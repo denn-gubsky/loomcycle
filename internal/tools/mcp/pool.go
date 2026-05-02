@@ -54,13 +54,36 @@ func NewPool(build func(name string) (Caller, error), teardown func(c Caller)) *
 // first use and performing the MCP handshake + tools/list. Concurrent Get
 // callers for the same name share one in-flight init; concurrent Get
 // callers for different names don't block each other.
+//
+// If a cached entry's Caller is no longer Healthy (e.g. the stdio child
+// crashed), Get evicts it and re-initialises a fresh entry inline. The
+// caller never sees a "permanently dead" slot.
 func (p *Pool) Get(ctx context.Context, name string) (Caller, []ToolDescriptor, error) {
 	// Phase 1 (fast path): check the map under the lock. If the entry
-	// exists and is ready, return immediately. If it exists but is still
-	// initialising (some other goroutine got here first), wait on its
-	// ready channel without holding p.mu.
+	// exists, ready, and healthy, return immediately. If it exists but is
+	// still initialising, wait on its ready channel without holding p.mu.
+	// If it's ready but unhealthy, evict and fall through to a fresh init.
 	p.mu.Lock()
 	e, exists := p.servers[name]
+	if exists {
+		select {
+		case <-e.ready:
+			// Init finished. Check the result.
+			if e.err == nil && e.caller != nil && e.caller.Healthy() {
+				p.mu.Unlock()
+				return e.caller, e.tools, nil
+			}
+			// Either init failed earlier or the caller is now unhealthy.
+			// Evict so the rest of this function creates a fresh entry.
+			if e.err == nil && e.caller != nil && p.teardown != nil {
+				p.teardown(e.caller)
+			}
+			delete(p.servers, name)
+			exists = false
+		default:
+			// Still initialising — fall through to wait.
+		}
+	}
 	if !exists {
 		e = &entry{ready: make(chan struct{})}
 		p.servers[name] = e
@@ -68,10 +91,18 @@ func (p *Pool) Get(ctx context.Context, name string) (Caller, []ToolDescriptor, 
 	p.mu.Unlock()
 
 	if exists {
-		// Wait for the in-progress init (or already-finished entry).
+		// Wait for the in-progress init.
 		select {
 		case <-e.ready:
-			return e.caller, e.tools, e.err
+			if e.err == nil && e.caller != nil && e.caller.Healthy() {
+				return e.caller, e.tools, nil
+			}
+			if e.err != nil {
+				return nil, nil, e.err
+			}
+			// Won the race in the most awkward way: it became unhealthy
+			// between ready and our re-check. One retry resolves it.
+			return p.Get(ctx, name)
 		case <-ctx.Done():
 			return nil, nil, ctx.Err()
 		}
@@ -153,12 +184,7 @@ func (p *Pool) Tools() []tools.Tool {
 			continue
 		}
 		for _, td := range e.tools {
-			out = append(out, &mcpTool{
-				server:     serverName,
-				toolName:   td.Name,
-				descriptor: td,
-				caller:     e.caller,
-			})
+			out = append(out, NewTool(p, serverName, td))
 		}
 	}
 	return out
@@ -189,11 +215,28 @@ func (p *Pool) Close() {
 
 // mcpTool wraps an MCP server-side tool descriptor as a loomcycle tools.Tool
 // so the dispatcher can route to it the same way it routes to built-ins.
+//
+// Critically, the tool resolves its Caller via Pool.Get on every Execute —
+// not via a captured pointer at registration time. That way, if the stdio
+// child crashes and Pool.Get respawns it, this tool's next call uses the
+// new caller automatically, with no re-registration step.
 type mcpTool struct {
 	server     string
 	toolName   string
 	descriptor ToolDescriptor
-	caller     Caller
+	pool       *Pool
+}
+
+// NewTool wraps a single MCP tool descriptor as a tools.Tool. Operators
+// that want per-server allowed_tools filtering can call this directly with
+// the subset of descriptors they want to expose.
+func NewTool(pool *Pool, server string, descriptor ToolDescriptor) tools.Tool {
+	return &mcpTool{
+		server:     server,
+		toolName:   descriptor.Name,
+		descriptor: descriptor,
+		pool:       pool,
+	}
 }
 
 func (t *mcpTool) Name() string {
@@ -210,7 +253,17 @@ func (t *mcpTool) InputSchema() json.RawMessage {
 }
 
 func (t *mcpTool) Execute(ctx context.Context, input json.RawMessage) (tools.Result, error) {
-	res, err := CallTool(ctx, t.caller, t.toolName, input)
+	caller, _, err := t.pool.Get(ctx, t.server)
+	if err != nil {
+		// Pool spawn / handshake failed. ctx cancellation goes through as
+		// a hard error; everything else as a recoverable IsError so the
+		// model can see "MCP server unavailable" and decide what to do.
+		if ctx.Err() != nil {
+			return tools.Result{}, err
+		}
+		return tools.Result{Text: err.Error(), IsError: true}, nil
+	}
+	res, err := CallTool(ctx, caller, t.toolName, input)
 	if err != nil {
 		// Distinguish two failure modes:
 		//   1. ctx cancellation — the run is going away; the model should

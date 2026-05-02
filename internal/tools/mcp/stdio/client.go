@@ -136,6 +136,22 @@ func (c *Client) Call(ctx context.Context, method string, params any) (json.RawM
 	}
 }
 
+// Healthy reports whether the child process is still serving calls.
+// Returns false once Close has fired or the readLoop has exited (child
+// died). The check is non-blocking and safe for the Pool's cached-entry
+// fast path.
+func (c *Client) Healthy() bool {
+	if c.closed.Load() {
+		return false
+	}
+	select {
+	case <-c.doneCh:
+		return false
+	default:
+		return true
+	}
+}
+
 // Notify sends a JSON-RPC notification (no response expected).
 func (c *Client) Notify(method string, params any) error {
 	if c.closed.Load() {

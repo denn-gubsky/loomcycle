@@ -7,11 +7,17 @@ import (
 )
 
 // Caller is the minimum surface a transport must expose to drive the MCP
-// protocol. Both stdio.Client and a future http.Client satisfy this so the
+// protocol. Both stdio.Client and http.Client satisfy this so the
 // protocol-layer helpers below stay transport-agnostic.
 type Caller interface {
 	Call(ctx context.Context, method string, params any) (json.RawMessage, error)
 	Notify(method string, params any) error
+	// Healthy reports whether the underlying transport is still able to
+	// serve calls. For stdio: true while the child is alive. For HTTP:
+	// effectively always true (stateless), unless a session has been
+	// invalidated and we know about it. The Pool uses this to decide
+	// whether to evict + respawn before returning a cached entry.
+	Healthy() bool
 }
 
 // ProtocolVersion is what we advertise to MCP servers. 2024-11-05 is the

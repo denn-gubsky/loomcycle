@@ -368,6 +368,58 @@ func TestPoolGetRespectsCtxWhileWaitingOnPeerInit(t *testing.T) {
 	}
 }
 
+// Regression: when a cached entry's caller goes unhealthy (e.g. the stdio
+// child crashed), the next Pool.Get must evict + respawn rather than handing
+// back a dead caller forever.
+func TestPoolGetRespawnsAfterUnhealthy(t *testing.T) {
+	build := newCountingBuild(t, "ok")
+	pool := mcp.NewPool(build.fn, func(c mcp.Caller) {
+		if cl, ok := c.(*stdio.Client); ok {
+			_ = cl.Close()
+		}
+	})
+	t.Cleanup(pool.Close)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	// First Get → spawn 1.
+	caller1, _, err := pool.Get(ctx, "rs")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !caller1.Healthy() {
+		t.Fatal("first caller should be Healthy")
+	}
+
+	// Kill the child. After this the cached caller reports !Healthy.
+	if cl, ok := caller1.(*stdio.Client); ok {
+		_ = cl.Close()
+	}
+	// Give the readLoop a moment to observe EOF and close doneCh.
+	for i := 0; i < 100 && caller1.Healthy(); i++ {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if caller1.Healthy() {
+		t.Fatal("caller still Healthy after Close — test setup wrong")
+	}
+
+	// Next Get must respawn (build called again).
+	caller2, _, err := pool.Get(ctx, "rs")
+	if err != nil {
+		t.Fatalf("Get after crash: %v", err)
+	}
+	if !caller2.Healthy() {
+		t.Fatal("respawned caller should be Healthy")
+	}
+	if caller2 == caller1 {
+		t.Fatal("Get returned the dead caller, not a respawn")
+	}
+	if build.count != 2 {
+		t.Errorf("build called %d times, want 2 (spawn + respawn)", build.count)
+	}
+}
+
 func TestPoolGetReturnsBuildError(t *testing.T) {
 	pool := mcp.NewPool(
 		func(name string) (mcp.Caller, error) {
