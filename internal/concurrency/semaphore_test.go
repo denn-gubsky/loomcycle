@@ -90,3 +90,45 @@ func TestCtxCancelDuringWait(t *testing.T) {
 		t.Errorf("expected context.Canceled, got %v", err)
 	}
 }
+
+// Regression: when releaseFn races a waiter's ctx-cancellation, the slot
+// transfer can be silently stranded (release won the race, removed the
+// waiter from the queue, sent to its chan, but the waiter goroutine took
+// the ctx.Done() branch and returned without picking up the slot). After
+// many such races the active counter drifts up and never recovers.
+//
+// We synthesise the race by running many short-timeout acquires against a
+// small pool. After everything settles, both counters must be zero.
+func TestSemaphoreNoLeakOnCancellationRace(t *testing.T) {
+	const (
+		concurrency = 2
+		queueDepth  = 64
+		iterations  = 5000
+	)
+	s := New(concurrency, queueDepth, time.Second)
+	var wg sync.WaitGroup
+	for i := 0; i < iterations; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			// Variable timeout (0–4 ms) so cancellations happen at
+			// many different points relative to a release.
+			d := time.Duration(i%5) * time.Millisecond
+			ctx, cancel := context.WithTimeout(context.Background(), d)
+			defer cancel()
+			release, err := s.Acquire(ctx)
+			if err == nil {
+				time.Sleep(time.Microsecond) // brief work
+				release()
+			}
+		}(i)
+	}
+	wg.Wait()
+
+	// Let any in-flight transfers settle before sampling Stats.
+	time.Sleep(50 * time.Millisecond)
+	a, q := s.Stats()
+	if a != 0 || q != 0 {
+		t.Errorf("after %d racy iterations: active=%d queued=%d, want 0/0 (slot leak)", iterations, a, q)
+	}
+}
