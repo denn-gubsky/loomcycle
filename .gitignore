@@ -1,0 +1,42 @@
+# Binaries
+/cmd/ac/ac
+/bin/
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Test artifacts
+*.test
+*.out
+coverage.txt
+
+# Local config
+.env
+.env.*
+!.env.example
+loomcycle.local.yaml
+
+# Data
+*.db
+*.db-wal
+*.db-shm
+/data/
+
+# Editor
+.idea/
+.vscode/
+*.swp
+.DS_Store
+
+# Per-user Claude Code state (permission grants, plans)
+.claude/
+
+# Adapter build output
+adapters/ts/dist/
+adapters/ts/node_modules/
+adapters/python/dist/
+adapters/python/*.egg-info/
+adapters/python/.venv/
+__pycache__/
+*.pyc

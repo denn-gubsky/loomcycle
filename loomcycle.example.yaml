@@ -1,0 +1,23 @@
+# loomcycle.example.yaml
+# Routing, agent definitions, and MCP servers.
+# Secrets stay in .env (referenced via ${VAR} interpolation below).
+
+defaults:
+  provider: anthropic
+  model: claude-sonnet-4-6
+
+models:
+  cheap: { provider: anthropic, model: claude-haiku-4-5 }
+  smart: { provider: anthropic, model: claude-opus-4-7 }
+  # local: { provider: ollama, model: llama3.1:8b }   # v0.1 stub
+
+agents:
+  default:
+    model: smart
+    system_prompt: "You are a helpful assistant."
+    allowed_tools: [Read]
+
+concurrency:
+  max_concurrent_runs: 8
+  max_queue_depth: 16
+  queue_timeout_ms: 30000

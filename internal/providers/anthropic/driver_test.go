@@ -1,0 +1,171 @@
+package anthropic
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+
+	"github.com/denn-gubsky/loomcycle/internal/providers"
+)
+
+// fakeStream serves a canned SSE script as one Anthropic Messages response.
+func fakeStream(t *testing.T, frames []string) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("x-api-key"); got != "test-key" {
+			t.Errorf("missing x-api-key, got %q", got)
+		}
+		if got := r.Header.Get("anthropic-version"); got == "" {
+			t.Errorf("missing anthropic-version header")
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(200)
+		for _, f := range frames {
+			fmt.Fprint(w, f)
+			if flusher, ok := w.(http.Flusher); ok {
+				flusher.Flush()
+			}
+		}
+	}))
+}
+
+func TestStreamTextThenStop(t *testing.T) {
+	frames := []string{
+		"event: message_start\ndata: {\"type\":\"message_start\"}\n\n",
+		"event: content_block_start\ndata: {\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n",
+		"event: content_block_delta\ndata: {\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"hello \"}}\n\n",
+		"event: content_block_delta\ndata: {\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"world\"}}\n\n",
+		"event: content_block_stop\ndata: {\"index\":0}\n\n",
+		"event: message_delta\ndata: {\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"input_tokens\":42,\"output_tokens\":7}}\n\n",
+		"event: message_stop\ndata: {}\n\n",
+	}
+	srv := fakeStream(t, frames)
+	defer srv.Close()
+
+	d := New("test-key", srv.URL, nil)
+	ch, err := d.Call(context.Background(), providers.Request{
+		Model:    "claude-sonnet-4-6",
+		Messages: []providers.Message{{Role: "user", Content: []providers.ContentBlock{{Type: "text", Text: "hi"}}}},
+	})
+	if err != nil {
+		t.Fatalf("Call: %v", err)
+	}
+
+	var text strings.Builder
+	var done providers.Event
+	for ev := range ch {
+		switch ev.Type {
+		case providers.EventText:
+			text.WriteString(ev.Text)
+		case providers.EventDone:
+			done = ev
+		case providers.EventError:
+			t.Fatalf("unexpected error event: %s", ev.Error)
+		}
+	}
+	if text.String() != "hello world" {
+		t.Errorf("text = %q, want %q", text.String(), "hello world")
+	}
+	if done.StopReason != "end_turn" {
+		t.Errorf("stop_reason = %q", done.StopReason)
+	}
+	if done.Usage == nil || done.Usage.InputTokens != 42 || done.Usage.OutputTokens != 7 {
+		t.Errorf("usage = %+v", done.Usage)
+	}
+}
+
+func TestStreamToolUse(t *testing.T) {
+	frames := []string{
+		"event: message_start\ndata: {}\n\n",
+		"event: content_block_start\ndata: {\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\"toolu_1\",\"name\":\"Read\",\"input\":{}}}\n\n",
+		"event: content_block_delta\ndata: {\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"path\\\":\"}}\n\n",
+		"event: content_block_delta\ndata: {\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"\\\"/tmp/x\\\"}\"}}\n\n",
+		"event: content_block_stop\ndata: {\"index\":0}\n\n",
+		"event: message_delta\ndata: {\"delta\":{\"stop_reason\":\"tool_use\"},\"usage\":{\"input_tokens\":10,\"output_tokens\":3}}\n\n",
+		"event: message_stop\ndata: {}\n\n",
+	}
+	srv := fakeStream(t, frames)
+	defer srv.Close()
+
+	d := New("test-key", srv.URL, nil)
+	ch, err := d.Call(context.Background(), providers.Request{Model: "x"})
+	if err != nil {
+		t.Fatalf("Call: %v", err)
+	}
+
+	var toolCall *providers.ToolUse
+	var stop string
+	for ev := range ch {
+		if ev.Type == providers.EventToolCall {
+			toolCall = ev.ToolUse
+		}
+		if ev.Type == providers.EventDone {
+			stop = ev.StopReason
+		}
+	}
+	if toolCall == nil {
+		t.Fatal("no tool_call emitted")
+	}
+	if toolCall.Name != "Read" || toolCall.ID != "toolu_1" {
+		t.Errorf("tool: %+v", toolCall)
+	}
+	var input struct{ Path string }
+	if err := json.Unmarshal(toolCall.Input, &input); err != nil {
+		t.Fatalf("tool input json: %v (raw %s)", err, string(toolCall.Input))
+	}
+	if input.Path != "/tmp/x" {
+		t.Errorf("tool input path = %q", input.Path)
+	}
+	if stop != "tool_use" {
+		t.Errorf("stop_reason = %q", stop)
+	}
+}
+
+func TestRequestBodyShape(t *testing.T) {
+	// Verify the request marshalling: cache_control on Cacheable system block,
+	// proper tool_use / tool_result encoding.
+	var captured []byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		captured, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, "event: message_stop\ndata: {}\n\n")
+	}))
+	defer srv.Close()
+
+	d := New("test-key", srv.URL, nil)
+	ch, err := d.Call(context.Background(), providers.Request{
+		Model: "claude-sonnet-4-6",
+		System: []providers.ContentBlock{
+			{Type: "text", Text: "you are helpful", Cacheable: true},
+		},
+		Messages: []providers.Message{
+			{Role: "user", Content: []providers.ContentBlock{{Type: "text", Text: "hi"}}},
+			{Role: "assistant", Content: []providers.ContentBlock{
+				{Type: "tool_use", ToolUseID: "toolu_1", ToolName: "Read", ToolInput: json.RawMessage(`{"path":"/x"}`)},
+			}},
+			{Role: "user", Content: []providers.ContentBlock{
+				{Type: "tool_result", ToolUseID: "toolu_1", Text: "file contents"},
+			}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Call: %v", err)
+	}
+	for range ch {
+	}
+	body := string(captured)
+	if !strings.Contains(body, `"cache_control":{"type":"ephemeral"}`) {
+		t.Errorf("cache_control missing on system block:\n%s", body)
+	}
+	if !strings.Contains(body, `"tool_use_id":"toolu_1"`) {
+		t.Errorf("tool_result tool_use_id missing:\n%s", body)
+	}
+	if !strings.Contains(body, `"stream":true`) {
+		t.Errorf("stream flag missing:\n%s", body)
+	}
+}
