@@ -47,11 +47,17 @@ type AgentDef struct {
 // MCPServer declares one MCP server. Transport "stdio" or "http".
 type MCPServer struct {
 	Transport string            `yaml:"transport"`
-	Command   string            `yaml:"command"`
-	Args      []string          `yaml:"args"`
-	Env       map[string]string `yaml:"env"`
-	URL       string            `yaml:"url"`
+	Command   string            `yaml:"command"` // stdio
+	Args      []string          `yaml:"args"`    // stdio
+	Env       map[string]string `yaml:"env"`     // stdio
+	URL       string            `yaml:"url"`     // http
+	Headers   map[string]string `yaml:"headers"` // http
 	PoolSize  int               `yaml:"pool_size"`
+	// AllowedTools narrows which of the server's discovered tools are
+	// exposed to agents. Empty (default) = expose every tool the server
+	// advertises via tools/list. Use this to opt out of expensive or
+	// unwanted tools without forking the MCP server itself.
+	AllowedTools []string `yaml:"allowed_tools"`
 }
 
 // Concurrency caps for the runtime.

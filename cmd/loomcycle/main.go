@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"sort"
 	"syscall"
 	"time"
 
@@ -28,6 +29,9 @@ import (
 	storesqlite "github.com/denn-gubsky/loomcycle/internal/store/sqlite"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 	"github.com/denn-gubsky/loomcycle/internal/tools/builtin"
+	"github.com/denn-gubsky/loomcycle/internal/tools/mcp"
+	mcphttp "github.com/denn-gubsky/loomcycle/internal/tools/mcp/http"
+	mcpstdio "github.com/denn-gubsky/loomcycle/internal/tools/mcp/stdio"
 )
 
 func main() {
@@ -50,12 +54,75 @@ func main() {
 	// The Read tool is sandboxed: it refuses every call when Root is empty.
 	// Operators must set LOOMCYCLE_READ_ROOT explicitly to enable it (no
 	// silent default — the wrong default would leak file contents).
-	builtins := []tools.Tool{
+	allTools := []tools.Tool{
 		&builtin.Read{Root: cfg.Env.ReadRoot},
 	}
 	if cfg.Env.ReadRoot == "" {
 		log.Printf("note: Read tool is registered but disabled — set LOOMCYCLE_READ_ROOT to enable")
 	}
+
+	// MCP: spawn declared servers (stdio or http), discover their tools,
+	// register each as `mcp__{server}__{tool}` alongside the built-ins.
+	// Failures to spawn or handshake are logged and the server is skipped —
+	// the other servers still come up.
+	mcpPool := mcp.NewPool(
+		func(name string) (mcp.Caller, error) {
+			srv, ok := cfg.MCPServers[name]
+			if !ok {
+				return nil, fmt.Errorf("mcp_servers.%s: not in config", name)
+			}
+			switch srv.Transport {
+			case "stdio":
+				return spawnStdioMCP(name, srv)
+			case "http":
+				return mcphttp.New(mcphttp.Config{
+					URL:     srv.URL,
+					Headers: srv.Headers,
+				})
+			default:
+				return nil, fmt.Errorf("mcp_servers.%s: unknown transport %q", name, srv.Transport)
+			}
+		},
+		func(c mcp.Caller) {
+			// Both stdio.Client and http.Client implement Close() error.
+			// A future transport that doesn't gets logged so the leak is
+			// at least visible to operators.
+			type closer interface{ Close() error }
+			cl, ok := c.(closer)
+			if !ok {
+				log.Printf("mcp pool: teardown skipped (%T does not implement Close)", c)
+				return
+			}
+			_ = cl.Close()
+		},
+	)
+	defer mcpPool.Close()
+
+	// Initialise each server, apply per-server allowed_tools filter, and
+	// register the resulting tools alongside the built-ins.
+	//
+	// Budget: 30s SHARED across all servers, not per-server. With many
+	// servers configured, per-server timeouts can serially stack up past
+	// K8s liveness/readiness deadlines and put the pod in a restart loop
+	// before /healthz ever serves once. A shared ctx caps total startup
+	// blocking; remaining servers after the budget exits are skipped with
+	// a clear log line — they can be retried on demand via the lazy
+	// pool resolution path on the first agent run that needs them.
+	mcpInitCtx, mcpInitCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	for name, srv := range cfg.MCPServers {
+		_, descs, err := mcpPool.Get(mcpInitCtx, name)
+		if err != nil {
+			log.Printf("mcp[%s]: skipped — %v", name, err)
+			continue
+		}
+		filtered := applyAllowedToolsFilter(descs, srv.AllowedTools)
+		for _, d := range filtered {
+			allTools = append(allTools, mcp.NewTool(mcpPool, name, d))
+		}
+		log.Printf("mcp[%s]: ready, %d/%d tools registered (transport=%s)",
+			name, len(filtered), len(descs), srv.Transport)
+	}
+	mcpInitCancel()
 
 	// Storage: open SQLite under DataDir. We could no-op when DataDir is
 	// unset, but that would silently disable the transcript/continuation
@@ -72,7 +139,7 @@ func main() {
 	log.Printf("store: sqlite at %s", dbPath)
 
 	var storeIface store.Store = st
-	srv := lchttp.New(cfg, pr, builtins, sem, storeIface)
+	srv := lchttp.New(cfg, pr, allTools, sem, storeIface)
 	httpServer := &http.Server{
 		Addr:              cfg.Env.ListenAddr,
 		Handler:           srv.Mux(),
@@ -146,4 +213,46 @@ func (p *providerResolver) Get(id string) (providers.Provider, error) {
 	default:
 		return nil, fmt.Errorf("unknown provider %q", id)
 	}
+}
+
+// spawnStdioMCP starts a stdio MCP child for one server entry. Env keys are
+// sorted so process listings are deterministic across runs.
+func spawnStdioMCP(name string, srv config.MCPServer) (mcp.Caller, error) {
+	keys := make([]string, 0, len(srv.Env))
+	for k := range srv.Env {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	env := make([]string, 0, len(keys))
+	for _, k := range keys {
+		env = append(env, k+"="+srv.Env[k])
+	}
+	return mcpstdio.Spawn(mcpstdio.Config{
+		Command: srv.Command,
+		Args:    srv.Args,
+		Env:     env,
+		OnStderr: func(line string) {
+			log.Printf("mcp[%s]: %s", name, line)
+		},
+	})
+}
+
+// applyAllowedToolsFilter narrows a server's discovered tool descriptors
+// to the operator-permitted subset. Empty allowed = pass-through (default
+// behaviour: expose every tool the server advertises).
+func applyAllowedToolsFilter(descs []mcp.ToolDescriptor, allowed []string) []mcp.ToolDescriptor {
+	if len(allowed) == 0 {
+		return descs
+	}
+	allowSet := make(map[string]struct{}, len(allowed))
+	for _, name := range allowed {
+		allowSet[name] = struct{}{}
+	}
+	out := make([]mcp.ToolDescriptor, 0, len(descs))
+	for _, d := range descs {
+		if _, ok := allowSet[d.Name]; ok {
+			out = append(out, d)
+		}
+	}
+	return out
 }
