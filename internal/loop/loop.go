@@ -10,6 +10,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
@@ -229,19 +230,42 @@ func splitSegments(segs []PromptSegment) (system []providers.ContentBlock, messa
 	return
 }
 
+// allowedUntrustedKinds is the set of `kind` values an untrusted-block may
+// declare. Anything else is normalised to "untrusted" so a caller can't
+// inject a tag that the model treats as a trusted boundary (e.g. "system").
+var allowedUntrustedKinds = map[string]bool{
+	"untrusted":     true,
+	"web_content":   true,
+	"uploaded_cv":   true,
+	"qa_question":   true,
+	"user_input":    true,
+	"tool_output":   true,
+	"search_result": true,
+}
+
 // flattenContent converts the caller's typed content union into a provider
-// ContentBlock. Untrusted blocks are wrapped in <untrusted> tags so any
-// embedded "instructions" lose force.
+// ContentBlock. Untrusted blocks are wrapped in <kind>...</kind> tags so any
+// embedded "instructions" lose force. Two protections:
+//
+//   - kind is validated against allowedUntrustedKinds; unknown values are
+//     normalised to "untrusted" so a caller can't open a "system"- or
+//     "trusted"-shaped tag.
+//
+//   - the body is escaped: every `<` becomes `&lt;`. Without this, content
+//     containing `</web_content>` followed by attacker text and a re-opened
+//     `<web_content>` would syntactically close our wrapping and present
+//     the inner text to the model as if it were trusted.
 func flattenContent(c PromptContentBlock) providers.ContentBlock {
 	switch c.Type {
 	case "untrusted-block":
 		kind := c.Kind
-		if kind == "" {
+		if kind == "" || !allowedUntrustedKinds[kind] {
 			kind = "untrusted"
 		}
+		safe := strings.ReplaceAll(c.Text, "<", "&lt;")
 		return providers.ContentBlock{
 			Type: "text",
-			Text: fmt.Sprintf("<%s>\n%s\n</%s>", kind, c.Text, kind),
+			Text: fmt.Sprintf("<%s>\n%s\n</%s>", kind, safe, kind),
 		}
 	default: // "trusted-text"
 		return providers.ContentBlock{Type: "text", Text: c.Text, Cacheable: c.Cacheable}
