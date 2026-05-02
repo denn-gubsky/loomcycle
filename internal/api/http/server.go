@@ -5,10 +5,12 @@
 package http
 
 import (
+	"crypto/subtle"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
+	"strings"
 
 	"github.com/denn-gubsky/loomcycle/internal/concurrency"
 	"github.com/denn-gubsky/loomcycle/internal/config"
@@ -39,11 +41,38 @@ func New(cfg *config.Config, pr ProviderResolver, builtinTools []tools.Tool, sem
 }
 
 // Mux returns the http.Handler ready to be served.
+//
+// /v1 routes are wrapped with recovery middleware so a panic in the agent
+// loop, a tool, or a provider driver returns a 500 to the caller instead
+// of taking down the process. /healthz stays bare — it should never panic
+// and a panic there is a programmer error worth crashing on.
 func (s *Server) Mux() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", s.handleHealthz)
-	mux.Handle("/v1/runs", s.authMiddleware(http.HandlerFunc(s.handleRuns)))
+	mux.Handle("/v1/runs", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleRuns))))
 	return mux
+}
+
+// recoveryMiddleware turns a panicking handler into a 500. If headers have
+// already been sent (the SSE path opens the stream before running anything
+// that could panic), we can't write a status — we log and let the connection
+// terminate.
+func recoveryMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer func() {
+			if rec := recover(); rec != nil {
+				log.Printf("panic recovered in %s %s: %v", r.Method, r.URL.Path, rec)
+				// Best-effort 500. If headers are already sent (SSE has
+				// started writing) the WriteHeader call is a no-op and the
+				// client sees the connection close, which is the cleanest
+				// signal we can give at that point.
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusInternalServerError)
+				w.Write([]byte(`{"error":"internal server error"}`))
+			}
+		}()
+		next.ServeHTTP(w, r)
+	})
 }
 
 // --- handlers ---
@@ -65,6 +94,13 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	if ct := r.Header.Get("Content-Type"); ct != "" && !strings.HasPrefix(ct, "application/json") {
+		http.Error(w, "Content-Type must be application/json", http.StatusUnsupportedMediaType)
+		return
+	}
+	// Cap body at 1 MiB so a malicious caller can't exhaust memory by
+	// streaming a huge body. ReadHeaderTimeout doesn't cover the body.
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	var req runRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "bad json: "+err.Error(), http.StatusBadRequest)
@@ -122,7 +158,14 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		}}, req.Segments...)
 	}
 
-	stream := newSSE(w)
+	stream, ok := newSSE(w)
+	if !ok {
+		// ResponseWriter doesn't implement http.Flusher — every frame would
+		// be buffered until handler return, defeating SSE. Refuse cleanly so
+		// the caller gets a useful error instead of silent buffering.
+		http.Error(w, "server does not support streaming on this transport", http.StatusInternalServerError)
+		return
+	}
 	stream.start()
 
 	emit := func(ev providers.Event) {
@@ -144,16 +187,20 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 
 // authMiddleware enforces LOOMCYCLE_AUTH_TOKEN bearer auth, except for /healthz which
 // is mounted bare (this middleware is only wrapped around /v1/* routes).
+//
+// Comparison uses subtle.ConstantTimeCompare to prevent a timing oracle that
+// could let a network-adjacent attacker recover the token byte-by-byte.
 func (s *Server) authMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if s.cfg.Env.AuthToken == "" {
-			// No token configured = open mode (dev only).
+			// No token configured = open mode (dev only). Startup logged a
+			// warning so the operator knows.
 			next.ServeHTTP(w, r)
 			return
 		}
 		got := r.Header.Get("Authorization")
 		want := "Bearer " + s.cfg.Env.AuthToken
-		if got != want {
+		if subtle.ConstantTimeCompare([]byte(got), []byte(want)) != 1 {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}

@@ -2,7 +2,7 @@
 
 A lightweight, multi-tenant agentic runtime — one Go sidecar that owns the LLM tool-use loop end-to-end across Anthropic, OpenAI and Ollama. Consumed from Next.js (TS adapter) and Python over a local HTTP+SSE API.
 
-> **Status:** v0.1 in active development. Not production-ready. Anthropic, OpenAI, and Ollama providers work; MCP / SQLite store / Python adapter / response cache are scaffolded but not yet implemented.
+> **Status:** v0.2 — Anthropic, OpenAI, and Ollama providers all work. Not yet production-ready: MCP, SQLite store, Python adapter, and response cache are scaffolded but not yet implemented. v0.3 will fill those in.
 
 ## Why
 

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"regexp"
+	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -88,6 +89,9 @@ type Env struct {
 	ListenAddr      string
 	AuthToken       string
 	DataDir         string
+	// ReadRoot is the sandbox root for the built-in Read tool. Empty by
+	// default — the tool is registered but rejects every call until set.
+	ReadRoot string
 }
 
 // Load reads a YAML file and the process env. Empty path returns defaults +
@@ -123,6 +127,7 @@ func Load(path string) (*Config, error) {
 		ListenAddr:      getenvDefault("LOOMCYCLE_LISTEN_ADDR", "127.0.0.1:8787"),
 		AuthToken:       os.Getenv("LOOMCYCLE_AUTH_TOKEN"),
 		DataDir:         getenvDefault("LOOMCYCLE_DATA_DIR", "./data"),
+		ReadRoot:        os.Getenv("LOOMCYCLE_READ_ROOT"),
 	}
 
 	if err := validate(cfg); err != nil {
@@ -163,13 +168,49 @@ func (c *Config) ResolveAgentModel(agent string) (provider string, model string,
 	return provider, model, nil
 }
 
-// expandEnv replaces ${VAR} with the value of VAR. Missing vars expand to "".
+// envVarRe matches ${VAR} interpolation tokens in the YAML source.
+var envVarRe = regexp.MustCompile(`\$\{([A-Za-z_][A-Za-z0-9_]*)\}`)
+
+// expandEnv replaces ${VAR} with the value of VAR, but only for VARs whose
+// names match expandEnvAllowed. Other ${VAR} tokens pass through verbatim.
+//
+// Why an allowlist: a malicious or compromised YAML in a GitOps / shared-
+// config setup could otherwise inject `${ANTHROPIC_API_KEY}` into outbound
+// fields (MCP server URL, args, system prompt) and exfiltrate the secret.
+// We restrict expansion to a known-safe set of names that the project
+// explicitly publishes for this purpose.
+//
+// To add a new var that needs to be referenceable from YAML, add it here.
+// Provider keys (ANTHROPIC_API_KEY, OPENAI_API_KEY) are intentionally NOT
+// in this list — they reach providers through the Env struct, not via the
+// YAML interpolation path.
 func expandEnv(s string) string {
-	re := regexp.MustCompile(`\$\{([A-Za-z_][A-Za-z0-9_]*)\}`)
-	return re.ReplaceAllStringFunc(s, func(m string) string {
+	return envVarRe.ReplaceAllStringFunc(s, func(m string) string {
 		name := m[2 : len(m)-1]
+		if !expandEnvAllowed(name) {
+			return m // leave verbatim — caller sees the literal ${...}
+		}
 		return os.Getenv(name)
 	})
+}
+
+// expandEnvAllowed reports whether the given env-var name may be expanded
+// inside YAML. Allowlist:
+//   - any LOOMCYCLE_-prefixed variable (the project's own namespace)
+//   - well-known third-party keys MCP servers commonly need
+func expandEnvAllowed(name string) bool {
+	if strings.HasPrefix(name, "LOOMCYCLE_") {
+		return true
+	}
+	switch name {
+	case "BRAVE_API_KEY",
+		"GITHUB_TOKEN",
+		"SLACK_BOT_TOKEN",
+		"PG_DSN",
+		"REDIS_URL":
+		return true
+	}
+	return false
 }
 
 func getenvDefault(name, dflt string) string {

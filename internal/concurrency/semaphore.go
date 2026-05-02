@@ -115,6 +115,15 @@ func (s *Semaphore) cancelWaiter(target chan struct{}) {
 			return
 		}
 	}
+	// Not found: releaseFn already won the race and transferred a slot to
+	// us. The buffered chan holds a stranded token; drain it and decrement
+	// active to give the slot back, otherwise it's accounted to a goroutine
+	// that returned with ctx.Err() and never released.
+	select {
+	case <-target:
+		s.active--
+	default:
+	}
 }
 
 // IsBackpressure reports whether err is a BackpressureError.

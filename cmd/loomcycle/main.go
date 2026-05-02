@@ -44,8 +44,14 @@ func main() {
 		cfg.Concurrency.MaxQueueDepth,
 		cfg.Concurrency.QueueTimeout(),
 	)
+	// The Read tool is sandboxed: it refuses every call when Root is empty.
+	// Operators must set LOOMCYCLE_READ_ROOT explicitly to enable it (no
+	// silent default — the wrong default would leak file contents).
 	builtins := []tools.Tool{
-		&builtin.Read{},
+		&builtin.Read{Root: cfg.Env.ReadRoot},
+	}
+	if cfg.Env.ReadRoot == "" {
+		log.Printf("note: Read tool is registered but disabled — set LOOMCYCLE_READ_ROOT to enable")
 	}
 
 	srv := lchttp.New(cfg, pr, builtins, sem)
@@ -53,6 +59,10 @@ func main() {
 		Addr:              cfg.Env.ListenAddr,
 		Handler:           srv.Mux(),
 		ReadHeaderTimeout: 10 * time.Second,
+	}
+
+	if cfg.Env.AuthToken == "" {
+		log.Printf("WARNING: LOOMCYCLE_AUTH_TOKEN is not set; /v1 routes are unauthenticated (dev mode)")
 	}
 
 	go func() {

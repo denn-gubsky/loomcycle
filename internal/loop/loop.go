@@ -10,6 +10,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
@@ -108,14 +109,23 @@ func Run(ctx context.Context, opts RunOptions) (RunResult, error) {
 				iterText += ev.Text
 				emit(ev)
 			case providers.EventToolCall:
-				pendingTools = append(pendingTools, *ev.ToolUse)
+				// Some providers (Ollama) don't issue tool_call IDs. Anthropic
+				// and OpenAI both 400 if we replay an empty-ID tool_use in the
+				// next turn's history, so we synthesise one here. The synth ID
+				// is deterministic per (run, iter, slot) so a replay produces
+				// the same value.
+				tu := *ev.ToolUse
+				if tu.ID == "" {
+					tu.ID = fmt.Sprintf("lc-%d-%d", iter, len(pendingTools))
+				}
+				pendingTools = append(pendingTools, tu)
 				assistantBlocks = append(assistantBlocks, providers.ContentBlock{
 					Type:      "tool_use",
-					ToolUseID: ev.ToolUse.ID,
-					ToolName:  ev.ToolUse.Name,
-					ToolInput: ev.ToolUse.Input,
+					ToolUseID: tu.ID,
+					ToolName:  tu.Name,
+					ToolInput: tu.Input,
 				})
-				emit(ev)
+				emit(providers.Event{Type: providers.EventToolCall, ToolUse: &tu})
 			case providers.EventDone:
 				iterStop = ev.StopReason
 				iterUsage = ev.Usage
@@ -170,6 +180,15 @@ func Run(ctx context.Context, opts RunOptions) (RunResult, error) {
 		messages = append(messages, providers.Message{Role: "user", Content: toolResults})
 	}
 
+	// If the for loop exited by exhausting MaxIterations while the model was
+	// still mid-tool-use, the stop_reason will be stuck at "tool_use" but no
+	// tools ran on this final iteration. Surface that distinctly to the
+	// caller — they can decide whether to bump MaxIterations and retry, or
+	// surface a different error to the user.
+	if stopReason == "tool_use" {
+		stopReason = "max_iterations"
+	}
+
 	emit(providers.Event{Type: providers.EventDone, StopReason: stopReason, Usage: &totalUsage})
 
 	return RunResult{
@@ -211,19 +230,42 @@ func splitSegments(segs []PromptSegment) (system []providers.ContentBlock, messa
 	return
 }
 
+// allowedUntrustedKinds is the set of `kind` values an untrusted-block may
+// declare. Anything else is normalised to "untrusted" so a caller can't
+// inject a tag that the model treats as a trusted boundary (e.g. "system").
+var allowedUntrustedKinds = map[string]bool{
+	"untrusted":     true,
+	"web_content":   true,
+	"uploaded_cv":   true,
+	"qa_question":   true,
+	"user_input":    true,
+	"tool_output":   true,
+	"search_result": true,
+}
+
 // flattenContent converts the caller's typed content union into a provider
-// ContentBlock. Untrusted blocks are wrapped in <untrusted> tags so any
-// embedded "instructions" lose force.
+// ContentBlock. Untrusted blocks are wrapped in <kind>...</kind> tags so any
+// embedded "instructions" lose force. Two protections:
+//
+//   - kind is validated against allowedUntrustedKinds; unknown values are
+//     normalised to "untrusted" so a caller can't open a "system"- or
+//     "trusted"-shaped tag.
+//
+//   - the body is escaped: every `<` becomes `&lt;`. Without this, content
+//     containing `</web_content>` followed by attacker text and a re-opened
+//     `<web_content>` would syntactically close our wrapping and present
+//     the inner text to the model as if it were trusted.
 func flattenContent(c PromptContentBlock) providers.ContentBlock {
 	switch c.Type {
 	case "untrusted-block":
 		kind := c.Kind
-		if kind == "" {
+		if kind == "" || !allowedUntrustedKinds[kind] {
 			kind = "untrusted"
 		}
+		safe := strings.ReplaceAll(c.Text, "<", "&lt;")
 		return providers.ContentBlock{
 			Type: "text",
-			Text: fmt.Sprintf("<%s>\n%s\n</%s>", kind, c.Text, kind),
+			Text: fmt.Sprintf("<%s>\n%s\n</%s>", kind, safe, kind),
 		}
 	default: // "trusted-text"
 		return providers.ContentBlock{Type: "text", Text: c.Text, Cacheable: c.Cacheable}

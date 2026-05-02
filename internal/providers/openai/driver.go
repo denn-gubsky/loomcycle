@@ -156,10 +156,10 @@ type wireFunction struct {
 
 func buildRequestBody(req providers.Request) ([]byte, error) {
 	w := wireRequest{
-		Model:       req.Model,
-		MaxTokens:   req.MaxTokens,
-		Temperature: req.Temperature,
-		Stream:      true,
+		Model:         req.Model,
+		MaxTokens:     req.MaxTokens,
+		Temperature:   req.Temperature,
+		Stream:        true,
 		StreamOptions: &wireStreamOptions{IncludeUsage: true},
 	}
 
