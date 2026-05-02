@@ -197,8 +197,13 @@ func (c *Client) readLoop() {
 	defer close(c.doneCh)
 	defer c.failPending()
 
+	// 16 MiB per-line cap. Real-world MCP servers (brave-search, fetch,
+	// filesystem) routinely return single JSON-RPC frames > 4 MiB when a
+	// tool result includes raw HTML or a large file. Hitting the cap
+	// produces bufio.ErrTooLong, which kills the connection — we'd rather
+	// allocate up to 16 MiB once than mark the server permanently dead.
 	scanner := bufio.NewScanner(c.stdout)
-	scanner.Buffer(make([]byte, 64*1024), 4*1024*1024)
+	scanner.Buffer(make([]byte, 64*1024), 16*1024*1024)
 	for scanner.Scan() {
 		line := scanner.Bytes()
 		if len(line) == 0 {
@@ -236,7 +241,7 @@ func (c *Client) readLoop() {
 // discards if none). Exits when the child closes stderr.
 func (c *Client) stderrLoop() {
 	scanner := bufio.NewScanner(c.stderr)
-	scanner.Buffer(make([]byte, 64*1024), 4*1024*1024)
+	scanner.Buffer(make([]byte, 64*1024), 16*1024*1024)
 	for scanner.Scan() {
 		if c.cfg.OnStderr != nil {
 			c.cfg.OnStderr(scanner.Text())

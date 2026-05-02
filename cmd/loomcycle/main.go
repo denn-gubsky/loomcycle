@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"sort"
 	"syscall"
 	"time"
 
@@ -72,9 +73,16 @@ func main() {
 			if srv.Transport != "stdio" {
 				return nil, fmt.Errorf("mcp_servers.%s: transport %q not supported in this build (only stdio for now)", name, srv.Transport)
 			}
-			env := make([]string, 0, len(srv.Env))
-			for k, v := range srv.Env {
-				env = append(env, k+"="+v)
+			// Sort env keys so process listings and logs are deterministic
+			// across runs — Go map iteration is randomised.
+			keys := make([]string, 0, len(srv.Env))
+			for k := range srv.Env {
+				keys = append(keys, k)
+			}
+			sort.Strings(keys)
+			env := make([]string, 0, len(keys))
+			for _, k := range keys {
+				env = append(env, k+"="+srv.Env[k])
 			}
 			return mcpstdio.Spawn(mcpstdio.Config{
 				Command: srv.Command,

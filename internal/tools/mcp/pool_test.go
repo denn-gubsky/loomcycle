@@ -10,6 +10,7 @@ import (
 	"errors"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -86,6 +87,9 @@ func runFakeServer(mode string) {
 				Arguments json.RawMessage `json:"arguments"`
 			}
 			_ = json.Unmarshal(probe.Params, &p)
+			if mode == "slow-call" {
+				time.Sleep(200 * time.Millisecond)
+			}
 			if mode == "tool_iserror" {
 				_ = enc.Encode(map[string]any{
 					"jsonrpc": "2.0",
@@ -173,6 +177,33 @@ func TestPoolToolExecuteRoutesToServer(t *testing.T) {
 	}
 }
 
+// Regression: when ctx fires mid-Execute, the wrapper must surface a hard
+// error (non-nil err) rather than dressing the cancellation as a recoverable
+// tool failure (Result{IsError:true}, nil). The model would otherwise see a
+// confusing "tool errored" message in the transcript before the loop's next
+// provider call detects the same ctx and terminates the run.
+//
+// Test approach: drive an Execute against a slow server with a tight ctx.
+// Without the fix, Execute returns (Result{IsError:true, Text:"context..."}, nil).
+// With the fix, Execute returns (Result{}, err) so dispatcher's err branch fires.
+func TestPoolToolReturnsErrOnCtxCancel(t *testing.T) {
+	pool := newPoolWithFake(t, "slow-call")
+	initCtx, initCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer initCancel()
+	if _, _, err := pool.Get(initCtx, "search"); err != nil {
+		t.Fatal(err)
+	}
+	tool := pool.Tools()[0]
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
+	defer cancel()
+
+	_, err := tool.Execute(ctx, json.RawMessage(`{}`))
+	if err == nil {
+		t.Fatal("expected non-nil err on ctx cancel; tool dressed cancel as IsError")
+	}
+}
+
 func TestPoolToolPropagatesIsError(t *testing.T) {
 	pool := newPoolWithFake(t, "tool_iserror")
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -209,6 +240,131 @@ func TestPoolGetCachesConnection(t *testing.T) {
 	}
 	if build.count != 1 {
 		t.Errorf("build called %d times, want 1 (cache miss on second Get)", build.count)
+	}
+}
+
+// Regression: concurrent Get on the same server name must share one
+// in-flight init — not block under one lock and not double-spawn.
+func TestPoolGetSharesInFlightInit(t *testing.T) {
+	build := newCountingBuild(t, "ok")
+	pool := mcp.NewPool(build.fn, func(c mcp.Caller) {
+		if cl, ok := c.(*stdio.Client); ok {
+			_ = cl.Close()
+		}
+	})
+	t.Cleanup(pool.Close)
+
+	const N = 8
+	var wg sync.WaitGroup
+	errs := make(chan error, N)
+	for i := 0; i < N; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_, _, err := pool.Get(ctx, "shared")
+			if err != nil {
+				errs <- err
+			}
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Errorf("concurrent Get failed: %v", err)
+	}
+	if build.count != 1 {
+		t.Errorf("build called %d times, want 1 (concurrent Get must share init)", build.count)
+	}
+}
+
+// Regression: a failed init removes the entry from the map so subsequent
+// Get calls can retry, rather than getting back the cached error forever.
+func TestPoolGetRetriesAfterInitFailure(t *testing.T) {
+	var attempts int
+	pool := mcp.NewPool(
+		func(name string) (mcp.Caller, error) {
+			attempts++
+			if attempts == 1 {
+				return nil, errors.New("transient build failure")
+			}
+			c, err := stdio.Spawn(stdio.Config{
+				Command: os.Args[0],
+				Env:     []string{"BE_MCP_SERVER=ok"},
+			})
+			return c, err
+		},
+		func(c mcp.Caller) {
+			if cl, ok := c.(*stdio.Client); ok {
+				_ = cl.Close()
+			}
+		},
+	)
+	t.Cleanup(pool.Close)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if _, _, err := pool.Get(ctx, "retry"); err == nil {
+		t.Fatal("first Get expected to fail")
+	}
+	if _, _, err := pool.Get(ctx, "retry"); err != nil {
+		t.Errorf("second Get should succeed after failed entry was evicted: %v", err)
+	}
+	if attempts != 2 {
+		t.Errorf("attempts = %d, want 2", attempts)
+	}
+}
+
+// Regression: Get respects ctx cancellation while waiting on an in-flight
+// init started by another goroutine.
+func TestPoolGetRespectsCtxWhileWaitingOnPeerInit(t *testing.T) {
+	// Use a slow build so the second Get can race the first's init.
+	releaseBuild := make(chan struct{})
+	pool := mcp.NewPool(
+		func(name string) (mcp.Caller, error) {
+			<-releaseBuild
+			return stdio.Spawn(stdio.Config{
+				Command: os.Args[0],
+				Env:     []string{"BE_MCP_SERVER=ok"},
+			})
+		},
+		func(c mcp.Caller) {
+			if cl, ok := c.(*stdio.Client); ok {
+				_ = cl.Close()
+			}
+		},
+	)
+	t.Cleanup(func() {
+		// Unblock any stuck build before Close.
+		select {
+		case <-releaseBuild:
+		default:
+			close(releaseBuild)
+		}
+		pool.Close()
+	})
+
+	// First Get starts an init that hangs on releaseBuild.
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_, _, _ = pool.Get(ctx, "slow")
+	}()
+	// Give it a moment to register the entry.
+	time.Sleep(50 * time.Millisecond)
+
+	// Second Get races in with a tight ctx. Must return ctx.Err()
+	// before the first Get's init completes.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
+	defer cancel()
+	_, _, err := pool.Get(ctx, "slow")
+	if err == nil {
+		t.Fatal("expected ctx error")
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("err = %v, want DeadlineExceeded", err)
 	}
 }
 
