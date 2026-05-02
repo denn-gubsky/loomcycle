@@ -88,6 +88,9 @@ type Env struct {
 	ListenAddr      string
 	AuthToken       string
 	DataDir         string
+	// ReadRoot is the sandbox root for the built-in Read tool. Empty by
+	// default — the tool is registered but rejects every call until set.
+	ReadRoot string
 }
 
 // Load reads a YAML file and the process env. Empty path returns defaults +
@@ -123,6 +126,7 @@ func Load(path string) (*Config, error) {
 		ListenAddr:      getenvDefault("LOOMCYCLE_LISTEN_ADDR", "127.0.0.1:8787"),
 		AuthToken:       os.Getenv("LOOMCYCLE_AUTH_TOKEN"),
 		DataDir:         getenvDefault("LOOMCYCLE_DATA_DIR", "./data"),
+		ReadRoot:        os.Getenv("LOOMCYCLE_READ_ROOT"),
 	}
 
 	if err := validate(cfg); err != nil {

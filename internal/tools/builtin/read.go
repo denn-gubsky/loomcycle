@@ -7,16 +7,19 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
 
-// Read returns text from a file path. Bounded by maxBytes (default 256 KiB)
+// Read returns text from a file path. Bounded by MaxBytes (default 256 KiB)
 // so a malicious or confused model can't blow the context window with a huge
-// file.
+// file. Always sandboxed: Root must be set to a directory the tool may read
+// from. An empty Root is rejected at call time — there is no "open mode".
 type Read struct {
-	// Root is the optional sandbox root. When set, all paths must resolve
-	// inside Root after symlink evaluation; otherwise the call returns an error.
+	// Root is the sandbox root. All paths must resolve inside Root after
+	// full symlink evaluation; otherwise the call returns an error.
+	// Required: a Read with empty Root rejects every call.
 	Root     string
 	MaxBytes int64
 }
@@ -28,7 +31,7 @@ func (r *Read) InputSchema() json.RawMessage {
 	return json.RawMessage(`{
 		"type": "object",
 		"properties": {
-			"path": {"type": "string", "description": "Absolute file path."}
+			"path": {"type": "string", "description": "Absolute file path inside the sandbox root."}
 		},
 		"required": ["path"]
 	}`)
@@ -44,22 +47,32 @@ func (r *Read) Execute(ctx context.Context, input json.RawMessage) (tools.Result
 	if args.Path == "" {
 		return tools.Result{Text: "path is required", IsError: true}, nil
 	}
+	if r.Root == "" {
+		return tools.Result{Text: "Read tool is not configured with a sandbox root; refusing to read", IsError: true}, nil
+	}
 
-	clean := filepath.Clean(args.Path)
-	if r.Root != "" {
-		// Resolve symlinks under root to prevent escape.
-		root, err := filepath.EvalSymlinks(r.Root)
-		if err != nil {
-			return tools.Result{Text: "sandbox root: " + err.Error(), IsError: true}, nil
-		}
-		abs, err := filepath.Abs(clean)
-		if err != nil {
-			return tools.Result{Text: "abs path: " + err.Error(), IsError: true}, nil
-		}
-		rel, err := filepath.Rel(root, abs)
-		if err != nil || rel == ".." || (len(rel) >= 3 && rel[:3] == "../") {
-			return tools.Result{Text: fmt.Sprintf("path %q escapes sandbox %q", abs, root), IsError: true}, nil
-		}
+	// Sandbox check: resolve symlinks on BOTH root AND target before the
+	// `Rel` check, then open the resolved path. This blocks the TOCTOU
+	// where target was a symlink at check time but a different file at
+	// open time, and the case where target was a symlink to outside root.
+	root, err := filepath.EvalSymlinks(r.Root)
+	if err != nil {
+		return tools.Result{Text: "sandbox root: " + err.Error(), IsError: true}, nil
+	}
+	abs, err := filepath.Abs(filepath.Clean(args.Path))
+	if err != nil {
+		return tools.Result{Text: "abs path: " + err.Error(), IsError: true}, nil
+	}
+	resolved, err := filepath.EvalSymlinks(abs)
+	if err != nil {
+		// Not yet existing or broken symlink — surface as a normal open error.
+		return tools.Result{Text: err.Error(), IsError: true}, nil
+	}
+	rel, err := filepath.Rel(root, resolved)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		// The HasPrefix form uses the OS-specific separator so `..\foo` on
+		// Windows is caught alongside `../foo` on POSIX.
+		return tools.Result{Text: fmt.Sprintf("path %q escapes sandbox %q", resolved, root), IsError: true}, nil
 	}
 
 	maxBytes := r.MaxBytes
@@ -67,7 +80,9 @@ func (r *Read) Execute(ctx context.Context, input json.RawMessage) (tools.Result
 		maxBytes = 256 * 1024
 	}
 
-	f, err := os.Open(clean)
+	// Open the already-resolved path so a symlink swap between EvalSymlinks
+	// and Open can't change what we read.
+	f, err := os.Open(resolved)
 	if err != nil {
 		return tools.Result{Text: err.Error(), IsError: true}, nil
 	}
