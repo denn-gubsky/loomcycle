@@ -1,6 +1,7 @@
 package openai
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -9,6 +10,7 @@ import (
 	"net/http/httptest"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -284,6 +286,64 @@ func isStreamEventsRunning(t *testing.T) bool {
 	buf := make([]byte, 64*1024)
 	n := runtime.Stack(buf, true)
 	return strings.Contains(string(buf[:n]), ".streamEvents(")
+}
+
+// Regression: OpenAI 429 with x-ratelimit-reset-* headers (no Retry-After)
+// triggers a retry that re-sends the same body. Specifically tests the
+// header-fallback path: Retry-After absent, x-ratelimit-reset-tokens=0s.
+func TestRetryOn429PreservesContext(t *testing.T) {
+	var (
+		mu      sync.Mutex
+		bodies  [][]byte
+		callNum int
+	)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		callNum++
+		bodies = append(bodies, body)
+		n := callNum
+		mu.Unlock()
+
+		if n == 1 {
+			// 429 — no Retry-After, but x-ratelimit-reset-tokens=0s
+			// exercises the OpenAI parser fallback path.
+			w.Header().Set("X-Ratelimit-Reset-Requests", "100ms")
+			w.Header().Set("X-Ratelimit-Reset-Tokens", "0s")
+			w.WriteHeader(429)
+			w.Write([]byte(`{"error":{"type":"rate_limit_exceeded","message":"slow down"}}`))
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(200)
+		fmt.Fprint(w, `data: {"choices":[{"index":0,"delta":{"content":"recovered"}}]}`+"\n\n")
+		fmt.Fprint(w, `data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`+"\n\n")
+		fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	defer srv.Close()
+
+	d := New("test-key", srv.URL, nil)
+	ch, err := d.Call(context.Background(), providers.Request{Model: "gpt-4o-mini"})
+	if err != nil {
+		t.Fatalf("Call: %v", err)
+	}
+	var text strings.Builder
+	for ev := range ch {
+		if ev.Type == providers.EventText {
+			text.WriteString(ev.Text)
+		}
+	}
+	if text.String() != "recovered" {
+		t.Errorf("text = %q, want %q", text.String(), "recovered")
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if callNum != 2 {
+		t.Fatalf("server got %d calls, want 2", callNum)
+	}
+	if !bytes.Equal(bodies[0], bodies[1]) {
+		t.Errorf("retry body differs from original")
+	}
 }
 
 func TestNon200Status(t *testing.T) {

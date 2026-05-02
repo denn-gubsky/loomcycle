@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/providers"
+	"github.com/denn-gubsky/loomcycle/internal/providers/ratelimit"
 )
 
 const (
@@ -55,22 +56,37 @@ func (d *Driver) Capabilities() providers.Capabilities {
 
 // Call sends the request and returns a channel of Events. The channel is
 // closed when the stream ends (clean or error). Cancel ctx to abort.
+//
+// 429 retry: if Anthropic rate-limits the request, ratelimit.Do honours
+// the Retry-After header (or the exponential fallback) and re-sends the
+// same body bytes — preserving the full conversation history, tool
+// definitions, system blocks, and cache_control breakpoints. The agent
+// loop sees no failure on a transient rate-limit; it just observes a
+// longer round-trip.
 func (d *Driver) Call(ctx context.Context, req providers.Request) (<-chan providers.Event, error) {
 	body, err := buildRequestBody(req)
 	if err != nil {
 		return nil, fmt.Errorf("build request: %w", err)
 	}
 
-	httpReq, err := http.NewRequestWithContext(ctx, "POST", d.baseURL+"/v1/messages", bytes.NewReader(body))
-	if err != nil {
-		return nil, fmt.Errorf("new request: %w", err)
+	attempt := func(ctx context.Context) (*http.Response, error) {
+		// Build a fresh request each attempt — http.Request.Body is
+		// consumed by Do, so a single Reader can't be reused.
+		req, err := http.NewRequestWithContext(ctx, "POST", d.baseURL+"/v1/messages", bytes.NewReader(body))
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Accept", "text/event-stream")
+		req.Header.Set("x-api-key", d.apiKey)
+		req.Header.Set("anthropic-version", apiVersion)
+		return d.http.Do(req)
 	}
-	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("Accept", "text/event-stream")
-	httpReq.Header.Set("x-api-key", d.apiKey)
-	httpReq.Header.Set("anthropic-version", apiVersion)
 
-	resp, err := d.http.Do(httpReq)
+	resp, err := ratelimit.Do(ctx, ratelimit.Config{
+		Provider:    "anthropic",
+		ParseHeader: ratelimit.AnthropicRetryAfter,
+	}, attempt)
 	if err != nil {
 		return nil, fmt.Errorf("http: %w", err)
 	}

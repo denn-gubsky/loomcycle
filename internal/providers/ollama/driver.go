@@ -26,6 +26,7 @@ import (
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/providers"
+	"github.com/denn-gubsky/loomcycle/internal/providers/ratelimit"
 )
 
 const (
@@ -65,20 +66,29 @@ func (d *Driver) Capabilities() providers.Capabilities {
 
 // Call sends the chat request and streams Events. The goroutine that reads
 // the response closes the channel when the stream ends.
+// 429 retry: Ollama OSS doesn't rate-limit (no 429 expected on a local
+// server). Ollama Cloud may emit a standard Retry-After; we handle it
+// defensively. Same body-bytes-preserved retry as the cloud providers.
 func (d *Driver) Call(ctx context.Context, req providers.Request) (<-chan providers.Event, error) {
 	body, err := buildRequestBody(req)
 	if err != nil {
 		return nil, fmt.Errorf("build request: %w", err)
 	}
 
-	httpReq, err := http.NewRequestWithContext(ctx, "POST", d.baseURL+"/api/chat", bytes.NewReader(body))
-	if err != nil {
-		return nil, fmt.Errorf("new request: %w", err)
+	attempt := func(ctx context.Context) (*http.Response, error) {
+		req, err := http.NewRequestWithContext(ctx, "POST", d.baseURL+"/api/chat", bytes.NewReader(body))
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Accept", "application/x-ndjson")
+		return d.http.Do(req)
 	}
-	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("Accept", "application/x-ndjson")
 
-	resp, err := d.http.Do(httpReq)
+	resp, err := ratelimit.Do(ctx, ratelimit.Config{
+		Provider:    "ollama",
+		ParseHeader: ratelimit.OllamaRetryAfter,
+	}, attempt)
 	if err != nil {
 		return nil, fmt.Errorf("http: %w", err)
 	}
