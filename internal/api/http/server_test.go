@@ -626,6 +626,314 @@ func TestMessagesEndpointReplaysAndContinues(t *testing.T) {
 	}
 }
 
+// v0.3.2: two concurrent POSTs to the same session must serialize at the
+// session level. The second is fast-failed with 409 / session_busy
+// because blocking on an open SSE handler would hold the second HTTP
+// connection for the full duration of the first run, and a second
+// transcript replay overlapping the first would corrupt history.
+func TestPerSessionLockRejectsConcurrentMessages(t *testing.T) {
+	cfg := &config.Config{
+		Defaults: config.Defaults{Provider: "stub", Model: "stub-model"},
+		Agents: map[string]config.AgentDef{
+			"default": {Model: "stub-model"},
+		},
+		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4, QueueTimeoutMS: 1000},
+	}
+	// Provider is non-blocking by default; the test swaps in a blocking
+	// implementation after the seed call completes.
+	provider := &callableProvider{}
+	provider.call = func(ctx context.Context, req providers.Request) (<-chan providers.Event, error) {
+		ch := make(chan providers.Event, 2)
+		ch <- providers.Event{Type: providers.EventText, Text: "ok"}
+		ch <- providers.Event{Type: providers.EventDone, StopReason: "end_turn", Usage: &providers.Usage{InputTokens: 1, OutputTokens: 1}}
+		close(ch)
+		return ch, nil
+	}
+
+	st, _ := storesqlite.Open(filepath.Join(t.TempDir(), "test.db"))
+	defer st.Close()
+
+	srv := New(cfg, &stubResolver{p: provider}, nil, concurrency.New(4, 4, time.Second), st)
+	ts := httptest.NewServer(srv.Mux())
+	defer ts.Close()
+
+	// Seed: a fresh run to obtain a session id. Non-blocking.
+	resp0, err := http.Post(ts.URL+"/v1/runs", "application/json", strings.NewReader(
+		`{"agent":"default","segments":[{"role":"user","content":[{"type":"trusted-text","text":"hi"}]}]}`,
+	))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body0, _ := io.ReadAll(resp0.Body)
+	resp0.Body.Close()
+	sessionID := extractSessionID(string(body0))
+	if sessionID == "" {
+		t.Fatalf("no session id from seed call:\n%s", string(body0))
+	}
+
+	// Now swap in a blocking provider that holds until release2 is closed.
+	release2 := make(chan struct{})
+	provider.call = func(ctx context.Context, req providers.Request) (<-chan providers.Event, error) {
+		ch := make(chan providers.Event, 2)
+		go func() {
+			defer close(ch)
+			<-release2
+			ch <- providers.Event{Type: providers.EventText, Text: "ok"}
+			ch <- providers.Event{Type: providers.EventDone, StopReason: "end_turn", Usage: &providers.Usage{InputTokens: 1, OutputTokens: 1}}
+		}()
+		return ch, nil
+	}
+
+	// Fire two concurrent POSTs to the same session.
+	type result struct {
+		status int
+		body   string
+	}
+	first := make(chan result, 1)
+	go func() {
+		resp, err := http.Post(ts.URL+"/v1/sessions/"+sessionID+"/messages", "application/json", strings.NewReader(
+			`{"segments":[{"role":"user","content":[{"type":"trusted-text","text":"q1"}]}]}`,
+		))
+		if err != nil {
+			first <- result{status: -1, body: err.Error()}
+			return
+		}
+		defer resp.Body.Close()
+		b, _ := io.ReadAll(resp.Body)
+		first <- result{status: resp.StatusCode, body: string(b)}
+	}()
+
+	// Spin until the provider has actually been entered by the first
+	// request (otherwise the second can race ahead before the lock is held).
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		provider.mu.Lock()
+		n := len(provider.requests)
+		provider.mu.Unlock()
+		if n >= 2 { // seed + first continuation
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("first continuation never reached the provider")
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+
+	// Second continuation while the first is mid-call.
+	resp2, err := http.Post(ts.URL+"/v1/sessions/"+sessionID+"/messages", "application/json", strings.NewReader(
+		`{"segments":[{"role":"user","content":[{"type":"trusted-text","text":"q2"}]}]}`,
+	))
+	if err != nil {
+		close(release2)
+		t.Fatal(err)
+	}
+	body2, _ := io.ReadAll(resp2.Body)
+	resp2.Body.Close()
+
+	if resp2.StatusCode != http.StatusConflict {
+		close(release2)
+		<-first
+		t.Fatalf("second status = %d, want 409; body=%s", resp2.StatusCode, string(body2))
+	}
+	if !strings.Contains(string(body2), `"code":"session_busy"`) {
+		close(release2)
+		<-first
+		t.Fatalf("second body missing session_busy code: %s", string(body2))
+	}
+
+	// Let the first complete, then verify a follow-up succeeds (lock released).
+	close(release2)
+	got := <-first
+	if got.status != 200 {
+		t.Fatalf("first call failed: status=%d body=%s", got.status, got.body)
+	}
+
+	resp3, err := http.Post(ts.URL+"/v1/sessions/"+sessionID+"/messages", "application/json", strings.NewReader(
+		`{"segments":[{"role":"user","content":[{"type":"trusted-text","text":"q3"}]}]}`,
+	))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp3.Body.Close()
+	if resp3.StatusCode != 200 {
+		b, _ := io.ReadAll(resp3.Body)
+		t.Fatalf("post-release status = %d, body=%s", resp3.StatusCode, string(b))
+	}
+}
+
+// v0.3.2: the per-session lock must be scoped per-session, not global.
+// Two concurrent POSTs to DIFFERENT sessions must both succeed.
+func TestPerSessionLockDoesNotAffectOtherSessions(t *testing.T) {
+	cfg := &config.Config{
+		Defaults: config.Defaults{Provider: "stub", Model: "stub-model"},
+		Agents: map[string]config.AgentDef{
+			"default": {Model: "stub-model"},
+		},
+		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4, QueueTimeoutMS: 1000},
+	}
+	provider := &callableProvider{}
+	provider.call = func(ctx context.Context, _ providers.Request) (<-chan providers.Event, error) {
+		ch := make(chan providers.Event, 2)
+		ch <- providers.Event{Type: providers.EventText, Text: "ok"}
+		ch <- providers.Event{Type: providers.EventDone, StopReason: "end_turn", Usage: &providers.Usage{InputTokens: 1, OutputTokens: 1}}
+		close(ch)
+		return ch, nil
+	}
+
+	st, _ := storesqlite.Open(filepath.Join(t.TempDir(), "test.db"))
+	defer st.Close()
+
+	srv := New(cfg, &stubResolver{p: provider}, nil, concurrency.New(4, 4, time.Second), st)
+	ts := httptest.NewServer(srv.Mux())
+	defer ts.Close()
+
+	// Two fresh runs → two distinct session IDs.
+	mkSession := func() string {
+		resp, err := http.Post(ts.URL+"/v1/runs", "application/json", strings.NewReader(
+			`{"agent":"default","segments":[{"role":"user","content":[{"type":"trusted-text","text":"hi"}]}]}`,
+		))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		b, _ := io.ReadAll(resp.Body)
+		return extractSessionID(string(b))
+	}
+	s1, s2 := mkSession(), mkSession()
+	if s1 == "" || s2 == "" || s1 == s2 {
+		t.Fatalf("bad session ids: %q %q", s1, s2)
+	}
+
+	// Concurrent continuation on each — both must succeed.
+	var wg sync.WaitGroup
+	results := make([]int, 2)
+	for i, sid := range []string{s1, s2} {
+		wg.Add(1)
+		go func(i int, sid string) {
+			defer wg.Done()
+			resp, err := http.Post(ts.URL+"/v1/sessions/"+sid+"/messages", "application/json", strings.NewReader(
+				`{"segments":[{"role":"user","content":[{"type":"trusted-text","text":"go"}]}]}`,
+			))
+			if err != nil {
+				results[i] = -1
+				return
+			}
+			defer resp.Body.Close()
+			io.Copy(io.Discard, resp.Body)
+			results[i] = resp.StatusCode
+		}(i, sid)
+	}
+	wg.Wait()
+	for i, st := range results {
+		if st != 200 {
+			t.Errorf("session %d status = %d, want 200", i, st)
+		}
+	}
+}
+
+// v0.3.2: handleRuns also takes the lock when SessionID is set.
+// Reusing an explicit SessionID concurrently must fast-fail with 409.
+func TestPerSessionLockAppliesToRunsWithSessionID(t *testing.T) {
+	cfg := &config.Config{
+		Defaults: config.Defaults{Provider: "stub", Model: "stub-model"},
+		Agents: map[string]config.AgentDef{
+			"default": {Model: "stub-model"},
+		},
+		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4, QueueTimeoutMS: 1000},
+	}
+	release := make(chan struct{})
+	provider := &callableProvider{}
+	provider.call = func(ctx context.Context, _ providers.Request) (<-chan providers.Event, error) {
+		idx := len(provider.requests) - 1
+		ch := make(chan providers.Event, 2)
+		go func() {
+			defer close(ch)
+			if idx == 1 {
+				<-release
+			}
+			ch <- providers.Event{Type: providers.EventText, Text: "ok"}
+			ch <- providers.Event{Type: providers.EventDone, StopReason: "end_turn", Usage: &providers.Usage{InputTokens: 1, OutputTokens: 1}}
+		}()
+		return ch, nil
+	}
+
+	st, _ := storesqlite.Open(filepath.Join(t.TempDir(), "test.db"))
+	defer st.Close()
+
+	srv := New(cfg, &stubResolver{p: provider}, nil, concurrency.New(4, 4, time.Second), st)
+	ts := httptest.NewServer(srv.Mux())
+	defer ts.Close()
+
+	// Seed.
+	resp0, err := http.Post(ts.URL+"/v1/runs", "application/json", strings.NewReader(
+		`{"agent":"default","segments":[{"role":"user","content":[{"type":"trusted-text","text":"hi"}]}]}`,
+	))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body0, _ := io.ReadAll(resp0.Body)
+	resp0.Body.Close()
+	sessionID := extractSessionID(string(body0))
+	if sessionID == "" {
+		t.Fatalf("no session id from seed:\n%s", string(body0))
+	}
+
+	// Concurrent /v1/runs reusing the same session_id: first blocks; second 409s.
+	first := make(chan int, 1)
+	go func() {
+		resp, err := http.Post(ts.URL+"/v1/runs", "application/json", strings.NewReader(
+			`{"agent":"default","session_id":"`+sessionID+`","segments":[{"role":"user","content":[{"type":"trusted-text","text":"q1"}]}]}`,
+		))
+		if err != nil {
+			first <- -1
+			return
+		}
+		defer resp.Body.Close()
+		io.Copy(io.Discard, resp.Body)
+		first <- resp.StatusCode
+	}()
+
+	// Wait until provider entered (idx==1 means seed + first).
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		provider.mu.Lock()
+		n := len(provider.requests)
+		provider.mu.Unlock()
+		if n >= 2 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("first run never reached provider")
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+
+	resp2, err := http.Post(ts.URL+"/v1/runs", "application/json", strings.NewReader(
+		`{"agent":"default","session_id":"`+sessionID+`","segments":[{"role":"user","content":[{"type":"trusted-text","text":"q2"}]}]}`,
+	))
+	if err != nil {
+		close(release)
+		t.Fatal(err)
+	}
+	body2, _ := io.ReadAll(resp2.Body)
+	resp2.Body.Close()
+
+	if resp2.StatusCode != http.StatusConflict {
+		close(release)
+		<-first
+		t.Fatalf("second status = %d, want 409; body=%s", resp2.StatusCode, string(body2))
+	}
+	if !strings.Contains(string(body2), `"code":"session_busy"`) {
+		close(release)
+		<-first
+		t.Fatalf("second body missing session_busy: %s", string(body2))
+	}
+	close(release)
+	if got := <-first; got != 200 {
+		t.Errorf("first status = %d, want 200", got)
+	}
+}
+
 // callableProvider lets a test inject a Call function. Reuses stubProvider's
 // ID/Capabilities trivially.
 type callableProvider struct {
