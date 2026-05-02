@@ -10,6 +10,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/denn-gubsky/loomcycle/internal/providers"
 )
 
 // fakeResp builds a minimal *http.Response usable in tests.
@@ -236,6 +238,76 @@ func TestJitterIsBoundedAndDeterministic(t *testing.T) {
 	got2 := applyJitter(d, 0.2, rng2)
 	if got != got2 {
 		t.Errorf("jitter not deterministic with same seed: %v vs %v", got, got2)
+	}
+}
+
+func TestOnEventFiresWithRetryInfo(t *testing.T) {
+	var events []providers.Event
+	cfg := Config{
+		ParseHeader: AnthropicRetryAfter,
+		Provider:    "test-provider",
+		MaxAttempts: 3,
+		Schedule:    []time.Duration{1 * time.Millisecond, 1 * time.Millisecond},
+		Jitter:      0,
+		OnRetry:     func(string, int, time.Duration, string) {},
+		OnEvent:     func(e providers.Event) { events = append(events, e) },
+	}
+	calls := atomic.Int32{}
+	_, err := Do(context.Background(), cfg, func(ctx context.Context) (*http.Response, error) {
+		n := calls.Add(1)
+		if n < 3 {
+			return fakeResp(429, map[string]string{"Retry-After": "0"}, ""), nil
+		}
+		return fakeResp(200, nil, "ok"), nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 2 {
+		t.Fatalf("got %d events, want 2 (one per retry sleep)", len(events))
+	}
+	for i, ev := range events {
+		if ev.Type != providers.EventRetry {
+			t.Errorf("event[%d].Type = %q, want %q", i, ev.Type, providers.EventRetry)
+		}
+		if ev.Retry == nil {
+			t.Fatalf("event[%d].Retry is nil", i)
+		}
+		if ev.Retry.Provider != "test-provider" {
+			t.Errorf("event[%d].Retry.Provider = %q, want test-provider", i, ev.Retry.Provider)
+		}
+		if ev.Retry.Attempt != i+1 {
+			t.Errorf("event[%d].Retry.Attempt = %d, want %d", i, ev.Retry.Attempt, i+1)
+		}
+		if ev.Retry.Reason != ReasonHeader {
+			t.Errorf("event[%d].Retry.Reason = %q, want %q", i, ev.Retry.Reason, ReasonHeader)
+		}
+		// Retry-After: 0 → wait 0ms.
+		if ev.Retry.WaitMs != 0 {
+			t.Errorf("event[%d].Retry.WaitMs = %d, want 0", i, ev.Retry.WaitMs)
+		}
+	}
+}
+
+func TestOnEventNotCalledWhenNotSet(t *testing.T) {
+	// Smoke check: Config.OnEvent==nil must not panic in Do().
+	cfg := Config{
+		ParseHeader: AnthropicRetryAfter,
+		MaxAttempts: 2,
+		Schedule:    []time.Duration{1 * time.Millisecond},
+		Jitter:      0,
+		OnRetry:     func(string, int, time.Duration, string) {},
+	}
+	calls := atomic.Int32{}
+	_, err := Do(context.Background(), cfg, func(ctx context.Context) (*http.Response, error) {
+		n := calls.Add(1)
+		if n == 1 {
+			return fakeResp(429, nil, ""), nil
+		}
+		return fakeResp(200, nil, ""), nil
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
 }
 

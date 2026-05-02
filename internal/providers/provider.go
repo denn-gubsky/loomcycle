@@ -39,6 +39,14 @@ type Request struct {
 	MaxTokens   int            `json:"max_tokens,omitempty"`
 	Temperature *float64       `json:"temperature,omitempty"`
 	Stream      bool           `json:"stream"`
+
+	// OnEvent, when set, is called for events that occur BEFORE the
+	// response channel exists — most importantly, EventRetry frames
+	// fired during a 429 retry sleep. Optional; the loop populates this
+	// from RunOptions.OnEvent so adapter consumers see retry telemetry
+	// live on the same SSE stream as the main response. Marshalling
+	// callers should ignore (json:"-").
+	OnEvent func(Event) `json:"-"`
 }
 
 // Message is one turn in the conversation.
@@ -85,6 +93,12 @@ const (
 	EventUsage      EventType = "usage"
 	EventDone       EventType = "done"
 	EventError      EventType = "error"
+	// EventRetry signals that a provider returned 429 and the driver is
+	// about to sleep before retrying. Surfaced live during the retry sleep
+	// (not after) so adapter consumers can show "waiting on rate limit"
+	// to end users. The retry itself is invisible to the agent loop —
+	// EventRetry is purely informational.
+	EventRetry EventType = "retry"
 )
 
 // Event is one streamed datum from a provider call (or, after the loop layer
@@ -99,10 +113,20 @@ type Event struct {
 	// persist+replay round-trip matters because a continuation that lost
 	// the flag would re-feed the model a successful-looking result.
 	IsError bool `json:"is_error,omitempty"`
+	// Retry carries the retry telemetry on EventRetry. Nil otherwise.
+	Retry *RetryInfo `json:"retry,omitempty"`
 
 	// StopReason is set on the final assistant Event of a provider call:
 	// "end_turn" | "tool_use" | "max_tokens" | "stop_sequence".
 	StopReason string `json:"stop_reason,omitempty"`
+}
+
+// RetryInfo accompanies an EventRetry. Each field is set every time.
+type RetryInfo struct {
+	Provider string `json:"provider"`
+	Attempt  int    `json:"attempt"`
+	WaitMs   int64  `json:"wait_ms"`
+	Reason   string `json:"reason"` // "retry-after header" | "exponential backoff"
 }
 
 // ToolUse is the model's request to invoke a tool.

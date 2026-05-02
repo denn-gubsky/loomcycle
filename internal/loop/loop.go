@@ -99,6 +99,11 @@ func Run(ctx context.Context, opts RunOptions) (RunResult, error) {
 			System:   system,
 			Messages: messages,
 			Tools:    toolSpecs,
+			// OnEvent lets the driver fire pre-channel events (currently
+			// EventRetry during a 429 sleep) directly to the same caller
+			// hook the loop uses for response events. Without this hop
+			// the retry would be invisible to SSE consumers.
+			OnEvent: emit,
 		}
 		ch, err := opts.Provider.Call(ctx, req)
 		if err != nil {

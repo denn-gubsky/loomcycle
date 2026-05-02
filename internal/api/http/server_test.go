@@ -22,13 +22,24 @@ import (
 )
 
 // stubProvider replays a fixed event sequence, ignoring the request entirely.
-type stubProvider struct{ events []providers.Event }
+// If preEvents are set and req.OnEvent is non-nil, they are fired
+// synchronously through the OnEvent callback before the channel events —
+// simulating a driver that emitted EventRetry during a 429 sleep.
+type stubProvider struct {
+	events    []providers.Event
+	preEvents []providers.Event
+}
 
 func (s *stubProvider) ID() string { return "stub" }
 func (s *stubProvider) Capabilities() providers.Capabilities {
 	return providers.Capabilities{Streaming: true}
 }
-func (s *stubProvider) Call(ctx context.Context, _ providers.Request) (<-chan providers.Event, error) {
+func (s *stubProvider) Call(ctx context.Context, req providers.Request) (<-chan providers.Event, error) {
+	if req.OnEvent != nil {
+		for _, ev := range s.preEvents {
+			req.OnEvent(ev)
+		}
+	}
 	ch := make(chan providers.Event, len(s.events))
 	for _, ev := range s.events {
 		ch <- ev
@@ -84,6 +95,87 @@ func TestHandleRunsSSE(t *testing.T) {
 		if got[i] != w {
 			t.Errorf("frame %d: got %q want %q", i, got[i], w)
 		}
+	}
+}
+
+// v0.3.2 end-to-end: a driver that fires EventRetry through req.OnEvent
+// (as our drivers do during a 429 sleep) must surface as `event: retry`
+// over SSE, ahead of the main response events. Adapter UIs read this to
+// show "waiting on rate limit" live.
+func TestHandleRunsSSEEmitsRetryFrame(t *testing.T) {
+	cfg := &config.Config{
+		Defaults: config.Defaults{Provider: "stub", Model: "stub-model"},
+		Agents: map[string]config.AgentDef{
+			"default": {Model: "stub-model", AllowedTools: []string{"Read"}},
+		},
+		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4, QueueTimeoutMS: 1000},
+	}
+	cfg.Env.AuthToken = ""
+	provider := &stubProvider{
+		preEvents: []providers.Event{{
+			Type: providers.EventRetry,
+			Retry: &providers.RetryInfo{
+				Provider: "stub",
+				Attempt:  1,
+				WaitMs:   12345,
+				Reason:   "retry-after header",
+			},
+		}},
+		events: []providers.Event{
+			{Type: providers.EventText, Text: "hi"},
+			{Type: providers.EventDone, StopReason: "end_turn", Usage: &providers.Usage{InputTokens: 1, OutputTokens: 1}},
+		},
+	}
+	sem := concurrency.New(4, 4, 100*time.Millisecond)
+	srv := New(cfg, &stubResolver{p: provider}, []tools.Tool{}, sem, nil)
+
+	ts := httptest.NewServer(srv.Mux())
+	defer ts.Close()
+
+	resp, err := http.Post(ts.URL+"/v1/runs", "application/json", strings.NewReader(
+		`{"agent":"default","segments":[{"role":"user","content":[{"type":"trusted-text","text":"hi"}]}]}`,
+	))
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("status = %d", resp.StatusCode)
+	}
+
+	frames := readFrames(t, resp.Body)
+
+	// Must see a retry frame somewhere in the stream, with the full payload
+	// the adapter UI needs.
+	var retry *sseFrame
+	for i := range frames {
+		if frames[i].Event == "retry" {
+			retry = &frames[i]
+			break
+		}
+	}
+	if retry == nil {
+		var types []string
+		for _, f := range frames {
+			types = append(types, f.Event)
+		}
+		t.Fatalf("no retry frame in stream, got events: %v", types)
+	}
+	r, ok := retry.Data["retry"].(map[string]any)
+	if !ok {
+		t.Fatalf("retry frame has no .retry object: %#v", retry.Data)
+	}
+	if r["provider"] != "stub" {
+		t.Errorf("retry.provider = %v, want stub", r["provider"])
+	}
+	if r["attempt"].(float64) != 1 {
+		t.Errorf("retry.attempt = %v, want 1", r["attempt"])
+	}
+	if r["wait_ms"].(float64) != 12345 {
+		t.Errorf("retry.wait_ms = %v, want 12345", r["wait_ms"])
+	}
+	if r["reason"] != "retry-after header" {
+		t.Errorf("retry.reason = %v, want 'retry-after header'", r["reason"])
 	}
 }
 
@@ -758,6 +850,45 @@ func extractSessionID(body string) string {
 }
 
 // readEvents parses SSE frames and returns the event-type per frame in order.
+// sseFrame is one parsed SSE frame: event type + decoded JSON data.
+type sseFrame struct {
+	Event string
+	Data  map[string]any
+}
+
+func readFrames(t *testing.T, r io.Reader) []sseFrame {
+	t.Helper()
+	scanner := bufio.NewScanner(r)
+	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
+
+	var frames []sseFrame
+	var current sseFrame
+	for scanner.Scan() {
+		line := scanner.Text()
+		if line == "" {
+			if current.Event != "" {
+				frames = append(frames, current)
+				current = sseFrame{}
+			}
+			continue
+		}
+		if strings.HasPrefix(line, "event:") {
+			current.Event = strings.TrimSpace(strings.TrimPrefix(line, "event:"))
+		}
+		if strings.HasPrefix(line, "data:") {
+			payload := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+			_ = json.Unmarshal([]byte(payload), &current.Data)
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		t.Fatalf("scanner: %v", err)
+	}
+	if current.Event != "" {
+		frames = append(frames, current)
+	}
+	return frames
+}
+
 func readEvents(t *testing.T, r io.Reader) []string {
 	t.Helper()
 	scanner := bufio.NewScanner(r)

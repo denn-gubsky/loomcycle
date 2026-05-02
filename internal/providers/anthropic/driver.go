@@ -87,6 +87,7 @@ func (d *Driver) Call(ctx context.Context, req providers.Request) (<-chan provid
 	resp, err := ratelimit.Do(ctx, ratelimit.Config{
 		Provider:    "anthropic",
 		ParseHeader: ratelimit.AnthropicRetryAfter,
+		OnEvent:     req.OnEvent,
 	}, attempt)
 	if err != nil {
 		// ctx errors aren't HTTP errors — propagate as-is so the loop's
