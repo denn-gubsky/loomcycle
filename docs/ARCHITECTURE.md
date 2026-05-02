@@ -116,8 +116,8 @@ that continues an existing session.
 
 | Area | Status | Notes |
 |---|---|---|
-| OpenAI provider | not started | Driver plug-in, same `Provider` interface |
-| Ollama provider | not started | Same |
+| OpenAI provider | landed (phase_0_2) | Chat Completions API; index-keyed tool_call accumulator; `[DONE]` sentinel |
+| Ollama provider | landed (phase_0_2) | NDJSON streaming `/api/chat`; tool_calls work only on tool-tuned models |
 | MCP stdio pool | not started | `internal/tools/mcp/stdio/` empty |
 | MCP HTTP client | not started | `internal/tools/mcp/http/` empty |
 | Sub-agents | not started | Anthropic-only at v0.2 |

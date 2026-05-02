@@ -21,6 +21,8 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/providers/anthropic"
+	"github.com/denn-gubsky/loomcycle/internal/providers/ollama"
+	"github.com/denn-gubsky/loomcycle/internal/providers/openai"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 	"github.com/denn-gubsky/loomcycle/internal/tools/builtin"
 )
@@ -70,17 +72,28 @@ func main() {
 	_ = httpServer.Shutdown(ctx)
 }
 
-// providerResolver constructs and caches Provider instances on demand.
-// Anthropic is the only one wired at v0.1; the others return a clear error.
+// providerResolver constructs Provider instances at startup based on which
+// env vars are set. A provider that wasn't configured returns a clear error
+// when an agent tries to use it (rather than failing the whole startup).
 type providerResolver struct {
-	cfg       *config.Config
 	anthropic providers.Provider
+	openai    providers.Provider
+	ollama    providers.Provider
 }
 
 func newProviderResolver(cfg *config.Config) *providerResolver {
-	pr := &providerResolver{cfg: cfg}
+	pr := &providerResolver{}
 	if cfg.Env.AnthropicAPIKey != "" {
 		pr.anthropic = anthropic.New(cfg.Env.AnthropicAPIKey, "", nil)
+	}
+	if cfg.Env.OpenAIAPIKey != "" {
+		pr.openai = openai.New(cfg.Env.OpenAIAPIKey, "", nil)
+	}
+	// Ollama has no API key — wire it up if a base URL is configured (the
+	// loader defaults this to http://localhost:11434 so it's effectively
+	// always-on; users disable it by setting OLLAMA_BASE_URL=disabled).
+	if cfg.Env.OllamaBaseURL != "" && cfg.Env.OllamaBaseURL != "disabled" {
+		pr.ollama = ollama.New(cfg.Env.OllamaBaseURL, nil)
 	}
 	return pr
 }
@@ -93,9 +106,15 @@ func (p *providerResolver) Get(id string) (providers.Provider, error) {
 		}
 		return p.anthropic, nil
 	case "openai":
-		return nil, fmt.Errorf("openai provider: not implemented in v0.1 thin slice")
+		if p.openai == nil {
+			return nil, fmt.Errorf("openai provider not configured (set OPENAI_API_KEY)")
+		}
+		return p.openai, nil
 	case "ollama":
-		return nil, fmt.Errorf("ollama provider: not implemented in v0.1 thin slice")
+		if p.ollama == nil {
+			return nil, fmt.Errorf("ollama provider not configured (set OLLAMA_BASE_URL or unset OLLAMA_BASE_URL=disabled)")
+		}
+		return p.ollama, nil
 	default:
 		return nil, fmt.Errorf("unknown provider %q", id)
 	}
