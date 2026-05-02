@@ -11,6 +11,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -19,6 +20,7 @@ import (
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/providers"
+	"github.com/denn-gubsky/loomcycle/internal/providers/ratelimit"
 )
 
 const (
@@ -60,24 +62,39 @@ func (d *Driver) Capabilities() providers.Capabilities {
 
 // Call sends the request and returns a channel of Events. The goroutine that
 // reads the response closes the channel when the stream ends.
+//
+// 429 retry: ratelimit.Do honours OpenAI's Retry-After header when present;
+// otherwise it reads the bigger of x-ratelimit-reset-{requests,tokens}
+// (relative durations like "120ms" or "12.5s") so we wait for the more
+// constrained bucket. The same body bytes are re-sent — full conversation
+// context preserved across the rate limit.
 func (d *Driver) Call(ctx context.Context, req providers.Request) (<-chan providers.Event, error) {
 	body, err := buildRequestBody(req)
 	if err != nil {
 		return nil, fmt.Errorf("build request: %w", err)
 	}
 
-	httpReq, err := http.NewRequestWithContext(ctx, "POST", d.baseURL+"/chat/completions", bytes.NewReader(body))
-	if err != nil {
-		return nil, fmt.Errorf("new request: %w", err)
-	}
-	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("Accept", "text/event-stream")
-	if d.apiKey != "" {
-		httpReq.Header.Set("Authorization", "Bearer "+d.apiKey)
+	attempt := func(ctx context.Context) (*http.Response, error) {
+		req, err := http.NewRequestWithContext(ctx, "POST", d.baseURL+"/chat/completions", bytes.NewReader(body))
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Accept", "text/event-stream")
+		if d.apiKey != "" {
+			req.Header.Set("Authorization", "Bearer "+d.apiKey)
+		}
+		return d.http.Do(req)
 	}
 
-	resp, err := d.http.Do(httpReq)
+	resp, err := ratelimit.Do(ctx, ratelimit.Config{
+		Provider:    "openai",
+		ParseHeader: ratelimit.OpenAIRetryAfter,
+	}, attempt)
 	if err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return nil, err
+		}
 		return nil, fmt.Errorf("http: %w", err)
 	}
 	if resp.StatusCode != http.StatusOK {

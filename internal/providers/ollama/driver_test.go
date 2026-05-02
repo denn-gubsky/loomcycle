@@ -1,6 +1,7 @@
 package ollama
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -9,6 +10,7 @@ import (
 	"net/http/httptest"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -256,6 +258,60 @@ func TestNon200Status(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "404") {
 		t.Errorf("error doesn't mention status code: %v", err)
+	}
+}
+
+// Regression: Ollama Cloud may emit a 429 with Retry-After. The driver
+// retries with the same body. (Ollama OSS doesn't 429, but the wrap is
+// shared transport-level code so we exercise it here defensively.)
+func TestRetryOn429PreservesContext(t *testing.T) {
+	var (
+		mu      sync.Mutex
+		bodies  [][]byte
+		callNum int
+	)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		callNum++
+		bodies = append(bodies, body)
+		n := callNum
+		mu.Unlock()
+
+		if n == 1 {
+			w.Header().Set("Retry-After", "0")
+			w.WriteHeader(429)
+			w.Write([]byte(`{"error":"too many requests"}`))
+			return
+		}
+		w.Header().Set("Content-Type", "application/x-ndjson")
+		w.WriteHeader(200)
+		fmt.Fprint(w, `{"model":"llama3.1","message":{"role":"assistant","content":"recovered"},"done":false}`+"\n")
+		fmt.Fprint(w, `{"model":"llama3.1","message":{"role":"assistant","content":""},"done":true,"done_reason":"stop","prompt_eval_count":1,"eval_count":1}`+"\n")
+	}))
+	defer srv.Close()
+
+	d := New(srv.URL, nil)
+	ch, err := d.Call(context.Background(), providers.Request{Model: "llama3.1"})
+	if err != nil {
+		t.Fatalf("Call: %v", err)
+	}
+	var text strings.Builder
+	for ev := range ch {
+		if ev.Type == providers.EventText {
+			text.WriteString(ev.Text)
+		}
+	}
+	if text.String() != "recovered" {
+		t.Errorf("text = %q, want %q", text.String(), "recovered")
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if callNum != 2 {
+		t.Fatalf("server got %d calls, want 2", callNum)
+	}
+	if !bytes.Equal(bodies[0], bodies[1]) {
+		t.Errorf("retry body differs from original")
 	}
 }
 

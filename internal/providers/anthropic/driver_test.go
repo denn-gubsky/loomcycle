@@ -1,6 +1,7 @@
 package anthropic
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -9,9 +10,11 @@ import (
 	"net/http/httptest"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/loop"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 )
 
@@ -174,6 +177,133 @@ func isStreamEventsRunning(t *testing.T) bool {
 	buf := make([]byte, 64*1024)
 	n := runtime.Stack(buf, true)
 	return strings.Contains(string(buf[:n]), ".streamEvents(")
+}
+
+// Regression: a 429 from Anthropic must trigger a retry, not fail the run.
+// The driver's retry-wrapper re-sends the exact same body bytes — preserving
+// the full conversation context (messages, tools, system, cache_control)
+// across the rate limit. We assert the second request carries the same
+// body the first one did, AND the second request's stream is what the
+// caller eventually consumes.
+func TestRetryOn429PreservesContext(t *testing.T) {
+	var (
+		mu      sync.Mutex
+		bodies  [][]byte
+		callNum int
+	)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		callNum++
+		bodies = append(bodies, body)
+		n := callNum
+		mu.Unlock()
+
+		if n == 1 {
+			// First call: 429 with a 0-second retry-after so the test runs fast.
+			w.Header().Set("Retry-After", "0")
+			w.WriteHeader(429)
+			w.Write([]byte(`{"type":"error","error":{"type":"rate_limit_error","message":"slow down"}}`))
+			return
+		}
+		// Second call: stream a normal response.
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(200)
+		fmt.Fprint(w, "event: content_block_delta\ndata: {\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"recovered\"}}\n\n")
+		fmt.Fprint(w, "event: message_delta\ndata: {\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}\n\n")
+		fmt.Fprint(w, "event: message_stop\ndata: {}\n\n")
+	}))
+	defer srv.Close()
+
+	d := New("test-key", srv.URL, nil)
+	ch, err := d.Call(context.Background(), providers.Request{
+		Model:    "claude-sonnet-4-6",
+		Messages: []providers.Message{{Role: "user", Content: []providers.ContentBlock{{Type: "text", Text: "hi"}}}},
+	})
+	if err != nil {
+		t.Fatalf("Call: %v", err)
+	}
+	var text strings.Builder
+	for ev := range ch {
+		if ev.Type == providers.EventText {
+			text.WriteString(ev.Text)
+		}
+	}
+	if text.String() != "recovered" {
+		t.Errorf("text = %q, want %q (second-call stream not delivered)", text.String(), "recovered")
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if callNum != 2 {
+		t.Fatalf("server got %d calls, want 2 (no retry)", callNum)
+	}
+	// Body bytes must be identical across attempts — that's how context
+	// is preserved.
+	if !bytes.Equal(bodies[0], bodies[1]) {
+		t.Errorf("retry sent different body:\n  call 1: %s\n  call 2: %s", string(bodies[0]), string(bodies[1]))
+	}
+}
+
+// Integration regression: a 429 mid-loop must not bubble out as an EventError.
+// The retry happens inside the driver's Call(); the loop sees only the
+// recovered 200 response. Run() should return cleanly with end_turn and the
+// caller's OnEvent must NOT observe any error event.
+//
+// This is the load-bearing guarantee of v0.3.1: a transient rate limit
+// preserves the run's context. The driver-level test verifies the body
+// is re-sent; this loop-level test verifies the agent loop is unaffected.
+func TestRetryOn429IsInvisibleToLoop(t *testing.T) {
+	var callNum int
+	var mu sync.Mutex
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		callNum++
+		n := callNum
+		mu.Unlock()
+		if n == 1 {
+			w.Header().Set("Retry-After", "0")
+			w.WriteHeader(429)
+			w.Write([]byte(`{"type":"error","error":{"type":"rate_limit_error","message":"slow down"}}`))
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(200)
+		fmt.Fprint(w, "event: content_block_delta\ndata: {\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"recovered after 429\"}}\n\n")
+		fmt.Fprint(w, "event: message_delta\ndata: {\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}\n\n")
+		fmt.Fprint(w, "event: message_stop\ndata: {}\n\n")
+	}))
+	defer srv.Close()
+
+	d := New("test-key", srv.URL, nil)
+
+	var observedEvents []providers.EventType
+	res, err := loop.Run(context.Background(), loop.RunOptions{
+		Provider: d,
+		Model:    "claude-sonnet-4-6",
+		Segments: []loop.PromptSegment{
+			{Role: "user", Content: []loop.PromptContentBlock{{Type: "trusted-text", Text: "hi"}}},
+		},
+		OnEvent: func(ev providers.Event) {
+			observedEvents = append(observedEvents, ev.Type)
+		},
+	})
+	if err != nil {
+		t.Fatalf("Run returned error after 429-then-200: %v", err)
+	}
+	if res.StopReason != "end_turn" {
+		t.Errorf("StopReason = %q, want end_turn", res.StopReason)
+	}
+	for _, evType := range observedEvents {
+		if evType == providers.EventError {
+			t.Errorf("loop emitted EventError despite driver-level retry recovery")
+		}
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if callNum != 2 {
+		t.Errorf("server got %d calls, want 2 (driver should have retried)", callNum)
+	}
 }
 
 func TestRequestBodyShape(t *testing.T) {
