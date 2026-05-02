@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -559,6 +560,161 @@ func containsText(blocks []providers.ContentBlock, want string) bool {
 		}
 	}
 	return false
+}
+
+// Regression: replay must reconstruct messages in valid Anthropic/OpenAI
+// order even when the original run had tool calls. The bug was that
+// "usage" was treated as a flush boundary, but the loop emits usage BEFORE
+// tool_result within an iteration — so a multi-iteration tool-call run
+// would replay as [user, assistant(text+tool_use), assistant(text), user(tool_result)],
+// which both providers 400 on (two assistant turns back-to-back, tool_result
+// orphaned from its tool_use).
+//
+// Correct shape: [user, assistant(tool_use), user(tool_result), assistant(text), user(new)].
+func TestMessagesEndpointReplaysToolCallsCorrectly(t *testing.T) {
+	cfg := &config.Config{
+		Defaults: config.Defaults{Provider: "stub", Model: "stub-model"},
+		Agents: map[string]config.AgentDef{
+			"default": {Model: "stub-model", AllowedTools: []string{"FakeTool"}},
+		},
+		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4, QueueTimeoutMS: 1000},
+	}
+	// Provider call sequence:
+	//   call 0: emit tool_call → done(stop=tool_use)   ← loop will execute the tool
+	//   call 1: emit text "thanks" → done(stop=end_turn)
+	//   call 2: continuation → emit "second reply" → done(stop=end_turn)
+	provider := &callableProvider{}
+	provider.call = func(ctx context.Context, req providers.Request) (<-chan providers.Event, error) {
+		idx := len(provider.requests) - 1
+		var evs []providers.Event
+		switch idx {
+		case 0:
+			evs = []providers.Event{
+				{Type: providers.EventToolCall, ToolUse: &providers.ToolUse{
+					ID: "call_a", Name: "FakeTool", Input: json.RawMessage(`{}`),
+				}},
+				{Type: providers.EventDone, StopReason: "tool_use", Usage: &providers.Usage{InputTokens: 1, OutputTokens: 1}},
+			}
+		case 1:
+			evs = []providers.Event{
+				{Type: providers.EventText, Text: "thanks"},
+				{Type: providers.EventDone, StopReason: "end_turn", Usage: &providers.Usage{InputTokens: 1, OutputTokens: 1}},
+			}
+		default:
+			evs = []providers.Event{
+				{Type: providers.EventText, Text: "second"},
+				{Type: providers.EventDone, StopReason: "end_turn", Usage: &providers.Usage{InputTokens: 1, OutputTokens: 1}},
+			}
+		}
+		ch := make(chan providers.Event, len(evs))
+		for _, e := range evs {
+			ch <- e
+		}
+		close(ch)
+		return ch, nil
+	}
+
+	// Wire a real Read-tool-style stub that always succeeds with "TOOL OK".
+	type fakeTool struct{}
+	st, _ := storesqlite.Open(filepath.Join(t.TempDir(), "test.db"))
+	defer st.Close()
+	srv := New(cfg, &stubResolver{p: provider}, []tools.Tool{&fakeBuiltinTool{}}, concurrency.New(4, 4, time.Second), st)
+	ts := httptest.NewServer(srv.Mux())
+	defer ts.Close()
+	_ = fakeTool{} // keep the named type referenced
+
+	// First run — uses the tool.
+	resp, _ := http.Post(ts.URL+"/v1/runs", "application/json", strings.NewReader(
+		`{"agent":"default","segments":[{"role":"user","content":[{"type":"trusted-text","text":"hello"}]}],"allowed_tools":["FakeTool"]}`,
+	))
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	sessionID := extractSessionID(string(body))
+	if sessionID == "" {
+		t.Fatalf("no session id from first run:\n%s", string(body))
+	}
+
+	// Continuation. Provider call 2 receives the replayed history.
+	resp2, _ := http.Post(ts.URL+"/v1/sessions/"+sessionID+"/messages", "application/json", strings.NewReader(
+		`{"segments":[{"role":"user","content":[{"type":"trusted-text","text":"more"}]}]}`,
+	))
+	io.Copy(io.Discard, resp2.Body)
+	resp2.Body.Close()
+
+	provider.mu.Lock()
+	defer provider.mu.Unlock()
+	if len(provider.requests) < 3 {
+		t.Fatalf("provider got %d calls, want >=3", len(provider.requests))
+	}
+	contMsgs := provider.requests[2].Messages
+	// Must be: user(hello), assistant(tool_use call_a), user(tool_result call_a), assistant(thanks), user(more)
+	if len(contMsgs) != 5 {
+		t.Fatalf("continuation messages = %d, want 5; got: %s", len(contMsgs), describeMessages(contMsgs))
+	}
+	checks := []struct {
+		role    string
+		hasType string
+		text    string
+	}{
+		{"user", "text", "hello"},
+		{"assistant", "tool_use", ""},
+		{"user", "tool_result", ""},
+		{"assistant", "text", "thanks"},
+		{"user", "text", "more"},
+	}
+	for i, want := range checks {
+		got := contMsgs[i]
+		if got.Role != want.role {
+			t.Errorf("msg %d: role = %q, want %q. full sequence:\n%s", i, got.Role, want.role, describeMessages(contMsgs))
+			break
+		}
+		var found bool
+		for _, c := range got.Content {
+			if c.Type == want.hasType {
+				found = true
+				if want.text != "" && c.Text != want.text {
+					t.Errorf("msg %d: text = %q, want %q", i, c.Text, want.text)
+				}
+				break
+			}
+		}
+		if !found {
+			t.Errorf("msg %d: no content block of type %q. full sequence:\n%s", i, want.hasType, describeMessages(contMsgs))
+		}
+	}
+}
+
+func describeMessages(msgs []providers.Message) string {
+	var b strings.Builder
+	for i, m := range msgs {
+		fmt.Fprintf(&b, "  [%d] %s: ", i, m.Role)
+		for _, c := range m.Content {
+			fmt.Fprintf(&b, "(%s ", c.Type)
+			if c.Text != "" {
+				fmt.Fprintf(&b, "text=%q ", c.Text)
+			}
+			if c.ToolName != "" {
+				fmt.Fprintf(&b, "name=%s ", c.ToolName)
+			}
+			if c.ToolUseID != "" {
+				fmt.Fprintf(&b, "id=%s ", c.ToolUseID)
+			}
+			b.WriteString(") ")
+		}
+		b.WriteString("\n")
+	}
+	return b.String()
+}
+
+// fakeBuiltinTool is a Read-shaped tool that always succeeds, for the
+// continuation+tool-replay test. Lives next to that test only.
+type fakeBuiltinTool struct{}
+
+func (fakeBuiltinTool) Name() string                 { return "FakeTool" }
+func (fakeBuiltinTool) Description() string          { return "succeeds" }
+func (fakeBuiltinTool) InputSchema() json.RawMessage { return json.RawMessage(`{"type":"object"}`) }
+func (fakeBuiltinTool) Execute(ctx context.Context, in json.RawMessage) (tools.Result, error) {
+	return tools.Result{Text: "TOOL OK"}, nil
 }
 
 // Regression: continuation against an unknown session returns 404.

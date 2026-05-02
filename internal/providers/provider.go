@@ -95,6 +95,10 @@ type Event struct {
 	ToolUse *ToolUse  `json:"tool_use,omitempty"`
 	Usage   *Usage    `json:"usage,omitempty"`
 	Error   string    `json:"error,omitempty"`
+	// IsError flags a tool_result whose execution failed. Surviving the
+	// persist+replay round-trip matters because a continuation that lost
+	// the flag would re-feed the model a successful-looking result.
+	IsError bool `json:"is_error,omitempty"`
 
 	// StopReason is set on the final assistant Event of a provider call:
 	// "end_turn" | "tool_use" | "max_tokens" | "stop_sequence".

@@ -434,11 +434,19 @@ func replayTranscript(events []store.Event) []providers.Message {
 				messages = append(messages, providers.Message{Role: "user", Content: userBlocks})
 			}
 		case "text":
+			// New assistant turn starting → close any prior user(tool_result)
+			// turn that's still pending. We can't use "usage" as the boundary
+			// because the loop emits usage BEFORE tool_result within an
+			// iteration (see loop.go:163 vs loop.go:178), so usage-as-flush
+			// would close the user turn before the tool_results land in it.
+			flushPendingTools()
 			var pe providers.Event
 			if err := json.Unmarshal(ev.Payload, &pe); err == nil {
 				asstText.WriteString(pe.Text)
 			}
 		case "tool_call":
+			// Same reasoning as "text": this is a new assistant turn signal.
+			flushPendingTools()
 			var pe providers.Event
 			if err := json.Unmarshal(ev.Payload, &pe); err == nil && pe.ToolUse != nil {
 				asstTools = append(asstTools, providers.ContentBlock{
@@ -457,13 +465,15 @@ func replayTranscript(events []store.Event) []providers.Message {
 					Type:      "tool_result",
 					ToolUseID: pe.ToolUse.ID,
 					Text:      pe.Text,
+					IsError:   pe.IsError,
 				})
 			}
 			// Don't flush pendingToolResults yet — multiple tools at the
-			// same boundary belong to one user message.
-		case "done", "usage":
-			// Flush at run-iteration boundaries so multi-turn replays
-			// don't bleed across iterations.
+			// same boundary belong to one user message, and the next text
+			// or tool_call event will close this user turn.
+		case "done":
+			// End-of-run boundary — only used when the final iteration was
+			// purely textual (no tool_results to carry over).
 			flushAssistant()
 			flushPendingTools()
 		}

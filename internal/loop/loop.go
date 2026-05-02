@@ -179,6 +179,7 @@ func Run(ctx context.Context, opts RunOptions) (RunResult, error) {
 				Type:    providers.EventToolResult,
 				ToolUse: &providers.ToolUse{ID: tu.ID, Name: tu.Name, Input: tu.Input},
 				Text:    res.Text,
+				IsError: res.IsError,
 			})
 			toolResults = append(toolResults, providers.ContentBlock{
 				Type:      "tool_result",
