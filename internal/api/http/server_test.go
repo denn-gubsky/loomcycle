@@ -318,6 +318,116 @@ func TestRunsPersistsToStore(t *testing.T) {
 	}
 }
 
+// Regression: GET /v1/sessions/{id}/transcript returns the persisted events
+// of a session that's already been run via POST /v1/runs. Tests the full
+// chain: post → record → read back.
+func TestTranscriptEndpointReturnsEvents(t *testing.T) {
+	cfg := &config.Config{
+		Defaults: config.Defaults{Provider: "stub", Model: "stub-model"},
+		Agents: map[string]config.AgentDef{
+			"default": {Model: "stub-model"},
+		},
+		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4, QueueTimeoutMS: 1000},
+	}
+	provider := &stubProvider{events: []providers.Event{
+		{Type: providers.EventText, Text: "hi"},
+		{Type: providers.EventDone, StopReason: "end_turn", Usage: &providers.Usage{InputTokens: 1, OutputTokens: 1}},
+	}}
+	st, _ := storesqlite.Open(filepath.Join(t.TempDir(), "test.db"))
+	defer st.Close()
+
+	srv := New(cfg, &stubResolver{p: provider}, nil, concurrency.New(4, 4, time.Second), st)
+	ts := httptest.NewServer(srv.Mux())
+	defer ts.Close()
+
+	// Create a session by running once.
+	resp, err := http.Post(ts.URL+"/v1/runs", "application/json", strings.NewReader(
+		`{"agent":"default","segments":[{"role":"user","content":[{"type":"trusted-text","text":"hi"}]}]}`,
+	))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	sessionID := extractSessionID(string(body))
+	if sessionID == "" {
+		t.Fatalf("no session id in stream:\n%s", string(body))
+	}
+
+	// Now read transcript.
+	tResp, err := http.Get(ts.URL + "/v1/sessions/" + sessionID + "/transcript")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tResp.Body.Close()
+	if tResp.StatusCode != 200 {
+		t.Fatalf("transcript status = %d", tResp.StatusCode)
+	}
+
+	var got transcriptResponse
+	if err := json.NewDecoder(tResp.Body).Decode(&got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Session.ID != sessionID {
+		t.Errorf("session.id = %q, want %q", got.Session.ID, sessionID)
+	}
+	if len(got.Events) < 4 {
+		t.Errorf("events len = %d, want >=4", len(got.Events))
+	}
+	// The text event must round-trip its Text field through the typed decode.
+	var foundText bool
+	for _, ev := range got.Events {
+		if ev.Type == "text" && ev.Event.Text == "hi" {
+			foundText = true
+			break
+		}
+	}
+	if !foundText {
+		t.Errorf("no text event with Text=\"hi\" in transcript: %+v", got.Events)
+	}
+}
+
+// Regression: GET on an unknown session returns 404, not 500.
+func TestTranscriptEndpoint404OnUnknownSession(t *testing.T) {
+	cfg := &config.Config{
+		Concurrency: config.Concurrency{MaxConcurrentRuns: 1, MaxQueueDepth: 1, QueueTimeoutMS: 100},
+	}
+	st, _ := storesqlite.Open(filepath.Join(t.TempDir(), "test.db"))
+	defer st.Close()
+	srv := New(cfg, &stubResolver{}, nil, concurrency.New(1, 1, time.Second), st)
+	ts := httptest.NewServer(srv.Mux())
+	defer ts.Close()
+
+	resp, err := http.Get(ts.URL + "/v1/sessions/s_nope/transcript")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("status = %d, want 404", resp.StatusCode)
+	}
+}
+
+// Regression: the transcript endpoint requires a Store to be configured.
+// Without one, return 404 with a clear message rather than panicking.
+func TestTranscriptEndpoint404WhenStoreNotConfigured(t *testing.T) {
+	cfg := &config.Config{
+		Concurrency: config.Concurrency{MaxConcurrentRuns: 1, MaxQueueDepth: 1, QueueTimeoutMS: 100},
+	}
+	srv := New(cfg, &stubResolver{}, nil, concurrency.New(1, 1, time.Second), nil)
+	ts := httptest.NewServer(srv.Mux())
+	defer ts.Close()
+
+	resp, err := http.Get(ts.URL + "/v1/sessions/s_anything/transcript")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("status = %d, want 404", resp.StatusCode)
+	}
+}
+
 // extractSessionID pulls the session_id payload from the first SSE frame
 // whose event-name is "session". Returns "" if not found.
 func extractSessionID(body string) string {

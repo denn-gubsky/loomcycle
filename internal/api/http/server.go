@@ -55,7 +55,8 @@ func New(cfg *config.Config, pr ProviderResolver, builtinTools []tools.Tool, sem
 func (s *Server) Mux() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", s.handleHealthz)
-	mux.Handle("/v1/runs", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleRuns))))
+	mux.Handle("POST /v1/runs", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleRuns))))
+	mux.Handle("GET /v1/sessions/{id}/transcript", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleTranscript))))
 	return mux
 }
 
@@ -220,6 +221,71 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.finishRun(r.Context(), runID, loopRes, runErr)
+}
+
+// transcriptResponse is the JSON shape of GET /v1/sessions/{id}/transcript.
+type transcriptResponse struct {
+	Session store.Session     `json:"session"`
+	Events  []transcriptEvent `json:"events"`
+}
+
+// transcriptEvent is one event row, with payload re-decoded into a typed
+// providers.Event so the caller doesn't have to round-trip through
+// json.RawMessage. ts is unix-nanos so it round-trips losslessly.
+type transcriptEvent struct {
+	Seq   int64           `json:"seq"`
+	RunID string          `json:"run_id"`
+	TsNs  int64           `json:"ts_ns"`
+	Type  string          `json:"type"`
+	Event providers.Event `json:"event"`
+}
+
+func (s *Server) handleTranscript(w http.ResponseWriter, r *http.Request) {
+	if s.store == nil {
+		http.Error(w, "transcript persistence is not configured", http.StatusNotFound)
+		return
+	}
+	id := r.PathValue("id")
+	if id == "" {
+		http.Error(w, "session id is required", http.StatusBadRequest)
+		return
+	}
+	sess, err := s.store.GetSession(r.Context(), id)
+	if err != nil {
+		var nf *store.ErrNotFound
+		if errors.As(err, &nf) {
+			http.Error(w, err.Error(), http.StatusNotFound)
+			return
+		}
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	transcript, err := s.store.GetTranscript(r.Context(), id)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	resp := transcriptResponse{Session: sess, Events: make([]transcriptEvent, 0, len(transcript))}
+	for _, ev := range transcript {
+		te := transcriptEvent{
+			Seq:   ev.Seq,
+			RunID: ev.RunID,
+			TsNs:  ev.Timestamp.UnixNano(),
+			Type:  ev.Type,
+		}
+		// Decode payload back to a typed Event. If it fails (corrupt row),
+		// surface a minimal record so the rest of the transcript still ships.
+		if err := json.Unmarshal(ev.Payload, &te.Event); err != nil {
+			te.Event = providers.Event{Type: providers.EventType(ev.Type)}
+		}
+		resp.Events = append(resp.Events, te)
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(resp); err != nil {
+		log.Printf("transcript: encode failed: %v", err)
+	}
 }
 
 // openOrCreateSessionAndRun resolves the session (creating one if the caller
