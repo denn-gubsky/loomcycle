@@ -111,11 +111,11 @@ func (d *Driver) Call(ctx context.Context, req providers.Request) (<-chan provid
 //	}
 
 type wireRequest struct {
-	Model    string             `json:"model"`
-	Stream   bool               `json:"stream"`
-	Messages []wireMessage      `json:"messages"`
-	Tools    []wireTool         `json:"tools,omitempty"`
-	Options  *wireOptions       `json:"options,omitempty"`
+	Model    string        `json:"model"`
+	Stream   bool          `json:"stream"`
+	Messages []wireMessage `json:"messages"`
+	Tools    []wireTool    `json:"tools,omitempty"`
+	Options  *wireOptions  `json:"options,omitempty"`
 }
 
 type wireOptions struct {
@@ -244,10 +244,10 @@ func flattenMessage(m providers.Message) []wireMessage {
 // final or near-final line. So no accumulator is needed.
 
 type chunk struct {
-	Model     string  `json:"model"`
-	Message   message `json:"message"`
-	Done      bool    `json:"done"`
-	DoneReason string `json:"done_reason"`
+	Model      string  `json:"model"`
+	Message    message `json:"message"`
+	Done       bool    `json:"done"`
+	DoneReason string  `json:"done_reason"`
 
 	// Usage fields (only present on the final "done":true frame).
 	PromptEvalCount int `json:"prompt_eval_count"`
@@ -255,8 +255,8 @@ type chunk struct {
 }
 
 type message struct {
-	Role      string         `json:"role"`
-	Content   string         `json:"content"`
+	Role      string          `json:"role"`
+	Content   string          `json:"content"`
 	ToolCalls []chunkToolCall `json:"tool_calls"`
 }
 

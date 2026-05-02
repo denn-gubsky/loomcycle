@@ -218,8 +218,8 @@ func (n *nonFlushingWriter) Header() http.Header {
 	}
 	return n.header
 }
-func (n *nonFlushingWriter) WriteHeader(s int)             { n.status = s }
-func (n *nonFlushingWriter) Write(b []byte) (int, error)   { return n.body.Write(b) }
+func (n *nonFlushingWriter) WriteHeader(s int)           { n.status = s }
+func (n *nonFlushingWriter) Write(b []byte) (int, error) { return n.body.Write(b) }
 
 // Regression: when the ResponseWriter doesn't support flushing, the handler
 // must refuse cleanly with 500 instead of silently buffering every SSE frame
