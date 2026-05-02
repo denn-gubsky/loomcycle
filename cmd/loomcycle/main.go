@@ -61,6 +61,10 @@ func main() {
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
+	if cfg.Env.AuthToken == "" {
+		log.Printf("WARNING: LOOMCYCLE_AUTH_TOKEN is not set; /v1 routes are unauthenticated (dev mode)")
+	}
+
 	go func() {
 		log.Printf("loomcycle listening on %s", cfg.Env.ListenAddr)
 		if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {

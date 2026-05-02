@@ -5,6 +5,7 @@
 package http
 
 import (
+	"crypto/subtle"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -159,16 +160,20 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 
 // authMiddleware enforces LOOMCYCLE_AUTH_TOKEN bearer auth, except for /healthz which
 // is mounted bare (this middleware is only wrapped around /v1/* routes).
+//
+// Comparison uses subtle.ConstantTimeCompare to prevent a timing oracle that
+// could let a network-adjacent attacker recover the token byte-by-byte.
 func (s *Server) authMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if s.cfg.Env.AuthToken == "" {
-			// No token configured = open mode (dev only).
+			// No token configured = open mode (dev only). Startup logged a
+			// warning so the operator knows.
 			next.ServeHTTP(w, r)
 			return
 		}
 		got := r.Header.Get("Authorization")
 		want := "Bearer " + s.cfg.Env.AuthToken
-		if got != want {
+		if subtle.ConstantTimeCompare([]byte(got), []byte(want)) != 1 {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
