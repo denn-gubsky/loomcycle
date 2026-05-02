@@ -114,6 +114,109 @@ func TestAuthRequired(t *testing.T) {
 	}
 }
 
+// Regression: bodies larger than the cap are rejected, not silently read into
+// memory. We send valid JSON whose `text` field is large enough to cross the
+// 1 MiB cap — without MaxBytesReader, the decoder happily reads it all and
+// returns 200. With MaxBytesReader, the decoder fails mid-parse.
+func TestRunsRejectsOversizedBody(t *testing.T) {
+	cfg := &config.Config{
+		Defaults: config.Defaults{Provider: "stub", Model: "stub-model"},
+		Agents: map[string]config.AgentDef{
+			"default": {Model: "stub-model"},
+		},
+		Concurrency: config.Concurrency{MaxConcurrentRuns: 1, MaxQueueDepth: 1, QueueTimeoutMS: 100},
+	}
+	provider := &stubProvider{events: []providers.Event{
+		{Type: providers.EventDone, StopReason: "end_turn"},
+	}}
+	srv := New(cfg, &stubResolver{p: provider}, nil, concurrency.New(1, 1, time.Second))
+	ts := httptest.NewServer(srv.Mux())
+	defer ts.Close()
+
+	// 2 MiB of "x" inside a valid JSON string — guaranteed to cross 1 MiB cap.
+	huge := strings.Repeat("x", 2<<20)
+	body := `{"agent":"default","segments":[{"role":"user","content":[{"type":"trusted-text","text":"` + huge + `"}]}]}`
+
+	resp, err := http.Post(ts.URL+"/v1/runs", "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	defer resp.Body.Close()
+	// MaxBytesReader returns 400 (decoder sees a "http: request body too large"
+	// error mid-parse) or 413. Anything 2xx means the cap was bypassed.
+	if resp.StatusCode == http.StatusOK {
+		t.Errorf("status = 200 — oversized body was accepted (MaxBytesReader missing)")
+	}
+	if resp.StatusCode != http.StatusBadRequest && resp.StatusCode != http.StatusRequestEntityTooLarge {
+		t.Errorf("status = %d, want 400 or 413", resp.StatusCode)
+	}
+}
+
+// Regression: requests with the wrong Content-Type get 415, not a confusing
+// JSON parse error. Empty Content-Type is allowed (curl POST without -H).
+func TestRunsRejectsWrongContentType(t *testing.T) {
+	cfg := &config.Config{
+		Agents:      map[string]config.AgentDef{"default": {Model: "x"}},
+		Concurrency: config.Concurrency{MaxConcurrentRuns: 1, MaxQueueDepth: 1, QueueTimeoutMS: 100},
+	}
+	srv := New(cfg, &stubResolver{}, nil, concurrency.New(1, 1, time.Second))
+	ts := httptest.NewServer(srv.Mux())
+	defer ts.Close()
+
+	resp, err := http.Post(ts.URL+"/v1/runs", "application/x-www-form-urlencoded", strings.NewReader(`agent=default`))
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	if resp.StatusCode != http.StatusUnsupportedMediaType {
+		t.Errorf("status = %d, want 415 for non-JSON content type", resp.StatusCode)
+	}
+}
+
+// nonFlushingWriter implements http.ResponseWriter but NOT http.Flusher.
+// httptest's writers all implement Flusher, so we need this to exercise the
+// "writer cannot stream" fallback path.
+type nonFlushingWriter struct {
+	header http.Header
+	status int
+	body   strings.Builder
+}
+
+func (n *nonFlushingWriter) Header() http.Header {
+	if n.header == nil {
+		n.header = make(http.Header)
+	}
+	return n.header
+}
+func (n *nonFlushingWriter) WriteHeader(s int)             { n.status = s }
+func (n *nonFlushingWriter) Write(b []byte) (int, error)   { return n.body.Write(b) }
+
+// Regression: when the ResponseWriter doesn't support flushing, the handler
+// must refuse cleanly with 500 instead of silently buffering every SSE frame
+// until handler return.
+func TestRunsRejectsNonFlushableWriter(t *testing.T) {
+	cfg := &config.Config{
+		Defaults: config.Defaults{Provider: "stub", Model: "stub-model"},
+		Agents: map[string]config.AgentDef{
+			"default": {Model: "stub-model"},
+		},
+		Concurrency: config.Concurrency{MaxConcurrentRuns: 1, MaxQueueDepth: 1, QueueTimeoutMS: 100},
+	}
+	srv := New(cfg, &stubResolver{p: &stubProvider{}}, nil, concurrency.New(1, 1, time.Second))
+
+	w := &nonFlushingWriter{}
+	body := strings.NewReader(`{"agent":"default","segments":[{"role":"user","content":[{"type":"trusted-text","text":"hi"}]}]}`)
+	req := httptest.NewRequest("POST", "/v1/runs", body)
+	req.Header.Set("Content-Type", "application/json")
+	srv.Mux().ServeHTTP(w, req)
+
+	if w.status != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500", w.status)
+	}
+	if !strings.Contains(w.body.String(), "streaming") {
+		t.Errorf("body should mention streaming: %q", w.body.String())
+	}
+}
+
 // readEvents parses SSE frames and returns the event-type per frame in order.
 func readEvents(t *testing.T, r io.Reader) []string {
 	t.Helper()

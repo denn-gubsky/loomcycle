@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"strings"
 
 	"github.com/denn-gubsky/loomcycle/internal/concurrency"
 	"github.com/denn-gubsky/loomcycle/internal/config"
@@ -65,6 +66,13 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	if ct := r.Header.Get("Content-Type"); ct != "" && !strings.HasPrefix(ct, "application/json") {
+		http.Error(w, "Content-Type must be application/json", http.StatusUnsupportedMediaType)
+		return
+	}
+	// Cap body at 1 MiB so a malicious caller can't exhaust memory by
+	// streaming a huge body. ReadHeaderTimeout doesn't cover the body.
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	var req runRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "bad json: "+err.Error(), http.StatusBadRequest)
@@ -122,7 +130,14 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		}}, req.Segments...)
 	}
 
-	stream := newSSE(w)
+	stream, ok := newSSE(w)
+	if !ok {
+		// ResponseWriter doesn't implement http.Flusher — every frame would
+		// be buffered until handler return, defeating SSE. Refuse cleanly so
+		// the caller gets a useful error instead of silent buffering.
+		http.Error(w, "server does not support streaming on this transport", http.StatusInternalServerError)
+		return
+	}
 	stream.start()
 
 	emit := func(ev providers.Event) {

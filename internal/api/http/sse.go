@@ -3,6 +3,7 @@ package http
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 
 	"github.com/denn-gubsky/loomcycle/internal/providers"
@@ -17,9 +18,16 @@ type sse struct {
 	closed  bool
 }
 
-func newSSE(w http.ResponseWriter) *sse {
-	flusher, _ := w.(http.Flusher)
-	return &sse{w: w, flusher: flusher}
+// newSSE returns an sse and a boolean indicating whether the writer supports
+// streaming. When false, the caller should NOT call start() and should fall
+// back to a JSON response — the writer would otherwise buffer every frame
+// until handler return, defeating the point of SSE.
+func newSSE(w http.ResponseWriter) (*sse, bool) {
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		return &sse{w: w}, false
+	}
+	return &sse{w: w, flusher: flusher}, true
 }
 
 func (s *sse) start() {
@@ -37,8 +45,18 @@ func (s *sse) send(ev providers.Event) {
 	}
 	payload, err := json.Marshal(ev)
 	if err != nil {
-		// Best-effort: emit a fallback error frame.
-		fmt.Fprintf(s.w, "event: error\ndata: {\"type\":\"error\",\"error\":\"marshal: %s\"}\n\n", err.Error())
+		// Marshal can fail for unencodable values in ev.Payload-style fields.
+		// Build the fallback frame as JSON too so a newline in err.Error()
+		// can't escape the SSE data: line.
+		fallback, mErr := json.Marshal(map[string]string{
+			"type":  "error",
+			"error": "marshal: " + err.Error(),
+		})
+		if mErr != nil {
+			log.Printf("sse: fallback marshal failed: %v (orig: %v)", mErr, err)
+			return
+		}
+		fmt.Fprintf(s.w, "event: error\ndata: %s\n\n", fallback)
 		s.flush()
 		return
 	}
