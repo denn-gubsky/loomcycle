@@ -84,21 +84,33 @@ func main() {
 			}
 		},
 		func(c mcp.Caller) {
-			// Both transports implement io.Closer-shaped Close() error.
+			// Both stdio.Client and http.Client implement Close() error.
+			// A future transport that doesn't gets logged so the leak is
+			// at least visible to operators.
 			type closer interface{ Close() error }
-			if cl, ok := c.(closer); ok {
-				_ = cl.Close()
+			cl, ok := c.(closer)
+			if !ok {
+				log.Printf("mcp pool: teardown skipped (%T does not implement Close)", c)
+				return
 			}
+			_ = cl.Close()
 		},
 	)
 	defer mcpPool.Close()
 
 	// Initialise each server, apply per-server allowed_tools filter, and
 	// register the resulting tools alongside the built-ins.
+	//
+	// Budget: 30s SHARED across all servers, not per-server. With many
+	// servers configured, per-server timeouts can serially stack up past
+	// K8s liveness/readiness deadlines and put the pod in a restart loop
+	// before /healthz ever serves once. A shared ctx caps total startup
+	// blocking; remaining servers after the budget exits are skipped with
+	// a clear log line — they can be retried on demand via the lazy
+	// pool resolution path on the first agent run that needs them.
+	mcpInitCtx, mcpInitCancel := context.WithTimeout(context.Background(), 30*time.Second)
 	for name, srv := range cfg.MCPServers {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		_, descs, err := mcpPool.Get(ctx, name)
-		cancel()
+		_, descs, err := mcpPool.Get(mcpInitCtx, name)
 		if err != nil {
 			log.Printf("mcp[%s]: skipped — %v", name, err)
 			continue
@@ -110,6 +122,7 @@ func main() {
 		log.Printf("mcp[%s]: ready, %d/%d tools registered (transport=%s)",
 			name, len(filtered), len(descs), srv.Transport)
 	}
+	mcpInitCancel()
 
 	// Storage: open SQLite under DataDir. We could no-op when DataDir is
 	// unset, but that would silently disable the transcript/continuation
