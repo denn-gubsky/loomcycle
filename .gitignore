@@ -32,6 +32,9 @@ loomcycle.local.yaml
 # Per-user Claude Code state (permission grants, plans)
 .claude/
 
+# Internal docs not meant for publication (planning notes, decision logs)
+doc-internal/
+
 # Adapter build output
 adapters/ts/dist/
 adapters/ts/node_modules/
