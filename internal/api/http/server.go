@@ -5,17 +5,21 @@
 package http
 
 import (
+	"context"
 	"crypto/subtle"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/concurrency"
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/loop"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
+	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 	"github.com/denn-gubsky/loomcycle/internal/tools/policy"
 )
@@ -33,11 +37,13 @@ type Server struct {
 	providers ProviderResolver
 	tools     []tools.Tool
 	sem       *concurrency.Semaphore
+	store     store.Store // optional; nil means "don't persist"
 }
 
-// New constructs a Server.
-func New(cfg *config.Config, pr ProviderResolver, builtinTools []tools.Tool, sem *concurrency.Semaphore) *Server {
-	return &Server{cfg: cfg, providers: pr, tools: builtinTools, sem: sem}
+// New constructs a Server. If st is non-nil, every run is recorded as a
+// session+run+events tuple in the store; pass nil to keep v0.2 behaviour.
+func New(cfg *config.Config, pr ProviderResolver, builtinTools []tools.Tool, sem *concurrency.Semaphore, st store.Store) *Server {
+	return &Server{cfg: cfg, providers: pr, tools: builtinTools, sem: sem, store: st}
 }
 
 // Mux returns the http.Handler ready to be served.
@@ -87,6 +93,13 @@ type runRequest struct {
 	Agent        string               `json:"agent"`
 	Segments     []loop.PromptSegment `json:"segments"`
 	AllowedTools []string             `json:"allowed_tools,omitempty"`
+	// SessionID is optional. When set, the new run is appended to that
+	// session (the prior transcript is NOT replayed by /v1/runs — use
+	// /v1/sessions/{id}/messages for continuation). When empty, a fresh
+	// session is created. The new session ID is announced as the first
+	// SSE event so the caller can address subsequent calls to it.
+	SessionID string `json:"session_id,omitempty"`
+	TenantID  string `json:"tenant_id,omitempty"`
 }
 
 func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
@@ -158,6 +171,21 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		}}, req.Segments...)
 	}
 
+	// Persistence: resolve or create a session, create a run, route every
+	// emitted event through the store before forwarding to SSE. With
+	// s.store == nil the recording becomes a no-op so v0.2 callers see no
+	// behaviour change.
+	sessionID, runID, sessErr := s.openOrCreateSessionAndRun(r.Context(), req.SessionID, req.Agent, req.TenantID)
+	if sessErr != nil {
+		var nf *store.ErrNotFound
+		if errors.As(sessErr, &nf) {
+			http.Error(w, sessErr.Error(), http.StatusNotFound)
+			return
+		}
+		http.Error(w, sessErr.Error(), http.StatusInternalServerError)
+		return
+	}
+
 	stream, ok := newSSE(w)
 	if !ok {
 		// ResponseWriter doesn't implement http.Flusher — every frame would
@@ -168,11 +196,18 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 	}
 	stream.start()
 
-	emit := func(ev providers.Event) {
-		stream.send(ev)
+	// Announce the (possibly newly-created) session/run IDs so the caller
+	// can address continuation requests at the same session.
+	if sessionID != "" {
+		stream.send(providers.Event{
+			Type: "session", // not part of providers.EventType — just a side-channel
+			Text: sessionID,
+		})
 	}
 
-	_, runErr := loop.Run(r.Context(), loop.RunOptions{
+	emit := s.makeRecordingEmit(r.Context(), runID, stream.send)
+
+	loopRes, runErr := loop.Run(r.Context(), loop.RunOptions{
 		Provider:   provider,
 		Model:      model,
 		Tools:      allowedTools,
@@ -182,6 +217,82 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 	})
 	if runErr != nil {
 		stream.send(providers.Event{Type: providers.EventError, Error: runErr.Error()})
+	}
+
+	s.finishRun(r.Context(), runID, loopRes, runErr)
+}
+
+// openOrCreateSessionAndRun resolves the session (creating one if the caller
+// didn't pass an ID), then creates a run inside it. Returns ("", "", nil) when
+// no store is configured — the caller treats both empty IDs as "skip persistence".
+func (s *Server) openOrCreateSessionAndRun(ctx context.Context, requestedSessionID, agent, tenantID string) (string, string, error) {
+	if s.store == nil {
+		return "", "", nil
+	}
+	var sess store.Session
+	var err error
+	if requestedSessionID != "" {
+		sess, err = s.store.GetSession(ctx, requestedSessionID)
+		if err != nil {
+			return "", "", err
+		}
+	} else {
+		sess, err = s.store.CreateSession(ctx, tenantID, agent)
+		if err != nil {
+			return "", "", err
+		}
+	}
+	run, err := s.store.CreateRun(ctx, sess.ID)
+	if err != nil {
+		return "", "", err
+	}
+	return sess.ID, run.ID, nil
+}
+
+// makeRecordingEmit returns an OnEvent callback that records each event into
+// the store before forwarding to the SSE stream. Persistence failures are
+// logged but never block the stream — the caller has already received the
+// event and should not be punished for our IO problems.
+func (s *Server) makeRecordingEmit(ctx context.Context, runID string, fwd func(providers.Event)) func(providers.Event) {
+	if s.store == nil || runID == "" {
+		return fwd
+	}
+	return func(ev providers.Event) {
+		payload, err := json.Marshal(ev)
+		if err == nil {
+			if err := s.store.AppendEvent(ctx, runID, string(ev.Type), payload); err != nil {
+				log.Printf("store: AppendEvent failed (run=%s type=%s): %v", runID, ev.Type, err)
+			}
+		}
+		fwd(ev)
+	}
+}
+
+// finishRun marks the run terminal in the store. status is derived from
+// runErr: nil → completed, non-nil → failed. ctx may already be cancelled
+// (the client disconnected); we use a fresh background context with a short
+// timeout so the FinishRun write isn't lost.
+func (s *Server) finishRun(_ context.Context, runID string, res loop.RunResult, runErr error) {
+	if s.store == nil || runID == "" {
+		return
+	}
+	bg, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	status := store.RunCompleted
+	errMsg := ""
+	if runErr != nil {
+		status = store.RunFailed
+		errMsg = runErr.Error()
+	}
+	usage := store.Usage{
+		InputTokens:         res.Usage.InputTokens,
+		OutputTokens:        res.Usage.OutputTokens,
+		CacheCreationTokens: res.Usage.CacheCreationTokens,
+		CacheReadTokens:     res.Usage.CacheReadTokens,
+		Model:               res.Usage.Model,
+	}
+	if err := s.store.FinishRun(bg, runID, status, res.StopReason, usage, errMsg); err != nil {
+		log.Printf("store: FinishRun failed (run=%s): %v", runID, err)
 	}
 }
 

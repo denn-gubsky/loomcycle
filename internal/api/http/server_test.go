@@ -3,9 +3,11 @@ package http
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -13,6 +15,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/concurrency"
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
+	storesqlite "github.com/denn-gubsky/loomcycle/internal/store/sqlite"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
 
@@ -50,7 +53,7 @@ func TestHandleRunsSSE(t *testing.T) {
 		{Type: providers.EventDone, StopReason: "end_turn", Usage: &providers.Usage{InputTokens: 5, OutputTokens: 1}},
 	}}
 	sem := concurrency.New(4, 4, 100*time.Millisecond)
-	srv := New(cfg, &stubResolver{p: provider}, []tools.Tool{}, sem)
+	srv := New(cfg, &stubResolver{p: provider}, []tools.Tool{}, sem, nil)
 
 	ts := httptest.NewServer(srv.Mux())
 	defer ts.Close()
@@ -84,7 +87,7 @@ func TestHandleRunsSSE(t *testing.T) {
 
 func TestHealthz(t *testing.T) {
 	cfg := &config.Config{Concurrency: config.Concurrency{MaxConcurrentRuns: 1, MaxQueueDepth: 1, QueueTimeoutMS: 100}}
-	srv := New(cfg, &stubResolver{}, nil, concurrency.New(1, 1, time.Second))
+	srv := New(cfg, &stubResolver{}, nil, concurrency.New(1, 1, time.Second), nil)
 	ts := httptest.NewServer(srv.Mux())
 	defer ts.Close()
 	resp, err := http.Get(ts.URL + "/healthz")
@@ -102,7 +105,7 @@ func TestAuthRequired(t *testing.T) {
 		Concurrency: config.Concurrency{MaxConcurrentRuns: 1, MaxQueueDepth: 1, QueueTimeoutMS: 100},
 	}
 	cfg.Env.AuthToken = "secret"
-	srv := New(cfg, &stubResolver{}, nil, concurrency.New(1, 1, time.Second))
+	srv := New(cfg, &stubResolver{}, nil, concurrency.New(1, 1, time.Second), nil)
 	ts := httptest.NewServer(srv.Mux())
 	defer ts.Close()
 	resp, err := http.Post(ts.URL+"/v1/runs", "application/json", strings.NewReader(`{}`))
@@ -129,7 +132,7 @@ func TestRunsRejectsOversizedBody(t *testing.T) {
 	provider := &stubProvider{events: []providers.Event{
 		{Type: providers.EventDone, StopReason: "end_turn"},
 	}}
-	srv := New(cfg, &stubResolver{p: provider}, nil, concurrency.New(1, 1, time.Second))
+	srv := New(cfg, &stubResolver{p: provider}, nil, concurrency.New(1, 1, time.Second), nil)
 	ts := httptest.NewServer(srv.Mux())
 	defer ts.Close()
 
@@ -159,7 +162,7 @@ func TestRunsRejectsWrongContentType(t *testing.T) {
 		Agents:      map[string]config.AgentDef{"default": {Model: "x"}},
 		Concurrency: config.Concurrency{MaxConcurrentRuns: 1, MaxQueueDepth: 1, QueueTimeoutMS: 100},
 	}
-	srv := New(cfg, &stubResolver{}, nil, concurrency.New(1, 1, time.Second))
+	srv := New(cfg, &stubResolver{}, nil, concurrency.New(1, 1, time.Second), nil)
 	ts := httptest.NewServer(srv.Mux())
 	defer ts.Close()
 
@@ -179,7 +182,7 @@ func TestRecoveryMiddlewareCatchesPanic(t *testing.T) {
 	cfg := &config.Config{
 		Concurrency: config.Concurrency{MaxConcurrentRuns: 1, MaxQueueDepth: 1, QueueTimeoutMS: 100},
 	}
-	srv := New(cfg, &stubResolver{}, nil, concurrency.New(1, 1, time.Second))
+	srv := New(cfg, &stubResolver{}, nil, concurrency.New(1, 1, time.Second), nil)
 
 	// Wrap a handler that always panics with the same recoveryMiddleware
 	// the server uses. Verifies the middleware itself, independent of the
@@ -232,7 +235,7 @@ func TestRunsRejectsNonFlushableWriter(t *testing.T) {
 		},
 		Concurrency: config.Concurrency{MaxConcurrentRuns: 1, MaxQueueDepth: 1, QueueTimeoutMS: 100},
 	}
-	srv := New(cfg, &stubResolver{p: &stubProvider{}}, nil, concurrency.New(1, 1, time.Second))
+	srv := New(cfg, &stubResolver{p: &stubProvider{}}, nil, concurrency.New(1, 1, time.Second), nil)
 
 	w := &nonFlushingWriter{}
 	body := strings.NewReader(`{"agent":"default","segments":[{"role":"user","content":[{"type":"trusted-text","text":"hi"}]}]}`)
@@ -246,6 +249,92 @@ func TestRunsRejectsNonFlushableWriter(t *testing.T) {
 	if !strings.Contains(w.body.String(), "streaming") {
 		t.Errorf("body should mention streaming: %q", w.body.String())
 	}
+}
+
+// Regression: when a Store is wired, /v1/runs records the session+run+events
+// so a follow-up GetTranscript returns the full transcript. Also verifies
+// the SSE stream announces the new session_id as a "session" frame so the
+// caller can address continuation requests.
+func TestRunsPersistsToStore(t *testing.T) {
+	cfg := &config.Config{
+		Defaults: config.Defaults{Provider: "stub", Model: "stub-model"},
+		Agents: map[string]config.AgentDef{
+			"default": {Model: "stub-model"},
+		},
+		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4, QueueTimeoutMS: 1000},
+	}
+	provider := &stubProvider{events: []providers.Event{
+		{Type: providers.EventText, Text: "hello"},
+		{Type: providers.EventDone, StopReason: "end_turn", Usage: &providers.Usage{InputTokens: 5, OutputTokens: 1}},
+	}}
+	st, err := storesqlite.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	srv := New(cfg, &stubResolver{p: provider}, nil, concurrency.New(4, 4, time.Second), st)
+	ts := httptest.NewServer(srv.Mux())
+	defer ts.Close()
+
+	resp, err := http.Post(ts.URL+"/v1/runs", "application/json", strings.NewReader(
+		`{"agent":"default","segments":[{"role":"user","content":[{"type":"trusted-text","text":"hi"}]}]}`,
+	))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("status = %d", resp.StatusCode)
+	}
+
+	body, _ := io.ReadAll(resp.Body)
+	bodyStr := string(body)
+	// The first frame must announce the session ID.
+	if !strings.Contains(bodyStr, "event: session") {
+		t.Errorf("missing session announcement in SSE stream:\n%s", bodyStr)
+	}
+
+	// Pull the session ID out of the announcement frame.
+	sessionID := extractSessionID(bodyStr)
+	if sessionID == "" {
+		t.Fatalf("could not parse session_id from stream:\n%s", bodyStr)
+	}
+
+	transcript, err := st.GetTranscript(context.Background(), sessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Loop emits at least started, text, usage, done — same as v0.2 SSE.
+	if len(transcript) < 4 {
+		t.Errorf("transcript len = %d, want >= 4 (started/text/usage/done)", len(transcript))
+	}
+	wantTypes := map[string]bool{"started": true, "text": true, "done": true}
+	for _, ev := range transcript {
+		delete(wantTypes, ev.Type)
+	}
+	if len(wantTypes) > 0 {
+		t.Errorf("missing event types in transcript: %v", wantTypes)
+	}
+}
+
+// extractSessionID pulls the session_id payload from the first SSE frame
+// whose event-name is "session". Returns "" if not found.
+func extractSessionID(body string) string {
+	const marker = "event: session\ndata: "
+	i := strings.Index(body, marker)
+	if i < 0 {
+		return ""
+	}
+	tail := body[i+len(marker):]
+	end := strings.Index(tail, "\n")
+	if end < 0 {
+		return ""
+	}
+	// data is JSON: {"type":"session","text":"s_..."}
+	var ev struct{ Text string }
+	_ = json.Unmarshal([]byte(tail[:end]), &ev)
+	return ev.Text
 }
 
 // readEvents parses SSE frames and returns the event-type per frame in order.

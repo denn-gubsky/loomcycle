@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -23,6 +24,8 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/providers/anthropic"
 	"github.com/denn-gubsky/loomcycle/internal/providers/ollama"
 	"github.com/denn-gubsky/loomcycle/internal/providers/openai"
+	"github.com/denn-gubsky/loomcycle/internal/store"
+	storesqlite "github.com/denn-gubsky/loomcycle/internal/store/sqlite"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 	"github.com/denn-gubsky/loomcycle/internal/tools/builtin"
 )
@@ -54,7 +57,22 @@ func main() {
 		log.Printf("note: Read tool is registered but disabled — set LOOMCYCLE_READ_ROOT to enable")
 	}
 
-	srv := lchttp.New(cfg, pr, builtins, sem)
+	// Storage: open SQLite under DataDir. We could no-op when DataDir is
+	// unset, but that would silently disable the transcript/continuation
+	// endpoints — better to just use a sensible default and persist.
+	if err := os.MkdirAll(cfg.Env.DataDir, 0o755); err != nil {
+		log.Fatalf("data dir: %v", err)
+	}
+	dbPath := filepath.Join(cfg.Env.DataDir, "loomcycle.db")
+	st, err := storesqlite.Open(dbPath)
+	if err != nil {
+		log.Fatalf("store: %v", err)
+	}
+	defer st.Close()
+	log.Printf("store: sqlite at %s", dbPath)
+
+	var storeIface store.Store = st
+	srv := lchttp.New(cfg, pr, builtins, sem, storeIface)
 	httpServer := &http.Server{
 		Addr:              cfg.Env.ListenAddr,
 		Handler:           srv.Mux(),
