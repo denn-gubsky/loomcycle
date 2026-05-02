@@ -19,6 +19,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -90,6 +91,9 @@ func (d *Driver) Call(ctx context.Context, req providers.Request) (<-chan provid
 		ParseHeader: ratelimit.OllamaRetryAfter,
 	}, attempt)
 	if err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return nil, err
+		}
 		return nil, fmt.Errorf("http: %w", err)
 	}
 	if resp.StatusCode != http.StatusOK {

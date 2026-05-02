@@ -107,8 +107,10 @@ const (
 // success) or the last 429 (on budget exhaustion); in both cases its body
 // has NOT been read — caller owns it.
 //
-// Bodies of intermediate 429 responses are drained + closed by Do so the
-// underlying TCP connection can be reused for the retry.
+// Bodies of intermediate 429 responses (i.e. those followed by another
+// retry) are drained + closed by Do so the underlying TCP connection can
+// be reused. The body of the final 429 (returned on budget exhaustion) is
+// preserved so the caller can read the error message.
 //
 // ctx propagates into each attempt and into the inter-attempt sleep; a
 // cancelled ctx breaks out of the sleep immediately and returns ctx.Err().
@@ -164,9 +166,14 @@ func Do(ctx context.Context, cfg Config, attempt func(ctx context.Context) (*htt
 
 		cfg.OnRetry(cfg.Provider, i+1, wait, reason)
 
+		// time.NewTimer + defer Stop instead of time.After so a ctx-cancel
+		// during the wait doesn't leak the underlying timer until expiry.
+		// Trivial at 5min max wait but the canonical pattern.
+		t := time.NewTimer(wait)
 		select {
-		case <-time.After(wait):
+		case <-t.C:
 		case <-ctx.Done():
+			t.Stop()
 			return nil, ctx.Err()
 		}
 		totalWait += wait

@@ -51,15 +51,29 @@ func TestOpenAIRetryAfterPrefersRetryAfter(t *testing.T) {
 	}
 }
 
-func TestOpenAIRetryAfterFallsBackToResetTokens(t *testing.T) {
-	// No Retry-After; pick the bigger reset.
+func TestOpenAIRetryAfterFallsBackToSmallerReset(t *testing.T) {
+	// No Retry-After; pick the smaller non-zero reset (responsiveness +
+	// retry-budget trade-off; see headers.go for the full reasoning).
 	h := headers(
 		"X-Ratelimit-Reset-Requests", "100ms",
 		"X-Ratelimit-Reset-Tokens", "12.5s",
 	)
 	d, ok := OpenAIRetryAfter(h)
-	if !ok || d != 12500*time.Millisecond {
-		t.Errorf("got (%v, %v), want (12.5s, true)", d, ok)
+	if !ok || d != 100*time.Millisecond {
+		t.Errorf("got (%v, %v), want (100ms, true)", d, ok)
+	}
+}
+
+func TestOpenAIRetryAfterIgnoresZeroReset(t *testing.T) {
+	// Zero on one bucket means it's already refilled — should not be
+	// chosen as the wait. The non-zero bucket's reset is the answer.
+	h := headers(
+		"X-Ratelimit-Reset-Requests", "0s",
+		"X-Ratelimit-Reset-Tokens", "5s",
+	)
+	d, ok := OpenAIRetryAfter(h)
+	if !ok || d != 5*time.Second {
+		t.Errorf("got (%v, %v), want (5s, true) — zero bucket should be ignored", d, ok)
 	}
 }
 

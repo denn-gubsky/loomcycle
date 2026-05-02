@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -88,6 +89,11 @@ func (d *Driver) Call(ctx context.Context, req providers.Request) (<-chan provid
 		ParseHeader: ratelimit.AnthropicRetryAfter,
 	}, attempt)
 	if err != nil {
+		// ctx errors aren't HTTP errors — propagate as-is so the loop's
+		// errors.Is(ctx.Err()) checks aren't masked by the "http:" prefix.
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return nil, err
+		}
 		return nil, fmt.Errorf("http: %w", err)
 	}
 	if resp.StatusCode != http.StatusOK {

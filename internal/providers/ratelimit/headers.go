@@ -19,23 +19,33 @@ func AnthropicRetryAfter(h http.Header) (time.Duration, bool) {
 // OpenAI's Retry-After is sometimes present (seconds) but not guaranteed.
 // On every response (200 or 429) they emit relative durations like "120ms"
 // or "12.5s" in `x-ratelimit-reset-requests` and `x-ratelimit-reset-tokens`
-// telling you when each bucket refills. We try Retry-After first, then take
-// the larger of the two reset windows so we wait for the more constrained
-// bucket.
+// telling you when each bucket refills.
+//
+// When Retry-After is missing and we have both reset values, we take the
+// MIN of the non-zero ones rather than the max. Reasoning: a 429 means at
+// least one bucket emptied, but we don't know which. Picking the max
+// always succeeds on the first retry but over-waits when the empty bucket
+// was the smaller one. Picking the min is responsive: if we guessed
+// right, we retry at the perfect moment; if wrong, we 429 again and the
+// next retry sleeps the *real* needed wait. Total wall-clock wait is
+// the same as max in the wrong-guess case but we use one extra attempt
+// budget — cheap (we have 5 attempts).
 func OpenAIRetryAfter(h http.Header) (time.Duration, bool) {
 	if d, ok := parseRetryAfterSeconds(h.Get("Retry-After")); ok {
 		return d, true
 	}
-	var max time.Duration
+	var min time.Duration
 	for _, k := range []string{"X-Ratelimit-Reset-Requests", "X-Ratelimit-Reset-Tokens"} {
 		if v := h.Get(k); v != "" {
-			if d, err := time.ParseDuration(v); err == nil && d > max {
-				max = d
+			if d, err := time.ParseDuration(v); err == nil && d > 0 {
+				if min == 0 || d < min {
+					min = d
+				}
 			}
 		}
 	}
-	if max > 0 {
-		return max, true
+	if min > 0 {
+		return min, true
 	}
 	return 0, false
 }
