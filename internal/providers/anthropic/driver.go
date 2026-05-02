@@ -81,7 +81,7 @@ func (d *Driver) Call(ctx context.Context, req providers.Request) (<-chan provid
 	}
 
 	out := make(chan providers.Event, 16)
-	go streamEvents(resp.Body, out)
+	go streamEvents(ctx, resp.Body, out)
 	return out, nil
 }
 
@@ -197,9 +197,21 @@ type sseFrame struct {
 	data  []byte
 }
 
-func streamEvents(body io.ReadCloser, out chan<- providers.Event) {
+func streamEvents(ctx context.Context, body io.ReadCloser, out chan<- providers.Event) {
 	defer body.Close()
 	defer close(out)
+
+	// send respects ctx so a cancelled request doesn't leak this goroutine on
+	// a full unread channel. Returns false if ctx ended; callers should return
+	// immediately so defer close(out) fires and the consumer's range exits.
+	send := func(ev providers.Event) bool {
+		select {
+		case out <- ev:
+			return true
+		case <-ctx.Done():
+			return false
+		}
+	}
 
 	scanner := bufio.NewScanner(body)
 	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
@@ -214,7 +226,9 @@ func streamEvents(body io.ReadCloser, out chan<- providers.Event) {
 		if len(line) == 0 {
 			// dispatch frame
 			if frame.event != "" || len(frame.data) > 0 {
-				processFrame(frame, &current, &stopReason, &usage, out)
+				if !processFrame(frame, &current, &stopReason, &usage, send) {
+					return
+				}
 			}
 			frame = sseFrame{}
 			continue
@@ -226,11 +240,11 @@ func streamEvents(body io.ReadCloser, out chan<- providers.Event) {
 		}
 	}
 	if err := scanner.Err(); err != nil {
-		out <- providers.Event{Type: providers.EventError, Error: "stream read: " + err.Error()}
+		send(providers.Event{Type: providers.EventError, Error: "stream read: " + err.Error()})
 		return
 	}
 	// Final done event with stop_reason + usage.
-	out <- providers.Event{Type: providers.EventDone, StopReason: stopReason, Usage: usage}
+	send(providers.Event{Type: providers.EventDone, StopReason: stopReason, Usage: usage})
 }
 
 type pendingBlock struct {
@@ -240,13 +254,15 @@ type pendingBlock struct {
 	toolInput strings.Builder
 }
 
+// processFrame returns false if the caller should abort (ctx cancelled while
+// trying to send). All non-send paths return true unconditionally.
 func processFrame(
 	f sseFrame,
 	current *pendingBlock,
 	stopReason *string,
 	usage **providers.Usage,
-	out chan<- providers.Event,
-) {
+	send func(providers.Event) bool,
+) bool {
 	switch f.event {
 	case "content_block_start":
 		var ev struct {
@@ -258,7 +274,7 @@ func processFrame(
 			} `json:"content_block"`
 		}
 		if err := json.Unmarshal(f.data, &ev); err != nil {
-			return
+			return true
 		}
 		current.kind = ev.ContentBlock.Type
 		current.toolID = ev.ContentBlock.ID
@@ -278,11 +294,13 @@ func processFrame(
 			} `json:"delta"`
 		}
 		if err := json.Unmarshal(f.data, &ev); err != nil {
-			return
+			return true
 		}
 		switch ev.Delta.Type {
 		case "text_delta":
-			out <- providers.Event{Type: providers.EventText, Text: ev.Delta.Text}
+			if !send(providers.Event{Type: providers.EventText, Text: ev.Delta.Text}) {
+				return false
+			}
 		case "input_json_delta":
 			current.toolInput.WriteString(ev.Delta.PartialJSON)
 		}
@@ -293,13 +311,15 @@ func processFrame(
 			if len(input) == 0 {
 				input = json.RawMessage("{}")
 			}
-			out <- providers.Event{
+			if !send(providers.Event{
 				Type: providers.EventToolCall,
 				ToolUse: &providers.ToolUse{
 					ID:    current.toolID,
 					Name:  current.toolName,
 					Input: input,
 				},
+			}) {
+				return false
 			}
 		}
 		current.kind = ""
@@ -318,7 +338,7 @@ func processFrame(
 			} `json:"usage"`
 		}
 		if err := json.Unmarshal(f.data, &ev); err != nil {
-			return
+			return true
 		}
 		if ev.Delta.StopReason != "" {
 			*stopReason = ev.Delta.StopReason
@@ -339,9 +359,9 @@ func processFrame(
 			} `json:"error"`
 		}
 		if err := json.Unmarshal(f.data, &ev); err != nil {
-			out <- providers.Event{Type: providers.EventError, Error: "anthropic stream error (unparseable)"}
-			return
+			return send(providers.Event{Type: providers.EventError, Error: "anthropic stream error (unparseable)"})
 		}
-		out <- providers.Event{Type: providers.EventError, Error: ev.Error.Type + ": " + ev.Error.Message}
+		return send(providers.Event{Type: providers.EventError, Error: ev.Error.Type + ": " + ev.Error.Message})
 	}
+	return true
 }
