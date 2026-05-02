@@ -45,6 +45,11 @@ type RunOptions struct {
 	Segments      []PromptSegment
 	OnEvent       func(providers.Event) // streaming hook (called from loop goroutine)
 	MaxIterations int                   // safety cap; default 16
+
+	// PriorMessages is the conversation history to prepend before the
+	// caller's new Segments. Used by the continuation endpoint to replay
+	// a session's prior turns. Empty for a fresh run (the v0.2 case).
+	PriorMessages []providers.Message
 }
 
 // RunResult is the terminal state after a Run.
@@ -64,7 +69,12 @@ func Run(ctx context.Context, opts RunOptions) (RunResult, error) {
 		return RunResult{}, fmt.Errorf("loop: provider is nil")
 	}
 
-	system, messages := splitSegments(opts.Segments)
+	system, freshMessages := splitSegments(opts.Segments)
+	// Prepend any prior conversation history (continuation endpoint).
+	// PriorMessages is empty for fresh runs.
+	messages := make([]providers.Message, 0, len(opts.PriorMessages)+len(freshMessages))
+	messages = append(messages, opts.PriorMessages...)
+	messages = append(messages, freshMessages...)
 
 	var toolSpecs []providers.ToolSpec
 	if opts.Dispatcher != nil {
@@ -169,6 +179,7 @@ func Run(ctx context.Context, opts RunOptions) (RunResult, error) {
 				Type:    providers.EventToolResult,
 				ToolUse: &providers.ToolUse{ID: tu.ID, Name: tu.Name, Input: tu.Input},
 				Text:    res.Text,
+				IsError: res.IsError,
 			})
 			toolResults = append(toolResults, providers.ContentBlock{
 				Type:      "tool_result",
@@ -241,6 +252,14 @@ var allowedUntrustedKinds = map[string]bool{
 	"user_input":    true,
 	"tool_output":   true,
 	"search_result": true,
+}
+
+// FlattenContent is the public version of flattenContent for callers that
+// need to apply the same trust-escaping rules during transcript replay
+// (continuation endpoint). External callers should not depend on this for
+// any other purpose; it's stable but narrow.
+func FlattenContent(c PromptContentBlock) providers.ContentBlock {
+	return flattenContent(c)
 }
 
 // flattenContent converts the caller's typed content union into a provider
