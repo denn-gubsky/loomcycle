@@ -57,6 +57,7 @@ func (s *Server) Mux() http.Handler {
 	mux.HandleFunc("/healthz", s.handleHealthz)
 	mux.Handle("POST /v1/runs", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleRuns))))
 	mux.Handle("GET /v1/sessions/{id}/transcript", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleTranscript))))
+	mux.Handle("POST /v1/sessions/{id}/messages", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleMessages))))
 	return mux
 }
 
@@ -187,6 +188,18 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// If we're persisting, record the caller's input segments as the first
+	// event in the run. The loop never emits the caller's input itself, so
+	// without this the transcript would start with the assistant's first
+	// turn — and replay couldn't reconstruct the user prompt.
+	if s.store != nil && runID != "" {
+		if inputJSON, err := json.Marshal(req.Segments); err == nil {
+			if err := s.store.AppendEvent(r.Context(), runID, "user_input", inputJSON); err != nil {
+				log.Printf("store: AppendEvent(user_input) failed: %v", err)
+			}
+		}
+	}
+
 	stream, ok := newSSE(w)
 	if !ok {
 		// ResponseWriter doesn't implement http.Flusher — every frame would
@@ -221,6 +234,243 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.finishRun(r.Context(), runID, loopRes, runErr)
+}
+
+// messagesRequest is the JSON body for POST /v1/sessions/{id}/messages. It
+// only accepts new segments — agent / model / tools come from the session's
+// existing config (looked up by session.Agent → cfg.Agents).
+type messagesRequest struct {
+	Segments     []loop.PromptSegment `json:"segments"`
+	AllowedTools []string             `json:"allowed_tools,omitempty"`
+}
+
+func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
+	if s.store == nil {
+		http.Error(w, "session continuation requires persistence (Store not configured)", http.StatusNotFound)
+		return
+	}
+	if ct := r.Header.Get("Content-Type"); ct != "" && !strings.HasPrefix(ct, "application/json") {
+		http.Error(w, "Content-Type must be application/json", http.StatusUnsupportedMediaType)
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+
+	id := r.PathValue("id")
+	if id == "" {
+		http.Error(w, "session id is required", http.StatusBadRequest)
+		return
+	}
+	var body messagesRequest
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, "bad json: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	sess, err := s.store.GetSession(r.Context(), id)
+	if err != nil {
+		var nf *store.ErrNotFound
+		if errors.As(err, &nf) {
+			http.Error(w, err.Error(), http.StatusNotFound)
+			return
+		}
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// Resolve provider+model from the session's stored agent so the
+	// continuation runs against the same model as the original session.
+	agentDef, ok := s.cfg.Agents[sess.Agent]
+	if !ok {
+		http.Error(w, fmt.Sprintf("session refers to unknown agent %q", sess.Agent), http.StatusBadRequest)
+		return
+	}
+	providerID, model, err := s.cfg.ResolveAgentModel(sess.Agent)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	provider, err := s.providers.Get(providerID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	// Replay prior conversation history from the transcript.
+	transcript, err := s.store.GetTranscript(r.Context(), id)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	priorMessages := replayTranscript(transcript)
+
+	// Acquire concurrency slot before opening the SSE stream so backpressure
+	// is reported as 429.
+	release, err := s.sem.Acquire(r.Context())
+	if err != nil {
+		if concurrency.IsBackpressure(err) {
+			w.WriteHeader(http.StatusTooManyRequests)
+			fmt.Fprintf(w, `{"code":"backpressure","error":%q}`, err.Error())
+			return
+		}
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer release()
+
+	allowedTools := filterTools(s.tools, agentDef.AllowedTools, body.AllowedTools)
+	dispatcher := tools.NewDispatcher(allowedTools)
+
+	// Re-prepend the agent's system prompt — it isn't in the transcript
+	// (it's per-call configuration, not conversation content).
+	segments := body.Segments
+	if agentDef.SystemPrompt != "" {
+		segments = append([]loop.PromptSegment{{
+			Role: "system",
+			Content: []loop.PromptContentBlock{{
+				Type: "trusted-text", Text: agentDef.SystemPrompt, Cacheable: true,
+			}},
+		}}, segments...)
+	}
+
+	// Create a new run inside the existing session.
+	run, err := s.store.CreateRun(r.Context(), id)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	// Persist the new user input segments so a future replay sees them.
+	if inputJSON, err := json.Marshal(body.Segments); err == nil {
+		if err := s.store.AppendEvent(r.Context(), run.ID, "user_input", inputJSON); err != nil {
+			log.Printf("store: AppendEvent(user_input) failed: %v", err)
+		}
+	}
+
+	stream, ok := newSSE(w)
+	if !ok {
+		http.Error(w, "server does not support streaming on this transport", http.StatusInternalServerError)
+		return
+	}
+	stream.start()
+	stream.send(providers.Event{Type: "session", Text: id})
+
+	emit := s.makeRecordingEmit(r.Context(), run.ID, stream.send)
+
+	loopRes, runErr := loop.Run(r.Context(), loop.RunOptions{
+		Provider:      provider,
+		Model:         model,
+		Tools:         allowedTools,
+		Dispatcher:    dispatcher,
+		Segments:      segments,
+		PriorMessages: priorMessages,
+		OnEvent:       emit,
+	})
+	if runErr != nil {
+		stream.send(providers.Event{Type: providers.EventError, Error: runErr.Error()})
+	}
+
+	s.finishRun(r.Context(), run.ID, loopRes, runErr)
+}
+
+// replayTranscript walks the persisted events of a session and reconstructs
+// the conversation history as []providers.Message, ready to feed into
+// loop.Run via PriorMessages.
+//
+// The structure of a run in the event log:
+//   - user_input        — segments the caller posted (one per run start)
+//   - text              — assistant text deltas
+//   - tool_call         — assistant requested a tool
+//   - tool_result       — loop reports tool output (next user turn)
+//   - usage / done      — loop bookkeeping; ignored for replay
+//
+// Each run boundary (new user_input event) marks the end of the previous
+// assistant/user-tool-result turn pair.
+func replayTranscript(events []store.Event) []providers.Message {
+	var messages []providers.Message
+	var asstText strings.Builder
+	var asstTools []providers.ContentBlock
+	var pendingToolResults []providers.ContentBlock
+
+	flushAssistant := func() {
+		if asstText.Len() == 0 && len(asstTools) == 0 {
+			return
+		}
+		var content []providers.ContentBlock
+		if asstText.Len() > 0 {
+			content = append(content, providers.ContentBlock{Type: "text", Text: asstText.String()})
+		}
+		content = append(content, asstTools...)
+		messages = append(messages, providers.Message{Role: "assistant", Content: content})
+		asstText.Reset()
+		asstTools = nil
+	}
+	flushPendingTools := func() {
+		if len(pendingToolResults) == 0 {
+			return
+		}
+		messages = append(messages, providers.Message{Role: "user", Content: pendingToolResults})
+		pendingToolResults = nil
+	}
+
+	for _, ev := range events {
+		switch ev.Type {
+		case "user_input":
+			// New user turn: flush any in-progress assistant + tool_result accumulation.
+			flushAssistant()
+			flushPendingTools()
+			var segs []loop.PromptSegment
+			if err := json.Unmarshal(ev.Payload, &segs); err != nil {
+				continue
+			}
+			var userBlocks []providers.ContentBlock
+			for _, seg := range segs {
+				if seg.Role != "user" {
+					continue
+				}
+				for _, c := range seg.Content {
+					userBlocks = append(userBlocks, loop.FlattenContent(c))
+				}
+			}
+			if len(userBlocks) > 0 {
+				messages = append(messages, providers.Message{Role: "user", Content: userBlocks})
+			}
+		case "text":
+			var pe providers.Event
+			if err := json.Unmarshal(ev.Payload, &pe); err == nil {
+				asstText.WriteString(pe.Text)
+			}
+		case "tool_call":
+			var pe providers.Event
+			if err := json.Unmarshal(ev.Payload, &pe); err == nil && pe.ToolUse != nil {
+				asstTools = append(asstTools, providers.ContentBlock{
+					Type:      "tool_use",
+					ToolUseID: pe.ToolUse.ID,
+					ToolName:  pe.ToolUse.Name,
+					ToolInput: pe.ToolUse.Input,
+				})
+			}
+		case "tool_result":
+			// The assistant turn that emitted tool_use is now complete; flush it.
+			flushAssistant()
+			var pe providers.Event
+			if err := json.Unmarshal(ev.Payload, &pe); err == nil && pe.ToolUse != nil {
+				pendingToolResults = append(pendingToolResults, providers.ContentBlock{
+					Type:      "tool_result",
+					ToolUseID: pe.ToolUse.ID,
+					Text:      pe.Text,
+				})
+			}
+			// Don't flush pendingToolResults yet — multiple tools at the
+			// same boundary belong to one user message.
+		case "done", "usage":
+			// Flush at run-iteration boundaries so multi-turn replays
+			// don't bleed across iterations.
+			flushAssistant()
+			flushPendingTools()
+		}
+	}
+	flushAssistant()
+	flushPendingTools()
+	return messages
 }
 
 // transcriptResponse is the JSON shape of GET /v1/sessions/{id}/transcript.

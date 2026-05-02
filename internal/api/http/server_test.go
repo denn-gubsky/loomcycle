@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -419,6 +420,159 @@ func TestTranscriptEndpoint404WhenStoreNotConfigured(t *testing.T) {
 	defer ts.Close()
 
 	resp, err := http.Get(ts.URL + "/v1/sessions/s_anything/transcript")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("status = %d, want 404", resp.StatusCode)
+	}
+}
+
+// Regression: POST /v1/sessions/{id}/messages replays the prior transcript
+// and runs the model with both the old conversation and the new user input.
+// The provider stub records the messages it receives; the second request
+// must see the first request's user message + assistant reply + the new
+// user message.
+func TestMessagesEndpointReplaysAndContinues(t *testing.T) {
+	cfg := &config.Config{
+		Defaults: config.Defaults{Provider: "stub", Model: "stub-model"},
+		Agents: map[string]config.AgentDef{
+			"default": {Model: "stub-model"},
+		},
+		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4, QueueTimeoutMS: 1000},
+	}
+	// First call returns "first reply"; second call returns "second reply".
+	provider := &callableProvider{}
+	provider.call = func(ctx context.Context, req providers.Request) (<-chan providers.Event, error) {
+		// Note: callableProvider.Call has already appended req to .requests
+		// under .mu; we read the index without re-locking.
+		idx := len(provider.requests) - 1
+		text := "first reply"
+		if idx == 1 {
+			text = "second reply"
+		}
+		evs := []providers.Event{
+			{Type: providers.EventText, Text: text},
+			{Type: providers.EventDone, StopReason: "end_turn", Usage: &providers.Usage{InputTokens: 1, OutputTokens: 2}},
+		}
+		ch := make(chan providers.Event, len(evs))
+		for _, e := range evs {
+			ch <- e
+		}
+		close(ch)
+		return ch, nil
+	}
+
+	st, _ := storesqlite.Open(filepath.Join(t.TempDir(), "test.db"))
+	defer st.Close()
+
+	srv := New(cfg, &stubResolver{p: provider}, nil, concurrency.New(4, 4, time.Second), st)
+	ts := httptest.NewServer(srv.Mux())
+	defer ts.Close()
+
+	// First call: fresh session.
+	resp, err := http.Post(ts.URL+"/v1/runs", "application/json", strings.NewReader(
+		`{"agent":"default","segments":[{"role":"user","content":[{"type":"trusted-text","text":"hello"}]}]}`,
+	))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	sessionID := extractSessionID(string(body))
+	if sessionID == "" {
+		t.Fatalf("no session id from first call:\n%s", string(body))
+	}
+
+	// Second call: continuation on same session.
+	resp2, err := http.Post(ts.URL+"/v1/sessions/"+sessionID+"/messages", "application/json", strings.NewReader(
+		`{"segments":[{"role":"user","content":[{"type":"trusted-text","text":"and again"}]}]}`,
+	))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body2, _ := io.ReadAll(resp2.Body)
+	resp2.Body.Close()
+	if resp2.StatusCode != 200 {
+		t.Fatalf("status = %d, body=%s", resp2.StatusCode, string(body2))
+	}
+	if !strings.Contains(string(body2), "second reply") {
+		t.Errorf("missing second-call reply in stream:\n%s", string(body2))
+	}
+
+	// Verify the second provider call carried the prior conversation.
+	provider.mu.Lock()
+	defer provider.mu.Unlock()
+	if len(provider.requests) != 2 {
+		t.Fatalf("provider got %d calls, want 2", len(provider.requests))
+	}
+	secondMsgs := provider.requests[1].Messages
+	// Expected (at minimum): user("hello"), assistant("first reply"), user("and again").
+	if len(secondMsgs) < 3 {
+		t.Fatalf("second call carried %d messages, want >=3: %+v", len(secondMsgs), secondMsgs)
+	}
+	// First message: user with "hello".
+	if secondMsgs[0].Role != "user" || !containsText(secondMsgs[0].Content, "hello") {
+		t.Errorf("first replayed message: %+v", secondMsgs[0])
+	}
+	// Some message in the middle: assistant with "first reply".
+	var foundAsst bool
+	for _, m := range secondMsgs[1 : len(secondMsgs)-1] {
+		if m.Role == "assistant" && containsText(m.Content, "first reply") {
+			foundAsst = true
+		}
+	}
+	if !foundAsst {
+		t.Errorf("missing assistant reply in replay: %+v", secondMsgs)
+	}
+	// Last message: user with "and again".
+	last := secondMsgs[len(secondMsgs)-1]
+	if last.Role != "user" || !containsText(last.Content, "and again") {
+		t.Errorf("last message: %+v", last)
+	}
+}
+
+// callableProvider lets a test inject a Call function. Reuses stubProvider's
+// ID/Capabilities trivially.
+type callableProvider struct {
+	call     func(context.Context, providers.Request) (<-chan providers.Event, error)
+	requests []providers.Request
+	mu       sync.Mutex
+}
+
+func (c *callableProvider) ID() string { return "stub" }
+func (c *callableProvider) Capabilities() providers.Capabilities {
+	return providers.Capabilities{Streaming: true}
+}
+func (c *callableProvider) Call(ctx context.Context, req providers.Request) (<-chan providers.Event, error) {
+	c.mu.Lock()
+	c.requests = append(c.requests, req)
+	c.mu.Unlock()
+	return c.call(ctx, req)
+}
+
+func containsText(blocks []providers.ContentBlock, want string) bool {
+	for _, b := range blocks {
+		if b.Type == "text" && strings.Contains(b.Text, want) {
+			return true
+		}
+	}
+	return false
+}
+
+// Regression: continuation against an unknown session returns 404.
+func TestMessagesEndpoint404OnUnknownSession(t *testing.T) {
+	cfg := &config.Config{
+		Concurrency: config.Concurrency{MaxConcurrentRuns: 1, MaxQueueDepth: 1, QueueTimeoutMS: 100},
+	}
+	st, _ := storesqlite.Open(filepath.Join(t.TempDir(), "test.db"))
+	defer st.Close()
+	srv := New(cfg, &stubResolver{}, nil, concurrency.New(1, 1, time.Second), st)
+	ts := httptest.NewServer(srv.Mux())
+	defer ts.Close()
+
+	resp, err := http.Post(ts.URL+"/v1/sessions/s_nope/messages", "application/json", strings.NewReader(`{}`))
 	if err != nil {
 		t.Fatal(err)
 	}
