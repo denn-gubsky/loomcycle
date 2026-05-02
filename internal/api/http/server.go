@@ -41,11 +41,38 @@ func New(cfg *config.Config, pr ProviderResolver, builtinTools []tools.Tool, sem
 }
 
 // Mux returns the http.Handler ready to be served.
+//
+// /v1 routes are wrapped with recovery middleware so a panic in the agent
+// loop, a tool, or a provider driver returns a 500 to the caller instead
+// of taking down the process. /healthz stays bare — it should never panic
+// and a panic there is a programmer error worth crashing on.
 func (s *Server) Mux() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", s.handleHealthz)
-	mux.Handle("/v1/runs", s.authMiddleware(http.HandlerFunc(s.handleRuns)))
+	mux.Handle("/v1/runs", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleRuns))))
 	return mux
+}
+
+// recoveryMiddleware turns a panicking handler into a 500. If headers have
+// already been sent (the SSE path opens the stream before running anything
+// that could panic), we can't write a status — we log and let the connection
+// terminate.
+func recoveryMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer func() {
+			if rec := recover(); rec != nil {
+				log.Printf("panic recovered in %s %s: %v", r.Method, r.URL.Path, rec)
+				// Best-effort 500. If headers are already sent (SSE has
+				// started writing) the WriteHeader call is a no-op and the
+				// client sees the connection close, which is the cleanest
+				// signal we can give at that point.
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusInternalServerError)
+				w.Write([]byte(`{"error":"internal server error"}`))
+			}
+		}()
+		next.ServeHTTP(w, r)
+	})
 }
 
 // --- handlers ---

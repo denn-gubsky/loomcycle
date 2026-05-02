@@ -172,6 +172,37 @@ func TestRunsRejectsWrongContentType(t *testing.T) {
 	}
 }
 
+// Regression: a panic in any /v1 handler returns 500 to the caller and
+// keeps the process alive. Without recoveryMiddleware, the test would
+// terminate with the panic propagating through the test harness.
+func TestRecoveryMiddlewareCatchesPanic(t *testing.T) {
+	cfg := &config.Config{
+		Concurrency: config.Concurrency{MaxConcurrentRuns: 1, MaxQueueDepth: 1, QueueTimeoutMS: 100},
+	}
+	srv := New(cfg, &stubResolver{}, nil, concurrency.New(1, 1, time.Second))
+
+	// Wrap a handler that always panics with the same recoveryMiddleware
+	// the server uses. Verifies the middleware itself, independent of the
+	// /v1/runs path's other validations.
+	mux := http.NewServeMux()
+	mux.Handle("/panic", recoveryMiddleware(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		panic("synthetic panic for test")
+	})))
+	_ = srv // keep srv referenced; not used here directly
+
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	resp, err := http.Get(ts.URL + "/panic")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500 (panic should have been recovered)", resp.StatusCode)
+	}
+}
+
 // nonFlushingWriter implements http.ResponseWriter but NOT http.Flusher.
 // httptest's writers all implement Flusher, so we need this to exercise the
 // "writer cannot stream" fallback path.
