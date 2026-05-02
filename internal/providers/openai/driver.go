@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 
@@ -365,11 +366,16 @@ func streamEvents(body io.ReadCloser, out chan<- providers.Event) {
 	}
 
 	// Emit accumulated tool calls in index order before the done event.
-	for i := 0; i < len(tools); i++ {
-		acc, ok := tools[i]
-		if !ok {
-			continue
-		}
+	// Indices may be non-contiguous (e.g. 0, 2 with a gap at 1) — legal per
+	// the OpenAI spec — so we sort the actual keys rather than iterating
+	// 0..len(tools), which would silently drop any index >= len(tools).
+	indices := make([]int, 0, len(tools))
+	for i := range tools {
+		indices = append(indices, i)
+	}
+	sort.Ints(indices)
+	for _, i := range indices {
+		acc := tools[i]
 		args := acc.args.String()
 		if args == "" {
 			args = "{}"

@@ -279,6 +279,11 @@ func streamEvents(body io.ReadCloser, out chan<- providers.Event) {
 	var stopReason string
 	var usage *providers.Usage
 	var model string
+	// hadToolCalls tracks whether *any* frame emitted tool_calls. Ollama may
+	// emit tool_calls on a non-final frame, then send a separate done:true
+	// frame with an empty tool_calls array. We must remember the earlier
+	// emission so the loop iterates instead of breaking on "end_turn".
+	var hadToolCalls bool
 
 	for scanner.Scan() {
 		line := bytes.TrimSpace(scanner.Bytes())
@@ -297,6 +302,7 @@ func streamEvents(body io.ReadCloser, out chan<- providers.Event) {
 			out <- providers.Event{Type: providers.EventText, Text: c.Message.Content}
 		}
 		for _, tc := range c.Message.ToolCalls {
+			hadToolCalls = true
 			args := tc.Function.Arguments
 			if len(args) == 0 {
 				args = json.RawMessage("{}")
@@ -312,7 +318,7 @@ func streamEvents(body io.ReadCloser, out chan<- providers.Event) {
 		}
 
 		if c.Done {
-			stopReason = mapStopReason(c.DoneReason, len(c.Message.ToolCalls) > 0)
+			stopReason = mapStopReason(c.DoneReason, hadToolCalls)
 			if c.PromptEvalCount > 0 || c.EvalCount > 0 {
 				usage = &providers.Usage{
 					InputTokens:  c.PromptEvalCount,

@@ -154,6 +154,41 @@ func TestStreamMultipleToolCalls(t *testing.T) {
 	}
 }
 
+// Regression: OpenAI may emit tool_calls at non-contiguous indices (e.g.
+// 0 and 2 with a gap at 1). The accumulator must surface every present
+// index in sorted order, not iterate 0..len(map) and drop anything past
+// len.
+func TestStreamToolCallNonContiguousIndices(t *testing.T) {
+	frames := []string{
+		`data: {"choices":[{"index":0,"delta":{"tool_calls":[` +
+			`{"index":0,"id":"call_a","type":"function","function":{"name":"Read","arguments":"{}"}},` +
+			`{"index":2,"id":"call_c","type":"function","function":{"name":"Write","arguments":"{\"k\":1}"}}` +
+			`]}}]}` + "\n\n",
+		`data: {"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}` + "\n\n",
+		"data: [DONE]\n\n",
+	}
+	srv := fakeStream(t, frames)
+	defer srv.Close()
+	d := New("test-key", srv.URL, nil)
+	ch, _ := d.Call(context.Background(), providers.Request{Model: "x"})
+
+	var got []providers.ToolUse
+	for ev := range ch {
+		if ev.Type == providers.EventToolCall {
+			got = append(got, *ev.ToolUse)
+		}
+	}
+	if len(got) != 2 {
+		t.Fatalf("got %d tool_calls, want 2 (indices 0 and 2 must both be emitted despite the gap)", len(got))
+	}
+	if got[0].ID != "call_a" || got[0].Name != "Read" {
+		t.Errorf("tool 0: %+v", got[0])
+	}
+	if got[1].ID != "call_c" || got[1].Name != "Write" {
+		t.Errorf("tool 1 (was at index 2): %+v", got[1])
+	}
+}
+
 func TestRequestBodyShape(t *testing.T) {
 	// Verify the request marshalling: system block flattened, tool_use →
 	// tool_calls on assistant message, tool_result → role:"tool" message.

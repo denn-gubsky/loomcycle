@@ -116,6 +116,37 @@ func TestStreamToolCallOnFinalFrame(t *testing.T) {
 	}
 }
 
+// Regression: Ollama may emit tool_calls on a non-final frame and then a
+// separate done:true frame with no tool_calls. Stop reason must still be
+// "tool_use" so the agent loop runs the tool we already emitted.
+func TestStreamToolCallOnNonFinalFrame(t *testing.T) {
+	frames := []string{
+		`{"model":"llama3.1","message":{"role":"assistant","content":"","tool_calls":[{"function":{"name":"Read","arguments":{"path":"/x"}}}]},"done":false}` + "\n",
+		`{"model":"llama3.1","message":{"role":"assistant","content":""},"done":true,"done_reason":"stop","prompt_eval_count":10,"eval_count":3}` + "\n",
+	}
+	srv := fakeStream(t, frames)
+	defer srv.Close()
+	d := New(srv.URL, nil)
+	ch, _ := d.Call(context.Background(), providers.Request{Model: "llama3.1"})
+
+	var toolCalls int
+	var stop string
+	for ev := range ch {
+		if ev.Type == providers.EventToolCall {
+			toolCalls++
+		}
+		if ev.Type == providers.EventDone {
+			stop = ev.StopReason
+		}
+	}
+	if toolCalls != 1 {
+		t.Errorf("got %d tool_calls, want 1", toolCalls)
+	}
+	if stop != "tool_use" {
+		t.Errorf("stop_reason = %q, want tool_use (must persist across frames so the loop can run the tool emitted earlier)", stop)
+	}
+}
+
 func TestRequestBodyShape(t *testing.T) {
 	var captured []byte
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
