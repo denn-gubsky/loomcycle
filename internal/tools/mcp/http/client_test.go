@@ -318,6 +318,87 @@ func TestCtxCancelMidCall(t *testing.T) {
 	}
 }
 
+// Regression: a server that returns a response with an id that doesn't
+// match the request id is a JSON-RPC 2.0 protocol violation. The
+// single-POST streamable-HTTP shape makes correlation implicit, but if
+// a buggy server returns a stale id we surface it as an error rather
+// than silently feeding the wrong result back to the agent loop.
+func TestRPCResponseIDMismatchSurfaces(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var probe struct {
+			ID     *int64 `json:"id"`
+			Method string `json:"method"`
+		}
+		_ = json.Unmarshal(body, &probe)
+		if probe.ID == nil {
+			w.WriteHeader(http.StatusAccepted)
+			return
+		}
+		// Initialize: respond with the right id (so handshake succeeds).
+		// tools/call: respond with the WRONG id to simulate a buggy server.
+		respID := *probe.ID
+		if probe.Method == "tools/call" {
+			respID = 99999
+		}
+		if probe.Method == "initialize" {
+			w.Header().Set("Mcp-Session-Id", "s")
+		}
+		writeJSON(w, map[string]any{
+			"jsonrpc": "2.0",
+			"id":      respID,
+			"result":  map[string]any{},
+		})
+	}))
+	defer srv.Close()
+
+	c, _ := New(Config{URL: srv.URL})
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := mcp.Initialize(ctx, c, "t", "1"); err != nil {
+		t.Fatal(err)
+	}
+	_, err := c.Call(ctx, "tools/call", map[string]any{})
+	if err == nil {
+		t.Fatal("expected id-mismatch error")
+	}
+	if !strings.Contains(err.Error(), "id") {
+		t.Errorf("error doesn't mention id: %v", err)
+	}
+}
+
+// Regression: Notify must honour the caller's ctx. Previously the http
+// transport hardcoded a 30s background context for notifications, so a
+// run-level ctx-cancel during the initialized notification (sent inside
+// Initialize) would not propagate.
+func TestNotifyHonoursCallerCtx(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var probe struct {
+			ID *int64 `json:"id"`
+		}
+		_ = json.Unmarshal(body, &probe)
+		if probe.ID == nil {
+			// Notification — sleep so a 30ms ctx fires before we 202.
+			time.Sleep(200 * time.Millisecond)
+			w.WriteHeader(http.StatusAccepted)
+			return
+		}
+	}))
+	defer srv.Close()
+	c, _ := New(Config{URL: srv.URL})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
+	defer cancel()
+	err := c.Notify(ctx, "loomcycle/probe", nil)
+	if err == nil {
+		t.Fatal("expected ctx error from Notify")
+	}
+	if !strings.Contains(err.Error(), "context") && !strings.Contains(err.Error(), "deadline") {
+		t.Errorf("err = %v, want context-related", err)
+	}
+}
+
 func TestCloseIsIdempotent(t *testing.T) {
 	c, _ := New(Config{URL: "http://example.invalid"})
 	if err := c.Close(); err != nil {

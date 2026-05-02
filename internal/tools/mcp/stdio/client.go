@@ -152,8 +152,11 @@ func (c *Client) Healthy() bool {
 	}
 }
 
-// Notify sends a JSON-RPC notification (no response expected).
-func (c *Client) Notify(method string, params any) error {
+// Notify sends a JSON-RPC notification (no response expected). The ctx
+// caps the write; if a stuck child has filled the pipe buffer, the write
+// blocks past ctx and Notify returns ctx.Err(). The orphaned write
+// goroutine drains naturally when Close fires (which closes stdin).
+func (c *Client) Notify(ctx context.Context, method string, params any) error {
 	if c.closed.Load() {
 		return errors.New("mcp: client closed")
 	}
@@ -161,7 +164,17 @@ func (c *Client) Notify(method string, params any) error {
 	if err != nil {
 		return err
 	}
-	return c.write(n)
+	done := make(chan error, 1)
+	go func() { done <- c.write(n) }()
+	select {
+	case err := <-done:
+		return err
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-c.doneCh:
+		// Reader goroutine exited (child died) — write is doomed.
+		return errors.New("mcp: server exited")
+	}
 }
 
 // Close terminates the child process. Any in-flight Calls receive a

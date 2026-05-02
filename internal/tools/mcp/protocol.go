@@ -11,7 +11,10 @@ import (
 // protocol-layer helpers below stay transport-agnostic.
 type Caller interface {
 	Call(ctx context.Context, method string, params any) (json.RawMessage, error)
-	Notify(method string, params any) error
+	// Notify sends a fire-and-forget notification. The ctx caps the time
+	// the implementation may spend writing — needed for stdio, where a
+	// stuck pipe could otherwise block past the caller's deadline.
+	Notify(ctx context.Context, method string, params any) error
 	// Healthy reports whether the underlying transport is still able to
 	// serve calls. For stdio: true while the child is alive. For HTTP:
 	// effectively always true (stateless), unless a session has been
@@ -124,7 +127,7 @@ func Initialize(ctx context.Context, c Caller, clientName, clientVersion string)
 	if err := json.Unmarshal(raw, &res); err != nil {
 		return nil, fmt.Errorf("initialize result: %w", err)
 	}
-	if err := c.Notify("notifications/initialized", nil); err != nil {
+	if err := c.Notify(ctx, "notifications/initialized", nil); err != nil {
 		return nil, fmt.Errorf("initialized notify: %w", err)
 	}
 	return &res, nil

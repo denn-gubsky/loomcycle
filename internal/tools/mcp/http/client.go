@@ -132,15 +132,24 @@ func (c *Client) Call(ctx context.Context, method string, params any) (json.RawM
 	if err := json.Unmarshal(respBody, &rpcResp); err != nil {
 		return nil, fmt.Errorf("mcp http: decode response: %w (body: %s)", err, truncate(string(respBody), 200))
 	}
+	// JSON-RPC 2.0 requires the response id to match the request id. The
+	// streamable-HTTP single-POST shape makes correlation implicit, but a
+	// misbehaving server returning a stale id is a protocol violation we
+	// surface rather than silently accept (and feed back to the model).
+	if rpcResp.ID != id {
+		return nil, fmt.Errorf("mcp http: response id %d does not match request id %d (server protocol violation)", rpcResp.ID, id)
+	}
 	if rpcResp.Error != nil {
 		return nil, rpcResp.Error
 	}
 	return rpcResp.Result, nil
 }
 
-// Notify sends a JSON-RPC notification (no response expected).
-// MCP servers respond 202 Accepted to notifications.
-func (c *Client) Notify(method string, params any) error {
+// Notify sends a JSON-RPC notification (no response expected). MCP servers
+// respond 202 Accepted to notifications. ctx caps the request — callers
+// pass the same ctx they used for surrounding Call invocations so a
+// run-level cancellation tears down the whole chain consistently.
+func (c *Client) Notify(ctx context.Context, method string, params any) error {
 	if c.dead.Load() {
 		return errors.New("mcp http: session invalidated")
 	}
@@ -152,10 +161,6 @@ func (c *Client) Notify(method string, params any) error {
 	if err != nil {
 		return err
 	}
-	// Notifications shouldn't block on a long-running ctx. Use a short
-	// fire-and-forget timeout.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
 	resp, err := c.do(ctx, body)
 	if err != nil {
 		return err

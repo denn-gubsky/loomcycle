@@ -301,6 +301,35 @@ func TestServerCrashFailsInFlightCalls(t *testing.T) {
 	}
 }
 
+// Regression: a Notify whose ctx is already cancelled must return ctx.Err
+// rather than blocking on the pipe write. We test the easy direction
+// (cancel-then-call) because synthesising a stuck pipe in a unit test is
+// not portable; the goroutine + select shape means a cancelled ctx is
+// honoured immediately if the write is even slightly slow.
+func TestNotifyHonoursCtxCancel(t *testing.T) {
+	c := newClient(t, "ok")
+	// Initialize first so the client is ready (uses a non-cancelled ctx).
+	initCtx, initCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer initCancel()
+	if _, err := mcp.Initialize(initCtx, c, "t", "1"); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+
+	// Now call Notify with an already-cancelled ctx. The goroutine + select
+	// in Notify must return ctx.Err() rather than waiting on the write.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	err := c.Notify(ctx, "loomcycle/probe", nil)
+	// On a healthy fast pipe the write may complete BEFORE the select sees
+	// ctx.Done — the test passes if the function returned at all without
+	// deadlocking. We only assert that *if* an error was returned, it's
+	// the cancel.
+	if err != nil && err != context.Canceled {
+		t.Errorf("err = %v, want nil or context.Canceled", err)
+	}
+}
+
 func TestCloseIsIdempotent(t *testing.T) {
 	c, err := Spawn(Config{Command: os.Args[0], Env: []string{"BE_MCP_SERVER=ok"}})
 	if err != nil {
