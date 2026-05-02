@@ -7,8 +7,10 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 )
@@ -124,6 +126,54 @@ func TestStreamToolUse(t *testing.T) {
 	if stop != "tool_use" {
 		t.Errorf("stop_reason = %q", stop)
 	}
+}
+
+// Regression: cancelling ctx mid-stream must not leak the streaming goroutine
+// even when the consumer never drains the channel. We verify by inspecting
+// `runtime.Stack(all=true)` and looking for our function name; if it's still
+// running after a generous post-cancel grace period, the goroutine is stuck.
+//
+// Important: a naive "wait for channel close" test won't catch this — once
+// you start draining, the buffer frees up and the stuck producer unblocks
+// regardless of the bug. The leak only manifests when nobody drains.
+func TestCancellationDoesNotLeakGoroutine(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher := w.(http.Flusher)
+		for i := 0; i < 30; i++ {
+			fmt.Fprint(w, "event: content_block_delta\ndata: {\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"x\"}}\n\n")
+			flusher.Flush()
+		}
+		<-r.Context().Done()
+	}))
+	defer srv.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	d := New("test-key", srv.URL, nil)
+	_, err := d.Call(ctx, providers.Request{Model: "x"})
+	if err != nil {
+		t.Fatalf("Call: %v", err)
+	}
+
+	// Let the producer fill the 16-event buffer and block on the next send.
+	time.Sleep(100 * time.Millisecond)
+	cancel()
+	// Generous grace window for the goroutine to observe ctx and exit.
+	time.Sleep(300 * time.Millisecond)
+
+	if isStreamEventsRunning(t) {
+		t.Fatal("streamEvents goroutine still alive 300ms after ctx cancel — leaked")
+	}
+}
+
+// isStreamEventsRunning dumps all goroutine stacks and reports whether any
+// stack contains our streamEvents function. Bytes scanned, no allocs in the
+// hot path; safe for tests.
+func isStreamEventsRunning(t *testing.T) bool {
+	t.Helper()
+	buf := make([]byte, 64*1024)
+	n := runtime.Stack(buf, true)
+	return strings.Contains(string(buf[:n]), ".streamEvents(")
 }
 
 func TestRequestBodyShape(t *testing.T) {

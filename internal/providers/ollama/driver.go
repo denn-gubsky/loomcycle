@@ -89,7 +89,7 @@ func (d *Driver) Call(ctx context.Context, req providers.Request) (<-chan provid
 	}
 
 	out := make(chan providers.Event, 16)
-	go streamEvents(resp.Body, out)
+	go streamEvents(ctx, resp.Body, out)
 	return out, nil
 }
 
@@ -269,9 +269,21 @@ type chunkToolCallFn struct {
 	Arguments json.RawMessage `json:"arguments"`
 }
 
-func streamEvents(body io.ReadCloser, out chan<- providers.Event) {
+func streamEvents(ctx context.Context, body io.ReadCloser, out chan<- providers.Event) {
 	defer body.Close()
 	defer close(out)
+
+	// send respects ctx so a cancelled request doesn't leak this goroutine on
+	// a full unread channel. Returns false if ctx ended; callers should return
+	// immediately so defer close(out) fires and the consumer's range exits.
+	send := func(ev providers.Event) bool {
+		select {
+		case out <- ev:
+			return true
+		case <-ctx.Done():
+			return false
+		}
+	}
 
 	scanner := bufio.NewScanner(body)
 	scanner.Buffer(make([]byte, 64*1024), 4*1024*1024)
@@ -299,7 +311,9 @@ func streamEvents(body io.ReadCloser, out chan<- providers.Event) {
 		}
 
 		if c.Message.Content != "" {
-			out <- providers.Event{Type: providers.EventText, Text: c.Message.Content}
+			if !send(providers.Event{Type: providers.EventText, Text: c.Message.Content}) {
+				return
+			}
 		}
 		for _, tc := range c.Message.ToolCalls {
 			hadToolCalls = true
@@ -307,13 +321,15 @@ func streamEvents(body io.ReadCloser, out chan<- providers.Event) {
 			if len(args) == 0 {
 				args = json.RawMessage("{}")
 			}
-			out <- providers.Event{
+			if !send(providers.Event{
 				Type: providers.EventToolCall,
 				ToolUse: &providers.ToolUse{
 					ID:    "", // Ollama doesn't issue tool_call IDs; loop assigns one
 					Name:  tc.Function.Name,
 					Input: args,
 				},
+			}) {
+				return
 			}
 		}
 
@@ -329,11 +345,11 @@ func streamEvents(body io.ReadCloser, out chan<- providers.Event) {
 		}
 	}
 	if err := scanner.Err(); err != nil {
-		out <- providers.Event{Type: providers.EventError, Error: "stream read: " + err.Error()}
+		send(providers.Event{Type: providers.EventError, Error: "stream read: " + err.Error()})
 		return
 	}
 
-	out <- providers.Event{Type: providers.EventDone, StopReason: stopReason, Usage: usage}
+	send(providers.Event{Type: providers.EventDone, StopReason: stopReason, Usage: usage})
 }
 
 // mapStopReason translates Ollama's done_reason into our shared vocabulary.

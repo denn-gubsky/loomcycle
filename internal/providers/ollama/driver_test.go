@@ -7,8 +7,10 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 )
@@ -201,6 +203,44 @@ func TestRequestBodyShape(t *testing.T) {
 	if !strings.Contains(body, `"tools":[{"type":"function","function":{"name":"Read"`) {
 		t.Errorf("tools array missing/malformed:\n%s", body)
 	}
+}
+
+// Regression: cancelling ctx mid-stream must not leak the streaming goroutine
+// when nobody drains the channel. See the Anthropic driver test for the
+// rationale on why `runtime.Stack(all=true)` is the right signal here.
+func TestCancellationDoesNotLeakGoroutine(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/x-ndjson")
+		flusher := w.(http.Flusher)
+		for i := 0; i < 30; i++ {
+			fmt.Fprint(w, `{"model":"llama3.1","message":{"role":"assistant","content":"x"},"done":false}`+"\n")
+			flusher.Flush()
+		}
+		<-r.Context().Done()
+	}))
+	defer srv.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	d := New(srv.URL, nil)
+	_, err := d.Call(ctx, providers.Request{Model: "llama3.1"})
+	if err != nil {
+		t.Fatalf("Call: %v", err)
+	}
+
+	time.Sleep(100 * time.Millisecond)
+	cancel()
+	time.Sleep(300 * time.Millisecond)
+
+	if isStreamEventsRunning(t) {
+		t.Fatal("streamEvents goroutine still alive 300ms after ctx cancel — leaked")
+	}
+}
+
+func isStreamEventsRunning(t *testing.T) bool {
+	t.Helper()
+	buf := make([]byte, 64*1024)
+	n := runtime.Stack(buf, true)
+	return strings.Contains(string(buf[:n]), ".streamEvents(")
 }
 
 func TestNon200Status(t *testing.T) {
