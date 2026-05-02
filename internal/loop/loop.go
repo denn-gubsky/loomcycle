@@ -108,14 +108,23 @@ func Run(ctx context.Context, opts RunOptions) (RunResult, error) {
 				iterText += ev.Text
 				emit(ev)
 			case providers.EventToolCall:
-				pendingTools = append(pendingTools, *ev.ToolUse)
+				// Some providers (Ollama) don't issue tool_call IDs. Anthropic
+				// and OpenAI both 400 if we replay an empty-ID tool_use in the
+				// next turn's history, so we synthesise one here. The synth ID
+				// is deterministic per (run, iter, slot) so a replay produces
+				// the same value.
+				tu := *ev.ToolUse
+				if tu.ID == "" {
+					tu.ID = fmt.Sprintf("lc-%d-%d", iter, len(pendingTools))
+				}
+				pendingTools = append(pendingTools, tu)
 				assistantBlocks = append(assistantBlocks, providers.ContentBlock{
 					Type:      "tool_use",
-					ToolUseID: ev.ToolUse.ID,
-					ToolName:  ev.ToolUse.Name,
-					ToolInput: ev.ToolUse.Input,
+					ToolUseID: tu.ID,
+					ToolName:  tu.Name,
+					ToolInput: tu.Input,
 				})
-				emit(ev)
+				emit(providers.Event{Type: providers.EventToolCall, ToolUse: &tu})
 			case providers.EventDone:
 				iterStop = ev.StopReason
 				iterUsage = ev.Usage
@@ -168,6 +177,15 @@ func Run(ctx context.Context, opts RunOptions) (RunResult, error) {
 			})
 		}
 		messages = append(messages, providers.Message{Role: "user", Content: toolResults})
+	}
+
+	// If the for loop exited by exhausting MaxIterations while the model was
+	// still mid-tool-use, the stop_reason will be stuck at "tool_use" but no
+	// tools ran on this final iteration. Surface that distinctly to the
+	// caller — they can decide whether to bump MaxIterations and retry, or
+	// surface a different error to the user.
+	if stopReason == "tool_use" {
+		stopReason = "max_iterations"
 	}
 
 	emit(providers.Event{Type: providers.EventDone, StopReason: stopReason, Usage: &totalUsage})

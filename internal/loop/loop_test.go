@@ -3,6 +3,7 @@ package loop
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -140,6 +141,108 @@ func TestLoopToolUseCycle(t *testing.T) {
 			t.Errorf("event %d: got %v, want %v (full: %v)", i, gotTypes[i:], want[i:], gotTypes)
 			break
 		}
+	}
+}
+
+// Regression: when a provider emits a tool_use with an empty ID (Ollama does
+// this — its native API doesn't include tool_call IDs), the loop must
+// synthesise one. Otherwise the next iteration's request carries an empty
+// tool_use_id, which Anthropic and OpenAI both 400 on.
+func TestLoopSynthesizesEmptyToolCallID(t *testing.T) {
+	provider := &fakeProvider{
+		responses: [][]providers.Event{
+			{
+				{Type: providers.EventToolCall, ToolUse: &providers.ToolUse{
+					ID:    "", // simulate Ollama's empty ID
+					Name:  "FakeRead",
+					Input: json.RawMessage(`{"path":"/x"}`),
+				}},
+				{Type: providers.EventDone, StopReason: "tool_use"},
+			},
+			{
+				{Type: providers.EventText, Text: "done"},
+				{Type: providers.EventDone, StopReason: "end_turn"},
+			},
+		},
+	}
+	tool := &fakeTool{}
+	disp := tools.NewDispatcher([]tools.Tool{tool})
+
+	res, err := Run(context.Background(), RunOptions{
+		Provider:   provider,
+		Model:      "fake",
+		Tools:      []tools.Tool{tool},
+		Dispatcher: disp,
+		Segments:   []PromptSegment{{Role: "user", Content: []PromptContentBlock{{Type: "trusted-text", Text: "x"}}}},
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if res.StopReason != "end_turn" {
+		t.Errorf("stop_reason = %q", res.StopReason)
+	}
+	// The 2nd provider call must carry a non-empty tool_use_id and the
+	// matching tool_use with the same ID — that's what Anthropic/OpenAI
+	// validate.
+	secondMsgs := provider.calls[1].Messages
+	if len(secondMsgs) < 3 {
+		t.Fatalf("second call has %d messages, want >=3", len(secondMsgs))
+	}
+	asst := secondMsgs[len(secondMsgs)-2]
+	usr := secondMsgs[len(secondMsgs)-1]
+	if asst.Role != "assistant" || len(asst.Content) == 0 {
+		t.Fatalf("expected assistant turn, got %+v", asst)
+	}
+	asstID := ""
+	for _, c := range asst.Content {
+		if c.Type == "tool_use" {
+			asstID = c.ToolUseID
+		}
+	}
+	if asstID == "" {
+		t.Fatal("assistant tool_use has empty ToolUseID — synthesis missed")
+	}
+	if usr.Role != "user" || len(usr.Content) != 1 || usr.Content[0].Type != "tool_result" {
+		t.Fatalf("expected user tool_result, got %+v", usr)
+	}
+	if usr.Content[0].ToolUseID != asstID {
+		t.Errorf("tool_result ID %q != tool_use ID %q — pairing broken", usr.Content[0].ToolUseID, asstID)
+	}
+}
+
+// Regression: hitting MaxIterations while still mid-tool-use must surface as
+// a distinct stop_reason ("max_iterations") rather than a stale "tool_use"
+// the caller can't distinguish from a normal "model is asking for tools".
+func TestLoopMaxIterationsTruncatesStopReason(t *testing.T) {
+	// Provider always returns tool_use → loop will iterate until cap.
+	const cap = 3
+	tool := &fakeTool{}
+	disp := tools.NewDispatcher([]tools.Tool{tool})
+	infiniteToolUse := func() [][]providers.Event {
+		out := make([][]providers.Event, cap)
+		for i := range out {
+			out[i] = []providers.Event{
+				{Type: providers.EventToolCall, ToolUse: &providers.ToolUse{
+					ID: fmt.Sprintf("call_%d", i), Name: "FakeRead", Input: json.RawMessage(`{}`),
+				}},
+				{Type: providers.EventDone, StopReason: "tool_use"},
+			}
+		}
+		return out
+	}
+	res, err := Run(context.Background(), RunOptions{
+		Provider:      &fakeProvider{responses: infiniteToolUse()},
+		Model:         "fake",
+		Tools:         []tools.Tool{tool},
+		Dispatcher:    disp,
+		MaxIterations: cap,
+		Segments:      []PromptSegment{{Role: "user", Content: []PromptContentBlock{{Type: "trusted-text", Text: "x"}}}},
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if res.StopReason != "max_iterations" {
+		t.Errorf("stop_reason = %q, want max_iterations (caller can't distinguish exhaustion from in-flight tool_use otherwise)", res.StopReason)
 	}
 }
 
