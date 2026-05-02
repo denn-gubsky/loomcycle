@@ -315,6 +315,66 @@ func TestRetryOn429PreservesContext(t *testing.T) {
 	}
 }
 
+// v0.3.2: a 429 must fire EventRetry through req.OnEvent. Proves the
+// driver wires req.OnEvent into ratelimit.Config.OnEvent — without
+// that line, the EventRetry never reaches the caller.
+func TestRetryEmitsEventToRequestOnEvent(t *testing.T) {
+	var callNum int
+	var mu sync.Mutex
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		callNum++
+		n := callNum
+		mu.Unlock()
+		if n == 1 {
+			w.Header().Set("Retry-After", "0")
+			w.WriteHeader(429)
+			w.Write([]byte(`{"error":"too many requests"}`))
+			return
+		}
+		w.Header().Set("Content-Type", "application/x-ndjson")
+		w.WriteHeader(200)
+		fmt.Fprint(w, `{"model":"llama3.1","message":{"role":"assistant","content":"ok"},"done":false}`+"\n")
+		fmt.Fprint(w, `{"model":"llama3.1","message":{"role":"assistant","content":""},"done":true,"done_reason":"stop","prompt_eval_count":1,"eval_count":1}`+"\n")
+	}))
+	defer srv.Close()
+
+	var retries []providers.Event
+	var rmu sync.Mutex
+	d := New(srv.URL, nil)
+	ch, err := d.Call(context.Background(), providers.Request{
+		Model: "llama3.1",
+		OnEvent: func(ev providers.Event) {
+			rmu.Lock()
+			defer rmu.Unlock()
+			if ev.Type == providers.EventRetry {
+				retries = append(retries, ev)
+			}
+		},
+	})
+	if err != nil {
+		t.Fatalf("Call: %v", err)
+	}
+	for range ch {
+	}
+
+	rmu.Lock()
+	defer rmu.Unlock()
+	if len(retries) != 1 {
+		t.Fatalf("got %d retry events, want 1", len(retries))
+	}
+	r := retries[0].Retry
+	if r == nil {
+		t.Fatal("Retry payload missing")
+	}
+	if r.Provider != "ollama" {
+		t.Errorf("Provider = %q, want ollama", r.Provider)
+	}
+	if r.Attempt != 1 {
+		t.Errorf("Attempt = %d, want 1", r.Attempt)
+	}
+}
+
 func TestStopReasonWithoutToolCalls(t *testing.T) {
 	// done_reason "length" should map to max_tokens.
 	frames := []string{

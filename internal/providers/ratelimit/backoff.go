@@ -104,10 +104,12 @@ func defaultOnRetry(provider string, attempt int, wait time.Duration, reason str
 		provider, attempt, wait.String(), reason)
 }
 
-// Reason strings passed to OnRetry.
+// Reason strings passed to OnRetry. These re-export the canonical
+// constants from the providers package — the wire contract lives
+// there because RetryInfo.Reason is part of the SSE shape.
 const (
-	ReasonHeader   = "retry-after header"
-	ReasonSchedule = "exponential backoff"
+	ReasonHeader   = providers.RetryReasonHeader
+	ReasonSchedule = providers.RetryReasonSchedule
 )
 
 // Do calls attempt repeatedly until it returns a non-429 response or the

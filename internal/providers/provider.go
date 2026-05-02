@@ -46,6 +46,12 @@ type Request struct {
 	// from RunOptions.OnEvent so adapter consumers see retry telemetry
 	// live on the same SSE stream as the main response. Marshalling
 	// callers should ignore (json:"-").
+	//
+	// Callback contract: the driver invokes OnEvent synchronously from
+	// inside Call() (before the response channel exists). The callback
+	// MUST NOT block — the driver is mid-retry-sleep and a slow callback
+	// extends the rate-limit wait. SSE writes are fine; do not perform
+	// network IO from here.
 	OnEvent func(Event) `json:"-"`
 }
 
@@ -126,8 +132,19 @@ type RetryInfo struct {
 	Provider string `json:"provider"`
 	Attempt  int    `json:"attempt"`
 	WaitMs   int64  `json:"wait_ms"`
-	Reason   string `json:"reason"` // "retry-after header" | "exponential backoff"
+	// Reason is one of the RetryReason* constants below. It's a
+	// stable wire string — adapters string-match against it.
+	Reason string `json:"reason"`
 }
+
+// RetryReason* are the values of RetryInfo.Reason. They're declared on
+// the providers package (not on ratelimit) because they're part of the
+// wire contract — adapters and SSE consumers depend on these strings.
+// Do not change without bumping a major version.
+const (
+	RetryReasonHeader   = "retry-after header"
+	RetryReasonSchedule = "exponential backoff"
+)
 
 // ToolUse is the model's request to invoke a tool.
 type ToolUse struct {
