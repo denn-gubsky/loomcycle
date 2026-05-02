@@ -28,6 +28,8 @@ import (
 	storesqlite "github.com/denn-gubsky/loomcycle/internal/store/sqlite"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 	"github.com/denn-gubsky/loomcycle/internal/tools/builtin"
+	"github.com/denn-gubsky/loomcycle/internal/tools/mcp"
+	mcpstdio "github.com/denn-gubsky/loomcycle/internal/tools/mcp/stdio"
 )
 
 func main() {
@@ -50,12 +52,62 @@ func main() {
 	// The Read tool is sandboxed: it refuses every call when Root is empty.
 	// Operators must set LOOMCYCLE_READ_ROOT explicitly to enable it (no
 	// silent default — the wrong default would leak file contents).
-	builtins := []tools.Tool{
+	allTools := []tools.Tool{
 		&builtin.Read{Root: cfg.Env.ReadRoot},
 	}
 	if cfg.Env.ReadRoot == "" {
 		log.Printf("note: Read tool is registered but disabled — set LOOMCYCLE_READ_ROOT to enable")
 	}
+
+	// MCP: spawn declared stdio servers, discover their tools, register
+	// each as `mcp__{server}__{tool}` alongside the built-ins. Failures
+	// to spawn or handshake are logged and the server is skipped — the
+	// other servers still come up.
+	mcpPool := mcp.NewPool(
+		func(name string) (mcp.Caller, error) {
+			srv, ok := cfg.MCPServers[name]
+			if !ok {
+				return nil, fmt.Errorf("mcp_servers.%s: not in config", name)
+			}
+			if srv.Transport != "stdio" {
+				return nil, fmt.Errorf("mcp_servers.%s: transport %q not supported in this build (only stdio for now)", name, srv.Transport)
+			}
+			env := make([]string, 0, len(srv.Env))
+			for k, v := range srv.Env {
+				env = append(env, k+"="+v)
+			}
+			return mcpstdio.Spawn(mcpstdio.Config{
+				Command: srv.Command,
+				Args:    srv.Args,
+				Env:     env,
+				OnStderr: func(line string) {
+					log.Printf("mcp[%s]: %s", name, line)
+				},
+			})
+		},
+		func(c mcp.Caller) {
+			if cl, ok := c.(*mcpstdio.Client); ok {
+				_ = cl.Close()
+			}
+		},
+	)
+	defer mcpPool.Close()
+
+	for name, srv := range cfg.MCPServers {
+		if srv.Transport != "stdio" {
+			log.Printf("mcp[%s]: skipped (transport %q not yet supported)", name, srv.Transport)
+			continue
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		_, descs, err := mcpPool.Get(ctx, name)
+		cancel()
+		if err != nil {
+			log.Printf("mcp[%s]: skipped — %v", name, err)
+			continue
+		}
+		log.Printf("mcp[%s]: ready, %d tools registered", name, len(descs))
+	}
+	allTools = append(allTools, mcpPool.Tools()...)
 
 	// Storage: open SQLite under DataDir. We could no-op when DataDir is
 	// unset, but that would silently disable the transcript/continuation
@@ -72,7 +124,7 @@ func main() {
 	log.Printf("store: sqlite at %s", dbPath)
 
 	var storeIface store.Store = st
-	srv := lchttp.New(cfg, pr, builtins, sem, storeIface)
+	srv := lchttp.New(cfg, pr, allTools, sem, storeIface)
 	httpServer := &http.Server{
 		Addr:              cfg.Env.ListenAddr,
 		Handler:           srv.Mux(),
