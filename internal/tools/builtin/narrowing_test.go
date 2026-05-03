@@ -78,17 +78,21 @@ func TestNarrowHostsWebFetchInheritsNarrowing(t *testing.T) {
 	}
 }
 
-// WebSearch.AllowedHosts is set to the intersection; FilterMode
-// defaults to drop when AllowedHosts is being set for the first time.
+// WebSearch.AllowedHosts is set to (HTTP-floor ∩ caller); FilterMode
+// defaults to drop when narrowing. The HTTP tool in the run's slice
+// supplies the operator floor — this matches the actual reachability
+// (WebFetch, which shares HTTP, is what the model uses to follow up).
 func TestNarrowHostsWebSearchDropDefault(t *testing.T) {
+	httpTool := &HTTP{HostAllowlist: []string{"x.example", "y.example"}}
 	ws := &WebSearch{APIKey: "k"}
-	out := NarrowHosts([]tools.Tool{ws}, []string{"x.example"}, "")
-	wrapped := out[0].(*WebSearch)
+	out := NarrowHosts([]tools.Tool{httpTool, ws}, []string{"x.example"}, "")
+	// out[0] is the wrapped HTTP, out[1] is the wrapped WebSearch.
+	wrapped := out[1].(*WebSearch)
 	if wrapped == ws {
 		t.Errorf("WebSearch wrapper should be a value copy")
 	}
 	if !reflect.DeepEqual(wrapped.AllowedHosts, []string{"x.example"}) {
-		t.Errorf("AllowedHosts = %v", wrapped.AllowedHosts)
+		t.Errorf("AllowedHosts = %v, want [x.example] (HTTP floor ∩ caller)", wrapped.AllowedHosts)
 	}
 	if wrapped.FilterMode != WebSearchFilterDrop {
 		t.Errorf("FilterMode = %q, want %q (default when narrowing)", wrapped.FilterMode, WebSearchFilterDrop)
@@ -96,11 +100,26 @@ func TestNarrowHostsWebSearchDropDefault(t *testing.T) {
 }
 
 func TestNarrowHostsWebSearchKeepExplicit(t *testing.T) {
+	httpTool := &HTTP{HostAllowlist: []string{"x.example"}}
 	ws := &WebSearch{APIKey: "k"}
-	out := NarrowHosts([]tools.Tool{ws}, []string{"x.example"}, WebSearchFilterKeep)
-	wrapped := out[0].(*WebSearch)
+	out := NarrowHosts([]tools.Tool{httpTool, ws}, []string{"x.example"}, WebSearchFilterKeep)
+	wrapped := out[1].(*WebSearch)
 	if wrapped.FilterMode != WebSearchFilterKeep {
 		t.Errorf("FilterMode = %q, want %q", wrapped.FilterMode, WebSearchFilterKeep)
+	}
+}
+
+// Security parity: a WebSearch in a run with NO HTTP tool has no floor,
+// so the per-request narrowing produces an empty result list.
+// Symmetric with HTTP's deny-all default — a caller can't widen what
+// isn't there. The model couldn't fetch anything anyway (no WebFetch),
+// so this is the right answer.
+func TestNarrowHostsWebSearchWithoutHTTPGetsEmpty(t *testing.T) {
+	ws := &WebSearch{APIKey: "k"}
+	out := NarrowHosts([]tools.Tool{ws}, []string{"x.example"}, "")
+	wrapped := out[0].(*WebSearch)
+	if len(wrapped.AllowedHosts) != 0 {
+		t.Errorf("WebSearch with no HTTP floor must produce empty allowed list; got %v", wrapped.AllowedHosts)
 	}
 }
 
@@ -129,17 +148,20 @@ func TestNarrowHostsLeavesUnrelatedToolsAlone(t *testing.T) {
 	}
 }
 
-// Operator's static list empty + caller list set → caller list passes
-// through. Useful for test configs where no operator allowlist exists
-// but the caller still wants to constrain.
-func TestNarrowHostsOperatorEmptyCallerPassesThrough(t *testing.T) {
-	op := &HTTP{HostAllowlist: nil}
-	out := NarrowHosts([]tools.Tool{op}, []string{"x.example", "y.example"}, "")
+// Critical security invariant: an operator with no static allowlist
+// (HostAllowlist nil/empty) is in deny-all mode at the HTTP layer.
+// A caller supplying allowed_hosts MUST NOT be able to override that
+// deny-all by passing arbitrary hosts. This was a real BLOCKING bug
+// in an earlier draft — intersectHosts naively returned the caller's
+// list when operator was empty, letting a request to evil.com slip
+// through any deny-all-by-default deployment. Empirical proof:
+// reverting intersectHosts' empty-operator branch back to
+// `append([]string(nil), caller...)` makes this test fail.
+func TestNarrowHostsOperatorEmptyForcesDenyAll(t *testing.T) {
+	op := &HTTP{HostAllowlist: nil} // operator has not set an allowlist
+	out := NarrowHosts([]tools.Tool{op}, []string{"evil.example", "anywhere.example"}, "")
 	wrapped := out[0].(*HTTP)
-	got := append([]string(nil), wrapped.HostAllowlist...)
-	sort.Strings(got)
-	want := []string{"x.example", "y.example"}
-	if !reflect.DeepEqual(got, want) {
-		t.Errorf("with no operator list, caller list passes through; got %v", got)
+	if len(wrapped.HostAllowlist) != 0 {
+		t.Errorf("operator deny-all must override caller; got allowlist %v, want empty", wrapped.HostAllowlist)
 	}
 }

@@ -1245,14 +1245,20 @@ func TestPerRequestAllowedHostsNilLeavesOperatorListIntact(t *testing.T) {
 	if toolResult == "" {
 		t.Fatal("no tool_result in second call's messages")
 	}
-	// Should NOT be the empty-allowlist message — should be a dial/DNS
-	// failure, since hostAllowed accepted operator.example and we
-	// reached dialContext.
+	// Negative: should NOT be the empty-allowlist message — caller's
+	// nil allowed_hosts means no narrowing, so the operator's
+	// [operator.example] applies and the call passes hostAllowed.
 	if strings.Contains(toolResult, "empty host allowlist") {
 		t.Errorf("nil allowed_hosts should NOT trigger empty-allowlist refusal; got %q", toolResult)
 	}
-	// We don't assert exact DNS error wording — varies by resolver.
-	// The point: the call advanced past hostAllowed.
+	// Positive: the result must include "request:" — the only error
+	// path that prefix appears on (httptool.go's "request: " + err)
+	// fires AFTER hostAllowed accepts and dialContext starts dialing.
+	// Without this assertion a future regression that rejects in some
+	// other way would still pass the negative check.
+	if !strings.Contains(toolResult, "request:") {
+		t.Errorf("tool_result should contain 'request:' (proves call reached dial layer); got %q", toolResult)
+	}
 }
 
 // callableProvider lets a test inject a Call function. Reuses stubProvider's
