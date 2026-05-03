@@ -31,7 +31,7 @@ func resolveInsideRoot(root, target string) (resolved string, err error) {
 	if err != nil {
 		return "", err
 	}
-	if err := relInsideRoot(rootResolved, resolved); err != nil {
+	if err := relInsideRoot(rootResolved, abs, resolved); err != nil {
 		return "", err
 	}
 	return resolved, nil
@@ -53,21 +53,30 @@ func resolveParentInsideRoot(root, target string) (joined string, err error) {
 	if err != nil {
 		return "", fmt.Errorf("parent dir: %w", err)
 	}
-	if err := relInsideRoot(rootResolved, parentResolved); err != nil {
-		// Reuse the absolute path in the message so the model sees what
-		// it asked for, not the resolved-parent location.
-		return "", fmt.Errorf("path %q escapes sandbox %q", abs, rootResolved)
+	// Pass abs as both requested AND the resolved-equivalent so the
+	// error message matches the resolveInsideRoot shape: when the user
+	// path didn't redirect via symlinks (parent itself was inside root,
+	// or wholly outside), the message stays single-path.
+	parentEquivalent := filepath.Join(parentResolved, filepath.Base(abs))
+	if err := relInsideRoot(rootResolved, abs, parentEquivalent); err != nil {
+		return "", err
 	}
-	return filepath.Join(parentResolved, filepath.Base(abs)), nil
+	return parentEquivalent, nil
 }
 
-// relInsideRoot returns nil if resolved is inside root. The HasPrefix
-// form uses the OS-specific separator so `..\foo` on Windows is caught
-// alongside `../foo` on POSIX.
-func relInsideRoot(root, resolved string) error {
+// relInsideRoot returns nil if resolved is inside root. requested is the
+// caller-supplied path (pre-symlink-resolution); resolved is what we
+// actually checked. When the two differ (a symlink redirected the
+// target), the error message includes both so the model learns its
+// input was rerouted. The HasPrefix form uses the OS-specific separator
+// so `..\foo` on Windows is caught alongside `../foo` on POSIX.
+func relInsideRoot(root, requested, resolved string) error {
 	rel, err := filepath.Rel(root, resolved)
 	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return fmt.Errorf("path %q escapes sandbox %q", resolved, root)
+		if requested == resolved {
+			return fmt.Errorf("path %q escapes sandbox %q", requested, root)
+		}
+		return fmt.Errorf("path %q (resolved to %q) escapes sandbox %q", requested, resolved, root)
 	}
 	return nil
 }
