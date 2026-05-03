@@ -993,6 +993,102 @@ func TestPerSessionLockAppliesToRunsWithSessionID(t *testing.T) {
 	}
 }
 
+// Per-agent default-deny invariant: an agent declared with no
+// allowed_tools in YAML must see ZERO tools at the dispatcher,
+// even though several built-ins are registered server-wide. The
+// model's req.Tools should be empty. This is the security floor —
+// turning off filterTools' empty-list early-return would silently
+// expose every registered tool to every agent.
+func TestAgentWithNoAllowedToolsSeesZeroTools(t *testing.T) {
+	cfg := &config.Config{
+		Defaults: config.Defaults{Provider: "stub", Model: "stub-model"},
+		Agents: map[string]config.AgentDef{
+			// AllowedTools omitted — default-deny.
+			"locked": {Model: "stub-model"},
+		},
+		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4, QueueTimeoutMS: 1000},
+	}
+	provider := &callableProvider{}
+	provider.call = func(ctx context.Context, _ providers.Request) (<-chan providers.Event, error) {
+		ch := make(chan providers.Event, 2)
+		ch <- providers.Event{Type: providers.EventDone, StopReason: "end_turn", Usage: &providers.Usage{InputTokens: 1, OutputTokens: 1}}
+		close(ch)
+		return ch, nil
+	}
+	// Server-wide tool inventory has FakeTool registered — the agent
+	// must NOT see it because its allowed_tools is empty.
+	srv := New(cfg, &stubResolver{p: provider}, []tools.Tool{&fakeBuiltinTool{}}, concurrency.New(4, 4, time.Second), nil)
+	ts := httptest.NewServer(srv.Mux())
+	defer ts.Close()
+
+	resp, err := http.Post(ts.URL+"/v1/runs", "application/json", strings.NewReader(
+		`{"agent":"locked","segments":[{"role":"user","content":[{"type":"trusted-text","text":"hi"}]}]}`,
+	))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	io.Copy(io.Discard, resp.Body)
+	if resp.StatusCode != 200 {
+		t.Fatalf("status = %d", resp.StatusCode)
+	}
+
+	provider.mu.Lock()
+	defer provider.mu.Unlock()
+	if len(provider.requests) == 0 {
+		t.Fatal("provider was never called")
+	}
+	if got := len(provider.requests[0].Tools); got != 0 {
+		var names []string
+		for _, ts := range provider.requests[0].Tools {
+			names = append(names, ts.Name)
+		}
+		t.Errorf("agent with no allowed_tools saw %d tools (%v); want 0", got, names)
+	}
+}
+
+// Asymmetric: an agent that DOES allow a tool sees it. Pairs with the
+// previous test as the positive case — confirms the dispatcher is
+// actually plumbed (so a "0 tools" pass isn't accidentally because the
+// pipeline is broken).
+func TestAgentWithExplicitAllowSeeTool(t *testing.T) {
+	cfg := &config.Config{
+		Defaults: config.Defaults{Provider: "stub", Model: "stub-model"},
+		Agents: map[string]config.AgentDef{
+			"open": {Model: "stub-model", AllowedTools: []string{"FakeTool"}},
+		},
+		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4, QueueTimeoutMS: 1000},
+	}
+	provider := &callableProvider{}
+	provider.call = func(ctx context.Context, _ providers.Request) (<-chan providers.Event, error) {
+		ch := make(chan providers.Event, 2)
+		ch <- providers.Event{Type: providers.EventDone, StopReason: "end_turn", Usage: &providers.Usage{InputTokens: 1, OutputTokens: 1}}
+		close(ch)
+		return ch, nil
+	}
+	srv := New(cfg, &stubResolver{p: provider}, []tools.Tool{&fakeBuiltinTool{}}, concurrency.New(4, 4, time.Second), nil)
+	ts := httptest.NewServer(srv.Mux())
+	defer ts.Close()
+
+	resp, err := http.Post(ts.URL+"/v1/runs", "application/json", strings.NewReader(
+		`{"agent":"open","segments":[{"role":"user","content":[{"type":"trusted-text","text":"hi"}]}]}`,
+	))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	io.Copy(io.Discard, resp.Body)
+
+	provider.mu.Lock()
+	defer provider.mu.Unlock()
+	if len(provider.requests) == 0 || len(provider.requests[0].Tools) != 1 {
+		t.Fatalf("agent with FakeTool allowed should see 1 tool; got %d", len(provider.requests[0].Tools))
+	}
+	if provider.requests[0].Tools[0].Name != "FakeTool" {
+		t.Errorf("tool name = %q, want FakeTool", provider.requests[0].Tools[0].Name)
+	}
+}
+
 // callableProvider lets a test inject a Call function. Reuses stubProvider's
 // ID/Capabilities trivially.
 type callableProvider struct {

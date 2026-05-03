@@ -87,6 +87,17 @@ func main() {
 		log.Printf("note: Bash tool is registered but disabled — set LOOMCYCLE_BASH_ENABLED=1 to enable (NOT a true sandbox; see docs)")
 	}
 
+	// Per-agent tool policy is default-deny: an agent with no allowed_tools
+	// in YAML gets ZERO tools at the dispatcher. Warn at startup so
+	// operators don't discover this only when an agent inexplicably can't
+	// do anything. We log per-agent rather than once so the operator sees
+	// which definitions are affected.
+	for name, def := range cfg.Agents {
+		if len(def.AllowedTools) == 0 {
+			log.Printf("note: agent %q has no allowed_tools — it will see zero tools (intentional default-deny; add allowed_tools to its YAML to expose tools)", name)
+		}
+	}
+
 	// MCP: spawn declared servers (stdio or http), discover their tools,
 	// register each as `mcp__{server}__{tool}` alongside the built-ins.
 	// Failures to spawn or handshake are logged and the server is skipped —
