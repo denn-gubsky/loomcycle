@@ -16,9 +16,8 @@ import (
 // want the raw response. Same SSRF defences (allowlist + private-IP
 // block + redirect re-validation) flow through unchanged.
 type WebFetch struct {
-	HTTP            *HTTP
-	MaxOutputBytes  int64 // optional override; default 256 KiB
-	AllowPrivateIPs bool  // tests only
+	HTTP           *HTTP
+	MaxOutputBytes int64 // optional override; default 256 KiB
 }
 
 func (f *WebFetch) Name() string        { return "WebFetch" }

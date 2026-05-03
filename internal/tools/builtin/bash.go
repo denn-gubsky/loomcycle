@@ -50,7 +50,7 @@ type Bash struct {
 
 func (b *Bash) Name() string { return "Bash" }
 func (b *Bash) Description() string {
-	return "Run a shell command in the configured cwd. Returns combined stdout+stderr."
+	return "Run a shell command in a sandboxed working directory. Returns combined stdout+stderr."
 }
 
 func (b *Bash) InputSchema() json.RawMessage {
@@ -138,8 +138,8 @@ func (b *Bash) Execute(ctx context.Context, input json.RawMessage) (tools.Result
 	if bw.truncated {
 		fmt.Fprintf(&b2, "\n[output truncated at %d bytes]", maxOut)
 	}
-	if errors := runCtx.Err(); errors != nil {
-		fmt.Fprintf(&b2, "\n[killed: %v]", errors)
+	if ctxErr := runCtx.Err(); ctxErr != nil {
+		fmt.Fprintf(&b2, "\n[killed: %v]", ctxErr)
 		return tools.Result{Text: b2.String(), IsError: true}, nil
 	}
 	if waitErr != nil {

@@ -184,10 +184,24 @@ func (h *HTTP) do(ctx context.Context, method, rawURL string, headers map[string
 	return tools.Result{Text: b.String()}, nil
 }
 
-// dialContext is the connection-level SSRF guard. By the time we reach it,
-// the hostname has been DNS-resolved to a concrete address — we reject
-// the connection if the address is private. This catches DNS rebinding
-// even when the hostname passed the allowlist.
+// dialContext is the connection-level SSRF guard. By the time we reach
+// it, the hostname has been DNS-resolved to a concrete address set —
+// we filter out private addresses, refuse if NONE remain, and try each
+// public address in turn until one connects (mirrors stdlib Dialer's
+// happy-eyeballs-like behaviour for dual-stack hosts).
+//
+// This shape catches two real-world cases the naive "ips[0]" approach
+// misses:
+//
+//   - Dual-stack host returns [v6, v4]; v6 unreachable on this network.
+//     Iterating across the slice lets us fall back to v4.
+//   - Public host with a misconfigured DNS record that includes a
+//     private IP alongside the real one (corp-DNS leak). We dial the
+//     public IPs and ignore the leak rather than refusing the host.
+//
+// The Control hook is a belt-and-braces re-check at the syscall layer
+// in case the kernel ends up dialing a different address than the IP
+// we passed (rare but possible if the address gets transformed).
 func (h *HTTP) dialContext(ctx context.Context, network, addr string) (net.Conn, error) {
 	host, port, err := net.SplitHostPort(addr)
 	if err != nil {
@@ -197,20 +211,21 @@ func (h *HTTP) dialContext(ctx context.Context, network, addr string) (net.Conn,
 	if err != nil {
 		return nil, err
 	}
+	candidates := ips
 	if !h.AllowPrivateIPs {
+		candidates = candidates[:0]
 		for _, ip := range ips {
-			if isPrivateIP(ip.IP) {
-				return nil, fmt.Errorf("blocked: %s resolves to private address %s", host, ip.IP)
+			if !isPrivateIP(ip.IP) {
+				candidates = append(candidates, ip)
 			}
+		}
+		if len(candidates) == 0 {
+			return nil, fmt.Errorf("blocked: %s has no public addresses (got %d private)", host, len(ips))
 		}
 	}
 	d := net.Dialer{
 		Timeout: 10 * time.Second,
 		Control: func(network, address string, c syscall.RawConn) error {
-			// Belt-and-braces: if the kernel resolves to a different IP
-			// than our LookupIP saw (rare but possible under racy DNS),
-			// the address the syscall sees is the one we'll connect to.
-			// Re-check it.
 			if h.AllowPrivateIPs {
 				return nil
 			}
@@ -221,7 +236,15 @@ func (h *HTTP) dialContext(ctx context.Context, network, addr string) (net.Conn,
 			return nil
 		},
 	}
-	return d.DialContext(ctx, network, net.JoinHostPort(ips[0].String(), port))
+	var lastErr error
+	for _, ip := range candidates {
+		conn, err := d.DialContext(ctx, network, net.JoinHostPort(ip.String(), port))
+		if err == nil {
+			return conn, nil
+		}
+		lastErr = err
+	}
+	return nil, lastErr
 }
 
 // hostAllowed reports whether host is permitted by the allowlist.

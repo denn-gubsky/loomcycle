@@ -84,6 +84,31 @@ func TestWebFetchExtractsTextFromHTML(t *testing.T) {
 	}
 }
 
+// Regression: WebFetch splits HTTP's response on the FIRST "\n\n" to
+// drop the headers/body separator. A body containing its own blank
+// lines must not be over-trimmed by that split — switching to
+// LastIndex would do exactly that. Both paragraphs must survive.
+func TestWebFetchPreservesBlankLinesInBody(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		fmt.Fprint(w, "para1\n\npara2")
+	}))
+	defer srv.Close()
+
+	f := &WebFetch{HTTP: &HTTP{HostAllowlist: []string{mustHost(t, srv.URL)}, AllowPrivateIPs: true}}
+	body, _ := json.Marshal(map[string]string{"url": srv.URL})
+	res, err := f.Execute(context.Background(), body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.IsError {
+		t.Fatalf("unexpected error: %q", res.Text)
+	}
+	if !strings.Contains(res.Text, "para1") || !strings.Contains(res.Text, "para2") {
+		t.Errorf("blank-line body over-trimmed: %q", res.Text)
+	}
+}
+
 func TestStripHTML(t *testing.T) {
 	cases := []struct {
 		name  string

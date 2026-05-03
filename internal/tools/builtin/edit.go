@@ -70,24 +70,11 @@ func (e *Edit) Execute(ctx context.Context, input json.RawMessage) (tools.Result
 		maxBytes = 1 << 20
 	}
 
-	// Resolve sandbox + target. Edit requires the file to exist, so we
-	// EvalSymlinks the target itself (Write resolved the parent because
-	// the file may be new).
-	root, err := filepath.EvalSymlinks(e.Root)
-	if err != nil {
-		return tools.Result{Text: "sandbox root: " + err.Error(), IsError: true}, nil
-	}
-	abs, err := filepath.Abs(filepath.Clean(args.Path))
-	if err != nil {
-		return tools.Result{Text: "abs path: " + err.Error(), IsError: true}, nil
-	}
-	resolved, err := filepath.EvalSymlinks(abs)
+	// Edit requires the file to exist, so we use resolveInsideRoot
+	// (Write would resolve the parent because the file may be new).
+	resolved, err := resolveInsideRoot(e.Root, args.Path)
 	if err != nil {
 		return tools.Result{Text: err.Error(), IsError: true}, nil
-	}
-	rel, err := filepath.Rel(root, resolved)
-	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return tools.Result{Text: fmt.Sprintf("path %q escapes sandbox %q", resolved, root), IsError: true}, nil
 	}
 
 	info, err := os.Stat(resolved)

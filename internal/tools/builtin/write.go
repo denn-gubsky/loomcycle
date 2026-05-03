@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
@@ -68,25 +67,11 @@ func (w *Write) Execute(ctx context.Context, input json.RawMessage) (tools.Resul
 		return tools.Result{Text: fmt.Sprintf("content exceeds %d bytes (got %d)", maxBytes, len(args.Content)), IsError: true}, nil
 	}
 
-	root, err := filepath.EvalSymlinks(w.Root)
+	target, err := resolveParentInsideRoot(w.Root, args.Path)
 	if err != nil {
-		return tools.Result{Text: "sandbox root: " + err.Error(), IsError: true}, nil
+		return tools.Result{Text: err.Error(), IsError: true}, nil
 	}
-	abs, err := filepath.Abs(filepath.Clean(args.Path))
-	if err != nil {
-		return tools.Result{Text: "abs path: " + err.Error(), IsError: true}, nil
-	}
-	parent := filepath.Dir(abs)
-	resolvedParent, err := filepath.EvalSymlinks(parent)
-	if err != nil {
-		return tools.Result{Text: "parent dir: " + err.Error(), IsError: true}, nil
-	}
-	rel, err := filepath.Rel(root, resolvedParent)
-	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return tools.Result{Text: fmt.Sprintf("path %q escapes sandbox %q", abs, root), IsError: true}, nil
-	}
-
-	target := filepath.Join(resolvedParent, filepath.Base(abs))
+	resolvedParent := filepath.Dir(target)
 
 	// Tempfile in the same directory so the rename is intra-filesystem
 	// (cross-filesystem rename is not atomic).

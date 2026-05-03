@@ -78,8 +78,29 @@ func TestHTTPRejectsPrivateIPDespiteAllowlist(t *testing.T) {
 	if !res.IsError {
 		t.Fatalf("expected private-IP rejection, got %q", res.Text)
 	}
-	if !strings.Contains(res.Text, "private") {
-		t.Errorf("rejection should mention private; got %q", res.Text)
+	if !strings.Contains(res.Text, "no public addresses") && !strings.Contains(res.Text, "private") {
+		t.Errorf("rejection should mention private/public; got %q", res.Text)
+	}
+}
+
+// Direct unit test on dialContext with a public-shaped hostname that
+// resolves entirely to private IPs — proves the guard is what stops
+// the dial, not the layer-1 allowlist exact-match path. Catches the
+// regression the reviewer flagged: a future refactor of hostAllowed
+// could break this without TestHTTPRejectsPrivateIPDespiteAllowlist
+// noticing, because that test relies on "localhost"-as-allowlisted.
+//
+// We don't need a custom resolver: net.DefaultResolver.LookupIPAddr
+// resolves "localhost" to loopback addresses on every standard system,
+// and "localhost" is private under our isPrivateIP rule.
+func TestHTTPDialContextRefusesAllPrivateResolution(t *testing.T) {
+	h := &HTTP{HostAllowlist: []string{"localhost"}, AllowPrivateIPs: false}
+	_, err := h.dialContext(context.Background(), "tcp", "localhost:1")
+	if err == nil {
+		t.Fatal("expected refusal; localhost should resolve only to private IPs")
+	}
+	if !strings.Contains(err.Error(), "no public addresses") {
+		t.Errorf("expected 'no public addresses' error, got %v", err)
 	}
 }
 

@@ -94,6 +94,57 @@ func TestWebSearchHardMaxResultsCeiling(t *testing.T) {
 
 // Snippet truncation at 256 chars so a long Brave description can't blow
 // the model's context window.
+// Defence in depth: even if Brave returns more results than we asked
+// for (server bug or unexpected response shape), the rendering loop
+// must still cap at max. Without this clamp a misbehaving search
+// backend could blow the model's context window.
+func TestWebSearchClampsBraveOverflow(t *testing.T) {
+	// Hand-craft a response with 30 results.
+	var sb strings.Builder
+	sb.WriteString(`{"web":{"results":[`)
+	for i := 0; i < 30; i++ {
+		if i > 0 {
+			sb.WriteString(",")
+		}
+		fmt.Fprintf(&sb, `{"title":"R%d","url":"https://r%d/","description":"d"}`, i, i)
+	}
+	sb.WriteString(`]}}`)
+	resp := sb.String()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, resp)
+	}))
+	defer srv.Close()
+
+	s := &WebSearch{APIKey: "k", Endpoint: srv.URL}
+	body, _ := json.Marshal(map[string]any{"query": "x", "max_results": 9999})
+	res, err := s.Execute(context.Background(), body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.IsError {
+		t.Fatalf("unexpected error: %q", res.Text)
+	}
+	// The rendered output should have exactly 25 lines that start with "[" —
+	// one per result.
+	count := strings.Count(res.Text, "\n[")
+	// Number of [N] markers = newline-prefixed [ + the very first one.
+	if !strings.HasPrefix(res.Text, "[") {
+		t.Fatalf("output should start with [1] marker; got %q", res.Text[:min(len(res.Text), 80)])
+	}
+	count++
+	if count != 25 {
+		t.Errorf("rendered %d result blocks, want 25 (hard cap on Brave-side overflow)", count)
+	}
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
 func TestWebSearchTruncatesLongSnippet(t *testing.T) {
 	long := strings.Repeat("x", 400)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
