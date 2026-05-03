@@ -19,6 +19,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	storesqlite "github.com/denn-gubsky/loomcycle/internal/store/sqlite"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
+	"github.com/denn-gubsky/loomcycle/internal/tools/builtin"
 )
 
 // stubProvider replays a fixed event sequence, ignoring the request entirely.
@@ -990,6 +991,273 @@ func TestPerSessionLockAppliesToRunsWithSessionID(t *testing.T) {
 	close(release)
 	if got := <-first; got != 200 {
 		t.Errorf("first status = %d, want 200", got)
+	}
+}
+
+// Per-agent default-deny invariant: an agent declared with no
+// allowed_tools in YAML must see ZERO tools at the dispatcher,
+// even though several built-ins are registered server-wide. The
+// model's req.Tools should be empty. This is the security floor —
+// turning off filterTools' empty-list early-return would silently
+// expose every registered tool to every agent.
+func TestAgentWithNoAllowedToolsSeesZeroTools(t *testing.T) {
+	cfg := &config.Config{
+		Defaults: config.Defaults{Provider: "stub", Model: "stub-model"},
+		Agents: map[string]config.AgentDef{
+			// AllowedTools omitted — default-deny.
+			"locked": {Model: "stub-model"},
+		},
+		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4, QueueTimeoutMS: 1000},
+	}
+	provider := &callableProvider{}
+	provider.call = func(ctx context.Context, _ providers.Request) (<-chan providers.Event, error) {
+		ch := make(chan providers.Event, 2)
+		ch <- providers.Event{Type: providers.EventDone, StopReason: "end_turn", Usage: &providers.Usage{InputTokens: 1, OutputTokens: 1}}
+		close(ch)
+		return ch, nil
+	}
+	// Server-wide tool inventory has FakeTool registered — the agent
+	// must NOT see it because its allowed_tools is empty.
+	srv := New(cfg, &stubResolver{p: provider}, []tools.Tool{&fakeBuiltinTool{}}, concurrency.New(4, 4, time.Second), nil)
+	ts := httptest.NewServer(srv.Mux())
+	defer ts.Close()
+
+	resp, err := http.Post(ts.URL+"/v1/runs", "application/json", strings.NewReader(
+		`{"agent":"locked","segments":[{"role":"user","content":[{"type":"trusted-text","text":"hi"}]}]}`,
+	))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	io.Copy(io.Discard, resp.Body)
+	if resp.StatusCode != 200 {
+		t.Fatalf("status = %d", resp.StatusCode)
+	}
+
+	provider.mu.Lock()
+	defer provider.mu.Unlock()
+	if len(provider.requests) == 0 {
+		t.Fatal("provider was never called")
+	}
+	if got := len(provider.requests[0].Tools); got != 0 {
+		var names []string
+		for _, ts := range provider.requests[0].Tools {
+			names = append(names, ts.Name)
+		}
+		t.Errorf("agent with no allowed_tools saw %d tools (%v); want 0", got, names)
+	}
+}
+
+// Asymmetric: an agent that DOES allow a tool sees it. Pairs with the
+// previous test as the positive case — confirms the dispatcher is
+// actually plumbed (so a "0 tools" pass isn't accidentally because the
+// pipeline is broken).
+func TestAgentWithExplicitAllowSeeTool(t *testing.T) {
+	cfg := &config.Config{
+		Defaults: config.Defaults{Provider: "stub", Model: "stub-model"},
+		Agents: map[string]config.AgentDef{
+			"open": {Model: "stub-model", AllowedTools: []string{"FakeTool"}},
+		},
+		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4, QueueTimeoutMS: 1000},
+	}
+	provider := &callableProvider{}
+	provider.call = func(ctx context.Context, _ providers.Request) (<-chan providers.Event, error) {
+		ch := make(chan providers.Event, 2)
+		ch <- providers.Event{Type: providers.EventDone, StopReason: "end_turn", Usage: &providers.Usage{InputTokens: 1, OutputTokens: 1}}
+		close(ch)
+		return ch, nil
+	}
+	srv := New(cfg, &stubResolver{p: provider}, []tools.Tool{&fakeBuiltinTool{}}, concurrency.New(4, 4, time.Second), nil)
+	ts := httptest.NewServer(srv.Mux())
+	defer ts.Close()
+
+	resp, err := http.Post(ts.URL+"/v1/runs", "application/json", strings.NewReader(
+		`{"agent":"open","segments":[{"role":"user","content":[{"type":"trusted-text","text":"hi"}]}]}`,
+	))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	io.Copy(io.Discard, resp.Body)
+
+	provider.mu.Lock()
+	defer provider.mu.Unlock()
+	if len(provider.requests) == 0 || len(provider.requests[0].Tools) != 1 {
+		t.Fatalf("agent with FakeTool allowed should see 1 tool; got %d", len(provider.requests[0].Tools))
+	}
+	if provider.requests[0].Tools[0].Name != "FakeTool" {
+		t.Errorf("tool name = %q, want FakeTool", provider.requests[0].Tools[0].Name)
+	}
+}
+
+// Per-request host narrowing — empty array → deny all. The model
+// invokes HTTP; the wrapped tool's allowlist is empty, so the call
+// refuses BEFORE any DNS or dial. We inspect the tool_result text in
+// the second provider call to confirm the refusal happened with the
+// "not in allowlist" message (which only fires when the wrapped
+// allowlist is what blocked the call).
+func TestPerRequestAllowedHostsEmptyDeniesNetworkCalls(t *testing.T) {
+	cfg := &config.Config{
+		Defaults: config.Defaults{Provider: "stub", Model: "stub-model"},
+		Agents: map[string]config.AgentDef{
+			"net": {Model: "stub-model", AllowedTools: []string{"HTTP"}},
+		},
+		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4, QueueTimeoutMS: 1000},
+	}
+	provider := &callableProvider{}
+	provider.call = func(ctx context.Context, req providers.Request) (<-chan providers.Event, error) {
+		idx := len(provider.requests) - 1
+		var evs []providers.Event
+		switch idx {
+		case 0:
+			// First turn: emit a tool_call so the loop executes HTTP.
+			evs = []providers.Event{
+				{Type: providers.EventToolCall, ToolUse: &providers.ToolUse{
+					ID: "h1", Name: "HTTP",
+					Input: json.RawMessage(`{"method":"GET","url":"https://operator.example/"}`),
+				}},
+				{Type: providers.EventDone, StopReason: "tool_use", Usage: &providers.Usage{InputTokens: 1, OutputTokens: 1}},
+			}
+		default:
+			// Second turn: just close out so the run finishes.
+			evs = []providers.Event{
+				{Type: providers.EventText, Text: "ok"},
+				{Type: providers.EventDone, StopReason: "end_turn", Usage: &providers.Usage{InputTokens: 1, OutputTokens: 1}},
+			}
+		}
+		ch := make(chan providers.Event, len(evs))
+		for _, e := range evs {
+			ch <- e
+		}
+		close(ch)
+		return ch, nil
+	}
+
+	// Register a real HTTP tool with operator's allowlist permitting
+	// operator.example. Without per-request narrowing the call would
+	// attempt to dial (and fail with DNS NXDOMAIN, not a refusal).
+	httpTool := &builtin.HTTP{HostAllowlist: []string{"operator.example"}}
+	srv := New(cfg, &stubResolver{p: provider}, []tools.Tool{httpTool}, concurrency.New(4, 4, time.Second), nil)
+	ts := httptest.NewServer(srv.Mux())
+	defer ts.Close()
+
+	// allowed_hosts: [] → deny-all narrowing. The wrapped HTTP tool
+	// has an empty allowlist, so even operator.example is refused.
+	body := `{"agent":"net","segments":[{"role":"user","content":[{"type":"trusted-text","text":"go"}]}],"allowed_hosts":[]}`
+	resp, err := http.Post(ts.URL+"/v1/runs", "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	io.Copy(io.Discard, resp.Body)
+
+	provider.mu.Lock()
+	defer provider.mu.Unlock()
+	if len(provider.requests) < 2 {
+		t.Fatalf("provider got %d calls, want >=2 (tool_use + continuation)", len(provider.requests))
+	}
+	// The second call's messages must include a tool_result whose Text
+	// reflects the empty-allowlist refusal.
+	contMsgs := provider.requests[1].Messages
+	var toolResult string
+	for _, m := range contMsgs {
+		for _, c := range m.Content {
+			if c.Type == "tool_result" {
+				toolResult = c.Text
+			}
+		}
+	}
+	if toolResult == "" {
+		t.Fatalf("no tool_result in second call's messages: %s", describeMessages(contMsgs))
+	}
+	if !strings.Contains(toolResult, "empty host allowlist") && !strings.Contains(toolResult, "not in allowlist") {
+		t.Errorf("tool_result didn't show allowlist refusal: %q", toolResult)
+	}
+}
+
+// Conversely: nil allowed_hosts (omitted from request) → operator's
+// list applies. The same scenario as above but with allowed_hosts
+// missing should reach the dial layer (and fail with a DNS error,
+// distinct from the allowlist message).
+func TestPerRequestAllowedHostsNilLeavesOperatorListIntact(t *testing.T) {
+	cfg := &config.Config{
+		Defaults: config.Defaults{Provider: "stub", Model: "stub-model"},
+		Agents: map[string]config.AgentDef{
+			"net": {Model: "stub-model", AllowedTools: []string{"HTTP"}},
+		},
+		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4, QueueTimeoutMS: 1000},
+	}
+	provider := &callableProvider{}
+	provider.call = func(ctx context.Context, req providers.Request) (<-chan providers.Event, error) {
+		idx := len(provider.requests) - 1
+		var evs []providers.Event
+		switch idx {
+		case 0:
+			evs = []providers.Event{
+				{Type: providers.EventToolCall, ToolUse: &providers.ToolUse{
+					ID: "h1", Name: "HTTP",
+					Input: json.RawMessage(`{"method":"GET","url":"https://operator.example/"}`),
+				}},
+				{Type: providers.EventDone, StopReason: "tool_use", Usage: &providers.Usage{InputTokens: 1, OutputTokens: 1}},
+			}
+		default:
+			evs = []providers.Event{
+				{Type: providers.EventText, Text: "ok"},
+				{Type: providers.EventDone, StopReason: "end_turn", Usage: &providers.Usage{InputTokens: 1, OutputTokens: 1}},
+			}
+		}
+		ch := make(chan providers.Event, len(evs))
+		for _, e := range evs {
+			ch <- e
+		}
+		close(ch)
+		return ch, nil
+	}
+
+	httpTool := &builtin.HTTP{HostAllowlist: []string{"operator.example"}}
+	srv := New(cfg, &stubResolver{p: provider}, []tools.Tool{httpTool}, concurrency.New(4, 4, time.Second), nil)
+	ts := httptest.NewServer(srv.Mux())
+	defer ts.Close()
+
+	// allowed_hosts omitted → operator's list applies; URL passes
+	// hostAllowed and proceeds to the dial (which fails with DNS).
+	body := `{"agent":"net","segments":[{"role":"user","content":[{"type":"trusted-text","text":"go"}]}]}`
+	resp, err := http.Post(ts.URL+"/v1/runs", "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	io.Copy(io.Discard, resp.Body)
+
+	provider.mu.Lock()
+	defer provider.mu.Unlock()
+	if len(provider.requests) < 2 {
+		t.Fatalf("provider got %d calls, want >=2", len(provider.requests))
+	}
+	var toolResult string
+	for _, m := range provider.requests[1].Messages {
+		for _, c := range m.Content {
+			if c.Type == "tool_result" {
+				toolResult = c.Text
+			}
+		}
+	}
+	if toolResult == "" {
+		t.Fatal("no tool_result in second call's messages")
+	}
+	// Negative: should NOT be the empty-allowlist message — caller's
+	// nil allowed_hosts means no narrowing, so the operator's
+	// [operator.example] applies and the call passes hostAllowed.
+	if strings.Contains(toolResult, "empty host allowlist") {
+		t.Errorf("nil allowed_hosts should NOT trigger empty-allowlist refusal; got %q", toolResult)
+	}
+	// Positive: the result must include "request:" — the only error
+	// path that prefix appears on (httptool.go's "request: " + err)
+	// fires AFTER hostAllowed accepts and dialContext starts dialing.
+	// Without this assertion a future regression that rejects in some
+	// other way would still pass the negative check.
+	if !strings.Contains(toolResult, "request:") {
+		t.Errorf("tool_result should contain 'request:' (proves call reached dial layer); got %q", toolResult)
 	}
 }
 

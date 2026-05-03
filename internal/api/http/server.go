@@ -22,6 +22,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
+	"github.com/denn-gubsky/loomcycle/internal/tools/builtin"
 	"github.com/denn-gubsky/loomcycle/internal/tools/policy"
 )
 
@@ -140,6 +141,23 @@ type runRequest struct {
 	Agent        string               `json:"agent"`
 	Segments     []loop.PromptSegment `json:"segments"`
 	AllowedTools []string             `json:"allowed_tools,omitempty"`
+	// AllowedHosts narrows the HTTP/WebFetch/WebSearch host allowlist
+	// for THIS run only. nil/omitted = no narrowing (operator's static
+	// list applies). Empty array `[]` = deny all (every network call
+	// refuses). Non-empty = intersection with the operator list (caller
+	// can shrink, never widen). The pointer-to-slice shape lets us
+	// distinguish nil from empty in JSON.
+	AllowedHosts *[]string `json:"allowed_hosts,omitempty"`
+	// WebSearchFilter selects what happens to Brave search results
+	// whose URL host isn't in the intersected AllowedHosts list:
+	//   - "drop" (default when AllowedHosts is non-nil) omits non-
+	//     matching results entirely; the model only sees URLs it can
+	//     follow up on with WebFetch.
+	//   - "keep" returns Brave's full result set; the caller filters
+	//     downstream. Useful when the caller wants visibility into
+	//     what Brave found before narrowing.
+	// Ignored when AllowedHosts is nil.
+	WebSearchFilter string `json:"web_search_filter,omitempty"`
 	// SessionID is optional. When set, the new run is appended to that
 	// session (the prior transcript is NOT replayed by /v1/runs — use
 	// /v1/sessions/{id}/messages for continuation). When empty, a fresh
@@ -236,6 +254,12 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 
 	// Filter tools by agent allowlist + caller request.
 	allowedTools := filterTools(s.tools, agentDef.AllowedTools, req.AllowedTools)
+	// Per-run host narrowing for HTTP/WebFetch/WebSearch. nil pointer
+	// = no narrowing. Empty slice = deny-all (network tools refuse).
+	// Non-empty = intersected with the operator's static allowlist.
+	if req.AllowedHosts != nil {
+		allowedTools = builtin.NarrowHosts(allowedTools, *req.AllowedHosts, req.WebSearchFilter)
+	}
 	dispatcher := tools.NewDispatcher(allowedTools)
 
 	// Optional system prompt from agent def.
@@ -319,6 +343,13 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 type messagesRequest struct {
 	Segments     []loop.PromptSegment `json:"segments"`
 	AllowedTools []string             `json:"allowed_tools,omitempty"`
+	// AllowedHosts and WebSearchFilter mirror runRequest — see there
+	// for the full semantics. Per-call: continuations re-supply the
+	// list each time rather than inheriting from the seed call. This
+	// keeps "what hosts can this run reach?" answerable from the
+	// request alone, no session state to chase.
+	AllowedHosts    *[]string `json:"allowed_hosts,omitempty"`
+	WebSearchFilter string    `json:"web_search_filter,omitempty"`
 }
 
 func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
@@ -413,6 +444,9 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	defer release()
 
 	allowedTools := filterTools(s.tools, agentDef.AllowedTools, body.AllowedTools)
+	if body.AllowedHosts != nil {
+		allowedTools = builtin.NarrowHosts(allowedTools, *body.AllowedHosts, body.WebSearchFilter)
+	}
 	dispatcher := tools.NewDispatcher(allowedTools)
 
 	// Re-prepend the agent's system prompt — it isn't in the transcript

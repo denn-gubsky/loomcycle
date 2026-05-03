@@ -4,10 +4,7 @@ package builtin
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"os"
-	"path/filepath"
-	"strings"
 
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
@@ -51,28 +48,9 @@ func (r *Read) Execute(ctx context.Context, input json.RawMessage) (tools.Result
 		return tools.Result{Text: "Read tool is not configured with a sandbox root; refusing to read", IsError: true}, nil
 	}
 
-	// Sandbox check: resolve symlinks on BOTH root AND target before the
-	// `Rel` check, then open the resolved path. This blocks the TOCTOU
-	// where target was a symlink at check time but a different file at
-	// open time, and the case where target was a symlink to outside root.
-	root, err := filepath.EvalSymlinks(r.Root)
+	resolved, err := resolveInsideRoot(r.Root, args.Path)
 	if err != nil {
-		return tools.Result{Text: "sandbox root: " + err.Error(), IsError: true}, nil
-	}
-	abs, err := filepath.Abs(filepath.Clean(args.Path))
-	if err != nil {
-		return tools.Result{Text: "abs path: " + err.Error(), IsError: true}, nil
-	}
-	resolved, err := filepath.EvalSymlinks(abs)
-	if err != nil {
-		// Not yet existing or broken symlink — surface as a normal open error.
 		return tools.Result{Text: err.Error(), IsError: true}, nil
-	}
-	rel, err := filepath.Rel(root, resolved)
-	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		// The HasPrefix form uses the OS-specific separator so `..\foo` on
-		// Windows is caught alongside `../foo` on POSIX.
-		return tools.Result{Text: fmt.Sprintf("path %q escapes sandbox %q", resolved, root), IsError: true}, nil
 	}
 
 	maxBytes := r.MaxBytes

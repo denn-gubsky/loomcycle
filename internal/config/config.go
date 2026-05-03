@@ -98,6 +98,29 @@ type Env struct {
 	// ReadRoot is the sandbox root for the built-in Read tool. Empty by
 	// default — the tool is registered but rejects every call until set.
 	ReadRoot string
+	// WriteRoot is the sandbox root for both Write and Edit. Empty by
+	// default — both tools refuse every call until set. Same TOCTOU
+	// guarantees as ReadRoot.
+	WriteRoot string
+	// HTTPHostAllowlist is the comma-separated list of hostnames the
+	// HTTP and WebFetch tools may reach. Empty = both tools refuse all
+	// calls. Suffix-matched: an entry "example.com" matches both
+	// "example.com" and "api.example.com". RFC1918, loopback, and
+	// link-local addresses are HARD-blocked regardless of allowlist.
+	HTTPHostAllowlist []string
+	// BraveAPIKey enables the WebSearch tool. Empty = WebSearch refuses
+	// every call. Lives at https://api.search.brave.com/.
+	BraveAPIKey string
+	// BashEnabled gates the Bash tool. Defaults to false. Even when
+	// true the tool is NOT a true sandbox — it restricts cwd, scrubs
+	// env, bounds output, and times out, but cannot prevent the spawned
+	// process from reaching arbitrary files via absolute paths or making
+	// network calls. Operators wanting real isolation should run
+	// loomcycle inside a container or VM.
+	BashEnabled bool
+	// BashCwd is the working directory for spawned bash commands. Required
+	// when BashEnabled is true; if unset the tool refuses every call.
+	BashCwd string
 }
 
 // Load reads a YAML file and the process env. Empty path returns defaults +
@@ -127,13 +150,18 @@ func Load(path string) (*Config, error) {
 	}
 
 	cfg.Env = Env{
-		AnthropicAPIKey: os.Getenv("ANTHROPIC_API_KEY"),
-		OpenAIAPIKey:    os.Getenv("OPENAI_API_KEY"),
-		OllamaBaseURL:   getenvDefault("OLLAMA_BASE_URL", "http://localhost:11434"),
-		ListenAddr:      getenvDefault("LOOMCYCLE_LISTEN_ADDR", "127.0.0.1:8787"),
-		AuthToken:       os.Getenv("LOOMCYCLE_AUTH_TOKEN"),
-		DataDir:         getenvDefault("LOOMCYCLE_DATA_DIR", "./data"),
-		ReadRoot:        os.Getenv("LOOMCYCLE_READ_ROOT"),
+		AnthropicAPIKey:   os.Getenv("ANTHROPIC_API_KEY"),
+		OpenAIAPIKey:      os.Getenv("OPENAI_API_KEY"),
+		OllamaBaseURL:     getenvDefault("OLLAMA_BASE_URL", "http://localhost:11434"),
+		ListenAddr:        getenvDefault("LOOMCYCLE_LISTEN_ADDR", "127.0.0.1:8787"),
+		AuthToken:         os.Getenv("LOOMCYCLE_AUTH_TOKEN"),
+		DataDir:           getenvDefault("LOOMCYCLE_DATA_DIR", "./data"),
+		ReadRoot:          os.Getenv("LOOMCYCLE_READ_ROOT"),
+		WriteRoot:         os.Getenv("LOOMCYCLE_WRITE_ROOT"),
+		HTTPHostAllowlist: splitCSV(os.Getenv("LOOMCYCLE_HTTP_HOST_ALLOWLIST")),
+		BraveAPIKey:       os.Getenv("BRAVE_API_KEY"),
+		BashEnabled:       os.Getenv("LOOMCYCLE_BASH_ENABLED") == "1",
+		BashCwd:           os.Getenv("LOOMCYCLE_BASH_CWD"),
 	}
 
 	if err := validate(cfg); err != nil {
@@ -224,6 +252,21 @@ func getenvDefault(name, dflt string) string {
 		return v
 	}
 	return dflt
+}
+
+// splitCSV trims whitespace and drops empties from a comma-separated env value.
+func splitCSV(s string) []string {
+	if s == "" {
+		return nil
+	}
+	parts := strings.Split(s, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if t := strings.TrimSpace(p); t != "" {
+			out = append(out, t)
+		}
+	}
+	return out
 }
 
 func validate(c *Config) error {

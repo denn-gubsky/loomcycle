@@ -51,14 +51,51 @@ func main() {
 		cfg.Concurrency.MaxQueueDepth,
 		cfg.Concurrency.QueueTimeout(),
 	)
-	// The Read tool is sandboxed: it refuses every call when Root is empty.
-	// Operators must set LOOMCYCLE_READ_ROOT explicitly to enable it (no
-	// silent default — the wrong default would leak file contents).
+	// All built-in tools are SANDBOXED: each refuses every call until the
+	// operator explicitly enables it via env. We register every tool and
+	// log a note for any that's still disabled — that way the model sees
+	// a clear "tool refused" error instead of a confusing "unknown tool",
+	// and operators see at startup which tools they've configured.
+	httpTool := &builtin.HTTP{HostAllowlist: cfg.Env.HTTPHostAllowlist}
 	allTools := []tools.Tool{
 		&builtin.Read{Root: cfg.Env.ReadRoot},
+		&builtin.Write{Root: cfg.Env.WriteRoot},
+		&builtin.Edit{Root: cfg.Env.WriteRoot},
+		httpTool,
+		&builtin.WebFetch{HTTP: httpTool},
+		&builtin.WebSearch{APIKey: cfg.Env.BraveAPIKey},
+		&builtin.Bash{Enabled: cfg.Env.BashEnabled, Cwd: cfg.Env.BashCwd},
 	}
 	if cfg.Env.ReadRoot == "" {
 		log.Printf("note: Read tool is registered but disabled — set LOOMCYCLE_READ_ROOT to enable")
+	}
+	if cfg.Env.WriteRoot == "" {
+		log.Printf("note: Write + Edit tools are registered but disabled — set LOOMCYCLE_WRITE_ROOT to enable")
+	}
+	if len(cfg.Env.HTTPHostAllowlist) == 0 {
+		log.Printf("note: HTTP + WebFetch tools are registered but disabled — set LOOMCYCLE_HTTP_HOST_ALLOWLIST to enable")
+	}
+	if cfg.Env.BraveAPIKey == "" {
+		log.Printf("note: WebSearch tool is registered but disabled — set BRAVE_API_KEY to enable")
+	}
+	if cfg.Env.BashEnabled {
+		log.Printf("WARNING: Bash tool is enabled (LOOMCYCLE_BASH_ENABLED=1). This is NOT a true sandbox — run loomcycle inside a container or VM if you expose this to untrusted prompts.")
+		if cfg.Env.BashCwd == "" {
+			log.Printf("note: Bash is enabled but has no cwd; every call will refuse — set LOOMCYCLE_BASH_CWD")
+		}
+	} else {
+		log.Printf("note: Bash tool is registered but disabled — set LOOMCYCLE_BASH_ENABLED=1 to enable (NOT a true sandbox; see docs)")
+	}
+
+	// Per-agent tool policy is default-deny: an agent with no allowed_tools
+	// in YAML gets ZERO tools at the dispatcher. Warn at startup so
+	// operators don't discover this only when an agent inexplicably can't
+	// do anything. We log per-agent rather than once so the operator sees
+	// which definitions are affected.
+	for name, def := range cfg.Agents {
+		if len(def.AllowedTools) == 0 {
+			log.Printf("note: agent %q has no allowed_tools — it will see zero tools (intentional default-deny; add allowed_tools to its YAML to expose tools)", name)
+		}
 	}
 
 	// MCP: spawn declared servers (stdio or http), discover their tools,
