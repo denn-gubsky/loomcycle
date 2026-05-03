@@ -22,13 +22,24 @@ import (
 )
 
 // stubProvider replays a fixed event sequence, ignoring the request entirely.
-type stubProvider struct{ events []providers.Event }
+// If preEvents are set and req.OnEvent is non-nil, they are fired
+// synchronously through the OnEvent callback before the channel events —
+// simulating a driver that emitted EventRetry during a 429 sleep.
+type stubProvider struct {
+	events    []providers.Event
+	preEvents []providers.Event
+}
 
 func (s *stubProvider) ID() string { return "stub" }
 func (s *stubProvider) Capabilities() providers.Capabilities {
 	return providers.Capabilities{Streaming: true}
 }
-func (s *stubProvider) Call(ctx context.Context, _ providers.Request) (<-chan providers.Event, error) {
+func (s *stubProvider) Call(ctx context.Context, req providers.Request) (<-chan providers.Event, error) {
+	if req.OnEvent != nil {
+		for _, ev := range s.preEvents {
+			req.OnEvent(ev)
+		}
+	}
 	ch := make(chan providers.Event, len(s.events))
 	for _, ev := range s.events {
 		ch <- ev
@@ -84,6 +95,87 @@ func TestHandleRunsSSE(t *testing.T) {
 		if got[i] != w {
 			t.Errorf("frame %d: got %q want %q", i, got[i], w)
 		}
+	}
+}
+
+// v0.3.2 end-to-end: a driver that fires EventRetry through req.OnEvent
+// (as our drivers do during a 429 sleep) must surface as `event: retry`
+// over SSE, ahead of the main response events. Adapter UIs read this to
+// show "waiting on rate limit" live.
+func TestHandleRunsSSEEmitsRetryFrame(t *testing.T) {
+	cfg := &config.Config{
+		Defaults: config.Defaults{Provider: "stub", Model: "stub-model"},
+		Agents: map[string]config.AgentDef{
+			"default": {Model: "stub-model", AllowedTools: []string{"Read"}},
+		},
+		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4, QueueTimeoutMS: 1000},
+	}
+	cfg.Env.AuthToken = ""
+	provider := &stubProvider{
+		preEvents: []providers.Event{{
+			Type: providers.EventRetry,
+			Retry: &providers.RetryInfo{
+				Provider: "stub",
+				Attempt:  1,
+				WaitMs:   12345,
+				Reason:   "retry-after header",
+			},
+		}},
+		events: []providers.Event{
+			{Type: providers.EventText, Text: "hi"},
+			{Type: providers.EventDone, StopReason: "end_turn", Usage: &providers.Usage{InputTokens: 1, OutputTokens: 1}},
+		},
+	}
+	sem := concurrency.New(4, 4, 100*time.Millisecond)
+	srv := New(cfg, &stubResolver{p: provider}, []tools.Tool{}, sem, nil)
+
+	ts := httptest.NewServer(srv.Mux())
+	defer ts.Close()
+
+	resp, err := http.Post(ts.URL+"/v1/runs", "application/json", strings.NewReader(
+		`{"agent":"default","segments":[{"role":"user","content":[{"type":"trusted-text","text":"hi"}]}]}`,
+	))
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("status = %d", resp.StatusCode)
+	}
+
+	frames := readFrames(t, resp.Body)
+
+	// Must see a retry frame somewhere in the stream, with the full payload
+	// the adapter UI needs.
+	var retry *sseFrame
+	for i := range frames {
+		if frames[i].Event == "retry" {
+			retry = &frames[i]
+			break
+		}
+	}
+	if retry == nil {
+		var types []string
+		for _, f := range frames {
+			types = append(types, f.Event)
+		}
+		t.Fatalf("no retry frame in stream, got events: %v", types)
+	}
+	r, ok := retry.Data["retry"].(map[string]any)
+	if !ok {
+		t.Fatalf("retry frame has no .retry object: %#v", retry.Data)
+	}
+	if r["provider"] != "stub" {
+		t.Errorf("retry.provider = %v, want stub", r["provider"])
+	}
+	if r["attempt"].(float64) != 1 {
+		t.Errorf("retry.attempt = %v, want 1", r["attempt"])
+	}
+	if r["wait_ms"].(float64) != 12345 {
+		t.Errorf("retry.wait_ms = %v, want 12345", r["wait_ms"])
+	}
+	if r["reason"] != "retry-after header" {
+		t.Errorf("retry.reason = %v, want 'retry-after header'", r["reason"])
 	}
 }
 
@@ -534,6 +626,373 @@ func TestMessagesEndpointReplaysAndContinues(t *testing.T) {
 	}
 }
 
+// v0.3.2: two concurrent POSTs to the same session must serialize at the
+// session level. The second is fast-failed with 409 / session_busy
+// because blocking on an open SSE handler would hold the second HTTP
+// connection for the full duration of the first run, and a second
+// transcript replay overlapping the first would corrupt history.
+func TestPerSessionLockRejectsConcurrentMessages(t *testing.T) {
+	cfg := &config.Config{
+		Defaults: config.Defaults{Provider: "stub", Model: "stub-model"},
+		Agents: map[string]config.AgentDef{
+			"default": {Model: "stub-model"},
+		},
+		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4, QueueTimeoutMS: 1000},
+	}
+	// Provider is non-blocking by default; the test swaps in a blocking
+	// implementation after the seed call completes.
+	provider := &callableProvider{}
+	provider.call = func(ctx context.Context, req providers.Request) (<-chan providers.Event, error) {
+		ch := make(chan providers.Event, 2)
+		ch <- providers.Event{Type: providers.EventText, Text: "ok"}
+		ch <- providers.Event{Type: providers.EventDone, StopReason: "end_turn", Usage: &providers.Usage{InputTokens: 1, OutputTokens: 1}}
+		close(ch)
+		return ch, nil
+	}
+
+	st, _ := storesqlite.Open(filepath.Join(t.TempDir(), "test.db"))
+	defer st.Close()
+
+	srv := New(cfg, &stubResolver{p: provider}, nil, concurrency.New(4, 4, time.Second), st)
+	ts := httptest.NewServer(srv.Mux())
+	defer ts.Close()
+
+	// Seed: a fresh run to obtain a session id. Non-blocking.
+	resp0, err := http.Post(ts.URL+"/v1/runs", "application/json", strings.NewReader(
+		`{"agent":"default","segments":[{"role":"user","content":[{"type":"trusted-text","text":"hi"}]}]}`,
+	))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body0, _ := io.ReadAll(resp0.Body)
+	resp0.Body.Close()
+	sessionID := extractSessionID(string(body0))
+	if sessionID == "" {
+		t.Fatalf("no session id from seed call:\n%s", string(body0))
+	}
+
+	// Now swap in a blocking provider that holds until release2 is closed.
+	// Signal entry via a closed channel so the test waits deterministically
+	// rather than spinning on a length read.
+	release2 := make(chan struct{})
+	entered := make(chan struct{}, 1)
+	provider.call = func(ctx context.Context, req providers.Request) (<-chan providers.Event, error) {
+		select {
+		case entered <- struct{}{}:
+		default:
+		}
+		ch := make(chan providers.Event, 2)
+		go func() {
+			defer close(ch)
+			<-release2
+			ch <- providers.Event{Type: providers.EventText, Text: "ok"}
+			ch <- providers.Event{Type: providers.EventDone, StopReason: "end_turn", Usage: &providers.Usage{InputTokens: 1, OutputTokens: 1}}
+		}()
+		return ch, nil
+	}
+
+	// Fire two concurrent POSTs to the same session.
+	type result struct {
+		status int
+		body   string
+	}
+	first := make(chan result, 1)
+	go func() {
+		resp, err := http.Post(ts.URL+"/v1/sessions/"+sessionID+"/messages", "application/json", strings.NewReader(
+			`{"segments":[{"role":"user","content":[{"type":"trusted-text","text":"q1"}]}]}`,
+		))
+		if err != nil {
+			first <- result{status: -1, body: err.Error()}
+			return
+		}
+		defer resp.Body.Close()
+		b, _ := io.ReadAll(resp.Body)
+		first <- result{status: resp.StatusCode, body: string(b)}
+	}()
+
+	// Wait deterministically for the first request to enter the provider
+	// (and thus hold the session lock).
+	select {
+	case <-entered:
+	case <-time.After(2 * time.Second):
+		close(release2)
+		t.Fatal("first continuation never reached the provider")
+	}
+
+	// Second continuation while the first is mid-call.
+	resp2, err := http.Post(ts.URL+"/v1/sessions/"+sessionID+"/messages", "application/json", strings.NewReader(
+		`{"segments":[{"role":"user","content":[{"type":"trusted-text","text":"q2"}]}]}`,
+	))
+	if err != nil {
+		close(release2)
+		t.Fatal(err)
+	}
+	body2, _ := io.ReadAll(resp2.Body)
+	resp2.Body.Close()
+
+	if resp2.StatusCode != http.StatusConflict {
+		close(release2)
+		<-first
+		t.Fatalf("second status = %d, want 409; body=%s", resp2.StatusCode, string(body2))
+	}
+	if !strings.Contains(string(body2), `"code":"session_busy"`) {
+		close(release2)
+		<-first
+		t.Fatalf("second body missing session_busy code: %s", string(body2))
+	}
+
+	// Let the first complete, then verify a follow-up succeeds (lock released).
+	close(release2)
+	got := <-first
+	if got.status != 200 {
+		t.Fatalf("first call failed: status=%d body=%s", got.status, got.body)
+	}
+
+	resp3, err := http.Post(ts.URL+"/v1/sessions/"+sessionID+"/messages", "application/json", strings.NewReader(
+		`{"segments":[{"role":"user","content":[{"type":"trusted-text","text":"q3"}]}]}`,
+	))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp3.Body.Close()
+	if resp3.StatusCode != 200 {
+		b, _ := io.ReadAll(resp3.Body)
+		t.Fatalf("post-release status = %d, body=%s", resp3.StatusCode, string(b))
+	}
+}
+
+// v0.3.2: the per-session lock must be scoped per-session, not global.
+// Two concurrent POSTs to DIFFERENT sessions must both succeed.
+func TestPerSessionLockDoesNotAffectOtherSessions(t *testing.T) {
+	cfg := &config.Config{
+		Defaults: config.Defaults{Provider: "stub", Model: "stub-model"},
+		Agents: map[string]config.AgentDef{
+			"default": {Model: "stub-model"},
+		},
+		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4, QueueTimeoutMS: 1000},
+	}
+	provider := &callableProvider{}
+	provider.call = func(ctx context.Context, _ providers.Request) (<-chan providers.Event, error) {
+		ch := make(chan providers.Event, 2)
+		ch <- providers.Event{Type: providers.EventText, Text: "ok"}
+		ch <- providers.Event{Type: providers.EventDone, StopReason: "end_turn", Usage: &providers.Usage{InputTokens: 1, OutputTokens: 1}}
+		close(ch)
+		return ch, nil
+	}
+
+	st, _ := storesqlite.Open(filepath.Join(t.TempDir(), "test.db"))
+	defer st.Close()
+
+	srv := New(cfg, &stubResolver{p: provider}, nil, concurrency.New(4, 4, time.Second), st)
+	ts := httptest.NewServer(srv.Mux())
+	defer ts.Close()
+
+	// Two fresh runs → two distinct session IDs.
+	mkSession := func() string {
+		resp, err := http.Post(ts.URL+"/v1/runs", "application/json", strings.NewReader(
+			`{"agent":"default","segments":[{"role":"user","content":[{"type":"trusted-text","text":"hi"}]}]}`,
+		))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		b, _ := io.ReadAll(resp.Body)
+		return extractSessionID(string(b))
+	}
+	s1, s2 := mkSession(), mkSession()
+	if s1 == "" || s2 == "" || s1 == s2 {
+		t.Fatalf("bad session ids: %q %q", s1, s2)
+	}
+
+	// Concurrent continuation on each — both must succeed.
+	var wg sync.WaitGroup
+	results := make([]int, 2)
+	for i, sid := range []string{s1, s2} {
+		wg.Add(1)
+		go func(i int, sid string) {
+			defer wg.Done()
+			resp, err := http.Post(ts.URL+"/v1/sessions/"+sid+"/messages", "application/json", strings.NewReader(
+				`{"segments":[{"role":"user","content":[{"type":"trusted-text","text":"go"}]}]}`,
+			))
+			if err != nil {
+				results[i] = -1
+				return
+			}
+			defer resp.Body.Close()
+			io.Copy(io.Discard, resp.Body)
+			results[i] = resp.StatusCode
+		}(i, sid)
+	}
+	wg.Wait()
+	for i, st := range results {
+		if st != 200 {
+			t.Errorf("session %d status = %d, want 200", i, st)
+		}
+	}
+}
+
+// v0.3.2 review fix: unknown session IDs must NOT grow sessionLocks.
+// Previously trySessionLock ran before existence validation, so a caller
+// spamming /v1/sessions/<random>/messages or /v1/runs with an unknown
+// session_id could leak a *sync.Mutex per request indefinitely.
+func TestUnknownSessionIDDoesNotGrowLockTable(t *testing.T) {
+	cfg := &config.Config{
+		Defaults: config.Defaults{Provider: "stub", Model: "stub-model"},
+		Agents: map[string]config.AgentDef{
+			"default": {Model: "stub-model"},
+		},
+		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4, QueueTimeoutMS: 1000},
+	}
+	st, _ := storesqlite.Open(filepath.Join(t.TempDir(), "test.db"))
+	defer st.Close()
+
+	provider := &stubProvider{events: []providers.Event{
+		{Type: providers.EventDone, StopReason: "end_turn", Usage: &providers.Usage{InputTokens: 1, OutputTokens: 1}},
+	}}
+	srv := New(cfg, &stubResolver{p: provider}, nil, concurrency.New(4, 4, time.Second), st)
+	ts := httptest.NewServer(srv.Mux())
+	defer ts.Close()
+
+	// Hammer /messages with 50 unknown ids.
+	for i := 0; i < 50; i++ {
+		resp, err := http.Post(ts.URL+"/v1/sessions/s_unknown_"+fmt.Sprint(i)+"/messages", "application/json", strings.NewReader(
+			`{"segments":[{"role":"user","content":[{"type":"trusted-text","text":"x"}]}]}`,
+		))
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusNotFound {
+			t.Fatalf("messages unknown #%d: status = %d, want 404", i, resp.StatusCode)
+		}
+	}
+
+	// Hammer /runs with 50 unknown session_ids.
+	for i := 0; i < 50; i++ {
+		resp, err := http.Post(ts.URL+"/v1/runs", "application/json", strings.NewReader(
+			`{"agent":"default","session_id":"s_unknown_runs_`+fmt.Sprint(i)+`","segments":[{"role":"user","content":[{"type":"trusted-text","text":"x"}]}]}`,
+		))
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusNotFound {
+			t.Fatalf("runs unknown #%d: status = %d, want 404", i, resp.StatusCode)
+		}
+	}
+
+	if got := srv.lockedSessionCount(); got != 0 {
+		t.Fatalf("sessionLocks grew to %d entries from 100 unknown-id requests; want 0", got)
+	}
+}
+
+// v0.3.2: handleRuns also takes the lock when SessionID is set.
+// Reusing an explicit SessionID concurrently must fast-fail with 409.
+func TestPerSessionLockAppliesToRunsWithSessionID(t *testing.T) {
+	cfg := &config.Config{
+		Defaults: config.Defaults{Provider: "stub", Model: "stub-model"},
+		Agents: map[string]config.AgentDef{
+			"default": {Model: "stub-model"},
+		},
+		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4, QueueTimeoutMS: 1000},
+	}
+	// Gate which call blocks by inspecting the request itself rather than
+	// reading provider.requests' length racily. Calls whose user message
+	// contains "BLOCK_HERE" hold until release is closed; everything else
+	// completes immediately. entered signals first blocking entry.
+	release := make(chan struct{})
+	entered := make(chan struct{}, 1)
+	provider := &callableProvider{}
+	provider.call = func(ctx context.Context, req providers.Request) (<-chan providers.Event, error) {
+		shouldBlock := requestContains(req, "BLOCK_HERE")
+		if shouldBlock {
+			select {
+			case entered <- struct{}{}:
+			default:
+			}
+		}
+		ch := make(chan providers.Event, 2)
+		go func() {
+			defer close(ch)
+			if shouldBlock {
+				<-release
+			}
+			ch <- providers.Event{Type: providers.EventText, Text: "ok"}
+			ch <- providers.Event{Type: providers.EventDone, StopReason: "end_turn", Usage: &providers.Usage{InputTokens: 1, OutputTokens: 1}}
+		}()
+		return ch, nil
+	}
+
+	st, _ := storesqlite.Open(filepath.Join(t.TempDir(), "test.db"))
+	defer st.Close()
+
+	srv := New(cfg, &stubResolver{p: provider}, nil, concurrency.New(4, 4, time.Second), st)
+	ts := httptest.NewServer(srv.Mux())
+	defer ts.Close()
+
+	// Seed.
+	resp0, err := http.Post(ts.URL+"/v1/runs", "application/json", strings.NewReader(
+		`{"agent":"default","segments":[{"role":"user","content":[{"type":"trusted-text","text":"hi"}]}]}`,
+	))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body0, _ := io.ReadAll(resp0.Body)
+	resp0.Body.Close()
+	sessionID := extractSessionID(string(body0))
+	if sessionID == "" {
+		t.Fatalf("no session id from seed:\n%s", string(body0))
+	}
+
+	// Concurrent /v1/runs reusing the same session_id: first blocks; second 409s.
+	first := make(chan int, 1)
+	go func() {
+		resp, err := http.Post(ts.URL+"/v1/runs", "application/json", strings.NewReader(
+			`{"agent":"default","session_id":"`+sessionID+`","segments":[{"role":"user","content":[{"type":"trusted-text","text":"q1 BLOCK_HERE"}]}]}`,
+		))
+		if err != nil {
+			first <- -1
+			return
+		}
+		defer resp.Body.Close()
+		io.Copy(io.Discard, resp.Body)
+		first <- resp.StatusCode
+	}()
+
+	// Wait deterministically for the blocking call to enter the provider.
+	select {
+	case <-entered:
+	case <-time.After(2 * time.Second):
+		close(release)
+		t.Fatal("first run never reached provider")
+	}
+
+	resp2, err := http.Post(ts.URL+"/v1/runs", "application/json", strings.NewReader(
+		`{"agent":"default","session_id":"`+sessionID+`","segments":[{"role":"user","content":[{"type":"trusted-text","text":"q2"}]}]}`,
+	))
+	if err != nil {
+		close(release)
+		t.Fatal(err)
+	}
+	body2, _ := io.ReadAll(resp2.Body)
+	resp2.Body.Close()
+
+	if resp2.StatusCode != http.StatusConflict {
+		close(release)
+		<-first
+		t.Fatalf("second status = %d, want 409; body=%s", resp2.StatusCode, string(body2))
+	}
+	if !strings.Contains(string(body2), `"code":"session_busy"`) {
+		close(release)
+		<-first
+		t.Fatalf("second body missing session_busy: %s", string(body2))
+	}
+	close(release)
+	if got := <-first; got != 200 {
+		t.Errorf("first status = %d, want 200", got)
+	}
+}
+
 // callableProvider lets a test inject a Call function. Reuses stubProvider's
 // ID/Capabilities trivially.
 type callableProvider struct {
@@ -556,6 +1015,21 @@ func (c *callableProvider) Call(ctx context.Context, req providers.Request) (<-c
 func containsText(blocks []providers.ContentBlock, want string) bool {
 	for _, b := range blocks {
 		if b.Type == "text" && strings.Contains(b.Text, want) {
+			return true
+		}
+	}
+	return false
+}
+
+// requestContains scans the request's user messages for a marker string.
+// Tests use this to gate per-call behaviour deterministically (instead of
+// reading provider.requests' length, which races with concurrent appends).
+func requestContains(req providers.Request, marker string) bool {
+	for _, m := range req.Messages {
+		if m.Role != "user" {
+			continue
+		}
+		if containsText(m.Content, marker) {
 			return true
 		}
 	}
@@ -758,6 +1232,45 @@ func extractSessionID(body string) string {
 }
 
 // readEvents parses SSE frames and returns the event-type per frame in order.
+// sseFrame is one parsed SSE frame: event type + decoded JSON data.
+type sseFrame struct {
+	Event string
+	Data  map[string]any
+}
+
+func readFrames(t *testing.T, r io.Reader) []sseFrame {
+	t.Helper()
+	scanner := bufio.NewScanner(r)
+	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
+
+	var frames []sseFrame
+	var current sseFrame
+	for scanner.Scan() {
+		line := scanner.Text()
+		if line == "" {
+			if current.Event != "" {
+				frames = append(frames, current)
+				current = sseFrame{}
+			}
+			continue
+		}
+		if strings.HasPrefix(line, "event:") {
+			current.Event = strings.TrimSpace(strings.TrimPrefix(line, "event:"))
+		}
+		if strings.HasPrefix(line, "data:") {
+			payload := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+			_ = json.Unmarshal([]byte(payload), &current.Data)
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		t.Fatalf("scanner: %v", err)
+	}
+	if current.Event != "" {
+		frames = append(frames, current)
+	}
+	return frames
+}
+
 func readEvents(t *testing.T, r io.Reader) []string {
 	t.Helper()
 	scanner := bufio.NewScanner(r)

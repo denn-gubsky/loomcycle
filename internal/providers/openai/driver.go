@@ -90,6 +90,7 @@ func (d *Driver) Call(ctx context.Context, req providers.Request) (<-chan provid
 	resp, err := ratelimit.Do(ctx, ratelimit.Config{
 		Provider:    "openai",
 		ParseHeader: ratelimit.OpenAIRetryAfter,
+		OnEvent:     req.OnEvent,
 	}, attempt)
 	if err != nil {
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {

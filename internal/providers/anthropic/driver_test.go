@@ -306,6 +306,73 @@ func TestRetryOn429IsInvisibleToLoop(t *testing.T) {
 	}
 }
 
+// v0.3.2: a 429 must surface a typed EventRetry to the loop's OnEvent
+// hook, with provider/attempt/wait_ms/reason populated. This is the full
+// pipeline: driver 429 → ratelimit Config.OnEvent → req.OnEvent (loop's
+// emit) → opts.OnEvent (caller). The caller (e.g. the SSE handler) needs
+// the WaitMs to render "waiting on rate limit" UI.
+func TestRetryEmitsTypedEventToLoop(t *testing.T) {
+	var callNum int
+	var mu sync.Mutex
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		callNum++
+		n := callNum
+		mu.Unlock()
+		if n == 1 {
+			w.Header().Set("Retry-After", "0")
+			w.WriteHeader(429)
+			w.Write([]byte(`{"type":"error","error":{"type":"rate_limit_error","message":"slow down"}}`))
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(200)
+		fmt.Fprint(w, "event: content_block_delta\ndata: {\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"ok\"}}\n\n")
+		fmt.Fprint(w, "event: message_delta\ndata: {\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}\n\n")
+		fmt.Fprint(w, "event: message_stop\ndata: {}\n\n")
+	}))
+	defer srv.Close()
+
+	d := New("test-key", srv.URL, nil)
+
+	var retryEvents []providers.Event
+	_, err := loop.Run(context.Background(), loop.RunOptions{
+		Provider: d,
+		Model:    "claude-sonnet-4-6",
+		Segments: []loop.PromptSegment{
+			{Role: "user", Content: []loop.PromptContentBlock{{Type: "trusted-text", Text: "hi"}}},
+		},
+		OnEvent: func(ev providers.Event) {
+			if ev.Type == providers.EventRetry {
+				retryEvents = append(retryEvents, ev)
+			}
+		},
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(retryEvents) != 1 {
+		t.Fatalf("got %d retry events, want 1 (one 429 → one retry)", len(retryEvents))
+	}
+	r := retryEvents[0].Retry
+	if r == nil {
+		t.Fatal("EventRetry.Retry is nil")
+	}
+	if r.Provider != "anthropic" {
+		t.Errorf("Provider = %q, want anthropic", r.Provider)
+	}
+	if r.Attempt != 1 {
+		t.Errorf("Attempt = %d, want 1", r.Attempt)
+	}
+	// Retry-After: 0 honoured.
+	if r.WaitMs != 0 {
+		t.Errorf("WaitMs = %d, want 0", r.WaitMs)
+	}
+	if r.Reason == "" {
+		t.Errorf("Reason is empty, want non-empty")
+	}
+}
+
 func TestRequestBodyShape(t *testing.T) {
 	// Verify the request marshalling: cache_control on Cacheable system block,
 	// proper tool_use / tool_result encoding.

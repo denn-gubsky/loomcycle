@@ -13,6 +13,7 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/concurrency"
@@ -38,12 +39,56 @@ type Server struct {
 	tools     []tools.Tool
 	sem       *concurrency.Semaphore
 	store     store.Store // optional; nil means "don't persist"
+
+	// sessionLocks maps session IDs to *sync.Mutex. A continuation POST
+	// (handleMessages, or handleRuns with a non-empty SessionID) try-locks
+	// the session before replaying transcript + running. Concurrent POSTs
+	// to the same session fast-fail with 409, since the alternative is to
+	// leave a second SSE stream waiting indefinitely behind the first —
+	// and a partial-transcript replay would corrupt history.
+	//
+	// Entries accumulate; never deleted. ~32 B per session is acceptable
+	// for v0.3.2; periodic GC is a future cleanup.
+	sessionLocks sync.Map
 }
 
 // New constructs a Server. If st is non-nil, every run is recorded as a
 // session+run+events tuple in the store; pass nil to keep v0.2 behaviour.
 func New(cfg *config.Config, pr ProviderResolver, builtinTools []tools.Tool, sem *concurrency.Semaphore, st store.Store) *Server {
 	return &Server{cfg: cfg, providers: pr, tools: builtinTools, sem: sem, store: st}
+}
+
+// trySessionLock try-locks the session-scoped mutex for id. Returns
+// (release, true) on success and (nil, false) if another caller already
+// holds it — in which case the caller should respond 409 / session_busy.
+// id must be non-empty; an empty id is a programmer error and panics.
+//
+// Callers MUST validate the session exists in the store before calling
+// this — sessionLocks entries are never GC'd, so taking a lock on an
+// unknown id would leak permanently and is a vector for an unbounded
+// memory DoS.
+func (s *Server) trySessionLock(id string) (release func(), ok bool) {
+	if id == "" {
+		panic("trySessionLock: empty session id")
+	}
+	v, _ := s.sessionLocks.LoadOrStore(id, &sync.Mutex{})
+	mu := v.(*sync.Mutex)
+	if !mu.TryLock() {
+		return nil, false
+	}
+	return mu.Unlock, true
+}
+
+// lockedSessionCount returns the number of entries in sessionLocks.
+// Test-only: used to assert the DoS fix (unknown IDs must not grow
+// the table). sync.Map exposes no Len, so we range.
+func (s *Server) lockedSessionCount() int {
+	n := 0
+	s.sessionLocks.Range(func(_, _ any) bool {
+		n++
+		return true
+	})
+	return n
 }
 
 // Mux returns the http.Handler ready to be served.
@@ -141,6 +186,38 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
+	}
+
+	// Per-session continuation lock: when the caller is resuming an
+	// existing session, serialize at the session level so two concurrent
+	// POSTs can't replay overlapping transcripts. Fresh runs (empty
+	// SessionID) skip this — they have no prior history to corrupt.
+	//
+	// CRITICAL: validate the session exists BEFORE taking the lock.
+	// Otherwise an attacker can spam unknown IDs and each LoadOrStore
+	// grows sessionLocks permanently (entries are never GC'd at v0.3.2).
+	if req.SessionID != "" {
+		if s.store == nil {
+			http.Error(w, "session_id requires persistence (Store not configured)", http.StatusBadRequest)
+			return
+		}
+		if _, err := s.store.GetSession(r.Context(), req.SessionID); err != nil {
+			var nf *store.ErrNotFound
+			if errors.As(err, &nf) {
+				http.Error(w, err.Error(), http.StatusNotFound)
+				return
+			}
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		releaseSess, ok := s.trySessionLock(req.SessionID)
+		if !ok {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusConflict)
+			fmt.Fprintf(w, `{"code":"session_busy","error":"another request is in flight on session %q"}`, req.SessionID)
+			return
+		}
+		defer releaseSess()
 	}
 
 	// Acquire concurrency slot first so backpressure is reported as 429
@@ -260,12 +337,16 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "session id is required", http.StatusBadRequest)
 		return
 	}
+
 	var body messagesRequest
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		http.Error(w, "bad json: "+err.Error(), http.StatusBadRequest)
 		return
 	}
 
+	// Validate the session exists BEFORE taking the per-session lock.
+	// Otherwise an attacker can spam unknown IDs and each LoadOrStore
+	// grows sessionLocks permanently (entries are never GC'd at v0.3.2).
 	sess, err := s.store.GetSession(r.Context(), id)
 	if err != nil {
 		var nf *store.ErrNotFound
@@ -276,6 +357,20 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+
+	// Per-session continuation lock: take the lock before transcript
+	// replay so two concurrent POSTs to the same session can't read
+	// half-written history. Fast-fail with 409 since the alternative —
+	// blocking on an SSE handler — would hold an HTTP connection open
+	// for the full length of the in-flight run.
+	releaseSess, ok := s.trySessionLock(id)
+	if !ok {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusConflict)
+		fmt.Fprintf(w, `{"code":"session_busy","error":"another request is in flight on session %q"}`, id)
+		return
+	}
+	defer releaseSess()
 
 	// Resolve provider+model from the session's stored agent so the
 	// continuation runs against the same model as the original session.

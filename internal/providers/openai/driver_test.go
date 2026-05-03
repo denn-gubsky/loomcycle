@@ -346,6 +346,68 @@ func TestRetryOn429PreservesContext(t *testing.T) {
 	}
 }
 
+// v0.3.2: a 429 must fire EventRetry through req.OnEvent so the loop's
+// SSE consumer sees retry telemetry live during the sleep. This proves
+// the driver wires req.OnEvent into ratelimit.Config.OnEvent — without
+// that line, the EventRetry never reaches the caller.
+func TestRetryEmitsEventToRequestOnEvent(t *testing.T) {
+	var callNum int
+	var mu sync.Mutex
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		callNum++
+		n := callNum
+		mu.Unlock()
+		if n == 1 {
+			w.Header().Set("Retry-After", "0")
+			w.WriteHeader(429)
+			w.Write([]byte(`{"error":{"type":"rate_limit_exceeded","message":"slow down"}}`))
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(200)
+		fmt.Fprint(w, `data: {"choices":[{"index":0,"delta":{"content":"ok"}}]}`+"\n\n")
+		fmt.Fprint(w, `data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`+"\n\n")
+		fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	defer srv.Close()
+
+	var retries []providers.Event
+	var rmu sync.Mutex
+	d := New("test-key", srv.URL, nil)
+	ch, err := d.Call(context.Background(), providers.Request{
+		Model: "gpt-4o-mini",
+		OnEvent: func(ev providers.Event) {
+			rmu.Lock()
+			defer rmu.Unlock()
+			if ev.Type == providers.EventRetry {
+				retries = append(retries, ev)
+			}
+		},
+	})
+	if err != nil {
+		t.Fatalf("Call: %v", err)
+	}
+	for range ch {
+	}
+
+	rmu.Lock()
+	defer rmu.Unlock()
+	if len(retries) != 1 {
+		t.Fatalf("got %d retry events, want 1", len(retries))
+	}
+	r := retries[0].Retry
+	if r == nil {
+		t.Fatal("Retry payload missing")
+	}
+	if r.Provider != "openai" {
+		t.Errorf("Provider = %q, want openai", r.Provider)
+	}
+	if r.Attempt != 1 {
+		t.Errorf("Attempt = %d, want 1", r.Attempt)
+	}
+}
+
 func TestNon200Status(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(401)

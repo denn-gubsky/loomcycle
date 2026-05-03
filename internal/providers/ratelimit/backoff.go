@@ -21,6 +21,8 @@ import (
 	"math/rand"
 	"net/http"
 	"time"
+
+	"github.com/denn-gubsky/loomcycle/internal/providers"
 )
 
 // ParseFn extracts a retry-after duration from response headers. Returns
@@ -60,6 +62,12 @@ type Config struct {
 	// default writes a structured log line via the standard logger.
 	OnRetry func(provider string, attempt int, wait time.Duration, reason string)
 
+	// OnEvent, when set, is called after OnRetry with a typed
+	// providers.EventRetry. Drivers wire req.OnEvent here so adapter
+	// consumers see retry telemetry on the same SSE stream as the main
+	// response. Optional.
+	OnEvent func(providers.Event)
+
 	// rng is for tests to inject a deterministic source. nil = global rand.
 	rng *rand.Rand
 }
@@ -96,10 +104,12 @@ func defaultOnRetry(provider string, attempt int, wait time.Duration, reason str
 		provider, attempt, wait.String(), reason)
 }
 
-// Reason strings passed to OnRetry.
+// Reason strings passed to OnRetry. These re-export the canonical
+// constants from the providers package — the wire contract lives
+// there because RetryInfo.Reason is part of the SSE shape.
 const (
-	ReasonHeader   = "retry-after header"
-	ReasonSchedule = "exponential backoff"
+	ReasonHeader   = providers.RetryReasonHeader
+	ReasonSchedule = providers.RetryReasonSchedule
 )
 
 // Do calls attempt repeatedly until it returns a non-429 response or the
@@ -165,6 +175,17 @@ func Do(ctx context.Context, cfg Config, attempt func(ctx context.Context) (*htt
 		_ = resp.Body.Close()
 
 		cfg.OnRetry(cfg.Provider, i+1, wait, reason)
+		if cfg.OnEvent != nil {
+			cfg.OnEvent(providers.Event{
+				Type: providers.EventRetry,
+				Retry: &providers.RetryInfo{
+					Provider: cfg.Provider,
+					Attempt:  i + 1,
+					WaitMs:   wait.Milliseconds(),
+					Reason:   reason,
+				},
+			})
+		}
 
 		// time.NewTimer + defer Stop instead of time.After so a ctx-cancel
 		// during the wait doesn't leak the underlying timer until expiry.
