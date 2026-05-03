@@ -36,7 +36,24 @@ type WebSearch struct {
 	// HTTPClient overrides the default. Tests inject one to control
 	// dialing; in production the default *http.Client is used.
 	HTTPClient *http.Client
+	// AllowedHosts narrows the result set to URLs whose host suffix-
+	// matches one of these entries. nil = no narrowing (return what
+	// Brave returned). The per-run wrapper in narrowing.go sets this.
+	AllowedHosts []string
+	// FilterMode selects what happens to results whose URL host isn't
+	// in AllowedHosts. WebSearchFilterDrop (default when AllowedHosts
+	// is set) omits non-matching results entirely; WebSearchFilterKeep
+	// returns everything Brave returned and lets the caller filter
+	// downstream. Ignored when AllowedHosts is nil.
+	FilterMode string
 }
+
+// FilterMode constants for WebSearch.FilterMode. The wire form
+// (carried in the HTTP request body) uses these exact strings.
+const (
+	WebSearchFilterDrop = "drop"
+	WebSearchFilterKeep = "keep"
+)
 
 func (s *WebSearch) Name() string { return "WebSearch" }
 func (s *WebSearch) Description() string {
@@ -141,9 +158,29 @@ func (s *WebSearch) Execute(ctx context.Context, input json.RawMessage) (tools.R
 		return tools.Result{Text: "no results", IsError: false}, nil
 	}
 
+	// Per-run host narrowing — applied here so the filter is the LAST
+	// thing to touch the result list, after Brave's count and the
+	// hard-25 cap. Drop mode is the default when AllowedHosts is set;
+	// keep mode is opt-in for callers that want to see everything and
+	// filter downstream.
+	results := parsed.Web.Results
+	if s.AllowedHosts != nil && s.FilterMode != WebSearchFilterKeep {
+		filtered := results[:0]
+		for _, r := range results {
+			if u, err := url.Parse(r.URL); err == nil && hostAllowed(u.Hostname(), s.AllowedHosts) {
+				filtered = append(filtered, r)
+			}
+		}
+		results = filtered
+	}
+	if len(results) == 0 {
+		return tools.Result{Text: "no results"}, nil
+	}
+
 	var b strings.Builder
-	for i, r := range parsed.Web.Results {
-		if i >= max {
+	rendered := 0
+	for _, r := range results {
+		if rendered >= max {
 			break
 		}
 		title := stripHTML(r.Title) // brave returns title with <strong> highlighting
@@ -151,7 +188,8 @@ func (s *WebSearch) Execute(ctx context.Context, input json.RawMessage) (tools.R
 		if len(desc) > maxSnippetChars {
 			desc = desc[:maxSnippetChars] + "…"
 		}
-		fmt.Fprintf(&b, "[%d] %s — %s\n   %s\n", i+1, title, r.URL, desc)
+		rendered++
+		fmt.Fprintf(&b, "[%d] %s — %s\n   %s\n", rendered, title, r.URL, desc)
 	}
 	return tools.Result{Text: strings.TrimRight(b.String(), "\n")}, nil
 }

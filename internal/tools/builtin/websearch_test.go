@@ -181,6 +181,111 @@ func TestWebSearchSurfacesUpstreamError(t *testing.T) {
 	}
 }
 
+// Per-run host narrowing — drop mode (default when AllowedHosts is set).
+// Brave returns three results across two hosts; AllowedHosts permits
+// only one host. The other host's result must be omitted, and indices
+// must renumber so the model sees [1] not [3].
+func TestWebSearchAllowedHostsDropMode(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"web":{"results":[
+			{"title":"A","url":"https://allowed.example/a","description":"da"},
+			{"title":"B","url":"https://blocked.example/b","description":"db"},
+			{"title":"C","url":"https://api.allowed.example/c","description":"dc"}
+		]}}`)
+	}))
+	defer srv.Close()
+
+	s := &WebSearch{
+		APIKey:       "k",
+		Endpoint:     srv.URL,
+		AllowedHosts: []string{"allowed.example"},
+		// FilterMode unset → defaults to drop.
+	}
+	body, _ := json.Marshal(map[string]string{"query": "x"})
+	res, err := s.Execute(context.Background(), body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.IsError {
+		t.Fatalf("unexpected error: %q", res.Text)
+	}
+	if strings.Contains(res.Text, "blocked.example") {
+		t.Errorf("blocked host leaked into results: %q", res.Text)
+	}
+	if !strings.Contains(res.Text, "allowed.example/a") || !strings.Contains(res.Text, "allowed.example/c") {
+		t.Errorf("allowed hosts missing: %q", res.Text)
+	}
+	// Renumbering: only two results survive — should be [1] and [2], not [1] and [3].
+	if !strings.HasPrefix(res.Text, "[1]") {
+		t.Errorf("first result should be [1]; got prefix %q", res.Text[:min(len(res.Text), 50)])
+	}
+	if !strings.Contains(res.Text, "[2] C") {
+		t.Errorf("second result should be [2] C; got %q", res.Text)
+	}
+	if strings.Contains(res.Text, "[3]") {
+		t.Errorf("indices should renumber; saw [3] in %q", res.Text)
+	}
+}
+
+// Per-run host narrowing — keep mode (caller filters downstream).
+// Brave's full result set comes through unchanged; the model receives
+// every URL so it can reason about them. The contract: AllowedHosts
+// is informational here, NOT enforced.
+func TestWebSearchAllowedHostsKeepMode(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"web":{"results":[
+			{"title":"A","url":"https://allowed.example/a","description":"da"},
+			{"title":"B","url":"https://blocked.example/b","description":"db"}
+		]}}`)
+	}))
+	defer srv.Close()
+
+	s := &WebSearch{
+		APIKey:       "k",
+		Endpoint:     srv.URL,
+		AllowedHosts: []string{"allowed.example"},
+		FilterMode:   WebSearchFilterKeep,
+	}
+	body, _ := json.Marshal(map[string]string{"query": "x"})
+	res, err := s.Execute(context.Background(), body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.IsError {
+		t.Fatalf("unexpected error: %q", res.Text)
+	}
+	if !strings.Contains(res.Text, "blocked.example") {
+		t.Errorf("keep mode should return non-matching results; got %q", res.Text)
+	}
+	if !strings.Contains(res.Text, "allowed.example") {
+		t.Errorf("matching result missing in keep mode: %q", res.Text)
+	}
+}
+
+// Edge: AllowedHosts set, drop mode, ALL Brave results filtered out.
+// Should return "no results" (matching the empty-Brave-response shape).
+func TestWebSearchAllowedHostsDropAllFiltered(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"web":{"results":[
+			{"title":"A","url":"https://blocked.example/a","description":"d"}
+		]}}`)
+	}))
+	defer srv.Close()
+
+	s := &WebSearch{APIKey: "k", Endpoint: srv.URL, AllowedHosts: []string{"only.example"}}
+	body, _ := json.Marshal(map[string]string{"query": "x"})
+	res, err := s.Execute(context.Background(), body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.IsError {
+		t.Fatalf("unexpected error: %q", res.Text)
+	}
+	if res.Text != "no results" {
+		t.Errorf("text = %q, want 'no results'", res.Text)
+	}
+}
+
 func TestWebSearchEmptyResults(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprint(w, `{"web":{"results":[]}}`)

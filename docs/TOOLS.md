@@ -126,6 +126,61 @@ Use cases:
 - Multi-step pipelines where stage 1 only reads, stage 2 also writes.
 - A web UI that exposes a "safe mode" that disables `Bash` even when the agent is normally allowed it.
 
+## Per-request URL allowlist (HTTP / WebFetch / WebSearch)
+
+The operator's `LOOMCYCLE_HTTP_HOST_ALLOWLIST` is a security floor — every host the agent might ever need to reach. For a single run, callers usually want to constrain further: this run is about scraping job listings from `linkedin.com` and `indeed.com`, that one is about reading from `bbc.co.uk`. Per-request narrowing exists for exactly this.
+
+```http
+POST /v1/runs
+{
+  "agent": "cv-adapter",
+  "allowed_hosts": ["linkedin.com", "indeed.com"],
+  "web_search_filter": "drop",       // optional; defaults to "drop"
+  "segments": [...]
+}
+```
+
+### Three-state `allowed_hosts`
+
+| Field state           | Effective allowlist                                  |
+|-----------------------|------------------------------------------------------|
+| omitted (`null`)      | Operator's full static list (no narrowing)           |
+| `[]` (empty array)    | **Deny all** — every HTTP / WebFetch call refuses    |
+| `["a.com", "b.com"]`  | Operator list ∩ caller list                          |
+
+Distinguishing `null` from `[]` matters: omitting the field means "I don't have an opinion, use the operator's list"; sending `[]` means "this run does no network calls".
+
+### Intersection-only — caller can shrink, never widen
+
+If the operator's static allowlist is `["api.linkedin.com"]` and the caller asks for `["evil.example", "api.linkedin.com"]`, the effective list is `["api.linkedin.com"]` — `evil.example` is silently dropped. The operator's policy is the floor; nothing the caller does can lift it. Suffix matching applies on both sides: `api.linkedin.com` is allowed under operator entry `linkedin.com`.
+
+### Trust boundary
+
+`allowed_hosts` MUST come from the trusted upstream caller, never from the model. The model can read its own `system` prompt and request body content but cannot construct a /v1/runs request. As long as the application calling loomcycle is the one supplying `allowed_hosts`, the threat model holds. **Don't pipe model-generated text into `allowed_hosts`** — that turns the policy into something the prompt can manipulate.
+
+### `web_search_filter` for WebSearch
+
+Brave Search returns whatever it found. With per-request narrowing in place, the model sees URLs it can't actually fetch, which wastes context tokens. Two options:
+
+| `web_search_filter` | Brave behaviour preserved | Model sees results outside `allowed_hosts`? |
+|---------------------|---------------------------|----------------------------------------------|
+| `"drop"` (default when `allowed_hosts` is set) | Yes (Brave is paid) | No — non-matching results are filtered out, indices renumber |
+| `"keep"`            | Yes                       | Yes — full result list passes through; caller filters downstream |
+
+`drop` is the default because the typical agent is already context-constrained and showing it URLs it can't follow up on is wasteful. `keep` is for callers that want to see what Brave returned before applying their own narrowing logic (e.g. a UI that displays "we found N results on these other hosts too").
+
+Filter mode is ignored when `allowed_hosts` is `null`.
+
+### Session continuation
+
+Continuations on `/v1/sessions/{id}/messages` re-supply `allowed_hosts` and `web_search_filter` per call. The list is **not** persisted on the session. This keeps "what hosts can this turn reach?" answerable from the request alone — no implicit state to chase. A continuation can change (typically narrow) the list as the conversation evolves.
+
+### What this doesn't cover
+
+- **Path-level filtering** (`example.com/api/v1/*` only) — out of scope; operators wanting that wire an HTTP MCP gateway in front.
+- **Per-host method limits** (`linkedin.com` GET-only) — same reasoning.
+- **Quota / rate limits per host** — orthogonal; belongs in a v0.4 hooks/observability story.
+
 ## What "default-deny" means in practice
 
 | Situation                                                 | Result                                |
