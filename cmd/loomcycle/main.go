@@ -3,6 +3,12 @@
 // Usage:
 //
 //	loomcycle --config loomcycle.yaml
+//
+// Build identification: the buildCommit and buildTime vars are populated
+// at link time via -ldflags so a running binary can identify itself.
+// Without ldflags injection they default to "unknown" — useful signal
+// when an operator is debugging "is this the binary I just built?".
+// See loomcycle.sh for the canonical build invocation.
 package main
 
 import (
@@ -34,9 +40,33 @@ import (
 	mcpstdio "github.com/denn-gubsky/loomcycle/internal/tools/mcp/stdio"
 )
 
+// Build identification — overridden at link time via:
+//
+//	go build -ldflags "-X main.buildCommit=$(git rev-parse --short HEAD) \
+//	                   -X main.buildTime=$(date -u +%Y-%m-%dT%H:%M:%SZ)" ...
+//
+// Defaults make a forgotten -ldflags invocation visible at runtime
+// rather than silently shipping an unidentifiable binary.
+var (
+	buildCommit = "unknown"
+	buildTime   = "unknown"
+)
+
 func main() {
 	cfgPath := flag.String("config", "loomcycle.yaml", "path to config YAML")
+	showVersion := flag.Bool("version", false, "print build identifier and exit")
 	flag.Parse()
+
+	if *showVersion {
+		fmt.Printf("loomcycle commit=%s built=%s\n", buildCommit, buildTime)
+		return
+	}
+
+	// Identify ourselves first thing so an operator running a stale
+	// binary spots it immediately — before any "but my code says X"
+	// debugging spiral. Critical when development cycle is "git pull
+	// && restart" without a rebuild step in between.
+	log.Printf("loomcycle build: commit=%s time=%s", buildCommit, buildTime)
 
 	cfg, err := config.Load(*cfgPath)
 	if err != nil {
@@ -56,7 +86,16 @@ func main() {
 	// log a note for any that's still disabled — that way the model sees
 	// a clear "tool refused" error instead of a confusing "unknown tool",
 	// and operators see at startup which tools they've configured.
-	httpTool := &builtin.HTTP{HostAllowlist: cfg.Env.HTTPHostAllowlist}
+	// Strip loopback aliases (localhost, 127.0.0.1, etc.) from the
+	// operator's static allowlist. Belt-and-braces — the IP-level
+	// guard at dial time also rejects loopback, but stripping here
+	// means loopback never appears in the tool's effective list and
+	// operators don't get fooled by seeing "localhost" listed.
+	staticHosts := builtin.StripLocalhostAliases(cfg.Env.HTTPHostAllowlist)
+	httpTool := &builtin.HTTP{
+		HostAllowlist:        staticHosts,
+		PrivateHostAllowlist: cfg.Env.HTTPPrivateHostAllowlist,
+	}
 	allTools := []tools.Tool{
 		&builtin.Read{Root: cfg.Env.ReadRoot},
 		&builtin.Write{Root: cfg.Env.WriteRoot},
@@ -72,8 +111,14 @@ func main() {
 	if cfg.Env.WriteRoot == "" {
 		log.Printf("note: Write + Edit tools are registered but disabled — set LOOMCYCLE_WRITE_ROOT to enable")
 	}
-	if len(cfg.Env.HTTPHostAllowlist) == 0 {
-		log.Printf("note: HTTP + WebFetch tools are registered but disabled — set LOOMCYCLE_HTTP_HOST_ALLOWLIST to enable")
+	if len(staticHosts) == 0 && !cfg.Env.HTTPCallerAuthoritative {
+		log.Printf("note: HTTP + WebFetch tools are registered but disabled — set LOOMCYCLE_HTTP_HOST_ALLOWLIST to enable (or LOOMCYCLE_HTTP_CALLER_AUTHORITATIVE=1 to delegate the allowlist to the caller)")
+	}
+	if cfg.Env.HTTPCallerAuthoritative {
+		log.Printf("note: HTTP_CALLER_AUTHORITATIVE=1 — caller's allowed_hosts is the sole policy; operator's static list is fallback only")
+	}
+	if len(cfg.Env.HTTPPrivateHostAllowlist) > 0 {
+		log.Printf("note: HTTP_PRIVATE_HOST_ALLOWLIST=%v — these hosts may resolve to private IPs (e.g. localhost callbacks)", cfg.Env.HTTPPrivateHostAllowlist)
 	}
 	if cfg.Env.BraveAPIKey == "" {
 		log.Printf("note: WebSearch tool is registered but disabled — set BRAVE_API_KEY to enable")

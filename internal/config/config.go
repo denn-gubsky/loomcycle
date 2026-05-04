@@ -4,6 +4,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
@@ -38,10 +39,19 @@ type ModelRef struct {
 
 // AgentDef is one agent the API can address by name.
 type AgentDef struct {
-	Provider     string   `yaml:"provider"` // optional override of Defaults
-	Model        string   `yaml:"model"`    // alias or full model ID
-	SystemPrompt string   `yaml:"system_prompt"`
-	AllowedTools []string `yaml:"allowed_tools"`
+	Provider string `yaml:"provider"` // optional override of Defaults
+	Model    string `yaml:"model"`    // alias or full model ID
+	// SystemPrompt is the agent's system prompt as an inline YAML
+	// string. Mutually exclusive with SystemPromptFile.
+	SystemPrompt string `yaml:"system_prompt"`
+	// SystemPromptFile points at a file whose contents become
+	// SystemPrompt. Resolved relative to the YAML config file's
+	// directory (so "agents/qa.md" works regardless of cwd). Useful
+	// for prompts that don't fit inline — long .md files with
+	// frontmatter, etc. The frontmatter is loaded verbatim; if you
+	// want to strip it, use SystemPrompt + a preprocessor.
+	SystemPromptFile string   `yaml:"system_prompt_file"`
+	AllowedTools     []string `yaml:"allowed_tools"`
 }
 
 // MCPServer declares one MCP server. Transport "stdio" or "http".
@@ -107,7 +117,22 @@ type Env struct {
 	// calls. Suffix-matched: an entry "example.com" matches both
 	// "example.com" and "api.example.com". RFC1918, loopback, and
 	// link-local addresses are HARD-blocked regardless of allowlist.
+	// Loopback aliases (localhost, 127.0.0.1, ::1, *.localhost) are
+	// stripped at startup — use HTTPPrivateHostAllowlist below to
+	// permit specific loopback hosts at the IP layer.
 	HTTPHostAllowlist []string
+	// HTTPPrivateHostAllowlist names hosts whose resolved private IPs
+	// are allowed at dial time. Suffix-matched. Use to permit agent
+	// callbacks to a localhost-bound application API. Default empty
+	// (no exception). Example: "localhost,127.0.0.1".
+	HTTPPrivateHostAllowlist []string
+	// HTTPCallerAuthoritative flips the per-request allowed_hosts
+	// trust model: when true, caller's list is the sole policy
+	// (operator's HTTPHostAllowlist becomes a fallback for runs that
+	// don't carry their own list). When false (default), caller can
+	// only narrow operator's list, never widen. Operator opts in once
+	// via LOOMCYCLE_HTTP_CALLER_AUTHORITATIVE=1.
+	HTTPCallerAuthoritative bool
 	// BraveAPIKey enables the WebSearch tool. Empty = WebSearch refuses
 	// every call. Lives at https://api.search.brave.com/.
 	BraveAPIKey string
@@ -147,21 +172,29 @@ func Load(path string) (*Config, error) {
 		if err := yaml.Unmarshal([]byte(expanded), cfg); err != nil {
 			return nil, fmt.Errorf("parse %s: %w", path, err)
 		}
+		// Resolve any agent's system_prompt_file → system_prompt. Done
+		// here so the rest of the runtime sees a uniform AgentDef
+		// regardless of which form the operator wrote.
+		if err := resolveSystemPromptFiles(cfg, path); err != nil {
+			return nil, err
+		}
 	}
 
 	cfg.Env = Env{
-		AnthropicAPIKey:   os.Getenv("ANTHROPIC_API_KEY"),
-		OpenAIAPIKey:      os.Getenv("OPENAI_API_KEY"),
-		OllamaBaseURL:     getenvDefault("OLLAMA_BASE_URL", "http://localhost:11434"),
-		ListenAddr:        getenvDefault("LOOMCYCLE_LISTEN_ADDR", "127.0.0.1:8787"),
-		AuthToken:         os.Getenv("LOOMCYCLE_AUTH_TOKEN"),
-		DataDir:           getenvDefault("LOOMCYCLE_DATA_DIR", "./data"),
-		ReadRoot:          os.Getenv("LOOMCYCLE_READ_ROOT"),
-		WriteRoot:         os.Getenv("LOOMCYCLE_WRITE_ROOT"),
-		HTTPHostAllowlist: splitCSV(os.Getenv("LOOMCYCLE_HTTP_HOST_ALLOWLIST")),
-		BraveAPIKey:       os.Getenv("BRAVE_API_KEY"),
-		BashEnabled:       os.Getenv("LOOMCYCLE_BASH_ENABLED") == "1",
-		BashCwd:           os.Getenv("LOOMCYCLE_BASH_CWD"),
+		AnthropicAPIKey:          os.Getenv("ANTHROPIC_API_KEY"),
+		OpenAIAPIKey:             os.Getenv("OPENAI_API_KEY"),
+		OllamaBaseURL:            getenvDefault("OLLAMA_BASE_URL", "http://localhost:11434"),
+		ListenAddr:               getenvDefault("LOOMCYCLE_LISTEN_ADDR", "127.0.0.1:8787"),
+		AuthToken:                os.Getenv("LOOMCYCLE_AUTH_TOKEN"),
+		DataDir:                  getenvDefault("LOOMCYCLE_DATA_DIR", "./data"),
+		ReadRoot:                 os.Getenv("LOOMCYCLE_READ_ROOT"),
+		WriteRoot:                os.Getenv("LOOMCYCLE_WRITE_ROOT"),
+		HTTPHostAllowlist:        splitCSV(os.Getenv("LOOMCYCLE_HTTP_HOST_ALLOWLIST")),
+		HTTPPrivateHostAllowlist: splitCSV(os.Getenv("LOOMCYCLE_HTTP_PRIVATE_HOST_ALLOWLIST")),
+		HTTPCallerAuthoritative:  os.Getenv("LOOMCYCLE_HTTP_CALLER_AUTHORITATIVE") == "1",
+		BraveAPIKey:              os.Getenv("BRAVE_API_KEY"),
+		BashEnabled:              os.Getenv("LOOMCYCLE_BASH_ENABLED") == "1",
+		BashCwd:                  os.Getenv("LOOMCYCLE_BASH_CWD"),
 	}
 
 	if err := validate(cfg); err != nil {
@@ -252,6 +285,55 @@ func getenvDefault(name, dflt string) string {
 		return v
 	}
 	return dflt
+}
+
+// resolveSystemPromptFiles populates each agent's SystemPrompt from
+// SystemPromptFile when set. Relative paths are resolved against the
+// YAML config file's directory so the operator's "agents/qa.md" works
+// regardless of the process's cwd.
+//
+// Errors:
+//   - both SystemPrompt and SystemPromptFile set on the same agent
+//   - SystemPromptFile points at a missing or unreadable file
+//
+// SECURITY: the YAML config is treated as fully trusted operator
+// input. SystemPromptFile values may use "../" relative paths that
+// escape configDir, and os.ReadFile follows symlinks — both are
+// intentional. This is fine when the operator owns the YAML (typical
+// deployment: a sysadmin checks the file in alongside the binary).
+//
+// If you ever load YAML from a less-trusted source — multi-tenant
+// control plane, GitOps from PR branches, shared file shares — you
+// MUST clamp paths to configDir (reject relative segments containing
+// ".." after Clean) and open with O_NOFOLLOW. The current code makes
+// neither check; an attacker who can write YAML can read any file
+// the loomcycle process can.
+func resolveSystemPromptFiles(cfg *Config, configPath string) error {
+	configDir, err := filepath.Abs(filepath.Dir(configPath))
+	if err != nil {
+		return fmt.Errorf("config dir: %w", err)
+	}
+	for name, def := range cfg.Agents {
+		if def.SystemPromptFile == "" {
+			continue
+		}
+		if def.SystemPrompt != "" {
+			return fmt.Errorf("agent %q: system_prompt and system_prompt_file are mutually exclusive", name)
+		}
+		p := def.SystemPromptFile
+		if !filepath.IsAbs(p) {
+			p = filepath.Join(configDir, p)
+		}
+		body, err := os.ReadFile(p)
+		if err != nil {
+			return fmt.Errorf("agent %q: read system_prompt_file %s: %w", name, p, err)
+		}
+		def.SystemPrompt = string(body)
+		// SystemPromptFile is preserved on the struct — no harm, and
+		// surfaces the source path for anyone debugging the config.
+		cfg.Agents[name] = def
+	}
+	return nil
 }
 
 // splitCSV trims whitespace and drops empties from a comma-separated env value.
