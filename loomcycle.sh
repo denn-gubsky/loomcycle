@@ -71,25 +71,44 @@ else
   echo "loomcycle.sh: no $ENV_FILE found (ok for first run; copy from .env.example)" >&2
 fi
 
-# ─── 3. Stop any prior loomcycle instance ─────────────────────────────
-# This is the design choice you might want to tune — see
-# stop_prior_instance() below. Default behaviour: send SIGTERM to any
-# loomcycle process started from THIS bin path, wait briefly for it to
-# release the port, fall back to SIGKILL if it stuck around.
+# ─── 3. Stop any prior instance bound to the loomcycle port ───────────
+# Match by listen port (LOOMCYCLE_LISTEN_ADDR's :port suffix). Catches
+# any prior loomcycle regardless of which checkout / binary path it
+# was started from — useful when you have multiple working trees open
+# and the script in one of them needs to clear whatever's on the port.
+#
+# Trade-off accepted: this WILL kill an unrelated process listening on
+# the same port (e.g. `python -m http.server 8787`). LOOMCYCLE_LISTEN_ADDR
+# defaults to 127.0.0.1:8787; bind to a less-conventional port if the
+# blast radius is a concern.
+#
+# `lsof -sTCP:LISTEN` filters to listening sockets only, so a TCP
+# client connected to that port from elsewhere on the box is NOT a
+# match. That keeps innocent clients alive.
 stop_prior_instance() {
-  # Match by exact binary path so we never kill an unrelated process
-  # that happens to be on the same port. `pgrep -f` matches the full
-  # command line.
-  local target_bin
-  target_bin="$(cd "$(dirname "$BIN")" && pwd)/$(basename "$BIN")"
+  local addr="${LOOMCYCLE_LISTEN_ADDR:-127.0.0.1:8787}"
+  # Strip everything up to and including the last ':' to get the port.
+  # Works for "127.0.0.1:8787", "[::1]:8787", and ":8787".
+  local port="${addr##*:}"
+  if [[ -z "$port" || "$port" == "$addr" ]]; then
+    echo "loomcycle.sh: cannot extract port from LOOMCYCLE_LISTEN_ADDR='$addr'; skipping prior-instance stop" >&2
+    return 0
+  fi
+
+  # Need lsof. Skip cleanly on systems without it rather than failing
+  # the whole start (the bind itself will surface the conflict if any).
+  if ! command -v lsof >/dev/null 2>&1; then
+    echo "loomcycle.sh: lsof not found; skipping prior-instance stop" >&2
+    return 0
+  fi
 
   local pids
-  pids="$(pgrep -f "$target_bin" || true)"
+  pids="$(lsof -ti tcp:"$port" -sTCP:LISTEN 2>/dev/null || true)"
   if [[ -z "$pids" ]]; then
     return 0
   fi
 
-  echo "loomcycle.sh: stopping prior instance(s): $pids"
+  echo "loomcycle.sh: stopping process(es) listening on port $port: $pids"
   # SIGTERM first — loomcycle catches it and shuts down cleanly
   # (releases the port, flushes the store).
   # shellcheck disable=SC2086
@@ -98,15 +117,18 @@ stop_prior_instance() {
   # Wait up to 5s for graceful exit.
   local i
   for i in $(seq 1 10); do
-    if ! pgrep -f "$target_bin" >/dev/null 2>&1; then
+    if [[ -z "$(lsof -ti tcp:"$port" -sTCP:LISTEN 2>/dev/null)" ]]; then
       return 0
     fi
     sleep 0.5
   done
 
-  echo "loomcycle.sh: prior instance didn't exit; sending SIGKILL" >&2
-  # shellcheck disable=SC2086
-  kill -KILL $pids 2>/dev/null || true
+  echo "loomcycle.sh: process didn't exit on SIGTERM; sending SIGKILL" >&2
+  pids="$(lsof -ti tcp:"$port" -sTCP:LISTEN 2>/dev/null || true)"
+  if [[ -n "$pids" ]]; then
+    # shellcheck disable=SC2086
+    kill -KILL $pids 2>/dev/null || true
+  fi
   sleep 0.5
 }
 
