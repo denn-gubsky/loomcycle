@@ -91,7 +91,16 @@ func main() {
 	// guard at dial time also rejects loopback, but stripping here
 	// means loopback never appears in the tool's effective list and
 	// operators don't get fooled by seeing "localhost" listed.
-	staticHosts := builtin.StripLocalhostAliases(cfg.Env.HTTPHostAllowlist)
+	//
+	// PrivateHostAllowlist acts as the exemption: if the operator
+	// has explicitly opted in to a loopback host via that env var,
+	// it survives the strip on the main allowlist too. This is what
+	// lets a single "localhost" entry mean "agents may reach this
+	// loopback host AND the IP-private check is lifted for it".
+	staticHosts := builtin.StripLocalhostAliases(
+		cfg.Env.HTTPHostAllowlist,
+		cfg.Env.HTTPPrivateHostAllowlist,
+	)
 	httpTool := &builtin.HTTP{
 		HostAllowlist:        staticHosts,
 		PrivateHostAllowlist: cfg.Env.HTTPPrivateHostAllowlist,

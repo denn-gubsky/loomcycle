@@ -219,11 +219,138 @@ func TestStripLocalhostAliases(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := StripLocalhostAliases(tc.in)
+			got := StripLocalhostAliases(tc.in, nil)
 			if !reflect.DeepEqual(got, tc.want) {
 				t.Errorf("StripLocalhostAliases(%v) = %v, want %v", tc.in, got, tc.want)
 			}
 		})
+	}
+}
+
+// Exempt parameter: entries listed there survive the strip even if
+// they're loopback. Use case: operator opts in to localhost callbacks
+// via LOOMCYCLE_HTTP_PRIVATE_HOST_ALLOWLIST; without this exemption,
+// caller-supplied "localhost" gets stripped and Phase B agents fail.
+func TestStripLocalhostAliasesExempt(t *testing.T) {
+	cases := []struct {
+		name   string
+		in     []string
+		exempt []string
+		want   []string
+	}{
+		{
+			"localhost on exempt survives",
+			[]string{"localhost", "127.0.0.1", "real.example"},
+			[]string{"localhost"},
+			[]string{"localhost", "real.example"},
+		},
+		{
+			"both loopbacks on exempt survive",
+			[]string{"localhost", "127.0.0.1", "::1", "real.example"},
+			[]string{"localhost", "127.0.0.1", "::1"},
+			[]string{"localhost", "127.0.0.1", "::1", "real.example"},
+		},
+		{
+			"exempt is case-insensitive",
+			[]string{"LocalHost", "real.example"},
+			[]string{"localhost"},
+			[]string{"LocalHost", "real.example"},
+		},
+		{
+			"exempt with trailing dot still matches",
+			[]string{"localhost.", "real.example"},
+			[]string{"localhost"},
+			[]string{"localhost.", "real.example"},
+		},
+		{
+			"exempt only protects what's listed; non-exempt loopback still stripped",
+			[]string{"localhost", "127.0.0.1"},
+			[]string{"localhost"},
+			[]string{"localhost"},
+		},
+		{
+			"empty exempt is identical to nil exempt",
+			[]string{"localhost", "real.example"},
+			[]string{},
+			[]string{"real.example"},
+		},
+		{
+			"exempt that doesn't appear in input is a no-op",
+			[]string{"localhost", "real.example"},
+			[]string{"127.0.0.1"},
+			[]string{"real.example"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := StripLocalhostAliases(tc.in, tc.exempt)
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Errorf("StripLocalhostAliases(%v, exempt=%v) = %v, want %v", tc.in, tc.exempt, got, tc.want)
+			}
+		})
+	}
+}
+
+// End-to-end Phase B semantics: caller supplies allowed_hosts:
+// ["localhost", "127.0.0.1"], operator has PrivateHostAllowlist with
+// the same entries, CALLER_AUTHORITATIVE=true. Result: the wrapped
+// HTTP tool gets HostAllowlist=["localhost","127.0.0.1"] (preserved
+// through the strip) — making jobs-search-agent's localhost callback
+// reachable.
+func TestNarrowHostsPhaseBLocalhostCallback(t *testing.T) {
+	httpTool := &HTTP{
+		HostAllowlist:        nil, // operator opts out of static list
+		PrivateHostAllowlist: []string{"localhost", "127.0.0.1"},
+	}
+	caller := []string{"localhost", "127.0.0.1"}
+	out := NarrowHosts([]tools.Tool{httpTool}, caller, "", true)
+	wrapped := out[0].(*HTTP)
+	got := append([]string(nil), wrapped.HostAllowlist...)
+	sort.Strings(got)
+	want := []string{"127.0.0.1", "localhost"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("Phase B localhost callback: got HostAllowlist=%v, want %v", got, want)
+	}
+}
+
+// Reviewer-flagged edge case: agent allowed WebFetch but NOT a
+// standalone HTTP. WebFetch wraps an inner *HTTP that carries the
+// same operator-configured PrivateHostAllowlist. Without unwrapping
+// *WebFetch, findHTTPPrivateAllowlist would return nil and Phase B's
+// promise breaks for that agent shape (caller-supplied "localhost"
+// gets stripped even though the operator opted in).
+func TestNarrowHostsWebFetchOnlyHonoursPrivateAllowlist(t *testing.T) {
+	innerHTTP := &HTTP{
+		HostAllowlist:        nil,
+		PrivateHostAllowlist: []string{"localhost"},
+	}
+	wf := &WebFetch{HTTP: innerHTTP}
+	caller := []string{"localhost"}
+	out := NarrowHosts([]tools.Tool{wf}, caller, "", true)
+	wrapped := out[0].(*WebFetch)
+	if wrapped.HTTP == nil {
+		t.Fatal("wrapped WebFetch lost its HTTP backend")
+	}
+	if !reflect.DeepEqual(wrapped.HTTP.HostAllowlist, []string{"localhost"}) {
+		t.Errorf("WebFetch-only run should preserve operator-exempt localhost; got %v", wrapped.HTTP.HostAllowlist)
+	}
+}
+
+// Inverse: same setup but operator did NOT set PrivateHostAllowlist.
+// Caller's loopback entries get stripped; in CALLER_AUTHORITATIVE mode
+// that empties the caller list which falls back to operator's static
+// (also empty) → effectively deny-all. This is the v0.3.4 default
+// behaviour we want to preserve when the operator hasn't opted in.
+func TestNarrowHostsLocalhostStrippedWhenNoPrivateAllowlist(t *testing.T) {
+	httpTool := &HTTP{
+		HostAllowlist:        nil,
+		PrivateHostAllowlist: nil, // operator did NOT opt in
+	}
+	caller := []string{"localhost", "127.0.0.1"}
+	out := NarrowHosts([]tools.Tool{httpTool}, caller, "", true)
+	wrapped := out[0].(*HTTP)
+	if len(wrapped.HostAllowlist) != 0 {
+		t.Errorf("without PrivateHostAllowlist, all loopback should strip and fall back to operator's empty list; got %v", wrapped.HostAllowlist)
 	}
 }
 
