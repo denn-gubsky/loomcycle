@@ -53,8 +53,15 @@ func NarrowHosts(in []tools.Tool, callerAllowed []string, wsFilterMode string, c
 	// nil stays nil (the "no narrowing" signal); a list with only
 	// loopback aliases shrinks to an empty list (deny-all in INTERSECT,
 	// fall-back-to-operator in CALLER_AUTHORITATIVE).
+	//
+	// Exception: if the operator has explicitly opted in to specific
+	// loopback hosts via HTTP.PrivateHostAllowlist, those entries are
+	// preserved through the strip. Without this, jobs-search-agent's
+	// Phase B "agents call back to localhost" pattern fails — the
+	// caller-supplied "localhost" gets stripped and the dial layer
+	// has nothing to reach. See tests for exact semantics.
 	if callerAllowed != nil {
-		callerAllowed = StripLocalhostAliases(callerAllowed)
+		callerAllowed = StripLocalhostAliases(callerAllowed, findHTTPPrivateAllowlist(in))
 	}
 
 	if callerAuthoritative {
@@ -161,24 +168,34 @@ func narrowHTTP(orig *HTTP, callerAllowed []string) *HTTP {
 }
 
 // StripLocalhostAliases drops loopback-aliasing entries from a host
-// allowlist. Belt-and-braces: the IP-level connect guard rejects
-// loopback IPs at dial time too, but stripping at allowlist-parse
-// time means operators never see "localhost" in their effective list
-// and falsely conclude it's reachable through the main allowlist.
+// allowlist UNLESS they're also on `exempt` (typically the operator's
+// LOOMCYCLE_HTTP_PRIVATE_HOST_ALLOWLIST — "operator has explicitly
+// opted in to these private hosts"). Belt-and-braces: the IP-level
+// connect guard rejects loopback IPs at dial time too, but stripping
+// at allowlist-parse time means operators don't accidentally see
+// "localhost" in their effective list and falsely conclude it's
+// reachable through the main allowlist.
 //
-// What's stripped (case-insensitive, trailing dot ignored):
+// Exempt semantics: when `exempt` contains "localhost", a caller-
+// supplied "localhost" survives the strip; the IP-private check is
+// already lifted for that host by the same env var (PrivateHostAllowlist).
+// This is what makes localhost callbacks (jobs-search-agent's Phase B
+// pattern) work without disabling the SSRF defenses for the rest
+// of the universe.
+//
+// What's stripped when not on exempt (case-insensitive, trailing dot ignored):
 //   - "localhost" and any host whose final label is "localhost"
 //     (RFC 6761 reserves the entire .localhost TLD as loopback)
 //   - "127.0.0.1", "0.0.0.0" — IPv4 loopback / unspecified
 //   - "::1", "[::]", "[::1]" — IPv6 loopback / unspecified literals
 //
-// Does NOT apply to LOOMCYCLE_HTTP_PRIVATE_HOST_ALLOWLIST — that env
-// var's whole purpose is to permit specific loopback hosts, so the
-// strip would be self-defeating.
-func StripLocalhostAliases(in []string) []string {
+// Pass `nil` for exempt to get the original strip-everything-loopback
+// behaviour (config-load-time strip when no PrivateHostAllowlist is set).
+func StripLocalhostAliases(in []string, exempt []string) []string {
 	if len(in) == 0 {
 		return in
 	}
+	exemptSet := normaliseExempt(exempt)
 	out := make([]string, 0, len(in))
 	for _, h := range in {
 		// Try host:port split first so "localhost:3000" or "[::1]:443"
@@ -190,6 +207,10 @@ func StripLocalhostAliases(in []string) []string {
 			hostPart = hp
 		}
 		n := strings.ToLower(strings.TrimSuffix(hostPart, "."))
+		if exemptSet[n] {
+			out = append(out, h)
+			continue
+		}
 		if n == "localhost" || strings.HasSuffix(n, ".localhost") {
 			continue
 		}
@@ -198,6 +219,37 @@ func StripLocalhostAliases(in []string) []string {
 			continue
 		}
 		out = append(out, h)
+	}
+	return out
+}
+
+// findHTTPPrivateAllowlist scans the run's tool slice for an HTTP tool
+// and returns its PrivateHostAllowlist. Used by NarrowHosts to find
+// the operator's "loopback exemption" list at per-call narrowing time.
+// Returns nil when no HTTP tool is in the run (no exemption applies).
+func findHTTPPrivateAllowlist(in []tools.Tool) []string {
+	for _, t := range in {
+		if h, ok := t.(*HTTP); ok {
+			return h.PrivateHostAllowlist
+		}
+	}
+	return nil
+}
+
+// normaliseExempt lower-cases and trims each entry of the exempt list
+// so the strip's match logic can compare against the same shape it
+// produces from the input.
+func normaliseExempt(exempt []string) map[string]bool {
+	if len(exempt) == 0 {
+		return nil
+	}
+	out := make(map[string]bool, len(exempt))
+	for _, e := range exempt {
+		hostPart := e
+		if hp, _, err := net.SplitHostPort(e); err == nil {
+			hostPart = hp
+		}
+		out[strings.ToLower(strings.TrimSuffix(hostPart, "."))] = true
 	}
 	return out
 }
