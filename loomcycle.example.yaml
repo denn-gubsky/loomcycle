@@ -1,24 +1,147 @@
-# loomcycle.example.yaml
-# Routing, agent definitions, and MCP servers.
-# Secrets stay in .env (referenced via ${VAR} interpolation below).
+# loomcycle.example.yaml — comprehensive example with every tool exercised.
+#
+# Copy this to ~/.config/loomcycle/loomcycle.yaml (or wherever your
+# `loomcycle --config` flag points) and edit the agents to your needs.
+#
+# Two-layer policy model (see docs/TOOLS.md):
+#   1. Operator-side env: each built-in is registered but DISABLED until
+#      its env var is set. .env.example documents these.
+#   2. Per-agent allowed_tools below: anchored allowlist (default-deny).
+#      An agent with no allowed_tools sees ZERO tools at the dispatcher.
+#
+# YAML interpolation: ${VAR} is allowed but RESTRICTED — only LOOMCYCLE_*
+# names plus a small list of well-known third-party tokens (BRAVE_API_KEY,
+# GITHUB_TOKEN, SLACK_BOT_TOKEN, PG_DSN, REDIS_URL). Other ${VAR} tokens
+# are passed through verbatim. This blocks a malicious YAML in a shared-
+# config setup from exfiltrating, say, ANTHROPIC_API_KEY into an MCP
+# server URL.
 
+# ─── Default routing for agents that don't specify their own ──────────
 defaults:
   provider: anthropic
   model: claude-sonnet-4-6
 
+# ─── Model aliases ────────────────────────────────────────────────────
+# Agents reference these names via `model: <alias>`. The alias resolves
+# to (provider, real_model_id). Cleaner than repeating model strings,
+# and makes "swap haiku→sonnet for cv-adapter" a one-line YAML change.
 models:
   cheap:  { provider: anthropic, model: claude-haiku-4-5 }
-  smart:  { provider: anthropic, model: claude-opus-4-7 }
+  smart:  { provider: anthropic, model: claude-sonnet-4-6 }
+  best:   { provider: anthropic, model: claude-opus-4-7 }
   gpt:    { provider: openai,    model: gpt-4o-mini }
+  gpt-4:  { provider: openai,    model: gpt-4o }
   local:  { provider: ollama,    model: llama3.1:8b }     # tool-tuned model
 
+# ─── Agents ───────────────────────────────────────────────────────────
+# Each agent is addressed by name in POST /v1/runs's "agent" field.
+# allowed_tools is the ANCHORED allowlist — anything not on the list is
+# invisible to that agent's runs. Glob `mcp__server__*` exposes every
+# tool from one MCP server.
 agents:
+
+  # The minimum-viable agent: smart model, system prompt, no tools.
+  # Reaches no resources outside the model. Safe for prompts that only
+  # need text generation (Q&A bots, classifiers, summarisers).
   default:
     model: smart
     system_prompt: "You are a helpful assistant."
-    allowed_tools: [Read]
+    allowed_tools: []
 
+  # Filesystem-only agent: can read/write/edit files but cannot reach
+  # the network. Good for code-review or doc-editing flows where the
+  # operator has staged inputs into LOOMCYCLE_WRITE_ROOT.
+  file-editor:
+    model: smart
+    system_prompt: "You edit files in the configured sandbox. Never speculate about files you haven't read."
+    allowed_tools: [Read, Write, Edit]
+
+  # Research agent: can search the web and fetch pages. Cannot touch
+  # the filesystem. Default WebSearch filter is "drop" — the model
+  # only sees URLs it can actually fetch via WebFetch (the per-request
+  # allowed_hosts narrows further if the caller supplies it).
+  researcher:
+    model: smart
+    system_prompt: "You do focused web research. Cite every claim with a URL."
+    allowed_tools: [WebSearch, WebFetch]
+
+  # Power agent: full tool surface. Should only be used when the
+  # operator has containerised loomcycle (Bash is NOT a true sandbox).
+  # Keep `Bash` off this list unless you really need it.
+  power-user:
+    model: best
+    system_prompt: "You have broad access. Do the minimum work needed."
+    allowed_tools: [Read, Write, Edit, WebSearch, WebFetch]
+    # Add Bash only if loomcycle runs inside a container/VM:
+    # allowed_tools: [Read, Write, Edit, WebSearch, WebFetch, Bash]
+
+  # MCP-backed agent: glob exposes every tool the brave-search MCP
+  # server registers, alongside built-in WebFetch for the deep-dive.
+  # The mcp_servers.brave-search block below declares the server.
+  brave-researcher:
+    model: smart
+    allowed_tools: ["mcp__brave-search__*", WebFetch]
+    system_prompt: "Search via Brave, fetch top results, synthesise."
+
+  # Cheap classifier: haiku model, no tools, system prompt does
+  # all the heavy lifting. Good for routing/triage where you'd
+  # otherwise pay sonnet rates per call.
+  classifier:
+    model: cheap
+    system_prompt: |
+      Classify each input into exactly one of: bug, feature, question, spam.
+      Output ONLY the label, no explanation.
+    allowed_tools: []
+
+# ─── MCP servers ──────────────────────────────────────────────────────
+# Declared servers spawn at startup (stdio) or are dialed per-call
+# (http). Their tools register as `mcp__{server}__{tool}` after
+# tools/list discovery. Operator-level allowed_tools narrows what the
+# server exposes BEFORE any agent's allowed_tools is consulted.
+mcp_servers:
+
+  # ─ Stdio MCP server (subprocess) ────────────────────────────────────
+  brave-search:
+    transport: stdio
+    command: npx
+    args: ["-y", "@modelcontextprotocol/server-brave-search"]
+    env:
+      # ${BRAVE_API_KEY} expands from the parent process env (loomcycle.sh
+      # sources .env.local before exec). Falls through verbatim if the
+      # var is unset — the MCP server will then refuse to start, which
+      # surfaces as a startup log line and the server is skipped.
+      BRAVE_API_KEY: "${BRAVE_API_KEY}"
+    pool_size: 2
+    # Operator-level filter: only this subset of the server's tools is
+    # registered AT ALL. Useful when an MCP server advertises 20 tools
+    # but you only want the model to see 2.
+    allowed_tools: [brave_web_search]
+
+  # ─ HTTP MCP server (per-call dial) ──────────────────────────────────
+  # Use HTTP transport when the MCP server runs as a separate service
+  # (own process, own container, own host). loomcycle dials it per
+  # tool-call and 404s mark the server dead until next discovery.
+  # jobs-ingest:
+  #   transport: http
+  #   url: http://localhost:3000/mcp/ingest
+  #   headers:
+  #     Authorization: "Bearer ${LOOMCYCLE_AUTH_TOKEN}"
+
+# ─── Concurrency ──────────────────────────────────────────────────────
+# Caps total in-flight runs across all agents. Bursts above the cap
+# queue up to max_queue_depth for queue_timeout_ms before returning
+# HTTP 429 with code:"backpressure".
 concurrency:
-  max_concurrent_runs: 8
-  max_queue_depth: 16
-  queue_timeout_ms: 30000
+  max_concurrent_runs: 8       # ~1 GiB RSS per run on a typical Sonnet config
+  max_queue_depth: 16          # short burst absorption
+  queue_timeout_ms: 30000      # 30s — caller-side timeout should match
+
+# ─── Cache ────────────────────────────────────────────────────────────
+# Two layers: the response_kv (loomcycle's own normalised-request KV)
+# and native (provider-side cache_control on Anthropic system blocks).
+cache:
+  response_kv:
+    backend: memory            # "memory" | "redis" (redis adapter v0.4)
+    ttl: 5m
+  native:
+    enabled: true              # honour Anthropic cache_control hints

@@ -3,6 +3,12 @@
 // Usage:
 //
 //	loomcycle --config loomcycle.yaml
+//
+// Build identification: the buildCommit and buildTime vars are populated
+// at link time via -ldflags so a running binary can identify itself.
+// Without ldflags injection they default to "unknown" — useful signal
+// when an operator is debugging "is this the binary I just built?".
+// See loomcycle.sh for the canonical build invocation.
 package main
 
 import (
@@ -34,9 +40,33 @@ import (
 	mcpstdio "github.com/denn-gubsky/loomcycle/internal/tools/mcp/stdio"
 )
 
+// Build identification — overridden at link time via:
+//
+//	go build -ldflags "-X main.buildCommit=$(git rev-parse --short HEAD) \
+//	                   -X main.buildTime=$(date -u +%Y-%m-%dT%H:%M:%SZ)" ...
+//
+// Defaults make a forgotten -ldflags invocation visible at runtime
+// rather than silently shipping an unidentifiable binary.
+var (
+	buildCommit = "unknown"
+	buildTime   = "unknown"
+)
+
 func main() {
 	cfgPath := flag.String("config", "loomcycle.yaml", "path to config YAML")
+	showVersion := flag.Bool("version", false, "print build identifier and exit")
 	flag.Parse()
+
+	if *showVersion {
+		fmt.Printf("loomcycle commit=%s built=%s\n", buildCommit, buildTime)
+		return
+	}
+
+	// Identify ourselves first thing so an operator running a stale
+	// binary spots it immediately — before any "but my code says X"
+	// debugging spiral. Critical when development cycle is "git pull
+	// && restart" without a rebuild step in between.
+	log.Printf("loomcycle build: commit=%s time=%s", buildCommit, buildTime)
 
 	cfg, err := config.Load(*cfgPath)
 	if err != nil {

@@ -34,7 +34,10 @@ func TestLoadExample(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ResolveAgentModel: %v", err)
 	}
-	if provider != "anthropic" || model != "claude-opus-4-7" {
+	// Example's `default` agent uses `model: smart`, which resolves
+	// via the models alias to anthropic/claude-sonnet-4-6. If you
+	// change the example's smart alias, update this assertion.
+	if provider != "anthropic" || model != "claude-sonnet-4-6" {
 		t.Errorf("resolved (%s, %s)", provider, model)
 	}
 }
