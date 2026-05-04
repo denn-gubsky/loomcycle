@@ -295,6 +295,19 @@ func getenvDefault(name, dflt string) string {
 // Errors:
 //   - both SystemPrompt and SystemPromptFile set on the same agent
 //   - SystemPromptFile points at a missing or unreadable file
+//
+// SECURITY: the YAML config is treated as fully trusted operator
+// input. SystemPromptFile values may use "../" relative paths that
+// escape configDir, and os.ReadFile follows symlinks — both are
+// intentional. This is fine when the operator owns the YAML (typical
+// deployment: a sysadmin checks the file in alongside the binary).
+//
+// If you ever load YAML from a less-trusted source — multi-tenant
+// control plane, GitOps from PR branches, shared file shares — you
+// MUST clamp paths to configDir (reject relative segments containing
+// ".." after Clean) and open with O_NOFOLLOW. The current code makes
+// neither check; an attacker who can write YAML can read any file
+// the loomcycle process can.
 func resolveSystemPromptFiles(cfg *Config, configPath string) error {
 	configDir, err := filepath.Abs(filepath.Dir(configPath))
 	if err != nil {

@@ -1,6 +1,7 @@
 package builtin
 
 import (
+	"net"
 	"strings"
 
 	"github.com/denn-gubsky/loomcycle/internal/tools"
@@ -180,7 +181,15 @@ func StripLocalhostAliases(in []string) []string {
 	}
 	out := make([]string, 0, len(in))
 	for _, h := range in {
-		n := strings.ToLower(strings.TrimSuffix(h, "."))
+		// Try host:port split first so "localhost:3000" or "[::1]:443"
+		// also trip the strip. net.SplitHostPort succeeds on
+		// well-formed host:port strings; on failure we fall back to
+		// the bare-string path (allowlist entries usually omit ports).
+		hostPart := h
+		if hp, _, err := net.SplitHostPort(h); err == nil {
+			hostPart = hp
+		}
+		n := strings.ToLower(strings.TrimSuffix(hostPart, "."))
 		if n == "localhost" || strings.HasSuffix(n, ".localhost") {
 			continue
 		}

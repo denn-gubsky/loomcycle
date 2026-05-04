@@ -137,6 +137,37 @@ func TestHTTPPrivateHostAllowlistPermitsListedHost(t *testing.T) {
 	}
 }
 
+// Asymmetric companion to TestHTTPPrivateHostAllowlistPermitsListedHost.
+// The earlier test puts the SAME entry on both HostAllowlist and
+// PrivateHostAllowlist — could pass for the wrong reason if the dial
+// path mistakenly consulted HostAllowlist. Here HostAllowlist is the
+// only thing letting the URL through layer-1; PrivateHostAllowlist
+// has a non-matching entry. The dial layer should still reject the
+// private IP because the exemption doesn't apply to this host.
+func TestHTTPPrivateHostAllowlistAsymmetricLists(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, "should not be reached")
+	}))
+	defer srv.Close()
+
+	host := mustHost(t, srv.URL)
+	h := &HTTP{
+		HostAllowlist:        []string{host},                  // 127.0.0.1 — passes layer 1
+		PrivateHostAllowlist: []string{"some.unrelated.host"}, // does NOT match host
+	}
+	body, _ := json.Marshal(map[string]string{"method": "GET", "url": srv.URL})
+	res, err := h.Execute(context.Background(), body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.IsError {
+		t.Fatalf("expected refusal — host not in PrivateHostAllowlist; got %q", res.Text)
+	}
+	if !strings.Contains(res.Text, "no public addresses") {
+		t.Errorf("expected 'no public addresses' rejection (private-IP guard fires); got %q", res.Text)
+	}
+}
+
 // Inverse: a host NOT in PrivateHostAllowlist resolving to private IP
 // is still refused. The exception is scoped to listed hosts only.
 func TestHTTPPrivateHostAllowlistDoesNotLeakToOtherHosts(t *testing.T) {

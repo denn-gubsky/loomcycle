@@ -206,6 +206,16 @@ func TestStripLocalhostAliases(t *testing.T) {
 			[]string{"Example.COM", "ApI.example.com"},
 			[]string{"Example.COM", "ApI.example.com"},
 		},
+		{
+			"strips loopback host:port",
+			[]string{"localhost:3000", "127.0.0.1:8080", "[::1]:443", "good.example:443"},
+			[]string{"good.example:443"},
+		},
+		{
+			"strips *.localhost:port",
+			[]string{"api.localhost:9000", "service.localhost:80"},
+			[]string{},
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -221,17 +231,41 @@ func TestStripLocalhostAliases(t *testing.T) {
 
 // CALLER_AUTHORITATIVE + caller has hosts → caller's list replaces
 // operator's HostAllowlist on every network tool. Operator's list is
-// NOT intersected.
+// NOT intersected. Order assertion is exact (no sort) so a future
+// internal sort/dedupe inside replaceHostsInTools would surface as a
+// test failure — caller-supplied order is part of the contract.
 func TestNarrowHostsAuthoritativeReplacesOperator(t *testing.T) {
 	op := &HTTP{HostAllowlist: []string{"operator-only.example"}}
 	caller := []string{"caller-wide.example", "another.example"}
 	out := NarrowHosts([]tools.Tool{op}, caller, "", true)
 	wrapped := out[0].(*HTTP)
-	got := append([]string(nil), wrapped.HostAllowlist...)
-	sort.Strings(got)
-	want := []string{"another.example", "caller-wide.example"}
-	if !reflect.DeepEqual(got, want) {
-		t.Errorf("authoritative replace = %v, want %v (operator's list ignored)", got, want)
+	if !reflect.DeepEqual(wrapped.HostAllowlist, caller) {
+		t.Errorf("authoritative replace = %v, want %v exactly (caller's order preserved)", wrapped.HostAllowlist, caller)
+	}
+	// Operator's instance must be untouched.
+	if !reflect.DeepEqual(op.HostAllowlist, []string{"operator-only.example"}) {
+		t.Errorf("operator instance mutated: %v", op.HostAllowlist)
+	}
+}
+
+// assertOperatorFallback checks the semantic invariant of option (iii):
+// the wrapped tool's HostAllowlist matches the operator's, AND the
+// operator's instance was NOT mutated. Catches both "tool dropped
+// the operator's list" regressions AND "tool mutated operator's
+// shared slice" regressions. Doesn't depend on the implementation
+// detail of "is the same pointer returned".
+func assertOperatorFallback(t *testing.T, out tools.Tool, op *HTTP, originalOpHosts []string) {
+	t.Helper()
+	wrapped, ok := out.(*HTTP)
+	if !ok {
+		t.Fatalf("expected *HTTP, got %T", out)
+	}
+	if !reflect.DeepEqual(wrapped.HostAllowlist, op.HostAllowlist) {
+		t.Errorf("wrapped HostAllowlist = %v, want operator's %v", wrapped.HostAllowlist, op.HostAllowlist)
+	}
+	// Operator instance must not have been mutated.
+	if !reflect.DeepEqual(op.HostAllowlist, originalOpHosts) {
+		t.Errorf("operator instance mutated: HostAllowlist now %v, was %v", op.HostAllowlist, originalOpHosts)
 	}
 }
 
@@ -240,10 +274,9 @@ func TestNarrowHostsAuthoritativeReplacesOperator(t *testing.T) {
 // existing HostAllowlist applies.
 func TestNarrowHostsAuthoritativeNilFallsBackToOperator(t *testing.T) {
 	op := &HTTP{HostAllowlist: []string{"operator-only.example"}}
+	originalHosts := append([]string(nil), op.HostAllowlist...)
 	out := NarrowHosts([]tools.Tool{op}, nil, "", true)
-	if out[0] != op {
-		t.Errorf("nil caller in authoritative mode should pass through (operator's list applies); got wrapped instance")
-	}
+	assertOperatorFallback(t, out[0], op, originalHosts)
 }
 
 // CALLER_AUTHORITATIVE + caller is empty → also falls back to
@@ -251,10 +284,9 @@ func TestNarrowHostsAuthoritativeNilFallsBackToOperator(t *testing.T) {
 // INTERSECT mode where empty caller means deny-all).
 func TestNarrowHostsAuthoritativeEmptyFallsBackToOperator(t *testing.T) {
 	op := &HTTP{HostAllowlist: []string{"operator-only.example"}}
+	originalHosts := append([]string(nil), op.HostAllowlist...)
 	out := NarrowHosts([]tools.Tool{op}, []string{}, "", true)
-	if out[0] != op {
-		t.Errorf("empty caller in authoritative mode should pass through; got wrapped instance")
-	}
+	assertOperatorFallback(t, out[0], op, originalHosts)
 }
 
 // Localhost-strip applies in BOTH modes. Caller passing localhost
@@ -285,9 +317,8 @@ func TestNarrowHostsStripsLocalhostFromCallerInIntersectMode(t *testing.T) {
 // strip), behaviour equals empty-caller → fall back to operator.
 func TestNarrowHostsAuthoritativeAllLoopbackBecomesFallback(t *testing.T) {
 	op := &HTTP{HostAllowlist: []string{"operator-only.example"}}
+	originalHosts := append([]string(nil), op.HostAllowlist...)
 	caller := []string{"localhost", "127.0.0.1"} // all stripped
 	out := NarrowHosts([]tools.Tool{op}, caller, "", true)
-	if out[0] != op {
-		t.Errorf("caller of only-loopback in authoritative mode should fall back to operator; got wrapped instance")
-	}
+	assertOperatorFallback(t, out[0], op, originalHosts)
 }

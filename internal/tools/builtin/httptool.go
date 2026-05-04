@@ -55,6 +55,12 @@ type HTTP struct {
 	// Use case: agents calling back to a localhost-bound application
 	// API. Hostname is checked BEFORE DNS so dial-time still validates
 	// the resolved IP against this same list.
+	//
+	// Matching is suffix-string against the URL's literal hostname,
+	// not against resolved IPs. Listing "localhost" does NOT permit
+	// a URL written as "http://127.0.0.1/" — operators wanting both
+	// must list both literally. Same applies to IPv4 vs IPv6 loopback:
+	// "127.0.0.1" doesn't cover "::1".
 	PrivateHostAllowlist []string
 }
 
