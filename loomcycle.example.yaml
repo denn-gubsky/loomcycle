@@ -48,6 +48,14 @@ agents:
     system_prompt: "You are a helpful assistant."
     allowed_tools: []
 
+  # Loads the system prompt from a file relative to this YAML's
+  # directory. Mutually exclusive with system_prompt. Useful when the
+  # prompt is long enough to be uncomfortable to inline.
+  # docs-from-file:
+  #   model: smart
+  #   system_prompt_file: prompts/docs-agent.md
+  #   allowed_tools: [WebFetch]
+
   # Filesystem-only agent: can read/write/edit files but cannot reach
   # the network. Good for code-review or doc-editing flows where the
   # operator has staged inputs into LOOMCYCLE_WRITE_ROOT.

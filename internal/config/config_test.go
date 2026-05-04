@@ -127,3 +127,90 @@ mcp_servers:
 		t.Fatal("expected validation error for missing url")
 	}
 }
+
+// system_prompt_file populates SystemPrompt from disk. Path resolves
+// relative to the YAML config file's directory so the operator's
+// "agents/qa.md" works regardless of cwd.
+func TestSystemPromptFileLoaded(t *testing.T) {
+	tmp := t.TempDir()
+	promptDir := filepath.Join(tmp, "prompts")
+	if err := os.MkdirAll(promptDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(promptDir, "qa.md"), []byte("You are QA."), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	yamlPath := filepath.Join(tmp, "c.yaml")
+	if err := os.WriteFile(yamlPath, []byte(`
+defaults: { provider: anthropic, model: claude-sonnet-4-6 }
+agents:
+  qa: { model: claude-sonnet-4-6, system_prompt_file: prompts/qa.md }
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(yamlPath)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := cfg.Agents["qa"].SystemPrompt; got != "You are QA." {
+		t.Errorf("SystemPrompt = %q, want %q", got, "You are QA.")
+	}
+}
+
+func TestSystemPromptFileAndInlineMutuallyExclusive(t *testing.T) {
+	tmp := t.TempDir()
+	if err := os.WriteFile(filepath.Join(tmp, "p.md"), []byte("body"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	yamlPath := filepath.Join(tmp, "c.yaml")
+	os.WriteFile(yamlPath, []byte(`
+defaults: { provider: anthropic, model: claude-sonnet-4-6 }
+agents:
+  bad:
+    model: claude-sonnet-4-6
+    system_prompt: "inline"
+    system_prompt_file: p.md
+`), 0o600)
+	_, err := Load(yamlPath)
+	if err == nil || !strings.Contains(err.Error(), "mutually exclusive") {
+		t.Errorf("expected mutual-exclusion error, got %v", err)
+	}
+}
+
+func TestSystemPromptFileMissingErrors(t *testing.T) {
+	tmp := t.TempDir()
+	yamlPath := filepath.Join(tmp, "c.yaml")
+	os.WriteFile(yamlPath, []byte(`
+defaults: { provider: anthropic, model: claude-sonnet-4-6 }
+agents:
+  bad: { model: claude-sonnet-4-6, system_prompt_file: nope.md }
+`), 0o600)
+	_, err := Load(yamlPath)
+	if err == nil {
+		t.Fatal("expected error for missing prompt file")
+	}
+}
+
+// Absolute path bypasses configDir resolution. Used when the operator
+// stages prompts somewhere outside the YAML's directory.
+func TestSystemPromptFileAbsolutePath(t *testing.T) {
+	tmp := t.TempDir()
+	otherDir := t.TempDir()
+	abs := filepath.Join(otherDir, "prompt.md")
+	if err := os.WriteFile(abs, []byte("absolute body"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	yamlPath := filepath.Join(tmp, "c.yaml")
+	os.WriteFile(yamlPath, []byte(`
+defaults: { provider: anthropic, model: claude-sonnet-4-6 }
+agents:
+  qa: { model: claude-sonnet-4-6, system_prompt_file: `+abs+` }
+`), 0o600)
+	cfg, err := Load(yamlPath)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Agents["qa"].SystemPrompt != "absolute body" {
+		t.Errorf("absolute path not resolved correctly")
+	}
+}

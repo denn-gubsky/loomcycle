@@ -48,6 +48,14 @@ type HTTP struct {
 	// flip this to true so they can hit httptest.NewServer (loopback).
 	// Production never sets this to true.
 	AllowPrivateIPs bool
+	// PrivateHostAllowlist is the suffix-matched list of hostnames
+	// allowed to resolve to private IPs at dial time. Default empty
+	// (no exception — every private resolution refused). Operator
+	// opts specific hosts in via LOOMCYCLE_HTTP_PRIVATE_HOST_ALLOWLIST.
+	// Use case: agents calling back to a localhost-bound application
+	// API. Hostname is checked BEFORE DNS so dial-time still validates
+	// the resolved IP against this same list.
+	PrivateHostAllowlist []string
 }
 
 func (h *HTTP) Name() string { return "HTTP" }
@@ -207,12 +215,20 @@ func (h *HTTP) dialContext(ctx context.Context, network, addr string) (net.Conn,
 	if err != nil {
 		return nil, err
 	}
+	// PrivateHostAllowlist: hostname-side opt-in to the private-IP
+	// block. If host is on the list, dial-layer private-IP rejection
+	// is skipped for THIS dial. Distinct from AllowPrivateIPs (which
+	// is the global tests-only flag); this one is operator-opt-in
+	// scoped to specific hostnames so e.g. localhost can be reached
+	// without disabling the SSRF block for the rest of the universe.
+	hostExempt := hostAllowed(host, h.PrivateHostAllowlist)
+
 	ips, err := net.DefaultResolver.LookupIPAddr(ctx, host)
 	if err != nil {
 		return nil, err
 	}
 	candidates := ips
-	if !h.AllowPrivateIPs {
+	if !h.AllowPrivateIPs && !hostExempt {
 		candidates = candidates[:0]
 		for _, ip := range ips {
 			if !isPrivateIP(ip.IP) {
@@ -226,7 +242,7 @@ func (h *HTTP) dialContext(ctx context.Context, network, addr string) (net.Conn,
 	d := net.Dialer{
 		Timeout: 10 * time.Second,
 		Control: func(network, address string, c syscall.RawConn) error {
-			if h.AllowPrivateIPs {
+			if h.AllowPrivateIPs || hostExempt {
 				return nil
 			}
 			ip, _, _ := net.SplitHostPort(address)

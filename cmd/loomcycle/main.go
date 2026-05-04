@@ -86,7 +86,16 @@ func main() {
 	// log a note for any that's still disabled — that way the model sees
 	// a clear "tool refused" error instead of a confusing "unknown tool",
 	// and operators see at startup which tools they've configured.
-	httpTool := &builtin.HTTP{HostAllowlist: cfg.Env.HTTPHostAllowlist}
+	// Strip loopback aliases (localhost, 127.0.0.1, etc.) from the
+	// operator's static allowlist. Belt-and-braces — the IP-level
+	// guard at dial time also rejects loopback, but stripping here
+	// means loopback never appears in the tool's effective list and
+	// operators don't get fooled by seeing "localhost" listed.
+	staticHosts := builtin.StripLocalhostAliases(cfg.Env.HTTPHostAllowlist)
+	httpTool := &builtin.HTTP{
+		HostAllowlist:        staticHosts,
+		PrivateHostAllowlist: cfg.Env.HTTPPrivateHostAllowlist,
+	}
 	allTools := []tools.Tool{
 		&builtin.Read{Root: cfg.Env.ReadRoot},
 		&builtin.Write{Root: cfg.Env.WriteRoot},
@@ -102,8 +111,14 @@ func main() {
 	if cfg.Env.WriteRoot == "" {
 		log.Printf("note: Write + Edit tools are registered but disabled — set LOOMCYCLE_WRITE_ROOT to enable")
 	}
-	if len(cfg.Env.HTTPHostAllowlist) == 0 {
-		log.Printf("note: HTTP + WebFetch tools are registered but disabled — set LOOMCYCLE_HTTP_HOST_ALLOWLIST to enable")
+	if len(staticHosts) == 0 && !cfg.Env.HTTPCallerAuthoritative {
+		log.Printf("note: HTTP + WebFetch tools are registered but disabled — set LOOMCYCLE_HTTP_HOST_ALLOWLIST to enable (or LOOMCYCLE_HTTP_CALLER_AUTHORITATIVE=1 to delegate the allowlist to the caller)")
+	}
+	if cfg.Env.HTTPCallerAuthoritative {
+		log.Printf("note: HTTP_CALLER_AUTHORITATIVE=1 — caller's allowed_hosts is the sole policy; operator's static list is fallback only")
+	}
+	if len(cfg.Env.HTTPPrivateHostAllowlist) > 0 {
+		log.Printf("note: HTTP_PRIVATE_HOST_ALLOWLIST=%v — these hosts may resolve to private IPs (e.g. localhost callbacks)", cfg.Env.HTTPPrivateHostAllowlist)
 	}
 	if cfg.Env.BraveAPIKey == "" {
 		log.Printf("note: WebSearch tool is registered but disabled — set BRAVE_API_KEY to enable")

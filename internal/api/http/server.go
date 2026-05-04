@@ -254,11 +254,17 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 
 	// Filter tools by agent allowlist + caller request.
 	allowedTools := filterTools(s.tools, agentDef.AllowedTools, req.AllowedTools)
-	// Per-run host narrowing for HTTP/WebFetch/WebSearch. nil pointer
-	// = no narrowing. Empty slice = deny-all (network tools refuse).
-	// Non-empty = intersected with the operator's static allowlist.
-	if req.AllowedHosts != nil {
-		allowedTools = builtin.NarrowHosts(allowedTools, *req.AllowedHosts, req.WebSearchFilter)
+	// Per-run host narrowing for HTTP/WebFetch/WebSearch. Behaviour
+	// depends on LOOMCYCLE_HTTP_CALLER_AUTHORITATIVE — see NarrowHosts
+	// doc comment. In caller-authoritative mode we ALWAYS call so the
+	// nil-fallback-to-operator path works; in default mode we only
+	// call when the caller actually supplied a list.
+	if req.AllowedHosts != nil || s.cfg.Env.HTTPCallerAuthoritative {
+		var caller []string
+		if req.AllowedHosts != nil {
+			caller = *req.AllowedHosts
+		}
+		allowedTools = builtin.NarrowHosts(allowedTools, caller, req.WebSearchFilter, s.cfg.Env.HTTPCallerAuthoritative)
 	}
 	dispatcher := tools.NewDispatcher(allowedTools)
 
@@ -444,8 +450,12 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	defer release()
 
 	allowedTools := filterTools(s.tools, agentDef.AllowedTools, body.AllowedTools)
-	if body.AllowedHosts != nil {
-		allowedTools = builtin.NarrowHosts(allowedTools, *body.AllowedHosts, body.WebSearchFilter)
+	if body.AllowedHosts != nil || s.cfg.Env.HTTPCallerAuthoritative {
+		var caller []string
+		if body.AllowedHosts != nil {
+			caller = *body.AllowedHosts
+		}
+		allowedTools = builtin.NarrowHosts(allowedTools, caller, body.WebSearchFilter, s.cfg.Env.HTTPCallerAuthoritative)
 	}
 	dispatcher := tools.NewDispatcher(allowedTools)
 

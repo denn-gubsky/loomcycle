@@ -104,6 +104,80 @@ func TestHTTPDialContextRefusesAllPrivateResolution(t *testing.T) {
 	}
 }
 
+// PrivateHostAllowlist: hosts on the list bypass the IP-private check
+// at dial time. Use case: agent calling back to localhost-bound app
+// API. Must NOT also disable the check for other hosts.
+//
+// We use httptest.NewServer (loopback) — when "localhost" is in the
+// PrivateHostAllowlist, the dial proceeds. When it's NOT, the dial
+// is blocked by the standard private-IP rejection.
+func TestHTTPPrivateHostAllowlistPermitsListedHost(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, "ok via localhost")
+	}))
+	defer srv.Close()
+
+	host := mustHost(t, srv.URL)
+	h := &HTTP{
+		HostAllowlist:        []string{host},
+		PrivateHostAllowlist: []string{host},
+		// AllowPrivateIPs stays false — we're testing the per-host
+		// exception, not the global tests-only flag.
+	}
+	body, _ := json.Marshal(map[string]string{"method": "GET", "url": srv.URL})
+	res, err := h.Execute(context.Background(), body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.IsError {
+		t.Fatalf("listed private host should be reachable; got %q", res.Text)
+	}
+	if !strings.Contains(res.Text, "ok via localhost") {
+		t.Errorf("body missing: %q", res.Text)
+	}
+}
+
+// Inverse: a host NOT in PrivateHostAllowlist resolving to private IP
+// is still refused. The exception is scoped to listed hosts only.
+func TestHTTPPrivateHostAllowlistDoesNotLeakToOtherHosts(t *testing.T) {
+	h := &HTTP{
+		HostAllowlist:        []string{"localhost", "127.0.0.1"},
+		PrivateHostAllowlist: []string{"my-app"}, // arbitrary unrelated host
+	}
+	// Dial localhost — NOT in PrivateHostAllowlist. Should be refused
+	// the same way as without the exception list.
+	_, err := h.dialContext(context.Background(), "tcp", "localhost:1")
+	if err == nil {
+		t.Fatal("expected refusal for unlisted private host")
+	}
+	if !strings.Contains(err.Error(), "no public addresses") {
+		t.Errorf("expected 'no public addresses' error, got %v", err)
+	}
+}
+
+// Suffix-match parity: PrivateHostAllowlist uses the same suffix
+// matching as HostAllowlist. Listing "myapp.local" permits
+// "api.myapp.local" too, anchored at a dot boundary.
+func TestHTTPPrivateHostAllowlistSuffixMatch(t *testing.T) {
+	cases := []struct {
+		host  string
+		list  []string
+		match bool
+	}{
+		{"myapp.local", []string{"myapp.local"}, true},
+		{"api.myapp.local", []string{"myapp.local"}, true},
+		{"evilmyapp.local", []string{"myapp.local"}, false},
+		{"myapp.local.evil", []string{"myapp.local"}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.host, func(t *testing.T) {
+			if got := hostAllowed(tc.host, tc.list); got != tc.match {
+				t.Errorf("hostAllowed(%q, %v) = %v, want %v", tc.host, tc.list, got, tc.match)
+			}
+		})
+	}
+}
+
 func TestIsPrivateIP(t *testing.T) {
 	cases := []struct {
 		ip      string
