@@ -313,6 +313,29 @@ func TestNarrowHostsPhaseBLocalhostCallback(t *testing.T) {
 	}
 }
 
+// Reviewer-flagged edge case: agent allowed WebFetch but NOT a
+// standalone HTTP. WebFetch wraps an inner *HTTP that carries the
+// same operator-configured PrivateHostAllowlist. Without unwrapping
+// *WebFetch, findHTTPPrivateAllowlist would return nil and Phase B's
+// promise breaks for that agent shape (caller-supplied "localhost"
+// gets stripped even though the operator opted in).
+func TestNarrowHostsWebFetchOnlyHonoursPrivateAllowlist(t *testing.T) {
+	innerHTTP := &HTTP{
+		HostAllowlist:        nil,
+		PrivateHostAllowlist: []string{"localhost"},
+	}
+	wf := &WebFetch{HTTP: innerHTTP}
+	caller := []string{"localhost"}
+	out := NarrowHosts([]tools.Tool{wf}, caller, "", true)
+	wrapped := out[0].(*WebFetch)
+	if wrapped.HTTP == nil {
+		t.Fatal("wrapped WebFetch lost its HTTP backend")
+	}
+	if !reflect.DeepEqual(wrapped.HTTP.HostAllowlist, []string{"localhost"}) {
+		t.Errorf("WebFetch-only run should preserve operator-exempt localhost; got %v", wrapped.HTTP.HostAllowlist)
+	}
+}
+
 // Inverse: same setup but operator did NOT set PrivateHostAllowlist.
 // Caller's loopback entries get stripped; in CALLER_AUTHORITATIVE mode
 // that empties the caller list which falls back to operator's static

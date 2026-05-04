@@ -227,10 +227,21 @@ func StripLocalhostAliases(in []string, exempt []string) []string {
 // and returns its PrivateHostAllowlist. Used by NarrowHosts to find
 // the operator's "loopback exemption" list at per-call narrowing time.
 // Returns nil when no HTTP tool is in the run (no exemption applies).
+//
+// Also unwraps *WebFetch — that tool wraps an inner *HTTP and an
+// agent allowed only WebFetch (no standalone HTTP) would otherwise
+// lose the exemption even though the same configured PrivateHostAllowlist
+// applies. Returns the first match; in the standard config there is
+// exactly one shared HTTP instance, so the order doesn't matter.
 func findHTTPPrivateAllowlist(in []tools.Tool) []string {
 	for _, t := range in {
-		if h, ok := t.(*HTTP); ok {
-			return h.PrivateHostAllowlist
+		switch v := t.(type) {
+		case *HTTP:
+			return v.PrivateHostAllowlist
+		case *WebFetch:
+			if v.HTTP != nil {
+				return v.HTTP.PrivateHostAllowlist
+			}
 		}
 	}
 	return nil
