@@ -86,9 +86,11 @@ func TestHandleRunsSSE(t *testing.T) {
 		t.Errorf("content-type = %q", ct)
 	}
 
-	// Read SSE frames; expect started, text, usage, done.
+	// Read SSE frames. v0.4 announces agent_id in a side-channel
+	// "agent" frame before the loop emits its first model event;
+	// agent → started → text → usage → done.
 	got := readEvents(t, resp.Body)
-	wantTypes := []string{"started", "text", "usage", "done"}
+	wantTypes := []string{"agent", "started", "text", "usage", "done"}
 	if len(got) != len(wantTypes) {
 		t.Fatalf("got %d frames %v, want %d %v", len(got), got, len(wantTypes), wantTypes)
 	}

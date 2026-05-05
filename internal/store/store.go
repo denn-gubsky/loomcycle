@@ -26,6 +26,10 @@ type Session struct {
 	TenantID  string    `json:"tenant_id"`
 	Agent     string    `json:"agent"`
 	CreatedAt time.Time `json:"created_at"`
+	// UserID binds the session to a user (v0.4+). Empty for legacy
+	// rows that pre-date the column. Caller-supplied at session
+	// creation; sub-agent sessions inherit the parent's value.
+	UserID string `json:"user_id,omitempty"`
 }
 
 // RunStatus is the terminal state of a run, or "running" while it's still in
@@ -53,6 +57,30 @@ type Run struct {
 	CacheReadTokens     int       `json:"cache_read_input_tokens,omitempty"`
 	Model               string    `json:"model,omitempty"`
 	ErrorMsg            string    `json:"error,omitempty"`
+
+	// v0.4 tracking + cancel fields. All optional/nullable for
+	// back-compat with rows created before the columns landed.
+
+	// AgentID is the caller-supplied (or loomcycle-generated)
+	// tracking handle. Distinct from SessionID — agent_id is
+	// per-run, session_id is per-conversation-thread. Used as the
+	// addressable identifier for the cancel/get/list endpoints.
+	AgentID string `json:"agent_id,omitempty"`
+	// ParentAgentID is set on sub-agent runs to the spawning
+	// agent's AgentID. Drives cascade-cancel.
+	ParentAgentID string `json:"parent_agent_id,omitempty"`
+	// ParentRunID is the direct parent run for sub-agent runs.
+	// Useful for transcript stitching.
+	ParentRunID string `json:"parent_run_id,omitempty"`
+	// UserID is denormalised from the session for fast cancel/list
+	// lookups without a session join. Set at run creation; never
+	// mutated.
+	UserID string `json:"user_id,omitempty"`
+	// LastHeartbeatAt is updated by the loop at each iteration so
+	// a future sweeper can detect crashed runs (no heartbeat for
+	// > N minutes → presumed dead). Zero-time means no heartbeat
+	// yet (run never reached its first iteration).
+	LastHeartbeatAt time.Time `json:"last_heartbeat_at,omitempty"`
 }
 
 // Event is one streamed datum, persisted append-only. Payload is the JSON
@@ -77,14 +105,38 @@ type Usage struct {
 	Model               string
 }
 
+// RunIdentity carries the v0.4 tracking fields a CreateRun caller can
+// supply. Zero-value fields mean "no value" — implementations must
+// store them as NULL (or empty string for TEXT columns) so historical
+// rows remain queryable.
+type RunIdentity struct {
+	// AgentID is the caller-supplied tracking handle, or
+	// loomcycle-generated for top-level runs without a caller value
+	// and for sub-agent runs (which always get a fresh ID).
+	AgentID string
+	// ParentAgentID is set only on sub-agent runs (the spawning
+	// agent's AgentID).
+	ParentAgentID string
+	// ParentRunID is the direct parent run row's ID. Set with
+	// ParentAgentID on sub-agent runs.
+	ParentRunID string
+	// UserID is denormalised from the session at run creation for
+	// fast lookups without a session join. Callers SHOULD pass the
+	// session's user_id here; the implementation does not enforce
+	// consistency (cheaper to trust the caller than to JOIN on
+	// every CreateRun).
+	UserID string
+}
+
 // Store is the persistence backend. SQLite is the default; Postgres / Redis
 // adapters slot in behind this interface in v0.4.
 //
 // All methods take ctx. Implementations must honour ctx cancellation for
 // long-running queries (transcript replay especially).
 type Store interface {
-	// CreateSession creates a new session with a generated ID.
-	CreateSession(ctx context.Context, tenantID, agent string) (Session, error)
+	// CreateSession creates a new session with a generated ID. userID
+	// may be empty for v0.3 back-compat callers.
+	CreateSession(ctx context.Context, tenantID, agent, userID string) (Session, error)
 
 	// GetSession returns the session metadata. Returns ErrNotFound if
 	// the ID doesn't exist.
@@ -92,7 +144,9 @@ type Store interface {
 
 	// CreateRun starts a new run within an existing session, in
 	// status "running". Returns ErrNotFound if sessionID doesn't exist.
-	CreateRun(ctx context.Context, sessionID string) (Run, error)
+	// identity carries the v0.4 tracking fields; pass a zero value to
+	// behave as v0.3.
+	CreateRun(ctx context.Context, sessionID string, identity RunIdentity) (Run, error)
 
 	// AppendEvent persists one event for a run. Implementations should be
 	// safe to call from the loop's goroutine on the hot path; bulk-insert
@@ -107,6 +161,27 @@ type Store interface {
 	// GetTranscript returns all events for a session, ordered by Seq.
 	// Returns an empty slice (not error) for a session with no runs yet.
 	GetTranscript(ctx context.Context, sessionID string) ([]Event, error)
+
+	// GetRunByAgentID returns the most recently started run carrying
+	// the given agent_id. Returns *ErrNotFound when no such row.
+	// Used by the GET /v1/agents/{agent_id} and cancel endpoints to
+	// resolve the API-facing handle to a Run.
+	GetRunByAgentID(ctx context.Context, agentID string) (Run, error)
+
+	// ListActiveRunsByUser returns runs for userID whose status matches
+	// the supplied filter. An empty status returns ALL statuses
+	// (caller can filter further). Results are bounded — 100 rows max,
+	// ordered by started_at DESC.
+	ListActiveRunsByUser(ctx context.Context, userID string, status RunStatus) ([]Run, error)
+
+	// ListRunsByParentAgentID returns the runs whose parent_agent_id
+	// matches the given value. Drives cascade-cancel discovery.
+	ListRunsByParentAgentID(ctx context.Context, parentAgentID string) ([]Run, error)
+
+	// UpdateHeartbeat sets last_heartbeat_at on a run to the current
+	// time. Called by the loop at each iteration. No-op if the run
+	// is not running (terminal runs don't accept heartbeats).
+	UpdateHeartbeat(ctx context.Context, runID string) error
 
 	// Close releases backend resources. Idempotent.
 	Close() error

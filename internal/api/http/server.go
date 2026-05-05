@@ -6,7 +6,9 @@ package http
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/subtle"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -16,6 +18,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/cancel"
 	"github.com/denn-gubsky/loomcycle/internal/concurrency"
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/loop"
@@ -41,6 +44,12 @@ type Server struct {
 	sem       *concurrency.Semaphore
 	store     store.Store // optional; nil means "don't persist"
 
+	// cancelReg holds the in-memory map of agent_id → cancelFn so the
+	// cancel API can tear down a still-running loop from a different
+	// HTTP request. Always non-nil after New(); empty on startup. See
+	// internal/cancel/registry.go for the trust model.
+	cancelReg *cancel.Registry
+
 	// sessionLocks maps session IDs to *sync.Mutex. A continuation POST
 	// (handleMessages, or handleRuns with a non-empty SessionID) try-locks
 	// the session before replaying transcript + running. Concurrent POSTs
@@ -61,8 +70,19 @@ type Server struct {
 // Server's own runSubAgent method — we'd otherwise have a chicken-and-
 // egg between tool list and Server. Per-agent allow-list still gates
 // access (an agent without "Agent" in `allowed_tools` won't see it).
+//
+// The cancel registry is also constructed here. It's always present
+// (empty if no run has started) so handler code can call its methods
+// unconditionally without nil-checking.
 func New(cfg *config.Config, pr ProviderResolver, builtinTools []tools.Tool, sem *concurrency.Semaphore, st store.Store) *Server {
-	s := &Server{cfg: cfg, providers: pr, tools: builtinTools, sem: sem, store: st}
+	s := &Server{
+		cfg:       cfg,
+		providers: pr,
+		tools:     builtinTools,
+		sem:       sem,
+		store:     st,
+		cancelReg: cancel.NewRegistry(),
+	}
 	s.tools = append(s.tools, &builtin.AgentTool{Run: s.runSubAgent})
 	return s
 }
@@ -112,6 +132,10 @@ func (s *Server) Mux() http.Handler {
 	mux.Handle("POST /v1/runs", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleRuns))))
 	mux.Handle("GET /v1/sessions/{id}/transcript", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleTranscript))))
 	mux.Handle("POST /v1/sessions/{id}/messages", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleMessages))))
+	// v0.4 tracking + cancel API.
+	mux.Handle("GET /v1/agents/{agent_id}", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleGetAgent))))
+	mux.Handle("POST /v1/agents/{agent_id}/cancel", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleCancelAgent))))
+	mux.Handle("GET /v1/users/{user_id}/agents", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleListUserAgents))))
 	return mux
 }
 
@@ -173,6 +197,17 @@ type runRequest struct {
 	// SSE event so the caller can address subsequent calls to it.
 	SessionID string `json:"session_id,omitempty"`
 	TenantID  string `json:"tenant_id,omitempty"`
+	// UserID binds the run to a user (v0.4+). Optional. Charset:
+	// [A-Za-z0-9_-]{1,128}. Empty leaves the run unbound (legacy v0.3
+	// behaviour). Sub-agent runs spawned from this run inherit it.
+	UserID string `json:"user_id,omitempty"`
+	// AgentID is a caller-supplied tracking handle (v0.4+). Optional;
+	// when omitted, loomcycle generates one and announces it in the
+	// `event: agent` SSE frame. Charset: [A-Za-z0-9_-]{1,128}. Distinct
+	// from SessionID — agent_id addresses a single run for status/cancel,
+	// session_id addresses the conversation thread for transcript
+	// continuation.
+	AgentID string `json:"agent_id,omitempty"`
 }
 
 func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
@@ -194,6 +229,19 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Agent == "" {
 		http.Error(w, `agent is required`, http.StatusBadRequest)
+		return
+	}
+
+	// Validate the v0.4 tracking fields. user_id is optional; an empty
+	// agent_id triggers server-side generation. Both, when supplied,
+	// must satisfy the [A-Za-z0-9_-]{1,128} charset so they're safe to
+	// use as URL path segments and registry keys.
+	if req.UserID != "" && !validIdent(req.UserID) {
+		http.Error(w, `user_id must match [A-Za-z0-9_-]{1,128}`, http.StatusBadRequest)
+		return
+	}
+	if req.AgentID != "" && !validIdent(req.AgentID) {
+		http.Error(w, `agent_id must match [A-Za-z0-9_-]{1,128}`, http.StatusBadRequest)
 		return
 	}
 
@@ -288,11 +336,22 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		}}, req.Segments...)
 	}
 
+	// Resolve the run's agent_id: the caller's value when supplied,
+	// otherwise a fresh server-generated one. We need this BEFORE
+	// session/run creation so we can write it to the row in one shot,
+	// AND BEFORE registering the cancel entry so a cancel arriving
+	// between Register and the loop's first ctx-check finds the entry.
+	agentID := req.AgentID
+	if agentID == "" {
+		agentID = newAgentID()
+	}
+
 	// Persistence: resolve or create a session, create a run, route every
 	// emitted event through the store before forwarding to SSE. With
 	// s.store == nil the recording becomes a no-op so v0.2 callers see no
 	// behaviour change.
-	sessionID, runID, sessErr := s.openOrCreateSessionAndRun(r.Context(), req.SessionID, req.Agent, req.TenantID)
+	identity := store.RunIdentity{AgentID: agentID, UserID: req.UserID}
+	sessionID, runID, sessErr := s.openOrCreateSessionAndRun(r.Context(), req.SessionID, req.Agent, req.TenantID, req.UserID, identity)
 	if sessErr != nil {
 		var nf *store.ErrNotFound
 		if errors.As(sessErr, &nf) {
@@ -302,6 +361,41 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, sessErr.Error(), http.StatusInternalServerError)
 		return
 	}
+
+	// Derive the loop ctx with a cancel-cause function. The HTTP request
+	// ctx remains the parent so client-disconnect still tears down. We
+	// register the cancelFn under agent_id so an external cancel API
+	// call can fire it.
+	runCtx, cancelFn := context.WithCancelCause(r.Context())
+	defer cancelFn(nil) // ensure ctx leaks don't survive the handler
+
+	regErr := s.cancelReg.Register(cancel.Entry{
+		AgentID:   agentID,
+		RunID:     runID,
+		SessionID: sessionID,
+		UserID:    req.UserID,
+		StartedAt: time.Now(),
+	}, cancelFn)
+	if errors.Is(regErr, cancel.ErrInUse) {
+		// We've already created the session+run row in the store
+		// (session creation is unavoidable to satisfy the FK on
+		// runs). Leaving the run at status=running would orphan it
+		// permanently — the heartbeat sweeper (when it lands) would
+		// eventually catch it, but in the meantime it pollutes
+		// ListActiveRunsByUser. Mark it failed with a clear reason
+		// so the row is terminal from this exit path.
+		s.finishRunFailedReason(runID, "agent_id collision; run never started")
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusConflict)
+		fmt.Fprintf(w, `{"code":"agent_id_in_use","error":"agent_id %q is already mapped to an active run"}`, agentID)
+		return
+	}
+	if regErr != nil {
+		s.finishRunFailedReason(runID, "registry register failed: "+regErr.Error())
+		http.Error(w, regErr.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer s.cancelReg.Deregister(agentID)
 
 	// If we're persisting, record the caller's input segments as the first
 	// event in the run. The loop never emits the caller's input itself, so
@@ -333,6 +427,16 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 			Text: sessionID,
 		})
 	}
+	// New v0.4 side-channel: announce the agent_id (and run_id) so the
+	// caller can address cancel/status without knowing the loomcycle-
+	// internal session/run IDs. parent_agent_id is null for top-level
+	// runs; sub-agents emit it via runSubAgent's own side-channel work.
+	stream.sendRaw("agent", map[string]any{
+		"agent_id":        agentID,
+		"run_id":          runID,
+		"session_id":      sessionID,
+		"parent_agent_id": nil,
+	})
 
 	emit := s.makeRecordingEmit(r.Context(), runID, stream.send)
 
@@ -340,21 +444,34 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 	// that need a runtime view of "what this agent can use" (e.g. the
 	// Skill tool's subset check on each call) read it via ctx instead
 	// of being constructed per-run.
-	loopCtx := tools.WithAgentTools(r.Context(), toolNames(allowedTools))
+	loopCtx := tools.WithAgentTools(runCtx, toolNames(allowedTools))
+	// Stash the run's identity so the Agent built-in tool's
+	// SubAgentRunner can inherit user_id and set parent_agent_id on
+	// any sub-runs it spawns.
+	loopCtx = tools.WithRunIdentity(loopCtx, tools.RunIdentityValue{
+		UserID:  req.UserID,
+		AgentID: agentID,
+	})
+
+	// Heartbeat hook: each loop iteration updates last_heartbeat_at so a
+	// future sweeper can detect crashed processes (no heartbeat for > N
+	// minutes → presumed dead). Cheap (~10–100 calls per run).
+	heartbeat := s.makeHeartbeat(runID)
 
 	loopRes, runErr := loop.Run(loopCtx, loop.RunOptions{
-		Provider:   provider,
-		Model:      model,
-		Tools:      allowedTools,
-		Dispatcher: dispatcher,
-		Segments:   req.Segments,
-		OnEvent:    emit,
+		Provider:    provider,
+		Model:       model,
+		Tools:       allowedTools,
+		Dispatcher:  dispatcher,
+		Segments:    req.Segments,
+		OnEvent:     emit,
+		OnHeartbeat: heartbeat,
 	})
 	if runErr != nil {
 		stream.send(providers.Event{Type: providers.EventError, Error: runErr.Error()})
 	}
 
-	s.finishRun(r.Context(), runID, loopRes, runErr)
+	s.finishRunWithCancel(r.Context(), runCtx, runID, loopRes, runErr)
 }
 
 // messagesRequest is the JSON body for POST /v1/sessions/{id}/messages. It
@@ -370,6 +487,12 @@ type messagesRequest struct {
 	// request alone, no session state to chase.
 	AllowedHosts    *[]string `json:"allowed_hosts,omitempty"`
 	WebSearchFilter string    `json:"web_search_filter,omitempty"`
+	// AgentID is a fresh tracking handle for the new run created by
+	// this continuation (v0.4+). Same charset rules as runRequest.
+	// UserID is NOT accepted here — continuation runs inherit the
+	// session's user_id (set at original creation); allowing a
+	// different user_id mid-session would be confusing.
+	AgentID string `json:"agent_id,omitempty"`
 }
 
 func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
@@ -485,12 +608,56 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		}}, segments...)
 	}
 
-	// Create a new run inside the existing session.
-	run, err := s.store.CreateRun(r.Context(), id)
+	// Validate any caller-supplied agent_id and reserve one for the new
+	// run (sub-fresh per continuation; never inherited from the prior
+	// run since "the run" is what agent_id addresses).
+	if body.AgentID != "" && !validIdent(body.AgentID) {
+		http.Error(w, `agent_id must match [A-Za-z0-9_-]{1,128}`, http.StatusBadRequest)
+		return
+	}
+	agentID := body.AgentID
+	if agentID == "" {
+		agentID = newAgentID()
+	}
+
+	// Create a new run inside the existing session. user_id is
+	// inherited from the session (set at original creation).
+	run, err := s.store.CreateRun(r.Context(), id, store.RunIdentity{
+		AgentID: agentID,
+		UserID:  sess.UserID,
+	})
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+
+	// Derive a runCtx with cancel-cause and register in the cancel
+	// registry. Same shape as handleRuns.
+	runCtx, cancelFn := context.WithCancelCause(r.Context())
+	defer cancelFn(nil)
+	regErr := s.cancelReg.Register(cancel.Entry{
+		AgentID:   agentID,
+		RunID:     run.ID,
+		SessionID: id,
+		UserID:    sess.UserID,
+		StartedAt: time.Now(),
+	}, cancelFn)
+	if errors.Is(regErr, cancel.ErrInUse) {
+		// Same orphan-row mitigation as handleRuns — the run was
+		// already inserted at status=running.
+		s.finishRunFailedReason(run.ID, "agent_id collision; run never started")
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusConflict)
+		fmt.Fprintf(w, `{"code":"agent_id_in_use","error":"agent_id %q is already mapped to an active run"}`, agentID)
+		return
+	}
+	if regErr != nil {
+		s.finishRunFailedReason(run.ID, "registry register failed: "+regErr.Error())
+		http.Error(w, regErr.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer s.cancelReg.Deregister(agentID)
+
 	// Persist the new user input segments so a future replay sees them.
 	if inputJSON, err := json.Marshal(body.Segments); err == nil {
 		if err := s.store.AppendEvent(r.Context(), run.ID, "user_input", inputJSON); err != nil {
@@ -505,10 +672,21 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	}
 	stream.start()
 	stream.send(providers.Event{Type: "session", Text: id})
+	stream.sendRaw("agent", map[string]any{
+		"agent_id":        agentID,
+		"run_id":          run.ID,
+		"session_id":      id,
+		"parent_agent_id": nil,
+	})
 
 	emit := s.makeRecordingEmit(r.Context(), run.ID, stream.send)
+	heartbeat := s.makeHeartbeat(run.ID)
 
-	loopCtx := tools.WithAgentTools(r.Context(), toolNames(allowedTools))
+	loopCtx := tools.WithAgentTools(runCtx, toolNames(allowedTools))
+	loopCtx = tools.WithRunIdentity(loopCtx, tools.RunIdentityValue{
+		UserID:  sess.UserID,
+		AgentID: agentID,
+	})
 	loopRes, runErr := loop.Run(loopCtx, loop.RunOptions{
 		Provider:      provider,
 		Model:         model,
@@ -517,12 +695,13 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		Segments:      segments,
 		PriorMessages: priorMessages,
 		OnEvent:       emit,
+		OnHeartbeat:   heartbeat,
 	})
 	if runErr != nil {
 		stream.send(providers.Event{Type: providers.EventError, Error: runErr.Error()})
 	}
 
-	s.finishRun(r.Context(), run.ID, loopRes, runErr)
+	s.finishRunWithCancel(r.Context(), runCtx, run.ID, loopRes, runErr)
 }
 
 // replayTranscript walks the persisted events of a session and reconstructs
@@ -705,7 +884,14 @@ func (s *Server) handleTranscript(w http.ResponseWriter, r *http.Request) {
 // openOrCreateSessionAndRun resolves the session (creating one if the caller
 // didn't pass an ID), then creates a run inside it. Returns ("", "", nil) when
 // no store is configured — the caller treats both empty IDs as "skip persistence".
-func (s *Server) openOrCreateSessionAndRun(ctx context.Context, requestedSessionID, agent, tenantID string) (string, string, error) {
+//
+// userID is forwarded into the new session row (empty when the caller didn't
+// supply one). identity carries the v0.4 tracking fields for the new run; for
+// continuation requests on an existing session, the run inherits the session's
+// user_id automatically via the denormalised UserID on RunIdentity (caller is
+// responsible for setting that when continuing — typically copied from
+// GetSession).
+func (s *Server) openOrCreateSessionAndRun(ctx context.Context, requestedSessionID, agent, tenantID, userID string, identity store.RunIdentity) (string, string, error) {
 	if s.store == nil {
 		return "", "", nil
 	}
@@ -717,12 +903,18 @@ func (s *Server) openOrCreateSessionAndRun(ctx context.Context, requestedSession
 			return "", "", err
 		}
 	} else {
-		sess, err = s.store.CreateSession(ctx, tenantID, agent)
+		sess, err = s.store.CreateSession(ctx, tenantID, agent, userID)
 		if err != nil {
 			return "", "", err
 		}
 	}
-	run, err := s.store.CreateRun(ctx, sess.ID)
+	// Denormalise session.UserID onto the new run if the caller didn't
+	// supply one (cv-rewriter etc. always have one path; continuation
+	// inherits via the session lookup).
+	if identity.UserID == "" {
+		identity.UserID = sess.UserID
+	}
+	run, err := s.store.CreateRun(ctx, sess.ID, identity)
 	if err != nil {
 		return "", "", err
 	}
@@ -788,12 +980,56 @@ func (s *Server) runSubAgent(ctx context.Context, name string, prompt string) (s
 		return "", fmt.Errorf("provider for sub-agent %q: %w", name, err)
 	}
 
+	// Read parent's identity from ctx to inherit user_id and pin
+	// parent_agent_id on the sub-run. tools.RunIdentity returns zero
+	// value if the parent didn't set it — sub-agents spawned from
+	// callers that didn't supply user_id naturally inherit empty.
+	parentIdentity := tools.RunIdentity(ctx)
+
+	// Generate a fresh agent_id for the sub-run. Always generated;
+	// callers can't override (the sub is loomcycle-controlled).
+	subAgentID := newAgentID()
+
 	// Sub-run gets its OWN session. Tenant inherited as empty for v0.4.0
 	// MVP — multi-tenant agent inheritance lands when per-tenant
 	// fairness does (later in v0.4 / v0.5).
-	subSessionID, subRunID, err := s.openOrCreateSessionAndRun(ctx, "", name, "")
+	subIdentity := store.RunIdentity{
+		AgentID:       subAgentID,
+		ParentAgentID: parentIdentity.AgentID,
+		// ParentRunID is left empty here — we don't have the parent's
+		// run.ID handy without an extra registry lookup. Cascade
+		// works via parent_agent_id alone; ParentRunID is informational
+		// for transcript stitching and can be filled in by a future
+		// refactor that threads parent run.ID through ctx.
+		UserID: parentIdentity.UserID,
+	}
+	subSessionID, subRunID, err := s.openOrCreateSessionAndRun(ctx, "", name, "", parentIdentity.UserID, subIdentity)
 	if err != nil {
 		return "", fmt.Errorf("create sub-session for %q: %w", name, err)
+	}
+
+	// Register the sub-run in the cancel registry so a parent-cancel
+	// can cascade through. Sub uses parent's runCtx (passed in via
+	// ctx) — a parent ctx-cancel already tears down the sub-loop, but
+	// the registry entry lets the cascade walk in Cancel() find this
+	// sub explicitly (belt-and-braces against grandchild races).
+	subRunCtx, subCancelFn := context.WithCancelCause(ctx)
+	defer subCancelFn(nil)
+	regErr := s.cancelReg.Register(cancel.Entry{
+		AgentID:       subAgentID,
+		RunID:         subRunID,
+		SessionID:     subSessionID,
+		UserID:        parentIdentity.UserID,
+		ParentAgentID: parentIdentity.AgentID,
+		StartedAt:     time.Now(),
+	}, subCancelFn)
+	if regErr != nil {
+		// A duplicate-active collision is essentially impossible here
+		// (subAgentID is freshly generated); log and continue without
+		// registering rather than fail the run for a registry hiccup.
+		log.Printf("cancel registry: sub-agent register failed (%s): %v", subAgentID, regErr)
+	} else {
+		defer s.cancelReg.Deregister(subAgentID)
 	}
 
 	// Build segments: agent's system_prompt (with cache_control) + the
@@ -847,26 +1083,372 @@ func (s *Server) runSubAgent(ctx context.Context, name string, prompt string) (s
 	// tool list does not leak to the child (and vice versa). This
 	// matches the trust model: each agent's allowed_tools is its own
 	// authority for any subset checks done inside its run.
-	subCtx := tools.WithAgentTools(ctx, toolNames(subTools))
+	//
+	// The sub's run identity is also threaded through ctx so a
+	// recursive Agent tool call from this sub picks up the right
+	// parent_agent_id (= subAgentID).
+	subCtx := tools.WithAgentTools(subRunCtx, toolNames(subTools))
+	subCtx = tools.WithRunIdentity(subCtx, tools.RunIdentityValue{
+		UserID:  parentIdentity.UserID,
+		AgentID: subAgentID,
+	})
+
+	subHeartbeat := s.makeHeartbeat(subRunID)
 
 	res, runErr := loop.Run(subCtx, loop.RunOptions{
-		Provider:   provider,
-		Model:      model,
-		Tools:      subTools,
-		Dispatcher: subDispatcher,
-		Segments:   segs,
-		OnEvent:    subEmit,
+		Provider:    provider,
+		Model:       model,
+		Tools:       subTools,
+		Dispatcher:  subDispatcher,
+		Segments:    segs,
+		OnEvent:     subEmit,
+		OnHeartbeat: subHeartbeat,
 	})
-	s.finishRun(ctx, subRunID, res, runErr)
+	s.finishRunWithCancel(ctx, subRunCtx, subRunID, res, runErr)
 
 	if runErr != nil {
 		// Wrap with session/run IDs so a developer reading parent logs
 		// can locate the sub's transcript directly. The parent agent's
-		// model sees the unwrapped error message.
-		return "", fmt.Errorf("sub-agent %q failed (session=%s run=%s): %w",
-			name, subSessionID, subRunID, runErr)
+		// model sees the unwrapped error message. agent_id is the v0.4
+		// addressable handle, so include it too — the easiest hint for
+		// "GET /v1/agents/<this>" debugging.
+		return "", fmt.Errorf("sub-agent %q failed (agent=%s session=%s run=%s): %w",
+			name, subAgentID, subSessionID, subRunID, runErr)
 	}
-	return res.FinalText, nil
+	// Surface the sub agent_id to the parent agent's transcript by
+	// prefixing the tool_result text. Parent caller's model sees this
+	// and can echo it to the UI. Cheap; unblocks future "cancel only
+	// the sub" UX.
+	return fmt.Sprintf("[sub-agent agent_id=%s]\n%s", subAgentID, res.FinalText), nil
+}
+
+// agentResponse is the JSON shape returned by GET /v1/agents/{id} and
+// each entry in GET /v1/users/{user_id}/agents. Mirrors store.Run plus
+// a flag distinguishing live (still in the cancel registry) from
+// terminated.
+//
+// The response intentionally avoids exposing internal fields like
+// loomcycle's session_id when the caller didn't already know it; we
+// include it because the same caller almost always has the session_id
+// from the original SSE stream and surfacing it here keeps things
+// debug-friendly.
+type agentResponse struct {
+	AgentID         string             `json:"agent_id"`
+	RunID           string             `json:"run_id"`
+	SessionID       string             `json:"session_id"`
+	UserID          string             `json:"user_id,omitempty"`
+	ParentAgentID   string             `json:"parent_agent_id,omitempty"`
+	Status          store.RunStatus    `json:"status"`
+	StartedAt       time.Time          `json:"started_at"`
+	CompletedAt     *time.Time         `json:"completed_at,omitempty"`
+	StopReason      string             `json:"stop_reason,omitempty"`
+	Error           string             `json:"error,omitempty"`
+	Usage           agentResponseUsage `json:"usage"`
+	LastHeartbeatAt *time.Time         `json:"last_heartbeat_at,omitempty"`
+	Live            bool               `json:"live"`
+}
+
+type agentResponseUsage struct {
+	InputTokens         int    `json:"input_tokens"`
+	OutputTokens        int    `json:"output_tokens"`
+	CacheCreationTokens int    `json:"cache_creation_tokens,omitempty"`
+	CacheReadTokens     int    `json:"cache_read_tokens,omitempty"`
+	Model               string `json:"model,omitempty"`
+}
+
+// runToAgentResponse converts a store.Run into the API response shape.
+// `live` indicates whether the cancel registry still has an entry —
+// distinguishes "running and cancellable" from "running per the row but
+// the registry doesn't know about it" (which can happen after a process
+// restart). The HTTP layer surfaces this flag so the UI can decide
+// whether to offer a Cancel button.
+func runToAgentResponse(r store.Run, live bool) agentResponse {
+	resp := agentResponse{
+		AgentID:       r.AgentID,
+		RunID:         r.ID,
+		SessionID:     r.SessionID,
+		UserID:        r.UserID,
+		ParentAgentID: r.ParentAgentID,
+		Status:        r.Status,
+		StartedAt:     r.StartedAt,
+		StopReason:    r.StopReason,
+		Error:         r.ErrorMsg,
+		Usage: agentResponseUsage{
+			InputTokens:         r.InputTokens,
+			OutputTokens:        r.OutputTokens,
+			CacheCreationTokens: r.CacheCreationTokens,
+			CacheReadTokens:     r.CacheReadTokens,
+			Model:               r.Model,
+		},
+		Live: live,
+	}
+	if !r.CompletedAt.IsZero() {
+		t := r.CompletedAt
+		resp.CompletedAt = &t
+	}
+	if !r.LastHeartbeatAt.IsZero() {
+		t := r.LastHeartbeatAt
+		resp.LastHeartbeatAt = &t
+	}
+	return resp
+}
+
+// handleGetAgent serves GET /v1/agents/{agent_id}. Returns the most
+// recent run carrying the agent_id, with its current status. 404 when
+// neither the registry nor the store knows the id.
+func (s *Server) handleGetAgent(w http.ResponseWriter, r *http.Request) {
+	agentID := r.PathValue("agent_id")
+	if !validIdent(agentID) {
+		http.Error(w, `agent_id must match [A-Za-z0-9_-]{1,128}`, http.StatusBadRequest)
+		return
+	}
+	if s.store == nil {
+		// Without persistence we can only answer "live in registry" —
+		// no historical runs to query. ONE Get call so a concurrent
+		// Deregister between a check and a read doesn't return a
+		// half-populated entry.
+		entry, ok := s.cancelReg.Get(agentID)
+		if !ok {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusNotFound)
+			fmt.Fprintf(w, `{"code":"unknown_agent_id","error":"no live run for %q (no store configured)"}`, agentID)
+			return
+		}
+		writeJSON(w, http.StatusOK, agentResponse{
+			AgentID:   agentID,
+			RunID:     entry.RunID,
+			SessionID: entry.SessionID,
+			UserID:    entry.UserID,
+			Status:    store.RunRunning,
+			StartedAt: entry.StartedAt,
+			Live:      true,
+		})
+		return
+	}
+	run, err := s.store.GetRunByAgentID(r.Context(), agentID)
+	if err != nil {
+		var nf *store.ErrNotFound
+		if errors.As(err, &nf) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusNotFound)
+			fmt.Fprintf(w, `{"code":"unknown_agent_id","error":"no run found for agent_id %q"}`, agentID)
+			return
+		}
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	_, live := s.cancelReg.Get(agentID)
+	writeJSON(w, http.StatusOK, runToAgentResponse(run, live))
+}
+
+// cancelRequest is the (optional) JSON body for POST /v1/agents/{id}/cancel.
+type cancelRequest struct {
+	Reason string `json:"reason,omitempty"`
+}
+
+// cancelResponse is the JSON shape returned by the cancel endpoint.
+type cancelResponse struct {
+	Cancelled bool     `json:"cancelled"`
+	AgentID   string   `json:"agent_id"`
+	Cascaded  []string `json:"cascaded,omitempty"`
+	Status    string   `json:"status,omitempty"` // present on idempotent re-cancel of a terminated run
+	Reason    string   `json:"reason,omitempty"`
+}
+
+// handleCancelAgent serves POST /v1/agents/{agent_id}/cancel. Cancels
+// the in-flight run (and cascading children); idempotent — a second
+// cancel of a terminated run returns 200 with the prior status rather
+// than 404.
+func (s *Server) handleCancelAgent(w http.ResponseWriter, r *http.Request) {
+	agentID := r.PathValue("agent_id")
+	if !validIdent(agentID) {
+		http.Error(w, `agent_id must match [A-Za-z0-9_-]{1,128}`, http.StatusBadRequest)
+		return
+	}
+
+	var body cancelRequest
+	if r.ContentLength > 0 {
+		// Best-effort decode — empty body is fine.
+		_ = json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<10)).Decode(&body)
+	}
+
+	res, ok := s.cancelReg.Cancel(agentID, body.Reason)
+	if ok {
+		writeJSON(w, http.StatusOK, cancelResponse{
+			Cancelled: true,
+			AgentID:   agentID,
+			Cascaded:  res.Cascaded,
+			Reason:    res.Reason,
+		})
+		return
+	}
+
+	// Not in registry — either already terminated, or never existed.
+	// Distinguish via the store: a row exists → terminated (idempotent
+	// 200); no row → 404.
+	if s.store == nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		fmt.Fprintf(w, `{"code":"unknown_agent_id","error":"no live or terminated run for %q (no store configured)"}`, agentID)
+		return
+	}
+	run, err := s.store.GetRunByAgentID(r.Context(), agentID)
+	if err != nil {
+		var nf *store.ErrNotFound
+		if errors.As(err, &nf) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusNotFound)
+			fmt.Fprintf(w, `{"code":"unknown_agent_id","error":"no run found for agent_id %q"}`, agentID)
+			return
+		}
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	// Idempotent: surface the existing terminal status. cancelled=false
+	// signals "this call did not initiate the cancel" but is still 200.
+	writeJSON(w, http.StatusOK, cancelResponse{
+		Cancelled: false,
+		AgentID:   agentID,
+		Status:    string(run.Status),
+	})
+}
+
+// handleListUserAgents serves GET /v1/users/{user_id}/agents?status=running.
+// Returns at most 100 runs ordered by started_at DESC.
+func (s *Server) handleListUserAgents(w http.ResponseWriter, r *http.Request) {
+	userID := r.PathValue("user_id")
+	if !validIdent(userID) {
+		http.Error(w, `user_id must match [A-Za-z0-9_-]{1,128}`, http.StatusBadRequest)
+		return
+	}
+	if s.store == nil {
+		http.Error(w, "list-by-user requires persistence (Store not configured)", http.StatusNotFound)
+		return
+	}
+	statusFilter := store.RunStatus(r.URL.Query().Get("status"))
+	// Default to running — the most useful view for "what's in flight
+	// for me?". Pass status=all to override.
+	if statusFilter == "" {
+		statusFilter = store.RunRunning
+	}
+	if statusFilter == "all" {
+		statusFilter = ""
+	}
+	runs, err := s.store.ListActiveRunsByUser(r.Context(), userID, statusFilter)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	out := make([]agentResponse, 0, len(runs))
+	for _, run := range runs {
+		_, live := s.cancelReg.Get(run.AgentID)
+		out = append(out, runToAgentResponse(run, live))
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"agents": out})
+}
+
+// writeJSON is a small helper for the new endpoints that avoids
+// repeating the Content-Type + WriteHeader + Encode dance.
+func writeJSON(w http.ResponseWriter, status int, body any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	if err := json.NewEncoder(w).Encode(body); err != nil {
+		log.Printf("writeJSON encode failed: %v", err)
+	}
+}
+
+// makeHeartbeat returns a callback the loop fires at each iteration.
+// It updates runs.last_heartbeat_at via a fire-and-forget background
+// context (the loop's ctx may be cancelled mid-write; the heartbeat
+// shouldn't gate on it).
+//
+// nil store or runID makes this a no-op so v0.2 callers stay
+// hands-off.
+func (s *Server) makeHeartbeat(runID string) func() {
+	if s.store == nil || runID == "" {
+		return nil
+	}
+	return func() {
+		bg, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+		defer cancel()
+		if err := s.store.UpdateHeartbeat(bg, runID); err != nil {
+			// Log only — never fail the run on a heartbeat hiccup.
+			log.Printf("store: UpdateHeartbeat(%s) failed: %v", runID, err)
+		}
+	}
+}
+
+// finishRunWithCancel is the cause-aware version of finishRun. It
+// inspects context.Cause(runCtx) to discriminate API-cancel
+// (cancel.ErrCancelledByAPI sentinel attached) from client-disconnect
+// (plain ctx.Canceled, no cause) and other errors. API-cancel writes
+// status=cancelled with the reason; everything else falls through to
+// finishRun's existing failed/completed logic.
+//
+// runCtx is the per-run ctx derived from the HTTP request ctx via
+// context.WithCancelCause. ctx (the first arg) is the outer ctx used
+// only by finishRun for its store write — passing both keeps the
+// background-write fallback in finishRun reusable for both code paths.
+func (s *Server) finishRunWithCancel(ctx context.Context, runCtx context.Context, runID string, res loop.RunResult, runErr error) {
+	if cause := context.Cause(runCtx); errors.Is(cause, cancel.ErrCancelledByAPI) {
+		// API-cancel terminal write. Reason text comes from the
+		// optional wrapper; falls back to the sentinel string.
+		reason := cancel.ReasonFromCause(cause)
+		if reason == "" {
+			reason = "cancelled by api"
+		}
+		s.finishRunCancelled(ctx, runID, res, reason)
+		return
+	}
+	s.finishRun(ctx, runID, res, runErr)
+}
+
+// finishRunFailedReason marks a run terminal with status=failed and
+// the supplied error string, no usage. Used by the BLOCKING-fix paths
+// where we created a run row but bailed before the loop ran (e.g.
+// agent_id collision in the registry). Without this, those rows
+// orphan at status=running and pollute ListActiveRunsByUser.
+//
+// Mirrors finishRun's structure: fresh background ctx with 5s timeout
+// so the write isn't lost when the request ctx is already torn down.
+func (s *Server) finishRunFailedReason(runID, reason string) {
+	if s.store == nil || runID == "" {
+		return
+	}
+	bg, cancelFn := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancelFn()
+	if err := s.store.FinishRun(bg, runID, store.RunFailed, "", store.Usage{}, reason); err != nil {
+		log.Printf("store: FinishRun(failed reason=%q) failed (run=%s): %v", reason, runID, err)
+	}
+}
+
+// finishRunCancelled writes the terminal cancelled status with the
+// supplied reason. Mirrors finishRun's structure (background ctx with
+// 5s timeout) so the store write isn't lost when runCtx is cancelled.
+//
+// Note: the ctx parameter is intentionally ignored — the function
+// always uses a fresh background ctx because at the call site BOTH
+// the request ctx and the runCtx are typically already cancelled.
+// The parameter is kept for signature parity with finishRun so the
+// two are interchangeable at the call site (finishRunWithCancel
+// dispatches to one or the other), but it's a no-op input. If you
+// add real ctx propagation here, audit every caller.
+func (s *Server) finishRunCancelled(_ context.Context, runID string, res loop.RunResult, reason string) {
+	if s.store == nil || runID == "" {
+		return
+	}
+	bg, cancelFn := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancelFn()
+	usage := store.Usage{
+		InputTokens:         res.Usage.InputTokens,
+		OutputTokens:        res.Usage.OutputTokens,
+		CacheCreationTokens: res.Usage.CacheCreationTokens,
+		CacheReadTokens:     res.Usage.CacheReadTokens,
+		Model:               res.Usage.Model,
+	}
+	if err := s.store.FinishRun(bg, runID, store.RunCancelled, reason, usage, ""); err != nil {
+		log.Printf("store: FinishRun(cancelled) failed (run=%s): %v", runID, err)
+	}
 }
 
 // finishRun marks the run terminal in the store. status is derived from
@@ -918,6 +1500,38 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// validIdent reports whether s is a valid user_id or agent_id. Charset
+// matches the spec: [A-Za-z0-9_-] with length 1..128. Used to refuse
+// malformed input at the HTTP boundary so SQL queries and registry
+// keys stay sane (no embedded slashes that could confuse URL routing,
+// no whitespace that could land in a stop_reason field).
+func validIdent(s string) bool {
+	if s == "" || len(s) > 128 {
+		return false
+	}
+	for _, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z',
+			r >= 'A' && r <= 'Z',
+			r >= '0' && r <= '9',
+			r == '_', r == '-':
+			continue
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// newAgentID produces a fresh agent_id when the caller didn't supply
+// one (or when sub-agents need their own). Same shape as session/run
+// IDs: short prefix + 16 hex chars (8 random bytes = 64 bits of entropy).
+func newAgentID() string {
+	var b [8]byte
+	_, _ = rand.Read(b[:])
+	return "a_" + hex.EncodeToString(b[:])
 }
 
 // toolNames returns the names of a slice of tools — used to populate
