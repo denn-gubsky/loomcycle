@@ -65,6 +65,30 @@ func (d *Dispatcher) Specs(order []Tool) []providers.ToolSpec {
 	return out
 }
 
+// ctxKeyAgentTools is the context key under which the runtime stores
+// the calling agent's effective allowed_tools list (after agent + caller
+// narrowing). Tools that need to apply secondary subset checks (like
+// the built-in Skill tool, which validates skill `allowed-tools` ⊆
+// agent `allowed_tools` at call time) read it via AgentTools.
+type ctxKeyAgentTools struct{}
+
+// WithAgentTools attaches the agent's effective tool names to ctx. The
+// HTTP server calls this once per run before invoking the loop so any
+// tool that resolves dynamic permissions has the same view of "what
+// the agent can use."
+func WithAgentTools(ctx context.Context, names []string) context.Context {
+	return context.WithValue(ctx, ctxKeyAgentTools{}, names)
+}
+
+// AgentTools returns the agent's effective tool names from ctx, or
+// nil if not attached. Returning nil from a tool that requires this
+// list should cause the tool to refuse with a clear "misconfigured
+// runtime" message.
+func AgentTools(ctx context.Context) []string {
+	v, _ := ctx.Value(ctxKeyAgentTools{}).([]string)
+	return v
+}
+
 // Execute looks up the named tool and runs it. Unknown tool names return an
 // error result (the model can self-correct) rather than a hard error.
 func (d *Dispatcher) Execute(ctx context.Context, name string, input json.RawMessage) Result {

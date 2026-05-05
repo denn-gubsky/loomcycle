@@ -23,10 +23,35 @@ type Config struct {
 	MCPServers  map[string]MCPServer `yaml:"mcp_servers"`
 	Concurrency Concurrency          `yaml:"concurrency"`
 	Cache       CacheConfig          `yaml:"cache"`
+	// LocalAPI declares the OpenAPI-derived MCP gateway (v0.4.0+).
+	// One tool is generated per operation; tools forward calls to
+	// BaseURL with the agent's `bearer` field as Authorization.
+	// Empty SpecPath disables the gateway. See
+	// internal/tools/localapi for the wire model.
+	LocalAPI LocalAPIConfig `yaml:"local_api"`
 
 	// Env-derived; not in YAML.
 	Env Env `yaml:"-"`
+
+	// configDir is the directory of the loaded YAML, kept so relative
+	// paths inside the config (system_prompt_file, local_api.spec) can
+	// be resolved against it.
+	configDir string `yaml:"-"`
 }
+
+// LocalAPIConfig is the operator-supplied config for the local-api
+// gateway. Mirrors localapi.Config but lives in the config package so
+// tests don't need to import the localapi package.
+type LocalAPIConfig struct {
+	SpecPath       string `yaml:"spec"`
+	BaseURL        string `yaml:"base_url"`
+	ToolNamePrefix string `yaml:"tool_name_prefix"`
+}
+
+// ConfigDir returns the directory the YAML was loaded from. Used by
+// callers that need to resolve relative paths declared in the config
+// (the local-api spec path, additional resource files).
+func (c *Config) ConfigDir() string { return c.configDir }
 
 // Defaults are the fall-throughs for agents that don't specify them.
 type Defaults struct {
@@ -192,6 +217,11 @@ func Load(path string) (*Config, error) {
 		expanded := expandEnv(string(raw))
 		if err := yaml.Unmarshal([]byte(expanded), cfg); err != nil {
 			return nil, fmt.Errorf("parse %s: %w", path, err)
+		}
+		// Stash the config directory so callers (e.g. localapi.Build)
+		// can resolve relative paths declared inside the YAML.
+		if abs, err := filepath.Abs(filepath.Dir(path)); err == nil {
+			cfg.configDir = abs
 		}
 		// Resolve any agent's system_prompt_file → system_prompt. Done
 		// here so the rest of the runtime sees a uniform AgentDef

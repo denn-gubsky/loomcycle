@@ -55,8 +55,16 @@ type Server struct {
 
 // New constructs a Server. If st is non-nil, every run is recorded as a
 // session+run+events tuple in the store; pass nil to keep v0.2 behaviour.
+//
+// The Agent built-in tool is registered automatically here (not in
+// cmd/loomcycle/main.go) because its SubAgentRunner closes over the
+// Server's own runSubAgent method — we'd otherwise have a chicken-and-
+// egg between tool list and Server. Per-agent allow-list still gates
+// access (an agent without "Agent" in `allowed_tools` won't see it).
 func New(cfg *config.Config, pr ProviderResolver, builtinTools []tools.Tool, sem *concurrency.Semaphore, st store.Store) *Server {
-	return &Server{cfg: cfg, providers: pr, tools: builtinTools, sem: sem, store: st}
+	s := &Server{cfg: cfg, providers: pr, tools: builtinTools, sem: sem, store: st}
+	s.tools = append(s.tools, &builtin.AgentTool{Run: s.runSubAgent})
+	return s
 }
 
 // trySessionLock try-locks the session-scoped mutex for id. Returns
@@ -328,7 +336,13 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 
 	emit := s.makeRecordingEmit(r.Context(), runID, stream.send)
 
-	loopRes, runErr := loop.Run(r.Context(), loop.RunOptions{
+	// Pass the agent's effective tool names to the dispatcher so tools
+	// that need a runtime view of "what this agent can use" (e.g. the
+	// Skill tool's subset check on each call) read it via ctx instead
+	// of being constructed per-run.
+	loopCtx := tools.WithAgentTools(r.Context(), toolNames(allowedTools))
+
+	loopRes, runErr := loop.Run(loopCtx, loop.RunOptions{
 		Provider:   provider,
 		Model:      model,
 		Tools:      allowedTools,
@@ -494,7 +508,8 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 
 	emit := s.makeRecordingEmit(r.Context(), run.ID, stream.send)
 
-	loopRes, runErr := loop.Run(r.Context(), loop.RunOptions{
+	loopCtx := tools.WithAgentTools(r.Context(), toolNames(allowedTools))
+	loopRes, runErr := loop.Run(loopCtx, loop.RunOptions{
 		Provider:      provider,
 		Model:         model,
 		Tools:         allowedTools,
@@ -733,6 +748,127 @@ func (s *Server) makeRecordingEmit(ctx context.Context, runID string, fwd func(p
 	}
 }
 
+// runSubAgent is the SubAgentRunner closure injected into the Agent
+// built-in tool. It looks up the named agent in cfg.Agents, builds a
+// fresh session+run for the sub-execution, drives loop.Run with the
+// sub-agent's full declared tool set, and returns the FinalText.
+//
+// Trust model: the sub-agent's `allowed_tools` is the SOLE authority on
+// its tool surface. Parent and child are both operator-vetted YAML
+// definitions; neither widens nor narrows the other. The Agent tool's
+// availability to the parent is the gate (a parent without "Agent" in
+// its allowed_tools cannot call this in the first place).
+//
+// Sub-runs are persisted as their OWN sessions for replayability. The
+// parent's transcript records only the tool_call (with input) and
+// tool_result (with the sub's final text); the sub's intermediate
+// events are reachable via GET /v1/sessions/{sub-session-id}/transcript.
+//
+// Concurrency: sub-runs DO NOT acquire a fresh semaphore slot. They run
+// inside the parent's slot — the entire run tree counts as one against
+// MAX_CONCURRENT_RUNS. This avoids deadlocks at low concurrency caps
+// and matches the cost model (a parent's compute budget already covers
+// the work it delegates).
+//
+// Errors propagate as Go errors back to the Agent tool, which surfaces
+// them as IsError tool_results to the parent's model rather than
+// tearing down the parent run.
+func (s *Server) runSubAgent(ctx context.Context, name string, prompt string) (string, error) {
+	def, ok := s.cfg.Agents[name]
+	if !ok {
+		return "", fmt.Errorf("unknown sub-agent %q (not in loomcycle.yaml agents map)", name)
+	}
+
+	providerID, model, err := s.cfg.ResolveAgentModel(name)
+	if err != nil {
+		return "", fmt.Errorf("resolve sub-agent %q model: %w", name, err)
+	}
+	provider, err := s.providers.Get(providerID)
+	if err != nil {
+		return "", fmt.Errorf("provider for sub-agent %q: %w", name, err)
+	}
+
+	// Sub-run gets its OWN session. Tenant inherited as empty for v0.4.0
+	// MVP — multi-tenant agent inheritance lands when per-tenant
+	// fairness does (later in v0.4 / v0.5).
+	subSessionID, subRunID, err := s.openOrCreateSessionAndRun(ctx, "", name, "")
+	if err != nil {
+		return "", fmt.Errorf("create sub-session for %q: %w", name, err)
+	}
+
+	// Build segments: agent's system_prompt (with cache_control) + the
+	// caller-supplied prompt as the first user message. Mirrors the
+	// shape of /v1/runs.
+	var segs []loop.PromptSegment
+	if def.SystemPrompt != "" {
+		segs = append(segs, loop.PromptSegment{
+			Role: "system",
+			Content: []loop.PromptContentBlock{{
+				Type:      "trusted-text",
+				Text:      def.SystemPrompt,
+				Cacheable: true,
+			}},
+		})
+	}
+	segs = append(segs, loop.PromptSegment{
+		Role: "user",
+		Content: []loop.PromptContentBlock{{
+			Type: "trusted-text",
+			Text: prompt,
+		}},
+	})
+
+	subTools := filterTools(s.tools, def.AllowedTools, nil)
+	// Caller-authoritative HTTP host narrowing doesn't apply here:
+	// sub-agents fall back to operator's static allowlist (no per-call
+	// caller list). If the sub-agent itself uses HTTP and needs hosts
+	// the operator's static list lacks, the operator must add them or
+	// run loomcycle in CALLER_AUTHORITATIVE mode (where the static
+	// list IS the fallback for runs without per-call narrowing).
+	subDispatcher := tools.NewDispatcher(subTools)
+
+	// Persist the input segments as the first event so transcript
+	// replay reconstructs the user prompt the same way fresh runs do.
+	if s.store != nil && subRunID != "" {
+		if inputJSON, err := json.Marshal(segs); err == nil {
+			if err := s.store.AppendEvent(ctx, subRunID, "user_input", inputJSON); err != nil {
+				log.Printf("store: AppendEvent(user_input) failed for sub-run %s: %v", subRunID, err)
+			}
+		}
+	}
+
+	// Sub-emit records to the sub's transcript only — the parent's SSE
+	// stream is fwd=no-op so sub events don't bleed into the parent's
+	// event stream. The parent observes only the wrapping
+	// tool_call/tool_result on its own stream.
+	subEmit := s.makeRecordingEmit(ctx, subRunID, func(providers.Event) {})
+
+	// Sub-run gets ITS OWN agent tools attached to ctx — the parent's
+	// tool list does not leak to the child (and vice versa). This
+	// matches the trust model: each agent's allowed_tools is its own
+	// authority for any subset checks done inside its run.
+	subCtx := tools.WithAgentTools(ctx, toolNames(subTools))
+
+	res, runErr := loop.Run(subCtx, loop.RunOptions{
+		Provider:   provider,
+		Model:      model,
+		Tools:      subTools,
+		Dispatcher: subDispatcher,
+		Segments:   segs,
+		OnEvent:    subEmit,
+	})
+	s.finishRun(ctx, subRunID, res, runErr)
+
+	if runErr != nil {
+		// Wrap with session/run IDs so a developer reading parent logs
+		// can locate the sub's transcript directly. The parent agent's
+		// model sees the unwrapped error message.
+		return "", fmt.Errorf("sub-agent %q failed (session=%s run=%s): %w",
+			name, subSessionID, subRunID, runErr)
+	}
+	return res.FinalText, nil
+}
+
 // finishRun marks the run terminal in the store. status is derived from
 // runErr: nil → completed, non-nil → failed. ctx may already be cancelled
 // (the client disconnected); we use a fresh background context with a short
@@ -782,6 +918,18 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// toolNames returns the names of a slice of tools — used to populate
+// the per-run AgentTools context value for tools that need a runtime
+// view of "what this agent can use" (e.g. the Skill tool's subset
+// check on each call).
+func toolNames(ts []tools.Tool) []string {
+	out := make([]string, 0, len(ts))
+	for _, t := range ts {
+		out = append(out, t.Name())
+	}
+	return out
 }
 
 // filterTools applies the agent + caller allowlists to the registered builtins.

@@ -31,10 +31,12 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/providers/anthropic"
 	"github.com/denn-gubsky/loomcycle/internal/providers/ollama"
 	"github.com/denn-gubsky/loomcycle/internal/providers/openai"
+	"github.com/denn-gubsky/loomcycle/internal/skills"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	storesqlite "github.com/denn-gubsky/loomcycle/internal/store/sqlite"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 	"github.com/denn-gubsky/loomcycle/internal/tools/builtin"
+	"github.com/denn-gubsky/loomcycle/internal/tools/localapi"
 	"github.com/denn-gubsky/loomcycle/internal/tools/mcp"
 	mcphttp "github.com/denn-gubsky/loomcycle/internal/tools/mcp/http"
 	mcpstdio "github.com/denn-gubsky/loomcycle/internal/tools/mcp/stdio"
@@ -105,6 +107,18 @@ func main() {
 		HostAllowlist:        staticHosts,
 		PrivateHostAllowlist: cfg.Env.HTTPPrivateHostAllowlist,
 	}
+	// Skill tool reuses the same name→body registry that the static
+	// bundling path (Approach A in internal/config) uses. Loading once
+	// at boot keeps the in-memory map authoritative — SIGHUP-style
+	// hot-reload of skills is a future enhancement.
+	skillSet, err := skills.LoadSet(cfg.Env.SkillsRoot)
+	if err != nil {
+		log.Fatalf("skills: %v", err)
+	}
+	if cfg.Env.SkillsRoot != "" {
+		log.Printf("skills: loaded %d from %s", len(skillSet.Names()), cfg.Env.SkillsRoot)
+	}
+
 	allTools := []tools.Tool{
 		&builtin.Read{Root: cfg.Env.ReadRoot},
 		&builtin.Write{Root: cfg.Env.WriteRoot},
@@ -113,6 +127,29 @@ func main() {
 		&builtin.WebFetch{HTTP: httpTool},
 		&builtin.WebSearch{APIKey: cfg.Env.BraveAPIKey},
 		&builtin.Bash{Enabled: cfg.Env.BashEnabled, Cwd: cfg.Env.BashCwd},
+		&builtin.SkillTool{Set: skillSet},
+	}
+
+	// Local API MCP gateway (v0.4.0+). When `local_api.spec` is set
+	// in loomcycle.yaml, parse the OpenAPI spec and register one tool
+	// per operation. Each tool forwards calls to local_api.base_url
+	// with the agent's `bearer` field as Authorization. Replaces the
+	// curl-shaped HTTP-tool pattern Phase B agents currently use.
+	if cfg.LocalAPI.SpecPath != "" {
+		laTools, laWarns, err := localapi.Build(localapi.Config{
+			SpecPath:       cfg.LocalAPI.SpecPath,
+			BaseURL:        cfg.LocalAPI.BaseURL,
+			ToolNamePrefix: cfg.LocalAPI.ToolNamePrefix,
+		}, cfg.ConfigDir())
+		if err != nil {
+			log.Printf("local-api gateway disabled: %v", err)
+		} else {
+			for _, w := range laWarns {
+				log.Printf("local-api: %s", w)
+			}
+			log.Printf("local-api: registered %d tools from %s", len(laTools), cfg.LocalAPI.SpecPath)
+			allTools = append(allTools, laTools...)
+		}
 	}
 	if cfg.Env.ReadRoot == "" {
 		log.Printf("note: Read tool is registered but disabled — set LOOMCYCLE_READ_ROOT to enable")
