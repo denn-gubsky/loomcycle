@@ -31,6 +31,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/providers/anthropic"
 	"github.com/denn-gubsky/loomcycle/internal/providers/ollama"
 	"github.com/denn-gubsky/loomcycle/internal/providers/openai"
+	"github.com/denn-gubsky/loomcycle/internal/skills"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	storesqlite "github.com/denn-gubsky/loomcycle/internal/store/sqlite"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
@@ -105,6 +106,18 @@ func main() {
 		HostAllowlist:        staticHosts,
 		PrivateHostAllowlist: cfg.Env.HTTPPrivateHostAllowlist,
 	}
+	// Skill tool reuses the same name→body registry that the static
+	// bundling path (Approach A in internal/config) uses. Loading once
+	// at boot keeps the in-memory map authoritative — SIGHUP-style
+	// hot-reload of skills is a future enhancement.
+	skillSet, err := skills.LoadSet(cfg.Env.SkillsRoot)
+	if err != nil {
+		log.Fatalf("skills: %v", err)
+	}
+	if cfg.Env.SkillsRoot != "" {
+		log.Printf("skills: loaded %d from %s", len(skillSet.Names()), cfg.Env.SkillsRoot)
+	}
+
 	allTools := []tools.Tool{
 		&builtin.Read{Root: cfg.Env.ReadRoot},
 		&builtin.Write{Root: cfg.Env.WriteRoot},
@@ -113,6 +126,7 @@ func main() {
 		&builtin.WebFetch{HTTP: httpTool},
 		&builtin.WebSearch{APIKey: cfg.Env.BraveAPIKey},
 		&builtin.Bash{Enabled: cfg.Env.BashEnabled, Cwd: cfg.Env.BashCwd},
+		&builtin.SkillTool{Set: skillSet},
 	}
 	if cfg.Env.ReadRoot == "" {
 		log.Printf("note: Read tool is registered but disabled — set LOOMCYCLE_READ_ROOT to enable")
