@@ -180,10 +180,27 @@ func TestSkillTool_UnknownSkillHints(t *testing.T) {
 	}
 }
 
-// Nil Set means LOOMCYCLE_SKILLS_ROOT is unset; refuse with a clear
-// runtime-misconfiguration message.
+// Nil Set means LOOMCYCLE_SKILLS_ROOT is unset (or direct test
+// construction); refuse with a clear runtime-misconfiguration message.
 func TestSkillTool_NilSetReturnsConfigError(t *testing.T) {
 	tool := &SkillTool{Set: nil}
+	res, _ := tool.Execute(context.Background(), json.RawMessage(`{"name":"x"}`))
+	if !res.IsError || !strings.Contains(res.Text, "LOOMCYCLE_SKILLS_ROOT") {
+		t.Errorf("expected config error, got %+v", res)
+	}
+}
+
+// Empty Set is what main.go actually constructs when
+// LOOMCYCLE_SKILLS_ROOT is unset (skills.LoadSet("") returns a non-nil
+// empty Set). Without a fast-path here, the operator would see
+// "unknown skill 'foo'" — true but unhelpful — instead of the
+// LOOMCYCLE_SKILLS_ROOT hint.
+func TestSkillTool_EmptySetReturnsConfigError(t *testing.T) {
+	emptySet, err := skills.LoadSet("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tool := &SkillTool{Set: emptySet}
 	res, _ := tool.Execute(context.Background(), json.RawMessage(`{"name":"x"}`))
 	if !res.IsError || !strings.Contains(res.Text, "LOOMCYCLE_SKILLS_ROOT") {
 		t.Errorf("expected config error, got %+v", res)

@@ -315,6 +315,63 @@ func TestEndpointTool_InputSchemaShape(t *testing.T) {
 	}
 }
 
+// Two operationIds that normalise to the same string MUST NOT
+// silently collide in the dispatcher map. Without the collision
+// guard, both tools register but only one dispatches (whichever
+// the map iteration overwrote last) — the model sees both names in
+// its menu but invocation is non-deterministic.
+//
+// EMPIRICAL: removing the `if firstOpID, dup := seen[toolName]; dup`
+// branch from loader.go makes this test fail.
+func TestBuild_DetectsCollisionAfterNormalisation(t *testing.T) {
+	// Both '@' and '.' get normalised to '_' (only [A-Za-z0-9_-] survives).
+	// `op@user` and `op.user` both become `op_user` after normalisation.
+	body := `
+openapi: 3.0.0
+info: {title: x, version: x}
+paths:
+  /a:
+    get:
+      operationId: op@user
+      summary: at flavour
+  /b:
+    get:
+      operationId: op.user
+      summary: dot flavour
+`
+	path, _ := writeSpec(t, body)
+	out, warns, err := Build(Config{
+		SpecPath:       path,
+		BaseURL:        "http://x",
+		ToolNamePrefix: "local",
+	}, "")
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	// Only ONE tool should survive the collision; the other becomes a
+	// warning. Stable order: spec.Endpoints() sorts by (path, method),
+	// so /a's op@user wins, /b's op.user is dropped.
+	if len(out) != 1 {
+		names := make([]string, len(out))
+		for i, tl := range out {
+			names[i] = tl.Name()
+		}
+		t.Fatalf("expected 1 tool after collision, got %d: %v", len(out), names)
+	}
+	if got := out[0].Name(); got != "local__op_user" {
+		t.Errorf("survivor tool name = %q, want local__op_user", got)
+	}
+	collided := false
+	for _, w := range warns {
+		if strings.Contains(w, "collides") && strings.Contains(w, "op.user") {
+			collided = true
+		}
+	}
+	if !collided {
+		t.Errorf("expected a collision warning naming op.user, got: %v", warns)
+	}
+}
+
 // Helper: parse spec, build tools, return the named one. Aborts the
 // test if the spec doesn't parse or the tool isn't found.
 func buildOneTool(t *testing.T, body, baseURL, opID string) (*EndpointTool, []string, error) {

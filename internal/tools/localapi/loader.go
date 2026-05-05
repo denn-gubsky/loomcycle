@@ -51,6 +51,14 @@ func Build(cfg Config, configDir string) ([]tools.Tool, []string, error) {
 
 	endpoints, warns := spec.Endpoints()
 
+	// Track names we've already registered so a normalisation collision
+	// (e.g. `get-user` and `get.user` both → `get_user`) is detected and
+	// the second skipped instead of silently overwriting the first in
+	// the dispatcher map. Without this, the model sees both opIds in
+	// its tool menu but only ONE actually dispatches — and which one is
+	// determined by map iteration order.
+	seen := make(map[string]string, len(endpoints))
+
 	out := make([]tools.Tool, 0, len(endpoints))
 	for _, ep := range endpoints {
 		toolName := prefix + "__" + ep.Operation.OperationID
@@ -66,6 +74,14 @@ func Build(cfg Config, configDir string) ([]tools.Tool, []string, error) {
 				fmt.Sprintf("operation %s: normalised tool name %q → %q", ep.Operation.OperationID, toolName, safe))
 			toolName = safe
 		}
+
+		if firstOpID, dup := seen[toolName]; dup {
+			warns = append(warns,
+				fmt.Sprintf("operation %s: tool name %q collides with operation %s after normalisation; skipping the second one (rename the operationId to disambiguate)",
+					ep.Operation.OperationID, toolName, firstOpID))
+			continue
+		}
+		seen[toolName] = ep.Operation.OperationID
 
 		tool := &EndpointTool{
 			ToolName:      toolName,

@@ -88,10 +88,19 @@ func (s *SkillTool) InputSchema() json.RawMessage { return json.RawMessage(skill
 
 // Execute implements tools.Tool.
 func (s *SkillTool) Execute(ctx context.Context, input json.RawMessage) (tools.Result, error) {
-	if s.Set == nil {
+	// Two paths land here that look like "no skills available":
+	//   1. Set == nil — direct construction without a loader (defensive,
+	//      not reachable from main.go which always passes a non-nil set).
+	//   2. Set is non-nil but empty — main.go's path when
+	//      LOOMCYCLE_SKILLS_ROOT is unset (skills.LoadSet("") returns a
+	//      non-nil empty Set so callers can always Get without a guard).
+	// Both produce the same operator-facing diagnostic: "set
+	// LOOMCYCLE_SKILLS_ROOT to use this tool" — distinguishing them in
+	// the error text would only matter to a unit test, never an operator.
+	if s.Set == nil || len(s.Set.Names()) == 0 {
 		return tools.Result{
 			IsError: true,
-			Text:    "Skill tool not configured: LOOMCYCLE_SKILLS_ROOT is unset",
+			Text:    "Skill tool: no skills configured (set LOOMCYCLE_SKILLS_ROOT and populate <root>/<name>/SKILL.md)",
 		}, nil
 	}
 

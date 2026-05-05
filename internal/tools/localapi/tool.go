@@ -184,11 +184,13 @@ func (t *EndpointTool) Execute(ctx context.Context, input json.RawMessage) (tool
 	}
 
 	// Substitute path parameters into the URL template. url.PathEscape
-	// escapes special characters (including '/') so a hostile param
-	// value cannot break out of its path segment (e.g. `id=../admin`
-	// becomes `id=%2E%2E%2Fadmin` on the wire). OpenAPI path
-	// parameters are scoped to a single segment by default (style:
-	// simple); the strict-segment escape matches that contract.
+	// escapes characters outside the unreserved set (which includes
+	// '.' but NOT '/'), so '/' becomes '%2F' on the wire. The dot is
+	// untouched, but it can't introduce a path-traversal step without
+	// a slash; `id=../admin` becomes `..%2Fadmin`, which the upstream
+	// router treats as one literal segment. OpenAPI path parameters
+	// are scoped to a single segment by default (style: simple); this
+	// escape matches that contract.
 	urlPath := t.Path
 	for _, p := range t.Parameters {
 		if p.In != "path" {
