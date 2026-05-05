@@ -61,11 +61,19 @@ func (s *WebSearch) Description() string {
 }
 
 func (s *WebSearch) InputSchema() json.RawMessage {
+	// max_results: model-facing cap is wide enough that overshoot
+	// (model trained on WebSearch APIs that allow up to 100) does
+	// not produce a schema-violation error round-trip; the runtime
+	// silently clamps to maxResultsHard = 25 in Execute(). Without
+	// this widening, a single overshoot like max_results=30 made
+	// the agent believe the tool itself was broken and cascade
+	// into elaborate-query retry loops (see job-searcher prod
+	// failure 2026-05-05).
 	return json.RawMessage(`{
 		"type": "object",
 		"properties": {
 			"query":       {"type": "string"},
-			"max_results": {"type": "integer", "minimum": 1, "maximum": 25}
+			"max_results": {"type": "integer", "minimum": 1, "maximum": 100}
 		},
 		"required": ["query"]
 	}`)
