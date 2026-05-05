@@ -25,10 +25,10 @@ func Apply(available, agentAllowed, callerAllowed []string) []string {
 
 	out := make([]string, 0, len(available))
 	for _, name := range available {
-		if !matches(name, agentSet) {
+		if !Matches(name, agentSet) {
 			continue
 		}
-		if callerSet != nil && !matches(name, callerSet) {
+		if callerSet != nil && !Matches(name, callerSet) {
 			continue
 		}
 		out = append(out, name)
@@ -36,9 +36,11 @@ func Apply(available, agentAllowed, callerAllowed []string) []string {
 	return out
 }
 
-// matches checks if name is allowed by any rule in the set. Rules ending in
-// "*" match by prefix; otherwise exact match.
-func matches(name string, set map[string]bool) bool {
+// Matches checks if name is allowed by any rule in the set. Rules ending in
+// "*" match by prefix; otherwise exact match. Exported so other packages
+// (e.g. config) can perform the same subset check when validating layered
+// allowlists.
+func Matches(name string, set map[string]bool) bool {
 	if set[name] {
 		return true
 	}
