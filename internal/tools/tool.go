@@ -89,6 +89,38 @@ func AgentTools(ctx context.Context) []string {
 	return v
 }
 
+// ctxKeyRunIdentity is the context key under which the runtime
+// stashes the current run's user_id and agent_id (v0.4 tracking
+// fields). Sub-agents read these via RunIdentity to inherit the
+// parent's user_id and to know whose agent_id is their parent.
+type ctxKeyRunIdentity struct{}
+
+// RunIdentityValue is the shape stored in ctx by WithRunIdentity. The
+// "Value" suffix avoids a naming collision with store.RunIdentity
+// (which is the persistence-layer struct with more fields).
+type RunIdentityValue struct {
+	UserID  string
+	AgentID string
+}
+
+// WithRunIdentity attaches the current run's identity to ctx. The
+// HTTP server calls this once per run before invoking the loop so the
+// AgentTool's SubAgentRunner can read it back via RunIdentity and
+// thread userID/parentAgentID through to the new sub-agent's session
+// + run records.
+func WithRunIdentity(ctx context.Context, ident RunIdentityValue) context.Context {
+	return context.WithValue(ctx, ctxKeyRunIdentity{}, ident)
+}
+
+// RunIdentity returns the current run's identity from ctx, or zero
+// value if not attached. The HTTP server's runSubAgent uses the
+// AgentID as the new sub-run's parent_agent_id and the UserID for
+// inheritance into the sub-agent's session.
+func RunIdentity(ctx context.Context) RunIdentityValue {
+	v, _ := ctx.Value(ctxKeyRunIdentity{}).(RunIdentityValue)
+	return v
+}
+
 // Execute looks up the named tool and runs it. Unknown tool names return an
 // error result (the model can self-correct) rather than a hard error.
 func (d *Dispatcher) Execute(ctx context.Context, name string, input json.RawMessage) Result {

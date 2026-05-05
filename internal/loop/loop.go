@@ -50,6 +50,15 @@ type RunOptions struct {
 	// caller's new Segments. Used by the continuation endpoint to replay
 	// a session's prior turns. Empty for a fresh run (the v0.2 case).
 	PriorMessages []providers.Message
+
+	// OnHeartbeat fires once at the start of each iteration (after the
+	// previous iteration's events have all drained). The HTTP server
+	// uses this to update runs.last_heartbeat_at — foundation for the
+	// v0.4.x sweeper that detects crashed runs by stale heartbeats.
+	// Optional; nil disables. Called from the loop goroutine,
+	// synchronously, so implementations should be cheap (single
+	// UPDATE) and tolerate ctx cancellation gracefully.
+	OnHeartbeat func()
 }
 
 // RunResult is the terminal state after a Run.
@@ -94,6 +103,14 @@ func Run(ctx context.Context, opts RunOptions) (RunResult, error) {
 	var stopReason string
 
 	for iter := 0; iter < opts.MaxIterations; iter++ {
+		// Heartbeat fires at the top of each iteration. Cheap path —
+		// implementations are expected to be ~one UPDATE. Failures
+		// should NOT propagate (a sweeper in the future is the
+		// authoritative path; a missed heartbeat just means we have
+		// to wait for the sweeper to catch up).
+		if opts.OnHeartbeat != nil {
+			opts.OnHeartbeat()
+		}
 		req := providers.Request{
 			Model:    opts.Model,
 			System:   system,

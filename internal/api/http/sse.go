@@ -64,6 +64,29 @@ func (s *sse) send(ev providers.Event) {
 	s.flush()
 }
 
+// sendRaw emits an SSE frame with a custom event name and a JSON-
+// marshalled payload. Used for side-channel events that don't fit the
+// `providers.Event` shape — currently the v0.4 `event: agent` frame
+// that announces the run's agent_id alongside the existing
+// `event: session` frame.
+//
+// data may be any json-marshalable value; on marshal failure we log
+// and silently drop (the run is still happening; an SSE-side hiccup
+// shouldn't tear down the response). The caller is responsible for
+// keeping the data shape stable since adapters parse it.
+func (s *sse) sendRaw(eventName string, data any) {
+	if s.closed {
+		return
+	}
+	payload, err := json.Marshal(data)
+	if err != nil {
+		log.Printf("sse: sendRaw marshal failed for %q: %v", eventName, err)
+		return
+	}
+	fmt.Fprintf(s.w, "event: %s\ndata: %s\n\n", eventName, payload)
+	s.flush()
+}
+
 func (s *sse) flush() {
 	if s.flusher != nil {
 		s.flusher.Flush()
