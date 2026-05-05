@@ -135,6 +135,30 @@ mcp_servers:
   #   headers:
   #     Authorization: "Bearer ${LOOMCYCLE_AUTH_TOKEN}"
 
+# ─── Local API MCP gateway (v0.4.0+) ─────────────────────────────────
+# Reads an OpenAPI 3.0 spec at boot and exposes one typed tool per
+# operation, named `<prefix>__<operationId>`. Forwards calls to
+# base_url with the agent's `bearer` field as Authorization.
+#
+# Replaces the curl-shaped HTTP-tool pattern: an agent that previously
+# called `HTTP({method:"PATCH", url:"$BASE_URL/api/applications/...",
+# headers:{Authorization:"Bearer ..."}, body:{...}})` instead calls
+# `local__patch_application({bearer:"...", id:"...", body:{...}})` —
+# typed, schema-validated, and rename-safe.
+#
+# Constraints:
+#   - Inline schemas only ($ref is NOT resolved). Bundle your spec
+#     before pointing loomcycle at it (swagger-cli bundle, redocly
+#     bundle, etc.).
+#   - JSON request/response bodies only.
+#   - Trust model: this gateway is pointed at YOUR application server;
+#     SSRF and private-IP defences from the HTTP tool do not apply.
+#     Don't point base_url at attacker-controlled hosts.
+# local_api:
+#   spec: openapi.yaml          # relative to this YAML's directory
+#   base_url: http://localhost:3000
+#   tool_name_prefix: local     # tools become mcp__-style: local__<opId>
+
 # ─── Concurrency ──────────────────────────────────────────────────────
 # Caps total in-flight runs across all agents. Bursts above the cap
 # queue up to max_queue_depth for queue_timeout_ms before returning

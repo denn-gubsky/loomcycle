@@ -36,6 +36,7 @@ import (
 	storesqlite "github.com/denn-gubsky/loomcycle/internal/store/sqlite"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 	"github.com/denn-gubsky/loomcycle/internal/tools/builtin"
+	"github.com/denn-gubsky/loomcycle/internal/tools/localapi"
 	"github.com/denn-gubsky/loomcycle/internal/tools/mcp"
 	mcphttp "github.com/denn-gubsky/loomcycle/internal/tools/mcp/http"
 	mcpstdio "github.com/denn-gubsky/loomcycle/internal/tools/mcp/stdio"
@@ -127,6 +128,28 @@ func main() {
 		&builtin.WebSearch{APIKey: cfg.Env.BraveAPIKey},
 		&builtin.Bash{Enabled: cfg.Env.BashEnabled, Cwd: cfg.Env.BashCwd},
 		&builtin.SkillTool{Set: skillSet},
+	}
+
+	// Local API MCP gateway (v0.4.0+). When `local_api.spec` is set
+	// in loomcycle.yaml, parse the OpenAPI spec and register one tool
+	// per operation. Each tool forwards calls to local_api.base_url
+	// with the agent's `bearer` field as Authorization. Replaces the
+	// curl-shaped HTTP-tool pattern Phase B agents currently use.
+	if cfg.LocalAPI.SpecPath != "" {
+		laTools, laWarns, err := localapi.Build(localapi.Config{
+			SpecPath:       cfg.LocalAPI.SpecPath,
+			BaseURL:        cfg.LocalAPI.BaseURL,
+			ToolNamePrefix: cfg.LocalAPI.ToolNamePrefix,
+		}, cfg.ConfigDir())
+		if err != nil {
+			log.Printf("local-api gateway disabled: %v", err)
+		} else {
+			for _, w := range laWarns {
+				log.Printf("local-api: %s", w)
+			}
+			log.Printf("local-api: registered %d tools from %s", len(laTools), cfg.LocalAPI.SpecPath)
+			allTools = append(allTools, laTools...)
+		}
 	}
 	if cfg.Env.ReadRoot == "" {
 		log.Printf("note: Read tool is registered but disabled — set LOOMCYCLE_READ_ROOT to enable")
