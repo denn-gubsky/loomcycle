@@ -10,6 +10,9 @@ import (
 	"time"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/denn-gubsky/loomcycle/internal/skills"
+	"github.com/denn-gubsky/loomcycle/internal/tools/policy"
 )
 
 // Config is the top-level YAML structure plus env-derived fields.
@@ -52,6 +55,18 @@ type AgentDef struct {
 	// want to strip it, use SystemPrompt + a preprocessor.
 	SystemPromptFile string   `yaml:"system_prompt_file"`
 	AllowedTools     []string `yaml:"allowed_tools"`
+	// Skills lists skill names (each = a subdirectory under
+	// LOOMCYCLE_SKILLS_ROOT containing SKILL.md) whose bodies are
+	// concatenated onto SystemPrompt at config-load. Approach A in
+	// doc-internal/skills-design.md: static bundling lets the skill
+	// body land inside the cacheable system block, paying the
+	// cache-write cost once per 5-min TTL.
+	//
+	// SECURITY: each named skill's allowed-tools frontmatter must be a
+	// SUBSET of this agent's AllowedTools. resolveSkills enforces this
+	// at config-load — a skill may only narrow, never widen, the tool
+	// set the operator granted to the agent.
+	Skills []string `yaml:"skills"`
 }
 
 // MCPServer declares one MCP server. Transport "stdio" or "http".
@@ -146,6 +161,12 @@ type Env struct {
 	// BashCwd is the working directory for spawned bash commands. Required
 	// when BashEnabled is true; if unset the tool refuses every call.
 	BashCwd string
+	// SkillsRoot points at a directory holding subdirectories of the
+	// shape `<name>/SKILL.md`. When unset, agents may not list skills
+	// (resolveSkills errors loudly to surface the misconfiguration —
+	// silently dropping skill bodies would defeat the prompts that
+	// reference them). Sourced from LOOMCYCLE_SKILLS_ROOT.
+	SkillsRoot string
 }
 
 // Load reads a YAML file and the process env. Empty path returns defaults +
@@ -195,6 +216,14 @@ func Load(path string) (*Config, error) {
 		BraveAPIKey:              os.Getenv("BRAVE_API_KEY"),
 		BashEnabled:              os.Getenv("LOOMCYCLE_BASH_ENABLED") == "1",
 		BashCwd:                  os.Getenv("LOOMCYCLE_BASH_CWD"),
+		SkillsRoot:               os.Getenv("LOOMCYCLE_SKILLS_ROOT"),
+	}
+
+	// resolveSkills MUST come after env loading (it needs SkillsRoot)
+	// AND after resolveSystemPromptFiles (skill bodies append onto
+	// SystemPrompt — file-loaded prompts have to land first).
+	if err := resolveSkills(cfg); err != nil {
+		return nil, err
 	}
 
 	if err := validate(cfg); err != nil {
@@ -331,6 +360,84 @@ func resolveSystemPromptFiles(cfg *Config, configPath string) error {
 		def.SystemPrompt = string(body)
 		// SystemPromptFile is preserved on the struct — no harm, and
 		// surfaces the source path for anyone debugging the config.
+		cfg.Agents[name] = def
+	}
+	return nil
+}
+
+// resolveSkills bundles skill bodies into agent system prompts and
+// validates each skill's allowed-tools is a subset of the bundling
+// agent's allowed_tools. Static bundling — see Approach A in
+// doc-internal/skills-design.md.
+//
+// Errors:
+//   - SkillsRoot unset but an agent lists `skills:` (silent drop would
+//     produce agents whose prompts reference skills the runtime never
+//     loaded; loud failure forces the operator to fix the config)
+//   - skills root unreadable / not a directory
+//   - agent references an unknown skill name
+//   - skill demands a tool the agent doesn't grant (security invariant)
+//
+// SECURITY: the subset check uses internal/tools/policy.matches so
+// glob rules on either side compose correctly. Examples:
+//   - skill `[Read]`, agent `[Read, HTTP]` → OK (literal match)
+//   - skill `[mcp__brave__search]`, agent `[mcp__brave__*]` → OK
+//     (skill literal matched by agent glob, narrowing is fine)
+//   - skill `[mcp__brave__*]`, agent `[mcp__brave__search]` → ERROR
+//     (skill demands broader access than agent grants)
+//   - skill `[Edit]`, agent `[Read]` → ERROR (skill widens)
+func resolveSkills(cfg *Config) error {
+	// Fast-fail when skills root is unset but agents list skills. We
+	// could no-op silently, but that produces agents whose prompts
+	// reference skills the runtime never bundled — exactly the failure
+	// mode this whole feature was added to fix.
+	if cfg.Env.SkillsRoot == "" {
+		for name, def := range cfg.Agents {
+			if len(def.Skills) > 0 {
+				return fmt.Errorf("agent %q: lists skills %v but LOOMCYCLE_SKILLS_ROOT is not set", name, def.Skills)
+			}
+		}
+		return nil
+	}
+	set, err := skills.LoadSet(cfg.Env.SkillsRoot)
+	if err != nil {
+		return fmt.Errorf("load skills: %w", err)
+	}
+	for name, def := range cfg.Agents {
+		if len(def.Skills) == 0 {
+			continue
+		}
+		// Build agent rule set once per agent.
+		agentSet := make(map[string]bool, len(def.AllowedTools))
+		for _, t := range def.AllowedTools {
+			agentSet[t] = true
+		}
+		for _, skillName := range def.Skills {
+			sk, ok := set.Get(skillName)
+			if !ok {
+				return fmt.Errorf("agent %q: unknown skill %q (skills root: %s)", name, skillName, cfg.Env.SkillsRoot)
+			}
+			// SECURITY: enforce skill.allowed-tools ⊆ agent.allowed_tools.
+			var widening []string
+			for _, t := range sk.AllowedTools {
+				if !policy.Matches(t, agentSet) {
+					widening = append(widening, t)
+				}
+			}
+			if len(widening) > 0 {
+				return fmt.Errorf(
+					"agent %q: skill %q requires tools %v not granted by the agent's allowed_tools — skills may not widen the agent's tool set",
+					name, skillName, widening,
+				)
+			}
+			// Append. Use a separator only if there is already content
+			// in the system prompt; first skill on a prompt-less agent
+			// becomes the prompt without a leading "---".
+			if def.SystemPrompt != "" {
+				def.SystemPrompt += "\n\n---\n\n"
+			}
+			def.SystemPrompt += sk.Body
+		}
 		cfg.Agents[name] = def
 	}
 	return nil
