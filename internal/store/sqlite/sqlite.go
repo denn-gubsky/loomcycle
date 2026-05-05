@@ -139,6 +139,13 @@ func (s *Store) migrate(ctx context.Context) error {
 		`CREATE INDEX IF NOT EXISTS sessions_by_user        ON sessions(user_id)     WHERE user_id IS NOT NULL`,
 	}
 	for _, q := range addIndexes {
+		// Note the asymmetry vs addColumns above: indexes use
+		// `CREATE INDEX IF NOT EXISTS` which is unconditionally
+		// idempotent, so we don't need to swallow "duplicate"
+		// errors. If you ADD a non-IF-NOT-EXISTS statement here for
+		// some reason, do NOT copy the column-loop's substring guard —
+		// you'd silently suppress real schema errors. Keep the
+		// idempotent shape consistent across all index DDL.
 		if _, err := s.db.ExecContext(ctx, q); err != nil {
 			return fmt.Errorf("migrate add index: %w", err)
 		}

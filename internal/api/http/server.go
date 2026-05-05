@@ -377,12 +377,21 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		StartedAt: time.Now(),
 	}, cancelFn)
 	if errors.Is(regErr, cancel.ErrInUse) {
+		// We've already created the session+run row in the store
+		// (session creation is unavoidable to satisfy the FK on
+		// runs). Leaving the run at status=running would orphan it
+		// permanently — the heartbeat sweeper (when it lands) would
+		// eventually catch it, but in the meantime it pollutes
+		// ListActiveRunsByUser. Mark it failed with a clear reason
+		// so the row is terminal from this exit path.
+		s.finishRunFailedReason(runID, "agent_id collision; run never started")
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusConflict)
 		fmt.Fprintf(w, `{"code":"agent_id_in_use","error":"agent_id %q is already mapped to an active run"}`, agentID)
 		return
 	}
 	if regErr != nil {
+		s.finishRunFailedReason(runID, "registry register failed: "+regErr.Error())
 		http.Error(w, regErr.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -634,12 +643,16 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		StartedAt: time.Now(),
 	}, cancelFn)
 	if errors.Is(regErr, cancel.ErrInUse) {
+		// Same orphan-row mitigation as handleRuns — the run was
+		// already inserted at status=running.
+		s.finishRunFailedReason(run.ID, "agent_id collision; run never started")
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusConflict)
 		fmt.Fprintf(w, `{"code":"agent_id_in_use","error":"agent_id %q is already mapped to an active run"}`, agentID)
 		return
 	}
 	if regErr != nil {
+		s.finishRunFailedReason(run.ID, "registry register failed: "+regErr.Error())
 		http.Error(w, regErr.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -1191,16 +1204,16 @@ func (s *Server) handleGetAgent(w http.ResponseWriter, r *http.Request) {
 	}
 	if s.store == nil {
 		// Without persistence we can only answer "live in registry" —
-		// no historical runs to query. Surface that as a 404 with a
-		// distinct code so the caller can tell.
-		if _, ok := s.cancelReg.Get(agentID); !ok {
+		// no historical runs to query. ONE Get call so a concurrent
+		// Deregister between a check and a read doesn't return a
+		// half-populated entry.
+		entry, ok := s.cancelReg.Get(agentID)
+		if !ok {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusNotFound)
 			fmt.Fprintf(w, `{"code":"unknown_agent_id","error":"no live run for %q (no store configured)"}`, agentID)
 			return
 		}
-		// Live but unpersisted — return a minimal-shape response.
-		entry, _ := s.cancelReg.Get(agentID)
 		writeJSON(w, http.StatusOK, agentResponse{
 			AgentID:   agentID,
 			RunID:     entry.RunID,
@@ -1390,9 +1403,36 @@ func (s *Server) finishRunWithCancel(ctx context.Context, runCtx context.Context
 	s.finishRun(ctx, runID, res, runErr)
 }
 
+// finishRunFailedReason marks a run terminal with status=failed and
+// the supplied error string, no usage. Used by the BLOCKING-fix paths
+// where we created a run row but bailed before the loop ran (e.g.
+// agent_id collision in the registry). Without this, those rows
+// orphan at status=running and pollute ListActiveRunsByUser.
+//
+// Mirrors finishRun's structure: fresh background ctx with 5s timeout
+// so the write isn't lost when the request ctx is already torn down.
+func (s *Server) finishRunFailedReason(runID, reason string) {
+	if s.store == nil || runID == "" {
+		return
+	}
+	bg, cancelFn := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancelFn()
+	if err := s.store.FinishRun(bg, runID, store.RunFailed, "", store.Usage{}, reason); err != nil {
+		log.Printf("store: FinishRun(failed reason=%q) failed (run=%s): %v", reason, runID, err)
+	}
+}
+
 // finishRunCancelled writes the terminal cancelled status with the
 // supplied reason. Mirrors finishRun's structure (background ctx with
 // 5s timeout) so the store write isn't lost when runCtx is cancelled.
+//
+// Note: the ctx parameter is intentionally ignored — the function
+// always uses a fresh background ctx because at the call site BOTH
+// the request ctx and the runCtx are typically already cancelled.
+// The parameter is kept for signature parity with finishRun so the
+// two are interchangeable at the call site (finishRunWithCancel
+// dispatches to one or the other), but it's a no-op input. If you
+// add real ctx propagation here, audit every caller.
 func (s *Server) finishRunCancelled(_ context.Context, runID string, res loop.RunResult, reason string) {
 	if s.store == nil || runID == "" {
 		return

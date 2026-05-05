@@ -15,7 +15,6 @@ import (
 type sse struct {
 	w       http.ResponseWriter
 	flusher http.Flusher
-	closed  bool
 }
 
 // newSSE returns an sse and a boolean indicating whether the writer supports
@@ -40,9 +39,6 @@ func (s *sse) start() {
 }
 
 func (s *sse) send(ev providers.Event) {
-	if s.closed {
-		return
-	}
 	payload, err := json.Marshal(ev)
 	if err != nil {
 		// Marshal can fail for unencodable values in ev.Payload-style fields.
@@ -75,9 +71,6 @@ func (s *sse) send(ev providers.Event) {
 // shouldn't tear down the response). The caller is responsible for
 // keeping the data shape stable since adapters parse it.
 func (s *sse) sendRaw(eventName string, data any) {
-	if s.closed {
-		return
-	}
 	payload, err := json.Marshal(data)
 	if err != nil {
 		log.Printf("sse: sendRaw marshal failed for %q: %v", eventName, err)

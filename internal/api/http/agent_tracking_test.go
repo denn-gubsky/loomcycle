@@ -249,6 +249,87 @@ func TestRuns_RejectsDuplicateActiveAgentID(t *testing.T) {
 	close(prov.release)
 }
 
+// REGRESSION: a 409 from the duplicate-active path MUST NOT leave the
+// just-created run row at status=running. The handler creates a
+// session+run BEFORE registering with the cancel registry; a registry
+// collision was previously orphaning that row at status=running for
+// the heartbeat sweeper to clean up later — polluting
+// ListActiveRunsByUser in the meantime.
+//
+// EMPIRICAL: removing the s.finishRunFailedReason call on the ErrInUse
+// branch of handleRuns regresses this test (the row stays at running).
+func TestRuns_DuplicateActiveAgentID_DoesNotLeakRunningRow(t *testing.T) {
+	cfg := makeBaseConfig()
+	prov := &pausableProvider{release: make(chan struct{}), finalText: "ok"}
+	srv, _ := makeServer(t, prov, cfg)
+	ts := httptest.NewServer(srv.Mux())
+	defer ts.Close()
+
+	// First run: kick off and wait for registry presence.
+	go func() {
+		resp, _ := http.Post(ts.URL+"/v1/runs", "application/json", strings.NewReader(
+			`{"agent":"default","user_id":"alice","agent_id":"a_dup_leak","segments":[{"role":"user","content":[{"type":"trusted-text","text":"x"}]}]}`,
+		))
+		if resp != nil {
+			_, _ = io.Copy(io.Discard, resp.Body)
+			resp.Body.Close()
+		}
+	}()
+	waitForRegistry(t, srv, "a_dup_leak", 2*time.Second)
+
+	// Second run with same agent_id → 409.
+	resp2, _ := http.Post(ts.URL+"/v1/runs", "application/json", strings.NewReader(
+		`{"agent":"default","user_id":"alice","agent_id":"a_dup_leak","segments":[{"role":"user","content":[{"type":"trusted-text","text":"y"}]}]}`,
+	))
+	defer resp2.Body.Close()
+	if resp2.StatusCode != 409 {
+		t.Fatalf("status = %d, want 409", resp2.StatusCode)
+	}
+
+	// At this point Alice should have exactly ONE running row (the
+	// first one) — NOT two. The second run's row, created before the
+	// registry collision was detected, must have been transitioned
+	// to status=failed.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		runs, _ := srv.store.ListActiveRunsByUser(context.Background(), "alice", "")
+		failedCount := 0
+		runningCount := 0
+		for _, r := range runs {
+			switch r.Status {
+			case "running":
+				runningCount++
+			case "failed":
+				failedCount++
+			}
+		}
+		// We expect: 1 running (the live first run) + 1 failed (the
+		// 409-rejected second). If we see 2 running, the leak is back.
+		if runningCount == 1 && failedCount == 1 {
+			break
+		}
+		if runningCount > 1 {
+			t.Fatalf("BLOCKING: %d running rows for alice, expected 1 (the 409 leaked a row)", runningCount)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	// Sanity: there should be at least one failed row with the
+	// "agent_id collision" reason.
+	allRuns, _ := srv.store.ListActiveRunsByUser(context.Background(), "alice", "failed")
+	foundCollision := false
+	for _, r := range allRuns {
+		if strings.Contains(r.ErrorMsg, "agent_id collision") {
+			foundCollision = true
+		}
+	}
+	if !foundCollision {
+		t.Errorf("expected a failed row with 'agent_id collision' error, got: %+v", allRuns)
+	}
+
+	close(prov.release)
+}
+
 // Cancelling a running run via POST /v1/agents/{id}/cancel writes
 // status=cancelled (NOT failed) in the store. The cause-aware path
 // in finishRunWithCancel discriminates API-cancel from client-disconnect.
