@@ -416,3 +416,53 @@ func TestRequestBodyShape(t *testing.T) {
 		t.Errorf("stream flag missing:\n%s", body)
 	}
 }
+
+// TestBuildRequestBody_MaxTokensDefault verifies the driver's default
+// max_tokens. 4096 was the historical value but caused mid-output
+// truncation for batch agents (~12k chars output ≈ 4k tokens, hitting
+// the cap before the closing `}` of a verdicts JSON). Bumped to 8192
+// 2026-05-05; haiku-4-5/sonnet-4-6 both support up to 64k output so
+// 8k is still conservative. Revert this constant to fail this test.
+func TestBuildRequestBody_MaxTokensDefault(t *testing.T) {
+	body, err := buildRequestBody(providers.Request{
+		Model:    "claude-haiku-4-5",
+		System:   []providers.ContentBlock{{Type: "text", Text: "you are a test"}},
+		Messages: []providers.Message{{Role: "user", Content: []providers.ContentBlock{{Type: "text", Text: "hi"}}}},
+	})
+	if err != nil {
+		t.Fatalf("buildRequestBody: %v", err)
+	}
+	var parsed struct {
+		MaxTokens int `json:"max_tokens"`
+	}
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if parsed.MaxTokens != 8192 {
+		t.Errorf("default max_tokens: got %d, want 8192 (raised from 4096 to give batch-output agents headroom)", parsed.MaxTokens)
+	}
+}
+
+// TestBuildRequestBody_MaxTokensOverride verifies that req.MaxTokens
+// flows through to the wire request when the caller (loop.RunOptions
+// → HTTP server, populated from agentDef.MaxTokens) sets it.
+func TestBuildRequestBody_MaxTokensOverride(t *testing.T) {
+	body, err := buildRequestBody(providers.Request{
+		Model:     "claude-haiku-4-5",
+		MaxTokens: 16384,
+		System:    []providers.ContentBlock{{Type: "text", Text: "x"}},
+		Messages:  []providers.Message{{Role: "user", Content: []providers.ContentBlock{{Type: "text", Text: "y"}}}},
+	})
+	if err != nil {
+		t.Fatalf("buildRequestBody: %v", err)
+	}
+	var parsed struct {
+		MaxTokens int `json:"max_tokens"`
+	}
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if parsed.MaxTokens != 16384 {
+		t.Errorf("override max_tokens: got %d, want 16384", parsed.MaxTokens)
+	}
+}

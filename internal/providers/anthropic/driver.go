@@ -149,7 +149,12 @@ type wireContentBlock struct {
 func buildRequestBody(req providers.Request) ([]byte, error) {
 	maxTokens := req.MaxTokens
 	if maxTokens == 0 {
-		maxTokens = 4096
+		// 8192 picked over the previous 4096: haiku-4-5/sonnet-4-6
+		// both support up to 64k output, and 4096 was empirically
+		// truncating verdict-batch agents (~12k chars output ≈ 4k
+		// tokens). 8k is still conservative — agents that need more
+		// can set max_tokens: NN explicitly in their YAML.
+		maxTokens = 8192
 	}
 
 	w := wireRequest{
