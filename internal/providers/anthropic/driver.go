@@ -104,7 +104,15 @@ func (d *Driver) Call(ctx context.Context, req providers.Request) (<-chan provid
 	}
 
 	out := make(chan providers.Event, 16)
-	go streamEvents(ctx, resp.Body, out)
+	// Thread req.Model into the stream parser so the message_delta
+	// handler can stamp it onto the Usage event. Anthropic's
+	// streaming usage object doesn't carry the model field; without
+	// this plumbing, every providers.Usage on the wire has Model="",
+	// the loop's totalUsage.Model stays empty, and the runs table's
+	// `model` column never populates. Cost incident 2026-05-06: with
+	// no model recorded per run, we couldn't verify which agent
+	// runs called which model — investigation depended on guesses.
+	go streamEvents(ctx, resp.Body, out, req.Model)
 	return out, nil
 }
 
@@ -225,7 +233,7 @@ type sseFrame struct {
 	data  []byte
 }
 
-func streamEvents(ctx context.Context, body io.ReadCloser, out chan<- providers.Event) {
+func streamEvents(ctx context.Context, body io.ReadCloser, out chan<- providers.Event, model string) {
 	defer body.Close()
 	defer close(out)
 
@@ -254,7 +262,7 @@ func streamEvents(ctx context.Context, body io.ReadCloser, out chan<- providers.
 		if len(line) == 0 {
 			// dispatch frame
 			if frame.event != "" || len(frame.data) > 0 {
-				if !processFrame(frame, &current, &stopReason, &usage, send) {
+				if !processFrame(frame, &current, &stopReason, &usage, send, model) {
 					return
 				}
 			}
@@ -290,6 +298,7 @@ func processFrame(
 	stopReason *string,
 	usage **providers.Usage,
 	send func(providers.Event) bool,
+	model string,
 ) bool {
 	switch f.event {
 	case "content_block_start":
@@ -372,11 +381,15 @@ func processFrame(
 			*stopReason = ev.Delta.StopReason
 		}
 		// usage in message_delta is final cumulative; it overwrites.
+		// Stamp the model from the request — Anthropic's streaming
+		// usage object doesn't carry it, so we plumb it through from
+		// driver.Call (see comment at the streamEvents call site).
 		*usage = &providers.Usage{
 			InputTokens:         ev.Usage.InputTokens,
 			OutputTokens:        ev.Usage.OutputTokens,
 			CacheCreationTokens: ev.Usage.CacheCreationTokens,
 			CacheReadTokens:     ev.Usage.CacheReadTokens,
+			Model:               model,
 		}
 
 	case "error":

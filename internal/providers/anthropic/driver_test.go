@@ -466,3 +466,57 @@ func TestBuildRequestBody_MaxTokensOverride(t *testing.T) {
 		t.Errorf("override max_tokens: got %d, want 16384", parsed.MaxTokens)
 	}
 }
+
+// TestStreamingUsage_PopulatesModel verifies that the providers.Usage
+// emitted on EventDone carries the model field from the request.
+//
+// Anthropic's streaming `message_delta` event includes token counts
+// but NOT the model identifier. The driver plumbs req.Model through
+// to the usage parser so downstream stores (loomcycle's runs.model
+// column, jobs-search-web's agent_runs.model) get the ground truth.
+//
+// Cost incident 2026-05-06: with no model recorded per loomcycle run,
+// it was impossible to verify which agents called which models from
+// DB queries alone. Investigation required guesswork. This test
+// pins the invariant: Usage.Model on EventDone equals req.Model.
+//
+// Revert the streamEvents `model` parameter or the Usage.Model
+// assignment in processFrame's message_delta case to fail this test.
+func TestStreamingUsage_PopulatesModel(t *testing.T) {
+	const requestedModel = "claude-haiku-4-5-20251001"
+
+	srv := fakeStream(t, []string{
+		"event: content_block_delta\ndata: {\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"ok\"}}\n\n",
+		"event: message_delta\ndata: {\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"input_tokens\":42,\"output_tokens\":7}}\n\n",
+		"event: message_stop\ndata: {}\n\n",
+	})
+	defer srv.Close()
+
+	d := New("test-key", srv.URL, nil)
+	ch, err := d.Call(context.Background(), providers.Request{
+		Model:    requestedModel,
+		Messages: []providers.Message{{Role: "user", Content: []providers.ContentBlock{{Type: "text", Text: "hi"}}}},
+	})
+	if err != nil {
+		t.Fatalf("Call: %v", err)
+	}
+
+	var done *providers.Event
+	for ev := range ch {
+		if ev.Type == providers.EventDone {
+			cp := ev
+			done = &cp
+		}
+	}
+	if done == nil || done.Usage == nil {
+		t.Fatalf("expected an EventDone with Usage; got done=%v", done)
+	}
+	if done.Usage.Model != requestedModel {
+		t.Errorf("Usage.Model = %q, want %q (Anthropic streaming usage doesn't carry model — driver should stamp it from req.Model)",
+			done.Usage.Model, requestedModel)
+	}
+	// Also assert tokens to confirm the parse path is otherwise intact.
+	if done.Usage.InputTokens != 42 || done.Usage.OutputTokens != 7 {
+		t.Errorf("Usage tokens: input=%d output=%d, want 42/7", done.Usage.InputTokens, done.Usage.OutputTokens)
+	}
+}
