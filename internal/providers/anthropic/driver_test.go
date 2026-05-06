@@ -84,6 +84,49 @@ func TestStreamTextThenStop(t *testing.T) {
 	}
 }
 
+// TestStreamUsageCarriesModel asserts the model alias from message_start
+// flows through to the final Usage. Regression for the bug where every
+// loomcycle-backed agent_runs row had cost_usd = 0 because the SSE
+// usage event had Model="" — pricing keyed off model returned null,
+// jobs-search-web wrote 0 to the column. The fix consumes message_start
+// to capture model and stamps it on the message_delta-emitted Usage.
+func TestStreamUsageCarriesModel(t *testing.T) {
+	frames := []string{
+		"event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_x\",\"model\":\"claude-haiku-4-5-20251001\"}}\n\n",
+		"event: content_block_start\ndata: {\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n",
+		"event: content_block_delta\ndata: {\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"hi\"}}\n\n",
+		"event: content_block_stop\ndata: {\"index\":0}\n\n",
+		"event: message_delta\ndata: {\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"input_tokens\":12,\"output_tokens\":3}}\n\n",
+		"event: message_stop\ndata: {}\n\n",
+	}
+	srv := fakeStream(t, frames)
+	defer srv.Close()
+
+	d := New("test-key", srv.URL, nil)
+	ch, err := d.Call(context.Background(), providers.Request{
+		Model:    "claude-haiku-4-5",
+		Messages: []providers.Message{{Role: "user", Content: []providers.ContentBlock{{Type: "text", Text: "hi"}}}},
+	})
+	if err != nil {
+		t.Fatalf("Call: %v", err)
+	}
+
+	var done providers.Event
+	for ev := range ch {
+		if ev.Type == providers.EventDone {
+			done = ev
+		}
+	}
+	if done.Usage == nil {
+		t.Fatal("done.Usage is nil")
+	}
+	// Wire model wins (message_start), not the request alias — so
+	// downstream pricing matches what Anthropic actually billed.
+	if done.Usage.Model != "claude-haiku-4-5-20251001" {
+		t.Errorf("Usage.Model = %q, want %q", done.Usage.Model, "claude-haiku-4-5-20251001")
+	}
+}
+
 func TestStreamToolUse(t *testing.T) {
 	frames := []string{
 		"event: message_start\ndata: {}\n\n",

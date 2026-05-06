@@ -211,6 +211,10 @@ func toWireBlock(c providers.ContentBlock) wireContentBlock {
 // --- SSE parsing ---
 //
 // Anthropic streams a sequence of events. We care about:
+//   - message_start          : carries the resolved model alias (e.g.
+//                              `claude-haiku-4-5-20251001`); needed so
+//                              the SSE Usage event can carry model and
+//                              the consumer can price the run.
 //   - content_block_start    : begins a text or tool_use block
 //   - content_block_delta    : text_delta or input_json_delta
 //   - content_block_stop     : finalize current block (emit tool_call if tool_use)
@@ -247,6 +251,11 @@ func streamEvents(ctx context.Context, body io.ReadCloser, out chan<- providers.
 	var current pendingBlock
 	var stopReason string
 	var usage *providers.Usage
+	// Resolved model alias from message_start. Anthropic sometimes
+	// returns a date-suffixed alias (`claude-haiku-4-5-20251001`)
+	// distinct from the request alias (`claude-haiku-4-5`); capture
+	// the wire value so downstream pricing matches what was billed.
+	var model string
 
 	var frame sseFrame
 	for scanner.Scan() {
@@ -254,7 +263,7 @@ func streamEvents(ctx context.Context, body io.ReadCloser, out chan<- providers.
 		if len(line) == 0 {
 			// dispatch frame
 			if frame.event != "" || len(frame.data) > 0 {
-				if !processFrame(frame, &current, &stopReason, &usage, send) {
+				if !processFrame(frame, &current, &stopReason, &model, &usage, send) {
 					return
 				}
 			}
@@ -288,10 +297,29 @@ func processFrame(
 	f sseFrame,
 	current *pendingBlock,
 	stopReason *string,
+	model *string,
 	usage **providers.Usage,
 	send func(providers.Event) bool,
 ) bool {
 	switch f.event {
+	case "message_start":
+		// Anthropic's message_start carries the full Message object,
+		// including the resolved model alias. We don't need anything
+		// else from it here — usage in message_start is partial
+		// (input_tokens only, no cumulative); message_delta carries
+		// the final cumulative usage. Just stash the model.
+		var ev struct {
+			Message struct {
+				Model string `json:"model"`
+			} `json:"message"`
+		}
+		if err := json.Unmarshal(f.data, &ev); err != nil {
+			return true
+		}
+		if ev.Message.Model != "" {
+			*model = ev.Message.Model
+		}
+
 	case "content_block_start":
 		var ev struct {
 			ContentBlock struct {
@@ -372,11 +400,14 @@ func processFrame(
 			*stopReason = ev.Delta.StopReason
 		}
 		// usage in message_delta is final cumulative; it overwrites.
+		// Model comes from message_start (captured into *model above);
+		// without it the consumer can't price the run.
 		*usage = &providers.Usage{
 			InputTokens:         ev.Usage.InputTokens,
 			OutputTokens:        ev.Usage.OutputTokens,
 			CacheCreationTokens: ev.Usage.CacheCreationTokens,
 			CacheReadTokens:     ev.Usage.CacheReadTokens,
+			Model:               *model,
 		}
 
 	case "error":
