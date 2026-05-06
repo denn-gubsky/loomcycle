@@ -92,6 +92,15 @@ type AgentDef struct {
 	// at config-load — a skill may only narrow, never widen, the tool
 	// set the operator granted to the agent.
 	Skills []string `yaml:"skills"`
+
+	// MaxTokens caps per-iteration assistant output. Zero = use the
+	// provider driver's default (4096 in anthropic, far below
+	// haiku-4-5's 64k ceiling). Set explicitly for agents that emit
+	// large structured output (verdict JSON for big batches, long
+	// rewrites): without it, output truncates mid-response and the
+	// caller's parser fails. Recommended values: 8192 for general
+	// use, 16384+ for batch scoring agents.
+	MaxTokens int `yaml:"max_tokens"`
 }
 
 // MCPServer declares one MCP server. Transport "stdio" or "http".

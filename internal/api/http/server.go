@@ -466,6 +466,7 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		Segments:    req.Segments,
 		OnEvent:     emit,
 		OnHeartbeat: heartbeat,
+		MaxTokens:   agentDef.MaxTokens, // 0 → driver default
 	})
 	if runErr != nil {
 		stream.send(providers.Event{Type: providers.EventError, Error: runErr.Error()})
@@ -696,6 +697,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		PriorMessages: priorMessages,
 		OnEvent:       emit,
 		OnHeartbeat:   heartbeat,
+		MaxTokens:     agentDef.MaxTokens, // 0 → driver default
 	})
 	if runErr != nil {
 		stream.send(providers.Event{Type: providers.EventError, Error: runErr.Error()})
@@ -1103,6 +1105,7 @@ func (s *Server) runSubAgent(ctx context.Context, name string, prompt string) (s
 		Segments:    segs,
 		OnEvent:     subEmit,
 		OnHeartbeat: subHeartbeat,
+		MaxTokens:   def.MaxTokens, // 0 → driver default
 	})
 	s.finishRunWithCancel(ctx, subRunCtx, subRunID, res, runErr)
 

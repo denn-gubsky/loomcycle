@@ -59,6 +59,15 @@ type RunOptions struct {
 	// synchronously, so implementations should be cheap (single
 	// UPDATE) and tolerate ctx cancellation gracefully.
 	OnHeartbeat func()
+
+	// MaxTokens caps per-iteration assistant output. Zero = let the
+	// driver pick its default (4096 in the anthropic driver, which
+	// is far below modern haiku/sonnet output ceilings of 8k–64k).
+	// Agents that emit large structured output (verdicts JSON for
+	// big batches, long-form rewrites) need to set this explicitly
+	// or they truncate mid-output. The HTTP server populates this
+	// from cfg.Agents[X].MaxTokens at request time.
+	MaxTokens int
 }
 
 // RunResult is the terminal state after a Run.
@@ -112,10 +121,11 @@ func Run(ctx context.Context, opts RunOptions) (RunResult, error) {
 			opts.OnHeartbeat()
 		}
 		req := providers.Request{
-			Model:    opts.Model,
-			System:   system,
-			Messages: messages,
-			Tools:    toolSpecs,
+			Model:     opts.Model,
+			System:    system,
+			Messages:  messages,
+			Tools:     toolSpecs,
+			MaxTokens: opts.MaxTokens, // 0 → driver default
 			// OnEvent lets the driver fire pre-channel events (currently
 			// EventRetry during a 429 sleep) directly to the same caller
 			// hook the loop uses for response events. Without this hop
