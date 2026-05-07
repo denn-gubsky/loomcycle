@@ -190,7 +190,13 @@ func (c *Client) do(ctx context.Context, body []byte) (*http.Response, error) {
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "application/json")
+	// MCP Streamable HTTP spec (2024-11-05) requires the client to advertise
+	// both content-types. Servers that conform strictly (e.g., the official
+	// @modelcontextprotocol/sdk's WebStandardStreamableHTTPServerTransport)
+	// reject anything else with HTTP 406 Not Acceptable. The server picks
+	// per-request whether to reply JSON or SSE based on what the response
+	// shape is; we must accept both.
+	req.Header.Set("Accept", "application/json, text/event-stream")
 	for k, v := range c.headers {
 		req.Header.Set(k, v)
 	}

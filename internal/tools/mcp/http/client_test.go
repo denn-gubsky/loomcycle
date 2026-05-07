@@ -274,6 +274,58 @@ func TestHeadersForwarded(t *testing.T) {
 	}
 }
 
+// TestAcceptHeaderIncludesBothMediaTypes asserts that the client
+// advertises both application/json and text/event-stream in Accept.
+// MCP Streamable HTTP servers that conform strictly (e.g., the
+// official @modelcontextprotocol/sdk's StreamableHTTP transport)
+// reject anything else with HTTP 406 Not Acceptable. Regression for
+// the 2026-05-07 jobs-search-agent /api/mcp 406 incident.
+func TestAcceptHeaderIncludesBothMediaTypes(t *testing.T) {
+	var sawAccept string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sawAccept = r.Header.Get("Accept")
+		var probe struct {
+			ID     *int64 `json:"id"`
+			Method string `json:"method"`
+		}
+		body, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(body, &probe)
+		if probe.Method == "initialize" {
+			writeJSON(w, map[string]any{
+				"jsonrpc": "2.0",
+				"id":      *probe.ID,
+				"result": map[string]any{
+					"protocolVersion": "2024-11-05",
+					"capabilities":    map[string]any{},
+					"serverInfo":      map[string]any{"name": "fake", "version": "1"},
+				},
+			})
+			return
+		}
+		if probe.ID != nil {
+			writeJSON(w, map[string]any{"jsonrpc": "2.0", "id": *probe.ID, "result": map[string]any{}})
+			return
+		}
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	defer srv.Close()
+
+	c, _ := New(Config{URL: srv.URL})
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := mcp.Initialize(ctx, c, "t", "1"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Both media types MUST appear in the Accept header.
+	if !strings.Contains(sawAccept, "application/json") {
+		t.Errorf("Accept missing application/json: got %q", sawAccept)
+	}
+	if !strings.Contains(sawAccept, "text/event-stream") {
+		t.Errorf("Accept missing text/event-stream: got %q", sawAccept)
+	}
+}
+
 func TestHeadersMissingReturnsAuthError(t *testing.T) {
 	srv := newFakeServer(t, "auth-required")
 	defer srv.Close()
