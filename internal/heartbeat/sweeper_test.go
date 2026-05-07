@@ -1,0 +1,167 @@
+package heartbeat
+
+import (
+	"context"
+	"path/filepath"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/denn-gubsky/loomcycle/internal/store"
+	"github.com/denn-gubsky/loomcycle/internal/store/sqlite"
+)
+
+// newTestStore opens a fresh sqlite store for the sweeper tests.
+// Sweeper logic is store-agnostic; using sqlite keeps the tests fast
+// and doesn't require a Postgres fixture.
+func newTestStore(t *testing.T) *sqlite.Store {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "test.db")
+	s, err := sqlite.Open(path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	return s
+}
+
+// TestSweeperOnce_MarksStale exercises sweepOnce against a real store
+// without spinning the Run loop. Verifies the stale row gets flipped
+// while a fresh row is left alone.
+func TestSweeperOnce_MarksStale(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+	sess, _ := st.CreateSession(ctx, "t", "a", "u")
+
+	stale, _ := st.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: "a_stale"})
+	_ = st.UpdateHeartbeat(ctx, stale.ID)
+
+	time.Sleep(20 * time.Millisecond)
+
+	fresh, _ := st.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: "a_fresh"})
+	_ = st.UpdateHeartbeat(ctx, fresh.ID)
+
+	sw := New(st, Config{
+		Interval:   1 * time.Hour, // unused — we drive sweepOnce directly
+		StaleAfter: 10 * time.Millisecond,
+		Logger:     func(format string, args ...any) {}, // silence
+	})
+	n, err := sw.sweepOnce(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Errorf("sweepOnce returned %d, want 1", n)
+	}
+
+	staleAfter, _ := st.GetRunByAgentID(ctx, "a_stale")
+	if staleAfter.Status != store.RunFailed {
+		t.Errorf("stale row: status=%q, want failed", staleAfter.Status)
+	}
+	freshAfter, _ := st.GetRunByAgentID(ctx, "a_fresh")
+	if freshAfter.Status != store.RunRunning {
+		t.Errorf("fresh row: status=%q, want running", freshAfter.Status)
+	}
+}
+
+// TestSweeperRun_StopsOnContextDone asserts the goroutine exits cleanly
+// when its context is cancelled. Without this, a slow Run loop on
+// shutdown could outlive the parent process and prevent the Store
+// from closing.
+func TestSweeperRun_StopsOnContextDone(t *testing.T) {
+	st := newTestStore(t)
+	sw := New(st, Config{
+		Interval:   10 * time.Millisecond,
+		StaleAfter: 1 * time.Hour,
+		Logger:     func(format string, args ...any) {},
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+
+	done := make(chan struct{})
+	go func() {
+		sw.Run(ctx)
+		close(done)
+	}()
+
+	// Let the sweeper run a few ticks, then cancel.
+	time.Sleep(50 * time.Millisecond)
+	cancel()
+
+	select {
+	case <-done:
+		// goroutine exited cleanly
+	case <-time.After(2 * time.Second):
+		t.Fatal("sweeper did not exit within 2s of ctx cancellation")
+	}
+}
+
+// TestSweeperRun_NilStoreNoOp asserts Run returns immediately when the
+// Store is nil — relevant for callers that want to construct the
+// Sweeper unconditionally and let nil flow through.
+func TestSweeperRun_NilStoreNoOp(t *testing.T) {
+	sw := New(nil, Config{
+		Interval:   1 * time.Millisecond,
+		StaleAfter: 1 * time.Millisecond,
+		Logger:     func(format string, args ...any) {},
+	})
+	done := make(chan struct{})
+	go func() {
+		sw.Run(context.Background())
+		close(done)
+	}()
+	select {
+	case <-done:
+		// returned immediately
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("Run with nil store should be a no-op; instead it blocked")
+	}
+}
+
+// TestSweeperRun_LogsResults captures sweep log output and asserts the
+// "marked N stale run(s)" line fires when a stale row is present, and
+// the "0 stale runs" no-op line fires when nothing is stale.
+func TestSweeperRun_LogsResults(t *testing.T) {
+	st := newTestStore(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	sess, _ := st.CreateSession(ctx, "t", "a", "u")
+	stale, _ := st.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: "a_stale_log"})
+	_ = st.UpdateHeartbeat(ctx, stale.ID)
+	time.Sleep(15 * time.Millisecond)
+
+	var (
+		mu   sync.Mutex
+		logs []string
+	)
+	sw := New(st, Config{
+		Interval:   10 * time.Millisecond,
+		StaleAfter: 5 * time.Millisecond,
+		Logger: func(format string, args ...any) {
+			mu.Lock()
+			logs = append(logs, format)
+			mu.Unlock()
+		},
+	})
+	go sw.Run(ctx)
+
+	// Wait long enough for at least 2 sweep ticks.
+	time.Sleep(80 * time.Millisecond)
+	cancel()
+	time.Sleep(20 * time.Millisecond) // let the goroutine drain
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	// At least one "marked N" line for the stale row.
+	foundMarked := false
+	for _, line := range logs {
+		if line == "heartbeat: marked %d stale run(s) as failed" {
+			foundMarked = true
+			break
+		}
+	}
+	if !foundMarked {
+		t.Errorf("expected 'marked N stale runs' log line; got: %v", logs)
+	}
+}

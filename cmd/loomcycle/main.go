@@ -32,6 +32,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/providers/ollama"
 	"github.com/denn-gubsky/loomcycle/internal/providers/openai"
 	"github.com/denn-gubsky/loomcycle/internal/skills"
+	"github.com/denn-gubsky/loomcycle/internal/heartbeat"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	storepostgres "github.com/denn-gubsky/loomcycle/internal/store/postgres"
 	storesqlite "github.com/denn-gubsky/loomcycle/internal/store/sqlite"
@@ -280,6 +281,38 @@ func main() {
 		log.Printf("WARNING: LOOMCYCLE_AUTH_TOKEN is not set; /v1 routes are unauthenticated (dev mode)")
 	}
 
+	// Background goroutines (heartbeat sweeper + session-lock map GC)
+	// share a single ctx tied to the signal handler below — graceful
+	// shutdown cancels them alongside the HTTP server. We rely on the
+	// goroutines to exit promptly on ctx.Done(); both are documented
+	// to do so in their packages.
+	bgCtx, bgCancel := context.WithCancel(context.Background())
+	defer bgCancel()
+
+	if cfg.Env.HeartbeatSweeperEnabled && storeIface != nil {
+		sweeper := heartbeat.New(storeIface, heartbeat.Config{
+			Interval:   cfg.Env.HeartbeatSweepInterval,
+			StaleAfter: cfg.Env.HeartbeatStaleAfter,
+		})
+		go sweeper.Run(bgCtx)
+	} else {
+		log.Printf("heartbeat: sweeper disabled (LOOMCYCLE_HEARTBEAT_SWEEPER=0 or no Store)")
+	}
+
+	// Session-lock map GC. Defaults: prune entries idle ≥ 10 min, on
+	// a 5-min tick. Disabled when both interval and max-idle resolve
+	// to zero (operator can opt out by setting both to 0).
+	sessionGCInterval := cfg.Env.SessionLockGCInterval
+	if sessionGCInterval <= 0 {
+		sessionGCInterval = 5 * time.Minute
+	}
+	sessionGCMaxIdle := cfg.Env.SessionLockMaxIdle
+	if sessionGCMaxIdle <= 0 {
+		sessionGCMaxIdle = 10 * time.Minute
+	}
+	go srv.RunSessionLockGC(bgCtx, sessionGCInterval, sessionGCMaxIdle)
+	log.Printf("session-lock GC: interval=%s max_idle=%s", sessionGCInterval, sessionGCMaxIdle)
+
 	go func() {
 		log.Printf("loomcycle listening on %s", cfg.Env.ListenAddr)
 		if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
@@ -292,6 +325,7 @@ func main() {
 	signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
 	<-sig
 	log.Println("shutting down…")
+	bgCancel() // tear down sweeper + GC goroutines first
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	_ = httpServer.Shutdown(ctx)

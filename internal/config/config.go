@@ -236,6 +236,33 @@ type Env struct {
 	// silently dropping skill bodies would defeat the prompts that
 	// reference them). Sourced from LOOMCYCLE_SKILLS_ROOT.
 	SkillsRoot string
+
+	// HeartbeatSweeperEnabled controls the v0.5.0 stale-run sweeper.
+	// When true (default), a goroutine periodically marks runs whose
+	// heartbeat hasn't advanced in HeartbeatStaleAfter as failed —
+	// prevents the active-run lists from accumulating dead rows when
+	// the host process crashes mid-loop. Disable with
+	// LOOMCYCLE_HEARTBEAT_SWEEPER=0 (e.g. when an external sweeper
+	// owns this responsibility in a multi-replica deployment).
+	HeartbeatSweeperEnabled bool
+	// HeartbeatSweepInterval is the sweep tick rate. Default 60s.
+	// Env: LOOMCYCLE_HEARTBEAT_SWEEP_INTERVAL_MS.
+	HeartbeatSweepInterval time.Duration
+	// HeartbeatStaleAfter is the cutoff: runs with last_heartbeat_at
+	// (or started_at, when no heartbeat ever fired) older than this
+	// are swept. Default 10 minutes. Should be ≥ 2× the loop's
+	// expected per-iteration time so live runs in long tool calls
+	// aren't sweeped. Env: LOOMCYCLE_HEARTBEAT_STALE_MS.
+	HeartbeatStaleAfter time.Duration
+	// SessionLockGCInterval is how often the v0.5.0 session-lock map
+	// GC runs. Default 5 minutes. Env:
+	// LOOMCYCLE_SESSION_LOCK_GC_INTERVAL_MS.
+	SessionLockGCInterval time.Duration
+	// SessionLockMaxIdle is the cutoff for the GC: a session-lock
+	// entry whose refcount is 0 AND lastAccessed is older than this
+	// is reclaimed. Default 10 minutes. Env:
+	// LOOMCYCLE_SESSION_LOCK_MAX_IDLE_MS.
+	SessionLockMaxIdle time.Duration
 }
 
 // Load reads a YAML file and the process env. Empty path returns defaults +
@@ -291,6 +318,10 @@ func Load(path string) (*Config, error) {
 		BashEnabled:              os.Getenv("LOOMCYCLE_BASH_ENABLED") == "1",
 		BashCwd:                  os.Getenv("LOOMCYCLE_BASH_CWD"),
 		SkillsRoot:               os.Getenv("LOOMCYCLE_SKILLS_ROOT"),
+		// Sweeper / GC defaults — populated above zero only if the
+		// env var below was set. The fallbacks are applied in
+		// cmd/loomcycle/main.go where the goroutines are started.
+		HeartbeatSweeperEnabled: true,
 	}
 
 	// Env-overrides for the storage block. Env wins over YAML so prod
@@ -318,6 +349,30 @@ func Load(path string) (*Config, error) {
 	// Default backend is sqlite (back-compat with pre-Storage configs).
 	if cfg.Storage.Backend == "" {
 		cfg.Storage.Backend = "sqlite"
+	}
+
+	// Heartbeat sweeper + session-lock GC env. All optional; defaults
+	// are sensible for a single-replica deployment.
+	cfg.Env.HeartbeatSweeperEnabled = os.Getenv("LOOMCYCLE_HEARTBEAT_SWEEPER") != "0"
+	if v := os.Getenv("LOOMCYCLE_HEARTBEAT_SWEEP_INTERVAL_MS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			cfg.Env.HeartbeatSweepInterval = time.Duration(n) * time.Millisecond
+		}
+	}
+	if v := os.Getenv("LOOMCYCLE_HEARTBEAT_STALE_MS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			cfg.Env.HeartbeatStaleAfter = time.Duration(n) * time.Millisecond
+		}
+	}
+	if v := os.Getenv("LOOMCYCLE_SESSION_LOCK_GC_INTERVAL_MS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			cfg.Env.SessionLockGCInterval = time.Duration(n) * time.Millisecond
+		}
+	}
+	if v := os.Getenv("LOOMCYCLE_SESSION_LOCK_MAX_IDLE_MS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			cfg.Env.SessionLockMaxIdle = time.Duration(n) * time.Millisecond
+		}
 	}
 
 	// resolveSkills MUST come after env loading (it needs SkillsRoot)

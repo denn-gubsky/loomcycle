@@ -454,6 +454,42 @@ func (s *Store) UpdateHeartbeat(ctx context.Context, runID string) error {
 	return err
 }
 
+// SweepStaleRuns implements store.Store. Runs whose last_heartbeat_at
+// is older than cutoff (or whose started_at is older than cutoff and
+// who never heartbeated) are flipped to status="failed" with
+// error="heartbeat timeout". Single atomic UPDATE so concurrent
+// sweepers race correctly.
+func (s *Store) SweepStaleRuns(ctx context.Context, cutoff time.Time) (int, error) {
+	cutoffNs := cutoff.UnixNano()
+	completedNs := time.Now().UnixNano()
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE runs SET
+			status = ?,
+			completed_at = ?,
+			error = ?,
+			stop_reason = ?
+		 WHERE status = ?
+		   AND (
+			 (last_heartbeat_at IS NOT NULL AND last_heartbeat_at < ?)
+			 OR (last_heartbeat_at IS NULL AND started_at < ?)
+		   )`,
+		string(store.RunFailed), completedNs,
+		"heartbeat timeout", "heartbeat_timeout",
+		string(store.RunRunning),
+		cutoffNs, cutoffNs,
+	)
+	if err != nil {
+		return 0, err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		// Some drivers don't report RowsAffected; this isn't fatal —
+		// the UPDATE landed, we just don't know the count. Return 0.
+		return 0, nil
+	}
+	return int(n), nil
+}
+
 // nilIfEmpty returns nil when s is empty so the SQL driver writes NULL
 // rather than an empty string. Callers should prefer NULL for "no
 // value" so that COUNT(column) and IS NULL queries behave correctly.

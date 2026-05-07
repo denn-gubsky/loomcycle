@@ -15,7 +15,6 @@ import (
 	"log"
 	"net/http"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/cancel"
@@ -50,16 +49,19 @@ type Server struct {
 	// internal/cancel/registry.go for the trust model.
 	cancelReg *cancel.Registry
 
-	// sessionLocks maps session IDs to *sync.Mutex. A continuation POST
-	// (handleMessages, or handleRuns with a non-empty SessionID) try-locks
-	// the session before replaying transcript + running. Concurrent POSTs
-	// to the same session fast-fail with 409, since the alternative is to
-	// leave a second SSE stream waiting indefinitely behind the first —
-	// and a partial-transcript replay would corrupt history.
+	// sessionLocks tracks per-session mutexes used by continuation POSTs
+	// (handleMessages, or handleRuns with a non-empty SessionID). A
+	// concurrent POST to the same session fast-fails with 409, since the
+	// alternative is to leave a second SSE stream waiting indefinitely
+	// behind the first — and a partial-transcript replay would corrupt
+	// history.
 	//
-	// Entries accumulate; never deleted. ~32 B per session is acceptable
-	// for v0.3.2; periodic GC is a future cleanup.
-	sessionLocks sync.Map
+	// Entries are refcounted + GC'd by RunSessionLockGC: when the
+	// refcount hits zero AND the entry has been idle for longer than
+	// the GC's max-idle threshold, the entry is removed. Active and
+	// recently-used entries are never reclaimed. See the package doc on
+	// sessionLockMap for the lifecycle.
+	sessionLocks *sessionLockMap
 }
 
 // New constructs a Server. If st is non-nil, every run is recorded as a
@@ -76,12 +78,13 @@ type Server struct {
 // unconditionally without nil-checking.
 func New(cfg *config.Config, pr ProviderResolver, builtinTools []tools.Tool, sem *concurrency.Semaphore, st store.Store) *Server {
 	s := &Server{
-		cfg:       cfg,
-		providers: pr,
-		tools:     builtinTools,
-		sem:       sem,
-		store:     st,
-		cancelReg: cancel.NewRegistry(),
+		cfg:          cfg,
+		providers:    pr,
+		tools:        builtinTools,
+		sem:          sem,
+		store:        st,
+		cancelReg:    cancel.NewRegistry(),
+		sessionLocks: newSessionLockMap(),
 	}
 	s.tools = append(s.tools, &builtin.AgentTool{Run: s.runSubAgent})
 	return s
@@ -93,31 +96,46 @@ func New(cfg *config.Config, pr ProviderResolver, builtinTools []tools.Tool, sem
 // id must be non-empty; an empty id is a programmer error and panics.
 //
 // Callers MUST validate the session exists in the store before calling
-// this — sessionLocks entries are never GC'd, so taking a lock on an
-// unknown id would leak permanently and is a vector for an unbounded
-// memory DoS.
+// this — sessionLocks entries are GC'd only when both refcount=0 AND
+// idle ≥ maxIdle, but unknown-ID entries would still hang around for
+// at least one GC cycle and leak slowly. The DoS guard remains a
+// caller obligation.
 func (s *Server) trySessionLock(id string) (release func(), ok bool) {
 	if id == "" {
 		panic("trySessionLock: empty session id")
 	}
-	v, _ := s.sessionLocks.LoadOrStore(id, &sync.Mutex{})
-	mu := v.(*sync.Mutex)
-	if !mu.TryLock() {
-		return nil, false
-	}
-	return mu.Unlock, true
+	return s.sessionLocks.tryLock(id)
 }
 
 // lockedSessionCount returns the number of entries in sessionLocks.
-// Test-only: used to assert the DoS fix (unknown IDs must not grow
-// the table). sync.Map exposes no Len, so we range.
+// Test-only: used to assert (a) the DoS fix (unknown IDs must not grow
+// the table) and (b) the GC reclaims idle entries.
 func (s *Server) lockedSessionCount() int {
-	n := 0
-	s.sessionLocks.Range(func(_, _ any) bool {
-		n++
-		return true
-	})
-	return n
+	return s.sessionLocks.size()
+}
+
+// RunSessionLockGC periodically prunes session-lock entries whose
+// refcount is zero AND whose lastAccessed is older than maxIdle. Run
+// it on a goroutine that owns the lifecycle (typically alongside the
+// HTTP server in cmd/loomcycle/main.go).
+//
+// interval and maxIdle are operator-configurable; the recommended ratio
+// is maxIdle ≥ 2 × interval so a session that's just woken up after a
+// quiet period doesn't get its lock yanked mid-acquisition.
+func (s *Server) RunSessionLockGC(ctx context.Context, interval, maxIdle time.Duration) {
+	if interval <= 0 || maxIdle <= 0 {
+		return
+	}
+	t := time.NewTicker(interval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			_ = s.sessionLocks.gc(maxIdle)
+		}
+	}
 }
 
 // Mux returns the http.Handler ready to be served.

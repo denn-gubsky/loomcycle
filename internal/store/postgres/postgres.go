@@ -383,6 +383,37 @@ func (s *Store) UpdateHeartbeat(ctx context.Context, runID string) error {
 	return nil
 }
 
+// SweepStaleRuns implements store.Store. Runs whose last_heartbeat_at
+// is older than cutoff (or whose started_at is older than cutoff and
+// who never heartbeated) are flipped to status="failed" with
+// error="heartbeat timeout". Single atomic UPDATE so concurrent
+// sweepers — including a future multi-replica deployment — race
+// correctly.
+func (s *Store) SweepStaleRuns(ctx context.Context, cutoff time.Time) (int, error) {
+	cutoffUTC := cutoff.UTC()
+	completed := time.Now().UTC()
+	tag, err := s.pool.Exec(ctx,
+		`UPDATE runs SET
+			status = $1,
+			completed_at = $2,
+			error = $3,
+			stop_reason = $4
+		 WHERE status = $5
+		   AND (
+			 (last_heartbeat_at IS NOT NULL AND last_heartbeat_at < $6)
+			 OR (last_heartbeat_at IS NULL AND started_at < $6)
+		   )`,
+		string(store.RunFailed), completed,
+		"heartbeat timeout", "heartbeat_timeout",
+		string(store.RunRunning),
+		cutoffUTC,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("sweep stale runs: %w", err)
+	}
+	return int(tag.RowsAffected()), nil
+}
+
 // Close releases the connection pool. Idempotent.
 func (s *Store) Close() error {
 	s.closeOnce.Do(func() {

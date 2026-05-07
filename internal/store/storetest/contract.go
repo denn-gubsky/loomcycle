@@ -60,6 +60,7 @@ func Run(t *testing.T, factory Factory) {
 		{"UpdateHeartbeat", testUpdateHeartbeat},
 		{"FinishRunCancelledTerminal", testFinishRunCancelledTerminal},
 		{"TranscriptOrderedAcrossRuns", testTranscriptOrderedAcrossRuns},
+		{"SweepStaleRuns", testSweepStaleRuns},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -409,6 +410,81 @@ func testFinishRunCancelledTerminal(t *testing.T, s store.Store) {
 	again, _ := s.GetRunByAgentID(ctx, "a_x")
 	if again.Status != store.RunCancelled {
 		t.Errorf("late completed should not overwrite cancelled, got %q", again.Status)
+	}
+}
+
+// SweepStaleRuns flips runs whose heartbeats are older than the cutoff
+// (or that never heartbeated and whose started_at is older than the
+// cutoff) to status="failed" with error="heartbeat timeout". Already-
+// terminal runs are not touched. Fresh runs that have heartbeated
+// recently aren't touched either.
+func testSweepStaleRuns(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	sess, _ := s.CreateSession(ctx, "t", "a", "u")
+
+	// 1) A stale run that heartbeated long ago.
+	stale, _ := s.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: "a_stale"})
+	_ = s.UpdateHeartbeat(ctx, stale.ID)
+
+	// 2) A run that never heartbeated AND was created before the cutoff
+	//    we'll pass below — must also be swept.
+	_, _ = s.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: "a_no_hb"})
+
+	// Sleep enough that "now" is after both rows' (last_heartbeat_at
+	// or started_at). 30ms is generous and keeps the test fast.
+	time.Sleep(30 * time.Millisecond)
+
+	// 3) A fresh run that heartbeated AFTER the cutoff — must NOT be
+	//    swept.
+	fresh, _ := s.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: "a_fresh"})
+	_ = s.UpdateHeartbeat(ctx, fresh.ID)
+
+	// 4) An already-terminal run — must NOT be touched.
+	terminalRun, _ := s.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: "a_terminal"})
+	_ = s.FinishRun(ctx, terminalRun.ID, store.RunCompleted, "end_turn", store.Usage{}, "")
+
+	// Cutoff: between the stale row's last activity and the fresh
+	// row's. A 1ms-after-fresh-creation cutoff keeps stale and noHB
+	// stale, fresh fresh.
+	cutoff := time.Now().Add(-15 * time.Millisecond)
+
+	swept, err := s.SweepStaleRuns(ctx, cutoff)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if swept != 2 {
+		t.Errorf("SweepStaleRuns returned %d, want 2 (stale + noHB)", swept)
+	}
+
+	// Verify per-row outcomes.
+	staleAfter, _ := s.GetRunByAgentID(ctx, "a_stale")
+	if staleAfter.Status != store.RunFailed {
+		t.Errorf("stale row: status=%q, want failed", staleAfter.Status)
+	}
+	if staleAfter.ErrorMsg != "heartbeat timeout" {
+		t.Errorf("stale row: error=%q, want \"heartbeat timeout\"", staleAfter.ErrorMsg)
+	}
+	noHBAfter, _ := s.GetRunByAgentID(ctx, "a_no_hb")
+	if noHBAfter.Status != store.RunFailed {
+		t.Errorf("no-heartbeat row: status=%q, want failed", noHBAfter.Status)
+	}
+	freshAfter, _ := s.GetRunByAgentID(ctx, "a_fresh")
+	if freshAfter.Status != store.RunRunning {
+		t.Errorf("fresh row was swept: status=%q, want running", freshAfter.Status)
+	}
+	terminalAfter, _ := s.GetRunByAgentID(ctx, "a_terminal")
+	if terminalAfter.Status != store.RunCompleted {
+		t.Errorf("terminal row was clobbered: status=%q, want completed", terminalAfter.Status)
+	}
+
+	// Idempotent: a second sweep with the same cutoff is a no-op (the
+	// runs are no longer status='running').
+	swept2, err := s.SweepStaleRuns(ctx, cutoff)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if swept2 != 0 {
+		t.Errorf("second sweep returned %d, want 0", swept2)
 	}
 }
 

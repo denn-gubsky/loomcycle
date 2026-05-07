@@ -213,6 +213,29 @@ concurrency:
   max_queue_depth: 16          # short burst absorption
   queue_timeout_ms: 30000      # 30s — caller-side timeout should match
 
+# ─── Heartbeat sweeper + session-lock GC (v0.5.0) ─────────────────────
+# Two background goroutines that keep state from accumulating:
+#
+#   1. Heartbeat sweeper: periodically marks runs whose last_heartbeat_at
+#      is older than HeartbeatStaleAfter as failed (error="heartbeat
+#      timeout"). Without this, runs whose host process crashed mid-loop
+#      stay status=running forever and pollute the active-run lists.
+#   2. Session-lock map GC: prunes per-session continuation mutexes that
+#      have been idle (refcount=0) longer than SessionLockMaxIdle. The
+#      lock map otherwise grows monotonically — every distinct session
+#      ID seen by /v1/sessions/{id}/messages adds an entry.
+#
+# Both default-on with sensible thresholds. Operators in multi-replica
+# deployments can disable the sweeper (LOOMCYCLE_HEARTBEAT_SWEEPER=0) so
+# only one replica owns the cleanup duty.
+#
+# Env knobs (no YAML block — these are runtime tuning, not topology):
+#   LOOMCYCLE_HEARTBEAT_SWEEPER=1                  (default; 0 disables)
+#   LOOMCYCLE_HEARTBEAT_SWEEP_INTERVAL_MS=60000    (default 60s)
+#   LOOMCYCLE_HEARTBEAT_STALE_MS=600000            (default 10 min)
+#   LOOMCYCLE_SESSION_LOCK_GC_INTERVAL_MS=300000   (default 5 min)
+#   LOOMCYCLE_SESSION_LOCK_MAX_IDLE_MS=600000      (default 10 min)
+
 # ─── Cache ────────────────────────────────────────────────────────────
 # Two layers: the response_kv (loomcycle's own normalised-request KV)
 # and native (provider-side cache_control on Anthropic system blocks).
