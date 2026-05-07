@@ -93,3 +93,20 @@ func TestCloseIsIdempotent(t *testing.T) {
 		t.Errorf("second Close errored: %v", err)
 	}
 }
+
+// BenchmarkConcurrentRuns drives the storetest contract bench against
+// SQLite. Run via `go test -bench=. ./internal/store/sqlite/...`.
+// Operator-facing throughput numbers from this benchmark are
+// captured in docs/POSTGRES.md as the SQLite baseline.
+func BenchmarkConcurrentRuns(b *testing.B) {
+	for i := 0; i < b.N; i++ {
+		path := filepath.Join(b.TempDir(), "bench.db")
+		s, err := Open(path)
+		if err != nil {
+			b.Fatalf("Open: %v", err)
+		}
+		r := storetest.RunConcurrencyBench(b, s, storetest.BenchmarkConfig{})
+		b.Logf("sqlite: %s", storetest.FormatResult(r))
+		_ = s.Close()
+	}
+}

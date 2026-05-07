@@ -284,3 +284,72 @@ func TestMigrateUp_Idempotent(t *testing.T) {
 		t.Fatalf("second MigrateUp: %v", err)
 	}
 }
+
+// BenchmarkConcurrentRuns drives the storetest contract bench against
+// Postgres. Run via:
+//
+//	make pg-up
+//	LOOMCYCLE_TEST_PG_DSN="postgres://..." \
+//	  go test -bench=. -benchtime=1x ./internal/store/postgres/...
+//
+// Operator-facing throughput numbers from this benchmark are captured
+// in docs/POSTGRES.md alongside the SQLite baseline.
+func BenchmarkConcurrentRuns(b *testing.B) {
+	dsn := os.Getenv("LOOMCYCLE_TEST_PG_DSN")
+	if dsn == "" {
+		b.Skip("LOOMCYCLE_TEST_PG_DSN not set; skipping Postgres bench")
+	}
+	for i := 0; i < b.N; i++ {
+		// Per-iteration fresh schema avoids cross-bench pollution.
+		schema := uniqueBenchSchemaName(b)
+		bootstrap, err := pgxpool.New(context.Background(), dsn)
+		if err != nil {
+			b.Fatalf("dial: %v", err)
+		}
+		if _, err := bootstrap.Exec(context.Background(), `CREATE SCHEMA `+schema); err != nil {
+			bootstrap.Close()
+			b.Fatalf("create schema: %v", err)
+		}
+		bootstrap.Close()
+
+		scopedDSN := appendOption(dsn, "search_path", schema)
+		s, err := Open(context.Background(), Config{
+			DSN:          scopedDSN,
+			MaxOpenConns: 32,
+			AutoMigrate:  true,
+		})
+		if err != nil {
+			b.Fatalf("Open: %v", err)
+		}
+		r := storetest.RunConcurrencyBench(b, s, storetest.BenchmarkConfig{})
+		b.Logf("postgres: %s", storetest.FormatResult(r))
+		_ = s.Close()
+
+		// Cleanup schema.
+		drop, err := pgxpool.New(context.Background(), dsn)
+		if err == nil {
+			_, _ = drop.Exec(context.Background(), `DROP SCHEMA `+schema+` CASCADE`)
+			drop.Close()
+		}
+	}
+}
+
+// uniqueBenchSchemaName mirrors uniqueSchemaName but uses the
+// benchmark name (not a *testing.T name) for the prefix.
+func uniqueBenchSchemaName(b *testing.B) string {
+	n := schemaCounter.Add(1)
+	clean := strings.Map(func(r rune) rune {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
+			return r
+		case r >= 'A' && r <= 'Z':
+			return r + ('a' - 'A')
+		default:
+			return '_'
+		}
+	}, b.Name())
+	if len(clean) > 30 {
+		clean = clean[:30]
+	}
+	return fmt.Sprintf("lcb_%s_%d", clean, n)
+}
