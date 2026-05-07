@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"strings"
 	"sync"
@@ -460,4 +461,97 @@ func (b *countingBuild) fn(name string) (mcp.Caller, error) {
 		return nil, err
 	}
 	return c, nil
+}
+
+// TestGetWithRetryRecoversFromTransientBuildFailure proves the chicken-
+// and-egg start-order fix: when the MCP server's transport boots
+// concurrently with loomcycle and the first N handshakes fail (e.g.
+// ECONNREFUSED on port not yet open), GetWithRetry's exponential backoff
+// keeps trying until the peer comes up. Without retry, a slow-starting
+// peer means the operator has to restart loomcycle after the peer is
+// ready.
+func TestGetWithRetryRecoversFromTransientBuildFailure(t *testing.T) {
+	failureBudget := 2
+	pool := mcp.NewPool(
+		func(name string) (mcp.Caller, error) {
+			if failureBudget > 0 {
+				failureBudget--
+				return nil, errors.New("ECONNREFUSED (peer still starting)")
+			}
+			return stdio.Spawn(stdio.Config{
+				Command: os.Args[0],
+				Env:     []string{"BE_MCP_SERVER=ok"},
+			})
+		},
+		func(c mcp.Caller) {
+			type closer interface{ Close() error }
+			if cl, ok := c.(closer); ok {
+				_ = cl.Close()
+			}
+		},
+	)
+	t.Cleanup(pool.Close)
+
+	var logged []string
+	logf := func(format string, args ...any) {
+		logged = append(logged, fmt.Sprintf(format, args...))
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	caller, descs, err := pool.GetWithRetry(ctx, "delayed", logf)
+	if err != nil {
+		t.Fatalf("expected eventual success, got: %v\nlogs:\n%s", err, strings.Join(logged, "\n"))
+	}
+	if caller == nil {
+		t.Fatal("expected non-nil caller")
+	}
+	if len(descs) == 0 {
+		t.Errorf("expected at least one tool descriptor")
+	}
+	// Confirm we logged retries (not just a clean first-try).
+	if len(logged) < 2 {
+		t.Errorf("expected ≥2 retry log lines (one per failed attempt + 1 success), got %d:\n%s",
+			len(logged), strings.Join(logged, "\n"))
+	}
+	// Last log line should announce success (final attempt count > 1).
+	lastLine := logged[len(logged)-1]
+	if !strings.Contains(lastLine, "succeeded on attempt") {
+		t.Errorf("last log line should announce success: %q", lastLine)
+	}
+}
+
+// TestGetWithRetryGivesUpWhenCtxExpires proves retries don't loop
+// forever: when ctx expires before the peer comes up, the function
+// returns an error including the attempt count.
+func TestGetWithRetryGivesUpWhenCtxExpires(t *testing.T) {
+	pool := mcp.NewPool(
+		func(name string) (mcp.Caller, error) {
+			return nil, errors.New("ECONNREFUSED (peer never starts)")
+		},
+		nil,
+	)
+	t.Cleanup(pool.Close)
+
+	// Tight ctx — covers the first few attempts then expires while the
+	// retry helper is sleeping. We don't care about exact attempt count
+	// (depends on timing) — only that the function gives up cleanly
+	// rather than looping forever.
+	ctx, cancel := context.WithTimeout(context.Background(), 800*time.Millisecond)
+	defer cancel()
+
+	start := time.Now()
+	_, _, err := pool.GetWithRetry(ctx, "broken", nil)
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("expected error after ctx expiry")
+	}
+	if !strings.Contains(err.Error(), "gave up after") {
+		t.Errorf("error should mention attempt count: %v", err)
+	}
+	// Sanity: should give up close to ctx deadline, not run for 30s.
+	if elapsed > 3*time.Second {
+		t.Errorf("retry kept running well past ctx deadline (took %s)", elapsed)
+	}
 }

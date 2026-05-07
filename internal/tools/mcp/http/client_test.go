@@ -3,6 +3,7 @@ package http
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -271,6 +272,139 @@ func TestHeadersForwarded(t *testing.T) {
 	}
 	if !strings.Contains(mcp.JoinTextContent(res), "got: search") {
 		t.Errorf("got %q", mcp.JoinTextContent(res))
+	}
+}
+
+// TestSSEResponseDecoded asserts that the client correctly parses
+// a single-frame Streamable HTTP response delivered as
+// `text/event-stream`. The official @modelcontextprotocol/sdk's
+// WebStandardStreamableHTTPServerTransport defaults to SSE replies
+// for initialize and tools/list when the client advertises
+// text/event-stream in Accept; loomcycle previously fed the SSE body
+// straight to json.Unmarshal and crashed on the leading `event:` line.
+//
+// Regression for the 2026-05-07 jobs-search-agent /api/mcp decode
+// failure:
+//   mcp http: decode response: invalid character 'e' looking for
+//   beginning of value (body: event: message\ndata: {...})
+func TestSSEResponseDecoded(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var probe struct {
+			ID     *int64 `json:"id"`
+			Method string `json:"method"`
+		}
+		body, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(body, &probe)
+		// Notifications (no id) → 202 Accepted, no body. mcp.Initialize
+		// sends `notifications/initialized` after the initialize result;
+		// reject anything that surfaces an error.
+		if probe.ID == nil {
+			w.WriteHeader(http.StatusAccepted)
+			return
+		}
+		// Always respond to requests with SSE-framed JSON, mirroring the
+		// SDK's behaviour when the client advertises text/event-stream.
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprintf(w, "event: message\ndata: %s\n\n",
+			fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"result":{"protocolVersion":"2024-11-05","capabilities":{},"serverInfo":{"name":"sse-fake","version":"1"}}}`, *probe.ID))
+	}))
+	defer srv.Close()
+
+	c, _ := New(Config{URL: srv.URL})
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	info, err := mcp.Initialize(ctx, c, "t", "1")
+	if err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	if info.ServerInfo.Name != "sse-fake" {
+		t.Errorf("ServerInfo.Name = %q, want sse-fake", info.ServerInfo.Name)
+	}
+}
+
+// TestExtractSSEData asserts the SSE parser handles the shapes the
+// MCP SDK actually emits + the spec-permitted variations: single-line
+// data, multi-line data joined with \n, leading/trailing whitespace,
+// CRLF line endings, ignored event/id/retry fields, and missing data.
+func TestExtractSSEData(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want string
+		ok   bool
+	}{
+		{"single data line", "event: message\ndata: {\"a\":1}\n\n", `{"a":1}`, true},
+		{"no space after colon", "data:{\"a\":1}\n\n", `{"a":1}`, true},
+		{"multi data joined", "data: line1\ndata: line2\n\n", "line1\nline2", true},
+		{"crlf endings", "event: message\r\ndata: {\"a\":1}\r\n\r\n", `{"a":1}`, true},
+		{"id and retry ignored", "id: 7\nretry: 1000\ndata: {\"a\":1}\n\n", `{"a":1}`, true},
+		{"no data line", "event: message\n\n", "", false},
+		{"empty body", "", "", false},
+		{"first frame only", "data: A\n\ndata: B\n\n", "A", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := extractSSEData([]byte(tc.in))
+			if ok != tc.ok {
+				t.Errorf("ok = %v, want %v (got=%q)", ok, tc.ok, string(got))
+			}
+			if ok && string(got) != tc.want {
+				t.Errorf("got %q, want %q", string(got), tc.want)
+			}
+		})
+	}
+}
+
+// TestAcceptHeaderIncludesBothMediaTypes asserts that the client
+// advertises both application/json and text/event-stream in Accept.
+// MCP Streamable HTTP servers that conform strictly (e.g., the
+// official @modelcontextprotocol/sdk's StreamableHTTP transport)
+// reject anything else with HTTP 406 Not Acceptable. Regression for
+// the 2026-05-07 jobs-search-agent /api/mcp 406 incident.
+func TestAcceptHeaderIncludesBothMediaTypes(t *testing.T) {
+	var sawAccept string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sawAccept = r.Header.Get("Accept")
+		var probe struct {
+			ID     *int64 `json:"id"`
+			Method string `json:"method"`
+		}
+		body, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(body, &probe)
+		if probe.Method == "initialize" {
+			writeJSON(w, map[string]any{
+				"jsonrpc": "2.0",
+				"id":      *probe.ID,
+				"result": map[string]any{
+					"protocolVersion": "2024-11-05",
+					"capabilities":    map[string]any{},
+					"serverInfo":      map[string]any{"name": "fake", "version": "1"},
+				},
+			})
+			return
+		}
+		if probe.ID != nil {
+			writeJSON(w, map[string]any{"jsonrpc": "2.0", "id": *probe.ID, "result": map[string]any{}})
+			return
+		}
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	defer srv.Close()
+
+	c, _ := New(Config{URL: srv.URL})
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := mcp.Initialize(ctx, c, "t", "1"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Both media types MUST appear in the Accept header.
+	if !strings.Contains(sawAccept, "application/json") {
+		t.Errorf("Accept missing application/json: got %q", sawAccept)
+	}
+	if !strings.Contains(sawAccept, "text/event-stream") {
+		t.Errorf("Accept missing text/event-stream: got %q", sawAccept)
 	}
 }
 

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
@@ -155,6 +156,55 @@ func (p *Pool) initEntry(ctx context.Context, name string) (Caller, []ToolDescri
 		return nil, nil, fmt.Errorf("mcp pool: tools/list %q: %w", name, err)
 	}
 	return caller, descs, nil
+}
+
+// GetWithRetry calls Get with exponential backoff on failure: 500ms,
+// 1s, 2s, 4s, 8s, 16s capped (cumulative ~32s). Stops on first success
+// or when ctx is done. Each retry log line names the attempt + the
+// error so operators can see whether the wait is meaningful.
+//
+// Use case: chicken-and-egg start order. The MCP server lives behind a
+// dependency that boots concurrently with loomcycle (e.g. a Next.js
+// dev server compiling its `/api/mcp` route on first request). Without
+// retry, a slow-starting peer means loomcycle marks the server "skipped"
+// and the operator has to restart loomcycle after the peer is up.
+func (p *Pool) GetWithRetry(ctx context.Context, name string, logf func(string, ...any)) (Caller, []ToolDescriptor, error) {
+	if logf == nil {
+		logf = func(string, ...any) {}
+	}
+	const initialDelay = 500 * time.Millisecond
+	const maxDelay = 16 * time.Second
+	delay := initialDelay
+	attempt := 0
+	var lastErr error
+	for {
+		attempt++
+		caller, descs, err := p.Get(ctx, name)
+		if err == nil {
+			if attempt > 1 {
+				logf("mcp[%s]: handshake succeeded on attempt %d", name, attempt)
+			}
+			return caller, descs, nil
+		}
+		lastErr = err
+		// Done? Either ctx already cancelled before attempt, or it
+		// cancelled DURING the Get above. Either way, stop retrying.
+		if ctx.Err() != nil {
+			return nil, nil, fmt.Errorf("mcp[%s]: gave up after %d attempt(s): %w", name, attempt, lastErr)
+		}
+		logf("mcp[%s]: handshake failed (attempt %d): %v — retrying in %s", name, attempt, err, delay)
+		select {
+		case <-ctx.Done():
+			return nil, nil, fmt.Errorf("mcp[%s]: gave up after %d attempt(s): %w", name, attempt, lastErr)
+		case <-time.After(delay):
+		}
+		if delay < maxDelay {
+			delay *= 2
+			if delay > maxDelay {
+				delay = maxDelay
+			}
+		}
+	}
 }
 
 // Tools returns wrapped tools.Tool entries for every server that has

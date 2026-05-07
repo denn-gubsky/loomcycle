@@ -43,6 +43,8 @@ Each built-in is registered into the dispatcher at process startup but **refuses
 | `WebFetch`  | (same allowlist as HTTP — shared backend)             |
 | `WebSearch` | `BRAVE_API_KEY=...`                                   |
 | `Bash`      | `LOOMCYCLE_BASH_ENABLED=1` + `LOOMCYCLE_BASH_CWD=...` |
+| `Agent`     | Always registered (server-internal); per-agent `allowed_tools` controls who can spawn. |
+| `Skill`     | `LOOMCYCLE_SKILLS_ROOT=/path/to/skills` (or skills inlined per-agent via YAML `skills:` list) |
 
 Bash has additional warnings: it is **not a true sandbox** even when enabled. Run loomcycle inside a container or VM if Bash is exposed to untrusted prompts. See `internal/tools/builtin/bash.go` for the full warning.
 
@@ -208,3 +210,97 @@ Integration tests in `internal/api/http/server_test.go`:
 - `TestAgentWithExplicitAllowSeeTool` — positive control: allow-listed tool reaches the model.
 
 Empirical proof of the security invariant: inverting the default in `filterTools` (so empty allowlist exposes every tool) makes the first test fail. The test is what stops a future refactor from accidentally inverting the policy.
+
+## The `Agent` tool — sub-agent spawning (v0.4.0)
+
+The `Agent` built-in lets a parent agent spawn a child run by name:
+
+```json
+{"name": "researcher", "prompt": "Investigate X and return JSON …"}
+```
+
+**Auto-registration.** Unlike other built-ins, `Agent` is registered automatically by the HTTP server (it has to close over the server's own sub-run runner). It still respects per-agent `allowed_tools` — only agents that list `Agent` in their YAML can spawn children.
+
+**What the child inherits from the parent (via ctx):**
+
+- `user_id` — sub-agents bill to the same user.
+- `parent_agent_id` — written to the child's run row; powers cascade-cancel.
+- **Caller-authoritative host policy** (`allowed_hosts` + `web_search_filter`) — the parent's per-call host narrowing flows into the child. Without this propagation, sub-agents would silently fall back to the operator's static `LOOMCYCLE_HTTP_HOST_ALLOWLIST`, which usually excludes localhost callbacks. The fix landed in v0.4.0; see `internal/api/http/server.go runSubAgent` and `internal/tools/tool.go HostPolicy`.
+
+**What the child does NOT inherit:**
+
+- Tool allowlist — the child's `allowed_tools` is its YAML definition, narrowed only by the operator's enabled set. Parents cannot widen.
+- Session — sub-agents get a fresh session.
+- Tenant — inherited only for `user_id` purposes; multi-tenant isolation rules apply equally.
+
+**Recursion cap.** `MaxAgentDepth = 16` by default. Deeper spawning attempts return `IsError: true` tool_results so the parent can decide to retry / fall back / give up.
+
+**Failure mode is a tool error, not a run failure.** A sub-agent that crashes, times out, or rejects its input returns an `IsError: true` tool_result. Loomcycle does NOT tear down the parent on a child failure — the parent sees the error and decides what to do.
+
+References: `internal/tools/builtin/agent.go`, `internal/api/http/server.go runSubAgent`, `internal/api/http/agent_subagent_test.go`.
+
+## The `Skill` tool — Approach A (static bundling, shipped) and Approach B (dynamic, scaffolded)
+
+**Approach A — static bundling (active in v0.4.0).**
+
+At config-load, every directory under `LOOMCYCLE_SKILLS_ROOT` named `<skill>/SKILL.md` is read. Agents that list a skill in their YAML get the skill's body **concatenated into their system prompt** as a cacheable trusted-text block:
+
+```yaml
+agents:
+  cv-adapter:
+    model: smart
+    allowed_tools: [Read, Write]
+    skills: [voice-applier, cv-voice-applier]   # bodies merged into system prompt at config-load
+    system_prompt_file: prompts/cv-adapter.md
+```
+
+Constraint: each skill's frontmatter declares its own `allowed-tools`; this list must be a **subset** of the agent's `allowed_tools`. Mismatches are rejected at config-load with a clear error. This prevents skills from advertising tools the agent can't actually invoke.
+
+**Approach B — dynamic Skill tool (placeholder).**
+
+The `Skill` built-in is registered when `LOOMCYCLE_SKILLS_ROOT` is set; the model can call it with `{"name": "voice-applier"}` to load a skill mid-conversation. In v0.4.0 the tool returns "unknown skill" — full Approach B implementation is v1.0 work. The hook is in place so prompts that reference the dynamic Skill tool can be authored today; they degrade gracefully (the tool reports the skill isn't available, the model continues without).
+
+References: `internal/skills/`, `internal/tools/builtin/skill.go`.
+
+## LocalAPI tools — OpenAPI gateway (scaffolded; not the v0.4 integration vehicle)
+
+Operators register a local HTTP API by pointing at an OpenAPI spec in YAML:
+
+```yaml
+local_api:
+  spec: openapi.yaml          # relative to this YAML's directory
+  base_url: http://localhost:3000
+  tool_name_prefix: jobs       # tools become jobs__<operationId>
+```
+
+At config-load, loomcycle parses the spec and registers one tool per operation. The configured prefix determines the tool names (e.g. `jobs__listProjects`, `jobs__createApplication`). Each tool's input schema is derived from the OpenAPI parameters + request body schema. Agents call them like any other tool; loomcycle forwards the request to `base_url`.
+
+**Status (v0.4.0).** Code, parser, dispatcher wiring, and unit tests are landed (`internal/tools/localapi/`). The runtime registers LocalAPI tools at startup when `cfg.LocalAPI.SpecPath` is non-empty. The first production consumer (jobs-search-agent) chose the MCP-server pattern instead — it runs its own `/api/mcp` Streamable-HTTP server exposing typed tools (e.g., `mcp__jobs__getAgentContext`, `mcp__jobs__patchApplication`), which loomcycle consumes through the existing MCP HTTP transport. LocalAPI stays available for future consumers that prefer "wire an OpenAPI spec, get typed tools" without standing up an MCP server.
+
+**Why this matters when it lands.** Today an agent prompt has to spell out `GET http://localhost:3000/api/agent/context` as a string the model writes. The model occasionally invents wrong hostnames or paths (the cv-batch-adapter cv-adapter children burned all their iterations guessing hostnames in May 2026). With LocalAPI: the model sees a typed tool `jobs__getAgentContext` with parameter docs, and the URL string is loomcycle's responsibility, not the model's.
+
+**Allowlist behaviour.** LocalAPI tools are subject to the same default-deny: agents must list them in `allowed_tools` (glob `jobs__*` works). The HTTP destination (`base_url`) is NOT subject to `LOOMCYCLE_HTTP_HOST_ALLOWLIST` — operator opting into a `local_api` entry is the explicit grant.
+
+**No SSRF defense for `base_url`.** LocalAPI is for trusted internal APIs only. If you need allowlisted external HTTP access from agents, use the `HTTP` / `WebFetch` built-ins, which carry the full SSRF protection.
+
+References: `internal/tools/localapi/`, `cmd/loomcycle/main.go` (registration), `loomcycle.example.yaml` (commented `local_api:` example).
+
+## Provider × tool matrix
+
+What works with what:
+
+|              | Anthropic | OpenAI | Ollama (tool-tuned) |
+|---|:---:|:---:|:---:|
+| `Read` / `Write` / `Edit`  | ✅ | ✅ | ✅ |
+| `HTTP` / `WebFetch`        | ✅ | ✅ | ✅ |
+| `WebSearch`                | ✅ | ✅ | ✅ |
+| `Bash`                     | ✅ | ✅ | ✅ |
+| `Agent` (sub-agents)       | ✅ | ✅ | ✅ |
+| `Skill` (Approach A)       | ✅ | ✅ | ✅ |
+| `LocalAPI` (OpenAPI gateway) | ⏳ | ⏳ | ⏳ | (scaffolded — for future OpenAPI-without-MCP-server consumers) |
+| MCP tools (stdio + HTTP)   | ✅ | ✅ | ✅ |
+| Native cache_control       | ✅ | ❌ | ❌ |
+| Parallel tool calls        | ✅ | ✅ | depends on model |
+| Streaming text + tool_use  | ✅ | ✅ | ✅ |
+
+Ollama caveat: tool calling only works on **tool-tuned** models (Llama 3.1 instruct variants, Qwen2.5-Instruct, Mistral Nemo Instruct). Non-tool-tuned models will hallucinate tool names instead of calling them. Tool_use IDs are synthesized by the loop because Ollama doesn't issue them.
