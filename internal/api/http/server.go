@@ -315,12 +315,23 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 	// doc comment. In caller-authoritative mode we ALWAYS call so the
 	// nil-fallback-to-operator path works; in default mode we only
 	// call when the caller actually supplied a list.
+	//
+	// hostPolicy captures the inputs in a form sub-agents can re-apply
+	// via tools.HostPolicy(ctx) — without this propagation, sub-agents
+	// silently fall back to the operator's static allowlist and lose
+	// reachability to caller-supplied hosts (commonly localhost).
+	var hostPolicy tools.HostPolicyValue
 	if req.AllowedHosts != nil || s.cfg.Env.HTTPCallerAuthoritative {
 		var caller []string
 		if req.AllowedHosts != nil {
 			caller = *req.AllowedHosts
 		}
 		allowedTools = builtin.NarrowHosts(allowedTools, caller, req.WebSearchFilter, s.cfg.Env.HTTPCallerAuthoritative)
+		hostPolicy = tools.HostPolicyValue{
+			AllowedHosts:    caller,
+			HasList:         req.AllowedHosts != nil,
+			WebSearchFilter: req.WebSearchFilter,
+		}
 	}
 	dispatcher := tools.NewDispatcher(allowedTools)
 
@@ -452,6 +463,10 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		UserID:  req.UserID,
 		AgentID: agentID,
 	})
+	// Stash the caller's host policy so any sub-agents spawned by the
+	// Agent tool inherit the same allowed_hosts / WebSearchFilter
+	// narrowing the parent received.
+	loopCtx = tools.WithHostPolicy(loopCtx, hostPolicy)
 
 	// Heartbeat hook: each loop iteration updates last_heartbeat_at so a
 	// future sweeper can detect crashed processes (no heartbeat for > N
@@ -1057,12 +1072,21 @@ func (s *Server) runSubAgent(ctx context.Context, name string, prompt string) (s
 	})
 
 	subTools := filterTools(s.tools, def.AllowedTools, nil)
-	// Caller-authoritative HTTP host narrowing doesn't apply here:
-	// sub-agents fall back to operator's static allowlist (no per-call
-	// caller list). If the sub-agent itself uses HTTP and needs hosts
-	// the operator's static list lacks, the operator must add them or
-	// run loomcycle in CALLER_AUTHORITATIVE mode (where the static
-	// list IS the fallback for runs without per-call narrowing).
+	// Inherit the parent's caller-authoritative host policy. Without
+	// this, sub-agents fall back to the operator's static
+	// HTTPHostAllowlist — which typically doesn't include localhost
+	// callbacks — and a parent that worked against ["localhost"]
+	// silently spawns children that can't reach the caller's API.
+	// Production case: cv-batch-adapter (parent has localhost via
+	// caller-authoritative) → cv-adapter children that need to PATCH
+	// /api/applications/<id> back to jobs-search-web, hit
+	// "host \"localhost\" not in allowlist", waste iterations
+	// guessing hostnames, get capped by max_iterations, never write
+	// the documents (2026-05-06).
+	parentHostPolicy := tools.HostPolicy(ctx)
+	if parentHostPolicy.HasList || s.cfg.Env.HTTPCallerAuthoritative {
+		subTools = builtin.NarrowHosts(subTools, parentHostPolicy.AllowedHosts, parentHostPolicy.WebSearchFilter, s.cfg.Env.HTTPCallerAuthoritative)
+	}
 	subDispatcher := tools.NewDispatcher(subTools)
 
 	// Persist the input segments as the first event so transcript

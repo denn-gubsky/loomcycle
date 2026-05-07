@@ -17,6 +17,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	storesqlite "github.com/denn-gubsky/loomcycle/internal/store/sqlite"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
+	"github.com/denn-gubsky/loomcycle/internal/tools/builtin"
 )
 
 // scriptedProvider returns a different event sequence per call. Used by
@@ -304,5 +305,152 @@ func TestSubAgent_UnknownChildName(t *testing.T) {
 	// error, not a run-failing error.
 	if !strings.Contains(string(body), "I'll move on") {
 		t.Error("parent should have continued after the IsError tool_result")
+	}
+}
+
+// TestSubAgent_InheritsParentCallerHostAllowlist asserts that when a
+// parent run was started under CALLER_AUTHORITATIVE with a per-call
+// allowed_hosts list, sub-agents spawned via the Agent tool inherit
+// that same host policy and can reach the same hosts.
+//
+// Regression for the 2026-05-06 cv-batch-adapter bug: parent ran
+// against ["localhost"] (caller-authoritative). Spawned cv-adapter
+// children fell back to operator's static HTTPHostAllowlist (which
+// didn't include localhost), spent all iterations guessing hostnames
+// (host.docker.internal, 172.17.0.1, api, app, nextjs, web,
+// loomcycle, backend, server) and never reached the localhost API
+// to PATCH /api/applications/<id>. No documents were written.
+func TestSubAgent_InheritsParentCallerHostAllowlist(t *testing.T) {
+	// Stand up an HTTP target the child will try to reach. Always
+	// 127.0.0.1; the actual port is irrelevant — the host allowlist
+	// match is hostname-only.
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("child-saw-it"))
+	}))
+	defer target.Close()
+
+	// Operator's static list is empty — so sub-agents that DON'T
+	// inherit the parent's policy will see "host not in allowlist"
+	// and the test will fail. With the fix, the sub-agent sees the
+	// parent's caller-supplied list and reaches the target cleanly.
+	cfg := makeBaseConfig()
+	cfg.Env.HTTPCallerAuthoritative = true
+	cfg.Env.HTTPHostAllowlist = nil
+	cfg.Env.HTTPPrivateHostAllowlist = []string{"127.0.0.1"} // dial-layer loopback exemption
+	cfg.Agents = map[string]config.AgentDef{
+		"parent": {Model: "stub-model", AllowedTools: []string{"HTTP", "Agent"}, SystemPrompt: "you are the parent"},
+		"child":  {Model: "stub-model", AllowedTools: []string{"HTTP"}, SystemPrompt: "you are the child"},
+	}
+	cfg.Env.AuthToken = ""
+
+	// Provider script:
+	//   1) parent → tool_call(Agent) spawning child
+	//   2) child  → tool_call(HTTP GET <target>)
+	//   3) child  → final text + end_turn (after tool_result)
+	//   4) parent → final text + end_turn (after Agent tool_result)
+	prov := &scriptedProvider{
+		scripts: [][]providers.Event{
+			{
+				{
+					Type: providers.EventToolCall,
+					ToolUse: &providers.ToolUse{
+						ID:    "tu_parent_1",
+						Name:  "Agent",
+						Input: json.RawMessage(`{"name":"child","prompt":"GET ` + target.URL + `"}`),
+					},
+				},
+				{Type: providers.EventDone, StopReason: "tool_use", Usage: &providers.Usage{InputTokens: 10, OutputTokens: 2}},
+			},
+			{
+				{
+					Type: providers.EventToolCall,
+					ToolUse: &providers.ToolUse{
+						ID:    "tu_child_1",
+						Name:  "HTTP",
+						Input: json.RawMessage(`{"method":"GET","url":"` + target.URL + `"}`),
+					},
+				},
+				{Type: providers.EventDone, StopReason: "tool_use", Usage: &providers.Usage{InputTokens: 5, OutputTokens: 4}},
+			},
+			{
+				{Type: providers.EventText, Text: "child done"},
+				{Type: providers.EventDone, StopReason: "end_turn", Usage: &providers.Usage{InputTokens: 3, OutputTokens: 2}},
+			},
+			{
+				{Type: providers.EventText, Text: "parent done"},
+				{Type: providers.EventDone, StopReason: "end_turn", Usage: &providers.Usage{InputTokens: 12, OutputTokens: 3}},
+			},
+		},
+	}
+
+	// HTTP tool — operator config is what production ships. The
+	// allowlist is initially empty (per cfg above); NarrowHosts
+	// rebuilds the per-run tool with the caller's list.
+	httpTool := &builtin.HTTP{
+		HostAllowlist:        cfg.Env.HTTPHostAllowlist,
+		PrivateHostAllowlist: cfg.Env.HTTPPrivateHostAllowlist,
+	}
+
+	st, err := storesqlite.Open(filepath.Join(t.TempDir(), "subagent_hosts.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	srv := New(cfg, &stubResolver{p: prov}, []tools.Tool{httpTool}, concurrency.New(4, 4, time.Second), st)
+	ts := httptest.NewServer(srv.Mux())
+	defer ts.Close()
+
+	// Caller-authoritative request: the only hosts the run may reach
+	// are 127.0.0.1 (the target) — explicitly NOT in the operator's
+	// static list.
+	resp, err := http.Post(ts.URL+"/v1/runs", "application/json", strings.NewReader(
+		`{"agent":"parent","allowed_hosts":["127.0.0.1"],"segments":[{"role":"user","content":[{"type":"trusted-text","text":"start"}]}]}`,
+	))
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("status = %d", resp.StatusCode)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	bodyStr := string(body)
+
+	// The Agent tool only returns the child's final text to the parent,
+	// not the child's intermediate tool_results. To verify the child's
+	// HTTP tool actually reached the target host, walk the store: find
+	// the parent's agent_id from the SSE frame → list child runs by
+	// parent_agent_id → fetch the child's transcript → inspect the
+	// tool_result event from the child's HTTP call.
+	parentAgentID := extractAgentID(bodyStr)
+	if parentAgentID == "" {
+		t.Fatalf("could not extract parent agent_id from SSE body:\n%s", bodyStr)
+	}
+	childRuns, err := st.ListRunsByParentAgentID(context.Background(), parentAgentID)
+	if err != nil {
+		t.Fatalf("ListRunsByParentAgentID: %v", err)
+	}
+	if len(childRuns) != 1 {
+		t.Fatalf("expected 1 child run, got %d", len(childRuns))
+	}
+	childTranscript, err := st.GetTranscript(context.Background(), childRuns[0].SessionID)
+	if err != nil {
+		t.Fatalf("GetTranscript(child): %v", err)
+	}
+	var sawHTTPSuccess bool
+	for _, ev := range childTranscript {
+		if ev.Type != "tool_result" {
+			continue
+		}
+		payload := string(ev.Payload)
+		if strings.Contains(payload, "not in allowlist") {
+			t.Errorf("child's HTTP tool was denied by host allowlist — parent's caller policy did not propagate;\ntool_result payload:\n%s", payload)
+		}
+		if strings.Contains(payload, "child-saw-it") {
+			sawHTTPSuccess = true
+		}
+	}
+	if !sawHTTPSuccess {
+		t.Errorf("expected child's HTTP tool to reach target and capture body 'child-saw-it' in a tool_result event;\nchild transcript had %d events", len(childTranscript))
 	}
 }

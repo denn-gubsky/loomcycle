@@ -89,6 +89,45 @@ func AgentTools(ctx context.Context) []string {
 	return v
 }
 
+// ctxKeyHostPolicy is the context key for the run's effective HTTP
+// host narrowing policy — what the CALLER (top-level: HTTP request
+// body; sub-agent: inherited from the parent's ctx) asked for in
+// allowed_hosts / web_search_filter. Sub-agents read this via
+// HostPolicy and re-apply the parent's narrowing to their own tools,
+// so a parent that worked against ["localhost"] under
+// CALLER_AUTHORITATIVE doesn't spawn children that mysteriously fall
+// back to the operator's static allowlist (which typically doesn't
+// include localhost). See server.runSubAgent.
+type ctxKeyHostPolicy struct{}
+
+// HostPolicyValue captures the caller-authoritative HTTP host policy.
+//
+// HasList distinguishes "caller didn't supply a list at all" (false:
+// fall back to operator's static allowlist) from "caller supplied a
+// list, possibly empty" (true: the list IS the policy, deny-all if
+// empty). The two cases are different in CALLER_AUTHORITATIVE mode:
+// nil → operator's static list; empty → deny everything.
+type HostPolicyValue struct {
+	AllowedHosts    []string
+	HasList         bool
+	WebSearchFilter string
+}
+
+// WithHostPolicy attaches the caller's host narrowing policy to ctx.
+// runRequest sets this once for top-level runs; sub-agents inherit it
+// via the ctx chain (Agent tool's Execute → runSubAgent passes the
+// parent's ctx through).
+func WithHostPolicy(ctx context.Context, p HostPolicyValue) context.Context {
+	return context.WithValue(ctx, ctxKeyHostPolicy{}, p)
+}
+
+// HostPolicy returns the caller's host narrowing policy from ctx, or
+// the zero value (HasList=false, no narrowing) if not attached.
+func HostPolicy(ctx context.Context) HostPolicyValue {
+	v, _ := ctx.Value(ctxKeyHostPolicy{}).(HostPolicyValue)
+	return v
+}
+
 // ctxKeyRunIdentity is the context key under which the runtime
 // stashes the current run's user_id and agent_id (v0.4 tracking
 // fields). Sub-agents read these via RunIdentity to inherit the
