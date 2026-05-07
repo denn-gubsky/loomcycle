@@ -177,6 +177,33 @@ mcp_servers:
 #   base_url: http://localhost:3000
 #   tool_name_prefix: local     # tools become mcp__-style: local__<opId>
 
+# ─── Storage backend ──────────────────────────────────────────────────
+# SQLite is the default — single-file persistence, zero external deps.
+# Right for compact installs, dev, examples, and the README quick-start.
+#
+# Postgres is the v0.5+ production path — needed when an operator runs
+# hundreds of concurrent agents (jobs-search-agent's start-up phase) and
+# SQLite's single-writer ceiling becomes the load-bearing constraint.
+# The agent-facing Store interface is identical between backends; both
+# adapters are validated against a shared contract suite in CI so the
+# storage choice is operator-visible only via this block.
+#
+# Env equivalents (env wins over YAML so prod can keep the DSN out of
+# version-controlled config):
+#   LOOMCYCLE_STORAGE_BACKEND=postgres
+#   LOOMCYCLE_PG_DSN=postgres://user:pass@host:5432/loomcycle?sslmode=require
+#   LOOMCYCLE_PG_AUTOMIGRATE=1   # off by default — operator runs
+#                                  `loomcycle migrate up` explicitly
+#   LOOMCYCLE_PG_MAX_OPEN_CONNS=64
+#   LOOMCYCLE_PG_MIN_IDLE_CONNS=8
+#
+# storage:
+#   backend: postgres
+#   pg_dsn: ${LOOMCYCLE_PG_DSN}
+#   pg_max_open_conns: 32
+#   pg_min_idle_conns: 8
+#   pg_automigrate: false        # production default; flip to true in dev
+
 # ─── Concurrency ──────────────────────────────────────────────────────
 # Caps total in-flight runs across all agents. Bursts above the cap
 # queue up to max_queue_depth for queue_timeout_ms before returning

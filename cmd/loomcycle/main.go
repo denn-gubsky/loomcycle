@@ -33,6 +33,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/providers/openai"
 	"github.com/denn-gubsky/loomcycle/internal/skills"
 	"github.com/denn-gubsky/loomcycle/internal/store"
+	storepostgres "github.com/denn-gubsky/loomcycle/internal/store/postgres"
 	storesqlite "github.com/denn-gubsky/loomcycle/internal/store/sqlite"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 	"github.com/denn-gubsky/loomcycle/internal/tools/builtin"
@@ -259,21 +260,15 @@ func main() {
 	}
 	mcpInitCancel()
 
-	// Storage: open SQLite under DataDir. We could no-op when DataDir is
-	// unset, but that would silently disable the transcript/continuation
-	// endpoints — better to just use a sensible default and persist.
-	if err := os.MkdirAll(cfg.Env.DataDir, 0o755); err != nil {
-		log.Fatalf("data dir: %v", err)
-	}
-	dbPath := filepath.Join(cfg.Env.DataDir, "loomcycle.db")
-	st, err := storesqlite.Open(dbPath)
+	// Storage: SQLite (default, compact installs) or Postgres
+	// (production, hundreds of concurrent agents). Both adapters
+	// implement the same store.Store interface; they're tested against
+	// a shared contract suite in CI so they can't drift silently.
+	storeIface, storeCloser, err := openStore(cfg)
 	if err != nil {
 		log.Fatalf("store: %v", err)
 	}
-	defer st.Close()
-	log.Printf("store: sqlite at %s", dbPath)
-
-	var storeIface store.Store = st
+	defer storeCloser()
 	srv := lchttp.New(cfg, pr, allTools, sem, storeIface)
 	httpServer := &http.Server{
 		Addr:              cfg.Env.ListenAddr,
@@ -300,6 +295,49 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	_ = httpServer.Shutdown(ctx)
+}
+
+// openStore resolves the operator's storage choice (sqlite default;
+// postgres opt-in via storage.backend or LOOMCYCLE_STORAGE_BACKEND) and
+// returns a ready Store + a Close-and-log closer.
+//
+// Errors propagate up to log.Fatalf in main; they cover both
+// missing-config (postgres backend selected without a DSN) and
+// dial/migration failures (postgres unreachable, schema not initialised
+// when LOOMCYCLE_PG_AUTOMIGRATE=0).
+func openStore(cfg *config.Config) (store.Store, func(), error) {
+	switch cfg.Storage.Backend {
+	case "sqlite", "":
+		if err := os.MkdirAll(cfg.Env.DataDir, 0o755); err != nil {
+			return nil, nil, fmt.Errorf("data dir: %w", err)
+		}
+		dbPath := filepath.Join(cfg.Env.DataDir, "loomcycle.db")
+		st, err := storesqlite.Open(dbPath)
+		if err != nil {
+			return nil, nil, fmt.Errorf("sqlite open: %w", err)
+		}
+		log.Printf("store: sqlite at %s", dbPath)
+		return st, func() { _ = st.Close() }, nil
+
+	case "postgres":
+		if cfg.Storage.PgDSN == "" {
+			return nil, nil, fmt.Errorf("postgres backend selected but storage.pg_dsn / LOOMCYCLE_PG_DSN is empty")
+		}
+		st, err := storepostgres.Open(context.Background(), storepostgres.Config{
+			DSN:          cfg.Storage.PgDSN,
+			MaxOpenConns: cfg.Storage.PgMaxOpenConns,
+			MinIdleConns: cfg.Storage.PgMinIdleConns,
+			AutoMigrate:  cfg.Storage.PgAutoMigrate,
+		})
+		if err != nil {
+			return nil, nil, fmt.Errorf("postgres open: %w", err)
+		}
+		log.Printf("store: postgres (automigrate=%v)", cfg.Storage.PgAutoMigrate)
+		return st, func() { _ = st.Close() }, nil
+
+	default:
+		return nil, nil, fmt.Errorf("unknown storage.backend %q (want \"sqlite\" or \"postgres\")", cfg.Storage.Backend)
+	}
 }
 
 // providerResolver constructs Provider instances at startup based on which

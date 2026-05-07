@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -29,6 +30,10 @@ type Config struct {
 	// Empty SpecPath disables the gateway. See
 	// internal/tools/localapi for the wire model.
 	LocalAPI LocalAPIConfig `yaml:"local_api"`
+	// Storage selects the persistence backend. SQLite (default)
+	// covers compact/dev installs; Postgres unblocks horizontal
+	// scaling for production deployments. See StorageConfig.
+	Storage StorageConfig `yaml:"storage"`
 
 	// Env-derived; not in YAML.
 	Env Env `yaml:"-"`
@@ -46,6 +51,36 @@ type LocalAPIConfig struct {
 	SpecPath       string `yaml:"spec"`
 	BaseURL        string `yaml:"base_url"`
 	ToolNamePrefix string `yaml:"tool_name_prefix"`
+}
+
+// StorageConfig selects the Store backend and its connection settings.
+// Empty Backend defaults to "sqlite" for back-compat with v0.4 configs
+// that pre-date this block. SQLite uses Env.DataDir for its on-disk
+// path; Postgres uses the PgDSN below (or LOOMCYCLE_PG_DSN env).
+//
+// Env precedence: every field below has a corresponding LOOMCYCLE_*
+// env var. Env wins over YAML when both are set, so production
+// deploys can keep secrets (PG_DSN) out of the version-controlled YAML.
+type StorageConfig struct {
+	// Backend selects the adapter: "sqlite" (default) or "postgres".
+	// Env: LOOMCYCLE_STORAGE_BACKEND.
+	Backend string `yaml:"backend"`
+	// PgDSN is the Postgres connection string (libpq URL form).
+	// Required when Backend="postgres". Env: LOOMCYCLE_PG_DSN.
+	// Example: postgres://user:pass@host:5432/loomcycle?sslmode=require
+	PgDSN string `yaml:"pg_dsn"`
+	// PgMaxOpenConns caps the pgxpool size. Default 32. Env:
+	// LOOMCYCLE_PG_MAX_OPEN_CONNS.
+	PgMaxOpenConns int32 `yaml:"pg_max_open_conns"`
+	// PgMinIdleConns is the floor of warm idle connections. Default 4.
+	// Env: LOOMCYCLE_PG_MIN_IDLE_CONNS.
+	PgMinIdleConns int32 `yaml:"pg_min_idle_conns"`
+	// PgAutoMigrate controls schema bootstrap on startup. When false
+	// (default), Open() refuses to start unless the embedded migration
+	// set is at or behind the database — the operator must run
+	// `loomcycle migrate up` explicitly. When true, Open() runs
+	// migrations transparently. Env: LOOMCYCLE_PG_AUTOMIGRATE=1.
+	PgAutoMigrate bool `yaml:"pg_automigrate"`
 }
 
 // ConfigDir returns the directory the YAML was loaded from. Used by
@@ -256,6 +291,33 @@ func Load(path string) (*Config, error) {
 		BashEnabled:              os.Getenv("LOOMCYCLE_BASH_ENABLED") == "1",
 		BashCwd:                  os.Getenv("LOOMCYCLE_BASH_CWD"),
 		SkillsRoot:               os.Getenv("LOOMCYCLE_SKILLS_ROOT"),
+	}
+
+	// Env-overrides for the storage block. Env wins over YAML so prod
+	// deploys can keep PG_DSN out of version-controlled config files.
+	// Empty env values fall through to whatever YAML provided.
+	if v := os.Getenv("LOOMCYCLE_STORAGE_BACKEND"); v != "" {
+		cfg.Storage.Backend = v
+	}
+	if v := os.Getenv("LOOMCYCLE_PG_DSN"); v != "" {
+		cfg.Storage.PgDSN = v
+	}
+	if v := os.Getenv("LOOMCYCLE_PG_MAX_OPEN_CONNS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			cfg.Storage.PgMaxOpenConns = int32(n)
+		}
+	}
+	if v := os.Getenv("LOOMCYCLE_PG_MIN_IDLE_CONNS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			cfg.Storage.PgMinIdleConns = int32(n)
+		}
+	}
+	if v := os.Getenv("LOOMCYCLE_PG_AUTOMIGRATE"); v == "1" {
+		cfg.Storage.PgAutoMigrate = true
+	}
+	// Default backend is sqlite (back-compat with pre-Storage configs).
+	if cfg.Storage.Backend == "" {
+		cfg.Storage.Backend = "sqlite"
 	}
 
 	// resolveSkills MUST come after env loading (it needs SkillsRoot)
