@@ -129,11 +129,19 @@ mcp_servers:
   # Use HTTP transport when the MCP server runs as a separate service
   # (own process, own container, own host). loomcycle dials it per
   # tool-call and 404s mark the server dead until next discovery.
-  # jobs-ingest:
-  #   transport: http
-  #   url: http://localhost:3000/mcp/ingest
-  #   headers:
-  #     Authorization: "Bearer ${LOOMCYCLE_AUTH_TOKEN}"
+  #
+  # jobs-search-agent runs an MCP server at /api/mcp on its Next.js app.
+  # It exposes 8 typed tools (mcp__jobs__getAgentContext,
+  # mcp__jobs__patchApplication, mcp__jobs__postSearchIngest, etc.) for
+  # the agents to call back. The Authorization header carries a valid
+  # jobs-search-agent user API token; the MCP server validates it via
+  # the existing validateApiToken flow and forwards the same bearer to
+  # loopback fetches against its own routes.
+  jobs:
+    transport: http
+    url: http://localhost:3000/api/mcp
+    headers:
+      Authorization: "Bearer ${JOBS_SEARCH_API_TOKEN}"
 
 # ─── Local API MCP gateway (v0.4.0+) ─────────────────────────────────
 # Reads an OpenAPI 3.0 spec at boot and exposes one typed tool per
