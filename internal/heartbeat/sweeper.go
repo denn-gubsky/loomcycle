@@ -27,9 +27,15 @@ type Config struct {
 
 	// StaleAfter is the cutoff: runs whose last heartbeat (or
 	// started_at, if they never heartbeated) is older than this are
-	// marked failed. Default 10 minutes. Should be ≥ 2× the loop's
-	// expected per-iteration time to avoid sweeping live runs that
-	// happen to be in a long tool call.
+	// marked failed. Default 10 minutes.
+	//
+	// Should be ≥ 2× the longest expected single tool call duration.
+	// Heartbeats fire at the top of each loop iteration (BEFORE tool
+	// dispatch), so a slow Bash / WebFetch / sub-agent call blocks
+	// heartbeat updates for its full duration — a 9-minute tool call
+	// looks identical to a crashed run if StaleAfter is set too low.
+	// Operators with long-running tool dispatch should raise this
+	// (e.g. LOOMCYCLE_HEARTBEAT_STALE_MS=1800000 for a 30-min cap).
 	StaleAfter time.Duration
 
 	// Logger is the structured logger used for sweep results. Defaults

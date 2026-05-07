@@ -431,8 +431,11 @@ func testSweepStaleRuns(t *testing.T, s store.Store) {
 	_, _ = s.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: "a_no_hb"})
 
 	// Sleep enough that "now" is after both rows' (last_heartbeat_at
-	// or started_at). 30ms is generous and keeps the test fast.
-	time.Sleep(30 * time.Millisecond)
+	// or started_at). 60ms gives enough headroom to survive
+	// heavily-loaded CI runners doing dozens of parallel Postgres
+	// tests against a containerised fixture; tighter values
+	// (we ran 30ms briefly) flaked under load.
+	time.Sleep(60 * time.Millisecond)
 
 	// 3) A fresh run that heartbeated AFTER the cutoff — must NOT be
 	//    swept.
@@ -444,9 +447,10 @@ func testSweepStaleRuns(t *testing.T, s store.Store) {
 	_ = s.FinishRun(ctx, terminalRun.ID, store.RunCompleted, "end_turn", store.Usage{}, "")
 
 	// Cutoff: between the stale row's last activity and the fresh
-	// row's. A 1ms-after-fresh-creation cutoff keeps stale and noHB
-	// stale, fresh fresh.
-	cutoff := time.Now().Add(-15 * time.Millisecond)
+	// row's. 30ms-back keeps the stale + noHB rows past the cutoff
+	// while the fresh row stays after it. Doubling from the previous
+	// 15ms gives ~30ms of margin in either direction.
+	cutoff := time.Now().Add(-30 * time.Millisecond)
 
 	swept, err := s.SweepStaleRuns(ctx, cutoff)
 	if err != nil {

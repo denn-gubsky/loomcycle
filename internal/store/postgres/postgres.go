@@ -17,6 +17,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -61,6 +62,14 @@ type Store struct {
 func Open(ctx context.Context, cfg Config) (*Store, error) {
 	if cfg.DSN == "" {
 		return nil, errors.New("postgres: DSN is required")
+	}
+	// The embedded migrations driver (golang-migrate/pgx5) registers
+	// itself for URL-form DSNs only — pgx5://... — so a libpq
+	// keyword=value DSN ("host=foo user=bar password=...") would
+	// otherwise produce a confusing "unknown driver" error from deep
+	// inside golang-migrate. Refuse upfront with a pointed message.
+	if !strings.Contains(cfg.DSN, "://") {
+		return nil, errors.New("postgres: DSN must be URL form (postgres://user:pass@host:port/db?...) — keyword=value DSNs are not supported by the embedded migrations driver")
 	}
 	if cfg.MaxOpenConns <= 0 {
 		cfg.MaxOpenConns = 32

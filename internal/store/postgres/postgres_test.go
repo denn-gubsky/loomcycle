@@ -235,6 +235,29 @@ func TestAppendEventConcurrent(t *testing.T) {
 	}
 }
 
+// TestOpen_RejectsKeywordValueDSN asserts that a libpq keyword=value
+// DSN is rejected with a clear message — golang-migrate's pgx5 driver
+// only registers for URL-form DSNs, so without this guard the operator
+// sees a confusing "unknown driver" error from deep inside
+// golang-migrate when the embedded migrations are checked.
+//
+// EMPIRICAL: removing the !strings.Contains("://") check in postgres.go's
+// Open() makes this test fail (Open returns the migrate-init error
+// from golang-migrate instead of the upfront refusal).
+func TestOpen_RejectsKeywordValueDSN(t *testing.T) {
+	// We don't even need the live PG fixture here — Open returns the
+	// DSN-form error before dialing.
+	_, err := Open(context.Background(), Config{
+		DSN: "host=localhost user=loomcycle dbname=loomcycle",
+	})
+	if err == nil {
+		t.Fatal("Open should reject keyword=value DSN; got nil error")
+	}
+	if !strings.Contains(err.Error(), "URL form") {
+		t.Errorf("error doesn't mention URL form: %v", err)
+	}
+}
+
 // TestVerifySchemaCurrent_FreshDB asserts that opening a Postgres with no
 // schema applied AND AutoMigrate=false returns a clear error message
 // pointing at the fix (run loomcycle migrate up). Without this, a misconfig

@@ -31,11 +31,13 @@ func RunHealth(args []string, stdout, stderr io.Writer) int {
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
+		// Malformed --target — user error.
 		return fail(stderr, "build request: %v", err)
 	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return fail(stderr, "GET %s: %v", url, err)
+		// Network failure — operational.
+		return failOp(stderr, "GET %s: %v", url, err)
 	}
 	defer resp.Body.Close()
 
@@ -48,7 +50,8 @@ func RunHealth(args []string, stdout, stderr io.Writer) int {
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return fail(stderr, "non-OK status: %d", resp.StatusCode)
+		// Server reachable but unhealthy — operational.
+		return failOp(stderr, "non-OK status: %d", resp.StatusCode)
 	}
 	return 0
 }

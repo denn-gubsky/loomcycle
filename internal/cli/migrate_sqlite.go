@@ -62,6 +62,7 @@ func runMigrateSqliteToPostgres(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	if _, err := os.Stat(*src); err != nil {
+		// User pointed at a non-existent file — user error.
 		return fail(stderr, "src: %v", err)
 	}
 
@@ -70,13 +71,17 @@ func runMigrateSqliteToPostgres(args []string, stdout, stderr io.Writer) int {
 	// Open SQLite read-only. The query-string flag tells modernc to
 	// skip the journal-mode/foreign-key pragmas it normally applies
 	// — we're a reader, not a writer.
+	//
+	// Open + Ping failures from here onward are infrastructure
+	// problems (file corrupt, PG unreachable, schema missing) —
+	// exit code 1, not 2.
 	srcDB, err := sql.Open("sqlite", *src+"?_pragma=query_only(1)")
 	if err != nil {
-		return fail(stderr, "open sqlite: %v", err)
+		return failOp(stderr, "open sqlite: %v", err)
 	}
 	defer srcDB.Close()
 	if err := srcDB.Ping(); err != nil {
-		return fail(stderr, "ping sqlite: %v", err)
+		return failOp(stderr, "ping sqlite: %v", err)
 	}
 
 	// Open Postgres pool. We don't go through the Store adapter
@@ -85,20 +90,22 @@ func runMigrateSqliteToPostgres(args []string, stdout, stderr io.Writer) int {
 	if *autoMigrate {
 		fmt.Fprintln(stdout, "running `migrate up` against destination...")
 		if err := storepostgres.MigrateUp(*dst); err != nil {
-			return fail(stderr, "migrate up: %v", err)
+			return failOp(stderr, "migrate up: %v", err)
 		}
 	}
 	dstPool, err := pgxpool.New(ctx, *dst)
 	if err != nil {
-		return fail(stderr, "dial postgres: %v", err)
+		return failOp(stderr, "dial postgres: %v", err)
 	}
 	defer dstPool.Close()
 	if err := dstPool.Ping(ctx); err != nil {
-		return fail(stderr, "ping postgres: %v", err)
+		return failOp(stderr, "ping postgres: %v", err)
 	}
 
 	// Verify the destination has the schema. golang-migrate's
-	// schema_migrations table is the canary.
+	// schema_migrations table is the canary. This one IS arguably
+	// user error (operator didn't run `migrate up` first), so 2
+	// keeps the existing contract.
 	if _, _, err := storepostgres.MigrateStatus(*dst); err != nil {
 		return fail(stderr, "destination schema not initialised; pass --auto-migrate or run `loomcycle migrate up` first")
 	}
@@ -108,15 +115,15 @@ func runMigrateSqliteToPostgres(args []string, stdout, stderr io.Writer) int {
 
 	srcSessions, err := copySessions(ctx, srcDB, dstPool, stdout)
 	if err != nil {
-		return fail(stderr, "copy sessions: %v", err)
+		return failOp(stderr, "copy sessions: %v", err)
 	}
 	srcRuns, err := copyRuns(ctx, srcDB, dstPool, stdout)
 	if err != nil {
-		return fail(stderr, "copy runs: %v", err)
+		return failOp(stderr, "copy runs: %v", err)
 	}
 	srcEvents, err := copyEvents(ctx, srcDB, dstPool, stdout, *batchSize)
 	if err != nil {
-		return fail(stderr, "copy events: %v", err)
+		return failOp(stderr, "copy events: %v", err)
 	}
 
 	// Reset the events seq sequence so future inserts continue from
@@ -126,7 +133,7 @@ func runMigrateSqliteToPostgres(args []string, stdout, stderr io.Writer) int {
 		`SELECT setval(pg_get_serial_sequence('events','seq'),
 		               COALESCE((SELECT MAX(seq) FROM events), 1),
 		               (SELECT MAX(seq) IS NOT NULL FROM events))`); err != nil {
-		return fail(stderr, "setval events.seq: %v", err)
+		return failOp(stderr, "setval events.seq: %v", err)
 	}
 
 	if *skipVerify {
@@ -134,7 +141,8 @@ func runMigrateSqliteToPostgres(args []string, stdout, stderr io.Writer) int {
 		return 0
 	}
 
-	// Verification phase.
+	// Verification phase. Mismatches are operational failures (a
+	// row-count divergence means the copy didn't fully complete).
 	if err := verifyRowCounts(ctx, srcDB, dstPool, srcSessions, srcRuns, srcEvents, stdout, stderr); err != nil {
 		return 1
 	}

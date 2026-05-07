@@ -31,7 +31,8 @@ func TestRunHealth_OK(t *testing.T) {
 	}
 }
 
-// Server up but returning non-200 → rc=2.
+// Server up but returning non-200 → rc=1 (operational failure: the
+// runtime/infra is sick, not the operator's invocation).
 func TestRunHealth_Non200(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "down for maintenance", http.StatusServiceUnavailable)
@@ -40,20 +41,20 @@ func TestRunHealth_Non200(t *testing.T) {
 
 	var stdout, stderr bytes.Buffer
 	rc := RunHealth([]string{"--target", srv.URL}, &stdout, &stderr)
-	if rc == 0 {
-		t.Errorf("rc=0, want non-zero (503 should fail)")
+	if rc != 1 {
+		t.Errorf("rc=%d, want 1 (operational: server reachable but unhealthy)", rc)
 	}
 	if !strings.Contains(stderr.String(), "non-OK status: 503") {
 		t.Errorf("stderr missing diagnostic: %q", stderr.String())
 	}
 }
 
-// Server unreachable → rc=2.
+// Server unreachable → rc=1 (operational: network failure).
 func TestRunHealth_Unreachable(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	rc := RunHealth([]string{"--target", "http://127.0.0.1:1", "--timeout", "200ms"}, &stdout, &stderr)
-	if rc == 0 {
-		t.Errorf("rc=0, want non-zero (network failure should fail)")
+	if rc != 1 {
+		t.Errorf("rc=%d, want 1 (operational: connection refused)", rc)
 	}
 	if !strings.Contains(stderr.String(), "GET ") {
 		t.Errorf("stderr missing GET diagnostic: %q", stderr.String())

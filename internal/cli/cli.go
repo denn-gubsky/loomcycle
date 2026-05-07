@@ -47,9 +47,23 @@ func PrintHelp(w io.Writer) {
 	fmt.Fprintln(w, "Run any subcommand with -h for its own flags.")
 }
 
-// fail writes "loomcycle: error: <msg>" to stderr and returns the
-// supplied exit code. Convenience for the early-exit branches.
+// fail writes "loomcycle: error: <msg>" to stderr and returns 2 — the
+// **user-error** exit code. Use for: missing/bad CLI flags, malformed
+// config, unknown verbs, references to files that don't exist, etc.
+//
+// Operational failures (Postgres unreachable, migration engine error,
+// network failure on health probe) get exit code 1 via failOp() so
+// deployment pipelines can distinguish "fix the invocation" from
+// "the runtime/infra is sick."
 func fail(stderr io.Writer, format string, args ...any) int {
 	fmt.Fprintf(stderr, "loomcycle: error: "+format+"\n", args...)
 	return 2
+}
+
+// failOp writes the same prefix to stderr but returns 1 — the
+// **operational-failure** exit code. See fail() above for the
+// 1-vs-2 split rationale.
+func failOp(stderr io.Writer, format string, args ...any) int {
+	fmt.Fprintf(stderr, "loomcycle: error: "+format+"\n", args...)
+	return 1
 }
