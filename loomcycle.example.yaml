@@ -137,11 +137,21 @@ mcp_servers:
   # jobs-search-agent user API token; the MCP server validates it via
   # the existing validateApiToken flow and forwards the same bearer to
   # loopback fetches against its own routes.
+  #
+  # IMPORTANT — env-var name MUST be LOOMCYCLE_*-prefixed.
+  # Loomcycle's YAML env-expansion allowlist only expands variables
+  # whose name starts with LOOMCYCLE_ (or is on the explicit
+  # third-party allow-list — BRAVE_API_KEY, GITHUB_TOKEN, etc.). A
+  # name like ${JOBS_SEARCH_API_TOKEN} would pass through as the
+  # literal string and the MCP server would 401 on every call. Pick
+  # any LOOMCYCLE_-prefixed name; the example uses
+  # LOOMCYCLE_JOBS_SEARCH_API_TOKEN. Set it in .env.local with the
+  # value of a valid jobs-search-agent user API token.
   jobs:
     transport: http
     url: http://localhost:3000/api/mcp
     headers:
-      Authorization: "Bearer ${JOBS_SEARCH_API_TOKEN}"
+      Authorization: "Bearer ${LOOMCYCLE_JOBS_SEARCH_API_TOKEN}"
 
 # ─── Local API MCP gateway (v0.4.0+) ─────────────────────────────────
 # Reads an OpenAPI 3.0 spec at boot and exposes one typed tool per
