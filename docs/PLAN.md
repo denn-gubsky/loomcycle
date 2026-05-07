@@ -2,16 +2,15 @@
 
 This is the public roadmap. For decision history, regret notes, and per-version commit-by-commit details, see `doc-internal/PLAN.md` (gitignored).
 
-## v0.4.0 — current
+## v0.3.9 — current
 
-**Status: shipped.** Tag `v0.4.0` on `main`. The runtime is now usable as a single-tenant production library.
+**Status: tip of `main`.** The runtime is usable as a single-tenant library, but **v0.3.9 is not v0.4.0**: the LocalAPI MCP gateway — the headline feature of v0.4.0 — is scaffolded but not yet exercised end-to-end. Until at least one production caller migrates from raw `HTTP`-tool URLs to typed `localapi__<api>__<op>` tools, we don't claim v0.4.0.
 
-**What's in v0.4.0:**
+**What's in v0.3.9:**
 
 - Three providers — Anthropic Messages (with native `cache_control`), OpenAI Chat Completions, Ollama `/api/chat` (tool-tuned models only).
 - Nine built-in tools — `Read`, `Write`, `Edit`, `HTTP`, `WebFetch`, `WebSearch`, `Bash`, `Agent` (sub-agent spawning), `Skill` (Approach A static bundling).
 - MCP integration — pooled stdio children with auto-respawn, HTTP/SSE clients, per-server allowlists.
-- LocalAPI gateway — OpenAPI spec → one tool per operation, scoped to a configured `base_url`.
 - Sub-agents via the `Agent` built-in — depth-capped (16), parent host policy + identity inherited via ctx.
 - Agent tracking + cancel API — `agent_id` per run, cascade-cancel via `parent_agent_id`, list runs per user.
 - Per-agent `max_tokens` config (output budget; covers the case where bundled skills + tool narration eat into a fixed cap).
@@ -21,7 +20,26 @@ This is the public roadmap. For decision history, regret notes, and per-version 
 - Concurrency — global semaphore + bounded FIFO queue; backpressure → HTTP 429.
 - TypeScript adapter (`@loomcycle/client`) shipped on npm.
 
+**Scaffolded but not yet exercised end-to-end** (don't claim shipped):
+
+- **LocalAPI MCP gateway** — code is in `internal/tools/localapi/`, parser + dispatcher wiring + unit tests all landed, registered into the dispatcher at boot when `cfg.LocalAPI.SpecPath` is non-empty. **No production OpenAPI spec exists.** Every current consumer (`jobs-search-agent`'s nine HTTP-using agents) still calls `localhost:3000/api/...` via the raw `HTTP` tool with URLs the model writes by hand. This is the v0.4.0 release gate.
+
 For usage: see [README](../README.md). For the architecture: see [ARCHITECTURE.md](ARCHITECTURE.md). For tool policy: see [TOOLS.md](TOOLS.md).
+
+## v0.4.0 — in progress
+
+The single deliverable: **migrate jobs-search-agent off raw `HTTP` calls onto the LocalAPI gateway.**
+
+What "done" looks like:
+
+1. **OpenAPI spec exists** for jobs-search-agent's agent-facing routes (`/api/agent/context`, `/api/applications/<id>` PATCH, `/api/research`, `/api/research/ingest`, `/api/search/ingest`, plus whatever else agents currently call). Spec is generated from the route handlers, not hand-written, so it stays in lockstep with code.
+2. **Loomcycle config is updated** — `local_api: { spec: ..., base_url: http://localhost:3000, tool_name_prefix: jobs }` is uncommented in the operator's running yaml. Tools `jobs__getAgentContext`, `jobs__patchApplication`, etc. register at startup.
+3. **Agent prompts are migrated** — every `tools: HTTP, ...` agent in `.claude/agents/*.md` removes `HTTP` from its allow-list (or keeps it for explicit external calls only) and switches to typed `jobs__*` tool calls in its prompt body. The "spell the URL out" pattern goes away.
+4. **End-to-end run is verified** — at least one full pipeline run (search → ATS → research → cv-batch-adapter → documents) completes using LocalAPI tools instead of raw HTTP. No regressions in the existing test suite.
+5. **The cv-adapter "guess hostnames" failure mode is structurally impossible** — there's no URL string for the model to mistype, because there's no URL string in the prompt.
+6. **Operator and consumer docs updated** — both repos' READMEs, ARCHITECTURE.md, and the relevant agent prompt examples reflect the new pattern.
+
+After that, v0.4.0 is tag-ready.
 
 ## v1.0 — planned
 

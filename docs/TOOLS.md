@@ -211,7 +211,7 @@ Integration tests in `internal/api/http/server_test.go`:
 
 Empirical proof of the security invariant: inverting the default in `filterTools` (so empty allowlist exposes every tool) makes the first test fail. The test is what stops a future refactor from accidentally inverting the policy.
 
-## The `Agent` tool — sub-agent spawning (v0.4.0)
+## The `Agent` tool — sub-agent spawning (v0.3.9)
 
 The `Agent` built-in lets a parent agent spawn a child run by name:
 
@@ -241,7 +241,7 @@ References: `internal/tools/builtin/agent.go`, `internal/api/http/server.go runS
 
 ## The `Skill` tool — Approach A (static bundling, shipped) and Approach B (dynamic, scaffolded)
 
-**Approach A — static bundling (active in v0.4.0).**
+**Approach A — static bundling (active in v0.3.9).**
 
 At config-load, every directory under `LOOMCYCLE_SKILLS_ROOT` named `<skill>/SKILL.md` is read. Agents that list a skill in their YAML get the skill's body **concatenated into their system prompt** as a cacheable trusted-text block:
 
@@ -258,31 +258,32 @@ Constraint: each skill's frontmatter declares its own `allowed-tools`; this list
 
 **Approach B — dynamic Skill tool (placeholder).**
 
-The `Skill` built-in is registered when `LOOMCYCLE_SKILLS_ROOT` is set; the model can call it with `{"name": "voice-applier"}` to load a skill mid-conversation. In v0.4.0 the tool returns "unknown skill" — full Approach B implementation is v1.0 work. The hook is in place so prompts that reference the dynamic Skill tool can be authored today; they degrade gracefully (the tool reports the skill isn't available, the model continues without).
+The `Skill` built-in is registered when `LOOMCYCLE_SKILLS_ROOT` is set; the model can call it with `{"name": "voice-applier"}` to load a skill mid-conversation. In v0.3.9 the tool returns "unknown skill" — full Approach B implementation is v1.0 work. The hook is in place so prompts that reference the dynamic Skill tool can be authored today; they degrade gracefully (the tool reports the skill isn't available, the model continues without).
 
 References: `internal/skills/`, `internal/tools/builtin/skill.go`.
 
-## LocalAPI tools — OpenAPI gateway (v0.4.0)
+## LocalAPI tools — OpenAPI gateway (v0.4.0 blocking item — scaffolded, not yet end-to-end)
 
-Operators can expose a local HTTP API to agents by registering an OpenAPI spec:
+Operators register a local HTTP API by pointing at an OpenAPI spec in YAML:
 
 ```yaml
-local_apis:
-  jobs:
-    base_url: http://127.0.0.1:3000/api
-    spec: ./openapi/jobs.yaml
-    auth: bearer:${JOBS_API_KEY}
+local_api:
+  spec: openapi.yaml          # relative to this YAML's directory
+  base_url: http://localhost:3000
+  tool_name_prefix: jobs       # tools become jobs__<operationId>
 ```
 
-At config-load, loomcycle parses the spec and registers one tool per operation. Tool names are `localapi__{api_name}__{operationId}`. Each tool's input schema is derived from the OpenAPI parameters + request body schema. Agents call them like any other tool; loomcycle forwards the request to `base_url` with the configured auth header.
+At config-load, loomcycle parses the spec and registers one tool per operation. The configured prefix determines the tool names (e.g. `jobs__listProjects`, `jobs__createApplication`). Each tool's input schema is derived from the OpenAPI parameters + request body schema. Agents call them like any other tool; loomcycle forwards the request to `base_url`.
 
-This is the v0.4.0 alternative to running an HTTP MCP gateway in front of every internal API: same effect, no MCP server overhead, schema and validation come from the spec the application already maintains.
+**Status (v0.3.9).** Code, parser, dispatcher wiring, and unit tests are landed (`internal/tools/localapi/`). The runtime registers LocalAPI tools at startup when `cfg.LocalAPI.SpecPath` is non-empty. **No production OpenAPI spec exists yet** — every consumer today uses the raw `HTTP` tool with hand-written URLs in agent prompts. v0.4.0 ships when at least one production caller (jobs-search-agent) finishes the migration end-to-end. See `docs/PLAN.md` for the migration plan.
 
-**Allowlist behaviour.** LocalAPI tools are subject to the same default-deny: agents must list them in `allowed_tools` (glob `localapi__jobs__*` works) and operator can narrow per-API via the YAML. The HTTP destination (`base_url`) is NOT subject to `LOOMCYCLE_HTTP_HOST_ALLOWLIST` — operator opting into a `local_apis` entry is the explicit grant.
+**Why this matters when it lands.** Today an agent prompt has to spell out `GET http://localhost:3000/api/agent/context` as a string the model writes. The model occasionally invents wrong hostnames or paths (the cv-batch-adapter cv-adapter children burned all their iterations guessing hostnames in May 2026). With LocalAPI: the model sees a typed tool `jobs__getAgentContext` with parameter docs, and the URL string is loomcycle's responsibility, not the model's.
+
+**Allowlist behaviour.** LocalAPI tools are subject to the same default-deny: agents must list them in `allowed_tools` (glob `jobs__*` works). The HTTP destination (`base_url`) is NOT subject to `LOOMCYCLE_HTTP_HOST_ALLOWLIST` — operator opting into a `local_api` entry is the explicit grant.
 
 **No SSRF defense for `base_url`.** LocalAPI is for trusted internal APIs only. If you need allowlisted external HTTP access from agents, use the `HTTP` / `WebFetch` built-ins, which carry the full SSRF protection.
 
-References: `internal/tools/localapi/`, `internal/api/http/server.go` (registration), `loomcycle.example.yaml` (`local_apis:` section).
+References: `internal/tools/localapi/`, `cmd/loomcycle/main.go` (registration), `loomcycle.example.yaml` (commented `local_api:` example).
 
 ## Provider × tool matrix
 
@@ -296,7 +297,7 @@ What works with what:
 | `Bash`                     | ✅ | ✅ | ✅ |
 | `Agent` (sub-agents)       | ✅ | ✅ | ✅ |
 | `Skill` (Approach A)       | ✅ | ✅ | ✅ |
-| `LocalAPI` (OpenAPI gateway) | ✅ | ✅ | ✅ |
+| `LocalAPI` (OpenAPI gateway) | ⏳ | ⏳ | ⏳ | (scaffolded — see v0.4.0 milestone) |
 | MCP tools (stdio + HTTP)   | ✅ | ✅ | ✅ |
 | Native cache_control       | ✅ | ❌ | ❌ |
 | Parallel tool calls        | ✅ | ✅ | depends on model |

@@ -1,6 +1,6 @@
 # Architecture
 
-This document describes the v0.4.0 runtime end-to-end. For a higher-level pitch and quick-start, see the README. For the public roadmap, see `docs/PLAN.md`.
+This document describes the v0.3.9 runtime end-to-end. v0.4.0 is in progress; the LocalAPI MCP gateway is the blocking item — code is shipped but no production spec uses it yet. For a higher-level pitch and quick-start, see the README. For the public roadmap, see `docs/PLAN.md`.
 
 ## Shape
 
@@ -203,23 +203,24 @@ This is "Approach A" in the skills design. Approach B (a dynamic `Skill` tool th
 
 References: `internal/skills/`, `internal/tools/builtin/skill.go`.
 
-## LocalAPI gateway
+## LocalAPI gateway (v0.4.0 blocking item — scaffolded, not yet used end-to-end)
 
-`internal/tools/localapi/` — operators register one or more local APIs in YAML by pointing at an OpenAPI spec:
+`internal/tools/localapi/` — operators register a local API in YAML by pointing at an OpenAPI spec:
 
 ```yaml
-local_apis:
-  jobs:
-    base_url: http://127.0.0.1:3000/api
-    spec: ./openapi/jobs.yaml
-    auth: bearer:${JOBS_API_KEY}
+local_api:
+  spec: openapi.yaml          # relative to this YAML's directory
+  base_url: http://localhost:3000
+  tool_name_prefix: jobs       # tools become jobs__<operationId>
 ```
 
-At config-load, loomcycle parses the spec and registers one tool per operation, with input schemas derived from the OpenAPI parameters/body schema. Tool names are `localapi__{api}__{operationId}`. The agent calls them like any other tool; loomcycle forwards the request to `base_url` with the configured auth header.
+At config-load, loomcycle parses the spec and registers one tool per operation, with input schemas derived from the OpenAPI parameters / request body schema. Tool names follow the configured prefix. The agent calls them like any other tool; loomcycle forwards the request to `base_url`.
+
+**Status (v0.3.9):** Code, parser, dispatcher wiring, and unit tests are landed (`internal/tools/localapi/{loader,spec,tool,*_test}.go`). The runtime registers LocalAPI tools at startup when `cfg.LocalAPI.SpecPath` is non-empty. **No production OpenAPI spec exists yet.** Every consumer today uses the bare `HTTP` tool with hand-written URLs in agent prompts. The migration — generating a spec from jobs-search-agent's routes and updating agent prompts to call typed tools — defines the v0.4.0 release gate. See `docs/PLAN.md`.
 
 This is the v0.4.0 alternative to running an HTTP MCP gateway in front of every internal API: same effect (one tool per endpoint), without the MCP server overhead.
 
-References: `internal/tools/localapi/`, `internal/api/http/server.go` (registration), `loomcycle.example.yaml` (`local_apis` section).
+References: `internal/tools/localapi/`, `cmd/loomcycle/main.go` (registration), `loomcycle.example.yaml` (commented `local_api:` section).
 
 ## Storage
 

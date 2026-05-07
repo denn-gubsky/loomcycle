@@ -55,20 +55,22 @@ curl -N http://127.0.0.1:8787/v1/runs \
   }'
 ```
 
-## What's in v0.4.0
+## What's in v0.3.9
 
 | Surface             | Status |
 |---------------------|--------|
 | **Providers**       | Anthropic ✅ · OpenAI ✅ · Ollama ✅ (tool-tuned models only) |
 | **Built-in tools**  | Read · Write · Edit · HTTP · WebFetch · WebSearch · Bash · **Agent** · **Skill** |
 | **MCP transports**  | stdio (pooled, auto-respawn) · HTTP (per-call) |
-| **LocalAPI gateway** | OpenAPI spec → one tool per operation, scoped to base_url |
+| **LocalAPI gateway** | ⏳ scaffolded (code + tests + main.go wiring) — needs an OpenAPI spec + end-to-end migration to leave dev mode. The v0.4.0 blocking item. |
 | **Sub-agents**      | Agent built-in spawns child runs; depth-capped; parent host policy + identity inherit via ctx |
 | **Skills**          | Approach A: static bundling at config-load (skill body concatenated into agent system prompt) |
 | **Storage**         | SQLite (modernc.org, pure Go); sessions / runs / events tables; partial indexes for v0.4 sub-agent columns |
 | **Concurrency**     | Global semaphore + bounded FIFO queue; backpressure → HTTP 429 |
 | **Cancellation**    | Registry-based cancel API; cascades from parent to all children via `parent_agent_id` walk |
 | **Adapters**        | TypeScript (`@loomcycle/client`) ✅ · Python ⏳ deferred |
+
+> **v0.3.9 → v0.4.0.** v0.4.0 ships when the LocalAPI MCP gateway is migrated end-to-end: at least one production caller (jobs-search-agent) replaces its raw `HTTP`-tool URL strings with typed `localapi__<api>__<op>` tools generated from an OpenAPI spec. See `docs/PLAN.md` for the migration plan.
 
 ## Architecture (one diagram)
 

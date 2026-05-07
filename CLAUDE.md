@@ -17,7 +17,9 @@ It exists because vendor SDKs (`@anthropic-ai/claude-agent-sdk`, OpenAI Agents S
                                   └─ LocalAPI gateway (OpenAPI → tools)
 ```
 
-**Currently shipped (v0.4.0):** all three providers, nine built-in tools, MCP integration (stdio + HTTP), static skill bundling (Approach A), agent tracking + cancel API with parent-child cascade, sub-agent caller-host policy inheritance, per-agent `max_tokens`, SQLite store, semaphore-based concurrency. Wire shape is HTTP+SSE; gRPC is deferred.
+**Currently shipped (v0.3.9, working toward v0.4.0):** all three providers, eight built-in tools (Read, Write, Edit, HTTP, WebFetch, WebSearch, Bash, Agent, Skill), MCP integration (stdio + HTTP), static skill bundling (Approach A), agent tracking + cancel API with parent-child cascade, sub-agent caller-host policy inheritance, per-agent `max_tokens`, SQLite store, semaphore-based concurrency. Wire shape is HTTP+SSE; gRPC is deferred.
+
+**LocalAPI MCP gateway** is the v0.4.0 blocking item: code + tests landed in `internal/tools/localapi/`, wired into `cmd/loomcycle/main.go` via `cfg.LocalAPI.SpecPath`, but no production spec exists yet. The end-to-end migration (jobs-search-agent's nine HTTP-using agents from raw `HTTP` tool with hand-written URLs to typed `localapi__jobs__<op>` tools) defines v0.4.0's release gate.
 
 **Currently planned (v1.0 outline):** Memory tool (agent-scoped persistent storage), Channel tool (inter-agent message bus), LoomHelp tool (runtime introspection), LoomCycle MCP (loomcycle exposes itself as an MCP server so external orchestrators can spawn/configure agents), high-load capacity work (per-tenant fairness, Postgres `Store`, OTEL, run-status cache), web monitoring frontend. See `docs/PLAN.md` for the public roadmap and `doc-internal/PLAN.md` for decision history.
 
@@ -40,6 +42,7 @@ This is the chain you follow for every non-trivial change. Don't skip stages; th
 9. **PR** — one branch, one PR. Title says what the change does in one line. Body explains *why* (the user-visible problem), *what* (the technical change), and *what was tested* (the test names + the manual verification steps).
 10. **Human review** — wait for the user. Do not self-merge. Address review comments in additional commits on the same branch (don't force-push unless the user asks).
 11. **Merge** — squash to `main` after approval, with the PR title as the commit subject and the PR body as the commit body. Tag if it's a release.
+12. **CI** - keep CI always actual, update tests and make sure all CI tests are passed on every PR.
 
 Skip the chain only for trivial fixes (typos, stale comment lines, obviously-correct one-liners). When in doubt, follow the chain.
 
