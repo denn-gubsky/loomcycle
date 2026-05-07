@@ -32,6 +32,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/providers/ollama"
 	"github.com/denn-gubsky/loomcycle/internal/providers/openai"
 	"github.com/denn-gubsky/loomcycle/internal/skills"
+	"github.com/denn-gubsky/loomcycle/internal/cli"
 	"github.com/denn-gubsky/loomcycle/internal/heartbeat"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	storepostgres "github.com/denn-gubsky/loomcycle/internal/store/postgres"
@@ -57,6 +58,30 @@ var (
 )
 
 func main() {
+	// Subcommand dispatch BEFORE flag parsing — let `loomcycle
+	// validate ...` flow into the CLI surface without colliding with
+	// the server's own --config flag.
+	//
+	// First non-flag arg is the subcommand keyword. If it's one of
+	// the known subcommands, hand off to internal/cli and exit.
+	// Otherwise fall through to the server entry point (preserves
+	// backwards compat: `loomcycle --config foo.yaml` still works).
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "validate":
+			os.Exit(cli.RunValidate(os.Args[2:], os.Stdout, os.Stderr))
+		case "agents":
+			os.Exit(cli.RunAgents(os.Args[2:], os.Stdout, os.Stderr))
+		case "health":
+			os.Exit(cli.RunHealth(os.Args[2:], os.Stdout, os.Stderr))
+		case "migrate":
+			os.Exit(cli.RunMigrate(os.Args[2:], os.Stdout, os.Stderr))
+		case "help", "-h", "--help":
+			cli.PrintHelp(os.Stdout)
+			return
+		}
+	}
+
 	cfgPath := flag.String("config", "loomcycle.yaml", "path to config YAML")
 	showVersion := flag.Bool("version", false, "print build identifier and exit")
 	flag.Parse()
