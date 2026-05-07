@@ -128,8 +128,23 @@ func (c *Client) Call(ctx context.Context, method string, params any) (json.RawM
 		return nil, errors.New("mcp http: empty response body for request")
 	}
 
+	// MCP Streamable HTTP servers may reply with either application/json
+	// (single-shot) or text/event-stream (a single SSE frame for the
+	// response when the server side is running on an SSE-capable
+	// transport). Both are spec-compliant — we accept whichever the
+	// server picked. For SSE, extract the JSON from the `data:` line(s)
+	// of the first complete frame.
+	jsonBody := respBody
+	if ct := resp.Header.Get("Content-Type"); strings.Contains(ct, "text/event-stream") {
+		extracted, ok := extractSSEData(respBody)
+		if !ok {
+			return nil, fmt.Errorf("mcp http: SSE response has no data line (body: %s)", truncate(string(respBody), 200))
+		}
+		jsonBody = extracted
+	}
+
 	var rpcResp mcp.Response
-	if err := json.Unmarshal(respBody, &rpcResp); err != nil {
+	if err := json.Unmarshal(jsonBody, &rpcResp); err != nil {
 		return nil, fmt.Errorf("mcp http: decode response: %w (body: %s)", err, truncate(string(respBody), 200))
 	}
 	// JSON-RPC 2.0 requires the response id to match the request id. The
@@ -214,4 +229,42 @@ func truncate(s string, n int) string {
 		return s
 	}
 	return s[:n] + "…"
+}
+
+// extractSSEData parses a single SSE response frame and returns the
+// JSON payload joined from `data:` lines. SSE format per HTML Living
+// Standard: lines starting with `data: ` carry the payload; multiple
+// data lines in one frame are joined with `\n`. Returns the joined
+// payload + true if at least one data line was found.
+//
+// We process only the FIRST complete frame (terminated by a blank
+// line). For MCP Streamable HTTP, a JSON-RPC response is always a
+// single frame; servers that emit multiple frames per response are
+// using the streaming sub-shape we don't yet consume here.
+func extractSSEData(body []byte) ([]byte, bool) {
+	var out []byte
+	found := false
+	for _, line := range bytes.Split(body, []byte("\n")) {
+		// Trim trailing CR (SSE permits CRLF).
+		line = bytes.TrimRight(line, "\r")
+		if len(line) == 0 {
+			// Blank line ends the current frame.
+			if found {
+				return out, true
+			}
+			continue
+		}
+		if bytes.HasPrefix(line, []byte("data:")) {
+			payload := bytes.TrimPrefix(line, []byte("data:"))
+			// SSE permits a single optional space after the colon.
+			payload = bytes.TrimPrefix(payload, []byte(" "))
+			if found {
+				out = append(out, '\n')
+			}
+			out = append(out, payload...)
+			found = true
+		}
+		// `event:`, `id:`, `retry:` and unknown fields are ignored.
+	}
+	return out, found
 }
