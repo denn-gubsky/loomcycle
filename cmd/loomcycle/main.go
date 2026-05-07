@@ -236,9 +236,16 @@ func main() {
 	// blocking; remaining servers after the budget exits are skipped with
 	// a clear log line — they can be retried on demand via the lazy
 	// pool resolution path on the first agent run that needs them.
+	//
+	// GetWithRetry handles the chicken-and-egg start order: when an MCP
+	// server lives behind a dependency that boots concurrently with
+	// loomcycle (e.g. a Next.js dev server compiling its /api/mcp route
+	// on first request), the first handshake attempt may fail with
+	// ECONNREFUSED or a 404. GetWithRetry backs off (500ms, 1s, 2s, 4s,
+	// 8s, 16s) until success or ctx exhaustion. Each retry logs.
 	mcpInitCtx, mcpInitCancel := context.WithTimeout(context.Background(), 30*time.Second)
 	for name, srv := range cfg.MCPServers {
-		_, descs, err := mcpPool.Get(mcpInitCtx, name)
+		_, descs, err := mcpPool.GetWithRetry(mcpInitCtx, name, log.Printf)
 		if err != nil {
 			log.Printf("mcp[%s]: skipped — %v", name, err)
 			continue
