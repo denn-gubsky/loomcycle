@@ -1,6 +1,6 @@
 # Architecture
 
-This document describes the v0.3.9 runtime end-to-end. v0.4.0 is in progress; the LocalAPI MCP gateway is the blocking item — code is shipped but no production spec uses it yet. For a higher-level pitch and quick-start, see the README. For the public roadmap, see `docs/PLAN.md`.
+This document describes the v0.4.0 runtime end-to-end. v0.4.0 ships the MCP-integration story (Streamable HTTP transport, SSE response decoding, startup-retry, sub-agent host-policy inheritance) validated against jobs-search-agent as a real consumer; the LocalAPI gateway remains scaffolded as a convenience for OpenAPI-without-MCP-server cases but is no longer the integration vehicle. For a higher-level pitch and quick-start, see the README. For the public roadmap, see `docs/PLAN.md`.
 
 ## Shape
 
@@ -175,6 +175,19 @@ caller.allow ─┘                  (per-run     (per-run instance
 
 References: `internal/tools/tool.go`, `internal/tools/policy/`, `internal/tools/builtin/narrowing.go`, `internal/api/http/server.go runRequest`.
 
+### MCP HTTP transport (Streamable HTTP)
+
+The HTTP MCP client (`internal/tools/mcp/http/client.go`) speaks Streamable HTTP per the MCP 2024-11-05 spec. Two behaviours worth knowing:
+
+- **`Accept: application/json, text/event-stream`** on every outbound request. The official `@modelcontextprotocol/sdk` server-side transport returns 406 Not Acceptable if either media type is missing. Servers pick per-request whether to reply JSON (single-shot) or SSE (streaming), so the client must accept both.
+- **SSE response decoding.** When the server replies with `Content-Type: text/event-stream`, the client extracts the JSON payload from the first complete SSE frame's `data:` lines (with multi-line `data:` joining via `\n`, CRLF tolerance, ignored `event:` / `id:` / `retry:` fields). Plain `application/json` responses are decoded directly. Both shapes are spec-compliant.
+
+### MCP startup retry
+
+The `Pool.GetWithRetry` helper wraps `Pool.Get` with exponential backoff (500ms → 1s → 2s → 4s → 8s → 16s, cumulative ~32s). Used by `cmd/loomcycle/main.go` during the boot-time MCP-tool-discovery loop. Handles the chicken-and-egg start-order race: when an MCP server lives behind a peer that boots concurrently with loomcycle (e.g. a Next.js dev server compiling its `/api/mcp` route on first request), the first handshake attempt fails with `ECONNREFUSED` or a route-not-yet-compiled timeout. The shared 30s `mcpInitCtx` caps total retry across all servers; healthy servers handshake on attempt 1 (no backoff added). Retry attempts log so operators can see whether the wait is meaningful.
+
+References: `internal/tools/mcp/http/client.go` (transport), `internal/tools/mcp/pool.go GetWithRetry`, `cmd/loomcycle/main.go` MCP-init loop.
+
 ## Sub-agents (the Agent tool)
 
 The `Agent` built-in (`internal/tools/builtin/agent.go`) lets the model spawn a child run by name:
@@ -203,7 +216,7 @@ This is "Approach A" in the skills design. Approach B (a dynamic `Skill` tool th
 
 References: `internal/skills/`, `internal/tools/builtin/skill.go`.
 
-## LocalAPI gateway (v0.4.0 blocking item — scaffolded, not yet used end-to-end)
+## LocalAPI gateway (scaffolded; not the v0.4 integration vehicle)
 
 `internal/tools/localapi/` — operators register a local API in YAML by pointing at an OpenAPI spec:
 
@@ -216,9 +229,9 @@ local_api:
 
 At config-load, loomcycle parses the spec and registers one tool per operation, with input schemas derived from the OpenAPI parameters / request body schema. Tool names follow the configured prefix. The agent calls them like any other tool; loomcycle forwards the request to `base_url`.
 
-**Status (v0.3.9):** Code, parser, dispatcher wiring, and unit tests are landed (`internal/tools/localapi/{loader,spec,tool,*_test}.go`). The runtime registers LocalAPI tools at startup when `cfg.LocalAPI.SpecPath` is non-empty. **No production OpenAPI spec exists yet.** Every consumer today uses the bare `HTTP` tool with hand-written URLs in agent prompts. The migration — generating a spec from jobs-search-agent's routes and updating agent prompts to call typed tools — defines the v0.4.0 release gate. See `docs/PLAN.md`.
+**Status (v0.4.0):** Code, parser, dispatcher wiring, and unit tests are landed (`internal/tools/localapi/{loader,spec,tool,*_test}.go`). The runtime registers LocalAPI tools at startup when `cfg.LocalAPI.SpecPath` is non-empty. The first production consumer (jobs-search-agent) chose the MCP-server pattern instead — it runs its own `/api/mcp` Streamable-HTTP server exposing typed tools, which loomcycle consumes through the existing MCP HTTP transport. LocalAPI stays available for future consumers that prefer "wire an OpenAPI spec, get typed tools" without standing up an MCP server.
 
-This is the v0.4.0 alternative to running an HTTP MCP gateway in front of every internal API: same effect (one tool per endpoint), without the MCP server overhead.
+This is the alternative to running an HTTP MCP gateway in front of every internal API: same effect (one tool per endpoint), without the MCP server overhead. The trade-off vs. running an MCP server: LocalAPI has no per-call session, no `tools/list` dynamism, and no streaming responses — the OpenAPI spec is the contract.
 
 References: `internal/tools/localapi/`, `cmd/loomcycle/main.go` (registration), `loomcycle.example.yaml` (commented `local_api:` section).
 

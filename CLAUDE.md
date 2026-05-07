@@ -17,9 +17,15 @@ It exists because vendor SDKs (`@anthropic-ai/claude-agent-sdk`, OpenAI Agents S
                                   └─ LocalAPI gateway (OpenAPI → tools)
 ```
 
-**Currently shipped (v0.3.9, working toward v0.4.0):** all three providers, eight built-in tools (Read, Write, Edit, HTTP, WebFetch, WebSearch, Bash, Agent, Skill), MCP integration (stdio + HTTP), static skill bundling (Approach A), agent tracking + cancel API with parent-child cascade, sub-agent caller-host policy inheritance, per-agent `max_tokens`, SQLite store, semaphore-based concurrency. Wire shape is HTTP+SSE; gRPC is deferred.
+**Currently shipped (v0.4.0):** all three providers, eight built-in tools (Read, Write, Edit, HTTP, WebFetch, WebSearch, Bash, Agent, Skill), MCP integration (stdio + Streamable HTTP), static skill bundling (Approach A), agent tracking + cancel API with parent-child cascade, sub-agent caller-host policy inheritance, per-agent `max_tokens`, SQLite store, semaphore-based concurrency, **MCP startup-retry** (exponential backoff handshake — handles the peer-still-booting race for HTTP MCP servers).
 
-**LocalAPI MCP gateway** is the v0.4.0 blocking item: code + tests landed in `internal/tools/localapi/`, wired into `cmd/loomcycle/main.go` via `cfg.LocalAPI.SpecPath`, but no production spec exists yet. The end-to-end migration (jobs-search-agent's nine HTTP-using agents from raw `HTTP` tool with hand-written URLs to typed `localapi__jobs__<op>` tools) defines v0.4.0's release gate.
+**LocalAPI gateway** stays scaffolded as a future-consumer convenience for "OpenAPI without an MCP server." The v0.4.0 integration vehicle for jobs-search-agent is the MCP-server pattern instead — jobs-search-agent runs its own `/api/mcp` route exposing typed tools (e.g., `mcp__jobs__getAgentContext`, `mcp__jobs__patchApplication`, `mcp__jobs__postApplicationQaAnswers`), and loomcycle consumes it via the existing HTTP MCP transport. Loomcycle stays domain-agnostic; the consumer owns its own surface.
+
+**MCP HTTP-transport hardening (shipped in v0.4.0)** — four bugs surfaced by the jobs-search-agent integration and fixed with regression tests:
+1. Operator yaml env-var allowlist must be `LOOMCYCLE_*`-prefixed (or one of the documented third-party names) for `${...}` expansion.
+2. `Accept: application/json, text/event-stream` per the Streamable HTTP spec — strict servers return 406 otherwise.
+3. SSE-framed responses parsed correctly (the SDK's transport defaults to SSE when both media types are advertised).
+4. Pool-startup retry with exponential backoff so a peer compiling its `/api/mcp` route on first request doesn't get marked "skipped" indefinitely.
 
 **Currently planned (v1.0 outline):** Memory tool (agent-scoped persistent storage), Channel tool (inter-agent message bus), LoomHelp tool (runtime introspection), LoomCycle MCP (loomcycle exposes itself as an MCP server so external orchestrators can spawn/configure agents), high-load capacity work (per-tenant fairness, Postgres `Store`, OTEL, run-status cache), web monitoring frontend. See `docs/PLAN.md` for the public roadmap and `doc-internal/PLAN.md` for decision history.
 

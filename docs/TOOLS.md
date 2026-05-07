@@ -211,7 +211,7 @@ Integration tests in `internal/api/http/server_test.go`:
 
 Empirical proof of the security invariant: inverting the default in `filterTools` (so empty allowlist exposes every tool) makes the first test fail. The test is what stops a future refactor from accidentally inverting the policy.
 
-## The `Agent` tool — sub-agent spawning (v0.3.9)
+## The `Agent` tool — sub-agent spawning (v0.4.0)
 
 The `Agent` built-in lets a parent agent spawn a child run by name:
 
@@ -241,7 +241,7 @@ References: `internal/tools/builtin/agent.go`, `internal/api/http/server.go runS
 
 ## The `Skill` tool — Approach A (static bundling, shipped) and Approach B (dynamic, scaffolded)
 
-**Approach A — static bundling (active in v0.3.9).**
+**Approach A — static bundling (active in v0.4.0).**
 
 At config-load, every directory under `LOOMCYCLE_SKILLS_ROOT` named `<skill>/SKILL.md` is read. Agents that list a skill in their YAML get the skill's body **concatenated into their system prompt** as a cacheable trusted-text block:
 
@@ -258,11 +258,11 @@ Constraint: each skill's frontmatter declares its own `allowed-tools`; this list
 
 **Approach B — dynamic Skill tool (placeholder).**
 
-The `Skill` built-in is registered when `LOOMCYCLE_SKILLS_ROOT` is set; the model can call it with `{"name": "voice-applier"}` to load a skill mid-conversation. In v0.3.9 the tool returns "unknown skill" — full Approach B implementation is v1.0 work. The hook is in place so prompts that reference the dynamic Skill tool can be authored today; they degrade gracefully (the tool reports the skill isn't available, the model continues without).
+The `Skill` built-in is registered when `LOOMCYCLE_SKILLS_ROOT` is set; the model can call it with `{"name": "voice-applier"}` to load a skill mid-conversation. In v0.4.0 the tool returns "unknown skill" — full Approach B implementation is v1.0 work. The hook is in place so prompts that reference the dynamic Skill tool can be authored today; they degrade gracefully (the tool reports the skill isn't available, the model continues without).
 
 References: `internal/skills/`, `internal/tools/builtin/skill.go`.
 
-## LocalAPI tools — OpenAPI gateway (v0.4.0 blocking item — scaffolded, not yet end-to-end)
+## LocalAPI tools — OpenAPI gateway (scaffolded; not the v0.4 integration vehicle)
 
 Operators register a local HTTP API by pointing at an OpenAPI spec in YAML:
 
@@ -275,7 +275,7 @@ local_api:
 
 At config-load, loomcycle parses the spec and registers one tool per operation. The configured prefix determines the tool names (e.g. `jobs__listProjects`, `jobs__createApplication`). Each tool's input schema is derived from the OpenAPI parameters + request body schema. Agents call them like any other tool; loomcycle forwards the request to `base_url`.
 
-**Status (v0.3.9).** Code, parser, dispatcher wiring, and unit tests are landed (`internal/tools/localapi/`). The runtime registers LocalAPI tools at startup when `cfg.LocalAPI.SpecPath` is non-empty. **No production OpenAPI spec exists yet** — every consumer today uses the raw `HTTP` tool with hand-written URLs in agent prompts. v0.4.0 ships when at least one production caller (jobs-search-agent) finishes the migration end-to-end. See `docs/PLAN.md` for the migration plan.
+**Status (v0.4.0).** Code, parser, dispatcher wiring, and unit tests are landed (`internal/tools/localapi/`). The runtime registers LocalAPI tools at startup when `cfg.LocalAPI.SpecPath` is non-empty. The first production consumer (jobs-search-agent) chose the MCP-server pattern instead — it runs its own `/api/mcp` Streamable-HTTP server exposing typed tools (e.g., `mcp__jobs__getAgentContext`, `mcp__jobs__patchApplication`), which loomcycle consumes through the existing MCP HTTP transport. LocalAPI stays available for future consumers that prefer "wire an OpenAPI spec, get typed tools" without standing up an MCP server.
 
 **Why this matters when it lands.** Today an agent prompt has to spell out `GET http://localhost:3000/api/agent/context` as a string the model writes. The model occasionally invents wrong hostnames or paths (the cv-batch-adapter cv-adapter children burned all their iterations guessing hostnames in May 2026). With LocalAPI: the model sees a typed tool `jobs__getAgentContext` with parameter docs, and the URL string is loomcycle's responsibility, not the model's.
 
@@ -297,7 +297,7 @@ What works with what:
 | `Bash`                     | ✅ | ✅ | ✅ |
 | `Agent` (sub-agents)       | ✅ | ✅ | ✅ |
 | `Skill` (Approach A)       | ✅ | ✅ | ✅ |
-| `LocalAPI` (OpenAPI gateway) | ⏳ | ⏳ | ⏳ | (scaffolded — see v0.4.0 milestone) |
+| `LocalAPI` (OpenAPI gateway) | ⏳ | ⏳ | ⏳ | (scaffolded — for future OpenAPI-without-MCP-server consumers) |
 | MCP tools (stdio + HTTP)   | ✅ | ✅ | ✅ |
 | Native cache_control       | ✅ | ❌ | ❌ |
 | Parallel tool calls        | ✅ | ✅ | depends on model |

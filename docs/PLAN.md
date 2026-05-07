@@ -2,44 +2,33 @@
 
 This is the public roadmap. For decision history, regret notes, and per-version commit-by-commit details, see `doc-internal/PLAN.md` (gitignored).
 
-## v0.3.9 — current
+## v0.4.0 — current
 
-**Status: tip of `main`.** The runtime is usable as a single-tenant library, but **v0.3.9 is not v0.4.0**: the LocalAPI MCP gateway — the headline feature of v0.4.0 — is scaffolded but not yet exercised end-to-end. Until at least one production caller migrates from raw `HTTP`-tool URLs to typed `localapi__<api>__<op>` tools, we don't claim v0.4.0.
+**Status: shipped.** Tag `v0.4.0` on `main`. The runtime's MCP integration story is now production-validated against jobs-search-agent as the first real consumer.
 
-**What's in v0.3.9:**
+**What's in v0.4.0:**
 
 - Three providers — Anthropic Messages (with native `cache_control`), OpenAI Chat Completions, Ollama `/api/chat` (tool-tuned models only).
 - Nine built-in tools — `Read`, `Write`, `Edit`, `HTTP`, `WebFetch`, `WebSearch`, `Bash`, `Agent` (sub-agent spawning), `Skill` (Approach A static bundling).
-- MCP integration — pooled stdio children with auto-respawn, HTTP/SSE clients, per-server allowlists.
+- MCP integration — pooled stdio children with auto-respawn, **Streamable HTTP transport** (Accept: both JSON + SSE per spec; SSE response decoder; per-call dial), per-server allowlists.
+- **MCP startup retry** — exponential backoff handshake (500ms → 16s capped, 30s budget) so a peer compiling its `/api/mcp` route on first request doesn't get marked "skipped" indefinitely. Resolves the chicken-and-egg start-order race that bites every dev environment.
 - Sub-agents via the `Agent` built-in — depth-capped (16), parent host policy + identity inherited via ctx.
 - Agent tracking + cancel API — `agent_id` per run, cascade-cancel via `parent_agent_id`, list runs per user.
 - Per-agent `max_tokens` config (output budget; covers the case where bundled skills + tool narration eat into a fixed cap).
-- Anthropic driver: model alias plumbed from `message_start` into final `Usage.Model` so callers can price runs against the resolved alias (was a silent regression for callers using cache cost dashboards).
-- Sub-agent caller-host policy inheritance — children inherit the parent's per-call `allowed_hosts` instead of falling back to the operator's static list (closed a class of "child can't reach localhost" bugs).
+- Anthropic driver: model alias plumbed from `message_start` into final `Usage.Model` so callers can price runs against the resolved alias.
+- Sub-agent caller-host policy inheritance — children inherit the parent's per-call `allowed_hosts` instead of falling back to the operator's static list.
 - SQLite store — sessions, runs, events; partial indexes for v0.4 sub-agent columns; WAL mode.
 - Concurrency — global semaphore + bounded FIFO queue; backpressure → HTTP 429.
 - TypeScript adapter (`@loomcycle/client`) shipped on npm.
+- **End-to-end MCP-server validation against jobs-search-agent.** Two agents (`ats-filter`, `qa-agent`) now fetch context — and `qa-agent` also persists results — through typed `mcp__jobs__*` tools served by jobs-search-agent's own `/api/mcp` Streamable-HTTP server. This validates the runtime's MCP HTTP transport, host-policy inheritance, sub-agent retry, SSE response decoding, and Streamable-HTTP `Accept` handling against a real consumer. Per-agent migration in the consumer continues incrementally; the loomcycle surface is stable.
 
-**Scaffolded but not yet exercised end-to-end** (don't claim shipped):
+**Architecture pivot worth flagging.** v0.4.0 was originally planned as "migrate jobs-search-agent to the LocalAPI gateway" — feed an OpenAPI spec to loomcycle, register typed tools per operation. During the implementation, the user pulled back: the LocalAPI shape couples loomcycle's deploy config to one consumer's surface (loomcycle has to know about jobs-search-agent's routes). The cleaner architecture: jobs-search-agent runs its own MCP server; loomcycle stays domain-agnostic and consumes any MCP server via its existing HTTP MCP transport. v0.4.0 ships that pivot. LocalAPI remains in the codebase as a future-consumer convenience for OpenAPI-without-MCP-server cases, but it's not the integration vehicle.
 
-- **LocalAPI MCP gateway** — code is in `internal/tools/localapi/`, parser + dispatcher wiring + unit tests all landed, registered into the dispatcher at boot when `cfg.LocalAPI.SpecPath` is non-empty. **No production OpenAPI spec exists.** Every current consumer (`jobs-search-agent`'s nine HTTP-using agents) still calls `localhost:3000/api/...` via the raw `HTTP` tool with URLs the model writes by hand. This is the v0.4.0 release gate.
+**Scaffolded but not the v0.4 vehicle:**
+
+- **LocalAPI MCP gateway** — code is in `internal/tools/localapi/`, parser + dispatcher wiring + unit tests all landed, registered into the dispatcher at boot when `cfg.LocalAPI.SpecPath` is non-empty. Useful for future consumers that have an OpenAPI spec and don't want to stand up an MCP server.
 
 For usage: see [README](../README.md). For the architecture: see [ARCHITECTURE.md](ARCHITECTURE.md). For tool policy: see [TOOLS.md](TOOLS.md).
-
-## v0.4.0 — in progress
-
-The single deliverable: **migrate jobs-search-agent off raw `HTTP` calls onto the LocalAPI gateway.**
-
-What "done" looks like:
-
-1. **OpenAPI spec exists** for jobs-search-agent's agent-facing routes (`/api/agent/context`, `/api/applications/<id>` PATCH, `/api/research`, `/api/research/ingest`, `/api/search/ingest`, plus whatever else agents currently call). Spec is generated from the route handlers, not hand-written, so it stays in lockstep with code.
-2. **Loomcycle config is updated** — `local_api: { spec: ..., base_url: http://localhost:3000, tool_name_prefix: jobs }` is uncommented in the operator's running yaml. Tools `jobs__getAgentContext`, `jobs__patchApplication`, etc. register at startup.
-3. **Agent prompts are migrated** — every `tools: HTTP, ...` agent in `.claude/agents/*.md` removes `HTTP` from its allow-list (or keeps it for explicit external calls only) and switches to typed `jobs__*` tool calls in its prompt body. The "spell the URL out" pattern goes away.
-4. **End-to-end run is verified** — at least one full pipeline run (search → ATS → research → cv-batch-adapter → documents) completes using LocalAPI tools instead of raw HTTP. No regressions in the existing test suite.
-5. **The cv-adapter "guess hostnames" failure mode is structurally impossible** — there's no URL string for the model to mistype, because there's no URL string in the prompt.
-6. **Operator and consumer docs updated** — both repos' READMEs, ARCHITECTURE.md, and the relevant agent prompt examples reflect the new pattern.
-
-After that, v0.4.0 is tag-ready.
 
 ## v1.0 — planned
 

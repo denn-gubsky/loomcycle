@@ -16,7 +16,7 @@
 
 ## What it is
 
-loomcycle is a single Go binary that runs as a local sidecar and serves an HTTP+SSE API to your application. It owns the model→tool_use→tool_result→model loop, talks directly to provider HTTP APIs (no vendor SDK in the loop, no bundled binary), and dispatches tool calls to built-ins, MCP servers, or operator-supplied OpenAPI gateways. Multi-tenant. Multi-provider. Multi-agent (parents spawn sub-agents).
+LoomCycle is a single Go binary that runs as a local sidecar and serves an HTTP+SSE API to your application. It owns the model→tool_use→tool_result→model loop, talks directly to provider HTTP APIs (no vendor SDK in the loop, no bundled binary), and dispatches tool calls to built-ins, MCP servers, or operator-supplied OpenAPI gateways. Multi-tenant. Multi-provider. Multi-agent (parents spawn sub-agents).
 
 It exists to replace bundled-binary agent SDKs that cold-start in 20–30 s, leak memory under load, and lock you into one provider — the things that made the first production user (`jobs-search-agent`) infeasible to scale on a small VPS.
 
@@ -55,14 +55,15 @@ curl -N http://127.0.0.1:8787/v1/runs \
   }'
 ```
 
-## What's in v0.3.9
+## What's in v0.4.0
 
 | Surface             | Status |
 |---------------------|--------|
 | **Providers**       | Anthropic ✅ · OpenAI ✅ · Ollama ✅ (tool-tuned models only) |
 | **Built-in tools**  | Read · Write · Edit · HTTP · WebFetch · WebSearch · Bash · **Agent** · **Skill** |
-| **MCP transports**  | stdio (pooled, auto-respawn) · HTTP (per-call) |
-| **LocalAPI gateway** | ⏳ scaffolded (code + tests + main.go wiring) — needs an OpenAPI spec + end-to-end migration to leave dev mode. The v0.4.0 blocking item. |
+| **MCP transports**  | stdio (pooled, auto-respawn) · HTTP (Streamable, SSE-aware) |
+| **MCP startup retry** | Exponential backoff handshake on boot — handles peer-still-starting races |
+| **LocalAPI gateway** | ⏳ scaffolded — useful for consumers that have an OpenAPI spec but don't want to stand up an MCP server. Not the v0.4 integration vehicle (jobs-search-agent migrated to the MCP-server pattern instead — see below). |
 | **Sub-agents**      | Agent built-in spawns child runs; depth-capped; parent host policy + identity inherit via ctx |
 | **Skills**          | Approach A: static bundling at config-load (skill body concatenated into agent system prompt) |
 | **Storage**         | SQLite (modernc.org, pure Go); sessions / runs / events tables; partial indexes for v0.4 sub-agent columns |
@@ -70,7 +71,7 @@ curl -N http://127.0.0.1:8787/v1/runs \
 | **Cancellation**    | Registry-based cancel API; cascades from parent to all children via `parent_agent_id` walk |
 | **Adapters**        | TypeScript (`@loomcycle/client`) ✅ · Python ⏳ deferred |
 
-> **v0.3.9 → v0.4.0.** v0.4.0 ships when the LocalAPI MCP gateway is migrated end-to-end: at least one production caller (jobs-search-agent) replaces its raw `HTTP`-tool URL strings with typed `localapi__<api>__<op>` tools generated from an OpenAPI spec. See `docs/PLAN.md` for the migration plan.
+> **v0.4.0 — released after end-to-end MCP integration with jobs-search-agent.** Two agents (`ats-filter`, `qa-agent`) now fetch context — and `qa-agent` also persists results — through typed `mcp__jobs__*` tools served by jobs-search-agent's own MCP server. This validates the runtime's MCP HTTP transport, host-policy inheritance, sub-agent retry, SSE response decoding, and Streamable-HTTP `Accept` handling against a real consumer. Per-agent migration in the consumer continues incrementally; the loomcycle surface is stable.
 
 ## Architecture (one diagram)
 
