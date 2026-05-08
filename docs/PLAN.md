@@ -2,7 +2,28 @@
 
 This is the public roadmap. For decision history, regret notes, and per-version commit-by-commit details, see `doc-internal/PLAN.md` (gitignored).
 
-## v0.4.0 — current
+## v0.5.0 — current
+
+**Status: shipped (2026-05-08).** Tag `v0.5.0` on `main`, merged via PR #15. The production-deployment unlock: Postgres `Store` adapter alongside SQLite (which stays first-class for compact installs), heartbeat sweeper + session-lock map GC, operator-facing CLI surface.
+
+**What's in v0.5.0 (vs v0.4.0):**
+
+- **Postgres `Store` adapter** (`internal/store/postgres/`) — full implementation over `pgx/v5` + `pgxpool`, embedded migrations via `golang-migrate/migrate v4`. Operator opts in via `storage.backend: postgres` (yaml) or `LOOMCYCLE_STORAGE_BACKEND=postgres` (env). Postgres ≥ 14 required.
+- **SQLite stays first-class.** Default backend; both adapters validated against a shared behavioural contract suite (17 sub-tests) so they cannot drift silently.
+- **Heartbeat sweeper** — periodic background goroutine marks runs whose process crashed mid-loop as `failed`. Default-on; `LOOMCYCLE_HEARTBEAT_*` env knobs control cadence + cutoff.
+- **Session-lock map GC** — refcounted + idle-pruned; closes the v0.3.2 leak where the per-session continuation mutex map grew monotonically.
+- **CLI subcommands** (`loomcycle <verb>`) — `validate`, `agents list`, `health`, `migrate up|down|status`, `migrate sqlite-to-postgres`. The migration tool copies an existing SQLite DB into Postgres with row-count + transcript-digest verification, idempotent on re-run.
+- **Operator guide:** [POSTGRES.md](POSTGRES.md) covers configuration, the auto-migrate vs explicit-migrate policy split, the sqlite→postgres runbook, and reference benchmark numbers (100 concurrent agents: SQLite p99=31ms, Postgres p99=60ms — both well under the 1-second acceptance threshold).
+- **`make pg-up` / `pg-down`** — Docker-based Postgres test fixture for local dev.
+
+**Architecture decisions (vs original v0.5.0 plan):**
+
+- **Cross-replica advisory locks deferred to v1.0.** Driver was multi-replica HA; for the only deployment shape today (single replica), the in-memory cancel registry works for both backends.
+- **No live cutover for sqlite→postgres** — operator stops loomcycle, runs the copy, restarts. Live cutover is v1.0.
+
+For the public-roadmap status of subsequent milestones (v0.5.5, v0.6.0, v1.0), see below.
+
+## v0.4.0 — previous
 
 **Status: shipped.** Tag `v0.4.0` on `main`. The runtime's MCP integration story is now production-validated against jobs-search-agent as the first real consumer.
 
