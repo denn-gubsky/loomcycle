@@ -34,6 +34,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/providers/deepseek"
 	"github.com/denn-gubsky/loomcycle/internal/providers/ollama"
 	"github.com/denn-gubsky/loomcycle/internal/providers/openai"
+	"github.com/denn-gubsky/loomcycle/internal/resolve"
 	"github.com/denn-gubsky/loomcycle/internal/skills"
 	"github.com/denn-gubsky/loomcycle/internal/cli"
 	"github.com/denn-gubsky/loomcycle/internal/heartbeat"
@@ -304,6 +305,16 @@ func main() {
 	}
 	defer storeCloser()
 	srv := lchttp.New(cfg, pr, allTools, sem, storeIface)
+
+	// Build the model-resolution matrix (resolve.Resolver) and seed
+	// it with a STUB probe: every configured tier candidate is marked
+	// listed for any provider whose API key is set. Real probes
+	// against /v1/models endpoints land in PR 2 of the resolve-matrix
+	// series. With the stub probe, the resolver picks the first
+	// candidate in priority order whose provider is configured.
+	resolver := buildResolver(cfg)
+	srv.SetResolver(resolver)
+
 	httpServer := &http.Server{
 		Addr:              cfg.Env.ListenAddr,
 		Handler:           srv.Mux(),
@@ -504,6 +515,93 @@ func (p *providerResolver) Get(id string) (providers.Provider, error) {
 	default:
 		return nil, fmt.Errorf("unknown provider %q", id)
 	}
+}
+
+// buildResolver constructs the model-resolution matrix (resolve.Resolver)
+// and seeds it with a STUB probe: each provider is marked reachable when
+// its API key is present, and every configured tier candidate is pre-
+// listed for that provider. Real probes against /v1/models land in PR 2
+// of the resolve-matrix series — see doc-internal/rfcs/model-resolution-
+// matrix.md. The stub keeps the matrix functional for the resolver path
+// without the network round-trip.
+//
+// The matrix is empty for providers without an API key — those will
+// surface ErrTierUnavailable when an agent's tier resolution lands on
+// them. This is the documented degraded-mode startup behaviour: server
+// stays up, individual agent runs return 503 until something recovers.
+func buildResolver(cfg *config.Config) *resolve.Resolver {
+	libraryTiers := convertTiers(cfg.Tiers)
+	r := resolve.NewResolver(cfg.ProviderPriority, libraryTiers)
+
+	// Walk the union of (library tiers + every agent's tier overrides)
+	// to seed the matrix. Every (provider, model) pair declared
+	// anywhere becomes a candidate; the resolver gates them by
+	// provider reachability (set below from API-key presence).
+	seen := map[string]map[string]bool{} // provider → model → already-seen
+	seedFromCandidates := func(cands []resolve.Candidate) {
+		for _, c := range cands {
+			if seen[c.Provider] == nil {
+				seen[c.Provider] = map[string]bool{}
+			}
+			if !seen[c.Provider][c.Model] {
+				r.SeedModel(c.Provider, c.Model)
+				seen[c.Provider][c.Model] = true
+			}
+		}
+	}
+	for _, cands := range libraryTiers {
+		seedFromCandidates(cands)
+	}
+	for _, ag := range cfg.Agents {
+		for _, cands := range ag.Models {
+			conv := make([]resolve.Candidate, 0, len(cands))
+			for _, c := range cands {
+				conv = append(conv, resolve.Candidate{Provider: c.Provider, Model: c.Model})
+			}
+			seedFromCandidates(conv)
+		}
+	}
+
+	// Mark each provider reachable based on API key presence (the
+	// stub-probe heuristic). This is intentionally crude — a present
+	// key proves nothing about the provider being up — but it's
+	// strictly better than treating every provider as down. PR 2's
+	// real probe replaces this with a /v1/models round-trip.
+	if cfg.Env.AnthropicAPIKey != "" {
+		r.SetProviderReachable("anthropic", true)
+	}
+	if cfg.Env.OpenAIAPIKey != "" {
+		r.SetProviderReachable("openai", true)
+	}
+	if cfg.Env.DeepSeekAPIKey != "" {
+		r.SetProviderReachable("deepseek", true)
+	}
+	if cfg.Env.OllamaBaseURL != "" && cfg.Env.OllamaBaseURL != "disabled" {
+		// Ollama has no API key; reachability is gated on the base
+		// URL being non-empty. PR 2's probe will GET /api/tags before
+		// flipping this flag.
+		r.SetProviderReachable("ollama", true)
+	}
+	return r
+}
+
+// convertTiers translates the config-package representation of library
+// tier definitions into the resolver-package representation. Mirrors
+// the per-agent helper in internal/api/http/server.go but operates on
+// the top-level cfg.Tiers map.
+func convertTiers(in map[string][]config.TierCandidate) map[string][]resolve.Candidate {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string][]resolve.Candidate, len(in))
+	for tier, cands := range in {
+		conv := make([]resolve.Candidate, 0, len(cands))
+		for _, c := range cands {
+			conv = append(conv, resolve.Candidate{Provider: c.Provider, Model: c.Model})
+		}
+		out[tier] = conv
+	}
+	return out
 }
 
 // spawnStdioMCP starts a stdio MCP child for one server entry. Env keys are

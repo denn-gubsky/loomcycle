@@ -22,6 +22,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/loop"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
+	"github.com/denn-gubsky/loomcycle/internal/resolve"
 	"github.com/denn-gubsky/loomcycle/internal/runner"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
@@ -60,6 +61,16 @@ type Server struct {
 	// same lock map. main.go shares one instance between both
 	// surfaces. See runner.SessionLockMap for the GC lifecycle.
 	sessionLocks *runner.SessionLockMap
+
+	// resolver picks (provider, model, effort) for tier-using agents
+	// against an availability matrix. Optional — when nil, the
+	// Server falls back to cfg.ResolveAgentModel (the explicit-pin
+	// path) for every agent, preserving v0.6.x behaviour. cmd/
+	// loomcycle/main.go calls SetResolver after construction so
+	// tests that don't exercise tier resolution can omit the
+	// dependency. See internal/resolve and the matrix RFC at
+	// doc-internal/rfcs/model-resolution-matrix.md.
+	resolver *resolve.Resolver
 }
 
 // New constructs a Server. If st is non-nil, every run is recorded as a
@@ -93,6 +104,115 @@ func New(cfg *config.Config, pr ProviderResolver, builtinTools []tools.Tool, sem
 // interface) can use the same coordination point. Both wires
 // targeting the same session_id must serialize on the same lock.
 func (s *Server) SessionLocks() *runner.SessionLockMap { return s.sessionLocks }
+
+// SetResolver wires the model-resolution matrix into the Server. Call
+// from cmd/loomcycle/main.go after constructing both. Optional: when
+// no resolver is set, every agent uses the explicit-pin path
+// (cfg.ResolveAgentModel) — back-compat with v0.6.x.
+func (s *Server) SetResolver(r *resolve.Resolver) { s.resolver = r }
+
+// resolveErrorToStatus maps a resolver error to the appropriate HTTP
+// status code. Tier / pin unavailability returns 503 so caller-side
+// retry-with-backoff hits the right path. Anything else (typo on
+// agent name, missing pin/tier, validation failure) is 400.
+func resolveErrorToStatus(err error) int {
+	switch {
+	case errors.Is(err, resolve.ErrTierUnavailable),
+		errors.Is(err, resolve.ErrPinUnavailable):
+		return http.StatusServiceUnavailable
+	case errors.Is(err, resolve.ErrUnknownAgent),
+		errors.Is(err, runner.ErrUnknownAgent):
+		return http.StatusBadRequest
+	default:
+		// ErrInvalidArgument and unknown errors. 400 is the safer
+		// default than 500 — most resolver errors are operator-
+		// config issues that deserve to surface as bad-request.
+		return http.StatusBadRequest
+	}
+}
+
+// resolveAgent returns (provider, model, effort) for the named agent.
+// Picks between two paths:
+//
+//   - Explicit pin (agent has Provider+Model): use cfg.ResolveAgentModel
+//     directly. The resolver, when present, still gates the result via
+//     the availability matrix so a stalled pinned model surfaces
+//     ErrPinUnavailable instead of leaking the driver's 5xx.
+//
+//   - Tier (agent has Tier set): delegate to the resolver. Returns
+//     ErrTierUnavailable if no candidate in the requested tier
+//     resolves. The HTTP handler translates this to 503; gRPC to
+//     codes.Unavailable.
+//
+// Returning runner.ErrInvalidArgument / runner.ErrUnknownAgent for
+// pre-resolution errors keeps the wire-error vocabulary stable.
+func (s *Server) resolveAgent(agentName string) (providerID, model, effort string, err error) {
+	def, ok := s.cfg.Agents[agentName]
+	if !ok {
+		return "", "", "", fmt.Errorf("%w: %s", runner.ErrUnknownAgent, agentName)
+	}
+
+	hasPin := def.Provider != "" || def.Model != ""
+	hasTier := def.Tier != ""
+
+	// Tier path: agent declares tier (validation already rejected
+	// pin+tier together), resolver does the work.
+	if hasTier {
+		if s.resolver == nil {
+			// Tier requested but no resolver wired (test fixture or
+			// degraded-startup edge case before SetResolver was
+			// called). Fail explicitly rather than silently picking
+			// some default.
+			return "", "", "", fmt.Errorf("%w: agent %q uses tier %q but resolver is not configured",
+				runner.ErrInvalidArgument, agentName, def.Tier)
+		}
+		req := resolve.AgentRequest{
+			Name:      agentName,
+			Tier:      def.Tier,
+			Effort:    def.Effort,
+			Providers: def.Providers,
+			Models:    convertConfigCandidates(def.Models),
+		}
+		dec, rerr := s.resolver.Resolve(req)
+		if rerr != nil {
+			return "", "", "", rerr
+		}
+		return dec.Provider, dec.Model, dec.Effort, nil
+	}
+
+	// Pin path (or fallback to defaults): use the v0.6.x logic.
+	if !hasPin && s.cfg.Defaults.Model == "" {
+		return "", "", "", fmt.Errorf("%w: agent %q has no pin, no tier, and no defaults", runner.ErrInvalidArgument, agentName)
+	}
+	providerID, model, err = s.cfg.ResolveAgentModel(agentName)
+	if err != nil {
+		return "", "", "", fmt.Errorf("%w: %v", runner.ErrInvalidArgument, err)
+	}
+	// Effort still flows through on the pin path — an explicit-pin
+	// agent can declare effort and the driver will translate it
+	// where supported. Empty when not declared.
+	return providerID, model, def.Effort, nil
+}
+
+// convertConfigCandidates translates the config-package representation
+// of per-agent tier candidates into the resolver-package representation.
+// Keeping the resolver package free of internal/config imports avoids
+// circularity (resolver is consumed by the HTTP server, which already
+// depends on config).
+func convertConfigCandidates(in map[string][]config.TierCandidate) map[string][]resolve.Candidate {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string][]resolve.Candidate, len(in))
+	for tier, cands := range in {
+		conv := make([]resolve.Candidate, 0, len(cands))
+		for _, c := range cands {
+			conv = append(conv, resolve.Candidate{Provider: c.Provider, Model: c.Model})
+		}
+		out[tier] = conv
+	}
+	return out
+}
 
 // RunOnce is the wire-agnostic entry point for /v1/runs and
 // /v1/sessions/{id}/messages. The HTTP handlers (handleRuns,
@@ -156,9 +276,9 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	if !ok {
 		return fmt.Errorf("%w: %s", runner.ErrUnknownAgent, effectiveAgentName)
 	}
-	providerID, model, err := s.cfg.ResolveAgentModel(effectiveAgentName)
+	providerID, model, effort, err := s.resolveAgent(effectiveAgentName)
 	if err != nil {
-		return fmt.Errorf("%w: %v", runner.ErrInvalidArgument, err)
+		return err // already wrapped with runner.Err* sentinel
 	}
 	provider, err := s.providers.Get(providerID)
 	if err != nil {
@@ -289,6 +409,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		OnEvent:       emit,
 		OnHeartbeat:   heartbeat,
 		MaxTokens:     agentDef.MaxTokens,
+		Effort:        effort,
 	})
 	s.finishRunWithCancel(ctx, runCtx, runID, res, runErr)
 	return nil
@@ -487,9 +608,9 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	providerID, model, err := s.cfg.ResolveAgentModel(req.Agent)
+	providerID, model, effort, err := s.resolveAgent(req.Agent)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		http.Error(w, err.Error(), resolveErrorToStatus(err))
 		return
 	}
 	provider, err := s.providers.Get(providerID)
@@ -718,6 +839,7 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		OnEvent:     emit,
 		OnHeartbeat: heartbeat,
 		MaxTokens:   agentDef.MaxTokens, // 0 → driver default
+		Effort:      effort,
 	})
 	if runErr != nil {
 		stream.send(providers.Event{Type: providers.EventError, Error: runErr.Error()})
@@ -805,9 +927,9 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, fmt.Sprintf("session refers to unknown agent %q", sess.Agent), http.StatusBadRequest)
 		return
 	}
-	providerID, model, err := s.cfg.ResolveAgentModel(sess.Agent)
+	providerID, model, effort, err := s.resolveAgent(sess.Agent)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		http.Error(w, err.Error(), resolveErrorToStatus(err))
 		return
 	}
 	provider, err := s.providers.Get(providerID)
@@ -949,6 +1071,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		OnEvent:       emit,
 		OnHeartbeat:   heartbeat,
 		MaxTokens:     agentDef.MaxTokens, // 0 → driver default
+		Effort:        effort,
 	})
 	if runErr != nil {
 		stream.send(providers.Event{Type: providers.EventError, Error: runErr.Error()})
@@ -1224,7 +1347,7 @@ func (s *Server) runSubAgent(ctx context.Context, name string, prompt string) (s
 		return "", fmt.Errorf("unknown sub-agent %q (not in loomcycle.yaml agents map)", name)
 	}
 
-	providerID, model, err := s.cfg.ResolveAgentModel(name)
+	providerID, model, effort, err := s.resolveAgent(name)
 	if err != nil {
 		return "", fmt.Errorf("resolve sub-agent %q model: %w", name, err)
 	}
@@ -1366,6 +1489,7 @@ func (s *Server) runSubAgent(ctx context.Context, name string, prompt string) (s
 		OnEvent:     subEmit,
 		OnHeartbeat: subHeartbeat,
 		MaxTokens:   def.MaxTokens, // 0 → driver default
+		Effort:      effort,
 	})
 	s.finishRunWithCancel(ctx, subRunCtx, subRunID, res, runErr)
 

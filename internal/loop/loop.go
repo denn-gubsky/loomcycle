@@ -68,6 +68,15 @@ type RunOptions struct {
 	// or they truncate mid-output. The HTTP server populates this
 	// from cfg.Agents[X].MaxTokens at request time.
 	MaxTokens int
+
+	// Effort is the reasoning-effort hint plumbed through to the
+	// driver. One of "low" / "medium" / "high" or empty (= no hint).
+	// Per-driver translation lands in PR 3 of the resolve-matrix
+	// series — Anthropic maps to thinking.budget_tokens, OpenAI to
+	// reasoning_effort, DeepSeek to its V4 thinking-mode toggle,
+	// Ollama no-op. PR 1 plumbs it through providers.Request
+	// unchanged; drivers in PR 1 ignore the field entirely.
+	Effort string
 }
 
 // RunResult is the terminal state after a Run.
@@ -126,6 +135,7 @@ func Run(ctx context.Context, opts RunOptions) (RunResult, error) {
 			Messages:  messages,
 			Tools:     toolSpecs,
 			MaxTokens: opts.MaxTokens, // 0 → driver default
+			Effort:    opts.Effort,    // "" → driver default; PR 3 wires per-driver translation
 			// OnEvent lets the driver fire pre-channel events (currently
 			// EventRetry during a 429 sleep) directly to the same caller
 			// hook the loop uses for response events. Without this hop

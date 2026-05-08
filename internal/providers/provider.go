@@ -40,6 +40,16 @@ type Request struct {
 	Temperature *float64       `json:"temperature,omitempty"`
 	Stream      bool           `json:"stream"`
 
+	// Effort is the reasoning-effort hint: "low" / "medium" / "high"
+	// or empty (= no hint, driver default). Drivers translate it to
+	// their native parameter where supported (Anthropic
+	// thinking.budget_tokens; OpenAI reasoning_effort; DeepSeek V4
+	// thinking-mode toggle), silently ignored on models without a
+	// reasoning surface (haiku-4-5, gpt-5.4-mini, etc.). The
+	// translation lands in PR 3 of the resolve-matrix series; PR 1
+	// adds the field but drivers ignore it.
+	Effort string `json:"-"`
+
 	// OnEvent, when set, is called for events that occur BEFORE the
 	// response channel exists — most importantly, EventRetry frames
 	// fired during a 429 retry sleep. Optional; the loop populates this
