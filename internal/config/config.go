@@ -186,6 +186,15 @@ type Env struct {
 	AnthropicAPIKey string
 	OpenAIAPIKey    string
 	OllamaBaseURL   string
+	// DeepSeekAPIKey enables the `provider: deepseek` driver. Empty
+	// = provider not registered (agents that ask for it fail at
+	// resolve time, mirroring OpenAI / Anthropic behaviour).
+	DeepSeekAPIKey string
+	// DeepSeekBaseURL overrides the public DeepSeek endpoint
+	// (https://api.deepseek.com/v1) for self-hosted OpenAI-
+	// compatible mirrors (e.g. an internal vLLM serving a DeepSeek
+	// model). Empty = use the public endpoint.
+	DeepSeekBaseURL string
 	ListenAddr      string
 	AuthToken       string
 	DataDir         string
@@ -313,6 +322,8 @@ func Load(path string) (*Config, error) {
 		AnthropicAPIKey:          os.Getenv("ANTHROPIC_API_KEY"),
 		OpenAIAPIKey:             os.Getenv("OPENAI_API_KEY"),
 		OllamaBaseURL:            getenvDefault("OLLAMA_BASE_URL", "http://localhost:11434"),
+		DeepSeekAPIKey:           os.Getenv("DEEPSEEK_API_KEY"),
+		DeepSeekBaseURL:          os.Getenv("DEEPSEEK_BASE_URL"),
 		ListenAddr:               getenvDefault("LOOMCYCLE_LISTEN_ADDR", "127.0.0.1:8787"),
 		AuthToken:                os.Getenv("LOOMCYCLE_AUTH_TOKEN"),
 		DataDir:                  getenvDefault("LOOMCYCLE_DATA_DIR", "./data"),

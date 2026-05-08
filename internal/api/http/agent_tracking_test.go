@@ -149,9 +149,12 @@ func TestRuns_GeneratesAgentIDWhenOmitted(t *testing.T) {
 	ts := httptest.NewServer(srv.Mux())
 	defer ts.Close()
 
-	resp, _ := http.Post(ts.URL+"/v1/runs", "application/json", strings.NewReader(
+	resp, err := http.Post(ts.URL+"/v1/runs", "application/json", strings.NewReader(
 		`{"agent":"default","segments":[{"role":"user","content":[{"type":"trusted-text","text":"hi"}]}]}`,
 	))
+	if err != nil {
+		t.Fatalf("POST /v1/runs: %v", err)
+	}
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)
 	got := extractAgentID(string(body))
@@ -278,9 +281,12 @@ func TestRuns_DuplicateActiveAgentID_DoesNotLeakRunningRow(t *testing.T) {
 	waitForRegistry(t, srv, "a_dup_leak", 2*time.Second)
 
 	// Second run with same agent_id → 409.
-	resp2, _ := http.Post(ts.URL+"/v1/runs", "application/json", strings.NewReader(
+	resp2, err := http.Post(ts.URL+"/v1/runs", "application/json", strings.NewReader(
 		`{"agent":"default","user_id":"alice","agent_id":"a_dup_leak","segments":[{"role":"user","content":[{"type":"trusted-text","text":"y"}]}]}`,
 	))
+	if err != nil {
+		t.Fatalf("POST /v1/runs (duplicate agent_id): %v", err)
+	}
 	defer resp2.Body.Close()
 	if resp2.StatusCode != 409 {
 		t.Fatalf("status = %d, want 409", resp2.StatusCode)
@@ -403,7 +409,10 @@ func TestCancel_UnknownAgentID_404(t *testing.T) {
 	ts := httptest.NewServer(srv.Mux())
 	defer ts.Close()
 
-	resp, _ := http.Post(ts.URL+"/v1/agents/a_nope/cancel", "application/json", strings.NewReader(`{}`))
+	resp, err := http.Post(ts.URL+"/v1/agents/a_nope/cancel", "application/json", strings.NewReader(`{}`))
+	if err != nil {
+		t.Fatalf("POST /v1/agents/a_nope/cancel: %v", err)
+	}
 	defer resp.Body.Close()
 	if resp.StatusCode != 404 {
 		body, _ := io.ReadAll(resp.Body)
@@ -435,7 +444,10 @@ func TestCancel_AlreadyFinished_Idempotent(t *testing.T) {
 	resp.Body.Close()
 
 	// Cancel after termination.
-	cancelResp, _ := http.Post(ts.URL+"/v1/agents/a_done/cancel", "application/json", strings.NewReader(`{}`))
+	cancelResp, err := http.Post(ts.URL+"/v1/agents/a_done/cancel", "application/json", strings.NewReader(`{}`))
+	if err != nil {
+		t.Fatalf("POST /v1/agents/a_done/cancel: %v", err)
+	}
 	defer cancelResp.Body.Close()
 	if cancelResp.StatusCode != 200 {
 		body, _ := io.ReadAll(cancelResp.Body)
@@ -477,7 +489,10 @@ func TestGetAgent_ReturnsCurrentStatus(t *testing.T) {
 	resp.Body.Close()
 
 	// After completion, GET returns the terminal record.
-	getResp, _ := http.Get(ts.URL + "/v1/agents/a_get")
+	getResp, err := http.Get(ts.URL + "/v1/agents/a_get")
+	if err != nil {
+		t.Fatalf("GET /v1/agents/a_get: %v", err)
+	}
 	defer getResp.Body.Close()
 	if getResp.StatusCode != 200 {
 		body, _ := io.ReadAll(getResp.Body)
@@ -539,7 +554,10 @@ func TestListUserAgents_FiltersByUserAndStatus(t *testing.T) {
 	}
 
 	// All-statuses for alice — should see exactly her two completed runs.
-	getResp, _ := http.Get(ts.URL + "/v1/users/alice/agents?status=all")
+	getResp, err := http.Get(ts.URL + "/v1/users/alice/agents?status=all")
+	if err != nil {
+		t.Fatalf("GET /v1/users/alice/agents: %v", err)
+	}
 	defer getResp.Body.Close()
 	var listDoc struct {
 		Agents []agentResponse `json:"agents"`
@@ -643,8 +661,11 @@ func TestCancel_CascadesToSubAgent(t *testing.T) {
 		t.Skip("sub-agent did not register within deadline; the empty-script approach may not exercise the sub-loop reliably on this platform")
 	}
 
-	cancelResp, _ := http.Post(ts.URL+"/v1/agents/a_parent/cancel", "application/json",
+	cancelResp, err := http.Post(ts.URL+"/v1/agents/a_parent/cancel", "application/json",
 		strings.NewReader(`{"reason":"shutdown"}`))
+	if err != nil {
+		t.Fatalf("POST /v1/agents/a_parent/cancel: %v", err)
+	}
 	defer cancelResp.Body.Close()
 	if cancelResp.StatusCode != 200 {
 		t.Fatalf("cancel status = %d", cancelResp.StatusCode)
