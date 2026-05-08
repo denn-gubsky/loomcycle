@@ -16,7 +16,51 @@
 # config setup from exfiltrating, say, ANTHROPIC_API_KEY into an MCP
 # server URL.
 
+# ─── Tier-based model resolution (v0.7+, opt-in) ──────────────────────
+# Agents can declare `tier: low | middle | high` instead of pinning a
+# specific (provider, model). The resolver walks `provider_priority`
+# below and picks the first available candidate from `tiers.<level>`
+# for that provider. Cost-floor-first by default — try DeepSeek, fall
+# through to Ollama (local llama), then OpenAI, then Anthropic.
+#
+# Per-agent overrides: an agent may set its own `providers:` list
+# (full replacement of provider_priority) and/or `models:` map (full
+# replacement of tiers, per-tier). See the cv-generator agent below
+# for a sensitive-paths-only example.
+#
+# Live availability: PR 2 of the resolve-matrix series probes each
+# provider's /v1/models endpoint at startup and re-probes every
+# 15 minutes (configurable via LOOMCYCLE_RESOLVE_PROBE_INTERVAL).
+# Models that 404 or whose providers 5xx mid-run get marked stalled
+# and skipped; the next periodic probe revives them. PR 1 ships a
+# stub probe — providers are reachable iff their API key is set.
+provider_priority:
+  - deepseek
+  - ollama
+  - openai
+  - anthropic
+
+tiers:
+  low:
+    - { provider: deepseek,  model: deepseek-v4-flash }
+    - { provider: ollama,    model: gemma4:9b }
+    - { provider: openai,    model: gpt-5.4-mini }
+    - { provider: anthropic, model: claude-haiku-4-5 }
+  middle:
+    - { provider: deepseek,  model: deepseek-v4-pro }
+    - { provider: ollama,    model: qwen3.6:27b }
+    - { provider: openai,    model: gpt-5.4 }
+    - { provider: anthropic, model: claude-sonnet-4-6 }
+  high:
+    # DeepSeek absent — V4 Pro doesn't compete with Opus 4.7 / GPT-5.5.
+    - { provider: ollama,    model: kimi-k2.6 }
+    - { provider: openai,    model: gpt-5.5 }
+    - { provider: anthropic, model: claude-opus-4-7 }
+
 # ─── Default routing for agents that don't specify their own ──────────
+# Used by agents that declare neither `tier:` nor an explicit
+# `provider:`+`model:` pin. v0.6.x back-compat path; tier-based agents
+# bypass these defaults entirely.
 defaults:
   provider: anthropic
   model: claude-sonnet-4-6
@@ -47,6 +91,47 @@ agents:
     model: smart
     system_prompt: "You are a helpful assistant."
     allowed_tools: []
+
+  # ─── Tier-based agents (v0.7+) ──────────────────────────────────────
+  # These three illustrate the resolver's three shapes: bare tier,
+  # tier with provider override, tier with full per-agent matrix
+  # override. Pick whichever matches your routing intent.
+
+  # Bare tier: resolver walks library priority + library tier defs.
+  # Cost-floor-first (DeepSeek → Ollama → OpenAI → Anthropic). The
+  # canonical shape for high-volume public-data agents.
+  ats-filter:
+    tier: low
+    system_prompt: "You filter job postings against the user's resume. Output JSON."
+    allowed_tools: []
+
+  # Tier + provider override: this agent skips DeepSeek and Ollama
+  # entirely, preferring Anthropic and OpenAI in that order. Useful
+  # for agents where you want the cloud-frontier providers but still
+  # want fallthrough between them. `effort: high` requests max
+  # reasoning budget where supported (Anthropic thinking, OpenAI
+  # reasoning_effort); silently ignored on models without reasoning.
+  ranker:
+    tier: middle
+    effort: high
+    providers: [anthropic, openai]
+    system_prompt: "You rank candidates against a position rubric. Show your reasoning."
+    allowed_tools: []
+
+  # Tier + per-agent matrix override: full replacement of the tier's
+  # candidate list. This agent locks user-sensitive paths to
+  # Anthropic — even though library priority lists DeepSeek first,
+  # the per-agent `models:` block ensures only Anthropic is ever
+  # picked. The resolver still goes through the matrix so a stalled
+  # claude-opus-4-7 surfaces as 503 cleanly (no silent fall-through).
+  cv-generator:
+    tier: high
+    effort: medium
+    models:
+      high:
+        - { provider: anthropic, model: claude-opus-4-7 }
+    system_prompt: "You adapt the user's CV to a target job description."
+    allowed_tools: [Read, Write]
 
   # Loads the system prompt from a file relative to this YAML's
   # directory. Mutually exclusive with system_prompt. Useful when the

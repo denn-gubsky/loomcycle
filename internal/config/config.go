@@ -35,6 +35,24 @@ type Config struct {
 	// scaling for production deployments. See StorageConfig.
 	Storage StorageConfig `yaml:"storage"`
 
+	// ProviderPriority is the library-wide order the resolver walks
+	// when an agent declares a tier (low/middle/high) without a
+	// per-agent `providers:` override. Cost-floor-first by default
+	// (deepseek > ollama > openai > anthropic) — try the cheapest
+	// reasonable backend first, escalate when the lower options
+	// stall. Empty = use the hardcoded default in
+	// internal/resolve/. Per-agent `providers:` fully replaces this.
+	ProviderPriority []string `yaml:"provider_priority"`
+
+	// Tiers is the library-wide tier → ordered candidate list.
+	// Operator-editable so model wire aliases stay out of the
+	// binary as the catalog churns. The resolver consults this when
+	// an agent declares a tier without a per-agent `models:`
+	// override. See doc-internal/rfcs/model-resolution-matrix.md
+	// for the May-2026 default matrix; loomcycle.example.yaml has
+	// the full operator-facing example.
+	Tiers map[string][]TierCandidate `yaml:"tiers"`
+
 	// Env-derived; not in YAML.
 	Env Env `yaml:"-"`
 
@@ -100,6 +118,16 @@ type ModelRef struct {
 	Model    string `yaml:"model"`
 }
 
+// TierCandidate is one entry in a tier's ordered candidate list.
+// The resolver walks tier candidates in declaration order, picking
+// the first (provider, model) where the provider is reachable, the
+// model is listed by the provider, and neither is currently marked
+// stalled in the availability matrix.
+type TierCandidate struct {
+	Provider string `yaml:"provider"`
+	Model    string `yaml:"model"`
+}
+
 // AgentDef is one agent the API can address by name.
 type AgentDef struct {
 	Provider string `yaml:"provider"` // optional override of Defaults
@@ -136,6 +164,41 @@ type AgentDef struct {
 	// caller's parser fails. Recommended values: 8192 for general
 	// use, 16384+ for batch scoring agents.
 	MaxTokens int `yaml:"max_tokens"`
+
+	// Tier is the model-tier the resolver should pick from when
+	// the agent doesn't declare an explicit Provider+Model pin.
+	// One of "low" / "middle" / "high". Empty = no tier-based
+	// resolution; the agent must use the explicit pin path.
+	// Mutually exclusive with the explicit Provider+Model pin —
+	// validation rejects setting both.
+	Tier string `yaml:"tier"`
+
+	// Effort is the reasoning-effort hint passed to the resolved
+	// model where supported. One of "low" / "medium" / "high" or
+	// empty (= no hint, driver default). Anthropic maps this to
+	// thinking.budget_tokens; OpenAI to reasoning_effort; DeepSeek
+	// V4 to its thinking-mode toggle. Silently ignored on models
+	// without a reasoning surface (haiku-4-5, gpt-5.4-mini, etc.).
+	// Real per-driver translation lands in PR 3 of the resolve-
+	// matrix series; PR 1 plumbs the field through unchanged.
+	Effort string `yaml:"effort"`
+
+	// Providers is the per-agent override of the library
+	// ProviderPriority for tier resolution. Full replacement
+	// semantics: when set, the resolver uses this list verbatim
+	// for this agent and ignores the library default. Has no
+	// effect on agents using the explicit Provider+Model pin.
+	Providers []string `yaml:"providers"`
+
+	// Models is the per-agent override of the library Tiers map
+	// (per-tier candidate lists). Same semantics as the library
+	// version: keyed by tier name (low/middle/high), each value is
+	// an ordered candidate list. Full replacement — when set for a
+	// given tier, the resolver uses this list verbatim and ignores
+	// the library tier definition. Useful for narrowing an agent
+	// to a specific subset of providers (e.g. CV generator that
+	// must stay on Anthropic for sensitive paths).
+	Models map[string][]TierCandidate `yaml:"models"`
 }
 
 // MCPServer declares one MCP server. Transport "stdio" or "http".
@@ -637,6 +700,34 @@ func splitCSV(s string) []string {
 	return out
 }
 
+// validProviderIDs is the set of provider names the resolver knows
+// how to dispatch to. Adding a new driver requires extending this set
+// AND wiring the driver into cmd/loomcycle/main.go's resolver.
+var validProviderIDs = map[string]bool{
+	"anthropic": true,
+	"openai":    true,
+	"deepseek":  true,
+	"ollama":    true,
+}
+
+// validTierNames is the closed set of tier names. Operators choose
+// per-agent which tier they want; the names are not user-extensible
+// today (would require coordinating with the library matrix shape).
+var validTierNames = map[string]bool{
+	"low":    true,
+	"middle": true,
+	"high":   true,
+}
+
+// validEffortLevels mirrors the Claude / OpenAI reasoning-effort
+// vocabulary. Empty string means "no hint" (driver default).
+var validEffortLevels = map[string]bool{
+	"":       true,
+	"low":    true,
+	"medium": true,
+	"high":   true,
+}
+
 func validate(c *Config) error {
 	if c.Concurrency.MaxConcurrentRuns < 1 {
 		return fmt.Errorf("concurrency.max_concurrent_runs must be >= 1")
@@ -644,9 +735,70 @@ func validate(c *Config) error {
 	if c.Concurrency.MaxQueueDepth < 0 {
 		return fmt.Errorf("concurrency.max_queue_depth must be >= 0")
 	}
+	// Library-level provider priority — validate every entry is a
+	// known provider name. Empty list is fine (resolver falls back
+	// to its hardcoded default order).
+	for i, p := range c.ProviderPriority {
+		if !validProviderIDs[p] {
+			return fmt.Errorf("provider_priority[%d]: unknown provider %q (want one of anthropic/openai/deepseek/ollama)", i, p)
+		}
+	}
+	// Library-level tier definitions.
+	for tierName, candidates := range c.Tiers {
+		if !validTierNames[tierName] {
+			return fmt.Errorf("tiers.%s: unknown tier (want one of low/middle/high)", tierName)
+		}
+		for i, cand := range candidates {
+			if !validProviderIDs[cand.Provider] {
+				return fmt.Errorf("tiers.%s[%d]: unknown provider %q", tierName, i, cand.Provider)
+			}
+			if cand.Model == "" {
+				return fmt.Errorf("tiers.%s[%d]: model is required", tierName, i)
+			}
+		}
+	}
 	for name, agent := range c.Agents {
-		if agent.Model == "" && c.Defaults.Model == "" {
-			return fmt.Errorf("agent %q: no model and no defaults.model", name)
+		// Tier-based resolution and explicit pin are mutually
+		// exclusive — pinning a model and asking for a tier is
+		// ambiguous, and silently picking one would surprise the
+		// next reader of the yaml.
+		hasPin := agent.Provider != "" || agent.Model != ""
+		hasTier := agent.Tier != ""
+		if hasPin && hasTier {
+			return fmt.Errorf("agent %q: cannot set both explicit provider/model pin and tier (pick one)", name)
+		}
+		if !hasPin && !hasTier {
+			// Back-compat path: agents without either fall back
+			// to defaults.model — same as v0.5.x behaviour.
+			if c.Defaults.Model == "" {
+				return fmt.Errorf("agent %q: no model, no tier, and no defaults.model", name)
+			}
+		}
+		if !validEffortLevels[agent.Effort] {
+			return fmt.Errorf("agent %q: invalid effort %q (want one of low/medium/high or empty)", name, agent.Effort)
+		}
+		if hasTier && !validTierNames[agent.Tier] {
+			return fmt.Errorf("agent %q: invalid tier %q (want one of low/middle/high)", name, agent.Tier)
+		}
+		// Per-agent provider override.
+		for i, p := range agent.Providers {
+			if !validProviderIDs[p] {
+				return fmt.Errorf("agent %q: providers[%d]: unknown provider %q", name, i, p)
+			}
+		}
+		// Per-agent tier-candidate override.
+		for tierName, candidates := range agent.Models {
+			if !validTierNames[tierName] {
+				return fmt.Errorf("agent %q: models.%s: unknown tier", name, tierName)
+			}
+			for i, cand := range candidates {
+				if !validProviderIDs[cand.Provider] {
+					return fmt.Errorf("agent %q: models.%s[%d]: unknown provider %q", name, tierName, i, cand.Provider)
+				}
+				if cand.Model == "" {
+					return fmt.Errorf("agent %q: models.%s[%d]: model is required", name, tierName, i)
+				}
+			}
 		}
 	}
 	for name, srv := range c.MCPServers {
