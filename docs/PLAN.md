@@ -2,7 +2,41 @@
 
 This is the public roadmap. For decision history, regret notes, and per-version commit-by-commit details, see `doc-internal/PLAN.md` (gitignored).
 
-## v0.5.0 — current
+## v0.6.0 — current
+
+**Status: shipped (2026-05-08).** Tag `v0.6.0` on `main`, merged via PRs #18 + #19 + the OpenAI driver `Usage.Model` fix. Provider matrix now covers four backends: Anthropic for user-sensitive paths, DeepSeek for high-volume public-data work, Ollama (local llama) for offline / cost-floor scenarios, OpenAI for general use. Per-agent provider routing in YAML lets a consumer mix and match by data sensitivity.
+
+**What's in v0.6.0 (vs v0.5.5):**
+
+- **DeepSeek provider** (`internal/providers/deepseek/`) — thin wrapper around the existing OpenAI driver with the DeepSeek base URL pre-baked and `ID()` returning `"deepseek"`. DeepSeek's Chat Completions endpoint is OpenAI-compatible, so the wire shape, SSE framing, retry strategy, and tool-call envelope all reuse the OpenAI plumbing unchanged. Operator opts in via `DEEPSEEK_API_KEY` env; `DEEPSEEK_BASE_URL` overrides for self-hosted OpenAI-compatible mirrors (e.g. vLLM serving a DeepSeek model). Per-agent yaml: `provider: deepseek`.
+- **OpenAI driver: `Usage.Model` populated from chunk envelope.** Pre-fix, `streamEvents` extracted token counts from the streamed `usage` chunk but never captured the model field, so `runs.model` was always empty for any OpenAI-compatible endpoint (OpenAI itself, DeepSeek, vLLM, ...). Same regression class as the v0.4.0 anthropic fix; latent until the DeepSeek live test surfaced it. Now every OpenAI-compatible run records the wire-resolved alias (e.g. `deepseek-chat-v3-0324`, `gpt-4o-mini-2024-07-18`) — what the provider actually billed against, which matters for cost retros.
+- **Ollama live integration tests** (`internal/providers/ollama/live_test.go`) — three tests (probe, chat, tool call) gated by `OLLAMA_TEST_BASE_URL`. v0.4.0 shipped the Ollama driver with httptest fakes only; the live coverage validates qwen3:14b on RTX 5080 (16GB VRAM) end-to-end as the offline / cost-floor backend.
+- **`internal/auth.CompareBearer`** — sha256+CTC helper used by both HTTP and gRPC bearer-token middleware. Plain `subtle.ConstantTimeCompare` returns 0 immediately on length mismatch, leaking the expected token's length via timing; hashing both sides to a fixed-length digest before the constant-time compare closes that channel. Strengthens auth on both wire surfaces.
+
+**Provider routing intent (jobs-search-agent first):**
+
+| Sensitivity | Backend | Rationale |
+|---|---|---|
+| User-sensitive (CV / CL generation, profile-aware q&a) | **Anthropic** | Best quality + privacy posture for user data |
+| Public data (job scoring, ATS filtering, company profiling, position relevance) | **DeepSeek** | Order-of-magnitude cheaper than Anthropic for high-volume work |
+| Offline / private / cost floor | **Ollama** (local llama) | qwen3:14b on RTX-class VRAM gives DeepSeek-comparable quality at near-zero marginal cost |
+| General / new agents during development | **OpenAI** | Standard choice for prototyping; pin to a specific model to avoid drift |
+
+Architecture decision: DeepSeek is a separate `provider: deepseek` rather than `provider: openai` with a quirky base URL. Three reasons: (1) explicit yaml config documents intent, (2) per-provider `runs.model` rollups can't conflate OpenAI and DeepSeek pricing, (3) a place to absorb DeepSeek-specific quirks (reasoning_content for the reasoner model, future rate-limit header differences) without polluting the OpenAI driver.
+
+## v0.5.5 — previous
+
+**Status: shipped (2026-05-08).** Tag `v0.5.5` on `main`, merged via PR #16. Wire surface coverage: gRPC alongside HTTP+SSE, async Python adapter as a first-class consumer.
+
+**What's in v0.5.5 (vs v0.5.0):**
+
+- **gRPC server** (opt-in via `LOOMCYCLE_GRPC_ADDR`). All seven RPCs mirror the HTTP+SSE surface 1:1 — `Run`, `Continue`, `GetAgent`, `CancelAgent`, `ListUserAgents`, `GetTranscript`, `Health`. Both wires share the same store, cancel registry, runner, and concurrency semaphore — picking gRPC vs. HTTP is a wire-format decision, not a feature decision. A cancel issued via gRPC reaches a run started via HTTP and vice versa.
+- **`internal/runner/`** wire-agnostic seam. The HTTP server satisfies `runner.Runner`; the gRPC server delegates to the same instance. Compile-time guard `var _ runner.Runner = (*Server)(nil)` keeps the interface conformance honest.
+- **Python adapter** (`adapters/python/`, `pip install loomcycle`) — async `LoomcycleClient` over `grpc.aio` covering all seven RPCs. Frozen-dataclass events (`AgentEvent`, `ToolUse`, `Usage`, `Retry`); typed exceptions over `grpc.StatusCode` codes; PEP-561 `py.typed` marker. Promotes the Python adapter from "deferred" to a shipped consumer.
+- **Synthetic registration frames.** `Run`/`Continue` server-stream emit a wire-stable `session` + `agent` frame pair before any provider event so adapters can capture `(agent_id, run_id, session_id, parent_agent_id)` without re-decoding the loop's transcript. The Python adapter swallows these into a `RunHandle`; the HTTP+SSE side-channel exposes the same data via existing event types.
+- **Operator guide:** [GRPC.md](GRPC.md) covers enablement, wire-shape parity with HTTP+SSE, synthetic-frame contract, error code mapping, TLS / coexistence recipes, Python adapter quick-start.
+
+## v0.5.0 — earlier
 
 **Status: shipped (2026-05-08).** Tag `v0.5.0` on `main`, merged via PR #15. The production-deployment unlock: Postgres `Store` adapter alongside SQLite (which stays first-class for compact installs), heartbeat sweeper + session-lock map GC, operator-facing CLI surface.
 
@@ -21,9 +55,7 @@ This is the public roadmap. For decision history, regret notes, and per-version 
 - **Cross-replica advisory locks deferred to v1.0.** Driver was multi-replica HA; for the only deployment shape today (single replica), the in-memory cancel registry works for both backends.
 - **No live cutover for sqlite→postgres** — operator stops loomcycle, runs the copy, restarts. Live cutover is v1.0.
 
-For the public-roadmap status of subsequent milestones (v0.5.5, v0.6.0, v1.0), see below.
-
-## v0.4.0 — previous
+## v0.4.0 — earlier
 
 **Status: shipped.** Tag `v0.4.0` on `main`. The runtime's MCP integration story is now production-validated against jobs-search-agent as the first real consumer.
 
@@ -50,6 +82,15 @@ For the public-roadmap status of subsequent milestones (v0.5.5, v0.6.0, v1.0), s
 - **LocalAPI MCP gateway** — code is in `internal/tools/localapi/`, parser + dispatcher wiring + unit tests all landed, registered into the dispatcher at boot when `cfg.LocalAPI.SpecPath` is non-empty. Useful for future consumers that have an OpenAPI spec and don't want to stand up an MCP server.
 
 For usage: see [README](../README.md). For the architecture: see [ARCHITECTURE.md](ARCHITECTURE.md). For tool policy: see [TOOLS.md](TOOLS.md).
+
+## v0.7+ — near-term
+
+Items already designed or scoped, ready to pick up. Distinct from the v1.0 outline below: these are bounded chunks of work with a known shape, not framework-defining primitives.
+
+- **Tool-use hooks implementation** (`PreToolUse` / `PostToolUse`). The public outline lives in [Framework primitives → Tool-use hooks](#tool-use-hooks-pretoolusepostooluse) below. Documentation restored to the roadmap in PR #17. Implementation follows once the wire shape (Go interface vs. HTTP webhook vs. MCP-callable) is decided in an RFC.
+- **`EventThinking` event type.** Recent Ollama versions surface qwen3 / deepseek-r1 reasoning output in a separate `message.thinking` field that the Ollama driver currently silently drops. Acceptable for jobs-search-agent's structured-output public-data agents, but blocks future chain-of-thought consumers and hides cost (operators pay for thinking tokens via `output_tokens` without visibility into what they bought). RFC at pickup; same event type would apply to OpenAI o1-family support when that lands.
+- **`TestBashTimeout` race-detector reliability.** The 100ms timeout in `internal/tools/builtin/bash_test.go` doesn't fire reliably under the race detector on slow CI runners (full `sleep 5` runs to completion instead of cancelling). Real timer-signal starvation, not a margin tweak. Likely needs a refactor of `Bash.Execute()`'s timeout machinery to use `exec.CommandContext` rather than a separate timer goroutine.
+- **jobs-search-agent provider routing rollout.** v0.6.0 ships the per-agent `provider:` knob and three first-class backends (Anthropic / DeepSeek / Ollama). The consumer-side flip happens in `jobs-search-agent`'s agent yaml: public-data agents (ATS filtering, position relevance, company profiling) move to `provider: deepseek`; CV / CL generation stays on `provider: anthropic`. Validation: cost rollups by `runs.model` should show DeepSeek dominating volume while Anthropic dominates spend.
 
 ## v1.0 — planned
 
@@ -149,10 +190,6 @@ The cookbook in v1.0 will expand this into a full set: development sandbox, sing
 ### Web monitoring frontend
 
 A small frontend on top of the SQLite/Postgres event stream — see runs, drill into transcripts, view token + cost rollups. Not a chat UI; this is operator-facing monitoring. Distinct from the LoomCycle MCP, which is for external orchestration.
-
-### Python adapter
-
-`pip install loomcycle`. Thin client over the HTTP+SSE API, equivalent to the TS adapter at `adapters/ts/`. Deferred until a Python-first downstream consumer materializes.
 
 ## Decision principles
 

@@ -287,20 +287,23 @@ References: `internal/tools/localapi/`, `cmd/loomcycle/main.go` (registration), 
 
 ## Provider × tool matrix
 
-What works with what:
+What works with what (DeepSeek added in v0.6.0; behaviour identical to OpenAI for tool dispatch since it shares the driver):
 
-|              | Anthropic | OpenAI | Ollama (tool-tuned) |
-|---|:---:|:---:|:---:|
-| `Read` / `Write` / `Edit`  | ✅ | ✅ | ✅ |
-| `HTTP` / `WebFetch`        | ✅ | ✅ | ✅ |
-| `WebSearch`                | ✅ | ✅ | ✅ |
-| `Bash`                     | ✅ | ✅ | ✅ |
-| `Agent` (sub-agents)       | ✅ | ✅ | ✅ |
-| `Skill` (Approach A)       | ✅ | ✅ | ✅ |
-| `LocalAPI` (OpenAPI gateway) | ⏳ | ⏳ | ⏳ | (scaffolded — for future OpenAPI-without-MCP-server consumers) |
-| MCP tools (stdio + HTTP)   | ✅ | ✅ | ✅ |
-| Native cache_control       | ✅ | ❌ | ❌ |
-| Parallel tool calls        | ✅ | ✅ | depends on model |
-| Streaming text + tool_use  | ✅ | ✅ | ✅ |
+|              | Anthropic | OpenAI | DeepSeek | Ollama (tool-tuned) |
+|---|:---:|:---:|:---:|:---:|
+| `Read` / `Write` / `Edit`  | ✅ | ✅ | ✅ | ✅ |
+| `HTTP` / `WebFetch`        | ✅ | ✅ | ✅ | ✅ |
+| `WebSearch`                | ✅ | ✅ | ✅ | ✅ |
+| `Bash`                     | ✅ | ✅ | ✅ | ✅ |
+| `Agent` (sub-agents)       | ✅ | ✅ | ✅ | ✅ |
+| `Skill` (Approach A)       | ✅ | ✅ | ✅ | ✅ |
+| `LocalAPI` (OpenAPI gateway) | ⏳ | ⏳ | ⏳ | ⏳ | (scaffolded — for future OpenAPI-without-MCP-server consumers) |
+| MCP tools (stdio + HTTP)   | ✅ | ✅ | ✅ | ✅ |
+| Native cache_control       | ✅ | ❌ | ❌ | ❌ |
+| Parallel tool calls        | ✅ | ✅ | ✅ | depends on model |
+| Streaming text + tool_use  | ✅ | ✅ | ✅ | ✅ |
+| `Usage.Model` populated    | ✅ | ✅ (v0.6.0+) | ✅ | ✅ |
 
-Ollama caveat: tool calling only works on **tool-tuned** models (Llama 3.1 instruct variants, Qwen2.5-Instruct, Mistral Nemo Instruct). Non-tool-tuned models will hallucinate tool names instead of calling them. Tool_use IDs are synthesized by the loop because Ollama doesn't issue them.
+Ollama caveat: tool calling only works on **tool-tuned** models (qwen3+, Llama 3.1 instruct variants, Qwen2.5-Instruct, Mistral Nemo Instruct). Non-tool-tuned models will silently drop the `tools` field instead of calling them — Ollama's behaviour, not the driver's. Tool_use IDs are synthesized by the loop because Ollama doesn't issue them.
+
+DeepSeek caveat: the v0.6.0 driver wraps the OpenAI driver, so it inherits OpenAI's behaviour exactly. The `deepseek-reasoner` model emits `reasoning_content` separately from `content`; the driver doesn't yet surface that (tracked as v0.7+ alongside the parallel Ollama `message.thinking` gap).

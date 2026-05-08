@@ -23,10 +23,12 @@ It exists to replace bundled-binary agent SDKs that cold-start in 20–30 s, lea
 ## Why this approach
 
 - **Pure HTTP loop.** No vendor binary spawned per call. The runtime is one Go process, ~16 MB compiled, single static binary. Cold-start is the kernel's exec time.
-- **Provider-agnostic.** Anthropic Messages, OpenAI Chat Completions, Ollama `/api/chat` — all three drivers normalize to one `Event` channel the loop drains. Capability flags expose provider-specific extras (Anthropic `cache_control`, OpenAI parallel tool calls).
+- **Provider-agnostic.** Four drivers — Anthropic Messages, OpenAI Chat Completions, DeepSeek (OpenAI-compatible), Ollama `/api/chat` — all normalize to one `Event` channel the loop drains. Capability flags expose provider-specific extras (Anthropic `cache_control`, OpenAI / DeepSeek parallel tool calls).
+- **Per-agent provider routing.** YAML `provider:` field per agent lets a consumer mix backends by data sensitivity: Anthropic for user-sensitive paths, DeepSeek for high-volume public-data work, Ollama (local llama) for offline / cost-floor scenarios. Same wire surface, different cost / privacy posture per agent.
 - **Default-deny tool policy.** Every built-in is disabled until env-configured. Every agent gets zero tools until `allowed_tools` is set in YAML. Two layers must say "yes" before a tool reaches the model.
 - **Native cache placement.** When the provider supports it (Anthropic), system blocks marked `cacheable: true` carry `cache_control` on the wire — you keep cache reads on the stable preamble even when the rest of the conversation churns.
-- **Observable everywhere.** Every text chunk, tool call, tool result, usage update, and retry is an SSE event. Nothing happens silently.
+- **Two wire surfaces.** HTTP+SSE (default) and gRPC (opt-in via `LOOMCYCLE_GRPC_ADDR`). Both share the same store, cancel registry, runner, and concurrency semaphore — picking one is a wire-format decision, not a feature decision. A cancel issued via gRPC reaches a run started via HTTP and vice versa.
+- **Observable everywhere.** Every text chunk, tool call, tool result, usage update, and retry is an SSE / gRPC event. Nothing happens silently.
 
 ## Quick start
 
@@ -55,7 +57,27 @@ curl -N http://127.0.0.1:8787/v1/runs \
   }'
 ```
 
-## What's in v0.5.0 (`feature-postgres` branch)
+## What's in v0.6.0
+
+| Surface             | Status |
+|---------------------|--------|
+| **DeepSeek provider** | ✅ Wraps the OpenAI driver with the DeepSeek base URL pre-baked. Per-agent yaml: `provider: deepseek`. Set `DEEPSEEK_API_KEY`; optional `DEEPSEEK_BASE_URL` for self-hosted OpenAI-compatible mirrors (vLLM, etc.). |
+| **OpenAI `Usage.Model` fix** | ✅ Driver now captures the wire-resolved model alias from the streamed chunk envelope, so `runs.model` populates for every OpenAI-compatible run (OpenAI itself, DeepSeek, vLLM). Same regression class as the v0.4 anthropic fix; latent until the DeepSeek live test surfaced it. |
+| **Ollama live integration tests** | ✅ Three tests (probe, chat, tool call) gated by `OLLAMA_TEST_BASE_URL`. Validated against qwen3:14b on RTX 5080 (16GB VRAM) end-to-end as the offline / cost-floor backend. |
+| **Constant-time bearer compare** | ✅ New `internal/auth.CompareBearer` (sha256+CTC) replaces raw `subtle.ConstantTimeCompare` on both HTTP and gRPC. Closes a length-leak side channel that the stdlib documents but doesn't fix. |
+
+**Provider routing intent (jobs-search-agent first):** Anthropic for user-sensitive paths · DeepSeek for high-volume public data · Ollama (local llama) for offline / cost floor · OpenAI for general use / prototyping. See [`docs/PLAN.md`](docs/PLAN.md#v060--current) for the full rationale and the v0.7+ rollout plan.
+
+## What's in v0.5.5
+
+| Surface             | Status |
+|---------------------|--------|
+| **gRPC server**      | ✅ Opt-in via `LOOMCYCLE_GRPC_ADDR`. All seven RPCs mirror the HTTP+SSE surface 1:1 (`Run`, `Continue`, `GetAgent`, `CancelAgent`, `ListUserAgents`, `GetTranscript`, `Health`). Coexists with HTTP — same store, same cancel registry, same semaphore. See [`docs/GRPC.md`](docs/GRPC.md). |
+| **Python adapter**   | ✅ `pip install loomcycle`. Async `LoomcycleClient` over `grpc.aio` covering all seven RPCs. PEP-561 `py.typed`. |
+| **`internal/runner/`** | ✅ Wire-agnostic seam — HTTP server satisfies `runner.Runner`, gRPC server delegates to the same instance. |
+| **Synthetic registration frames** | ✅ Wire-stable `session` + `agent` frame pair at the head of every Run/Continue stream so adapters capture `(agent_id, run_id, session_id, parent_agent_id)` without re-decoding the transcript. |
+
+## What's in v0.5.0
 
 | Surface             | Status |
 |---------------------|--------|
@@ -72,7 +94,7 @@ The bulk of v0.5.0 is operational: backbone you'll need before scaling past one 
 
 | Surface             | Status |
 |---------------------|--------|
-| **Providers**       | Anthropic ✅ · OpenAI ✅ · Ollama ✅ (tool-tuned models only) |
+| **Providers**       | Anthropic ✅ · OpenAI ✅ · Ollama ✅ (tool-tuned models only). DeepSeek added in v0.6.0. |
 | **Built-in tools**  | Read · Write · Edit · HTTP · WebFetch · WebSearch · Bash · **Agent** · **Skill** |
 | **MCP transports**  | stdio (pooled, auto-respawn) · HTTP (Streamable, SSE-aware) |
 | **MCP startup retry** | Exponential backoff handshake on boot — handles peer-still-starting races |
@@ -101,6 +123,7 @@ The bulk of v0.5.0 is operational: backbone you'll need before scaling past one 
                   │  Agent loop ──── Provider drivers            │
                   │     │              ├─ Anthropic   ✅         │
                   │     │              ├─ OpenAI      ✅         │
+                  │     │              ├─ DeepSeek    ✅         │
                   │     │              └─ Ollama      ✅         │
                   │     ▼                                        │
                   │  Tool dispatcher                             │
@@ -121,7 +144,7 @@ Most-used knobs (full list in `.env.example` + `loomcycle.example.yaml`):
 
 | Env / YAML | What it does |
 |---|---|
-| `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `OLLAMA_BASE_URL` | Provider credentials. Set what you'll use; unset keys disable the corresponding driver. |
+| `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `DEEPSEEK_API_KEY` / `OLLAMA_BASE_URL` | Provider credentials. Set what you'll use; unset keys disable the corresponding driver. `DEEPSEEK_BASE_URL` overrides the public DeepSeek endpoint for self-hosted OpenAI-compatible mirrors. |
 | `LOOMCYCLE_AUTH_TOKEN` | Bearer token required on every `/v1/*` request. Empty = dev-mode unauthenticated (warning logged). |
 | `LOOMCYCLE_LISTEN_ADDR` | Default `127.0.0.1:8787`. |
 | `LOOMCYCLE_DATA_DIR` | SQLite store location. Default `./data`. |
@@ -136,8 +159,8 @@ Most-used knobs (full list in `.env.example` + `loomcycle.example.yaml`):
 
 ## Adapters
 
-- **TypeScript** — `npm install @loomcycle/client` → see `adapters/ts/`. Used by `jobs-search-agent`.
-- **Python** — deferred to v1.x.
+- **TypeScript** — `npm install @loomcycle/client` → see `adapters/ts/`. HTTP+SSE. Used by `jobs-search-agent`.
+- **Python** — `pip install loomcycle` → see `adapters/python/`. Async over `grpc.aio`; covers all seven RPCs. Shipped in v0.5.5.
 
 ## Security
 
@@ -154,7 +177,7 @@ Most-used knobs (full list in `.env.example` + `loomcycle.example.yaml`):
 - `docs/TOOLS.md` — the two-layer default-deny model end-to-end, every built-in tool, MCP / LocalAPI integrations, per-request narrowing.
 - `docs/POSTGRES.md` — operator guide for the v0.5.0 Postgres backend: configuration, migrations, sqlite→postgres data migration runbook, concurrency benchmark.
 - `docs/GRPC.md` — operator guide for the v0.5.5 gRPC surface: enablement, wire-shape parity with HTTP+SSE, error mapping, TLS / coexistence recipes, Python adapter quick-start.
-- `docs/PLAN.md` — public roadmap. v0.4.0 + v0.5.0 status; v0.5.5 / v0.6.0 / v1.0 outlines.
+- `docs/PLAN.md` — public roadmap. v0.4.0 / v0.5.0 / v0.5.5 / v0.6.0 shipped status; v0.7+ near-term + v1.0 outline.
 - `CLAUDE.md` — project guide for agents working in this repo (Claude Code).
 
 ## License
