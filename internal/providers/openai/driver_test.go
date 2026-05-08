@@ -81,6 +81,52 @@ func TestStreamTextThenStop(t *testing.T) {
 	}
 }
 
+// TestStreamUsage_PopulatesModel pins the regression fix for empty
+// runs.model on OpenAI / DeepSeek / vLLM streaming responses. The
+// driver must capture the wire-resolved model alias from the chunk
+// envelopes (every chunk carries `"model": "..."`) and stamp it onto
+// the final EventDone.Usage so downstream cost accounting can
+// attribute by model. Pre-fix, every OpenAI-driver run wrote `""`
+// to the runs.model column — same regression class as the v0.4.0
+// anthropic fix (commit 5bdccfc), just for OpenAI-compatible
+// endpoints.
+func TestStreamUsage_PopulatesModel(t *testing.T) {
+	frames := []string{
+		// Real OpenAI / DeepSeek wire shape: every chunk includes a
+		// top-level "model" field. We use the date-suffixed alias here
+		// (what's actually billed) to confirm the driver captures the
+		// wire value, not the request alias.
+		`data: {"model":"deepseek-chat-v3-0324","choices":[{"index":0,"delta":{"content":"hi"}}]}` + "\n\n",
+		`data: {"model":"deepseek-chat-v3-0324","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}` + "\n\n",
+		`data: {"model":"deepseek-chat-v3-0324","choices":[],"usage":{"prompt_tokens":12,"completion_tokens":1}}` + "\n\n",
+		"data: [DONE]\n\n",
+	}
+	srv := fakeStream(t, frames)
+	defer srv.Close()
+
+	d := New("test-key", srv.URL, nil)
+	ch, err := d.Call(context.Background(), providers.Request{
+		Model:    "deepseek-chat",
+		Messages: []providers.Message{{Role: "user", Content: []providers.ContentBlock{{Type: "text", Text: "x"}}}},
+	})
+	if err != nil {
+		t.Fatalf("Call: %v", err)
+	}
+	var done providers.Event
+	for ev := range ch {
+		if ev.Type == providers.EventDone {
+			done = ev
+		}
+	}
+	if done.Usage == nil {
+		t.Fatal("EventDone.Usage is nil; usage chunk did not parse")
+	}
+	if done.Usage.Model != "deepseek-chat-v3-0324" {
+		t.Errorf("Usage.Model = %q, want %q (wire-resolved alias from chunk envelope)",
+			done.Usage.Model, "deepseek-chat-v3-0324")
+	}
+}
+
 func TestStreamToolCallAccumulation(t *testing.T) {
 	// First delta carries id + function.name; subsequent deltas dribble out
 	// the JSON arguments piecewise. Verify we accumulate into one tool_call.

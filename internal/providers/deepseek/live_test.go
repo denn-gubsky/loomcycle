@@ -48,23 +48,23 @@ func TestLive_DeepSeekChatCompletion(t *testing.T) {
 		t.Fatalf("Call: %v", err)
 	}
 
+	// The OpenAI driver folds Usage into the final EventDone
+	// rather than emitting a separate EventUsage — assertions
+	// inspect ev.Usage on done.
 	var text strings.Builder
 	var sawDone bool
-	var sawUsage bool
 	var modelOnUsage string
-	var inputTokens, outputTokens int64
+	var inputTokens, outputTokens int
 	for ev := range ch {
 		switch ev.Type {
 		case providers.EventText:
 			text.WriteString(ev.Text)
 		case providers.EventDone:
 			sawDone = true
-		case providers.EventUsage:
-			sawUsage = true
 			if ev.Usage != nil {
 				modelOnUsage = ev.Usage.Model
-				inputTokens = int64(ev.Usage.InputTokens)
-				outputTokens = int64(ev.Usage.OutputTokens)
+				inputTokens = ev.Usage.InputTokens
+				outputTokens = ev.Usage.OutputTokens
 			}
 		case providers.EventError:
 			t.Fatalf("provider error: %s", ev.Error)
@@ -72,16 +72,13 @@ func TestLive_DeepSeekChatCompletion(t *testing.T) {
 	}
 
 	if !sawDone {
-		t.Errorf("no EventDone received; stream ended unexpectedly")
-	}
-	if !sawUsage {
-		t.Errorf("no EventUsage received; runs.model column would not populate")
+		t.Fatal("no EventDone received; stream ended unexpectedly")
 	}
 	if modelOnUsage == "" {
-		t.Errorf("Usage.Model empty; downstream cost-attribution would fail. usage seen=%v", sawUsage)
+		t.Errorf("Usage.Model empty; runs.model column would not populate downstream — same regression class as v0.4.0 anthropic fix")
 	}
 	if inputTokens == 0 || outputTokens == 0 {
-		t.Errorf("token counters zero: input=%d output=%d", inputTokens, outputTokens)
+		t.Errorf("token counters zero: input=%d output=%d (stream_options.include_usage may not have fired)", inputTokens, outputTokens)
 	}
 	if text.Len() == 0 {
 		t.Errorf("no text response received")

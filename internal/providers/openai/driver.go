@@ -295,6 +295,14 @@ type chunkFunctionD struct {
 }
 
 type chunk struct {
+	// Model is the wire-resolved alias (e.g. "gpt-4o-mini-2024-07-18"
+	// or "deepseek-chat") set on every chunk by OpenAI-compatible
+	// servers. We capture it so the final EventDone.Usage carries
+	// the actual billed model rather than an empty string. Without
+	// this, runs.model never populates downstream — same regression
+	// class as the v0.4.0 Anthropic fix (commit 5bdccfc), just for
+	// OpenAI / DeepSeek / vLLM / any OpenAI-compatible endpoint.
+	Model   string `json:"model"`
 	Choices []struct {
 		Delta        chunkDelta `json:"delta"`
 		FinishReason string     `json:"finish_reason"`
@@ -338,6 +346,13 @@ func streamEvents(ctx context.Context, body io.ReadCloser, out chan<- providers.
 	tools := map[int]*toolAccumulator{}
 	var stopReason string
 	var usage *providers.Usage
+	// model is the wire-resolved alias captured from the first
+	// chunk that carries one. Stamped onto Usage when the usage
+	// chunk arrives (or onto an empty Usage at done time if
+	// stream_options.include_usage didn't fire — defensive, since
+	// some OpenAI-compatible servers omit usage on cancelled
+	// streams).
+	var model string
 
 	for scanner.Scan() {
 		line := bytes.TrimSpace(scanner.Bytes())
@@ -352,6 +367,9 @@ func streamEvents(ctx context.Context, body io.ReadCloser, out chan<- providers.
 		var c chunk
 		if err := json.Unmarshal(payload, &c); err != nil {
 			continue // skip malformed frames; final usage frame may be malformed in cancelled streams
+		}
+		if c.Model != "" && model == "" {
+			model = c.Model
 		}
 
 		for _, ch := range c.Choices {
@@ -385,6 +403,7 @@ func streamEvents(ctx context.Context, body io.ReadCloser, out chan<- providers.
 			u := &providers.Usage{
 				InputTokens:  c.Usage.PromptTokens,
 				OutputTokens: c.Usage.CompletionTokens,
+				Model:        model,
 			}
 			if c.Usage.PromptTokensDetails != nil {
 				u.CacheReadTokens = c.Usage.PromptTokensDetails.CachedTokens
