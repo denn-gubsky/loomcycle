@@ -91,6 +91,16 @@ This is the "MCP-configurable" axis: instead of writing YAML and POSTing JSON, a
 
 What's not yet decided: stdio vs HTTP transport (probably both), method naming (resources vs tools), whether MCP clients can register new agents at runtime or only spawn from operator-defined ones, handling of long-lived run streams across MCP's request/response shape.
 
+#### Tool-use hooks (PreToolUse / PostToolUse)
+
+Operator-supplied middleware around tool dispatch. The agent loop calls `PreToolUse` before invoking any tool — given the tool name, the model's input, the agent identity, and the request context, the hook can rewrite the input, deny the call (returning a synthetic `tool_result`), audit it, or annotate it with metadata (e.g. a trace span ID). After the tool runs, `PostToolUse` sees the result and can rewrite it. The canonical use case for the post-hook is wrapping untrusted content from `WebFetch` / `HTTP` / MCP results in a trust-boundary marker so a downstream LLM treats the payload as data rather than instructions — the v0.2 plan called this the "untrusted-content wrap."
+
+Hooks are the seam for cross-cutting concerns the runtime currently has no first-class place for: per-tool quotas, audit logs that capture every tool call before the policy layer touches it, content-sanitization passes, OTEL spans tied to tool invocations, soft-deny patterns ("you tried to fetch X; here's a redacted version instead"). Today every one of these would have to be bolted into the dispatcher; hooks let them be operator-pluggable without forking the runtime. The pre/post split mirrors the same pattern in Claude Code's hooks system, so operators porting policy code between the two have one mental model.
+
+This was originally a v0.2 plan item, deferred at v0.4 because no consumer required it, and resurfaces alongside the v1.0 observability work — many of the items in *High-load runtime work* below (OTEL spans, per-tool quotas, audit) want hooks as their wiring point.
+
+What's not yet decided: hook composition order (single chain vs typed phases), how hooks express denial vs annotation, whether hooks see the post-policy-narrowing input or the raw model input, whether hooks can short-circuit the loop entirely, and the wire shape — Go interface (compile-time, in-process), HTTP webhook (operator-supplied service), or MCP-callable (agentic hook driving agentic policy). RFC at pickup.
+
 ### High-load runtime work
 
 These are cross-cutting capacity items. Not a single feature; collectively they take the runtime from "single-tenant comfortable on a 4–8 GiB VPS" to "10k concurrent agents per replica."
