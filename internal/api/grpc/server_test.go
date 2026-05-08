@@ -16,6 +16,8 @@ import (
 
 	"github.com/denn-gubsky/loomcycle/internal/api/grpc/loomcyclepb"
 	"github.com/denn-gubsky/loomcycle/internal/cancel"
+	"github.com/denn-gubsky/loomcycle/internal/providers"
+	"github.com/denn-gubsky/loomcycle/internal/runner"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	storesqlite "github.com/denn-gubsky/loomcycle/internal/store/sqlite"
 )
@@ -358,9 +360,13 @@ func TestGetTranscript_EmptySessionID(t *testing.T) {
 	}
 }
 
-// ---- Run / Continue stubs (PR 1: Unimplemented; PR 2 wires them) ----
+// ---- Run / Continue with no runner ----
+//
+// startTestServer constructs the gRPC adapter without injecting a
+// runner.Runner — the metadata RPC tests don't need one. Run /
+// Continue should refuse cleanly with codes.Unimplemented.
 
-func TestRun_Unimplemented(t *testing.T) {
+func TestRun_NoRunner(t *testing.T) {
 	client, _, _, cleanup := startTestServer(t, "")
 	defer cleanup()
 
@@ -372,12 +378,12 @@ func TestRun_Unimplemented(t *testing.T) {
 	if status.Code(err) != codes.Unimplemented {
 		t.Errorf("code=%s, want Unimplemented", status.Code(err))
 	}
-	if !strings.Contains(err.Error(), "PR 2") {
-		t.Errorf("error doesn't reference PR 2: %v", err)
+	if !strings.Contains(err.Error(), "requires a runner") {
+		t.Errorf("error doesn't reference 'requires a runner': %v", err)
 	}
 }
 
-func TestContinue_Unimplemented(t *testing.T) {
+func TestContinue_NoRunner(t *testing.T) {
 	client, _, _, cleanup := startTestServer(t, "")
 	defer cleanup()
 
@@ -388,5 +394,206 @@ func TestContinue_Unimplemented(t *testing.T) {
 	_, err = stream.Recv()
 	if status.Code(err) != codes.Unimplemented {
 		t.Errorf("code=%s, want Unimplemented", status.Code(err))
+	}
+}
+
+// ---- Run / Continue with a fakeRunner ----
+//
+// Streaming wiring is exercised here without spinning up a real loop.
+// fakeRunner implements runner.Runner — it fires the OnRegistered
+// callback synthetically + emits a few events + returns nil. Tests
+// assert the proto stream conveys both the synthetic "session" /
+// "agent" frames AND each provider event.
+
+func TestRun_Streaming(t *testing.T) {
+	fr := &fakeRunner{
+		registered: registrationFrame{
+			AgentID: "a_top", RunID: "r_top", SessionID: "s_top",
+		},
+		events: []proverevent{
+			{typ: "text", text: "hello"},
+			{typ: "tool_use", toolName: "Read", toolInput: []byte(`{"path":"/x"}`)},
+			{typ: "done", stopReason: "end_turn"},
+		},
+	}
+	client, cleanup := startTestServerWithRunner(t, fr)
+	defer cleanup()
+
+	stream, err := client.Run(context.Background(), &loomcyclepb.RunRequest{Agent: "default"})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	got := drain(t, stream)
+	// Expected: 2 synthetic frames (session, agent) + 3 events.
+	if len(got) != 5 {
+		t.Fatalf("frames: got %d, want 5\n%+v", len(got), got)
+	}
+	if got[0].Type != "session" || got[0].Text != "s_top" {
+		t.Errorf("frame[0]: %+v", got[0])
+	}
+	if got[1].Type != "agent" || got[1].Text != "a_top" {
+		t.Errorf("frame[1]: %+v", got[1])
+	}
+	if !strings.Contains(got[1].Error, "r_top") || !strings.Contains(got[1].Error, "s_top") {
+		t.Errorf("frame[1].error envelope missing run/session: %s", got[1].Error)
+	}
+	if got[2].Type != "text" || got[2].Text != "hello" {
+		t.Errorf("frame[2]: %+v", got[2])
+	}
+	if got[3].ToolUse == nil || got[3].ToolUse.Name != "Read" {
+		t.Errorf("frame[3] tool_use: %+v", got[3])
+	}
+	if got[4].StopReason != "end_turn" {
+		t.Errorf("frame[4] stop_reason: %+v", got[4])
+	}
+}
+
+func TestRun_StreamingErrorMapping(t *testing.T) {
+	cases := []struct {
+		name     string
+		runErr   error
+		wantCode codes.Code
+	}{
+		{"unknown agent", runner.ErrUnknownAgent, codes.InvalidArgument},
+		{"session not found", runner.ErrSessionNotFound, codes.NotFound},
+		{"session busy", runner.ErrSessionBusy, codes.FailedPrecondition},
+		{"agent_id in use", runner.ErrAgentIDInUse, codes.AlreadyExists},
+		{"backpressure", runner.ErrBackpressure, codes.ResourceExhausted},
+		{"internal", runner.ErrInternal, codes.Internal},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fr := &fakeRunner{returnErr: tc.runErr}
+			client, cleanup := startTestServerWithRunner(t, fr)
+			defer cleanup()
+
+			stream, err := client.Run(context.Background(), &loomcyclepb.RunRequest{Agent: "default"})
+			if err != nil {
+				t.Fatalf("Run: %v", err)
+			}
+			_, err = stream.Recv()
+			if status.Code(err) != tc.wantCode {
+				t.Errorf("got code=%s, want %s; err=%v", status.Code(err), tc.wantCode, err)
+			}
+		})
+	}
+}
+
+func TestContinue_RequiresSessionID(t *testing.T) {
+	fr := &fakeRunner{}
+	client, cleanup := startTestServerWithRunner(t, fr)
+	defer cleanup()
+
+	stream, err := client.Continue(context.Background(), &loomcyclepb.ContinueRequest{}) // no session_id
+	if err != nil {
+		t.Fatalf("Continue: %v", err)
+	}
+	_, err = stream.Recv()
+	if status.Code(err) != codes.InvalidArgument {
+		t.Errorf("code=%s, want InvalidArgument", status.Code(err))
+	}
+}
+
+// ---- fakeRunner + helpers ----
+
+// fakeRunner satisfies runner.Runner without spinning up a real
+// agent loop. Tests configure it with a registration frame + a list
+// of events to emit + an optional error to return.
+type fakeRunner struct {
+	registered registrationFrame
+	events     []proverevent
+	returnErr  error
+}
+
+type registrationFrame struct {
+	AgentID, RunID, SessionID, ParentAgentID string
+}
+
+type proverevent struct {
+	typ        string
+	text       string
+	toolName   string
+	toolInput  []byte
+	stopReason string
+}
+
+func (f *fakeRunner) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunCallbacks) error {
+	if f.returnErr != nil {
+		return f.returnErr
+	}
+	if cb.OnRegistered != nil {
+		cb.OnRegistered(f.registered.AgentID, f.registered.RunID, f.registered.SessionID, f.registered.ParentAgentID)
+	}
+	for _, e := range f.events {
+		ev := providers.Event{
+			Type:       providers.EventType(e.typ),
+			Text:       e.text,
+			StopReason: e.stopReason,
+		}
+		if e.toolName != "" {
+			ev.ToolUse = &providers.ToolUse{Name: e.toolName, Input: e.toolInput}
+		}
+		if cb.OnEvent != nil {
+			cb.OnEvent(ev)
+		}
+	}
+	return nil
+}
+
+// startTestServerWithRunner is the streaming-test variant of
+// startTestServer — same fixture, plus a Runner injection.
+func startTestServerWithRunner(t *testing.T, r runner.Runner) (loomcyclepb.LoomcycleClient, func()) {
+	t.Helper()
+
+	st := newTestStore(t)
+	reg := cancel.NewRegistry()
+
+	adapter := New(Config{
+		Store: st, CancelReg: reg, Runner: r,
+		BuildCommit: "test-commit", BuildTime: "test-time",
+	})
+
+	grpcSrv := googlegrpc.NewServer(
+		googlegrpc.UnaryInterceptor(adapter.UnaryAuthInterceptor()),
+		googlegrpc.StreamInterceptor(adapter.StreamAuthInterceptor()),
+	)
+	loomcyclepb.RegisterLoomcycleServer(grpcSrv, adapter)
+
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	go func() { _ = grpcSrv.Serve(lis) }()
+
+	conn, err := googlegrpc.NewClient(lis.Addr().String(),
+		googlegrpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	cleanup := func() {
+		_ = conn.Close()
+		grpcSrv.GracefulStop()
+	}
+	return loomcyclepb.NewLoomcycleClient(conn), cleanup
+}
+
+// drain reads every Event from a Run/Continue stream until EOF or
+// error. Used by the streaming tests to assert frame ordering +
+// content.
+func drain(t *testing.T, stream loomcyclepb.Loomcycle_RunClient) []*loomcyclepb.Event {
+	t.Helper()
+	var out []*loomcyclepb.Event
+	for {
+		ev, err := stream.Recv()
+		if err != nil {
+			// EOF on a successful stream is the natural terminator;
+			// other errors fail the test.
+			if err.Error() == "EOF" || strings.Contains(err.Error(), "EOF") {
+				return out
+			}
+			t.Fatalf("Recv: %v", err)
+		}
+		out = append(out, ev)
 	}
 }

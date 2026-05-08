@@ -30,20 +30,25 @@ import (
 
 	"github.com/denn-gubsky/loomcycle/internal/api/grpc/loomcyclepb"
 	"github.com/denn-gubsky/loomcycle/internal/cancel"
+	"github.com/denn-gubsky/loomcycle/internal/loop"
+	"github.com/denn-gubsky/loomcycle/internal/providers"
+	"github.com/denn-gubsky/loomcycle/internal/runner"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 )
 
-// Server implements loomcyclepb.LoomcycleServer over the same backing
-// state as internal/api/http.Server. The two are constructed from the
-// same dependencies in cmd/loomcycle/main.go and intentionally do NOT
-// share a struct — keeping them parallel rather than nested makes
-// each surface separately testable and avoids cross-package import
-// cycles.
+// Server implements loomcyclepb.LoomcycleServer. The metadata RPCs
+// (Health, GetAgent, CancelAgent, ListUserAgents, GetTranscript) read
+// from the same Store + cancel.Registry the HTTP server uses; the
+// streaming RPCs (Run, Continue) delegate to a runner.Runner — in
+// production this is the *internal/api/http.Server instance from
+// main.go, so a cancel issued via gRPC reaches a run started via
+// HTTP and vice versa.
 type Server struct {
 	loomcyclepb.UnimplementedLoomcycleServer
 
 	store     store.Store
 	cancelReg *cancel.Registry
+	runner    runner.Runner
 
 	// authToken is the bearer token clients must present in the
 	// `authorization` gRPC metadata header. Empty means open-mode
@@ -62,11 +67,14 @@ type Server struct {
 	startedAt time.Time
 }
 
-// Config carries the server's construction-time inputs. Same shape
-// the HTTP server takes.
+// Config carries the server's construction-time inputs.
 type Config struct {
 	Store       store.Store
 	CancelReg   *cancel.Registry
+	// Runner is the wire-agnostic loop driver. *internal/api/http.Server
+	// satisfies it. May be nil — Run + Continue then return
+	// codes.Unimplemented (useful for tests that don't need streaming).
+	Runner      runner.Runner
 	AuthToken   string
 	BuildCommit string
 	BuildTime   string
@@ -78,6 +86,7 @@ func New(cfg Config) *Server {
 	return &Server{
 		store:       cfg.Store,
 		cancelReg:   cfg.CancelReg,
+		runner:      cfg.Runner,
 		authToken:   cfg.AuthToken,
 		buildCommit: cfg.BuildCommit,
 		buildTime:   cfg.BuildTime,
@@ -380,20 +389,235 @@ func (s *Server) MustLogStartupBanner(addr string) {
 }
 
 // ========================
-// Streaming RPC stubs (PR 2)
+// Streaming RPCs
 // ========================
 
-// Run server-streams events from a fresh agent run. PR 2 wires this
-// into the same loop runner the HTTP handleRuns drives; PR 1 stubs
-// it so adapters can compile against the full proto without the gRPC
-// surface refusing-to-implement at the type level.
+// Run server-streams events from a fresh agent run. Mirrors HTTP's
+// POST /v1/runs. The gRPC stream's first message is always an Event
+// of type "session" carrying the new session_id, followed by an
+// Event of type "agent" carrying agent_id / run_id (parity with the
+// HTTP SSE side-channel frames). After that, every providers.Event
+// emitted by the loop becomes one Event message on the stream.
+//
+// Returning nil ends the stream cleanly; returning a status error
+// surfaces the failure to the client.
 func (s *Server) Run(req *loomcyclepb.RunRequest, stream loomcyclepb.Loomcycle_RunServer) error {
-	return status.Error(codes.Unimplemented, "Run streaming lands in v0.5.5 PR 2 — use HTTP+SSE for now")
+	if s.runner == nil {
+		return status.Error(codes.Unimplemented, "Run streaming requires a runner; this Server was constructed without one")
+	}
+	in := runInputFromProto(req.GetAgent(), req.GetSessionId(), req.GetSegments(),
+		req.GetAllowedTools(), req.GetAllowedHosts(), req.GetWebSearchFilter(),
+		req.GetUserId(), req.GetAgentId())
+	return s.driveStream(stream.Context(), stream, in)
 }
 
-// Continue server-streams events from a continuation. Same PR 2
-// caveat as Run.
+// Continue server-streams events from a continuation. Mirrors HTTP's
+// POST /v1/sessions/{id}/messages. Same stream shape as Run; the
+// "session" frame echoes the existing session_id (rather than
+// announcing a new one) so adapters can use one decoder for both.
 func (s *Server) Continue(req *loomcyclepb.ContinueRequest, stream loomcyclepb.Loomcycle_ContinueServer) error {
-	return status.Error(codes.Unimplemented, "Continue streaming lands in v0.5.5 PR 2 — use HTTP+SSE for now")
+	if s.runner == nil {
+		return status.Error(codes.Unimplemented, "Continue streaming requires a runner; this Server was constructed without one")
+	}
+	if req.GetSessionId() == "" {
+		return status.Error(codes.InvalidArgument, "session_id is required for Continue")
+	}
+	in := runInputFromProto(/*agent=*/ "", req.GetSessionId(), req.GetSegments(),
+		req.GetAllowedTools(), req.GetAllowedHosts(), req.GetWebSearchFilter(),
+		/*userID=*/ "", req.GetAgentId())
+	return s.driveStream(stream.Context(), stream, in)
+}
+
+// runStreamSink abstracts the two streaming server types
+// (Loomcycle_RunServer and Loomcycle_ContinueServer) to one Send
+// method so driveStream is generic across both RPC shapes.
+type runStreamSink interface {
+	Send(*loomcyclepb.Event) error
+}
+
+// driveStream translates the runner.RunCallbacks into stream.Send
+// calls, runs the unified loop, and maps runner.ErrFoo → gRPC
+// status codes on completion.
+//
+// The OnRegistered callback emits two synthetic Events on the stream
+// — type="session" with the session_id in Text, and type="agent"
+// with agent_id+run_id+session_id+parent_agent_id encoded into
+// fields the proto Event already carries (Text=agent_id;
+// StopReason=parent_agent_id for transport efficiency). Adapters
+// that want a typed first frame can decode these by their type
+// strings; the wire shape mirrors HTTP's "session" + "agent" SSE
+// side-channel frames.
+func (s *Server) driveStream(ctx context.Context, stream runStreamSink, in runner.RunInput) error {
+	// Send error captured from OnEvent so we can fail the RPC if
+	// the client disappears mid-stream. Without this the loop
+	// would keep emitting events into a broken pipe.
+	var sendErr error
+
+	cb := runner.RunCallbacks{
+		OnRegistered: func(agentID, runID, sessionID, parentAgentID string) {
+			// "session" frame.
+			if err := stream.Send(&loomcyclepb.Event{
+				Type: "session",
+				Text: sessionID,
+			}); err != nil {
+				sendErr = err
+				return
+			}
+			// "agent" frame — pack the four IDs into the existing
+			// Event fields so we don't need a new proto message.
+			// Adapters parse: type=="agent", text=agent_id,
+			// stop_reason=parent_agent_id, plus a JSON envelope in
+			// `error` for run_id+session_id (using `error` as a
+			// generic string carrier; sub-optimal but avoids a
+			// proto change in PR 2).
+			payload := agentFrameJSON(agentID, runID, sessionID, parentAgentID)
+			_ = stream.Send(&loomcyclepb.Event{
+				Type:       "agent",
+				Text:       agentID,
+				StopReason: parentAgentID,
+				Error:      payload,
+			})
+		},
+		OnEvent: func(ev providers.Event) {
+			if sendErr != nil {
+				return // skip emits once the stream is broken
+			}
+			if err := stream.Send(eventToProto(ev)); err != nil {
+				sendErr = err
+			}
+		},
+	}
+
+	runErr := s.runner.RunOnce(ctx, in, cb)
+	if sendErr != nil {
+		// Stream broke mid-run — the runner kept going (correct, for
+		// transcript persistence), but we surface to the client.
+		return status.Errorf(codes.Canceled, "stream send failed: %v", sendErr)
+	}
+	return mapRunnerErr(runErr)
+}
+
+// runInputFromProto maps the proto request fields into the
+// runner.RunInput shared between Run and Continue.
+func runInputFromProto(
+	agent, sessionID string,
+	segments []*loomcyclepb.PromptSegment,
+	allowedTools []string,
+	allowedHosts *loomcyclepb.HostAllowlist,
+	webSearchFilter, userID, agentID string,
+) runner.RunInput {
+	in := runner.RunInput{
+		Agent:           agent,
+		SessionID:       sessionID,
+		Segments:        segmentsFromProto(segments),
+		AllowedTools:    allowedTools,
+		WebSearchFilter: webSearchFilter,
+		UserID:          userID,
+		AgentID:         agentID,
+	}
+	if allowedHosts != nil {
+		// Proto3 message-type field present → caller did supply a
+		// list (possibly empty). Mirrors HTTP's *[]string distinction
+		// between nil (no narrowing) and []string{} (deny-all).
+		list := allowedHosts.GetList()
+		in.AllowedHosts = &list
+	}
+	return in
+}
+
+func segmentsFromProto(segs []*loomcyclepb.PromptSegment) []loop.PromptSegment {
+	out := make([]loop.PromptSegment, 0, len(segs))
+	for _, s := range segs {
+		blocks := make([]loop.PromptContentBlock, 0, len(s.GetContent()))
+		for _, b := range s.GetContent() {
+			blocks = append(blocks, loop.PromptContentBlock{
+				Type:      b.GetType(),
+				Text:      b.GetText(),
+				Cacheable: b.GetCacheable(),
+			})
+		}
+		out = append(out, loop.PromptSegment{
+			Role:    s.GetRole(),
+			Content: blocks,
+		})
+	}
+	return out
+}
+
+// eventToProto maps a providers.Event onto the proto Event message.
+// The proto fields mirror providers.Event 1:1 — see proto/loomcycle.proto.
+func eventToProto(ev providers.Event) *loomcyclepb.Event {
+	out := &loomcyclepb.Event{
+		Type:       string(ev.Type),
+		Text:       ev.Text,
+		Error:      ev.Error,
+		IsError:    ev.IsError,
+		StopReason: ev.StopReason,
+	}
+	if ev.ToolUse != nil {
+		out.ToolUse = &loomcyclepb.ToolUse{
+			Id:    ev.ToolUse.ID,
+			Name:  ev.ToolUse.Name,
+			Input: ev.ToolUse.Input,
+		}
+	}
+	if ev.Usage != nil {
+		out.Usage = &loomcyclepb.Usage{
+			InputTokens:         int64(ev.Usage.InputTokens),
+			OutputTokens:        int64(ev.Usage.OutputTokens),
+			CacheCreationTokens: int64(ev.Usage.CacheCreationTokens),
+			CacheReadTokens:     int64(ev.Usage.CacheReadTokens),
+			Model:               ev.Usage.Model,
+		}
+	}
+	if ev.Retry != nil {
+		out.Retry = &loomcyclepb.Retry{
+			Provider: ev.Retry.Provider,
+			Attempt:  int32(ev.Retry.Attempt),
+			WaitMs:   ev.Retry.WaitMs,
+			Reason:   ev.Retry.Reason,
+		}
+	}
+	return out
+}
+
+// agentFrameJSON encodes the four registration IDs into a compact
+// JSON object stored in the synthetic "agent" Event's Error field.
+// Adapters decode this on the client side. Hand-rolled to avoid
+// pulling encoding/json into the streaming hot path.
+func agentFrameJSON(agentID, runID, sessionID, parentAgentID string) string {
+	return `{"agent_id":"` + agentID +
+		`","run_id":"` + runID +
+		`","session_id":"` + sessionID +
+		`","parent_agent_id":"` + parentAgentID + `"}`
+}
+
+// mapRunnerErr converts a runner.ErrFoo (or wrapped variant) into a
+// gRPC status error. Preserves the underlying message so adapter
+// logs can correlate with HTTP-side error bodies.
+func mapRunnerErr(err error) error {
+	if err == nil {
+		return nil
+	}
+	switch {
+	case errors.Is(err, runner.ErrUnknownAgent):
+		return status.Error(codes.InvalidArgument, err.Error())
+	case errors.Is(err, runner.ErrInvalidArgument):
+		return status.Error(codes.InvalidArgument, err.Error())
+	case errors.Is(err, runner.ErrUnknownProvider):
+		return status.Error(codes.InvalidArgument, err.Error())
+	case errors.Is(err, runner.ErrSessionRequired):
+		return status.Error(codes.FailedPrecondition, err.Error())
+	case errors.Is(err, runner.ErrSessionNotFound):
+		return status.Error(codes.NotFound, err.Error())
+	case errors.Is(err, runner.ErrSessionBusy):
+		return status.Error(codes.FailedPrecondition, err.Error())
+	case errors.Is(err, runner.ErrAgentIDInUse):
+		return status.Error(codes.AlreadyExists, err.Error())
+	case errors.Is(err, runner.ErrBackpressure):
+		return status.Error(codes.ResourceExhausted, err.Error())
+	default:
+		return status.Errorf(codes.Internal, "runner: %v", err)
+	}
 }
 
