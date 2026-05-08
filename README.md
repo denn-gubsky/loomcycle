@@ -57,6 +57,18 @@ curl -N http://127.0.0.1:8787/v1/runs \
   }'
 ```
 
+## What's in v0.7.0
+
+| Surface             | Status |
+|---------------------|--------|
+| **Tier-based resolution** | ✅ Agents declare `tier: low \| middle \| high` instead of pinning a specific model. Resolver picks `(provider, model)` against a live availability matrix. Per-agent `providers:` and `models:` overrides cover asymmetric pinning. Explicit pins from v0.6.x continue to work. |
+| **Live `/v1/models` probes** | ✅ Each driver implements `Probe` + `ListModels`. Startup probes run in parallel with a 5s deadline; periodic re-probe runs every 15 min (configurable up to 1h via `LOOMCYCLE_RESOLVE_PROBE_INTERVAL_MS`). |
+| **`Excluded` flag**  | ✅ Providers without API keys are explicitly marked excluded in the matrix — distinct from "probe attempted, failed". Visible in `Resolver.Snapshot()` for dashboards. Startup logs surface the state. |
+| **Reactive stall feedback** | ✅ Loop calls `MarkStalled` on driver errors (5xx after retry, mid-stream errors). Resolver skips stalled `(provider, model)` pairs until next probe revives. `ctx.Err()` guards prevent user-cancellations from polluting the matrix. |
+| **Per-driver effort hint** | ✅ Agent yaml: `effort: low \| medium \| high`. Anthropic → `thinking.budget_tokens` (haiku always skips); OpenAI → `reasoning_effort`; DeepSeek inherits OpenAI; Ollama is a no-op. Loop logs once per Run when effort is dropped. |
+
+**See [`docs/PLAN.md#v070--current`](docs/PLAN.md#v070--current) for the full feature breakdown and the cv-adapter / ai-detector example showing how to enforce different model families across a verification pipeline.**
+
 ## What's in v0.6.0
 
 | Surface             | Status |
@@ -177,7 +189,7 @@ Most-used knobs (full list in `.env.example` + `loomcycle.example.yaml`):
 - `docs/TOOLS.md` — the two-layer default-deny model end-to-end, every built-in tool, MCP / LocalAPI integrations, per-request narrowing.
 - `docs/POSTGRES.md` — operator guide for the v0.5.0 Postgres backend: configuration, migrations, sqlite→postgres data migration runbook, concurrency benchmark.
 - `docs/GRPC.md` — operator guide for the v0.5.5 gRPC surface: enablement, wire-shape parity with HTTP+SSE, error mapping, TLS / coexistence recipes, Python adapter quick-start.
-- `docs/PLAN.md` — public roadmap. v0.4.0 / v0.5.0 / v0.5.5 / v0.6.0 shipped status; v0.7+ near-term + v1.0 outline.
+- `docs/PLAN.md` — public roadmap. v0.4.0 / v0.5.0 / v0.5.5 / v0.6.0 / v0.7.0 shipped status; v0.7.x near-term + v1.0 outline.
 - `CLAUDE.md` — project guide for agents working in this repo (Claude Code).
 
 ## License

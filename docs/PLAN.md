@@ -2,7 +2,29 @@
 
 This is the public roadmap. For decision history, regret notes, and per-version commit-by-commit details, see `doc-internal/PLAN.md` (gitignored).
 
-## v0.6.0 — current
+## v0.7.0 — current
+
+**Status: shipped (2026-05-08).** Tag `v0.7.0` on `main`, merged via PRs #21 + #22 + #23. Adds the model-resolution matrix: agents declare a tier (low / middle / high) plus an optional effort hint, the runtime picks (provider, model) against an availability matrix that's live-probed at startup and re-probed every 15 minutes. Closes the v0.7+ near-term scope from v0.6.0.
+
+**What's in v0.7.0 (vs v0.6.0):**
+
+- **Tier-based resolution.** Agent yaml declares `tier: low | middle | high`; resolver walks library priority + tier candidates and picks the first available `(provider, model)`. Per-agent overrides for `providers:` (full priority replacement) and `models:` (full tier-candidate replacement) cover the asymmetric pinning cases — see the cv-generator / ai-detector example in `loomcycle.example.yaml`. Explicit `provider:+model:` pins from v0.6.x continue to work unchanged.
+- **Live probes per provider.** `internal/providers.Provider` gains `Probe(ctx) error` and `ListModels(ctx) ([]string, error)`. Each driver implements its variant: Anthropic / OpenAI / DeepSeek hit `/v1/models`, Ollama hits `/api/tags`. Startup runs all configured probes in parallel with a 5-second deadline; results seed the matrix.
+- **`Excluded` flag for unconfigured providers.** Providers without API keys (or for Ollama, no base URL) are explicitly marked `Excluded` in the matrix — distinct from "probe attempted but failed". `Snapshot()` surfaces both flags so dashboards can render "deliberately not enabled" apart from "tried and failed". Operators see startup logs like `resolve probe: deepseek excluded (DEEPSEEK_API_KEY not set)`.
+- **Reactive stall feedback.** Loop calls `MarkStalled(provider, model, reason)` on driver errors that suggest the model is broken (5xx after retry, mid-stream errors). `ctx.Err()` guards prevent user-cancellations from polluting the matrix. Next periodic probe revives or confirms the stall. Stall is per-`(provider, model)` so one bad model doesn't take down a whole driver.
+- **Per-driver effort translation.** Agent yaml declares `effort: low | medium | high` alongside the tier. Drivers translate where supported: Anthropic → `thinking.budget_tokens` (low → skip; medium → 2048; high → 8192; haiku always skips); OpenAI → `reasoning_effort` (pass-through verbatim); DeepSeek inherits OpenAI; Ollama is a no-op. The loop logs `effort dropped` once per Run when an agent declared effort but landed on a `SupportsEffort=false` provider.
+- **Periodic re-probe.** Background goroutine on the configured cadence (default 15 min, max 1 hour via `LOOMCYCLE_RESOLVE_PROBE_INTERVAL_MS`). Tied to `bgCtx` for graceful shutdown alongside the heartbeat sweeper and session-lock GC.
+- **Constant-time bearer compare hardening (carry-over from v0.6.0).** `internal/auth.CompareBearer` (sha256+CTC) replaces raw `subtle.ConstantTimeCompare` on both HTTP and gRPC. Closes the length-leak side channel.
+
+**Architecture decisions:**
+
+- **Anthropic budget clamping.** Anthropic's API requires `thinking.budget_tokens < max_tokens` AND `≥ 1024`. When the requested budget would equal or exceed `max_tokens`, the driver clamps to `max_tokens - 1024` (leaves 1024 for the response). Below the 1024 minimum, the field is dropped entirely. Operators wanting `tier: high + effort: high` to actually get the full 8192 thinking budget should set `max_tokens: 16384` explicitly.
+- **No live cutover for stall** — operators see `runs.model` reflecting the wire-resolved alias from PR 2 onwards, so cost retros remain accurate even when the resolver fell through to a different candidate mid-Run.
+- **No `runs.tier` column** — the resolver's input (the requested tier) and its output (resolved provider+model) are both observable today. Adding a column for "what tier did this come from" was deferred until a consumer asks for it.
+
+For the v0.6.x cost-routing strategy that drove this work, see [v0.6.0](#v060--earlier).
+
+## v0.6.0 — previous
 
 **Status: shipped (2026-05-08).** Tag `v0.6.0` on `main`, merged via PRs #18 + #19 + the OpenAI driver `Usage.Model` fix. Provider matrix now covers four backends: Anthropic for user-sensitive paths, DeepSeek for high-volume public-data work, Ollama (local llama) for offline / cost-floor scenarios, OpenAI for general use. Per-agent provider routing in YAML lets a consumer mix and match by data sensitivity.
 
@@ -24,7 +46,7 @@ This is the public roadmap. For decision history, regret notes, and per-version 
 
 Architecture decision: DeepSeek is a separate `provider: deepseek` rather than `provider: openai` with a quirky base URL. Three reasons: (1) explicit yaml config documents intent, (2) per-provider `runs.model` rollups can't conflate OpenAI and DeepSeek pricing, (3) a place to absorb DeepSeek-specific quirks (reasoning_content for the reasoner model, future rate-limit header differences) without polluting the OpenAI driver.
 
-## v0.5.5 — previous
+## v0.5.5 — earlier
 
 **Status: shipped (2026-05-08).** Tag `v0.5.5` on `main`, merged via PR #16. Wire surface coverage: gRPC alongside HTTP+SSE, async Python adapter as a first-class consumer.
 
@@ -83,14 +105,15 @@ Architecture decision: DeepSeek is a separate `provider: deepseek` rather than `
 
 For usage: see [README](../README.md). For the architecture: see [ARCHITECTURE.md](ARCHITECTURE.md). For tool policy: see [TOOLS.md](TOOLS.md).
 
-## v0.7+ — near-term
+## v0.7.x — near-term
 
-Items already designed or scoped, ready to pick up. Distinct from the v1.0 outline below: these are bounded chunks of work with a known shape, not framework-defining primitives.
+Items scoped after v0.7.0 ships, ordered roughly by readiness. Distinct from the v1.0 outline below: these are bounded chunks of work with a known shape, not framework-defining primitives.
 
 - **Tool-use hooks implementation** (`PreToolUse` / `PostToolUse`). The public outline lives in [Framework primitives → Tool-use hooks](#tool-use-hooks-pretoolusepostooluse) below. Documentation restored to the roadmap in PR #17. Implementation follows once the wire shape (Go interface vs. HTTP webhook vs. MCP-callable) is decided in an RFC.
-- **`EventThinking` event type.** Recent Ollama versions surface qwen3 / deepseek-r1 reasoning output in a separate `message.thinking` field that the Ollama driver currently silently drops. Acceptable for jobs-search-agent's structured-output public-data agents, but blocks future chain-of-thought consumers and hides cost (operators pay for thinking tokens via `output_tokens` without visibility into what they bought). RFC at pickup; same event type would apply to OpenAI o1-family support when that lands.
-- **`TestBashTimeout` race-detector reliability.** The 100ms timeout in `internal/tools/builtin/bash_test.go` doesn't fire reliably under the race detector on slow CI runners (full `sleep 5` runs to completion instead of cancelling). Real timer-signal starvation, not a margin tweak. Likely needs a refactor of `Bash.Execute()`'s timeout machinery to use `exec.CommandContext` rather than a separate timer goroutine.
-- **jobs-search-agent provider routing rollout.** v0.6.0 ships the per-agent `provider:` knob and three first-class backends (Anthropic / DeepSeek / Ollama). The consumer-side flip happens in `jobs-search-agent`'s agent yaml: public-data agents (ATS filtering, position relevance, company profiling) move to `provider: deepseek`; CV / CL generation stays on `provider: anthropic`. Validation: cost rollups by `runs.model` should show DeepSeek dominating volume while Anthropic dominates spend.
+- **`EventThinking` event type.** Recent Ollama versions surface qwen3 / deepseek-r1 reasoning output in a separate `message.thinking` field that the Ollama driver currently silently drops. Acceptable for jobs-search-agent's structured-output public-data agents, but blocks future chain-of-thought consumers and hides cost (operators pay for thinking tokens via `output_tokens` without visibility into what they bought). The v0.7.0 effort wiring partially addresses the *input* side (operators control thinking budget); EventThinking addresses the *output* side (operators see what was thought). RFC at pickup; same event type would apply to OpenAI o1-family support when that lands.
+- **`TestBashTimeout` race-detector reliability.** The 100ms timeout in `internal/tools/builtin/bash_test.go` doesn't fire reliably under the race detector on slow CI runners (full `sleep 5` runs to completion instead of cancelling). Real timer-signal starvation, not a margin tweak. Likely needs a refactor of `Bash.Execute()`'s timeout machinery to use `exec.CommandContext` rather than a separate timer goroutine. Has flaked CI on every PR since v0.5.5.
+- **jobs-search-agent provider routing rollout.** v0.6.0 shipped the per-agent `provider:` knob; v0.7.0 added tier resolution. The consumer-side flip happens in `jobs-search-agent`'s agent yaml: public-data agents (ATS filtering, position relevance, company profiling) move to `tier: low` or `provider: deepseek`; CV / CL generation stays explicit on Anthropic. The cv-adapter / ai-detector pair specifically uses tier+per-agent-overrides to enforce different model families for the AI-review pipeline. Validation: cost rollups by `runs.model` should show DeepSeek dominating volume while Anthropic dominates spend.
+- **Resolver Snapshot endpoint.** v0.7.0 ships `Resolver.Snapshot()` for in-process introspection but no HTTP / gRPC surface to expose it. A small admin endpoint (`GET /v1/_resolver`) gated by the auth bearer would let dashboards render the matrix state without log scraping. Bounded scope; defer until the first consumer asks.
 
 ## v1.0 — planned
 
