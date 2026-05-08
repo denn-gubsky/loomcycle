@@ -263,6 +263,13 @@ type Env struct {
 	// is reclaimed. Default 10 minutes. Env:
 	// LOOMCYCLE_SESSION_LOCK_MAX_IDLE_MS.
 	SessionLockMaxIdle time.Duration
+
+	// GrpcAddr is the gRPC listener address (e.g. ":8788" or
+	// "127.0.0.1:8788"). Empty disables the gRPC surface; HTTP+SSE
+	// always listens on ListenAddr regardless. Both surfaces share
+	// the same Store / cancel registry / config — operators can
+	// run with one, the other, or both. Env: LOOMCYCLE_GRPC_ADDR.
+	GrpcAddr string
 }
 
 // Load reads a YAML file and the process env. Empty path returns defaults +
@@ -350,6 +357,11 @@ func Load(path string) (*Config, error) {
 	if cfg.Storage.Backend == "" {
 		cfg.Storage.Backend = "sqlite"
 	}
+
+	// gRPC server (v0.5.5+). Disabled by default; operator opts in
+	// by setting LOOMCYCLE_GRPC_ADDR. Coexists with HTTP+SSE (which
+	// remains the default and is on a separate port).
+	cfg.Env.GrpcAddr = os.Getenv("LOOMCYCLE_GRPC_ADDR")
 
 	// Heartbeat sweeper + session-lock GC env. All optional; defaults
 	// are sensible for a single-replica deployment.

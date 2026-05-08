@@ -20,7 +20,7 @@ PG_PASSWORD  ?= loomcycle
 
 PG_DSN := postgres://$(PG_USER):$(PG_PASSWORD)@127.0.0.1:$(PG_PORT)/$(PG_DATABASE)?sslmode=disable
 
-.PHONY: help build test test-pg pg-up pg-down pg-logs
+.PHONY: help build test test-pg pg-up pg-down pg-logs proto proto-deps
 
 help:
 	@echo "loomcycle dev targets:"
@@ -30,6 +30,8 @@ help:
 	@echo "  pg-up       — start an ephemeral Postgres container for the test fixture"
 	@echo "  pg-down     — stop + remove the test fixture container"
 	@echo "  pg-logs     — tail the test fixture container's logs"
+	@echo "  proto       — regenerate Go gRPC stubs from proto/loomcycle.proto"
+	@echo "  proto-deps  — install the Go protoc plugins (one-time)"
 	@echo ""
 	@echo "Local DSN: $(PG_DSN)"
 
@@ -85,3 +87,35 @@ pg-down:
 
 pg-logs:
 	docker logs -f $(PG_CONTAINER)
+
+# proto / gRPC codegen.
+#
+# We commit the generated *.pb.go files into the tree (alongside the
+# proto, under internal/api/grpc/loomcyclepb/) so a fresh checkout
+# builds without first running protoc. Re-run `make proto` whenever
+# proto/loomcycle.proto changes.
+PROTO_OUT_DIR := internal/api/grpc/loomcyclepb
+proto:
+	@if ! command -v protoc >/dev/null 2>&1; then \
+		echo "protoc not found; install via your package manager (e.g. brew install protobuf)"; \
+		exit 1; \
+	fi
+	@if ! command -v protoc-gen-go >/dev/null 2>&1; then \
+		echo "protoc-gen-go not found; run 'make proto-deps' first"; \
+		exit 1; \
+	fi
+	mkdir -p $(PROTO_OUT_DIR)
+	protoc \
+		--go_out=$(PROTO_OUT_DIR) \
+		--go_opt=paths=source_relative \
+		--go-grpc_out=$(PROTO_OUT_DIR) \
+		--go-grpc_opt=paths=source_relative \
+		--proto_path=proto \
+		proto/loomcycle.proto
+	@echo "regenerated $(PROTO_OUT_DIR)/*.pb.go"
+
+proto-deps:
+	go install google.golang.org/protobuf/cmd/protoc-gen-go@latest
+	go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@latest
+	@echo ""
+	@echo "Add $$(go env GOPATH)/bin to your PATH if it isn't already."

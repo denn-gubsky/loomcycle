@@ -1,0 +1,301 @@
+// loomcycle's gRPC service surface (v0.5.5).
+//
+// Mirrors the existing HTTP+SSE wire shape exactly — every RPC has a
+// 1:1 mapping to an HTTP route under /v1/. Both wire surfaces coexist
+// on the same loomcycle process; operators pick one (or both) via
+// LOOMCYCLE_GRPC_ADDR / LOOMCYCLE_LISTEN_ADDR.
+//
+// Compatibility:
+//   - The HTTP+SSE surface is the canonical contract for now.
+//     Anything that ships there must be expressible here without
+//     loss; proto changes follow HTTP+SSE, not the other way.
+//   - Field numbers are stable across v0.5.x. Adding a new field is
+//     non-breaking; removing or renumbering one is. v0 caveats apply
+//     until v1.0 is tagged.
+//   - The `status` strings use the same enum the HTTP API uses
+//     (running / completed / failed / cancelled) — represented as
+//     proto strings, not a typed enum, so adding a new state on the
+//     HTTP side doesn't require regenerating gRPC stubs everywhere.
+syntax = "proto3";
+
+package loomcycle.v1;
+
+option go_package = "github.com/denn-gubsky/loomcycle/internal/api/grpc/loomcyclepb;loomcyclepb";
+
+import "google/protobuf/timestamp.proto";
+
+// ========================
+// Service
+// ========================
+
+service Loomcycle {
+  // Run starts a fresh agent run and server-streams its events. One
+  // request → many Event responses. The stream terminates on EOF when
+  // the loop reaches its terminal state (done, failed, or cancelled).
+  //
+  // Mirrors POST /v1/runs.
+  rpc Run(RunRequest) returns (stream Event);
+
+  // Continue extends an existing session with a new run. The session's
+  // prior transcript is replayed into the loop's context; the response
+  // stream covers only the NEW events from this continuation.
+  //
+  // Mirrors POST /v1/sessions/{id}/messages.
+  rpc Continue(ContinueRequest) returns (stream Event);
+
+  // GetTranscript returns the full event history for a session,
+  // ordered by seq. Used by adapters that re-attach to a previously
+  // started session (e.g. cross-tab sync).
+  //
+  // Mirrors GET /v1/sessions/{id}/transcript.
+  rpc GetTranscript(GetTranscriptRequest) returns (Transcript);
+
+  // GetAgent returns one agent's current status + usage stats. Used
+  // by adapters polling for completion when the SSE/gRPC stream was
+  // interrupted (browser tab closed, network blip).
+  //
+  // Mirrors GET /v1/agents/{agent_id}.
+  rpc GetAgent(GetAgentRequest) returns (Agent);
+
+  // CancelAgent sets the agent's terminal status to "cancelled" and
+  // cascades the cancellation to every child via parent_agent_id.
+  //
+  // Mirrors POST /v1/agents/{agent_id}/cancel.
+  rpc CancelAgent(CancelAgentRequest) returns (CancelAgentResponse);
+
+  // ListUserAgents enumerates a user's recent agent runs, optionally
+  // filtered by status.
+  //
+  // Mirrors GET /v1/users/{user_id}/agents.
+  rpc ListUserAgents(ListUserAgentsRequest) returns (ListUserAgentsResponse);
+
+  // Health is the liveness probe. Returns build identifier + uptime.
+  //
+  // Mirrors GET /healthz (which is unauthenticated on the HTTP side;
+  // the gRPC equivalent stays unauthenticated for parity).
+  rpc Health(HealthRequest) returns (HealthResponse);
+}
+
+// ========================
+// Run / Continue
+// ========================
+
+message RunRequest {
+  // Agent name from the operator yaml's agents block.
+  string agent = 1;
+
+  // Session ID. Empty → start a fresh session; non-empty → continue
+  // the named session (transcript replayed before the new turn).
+  // The HTTP equivalent is "set the session_id field on POST /v1/runs".
+  string session_id = 2;
+
+  // Prompt content blocks (system + user mix). Empty → use the
+  // operator-configured agent system_prompt only.
+  repeated PromptSegment segments = 3;
+
+  // Per-call tool allowlist, intersected with the agent's allowed_tools.
+  // Empty → no narrowing (agent's full tool surface).
+  repeated string allowed_tools = 4;
+
+  // Per-call host allowlist for HTTP / WebFetch / WebSearch.
+  // Three states (proto3 doesn't support nullable repeated, so we use
+  // a wrapper):
+  //   - allowed_hosts unset (oneof not selected) — no narrowing
+  //   - allowed_hosts.list = [] — deny all (no host reachable)
+  //   - allowed_hosts.list = [...] — intersection with operator's list
+  HostAllowlist allowed_hosts = 5;
+
+  // WebSearch result-narrowing mode. Ignored when allowed_hosts is
+  // unset. "drop" (default) filters out non-allowed results;
+  // "keep" returns the full set.
+  string web_search_filter = 6;
+
+  // v0.4+ tracking fields. agent_id is the caller-supplied tracking
+  // handle (for cross-process status polls). user_id binds the run
+  // to a user for ListUserAgents + cancel-cascade.
+  string agent_id = 7;
+  string user_id = 8;
+}
+
+message ContinueRequest {
+  string session_id = 1;
+  repeated PromptSegment segments = 2;
+  repeated string allowed_tools = 3;
+  HostAllowlist allowed_hosts = 4;
+  string web_search_filter = 5;
+  string agent_id = 6;  // fresh tracking handle for this continuation
+}
+
+// HostAllowlist wraps a repeated string so the absence-of-list state
+// is distinguishable from the empty-list state on the wire.
+message HostAllowlist {
+  repeated string list = 1;
+}
+
+// PromptSegment mirrors loop.PromptSegment. Role is "system" | "user"
+// | "assistant"; in practice, gRPC callers send only "system" and
+// "user" segments and let the loop produce "assistant" turns.
+message PromptSegment {
+  string role = 1;
+  repeated PromptContentBlock content = 2;
+}
+
+// PromptContentBlock mirrors loop.PromptContentBlock. The trust
+// vocabulary stays HTTP-compatible:
+//   - "trusted-text" / "user-text" / "tool-output-text" / "third-party-text"
+// Cacheable=true marks this block for native provider caching
+// (Anthropic cache_control). Ignored on providers that don't support it.
+message PromptContentBlock {
+  string type = 1;
+  string text = 2;
+  bool cacheable = 3;
+}
+
+// ========================
+// Event (server-stream)
+// ========================
+
+// Event is one frame on the Run/Continue server stream. Mirrors
+// providers.Event 1:1 — fields stay nullable (proto3 message-type
+// fields default to nil-equivalent) so the wire shape can carry
+// "this event is just text" or "this event is a tool_use" or "this
+// event is a usage update" without per-type subclassing.
+message Event {
+  string type = 1;  // text | tool_use | tool_result | usage | retry | done | error
+  string text = 2;
+  ToolUse tool_use = 3;
+  Usage usage = 4;
+  string error = 5;
+  bool is_error = 6;        // tool_result with execution failure
+  Retry retry = 7;
+  string stop_reason = 8;   // end_turn | tool_use | max_tokens | stop_sequence
+}
+
+// ToolUse carries one tool_use block emitted by the model. The id is
+// the model's correlator (Claude tu_*, OpenAI call_*); name is the
+// tool's registered name; input is the raw JSON the model produced.
+message ToolUse {
+  string id = 1;
+  string name = 2;
+  bytes input = 3;
+}
+
+// Usage is the per-call token accounting. CacheCreation/Read tokens
+// surface on Anthropic provider responses; zero on others.
+message Usage {
+  int64 input_tokens = 1;
+  int64 output_tokens = 2;
+  int64 cache_creation_tokens = 3;
+  int64 cache_read_tokens = 4;
+  string model = 5;
+}
+
+// Retry mirrors providers.RetryInfo. Fired when a provider 429 is
+// being retried with backoff; gives adapters live "waiting on rate
+// limit" telemetry.
+message Retry {
+  string provider = 1;
+  int32 attempt = 2;
+  int64 wait_ms = 3;
+  string reason = 4;  // RetryReasonHeader | RetryReasonSchedule
+}
+
+// ========================
+// Transcript
+// ========================
+
+message GetTranscriptRequest {
+  string session_id = 1;
+}
+
+message Transcript {
+  repeated TranscriptEvent events = 1;
+}
+
+// TranscriptEvent is one persisted store.Event. The payload is raw
+// JSON bytes (matching the HTTP transcript surface) so adapters
+// decode the same way regardless of wire choice.
+message TranscriptEvent {
+  int64 seq = 1;
+  string session_id = 2;
+  string run_id = 3;
+  google.protobuf.Timestamp ts = 4;
+  string type = 5;
+  bytes payload = 6;
+}
+
+// ========================
+// Agent (status)
+// ========================
+
+message GetAgentRequest {
+  string agent_id = 1;
+}
+
+// Agent mirrors HTTP's agentResponse. Status is a string (running |
+// completed | failed | cancelled) so the wire stays compatible with
+// future status additions without regen.
+message Agent {
+  string agent_id = 1;
+  string run_id = 2;
+  string session_id = 3;
+  string user_id = 4;
+  string parent_agent_id = 5;
+  string status = 6;
+  google.protobuf.Timestamp started_at = 7;
+  google.protobuf.Timestamp completed_at = 8;
+  string stop_reason = 9;
+  string error = 10;
+  AgentUsage usage = 11;
+  google.protobuf.Timestamp last_heartbeat_at = 12;
+  // Live = true when the agent is still in the cancel registry (i.e.
+  // cancellable). Adapters use this to distinguish "running and
+  // cancellable" from "running per the row but the registry doesn't
+  // know about it" (process restart leaves the latter).
+  bool live = 13;
+}
+
+// AgentUsage mirrors agentResponseUsage.
+message AgentUsage {
+  int64 input_tokens = 1;
+  int64 output_tokens = 2;
+  int64 cache_creation_tokens = 3;
+  int64 cache_read_tokens = 4;
+  string model = 5;
+}
+
+message CancelAgentRequest {
+  string agent_id = 1;
+  string reason = 2;
+}
+
+message CancelAgentResponse {
+  // cancelled_count is the number of agents (this one plus any
+  // descendants reached via parent_agent_id walk) marked cancelled.
+  int32 cancelled_count = 1;
+}
+
+message ListUserAgentsRequest {
+  string user_id = 1;
+  // Optional status filter ("running" | "completed" | "failed" |
+  // "cancelled"). Empty → all statuses.
+  string status = 2;
+}
+
+message ListUserAgentsResponse {
+  repeated Agent agents = 1;
+}
+
+// ========================
+// Health
+// ========================
+
+message HealthRequest {}
+
+message HealthResponse {
+  bool ok = 1;
+  string commit = 2;
+  string built = 3;
+  // Uptime in seconds since process start.
+  int64 uptime_seconds = 4;
+}

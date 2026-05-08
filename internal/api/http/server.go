@@ -90,6 +90,15 @@ func New(cfg *config.Config, pr ProviderResolver, builtinTools []tools.Tool, sem
 	return s
 }
 
+// CancelRegistry exposes the in-memory registry so a parallel API
+// surface (the gRPC server in internal/api/grpc) can answer cancel /
+// status queries against the same state. Both surfaces are
+// constructed in cmd/loomcycle/main.go from the same dependencies;
+// they share the registry rather than maintaining parallel ones,
+// which would let a cancel issued via gRPC silently miss runs that
+// originated on the HTTP path (or vice versa).
+func (s *Server) CancelRegistry() *cancel.Registry { return s.cancelReg }
+
 // trySessionLock try-locks the session-scoped mutex for id. Returns
 // (release, true) on success and (nil, false) if another caller already
 // holds it — in which case the caller should respond 409 / session_busy.
