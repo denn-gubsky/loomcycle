@@ -55,6 +55,19 @@ curl -N http://127.0.0.1:8787/v1/runs \
   }'
 ```
 
+## What's in v0.5.0 (`feature-postgres` branch)
+
+| Surface             | Status |
+|---------------------|--------|
+| **Postgres backend** | ✅ Full `Store` adapter over `pgx/v5` + embedded `golang-migrate`. Same interface as SQLite; adapters share a contract suite so they can't drift. See [`docs/POSTGRES.md`](docs/POSTGRES.md). |
+| **SQLite stays first-class** | ✅ Default backend; both adapters tested against the same behavioural contract suite. |
+| **Heartbeat sweeper** | ✅ Periodic background goroutine marks runs whose process crashed mid-loop as `failed`. Default-on, env-tunable. |
+| **Session-lock map GC** | ✅ Refcounted + idle-pruned; closes the v0.3.2 leak where `sessionLocks` grew monotonically. |
+| **CLI subcommands**  | ✅ `loomcycle validate` · `agents list` · `health` · `migrate up\|down\|status` · `migrate sqlite-to-postgres` |
+| **`make pg-up` / `pg-down`** | ✅ Local Postgres fixture for tests + dev. |
+
+The bulk of v0.5.0 is operational: backbone you'll need before scaling past one replica. SQLite stays the default for compact installs.
+
 ## What's in v0.4.0
 
 | Surface             | Status |
@@ -98,7 +111,7 @@ curl -N http://127.0.0.1:8787/v1/runs \
                   │     ▼                                        │
                   │  Cache (Anthropic native; response KV ⏳)    │
                   │     ▼                                        │
-                  │  Store (SQLite ✅; Postgres / Redis ⏳)      │
+                  │  Store (SQLite ✅ default; Postgres ✅ v0.5)│
                   └──────────────────────────────────────────────┘
 ```
 
@@ -139,7 +152,8 @@ Most-used knobs (full list in `.env.example` + `loomcycle.example.yaml`):
 
 - `docs/ARCHITECTURE.md` — request flow, provider abstraction, agent loop, sub-agents, skills, storage, concurrency, cancellation.
 - `docs/TOOLS.md` — the two-layer default-deny model end-to-end, every built-in tool, MCP / LocalAPI integrations, per-request narrowing.
-- `docs/PLAN.md` — public roadmap. v0.4.0 status; v1.0 outline (Memory tool, Channel tool, LoomHelp, LoomCycle MCP, high-load runtime work).
+- `docs/POSTGRES.md` — operator guide for the v0.5.0 Postgres backend: configuration, migrations, sqlite→postgres data migration runbook, concurrency benchmark.
+- `docs/PLAN.md` — public roadmap. v0.4.0 + v0.5.0 status; v0.5.5 / v0.6.0 / v1.0 outlines.
 - `CLAUDE.md` — project guide for agents working in this repo (Claude Code).
 
 ## License

@@ -32,7 +32,10 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/providers/ollama"
 	"github.com/denn-gubsky/loomcycle/internal/providers/openai"
 	"github.com/denn-gubsky/loomcycle/internal/skills"
+	"github.com/denn-gubsky/loomcycle/internal/cli"
+	"github.com/denn-gubsky/loomcycle/internal/heartbeat"
 	"github.com/denn-gubsky/loomcycle/internal/store"
+	storepostgres "github.com/denn-gubsky/loomcycle/internal/store/postgres"
 	storesqlite "github.com/denn-gubsky/loomcycle/internal/store/sqlite"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 	"github.com/denn-gubsky/loomcycle/internal/tools/builtin"
@@ -55,6 +58,30 @@ var (
 )
 
 func main() {
+	// Subcommand dispatch BEFORE flag parsing — let `loomcycle
+	// validate ...` flow into the CLI surface without colliding with
+	// the server's own --config flag.
+	//
+	// First non-flag arg is the subcommand keyword. If it's one of
+	// the known subcommands, hand off to internal/cli and exit.
+	// Otherwise fall through to the server entry point (preserves
+	// backwards compat: `loomcycle --config foo.yaml` still works).
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "validate":
+			os.Exit(cli.RunValidate(os.Args[2:], os.Stdout, os.Stderr))
+		case "agents":
+			os.Exit(cli.RunAgents(os.Args[2:], os.Stdout, os.Stderr))
+		case "health":
+			os.Exit(cli.RunHealth(os.Args[2:], os.Stdout, os.Stderr))
+		case "migrate":
+			os.Exit(cli.RunMigrate(os.Args[2:], os.Stdout, os.Stderr))
+		case "help", "-h", "--help":
+			cli.PrintHelp(os.Stdout)
+			return
+		}
+	}
+
 	cfgPath := flag.String("config", "loomcycle.yaml", "path to config YAML")
 	showVersion := flag.Bool("version", false, "print build identifier and exit")
 	flag.Parse()
@@ -259,21 +286,15 @@ func main() {
 	}
 	mcpInitCancel()
 
-	// Storage: open SQLite under DataDir. We could no-op when DataDir is
-	// unset, but that would silently disable the transcript/continuation
-	// endpoints — better to just use a sensible default and persist.
-	if err := os.MkdirAll(cfg.Env.DataDir, 0o755); err != nil {
-		log.Fatalf("data dir: %v", err)
-	}
-	dbPath := filepath.Join(cfg.Env.DataDir, "loomcycle.db")
-	st, err := storesqlite.Open(dbPath)
+	// Storage: SQLite (default, compact installs) or Postgres
+	// (production, hundreds of concurrent agents). Both adapters
+	// implement the same store.Store interface; they're tested against
+	// a shared contract suite in CI so they can't drift silently.
+	storeIface, storeCloser, err := openStore(cfg)
 	if err != nil {
 		log.Fatalf("store: %v", err)
 	}
-	defer st.Close()
-	log.Printf("store: sqlite at %s", dbPath)
-
-	var storeIface store.Store = st
+	defer storeCloser()
 	srv := lchttp.New(cfg, pr, allTools, sem, storeIface)
 	httpServer := &http.Server{
 		Addr:              cfg.Env.ListenAddr,
@@ -284,6 +305,38 @@ func main() {
 	if cfg.Env.AuthToken == "" {
 		log.Printf("WARNING: LOOMCYCLE_AUTH_TOKEN is not set; /v1 routes are unauthenticated (dev mode)")
 	}
+
+	// Background goroutines (heartbeat sweeper + session-lock map GC)
+	// share a single ctx tied to the signal handler below — graceful
+	// shutdown cancels them alongside the HTTP server. We rely on the
+	// goroutines to exit promptly on ctx.Done(); both are documented
+	// to do so in their packages.
+	bgCtx, bgCancel := context.WithCancel(context.Background())
+	defer bgCancel()
+
+	if cfg.Env.HeartbeatSweeperEnabled && storeIface != nil {
+		sweeper := heartbeat.New(storeIface, heartbeat.Config{
+			Interval:   cfg.Env.HeartbeatSweepInterval,
+			StaleAfter: cfg.Env.HeartbeatStaleAfter,
+		})
+		go sweeper.Run(bgCtx)
+	} else {
+		log.Printf("heartbeat: sweeper disabled (LOOMCYCLE_HEARTBEAT_SWEEPER=0 or no Store)")
+	}
+
+	// Session-lock map GC. Defaults: prune entries idle ≥ 10 min, on
+	// a 5-min tick. Disabled when both interval and max-idle resolve
+	// to zero (operator can opt out by setting both to 0).
+	sessionGCInterval := cfg.Env.SessionLockGCInterval
+	if sessionGCInterval <= 0 {
+		sessionGCInterval = 5 * time.Minute
+	}
+	sessionGCMaxIdle := cfg.Env.SessionLockMaxIdle
+	if sessionGCMaxIdle <= 0 {
+		sessionGCMaxIdle = 10 * time.Minute
+	}
+	go srv.RunSessionLockGC(bgCtx, sessionGCInterval, sessionGCMaxIdle)
+	log.Printf("session-lock GC: interval=%s max_idle=%s", sessionGCInterval, sessionGCMaxIdle)
 
 	go func() {
 		log.Printf("loomcycle listening on %s", cfg.Env.ListenAddr)
@@ -297,9 +350,53 @@ func main() {
 	signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
 	<-sig
 	log.Println("shutting down…")
+	bgCancel() // tear down sweeper + GC goroutines first
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	_ = httpServer.Shutdown(ctx)
+}
+
+// openStore resolves the operator's storage choice (sqlite default;
+// postgres opt-in via storage.backend or LOOMCYCLE_STORAGE_BACKEND) and
+// returns a ready Store + a Close-and-log closer.
+//
+// Errors propagate up to log.Fatalf in main; they cover both
+// missing-config (postgres backend selected without a DSN) and
+// dial/migration failures (postgres unreachable, schema not initialised
+// when LOOMCYCLE_PG_AUTOMIGRATE=0).
+func openStore(cfg *config.Config) (store.Store, func(), error) {
+	switch cfg.Storage.Backend {
+	case "sqlite", "":
+		if err := os.MkdirAll(cfg.Env.DataDir, 0o755); err != nil {
+			return nil, nil, fmt.Errorf("data dir: %w", err)
+		}
+		dbPath := filepath.Join(cfg.Env.DataDir, "loomcycle.db")
+		st, err := storesqlite.Open(dbPath)
+		if err != nil {
+			return nil, nil, fmt.Errorf("sqlite open: %w", err)
+		}
+		log.Printf("store: sqlite at %s", dbPath)
+		return st, func() { _ = st.Close() }, nil
+
+	case "postgres":
+		if cfg.Storage.PgDSN == "" {
+			return nil, nil, fmt.Errorf("postgres backend selected but storage.pg_dsn / LOOMCYCLE_PG_DSN is empty")
+		}
+		st, err := storepostgres.Open(context.Background(), storepostgres.Config{
+			DSN:          cfg.Storage.PgDSN,
+			MaxOpenConns: cfg.Storage.PgMaxOpenConns,
+			MinIdleConns: cfg.Storage.PgMinIdleConns,
+			AutoMigrate:  cfg.Storage.PgAutoMigrate,
+		})
+		if err != nil {
+			return nil, nil, fmt.Errorf("postgres open: %w", err)
+		}
+		log.Printf("store: postgres (automigrate=%v)", cfg.Storage.PgAutoMigrate)
+		return st, func() { _ = st.Close() }, nil
+
+	default:
+		return nil, nil, fmt.Errorf("unknown storage.backend %q (want \"sqlite\" or \"postgres\")", cfg.Storage.Backend)
+	}
 }
 
 // providerResolver constructs Provider instances at startup based on which

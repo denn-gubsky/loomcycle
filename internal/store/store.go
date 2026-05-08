@@ -183,6 +183,23 @@ type Store interface {
 	// is not running (terminal runs don't accept heartbeats).
 	UpdateHeartbeat(ctx context.Context, runID string) error
 
+	// SweepStaleRuns marks every running row that hasn't heartbeated
+	// since `cutoff` as failed with error="heartbeat timeout". Returns
+	// the number of rows updated.
+	//
+	// "Hasn't heartbeated" includes runs that never set
+	// last_heartbeat_at at all (crashed before the first iteration);
+	// for those, started_at is the cutoff comparison. Implementations
+	// MUST treat both cases consistently — without this, a process that
+	// crashes between CreateRun and the loop's first heartbeat tick
+	// would never get cleaned up.
+	//
+	// The query is a single atomic UPDATE so concurrent sweepers race
+	// correctly: whichever sweeper commits first wins; later sweepers
+	// see WHERE status='running' fail-match and update zero rows.
+	// Used by internal/heartbeat for the periodic sweep goroutine.
+	SweepStaleRuns(ctx context.Context, cutoff time.Time) (int, error)
+
 	// Close releases backend resources. Idempotent.
 	Close() error
 }
