@@ -10,6 +10,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"strings"
 
 	"github.com/denn-gubsky/loomcycle/internal/providers"
@@ -118,6 +119,18 @@ func Run(ctx context.Context, opts RunOptions) (RunResult, error) {
 	}
 	if opts.Provider == nil {
 		return RunResult{}, fmt.Errorf("loop: provider is nil")
+	}
+
+	// Log once per Run if the agent declared an effort hint but the
+	// resolved provider is SupportsEffort=false. Operators see a
+	// clear "effort dropped on ollama/qwen3:14b" line rather than
+	// silently believing the agent thought hard. Once-per-Run is
+	// sufficient because the (provider, model) is the same across
+	// every iteration of a Run; spamming on each iteration would
+	// just be noise.
+	if opts.Effort != "" && !opts.Provider.Capabilities().SupportsEffort {
+		log.Printf("loop: effort=%q dropped — provider %q does not translate effort to a wire param (model=%q)",
+			opts.Effort, opts.Provider.ID(), opts.Model)
 	}
 
 	system, freshMessages := splitSegments(opts.Segments)

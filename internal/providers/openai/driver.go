@@ -57,6 +57,13 @@ func (d *Driver) Capabilities() providers.Capabilities {
 		Streaming:         true,
 		MaxContextTokens:  128_000, // gpt-4o family default; bigger on some
 		SupportsThinking:  false,
+		// SupportsEffort=true means the driver translates Request.Effort
+		// to reasoning_effort on the wire. Whether the resolved model
+		// actually honours it (o-series + GPT-5 do; chat-only models
+		// like gpt-5.4-mini reject) is the API's decision — the driver
+		// passes through; operators using effort with non-reasoning
+		// models will see the API's 400 surface clearly.
+		SupportsEffort: true,
 	}
 }
 
@@ -136,6 +143,17 @@ type wireRequest struct {
 	// stream_options.include_usage tells OpenAI to include final usage in the
 	// last data frame before [DONE]. Without this we have no token counts.
 	StreamOptions *wireStreamOptions `json:"stream_options,omitempty"`
+
+	// ReasoningEffort is the wire param OpenAI's reasoning models
+	// (o-series, GPT-5+) accept. Pass-through of the operator's
+	// effort hint: "low" / "medium" / "high". Empty = omit (driver
+	// default; chat models that don't accept the param ignore it).
+	// DeepSeek's /v1/chat/completions wrapper inherits this verbatim
+	// — DeepSeek V4 accepts the same field name per its OpenAI-compat
+	// surface. The API rejects the field on non-reasoning models
+	// (gpt-5.4-mini, etc.) with a 400; operators using effort with
+	// those models should expect the rejection rather than silent drop.
+	ReasoningEffort string `json:"reasoning_effort,omitempty"`
 }
 
 type wireStreamOptions struct {
@@ -179,6 +197,13 @@ func buildRequestBody(req providers.Request) ([]byte, error) {
 		Temperature:   req.Temperature,
 		Stream:        true,
 		StreamOptions: &wireStreamOptions{IncludeUsage: true},
+		// Pass-through of Request.Effort to OpenAI's reasoning_effort
+		// param. Empty stays empty — omitempty drops it from the wire.
+		// "low" / "medium" / "high" pass through verbatim; the API
+		// rejects unknown strings, which is fine because we only ever
+		// receive values from the validated Effort enum at the config
+		// layer.
+		ReasoningEffort: req.Effort,
 	}
 
 	// System blocks become a single role:"system" message at the top.

@@ -56,6 +56,23 @@ type Capabilities struct {
 	Streaming         bool
 	MaxContextTokens  int
 	SupportsThinking  bool
+
+	// SupportsEffort signals that the driver translates Request.Effort
+	// into a native wire parameter when set. Anthropic maps it to a
+	// `thinking.budget_tokens` block; OpenAI to `reasoning_effort`;
+	// DeepSeek (via the OpenAI wrapper) inherits OpenAI's behaviour;
+	// Ollama is a no-op (no operator-controlled thinking budget today).
+	//
+	// SupportsEffort=true does NOT mean every model on this provider
+	// honours the hint — haiku-4-5 and gpt-5.4-mini, for example, are
+	// non-reasoning models that the provider's API will reject (or
+	// silently ignore) the hint on. The driver decides per-call whether
+	// to actually attach the wire param based on the model name. The
+	// flag is purely informational — the loop uses it to log when an
+	// agent declared effort but landed on a SupportsEffort=false
+	// provider, so the operator sees "effort dropped" rather than
+	// silently believing the agent thought hard.
+	SupportsEffort bool
 }
 
 // Request is one round-trip to the provider. The loop builds a fresh Request

@@ -52,6 +52,7 @@ func (d *Driver) Capabilities() providers.Capabilities {
 		Streaming:         true,
 		MaxContextTokens:  200_000,
 		SupportsThinking:  true,
+		SupportsEffort:    true,
 	}
 }
 
@@ -118,6 +119,21 @@ type wireRequest struct {
 	Tools       []providers.ToolSpec `json:"tools,omitempty"`
 	Temperature *float64             `json:"temperature,omitempty"`
 	Stream      bool                 `json:"stream"`
+	// Thinking opts the request into Anthropic's extended-thinking
+	// surface. Only sent when the agent declared an effort hint AND
+	// the model is reasoning-capable (sonnet/opus, NOT haiku). When
+	// the field is nil it's omitted from the wire — non-reasoning
+	// models would 400 on its presence.
+	Thinking *wireThinking `json:"thinking,omitempty"`
+}
+
+// wireThinking is Anthropic's extended-thinking opt-in. The API spec
+// uses {"type":"enabled","budget_tokens":N} with budget ≥ 1024 and
+// ≤ MaxTokens. We never send a disabled form; "no thinking" = field
+// omitted entirely.
+type wireThinking struct {
+	Type         string `json:"type"`          // always "enabled"
+	BudgetTokens int    `json:"budget_tokens"` // ≥ 1024 per Anthropic spec
 }
 
 type wireSystemBlock struct {
@@ -163,6 +179,39 @@ func buildRequestBody(req providers.Request) ([]byte, error) {
 		Tools:       req.Tools,
 		Temperature: req.Temperature,
 		Stream:      true, // we always stream
+	}
+
+	// Translate the agent's effort hint to Anthropic's extended-
+	// thinking block when the model is reasoning-capable. haiku
+	// models don't support extended thinking — sending the field
+	// would 400 — so we gate on the model name. The decision table:
+	//
+	//   effort == ""     → no thinking field (driver default)
+	//   model is haiku   → no thinking field (model can't think)
+	//   effort == "low"  → no thinking field (low maps to "skip")
+	//   effort == "med"  → thinking{enabled, budget=2048}
+	//   effort == "high" → thinking{enabled, budget=8192}
+	//
+	// "low" intentionally maps to "no thinking" rather than "low
+	// budget" because Anthropic's spec requires budget ≥ 1024 and
+	// we want the operator's "low effort" intent to mean "answer
+	// fast, don't reason" — the cheapest behaviour the wire
+	// supports. Medium and high pick conservative budgets that
+	// fit comfortably under the default 8192 max_tokens.
+	if budget := anthropicEffortBudget(req.Effort, req.Model); budget > 0 {
+		// Anthropic requires budget < max_tokens. When the requested
+		// budget would equal or exceed max_tokens, leave a 1024-token
+		// response margin (matches Anthropic's stated 1024 minimum
+		// for the budget itself — symmetric headroom on both sides
+		// of the split). Floor the result at 1024; if max_tokens is
+		// too small to satisfy that, skip thinking rather than send
+		// an invalid request.
+		if budget >= maxTokens {
+			budget = maxTokens - 1024
+		}
+		if budget >= 1024 {
+			w.Thinking = &wireThinking{Type: "enabled", BudgetTokens: budget}
+		}
 	}
 
 	for _, sb := range req.System {
@@ -440,6 +489,39 @@ func (d *Driver) Probe(ctx context.Context) error {
 // + periodic probe to populate the Listed flag in ModelStatus.
 func (d *Driver) ListModels(ctx context.Context) ([]string, error) {
 	return d.fetchModels(ctx)
+}
+
+// anthropicEffortBudget translates the operator's effort hint into a
+// concrete thinking budget for Anthropic's extended-thinking surface.
+// Returns 0 to mean "skip the thinking block entirely" (either effort
+// is unset, the model isn't reasoning-capable, or low maps to skip).
+//
+// Model gating: only opus and sonnet support extended thinking on the
+// 4.x line. Haiku 4.5 doesn't, and sending the field would 400. We
+// pattern-match the model name rather than maintain an explicit list
+// — Anthropic's naming convention (claude-{family}-{version}) is
+// stable enough that "haiku in name" is reliable. If a future model
+// changes the convention, this gate is the one place to update.
+func anthropicEffortBudget(effort, model string) int {
+	if effort == "" {
+		return 0
+	}
+	if strings.Contains(model, "haiku") {
+		return 0
+	}
+	switch effort {
+	case "low":
+		// Low effort = "answer fast, don't reason." Map to "skip
+		// thinking" rather than "minimum budget" — the cheapest
+		// behaviour at the wire is no thinking at all.
+		return 0
+	case "medium":
+		return 2048
+	case "high":
+		return 8192
+	default:
+		return 0 // unknown effort string; defensive
+	}
 }
 
 // fetchModels is the shared GET /v1/models round-trip. Anthropic's
