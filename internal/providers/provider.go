@@ -115,6 +115,19 @@ type Request struct {
 type Message struct {
 	Role    string         `json:"role"` // "user" | "assistant"
 	Content []ContentBlock `json:"content"`
+
+	// Reasoning carries the assistant turn's reasoning trace when the
+	// provider's model emits one. DeepSeek V4 Pro and the deepseek-
+	// reasoner family return `reasoning_content` alongside `content`
+	// when thinking mode is on; the API requires that string to be
+	// echoed back on subsequent turns or the next request 400s with
+	// "reasoning_content in the thinking mode must be passed back."
+	//
+	// Empty for non-thinking models / non-DeepSeek providers; the
+	// `omitempty` keeps it out of the wire body for everyone else
+	// (vanilla OpenAI ignores unknown fields anyway, but no point
+	// sending bytes that mean nothing).
+	Reasoning string `json:"reasoning_content,omitempty"`
 }
 
 // ContentBlock is one piece of message content. Type discriminates the union.
@@ -181,6 +194,15 @@ type Event struct {
 	// StopReason is set on the final assistant Event of a provider call:
 	// "end_turn" | "tool_use" | "max_tokens" | "stop_sequence".
 	StopReason string `json:"stop_reason,omitempty"`
+
+	// Reasoning carries the assistant turn's accumulated reasoning
+	// trace (DeepSeek V4 Pro / deepseek-reasoner). Set on EventDone
+	// when the response stream included `reasoning_content` deltas.
+	// The loop reads this and stamps it onto the assistant Message
+	// it appends to the conversation history so the next iteration
+	// echoes it back to the API per DeepSeek's contract. Empty for
+	// non-thinking models.
+	Reasoning string `json:"reasoning,omitempty"`
 }
 
 // RetryInfo accompanies an EventRetry. Each field is set every time.

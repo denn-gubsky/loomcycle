@@ -166,6 +166,11 @@ type wireMessage struct {
 	Name       string         `json:"name,omitempty"`
 	ToolCallID string         `json:"tool_call_id,omitempty"`
 	ToolCalls  []wireToolCall `json:"tool_calls,omitempty"`
+	// ReasoningContent is the per-turn reasoning trace DeepSeek V4 Pro
+	// (and deepseek-reasoner) require operators to echo back on
+	// subsequent assistant-history turns. omitempty keeps it off the
+	// wire for non-thinking models / non-DeepSeek endpoints.
+	ReasoningContent string `json:"reasoning_content,omitempty"`
 }
 
 type wireToolCall struct {
@@ -262,7 +267,18 @@ func flattenMessage(m providers.Message) []wireMessage {
 				})
 			}
 		}
-		return []wireMessage{{Role: "assistant", Content: text.String(), ToolCalls: calls}}
+		// Echo back reasoning_content if the message carries one
+		// (DeepSeek V4 Pro / deepseek-reasoner contract — sending the
+		// assistant turn back without it 400s with "reasoning_content
+		// in the thinking mode must be passed back"). omitempty keeps
+		// the field off the wire for non-thinking models / non-DeepSeek
+		// endpoints; vanilla OpenAI ignores unknown fields anyway.
+		return []wireMessage{{
+			Role:             "assistant",
+			Content:          text.String(),
+			ToolCalls:        calls,
+			ReasoningContent: m.Reasoning,
+		}}
 	}
 
 	// user role: split tool_result blocks into their own messages.
@@ -305,6 +321,12 @@ func flattenMessage(m providers.Message) []wireMessage {
 type chunkDelta struct {
 	Content   string             `json:"content"`
 	ToolCalls []chunkToolCallDel `json:"tool_calls"`
+	// ReasoningContent streams alongside Content for thinking-mode
+	// models (DeepSeek V4 Pro, deepseek-reasoner). The deltas
+	// concatenate into the per-turn reasoning trace, which the
+	// driver surfaces on EventDone.Reasoning so the loop can echo
+	// it back on the next iteration.
+	ReasoningContent string `json:"reasoning_content"`
 }
 
 type chunkToolCallDel struct {
@@ -378,6 +400,15 @@ func streamEvents(ctx context.Context, body io.ReadCloser, out chan<- providers.
 	// some OpenAI-compatible servers omit usage on cancelled
 	// streams).
 	var model string
+	// reasoningBuf accumulates `delta.reasoning_content` chunks for
+	// thinking-mode models (DeepSeek V4 Pro / deepseek-reasoner).
+	// Surfaced on EventDone.Reasoning so the loop can stamp it onto
+	// the assistant Message it appends to the conversation history.
+	// The next iteration's request body then echoes it back via
+	// wireMessage.ReasoningContent — DeepSeek's API requires this or
+	// it 400s with "reasoning_content in the thinking mode must be
+	// passed back". Empty for non-thinking models.
+	var reasoningBuf strings.Builder
 
 	for scanner.Scan() {
 		line := bytes.TrimSpace(scanner.Bytes())
@@ -398,6 +429,14 @@ func streamEvents(ctx context.Context, body io.ReadCloser, out chan<- providers.
 		}
 
 		for _, ch := range c.Choices {
+			if ch.Delta.ReasoningContent != "" {
+				// Internal accumulator only — reasoning isn't an
+				// EventText event today (would surface as model
+				// "speech" to adapters that just stream text). Kept
+				// inside the driver until the v0.7.x EventThinking
+				// follow-up exposes it as a typed event.
+				reasoningBuf.WriteString(ch.Delta.ReasoningContent)
+			}
 			if ch.Delta.Content != "" {
 				if !send(providers.Event{Type: providers.EventText, Text: ch.Delta.Content}) {
 					return
@@ -468,7 +507,12 @@ func streamEvents(ctx context.Context, body io.ReadCloser, out chan<- providers.
 		}
 	}
 
-	send(providers.Event{Type: providers.EventDone, StopReason: stopReason, Usage: usage})
+	send(providers.Event{
+		Type:       providers.EventDone,
+		StopReason: stopReason,
+		Usage:      usage,
+		Reasoning:  reasoningBuf.String(),
+	})
 }
 
 // mapStopReason translates OpenAI's finish_reason vocabulary into our shared

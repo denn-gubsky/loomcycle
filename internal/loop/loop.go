@@ -200,6 +200,13 @@ func Run(ctx context.Context, opts RunOptions) (RunResult, error) {
 		var iterText string
 		var iterStop string
 		var iterUsage *providers.Usage
+		// iterReasoning holds the accumulated reasoning_content from
+		// thinking-mode models (DeepSeek V4 Pro / deepseek-reasoner).
+		// Stamped onto the assistant Message we append below so the
+		// next iteration's request body echoes it back to the API
+		// per DeepSeek's roundtrip contract. Empty for non-thinking
+		// providers.
+		var iterReasoning string
 
 		for ev := range ch {
 			switch ev.Type {
@@ -227,6 +234,7 @@ func Run(ctx context.Context, opts RunOptions) (RunResult, error) {
 			case providers.EventDone:
 				iterStop = ev.StopReason
 				iterUsage = ev.Usage
+				iterReasoning = ev.Reasoning
 			case providers.EventError:
 				// Resolver stall feedback for in-stream errors:
 				// driver opened the SSE/NDJSON stream successfully
@@ -249,7 +257,11 @@ func Run(ctx context.Context, opts RunOptions) (RunResult, error) {
 				assistantBlocks...,
 			)
 		}
-		messages = append(messages, providers.Message{Role: "assistant", Content: assistantBlocks})
+		messages = append(messages, providers.Message{
+			Role:      "assistant",
+			Content:   assistantBlocks,
+			Reasoning: iterReasoning,
+		})
 
 		if iterUsage != nil {
 			totalUsage.InputTokens += iterUsage.InputTokens

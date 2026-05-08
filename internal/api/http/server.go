@@ -1124,6 +1124,13 @@ func replayTranscript(events []store.Event) []providers.Message {
 	var asstText strings.Builder
 	var asstTools []providers.ContentBlock
 	var pendingToolResults []providers.ContentBlock
+	// asstReasoning carries reasoning_content captured from the
+	// iteration's "done" event so the rebuilt assistant Message can
+	// echo it back to the API on continuation. Required by DeepSeek
+	// V4 Pro / deepseek-reasoner — without it, the next request 400s
+	// with "reasoning_content in the thinking mode must be passed
+	// back". Empty for non-thinking models.
+	var asstReasoning string
 
 	flushAssistant := func() {
 		if asstText.Len() == 0 && len(asstTools) == 0 {
@@ -1134,9 +1141,14 @@ func replayTranscript(events []store.Event) []providers.Message {
 			content = append(content, providers.ContentBlock{Type: "text", Text: asstText.String()})
 		}
 		content = append(content, asstTools...)
-		messages = append(messages, providers.Message{Role: "assistant", Content: content})
+		messages = append(messages, providers.Message{
+			Role:      "assistant",
+			Content:   content,
+			Reasoning: asstReasoning,
+		})
 		asstText.Reset()
 		asstTools = nil
+		asstReasoning = ""
 	}
 	flushPendingTools := func() {
 		if len(pendingToolResults) == 0 {
@@ -1207,8 +1219,20 @@ func replayTranscript(events []store.Event) []providers.Message {
 			// same boundary belong to one user message, and the next text
 			// or tool_call event will close this user turn.
 		case "done":
-			// End-of-run boundary — only used when the final iteration was
-			// purely textual (no tool_results to carry over).
+			// Capture reasoning_content (if present) BEFORE the flush
+			// so the rebuilt assistant Message carries it. Mid-
+			// conversation, this done event also marks the end of
+			// the iteration's assistant turn — done arrives in the
+			// stream BEFORE tool_result events, so the flush here
+			// commits the assistant Message with reasoning attached.
+			var pe providers.Event
+			if err := json.Unmarshal(ev.Payload, &pe); err == nil {
+				asstReasoning = pe.Reasoning
+			}
+			// End-of-run boundary — used both mid-conversation (the
+			// per-iteration assistant turn closes here) and at the
+			// very end (final iteration with purely textual output,
+			// no tool_results to carry over).
 			flushAssistant()
 			flushPendingTools()
 		}
