@@ -31,6 +31,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/providers/anthropic"
+	"github.com/denn-gubsky/loomcycle/internal/providers/deepseek"
 	"github.com/denn-gubsky/loomcycle/internal/providers/ollama"
 	"github.com/denn-gubsky/loomcycle/internal/providers/openai"
 	"github.com/denn-gubsky/loomcycle/internal/skills"
@@ -452,6 +453,7 @@ type providerResolver struct {
 	anthropic providers.Provider
 	openai    providers.Provider
 	ollama    providers.Provider
+	deepseek  providers.Provider
 }
 
 func newProviderResolver(cfg *config.Config) *providerResolver {
@@ -467,6 +469,12 @@ func newProviderResolver(cfg *config.Config) *providerResolver {
 	// always-on; users disable it by setting OLLAMA_BASE_URL=disabled).
 	if cfg.Env.OllamaBaseURL != "" && cfg.Env.OllamaBaseURL != "disabled" {
 		pr.ollama = ollama.New(cfg.Env.OllamaBaseURL, nil)
+	}
+	// DeepSeek opts in via DEEPSEEK_API_KEY. Optional DEEPSEEK_BASE_URL
+	// overrides the public endpoint for self-hosted OpenAI-compatible
+	// mirrors. Same on/off semantics as Anthropic + OpenAI.
+	if cfg.Env.DeepSeekAPIKey != "" {
+		pr.deepseek = deepseek.New(cfg.Env.DeepSeekAPIKey, cfg.Env.DeepSeekBaseURL, nil)
 	}
 	return pr
 }
@@ -488,6 +496,11 @@ func (p *providerResolver) Get(id string) (providers.Provider, error) {
 			return nil, fmt.Errorf("ollama provider not configured (set OLLAMA_BASE_URL or unset OLLAMA_BASE_URL=disabled)")
 		}
 		return p.ollama, nil
+	case "deepseek":
+		if p.deepseek == nil {
+			return nil, fmt.Errorf("deepseek provider not configured (set DEEPSEEK_API_KEY)")
+		}
+		return p.deepseek, nil
 	default:
 		return nil, fmt.Errorf("unknown provider %q", id)
 	}
