@@ -114,7 +114,7 @@ func (d *Driver) Call(ctx context.Context, req providers.Request) (<-chan provid
 	}
 
 	out := make(chan providers.Event, 16)
-	go streamEvents(ctx, resp.Body, out)
+	go streamEvents(ctx, resp.Body, out, len(req.Tools) > 0)
 	return out, nil
 }
 
@@ -294,7 +294,7 @@ type chunkToolCallFn struct {
 	Arguments json.RawMessage `json:"arguments"`
 }
 
-func streamEvents(ctx context.Context, body io.ReadCloser, out chan<- providers.Event) {
+func streamEvents(ctx context.Context, body io.ReadCloser, out chan<- providers.Event, wantTools bool) {
 	defer body.Close()
 	defer close(out)
 
@@ -314,6 +314,7 @@ func streamEvents(ctx context.Context, body io.ReadCloser, out chan<- providers.
 	scanner.Buffer(make([]byte, 64*1024), 4*1024*1024)
 
 	var stopReason string
+	var rawDoneReason string // pre-mapStopReason; needed if we re-evaluate after recovery
 	var usage *providers.Usage
 	var model string
 	// hadToolCalls tracks whether *any* frame emitted tool_calls. Ollama may
@@ -321,6 +322,12 @@ func streamEvents(ctx context.Context, body io.ReadCloser, out chan<- providers.
 	// frame with an empty tool_calls array. We must remember the earlier
 	// emission so the loop iterates instead of breaking on "end_turn".
 	var hadToolCalls bool
+	// textBuf accumulates message.content across the stream. Used only by
+	// the post-stream qwen3 tool-call-as-text recovery path (gated on
+	// wantTools && !hadToolCalls). Non-tool flows still stream text live;
+	// this buffer just mirrors what was streamed so we can re-parse it
+	// at end-of-stream without buffering the user's view of progress.
+	var textBuf strings.Builder
 
 	for scanner.Scan() {
 		line := bytes.TrimSpace(scanner.Bytes())
@@ -336,6 +343,7 @@ func streamEvents(ctx context.Context, body io.ReadCloser, out chan<- providers.
 		}
 
 		if c.Message.Content != "" {
+			textBuf.WriteString(c.Message.Content)
 			if !send(providers.Event{Type: providers.EventText, Text: c.Message.Content}) {
 				return
 			}
@@ -359,6 +367,7 @@ func streamEvents(ctx context.Context, body io.ReadCloser, out chan<- providers.
 		}
 
 		if c.Done {
+			rawDoneReason = c.DoneReason
 			stopReason = mapStopReason(c.DoneReason, hadToolCalls)
 			if c.PromptEvalCount > 0 || c.EvalCount > 0 {
 				usage = &providers.Usage{
@@ -374,7 +383,117 @@ func streamEvents(ctx context.Context, body io.ReadCloser, out chan<- providers.
 		return
 	}
 
+	// qwen3 tool-call-as-text recovery. Empirically, qwen3:14b (and
+	// related Ollama-served reasoning models) sometimes lose tool-call
+	// discipline across iterations: the first iteration uses the
+	// structured `tool_calls` envelope correctly, but subsequent
+	// iterations emit the next tool call as `content` text — a JSON
+	// payload like `{"name":"foo","arguments":{...}}`. The loop then
+	// terminates with the JSON-as-text as the final assistant turn,
+	// the consumer sees a tool-call JSON dump where it expected an
+	// answer, and the run completes with garbage output.
+	//
+	// When this happens (wantTools=true, no structured tool_calls
+	// arrived, and the buffered text content parses cleanly as one
+	// or more tool-call objects), we synthesise EventToolCall events
+	// at the tail of the stream. The loop's history record retains
+	// the original streamed text (so the transcript's audit trail is
+	// honest about what the model emitted), but the synthesised tool
+	// calls let the loop iterate instead of terminating. The next
+	// iteration typically produces a clean answer.
+	//
+	// Recovery is gated on wantTools=true so non-tool flows that
+	// happen to emit JSON-shaped text (e.g. an agent whose final
+	// answer IS a JSON object — ats-filter, injection-judge) don't
+	// get false-positive tool calls synthesised.
+	if wantTools && !hadToolCalls && textBuf.Len() > 0 {
+		if recovered := tryParseToolCallsFromText(textBuf.String()); len(recovered) > 0 {
+			for _, tu := range recovered {
+				if !send(providers.Event{Type: providers.EventToolCall, ToolUse: tu}) {
+					return
+				}
+			}
+			hadToolCalls = true
+			// Recompute stopReason now that we have tool calls. Ollama's
+			// own done_reason was "stop" (the model thought it was
+			// finished); we know better.
+			stopReason = mapStopReason(rawDoneReason, true)
+		}
+	}
+
 	send(providers.Event{Type: providers.EventDone, StopReason: stopReason, Usage: usage})
+}
+
+// tryParseToolCallsFromText attempts to parse the raw text content as
+// one or more Ollama-shaped tool-call objects:
+//
+//	{"name":"...","arguments":{...}}
+//
+// or an array of such objects. Returns the parsed ToolUse list when
+// successful, nil otherwise. Tolerates surrounding whitespace + a
+// markdown ```json fence (qwen3 sometimes wraps its output).
+//
+// A clean-parse contract — strict matching prevents false positives
+// from text that happens to look JSON-ish (e.g. an agent whose answer
+// includes a tool-call example in prose). We require the ENTIRE
+// trimmed content to deserialise into the tool-call shape; any prose
+// outside the JSON disqualifies the recovery.
+func tryParseToolCallsFromText(text string) []*providers.ToolUse {
+	s := strings.TrimSpace(text)
+	if s == "" {
+		return nil
+	}
+	// Strip a single markdown fence pair if present. qwen3's chat
+	// template sometimes wraps tool-call output in ```json ... ```.
+	if strings.HasPrefix(s, "```") {
+		// Drop the opening fence (may be ``` or ```json or ```\n).
+		if nl := strings.IndexByte(s, '\n'); nl >= 0 {
+			s = s[nl+1:]
+		} else {
+			s = strings.TrimPrefix(s, "```")
+		}
+		s = strings.TrimSuffix(strings.TrimSpace(s), "```")
+		s = strings.TrimSpace(s)
+	}
+
+	type rawCall struct {
+		Name      string          `json:"name"`
+		Arguments json.RawMessage `json:"arguments"`
+	}
+
+	// Try array first — qwen3 occasionally batches multiple calls.
+	if strings.HasPrefix(s, "[") {
+		var arr []rawCall
+		if err := json.Unmarshal([]byte(s), &arr); err == nil && len(arr) > 0 {
+			out := make([]*providers.ToolUse, 0, len(arr))
+			for _, r := range arr {
+				if r.Name == "" {
+					return nil // any malformed entry → bail; treat as prose
+				}
+				args := r.Arguments
+				if len(args) == 0 {
+					args = json.RawMessage("{}")
+				}
+				out = append(out, &providers.ToolUse{Name: r.Name, Input: args})
+			}
+			return out
+		}
+		return nil
+	}
+
+	// Try single object.
+	var r rawCall
+	if err := json.Unmarshal([]byte(s), &r); err != nil {
+		return nil
+	}
+	if r.Name == "" {
+		return nil
+	}
+	args := r.Arguments
+	if len(args) == 0 {
+		args = json.RawMessage("{}")
+	}
+	return []*providers.ToolUse{{Name: r.Name, Input: args}}
 }
 
 // mapStopReason translates Ollama's done_reason into our shared vocabulary.
