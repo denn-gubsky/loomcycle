@@ -7,7 +7,7 @@ This document describes the v0.4.0 runtime end-to-end. v0.4.0 ships the MCP-inte
 `loomcycle` is a single Go binary (`bin/loomcycle` from `cmd/loomcycle/`) that:
 
 1. Owns the LLM **tool-use loop** end-to-end (model → tool_use → tool_result → model). No vendor SDK in the loop, no bundled binary.
-2. Talks to **providers** over their public HTTP APIs — Anthropic Messages, OpenAI Chat Completions, Ollama `/api/chat`.
+2. Talks to **providers** over their public HTTP APIs — Anthropic Messages, OpenAI Chat Completions, DeepSeek (OpenAI-compatible Chat Completions at a different base URL), Ollama `/api/chat`.
 3. Dispatches tool calls to **built-in tools**, **MCP servers** (stdio + HTTP), **LocalAPI gateways** (OpenAPI → tool-per-operation), or **sub-agents** (the `Agent` built-in).
 4. Streams every event back to callers as **SSE** over a small HTTP API (`/v1/runs`, `/v1/sessions/{id}/messages`, `/v1/agents/{agent_id}`, `/v1/users/{user_id}/agents`, `/healthz`).
 5. Persists sessions, runs, and events to a pluggable `Store` (SQLite default; Postgres + Redis adapters scaffolded for v1.0).
@@ -29,6 +29,7 @@ loomcycle/
 │   ├── providers/
 │   │   ├── anthropic/                 Messages API + native cache_control
 │   │   ├── openai/                    Chat Completions
+│   │   ├── deepseek/                  Wraps openai/ with the DeepSeek base URL pre-baked
 │   │   ├── ollama/                    /api/chat NDJSON (tool-tuned models only)
 │   │   ├── ratelimit/                 per-driver retry-after + backoff
 │   │   └── provider.go                Provider interface + Capabilities
@@ -123,13 +124,14 @@ type Event struct {
 
 Each driver translates its provider's streaming shape into the same `Event` channel. The loop is provider-agnostic. Capability flags let the loop decline to set fields the provider doesn't honour (e.g. only Anthropic gets `cache_control` placement; Ollama tool-call IDs are synthesized by the loop).
 
-Three drivers ship in v0.4.0:
+Four drivers ship as of v0.6.0:
 
 | Driver       | API                       | Notes |
 |---|---|---|
 | `anthropic` | Messages (streaming SSE)   | Native `cache_control` on system blocks marked `cacheable: true`. `message_start.message.model` plumbed into final `Usage.Model` so callers get the resolved alias for pricing. |
-| `openai`    | Chat Completions (streaming) | Index-keyed tool_call accumulator across deltas. Honours `[DONE]` sentinel. |
-| `ollama`    | `/api/chat` (NDJSON)         | Tool-tuned models only. Tool-call IDs synthesized as `lc-{iter}-{slot}` because Ollama doesn't issue them. |
+| `openai`    | Chat Completions (streaming) | Index-keyed tool_call accumulator across deltas. Honours `[DONE]` sentinel. As of v0.6.0, captures the wire-resolved `model` field from each chunk envelope so `runs.model` populates correctly (also benefits any OpenAI-compatible endpoint — DeepSeek, vLLM). |
+| `deepseek`  | Chat Completions (streaming) | Wraps the `openai` driver with `https://api.deepseek.com/v1` pre-baked and `ID()` returning `"deepseek"`. Same wire shape, retry strategy, and tool-call envelope. Operator opts in via `DEEPSEEK_API_KEY` env (optional `DEEPSEEK_BASE_URL` for self-hosted OpenAI-compatible mirrors). Distinct package so per-provider cost rollups don't conflate OpenAI and DeepSeek pricing. |
+| `ollama`    | `/api/chat` (NDJSON)         | Tool-tuned models only (qwen3+, llama3.1+, mistral-large). Tool-call IDs synthesized as `lc-{iter}-{slot}` because Ollama doesn't issue them. Recent Ollama versions emit reasoning-model output in a separate `message.thinking` field which the driver currently drops — tracked as v0.7+ work. |
 
 Each driver has rate-limit retry logic (`internal/providers/ratelimit/`) — 429s and provider 5xx-with-retry-after preserve run context across the retry; observable as `event: retry` SSE frames.
 
