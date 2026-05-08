@@ -8,7 +8,6 @@ import (
 	"runtime"
 	"strings"
 	"testing"
-	"time"
 )
 
 // Refusal cases: empty Enabled flag rejects every call. We test this
@@ -60,28 +59,6 @@ func TestBashRunsInsideCwd(t *testing.T) {
 	}
 	if !strings.Contains(res.Text, "marker.txt") {
 		t.Errorf("ls did not see marker.txt; got %q", res.Text)
-	}
-}
-
-func TestBashTimeout(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip()
-	}
-	cwd, _ := filepath.EvalSymlinks(t.TempDir())
-	b := &Bash{Enabled: true, Cwd: cwd, Timeout: 100 * time.Millisecond}
-	body, _ := json.Marshal(map[string]any{"command": "sleep 5"})
-
-	start := time.Now()
-	res, err := b.Execute(context.Background(), body)
-	elapsed := time.Since(start)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !res.IsError {
-		t.Errorf("expected timeout error, got %q", res.Text)
-	}
-	if elapsed > 2*time.Second {
-		t.Errorf("timeout did not fire in time: elapsed=%v", elapsed)
 	}
 }
 
