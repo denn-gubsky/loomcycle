@@ -41,5 +41,7 @@ adapters/ts/node_modules/
 adapters/python/dist/
 adapters/python/*.egg-info/
 adapters/python/.venv/
+adapters/python/.pytest_cache/
 __pycache__/
 *.pyc
+.pytest_cache/

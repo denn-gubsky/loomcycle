@@ -20,7 +20,7 @@ PG_PASSWORD  ?= loomcycle
 
 PG_DSN := postgres://$(PG_USER):$(PG_PASSWORD)@127.0.0.1:$(PG_PORT)/$(PG_DATABASE)?sslmode=disable
 
-.PHONY: help build test test-pg pg-up pg-down pg-logs proto proto-deps
+.PHONY: help build test test-pg pg-up pg-down pg-logs proto proto-deps python-proto python-test
 
 help:
 	@echo "loomcycle dev targets:"
@@ -119,3 +119,37 @@ proto-deps:
 	go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@latest
 	@echo ""
 	@echo "Add $$(go env GOPATH)/bin to your PATH if it isn't already."
+
+# Python adapter codegen + tests.
+#
+# python-proto regenerates the Python protobuf stubs into
+# adapters/python/loomcycle/_generated/. Both files are committed so
+# `pip install loomcycle` doesn't require a working protoc.
+#
+# python-test runs the adapter's pytest suite. Live-loomcycle
+# integration tests skip without LOOMCYCLE_GRPC_ADDR set.
+PY_VENV       := adapters/python/.venv
+PY_PROTO_OUT  := adapters/python/loomcycle/_generated
+python-proto:
+	@if [ ! -x "$(PY_VENV)/bin/python" ]; then \
+		echo "Python venv not found at $(PY_VENV); create it with:"; \
+		echo "  python3 -m venv $(PY_VENV) && \\"; \
+		echo "  $(PY_VENV)/bin/pip install -e adapters/python[dev]"; \
+		exit 1; \
+	fi
+	mkdir -p $(PY_PROTO_OUT)
+	$(PY_VENV)/bin/python -m grpc_tools.protoc \
+		--python_out=$(PY_PROTO_OUT) \
+		--grpc_python_out=$(PY_PROTO_OUT) \
+		--proto_path=proto \
+		proto/loomcycle.proto
+	@# grpc_tools generates absolute imports (`import loomcycle_pb2`)
+	@# rather than the relative form (`from . import loomcycle_pb2`)
+	@# Python packages need. Patch the grpc stub so it's importable
+	@# from the loomcycle._generated package without a sys.path hack.
+	@sed -i '' 's/^import loomcycle_pb2 as loomcycle__pb2$$/from . import loomcycle_pb2 as loomcycle__pb2/' $(PY_PROTO_OUT)/loomcycle_pb2_grpc.py
+	@touch $(PY_PROTO_OUT)/__init__.py
+	@echo "regenerated $(PY_PROTO_OUT)/*.py"
+
+python-test:
+	$(PY_VENV)/bin/python -m pytest adapters/python/tests -v
