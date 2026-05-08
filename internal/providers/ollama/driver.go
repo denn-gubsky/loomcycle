@@ -62,6 +62,16 @@ func (d *Driver) Capabilities() providers.Capabilities {
 		Streaming:         true,
 		MaxContextTokens:  0, // varies wildly by model; 0 means "ask the model"
 		SupportsThinking:  false,
+		// Ollama has no operator-controlled thinking-budget knob today.
+		// Reasoning models (qwen3, deepseek-r1) emit <think>...</think>
+		// content automatically based on model defaults; the loomcycle
+		// loop currently drops that into message.thinking which the
+		// driver doesn't surface. Tracked as a separate v0.7+
+		// EventThinking follow-up. SupportsEffort=false signals to
+		// the loop that an Ollama-routed agent's effort hint will be
+		// dropped, so the loop logs once per Run for operator
+		// visibility.
+		SupportsEffort: false,
 	}
 }
 
