@@ -28,7 +28,11 @@ type pausableProvider struct {
 	finalText  string
 }
 
-func (p *pausableProvider) ID() string { return "pausable" }
+func (p *pausableProvider) ID() string                            { return "pausable" }
+func (p *pausableProvider) Probe(_ context.Context) error          { return nil }
+func (p *pausableProvider) ListModels(_ context.Context) ([]string, error) {
+	return []string{"pausable-model"}, nil
+}
 func (p *pausableProvider) Capabilities() providers.Capabilities {
 	return providers.Capabilities{Streaming: true}
 }

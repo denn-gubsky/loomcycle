@@ -342,6 +342,14 @@ type Env struct {
 	// the same Store / cancel registry / config — operators can
 	// run with one, the other, or both. Env: LOOMCYCLE_GRPC_ADDR.
 	GrpcAddr string
+
+	// ResolveProbeInterval is the cadence at which the resolver
+	// re-probes each provider's /v1/models endpoint (or /api/tags
+	// for Ollama) to refresh the availability matrix. Default 15
+	// minutes; clamped to a 1-hour ceiling so a misconfigured
+	// long interval can't hide a recovered provider for a full
+	// day. Env: LOOMCYCLE_RESOLVE_PROBE_INTERVAL_MS.
+	ResolveProbeInterval time.Duration
 }
 
 // Load reads a YAML file and the process env. Empty path returns defaults +
@@ -458,6 +466,26 @@ func Load(path string) (*Config, error) {
 	if v := os.Getenv("LOOMCYCLE_SESSION_LOCK_MAX_IDLE_MS"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
 			cfg.Env.SessionLockMaxIdle = time.Duration(n) * time.Millisecond
+		}
+	}
+	// LOOMCYCLE_RESOLVE_PROBE_INTERVAL_MS overrides the default 15-min
+	// probe cadence. Clamped to a 1-hour ceiling so a typo or
+	// misunderstanding can't stretch the recovery window beyond what
+	// the design assumed. Sub-minute intervals are also clamped up to
+	// 60s — anything tighter risks hammering provider /v1/models
+	// endpoints for negligible recovery-time benefit.
+	if v := os.Getenv("LOOMCYCLE_RESOLVE_PROBE_INTERVAL_MS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			d := time.Duration(n) * time.Millisecond
+			const minProbe = 60 * time.Second
+			const maxProbe = 60 * time.Minute
+			if d < minProbe {
+				d = minProbe
+			}
+			if d > maxProbe {
+				d = maxProbe
+			}
+			cfg.Env.ResolveProbeInterval = d
 		}
 	}
 

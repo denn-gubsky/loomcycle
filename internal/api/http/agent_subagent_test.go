@@ -30,7 +30,11 @@ type scriptedProvider struct {
 	defaultS []providers.Event // returned for any call past len(scripts)
 }
 
-func (s *scriptedProvider) ID() string { return "scripted" }
+func (s *scriptedProvider) ID() string                            { return "scripted" }
+func (s *scriptedProvider) Probe(_ context.Context) error          { return nil }
+func (s *scriptedProvider) ListModels(_ context.Context) ([]string, error) {
+	return []string{"scripted-model"}, nil
+}
 func (s *scriptedProvider) Capabilities() providers.Capabilities {
 	return providers.Capabilities{Streaming: true}
 }

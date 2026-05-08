@@ -462,3 +462,60 @@ func mapStopReason(openaiReason string) string {
 		return openaiReason
 	}
 }
+
+// Probe checks reachability + auth by hitting GET /v1/models with the
+// passed context's deadline. Reuses fetchModels' round-trip so a single
+// HTTP call covers both health and the model-list payload — the
+// caller decides which signal it needs.
+func (d *Driver) Probe(ctx context.Context) error {
+	_, err := d.fetchModels(ctx)
+	return err
+}
+
+// ListModels returns the wire aliases the OpenAI-compatible endpoint
+// currently serves. Used by the resolver to populate the Listed flag
+// in ModelStatus. DeepSeek's /v1/models has the same response shape,
+// so the deepseek wrapper inherits this method unchanged.
+func (d *Driver) ListModels(ctx context.Context) ([]string, error) {
+	return d.fetchModels(ctx)
+}
+
+// fetchModels is the shared GET /v1/models round-trip. OpenAI's
+// response shape:
+//
+//	{"object": "list",
+//	 "data": [{"id": "gpt-5.4", "object": "model", "created": ...},
+//	          {"id": "gpt-4o-mini", ...},
+//	          ...]}
+//
+// We surface only the IDs. OpenAI's response is small enough (a few
+// dozen models for a typical org) that one page suffices.
+func (d *Driver) fetchModels(ctx context.Context) ([]string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, d.baseURL+"/models", nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+d.apiKey)
+	resp, err := d.http.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("openai /v1/models: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+		return nil, fmt.Errorf("openai /v1/models: status %d (%s)", resp.StatusCode, string(body))
+	}
+	var doc struct {
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&doc); err != nil {
+		return nil, fmt.Errorf("openai /v1/models decode: %w", err)
+	}
+	out := make([]string, 0, len(doc.Data))
+	for _, m := range doc.Data {
+		out = append(out, m.ID)
+	}
+	return out, nil
+}

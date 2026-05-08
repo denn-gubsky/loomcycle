@@ -17,6 +17,35 @@ type Provider interface {
 	ID() string
 	Capabilities() Capabilities
 	Call(ctx context.Context, req Request) (<-chan Event, error)
+
+	// Probe is a lightweight reachability + auth check. Returns nil
+	// iff the provider responds successfully (auth valid, network
+	// reachable). Used by the resolver's startup probe and periodic
+	// re-probe loop. Implementations should hit a cheap endpoint
+	// (typically GET /v1/models or /api/tags), respect the passed
+	// context's deadline, and return without retry — the caller
+	// owns retry/backoff policy.
+	//
+	// Probe is allowed to share its work with ListModels: drivers
+	// commonly implement Probe by calling ListModels and treating a
+	// non-empty result as "healthy" (the network round-trip
+	// already proves reachability + auth). The interface keeps
+	// them separate so callers that only need health (no model
+	// list) don't pay the marshalling cost.
+	Probe(ctx context.Context) error
+
+	// ListModels returns the wire aliases the provider currently
+	// serves. Used by the resolver to populate the per-model
+	// availability matrix (Listed flag in ModelStatus). The exact
+	// format depends on the provider's models endpoint:
+	//   - Anthropic / OpenAI / DeepSeek: /v1/models response data[].id
+	//   - Ollama: /api/tags response models[].name
+	//
+	// Returns an empty slice (not nil) when the endpoint succeeds
+	// with zero models — that's a different signal than "probe
+	// failed" and the resolver treats it as "provider reachable
+	// but every model offline".
+	ListModels(ctx context.Context) ([]string, error)
 }
 
 // Capabilities tells the loop what the provider can and can't do, so the loop

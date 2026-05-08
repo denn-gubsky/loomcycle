@@ -111,6 +111,29 @@ func (s *Server) SessionLocks() *runner.SessionLockMap { return s.sessionLocks }
 // (cfg.ResolveAgentModel) — back-compat with v0.6.x.
 func (s *Server) SetResolver(r *resolve.Resolver) { s.resolver = r }
 
+// markStalledFn returns a closure suitable for loop.RunOptions.MarkStalled.
+// The closure captures the resolver-scoped (provider, model) for the
+// current iteration; the loop calls it on driver errors that suggest
+// the model itself is broken (5xx after retry, mid-stream errors).
+//
+// Returns nil when no resolver is wired (back-compat path) — RunOptions
+// treats nil as "stall feedback disabled".
+func (s *Server) markStalledFn(provider, model string) func(p, m, reason string) {
+	if s.resolver == nil {
+		return nil
+	}
+	// Closure captures only what the loop needs. Loop passes
+	// (provider, model, reason); we ignore the loop's args and use
+	// the resolved pair from the call site, since they're the
+	// authoritative inputs to the resolver — the loop wouldn't know
+	// to discriminate between OpenAI vs DeepSeek without us telling
+	// it via opts.Provider.ID() (which is what it'll pass anyway,
+	// but pinning here keeps the contract explicit).
+	return func(_, _, reason string) {
+		s.resolver.MarkStalled(provider, model, reason)
+	}
+}
+
 // resolveErrorToStatus maps a resolver error to the appropriate HTTP
 // status code. Tier / pin unavailability returns 503 so caller-side
 // retry-with-backoff hits the right path. Anything else (typo on
@@ -410,6 +433,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		OnHeartbeat:   heartbeat,
 		MaxTokens:     agentDef.MaxTokens,
 		Effort:        effort,
+		MarkStalled:   s.markStalledFn(providerID, model),
 	})
 	s.finishRunWithCancel(ctx, runCtx, runID, res, runErr)
 	return nil
@@ -840,6 +864,7 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		OnHeartbeat: heartbeat,
 		MaxTokens:   agentDef.MaxTokens, // 0 → driver default
 		Effort:      effort,
+		MarkStalled: s.markStalledFn(providerID, model),
 	})
 	if runErr != nil {
 		stream.send(providers.Event{Type: providers.EventError, Error: runErr.Error()})
@@ -1072,6 +1097,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		OnHeartbeat:   heartbeat,
 		MaxTokens:     agentDef.MaxTokens, // 0 → driver default
 		Effort:        effort,
+		MarkStalled:   s.markStalledFn(providerID, model),
 	})
 	if runErr != nil {
 		stream.send(providers.Event{Type: providers.EventError, Error: runErr.Error()})
@@ -1490,6 +1516,7 @@ func (s *Server) runSubAgent(ctx context.Context, name string, prompt string) (s
 		OnHeartbeat: subHeartbeat,
 		MaxTokens:   def.MaxTokens, // 0 → driver default
 		Effort:      effort,
+		MarkStalled: s.markStalledFn(providerID, model),
 	})
 	s.finishRunWithCancel(ctx, subRunCtx, subRunID, res, runErr)
 

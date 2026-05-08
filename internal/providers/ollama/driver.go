@@ -384,3 +384,64 @@ func mapStopReason(ollamaReason string, hadToolCalls bool) string {
 		return ollamaReason
 	}
 }
+
+// Probe checks reachability via GET /api/tags (no auth required —
+// Ollama's local trust model). Returns nil iff the response is 200 OK
+// with parseable JSON. Reuses fetchTags so a single round-trip can
+// also surface the model list when ListModels is the next call (the
+// resolver typically does both at once during a probe sweep).
+func (d *Driver) Probe(ctx context.Context) error {
+	_, err := d.fetchTags(ctx)
+	return err
+}
+
+// ListModels returns the names of models pulled on this Ollama server
+// (the `models[].name` array from /api/tags). These are the wire
+// aliases the resolver matches against (e.g. "qwen3:14b",
+// "gemma4:9b") — same strings agent yaml uses in its tier candidate
+// list.
+func (d *Driver) ListModels(ctx context.Context) ([]string, error) {
+	return d.fetchTags(ctx)
+}
+
+// fetchTags is the shared GET /api/tags round-trip. Ollama's response
+// shape:
+//
+//	{"models": [
+//	  {"name": "qwen3:14b", "modified_at": "...", "size": 9276198565,
+//	   "digest": "...", "details": {...}},
+//	  ...
+//	]}
+//
+// Unlike Anthropic / OpenAI, Ollama may legitimately return an empty
+// `models` array (operator hasn't pulled any models yet). The
+// resolver treats that as "provider reachable, every candidate
+// stalled until something gets pulled" — distinct from probe failure.
+func (d *Driver) fetchTags(ctx context.Context) ([]string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, d.baseURL+"/api/tags", nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := d.http.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("ollama /api/tags: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+		return nil, fmt.Errorf("ollama /api/tags: status %d (%s)", resp.StatusCode, string(body))
+	}
+	var doc struct {
+		Models []struct {
+			Name string `json:"name"`
+		} `json:"models"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&doc); err != nil {
+		return nil, fmt.Errorf("ollama /api/tags decode: %w", err)
+	}
+	out := make([]string, 0, len(doc.Models))
+	for _, m := range doc.Models {
+		out = append(out, m.Name)
+	}
+	return out, nil
+}

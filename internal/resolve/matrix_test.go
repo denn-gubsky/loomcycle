@@ -358,6 +358,91 @@ func TestSetReachable_NilModelsKeepsPriorList(t *testing.T) {
 	}
 }
 
+// ---- Excluded-flag tests (PR 2) ----
+
+func TestSetExcluded_SkipsProviderInResolution(t *testing.T) {
+	// Provider with no API key gets SetExcluded; resolver must skip
+	// it the same way it skips an unreachable provider. Per the
+	// operator's directive: providers without keys are MARKED
+	// excluded so Snapshot() shows the distinct state.
+	priority, tiers := fixtureLibrary()
+	r := NewResolver(priority, tiers)
+	seedAll(t, r, tiers)
+	// Simulate "no DEEPSEEK_API_KEY set" → SetExcluded.
+	r.SetExcluded("deepseek", "DEEPSEEK_API_KEY not set")
+
+	dec, err := r.Resolve(AgentRequest{Name: "ats-filter", Tier: "low"})
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	// DeepSeek is library priority's first choice for low tier;
+	// with it excluded, resolver should fall through to Ollama.
+	if dec.Provider != "ollama" {
+		t.Errorf("decision provider = %q, want ollama (fallthrough from excluded deepseek)", dec.Provider)
+	}
+}
+
+func TestSetExcluded_VisibleInSnapshot(t *testing.T) {
+	// Operators reading Snapshot() must be able to distinguish
+	// "deliberately excluded" from "probe failed". The Excluded
+	// flag is the wire-stable signal for that.
+	priority, tiers := fixtureLibrary()
+	r := NewResolver(priority, tiers)
+	r.SetExcluded("anthropic", "ANTHROPIC_API_KEY not set")
+	r.SetReachable("openai", false, nil, "EOF on /v1/models")
+
+	snap := r.Snapshot()
+	if !snap["anthropic"].Excluded {
+		t.Error("anthropic should be Excluded=true (no key)")
+	}
+	if snap["anthropic"].LastError == "" {
+		t.Error("anthropic LastError should carry the exclusion reason")
+	}
+	if snap["openai"].Excluded {
+		t.Error("openai should be Excluded=false (probe attempted, failed)")
+	}
+	if snap["openai"].Reachable {
+		t.Error("openai Reachable should be false")
+	}
+}
+
+func TestSetReachable_ClearsExcludedFlag(t *testing.T) {
+	// Operator adds the API key after startup; periodic re-probe
+	// runs and SetReachable is called. The Excluded flag should
+	// clear so the operator can tell at a glance "this provider
+	// is now actively probed, not deliberately excluded".
+	r := NewResolver([]string{"anthropic"}, map[string][]Candidate{
+		"low": {{Provider: "anthropic", Model: "claude-haiku-4-5"}},
+	})
+	r.SetExcluded("anthropic", "ANTHROPIC_API_KEY not set")
+
+	// Re-probe succeeds.
+	r.SetReachable("anthropic", true, []string{"claude-haiku-4-5"}, "")
+
+	snap := r.Snapshot()["anthropic"]
+	if snap.Excluded {
+		t.Error("Excluded flag should clear after a successful probe (operator added the key)")
+	}
+	if !snap.Reachable {
+		t.Error("Reachable should be true after successful probe")
+	}
+}
+
+func TestSetExcluded_IsIdempotent(t *testing.T) {
+	// Periodic probe sweeps SetExcluded every cycle for unconfigured
+	// providers. The contract is that repeat calls don't churn other
+	// state — only LastCheck and (idempotent) Excluded/LastError.
+	r := NewResolver([]string{"anthropic"}, nil)
+	r.SetExcluded("anthropic", "no key")
+	t1 := r.Snapshot()["anthropic"].LastCheck
+	r.SetExcluded("anthropic", "no key")
+	t2 := r.Snapshot()["anthropic"].LastCheck
+	if !t2.After(t1) && t2 != t1 {
+		// LastCheck should advance OR stay the same; just sanity.
+		t.Errorf("LastCheck went backwards: %v -> %v", t1, t2)
+	}
+}
+
 func TestSnapshot_IsACopy(t *testing.T) {
 	// Snapshot's job is operator observability — callers should
 	// not be able to mutate resolver state by writing to the
