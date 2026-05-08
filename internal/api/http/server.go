@@ -7,7 +7,6 @@ package http
 import (
 	"context"
 	"crypto/rand"
-	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -17,11 +16,13 @@ import (
 	"strings"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/cancel"
 	"github.com/denn-gubsky/loomcycle/internal/concurrency"
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/loop"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
+	"github.com/denn-gubsky/loomcycle/internal/runner"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 	"github.com/denn-gubsky/loomcycle/internal/tools/builtin"
@@ -49,19 +50,16 @@ type Server struct {
 	// internal/cancel/registry.go for the trust model.
 	cancelReg *cancel.Registry
 
-	// sessionLocks tracks per-session mutexes used by continuation POSTs
-	// (handleMessages, or handleRuns with a non-empty SessionID). A
-	// concurrent POST to the same session fast-fails with 409, since the
-	// alternative is to leave a second SSE stream waiting indefinitely
-	// behind the first — and a partial-transcript replay would corrupt
-	// history.
+	// sessionLocks tracks per-session mutexes used by continuation
+	// requests (handleMessages, or handleRuns with a non-empty
+	// SessionID). A concurrent request to the same session fast-fails
+	// with 409 (HTTP) / FailedPrecondition (gRPC).
 	//
-	// Entries are refcounted + GC'd by RunSessionLockGC: when the
-	// refcount hits zero AND the entry has been idle for longer than
-	// the GC's max-idle threshold, the entry is removed. Active and
-	// recently-used entries are never reclaimed. See the package doc on
-	// sessionLockMap for the lifecycle.
-	sessionLocks *sessionLockMap
+	// Lives in internal/runner so the gRPC wire surface — which
+	// targets the same session_id space — coordinates against the
+	// same lock map. main.go shares one instance between both
+	// surfaces. See runner.SessionLockMap for the GC lifecycle.
+	sessionLocks *runner.SessionLockMap
 }
 
 // New constructs a Server. If st is non-nil, every run is recorded as a
@@ -84,11 +82,231 @@ func New(cfg *config.Config, pr ProviderResolver, builtinTools []tools.Tool, sem
 		sem:          sem,
 		store:        st,
 		cancelReg:    cancel.NewRegistry(),
-		sessionLocks: newSessionLockMap(),
+		sessionLocks: runner.NewSessionLockMap(),
 	}
 	s.tools = append(s.tools, &builtin.AgentTool{Run: s.runSubAgent})
 	return s
 }
+
+// SessionLocks exposes the per-session lock map so the gRPC server
+// (which shares the same Server instance via the runner.Runner
+// interface) can use the same coordination point. Both wires
+// targeting the same session_id must serialize on the same lock.
+func (s *Server) SessionLocks() *runner.SessionLockMap { return s.sessionLocks }
+
+// RunOnce is the wire-agnostic entry point for /v1/runs and
+// /v1/sessions/{id}/messages. The HTTP handlers (handleRuns,
+// handleMessages) and the gRPC handlers (Run, Continue) translate
+// their own request shape into a runner.RunInput and call here.
+//
+// The function blocks until the loop terminates. Sentinel errors
+// (runner.ErrFoo) come back so each wire surface can map to its own
+// status codes (HTTP 4xx/5xx vs gRPC codes).
+//
+// Implementation note: this duplicates the body of handleRuns +
+// handleMessages today (both still implement their own logic
+// inline). PR-3-of-v0.5.5-followup will refactor those two handlers
+// to call RunOnce. The duplication exists because folding it into
+// the same change as gRPC's Run/Continue would touch ~500 LOC of
+// HTTP code in a PR whose primary purpose is gRPC streaming;
+// keeping them separate makes both PRs reviewable.
+func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunCallbacks) error {
+	// ---- Validation phase ----
+	if in.UserID != "" && !validIdent(in.UserID) {
+		return fmt.Errorf("%w: user_id must match [A-Za-z0-9_-]{1,128}", runner.ErrInvalidArgument)
+	}
+	if in.AgentID != "" && !validIdent(in.AgentID) {
+		return fmt.Errorf("%w: agent_id must match [A-Za-z0-9_-]{1,128}", runner.ErrInvalidArgument)
+	}
+
+	// ---- Session resolution (continuation only) ----
+	isContinuation := in.SessionID != ""
+	effectiveAgentName := in.Agent
+	effectiveTenantID := in.TenantID
+	effectiveUserID := in.UserID
+	var priorMessages []providers.Message
+
+	if isContinuation {
+		if s.store == nil {
+			return runner.ErrSessionRequired
+		}
+		sess, err := s.store.GetSession(ctx, in.SessionID)
+		if err != nil {
+			var nf *store.ErrNotFound
+			if errors.As(err, &nf) {
+				return fmt.Errorf("%w: %s", runner.ErrSessionNotFound, in.SessionID)
+			}
+			return fmt.Errorf("%w: %v", runner.ErrInternal, err)
+		}
+		effectiveAgentName = sess.Agent
+		effectiveTenantID = sess.TenantID
+		effectiveUserID = sess.UserID
+
+		releaseLock, ok := s.sessionLocks.TryLock(in.SessionID)
+		if !ok {
+			return fmt.Errorf("%w: another request is in flight on session %q", runner.ErrSessionBusy, in.SessionID)
+		}
+		defer releaseLock()
+	}
+
+	if effectiveAgentName == "" {
+		return fmt.Errorf("%w: agent is required", runner.ErrInvalidArgument)
+	}
+	agentDef, ok := s.cfg.Agents[effectiveAgentName]
+	if !ok {
+		return fmt.Errorf("%w: %s", runner.ErrUnknownAgent, effectiveAgentName)
+	}
+	providerID, model, err := s.cfg.ResolveAgentModel(effectiveAgentName)
+	if err != nil {
+		return fmt.Errorf("%w: %v", runner.ErrInvalidArgument, err)
+	}
+	provider, err := s.providers.Get(providerID)
+	if err != nil {
+		return fmt.Errorf("%w: %v", runner.ErrUnknownProvider, err)
+	}
+
+	// ---- Transcript replay (continuation only) ----
+	if isContinuation {
+		transcript, err := s.store.GetTranscript(ctx, in.SessionID)
+		if err != nil {
+			return fmt.Errorf("%w: %v", runner.ErrInternal, err)
+		}
+		priorMessages = replayTranscript(transcript)
+	}
+
+	// ---- Concurrency slot ----
+	release, err := s.sem.Acquire(ctx)
+	if err != nil {
+		if concurrency.IsBackpressure(err) {
+			return fmt.Errorf("%w: %v", runner.ErrBackpressure, err)
+		}
+		return fmt.Errorf("%w: %v", runner.ErrInternal, err)
+	}
+	defer release()
+
+	// ---- Tool filtering + host narrowing ----
+	allowedTools := filterTools(s.tools, agentDef.AllowedTools, in.AllowedTools)
+	var hostPolicy tools.HostPolicyValue
+	if in.AllowedHosts != nil || s.cfg.Env.HTTPCallerAuthoritative {
+		var caller []string
+		if in.AllowedHosts != nil {
+			caller = *in.AllowedHosts
+		}
+		allowedTools = builtin.NarrowHosts(allowedTools, caller, in.WebSearchFilter, s.cfg.Env.HTTPCallerAuthoritative)
+		hostPolicy = tools.HostPolicyValue{
+			AllowedHosts:    caller,
+			HasList:         in.AllowedHosts != nil,
+			WebSearchFilter: in.WebSearchFilter,
+		}
+	}
+	dispatcher := tools.NewDispatcher(allowedTools)
+
+	// ---- Segments: prepend agent's system prompt ----
+	segments := in.Segments
+	if agentDef.SystemPrompt != "" {
+		segments = append([]loop.PromptSegment{{
+			Role: "system",
+			Content: []loop.PromptContentBlock{{
+				Type: "trusted-text", Text: agentDef.SystemPrompt, Cacheable: true,
+			}},
+		}}, segments...)
+	}
+
+	// ---- agent_id: caller-supplied or generated ----
+	agentID := in.AgentID
+	if agentID == "" {
+		agentID = newAgentID()
+	}
+
+	// ---- Session+run creation ----
+	identity := store.RunIdentity{AgentID: agentID, UserID: effectiveUserID}
+	sessionID, runID, sessErr := s.openOrCreateSessionAndRun(ctx, in.SessionID, effectiveAgentName, effectiveTenantID, effectiveUserID, identity)
+	if sessErr != nil {
+		var nf *store.ErrNotFound
+		if errors.As(sessErr, &nf) {
+			return fmt.Errorf("%w: %v", runner.ErrSessionNotFound, sessErr)
+		}
+		return fmt.Errorf("%w: %v", runner.ErrInternal, sessErr)
+	}
+
+	// ---- Cancel registry ----
+	runCtx, cancelFn := context.WithCancelCause(ctx)
+	defer cancelFn(nil)
+	regErr := s.cancelReg.Register(cancel.Entry{
+		AgentID:   agentID,
+		RunID:     runID,
+		SessionID: sessionID,
+		UserID:    effectiveUserID,
+		StartedAt: time.Now(),
+	}, cancelFn)
+	if errors.Is(regErr, cancel.ErrInUse) {
+		s.finishRunFailedReason(runID, "agent_id collision; run never started")
+		return fmt.Errorf("%w: agent_id %q is already mapped to an active run", runner.ErrAgentIDInUse, agentID)
+	}
+	if regErr != nil {
+		s.finishRunFailedReason(runID, "registry register failed: "+regErr.Error())
+		return fmt.Errorf("%w: %v", runner.ErrInternal, regErr)
+	}
+	defer s.cancelReg.Deregister(agentID)
+
+	// ---- Persist input segments ----
+	if s.store != nil && runID != "" {
+		if inputJSON, err := json.Marshal(in.Segments); err == nil {
+			if err := s.store.AppendEvent(ctx, runID, "user_input", inputJSON); err != nil {
+				log.Printf("store: AppendEvent(user_input) failed: %v", err)
+			}
+		}
+	}
+
+	// ---- Caller registration callback ----
+	if cb.OnRegistered != nil {
+		cb.OnRegistered(agentID, runID, sessionID, "")
+	}
+
+	// ---- Build emit chain (record + forward to caller) ----
+	emit := s.makeRecordingEmit(ctx, runID, func(ev providers.Event) {
+		if cb.OnEvent != nil {
+			cb.OnEvent(ev)
+		}
+	})
+
+	loopCtx := tools.WithAgentTools(runCtx, toolNames(allowedTools))
+	loopCtx = tools.WithRunIdentity(loopCtx, tools.RunIdentityValue{
+		UserID:  effectiveUserID,
+		AgentID: agentID,
+	})
+	loopCtx = tools.WithHostPolicy(loopCtx, hostPolicy)
+
+	heartbeat := s.makeHeartbeat(runID)
+
+	res, runErr := loop.Run(loopCtx, loop.RunOptions{
+		Provider:      provider,
+		Model:         model,
+		Tools:         allowedTools,
+		Dispatcher:    dispatcher,
+		Segments:      segments,
+		PriorMessages: priorMessages,
+		OnEvent:       emit,
+		OnHeartbeat:   heartbeat,
+		MaxTokens:     agentDef.MaxTokens,
+	})
+	s.finishRunWithCancel(ctx, runCtx, runID, res, runErr)
+	return nil
+}
+
+// Compile-time guard: *Server must satisfy runner.Runner so the
+// gRPC wire surface (which depends on the interface) can be wired
+// without a separate adapter type.
+var _ runner.Runner = (*Server)(nil)
+
+// CancelRegistry exposes the in-memory registry so a parallel API
+// surface (the gRPC server in internal/api/grpc) can answer cancel /
+// status queries against the same state. Both surfaces are
+// constructed in cmd/loomcycle/main.go from the same dependencies;
+// they share the registry rather than maintaining parallel ones,
+// which would let a cancel issued via gRPC silently miss runs that
+// originated on the HTTP path (or vice versa).
+func (s *Server) CancelRegistry() *cancel.Registry { return s.cancelReg }
 
 // trySessionLock try-locks the session-scoped mutex for id. Returns
 // (release, true) on success and (nil, false) if another caller already
@@ -104,24 +322,24 @@ func (s *Server) trySessionLock(id string) (release func(), ok bool) {
 	if id == "" {
 		panic("trySessionLock: empty session id")
 	}
-	return s.sessionLocks.tryLock(id)
+	return s.sessionLocks.TryLock(id)
 }
 
 // lockedSessionCount returns the number of entries in sessionLocks.
 // Test-only: used to assert (a) the DoS fix (unknown IDs must not grow
 // the table) and (b) the GC reclaims idle entries.
 func (s *Server) lockedSessionCount() int {
-	return s.sessionLocks.size()
+	return s.sessionLocks.Size()
 }
 
 // RunSessionLockGC periodically prunes session-lock entries whose
 // refcount is zero AND whose lastAccessed is older than maxIdle. Run
 // it on a goroutine that owns the lifecycle (typically alongside the
-// HTTP server in cmd/loomcycle/main.go).
+// HTTP / gRPC servers in cmd/loomcycle/main.go).
 //
-// interval and maxIdle are operator-configurable; the recommended ratio
-// is maxIdle ≥ 2 × interval so a session that's just woken up after a
-// quiet period doesn't get its lock yanked mid-acquisition.
+// interval and maxIdle are operator-configurable; the recommended
+// ratio is maxIdle ≥ 2 × interval so a session that's just woken up
+// after a quiet period doesn't get its lock yanked mid-acquisition.
 func (s *Server) RunSessionLockGC(ctx context.Context, interval, maxIdle time.Duration) {
 	if interval <= 0 || maxIdle <= 0 {
 		return
@@ -133,7 +351,7 @@ func (s *Server) RunSessionLockGC(ctx context.Context, interval, maxIdle time.Du
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			_ = s.sessionLocks.gc(maxIdle)
+			_ = s.sessionLocks.GC(maxIdle)
 		}
 	}
 }
@@ -1527,8 +1745,11 @@ func (s *Server) finishRun(_ context.Context, runID string, res loop.RunResult, 
 // authMiddleware enforces LOOMCYCLE_AUTH_TOKEN bearer auth, except for /healthz which
 // is mounted bare (this middleware is only wrapped around /v1/* routes).
 //
-// Comparison uses subtle.ConstantTimeCompare to prevent a timing oracle that
-// could let a network-adjacent attacker recover the token byte-by-byte.
+// Comparison uses auth.CompareBearer, which hashes both sides to a
+// fixed-length digest before subtle.ConstantTimeCompare so the
+// compare is constant-time regardless of input length (raw
+// ConstantTimeCompare returns early on length mismatch and leaks
+// the expected token's length).
 func (s *Server) authMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if s.cfg.Env.AuthToken == "" {
@@ -1539,7 +1760,7 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 		}
 		got := r.Header.Get("Authorization")
 		want := "Bearer " + s.cfg.Env.AuthToken
-		if subtle.ConstantTimeCompare([]byte(got), []byte(want)) != 1 {
+		if !auth.CompareBearer(got, want) {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}

@@ -13,9 +13,11 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -37,6 +39,11 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	storepostgres "github.com/denn-gubsky/loomcycle/internal/store/postgres"
 	storesqlite "github.com/denn-gubsky/loomcycle/internal/store/sqlite"
+
+	googlegrpc "google.golang.org/grpc"
+
+	loomgrpc "github.com/denn-gubsky/loomcycle/internal/api/grpc"
+	"github.com/denn-gubsky/loomcycle/internal/api/grpc/loomcyclepb"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 	"github.com/denn-gubsky/loomcycle/internal/tools/builtin"
 	"github.com/denn-gubsky/loomcycle/internal/tools/localapi"
@@ -345,12 +352,51 @@ func main() {
 		}
 	}()
 
+	// gRPC server. Optional; opt-in via LOOMCYCLE_GRPC_ADDR. Reuses
+	// the same Store + cancel registry as the HTTP server so both
+	// surfaces give identical answers. PR 1 of v0.5.5 implements
+	// metadata RPCs only (Run/Continue stub to Unimplemented); PR 2
+	// wires the streaming surface.
+	var grpcSrv *googlegrpc.Server
+	if cfg.Env.GrpcAddr != "" {
+		grpcAdapter := loomgrpc.New(loomgrpc.Config{
+			Store:       storeIface,
+			CancelReg:   srv.CancelRegistry(),
+			Runner:      srv, // *http.Server satisfies runner.Runner
+			AuthToken:   cfg.Env.AuthToken,
+			BuildCommit: buildCommit,
+			BuildTime:   buildTime,
+		})
+		grpcSrv = googlegrpc.NewServer(
+			googlegrpc.UnaryInterceptor(grpcAdapter.UnaryAuthInterceptor()),
+			googlegrpc.StreamInterceptor(grpcAdapter.StreamAuthInterceptor()),
+		)
+		loomcyclepb.RegisterLoomcycleServer(grpcSrv, grpcAdapter)
+		grpcLis, err := net.Listen("tcp", cfg.Env.GrpcAddr)
+		if err != nil {
+			log.Fatalf("grpc listen %s: %v", cfg.Env.GrpcAddr, err)
+		}
+		grpcAdapter.MustLogStartupBanner(cfg.Env.GrpcAddr)
+		go func() {
+			// GracefulStop returns ErrServerStopped on the
+			// normal shutdown path — don't log it as a serve
+			// failure (would pollute operator logs and trip alert
+			// rules watching for "error" tokens).
+			if err := grpcSrv.Serve(grpcLis); err != nil && !errors.Is(err, googlegrpc.ErrServerStopped) {
+				log.Printf("grpc serve: %v", err)
+			}
+		}()
+	}
+
 	// Graceful shutdown.
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
 	<-sig
 	log.Println("shutting down…")
 	bgCancel() // tear down sweeper + GC goroutines first
+	if grpcSrv != nil {
+		grpcSrv.GracefulStop()
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	_ = httpServer.Shutdown(ctx)

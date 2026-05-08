@@ -213,6 +213,27 @@ concurrency:
   max_queue_depth: 16          # short burst absorption
   queue_timeout_ms: 30000      # 30s — caller-side timeout should match
 
+# ─── gRPC server (v0.5.5) ─────────────────────────────────────────────
+# Optional second wire surface alongside HTTP+SSE. Mirrors the
+# /v1/* surface 1:1 via proto/loomcycle.proto. Disabled by default;
+# operator opts in by setting LOOMCYCLE_GRPC_ADDR.
+#
+# v0.5.5 PR 1 implements the metadata RPCs (GetAgent, CancelAgent,
+# ListUserAgents, GetTranscript, Health) + the auth interceptor.
+# Run / Continue (server-streaming) land in PR 2 once the HTTP
+# handler's run-loop wiring is factored into a shared runner.
+#
+# Auth uses the same LOOMCYCLE_AUTH_TOKEN as HTTP, presented via the
+# `authorization: Bearer <token>` gRPC metadata header. Health is
+# unauthenticated for parity with HTTP /healthz.
+#
+# Cleartext HTTP/2 — TLS termination is a deployment concern (run
+# loomcycle behind a TLS-terminating proxy if you need it). The gRPC
+# listener binds inside the trusted sidecar boundary same as HTTP.
+#
+# Env knobs (no YAML block — runtime tuning only):
+#   LOOMCYCLE_GRPC_ADDR=:8788          (empty = disabled)
+
 # ─── Heartbeat sweeper + session-lock GC (v0.5.0) ─────────────────────
 # Two background goroutines that keep state from accumulating:
 #

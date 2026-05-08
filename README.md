@@ -153,6 +153,7 @@ Most-used knobs (full list in `.env.example` + `loomcycle.example.yaml`):
 - `docs/ARCHITECTURE.md` — request flow, provider abstraction, agent loop, sub-agents, skills, storage, concurrency, cancellation.
 - `docs/TOOLS.md` — the two-layer default-deny model end-to-end, every built-in tool, MCP / LocalAPI integrations, per-request narrowing.
 - `docs/POSTGRES.md` — operator guide for the v0.5.0 Postgres backend: configuration, migrations, sqlite→postgres data migration runbook, concurrency benchmark.
+- `docs/GRPC.md` — operator guide for the v0.5.5 gRPC surface: enablement, wire-shape parity with HTTP+SSE, error mapping, TLS / coexistence recipes, Python adapter quick-start.
 - `docs/PLAN.md` — public roadmap. v0.4.0 + v0.5.0 status; v0.5.5 / v0.6.0 / v1.0 outlines.
 - `CLAUDE.md` — project guide for agents working in this repo (Claude Code).
 
