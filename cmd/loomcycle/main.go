@@ -13,6 +13,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
@@ -377,7 +378,11 @@ func main() {
 		}
 		grpcAdapter.MustLogStartupBanner(cfg.Env.GrpcAddr)
 		go func() {
-			if err := grpcSrv.Serve(grpcLis); err != nil {
+			// GracefulStop returns ErrServerStopped on the
+			// normal shutdown path — don't log it as a serve
+			// failure (would pollute operator logs and trip alert
+			// rules watching for "error" tokens).
+			if err := grpcSrv.Serve(grpcLis); err != nil && !errors.Is(err, googlegrpc.ErrServerStopped) {
 				log.Printf("grpc serve: %v", err)
 			}
 		}()

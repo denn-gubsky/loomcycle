@@ -115,8 +115,6 @@ func (m *SessionLockMap) GC(maxIdle time.Duration) int {
 	return removed
 }
 
-// size returns the number of entries currently in the map. Used by
-// tests to assert the GC actually reclaims idle entries.
 // Size returns the number of entries currently in the map. Used by
 // tests to assert the GC actually reclaims idle entries.
 func (m *SessionLockMap) Size() int {

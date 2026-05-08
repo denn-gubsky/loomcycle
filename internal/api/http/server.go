@@ -7,7 +7,6 @@ package http
 import (
 	"context"
 	"crypto/rand"
-	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -17,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/cancel"
 	"github.com/denn-gubsky/loomcycle/internal/concurrency"
 	"github.com/denn-gubsky/loomcycle/internal/config"
@@ -1745,8 +1745,11 @@ func (s *Server) finishRun(_ context.Context, runID string, res loop.RunResult, 
 // authMiddleware enforces LOOMCYCLE_AUTH_TOKEN bearer auth, except for /healthz which
 // is mounted bare (this middleware is only wrapped around /v1/* routes).
 //
-// Comparison uses subtle.ConstantTimeCompare to prevent a timing oracle that
-// could let a network-adjacent attacker recover the token byte-by-byte.
+// Comparison uses auth.CompareBearer, which hashes both sides to a
+// fixed-length digest before subtle.ConstantTimeCompare so the
+// compare is constant-time regardless of input length (raw
+// ConstantTimeCompare returns early on length mismatch and leaks
+// the expected token's length).
 func (s *Server) authMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if s.cfg.Env.AuthToken == "" {
@@ -1757,7 +1760,7 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 		}
 		got := r.Header.Get("Authorization")
 		want := "Bearer " + s.cfg.Env.AuthToken
-		if subtle.ConstantTimeCompare([]byte(got), []byte(want)) != 1 {
+		if !auth.CompareBearer(got, want) {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}

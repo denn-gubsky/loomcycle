@@ -17,7 +17,7 @@ package grpc
 
 import (
 	"context"
-	"crypto/subtle"
+	"encoding/json"
 	"errors"
 	"log"
 	"time"
@@ -29,6 +29,7 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/denn-gubsky/loomcycle/internal/api/grpc/loomcyclepb"
+	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/cancel"
 	"github.com/denn-gubsky/loomcycle/internal/loop"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
@@ -363,7 +364,10 @@ func (s *Server) StreamAuthInterceptor() googlegrpc.StreamServerInterceptor {
 const healthFullMethod = "/loomcycle.v1.Loomcycle/Health"
 
 // checkBearer validates the `authorization: Bearer <token>` metadata
-// header in constant time.
+// header in constant time. Uses auth.CompareBearer (sha256 + CTC)
+// rather than subtle.ConstantTimeCompare directly so the compare is
+// constant-time regardless of input length — raw CTC returns early
+// on length mismatch and leaks the expected token's length.
 func checkBearer(ctx context.Context, want string) error {
 	md, ok := metadata.FromIncomingContext(ctx)
 	if !ok {
@@ -375,7 +379,7 @@ func checkBearer(ctx context.Context, want string) error {
 	}
 	got := values[0]
 	expected := "Bearer " + want
-	if subtle.ConstantTimeCompare([]byte(got), []byte(expected)) != 1 {
+	if !auth.CompareBearer(got, expected) {
 		return status.Error(codes.Unauthenticated, "invalid bearer token")
 	}
 	return nil
@@ -471,12 +475,18 @@ func (s *Server) driveStream(ctx context.Context, stream runStreamSink, in runne
 			// generic string carrier; sub-optimal but avoids a
 			// proto change in PR 2).
 			payload := agentFrameJSON(agentID, runID, sessionID, parentAgentID)
-			_ = stream.Send(&loomcyclepb.Event{
+			// Capture the send error so the OnEvent guard fires
+			// if the agent frame fails — otherwise the loop would
+			// run for one full iteration emitting into a broken
+			// pipe before discovering the client is gone.
+			if err := stream.Send(&loomcyclepb.Event{
 				Type:       "agent",
 				Text:       agentID,
 				StopReason: parentAgentID,
 				Error:      payload,
-			})
+			}); err != nil {
+				sendErr = err
+			}
 		},
 		OnEvent: func(ev providers.Event) {
 			if sendErr != nil {
@@ -583,13 +593,28 @@ func eventToProto(ev providers.Event) *loomcyclepb.Event {
 
 // agentFrameJSON encodes the four registration IDs into a compact
 // JSON object stored in the synthetic "agent" Event's Error field.
-// Adapters decode this on the client side. Hand-rolled to avoid
-// pulling encoding/json into the streaming hot path.
+// Adapters decode this on the client side.
+//
+// Uses encoding/json — fires once per run (not per event), so the
+// allocation cost is negligible and the previous hand-rolled
+// concat was a fragile micro-optimisation: a future caller passing
+// an ID with `"` or `\` would have produced malformed JSON.
 func agentFrameJSON(agentID, runID, sessionID, parentAgentID string) string {
-	return `{"agent_id":"` + agentID +
-		`","run_id":"` + runID +
-		`","session_id":"` + sessionID +
-		`","parent_agent_id":"` + parentAgentID + `"}`
+	b, err := json.Marshal(struct {
+		AgentID       string `json:"agent_id"`
+		RunID         string `json:"run_id"`
+		SessionID     string `json:"session_id"`
+		ParentAgentID string `json:"parent_agent_id"`
+	}{agentID, runID, sessionID, parentAgentID})
+	if err != nil {
+		// json.Marshal on a struct of strings cannot fail in
+		// practice — there's no UnmarshalJSON on string and no
+		// channel/func in the type. Fall back to an empty
+		// envelope; adapters tolerate this (test_drive_stream
+		// covers a malformed envelope).
+		return "{}"
+	}
+	return string(b)
 }
 
 // mapRunnerErr converts a runner.ErrFoo (or wrapped variant) into a

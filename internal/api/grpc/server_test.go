@@ -456,6 +456,9 @@ func TestRun_StreamingErrorMapping(t *testing.T) {
 		wantCode codes.Code
 	}{
 		{"unknown agent", runner.ErrUnknownAgent, codes.InvalidArgument},
+		{"invalid argument", runner.ErrInvalidArgument, codes.InvalidArgument},
+		{"unknown provider", runner.ErrUnknownProvider, codes.InvalidArgument},
+		{"session required", runner.ErrSessionRequired, codes.FailedPrecondition},
 		{"session not found", runner.ErrSessionNotFound, codes.NotFound},
 		{"session busy", runner.ErrSessionBusy, codes.FailedPrecondition},
 		{"agent_id in use", runner.ErrAgentIDInUse, codes.AlreadyExists},
