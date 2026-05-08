@@ -124,12 +124,21 @@ type Resolver struct {
 }
 
 // Availability is the resolver's view of one provider's reachability
-// plus per-model status. Mutated by SetReachable / MarkStalled / the
-// periodic probe loop in PR 2.
+// plus per-model status. Mutated by SetReachable / SetExcluded /
+// MarkStalled / the periodic probe loop.
 type Availability struct {
+	// Excluded means the provider was deliberately not probed
+	// because no API key (or for Ollama, no base URL) was
+	// configured. Distinct from Reachable=false (which means probe
+	// attempted and failed) so operators reading Snapshot() can
+	// tell "operator chose not to enable this provider" apart from
+	// "provider is down right now". Resolver skips Excluded
+	// providers identically to unreachable ones.
+	Excluded bool
+
 	// Reachable means the most recent probe to the provider's
-	// endpoint succeeded. PR 1's stub probe sets this from API key
-	// presence; PR 2's live probe sets it from /v1/models response.
+	// endpoint succeeded. False when Excluded=true (we never
+	// probed) or when the probe failed.
 	Reachable bool
 
 	// Models tracks per-model status. The outer Reachable check
@@ -140,11 +149,15 @@ type Availability struct {
 
 	// LastCheck is when the matrix was last updated for this
 	// provider — either by a probe or a stall feedback call.
+	// Zero value when Excluded=true and the entry was never
+	// updated from anything other than SetExcluded.
 	LastCheck time.Time
 
 	// LastError is the last failure reason (probe error or stall
-	// reason). Empty on success. Surfaced in operator logs and the
-	// 503 message so triage doesn't require a separate trace.
+	// reason). For excluded providers, contains the reason
+	// (typically "no API key configured"). Surfaced in operator
+	// logs and the 503 message so triage doesn't require a
+	// separate trace.
 	LastError string
 }
 
@@ -311,7 +324,7 @@ func (r *Resolver) priorityFor(req AgentRequest) []string {
 // usable. Caller holds r.mu (read or write).
 func (r *Resolver) isAvailableLocked(provider, model string) bool {
 	avail, ok := r.matrix[provider]
-	if !ok || !avail.Reachable {
+	if !ok || avail.Excluded || !avail.Reachable {
 		return false
 	}
 	status, ok := avail.Models[model]
@@ -343,6 +356,11 @@ func (r *Resolver) SetReachable(provider string, reachable bool, listedModels []
 		avail = &Availability{Models: map[string]ModelStatus{}}
 		r.matrix[provider] = avail
 	}
+	// SetReachable means a probe ran, which conceptually retracts
+	// the "deliberately not probed" Excluded marker. If the probe
+	// failed, Reachable goes false but Excluded stays cleared —
+	// "we tried, it didn't work" is distinct from "we didn't try".
+	avail.Excluded = false
 	avail.Reachable = reachable
 	avail.LastCheck = time.Now()
 	avail.LastError = lastErr
@@ -404,6 +422,34 @@ func (r *Resolver) SetProviderReachable(provider string, reachable bool) {
 	avail.LastCheck = time.Now()
 }
 
+// SetExcluded marks a provider as deliberately not probed — no API
+// key configured, or for Ollama no base URL. The resolver skips
+// excluded providers identically to unreachable ones, but Snapshot()
+// surfaces the distinct flag so operators can tell "operator chose
+// not to enable" from "operator enabled but the probe failed".
+//
+// Reason is surfaced in LastError for operator logs (typical values:
+// "ANTHROPIC_API_KEY not set", "DEEPSEEK_API_KEY not set",
+// "OLLAMA_BASE_URL not configured").
+//
+// Calling SetExcluded clears Reachable (an excluded provider is
+// definitionally not reachable) and is idempotent — safe to call on
+// every probe sweep without side effects beyond updating LastCheck
+// and LastError.
+func (r *Resolver) SetExcluded(provider, reason string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	avail, ok := r.matrix[provider]
+	if !ok {
+		avail = &Availability{Models: map[string]ModelStatus{}}
+		r.matrix[provider] = avail
+	}
+	avail.Excluded = true
+	avail.Reachable = false
+	avail.LastCheck = time.Now()
+	avail.LastError = reason
+}
+
 // MarkStalled records a runtime failure for a (provider, model). The
 // loop should call this on first 5xx-after-retry or 404-on-model-name
 // — the model is presumed broken until the next successful probe
@@ -450,6 +496,7 @@ func (r *Resolver) Snapshot() map[string]Availability {
 			models[m] = s
 		}
 		out[provider] = Availability{
+			Excluded:  avail.Excluded,
 			Reachable: avail.Reachable,
 			Models:    models,
 			LastCheck: avail.LastCheck,

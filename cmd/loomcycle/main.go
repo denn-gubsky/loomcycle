@@ -23,6 +23,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"sort"
+	"sync"
 	"syscall"
 	"time"
 
@@ -306,13 +307,15 @@ func main() {
 	defer storeCloser()
 	srv := lchttp.New(cfg, pr, allTools, sem, storeIface)
 
-	// Build the model-resolution matrix (resolve.Resolver) and seed
-	// it with a STUB probe: every configured tier candidate is marked
-	// listed for any provider whose API key is set. Real probes
-	// against /v1/models endpoints land in PR 2 of the resolve-matrix
-	// series. With the stub probe, the resolver picks the first
-	// candidate in priority order whose provider is configured.
-	resolver := buildResolver(cfg)
+	// Build the model-resolution matrix (resolve.Resolver). Providers
+	// without API keys are MARKED EXCLUDED so Snapshot() shows the
+	// distinct "no key configured" state — the resolver skips them
+	// like unreachable providers but operators can tell the two
+	// apart in logs and dashboards. Providers with keys are probed
+	// live (GET /v1/models or /api/tags) and seeded from the
+	// response. The probe goroutine started below re-runs the probe
+	// on the configured cadence to catch recoveries.
+	resolver := buildResolver(cfg, pr)
 	srv.SetResolver(resolver)
 
 	httpServer := &http.Server{
@@ -356,6 +359,20 @@ func main() {
 	}
 	go srv.RunSessionLockGC(bgCtx, sessionGCInterval, sessionGCMaxIdle)
 	log.Printf("session-lock GC: interval=%s max_idle=%s", sessionGCInterval, sessionGCMaxIdle)
+
+	// Periodic probe loop: re-runs the resolver's reachability +
+	// model-list probe on the configured cadence so a provider
+	// recovering from an outage shows up in the matrix without a
+	// loomcycle restart. Default 15 minutes; clamped to [60s, 1h] in
+	// the config loader. The first probe already ran inside
+	// buildResolver above (synchronously, before traffic begins) —
+	// this goroutine handles all subsequent rounds.
+	probeInterval := cfg.Env.ResolveProbeInterval
+	if probeInterval <= 0 {
+		probeInterval = 15 * time.Minute
+	}
+	go runResolveProbeLoop(bgCtx, resolver, pr, cfg, probeInterval)
+	log.Printf("resolve probe: interval=%s", probeInterval)
 
 	go func() {
 		log.Printf("loomcycle listening on %s", cfg.Env.ListenAddr)
@@ -517,72 +534,112 @@ func (p *providerResolver) Get(id string) (providers.Provider, error) {
 	}
 }
 
-// buildResolver constructs the model-resolution matrix (resolve.Resolver)
-// and seeds it with a STUB probe: each provider is marked reachable when
-// its API key is present, and every configured tier candidate is pre-
-// listed for that provider. Real probes against /v1/models land in PR 2
-// of the resolve-matrix series — see doc-internal/rfcs/model-resolution-
-// matrix.md. The stub keeps the matrix functional for the resolver path
-// without the network round-trip.
+// buildResolver constructs the model-resolution matrix
+// (resolve.Resolver) and runs the FIRST round of live probes
+// synchronously before returning. Per the operator's directive:
+// providers without API keys are explicitly marked Excluded so
+// Snapshot() distinguishes "operator chose not to enable this
+// provider" from "operator enabled but the probe failed".
 //
-// The matrix is empty for providers without an API key — those will
-// surface ErrTierUnavailable when an agent's tier resolution lands on
-// them. This is the documented degraded-mode startup behaviour: server
-// stays up, individual agent runs return 503 until something recovers.
-func buildResolver(cfg *config.Config) *resolve.Resolver {
+// The first probe completes synchronously so traffic served on the
+// HTTP/gRPC port immediately after this returns sees a populated
+// matrix (or an explicit Excluded marker for unconfigured providers).
+// Subsequent rounds run in a background goroutine started by main —
+// see runResolveProbeLoop.
+func buildResolver(cfg *config.Config, pr *providerResolver) *resolve.Resolver {
 	libraryTiers := convertTiers(cfg.Tiers)
 	r := resolve.NewResolver(cfg.ProviderPriority, libraryTiers)
 
-	// Walk the union of (library tiers + every agent's tier overrides)
-	// to seed the matrix. Every (provider, model) pair declared
-	// anywhere becomes a candidate; the resolver gates them by
-	// provider reachability (set below from API-key presence).
-	seen := map[string]map[string]bool{} // provider → model → already-seen
-	seedFromCandidates := func(cands []resolve.Candidate) {
-		for _, c := range cands {
-			if seen[c.Provider] == nil {
-				seen[c.Provider] = map[string]bool{}
-			}
-			if !seen[c.Provider][c.Model] {
-				r.SeedModel(c.Provider, c.Model)
-				seen[c.Provider][c.Model] = true
-			}
+	// First-round probe — synchronous, so the matrix is hot before
+	// the listener accepts traffic.
+	runResolveProbeOnce(context.Background(), r, pr, cfg)
+	return r
+}
+
+// runResolveProbeOnce performs one full sweep across all four
+// providers: explicitly Excludes those without keys (visible in
+// Snapshot), and live-probes the rest. Used by buildResolver for
+// the synchronous startup probe and by runResolveProbeLoop for
+// every periodic re-probe.
+//
+// Each provider's probe runs in its own goroutine with a 5-second
+// deadline so a slow provider doesn't hold the whole sweep. The
+// caller's ctx (typically bgCtx for the periodic loop, or
+// context.Background for startup) bounds the total wait.
+func runResolveProbeOnce(ctx context.Context, r *resolve.Resolver, pr *providerResolver, cfg *config.Config) {
+	type probeJob struct {
+		id        string                 // provider id
+		excluded  bool                   // operator opted out
+		exclReason string                // why excluded; surfaced in LastError
+		provider  providers.Provider     // nil when excluded
+	}
+
+	jobs := []probeJob{
+		{id: "anthropic", excluded: cfg.Env.AnthropicAPIKey == "",
+			exclReason: "ANTHROPIC_API_KEY not set"},
+		{id: "openai", excluded: cfg.Env.OpenAIAPIKey == "",
+			exclReason: "OPENAI_API_KEY not set"},
+		{id: "deepseek", excluded: cfg.Env.DeepSeekAPIKey == "",
+			exclReason: "DEEPSEEK_API_KEY not set"},
+		{id: "ollama", excluded: cfg.Env.OllamaBaseURL == "" || cfg.Env.OllamaBaseURL == "disabled",
+			exclReason: "OLLAMA_BASE_URL not configured"},
+	}
+	for i := range jobs {
+		if jobs[i].excluded {
+			continue
 		}
-	}
-	for _, cands := range libraryTiers {
-		seedFromCandidates(cands)
-	}
-	for _, ag := range cfg.Agents {
-		for _, cands := range ag.Models {
-			conv := make([]resolve.Candidate, 0, len(cands))
-			for _, c := range cands {
-				conv = append(conv, resolve.Candidate{Provider: c.Provider, Model: c.Model})
-			}
-			seedFromCandidates(conv)
+		if p, err := pr.Get(jobs[i].id); err == nil {
+			jobs[i].provider = p
+		} else {
+			// Provider configured but resolver-Get failed. Mark
+			// Excluded with the resolver error as the reason —
+			// rare in practice (newProviderResolver wires every
+			// driver whose key is set) but defensive.
+			jobs[i].excluded = true
+			jobs[i].exclReason = fmt.Sprintf("provider not registered: %v", err)
 		}
 	}
 
-	// Mark each provider reachable based on API key presence (the
-	// stub-probe heuristic). This is intentionally crude — a present
-	// key proves nothing about the provider being up — but it's
-	// strictly better than treating every provider as down. PR 2's
-	// real probe replaces this with a /v1/models round-trip.
-	if cfg.Env.AnthropicAPIKey != "" {
-		r.SetProviderReachable("anthropic", true)
+	var wg sync.WaitGroup
+	for _, j := range jobs {
+		if j.excluded {
+			r.SetExcluded(j.id, j.exclReason)
+			log.Printf("resolve probe: %s excluded (%s)", j.id, j.exclReason)
+			continue
+		}
+		wg.Add(1)
+		go func(j probeJob) {
+			defer wg.Done()
+			probeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+			defer cancel()
+			models, err := j.provider.ListModels(probeCtx)
+			if err != nil {
+				r.SetReachable(j.id, false, nil, err.Error())
+				log.Printf("resolve probe: %s unreachable (%v)", j.id, err)
+				return
+			}
+			r.SetReachable(j.id, true, models, "")
+			log.Printf("resolve probe: %s reachable (%d models listed)", j.id, len(models))
+		}(j)
 	}
-	if cfg.Env.OpenAIAPIKey != "" {
-		r.SetProviderReachable("openai", true)
+	wg.Wait()
+}
+
+// runResolveProbeLoop runs runResolveProbeOnce on the configured
+// interval until ctx is cancelled. Started as a goroutine from main;
+// shares bgCtx with the heartbeat sweeper and session-lock GC so
+// SIGTERM tears all three down together.
+func runResolveProbeLoop(ctx context.Context, r *resolve.Resolver, pr *providerResolver, cfg *config.Config, interval time.Duration) {
+	t := time.NewTicker(interval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			runResolveProbeOnce(ctx, r, pr, cfg)
+		}
 	}
-	if cfg.Env.DeepSeekAPIKey != "" {
-		r.SetProviderReachable("deepseek", true)
-	}
-	if cfg.Env.OllamaBaseURL != "" && cfg.Env.OllamaBaseURL != "disabled" {
-		// Ollama has no API key; reachability is gated on the base
-		// URL being non-empty. PR 2's probe will GET /api/tags before
-		// flipping this flag.
-		r.SetProviderReachable("ollama", true)
-	}
-	return r
 }
 
 // convertTiers translates the config-package representation of library

@@ -84,3 +84,19 @@ func (d *Driver) Capabilities() providers.Capabilities {
 func (d *Driver) Call(ctx context.Context, req providers.Request) (<-chan providers.Event, error) {
 	return d.inner.Call(ctx, req)
 }
+
+// Probe delegates to the OpenAI driver, which hits GET /v1/models
+// against whatever base URL was configured. DeepSeek's /v1/models
+// response uses the OpenAI-compatible shape ({"data": [{"id": ...}]}),
+// so the inner driver's parser works unchanged. Listed wire aliases
+// observed in production: deepseek-chat (V3 chat), deepseek-reasoner
+// (R1), deepseek-v4-flash, deepseek-v4-pro.
+func (d *Driver) Probe(ctx context.Context) error {
+	return d.inner.Probe(ctx)
+}
+
+// ListModels delegates to the OpenAI driver. See Probe's docstring
+// for the wire-shape rationale.
+func (d *Driver) ListModels(ctx context.Context) ([]string, error) {
+	return d.inner.ListModels(ctx)
+}

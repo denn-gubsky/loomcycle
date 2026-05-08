@@ -424,3 +424,60 @@ func processFrame(
 	}
 	return true
 }
+
+// Probe checks reachability + auth by hitting GET /v1/models with a short
+// deadline. Returns nil iff the response is 200 OK. The shared
+// implementation with ListModels does the same round-trip; we keep them
+// separate so callers that only need health-check don't pay the JSON
+// decode cost.
+func (d *Driver) Probe(ctx context.Context) error {
+	_, err := d.fetchModels(ctx)
+	return err
+}
+
+// ListModels returns the wire aliases Anthropic currently exposes (the
+// `data[].id` array from /v1/models). Used by the resolver's startup
+// + periodic probe to populate the Listed flag in ModelStatus.
+func (d *Driver) ListModels(ctx context.Context) ([]string, error) {
+	return d.fetchModels(ctx)
+}
+
+// fetchModels is the shared GET /v1/models round-trip. Anthropic's
+// response shape:
+//
+//	{"data": [{"id": "claude-haiku-4-5", "type": "model", ...}, ...],
+//	 "first_id": "...", "last_id": "...", "has_more": false}
+//
+// We surface only the IDs and ignore pagination — the response is
+// small enough (handful of models) that one page is enough for the
+// resolver's purposes.
+func (d *Driver) fetchModels(ctx context.Context) ([]string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, d.baseURL+"/v1/models", nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("x-api-key", d.apiKey)
+	req.Header.Set("anthropic-version", apiVersion)
+	resp, err := d.http.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("anthropic /v1/models: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+		return nil, fmt.Errorf("anthropic /v1/models: status %d (%s)", resp.StatusCode, string(body))
+	}
+	var doc struct {
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&doc); err != nil {
+		return nil, fmt.Errorf("anthropic /v1/models decode: %w", err)
+	}
+	out := make([]string, 0, len(doc.Data))
+	for _, m := range doc.Data {
+		out = append(out, m.ID)
+	}
+	return out, nil
+}

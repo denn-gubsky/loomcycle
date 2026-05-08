@@ -19,7 +19,11 @@ type fakeProvider struct {
 	calls     []providers.Request
 }
 
-func (f *fakeProvider) ID() string { return "fake" }
+func (f *fakeProvider) ID() string                            { return "fake" }
+func (f *fakeProvider) Probe(_ context.Context) error          { return nil }
+func (f *fakeProvider) ListModels(_ context.Context) ([]string, error) {
+	return []string{"fake-model"}, nil
+}
 func (f *fakeProvider) Capabilities() providers.Capabilities {
 	return providers.Capabilities{Streaming: true}
 }
@@ -308,6 +312,74 @@ func TestLoopUntrustedBlockKindAllowlist(t *testing.T) {
 	}
 	if !strings.Contains(body, "<untrusted>") {
 		t.Errorf("disallowed Kind should normalise to <untrusted>. Body:\n%s", body)
+	}
+}
+
+// erroringProvider always returns the configured error from Call().
+// Used to exercise the loop's MarkStalled feedback path: a driver
+// that fails after its own retries is expected to surface stall
+// feedback to the resolver.
+type erroringProvider struct {
+	err error
+}
+
+func (e *erroringProvider) ID() string                            { return "erroring" }
+func (e *erroringProvider) Probe(_ context.Context) error          { return nil }
+func (e *erroringProvider) ListModels(_ context.Context) ([]string, error) {
+	return []string{"fake-model"}, nil
+}
+func (e *erroringProvider) Capabilities() providers.Capabilities {
+	return providers.Capabilities{Streaming: true}
+}
+func (e *erroringProvider) Call(_ context.Context, _ providers.Request) (<-chan providers.Event, error) {
+	return nil, e.err
+}
+
+func TestLoop_MarkStalledOnDriverError(t *testing.T) {
+	// Driver gives up after its own retries → loop must call
+	// MarkStalled with the (provider, model) so the resolver
+	// flips the per-model stall flag.
+	prov := &erroringProvider{err: fmt.Errorf("anthropic 500: upstream timeout")}
+	type stallCall struct {
+		provider, model, reason string
+	}
+	var stalls []stallCall
+	_, err := Run(context.Background(), RunOptions{
+		Provider: prov,
+		Model:    "claude-opus-4-7",
+		Segments: []PromptSegment{
+			{Role: "user", Content: []PromptContentBlock{{Type: "trusted-text", Text: "x"}}},
+		},
+		MarkStalled: func(p, m, r string) { stalls = append(stalls, stallCall{p, m, r}) },
+	})
+	if err == nil {
+		t.Fatal("Run should propagate driver error")
+	}
+	if len(stalls) != 1 {
+		t.Fatalf("MarkStalled calls = %d, want 1", len(stalls))
+	}
+	if stalls[0].provider != "erroring" || stalls[0].model != "claude-opus-4-7" {
+		t.Errorf("stall = %+v, want erroring / claude-opus-4-7", stalls[0])
+	}
+}
+
+func TestLoop_NoMarkStalledOnContextCancel(t *testing.T) {
+	// User-side cancellation is NOT a provider fault — must not
+	// pollute the matrix with false stalls. Verifies the ctx.Err()
+	// guard in the loop's MarkStalled call site.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // pre-cancel so the very first Call sees ctx done
+
+	prov := &erroringProvider{err: ctx.Err()}
+	var stallCount int
+	_, _ = Run(ctx, RunOptions{
+		Provider:    prov,
+		Model:       "claude-opus-4-7",
+		Segments:    []PromptSegment{{Role: "user", Content: []PromptContentBlock{{Type: "trusted-text", Text: "x"}}}},
+		MarkStalled: func(_, _, _ string) { stallCount++ },
+	})
+	if stallCount != 0 {
+		t.Errorf("MarkStalled called %d times, want 0 (ctx cancel != stall)", stallCount)
 	}
 }
 

@@ -77,6 +77,30 @@ type RunOptions struct {
 	// Ollama no-op. PR 1 plumbs it through providers.Request
 	// unchanged; drivers in PR 1 ignore the field entirely.
 	Effort string
+
+	// MarkStalled is the resolver feedback hook: the loop calls it
+	// when this iteration's provider call surfaced an error that
+	// suggests the (provider, model) pair is broken. The resolver
+	// flips its Stalled flag for that pair, the next probe sweep
+	// either revives it (if /v1/models still lists the model and
+	// the endpoint is healthy) or confirms the stall.
+	//
+	// Optional: nil disables stall feedback. When non-nil, the
+	// loop calls it on:
+	//   - non-context errors returned by Provider.Call (driver
+	//     gave up after retries; the request never opened a stream)
+	//   - EventError frames in the response stream (driver opened a
+	//     stream but the provider then 5xx'd or the model 404'd
+	//     mid-iteration)
+	//
+	// The loop intentionally over-reports rather than under-reports:
+	// the cure for a false-positive stall is cheap (next probe
+	// clears it within ResolveProbeInterval), the cost of a missed
+	// stall is misleading 503s pinned on a recovered provider until
+	// the periodic probe catches up. PR 2 keeps the discrimination
+	// simple; tighten in follow-ups if over-reporting becomes
+	// observable noise.
+	MarkStalled func(provider, model, reason string)
 }
 
 // RunResult is the terminal state after a Run.
@@ -144,6 +168,15 @@ func Run(ctx context.Context, opts RunOptions) (RunResult, error) {
 		}
 		ch, err := opts.Provider.Call(ctx, req)
 		if err != nil {
+			// Resolver stall feedback: any non-context error from
+			// Call() is a driver giving up after its own retries.
+			// Mark the (provider, model) stalled so the resolver
+			// stops returning it until the next periodic probe
+			// re-validates. ctx errors are user-side cancellation,
+			// not provider faults — don't pollute the matrix.
+			if opts.MarkStalled != nil && ctx.Err() == nil {
+				opts.MarkStalled(opts.Provider.ID(), opts.Model, err.Error())
+			}
 			emit(providers.Event{Type: providers.EventError, Error: err.Error()})
 			return RunResult{Iterations: iter}, err
 		}
@@ -182,6 +215,15 @@ func Run(ctx context.Context, opts RunOptions) (RunResult, error) {
 				iterStop = ev.StopReason
 				iterUsage = ev.Usage
 			case providers.EventError:
+				// Resolver stall feedback for in-stream errors:
+				// driver opened the SSE/NDJSON stream successfully
+				// but then surfaced a provider-side error (5xx
+				// mid-stream, model 404 on dispatch, etc.). Mark
+				// stalled. Same ctx-guard as above — user cancel
+				// shouldn't pollute the matrix.
+				if opts.MarkStalled != nil && ctx.Err() == nil {
+					opts.MarkStalled(opts.Provider.ID(), opts.Model, ev.Error)
+				}
 				emit(ev)
 				return RunResult{Iterations: iter}, fmt.Errorf("provider error: %s", ev.Error)
 			}
