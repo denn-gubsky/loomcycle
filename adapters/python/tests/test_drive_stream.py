@@ -183,3 +183,92 @@ async def test_drive_stream_handles_malformed_envelope_gracefully():
     assert captured[0].agent_id == "ag1"
     assert captured[0].run_id == ""
     assert [e.type for e in out] == ["text"]
+
+
+# ---- HIGH #4: real grpc.aio.AioRpcError flowing through ----
+#
+# The unit tests in test_errors.py use a hand-rolled fake that
+# isn't a subclass of grpc.aio.AioRpcError, so they don't verify
+# that the ``except grpc.aio.AioRpcError`` clause in
+# ``_drive_stream`` actually intercepts a real one. This test
+# raises a real AioRpcError mid-iteration and checks the
+# typed-exception lands at the call site.
+
+
+class _RaisingStream:
+    """Async iterable that raises a real ``grpc.aio.AioRpcError``
+    on the first ``__anext__``."""
+
+    def __init__(self, code: grpc.StatusCode, details: str) -> None:
+        self._code = code
+        self._details = details
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        raise grpc.aio.AioRpcError(
+            code=self._code,
+            initial_metadata=grpc.aio.Metadata(),
+            trailing_metadata=grpc.aio.Metadata(),
+            details=self._details,
+            debug_error_string="",
+        )
+
+
+@pytest.mark.asyncio
+async def test_drive_stream_routes_real_aiorpcerror_session_not_found():
+    """Continue with a missing session_id flows through
+    mapRunnerErr → codes.NotFound → 'session not found'. Verify
+    the streaming path raises SessionNotFoundError, not
+    AgentNotFoundError. Regression for the bug where
+    ``_drive_stream`` lacked session-id context."""
+    from loomcycle.errors import SessionNotFoundError
+
+    client = _make_client()
+    stream = _RaisingStream(grpc.StatusCode.NOT_FOUND, "session not found")
+    with pytest.raises(SessionNotFoundError) as ei:
+        async for _ in client._drive_stream(stream, on_handle=None):
+            pass
+    assert ei.value.code == grpc.StatusCode.NOT_FOUND
+
+
+@pytest.mark.asyncio
+async def test_drive_stream_routes_real_aiorpcerror_backpressure():
+    """Resource-exhausted from the semaphore should surface as
+    BackpressureError through the streaming path."""
+    from loomcycle.errors import BackpressureError
+
+    client = _make_client()
+    stream = _RaisingStream(
+        grpc.StatusCode.RESOURCE_EXHAUSTED, "concurrency limit reached"
+    )
+    with pytest.raises(BackpressureError):
+        async for _ in client._drive_stream(stream, on_handle=None):
+            pass
+
+
+# ---- BLOCKING #1: run_streaming / continue_session must return
+#      an async iterable directly, not a coroutine.
+
+
+@pytest.mark.asyncio
+async def test_run_streaming_returns_async_iterator_not_coroutine():
+    """The public method must be sync-returning; ``async for`` over
+    its return value must work without an intervening ``await``.
+    Regression: when run_streaming was ``async def``, calling it
+    returned a coroutine, and ``async for`` on it raised
+    'coroutine object is not an async iterable'."""
+    import inspect
+
+    client = _make_client()
+    # Don't actually open the stream — just verify the method is
+    # not a coroutine function. This is the property the
+    # reviewer's repro depends on.
+    assert not inspect.iscoroutinefunction(client.run_streaming), (
+        "run_streaming must be sync-returning so 'async for' works "
+        "without an intervening 'await'"
+    )
+    assert not inspect.iscoroutinefunction(client.continue_session), (
+        "continue_session must be sync-returning"
+    )

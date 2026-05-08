@@ -37,15 +37,20 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
     "Topic :: Software Development :: Libraries",
 ]
-# Pinned to a recent minor that supports asyncio + protobuf 5.x.
+# grpcio floor matches the GRPC_GENERATED_VERSION baked into the
+# committed _generated/loomcycle_pb2_grpc.py stubs (1.80.0). The
+# generated module raises RuntimeError at import time on lower
+# versions, so the pip-resolver dependency must mirror that.
+# Re-run `make python-proto` if you need to regenerate against an
+# older grpcio.
 dependencies = [
-    "grpcio >= 1.60.0",
+    "grpcio >= 1.80.0",
     "protobuf >= 5.0.0, < 7.0.0",
 ]
 
 [project.optional-dependencies]
 dev = [
-    "grpcio-tools >= 1.60.0",
+    "grpcio-tools >= 1.80.0",
     "pytest >= 7.4",
     "pytest-asyncio >= 0.23",
 ]

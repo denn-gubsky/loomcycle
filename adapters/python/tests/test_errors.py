@@ -1,6 +1,6 @@
 """Unit tests for the gRPC-error → typed-exception mapping.
 
-We don't need a live gRPC server — we just synthesize an
+We don't need a live gRPC server — we synthesize an
 ``AioRpcError`` with the right code/details and verify the
 right Python exception class lands.
 """
@@ -24,8 +24,10 @@ from loomcycle.errors import (
 
 
 class _FakeAioRpcError(Exception):
-    """Stand-in for ``grpc.aio.AioRpcError`` — only the surface
-    ``_raise_from_grpc`` reads (``code()``, ``details()``)."""
+    """Stand-in for ``grpc.aio.AioRpcError`` for the unit tests
+    that only need ``code()`` / ``details()``. The full-stack flow
+    through ``_drive_stream`` is exercised separately with a real
+    ``grpc.aio.AioRpcError`` (see test_drive_stream)."""
 
     def __init__(self, code: grpc.StatusCode, details: str) -> None:
         super().__init__(details)
@@ -39,19 +41,43 @@ class _FakeAioRpcError(Exception):
         return self._details
 
 
-def test_not_found_with_agent_id_raises_agent_not_found():
-    err = _FakeAioRpcError(grpc.StatusCode.NOT_FOUND, "no such agent")
-    with pytest.raises(AgentNotFoundError) as ei:
-        _raise_from_grpc(err, agent_id="ag-123")
-    assert "no such agent" in ei.value.message
+# ---- NOT_FOUND discrimination by message text ----
+#
+# The server's wire-stable strings:
+#   "session not found"                   (Continue / GetTranscript)
+#   "no live run for %q ..."              (GetAgent / CancelAgent)
+#   "no run found for agent_id %q"        (GetAgent / CancelAgent)
+
+
+def test_not_found_session_message_routes_to_session_not_found():
+    err = _FakeAioRpcError(grpc.StatusCode.NOT_FOUND, "session not found")
+    with pytest.raises(SessionNotFoundError) as ei:
+        _raise_from_grpc(err)
     assert ei.value.code == grpc.StatusCode.NOT_FOUND
 
 
-def test_not_found_with_session_id_raises_session_not_found():
-    err = _FakeAioRpcError(grpc.StatusCode.NOT_FOUND, "no such session")
-    with pytest.raises(SessionNotFoundError) as ei:
-        _raise_from_grpc(err, session_id="sess-abc")
-    assert "no such session" in ei.value.message
+def test_not_found_session_quoted_message_routes_to_session_not_found():
+    err = _FakeAioRpcError(grpc.StatusCode.NOT_FOUND, 'session "abc-123" not found')
+    with pytest.raises(SessionNotFoundError):
+        _raise_from_grpc(err)
+
+
+def test_not_found_agent_message_routes_to_agent_not_found():
+    err = _FakeAioRpcError(
+        grpc.StatusCode.NOT_FOUND, 'no run found for agent_id "ag-99"'
+    )
+    with pytest.raises(AgentNotFoundError) as ei:
+        _raise_from_grpc(err)
+    assert ei.value.code == grpc.StatusCode.NOT_FOUND
+
+
+def test_not_found_no_live_run_message_routes_to_agent_not_found():
+    err = _FakeAioRpcError(
+        grpc.StatusCode.NOT_FOUND,
+        'no live run for "ag-77" (no store configured)',
+    )
+    with pytest.raises(AgentNotFoundError):
+        _raise_from_grpc(err)
 
 
 def test_failed_precondition_session_busy_routes_to_session_busy():
@@ -60,13 +86,26 @@ def test_failed_precondition_session_busy_routes_to_session_busy():
         "session busy: another request is in flight",
     )
     with pytest.raises(SessionBusyError):
-        _raise_from_grpc(err, session_id="sess-abc")
+        _raise_from_grpc(err)
+
+
+def test_failed_precondition_session_required_routes_to_base_error():
+    # ErrSessionRequired also maps to FAILED_PRECONDITION but the
+    # message doesn't match the session-busy heuristic — it should
+    # surface as the base LoomcycleError (caller saw a code-precondition
+    # the busy-session subclass wouldn't apply to).
+    err = _FakeAioRpcError(
+        grpc.StatusCode.FAILED_PRECONDITION,
+        "session-bound action requires store",
+    )
+    with pytest.raises(LoomcycleError) as ei:
+        _raise_from_grpc(err)
+    assert not isinstance(ei.value, SessionBusyError)
 
 
 def test_already_exists_raises_agent_id_in_use():
     err = _FakeAioRpcError(
-        grpc.StatusCode.ALREADY_EXISTS,
-        "agent_id already in use",
+        grpc.StatusCode.ALREADY_EXISTS, "agent_id already in use"
     )
     with pytest.raises(AgentIDInUseError):
         _raise_from_grpc(err)
@@ -74,8 +113,7 @@ def test_already_exists_raises_agent_id_in_use():
 
 def test_resource_exhausted_raises_backpressure():
     err = _FakeAioRpcError(
-        grpc.StatusCode.RESOURCE_EXHAUSTED,
-        "concurrency limit reached",
+        grpc.StatusCode.RESOURCE_EXHAUSTED, "concurrency limit reached"
     )
     with pytest.raises(BackpressureError):
         _raise_from_grpc(err)
@@ -101,7 +139,6 @@ def test_invalid_argument_raises_base_loomcycle_error():
     )
     with pytest.raises(LoomcycleError) as ei:
         _raise_from_grpc(err)
-    # Should NOT be one of the specific subclasses.
     assert not isinstance(ei.value, (AgentNotFoundError, SessionNotFoundError))
     assert ei.value.code == grpc.StatusCode.INVALID_ARGUMENT
 

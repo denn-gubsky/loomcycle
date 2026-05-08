@@ -25,6 +25,7 @@ from dataclasses import dataclass
 from typing import (
     Any,
     AsyncIterator,
+    Callable,
     Iterable,
     List,
     Mapping,
@@ -144,7 +145,7 @@ class LoomcycleClient:
                 metadata=self._auth_metadata(),
             )
         except grpc.aio.AioRpcError as e:
-            _raise_from_grpc(e, agent_id=agent_id)
+            _raise_from_grpc(e)
         return _agent_to_dict(resp)
 
     async def cancel_agent(
@@ -160,7 +161,7 @@ class LoomcycleClient:
                 metadata=self._auth_metadata(),
             )
         except grpc.aio.AioRpcError as e:
-            _raise_from_grpc(e, agent_id=agent_id)
+            _raise_from_grpc(e)
         return resp.cancelled_count
 
     async def list_user_agents(
@@ -192,7 +193,7 @@ class LoomcycleClient:
                 metadata=self._auth_metadata(),
             )
         except grpc.aio.AioRpcError as e:
-            _raise_from_grpc(e, session_id=session_id)
+            _raise_from_grpc(e)
         return [
             {
                 "seq": e.seq,
@@ -207,7 +208,7 @@ class LoomcycleClient:
 
     # ---- Streaming RPCs ----
 
-    async def run_streaming(
+    def run_streaming(
         self,
         *,
         agent: str,
@@ -218,7 +219,7 @@ class LoomcycleClient:
         user_id: str = "",
         agent_id: str = "",
         session_id: str = "",
-        on_handle: Optional[Any] = None,
+        on_handle: Optional[Callable[["RunHandle"], None]] = None,
     ) -> AsyncIterator[AgentEvent]:
         """Drive one agent run end-to-end, yielding each
         ``AgentEvent`` as it arrives.
@@ -234,6 +235,11 @@ class LoomcycleClient:
           - ``None``        → no narrowing
           - ``[]``          → deny-all
           - ``["foo.com"]`` → intersection with operator's static list
+
+        Returns an ``AsyncIterator[AgentEvent]`` directly (this
+        method is sync — the underlying gRPC stub call is lazy
+        enough that no ``await`` is needed at the call site;
+        consume with ``async for``).
         """
         req = pb.RunRequest(
             agent=agent,
@@ -252,7 +258,7 @@ class LoomcycleClient:
             on_handle=on_handle,
         )
 
-    async def continue_session(
+    def continue_session(
         self,
         *,
         session_id: str,
@@ -261,11 +267,12 @@ class LoomcycleClient:
         allowed_hosts: Optional[Sequence[str]] = None,
         web_search_filter: str = "",
         agent_id: str = "",
-        on_handle: Optional[Any] = None,
+        on_handle: Optional[Callable[["RunHandle"], None]] = None,
     ) -> AsyncIterator[AgentEvent]:
         """Continue an existing session. Same yield shape as
         ``run_streaming``; the agent + user_id are inherited from
-        the existing session row server-side."""
+        the existing session row server-side. Sync-returning — see
+        ``run_streaming`` for consumption pattern."""
         req = pb.ContinueRequest(
             session_id=session_id,
             segments=_segments_to_proto(segments),
@@ -419,10 +426,24 @@ def _ts_to_iso(ts) -> str:
     return ts.ToJsonString()
 
 
-def _raise_from_grpc(err: grpc.aio.AioRpcError, *, agent_id: str = "", session_id: str = "") -> "None":
+def _raise_from_grpc(err: grpc.aio.AioRpcError) -> "None":
     """Translate a gRPC error into one of our typed exceptions.
     Mirrors the inverse of internal/api/grpc/server.go's
-    ``mapRunnerErr``.
+    ``mapRunnerErr`` plus the direct ``codes.NotFound`` emissions
+    in ``GetAgent`` / ``CancelAgent`` / ``GetTranscript``.
+
+    Discriminates ``NotFound`` between session-vs-agent by
+    inspecting the status message — the server's wire-stable
+    strings are the source of truth:
+
+      - ``"session not found"`` (Continue, GetTranscript) →
+        ``SessionNotFoundError``
+      - ``"no live run for"`` / ``"no run found for agent_id"``
+        (GetAgent, CancelAgent) → ``AgentNotFoundError``
+
+    Keeping the function context-free means the streaming path
+    (which can't easily thread call-kind context through
+    ``_drive_stream``) routes correctly without special-casing.
 
     Always raises — the function is annotated as returning ``None``
     only because Python's type system needs a return for ``except``
@@ -430,17 +451,15 @@ def _raise_from_grpc(err: grpc.aio.AioRpcError, *, agent_id: str = "", session_i
     """
     code = err.code()
     msg = err.details() or str(err)
+    msg_lower = msg.lower()
     if code == grpc.StatusCode.NOT_FOUND:
-        # Distinguish "agent not found" from "session not found"
-        # via the call's contextual hint. The error message itself
-        # carries enough info too.
-        if session_id and not agent_id:
+        if "session" in msg_lower:
             raise SessionNotFoundError(msg, code=code) from err
         raise AgentNotFoundError(msg, code=code) from err
     if code == grpc.StatusCode.FAILED_PRECONDITION:
         # Server uses FailedPrecondition for both ErrSessionRequired
         # and ErrSessionBusy. The message carries the discriminator.
-        if "session busy" in msg.lower() or "another request" in msg.lower():
+        if "session busy" in msg_lower or "another request" in msg_lower:
             raise SessionBusyError(msg, code=code) from err
         raise LoomcycleError(msg, code=code) from err
     if code == grpc.StatusCode.ALREADY_EXISTS:
