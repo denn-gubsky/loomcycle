@@ -32,7 +32,8 @@ loomcycle/
 │   │   ├── deepseek/                  Wraps openai/ with the DeepSeek base URL pre-baked
 │   │   ├── ollama/                    /api/chat NDJSON (tool-tuned models only)
 │   │   ├── ratelimit/                 per-driver retry-after + backoff
-│   │   └── provider.go                Provider interface + Capabilities
+│   │   └── provider.go                Provider interface (Call, Probe, ListModels) + Capabilities
+│   ├── resolve/                       v0.7.0 model resolution matrix (tier + effort + availability)
 │   ├── skills/                        Approach A: static skill bundling at config-load
 │   ├── store/
 │   │   ├── store.go                   Store interface (sessions / runs / events)
@@ -135,7 +136,34 @@ Four drivers ship as of v0.6.0:
 
 Each driver has rate-limit retry logic (`internal/providers/ratelimit/`) — 429s and provider 5xx-with-retry-after preserve run context across the retry; observable as `event: retry` SSE frames.
 
+As of v0.7.0 every driver also implements `Probe(ctx) error` and `ListModels(ctx) ([]string, error)` (used by the resolver — see below). Probe is a lightweight reachability + auth check; ListModels returns the wire aliases the provider currently serves. Both share the same round-trip in each driver's implementation.
+
 References: `internal/providers/`, `internal/providers/anthropic/driver.go`, `internal/providers/ratelimit/`.
+
+## Model resolution matrix
+
+`internal/resolve/` (added v0.7.0) — the resolver picks `(provider, model)` for tier-using agents at request time. Inputs: agent yaml's `tier`, `effort`, optional per-agent `providers:` and `models:` overrides; library-wide `provider_priority` and `tiers` from the config. Output: a `Decision{Provider, Model, Effort}` the loop hands to the right driver.
+
+State: `Availability` per provider, `ModelStatus` per model. Three orthogonal flags:
+- `Excluded` — operator chose not to enable this provider (no API key, base URL unset). Set at startup; cleared by `SetReachable`.
+- `Reachable` — most recent probe succeeded. Set/cleared by every probe sweep.
+- per-model `Stalled` — runtime feedback from the loop on a 5xx-after-retry or in-stream error. Cleared by the next successful probe.
+
+Lifecycle:
+1. Startup: `cmd/loomcycle/main.go` builds the resolver, runs the first-round probe synchronously (parallel across providers, 5s deadline each), then starts a background goroutine that re-probes every `LOOMCYCLE_RESOLVE_PROBE_INTERVAL_MS` (default 15 min, max 1 h).
+2. Per-request: HTTP / gRPC server calls `Server.resolveAgent(name)` which routes pin-vs-tier and returns `(provider, model, effort)` for the loop.
+3. On driver error: loop calls `MarkStalled(provider, model, reason)` (with `ctx.Err() == nil` guard so user cancels don't pollute the matrix).
+
+Effort flow: agent yaml `effort: low|medium|high` → `Decision.Effort` → `RunOptions.Effort` → `providers.Request.Effort`. Each driver translates per its `Capabilities.SupportsEffort`:
+
+| Driver | Translation |
+|---|---|
+| `anthropic` | `thinking.budget_tokens` (low → skip thinking; medium → 2048; high → 8192). Haiku always skips. Budget clamps to `max_tokens - 1024` if it would exceed `max_tokens`; drops below 1024 minimum. |
+| `openai` | `reasoning_effort` (pass-through). API rejects on non-reasoning models with 400. |
+| `deepseek` | Inherits OpenAI via the wrapper. |
+| `ollama` | `SupportsEffort=false`. Loop logs once per Run when effort is dropped. |
+
+References: `internal/resolve/matrix.go`, `internal/api/http/server.go` (`resolveAgent`, `markStalledFn`), `cmd/loomcycle/main.go` (`buildResolver`, `runResolveProbeOnce`, `runResolveProbeLoop`).
 
 ## Agent loop
 
