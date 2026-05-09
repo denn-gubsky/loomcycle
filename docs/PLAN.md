@@ -203,13 +203,17 @@ For usage: see [README](../README.md). For the architecture: see [ARCHITECTURE.m
 
 Sequenced 2026-05-09. Each point release ships one focused framework primitive — the v1.0 capstone (LoomCycle MCP) needs them in this order because the MCP server's surface is built FROM these primitives. Detailed design (API schemas, storage shapes, retention semantics) lives in feature-branch RFCs at implementation time; the outlines below capture the shape but not the wire.
 
-### v0.8.0 — Memory tool
+### v0.8.0 — Memory tool *(in development)*
 
-Agent-scoped persistent storage. Backs self-improving agents — an agent can write a fact, a learned heuristic, a counter, or a per-user preference, and read it back on the next invocation. Scope variants (per-agent vs per-session vs per-user vs per-tenant) and retention semantics (TTL, size caps, eviction policy) shape the storage backend, which goes on the existing Postgres `Store` adapter (sqlite for dev, postgres for prod) — no new infra.
+**Status: in development on `feature-memory-tool` branch (2026-05-09).** Five-op surface (`get` / `set` / `delete` / `list` / `incr`) over a `memory` table on both SQLite and Postgres. Agent and user scopes ship; session and tenant scopes are forward-compatible (yaml accepts new scope strings without a wire change). TTL is in seconds; per-write 64 KB and per-(scope, scope_id) 1 MB defaults are operator-overridable, with per-agent `memory_quota_bytes` for production tuning.
+
+Agents are stateless across runs today. Memory closes the gap with persistent storage that survives across runs and sessions — a place to write down learned facts, counters, per-user preferences, summaries of long conversations, or notes for an agent's future self. The yaml gate is double-keyed: `Memory` must be in `allowed_tools`, AND the agent must declare `memory_scopes: [...]` to actually pick which scopes it can touch.
 
 **Sequenced first** because Channel and LoomHelp both expect Memory to exist (Memory underpins the "agents that learn" use case Channel routing makes interesting; LoomHelp surfaces a memory-snapshot view in its introspection output).
 
-What's not yet decided: API shape (key/value vs append-log vs both), TTL semantics, encryption-at-rest, cross-agent read permission model, schema versioning for stored values, structured-JSON values (queryable) vs opaque blobs (simpler). RFC at pickup.
+**Locked decisions** (RFC under doc-internal): scopes = `agent` + `user`; values = JSON (validated at write); ops = `get` / `set` / `delete` / `list` / **`incr`** (atomic counter); TTL = seconds; encryption-at-rest deferred to v0.9.x cluster work; no automatic eviction (quota exceeded → write fails with `quota_exceeded`); ACL = agent's `memory_scopes` is the floor.
+
+For the full surface and yaml shape, see [TOOLS.md → Memory tool](TOOLS.md#the-memory-tool--persistent-agent-scoped-storage-v080).
 
 ### v0.8.1 — Channel tool
 

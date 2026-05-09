@@ -45,6 +45,7 @@ Each built-in is registered into the dispatcher at process startup but **refuses
 | `Bash`      | `LOOMCYCLE_BASH_ENABLED=1` + `LOOMCYCLE_BASH_CWD=...` |
 | `Agent`     | Always registered (server-internal); per-agent `allowed_tools` controls who can spawn. |
 | `Skill`     | `LOOMCYCLE_SKILLS_ROOT=/path/to/skills` (or skills inlined per-agent via YAML `skills:` list) |
+| `Memory`    | Storage backend (SQLite default; Postgres opt-in) + per-agent `memory_scopes:` allowlist. |
 
 Bash has additional warnings: it is **not a true sandbox** even when enabled. Run loomcycle inside a container or VM if Bash is exposed to untrusted prompts. See `internal/tools/builtin/bash.go` for the full warning.
 
@@ -261,6 +262,86 @@ Constraint: each skill's frontmatter declares its own `allowed-tools`; this list
 The `Skill` built-in is registered when `LOOMCYCLE_SKILLS_ROOT` is set; the model can call it with `{"name": "voice-applier"}` to load a skill mid-conversation. In v0.4.0 the tool returns "unknown skill" — full Approach B implementation is v1.0 work. The hook is in place so prompts that reference the dynamic Skill tool can be authored today; they degrade gracefully (the tool reports the skill isn't available, the model continues without).
 
 References: `internal/skills/`, `internal/tools/builtin/skill.go`.
+
+## The `Memory` tool — persistent agent-scoped storage (v0.8.0)
+
+The `Memory` built-in gives agents a place to write down state that survives across runs and sessions. Five operations behind one tool, discriminated by an `op` field: **`get`**, **`set`**, **`delete`**, **`list`**, **`incr`**.
+
+### Wire shape
+
+```jsonc
+{
+  "op":     "get" | "set" | "delete" | "list" | "incr",
+  "scope":  "agent" | "user",
+  "key":    "string",     // get/set/delete/incr
+  "value":  any,          // set
+  "delta":  number,       // incr (default 1, may be negative)
+  "ttl":    number,       // set/incr — seconds; absent = no expiry
+  "prefix": "string",     // list filter
+  "limit":  number        // list cap (default 100, max 1000)
+}
+```
+
+Result shapes:
+
+```jsonc
+get    → { "value": <stored> | null, "expires_at": "RFC3339" | null }
+set    → { "ok": true }
+incr   → { "value": <new int> }
+delete → { "deleted": true | false }
+list   → { "entries": [{"key", "value", "expires_at"}], "truncated": bool }
+```
+
+### Scopes
+
+Two scopes ship in v0.8.0:
+
+- **`agent`** — keyed by the yaml-declared agent name. Cross-run, **shared across users.** Use for: per-agent counters, learned heuristics, summaries the agent wants its future self to read.
+- **`user`** — keyed by the run's `user_id`. Cross-agent, **per end-user.** Use for: voice/preferences, per-user notes, anything you want every agent that's allowed to read the user scope to see.
+
+`session` and `tenant` scopes are forward-compatible (the yaml allowlist accepts new scope strings without a wire-protocol change) but not implemented in v0.8.0.
+
+`scope_id` is **always** resolved server-side. The model picks the scope; loomcycle picks the scope_id. A model-supplied scope_id would let one user's agent run read another user's keys.
+
+### Per-agent yaml policy
+
+```yaml
+agents:
+  cv-adapter:
+    allowed_tools: [Memory, Read, Write]
+    memory_scopes: [agent, user]            # which scopes this agent may use
+    memory_quota_bytes: 5_000_000           # per-(scope, scope_id) override (default 1 MB)
+```
+
+`memory_scopes` is a default-deny allowlist. An agent with `Memory` in `allowed_tools` but no `memory_scopes` sees a refusal on every Memory call.
+
+`memory_quota_bytes` overrides the global `LOOMCYCLE_MEMORY_MAX_SCOPE_BYTES` for this agent only. Use higher caps for memory-heavy agents; lower for noisy agents you want kept in check.
+
+### Operator env vars
+
+| Env var | Default | Purpose |
+|---|---|---|
+| `LOOMCYCLE_MEMORY_MAX_VALUE_BYTES` | `65536` | Per-write cap on the `value` payload. 0 disables. |
+| `LOOMCYCLE_MEMORY_MAX_SCOPE_BYTES` | `1048576` | Default per-(scope, scope_id) cap. 0 disables. |
+| `LOOMCYCLE_MEMORY_SWEEP_MS` | `900000` (15 min) | TTL reaper goroutine cadence. 0 disables. |
+
+### Atomic increment
+
+`op: "incr"` is the counter primitive. If the key doesn't exist (or the existing value has already expired), the row is created starting from `0 + delta`. If the existing value isn't a JSON number, the call is refused with `wrong_type`. Optional `ttl` resets the expiry on every increment.
+
+### TTL semantics
+
+`ttl: 3600` on a `set` makes the row expire in one hour. Reads filter expired rows out **before** the sweeper runs them — agents never see stale values, even on a slow sweep cadence. The sweep goroutine just keeps the table bounded over the long haul.
+
+### What's NOT in v0.8.0
+
+- Cross-tenant sharing (no `tenant` scope yet).
+- Append-log primitive — agents wanting an event stream write `events/<timestamp>` keys + `list` with prefix.
+- Automatic eviction / LRU — quota exceeded → the write fails with `quota_exceeded`. Agents call `delete` explicitly.
+- Encryption-at-rest — disk encryption is operator-config-wide, not Memory-specific. Revisit alongside v0.9.x HA work.
+- Server-side schema validation — values are JSON; agents own their schemas.
+
+References: `internal/store/store.go` (interface), `internal/store/sqlite/sqlite.go` + `internal/store/postgres/postgres.go` (adapters), `internal/tools/builtin/memory.go` (tool).
 
 ## LocalAPI tools — OpenAPI gateway (scaffolded; not the v0.4 integration vehicle)
 
