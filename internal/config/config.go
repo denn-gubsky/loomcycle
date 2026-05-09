@@ -824,6 +824,7 @@ var validProviderIDs = map[string]bool{
 	"openai":    true,
 	"deepseek":  true,
 	"ollama":    true,
+	"gemini":    true,
 }
 
 // validTierNames is the closed set of tier names. Operators choose
@@ -856,7 +857,7 @@ func validate(c *Config) error {
 	// to its hardcoded default order).
 	for i, p := range c.ProviderPriority {
 		if !validProviderIDs[p] {
-			return fmt.Errorf("provider_priority[%d]: unknown provider %q (want one of anthropic/openai/deepseek/ollama)", i, p)
+			return fmt.Errorf("provider_priority[%d]: unknown provider %q (want one of anthropic/openai/deepseek/gemini/ollama)", i, p)
 		}
 	}
 	// Library-level tier definitions.
