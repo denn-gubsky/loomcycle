@@ -14,6 +14,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/denn-gubsky/loomcycle/internal/hooks"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
@@ -95,6 +96,22 @@ type RunOptions struct {
 	// HTTP server's MAX_CONCURRENT_RUNS slot bounds the run tree
 	// already).
 	ToolParallelism int
+
+	// AgentName is the operator-config key for the running agent
+	// (e.g. "qa-agent", "company-researcher"). Threaded through so
+	// the Hooks dispatcher can filter tool-use hooks by agent
+	// selector. Empty string is fine for direct loop callers that
+	// don't go through the agent yaml; the hooks dispatcher then
+	// only fires hooks with `agents: ["*"]`.
+	AgentName string
+
+	// Hooks is the tool-use hook dispatcher. Optional; nil disables
+	// all hook invocation (the loop runs tool dispatch directly,
+	// preserving pre-v0.7.x behaviour). When non-nil, each
+	// concurrently-dispatched tool_call has its Pre chain invoked
+	// before executeTool and its Post chain invoked after, per the
+	// fail-mode / chain-order contract on hooks.Dispatcher.
+	Hooks *hooks.Dispatcher
 
 	// MarkStalled is the resolver feedback hook: the loop calls it
 	// when this iteration's provider call surfaced an error that
@@ -313,7 +330,13 @@ func Run(ctx context.Context, opts RunOptions) (RunResult, error) {
 		// tools' results stream out first, slow ones last — because
 		// callers rendering live progress want "company 1 done" the
 		// moment company 1 is done, not after company 3 finishes too.
-		toolResults := executePendingTools(ctx, opts.Dispatcher, pendingTools, opts.ToolParallelism, emit)
+		ident := tools.RunIdentity(ctx)
+		hookIdent := hooks.Identity{
+			Agent:   opts.AgentName,
+			UserID:  ident.UserID,
+			AgentID: ident.AgentID,
+		}
+		toolResults := executePendingTools(ctx, opts.Dispatcher, pendingTools, opts.ToolParallelism, opts.Hooks, hookIdent, emit)
 		messages = append(messages, providers.Message{Role: "user", Content: toolResults})
 	}
 
@@ -345,6 +368,51 @@ func executeTool(ctx context.Context, d *tools.Dispatcher, tu providers.ToolUse)
 	return d.Execute(ctx, tu.Name, tu.Input)
 }
 
+// dispatchOneTool wraps executeTool with the registered tool-use hook
+// chains (when hookDispatcher is non-nil). Pre-hooks run first; if any
+// returns a non-nil deny, executeTool is skipped and the synthetic
+// result becomes the tool_result the model sees. Post-hooks then run
+// over the (real or synthetic) result; the final post-chain output is
+// what reaches the parent emit / message.
+//
+// hookDispatcher == nil OR no matching hooks registered → fast path
+// reduces to plain executeTool. The dispatcher's Match call is
+// O(N) over registered hooks; with no hooks registered this is a
+// nil-slice return and the function shape is identical to pre-hook
+// behaviour.
+func dispatchOneTool(
+	ctx context.Context,
+	dispatcher *tools.Dispatcher,
+	tu providers.ToolUse,
+	hookDispatcher *hooks.Dispatcher,
+	ident hooks.Identity,
+) tools.Result {
+	if hookDispatcher == nil {
+		return executeTool(ctx, dispatcher, tu)
+	}
+	hookTC := hooks.ToolCall{ID: tu.ID, Name: tu.Name, Input: tu.Input}
+
+	pre := hookDispatcher.RunPre(ctx, ident, hookTC)
+	var r tools.Result
+	if pre.Deny != nil {
+		// A Pre-hook short-circuited; do NOT run the real tool. The
+		// synthetic result IS the tool_result the model sees. Post
+		// chain still runs — operators may want to wrap or audit
+		// even denied results.
+		r = tools.Result{Text: pre.Deny.Text, IsError: pre.Deny.IsError}
+	} else {
+		// Run the tool with the (possibly hook-rewritten) input.
+		running := tu
+		if pre.Input != nil {
+			running.Input = pre.Input
+		}
+		r = executeTool(ctx, dispatcher, running)
+	}
+
+	post := hookDispatcher.RunPost(ctx, ident, hookTC, hooks.ToolResult{Text: r.Text, IsError: r.IsError})
+	return tools.Result{Text: post.Text, IsError: post.IsError}
+}
+
 // executePendingTools runs the assistant turn's tool_calls concurrently,
 // bounded by `parallelism`, and returns the tool_result content blocks in
 // the same order as `pending` (so the next turn's user message preserves
@@ -366,6 +434,8 @@ func executePendingTools(
 	dispatcher *tools.Dispatcher,
 	pending []providers.ToolUse,
 	parallelism int,
+	hookDispatcher *hooks.Dispatcher,
+	hookIdent hooks.Identity,
 	emit func(providers.Event),
 ) []providers.ContentBlock {
 	if len(pending) == 0 {
@@ -402,7 +472,7 @@ func executePendingTools(
 				}}
 				return
 			}
-			r := executeTool(ctx, dispatcher, tu)
+			r := dispatchOneTool(ctx, dispatcher, tu, hookDispatcher, hookIdent)
 			resCh <- result{idx: i, tu: tu, res: r}
 		}(i, tu)
 	}
