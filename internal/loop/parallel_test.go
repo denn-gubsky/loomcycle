@@ -79,8 +79,8 @@ type scriptedProvider struct {
 	mu       sync.Mutex
 }
 
-func (p *scriptedProvider) ID() string                                   { return "scripted" }
-func (p *scriptedProvider) Probe(_ context.Context) error                { return nil }
+func (p *scriptedProvider) ID() string                    { return "scripted" }
+func (p *scriptedProvider) Probe(_ context.Context) error { return nil }
 func (p *scriptedProvider) ListModels(_ context.Context) ([]string, error) {
 	return []string{"scripted-model"}, nil
 }
