@@ -14,6 +14,10 @@
 
 ---
 
+> **🚧 Closed for external contributions until v1.x.** Loomcycle is in active v0.8 → v0.9 → v1.0 development. Pull requests will be acknowledged but closed without merge during this window. Bug reports for clear-cut defects and security disclosures are still welcome. See [`CONTRIBUTING.md`](CONTRIBUTING.md) for the policy and the trigger conditions for reopening.
+
+---
+
 ## What it is
 
 LoomCycle is a single Go binary that runs as a local sidecar and serves an HTTP+SSE API to your application. It owns the model→tool_use→tool_result→model loop, talks directly to provider HTTP APIs (no vendor SDK in the loop, no bundled binary), and dispatches tool calls to built-ins, MCP servers, or operator-supplied OpenAPI gateways. Multi-tenant. Multi-provider. Multi-agent (parents spawn sub-agents).
