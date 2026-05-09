@@ -24,6 +24,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strconv"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -77,6 +80,7 @@ func Run(t *testing.T, factory Factory) {
 		{"MemoryIncrementOnExpiredKey", testMemoryIncrementOnExpiredKey},
 		{"MemoryScopeIsolation", testMemoryScopeIsolation},
 		{"MemoryListScopeIDs", testMemoryListScopeIDs},
+		{"MemoryIncrementIsAtomicUnderConcurrency", testMemoryIncrementIsAtomicUnderConcurrency},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -940,6 +944,53 @@ func testMemoryListScopeIDs(t *testing.T, s store.Store) {
 			t.Errorf("expired-only scope_id %q should not appear", u.ScopeID)
 		}
 	}
+}
+
+// testMemoryIncrementIsAtomicUnderConcurrency is a regression test
+// for two adapter-level bugs caught in v0.8.0 review:
+//
+//   - SQLite's BeginTx(nil) gives a DEFERRED transaction, not the
+//     IMMEDIATE the increment loop assumes. Two concurrent increments
+//     on the same key both see the old value and both write the same
+//     "next" value, losing one update.
+//   - Postgres's SELECT FOR UPDATE on a non-existent row does NOT
+//     block the second transaction (there's no row to lock). Both
+//     transactions see ErrNoRows, both INSERT (one wins outright,
+//     the second's ON CONFLICT DO UPDATE overwrites the first's
+//     value with delta — losing the first's contribution).
+//
+// 100 concurrent +1 increments must produce exactly 100. A failing
+// adapter shows a final value < 100 (number of lost updates).
+func testMemoryIncrementIsAtomicUnderConcurrency(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	const N = 100
+	var wg sync.WaitGroup
+	wg.Add(N)
+	for i := 0; i < N; i++ {
+		go func() {
+			defer wg.Done()
+			_, _ = s.MemoryIncrement(ctx, store.MemoryScopeAgent, "qa", "counter", 1, 0)
+		}()
+	}
+	wg.Wait()
+
+	got, err := s.MemoryGet(ctx, store.MemoryScopeAgent, "qa", "counter")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := strconv.Itoa(N)
+	if string(got.Value) != want {
+		t.Errorf("concurrent increments: counter = %s, want %s (%d lost updates)",
+			got.Value, want, N-mustParseInt(string(got.Value)))
+	}
+}
+
+func mustParseInt(s string) int {
+	n, err := strconv.Atoi(strings.TrimSpace(s))
+	if err != nil {
+		return 0
+	}
+	return n
 }
 
 // intToKey is a tiny helper for testMemoryListTruncation — keeps the

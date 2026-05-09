@@ -702,18 +702,37 @@ func (s *Store) MemoryList(ctx context.Context, scope store.MemoryScope, scopeID
 // arithmetic + write in an IMMEDIATE transaction (a write lock at
 // the BEGIN). Concurrent increments serialise on the lock; the
 // loop is contention-free in the absence of writes.
+//
+// modernc/sqlite's database/sql driver does NOT translate
+// `sql.LevelSerializable` to `BEGIN IMMEDIATE` — it only honors
+// `_txlock=immediate` in the DSN (which would affect every
+// transaction, including read paths where DEFERRED is preferred).
+// We therefore pin a connection from the pool and issue
+// `BEGIN IMMEDIATE` / `COMMIT` raw, scoping the lock-on-BEGIN
+// behaviour to this one operation. Verified by a 100-goroutine
+// regression test in storetest (counter must hit exactly 100).
 func (s *Store) MemoryIncrement(ctx context.Context, scope store.MemoryScope, scopeID, key string, delta int64, ttl time.Duration) (int64, error) {
-	tx, err := s.db.BeginTx(ctx, nil)
+	conn, err := s.db.Conn(ctx)
 	if err != nil {
 		return 0, err
 	}
-	defer func() { _ = tx.Rollback() }()
+	defer conn.Close()
+
+	if _, err := conn.ExecContext(ctx, "BEGIN IMMEDIATE"); err != nil {
+		return 0, err
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_, _ = conn.ExecContext(context.Background(), "ROLLBACK")
+		}
+	}()
 
 	var (
 		valueText sql.NullString
 		expiresAt sql.NullInt64
 	)
-	err = tx.QueryRowContext(ctx,
+	err = conn.QueryRowContext(ctx,
 		`SELECT value, expires_at FROM memory WHERE scope = ? AND scope_id = ? AND key = ?`,
 		string(scope), scopeID, key,
 	).Scan(&valueText, &expiresAt)
@@ -758,7 +777,7 @@ func (s *Store) MemoryIncrement(ctx context.Context, scope store.MemoryScope, sc
 		newExpires = expiresAt.Int64 // preserve existing expiry
 	}
 
-	_, err = tx.ExecContext(ctx,
+	_, err = conn.ExecContext(ctx,
 		`INSERT INTO memory(scope, scope_id, key, value, expires_at, created_at, updated_at)
 		 VALUES (?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(scope, scope_id, key) DO UPDATE SET
@@ -770,9 +789,10 @@ func (s *Store) MemoryIncrement(ctx context.Context, scope store.MemoryScope, sc
 	if err != nil {
 		return 0, err
 	}
-	if err := tx.Commit(); err != nil {
+	if _, err := conn.ExecContext(ctx, "COMMIT"); err != nil {
 		return 0, err
 	}
+	committed = true
 	return next, nil
 }
 
