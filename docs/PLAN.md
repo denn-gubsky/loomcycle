@@ -2,7 +2,37 @@
 
 This is the public roadmap. For decision history, regret notes, and per-version commit-by-commit details, see `doc-internal/PLAN.md` (gitignored).
 
-## v0.7.4 — current
+## v0.8.0 — current
+
+**Status: shipped (2026-05-09).** First v0.8.x point release: the **Memory tool** — persistent agent-scoped key/value storage that survives across runs and sessions. Five-op surface (`get` / `set` / `delete` / `list` / `incr`) over a new `memory` table on both SQLite and Postgres. Per-agent yaml gates which scopes an agent may use; operator env vars cap per-write and per-scope bytes. The first of four v0.8.x framework primitives sequenced toward the v1.0 LoomCycle MCP capstone.
+
+**What's in v0.8.0 (vs v0.7.4):**
+
+- **`Memory` built-in tool** (PR #45). The model invokes one tool with a discriminated `op` field; loomcycle resolves `scope_id` server-side from the run's identity (yaml agent name for `agent` scope; `user_id` for `user` scope) so a model-supplied scope_id can never read another user's keys. Atomic increment is the v0.8.0 counter primitive — concurrent same-key increments serialise via `BEGIN IMMEDIATE` on SQLite and `pg_advisory_xact_lock` on Postgres (a 100-goroutine regression test catches lost-update races on either backend). TTL is in seconds; expired entries are filtered at read time so agents never see stale values, with a periodic sweeper to keep the table bounded.
+- **Per-agent yaml policy.** New fields: `memory_scopes: [agent, user]` (default-deny allowlist — `Memory` in `allowed_tools` is necessary but not sufficient) and `memory_quota_bytes` (per-agent override of the global `LOOMCYCLE_MEMORY_MAX_SCOPE_BYTES` default). Sub-agents get THEIR OWN `memory_scopes` from yaml — the parent's policy does NOT cascade. This matches the existing `allowed_tools` model: a child's surface is its own yaml's authority. Cross-agent state-sharing is what the `user` scope is for.
+- **Web UI Memory page** (`/ui/memory`). Three-pane browser: scope picker (`agent` / `user`) → scope_id list with key counts and byte totals → keys with prefix filter → entry detail with pretty-printed JSON, created_at / updated_at, and TTL. Polls the new `/v1/_memory/*` admin endpoints on a 5 s tick. Operators can audit what an agent has stored without dropping into SQL.
+- **Admin API.** Four read-only routes — `GET /v1/_memory/scopes`, `/scopes/{scope}`, `/scopes/{scope}/{scope_id}/keys`, `/scopes/{scope}/{scope_id}/keys/{key...}`. Bearer-authed via the existing middleware; same admin posture as `/v1/_users` / `/v1/_resolver`. The `{key...}` multi-segment route handles the common `events/2026-05-09T10:00`-style key shape.
+- **Pre-existing host-policy fix bundled in.** Code review of the v0.8.0 work surfaced that `handleMessages` (the session continuation path) had been missing `tools.WithHostPolicy` on its loop ctx since v0.4.0 — sub-agents spawned from a continuation fell back to the operator's static allowlist instead of the caller's narrowed list. Fixed alongside the new Memory ctx values; same shape as the v0.4.0 fix `9677b85` made for top-level runs.
+
+**Operator env vars:**
+
+- `LOOMCYCLE_MEMORY_MAX_VALUE_BYTES` (default 65536) — per-write cap on the `value` payload.
+- `LOOMCYCLE_MEMORY_MAX_SCOPE_BYTES` (default 1048576) — default per-(scope, scope_id) cap; per-agent yaml overrides this.
+- `LOOMCYCLE_MEMORY_SWEEP_MS` (default 900000 / 15 min) — TTL reaper goroutine cadence; 0 disables.
+
+**Architecture decisions worth flagging:**
+
+- **`scope_id` is server-resolved, not model-supplied.** The model picks the SCOPE (agent vs user); loomcycle picks the SCOPE_ID from the run context. Non-negotiable.
+- **No automatic eviction.** Quota exceeded → write fails with `quota_exceeded`. Operators set quotas deliberately; agents call `delete` explicitly. LRU is a v0.9.x candidate.
+- **No encryption-at-rest.** Memory rows land in the same DB as transcripts (which already carry user prompts + tool outputs). Disk encryption is operator-config-wide, not Memory-specific. Revisit alongside v0.9.x HA work.
+- **Postgres migration `0002_memory.up.sql` is additive-only.** New table with no locking on existing tables; safe to apply against a live database with zero downtime.
+- **Concurrency primitive caught two real bugs at review time.** SQLite's `BeginTx(nil)` is DEFERRED (modernc/sqlite ignores `sql.LevelSerializable`); fix uses a pinned connection + raw `BEGIN IMMEDIATE` / `COMMIT`. Postgres `SELECT FOR UPDATE` doesn't lock absent rows; fix uses `pg_advisory_xact_lock(hashtextextended(key, 0))` so different keys don't contend. Both have a 100-goroutine regression test that demonstrably failed pre-fix.
+
+For the v0.7.4 baseline that drove the v0.8.0 framework-primitive work, see [v0.7.4](#v074--earlier).
+
+For the full Memory tool surface and yaml shape, see [TOOLS.md → Memory tool](TOOLS.md#the-memory-tool--persistent-agent-scoped-storage-v080).
+
+## v0.7.4 — earlier
 
 **Status: shipped (2026-05-09).** Iteration on top of v0.7.3 from the operator's first day running the Web UI against jobs-search-agent. Five PRs (#39 + #40 + #41 + #42, plus the in-process Gemini config-validation hotfix) addressing real UX gaps and a wire-shape drift the v0.7.3 ship missed. No breaking wire changes.
 
@@ -203,17 +233,7 @@ For usage: see [README](../README.md). For the architecture: see [ARCHITECTURE.m
 
 Sequenced 2026-05-09. Each point release ships one focused framework primitive — the v1.0 capstone (LoomCycle MCP) needs them in this order because the MCP server's surface is built FROM these primitives. Detailed design (API schemas, storage shapes, retention semantics) lives in feature-branch RFCs at implementation time; the outlines below capture the shape but not the wire.
 
-### v0.8.0 — Memory tool *(in development)*
-
-**Status: in development on `feature-memory-tool` branch (2026-05-09).** Five-op surface (`get` / `set` / `delete` / `list` / `incr`) over a `memory` table on both SQLite and Postgres. Agent and user scopes ship; session and tenant scopes are forward-compatible (yaml accepts new scope strings without a wire change). TTL is in seconds; per-write 64 KB and per-(scope, scope_id) 1 MB defaults are operator-overridable, with per-agent `memory_quota_bytes` for production tuning.
-
-Agents are stateless across runs today. Memory closes the gap with persistent storage that survives across runs and sessions — a place to write down learned facts, counters, per-user preferences, summaries of long conversations, or notes for an agent's future self. The yaml gate is double-keyed: `Memory` must be in `allowed_tools`, AND the agent must declare `memory_scopes: [...]` to actually pick which scopes it can touch.
-
-**Sequenced first** because Channel and LoomHelp both expect Memory to exist (Memory underpins the "agents that learn" use case Channel routing makes interesting; LoomHelp surfaces a memory-snapshot view in its introspection output).
-
-**Locked decisions** (RFC under doc-internal): scopes = `agent` + `user`; values = JSON (validated at write); ops = `get` / `set` / `delete` / `list` / **`incr`** (atomic counter); TTL = seconds; encryption-at-rest deferred to v0.9.x cluster work; no automatic eviction (quota exceeded → write fails with `quota_exceeded`); ACL = agent's `memory_scopes` is the floor.
-
-For the full surface and yaml shape, see [TOOLS.md → Memory tool](TOOLS.md#the-memory-tool--persistent-agent-scoped-storage-v080).
+**v0.8.0 Memory tool shipped 2026-05-09** — see the [Current](#v080--current) section above for the full release notes.
 
 ### v0.8.1 — Channel tool
 
