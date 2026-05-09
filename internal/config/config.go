@@ -534,15 +534,21 @@ func Load(path string) (*Config, error) {
 		}
 	}
 	// LOOMCYCLE_SSE_KEEPALIVE_MS sets the SSE keepalive cadence.
-	// Default 20 s; 0 disables. Floor 1 s so a misconfigured tiny
-	// value can't busy-loop the writer; ceiling 5 min so a misread
-	// (e.g. seconds vs ms) can't disable keepalive in practice.
+	// Default 20 s; 0 (or any value ≤ 0) disables. Floor 1 s for
+	// positive values so a misconfigured tiny value can't busy-loop
+	// the writer; ceiling 5 min so a misread (e.g. seconds vs ms)
+	// can't effectively disable keepalive in practice.
+	//
+	// Treating negative values as "disable" (same as 0) matches
+	// operator intent for the typical typo case and is consistent
+	// with the disable contract on `sse.startKeepalive` itself
+	// (interval <= 0 → no goroutine).
 	cfg.Env.SSEKeepaliveInterval = 20 * time.Second
 	if v := os.Getenv("LOOMCYCLE_SSE_KEEPALIVE_MS"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
-			if n == 0 {
+			if n <= 0 {
 				cfg.Env.SSEKeepaliveInterval = 0
-			} else if n > 0 {
+			} else {
 				d := time.Duration(n) * time.Millisecond
 				const minSSE = 1 * time.Second
 				const maxSSE = 5 * time.Minute
