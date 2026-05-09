@@ -76,6 +76,7 @@ func Run(t *testing.T, factory Factory) {
 		{"MemoryIncrementOnNonNumberFails", testMemoryIncrementOnNonNumberFails},
 		{"MemoryIncrementOnExpiredKey", testMemoryIncrementOnExpiredKey},
 		{"MemoryScopeIsolation", testMemoryScopeIsolation},
+		{"MemoryListScopeIDs", testMemoryListScopeIDs},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -890,6 +891,54 @@ func testMemoryScopeIsolation(t *testing.T, s store.Store) {
 	list, _, _ := s.MemoryList(ctx, store.MemoryScopeUser, "alice", "", 100)
 	if len(list) != 1 {
 		t.Errorf("alice-scope list returned %d rows, want 1", len(list))
+	}
+}
+
+func testMemoryListScopeIDs(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	// alice: 2 keys; bob: 1 key; qa-agent: 1 key.
+	_ = s.MemorySet(ctx, store.MemoryScopeUser, "alice", "voice", json.RawMessage(`"a1"`), 0)
+	_ = s.MemorySet(ctx, store.MemoryScopeUser, "alice", "tone", json.RawMessage(`"a2"`), 0)
+	_ = s.MemorySet(ctx, store.MemoryScopeUser, "bob", "voice", json.RawMessage(`"b1"`), 0)
+	_ = s.MemorySet(ctx, store.MemoryScopeAgent, "qa-agent", "warnings", json.RawMessage(`5`), 0)
+
+	users, err := s.MemoryListScopeIDs(ctx, store.MemoryScopeUser)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]int{}
+	for _, u := range users {
+		got[u.ScopeID] = u.KeyCount
+		if u.UpdatedAt.IsZero() {
+			t.Errorf("%s.UpdatedAt is zero", u.ScopeID)
+		}
+		if u.Bytes <= 0 {
+			t.Errorf("%s.Bytes = %d, want > 0", u.ScopeID, u.Bytes)
+		}
+	}
+	if got["alice"] != 2 || got["bob"] != 1 {
+		t.Errorf("user-scope summary: %v, want alice=2 bob=1", got)
+	}
+	if _, ok := got["qa-agent"]; ok {
+		t.Errorf("user-scope listing should not include agent-scope rows: %v", got)
+	}
+
+	agents, err := s.MemoryListScopeIDs(ctx, store.MemoryScopeAgent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(agents) != 1 || agents[0].ScopeID != "qa-agent" {
+		t.Errorf("agent-scope summary: %+v", agents)
+	}
+
+	// Expired rows must not surface in the summary.
+	_ = s.MemorySet(ctx, store.MemoryScopeUser, "transient", "k", json.RawMessage(`1`), 30*time.Millisecond)
+	time.Sleep(60 * time.Millisecond)
+	users2, _ := s.MemoryListScopeIDs(ctx, store.MemoryScopeUser)
+	for _, u := range users2 {
+		if u.ScopeID == "transient" {
+			t.Errorf("expired-only scope_id %q should not appear", u.ScopeID)
+		}
 	}
 }
 

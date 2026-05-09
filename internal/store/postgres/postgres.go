@@ -681,6 +681,40 @@ func (s *Store) MemoryIncrement(ctx context.Context, scope store.MemoryScope, sc
 	return next, nil
 }
 
+// MemoryListScopeIDs returns distinct scope_ids under scope with
+// summary stats. octet_length(value::text) is used for the bytes
+// estimate — JSONB has no LENGTH() in the SQLite sense; the textual
+// representation is what an operator cares about anyway. Capped at
+// 200 rows ordered by updated_at DESC.
+func (s *Store) MemoryListScopeIDs(ctx context.Context, scope store.MemoryScope) ([]store.MemoryScopeIDSummary, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT
+			scope_id,
+			COUNT(*)                                                          AS key_count,
+			COALESCE(SUM(octet_length(key) + octet_length(value::text)), 0)   AS bytes,
+			MAX(updated_at)                                                   AS updated_at
+		FROM memory
+		WHERE scope = $1 AND (expires_at IS NULL OR expires_at > NOW())
+		GROUP BY scope_id
+		ORDER BY updated_at DESC
+		LIMIT 200`,
+		string(scope),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("memory list scope ids: %w", err)
+	}
+	defer rows.Close()
+	var out []store.MemoryScopeIDSummary
+	for rows.Next() {
+		var summary store.MemoryScopeIDSummary
+		if err := rows.Scan(&summary.ScopeID, &summary.KeyCount, &summary.Bytes, &summary.UpdatedAt); err != nil {
+			return nil, fmt.Errorf("memory list scope ids scan: %w", err)
+		}
+		out = append(out, summary)
+	}
+	return out, rows.Err()
+}
+
 // MemorySweep deletes every Memory row whose expires_at has passed.
 // Single atomic DELETE so concurrent sweepers race correctly.
 func (s *Store) MemorySweep(ctx context.Context) (int, error) {

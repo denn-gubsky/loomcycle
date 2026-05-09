@@ -554,6 +554,13 @@ func (s *Server) Mux() http.Handler {
 	// user_ids that have runs in the store. Bearer-authed; drives
 	// the Web UI's run-list user dropdown.
 	mux.Handle("GET /v1/_users", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleListUsers))))
+	// v0.8.0 Memory admin — read-only browsing of stored Memory rows.
+	// Drives the Web UI's Memory page. Bearer-authed; same admin
+	// posture as /v1/_users / /v1/_resolver.
+	mux.Handle("GET /v1/_memory/scopes", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleListMemoryScopes))))
+	mux.Handle("GET /v1/_memory/scopes/{scope}", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleListMemoryScopeIDs))))
+	mux.Handle("GET /v1/_memory/scopes/{scope}/{scope_id}/keys", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleListMemoryEntries))))
+	mux.Handle("GET /v1/_memory/scopes/{scope}/{scope_id}/keys/{key}", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleGetMemoryEntry))))
 	// v0.7.3 Web UI — embedded React SPA. The cookie-set landing
 	// page (/ui with a ?token= query) is intentionally NOT
 	// auth-middleware-wrapped; it sets the cookie that the

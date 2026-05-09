@@ -273,6 +273,13 @@ type Store interface {
 	// DELETE).
 	MemorySweep(ctx context.Context) (int, error)
 
+	// MemoryListScopeIDs returns one row per distinct scope_id under
+	// the given scope, with summary stats (key count, total bytes,
+	// most recent updated_at). Drives the v0.8.0 Web UI's Memory
+	// page picker. Expired rows are excluded — operators see live
+	// state only. Capped at 200 rows ordered by updated_at DESC.
+	MemoryListScopeIDs(ctx context.Context, scope MemoryScope) ([]MemoryScopeIDSummary, error)
+
 	// Close releases backend resources. Idempotent.
 	Close() error
 }
@@ -302,6 +309,17 @@ type MemoryEntry struct {
 	ExpiresAt time.Time       `json:"expires_at,omitempty"`
 	CreatedAt time.Time       `json:"created_at"`
 	UpdatedAt time.Time       `json:"updated_at"`
+}
+
+// MemoryScopeIDSummary is one row of MemoryListScopeIDs' output.
+// KeyCount is the live key count (expired rows excluded). Bytes is
+// the sum of key+value bytes — gives operators a quick "how full is
+// this scope" view in the UI.
+type MemoryScopeIDSummary struct {
+	ScopeID   string    `json:"scope_id"`
+	KeyCount  int       `json:"key_count"`
+	Bytes     int       `json:"bytes"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 // ErrMemoryWrongType is returned by MemoryIncrement when the existing

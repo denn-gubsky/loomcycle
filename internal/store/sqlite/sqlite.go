@@ -776,6 +776,43 @@ func (s *Store) MemoryIncrement(ctx context.Context, scope store.MemoryScope, sc
 	return next, nil
 }
 
+// MemoryListScopeIDs returns distinct scope_ids under scope with
+// summary stats. Excludes expired rows so operators see live state
+// only. Capped at 200 rows ordered by updated_at DESC.
+func (s *Store) MemoryListScopeIDs(ctx context.Context, scope store.MemoryScope) ([]store.MemoryScopeIDSummary, error) {
+	nowNs := time.Now().UnixNano()
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT
+			scope_id,
+			COUNT(*)                                              AS key_count,
+			COALESCE(SUM(LENGTH(key) + LENGTH(value)), 0)          AS bytes,
+			MAX(updated_at)                                        AS updated_at
+		FROM memory
+		WHERE scope = ? AND (expires_at IS NULL OR expires_at > ?)
+		GROUP BY scope_id
+		ORDER BY updated_at DESC
+		LIMIT 200`,
+		string(scope), nowNs,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []store.MemoryScopeIDSummary
+	for rows.Next() {
+		var (
+			summary   store.MemoryScopeIDSummary
+			updatedNs int64
+		)
+		if err := rows.Scan(&summary.ScopeID, &summary.KeyCount, &summary.Bytes, &updatedNs); err != nil {
+			return nil, err
+		}
+		summary.UpdatedAt = time.Unix(0, updatedNs).UTC()
+		out = append(out, summary)
+	}
+	return out, rows.Err()
+}
+
 // MemorySweep deletes every Memory row whose expires_at has passed.
 func (s *Store) MemorySweep(ctx context.Context) (int, error) {
 	res, err := s.db.ExecContext(ctx,
