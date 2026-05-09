@@ -18,23 +18,34 @@ export function listUsers(): Promise<ListUsersResponse> {
   return jsonFetch<ListUsersResponse>("/v1/_users");
 }
 
+// Agent mirrors agentResponse on the server (internal/api/http/server.go).
+// Field names use snake_case to match the wire shape; renaming any of
+// them is a wire change, not a UI change.
 export interface Agent {
   agent_id: string;
   run_id: string;
   session_id: string;
+  // agent is the YAML-declared agent name ("qa-agent",
+  // "company-researcher") — what the operator wants to see in lists.
+  // Empty when loomcycle's parser didn't see a session row (legacy
+  // rows pre-dating the agent column on the JOIN).
+  agent: string;
   parent_agent_id: string | null;
-  agent_type: string;
   user_id: string;
   status: "running" | "completed" | "failed" | "cancelled";
-  model: string;
   started_at: string;
   completed_at: string | null;
-  duration_ms: number | null;
+  stop_reason: string | null;
   error: string | null;
-  input_tokens: number | null;
-  output_tokens: number | null;
-  cache_read_tokens: number | null;
-  cache_creation_tokens: number | null;
+  usage: {
+    input_tokens?: number;
+    output_tokens?: number;
+    cache_creation_tokens?: number;
+    cache_read_tokens?: number;
+    model?: string;
+  };
+  last_heartbeat_at: string | null;
+  live: boolean;
 }
 
 export interface ListAgentsResponse {

@@ -70,7 +70,7 @@ export default function AgentDetail() {
         <div className="agent-header">
           <div className="line1">
             <span className={`pill ${agent.status}`}>{agent.status}</span>
-            <strong>{agent.agent_type}</strong>
+            <strong>{agent.agent || "(unknown agent)"}</strong>
             <code className="agent-id">{agent.agent_id}</code>
             {agent.status === "running" && (
               <button
@@ -92,7 +92,7 @@ export default function AgentDetail() {
             )}
           </div>
           <div className="line2">
-            <span>{agent.model || "—"}</span>
+            <span>{agent.usage?.model || "—"}</span>
             <span>user: {agent.user_id || "—"}</span>
             {agent.parent_agent_id && (
               <span>
@@ -103,10 +103,12 @@ export default function AgentDetail() {
               </span>
             )}
             <span>
-              tokens: {agent.input_tokens ?? "?"} in / {agent.output_tokens ?? "?"} out
-              {agent.cache_read_tokens ? `, ${agent.cache_read_tokens} cache-read` : ""}
+              tokens: {agent.usage?.input_tokens ?? "?"} in / {agent.usage?.output_tokens ?? "?"} out
+              {agent.usage?.cache_read_tokens ? `, ${agent.usage.cache_read_tokens} cache-read` : ""}
             </span>
-            {agent.duration_ms != null && <span>{(agent.duration_ms / 1000).toFixed(1)}s</span>}
+            {agent.completed_at && (
+              <span>{durationLabel(agent.started_at, agent.completed_at)}</span>
+            )}
           </div>
           {agent.error && <div className="agent-err">error: {agent.error}</div>}
         </div>
@@ -300,4 +302,14 @@ function formatTime(ns: number): string {
   if (!ns) return "";
   const ms = Math.floor(ns / 1_000_000);
   return new Date(ms).toLocaleTimeString();
+}
+
+function durationLabel(startedAt: string, completedAt: string): string {
+  const a = new Date(startedAt).getTime();
+  const b = new Date(completedAt).getTime();
+  if (!Number.isFinite(a) || !Number.isFinite(b)) return "";
+  const ms = b - a;
+  if (ms < 1000) return `${ms}ms`;
+  if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`;
+  return `${Math.floor(ms / 60_000)}m ${Math.round((ms % 60_000) / 1000)}s`;
 }

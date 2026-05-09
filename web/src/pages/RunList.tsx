@@ -128,10 +128,10 @@ function RunNode({ node, depth }: { node: TreeNode; depth: number }) {
       <div className="row">
         <span className={`pill ${a.status}`}>{a.status}</span>
         <Link to={`/agents/${a.agent_id}`} className="agent-link">
-          <strong>{a.agent_type}</strong>
+          <strong>{a.agent || "(unknown agent)"}</strong>
           <code className="agent-id">{a.agent_id.slice(0, 12)}…</code>
         </Link>
-        <span className="model">{a.model || "—"}</span>
+        <span className="model">{a.usage?.model || "—"}</span>
         <span className="time">{relativeTime(a.started_at)}</span>
         {a.error && <span className="error-flag" title={a.error}>error</span>}
       </div>

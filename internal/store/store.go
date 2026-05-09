@@ -45,8 +45,13 @@ const (
 
 // Run is one execution within a session.
 type Run struct {
-	ID                  string    `json:"id"`
-	SessionID           string    `json:"session_id"`
+	ID        string `json:"id"`
+	SessionID string `json:"session_id"`
+	// Agent is the YAML-declared agent name (e.g. "qa-agent",
+	// "company-researcher"). Read from the parent session via SQL JOIN
+	// at read time — NOT a column on the runs table. Empty when the
+	// JOIN can't resolve (e.g. a session row was manually pruned).
+	Agent               string    `json:"agent,omitempty"`
 	Status              RunStatus `json:"status"`
 	StartedAt           time.Time `json:"started_at"`
 	CompletedAt         time.Time `json:"completed_at,omitempty"`

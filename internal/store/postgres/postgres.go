@@ -303,11 +303,13 @@ func (s *Store) GetRunByAgentID(ctx context.Context, agentID string) (store.Run,
 		return store.Run{}, &store.ErrNotFound{Kind: "run", ID: agentID}
 	}
 	row := s.pool.QueryRow(ctx,
-		`SELECT id, session_id, status, started_at, completed_at, stop_reason,
-		        input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens,
-		        model, error,
-		        agent_id, parent_agent_id, parent_run_id, user_id, last_heartbeat_at
-		 FROM runs WHERE agent_id = $1 ORDER BY started_at DESC LIMIT 1`, agentID,
+		`SELECT r.id, r.session_id, r.status, r.started_at, r.completed_at, r.stop_reason,
+		        r.input_tokens, r.output_tokens, r.cache_creation_tokens, r.cache_read_tokens,
+		        r.model, r.error,
+		        r.agent_id, r.parent_agent_id, r.parent_run_id, r.user_id, r.last_heartbeat_at,
+		        s.agent
+		 FROM runs r LEFT JOIN sessions s ON r.session_id = s.id
+		 WHERE r.agent_id = $1 ORDER BY r.started_at DESC LIMIT 1`, agentID,
 	)
 	r, err := scanRun(row)
 	if err != nil {
@@ -363,20 +365,24 @@ func (s *Store) ListActiveRunsByUser(ctx context.Context, userID string, status 
 	)
 	if status == "" {
 		rows, err = s.pool.Query(ctx,
-			`SELECT id, session_id, status, started_at, completed_at, stop_reason,
-			        input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens,
-			        model, error,
-			        agent_id, parent_agent_id, parent_run_id, user_id, last_heartbeat_at
-			 FROM runs WHERE user_id = $1
-			 ORDER BY started_at DESC LIMIT $2`, userID, limit)
+			`SELECT r.id, r.session_id, r.status, r.started_at, r.completed_at, r.stop_reason,
+			        r.input_tokens, r.output_tokens, r.cache_creation_tokens, r.cache_read_tokens,
+			        r.model, r.error,
+			        r.agent_id, r.parent_agent_id, r.parent_run_id, r.user_id, r.last_heartbeat_at,
+			        s.agent
+			 FROM runs r LEFT JOIN sessions s ON r.session_id = s.id
+			 WHERE r.user_id = $1
+			 ORDER BY r.started_at DESC LIMIT $2`, userID, limit)
 	} else {
 		rows, err = s.pool.Query(ctx,
-			`SELECT id, session_id, status, started_at, completed_at, stop_reason,
-			        input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens,
-			        model, error,
-			        agent_id, parent_agent_id, parent_run_id, user_id, last_heartbeat_at
-			 FROM runs WHERE user_id = $1 AND status = $2
-			 ORDER BY started_at DESC LIMIT $3`, userID, string(status), limit)
+			`SELECT r.id, r.session_id, r.status, r.started_at, r.completed_at, r.stop_reason,
+			        r.input_tokens, r.output_tokens, r.cache_creation_tokens, r.cache_read_tokens,
+			        r.model, r.error,
+			        r.agent_id, r.parent_agent_id, r.parent_run_id, r.user_id, r.last_heartbeat_at,
+			        s.agent
+			 FROM runs r LEFT JOIN sessions s ON r.session_id = s.id
+			 WHERE r.user_id = $1 AND r.status = $2
+			 ORDER BY r.started_at DESC LIMIT $3`, userID, string(status), limit)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("list active runs: %w", err)
@@ -393,12 +399,14 @@ func (s *Store) ListRunsByParentAgentID(ctx context.Context, parentAgentID strin
 		return nil, nil
 	}
 	rows, err := s.pool.Query(ctx,
-		`SELECT id, session_id, status, started_at, completed_at, stop_reason,
-		        input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens,
-		        model, error,
-		        agent_id, parent_agent_id, parent_run_id, user_id, last_heartbeat_at
-		 FROM runs WHERE parent_agent_id = $1
-		 ORDER BY started_at ASC`, parentAgentID,
+		`SELECT r.id, r.session_id, r.status, r.started_at, r.completed_at, r.stop_reason,
+		        r.input_tokens, r.output_tokens, r.cache_creation_tokens, r.cache_read_tokens,
+		        r.model, r.error,
+		        r.agent_id, r.parent_agent_id, r.parent_run_id, r.user_id, r.last_heartbeat_at,
+		        s.agent
+		 FROM runs r LEFT JOIN sessions s ON r.session_id = s.id
+		 WHERE r.parent_agent_id = $1
+		 ORDER BY r.started_at ASC`, parentAgentID,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("list runs by parent: %w", err)
@@ -477,6 +485,10 @@ type rowScanner interface {
 
 // scanRun reads one run row from pgx into a store.Run, converting
 // nullable columns through pointer-string scratch variables.
+//
+// Trailing column is `s.agent` from the LEFT JOIN onto sessions —
+// surfaces the human-readable agent name (yaml-declared, e.g.
+// "qa-agent") on every Run without a separate session lookup.
 func scanRun(r rowScanner) (store.Run, error) {
 	var (
 		out store.Run
@@ -489,6 +501,7 @@ func scanRun(r rowScanner) (store.Run, error) {
 
 		agentID, parentAgentID, parentRunID, userID *string
 		lastHeartbeatAt                             *time.Time
+		sessAgent                                   *string
 
 		statusStr string
 	)
@@ -497,6 +510,7 @@ func scanRun(r rowScanner) (store.Run, error) {
 		&out.InputTokens, &out.OutputTokens, &out.CacheCreationTokens, &out.CacheReadTokens,
 		&model, &errMsg,
 		&agentID, &parentAgentID, &parentRunID, &userID, &lastHeartbeatAt,
+		&sessAgent,
 	); err != nil {
 		return store.Run{}, err
 	}
@@ -528,6 +542,9 @@ func scanRun(r rowScanner) (store.Run, error) {
 	}
 	if lastHeartbeatAt != nil {
 		out.LastHeartbeatAt = *lastHeartbeatAt
+	}
+	if sessAgent != nil {
+		out.Agent = *sessAgent
 	}
 	return out, nil
 }
