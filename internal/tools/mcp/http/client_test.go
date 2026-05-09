@@ -285,8 +285,9 @@ func TestHeadersForwarded(t *testing.T) {
 //
 // Regression for the 2026-05-07 jobs-search-agent /api/mcp decode
 // failure:
-//   mcp http: decode response: invalid character 'e' looking for
-//   beginning of value (body: event: message\ndata: {...})
+//
+//	mcp http: decode response: invalid character 'e' looking for
+//	beginning of value (body: event: message\ndata: {...})
 func TestSSEResponseDecoded(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var probe struct {

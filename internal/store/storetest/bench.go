@@ -97,9 +97,9 @@ func RunConcurrencyBench(tb testing.TB, s store.Store, cfg BenchmarkConfig) Benc
 	var latMu sync.Mutex
 
 	var (
-		wg            sync.WaitGroup
-		errCount      atomic.Uint64
-		eventsTotal   atomic.Uint64
+		wg          sync.WaitGroup
+		errCount    atomic.Uint64
+		eventsTotal atomic.Uint64
 	)
 	wg.Add(cfg.Concurrency)
 	wallStart := time.Now()

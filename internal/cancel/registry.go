@@ -21,36 +21,36 @@
 //
 // Lifecycle:
 //
-//   ┌────────────────────────────────────────────────────────────────┐
-//   │ HTTP req in →  Server creates session+run → Register(agentID)  │
-//   │                          │                                     │
-//   │                          ▼                                     │
-//   │              ┌─ loop.Run(runCtx) ──────────────┐                │
-//   │              │  (subloops inherit runCtx —     │                │
-//   │              │   parent cancel cascades)       │                │
-//   │              └─────────────────────────────────┘                │
-//   │                          │                                     │
-//   │                          ▼                                     │
-//   │              FinishRun (writes terminal status)                 │
-//   │                          │                                     │
-//   │                          ▼                                     │
-//   │              Deregister(agentID)  ← `defer` so even panics      │
-//   │                                     deregister cleanly         │
-//   └────────────────────────────────────────────────────────────────┘
+//	┌────────────────────────────────────────────────────────────────┐
+//	│ HTTP req in →  Server creates session+run → Register(agentID)  │
+//	│                          │                                     │
+//	│                          ▼                                     │
+//	│              ┌─ loop.Run(runCtx) ──────────────┐                │
+//	│              │  (subloops inherit runCtx —     │                │
+//	│              │   parent cancel cascades)       │                │
+//	│              └─────────────────────────────────┘                │
+//	│                          │                                     │
+//	│                          ▼                                     │
+//	│              FinishRun (writes terminal status)                 │
+//	│                          │                                     │
+//	│                          ▼                                     │
+//	│              Deregister(agentID)  ← `defer` so even panics      │
+//	│                                     deregister cleanly         │
+//	└────────────────────────────────────────────────────────────────┘
 //
 // Cancel from a separate request:
 //
-//   POST /v1/agents/<id>/cancel
-//   ↓
-//   Registry.Cancel("a_id", "user_clicked_stop")
-//   ↓
-//   1. cancelFn(ErrCancelledByAPI) — runCtx becomes cancelled with cause
-//   2. Walk children: each direct child's cancelFn fires too
-//      (recursively descends because each child's cancelFn ALSO triggers
-//      ITS subtree's ctx cascade)
-//   3. Loop iterations exit on next ctx check; FinishRun sees the cause
-//      and writes RunCancelled (rather than RunFailed) via the cause-
-//      aware logic in server.finishRun.
+//	POST /v1/agents/<id>/cancel
+//	↓
+//	Registry.Cancel("a_id", "user_clicked_stop")
+//	↓
+//	1. cancelFn(ErrCancelledByAPI) — runCtx becomes cancelled with cause
+//	2. Walk children: each direct child's cancelFn fires too
+//	   (recursively descends because each child's cancelFn ALSO triggers
+//	   ITS subtree's ctx cascade)
+//	3. Loop iterations exit on next ctx check; FinishRun sees the cause
+//	   and writes RunCancelled (rather than RunFailed) via the cause-
+//	   aware logic in server.finishRun.
 package cancel
 
 import (

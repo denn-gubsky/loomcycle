@@ -44,15 +44,15 @@ import (
 //     Execute (rare; surfaces as the loop's tool_result with the
 //     wrapper text).
 type EndpointTool struct {
-	ToolName    string                  // "<prefix>__<operationId>"
-	BaseURL     string                  // e.g. "http://localhost:3000"
-	Path        string                  // e.g. "/api/applications/{id}"
-	Method      string                  // "GET" | "POST" | ...
-	OpSummary   string
+	ToolName      string // "<prefix>__<operationId>"
+	BaseURL       string // e.g. "http://localhost:3000"
+	Path          string // e.g. "/api/applications/{id}"
+	Method        string // "GET" | "POST" | ...
+	OpSummary     string
 	OpDescription string
-	Parameters  []parameter
-	HasBody     bool
-	BodySchema  *yaml.Node // raw JSON Schema (passed through to model)
+	Parameters    []parameter
+	HasBody       bool
+	BodySchema    *yaml.Node // raw JSON Schema (passed through to model)
 
 	HTTPClient *http.Client // optional; defaults to http.DefaultClient
 }

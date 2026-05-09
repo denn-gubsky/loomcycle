@@ -4,14 +4,14 @@
 //
 // Wire model (Approach A in doc-internal/skills-design.md):
 //
-//   1. Operator points LOOMCYCLE_SKILLS_ROOT at a directory containing
-//      one subdirectory per skill, each with a SKILL.md file.
-//   2. Each agent's YAML lists `skills: [name1, name2]`. At config-load,
-//      the named skill bodies are concatenated onto the agent's
-//      system_prompt.
-//   3. The bundled body lands inside the cacheable system block at the
-//      provider layer, so subsequent runs replay the skill at
-//      cache-read rates.
+//  1. Operator points LOOMCYCLE_SKILLS_ROOT at a directory containing
+//     one subdirectory per skill, each with a SKILL.md file.
+//  2. Each agent's YAML lists `skills: [name1, name2]`. At config-load,
+//     the named skill bodies are concatenated onto the agent's
+//     system_prompt.
+//  3. The bundled body lands inside the cacheable system block at the
+//     provider layer, so subsequent runs replay the skill at
+//     cache-read rates.
 //
 // Approach A trades cache effectiveness for static behaviour: the
 // bundled set is fixed at config-load. Dynamic discovery (Approach B —

@@ -213,12 +213,12 @@ func copyRuns(ctx context.Context, src *sql.DB, dst *pgxpool.Pool, stdout io.Wri
 	count := 0
 	for rows.Next() {
 		var (
-			id, sessionID, status                                    string
-			startedAtNs                                              int64
-			completedAtNs, lastHeartbeatAtNs                         *int64
-			stopReason, model, errMsg                                *string
+			id, sessionID, status                                     string
+			startedAtNs                                               int64
+			completedAtNs, lastHeartbeatAtNs                          *int64
+			stopReason, model, errMsg                                 *string
 			inputTokens, outputTokens, cacheCreationTokens, cacheRead int64
-			agentID, parentAgentID, parentRunID, userID              *string
+			agentID, parentAgentID, parentRunID, userID               *string
 		)
 		if err := rows.Scan(
 			&id, &sessionID, &status, &startedAtNs, &completedAtNs, &stopReason,
@@ -284,11 +284,11 @@ func copyEvents(ctx context.Context, src *sql.DB, dst *pgxpool.Pool, stdout io.W
 	defer rows.Close()
 
 	type ev struct {
-		seq                  int64
-		sessionID, runID     string
-		ts                   time.Time
-		typ                  string
-		payload              []byte
+		seq              int64
+		sessionID, runID string
+		ts               time.Time
+		typ              string
+		payload          []byte
 	}
 	batch := make([]ev, 0, batchSize)
 	count := 0
@@ -444,9 +444,9 @@ func digestSqliteTranscript(ctx context.Context, db *sql.DB, sessionID string) (
 	h := sha256.New()
 	for rows.Next() {
 		var (
-			seq          int64
-			runID, typ   string
-			payload      []byte
+			seq        int64
+			runID, typ string
+			payload    []byte
 		)
 		if err := rows.Scan(&seq, &runID, &typ, &payload); err != nil {
 			return "", err
@@ -490,6 +490,9 @@ type stringWriter struct {
 	buf []byte
 }
 
-func (w *stringWriter) Write(p []byte) (int, error)        { w.buf = append(w.buf, p...); return len(p), nil }
-func (w *stringWriter) WriteString(s string) (int, error)  { w.buf = append(w.buf, s...); return len(s), nil }
-func (w *stringWriter) String() string                     { return string(w.buf) }
+func (w *stringWriter) Write(p []byte) (int, error) { w.buf = append(w.buf, p...); return len(p), nil }
+func (w *stringWriter) WriteString(s string) (int, error) {
+	w.buf = append(w.buf, s...)
+	return len(s), nil
+}
+func (w *stringWriter) String() string { return string(w.buf) }

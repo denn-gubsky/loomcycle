@@ -70,8 +70,8 @@ type Server struct {
 
 // Config carries the server's construction-time inputs.
 type Config struct {
-	Store       store.Store
-	CancelReg   *cancel.Registry
+	Store     store.Store
+	CancelReg *cancel.Registry
 	// Runner is the wire-agnostic loop driver. *internal/api/http.Server
 	// satisfies it. May be nil — Run + Continue then return
 	// codes.Unimplemented (useful for tests that don't need streaming).
@@ -426,7 +426,7 @@ func (s *Server) Continue(req *loomcyclepb.ContinueRequest, stream loomcyclepb.L
 	if req.GetSessionId() == "" {
 		return status.Error(codes.InvalidArgument, "session_id is required for Continue")
 	}
-	in := runInputFromProto(/*agent=*/ "", req.GetSessionId(), req.GetSegments(),
+	in := runInputFromProto( /*agent=*/ "", req.GetSessionId(), req.GetSegments(),
 		req.GetAllowedTools(), req.GetAllowedHosts(), req.GetWebSearchFilter(),
 		/*userID=*/ "", req.GetAgentId())
 	return s.driveStream(stream.Context(), stream, in)
@@ -645,4 +645,3 @@ func mapRunnerErr(err error) error {
 		return status.Errorf(codes.Internal, "runner: %v", err)
 	}
 }
-

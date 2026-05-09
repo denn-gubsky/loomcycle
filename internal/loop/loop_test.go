@@ -19,8 +19,8 @@ type fakeProvider struct {
 	calls     []providers.Request
 }
 
-func (f *fakeProvider) ID() string                            { return "fake" }
-func (f *fakeProvider) Probe(_ context.Context) error          { return nil }
+func (f *fakeProvider) ID() string                    { return "fake" }
+func (f *fakeProvider) Probe(_ context.Context) error { return nil }
 func (f *fakeProvider) ListModels(_ context.Context) ([]string, error) {
 	return []string{"fake-model"}, nil
 }
@@ -323,8 +323,8 @@ type erroringProvider struct {
 	err error
 }
 
-func (e *erroringProvider) ID() string                            { return "erroring" }
-func (e *erroringProvider) Probe(_ context.Context) error          { return nil }
+func (e *erroringProvider) ID() string                    { return "erroring" }
+func (e *erroringProvider) Probe(_ context.Context) error { return nil }
 func (e *erroringProvider) ListModels(_ context.Context) ([]string, error) {
 	return []string{"fake-model"}, nil
 }

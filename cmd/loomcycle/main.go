@@ -28,8 +28,10 @@ import (
 	"time"
 
 	lchttp "github.com/denn-gubsky/loomcycle/internal/api/http"
+	"github.com/denn-gubsky/loomcycle/internal/cli"
 	"github.com/denn-gubsky/loomcycle/internal/concurrency"
 	"github.com/denn-gubsky/loomcycle/internal/config"
+	"github.com/denn-gubsky/loomcycle/internal/heartbeat"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/providers/anthropic"
 	"github.com/denn-gubsky/loomcycle/internal/providers/deepseek"
@@ -37,8 +39,6 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/providers/openai"
 	"github.com/denn-gubsky/loomcycle/internal/resolve"
 	"github.com/denn-gubsky/loomcycle/internal/skills"
-	"github.com/denn-gubsky/loomcycle/internal/cli"
-	"github.com/denn-gubsky/loomcycle/internal/heartbeat"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	storepostgres "github.com/denn-gubsky/loomcycle/internal/store/postgres"
 	storesqlite "github.com/denn-gubsky/loomcycle/internal/store/sqlite"
@@ -568,10 +568,10 @@ func buildResolver(cfg *config.Config, pr *providerResolver) *resolve.Resolver {
 // context.Background for startup) bounds the total wait.
 func runResolveProbeOnce(ctx context.Context, r *resolve.Resolver, pr *providerResolver, cfg *config.Config) {
 	type probeJob struct {
-		id        string                 // provider id
-		excluded  bool                   // operator opted out
-		exclReason string                // why excluded; surfaced in LastError
-		provider  providers.Provider     // nil when excluded
+		id         string             // provider id
+		excluded   bool               // operator opted out
+		exclReason string             // why excluded; surfaced in LastError
+		provider   providers.Provider // nil when excluded
 	}
 
 	jobs := []probeJob{
