@@ -328,11 +328,15 @@ These hold across v1.0 work; deviation requires a written justification:
 - **No vendor SDKs in the loop.** Every provider driver is pure HTTP. No bundled binaries; no subprocess auth inheritance.
 - **Default-deny stays default-deny.** New tools start invisible to existing agents until they opt in.
 
-## How to contribute to v1.0
+## Contribution policy
+
+> **External contributions are closed until v1.x ships.** PRs against this repository during v0.8 / v0.9 / v1.0 development will be acknowledged and closed (not merged) without prejudice — see [`CONTRIBUTING.md`](../CONTRIBUTING.md) for the full policy, the rationale, and what's still welcome (bug reports, security disclosures, downstream consumers, forks).
+
+The chain below applies to **internal contributors** (the maintainer + Claude Code working with the maintainer's confirmation). It captures the discipline for the v0.8 / v0.9 / v1.0 work itself.
 
 Pick an item, write an RFC (one markdown file under `doc-internal/rfcs/<feature>.md`), open a feature branch (`feature-<name>`), follow the chain documented in `CLAUDE.md` (architect → plan → code → tests → review → merge). The RFC is the design step — implementation follows once the RFC is reviewed.
 
-For non-trivial items (Memory tool, Channel tool, Postgres adapter), the RFC should cover:
+For non-trivial items (Memory tool, Channel tool, LoomHelp tool, LoomCycle MCP), the RFC should cover:
 
 1. The user-visible surface (API shape, semantics, error cases).
 2. The storage / wire shape (schema, message formats).
