@@ -155,12 +155,24 @@ func TestStreamTextCoalescing_FlushesOnNewline(t *testing.T) {
 }
 
 func TestStreamTextCoalescing_FlushesBeforeToolCall(t *testing.T) {
-	// Buffered text must flush before the accumulated tool_call event
-	// at end-of-stream, preserving the contract "text precedes
-	// tool_call" that downstream consumers rely on.
+	// Two text deltas straddling a tool_call delta. On the pre-fix
+	// driver each text delta emitted its own EventText the moment it
+	// parsed (mid-stream emission), giving 2 EventText events. On the
+	// post-fix driver, both deltas are below the 64-byte threshold and
+	// contain no newline, so they accumulate in textBuf; the post-loop
+	// flushText() before tool_call emission produces a single
+	// EventText carrying the concatenated body.
+	//
+	// The discriminator is the EventText count, NOT the ordering —
+	// ordering is satisfied either way because tool_calls only emit
+	// at end-of-stream. The count proves the coalescer engaged. A
+	// regression that drops the post-loop flushText() (or one that
+	// reverts mid-stream emission for short deltas) would push the
+	// count back to 2 and trip this test.
 	frames := []string{
-		`data: {"choices":[{"index":0,"delta":{"content":"calling tool"}}]}` + "\n\n",
+		`data: {"choices":[{"index":0,"delta":{"content":"calling "}}]}` + "\n\n",
 		`data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"foo","arguments":"{}"}}]}}]}` + "\n\n",
+		`data: {"choices":[{"index":0,"delta":{"content":"tool"}}]}` + "\n\n",
 		`data: {"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}` + "\n\n",
 		"data: [DONE]\n\n",
 	}
@@ -178,16 +190,21 @@ func TestStreamTextCoalescing_FlushesBeforeToolCall(t *testing.T) {
 	}
 	var seen []providers.EventType
 	var text strings.Builder
+	textCount := 0
 	for ev := range ch {
 		seen = append(seen, ev.Type)
 		if ev.Type == providers.EventText {
+			textCount++
 			text.WriteString(ev.Text)
 		}
 	}
 	if text.String() != "calling tool" {
-		t.Errorf("text = %q, want %q", text.String(), "calling tool")
+		t.Errorf("text round-trip = %q, want %q (a delta was lost)", text.String(), "calling tool")
 	}
-	// Find positions: text must come before tool_call.
+	if textCount != 1 {
+		t.Errorf("EventText count = %d, want 1 (coalescer did not engage; mid-stream emit slipped through)", textCount)
+	}
+	// Sanity check on ordering — text must precede tool_call.
 	textIdx, toolIdx := -1, -1
 	for i, et := range seen {
 		if et == providers.EventText && textIdx < 0 {
@@ -197,11 +214,8 @@ func TestStreamTextCoalescing_FlushesBeforeToolCall(t *testing.T) {
 			toolIdx = i
 		}
 	}
-	if textIdx < 0 || toolIdx < 0 {
-		t.Fatalf("missing event types: text=%d tool=%d (seen=%v)", textIdx, toolIdx, seen)
-	}
-	if textIdx >= toolIdx {
-		t.Errorf("event order = %v: text@%d before tool@%d expected", seen, textIdx, toolIdx)
+	if textIdx < 0 || toolIdx < 0 || textIdx >= toolIdx {
+		t.Errorf("event order = %v: text must precede tool_call", seen)
 	}
 }
 

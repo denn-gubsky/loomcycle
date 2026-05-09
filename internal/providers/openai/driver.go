@@ -505,6 +505,11 @@ func streamEvents(ctx context.Context, body io.ReadCloser, out chan<- providers.
 		}
 	}
 	if err := scanner.Err(); err != nil {
+		// Flush any buffered text before the error event so bytes the
+		// wire delivered aren't silently dropped just because the read
+		// failed mid-stream. Best-effort: a send failure here is fine
+		// (the error event still surfaces the failure to the caller).
+		_ = flushText()
 		send(providers.Event{Type: providers.EventError, Error: "stream read: " + err.Error()})
 		return
 	}
