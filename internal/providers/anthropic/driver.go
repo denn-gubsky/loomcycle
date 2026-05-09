@@ -395,6 +395,7 @@ func processFrame(
 			Delta struct {
 				Type        string `json:"type"`
 				Text        string `json:"text"`
+				Thinking    string `json:"thinking"`
 				PartialJSON string `json:"partial_json"`
 			} `json:"delta"`
 		}
@@ -404,6 +405,16 @@ func processFrame(
 		switch ev.Delta.Type {
 		case "text_delta":
 			if !send(providers.Event{Type: providers.EventText, Text: ev.Delta.Text}) {
+				return false
+			}
+		case "thinking_delta":
+			// Anthropic extended-thinking chunks. Surfaced live as
+			// EventThinking so consumers can render the trace
+			// independently of EventText. The signature_delta type
+			// (carrying the cryptographic seal of the thinking block)
+			// is intentionally not surfaced — it's metadata for the
+			// next-turn echo, not user-visible content.
+			if !send(providers.Event{Type: providers.EventThinking, Text: ev.Delta.Thinking}) {
 				return false
 			}
 		case "input_json_delta":

@@ -174,6 +174,28 @@ const (
 	// to end users. The retry itself is invisible to the agent loop —
 	// EventRetry is purely informational.
 	EventRetry EventType = "retry"
+	// EventThinking carries one chunk of the model's reasoning trace,
+	// emitted live as the underlying provider streams it. Distinct from
+	// EventText so consumers can render or hide reasoning independently
+	// of the model's user-facing answer.
+	//
+	// Sources per provider:
+	//   - Anthropic: thinking_delta deltas from extended-thinking blocks
+	//   - OpenAI / DeepSeek: delta.reasoning_content fragments
+	//     (DeepSeek V4 Pro / deepseek-reasoner / o-series / GPT-5)
+	//   - Ollama: message.thinking field on each chunk
+	//     (qwen3, deepseek-r1, hermes3, etc. — drivers that surface
+	//     reasoning out-of-band from the user-visible content)
+	//
+	// EventThinking is purely informational on the loop side — the loop
+	// does not echo it back to the next iteration. The
+	// echo-the-trace-back contract (DeepSeek's "reasoning_content must
+	// be passed back" requirement) is still served by EventDone.Reasoning,
+	// which carries the full concatenated trace alongside the streaming
+	// chunks. Adapters that only want the final trace can ignore
+	// EventThinking and read EventDone.Reasoning; adapters that want
+	// live progress should consume both.
+	EventThinking EventType = "thinking"
 )
 
 // Event is one streamed datum from a provider call (or, after the loop layer

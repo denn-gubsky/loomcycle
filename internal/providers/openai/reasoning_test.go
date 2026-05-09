@@ -3,6 +3,7 @@ package openai
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/denn-gubsky/loomcycle/internal/providers"
@@ -20,6 +21,58 @@ import (
 // `reasoning_content` field on the next request body.
 // No-thinking: vanilla streams without reasoning_content stay clean
 // (the field is omitted from EventDone and from the wire body).
+
+// TestReasoning_EmitsLiveEventThinking pins the v0.7.x EventThinking
+// contract for the OpenAI driver: every reasoning_content delta on
+// the wire must surface as an EventThinking event in addition to
+// being accumulated for EventDone.Reasoning. Pre-fix, the driver
+// only buffered — adapters could see the final consolidated trace
+// but had no way to render it as it streamed.
+func TestReasoning_EmitsLiveEventThinking(t *testing.T) {
+	frames := []string{
+		`data: {"model":"deepseek-v4-pro","choices":[{"index":0,"delta":{"reasoning_content":"Let me think... "}}]}` + "\n\n",
+		`data: {"model":"deepseek-v4-pro","choices":[{"index":0,"delta":{"reasoning_content":"the answer is 42."}}]}` + "\n\n",
+		`data: {"model":"deepseek-v4-pro","choices":[{"index":0,"delta":{"content":"42"}}]}` + "\n\n",
+		`data: {"model":"deepseek-v4-pro","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}` + "\n\n",
+		"data: [DONE]\n\n",
+	}
+	srv := fakeStream(t, frames)
+	defer srv.Close()
+	d := New("test-key", srv.URL, nil)
+	ch, _ := d.Call(context.Background(), providers.Request{
+		Model:    "deepseek-v4-pro",
+		Messages: []providers.Message{{Role: "user", Content: []providers.ContentBlock{{Type: "text", Text: "hi"}}}},
+	})
+
+	var thinking strings.Builder
+	thinkingEvents := 0
+	var done providers.Event
+	for ev := range ch {
+		if ev.Type == providers.EventThinking {
+			thinkingEvents++
+			thinking.WriteString(ev.Text)
+		}
+		if ev.Type == providers.EventDone {
+			done = ev
+		}
+	}
+	// Two reasoning deltas → two EventThinking events (no coalescing
+	// for thinking; the per-delta cadence IS the contract).
+	if thinkingEvents != 2 {
+		t.Errorf("EventThinking count = %d, want 2", thinkingEvents)
+	}
+	want := "Let me think... the answer is 42."
+	if thinking.String() != want {
+		t.Errorf("EventThinking concat = %q, want %q", thinking.String(), want)
+	}
+	// EventDone.Reasoning still carries the consolidated trace —
+	// EventThinking is additive, not a replacement, because the
+	// loop's next-turn echo (DeepSeek roundtrip) reads from
+	// EventDone.Reasoning.
+	if done.Reasoning != want {
+		t.Errorf("EventDone.Reasoning = %q, want %q (live emit must NOT break the buffered roundtrip)", done.Reasoning, want)
+	}
+}
 
 func TestReasoning_CaptureAccumulatesAcrossDeltas(t *testing.T) {
 	// Mimics DeepSeek V4 Pro: reasoning_content streams in chunks

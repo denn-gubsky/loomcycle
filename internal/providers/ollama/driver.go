@@ -63,14 +63,13 @@ func (d *Driver) Capabilities() providers.Capabilities {
 		MaxContextTokens:  0, // varies wildly by model; 0 means "ask the model"
 		SupportsThinking:  false,
 		// Ollama has no operator-controlled thinking-budget knob today.
-		// Reasoning models (qwen3, deepseek-r1) emit <think>...</think>
-		// content automatically based on model defaults; the loomcycle
-		// loop currently drops that into message.thinking which the
-		// driver doesn't surface. Tracked as a separate v0.7+
-		// EventThinking follow-up. SupportsEffort=false signals to
-		// the loop that an Ollama-routed agent's effort hint will be
-		// dropped, so the loop logs once per Run for operator
-		// visibility.
+		// Reasoning models (qwen3, deepseek-r1, hermes3) decide whether
+		// to think based on their own defaults; the message.thinking
+		// field is now surfaced as EventThinking so adapters can render
+		// or hide the trace, but loomcycle has no input-side hint that
+		// would dial it up or down. SupportsEffort=false signals to the
+		// loop that an Ollama-routed agent's effort hint is dropped, so
+		// the loop logs once per Run for operator visibility.
 		SupportsEffort: false,
 	}
 }
@@ -280,8 +279,14 @@ type chunk struct {
 }
 
 type message struct {
-	Role      string          `json:"role"`
-	Content   string          `json:"content"`
+	Role    string `json:"role"`
+	Content string `json:"content"`
+	// Thinking carries the model's reasoning trace for thinking-mode
+	// models (qwen3, deepseek-r1, hermes3, etc.). Surfaced live as
+	// EventThinking — distinct from Content so consumers can render or
+	// hide reasoning independently. Pre-EventThinking, this field was
+	// silently dropped because the driver only consumed Content.
+	Thinking  string          `json:"thinking"`
 	ToolCalls []chunkToolCall `json:"tool_calls"`
 }
 
@@ -342,6 +347,11 @@ func streamEvents(ctx context.Context, body io.ReadCloser, out chan<- providers.
 			model = c.Model
 		}
 
+		if c.Message.Thinking != "" {
+			if !send(providers.Event{Type: providers.EventThinking, Text: c.Message.Thinking}) {
+				return
+			}
+		}
 		if c.Message.Content != "" {
 			textBuf.WriteString(c.Message.Content)
 			if !send(providers.Event{Type: providers.EventText, Text: c.Message.Content}) {
