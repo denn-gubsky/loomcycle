@@ -35,6 +35,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/providers/anthropic"
 	"github.com/denn-gubsky/loomcycle/internal/providers/deepseek"
+	"github.com/denn-gubsky/loomcycle/internal/providers/gemini"
 	"github.com/denn-gubsky/loomcycle/internal/providers/ollama"
 	"github.com/denn-gubsky/loomcycle/internal/providers/openai"
 	"github.com/denn-gubsky/loomcycle/internal/resolve"
@@ -482,6 +483,7 @@ type providerResolver struct {
 	openai    providers.Provider
 	ollama    providers.Provider
 	deepseek  providers.Provider
+	gemini    providers.Provider
 }
 
 func newProviderResolver(cfg *config.Config) *providerResolver {
@@ -503,6 +505,12 @@ func newProviderResolver(cfg *config.Config) *providerResolver {
 	// mirrors. Same on/off semantics as Anthropic + OpenAI.
 	if cfg.Env.DeepSeekAPIKey != "" {
 		pr.deepseek = deepseek.New(cfg.Env.DeepSeekAPIKey, cfg.Env.DeepSeekBaseURL, nil)
+	}
+	// Gemini opts in via GEMINI_API_KEY. Optional GEMINI_BASE_URL
+	// points at a Vertex AI Gemini endpoint instead of the public
+	// generativelanguage.googleapis.com surface.
+	if cfg.Env.GeminiAPIKey != "" {
+		pr.gemini = gemini.New(cfg.Env.GeminiAPIKey, cfg.Env.GeminiBaseURL, nil)
 	}
 	return pr
 }
@@ -529,6 +537,11 @@ func (p *providerResolver) Get(id string) (providers.Provider, error) {
 			return nil, fmt.Errorf("deepseek provider not configured (set DEEPSEEK_API_KEY)")
 		}
 		return p.deepseek, nil
+	case "gemini":
+		if p.gemini == nil {
+			return nil, fmt.Errorf("gemini provider not configured (set GEMINI_API_KEY)")
+		}
+		return p.gemini, nil
 	default:
 		return nil, fmt.Errorf("unknown provider %q", id)
 	}
@@ -581,6 +594,8 @@ func runResolveProbeOnce(ctx context.Context, r *resolve.Resolver, pr *providerR
 			exclReason: "OPENAI_API_KEY not set"},
 		{id: "deepseek", excluded: cfg.Env.DeepSeekAPIKey == "",
 			exclReason: "DEEPSEEK_API_KEY not set"},
+		{id: "gemini", excluded: cfg.Env.GeminiAPIKey == "",
+			exclReason: "GEMINI_API_KEY not set"},
 		{id: "ollama", excluded: cfg.Env.OllamaBaseURL == "" || cfg.Env.OllamaBaseURL == "disabled",
 			exclReason: "OLLAMA_BASE_URL not configured"},
 	}

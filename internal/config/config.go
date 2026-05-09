@@ -258,9 +258,21 @@ type Env struct {
 	// compatible mirrors (e.g. an internal vLLM serving a DeepSeek
 	// model). Empty = use the public endpoint.
 	DeepSeekBaseURL string
-	ListenAddr      string
-	AuthToken       string
-	DataDir         string
+	// GeminiAPIKey enables the `provider: gemini` driver. Empty =
+	// provider not registered. Set to a Google AI Studio key
+	// (https://aistudio.google.com/apikey) or a Vertex AI service
+	// account credential exchanged for a `gcloud auth print-access-token`
+	// when GeminiBaseURL points at a Vertex AI gateway.
+	GeminiAPIKey string
+	// GeminiBaseURL overrides the public generativelanguage.googleapis.com
+	// endpoint. Set to a Vertex AI Gemini endpoint
+	// (https://{region}-aiplatform.googleapis.com/v1beta) for
+	// production deployments that route through GCP project quotas
+	// rather than the public AI Studio API. Empty = public endpoint.
+	GeminiBaseURL string
+	ListenAddr    string
+	AuthToken     string
+	DataDir       string
 	// ReadRoot is the sandbox root for the built-in Read tool. Empty by
 	// default — the tool is registered but rejects every call until set.
 	ReadRoot string
@@ -427,6 +439,8 @@ func Load(path string) (*Config, error) {
 		OllamaBaseURL:            getenvDefault("OLLAMA_BASE_URL", "http://localhost:11434"),
 		DeepSeekAPIKey:           os.Getenv("DEEPSEEK_API_KEY"),
 		DeepSeekBaseURL:          os.Getenv("DEEPSEEK_BASE_URL"),
+		GeminiAPIKey:             os.Getenv("GEMINI_API_KEY"),
+		GeminiBaseURL:            os.Getenv("GEMINI_BASE_URL"),
 		ListenAddr:               getenvDefault("LOOMCYCLE_LISTEN_ADDR", "127.0.0.1:8787"),
 		AuthToken:                os.Getenv("LOOMCYCLE_AUTH_TOKEN"),
 		DataDir:                  getenvDefault("LOOMCYCLE_DATA_DIR", "./data"),

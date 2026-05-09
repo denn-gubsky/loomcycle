@@ -287,26 +287,29 @@ References: `internal/tools/localapi/`, `cmd/loomcycle/main.go` (registration), 
 
 ## Provider × tool matrix
 
-What works with what (DeepSeek added in v0.6.0; behaviour identical to OpenAI for tool dispatch since it shares the driver):
+What works with what (Gemini added in v0.7.2 alongside the existing four backends):
 
-|              | Anthropic | OpenAI | DeepSeek | Ollama (tool-tuned) |
-|---|:---:|:---:|:---:|:---:|
-| `Read` / `Write` / `Edit`  | ✅ | ✅ | ✅ | ✅ |
-| `HTTP` / `WebFetch`        | ✅ | ✅ | ✅ | ✅ |
-| `WebSearch`                | ✅ | ✅ | ✅ | ✅ |
-| `Bash`                     | ✅ | ✅ | ✅ | ✅ |
-| `Agent` (sub-agents)       | ✅ | ✅ | ✅ | ✅ |
-| `Skill` (Approach A)       | ✅ | ✅ | ✅ | ✅ |
-| `LocalAPI` (OpenAPI gateway) | ⏳ | ⏳ | ⏳ | ⏳ | (scaffolded — for future OpenAPI-without-MCP-server consumers) |
-| MCP tools (stdio + HTTP)   | ✅ | ✅ | ✅ | ✅ |
-| Native cache_control       | ✅ | ❌ | ❌ | ❌ |
-| Parallel tool calls        | ✅ | ✅ | ✅ | depends on model |
-| Streaming text + tool_use  | ✅ | ✅ | ✅ | ✅ |
-| `Usage.Model` populated    | ✅ | ✅ (v0.6.0+) | ✅ | ✅ |
+|              | Anthropic | OpenAI | DeepSeek | Gemini | Ollama (tool-tuned) |
+|---|:---:|:---:|:---:|:---:|:---:|
+| `Read` / `Write` / `Edit`  | ✅ | ✅ | ✅ | ✅ | ✅ |
+| `HTTP` / `WebFetch`        | ✅ | ✅ | ✅ | ✅ | ✅ |
+| `WebSearch`                | ✅ | ✅ | ✅ | ✅ | ✅ |
+| `Bash`                     | ✅ | ✅ | ✅ | ✅ | ✅ |
+| `Agent` (sub-agents)       | ✅ | ✅ | ✅ | ✅ | ✅ |
+| `Skill` (Approach A)       | ✅ | ✅ | ✅ | ✅ | ✅ |
+| `LocalAPI` (OpenAPI gateway) | ⏳ | ⏳ | ⏳ | ⏳ | ⏳ | (scaffolded — for future OpenAPI-without-MCP-server consumers) |
+| MCP tools (stdio + HTTP)   | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Native cache_control       | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Parallel tool calls        | ✅ | ✅ | ✅ | ✅ | depends on model |
+| Streaming text + tool_use  | ✅ | ✅ | ✅ | ✅ | ✅ |
+| `Usage.Model` populated    | ✅ | ✅ (v0.6.0+) | ✅ | ✅ | ✅ |
+| Effort hint translation    | ✅ thinking.budget_tokens | ✅ reasoning_effort | ✅ (via OpenAI wrapper) | ✅ thinkingConfig.thinkingBudget | ❌ |
 
 Ollama caveat: tool calling only works on **tool-tuned** models (qwen3+, Llama 3.1 instruct variants, Qwen2.5-Instruct, Mistral Nemo Instruct). Non-tool-tuned models will silently drop the `tools` field instead of calling them — Ollama's behaviour, not the driver's. Tool_use IDs are synthesized by the loop because Ollama doesn't issue them.
 
-DeepSeek caveat: the v0.6.0 driver wraps the OpenAI driver, so it inherits OpenAI's behaviour exactly. The `deepseek-reasoner` model emits `reasoning_content` separately from `content`; the driver surfaces it as `EventDone.Reasoning` (since v0.7.0) and now also as live `EventThinking` events (since v0.7.x).
+DeepSeek caveat: the v0.6.0 driver wraps the OpenAI driver, so it inherits OpenAI's behaviour exactly. The `deepseek-reasoner` model emits `reasoning_content` separately from `content`; the driver surfaces it as `EventDone.Reasoning` (since v0.7.0) and now also as live `EventThinking` events (since v0.7.1).
+
+Gemini caveat: enabled by `GEMINI_API_KEY` env (Google AI Studio key). Optional `GEMINI_BASE_URL` overrides for Vertex AI deployments. Gemini reads the model name from the URL path (not the request body), uses `x-goog-api-key` header auth, and emits `functionCall` parts instead of OpenAI-style `tool_calls`. The driver translates loomcycle roles (`user` / `assistant`) to Gemini's (`user` / `model`). Tool_use IDs are synthesized by the loop because Gemini doesn't issue them. Effort hint translates to `generationConfig.thinkingConfig.thinkingBudget` on gemini-2.5-flash / gemini-2.5-pro: `low` → 0 (disable), `medium` → 2048, `high` → 8192 (clamped to `max_tokens - 1024` when budget would equal/exceed `max_tokens`). Thinking *output* is opaque (Gemini emits a `thoughtSignature` blob, not text) — no `EventThinking` plumbing yet; will revisit when Gemini opens up a text-trace surface.
 
 ## Tool-use hooks (v0.7.x+)
 
