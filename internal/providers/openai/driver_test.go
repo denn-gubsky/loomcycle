@@ -35,6 +35,184 @@ func fakeStream(t *testing.T, frames []string) *httptest.Server {
 	}))
 }
 
+// TestStreamTextCoalescing pins the per-delta coalescing behaviour for
+// OpenAI-compatible streams. DeepSeek (and OpenAI's gpt-5.x family)
+// often stream one token per delta; without coalescing every token
+// becomes one EventText, which line-prefix-logging consumers render as
+// one word per line. Regression vehicle for a 2026-05-09 user report
+// from a jobs-search-agent run on `deepseek-v4-pro`.
+//
+// Contract:
+//
+//   1. Many small (sub-threshold) text deltas are batched into fewer
+//      EventText emissions. Threshold is 64 bytes today.
+//   2. A delta containing '\n' flushes immediately so formatting
+//      boundaries survive coalescing.
+//   3. End-of-stream flushes any residual buffer (no dropped text).
+//   4. The concatenation of all EventText.Text values is byte-identical
+//      to the concatenation of the wire deltas — coalescing is purely
+//      a packing change, never a transformation.
+func TestStreamTextCoalescing_BatchesPerTokenDeltas(t *testing.T) {
+	// 32 single-token deltas of 3-4 bytes each (~96-128 wire bytes).
+	// Pre-fix this produces 32 EventText events; post-fix it produces
+	// at most a handful (each batch ≥ 64 bytes).
+	tokens := []string{
+		"The", " quick", " brown", " fox", " jumps",
+		" over", " the", " lazy", " dog", " near",
+		" the", " river", " where", " moss", " grows",
+		" thick", " on", " smooth", " stones", " in",
+		" the", " shallows", " and", " trout", " dart",
+		" between", " sunlight", " and", " shadow", " through",
+		" the", " current",
+	}
+	var frames []string
+	for _, tok := range tokens {
+		frames = append(frames, `data: {"choices":[{"index":0,"delta":{"content":`+jsonString(tok)+`}}]}`+"\n\n")
+	}
+	frames = append(frames,
+		`data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`+"\n\n",
+		"data: [DONE]\n\n",
+	)
+	srv := fakeStream(t, frames)
+	defer srv.Close()
+
+	d := New("test-key", srv.URL, nil)
+	ch, err := d.Call(context.Background(), providers.Request{
+		Model:    "gpt-5.4-mini",
+		Messages: []providers.Message{{Role: "user", Content: []providers.ContentBlock{{Type: "text", Text: "x"}}}},
+	})
+	if err != nil {
+		t.Fatalf("Call: %v", err)
+	}
+	var got strings.Builder
+	var textEvents int
+	for ev := range ch {
+		if ev.Type == providers.EventText {
+			textEvents++
+			got.WriteString(ev.Text)
+		}
+	}
+
+	// Concatenation must round-trip byte-identically.
+	want := strings.Join(tokens, "")
+	if got.String() != want {
+		t.Errorf("text round-trip = %q, want %q", got.String(), want)
+	}
+	// Coalescing target: ≤ 32 / 8 = 4× fewer events than the per-delta
+	// emission would produce. Loose bound to leave room for the natural
+	// 64-byte threshold and for the trailing partial-buffer flush.
+	if textEvents > len(tokens)/4 {
+		t.Errorf("emitted %d EventText, want fewer (~%d) — coalescing did not engage",
+			textEvents, len(tokens)/4)
+	}
+	if textEvents == 0 {
+		t.Fatal("no EventText emitted; final flush dropped the residual buffer")
+	}
+}
+
+func TestStreamTextCoalescing_FlushesOnNewline(t *testing.T) {
+	// A delta containing '\n' must flush the buffer immediately so a
+	// downstream consumer that renders line-by-line sees the newline at
+	// the same chunk boundary it arrived on.
+	frames := []string{
+		`data: {"choices":[{"index":0,"delta":{"content":"line one"}}]}` + "\n\n",
+		`data: {"choices":[{"index":0,"delta":{"content":"\n"}}]}` + "\n\n",
+		`data: {"choices":[{"index":0,"delta":{"content":"line two"}}]}` + "\n\n",
+		`data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}` + "\n\n",
+		"data: [DONE]\n\n",
+	}
+	srv := fakeStream(t, frames)
+	defer srv.Close()
+
+	d := New("test-key", srv.URL, nil)
+	ch, err := d.Call(context.Background(), providers.Request{
+		Model:    "gpt-5.4-mini",
+		Messages: []providers.Message{{Role: "user", Content: []providers.ContentBlock{{Type: "text", Text: "x"}}}},
+	})
+	if err != nil {
+		t.Fatalf("Call: %v", err)
+	}
+	var events []string
+	for ev := range ch {
+		if ev.Type == providers.EventText {
+			events = append(events, ev.Text)
+		}
+	}
+	if len(events) < 2 {
+		t.Fatalf("expected at least two EventText emissions split on newline, got %d: %v",
+			len(events), events)
+	}
+	// First emission must end at the newline boundary (the '\n'
+	// either terminates the first event or is its own event — both
+	// satisfy the contract that the newline is a flush point).
+	first := events[0]
+	if !strings.HasSuffix(first, "\n") && events[1] != "\n" {
+		t.Errorf("first emission %q (or events[1] %q) did not flush at newline", first, events[1])
+	}
+	if got := strings.Join(events, ""); got != "line one\nline two" {
+		t.Errorf("text round-trip = %q, want %q", got, "line one\nline two")
+	}
+}
+
+func TestStreamTextCoalescing_FlushesBeforeToolCall(t *testing.T) {
+	// Buffered text must flush before the accumulated tool_call event
+	// at end-of-stream, preserving the contract "text precedes
+	// tool_call" that downstream consumers rely on.
+	frames := []string{
+		`data: {"choices":[{"index":0,"delta":{"content":"calling tool"}}]}` + "\n\n",
+		`data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"foo","arguments":"{}"}}]}}]}` + "\n\n",
+		`data: {"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}` + "\n\n",
+		"data: [DONE]\n\n",
+	}
+	srv := fakeStream(t, frames)
+	defer srv.Close()
+
+	d := New("test-key", srv.URL, nil)
+	ch, err := d.Call(context.Background(), providers.Request{
+		Model:    "gpt-5.4-mini",
+		Tools:    []providers.ToolSpec{{Name: "foo"}},
+		Messages: []providers.Message{{Role: "user", Content: []providers.ContentBlock{{Type: "text", Text: "x"}}}},
+	})
+	if err != nil {
+		t.Fatalf("Call: %v", err)
+	}
+	var seen []providers.EventType
+	var text strings.Builder
+	for ev := range ch {
+		seen = append(seen, ev.Type)
+		if ev.Type == providers.EventText {
+			text.WriteString(ev.Text)
+		}
+	}
+	if text.String() != "calling tool" {
+		t.Errorf("text = %q, want %q", text.String(), "calling tool")
+	}
+	// Find positions: text must come before tool_call.
+	textIdx, toolIdx := -1, -1
+	for i, et := range seen {
+		if et == providers.EventText && textIdx < 0 {
+			textIdx = i
+		}
+		if et == providers.EventToolCall && toolIdx < 0 {
+			toolIdx = i
+		}
+	}
+	if textIdx < 0 || toolIdx < 0 {
+		t.Fatalf("missing event types: text=%d tool=%d (seen=%v)", textIdx, toolIdx, seen)
+	}
+	if textIdx >= toolIdx {
+		t.Errorf("event order = %v: text@%d before tool@%d expected", seen, textIdx, toolIdx)
+	}
+}
+
+// jsonString quotes s for use as a JSON string literal in the test
+// frame payloads. Avoids pulling encoding/json import drift into
+// frame construction loops.
+func jsonString(s string) string {
+	b, _ := json.Marshal(s)
+	return string(b)
+}
+
 func TestStreamTextThenStop(t *testing.T) {
 	frames := []string{
 		`data: {"choices":[{"index":0,"delta":{"content":"hello "}}]}` + "\n\n",
