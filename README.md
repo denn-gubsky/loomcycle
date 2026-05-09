@@ -23,21 +23,23 @@ It exists to replace bundled-binary agent SDKs that cold-start in 20–30 s, lea
 ## Why this approach
 
 - **Pure HTTP loop.** No vendor binary spawned per call. The runtime is one Go process, ~16 MB compiled, single static binary. Cold-start is the kernel's exec time.
-- **Provider-agnostic.** Four drivers — Anthropic Messages, OpenAI Chat Completions, DeepSeek (OpenAI-compatible), Ollama `/api/chat` — all normalize to one `Event` channel the loop drains. Capability flags expose provider-specific extras (Anthropic `cache_control`, OpenAI / DeepSeek parallel tool calls).
-- **Per-agent provider routing.** YAML `provider:` field per agent lets a consumer mix backends by data sensitivity: Anthropic for user-sensitive paths, DeepSeek for high-volume public-data work, Ollama (local llama) for offline / cost-floor scenarios. Same wire surface, different cost / privacy posture per agent.
+- **Provider-agnostic.** Five drivers — Anthropic Messages, OpenAI Chat Completions, DeepSeek (OpenAI-compatible), Google Gemini (`generateContent`), Ollama `/api/chat` — all normalize to one `Event` channel the loop drains. Capability flags expose provider-specific extras (Anthropic `cache_control`, Gemini's 2 M context, OpenAI / DeepSeek / Gemini parallel tool calls).
+- **Per-agent provider routing.** YAML `provider:` field per agent lets a consumer mix backends by data sensitivity: Anthropic for user-sensitive paths, DeepSeek / Gemini for high-volume public-data work, Ollama (local llama) for offline / cost-floor scenarios. Same wire surface, different cost / privacy posture per agent.
 - **Default-deny tool policy.** Every built-in is disabled until env-configured. Every agent gets zero tools until `allowed_tools` is set in YAML. Two layers must say "yes" before a tool reaches the model.
 - **Native cache placement.** When the provider supports it (Anthropic), system blocks marked `cacheable: true` carry `cache_control` on the wire — you keep cache reads on the stable preamble even when the rest of the conversation churns.
-- **Two wire surfaces.** HTTP+SSE (default) and gRPC (opt-in via `LOOMCYCLE_GRPC_ADDR`). Both share the same store, cancel registry, runner, and concurrency semaphore — picking one is a wire-format decision, not a feature decision. A cancel issued via gRPC reaches a run started via HTTP and vice versa.
-- **Observable everywhere.** Every text chunk, tool call, tool result, usage update, and retry is an SSE / gRPC event. Nothing happens silently.
+- **Two wire surfaces + a Web UI.** HTTP+SSE (default), gRPC (opt-in via `LOOMCYCLE_GRPC_ADDR`), and an embedded read-only React SPA at `/ui` for monitoring agent runs (parent → children tree, per-agent transcript log, cancel button). All share the same store, cancel registry, runner, and concurrency semaphore — a cancel issued via the UI reaches a run started via HTTP and vice versa.
+- **Observable everywhere.** Every text chunk, tool call, tool result, usage update, retry, and reasoning fragment is an SSE / gRPC event. Nothing happens silently.
 
 ## Quick start
 
 ```bash
-# 1. Build
-go build -o bin/loomcycle ./cmd/loomcycle
+# 1. Build (UI + binary in one shot)
+make build-all
+# Or Go-only (skips embedding the UI; /ui returns 503):
+#   make build
 
 # 2. Configure
-cp .env.example .env.local       # set ANTHROPIC_API_KEY etc.
+cp .env.example .env.local       # set ANTHROPIC_API_KEY / GEMINI_API_KEY / etc.
 cp loomcycle.example.yaml ~/.config/loomcycle/loomcycle.yaml
 
 # 3. Run
@@ -55,7 +57,50 @@ curl -N http://127.0.0.1:8787/v1/runs \
     "agent": "default",
     "segments": [{"role":"user","content":[{"type":"trusted-text","text":"Hello"}]}]
   }'
+
+# 6. Open the Web UI (one-time per browser session)
+open "http://127.0.0.1:8787/ui?token=$LOOMCYCLE_AUTH_TOKEN"
+# Sets a HttpOnly session cookie + redirects to /ui.
+# Pick a user_id from the dropdown to see runs.
 ```
+
+## What's in v0.7.4
+
+| Surface             | Status |
+|---------------------|--------|
+| **Web UI agent name + content fixes** | ✅ Run list now shows the YAML-declared agent name (`qa-agent`, `company-researcher`) instead of just the UUID. Agent detail header reads from the corrected wire shape (model + tokens + duration). Transcript event panels now render actual content (text, tool calls, tool results, errors) — collapsed-by-default with a one-line summary, click to expand for full text + tool params + pretty-printed JSON. (PRs #41, #42) |
+| **User picker dropdown** | ✅ New `GET /v1/_users` admin endpoint surfaces distinct user_ids that have runs in the store, with running / total counts + last-active timestamp. The Web UI top bar swaps the freeform user_id input for a dropdown — operators no longer need to know the UUID up front. Manual override (✎ button) preserved for picking a user who has no runs yet. (PR #40) |
+| **Gemini config validation hotfix** | ✅ v0.7.2 wired the Gemini driver into the resolver but missed adding `gemini` to the config validator's allowlist; operators with `provider: gemini` rows in their yaml saw startup fail. Fixed. (PR #39) |
+
+## What's in v0.7.3
+
+| Surface             | Status |
+|---------------------|--------|
+| **Embedded read-only Web UI** | ✅ React 19 + Vite 7 + TypeScript SPA at `/ui`. Two pages: run list (parent → children tree, status filter, auto-refresh every 3 s) and per-agent detail (event log: text / thinking / tool_call / tool_result / error / retry / done; auto-refresh every 1.5 s for active runs; cancel button). No new wire endpoints — the SPA reuses the existing `/v1/users/{user_id}/agents`, `/v1/agents/{agent_id}`, `/v1/sessions/{id}/transcript`, `/v1/agents/{agent_id}/cancel` routes. |
+| **Bearer-in-cookie auth** | ✅ Operator visits `/ui?token=<bearer>` once; server sets a `loomcycle_session` HttpOnly cookie and 302s back. Subsequent /v1 calls authenticate via the cookie (same-origin fetch). The existing `Authorization: Bearer …` header path keeps working unchanged for adapters / curl / SDKs — bearer wins on precedence so a stale cookie can't mask a deliberate request. |
+| **Build pipeline** | ✅ `make build-ui` runs `npm install + npm run build` and writes the production bundle to `internal/webui/dist/` (embedded via `go:embed`). `make build-all` does both. A fresh checkout without npm toolchain still compiles via Go alone (a committed `.gitkeep` placeholder); `/ui` then returns 503 with a `ui_not_built` code as the diagnostic. |
+
+## What's in v0.7.2
+
+| Surface             | Status |
+|---------------------|--------|
+| **Google Gemini provider** | ✅ Fifth backend driver in `internal/providers/gemini/`. Speaks Gemini's `generateContent` API: model name in URL path (not body), `x-goog-api-key` header auth, SSE streaming via `?alt=sse`. Tool dispatch maps loomcycle's `tool_use` / `tool_result` to Gemini's `functionCall` / `functionResponse` content parts. |
+| **Effort hint translation** | ✅ `effort: low \| medium \| high` maps to `generationConfig.thinkingConfig.thinkingBudget` on gemini-2.5-flash / gemini-2.5-pro: `low` → 0 (disable), `medium` → 2048, `high` → 8192 (clamped to `max_tokens - 1024` when needed). Same vocabulary as Anthropic / OpenAI — no per-provider effort dialect. |
+| **Resolver matrix integration** | ✅ Excluded when `GEMINI_API_KEY` is unset; probed at startup and on the periodic re-probe with the same 5 s deadline as the others. Per-agent yaml: `provider: gemini` and `model: gemini-2.5-flash` (or any model the wire `/v1beta/models` returns). |
+| **Vertex AI deployments** | ✅ Optional `GEMINI_BASE_URL` overrides for Vertex AI Gemini gateways (production deployments routing through GCP project quotas instead of the public AI Studio API). |
+
+## What's in v0.7.1
+
+| Surface             | Status |
+|---------------------|--------|
+| **`EventThinking` event type** | ✅ Live streaming of model reasoning as a typed event distinct from `EventText`. Anthropic from `thinking_delta` content blocks; OpenAI / DeepSeek from `delta.reasoning_content`; Ollama from `message.thinking`. `EventDone.Reasoning` still carries the consolidated trace for next-turn echo (DeepSeek roundtrip). |
+| **Tool-use hooks** | ✅ Operator-supplied middleware around tool dispatch via `POST /v1/hooks`. Selectors filter by `(agent, tool, phase)`; per-`(owner, name)` idempotent registration prevents cascading on app restart. Fail-open default (telemetry hooks don't block); fail-closed available for security-shaped hooks. See [`docs/TOOLS.md`](docs/TOOLS.md). |
+| **Resolver Snapshot endpoint** | ✅ `GET /v1/_resolver` exposes the in-process availability matrix as JSON, bearer-authed. 503 with `resolver_unavailable` in the brief degraded-startup window so dashboards distinguish "matrix not available" from "matrix is empty". |
+| **Parallel tool dispatch** | ✅ The agent loop dispatched a turn's tool_calls serially — `Agent` fan-outs queued. New `executePendingTools` runs each in its own goroutine, default 8 concurrent, `LOOMCYCLE_TOOL_PARALLELISM` to override. |
+| **SSE wire-level keepalive** | ✅ Long-lived agent streams emit `: keepalive\n\n` comment frames every 20 s by default. Closes the opaque `TypeError: terminated` undici reports when networks with idle-connection timeouts (Tailscale, NAT routers) drop a silent stream. `LOOMCYCLE_SSE_KEEPALIVE_MS` to override; 0 disables. |
+| **Per-token text coalescing** | ✅ OpenAI / DeepSeek streaming text deltas accumulate into 64-byte chunks. Closes the "every word on its own line" cosmetic noise DeepSeek's tokenizer produced. |
+| **Ollama qwen3 tool-call recovery** | ✅ Both JSON-shape (`{"name":"...","arguments":{...}}`) and bracketed-markdown (`[tool_use: name]\n{args}`) forms now synthesize `EventToolCall` so the loop iterates instead of terminating with the markup as the final answer. |
+| **DeepSeek thinking-mode roundtrip** | ✅ DeepSeek V4 Pro / deepseek-reasoner returns `reasoning_content` alongside `content`; the API requires it echoed back on subsequent turns. The OpenAI driver captures it on `EventDone.Reasoning`; the request builder serialises it back when the assistant Message carries one. |
 
 ## What's in v0.7.0
 

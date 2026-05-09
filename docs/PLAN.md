@@ -2,7 +2,28 @@
 
 This is the public roadmap. For decision history, regret notes, and per-version commit-by-commit details, see `doc-internal/PLAN.md` (gitignored).
 
-## v0.7.3 — current
+## v0.7.4 — current
+
+**Status: shipped (2026-05-09).** Iteration on top of v0.7.3 from the operator's first day running the Web UI against jobs-search-agent. Five PRs (#39 + #40 + #41 + #42, plus the in-process Gemini config-validation hotfix) addressing real UX gaps and a wire-shape drift the v0.7.3 ship missed. No breaking wire changes.
+
+**What's in v0.7.4 (vs v0.7.3):**
+
+- **Web UI agent name + content fixes** (PRs #41, #42, 2026-05-09). Two distinct bugs surfaced by running the UI end-to-end:
+  - **Run list shows agent names.** v0.7.3 listed runs by `agent_id` UUID only — nothing identifying *which* agent each row was. Root cause: the wire response carried only the UUID; the YAML-declared name (`qa-agent`, `company-researcher`) lived on `sessions.agent`, not the run row. Fixed by JOIN-ing sessions in the SQL queries (denormalising onto `Run.Agent` at read time, matching the existing `UserID` denorm pattern), surfacing as `agent` in the JSON response, and updating the React `Agent` type to match. Both SQLite + Postgres adapters carry the JOIN.
+  - **Transcript event panels render actual content.** v0.7.3's `AgentDetail` showed only the type label (`TEXT`, `TOOL`) on each event — no text, no tool params, no results. Root cause: the transcript endpoint nests the event payload under `event:` (alongside `seq` / `run_id` / `ts_ns` wrapper fields), but the React code was reading `ev.text` / `ev.tool_use` directly off the top level. Fixed types + reads.
+  - Bonus: events render as **collapsed-by-default panels** with a one-line summary (first line of text, tool name + args preview, `done` usage tokens, etc); click (or Enter / Space, keyboard accessible) expands to the full payload. Operators scrolling a long transcript see the SHAPE of the run without a wall of text.
+- **User picker dropdown** (PR #40, 2026-05-09). v0.7.3 made the operator type a `user_id` UUID into a freeform input — no way to discover who has running agents. New `GET /v1/_users` admin endpoint surfaces distinct user_ids with summary stats (`running_count`, `total_count`, `last_started_at`). The UI top bar now shows a `<select>` populated from the endpoint, refreshed every 30 s. Each option reads "user_id · N running" or "user_id · M runs" so the dropdown doubles as a quick activity view. Manual override (✎ button) preserved for picking a user with no runs yet.
+- **Gemini config validation hotfix** (PR #39, 2026-05-09). v0.7.2 added the Gemini driver to `internal/providers/gemini/` and wired it into `cmd/loomcycle/main.go`'s provider resolver, but missed the validation set in `internal/config/config.go`. Operators with `provider: gemini` rows in their loomcycle.yaml saw startup fail with `unknown provider "gemini"`. Two-line fix: added gemini to `validProviderIDs`, updated the error message.
+
+**Architecture decisions worth flagging:**
+
+- **`store.Run.Agent` is denormalised via SQL JOIN, not stored on the runs table.** Same pattern as the existing `UserID` denorm (the comment at `store.go::RunIdentity.UserID` describes the original rationale: cheaper to trust the caller / let SQL do the join than to add a new column with its own migration story). Runs table stays unchanged; only the SELECT queries grow a LEFT JOIN onto sessions.
+- **No new migrations for the Web UI features.** Everything in v0.7.3 + v0.7.4 reads from existing columns (or, for the agent name, joins sessions). The runs / sessions / events tables are unchanged from v0.5.0.
+- **No SSE for live updates yet.** UI polls (`3 s` for the run list, `1.5 s` for the active-run detail, `30 s` for the user picker). v0.8 candidate: a `/v1/users/{user_id}/agents/stream` SSE endpoint pushing state-transition events. Polling is acceptable for the v0.7.x footprint; tunable inside `web/src/`.
+
+For the v0.7.3 baseline that drove this work, see [v0.7.3](#v073--earlier).
+
+## v0.7.3 — earlier
 
 **Status: shipped (2026-05-09).** Adds an embedded read-only Web UI for monitoring agent runs, with bearer-in-cookie auth bridging the existing /v1 API. React + Vite + TypeScript stack; output embedded into the Go binary via go:embed. Operators visit `/ui?token=<bearer>` once; subsequent navigation authenticates via an HttpOnly session cookie.
 
@@ -20,9 +41,9 @@ This is the public roadmap. For decision history, regret notes, and per-version 
 - **Stack: React + Vite + TypeScript.** Operator chose React over server-side-rendered HTML to keep the door open for richer extensions (tool-use hook editor, resolver matrix dashboard, CV diff viewer) without rewriting. Bundle size is small enough that the overhead vs SSR is negligible at the v0.7.3 footprint.
 - **`web/dist/` is NOT committed.** The build artefact lives at `internal/webui/dist/` and is gitignored except for the `.gitkeep` placeholder. Operators / CI run `make build-ui` before `go build` (or `make build-all` which combines them). This keeps PR diffs free of bundled-asset noise.
 
-For the v0.7.2 baseline that drove this work, see [v0.7.2](#v072--earlier).
+For the v0.7.2 baseline that drove the v0.7.3 batch, see [v0.7.2](#v072--past).
 
-## v0.7.2 — earlier
+## v0.7.2 — past
 
 **Status: shipped (2026-05-09).** Adds the Google Gemini provider as the fifth backend alongside Anthropic / OpenAI / DeepSeek / Ollama. No changes to existing drivers; per-agent yaml gains `provider: gemini` as an option.
 
