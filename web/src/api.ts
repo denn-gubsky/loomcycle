@@ -41,7 +41,11 @@ export interface ListAgentsResponse {
   agents: Agent[];
 }
 
-export interface TranscriptEvent {
+// EventPayload mirrors providers.Event on the server side. Carried
+// inside `TranscriptEvent.event` (the wire shape from
+// /v1/sessions/{id}/transcript wraps each row with seq/run_id/ts_ns
+// plus the embedded event).
+export interface EventPayload {
   type: string;
   text?: string;
   tool_use?: { id: string; name: string; input: unknown };
@@ -57,19 +61,29 @@ export interface TranscriptEvent {
     model?: string;
   };
   error?: string;
-  // Loomcycle stamps event arrival as event_id + created_at on the
-  // wire when the consumer asks for replay. For live streams these
-  // can be absent; treat as optional in the UI.
-  event_id?: string;
-  created_at?: string;
+  retry?: { provider?: string; attempt?: number; wait_ms?: number; reason?: string };
+}
+
+// TranscriptEvent is one persisted row from
+// /v1/sessions/{id}/transcript. The server wraps each providers.Event
+// in {seq, run_id, ts_ns, type, event:{...}} — the type field at the
+// top level mirrors event.type so consumers can filter without
+// digging into the payload, but the actual content lives under
+// `event`.
+export interface TranscriptEvent {
+  seq: number;
+  run_id: string;
+  ts_ns: number;
+  type: string;
+  event: EventPayload;
 }
 
 export interface TranscriptResponse {
   session: {
     id: string;
     user_id: string;
-    agent_type: string;
-    started_at: string;
+    agent: string;
+    created_at: string;
   };
   events: TranscriptEvent[];
 }
