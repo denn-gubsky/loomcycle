@@ -537,6 +537,8 @@ func (s *Server) Mux() http.Handler {
 	mux.Handle("POST /v1/hooks", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleRegisterHook))))
 	mux.Handle("GET /v1/hooks", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleListHooks))))
 	mux.Handle("DELETE /v1/hooks/{id}", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleDeleteHook))))
+	// v0.7.x resolver introspection — operator-only debug surface.
+	mux.Handle("GET /v1/_resolver", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleResolverSnapshot))))
 	return mux
 }
 
