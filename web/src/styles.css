@@ -393,3 +393,206 @@ pre {
 .ev-error .kind { color: var(--failed); }
 .ev-retry { border-left-color: var(--running); }
 .ev-done { border-left-color: var(--fg-soft); }
+
+/* v0.8.0 nav tabs (top bar between brand and user picker). */
+.nav-tabs {
+  display: flex;
+  gap: 4px;
+  margin-left: 24px;
+}
+.nav-tabs a {
+  color: var(--fg-soft);
+  padding: 4px 10px;
+  border-radius: 4px;
+  font-size: 13px;
+}
+.nav-tabs a:hover {
+  background: var(--bg-soft-2);
+  color: var(--fg);
+  text-decoration: none;
+}
+
+/* v0.8.0 Memory page — three-pane layout. */
+.memory-view {
+  display: grid;
+  grid-template-columns: 280px 320px 1fr;
+  gap: 12px;
+  padding: 12px;
+  height: 100%;
+  min-height: 0;
+}
+.memory-pane {
+  background: var(--bg-soft);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.memory-pane .pane-header {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--fg-soft);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.memory-pane .pane-header.sub {
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-soft-2);
+}
+.memory-pane .pane-header code {
+  color: var(--fg);
+  font-size: 12px;
+  text-transform: none;
+  letter-spacing: 0;
+}
+.scope-tabs {
+  display: flex;
+  padding: 8px;
+  gap: 6px;
+  border-bottom: 1px solid var(--border);
+}
+.scope-tabs button {
+  flex: 1;
+  background: var(--bg);
+  color: var(--fg-soft);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 6px 10px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.scope-tabs button.on {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: white;
+}
+.scope-id-list,
+.key-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  overflow: auto;
+  flex: 1;
+  min-height: 0;
+}
+.scope-id-list li,
+.key-list li {
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  cursor: pointer;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+}
+.scope-id-list li:hover,
+.key-list li:hover {
+  background: var(--bg-soft-2);
+}
+.scope-id-list li.on,
+.key-list li.on {
+  background: var(--bg-soft-2);
+  border-left: 3px solid var(--accent);
+  padding-left: 9px;
+}
+.scope-id-list li .meta {
+  color: var(--fg-soft);
+  font-size: 11px;
+  font-family: var(--mono);
+}
+.scope-id-list li code,
+.key-list li code {
+  font-size: 12px;
+  word-break: break-all;
+}
+.empty-row {
+  color: var(--fg-soft);
+  padding: 16px 12px !important;
+  cursor: default !important;
+  font-style: italic;
+  font-size: 12px;
+  border-bottom: 1px solid var(--border);
+}
+.empty-row:hover {
+  background: transparent !important;
+}
+.prefix-input {
+  margin: 8px 12px;
+  padding: 6px 10px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--fg);
+  font-family: var(--mono);
+  font-size: 12px;
+}
+.ttl-flag {
+  background: var(--running);
+  color: white;
+  font-size: 10px;
+  text-transform: uppercase;
+  padding: 1px 4px;
+  border-radius: 2px;
+  letter-spacing: 0.04em;
+}
+.entry-detail {
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  flex: 1;
+  min-height: 0;
+}
+.entry-meta {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 4px 12px;
+  font-size: 12px;
+}
+.entry-meta div {
+  display: contents;
+}
+.entry-meta div span {
+  color: var(--fg-soft);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-size: 10px;
+  align-self: center;
+}
+.entry-meta div code {
+  font-size: 12px;
+  word-break: break-all;
+}
+.entry-value {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 12px;
+  color: var(--fg);
+  font-family: var(--mono);
+  font-size: 12px;
+  flex: 1;
+  overflow: auto;
+  margin: 0;
+}
+.detail-pane .empty {
+  padding: 24px;
+  color: var(--fg-soft);
+  font-style: italic;
+}
+.memory-err {
+  position: fixed;
+  bottom: 16px;
+  right: 16px;
+  background: var(--failed);
+  color: white;
+  padding: 8px 12px;
+  border-radius: 4px;
+  font-size: 12px;
+  max-width: 400px;
+}

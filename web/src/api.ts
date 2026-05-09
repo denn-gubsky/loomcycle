@@ -130,6 +130,87 @@ export function getTranscript(sessionId: string): Promise<TranscriptResponse> {
   return jsonFetch<TranscriptResponse>(`/v1/sessions/${encodeURIComponent(sessionId)}/transcript`);
 }
 
+// v0.8.0 Memory admin types — mirrors internal/api/http/memory.go.
+
+export interface MemoryScopeKind {
+  name: string;
+  description: string;
+}
+
+export interface MemoryScopesResponse {
+  scopes: MemoryScopeKind[];
+}
+
+export interface MemoryScopeIDSummary {
+  scope_id: string;
+  key_count: number;
+  bytes: number;
+  updated_at: string;
+}
+
+export interface MemoryScopeIDsResponse {
+  scope: string;
+  scope_ids: MemoryScopeIDSummary[];
+}
+
+// MemoryEntry mirrors store.MemoryEntry. value is a parsed JSON value
+// (the server stored it as JSONB on Postgres, TEXT-as-JSON on SQLite,
+// and re-parsed it on the way out — `unknown` here so the UI can
+// pretty-print whatever shape the agent wrote).
+export interface MemoryEntry {
+  key: string;
+  value: unknown;
+  expires_at?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface MemoryEntriesResponse {
+  scope: string;
+  scope_id: string;
+  entries: MemoryEntry[];
+  truncated: boolean;
+}
+
+export interface MemoryEntryResponse {
+  scope: string;
+  scope_id: string;
+  entry: MemoryEntry;
+}
+
+export function listMemoryScopes(): Promise<MemoryScopesResponse> {
+  return jsonFetch<MemoryScopesResponse>("/v1/_memory/scopes");
+}
+
+export function listMemoryScopeIDs(scope: string): Promise<MemoryScopeIDsResponse> {
+  return jsonFetch<MemoryScopeIDsResponse>(`/v1/_memory/scopes/${encodeURIComponent(scope)}`);
+}
+
+export function listMemoryEntries(
+  scope: string,
+  scopeID: string,
+  prefix?: string,
+  limit?: number,
+): Promise<MemoryEntriesResponse> {
+  const params = new URLSearchParams();
+  if (prefix) params.set("prefix", prefix);
+  if (limit) params.set("limit", String(limit));
+  const qs = params.toString();
+  return jsonFetch<MemoryEntriesResponse>(
+    `/v1/_memory/scopes/${encodeURIComponent(scope)}/${encodeURIComponent(scopeID)}/keys${qs ? "?" + qs : ""}`,
+  );
+}
+
+export function getMemoryEntry(
+  scope: string,
+  scopeID: string,
+  key: string,
+): Promise<MemoryEntryResponse> {
+  return jsonFetch<MemoryEntryResponse>(
+    `/v1/_memory/scopes/${encodeURIComponent(scope)}/${encodeURIComponent(scopeID)}/keys/${encodeURIComponent(key)}`,
+  );
+}
+
 export async function cancelAgent(agentId: string, reason?: string): Promise<unknown> {
   const resp = await fetch(`/v1/agents/${encodeURIComponent(agentId)}/cancel`, {
     method: "POST",

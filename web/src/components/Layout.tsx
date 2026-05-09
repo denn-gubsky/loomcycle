@@ -53,8 +53,12 @@ export default function Layout() {
       <header className="topbar">
         <div className="brand">
           <Link to="/">loomcycle</Link>
-          <span className="version">v0.7.3</span>
+          <span className="version">v0.8.0</span>
         </div>
+        <nav className="nav-tabs">
+          <Link to="/">runs</Link>
+          <Link to="/memory">memory</Link>
+        </nav>
         <div className="user-picker">
           {usersErr && <span className="picker-err" title={usersErr}>users unavailable</span>}
           {!showManual && (
