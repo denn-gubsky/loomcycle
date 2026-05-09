@@ -435,19 +435,24 @@ func streamEvents(ctx context.Context, body io.ReadCloser, out chan<- providers.
 }
 
 // tryParseToolCallsFromText attempts to parse the raw text content as
-// one or more Ollama-shaped tool-call objects:
+// one or more Ollama-shaped tool-call objects. Two shapes covered:
 //
-//	{"name":"...","arguments":{...}}
+//  1. JSON-shape (PR #26):
+//     {"name":"...","arguments":{...}}
+//     or an array of such objects, optionally wrapped in a ```json fence.
 //
-// or an array of such objects. Returns the parsed ToolUse list when
-// successful, nil otherwise. Tolerates surrounding whitespace + a
-// markdown ```json fence (qwen3 sometimes wraps its output).
+//  2. Markdown-bracket shape (this function's fallback path, v0.7.x):
+//     [tool_use: <name>]\n{"...": ...}
+//     [tool_use: <name> {"...": ...}]
+//     [tool_use: <name>]
+//     Some chat templates produce this form instead of structured
+//     tool_calls — observed on a few hermes / mistral fine-tunes.
 //
-// A clean-parse contract — strict matching prevents false positives
-// from text that happens to look JSON-ish (e.g. an agent whose answer
-// includes a tool-call example in prose). We require the ENTIRE
-// trimmed content to deserialise into the tool-call shape; any prose
-// outside the JSON disqualifies the recovery.
+// Returns the parsed ToolUse list when either shape matches, nil
+// otherwise. Strict matching prevents false positives from text that
+// happens to look JSON-ish or contains the literal phrase "tool_use" in
+// prose: we require the ENTIRE trimmed content to deserialise into the
+// tool-call shape.
 func tryParseToolCallsFromText(text string) []*providers.ToolUse {
 	s := strings.TrimSpace(text)
 	if s == "" {
@@ -472,7 +477,7 @@ func tryParseToolCallsFromText(text string) []*providers.ToolUse {
 	}
 
 	// Try array first — qwen3 occasionally batches multiple calls.
-	if strings.HasPrefix(s, "[") {
+	if strings.HasPrefix(s, "[") && !strings.HasPrefix(s, "[tool_use:") {
 		var arr []rawCall
 		if err := json.Unmarshal([]byte(s), &arr); err == nil && len(arr) > 0 {
 			out := make([]*providers.ToolUse, 0, len(arr))
@@ -491,7 +496,18 @@ func tryParseToolCallsFromText(text string) []*providers.ToolUse {
 		return nil
 	}
 
-	// Try single object.
+	// Try the markdown-bracket shape. Falls through to the JSON-object
+	// parse below when the text doesn't start with the bracket marker,
+	// so prose containing the word "tool_use" mid-paragraph never trips
+	// this path.
+	if strings.HasPrefix(s, "[tool_use:") {
+		if call := parseMarkdownToolCall(s); call != nil {
+			return []*providers.ToolUse{call}
+		}
+		return nil
+	}
+
+	// Try single JSON object.
 	var r rawCall
 	if err := json.Unmarshal([]byte(s), &r); err != nil {
 		return nil
@@ -504,6 +520,104 @@ func tryParseToolCallsFromText(text string) []*providers.ToolUse {
 		args = json.RawMessage("{}")
 	}
 	return []*providers.ToolUse{{Name: r.Name, Input: args}}
+}
+
+// parseMarkdownToolCall recognises the bracketed-markdown tool-call
+// form. Caller has already verified s starts with "[tool_use:" and
+// trimmed surrounding whitespace. Returns nil on any malformation —
+// the caller treats nil as "this isn't a tool call, leave it as text".
+//
+// Three shapes accepted:
+//
+//	[tool_use: name]                   → name, default args {}
+//	[tool_use: name {args}]            → name + inline args
+//	[tool_use: name]\n{args}           → name + post-bracket args
+//
+// In all cases the ENTIRE input must be consumed: any trailing prose
+// after the args (or after the bracket when args are absent) is a
+// disqualifier. Same strict-match contract as the JSON parser.
+func parseMarkdownToolCall(s string) *providers.ToolUse {
+	const marker = "[tool_use:"
+	closeIdx := strings.IndexByte(s, ']')
+	if closeIdx < 0 {
+		return nil
+	}
+	inside := strings.TrimSpace(s[len(marker):closeIdx])
+	if inside == "" {
+		return nil
+	}
+	after := strings.TrimSpace(s[closeIdx+1:])
+
+	// Split inside into name + optional inline args at the first
+	// whitespace or '{'. Inline args, when present, MUST start with '{'.
+	var name string
+	var inlineArgs string
+	if cut := strings.IndexAny(inside, " \t\n{"); cut >= 0 {
+		name = strings.TrimSpace(inside[:cut])
+		inlineArgs = strings.TrimSpace(inside[cut:])
+	} else {
+		name = inside
+	}
+	if !looksLikeIdentifier(name) {
+		return nil
+	}
+
+	// Decide which args source applies. At most one of inlineArgs /
+	// after may be non-empty; both populated is a malformation we
+	// reject (the model produced something we can't unambiguously
+	// interpret).
+	switch {
+	case inlineArgs != "" && after != "":
+		return nil
+	case inlineArgs != "":
+		if !strings.HasPrefix(inlineArgs, "{") {
+			return nil
+		}
+		if !isValidJSONObject(inlineArgs) {
+			return nil
+		}
+		return &providers.ToolUse{Name: name, Input: json.RawMessage(inlineArgs)}
+	case after != "":
+		if !strings.HasPrefix(after, "{") {
+			return nil
+		}
+		if !isValidJSONObject(after) {
+			return nil
+		}
+		return &providers.ToolUse{Name: name, Input: json.RawMessage(after)}
+	default:
+		// Bracket form with no args at all → default to {}.
+		return &providers.ToolUse{Name: name, Input: json.RawMessage("{}")}
+	}
+}
+
+// looksLikeIdentifier validates the tool name as Anthropic / OpenAI's
+// shared format ([A-Za-z_][A-Za-z0-9_-]*). Same regex the dispatcher
+// applies on registration; rejecting here prevents the synthesised
+// EventToolCall from carrying a name the dispatcher would refuse anyway.
+func looksLikeIdentifier(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i, c := range s {
+		switch {
+		case c >= 'a' && c <= 'z':
+		case c >= 'A' && c <= 'Z':
+		case c == '_':
+		case i > 0 && (c == '-' || (c >= '0' && c <= '9')):
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// isValidJSONObject confirms s parses as a JSON object (not just any
+// JSON value). Tool-call args must be an object shape per Anthropic /
+// OpenAI's tool input contract.
+func isValidJSONObject(s string) bool {
+	var probe map[string]any
+	return json.Unmarshal([]byte(s), &probe) == nil
 }
 
 // mapStopReason translates Ollama's done_reason into our shared vocabulary.
