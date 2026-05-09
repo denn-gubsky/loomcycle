@@ -306,4 +306,85 @@ What works with what (DeepSeek added in v0.6.0; behaviour identical to OpenAI fo
 
 Ollama caveat: tool calling only works on **tool-tuned** models (qwen3+, Llama 3.1 instruct variants, Qwen2.5-Instruct, Mistral Nemo Instruct). Non-tool-tuned models will silently drop the `tools` field instead of calling them — Ollama's behaviour, not the driver's. Tool_use IDs are synthesized by the loop because Ollama doesn't issue them.
 
-DeepSeek caveat: the v0.6.0 driver wraps the OpenAI driver, so it inherits OpenAI's behaviour exactly. The `deepseek-reasoner` model emits `reasoning_content` separately from `content`; the driver doesn't yet surface that (tracked as v0.7+ alongside the parallel Ollama `message.thinking` gap).
+DeepSeek caveat: the v0.6.0 driver wraps the OpenAI driver, so it inherits OpenAI's behaviour exactly. The `deepseek-reasoner` model emits `reasoning_content` separately from `content`; the driver surfaces it as `EventDone.Reasoning` (since v0.7.0) and now also as live `EventThinking` events (since v0.7.x).
+
+## Tool-use hooks (v0.7.x+)
+
+Operator-supplied middleware around tool dispatch. External apps register HTTP-webhook callbacks against `(agent, tool, phase)` selectors; loomcycle invokes them around the dispatcher so the hook can rewrite the input, short-circuit with a synthetic result, or rewrite the post-tool result.
+
+The canonical use case is **wrapping untrusted content** from `WebFetch` / `HTTP` / MCP results in trust-boundary markers so a downstream LLM treats payloads as data rather than instructions. Other shapes the seam supports: per-tool quotas, audit logs, content sanitisation, soft-deny patterns ("you tried to fetch X; here's a redacted version instead"), OTEL spans tied to tool invocations.
+
+### Registration
+
+```
+POST /v1/hooks
+{
+  "owner": "jobs-search-web",       // app UID; (owner, name) is the identity
+  "name":  "scan-webfetch",
+  "phase": "post",                  // "pre" | "post"
+  "agents": ["*"],                  // glob list; empty = ["*"]
+  "tools":  ["WebFetch", "HTTP"],   // glob list; empty = ["*"]
+  "callback_url": "https://jobs-search-web.local/api/hooks/scan",
+  "fail_mode": "open",              // "open" (default) | "closed"
+  "timeout_ms": 5000                // default 5000, ceiling 60000
+}
+→ 200 { "id": "hook_xxx" }
+
+GET    /v1/hooks               // debug listing
+DELETE /v1/hooks/{id}          // remove a registration
+```
+
+**Idempotency**: re-registering the same `(owner, name)` **replaces** the prior entry in-place (preserves chain ordering, mints a fresh ID). Solves the cascading-on-restart problem cleanly: an app that re-registers on its own startup never accumulates duplicates.
+
+**No persistence** across loomcycle restart. Apps re-register on their own startup. If your app is down, your hooks aren't active — which matches reality (the app can't process callbacks anyway).
+
+### Filtering
+
+- `agents`: array of exact matches or `["*"]`. Empty / missing = `["*"]`.
+- `tools`: array of exact matches; supports `prefix*` glob (`mcp__jobs__*`). Empty / missing = `["*"]`.
+- A hook fires when **both** match. Multiple hooks can match the same call — they chain in registration order (Pre) or reverse order (Post, LIFO middleware).
+
+### Webhook payload
+
+**Pre** (`POST <callback_url>`):
+```json
+{
+  "phase": "pre", "owner": "...", "hook_name": "...",
+  "agent": "company-researcher", "user_id": "...", "agent_id": "...",
+  "tool_call": { "id": "...", "name": "WebFetch", "input": { "url": "..." } }
+}
+→ { "input": {...} }                                 // rewrite
+→ { "deny": { "is_error": false, "text": "..." } }   // short-circuit
+→ {} or 204                                          // no change
+```
+
+**Post** (`POST <callback_url>`):
+```json
+{
+  "phase": "post", "owner": "...", "hook_name": "...",
+  "agent": "company-researcher", "user_id": "...", "agent_id": "...",
+  "tool_call": { "id": "...", "name": "WebFetch", "input": {...} },
+  "tool_result": { "is_error": false, "text": "...page body..." }
+}
+→ { "result": { "is_error": false, "text": "<untrusted>...</untrusted>" } }
+→ {} or 204                                          // no change
+```
+
+### Composition
+
+- **Pre chain**: registration order. The first non-nil `deny` short-circuits the rest of the Pre chain.
+- **Post chain**: reverse registration order (LIFO middleware). Each hook sees the result the prior (inner) hook produced.
+- Hooks within the chain run sequentially per-tool. The **parallel tool dispatcher** (v0.7.x) runs N tool calls in parallel; their hook chains fire in parallel too. The webhook server must handle concurrent calls.
+
+### Failure modes
+
+- **`fail_mode: "open"`** *(default)*: webhook timeout / 5xx / network error → original input or result passes through unchanged. Right for telemetry-shaped hooks where the hook should never block tool dispatch when the registering app is down.
+- **`fail_mode: "closed"`**: webhook timeout / 5xx / network error → tool fails with `IsError: true`. Right for security-shaped hooks (injection scanners) where a down hook would let bypassed payloads through.
+
+### Trust-boundary invariants
+
+- Hooks run **after** the policy layer (`allowed_tools` / `allowed_hosts`). Hooks may narrow further or rewrite content — **never widen**.
+- Hooks **cannot** tear down the agent run. The worst they can do is short-circuit one tool call with a synthetic `IsError: true` result.
+- Webhook payloads include `agent_id` and `user_id` for correlation but **do NOT** include the agent's prompt or message history.
+
+References: `internal/hooks/`, `internal/api/http/hooks.go` (registration routes), `internal/loop/loop.go::dispatchOneTool` (chain invocation).

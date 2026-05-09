@@ -20,6 +20,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/cancel"
 	"github.com/denn-gubsky/loomcycle/internal/concurrency"
 	"github.com/denn-gubsky/loomcycle/internal/config"
+	"github.com/denn-gubsky/loomcycle/internal/hooks"
 	"github.com/denn-gubsky/loomcycle/internal/loop"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/resolve"
@@ -71,6 +72,15 @@ type Server struct {
 	// dependency. See internal/resolve and the matrix RFC at
 	// doc-internal/rfcs/model-resolution-matrix.md.
 	resolver *resolve.Resolver
+
+	// hookRegistry holds the runtime-registered tool-use hooks (the
+	// /v1/hooks endpoints write into this), and hookDispatcher is the
+	// loop-side adapter the agent loop calls into when dispatching
+	// tools. Both are non-nil after New() — no consumer needs to nil-
+	// check. An empty registry produces zero hook invocations on the
+	// hot path (Match returns nil, dispatchOneTool fast-paths).
+	hookRegistry   *hooks.Registry
+	hookDispatcher *hooks.Dispatcher
 }
 
 // New constructs a Server. If st is non-nil, every run is recorded as a
@@ -86,14 +96,17 @@ type Server struct {
 // (empty if no run has started) so handler code can call its methods
 // unconditionally without nil-checking.
 func New(cfg *config.Config, pr ProviderResolver, builtinTools []tools.Tool, sem *concurrency.Semaphore, st store.Store) *Server {
+	hookReg := hooks.NewRegistry()
 	s := &Server{
-		cfg:          cfg,
-		providers:    pr,
-		tools:        builtinTools,
-		sem:          sem,
-		store:        st,
-		cancelReg:    cancel.NewRegistry(),
-		sessionLocks: runner.NewSessionLockMap(),
+		cfg:            cfg,
+		providers:      pr,
+		tools:          builtinTools,
+		sem:            sem,
+		store:          st,
+		cancelReg:      cancel.NewRegistry(),
+		sessionLocks:   runner.NewSessionLockMap(),
+		hookRegistry:   hookReg,
+		hookDispatcher: hooks.NewDispatcher(hookReg, nil),
 	}
 	s.tools = append(s.tools, &builtin.AgentTool{Run: s.runSubAgent})
 	return s
@@ -435,6 +448,8 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		Effort:          effort,
 		MarkStalled:     s.markStalledFn(providerID, model),
 		ToolParallelism: s.cfg.Env.ToolParallelism,
+		AgentName:       effectiveAgentName,
+		Hooks:           s.hookDispatcher,
 	})
 	s.finishRunWithCancel(ctx, runCtx, runID, res, runErr)
 	return nil
@@ -518,6 +533,10 @@ func (s *Server) Mux() http.Handler {
 	mux.Handle("GET /v1/agents/{agent_id}", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleGetAgent))))
 	mux.Handle("POST /v1/agents/{agent_id}/cancel", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleCancelAgent))))
 	mux.Handle("GET /v1/users/{user_id}/agents", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleListUserAgents))))
+	// v0.7.x tool-use hook registration API.
+	mux.Handle("POST /v1/hooks", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleRegisterHook))))
+	mux.Handle("GET /v1/hooks", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleListHooks))))
+	mux.Handle("DELETE /v1/hooks/{id}", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleDeleteHook))))
 	return mux
 }
 
@@ -872,6 +891,8 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		Effort:          effort,
 		MarkStalled:     s.markStalledFn(providerID, model),
 		ToolParallelism: s.cfg.Env.ToolParallelism,
+		AgentName:       req.Agent,
+		Hooks:           s.hookDispatcher,
 	})
 	if runErr != nil {
 		stream.send(providers.Event{Type: providers.EventError, Error: runErr.Error()})
@@ -1108,6 +1129,8 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		Effort:          effort,
 		MarkStalled:     s.markStalledFn(providerID, model),
 		ToolParallelism: s.cfg.Env.ToolParallelism,
+		AgentName:       sess.Agent,
+		Hooks:           s.hookDispatcher,
 	})
 	if runErr != nil {
 		stream.send(providers.Event{Type: providers.EventError, Error: runErr.Error()})
@@ -1552,6 +1575,8 @@ func (s *Server) runSubAgent(ctx context.Context, name string, prompt string) (s
 		Effort:          effort,
 		MarkStalled:     s.markStalledFn(providerID, model),
 		ToolParallelism: s.cfg.Env.ToolParallelism,
+		AgentName:       name,
+		Hooks:           s.hookDispatcher,
 	})
 	s.finishRunWithCancel(ctx, subRunCtx, subRunID, res, runErr)
 
