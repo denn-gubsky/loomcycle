@@ -118,4 +118,3 @@ func TestSSEKeepalive_GoroutineExitsOnContextCancel(t *testing.T) {
 			beforeQuiet, afterQuiet)
 	}
 }
-
