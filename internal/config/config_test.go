@@ -445,6 +445,99 @@ agents:
 	}
 }
 
+// v0.8.0 Memory tool: yaml memory_scopes must validate against the
+// closed set {agent, user}. An unknown scope is a config-load error
+// — silent drop would let a typoed `memmory_scopes: [agnet]` produce
+// an agent that calls Memory.set with no policy applied at runtime.
+func TestMemoryScopesValidation(t *testing.T) {
+	tmp := t.TempDir()
+	yamlPath := filepath.Join(tmp, "c.yaml")
+	os.WriteFile(yamlPath, []byte(`
+defaults: { provider: anthropic, model: claude-sonnet-4-6 }
+agents:
+  bad:
+    model: claude-sonnet-4-6
+    memory_scopes: [agent, tenant]
+`), 0o600)
+	_, err := Load(yamlPath)
+	if err == nil {
+		t.Fatal("expected error for unknown memory scope")
+	}
+	if !strings.Contains(err.Error(), "tenant") {
+		t.Errorf("error should name the offending scope: %v", err)
+	}
+}
+
+func TestMemoryScopesAccepted(t *testing.T) {
+	tmp := t.TempDir()
+	yamlPath := filepath.Join(tmp, "c.yaml")
+	os.WriteFile(yamlPath, []byte(`
+defaults: { provider: anthropic, model: claude-sonnet-4-6 }
+agents:
+  ok:
+    model: claude-sonnet-4-6
+    allowed_tools: [Memory]
+    memory_scopes: [agent, user]
+    memory_quota_bytes: 5000000
+`), 0o600)
+	cfg, err := Load(yamlPath)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	def := cfg.Agents["ok"]
+	if len(def.MemoryScopes) != 2 || def.MemoryScopes[0] != "agent" || def.MemoryScopes[1] != "user" {
+		t.Errorf("MemoryScopes round-trip: %v", def.MemoryScopes)
+	}
+	if def.MemoryQuotaBytes != 5_000_000 {
+		t.Errorf("MemoryQuotaBytes = %d", def.MemoryQuotaBytes)
+	}
+}
+
+func TestMemoryEnvDefaults(t *testing.T) {
+	tmp := t.TempDir()
+	yamlPath := filepath.Join(tmp, "c.yaml")
+	os.WriteFile(yamlPath, []byte(`
+defaults: { provider: anthropic, model: claude-sonnet-4-6 }
+agents:
+  default: { model: claude-sonnet-4-6 }
+`), 0o600)
+	cfg, err := Load(yamlPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Env.MemoryMaxValueBytes != 64*1024 {
+		t.Errorf("MemoryMaxValueBytes default = %d, want 65536", cfg.Env.MemoryMaxValueBytes)
+	}
+	if cfg.Env.MemoryMaxScopeBytes != 1024*1024 {
+		t.Errorf("MemoryMaxScopeBytes default = %d, want 1048576", cfg.Env.MemoryMaxScopeBytes)
+	}
+	if cfg.Env.MemorySweepInterval == 0 {
+		t.Errorf("MemorySweepInterval default should be non-zero")
+	}
+}
+
+func TestMemoryEnvDisable(t *testing.T) {
+	tmp := t.TempDir()
+	yamlPath := filepath.Join(tmp, "c.yaml")
+	os.WriteFile(yamlPath, []byte(`
+defaults: { provider: anthropic, model: claude-sonnet-4-6 }
+agents:
+  default: { model: claude-sonnet-4-6 }
+`), 0o600)
+	t.Setenv("LOOMCYCLE_MEMORY_MAX_VALUE_BYTES", "0")
+	t.Setenv("LOOMCYCLE_MEMORY_SWEEP_MS", "-1")
+	cfg, err := Load(yamlPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Env.MemoryMaxValueBytes != 0 {
+		t.Errorf("0 should disable; got %d", cfg.Env.MemoryMaxValueBytes)
+	}
+	if cfg.Env.MemorySweepInterval != 0 {
+		t.Errorf("negative should disable; got %v", cfg.Env.MemorySweepInterval)
+	}
+}
+
 // Absolute path bypasses configDir resolution. Used when the operator
 // stages prompts somewhere outside the YAML's directory.
 func TestSystemPromptFileAbsolutePath(t *testing.T) {
