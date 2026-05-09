@@ -301,17 +301,24 @@ func (m *Memory) checkQuota(ctx context.Context, scope store.MemoryScope, scopeI
 	// the worst case; in practice scopes hold a handful of summary
 	// keys. If we ever need to scale this, we'll add a cached
 	// per-(scope, scope_id) byte counter via a SQL trigger.
+	//
+	// We treat truncation (>1000 keys in scope) as a quota refusal:
+	// undercounting would let a thousand-tiny-key agent slip past the
+	// cap silently. An agent that hits this limit should `delete`
+	// rows before writing more, or operators should bump the quota.
 	const listCap = 1000
-	entries, _, err := m.Store.MemoryList(ctx, scope, scopeID, "", listCap)
+	entries, truncated, err := m.Store.MemoryList(ctx, scope, scopeID, "", listCap)
 	if err != nil {
 		return fmt.Errorf("quota check: %w", err)
 	}
+	if truncated {
+		return fmt.Errorf("Memory.set: scope %q has more than %d keys; quota check cannot run accurately — delete unused keys first",
+			scope, listCap)
+	}
 	used := 0
-	keyExists := false
 	for _, e := range entries {
 		used += len(e.Key) + len(e.Value)
 		if e.Key == key {
-			keyExists = true
 			// Subtract the existing row's bytes — we'll re-add
 			// the new size below to compute the post-write total.
 			used -= len(e.Key) + len(e.Value)
@@ -319,7 +326,6 @@ func (m *Memory) checkQuota(ctx context.Context, scope store.MemoryScope, scopeI
 	}
 	projected := used + len(key) + addBytes
 	if projected > quota {
-		_ = keyExists
 		return fmt.Errorf("Memory.set: scope %q quota %d bytes would be exceeded by this write (current=%d, after=%d)",
 			scope, quota, used, projected)
 	}

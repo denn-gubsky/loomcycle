@@ -186,6 +186,32 @@ func TestHandleGetMemoryEntry_RoundTrip(t *testing.T) {
 	}
 }
 
+// Memory keys often contain `/` (e.g. `events/2026-05-09`). The mux
+// pattern uses {key...} so the multi-segment path resolves correctly;
+// a plain {key} would 404 these silently. Exercise the route through
+// the full Mux() so the pattern matching is part of the test.
+func TestHandleGetMemoryEntry_MultiSegmentKey(t *testing.T) {
+	s := memoryAdminFixture(t)
+	if err := s.store.MemorySet(t.Context(), store.MemoryScopeAgent, "qa-agent",
+		"events/2026-05-09T10:00", []byte(`"first event"`), 0); err != nil {
+		t.Fatal(err)
+	}
+	rec := httptest.NewRecorder()
+	s.Mux().ServeHTTP(rec, httptest.NewRequest(
+		"GET", "/v1/_memory/scopes/agent/qa-agent/keys/events/2026-05-09T10:00", nil,
+	))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var resp memoryEntryResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatal(err)
+	}
+	if string(resp.Entry.Value) != `"first event"` {
+		t.Errorf("value = %s", resp.Entry.Value)
+	}
+}
+
 func TestHandleGetMemoryEntry_NotFound(t *testing.T) {
 	s := memoryAdminFixture(t)
 	req := httptest.NewRequest("GET", "/v1/_memory/scopes/agent/qa-agent/keys/missing", nil)

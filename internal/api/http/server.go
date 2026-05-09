@@ -560,7 +560,10 @@ func (s *Server) Mux() http.Handler {
 	mux.Handle("GET /v1/_memory/scopes", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleListMemoryScopes))))
 	mux.Handle("GET /v1/_memory/scopes/{scope}", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleListMemoryScopeIDs))))
 	mux.Handle("GET /v1/_memory/scopes/{scope}/{scope_id}/keys", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleListMemoryEntries))))
-	mux.Handle("GET /v1/_memory/scopes/{scope}/{scope_id}/keys/{key}", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleGetMemoryEntry))))
+	// {key...} catches multi-segment keys — Memory keys frequently use
+	// `/`-prefixed paths (e.g. `events/2026-05-09T10:00`) and a
+	// single-segment {key} would 404 on those.
+	mux.Handle("GET /v1/_memory/scopes/{scope}/{scope_id}/keys/{key...}", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleGetMemoryEntry))))
 	// v0.7.3 Web UI — embedded React SPA. The cookie-set landing
 	// page (/ui with a ?token= query) is intentionally NOT
 	// auth-middleware-wrapped; it sets the cookie that the
@@ -1054,12 +1057,18 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	defer release()
 
 	allowedTools := filterTools(s.tools, agentDef.AllowedTools, body.AllowedTools)
+	var hostPolicy tools.HostPolicyValue
 	if body.AllowedHosts != nil || s.cfg.Env.HTTPCallerAuthoritative {
 		var caller []string
 		if body.AllowedHosts != nil {
 			caller = *body.AllowedHosts
 		}
 		allowedTools = builtin.NarrowHosts(allowedTools, caller, body.WebSearchFilter, s.cfg.Env.HTTPCallerAuthoritative)
+		hostPolicy = tools.HostPolicyValue{
+			AllowedHosts:    caller,
+			HasList:         body.AllowedHosts != nil,
+			WebSearchFilter: body.WebSearchFilter,
+		}
 	}
 	dispatcher := tools.NewDispatcher(allowedTools)
 
@@ -1156,6 +1165,13 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		UserID:  sess.UserID,
 		AgentID: agentID,
 	})
+	// Sub-agents spawned by this continuation must inherit the
+	// caller-authoritative host narrowing, same as runRequest +
+	// handleRuns. Without this, a sub-agent runs against the
+	// operator's static allowlist instead of the caller's narrowed
+	// list — the production failure mode 9677b85 fixed for top-level
+	// runs and this continuation path was missing the same fix.
+	loopCtx = tools.WithHostPolicy(loopCtx, hostPolicy)
 	loopCtx = tools.WithAgentName(loopCtx, sess.Agent)
 	loopCtx = tools.WithMemoryPolicy(loopCtx, tools.MemoryPolicyValue{
 		AllowedScopes: agentDef.MemoryScopes,
