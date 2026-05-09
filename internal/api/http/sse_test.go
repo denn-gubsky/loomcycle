@@ -82,7 +82,7 @@ func (s *splittingWriter) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 func (s *splittingWriter) WriteHeader(st int) { s.status = st }
-func (s *splittingWriter) Flush()              {}
+func (s *splittingWriter) Flush()             {}
 
 // SnapshotAfterQuiescing should only be called after every writer
 // goroutine has stopped (e.g. cancel + wait). Reading concurrently
