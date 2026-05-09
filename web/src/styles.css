@@ -1,0 +1,312 @@
+/* Loomcycle UI — minimal, dark-first dashboard styling.
+   No CSS framework; vanilla CSS for the v0.7.3 footprint. */
+
+:root {
+  --bg: #0f1115;
+  --bg-soft: #161922;
+  --bg-soft-2: #1d2230;
+  --fg: #e6e6e6;
+  --fg-soft: #9aa0ad;
+  --accent: #5b9dff;
+  --running: #f0a040;
+  --completed: #4ec9b0;
+  --failed: #ff5d68;
+  --cancelled: #b08bd0;
+  --border: #2a2e3a;
+  --mono: ui-monospace, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+}
+
+* {
+  box-sizing: border-box;
+}
+html, body, #root {
+  margin: 0;
+  padding: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  font-size: 14px;
+  height: 100%;
+}
+a {
+  color: var(--accent);
+  text-decoration: none;
+}
+a:hover {
+  text-decoration: underline;
+}
+code, pre {
+  font-family: var(--mono);
+  font-size: 13px;
+}
+pre {
+  margin: 4px 0 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.layout {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+.topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 16px;
+  background: var(--bg-soft);
+  border-bottom: 1px solid var(--border);
+}
+.brand {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-weight: 600;
+}
+.brand a {
+  color: var(--fg);
+}
+.version {
+  color: var(--fg-soft);
+  font-size: 12px;
+  font-family: var(--mono);
+}
+.user-input {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.user-input label {
+  color: var(--fg-soft);
+  font-size: 12px;
+}
+.user-input input {
+  background: var(--bg);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 4px 8px;
+  font-family: var(--mono);
+  font-size: 13px;
+  width: 280px;
+}
+.user-input button {
+  background: var(--accent);
+  color: white;
+  border: none;
+  border-radius: 4px;
+  padding: 5px 12px;
+  cursor: pointer;
+}
+.user-input button:disabled {
+  background: var(--border);
+  color: var(--fg-soft);
+  cursor: not-allowed;
+}
+
+.content {
+  flex: 1;
+  overflow: auto;
+  padding: 16px;
+}
+.empty {
+  color: var(--fg-soft);
+  padding: 32px 16px;
+  text-align: center;
+}
+.err {
+  background: rgba(255, 93, 104, 0.1);
+  border: 1px solid var(--failed);
+  color: var(--failed);
+  padding: 8px 12px;
+  border-radius: 4px;
+  margin-bottom: 12px;
+  font-family: var(--mono);
+  font-size: 12px;
+}
+
+/* run list */
+.run-list .toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+}
+.filter {
+  display: flex;
+  gap: 4px;
+}
+.filter button {
+  background: var(--bg-soft);
+  color: var(--fg-soft);
+  border: 1px solid var(--border);
+  padding: 4px 12px;
+  cursor: pointer;
+  font-size: 12px;
+  border-radius: 3px;
+}
+.filter button.on {
+  background: var(--accent);
+  color: white;
+  border-color: var(--accent);
+}
+.meta {
+  color: var(--fg-soft);
+  font-size: 12px;
+  display: flex;
+  gap: 12px;
+}
+.spin {
+  font-style: italic;
+}
+
+.tree {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.tree .children {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  border-left: 1px dashed var(--border);
+  margin-left: 14px;
+  padding-left: 12px;
+}
+.node {
+  margin: 2px 0;
+}
+.node .row {
+  display: grid;
+  grid-template-columns: 80px 1fr 200px 120px auto;
+  gap: 12px;
+  align-items: center;
+  padding: 6px 8px;
+  background: var(--bg-soft);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+.agent-link {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.agent-id {
+  color: var(--fg-soft);
+}
+.model {
+  color: var(--fg-soft);
+  font-size: 12px;
+}
+.time {
+  color: var(--fg-soft);
+  font-size: 12px;
+  text-align: right;
+}
+.error-flag {
+  color: var(--failed);
+  font-size: 11px;
+  text-transform: uppercase;
+}
+
+.pill {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  text-align: center;
+  min-width: 70px;
+  font-weight: 600;
+}
+.pill.running { background: rgba(240, 160, 64, 0.2); color: var(--running); }
+.pill.completed { background: rgba(78, 201, 176, 0.2); color: var(--completed); }
+.pill.failed { background: rgba(255, 93, 104, 0.2); color: var(--failed); }
+.pill.cancelled { background: rgba(176, 139, 208, 0.2); color: var(--cancelled); }
+
+/* agent detail */
+.crumbs {
+  margin-bottom: 12px;
+}
+.agent-header {
+  background: var(--bg-soft);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 12px;
+  margin-bottom: 12px;
+}
+.agent-header .line1 {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.agent-header .line2 {
+  margin-top: 6px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  font-size: 12px;
+  color: var(--fg-soft);
+}
+.cancel-btn {
+  background: var(--failed);
+  color: white;
+  border: none;
+  border-radius: 3px;
+  padding: 4px 10px;
+  cursor: pointer;
+  margin-left: auto;
+  font-size: 12px;
+}
+.cancel-btn:disabled {
+  opacity: 0.6;
+}
+.agent-err {
+  margin-top: 8px;
+  padding: 6px 10px;
+  background: rgba(255, 93, 104, 0.1);
+  border-left: 3px solid var(--failed);
+  font-family: var(--mono);
+  font-size: 12px;
+}
+
+.events {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.ev {
+  background: var(--bg-soft);
+  border: 1px solid var(--border);
+  border-left-width: 3px;
+  border-radius: 3px;
+  padding: 8px 12px;
+}
+.ev .kind {
+  display: inline-block;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--fg-soft);
+  margin-bottom: 4px;
+  font-family: var(--mono);
+}
+.ev-text { border-left-color: #6b8caf; }
+.ev-thinking { border-left-color: #b08bd0; background: var(--bg-soft-2); }
+.ev-thinking pre { color: var(--fg-soft); font-style: italic; }
+.ev-tool-call { border-left-color: var(--accent); }
+.ev-tool-call .tool strong {
+  color: var(--accent);
+  font-family: var(--mono);
+}
+.ev-tool-result { border-left-color: var(--completed); }
+.ev-tool-result.err { border-left-color: var(--failed); }
+.ev-error { border-left-color: var(--failed); background: rgba(255, 93, 104, 0.05); }
+.ev-retry { border-left-color: var(--running); }
+.ev-done { border-left-color: var(--fg-soft); }
+.ev-unknown { border-left-color: var(--fg-soft); opacity: 0.7; }

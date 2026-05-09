@@ -2,7 +2,27 @@
 
 This is the public roadmap. For decision history, regret notes, and per-version commit-by-commit details, see `doc-internal/PLAN.md` (gitignored).
 
-## v0.7.2 — current
+## v0.7.3 — current
+
+**Status: shipped (2026-05-09).** Adds an embedded read-only Web UI for monitoring agent runs, with bearer-in-cookie auth bridging the existing /v1 API. React + Vite + TypeScript stack; output embedded into the Go binary via go:embed. Operators visit `/ui?token=<bearer>` once; subsequent navigation authenticates via an HttpOnly session cookie.
+
+**What's in v0.7.3 (vs v0.7.2):**
+
+- **Embedded React SPA** (`web/` source, `internal/webui/` Go package). Two pages today: a tree view of runs at `/ui` (parent → children, filterable by status, polls every 3 s) and a per-agent detail view at `/ui/agents/{agent_id}` (event log: text / thinking / tool_call / tool_result / error / retry / done; auto-refreshes for active runs; cancel button). No new wire endpoints required — the UI consumes the existing `/v1/users/{user_id}/agents`, `/v1/agents/{agent_id}`, `/v1/sessions/{id}/transcript`, and `/v1/agents/{agent_id}/cancel` routes.
+- **Bearer-in-cookie auth** (`internal/api/http/server.go::authMiddleware`). The middleware now accepts either an `Authorization: Bearer ...` header (existing contract — every adapter / curl / SDK keeps working) OR a `loomcycle_session` HttpOnly cookie set by `/ui?token=...`. Cookie is `SameSite=Strict`, `HttpOnly`, optionally `Secure` (auto-detected from `r.TLS`; operators behind TLS terminators can pass an explicit flag through `webui.Handler`).
+- **`internal/webui` package**: owns the `go:embed all:dist` declaration so the Go side never reaches into `web/` directly. Exports `Handler(prefix, secureCookie)` that returns an `http.Handler` mounted by api/http at `/ui` and `/ui/`. SPA fallback: any path that doesn't resolve to an embedded asset falls through to `index.html` so the React Router handles deep links like `/ui/agents/{id}`.
+- **Build pipeline**: new `make build-ui` target wraps `npm install + npm run build` and writes to `internal/webui/dist/`. CI's existing Go job stays unchanged — the committed `.gitkeep` placeholder ensures `go:embed` always has a matching file, so a fresh checkout without `npm` toolchain still compiles. A new `web-ui` CI job runs typecheck + build separately. Operators who skip the UI build see a clean 503 with `ui_not_built` code on `/ui` rather than a confusing 404.
+
+**Architecture decisions worth flagging:**
+
+- **No new SSE wire surface for live updates yet.** The UI polls (`3 s` for the run list, `1.5 s` for the active-run detail). v0.8 candidate: a dedicated `/v1/users/{user_id}/agents/stream` SSE endpoint that pushes state-transition events. Polling is acceptable for the v0.7.3 footprint; the consumer-side knob lives in `web/src/pages/`.
+- **No source maps in the production bundle.** Inline source maps blew the embedded JS to 2 MB; separate `.map` files would still bloat the binary. UI bugs are debugged via `npm run dev` against a running loomcycle (Vite proxies `/v1` to `localhost:8787`). Production embedded payload: ~239 KB JS / ~5 KB CSS / 0.4 KB HTML (76 KB / 1.5 KB / 0.27 KB gzipped).
+- **Stack: React + Vite + TypeScript.** Operator chose React over server-side-rendered HTML to keep the door open for richer extensions (tool-use hook editor, resolver matrix dashboard, CV diff viewer) without rewriting. Bundle size is small enough that the overhead vs SSR is negligible at the v0.7.3 footprint.
+- **`web/dist/` is NOT committed.** The build artefact lives at `internal/webui/dist/` and is gitignored except for the `.gitkeep` placeholder. Operators / CI run `make build-ui` before `go build` (or `make build-all` which combines them). This keeps PR diffs free of bundled-asset noise.
+
+For the v0.7.2 baseline that drove this work, see [v0.7.2](#v072--earlier).
+
+## v0.7.2 — earlier
 
 **Status: shipped (2026-05-09).** Adds the Google Gemini provider as the fifth backend alongside Anthropic / OpenAI / DeepSeek / Ollama. No changes to existing drivers; per-agent yaml gains `provider: gemini` as an option.
 

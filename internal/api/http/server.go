@@ -29,6 +29,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 	"github.com/denn-gubsky/loomcycle/internal/tools/builtin"
 	"github.com/denn-gubsky/loomcycle/internal/tools/policy"
+	"github.com/denn-gubsky/loomcycle/internal/webui"
 )
 
 // ProviderResolver returns a Provider by ID. The cmd/loomcycle main constructs one
@@ -539,6 +540,17 @@ func (s *Server) Mux() http.Handler {
 	mux.Handle("DELETE /v1/hooks/{id}", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleDeleteHook))))
 	// v0.7.x resolver introspection — operator-only debug surface.
 	mux.Handle("GET /v1/_resolver", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleResolverSnapshot))))
+	// v0.7.3 Web UI — embedded React SPA. The cookie-set landing
+	// page (/ui with a ?token= query) is intentionally NOT
+	// auth-middleware-wrapped; it sets the cookie that the
+	// authMiddleware will then accept on subsequent /v1 calls.
+	// Static asset requests (/ui/assets/*) don't need auth either
+	// — the SPA shell is public; it pulls protected data from
+	// /v1/* which DOES go through authMiddleware. Standard SPA-on-
+	// API split.
+	uiHandler := webui.Handler("/ui", false)
+	mux.Handle("GET /ui", recoveryMiddleware(uiHandler))
+	mux.Handle("GET /ui/", recoveryMiddleware(uiHandler))
 	return mux
 }
 
@@ -1971,13 +1983,30 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
-		got := r.Header.Get("Authorization")
 		want := "Bearer " + s.cfg.Env.AuthToken
-		if !auth.CompareBearer(got, want) {
+		// Standard bearer-header path (every adapter / curl / API client).
+		if got := r.Header.Get("Authorization"); got != "" {
+			if auth.CompareBearer(got, want) {
+				next.ServeHTTP(w, r)
+				return
+			}
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
-		next.ServeHTTP(w, r)
+		// Cookie fallback for the embedded Web UI (v0.7.3). The /ui
+		// landing handler converts a `?token=...` query into a
+		// loomcycle_session HttpOnly cookie; subsequent /v1 calls
+		// from the SPA carry the cookie automatically (same-origin
+		// fetch). Operators using bearer headers via curl / SDKs are
+		// unaffected.
+		if cookie, err := r.Cookie(webui.SessionCookie); err == nil && cookie.Value != "" {
+			cookieBearer := "Bearer " + cookie.Value
+			if auth.CompareBearer(cookieBearer, want) {
+				next.ServeHTTP(w, r)
+				return
+			}
+		}
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
 	})
 }
 
