@@ -2,7 +2,33 @@
 
 This is the public roadmap. For decision history, regret notes, and per-version commit-by-commit details, see `doc-internal/PLAN.md` (gitignored).
 
-## v0.7.0 — current
+## v0.7.1 — current
+
+**Status: shipped (2026-05-09).** Tag `v0.7.1` on `main`. v0.7.1 is a "consolidation" point release on top of v0.7.0: eleven PRs merged over a single intensive session that cleaned up production-discovered gaps from the jobs-search-agent integration, expanded the typed event surface (live thinking, tool-use hooks), unblocked silent-network-drop scenarios for fan-out agents, and exposed the in-process resolver matrix over HTTP so dashboards can render it. No breaking wire changes — every consumer that worked against v0.7.0 keeps working unchanged.
+
+**What's in v0.7.1 (vs v0.7.0):**
+
+- **DeepSeek thinking-mode roundtrip** (PR #25). DeepSeek V4 Pro / deepseek-reasoner returns `reasoning_content` alongside `content`; the API requires it to be echoed back on subsequent turns or the next request 400s. The OpenAI driver captures the reasoning trace, surfaces it on `EventDone.Reasoning`, and the request builder serialises it back when the assistant Message carries one.
+- **Ollama qwen3 tool-call-as-text recovery** (PR #26 + PR #35). qwen3:14b sometimes loses tool-call envelope discipline mid-conversation. PR #26 added recovery for the JSON-shape: `{"name":"...","arguments":{...}}`, optionally inside a markdown fence, and the array form for batched calls. PR #35 added the bracketed-markdown form: `[tool_use: name]\n{args}` / `[tool_use: name {args}]` / bare `[tool_use: name]`.
+- **`TestBashTimeout` race-detector reliability** (PR #27). Moved the timing-sensitive timeout test behind a `//go:build !race` tag — the race detector's goroutine-scheduling overhead starves the kill goroutine long enough that the full `sleep 5` runs to completion. Production code is fine; the race environment isn't a useful place to validate timing-sensitive scheduling.
+- **Per-token text coalescing for OpenAI / DeepSeek** (PR #28). Streaming text deltas accumulate into 64-byte chunks before emitting `EventText`, with mandatory flushes on newline / before tool_calls / end-of-stream. Closes the "every word on its own line" cosmetic noise DeepSeek's tokenizer produced in line-prefix-logging consumers.
+- **SSE wire-level keepalive** (PR #29). Long-lived agent streams emit `: keepalive\n\n` comment frames every 20 s by default to keep the underlying TCP/HTTP path warm. Closes the opaque `TypeError: terminated` undici reports when networks with idle-connection timeouts (Tailscale, NAT routers) drop a silent stream. Configurable via `LOOMCYCLE_SSE_KEEPALIVE_MS`; 0 disables.
+- **Parallel tool dispatch** (PR #30). The agent loop dispatched a turn's tool_calls serially — for the `Agent` built-in tool that turned 3-way fan-outs into queues. New `executePendingTools` runs each tool_call in its own goroutine, bounded by `LOOMCYCLE_TOOL_PARALLELISM` (default 8). Messages handed back to the model preserve tool_call order; SSE events emit in completion order so live consumers see fast tools' results first.
+- **`EventThinking` event type** (PR #32). Live streaming of the model's reasoning trace as a typed event distinct from `EventText`. All three drivers wire it up: Anthropic from `thinking_delta` content blocks, OpenAI / DeepSeek from `delta.reasoning_content`, Ollama from `message.thinking`. Consumers can render or hide the trace independently of the user-visible answer; `EventDone.Reasoning` still carries the consolidated trace for next-turn echo (DeepSeek roundtrip requirement).
+- **Tool-use hooks** (PR #33). Operator-supplied middleware around tool dispatch. External apps register HTTP-webhook callbacks against `(agent, tool, phase)` selectors via `POST /v1/hooks`; loomcycle invokes them around `executeTool` so a hook can rewrite the input, short-circuit with a synthetic result, or rewrite the post-tool result. Per-`(owner, name)` idempotent registration prevents cascading on app restart. Fail-open default (telemetry hooks don't block); fail-closed available for security-shaped hooks. See `docs/TOOLS.md` for the full surface.
+- **Resolver Snapshot endpoint** (PR #34). `GET /v1/_resolver` exposes the in-process availability matrix as JSON, bearer-authed. Returns 503 in the brief degraded-startup window before `SetResolver` is called, so dashboards can distinguish "matrix not available" from "matrix is empty". Wire shape uses snake_case via a thin adapter so internal `resolve.Availability` renames don't churn the public surface.
+- **gofmt / chore** (PR #31). Whole-tree gofmt to clear pre-Go-1.19 doc-comment style drift that had been failing CI's gofmt step on every PR.
+
+**Architecture decisions worth flagging:**
+
+- **Hooks chose HTTP-webhook over Go interface for the v0.7.x scope.** External apps (jobs-search-web) need to plug their own logic in from outside the loomcycle binary. A future in-process Go hook is just a hook implementation that runs the callback in-process; the registration shape stays the same.
+- **Hooks are NOT persistent across loomcycle restart.** Apps re-register on their own startup. (Owner, name) tuple identity prevents cascading on the registering app's restart. An app that's down can't process callbacks anyway, so unregistered-on-restart matches reality.
+- **Parallel tool dispatch caps at 8 concurrently.** Set by `LOOMCYCLE_TOOL_PARALLELISM`. The HTTP server's `MAX_CONCURRENT_RUNS` slot still bounds the run tree, so this is an inner-loop knob that doesn't change the global ceiling. Default 8 chosen empirically — typical Anthropic / DeepSeek turns emit 2–5 tool_calls; 8 covers the common case without spawning storms on rare large fan-outs.
+- **EventThinking is additive, not a replacement.** `EventDone.Reasoning` still carries the consolidated trace for the next-turn echo. Adapters that only want the final string keep working unchanged; adapters that want live progress consume both.
+
+For the v0.7.0 baseline that drove this work, see [v0.7.0](#v070--earlier).
+
+## v0.7.0 — earlier
 
 **Status: shipped (2026-05-08).** Tag `v0.7.0` on `main`, merged via PRs #21 + #22 + #23. Adds the model-resolution matrix: agents declare a tier (low / middle / high) plus an optional effort hint, the runtime picks (provider, model) against an availability matrix that's live-probed at startup and re-probed every 15 minutes. Closes the v0.7+ near-term scope from v0.6.0.
 
@@ -24,7 +50,7 @@ This is the public roadmap. For decision history, regret notes, and per-version 
 
 For the v0.6.x cost-routing strategy that drove this work, see [v0.6.0](#v060--earlier).
 
-## v0.6.0 — previous
+## v0.6.0 — earlier
 
 **Status: shipped (2026-05-08).** Tag `v0.6.0` on `main`, merged via PRs #18 + #19 + the OpenAI driver `Usage.Model` fix. Provider matrix now covers four backends: Anthropic for user-sensitive paths, DeepSeek for high-volume public-data work, Ollama (local llama) for offline / cost-floor scenarios, OpenAI for general use. Per-agent provider routing in YAML lets a consumer mix and match by data sensitivity.
 
@@ -105,26 +131,11 @@ Architecture decision: DeepSeek is a separate `provider: deepseek` rather than `
 
 For usage: see [README](../README.md). For the architecture: see [ARCHITECTURE.md](ARCHITECTURE.md). For tool policy: see [TOOLS.md](TOOLS.md).
 
-## v0.7.x — near-term
+## v0.8.x — next
 
-Items scoped after v0.7.0 ships, ordered roughly by readiness. Distinct from the v1.0 outline below: these are bounded chunks of work with a known shape, not framework-defining primitives.
+Empty as of v0.7.1. Contributions and proposals welcome — open an RFC under `doc-internal/rfcs/<feature>.md` per the contribution flow at the bottom of this file.
 
-### Shipped post-v0.7.0
-
-- **DeepSeek thinking-mode roundtrip** (PR #25, 2026-05-08). DeepSeek V4 Pro / deepseek-reasoner returns `reasoning_content` alongside `content`; the API requires it to be echoed back on subsequent turns or the next request 400s. The OpenAI driver now captures the reasoning trace, surfaces it on `EventDone.Reasoning`, and the request builder serialises it back when the assistant `Message` carries one.
-- **Ollama qwen3 tool-call-as-text recovery** (PR #26, 2026-05-08). qwen3:14b sometimes loses tool-call envelope discipline mid-conversation and emits the next call as plain JSON content. The Ollama driver detects the JSON shape at end-of-stream and synthesises an `EventToolCall` so the loop iterates instead of terminating with the JSON dump as the final answer. JSON-shape and array-of-calls forms covered; the bracketed `[tool_use: name]` notation is not.
-- **`TestBashTimeout` race-detector reliability** (PR #27, 2026-05-08). Moved the timing-sensitive timeout test behind a `//go:build !race` tag — the race detector's goroutine-scheduling overhead starves the kill goroutine long enough that the full `sleep 5` runs to completion. Production code is fine; the race environment isn't a useful place to validate timing-sensitive scheduling.
-- **Per-token text coalescing for OpenAI / DeepSeek** (PR #28, 2026-05-09). Streaming text deltas accumulate into 64-byte chunks before emitting `EventText`, with mandatory flushes on newline / before tool_calls / end-of-stream. Closes the "every word on its own line" cosmetic noise DeepSeek's tokenizer produced in line-prefix-logging consumers.
-- **SSE wire-level keepalive** (PR #29, 2026-05-09). Long-lived agent streams emit `: keepalive\n\n` comment frames every 20 s by default to keep the underlying TCP/HTTP path warm. Closes the opaque `TypeError: terminated` undici reports when networks with idle-connection timeouts (Tailscale, NAT routers) drop a silent stream. Configurable via `LOOMCYCLE_SSE_KEEPALIVE_MS`; 0 disables.
-- **Parallel tool dispatch** (PR #30, 2026-05-09). The agent loop dispatched a turn's tool_calls serially — for the `Agent` built-in tool that turned 3-way fan-outs into queues. New `executePendingTools` runs each tool_call in its own goroutine, bounded by `LOOMCYCLE_TOOL_PARALLELISM` (default 8). Messages handed back to the model preserve tool_call order; SSE events emit in completion order so live consumers see fast tools' results first.
-- **`EventThinking` event type** (PR #32, 2026-05-09). Live streaming of the model's reasoning trace as a typed event distinct from `EventText`. All three drivers wire it up: Anthropic from `thinking_delta` content blocks, OpenAI / DeepSeek from `delta.reasoning_content`, Ollama from `message.thinking`. Consumers can render or hide the trace independently of the user-visible answer; `EventDone.Reasoning` still carries the consolidated trace for next-turn echo (DeepSeek roundtrip requirement).
-- **Resolver Snapshot endpoint** (PR #34, 2026-05-09). `GET /v1/_resolver` exposes the in-process availability matrix as JSON, bearer-authed. Returns 503 in the brief degraded-startup window before `SetResolver` is called, so dashboards can distinguish "matrix not available" from "matrix is empty". Wire shape uses snake_case via a thin adapter so internal `resolve.Availability` renames don't churn the public surface.
-- **Tool-use hooks** (PR #33, 2026-05-09). Operator-supplied middleware around tool dispatch. External apps register HTTP-webhook callbacks against `(agent, tool, phase)` selectors via `POST /v1/hooks`; loomcycle invokes them around `executeTool` so a hook can rewrite the input, short-circuit with a synthetic result, or rewrite the post-tool result. Per-`(owner, name)` idempotent registration prevents cascading on app restart. Fail-open default (telemetry hooks don't block); fail-closed available for security-shaped hooks. See `docs/TOOLS.md` for the full surface.
-- **Ollama markdown-form tool-call parser** (PR — pending merge of this branch, 2026-05-09). Extends PR #26's JSON-shape recovery with the bracketed-markdown form some chat templates produce: `[tool_use: name]\n{args}`, `[tool_use: name {args}]`, and the bare `[tool_use: name]` (defaults to empty args). Strict-prefix-match (`[tool_use:`) on the trimmed body gates the recovery so prose mentioning the literal phrase "tool_use" never false-positives. Identifier and JSON-object validation reject malformed shapes; ambiguous double-args (inline + post-bracket) are rejected on principle.
-
-### Still queued
-
-- **jobs-search-agent provider routing rollout.** v0.6.0 shipped the per-agent `provider:` knob; v0.7.0 added tier resolution. The consumer-side flip happens in `jobs-search-agent`'s agent yaml: public-data agents (ATS filtering, position relevance, company profiling) move to `tier: low` or `provider: deepseek`; CV / CL generation stays explicit on Anthropic. The cv-adapter / ai-detector pair specifically uses tier+per-agent-overrides to enforce different model families for the AI-review pipeline. Validation: cost rollups by `runs.model` should show DeepSeek dominating volume while Anthropic dominates spend.
+The shape of the next batch is informed by the v1.0 outline below; expect Memory tool / Channel tool / LoomHelp tool / LoomCycle MCP / high-load runtime work to be sequenced into v0.8.x point releases before v1.0's full ambition lands.
 
 ## v1.0 — planned
 
