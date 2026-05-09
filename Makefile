@@ -20,11 +20,13 @@ PG_PASSWORD  ?= loomcycle
 
 PG_DSN := postgres://$(PG_USER):$(PG_PASSWORD)@127.0.0.1:$(PG_PORT)/$(PG_DATABASE)?sslmode=disable
 
-.PHONY: help build test test-pg pg-up pg-down pg-logs proto proto-deps python-proto python-test
+.PHONY: help build build-ui build-all test test-pg pg-up pg-down pg-logs proto proto-deps python-proto python-test
 
 help:
 	@echo "loomcycle dev targets:"
 	@echo "  build       — go build ./..."
+	@echo "  build-ui    — npm install + npm build for web/ (output → internal/webui/dist/)"
+	@echo "  build-all   — build-ui + build (produces a binary with the latest UI embedded)"
 	@echo "  test        — go test ./... (Postgres tests skip without LOOMCYCLE_TEST_PG_DSN)"
 	@echo "  test-pg     — go test ./... with LOOMCYCLE_TEST_PG_DSN set against the local fixture"
 	@echo "  pg-up       — start an ephemeral Postgres container for the test fixture"
@@ -37,6 +39,18 @@ help:
 
 build:
 	go build ./...
+
+build-ui:
+	# Build the React SPA into internal/webui/dist/. The dist/ tree is
+	# wiped first so old content-hashed assets don't accumulate, then
+	# the .gitkeep placeholder is restored so go:embed always has at
+	# least one matching file (a fresh checkout without npm-build still
+	# compiles Go).
+	rm -rf internal/webui/dist/*
+	cd web && npm install --silent && npm run build
+	touch internal/webui/dist/.gitkeep
+
+build-all: build-ui build
 
 test:
 	go test ./...

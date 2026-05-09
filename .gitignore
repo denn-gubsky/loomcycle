@@ -45,3 +45,18 @@ adapters/python/.pytest_cache/
 __pycache__/
 *.pyc
 .pytest_cache/
+
+# v0.7.3 web UI build artefacts. The .gitkeep placeholder is the only
+# committed file under internal/webui/dist/ — `make build-ui` replaces
+# it with index.html + assets/, which we don't commit (CI runs the
+# build before `go build`).
+web/node_modules/
+web/dist/
+# tsc-emitted .js / build cache (Vite handles compilation; package.json
+# uses `tsc --noEmit` for typecheck only, but accidental `tsc -b` runs
+# produce these in-tree).
+web/**/*.js
+!web/vite.config.ts
+web/tsconfig.tsbuildinfo
+internal/webui/dist/*
+!internal/webui/dist/.gitkeep

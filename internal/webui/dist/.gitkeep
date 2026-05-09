@@ -1,0 +1,5 @@
+# Placeholder so go:embed in webui.go has at least one matching file
+# before the operator runs `make build-ui`. After the npm build runs,
+# this file co-exists with index.html and /assets — its presence is
+# harmless (the handler looks up index.html specifically and serves
+# 503 with `ui_not_built` when index.html is missing).
