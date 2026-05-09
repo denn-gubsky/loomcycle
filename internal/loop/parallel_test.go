@@ -70,7 +70,13 @@ func (t *slowTool) Execute(ctx context.Context, input json.RawMessage) (tools.Re
 type scriptedProvider struct {
 	toolCalls []providers.ToolUse
 	calls     int
-	mu        sync.Mutex
+	// requests captures every providers.Request the loop hands to
+	// Call(), in order. Used by TestParallelDispatch_PreservesMessageOrdering
+	// to inspect the messages array on turn 2 (the one that carries the
+	// tool_result content blocks) and assert tool_call ordering survives
+	// the parallel dispatch.
+	requests []providers.Request
+	mu       sync.Mutex
 }
 
 func (p *scriptedProvider) ID() string                                   { return "scripted" }
@@ -81,11 +87,12 @@ func (p *scriptedProvider) ListModels(_ context.Context) ([]string, error) {
 func (p *scriptedProvider) Capabilities() providers.Capabilities {
 	return providers.Capabilities{Streaming: true}
 }
-func (p *scriptedProvider) Call(_ context.Context, _ providers.Request) (<-chan providers.Event, error) {
+func (p *scriptedProvider) Call(_ context.Context, req providers.Request) (<-chan providers.Event, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	turn := p.calls
 	p.calls++
+	p.requests = append(p.requests, req)
 	ch := make(chan providers.Event, len(p.toolCalls)+2)
 	if turn == 0 {
 		ch <- providers.Event{Type: providers.EventText, Text: "spawning"}
@@ -162,13 +169,15 @@ func TestParallelDispatch_RunsConcurrently_NotSerial(t *testing.T) {
 
 // TestParallelDispatch_PreservesMessageOrdering pins the contract
 // that the message handed back to the model lists tool_results in
-// tool_call order, even when tools finish out of order.
+// tool_call order, even when tools finish out of order. The
+// assertion is on the ACTUAL request the loop hands to the provider
+// on turn 2 (the one carrying the tool_result content blocks),
+// captured by scriptedProvider.requests.
 func TestParallelDispatch_PreservesMessageOrdering(t *testing.T) {
-	// Make the FIRST tool the slowest — then a serial dispatch and a
-	// parallel dispatch would both finish in the same final order
-	// (slowest first) and miss any reordering bug. Instead, make
-	// tool 0 fast, tool 1 medium, tool 2 fastest. That way completion
-	// order is [2, 0, 1] but the message must still read [0, 1, 2].
+	// Tool 0 medium, tool 1 slowest, tool 2 fastest → completion
+	// order [2, 0, 1] differs from tool_call order [0, 1, 2]. The
+	// indexed-slot write in executePendingTools must restore the
+	// original ordering before the message is appended.
 	pending := []providers.ToolUse{
 		{ID: "call_0", Name: "Slow", Input: json.RawMessage(`{"id":"call_0","ms":50}`)},
 		{ID: "call_1", Name: "Slow", Input: json.RawMessage(`{"id":"call_1","ms":80}`)},
@@ -189,27 +198,51 @@ func TestParallelDispatch_PreservesMessageOrdering(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	// Pull the request the model received for iteration 2: its
-	// final message contains the tool_results we built. Order must
-	// match pending[].ID even though completion order was different.
-	req2 := prov.calls
-	_ = req2 // calls is incremented internally; the mutated state is what we want
-	// Deeper inspection: messages array isn't directly exposed by
-	// scripted provider; instead we verify finish-time ordering
-	// confirms our assumption (call_2 < call_0 < call_1) — the only
-	// way the test can succeed without parallel + indexed write is
-	// if both ordering-relevant code paths are correct.
+
+	// Sanity guard: the test only exercises the reorder path when
+	// finish times actually separate as planned. If scheduler noise
+	// produces a different finish order on this run, skip rather
+	// than report a misleading pass.
 	tool.mu.Lock()
-	defer tool.mu.Unlock()
 	if !(tool.finishes["call_2"].Before(tool.finishes["call_0"]) &&
 		tool.finishes["call_0"].Before(tool.finishes["call_1"])) {
-		// If timing didn't separate as planned, the test isn't
-		// really exercising the reorder path — flag it so a
-		// flake-detective doesn't dismiss a real regression as
-		// "scheduler noise".
-		t.Skipf("scheduler did not produce the expected finish order on this run "+
+		tool.mu.Unlock()
+		t.Skipf("scheduler did not separate finish times this run "+
 			"(call_2=%v call_0=%v call_1=%v); cannot assert reordering",
 			tool.finishes["call_2"], tool.finishes["call_0"], tool.finishes["call_1"])
+	}
+	tool.mu.Unlock()
+
+	// Pull turn 2's request — that's the one carrying the user
+	// message with all three tool_result blocks.
+	prov.mu.Lock()
+	defer prov.mu.Unlock()
+	if len(prov.requests) < 2 {
+		t.Fatalf("turn 2 not captured (got %d Call invocations)", len(prov.requests))
+	}
+	turn2 := prov.requests[1]
+
+	// Find the user message containing tool_results and pull their
+	// IDs in wire order. We expect three blocks correlated to
+	// call_0/call_1/call_2 in that exact order.
+	var ids []string
+	for _, msg := range turn2.Messages {
+		for _, c := range msg.Content {
+			if c.Type == "tool_result" {
+				ids = append(ids, c.ToolUseID)
+			}
+		}
+	}
+	want := []string{"call_0", "call_1", "call_2"}
+	if len(ids) != len(want) {
+		t.Fatalf("tool_result block count = %d, want %d (got %v)", len(ids), len(want), ids)
+	}
+	for i, got := range ids {
+		if got != want[i] {
+			t.Errorf("tool_result[%d] = %q, want %q (full order %v; reorder bug — "+
+				"results slice was written in completion order, not tool_call order)",
+				i, got, want[i], ids)
+		}
 	}
 }
 
