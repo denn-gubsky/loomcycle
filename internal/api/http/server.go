@@ -1625,9 +1625,15 @@ func (s *Server) runSubAgent(ctx context.Context, name string, prompt string) (s
 // from the original SSE stream and surfacing it here keeps things
 // debug-friendly.
 type agentResponse struct {
-	AgentID         string             `json:"agent_id"`
-	RunID           string             `json:"run_id"`
-	SessionID       string             `json:"session_id"`
+	AgentID   string `json:"agent_id"`
+	RunID     string `json:"run_id"`
+	SessionID string `json:"session_id"`
+	// Agent is the YAML-declared agent name (e.g. "qa-agent",
+	// "company-researcher"). Surfaced from the parent session via
+	// SQL JOIN so consumers don't have to fetch the session row
+	// separately. Empty when the session row is missing (manual
+	// pruning / very-old data).
+	Agent           string             `json:"agent,omitempty"`
 	UserID          string             `json:"user_id,omitempty"`
 	ParentAgentID   string             `json:"parent_agent_id,omitempty"`
 	Status          store.RunStatus    `json:"status"`
@@ -1659,6 +1665,7 @@ func runToAgentResponse(r store.Run, live bool) agentResponse {
 		AgentID:       r.AgentID,
 		RunID:         r.ID,
 		SessionID:     r.SessionID,
+		Agent:         r.Agent,
 		UserID:        r.UserID,
 		ParentAgentID: r.ParentAgentID,
 		Status:        r.Status,

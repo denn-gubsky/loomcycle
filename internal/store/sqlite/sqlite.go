@@ -299,12 +299,19 @@ func (s *Store) GetTranscript(ctx context.Context, sessionID string) ([]store.Ev
 
 // scanRun decodes one row from a runs SELECT into a store.Run. The
 // SELECT column list MUST match the order in runColumns below.
+//
+// The trailing `agent` column comes from a LEFT JOIN onto sessions
+// — sessions.agent is the YAML-declared agent name. NULL when the
+// session row is missing (the JOIN drops the agent name silently
+// rather than failing the read; the rest of the run row is still
+// useful).
 func scanRun(scanner interface{ Scan(...any) error }) (store.Run, error) {
 	var r store.Run
 	var startedNs, completedNs sql.NullInt64
 	var lastHbNs sql.NullInt64
 	var stopReason, model, errMsg sql.NullString
 	var agentID, parentAgentID, parentRunID, userID sql.NullString
+	var sessAgent sql.NullString
 	var status string
 	if err := scanner.Scan(
 		&r.ID, &r.SessionID, &status, &startedNs, &completedNs,
@@ -312,6 +319,7 @@ func scanRun(scanner interface{ Scan(...any) error }) (store.Run, error) {
 		&r.InputTokens, &r.OutputTokens, &r.CacheCreationTokens, &r.CacheReadTokens,
 		&model, &errMsg,
 		&agentID, &parentAgentID, &parentRunID, &userID, &lastHbNs,
+		&sessAgent,
 	); err != nil {
 		return store.Run{}, err
 	}
@@ -346,16 +354,30 @@ func scanRun(scanner interface{ Scan(...any) error }) (store.Run, error) {
 	if userID.Valid {
 		r.UserID = userID.String
 	}
+	if sessAgent.Valid {
+		r.Agent = sessAgent.String
+	}
 	return r, nil
 }
 
 // runColumns is the canonical SELECT column list paired with scanRun.
 // Centralised so a future column addition is a one-line change.
-const runColumns = `id, session_id, status, started_at, completed_at,
-		stop_reason,
-		input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens,
-		model, error,
-		agent_id, parent_agent_id, parent_run_id, user_id, last_heartbeat_at`
+//
+// The `r.` / `s.` qualifiers + the trailing JOIN clause are required
+// because of the sessions.agent column (denormalised onto Run.Agent
+// at read time so callers don't have to fetch the session row
+// separately). All callers MUST use `runFromTable` to reference the
+// table (with its alias) so the qualifiers resolve.
+const runColumns = `r.id, r.session_id, r.status, r.started_at, r.completed_at,
+		r.stop_reason,
+		r.input_tokens, r.output_tokens, r.cache_creation_tokens, r.cache_read_tokens,
+		r.model, r.error,
+		r.agent_id, r.parent_agent_id, r.parent_run_id, r.user_id, r.last_heartbeat_at,
+		s.agent`
+
+// runFromTable is the canonical FROM clause paired with runColumns.
+// Provides the `r` and `s` aliases that the column list references.
+const runFromTable = `runs r LEFT JOIN sessions s ON r.session_id = s.id`
 
 // GetRunByAgentID returns the most recently started run carrying the
 // given agent_id, or *store.ErrNotFound. Multiple historical runs may
@@ -367,7 +389,7 @@ func (s *Store) GetRunByAgentID(ctx context.Context, agentID string) (store.Run,
 		return store.Run{}, &store.ErrNotFound{Kind: "run", ID: agentID}
 	}
 	row := s.db.QueryRowContext(ctx,
-		`SELECT `+runColumns+` FROM runs WHERE agent_id = ? ORDER BY started_at DESC LIMIT 1`,
+		`SELECT `+runColumns+` FROM `+runFromTable+` WHERE r.agent_id = ? ORDER BY r.started_at DESC LIMIT 1`,
 		agentID,
 	)
 	r, err := scanRun(row)
@@ -422,12 +444,12 @@ func (s *Store) ListActiveRunsByUser(ctx context.Context, userID string, status 
 	var err error
 	if status == "" {
 		rows, err = s.db.QueryContext(ctx,
-			`SELECT `+runColumns+` FROM runs WHERE user_id = ? ORDER BY started_at DESC LIMIT 100`,
+			`SELECT `+runColumns+` FROM `+runFromTable+` WHERE r.user_id = ? ORDER BY r.started_at DESC LIMIT 100`,
 			userID,
 		)
 	} else {
 		rows, err = s.db.QueryContext(ctx,
-			`SELECT `+runColumns+` FROM runs WHERE user_id = ? AND status = ? ORDER BY started_at DESC LIMIT 100`,
+			`SELECT `+runColumns+` FROM `+runFromTable+` WHERE r.user_id = ? AND r.status = ? ORDER BY r.started_at DESC LIMIT 100`,
 			userID, string(status),
 		)
 	}
@@ -456,7 +478,7 @@ func (s *Store) ListRunsByParentAgentID(ctx context.Context, parentAgentID strin
 		return nil, nil
 	}
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT `+runColumns+` FROM runs WHERE parent_agent_id = ? ORDER BY started_at ASC`,
+		`SELECT `+runColumns+` FROM `+runFromTable+` WHERE r.parent_agent_id = ? ORDER BY r.started_at ASC`,
 		parentAgentID,
 	)
 	if err != nil {
