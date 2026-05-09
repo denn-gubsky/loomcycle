@@ -350,6 +350,22 @@ type Env struct {
 	// long interval can't hide a recovered provider for a full
 	// day. Env: LOOMCYCLE_RESOLVE_PROBE_INTERVAL_MS.
 	ResolveProbeInterval time.Duration
+
+	// ToolParallelism caps how many tool_calls from a single
+	// assistant turn run concurrently. Default 8. Set to 1 to
+	// force serial dispatch (debug / determinism). Field 0
+	// (unset) is treated as the default — the loop fills in 8.
+	//
+	// Bumping this matters most for agents that fan out via the
+	// `Agent` built-in tool: each Agent call spawns a sub-agent
+	// run, so a parent that emitted 3 Agent tool_calls would
+	// pre-2026-05-09 see them serialised back-to-back instead of
+	// running concurrently. The HTTP server's MAX_CONCURRENT_RUNS
+	// slot still bounds the run tree, so per-tool parallelism is
+	// an inner-loop knob that doesn't change the global ceiling.
+	//
+	// Env: LOOMCYCLE_TOOL_PARALLELISM.
+	ToolParallelism int
 }
 
 // Load reads a YAML file and the process env. Empty path returns defaults +
@@ -466,6 +482,19 @@ func Load(path string) (*Config, error) {
 	if v := os.Getenv("LOOMCYCLE_SESSION_LOCK_MAX_IDLE_MS"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
 			cfg.Env.SessionLockMaxIdle = time.Duration(n) * time.Millisecond
+		}
+	}
+	// LOOMCYCLE_TOOL_PARALLELISM overrides the per-iteration
+	// tool_call concurrency cap (default 8). Floor 1, ceiling 64
+	// — anything beyond 64 would spawn a goroutine storm that
+	// outweighs realistic fan-out. Zero / negative values fall
+	// through to the default.
+	if v := os.Getenv("LOOMCYCLE_TOOL_PARALLELISM"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			if n > 64 {
+				n = 64
+			}
+			cfg.Env.ToolParallelism = n
 		}
 	}
 	// LOOMCYCLE_RESOLVE_PROBE_INTERVAL_MS overrides the default 15-min
