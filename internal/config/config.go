@@ -366,6 +366,22 @@ type Env struct {
 	//
 	// Env: LOOMCYCLE_TOOL_PARALLELISM.
 	ToolParallelism int
+
+	// SSEKeepaliveInterval is the cadence at which the SSE writer
+	// emits comment-only frames (`:keepalive`) on long-lived agent
+	// streams. Required-ignored by SSE clients per WHATWG so they
+	// don't surface as events; the point is to keep the underlying
+	// TCP/HTTP path from going idle. Agent runs that fan out to
+	// sub-agents can sit minutes between real events while a child
+	// is mid-WebFetch — networks with idle-connection timeouts
+	// (Tailscale, NAT routers, some reverse proxies) drop silent
+	// streams and the consumer-side undici reports the drop as
+	// `TypeError: terminated` with no diagnostic context.
+	//
+	// Default 20 s — comfortably under the typical 30-120 s idle
+	// timeouts on the affected network paths. Set to 0 to disable.
+	// Env: LOOMCYCLE_SSE_KEEPALIVE_MS.
+	SSEKeepaliveInterval time.Duration
 }
 
 // Load reads a YAML file and the process env. Empty path returns defaults +
@@ -515,6 +531,29 @@ func Load(path string) (*Config, error) {
 				d = maxProbe
 			}
 			cfg.Env.ResolveProbeInterval = d
+		}
+	}
+	// LOOMCYCLE_SSE_KEEPALIVE_MS sets the SSE keepalive cadence.
+	// Default 20 s; 0 disables. Floor 1 s so a misconfigured tiny
+	// value can't busy-loop the writer; ceiling 5 min so a misread
+	// (e.g. seconds vs ms) can't disable keepalive in practice.
+	cfg.Env.SSEKeepaliveInterval = 20 * time.Second
+	if v := os.Getenv("LOOMCYCLE_SSE_KEEPALIVE_MS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			if n == 0 {
+				cfg.Env.SSEKeepaliveInterval = 0
+			} else if n > 0 {
+				d := time.Duration(n) * time.Millisecond
+				const minSSE = 1 * time.Second
+				const maxSSE = 5 * time.Minute
+				if d < minSSE {
+					d = minSSE
+				}
+				if d > maxSSE {
+					d = maxSSE
+				}
+				cfg.Env.SSEKeepaliveInterval = d
+			}
 		}
 	}
 
