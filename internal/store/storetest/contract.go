@@ -56,6 +56,7 @@ func Run(t *testing.T, factory Factory) {
 		{"GetRunByAgentIDNotFound", testGetRunByAgentIDNotFound},
 		{"GetRunByAgentIDReturnsMostRecent", testGetRunByAgentIDReturnsMostRecent},
 		{"ListActiveRunsByUser", testListActiveRunsByUser},
+		{"ListUsers", testListUsers},
 		{"ListRunsByParentAgentID", testListRunsByParentAgentID},
 		{"UpdateHeartbeat", testUpdateHeartbeat},
 		{"FinishRunCancelledTerminal", testFinishRunCancelledTerminal},
@@ -334,6 +335,65 @@ func testListActiveRunsByUser(t *testing.T, s store.Store) {
 
 	if got, _ := s.ListActiveRunsByUser(ctx, "", store.RunRunning); len(got) != 0 {
 		t.Errorf("empty userID should return no rows, got %d", len(got))
+	}
+}
+
+func testListUsers(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	sessAlice, _ := s.CreateSession(ctx, "t", "a", "alice")
+	sessBob, _ := s.CreateSession(ctx, "t", "a", "bob")
+
+	// alice: 2 runs, 1 still running.
+	rA1, _ := s.CreateRun(ctx, sessAlice.ID, store.RunIdentity{AgentID: "a_alice1", UserID: "alice"})
+	_, _ = s.CreateRun(ctx, sessAlice.ID, store.RunIdentity{AgentID: "a_alice2", UserID: "alice"})
+	_ = s.FinishRun(ctx, rA1.ID, store.RunCompleted, "end_turn", store.Usage{}, "")
+
+	// bob: 1 run, completed.
+	rB1, _ := s.CreateRun(ctx, sessBob.ID, store.RunIdentity{AgentID: "a_bob1", UserID: "bob"})
+	_ = s.FinishRun(ctx, rB1.ID, store.RunCompleted, "end_turn", store.Usage{}, "")
+
+	// Empty-userID run should NOT show up in the listing — filtered
+	// by the WHERE user_id != '' clause.
+	sessAnon, _ := s.CreateSession(ctx, "t", "a", "")
+	_, _ = s.CreateRun(ctx, sessAnon.ID, store.RunIdentity{AgentID: "a_anon", UserID: ""})
+
+	users, err := s.ListUsers(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Order: most-recent activity first. Last run was bob's
+	// (CreateRun ordering), then alice's. But CreateRun timestamps
+	// are nanosecond-resolution and assigned in order — bob is later
+	// than alice.
+	wantIDs := map[string]struct {
+		running int
+		total   int
+	}{
+		"alice": {running: 1, total: 2},
+		"bob":   {running: 0, total: 1},
+	}
+	if len(users) != len(wantIDs) {
+		ids := make([]string, len(users))
+		for i, u := range users {
+			ids[i] = u.UserID
+		}
+		t.Fatalf("ListUsers returned %d users, want %d (got %v)", len(users), len(wantIDs), ids)
+	}
+	for _, u := range users {
+		want, ok := wantIDs[u.UserID]
+		if !ok {
+			t.Errorf("unexpected user_id in result: %q", u.UserID)
+			continue
+		}
+		if u.RunningCount != want.running {
+			t.Errorf("%s.running = %d, want %d", u.UserID, u.RunningCount, want.running)
+		}
+		if u.TotalCount != want.total {
+			t.Errorf("%s.total = %d, want %d", u.UserID, u.TotalCount, want.total)
+		}
+		if u.LastStartedAt.IsZero() {
+			t.Errorf("%s.last_started_at is zero; should reflect a real timestamp", u.UserID)
+		}
 	}
 }
 

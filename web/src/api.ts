@@ -3,6 +3,21 @@
 // operator visits `/ui?token=...` — fetch() includes it
 // automatically because we're same-origin. No bearer header needed.
 
+export interface UserSummary {
+  user_id: string;
+  running_count: number;
+  total_count: number;
+  last_started_at: string;
+}
+
+export interface ListUsersResponse {
+  users: UserSummary[];
+}
+
+export function listUsers(): Promise<ListUsersResponse> {
+  return jsonFetch<ListUsersResponse>("/v1/_users");
+}
+
 export interface Agent {
   agent_id: string;
   run_id: string;

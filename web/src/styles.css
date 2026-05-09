@@ -72,16 +72,17 @@ pre {
   font-size: 12px;
   font-family: var(--mono);
 }
-.user-input {
+.user-picker {
   display: flex;
   gap: 8px;
   align-items: center;
 }
-.user-input label {
+.user-picker label {
   color: var(--fg-soft);
   font-size: 12px;
 }
-.user-input input {
+.user-picker select,
+.user-picker input {
   background: var(--bg);
   color: var(--fg);
   border: 1px solid var(--border);
@@ -89,9 +90,14 @@ pre {
   padding: 4px 8px;
   font-family: var(--mono);
   font-size: 13px;
-  width: 280px;
+  min-width: 280px;
 }
-.user-input button {
+.user-picker form {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+.user-picker button {
   background: var(--accent);
   color: white;
   border: none;
@@ -99,10 +105,21 @@ pre {
   padding: 5px 12px;
   cursor: pointer;
 }
-.user-input button:disabled {
-  background: var(--border);
+.user-picker button.manual-btn {
+  background: transparent;
   color: var(--fg-soft);
-  cursor: not-allowed;
+  border: 1px solid var(--border);
+  padding: 4px 8px;
+  font-size: 12px;
+}
+.user-picker button.manual-btn:hover {
+  color: var(--fg);
+  border-color: var(--accent);
+}
+.picker-err {
+  color: var(--failed);
+  font-size: 11px;
+  font-style: italic;
 }
 
 .content {
