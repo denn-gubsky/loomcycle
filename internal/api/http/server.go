@@ -540,6 +540,10 @@ func (s *Server) Mux() http.Handler {
 	mux.Handle("DELETE /v1/hooks/{id}", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleDeleteHook))))
 	// v0.7.x resolver introspection — operator-only debug surface.
 	mux.Handle("GET /v1/_resolver", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleResolverSnapshot))))
+	// v0.7.3+ user picker — admin-style endpoint surfacing distinct
+	// user_ids that have runs in the store. Bearer-authed; drives
+	// the Web UI's run-list user dropdown.
+	mux.Handle("GET /v1/_users", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleListUsers))))
 	// v0.7.3 Web UI — embedded React SPA. The cookie-set landing
 	// page (/ui with a ?token= query) is intentionally NOT
 	// auth-middleware-wrapped; it sets the cookie that the

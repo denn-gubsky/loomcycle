@@ -377,6 +377,40 @@ func (s *Store) GetRunByAgentID(ctx context.Context, agentID string) (store.Run,
 	return r, err
 }
 
+// ListUsers returns one row per distinct user_id with summary stats.
+// Drives the v0.7.3 Web UI user picker.
+//
+// SQLite COUNT(CASE WHEN ...) is the conventional shape for grouped
+// counts by category; both backends produce identical row sets.
+func (s *Store) ListUsers(ctx context.Context) ([]store.UserSummary, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT
+			user_id,
+			COUNT(CASE WHEN status = 'running' THEN 1 END) AS running_count,
+			COUNT(*) AS total_count,
+			MAX(started_at) AS last_started_at
+		FROM runs
+		WHERE user_id IS NOT NULL AND user_id != ''
+		GROUP BY user_id
+		ORDER BY last_started_at DESC
+		LIMIT 200`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []store.UserSummary
+	for rows.Next() {
+		var u store.UserSummary
+		var lastNanos int64
+		if err := rows.Scan(&u.UserID, &u.RunningCount, &u.TotalCount, &lastNanos); err != nil {
+			return nil, err
+		}
+		u.LastStartedAt = time.Unix(0, lastNanos).UTC()
+		out = append(out, u)
+	}
+	return out, rows.Err()
+}
+
 // ListActiveRunsByUser returns runs for userID whose status matches the
 // supplied filter. An empty status returns ALL statuses. Capped at 100
 // rows ordered by started_at DESC.

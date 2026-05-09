@@ -319,6 +319,36 @@ func (s *Store) GetRunByAgentID(ctx context.Context, agentID string) (store.Run,
 	return r, nil
 }
 
+// ListUsers returns one row per distinct user_id with summary stats.
+// Drives the v0.7.3 Web UI user picker. Mirrors the SQLite shape so
+// behaviour is identical across backends.
+func (s *Store) ListUsers(ctx context.Context) ([]store.UserSummary, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT
+			user_id,
+			COUNT(*) FILTER (WHERE status = 'running') AS running_count,
+			COUNT(*) AS total_count,
+			MAX(started_at) AS last_started_at
+		FROM runs
+		WHERE user_id IS NOT NULL AND user_id != ''
+		GROUP BY user_id
+		ORDER BY last_started_at DESC
+		LIMIT 200`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []store.UserSummary
+	for rows.Next() {
+		var u store.UserSummary
+		if err := rows.Scan(&u.UserID, &u.RunningCount, &u.TotalCount, &u.LastStartedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, u)
+	}
+	return out, rows.Err()
+}
+
 // ListActiveRunsByUser returns up to 100 runs for the user, ordered by
 // started_at DESC. Empty status returns all statuses; non-empty filters
 // to the exact status string. Empty userID short-circuits to no rows.

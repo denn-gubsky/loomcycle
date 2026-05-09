@@ -128,6 +128,20 @@ type RunIdentity struct {
 	UserID string
 }
 
+// UserSummary is one row of ListUsers' output: distinct user_id with
+// summary stats. Drives the Web UI's user picker so operators can see
+// who has active runs and pick from a list rather than typing a UUID.
+//
+// `LastStartedAt` is the most recent run start (any status) — useful
+// for sorting by activity. `RunningCount` is the in-flight count
+// (status=="running"); `TotalCount` includes everything ever.
+type UserSummary struct {
+	UserID        string    `json:"user_id"`
+	RunningCount  int       `json:"running_count"`
+	TotalCount    int       `json:"total_count"`
+	LastStartedAt time.Time `json:"last_started_at"`
+}
+
 // Store is the persistence backend. SQLite is the default; Postgres / Redis
 // adapters slot in behind this interface in v0.4.
 //
@@ -177,6 +191,17 @@ type Store interface {
 	// ListRunsByParentAgentID returns the runs whose parent_agent_id
 	// matches the given value. Drives cascade-cancel discovery.
 	ListRunsByParentAgentID(ctx context.Context, parentAgentID string) ([]Run, error)
+
+	// ListUsers returns the distinct user_ids that have runs in the
+	// store, with summary stats per user (run counts by status, last
+	// activity). Drives the v0.7.3 Web UI's user picker so operators
+	// don't have to type a UUID. Excludes runs with empty user_id
+	// (the default for callers that don't supply identity).
+	//
+	// Capped at 200 users ordered by last_started_at DESC. A bigger
+	// list would be a UX problem anyway — the UI then needs filtering
+	// rather than dropdown.
+	ListUsers(ctx context.Context) ([]UserSummary, error)
 
 	// UpdateHeartbeat sets last_heartbeat_at on a run to the current
 	// time. Called by the loop at each iteration. No-op if the run
