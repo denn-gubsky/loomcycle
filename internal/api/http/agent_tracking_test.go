@@ -23,13 +23,13 @@ import (
 // ctx is cancelled. Used by cancel tests to give an external cancel
 // request time to fire before the loop's response stream completes.
 type pausableProvider struct {
-	release    chan struct{}
-	ctxFired   atomic.Bool
-	finalText  string
+	release   chan struct{}
+	ctxFired  atomic.Bool
+	finalText string
 }
 
-func (p *pausableProvider) ID() string                            { return "pausable" }
-func (p *pausableProvider) Probe(_ context.Context) error          { return nil }
+func (p *pausableProvider) ID() string                    { return "pausable" }
+func (p *pausableProvider) Probe(_ context.Context) error { return nil }
 func (p *pausableProvider) ListModels(_ context.Context) ([]string, error) {
 	return []string{"pausable-model"}, nil
 }

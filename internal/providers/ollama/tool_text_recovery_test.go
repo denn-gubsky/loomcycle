@@ -208,7 +208,7 @@ func TestToolTextRecovery_DisabledWhenNoToolsRequested(t *testing.T) {
 
 	d := New(srv.URL, nil)
 	ch, _ := d.Call(context.Background(), providers.Request{
-		Model:    "qwen3:14b",
+		Model: "qwen3:14b",
 		// Tools intentionally empty — recovery must NOT fire.
 		Messages: []providers.Message{{Role: "user", Content: []providers.ContentBlock{{Type: "text", Text: "x"}}}},
 	})

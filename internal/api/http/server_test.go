@@ -31,8 +31,8 @@ type stubProvider struct {
 	preEvents []providers.Event
 }
 
-func (s *stubProvider) ID() string                            { return "stub" }
-func (s *stubProvider) Probe(_ context.Context) error          { return nil }
+func (s *stubProvider) ID() string                    { return "stub" }
+func (s *stubProvider) Probe(_ context.Context) error { return nil }
 func (s *stubProvider) ListModels(_ context.Context) ([]string, error) {
 	return []string{"stub-model"}, nil
 }
@@ -1275,8 +1275,8 @@ type callableProvider struct {
 	mu       sync.Mutex
 }
 
-func (c *callableProvider) ID() string                            { return "stub" }
-func (c *callableProvider) Probe(_ context.Context) error          { return nil }
+func (c *callableProvider) ID() string                    { return "stub" }
+func (c *callableProvider) Probe(_ context.Context) error { return nil }
 func (c *callableProvider) ListModels(_ context.Context) ([]string, error) {
 	return []string{"stub-model"}, nil
 }

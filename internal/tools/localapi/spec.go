@@ -46,11 +46,11 @@ import (
 // Spec is the parsed subset of an OpenAPI 3.0 document. Fields not
 // listed here are ignored.
 type Spec struct {
-	OpenAPI    string                  `yaml:"openapi"`
-	Info       infoBlock               `yaml:"info"`
-	Paths      map[string]pathItem     `yaml:"paths"`
-	Components componentsBlock         `yaml:"components"`
-	rawBytes   []byte                  // kept for diagnostics
+	OpenAPI    string              `yaml:"openapi"`
+	Info       infoBlock           `yaml:"info"`
+	Paths      map[string]pathItem `yaml:"paths"`
+	Components componentsBlock     `yaml:"components"`
+	rawBytes   []byte              // kept for diagnostics
 }
 
 type infoBlock struct {
@@ -74,17 +74,17 @@ type pathItem struct {
 // are kept as `*yaml.Node` so we can re-serialise them as JSON Schema
 // without deep-parsing every type variant the OpenAPI spec allows.
 type operation struct {
-	OperationID string             `yaml:"operationId"`
-	Summary     string             `yaml:"summary"`
-	Description string             `yaml:"description"`
-	Parameters  []parameter        `yaml:"parameters"`
-	RequestBody *requestBody       `yaml:"requestBody"`
-	Tags        []string           `yaml:"tags"`
+	OperationID string       `yaml:"operationId"`
+	Summary     string       `yaml:"summary"`
+	Description string       `yaml:"description"`
+	Parameters  []parameter  `yaml:"parameters"`
+	RequestBody *requestBody `yaml:"requestBody"`
+	Tags        []string     `yaml:"tags"`
 }
 
 type parameter struct {
 	Name        string     `yaml:"name"`
-	In          string     `yaml:"in"`         // "path" | "query" | "header" | "cookie"
+	In          string     `yaml:"in"` // "path" | "query" | "header" | "cookie"
 	Description string     `yaml:"description"`
 	Required    bool       `yaml:"required"`
 	Schema      *yaml.Node `yaml:"schema"`
@@ -146,9 +146,9 @@ func LoadSpec(specPath, configDir string) (*Spec, error) {
 // become a tool. Builders walk the spec via Endpoints() and call
 // BuildTool for each.
 type Endpoint struct {
-	Path       string
-	Method     string // "GET" | "POST" | "PUT" | "PATCH" | "DELETE"
-	Operation  *operation
+	Path      string
+	Method    string // "GET" | "POST" | "PUT" | "PATCH" | "DELETE"
+	Operation *operation
 }
 
 // Endpoints flattens the Spec into a list of (path, method, operation)

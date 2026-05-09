@@ -147,8 +147,8 @@ func (s *Store) CreateSession(ctx context.Context, tenantID, agent, userID strin
 // GetSession returns the row by ID or *store.ErrNotFound.
 func (s *Store) GetSession(ctx context.Context, sessionID string) (store.Session, error) {
 	var (
-		out      store.Session
-		userID   *string
+		out       store.Session
+		userID    *string
 		createdAt time.Time
 	)
 	row := s.pool.QueryRow(ctx,
@@ -451,14 +451,14 @@ func scanRun(r rowScanner) (store.Run, error) {
 	var (
 		out store.Run
 
-		started time.Time
-		completed *time.Time
+		started    time.Time
+		completed  *time.Time
 		stopReason *string
-		model *string
-		errMsg *string
+		model      *string
+		errMsg     *string
 
 		agentID, parentAgentID, parentRunID, userID *string
-		lastHeartbeatAt *time.Time
+		lastHeartbeatAt                             *time.Time
 
 		statusStr string
 	)
