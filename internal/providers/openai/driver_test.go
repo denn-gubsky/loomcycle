@@ -44,14 +44,14 @@ func fakeStream(t *testing.T, frames []string) *httptest.Server {
 //
 // Contract:
 //
-//   1. Many small (sub-threshold) text deltas are batched into fewer
-//      EventText emissions. Threshold is 64 bytes today.
-//   2. A delta containing '\n' flushes immediately so formatting
-//      boundaries survive coalescing.
-//   3. End-of-stream flushes any residual buffer (no dropped text).
-//   4. The concatenation of all EventText.Text values is byte-identical
-//      to the concatenation of the wire deltas — coalescing is purely
-//      a packing change, never a transformation.
+//  1. Many small (sub-threshold) text deltas are batched into fewer
+//     EventText emissions. Threshold is 64 bytes today.
+//  2. A delta containing '\n' flushes immediately so formatting
+//     boundaries survive coalescing.
+//  3. End-of-stream flushes any residual buffer (no dropped text).
+//  4. The concatenation of all EventText.Text values is byte-identical
+//     to the concatenation of the wire deltas — coalescing is purely
+//     a packing change, never a transformation.
 func TestStreamTextCoalescing_BatchesPerTokenDeltas(t *testing.T) {
 	// 32 single-token deltas of 3-4 bytes each (~96-128 wire bytes).
 	// Pre-fix this produces 32 EventText events; post-fix it produces
