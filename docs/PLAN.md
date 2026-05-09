@@ -199,73 +199,86 @@ Architecture decision: DeepSeek is a separate `provider: deepseek` rather than `
 
 For usage: see [README](../README.md). For the architecture: see [ARCHITECTURE.md](ARCHITECTURE.md). For tool policy: see [TOOLS.md](TOOLS.md).
 
-## v0.8.x — next
+## v0.8.x — next: framework primitives
 
-Empty as of v0.7.1. Contributions and proposals welcome — open an RFC under `doc-internal/rfcs/<feature>.md` per the contribution flow at the bottom of this file.
+Sequenced 2026-05-09. Each point release ships one focused framework primitive — the v1.0 capstone (LoomCycle MCP) needs them in this order because the MCP server's surface is built FROM these primitives. Detailed design (API schemas, storage shapes, retention semantics) lives in feature-branch RFCs at implementation time; the outlines below capture the shape but not the wire.
 
-The shape of the next batch is informed by the v1.0 outline below; expect Memory tool / Channel tool / LoomHelp tool / LoomCycle MCP / high-load runtime work to be sequenced into v0.8.x point releases before v1.0's full ambition lands.
+### v0.8.0 — Memory tool
 
-## v1.0 — planned
+Agent-scoped persistent storage. Backs self-improving agents — an agent can write a fact, a learned heuristic, a counter, or a per-user preference, and read it back on the next invocation. Scope variants (per-agent vs per-session vs per-user vs per-tenant) and retention semantics (TTL, size caps, eviction policy) shape the storage backend, which goes on the existing Postgres `Store` adapter (sqlite for dev, postgres for prod) — no new infra.
 
-The v1.0 ambition is a **high-load agentic runtime**: 10,000 concurrent agents and sub-agents on a single replica, MCP-orchestrable from external tools (Claude Code, other harnesses), with first-class agent self-improvement through persistent memory and inter-agent messaging.
+**Sequenced first** because Channel and LoomHelp both expect Memory to exist (Memory underpins the "agents that learn" use case Channel routing makes interesting; LoomHelp surfaces a memory-snapshot view in its introspection output).
 
-These items are **outline-only** here. Detailed design (API schemas, storage shapes, retention semantics) lives in feature-branch RFCs at implementation time, not in this roadmap.
+What's not yet decided: API shape (key/value vs append-log vs both), TTL semantics, encryption-at-rest, cross-agent read permission model, schema versioning for stored values, structured-JSON values (queryable) vs opaque blobs (simpler). RFC at pickup.
 
-### Framework primitives
+### v0.8.1 — Channel tool
 
-#### Memory tool
+Persistent inter-agent message bus. One agent writes to a named channel; another reads from it. Powers patterns like "researcher writes findings into `findings/` channel; analyst drains the channel and produces summaries" without making the orchestrator handle handoff.
 
-Agent-scoped persistent storage. Backs self-improving agents — an agent can write a fact, a learned heuristic, a counter, or a per-user preference, and read it back on the next invocation. Scope variants (per-agent vs per-session vs per-user) and retention semantics (TTL, size caps, eviction policy) shape the storage backend, which lands on the v1.0 Postgres `Store` adapter.
+Two backend forks compete: Postgres `LISTEN/NOTIFY` (simpler, single-replica, no new infra dependency) vs Redis Streams (multi-replica HA-ready, new infra dependency). RFC at pickup commits one — single-replica today argues for the Postgres path; Redis can layer on later when multi-replica HA arrives.
 
-What's not yet decided: the API shape (key/value vs append-log vs both), TTL semantics, encryption-at-rest, cross-agent read permission model, schema versioning for stored values. RFC at pickup.
+What's not yet decided: queue vs topic semantics, durability vs at-most-once, ACL (which agent can publish to which channel — channels can be a side-channel for jailbreaks if any-agent-to-any-channel is allowed), backpressure when readers fall behind, dead-letter handling. RFC at pickup.
 
-#### Channel tool
+### v0.8.2 — LoomHelp tool (absorbing all tools)
 
-Persistent inter-agent message bus. One agent writes to a named channel; another reads from it. Powers patterns like "researcher writes findings into `findings/` channel; analyst drains the channel and produces summaries" without making the orchestrator handle handoff. Backend likely Postgres LISTEN/NOTIFY or Redis Streams; durability guarantees TBD.
+Runtime introspection — but with a wider remit than the original v1.0 sketch. LoomHelp absorbs the metadata exposure for **every** built-in and registered tool: input schemas, output formats, side-effect classes (pure / network / filesystem / privileged), allow-list narrowing the active agent has applied, the tool's docstring and operator notes. Plus runtime context: the agent's own identity, parent / sub-agent linkage, loaded skills, current Memory snapshot, available Channels.
 
-What's not yet decided: queue vs topic semantics, durability vs at-most-once, ACL (which agent can publish to which channel), backpressure when readers fall behind, dead-letter handling. RFC at pickup.
+Single read-only tool that returns a structured catalogue. Useful for the Comfort Agents pattern — agents that build their own task plans benefit from being able to inspect their environment before deciding what to do. Operators who want to gate tool discovery from agents (defence-in-depth) can disable LoomHelp via the standard `allowed_tools` policy; the introspection surface is opt-in per-agent.
 
-#### LoomHelp tool
+What's not yet decided: output format (JSON schema vs markdown vs both), what counts as a "secret" beyond env-var name patterns, schema for the side-effect-class taxonomy, whether LoomHelp can introspect *other* agents' tool sets (probably no — that's a privilege-escalation vector).
 
-Runtime introspection. Agents query "what tools do I have, what message formats, what skills are loaded, what's the agent_id of my parent" via a single read-only tool. Useful for the Comfort Agents pattern — agents that build their own task plans benefit from being able to inspect their environment before deciding what to do. Output schema is operator-config-derived, with secrets explicitly excluded.
-
-What's not yet decided: output format (JSON schema vs markdown vs both), what counts as a "secret" beyond env-var name patterns, whether the tool can be selectively narrowed at the agent layer.
-
-#### LoomCycle MCP
+### v0.8.3 — LoomCycle MCP (the v0.8.x capstone)
 
 Loomcycle exposes itself as an **MCP server**. External orchestrators (Claude Code, agentic harnesses, other loomcycle instances) connect to it as an MCP client and:
 
 - Configure agents and spawn runs (alternate front-end to `/v1/runs`).
-- Send messages on Channels.
-- Read/write Memory entries.
-- Call LoomHelp.
+- Send messages on Channels (built in v0.8.1).
+- Read/write Memory entries (built in v0.8.0).
+- Call LoomHelp (built in v0.8.2).
 - Subscribe to run-event streams (alternate to SSE).
 
-This is the "MCP-configurable" axis: instead of writing YAML and POSTing JSON, an external tool drives loomcycle through standard MCP. Surface area maps roughly 1:1 to the existing `/v1/*` endpoints, with auth via the operator's bearer token translated into MCP's auth scheme.
+This is the "MCP-configurable" axis: instead of writing YAML and POSTing JSON, an external tool drives loomcycle through standard MCP. Surface area maps roughly 1:1 to the existing `/v1/*` endpoints plus the v0.8.0–0.8.2 primitives, with auth via the operator's bearer token translated into MCP's auth scheme.
 
-What's not yet decided: stdio vs HTTP transport (probably both), method naming (resources vs tools), whether MCP clients can register new agents at runtime or only spawn from operator-defined ones, handling of long-lived run streams across MCP's request/response shape.
+What's not yet decided: stdio vs HTTP transport (probably both — stdio for desktop-app integrations, HTTP for service-to-service), method naming (resources vs tools), whether MCP clients can register new agents at runtime or only spawn from operator-defined ones, handling of long-lived run streams across MCP's request/response shape.
 
-#### Tool-use hooks (PreToolUse / PostToolUse)
+## v0.9.x — high-load runtime sweep
 
-Operator-supplied middleware around tool dispatch. The agent loop calls `PreToolUse` before invoking any tool — given the tool name, the model's input, the agent identity, and the request context, the hook can rewrite the input, deny the call (returning a synthetic `tool_result`), audit it, or annotate it with metadata (e.g. a trace span ID). After the tool runs, `PostToolUse` sees the result and can rewrite it. The canonical use case for the post-hook is wrapping untrusted content from `WebFetch` / `HTTP` / MCP results in a trust-boundary marker so a downstream LLM treats the payload as data rather than instructions — the v0.2 plan called this the "untrusted-content wrap."
-
-Hooks are the seam for cross-cutting concerns the runtime currently has no first-class place for: per-tool quotas, audit logs that capture every tool call before the policy layer touches it, content-sanitization passes, OTEL spans tied to tool invocations, soft-deny patterns ("you tried to fetch X; here's a redacted version instead"). Today every one of these would have to be bolted into the dispatcher; hooks let them be operator-pluggable without forking the runtime. The pre/post split mirrors the same pattern in Claude Code's hooks system, so operators porting policy code between the two have one mental model.
-
-This was originally a v0.2 plan item, deferred at v0.4 because no consumer required it, and resurfaces alongside the v1.0 observability work — many of the items in *High-load runtime work* below (OTEL spans, per-tool quotas, audit) want hooks as their wiring point.
-
-What's not yet decided: hook composition order (single chain vs typed phases), how hooks express denial vs annotation, whether hooks see the post-policy-narrowing input or the raw model input, whether hooks can short-circuit the loop entirely, and the wire shape — Go interface (compile-time, in-process), HTTP webhook (operator-supplied service), or MCP-callable (agentic hook driving agentic policy). RFC at pickup.
-
-### High-load runtime work
-
-These are cross-cutting capacity items. Not a single feature; collectively they take the runtime from "single-tenant comfortable on a 4–8 GiB VPS" to "10k concurrent agents per replica."
+Cross-cutting capacity items. Not a single feature; collectively they take the runtime from "single-tenant comfortable on a 4–8 GiB VPS" to "10k concurrent agents per replica." Sequenced into v0.9.x as a series of small focused PRs once the v0.8.x framework primitives are in.
 
 - **Per-tenant fairness** in the concurrency layer. Currently every caller competes for one global semaphore — a noisy tenant monopolises the pool. Token bucket per `user_id` (or per `tenant_id` once that lands), with a small unfair share for global priorities.
-- **Postgres `Store` adapter** replaces single-writer SQLite for multi-replica HA. Schema is already shaped to absorb this (the `Store` interface is provider-agnostic; current SQLite implementation is one of N possible backends).
-- **In-memory run-status cache.** Today every `GET /v1/agents/{agent_id}` hits SQLite. At 10k concurrent runs this is a hot path. LRU keyed on `agent_id` with sub-second TTL.
+- **In-memory run-status cache.** Today every `GET /v1/agents/{agent_id}` hits SQLite/Postgres. At 10k concurrent runs this is a hot path. LRU keyed on `agent_id` with sub-second TTL.
+- **OpenTelemetry traces + Prometheus metrics endpoint.** Currently logs only. Per-run trace, per-tool-call span (the v0.7.1 hook seam is the wiring point), request rate / queue depth / semaphore-occupancy / provider-RTT histograms.
+- **Heartbeat sweeper.** `last_heartbeat_at` is updated by the loop on every iteration but nothing reads it. A sweeper detects crashed runs (no heartbeat for > N minutes) and marks them failed so they don't stay `running` forever. (Schema-side already in place since v0.5.0.)
 - **Session-lock map GC.** The HTTP server's `sync.Map` of session locks never garbage-collects entries (~32 B per session). Periodic sweep + bounded total entries.
-- **OpenTelemetry traces + Prometheus metrics endpoint.** Currently logs only. Per-run trace, per-tool-call span, request rate / queue depth / semaphore-occupancy / provider-RTT histograms.
-- **Heartbeat sweeper.** `last_heartbeat_at` is updated by the loop on every iteration but nothing reads it. A sweeper detects crashed runs (no heartbeat for > N minutes) and marks them failed so they don't stay `running` forever.
-- **Multi-replica HA.** Postgres for transcripts; Redis for in-flight cancel registry replication. Out-of-process cancel works across replicas via Redis pub-sub.
+- **Multi-replica HA.** Postgres for transcripts (already shipped in v0.5.0); Redis for in-flight cancel registry replication. Out-of-process cancel works across replicas via Redis pub-sub.
+
+## v1.0 — planned
+
+The v1.0 ambition closes the loop: **10k concurrent agents per replica running on operator-friendly distribution paths**, with the v0.8.x framework primitives + v0.9.x capacity work polished into a release candidate. The v1.0 cut adds operator-experience work that wasn't worth doing earlier:
+
+### Distribution channels
+
+Make `loomcycle` install with one command on every operator's preferred toolchain:
+
+- **Homebrew tap** (`brew install loomcycle/loomcycle/loomcycle`) — macOS / Linuxbrew. Tap repo with a formula generated from the GitHub release artefacts.
+- **Docker images** (`docker pull ghcr.io/denn-gubsky/loomcycle:v1.0`) — multi-arch (amd64 + arm64). Distroless base, embedded UI, ~30 MB compressed. CI publishes on every release tag.
+- **Kubernetes Helm chart** — values.yaml covering the env-var surface, ConfigMap for the YAML config, optional Postgres + Redis dependencies via the chart's values. Documented for both single-replica (default) and multi-replica HA modes.
+- **`go install`** path stays the canonical install for Go-shop operators (`go install github.com/denn-gubsky/loomcycle/cmd/loomcycle@latest`); the Homebrew + Docker paths are convenience layers on top.
+
+### Integration tools
+
+First-party integrations the runtime makes more valuable:
+
+- **Claude Desktop / Claude Code MCP integration** — pre-built `.mcp.json` recipe + a one-page operator guide for adding loomcycle to Claude Code's MCP server list (uses the v0.8.3 LoomCycle MCP surface).
+- **OpenTelemetry exporter recipes** — example Helm values + `loomcycle.yaml` snippets for the three common backends (Tempo, Honeycomb, Datadog). The OTEL spans themselves ship in v0.9.x; v1.0 ships the operator-side wiring guide.
+- **Prometheus / Grafana dashboard** — JSON dashboard committed to the repo, importable in one click. Key panels: throughput, error rate by provider, p99 tool dispatch latency, per-tenant share of the semaphore.
+- **CLI scaffolding** — `loomcycle init` generates a minimal working `loomcycle.yaml` + `.env.local` for a fresh deploy. `loomcycle agent add <name>` scaffolds an agent yaml block. Lower the time-to-first-run for new operators from "read the docs" to "run two commands."
+
+### Polish + operator-experience
+
+- **Settings UI** in the Web SPA — bearer-token rotation flow, env-var inspector, hook list view (read-only, the operator's own registrations from `POST /v1/hooks`), Resolver matrix dashboard. Replaces the current `?token=…` URL-paste with a proper login form when the operator hits `/ui` without a session cookie.
+- **YAML schema validation** — `loomcycle validate` already exists; v1.0 adds per-field error messages with line numbers + suggested fixes (today most errors are a single-line "unknown agent X" without further detail).
+- **Long-form architecture docs** — the existing `docs/ARCHITECTURE.md` covers the runtime; v1.0 adds an operator-flow walkthrough (deploy → configure → wire a consumer → monitor) and a developer-flow walkthrough (clone → make → write a hook → publish).
 
 ### Operator posture: sandbox vs agentic, no profile flag
 
@@ -300,9 +313,9 @@ YAML: agents can list any tool. The bearer token (`LOOMCYCLE_AUTH_TOKEN`) is the
 
 The cookbook in v1.0 will expand this into a full set: development sandbox, single-user agentic dev, multi-tenant SaaS, batch processing, etc.
 
-### Web monitoring frontend
+### Web monitoring frontend (shipped — was v1.0, now v0.7.3+)
 
-A small frontend on top of the SQLite/Postgres event stream — see runs, drill into transcripts, view token + cost rollups. Not a chat UI; this is operator-facing monitoring. Distinct from the LoomCycle MCP, which is for external orchestration.
+The read-only operator-facing monitoring frontend that was originally scoped here landed early as v0.7.3 (initial ship) and v0.7.4 (agent names, user picker, content panels). v1.0 builds on it with the **Settings UI** + **bearer-rotation flow** + **Resolver matrix dashboard** + **read-only hook list view** items called out under "Polish + operator-experience" above. The original outline is preserved here for traceability.
 
 ## Decision principles
 
