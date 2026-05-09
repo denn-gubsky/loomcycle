@@ -433,6 +433,16 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		AgentID: agentID,
 	})
 	loopCtx = tools.WithHostPolicy(loopCtx, hostPolicy)
+	// Memory tool policy: agent name + per-agent scope allowlist +
+	// per-agent quota override. The Memory tool reads these from ctx
+	// at call time to refuse out-of-policy operations and resolve
+	// scope_id (yaml agent name for `agent` scope, user_id for
+	// `user` scope).
+	loopCtx = tools.WithAgentName(loopCtx, effectiveAgentName)
+	loopCtx = tools.WithMemoryPolicy(loopCtx, tools.MemoryPolicyValue{
+		AllowedScopes: agentDef.MemoryScopes,
+		QuotaBytes:    agentDef.MemoryQuotaBytes,
+	})
 
 	heartbeat := s.makeHeartbeat(runID)
 
@@ -891,6 +901,11 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 	// Agent tool inherit the same allowed_hosts / WebSearchFilter
 	// narrowing the parent received.
 	loopCtx = tools.WithHostPolicy(loopCtx, hostPolicy)
+	loopCtx = tools.WithAgentName(loopCtx, req.Agent)
+	loopCtx = tools.WithMemoryPolicy(loopCtx, tools.MemoryPolicyValue{
+		AllowedScopes: agentDef.MemoryScopes,
+		QuotaBytes:    agentDef.MemoryQuotaBytes,
+	})
 
 	// Heartbeat hook: each loop iteration updates last_heartbeat_at so a
 	// future sweeper can detect crashed processes (no heartbeat for > N
@@ -1133,6 +1148,11 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	loopCtx = tools.WithRunIdentity(loopCtx, tools.RunIdentityValue{
 		UserID:  sess.UserID,
 		AgentID: agentID,
+	})
+	loopCtx = tools.WithAgentName(loopCtx, sess.Agent)
+	loopCtx = tools.WithMemoryPolicy(loopCtx, tools.MemoryPolicyValue{
+		AllowedScopes: agentDef.MemoryScopes,
+		QuotaBytes:    agentDef.MemoryQuotaBytes,
 	})
 	loopRes, runErr := loop.Run(loopCtx, loop.RunOptions{
 		Provider:        provider,
@@ -1577,6 +1597,18 @@ func (s *Server) runSubAgent(ctx context.Context, name string, prompt string) (s
 	subCtx = tools.WithRunIdentity(subCtx, tools.RunIdentityValue{
 		UserID:  parentIdentity.UserID,
 		AgentID: subAgentID,
+	})
+	subCtx = tools.WithAgentName(subCtx, name)
+	// Sub-agents get THEIR OWN Memory policy from yaml — the parent's
+	// memory_scopes do NOT cascade. This matches the existing
+	// `allowed_tools` model: a child's surface is its own yaml's
+	// authority. Cross-agent state-sharing is what the `user` scope
+	// is for; sub-agents that share state with their parent simply
+	// both list `user` (or `agent` keyed by a shared name) in their
+	// memory_scopes.
+	subCtx = tools.WithMemoryPolicy(subCtx, tools.MemoryPolicyValue{
+		AllowedScopes: def.MemoryScopes,
+		QuotaBytes:    def.MemoryQuotaBytes,
 	})
 
 	subHeartbeat := s.makeHeartbeat(subRunID)
