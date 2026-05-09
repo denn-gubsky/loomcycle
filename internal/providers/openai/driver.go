@@ -456,11 +456,15 @@ func streamEvents(ctx context.Context, body io.ReadCloser, out chan<- providers.
 
 		for _, ch := range c.Choices {
 			if ch.Delta.ReasoningContent != "" {
-				// Internal accumulator only — reasoning isn't an
-				// EventText event today (would surface as model
-				// "speech" to adapters that just stream text). Kept
-				// inside the driver until the v0.7.x EventThinking
-				// follow-up exposes it as a typed event.
+				// Surface live as EventThinking so consumers can render
+				// the trace as it streams. ALSO accumulate into
+				// reasoningBuf — EventDone.Reasoning still carries the
+				// consolidated trace because the loop stamps it onto
+				// the assistant Message for next-turn echo (DeepSeek's
+				// "reasoning_content must be passed back" requirement).
+				if !send(providers.Event{Type: providers.EventThinking, Text: ch.Delta.ReasoningContent}) {
+					return
+				}
 				reasoningBuf.WriteString(ch.Delta.ReasoningContent)
 			}
 			if ch.Delta.Content != "" {
