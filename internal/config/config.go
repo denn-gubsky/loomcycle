@@ -199,6 +199,21 @@ type AgentDef struct {
 	// to a specific subset of providers (e.g. CV generator that
 	// must stay on Anthropic for sensitive paths).
 	Models map[string][]TierCandidate `yaml:"models"`
+
+	// MemoryScopes is the v0.8.0 Memory tool scope allowlist. Empty
+	// = no Memory access (the default-deny invariant — even if
+	// `Memory` is in AllowedTools, agents without an explicit
+	// memory_scopes list see refused calls). Currently accepts
+	// "agent" and "user"; forward-compatible for "session" / "tenant"
+	// when those scopes ship.
+	MemoryScopes []string `yaml:"memory_scopes"`
+
+	// MemoryQuotaBytes overrides the global per-(scope, scope_id)
+	// byte cap (LOOMCYCLE_MEMORY_MAX_SCOPE_BYTES) for this agent.
+	// 0 = use the global default. Set higher for agents that
+	// legitimately maintain large state (cv-adapter); set lower for
+	// noisy agents you want to keep on a tight leash.
+	MemoryQuotaBytes int `yaml:"memory_quota_bytes"`
 }
 
 // MCPServer declares one MCP server. Transport "stdio" or "http".
@@ -394,6 +409,26 @@ type Env struct {
 	// timeouts on the affected network paths. Set to 0 to disable.
 	// Env: LOOMCYCLE_SSE_KEEPALIVE_MS.
 	SSEKeepaliveInterval time.Duration
+
+	// MemoryMaxValueBytes caps a single Memory.set / Memory.incr
+	// payload. Default 65536 (64 KB) — generous for a JSON document
+	// agents would actually persist; refuses obvious abuse like
+	// "stash an entire transcript here." Set to 0 to disable.
+	// Env: LOOMCYCLE_MEMORY_MAX_VALUE_BYTES.
+	MemoryMaxValueBytes int
+
+	// MemoryMaxScopeBytes is the default per-(scope, scope_id) byte
+	// cap. Per-agent yaml `memory_quota_bytes` overrides this.
+	// Default 1048576 (1 MB). Set to 0 to disable.
+	// Env: LOOMCYCLE_MEMORY_MAX_SCOPE_BYTES.
+	MemoryMaxScopeBytes int
+
+	// MemorySweepInterval is how often the TTL reaper goroutine
+	// runs MemorySweep on the store. Default 15 minutes. Set to 0
+	// to disable (operators with an external reaper, or tests that
+	// don't want background work, can opt out).
+	// Env: LOOMCYCLE_MEMORY_SWEEP_MS.
+	MemorySweepInterval time.Duration
 }
 
 // Load reads a YAML file and the process env. Empty path returns defaults +
@@ -573,6 +608,40 @@ func Load(path string) (*Config, error) {
 					d = maxSSE
 				}
 				cfg.Env.SSEKeepaliveInterval = d
+			}
+		}
+	}
+
+	// Memory tool defaults. Per-write 64 KB, per-scope 1 MB,
+	// 15-minute TTL sweep cadence. Negative values are treated as
+	// "disable" (matches the SSE keepalive convention above).
+	cfg.Env.MemoryMaxValueBytes = 64 * 1024
+	if v := os.Getenv("LOOMCYCLE_MEMORY_MAX_VALUE_BYTES"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			if n <= 0 {
+				cfg.Env.MemoryMaxValueBytes = 0
+			} else {
+				cfg.Env.MemoryMaxValueBytes = n
+			}
+		}
+	}
+	cfg.Env.MemoryMaxScopeBytes = 1024 * 1024
+	if v := os.Getenv("LOOMCYCLE_MEMORY_MAX_SCOPE_BYTES"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			if n <= 0 {
+				cfg.Env.MemoryMaxScopeBytes = 0
+			} else {
+				cfg.Env.MemoryMaxScopeBytes = n
+			}
+		}
+	}
+	cfg.Env.MemorySweepInterval = 15 * time.Minute
+	if v := os.Getenv("LOOMCYCLE_MEMORY_SWEEP_MS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			if n <= 0 {
+				cfg.Env.MemorySweepInterval = 0
+			} else {
+				cfg.Env.MemorySweepInterval = time.Duration(n) * time.Millisecond
 			}
 		}
 	}
@@ -845,6 +914,14 @@ var validEffortLevels = map[string]bool{
 	"high":   true,
 }
 
+// validMemoryScopes is the closed set of Memory tool scope names
+// accepted in agent yaml. v0.8.0 ships agent + user; future versions
+// may add session / tenant.
+var validMemoryScopes = map[string]bool{
+	"agent": true,
+	"user":  true,
+}
+
 func validate(c *Config) error {
 	if c.Concurrency.MaxConcurrentRuns < 1 {
 		return fmt.Errorf("concurrency.max_concurrent_runs must be >= 1")
@@ -916,6 +993,17 @@ func validate(c *Config) error {
 					return fmt.Errorf("agent %q: models.%s[%d]: model is required", name, tierName, i)
 				}
 			}
+		}
+		// Memory tool: validate memory_scopes are known scope strings.
+		// Empty memory_scopes is fine (it just means no Memory access);
+		// non-empty must be a subset of {agent, user} for v0.8.0.
+		for i, sc := range agent.MemoryScopes {
+			if !validMemoryScopes[sc] {
+				return fmt.Errorf("agent %q: memory_scopes[%d]: unknown scope %q (want one of: agent, user)", name, i, sc)
+			}
+		}
+		if agent.MemoryQuotaBytes < 0 {
+			return fmt.Errorf("agent %q: memory_quota_bytes must be >= 0", name)
 		}
 	}
 	for name, srv := range c.MCPServers {

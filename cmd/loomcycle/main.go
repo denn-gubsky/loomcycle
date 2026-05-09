@@ -167,6 +167,15 @@ func main() {
 		&builtin.Bash{Enabled: cfg.Env.BashEnabled, Cwd: cfg.Env.BashCwd},
 		&builtin.SkillTool{Set: skillSet},
 	}
+	// Memory tool — wired post-store so it can grab the live Store
+	// reference. Registered unconditionally; access is gated per-agent
+	// via memory_scopes yaml + the Memory.Store==nil branch when the
+	// runtime hasn't configured a store backend.
+	memoryTool := &builtin.Memory{
+		MaxValueBytes:     cfg.Env.MemoryMaxValueBytes,
+		DefaultQuotaBytes: cfg.Env.MemoryMaxScopeBytes,
+	}
+	allTools = append(allTools, memoryTool)
 
 	// Local API MCP gateway (v0.4.0+). When `local_api.spec` is set
 	// in loomcycle.yaml, parse the OpenAPI spec and register one tool
@@ -306,6 +315,11 @@ func main() {
 		log.Fatalf("store: %v", err)
 	}
 	defer storeCloser()
+	// Memory tool depends on the Store; wire the live backend in now
+	// that the adapter is open. This keeps the per-agent registration
+	// at boot (allTools assembled once) and the tool's nil-Store
+	// fallback for operators running without a configured store.
+	memoryTool.Store = storeIface
 	srv := lchttp.New(cfg, pr, allTools, sem, storeIface)
 
 	// Build the model-resolution matrix (resolve.Resolver). Providers
@@ -345,6 +359,17 @@ func main() {
 		go sweeper.Run(bgCtx)
 	} else {
 		log.Printf("heartbeat: sweeper disabled (LOOMCYCLE_HEARTBEAT_SWEEPER=0 or no Store)")
+	}
+
+	// Memory tool TTL sweeper. Cheap periodic DELETE of expired rows.
+	// The store also filters expired entries at read time, so this
+	// goroutine only matters for keeping the table small over the
+	// long haul.
+	if cfg.Env.MemorySweepInterval > 0 && storeIface != nil {
+		go runMemorySweeper(bgCtx, storeIface, cfg.Env.MemorySweepInterval)
+		log.Printf("memory: sweeper interval=%s", cfg.Env.MemorySweepInterval)
+	} else {
+		log.Printf("memory: sweeper disabled (LOOMCYCLE_MEMORY_SWEEP_MS=0 or no Store)")
 	}
 
 	// Session-lock map GC. Defaults: prune entries idle ≥ 10 min, on
@@ -674,6 +699,30 @@ func convertTiers(in map[string][]config.TierCandidate) map[string][]resolve.Can
 		out[tier] = conv
 	}
 	return out
+}
+
+// runMemorySweeper periodically deletes Memory rows whose TTL has
+// expired. Read paths in the store filter expired rows out anyway so
+// agents never see stale values; the sweeper just keeps the table
+// bounded over time.
+func runMemorySweeper(ctx context.Context, s store.Store, interval time.Duration) {
+	t := time.NewTicker(interval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			swept, err := s.MemorySweep(ctx)
+			if err != nil {
+				log.Printf("memory sweep: %v", err)
+				continue
+			}
+			if swept > 0 {
+				log.Printf("memory sweep: deleted %d expired row(s)", swept)
+			}
+		}
+	}
 }
 
 // spawnStdioMCP starts a stdio MCP child for one server entry. Env keys are

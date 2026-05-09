@@ -8,8 +8,10 @@ import (
 	"crypto/rand"
 	"database/sql"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -96,6 +98,20 @@ func (s *Store) migrate(ctx context.Context) error {
 			payload    BLOB NOT NULL
 		)`,
 		`CREATE INDEX IF NOT EXISTS events_by_session ON events(session_id, seq)`,
+		// v0.8 Memory tool. PRIMARY KEY (scope, scope_id, key) gives
+		// the natural lookup index; the partial expires_at index keeps
+		// the sweeper's DELETE cheap (no full-table scan).
+		`CREATE TABLE IF NOT EXISTS memory (
+			scope       TEXT NOT NULL,
+			scope_id    TEXT NOT NULL,
+			key         TEXT NOT NULL,
+			value       TEXT NOT NULL,
+			expires_at  INTEGER,
+			created_at  INTEGER NOT NULL,
+			updated_at  INTEGER NOT NULL,
+			PRIMARY KEY (scope, scope_id, key)
+		)`,
+		`CREATE INDEX IF NOT EXISTS memory_by_expires_at ON memory(expires_at) WHERE expires_at IS NOT NULL`,
 	}
 	for _, q := range stmts {
 		if _, err := s.db.ExecContext(ctx, q); err != nil {
@@ -544,6 +560,308 @@ func (s *Store) SweepStaleRuns(ctx context.Context, cutoff time.Time) (int, erro
 		return 0, nil
 	}
 	return int(n), nil
+}
+
+// MemorySet upserts a Memory row. ttl > 0 sets expires_at = now+ttl;
+// ttl <= 0 clears the column to NULL (no expiry).
+//
+// Stored as JSON text in a TEXT column — SQLite has no native JSON
+// type beyond what JSON1 functions consume; the tool layer is the
+// source of truth for shape validation. (We also use the textual
+// representation for the JSON-number parse in MemoryIncrement.)
+func (s *Store) MemorySet(ctx context.Context, scope store.MemoryScope, scopeID, key string, value json.RawMessage, ttl time.Duration) error {
+	now := time.Now().UnixNano()
+	var expiresAt any
+	if ttl > 0 {
+		expiresAt = time.Now().Add(ttl).UnixNano()
+	}
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO memory(scope, scope_id, key, value, expires_at, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?)
+		 ON CONFLICT(scope, scope_id, key) DO UPDATE SET
+		    value = excluded.value,
+		    expires_at = excluded.expires_at,
+		    updated_at = excluded.updated_at`,
+		string(scope), scopeID, key, string(value), expiresAt, now, now,
+	)
+	return err
+}
+
+// MemoryGet returns the entry or *ErrNotFound. Expired rows are
+// surfaced as ErrNotFound regardless of whether the sweeper has
+// reaped them yet.
+func (s *Store) MemoryGet(ctx context.Context, scope store.MemoryScope, scopeID, key string) (store.MemoryEntry, error) {
+	var (
+		valueText string
+		expiresAt sql.NullInt64
+		createdAt int64
+		updatedAt int64
+	)
+	err := s.db.QueryRowContext(ctx,
+		`SELECT value, expires_at, created_at, updated_at
+		 FROM memory WHERE scope = ? AND scope_id = ? AND key = ?`,
+		string(scope), scopeID, key,
+	).Scan(&valueText, &expiresAt, &createdAt, &updatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return store.MemoryEntry{}, &store.ErrNotFound{Kind: "memory", ID: key}
+	}
+	if err != nil {
+		return store.MemoryEntry{}, err
+	}
+	if expiresAt.Valid && time.Now().UnixNano() > expiresAt.Int64 {
+		return store.MemoryEntry{}, &store.ErrNotFound{Kind: "memory", ID: key}
+	}
+	out := store.MemoryEntry{
+		Key:       key,
+		Value:     json.RawMessage(valueText),
+		CreatedAt: time.Unix(0, createdAt),
+		UpdatedAt: time.Unix(0, updatedAt),
+	}
+	if expiresAt.Valid {
+		out.ExpiresAt = time.Unix(0, expiresAt.Int64)
+	}
+	return out, nil
+}
+
+// MemoryDelete removes a row. Returns whether a row was actually
+// deleted; both outcomes are non-error.
+func (s *Store) MemoryDelete(ctx context.Context, scope store.MemoryScope, scopeID, key string) (bool, error) {
+	res, err := s.db.ExecContext(ctx,
+		`DELETE FROM memory WHERE scope = ? AND scope_id = ? AND key = ?`,
+		string(scope), scopeID, key,
+	)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, nil
+	}
+	return n > 0, nil
+}
+
+// MemoryList enumerates entries for a (scope, scopeID), filtered by
+// prefix and capped at limit rows. Expired rows are filtered in the
+// WHERE clause so callers never see them. truncated == true when the
+// underlying query found at least limit+1 rows.
+func (s *Store) MemoryList(ctx context.Context, scope store.MemoryScope, scopeID, prefix string, limit int) ([]store.MemoryEntry, bool, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	nowNs := time.Now().UnixNano()
+	// Fetch limit+1 to detect truncation without a separate COUNT(*).
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT key, value, expires_at, created_at, updated_at
+		 FROM memory
+		 WHERE scope = ? AND scope_id = ? AND key LIKE ? ESCAPE '\'
+		   AND (expires_at IS NULL OR expires_at > ?)
+		 ORDER BY key ASC
+		 LIMIT ?`,
+		string(scope), scopeID, escapeLikePrefix(prefix)+"%", nowNs, limit+1,
+	)
+	if err != nil {
+		return nil, false, err
+	}
+	defer rows.Close()
+	var out []store.MemoryEntry
+	for rows.Next() {
+		var (
+			key       string
+			valueText string
+			expiresAt sql.NullInt64
+			createdAt int64
+			updatedAt int64
+		)
+		if err := rows.Scan(&key, &valueText, &expiresAt, &createdAt, &updatedAt); err != nil {
+			return nil, false, err
+		}
+		entry := store.MemoryEntry{
+			Key:       key,
+			Value:     json.RawMessage(valueText),
+			CreatedAt: time.Unix(0, createdAt),
+			UpdatedAt: time.Unix(0, updatedAt),
+		}
+		if expiresAt.Valid {
+			entry.ExpiresAt = time.Unix(0, expiresAt.Int64)
+		}
+		out = append(out, entry)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, false, err
+	}
+	truncated := false
+	if len(out) > limit {
+		out = out[:limit]
+		truncated = true
+	}
+	return out, truncated, nil
+}
+
+// MemoryIncrement is the atomic counter primitive. SQLite has no
+// native compare-and-set on JSON values, so we wrap the read +
+// arithmetic + write in an IMMEDIATE transaction (a write lock at
+// the BEGIN). Concurrent increments serialise on the lock; the
+// loop is contention-free in the absence of writes.
+//
+// modernc/sqlite's database/sql driver does NOT translate
+// `sql.LevelSerializable` to `BEGIN IMMEDIATE` — it only honors
+// `_txlock=immediate` in the DSN (which would affect every
+// transaction, including read paths where DEFERRED is preferred).
+// We therefore pin a connection from the pool and issue
+// `BEGIN IMMEDIATE` / `COMMIT` raw, scoping the lock-on-BEGIN
+// behaviour to this one operation. Verified by a 100-goroutine
+// regression test in storetest (counter must hit exactly 100).
+func (s *Store) MemoryIncrement(ctx context.Context, scope store.MemoryScope, scopeID, key string, delta int64, ttl time.Duration) (int64, error) {
+	conn, err := s.db.Conn(ctx)
+	if err != nil {
+		return 0, err
+	}
+	defer conn.Close()
+
+	if _, err := conn.ExecContext(ctx, "BEGIN IMMEDIATE"); err != nil {
+		return 0, err
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_, _ = conn.ExecContext(context.Background(), "ROLLBACK")
+		}
+	}()
+
+	var (
+		valueText sql.NullString
+		expiresAt sql.NullInt64
+	)
+	err = conn.QueryRowContext(ctx,
+		`SELECT value, expires_at FROM memory WHERE scope = ? AND scope_id = ? AND key = ?`,
+		string(scope), scopeID, key,
+	).Scan(&valueText, &expiresAt)
+	now := time.Now()
+	nowNs := now.UnixNano()
+
+	var current int64
+	rowExists := !errors.Is(err, sql.ErrNoRows)
+	if rowExists && err != nil {
+		return 0, err
+	}
+	// Treat expired rows as missing — increment from zero rather than
+	// the stale value.
+	if rowExists && expiresAt.Valid && nowNs > expiresAt.Int64 {
+		rowExists = false
+	}
+	if rowExists {
+		text := strings.TrimSpace(valueText.String)
+		n, parseErr := strconv.ParseInt(text, 10, 64)
+		if parseErr != nil {
+			// Fall back to JSON parse: covers floats expressed as
+			// integers ("3.0") which strconv rejects but JSON allows.
+			var f float64
+			if jsonErr := json.Unmarshal([]byte(text), &f); jsonErr != nil {
+				return 0, store.ErrMemoryWrongType
+			}
+			if f != float64(int64(f)) {
+				return 0, store.ErrMemoryWrongType
+			}
+			n = int64(f)
+		}
+		current = n
+	}
+	next := current + delta
+	nextText := strconv.FormatInt(next, 10)
+
+	var newExpires any
+	switch {
+	case ttl > 0:
+		newExpires = now.Add(ttl).UnixNano()
+	case rowExists && expiresAt.Valid:
+		newExpires = expiresAt.Int64 // preserve existing expiry
+	}
+
+	_, err = conn.ExecContext(ctx,
+		`INSERT INTO memory(scope, scope_id, key, value, expires_at, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?)
+		 ON CONFLICT(scope, scope_id, key) DO UPDATE SET
+		    value = excluded.value,
+		    expires_at = excluded.expires_at,
+		    updated_at = excluded.updated_at`,
+		string(scope), scopeID, key, nextText, newExpires, nowNs, nowNs,
+	)
+	if err != nil {
+		return 0, err
+	}
+	if _, err := conn.ExecContext(ctx, "COMMIT"); err != nil {
+		return 0, err
+	}
+	committed = true
+	return next, nil
+}
+
+// MemoryListScopeIDs returns distinct scope_ids under scope with
+// summary stats. Excludes expired rows so operators see live state
+// only. Capped at 200 rows ordered by updated_at DESC.
+func (s *Store) MemoryListScopeIDs(ctx context.Context, scope store.MemoryScope) ([]store.MemoryScopeIDSummary, error) {
+	nowNs := time.Now().UnixNano()
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT
+			scope_id,
+			COUNT(*)                                              AS key_count,
+			COALESCE(SUM(LENGTH(key) + LENGTH(value)), 0)          AS bytes,
+			MAX(updated_at)                                        AS updated_at
+		FROM memory
+		WHERE scope = ? AND (expires_at IS NULL OR expires_at > ?)
+		GROUP BY scope_id
+		ORDER BY updated_at DESC
+		LIMIT 200`,
+		string(scope), nowNs,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []store.MemoryScopeIDSummary
+	for rows.Next() {
+		var (
+			summary   store.MemoryScopeIDSummary
+			updatedNs int64
+		)
+		if err := rows.Scan(&summary.ScopeID, &summary.KeyCount, &summary.Bytes, &updatedNs); err != nil {
+			return nil, err
+		}
+		summary.UpdatedAt = time.Unix(0, updatedNs).UTC()
+		out = append(out, summary)
+	}
+	return out, rows.Err()
+}
+
+// MemorySweep deletes every Memory row whose expires_at has passed.
+func (s *Store) MemorySweep(ctx context.Context) (int, error) {
+	res, err := s.db.ExecContext(ctx,
+		`DELETE FROM memory WHERE expires_at IS NOT NULL AND expires_at <= ?`,
+		time.Now().UnixNano(),
+	)
+	if err != nil {
+		return 0, err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, nil
+	}
+	return int(n), nil
+}
+
+// escapeLikePrefix escapes the LIKE wildcards in `prefix` so an agent
+// passing "events_2026" doesn't get treated as "events" + any-char +
+// "2026". The ESCAPE clause in the LIKE statement uses backslash.
+func escapeLikePrefix(prefix string) string {
+	if prefix == "" {
+		return ""
+	}
+	r := strings.NewReplacer(
+		`\`, `\\`,
+		`%`, `\%`,
+		`_`, `\_`,
+	)
+	return r.Replace(prefix)
 }
 
 // nilIfEmpty returns nil when s is empty so the SQL driver writes NULL

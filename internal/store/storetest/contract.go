@@ -22,7 +22,11 @@ package storetest
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"strconv"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -62,6 +66,21 @@ func Run(t *testing.T, factory Factory) {
 		{"FinishRunCancelledTerminal", testFinishRunCancelledTerminal},
 		{"TranscriptOrderedAcrossRuns", testTranscriptOrderedAcrossRuns},
 		{"SweepStaleRuns", testSweepStaleRuns},
+		{"MemorySetGetRoundTrip", testMemorySetGetRoundTrip},
+		{"MemoryGetNotFound", testMemoryGetNotFound},
+		{"MemoryOverwriteUpdatesValue", testMemoryOverwriteUpdatesValue},
+		{"MemoryDelete", testMemoryDelete},
+		{"MemoryListPrefix", testMemoryListPrefix},
+		{"MemoryListTruncation", testMemoryListTruncation},
+		{"MemoryTTLExpiry", testMemoryTTLExpiry},
+		{"MemorySweepReapsExpired", testMemorySweepReapsExpired},
+		{"MemoryIncrementOnNewKey", testMemoryIncrementOnNewKey},
+		{"MemoryIncrementOnExistingNumber", testMemoryIncrementOnExistingNumber},
+		{"MemoryIncrementOnNonNumberFails", testMemoryIncrementOnNonNumberFails},
+		{"MemoryIncrementOnExpiredKey", testMemoryIncrementOnExpiredKey},
+		{"MemoryScopeIsolation", testMemoryScopeIsolation},
+		{"MemoryListScopeIDs", testMemoryListScopeIDs},
+		{"MemoryIncrementIsAtomicUnderConcurrency", testMemoryIncrementIsAtomicUnderConcurrency},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -595,4 +614,391 @@ func testTranscriptOrderedAcrossRuns(t *testing.T, s store.Store) {
 	if transcript[2].RunID != runB.ID || transcript[3].RunID != runB.ID {
 		t.Errorf("last two events should belong to runB")
 	}
+}
+
+// ----- Memory contract -----
+//
+// These tests exercise the v0.8.0 Memory tool's storage surface.
+// Both backends implement identical semantics, so the suite runs
+// unchanged against SQLite (TEXT-as-JSON column) and Postgres (JSONB).
+
+func testMemorySetGetRoundTrip(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	value := json.RawMessage(`{"style":"concise","tone":"friendly"}`)
+	if err := s.MemorySet(ctx, store.MemoryScopeUser, "alice", "voice", value, 0); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.MemoryGet(ctx, store.MemoryScopeUser, "alice", "voice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Key != "voice" {
+		t.Errorf("key = %q, want voice", got.Key)
+	}
+	// Compare by parsed shape — JSONB may reorder keys / drop whitespace.
+	var a, b map[string]any
+	if err := json.Unmarshal(value, &a); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(got.Value, &b); err != nil {
+		t.Fatalf("stored value not valid JSON: %v", err)
+	}
+	if a["style"] != b["style"] || a["tone"] != b["tone"] {
+		t.Errorf("value round-trip diverged: stored=%v got=%v", a, b)
+	}
+	if got.CreatedAt.IsZero() || got.UpdatedAt.IsZero() {
+		t.Error("created_at / updated_at must be set on a fresh write")
+	}
+	if !got.ExpiresAt.IsZero() {
+		t.Errorf("expires_at should be zero for ttl=0; got %v", got.ExpiresAt)
+	}
+}
+
+func testMemoryGetNotFound(t *testing.T, s store.Store) {
+	_, err := s.MemoryGet(context.Background(), store.MemoryScopeAgent, "qa-agent", "missing")
+	var nf *store.ErrNotFound
+	if !errors.As(err, &nf) {
+		t.Errorf("got %v (%T), want *store.ErrNotFound", err, err)
+	}
+}
+
+func testMemoryOverwriteUpdatesValue(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	if err := s.MemorySet(ctx, store.MemoryScopeAgent, "qa", "summary", json.RawMessage(`"v1"`), 0); err != nil {
+		t.Fatal(err)
+	}
+	first, _ := s.MemoryGet(ctx, store.MemoryScopeAgent, "qa", "summary")
+	time.Sleep(2 * time.Millisecond)
+	if err := s.MemorySet(ctx, store.MemoryScopeAgent, "qa", "summary", json.RawMessage(`"v2"`), 0); err != nil {
+		t.Fatal(err)
+	}
+	second, _ := s.MemoryGet(ctx, store.MemoryScopeAgent, "qa", "summary")
+	if string(second.Value) == string(first.Value) {
+		t.Error("overwrite did not change the stored value")
+	}
+	if !second.UpdatedAt.After(first.UpdatedAt) {
+		t.Errorf("updated_at not advanced: first=%v second=%v", first.UpdatedAt, second.UpdatedAt)
+	}
+}
+
+func testMemoryDelete(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	_ = s.MemorySet(ctx, store.MemoryScopeUser, "u1", "k", json.RawMessage(`1`), 0)
+
+	deleted, err := s.MemoryDelete(ctx, store.MemoryScopeUser, "u1", "k")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !deleted {
+		t.Error("expected deleted=true on a present key")
+	}
+	deleted, err = s.MemoryDelete(ctx, store.MemoryScopeUser, "u1", "k")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if deleted {
+		t.Error("expected deleted=false on a missing key")
+	}
+}
+
+func testMemoryListPrefix(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	for k, v := range map[string]string{
+		"events/2026-05-09T10:00": `"a"`,
+		"events/2026-05-09T11:00": `"b"`,
+		"events/2026-05-10T09:00": `"c"`,
+		"prefs/voice":             `"d"`,
+		"prefs/timezone":          `"e"`,
+	} {
+		if err := s.MemorySet(ctx, store.MemoryScopeUser, "alice", k, json.RawMessage(v), 0); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, truncated, err := s.MemoryList(ctx, store.MemoryScopeUser, "alice", "events/", 50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if truncated {
+		t.Errorf("truncated unexpectedly")
+	}
+	if len(got) != 3 {
+		t.Errorf("len = %d, want 3 (events/* only)", len(got))
+	}
+	for _, e := range got {
+		if len(e.Key) < len("events/") || e.Key[:len("events/")] != "events/" {
+			t.Errorf("non-prefix-matching key in result: %q", e.Key)
+		}
+	}
+	// Empty prefix returns everything in the scope.
+	all, _, err := s.MemoryList(ctx, store.MemoryScopeUser, "alice", "", 50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(all) != 5 {
+		t.Errorf("empty prefix len = %d, want 5", len(all))
+	}
+}
+
+func testMemoryListTruncation(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	for i := 0; i < 5; i++ {
+		_ = s.MemorySet(ctx, store.MemoryScopeAgent, "qa", "key/"+intToKey(i), json.RawMessage(`1`), 0)
+	}
+	got, truncated, err := s.MemoryList(ctx, store.MemoryScopeAgent, "qa", "key/", 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !truncated {
+		t.Error("truncated should be true when more rows exist than limit")
+	}
+	if len(got) != 3 {
+		t.Errorf("len = %d, want 3", len(got))
+	}
+}
+
+func testMemoryTTLExpiry(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	// 50 ms TTL — short enough for a test, long enough to survive the
+	// initial Get on a slow CI runner.
+	if err := s.MemorySet(ctx, store.MemoryScopeAgent, "qa", "warning", json.RawMessage(`"hi"`), 50*time.Millisecond); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.MemoryGet(ctx, store.MemoryScopeAgent, "qa", "warning")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ExpiresAt.IsZero() {
+		t.Error("expires_at should be set when ttl > 0")
+	}
+
+	time.Sleep(100 * time.Millisecond)
+
+	_, err = s.MemoryGet(ctx, store.MemoryScopeAgent, "qa", "warning")
+	var nf *store.ErrNotFound
+	if !errors.As(err, &nf) {
+		t.Errorf("expired key should return ErrNotFound, got %v", err)
+	}
+
+	// MemoryList must filter expired entries even before the sweeper
+	// runs.
+	listed, _, err := s.MemoryList(ctx, store.MemoryScopeAgent, "qa", "warning", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(listed) != 0 {
+		t.Errorf("MemoryList returned expired row(s): %d", len(listed))
+	}
+}
+
+func testMemorySweepReapsExpired(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	_ = s.MemorySet(ctx, store.MemoryScopeUser, "u", "transient", json.RawMessage(`1`), 30*time.Millisecond)
+	_ = s.MemorySet(ctx, store.MemoryScopeUser, "u", "permanent", json.RawMessage(`1`), 0)
+
+	time.Sleep(60 * time.Millisecond)
+	deleted, err := s.MemorySweep(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if deleted < 1 {
+		t.Errorf("MemorySweep reaped %d, want >=1", deleted)
+	}
+	// Idempotent: second sweep right after is a no-op.
+	deleted2, err := s.MemorySweep(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if deleted2 != 0 {
+		t.Errorf("second sweep reaped %d, want 0", deleted2)
+	}
+	// Permanent row must survive.
+	if _, err := s.MemoryGet(ctx, store.MemoryScopeUser, "u", "permanent"); err != nil {
+		t.Errorf("permanent row was reaped: %v", err)
+	}
+}
+
+func testMemoryIncrementOnNewKey(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	got, err := s.MemoryIncrement(ctx, store.MemoryScopeAgent, "qa", "warnings", 1, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != 1 {
+		t.Errorf("incr on new key = %d, want 1", got)
+	}
+	got, err = s.MemoryIncrement(ctx, store.MemoryScopeAgent, "qa", "warnings", 5, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != 6 {
+		t.Errorf("incr by 5 on existing 1 = %d, want 6", got)
+	}
+}
+
+func testMemoryIncrementOnExistingNumber(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	_ = s.MemorySet(ctx, store.MemoryScopeAgent, "qa", "n", json.RawMessage(`42`), 0)
+	got, err := s.MemoryIncrement(ctx, store.MemoryScopeAgent, "qa", "n", -10, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != 32 {
+		t.Errorf("incr by -10 on 42 = %d, want 32", got)
+	}
+}
+
+func testMemoryIncrementOnNonNumberFails(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	_ = s.MemorySet(ctx, store.MemoryScopeAgent, "qa", "obj", json.RawMessage(`{"hello":"world"}`), 0)
+	_, err := s.MemoryIncrement(ctx, store.MemoryScopeAgent, "qa", "obj", 1, 0)
+	if !errors.Is(err, store.ErrMemoryWrongType) {
+		t.Errorf("got %v, want ErrMemoryWrongType", err)
+	}
+}
+
+func testMemoryIncrementOnExpiredKey(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	_ = s.MemorySet(ctx, store.MemoryScopeAgent, "qa", "k", json.RawMessage(`100`), 30*time.Millisecond)
+	time.Sleep(60 * time.Millisecond)
+	got, err := s.MemoryIncrement(ctx, store.MemoryScopeAgent, "qa", "k", 1, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != 1 {
+		t.Errorf("incr on expired key should restart from 0; got %d, want 1", got)
+	}
+}
+
+func testMemoryScopeIsolation(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	_ = s.MemorySet(ctx, store.MemoryScopeUser, "alice", "secret", json.RawMessage(`"alice-secret"`), 0)
+	_ = s.MemorySet(ctx, store.MemoryScopeUser, "bob", "secret", json.RawMessage(`"bob-secret"`), 0)
+	_ = s.MemorySet(ctx, store.MemoryScopeAgent, "qa", "secret", json.RawMessage(`"qa-secret"`), 0)
+
+	a, err := s.MemoryGet(ctx, store.MemoryScopeUser, "alice", "secret")
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := s.MemoryGet(ctx, store.MemoryScopeUser, "bob", "secret")
+	if err != nil {
+		t.Fatal(err)
+	}
+	q, err := s.MemoryGet(ctx, store.MemoryScopeAgent, "qa", "secret")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(a.Value) == string(b.Value) || string(a.Value) == string(q.Value) {
+		t.Errorf("scope isolation broken: alice=%s bob=%s qa=%s", a.Value, b.Value, q.Value)
+	}
+
+	// Listing one (scope, scopeID) must not surface another's keys.
+	list, _, _ := s.MemoryList(ctx, store.MemoryScopeUser, "alice", "", 100)
+	if len(list) != 1 {
+		t.Errorf("alice-scope list returned %d rows, want 1", len(list))
+	}
+}
+
+func testMemoryListScopeIDs(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	// alice: 2 keys; bob: 1 key; qa-agent: 1 key.
+	_ = s.MemorySet(ctx, store.MemoryScopeUser, "alice", "voice", json.RawMessage(`"a1"`), 0)
+	_ = s.MemorySet(ctx, store.MemoryScopeUser, "alice", "tone", json.RawMessage(`"a2"`), 0)
+	_ = s.MemorySet(ctx, store.MemoryScopeUser, "bob", "voice", json.RawMessage(`"b1"`), 0)
+	_ = s.MemorySet(ctx, store.MemoryScopeAgent, "qa-agent", "warnings", json.RawMessage(`5`), 0)
+
+	users, err := s.MemoryListScopeIDs(ctx, store.MemoryScopeUser)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]int{}
+	for _, u := range users {
+		got[u.ScopeID] = u.KeyCount
+		if u.UpdatedAt.IsZero() {
+			t.Errorf("%s.UpdatedAt is zero", u.ScopeID)
+		}
+		if u.Bytes <= 0 {
+			t.Errorf("%s.Bytes = %d, want > 0", u.ScopeID, u.Bytes)
+		}
+	}
+	if got["alice"] != 2 || got["bob"] != 1 {
+		t.Errorf("user-scope summary: %v, want alice=2 bob=1", got)
+	}
+	if _, ok := got["qa-agent"]; ok {
+		t.Errorf("user-scope listing should not include agent-scope rows: %v", got)
+	}
+
+	agents, err := s.MemoryListScopeIDs(ctx, store.MemoryScopeAgent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(agents) != 1 || agents[0].ScopeID != "qa-agent" {
+		t.Errorf("agent-scope summary: %+v", agents)
+	}
+
+	// Expired rows must not surface in the summary.
+	_ = s.MemorySet(ctx, store.MemoryScopeUser, "transient", "k", json.RawMessage(`1`), 30*time.Millisecond)
+	time.Sleep(60 * time.Millisecond)
+	users2, _ := s.MemoryListScopeIDs(ctx, store.MemoryScopeUser)
+	for _, u := range users2 {
+		if u.ScopeID == "transient" {
+			t.Errorf("expired-only scope_id %q should not appear", u.ScopeID)
+		}
+	}
+}
+
+// testMemoryIncrementIsAtomicUnderConcurrency is a regression test
+// for two adapter-level bugs caught in v0.8.0 review:
+//
+//   - SQLite's BeginTx(nil) gives a DEFERRED transaction, not the
+//     IMMEDIATE the increment loop assumes. Two concurrent increments
+//     on the same key both see the old value and both write the same
+//     "next" value, losing one update.
+//   - Postgres's SELECT FOR UPDATE on a non-existent row does NOT
+//     block the second transaction (there's no row to lock). Both
+//     transactions see ErrNoRows, both INSERT (one wins outright,
+//     the second's ON CONFLICT DO UPDATE overwrites the first's
+//     value with delta — losing the first's contribution).
+//
+// 100 concurrent +1 increments must produce exactly 100. A failing
+// adapter shows a final value < 100 (number of lost updates).
+func testMemoryIncrementIsAtomicUnderConcurrency(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	const N = 100
+	var wg sync.WaitGroup
+	wg.Add(N)
+	for i := 0; i < N; i++ {
+		go func() {
+			defer wg.Done()
+			_, _ = s.MemoryIncrement(ctx, store.MemoryScopeAgent, "qa", "counter", 1, 0)
+		}()
+	}
+	wg.Wait()
+
+	got, err := s.MemoryGet(ctx, store.MemoryScopeAgent, "qa", "counter")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := strconv.Itoa(N)
+	if string(got.Value) != want {
+		t.Errorf("concurrent increments: counter = %s, want %s (%d lost updates)",
+			got.Value, want, N-mustParseInt(string(got.Value)))
+	}
+}
+
+func mustParseInt(s string) int {
+	n, err := strconv.Atoi(strings.TrimSpace(s))
+	if err != nil {
+		return 0
+	}
+	return n
+}
+
+// intToKey is a tiny helper for testMemoryListTruncation — keeps the
+// keys lex-sortable so the prefix LIKE behaves predictably.
+func intToKey(i int) string {
+	const digits = "0123456789"
+	if i < 10 {
+		return string(digits[i])
+	}
+	return string(digits[i/10]) + string(digits[i%10])
 }

@@ -17,6 +17,7 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"time"
 )
 
@@ -230,9 +231,121 @@ type Store interface {
 	// Used by internal/heartbeat for the periodic sweep goroutine.
 	SweepStaleRuns(ctx context.Context, cutoff time.Time) (int, error)
 
+	// MemorySet writes a Memory entry. ttl > 0 sets an expiry; ttl <= 0
+	// stores with no expiry (the row's expires_at column is NULL). The
+	// row is upserted on the (scope, scopeID, key) primary key —
+	// re-writes overwrite the value and bump updated_at. Implementations
+	// are responsible for surfacing wire-level constraints (max value
+	// bytes, scope quota) as ErrMemoryQuotaExceeded — the tool layer
+	// trusts the store's verdict.
+	MemorySet(ctx context.Context, scope MemoryScope, scopeID, key string, value json.RawMessage, ttl time.Duration) error
+
+	// MemoryGet reads one entry. Returns *ErrNotFound for both "key
+	// missing" and "key expired" — callers don't need to distinguish.
+	// Implementations MUST treat an entry whose expires_at is in the
+	// past as missing (returns ErrNotFound) regardless of whether the
+	// sweeper has reaped it yet — the sweeper is best-effort.
+	MemoryGet(ctx context.Context, scope MemoryScope, scopeID, key string) (MemoryEntry, error)
+
+	// MemoryDelete removes an entry. Returns true when a row was
+	// actually deleted, false when the key didn't exist (or had
+	// already expired). Both are non-error paths.
+	MemoryDelete(ctx context.Context, scope MemoryScope, scopeID, key string) (bool, error)
+
+	// MemoryList returns entries for the (scope, scopeID) tuple whose
+	// key starts with prefix. An empty prefix returns every key in the
+	// scope. Capped at limit rows; if more rows would match, callers
+	// see truncated == true. Expired rows are filtered out — callers
+	// never see them.
+	MemoryList(ctx context.Context, scope MemoryScope, scopeID, prefix string, limit int) (entries []MemoryEntry, truncated bool, err error)
+
+	// MemoryIncrement is an atomic add over the JSON-number value at
+	// (scope, scopeID, key). If the key doesn't exist, it's created
+	// with the delta as the value. If the existing value isn't a
+	// JSON number, returns ErrMemoryWrongType. Optional ttl sets (or
+	// resets, on a re-incr) the expiry; ttl <= 0 keeps the existing
+	// expiry untouched (or no expiry on a fresh row).
+	MemoryIncrement(ctx context.Context, scope MemoryScope, scopeID, key string, delta int64, ttl time.Duration) (int64, error)
+
+	// MemorySweep deletes every Memory row whose expires_at has passed.
+	// Returns the row count deleted. Safe to run from a periodic
+	// goroutine; idempotent under concurrent sweepers (single atomic
+	// DELETE).
+	MemorySweep(ctx context.Context) (int, error)
+
+	// MemoryListScopeIDs returns one row per distinct scope_id under
+	// the given scope, with summary stats (key count, total bytes,
+	// most recent updated_at). Drives the v0.8.0 Web UI's Memory
+	// page picker. Expired rows are excluded — operators see live
+	// state only. Capped at 200 rows ordered by updated_at DESC.
+	MemoryListScopeIDs(ctx context.Context, scope MemoryScope) ([]MemoryScopeIDSummary, error)
+
 	// Close releases backend resources. Idempotent.
 	Close() error
 }
+
+// MemoryScope is the addressing axis for a Memory row. v0.8.0 ships
+// `agent` and `user`; the type is forward-compatible for adding
+// `session` / `tenant` later — a new scope value is a yaml + adapter
+// allowlist update, not a wire-protocol change.
+type MemoryScope string
+
+const (
+	// MemoryScopeAgent — keyed by yaml agent name. Cross-run state for
+	// one agent type (counters, summaries, learned facts).
+	MemoryScopeAgent MemoryScope = "agent"
+	// MemoryScopeUser — keyed by user_id. Per-end-user state shared
+	// across every agent that's allowed to read the `user` scope.
+	MemoryScopeUser MemoryScope = "user"
+)
+
+// MemoryEntry is one row in the memory table. ExpiresAt is zero when
+// the row has no expiry. CreatedAt and UpdatedAt are the row's
+// lifecycle timestamps; UpdatedAt advances on overwrite or
+// MemoryIncrement.
+type MemoryEntry struct {
+	Key       string          `json:"key"`
+	Value     json.RawMessage `json:"value"`
+	ExpiresAt time.Time       `json:"expires_at,omitempty"`
+	CreatedAt time.Time       `json:"created_at"`
+	UpdatedAt time.Time       `json:"updated_at"`
+}
+
+// MemoryScopeIDSummary is one row of MemoryListScopeIDs' output.
+// KeyCount is the live key count (expired rows excluded). Bytes is
+// the sum of key+value bytes — gives operators a quick "how full is
+// this scope" view in the UI.
+type MemoryScopeIDSummary struct {
+	ScopeID   string    `json:"scope_id"`
+	KeyCount  int       `json:"key_count"`
+	Bytes     int       `json:"bytes"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// ErrMemoryWrongType is returned by MemoryIncrement when the existing
+// value at the target key is not a JSON number. Callers (the Memory
+// tool) surface this as a typed tool-result error.
+var ErrMemoryWrongType = &MemoryError{Code: "wrong_type", Msg: "memory: existing value is not a JSON number"}
+
+// ErrMemoryQuotaExceeded is returned by MemorySet / MemoryIncrement
+// when the write would push the (scope, scopeID) tuple past its
+// configured byte cap. The caller should drop or replace existing
+// keys; loomcycle does not auto-evict.
+var ErrMemoryQuotaExceeded = &MemoryError{Code: "quota_exceeded", Msg: "memory: scope quota exceeded"}
+
+// ErrMemoryValueTooLarge is returned when a single value exceeds the
+// per-write byte cap (LOOMCYCLE_MEMORY_MAX_VALUE_BYTES).
+var ErrMemoryValueTooLarge = &MemoryError{Code: "value_too_large", Msg: "memory: value exceeds max bytes"}
+
+// MemoryError is a typed error so the Memory tool can surface a
+// stable error code to the agent. The Code is wire-stable; the Msg
+// is human-readable and may evolve.
+type MemoryError struct {
+	Code string
+	Msg  string
+}
+
+func (e *MemoryError) Error() string { return e.Msg }
 
 // ErrNotFound is returned when a session or run ID isn't in the store.
 type ErrNotFound struct {

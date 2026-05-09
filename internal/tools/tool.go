@@ -160,6 +160,60 @@ func RunIdentity(ctx context.Context) RunIdentityValue {
 	return v
 }
 
+// ctxKeyAgentName is the context key under which the runtime stores the
+// yaml-declared agent name (e.g. "qa-agent", "company-researcher"). The
+// Memory tool reads this to resolve the `agent` scope_id; other future
+// tools that need to namespace state by agent can use it the same way.
+type ctxKeyAgentName struct{}
+
+// WithAgentName attaches the agent's yaml-declared name to ctx.
+// loop.Run threads opts.AgentName through, but ctx-level access lets
+// tools read it without plumbing the value through every Execute
+// signature. Empty string is acceptable — tools that need the value
+// must validate.
+func WithAgentName(ctx context.Context, name string) context.Context {
+	return context.WithValue(ctx, ctxKeyAgentName{}, name)
+}
+
+// AgentName returns the yaml-declared agent name from ctx, or empty
+// string if not attached.
+func AgentName(ctx context.Context) string {
+	v, _ := ctx.Value(ctxKeyAgentName{}).(string)
+	return v
+}
+
+// ctxKeyMemoryPolicy is the context key for the per-agent Memory tool
+// policy (allowed scopes + scope-byte quota override). Set by the HTTP
+// server from the agent's yaml definition; read by the Memory tool to
+// gate writes and surface "scope not allowed" refusals to the model.
+type ctxKeyMemoryPolicy struct{}
+
+// MemoryPolicyValue is the per-agent Memory access policy.
+//
+//   - AllowedScopes is the yaml `memory_scopes` allowlist; an empty
+//     slice means the agent has NO Memory access (the tool itself
+//     must already be in allowed_tools for the agent to even call it,
+//     but the scope allowlist is a second gate that lets operators
+//     grant Memory:read-only on `user` while withholding `agent`).
+//   - QuotaBytes is the yaml `memory_quota_bytes` override; 0 falls
+//     back to the global LOOMCYCLE_MEMORY_MAX_SCOPE_BYTES default.
+type MemoryPolicyValue struct {
+	AllowedScopes []string
+	QuotaBytes    int
+}
+
+// WithMemoryPolicy attaches the agent's resolved Memory policy to ctx.
+func WithMemoryPolicy(ctx context.Context, p MemoryPolicyValue) context.Context {
+	return context.WithValue(ctx, ctxKeyMemoryPolicy{}, p)
+}
+
+// MemoryPolicy returns the agent's Memory policy from ctx. Zero value
+// (empty AllowedScopes, QuotaBytes=0) means "no Memory access".
+func MemoryPolicy(ctx context.Context) MemoryPolicyValue {
+	v, _ := ctx.Value(ctxKeyMemoryPolicy{}).(MemoryPolicyValue)
+	return v
+}
+
 // Execute looks up the named tool and runs it. Unknown tool names return an
 // error result (the model can self-correct) rather than a hard error.
 func (d *Dispatcher) Execute(ctx context.Context, name string, input json.RawMessage) Result {

@@ -15,8 +15,10 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -473,6 +475,292 @@ func (s *Store) Close() error {
 // future SQLite-to-Postgres data migration tool. Not part of the Store
 // interface — this is package-internal access for the runtime layer.
 func (s *Store) Pool() *pgxpool.Pool { return s.pool }
+
+// MemorySet upserts a Memory row. The value column is JSONB; we cast
+// the input bytes to ::jsonb in the query so the database validates
+// the JSON shape (an invalid payload surfaces as a SQL error rather
+// than a silently-stored bad row).
+func (s *Store) MemorySet(ctx context.Context, scope store.MemoryScope, scopeID, key string, value json.RawMessage, ttl time.Duration) error {
+	now := time.Now().UTC()
+	var expiresAt any
+	if ttl > 0 {
+		expiresAt = now.Add(ttl)
+	}
+	_, err := s.pool.Exec(ctx,
+		`INSERT INTO memory (scope, scope_id, key, value, expires_at, created_at, updated_at)
+		 VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7)
+		 ON CONFLICT (scope, scope_id, key) DO UPDATE SET
+		    value = EXCLUDED.value,
+		    expires_at = EXCLUDED.expires_at,
+		    updated_at = EXCLUDED.updated_at`,
+		string(scope), scopeID, key, string(value), expiresAt, now, now,
+	)
+	if err != nil {
+		return fmt.Errorf("memory set: %w", err)
+	}
+	return nil
+}
+
+// MemoryGet returns one entry. Expired rows are surfaced as
+// ErrNotFound (the WHERE clause filters them out so the caller never
+// sees a stale value, even if the sweeper is behind).
+func (s *Store) MemoryGet(ctx context.Context, scope store.MemoryScope, scopeID, key string) (store.MemoryEntry, error) {
+	var (
+		valueText []byte
+		expiresAt *time.Time
+		createdAt time.Time
+		updatedAt time.Time
+	)
+	err := s.pool.QueryRow(ctx,
+		`SELECT value::text, expires_at, created_at, updated_at
+		 FROM memory
+		 WHERE scope = $1 AND scope_id = $2 AND key = $3
+		   AND (expires_at IS NULL OR expires_at > NOW())`,
+		string(scope), scopeID, key,
+	).Scan(&valueText, &expiresAt, &createdAt, &updatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return store.MemoryEntry{}, &store.ErrNotFound{Kind: "memory", ID: key}
+	}
+	if err != nil {
+		return store.MemoryEntry{}, fmt.Errorf("memory get: %w", err)
+	}
+	out := store.MemoryEntry{
+		Key:       key,
+		Value:     json.RawMessage(valueText),
+		CreatedAt: createdAt,
+		UpdatedAt: updatedAt,
+	}
+	if expiresAt != nil {
+		out.ExpiresAt = *expiresAt
+	}
+	return out, nil
+}
+
+// MemoryDelete removes a row. The boolean reports whether a row was
+// actually present. Both branches are non-error.
+func (s *Store) MemoryDelete(ctx context.Context, scope store.MemoryScope, scopeID, key string) (bool, error) {
+	tag, err := s.pool.Exec(ctx,
+		`DELETE FROM memory WHERE scope = $1 AND scope_id = $2 AND key = $3`,
+		string(scope), scopeID, key,
+	)
+	if err != nil {
+		return false, fmt.Errorf("memory delete: %w", err)
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
+// MemoryList enumerates entries for a (scope, scopeID), filtered by
+// prefix and capped at limit. The query fetches limit+1 rows so we
+// can report truncated == true without a separate COUNT(*).
+func (s *Store) MemoryList(ctx context.Context, scope store.MemoryScope, scopeID, prefix string, limit int) ([]store.MemoryEntry, bool, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	pattern := escapeLikePrefix(prefix) + "%"
+	rows, err := s.pool.Query(ctx,
+		`SELECT key, value::text, expires_at, created_at, updated_at
+		 FROM memory
+		 WHERE scope = $1 AND scope_id = $2 AND key LIKE $3 ESCAPE '\'
+		   AND (expires_at IS NULL OR expires_at > NOW())
+		 ORDER BY key ASC
+		 LIMIT $4`,
+		string(scope), scopeID, pattern, limit+1,
+	)
+	if err != nil {
+		return nil, false, fmt.Errorf("memory list: %w", err)
+	}
+	defer rows.Close()
+	var out []store.MemoryEntry
+	for rows.Next() {
+		var (
+			key       string
+			valueText []byte
+			expiresAt *time.Time
+			createdAt time.Time
+			updatedAt time.Time
+		)
+		if err := rows.Scan(&key, &valueText, &expiresAt, &createdAt, &updatedAt); err != nil {
+			return nil, false, fmt.Errorf("memory list scan: %w", err)
+		}
+		entry := store.MemoryEntry{
+			Key:       key,
+			Value:     json.RawMessage(valueText),
+			CreatedAt: createdAt,
+			UpdatedAt: updatedAt,
+		}
+		if expiresAt != nil {
+			entry.ExpiresAt = *expiresAt
+		}
+		out = append(out, entry)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, false, fmt.Errorf("memory list iter: %w", err)
+	}
+	truncated := false
+	if len(out) > limit {
+		out = out[:limit]
+		truncated = true
+	}
+	return out, truncated, nil
+}
+
+// MemoryIncrement is the atomic counter primitive. We do the parse +
+// add in a single transaction. `SELECT ... FOR UPDATE` correctly
+// serialises increments on an EXISTING row, but does NOT block when
+// the row is absent (no row to lock) — two concurrent first-
+// increments of the same key would both see ErrNoRows, both compute
+// `delta`, and both INSERT. The unique constraint serialises the
+// writes (one INSERT wins, the other falls into ON CONFLICT DO
+// UPDATE), but EXCLUDED.value is the SECOND transaction's `delta`
+// rather than `first_result + delta`, losing the first's contribution.
+//
+// Fix: take a transaction-scoped advisory lock keyed by the
+// (scope, scope_id, key) hash before SELECT-ing. This serialises
+// every increment on the same key — the FIRST winner does its
+// SELECT (NoRows → INSERT delta), commits, releases the advisory
+// lock; the SECOND now does its SELECT (sees value=delta → INSERT
+// 2*delta via ON CONFLICT DO UPDATE). Different keys hash to
+// different lock IDs and don't contend. Verified by a 100-goroutine
+// regression test in storetest (all 100 increments must land).
+func (s *Store) MemoryIncrement(ctx context.Context, scope store.MemoryScope, scopeID, key string, delta int64, ttl time.Duration) (int64, error) {
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return 0, fmt.Errorf("memory incr begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	if _, err := tx.Exec(ctx,
+		`SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`,
+		string(scope)+":"+scopeID+":"+key,
+	); err != nil {
+		return 0, fmt.Errorf("memory incr lock: %w", err)
+	}
+
+	var (
+		valueText []byte
+		expiresAt *time.Time
+	)
+	err = tx.QueryRow(ctx,
+		`SELECT value::text, expires_at FROM memory
+		 WHERE scope = $1 AND scope_id = $2 AND key = $3`,
+		string(scope), scopeID, key,
+	).Scan(&valueText, &expiresAt)
+
+	now := time.Now().UTC()
+	rowExists := !errors.Is(err, pgx.ErrNoRows)
+	if rowExists && err != nil {
+		return 0, fmt.Errorf("memory incr select: %w", err)
+	}
+	if rowExists && expiresAt != nil && now.After(*expiresAt) {
+		// Treat expired as missing — increment from zero rather than
+		// the stale value.
+		rowExists = false
+	}
+
+	var current int64
+	if rowExists {
+		text := strings.TrimSpace(string(valueText))
+		n, parseErr := strconv.ParseInt(text, 10, 64)
+		if parseErr != nil {
+			var f float64
+			if jsonErr := json.Unmarshal([]byte(text), &f); jsonErr != nil {
+				return 0, store.ErrMemoryWrongType
+			}
+			if f != float64(int64(f)) {
+				return 0, store.ErrMemoryWrongType
+			}
+			n = int64(f)
+		}
+		current = n
+	}
+	next := current + delta
+	nextText := strconv.FormatInt(next, 10)
+
+	var newExpires any
+	switch {
+	case ttl > 0:
+		newExpires = now.Add(ttl)
+	case rowExists && expiresAt != nil:
+		newExpires = *expiresAt // preserve existing expiry
+	}
+
+	if _, err := tx.Exec(ctx,
+		`INSERT INTO memory (scope, scope_id, key, value, expires_at, created_at, updated_at)
+		 VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7)
+		 ON CONFLICT (scope, scope_id, key) DO UPDATE SET
+		    value = EXCLUDED.value,
+		    expires_at = EXCLUDED.expires_at,
+		    updated_at = EXCLUDED.updated_at`,
+		string(scope), scopeID, key, nextText, newExpires, now, now,
+	); err != nil {
+		return 0, fmt.Errorf("memory incr write: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return 0, fmt.Errorf("memory incr commit: %w", err)
+	}
+	return next, nil
+}
+
+// MemoryListScopeIDs returns distinct scope_ids under scope with
+// summary stats. octet_length(value::text) is used for the bytes
+// estimate — JSONB has no LENGTH() in the SQLite sense; the textual
+// representation is what an operator cares about anyway. Capped at
+// 200 rows ordered by updated_at DESC.
+func (s *Store) MemoryListScopeIDs(ctx context.Context, scope store.MemoryScope) ([]store.MemoryScopeIDSummary, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT
+			scope_id,
+			COUNT(*)                                                          AS key_count,
+			COALESCE(SUM(octet_length(key) + octet_length(value::text)), 0)   AS bytes,
+			MAX(updated_at)                                                   AS updated_at
+		FROM memory
+		WHERE scope = $1 AND (expires_at IS NULL OR expires_at > NOW())
+		GROUP BY scope_id
+		ORDER BY updated_at DESC
+		LIMIT 200`,
+		string(scope),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("memory list scope ids: %w", err)
+	}
+	defer rows.Close()
+	var out []store.MemoryScopeIDSummary
+	for rows.Next() {
+		var summary store.MemoryScopeIDSummary
+		if err := rows.Scan(&summary.ScopeID, &summary.KeyCount, &summary.Bytes, &summary.UpdatedAt); err != nil {
+			return nil, fmt.Errorf("memory list scope ids scan: %w", err)
+		}
+		out = append(out, summary)
+	}
+	return out, rows.Err()
+}
+
+// MemorySweep deletes every Memory row whose expires_at has passed.
+// Single atomic DELETE so concurrent sweepers race correctly.
+func (s *Store) MemorySweep(ctx context.Context) (int, error) {
+	tag, err := s.pool.Exec(ctx,
+		`DELETE FROM memory WHERE expires_at IS NOT NULL AND expires_at <= NOW()`,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("memory sweep: %w", err)
+	}
+	return int(tag.RowsAffected()), nil
+}
+
+// escapeLikePrefix neutralises the LIKE wildcards in `prefix` so an
+// agent searching for "events_2026" doesn't get treated as
+// "events" + any-char + "2026". Backslash is the ESCAPE clause.
+func escapeLikePrefix(prefix string) string {
+	if prefix == "" {
+		return ""
+	}
+	r := strings.NewReplacer(
+		`\`, `\\`,
+		`%`, `\%`,
+		`_`, `\_`,
+	)
+	return r.Replace(prefix)
+}
 
 // ---- helpers ----
 
