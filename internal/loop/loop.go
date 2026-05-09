@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"sync"
 
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
@@ -79,6 +80,22 @@ type RunOptions struct {
 	// unchanged; drivers in PR 1 ignore the field entirely.
 	Effort string
 
+	// ToolParallelism caps how many tool_calls from a single
+	// assistant turn run concurrently. Zero = use the package
+	// default (8). Models like Anthropic and DeepSeek often emit
+	// 2-5 tool_calls per turn; the Agent built-in tool turns each
+	// of those into a full sub-agent run, so a serial dispatch
+	// (the pre-2026-05-09 default) was forcing fan-outs of 3
+	// sub-agents to run back-to-back instead of in parallel.
+	//
+	// Set to 1 to force serial dispatch (debug / determinism).
+	// Setting it higher than the number of pending tool_calls is
+	// harmless — the bound is never hit. Per-iteration; the loop
+	// has no global cap on aggregate concurrency across runs (the
+	// HTTP server's MAX_CONCURRENT_RUNS slot bounds the run tree
+	// already).
+	ToolParallelism int
+
 	// MarkStalled is the resolver feedback hook: the loop calls it
 	// when this iteration's provider call surfaced an error that
 	// suggests the (provider, model) pair is broken. The resolver
@@ -116,6 +133,9 @@ type RunResult struct {
 func Run(ctx context.Context, opts RunOptions) (RunResult, error) {
 	if opts.MaxIterations == 0 {
 		opts.MaxIterations = 16
+	}
+	if opts.ToolParallelism <= 0 {
+		opts.ToolParallelism = 8
 	}
 	if opts.Provider == nil {
 		return RunResult{}, fmt.Errorf("loop: provider is nil")
@@ -280,23 +300,20 @@ func Run(ctx context.Context, opts RunOptions) (RunResult, error) {
 			break
 		}
 
-		// Execute pending tools and append a single user turn with all results.
-		toolResults := make([]providers.ContentBlock, 0, len(pendingTools))
-		for _, tu := range pendingTools {
-			res := executeTool(ctx, opts.Dispatcher, tu)
-			emit(providers.Event{
-				Type:    providers.EventToolResult,
-				ToolUse: &providers.ToolUse{ID: tu.ID, Name: tu.Name, Input: tu.Input},
-				Text:    res.Text,
-				IsError: res.IsError,
-			})
-			toolResults = append(toolResults, providers.ContentBlock{
-				Type:      "tool_result",
-				ToolUseID: tu.ID,
-				Text:      res.Text,
-				IsError:   res.IsError,
-			})
-		}
+		// Execute pending tools concurrently, bounded by
+		// opts.ToolParallelism, and append a single user turn with
+		// all results in tool_call order.
+		//
+		// Two ordering rules cohabit here. The MESSAGE we hand the
+		// model on the next turn lists tool_results in the same order
+		// the model emitted the tool_calls — Anthropic correlates by
+		// tool_use_id but staying stable on the wire avoids subtle
+		// surprises in cache reuse and transcript reads. The EVENTS
+		// we emit on the SSE stream go out in COMPLETION order — fast
+		// tools' results stream out first, slow ones last — because
+		// callers rendering live progress want "company 1 done" the
+		// moment company 1 is done, not after company 3 finishes too.
+		toolResults := executePendingTools(ctx, opts.Dispatcher, pendingTools, opts.ToolParallelism, emit)
 		messages = append(messages, providers.Message{Role: "user", Content: toolResults})
 	}
 
@@ -326,6 +343,94 @@ func executeTool(ctx context.Context, d *tools.Dispatcher, tu providers.ToolUse)
 		return tools.Result{Text: "no tool dispatcher", IsError: true}
 	}
 	return d.Execute(ctx, tu.Name, tu.Input)
+}
+
+// executePendingTools runs the assistant turn's tool_calls concurrently,
+// bounded by `parallelism`, and returns the tool_result content blocks in
+// the same order as `pending` (so the next turn's user message preserves
+// tool_call ordering). EventToolResult emissions happen in COMPLETION
+// order — a fast tool's result reaches the SSE consumer before a slow
+// one's, even when the slow one came first in `pending`.
+//
+// Tools share `ctx`, so a parent cancellation propagates to every
+// in-flight goroutine. Tool errors are surfaced as IsError tool_results
+// (the existing dispatcher contract); they do NOT abort the batch — the
+// other tools still run, and the model gets to see every result.
+//
+// All emit() calls happen from THIS goroutine (the caller's), reading
+// from a results channel. That preserves the existing single-writer
+// contract for emit and avoids forcing every emit implementation to be
+// thread-safe.
+func executePendingTools(
+	ctx context.Context,
+	dispatcher *tools.Dispatcher,
+	pending []providers.ToolUse,
+	parallelism int,
+	emit func(providers.Event),
+) []providers.ContentBlock {
+	if len(pending) == 0 {
+		return nil
+	}
+	if parallelism < 1 {
+		parallelism = 1
+	}
+
+	type result struct {
+		idx int
+		tu  providers.ToolUse
+		res tools.Result
+	}
+
+	resCh := make(chan result, len(pending))
+	sem := make(chan struct{}, parallelism)
+
+	var wg sync.WaitGroup
+	for i, tu := range pending {
+		wg.Add(1)
+		go func(i int, tu providers.ToolUse) {
+			defer wg.Done()
+			// Acquire the slot. ctx-aware so a parent cancellation
+			// during a saturated batch unblocks the goroutine instead
+			// of having it sit forever on a full sem channel.
+			select {
+			case sem <- struct{}{}:
+				defer func() { <-sem }()
+			case <-ctx.Done():
+				resCh <- result{idx: i, tu: tu, res: tools.Result{
+					IsError: true,
+					Text:    "tool dispatch cancelled before slot acquired: " + ctx.Err().Error(),
+				}}
+				return
+			}
+			r := executeTool(ctx, dispatcher, tu)
+			resCh <- result{idx: i, tu: tu, res: r}
+		}(i, tu)
+	}
+	go func() {
+		wg.Wait()
+		close(resCh)
+	}()
+
+	results := make([]providers.ContentBlock, len(pending))
+	for r := range resCh {
+		// Emit in completion order so the SSE consumer sees each
+		// tool's result the moment it's done.
+		emit(providers.Event{
+			Type:    providers.EventToolResult,
+			ToolUse: &providers.ToolUse{ID: r.tu.ID, Name: r.tu.Name, Input: r.tu.Input},
+			Text:    r.res.Text,
+			IsError: r.res.IsError,
+		})
+		// Place by index so the message we hand back to the model
+		// stays in tool_call order regardless of finish order.
+		results[r.idx] = providers.ContentBlock{
+			Type:      "tool_result",
+			ToolUseID: r.tu.ID,
+			Text:      r.res.Text,
+			IsError:   r.res.IsError,
+		}
+	}
+	return results
 }
 
 // splitSegments separates "system" segments (which become provider System

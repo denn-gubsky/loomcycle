@@ -423,17 +423,18 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	heartbeat := s.makeHeartbeat(runID)
 
 	res, runErr := loop.Run(loopCtx, loop.RunOptions{
-		Provider:      provider,
-		Model:         model,
-		Tools:         allowedTools,
-		Dispatcher:    dispatcher,
-		Segments:      segments,
-		PriorMessages: priorMessages,
-		OnEvent:       emit,
-		OnHeartbeat:   heartbeat,
-		MaxTokens:     agentDef.MaxTokens,
-		Effort:        effort,
-		MarkStalled:   s.markStalledFn(providerID, model),
+		Provider:        provider,
+		Model:           model,
+		Tools:           allowedTools,
+		Dispatcher:      dispatcher,
+		Segments:        segments,
+		PriorMessages:   priorMessages,
+		OnEvent:         emit,
+		OnHeartbeat:     heartbeat,
+		MaxTokens:       agentDef.MaxTokens,
+		Effort:          effort,
+		MarkStalled:     s.markStalledFn(providerID, model),
+		ToolParallelism: s.cfg.Env.ToolParallelism,
 	})
 	s.finishRunWithCancel(ctx, runCtx, runID, res, runErr)
 	return nil
@@ -855,16 +856,17 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 	heartbeat := s.makeHeartbeat(runID)
 
 	loopRes, runErr := loop.Run(loopCtx, loop.RunOptions{
-		Provider:    provider,
-		Model:       model,
-		Tools:       allowedTools,
-		Dispatcher:  dispatcher,
-		Segments:    req.Segments,
-		OnEvent:     emit,
-		OnHeartbeat: heartbeat,
-		MaxTokens:   agentDef.MaxTokens, // 0 → driver default
-		Effort:      effort,
-		MarkStalled: s.markStalledFn(providerID, model),
+		Provider:        provider,
+		Model:           model,
+		Tools:           allowedTools,
+		Dispatcher:      dispatcher,
+		Segments:        req.Segments,
+		OnEvent:         emit,
+		OnHeartbeat:     heartbeat,
+		MaxTokens:       agentDef.MaxTokens, // 0 → driver default
+		Effort:          effort,
+		MarkStalled:     s.markStalledFn(providerID, model),
+		ToolParallelism: s.cfg.Env.ToolParallelism,
 	})
 	if runErr != nil {
 		stream.send(providers.Event{Type: providers.EventError, Error: runErr.Error()})
@@ -1087,17 +1089,18 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		AgentID: agentID,
 	})
 	loopRes, runErr := loop.Run(loopCtx, loop.RunOptions{
-		Provider:      provider,
-		Model:         model,
-		Tools:         allowedTools,
-		Dispatcher:    dispatcher,
-		Segments:      segments,
-		PriorMessages: priorMessages,
-		OnEvent:       emit,
-		OnHeartbeat:   heartbeat,
-		MaxTokens:     agentDef.MaxTokens, // 0 → driver default
-		Effort:        effort,
-		MarkStalled:   s.markStalledFn(providerID, model),
+		Provider:        provider,
+		Model:           model,
+		Tools:           allowedTools,
+		Dispatcher:      dispatcher,
+		Segments:        segments,
+		PriorMessages:   priorMessages,
+		OnEvent:         emit,
+		OnHeartbeat:     heartbeat,
+		MaxTokens:       agentDef.MaxTokens, // 0 → driver default
+		Effort:          effort,
+		MarkStalled:     s.markStalledFn(providerID, model),
+		ToolParallelism: s.cfg.Env.ToolParallelism,
 	})
 	if runErr != nil {
 		stream.send(providers.Event{Type: providers.EventError, Error: runErr.Error()})
@@ -1531,16 +1534,17 @@ func (s *Server) runSubAgent(ctx context.Context, name string, prompt string) (s
 	subHeartbeat := s.makeHeartbeat(subRunID)
 
 	res, runErr := loop.Run(subCtx, loop.RunOptions{
-		Provider:    provider,
-		Model:       model,
-		Tools:       subTools,
-		Dispatcher:  subDispatcher,
-		Segments:    segs,
-		OnEvent:     subEmit,
-		OnHeartbeat: subHeartbeat,
-		MaxTokens:   def.MaxTokens, // 0 → driver default
-		Effort:      effort,
-		MarkStalled: s.markStalledFn(providerID, model),
+		Provider:        provider,
+		Model:           model,
+		Tools:           subTools,
+		Dispatcher:      subDispatcher,
+		Segments:        segs,
+		OnEvent:         subEmit,
+		OnHeartbeat:     subHeartbeat,
+		MaxTokens:       def.MaxTokens, // 0 → driver default
+		Effort:          effort,
+		MarkStalled:     s.markStalledFn(providerID, model),
+		ToolParallelism: s.cfg.Env.ToolParallelism,
 	})
 	s.finishRunWithCancel(ctx, subRunCtx, subRunID, res, runErr)
 
