@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Link, useParams } from "react-router-dom";
-import { Agent, TranscriptEvent, cancelAgent, getAgent, getTranscript } from "../api";
+import { Agent, EventPayload, TranscriptEvent, cancelAgent, getAgent, getTranscript } from "../api";
 
 // Auto-refresh cadence for live runs. Static runs (completed /
 // failed / cancelled) skip polling.
@@ -33,7 +33,6 @@ export default function AgentDetail() {
       } catch (e) {
         if (!cancelled) setErr(e instanceof Error ? e.message : String(e));
       } finally {
-        // Schedule next fetch only when status is still running.
         if (!cancelled) {
           if (agent?.status === "running" || agent === null) {
             timer = window.setTimeout(fetchOnce, REFRESH_MS);
@@ -115,8 +114,8 @@ export default function AgentDetail() {
         <div className="empty">loading…</div>
       )}
       <div className="events">
-        {renderedEvents.map((ev, i) => (
-          <EventCard key={i} ev={ev} />
+        {renderedEvents.map((ev) => (
+          <EventCard key={ev.seq} row={ev} />
         ))}
         <div ref={tailRef} />
       </div>
@@ -125,71 +124,180 @@ export default function AgentDetail() {
 }
 
 // visible filters out events that are noise on the operator dashboard
-// (started — purely a marker; usage — folded into the header).
+// (started — purely a marker; usage — folded into the header;
+// session/agent — side-channel ID announcements; user_input — the
+// initial prompt, separately rendered in v0.8).
 function visible(ev: TranscriptEvent): boolean {
-  return ev.type !== "started" && ev.type !== "usage" && ev.type !== "session" && ev.type !== "agent";
+  const t = ev.event?.type ?? ev.type;
+  return t !== "started" && t !== "usage" && t !== "session" && t !== "agent" && t !== "user_input";
 }
 
-function EventCard({ ev }: { ev: TranscriptEvent }) {
+// EventCard renders one transcript row as a collapsed panel by
+// default — first-line summary + a "▶" affordance — that expands on
+// click to show the full text / inputs / outputs / tool params.
+// Operators scrolling a long transcript see the shape of the run
+// without a wall of text; clicking dives into a specific event.
+function EventCard({ row }: { row: TranscriptEvent }) {
+  const [open, setOpen] = useState(false);
+  const ev = row.event ?? ({ type: row.type } as EventPayload);
+  const kind = ev.type ?? row.type;
+
+  const summary = summaryFor(ev);
+  const detail = detailFor(ev);
+
+  const toggle = () => setOpen((v) => !v);
+
+  return (
+    <div
+      className={`ev ev-${kind} ${ev.is_error ? "err" : ""} ${open ? "open" : ""}`}
+      onClick={toggle}
+      role="button"
+      tabIndex={0}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          toggle();
+        }
+      }}
+    >
+      <div className="ev-header">
+        <span className="caret">{open ? "▼" : "▶"}</span>
+        <span className="kind">{labelFor(ev)}</span>
+        {!open && <span className="summary">{summary}</span>}
+        {row.ts_ns > 0 && <span className="ts">{formatTime(row.ts_ns)}</span>}
+      </div>
+      {open && <div className="ev-detail">{detail}</div>}
+    </div>
+  );
+}
+
+// labelFor is the small uppercase tag on the left side of each card.
+// Tool calls embed the tool name to reduce the click-to-discover
+// distance for "what tool was this".
+function labelFor(ev: EventPayload): string {
+  switch (ev.type) {
+    case "tool_call":
+      return `tool_call · ${ev.tool_use?.name ?? "?"}`;
+    case "tool_result":
+      return ev.is_error ? "tool_result · error" : "tool_result";
+    case "done":
+      return `done · ${ev.stop_reason ?? "?"}`;
+    case "retry":
+      return `retry · ${ev.retry?.reason ?? ""}`.trim();
+    default:
+      return ev.type ?? "?";
+  }
+}
+
+// summaryFor is the one-line preview shown when the card is
+// collapsed. Keeps the transcript scannable; full content opens on
+// click.
+function summaryFor(ev: EventPayload): string {
   switch (ev.type) {
     case "text":
-      return (
-        <div className="ev ev-text">
-          <span className="kind">text</span>
-          <pre>{ev.text}</pre>
-        </div>
-      );
     case "thinking":
-      return (
-        <div className="ev ev-thinking">
-          <span className="kind">thinking</span>
-          <pre>{ev.text}</pre>
-        </div>
-      );
+      return firstLine(ev.text ?? "", 200);
+    case "tool_call": {
+      const args = ev.tool_use?.input;
+      if (!args) return "(no args)";
+      const json = typeof args === "string" ? args : JSON.stringify(args);
+      return firstLine(json, 200);
+    }
+    case "tool_result":
+      return firstLine(ev.text ?? "", 200);
+    case "error":
+      return firstLine(ev.error ?? "", 200);
+    case "retry": {
+      const r = ev.retry ?? {};
+      return `${r.provider ?? "?"} attempt ${r.attempt ?? "?"} · wait ${r.wait_ms ?? "?"}ms`;
+    }
+    case "done":
+      return ev.usage
+        ? `${ev.usage.input_tokens ?? 0} in / ${ev.usage.output_tokens ?? 0} out${
+            ev.usage.model ? ` · ${ev.usage.model}` : ""
+          }`
+        : "";
+    default:
+      return "";
+  }
+}
+
+// detailFor is the full content shown when the card is expanded.
+// Returns React nodes so each event type can format its payload how
+// it wants (raw text, pretty-printed JSON, etc).
+function detailFor(ev: EventPayload): ReactNode {
+  switch (ev.type) {
+    case "text":
+    case "thinking":
+      return <pre className="full-text">{ev.text ?? ""}</pre>;
     case "tool_call":
       return (
-        <div className="ev ev-tool-call">
-          <span className="kind">tool_call</span>
-          <div className="tool">
-            <strong>{ev.tool_use?.name}</strong>
-            <pre>{ev.tool_use ? JSON.stringify(ev.tool_use.input, null, 2) : ""}</pre>
+        <div className="tool-detail">
+          <div className="tool-meta">
+            <span>name:</span> <code>{ev.tool_use?.name ?? "?"}</code>
+            {ev.tool_use?.id && (
+              <>
+                {" · "}
+                <span>id:</span> <code>{ev.tool_use.id}</code>
+              </>
+            )}
+          </div>
+          <div className="tool-params">
+            <span>input:</span>
+            <pre className="full-text">{prettyJSON(ev.tool_use?.input)}</pre>
           </div>
         </div>
       );
     case "tool_result":
-      return (
-        <div className={`ev ev-tool-result ${ev.is_error ? "err" : ""}`}>
-          <span className="kind">tool_result{ev.is_error ? " (error)" : ""}</span>
-          <pre>{ev.text}</pre>
-        </div>
-      );
+      return <pre className="full-text">{ev.text ?? ""}</pre>;
     case "error":
-      return (
-        <div className="ev ev-error">
-          <span className="kind">error</span>
-          <pre>{ev.error}</pre>
-        </div>
-      );
+      return <pre className="full-text">{ev.error ?? ""}</pre>;
     case "retry":
       return (
-        <div className="ev ev-retry">
-          <span className="kind">retry</span>
-          <pre>rate-limited; sleeping…</pre>
-        </div>
+        <pre className="full-text">
+          {JSON.stringify(ev.retry ?? {}, null, 2)}
+        </pre>
       );
     case "done":
       return (
-        <div className="ev ev-done">
-          <span className="kind">done</span>
-          <pre>stop_reason: {ev.stop_reason ?? "?"}</pre>
+        <div>
+          <div>stop_reason: {ev.stop_reason ?? "?"}</div>
+          {ev.reasoning && (
+            <div>
+              <strong>reasoning trace:</strong>
+              <pre className="full-text">{ev.reasoning}</pre>
+            </div>
+          )}
+          {ev.usage && (
+            <pre className="full-text">{JSON.stringify(ev.usage, null, 2)}</pre>
+          )}
         </div>
       );
     default:
-      return (
-        <div className="ev ev-unknown">
-          <span className="kind">{ev.type}</span>
-          <pre>{JSON.stringify(ev, null, 2)}</pre>
-        </div>
-      );
+      return <pre className="full-text">{JSON.stringify(ev, null, 2)}</pre>;
   }
+}
+
+function firstLine(s: string, max: number): string {
+  if (!s) return "";
+  const nl = s.indexOf("\n");
+  let line = nl >= 0 ? s.slice(0, nl) : s;
+  if (line.length > max) line = line.slice(0, max) + "…";
+  return line;
+}
+
+function prettyJSON(v: unknown): string {
+  if (v == null) return "";
+  if (typeof v === "string") return v;
+  try {
+    return JSON.stringify(v, null, 2);
+  } catch {
+    return String(v);
+  }
+}
+
+function formatTime(ns: number): string {
+  if (!ns) return "";
+  const ms = Math.floor(ns / 1_000_000);
+  return new Date(ms).toLocaleTimeString();
 }
