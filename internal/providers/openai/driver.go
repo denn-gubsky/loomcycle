@@ -410,6 +410,32 @@ func streamEvents(ctx context.Context, body io.ReadCloser, out chan<- providers.
 	// passed back". Empty for non-thinking models.
 	var reasoningBuf strings.Builder
 
+	// textBuf coalesces consecutive `delta.content` chunks into
+	// reasonable-sized EventText emissions. OpenAI-compatible endpoints
+	// (especially DeepSeek) often stream one token per delta — every
+	// delta becomes an EventText becomes a render line on log-based
+	// consumers, producing the "every word on its own line" visual
+	// noise reported in the field. Anthropic's wire is naturally chunked
+	// at multi-token granularity; this brings the OpenAI path closer to
+	// that shape without adding a timer goroutine.
+	//
+	// Flush points: textCoalesceMin reached, the new chunk contains a
+	// newline (preserve formatting boundaries), end-of-stream (before
+	// tool_call emissions and EventDone). The threshold is small enough
+	// that a streaming UI still feels live (~64-char chunks ≈ a phrase
+	// per render frame); larger reduces event count more but degrades
+	// typewriter feel.
+	var textBuf strings.Builder
+	const textCoalesceMin = 64
+	flushText := func() bool {
+		if textBuf.Len() == 0 {
+			return true
+		}
+		s := textBuf.String()
+		textBuf.Reset()
+		return send(providers.Event{Type: providers.EventText, Text: s})
+	}
+
 	for scanner.Scan() {
 		line := bytes.TrimSpace(scanner.Bytes())
 		if len(line) == 0 || !bytes.HasPrefix(line, []byte("data:")) {
@@ -438,8 +464,11 @@ func streamEvents(ctx context.Context, body io.ReadCloser, out chan<- providers.
 				reasoningBuf.WriteString(ch.Delta.ReasoningContent)
 			}
 			if ch.Delta.Content != "" {
-				if !send(providers.Event{Type: providers.EventText, Text: ch.Delta.Content}) {
-					return
+				textBuf.WriteString(ch.Delta.Content)
+				if textBuf.Len() >= textCoalesceMin || strings.ContainsRune(ch.Delta.Content, '\n') {
+					if !flushText() {
+						return
+					}
 				}
 			}
 			for _, tc := range ch.Delta.ToolCalls {
@@ -476,7 +505,19 @@ func streamEvents(ctx context.Context, body io.ReadCloser, out chan<- providers.
 		}
 	}
 	if err := scanner.Err(); err != nil {
+		// Flush any buffered text before the error event so bytes the
+		// wire delivered aren't silently dropped just because the read
+		// failed mid-stream. Best-effort: a send failure here is fine
+		// (the error event still surfaces the failure to the caller).
+		_ = flushText()
 		send(providers.Event{Type: providers.EventError, Error: "stream read: " + err.Error()})
+		return
+	}
+
+	// Flush any text still buffered by the coalescer before tool_call /
+	// done events — preserves "text precedes tool_call" ordering and
+	// guarantees no text is dropped on stream end.
+	if !flushText() {
 		return
 	}
 
