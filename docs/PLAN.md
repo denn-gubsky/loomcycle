@@ -2,7 +2,34 @@
 
 This is the public roadmap. For decision history, regret notes, and per-version commit-by-commit details, see `doc-internal/PLAN.md` (gitignored).
 
-## v0.7.1 — current
+## v0.7.2 — current
+
+**Status: shipped (2026-05-09).** Adds the Google Gemini provider as the fifth backend alongside Anthropic / OpenAI / DeepSeek / Ollama. No changes to existing drivers; per-agent yaml gains `provider: gemini` as an option.
+
+**What's in v0.7.2 (vs v0.7.1):**
+
+- **Gemini driver** (`internal/providers/gemini/`) — new from-scratch implementation of the `Provider` interface for Google's generativelanguage.googleapis.com `/v1beta/models` API. Three wire-shape differences from the OpenAI driver kept the existing wrapper-pattern off the table:
+  - The model name is in the URL path (`/v1beta/models/{model}:streamGenerateContent`), not the request body.
+  - Auth is via the `x-goog-api-key` header (Vertex AI deployments override `GEMINI_BASE_URL` and supply a service-account access token).
+  - Streaming requires `?alt=sse` — without it, Gemini buffers the entire response into a JSON array.
+- **Tool dispatch via functionCall / functionResponse parts.** Gemini's content-part union differs from the OpenAI `tool_calls` array shape; the driver translates loomcycle's `tool_use` / `tool_result` content blocks transparently. Tool IDs are synthesised by the loop because Gemini doesn't issue them (same as Ollama).
+- **Effort hint → `generationConfig.thinkingConfig.thinkingBudget`.** Gemini-2.5-flash and gemini-2.5-pro support the `thinkingConfig` knob; the driver maps `effort: low` → 0 (disable), `medium` → 2048, `high` → 8192 (clamped to `max_tokens - 1024` when the budget would equal or exceed `max_tokens`). Same vocabulary the operator already uses for Anthropic / OpenAI — no per-provider effort dialect.
+- **Probe + ListModels via `GET /v1beta/models`.** Stripping the `models/` prefix the API uses internally so the resolver matches against bare aliases (`gemini-2.0-flash`) consistent with the other drivers.
+- **Resolver matrix integration.** `cmd/loomcycle/main.go` registers Gemini alongside the existing four backends. Excluded when `GEMINI_API_KEY` is unset; probed at startup and on the periodic re-probe with the same 5 s deadline as the others.
+
+**Operator-facing surface:**
+
+- New env: `GEMINI_API_KEY`, `GEMINI_BASE_URL` (optional; defaults to public Gemini API).
+- Per-agent yaml: `provider: gemini` and `model: gemini-2.5-flash` (or any model the wire `/v1beta/models` returns). Tier candidates can list `{ provider: gemini, model: gemini-... }` alongside the other backends.
+
+**Architecture decisions worth flagging:**
+
+- **No EventThinking from Gemini yet.** Gemini-2.5 emits `thoughtSignature` blobs (base64) rather than a text trace, so there's nothing to surface as `EventThinking`. The thinking-token *count* lands on `Usage` for cost retros (`thoughtsTokenCount` in usageMetadata). When Google opens up a text-trace surface this is the wiring point.
+- **Native `cache_control` not exposed.** Gemini has implicit prompt caching on long contexts but no operator-controlled knob like Anthropic's `cache_control` breakpoint. Capability flag stays false until Gemini ships an explicit cache-control surface.
+
+For the v0.7.1 baseline that drove this work, see [v0.7.1](#v071--earlier).
+
+## v0.7.1 — earlier
 
 **Status: shipped (2026-05-09).** Tag `v0.7.1` on `main`. v0.7.1 is a "consolidation" point release on top of v0.7.0: eleven PRs merged over a single intensive session that cleaned up production-discovered gaps from the jobs-search-agent integration, expanded the typed event surface (live thinking, tool-use hooks), unblocked silent-network-drop scenarios for fan-out agents, and exposed the in-process resolver matrix over HTTP so dashboards can render it. No breaking wire changes — every consumer that worked against v0.7.0 keeps working unchanged.
 
@@ -26,7 +53,7 @@ This is the public roadmap. For decision history, regret notes, and per-version 
 - **Parallel tool dispatch caps at 8 concurrently.** Set by `LOOMCYCLE_TOOL_PARALLELISM`. The HTTP server's `MAX_CONCURRENT_RUNS` slot still bounds the run tree, so this is an inner-loop knob that doesn't change the global ceiling. Default 8 chosen empirically — typical Anthropic / DeepSeek turns emit 2–5 tool_calls; 8 covers the common case without spawning storms on rare large fan-outs.
 - **EventThinking is additive, not a replacement.** `EventDone.Reasoning` still carries the consolidated trace for the next-turn echo. Adapters that only want the final string keep working unchanged; adapters that want live progress consume both.
 
-For the v0.7.0 baseline that drove this work, see [v0.7.0](#v070--earlier).
+For the v0.7.0 baseline that drove the v0.7.1 batch, see [v0.7.0](#v070--earlier).
 
 ## v0.7.0 — earlier
 
