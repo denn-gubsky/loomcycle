@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/providers"
+	"github.com/denn-gubsky/loomcycle/internal/providers/streamhttp"
 )
 
 // fakeStream serves a canned NDJSON script as one /api/chat response.
@@ -44,7 +45,7 @@ func TestStreamTextThenStop(t *testing.T) {
 	srv := fakeStream(t, frames)
 	defer srv.Close()
 
-	d := New(srv.URL, nil)
+	d := New(srv.URL, streamhttp.Options{}, nil)
 	ch, err := d.Call(context.Background(), providers.Request{
 		Model:    "llama3.1",
 		Messages: []providers.Message{{Role: "user", Content: []providers.ContentBlock{{Type: "text", Text: "hi"}}}},
@@ -88,7 +89,7 @@ func TestStreamToolCallOnFinalFrame(t *testing.T) {
 	}
 	srv := fakeStream(t, frames)
 	defer srv.Close()
-	d := New(srv.URL, nil)
+	d := New(srv.URL, streamhttp.Options{}, nil)
 	ch, _ := d.Call(context.Background(), providers.Request{Model: "llama3.1"})
 
 	var toolCall *providers.ToolUse
@@ -130,7 +131,7 @@ func TestStreamToolCallOnNonFinalFrame(t *testing.T) {
 	}
 	srv := fakeStream(t, frames)
 	defer srv.Close()
-	d := New(srv.URL, nil)
+	d := New(srv.URL, streamhttp.Options{}, nil)
 	ch, _ := d.Call(context.Background(), providers.Request{Model: "llama3.1"})
 
 	var toolCalls int
@@ -160,7 +161,7 @@ func TestRequestBodyShape(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	d := New(srv.URL, nil)
+	d := New(srv.URL, streamhttp.Options{}, nil)
 	temp := 0.7
 	ch, err := d.Call(context.Background(), providers.Request{
 		Model:       "llama3.1",
@@ -223,7 +224,7 @@ func TestCancellationDoesNotLeakGoroutine(t *testing.T) {
 	defer srv.Close()
 
 	ctx, cancel := context.WithCancel(context.Background())
-	d := New(srv.URL, nil)
+	d := New(srv.URL, streamhttp.Options{}, nil)
 	_, err := d.Call(ctx, providers.Request{Model: "llama3.1"})
 	if err != nil {
 		t.Fatalf("Call: %v", err)
@@ -251,7 +252,7 @@ func TestNon200Status(t *testing.T) {
 		fmt.Fprint(w, `{"error":"model not found"}`)
 	}))
 	defer srv.Close()
-	d := New(srv.URL, nil)
+	d := New(srv.URL, streamhttp.Options{}, nil)
 	_, err := d.Call(context.Background(), providers.Request{Model: "nope"})
 	if err == nil {
 		t.Fatal("expected error on 404")
@@ -291,7 +292,7 @@ func TestRetryOn429PreservesContext(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	d := New(srv.URL, nil)
+	d := New(srv.URL, streamhttp.Options{}, nil)
 	ch, err := d.Call(context.Background(), providers.Request{Model: "llama3.1"})
 	if err != nil {
 		t.Fatalf("Call: %v", err)
@@ -341,7 +342,7 @@ func TestRetryEmitsEventToRequestOnEvent(t *testing.T) {
 
 	var retries []providers.Event
 	var rmu sync.Mutex
-	d := New(srv.URL, nil)
+	d := New(srv.URL, streamhttp.Options{}, nil)
 	ch, err := d.Call(context.Background(), providers.Request{
 		Model: "llama3.1",
 		OnEvent: func(ev providers.Event) {
@@ -382,7 +383,7 @@ func TestStopReasonWithoutToolCalls(t *testing.T) {
 	}
 	srv := fakeStream(t, frames)
 	defer srv.Close()
-	d := New(srv.URL, nil)
+	d := New(srv.URL, streamhttp.Options{}, nil)
 	ch, _ := d.Call(context.Background(), providers.Request{Model: "x"})
 	var stop string
 	for ev := range ch {

@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/denn-gubsky/loomcycle/internal/providers"
+	"github.com/denn-gubsky/loomcycle/internal/providers/streamhttp"
 )
 
 // Three tests pin the reasoning_content roundtrip — the contract
@@ -38,7 +39,7 @@ func TestReasoning_EmitsLiveEventThinking(t *testing.T) {
 	}
 	srv := fakeStream(t, frames)
 	defer srv.Close()
-	d := New("test-key", srv.URL, nil)
+	d := New("test-key", srv.URL, streamhttp.Options{}, nil)
 	ch, _ := d.Call(context.Background(), providers.Request{
 		Model:    "deepseek-v4-pro",
 		Messages: []providers.Message{{Role: "user", Content: []providers.ContentBlock{{Type: "text", Text: "hi"}}}},
@@ -91,7 +92,7 @@ func TestReasoning_CaptureAccumulatesAcrossDeltas(t *testing.T) {
 	srv := fakeStream(t, frames)
 	defer srv.Close()
 
-	d := New("test-key", srv.URL, nil)
+	d := New("test-key", srv.URL, streamhttp.Options{}, nil)
 	ch, err := d.Call(context.Background(), providers.Request{
 		Model:    "deepseek-v4-pro",
 		Messages: []providers.Message{{Role: "user", Content: []providers.ContentBlock{{Type: "text", Text: "hi"}}}},

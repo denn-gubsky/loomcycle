@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"github.com/denn-gubsky/loomcycle/internal/providers/streamhttp"
 )
 
 // fakeModelsServer serves a canned /models response.
@@ -35,7 +36,7 @@ func TestListModels_HappyPath(t *testing.T) {
 	srv := fakeModelsServer(t, http.StatusOK, body)
 	defer srv.Close()
 
-	d := New("test-key", srv.URL, nil)
+	d := New("test-key", srv.URL, streamhttp.Options{}, nil)
 	models, err := d.ListModels(context.Background())
 	if err != nil {
 		t.Fatalf("ListModels: %v", err)
@@ -59,7 +60,7 @@ func TestListModels_DeepSeekShape(t *testing.T) {
 	srv := fakeModelsServer(t, http.StatusOK, body)
 	defer srv.Close()
 
-	d := New("test-key", srv.URL, nil)
+	d := New("test-key", srv.URL, streamhttp.Options{}, nil)
 	models, err := d.ListModels(context.Background())
 	if err != nil {
 		t.Fatalf("ListModels (DeepSeek shape): %v", err)
@@ -74,7 +75,7 @@ func TestProbe_AuthFailure(t *testing.T) {
 		`{"error": {"message": "Incorrect API key", "type": "invalid_request_error"}}`)
 	defer srv.Close()
 
-	d := New("test-key", srv.URL, nil)
+	d := New("test-key", srv.URL, streamhttp.Options{}, nil)
 	if err := d.Probe(context.Background()); err == nil {
 		t.Fatal("Probe should error on 401")
 	}

@@ -447,6 +447,32 @@ type Env struct {
 	// don't want background work, can opt out).
 	// Env: LOOMCYCLE_MEMORY_SWEEP_MS.
 	MemorySweepInterval time.Duration
+
+	// ProviderHeaderTimeout is the per-attempt cap on time-to-first-
+	// byte for streaming provider HTTP calls (set on each driver's
+	// http.Transport.ResponseHeaderTimeout). Default 60s — generous
+	// enough for cold-start cloud endpoints and warming Ollama models
+	// without leaving a stalled pre-stream connection open forever.
+	// Env: LOOMCYCLE_PROVIDER_HEADER_TIMEOUT_MS.
+	ProviderHeaderTimeout time.Duration
+
+	// ProviderIdleTimeout is the maximum gap allowed between body
+	// bytes during a streaming provider response. The driver wraps
+	// resp.Body with streamhttp.WrapBody and resets a timer on every
+	// Read; if the timer fires (no bytes for this long), the request
+	// context is cancelled. Default 90s — long enough to ride out
+	// reasoning-model thinking pauses, short enough to drop a truly
+	// stalled stream before the agent's heartbeat sweeper notices.
+	//
+	// Why this exists: the previous implementation used
+	// http.Client.Timeout = 5min as a wall-clock cap on the entire
+	// request. For long final-turn responses (e.g. job-searcher
+	// emitting a 25-position ingest payload) the cap fired mid-stream
+	// even when the model was actively producing tokens. The
+	// header-timeout + per-byte idle pair lets long *productive*
+	// streams complete while still killing genuinely stalled ones.
+	// Env: LOOMCYCLE_PROVIDER_IDLE_TIMEOUT_MS.
+	ProviderIdleTimeout time.Duration
 }
 
 // Load reads a YAML file and the process env. Empty path returns defaults +
@@ -682,6 +708,24 @@ func Load(path string) (*Config, error) {
 			} else {
 				cfg.Env.MemorySweepInterval = time.Duration(n) * time.Millisecond
 			}
+		}
+	}
+
+	// Provider streaming timeouts. Defaults match streamhttp.Default*.
+	// Negative or zero values are NOT treated as "disable" — there's no
+	// safe interpretation of "stream forever" given the agent loop's
+	// liveness assumptions. Operators bumping these should pick a real
+	// number; bad input falls through to the default.
+	cfg.Env.ProviderHeaderTimeout = 60 * time.Second
+	if v := os.Getenv("LOOMCYCLE_PROVIDER_HEADER_TIMEOUT_MS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			cfg.Env.ProviderHeaderTimeout = time.Duration(n) * time.Millisecond
+		}
+	}
+	cfg.Env.ProviderIdleTimeout = 90 * time.Second
+	if v := os.Getenv("LOOMCYCLE_PROVIDER_IDLE_TIMEOUT_MS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			cfg.Env.ProviderIdleTimeout = time.Duration(n) * time.Millisecond
 		}
 	}
 

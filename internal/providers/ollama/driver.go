@@ -28,29 +28,36 @@ import (
 
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/providers/ratelimit"
+	"github.com/denn-gubsky/loomcycle/internal/providers/streamhttp"
 )
 
 const (
 	defaultBaseURL = "http://localhost:11434"
-	defaultTimeout = 10 * time.Minute // local generation can be slow
 )
 
 // Driver speaks Ollama's /api/chat. No API key — local trust model.
 type Driver struct {
-	baseURL string
-	http    *http.Client
+	baseURL     string
+	http        *http.Client
+	idleTimeout time.Duration
 }
 
-// New constructs a Driver. baseURL may be empty for the default localhost endpoint.
-func New(baseURL string, httpClient *http.Client) *Driver {
+// New constructs a Driver. baseURL may be empty for the default localhost
+// endpoint. streamOpts controls per-stream timeouts. Local generation
+// can be very slow on first-token (model warmup, large context); callers
+// passing zero values get the streamhttp defaults — usually fine, but
+// operators on cold-start sensitive deployments may want to bump
+// HeaderTimeout via LOOMCYCLE_PROVIDER_HEADER_TIMEOUT_SECONDS.
+func New(baseURL string, streamOpts streamhttp.Options, httpClient *http.Client) *Driver {
 	if baseURL == "" {
 		baseURL = defaultBaseURL
 	}
 	baseURL = strings.TrimRight(baseURL, "/")
+	streamOpts = streamOpts.Resolve()
 	if httpClient == nil {
-		httpClient = &http.Client{Timeout: defaultTimeout}
+		httpClient = streamhttp.NewClient(streamOpts.HeaderTimeout)
 	}
-	return &Driver{baseURL: baseURL, http: httpClient}
+	return &Driver{baseURL: baseURL, http: httpClient, idleTimeout: streamOpts.IdleTimeout}
 }
 
 func (d *Driver) ID() string { return "ollama" }
@@ -85,8 +92,10 @@ func (d *Driver) Call(ctx context.Context, req providers.Request) (<-chan provid
 		return nil, fmt.Errorf("build request: %w", err)
 	}
 
-	attempt := func(ctx context.Context) (*http.Response, error) {
-		req, err := http.NewRequestWithContext(ctx, "POST", d.baseURL+"/api/chat", bytes.NewReader(body))
+	streamCtx, cancelStream := context.WithCancel(ctx)
+
+	attempt := func(attemptCtx context.Context) (*http.Response, error) {
+		req, err := http.NewRequestWithContext(attemptCtx, "POST", d.baseURL+"/api/chat", bytes.NewReader(body))
 		if err != nil {
 			return nil, err
 		}
@@ -95,12 +104,13 @@ func (d *Driver) Call(ctx context.Context, req providers.Request) (<-chan provid
 		return d.http.Do(req)
 	}
 
-	resp, err := ratelimit.Do(ctx, ratelimit.Config{
+	resp, err := ratelimit.Do(streamCtx, ratelimit.Config{
 		Provider:    "ollama",
 		ParseHeader: ratelimit.OllamaRetryAfter,
 		OnEvent:     req.OnEvent,
 	}, attempt)
 	if err != nil {
+		cancelStream()
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			return nil, err
 		}
@@ -108,12 +118,18 @@ func (d *Driver) Call(ctx context.Context, req providers.Request) (<-chan provid
 	}
 	if resp.StatusCode != http.StatusOK {
 		defer resp.Body.Close()
+		cancelStream()
 		errBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		return nil, fmt.Errorf("ollama %d: %s", resp.StatusCode, strings.TrimSpace(string(errBody)))
 	}
 
+	resp.Body = streamhttp.WrapBody(resp.Body, d.idleTimeout, cancelStream)
+
 	out := make(chan providers.Event, 16)
-	go streamEvents(ctx, resp.Body, out, len(req.Tools) > 0)
+	go func() {
+		defer cancelStream()
+		streamEvents(streamCtx, resp.Body, out, len(req.Tools) > 0)
+	}()
 	return out, nil
 }
 

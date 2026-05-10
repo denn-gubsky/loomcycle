@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/denn-gubsky/loomcycle/internal/providers"
+	"github.com/denn-gubsky/loomcycle/internal/providers/streamhttp"
 )
 
 // TestStreamThinking_EmitsLiveEventThinking pins the v0.7.x
@@ -36,7 +37,7 @@ func TestStreamThinking_EmitsLiveEventThinking(t *testing.T) {
 	srv := fakeStream(t, frames)
 	defer srv.Close()
 
-	d := New("test-key", srv.URL, nil)
+	d := New("test-key", srv.URL, streamhttp.Options{}, nil)
 	ch, err := d.Call(context.Background(), providers.Request{
 		Model:    "claude-opus-4-7",
 		Messages: []providers.Message{{Role: "user", Content: []providers.ContentBlock{{Type: "text", Text: "what is 6 times 7"}}}},
@@ -89,7 +90,7 @@ func TestStreamThinking_NotEmittedOnPlainTextStream(t *testing.T) {
 	srv := fakeStream(t, frames)
 	defer srv.Close()
 
-	d := New("test-key", srv.URL, nil)
+	d := New("test-key", srv.URL, streamhttp.Options{}, nil)
 	ch, _ := d.Call(context.Background(), providers.Request{
 		Model:    "claude-haiku-4-5",
 		Messages: []providers.Message{{Role: "user", Content: []providers.ContentBlock{{Type: "text", Text: "hi"}}}},
