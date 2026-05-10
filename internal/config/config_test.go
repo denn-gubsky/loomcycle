@@ -842,3 +842,126 @@ defaults: { provider: anthropic, model: claude-sonnet-4-6 }
 		t.Errorf("merged prompt missing skill body: %q", prompt)
 	}
 }
+
+// TestDiscoverAgents_NoYAMLPath: AGENTS_ROOT set, Load called with
+// path="" (env-only mode, no yaml). The discovery + system-prompt-file
+// resolution passes must run regardless of yaml presence — without
+// this the headline "MDs as sole source of truth" deployment shape
+// would silently load zero agents (the original Load wrapped both
+// passes in `if path != ""`). Regression guard for the critical bug
+// the code review caught at PR #49 review time.
+func TestDiscoverAgents_NoYAMLPath(t *testing.T) {
+	tmp := t.TempDir()
+	agentsDir := filepath.Join(tmp, "agents")
+	if err := os.Mkdir(agentsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeAgentMD(t, agentsDir, "solo", `---
+name: solo
+provider: anthropic
+model: claude-sonnet-4-6
+allowed_tools: [Read]
+---
+solo body
+`)
+	t.Setenv("LOOMCYCLE_AGENTS_ROOT", agentsDir)
+
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatalf("Load(\"\"): %v", err)
+	}
+	if got := len(cfg.Agents); got != 1 {
+		t.Fatalf("Agents count = %d, want 1 (env-only deployment should still discover)", got)
+	}
+	if cfg.Agents["solo"].SystemPrompt != "solo body\n" {
+		t.Errorf("SystemPrompt = %q, want body from MD", cfg.Agents["solo"].SystemPrompt)
+	}
+}
+
+// TestDiscoverAgents_EmptyYAMLListClearsDiscovered: the merger's
+// nil-vs-empty-slice contract — yaml `allowed_tools: []` actively
+// zero-outs a discovered list, vs yaml omitting the field entirely
+// (which keeps discovered). Pins gopkg.in/yaml.v3's nil/non-nil-empty
+// distinction so a future yaml lib upgrade that breaks this surfaces
+// as a test failure instead of silently leaving agents with the wrong
+// tool set.
+func TestDiscoverAgents_EmptyYAMLListClearsDiscovered(t *testing.T) {
+	tmp := t.TempDir()
+	agentsDir := filepath.Join(tmp, "agents")
+	if err := os.Mkdir(agentsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeAgentMD(t, agentsDir, "narrow", `---
+name: narrow
+provider: anthropic
+model: claude-sonnet-4-6
+allowed_tools: [Read, Edit, mcp__jobs__getAgentContext]
+---
+body
+`)
+	yamlPath := filepath.Join(tmp, "c.yaml")
+	if err := os.WriteFile(yamlPath, []byte(`
+defaults: { provider: anthropic, model: claude-sonnet-4-6 }
+agents:
+  narrow:
+    allowed_tools: []
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("LOOMCYCLE_AGENTS_ROOT", agentsDir)
+
+	cfg, err := Load(yamlPath)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	got := cfg.Agents["narrow"].AllowedTools
+	if got == nil {
+		t.Errorf("AllowedTools = nil; expected non-nil empty slice (yaml [] should override discovered)")
+	}
+	if len(got) != 0 {
+		t.Errorf("AllowedTools = %v; expected empty slice (yaml [] should zero out discovered list)", got)
+	}
+}
+
+// TestDiscoverAgents_YAMLInlinePromptOverridesMDFile: covers the
+// inverse of TestDiscoverAgents_YAMLSystemPromptFileWins. MD has
+// system_prompt_file in its frontmatter; yaml override sets inline
+// system_prompt. Without the merger clearing the OTHER source on
+// each prompt-source override, both fields end up populated and
+// resolveSystemPromptFiles' mutual-exclusion check fires.
+func TestDiscoverAgents_YAMLInlinePromptOverridesMDFile(t *testing.T) {
+	tmp := t.TempDir()
+	agentsDir := filepath.Join(tmp, "agents")
+	if err := os.Mkdir(agentsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tmp, "from-file.md"), []byte("from-file body"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	writeAgentMD(t, agentsDir, "doc", `---
+name: doc
+provider: anthropic
+model: claude-sonnet-4-6
+allowed_tools: [Read]
+system_prompt_file: from-file.md
+---
+`)
+	yamlPath := filepath.Join(tmp, "c.yaml")
+	if err := os.WriteFile(yamlPath, []byte(`
+defaults: { provider: anthropic, model: claude-sonnet-4-6 }
+agents:
+  doc:
+    system_prompt: "yaml override prompt"
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("LOOMCYCLE_AGENTS_ROOT", agentsDir)
+
+	cfg, err := Load(yamlPath)
+	if err != nil {
+		t.Fatalf("Load: %v (the merger should have cleared SystemPromptFile when yaml set inline SystemPrompt)", err)
+	}
+	if got := cfg.Agents["doc"].SystemPrompt; got != "yaml override prompt" {
+		t.Errorf("SystemPrompt = %q, want yaml override", got)
+	}
+}

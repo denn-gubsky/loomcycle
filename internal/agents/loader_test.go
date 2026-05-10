@@ -361,3 +361,25 @@ body
 		t.Errorf("error %q should mention 'tools'", err.Error())
 	}
 }
+
+// TestParseAgent_ToolsRejectsMapElement: a list containing a YAML map
+// (a realistic typo when an operator confuses `models:` block syntax
+// with `tools:`) must error rather than silently dropping the bad
+// element. The rejection happens in the []any branch of coerceToolsField
+// when the element type assertion to string fails.
+func TestParseAgent_ToolsRejectsMapElement(t *testing.T) {
+	_, err := parseAgent([]byte(`---
+name: bad-mixed
+tools:
+  - { provider: foo, model: bar }
+  - "Read"
+---
+body
+`))
+	if err == nil {
+		t.Fatal("expected error for map element in tools list, got nil")
+	}
+	if !strings.Contains(err.Error(), "tools") {
+		t.Errorf("error %q should mention 'tools'", err.Error())
+	}
+}

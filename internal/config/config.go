@@ -478,23 +478,32 @@ func Load(path string) (*Config, error) {
 		if abs, err := filepath.Abs(filepath.Dir(path)); err == nil {
 			cfg.configDir = abs
 		}
-		// Discover MD-defined agents BEFORE resolveSystemPromptFiles so
-		// the file-resolution pass sees a merged map. We read the env
-		// var inline here because the full Env struct is populated later
-		// in this function — re-shuffling that order would risk subtler
-		// regressions for one early reader. The book-keeping copy onto
-		// cfg.Env.AgentsRoot lands in the env-block below.
-		if root := os.Getenv("LOOMCYCLE_AGENTS_ROOT"); root != "" {
-			if err := discoverAgents(cfg, root); err != nil {
-				return nil, err
-			}
-		}
-		// Resolve any agent's system_prompt_file → system_prompt. Done
-		// here so the rest of the runtime sees a uniform AgentDef
-		// regardless of which form the operator wrote.
-		if err := resolveSystemPromptFiles(cfg, path); err != nil {
+	}
+	// Discover MD-defined agents BEFORE resolveSystemPromptFiles so
+	// the file-resolution pass sees a merged map. We read the env var
+	// inline here because the full Env struct is populated later in
+	// this function — re-shuffling that order would risk subtler
+	// regressions for one early reader. The book-keeping copy onto
+	// cfg.Env.AgentsRoot lands in the env-block below.
+	//
+	// Discovery runs OUTSIDE the `if path != ""` guard so the
+	// MDs-as-sole-source-of-truth deployment works (operator sets
+	// LOOMCYCLE_AGENTS_ROOT and omits the yaml entirely; cfg.Agents
+	// is populated purely from MDs).
+	if root := os.Getenv("LOOMCYCLE_AGENTS_ROOT"); root != "" {
+		if err := discoverAgents(cfg, root); err != nil {
 			return nil, err
 		}
+	}
+	// Resolve any agent's system_prompt_file → system_prompt (for both
+	// yaml-declared and discovered agents that set the field). Also
+	// outside the path-guard for the MDs-only path. With path == "",
+	// configDir is empty → relative paths resolve against cwd; absolute
+	// paths still work; this matches the documented semantic ("relative
+	// paths resolve against the YAML config file's directory" reduces
+	// to "the process's cwd" when there is no YAML).
+	if err := resolveSystemPromptFiles(cfg, path); err != nil {
+		return nil, err
 	}
 
 	cfg.Env = Env{
@@ -868,13 +877,21 @@ func mergeAgentDef(base, override AgentDef) AgentDef {
 	if override.Model != "" {
 		out.Model = override.Model
 	}
+	// Either prompt-source override clears the OTHER source on the
+	// merged struct. Without this, a discovered MD that sets
+	// system_prompt_file in its frontmatter merging with a yaml
+	// override that sets inline system_prompt (or vice versa) would
+	// produce both fields populated and trip resolveSystemPromptFiles'
+	// mutual-exclusion check downstream — making yaml overrides for
+	// the prompt source unusable. The yaml override is the explicit
+	// "use this prompt source instead" signal, regardless of which
+	// shape it takes.
 	if override.SystemPrompt != "" {
 		out.SystemPrompt = override.SystemPrompt
+		out.SystemPromptFile = ""
 	}
 	if override.SystemPromptFile != "" {
 		out.SystemPromptFile = override.SystemPromptFile
-		// File pointer wins over inline body; otherwise
-		// resolveSystemPromptFiles errors on "both set".
 		out.SystemPrompt = ""
 	}
 	if override.AllowedTools != nil {
