@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/denn-gubsky/loomcycle/internal/providers"
+	"github.com/denn-gubsky/loomcycle/internal/providers/streamhttp"
 )
 
 // Five tests pin the qwen3 tool-call-as-text recovery contract:
@@ -35,7 +36,7 @@ func TestToolTextRecovery_SynthesizesCallFromText(t *testing.T) {
 	srv := fakeStream(t, frames)
 	defer srv.Close()
 
-	d := New(srv.URL, nil)
+	d := New(srv.URL, streamhttp.Options{}, nil)
 	ch, err := d.Call(context.Background(), providers.Request{
 		Model: "qwen3:14b",
 		Tools: []providers.ToolSpec{{Name: "mcp__jobs__getApplication", InputSchema: json.RawMessage(`{}`)}},
@@ -88,7 +89,7 @@ func TestToolTextRecovery_SynthesizesArrayOfCalls(t *testing.T) {
 	srv := fakeStream(t, frames)
 	defer srv.Close()
 
-	d := New(srv.URL, nil)
+	d := New(srv.URL, streamhttp.Options{}, nil)
 	ch, _ := d.Call(context.Background(), providers.Request{
 		Model:    "qwen3:14b",
 		Tools:    []providers.ToolSpec{{Name: "a"}, {Name: "b"}},
@@ -115,7 +116,7 @@ func TestToolTextRecovery_StripsMarkdownFence(t *testing.T) {
 	srv := fakeStream(t, frames)
 	defer srv.Close()
 
-	d := New(srv.URL, nil)
+	d := New(srv.URL, streamhttp.Options{}, nil)
 	ch, _ := d.Call(context.Background(), providers.Request{
 		Model:    "qwen3:14b",
 		Tools:    []providers.ToolSpec{{Name: "foo"}},
@@ -142,7 +143,7 @@ func TestToolTextRecovery_DoesNotFalsePositiveOnProse(t *testing.T) {
 	srv := fakeStream(t, frames)
 	defer srv.Close()
 
-	d := New(srv.URL, nil)
+	d := New(srv.URL, streamhttp.Options{}, nil)
 	ch, _ := d.Call(context.Background(), providers.Request{
 		Model:    "qwen3:14b",
 		Tools:    []providers.ToolSpec{{Name: "foo"}},
@@ -178,7 +179,7 @@ func TestToolTextRecovery_NoSynthWhenStructuredCallAlreadyEmitted(t *testing.T) 
 	srv := fakeStream(t, frames)
 	defer srv.Close()
 
-	d := New(srv.URL, nil)
+	d := New(srv.URL, streamhttp.Options{}, nil)
 	ch, _ := d.Call(context.Background(), providers.Request{
 		Model:    "qwen3:14b",
 		Tools:    []providers.ToolSpec{{Name: "foo"}},
@@ -206,7 +207,7 @@ func TestToolTextRecovery_DisabledWhenNoToolsRequested(t *testing.T) {
 	srv := fakeStream(t, frames)
 	defer srv.Close()
 
-	d := New(srv.URL, nil)
+	d := New(srv.URL, streamhttp.Options{}, nil)
 	ch, _ := d.Call(context.Background(), providers.Request{
 		Model: "qwen3:14b",
 		// Tools intentionally empty — recovery must NOT fire.

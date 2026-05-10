@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/denn-gubsky/loomcycle/internal/providers"
+	"github.com/denn-gubsky/loomcycle/internal/providers/streamhttp"
 )
 
 // fakeStream serves a canned SSE script as one streamGenerateContent
@@ -51,7 +52,7 @@ func TestStreamTextThenStop(t *testing.T) {
 	srv := fakeStream(t, frames)
 	defer srv.Close()
 
-	d := New("test-key", srv.URL, nil)
+	d := New("test-key", srv.URL, streamhttp.Options{}, nil)
 	ch, err := d.Call(context.Background(), providers.Request{
 		Model:    "gemini-2.0-flash",
 		Messages: []providers.Message{{Role: "user", Content: []providers.ContentBlock{{Type: "text", Text: "hi"}}}},
@@ -97,7 +98,7 @@ func TestStreamFunctionCall(t *testing.T) {
 	srv := fakeStream(t, frames)
 	defer srv.Close()
 
-	d := New("test-key", srv.URL, nil)
+	d := New("test-key", srv.URL, streamhttp.Options{}, nil)
 	ch, _ := d.Call(context.Background(), providers.Request{
 		Model: "gemini-2.0-flash",
 		Tools: []providers.ToolSpec{
@@ -156,7 +157,7 @@ func TestRequestShape(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	d := New("test-key", srv.URL, nil)
+	d := New("test-key", srv.URL, streamhttp.Options{}, nil)
 	temp := 0.5
 	ch, _ := d.Call(context.Background(), providers.Request{
 		Model:       "gemini-2.5-flash",
@@ -310,7 +311,7 @@ func TestListModels_StripsModelsPrefix(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	d := New("test-key", srv.URL, nil)
+	d := New("test-key", srv.URL, streamhttp.Options{}, nil)
 	models, err := d.ListModels(context.Background())
 	if err != nil {
 		t.Fatalf("ListModels: %v", err)
@@ -333,7 +334,7 @@ func TestProbe_PropagatesError(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	d := New("bad-key", srv.URL, nil)
+	d := New("bad-key", srv.URL, streamhttp.Options{}, nil)
 	if err := d.Probe(context.Background()); err == nil {
 		t.Fatal("Probe with 401 didn't surface an error")
 	}

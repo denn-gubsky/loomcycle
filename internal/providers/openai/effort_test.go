@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/denn-gubsky/loomcycle/internal/providers"
+	"github.com/denn-gubsky/loomcycle/internal/providers/streamhttp"
 )
 
 // OpenAI effort translation is much simpler than Anthropic's: pass
@@ -84,7 +85,7 @@ func TestCapabilities_SupportsEffortIsTrue(t *testing.T) {
 	// edit can't quietly flip it to false (which would make the
 	// loop log "effort dropped" on every OpenAI run, misleading
 	// operators about what the driver actually does).
-	d := New("test-key", "", nil)
+	d := New("test-key", "", streamhttp.Options{}, nil)
 	if !d.Capabilities().SupportsEffort {
 		t.Error("OpenAI driver must report SupportsEffort=true")
 	}

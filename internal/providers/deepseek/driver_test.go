@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/denn-gubsky/loomcycle/internal/providers"
+	"github.com/denn-gubsky/loomcycle/internal/providers/streamhttp"
 )
 
 // fakeStream serves a canned SSE script, mirroring the OpenAI
@@ -38,14 +39,14 @@ func TestDriver_IDIsDeepseek(t *testing.T) {
 	// The whole point of the wrapper: a distinct ID so the
 	// provider resolver dispatches `provider: deepseek` to this
 	// driver and per-run cost accounting keys on it correctly.
-	d := New("test-key", "", nil)
+	d := New("test-key", "", streamhttp.Options{}, nil)
 	if got := d.ID(); got != "deepseek" {
 		t.Fatalf("ID() = %q, want %q", got, "deepseek")
 	}
 }
 
 func TestDriver_DefaultBaseURLIsDeepseek(t *testing.T) {
-	// New("", "", nil) must NOT fall through to api.openai.com.
+	// New("", "", streamhttp.Options{}, nil) must NOT fall through to api.openai.com.
 	// Verify by stubbing the OpenAI default URL — if the wrapper
 	// forgot to pre-bake the DeepSeek base, the request would
 	// flow to OpenAI. Easiest check: call with an empty base URL
@@ -64,7 +65,7 @@ func TestDriver_DefaultBaseURLIsDeepseek(t *testing.T) {
 			),
 		}, nil
 	})
-	d := New("test-key", "", &http.Client{Transport: rt})
+	d := New("test-key", "", streamhttp.Options{}, &http.Client{Transport: rt})
 	ch, err := d.Call(context.Background(), providers.Request{
 		Model:    "deepseek-chat",
 		Messages: []providers.Message{{Role: "user", Content: []providers.ContentBlock{{Type: "text", Text: "hi"}}}},
@@ -92,7 +93,7 @@ func TestDriver_CustomBaseURLOverridesDefault(t *testing.T) {
 	})
 	defer srv.Close()
 
-	d := New("test-key", srv.URL, nil)
+	d := New("test-key", srv.URL, streamhttp.Options{}, nil)
 	ch, err := d.Call(context.Background(), providers.Request{
 		Model:    "deepseek-chat",
 		Messages: []providers.Message{{Role: "user", Content: []providers.ContentBlock{{Type: "text", Text: "hi"}}}},
@@ -118,7 +119,7 @@ func TestDriver_CapabilitiesMatchOpenAI(t *testing.T) {
 	// pins the assumption so a future change to OpenAI's flags
 	// surfaces here as a deliberate decision rather than silent
 	// drift.
-	d := New("test-key", "", nil)
+	d := New("test-key", "", streamhttp.Options{}, nil)
 	caps := d.Capabilities()
 	if caps.NativePromptCache {
 		t.Errorf("NativePromptCache = true, want false (DeepSeek auto-caches; no caller knob)")
