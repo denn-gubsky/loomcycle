@@ -3,10 +3,10 @@ package ollama
 import (
 	"context"
 	"fmt"
+	"github.com/denn-gubsky/loomcycle/internal/providers/streamhttp"
 	"net/http"
 	"net/http/httptest"
 	"testing"
-	"github.com/denn-gubsky/loomcycle/internal/providers/streamhttp"
 )
 
 // fakeTagsServer serves a canned /api/tags response. Ollama doesn't
