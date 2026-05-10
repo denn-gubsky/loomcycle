@@ -41,16 +41,39 @@ func Spec(t Tool) providers.ToolSpec {
 // A new Dispatcher is built per run with the run's allowed-tools list so
 // off-policy calls fail fast.
 type Dispatcher struct {
-	tools map[string]Tool
+	tools    map[string]Tool
+	fallback FallbackFunc
 }
 
-// NewDispatcher builds a dispatcher from the given tools.
+// FallbackFunc is consulted by Dispatcher.Execute when a tool name isn't
+// in the static map. It returns (Result, true) when it has a definitive
+// outcome for the call (success OR a typed error to surface to the model);
+// (zero, false) means "I don't know about this name, fall through to
+// the dispatcher's default 'tool not found' error".
+//
+// Used to implement lazy MCP server registration: a configured server
+// that failed initial handshake registers no tools at boot, but a
+// fallback can detect mcp__<server>__<tool> names, retry the handshake,
+// register the tools, and dispatch. Memoising successful resolutions
+// in the fallback avoids re-handshaking on every subsequent call.
+type FallbackFunc func(ctx context.Context, name string, input json.RawMessage) (Result, bool)
+
+// NewDispatcher builds a dispatcher from the given tools. No fallback —
+// unknown names always return "tool not found".
 func NewDispatcher(tools []Tool) *Dispatcher {
 	m := make(map[string]Tool, len(tools))
 	for _, t := range tools {
 		m[t.Name()] = t
 	}
 	return &Dispatcher{tools: m}
+}
+
+// NewDispatcherWithFallback is NewDispatcher plus a FallbackFunc consulted
+// for unknown names before returning "tool not found".
+func NewDispatcherWithFallback(tools []Tool, fallback FallbackFunc) *Dispatcher {
+	d := NewDispatcher(tools)
+	d.fallback = fallback
+	return d
 }
 
 // Specs returns the providers.ToolSpec slice for all registered tools, in the
@@ -214,16 +237,22 @@ func MemoryPolicy(ctx context.Context) MemoryPolicyValue {
 	return v
 }
 
-// Execute looks up the named tool and runs it. Unknown tool names return an
-// error result (the model can self-correct) rather than a hard error.
+// Execute looks up the named tool and runs it. Unknown tool names consult
+// the optional Fallback before returning the standard "tool not found"
+// error result (the model can self-correct on the error result; we never
+// return a hard Go error here).
 func (d *Dispatcher) Execute(ctx context.Context, name string, input json.RawMessage) Result {
-	t, ok := d.tools[name]
-	if !ok {
-		return Result{Text: fmt.Sprintf("tool not found: %s", name), IsError: true}
+	if t, ok := d.tools[name]; ok {
+		res, err := t.Execute(ctx, input)
+		if err != nil {
+			return Result{Text: err.Error(), IsError: true}
+		}
+		return res
 	}
-	res, err := t.Execute(ctx, input)
-	if err != nil {
-		return Result{Text: err.Error(), IsError: true}
+	if d.fallback != nil {
+		if res, handled := d.fallback(ctx, name, input); handled {
+			return res
+		}
 	}
-	return res
+	return Result{Text: fmt.Sprintf("tool not found: %s", name), IsError: true}
 }

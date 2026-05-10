@@ -306,6 +306,26 @@ func main() {
 	}
 	mcpInitCancel()
 
+	// Lazy MCP recovery — when an agent calls a tool from a server that
+	// failed initial handshake (skipped above), this resolver tries one
+	// fresh pool.Get on the agent's call path. On success the server's
+	// tools are memoised in the resolver and dispatched. Subsequent
+	// calls hit the cache without re-handshaking.
+	//
+	// Without this, an MCP peer that's down at loomcycle boot stays
+	// invisible for the lifetime of the process — operators have to
+	// notice the "skipped" log line and restart loomcycle by hand.
+	// In a server environment where peers (jobs-search-web, other MCP
+	// services) restart independently, that's recurring operational
+	// pain. See internal/tools/mcp/lazy.go for the state machine.
+	mcpServerCfgs := make(map[string]mcp.ServerCfg, len(cfg.MCPServers))
+	for name, srv := range cfg.MCPServers {
+		mcpServerCfgs[name] = mcp.ServerCfg{AllowedTools: srv.AllowedTools}
+	}
+	mcpLazyResolver := mcp.NewLazyResolver(mcpPool, mcpServerCfgs, func(server string, count int) {
+		log.Printf("mcp[%s]: lazy-registered %d tool(s) on first agent call (was skipped at boot)", server, count)
+	}, 0)
+
 	// Storage: SQLite (default, compact installs) or Postgres
 	// (production, hundreds of concurrent agents). Both adapters
 	// implement the same store.Store interface; they're tested against
@@ -321,6 +341,7 @@ func main() {
 	// fallback for operators running without a configured store.
 	memoryTool.Store = storeIface
 	srv := lchttp.New(cfg, pr, allTools, sem, storeIface)
+	srv.SetMCPFallback(mcpLazyResolver.Resolve)
 
 	// Build the model-resolution matrix (resolve.Resolver). Providers
 	// without API keys are MARKED EXCLUDED so Snapshot() shows the
@@ -747,22 +768,9 @@ func spawnStdioMCP(name string, srv config.MCPServer) (mcp.Caller, error) {
 	})
 }
 
-// applyAllowedToolsFilter narrows a server's discovered tool descriptors
-// to the operator-permitted subset. Empty allowed = pass-through (default
-// behaviour: expose every tool the server advertises).
+// applyAllowedToolsFilter — thin wrapper over mcp.ApplyAllowedToolsFilter.
+// Lives in the mcp package so both the boot-time path here and the
+// lazy-retry path (mcp.LazyResolver) share one implementation.
 func applyAllowedToolsFilter(descs []mcp.ToolDescriptor, allowed []string) []mcp.ToolDescriptor {
-	if len(allowed) == 0 {
-		return descs
-	}
-	allowSet := make(map[string]struct{}, len(allowed))
-	for _, name := range allowed {
-		allowSet[name] = struct{}{}
-	}
-	out := make([]mcp.ToolDescriptor, 0, len(descs))
-	for _, d := range descs {
-		if _, ok := allowSet[d.Name]; ok {
-			out = append(out, d)
-		}
-	}
-	return out
+	return mcp.ApplyAllowedToolsFilter(descs, allowed)
 }
