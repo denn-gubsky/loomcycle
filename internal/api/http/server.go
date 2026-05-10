@@ -82,6 +82,17 @@ type Server struct {
 	// hot path (Match returns nil, dispatchOneTool fast-paths).
 	hookRegistry   *hooks.Registry
 	hookDispatcher *hooks.Dispatcher
+
+	// mcpFallback is the optional Dispatcher fallback for lazy MCP
+	// server registration. When set, an agent's call to a tool name
+	// that's not in the per-run dispatcher's static map (typically
+	// because the MCP server failed handshake at boot and was
+	// "skipped" by main.go) gets a chance to recover via this fallback
+	// before the dispatcher returns the standard "tool not found"
+	// error. Wired in cmd/loomcycle/main.go via SetMCPFallback after
+	// the MCP pool is built; nil-safe for tests + unit harnesses
+	// that don't exercise MCP at all. See internal/tools/mcp/lazy.go.
+	mcpFallback tools.FallbackFunc
 }
 
 // New constructs a Server. If st is non-nil, every run is recorded as a
@@ -111,6 +122,29 @@ func New(cfg *config.Config, pr ProviderResolver, builtinTools []tools.Tool, sem
 	}
 	s.tools = append(s.tools, &builtin.AgentTool{Run: s.runSubAgent})
 	return s
+}
+
+// SetMCPFallback installs the optional MCP lazy-resolution fallback.
+// Pass mcp.NewLazyResolver(...).Resolve here. Nil disables the
+// fallback (per-run dispatchers behave exactly as before — unknown
+// tool names return "tool not found" without any handshake retry).
+//
+// Mirrors the SetResolver pattern: tests that don't need lazy MCP
+// recovery can omit this call entirely. Production wires it from
+// cmd/loomcycle/main.go after the MCP pool is built.
+func (s *Server) SetMCPFallback(fn tools.FallbackFunc) {
+	s.mcpFallback = fn
+}
+
+// newDispatcher centralises Dispatcher construction so the three call
+// sites (handleRuns, handleMessages, runSubAgent) all pick up the
+// fallback automatically. With s.mcpFallback nil this is identical
+// to tools.NewDispatcher(allowedTools).
+func (s *Server) newDispatcher(allowedTools []tools.Tool) *tools.Dispatcher {
+	if s.mcpFallback == nil {
+		return tools.NewDispatcher(allowedTools)
+	}
+	return tools.NewDispatcherWithFallback(allowedTools, s.mcpFallback)
 }
 
 // SessionLocks exposes the per-session lock map so the gRPC server
@@ -356,7 +390,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 			WebSearchFilter: in.WebSearchFilter,
 		}
 	}
-	dispatcher := tools.NewDispatcher(allowedTools)
+	dispatcher := s.newDispatcher(allowedTools)
 
 	// ---- Segments: prepend agent's system prompt ----
 	segments := in.Segments
@@ -772,7 +806,7 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 			WebSearchFilter: req.WebSearchFilter,
 		}
 	}
-	dispatcher := tools.NewDispatcher(allowedTools)
+	dispatcher := s.newDispatcher(allowedTools)
 
 	// Optional system prompt from agent def.
 	if agentDef.SystemPrompt != "" {
@@ -1070,7 +1104,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 			WebSearchFilter: body.WebSearchFilter,
 		}
 	}
-	dispatcher := tools.NewDispatcher(allowedTools)
+	dispatcher := s.newDispatcher(allowedTools)
 
 	// Re-prepend the agent's system prompt — it isn't in the transcript
 	// (it's per-call configuration, not conversation content).
@@ -1590,7 +1624,7 @@ func (s *Server) runSubAgent(ctx context.Context, name string, prompt string) (s
 	if parentHostPolicy.HasList || s.cfg.Env.HTTPCallerAuthoritative {
 		subTools = builtin.NarrowHosts(subTools, parentHostPolicy.AllowedHosts, parentHostPolicy.WebSearchFilter, s.cfg.Env.HTTPCallerAuthoritative)
 	}
-	subDispatcher := tools.NewDispatcher(subTools)
+	subDispatcher := s.newDispatcher(subTools)
 
 	// Persist the input segments as the first event so transcript
 	// replay reconstructs the user prompt the same way fresh runs do.
