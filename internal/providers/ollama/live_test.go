@@ -33,6 +33,7 @@ import (
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/providers"
+	"github.com/denn-gubsky/loomcycle/internal/providers/streamhttp"
 )
 
 // liveBaseURL returns the test Ollama address from the env, or
@@ -110,7 +111,7 @@ func TestLive_OllamaChatCompletion(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	d := New(baseURL, nil)
+	d := New(baseURL, streamhttp.Options{}, nil)
 
 	// MaxTokens=512 gives reasoning models (qwen3, deepseek-r1, etc.)
 	// budget for the <think>...</think> block AND the actual answer.
@@ -191,7 +192,7 @@ func TestLive_OllamaToolCall(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 
-	d := New(baseURL, nil)
+	d := New(baseURL, streamhttp.Options{}, nil)
 
 	ch, err := d.Call(ctx, providers.Request{
 		Model: model,

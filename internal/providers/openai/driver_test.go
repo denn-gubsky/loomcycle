@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/providers"
+	"github.com/denn-gubsky/loomcycle/internal/providers/streamhttp"
 )
 
 // fakeStream serves a canned SSE script as one Chat Completions response.
@@ -76,7 +77,7 @@ func TestStreamTextCoalescing_BatchesPerTokenDeltas(t *testing.T) {
 	srv := fakeStream(t, frames)
 	defer srv.Close()
 
-	d := New("test-key", srv.URL, nil)
+	d := New("test-key", srv.URL, streamhttp.Options{}, nil)
 	ch, err := d.Call(context.Background(), providers.Request{
 		Model:    "gpt-5.4-mini",
 		Messages: []providers.Message{{Role: "user", Content: []providers.ContentBlock{{Type: "text", Text: "x"}}}},
@@ -124,7 +125,7 @@ func TestStreamTextCoalescing_FlushesOnNewline(t *testing.T) {
 	srv := fakeStream(t, frames)
 	defer srv.Close()
 
-	d := New("test-key", srv.URL, nil)
+	d := New("test-key", srv.URL, streamhttp.Options{}, nil)
 	ch, err := d.Call(context.Background(), providers.Request{
 		Model:    "gpt-5.4-mini",
 		Messages: []providers.Message{{Role: "user", Content: []providers.ContentBlock{{Type: "text", Text: "x"}}}},
@@ -179,7 +180,7 @@ func TestStreamTextCoalescing_FlushesBeforeToolCall(t *testing.T) {
 	srv := fakeStream(t, frames)
 	defer srv.Close()
 
-	d := New("test-key", srv.URL, nil)
+	d := New("test-key", srv.URL, streamhttp.Options{}, nil)
 	ch, err := d.Call(context.Background(), providers.Request{
 		Model:    "gpt-5.4-mini",
 		Tools:    []providers.ToolSpec{{Name: "foo"}},
@@ -238,7 +239,7 @@ func TestStreamTextThenStop(t *testing.T) {
 	srv := fakeStream(t, frames)
 	defer srv.Close()
 
-	d := New("test-key", srv.URL, nil)
+	d := New("test-key", srv.URL, streamhttp.Options{}, nil)
 	ch, err := d.Call(context.Background(), providers.Request{
 		Model:    "gpt-4o-mini",
 		Messages: []providers.Message{{Role: "user", Content: []providers.ContentBlock{{Type: "text", Text: "hi"}}}},
@@ -296,7 +297,7 @@ func TestStreamUsage_PopulatesModel(t *testing.T) {
 	srv := fakeStream(t, frames)
 	defer srv.Close()
 
-	d := New("test-key", srv.URL, nil)
+	d := New("test-key", srv.URL, streamhttp.Options{}, nil)
 	ch, err := d.Call(context.Background(), providers.Request{
 		Model:    "deepseek-chat",
 		Messages: []providers.Message{{Role: "user", Content: []providers.ContentBlock{{Type: "text", Text: "x"}}}},
@@ -333,7 +334,7 @@ func TestStreamToolCallAccumulation(t *testing.T) {
 	srv := fakeStream(t, frames)
 	defer srv.Close()
 
-	d := New("test-key", srv.URL, nil)
+	d := New("test-key", srv.URL, streamhttp.Options{}, nil)
 	ch, _ := d.Call(context.Background(), providers.Request{Model: "gpt-4o-mini"})
 
 	var toolCall *providers.ToolUse
@@ -376,7 +377,7 @@ func TestStreamMultipleToolCalls(t *testing.T) {
 	}
 	srv := fakeStream(t, frames)
 	defer srv.Close()
-	d := New("test-key", srv.URL, nil)
+	d := New("test-key", srv.URL, streamhttp.Options{}, nil)
 	ch, _ := d.Call(context.Background(), providers.Request{Model: "x"})
 
 	var got []providers.ToolUse
@@ -411,7 +412,7 @@ func TestStreamToolCallNonContiguousIndices(t *testing.T) {
 	}
 	srv := fakeStream(t, frames)
 	defer srv.Close()
-	d := New("test-key", srv.URL, nil)
+	d := New("test-key", srv.URL, streamhttp.Options{}, nil)
 	ch, _ := d.Call(context.Background(), providers.Request{Model: "x"})
 
 	var got []providers.ToolUse
@@ -442,7 +443,7 @@ func TestRequestBodyShape(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	d := New("test-key", srv.URL, nil)
+	d := New("test-key", srv.URL, streamhttp.Options{}, nil)
 	ch, err := d.Call(context.Background(), providers.Request{
 		Model: "gpt-4o-mini",
 		System: []providers.ContentBlock{
@@ -504,7 +505,7 @@ func TestCancellationDoesNotLeakGoroutine(t *testing.T) {
 	defer srv.Close()
 
 	ctx, cancel := context.WithCancel(context.Background())
-	d := New("test-key", srv.URL, nil)
+	d := New("test-key", srv.URL, streamhttp.Options{}, nil)
 	_, err := d.Call(ctx, providers.Request{Model: "x"})
 	if err != nil {
 		t.Fatalf("Call: %v", err)
@@ -560,7 +561,7 @@ func TestRetryOn429PreservesContext(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	d := New("test-key", srv.URL, nil)
+	d := New("test-key", srv.URL, streamhttp.Options{}, nil)
 	ch, err := d.Call(context.Background(), providers.Request{Model: "gpt-4o-mini"})
 	if err != nil {
 		t.Fatalf("Call: %v", err)
@@ -612,7 +613,7 @@ func TestRetryEmitsEventToRequestOnEvent(t *testing.T) {
 
 	var retries []providers.Event
 	var rmu sync.Mutex
-	d := New("test-key", srv.URL, nil)
+	d := New("test-key", srv.URL, streamhttp.Options{}, nil)
 	ch, err := d.Call(context.Background(), providers.Request{
 		Model: "gpt-4o-mini",
 		OnEvent: func(ev providers.Event) {
@@ -652,7 +653,7 @@ func TestNon200Status(t *testing.T) {
 		fmt.Fprint(w, `{"error":{"message":"invalid api key"}}`)
 	}))
 	defer srv.Close()
-	d := New("bad-key", srv.URL, nil)
+	d := New("bad-key", srv.URL, streamhttp.Options{}, nil)
 	_, err := d.Call(context.Background(), providers.Request{Model: "x"})
 	if err == nil {
 		t.Fatal("expected error on 401")

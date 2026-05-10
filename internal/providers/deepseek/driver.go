@@ -30,6 +30,7 @@ import (
 
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/providers/openai"
+	"github.com/denn-gubsky/loomcycle/internal/providers/streamhttp"
 )
 
 // defaultBaseURL is DeepSeek's OpenAI-compatible Chat Completions
@@ -47,12 +48,13 @@ type Driver struct {
 // New constructs a Driver. baseURL may be empty for the public
 // DeepSeek endpoint, or set to a self-hosted OpenAI-compatible mirror
 // (e.g. an internal vLLM serving a DeepSeek model). httpClient may be
-// nil to use the OpenAI driver's default.
-func New(apiKey, baseURL string, httpClient *http.Client) *Driver {
+// nil to use the OpenAI driver's default. streamOpts is forwarded to
+// the inner driver — see openai.New for semantics.
+func New(apiKey, baseURL string, streamOpts streamhttp.Options, httpClient *http.Client) *Driver {
 	if baseURL == "" {
 		baseURL = defaultBaseURL
 	}
-	return &Driver{inner: openai.New(apiKey, baseURL, httpClient)}
+	return &Driver{inner: openai.New(apiKey, baseURL, streamOpts, httpClient)}
 }
 
 // ID returns "deepseek" so the provider resolver in cmd/loomcycle

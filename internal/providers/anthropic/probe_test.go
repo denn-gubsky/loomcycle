@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"github.com/denn-gubsky/loomcycle/internal/providers/streamhttp"
 )
 
 // fakeModelsServer serves a canned /v1/models response. Asserts the
@@ -42,7 +43,7 @@ func TestListModels_HappyPath(t *testing.T) {
 	srv := fakeModelsServer(t, http.StatusOK, body)
 	defer srv.Close()
 
-	d := New("test-key", srv.URL, nil)
+	d := New("test-key", srv.URL, streamhttp.Options{}, nil)
 	models, err := d.ListModels(context.Background())
 	if err != nil {
 		t.Fatalf("ListModels: %v", err)
@@ -59,7 +60,7 @@ func TestProbe_HappyPath(t *testing.T) {
 	srv := fakeModelsServer(t, http.StatusOK, `{"data": [{"id": "claude-opus-4-7"}]}`)
 	defer srv.Close()
 
-	d := New("test-key", srv.URL, nil)
+	d := New("test-key", srv.URL, streamhttp.Options{}, nil)
 	if err := d.Probe(context.Background()); err != nil {
 		t.Fatalf("Probe: %v", err)
 	}
@@ -72,7 +73,7 @@ func TestProbe_AuthFailure(t *testing.T) {
 		`{"type": "error", "error": {"type": "authentication_error", "message": "invalid x-api-key"}}`)
 	defer srv.Close()
 
-	d := New("test-key", srv.URL, nil)
+	d := New("test-key", srv.URL, streamhttp.Options{}, nil)
 	err := d.Probe(context.Background())
 	if err == nil {
 		t.Fatal("Probe should error on 401")
@@ -92,7 +93,7 @@ func TestProbe_NetworkFailure(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	d := New("test-key", srv.URL, nil)
+	d := New("test-key", srv.URL, streamhttp.Options{}, nil)
 	if err := d.Probe(context.Background()); err == nil {
 		t.Fatal("Probe should error on dropped connection")
 	}

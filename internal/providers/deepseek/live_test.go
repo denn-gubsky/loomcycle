@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/providers"
+	"github.com/denn-gubsky/loomcycle/internal/providers/streamhttp"
 )
 
 func TestLive_DeepSeekChatCompletion(t *testing.T) {
@@ -31,7 +32,7 @@ func TestLive_DeepSeekChatCompletion(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	d := New(key, "", nil)
+	d := New(key, "", streamhttp.Options{}, nil)
 
 	ch, err := d.Call(ctx, providers.Request{
 		Model: "deepseek-chat",
@@ -102,7 +103,7 @@ func TestLive_DeepSeekToolCall(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	d := New(key, "", nil)
+	d := New(key, "", streamhttp.Options{}, nil)
 
 	ch, err := d.Call(ctx, providers.Request{
 		Model: "deepseek-chat",

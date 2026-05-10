@@ -38,6 +38,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/providers/gemini"
 	"github.com/denn-gubsky/loomcycle/internal/providers/ollama"
 	"github.com/denn-gubsky/loomcycle/internal/providers/openai"
+	"github.com/denn-gubsky/loomcycle/internal/providers/streamhttp"
 	"github.com/denn-gubsky/loomcycle/internal/resolve"
 	"github.com/denn-gubsky/loomcycle/internal/skills"
 	"github.com/denn-gubsky/loomcycle/internal/store"
@@ -513,29 +514,33 @@ type providerResolver struct {
 
 func newProviderResolver(cfg *config.Config) *providerResolver {
 	pr := &providerResolver{}
+	streamOpts := streamhttp.Options{
+		HeaderTimeout: cfg.Env.ProviderHeaderTimeout,
+		IdleTimeout:   cfg.Env.ProviderIdleTimeout,
+	}
 	if cfg.Env.AnthropicAPIKey != "" {
-		pr.anthropic = anthropic.New(cfg.Env.AnthropicAPIKey, "", nil)
+		pr.anthropic = anthropic.New(cfg.Env.AnthropicAPIKey, "", streamOpts, nil)
 	}
 	if cfg.Env.OpenAIAPIKey != "" {
-		pr.openai = openai.New(cfg.Env.OpenAIAPIKey, "", nil)
+		pr.openai = openai.New(cfg.Env.OpenAIAPIKey, "", streamOpts, nil)
 	}
 	// Ollama has no API key — wire it up if a base URL is configured (the
 	// loader defaults this to http://localhost:11434 so it's effectively
 	// always-on; users disable it by setting OLLAMA_BASE_URL=disabled).
 	if cfg.Env.OllamaBaseURL != "" && cfg.Env.OllamaBaseURL != "disabled" {
-		pr.ollama = ollama.New(cfg.Env.OllamaBaseURL, nil)
+		pr.ollama = ollama.New(cfg.Env.OllamaBaseURL, streamOpts, nil)
 	}
 	// DeepSeek opts in via DEEPSEEK_API_KEY. Optional DEEPSEEK_BASE_URL
 	// overrides the public endpoint for self-hosted OpenAI-compatible
 	// mirrors. Same on/off semantics as Anthropic + OpenAI.
 	if cfg.Env.DeepSeekAPIKey != "" {
-		pr.deepseek = deepseek.New(cfg.Env.DeepSeekAPIKey, cfg.Env.DeepSeekBaseURL, nil)
+		pr.deepseek = deepseek.New(cfg.Env.DeepSeekAPIKey, cfg.Env.DeepSeekBaseURL, streamOpts, nil)
 	}
 	// Gemini opts in via GEMINI_API_KEY. Optional GEMINI_BASE_URL
 	// points at a Vertex AI Gemini endpoint instead of the public
 	// generativelanguage.googleapis.com surface.
 	if cfg.Env.GeminiAPIKey != "" {
-		pr.gemini = gemini.New(cfg.Env.GeminiAPIKey, cfg.Env.GeminiBaseURL, nil)
+		pr.gemini = gemini.New(cfg.Env.GeminiAPIKey, cfg.Env.GeminiBaseURL, streamOpts, nil)
 	}
 	return pr
 }

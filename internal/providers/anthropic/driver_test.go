@@ -16,6 +16,7 @@ import (
 
 	"github.com/denn-gubsky/loomcycle/internal/loop"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
+	"github.com/denn-gubsky/loomcycle/internal/providers/streamhttp"
 )
 
 // fakeStream serves a canned SSE script as one Anthropic Messages response.
@@ -52,7 +53,7 @@ func TestStreamTextThenStop(t *testing.T) {
 	srv := fakeStream(t, frames)
 	defer srv.Close()
 
-	d := New("test-key", srv.URL, nil)
+	d := New("test-key", srv.URL, streamhttp.Options{}, nil)
 	ch, err := d.Call(context.Background(), providers.Request{
 		Model:    "claude-sonnet-4-6",
 		Messages: []providers.Message{{Role: "user", Content: []providers.ContentBlock{{Type: "text", Text: "hi"}}}},
@@ -102,7 +103,7 @@ func TestStreamUsageCarriesModel(t *testing.T) {
 	srv := fakeStream(t, frames)
 	defer srv.Close()
 
-	d := New("test-key", srv.URL, nil)
+	d := New("test-key", srv.URL, streamhttp.Options{}, nil)
 	ch, err := d.Call(context.Background(), providers.Request{
 		Model:    "claude-haiku-4-5",
 		Messages: []providers.Message{{Role: "user", Content: []providers.ContentBlock{{Type: "text", Text: "hi"}}}},
@@ -140,7 +141,7 @@ func TestStreamToolUse(t *testing.T) {
 	srv := fakeStream(t, frames)
 	defer srv.Close()
 
-	d := New("test-key", srv.URL, nil)
+	d := New("test-key", srv.URL, streamhttp.Options{}, nil)
 	ch, err := d.Call(context.Background(), providers.Request{Model: "x"})
 	if err != nil {
 		t.Fatalf("Call: %v", err)
@@ -195,7 +196,7 @@ func TestCancellationDoesNotLeakGoroutine(t *testing.T) {
 	defer srv.Close()
 
 	ctx, cancel := context.WithCancel(context.Background())
-	d := New("test-key", srv.URL, nil)
+	d := New("test-key", srv.URL, streamhttp.Options{}, nil)
 	_, err := d.Call(ctx, providers.Request{Model: "x"})
 	if err != nil {
 		t.Fatalf("Call: %v", err)
@@ -258,7 +259,7 @@ func TestRetryOn429PreservesContext(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	d := New("test-key", srv.URL, nil)
+	d := New("test-key", srv.URL, streamhttp.Options{}, nil)
 	ch, err := d.Call(context.Background(), providers.Request{
 		Model:    "claude-sonnet-4-6",
 		Messages: []providers.Message{{Role: "user", Content: []providers.ContentBlock{{Type: "text", Text: "hi"}}}},
@@ -318,7 +319,7 @@ func TestRetryOn429IsInvisibleToLoop(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	d := New("test-key", srv.URL, nil)
+	d := New("test-key", srv.URL, streamhttp.Options{}, nil)
 
 	var observedEvents []providers.EventType
 	res, err := loop.Run(context.Background(), loop.RunOptions{
@@ -376,7 +377,7 @@ func TestRetryEmitsTypedEventToLoop(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	d := New("test-key", srv.URL, nil)
+	d := New("test-key", srv.URL, streamhttp.Options{}, nil)
 
 	var retryEvents []providers.Event
 	_, err := loop.Run(context.Background(), loop.RunOptions{
@@ -427,7 +428,7 @@ func TestRequestBodyShape(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	d := New("test-key", srv.URL, nil)
+	d := New("test-key", srv.URL, streamhttp.Options{}, nil)
 	ch, err := d.Call(context.Background(), providers.Request{
 		Model: "claude-sonnet-4-6",
 		System: []providers.ContentBlock{

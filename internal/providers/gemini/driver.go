@@ -42,33 +42,37 @@ import (
 
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/providers/ratelimit"
+	"github.com/denn-gubsky/loomcycle/internal/providers/streamhttp"
 )
 
 const (
 	defaultBaseURL = "https://generativelanguage.googleapis.com/v1beta"
-	defaultTimeout = 5 * time.Minute
 )
 
 // Driver speaks Gemini's generateContent API.
 type Driver struct {
-	apiKey  string
-	baseURL string
-	http    *http.Client
+	apiKey      string
+	baseURL     string
+	http        *http.Client
+	idleTimeout time.Duration
 }
 
 // New constructs a Driver. baseURL may be empty for the default
 // endpoint, or set to a self-hosted Vertex AI Gemini gateway. The
 // trailing path "/v1beta" is included in the default — operator
-// overrides should match that pattern.
-func New(apiKey, baseURL string, httpClient *http.Client) *Driver {
+// overrides should match that pattern. streamOpts controls per-stream
+// timeouts (zero = streamhttp defaults). When httpClient is nil, a
+// fresh streaming client honoring streamOpts.HeaderTimeout is built.
+func New(apiKey, baseURL string, streamOpts streamhttp.Options, httpClient *http.Client) *Driver {
 	if baseURL == "" {
 		baseURL = defaultBaseURL
 	}
 	baseURL = strings.TrimRight(baseURL, "/")
+	streamOpts = streamOpts.Resolve()
 	if httpClient == nil {
-		httpClient = &http.Client{Timeout: defaultTimeout}
+		httpClient = streamhttp.NewClient(streamOpts.HeaderTimeout)
 	}
-	return &Driver{apiKey: apiKey, baseURL: baseURL, http: httpClient}
+	return &Driver{apiKey: apiKey, baseURL: baseURL, http: httpClient, idleTimeout: streamOpts.IdleTimeout}
 }
 
 func (d *Driver) ID() string { return "gemini" }
@@ -103,9 +107,11 @@ func (d *Driver) Call(ctx context.Context, req providers.Request) (<-chan provid
 		return nil, fmt.Errorf("build request: %w", err)
 	}
 
+	streamCtx, cancelStream := context.WithCancel(ctx)
+
 	url := d.baseURL + "/models/" + req.Model + ":streamGenerateContent?alt=sse"
-	attempt := func(ctx context.Context) (*http.Response, error) {
-		httpReq, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(body))
+	attempt := func(attemptCtx context.Context) (*http.Response, error) {
+		httpReq, err := http.NewRequestWithContext(attemptCtx, "POST", url, bytes.NewReader(body))
 		if err != nil {
 			return nil, err
 		}
@@ -117,12 +123,13 @@ func (d *Driver) Call(ctx context.Context, req providers.Request) (<-chan provid
 		return d.http.Do(httpReq)
 	}
 
-	resp, err := ratelimit.Do(ctx, ratelimit.Config{
+	resp, err := ratelimit.Do(streamCtx, ratelimit.Config{
 		Provider:    "gemini",
 		ParseHeader: ratelimit.OpenAIRetryAfter, // Gemini uses the same header shape
 		OnEvent:     req.OnEvent,
 	}, attempt)
 	if err != nil {
+		cancelStream()
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			return nil, err
 		}
@@ -130,12 +137,18 @@ func (d *Driver) Call(ctx context.Context, req providers.Request) (<-chan provid
 	}
 	if resp.StatusCode != http.StatusOK {
 		defer resp.Body.Close()
+		cancelStream()
 		errBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		return nil, fmt.Errorf("gemini %d: %s", resp.StatusCode, strings.TrimSpace(string(errBody)))
 	}
 
+	resp.Body = streamhttp.WrapBody(resp.Body, d.idleTimeout, cancelStream)
+
 	out := make(chan providers.Event, 16)
-	go streamEvents(ctx, resp.Body, out, req.Model)
+	go func() {
+		defer cancelStream()
+		streamEvents(streamCtx, resp.Body, out, req.Model)
+	}()
 	return out, nil
 }
 

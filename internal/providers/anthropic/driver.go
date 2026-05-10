@@ -17,30 +17,35 @@ import (
 
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/providers/ratelimit"
+	"github.com/denn-gubsky/loomcycle/internal/providers/streamhttp"
 )
 
 const (
 	defaultBaseURL = "https://api.anthropic.com"
 	apiVersion     = "2023-06-01"
-	defaultTimeout = 5 * time.Minute
 )
 
 // Driver is the Anthropic Messages API implementation of providers.Provider.
 type Driver struct {
-	apiKey  string
-	baseURL string
-	http    *http.Client
+	apiKey      string
+	baseURL     string
+	http        *http.Client
+	idleTimeout time.Duration
 }
 
 // New constructs a Driver. baseURL may be empty for the default endpoint.
-func New(apiKey, baseURL string, httpClient *http.Client) *Driver {
+// streamOpts controls the per-stream timeouts; zero values resolve to
+// streamhttp.Default*. When httpClient is nil, a fresh streaming client
+// honoring streamOpts.HeaderTimeout is built.
+func New(apiKey, baseURL string, streamOpts streamhttp.Options, httpClient *http.Client) *Driver {
 	if baseURL == "" {
 		baseURL = defaultBaseURL
 	}
+	streamOpts = streamOpts.Resolve()
 	if httpClient == nil {
-		httpClient = &http.Client{Timeout: defaultTimeout}
+		httpClient = streamhttp.NewClient(streamOpts.HeaderTimeout)
 	}
-	return &Driver{apiKey: apiKey, baseURL: baseURL, http: httpClient}
+	return &Driver{apiKey: apiKey, baseURL: baseURL, http: httpClient, idleTimeout: streamOpts.IdleTimeout}
 }
 
 func (d *Driver) ID() string { return "anthropic" }
@@ -71,10 +76,17 @@ func (d *Driver) Call(ctx context.Context, req providers.Request) (<-chan provid
 		return nil, fmt.Errorf("build request: %w", err)
 	}
 
-	attempt := func(ctx context.Context) (*http.Response, error) {
+	// streamCtx is a cancellable child of ctx. Its cancel is passed to
+	// streamhttp.WrapBody so an idle body read can interrupt the
+	// in-flight HTTP request. The streaming goroutine releases the ctx
+	// via deferred cancel; the wrap may have called cancel earlier
+	// (idempotent).
+	streamCtx, cancelStream := context.WithCancel(ctx)
+
+	attempt := func(attemptCtx context.Context) (*http.Response, error) {
 		// Build a fresh request each attempt — http.Request.Body is
 		// consumed by Do, so a single Reader can't be reused.
-		req, err := http.NewRequestWithContext(ctx, "POST", d.baseURL+"/v1/messages", bytes.NewReader(body))
+		req, err := http.NewRequestWithContext(attemptCtx, "POST", d.baseURL+"/v1/messages", bytes.NewReader(body))
 		if err != nil {
 			return nil, err
 		}
@@ -85,12 +97,13 @@ func (d *Driver) Call(ctx context.Context, req providers.Request) (<-chan provid
 		return d.http.Do(req)
 	}
 
-	resp, err := ratelimit.Do(ctx, ratelimit.Config{
+	resp, err := ratelimit.Do(streamCtx, ratelimit.Config{
 		Provider:    "anthropic",
 		ParseHeader: ratelimit.AnthropicRetryAfter,
 		OnEvent:     req.OnEvent,
 	}, attempt)
 	if err != nil {
+		cancelStream()
 		// ctx errors aren't HTTP errors — propagate as-is so the loop's
 		// errors.Is(ctx.Err()) checks aren't masked by the "http:" prefix.
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
@@ -100,12 +113,18 @@ func (d *Driver) Call(ctx context.Context, req providers.Request) (<-chan provid
 	}
 	if resp.StatusCode != http.StatusOK {
 		defer resp.Body.Close()
+		cancelStream()
 		errBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		return nil, fmt.Errorf("anthropic %d: %s", resp.StatusCode, strings.TrimSpace(string(errBody)))
 	}
 
+	resp.Body = streamhttp.WrapBody(resp.Body, d.idleTimeout, cancelStream)
+
 	out := make(chan providers.Event, 16)
-	go streamEvents(ctx, resp.Body, out)
+	go func() {
+		defer cancelStream()
+		streamEvents(streamCtx, resp.Body, out)
+	}()
 	return out, nil
 }
 
