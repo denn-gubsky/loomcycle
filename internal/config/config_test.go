@@ -561,3 +561,407 @@ agents:
 		t.Errorf("absolute path not resolved correctly")
 	}
 }
+
+// ─── Agent directory discovery (LOOMCYCLE_AGENTS_ROOT) ─────────────
+//
+// These tests cover the v0.8.x feature: discovering agents from a
+// directory of <name>.md files and merging with the yaml `agents:`
+// map. The yaml-as-override-layer contract is the load-bearing one;
+// every test here pins one slice of it.
+
+// writeAgentMD is a small helper to keep the test bodies focused on
+// the merge/precedence assertions rather than file plumbing.
+func writeAgentMD(t *testing.T, dir, name, content string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(dir, name+".md"), []byte(content), 0o600); err != nil {
+		t.Fatalf("write %s: %v", name, err)
+	}
+}
+
+// TestDiscoverAgents_DiscoveryAndYAMLMerge: an MD provides the base
+// AgentDef; a yaml entry with the same name overrides per-field
+// (allowed_tools changes, tier added, model from MD survives because
+// yaml leaves it zero). Headline scenario for the operator pain this
+// feature solves — single source of truth in the MD with targeted
+// per-environment overrides in yaml.
+func TestDiscoverAgents_DiscoveryAndYAMLMerge(t *testing.T) {
+	tmp := t.TempDir()
+	agentsDir := filepath.Join(tmp, "agents")
+	if err := os.Mkdir(agentsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeAgentMD(t, agentsDir, "foo", `---
+name: foo
+description: Foo agent
+tools: Read, mcp__jobs__getAgentContext
+tier: low
+max_tokens: 4096
+---
+prompt body
+`)
+	yamlPath := filepath.Join(tmp, "c.yaml")
+	if err := os.WriteFile(yamlPath, []byte(`
+defaults: { provider: anthropic, model: claude-sonnet-4-6 }
+agents:
+  foo:
+    max_tokens: 24576
+    allowed_tools: [Read, Edit]
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("LOOMCYCLE_AGENTS_ROOT", agentsDir)
+
+	cfg, err := Load(yamlPath)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	def := cfg.Agents["foo"]
+	if def.Tier != "low" {
+		t.Errorf("Tier = %q, want low (from MD; yaml didn't override)", def.Tier)
+	}
+	if def.MaxTokens != 24576 {
+		t.Errorf("MaxTokens = %d, want 24576 (yaml override)", def.MaxTokens)
+	}
+	wantTools := []string{"Read", "Edit"}
+	if len(def.AllowedTools) != 2 || def.AllowedTools[0] != "Read" || def.AllowedTools[1] != "Edit" {
+		t.Errorf("AllowedTools = %v, want %v (yaml override)", def.AllowedTools, wantTools)
+	}
+	if def.SystemPrompt != "prompt body\n" {
+		t.Errorf("SystemPrompt = %q, want body from MD", def.SystemPrompt)
+	}
+}
+
+// TestDiscoverAgents_DiscoveryOnly: AGENTS_ROOT set, yaml has no
+// `agents:` block at all. All agents come from the MDs, validation
+// passes. The deployment shape an operator using "MDs as sole source
+// of truth" should be able to ship.
+func TestDiscoverAgents_DiscoveryOnly(t *testing.T) {
+	tmp := t.TempDir()
+	agentsDir := filepath.Join(tmp, "agents")
+	if err := os.Mkdir(agentsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeAgentMD(t, agentsDir, "alpha", `---
+name: alpha
+provider: anthropic
+model: claude-sonnet-4-6
+allowed_tools: [Read]
+---
+alpha body
+`)
+	writeAgentMD(t, agentsDir, "beta", `---
+name: beta
+provider: anthropic
+model: claude-sonnet-4-6
+allowed_tools: [Read, Edit]
+---
+beta body
+`)
+	yamlPath := filepath.Join(tmp, "c.yaml")
+	if err := os.WriteFile(yamlPath, []byte(`
+defaults: { provider: anthropic, model: claude-sonnet-4-6 }
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("LOOMCYCLE_AGENTS_ROOT", agentsDir)
+
+	cfg, err := Load(yamlPath)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := len(cfg.Agents); got != 2 {
+		t.Fatalf("len(cfg.Agents) = %d, want 2", got)
+	}
+	if cfg.Agents["alpha"].SystemPrompt != "alpha body\n" {
+		t.Errorf("alpha SystemPrompt = %q", cfg.Agents["alpha"].SystemPrompt)
+	}
+	if cfg.Agents["beta"].SystemPrompt != "beta body\n" {
+		t.Errorf("beta SystemPrompt = %q", cfg.Agents["beta"].SystemPrompt)
+	}
+}
+
+// TestDiscoverAgents_YAMLOnlyRegression: AGENTS_ROOT unset. The
+// existing yaml-only deployment continues to work unchanged. Critical
+// regression guard — the discovery feature must NEVER change behaviour
+// for operators who haven't opted in.
+func TestDiscoverAgents_YAMLOnlyRegression(t *testing.T) {
+	tmp := t.TempDir()
+	yamlPath := filepath.Join(tmp, "c.yaml")
+	if err := os.WriteFile(yamlPath, []byte(`
+defaults: { provider: anthropic, model: claude-sonnet-4-6 }
+agents:
+  qa:
+    model: claude-sonnet-4-6
+    system_prompt: "You are QA."
+    allowed_tools: [Read]
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// Explicitly clear in case parent shell exported it.
+	t.Setenv("LOOMCYCLE_AGENTS_ROOT", "")
+
+	cfg, err := Load(yamlPath)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Agents["qa"].SystemPrompt != "You are QA." {
+		t.Errorf("yaml-only path broke: SystemPrompt = %q", cfg.Agents["qa"].SystemPrompt)
+	}
+}
+
+// TestDiscoverAgents_MergePinAndTierConflict: an MD pins Provider+Model;
+// a yaml override adds Tier without clearing the pin. The merger
+// produces an AgentDef with both Pin and Tier set; validate()'s
+// existing Pin XOR Tier rule catches it. Confirms validation runs
+// uniformly over the merged map (not just over yaml-only fields).
+func TestDiscoverAgents_MergePinAndTierConflict(t *testing.T) {
+	tmp := t.TempDir()
+	agentsDir := filepath.Join(tmp, "agents")
+	if err := os.Mkdir(agentsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeAgentMD(t, agentsDir, "conflict", `---
+name: conflict
+provider: anthropic
+model: claude-sonnet-4-6
+allowed_tools: [Read]
+---
+body
+`)
+	yamlPath := filepath.Join(tmp, "c.yaml")
+	if err := os.WriteFile(yamlPath, []byte(`
+defaults: { provider: anthropic, model: claude-sonnet-4-6 }
+agents:
+  conflict:
+    tier: low
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("LOOMCYCLE_AGENTS_ROOT", agentsDir)
+
+	_, err := Load(yamlPath)
+	if err == nil {
+		t.Fatal("expected validation error for Pin+Tier on merged agent, got nil")
+	}
+	if !strings.Contains(err.Error(), "tier") || !strings.Contains(err.Error(), "conflict") {
+		t.Errorf("error %q should cite both 'tier' and the agent name", err.Error())
+	}
+}
+
+// TestDiscoverAgents_YAMLSystemPromptFileWins: when the MD provides a
+// body AND the yaml override sets system_prompt_file, the file wins.
+// The merger clears the discovered SystemPrompt so resolveSystemPromptFiles
+// doesn't trip the "both inline + file set" mutual-exclusion check.
+// Operator semantic: yaml's pointer-to-file is the explicit override.
+func TestDiscoverAgents_YAMLSystemPromptFileWins(t *testing.T) {
+	tmp := t.TempDir()
+	agentsDir := filepath.Join(tmp, "agents")
+	if err := os.Mkdir(agentsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeAgentMD(t, agentsDir, "doc", `---
+name: doc
+provider: anthropic
+model: claude-sonnet-4-6
+allowed_tools: [Read]
+---
+discovered body that should be overridden
+`)
+	if err := os.WriteFile(filepath.Join(tmp, "override.md"), []byte("the override prompt"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	yamlPath := filepath.Join(tmp, "c.yaml")
+	if err := os.WriteFile(yamlPath, []byte(`
+defaults: { provider: anthropic, model: claude-sonnet-4-6 }
+agents:
+  doc:
+    system_prompt_file: override.md
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("LOOMCYCLE_AGENTS_ROOT", agentsDir)
+
+	cfg, err := Load(yamlPath)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := cfg.Agents["doc"].SystemPrompt; got != "the override prompt" {
+		t.Errorf("SystemPrompt = %q, want yaml-override-file content", got)
+	}
+}
+
+// TestDiscoverAgents_DiscoveredSkillsBundleCorrectly: an MD names a
+// skill in its frontmatter; SKILLS_ROOT is set and the skill is
+// available; resolveSkills runs over the merged map and bundles the
+// body. Confirms ordering — discovery happens before
+// resolveSystemPromptFiles + resolveSkills, so the discovered prompt
+// + the skill body both feed into the same downstream pipeline.
+func TestDiscoverAgents_DiscoveredSkillsBundleCorrectly(t *testing.T) {
+	tmp := t.TempDir()
+	agentsDir := filepath.Join(tmp, "agents")
+	if err := os.Mkdir(agentsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	skillsDir := filepath.Join(tmp, "skills")
+	if err := os.MkdirAll(filepath.Join(skillsDir, "helper"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(skillsDir, "helper", "SKILL.md"), []byte(`---
+name: helper
+description: a helper
+---
+SKILL HELPER BODY`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	writeAgentMD(t, agentsDir, "uses-skill", `---
+name: uses-skill
+provider: anthropic
+model: claude-sonnet-4-6
+allowed_tools: [Read]
+skills: [helper]
+---
+agent prompt body`)
+	yamlPath := filepath.Join(tmp, "c.yaml")
+	if err := os.WriteFile(yamlPath, []byte(`
+defaults: { provider: anthropic, model: claude-sonnet-4-6 }
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("LOOMCYCLE_AGENTS_ROOT", agentsDir)
+	t.Setenv("LOOMCYCLE_SKILLS_ROOT", skillsDir)
+
+	cfg, err := Load(yamlPath)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	prompt := cfg.Agents["uses-skill"].SystemPrompt
+	if !strings.Contains(prompt, "agent prompt body") {
+		t.Errorf("merged prompt missing agent body: %q", prompt)
+	}
+	if !strings.Contains(prompt, "SKILL HELPER BODY") {
+		t.Errorf("merged prompt missing skill body: %q", prompt)
+	}
+}
+
+// TestDiscoverAgents_NoYAMLPath: AGENTS_ROOT set, Load called with
+// path="" (env-only mode, no yaml). The discovery + system-prompt-file
+// resolution passes must run regardless of yaml presence — without
+// this the headline "MDs as sole source of truth" deployment shape
+// would silently load zero agents (the original Load wrapped both
+// passes in `if path != ""`). Regression guard for the critical bug
+// the code review caught at PR #49 review time.
+func TestDiscoverAgents_NoYAMLPath(t *testing.T) {
+	tmp := t.TempDir()
+	agentsDir := filepath.Join(tmp, "agents")
+	if err := os.Mkdir(agentsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeAgentMD(t, agentsDir, "solo", `---
+name: solo
+provider: anthropic
+model: claude-sonnet-4-6
+allowed_tools: [Read]
+---
+solo body
+`)
+	t.Setenv("LOOMCYCLE_AGENTS_ROOT", agentsDir)
+
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatalf("Load(\"\"): %v", err)
+	}
+	if got := len(cfg.Agents); got != 1 {
+		t.Fatalf("Agents count = %d, want 1 (env-only deployment should still discover)", got)
+	}
+	if cfg.Agents["solo"].SystemPrompt != "solo body\n" {
+		t.Errorf("SystemPrompt = %q, want body from MD", cfg.Agents["solo"].SystemPrompt)
+	}
+}
+
+// TestDiscoverAgents_EmptyYAMLListClearsDiscovered: the merger's
+// nil-vs-empty-slice contract — yaml `allowed_tools: []` actively
+// zero-outs a discovered list, vs yaml omitting the field entirely
+// (which keeps discovered). Pins gopkg.in/yaml.v3's nil/non-nil-empty
+// distinction so a future yaml lib upgrade that breaks this surfaces
+// as a test failure instead of silently leaving agents with the wrong
+// tool set.
+func TestDiscoverAgents_EmptyYAMLListClearsDiscovered(t *testing.T) {
+	tmp := t.TempDir()
+	agentsDir := filepath.Join(tmp, "agents")
+	if err := os.Mkdir(agentsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeAgentMD(t, agentsDir, "narrow", `---
+name: narrow
+provider: anthropic
+model: claude-sonnet-4-6
+allowed_tools: [Read, Edit, mcp__jobs__getAgentContext]
+---
+body
+`)
+	yamlPath := filepath.Join(tmp, "c.yaml")
+	if err := os.WriteFile(yamlPath, []byte(`
+defaults: { provider: anthropic, model: claude-sonnet-4-6 }
+agents:
+  narrow:
+    allowed_tools: []
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("LOOMCYCLE_AGENTS_ROOT", agentsDir)
+
+	cfg, err := Load(yamlPath)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	got := cfg.Agents["narrow"].AllowedTools
+	if got == nil {
+		t.Errorf("AllowedTools = nil; expected non-nil empty slice (yaml [] should override discovered)")
+	}
+	if len(got) != 0 {
+		t.Errorf("AllowedTools = %v; expected empty slice (yaml [] should zero out discovered list)", got)
+	}
+}
+
+// TestDiscoverAgents_YAMLInlinePromptOverridesMDFile: covers the
+// inverse of TestDiscoverAgents_YAMLSystemPromptFileWins. MD has
+// system_prompt_file in its frontmatter; yaml override sets inline
+// system_prompt. Without the merger clearing the OTHER source on
+// each prompt-source override, both fields end up populated and
+// resolveSystemPromptFiles' mutual-exclusion check fires.
+func TestDiscoverAgents_YAMLInlinePromptOverridesMDFile(t *testing.T) {
+	tmp := t.TempDir()
+	agentsDir := filepath.Join(tmp, "agents")
+	if err := os.Mkdir(agentsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tmp, "from-file.md"), []byte("from-file body"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	writeAgentMD(t, agentsDir, "doc", `---
+name: doc
+provider: anthropic
+model: claude-sonnet-4-6
+allowed_tools: [Read]
+system_prompt_file: from-file.md
+---
+`)
+	yamlPath := filepath.Join(tmp, "c.yaml")
+	if err := os.WriteFile(yamlPath, []byte(`
+defaults: { provider: anthropic, model: claude-sonnet-4-6 }
+agents:
+  doc:
+    system_prompt: "yaml override prompt"
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("LOOMCYCLE_AGENTS_ROOT", agentsDir)
+
+	cfg, err := Load(yamlPath)
+	if err != nil {
+		t.Fatalf("Load: %v (the merger should have cleared SystemPromptFile when yaml set inline SystemPrompt)", err)
+	}
+	if got := cfg.Agents["doc"].SystemPrompt; got != "yaml override prompt" {
+		t.Errorf("SystemPrompt = %q, want yaml override", got)
+	}
+}

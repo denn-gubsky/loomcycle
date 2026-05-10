@@ -12,6 +12,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/denn-gubsky/loomcycle/internal/agents"
 	"github.com/denn-gubsky/loomcycle/internal/skills"
 	"github.com/denn-gubsky/loomcycle/internal/tools/policy"
 )
@@ -336,6 +337,23 @@ type Env struct {
 	// reference them). Sourced from LOOMCYCLE_SKILLS_ROOT.
 	SkillsRoot string
 
+	// AgentsRoot points at a directory of flat `<name>.md` files.
+	// Each file's YAML frontmatter is parsed as an AgentDef base; the
+	// body becomes SystemPrompt. When set, discovered agents seed
+	// cfg.Agents BEFORE the yaml `agents:` block; yaml entries with
+	// matching names override per-field (mergeAgentDef in this file).
+	// Empty AgentsRoot leaves cfg.Agents to the yaml-only path —
+	// today's behaviour.
+	//
+	// Why this exists: synchronising the yaml `agents:` block with
+	// the .claude/agents/<name>.md files referenced from
+	// system_prompt_file is recurring operational pain (every dev↔main
+	// branch divergence breaks loomcycle on the deploy box). The
+	// directory becomes the single source of truth in normal
+	// operation; yaml entries shrink to per-environment overrides.
+	// Sourced from LOOMCYCLE_AGENTS_ROOT.
+	AgentsRoot string
+
 	// HeartbeatSweeperEnabled controls the v0.5.0 stale-run sweeper.
 	// When true (default), a goroutine periodically marks runs whose
 	// heartbeat hasn't advanced in HeartbeatStaleAfter as failed —
@@ -486,12 +504,32 @@ func Load(path string) (*Config, error) {
 		if abs, err := filepath.Abs(filepath.Dir(path)); err == nil {
 			cfg.configDir = abs
 		}
-		// Resolve any agent's system_prompt_file → system_prompt. Done
-		// here so the rest of the runtime sees a uniform AgentDef
-		// regardless of which form the operator wrote.
-		if err := resolveSystemPromptFiles(cfg, path); err != nil {
+	}
+	// Discover MD-defined agents BEFORE resolveSystemPromptFiles so
+	// the file-resolution pass sees a merged map. We read the env var
+	// inline here because the full Env struct is populated later in
+	// this function — re-shuffling that order would risk subtler
+	// regressions for one early reader. The book-keeping copy onto
+	// cfg.Env.AgentsRoot lands in the env-block below.
+	//
+	// Discovery runs OUTSIDE the `if path != ""` guard so the
+	// MDs-as-sole-source-of-truth deployment works (operator sets
+	// LOOMCYCLE_AGENTS_ROOT and omits the yaml entirely; cfg.Agents
+	// is populated purely from MDs).
+	if root := os.Getenv("LOOMCYCLE_AGENTS_ROOT"); root != "" {
+		if err := discoverAgents(cfg, root); err != nil {
 			return nil, err
 		}
+	}
+	// Resolve any agent's system_prompt_file → system_prompt (for both
+	// yaml-declared and discovered agents that set the field). Also
+	// outside the path-guard for the MDs-only path. With path == "",
+	// configDir is empty → relative paths resolve against cwd; absolute
+	// paths still work; this matches the documented semantic ("relative
+	// paths resolve against the YAML config file's directory" reduces
+	// to "the process's cwd" when there is no YAML).
+	if err := resolveSystemPromptFiles(cfg, path); err != nil {
+		return nil, err
 	}
 
 	cfg.Env = Env{
@@ -514,6 +552,7 @@ func Load(path string) (*Config, error) {
 		BashEnabled:              os.Getenv("LOOMCYCLE_BASH_ENABLED") == "1",
 		BashCwd:                  os.Getenv("LOOMCYCLE_BASH_CWD"),
 		SkillsRoot:               os.Getenv("LOOMCYCLE_SKILLS_ROOT"),
+		AgentsRoot:               os.Getenv("LOOMCYCLE_AGENTS_ROOT"),
 		// Sweeper / GC defaults — populated above zero only if the
 		// env var below was set. The fallbacks are applied in
 		// cmd/loomcycle/main.go where the goroutines are started.
@@ -785,6 +824,148 @@ func getenvDefault(name, dflt string) string {
 		return v
 	}
 	return dflt
+}
+
+// discoverAgents walks LOOMCYCLE_AGENTS_ROOT, parses each `<name>.md`
+// frontmatter as an AgentDef base, and merges the result into
+// cfg.Agents — yaml entries override per-field on conflict.
+//
+// Resolution-order constraint: this runs AFTER yaml.Unmarshal but
+// BEFORE resolveSystemPromptFiles. The latter needs to see the merged
+// map so a yaml `system_prompt_file` for a same-named MD agent works
+// (yaml's pointer wins over MD's body — see mergeAgentDef's special
+// case). resolveSkills runs later and also operates on the merged map.
+//
+// Discovered AgentDefs use the same field set as yaml-defined ones; no
+// new validation rules are introduced here. validate() runs unchanged
+// over the merged set, so a merge that produces both Pin and Tier
+// (e.g. MD `model: haiku` + yaml override `tier: low`) gets caught by
+// the existing post-load check.
+func discoverAgents(cfg *Config, root string) error {
+	set, err := agents.LoadSet(root)
+	if err != nil {
+		return fmt.Errorf("agents discovery: %w", err)
+	}
+	if cfg.Agents == nil {
+		cfg.Agents = make(map[string]AgentDef)
+	}
+	for _, name := range set.Names() {
+		discovered, _ := set.Get(name)
+		base := agentFromDiscovered(discovered)
+		// yaml-as-override: if cfg.Agents[name] already exists from
+		// the yaml unmarshal, the yaml fields beat the discovered
+		// ones for any non-zero override slot.
+		yamlEntry, hasYaml := cfg.Agents[name]
+		if hasYaml {
+			cfg.Agents[name] = mergeAgentDef(base, yamlEntry)
+		} else {
+			cfg.Agents[name] = base
+		}
+	}
+	return nil
+}
+
+// agentFromDiscovered converts the agents-package shape (which can't
+// import config without creating a cycle) to AgentDef. Field-for-field
+// passthrough except Models, where the local TierCandidate type is
+// converted to config.TierCandidate.
+func agentFromDiscovered(d *agents.Agent) AgentDef {
+	def := AgentDef{
+		Provider:         d.Provider,
+		Model:            d.Model,
+		SystemPrompt:     d.SystemPrompt,
+		SystemPromptFile: d.SystemPromptFile,
+		AllowedTools:     d.AllowedTools,
+		Skills:           d.Skills,
+		MaxTokens:        d.MaxTokens,
+		Tier:             d.Tier,
+		Effort:           d.Effort,
+		Providers:        d.Providers,
+		MemoryScopes:     d.MemoryScopes,
+		MemoryQuotaBytes: d.MemoryQuotaBytes,
+	}
+	if len(d.Models) > 0 {
+		def.Models = make(map[string][]TierCandidate, len(d.Models))
+		for tier, cands := range d.Models {
+			out := make([]TierCandidate, 0, len(cands))
+			for _, c := range cands {
+				out = append(out, TierCandidate{Provider: c.Provider, Model: c.Model})
+			}
+			def.Models[tier] = out
+		}
+	}
+	return def
+}
+
+// mergeAgentDef returns base with override's non-zero fields applied
+// on top. Per-field shallow merge: each AgentDef field is replaced
+// independently when the override's value is non-zero, otherwise
+// base's value carries through.
+//
+// Slices/maps: yaml.Unmarshal produces nil for absent keys and
+// non-nil-empty for explicit empty entries (`allowed_tools: []`).
+// We treat nil as "absent in yaml — keep discovered" and non-nil as
+// "explicit override — take yaml". This lets ops zero-out a list by
+// writing the empty form in yaml.
+//
+// Special case: SystemPromptFile in the yaml override clears the
+// discovered SystemPrompt. Otherwise resolveSystemPromptFiles would
+// load the file's contents and concatenate alongside the MD body,
+// confusing the prompt with two sources. The yaml SystemPromptFile
+// is the explicit "use this file instead of the MD body" signal.
+func mergeAgentDef(base, override AgentDef) AgentDef {
+	out := base
+	if override.Provider != "" {
+		out.Provider = override.Provider
+	}
+	if override.Model != "" {
+		out.Model = override.Model
+	}
+	// Either prompt-source override clears the OTHER source on the
+	// merged struct. Without this, a discovered MD that sets
+	// system_prompt_file in its frontmatter merging with a yaml
+	// override that sets inline system_prompt (or vice versa) would
+	// produce both fields populated and trip resolveSystemPromptFiles'
+	// mutual-exclusion check downstream — making yaml overrides for
+	// the prompt source unusable. The yaml override is the explicit
+	// "use this prompt source instead" signal, regardless of which
+	// shape it takes.
+	if override.SystemPrompt != "" {
+		out.SystemPrompt = override.SystemPrompt
+		out.SystemPromptFile = ""
+	}
+	if override.SystemPromptFile != "" {
+		out.SystemPromptFile = override.SystemPromptFile
+		out.SystemPrompt = ""
+	}
+	if override.AllowedTools != nil {
+		out.AllowedTools = override.AllowedTools
+	}
+	if override.Skills != nil {
+		out.Skills = override.Skills
+	}
+	if override.MaxTokens != 0 {
+		out.MaxTokens = override.MaxTokens
+	}
+	if override.Tier != "" {
+		out.Tier = override.Tier
+	}
+	if override.Effort != "" {
+		out.Effort = override.Effort
+	}
+	if override.Providers != nil {
+		out.Providers = override.Providers
+	}
+	if override.Models != nil {
+		out.Models = override.Models
+	}
+	if override.MemoryScopes != nil {
+		out.MemoryScopes = override.MemoryScopes
+	}
+	if override.MemoryQuotaBytes != 0 {
+		out.MemoryQuotaBytes = override.MemoryQuotaBytes
+	}
+	return out
 }
 
 // resolveSystemPromptFiles populates each agent's SystemPrompt from

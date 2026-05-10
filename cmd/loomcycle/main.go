@@ -157,6 +157,14 @@ func main() {
 	if cfg.Env.SkillsRoot != "" {
 		log.Printf("skills: loaded %d from %s", len(skillSet.Names()), cfg.Env.SkillsRoot)
 	}
+	if cfg.Env.AgentsRoot != "" {
+		// Agents-from-MD discovery happened inside config.Load (must run
+		// before resolveSystemPromptFiles so the merged map flows through
+		// the existing pipeline). Log the count post-merge so operators
+		// see the final cfg.Agents size, which may include yaml-only
+		// entries on top of the discovered ones.
+		log.Printf("agents: discovered from %s — total in cfg.Agents (after yaml merge): %d", cfg.Env.AgentsRoot, len(cfg.Agents))
+	}
 
 	allTools := []tools.Tool{
 		&builtin.Read{Root: cfg.Env.ReadRoot},
