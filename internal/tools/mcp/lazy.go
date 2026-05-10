@@ -28,21 +28,21 @@ import (
 // What it does. Wired as the Dispatcher's FallbackFunc, Resolve runs
 // when a tool name is missing from the static dispatcher map:
 //
-//   1. Parse the name as `mcp__<server>__<tool>`. If it's not that
-//      shape, return (zero, false) so the dispatcher emits its standard
-//      "tool not found" — preserves existing semantics for non-MCP misses.
-//   2. Look up <server> in the configured-servers set. If unknown,
-//      same fall-through (operator never declared it; the model
-//      probably hallucinated the name).
-//   3. Cache hit on the resolver's internal map? Execute the cached Tool
-//      and return.
-//   4. Cache miss: attempt one fresh pool.Get for the server (the pool
-//      handles concurrent-stampede coordination internally — the worst
-//      case is the calling goroutine waits for an in-flight init).
-//      On success, cache every tool the server exposes (after applying
-//      the operator's per-server allowed_tools filter) and dispatch the
-//      requested one. On failure, surface a clear error to the model
-//      naming the server's last-known unreachability reason.
+//  1. Parse the name as `mcp__<server>__<tool>`. If it's not that
+//     shape, return (zero, false) so the dispatcher emits its standard
+//     "tool not found" — preserves existing semantics for non-MCP misses.
+//  2. Look up <server> in the configured-servers set. If unknown,
+//     same fall-through (operator never declared it; the model
+//     probably hallucinated the name).
+//  3. Cache hit on the resolver's internal map? Execute the cached Tool
+//     and return.
+//  4. Cache miss: attempt one fresh pool.Get for the server (the pool
+//     handles concurrent-stampede coordination internally — the worst
+//     case is the calling goroutine waits for an in-flight init).
+//     On success, cache every tool the server exposes (after applying
+//     the operator's per-server allowed_tools filter) and dispatch the
+//     requested one. On failure, surface a clear error to the model
+//     naming the server's last-known unreachability reason.
 //
 // What it does NOT do.
 //   - Does not mutate s.tools (the global registry). Lazy-resolved

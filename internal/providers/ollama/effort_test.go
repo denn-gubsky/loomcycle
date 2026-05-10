@@ -1,8 +1,8 @@
 package ollama
 
 import (
-	"testing"
 	"github.com/denn-gubsky/loomcycle/internal/providers/streamhttp"
+	"testing"
 )
 
 // Ollama doesn't translate effort — it has no operator-controlled

@@ -3,11 +3,11 @@ package anthropic
 import (
 	"context"
 	"fmt"
+	"github.com/denn-gubsky/loomcycle/internal/providers/streamhttp"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
-	"github.com/denn-gubsky/loomcycle/internal/providers/streamhttp"
 )
 
 // fakeModelsServer serves a canned /v1/models response. Asserts the
