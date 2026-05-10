@@ -2,7 +2,32 @@
 
 This is the public roadmap. For decision history, regret notes, and per-version commit-by-commit details, see `doc-internal/PLAN.md` (gitignored).
 
-## v0.8.0 — current
+## v0.8.1 — current
+
+**Status: shipped (2026-05-10).** Operational hardening: three production-readiness improvements that surfaced from the jobs-search-agent VM bring-up and dev-mac reproductions. None are new framework primitives (those resume in v0.8.2 with the Channel tool); these three fix failure modes that made running loomcycle in a server environment painful.
+
+**What's in v0.8.1 (vs v0.8.0):**
+
+- **Provider streaming timeouts** (PR #47). Replaced the 5-min wall-clock `http.Client.Timeout` with two finer-grained ceilings: `Transport.ResponseHeaderTimeout` caps time-to-first-byte (default 60 s; per-driver Transport so one stalled provider doesn't starve another's connection reuse), and a body wrap resets a per-byte timer that cancels the request context on stall (default 90 s). Long but actively-emitting final-turn responses — e.g. job-searcher building a 25-position ingest payload — now complete instead of getting cut mid-stream. The wall-clock cap had been firing during the FIRST few seconds of the stream's body in some cases (job-searcher run `r_ea963a36bc` killed at 659 s with `provider error: stream read: context deadline exceeded` despite the model still emitting). New package `internal/providers/streamhttp/` with 8 unit tests covering active vs stalled streams, idempotent close, and the no-Client.Timeout sanity check; race-detector clean. All five drivers updated to `New(apiKey, baseURL, streamhttp.Options, *http.Client)`. Two new env vars: `LOOMCYCLE_PROVIDER_HEADER_TIMEOUT_MS`, `LOOMCYCLE_PROVIDER_IDLE_TIMEOUT_MS` (both clamped to sensible defaults; misconfigured negative/zero values fall through to the default).
+- **Lazy MCP retry on first agent call** (PR #48). MCP servers that failed initial handshake at boot used to stay marked `skipped` for the lifetime of the loomcycle process (the boot-time retry budget is 30 s shared across all servers; once it expires, the dispatcher map is built without those tools). Operators had to restart loomcycle by hand once the peer recovered. Now `tools.Dispatcher` carries an optional `FallbackFunc`; a lookup miss for `mcp__<server>__<tool>` against a configured-but-skipped server triggers one fresh `pool.Get` for that server on the agent's call path, registers the tools in the resolver's memo, and dispatches. Subsequent calls hit the cache without re-handshaking. The pool's existing `entry/ready` channel coalesces concurrent first-touches to a single underlying handshake (50-way concurrency test pinned the regression guard). Operator-visible log line: `mcp[<server>]: lazy-registered N tool(s) on first agent call (was skipped at boot)`. Addresses the "components restart independently in a server environment" failure mode — peer restarts no longer cascade into loomcycle restarts.
+- **Agent directory discovery** (PR #49). New `LOOMCYCLE_AGENTS_ROOT` points at a directory of flat `<name>.md` files. Each file's YAML frontmatter is parsed as the base `AgentDef`; the body becomes `system_prompt`. The yaml `agents:` map remains an OPTIONAL override layer — yaml entries with the same name override discovered fields per-field (yaml-as-override semantics; nil yaml field = absent, non-nil = explicit override that lets `allowed_tools: []` actively zero-out a discovered list). Mixed-mode, MDs-only, and yaml-only deployments all supported; existing yaml-only deploys are a strict regression guard. Frontmatter is flat top-level keys: `name` / `description` / `tools` / `model` / `tier` / `models` / `effort` / `max_tokens` / `skills` / `memory_scopes` / `memory_quota_bytes` / `providers` / `allowed_tools` / `system_prompt_file`. The `tools:` field accepts both Claude Code's comma-string (`tools: A, B, C`) and loomcycle's yaml list (`allowed_tools: [A, B, C]`); `allowed_tools` wins when both present. New `internal/agents/` package mirrors `internal/skills/` shape (same delimiter rules, same body-only fallback). Eliminates the synchronisation pain operators hit maintaining `.claude/agents/<name>.md` for Claude Code AND a corresponding loomcycle `agents:` block — single source of truth in normal operation, per-environment yaml overrides when needed.
+
+**Operator env vars (new in v0.8.1):**
+
+- `LOOMCYCLE_PROVIDER_HEADER_TIMEOUT_MS` (default 60000) — per-attempt cap on time-to-first-byte for streaming provider calls. Bump to 90000+ on networks with high TLS handshake latency or aggressive NAT idle timeouts.
+- `LOOMCYCLE_PROVIDER_IDLE_TIMEOUT_MS` (default 90000) — max gap between body bytes during a streaming response. Bump if you see mid-stream `context deadline exceeded` errors on long final turns where the model is provably still emitting (reasoning-model thinking pauses on extended budgets can exceed the default).
+- `LOOMCYCLE_AGENTS_ROOT` (unset by default) — directory of `<name>.md` files for agent-discovery. When unset, behaviour is unchanged from v0.8.0 (yaml-only).
+
+**Architecture decisions worth flagging:**
+
+- **The streaming-timeout pair replaces the wall-clock `Client.Timeout` everywhere.** No driver retains the old behaviour; the constructor signature change is uniform across anthropic / openai / deepseek / gemini / ollama. Tests covering the prior wall-clock semantic were updated, not preserved as compatibility guards — the prior behaviour was the bug.
+- **Lazy MCP retry doesn't mutate `s.tools`.** Lazy-resolved tools live only in the `LazyResolver`'s memo; they're served by the `FallbackFunc`. Tools that need to be ADVERTISED in the model's spec list (i.e. discoverable by a fresh model with no prompt-side knowledge of the tool name) would still need boot-time registration. That's a v1.x concern; the v0.8.1 design assumes agent prompts already name the tools they call (the existing operator pattern).
+- **Agent directory discovery uses yaml-as-override, not MDs-as-override.** Operators expressed the dev/main divergence pain shape: MDs are the natural editing surface (one file per agent, lives next to Claude Code's agent files), yaml is the per-deployment-tweak surface (override `max_tokens` on staging without editing the MD). Reverse semantics would force every per-environment tweak into a separate set of MD copies.
+- **No strict-frontmatter enforcement (`yaml.KnownFields(true)`) yet.** Typo'd keys silently parse as zero values today. Mitigation: `.env.example` documents the canonical key list. A follow-up PR can tighten both the agents loader and the skills loader together.
+
+For the v0.8.0 baseline that drove this work, see [v0.8.0](#v080--earlier).
+
+## v0.8.0 — earlier
 
 **Status: shipped (2026-05-09).** First v0.8.x point release: the **Memory tool** — persistent agent-scoped key/value storage that survives across runs and sessions. Five-op surface (`get` / `set` / `delete` / `list` / `incr`) over a new `memory` table on both SQLite and Postgres. Per-agent yaml gates which scopes an agent may use; operator env vars cap per-write and per-scope bytes. The first of four v0.8.x framework primitives sequenced toward the v1.0 LoomCycle MCP capstone.
 
@@ -231,11 +256,11 @@ For usage: see [README](../README.md). For the architecture: see [ARCHITECTURE.m
 
 ## v0.8.x — next: framework primitives
 
-Sequenced 2026-05-09. Each point release ships one focused framework primitive — the v1.0 capstone (LoomCycle MCP) needs them in this order because the MCP server's surface is built FROM these primitives. Detailed design (API schemas, storage shapes, retention semantics) lives in feature-branch RFCs at implementation time; the outlines below capture the shape but not the wire.
+Sequenced 2026-05-09; renumbered 2026-05-10 after v0.8.1 absorbed three operational-hardening PRs (#47/#48/#49). Each point release in the framework-primitive sequence ships one focused capability — the v1.0 capstone (LoomCycle MCP) needs them in this order because the MCP server's surface is built FROM these primitives. Detailed design (API schemas, storage shapes, retention semantics) lives in feature-branch RFCs at implementation time; the outlines below capture the shape but not the wire.
 
-**v0.8.0 Memory tool shipped 2026-05-09** — see the [Current](#v080--current) section above for the full release notes.
+**v0.8.0 Memory tool shipped 2026-05-09**; **v0.8.1 operational hardening shipped 2026-05-10** — see the sections above for full release notes.
 
-### v0.8.1 — Channel tool
+### v0.8.2 — Channel tool
 
 Persistent inter-agent message bus. One agent writes to a named channel; another reads from it. Powers patterns like "researcher writes findings into `findings/` channel; analyst drains the channel and produces summaries" without making the orchestrator handle handoff.
 
@@ -243,7 +268,7 @@ Two backend forks compete: Postgres `LISTEN/NOTIFY` (simpler, single-replica, no
 
 What's not yet decided: queue vs topic semantics, durability vs at-most-once, ACL (which agent can publish to which channel — channels can be a side-channel for jailbreaks if any-agent-to-any-channel is allowed), backpressure when readers fall behind, dead-letter handling. RFC at pickup.
 
-### v0.8.2 — LoomHelp tool (absorbing all tools)
+### v0.8.3 — LoomHelp tool (absorbing all tools)
 
 Runtime introspection — but with a wider remit than the original v1.0 sketch. LoomHelp absorbs the metadata exposure for **every** built-in and registered tool: input schemas, output formats, side-effect classes (pure / network / filesystem / privileged), allow-list narrowing the active agent has applied, the tool's docstring and operator notes. Plus runtime context: the agent's own identity, parent / sub-agent linkage, loaded skills, current Memory snapshot, available Channels.
 
@@ -251,14 +276,14 @@ Single read-only tool that returns a structured catalogue. Useful for the Comfor
 
 What's not yet decided: output format (JSON schema vs markdown vs both), what counts as a "secret" beyond env-var name patterns, schema for the side-effect-class taxonomy, whether LoomHelp can introspect *other* agents' tool sets (probably no — that's a privilege-escalation vector).
 
-### v0.8.3 — LoomCycle MCP (the v0.8.x capstone)
+### v0.8.4 — LoomCycle MCP (the v0.8.x capstone)
 
 Loomcycle exposes itself as an **MCP server**. External orchestrators (Claude Code, agentic harnesses, other loomcycle instances) connect to it as an MCP client and:
 
 - Configure agents and spawn runs (alternate front-end to `/v1/runs`).
-- Send messages on Channels (built in v0.8.1).
+- Send messages on Channels (built in v0.8.2).
 - Read/write Memory entries (built in v0.8.0).
-- Call LoomHelp (built in v0.8.2).
+- Call LoomHelp (built in v0.8.3).
 - Subscribe to run-event streams (alternate to SSE).
 
 This is the "MCP-configurable" axis: instead of writing YAML and POSTing JSON, an external tool drives loomcycle through standard MCP. Surface area maps roughly 1:1 to the existing `/v1/*` endpoints plus the v0.8.0–0.8.2 primitives, with auth via the operator's bearer token translated into MCP's auth scheme.

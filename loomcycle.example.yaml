@@ -82,6 +82,17 @@ models:
 # allowed_tools is the ANCHORED allowlist — anything not on the list is
 # invisible to that agent's runs. Glob `mcp__server__*` exposes every
 # tool from one MCP server.
+#
+# Agent directory discovery (v0.8.1+): agents can ALSO be defined as
+# flat <name>.md files under a directory pointed at by the env var
+# LOOMCYCLE_AGENTS_ROOT. Each MD's YAML frontmatter is the base
+# AgentDef; the body becomes system_prompt. Yaml entries below act as
+# an OPTIONAL override layer — a yaml entry with the same name as a
+# discovered MD overrides per-field, so operators can keep one source
+# of truth in the MD and tweak per-environment via yaml. See
+# .env.example for the full frontmatter contract. When AGENTS_ROOT is
+# unset (default), behaviour is unchanged: agents come purely from the
+# yaml block below.
 agents:
 
   # The minimum-viable agent: smart model, system prompt, no tools.
