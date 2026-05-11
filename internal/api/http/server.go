@@ -303,6 +303,55 @@ func (s *Server) userTierOverlay(name string) *resolve.UserTierOverlay {
 	}
 }
 
+// fallbackForRun builds the v0.8.2 PR-2 runtime-fallback policy +
+// re-resolve closure for one run. Returns zero/nil when the
+// operator has no user_tiers configured OR the resolved tier has
+// fallback_on_error=false (free-tier cost-cap semantics).
+//
+// The closure captures agentName + userTier so the loop can call
+// it on a retryable error mid-run. It walks the same path as the
+// initial resolveAgent: mark the failed (provider, model) stalled
+// in the matrix, ask the resolver for the next candidate, look up
+// the corresponding driver.
+//
+// On no-more-candidates the closure returns an error — the loop
+// then surfaces the ORIGINAL provider error to the caller (the
+// fallback path is terminal for this run).
+func (s *Server) fallbackForRun(agentName, userTier string) (loop.FallbackPolicy, func(ctx context.Context, failedProvider, failedModel string, cause error) (providers.Provider, string, string, error)) {
+	overlay := s.userTierOverlay(userTier)
+	if overlay == nil || !overlay.FallbackOnError {
+		return loop.FallbackPolicy{}, nil
+	}
+	policy := loop.FallbackPolicy{
+		Enabled:      true,
+		MaxAttempts:  overlay.MaxFallbackAttempts, // 0 = loop uses its own default (3)
+		UserTierName: overlay.Name,
+	}
+	reResolve := func(ctx context.Context, failedProvider, failedModel string, cause error) (providers.Provider, string, string, error) {
+		// Mark the failed pair stalled BEFORE re-resolving so the
+		// resolver's matrix walks past it. SetReachable=false on
+		// the model only, not the whole provider — other models on
+		// the same provider may still be valid.
+		if s.resolver != nil {
+			s.resolver.MarkStalled(failedProvider, failedModel, cause.Error())
+		}
+		// Re-resolve with the same agent + user_tier. The resolver's
+		// stall flag we just set excludes the failed pair; the next
+		// non-stalled candidate in the user_tier's priority is what
+		// we get back.
+		newProviderID, newModel, newEffort, err := s.resolveAgent(agentName, userTier)
+		if err != nil {
+			return nil, "", "", err
+		}
+		newProvider, err := s.providers.Get(newProviderID)
+		if err != nil {
+			return nil, "", "", err
+		}
+		return newProvider, newModel, newEffort, nil
+	}
+	return policy, reResolve
+}
+
 // convertConfigCandidates translates the config-package representation
 // of per-agent tier candidates into the resolver-package representation.
 // Keeping the resolver package free of internal/config imports avoids
@@ -519,6 +568,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 
 	heartbeat := s.makeHeartbeat(runID)
 
+	fbPolicy, fbReResolve := s.fallbackForRun(effectiveAgentName, in.UserTier)
 	res, runErr := loop.Run(loopCtx, loop.RunOptions{
 		Provider:        provider,
 		Model:           model,
@@ -534,6 +584,8 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		ToolParallelism: s.cfg.Env.ToolParallelism,
 		AgentName:       effectiveAgentName,
 		UserTier:        in.UserTier,
+		FallbackPolicy:  fbPolicy,
+		ReResolve:       fbReResolve,
 		Hooks:           s.hookDispatcher,
 	})
 	s.finishRunWithCancel(ctx, runCtx, runID, res, runErr)
@@ -1016,6 +1068,7 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 	// minutes → presumed dead). Cheap (~10–100 calls per run).
 	heartbeat := s.makeHeartbeat(runID)
 
+	fbPolicy, fbReResolve := s.fallbackForRun(req.Agent, req.UserTier)
 	loopRes, runErr := loop.Run(loopCtx, loop.RunOptions{
 		Provider:        provider,
 		Model:           model,
@@ -1030,6 +1083,8 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		ToolParallelism: s.cfg.Env.ToolParallelism,
 		AgentName:       req.Agent,
 		UserTier:        req.UserTier,
+		FallbackPolicy:  fbPolicy,
+		ReResolve:       fbReResolve,
 		Hooks:           s.hookDispatcher,
 	})
 	if runErr != nil {
@@ -1289,6 +1344,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		AllowedScopes: agentDef.MemoryScopes,
 		QuotaBytes:    agentDef.MemoryQuotaBytes,
 	})
+	fbPolicy, fbReResolve := s.fallbackForRun(sess.Agent, body.UserTier)
 	loopRes, runErr := loop.Run(loopCtx, loop.RunOptions{
 		Provider:        provider,
 		Model:           model,
@@ -1304,6 +1360,8 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		ToolParallelism: s.cfg.Env.ToolParallelism,
 		AgentName:       sess.Agent,
 		UserTier:        body.UserTier,
+		FallbackPolicy:  fbPolicy,
+		ReResolve:       fbReResolve,
 		Hooks:           s.hookDispatcher,
 	})
 	if runErr != nil {
@@ -1757,6 +1815,7 @@ func (s *Server) runSubAgent(ctx context.Context, name string, prompt string) (s
 
 	subHeartbeat := s.makeHeartbeat(subRunID)
 
+	fbPolicy, fbReResolve := s.fallbackForRun(name, parentTier)
 	res, runErr := loop.Run(subCtx, loop.RunOptions{
 		Provider:        provider,
 		Model:           model,
@@ -1771,6 +1830,8 @@ func (s *Server) runSubAgent(ctx context.Context, name string, prompt string) (s
 		ToolParallelism: s.cfg.Env.ToolParallelism,
 		AgentName:       name,
 		UserTier:        parentTier,
+		FallbackPolicy:  fbPolicy,
+		ReResolve:       fbReResolve,
 		Hooks:           s.hookDispatcher,
 	})
 	s.finishRunWithCancel(ctx, subRunCtx, subRunID, res, runErr)

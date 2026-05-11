@@ -196,6 +196,28 @@ const (
 	// EventThinking and read EventDone.Reasoning; adapters that want
 	// live progress should consume both.
 	EventThinking EventType = "thinking"
+
+	// EventProviderFallback signals a v0.8.2 runtime fallback fired
+	// after a provider call returned a retryable error
+	// (ErrorClassRetryable per internal/providers/errclass.go) and
+	// the run's user_tier policy permitted the climb. The loop has
+	// already swapped to a fresh (provider, model) on the next-in-
+	// queue, re-resolved against the tier's candidate list with the
+	// failed provider marked stalled. The next iteration uses the
+	// new provider; this event is purely informational so adapters
+	// can show "switched to %s after %s 429" without a separate API
+	// call to inspect resolver state.
+	//
+	// The Fallback field carries the structured payload.
+	EventProviderFallback EventType = "provider_fallback"
+
+	// EventCacheInvalidated signals that a v0.8.2 runtime fallback
+	// dropped a provider-specific cache (most notably Anthropic's
+	// cache_control breakpoints) when switching to a different
+	// provider. The cost retro view should treat this run's
+	// downstream iterations as cache-cold for the new provider.
+	// Purely informational; the loop continues unchanged.
+	EventCacheInvalidated EventType = "cache_invalidated"
 )
 
 // Event is one streamed datum from a provider call (or, after the loop layer
@@ -212,6 +234,13 @@ type Event struct {
 	IsError bool `json:"is_error,omitempty"`
 	// Retry carries the retry telemetry on EventRetry. Nil otherwise.
 	Retry *RetryInfo `json:"retry,omitempty"`
+
+	// Fallback carries the structured payload on EventProviderFallback
+	// (the v0.8.2 runtime provider switch). Nil on all other event
+	// types. Adapters log/render the switch + the failing error class
+	// so cost retros can attribute downstream tokens to the new
+	// provider.
+	Fallback *FallbackInfo `json:"fallback,omitempty"`
 
 	// StopReason is set on the final assistant Event of a provider call:
 	// "end_turn" | "tool_use" | "max_tokens" | "stop_sequence".
@@ -245,6 +274,43 @@ const (
 	RetryReasonHeader   = "retry-after header"
 	RetryReasonSchedule = "exponential backoff"
 )
+
+// FallbackInfo accompanies an EventProviderFallback. Carries the
+// structured switch context for log + UI rendering. Wire-stable; the
+// field names are part of the v0.8.2+ contract.
+type FallbackInfo struct {
+	// FailedProvider + FailedModel — the pair the loop just stopped
+	// using. The loop marks (FailedProvider, FailedModel) stalled in
+	// the resolver matrix before re-resolving, so subsequent agent
+	// runs in this loomcycle process skip them until the next
+	// availability probe clears the stall.
+	FailedProvider string `json:"failed_provider"`
+	FailedModel    string `json:"failed_model"`
+	// NewProvider + NewModel — the next-in-queue the resolver picked.
+	// Empty + the loop emits EventError next when the resolver could
+	// not find any non-stalled candidate (the user_tier's candidate
+	// list was exhausted).
+	NewProvider string `json:"new_provider,omitempty"`
+	NewModel    string `json:"new_model,omitempty"`
+	// Attempt is the cumulative fallback counter — 1 for the first
+	// switch after the original provider failed, 2 for the second,
+	// etc. Capped by the user_tier's MaxFallbackAttempts.
+	Attempt int `json:"attempt"`
+	// UserTier is the operator-declared tier name that authorised
+	// this fallback ("default" / "free" / "low" / "medium" / "high").
+	// Free tiers never produce this event — their FallbackOnError
+	// is false and the loop propagates the original error instead.
+	UserTier string `json:"user_tier"`
+	// Reason is the error-class label that triggered the switch
+	// ("retryable" most commonly; "deadline_exceeded" never — that
+	// shape is non-retryable). Stable wire string.
+	Reason string `json:"reason"`
+	// CauseError is the original error message (truncated to ~200
+	// chars to avoid 9 KB HTML bodies flooding the SSE wire). Useful
+	// for operator diagnostics — they see "anthropic 429: rate
+	// limit exceeded" alongside the structural switch info.
+	CauseError string `json:"cause_error,omitempty"`
+}
 
 // ToolUse is the model's request to invoke a tool.
 type ToolUse struct {
