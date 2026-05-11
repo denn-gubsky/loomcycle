@@ -1,0 +1,31 @@
+# test/runtime/memory/loomcycle.yaml — v0.8.0 Memory-tool runtime smoke test.
+#
+# One test agent (./agents/memorybot.md) called twice over the same
+# loomcycle instance + sqlite DB. Run 1 writes; run 2 reads. State
+# is expected to persist across the run boundary — that's the whole
+# point of Memory.
+#
+# Provider: deepseek. Set DEEPSEEK_API_KEY in your shell (or source
+# .env.local) before invoking the driver.
+
+provider_priority: [deepseek]
+
+defaults:
+  provider: deepseek
+  model: deepseek-v4-pro
+
+# ─── Agents from MD discovery ──────────────────────────────────────
+# run.sh sets LOOMCYCLE_AGENTS_ROOT to ./agents/ (alongside this
+# file). No yaml `agents:` block — the agent comes purely from the
+# MD frontmatter.
+
+# ─── Storage ───────────────────────────────────────────────────────
+# Local sqlite, isolated path so this test doesn't touch any
+# existing data dir.
+storage:
+  backend: sqlite
+
+# ─── Concurrency ───────────────────────────────────────────────────
+concurrency:
+  max_concurrent_runs: 4
+  max_queue_depth: 8
