@@ -1,8 +1,8 @@
 ---
 name: researcher
 description: Publishes structured findings to the `findings` channel. v0.8.4 Channel-tool runtime smoke-test agent.
-provider: deepseek
-model: deepseek-v4-pro
+provider: gemini
+model: gemini-2.5-flash
 allowed_tools: [Channel]
 channels:
   publish: [findings]

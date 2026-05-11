@@ -3,15 +3,15 @@
 # tier-walk smoke test.
 #
 # Drives one /v1/runs with user_tier=low. The tier's candidate list
-# is [deepseek, anthropic]. DEEPSEEK_BASE_URL is overridden to
+# is [deepseek, gemini]. DEEPSEEK_BASE_URL is overridden to
 # http://127.0.0.1:1, so:
 #
 #   1. At boot, the resolver probes /v1/models on each provider.
 #      The deepseek probe fails with `connect: connection refused`
 #      → matrix marks deepseek unreachable.
 #   2. At run-start, the resolver walks the user_tier's candidate
-#      list. deepseek is skipped (unreachable in matrix); anthropic
-#      is healthy → resolver returns claude-haiku-4-5-20251001.
+#      list. deepseek is skipped (unreachable in matrix); gemini
+#      is healthy → resolver returns gemini-2.5-flash.
 #   3. The run completes against the fallback provider.
 #
 # This validates the RESOLVE-TIME tier-walk path of v0.8.2: the
@@ -30,7 +30,7 @@
 # Same `test/runtime/<feature>/` convention as channels/ and memory/.
 #
 # Usage:
-#   DEEPSEEK_API_KEY=... ANTHROPIC_API_KEY=... ./test/runtime/user-tier/run.sh
+#   DEEPSEEK_API_KEY=... GEMINI_API_KEY=... ./test/runtime/user-tier/run.sh
 # OR:
 #   set -a; source .env.local; set +a; ./test/runtime/user-tier/run.sh
 
@@ -55,16 +55,16 @@ cleanup() {
 # ─── Env requirements ───────────────────────────────────────────────
 # Need BOTH keys: DeepSeek for the primary registration (the
 # unreachable URL means auth is never tried, but the registration
-# check is DEEPSEEK_API_KEY != ""), Anthropic for the fallback to
+# check is DEEPSEEK_API_KEY != ""), Gemini for the fallback to
 # actually succeed.
 if [[ -z "${DEEPSEEK_API_KEY:-}" ]]; then
   echo "ERROR: DEEPSEEK_API_KEY not set. Source .env.local first." >&2
   exit 1
 fi
-if [[ -z "${ANTHROPIC_API_KEY:-}" ]]; then
-  echo "ERROR: ANTHROPIC_API_KEY not set — required for the fallback step." >&2
+if [[ -z "${GEMINI_API_KEY:-}" ]]; then
+  echo "ERROR: GEMINI_API_KEY not set — required for the fallback step." >&2
   echo "  This test needs BOTH DEEPSEEK_API_KEY (primary, will fail by design)" >&2
-  echo "  AND ANTHROPIC_API_KEY (fallback, must succeed)." >&2
+  echo "  AND GEMINI_API_KEY (fallback, must succeed)." >&2
   exit 1
 fi
 if ! command -v python3 &>/dev/null; then
@@ -141,7 +141,7 @@ grep -E "user_tiers:|agents:|providers" "$BOOT_LOG" | sed 's/^/      /' || true
 echo
 
 # ─── 4. Drive a single run with user_tier=low ──────────────────────
-echo "[4/5] Running greeter with user_tier=low (primary deepseek fails → fallback to anthropic)..."
+echo "[4/5] Running greeter with user_tier=low (primary deepseek fails → fallback to gemini)..."
 # Drop `-f` (no auto-bail on 4xx/5xx) so the response body lands in
 # RUN_SSE for inspection even on error. Capture status separately.
 RUN_HTTP_STATUS=$(curl -sS -N -w '%{http_code}' -o "$RUN_SSE" \
@@ -219,8 +219,8 @@ echo "  Run status:                     $RUN_STATUS (expect completed)"
 
 # Check 3: model used = fallback target = claude-haiku-4-5-20251001
 # (the tier's SECOND candidate, picked after deepseek was skipped).
-echo "  Run model (= fallback target):  $RUN_MODEL (expect claude-haiku-4-5-20251001)"
-[[ "$RUN_MODEL" == "claude-haiku-4-5-20251001" ]] || PASS=false
+echo "  Run model (= fallback target):  $RUN_MODEL (expect gemini-2.5-flash)"
+[[ "$RUN_MODEL" == "gemini-2.5-flash" ]] || PASS=false
 
 # Check 4: runs.user_tier marker stamped (v0.8.2 audit column).
 echo "  Run user_tier marker:           $RUN_TIER (expect low)"

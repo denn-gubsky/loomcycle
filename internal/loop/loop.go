@@ -719,9 +719,15 @@ func executePendingTools(
 		})
 		// Place by index so the message we hand back to the model
 		// stays in tool_call order regardless of finish order.
+		// ToolName is set for the benefit of providers that
+		// correlate tool_use ↔ tool_result by NAME rather than by
+		// id — Gemini's functionResponse and Ollama's tool messages
+		// both require the name. Anthropic / OpenAI / DeepSeek use
+		// the id only and ignore the redundant name field.
 		results[r.idx] = providers.ContentBlock{
 			Type:      "tool_result",
 			ToolUseID: r.tu.ID,
+			ToolName:  r.tu.Name,
 			Text:      r.res.Text,
 			IsError:   r.res.IsError,
 		}

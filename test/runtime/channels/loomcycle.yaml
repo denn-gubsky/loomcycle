@@ -3,16 +3,16 @@
 # Two test agents (./agents/{researcher,analyst}.md) talking through a
 # user-scoped `findings` channel. See ./run.sh for the driver.
 #
-# Provider: deepseek. Set DEEPSEEK_API_KEY in your shell (or source
-# .env.local) before invoking the driver.
+# Provider: gemini (gemini-2.5-flash). Set GEMINI_API_KEY in your
+# shell (or source .env.local) before invoking the driver.
 
-# DeepSeek-only provider routing. Other agents not declared here
+# Gemini-only provider routing. Other agents not declared here
 # resolve through cfg.Defaults below.
-provider_priority: [deepseek]
+provider_priority: [gemini]
 
 defaults:
-  provider: deepseek
-  model: deepseek-v4-pro
+  provider: gemini
+  model: gemini-2.5-flash
 
 # ─── Channels (v0.8.4) ──────────────────────────────────────────────
 # One user-scoped queue. user-scope means cursor_id = user_id, so the
