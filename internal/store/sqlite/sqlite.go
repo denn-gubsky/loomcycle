@@ -516,6 +516,22 @@ func (s *Store) GetRunByAgentID(ctx context.Context, agentID string) (store.Run,
 	return r, err
 }
 
+// GetRun returns one row by run_id (the primary key on runs).
+func (s *Store) GetRun(ctx context.Context, runID string) (store.Run, error) {
+	if runID == "" {
+		return store.Run{}, &store.ErrNotFound{Kind: "run", ID: runID}
+	}
+	row := s.db.QueryRowContext(ctx,
+		`SELECT `+runColumns+` FROM `+runFromTable+` WHERE r.id = ?`,
+		runID,
+	)
+	r, err := scanRun(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return store.Run{}, &store.ErrNotFound{Kind: "run", ID: runID}
+	}
+	return r, err
+}
+
 // ListUsers returns one row per distinct user_id with summary stats.
 // Drives the v0.7.3 Web UI user picker.
 //
