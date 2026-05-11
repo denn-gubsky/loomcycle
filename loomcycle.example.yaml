@@ -57,6 +57,82 @@ tiers:
     - { provider: openai,    model: gpt-5.5 }
     - { provider: anthropic, model: claude-opus-4-7 }
 
+# ─── User tiers (v0.8.2+) ─────────────────────────────────────────────
+# Operator-defined per-user-tier overlay on the resolver matrix above.
+# Each named tier scopes WHICH providers are eligible for runs belonging
+# to that user-class, AND whether retryable errors (429/5xx/network/
+# stream-idle) trigger a runtime switch to the next candidate.
+#
+# How it connects to the wire:
+#   POST /v1/runs { "agent": "...", "user_tier": "free" | "low" | ... }
+# The named tier resolves at run-start (intersect agent's `providers:`
+# with this tier's `provider_priority`) and AGAIN per provider error
+# during the run (loop calls into the resolver to pick the next
+# candidate, capped at `max_fallback_attempts` cumulative switches).
+#
+# Empty intersection at run-start = `ErrTierAgentNotAvailable` returned
+# to the client (the agent's allowed providers don't include any in this
+# tier's priority) — useful for "free tier can't run premium-only
+# agents" UX gates.
+#
+# `default` is REQUIRED (used when a request omits `user_tier:`, or
+# names a tier not in this map). Anything matching the library defaults
+# above is fine as the `default` shape; back-compat v0.7.x clients see
+# unchanged behaviour because `default.fallback_on_error: true` mirrors
+# the v0.7.x retryable-error retry.
+#
+# `fallback_on_error: false` is the cost-cap shape: a 429 from the only
+# available provider returns the error to the client (no climb to paid
+# providers, no surprise bills). Paid tiers want `true`.
+user_tiers:
+
+  # REQUIRED — used when a run's `user_tier:` is unset or unknown.
+  # Same shape as the library defaults above so v0.7.x clients see no
+  # behaviour change.
+  default:
+    provider_priority: [deepseek, ollama, openai, anthropic]
+    # Tier-bodies (low/middle/high) omitted = inherit from library
+    # `tiers:` above. Override only when this user-tier needs a
+    # different candidate list than the library default.
+    fallback_on_error: true
+    max_fallback_attempts: 3
+
+  # Free tier: cost cap — only the no-paid-key providers, no climb on
+  # 429 (would defeat the point). `fallback_on_error: false` means a
+  # 429 surfaces immediately to the client; the client can then offer
+  # an upgrade prompt.
+  free:
+    provider_priority: [ollama]
+    tiers:
+      low:    [{provider: ollama, model: gemma4:9b}]
+      middle: [{provider: ollama, model: qwen3.6:27b}]
+      high:   [{provider: ollama, model: qwen3.6:27b}]
+    fallback_on_error: false
+
+  # Low tier: cost-floor-first with one paid backstop. DeepSeek's free
+  # quota covers most runs; Anthropic catches the burst.
+  low:
+    provider_priority: [deepseek, anthropic]
+    # tier-bodies omitted = inherit library tiers (DeepSeek + Anthropic
+    # candidates from `low:` above survive the intersection).
+    fallback_on_error: true
+    max_fallback_attempts: 3
+
+  # Medium tier: paid providers preferred, DeepSeek as the cost
+  # backstop. Sequenced so a 429 on OpenAI climbs to Anthropic before
+  # falling back to DeepSeek.
+  medium:
+    provider_priority: [openai, anthropic, deepseek]
+    fallback_on_error: true
+    max_fallback_attempts: 3
+
+  # High tier: Anthropic-only. No fallback (the SLA is "best model or
+  # error"; falling back to a cheaper provider would silently degrade
+  # output quality for users paying for the top tier).
+  high:
+    provider_priority: [anthropic]
+    fallback_on_error: false
+
 # ─── Default routing for agents that don't specify their own ──────────
 # Used by agents that declare neither `tier:` nor an explicit
 # `provider:`+`model:` pin. v0.6.x back-compat path; tier-based agents
