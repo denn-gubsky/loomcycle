@@ -304,6 +304,22 @@ func (s *Server) userTierOverlay(name string) *resolve.UserTierOverlay {
 	}
 }
 
+// substratePoliciesForAgent returns the v0.8.5 AgentDef +
+// Evaluation policies for one agent. Mirrors channelPolicyForAgent's
+// shape. selfName is the resolved agent name as seen by the ctx
+// chain (== tools.AgentName at attach time); stamped onto the
+// AgentDef policy so the tool's "self" scope check is robust to
+// any future ctx-stack mutations.
+func (s *Server) substratePoliciesForAgent(agentDef config.AgentDef, selfName string) (tools.AgentDefPolicyValue, tools.EvaluationPolicyValue) {
+	return tools.AgentDefPolicyValue{
+			Scopes:   agentDef.AgentDefScopes,
+			SelfName: selfName,
+		},
+		tools.EvaluationPolicyValue{
+			Scopes: agentDef.EvaluationScopes,
+		}
+}
+
 // channelPolicyForAgent builds the v0.8.4 Channel-tool policy from
 // the agent yaml + the top-level `channels:` block. Returns a value
 // suitable for tools.WithChannelPolicy. The Channels map is a copy
@@ -592,6 +608,9 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	})
 	loopCtx = tools.WithChannelPolicy(loopCtx, s.channelPolicyForAgent(agentDef))
 	loopCtx = tools.WithEventEmitter(loopCtx, emit)
+	adPolicy, evPolicy := s.substratePoliciesForAgent(agentDef, effectiveAgentName)
+	loopCtx = tools.WithAgentDefPolicy(loopCtx, adPolicy)
+	loopCtx = tools.WithEvaluationPolicy(loopCtx, evPolicy)
 
 	heartbeat := s.makeHeartbeat(runID)
 
@@ -1091,6 +1110,9 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 	})
 	loopCtx = tools.WithChannelPolicy(loopCtx, s.channelPolicyForAgent(agentDef))
 	loopCtx = tools.WithEventEmitter(loopCtx, emit)
+	adPolicy, evPolicy := s.substratePoliciesForAgent(agentDef, req.Agent)
+	loopCtx = tools.WithAgentDefPolicy(loopCtx, adPolicy)
+	loopCtx = tools.WithEvaluationPolicy(loopCtx, evPolicy)
 
 	// Heartbeat hook: each loop iteration updates last_heartbeat_at so a
 	// future sweeper can detect crashed processes (no heartbeat for > N
@@ -1375,6 +1397,9 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	})
 	loopCtx = tools.WithChannelPolicy(loopCtx, s.channelPolicyForAgent(agentDef))
 	loopCtx = tools.WithEventEmitter(loopCtx, emit)
+	adPolicy, evPolicy := s.substratePoliciesForAgent(agentDef, sess.Agent)
+	loopCtx = tools.WithAgentDefPolicy(loopCtx, adPolicy)
+	loopCtx = tools.WithEvaluationPolicy(loopCtx, evPolicy)
 	fbPolicy, fbReResolve := s.fallbackForRun(sess.Agent, body.UserTier)
 	loopRes, runErr := loop.Run(loopCtx, loop.RunOptions{
 		Provider:        provider,
@@ -1870,6 +1895,13 @@ func (s *Server) runSubAgent(ctx context.Context, name string, prompt string) (s
 	// subEmit above). Channel-tool publishes from inside the sub
 	// surface on the sub's SSE stream, not the parent's.
 	subCtx = tools.WithEventEmitter(subCtx, subEmit)
+	// Sub-agent's substrate policies come from ITS OWN yaml — same
+	// shape as Memory/Channel. selfName is the sub's name so the
+	// "self" scope resolves to the sub-agent's identity, not the
+	// parent's.
+	subADPolicy, subEvPolicy := s.substratePoliciesForAgent(def, name)
+	subCtx = tools.WithAgentDefPolicy(subCtx, subADPolicy)
+	subCtx = tools.WithEvaluationPolicy(subCtx, subEvPolicy)
 
 	subHeartbeat := s.makeHeartbeat(subRunID)
 

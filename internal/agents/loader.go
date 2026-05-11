@@ -72,6 +72,15 @@ type Agent struct {
 	// Channels is the v0.8.4 Channel-tool ACL. Empty Publish /
 	// Subscribe = no access on that side.
 	Channels AgentChannelACL
+	// AgentDefScopes is the v0.8.5 AgentDef-tool capability gate.
+	// Closed set: "self" / "descendants" / "named:<name>" / "any".
+	// Empty = default-deny.
+	AgentDefScopes []string
+	// EvaluationScopes is the v0.8.5 Evaluation-tool capability gate.
+	// Closed set: "submit_self" / "submit_siblings" /
+	// "submit_descendants" / "submit_any" / "read_any". Empty =
+	// default-deny.
+	EvaluationScopes []string
 	// Path is the absolute path of the source MD, kept for diagnostic
 	// logging (skills/loader.go follows the same convention).
 	Path string
@@ -211,6 +220,8 @@ type frontmatter struct {
 	MemoryScopes     []string                   `yaml:"memory_scopes"`
 	MemoryQuotaBytes int                        `yaml:"memory_quota_bytes"`
 	Channels         AgentChannelACL            `yaml:"channels"`
+	AgentDefScopes   []string                   `yaml:"agent_def_scopes"`
+	EvaluationScopes []string                   `yaml:"evaluation_scopes"`
 	SystemPromptFile string                     `yaml:"system_prompt_file"`
 	// SystemPrompt as an inline frontmatter field is intentionally
 	// NOT supported. The body of the MD is the prompt; if you want a
@@ -271,6 +282,8 @@ func parseAgent(raw []byte) (*Agent, error) {
 	a.MemoryScopes = fm.MemoryScopes
 	a.MemoryQuotaBytes = fm.MemoryQuotaBytes
 	a.Channels = fm.Channels
+	a.AgentDefScopes = fm.AgentDefScopes
+	a.EvaluationScopes = fm.EvaluationScopes
 	a.SystemPromptFile = fm.SystemPromptFile
 	a.SystemPrompt = body
 

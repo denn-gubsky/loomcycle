@@ -305,6 +305,46 @@ type AgentDef struct {
 	// operator-yaml is the floor; the model can never enlarge its
 	// own access. Sub-agents inherit the parent's ACL via ctx.
 	Channels AgentChannelACL `yaml:"channels"`
+
+	// AgentDefScopes is the v0.8.5 AgentDef tool capability gate.
+	// Default-deny when empty. Mirrors MemoryScopes' shape — having
+	// AgentDef in allowed_tools is necessary but not sufficient; this
+	// list narrows which mutation paths the agent can take. Closed
+	// set:
+	//
+	//   - "self"         → may fork/promote/retire its OWN name
+	//                       (== tools.AgentName(ctx))
+	//   - "descendants"  → may operate on any def whose lineage chain
+	//                       traces back to a def the agent created
+	//   - "named:<name>" → may operate on the specified single name
+	//                       (multi-entry: "named:foo" + "named:bar")
+	//   - "any"          → unrestricted (operator-blessed orchestrator
+	//                       privilege)
+	//
+	// "any" is intentionally a single string ("any") rather than a
+	// wildcard pattern so the model never authors mass-mutation
+	// access via a templated string.
+	AgentDefScopes []string `yaml:"agent_def_scopes"`
+
+	// EvaluationScopes is the v0.8.5 Evaluation tool capability gate.
+	// Multi-select; default-deny when empty. Closed set:
+	//
+	//   - "submit_self"        → may emit evaluations against own runs
+	//   - "submit_siblings"    → may emit evaluations against sibling
+	//                             runs (same parent_agent_id)
+	//   - "submit_descendants" → may emit evaluations against the
+	//                             agent's spawn-tree descendants
+	//   - "submit_any"         → unrestricted submit (operator
+	//                             override; emitter_role = "unrelated"
+	//                             when the agent has no kinship)
+	//   - "read_any"           → may call list/aggregate ops against
+	//                             any def or run
+	//
+	// Emitter role is derived server-side from the emitter's ctx vs
+	// the target run's identity; the model never supplies it. The
+	// scope list gates WHICH emitter roles the agent is allowed to
+	// produce.
+	EvaluationScopes []string `yaml:"evaluation_scopes"`
 }
 
 // Channel is one operator-declared channel in the top-level
@@ -1091,6 +1131,8 @@ func agentFromDiscovered(d *agents.Agent) AgentDef {
 			Publish:   d.Channels.Publish,
 			Subscribe: d.Channels.Subscribe,
 		},
+		AgentDefScopes:   d.AgentDefScopes,
+		EvaluationScopes: d.EvaluationScopes,
 	}
 	if len(d.Models) > 0 {
 		def.Models = make(map[string][]TierCandidate, len(d.Models))
@@ -1178,6 +1220,12 @@ func mergeAgentDef(base, override AgentDef) AgentDef {
 	}
 	if override.Channels.Subscribe != nil {
 		out.Channels.Subscribe = override.Channels.Subscribe
+	}
+	if override.AgentDefScopes != nil {
+		out.AgentDefScopes = override.AgentDefScopes
+	}
+	if override.EvaluationScopes != nil {
+		out.EvaluationScopes = override.EvaluationScopes
 	}
 	return out
 }
@@ -1379,6 +1427,43 @@ var validChannelSemantics = map[string]bool{
 	"broadcast": true,
 }
 
+// validEvaluationScopes is the closed set of Evaluation-tool scope
+// strings. See AgentDef.EvaluationScopes docstring for the meaning
+// of each.
+var validEvaluationScopes = map[string]bool{
+	"submit_self":        true,
+	"submit_siblings":    true,
+	"submit_descendants": true,
+	"submit_any":         true,
+	"read_any":           true,
+}
+
+// validateAgentDefScope checks one entry in an agent's
+// agent_def_scopes list. Closed set:
+//
+//   - "self"
+//   - "descendants"
+//   - "any"
+//   - "named:<name>" where <name> is non-empty
+//
+// The "named:" prefix is the only stringly-typed exception — keeps
+// the yaml authoring ergonomic. Empty name in "named:" is rejected
+// at config-load.
+func validateAgentDefScope(sc string) error {
+	switch sc {
+	case "self", "descendants", "any":
+		return nil
+	}
+	if strings.HasPrefix(sc, "named:") {
+		ref := strings.TrimPrefix(sc, "named:")
+		if ref == "" {
+			return fmt.Errorf("agent_def_scopes: \"named:\" requires a non-empty name (e.g. \"named:coder\")")
+		}
+		return nil
+	}
+	return fmt.Errorf("unknown scope %q (want one of: self, descendants, any, or \"named:<name>\")", sc)
+}
+
 // validateAgentChannelEntry checks one publish/subscribe entry on
 // an AgentDef.Channels list. Exact match → must reference a declared
 // channel. Trailing "/*" wildcard → must match at least one declared
@@ -1541,6 +1626,20 @@ func validate(c *Config) error {
 		for i, ch := range agent.Channels.Subscribe {
 			if err := validateAgentChannelEntry(c.Channels, ch); err != nil {
 				return fmt.Errorf("agent %q: channels.subscribe[%d]: %w", name, i, err)
+			}
+		}
+		// AgentDef tool (v0.8.5): validate agent_def_scopes entries.
+		// Closed set: "self" / "descendants" / "named:<name>" / "any".
+		for i, sc := range agent.AgentDefScopes {
+			if err := validateAgentDefScope(sc); err != nil {
+				return fmt.Errorf("agent %q: agent_def_scopes[%d]: %w", name, i, err)
+			}
+		}
+		// Evaluation tool (v0.8.5): validate evaluation_scopes entries.
+		// Closed set as documented on AgentDef.EvaluationScopes.
+		for i, sc := range agent.EvaluationScopes {
+			if !validEvaluationScopes[sc] {
+				return fmt.Errorf("agent %q: evaluation_scopes[%d]: unknown scope %q (want one of: submit_self, submit_siblings, submit_descendants, submit_any, read_any)", name, i, sc)
 			}
 		}
 	}
