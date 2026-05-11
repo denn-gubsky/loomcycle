@@ -965,3 +965,151 @@ agents:
 		t.Errorf("SystemPrompt = %q, want yaml override", got)
 	}
 }
+
+// ─── v0.8.2 user_tiers validation ───────────────────────────────────
+
+// TestUserTiers_DefaultRequired: a user_tiers: block without a
+// "default" entry fails validation — required for back-compat with
+// v0.7.x clients that don't yet send user_tier in the request body.
+func TestUserTiers_DefaultRequired(t *testing.T) {
+	tmp := t.TempDir()
+	yamlPath := filepath.Join(tmp, "c.yaml")
+	if err := os.WriteFile(yamlPath, []byte(`
+defaults: { provider: anthropic, model: claude-sonnet-4-6 }
+user_tiers:
+  free:
+    provider_priority: [gemini, ollama]
+    fallback_on_error: false
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Load(yamlPath)
+	if err == nil {
+		t.Fatal("expected validation error for missing default tier")
+	}
+	if !strings.Contains(err.Error(), `"default"`) {
+		t.Errorf("error %q should mention `default`", err.Error())
+	}
+}
+
+// TestUserTiers_UnknownProviderRejected: a typo'd provider name in
+// a user_tier's provider_priority must surface at config-load, NOT
+// at request time when the resolver would have surfaced a confusing
+// "no candidates available" error.
+func TestUserTiers_UnknownProviderRejected(t *testing.T) {
+	tmp := t.TempDir()
+	yamlPath := filepath.Join(tmp, "c.yaml")
+	if err := os.WriteFile(yamlPath, []byte(`
+defaults: { provider: anthropic, model: claude-sonnet-4-6 }
+user_tiers:
+  default:
+    provider_priority: [anthropic]
+  badtier:
+    provider_priority: [anthopic]  # typo'd
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Load(yamlPath)
+	if err == nil {
+		t.Fatal("expected validation error for unknown provider")
+	}
+	if !strings.Contains(err.Error(), "anthopic") {
+		t.Errorf("error %q should cite the typo'd provider name", err.Error())
+	}
+}
+
+// TestUserTiers_AcceptsValidShape: a complete user_tiers block with
+// default + named tiers, each with provider_priority + tiers map +
+// fallback_on_error, loads cleanly. Round-trip smoke test that all
+// fields survive yaml.Unmarshal.
+func TestUserTiers_AcceptsValidShape(t *testing.T) {
+	tmp := t.TempDir()
+	yamlPath := filepath.Join(tmp, "c.yaml")
+	if err := os.WriteFile(yamlPath, []byte(`
+defaults: { provider: anthropic, model: claude-sonnet-4-6 }
+user_tiers:
+  default:
+    provider_priority: [anthropic, deepseek]
+    tiers:
+      middle:
+        - { provider: anthropic, model: claude-sonnet-4-6 }
+    fallback_on_error: true
+    max_fallback_attempts: 3
+  free:
+    provider_priority: [gemini, ollama]
+    tiers:
+      low:
+        - { provider: gemini, model: gemini-2.0-flash }
+    fallback_on_error: false
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(yamlPath)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(cfg.UserTiers) != 2 {
+		t.Fatalf("UserTiers len = %d, want 2", len(cfg.UserTiers))
+	}
+	def := cfg.UserTiers["default"]
+	if !def.FallbackOnError {
+		t.Errorf("default.fallback_on_error = false; want true")
+	}
+	if def.MaxFallbackAttempts != 3 {
+		t.Errorf("default.max_fallback_attempts = %d; want 3", def.MaxFallbackAttempts)
+	}
+	free := cfg.UserTiers["free"]
+	if free.FallbackOnError {
+		t.Errorf("free.fallback_on_error = true; want false (cost cap)")
+	}
+	if len(free.ProviderPriority) != 2 || free.ProviderPriority[0] != "gemini" {
+		t.Errorf("free.provider_priority = %v; want [gemini, ollama]", free.ProviderPriority)
+	}
+}
+
+// TestUserTiers_NegativeMaxFallbackAttempts: 0 is allowed (defaults
+// to 3 at runtime); negative is rejected as a config error.
+func TestUserTiers_NegativeMaxFallbackAttempts(t *testing.T) {
+	tmp := t.TempDir()
+	yamlPath := filepath.Join(tmp, "c.yaml")
+	if err := os.WriteFile(yamlPath, []byte(`
+defaults: { provider: anthropic, model: claude-sonnet-4-6 }
+user_tiers:
+  default:
+    provider_priority: [anthropic]
+    max_fallback_attempts: -1
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Load(yamlPath)
+	if err == nil {
+		t.Fatal("expected error for negative max_fallback_attempts")
+	}
+	if !strings.Contains(err.Error(), "max_fallback_attempts") {
+		t.Errorf("error %q should cite max_fallback_attempts", err.Error())
+	}
+}
+
+// TestUserTiers_AbsentBlockUnchangedBehaviour: no user_tiers: block at
+// all — Load succeeds, cfg.UserTiers is nil/empty, v0.7.x-era
+// behaviour preserved.
+func TestUserTiers_AbsentBlockUnchangedBehaviour(t *testing.T) {
+	tmp := t.TempDir()
+	yamlPath := filepath.Join(tmp, "c.yaml")
+	if err := os.WriteFile(yamlPath, []byte(`
+defaults: { provider: anthropic, model: claude-sonnet-4-6 }
+agents:
+  qa:
+    model: claude-sonnet-4-6
+    allowed_tools: [Read]
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(yamlPath)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(cfg.UserTiers) != 0 {
+		t.Errorf("UserTiers len = %d; want 0 (block absent)", len(cfg.UserTiers))
+	}
+}

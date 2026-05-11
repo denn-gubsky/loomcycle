@@ -130,6 +130,10 @@ func (s *Store) migrate(ctx context.Context) error {
 		`ALTER TABLE runs ADD COLUMN parent_run_id TEXT`,
 		`ALTER TABLE runs ADD COLUMN user_id TEXT`,
 		`ALTER TABLE runs ADD COLUMN last_heartbeat_at INTEGER`,
+		// v0.8.2: user_tier marker (PR #52). Nullable on legacy rows;
+		// new rows carry the name of the user_tier policy applied at
+		// run creation. Compliance + cost-retro queries facet on this.
+		`ALTER TABLE runs ADD COLUMN user_tier TEXT`,
 	}
 	for _, q := range addColumns {
 		if _, err := s.db.ExecContext(ctx, q); err != nil {
@@ -218,13 +222,14 @@ func (s *Store) CreateRun(ctx context.Context, sessionID string, identity store.
 	id := newID("r_")
 	now := time.Now()
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO runs(id, session_id, status, started_at, agent_id, parent_agent_id, parent_run_id, user_id)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO runs(id, session_id, status, started_at, agent_id, parent_agent_id, parent_run_id, user_id, user_tier)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		id, sessionID, store.RunRunning, now.UnixNano(),
 		nilIfEmpty(identity.AgentID),
 		nilIfEmpty(identity.ParentAgentID),
 		nilIfEmpty(identity.ParentRunID),
 		nilIfEmpty(identity.UserID),
+		nilIfEmpty(identity.UserTier),
 	)
 	if err != nil {
 		return store.Run{}, err
@@ -238,6 +243,7 @@ func (s *Store) CreateRun(ctx context.Context, sessionID string, identity store.
 		ParentAgentID: identity.ParentAgentID,
 		ParentRunID:   identity.ParentRunID,
 		UserID:        identity.UserID,
+		UserTier:      identity.UserTier,
 	}, nil
 }
 
@@ -326,7 +332,7 @@ func scanRun(scanner interface{ Scan(...any) error }) (store.Run, error) {
 	var startedNs, completedNs sql.NullInt64
 	var lastHbNs sql.NullInt64
 	var stopReason, model, errMsg sql.NullString
-	var agentID, parentAgentID, parentRunID, userID sql.NullString
+	var agentID, parentAgentID, parentRunID, userID, userTier sql.NullString
 	var sessAgent sql.NullString
 	var status string
 	if err := scanner.Scan(
@@ -335,6 +341,7 @@ func scanRun(scanner interface{ Scan(...any) error }) (store.Run, error) {
 		&r.InputTokens, &r.OutputTokens, &r.CacheCreationTokens, &r.CacheReadTokens,
 		&model, &errMsg,
 		&agentID, &parentAgentID, &parentRunID, &userID, &lastHbNs,
+		&userTier,
 		&sessAgent,
 	); err != nil {
 		return store.Run{}, err
@@ -370,6 +377,9 @@ func scanRun(scanner interface{ Scan(...any) error }) (store.Run, error) {
 	if userID.Valid {
 		r.UserID = userID.String
 	}
+	if userTier.Valid {
+		r.UserTier = userTier.String
+	}
 	if sessAgent.Valid {
 		r.Agent = sessAgent.String
 	}
@@ -389,6 +399,7 @@ const runColumns = `r.id, r.session_id, r.status, r.started_at, r.completed_at,
 		r.input_tokens, r.output_tokens, r.cache_creation_tokens, r.cache_read_tokens,
 		r.model, r.error,
 		r.agent_id, r.parent_agent_id, r.parent_run_id, r.user_id, r.last_heartbeat_at,
+		r.user_tier,
 		s.agent`
 
 // runFromTable is the canonical FROM clause paired with runColumns.

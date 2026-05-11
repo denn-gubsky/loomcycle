@@ -163,6 +163,13 @@ type ctxKeyRunIdentity struct{}
 type RunIdentityValue struct {
 	UserID  string
 	AgentID string
+	// UserTier is the v0.8.2 user-facing-tier policy name applied to
+	// this run (e.g. "free" / "low" / "medium" / "high"). Sub-agents
+	// inherit it via ctx so the resolver applies the same tier
+	// overlay for child runs without the caller re-supplying it.
+	// Empty when the operator has no user_tiers block or the caller
+	// didn't pass user_tier.
+	UserTier string
 }
 
 // WithRunIdentity attaches the current run's identity to ctx. The

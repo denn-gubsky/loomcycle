@@ -50,6 +50,16 @@ var (
 	// because a pinned agent has no fallthrough — caller asked for
 	// THAT model specifically.
 	ErrPinUnavailable = errors.New("pinned (provider, model) is unavailable")
+
+	// ErrTierAgentNotAvailable is returned by Resolve (v0.8.2+) when
+	// the agent's policy (per-agent Providers / Models) and the
+	// run's user_tier policy have an empty intersection — the agent
+	// requires providers / models the user_tier doesn't grant access
+	// to. Distinct from ErrTierUnavailable because it's a POLICY
+	// refusal (operator-defined), not a matrix outage. HTTP maps
+	// this to 403 Forbidden with a typed error code so the client
+	// can render an "upgrade your tier to use this agent" message.
+	ErrTierAgentNotAvailable = errors.New("agent not available for user_tier")
 )
 
 // Decision is the resolver's output: which (provider, model) the loop
@@ -90,6 +100,51 @@ type AgentRequest struct {
 	// Per-agent overrides. Empty / nil = use library defaults.
 	Providers []string
 	Models    map[string][]Candidate
+
+	// UserTier is the v0.8.2 user-facing-tier policy overlay for
+	// this resolution. Nil = no overlay (back-compat path; resolver
+	// uses library + per-agent overrides as in v0.7.x). Non-nil:
+	// the overlay's ProviderPriority + Tiers sit BETWEEN library and
+	// per-agent in the precedence chain.
+	//
+	// When the overlay AND per-agent Providers are both set, the
+	// intersection (in per-agent order) is what the resolver walks.
+	// Empty intersection → ErrTierAgentNotAvailable (operator policy
+	// refusal — not a transient outage).
+	UserTier *UserTierOverlay
+}
+
+// UserTierOverlay carries the per-request user-tier policy. Built by
+// the HTTP server from cfg.UserTiers[req.user_tier] and threaded into
+// AgentRequest. PR 1 plumbs ProviderPriority + Tiers through the
+// resolver; PR 2 consumes FallbackOnError + MaxFallbackAttempts in the
+// loop's runtime-fallback path.
+//
+// Lives in this package (rather than imported from config) for the
+// same dependency-arrow reason as Candidate — keeps internal/resolve
+// from depending on internal/config.
+type UserTierOverlay struct {
+	// Name is the operator-declared tier name ("default" / "free" /
+	// "low" / "medium" / "high" / etc.) — used only in error
+	// messages so refusals cite WHICH tier blocked the request.
+	Name string
+
+	// ProviderPriority overlays the library order. See AgentRequest's
+	// UserTier docstring for intersection semantics.
+	ProviderPriority []string
+
+	// Tiers overlays library Tiers (per-task-tier candidate lists).
+	// Falls through library when this tier doesn't define candidates
+	// for the requested task tier; agent.Models[tier] still takes
+	// precedence on top of this.
+	Tiers map[string][]Candidate
+
+	// FallbackOnError + MaxFallbackAttempts are read by PR 2's loop;
+	// the resolver doesn't act on them, but plumbing them on the
+	// overlay keeps "everything about this user_tier in one place"
+	// for callers downstream.
+	FallbackOnError     bool
+	MaxFallbackAttempts int
 }
 
 // Candidate is one (provider, model) pair in a tier's candidate list.
@@ -255,7 +310,48 @@ func (r *Resolver) Resolve(req AgentRequest) (Decision, error) {
 			ErrTierUnavailable, req.Name, req.Tier)
 	}
 
-	priority := r.priorityFor(req)
+	priority, refused := r.priorityFor(req)
+	if refused {
+		// Per-agent Providers ∩ user_tier.ProviderPriority is empty.
+		// This is an operator policy refusal (option A in the v0.8.2
+		// design): the agent demands providers the user_tier doesn't
+		// grant. Distinct from a transient outage; the client can
+		// render "upgrade required" without retry.
+		return Decision{}, fmt.Errorf("%w: agent %q requires providers %v; user_tier %q grants %v",
+			ErrTierAgentNotAvailable, req.Name, req.Providers, req.UserTier.Name, req.UserTier.ProviderPriority)
+	}
+	if len(priority) == 0 {
+		// No effective priority — defaults must be wrong or user_tier
+		// has an empty provider_priority. Treat as outage shape.
+		return Decision{}, fmt.Errorf("%w: agent %q tier %q has no effective provider priority",
+			ErrTierUnavailable, req.Name, req.Tier)
+	}
+
+	// Pre-check: do any candidates list a provider that's in the
+	// effective priority? If the operator's agent.Models[tier] only
+	// lists providers excluded by user_tier (e.g. anthropic-pinned
+	// cv-adapter + free tier with no anthropic), refuse with the
+	// policy-refusal shape — operator's intent is clear, the
+	// resolver shouldn't surface it as a transient outage that the
+	// client might retry.
+	if req.UserTier != nil {
+		hasViableCandidate := false
+		for _, p := range priority {
+			for _, cand := range candidates {
+				if cand.Provider == p {
+					hasViableCandidate = true
+					break
+				}
+			}
+			if hasViableCandidate {
+				break
+			}
+		}
+		if !hasViableCandidate {
+			return Decision{}, fmt.Errorf("%w: agent %q tier %q candidates do not include any provider granted by user_tier %q",
+				ErrTierAgentNotAvailable, req.Name, req.Tier, req.UserTier.Name)
+		}
+	}
 
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -295,12 +391,21 @@ func (r *Resolver) resolvePin(req AgentRequest) (Decision, error) {
 }
 
 // candidatesFor returns the candidate list the resolver should walk
-// for this request — agent's Models[Tier] override if non-empty, else
-// the library tier definition. Caller has already validated req.Tier
-// is non-empty.
+// for this request, applying the v0.8.2 overlay precedence:
+//
+//   per-agent Models[Tier]   (highest)
+//   user_tier overlay Tiers  (when set; v0.8.2)
+//   library Tiers            (fallback)
+//
+// Caller has already validated req.Tier is non-empty.
 func (r *Resolver) candidatesFor(req AgentRequest) []Candidate {
 	if cands, ok := req.Models[req.Tier]; ok && len(cands) > 0 {
 		return cands
+	}
+	if req.UserTier != nil {
+		if cands, ok := req.UserTier.Tiers[req.Tier]; ok && len(cands) > 0 {
+			return cands
+		}
 	}
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -310,14 +415,45 @@ func (r *Resolver) candidatesFor(req AgentRequest) []Candidate {
 	return nil
 }
 
-// priorityFor returns the provider priority order the resolver should
-// walk — agent's Providers override if non-empty, else the library
-// default.
-func (r *Resolver) priorityFor(req AgentRequest) []string {
-	if len(req.Providers) > 0 {
-		return req.Providers
+// priorityFor returns the provider-priority order the resolver should
+// walk for this request, applying the v0.8.2 overlay precedence:
+//
+//   per-agent Providers      (highest, but intersected with user_tier)
+//   user_tier ProviderPriority (when set; v0.8.2)
+//   library ProviderPriority (fallback)
+//
+// The second return value is true when the per-agent Providers and the
+// user_tier overlay's ProviderPriority have an empty intersection.
+// This is the option-A refusal path — caller propagates as
+// ErrTierAgentNotAvailable so the client surfaces "upgrade required"
+// rather than "transient outage."
+func (r *Resolver) priorityFor(req AgentRequest) (order []string, refused bool) {
+	switch {
+	case len(req.Providers) > 0 && req.UserTier != nil:
+		// Intersection: filter agent.Providers, keep only those also
+		// in the user_tier overlay. Walk in agent's declared order so
+		// the per-agent operator intent (e.g. "anthropic first, then
+		// deepseek") is preserved within the tier-restricted space.
+		allowed := make(map[string]struct{}, len(req.UserTier.ProviderPriority))
+		for _, p := range req.UserTier.ProviderPriority {
+			allowed[p] = struct{}{}
+		}
+		out := make([]string, 0, len(req.Providers))
+		for _, p := range req.Providers {
+			if _, ok := allowed[p]; ok {
+				out = append(out, p)
+			}
+		}
+		if len(out) == 0 {
+			return nil, true
+		}
+		return out, false
+	case len(req.Providers) > 0:
+		return req.Providers, false
+	case req.UserTier != nil && len(req.UserTier.ProviderPriority) > 0:
+		return req.UserTier.ProviderPriority, false
 	}
-	return r.libraryPriority
+	return r.libraryPriority, false
 }
 
 // isAvailableLocked checks whether a (provider, model) is currently

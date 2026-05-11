@@ -105,6 +105,16 @@ type RunOptions struct {
 	// only fires hooks with `agents: ["*"]`.
 	AgentName string
 
+	// UserTier is the v0.8.2 user-facing-tier policy name applied
+	// to this run. PR 1 only plumbs the field; PR 2's runtime
+	// fallback consumes FallbackOnError + MaxFallbackAttempts via
+	// the resolver's UserTierOverlay (resolver state, not RunOptions).
+	// This field is currently informational — it appears in the
+	// agent-loop log line + on store.Run.UserTier so cost/compliance
+	// queries can facet by tier. Empty when the operator has no
+	// user_tiers configured.
+	UserTier string
+
 	// Hooks is the tool-use hook dispatcher. Optional; nil disables
 	// all hook invocation (the loop runs tool dispatch directly,
 	// preserving pre-v0.7.x behaviour). When non-nil, each

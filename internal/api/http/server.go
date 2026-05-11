@@ -217,7 +217,13 @@ func resolveErrorToStatus(err error) int {
 //
 // Returning runner.ErrInvalidArgument / runner.ErrUnknownAgent for
 // pre-resolution errors keeps the wire-error vocabulary stable.
-func (s *Server) resolveAgent(agentName string) (providerID, model, effort string, err error) {
+//
+// userTier is the v0.8.2 user-facing-tier name from the request body.
+// Empty falls through to cfg.UserTiers["default"] when an operator
+// has a user_tiers block; otherwise the resolver operates without an
+// overlay (v0.7.x behaviour). Unknown names are rejected upstream
+// before this is called.
+func (s *Server) resolveAgent(agentName, userTier string) (providerID, model, effort string, err error) {
 	def, ok := s.cfg.Agents[agentName]
 	if !ok {
 		return "", "", "", fmt.Errorf("%w: %s", runner.ErrUnknownAgent, agentName)
@@ -243,6 +249,7 @@ func (s *Server) resolveAgent(agentName string) (providerID, model, effort strin
 			Effort:    def.Effort,
 			Providers: def.Providers,
 			Models:    convertConfigCandidates(def.Models),
+			UserTier:  s.userTierOverlay(userTier),
 		}
 		dec, rerr := s.resolver.Resolve(req)
 		if rerr != nil {
@@ -263,6 +270,37 @@ func (s *Server) resolveAgent(agentName string) (providerID, model, effort strin
 	// agent can declare effort and the driver will translate it
 	// where supported. Empty when not declared.
 	return providerID, model, def.Effort, nil
+}
+
+// userTierOverlay builds the resolver's UserTierOverlay from
+// cfg.UserTiers[name]. Returns nil when:
+//   - the operator has no user_tiers block configured (v0.7-era
+//     deploys, unaffected by v0.8.2),
+//   - the name is empty AND there's no "default" entry,
+//   - the name doesn't resolve (handled upstream by HTTP-side
+//     validation; returning nil here is a safety belt).
+//
+// When the operator HAS configured user_tiers, an empty name falls
+// through to "default" — preserves v0.7.x clients that don't yet send
+// user_tier in the request body.
+func (s *Server) userTierOverlay(name string) *resolve.UserTierOverlay {
+	if len(s.cfg.UserTiers) == 0 {
+		return nil
+	}
+	if name == "" {
+		name = "default"
+	}
+	ut, ok := s.cfg.UserTiers[name]
+	if !ok {
+		return nil
+	}
+	return &resolve.UserTierOverlay{
+		Name:                name,
+		ProviderPriority:    ut.ProviderPriority,
+		Tiers:               convertConfigCandidates(ut.Tiers),
+		FallbackOnError:     ut.FallbackOnError,
+		MaxFallbackAttempts: ut.MaxFallbackAttempts,
+	}
 }
 
 // convertConfigCandidates translates the config-package representation
@@ -347,7 +385,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	if !ok {
 		return fmt.Errorf("%w: %s", runner.ErrUnknownAgent, effectiveAgentName)
 	}
-	providerID, model, effort, err := s.resolveAgent(effectiveAgentName)
+	providerID, model, effort, err := s.resolveAgent(effectiveAgentName, in.UserTier)
 	if err != nil {
 		return err // already wrapped with runner.Err* sentinel
 	}
@@ -410,7 +448,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	}
 
 	// ---- Session+run creation ----
-	identity := store.RunIdentity{AgentID: agentID, UserID: effectiveUserID}
+	identity := store.RunIdentity{AgentID: agentID, UserID: effectiveUserID, UserTier: in.UserTier}
 	sessionID, runID, sessErr := s.openOrCreateSessionAndRun(ctx, in.SessionID, effectiveAgentName, effectiveTenantID, effectiveUserID, identity)
 	if sessErr != nil {
 		var nf *store.ErrNotFound
@@ -463,8 +501,9 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 
 	loopCtx := tools.WithAgentTools(runCtx, toolNames(allowedTools))
 	loopCtx = tools.WithRunIdentity(loopCtx, tools.RunIdentityValue{
-		UserID:  effectiveUserID,
-		AgentID: agentID,
+		UserID:   effectiveUserID,
+		AgentID:  agentID,
+		UserTier: in.UserTier,
 	})
 	loopCtx = tools.WithHostPolicy(loopCtx, hostPolicy)
 	// Memory tool policy: agent name + per-agent scope allowlist +
@@ -494,6 +533,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		MarkStalled:     s.markStalledFn(providerID, model),
 		ToolParallelism: s.cfg.Env.ToolParallelism,
 		AgentName:       effectiveAgentName,
+		UserTier:        in.UserTier,
 		Hooks:           s.hookDispatcher,
 	})
 	s.finishRunWithCancel(ctx, runCtx, runID, res, runErr)
@@ -681,6 +721,14 @@ type runRequest struct {
 	// session_id addresses the conversation thread for transcript
 	// continuation.
 	AgentID string `json:"agent_id,omitempty"`
+	// UserTier names the user-facing-tier policy the resolver should
+	// overlay for this run (v0.8.2+). When set, MUST exist in
+	// cfg.UserTiers (unknown → 400). When omitted, the resolver uses
+	// cfg.UserTiers["default"] if the operator has a user_tiers
+	// block, otherwise falls through to the v0.7-era library + per-
+	// agent overrides. See docs/PLAN.md → v0.8.2 for the full
+	// resolver overlay precedence chain.
+	UserTier string `json:"user_tier,omitempty"`
 }
 
 func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
@@ -724,7 +772,18 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	providerID, model, effort, err := s.resolveAgent(req.Agent)
+	// v0.8.2: validate user_tier early so an unknown name surfaces as
+	// 400 before the resolver runs. Empty user_tier is fine — the
+	// resolver falls through to cfg.UserTiers["default"] (or to v0.7-
+	// era behaviour when no user_tiers block is configured).
+	if req.UserTier != "" && len(s.cfg.UserTiers) > 0 {
+		if _, ok := s.cfg.UserTiers[req.UserTier]; !ok {
+			http.Error(w, fmt.Sprintf("unknown user_tier %q", req.UserTier), http.StatusBadRequest)
+			return
+		}
+	}
+
+	providerID, model, effort, err := s.resolveAgent(req.Agent, req.UserTier)
 	if err != nil {
 		http.Error(w, err.Error(), resolveErrorToStatus(err))
 		return
@@ -834,7 +893,7 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 	// emitted event through the store before forwarding to SSE. With
 	// s.store == nil the recording becomes a no-op so v0.2 callers see no
 	// behaviour change.
-	identity := store.RunIdentity{AgentID: agentID, UserID: req.UserID}
+	identity := store.RunIdentity{AgentID: agentID, UserID: req.UserID, UserTier: req.UserTier}
 	sessionID, runID, sessErr := s.openOrCreateSessionAndRun(r.Context(), req.SessionID, req.Agent, req.TenantID, req.UserID, identity)
 	if sessErr != nil {
 		var nf *store.ErrNotFound
@@ -938,8 +997,9 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 	// SubAgentRunner can inherit user_id and set parent_agent_id on
 	// any sub-runs it spawns.
 	loopCtx = tools.WithRunIdentity(loopCtx, tools.RunIdentityValue{
-		UserID:  req.UserID,
-		AgentID: agentID,
+		UserID:   req.UserID,
+		AgentID:  agentID,
+		UserTier: req.UserTier,
 	})
 	// Stash the caller's host policy so any sub-agents spawned by the
 	// Agent tool inherit the same allowed_hosts / WebSearchFilter
@@ -969,6 +1029,7 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		MarkStalled:     s.markStalledFn(providerID, model),
 		ToolParallelism: s.cfg.Env.ToolParallelism,
 		AgentName:       req.Agent,
+		UserTier:        req.UserTier,
 		Hooks:           s.hookDispatcher,
 	})
 	if runErr != nil {
@@ -997,6 +1058,12 @@ type messagesRequest struct {
 	// session's user_id (set at original creation); allowing a
 	// different user_id mid-session would be confusing.
 	AgentID string `json:"agent_id,omitempty"`
+	// UserTier is the v0.8.2 user-facing-tier policy name for THIS
+	// continuation. Unlike UserID (session-bound), user_tier is
+	// per-request so a user upgrading mid-session sees the new tier
+	// applied immediately. Empty falls through to
+	// cfg.UserTiers["default"] when user_tiers is configured.
+	UserTier string `json:"user_tier,omitempty"`
 }
 
 func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
@@ -1057,7 +1124,14 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, fmt.Sprintf("session refers to unknown agent %q", sess.Agent), http.StatusBadRequest)
 		return
 	}
-	providerID, model, effort, err := s.resolveAgent(sess.Agent)
+	// v0.8.2: validate user_tier early (same shape as handleRuns).
+	if body.UserTier != "" && len(s.cfg.UserTiers) > 0 {
+		if _, ok := s.cfg.UserTiers[body.UserTier]; !ok {
+			http.Error(w, fmt.Sprintf("unknown user_tier %q", body.UserTier), http.StatusBadRequest)
+			return
+		}
+	}
+	providerID, model, effort, err := s.resolveAgent(sess.Agent, body.UserTier)
 	if err != nil {
 		http.Error(w, err.Error(), resolveErrorToStatus(err))
 		return
@@ -1131,10 +1205,13 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Create a new run inside the existing session. user_id is
-	// inherited from the session (set at original creation).
+	// inherited from the session (set at original creation). user_tier
+	// is per-request (v0.8.2) — a user upgrading mid-session sees
+	// the new tier applied immediately on this continuation.
 	run, err := s.store.CreateRun(r.Context(), id, store.RunIdentity{
-		AgentID: agentID,
-		UserID:  sess.UserID,
+		AgentID:  agentID,
+		UserID:   sess.UserID,
+		UserTier: body.UserTier,
 	})
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -1196,8 +1273,9 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 
 	loopCtx := tools.WithAgentTools(runCtx, toolNames(allowedTools))
 	loopCtx = tools.WithRunIdentity(loopCtx, tools.RunIdentityValue{
-		UserID:  sess.UserID,
-		AgentID: agentID,
+		UserID:   sess.UserID,
+		AgentID:  agentID,
+		UserTier: body.UserTier,
 	})
 	// Sub-agents spawned by this continuation must inherit the
 	// caller-authoritative host narrowing, same as runRequest +
@@ -1225,6 +1303,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		MarkStalled:     s.markStalledFn(providerID, model),
 		ToolParallelism: s.cfg.Env.ToolParallelism,
 		AgentName:       sess.Agent,
+		UserTier:        body.UserTier,
 		Hooks:           s.hookDispatcher,
 	})
 	if runErr != nil {
@@ -1525,7 +1604,13 @@ func (s *Server) runSubAgent(ctx context.Context, name string, prompt string) (s
 		return "", fmt.Errorf("unknown sub-agent %q (not in loomcycle.yaml agents map)", name)
 	}
 
-	providerID, model, effort, err := s.resolveAgent(name)
+	// v0.8.2: inherit parent's user_tier via ctx. The Agent built-in
+	// tool can't pass it explicitly (the tool's input schema is
+	// caller-authoritative). Reading from ctx keeps the same tier
+	// policy + fallback posture applied to the whole sub-run tree.
+	parentTier := tools.RunIdentity(ctx).UserTier
+
+	providerID, model, effort, err := s.resolveAgent(name, parentTier)
 	if err != nil {
 		return "", fmt.Errorf("resolve sub-agent %q model: %w", name, err)
 	}
@@ -1555,7 +1640,8 @@ func (s *Server) runSubAgent(ctx context.Context, name string, prompt string) (s
 		// works via parent_agent_id alone; ParentRunID is informational
 		// for transcript stitching and can be filled in by a future
 		// refactor that threads parent run.ID through ctx.
-		UserID: parentIdentity.UserID,
+		UserID:   parentIdentity.UserID,
+		UserTier: parentIdentity.UserTier, // v0.8.2: same user_tier across the sub-run tree
 	}
 	subSessionID, subRunID, err := s.openOrCreateSessionAndRun(ctx, "", name, "", parentIdentity.UserID, subIdentity)
 	if err != nil {
@@ -1652,8 +1738,9 @@ func (s *Server) runSubAgent(ctx context.Context, name string, prompt string) (s
 	// parent_agent_id (= subAgentID).
 	subCtx := tools.WithAgentTools(subRunCtx, toolNames(subTools))
 	subCtx = tools.WithRunIdentity(subCtx, tools.RunIdentityValue{
-		UserID:  parentIdentity.UserID,
-		AgentID: subAgentID,
+		UserID:   parentIdentity.UserID,
+		AgentID:  subAgentID,
+		UserTier: parentIdentity.UserTier, // v0.8.2: sub-agents inherit parent's user_tier
 	})
 	subCtx = tools.WithAgentName(subCtx, name)
 	// Sub-agents get THEIR OWN Memory policy from yaml — the parent's
@@ -1683,6 +1770,7 @@ func (s *Server) runSubAgent(ctx context.Context, name string, prompt string) (s
 		MarkStalled:     s.markStalledFn(providerID, model),
 		ToolParallelism: s.cfg.Env.ToolParallelism,
 		AgentName:       name,
+		UserTier:        parentTier,
 		Hooks:           s.hookDispatcher,
 	})
 	s.finishRunWithCancel(ctx, subRunCtx, subRunID, res, runErr)

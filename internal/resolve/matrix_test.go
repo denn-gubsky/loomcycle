@@ -457,3 +457,203 @@ func TestSnapshot_IsACopy(t *testing.T) {
 		t.Error("Snapshot mutation leaked back into resolver state")
 	}
 }
+
+// ---- v0.8.2 user_tier overlay tests ----
+
+// freeTierOverlay is a typical "free" user-tier policy: gemini-free +
+// ollama-local only. Anthropic and DeepSeek are NOT in the priority,
+// so any agent with agent.Providers including only those will refuse
+// for free users (option A).
+func freeTierOverlay() *UserTierOverlay {
+	return &UserTierOverlay{
+		Name:             "free",
+		ProviderPriority: []string{"gemini", "ollama"},
+		Tiers: map[string][]Candidate{
+			"low":    {{Provider: "gemini", Model: "gemini-2.0-flash"}, {Provider: "ollama", Model: "llama-local"}},
+			"middle": {{Provider: "gemini", Model: "gemini-2.0-flash"}, {Provider: "ollama", Model: "llama-local"}},
+			"high":   {{Provider: "gemini", Model: "gemini-2.5-pro"}},
+		},
+		FallbackOnError: false, // free tier doesn't cascade — cost cap
+	}
+}
+
+// highTierOverlay is the opposite end: anthropic-only, premium models.
+func highTierOverlay() *UserTierOverlay {
+	return &UserTierOverlay{
+		Name:                "high",
+		ProviderPriority:    []string{"anthropic"},
+		Tiers:               nil, // falls through to library tiers for the anthropic candidates
+		FallbackOnError:     true,
+		MaxFallbackAttempts: 3,
+	}
+}
+
+// TestResolve_UserTierOverlay_UsesUserTierPriorityWhenAgentHasNone:
+// no per-agent Providers override + a user_tier overlay → resolver
+// walks the user_tier's order, not the library default. Pins the
+// headline overlay-precedence case.
+func TestResolve_UserTierOverlay_UsesUserTierPriorityWhenAgentHasNone(t *testing.T) {
+	priority, tiers := fixtureLibrary()
+	r := NewResolver(priority, tiers)
+	// Seed gemini reachable, others NOT. Confirms the resolver walks
+	// the user_tier's order (gemini first) rather than the library
+	// order (deepseek first).
+	r.SeedModel("gemini", "gemini-2.0-flash")
+	r.SetProviderReachable("gemini", true)
+
+	overlay := freeTierOverlay()
+	overlay.Tiers["low"] = []Candidate{
+		{Provider: "gemini", Model: "gemini-2.0-flash"},
+		{Provider: "ollama", Model: "llama-local"},
+	}
+	dec, err := r.Resolve(AgentRequest{
+		Name:     "any-agent",
+		Tier:     "low",
+		UserTier: overlay,
+	})
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if dec.Provider != "gemini" || dec.Model != "gemini-2.0-flash" {
+		t.Errorf("Decision = %+v; want gemini/gemini-2.0-flash", dec)
+	}
+}
+
+// TestResolve_UserTierOverlay_NonEmptyIntersection: per-agent
+// Providers AND user_tier set. Intersection must be walked in
+// agent-Providers order (preserves operator intent inside the
+// tier-restricted space).
+func TestResolve_UserTierOverlay_NonEmptyIntersection(t *testing.T) {
+	priority, tiers := fixtureLibrary()
+	r := NewResolver(priority, tiers)
+	r.SeedModel("anthropic", "claude-sonnet-4-6")
+	r.SetProviderReachable("anthropic", true)
+	r.SeedModel("deepseek", "deepseek-v4-pro")
+	r.SetProviderReachable("deepseek", true)
+
+	overlay := highTierOverlay()
+	overlay.ProviderPriority = []string{"anthropic", "deepseek"} // user has both
+
+	dec, err := r.Resolve(AgentRequest{
+		Name:      "cv-adapter",
+		Tier:      "middle",
+		Providers: []string{"anthropic"}, // agent constrains to anthropic only
+		UserTier:  overlay,
+	})
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	// Intersection = {anthropic}. Library "middle" candidates have anthropic;
+	// resolver picks it.
+	if dec.Provider != "anthropic" {
+		t.Errorf("Decision.Provider = %q; want anthropic (the intersection)", dec.Provider)
+	}
+}
+
+// TestResolve_UserTierOverlay_EmptyIntersectionRefuses: option-A
+// refusal — per-agent Providers and user_tier overlay have NO
+// providers in common. Headline scenario for "cv-adapter is anthropic-
+// pinned for privacy + free user has no anthropic". Returns
+// ErrTierAgentNotAvailable (operator policy refusal, distinct from a
+// transient outage).
+func TestResolve_UserTierOverlay_EmptyIntersectionRefuses(t *testing.T) {
+	priority, tiers := fixtureLibrary()
+	r := NewResolver(priority, tiers)
+	seedAll(t, r, tiers)
+	r.SetProviderReachable("gemini", true)
+	r.SeedModel("gemini", "gemini-2.0-flash")
+
+	_, err := r.Resolve(AgentRequest{
+		Name:      "cv-adapter",
+		Tier:      "middle",
+		Providers: []string{"anthropic"}, // agent demands anthropic
+		UserTier:  freeTierOverlay(),     // free has [gemini, ollama] — no anthropic
+	})
+	if err == nil {
+		t.Fatal("expected refusal; got success")
+	}
+	if !errors.Is(err, ErrTierAgentNotAvailable) {
+		t.Errorf("expected ErrTierAgentNotAvailable, got %v", err)
+	}
+	// Distinct from ErrTierUnavailable — operator policy refusal, not
+	// matrix outage. The client must NOT retry; they need an upgrade.
+	if errors.Is(err, ErrTierUnavailable) {
+		t.Errorf("expected NOT-ErrTierUnavailable (policy refusal, not outage), got %v", err)
+	}
+}
+
+// TestResolve_UserTierOverlay_AgentModelsExcludeTierProviders: the
+// secondary refusal path — per-agent Models[tier] only lists providers
+// the user_tier doesn't grant. Same option-A refusal shape as above
+// but triggered by Models rather than Providers.
+func TestResolve_UserTierOverlay_AgentModelsExcludeTierProviders(t *testing.T) {
+	priority, tiers := fixtureLibrary()
+	r := NewResolver(priority, tiers)
+	seedAll(t, r, tiers)
+
+	_, err := r.Resolve(AgentRequest{
+		Name: "cv-adapter",
+		Tier: "middle",
+		// agent.Models pins this tier to anthropic-only candidates
+		Models: map[string][]Candidate{
+			"middle": {{Provider: "anthropic", Model: "claude-sonnet-4-6"}},
+		},
+		// free user_tier has no anthropic in provider_priority
+		UserTier: freeTierOverlay(),
+	})
+	if err == nil {
+		t.Fatal("expected refusal; got success")
+	}
+	if !errors.Is(err, ErrTierAgentNotAvailable) {
+		t.Errorf("expected ErrTierAgentNotAvailable, got %v", err)
+	}
+}
+
+// TestResolve_UserTierOverlay_NoOverlayPreservesV07Behaviour: nil
+// UserTier on AgentRequest must produce IDENTICAL behaviour to the
+// v0.7.x path. Critical regression guard: every v0.7 deployment that
+// hasn't opted into user_tiers stays unchanged.
+func TestResolve_UserTierOverlay_NoOverlayPreservesV07Behaviour(t *testing.T) {
+	priority, tiers := fixtureLibrary()
+	r := NewResolver(priority, tiers)
+	seedAll(t, r, tiers)
+
+	// With no overlay, resolver should walk the library priority
+	// (deepseek first) for an agent with no overrides.
+	dec, err := r.Resolve(AgentRequest{
+		Name:     "default-agent",
+		Tier:     "middle",
+		UserTier: nil,
+	})
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if dec.Provider != "deepseek" {
+		t.Errorf("Decision.Provider = %q; want deepseek (library-priority first)", dec.Provider)
+	}
+}
+
+// TestResolve_UserTierOverlay_TierFallthroughToLibrary: user_tier
+// overlay defines no candidates for the requested task tier; resolver
+// falls through to library tiers (after applying user_tier's provider
+// priority filter).
+func TestResolve_UserTierOverlay_TierFallthroughToLibrary(t *testing.T) {
+	priority, tiers := fixtureLibrary()
+	r := NewResolver(priority, tiers)
+	seedAll(t, r, tiers)
+
+	overlay := highTierOverlay() // Tiers map is nil
+	dec, err := r.Resolve(AgentRequest{
+		Name:     "any",
+		Tier:     "high",
+		UserTier: overlay,
+	})
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	// overlay.ProviderPriority = [anthropic]; library "high" candidates
+	// include anthropic (claude-opus-4-7). Resolver should pick it.
+	if dec.Provider != "anthropic" {
+		t.Errorf("Decision.Provider = %q; want anthropic (library tier filtered through user_tier priority)", dec.Provider)
+	}
+}
