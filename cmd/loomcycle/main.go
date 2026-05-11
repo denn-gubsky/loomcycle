@@ -23,6 +23,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -164,6 +165,23 @@ func main() {
 		// see the final cfg.Agents size, which may include yaml-only
 		// entries on top of the discovered ones.
 		log.Printf("agents: discovered from %s — total in cfg.Agents (after yaml merge): %d", cfg.Env.AgentsRoot, len(cfg.Agents))
+	}
+	if len(cfg.UserTiers) > 0 {
+		// v0.8.2 — log configured user_tier policies at boot so
+		// operators see what's available. "default" surfaces first
+		// when present (it's the required entry per validation); the
+		// rest sort lexicographically.
+		names := make([]string, 0, len(cfg.UserTiers))
+		for n := range cfg.UserTiers {
+			if n != "default" {
+				names = append(names, n)
+			}
+		}
+		sort.Strings(names)
+		if _, hasDefault := cfg.UserTiers["default"]; hasDefault {
+			names = append([]string{"default"}, names...)
+		}
+		log.Printf("user_tiers: configured %d — %s", len(names), strings.Join(names, " / "))
 	}
 
 	allTools := []tools.Tool{

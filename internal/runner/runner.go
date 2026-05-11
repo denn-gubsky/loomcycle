@@ -135,6 +135,12 @@ type RunInput struct {
 	// the runner generates one when empty and emits it via
 	// OnRegistered.
 	AgentID string
+
+	// UserTier is the v0.8.2 user-facing-tier policy name. Empty
+	// falls through to cfg.UserTiers["default"] when configured.
+	// See internal/api/http/server.go resolveAgent for the overlay
+	// semantics and docs/PLAN.md → v0.8.2 for the full design.
+	UserTier string
 }
 
 // RunCallbacks is how the wire surfaces observe the run.

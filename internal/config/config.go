@@ -54,6 +54,31 @@ type Config struct {
 	// the full operator-facing example.
 	Tiers map[string][]TierCandidate `yaml:"tiers"`
 
+	// UserTiers is the v0.8.2 user-facing-tier policy map. Each entry
+	// names a tier (e.g. "free" / "low" / "medium" / "high" /
+	// "default") and carries the per-tier provider-and-model policy
+	// the resolver overlays for runs that carry that user_tier in the
+	// POST /v1/runs request body.
+	//
+	// When this map is set, a "default" entry is REQUIRED — it covers
+	// runs that don't specify a user_tier (back-compat with v0.7.x
+	// clients) and runs from clients that haven't been bumped yet.
+	// When this map is empty / nil, the v0.8.2 user_tier feature is
+	// disabled and resolution falls back to the v0.7-era ProviderPriority
+	// + Tiers + per-agent override path unchanged.
+	//
+	// Overlay precedence (low → high):
+	//   library ProviderPriority + Tiers   (fallback when no overlay)
+	//   user_tier (this map's named entry) (when user_tier in request)
+	//   agent.Providers / agent.Models     (per-agent yaml overrides)
+	//
+	// agent.Providers ∩ user_tier.ProviderPriority is enforced — when
+	// empty, the resolver refuses with ErrTierAgentNotAvailable so the
+	// client can surface "this agent isn't available for your tier".
+	//
+	// See docs/PLAN.md → v0.8.2 for the full design rationale.
+	UserTiers map[string]UserTier `yaml:"user_tiers"`
+
 	// Env-derived; not in YAML.
 	Env Env `yaml:"-"`
 
@@ -127,6 +152,51 @@ type ModelRef struct {
 type TierCandidate struct {
 	Provider string `yaml:"provider"`
 	Model    string `yaml:"model"`
+}
+
+// UserTier is one named user-facing-tier policy. Operators define
+// these in the top-level `user_tiers:` map; clients reference them by
+// name via the `user_tier` field on POST /v1/runs. See Config.UserTiers
+// for the precedence semantics.
+//
+// The "default" tier is required (validated at config-load) and covers
+// requests that don't carry user_tier in the body — preserves v0.7.x
+// behaviour for clients that haven't been bumped to the new wire field.
+type UserTier struct {
+	// ProviderPriority is the order the resolver walks for runs
+	// carrying this user_tier (overlays the library-wide
+	// ProviderPriority). Per-agent `providers:` overrides still apply
+	// on top — when both are set, the agent's order wins WITHIN the
+	// intersection of (agent.Providers, user_tier.ProviderPriority).
+	// Empty intersection → resolver refuses with a typed error so the
+	// client can render "agent not available for your tier".
+	ProviderPriority []string `yaml:"provider_priority"`
+
+	// Tiers is the per-task-tier (low/middle/high) candidate map for
+	// this user_tier, overlaying the library-wide Tiers. Same per-
+	// agent override semantics: agent.Models[tier] takes precedence
+	// when set; otherwise this map; otherwise library.Tiers[tier].
+	Tiers map[string][]TierCandidate `yaml:"tiers"`
+
+	// FallbackOnError selects the v0.8.2 PR 2 runtime behaviour when
+	// a provider call returns a retryable error (429, 5xx, network
+	// timeout, stream-idle deadline). When true, the resolver re-
+	// picks the next provider in the candidate list and the loop
+	// continues with the new provider (subject to MaxFallbackAttempts).
+	// When false, the error propagates to the client — the cost-cap
+	// semantic for free tiers, where cascading would defeat the
+	// budget guarantee.
+	//
+	// Defaults to true on the "default" tier so back-compat clients
+	// keep the v0.7.x rate-limit retry behaviour they had.
+	FallbackOnError bool `yaml:"fallback_on_error"`
+
+	// MaxFallbackAttempts caps cumulative provider switches per run.
+	// A run that hits Anthropic → DeepSeek → Gemini under fallback
+	// would consume 3 attempts (the original + 2 fallbacks). Default
+	// 3. PR 2 consumes this; PR 1 just plumbs it through. Zero falls
+	// back to the default.
+	MaxFallbackAttempts int `yaml:"max_fallback_attempts"`
 }
 
 // AgentDef is one agent the API can address by name.
@@ -1173,6 +1243,44 @@ func validate(c *Config) error {
 			}
 			if cand.Model == "" {
 				return fmt.Errorf("tiers.%s[%d]: model is required", tierName, i)
+			}
+		}
+	}
+	// User-tier definitions (v0.8.2). When the map is populated, a
+	// "default" entry is required so requests without a user_tier
+	// field have a defined policy to fall through to. Each tier's
+	// internal shape is validated with the same rules as the library
+	// ProviderPriority + Tiers above — duplication is intentional so
+	// the errors point at the offending user_tiers.<name> path rather
+	// than a generic message.
+	if len(c.UserTiers) > 0 {
+		if _, ok := c.UserTiers["default"]; !ok {
+			return fmt.Errorf(`user_tiers: a "default" entry is required when the user_tiers block is populated (covers requests without user_tier and back-compat with v0.7.x clients)`)
+		}
+		for tierName, ut := range c.UserTiers {
+			if tierName == "" {
+				return fmt.Errorf("user_tiers: empty tier name")
+			}
+			for i, p := range ut.ProviderPriority {
+				if !validProviderIDs[p] {
+					return fmt.Errorf("user_tiers.%s.provider_priority[%d]: unknown provider %q", tierName, i, p)
+				}
+			}
+			for taskTier, candidates := range ut.Tiers {
+				if !validTierNames[taskTier] {
+					return fmt.Errorf("user_tiers.%s.tiers.%s: unknown tier (want one of low/middle/high)", tierName, taskTier)
+				}
+				for i, cand := range candidates {
+					if !validProviderIDs[cand.Provider] {
+						return fmt.Errorf("user_tiers.%s.tiers.%s[%d]: unknown provider %q", tierName, taskTier, i, cand.Provider)
+					}
+					if cand.Model == "" {
+						return fmt.Errorf("user_tiers.%s.tiers.%s[%d]: model is required", tierName, taskTier, i)
+					}
+				}
+			}
+			if ut.MaxFallbackAttempts < 0 {
+				return fmt.Errorf("user_tiers.%s.max_fallback_attempts: must be >= 0 (0 = use default of 3)", tierName)
 			}
 		}
 	}

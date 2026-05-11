@@ -87,6 +87,15 @@ type Run struct {
 	// > N minutes → presumed dead). Zero-time means no heartbeat
 	// yet (run never reached its first iteration).
 	LastHeartbeatAt time.Time `json:"last_heartbeat_at,omitempty"`
+
+	// UserTier is the v0.8.2 user-facing-tier marker — the name of
+	// the user_tier policy applied to this run for resolver overlay
+	// + (PR 2) runtime fallback. Empty when the run was created
+	// without a user_tier field on the request body (back-compat
+	// with v0.7.x clients) OR when the operator's yaml doesn't
+	// define a user_tiers block at all. Lets compliance / cost
+	// retrospective queries facet by tier without grepping logs.
+	UserTier string `json:"user_tier,omitempty"`
 }
 
 // Event is one streamed datum, persisted append-only. Payload is the JSON
@@ -132,6 +141,10 @@ type RunIdentity struct {
 	// consistency (cheaper to trust the caller than to JOIN on
 	// every CreateRun).
 	UserID string
+	// UserTier is the v0.8.2 user-tier marker captured at run
+	// creation. Empty when the request didn't carry user_tier (back-
+	// compat) or the operator's yaml has no user_tiers block.
+	UserTier string
 }
 
 // UserSummary is one row of ListUsers' output: distinct user_id with

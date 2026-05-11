@@ -190,13 +190,14 @@ func (s *Store) CreateRun(ctx context.Context, sessionID string, identity store.
 	if _, err := s.pool.Exec(ctx,
 		`INSERT INTO runs (
 			id, session_id, status, started_at,
-			agent_id, parent_agent_id, parent_run_id, user_id
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+			agent_id, parent_agent_id, parent_run_id, user_id, user_tier
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
 		id, sessionID, string(store.RunRunning), now,
 		nullableText(identity.AgentID),
 		nullableText(identity.ParentAgentID),
 		nullableText(identity.ParentRunID),
 		nullableText(identity.UserID),
+		nullableText(identity.UserTier),
 	); err != nil {
 		return store.Run{}, fmt.Errorf("create run: %w", err)
 	}
@@ -209,6 +210,7 @@ func (s *Store) CreateRun(ctx context.Context, sessionID string, identity store.
 		ParentAgentID: identity.ParentAgentID,
 		ParentRunID:   identity.ParentRunID,
 		UserID:        identity.UserID,
+		UserTier:      identity.UserTier,
 	}, nil
 }
 
@@ -308,7 +310,7 @@ func (s *Store) GetRunByAgentID(ctx context.Context, agentID string) (store.Run,
 		`SELECT r.id, r.session_id, r.status, r.started_at, r.completed_at, r.stop_reason,
 		        r.input_tokens, r.output_tokens, r.cache_creation_tokens, r.cache_read_tokens,
 		        r.model, r.error,
-		        r.agent_id, r.parent_agent_id, r.parent_run_id, r.user_id, r.last_heartbeat_at,
+		        r.agent_id, r.parent_agent_id, r.parent_run_id, r.user_id, r.last_heartbeat_at, r.user_tier,
 		        s.agent
 		 FROM runs r LEFT JOIN sessions s ON r.session_id = s.id
 		 WHERE r.agent_id = $1 ORDER BY r.started_at DESC LIMIT 1`, agentID,
@@ -370,7 +372,7 @@ func (s *Store) ListActiveRunsByUser(ctx context.Context, userID string, status 
 			`SELECT r.id, r.session_id, r.status, r.started_at, r.completed_at, r.stop_reason,
 			        r.input_tokens, r.output_tokens, r.cache_creation_tokens, r.cache_read_tokens,
 			        r.model, r.error,
-			        r.agent_id, r.parent_agent_id, r.parent_run_id, r.user_id, r.last_heartbeat_at,
+			        r.agent_id, r.parent_agent_id, r.parent_run_id, r.user_id, r.last_heartbeat_at, r.user_tier,
 			        s.agent
 			 FROM runs r LEFT JOIN sessions s ON r.session_id = s.id
 			 WHERE r.user_id = $1
@@ -380,7 +382,7 @@ func (s *Store) ListActiveRunsByUser(ctx context.Context, userID string, status 
 			`SELECT r.id, r.session_id, r.status, r.started_at, r.completed_at, r.stop_reason,
 			        r.input_tokens, r.output_tokens, r.cache_creation_tokens, r.cache_read_tokens,
 			        r.model, r.error,
-			        r.agent_id, r.parent_agent_id, r.parent_run_id, r.user_id, r.last_heartbeat_at,
+			        r.agent_id, r.parent_agent_id, r.parent_run_id, r.user_id, r.last_heartbeat_at, r.user_tier,
 			        s.agent
 			 FROM runs r LEFT JOIN sessions s ON r.session_id = s.id
 			 WHERE r.user_id = $1 AND r.status = $2
@@ -404,7 +406,7 @@ func (s *Store) ListRunsByParentAgentID(ctx context.Context, parentAgentID strin
 		`SELECT r.id, r.session_id, r.status, r.started_at, r.completed_at, r.stop_reason,
 		        r.input_tokens, r.output_tokens, r.cache_creation_tokens, r.cache_read_tokens,
 		        r.model, r.error,
-		        r.agent_id, r.parent_agent_id, r.parent_run_id, r.user_id, r.last_heartbeat_at,
+		        r.agent_id, r.parent_agent_id, r.parent_run_id, r.user_id, r.last_heartbeat_at, r.user_tier,
 		        s.agent
 		 FROM runs r LEFT JOIN sessions s ON r.session_id = s.id
 		 WHERE r.parent_agent_id = $1
@@ -787,9 +789,9 @@ func scanRun(r rowScanner) (store.Run, error) {
 		model      *string
 		errMsg     *string
 
-		agentID, parentAgentID, parentRunID, userID *string
-		lastHeartbeatAt                             *time.Time
-		sessAgent                                   *string
+		agentID, parentAgentID, parentRunID, userID, userTier *string
+		lastHeartbeatAt                                       *time.Time
+		sessAgent                                             *string
 
 		statusStr string
 	)
@@ -798,6 +800,7 @@ func scanRun(r rowScanner) (store.Run, error) {
 		&out.InputTokens, &out.OutputTokens, &out.CacheCreationTokens, &out.CacheReadTokens,
 		&model, &errMsg,
 		&agentID, &parentAgentID, &parentRunID, &userID, &lastHeartbeatAt,
+		&userTier,
 		&sessAgent,
 	); err != nil {
 		return store.Run{}, err
@@ -830,6 +833,9 @@ func scanRun(r rowScanner) (store.Run, error) {
 	}
 	if lastHeartbeatAt != nil {
 		out.LastHeartbeatAt = *lastHeartbeatAt
+	}
+	if userTier != nil {
+		out.UserTier = *userTier
 	}
 	if sessAgent != nil {
 		out.Agent = *sessAgent
