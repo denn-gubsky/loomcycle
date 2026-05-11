@@ -244,6 +244,59 @@ func MemoryPolicy(ctx context.Context) MemoryPolicyValue {
 	return v
 }
 
+// ctxKeyChannelPolicy is the context key for the per-agent Channel
+// tool ACL (v0.8.4). Set by the HTTP server from the agent's yaml
+// definition; read by the Channel tool to gate publish/subscribe and
+// surface "channel not allowed" refusals to the model. Sub-agents
+// inherit the parent's policy via this ctx key just like
+// MemoryPolicy and HostPolicy.
+type ctxKeyChannelPolicy struct{}
+
+// ChannelPolicyValue is the per-agent Channel access policy.
+//
+//   - Publish is the operator-yaml `channels.publish` allowlist —
+//     channel names (with optional trailing "/*" wildcard) the agent
+//     may post to.
+//   - Subscribe is the matching allowlist for subscribe / peek / ack.
+//   - Channels is a snapshot of the operator's `channels:` block,
+//     keyed by channel name. Carries per-channel defaults (scope,
+//     default_ttl, max_messages, semantic) so the tool layer can
+//     resolve them without round-tripping through config.
+//
+// Empty Publish / Subscribe means "no channel access on that side"
+// — the tool returns a typed refusal with the allowlist enumerated.
+type ChannelPolicyValue struct {
+	Publish   []string
+	Subscribe []string
+	Channels  map[string]ChannelDef
+}
+
+// ChannelDef mirrors config.Channel for the tool layer. Lives here
+// (not in config) so the dependency arrow stays internal/config →
+// internal/tools, not the reverse.
+type ChannelDef struct {
+	Name        string
+	Scope       string // "agent" | "user" | "global"
+	DefaultTTL  int    // seconds; 0 = no default
+	MaxMessages int    // 0 = unbounded (overflow trim disabled)
+	Semantic    string // "queue" | "broadcast" (informational; storage shape identical)
+}
+
+// WithChannelPolicy attaches the agent's resolved Channel policy to ctx.
+func WithChannelPolicy(ctx context.Context, p ChannelPolicyValue) context.Context {
+	return context.WithValue(ctx, ctxKeyChannelPolicy{}, p)
+}
+
+// ChannelPolicy returns the agent's Channel policy from ctx. Zero
+// value (nil Publish/Subscribe, empty Channels) means "no Channel
+// access" — the tool surfaces this as a clear "not configured"
+// refusal so operators see one explicit failure instead of a
+// stack-trace.
+func ChannelPolicy(ctx context.Context) ChannelPolicyValue {
+	v, _ := ctx.Value(ctxKeyChannelPolicy{}).(ChannelPolicyValue)
+	return v
+}
+
 // Execute looks up the named tool and runs it. Unknown tool names consult
 // the optional Fallback before returning the standard "tool not found"
 // error result (the model can self-correct on the error result; we never

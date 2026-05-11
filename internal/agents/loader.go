@@ -69,9 +69,19 @@ type Agent struct {
 	Models           map[string][]TierCandidate
 	MemoryScopes     []string
 	MemoryQuotaBytes int
+	// Channels is the v0.8.4 Channel-tool ACL. Empty Publish /
+	// Subscribe = no access on that side.
+	Channels AgentChannelACL
 	// Path is the absolute path of the source MD, kept for diagnostic
 	// logging (skills/loader.go follows the same convention).
 	Path string
+}
+
+// AgentChannelACL mirrors config.AgentChannelACL locally so this
+// package doesn't import config. The merger in config converts.
+type AgentChannelACL struct {
+	Publish   []string `yaml:"publish"`
+	Subscribe []string `yaml:"subscribe"`
 }
 
 // TierCandidate mirrors config.TierCandidate's shape locally so this
@@ -200,6 +210,7 @@ type frontmatter struct {
 	Models           map[string][]TierCandidate `yaml:"models"`
 	MemoryScopes     []string                   `yaml:"memory_scopes"`
 	MemoryQuotaBytes int                        `yaml:"memory_quota_bytes"`
+	Channels         AgentChannelACL            `yaml:"channels"`
 	SystemPromptFile string                     `yaml:"system_prompt_file"`
 	// SystemPrompt as an inline frontmatter field is intentionally
 	// NOT supported. The body of the MD is the prompt; if you want a
@@ -259,6 +270,7 @@ func parseAgent(raw []byte) (*Agent, error) {
 	a.Models = fm.Models
 	a.MemoryScopes = fm.MemoryScopes
 	a.MemoryQuotaBytes = fm.MemoryQuotaBytes
+	a.Channels = fm.Channels
 	a.SystemPromptFile = fm.SystemPromptFile
 	a.SystemPrompt = body
 

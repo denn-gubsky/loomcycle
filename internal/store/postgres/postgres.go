@@ -749,6 +749,202 @@ func (s *Store) MemorySweep(ctx context.Context) (int, error) {
 	return int(tag.RowsAffected()), nil
 }
 
+// ---- v0.8.4 Channel tool ----
+//
+// Postgres mirror of the SQLite implementation. Reads filter expired
+// rows at the WHERE clause; the sweeper is best-effort cleanup, not a
+// correctness anchor. payload is JSONB so future filter primitives
+// can use @> / -> without a migration.
+
+// ChannelPublish appends one message and (if maxMessages > 0) trims
+// the channel down to maxMessages oldest-first inside the same txn.
+// Returns the new id + the count of rows trimmed (lossy-on-overflow).
+func (s *Store) ChannelPublish(ctx context.Context, msg store.ChannelMessage, maxMessages int) (string, int, error) {
+	now := time.Now().UTC()
+	msg.ID = store.MintChannelMessageID(now)
+	msg.PublishedAt = now
+
+	var expiresAt any
+	if !msg.ExpiresAt.IsZero() {
+		expiresAt = msg.ExpiresAt.UTC()
+	}
+
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return "", 0, fmt.Errorf("channel publish begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	if _, err := tx.Exec(ctx,
+		`INSERT INTO channel_messages (id, channel, scope, scope_id, payload, published_at, expires_at)
+		 VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7)`,
+		msg.ID, msg.Channel, string(msg.Scope), msg.ScopeID, string(msg.Payload), now, expiresAt,
+	); err != nil {
+		return "", 0, fmt.Errorf("channel publish insert: %w", err)
+	}
+
+	dropped := 0
+	if maxMessages > 0 {
+		tag, err := tx.Exec(ctx,
+			`DELETE FROM channel_messages
+			 WHERE channel = $1 AND scope = $2 AND scope_id = $3
+			   AND id NOT IN (
+			     SELECT id FROM channel_messages
+			      WHERE channel = $1 AND scope = $2 AND scope_id = $3
+			      ORDER BY id DESC
+			      LIMIT $4
+			   )`,
+			msg.Channel, string(msg.Scope), msg.ScopeID, maxMessages,
+		)
+		if err != nil {
+			return "", 0, fmt.Errorf("channel publish trim: %w", err)
+		}
+		dropped = int(tag.RowsAffected())
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return "", 0, fmt.Errorf("channel publish commit: %w", err)
+	}
+	return msg.ID, dropped, nil
+}
+
+// ChannelSubscribe reads up to `limit` messages newer than fromCursor.
+// fromCursor == "" || "cur_0" → from the oldest non-expired row.
+func (s *Store) ChannelSubscribe(ctx context.Context, channel string, scope store.MemoryScope, scopeID, fromCursor string, limit int) ([]store.ChannelMessage, string, error) {
+	return s.channelRead(ctx, channel, scope, scopeID, fromCursor, limit)
+}
+
+// ChannelPeek is identical to Subscribe at the storage layer — the
+// difference is purely semantic (whether the tool layer commits the
+// returned cursor on the next call).
+func (s *Store) ChannelPeek(ctx context.Context, channel string, scope store.MemoryScope, scopeID, fromCursor string, limit int) ([]store.ChannelMessage, error) {
+	msgs, _, err := s.channelRead(ctx, channel, scope, scopeID, fromCursor, limit)
+	return msgs, err
+}
+
+// channelRead is the shared read body. Filters expired rows at WHERE.
+func (s *Store) channelRead(ctx context.Context, channel string, scope store.MemoryScope, scopeID, fromCursor string, limit int) ([]store.ChannelMessage, string, error) {
+	if limit <= 0 {
+		limit = 10
+	}
+	if fromCursor == "cur_0" {
+		fromCursor = ""
+	}
+	rows, err := s.pool.Query(ctx,
+		`SELECT id, payload::text, published_at, expires_at
+		 FROM channel_messages
+		 WHERE channel = $1 AND scope = $2 AND scope_id = $3
+		   AND id > $4
+		   AND (expires_at IS NULL OR expires_at > NOW())
+		 ORDER BY id ASC
+		 LIMIT $5`,
+		channel, string(scope), scopeID, fromCursor, limit,
+	)
+	if err != nil {
+		return nil, "", fmt.Errorf("channel read: %w", err)
+	}
+	defer rows.Close()
+
+	var msgs []store.ChannelMessage
+	var lastID string
+	for rows.Next() {
+		var (
+			id          string
+			payloadText []byte
+			publishedAt time.Time
+			expiresAt   *time.Time
+		)
+		if err := rows.Scan(&id, &payloadText, &publishedAt, &expiresAt); err != nil {
+			return nil, "", fmt.Errorf("channel read scan: %w", err)
+		}
+		msg := store.ChannelMessage{
+			ID:          id,
+			Channel:     channel,
+			Scope:       scope,
+			ScopeID:     scopeID,
+			Payload:     json.RawMessage(payloadText),
+			PublishedAt: publishedAt,
+		}
+		if expiresAt != nil {
+			msg.ExpiresAt = *expiresAt
+		}
+		msgs = append(msgs, msg)
+		lastID = id
+	}
+	if err := rows.Err(); err != nil {
+		return nil, "", fmt.Errorf("channel read rows: %w", err)
+	}
+	return msgs, lastID, nil
+}
+
+// ChannelAck advances the per-subscriber committed cursor. Rejects
+// cursor values older than the currently committed one (ULID
+// lexicographic order). Idempotent on re-ack.
+func (s *Store) ChannelAck(ctx context.Context, channel string, scope store.MemoryScope, scopeID, cursor string) error {
+	if cursor == "" || cursor == "cur_0" {
+		return nil
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("channel ack begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	var existing string
+	err = tx.QueryRow(ctx,
+		`SELECT cursor FROM channel_cursors WHERE channel = $1 AND scope = $2 AND scope_id = $3`,
+		channel, string(scope), scopeID,
+	).Scan(&existing)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return fmt.Errorf("channel ack lookup: %w", err)
+	}
+	if existing != "" && cursor < existing {
+		return store.ErrChannelCursorRegression
+	}
+	if existing == cursor {
+		return tx.Commit(ctx) // idempotent
+	}
+
+	now := time.Now().UTC()
+	if _, err := tx.Exec(ctx,
+		`INSERT INTO channel_cursors (channel, scope, scope_id, cursor, updated_at)
+		 VALUES ($1, $2, $3, $4, $5)
+		 ON CONFLICT (channel, scope, scope_id) DO UPDATE SET
+		    cursor = EXCLUDED.cursor,
+		    updated_at = EXCLUDED.updated_at`,
+		channel, string(scope), scopeID, cursor, now,
+	); err != nil {
+		return fmt.Errorf("channel ack upsert: %w", err)
+	}
+	return tx.Commit(ctx)
+}
+
+// ChannelCommittedCursor returns the most recent ack'd cursor, or "".
+func (s *Store) ChannelCommittedCursor(ctx context.Context, channel string, scope store.MemoryScope, scopeID string) (string, error) {
+	var cursor string
+	err := s.pool.QueryRow(ctx,
+		`SELECT cursor FROM channel_cursors WHERE channel = $1 AND scope = $2 AND scope_id = $3`,
+		channel, string(scope), scopeID,
+	).Scan(&cursor)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("channel committed: %w", err)
+	}
+	return cursor, nil
+}
+
+// ChannelSweepExpired drops every expired channel_messages row.
+func (s *Store) ChannelSweepExpired(ctx context.Context) (int, error) {
+	tag, err := s.pool.Exec(ctx,
+		`DELETE FROM channel_messages WHERE expires_at IS NOT NULL AND expires_at <= NOW()`,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("channel sweep: %w", err)
+	}
+	return int(tag.RowsAffected()), nil
+}
+
 // escapeLikePrefix neutralises the LIKE wildcards in `prefix` so an
 // agent searching for "events_2026" doesn't get treated as
 // "events" + any-char + "2026". Backslash is the ESCAPE clause.

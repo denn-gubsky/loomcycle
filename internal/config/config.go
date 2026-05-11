@@ -79,6 +79,17 @@ type Config struct {
 	// See docs/PLAN.md → v0.8.2 for the full design rationale.
 	UserTiers map[string]UserTier `yaml:"user_tiers"`
 
+	// Channels is the v0.8.4 Channel-tool registry. Operators
+	// declare channels explicitly here — no auto-creation — so the
+	// namespace is operator-owned and ACL rules in
+	// AgentDef.Channels can validate against a closed set.
+	//
+	// Empty / nil = Channel tool is effectively disabled (every
+	// publish/subscribe op refuses with "channel not declared").
+	// Re-uses the existing Memory scope vocabulary (agent / user)
+	// plus a new "global" scope for cross-tenant fan-out streams.
+	Channels map[string]Channel `yaml:"channels"`
+
 	// Env-derived; not in YAML.
 	Env Env `yaml:"-"`
 
@@ -285,6 +296,56 @@ type AgentDef struct {
 	// legitimately maintain large state (cv-adapter); set lower for
 	// noisy agents you want to keep on a tight leash.
 	MemoryQuotaBytes int `yaml:"memory_quota_bytes"`
+
+	// Channels is the v0.8.4 Channel tool ACL for this agent —
+	// per-side (publish / subscribe) allowlists naming channels the
+	// agent may post to or read from. Entries may use a trailing
+	// "/*" wildcard (`findings/*` matches `findings/alpha` but NOT
+	// `findings`). Same trust model as AllowedTools / MemoryScopes —
+	// operator-yaml is the floor; the model can never enlarge its
+	// own access. Sub-agents inherit the parent's ACL via ctx.
+	Channels AgentChannelACL `yaml:"channels"`
+}
+
+// Channel is one operator-declared channel in the top-level
+// `channels:` block. Operators must declare a channel explicitly
+// before any agent yaml may grant publish/subscribe on it — there
+// is no auto-creation. The fields here set per-channel defaults
+// (overridable per-publish-call where it makes sense):
+//
+//   - Scope is the channel's cursor-isolation axis. Re-uses the
+//     Memory vocabulary (agent / user) plus a new "global" scope
+//     for cross-tenant fan-out (a global channel has ONE cursor
+//     for the whole channel, regardless of which agent or user
+//     reads from it).
+//   - DefaultTTL is the per-message TTL in seconds applied when the
+//     publish call doesn't supply one. Zero = no default (message
+//     lives until the operator runs a manual purge or hits
+//     MaxMessages).
+//   - MaxMessages is the bounded-storage cap. When a publish would
+//     push the per-(channel, scope, scope_id) count past this
+//     value, the OLDEST rows are trimmed inside the same txn
+//     (lossy-on-overflow per the v0.8.4 RFC — publishers never
+//     block). Zero = unbounded.
+//   - Semantic is "queue" or "broadcast" — informational only at
+//     the storage level (the wire shape is identical). The tool
+//     surface uses it for documentation and to warn at boot when
+//     an ACL pattern looks wrong for the semantic (e.g. multiple
+//     subscribers on a queue-shaped channel with the same scope
+//     will compete for messages).
+type Channel struct {
+	Scope       string `yaml:"scope"`
+	DefaultTTL  int    `yaml:"default_ttl"`
+	MaxMessages int    `yaml:"max_messages"`
+	Semantic    string `yaml:"semantic"`
+}
+
+// AgentChannelACL carries the per-agent publish / subscribe
+// allowlists for the v0.8.4 Channel tool. Empty Publish / Subscribe
+// means no access on that side — the tool surfaces a typed refusal.
+type AgentChannelACL struct {
+	Publish   []string `yaml:"publish"`
+	Subscribe []string `yaml:"subscribe"`
 }
 
 // MCPServer declares one MCP server. Transport "stdio" or "http".
@@ -533,6 +594,27 @@ type Env struct {
 	// don't want background work, can opt out).
 	// Env: LOOMCYCLE_MEMORY_SWEEP_MS.
 	MemorySweepInterval time.Duration
+
+	// ChannelsMaxValueBytes caps a single Channel.publish payload
+	// (v0.8.4). Default 65536 (64 KB) — mirrors MemoryMaxValueBytes.
+	// 0 disables. Env: LOOMCYCLE_CHANNELS_MAX_VALUE_BYTES.
+	ChannelsMaxValueBytes int
+
+	// ChannelsSweepInterval is the TTL reaper cadence for the
+	// channel_messages table (v0.8.4). Default 15 minutes — same as
+	// MemorySweepInterval. 0 disables. Read paths filter expired
+	// rows regardless of whether the sweeper has run, so this is
+	// purely about keeping the table bounded.
+	// Env: LOOMCYCLE_CHANNELS_SWEEP_MS.
+	ChannelsSweepInterval time.Duration
+
+	// ChannelsLongPollCapMS caps the wait_ms an agent may request
+	// on a Channel.subscribe call (v0.8.4). Default 30000 (30 s) —
+	// long enough for "wake me when there's new work" semantics,
+	// short enough that a hung subscribe doesn't leak goroutines
+	// on agent crash. 0 disables long-poll entirely.
+	// Env: LOOMCYCLE_CHANNELS_LONGPOLL_CAP_MS.
+	ChannelsLongPollCapMS int
 
 	// ProviderHeaderTimeout is the per-attempt cap on time-to-first-
 	// byte for streaming provider HTTP calls (set on each driver's
@@ -799,6 +881,40 @@ func Load(path string) (*Config, error) {
 		}
 	}
 
+	// Channel tool defaults (v0.8.4). Per-write 64 KB, 15-minute
+	// TTL sweep cadence, 30 s long-poll cap — same shape as Memory's
+	// negative-as-disable convention.
+	cfg.Env.ChannelsMaxValueBytes = 64 * 1024
+	if v := os.Getenv("LOOMCYCLE_CHANNELS_MAX_VALUE_BYTES"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			if n <= 0 {
+				cfg.Env.ChannelsMaxValueBytes = 0
+			} else {
+				cfg.Env.ChannelsMaxValueBytes = n
+			}
+		}
+	}
+	cfg.Env.ChannelsSweepInterval = 15 * time.Minute
+	if v := os.Getenv("LOOMCYCLE_CHANNELS_SWEEP_MS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			if n <= 0 {
+				cfg.Env.ChannelsSweepInterval = 0
+			} else {
+				cfg.Env.ChannelsSweepInterval = time.Duration(n) * time.Millisecond
+			}
+		}
+	}
+	cfg.Env.ChannelsLongPollCapMS = 30000
+	if v := os.Getenv("LOOMCYCLE_CHANNELS_LONGPOLL_CAP_MS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			if n <= 0 {
+				cfg.Env.ChannelsLongPollCapMS = 0
+			} else {
+				cfg.Env.ChannelsLongPollCapMS = n
+			}
+		}
+	}
+
 	// Provider streaming timeouts. Defaults match streamhttp.Default*.
 	// Negative or zero values are NOT treated as "disable" — there's no
 	// safe interpretation of "stream forever" given the agent loop's
@@ -971,6 +1087,10 @@ func agentFromDiscovered(d *agents.Agent) AgentDef {
 		Providers:        d.Providers,
 		MemoryScopes:     d.MemoryScopes,
 		MemoryQuotaBytes: d.MemoryQuotaBytes,
+		Channels: AgentChannelACL{
+			Publish:   d.Channels.Publish,
+			Subscribe: d.Channels.Subscribe,
+		},
 	}
 	if len(d.Models) > 0 {
 		def.Models = make(map[string][]TierCandidate, len(d.Models))
@@ -1052,6 +1172,12 @@ func mergeAgentDef(base, override AgentDef) AgentDef {
 	}
 	if override.MemoryQuotaBytes != 0 {
 		out.MemoryQuotaBytes = override.MemoryQuotaBytes
+	}
+	if override.Channels.Publish != nil {
+		out.Channels.Publish = override.Channels.Publish
+	}
+	if override.Channels.Subscribe != nil {
+		out.Channels.Subscribe = override.Channels.Subscribe
 	}
 	return out
 }
@@ -1236,6 +1362,51 @@ var validMemoryScopes = map[string]bool{
 	"user":  true,
 }
 
+// validChannelScopes is the closed set of Channel tool scope names
+// accepted on a top-level `channels:` entry. agent + user mirror
+// Memory's vocabulary; global is the cross-tenant fan-out shape.
+var validChannelScopes = map[string]bool{
+	"agent":  true,
+	"user":   true,
+	"global": true,
+}
+
+// validChannelSemantics is informational at the storage level (the
+// wire shape is identical for queue and broadcast) — the tool layer
+// uses it for documentation + boot warnings.
+var validChannelSemantics = map[string]bool{
+	"queue":     true,
+	"broadcast": true,
+}
+
+// validateAgentChannelEntry checks one publish/subscribe entry on
+// an AgentDef.Channels list. Exact match → must reference a declared
+// channel. Trailing "/*" wildcard → must match at least one declared
+// channel's prefix. Wildcards mid-string are rejected so operators
+// can't accidentally grant "*" access.
+func validateAgentChannelEntry(declared map[string]Channel, entry string) error {
+	entry = strings.TrimSpace(entry)
+	if entry == "" {
+		return fmt.Errorf("empty channel reference")
+	}
+	if strings.Contains(entry, "*") && !strings.HasSuffix(entry, "/*") {
+		return fmt.Errorf("channel %q: wildcards must be a trailing \"/*\" suffix (no mid-string globs)", entry)
+	}
+	if strings.HasSuffix(entry, "/*") {
+		prefix := strings.TrimSuffix(entry, "*") // keep trailing /
+		for name := range declared {
+			if strings.HasPrefix(name, prefix) && len(name) > len(prefix) {
+				return nil
+			}
+		}
+		return fmt.Errorf("channel %q: no declared channel matches the prefix", entry)
+	}
+	if _, ok := declared[entry]; !ok {
+		return fmt.Errorf("channel %q: not in operator-declared channels:", entry)
+	}
+	return nil
+}
+
 func validate(c *Config) error {
 	if c.Concurrency.MaxConcurrentRuns < 1 {
 		return fmt.Errorf("concurrency.max_concurrent_runs must be >= 1")
@@ -1356,6 +1527,39 @@ func validate(c *Config) error {
 		}
 		if agent.MemoryQuotaBytes < 0 {
 			return fmt.Errorf("agent %q: memory_quota_bytes must be >= 0", name)
+		}
+		// Channel tool (v0.8.4): every entry in publish/subscribe must
+		// reference a declared channel (exact match) OR be a "<prefix>/*"
+		// wildcard whose prefix matches at least one declared channel.
+		// Wildcard with no matches at config-load is rejected so an
+		// operator typo doesn't silently disable an ACL.
+		for i, ch := range agent.Channels.Publish {
+			if err := validateAgentChannelEntry(c.Channels, ch); err != nil {
+				return fmt.Errorf("agent %q: channels.publish[%d]: %w", name, i, err)
+			}
+		}
+		for i, ch := range agent.Channels.Subscribe {
+			if err := validateAgentChannelEntry(c.Channels, ch); err != nil {
+				return fmt.Errorf("agent %q: channels.subscribe[%d]: %w", name, i, err)
+			}
+		}
+	}
+	// Channel tool: validate the top-level `channels:` block.
+	for name, ch := range c.Channels {
+		if name == "" {
+			return fmt.Errorf("channels: empty channel name")
+		}
+		if !validChannelScopes[ch.Scope] {
+			return fmt.Errorf("channels.%s: unknown scope %q (want one of: agent, user, global)", name, ch.Scope)
+		}
+		if ch.DefaultTTL < 0 {
+			return fmt.Errorf("channels.%s: default_ttl must be >= 0", name)
+		}
+		if ch.MaxMessages < 0 {
+			return fmt.Errorf("channels.%s: max_messages must be >= 0", name)
+		}
+		if ch.Semantic != "" && !validChannelSemantics[ch.Semantic] {
+			return fmt.Errorf("channels.%s: unknown semantic %q (want one of: queue, broadcast)", name, ch.Semantic)
 		}
 	}
 	for name, srv := range c.MCPServers {

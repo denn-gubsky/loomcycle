@@ -17,9 +17,29 @@ package store
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"time"
 )
+
+// MintChannelMessageID returns a fresh channel-message id that's
+// monotonic-by-publish-time AND globally unique. Format:
+// "msg_<16-hex unixNanos><8-hex rand>" — 24 hex chars after the
+// prefix. Sortable lexicographically by publish time within the
+// resolution of a single nanosecond; the 4-byte random suffix
+// collision-protects same-nanosecond publishes.
+//
+// Why not ULID: adding an external dep for one purpose is bigger
+// than the ~10 lines we save. The format is intentionally
+// inspect-friendly — operators can eyeball "this message was
+// published before that one" from the hex prefix.
+func MintChannelMessageID(t time.Time) string {
+	var buf [4]byte
+	_, _ = rand.Read(buf[:])
+	return fmt.Sprintf("msg_%016x%s", uint64(t.UnixNano()), hex.EncodeToString(buf[:]))
+}
 
 // Session is a logical conversation thread.
 type Session struct {
@@ -293,6 +313,57 @@ type Store interface {
 	// state only. Capped at 200 rows ordered by updated_at DESC.
 	MemoryListScopeIDs(ctx context.Context, scope MemoryScope) ([]MemoryScopeIDSummary, error)
 
+	// ChannelPublish appends one message to a channel. The message's
+	// ID is assigned by the store (ULID — sortable by publish time);
+	// the returned id is the cursor agents pass back on subsequent
+	// reads. msg.PublishedAt + msg.ExpiresAt are server-assigned and
+	// may overwrite caller-supplied values for correctness; msg.ID
+	// is ignored on input.
+	//
+	// Enforces the per-(channel, scope, scope_id) max_messages cap by
+	// trimming the oldest entries inside the same txn — lossy-on-
+	// overflow, per the v0.8.4 design (publisher never blocks).
+	// Returns the count of messages trimmed (zero in steady state)
+	// so the tool layer can emit EventChannelOverflow.
+	ChannelPublish(ctx context.Context, msg ChannelMessage, maxMessages int) (id string, dropped int, err error)
+
+	// ChannelSubscribe reads up to `limit` messages newer than
+	// `fromCursor` (the empty string and the sentinel "cur_0" both
+	// mean "from oldest non-expired"). Returns the batch + the
+	// `nextCursor` ready for the next call. Expired rows are filtered
+	// at read time so callers never see stale messages even if the
+	// sweeper has lagged.
+	//
+	// nextCursor is the id of the LAST message in the returned batch
+	// (empty when batch is empty); committing it via ChannelAck
+	// advances the per-subscriber position.
+	ChannelSubscribe(ctx context.Context, channel string, scope MemoryScope, scopeID, fromCursor string, limit int) (msgs []ChannelMessage, nextCursor string, err error)
+
+	// ChannelAck advances the committed cursor for one subscriber to
+	// the supplied cursor value. Idempotent — re-acking the same
+	// cursor is a no-op. Acking a cursor older than the current
+	// committed value is rejected with ErrChannelCursorRegression so
+	// out-of-order acks from buggy agents can't rewind delivery.
+	ChannelAck(ctx context.Context, channel string, scope MemoryScope, scopeID, cursor string) error
+
+	// ChannelCommittedCursor returns the most recent cursor a
+	// subscriber acked, or empty string when no ack has happened
+	// yet (= read from oldest non-expired). Used by ChannelSubscribe
+	// when callers omit fromCursor — "pick up where I left off".
+	ChannelCommittedCursor(ctx context.Context, channel string, scope MemoryScope, scopeID string) (string, error)
+
+	// ChannelSweepExpired deletes every channel_messages row whose
+	// expires_at has passed. Returns the deleted row count for the
+	// sweeper's log line. Safe under concurrent sweepers; mirrors
+	// MemorySweep's shape.
+	ChannelSweepExpired(ctx context.Context) (int, error)
+
+	// ChannelPeek is the non-consuming read. Same args as Subscribe
+	// but never updates a cursor and never auto-advances. Powers
+	// the tool's "peek" op for debugging — operators can replay
+	// from cur_0 without disturbing the consumer's position.
+	ChannelPeek(ctx context.Context, channel string, scope MemoryScope, scopeID, fromCursor string, limit int) ([]ChannelMessage, error)
+
 	// Close releases backend resources. Idempotent.
 	Close() error
 }
@@ -359,6 +430,45 @@ type MemoryError struct {
 }
 
 func (e *MemoryError) Error() string { return e.Msg }
+
+// ChannelMessage is one row in the channel_messages table. ID is a
+// ULID assigned by the store at publish time (sortable by publish
+// instant — gives "oldest first" reads for free). ExpiresAt is zero
+// when the publisher passed no TTL AND the channel had no default;
+// the read path filters expired rows regardless of whether the
+// sweeper has run.
+type ChannelMessage struct {
+	ID          string          `json:"id"`
+	Channel     string          `json:"channel"`
+	Scope       MemoryScope     `json:"scope"` // re-uses MemoryScope so operators don't track two enums
+	ScopeID     string          `json:"scope_id"`
+	Payload     json.RawMessage `json:"payload"`
+	PublishedAt time.Time       `json:"published_at"`
+	ExpiresAt   time.Time       `json:"expires_at,omitempty"`
+}
+
+// ErrChannelCursorRegression is returned by ChannelAck when a caller
+// tries to commit a cursor older than the currently committed one.
+// Protects against buggy agents accidentally rewinding delivery —
+// the cursor is monotonic by design.
+var ErrChannelCursorRegression = &ChannelError{Code: "cursor_regression", Msg: "channel: ack cursor older than committed"}
+
+// ErrChannelValueTooLarge is returned by ChannelPublish when a
+// payload exceeds the per-write byte cap
+// (LOOMCYCLE_CHANNELS_MAX_VALUE_BYTES, default 64 KB). Mirrors
+// ErrMemoryValueTooLarge — same shape, separate type so tool-layer
+// error mapping is unambiguous.
+var ErrChannelValueTooLarge = &ChannelError{Code: "value_too_large", Msg: "channel: payload exceeds max bytes"}
+
+// ChannelError is the typed-error envelope for channel-specific
+// failures the tool layer surfaces to agents. The Code is wire-
+// stable; Msg is human-readable and may evolve.
+type ChannelError struct {
+	Code string
+	Msg  string
+}
+
+func (e *ChannelError) Error() string { return e.Msg }
 
 // ErrNotFound is returned when a session or run ID isn't in the store.
 type ErrNotFound struct {

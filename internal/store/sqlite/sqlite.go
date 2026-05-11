@@ -112,6 +112,30 @@ func (s *Store) migrate(ctx context.Context) error {
 			PRIMARY KEY (scope, scope_id, key)
 		)`,
 		`CREATE INDEX IF NOT EXISTS memory_by_expires_at ON memory(expires_at) WHERE expires_at IS NOT NULL`,
+		// v0.8.4 Channel tool — see internal/store/postgres/migrations/0004_channels.up.sql
+		// for the full rationale. SQLite mirrors the shape: TEXT id (ULID-like prefix
+		// "msg_<unixnano>_<rand>" — sortable by publish time), per-(channel, scope,
+		// scope_id) composite PK so per-subscriber scans are index lookups. payload is
+		// TEXT-encoded JSON because SQLite doesn't have a native JSONB type.
+		`CREATE TABLE IF NOT EXISTS channel_messages (
+			id           TEXT    NOT NULL,
+			channel      TEXT    NOT NULL,
+			scope        TEXT    NOT NULL,
+			scope_id     TEXT    NOT NULL,
+			payload      TEXT    NOT NULL,
+			published_at INTEGER NOT NULL,
+			expires_at   INTEGER,
+			PRIMARY KEY (channel, scope, scope_id, id)
+		)`,
+		`CREATE INDEX IF NOT EXISTS channel_messages_by_expires_at ON channel_messages(expires_at) WHERE expires_at IS NOT NULL`,
+		`CREATE TABLE IF NOT EXISTS channel_cursors (
+			channel    TEXT    NOT NULL,
+			scope      TEXT    NOT NULL,
+			scope_id   TEXT    NOT NULL,
+			cursor     TEXT    NOT NULL,
+			updated_at INTEGER NOT NULL,
+			PRIMARY KEY (channel, scope, scope_id)
+		)`,
 	}
 	for _, q := range stmts {
 		if _, err := s.db.ExecContext(ctx, q); err != nil {
@@ -848,6 +872,223 @@ func (s *Store) MemoryListScopeIDs(ctx context.Context, scope store.MemoryScope)
 func (s *Store) MemorySweep(ctx context.Context) (int, error) {
 	res, err := s.db.ExecContext(ctx,
 		`DELETE FROM memory WHERE expires_at IS NOT NULL AND expires_at <= ?`,
+		time.Now().UnixNano(),
+	)
+	if err != nil {
+		return 0, err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, nil
+	}
+	return int(n), nil
+}
+
+// ---- v0.8.4 Channel tool ----
+//
+// All five methods are single-table operations against
+// channel_messages / channel_cursors. Per-(channel, scope, scope_id)
+// reads use the composite primary key directly — no extra index
+// needed. The expires_at filter happens at read time AND in the
+// sweeper; readers never see expired rows even if the sweeper has
+// lagged.
+
+// ChannelPublish appends one message and trims the channel down to
+// maxMessages inside the same txn (oldest rows go first). maxMessages
+// <= 0 disables the trim. Returns the assigned id and the trim count.
+func (s *Store) ChannelPublish(ctx context.Context, msg store.ChannelMessage, maxMessages int) (string, int, error) {
+	now := time.Now()
+	msg.ID = store.MintChannelMessageID(now)
+	msg.PublishedAt = now
+
+	var expiresAt any
+	if !msg.ExpiresAt.IsZero() {
+		expiresAt = msg.ExpiresAt.UnixNano()
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return "", 0, err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO channel_messages(id, channel, scope, scope_id, payload, published_at, expires_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		msg.ID, msg.Channel, string(msg.Scope), msg.ScopeID, string(msg.Payload), now.UnixNano(), expiresAt,
+	); err != nil {
+		return "", 0, err
+	}
+
+	dropped := 0
+	if maxMessages > 0 {
+		// Trim by deleting the oldest rows beyond maxMessages. We
+		// ORDER BY id (= publish time) so the trim is deterministic.
+		// The subquery selects the surviving "keep" set; everything
+		// older is dropped. This is the lossy-on-overflow shape from
+		// the v0.8.4 RFC — publisher never blocks.
+		res, err := tx.ExecContext(ctx,
+			`DELETE FROM channel_messages
+			 WHERE channel = ? AND scope = ? AND scope_id = ?
+			   AND id NOT IN (
+			     SELECT id FROM channel_messages
+			      WHERE channel = ? AND scope = ? AND scope_id = ?
+			      ORDER BY id DESC
+			      LIMIT ?
+			   )`,
+			msg.Channel, string(msg.Scope), msg.ScopeID,
+			msg.Channel, string(msg.Scope), msg.ScopeID,
+			maxMessages,
+		)
+		if err != nil {
+			return "", 0, err
+		}
+		if n, _ := res.RowsAffected(); n > 0 {
+			dropped = int(n)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return "", 0, err
+	}
+	return msg.ID, dropped, nil
+}
+
+// ChannelSubscribe reads up to `limit` messages newer than fromCursor.
+// fromCursor == "" || "cur_0" → from the oldest non-expired row.
+// Returns the batch + the id of the LAST message as nextCursor.
+func (s *Store) ChannelSubscribe(ctx context.Context, channel string, scope store.MemoryScope, scopeID, fromCursor string, limit int) ([]store.ChannelMessage, string, error) {
+	return s.channelRead(ctx, channel, scope, scopeID, fromCursor, limit)
+}
+
+// ChannelPeek is identical to ChannelSubscribe (non-consuming — the
+// cursor table is never touched on either path). The semantic
+// difference lives entirely in the tool layer: Subscribe optionally
+// commits the returned cursor on the next call, Peek never does.
+func (s *Store) ChannelPeek(ctx context.Context, channel string, scope store.MemoryScope, scopeID, fromCursor string, limit int) ([]store.ChannelMessage, error) {
+	msgs, _, err := s.channelRead(ctx, channel, scope, scopeID, fromCursor, limit)
+	return msgs, err
+}
+
+// channelRead is the shared read body for Subscribe + Peek. expired-
+// at-read-time filter applies on both paths.
+func (s *Store) channelRead(ctx context.Context, channel string, scope store.MemoryScope, scopeID, fromCursor string, limit int) ([]store.ChannelMessage, string, error) {
+	if limit <= 0 {
+		limit = 10
+	}
+	if fromCursor == "cur_0" {
+		fromCursor = ""
+	}
+	now := time.Now().UnixNano()
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, payload, published_at, expires_at
+		 FROM channel_messages
+		 WHERE channel = ? AND scope = ? AND scope_id = ?
+		   AND id > ?
+		   AND (expires_at IS NULL OR expires_at > ?)
+		 ORDER BY id ASC
+		 LIMIT ?`,
+		channel, string(scope), scopeID, fromCursor, now, limit,
+	)
+	if err != nil {
+		return nil, "", err
+	}
+	defer rows.Close()
+
+	var msgs []store.ChannelMessage
+	var lastID string
+	for rows.Next() {
+		var (
+			id          string
+			payload     string
+			publishedAt int64
+			expiresAt   sql.NullInt64
+		)
+		if err := rows.Scan(&id, &payload, &publishedAt, &expiresAt); err != nil {
+			return nil, "", err
+		}
+		msg := store.ChannelMessage{
+			ID:          id,
+			Channel:     channel,
+			Scope:       scope,
+			ScopeID:     scopeID,
+			Payload:     json.RawMessage(payload),
+			PublishedAt: time.Unix(0, publishedAt),
+		}
+		if expiresAt.Valid {
+			msg.ExpiresAt = time.Unix(0, expiresAt.Int64)
+		}
+		msgs = append(msgs, msg)
+		lastID = id
+	}
+	if err := rows.Err(); err != nil {
+		return nil, "", err
+	}
+	return msgs, lastID, nil
+}
+
+// ChannelAck commits cursor to the per-subscriber row. Rejects cursor
+// values older than the currently committed one (ULID lexicographic
+// order). Idempotent re-ack of the SAME cursor is a no-op.
+func (s *Store) ChannelAck(ctx context.Context, channel string, scope store.MemoryScope, scopeID, cursor string) error {
+	if cursor == "" || cursor == "cur_0" {
+		return nil // nothing to commit
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var existing string
+	err = tx.QueryRowContext(ctx,
+		`SELECT cursor FROM channel_cursors WHERE channel = ? AND scope = ? AND scope_id = ?`,
+		channel, string(scope), scopeID,
+	).Scan(&existing)
+	if err != nil && err != sql.ErrNoRows {
+		return err
+	}
+	if existing != "" && cursor < existing {
+		return store.ErrChannelCursorRegression
+	}
+	if existing == cursor {
+		return tx.Commit() // idempotent
+	}
+
+	now := time.Now().UnixNano()
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO channel_cursors(channel, scope, scope_id, cursor, updated_at)
+		 VALUES (?, ?, ?, ?, ?)
+		 ON CONFLICT(channel, scope, scope_id) DO UPDATE SET
+		    cursor = excluded.cursor,
+		    updated_at = excluded.updated_at`,
+		channel, string(scope), scopeID, cursor, now,
+	); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// ChannelCommittedCursor returns the last cursor ack'd for a
+// subscriber, or empty string when none.
+func (s *Store) ChannelCommittedCursor(ctx context.Context, channel string, scope store.MemoryScope, scopeID string) (string, error) {
+	var cursor string
+	err := s.db.QueryRowContext(ctx,
+		`SELECT cursor FROM channel_cursors WHERE channel = ? AND scope = ? AND scope_id = ?`,
+		channel, string(scope), scopeID,
+	).Scan(&cursor)
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	return cursor, nil
+}
+
+// ChannelSweepExpired deletes every expired row. Mirror of MemorySweep.
+func (s *Store) ChannelSweepExpired(ctx context.Context) (int, error) {
+	res, err := s.db.ExecContext(ctx,
+		`DELETE FROM channel_messages WHERE expires_at IS NOT NULL AND expires_at <= ?`,
 		time.Now().UnixNano(),
 	)
 	if err != nil {
