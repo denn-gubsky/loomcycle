@@ -339,3 +339,74 @@ func TestProbe_PropagatesError(t *testing.T) {
 		t.Fatal("Probe with 401 didn't surface an error")
 	}
 }
+
+// TestSanitizeGeminiSchema_StripsAdditionalProperties pins the v0.8.4
+// follow-up fix: Gemini's function_declarations.parameters rejects
+// JSON Schema's additionalProperties (and $schema / $id). The Channel
+// + Memory built-in tools both ship schemas with these fields, which
+// every other driver (Anthropic / OpenAI / DeepSeek / Ollama)
+// accepts silently. Without the sanitizer, every tool call against
+// Gemini returns 400 INVALID_ARGUMENT.
+func TestSanitizeGeminiSchema_StripsAdditionalProperties(t *testing.T) {
+	in := json.RawMessage(`{
+		"type":"object",
+		"properties":{
+			"op":{"type":"string","enum":["get","set"]},
+			"value":{"type":"object","additionalProperties":false}
+		},
+		"required":["op"],
+		"additionalProperties":false,
+		"$schema":"https://json-schema.org/draft/2020-12/schema",
+		"$id":"channel-input"
+	}`)
+	got := sanitizeGeminiSchema(in)
+	gotStr := string(got)
+
+	// All three offending fields must be stripped from both the
+	// root schema AND any nested object schema. Without recursion,
+	// the inner "value.additionalProperties" would survive and the
+	// API still rejects.
+	if strings.Contains(gotStr, "additionalProperties") {
+		t.Errorf("additionalProperties not stripped: %s", gotStr)
+	}
+	if strings.Contains(gotStr, "$schema") {
+		t.Errorf("$schema not stripped: %s", gotStr)
+	}
+	if strings.Contains(gotStr, "$id") {
+		t.Errorf("$id not stripped: %s", gotStr)
+	}
+	// Allowed fields must survive.
+	if !strings.Contains(gotStr, `"properties"`) {
+		t.Errorf("properties missing from sanitized output: %s", gotStr)
+	}
+	if !strings.Contains(gotStr, `"required"`) {
+		t.Errorf("required missing from sanitized output: %s", gotStr)
+	}
+	if !strings.Contains(gotStr, `"enum"`) {
+		t.Errorf("enum missing from sanitized output: %s", gotStr)
+	}
+}
+
+// TestSanitizeGeminiSchema_PreservesOnMalformedInput pins the best-
+// effort contract: if the schema is somehow malformed JSON (shouldn't
+// happen at runtime since the loop builds it from validated tool
+// specs), the sanitizer returns the input verbatim so Gemini surfaces
+// a clear 400 rather than the driver silently swallowing the problem.
+func TestSanitizeGeminiSchema_PreservesOnMalformedInput(t *testing.T) {
+	in := json.RawMessage(`not json`)
+	got := sanitizeGeminiSchema(in)
+	if string(got) != "not json" {
+		t.Errorf("malformed input not preserved: got %q", string(got))
+	}
+}
+
+// TestSanitizeGeminiSchema_EmptyInputPassthrough — zero-length
+// schemas (rare; would mean a tool with no parameters) pass through
+// unchanged.
+func TestSanitizeGeminiSchema_EmptyInputPassthrough(t *testing.T) {
+	in := json.RawMessage(``)
+	got := sanitizeGeminiSchema(in)
+	if len(got) != 0 {
+		t.Errorf("empty input not preserved: got %d bytes", len(got))
+	}
+}

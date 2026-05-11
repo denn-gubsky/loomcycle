@@ -5,14 +5,14 @@
 # is expected to persist across the run boundary — that's the whole
 # point of Memory.
 #
-# Provider: deepseek. Set DEEPSEEK_API_KEY in your shell (or source
-# .env.local) before invoking the driver.
+# Provider: gemini (gemini-2.5-flash). Set GEMINI_API_KEY in your
+# shell (or source .env.local) before invoking the driver.
 
-provider_priority: [deepseek]
+provider_priority: [gemini]
 
 defaults:
-  provider: deepseek
-  model: deepseek-v4-pro
+  provider: gemini
+  model: gemini-2.5-flash
 
 # ─── Agents from MD discovery ──────────────────────────────────────
 # run.sh sets LOOMCYCLE_AGENTS_ROOT to ./agents/ (alongside this

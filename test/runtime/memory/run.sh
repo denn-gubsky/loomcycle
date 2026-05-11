@@ -37,8 +37,8 @@ export LOOMCYCLE_DATA_DIR="$TEST_DIR/data"
 export LOOMCYCLE_AGENTS_ROOT="$SCRIPT_DIR/agents"
 export LOOMCYCLE_LISTEN_ADDR="127.0.0.1:18788"   # +1 vs channels test
 export LOOMCYCLE_AUTH_TOKEN="test-token-$(date +%s)"
-if [[ -z "${DEEPSEEK_API_KEY:-}" ]]; then
-  echo "ERROR: DEEPSEEK_API_KEY not set. Source .env.local first:" >&2
+if [[ -z "${GEMINI_API_KEY:-}" ]]; then
+  echo "ERROR: GEMINI_API_KEY not set. Source .env.local first:" >&2
   echo "  set -a; source .env.local; set +a" >&2
   exit 1
 fi

@@ -43,9 +43,9 @@ export LOOMCYCLE_DATA_DIR="$TEST_DIR/data"
 export LOOMCYCLE_AGENTS_ROOT="$SCRIPT_DIR/agents"
 export LOOMCYCLE_LISTEN_ADDR="127.0.0.1:18787"
 export LOOMCYCLE_AUTH_TOKEN="test-token-$(date +%s)"
-# Forward whatever DEEPSEEK_API_KEY the operator has in their shell.
-if [[ -z "${DEEPSEEK_API_KEY:-}" ]]; then
-  echo "ERROR: DEEPSEEK_API_KEY not set. Source .env.local first:" >&2
+# Forward whatever GEMINI_API_KEY the operator has in their shell.
+if [[ -z "${GEMINI_API_KEY:-}" ]]; then
+  echo "ERROR: GEMINI_API_KEY not set. Source .env.local first:" >&2
   echo "  set -a; source .env.local; set +a" >&2
   exit 1
 fi

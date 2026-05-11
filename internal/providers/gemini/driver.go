@@ -253,7 +253,7 @@ func buildRequestBody(req providers.Request) ([]byte, error) {
 			decls = append(decls, wireFunctionDecl{
 				Name:        t.Name,
 				Description: t.Description,
-				Parameters:  t.InputSchema,
+				Parameters:  sanitizeGeminiSchema(t.InputSchema),
 			})
 		}
 		w.Tools = []wireTool{{FunctionDeclarations: decls}}
@@ -580,4 +580,60 @@ func (d *Driver) fetchModels(ctx context.Context) ([]string, error) {
 		}
 	}
 	return out, nil
+}
+
+// sanitizeGeminiSchema strips JSON-Schema fields that Gemini's
+// function_declarations.parameters does not accept. Gemini takes
+// an OpenAPI-3.0 subset; full JSON Schema features like
+// additionalProperties, $schema, $ref, oneOf, anyOf, etc. produce
+// a 400 INVALID_ARGUMENT.
+//
+// The Channel and Memory built-in tools both ship schemas with
+// `"additionalProperties": false` (a JSON Schema best-practice
+// that's silently accepted by Anthropic / OpenAI / DeepSeek /
+// Ollama drivers). The other built-in tools don't use it today
+// but might in the future. This helper makes the Gemini driver
+// tolerant of any tool schema that happens to use the rejected
+// fields — operators don't have to know which tools are
+// Gemini-compatible.
+//
+// Best-effort: on parse failure (malformed schema), returns the
+// original bytes so Gemini surfaces a clear 400 rather than the
+// driver swallowing the problem.
+func sanitizeGeminiSchema(raw json.RawMessage) json.RawMessage {
+	if len(raw) == 0 {
+		return raw
+	}
+	var parsed any
+	if err := json.Unmarshal(raw, &parsed); err != nil {
+		return raw
+	}
+	stripGeminiUnsupported(parsed)
+	out, err := json.Marshal(parsed)
+	if err != nil {
+		return raw
+	}
+	return out
+}
+
+// stripGeminiUnsupported walks a parsed JSON value and removes
+// the field names Gemini rejects. Recurses into nested objects
+// (e.g., properties.*.additionalProperties on nested schemas)
+// and arrays (e.g., enum value validation lists).
+func stripGeminiUnsupported(node any) {
+	switch n := node.(type) {
+	case map[string]any:
+		// The vocabulary Gemini doesn't accept. Add more here if
+		// future tool schemas trip the API.
+		delete(n, "additionalProperties")
+		delete(n, "$schema")
+		delete(n, "$id")
+		for _, v := range n {
+			stripGeminiUnsupported(v)
+		}
+	case []any:
+		for _, item := range n {
+			stripGeminiUnsupported(item)
+		}
+	}
 }

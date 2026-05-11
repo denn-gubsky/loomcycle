@@ -1,8 +1,8 @@
 ---
 name: memorybot
 description: Two-run Memory smoke test agent. Writes on the first call, reads on the second.
-provider: deepseek
-model: deepseek-v4-pro
+provider: gemini
+model: gemini-2.5-flash
 allowed_tools: [Memory]
 memory_scopes: [agent, user]
 ---
