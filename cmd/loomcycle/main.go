@@ -220,6 +220,16 @@ func main() {
 	}
 	allTools = append(allTools, channelTool)
 
+	// AgentDef tool (v0.8.5). Per-agent default-deny via
+	// agent_def_scopes yaml; the tool itself is registered globally
+	// and the policy gate runs inside Execute.
+	agentDefTool := &builtin.AgentDef{
+		Cfg:                 cfg,
+		MaxDefinitionBytes:  cfg.Env.AgentDefMaxDefinitionBytes,
+		MaxDescriptionBytes: cfg.Env.AgentDefMaxDescriptionBytes,
+	}
+	allTools = append(allTools, agentDefTool)
+
 	// Local API MCP gateway (v0.4.0+). When `local_api.spec` is set
 	// in loomcycle.yaml, parse the OpenAPI spec and register one tool
 	// per operation. Each tool forwards calls to local_api.base_url
@@ -384,6 +394,7 @@ func main() {
 	// fallback for operators running without a configured store.
 	memoryTool.Store = storeIface
 	channelTool.Store = storeIface
+	agentDefTool.Store = storeIface
 	srv := lchttp.New(cfg, pr, allTools, sem, storeIface)
 	srv.SetMCPFallback(mcpLazyResolver.Resolve)
 
