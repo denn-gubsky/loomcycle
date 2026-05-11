@@ -1,17 +1,26 @@
-# test/runtime/user-tier/loomcycle.yaml — v0.8.2 user_tier runtime-fallback test.
+# test/runtime/user-tier/loomcycle.yaml — v0.8.2 user_tier resolve-time
+# tier-walk test.
 #
 # Drives a run with `user_tier: low` whose primary provider (deepseek)
-# is forced to fail at the network layer (DEEPSEEK_BASE_URL points at
-# an unreachable address — see run.sh). The v0.8.2 fallback path
-# kicks in, swaps to anthropic, and the run completes against the
-# fallback provider.
+# is unreachable (DEEPSEEK_BASE_URL points at port 1 — see run.sh).
+# Boot probe marks deepseek unreachable in the matrix; at run-start,
+# the resolver walks the tier's candidate list, skips deepseek, and
+# dispatches to the next candidate (anthropic). Run completes
+# against the fallback provider.
 #
 # Validates:
-#   - error classifier marks a network-refused error as Retryable
-#   - loop calls ReResolve via the user_tier candidate list
-#   - resolver picks the next provider (anthropic) and dispatches
-#   - SSE stream surfaces event: provider_fallback with FallbackInfo
-#   - run.user_tier marker persists
+#   - boot probe marks deepseek unreachable
+#   - resolver walks the user_tier candidate list and skips stalled
+#     candidates at resolve-time
+#   - run dispatches to the next candidate (claude-haiku-4-5-20251001)
+#   - runs.user_tier marker persists for cost retros and compliance
+#
+# Does NOT validate the mid-run fallback path (v0.8.2 PR #53 — error
+# classifier + ReResolve from inside the loop after a 5xx mid-call).
+# That path is unit-tested in internal/loop/fallback_test.go.
+# Exercising it from a runtime test would require a fake HTTP server
+# that probes 200 on /v1/models but 503 on /v1/chat/completions —
+# out of scope for this smoke. See run.sh's docstring for details.
 #
 # Requires DEEPSEEK_API_KEY (any non-empty value — the unreachable URL
 # means auth is never tried) AND ANTHROPIC_API_KEY. run.sh exits

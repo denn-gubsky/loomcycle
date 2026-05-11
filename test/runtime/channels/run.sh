@@ -49,6 +49,14 @@ if [[ -z "${DEEPSEEK_API_KEY:-}" ]]; then
   echo "  set -a; source .env.local; set +a" >&2
   exit 1
 fi
+if ! command -v python3 &>/dev/null; then
+  echo "ERROR: python3 is required for SSE delta extraction." >&2
+  exit 1
+fi
+if ! command -v sqlite3 &>/dev/null; then
+  echo "ERROR: sqlite3 CLI is required for storage inspection." >&2
+  exit 1
+fi
 
 mkdir -p "$TEST_DIR/data"
 BOOT_LOG="$TEST_DIR/boot.log"
@@ -65,9 +73,11 @@ echo "[2/6] Booting loomcycle at $LOOMCYCLE_LISTEN_ADDR (config: $SCRIPT_DIR/loo
 LOOMCYCLE_PID=$!
 
 # Wait up to 10 s for /healthz to respond.
+READY=0
 for i in $(seq 1 50); do
   if curl -fsS "http://$LOOMCYCLE_LISTEN_ADDR/healthz" > /dev/null 2>&1; then
     echo "      ready after ~$((i * 200))ms"
+    READY=1
     break
   fi
   if ! kill -0 "$LOOMCYCLE_PID" 2>/dev/null; then
@@ -77,6 +87,14 @@ for i in $(seq 1 50); do
   fi
   sleep 0.2
 done
+
+if [[ "$READY" != "1" ]]; then
+  # Boot taking longer than 10 s (cold-start probes on a slow
+  # network). Fail loudly so the cause is visible.
+  echo "ERROR: loomcycle did not become ready within ~10 s. Boot log so far:" >&2
+  cat "$BOOT_LOG" >&2
+  exit 1
+fi
 
 # ─── 3. Surface the boot log lines that matter ──────────────────────
 echo "[3/6] Boot-log highlights (channels + agents):"

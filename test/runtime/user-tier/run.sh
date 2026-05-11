@@ -67,6 +67,15 @@ if [[ -z "${ANTHROPIC_API_KEY:-}" ]]; then
   echo "  AND ANTHROPIC_API_KEY (fallback, must succeed)." >&2
   exit 1
 fi
+if ! command -v python3 &>/dev/null; then
+  echo "ERROR: python3 is required for SSE delta extraction." >&2
+  echo "  Install python3 or add to PATH." >&2
+  exit 1
+fi
+if ! command -v sqlite3 &>/dev/null; then
+  echo "ERROR: sqlite3 CLI is required for storage inspection." >&2
+  exit 1
+fi
 
 export LOOMCYCLE_DATA_DIR="$TEST_DIR/data"
 export LOOMCYCLE_AGENTS_ROOT="$SCRIPT_DIR/agents"
@@ -100,9 +109,11 @@ echo "      DEEPSEEK_BASE_URL=$DEEPSEEK_BASE_URL  (deliberately unreachable)"
 ./bin/loomcycle --config "$SCRIPT_DIR/loomcycle.yaml" > "$BOOT_LOG" 2>&1 &
 LOOMCYCLE_PID=$!
 
+READY=0
 for i in $(seq 1 50); do
   if curl -fsS "http://$LOOMCYCLE_LISTEN_ADDR/healthz" > /dev/null 2>&1; then
     echo "      ready after ~$((i * 200))ms"
+    READY=1
     break
   fi
   if ! kill -0 "$LOOMCYCLE_PID" 2>/dev/null; then
@@ -112,6 +123,18 @@ for i in $(seq 1 50); do
   fi
   sleep 0.2
 done
+
+if [[ "$READY" != "1" ]]; then
+  # Falling through the readiness loop without the curl ever
+  # succeeding AND without the process dying means loomcycle is
+  # still booting (cold-start probes are real network calls; on a
+  # slow connection they can exceed 10 s). Fail loudly so a
+  # contributor sees the actual cause instead of an opaque
+  # ECONNREFUSED later in the script.
+  echo "ERROR: loomcycle did not become ready within ~10 s. Boot log so far:" >&2
+  cat "$BOOT_LOG" >&2
+  exit 1
+fi
 
 echo "[3/5] Boot-log highlights:"
 grep -E "user_tiers:|agents:|providers" "$BOOT_LOG" | sed 's/^/      /' || true
@@ -173,9 +196,15 @@ echo
 echo "── Verdict ───────────────────────────────────────────────────────"
 PASS=true
 
-# Check 1: boot probe marked deepseek unreachable (this is the
+# Check 1: boot probe marked deepseek UNREACHABLE (this is the
 # precondition for the tier walk to skip it at run-start).
-PROBE_LINE=$(grep -E "resolve probe: deepseek (unreachable|excluded)" "$BOOT_LOG" | head -1)
+#
+# Match only "unreachable", NOT "excluded". The two come from
+# different code paths: "unreachable" = probe attempted but failed
+# (the path we're verifying); "excluded" = operator opted out at
+# config time (a different scenario this test isn't designed to
+# cover). Matching both would silently accept the wrong failure mode.
+PROBE_LINE=$(grep -E "resolve probe: deepseek unreachable" "$BOOT_LOG" | head -1)
 echo "  Probe marked deepseek bad:      $(if [[ -n "$PROBE_LINE" ]]; then echo "yes"; else echo "no"; PASS=false; fi)"
 if [[ -n "$PROBE_LINE" ]]; then
   echo "    └─ $PROBE_LINE"
