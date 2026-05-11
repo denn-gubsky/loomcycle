@@ -1,0 +1,154 @@
+# LoomCycle release history
+
+Per-version release notes from v0.4.0 onward. The current and immediately previous releases are also summarised in the main [`README.md`](README.md); older releases live here.
+
+For the **public roadmap** (planned v0.8.x through v1.0 work — Channels, Self-Evolution Substrate, Context, LoomCycle MCP, distribution, operator postures), see [`docs/PLAN.md`](docs/PLAN.md).
+
+For pre-v0.4 history (single-tool runtime, library milestone, security patch), see the same `docs/PLAN.md` under the per-version sections.
+
+---
+
+## What's in v0.8.4
+
+| Surface             | Status |
+|---------------------|--------|
+| **`Channel` built-in tool** | ✅ Persistent inter-agent message bus. Five ops on a discriminated `op` field: `publish` (append JSON payload to a named channel; ACL-gated), `subscribe` (drain up to N new messages + return a cursor; optional `wait_ms` long-poll), `ack` (explicitly commit a cursor; rejects regressions via `ErrChannelCursorRegression`), `peek` (non-consuming debug read), `list_channels` (informational ACL dump). Subscribe is at-most-once-by-default (commits `next_cursor` on return); agents wanting at-least-once / crash safety use `peek` → process → `ack`. Same single-discriminated-`op` shape as Memory. Sub-agents inherit the parent's ACL via ctx (mirror of `WithMemoryPolicy` / `WithHostPolicy`). |
+| **Storage-layered backend** | ✅ Messages persist to `store.Store` via two new tables: `channel_messages` (TEXT id ULID-style `msg_<unixnano><rand>`, payload JSONB on Postgres / TEXT on SQLite, expires_at) and `channel_cursors` (per-subscriber committed position). Cursor scope mirrors Memory: `agent` (one cursor per agent name), `user` (per user_id), `global` (one shared cursor). Additive `0004_channels.up.sql` Postgres migration; idempotent CREATE TABLE on SQLite. Storetest contract suite: 11 subtests run on both backends — publish/subscribe ordering, cursor monotonicity, TTL filter at read, max_messages trim, scope isolation, replay via `cur_0`, ack-regression rejection. |
+| **In-process notification Bus** | ✅ New `internal/channels/` package. `Bus.Notify(channel)` wakes any in-process subscribers blocked in `Bus.Wait(ctx, channel, timeout)`. Subscribe with `wait_ms > 0` queries storage, then blocks on the bus until a publish lands or the timeout fires — sub-millisecond latency for same-process consumers; cross-process subscribers fall back to polling. 7 race-detector-clean tests (notify wakes, timeout returns false, ctx cancel returns early, fan-out, channel isolation, no-timeout-no-wait, stress under concurrent notify+wait). |
+| **Operator-yaml ACL** | ✅ New top-level `channels:` block declares the namespace (per-channel `scope` / `default_ttl` / `max_messages` / `semantic`). Per-agent `channels: {publish: [...], subscribe: [...]}` allowlists name channels with optional trailing `/*` wildcard (`findings/*` matches `findings/alpha` but NOT `findings`; mid-string globs rejected at config-load so an operator typo can't grant `*` access). Same trust model as `allowed_tools` + `memory_scopes`. Validation: every ACL entry must reference a declared channel; wildcards with no matches at load time are rejected. |
+| **Lossy-on-overflow bounded storage** | ✅ Each channel declares `max_messages`; publishes that push the per-(channel, scope, scope_id) count past trim OLDEST rows inside the same txn. Publisher never blocks — the v0.8.4 RFC's central trade-off (cost cap → never starve the producer). The publish result includes `dropped_oldest: N` so the tool layer (and future audit events) sees the overflow signal. 0 = unbounded. |
+| **Three new env vars** | ✅ `LOOMCYCLE_CHANNELS_MAX_VALUE_BYTES` (per-publish payload cap, default 64 KB), `LOOMCYCLE_CHANNELS_SWEEP_MS` (TTL reaper cadence, default 15 min), `LOOMCYCLE_CHANNELS_LONGPOLL_CAP_MS` (max `wait_ms` allowed on subscribe, default 30 s). All have sensible defaults; zero disables. |
+| **Operator visibility** | ✅ Boot log emits `channels: configured N — channel-a / channel-b / ...` (mirror of `user_tiers:` line shape). Sweeper goroutine logs per-sweep delete count when > 0. `loomcycle.example.yaml` ships with two canonical channels — `findings` (scope: agent, semantic: queue, 24h TTL, 10k max) and `alerts` (scope: global, semantic: broadcast, 1h TTL, 1k max) — plus two example agents (`researcher` publishes, `analyst` subscribes) demonstrating the canonical handoff pattern. |
+
+## What's in v0.8.3
+
+| Surface             | Status |
+|---------------------|--------|
+| **Provider split: `ollama` + `ollama-local`** | ✅ Hosted ollama.com (Bearer auth via `OLLAMA_API_KEY`) is now `ollama`; local-network Ollama (no auth, default `http://localhost:11434`) is now `ollama-local`. One driver package serves both — same `/api/chat` wire shape; only the auth header + base URL differ. Existing deploys with `OLLAMA_BASE_URL=http://localhost:11434` keep working unchanged (the env var now drives `ollama-local`). Two new env vars: `OLLAMA_API_KEY` + optional `OLLAMA_CLOUD_BASE_URL`. Library `defaultLibraryPriority` becomes `[ollama-local, deepseek, openai, anthropic, ollama]` — workstation at the floor, hosted ollama after the paid clouds. (PR #55) |
+
+## What's in v0.8.2
+
+| Surface             | Status |
+|---------------------|--------|
+| **`user_tier` policy + resolver overlay** | ✅ Operator-defined named user-tier policies in `loomcycle.yaml` (`user_tiers:` block) — each tier carries its own `provider_priority`, per-task-tier `tiers`, `fallback_on_error` switch, and `max_fallback_attempts` cap. Runs carry `user_tier` per-request via `POST /v1/runs` (and `POST /v1/sessions/{id}/messages`); empty falls through to the required `default` entry; unknown name → 400. The resolver overlays the tier's policy between library defaults and per-agent overrides; `agent.providers ∩ user_tier.provider_priority` empty → `ErrTierAgentNotAvailable` (distinct from outage so clients render "upgrade required"). Sub-agents inherit the parent's `user_tier` via ctx. New `runs.user_tier` column (additive migration on both SQLite + Postgres) drives cost retros + compliance audit. (PR #52) |
+| **Runtime provider fallback** | ✅ When a provider call returns a retryable error (429/5xx/network/v0.8.1 stream-idle), the loop swaps to the next-in-queue provider within the user_tier's candidate list and continues the iteration. Five-bucket error classifier in `internal/providers/errclass.go` distinguishes retryable from permanent (400/401/403/422) so config errors don't cascade through every provider's quota. Cumulative 3-attempt budget per run; per-tier `fallback_on_error: false` opts free tiers out of the cascade (cost-cap semantic — 429 returns error to client, no climb to paid providers). New typed events `EventProviderFallback` (with structured `FallbackInfo` payload) and `EventCacheInvalidated` (fired only on `anthropic → other` since Anthropic is the only provider with operator-controlled `cache_control` today). (PR #53) |
+| **Per-tier policy in operator yaml** | ✅ `user_tiers:` block ships with five canonical tiers in `loomcycle.example.yaml`: `default` (back-compat for v0.7.x clients — mirrors the library defaults), `free` (ollama-only, no cascade — cost-cap shape), `low` (deepseek + anthropic, cascade on), `medium` (openai + anthropic + deepseek, cascade on), `high` (anthropic-only, no cascade — premium SLA). Each tier carries its own `fallback_on_error` posture. The "default" entry is required when the block is populated; validation rejects unknown providers/tiers and negative `max_fallback_attempts`. |
+| **Per-run audit marker** | ✅ `runs.user_tier` column on both backends with the additive `0003_user_tier.up.sql` Postgres migration. Compliance + cost-retrospective queries facet by tier without grepping logs. The boot log emits `user_tiers: configured N — default / free / low / medium / high` so operators see what's available at startup. |
+
+## What's in v0.8.1
+
+| Surface             | Status |
+|---------------------|--------|
+| **Provider streaming timeouts** | ✅ Replaced the 5-min wall-clock `http.Client.Timeout` with a header + per-byte idle pair. `Transport.ResponseHeaderTimeout` caps time-to-first-byte (default 60 s); a body wrap resets a timer on each Read and cancels the request context on stall (default 90 s). Long but actively-emitting final-turn responses (e.g. job-searcher emitting a 25-position ingest payload) now complete instead of getting cut mid-stream. Two operator knobs: `LOOMCYCLE_PROVIDER_HEADER_TIMEOUT_MS` / `LOOMCYCLE_PROVIDER_IDLE_TIMEOUT_MS`. All five provider drivers updated; `streamhttp` package + 8 unit tests; `-race` clean. (PR #47) |
+| **Lazy MCP retry on first agent call** | ✅ MCP servers that failed initial handshake at boot (peer down, slow to start, or broken at the time loomcycle started) used to stay marked `skipped` for the lifetime of the loomcycle process — operators had to restart loomcycle by hand once the peer recovered. Now the dispatcher carries an optional `FallbackFunc` (set in `cmd/loomcycle/main.go`); a tool name matching `mcp__<server>__<tool>` for a configured-but-skipped server triggers one fresh `pool.Get` for that server on the agent's call path. On success, the server's tools are memoised and dispatched; the operator-visible log line is `mcp[<server>]: lazy-registered N tool(s) on first agent call (was skipped at boot)`. Subsequent calls hit the cache without re-handshaking. The pool's existing `entry/ready` channel coalesces concurrent first-touches to a single underlying handshake (50-way concurrency test pinned). Peer restarts no longer require a loomcycle restart — addresses the "components restart independently in a server environment" failure mode. (PR #48) |
+| **Agent directory discovery** | ✅ New `LOOMCYCLE_AGENTS_ROOT` points at a directory of flat `<name>.md` files. Each file's YAML frontmatter is the base `AgentDef`; the body becomes `system_prompt`. The yaml `agents:` map remains an OPTIONAL override layer — yaml entries with the same name override discovered fields per-field (yaml-as-override). Mixed-mode, MDs-only, and yaml-only deployments all supported. Frontmatter is flat top-level keys (`name` / `description` / `tools` / `model` / `tier` / `models` / `effort` / `max_tokens` / `skills` / `memory_scopes` / `memory_quota_bytes` / `providers` / `allowed_tools` / `system_prompt_file`); accepts both Claude Code's `tools: A, B, C` (comma-string) and loomcycle's `allowed_tools: [A, B, C]` (yaml list); `allowed_tools` wins when both present. Single source of truth for operators maintaining `.claude/agents/*.md` for Claude Code AND a corresponding loomcycle `agents:` block. (PR #49) |
+
+## What's in v0.8.0
+
+| Surface             | Status |
+|---------------------|--------|
+| **`Memory` built-in tool** | ✅ Persistent agent-scoped key/value storage that survives across runs and sessions. Five ops behind one tool: `get` / `set` / `delete` / `list` / **`incr`** (atomic counter). Two scopes: `agent` (yaml-keyed; cross-run, shared across users) and `user` (user_id-keyed; cross-agent, per end-user). Backed by a new `memory` table on both SQLite and Postgres adapters. (PR #45) |
+| **Per-agent yaml policy** | ✅ `memory_scopes: [agent, user]` is a default-deny allowlist — `Memory` in `allowed_tools` is necessary but not sufficient. Optional `memory_quota_bytes` per-agent override of the global `LOOMCYCLE_MEMORY_MAX_SCOPE_BYTES` cap. Sub-agents get their OWN policy from yaml — the parent's `memory_scopes` does NOT cascade. (PR #45) |
+| **Web UI Memory page** | ✅ `/ui/memory` — three-pane browser: scope picker → scope_id list with key counts and byte totals → keys with prefix filter → entry detail with pretty-printed JSON, timestamps, and TTL. Polls the new `/v1/_memory/*` admin endpoints on a 5 s tick. (PR #45) |
+| **Admin API for Memory** | ✅ Four read-only routes — `GET /v1/_memory/scopes`, `/scopes/{scope}`, `/scopes/{scope}/{scope_id}/keys`, `/scopes/{scope}/{scope_id}/keys/{key...}`. Bearer-authed via the existing middleware. The `{key...}` multi-segment route handles slashed keys like `events/2026-05-09T10:00`. (PR #45) |
+| **Concurrency hardening** | ✅ Atomic increment correctness verified by a 100-goroutine regression test on both backends. Caught and fixed two real lost-update races at review time: SQLite `BeginTx(nil)` is DEFERRED (fix: pinned connection + raw `BEGIN IMMEDIATE`); Postgres `SELECT FOR UPDATE` doesn't lock absent rows (fix: `pg_advisory_xact_lock` keyed by hash of the (scope, scope_id, key) tuple). (PR #45) |
+| **Pre-existing host-policy fix** | ✅ `handleMessages` (session continuation path) had been missing `tools.WithHostPolicy` on its loop ctx since v0.4.0 — sub-agents from continuations fell back to the operator's static allowlist instead of the caller's narrowed list. Fixed alongside the new Memory ctx values. (PR #45) |
+
+## What's in v0.7.4
+
+| Surface             | Status |
+|---------------------|--------|
+| **Web UI agent name + content fixes** | ✅ Run list now shows the YAML-declared agent name (`qa-agent`, `company-researcher`) instead of just the UUID. Agent detail header reads from the corrected wire shape (model + tokens + duration). Transcript event panels now render actual content (text, tool calls, tool results, errors) — collapsed-by-default with a one-line summary, click to expand for full text + tool params + pretty-printed JSON. (PRs #41, #42) |
+| **User picker dropdown** | ✅ New `GET /v1/_users` admin endpoint surfaces distinct user_ids that have runs in the store, with running / total counts + last-active timestamp. The Web UI top bar swaps the freeform user_id input for a dropdown — operators no longer need to know the UUID up front. Manual override (✎ button) preserved for picking a user who has no runs yet. (PR #40) |
+| **Gemini config validation hotfix** | ✅ v0.7.2 wired the Gemini driver into the resolver but missed adding `gemini` to the config validator's allowlist; operators with `provider: gemini` rows in their yaml saw startup fail. Fixed. (PR #39) |
+
+## What's in v0.7.3
+
+| Surface             | Status |
+|---------------------|--------|
+| **Embedded read-only Web UI** | ✅ React 19 + Vite 7 + TypeScript SPA at `/ui`. Two pages: run list (parent → children tree, status filter, auto-refresh every 3 s) and per-agent detail (event log: text / thinking / tool_call / tool_result / error / retry / done; auto-refresh every 1.5 s for active runs; cancel button). No new wire endpoints — the SPA reuses the existing `/v1/users/{user_id}/agents`, `/v1/agents/{agent_id}`, `/v1/sessions/{id}/transcript`, `/v1/agents/{agent_id}/cancel` routes. |
+| **Bearer-in-cookie auth** | ✅ Operator visits `/ui?token=<bearer>` once; server sets a `loomcycle_session` HttpOnly cookie and 302s back. Subsequent /v1 calls authenticate via the cookie (same-origin fetch). The existing `Authorization: Bearer …` header path keeps working unchanged for adapters / curl / SDKs — bearer wins on precedence so a stale cookie can't mask a deliberate request. |
+| **Build pipeline** | ✅ `make build-ui` runs `npm install + npm run build` and writes the production bundle to `internal/webui/dist/` (embedded via `go:embed`). `make build-all` does both. A fresh checkout without npm toolchain still compiles via Go alone (a committed `.gitkeep` placeholder); `/ui` then returns 503 with a `ui_not_built` code as the diagnostic. |
+
+## What's in v0.7.2
+
+| Surface             | Status |
+|---------------------|--------|
+| **Google Gemini provider** | ✅ Fifth backend driver in `internal/providers/gemini/`. Speaks Gemini's `generateContent` API: model name in URL path (not body), `x-goog-api-key` header auth, SSE streaming via `?alt=sse`. Tool dispatch maps loomcycle's `tool_use` / `tool_result` to Gemini's `functionCall` / `functionResponse` content parts. |
+| **Effort hint translation** | ✅ `effort: low \| medium \| high` maps to `generationConfig.thinkingConfig.thinkingBudget` on gemini-2.5-flash / gemini-2.5-pro: `low` → 0 (disable), `medium` → 2048, `high` → 8192 (clamped to `max_tokens - 1024` when needed). Same vocabulary as Anthropic / OpenAI — no per-provider effort dialect. |
+| **Resolver matrix integration** | ✅ Excluded when `GEMINI_API_KEY` is unset; probed at startup and on the periodic re-probe with the same 5 s deadline as the others. Per-agent yaml: `provider: gemini` and `model: gemini-2.5-flash` (or any model the wire `/v1beta/models` returns). |
+| **Vertex AI deployments** | ✅ Optional `GEMINI_BASE_URL` overrides for Vertex AI Gemini gateways (production deployments routing through GCP project quotas instead of the public AI Studio API). |
+
+## What's in v0.7.1
+
+| Surface             | Status |
+|---------------------|--------|
+| **`EventThinking` event type** | ✅ Live streaming of model reasoning as a typed event distinct from `EventText`. Anthropic from `thinking_delta` content blocks; OpenAI / DeepSeek from `delta.reasoning_content`; Ollama from `message.thinking`. `EventDone.Reasoning` still carries the consolidated trace for next-turn echo (DeepSeek roundtrip). |
+| **Tool-use hooks** | ✅ Operator-supplied middleware around tool dispatch via `POST /v1/hooks`. Selectors filter by `(agent, tool, phase)`; per-`(owner, name)` idempotent registration prevents cascading on app restart. Fail-open default (telemetry hooks don't block); fail-closed available for security-shaped hooks. See [`docs/TOOLS.md`](docs/TOOLS.md). |
+| **Resolver Snapshot endpoint** | ✅ `GET /v1/_resolver` exposes the in-process availability matrix as JSON, bearer-authed. 503 with `resolver_unavailable` in the brief degraded-startup window so dashboards distinguish "matrix not available" from "matrix is empty". |
+| **Parallel tool dispatch** | ✅ The agent loop dispatched a turn's tool_calls serially — `Agent` fan-outs queued. New `executePendingTools` runs each in its own goroutine, default 8 concurrent, `LOOMCYCLE_TOOL_PARALLELISM` to override. |
+| **SSE wire-level keepalive** | ✅ Long-lived agent streams emit `: keepalive\n\n` comment frames every 20 s by default. Closes the opaque `TypeError: terminated` undici reports when networks with idle-connection timeouts (Tailscale, NAT routers) drop a silent stream. `LOOMCYCLE_SSE_KEEPALIVE_MS` to override; 0 disables. |
+| **Per-token text coalescing** | ✅ OpenAI / DeepSeek streaming text deltas accumulate into 64-byte chunks. Closes the "every word on its own line" cosmetic noise DeepSeek's tokenizer produced. |
+| **Ollama qwen3 tool-call recovery** | ✅ Both JSON-shape (`{"name":"...","arguments":{...}}`) and bracketed-markdown (`[tool_use: name]\n{args}`) forms now synthesize `EventToolCall` so the loop iterates instead of terminating with the markup as the final answer. |
+| **DeepSeek thinking-mode roundtrip** | ✅ DeepSeek V4 Pro / deepseek-reasoner returns `reasoning_content` alongside `content`; the API requires it echoed back on subsequent turns. The OpenAI driver captures it on `EventDone.Reasoning`; the request builder serialises it back when the assistant Message carries one. |
+
+## What's in v0.7.0
+
+| Surface             | Status |
+|---------------------|--------|
+| **Tier-based resolution** | ✅ Agents declare `tier: low \| middle \| high` instead of pinning a specific model. Resolver picks `(provider, model)` against a live availability matrix. Per-agent `providers:` and `models:` overrides cover asymmetric pinning. Explicit pins from v0.6.x continue to work. |
+| **Live `/v1/models` probes** | ✅ Each driver implements `Probe` + `ListModels`. Startup probes run in parallel with a 5s deadline; periodic re-probe runs every 15 min (configurable up to 1h via `LOOMCYCLE_RESOLVE_PROBE_INTERVAL_MS`). |
+| **`Excluded` flag**  | ✅ Providers without API keys are explicitly marked excluded in the matrix — distinct from "probe attempted, failed". Visible in `Resolver.Snapshot()` for dashboards. Startup logs surface the state. |
+| **Reactive stall feedback** | ✅ Loop calls `MarkStalled` on driver errors (5xx after retry, mid-stream errors). Resolver skips stalled `(provider, model)` pairs until next probe revives. `ctx.Err()` guards prevent user-cancellations from polluting the matrix. |
+| **Per-driver effort hint** | ✅ Agent yaml: `effort: low \| medium \| high`. Anthropic → `thinking.budget_tokens` (haiku always skips); OpenAI → `reasoning_effort`; DeepSeek inherits OpenAI; Ollama is a no-op. Loop logs once per Run when effort is dropped. |
+
+## What's in v0.6.0
+
+| Surface             | Status |
+|---------------------|--------|
+| **DeepSeek provider** | ✅ Wraps the OpenAI driver with the DeepSeek base URL pre-baked. Per-agent yaml: `provider: deepseek`. Set `DEEPSEEK_API_KEY`; optional `DEEPSEEK_BASE_URL` for self-hosted OpenAI-compatible mirrors (vLLM, etc.). |
+| **OpenAI `Usage.Model` fix** | ✅ Driver now captures the wire-resolved model alias from the streamed chunk envelope, so `runs.model` populates for every OpenAI-compatible run (OpenAI itself, DeepSeek, vLLM). Same regression class as the v0.4 anthropic fix; latent until the DeepSeek live test surfaced it. |
+| **Ollama live integration tests** | ✅ Three tests (probe, chat, tool call) gated by `OLLAMA_TEST_BASE_URL`. Validated against qwen3:14b on RTX 5080 (16GB VRAM) end-to-end as the offline / cost-floor backend. |
+| **Constant-time bearer compare** | ✅ New `internal/auth.CompareBearer` (sha256+CTC) replaces raw `subtle.ConstantTimeCompare` on both HTTP and gRPC. Closes a length-leak side channel that the stdlib documents but doesn't fix. |
+
+**Provider routing intent (jobs-search-agent first):** Anthropic for user-sensitive paths · DeepSeek for high-volume public data · Ollama (local llama) for offline / cost floor · OpenAI for general use / prototyping. See [`docs/PLAN.md`](docs/PLAN.md#v060--earlier) for the full rationale and rollout history.
+
+## What's in v0.5.5
+
+| Surface             | Status |
+|---------------------|--------|
+| **gRPC server**      | ✅ Opt-in via `LOOMCYCLE_GRPC_ADDR`. All seven RPCs mirror the HTTP+SSE surface 1:1 (`Run`, `Continue`, `GetAgent`, `CancelAgent`, `ListUserAgents`, `GetTranscript`, `Health`). Coexists with HTTP — same store, same cancel registry, same semaphore. See [`docs/GRPC.md`](docs/GRPC.md). |
+| **Python adapter**   | ✅ `pip install loomcycle`. Async `LoomcycleClient` over `grpc.aio` covering all seven RPCs. PEP-561 `py.typed`. |
+| **`internal/runner/`** | ✅ Wire-agnostic seam — HTTP server satisfies `runner.Runner`, gRPC server delegates to the same instance. |
+| **Synthetic registration frames** | ✅ Wire-stable `session` + `agent` frame pair at the head of every Run/Continue stream so adapters capture `(agent_id, run_id, session_id, parent_agent_id)` without re-decoding the transcript. |
+
+## What's in v0.5.0
+
+| Surface             | Status |
+|---------------------|--------|
+| **Postgres backend** | ✅ Full `Store` adapter over `pgx/v5` + embedded `golang-migrate`. Same interface as SQLite; adapters share a contract suite so they can't drift. See [`docs/POSTGRES.md`](docs/POSTGRES.md). |
+| **SQLite stays first-class** | ✅ Default backend; both adapters tested against the same behavioural contract suite. |
+| **Heartbeat sweeper** | ✅ Periodic background goroutine marks runs whose process crashed mid-loop as `failed`. Default-on, env-tunable. |
+| **Session-lock map GC** | ✅ Refcounted + idle-pruned; closes the v0.3.2 leak where `sessionLocks` grew monotonically. |
+| **CLI subcommands**  | ✅ `loomcycle validate` · `agents list` · `health` · `migrate up\|down\|status` · `migrate sqlite-to-postgres` |
+| **`make pg-up` / `pg-down`** | ✅ Local Postgres fixture for tests + dev. |
+
+The bulk of v0.5.0 is operational: backbone you'll need before scaling past one replica. SQLite stays the default for compact installs.
+
+## What's in v0.4.0
+
+| Surface             | Status |
+|---------------------|--------|
+| **Providers**       | Anthropic ✅ · OpenAI ✅ · Ollama ✅ (tool-tuned models only). DeepSeek added in v0.6.0; Gemini in v0.7.2; Ollama-local split out in v0.8.3. |
+| **Built-in tools**  | Read · Write · Edit · HTTP · WebFetch · WebSearch · Bash · **Agent** · **Skill** (Memory added in v0.8.0) |
+| **MCP transports**  | stdio (pooled, auto-respawn) · HTTP (Streamable, SSE-aware) |
+| **MCP startup retry** | Exponential backoff handshake on boot — handles peer-still-starting races |
+| **LocalAPI gateway** | ⏳ scaffolded — useful for consumers that have an OpenAPI spec but don't want to stand up an MCP server. Not the v0.4 integration vehicle (jobs-search-agent migrated to the MCP-server pattern instead). |
+| **Sub-agents**      | Agent built-in spawns child runs; depth-capped; parent host policy + identity inherit via ctx |
+| **Skills**          | Approach A: static bundling at config-load (skill body concatenated into agent system prompt) |
+| **Storage**         | SQLite (modernc.org, pure Go); sessions / runs / events tables; partial indexes for v0.4 sub-agent columns |
+| **Concurrency**     | Global semaphore + bounded FIFO queue; backpressure → HTTP 429 |
+| **Cancellation**    | Registry-based cancel API; cascades from parent to all children via `parent_agent_id` walk |
+| **Adapters**        | TypeScript (`@loomcycle/client`) ✅ · Python ⏳ deferred (shipped in v0.5.5) |
+
+> **v0.4.0 — released after end-to-end MCP integration with jobs-search-agent.** Two agents (`ats-filter`, `qa-agent`) now fetch context — and `qa-agent` also persists results — through typed `mcp__jobs__*` tools served by jobs-search-agent's own MCP server. This validates the runtime's MCP HTTP transport, host-policy inheritance, sub-agent retry, SSE response decoding, and Streamable-HTTP `Accept` handling against a real consumer. Per-agent migration in the consumer continues incrementally; the loomcycle surface is stable.
