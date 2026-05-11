@@ -342,7 +342,7 @@ For usage: see [README](../README.md). For the architecture: see [ARCHITECTURE.m
 
 ## v0.8.x — next: framework primitives
 
-Sequenced 2026-05-09; renumbered 2026-05-10 after v0.8.1 absorbed three operational-hardening PRs (#47/#48/#49); renumbered again 2026-05-11 after v0.8.2 absorbed the `user_tier` resolver-overlay + runtime-fallback work (PRs #52/#53); renumbered once more 2026-05-11 to insert v0.8.5 Self-Evolution Substrate (AgentDef + versioning + Evaluation) ahead of Context (introspection) and LoomCycle MCP — the capstone must expose those tools, so they have to ship first; v0.8.3 took the ollama-split hot-fix and v0.8.4 shipped the Channel tool, so the remaining v0.8.x roadmap below begins at v0.8.5. Each point release in the framework-primitive sequence ships one focused capability — the v1.0 capstone (LoomCycle MCP) needs them in this order because the MCP server's surface is built FROM these primitives. Detailed design (API schemas, storage shapes, retention semantics) lives in feature-branch RFCs at implementation time; the outlines below capture the shape but not the wire.
+Sequenced 2026-05-09; renumbered 2026-05-10 after v0.8.1 absorbed three operational-hardening PRs (#47/#48/#49); renumbered again 2026-05-11 after v0.8.2 absorbed the `user_tier` resolver-overlay + runtime-fallback work (PRs #52/#53); renumbered once more 2026-05-11 to insert v0.8.5 Self-Evolution Substrate (AgentDef + versioning + Evaluation) ahead of Context (introspection) and LoomCycle MCP — the capstone must expose those tools, so they have to ship first; v0.8.3 took the ollama-split hot-fix and v0.8.4 shipped the Channel tool, so the remaining v0.8.x roadmap below begins at v0.8.5; **v0.8.8 Question tool added 2026-05-11 as the human-in-the-loop primitive that completes the substrate symmetry — Memory + Channel + AgentDef/Eval + Context + LoomCycle MCP + Question covers every direction of agent interaction (state, IPC, self-mutation, introspection, control plane, human bridge).** Each point release in the framework-primitive sequence ships one focused capability — the v1.0 capstone (LoomCycle MCP) needs them in this order because the MCP server's surface is built FROM these primitives. Detailed design (API schemas, storage shapes, retention semantics) lives in feature-branch RFCs at implementation time; the outlines below capture the shape but not the wire.
 
 **v0.8.0 Memory tool shipped 2026-05-09**; **v0.8.1 operational hardening shipped 2026-05-10**; **v0.8.2 user_tier shipped 2026-05-11**; **v0.8.3 ollama split shipped 2026-05-11**; **v0.8.4 Channel tool shipped 2026-05-11** — see the sections above for full release notes.
 
@@ -395,11 +395,46 @@ Loomcycle exposes itself as an **MCP server**. External orchestrators (Claude Co
 - **Create / fork / promote `AgentDef` versions (built in v0.8.5).**
 - **Submit / aggregate Evaluations (built in v0.8.5).**
 - Call Context for runtime introspection (built in v0.8.6).
+- **Surface `Question.ask` so external orchestrators can route human-in-the-loop questions through their own UI** (paired with v0.8.8 Question tool — the loomcycle Web UI is the default surface, the MCP exposure is the orchestrator-side override).
 - Subscribe to run-event streams (alternate to SSE).
 
 This is the "MCP-configurable" axis: instead of writing YAML and POSTing JSON, an external tool drives loomcycle through standard MCP. Surface area maps roughly 1:1 to the existing `/v1/*` endpoints plus the v0.8.0–0.8.6 primitives, with auth via the operator's bearer token translated into MCP's auth scheme.
 
 What's not yet decided: stdio vs HTTP transport (probably both — stdio for desktop-app integrations, HTTP for service-to-service), method naming (resources vs tools), whether MCP clients can register new agents at runtime or only spawn from operator-defined ones, handling of long-lived run streams across MCP's request/response shape.
+
+### v0.8.8 — Question tool (human-in-the-loop primitive)
+
+Closes the one direction the v0.8.0–v0.8.7 arc leaves uncovered: **agent ↔ human, mid-run**. The substrate primitives so far cover machine interaction — state (Memory), IPC (Channel), self-mutation (AgentDef), selection (Evaluation), introspection (Context), control plane (LoomCycle MCP). `Question` is the human bridge.
+
+Agents call `Question.ask` to surface a clarifying question, request approval before a risky action, or present a multiple-choice decision to a human in the loop. The human's answer flows back into the agent's loop as the tool result.
+
+**Tool surface (sketch):** three ops on the discriminated-`op` shape that matches Memory / Channel / Context.
+
+- `ask(question, options?, context?, timeout_ms?, priority?)` — surface a question; agent loop pauses until answered, timed out, or cancelled.
+- `notify(message, priority?)` — fire-and-forget (no answer expected).
+- `cancel(question_id)` — cancel a pending question (e.g. agent figured it out itself before the human got there).
+
+The result of `ask` carries `{question_id, answered, answer?, answered_by_user_id?, answered_at?, timed_out, cancelled}`. The model never supplies `answered_by_user_id` — server-resolved from the bearer / cookie context of whoever submits the answer.
+
+**Three delivery surfaces, one tool interface:**
+
+| Path | Where the human sees it | Owner |
+|---|---|---|
+| **(1) Built-in with Web UI default** | `/ui/questions` modal/sidebar; operator (matching the run's `user_id`) answers via the existing bearer-cookie session | loomcycle |
+| **(2) MCP-implemented (consumer-side)** | Consumer runs its own MCP server exposing `mcp__<name>__ask`; loomcycle calls it like any other MCP tool (jobs-search-agent's pattern) | Consumer |
+| **(3) LoomCycle MCP exposure** | v0.8.7 LoomCycle MCP surfaces `Question.ask` so external orchestrators (Claude Code, custom dashboards) become the delivery surface | loomcycle + orchestrator |
+
+Operator picks via `question.backend: webui | mcp_server:<name> | cli` in yaml. The Web UI is the default for production; `cli` lets local dev read answers from stdin.
+
+**Trust model:** per-agent `question_enabled: true` (default-deny, parallel to `memory_scopes` / `channels`). The run's `user_id` is the authoritative answerer — only that user (or operator admins via bearer) can submit. Operator env caps `LOOMCYCLE_QUESTION_DEFAULT_TIMEOUT_MS`, `LOOMCYCLE_QUESTION_MAX_TIMEOUT_MS`, `LOOMCYCLE_QUESTION_MAX_PENDING_PER_USER` bound the surface against runaway question floods.
+
+**Storage:** new `questions` table (additive migration, same pattern as `memory` / `channel_messages` / `agent_defs`). Wire: `POST /v1/runs/{run_id}/questions/{question_id}/answer` for the operator-side submit; new SSE event types `EventQuestion` (emitted on `ask`) and `EventQuestionAnswered` (emitted on resolve).
+
+**Run-lifecycle integration:** when `ask` is called, the agent loop enters a "waiting on human" state. The existing v0.5.0 heartbeat keeps the run alive; the v0.8.4 Channel long-poll wake pattern is reused for sub-millisecond wake on answer.
+
+**What's not yet decided:** blocking vs polling tool semantics (lean: blocking, with heartbeat keeping the run alive), the relationship to Channel (could be implemented as a thin layer; lean: separate tool because request/response semantic is one-to-one, not many-to-many), the notification side-channel (how does the human learn to look at the UI — Slack bot subscribing to SSE? email digest? — lean: out of scope, operator integrates against the pending-queue endpoint).
+
+Detailed design at pickup time will lift the local addendum (in this session's plan file) into `doc-internal/rfcs/question-tool.md`.
 
 ## v0.9.x — high-load runtime sweep
 
