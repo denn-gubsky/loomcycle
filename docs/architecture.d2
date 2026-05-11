@@ -1,0 +1,141 @@
+# LoomCycle architecture diagram
+# Render: d2 docs/architecture.d2 docs/assets/architecture.png
+
+vars: {
+  d2-config: {
+    layout-engine: elk
+    pad: 32
+  }
+}
+
+direction: down
+
+# ---- External callers (left) ----
+
+clients: "App servers · CLIs\nTS / Python SDKs" {
+  shape: rectangle
+  style: {
+    fill: "#eef2f7"
+    stroke: "#475569"
+    font-size: 14
+  }
+}
+
+# ---- The loomcycle binary (center) ----
+
+loomcycle: "loomcycle — single Go binary (~30 MB)" {
+  style: {
+    fill: "#fbfcfe"
+    stroke: "#3b5998"
+    stroke-width: 2
+    border-radius: 12
+    font-size: 16
+    bold: true
+  }
+
+  direction: down
+
+  surfaces: "Wire surfaces" {
+    grid-columns: 3
+    style.fill: "#f1f5f9"
+
+    http_sse: "HTTP + SSE" {style.fill: "#dbeafe"}
+    grpc: "gRPC" {style.fill: "#dbeafe"}
+    webui: "React Web UI (/ui)" {style.fill: "#dbeafe"}
+  }
+
+  middleware: "Auth (bearer, constant-time) · Concurrency semaphore · Cancel registry" {
+    style: {
+      fill: "#f8fafc"
+      italic: true
+      font-size: 13
+    }
+  }
+
+  loop: "Agent loop\nmodel → tool_use → tool_result → model" {
+    style: {
+      fill: "#e0e7ff"
+      stroke: "#4f46e5"
+      stroke-width: 2
+      bold: true
+      font-size: 15
+    }
+  }
+
+  dispatcher: "Tool dispatcher" {
+    grid-columns: 3
+    style.fill: "#fef3c7"
+
+    builtins: "10 built-in tools\nMemory · Read · Write · Edit\nHTTP · WebFetch · WebSearch\nBash · Agent · Skill" {
+      style: {fill: "#fde68a"; font-size: 12}
+    }
+    mcp_layer: "MCP transport\nstdio pool +\nStreamable HTTP" {
+      style: {fill: "#fde68a"; font-size: 12}
+    }
+    subagents: "Sub-agent runner\n(Agent tool)\nctx-inherited policy" {
+      style: {fill: "#fde68a"; font-size: 12}
+    }
+  }
+
+  store: "Store\nSQLite (default) · Postgres (HA)" {
+    shape: cylinder
+    style: {
+      fill: "#fed7aa"
+      stroke: "#ea580c"
+      bold: true
+    }
+  }
+
+  surfaces -> middleware: {style.stroke: "#94a3b8"}
+  middleware -> loop: {style.stroke: "#94a3b8"}
+  loop -> dispatcher: "dispatch" {style.stroke: "#4f46e5"}
+  loop -> store: "transcripts · events" {style.stroke: "#ea580c"}
+  dispatcher.subagents -> loop: "spawn child" {
+    style.stroke: "#4f46e5"
+    style.stroke-dash: 4
+  }
+}
+
+# ---- External services (right) ----
+
+externals: "External" {
+  style: {
+    fill: "#fffbeb"
+    stroke: "#d97706"
+    border-radius: 12
+  }
+  direction: down
+
+  providers: "LLM providers (6, pure HTTP — no SDKs)" {
+    grid-columns: 2
+    style.fill: "#fef9c3"
+
+    anthropic: "Anthropic" {style.fill: "#fde68a"}
+    openai: "OpenAI" {style.fill: "#fde68a"}
+    deepseek: "DeepSeek" {style.fill: "#fde68a"}
+    gemini: "Gemini" {style.fill: "#fde68a"}
+    ollama_cloud: "Ollama (cloud)" {style.fill: "#fde68a"}
+    ollama_local: "Ollama (local)" {style.fill: "#fde68a"}
+  }
+
+  mcp_servers: "External MCP servers\n(consumer-side typed tools)" {
+    shape: cloud
+    style: {
+      fill: "#ede9fe"
+      stroke: "#7c3aed"
+    }
+  }
+}
+
+# ---- Cross-layer edges ----
+
+clients -> loomcycle.surfaces: "HTTP · gRPC" {style.stroke: "#475569"}
+loomcycle.loop -> externals.providers: "stream + tool_use" {
+  style: {
+    stroke: "#d97706"
+    bold: true
+  }
+}
+loomcycle.dispatcher.mcp_layer -> externals.mcp_servers: "JSON-RPC" {
+  style.stroke: "#7c3aed"
+}

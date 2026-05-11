@@ -92,29 +92,11 @@ Public roadmap with v0.8.x → v1.0 design details: [`docs/PLAN.md`](docs/PLAN.m
 
 ## Architecture (one diagram)
 
-```
-                  ┌──────────────────────────────────────────────────┐
-  App server  ───▶│  loomcycle (Go, single ~30 MB binary)            │
-                  │                                                  │
-                  │  HTTP+SSE  ·  gRPC  ·  React Web UI at /ui       │
-                  │     │                                            │
-                  │     ▼                                            │
-                  │  Auth · Concurrency semaphore · Cancel registry  │
-                  │     │                                            │
-                  │     ▼                                            │
-                  │  Agent loop ─── Provider drivers (6)             │
-                  │     │            ├─ Anthropic · OpenAI           │
-                  │     │            ├─ DeepSeek · Gemini            │
-                  │     │            └─ Ollama (cloud + local)       │
-                  │     ▼                                            │
-                  │  Tool dispatcher                                 │
-                  │     ├─ Built-ins (10 tools incl. Memory)         │
-                  │     ├─ MCP (stdio pool + Streamable HTTP)        │
-                  │     └─ Agent tool → sub-agent runner             │
-                  │     ▼                                            │
-                  │  Store (SQLite default, Postgres for HA)         │
-                  └──────────────────────────────────────────────────┘
-```
+<p align="center">
+  <img src="docs/assets/architecture.png" alt="loomcycle architecture — app servers / SDKs at the top, the single Go binary in the middle (wire surfaces → middleware → agent loop → tool dispatcher → store), six LLM providers and external MCP servers at the bottom" width="780" />
+</p>
+
+Diagram source: [`docs/architecture.d2`](docs/architecture.d2) (regenerate with `d2 docs/architecture.d2 docs/assets/architecture.png`).
 
 Full request flow, abstractions, and concurrency model: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
