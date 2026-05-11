@@ -334,7 +334,23 @@ type NativeCacheConfig struct {
 type Env struct {
 	AnthropicAPIKey string
 	OpenAIAPIKey    string
-	OllamaBaseURL   string
+	// OllamaBaseURL is the local-network Ollama endpoint. Drives the
+	// `ollama-local` provider registration. Default
+	// `http://localhost:11434` keeps existing deploys unchanged across
+	// the v0.8.3 split — operators with this var set keep working with
+	// no further action. Setting `OLLAMA_BASE_URL=disabled` opts out
+	// of registering `ollama-local`.
+	OllamaBaseURL string
+	// OllamaAPIKey enables the `ollama` provider (hosted ollama.com,
+	// Bearer auth). Empty = provider not registered. Same on/off
+	// semantics as the other paid-cloud providers (Anthropic / OpenAI /
+	// DeepSeek / Gemini).
+	OllamaAPIKey string
+	// OllamaCloudBaseURL overrides the hosted ollama.com endpoint
+	// (https://ollama.com) for staged rollouts or vendor mirrors.
+	// Defaults to the public hosted endpoint; ignored when
+	// OllamaAPIKey is empty.
+	OllamaCloudBaseURL string
 	// DeepSeekAPIKey enables the `provider: deepseek` driver. Empty
 	// = provider not registered (agents that ask for it fail at
 	// resolve time, mirroring OpenAI / Anthropic behaviour).
@@ -606,6 +622,8 @@ func Load(path string) (*Config, error) {
 		AnthropicAPIKey:          os.Getenv("ANTHROPIC_API_KEY"),
 		OpenAIAPIKey:             os.Getenv("OPENAI_API_KEY"),
 		OllamaBaseURL:            getenvDefault("OLLAMA_BASE_URL", "http://localhost:11434"),
+		OllamaAPIKey:             os.Getenv("OLLAMA_API_KEY"),
+		OllamaCloudBaseURL:       getenvDefault("OLLAMA_CLOUD_BASE_URL", "https://ollama.com"),
 		DeepSeekAPIKey:           os.Getenv("DEEPSEEK_API_KEY"),
 		DeepSeekBaseURL:          os.Getenv("DEEPSEEK_BASE_URL"),
 		GeminiAPIKey:             os.Getenv("GEMINI_API_KEY"),
@@ -1184,11 +1202,12 @@ func splitCSV(s string) []string {
 // how to dispatch to. Adding a new driver requires extending this set
 // AND wiring the driver into cmd/loomcycle/main.go's resolver.
 var validProviderIDs = map[string]bool{
-	"anthropic": true,
-	"openai":    true,
-	"deepseek":  true,
-	"ollama":    true,
-	"gemini":    true,
+	"anthropic":    true,
+	"openai":       true,
+	"deepseek":     true,
+	"ollama":       true, // hosted ollama.com (Bearer auth)
+	"ollama-local": true, // local-network Ollama (no auth)
+	"gemini":       true,
 }
 
 // validTierNames is the closed set of tier names. Operators choose

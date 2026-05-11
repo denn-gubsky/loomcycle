@@ -10,24 +10,24 @@ import (
 // across the tests so each one starts from the realistic operator
 // config rather than a contrived two-row table.
 func fixtureLibrary() (priority []string, tiers map[string][]Candidate) {
-	priority = []string{"deepseek", "ollama", "openai", "anthropic"}
+	priority = []string{"deepseek", "ollama-local", "openai", "anthropic"}
 	tiers = map[string][]Candidate{
 		"low": {
 			{Provider: "deepseek", Model: "deepseek-v4-flash"},
-			{Provider: "ollama", Model: "gemma4:9b"},
+			{Provider: "ollama-local", Model: "gemma4:9b"},
 			{Provider: "openai", Model: "gpt-5.4-mini"},
 			{Provider: "anthropic", Model: "claude-haiku-4-5"},
 		},
 		"middle": {
 			{Provider: "deepseek", Model: "deepseek-v4-pro"},
-			{Provider: "ollama", Model: "qwen3.6:27b"},
+			{Provider: "ollama-local", Model: "qwen3.6:27b"},
 			{Provider: "openai", Model: "gpt-5.4"},
 			{Provider: "anthropic", Model: "claude-sonnet-4-6"},
 		},
 		"high": {
 			// DeepSeek deliberately absent at high tier per the
 			// May-2026 matrix.
-			{Provider: "ollama", Model: "kimi-k2.6"},
+			{Provider: "ollama-local", Model: "kimi-k2.6"},
 			{Provider: "openai", Model: "gpt-5.5"},
 			{Provider: "anthropic", Model: "claude-opus-4-7"},
 		},
@@ -47,7 +47,7 @@ func seedAll(t *testing.T, r *Resolver, tiers map[string][]Candidate) {
 			r.SeedModel(c.Provider, c.Model)
 		}
 	}
-	for _, providerID := range []string{"anthropic", "openai", "deepseek", "ollama"} {
+	for _, providerID := range []string{"anthropic", "openai", "deepseek", "ollama-local"} {
 		r.SetProviderReachable(providerID, true)
 	}
 }
@@ -142,7 +142,7 @@ func TestResolve_FallthroughWhenFirstCandidateStalled(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
-	if dec.Provider != "ollama" {
+	if dec.Provider != "ollama-local" {
 		t.Errorf("decision provider = %q, want ollama (fallthrough from stalled deepseek)", dec.Provider)
 	}
 }
@@ -162,7 +162,7 @@ func TestResolve_FallthroughWhenProviderUnreachable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
-	if dec.Provider != "ollama" {
+	if dec.Provider != "ollama-local" {
 		t.Errorf("decision provider = %q, want ollama (fallthrough from unreachable deepseek)", dec.Provider)
 	}
 }
@@ -245,7 +245,7 @@ func TestResolve_TierUnavailableWhenNoProviderReachable(t *testing.T) {
 	priority, tiers := fixtureLibrary()
 	r := NewResolver(priority, tiers)
 	seedAll(t, r, tiers)
-	for _, p := range []string{"anthropic", "openai", "deepseek", "ollama"} {
+	for _, p := range []string{"anthropic", "openai", "deepseek", "ollama-local"} {
 		r.SetProviderReachable(p, false)
 	}
 
@@ -377,7 +377,7 @@ func TestSetExcluded_SkipsProviderInResolution(t *testing.T) {
 	}
 	// DeepSeek is library priority's first choice for low tier;
 	// with it excluded, resolver should fall through to Ollama.
-	if dec.Provider != "ollama" {
+	if dec.Provider != "ollama-local" {
 		t.Errorf("decision provider = %q, want ollama (fallthrough from excluded deepseek)", dec.Provider)
 	}
 }
@@ -467,10 +467,10 @@ func TestSnapshot_IsACopy(t *testing.T) {
 func freeTierOverlay() *UserTierOverlay {
 	return &UserTierOverlay{
 		Name:             "free",
-		ProviderPriority: []string{"gemini", "ollama"},
+		ProviderPriority: []string{"gemini", "ollama-local"},
 		Tiers: map[string][]Candidate{
-			"low":    {{Provider: "gemini", Model: "gemini-2.0-flash"}, {Provider: "ollama", Model: "llama-local"}},
-			"middle": {{Provider: "gemini", Model: "gemini-2.0-flash"}, {Provider: "ollama", Model: "llama-local"}},
+			"low":    {{Provider: "gemini", Model: "gemini-2.0-flash"}, {Provider: "ollama-local", Model: "llama-local"}},
+			"middle": {{Provider: "gemini", Model: "gemini-2.0-flash"}, {Provider: "ollama-local", Model: "llama-local"}},
 			"high":   {{Provider: "gemini", Model: "gemini-2.5-pro"}},
 		},
 		FallbackOnError: false, // free tier doesn't cascade — cost cap
@@ -504,7 +504,7 @@ func TestResolve_UserTierOverlay_UsesUserTierPriorityWhenAgentHasNone(t *testing
 	overlay := freeTierOverlay()
 	overlay.Tiers["low"] = []Candidate{
 		{Provider: "gemini", Model: "gemini-2.0-flash"},
-		{Provider: "ollama", Model: "llama-local"},
+		{Provider: "ollama-local", Model: "llama-local"},
 	}
 	dec, err := r.Resolve(AgentRequest{
 		Name:     "any-agent",
@@ -655,5 +655,50 @@ func TestResolve_UserTierOverlay_TierFallthroughToLibrary(t *testing.T) {
 	// include anthropic (claude-opus-4-7). Resolver should pick it.
 	if dec.Provider != "anthropic" {
 		t.Errorf("Decision.Provider = %q; want anthropic (library tier filtered through user_tier priority)", dec.Provider)
+	}
+}
+
+// TestResolve_OllamaLocalAndOllamaAreDistinct pins the v0.8.3 split:
+// the resolver treats "ollama" (hosted) and "ollama-local" (local)
+// as independent priority slots. Mark hosted ollama stalled; the
+// resolver must walk on to the next slot — not silently substitute
+// the local registration just because both share the same driver
+// internally.
+func TestResolve_OllamaLocalAndOllamaAreDistinct(t *testing.T) {
+	priority := []string{"ollama", "ollama-local", "anthropic"}
+	tiers := map[string][]Candidate{
+		"low": {
+			{Provider: "ollama", Model: "kimi-k2.6"},       // hosted-only
+			{Provider: "ollama-local", Model: "gemma4:9b"}, // local-only
+			{Provider: "anthropic", Model: "claude-haiku-4-5"},
+		},
+	}
+	r := NewResolver(priority, tiers)
+	r.SeedModel("ollama", "kimi-k2.6")
+	r.SeedModel("ollama-local", "gemma4:9b")
+	r.SeedModel("anthropic", "claude-haiku-4-5")
+	r.SetProviderReachable("ollama", true)
+	r.SetProviderReachable("ollama-local", true)
+	r.SetProviderReachable("anthropic", true)
+
+	// First resolution: hosted is healthy → resolver picks it.
+	dec, err := r.Resolve(AgentRequest{Name: "any", Tier: "low"})
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if dec.Provider != "ollama" || dec.Model != "kimi-k2.6" {
+		t.Errorf("first resolve = %+v; want ollama/kimi-k2.6", dec)
+	}
+
+	// Mark hosted's model stalled — resolver should walk past it to
+	// the local registration. If the two ids were conflated the
+	// resolver would either return the same decision or skip BOTH.
+	r.MarkStalled("ollama", "kimi-k2.6", "503")
+	dec, err = r.Resolve(AgentRequest{Name: "any", Tier: "low"})
+	if err != nil {
+		t.Fatalf("Resolve after stall: %v", err)
+	}
+	if dec.Provider != "ollama-local" || dec.Model != "gemma4:9b" {
+		t.Errorf("post-stall resolve = %+v; want ollama-local/gemma4:9b (proves the two are distinct)", dec)
 	}
 }

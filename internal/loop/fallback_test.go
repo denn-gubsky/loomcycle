@@ -23,9 +23,9 @@ type tieredProvider struct {
 	calls     int
 }
 
-func (p *tieredProvider) ID() string                                       { return p.id }
-func (p *tieredProvider) Probe(_ context.Context) error                    { return nil }
-func (p *tieredProvider) ListModels(_ context.Context) ([]string, error)   { return []string{"m"}, nil }
+func (p *tieredProvider) ID() string                                     { return p.id }
+func (p *tieredProvider) Probe(_ context.Context) error                  { return nil }
+func (p *tieredProvider) ListModels(_ context.Context) ([]string, error) { return []string{"m"}, nil }
 func (p *tieredProvider) Capabilities() providers.Capabilities {
 	return providers.Capabilities{Streaming: true}
 }
@@ -148,11 +148,11 @@ func TestFallback_DisabledPolicy_PropagatesError(t *testing.T) {
 	}
 	reResolveCalls := 0
 	opts := RunOptions{
-		Provider:      failing,
-		Model:         "gemini-2.0-flash",
-		MaxIterations: 5,
-		Segments:      []PromptSegment{{Role: "user", Content: []PromptContentBlock{{Type: "trusted-text", Text: "hi"}}}},
-		OnEvent:       func(ev providers.Event) {},
+		Provider:       failing,
+		Model:          "gemini-2.0-flash",
+		MaxIterations:  5,
+		Segments:       []PromptSegment{{Role: "user", Content: []PromptContentBlock{{Type: "trusted-text", Text: "hi"}}}},
+		OnEvent:        func(ev providers.Event) {},
 		FallbackPolicy: FallbackPolicy{Enabled: false}, // free tier
 		ReResolve: func(_ context.Context, _, _ string, _ error) (providers.Provider, string, string, error) {
 			reResolveCalls++

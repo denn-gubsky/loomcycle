@@ -30,7 +30,7 @@ loomcycle/
 │   │   ├── anthropic/                 Messages API + native cache_control
 │   │   ├── openai/                    Chat Completions
 │   │   ├── deepseek/                  Wraps openai/ with the DeepSeek base URL pre-baked
-│   │   ├── ollama/                    /api/chat NDJSON (tool-tuned models only)
+│   │   ├── ollama/                    /api/chat NDJSON (registered as both `ollama` cloud + `ollama-local`)
 │   │   ├── ratelimit/                 per-driver retry-after + backoff
 │   │   └── provider.go                Provider interface (Call, Probe, ListModels) + Capabilities
 │   ├── resolve/                       v0.7.0 model resolution matrix (tier + effort + availability)
@@ -125,14 +125,16 @@ type Event struct {
 
 Each driver translates its provider's streaming shape into the same `Event` channel. The loop is provider-agnostic. Capability flags let the loop decline to set fields the provider doesn't honour (e.g. only Anthropic gets `cache_control` placement; Ollama tool-call IDs are synthesized by the loop).
 
-Four drivers ship as of v0.6.0:
+Six driver registrations ship as of v0.8.3 (one package per provider, except `ollama` and `ollama-local` which share the `internal/providers/ollama/` package — same wire shape, different auth header + base URL):
 
 | Driver       | API                       | Notes |
 |---|---|---|
 | `anthropic` | Messages (streaming SSE)   | Native `cache_control` on system blocks marked `cacheable: true`. `message_start.message.model` plumbed into final `Usage.Model` so callers get the resolved alias for pricing. |
 | `openai`    | Chat Completions (streaming) | Index-keyed tool_call accumulator across deltas. Honours `[DONE]` sentinel. As of v0.6.0, captures the wire-resolved `model` field from each chunk envelope so `runs.model` populates correctly (also benefits any OpenAI-compatible endpoint — DeepSeek, vLLM). |
 | `deepseek`  | Chat Completions (streaming) | Wraps the `openai` driver with `https://api.deepseek.com/v1` pre-baked and `ID()` returning `"deepseek"`. Same wire shape, retry strategy, and tool-call envelope. Operator opts in via `DEEPSEEK_API_KEY` env (optional `DEEPSEEK_BASE_URL` for self-hosted OpenAI-compatible mirrors). Distinct package so per-provider cost rollups don't conflate OpenAI and DeepSeek pricing. |
-| `ollama`    | `/api/chat` (NDJSON)         | Tool-tuned models only (qwen3+, llama3.1+, mistral-large). Tool-call IDs synthesized as `lc-{iter}-{slot}` because Ollama doesn't issue them. Recent Ollama versions emit reasoning-model output in a separate `message.thinking` field which the driver currently drops — tracked as v0.7+ work. |
+| `gemini`    | Generative Language API (streaming SSE) | v0.7.x driver. Reasoning-effort hint translated to Gemini's `thinking_config`. |
+| `ollama`    | `/api/chat` (NDJSON), Bearer auth | **Hosted ollama.com.** Opts in via `OLLAMA_API_KEY` (optional `OLLAMA_CLOUD_BASE_URL` for vendor mirrors). Same `/api/chat` wire shape as local Ollama; Bearer header on every request. Treated as a paid-cloud provider in priority queues. |
+| `ollama-local` | `/api/chat` (NDJSON), no auth | **Local-network Ollama.** Opts in via `OLLAMA_BASE_URL` (default `http://localhost:11434`; `disabled` opts out). No auth — local trust model. Tool-tuned models only (qwen3+, llama3.1+, mistral-large). Tool-call IDs synthesized as `lc-{iter}-{slot}` because Ollama doesn't issue them. Recent Ollama versions emit reasoning-model output in a separate `message.thinking` field which the driver currently drops — tracked as v0.7+ work. |
 
 Each driver has rate-limit retry logic (`internal/providers/ratelimit/`) — 429s and provider 5xx-with-retry-after preserve run context across the retry; observable as `event: retry` SSE frames.
 
@@ -161,7 +163,7 @@ Effort flow: agent yaml `effort: low|medium|high` → `Decision.Effort` → `Run
 | `anthropic` | `thinking.budget_tokens` (low → skip thinking; medium → 2048; high → 8192). Haiku always skips. Budget clamps to `max_tokens - 1024` if it would exceed `max_tokens`; drops below 1024 minimum. |
 | `openai` | `reasoning_effort` (pass-through). API rejects on non-reasoning models with 400. |
 | `deepseek` | Inherits OpenAI via the wrapper. |
-| `ollama` | `SupportsEffort=false`. Loop logs once per Run when effort is dropped. |
+| `ollama`, `ollama-local` | Both share the same driver: `SupportsEffort=false`. Loop logs once per Run when effort is dropped. |
 
 References: `internal/resolve/matrix.go`, `internal/api/http/server.go` (`resolveAgent`, `markStalledFn`), `cmd/loomcycle/main.go` (`buildResolver`, `runResolveProbeOnce`, `runResolveProbeLoop`).
 

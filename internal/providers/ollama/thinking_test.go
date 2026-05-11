@@ -29,7 +29,7 @@ func TestStreamThinking_EmitsLiveEventThinking(t *testing.T) {
 	srv := fakeStream(t, frames)
 	defer srv.Close()
 
-	d := New(srv.URL, streamhttp.Options{}, nil)
+	d := New("", "", srv.URL, streamhttp.Options{}, nil)
 	ch, err := d.Call(context.Background(), providers.Request{
 		Model:    "qwen3:14b",
 		Messages: []providers.Message{{Role: "user", Content: []providers.ContentBlock{{Type: "text", Text: "what is 6 times 7"}}}},
@@ -77,7 +77,7 @@ func TestStreamThinking_NotEmittedOnNonThinkingModel(t *testing.T) {
 	srv := fakeStream(t, frames)
 	defer srv.Close()
 
-	d := New(srv.URL, streamhttp.Options{}, nil)
+	d := New("", "", srv.URL, streamhttp.Options{}, nil)
 	ch, _ := d.Call(context.Background(), providers.Request{
 		Model:    "llama3.1",
 		Messages: []providers.Message{{Role: "user", Content: []providers.ContentBlock{{Type: "text", Text: "hi"}}}},

@@ -554,9 +554,14 @@ func openStore(cfg *config.Config) (store.Store, func(), error) {
 type providerResolver struct {
 	anthropic providers.Provider
 	openai    providers.Provider
-	ollama    providers.Provider
-	deepseek  providers.Provider
-	gemini    providers.Provider
+	// ollama = hosted ollama.com (Bearer auth via OLLAMA_API_KEY).
+	// ollamaLocal = local-network endpoint (no auth, default
+	// localhost:11434). Both wrap the same internal driver; only the
+	// providerID, auth header, and base URL differ. See v0.8.3 split.
+	ollama      providers.Provider
+	ollamaLocal providers.Provider
+	deepseek    providers.Provider
+	gemini      providers.Provider
 }
 
 func newProviderResolver(cfg *config.Config) *providerResolver {
@@ -571,11 +576,20 @@ func newProviderResolver(cfg *config.Config) *providerResolver {
 	if cfg.Env.OpenAIAPIKey != "" {
 		pr.openai = openai.New(cfg.Env.OpenAIAPIKey, "", streamOpts, nil)
 	}
-	// Ollama has no API key — wire it up if a base URL is configured (the
-	// loader defaults this to http://localhost:11434 so it's effectively
-	// always-on; users disable it by setting OLLAMA_BASE_URL=disabled).
+	// Hosted ollama.com — opts in via OLLAMA_API_KEY. Bearer-auth on the
+	// same /api/chat wire shape as local Ollama; the driver is shared,
+	// only the providerID + auth header + base URL differ.
+	// OLLAMA_CLOUD_BASE_URL overrides the public endpoint for staged
+	// rollouts or vendor mirrors.
+	if cfg.Env.OllamaAPIKey != "" {
+		pr.ollama = ollama.New("ollama", cfg.Env.OllamaAPIKey, cfg.Env.OllamaCloudBaseURL, streamOpts, nil)
+	}
+	// Local-network Ollama — no API key, local trust model. The loader
+	// defaults OLLAMA_BASE_URL to http://localhost:11434, so this is
+	// effectively always-on. Operators disable it via
+	// OLLAMA_BASE_URL=disabled (or an empty string in shell env).
 	if cfg.Env.OllamaBaseURL != "" && cfg.Env.OllamaBaseURL != "disabled" {
-		pr.ollama = ollama.New(cfg.Env.OllamaBaseURL, streamOpts, nil)
+		pr.ollamaLocal = ollama.New("ollama-local", "", cfg.Env.OllamaBaseURL, streamOpts, nil)
 	}
 	// DeepSeek opts in via DEEPSEEK_API_KEY. Optional DEEPSEEK_BASE_URL
 	// overrides the public endpoint for self-hosted OpenAI-compatible
@@ -606,9 +620,14 @@ func (p *providerResolver) Get(id string) (providers.Provider, error) {
 		return p.openai, nil
 	case "ollama":
 		if p.ollama == nil {
-			return nil, fmt.Errorf("ollama provider not configured (set OLLAMA_BASE_URL or unset OLLAMA_BASE_URL=disabled)")
+			return nil, fmt.Errorf("ollama provider not configured (set OLLAMA_API_KEY for hosted ollama.com; use provider id \"ollama-local\" for a local-network Ollama)")
 		}
 		return p.ollama, nil
+	case "ollama-local":
+		if p.ollamaLocal == nil {
+			return nil, fmt.Errorf("ollama-local provider not configured (set OLLAMA_BASE_URL, or it's been opted out via OLLAMA_BASE_URL=disabled)")
+		}
+		return p.ollamaLocal, nil
 	case "deepseek":
 		if p.deepseek == nil {
 			return nil, fmt.Errorf("deepseek provider not configured (set DEEPSEEK_API_KEY)")
@@ -673,7 +692,9 @@ func runResolveProbeOnce(ctx context.Context, r *resolve.Resolver, pr *providerR
 			exclReason: "DEEPSEEK_API_KEY not set"},
 		{id: "gemini", excluded: cfg.Env.GeminiAPIKey == "",
 			exclReason: "GEMINI_API_KEY not set"},
-		{id: "ollama", excluded: cfg.Env.OllamaBaseURL == "" || cfg.Env.OllamaBaseURL == "disabled",
+		{id: "ollama", excluded: cfg.Env.OllamaAPIKey == "",
+			exclReason: "OLLAMA_API_KEY not set"},
+		{id: "ollama-local", excluded: cfg.Env.OllamaBaseURL == "" || cfg.Env.OllamaBaseURL == "disabled",
 			exclReason: "OLLAMA_BASE_URL not configured"},
 	}
 	for i := range jobs {
