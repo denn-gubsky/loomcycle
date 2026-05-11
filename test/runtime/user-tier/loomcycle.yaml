@@ -1,0 +1,78 @@
+# test/runtime/user-tier/loomcycle.yaml — v0.8.2 user_tier resolve-time
+# tier-walk test.
+#
+# Drives a run with `user_tier: low` whose primary provider (deepseek)
+# is unreachable (DEEPSEEK_BASE_URL points at port 1 — see run.sh).
+# Boot probe marks deepseek unreachable in the matrix; at run-start,
+# the resolver walks the tier's candidate list, skips deepseek, and
+# dispatches to the next candidate (anthropic). Run completes
+# against the fallback provider.
+#
+# Validates:
+#   - boot probe marks deepseek unreachable
+#   - resolver walks the user_tier candidate list and skips stalled
+#     candidates at resolve-time
+#   - run dispatches to the next candidate (claude-haiku-4-5-20251001)
+#   - runs.user_tier marker persists for cost retros and compliance
+#
+# Does NOT validate the mid-run fallback path (v0.8.2 PR #53 — error
+# classifier + ReResolve from inside the loop after a 5xx mid-call).
+# That path is unit-tested in internal/loop/fallback_test.go.
+# Exercising it from a runtime test would require a fake HTTP server
+# that probes 200 on /v1/models but 503 on /v1/chat/completions —
+# out of scope for this smoke. See run.sh's docstring for details.
+#
+# Requires DEEPSEEK_API_KEY (any non-empty value — the unreachable URL
+# means auth is never tried) AND ANTHROPIC_API_KEY. run.sh exits
+# cleanly with a clear message if either is missing.
+
+# Both providers configured so the resolver can dispatch to either.
+provider_priority: [deepseek, anthropic]
+
+# ─── User tiers (v0.8.2) ────────────────────────────────────────────
+# `low` is the tier the test driver passes on POST /v1/runs. Primary
+# is deepseek (broken URL → fails); fallback is anthropic (real).
+# fallback_on_error: true is the gate — without it the broken-primary
+# error propagates straight to the client and no switch happens.
+user_tiers:
+  default:
+    # Used only by runs that don't carry a user_tier. Mirrors `low`
+    # so this config is interpretable for ad-hoc curl calls.
+    provider_priority: [deepseek, anthropic]
+    tiers:
+      low:
+        - { provider: deepseek,  model: deepseek-v4-pro }
+        - { provider: anthropic, model: claude-haiku-4-5-20251001 }
+    fallback_on_error: true
+    max_fallback_attempts: 3
+
+  low:
+    provider_priority: [deepseek, anthropic]
+    tiers:
+      low:
+        - { provider: deepseek,  model: deepseek-v4-pro }
+        - { provider: anthropic, model: claude-haiku-4-5-20251001 }
+    fallback_on_error: true
+    max_fallback_attempts: 3
+
+# ─── Agents from MD discovery ──────────────────────────────────────
+# run.sh sets LOOMCYCLE_AGENTS_ROOT to ./agents/. The single test
+# agent (greeter.md) declares tier: low and no provider pin — so
+# resolution walks the candidate list above.
+
+# Inject tier: low on the agent via the yaml override layer.
+# The MD itself stays provider-agnostic so this yaml is the only
+# place the tier dependency lives.
+agents:
+  greeter:
+    tier: low
+    effort: low
+
+# ─── Storage ───────────────────────────────────────────────────────
+storage:
+  backend: sqlite
+
+# ─── Concurrency ───────────────────────────────────────────────────
+concurrency:
+  max_concurrent_runs: 4
+  max_queue_depth: 8
