@@ -237,3 +237,80 @@ func TestAgentDefTool_RetireRoundTrip(t *testing.T) {
 		t.Error("retire(false) didn't reverse")
 	}
 }
+
+// Capability-escalation guard on `create`: an agent with narrow
+// allowed_tools cannot mint a new agent with a wider tool surface
+// than its own. The caller's effective AgentTools(ctx) is the
+// ceiling. Mirror of the subset check in `fork`.
+func TestAgentDefTool_CreateRefusedOnAllowedToolsWidening(t *testing.T) {
+	tool, ctx, cleanup := agentDefFixture(t)
+	defer cleanup()
+
+	// Caller's effective tools is [Read, AgentDef] only.
+	narrowCtx := tools.WithAgentTools(ctx, []string{"Read", "AgentDef"})
+
+	// Overlay tries to add Write — wider than the caller's surface.
+	res, _ := tool.Execute(narrowCtx, json.RawMessage(`{"op":"create","name":"newagent","overlay":{"allowed_tools":["Read","Write"]}}`))
+	if !res.IsError {
+		t.Fatalf("create with wider allowed_tools should refuse; got %s", res.Text)
+	}
+	if !strings.Contains(res.Text, "AllowedTools cannot widen") {
+		t.Errorf("error should mention AllowedTools widening; got %s", res.Text)
+	}
+
+	// Same overlay but subset of caller's tools is fine.
+	res, _ = tool.Execute(narrowCtx, json.RawMessage(`{"op":"create","name":"newagent2","overlay":{"allowed_tools":["Read"]}}`))
+	if res.IsError {
+		t.Fatalf("create with narrowed allowed_tools should pass; got %s", res.Text)
+	}
+}
+
+// Missing AgentTools(ctx) — runtime misconfiguration. With a
+// non-empty overlay AllowedTools, refuse rather than silently
+// allow the wider value.
+func TestAgentDefTool_CreateRefusedWhenCallerToolsMissing(t *testing.T) {
+	tool, ctx, cleanup := agentDefFixture(t)
+	defer cleanup()
+
+	// ctx does NOT have AgentTools attached. Overlay sets allowed_tools.
+	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"create","name":"newagent","overlay":{"allowed_tools":["Read"]}}`))
+	if !res.IsError {
+		t.Fatalf("create with no AgentTools(ctx) + AllowedTools overlay should refuse; got %s", res.Text)
+	}
+	if !strings.Contains(res.Text, "not on ctx") {
+		t.Errorf("error should mention missing ctx tools; got %s", res.Text)
+	}
+
+	// Create WITHOUT allowed_tools overlay should still pass (no
+	// widening risk when the def doesn't declare its own tools).
+	res, _ = tool.Execute(ctx, json.RawMessage(`{"op":"create","name":"toolless"}`))
+	if res.IsError {
+		t.Fatalf("create with no allowed_tools overlay should pass even without ctx tools; got %s", res.Text)
+	}
+}
+
+// Documents the v0.8.5 gap: the `descendants` scope is behaviourally
+// equivalent to `any` because the tool does not walk the lineage
+// graph on every check. This pins the current (undesired) behaviour
+// so future tightening triggers a deliberate test update rather than
+// silently changing the runtime contract.
+func TestAgentDefTool_DescendantsScopeIsCurrentlyEquivalentToAny(t *testing.T) {
+	tool, _, cleanup := agentDefFixture(t)
+	defer cleanup()
+	// Build a ctx with ONLY `descendants` scope (no `any`, no `named:foo`).
+	ctx := tools.WithAgentName(context.Background(), "alpha")
+	ctx = tools.WithRunIdentity(ctx, tools.RunIdentityValue{AgentID: "a_test"})
+	ctx = tools.WithAgentDefPolicy(ctx, tools.AgentDefPolicyValue{
+		Scopes:   []string{"descendants"},
+		SelfName: "alpha",
+	})
+	ctx = tools.WithAgentTools(ctx, []string{"Read"})
+
+	// Mutate a totally unrelated name (would-be cross-tree).
+	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"create","name":"completely-unrelated"}`))
+	if res.IsError {
+		t.Fatalf("descendants scope currently accepts unrelated names by design (v0.8.5 gap); got %s", res.Text)
+	}
+	// When this test starts failing, descendants has been tightened —
+	// update the test and the inline comment in checkScopeForName.
+}

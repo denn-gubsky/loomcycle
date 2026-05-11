@@ -159,6 +159,25 @@ func (a *AgentDef) execCreate(ctx context.Context, policy tools.AgentDefPolicyVa
 	if err != nil {
 		return errResult(fmt.Sprintf("create: %s", err)), nil
 	}
+	// AllowedTools ceiling on `create`: the caller's own effective
+	// allowed_tools is the ceiling for any new agent it mints. Without
+	// this check an agent with narrow allowed_tools could call
+	// `create` with overlay.allowed_tools = [the entire universe] and
+	// then spawn the resulting agent — a capability-escalation path.
+	// Mirror of the subset check in `fork`.
+	//
+	// AgentTools(ctx) returns nil in test contexts; we refuse to
+	// create with a non-empty AllowedTools overlay when the ceiling
+	// is unknown rather than silently allowing widening.
+	callerTools := tools.AgentTools(ctx)
+	if len(def.AllowedTools) > 0 {
+		if callerTools == nil {
+			return errResult("create: caller's effective allowed_tools not on ctx (runtime misconfiguration); refuse rather than risk silent widening"), nil
+		}
+		if err := assertAllowedToolsSubset(def.AllowedTools, callerTools); err != nil {
+			return errResult(fmt.Sprintf("create: %s", err)), nil
+		}
+	}
 	defJSON, err := json.Marshal(def)
 	if err != nil {
 		return errResult(fmt.Sprintf("create: marshal: %s", err)), nil
@@ -239,12 +258,25 @@ func (a *AgentDef) execFork(ctx context.Context, policy tools.AgentDefPolicyValu
 			if !ok {
 				return errResult(fmt.Sprintf("fork: no parent — name %q has neither a DB version nor a static cfg.Agents entry", in.Name)), nil
 			}
-			bootstrap, err := a.bootstrapStatic(ctx, in.Name, static)
-			if err != nil {
-				return errResult(fmt.Sprintf("fork: bootstrap static: %s", err)), nil
+			bootstrap, berr := a.bootstrapStatic(ctx, in.Name, static)
+			if berr != nil {
+				// A concurrent first-fork may have already bootstrapped
+				// v1 between our AgentDefGetActive check and our own
+				// bootstrap insert. The store's per-name lock guarantees
+				// monotonic versions but our caller has no way to know
+				// "another goroutine just won v1." Re-read the active
+				// pointer once before propagating the error — if it's
+				// now set, use that as our parent instead of failing.
+				if row2, gerr := a.Store.AgentDefGetActive(ctx, in.Name); gerr == nil {
+					parent = row2
+					parentDefID = row2.DefID
+				} else {
+					return errResult(fmt.Sprintf("fork: bootstrap static: %s", berr)), nil
+				}
+			} else {
+				parent = bootstrap
+				parentDefID = bootstrap.DefID
 			}
-			parent = bootstrap
-			parentDefID = bootstrap.DefID
 		}
 	}
 
@@ -407,11 +439,17 @@ func (a *AgentDef) checkScopeForName(policy tools.AgentDefPolicyValue, name, _ s
 				return nil
 			}
 		case "descendants":
-			// v0.8.5 simplification: descendants is treated as "any"
-			// inside the agent's spawn tree, which the tool can't
-			// efficiently verify without walking the lineage against
-			// every check. For now, accept on "descendants" present —
-			// a future PR can tighten this with a lineage-walk gate.
+			// KNOWN GAP (TODO v0.9.x): `descendants` is intended to
+			// permit mutation of agents in the calling agent's spawn
+			// tree. Today the tool has no efficient way to verify
+			// lineage against every check (cfg.Agents is the static
+			// boundary; a DB-only descendant tree is N AgentDefGet
+			// round-trips deep). For v0.8.5 we accept on "descendants"
+			// present, which makes the scope behaviourally equivalent
+			// to "any". Operators wanting strict descendant gating
+			// must grant `named:<child>` per child instead. See
+			// TestAgentDefTool_DescendantsScopeIsCurrentlyEquivalentToAny
+			// for the pinned-but-undesired current behaviour.
 			return nil
 		default:
 			if strings.HasPrefix(sc, "named:") {
@@ -467,17 +505,28 @@ func (a *AgentDef) resolveAllowedToolsRoot(ctx context.Context, name string, par
 	if static, ok := a.Cfg.Agents[name]; ok {
 		return static.AllowedTools, nil
 	}
-	// Walk parent chain to the v1 row.
+	// Walk parent chain to the v1 row. Hard cap at 100 hops as a
+	// defense against cyclic / corrupt lineage. If we exhaust the cap
+	// without reaching the root (ParentDefID still non-empty), refuse
+	// rather than treat the mid-chain row as the ceiling — using a
+	// non-root row would silently weaken the AllowedTools security
+	// invariant for sufficiently deep or cyclic chains.
 	cur := parent
-	for i := 0; i < 100; i++ {
+	const maxHops = 100
+	reachedRoot := false
+	for i := 0; i < maxHops; i++ {
 		if cur.ParentDefID == "" {
-			break // cur is the root
+			reachedRoot = true
+			break
 		}
 		next, err := a.Store.AgentDefGet(ctx, cur.ParentDefID)
 		if err != nil {
 			return nil, err
 		}
 		cur = next
+	}
+	if !reachedRoot {
+		return nil, fmt.Errorf("lineage depth exceeds %d hops — possible cycle or corrupt chain for name %q (last def_id walked: %q)", maxHops, name, cur.DefID)
 	}
 	var rootDef mergedDef
 	if err := json.Unmarshal(cur.Definition, &rootDef); err != nil {
