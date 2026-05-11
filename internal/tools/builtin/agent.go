@@ -20,11 +20,18 @@ import (
 //     parent's tool set does NOT widen the child's. Parent and child are
 //     both operator-vetted definitions, so each agent's declared
 //     allow-list is authoritative for itself.
+//   - When defID is non-empty, resolve the sub-agent against the
+//     agent_defs row at that id (v0.8.5 substrate). The row's Name MUST
+//     match the requested name — cross-name pinning is refused. The
+//     def's mutable fields (system_prompt, allowed_tools, model, tier,
+//     etc.) override the static cfg.Agents entry for this sub-run. The
+//     pinned defID is also persisted on the sub-run row so evaluations
+//     denormalise correctly.
 //   - Persist the sub-agent's run as a separate session in the Store so
 //     transcripts are replayable independently of the parent.
 //   - Carry the parent's context.Context (so cancellation, deadlines,
 //     and the loomcycle agent-depth value all propagate).
-type SubAgentRunner func(ctx context.Context, name string, prompt string) (output string, err error)
+type SubAgentRunner func(ctx context.Context, name string, prompt string, defID string) (output string, err error)
 
 // MaxAgentDepth caps recursion: a top-level run is depth 0, the agents
 // it spawns are depth 1, etc. The cap is a safety rail against runaway
@@ -84,17 +91,24 @@ type AgentTool struct {
 type agentInput struct {
 	Name   string `json:"name"`
 	Prompt string `json:"prompt"`
+	// DefID is optional (v0.8.5). When set, the sub-agent runs against
+	// this specific agent_defs row instead of the currently-active
+	// pointer / static cfg.Agents fallback. The row's name must match
+	// `Name` — cross-name def pinning is refused. Empty = standard
+	// active-or-static resolution.
+	DefID string `json:"def_id,omitempty"`
 }
 
-// agentInputSchema is the JSON Schema the model sees. Both fields are
-// required; nothing else is permitted (unknown fields are tolerated by
-// json.Unmarshal but will be ignored, so this is documentation more
-// than enforcement).
+// agentInputSchema is the JSON Schema the model sees. name + prompt are
+// required; def_id is optional. additionalProperties:false enforces the
+// exact shape (operator-vetted parents can't accidentally smuggle in
+// undocumented fields).
 const agentInputSchema = `{
   "type": "object",
   "properties": {
     "name":   {"type": "string", "description": "Sub-agent name. Must match a key in the loomcycle.yaml agents map."},
-    "prompt": {"type": "string", "description": "User-message body the sub-agent sees. Treat this as the task description; do not include auth tokens (the sub-agent gets its own auth context)."}
+    "prompt": {"type": "string", "description": "User-message body the sub-agent sees. Treat this as the task description; do not include auth tokens (the sub-agent gets its own auth context)."},
+    "def_id": {"type": "string", "description": "Optional. Pin this sub-run to a specific agent_defs row id (returned by AgentDef.create or AgentDef.fork). The row's name must match the 'name' field. Empty = use the currently-active version (or static cfg.Agents)."}
   },
   "required": ["name", "prompt"],
   "additionalProperties": false
@@ -149,7 +163,7 @@ func (a *AgentTool) Execute(ctx context.Context, input json.RawMessage) (tools.R
 	}
 	subCtx := IncrementAgentDepth(ctx)
 
-	output, err := a.Run(subCtx, in.Name, in.Prompt)
+	output, err := a.Run(subCtx, in.Name, in.Prompt, in.DefID)
 	if err != nil {
 		// Surface as an error tool_result. The parent can decide whether
 		// to retry, fall back, or give up. We don't tear down the parent

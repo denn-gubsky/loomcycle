@@ -320,6 +320,97 @@ func (s *Server) substratePoliciesForAgent(agentDef config.AgentDef, selfName st
 		}
 }
 
+// applyAgentDefOverlay overlays the v0.8.5 agent_defs.definition JSON
+// onto a static cfg.Agents entry, producing the effective AgentDef
+// for one sub-run. Mirrors the mutable-subset list maintained by the
+// AgentDef tool's `mergedDef`: provider, model, tier, effort,
+// max_tokens, system_prompt, allowed_tools, skills, providers, models,
+// memory_scopes, memory_quota_bytes. Substrate policy fields
+// (agent_def_scopes, evaluation_scopes) are NOT overlaid — they stay
+// with the static yaml so the operator's substrate-capability gate
+// can't be widened by a fork. AllowedTools narrowing is enforced at
+// AgentDef.create/fork time (the tool refuses widening); here we
+// simply trust the persisted row.
+//
+// Malformed JSON returns the base unchanged — the AgentDef tool's
+// schema ensures rows are well-formed, so this is defensive only.
+func applyAgentDefOverlay(base config.AgentDef, definition json.RawMessage) config.AgentDef {
+	if len(definition) == 0 {
+		return base
+	}
+	// Decode into a partial AgentDef-shaped struct. Using
+	// config.AgentDef directly would pull substrate policy fields
+	// into the merge by accident; an inline anonymous struct keeps
+	// the overlay surface explicit.
+	var ov struct {
+		Provider         string                            `json:"provider,omitempty"`
+		Model            string                            `json:"model,omitempty"`
+		Tier             string                            `json:"tier,omitempty"`
+		Effort           string                            `json:"effort,omitempty"`
+		MaxTokens        int                               `json:"max_tokens,omitempty"`
+		SystemPrompt     string                            `json:"system_prompt,omitempty"`
+		AllowedTools     []string                          `json:"allowed_tools,omitempty"`
+		Skills           []string                          `json:"skills,omitempty"`
+		Providers        []string                          `json:"providers,omitempty"`
+		Models           map[string][]config.TierCandidate `json:"models,omitempty"`
+		MemoryScopes     []string                          `json:"memory_scopes,omitempty"`
+		MemoryQuotaBytes int                               `json:"memory_quota_bytes,omitempty"`
+	}
+	if err := json.Unmarshal(definition, &ov); err != nil {
+		log.Printf("agent_def overlay: malformed definition JSON, falling back to static: %v", err)
+		return base
+	}
+	out := base
+	if ov.Provider != "" {
+		out.Provider = ov.Provider
+	}
+	if ov.Model != "" {
+		out.Model = ov.Model
+		// Pinning a model implies the fork chose a specific provider/
+		// model pair — clear the static Tier so resolver doesn't
+		// mistake the row for a tier-driven choice. Pin XOR Tier was
+		// already enforced at AgentDef.create time.
+		if ov.Tier == "" {
+			out.Tier = ""
+		}
+	}
+	if ov.Tier != "" {
+		out.Tier = ov.Tier
+		// Mirror image: explicit tier clears any static model pin.
+		if ov.Model == "" {
+			out.Model = ""
+		}
+	}
+	if ov.Effort != "" {
+		out.Effort = ov.Effort
+	}
+	if ov.MaxTokens != 0 {
+		out.MaxTokens = ov.MaxTokens
+	}
+	if ov.SystemPrompt != "" {
+		out.SystemPrompt = ov.SystemPrompt
+	}
+	if ov.AllowedTools != nil {
+		out.AllowedTools = ov.AllowedTools
+	}
+	if ov.Skills != nil {
+		out.Skills = ov.Skills
+	}
+	if ov.Providers != nil {
+		out.Providers = ov.Providers
+	}
+	if ov.Models != nil {
+		out.Models = ov.Models
+	}
+	if ov.MemoryScopes != nil {
+		out.MemoryScopes = ov.MemoryScopes
+	}
+	if ov.MemoryQuotaBytes != 0 {
+		out.MemoryQuotaBytes = ov.MemoryQuotaBytes
+	}
+	return out
+}
+
 // channelPolicyForAgent builds the v0.8.4 Channel-tool policy from
 // the agent yaml + the top-level `channels:` block. Returns a value
 // suitable for tools.WithChannelPolicy. The Channels map is a copy
@@ -1729,10 +1820,33 @@ func (s *Server) makeRecordingEmit(ctx context.Context, runID string, fwd func(p
 // Errors propagate as Go errors back to the Agent tool, which surfaces
 // them as IsError tool_results to the parent's model rather than
 // tearing down the parent run.
-func (s *Server) runSubAgent(ctx context.Context, name string, prompt string) (string, error) {
+func (s *Server) runSubAgent(ctx context.Context, name string, prompt string, defID string) (string, error) {
 	def, ok := s.cfg.Agents[name]
 	if !ok {
 		return "", fmt.Errorf("unknown sub-agent %q (not in loomcycle.yaml agents map)", name)
+	}
+
+	// v0.8.5 substrate: when defID is set, overlay the named def's
+	// mutable fields (system_prompt, allowed_tools, model, tier,
+	// effort, max_tokens, memory_scopes, etc.) over the static
+	// cfg.Agents entry for this single sub-run. Name mismatch is a
+	// hard refuse — pinning across names would let a parent bypass
+	// the operator's static agent boundary.
+	if defID != "" {
+		if s.store == nil {
+			return "", fmt.Errorf("Agent tool: def_id pinning requires a configured store backend")
+		}
+		row, err := s.store.AgentDefGet(ctx, defID)
+		if err != nil {
+			return "", fmt.Errorf("Agent tool: def_id %q lookup failed: %w", defID, err)
+		}
+		if row.Name != name {
+			return "", fmt.Errorf("Agent tool: def_id %q is for agent %q, not %q (cross-name pinning refused)", defID, row.Name, name)
+		}
+		if row.Retired {
+			return "", fmt.Errorf("Agent tool: def_id %q is retired", defID)
+		}
+		def = applyAgentDefOverlay(def, row.Definition)
 	}
 
 	// v0.8.2: inherit parent's user_tier via ctx. The Agent built-in
@@ -1771,8 +1885,9 @@ func (s *Server) runSubAgent(ctx context.Context, name string, prompt string) (s
 		// works via parent_agent_id alone; ParentRunID is informational
 		// for transcript stitching and can be filled in by a future
 		// refactor that threads parent run.ID through ctx.
-		UserID:   parentIdentity.UserID,
-		UserTier: parentIdentity.UserTier, // v0.8.2: same user_tier across the sub-run tree
+		UserID:     parentIdentity.UserID,
+		UserTier:   parentIdentity.UserTier, // v0.8.2: same user_tier across the sub-run tree
+		AgentDefID: defID,                   // v0.8.5: pin defID on the sub-run for evaluation denormalisation
 	}
 	subSessionID, subRunID, err := s.openOrCreateSessionAndRun(ctx, "", name, "", parentIdentity.UserID, subIdentity)
 	if err != nil {
