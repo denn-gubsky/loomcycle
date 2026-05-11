@@ -139,6 +139,54 @@ user_tiers:
     provider_priority: [anthropic]
     fallback_on_error: false
 
+# ─── Channels (v0.8.4) ────────────────────────────────────────────────
+# Operator-declared inter-agent message channels. Agents publish JSON
+# payloads to a named channel; other agents subscribe to drain new
+# messages with cursor-based at-least-once delivery.
+#
+# Channels MUST be declared here before any agent yaml may grant
+# publish/subscribe on them — there is no auto-creation. The
+# namespace is operator-owned. Per-agent ACLs (below in `agents:`)
+# name channels by exact match OR by trailing "/*" wildcard
+# (`findings/*` matches `findings/alpha` but NOT `findings` itself).
+#
+# Per-channel fields:
+#   scope         — cursor-isolation axis: agent | user | global
+#                   * agent  = one cursor per agent name (cross-run,
+#                              cross-user — researcher's queue is
+#                              shared across every researcher run)
+#                   * user   = one cursor per user_id
+#                   * global = one shared cursor for the whole channel
+#   default_ttl   — per-message TTL in seconds (0 = no default)
+#   max_messages  — bounded storage cap; OLDEST trimmed first on
+#                   overflow (publishers never block). 0 = unbounded.
+#   semantic      — informational: queue (work-distribution) or
+#                   broadcast (fan-out). Storage shape is identical;
+#                   the operator declares the intent.
+#
+# Empty / absent `channels:` block = Channel tool effectively
+# disabled (every publish/subscribe op refuses).
+channels:
+
+  # Researcher-to-analyst work queue. Each researcher agent's
+  # findings drain to the analyst agent's queue.
+  findings:
+    scope: agent
+    default_ttl: 86400
+    max_messages: 10000
+    semantic: queue
+
+  # Cross-tenant alerts broadcast. Every subscriber sees every
+  # message. global scope = one shared cursor for the whole channel,
+  # so this is fan-out (every subscriber agent reads the same
+  # sequence from the same cursor). For per-subscriber broadcast
+  # use scope: agent + a queue-semantic channel + multiple cursors.
+  alerts:
+    scope: global
+    default_ttl: 3600
+    max_messages: 1000
+    semantic: broadcast
+
 # ─── Default routing for agents that don't specify their own ──────────
 # Used by agents that declare neither `tier:` nor an explicit
 # `provider:`+`model:` pin. v0.6.x back-compat path; tier-based agents
@@ -246,10 +294,30 @@ agents:
   # the filesystem. Default WebSearch filter is "drop" — the model
   # only sees URLs it can actually fetch via WebFetch (the per-request
   # allowed_hosts narrows further if the caller supplies it).
+  #
+  # `channels:` (v0.8.4) — this agent PUBLISHES findings to the queue
+  # but does NOT subscribe (one-way producer). The analyst agent
+  # below mirrors this: subscribes but doesn't publish. Together they
+  # implement the "researcher-feeds-analyst" canonical pattern from
+  # the v0.8.4 Channel-tool RFC.
   researcher:
     model: smart
-    system_prompt: "You do focused web research. Cite every claim with a URL."
-    allowed_tools: [WebSearch, WebFetch]
+    system_prompt: "You do focused web research. Cite every claim with a URL. Publish each finding as a single JSON object to the `findings` channel."
+    allowed_tools: [WebSearch, WebFetch, Channel]
+    channels:
+      publish: [findings]
+      subscribe: []
+
+  # Analyst agent: drains the researcher's findings queue, summarises
+  # batches into reports, and reads the alerts broadcast. Demonstrates
+  # the consumer side of the Channel tool.
+  analyst:
+    model: smart
+    system_prompt: "You drain the `findings` channel and produce summary reports. Subscribe to `alerts` for cross-tenant notifications."
+    allowed_tools: [Channel, Write]
+    channels:
+      publish: []
+      subscribe: [findings, alerts]
 
   # Power agent: full tool surface. Should only be used when the
   # operator has containerised loomcycle (Bash is NOT a true sandbox).

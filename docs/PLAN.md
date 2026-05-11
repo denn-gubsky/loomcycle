@@ -2,7 +2,40 @@
 
 This is the public roadmap. For decision history, regret notes, and per-version commit-by-commit details, see `doc-internal/PLAN.md` (gitignored).
 
-## v0.8.2 — current
+## v0.8.4 — current
+
+**Status: shipped (2026-05-11).** The **Channel tool** — persistent inter-agent message bus. One agent publishes JSON payloads to a named channel; another subscribes and drains them with cursor-based at-least-once delivery. Closes the gap between Memory (state) and Agent (RPC spawn) — channels are the asynchronous decoupled handoff primitive. Framework primitive #3 (after Memory v0.8.0 and user_tier v0.8.2) on the way to the LoomCycle MCP capstone.
+
+**What's in v0.8.4 (vs v0.8.3):**
+
+- **`Channel` built-in tool** with five ops: `publish` / `subscribe` / `ack` / `peek` / `list_channels`. Single discriminated `op` field, same shape as Memory. Storage-layered design: messages persist to the existing `store.Store` (sqlite + postgres) via two new tables (`channel_messages` + `channel_cursors`); same-process subscribers waiting in long-poll mode get sub-millisecond notification via an in-process `Bus`. Cross-process notification (multi-replica deployments) deferred to v0.9.x — single-replica is today's only deployment.
+- **Cursor scope mirrors Memory's** (`agent` / `user` / `global`). Two researcher-agent runs share a cursor on the same `agent`-scoped channel — that's the queue semantic. Two different agents subscribing to the same channel each maintain their own cursor — that's the work-distribution shape. `global` scope is the cross-tenant fan-out option (one shared cursor for the whole channel; no automatic isolation, operator declares the channel explicitly).
+- **At-most-once-by-default for `subscribe`; at-least-once via `peek` + `ack`.** Subscribe commits `next_cursor` BEFORE returning (commit-on-return — agents looping on subscribe march forward without tracking cursors). Agents needing crash safety call `peek` (non-consuming) → process → `ack` (explicit cursor commit). Cursor monotonicity enforced — `ChannelAck` rejects cursor values older than the currently committed one (`ErrChannelCursorRegression`) so buggy agents can't rewind delivery. Two-step peek+ack matches SQS / Kafka consumer idioms.
+- **Operator-yaml ACL.** Channels MUST be declared in the top-level `channels:` block; agents grant themselves access via per-agent `channels: {publish: [list], subscribe: [list]}`. Wildcards (`findings/*`) are prefix-anchored — match `findings/alpha` but NOT `findings`. Mid-string globs (`*`) are rejected at config load. Sub-agents inherit the parent's ACL via ctx, same shape as `WithMemoryPolicy` and `WithHostPolicy`.
+- **Long-poll subscribe.** Optional `wait_ms` budget on a subscribe; if the storage read returns empty, the tool blocks on the in-process `Bus.Wait` for that channel until either a new publish lands or the timeout fires. Cap is operator-controlled (`LOOMCYCLE_CHANNELS_LONGPOLL_CAP_MS`, default 30 s) so a hung subscribe doesn't leak goroutines on agent crash.
+- **Bounded storage with lossy-on-overflow.** Each channel declares `max_messages`; publishes that would push the per-(channel, scope, scope_id) count past this trim the OLDEST rows inside the same txn. Publisher never blocks. 0 = unbounded. Sweeper goroutine (mirror of Memory's) keeps the table bounded over time; read paths filter expired rows at WHERE regardless of sweeper cadence.
+- **Three new env vars:** `LOOMCYCLE_CHANNELS_MAX_VALUE_BYTES` (per-publish payload cap; default 64 KB), `LOOMCYCLE_CHANNELS_SWEEP_MS` (TTL reaper cadence; default 15 min), `LOOMCYCLE_CHANNELS_LONGPOLL_CAP_MS` (max wait_ms; default 30 s). All have sensible defaults; zero disables.
+- **Test coverage:** 11 storetest contract tests + 7 bus race-detector tests + 10 tool-layer tests. SQLite and Postgres both validated against the same contract (cursor monotonicity, TTL filter at read, max_messages trim, scope isolation, replay via `cur_0`, ack-regression rejection).
+- **Operator visibility:** Boot log emits `channels: configured N — channel-a / channel-b / ...` (mirror of `user_tiers:` line). Sweeper logs per-sweep delete count.
+
+**Architecture decisions (resolved in the v0.8.4 RFC):**
+
+- **Storage-layered backend** (not Postgres `LISTEN/NOTIFY`, not Redis Streams). Operators get no new infra dependency; sqlite + postgres parity matches Memory's shape. Cross-process notification — if v0.9.x multi-replica HA proves dominant — can swap `bus.go`'s backplane without changing the tool surface.
+- **Cursor scope = Memory scope.** One mental model, one isolation story, one set of operator-yaml allowlists to maintain. The cost is that `global` scope channels need careful operator review (one bad ACL can leak across tenants); this is documented inline in `loomcycle.example.yaml`.
+- **No DLQ in v0.8.4.** Readers that abandon a cursor leave messages until TTL; operators debug via `peek` from `cur_0`. Real dead-letter-with-retry-count is a v0.9.x candidate.
+- **Polling subscribe, not streaming.** Tool calls stay synchronous from the model's POV; real-time-ish behaviour comes from `wait_ms` + the in-process bus. Streaming subscribe would couple Channels to a long-running-tool-output plumbing that doesn't exist yet — separate concern.
+
+Detailed design in `doc-internal/rfcs/channels-tool.md` (gitignored).
+
+For the v0.8.3 baseline that drove this work, see [v0.8.3](#v083--earlier).
+
+## v0.8.3 — earlier
+
+**Status: shipped (2026-05-11).** Split the single `ollama` provider registration into two — `ollama` (hosted ollama.com, Bearer auth via `OLLAMA_API_KEY`) and `ollama-local` (local-network Ollama, no auth, `OLLAMA_BASE_URL`). One driver package serves both; the constructor takes `providerID` + `apiKey` and threads them through `ID()`, the rate-limit Config, the non-2xx error formatter (matters for v0.8.2's classifier's `"<name> <code>:"` prefix anchor), and the optional `Authorization: Bearer` header. Operator yaml referencing `provider: ollama` for a local backend renames to `provider: ollama-local`; existing deploys keep working unchanged because `OLLAMA_BASE_URL=http://localhost:11434` now feeds `ollama-local`. PR #55.
+
+For the v0.8.2 baseline, see [v0.8.2](#v082--earlier).
+
+## v0.8.2 — earlier
 
 **Status: shipped (2026-05-11).** The **user_tier** feature — operator-defined per-user-tier provider/model policies that overlay resolver behaviour AND drive runtime fallback when a provider call hits a retryable error. Two-PR ship: PR #52 (resolve-time overlay + wire/store/yaml) + PR #53 (runtime fallback + error classification + typed events). Enables jobs-search-agent and similar consumers to surface differentiated user tiers (free / low / medium / high) with operator-defined cost/quality/privacy tradeoffs.
 
@@ -309,37 +342,45 @@ For usage: see [README](../README.md). For the architecture: see [ARCHITECTURE.m
 
 ## v0.8.x — next: framework primitives
 
-Sequenced 2026-05-09; renumbered 2026-05-10 after v0.8.1 absorbed three operational-hardening PRs (#47/#48/#49); renumbered again 2026-05-11 after v0.8.2 absorbed the `user_tier` resolver-overlay + runtime-fallback work (PRs #52/#53). Each point release in the framework-primitive sequence ships one focused capability — the v1.0 capstone (LoomCycle MCP) needs them in this order because the MCP server's surface is built FROM these primitives. Detailed design (API schemas, storage shapes, retention semantics) lives in feature-branch RFCs at implementation time; the outlines below capture the shape but not the wire.
+Sequenced 2026-05-09; renumbered 2026-05-10 after v0.8.1 absorbed three operational-hardening PRs (#47/#48/#49); renumbered again 2026-05-11 after v0.8.2 absorbed the `user_tier` resolver-overlay + runtime-fallback work (PRs #52/#53); renumbered once more 2026-05-11 to insert v0.8.5 Self-Evolution Substrate (AgentDef + versioning + Evaluation) ahead of LoomHelp and LoomCycle MCP — the capstone must expose those tools, so they have to ship first; v0.8.3 took the ollama-split hot-fix and v0.8.4 shipped the Channel tool, so the remaining v0.8.x roadmap below begins at v0.8.5. Each point release in the framework-primitive sequence ships one focused capability — the v1.0 capstone (LoomCycle MCP) needs them in this order because the MCP server's surface is built FROM these primitives. Detailed design (API schemas, storage shapes, retention semantics) lives in feature-branch RFCs at implementation time; the outlines below capture the shape but not the wire.
 
-**v0.8.0 Memory tool shipped 2026-05-09**; **v0.8.1 operational hardening shipped 2026-05-10**; **v0.8.2 user_tier shipped 2026-05-11** — see the sections above for full release notes.
+**v0.8.0 Memory tool shipped 2026-05-09**; **v0.8.1 operational hardening shipped 2026-05-10**; **v0.8.2 user_tier shipped 2026-05-11**; **v0.8.3 ollama split shipped 2026-05-11**; **v0.8.4 Channel tool shipped 2026-05-11** — see the sections above for full release notes.
 
-### v0.8.3 — Channel tool
+### v0.8.5 — Self-Evolution Substrate (AgentDef + versioning + Evaluation)
 
-Persistent inter-agent message bus. One agent writes to a named channel; another reads from it. Powers patterns like "researcher writes findings into `findings/` channel; analyst drains the channel and produces summaries" without making the orchestrator handle handoff.
+Three substrate primitives shipped together; closes the gaps that block the planned self-evolving agentic research program. Sequenced before LoomHelp (v0.8.6) and LoomCycle MCP (v0.8.7) because the MCP capstone must expose both new tools.
 
-Two backend forks compete: Postgres `LISTEN/NOTIFY` (simpler, single-replica, no new infra dependency) vs Redis Streams (multi-replica HA-ready, new infra dependency). RFC at pickup commits one — single-replica today argues for the Postgres path; Redis can layer on later when multi-replica HA arrives.
+**Primitive 1 — `AgentDef` built-in tool.** Agents can `create` / `fork` / `retire` / `promote` / `get` / `list` agent definitions at runtime. Six-op surface, mirrors the Memory tool's discriminated-op shape. Operator-blessed static `<name>.md` files remain the immutable root; DB-held versions live in the derived layer. Per-agent yaml `agent_def_scopes` gate (`self` / `descendants` / `named:[...]` / `any`), default-deny. `AllowedTools` widening is REFUSED across forks — operator-blessed root is the permanent capability ceiling.
 
-What's not yet decided: queue vs topic semantics, durability vs at-most-once, ACL (which agent can publish to which channel — channels can be a side-channel for jailbreaks if any-agent-to-any-channel is allowed), backpressure when readers fall behind, dead-letter handling. RFC at pickup.
+**Primitive 2 — Versioned definitions + lineage.** Two new tables: append-only `agent_defs` (UUID `def_id`, monotonic `version` per `name`, `parent_def_id` for lineage, `bootstrapped_from_static` flag for static-derived roots) + `agent_def_active` pointer table for "which version a name resolves to." Additive `runs.agent_def_id` column for cost / experiment retros. Resolver becomes DB-first with static fallback: `defID` pin → `agent_def_active[name]` → `cfg.Agents[name]`. Sub-agent spawning re-resolves by name + uses active pointer; pinning via optional `def_id` on the `Agent` tool input.
 
-### v0.8.4 — LoomHelp tool (absorbing all tools)
+**Primitive 3 — `Evaluation` built-in tool.** Five-op surface (`submit` / `get` / `list_for_run` / `list_for_def` / `aggregate`) over a new `evaluations` table. Score model: required scalar (RL lingua franca) + optional `dimensions` map (multi-axis fitness) + optional `judgement` JSON + optional `rationale` text. Emitter role derived server-side from ctx (`self` / `sibling` / `parent` / `external` / `unrelated`) so the model can't lie about who scored what. Per-agent yaml `evaluation_scopes` gate (multi-select). Loomcycle does NOT auto-promote based on score — selection is policy, lives in user-agent orchestrators.
 
-Runtime introspection — but with a wider remit than the original v1.0 sketch. LoomHelp absorbs the metadata exposure for **every** built-in and registered tool: input schemas, output formats, side-effect classes (pure / network / filesystem / privileged), allow-list narrowing the active agent has applied, the tool's docstring and operator notes. Plus runtime context: the agent's own identity, parent / sub-agent linkage, loaded skills, current Memory snapshot, available Channels.
+**Three motivating experiments** the substrate enables: (A) existing hockeybot pipeline — zero-regression bar; (B) software-dev team where orchestrator forks specialized coder variants per task and a sibling reviewer scores them; (C) ecosystem evolution with random agents, grow/survive/eat/multiply/die rationales, lineage-based analysis.
+
+Detailed design in `doc-internal/rfcs/self-evolution-substrate.md` (gitignored). Build sequence: 7 PRs over ~3–4 weeks. PRs 1–5 are the experiment-enabling substrate (all three experiments run after PR 5 with no UI); PRs 6–7 are the admin API + Web UI agent-defs page — load-bearing for the v1.0 "Agentic OS" launch narrative.
+
+### v0.8.6 — LoomHelp tool (absorbing all tools)
+
+Runtime introspection — but with a wider remit than the original v1.0 sketch. LoomHelp absorbs the metadata exposure for **every** built-in and registered tool: input schemas, output formats, side-effect classes (pure / network / filesystem / privileged), allow-list narrowing the active agent has applied, the tool's docstring and operator notes. Plus runtime context: the agent's own identity, parent / sub-agent linkage, loaded skills, current Memory snapshot, available Channels, **active `agent_def_id` + version + lineage (from v0.8.5)**, **accumulated evaluation aggregates against the current `def_id`**.
 
 Single read-only tool that returns a structured catalogue. Useful for the Comfort Agents pattern — agents that build their own task plans benefit from being able to inspect their environment before deciding what to do. Operators who want to gate tool discovery from agents (defence-in-depth) can disable LoomHelp via the standard `allowed_tools` policy; the introspection surface is opt-in per-agent.
 
 What's not yet decided: output format (JSON schema vs markdown vs both), what counts as a "secret" beyond env-var name patterns, schema for the side-effect-class taxonomy, whether LoomHelp can introspect *other* agents' tool sets (probably no — that's a privilege-escalation vector).
 
-### v0.8.5 — LoomCycle MCP (the v0.8.x capstone)
+### v0.8.7 — LoomCycle MCP (the v0.8.x capstone)
 
 Loomcycle exposes itself as an **MCP server**. External orchestrators (Claude Code, agentic harnesses, other loomcycle instances) connect to it as an MCP client and:
 
 - Configure agents and spawn runs (alternate front-end to `/v1/runs`).
-- Send messages on Channels (built in v0.8.3).
+- Send messages on Channels (built in the v0.8.3–0.8.4 Channel work).
 - Read/write Memory entries (built in v0.8.0).
-- Call LoomHelp (built in v0.8.4).
+- **Create / fork / promote `AgentDef` versions (built in v0.8.5).**
+- **Submit / aggregate Evaluations (built in v0.8.5).**
+- Call LoomHelp (built in v0.8.6).
 - Subscribe to run-event streams (alternate to SSE).
 
-This is the "MCP-configurable" axis: instead of writing YAML and POSTing JSON, an external tool drives loomcycle through standard MCP. Surface area maps roughly 1:1 to the existing `/v1/*` endpoints plus the v0.8.0–0.8.4 primitives, with auth via the operator's bearer token translated into MCP's auth scheme.
+This is the "MCP-configurable" axis: instead of writing YAML and POSTing JSON, an external tool drives loomcycle through standard MCP. Surface area maps roughly 1:1 to the existing `/v1/*` endpoints plus the v0.8.0–0.8.6 primitives, with auth via the operator's bearer token translated into MCP's auth scheme.
 
 What's not yet decided: stdio vs HTTP transport (probably both — stdio for desktop-app integrations, HTTP for service-to-service), method naming (resources vs tools), whether MCP clients can register new agents at runtime or only spawn from operator-defined ones, handling of long-lived run streams across MCP's request/response shape.
 
@@ -371,7 +412,7 @@ Make `loomcycle` install with one command on every operator's preferred toolchai
 
 First-party integrations the runtime makes more valuable:
 
-- **Claude Desktop / Claude Code MCP integration** — pre-built `.mcp.json` recipe + a one-page operator guide for adding loomcycle to Claude Code's MCP server list (uses the v0.8.5 LoomCycle MCP surface).
+- **Claude Desktop / Claude Code MCP integration** — pre-built `.mcp.json` recipe + a one-page operator guide for adding loomcycle to Claude Code's MCP server list (uses the v0.8.7 LoomCycle MCP surface).
 - **OpenTelemetry exporter recipes** — example Helm values + `loomcycle.yaml` snippets for the three common backends (Tempo, Honeycomb, Datadog). The OTEL spans themselves ship in v0.9.x; v1.0 ships the operator-side wiring guide.
 - **Prometheus / Grafana dashboard** — JSON dashboard committed to the repo, importable in one click. Key panels: throughput, error rate by provider, p99 tool dispatch latency, per-tenant share of the semaphore.
 - **CLI scaffolding** — `loomcycle init` generates a minimal working `loomcycle.yaml` + `.env.local` for a fresh deploy. `loomcycle agent add <name>` scaffolds an agent yaml block. Lower the time-to-first-run for new operators from "read the docs" to "run two commands."

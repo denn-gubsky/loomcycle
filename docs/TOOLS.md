@@ -343,6 +343,110 @@ agents:
 
 References: `internal/store/store.go` (interface), `internal/store/sqlite/sqlite.go` + `internal/store/postgres/postgres.go` (adapters), `internal/tools/builtin/memory.go` (tool).
 
+## The `Channel` tool — persistent inter-agent message bus (v0.8.4)
+
+Channels are the asynchronous decoupled handoff primitive. One agent publishes JSON payloads to a named channel; another agent subscribes and drains them with cursor-based delivery. Same storage backbone as Memory (sqlite + postgres) plus an in-process notification bus for sub-millisecond same-process subscriber wake-ups.
+
+### Operator setup
+
+Channels MUST be declared in the top-level `channels:` block of `loomcycle.yaml`. No auto-creation; the namespace is operator-owned.
+
+```yaml
+channels:
+  findings:
+    scope: agent              # cursor isolation: agent | user | global
+    default_ttl: 86400        # per-message TTL fallback (seconds)
+    max_messages: 10000       # bounded storage; oldest trimmed first
+    semantic: queue           # informational: queue | broadcast
+
+  alerts:
+    scope: global
+    default_ttl: 3600
+    max_messages: 1000
+    semantic: broadcast
+```
+
+Per-agent ACL via the agent yaml:
+
+```yaml
+agents:
+  researcher:
+    channels:
+      publish:   [findings]            # exact match
+      subscribe: []                    # one-way producer
+  analyst:
+    channels:
+      publish:   []
+      subscribe: [findings, alerts, findings/*]  # trailing /* prefix wildcard
+```
+
+Wildcards are anchored at the end (`findings/*` matches `findings/alpha` but NOT `findings`). Mid-string globs are rejected at config-load so a typo can't accidentally grant `*` access.
+
+### Tool surface (what an agent sees)
+
+```jsonc
+// Publish (producer side):
+{ "op": "publish", "channel": "findings", "value": {...}, "ttl": 3600 }
+//   → { "message_id": "msg_...", "channel": "findings", "dropped_oldest": 0 }
+
+// Subscribe (consumer side) — polling, optional long-poll:
+{ "op": "subscribe", "channel": "findings", "max_messages": 10, "wait_ms": 0 }
+//   → { "messages": [{ "id", "value", "published_at" }], "next_cursor": "msg_...", "channel": "findings" }
+
+// Ack — explicitly commit a cursor (only needed for at-least-once via peek+ack):
+{ "op": "ack", "channel": "findings", "cursor": "msg_..." }
+
+// Peek — non-consuming read (debugging or at-least-once consumer pattern):
+{ "op": "peek", "channel": "findings", "from_cursor": "cur_0", "max_messages": 10 }
+
+// List — informational, reports this agent's allowlists:
+{ "op": "list_channels" }
+//   → { "publish": [...], "subscribe": [...] }
+```
+
+### Delivery semantics
+
+**`subscribe` is at-most-once-by-default**: the tool commits `next_cursor` BEFORE returning. Agents that just loop `subscribe` march forward without tracking cursors themselves. If the loomcycle process or the agent crashes between "subscribe returned" and "agent finished processing," the batch is lost.
+
+**For at-least-once / crash safety, use `peek` + `ack`**:
+
+1. `peek` — read messages without advancing the cursor.
+2. Process them; persist the work somewhere durable.
+3. `ack` with the cursor of the last-processed message — commits the cursor.
+4. Next `peek` reads from the new committed cursor.
+
+Cursor monotonicity is enforced: `ack` with a cursor older than the currently committed one returns `cursor_regression`. Cursors are opaque strings (ULID-shaped under the hood — sortable by publish time, agents should not parse them).
+
+### Cursor scope (mirrors Memory)
+
+- **`scope: agent`** — cursor is per agent name. Two researcher-agent runs share a cursor on the same channel (work continues across runs). Two DIFFERENT agents subscribing to the same agent-scoped channel each maintain their own queue.
+- **`scope: user`** — cursor is per `user_id`. Two runs for the same user share a cursor — the "user-stream" shape. Cross-agent cursor sharing for the same user (the canonical "researcher → analyst" hand-off pattern).
+- **`scope: global`** — one shared cursor for the whole channel. Cross-tenant fan-out broadcasts. Operator declares the channel explicitly; an unintentional `global` ACL can leak across tenants.
+
+### Long-poll subscribe
+
+`subscribe` accepts an optional `wait_ms`. If the storage read returns empty, the tool blocks on the in-process notification bus for that channel until either a new publish lands or the timeout fires. Cap is operator-controlled (`LOOMCYCLE_CHANNELS_LONGPOLL_CAP_MS`, default 30 s). Same-process subscribers wake within microseconds of a publish; cross-process subscribers (multi-replica deployments) fall back to polling — that's deferred to v0.9.x.
+
+### Quotas and overflow
+
+- Per-write payload cap: `LOOMCYCLE_CHANNELS_MAX_VALUE_BYTES` (default 64 KB). 0 disables.
+- Per-channel storage cap: `max_messages` in the operator yaml. When a publish would push the count past this, the OLDEST rows are trimmed inside the same txn. Publisher never blocks. The publish result includes `dropped_oldest: N`.
+- TTL reaper: periodic background goroutine deletes expired rows. Cadence `LOOMCYCLE_CHANNELS_SWEEP_MS` (default 15 min). Read paths filter expired rows at WHERE regardless of sweeper cadence.
+
+### Sub-agent inheritance
+
+A spawned sub-agent inherits the parent's Channel ACL via ctx (mirror of `WithMemoryPolicy` / `WithHostPolicy`). A sub-agent cannot publish to a channel the parent couldn't. This is what makes the ACL story enforceable: no escalation across the `Agent` boundary.
+
+### Out of scope for v0.8.4
+
+- Cross-process / multi-replica notification — multi-replica subscribers fall back to polling. v0.9.x.
+- Dead-letter queue / redelivery-count tracking.
+- Streaming subscribe (tool emits events mid-call). Polling only; long-poll covers the real-time-ish use case.
+- Schema enforcement on payloads — operator declares JSON schema per channel.
+- Admin API for inspecting / purging channels. Manual SQL for v0.8.4.
+
+References: `internal/store/store.go` (interface), `internal/tools/builtin/channel.go` (tool), `internal/channels/bus.go` (notification bus), `doc-internal/rfcs/channels-tool.md` (full design RFC, gitignored).
+
 ## LocalAPI tools — OpenAPI gateway (scaffolded; not the v0.4 integration vehicle)
 
 Operators register a local HTTP API by pointing at an OpenAPI spec in YAML:

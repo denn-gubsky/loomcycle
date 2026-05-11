@@ -303,6 +303,30 @@ func (s *Server) userTierOverlay(name string) *resolve.UserTierOverlay {
 	}
 }
 
+// channelPolicyForAgent builds the v0.8.4 Channel-tool policy from
+// the agent yaml + the top-level `channels:` block. Returns a value
+// suitable for tools.WithChannelPolicy. The Channels map is a copy
+// of every operator-declared channel — the tool layer needs the
+// per-channel scope/TTL/max_messages even for channels NOT in this
+// agent's allowlist (e.g. to phrase a useful refusal message).
+func (s *Server) channelPolicyForAgent(agentDef config.AgentDef) tools.ChannelPolicyValue {
+	channels := make(map[string]tools.ChannelDef, len(s.cfg.Channels))
+	for name, ch := range s.cfg.Channels {
+		channels[name] = tools.ChannelDef{
+			Name:        name,
+			Scope:       ch.Scope,
+			DefaultTTL:  ch.DefaultTTL,
+			MaxMessages: ch.MaxMessages,
+			Semantic:    ch.Semantic,
+		}
+	}
+	return tools.ChannelPolicyValue{
+		Publish:   agentDef.Channels.Publish,
+		Subscribe: agentDef.Channels.Subscribe,
+		Channels:  channels,
+	}
+}
+
 // fallbackForRun builds the v0.8.2 PR-2 runtime-fallback policy +
 // re-resolve closure for one run. Returns zero/nil when the
 // operator has no user_tiers configured OR the resolved tier has
@@ -565,6 +589,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		AllowedScopes: agentDef.MemoryScopes,
 		QuotaBytes:    agentDef.MemoryQuotaBytes,
 	})
+	loopCtx = tools.WithChannelPolicy(loopCtx, s.channelPolicyForAgent(agentDef))
 
 	heartbeat := s.makeHeartbeat(runID)
 
@@ -1062,6 +1087,7 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		AllowedScopes: agentDef.MemoryScopes,
 		QuotaBytes:    agentDef.MemoryQuotaBytes,
 	})
+	loopCtx = tools.WithChannelPolicy(loopCtx, s.channelPolicyForAgent(agentDef))
 
 	// Heartbeat hook: each loop iteration updates last_heartbeat_at so a
 	// future sweeper can detect crashed processes (no heartbeat for > N
@@ -1344,6 +1370,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		AllowedScopes: agentDef.MemoryScopes,
 		QuotaBytes:    agentDef.MemoryQuotaBytes,
 	})
+	loopCtx = tools.WithChannelPolicy(loopCtx, s.channelPolicyForAgent(agentDef))
 	fbPolicy, fbReResolve := s.fallbackForRun(sess.Agent, body.UserTier)
 	loopRes, runErr := loop.Run(loopCtx, loop.RunOptions{
 		Provider:        provider,
@@ -1812,6 +1839,12 @@ func (s *Server) runSubAgent(ctx context.Context, name string, prompt string) (s
 		AllowedScopes: def.MemoryScopes,
 		QuotaBytes:    def.MemoryQuotaBytes,
 	})
+	// Sub-agent's Channel policy follows the same per-yaml shape as
+	// MemoryPolicy above. The Channels map (operator-declared
+	// channels) IS shared with the parent — those are operator
+	// state, not agent state. The ALLOWLISTS (publish / subscribe)
+	// come from the child's yaml.
+	subCtx = tools.WithChannelPolicy(subCtx, s.channelPolicyForAgent(def))
 
 	subHeartbeat := s.makeHeartbeat(subRunID)
 

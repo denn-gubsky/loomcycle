@@ -29,6 +29,7 @@ import (
 	"time"
 
 	lchttp "github.com/denn-gubsky/loomcycle/internal/api/http"
+	"github.com/denn-gubsky/loomcycle/internal/channels"
 	"github.com/denn-gubsky/loomcycle/internal/cli"
 	"github.com/denn-gubsky/loomcycle/internal/concurrency"
 	"github.com/denn-gubsky/loomcycle/internal/config"
@@ -204,6 +205,21 @@ func main() {
 	}
 	allTools = append(allTools, memoryTool)
 
+	// Channel tool (v0.8.4) — persistent inter-agent message bus.
+	// One Bus instance per process so in-process subscribers waiting
+	// in long-poll mode get sub-millisecond notification. Same
+	// Store==nil branch as Memory: tool registered unconditionally,
+	// declines all ops when no store configured. Per-agent ACL via
+	// `channels:` yaml + the operator-declared top-level `channels:`
+	// block.
+	channelBus := channels.NewBus()
+	channelTool := &builtin.Channel{
+		Bus:           channelBus,
+		MaxValueBytes: cfg.Env.ChannelsMaxValueBytes,
+		LongPollCapMS: cfg.Env.ChannelsLongPollCapMS,
+	}
+	allTools = append(allTools, channelTool)
+
 	// Local API MCP gateway (v0.4.0+). When `local_api.spec` is set
 	// in loomcycle.yaml, parse the OpenAPI spec and register one tool
 	// per operation. Each tool forwards calls to local_api.base_url
@@ -367,6 +383,7 @@ func main() {
 	// at boot (allTools assembled once) and the tool's nil-Store
 	// fallback for operators running without a configured store.
 	memoryTool.Store = storeIface
+	channelTool.Store = storeIface
 	srv := lchttp.New(cfg, pr, allTools, sem, storeIface)
 	srv.SetMCPFallback(mcpLazyResolver.Resolve)
 
@@ -418,6 +435,27 @@ func main() {
 		log.Printf("memory: sweeper interval=%s", cfg.Env.MemorySweepInterval)
 	} else {
 		log.Printf("memory: sweeper disabled (LOOMCYCLE_MEMORY_SWEEP_MS=0 or no Store)")
+	}
+
+	// Channel tool TTL sweeper (v0.8.4). Same shape as MemorySweeper.
+	// Reads filter expired rows regardless, so the sweeper is purely
+	// for keeping the channel_messages table bounded.
+	if cfg.Env.ChannelsSweepInterval > 0 && storeIface != nil {
+		go runChannelsSweeper(bgCtx, storeIface, cfg.Env.ChannelsSweepInterval)
+		log.Printf("channels: sweeper interval=%s", cfg.Env.ChannelsSweepInterval)
+	} else if storeIface != nil {
+		log.Printf("channels: sweeper disabled (LOOMCYCLE_CHANNELS_SWEEP_MS=0)")
+	}
+	// Boot summary of operator-declared channels. Mirrors the
+	// "user_tiers: configured N — ..." line shape so operators see
+	// the framework-primitive state at startup.
+	if n := len(cfg.Channels); n > 0 {
+		names := make([]string, 0, n)
+		for name := range cfg.Channels {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		log.Printf("channels: configured %d — %s", n, strings.Join(names, " / "))
 	}
 
 	// Session-lock map GC. Defaults: prune entries idle ≥ 10 min, on
@@ -793,6 +831,29 @@ func runMemorySweeper(ctx context.Context, s store.Store, interval time.Duration
 			}
 			if swept > 0 {
 				log.Printf("memory sweep: deleted %d expired row(s)", swept)
+			}
+		}
+	}
+}
+
+// runChannelsSweeper is the v0.8.4 mirror of runMemorySweeper for
+// the channel_messages table. Same shape — read paths filter
+// expired rows regardless, so the sweeper is bounded-table cleanup.
+func runChannelsSweeper(ctx context.Context, s store.Store, interval time.Duration) {
+	t := time.NewTicker(interval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			swept, err := s.ChannelSweepExpired(ctx)
+			if err != nil {
+				log.Printf("channels sweep: %v", err)
+				continue
+			}
+			if swept > 0 {
+				log.Printf("channels sweep: deleted %d expired row(s)", swept)
 			}
 		}
 	}
