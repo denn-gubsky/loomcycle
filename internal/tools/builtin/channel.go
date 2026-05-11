@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 
@@ -169,7 +170,7 @@ func (c *Channel) resolveChannel(ctx context.Context, policy tools.ChannelPolicy
 		return def, store.MemoryScopeUser, ident.UserID, nil
 	case "global":
 		// Single shared cursor for the channel — empty scope_id.
-		return def, store.MemoryScope("global"), "", nil
+		return def, store.MemoryScopeGlobal, "", nil
 	default:
 		return tools.ChannelDef{}, "", "", fmt.Errorf("Channel tool: channel %q has unknown scope %q (operator config bug)", name, def.Scope)
 	}
@@ -178,8 +179,18 @@ func (c *Channel) resolveChannel(ctx context.Context, policy tools.ChannelPolicy
 // channelAllowed checks `name` against the allowlist, supporting a
 // trailing "/*" prefix wildcard. `findings/*` matches `findings/alpha`
 // and `findings/beta` but NOT `findings` itself.
+//
+// Defense-in-depth: rejects names containing path-traversal patterns
+// (`..` or `//`) before the wildcard match. The closed-set check at
+// resolveChannel's call site already filters undeclared names — this
+// guard ensures that if a future refactor relaxes that check, the
+// wildcard can't accidentally grant `findings/*` access to
+// `findings/../secret` or `findings//bypass`.
 func channelAllowed(name string, allowlist []string) bool {
 	name = strings.TrimSpace(name)
+	if strings.Contains(name, "..") || strings.Contains(name, "//") {
+		return false
+	}
 	for _, pat := range allowlist {
 		pat = strings.TrimSpace(pat)
 		if pat == name {
@@ -302,7 +313,21 @@ func (c *Channel) execSubscribe(ctx context.Context, policy tools.ChannelPolicyV
 	// explicit `ack` once processing is durable. The two-step
 	// pattern is documented in docs/TOOLS.md.
 	if next != "" {
-		_ = c.Store.ChannelAck(ctx, in.Channel, scope, scopeID, next) // best-effort; regression silently no-ops
+		if err := c.Store.ChannelAck(ctx, in.Channel, scope, scopeID, next); err != nil {
+			// Cursor regression on auto-commit is impossible by
+			// construction (we just read this cursor in the same
+			// txn, so it's always >= the previous committed value).
+			// Any error here is a transient storage problem
+			// (Postgres connection drop, sqlite lock contention).
+			// We still return the batch to the agent — but log so
+			// operators can detect the silent double-delivery that
+			// will happen on the next subscribe call: the agent
+			// will re-receive this batch because the committed
+			// cursor didn't advance.
+			if !errors.Is(err, store.ErrChannelCursorRegression) {
+				log.Printf("channel %q: subscribe auto-ack failed (next double-delivery expected): %v", in.Channel, err)
+			}
+		}
 	}
 
 	out := make([]map[string]any, 0, len(msgs))

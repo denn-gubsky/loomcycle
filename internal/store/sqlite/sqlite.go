@@ -927,16 +927,32 @@ func (s *Store) ChannelPublish(ctx context.Context, msg store.ChannelMessage, ma
 		// The subquery selects the surviving "keep" set; everything
 		// older is dropped. This is the lossy-on-overflow shape from
 		// the v0.8.4 RFC — publisher never blocks.
+		//
+		// The `id != ?` clause protects against the Postgres
+		// READ-COMMITTED race where two concurrent publishers to the
+		// same (channel, scope, scope_id) can each see the other's
+		// committed row inside their own trim subquery. Without this
+		// guard, A's INSERT X + concurrent B's commit of Y > X means
+		// A's trim subquery picks Y as top-N (excluding X by lex
+		// order) and A's DELETE removes its own just-inserted X.
+		// A then commits and reports success to its caller, but X
+		// is gone. With the guard, the just-inserted row is never
+		// in the DELETE candidate set under any race.
+		//
+		// SQLite is single-writer (WAL) so the race doesn't occur,
+		// but the guard adds no cost and keeps the two backends'
+		// SQL identical.
 		res, err := tx.ExecContext(ctx,
 			`DELETE FROM channel_messages
 			 WHERE channel = ? AND scope = ? AND scope_id = ?
+			   AND id != ?
 			   AND id NOT IN (
 			     SELECT id FROM channel_messages
 			      WHERE channel = ? AND scope = ? AND scope_id = ?
 			      ORDER BY id DESC
 			      LIMIT ?
 			   )`,
-			msg.Channel, string(msg.Scope), msg.ScopeID,
+			msg.Channel, string(msg.Scope), msg.ScopeID, msg.ID,
 			msg.Channel, string(msg.Scope), msg.ScopeID,
 			maxMessages,
 		)

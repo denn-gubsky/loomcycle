@@ -31,6 +31,13 @@ import (
 // resolution of a single nanosecond; the 4-byte random suffix
 // collision-protects same-nanosecond publishes.
 //
+// The lex-order-matches-publish-time invariant holds while
+// uint64(UnixNano) fits in 16 hex digits — true through year 2262
+// (then the value overflows 17 hex digits and the %016x padding
+// breaks the lex ordering). The cursor regression check in
+// ChannelAck relies on this; any future format change must preserve
+// the property or update the comparison.
+//
 // Why not ULID: adding an external dep for one purpose is bigger
 // than the ~10 lines we save. The format is intentionally
 // inspect-friendly — operators can eyeball "this message was
@@ -368,10 +375,12 @@ type Store interface {
 	Close() error
 }
 
-// MemoryScope is the addressing axis for a Memory row. v0.8.0 ships
-// `agent` and `user`; the type is forward-compatible for adding
-// `session` / `tenant` later — a new scope value is a yaml + adapter
-// allowlist update, not a wire-protocol change.
+// MemoryScope is the addressing axis for a Memory or Channel row.
+// v0.8.0 shipped `agent` + `user`; v0.8.4 added `global` for the
+// Channel tool's cross-tenant fan-out shape. The type is
+// forward-compatible for adding `session` / `tenant` later — a new
+// scope value is a yaml + adapter allowlist update, not a
+// wire-protocol change.
 type MemoryScope string
 
 const (
@@ -381,6 +390,14 @@ const (
 	// MemoryScopeUser — keyed by user_id. Per-end-user state shared
 	// across every agent that's allowed to read the `user` scope.
 	MemoryScopeUser MemoryScope = "user"
+	// MemoryScopeGlobal — single shared keyspace (scope_id = "").
+	// v0.8.4 Channel tool only — Memory does not expose this scope
+	// (no per-agent memory_scopes value validates it). Channel
+	// declares `scope: global` in the operator yaml; agents granted
+	// publish/subscribe on a global channel read/write the same
+	// cursor regardless of agent or user. Reserved for cross-tenant
+	// fan-out streams the operator has reviewed.
+	MemoryScopeGlobal MemoryScope = "global"
 )
 
 // MemoryEntry is one row in the memory table. ExpiresAt is zero when

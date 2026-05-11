@@ -785,16 +785,33 @@ func (s *Store) ChannelPublish(ctx context.Context, msg store.ChannelMessage, ma
 
 	dropped := 0
 	if maxMessages > 0 {
+		// The `id != $5` clause is the race guard: under READ
+		// COMMITTED, two concurrent publishers to the same
+		// (channel, scope, scope_id) can each see the other's
+		// committed row inside their own trim subquery. Without the
+		// guard, A's INSERT X + concurrent B's commit of Y > X means
+		// A's trim picks Y as top-N (excluding X by lex order) and
+		// A's DELETE removes its own just-inserted X. A then
+		// commits and reports success to its caller, but X is gone.
+		// With the guard, the just-inserted row is never in the
+		// DELETE candidate set under any race.
+		//
+		// Trade-off: under sustained concurrent overflow, the table
+		// may briefly exceed maxMessages by k (one extra row per
+		// concurrent publisher whose trim races). The next trim
+		// converges. This is the right safety property: no message
+		// that was reported as published is ever silently lost.
 		tag, err := tx.Exec(ctx,
 			`DELETE FROM channel_messages
 			 WHERE channel = $1 AND scope = $2 AND scope_id = $3
+			   AND id != $5
 			   AND id NOT IN (
 			     SELECT id FROM channel_messages
 			      WHERE channel = $1 AND scope = $2 AND scope_id = $3
 			      ORDER BY id DESC
 			      LIMIT $4
 			   )`,
-			msg.Channel, string(msg.Scope), msg.ScopeID, maxMessages,
+			msg.Channel, string(msg.Scope), msg.ScopeID, maxMessages, msg.ID,
 		)
 		if err != nil {
 			return "", 0, fmt.Errorf("channel publish trim: %w", err)

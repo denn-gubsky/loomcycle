@@ -12,25 +12,23 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
 
-// TestChannelIntegration_TwoAgentHandoff pins the canonical v0.8.4
-// flow: one agent (the publisher) writes findings; another agent
-// (the subscriber) reads them. The two agents run as separate ctx
-// trees on the same store + bus, mirroring the runtime topology
-// (each Run gets its own ctx but they share the operator-process
-// state).
+// TestChannelIntegration_AgentScopeIsolatesPerAgent pins three
+// properties of an agent-scoped channel under a two-agent setup:
 //
-// Specifically verifies:
+//  1. Cursor isolation — researcher's writes go to scope_id=researcher
+//     (its own agent name); analyst.subscribe (scope_id=analyst) sees
+//     an EMPTY queue. Agent-scoped channels are PER-AGENT queues,
+//     not a shared work-distribution queue.
+//  2. Publish ACL refusal — analyst has publish:[], so analyst's
+//     attempt to publish to findings is refused with a typed error.
+//  3. Subscribe ACL refusal — researcher has subscribe:[], so
+//     researcher's attempt to subscribe to findings is refused.
 //
-//  1. researcher publishes 3 findings → analyst.subscribe returns all 3.
-//  2. analyst.subscribe a second time → returns 0 (auto-ack from the
-//     previous batch's `from_cursor` advance).
-//  3. analyst.subscribe with `from_cursor: cur_0` → replays all 3
-//     regardless of the committed cursor.
-//  4. publisher.subscribe is REFUSED (researcher has subscribe: []).
-//  5. subscriber.publish is REFUSED (analyst has publish: []).
-//  6. Long-poll wait actually wakes when a publish lands during the
-//     wait window.
-func TestChannelIntegration_TwoAgentHandoff(t *testing.T) {
+// For the "researcher publishes, analyst drains" canonical handoff
+// pattern see TestChannelIntegration_UserScopedQueueSharedAcrossAgents
+// (user-scope shares cursor across agents); this test pins the
+// opposite invariant for the agent-scope case.
+func TestChannelIntegration_AgentScopeIsolatesPerAgent(t *testing.T) {
 	s, err := sqlite.Open(":memory:")
 	if err != nil {
 		t.Fatalf("sqlite.Open: %v", err)
@@ -77,19 +75,13 @@ func TestChannelIntegration_TwoAgentHandoff(t *testing.T) {
 		time.Sleep(time.Microsecond)
 	}
 
-	// ---- (2) analyst subscribes — sees all 3 ----
-	// IMPORTANT: cursor isolation is per-(channel, scope, scope_id).
-	// findings is agent-scoped → analyst's reads use scope_id="analyst",
-	// researcher's writes use scope_id="researcher". They land in
-	// DIFFERENT rows. So this integration test deliberately ALSO has
-	// the analyst publish first to its own scope and then reads it back
-	// — to verify the "queue-distinct-per-subscriber-agent" semantic.
-	//
-	// For a cross-agent flow (researcher → analyst share a queue), the
-	// channel must be either user-scoped (cursor per user_id, shared
-	// across agents) OR global-scoped. Below we test BOTH cases:
-	// agent-scope isolation here, user-scope sharing in a second sub-
-	// test.
+	// ---- (1) cursor isolation: analyst sees ZERO messages ----
+	// findings is agent-scoped → researcher's writes land at
+	// scope_id="researcher"; analyst's reads use scope_id="analyst",
+	// which is a DIFFERENT row set. Cross-agent sharing on this
+	// channel is by design impossible. (Use a user-scoped or
+	// global-scoped channel for cross-agent handoff — see the next
+	// test.)
 	res, _ := tool.Execute(analystCtx, json.RawMessage(`{"op":"subscribe","channel":"findings","max_messages":10}`))
 	got := decodeResult(t, res.Text)
 	msgs := got["messages"].([]any)
@@ -97,7 +89,7 @@ func TestChannelIntegration_TwoAgentHandoff(t *testing.T) {
 		t.Errorf("analyst's agent-scoped queue starts empty (researcher's writes went to its OWN scope); got %d msgs", len(msgs))
 	}
 
-	// ---- (4) researcher.subscribe is refused (ACL) ----
+	// ---- (3) researcher.subscribe is refused (ACL) ----
 	res, _ = tool.Execute(researcherCtx, json.RawMessage(`{"op":"subscribe","channel":"findings","max_messages":10}`))
 	if !res.IsError {
 		t.Error("researcher subscribe should be refused (subscribe: [])")
@@ -106,7 +98,7 @@ func TestChannelIntegration_TwoAgentHandoff(t *testing.T) {
 		t.Errorf("refusal should mention subscribe; got %s", res.Text)
 	}
 
-	// ---- (5) analyst.publish is refused (ACL) ----
+	// ---- (2) analyst.publish is refused (ACL) ----
 	res, _ = tool.Execute(analystCtx, json.RawMessage(`{"op":"publish","channel":"findings","value":{}}`))
 	if !res.IsError {
 		t.Error("analyst publish should be refused (publish: [])")
