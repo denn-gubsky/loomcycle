@@ -9,6 +9,7 @@ package loop
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
@@ -106,14 +107,35 @@ type RunOptions struct {
 	AgentName string
 
 	// UserTier is the v0.8.2 user-facing-tier policy name applied
-	// to this run. PR 1 only plumbs the field; PR 2's runtime
-	// fallback consumes FallbackOnError + MaxFallbackAttempts via
-	// the resolver's UserTierOverlay (resolver state, not RunOptions).
-	// This field is currently informational — it appears in the
-	// agent-loop log line + on store.Run.UserTier so cost/compliance
-	// queries can facet by tier. Empty when the operator has no
-	// user_tiers configured.
+	// to this run. Informational on the loop side — appears on
+	// store.Run.UserTier + agent-loop log lines so cost/compliance
+	// queries can facet by tier. The actual fallback behaviour is
+	// driven by FallbackPolicy below (also set by the HTTP server
+	// from the operator's user_tiers yaml). Empty when no user_tier
+	// was supplied / configured.
 	UserTier string
+
+	// FallbackPolicy controls the v0.8.2 runtime fallback path —
+	// the loop switches to the next-in-queue provider when a call
+	// returns a retryable error (rate limit, 5xx, network, stream-
+	// idle). Zero value = disabled (preserves v0.7.x error-out
+	// semantics). When Enabled is true, ReResolve MUST be non-nil.
+	FallbackPolicy FallbackPolicy
+
+	// ReResolve is the runtime-fallback callback. Called when a
+	// provider call returns a retryable error AND FallbackPolicy.
+	// Enabled AND attempts < MaxAttempts. The callback marks the
+	// failed (provider, model) stalled in the resolver, picks the
+	// next-in-queue, and returns the new Provider + Model + Effort.
+	//
+	// Returning an error from ReResolve means the resolver couldn't
+	// find another candidate — the loop then surfaces the original
+	// error to the caller (no further fallback attempts on this run).
+	//
+	// Nil disables runtime fallback regardless of FallbackPolicy.
+	// Both fields are set together by the HTTP server / gRPC server
+	// when the operator's user_tier policy enables fallback.
+	ReResolve func(ctx context.Context, failedProvider, failedModel string, cause error) (provider providers.Provider, model string, effort string, err error)
 
 	// Hooks is the tool-use hook dispatcher. Optional; nil disables
 	// all hook invocation (the loop runs tool dispatch directly,
@@ -146,6 +168,168 @@ type RunOptions struct {
 	// simple; tighten in follow-ups if over-reporting becomes
 	// observable noise.
 	MarkStalled func(provider, model, reason string)
+}
+
+// FallbackPolicy controls the v0.8.2 runtime fallback path. The HTTP
+// server builds this from cfg.UserTiers[req.user_tier]; the gRPC
+// server does the same. Zero value disables fallback (preserves
+// v0.7.x error-out semantics).
+//
+// Per-tier policy split: free tiers ship with Enabled=false (a 429
+// becomes a hard error so cost caps hold); paid tiers ship with
+// Enabled=true and MaxAttempts=3 (the cumulative cap across providers
+// — a run that climbs Anthropic → DeepSeek → Gemini consumes all 3).
+type FallbackPolicy struct {
+	// Enabled gates the fallback path. False = ReResolve is never
+	// consulted, errors propagate as in v0.7.x.
+	Enabled bool
+
+	// MaxAttempts is the cumulative cap on provider switches per
+	// run. The original provider doesn't count — only the SWITCHES.
+	// A run that successfully cascaded Anthropic → DeepSeek (1
+	// switch) → Gemini (2 switches) consumed 2 attempts; the 3rd
+	// would be allowed when MaxAttempts >= 3. Zero falls back to
+	// the package default of 3.
+	MaxAttempts int
+
+	// UserTierName is the operator-declared tier name that
+	// authorised this fallback policy. Informational — appears on
+	// the EventProviderFallback payload so log + UI consumers can
+	// attribute the switch to a specific tier.
+	UserTierName string
+}
+
+// defaultMaxFallbackAttempts is the cumulative cap when the operator
+// yaml leaves MaxAttempts at 0. Three attempts gets a run from a
+// stalled Anthropic through two more providers — enough to recover
+// from a single-provider outage without consuming dozens of attempts
+// against a deeper backbone-wide issue.
+const defaultMaxFallbackAttempts = 3
+
+// fallbackOutcome enumerates what tryProviderFallback decided after
+// classifying the error and consulting policy + budget.
+type fallbackOutcome int
+
+const (
+	// fallbackOutcomeNotEligible — the error class wasn't retryable,
+	// the policy was disabled, or the budget was exhausted. Caller
+	// propagates the original error via the existing error path.
+	fallbackOutcomeNotEligible fallbackOutcome = iota
+
+	// fallbackOutcomeSwitched — the loop's opts.Provider /
+	// opts.Model / opts.Effort were swapped in place. Caller
+	// re-runs the current iteration body against the new provider
+	// (typically via `continue` on the outer loop).
+	fallbackOutcomeSwitched
+
+	// fallbackOutcomeReResolveFailed — fallback was eligible AND the
+	// caller invoked ReResolve, but no replacement candidate was
+	// available (resolver exhausted the user_tier's candidate list).
+	// Caller propagates the original error (the fallback path is
+	// terminal for this run).
+	fallbackOutcomeReResolveFailed
+)
+
+// tryProviderFallback classifies the error, consults the run's
+// FallbackPolicy + cumulative attempts counter, and (if all three
+// permit) calls ReResolve to swap to the next provider. On success
+// it mutates *opts in place — caller continues the iteration body
+// against the new provider as if nothing happened.
+//
+// The mutation is intentional: opts is a value-receiver in Run, so
+// the swap is local to this loop invocation. The caller of Run
+// passed providers + initial state and doesn't re-read them.
+//
+// Emits EventProviderFallback on every successful switch. Emits
+// EventCacheInvalidated when an Anthropic provider is swapped out
+// (the only provider with operator-controlled cache_control
+// breakpoints today; gemini-implicit-cache and others don't surface
+// a knob, so swap-away isn't a meaningful invalidation event).
+func tryProviderFallback(
+	ctx context.Context,
+	opts *RunOptions,
+	attempts *int,
+	cause error,
+	emit func(providers.Event),
+) fallbackOutcome {
+	if !opts.FallbackPolicy.Enabled || opts.ReResolve == nil {
+		return fallbackOutcomeNotEligible
+	}
+	cls := providers.ClassifyError(cause)
+	if cls != providers.ErrorClassRetryable {
+		return fallbackOutcomeNotEligible
+	}
+	maxAttempts := opts.FallbackPolicy.MaxAttempts
+	if maxAttempts <= 0 {
+		maxAttempts = defaultMaxFallbackAttempts
+	}
+	if *attempts >= maxAttempts {
+		return fallbackOutcomeNotEligible
+	}
+	// Ctx already cancelled? Don't fall back — caller signalled
+	// abandon, classify would have caught explicit ctx.Canceled but
+	// race-stops can have the loop here with a fresh-looking error.
+	if ctx.Err() != nil {
+		return fallbackOutcomeNotEligible
+	}
+
+	failedProvider := opts.Provider.ID()
+	failedModel := opts.Model
+	newProvider, newModel, newEffort, rerr := opts.ReResolve(ctx, failedProvider, failedModel, cause)
+	if rerr != nil {
+		return fallbackOutcomeReResolveFailed
+	}
+
+	*attempts++
+
+	emit(providers.Event{
+		Type: providers.EventProviderFallback,
+		Fallback: &providers.FallbackInfo{
+			FailedProvider: failedProvider,
+			FailedModel:    failedModel,
+			NewProvider:    newProvider.ID(),
+			NewModel:       newModel,
+			Attempt:        *attempts,
+			UserTier:       opts.FallbackPolicy.UserTierName,
+			Reason:         cls.String(),
+			CauseError:     truncateError(cause),
+		},
+	})
+
+	// Cache-loss event when switching AWAY from Anthropic. The
+	// cache_control breakpoints in the system block (and on system_
+	// prompt segments) are Anthropic-specific; no other provider
+	// carries the equivalent state today. A switch FROM anthropic
+	// means downstream iterations on the new provider get cache-
+	// cold rates. Switches INTO anthropic don't emit this event —
+	// the new provider has no cache to begin with, and Anthropic's
+	// implicit cache will warm naturally.
+	if failedProvider == "anthropic" && newProvider.ID() != "anthropic" {
+		emit(providers.Event{
+			Type: providers.EventCacheInvalidated,
+			Text: fmt.Sprintf("Anthropic cache_control breakpoints lost on switch to %s; this run's downstream iterations will be cache-cold", newProvider.ID()),
+		})
+	}
+
+	opts.Provider = newProvider
+	opts.Model = newModel
+	opts.Effort = newEffort
+	return fallbackOutcomeSwitched
+}
+
+// truncateError clips long error strings to 200 chars so a peer's
+// 9 KB HTML 500 page doesn't flood the SSE wire on EventProviderFallback.
+// Same shape as the lazy-MCP resolver's summariseErr in v0.8.1.
+func truncateError(err error) string {
+	if err == nil {
+		return ""
+	}
+	s := err.Error()
+	const maxLen = 200
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen] + "…(truncated)"
 }
 
 // RunResult is the terminal state after a Run.
@@ -203,7 +387,15 @@ func Run(ctx context.Context, opts RunOptions) (RunResult, error) {
 	var totalUsage providers.Usage
 	var finalText string
 	var stopReason string
+	// fallbackAttempts counts cumulative v0.8.2 provider switches per
+	// run. tryProviderFallback bumps it on each successful switch;
+	// the FallbackPolicy.MaxAttempts cap (default 3) is enforced
+	// there. A fallback "consumes" one iter slot from the outer loop
+	// — we don't decrement iter, because a deliberate switch should
+	// still count toward MaxIterations as work the run did.
+	var fallbackAttempts int
 
+outerLoop:
 	for iter := 0; iter < opts.MaxIterations; iter++ {
 		// Heartbeat fires at the top of each iteration. Cheap path —
 		// implementations are expected to be ~one UPDATE. Failures
@@ -236,6 +428,17 @@ func Run(ctx context.Context, opts RunOptions) (RunResult, error) {
 			// not provider faults — don't pollute the matrix.
 			if opts.MarkStalled != nil && ctx.Err() == nil {
 				opts.MarkStalled(opts.Provider.ID(), opts.Model, err.Error())
+			}
+			// v0.8.2: when the run carries a fallback policy and the
+			// error class is retryable, swap to the next provider
+			// and re-run this iteration. tryProviderFallback emits
+			// EventProviderFallback (+ EventCacheInvalidated when
+			// switching away from anthropic) and mutates opts in
+			// place. Outcome==Switched → continue the outer loop
+			// without surfacing the error. Other outcomes fall
+			// through to the original error path.
+			if tryProviderFallback(ctx, &opts, &fallbackAttempts, err, emit) == fallbackOutcomeSwitched {
+				continue outerLoop
 			}
 			emit(providers.Event{Type: providers.EventError, Error: err.Error()})
 			return RunResult{Iterations: iter}, err
@@ -291,6 +494,19 @@ func Run(ctx context.Context, opts RunOptions) (RunResult, error) {
 				// shouldn't pollute the matrix.
 				if opts.MarkStalled != nil && ctx.Err() == nil {
 					opts.MarkStalled(opts.Provider.ID(), opts.Model, ev.Error)
+				}
+				// v0.8.2: classify the RAW provider error string
+				// (e.g. "anthropic 503: backend unavailable") for
+				// the fallback decision. The classifier's status-
+				// prefix regex needs the bare "<name> <code>:"
+				// shape, which the streamErr wrap below would
+				// obscure. The wrap is reserved for the FINAL
+				// return value when fallback isn't eligible.
+				rawErr := errors.New(ev.Error)
+				if tryProviderFallback(ctx, &opts, &fallbackAttempts, rawErr, emit) == fallbackOutcomeSwitched {
+					for range ch {
+					}
+					continue outerLoop
 				}
 				emit(ev)
 				return RunResult{Iterations: iter}, fmt.Errorf("provider error: %s", ev.Error)

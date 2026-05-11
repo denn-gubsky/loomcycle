@@ -1,0 +1,427 @@
+package loop
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"strings"
+	"sync"
+	"testing"
+
+	"github.com/denn-gubsky/loomcycle/internal/providers"
+)
+
+// tieredProvider is a fakeProvider variant whose ID is configurable.
+// The fallback tests need two distinct providers with different IDs
+// so we can assert the EventProviderFallback payload carries the
+// correct new_provider name.
+type tieredProvider struct {
+	id        string
+	mu        sync.Mutex
+	responses [][]providers.Event
+	errors    []error // returned by Call() at the same index; nil → use responses[idx]
+	calls     int
+}
+
+func (p *tieredProvider) ID() string                                       { return p.id }
+func (p *tieredProvider) Probe(_ context.Context) error                    { return nil }
+func (p *tieredProvider) ListModels(_ context.Context) ([]string, error)   { return []string{"m"}, nil }
+func (p *tieredProvider) Capabilities() providers.Capabilities {
+	return providers.Capabilities{Streaming: true}
+}
+func (p *tieredProvider) Call(_ context.Context, _ providers.Request) (<-chan providers.Event, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	idx := p.calls
+	p.calls++
+	if idx < len(p.errors) && p.errors[idx] != nil {
+		return nil, p.errors[idx]
+	}
+	if idx >= len(p.responses) {
+		return nil, fmt.Errorf("no scripted response at idx=%d for %s", idx, p.id)
+	}
+	ch := make(chan providers.Event, len(p.responses[idx]))
+	for _, ev := range p.responses[idx] {
+		ch <- ev
+	}
+	close(ch)
+	return ch, nil
+}
+
+// successResponse returns the canonical "model said hi and stopped"
+// event sequence — used as the terminal response after a fallback
+// switches to the new provider.
+func successResponse() []providers.Event {
+	return []providers.Event{
+		{Type: providers.EventText, Text: "hi from new provider"},
+		{Type: providers.EventDone, StopReason: "end_turn", Usage: &providers.Usage{InputTokens: 1, OutputTokens: 1, Model: "m"}},
+	}
+}
+
+// TestFallback_429SwitchesProviderAndEmitsEvent — the headline case:
+// first Call returns "anthropic 429: rate limit", policy enables
+// fallback, ReResolve returns a new provider; the next iteration
+// succeeds against the new provider. EventProviderFallback carries
+// the correct failed/new provider names.
+func TestFallback_429SwitchesProviderAndEmitsEvent(t *testing.T) {
+	failing := &tieredProvider{
+		id:     "anthropic",
+		errors: []error{fmt.Errorf("anthropic 429: rate limit exceeded")},
+	}
+	healthy := &tieredProvider{
+		id:        "deepseek",
+		responses: [][]providers.Event{successResponse()},
+	}
+
+	var events []providers.Event
+	var mu sync.Mutex
+
+	opts := RunOptions{
+		Provider:      failing,
+		Model:         "claude-sonnet-4-6",
+		MaxIterations: 5,
+		Segments:      []PromptSegment{{Role: "user", Content: []PromptContentBlock{{Type: "trusted-text", Text: "hi"}}}},
+		OnEvent: func(ev providers.Event) {
+			mu.Lock()
+			defer mu.Unlock()
+			events = append(events, ev)
+		},
+		FallbackPolicy: FallbackPolicy{
+			Enabled:      true,
+			MaxAttempts:  3,
+			UserTierName: "medium",
+		},
+		ReResolve: func(_ context.Context, _, _ string, _ error) (providers.Provider, string, string, error) {
+			return healthy, "deepseek-v4-pro", "", nil
+		},
+	}
+	res, err := Run(context.Background(), opts)
+	if err != nil {
+		t.Fatalf("Run: %v (expected success after fallback)", err)
+	}
+	if res.StopReason != "end_turn" {
+		t.Errorf("StopReason = %q, want end_turn", res.StopReason)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	var fbEvent *providers.Event
+	for i := range events {
+		if events[i].Type == providers.EventProviderFallback {
+			fbEvent = &events[i]
+			break
+		}
+	}
+	if fbEvent == nil {
+		t.Fatal("no EventProviderFallback emitted")
+	}
+	if fbEvent.Fallback == nil {
+		t.Fatal("EventProviderFallback emitted with nil Fallback payload")
+	}
+	if fbEvent.Fallback.FailedProvider != "anthropic" {
+		t.Errorf("FailedProvider = %q, want anthropic", fbEvent.Fallback.FailedProvider)
+	}
+	if fbEvent.Fallback.NewProvider != "deepseek" {
+		t.Errorf("NewProvider = %q, want deepseek", fbEvent.Fallback.NewProvider)
+	}
+	if fbEvent.Fallback.Attempt != 1 {
+		t.Errorf("Attempt = %d, want 1", fbEvent.Fallback.Attempt)
+	}
+	if fbEvent.Fallback.UserTier != "medium" {
+		t.Errorf("UserTier = %q, want medium", fbEvent.Fallback.UserTier)
+	}
+	if fbEvent.Fallback.Reason != "retryable" {
+		t.Errorf("Reason = %q, want retryable", fbEvent.Fallback.Reason)
+	}
+	if !strings.Contains(fbEvent.Fallback.CauseError, "anthropic 429") {
+		t.Errorf("CauseError = %q, want substring 'anthropic 429'", fbEvent.Fallback.CauseError)
+	}
+}
+
+// TestFallback_DisabledPolicy_PropagatesError — free tier: enabled=false
+// means a 429 returns the error to the caller, no switch attempted.
+// Pins the cost-cap semantic.
+func TestFallback_DisabledPolicy_PropagatesError(t *testing.T) {
+	failing := &tieredProvider{
+		id:     "gemini",
+		errors: []error{fmt.Errorf("gemini 429: free tier exhausted")},
+	}
+	reResolveCalls := 0
+	opts := RunOptions{
+		Provider:      failing,
+		Model:         "gemini-2.0-flash",
+		MaxIterations: 5,
+		Segments:      []PromptSegment{{Role: "user", Content: []PromptContentBlock{{Type: "trusted-text", Text: "hi"}}}},
+		OnEvent:       func(ev providers.Event) {},
+		FallbackPolicy: FallbackPolicy{Enabled: false}, // free tier
+		ReResolve: func(_ context.Context, _, _ string, _ error) (providers.Provider, string, string, error) {
+			reResolveCalls++
+			return nil, "", "", nil
+		},
+	}
+	_, err := Run(context.Background(), opts)
+	if err == nil {
+		t.Fatal("expected error to propagate when fallback disabled")
+	}
+	if !strings.Contains(err.Error(), "gemini 429") {
+		t.Errorf("error = %q, want substring 'gemini 429'", err.Error())
+	}
+	if reResolveCalls != 0 {
+		t.Errorf("ReResolve called %d times; want 0 (policy disabled)", reResolveCalls)
+	}
+}
+
+// TestFallback_BudgetExhausted_PropagatesError — policy enabled, but
+// after 3 successful switches a 4th 429 should propagate. Confirms
+// MaxAttempts is the cumulative cap across providers.
+func TestFallback_BudgetExhausted_PropagatesError(t *testing.T) {
+	// Each tieredProvider returns 429 on every call so the loop
+	// keeps trying to fall back. ReResolve hands out fresh providers
+	// each time; the cap stops the cycle at attempt 3.
+	makeFailing := func(id string) *tieredProvider {
+		return &tieredProvider{
+			id:     id,
+			errors: []error{fmt.Errorf("%s 429: throttled", id)},
+		}
+	}
+	providers0 := makeFailing("anthropic")
+	providers1 := makeFailing("deepseek")
+	providers2 := makeFailing("gemini")
+	providers3 := makeFailing("ollama")
+
+	queue := []*tieredProvider{providers1, providers2, providers3}
+	reResolveCalls := 0
+
+	opts := RunOptions{
+		Provider:      providers0,
+		Model:         "m0",
+		MaxIterations: 10,
+		Segments:      []PromptSegment{{Role: "user", Content: []PromptContentBlock{{Type: "trusted-text", Text: "hi"}}}},
+		OnEvent:       func(ev providers.Event) {},
+		FallbackPolicy: FallbackPolicy{
+			Enabled:      true,
+			MaxAttempts:  3,
+			UserTierName: "high",
+		},
+		ReResolve: func(_ context.Context, _, _ string, _ error) (providers.Provider, string, string, error) {
+			next := queue[reResolveCalls]
+			reResolveCalls++
+			return next, "m" + next.id, "", nil
+		},
+	}
+	_, err := Run(context.Background(), opts)
+	if err == nil {
+		t.Fatal("expected error after budget exhausted")
+	}
+	// After the 3rd switch (now on providers3), the 4th 429 should
+	// NOT trigger another switch (budget exhausted). The original
+	// providers3 error propagates.
+	if !strings.Contains(err.Error(), "ollama 429") {
+		t.Errorf("expected ollama 429 (the final provider's error); got %v", err)
+	}
+	if reResolveCalls != 3 {
+		t.Errorf("ReResolve called %d times; want 3 (MaxAttempts cap)", reResolveCalls)
+	}
+}
+
+// TestFallback_PermanentError_PropagatesRegardlessOfPolicy — a 400 /
+// 401 / 403 must NOT trigger fallback even when policy is enabled.
+// These are configuration errors (bad payload, bad auth); cascading
+// burns through every provider's quota for no benefit.
+func TestFallback_PermanentError_PropagatesRegardlessOfPolicy(t *testing.T) {
+	failing := &tieredProvider{
+		id:     "anthropic",
+		errors: []error{fmt.Errorf("anthropic 400: invalid request shape")},
+	}
+	reResolveCalls := 0
+	opts := RunOptions{
+		Provider:       failing,
+		Model:          "claude-sonnet-4-6",
+		MaxIterations:  5,
+		Segments:       []PromptSegment{{Role: "user", Content: []PromptContentBlock{{Type: "trusted-text", Text: "hi"}}}},
+		OnEvent:        func(ev providers.Event) {},
+		FallbackPolicy: FallbackPolicy{Enabled: true, MaxAttempts: 3},
+		ReResolve: func(_ context.Context, _, _ string, _ error) (providers.Provider, string, string, error) {
+			reResolveCalls++
+			t.Error("ReResolve was called for a 400 — should NOT happen")
+			return nil, "", "", nil
+		},
+	}
+	_, err := Run(context.Background(), opts)
+	if err == nil {
+		t.Fatal("expected error to propagate for permanent class")
+	}
+	if !strings.Contains(err.Error(), "anthropic 400") {
+		t.Errorf("error = %q, want substring 'anthropic 400'", err.Error())
+	}
+	if reResolveCalls != 0 {
+		t.Errorf("ReResolve called %d times; want 0 (permanent error)", reResolveCalls)
+	}
+}
+
+// TestFallback_AnthropicToOther_EmitsCacheInvalidated — when the
+// failing provider is anthropic and the new one isn't, the loop
+// must emit EventCacheInvalidated alongside EventProviderFallback.
+// Anthropic's cache_control breakpoints don't transfer; this event
+// is the signal to cost-retro tooling that downstream tokens for
+// this run are cache-cold.
+func TestFallback_AnthropicToOther_EmitsCacheInvalidated(t *testing.T) {
+	failing := &tieredProvider{
+		id:     "anthropic",
+		errors: []error{fmt.Errorf("anthropic 503: backend unavailable")},
+	}
+	healthy := &tieredProvider{
+		id:        "deepseek",
+		responses: [][]providers.Event{successResponse()},
+	}
+	var events []providers.Event
+	var mu sync.Mutex
+	opts := RunOptions{
+		Provider:      failing,
+		Model:         "claude-sonnet-4-6",
+		MaxIterations: 5,
+		Segments:      []PromptSegment{{Role: "user", Content: []PromptContentBlock{{Type: "trusted-text", Text: "hi"}}}},
+		OnEvent: func(ev providers.Event) {
+			mu.Lock()
+			defer mu.Unlock()
+			events = append(events, ev)
+		},
+		FallbackPolicy: FallbackPolicy{Enabled: true, MaxAttempts: 3, UserTierName: "high"},
+		ReResolve: func(_ context.Context, _, _ string, _ error) (providers.Provider, string, string, error) {
+			return healthy, "deepseek-v4-pro", "", nil
+		},
+	}
+	if _, err := Run(context.Background(), opts); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	sawCacheEvent := false
+	for _, ev := range events {
+		if ev.Type == providers.EventCacheInvalidated {
+			sawCacheEvent = true
+			if !strings.Contains(ev.Text, "deepseek") {
+				t.Errorf("cache event text = %q, want substring 'deepseek'", ev.Text)
+			}
+			break
+		}
+	}
+	if !sawCacheEvent {
+		t.Error("no EventCacheInvalidated emitted on anthropic→deepseek switch")
+	}
+}
+
+// TestFallback_NonAnthropicSwitch_NoCacheEvent — switching from
+// (e.g.) gemini to deepseek must NOT emit EventCacheInvalidated.
+// Only Anthropic has operator-controlled cache_control breakpoints
+// today; cache invalidation isn't meaningful for other providers.
+func TestFallback_NonAnthropicSwitch_NoCacheEvent(t *testing.T) {
+	failing := &tieredProvider{
+		id:     "gemini",
+		errors: []error{fmt.Errorf("gemini 503: backend unavailable")},
+	}
+	healthy := &tieredProvider{
+		id:        "deepseek",
+		responses: [][]providers.Event{successResponse()},
+	}
+	var events []providers.Event
+	var mu sync.Mutex
+	opts := RunOptions{
+		Provider:      failing,
+		Model:         "gemini-2.5-pro",
+		MaxIterations: 5,
+		Segments:      []PromptSegment{{Role: "user", Content: []PromptContentBlock{{Type: "trusted-text", Text: "hi"}}}},
+		OnEvent: func(ev providers.Event) {
+			mu.Lock()
+			defer mu.Unlock()
+			events = append(events, ev)
+		},
+		FallbackPolicy: FallbackPolicy{Enabled: true, MaxAttempts: 3, UserTierName: "high"},
+		ReResolve: func(_ context.Context, _, _ string, _ error) (providers.Provider, string, string, error) {
+			return healthy, "deepseek-v4-pro", "", nil
+		},
+	}
+	if _, err := Run(context.Background(), opts); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	for _, ev := range events {
+		if ev.Type == providers.EventCacheInvalidated {
+			t.Errorf("EventCacheInvalidated emitted on gemini→deepseek switch (no anthropic cache to invalidate)")
+		}
+	}
+}
+
+// TestFallback_ReResolveFailure_PropagatesOriginalError — the
+// resolver couldn't find another candidate (the user_tier's list
+// is exhausted). The loop must surface the ORIGINAL provider error
+// to the caller, not the resolver's "no candidates" error.
+// Operators read the actual provider failure; the no-candidates
+// outcome is downstream context.
+func TestFallback_ReResolveFailure_PropagatesOriginalError(t *testing.T) {
+	failing := &tieredProvider{
+		id:     "anthropic",
+		errors: []error{fmt.Errorf("anthropic 429: throttled")},
+	}
+	opts := RunOptions{
+		Provider:       failing,
+		Model:          "claude-sonnet-4-6",
+		MaxIterations:  5,
+		Segments:       []PromptSegment{{Role: "user", Content: []PromptContentBlock{{Type: "trusted-text", Text: "hi"}}}},
+		OnEvent:        func(ev providers.Event) {},
+		FallbackPolicy: FallbackPolicy{Enabled: true, MaxAttempts: 3},
+		ReResolve: func(_ context.Context, _, _ string, _ error) (providers.Provider, string, string, error) {
+			return nil, "", "", errors.New("user_tier candidate list exhausted")
+		},
+	}
+	_, err := Run(context.Background(), opts)
+	if err == nil {
+		t.Fatal("expected error when ReResolve fails")
+	}
+	// Must surface the ORIGINAL "anthropic 429", not the resolver's
+	// "user_tier candidate list exhausted" — operator needs to see
+	// what actually broke at the provider.
+	if !strings.Contains(err.Error(), "anthropic 429") {
+		t.Errorf("error = %q, want substring 'anthropic 429' (original provider failure)", err.Error())
+	}
+}
+
+// TestFallback_StreamMidErrorTriggers — provider opens the SSE
+// stream successfully but emits an EventError mid-stream. The
+// fallback path must fire from the in-stream error too, not just
+// the Call-layer error. Models 5xx-ing mid-response is a common
+// shape that v0.8.2 needs to handle.
+func TestFallback_StreamMidErrorTriggers(t *testing.T) {
+	failing := &tieredProvider{
+		id: "anthropic",
+		responses: [][]providers.Event{
+			{
+				{Type: providers.EventText, Text: "starting..."},
+				{Type: providers.EventError, Error: "anthropic 503: stream interrupted"},
+			},
+		},
+	}
+	healthy := &tieredProvider{
+		id:        "deepseek",
+		responses: [][]providers.Event{successResponse()},
+	}
+	opts := RunOptions{
+		Provider:       failing,
+		Model:          "claude-sonnet-4-6",
+		MaxIterations:  5,
+		Segments:       []PromptSegment{{Role: "user", Content: []PromptContentBlock{{Type: "trusted-text", Text: "hi"}}}},
+		OnEvent:        func(ev providers.Event) {},
+		FallbackPolicy: FallbackPolicy{Enabled: true, MaxAttempts: 3, UserTierName: "high"},
+		ReResolve: func(_ context.Context, _, _ string, _ error) (providers.Provider, string, string, error) {
+			return healthy, "deepseek-v4-pro", "", nil
+		},
+	}
+	res, err := Run(context.Background(), opts)
+	if err != nil {
+		t.Fatalf("Run: %v (expected fallback to handle mid-stream error)", err)
+	}
+	if res.StopReason != "end_turn" {
+		t.Errorf("StopReason = %q, want end_turn", res.StopReason)
+	}
+}
