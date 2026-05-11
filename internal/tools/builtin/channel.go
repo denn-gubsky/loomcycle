@@ -8,8 +8,10 @@ import (
 	"log"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/denn-gubsky/loomcycle/internal/channels"
+	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
@@ -247,6 +249,24 @@ func (c *Channel) execPublish(ctx context.Context, policy tools.ChannelPolicyVal
 	if c.Bus != nil {
 		c.Bus.Notify(in.Channel)
 	}
+	// Typed audit event (v0.8.4 polish): same payload as the
+	// tool_result envelope, but on a separate event type so SSE
+	// consumers building channel dashboards can filter by Type
+	// without parsing every tool_result JSON. PayloadPreview is
+	// truncated at 200 chars — adapters that need the full
+	// payload still read it from the tool_result envelope.
+	tools.EventEmitter(ctx)(providers.Event{
+		Type: providers.EventChannelPublish,
+		Channel: &providers.ChannelEventInfo{
+			Channel:        in.Channel,
+			MessageID:      id,
+			Scope:          string(scope),
+			ScopeID:        scopeID,
+			PayloadBytes:   len(in.Value),
+			PayloadPreview: truncateForEvent(string(in.Value), 200),
+			DroppedOldest:  dropped,
+		},
+	})
 	return okJSON(map[string]any{
 		"message_id":     id,
 		"channel":        in.Channel,
@@ -301,6 +321,42 @@ func (c *Channel) execSubscribe(ctx context.Context, policy tools.ChannelPolicyV
 		}
 	}
 
+	// Emit BEFORE the auto-commit ack. Audit-event ordering
+	// invariant: "if the cursor committed, the events were
+	// emitted." Without this ordering, a transient ack failure
+	// could leave messages marked consumed in storage while the
+	// audit event was already written — but a transient ack
+	// SUCCESS combined with an SSE flush failure could leave
+	// messages consumed-but-not-audited, which is the worse gap
+	// (operator using events for compliance/billing sees silent
+	// holes). Emit first; commit second.
+	out := make([]map[string]any, 0, len(msgs))
+	emit := tools.EventEmitter(ctx)
+	for _, m := range msgs {
+		out = append(out, map[string]any{
+			"id":           m.ID,
+			"value":        m.Payload,
+			"published_at": m.PublishedAt.UTC().Format(time.RFC3339Nano),
+		})
+		// One typed delivery event per message in the returned
+		// batch, in delivery order. For replays via cur_0 these
+		// fire each time — delivery events count consumption,
+		// distinct from EventChannelPublish which counts
+		// production.
+		emit(providers.Event{
+			Type: providers.EventChannelDelivery,
+			Channel: &providers.ChannelEventInfo{
+				Channel:        in.Channel,
+				MessageID:      m.ID,
+				Scope:          string(scope),
+				ScopeID:        scopeID,
+				PayloadBytes:   len(m.Payload),
+				PayloadPreview: truncateForEvent(string(m.Payload), 200),
+				Cursor:         m.ID,
+			},
+		})
+	}
+
 	// Commit-on-return: when the read returned messages, advance
 	// the committed cursor to next (= last message in batch) BEFORE
 	// returning. This is the simple at-most-once shape — agents
@@ -328,15 +384,6 @@ func (c *Channel) execSubscribe(ctx context.Context, policy tools.ChannelPolicyV
 				log.Printf("channel %q: subscribe auto-ack failed (next double-delivery expected): %v", in.Channel, err)
 			}
 		}
-	}
-
-	out := make([]map[string]any, 0, len(msgs))
-	for _, m := range msgs {
-		out = append(out, map[string]any{
-			"id":           m.ID,
-			"value":        m.Payload,
-			"published_at": m.PublishedAt.UTC().Format(time.RFC3339Nano),
-		})
 	}
 	return okJSON(map[string]any{
 		"channel":     in.Channel,
@@ -398,4 +445,34 @@ func (c *Channel) execListChannels(policy tools.ChannelPolicyValue) (tools.Resul
 		"publish":   policy.Publish,
 		"subscribe": policy.Subscribe,
 	})
+}
+
+// truncateForEvent caps payload-preview strings at the configured
+// byte budget. Adds an ellipsis when truncated so consumers can
+// tell the preview is partial. Empty input returns empty (no
+// ellipsis on the zero case — keeps the wire shape tidy).
+//
+// UTF-8 safety: walks runes and stops at the last rune boundary
+// that fits within `max` bytes. Naive `s[:max]` byte-slicing
+// would split a multi-byte rune that straddles the cut, producing
+// invalid UTF-8 — JSON consumers (TS adapter's TextDecoder,
+// strict json.Unmarshal) would reject the resulting preview.
+// Since ChannelEventInfo is wire-stable from v0.8.4+, byte-slicing
+// is not an option.
+func truncateForEvent(s string, max int) string {
+	if max <= 0 || s == "" {
+		return s
+	}
+	if len(s) <= max {
+		return s
+	}
+	n := 0
+	for _, r := range s {
+		size := utf8.RuneLen(r)
+		if n+size > max {
+			break
+		}
+		n += size
+	}
+	return s[:n] + "…"
 }

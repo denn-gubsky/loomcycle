@@ -218,6 +218,33 @@ const (
 	// downstream iterations as cache-cold for the new provider.
 	// Purely informational; the loop continues unchanged.
 	EventCacheInvalidated EventType = "cache_invalidated"
+
+	// EventChannelPublish signals that the v0.8.4 Channel tool
+	// successfully appended a message to a channel. Emitted from
+	// inside the tool's Execute() via the ctx-attached event
+	// emitter (see tools.WithEventEmitter). The Channel field
+	// carries the structured payload — channel name, message id,
+	// scope axis, byte size, optional payload preview (truncated
+	// to 200 chars), and the trim count for overflow audits.
+	//
+	// All the same data exists in the surrounding tool_call /
+	// tool_result envelope, but the typed event lets SSE consumers
+	// build channel-activity dashboards by filtering on Type
+	// without parsing the tool_result JSON.
+	EventChannelPublish EventType = "channel_publish"
+
+	// EventChannelDelivery fires once per message returned to a
+	// subscriber. Emitted from inside the tool's Execute() via the
+	// ctx-attached event emitter. Distinct from EventChannelPublish
+	// because a single message can be delivered N times (across
+	// replays via `from_cursor: cur_0`, or to multiple subscribers
+	// on a broadcast-shape channel) — publish events count
+	// production, delivery events count consumption.
+	//
+	// One event per message in the returned batch. For a long-poll
+	// subscribe that returns 100 messages, expect 100
+	// EventChannelDelivery events emitted in order.
+	EventChannelDelivery EventType = "channel_delivery"
 )
 
 // Event is one streamed datum from a provider call (or, after the loop layer
@@ -241,6 +268,14 @@ type Event struct {
 	// so cost retros can attribute downstream tokens to the new
 	// provider.
 	Fallback *FallbackInfo `json:"fallback,omitempty"`
+
+	// Channel carries the structured payload on EventChannelPublish
+	// and EventChannelDelivery (the v0.8.4 typed audit events from
+	// the Channel tool). Nil on all other event types. Same
+	// payload shape for both event types so SSE consumers building
+	// channel-activity dashboards can filter on Type and key the
+	// row by (channel, message_id) without two parsers.
+	Channel *ChannelEventInfo `json:"channel,omitempty"`
 
 	// StopReason is set on the final assistant Event of a provider call:
 	// "end_turn" | "tool_use" | "max_tokens" | "stop_sequence".
@@ -310,6 +345,51 @@ type FallbackInfo struct {
 	// for operator diagnostics — they see "anthropic 429: rate
 	// limit exceeded" alongside the structural switch info.
 	CauseError string `json:"cause_error,omitempty"`
+}
+
+// ChannelEventInfo accompanies EventChannelPublish and
+// EventChannelDelivery. Same payload for both event types so SSE
+// consumers can build channel-activity dashboards by filtering on
+// Type and keying by (Channel, MessageID).
+//
+// Wire-stable; field names part of the v0.8.4+ contract.
+type ChannelEventInfo struct {
+	// Channel is the operator-declared channel name.
+	Channel string `json:"channel"`
+	// MessageID is the per-message identifier (ULID-shaped string,
+	// "msg_<16-hex unixNanos><8-hex rand>"). Sortable by publish
+	// time; agents must not parse it.
+	MessageID string `json:"message_id"`
+	// Scope mirrors the operator-yaml `scope` for this channel —
+	// "agent" / "user" / "global" — so dashboards can group by
+	// isolation axis without an extra lookup.
+	Scope string `json:"scope"`
+	// ScopeID is the resolved scope_id at emit time (agent name
+	// for scope=agent, user_id for scope=user, empty string for
+	// scope=global). Lets the audit trail show "who actually
+	// pub/sub'd this" without re-resolving from the run identity.
+	ScopeID string `json:"scope_id,omitempty"`
+	// PayloadBytes is the byte length of the JSON payload as
+	// stored. Useful for size dashboards without echoing the
+	// payload itself.
+	PayloadBytes int `json:"payload_bytes"`
+	// PayloadPreview is the first 200 characters of the JSON
+	// payload, included on every event for operator visibility.
+	// Larger payloads are truncated at 200 chars + "…"; agents and
+	// adapters that need the full payload read it from the
+	// tool_result envelope (which carries the untruncated JSON).
+	// Empty when the payload size is zero.
+	PayloadPreview string `json:"payload_preview,omitempty"`
+	// DroppedOldest is the count of overflow-trimmed rows on a
+	// publish (lossy-on-overflow per the v0.8.4 RFC). Always 0 on
+	// EventChannelDelivery — delivery cannot trigger trim.
+	DroppedOldest int `json:"dropped_oldest,omitempty"`
+	// Cursor is the new committed cursor after a delivery
+	// (auto-commit on subscribe = the message_id of the last in
+	// the batch). Always set on EventChannelDelivery to the
+	// MessageID of THIS event (since delivery events fire per
+	// message in order). Empty on EventChannelPublish.
+	Cursor string `json:"cursor,omitempty"`
 }
 
 // ToolUse is the model's request to invoke a tool.

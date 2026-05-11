@@ -437,6 +437,19 @@ Cursor monotonicity is enforced: `ack` with a cursor older than the currently co
 
 A spawned sub-agent inherits the parent's Channel ACL via ctx (mirror of `WithMemoryPolicy` / `WithHostPolicy`). A sub-agent cannot publish to a channel the parent couldn't. This is what makes the ACL story enforceable: no escalation across the `Agent` boundary.
 
+### Typed audit events
+
+Every successful `publish` and every delivered message surfaces a structured event on the run's SSE stream — distinct from the surrounding `tool_call` / `tool_result` envelope so SSE consumers can build channel-activity dashboards by filtering on event Type:
+
+| Event type | Fires on | Payload |
+|---|---|---|
+| `channel_publish` | Successful Channel.publish | `channel`, `message_id`, `scope`, `scope_id`, `payload_bytes`, `payload_preview` (truncated at 200 chars), `dropped_oldest` (overflow trim count) |
+| `channel_delivery` | One per message in a subscribe response (incl. replay batches) | `channel`, `message_id`, `scope`, `scope_id`, `payload_bytes`, `payload_preview`, `cursor` (= the message's own id) |
+
+Publish events count **production** (one per successful `Channel.publish`). Delivery events count **consumption** (one per message returned to a subscriber — on a `cur_0` replay, every message in the batch fires a fresh delivery event). All the same information is available in the `tool_result` envelope; the typed events exist purely to avoid the need to parse every `tool_result` JSON to detect channel activity.
+
+The payload preview is capped at 200 UTF-8 characters with a trailing `…` when truncated; adapters that need the full payload read it from the `tool_result` envelope (which carries the untruncated JSON). `payload_bytes` is always the full untruncated byte length.
+
 ### Out of scope for v0.8.4
 
 - Cross-process / multi-replica notification — multi-replica subscribers fall back to polling. v0.9.x.
