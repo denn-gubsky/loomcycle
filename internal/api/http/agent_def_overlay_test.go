@@ -72,6 +72,22 @@ func TestApplyAgentDefOverlay_TierOverridesStaticModelPin(t *testing.T) {
 	}
 }
 
+func TestApplyAgentDefOverlay_BothModelAndTier_PrefersModel(t *testing.T) {
+	// Defensive: a row that somehow carries both model AND tier (which
+	// AgentDef.create rejects) must collapse to one choice rather than
+	// passing the invariant violation through to the resolver. Prefer
+	// the more specific intent (Model wins, Tier cleared).
+	base := config.AgentDef{Provider: "anthropic"}
+	def := json.RawMessage(`{"model": "claude-haiku-4-5", "tier": "low"}`)
+	got := applyAgentDefOverlay(base, def)
+	if got.Model != "claude-haiku-4-5" {
+		t.Errorf("model = %q, want claude-haiku-4-5", got.Model)
+	}
+	if got.Tier != "" {
+		t.Errorf("tier should clear when model also set; got %q", got.Tier)
+	}
+}
+
 func TestApplyAgentDefOverlay_ModelOverridesStaticTier(t *testing.T) {
 	// Mirror: static was tier-driven; fork pins a specific model.
 	base := config.AgentDef{

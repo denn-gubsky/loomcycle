@@ -229,7 +229,17 @@ func (s *Server) resolveAgent(agentName, userTier string) (providerID, model, ef
 	if !ok {
 		return "", "", "", fmt.Errorf("%w: %s", runner.ErrUnknownAgent, agentName)
 	}
+	return s.resolveAgentDef(def, agentName, userTier)
+}
 
+// resolveAgentDef mirrors resolveAgent but takes a caller-supplied
+// AgentDef instead of looking it up in cfg.Agents. Used by the
+// v0.8.5 sub-agent path when an overlay has already produced an
+// effective def whose Provider/Model/Tier/Effort differ from the
+// static yaml. Without this, a forked sub-agent runs against the
+// static model — silently defeating the whole point of def_id
+// pinning.
+func (s *Server) resolveAgentDef(def config.AgentDef, agentName, userTier string) (providerID, model, effort string, err error) {
 	hasPin := def.Provider != "" || def.Model != ""
 	hasTier := def.Tier != ""
 
@@ -259,11 +269,12 @@ func (s *Server) resolveAgent(agentName, userTier string) (providerID, model, ef
 		return dec.Provider, dec.Model, dec.Effort, nil
 	}
 
-	// Pin path (or fallback to defaults): use the v0.6.x logic.
+	// Pin path (or fallback to defaults): use the v0.6.x logic against
+	// the caller-supplied def, NOT the static cfg.Agents entry.
 	if !hasPin && s.cfg.Defaults.Model == "" {
 		return "", "", "", fmt.Errorf("%w: agent %q has no pin, no tier, and no defaults", runner.ErrInvalidArgument, agentName)
 	}
-	providerID, model, err = s.cfg.ResolveAgentModel(agentName)
+	providerID, model, err = s.cfg.ResolveAgentDefModel(agentName, def)
 	if err != nil {
 		return "", "", "", fmt.Errorf("%w: %v", runner.ErrInvalidArgument, err)
 	}
@@ -364,22 +375,24 @@ func applyAgentDefOverlay(base config.AgentDef, definition json.RawMessage) conf
 	if ov.Provider != "" {
 		out.Provider = ov.Provider
 	}
-	if ov.Model != "" {
+	// Pin XOR Tier defensive resolution. AgentDef.create/fork rejects
+	// rows that set both, but a row written via direct SQL or migrated
+	// from a future schema variant could carry both. When both are set
+	// in the overlay, prefer Model (the more specific intent) and
+	// drop Tier — matches what the resolver does when given a pin.
+	switch {
+	case ov.Model != "" && ov.Tier != "":
 		out.Model = ov.Model
-		// Pinning a model implies the fork chose a specific provider/
-		// model pair — clear the static Tier so resolver doesn't
-		// mistake the row for a tier-driven choice. Pin XOR Tier was
-		// already enforced at AgentDef.create time.
-		if ov.Tier == "" {
-			out.Tier = ""
-		}
-	}
-	if ov.Tier != "" {
+		out.Tier = ""
+	case ov.Model != "":
+		out.Model = ov.Model
+		// Explicit model pin clears any static tier so the resolver
+		// takes the pin path, not the tier path.
+		out.Tier = ""
+	case ov.Tier != "":
 		out.Tier = ov.Tier
 		// Mirror image: explicit tier clears any static model pin.
-		if ov.Model == "" {
-			out.Model = ""
-		}
+		out.Model = ""
 	}
 	if ov.Effort != "" {
 		out.Effort = ov.Effort
@@ -1855,7 +1868,10 @@ func (s *Server) runSubAgent(ctx context.Context, name string, prompt string, de
 	// policy + fallback posture applied to the whole sub-run tree.
 	parentTier := tools.RunIdentity(ctx).UserTier
 
-	providerID, model, effort, err := s.resolveAgent(name, parentTier)
+	// Route through resolveAgentDef so an overlay's Model/Tier/Provider/
+	// Effort actually take effect. resolveAgent re-reads cfg.Agents and
+	// would silently discard the fork's values.
+	providerID, model, effort, err := s.resolveAgentDef(def, name, parentTier)
 	if err != nil {
 		return "", fmt.Errorf("resolve sub-agent %q model: %w", name, err)
 	}

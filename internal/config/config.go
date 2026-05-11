@@ -1060,6 +1060,15 @@ func (c *Config) ResolveAgentModel(agent string) (provider string, model string,
 	if !ok {
 		return "", "", fmt.Errorf("unknown agent %q", agent)
 	}
+	return c.ResolveAgentDefModel(agent, def)
+}
+
+// ResolveAgentDefModel mirrors ResolveAgentModel but resolves against
+// a caller-supplied AgentDef instead of looking it up in c.Agents.
+// Used by the sub-agent path when an overlay has already produced an
+// effective def whose Provider/Model differ from the static yaml.
+// Same alias-expansion + defaults-fallback rules as ResolveAgentModel.
+func (c *Config) ResolveAgentDefModel(agent string, def AgentDef) (provider string, model string, err error) {
 	model = def.Model
 	provider = def.Provider
 
