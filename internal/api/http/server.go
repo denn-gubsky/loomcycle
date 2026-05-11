@@ -14,6 +14,7 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/auth"
@@ -1646,11 +1647,28 @@ func (s *Server) openOrCreateSessionAndRun(ctx context.Context, requestedSession
 // the store before forwarding to the SSE stream. Persistence failures are
 // logged but never block the stream — the caller has already received the
 // event and should not be punished for our IO problems.
+//
+// Concurrency: returns a closure with a private mutex so the (AppendEvent,
+// fwd) pair is atomic per event. Without the mutex, two concurrent emit
+// callers (e.g., parallel tool goroutines from v0.7.0 ToolParallelism)
+// could interleave their AppendEvent + fwd pairs so the store's event
+// order disagrees with the SSE wire order. v0.7.x's pattern was "only the
+// loop goroutine calls emit," but v0.8.4's Channel-tool typed-audit-events
+// (EventChannelPublish / EventChannelDelivery) emit directly from inside
+// tool.Execute() — which runs in a tool goroutine, not the loop. The
+// mutex makes that safe for any concurrent caller.
 func (s *Server) makeRecordingEmit(ctx context.Context, runID string, fwd func(providers.Event)) func(providers.Event) {
 	if s.store == nil || runID == "" {
+		// Even on the store-less path, multiple concurrent callers
+		// could write to fwd in parallel. fwd itself (stream.send)
+		// is already mutex-protected for the SSE path, so the bare
+		// fwd is safe; just return it.
 		return fwd
 	}
+	var mu sync.Mutex
 	return func(ev providers.Event) {
+		mu.Lock()
+		defer mu.Unlock()
 		payload, err := json.Marshal(ev)
 		if err == nil {
 			if err := s.store.AppendEvent(ctx, runID, string(ev.Type), payload); err != nil {

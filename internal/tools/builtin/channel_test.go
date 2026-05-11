@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/denn-gubsky/loomcycle/internal/channels"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
@@ -342,6 +343,33 @@ func TestChannelTool_NoEmitterIsSilent(t *testing.T) {
 	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"publish","channel":"findings","value":{}}`))
 	if res.IsError {
 		t.Errorf("publish with no emitter should still succeed: %s", res.Text)
+	}
+}
+
+// TestChannelTool_PayloadPreviewIsValidUTF8AfterTruncation pins
+// the UTF-8 safety contract: truncating a payload whose
+// multi-byte rune straddles the byte cut MUST stop at the
+// previous rune boundary, never produce invalid UTF-8.
+//
+// Without this guarantee, JSON consumers (the TS adapter's
+// TextDecoder; strict json.Unmarshal in Go) would reject the
+// preview as malformed.
+func TestChannelTool_PayloadPreviewIsValidUTF8AfterTruncation(t *testing.T) {
+	// 3-byte UTF-8 character (CJK). 100 of them = 300 bytes.
+	// With max=200, naive byte-slicing would cut in the middle of
+	// rune 67 (byte index 198..200 holds half of a 3-byte char).
+	payload := strings.Repeat("漢", 100)
+	got := truncateForEvent(payload, 200)
+	if !utf8.ValidString(got) {
+		t.Fatalf("truncated preview is not valid UTF-8: %q", got)
+	}
+	if !strings.HasSuffix(got, "…") {
+		t.Errorf("expected ellipsis suffix on truncated preview; got %q", got[len(got)-5:])
+	}
+	// Should hold floor(200/3) = 66 runes + ellipsis = 67 runes,
+	// 66*3 = 198 bytes + 3-byte ellipsis = 201 bytes total.
+	if len(got) > 203 {
+		t.Errorf("truncated length = %d bytes; want <= 203", len(got))
 	}
 }
 
