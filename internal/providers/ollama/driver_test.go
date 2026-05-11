@@ -45,7 +45,7 @@ func TestStreamTextThenStop(t *testing.T) {
 	srv := fakeStream(t, frames)
 	defer srv.Close()
 
-	d := New(srv.URL, streamhttp.Options{}, nil)
+	d := New("", "", srv.URL, streamhttp.Options{}, nil)
 	ch, err := d.Call(context.Background(), providers.Request{
 		Model:    "llama3.1",
 		Messages: []providers.Message{{Role: "user", Content: []providers.ContentBlock{{Type: "text", Text: "hi"}}}},
@@ -89,7 +89,7 @@ func TestStreamToolCallOnFinalFrame(t *testing.T) {
 	}
 	srv := fakeStream(t, frames)
 	defer srv.Close()
-	d := New(srv.URL, streamhttp.Options{}, nil)
+	d := New("", "", srv.URL, streamhttp.Options{}, nil)
 	ch, _ := d.Call(context.Background(), providers.Request{Model: "llama3.1"})
 
 	var toolCall *providers.ToolUse
@@ -131,7 +131,7 @@ func TestStreamToolCallOnNonFinalFrame(t *testing.T) {
 	}
 	srv := fakeStream(t, frames)
 	defer srv.Close()
-	d := New(srv.URL, streamhttp.Options{}, nil)
+	d := New("", "", srv.URL, streamhttp.Options{}, nil)
 	ch, _ := d.Call(context.Background(), providers.Request{Model: "llama3.1"})
 
 	var toolCalls int
@@ -161,7 +161,7 @@ func TestRequestBodyShape(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	d := New(srv.URL, streamhttp.Options{}, nil)
+	d := New("", "", srv.URL, streamhttp.Options{}, nil)
 	temp := 0.7
 	ch, err := d.Call(context.Background(), providers.Request{
 		Model:       "llama3.1",
@@ -224,7 +224,7 @@ func TestCancellationDoesNotLeakGoroutine(t *testing.T) {
 	defer srv.Close()
 
 	ctx, cancel := context.WithCancel(context.Background())
-	d := New(srv.URL, streamhttp.Options{}, nil)
+	d := New("", "", srv.URL, streamhttp.Options{}, nil)
 	_, err := d.Call(ctx, providers.Request{Model: "llama3.1"})
 	if err != nil {
 		t.Fatalf("Call: %v", err)
@@ -252,7 +252,7 @@ func TestNon200Status(t *testing.T) {
 		fmt.Fprint(w, `{"error":"model not found"}`)
 	}))
 	defer srv.Close()
-	d := New(srv.URL, streamhttp.Options{}, nil)
+	d := New("", "", srv.URL, streamhttp.Options{}, nil)
 	_, err := d.Call(context.Background(), providers.Request{Model: "nope"})
 	if err == nil {
 		t.Fatal("expected error on 404")
@@ -292,7 +292,7 @@ func TestRetryOn429PreservesContext(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	d := New(srv.URL, streamhttp.Options{}, nil)
+	d := New("", "", srv.URL, streamhttp.Options{}, nil)
 	ch, err := d.Call(context.Background(), providers.Request{Model: "llama3.1"})
 	if err != nil {
 		t.Fatalf("Call: %v", err)
@@ -342,7 +342,7 @@ func TestRetryEmitsEventToRequestOnEvent(t *testing.T) {
 
 	var retries []providers.Event
 	var rmu sync.Mutex
-	d := New(srv.URL, streamhttp.Options{}, nil)
+	d := New("", "", srv.URL, streamhttp.Options{}, nil)
 	ch, err := d.Call(context.Background(), providers.Request{
 		Model: "llama3.1",
 		OnEvent: func(ev providers.Event) {
@@ -383,7 +383,7 @@ func TestStopReasonWithoutToolCalls(t *testing.T) {
 	}
 	srv := fakeStream(t, frames)
 	defer srv.Close()
-	d := New(srv.URL, streamhttp.Options{}, nil)
+	d := New("", "", srv.URL, streamhttp.Options{}, nil)
 	ch, _ := d.Call(context.Background(), providers.Request{Model: "x"})
 	var stop string
 	for ev := range ch {
@@ -393,5 +393,87 @@ func TestStopReasonWithoutToolCalls(t *testing.T) {
 	}
 	if stop != "max_tokens" {
 		t.Errorf("stop_reason = %q, want max_tokens", stop)
+	}
+}
+
+// TestDriver_ID_RespectsConstructorArg pins the v0.8.3 split: one
+// driver type, two registrations differentiated by providerID. The
+// empty-string default falls through to "ollama" so anything that
+// imported `ollama.New` before the signature widened keeps working.
+func TestDriver_ID_RespectsConstructorArg(t *testing.T) {
+	cases := []struct {
+		giveID string
+		wantID string
+	}{
+		{"ollama", "ollama"},
+		{"ollama-local", "ollama-local"},
+		{"", "ollama"}, // default
+	}
+	for _, tc := range cases {
+		t.Run(tc.giveID, func(t *testing.T) {
+			d := New(tc.giveID, "", "http://localhost:11434", streamhttp.Options{}, nil)
+			if got := d.ID(); got != tc.wantID {
+				t.Errorf("ID() = %q, want %q", got, tc.wantID)
+			}
+		})
+	}
+}
+
+// TestDriver_AuthHeaderEmittedOnlyWhenKeySet pins the split's auth
+// shape: the hosted ollama.com registration sends Bearer; the local
+// registration sends nothing (matches Ollama OSS's local-trust model
+// — servers in the wild rely on the absence of an auth header to
+// distinguish "loopback client" from "internet client").
+func TestDriver_AuthHeaderEmittedOnlyWhenKeySet(t *testing.T) {
+	cases := []struct {
+		name       string
+		providerID string
+		apiKey     string
+		wantHeader string // "" → expect no Authorization sent
+	}{
+		{"local: no auth", "ollama-local", "", ""},
+		{"cloud: Bearer sent", "ollama", "tok-xyz", "Bearer tok-xyz"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var got string
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				got = r.Header.Get("Authorization")
+				w.Header().Set("Content-Type", "application/x-ndjson")
+				w.WriteHeader(200)
+				fmt.Fprint(w, `{"model":"x","message":{"role":"assistant","content":""},"done":true,"done_reason":"stop"}`+"\n")
+			}))
+			defer srv.Close()
+			d := New(tc.providerID, tc.apiKey, srv.URL, streamhttp.Options{}, nil)
+			ch, err := d.Call(context.Background(), providers.Request{Model: "x"})
+			if err != nil {
+				t.Fatalf("Call: %v", err)
+			}
+			for range ch { // drain
+			}
+			if got != tc.wantHeader {
+				t.Errorf("Authorization header = %q, want %q", got, tc.wantHeader)
+			}
+		})
+	}
+}
+
+// TestDriver_NonOKErrorUsesProviderID pins that error messages carry
+// the provider id (not the hardcoded literal "ollama"), so the v0.8.2
+// error classifier — anchored on the "<name> <code>:" prefix — works
+// for both registrations.
+func TestDriver_NonOKErrorUsesProviderID(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(503)
+		fmt.Fprint(w, "backend unavailable")
+	}))
+	defer srv.Close()
+	d := New("ollama-local", "", srv.URL, streamhttp.Options{}, nil)
+	_, err := d.Call(context.Background(), providers.Request{Model: "x"})
+	if err == nil {
+		t.Fatal("want error, got nil")
+	}
+	if !strings.HasPrefix(err.Error(), "ollama-local 503:") {
+		t.Errorf("err = %q, want prefix \"ollama-local 503:\"", err.Error())
 	}
 }

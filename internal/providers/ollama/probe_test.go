@@ -33,7 +33,7 @@ func TestListModels_HappyPath(t *testing.T) {
 	srv := fakeTagsServer(t, http.StatusOK, body)
 	defer srv.Close()
 
-	d := New(srv.URL, streamhttp.Options{}, nil)
+	d := New("", "", srv.URL, streamhttp.Options{}, nil)
 	models, err := d.ListModels(context.Background())
 	if err != nil {
 		t.Fatalf("ListModels: %v", err)
@@ -50,7 +50,7 @@ func TestListModels_NoModelsPulled(t *testing.T) {
 	srv := fakeTagsServer(t, http.StatusOK, `{"models": []}`)
 	defer srv.Close()
 
-	d := New(srv.URL, streamhttp.Options{}, nil)
+	d := New("", "", srv.URL, streamhttp.Options{}, nil)
 	models, err := d.ListModels(context.Background())
 	if err != nil {
 		t.Fatalf("ListModels (empty): %v", err)
@@ -64,7 +64,7 @@ func TestProbe_HappyPath(t *testing.T) {
 	srv := fakeTagsServer(t, http.StatusOK, `{"models": []}`)
 	defer srv.Close()
 
-	d := New(srv.URL, streamhttp.Options{}, nil)
+	d := New("", "", srv.URL, streamhttp.Options{}, nil)
 	if err := d.Probe(context.Background()); err != nil {
 		t.Fatalf("Probe: %v", err)
 	}
@@ -76,7 +76,7 @@ func TestProbe_ServerDown(t *testing.T) {
 	srv := fakeTagsServer(t, http.StatusInternalServerError, "ollama: server error")
 	defer srv.Close()
 
-	d := New(srv.URL, streamhttp.Options{}, nil)
+	d := New("", "", srv.URL, streamhttp.Options{}, nil)
 	if err := d.Probe(context.Background()); err == nil {
 		t.Fatal("Probe should error on 500")
 	}

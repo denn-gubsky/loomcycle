@@ -162,7 +162,7 @@ func TestStreamMarkdownFormToolCall(t *testing.T) {
 	srv := fakeStream(t, frames)
 	defer srv.Close()
 
-	d := New(srv.URL, streamhttp.Options{}, nil)
+	d := New("", "", srv.URL, streamhttp.Options{}, nil)
 	ch, err := d.Call(context.Background(), providers.Request{
 		Model: "hermes3:latest",
 		Tools: []providers.ToolSpec{{Name: "search_web", InputSchema: json.RawMessage(`{}`)}},

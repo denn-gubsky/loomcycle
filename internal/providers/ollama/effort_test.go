@@ -15,7 +15,7 @@ func TestCapabilities_SupportsEffortIsFalse(t *testing.T) {
 	// when an agent declares effort on an Ollama-resolved run.
 	// Operators see clearly that the hint was discarded rather
 	// than silently believing the agent thought hard.
-	d := New("http://localhost:11434", streamhttp.Options{}, nil)
+	d := New("", "", "http://localhost:11434", streamhttp.Options{}, nil)
 	if d.Capabilities().SupportsEffort {
 		t.Error("Ollama driver must report SupportsEffort=false (no thinking-budget knob today)")
 	}

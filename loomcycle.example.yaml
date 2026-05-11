@@ -35,24 +35,28 @@
 # and skipped; the next periodic probe revives them. PR 1 ships a
 # stub probe — providers are reachable iff their API key is set.
 provider_priority:
+  - ollama-local   # workstation GPU — absolute floor when present
   - deepseek
-  - ollama
   - openai
   - anthropic
+  - ollama         # hosted ollama.com — opt-in via OLLAMA_API_KEY
 
 tiers:
   low:
-    - { provider: deepseek,  model: deepseek-v4-flash }
-    - { provider: ollama,    model: gemma4:9b }
-    - { provider: openai,    model: gpt-5.4-mini }
-    - { provider: anthropic, model: claude-haiku-4-5 }
+    - { provider: deepseek,     model: deepseek-v4-flash }
+    - { provider: ollama-local, model: gemma4:9b }
+    - { provider: openai,       model: gpt-5.4-mini }
+    - { provider: anthropic,    model: claude-haiku-4-5 }
   middle:
-    - { provider: deepseek,  model: deepseek-v4-pro }
-    - { provider: ollama,    model: qwen3.6:27b }
-    - { provider: openai,    model: gpt-5.4 }
-    - { provider: anthropic, model: claude-sonnet-4-6 }
+    - { provider: deepseek,     model: deepseek-v4-pro }
+    - { provider: ollama-local, model: qwen3.6:27b }
+    - { provider: openai,       model: gpt-5.4 }
+    - { provider: anthropic,    model: claude-sonnet-4-6 }
   high:
     # DeepSeek absent — V4 Pro doesn't compete with Opus 4.7 / GPT-5.5.
+    # ollama-local typically can't host 600B+ kimi-k2.6 either; the
+    # `ollama` (hosted) entry covers that case for operators with a
+    # paid quota.
     - { provider: ollama,    model: kimi-k2.6 }
     - { provider: openai,    model: gpt-5.5 }
     - { provider: anthropic, model: claude-opus-4-7 }
@@ -90,7 +94,7 @@ user_tiers:
   # Same shape as the library defaults above so v0.7.x clients see no
   # behaviour change.
   default:
-    provider_priority: [deepseek, ollama, openai, anthropic]
+    provider_priority: [ollama-local, deepseek, openai, anthropic, ollama]
     # Tier-bodies (low/middle/high) omitted = inherit from library
     # `tiers:` above. Override only when this user-tier needs a
     # different candidate list than the library default.
@@ -98,15 +102,17 @@ user_tiers:
     max_fallback_attempts: 3
 
   # Free tier: cost cap — only the no-paid-key providers, no climb on
-  # 429 (would defeat the point). `fallback_on_error: false` means a
-  # 429 surfaces immediately to the client; the client can then offer
-  # an upgrade prompt.
+  # 429 (would defeat the point). ollama-local (workstation GPU, no
+  # auth) is the right shape here: no quota to exhaust, no surprise
+  # bills. `fallback_on_error: false` means an Ollama outage surfaces
+  # immediately to the client; the client can then offer an upgrade
+  # prompt.
   free:
-    provider_priority: [ollama]
+    provider_priority: [ollama-local]
     tiers:
-      low:    [{provider: ollama, model: gemma4:9b}]
-      middle: [{provider: ollama, model: qwen3.6:27b}]
-      high:   [{provider: ollama, model: qwen3.6:27b}]
+      low:    [{provider: ollama-local, model: gemma4:9b}]
+      middle: [{provider: ollama-local, model: qwen3.6:27b}]
+      high:   [{provider: ollama-local, model: qwen3.6:27b}]
     fallback_on_error: false
 
   # Low tier: cost-floor-first with one paid backstop. DeepSeek's free
@@ -151,7 +157,7 @@ models:
   best:   { provider: anthropic, model: claude-opus-4-7 }
   gpt:    { provider: openai,    model: gpt-4o-mini }
   gpt-4:  { provider: openai,    model: gpt-4o }
-  local:  { provider: ollama,    model: llama3.1:8b }     # tool-tuned model
+  local:  { provider: ollama-local, model: llama3.1:8b }  # tool-tuned model on workstation
 
 # ─── Agents ───────────────────────────────────────────────────────────
 # Each agent is addressed by name in POST /v1/runs's "agent" field.

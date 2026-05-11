@@ -35,20 +35,40 @@ const (
 	defaultBaseURL = "http://localhost:11434"
 )
 
-// Driver speaks Ollama's /api/chat. No API key — local trust model.
+// Driver speaks Ollama's /api/chat. Single struct serves two registrations:
+//
+//   - providerID = "ollama"       → hosted ollama.com (Bearer auth via apiKey)
+//   - providerID = "ollama-local" → local-network Ollama (apiKey empty,
+//     local trust model)
+//
+// The wire shape is identical; only the auth header and base URL default
+// differ. main.go constructs one Driver per registration.
 type Driver struct {
+	providerID  string
+	apiKey      string // empty for ollama-local; Bearer token for hosted
 	baseURL     string
 	http        *http.Client
 	idleTimeout time.Duration
 }
 
-// New constructs a Driver. baseURL may be empty for the default localhost
-// endpoint. streamOpts controls per-stream timeouts. Local generation
-// can be very slow on first-token (model warmup, large context); callers
-// passing zero values get the streamhttp defaults — usually fine, but
-// operators on cold-start sensitive deployments may want to bump
-// HeaderTimeout via LOOMCYCLE_PROVIDER_HEADER_TIMEOUT_SECONDS.
-func New(baseURL string, streamOpts streamhttp.Options, httpClient *http.Client) *Driver {
+// New constructs a Driver.
+//
+//   - providerID names this registration (e.g. "ollama" or "ollama-local").
+//     Empty defaults to "ollama" for back-compat with any caller outside
+//     main.go's resolver wiring.
+//   - apiKey is the Bearer token for the hosted ollama.com endpoint;
+//     leave empty for local Ollama (no Authorization header is sent).
+//   - baseURL may be empty for the default localhost endpoint.
+//
+// streamOpts controls per-stream timeouts. Local generation can be very
+// slow on first-token (model warmup, large context); callers passing zero
+// values get the streamhttp defaults — usually fine, but operators on
+// cold-start sensitive deployments may want to bump HeaderTimeout via
+// LOOMCYCLE_PROVIDER_HEADER_TIMEOUT_SECONDS.
+func New(providerID, apiKey, baseURL string, streamOpts streamhttp.Options, httpClient *http.Client) *Driver {
+	if providerID == "" {
+		providerID = "ollama"
+	}
 	if baseURL == "" {
 		baseURL = defaultBaseURL
 	}
@@ -57,10 +77,10 @@ func New(baseURL string, streamOpts streamhttp.Options, httpClient *http.Client)
 	if httpClient == nil {
 		httpClient = streamhttp.NewClient(streamOpts.HeaderTimeout)
 	}
-	return &Driver{baseURL: baseURL, http: httpClient, idleTimeout: streamOpts.IdleTimeout}
+	return &Driver{providerID: providerID, apiKey: apiKey, baseURL: baseURL, http: httpClient, idleTimeout: streamOpts.IdleTimeout}
 }
 
-func (d *Driver) ID() string { return "ollama" }
+func (d *Driver) ID() string { return d.providerID }
 
 func (d *Driver) Capabilities() providers.Capabilities {
 	return providers.Capabilities{
@@ -101,11 +121,14 @@ func (d *Driver) Call(ctx context.Context, req providers.Request) (<-chan provid
 		}
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("Accept", "application/x-ndjson")
+		if d.apiKey != "" {
+			req.Header.Set("Authorization", "Bearer "+d.apiKey)
+		}
 		return d.http.Do(req)
 	}
 
 	resp, err := ratelimit.Do(streamCtx, ratelimit.Config{
-		Provider:    "ollama",
+		Provider:    d.providerID,
 		ParseHeader: ratelimit.OllamaRetryAfter,
 		OnEvent:     req.OnEvent,
 	}, attempt)
@@ -120,7 +143,7 @@ func (d *Driver) Call(ctx context.Context, req providers.Request) (<-chan provid
 		defer resp.Body.Close()
 		cancelStream()
 		errBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return nil, fmt.Errorf("ollama %d: %s", resp.StatusCode, strings.TrimSpace(string(errBody)))
+		return nil, fmt.Errorf("%s %d: %s", d.providerID, resp.StatusCode, strings.TrimSpace(string(errBody)))
 	}
 
 	resp.Body = streamhttp.WrapBody(resp.Body, d.idleTimeout, cancelStream)
@@ -690,6 +713,9 @@ func (d *Driver) fetchTags(ctx context.Context) ([]string, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, d.baseURL+"/api/tags", nil)
 	if err != nil {
 		return nil, err
+	}
+	if d.apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+d.apiKey)
 	}
 	resp, err := d.http.Do(req)
 	if err != nil {

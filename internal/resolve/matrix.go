@@ -242,7 +242,15 @@ type ModelStatus struct {
 // defaultLibraryPriority is the cost-floor-first ordering: try the
 // cheapest reasonable backend first, escalate when stalled. Used when
 // the operator hasn't set provider_priority in yaml.
-var defaultLibraryPriority = []string{"deepseek", "ollama", "openai", "anthropic"}
+//
+// ollama-local (no auth, runs on a workstation) sits at the absolute
+// floor — when an operator has a GPU on the network there's no reason
+// to pay for the first attempt. Paid clouds escalate from cheap
+// (DeepSeek) to premium (Anthropic). Hosted ollama.com (the `ollama`
+// id since the v0.8.3 split) sits after the paid clouds because it's
+// only sensible when the operator has explicitly paid for the
+// quota — agents that want it will pin it via per-agent `providers:`.
+var defaultLibraryPriority = []string{"ollama-local", "deepseek", "openai", "anthropic", "ollama"}
 
 // NewResolver constructs a Resolver with the library-wide defaults.
 // libraryPriority and libraryTiers come from the loaded Config; pass
@@ -393,9 +401,9 @@ func (r *Resolver) resolvePin(req AgentRequest) (Decision, error) {
 // candidatesFor returns the candidate list the resolver should walk
 // for this request, applying the v0.8.2 overlay precedence:
 //
-//   per-agent Models[Tier]   (highest)
-//   user_tier overlay Tiers  (when set; v0.8.2)
-//   library Tiers            (fallback)
+//	per-agent Models[Tier]   (highest)
+//	user_tier overlay Tiers  (when set; v0.8.2)
+//	library Tiers            (fallback)
 //
 // Caller has already validated req.Tier is non-empty.
 func (r *Resolver) candidatesFor(req AgentRequest) []Candidate {
@@ -418,9 +426,9 @@ func (r *Resolver) candidatesFor(req AgentRequest) []Candidate {
 // priorityFor returns the provider-priority order the resolver should
 // walk for this request, applying the v0.8.2 overlay precedence:
 //
-//   per-agent Providers      (highest, but intersected with user_tier)
-//   user_tier ProviderPriority (when set; v0.8.2)
-//   library ProviderPriority (fallback)
+//	per-agent Providers      (highest, but intersected with user_tier)
+//	user_tier ProviderPriority (when set; v0.8.2)
+//	library ProviderPriority (fallback)
 //
 // The second return value is true when the per-agent Providers and the
 // user_tier overlay's ProviderPriority have an empty intersection.
