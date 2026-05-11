@@ -169,6 +169,13 @@ func (s *Store) migrate(ctx context.Context) error {
 		// the tool layer; the store stores the string verbatim. Score
 		// is REAL (Go float64). Dimensions + Judgement are JSON-as-TEXT
 		// (sqlite has no JSONB).
+		//
+		// NO foreign keys on run_id or def_id: evaluations are an
+		// immutable audit log and must survive any future run/def
+		// pruning. Referential integrity is enforced at the
+		// application layer. A RESTRICT FK would block legitimate
+		// admin pruning workflows; CASCADE would silently delete
+		// audit data. Mirrors the postgres migration 0008.
 		`CREATE TABLE IF NOT EXISTS evaluations (
 			eval_id            TEXT    PRIMARY KEY,
 			run_id             TEXT    NOT NULL,
@@ -1701,8 +1708,11 @@ func computeAggregate(defID string, evals []store.EvaluationRow, lineageIncluded
 }
 
 // statsOf computes Mean/Median/Min/Max/Count for a non-empty slice.
-// Latest is filled by the caller (per-axis stat needs the original
-// ordering, which we lose when sorting for the median).
+// Latest is set here as vals[len-1]: callers MUST append in
+// created_at ASC order so the last element is the newest. For the
+// top-level Score axis the caller currently overwrites Latest after
+// returning (the input slice for that axis is built differently); for
+// the Dimensions and ByEmitterRole axes the value set here stands.
 func statsOf(vals []float64) store.ScoreStats {
 	if len(vals) == 0 {
 		return store.ScoreStats{}

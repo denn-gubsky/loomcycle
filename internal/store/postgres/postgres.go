@@ -1442,6 +1442,14 @@ func computeAggregate(defID string, evals []store.EvaluationRow, lineageIncluded
 	return out
 }
 
+// statsOf computes Mean/Median/Min/Max/Count for a non-empty slice.
+// Latest is set here as vals[len-1]: callers MUST append in
+// created_at ASC order so the last element is the newest. For the
+// top-level Score axis the caller currently overwrites Latest after
+// returning (the input slice for that axis is built differently); for
+// the Dimensions and ByEmitterRole axes the value set here stands.
+// Mirrors the SQLite implementation in sqlite.go — duplicated
+// intentionally; extract to a shared package if a third backend lands.
 func statsOf(vals []float64) store.ScoreStats {
 	if len(vals) == 0 {
 		return store.ScoreStats{}

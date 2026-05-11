@@ -16,6 +16,13 @@
 -- (operator chooses; substrate is range-agnostic). Dimensions are
 -- arbitrary named axes; judgement is free-form JSON. All capped at
 -- the application layer (LOOMCYCLE_EVALUATION_MAX_* env vars).
+--
+-- NO foreign keys on run_id or def_id: evaluations are an immutable
+-- audit log and must survive any future run/def pruning. Referential
+-- integrity is enforced at the application layer (EvaluationSubmit
+-- validates run_id exists before inserting). A RESTRICT FK would
+-- block legitimate admin pruning workflows; CASCADE would silently
+-- delete audit data. Mirrors the SQLite schema in sqlite.go.
 
 CREATE TABLE evaluations (
     eval_id            TEXT             PRIMARY KEY,
