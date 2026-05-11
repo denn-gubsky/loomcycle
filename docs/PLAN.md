@@ -2,9 +2,62 @@
 
 This is the public roadmap. For decision history, regret notes, and per-version commit-by-commit details, see `doc-internal/PLAN.md` (gitignored).
 
-## v0.8.1 — current
+## v0.8.2 — current
 
-**Status: shipped (2026-05-10).** Operational hardening: three production-readiness improvements that surfaced from the jobs-search-agent VM bring-up and dev-mac reproductions. None are new framework primitives (those resume in v0.8.2 with the Channel tool); these three fix failure modes that made running loomcycle in a server environment painful.
+**Status: shipped (2026-05-11).** The **user_tier** feature — operator-defined per-user-tier provider/model policies that overlay resolver behaviour AND drive runtime fallback when a provider call hits a retryable error. Two-PR ship: PR #52 (resolve-time overlay + wire/store/yaml) + PR #53 (runtime fallback + error classification + typed events). Enables jobs-search-agent and similar consumers to surface differentiated user tiers (free / low / medium / high) with operator-defined cost/quality/privacy tradeoffs.
+
+**What's in v0.8.2 (vs v0.8.1):**
+
+- **Named user_tiers in operator yaml** (PR #52). New top-level `user_tiers:` map with named entries (`default` required; common shape `default` + `free` + `low` + `medium` + `high`). Each entry carries `provider_priority`, per-task-tier `tiers` (low/middle/high candidate lists), `fallback_on_error` switch, and `max_fallback_attempts` cap. The "default" entry is required when the block is populated — covers v0.7.x clients that don't yet send `user_tier` in the request body.
+- **Wire protocol** (PR #52). `POST /v1/runs` and `POST /v1/sessions/{id}/messages` both accept an optional `user_tier` field. Empty falls through to `cfg.UserTiers["default"]`; unknown name → 400 with a clear error. Sub-agents inherit the parent's `user_tier` via ctx so the whole sub-run tree uses one tier policy.
+- **Resolver overlay precedence** (PR #52). The overlay sits BETWEEN library defaults and per-agent overrides: `library < user_tier < per-agent`. When per-agent `providers:` AND `user_tier.provider_priority` are both set, the resolver walks the intersection (in per-agent order, preserving operator intent within the tier-restricted space). **Empty intersection → `ErrTierAgentNotAvailable`** — operator policy refusal distinct from a transient outage, so clients render "upgrade required" instead of retrying. Same refusal also fires when `agent.Models[tier]` lists no candidates whose provider is in the user_tier's priority.
+- **Runtime provider fallback** (PR #53). When a provider call returns a retryable error AND the tier's `fallback_on_error: true` AND the cumulative attempt budget isn't exhausted, the loop swaps to the next-in-queue provider in the tier's candidate list and continues the iteration. The Call-layer error path AND the in-stream `EventError` path both trigger fallback (the latter handles mid-stream 5xx). The MarkStalled signal still fires so the resolver matrix knows to skip the failed pair on subsequent picks.
+- **Error classification taxonomy** (PR #53). New `internal/providers/errclass.go` with 5-bucket `ClassifyError`: **Retryable** (429, 500/502/503/504, network DNS/conn-refused, v0.8.1 stream-idle) → fallback; **Permanent** (400, 401, 403, 422, other 4xx) → propagate (cascading would burn through every provider's quota for a config issue); **Cancelled** (`context.Canceled`) → propagate (caller abandon); **DeadlineExceeded** (`context.DeadlineExceeded` on the root ctx, NOT v0.8.1 stream-idle) → propagate. Priority-of-checks invariant: v0.8.1 stream-idle marker beats the generic DeadlineExceeded branch even though the wrap chain satisfies `errors.Is(..., DeadlineExceeded)` — wrong here would misclassify every stream-idle as caller-deadline and lose the retry.
+- **Cumulative 3-attempt budget** (PR #53). `MaxFallbackAttempts` defaults to 3 (cap on cumulative provider switches per run; the original provider doesn't count). Prevents runaway-fallback loops under backbone-wide outages while still allowing recovery from single-provider issues. 0 in yaml falls through to the package default; negative is rejected at config-load.
+- **Per-tier `fallback_on_error` switchability** (PR #53). Free tier's `fallback_on_error: false` makes a 429 return an error to the client — no climb to paid providers — preserving the cost cap. Paid tiers' `fallback_on_error: true` enables the cascade. The "default" tier defaults to `fallback_on_error: true` so back-compat v0.7.x clients keep the rate-limit retry behaviour they had.
+- **Typed events** (PR #53). `EventProviderFallback` (with structured `FallbackInfo` payload — failed/new provider+model, attempt counter, user_tier name, error class, truncated cause) fires on every successful switch. `EventCacheInvalidated` fires when switching AWAY from Anthropic (the only provider with operator-controlled `cache_control` breakpoints today; downstream tokens on the new provider are cache-cold). Both are wire-stable; adapters/SSE consumers can string-match on `Type`.
+- **Per-run audit marker** (PR #52). New `runs.user_tier TEXT` column on both SQLite + Postgres adapters via additive `0003_user_tier.up.sql` migration (no locking; safe to apply live). Compliance + cost-retrospective queries facet by tier without grepping logs. Boot log emits `user_tiers: configured N — default / free / low / medium / high` so operators see what's available at startup.
+
+**Operator yaml shape:**
+
+```yaml
+user_tiers:
+  default:                            # required
+    provider_priority: [anthropic, deepseek]
+    tiers:
+      low:    [{provider: anthropic, model: claude-haiku-4-5}]
+      middle: [{provider: anthropic, model: claude-sonnet-4-6}]
+      high:   [{provider: anthropic, model: claude-sonnet-4-6}]
+    fallback_on_error: true
+    max_fallback_attempts: 3
+  free:
+    provider_priority: [gemini, ollama]
+    tiers: { low: [...], middle: [...], high: [...] }
+    fallback_on_error: false          # cost cap: 429 → error, no climb
+  low:
+    provider_priority: [gemini, deepseek]
+    fallback_on_error: true
+  medium:
+    provider_priority: [deepseek, anthropic]
+    fallback_on_error: true
+  high:
+    provider_priority: [anthropic]
+    fallback_on_error: true
+```
+
+**Architecture decisions worth flagging:**
+
+- **The role split is the architectural insight.** Operator-owned policy lives in `loomcycle.yaml`; application-owned identity lives in the request body. Loomcycle is the transport — it doesn't need to know what users pay for or how billing works. This mirrors the same operator/caller split that `allowed_hosts` already uses (operator floor in env, caller-authoritative per-request override).
+- **Two refusal paths produce the same `ErrTierAgentNotAvailable`.** Path 1: per-agent `providers:` ∩ user_tier `provider_priority` is empty. Path 2: per-agent `Models[tier]` lists no candidates whose provider is in the user_tier's priority. Both surface the same typed error so clients render one consistent "upgrade required" UI.
+- **The cumulative budget is the right shape for cost-fairness.** A free user can't escape the cap (`fallback_on_error: false`), and a paid user's runaway-fallback-loop is bounded at 3 attempts. Without the cumulative cap, a paid user hitting a backbone-wide outage could try every provider in their queue plus retry the original a few times, burning resources to no benefit.
+- **Stream-idle priority over DeadlineExceeded.** v0.8.1's per-byte idle wrap surfaces as `"stream read: context deadline exceeded"` and the wrap chain satisfies `errors.Is(..., DeadlineExceeded)` — but the SEMANTIC is "provider stalled, another might be healthy" (retryable), not "caller's deadline cap hit" (propagate). The classifier checks the substring marker BEFORE the generic DeadlineExceeded branch. Pinned by `TestClassifyError_StreamIdleHasPriorityOverDeadlineExceeded`.
+- **`EventCacheInvalidated` is intentionally narrow.** Only `anthropic → other` emits it. Gemini's implicit cache and DeepSeek's auto-cache aren't operator-controlled, so there's no operator-visible state to "lose" on switches involving them. If a future provider gains operator-controlled cache (or Gemini exposes one), the emission condition expands; the event type itself stays the same.
+
+For the v0.8.1 baseline that drove this work, see [v0.8.1](#v081--earlier).
+
+## v0.8.1 — earlier
+
+**Status: shipped (2026-05-10).** Operational hardening: three production-readiness improvements that surfaced from the jobs-search-agent VM bring-up and dev-mac reproductions. None are new framework primitives (those resume in v0.8.3 with the Channel tool — v0.8.2 absorbed the `user_tier` work after v0.8.1 shipped); these three fix failure modes that made running loomcycle in a server environment painful.
 
 **What's in v0.8.1 (vs v0.8.0):**
 
@@ -256,11 +309,11 @@ For usage: see [README](../README.md). For the architecture: see [ARCHITECTURE.m
 
 ## v0.8.x — next: framework primitives
 
-Sequenced 2026-05-09; renumbered 2026-05-10 after v0.8.1 absorbed three operational-hardening PRs (#47/#48/#49). Each point release in the framework-primitive sequence ships one focused capability — the v1.0 capstone (LoomCycle MCP) needs them in this order because the MCP server's surface is built FROM these primitives. Detailed design (API schemas, storage shapes, retention semantics) lives in feature-branch RFCs at implementation time; the outlines below capture the shape but not the wire.
+Sequenced 2026-05-09; renumbered 2026-05-10 after v0.8.1 absorbed three operational-hardening PRs (#47/#48/#49); renumbered again 2026-05-11 after v0.8.2 absorbed the `user_tier` resolver-overlay + runtime-fallback work (PRs #52/#53). Each point release in the framework-primitive sequence ships one focused capability — the v1.0 capstone (LoomCycle MCP) needs them in this order because the MCP server's surface is built FROM these primitives. Detailed design (API schemas, storage shapes, retention semantics) lives in feature-branch RFCs at implementation time; the outlines below capture the shape but not the wire.
 
-**v0.8.0 Memory tool shipped 2026-05-09**; **v0.8.1 operational hardening shipped 2026-05-10** — see the sections above for full release notes.
+**v0.8.0 Memory tool shipped 2026-05-09**; **v0.8.1 operational hardening shipped 2026-05-10**; **v0.8.2 user_tier shipped 2026-05-11** — see the sections above for full release notes.
 
-### v0.8.2 — Channel tool
+### v0.8.3 — Channel tool
 
 Persistent inter-agent message bus. One agent writes to a named channel; another reads from it. Powers patterns like "researcher writes findings into `findings/` channel; analyst drains the channel and produces summaries" without making the orchestrator handle handoff.
 
@@ -268,7 +321,7 @@ Two backend forks compete: Postgres `LISTEN/NOTIFY` (simpler, single-replica, no
 
 What's not yet decided: queue vs topic semantics, durability vs at-most-once, ACL (which agent can publish to which channel — channels can be a side-channel for jailbreaks if any-agent-to-any-channel is allowed), backpressure when readers fall behind, dead-letter handling. RFC at pickup.
 
-### v0.8.3 — LoomHelp tool (absorbing all tools)
+### v0.8.4 — LoomHelp tool (absorbing all tools)
 
 Runtime introspection — but with a wider remit than the original v1.0 sketch. LoomHelp absorbs the metadata exposure for **every** built-in and registered tool: input schemas, output formats, side-effect classes (pure / network / filesystem / privileged), allow-list narrowing the active agent has applied, the tool's docstring and operator notes. Plus runtime context: the agent's own identity, parent / sub-agent linkage, loaded skills, current Memory snapshot, available Channels.
 
@@ -276,17 +329,17 @@ Single read-only tool that returns a structured catalogue. Useful for the Comfor
 
 What's not yet decided: output format (JSON schema vs markdown vs both), what counts as a "secret" beyond env-var name patterns, schema for the side-effect-class taxonomy, whether LoomHelp can introspect *other* agents' tool sets (probably no — that's a privilege-escalation vector).
 
-### v0.8.4 — LoomCycle MCP (the v0.8.x capstone)
+### v0.8.5 — LoomCycle MCP (the v0.8.x capstone)
 
 Loomcycle exposes itself as an **MCP server**. External orchestrators (Claude Code, agentic harnesses, other loomcycle instances) connect to it as an MCP client and:
 
 - Configure agents and spawn runs (alternate front-end to `/v1/runs`).
-- Send messages on Channels (built in v0.8.2).
+- Send messages on Channels (built in v0.8.3).
 - Read/write Memory entries (built in v0.8.0).
-- Call LoomHelp (built in v0.8.3).
+- Call LoomHelp (built in v0.8.4).
 - Subscribe to run-event streams (alternate to SSE).
 
-This is the "MCP-configurable" axis: instead of writing YAML and POSTing JSON, an external tool drives loomcycle through standard MCP. Surface area maps roughly 1:1 to the existing `/v1/*` endpoints plus the v0.8.0–0.8.2 primitives, with auth via the operator's bearer token translated into MCP's auth scheme.
+This is the "MCP-configurable" axis: instead of writing YAML and POSTing JSON, an external tool drives loomcycle through standard MCP. Surface area maps roughly 1:1 to the existing `/v1/*` endpoints plus the v0.8.0–0.8.4 primitives, with auth via the operator's bearer token translated into MCP's auth scheme.
 
 What's not yet decided: stdio vs HTTP transport (probably both — stdio for desktop-app integrations, HTTP for service-to-service), method naming (resources vs tools), whether MCP clients can register new agents at runtime or only spawn from operator-defined ones, handling of long-lived run streams across MCP's request/response shape.
 
@@ -318,7 +371,7 @@ Make `loomcycle` install with one command on every operator's preferred toolchai
 
 First-party integrations the runtime makes more valuable:
 
-- **Claude Desktop / Claude Code MCP integration** — pre-built `.mcp.json` recipe + a one-page operator guide for adding loomcycle to Claude Code's MCP server list (uses the v0.8.3 LoomCycle MCP surface).
+- **Claude Desktop / Claude Code MCP integration** — pre-built `.mcp.json` recipe + a one-page operator guide for adding loomcycle to Claude Code's MCP server list (uses the v0.8.5 LoomCycle MCP surface).
 - **OpenTelemetry exporter recipes** — example Helm values + `loomcycle.yaml` snippets for the three common backends (Tempo, Honeycomb, Datadog). The OTEL spans themselves ship in v0.9.x; v1.0 ships the operator-side wiring guide.
 - **Prometheus / Grafana dashboard** — JSON dashboard committed to the repo, importable in one click. Key panels: throughput, error rate by provider, p99 tool dispatch latency, per-tenant share of the semaphore.
 - **CLI scaffolding** — `loomcycle init` generates a minimal working `loomcycle.yaml` + `.env.local` for a fresh deploy. `loomcycle agent add <name>` scaffolds an agent yaml block. Lower the time-to-first-run for new operators from "read the docs" to "run two commands."
