@@ -371,6 +371,102 @@ type Store interface {
 	// from cur_0 without disturbing the consumer's position.
 	ChannelPeek(ctx context.Context, channel string, scope MemoryScope, scopeID, fromCursor string, limit int) ([]ChannelMessage, error)
 
+	// ---- v0.8.5 Self-Evolution Substrate ----
+	//
+	// `AgentDef` is the agent-authored agent-definition versioning
+	// layer. Static `<name>.md` files remain the operator-blessed
+	// root; the database holds the derived layer of agent-created
+	// versions. Append-only. version is server-allocated under a
+	// per-name lock so concurrent forks against the same parent each
+	// get a distinct, monotonic version with no gaps.
+
+	// AgentDefCreate inserts a fresh row. The caller passes the row
+	// shape; the store allocates Version under the per-name lock,
+	// sets CreatedAt server-side, validates the parent (if any), and
+	// returns the persisted row. The DefID is caller-generated to
+	// support deterministic-ID workflows (test fixtures, externally-
+	// authored bootstrap rows).
+	//
+	// Errors:
+	//   - parent_def_id supplied but not found → ErrAgentDefParentNotFound
+	//   - name + version already exists (deterministic ID collision) → wraps the underlying constraint error
+	AgentDefCreate(ctx context.Context, row AgentDefRow) (AgentDefRow, error)
+
+	// AgentDefGet returns a single row by def_id. Returns *ErrNotFound
+	// when the row doesn't exist.
+	AgentDefGet(ctx context.Context, defID string) (AgentDefRow, error)
+
+	// AgentDefGetByNameVersion returns one row by (name, version).
+	// Useful for friendly lookups in the admin API. Returns
+	// *ErrNotFound on miss.
+	AgentDefGetByNameVersion(ctx context.Context, name string, version int) (AgentDefRow, error)
+
+	// AgentDefListByName returns every row for one name, ordered by
+	// version DESC. Empty slice (not nil) when the name has no rows.
+	// Retired rows are included; the caller filters as needed.
+	AgentDefListByName(ctx context.Context, name string) ([]AgentDefRow, error)
+
+	// AgentDefListChildren returns the immediate-children rows
+	// (parent_def_id == argument). One hop only — callers that need
+	// the full descendant tree walk iteratively.
+	AgentDefListChildren(ctx context.Context, parentDefID string) ([]AgentDefRow, error)
+
+	// AgentDefListNames returns one summary row per distinct name.
+	// Drives the admin API's name-list endpoint. count is the per-
+	// name version count; active_def_id is the agent_def_active
+	// pointer (empty when no row is promoted).
+	AgentDefListNames(ctx context.Context) ([]AgentDefNameSummary, error)
+
+	// AgentDefSetActive UPSERTs the agent_def_active pointer for
+	// `name` to `defID`. promotedByAgentID is the agent_id that
+	// performed the promotion (may be empty for admin API calls).
+	// Idempotent: promote A → promote B → promote A leaves the
+	// pointer at A with the latest promoted_at.
+	AgentDefSetActive(ctx context.Context, name, defID, promotedByAgentID string) error
+
+	// AgentDefGetActive returns the currently-active row for `name`
+	// — the (name, version) pointed at by agent_def_active. Returns
+	// *ErrNotFound when no active pointer exists (the caller falls
+	// through to cfg.Agents — the static fallback path).
+	AgentDefGetActive(ctx context.Context, name string) (AgentDefRow, error)
+
+	// AgentDefSetRetired flips the `retired` flag on one row. The
+	// row stays visible in lineage queries with the flag exposed;
+	// the resolver skips retired rows when picking the next default
+	// for runs that don't pin def_id.
+	AgentDefSetRetired(ctx context.Context, defID string, retired bool) error
+
+	// ---- Evaluation ----
+	//
+	// `Evaluation` is the score-attached-to-(run, def) primitive.
+	// Pure-insert (no per-row mutation), so no concurrency lock is
+	// needed. EvalID is caller-generated.
+
+	// EvaluationSubmit inserts a row. The caller stamps EmitterRole
+	// (derived server-side from ctx + run identity in the tool
+	// layer; the store does not interpret). CreatedAt is set by the
+	// store. Returns the persisted row.
+	EvaluationSubmit(ctx context.Context, row EvaluationRow) (EvaluationRow, error)
+
+	// EvaluationGet returns one row by eval_id. *ErrNotFound on miss.
+	EvaluationGet(ctx context.Context, evalID string) (EvaluationRow, error)
+
+	// EvaluationListForRun returns evaluations targeting a run,
+	// newest first. limit ≤ 0 falls through to a sane default.
+	EvaluationListForRun(ctx context.Context, runID string, limit int) ([]EvaluationRow, error)
+
+	// EvaluationListForDef returns evaluations targeting one def
+	// (denormalised def_id column). Same ordering + limit semantics
+	// as ListForRun.
+	EvaluationListForDef(ctx context.Context, defID string, limit int) ([]EvaluationRow, error)
+
+	// EvaluationAggregate computes summary statistics for a def_id.
+	// When opts.IncludeLineage is true, recursively walks parent_def_id
+	// and includes evaluations of every ancestor (depth-first;
+	// retired ancestors included). The returned LineageIncluded flag
+	// echoes the option for caller-side assertion.
+	EvaluationAggregate(ctx context.Context, defID string, opts AggregateOpts) (AggregateResult, error)
+
 	// Close releases backend resources. Idempotent.
 	Close() error
 }
@@ -486,6 +582,142 @@ type ChannelError struct {
 }
 
 func (e *ChannelError) Error() string { return e.Msg }
+
+// ---- v0.8.5 Self-Evolution Substrate types ----
+
+// AgentDefRow is one row in the agent_defs table. The Definition
+// field carries the JSON-encoded AgentDef body verbatim — the store
+// does NOT depend on internal/config (dep direction would invert),
+// so callers at the tool / HTTP layer unmarshal into the concrete
+// shape they need.
+//
+// Identity:
+//   - DefID is the canonical handle (caller-generated UUID/ULID;
+//     stable across renames). Use it for run pins and lineage edges.
+//   - (Name, Version) is the human-friendly identifier. Version is
+//     server-allocated, monotonic per Name with no gaps.
+//
+// Lineage:
+//   - ParentDefID empty = no parent (top of a lineage, typically
+//     bootstrapped from a static MD with BootstrappedFromStatic=true).
+//   - Children query: AgentDefListChildren(parentDefID).
+//
+// Provenance:
+//   - CreatedByAgentID + CreatedByRunID stamp the agent that called
+//     AgentDef.create/fork at runtime. Empty for the static-bootstrap
+//     row (its "creator" is the operator's MD file, not an agent).
+type AgentDefRow struct {
+	DefID                  string          `json:"def_id"`
+	Name                   string          `json:"name"`
+	Version                int             `json:"version"`
+	ParentDefID            string          `json:"parent_def_id,omitempty"`
+	Definition             json.RawMessage `json:"definition"`
+	Description            string          `json:"description,omitempty"`
+	CreatedAt              time.Time       `json:"created_at"`
+	CreatedByAgentID       string          `json:"created_by_agent_id,omitempty"`
+	CreatedByRunID         string          `json:"created_by_run_id,omitempty"`
+	Retired                bool            `json:"retired"`
+	BootstrappedFromStatic bool            `json:"bootstrapped_from_static"`
+}
+
+// AgentDefNameSummary is one entry of AgentDefListNames' output.
+// count is the version count; ActiveDefID is the agent_def_active
+// pointer (empty when no row is promoted under this name).
+type AgentDefNameSummary struct {
+	Name          string    `json:"name"`
+	VersionCount  int       `json:"version_count"`
+	ActiveDefID   string    `json:"active_def_id,omitempty"`
+	LatestVersion int       `json:"latest_version"`
+	LastUpdated   time.Time `json:"last_updated"`
+}
+
+// EvaluationRow is one row in the evaluations table.
+//
+// DefID is denormalised from runs.agent_def_id at submit time —
+// captures which version of the agent the run actually ran against.
+// Empty for static-resolved runs (where the agent body came from
+// cfg.Agents, not the database).
+//
+// Score is the required scalar (RL lingua franca). Dimensions are
+// optional named axes for multi-fitness; nil = no dimensions.
+// Judgement is a free-form structured payload; nil = absent.
+// Rationale is natural-language reasoning for explainability + audit.
+//
+// EmitterRole is derived server-side from the emitter's ctx vs the
+// target run's identity (parent / sibling / self / external /
+// unrelated). The model NEVER supplies it.
+type EvaluationRow struct {
+	EvalID         string             `json:"eval_id"`
+	RunID          string             `json:"run_id"`
+	DefID          string             `json:"def_id,omitempty"`
+	Score          float64            `json:"score"`
+	Dimensions     map[string]float64 `json:"dimensions,omitempty"`
+	Judgement      json.RawMessage    `json:"judgement,omitempty"`
+	Rationale      string             `json:"rationale,omitempty"`
+	EmitterRole    string             `json:"emitter_role"`
+	EmitterAgentID string             `json:"emitter_agent_id,omitempty"`
+	EmitterRunID   string             `json:"emitter_run_id,omitempty"`
+	CreatedAt      time.Time          `json:"created_at"`
+}
+
+// AggregateOpts is the parameter struct for EvaluationAggregate.
+type AggregateOpts struct {
+	// IncludeLineage walks parent_def_id chain depth-first and
+	// includes ancestors' evaluations in the aggregate. Retired
+	// ancestors are included; the caller can filter post-hoc.
+	IncludeLineage bool
+}
+
+// AggregateResult is the output of EvaluationAggregate.
+//
+// Count is the total evaluation row count contributing to the
+// statistics (post-lineage-walk when IncludeLineage is true).
+// Score aggregates the scalar field. Dimensions is keyed by the
+// dimension name the evaluations supplied (only dimensions present
+// in at least one row appear). ByEmitterRole breaks aggregates by
+// role string. LineageIncluded echoes the option for caller-side
+// assertion.
+type AggregateResult struct {
+	DefID           string                `json:"def_id"`
+	Count           int                   `json:"count"`
+	Score           ScoreStats            `json:"score"`
+	Dimensions      map[string]ScoreStats `json:"dimensions,omitempty"`
+	ByEmitterRole   map[string]ScoreStats `json:"by_emitter_role,omitempty"`
+	LineageIncluded bool                  `json:"lineage_included"`
+}
+
+// ScoreStats is the summary-stats bundle used inside AggregateResult.
+// All fields zero when Count is zero (an empty aggregate is a
+// well-defined "no evaluations submitted yet" response, NOT an error).
+type ScoreStats struct {
+	Mean   float64 `json:"mean"`
+	Median float64 `json:"median"`
+	Min    float64 `json:"min"`
+	Max    float64 `json:"max"`
+	Latest float64 `json:"latest"`
+	Count  int     `json:"count"`
+}
+
+// ErrAgentDefParentNotFound is returned by AgentDefCreate when the
+// caller supplied a parent_def_id that doesn't exist. Distinct from
+// ErrNotFound so the tool layer can surface "your fork parent
+// vanished" with a clean code.
+var ErrAgentDefParentNotFound = &SubstrateError{Code: "parent_not_found", Msg: "agent_def: parent_def_id does not exist"}
+
+// ErrAgentDefImmutable is returned by store-layer assertions if
+// someone tries to UPDATE an agent_defs row's definition column.
+// Append-only invariant. The adapter's contract test pins this.
+var ErrAgentDefImmutable = &SubstrateError{Code: "immutable", Msg: "agent_def: rows are append-only; create a new version"}
+
+// SubstrateError envelopes substrate-specific errors so the tool
+// layer can pattern-match on Code. Mirror of MemoryError /
+// ChannelError shape.
+type SubstrateError struct {
+	Code string
+	Msg  string
+}
+
+func (e *SubstrateError) Error() string { return e.Msg }
 
 // ErrNotFound is returned when a session or run ID isn't in the store.
 type ErrNotFound struct {

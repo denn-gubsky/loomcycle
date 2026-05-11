@@ -24,6 +24,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strconv"
 	"strings"
 	"sync"
@@ -92,6 +93,15 @@ func Run(t *testing.T, factory Factory) {
 		{"ChannelScopeIsolation", testChannelScopeIsolation},
 		{"ChannelPeekDoesNotConsume", testChannelPeekDoesNotConsume},
 		{"ChannelReplayFromCursorZero", testChannelReplayFromCursorZero},
+		{"AgentDefCreateAndGet", testAgentDefCreateAndGet},
+		{"AgentDefVersionMonotonicUnderContention", testAgentDefVersionMonotonicUnderContention},
+		{"AgentDefParallelForksDistinctVersions", testAgentDefParallelForksDistinctVersions},
+		{"AgentDefAppendOnlyDefinition", testAgentDefAppendOnlyDefinition},
+		{"AgentDefActivePointerIdempotent", testAgentDefActivePointerIdempotent},
+		{"AgentDefRetireReversible", testAgentDefRetireReversible},
+		{"AgentDefStaticFallback", testAgentDefStaticFallback},
+		{"EvaluationSubmitAndAggregate", testEvaluationSubmitAndAggregate},
+		{"EvaluationAggregateWithLineage", testEvaluationAggregateWithLineage},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1294,5 +1304,317 @@ func testChannelReplayFromCursorZero(t *testing.T, s store.Store) {
 	msgs, _, _ = s.ChannelSubscribe(ctx, "ch", store.MemoryScopeAgent, "x", "cur_0", 10)
 	if len(msgs) != 3 {
 		t.Errorf("replay: got %d, want 3 (cur_0 must ignore committed cursor)", len(msgs))
+	}
+}
+
+// ---- v0.8.5 Self-Evolution Substrate contract ----
+
+// mkDef returns a minimal AgentDefRow suitable for create tests.
+// def_id is caller-supplied; the store doesn't generate it.
+func mkDef(id, name string, parent string) store.AgentDefRow {
+	return store.AgentDefRow{
+		DefID:       id,
+		Name:        name,
+		ParentDefID: parent,
+		Definition:  json.RawMessage(`{"model":"x","system_prompt":"p"}`),
+		Description: "test row",
+	}
+}
+
+func testAgentDefCreateAndGet(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	row, err := s.AgentDefCreate(ctx, mkDef("d-1", "alpha", ""))
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if row.Version != 1 {
+		t.Errorf("first version = %d, want 1", row.Version)
+	}
+	got, err := s.AgentDefGet(ctx, "d-1")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.Name != "alpha" || got.Version != 1 {
+		t.Errorf("got %+v", got)
+	}
+	// Created-at populated.
+	if got.CreatedAt.IsZero() {
+		t.Error("created_at not populated")
+	}
+}
+
+func testAgentDefVersionMonotonicUnderContention(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	const G = 50 // 50 goroutines × 5 inserts = 250 unique versions
+	const Per = 5
+	var wg sync.WaitGroup
+	errs := make(chan error, G*Per)
+	for g := 0; g < G; g++ {
+		wg.Add(1)
+		go func(g int) {
+			defer wg.Done()
+			for i := 0; i < Per; i++ {
+				id := fmt.Sprintf("d-%d-%d", g, i)
+				_, err := s.AgentDefCreate(ctx, mkDef(id, "raceagent", ""))
+				if err != nil {
+					errs <- err
+					return
+				}
+			}
+		}(g)
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Fatalf("create error: %v", err)
+	}
+	rows, err := s.AgentDefListByName(ctx, "raceagent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != G*Per {
+		t.Fatalf("got %d versions, want %d", len(rows), G*Per)
+	}
+	// rows is version DESC. Check strictly monotonic and no gaps.
+	versions := make(map[int]bool, len(rows))
+	for _, r := range rows {
+		if versions[r.Version] {
+			t.Errorf("duplicate version %d", r.Version)
+		}
+		versions[r.Version] = true
+	}
+	for v := 1; v <= G*Per; v++ {
+		if !versions[v] {
+			t.Errorf("missing version %d", v)
+		}
+	}
+}
+
+func testAgentDefParallelForksDistinctVersions(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	parent, err := s.AgentDefCreate(ctx, mkDef("p-1", "forkparent", ""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	const N = 10
+	var wg sync.WaitGroup
+	errs := make(chan error, N)
+	for i := 0; i < N; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			_, err := s.AgentDefCreate(ctx, mkDef(fmt.Sprintf("f-%d", i), "forkparent", parent.DefID))
+			if err != nil {
+				errs <- err
+			}
+		}(i)
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Errorf("fork: %v", err)
+	}
+	children, err := s.AgentDefListChildren(ctx, parent.DefID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(children) != N {
+		t.Errorf("got %d children, want %d", len(children), N)
+	}
+	versions := make(map[int]bool)
+	for _, c := range children {
+		if versions[c.Version] {
+			t.Errorf("duplicate child version %d", c.Version)
+		}
+		versions[c.Version] = true
+		if c.ParentDefID != parent.DefID {
+			t.Errorf("child %s has wrong parent: %s", c.DefID, c.ParentDefID)
+		}
+	}
+}
+
+func testAgentDefAppendOnlyDefinition(t *testing.T, s store.Store) {
+	// The store's adapter has NO UPDATE statement on the definition
+	// column. This test verifies the row content is byte-identical
+	// after a get-set-get cycle would have applied if the store
+	// permitted mutation. There's no public API to mutate, so the
+	// only failure mode is "the implementation grew an UPDATE
+	// path" — caught by code review more than this test, but the
+	// test pins the contract for any future adapter.
+	ctx := context.Background()
+	original := mkDef("immutable-1", "frozen", "")
+	original.Definition = json.RawMessage(`{"v":"original"}`)
+	row, err := s.AgentDefCreate(ctx, original)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.AgentDefGet(ctx, row.DefID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got.Definition) != `{"v":"original"}` {
+		t.Errorf("definition: got %s, want original", got.Definition)
+	}
+}
+
+func testAgentDefActivePointerIdempotent(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	a, err := s.AgentDefCreate(ctx, mkDef("a", "promo", ""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := s.AgentDefCreate(ctx, mkDef("b", "promo", ""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AgentDefSetActive(ctx, "promo", a.DefID, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AgentDefSetActive(ctx, "promo", b.DefID, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AgentDefSetActive(ctx, "promo", a.DefID, ""); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.AgentDefGetActive(ctx, "promo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.DefID != a.DefID {
+		t.Errorf("active = %s, want %s", got.DefID, a.DefID)
+	}
+}
+
+func testAgentDefRetireReversible(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	row, err := s.AgentDefCreate(ctx, mkDef("r-1", "retireagent", ""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AgentDefSetRetired(ctx, row.DefID, true); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := s.AgentDefGet(ctx, row.DefID)
+	if !got.Retired {
+		t.Error("retire(true) didn't stick")
+	}
+	if err := s.AgentDefSetRetired(ctx, row.DefID, false); err != nil {
+		t.Fatal(err)
+	}
+	got, _ = s.AgentDefGet(ctx, row.DefID)
+	if got.Retired {
+		t.Error("retire(false) didn't reverse")
+	}
+	// Retired rows still appear in lineage queries.
+	rows, _ := s.AgentDefListByName(ctx, "retireagent")
+	if len(rows) != 1 {
+		t.Errorf("list after retire toggle: got %d, want 1", len(rows))
+	}
+}
+
+func testAgentDefStaticFallback(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	_, err := s.AgentDefGetActive(ctx, "no-such-name")
+	var nf *store.ErrNotFound
+	if !errors.As(err, &nf) {
+		t.Errorf("got %v, want *ErrNotFound", err)
+	}
+}
+
+func testEvaluationSubmitAndAggregate(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	def, err := s.AgentDefCreate(ctx, mkDef("eval-d", "evalagent", ""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Submit 5 evals with known scores.
+	scores := []float64{0.1, 0.3, 0.5, 0.7, 0.9}
+	for i, sc := range scores {
+		_, err := s.EvaluationSubmit(ctx, store.EvaluationRow{
+			EvalID:      fmt.Sprintf("ev-%d", i),
+			RunID:       fmt.Sprintf("r-%d", i),
+			DefID:       def.DefID,
+			Score:       sc,
+			EmitterRole: "self",
+			Dimensions:  map[string]float64{"correctness": sc},
+		})
+		if err != nil {
+			t.Fatalf("submit %d: %v", i, err)
+		}
+		time.Sleep(time.Microsecond) // ensure created_at ordering
+	}
+	agg, err := s.EvaluationAggregate(ctx, def.DefID, store.AggregateOpts{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if agg.Count != 5 {
+		t.Errorf("count = %d, want 5", agg.Count)
+	}
+	if agg.Score.Mean < 0.49 || agg.Score.Mean > 0.51 {
+		t.Errorf("mean = %f, want ~0.5", agg.Score.Mean)
+	}
+	if agg.Score.Min != 0.1 {
+		t.Errorf("min = %f", agg.Score.Min)
+	}
+	if agg.Score.Max != 0.9 {
+		t.Errorf("max = %f", agg.Score.Max)
+	}
+	if agg.Score.Median != 0.5 {
+		t.Errorf("median = %f, want 0.5", agg.Score.Median)
+	}
+	if agg.Score.Latest != 0.9 {
+		t.Errorf("latest = %f, want 0.9 (newest)", agg.Score.Latest)
+	}
+	// Dimensions captured.
+	corr, ok := agg.Dimensions["correctness"]
+	if !ok {
+		t.Fatal("no correctness dimension in aggregate")
+	}
+	if corr.Mean < 0.49 || corr.Mean > 0.51 {
+		t.Errorf("correctness mean = %f", corr.Mean)
+	}
+}
+
+func testEvaluationAggregateWithLineage(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	root, err := s.AgentDefCreate(ctx, mkDef("ln-root", "lineageagent", ""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	child, err := s.AgentDefCreate(ctx, mkDef("ln-child", "lineageagent", root.DefID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 2 evals on root, 3 evals on child.
+	for i := 0; i < 2; i++ {
+		_, _ = s.EvaluationSubmit(ctx, store.EvaluationRow{
+			EvalID: fmt.Sprintf("rt-%d", i), RunID: fmt.Sprintf("r-rt-%d", i),
+			DefID: root.DefID, Score: 0.5, EmitterRole: "external",
+		})
+	}
+	for i := 0; i < 3; i++ {
+		_, _ = s.EvaluationSubmit(ctx, store.EvaluationRow{
+			EvalID: fmt.Sprintf("ch-%d", i), RunID: fmt.Sprintf("r-ch-%d", i),
+			DefID: child.DefID, Score: 1.0, EmitterRole: "external",
+		})
+	}
+	// Without lineage: only child's 3.
+	agg, err := s.EvaluationAggregate(ctx, child.DefID, store.AggregateOpts{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if agg.Count != 3 {
+		t.Errorf("no-lineage count = %d, want 3", agg.Count)
+	}
+	// With lineage: 3 + 2 = 5.
+	agg, err = s.EvaluationAggregate(ctx, child.DefID, store.AggregateOpts{IncludeLineage: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if agg.Count != 5 {
+		t.Errorf("with-lineage count = %d, want 5", agg.Count)
+	}
+	if !agg.LineageIncluded {
+		t.Error("LineageIncluded flag not set")
 	}
 }

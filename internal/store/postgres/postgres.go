@@ -14,10 +14,12 @@ package postgres
 import (
 	"context"
 	"crypto/rand"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -960,6 +962,513 @@ func (s *Store) ChannelSweepExpired(ctx context.Context) (int, error) {
 		return 0, fmt.Errorf("channel sweep: %w", err)
 	}
 	return int(tag.RowsAffected()), nil
+}
+
+// ---- v0.8.5 Self-Evolution Substrate ----
+//
+// Postgres mirror of the SQLite implementation. Version-allocation
+// lock uses pg_advisory_xact_lock(hashtextextended('agent_def:' || name, 0))
+// inside the tx so concurrent forks against the same name serialise
+// without locking the whole table. The aggregation kernel
+// (computeAggregate / statsOf) is shared with sqlite.
+
+// AgentDefCreate allocates the next version for row.Name under a
+// per-name advisory lock and inserts. Validates parent_def_id.
+func (s *Store) AgentDefCreate(ctx context.Context, row store.AgentDefRow) (store.AgentDefRow, error) {
+	if row.DefID == "" || row.Name == "" {
+		return store.AgentDefRow{}, fmt.Errorf("agent_def: def_id + name required")
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return store.AgentDefRow{}, fmt.Errorf("agent_def create begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	// Per-name advisory lock — serialises version allocation against
+	// concurrent forks of the SAME name. Different names proceed in
+	// parallel. The hash is deterministic so the same name always
+	// hashes to the same lock key.
+	if _, err := tx.Exec(ctx,
+		`SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`,
+		"agent_def:"+row.Name,
+	); err != nil {
+		return store.AgentDefRow{}, fmt.Errorf("agent_def create lock: %w", err)
+	}
+
+	if row.ParentDefID != "" {
+		var n int
+		if err := tx.QueryRow(ctx, `SELECT COUNT(*) FROM agent_defs WHERE def_id = $1`, row.ParentDefID).Scan(&n); err != nil {
+			return store.AgentDefRow{}, fmt.Errorf("agent_def create parent check: %w", err)
+		}
+		if n == 0 {
+			return store.AgentDefRow{}, store.ErrAgentDefParentNotFound
+		}
+	}
+
+	var maxVer sql.NullInt64
+	if err := tx.QueryRow(ctx, `SELECT MAX(version) FROM agent_defs WHERE name = $1`, row.Name).Scan(&maxVer); err != nil {
+		return store.AgentDefRow{}, fmt.Errorf("agent_def create max version: %w", err)
+	}
+	row.Version = 1
+	if maxVer.Valid {
+		row.Version = int(maxVer.Int64) + 1
+	}
+	row.CreatedAt = time.Now().UTC()
+
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO agent_defs (
+			def_id, name, version, parent_def_id, definition, description,
+			created_at, created_by_agent_id, created_by_run_id,
+			retired, bootstrapped_from_static
+		) VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10, $11)`,
+		row.DefID, row.Name, row.Version, nullableString(row.ParentDefID),
+		string(row.Definition), nullableString(row.Description),
+		row.CreatedAt,
+		nullableString(row.CreatedByAgentID), nullableString(row.CreatedByRunID),
+		row.Retired, row.BootstrappedFromStatic,
+	); err != nil {
+		return store.AgentDefRow{}, fmt.Errorf("agent_def insert: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return store.AgentDefRow{}, fmt.Errorf("agent_def commit: %w", err)
+	}
+	return row, nil
+}
+
+// AgentDefGet returns one row by def_id.
+func (s *Store) AgentDefGet(ctx context.Context, defID string) (store.AgentDefRow, error) {
+	row, err := s.scanAgentDef(s.pool.QueryRow(ctx, agentDefSelect+` WHERE def_id = $1`, defID))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return store.AgentDefRow{}, &store.ErrNotFound{Kind: "agent_def", ID: defID}
+	}
+	return row, err
+}
+
+// AgentDefGetByNameVersion returns one row by (name, version).
+func (s *Store) AgentDefGetByNameVersion(ctx context.Context, name string, version int) (store.AgentDefRow, error) {
+	row, err := s.scanAgentDef(s.pool.QueryRow(ctx, agentDefSelect+` WHERE name = $1 AND version = $2`, name, version))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return store.AgentDefRow{}, &store.ErrNotFound{Kind: "agent_def", ID: fmt.Sprintf("%s@v%d", name, version)}
+	}
+	return row, err
+}
+
+// AgentDefListByName returns rows for one name, version DESC.
+func (s *Store) AgentDefListByName(ctx context.Context, name string) ([]store.AgentDefRow, error) {
+	rows, err := s.pool.Query(ctx, agentDefSelect+` WHERE name = $1 ORDER BY version DESC`, name)
+	if err != nil {
+		return nil, fmt.Errorf("agent_def list by name: %w", err)
+	}
+	defer rows.Close()
+	return s.scanAgentDefRows(rows)
+}
+
+// AgentDefListChildren returns immediate children.
+func (s *Store) AgentDefListChildren(ctx context.Context, parentDefID string) ([]store.AgentDefRow, error) {
+	rows, err := s.pool.Query(ctx, agentDefSelect+` WHERE parent_def_id = $1 ORDER BY version DESC`, parentDefID)
+	if err != nil {
+		return nil, fmt.Errorf("agent_def list children: %w", err)
+	}
+	defer rows.Close()
+	return s.scanAgentDefRows(rows)
+}
+
+// AgentDefListNames returns one summary per distinct name.
+func (s *Store) AgentDefListNames(ctx context.Context) ([]store.AgentDefNameSummary, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT
+			d.name,
+			COUNT(*)                  AS version_count,
+			MAX(d.version)            AS latest_version,
+			MAX(d.created_at)         AS last_updated,
+			COALESCE(a.def_id, '')    AS active_def_id
+		FROM agent_defs d
+		LEFT JOIN agent_def_active a ON a.name = d.name
+		GROUP BY d.name, a.def_id
+		ORDER BY d.name`)
+	if err != nil {
+		return nil, fmt.Errorf("agent_def list names: %w", err)
+	}
+	defer rows.Close()
+
+	var out []store.AgentDefNameSummary
+	for rows.Next() {
+		var s store.AgentDefNameSummary
+		if err := rows.Scan(&s.Name, &s.VersionCount, &s.LatestVersion, &s.LastUpdated, &s.ActiveDefID); err != nil {
+			return nil, err
+		}
+		out = append(out, s)
+	}
+	return out, rows.Err()
+}
+
+// AgentDefSetActive UPSERTs the agent_def_active pointer for name.
+func (s *Store) AgentDefSetActive(ctx context.Context, name, defID, promotedByAgentID string) error {
+	var rowName string
+	err := s.pool.QueryRow(ctx, `SELECT name FROM agent_defs WHERE def_id = $1`, defID).Scan(&rowName)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return &store.ErrNotFound{Kind: "agent_def", ID: defID}
+	}
+	if err != nil {
+		return fmt.Errorf("agent_def_active check: %w", err)
+	}
+	if rowName != name {
+		return fmt.Errorf("agent_def_active: def_id %q has name %q, refusing to promote under name %q", defID, rowName, name)
+	}
+	_, err = s.pool.Exec(ctx, `
+		INSERT INTO agent_def_active (name, def_id, promoted_at, promoted_by_agent_id)
+		VALUES ($1, $2, $3, $4)
+		ON CONFLICT (name) DO UPDATE SET
+		    def_id               = EXCLUDED.def_id,
+		    promoted_at          = EXCLUDED.promoted_at,
+		    promoted_by_agent_id = EXCLUDED.promoted_by_agent_id`,
+		name, defID, time.Now().UTC(), nullableString(promotedByAgentID),
+	)
+	if err != nil {
+		return fmt.Errorf("agent_def_active upsert: %w", err)
+	}
+	return nil
+}
+
+// AgentDefGetActive returns the active row for name. *ErrNotFound
+// when no pointer exists.
+func (s *Store) AgentDefGetActive(ctx context.Context, name string) (store.AgentDefRow, error) {
+	var defID string
+	err := s.pool.QueryRow(ctx, `SELECT def_id FROM agent_def_active WHERE name = $1`, name).Scan(&defID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return store.AgentDefRow{}, &store.ErrNotFound{Kind: "agent_def_active", ID: name}
+	}
+	if err != nil {
+		return store.AgentDefRow{}, fmt.Errorf("agent_def_active lookup: %w", err)
+	}
+	return s.AgentDefGet(ctx, defID)
+}
+
+// AgentDefSetRetired flips the retired flag.
+func (s *Store) AgentDefSetRetired(ctx context.Context, defID string, retired bool) error {
+	tag, err := s.pool.Exec(ctx, `UPDATE agent_defs SET retired = $1 WHERE def_id = $2`, retired, defID)
+	if err != nil {
+		return fmt.Errorf("agent_def set retired: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return &store.ErrNotFound{Kind: "agent_def", ID: defID}
+	}
+	return nil
+}
+
+const agentDefSelect = `SELECT
+	def_id, name, version,
+	COALESCE(parent_def_id, ''),
+	definition::text,
+	COALESCE(description, ''),
+	created_at,
+	COALESCE(created_by_agent_id, ''),
+	COALESCE(created_by_run_id, ''),
+	retired,
+	bootstrapped_from_static
+FROM agent_defs`
+
+func (s *Store) scanAgentDef(row pgx.Row) (store.AgentDefRow, error) {
+	var (
+		out        store.AgentDefRow
+		definition string
+	)
+	err := row.Scan(
+		&out.DefID, &out.Name, &out.Version,
+		&out.ParentDefID,
+		&definition,
+		&out.Description,
+		&out.CreatedAt,
+		&out.CreatedByAgentID, &out.CreatedByRunID,
+		&out.Retired, &out.BootstrappedFromStatic,
+	)
+	if err != nil {
+		return store.AgentDefRow{}, err
+	}
+	out.Definition = json.RawMessage(definition)
+	return out, nil
+}
+
+func (s *Store) scanAgentDefRows(rows pgx.Rows) ([]store.AgentDefRow, error) {
+	var out []store.AgentDefRow
+	for rows.Next() {
+		var (
+			r          store.AgentDefRow
+			definition string
+		)
+		if err := rows.Scan(
+			&r.DefID, &r.Name, &r.Version,
+			&r.ParentDefID,
+			&definition,
+			&r.Description,
+			&r.CreatedAt,
+			&r.CreatedByAgentID, &r.CreatedByRunID,
+			&r.Retired, &r.BootstrappedFromStatic,
+		); err != nil {
+			return nil, err
+		}
+		r.Definition = json.RawMessage(definition)
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// ---- Evaluation ----
+
+func (s *Store) EvaluationSubmit(ctx context.Context, row store.EvaluationRow) (store.EvaluationRow, error) {
+	if row.EvalID == "" || row.RunID == "" || row.EmitterRole == "" {
+		return store.EvaluationRow{}, fmt.Errorf("evaluation: eval_id, run_id, emitter_role required")
+	}
+	row.CreatedAt = time.Now().UTC()
+	var dimsJSON, judgementJSON any
+	if len(row.Dimensions) > 0 {
+		b, err := json.Marshal(row.Dimensions)
+		if err != nil {
+			return store.EvaluationRow{}, fmt.Errorf("evaluation: marshal dimensions: %w", err)
+		}
+		dimsJSON = string(b)
+	}
+	if len(row.Judgement) > 0 {
+		judgementJSON = string(row.Judgement)
+	}
+	if _, err := s.pool.Exec(ctx, `
+		INSERT INTO evaluations (
+			eval_id, run_id, def_id, score, dimensions, judgement, rationale,
+			emitter_role, emitter_agent_id, emitter_run_id, created_at
+		) VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb, $7, $8, $9, $10, $11)`,
+		row.EvalID, row.RunID, nullableString(row.DefID), row.Score,
+		dimsJSON, judgementJSON, nullableString(row.Rationale),
+		row.EmitterRole, nullableString(row.EmitterAgentID), nullableString(row.EmitterRunID),
+		row.CreatedAt,
+	); err != nil {
+		return store.EvaluationRow{}, fmt.Errorf("evaluation submit: %w", err)
+	}
+	return row, nil
+}
+
+func (s *Store) EvaluationGet(ctx context.Context, evalID string) (store.EvaluationRow, error) {
+	row, err := s.scanEvaluation(s.pool.QueryRow(ctx, evaluationSelect+` WHERE eval_id = $1`, evalID))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return store.EvaluationRow{}, &store.ErrNotFound{Kind: "evaluation", ID: evalID}
+	}
+	return row, err
+}
+
+func (s *Store) EvaluationListForRun(ctx context.Context, runID string, limit int) ([]store.EvaluationRow, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	rows, err := s.pool.Query(ctx, evaluationSelect+` WHERE run_id = $1 ORDER BY created_at DESC LIMIT $2`, runID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("evaluation list for run: %w", err)
+	}
+	defer rows.Close()
+	return s.scanEvaluationRows(rows)
+}
+
+func (s *Store) EvaluationListForDef(ctx context.Context, defID string, limit int) ([]store.EvaluationRow, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	rows, err := s.pool.Query(ctx, evaluationSelect+` WHERE def_id = $1 ORDER BY created_at DESC LIMIT $2`, defID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("evaluation list for def: %w", err)
+	}
+	defer rows.Close()
+	return s.scanEvaluationRows(rows)
+}
+
+func (s *Store) EvaluationAggregate(ctx context.Context, defID string, opts store.AggregateOpts) (store.AggregateResult, error) {
+	defIDs := []string{defID}
+	if opts.IncludeLineage {
+		ancestors, err := s.walkAncestors(ctx, defID)
+		if err != nil {
+			return store.AggregateResult{}, err
+		}
+		defIDs = append(defIDs, ancestors...)
+	}
+	if len(defIDs) > 1000 {
+		defIDs = defIDs[:1000]
+	}
+	rows, err := s.pool.Query(ctx, evaluationSelect+` WHERE def_id = ANY($1) ORDER BY created_at ASC`, defIDs)
+	if err != nil {
+		return store.AggregateResult{}, fmt.Errorf("evaluation aggregate: %w", err)
+	}
+	defer rows.Close()
+	evals, err := s.scanEvaluationRows(rows)
+	if err != nil {
+		return store.AggregateResult{}, err
+	}
+	return computeAggregate(defID, evals, opts.IncludeLineage), nil
+}
+
+func (s *Store) walkAncestors(ctx context.Context, defID string) ([]string, error) {
+	var ancestors []string
+	seen := map[string]bool{defID: true}
+	cur := defID
+	for i := 0; i < 100; i++ {
+		var parent sql.NullString
+		err := s.pool.QueryRow(ctx, `SELECT parent_def_id FROM agent_defs WHERE def_id = $1`, cur).Scan(&parent)
+		if errors.Is(err, pgx.ErrNoRows) || !parent.Valid || parent.String == "" {
+			return ancestors, nil
+		}
+		if err != nil {
+			return nil, err
+		}
+		if seen[parent.String] {
+			return ancestors, nil
+		}
+		seen[parent.String] = true
+		ancestors = append(ancestors, parent.String)
+		cur = parent.String
+	}
+	return ancestors, nil
+}
+
+const evaluationSelect = `SELECT
+	eval_id, run_id,
+	COALESCE(def_id, ''),
+	score,
+	COALESCE(dimensions::text, ''),
+	COALESCE(judgement::text, ''),
+	COALESCE(rationale, ''),
+	emitter_role,
+	COALESCE(emitter_agent_id, ''),
+	COALESCE(emitter_run_id, ''),
+	created_at
+FROM evaluations`
+
+func (s *Store) scanEvaluation(row pgx.Row) (store.EvaluationRow, error) {
+	var (
+		out                   store.EvaluationRow
+		dimensions, judgement string
+	)
+	if err := row.Scan(
+		&out.EvalID, &out.RunID, &out.DefID, &out.Score,
+		&dimensions, &judgement, &out.Rationale,
+		&out.EmitterRole, &out.EmitterAgentID, &out.EmitterRunID,
+		&out.CreatedAt,
+	); err != nil {
+		return store.EvaluationRow{}, err
+	}
+	if dimensions != "" {
+		_ = json.Unmarshal([]byte(dimensions), &out.Dimensions)
+	}
+	if judgement != "" {
+		out.Judgement = json.RawMessage(judgement)
+	}
+	return out, nil
+}
+
+func (s *Store) scanEvaluationRows(rows pgx.Rows) ([]store.EvaluationRow, error) {
+	var out []store.EvaluationRow
+	for rows.Next() {
+		var (
+			r                     store.EvaluationRow
+			dimensions, judgement string
+		)
+		if err := rows.Scan(
+			&r.EvalID, &r.RunID, &r.DefID, &r.Score,
+			&dimensions, &judgement, &r.Rationale,
+			&r.EmitterRole, &r.EmitterAgentID, &r.EmitterRunID,
+			&r.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		if dimensions != "" {
+			_ = json.Unmarshal([]byte(dimensions), &r.Dimensions)
+		}
+		if judgement != "" {
+			r.Judgement = json.RawMessage(judgement)
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// nullableString returns sql.NullString-equivalent for pgx Exec args.
+// pgx accepts `nil` for NULL; empty strings stay as empty NOT NULL —
+// but our columns are TEXT NULL so we pass nil to mean NULL.
+func nullableString(s string) any {
+	if s == "" {
+		return nil
+	}
+	return s
+}
+
+// computeAggregate + statsOf are defined in the sqlite adapter and
+// live in package store_sqlite. To avoid duplicating the aggregation
+// kernel, we redeclare it here as well — the two packages don't
+// share a parent except `store`, and putting the kernel in `store`
+// would force `store` to know about ScoreStats math. Leaving these
+// here for now; if a third backend lands we'll extract a helper
+// package.
+//
+// (Below copies are intentionally identical to sqlite's bodies.)
+
+func computeAggregate(defID string, evals []store.EvaluationRow, lineageIncluded bool) store.AggregateResult {
+	out := store.AggregateResult{
+		DefID:           defID,
+		Count:           len(evals),
+		LineageIncluded: lineageIncluded,
+	}
+	if len(evals) == 0 {
+		return out
+	}
+	scores := make([]float64, len(evals))
+	dimAcc := map[string][]float64{}
+	roleAcc := map[string][]float64{}
+	for i, e := range evals {
+		scores[i] = e.Score
+		for k, v := range e.Dimensions {
+			dimAcc[k] = append(dimAcc[k], v)
+		}
+		roleAcc[e.EmitterRole] = append(roleAcc[e.EmitterRole], e.Score)
+	}
+	out.Score = statsOf(scores)
+	out.Score.Latest = evals[len(evals)-1].Score
+	if len(dimAcc) > 0 {
+		out.Dimensions = make(map[string]store.ScoreStats, len(dimAcc))
+		for k, v := range dimAcc {
+			out.Dimensions[k] = statsOf(v)
+		}
+	}
+	if len(roleAcc) > 0 {
+		out.ByEmitterRole = make(map[string]store.ScoreStats, len(roleAcc))
+		for k, v := range roleAcc {
+			out.ByEmitterRole[k] = statsOf(v)
+		}
+	}
+	return out
+}
+
+func statsOf(vals []float64) store.ScoreStats {
+	if len(vals) == 0 {
+		return store.ScoreStats{}
+	}
+	out := store.ScoreStats{Count: len(vals), Min: vals[0], Max: vals[0]}
+	sum := 0.0
+	for _, v := range vals {
+		sum += v
+		if v < out.Min {
+			out.Min = v
+		}
+		if v > out.Max {
+			out.Max = v
+		}
+	}
+	out.Mean = sum / float64(len(vals))
+	out.Latest = vals[len(vals)-1]
+	sorted := make([]float64, len(vals))
+	copy(sorted, vals)
+	sort.Float64s(sorted)
+	mid := len(sorted) / 2
+	if len(sorted)%2 == 1 {
+		out.Median = sorted[mid]
+	} else {
+		out.Median = (sorted[mid-1] + sorted[mid]) / 2
+	}
+	return out
 }
 
 // escapeLikePrefix neutralises the LIKE wildcards in `prefix` so an
