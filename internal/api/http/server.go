@@ -590,6 +590,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		QuotaBytes:    agentDef.MemoryQuotaBytes,
 	})
 	loopCtx = tools.WithChannelPolicy(loopCtx, s.channelPolicyForAgent(agentDef))
+	loopCtx = tools.WithEventEmitter(loopCtx, emit)
 
 	heartbeat := s.makeHeartbeat(runID)
 
@@ -1088,6 +1089,7 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		QuotaBytes:    agentDef.MemoryQuotaBytes,
 	})
 	loopCtx = tools.WithChannelPolicy(loopCtx, s.channelPolicyForAgent(agentDef))
+	loopCtx = tools.WithEventEmitter(loopCtx, emit)
 
 	// Heartbeat hook: each loop iteration updates last_heartbeat_at so a
 	// future sweeper can detect crashed processes (no heartbeat for > N
@@ -1371,6 +1373,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		QuotaBytes:    agentDef.MemoryQuotaBytes,
 	})
 	loopCtx = tools.WithChannelPolicy(loopCtx, s.channelPolicyForAgent(agentDef))
+	loopCtx = tools.WithEventEmitter(loopCtx, emit)
 	fbPolicy, fbReResolve := s.fallbackForRun(sess.Agent, body.UserTier)
 	loopRes, runErr := loop.Run(loopCtx, loop.RunOptions{
 		Provider:        provider,
@@ -1845,6 +1848,10 @@ func (s *Server) runSubAgent(ctx context.Context, name string, prompt string) (s
 	// state, not agent state. The ALLOWLISTS (publish / subscribe)
 	// come from the child's yaml.
 	subCtx = tools.WithChannelPolicy(subCtx, s.channelPolicyForAgent(def))
+	// Sub-agent event emitter writes to the SUB's transcript (per
+	// subEmit above). Channel-tool publishes from inside the sub
+	// surface on the sub's SSE stream, not the parent's.
+	subCtx = tools.WithEventEmitter(subCtx, subEmit)
 
 	subHeartbeat := s.makeHeartbeat(subRunID)
 

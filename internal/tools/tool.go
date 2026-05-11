@@ -297,6 +297,48 @@ func ChannelPolicy(ctx context.Context) ChannelPolicyValue {
 	return v
 }
 
+// ctxKeyEventEmitter is the context key for the v0.8.4 typed-audit-
+// event emitter. The loop's OnEvent callback is attached at run
+// start; tools that want to surface structured wire events (e.g.
+// the Channel tool's EventChannelPublish / EventChannelDelivery)
+// retrieve it via EventEmitter(ctx) and call it synchronously.
+//
+// nil is the no-op shape — when no emitter is attached (most
+// short-lived contexts, including unit-test ctx), tools should
+// silently skip emission. EventEmitter never panics; it returns
+// a guaranteed-callable function (no-op when none was attached).
+type ctxKeyEventEmitter struct{}
+
+// EventEmitterFunc is the callback shape tools invoke to push a
+// typed event onto the run's SSE stream. Same signature as
+// loop.RunOptions.OnEvent.
+type EventEmitterFunc func(providers.Event)
+
+// WithEventEmitter attaches an emitter to ctx. The HTTP server
+// (Server.handleRuns and friends) calls this with the loop's
+// `emit` closure so any tool downstream can surface a typed
+// event onto the same SSE stream the loop uses. Sub-agent contexts
+// inherit the parent's emitter automatically — the parent and
+// child run share the same SSE stream.
+func WithEventEmitter(ctx context.Context, fn EventEmitterFunc) context.Context {
+	if fn == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, ctxKeyEventEmitter{}, fn)
+}
+
+// EventEmitter returns the emitter from ctx, or a no-op function
+// when none was attached. Callers can invoke the result directly
+// without nil-checking:
+//
+//	tools.EventEmitter(ctx)(providers.Event{Type: providers.EventChannelPublish, ...})
+func EventEmitter(ctx context.Context) EventEmitterFunc {
+	if fn, ok := ctx.Value(ctxKeyEventEmitter{}).(EventEmitterFunc); ok && fn != nil {
+		return fn
+	}
+	return func(providers.Event) {}
+}
+
 // Execute looks up the named tool and runs it. Unknown tool names consult
 // the optional Fallback before returning the standard "tool not found"
 // error result (the model can self-correct on the error result; we never

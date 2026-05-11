@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/channels"
+	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/store/sqlite"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
@@ -215,4 +216,172 @@ func intToStr(i int) string {
 		i /= 10
 	}
 	return string(out)
+}
+
+// ---- v0.8.4 typed-audit-event tests ----
+
+// captureEvents returns an EventEmitter that records every event
+// into a slice so tests can assert on the structured payload.
+func captureEvents() (tools.EventEmitterFunc, *[]providers.Event) {
+	var got []providers.Event
+	emit := func(ev providers.Event) { got = append(got, ev) }
+	return emit, &got
+}
+
+// TestChannelTool_PublishEmitsTypedEvent pins that a successful
+// Channel.publish surfaces EventChannelPublish with the full
+// structured payload (channel id, scope, message_id, byte size,
+// truncated preview).
+func TestChannelTool_PublishEmitsTypedEvent(t *testing.T) {
+	tool, ctx, cleanup := channelFixture(t)
+	defer cleanup()
+	emit, got := captureEvents()
+	ctx = tools.WithEventEmitter(ctx, emit)
+
+	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"publish","channel":"findings","value":{"i":42}}`))
+	if res.IsError {
+		t.Fatalf("publish: %s", res.Text)
+	}
+
+	var pubs []providers.Event
+	for _, ev := range *got {
+		if ev.Type == providers.EventChannelPublish {
+			pubs = append(pubs, ev)
+		}
+	}
+	if len(pubs) != 1 {
+		t.Fatalf("got %d EventChannelPublish, want 1", len(pubs))
+	}
+	info := pubs[0].Channel
+	if info == nil {
+		t.Fatal("Event.Channel nil; want non-nil ChannelEventInfo")
+	}
+	if info.Channel != "findings" {
+		t.Errorf("Channel = %q, want findings", info.Channel)
+	}
+	if info.MessageID == "" {
+		t.Error("MessageID empty")
+	}
+	if info.Scope != "agent" {
+		t.Errorf("Scope = %q, want agent", info.Scope)
+	}
+	if info.ScopeID != "researcher" {
+		t.Errorf("ScopeID = %q, want researcher (the fixture's agent name)", info.ScopeID)
+	}
+	if info.PayloadBytes == 0 {
+		t.Error("PayloadBytes = 0")
+	}
+	if !strings.Contains(info.PayloadPreview, `"i":42`) {
+		t.Errorf("PayloadPreview = %q, want contains `\"i\":42`", info.PayloadPreview)
+	}
+	if info.DroppedOldest != 0 {
+		t.Errorf("DroppedOldest = %d, want 0 on the first publish", info.DroppedOldest)
+	}
+}
+
+// TestChannelTool_SubscribeEmitsOneDeliveryPerMessage pins that
+// each message in a returned batch surfaces its own
+// EventChannelDelivery, in order, with Cursor populated.
+func TestChannelTool_SubscribeEmitsOneDeliveryPerMessage(t *testing.T) {
+	tool, ctx, cleanup := channelFixture(t)
+	defer cleanup()
+	emit, got := captureEvents()
+	ctx = tools.WithEventEmitter(ctx, emit)
+
+	for i := 0; i < 3; i++ {
+		_, _ = tool.Execute(ctx, json.RawMessage(`{"op":"publish","channel":"findings","value":{"i":`+intToStr(i)+`}}`))
+		time.Sleep(time.Microsecond)
+	}
+
+	// Reset captured events so the subscribe phase is clean.
+	*got = nil
+
+	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"subscribe","channel":"findings","max_messages":10}`))
+	if res.IsError {
+		t.Fatalf("subscribe: %s", res.Text)
+	}
+
+	var deliveries []providers.Event
+	for _, ev := range *got {
+		if ev.Type == providers.EventChannelDelivery {
+			deliveries = append(deliveries, ev)
+		}
+	}
+	if len(deliveries) != 3 {
+		t.Fatalf("got %d EventChannelDelivery, want 3 (one per message)", len(deliveries))
+	}
+	for i, ev := range deliveries {
+		if ev.Channel == nil {
+			t.Fatalf("delivery[%d].Channel nil", i)
+		}
+		if ev.Channel.MessageID == "" {
+			t.Errorf("delivery[%d].MessageID empty", i)
+		}
+		if ev.Channel.Cursor != ev.Channel.MessageID {
+			t.Errorf("delivery[%d].Cursor = %q, want MessageID %q (cursor = id of THIS msg)",
+				i, ev.Channel.Cursor, ev.Channel.MessageID)
+		}
+		if ev.Channel.Channel != "findings" {
+			t.Errorf("delivery[%d].Channel = %q, want findings", i, ev.Channel.Channel)
+		}
+		if i > 0 && deliveries[i].Channel.MessageID <= deliveries[i-1].Channel.MessageID {
+			t.Errorf("delivery[%d].MessageID not strictly increasing: %q vs %q",
+				i, deliveries[i-1].Channel.MessageID, deliveries[i].Channel.MessageID)
+		}
+	}
+}
+
+// TestChannelTool_NoEmitterIsSilent pins that the no-ctx-emitter
+// path is a no-op — tools called without WithEventEmitter still
+// work correctly, just without surfacing typed events.
+func TestChannelTool_NoEmitterIsSilent(t *testing.T) {
+	tool, ctx, cleanup := channelFixture(t)
+	defer cleanup()
+	// No WithEventEmitter applied — fixture ctx has no emitter.
+
+	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"publish","channel":"findings","value":{}}`))
+	if res.IsError {
+		t.Errorf("publish with no emitter should still succeed: %s", res.Text)
+	}
+}
+
+// TestChannelTool_PayloadPreviewTruncatedAt200Chars pins that
+// large payloads don't blow up the SSE wire — the preview is
+// capped at 200 chars + an ellipsis suffix.
+func TestChannelTool_PayloadPreviewTruncatedAt200Chars(t *testing.T) {
+	tool, ctx, cleanup := channelFixture(t)
+	defer cleanup()
+	emit, got := captureEvents()
+	ctx = tools.WithEventEmitter(ctx, emit)
+
+	// Construct a payload whose JSON-encoded form is well over 200 chars.
+	big := strings.Repeat("a", 500)
+	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"publish","channel":"findings","value":"`+big+`"}`))
+	if res.IsError {
+		t.Fatalf("publish: %s", res.Text)
+	}
+
+	var info *providers.ChannelEventInfo
+	for _, ev := range *got {
+		if ev.Type == providers.EventChannelPublish {
+			info = ev.Channel
+			break
+		}
+	}
+	if info == nil {
+		t.Fatal("no EventChannelPublish captured")
+	}
+	if !strings.HasSuffix(info.PayloadPreview, "…") {
+		t.Errorf("PayloadPreview should end with ellipsis when truncated; got %q", info.PayloadPreview[len(info.PayloadPreview)-10:])
+	}
+	// 200 chars + UTF-8 ellipsis (3 bytes). The rune count is 201; byte
+	// length is 203. Either property pins the cap; we go with byte
+	// length for simplicity since that's what len() returns.
+	if len(info.PayloadPreview) > 203 {
+		t.Errorf("PayloadPreview length = %d, want <= 203 (200 chars + 3-byte ellipsis)", len(info.PayloadPreview))
+	}
+	// PayloadBytes should reflect the FULL untruncated payload size.
+	if info.PayloadBytes < 500 {
+		t.Errorf("PayloadBytes = %d, want >= 500 (full payload size, not truncated)", info.PayloadBytes)
+	}
 }

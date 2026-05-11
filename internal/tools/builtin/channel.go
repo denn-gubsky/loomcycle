@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/channels"
+	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
@@ -247,6 +248,24 @@ func (c *Channel) execPublish(ctx context.Context, policy tools.ChannelPolicyVal
 	if c.Bus != nil {
 		c.Bus.Notify(in.Channel)
 	}
+	// Typed audit event (v0.8.4 polish): same payload as the
+	// tool_result envelope, but on a separate event type so SSE
+	// consumers building channel dashboards can filter by Type
+	// without parsing every tool_result JSON. PayloadPreview is
+	// truncated at 200 chars — adapters that need the full
+	// payload still read it from the tool_result envelope.
+	tools.EventEmitter(ctx)(providers.Event{
+		Type: providers.EventChannelPublish,
+		Channel: &providers.ChannelEventInfo{
+			Channel:        in.Channel,
+			MessageID:      id,
+			Scope:          string(scope),
+			ScopeID:        scopeID,
+			PayloadBytes:   len(in.Value),
+			PayloadPreview: truncateForEvent(string(in.Value), 200),
+			DroppedOldest:  dropped,
+		},
+	})
 	return okJSON(map[string]any{
 		"message_id":     id,
 		"channel":        in.Channel,
@@ -331,11 +350,29 @@ func (c *Channel) execSubscribe(ctx context.Context, policy tools.ChannelPolicyV
 	}
 
 	out := make([]map[string]any, 0, len(msgs))
+	emit := tools.EventEmitter(ctx)
 	for _, m := range msgs {
 		out = append(out, map[string]any{
 			"id":           m.ID,
 			"value":        m.Payload,
 			"published_at": m.PublishedAt.UTC().Format(time.RFC3339Nano),
+		})
+		// One typed delivery event per message in the returned
+		// batch, in delivery order. For replays via cur_0 these
+		// fire each time — delivery events count consumption,
+		// distinct from EventChannelPublish which counts
+		// production.
+		emit(providers.Event{
+			Type: providers.EventChannelDelivery,
+			Channel: &providers.ChannelEventInfo{
+				Channel:        in.Channel,
+				MessageID:      m.ID,
+				Scope:          string(scope),
+				ScopeID:        scopeID,
+				PayloadBytes:   len(m.Payload),
+				PayloadPreview: truncateForEvent(string(m.Payload), 200),
+				Cursor:         m.ID,
+			},
 		})
 	}
 	return okJSON(map[string]any{
@@ -398,4 +435,18 @@ func (c *Channel) execListChannels(policy tools.ChannelPolicyValue) (tools.Resul
 		"publish":   policy.Publish,
 		"subscribe": policy.Subscribe,
 	})
+}
+
+// truncateForEvent caps payload-preview strings at the configured
+// byte budget. Adds an ellipsis when truncated so consumers can
+// tell the preview is partial. Empty input returns empty (no
+// ellipsis on the zero case — keeps the wire shape tidy).
+func truncateForEvent(s string, max int) string {
+	if max <= 0 || s == "" {
+		return s
+	}
+	if len(s) <= max {
+		return s
+	}
+	return s[:max] + "…"
 }
