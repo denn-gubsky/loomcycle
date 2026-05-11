@@ -38,10 +38,19 @@ import (
 // closes the surface based on the derived emitter_role:
 //
 //	"submit_self"        → may submit when emitter_role == "self"
-//	"submit_siblings"    → may submit when emitter_role == "sibling"
+//	"submit_siblings"    → RESERVED. deriveEmitterRole cannot derive
+//	                        "sibling" today because RunIdentityValue
+//	                        does not carry emitter ParentAgentID;
+//	                        sibling cases collapse to "unrelated"
+//	                        and this scope is currently inert. Plumb
+//	                        emitter ParentAgentID through ctx in a
+//	                        future PR to activate it.
 //	"submit_descendants" → may submit when target run is in this
 //	                        agent's spawn tree
-//	"submit_any"         → unrestricted submit
+//	"submit_any"         → unrestricted submit (also the only path
+//	                        that permits emitter_role == "external"
+//	                        and the current escape hatch for sibling
+//	                        cross-rating)
 //	"read_any"           → may call get / list / aggregate
 //
 // Default-deny: empty scopes blocks every op.
@@ -112,6 +121,15 @@ func (e *Evaluation) InputSchema() json.RawMessage { return json.RawMessage(eval
 func (e *Evaluation) Execute(ctx context.Context, raw json.RawMessage) (tools.Result, error) {
 	if e.Store == nil {
 		return errResult("Evaluation tool: not configured (no Store backend)"), nil
+	}
+	// Pre-unmarshal size guard. The per-field caps in execSubmit run
+	// AFTER json.Unmarshal copies the whole raw payload into heap, so
+	// without this guard a 50 MB judgement allocates 50 MB before
+	// being rejected. Use the sum of the two field caps + headroom
+	// for the JSON envelope (op, run_id, etc.) as the upper bound.
+	// Headroom of 4 KB easily fits the other small fields.
+	if cap := totalRawBudget(e.MaxJudgementBytes, e.MaxRationaleBytes); cap > 0 && len(raw) > cap {
+		return errResult(fmt.Sprintf("Evaluation tool: input (%d bytes) exceeds max %d", len(raw), cap)), nil
 	}
 	var in evaluationInput
 	if err := json.Unmarshal(raw, &in); err != nil {
@@ -301,6 +319,23 @@ func deriveEmitterRole(emitter tools.RunIdentityValue, target store.Run) string 
 
 // checkSubmitScope returns nil iff the agent's evaluation_scopes
 // permits a submit with the given derived emitter_role.
+//
+// Two roles have known limitations that operators must understand:
+//
+//   - "sibling": deriveEmitterRole cannot derive this today because
+//     RunIdentityValue doesn't carry the emitter's ParentAgentID.
+//     The sibling case collapses to "unrelated" — `submit_siblings`
+//     in yaml is reserved but currently inert. Plumbing emitter
+//     ParentAgentID through tools.WithRunIdentity is queued for
+//     v0.9.x; until then operators wanting cross-sibling rating
+//     must grant `submit_any`.
+//
+//   - "external": only fires when the emitter's AgentID is empty,
+//     which is the admin-API submission path (no agent ctx). The
+//     top-level `submit_any` check above is the ONLY scope that
+//     permits external submissions — no dedicated `submit_external`
+//     exists. We don't add a redundant case branch here because the
+//     `submit_any` short-circuit at line 305 already covers it.
 func checkSubmitScope(policy tools.EvaluationPolicyValue, role string) error {
 	if hasScope(policy, "submit_any") {
 		return nil
@@ -311,6 +346,8 @@ func checkSubmitScope(policy tools.EvaluationPolicyValue, role string) error {
 			return nil
 		}
 	case "sibling":
+		// Reserved; deriveEmitterRole never returns this today.
+		// See the type-level doc above for the limitation + plan.
 		if hasScope(policy, "submit_siblings") {
 			return nil
 		}
@@ -320,13 +357,8 @@ func checkSubmitScope(policy tools.EvaluationPolicyValue, role string) error {
 		if hasScope(policy, "submit_descendants") {
 			return nil
 		}
-	case "external":
-		// External submissions are typically admin-API only; agents
-		// hitting the tool route have a non-empty AgentID, so this
-		// case won't fire from agent calls.
-		if hasScope(policy, "submit_any") {
-			return nil
-		}
+		// "external" is handled by the submit_any short-circuit above —
+		// no dedicated submit_external scope.
 	}
 	return fmt.Errorf("Evaluation tool: emitter_role=%q not permitted by this agent's evaluation_scopes %v (default-deny)", role, policy.Scopes)
 }
@@ -370,4 +402,19 @@ func mintEvalID() string {
 	var b [8]byte
 	_, _ = rand.Read(b[:])
 	return "eval_" + hex.EncodeToString(b[:])
+}
+
+// totalRawBudget computes the upper-bound raw-bytes cap for the
+// pre-unmarshal size guard in Execute. Returns 0 (= "no cap") when
+// either field cap is 0 — matches the per-field "0 disables the cap"
+// semantics. envelopeHeadroom covers the other input fields (op,
+// run_id, eval_id, def_id, dimensions, etc.) which are bounded in
+// practice by the model's emitted token budget.
+const envelopeHeadroom = 4 * 1024
+
+func totalRawBudget(maxJudgement, maxRationale int) int {
+	if maxJudgement <= 0 || maxRationale <= 0 {
+		return 0
+	}
+	return maxJudgement + maxRationale + envelopeHeadroom
 }

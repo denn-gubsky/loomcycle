@@ -290,6 +290,31 @@ func TestEvaluationTool_MissingOp(t *testing.T) {
 	}
 }
 
+func TestEvaluationTool_OversizedRawInputRejectedPreUnmarshal(t *testing.T) {
+	// The per-field caps (MaxJudgementBytes / MaxRationaleBytes) fire
+	// AFTER json.Unmarshal, which means without the pre-unmarshal guard
+	// a 50 MB judgement would allocate 50 MB on heap before being
+	// rejected. The pre-unmarshal guard caps the raw input at
+	// (MaxJudgement + MaxRationale + envelopeHeadroom) so this case
+	// fails fast without the allocation.
+	tool, _, _, cleanup := evaluationFixture(t)
+	defer cleanup()
+	tool.MaxJudgementBytes = 64
+	tool.MaxRationaleBytes = 64
+	ctx := ctxWithEmitter("a_target", "submit_self")
+
+	// Build a payload larger than 64+64+4096 = 4224 bytes.
+	huge := `{"op":"submit","run_id":"x","score":0.5,"rationale":"` +
+		strings.Repeat("z", 8000) + `"}`
+	res, _ := tool.Execute(ctx, json.RawMessage(huge))
+	if !res.IsError {
+		t.Fatalf("oversized raw input should refuse; got %s", res.Text)
+	}
+	if !strings.Contains(res.Text, "exceeds max") {
+		t.Errorf("error should mention exceeds max; got %s", res.Text)
+	}
+}
+
 func TestEvaluationTool_NoStore(t *testing.T) {
 	tool := &Evaluation{}
 	ctx := ctxWithEmitter("a_target", "submit_self")

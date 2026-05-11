@@ -529,7 +529,14 @@ func (s *Store) GetRun(ctx context.Context, runID string) (store.Run, error) {
 	if errors.Is(err, sql.ErrNoRows) {
 		return store.Run{}, &store.ErrNotFound{Kind: "run", ID: runID}
 	}
-	return r, err
+	if err != nil {
+		// Match postgres adapter's wrapping shape — without this, raw
+		// database/sql errors leak through to the tool layer with no
+		// "get run" context, and the two adapters diverge in their
+		// error message format.
+		return store.Run{}, fmt.Errorf("get run: %w", err)
+	}
+	return r, nil
 }
 
 // ListUsers returns one row per distinct user_id with summary stats.
