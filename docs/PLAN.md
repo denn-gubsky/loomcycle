@@ -342,13 +342,13 @@ For usage: see [README](../README.md). For the architecture: see [ARCHITECTURE.m
 
 ## v0.8.x — next: framework primitives
 
-Sequenced 2026-05-09; renumbered 2026-05-10 after v0.8.1 absorbed three operational-hardening PRs (#47/#48/#49); renumbered again 2026-05-11 after v0.8.2 absorbed the `user_tier` resolver-overlay + runtime-fallback work (PRs #52/#53); renumbered once more 2026-05-11 to insert v0.8.5 Self-Evolution Substrate (AgentDef + versioning + Evaluation) ahead of LoomHelp and LoomCycle MCP — the capstone must expose those tools, so they have to ship first; v0.8.3 took the ollama-split hot-fix and v0.8.4 shipped the Channel tool, so the remaining v0.8.x roadmap below begins at v0.8.5. Each point release in the framework-primitive sequence ships one focused capability — the v1.0 capstone (LoomCycle MCP) needs them in this order because the MCP server's surface is built FROM these primitives. Detailed design (API schemas, storage shapes, retention semantics) lives in feature-branch RFCs at implementation time; the outlines below capture the shape but not the wire.
+Sequenced 2026-05-09; renumbered 2026-05-10 after v0.8.1 absorbed three operational-hardening PRs (#47/#48/#49); renumbered again 2026-05-11 after v0.8.2 absorbed the `user_tier` resolver-overlay + runtime-fallback work (PRs #52/#53); renumbered once more 2026-05-11 to insert v0.8.5 Self-Evolution Substrate (AgentDef + versioning + Evaluation) ahead of Context (introspection) and LoomCycle MCP — the capstone must expose those tools, so they have to ship first; v0.8.3 took the ollama-split hot-fix and v0.8.4 shipped the Channel tool, so the remaining v0.8.x roadmap below begins at v0.8.5. Each point release in the framework-primitive sequence ships one focused capability — the v1.0 capstone (LoomCycle MCP) needs them in this order because the MCP server's surface is built FROM these primitives. Detailed design (API schemas, storage shapes, retention semantics) lives in feature-branch RFCs at implementation time; the outlines below capture the shape but not the wire.
 
 **v0.8.0 Memory tool shipped 2026-05-09**; **v0.8.1 operational hardening shipped 2026-05-10**; **v0.8.2 user_tier shipped 2026-05-11**; **v0.8.3 ollama split shipped 2026-05-11**; **v0.8.4 Channel tool shipped 2026-05-11** — see the sections above for full release notes.
 
 ### v0.8.5 — Self-Evolution Substrate (AgentDef + versioning + Evaluation)
 
-Three substrate primitives shipped together; closes the gaps that block the planned self-evolving agentic research program. Sequenced before LoomHelp (v0.8.6) and LoomCycle MCP (v0.8.7) because the MCP capstone must expose both new tools.
+Three substrate primitives shipped together; closes the gaps that block the planned self-evolving agentic research program. Sequenced before Context (v0.8.6) and LoomCycle MCP (v0.8.7) because the MCP capstone must expose both new tools.
 
 **Primitive 1 — `AgentDef` built-in tool.** Agents can `create` / `fork` / `retire` / `promote` / `get` / `list` agent definitions at runtime. Six-op surface, mirrors the Memory tool's discriminated-op shape. Operator-blessed static `<name>.md` files remain the immutable root; DB-held versions live in the derived layer. Per-agent yaml `agent_def_scopes` gate (`self` / `descendants` / `named:[...]` / `any`), default-deny. `AllowedTools` widening is REFUSED across forks — operator-blessed root is the permanent capability ceiling.
 
@@ -360,13 +360,30 @@ Three substrate primitives shipped together; closes the gaps that block the plan
 
 Detailed design in `doc-internal/rfcs/self-evolution-substrate.md` (gitignored). Build sequence: 7 PRs over ~3–4 weeks. PRs 1–5 are the experiment-enabling substrate (all three experiments run after PR 5 with no UI); PRs 6–7 are the admin API + Web UI agent-defs page — load-bearing for the v1.0 "Agentic OS" launch narrative.
 
-### v0.8.6 — LoomHelp tool (absorbing all tools)
+### v0.8.6 — Context tool (runtime introspection)
 
-Runtime introspection — but with a wider remit than the original v1.0 sketch. LoomHelp absorbs the metadata exposure for **every** built-in and registered tool: input schemas, output formats, side-effect classes (pure / network / filesystem / privileged), allow-list narrowing the active agent has applied, the tool's docstring and operator notes. Plus runtime context: the agent's own identity, parent / sub-agent linkage, loaded skills, current Memory snapshot, available Channels, **active `agent_def_id` + version + lineage (from v0.8.5)**, **accumulated evaluation aggregates against the current `def_id`**.
+Read-only tool that lets agents introspect their own runtime — what tools they have, what their identity / lineage looks like, what evaluations exist for their definition, what channels they can reach. Discriminated `op` field (same shape as Memory) lets agents narrow output instead of paying for a kitchen-sink dump on every call.
 
-Single read-only tool that returns a structured catalogue. Useful for the Comfort Agents pattern — agents that build their own task plans benefit from being able to inspect their environment before deciding what to do. Operators who want to gate tool discovery from agents (defence-in-depth) can disable LoomHelp via the standard `allowed_tools` policy; the introspection surface is opt-in per-agent.
+**Eight ops:**
 
-What's not yet decided: output format (JSON schema vs markdown vs both), what counts as a "secret" beyond env-var name patterns, schema for the side-effect-class taxonomy, whether LoomHelp can introspect *other* agents' tool sets (probably no — that's a privilege-escalation vector).
+| Op | Returns | Params |
+|---|---|---|
+| `self` | Identity bundle: `agent_id`, `agent_name`, `run_id`, `parent_agent_id`, `user_id`, `user_tier`, `agent_def_id` + `version` + `parent_def_id`, `iteration`, `provider`, `model`, loaded `skills`, Memory key-counts per scope | — |
+| `tools` | Post-filter tool catalog — builtins + MCP (`mcp__server__name`). Each entry: `name`, `description`, `side_effect_class`, runtime narrowing | — |
+| `doc` | Detailed tool documentation: input schema, op surface, examples, operator notes | `name?` |
+| `agents` | Visible agents — `name`, `description`, `tier`, `active_def_id` + `version`, spawn/mutate eligibility flags. **No `system_prompt` body** — that's behind `AgentDef.get` so the `agent_def_scopes` gate applies | `prefix?` |
+| `permissions` | Gates that apply to caller: `allowed_tools`, `allowed_hosts`, `memory_scopes`, `agent_def_scopes`, `evaluation_scopes`, accessible MCP servers, active hooks | — |
+| `channels` | Accessible channels: name, description, publish/subscribe rights, recent activity counter | `prefix?` |
+| `lineage` | AgentDef lineage tree: ancestors + descendants + retire/promote markers (from v0.8.5 substrate) | `def_id?` (defaults to caller's); `depth?` |
+| `evaluations` | Evaluation aggregate: count, mean/median/min/max/latest, per-emitter-role breakdown, dimensions stats (from v0.8.5 substrate) | `def_id?`; `include_lineage?` |
+
+**Default-add behaviour.** `Context` is auto-added to every agent's `allowed_tools` at config load — missing introspection is a footgun for self-evolving agents. Operators who want airgapped agents opt out via per-agent yaml `disable_context: true`.
+
+**Privacy boundary.** `Context.agents` returns metadata only (names, descriptions, tier). The full `system_prompt` body lives behind `AgentDef.get(def_id)`, which is gated by `agent_def_scopes`. Two layers: cheap discovery via Context, capability-gated content access via AgentDef.
+
+Single read-only tool — no mutations, no side effects beyond reads. Useful for the Comfort Agents pattern — agents that build their own task plans benefit from being able to inspect their environment before deciding what to do.
+
+What's not yet decided: response-size caps per op (default `LOOMCYCLE_CONTEXT_MAX_RESPONSE_BYTES`), schema for the `side_effect_class` taxonomy (pure / network / filesystem / privileged / state), whether `agents` shows agents the caller cannot spawn (current lean: yes, with an eligibility flag — discovery should be transparent even when access isn't).
 
 ### v0.8.7 — LoomCycle MCP (the v0.8.x capstone)
 
@@ -377,7 +394,7 @@ Loomcycle exposes itself as an **MCP server**. External orchestrators (Claude Co
 - Read/write Memory entries (built in v0.8.0).
 - **Create / fork / promote `AgentDef` versions (built in v0.8.5).**
 - **Submit / aggregate Evaluations (built in v0.8.5).**
-- Call LoomHelp (built in v0.8.6).
+- Call Context for runtime introspection (built in v0.8.6).
 - Subscribe to run-event streams (alternate to SSE).
 
 This is the "MCP-configurable" axis: instead of writing YAML and POSTing JSON, an external tool drives loomcycle through standard MCP. Surface area maps roughly 1:1 to the existing `/v1/*` endpoints plus the v0.8.0–0.8.6 primitives, with auth via the operator's bearer token translated into MCP's auth scheme.
@@ -466,7 +483,7 @@ These hold across v1.0 work; deviation requires a written justification:
 
 - **Config-driven posture, no profile flag.** Operators compose their security stance from individual env + YAML keys. We do not ship a "sandbox mode" abstraction.
 - **One binary stays one binary.** No `loomcycle-server` vs `loomcycle-agent`. Every feature lands in `cmd/loomcycle`. Build artefacts stay singular.
-- **MCP-orchestrable.** Whatever surface we expose for agents (Memory, Channel, LoomHelp), we also expose to external MCP clients. Agents and orchestrators play on the same plane.
+- **MCP-orchestrable.** Whatever surface we expose for agents (Memory, Channel, Context), we also expose to external MCP clients. Agents and orchestrators play on the same plane.
 - **Storage is pluggable.** SQLite for dev/single-tenant; Postgres for multi-replica. Anything new (Memory, Channel) goes through the `Store` interface, not direct SQL.
 - **No vendor SDKs in the loop.** Every provider driver is pure HTTP. No bundled binaries; no subprocess auth inheritance.
 - **Default-deny stays default-deny.** New tools start invisible to existing agents until they opt in.
@@ -479,7 +496,7 @@ The chain below applies to **internal contributors** (the maintainer + Claude Co
 
 Pick an item, write an RFC (one markdown file under `doc-internal/rfcs/<feature>.md`), open a feature branch (`feature-<name>`), follow the chain documented in `CLAUDE.md` (architect → plan → code → tests → review → merge). The RFC is the design step — implementation follows once the RFC is reviewed.
 
-For non-trivial items (Memory tool, Channel tool, LoomHelp tool, LoomCycle MCP), the RFC should cover:
+For non-trivial items (Memory tool, Channel tool, Context tool, LoomCycle MCP), the RFC should cover:
 
 1. The user-visible surface (API shape, semantics, error cases).
 2. The storage / wire shape (schema, message formats).
