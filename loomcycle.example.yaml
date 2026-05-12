@@ -187,6 +187,37 @@ channels:
     max_messages: 1000
     semantic: broadcast
 
+  # ─── v0.8.6 System channels ────────────────────────────────────────
+  # `_system/*` prefix is reserved: only operator yaml may declare,
+  # only loomcycle's internal publisher + the admin endpoint may
+  # write (per the channel's `publisher` field). Agents may
+  # subscribe (with ACL) but never publish.
+  #
+  # Optional — uncomment the channels you want. Each one's purpose:
+  #   - heartbeat-* : cadence ticker, one message per period.
+  #                   Verifies liveness, drives dashboards.
+  #   - alarms/*    : agent or admin-endpoint publishes alert
+  #                   payloads. Severity by channel name.
+  #   - runtime-state: v0.8.9 pause/resume/restore state transitions
+  #                    (event-driven; no `period:` needed because the
+  #                    channel name is in eventDrivenSystemChannels).
+  #   - provider-events: provider fallback + cache-invalidated signals
+  #                      (v0.9.x observability sweep wires this).
+  #
+  # Cadence channels (publisher: system + period:):
+  # _system/heartbeat-1m:    { scope: global, semantic: broadcast, default_ttl: 60s,  publisher: system, period: 1m }
+  # _system/heartbeat-5m:    { scope: global, semantic: broadcast, default_ttl: 300s, publisher: system, period: 5m }
+  # _system/heartbeat-1h:    { scope: global, semantic: broadcast, default_ttl: 1h,   publisher: system, period: 1h }
+  #
+  # Alarm channels (agents publish; admin endpoint can also publish):
+  # _system/alarms/critical: { scope: global, semantic: broadcast, default_ttl: 24h, max_messages: 1000 }
+  # _system/alarms/warning:  { scope: global, semantic: broadcast, default_ttl: 6h,  max_messages: 5000 }
+  # _system/alarms/info:     { scope: global, semantic: queue,     default_ttl: 1h,  max_messages: 10000 }
+  #
+  # Event-driven channels (publisher: system without period):
+  # _system/runtime-state:   { scope: global, semantic: broadcast, default_ttl: 7d, publisher: system }
+  # _system/provider-events: { scope: global, semantic: broadcast, default_ttl: 24h, publisher: system }
+
 # ─── Default routing for agents that don't specify their own ──────────
 # Used by agents that declare neither `tier:` nor an explicit
 # `provider:`+`model:` pin. v0.6.x back-compat path; tier-based agents

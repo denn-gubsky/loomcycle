@@ -28,6 +28,7 @@ test/runtime/<feature>/
 | `user-tier/` | Runtime fallback within a tier's candidate list. Primary provider stalls (induced via a sentinel); resolver walks the tier's candidates, picks the next, completes the run. Validates `fallback_on_error` + the 3-attempt cumulative cap. |
 | `agent-def/` (v0.8.5) | Single-agent walkthrough of the six AgentDef ops: create → get → list → fork → promote → retire. Driver inspects `agent_defs` + `agent_def_active` rows to verify lifecycle, parent-chain wiring, retire flags, and active-pointer placement. |
 | `evaluation/` (v0.8.5) | Two-run scenario. Run 1 (`worker`) executes a trivial deterministic op; driver extracts its run_id from the SSE `agent` event. Run 2 (`evaluator`) submits + reads back an Evaluation against the worker's run_id (emitter_role=`unrelated`; `submit_any` scope path). Verifies the full submit/get/list/aggregate surface. |
+| `system-channels/` (v0.8.6) | Three exercises in one run: (A) `_system/heartbeat-1s` cadence — driver waits 3s and asserts ≥2 messages with the fixed `{ts, version, uptime_s}` payload + `_system` attribution. (B) Admin endpoint — `curl POST /v1/_channels/_system/alarms/info` lands a row with `published_by_user_id = _admin`. (C) Agent deferred publish — scheduler-bot publishes to `findings` with `deliver_at = now+30s`; driver verifies the `(visible_at - published_at)` delta is in the expected window + the tool_result envelope carries `visible_at`. |
 
 Future scenarios (one folder per primitive):
 
