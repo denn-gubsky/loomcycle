@@ -428,11 +428,12 @@ func main() {
 
 	// v0.8.6 heartbeat runner — one goroutine per `_system/heartbeat-*`
 	// (or any other `publisher: system` + `period:` channel) declared
-	// in operator yaml. Stops on the same context cancellation that
-	// drains the HTTP server below. Skip-on-pause semantics: when
-	// v0.8.9 pause lands, the heartbeat goroutines pause naturally
-	// because their context is the same shutdown context the rest of
-	// the system uses.
+	// in operator yaml. Construction happens here; Start is deferred
+	// to AFTER bgCtx is created below so the runner observes the same
+	// shared shutdown context as the sweepers + session-lock GC.
+	// That way bgCancel() on SIGTERM tears the heartbeat goroutines
+	// down naturally, and any future v0.8.9 pause path that cancels
+	// bgCtx pauses heartbeats without a separate hook.
 	heartbeatChannels := make(map[string]struct {
 		Period      string
 		Publisher   string
@@ -459,8 +460,6 @@ func main() {
 	var heartbeatRunner *channels.HeartbeatRunner
 	if len(heartbeatSpecs) > 0 {
 		heartbeatRunner = channels.NewHeartbeatRunner(sysPublisher, buildCommit, heartbeatSpecs)
-		log.Printf("system channels: starting %d heartbeat goroutine(s)", len(heartbeatSpecs))
-		heartbeatRunner.Start(context.Background())
 	}
 
 	// Build the model-resolution matrix (resolve.Resolver). Providers
@@ -491,6 +490,14 @@ func main() {
 	// to do so in their packages.
 	bgCtx, bgCancel := context.WithCancel(context.Background())
 	defer bgCancel()
+
+	// v0.8.6 heartbeat runner — start AFTER bgCtx is available so
+	// bgCancel() on SIGTERM (or a future pause hook) cancels the
+	// heartbeat goroutines naturally.
+	if heartbeatRunner != nil {
+		log.Printf("system channels: starting %d heartbeat goroutine(s)", len(heartbeatSpecs))
+		heartbeatRunner.Start(bgCtx)
+	}
 
 	if cfg.Env.HeartbeatSweeperEnabled && storeIface != nil {
 		sweeper := heartbeat.New(storeIface, heartbeat.Config{
