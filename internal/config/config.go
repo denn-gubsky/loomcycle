@@ -656,6 +656,30 @@ type Env struct {
 	// Env: LOOMCYCLE_CHANNELS_LONGPOLL_CAP_MS.
 	ChannelsLongPollCapMS int
 
+	// AgentDefMaxDefinitionBytes caps a single AgentDef.create or
+	// AgentDef.fork's serialised definition JSON (v0.8.5). Default
+	// 131072 (128 KB). 0 disables. Mirrors MemoryMaxValueBytes's
+	// negative-as-disable convention.
+	// Env: LOOMCYCLE_AGENT_DEF_MAX_DEFINITION_BYTES.
+	AgentDefMaxDefinitionBytes int
+
+	// AgentDefMaxDescriptionBytes caps the free-text description
+	// field on AgentDef.create / fork (v0.8.5). Default 8192 (8 KB).
+	// 0 disables.
+	// Env: LOOMCYCLE_AGENT_DEF_MAX_DESCRIPTION_BYTES.
+	AgentDefMaxDescriptionBytes int
+
+	// EvaluationMaxJudgementBytes caps the structured-judgement JSON
+	// on Evaluation.submit (v0.8.5). Default 32768 (32 KB). 0 disables.
+	// Env: LOOMCYCLE_EVALUATION_MAX_JUDGEMENT_BYTES.
+	EvaluationMaxJudgementBytes int
+
+	// EvaluationMaxRationaleBytes caps the natural-language rationale
+	// text on Evaluation.submit (v0.8.5). Default 8192 (8 KB).
+	// 0 disables.
+	// Env: LOOMCYCLE_EVALUATION_MAX_RATIONALE_BYTES.
+	EvaluationMaxRationaleBytes int
+
 	// ProviderHeaderTimeout is the per-attempt cap on time-to-first-
 	// byte for streaming provider HTTP calls (set on each driver's
 	// http.Transport.ResponseHeaderTimeout). Default 60s — generous
@@ -951,6 +975,49 @@ func Load(path string) (*Config, error) {
 				cfg.Env.ChannelsLongPollCapMS = 0
 			} else {
 				cfg.Env.ChannelsLongPollCapMS = n
+			}
+		}
+	}
+
+	// v0.8.5 substrate caps. Same negative-as-disable convention as
+	// Memory + Channel sibling caps.
+	cfg.Env.AgentDefMaxDefinitionBytes = 131072
+	if v := os.Getenv("LOOMCYCLE_AGENT_DEF_MAX_DEFINITION_BYTES"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			if n <= 0 {
+				cfg.Env.AgentDefMaxDefinitionBytes = 0
+			} else {
+				cfg.Env.AgentDefMaxDefinitionBytes = n
+			}
+		}
+	}
+	cfg.Env.AgentDefMaxDescriptionBytes = 8192
+	if v := os.Getenv("LOOMCYCLE_AGENT_DEF_MAX_DESCRIPTION_BYTES"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			if n <= 0 {
+				cfg.Env.AgentDefMaxDescriptionBytes = 0
+			} else {
+				cfg.Env.AgentDefMaxDescriptionBytes = n
+			}
+		}
+	}
+	cfg.Env.EvaluationMaxJudgementBytes = 32768
+	if v := os.Getenv("LOOMCYCLE_EVALUATION_MAX_JUDGEMENT_BYTES"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			if n <= 0 {
+				cfg.Env.EvaluationMaxJudgementBytes = 0
+			} else {
+				cfg.Env.EvaluationMaxJudgementBytes = n
+			}
+		}
+	}
+	cfg.Env.EvaluationMaxRationaleBytes = 8192
+	if v := os.Getenv("LOOMCYCLE_EVALUATION_MAX_RATIONALE_BYTES"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			if n <= 0 {
+				cfg.Env.EvaluationMaxRationaleBytes = 0
+			} else {
+				cfg.Env.EvaluationMaxRationaleBytes = n
 			}
 		}
 	}
