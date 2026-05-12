@@ -1,0 +1,33 @@
+# test/runtime/evaluation/loomcycle.yaml — v0.8.5 Evaluation-tool runtime smoke test.
+#
+# Two agents: worker + evaluator. Worker does a trivial task (one
+# Memory write, deterministic). Evaluator receives the worker's
+# run_id in its prompt, submits an evaluation, then reads it back
+# via get + list_for_run + aggregate.
+#
+# emitter_role for the evaluator's submit will be "unrelated"
+# (different agent, no parent relationship between the two runs).
+# That's the case `submit_any` is for; the test exercises exactly
+# that path.
+#
+# Provider: gemini (gemini-2.5-flash). Set GEMINI_API_KEY in your
+# shell (or source .env.local) before invoking the driver.
+
+provider_priority: [gemini]
+
+defaults:
+  provider: gemini
+  model: gemini-2.5-flash
+
+# ─── Agents from MD discovery ──────────────────────────────────────
+# run.sh sets LOOMCYCLE_AGENTS_ROOT to ./agents/. No yaml `agents:`
+# block — both agents come from MD frontmatter.
+
+# ─── Storage ───────────────────────────────────────────────────────
+storage:
+  backend: sqlite
+
+# ─── Concurrency ───────────────────────────────────────────────────
+concurrency:
+  max_concurrent_runs: 4
+  max_queue_depth: 8

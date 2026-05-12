@@ -1,0 +1,30 @@
+# test/runtime/agent-def/loomcycle.yaml — v0.8.5 AgentDef-tool runtime smoke test.
+#
+# Single-agent walkthrough of the six AgentDef ops (create / get /
+# list / fork / promote / retire) over the same loomcycle instance.
+# Driver inspects the agent_defs + agent_def_active tables to verify
+# the lifecycle ended in the expected shape.
+#
+# Provider: gemini (gemini-2.5-flash). Set GEMINI_API_KEY in your
+# shell (or source .env.local) before invoking the driver.
+
+provider_priority: [gemini]
+
+defaults:
+  provider: gemini
+  model: gemini-2.5-flash
+
+# ─── Agents from MD discovery ──────────────────────────────────────
+# run.sh sets LOOMCYCLE_AGENTS_ROOT to ./agents/ (alongside this
+# file). No yaml `agents:` block — the agent comes purely from the
+# MD frontmatter. The "target" name the evolver mutates does NOT
+# need a static MD; create() will mint a fresh DB-only lineage.
+
+# ─── Storage ───────────────────────────────────────────────────────
+storage:
+  backend: sqlite
+
+# ─── Concurrency ───────────────────────────────────────────────────
+concurrency:
+  max_concurrent_runs: 4
+  max_queue_depth: 8

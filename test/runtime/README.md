@@ -23,14 +23,14 @@ test/runtime/<feature>/
 
 | Feature | Scenario |
 |---|---|
-| `channels/` | Two-agent canonical handoff: researcher publishes 3 findings to a user-scoped queue; analyst subscribes and produces a structured report. Verifies the Channel tool's publish/subscribe/auto-ack path through real DeepSeek tool calls. |
+| `channels/` | Two-agent canonical handoff: researcher publishes 3 findings to a user-scoped queue; analyst subscribes and produces a structured report. Verifies the Channel tool's publish/subscribe/auto-ack path through real provider tool calls. |
+| `memory/` | Single agent, two sequential runs. Run 1 writes a user-scope fact + an agent-scope counter (incr); run 2 reads them back and bumps the counter again. Validates cross-run state persistence — the core Memory promise. |
+| `user-tier/` | Runtime fallback within a tier's candidate list. Primary provider stalls (induced via a sentinel); resolver walks the tier's candidates, picks the next, completes the run. Validates `fallback_on_error` + the 3-attempt cumulative cap. |
+| `agent-def/` (v0.8.5) | Single-agent walkthrough of the six AgentDef ops: create → get → list → fork → promote → retire. Driver inspects `agent_defs` + `agent_def_active` rows to verify lifecycle, parent-chain wiring, retire flags, and active-pointer placement. |
+| `evaluation/` (v0.8.5) | Two-run scenario. Run 1 (`worker`) executes a trivial deterministic op; driver extracts its run_id from the SSE `agent` event. Run 2 (`evaluator`) submits + reads back an Evaluation against the worker's run_id (emitter_role=`unrelated`; `submit_any` scope path). Verifies the full submit/get/list/aggregate surface. |
 
 Future scenarios (one folder per primitive):
 
-- `memory/` — set/get/incr round-trip across two runs of the same agent
-- `user-tier/` — runtime fallback on a 429 from the primary provider in a tier's candidate list
-- `agent-def/` (v0.8.5) — fork → spawn → retire lifecycle
-- `evaluation/` (v0.8.5) — sibling-emitter evaluation of a forked variant
 - `context/` (v0.8.6) — introspection rollup against an agent with the full primitive surface
 
 ## When to add a runtime test
