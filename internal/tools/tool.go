@@ -408,6 +408,42 @@ func EvaluationPolicy(ctx context.Context) EvaluationPolicyValue {
 	return v
 }
 
+// ctxKeyHistoryPolicy is the key under which the runtime stashes the
+// v0.8.7 Context.history scope policy. Multi-select scopes; same shape
+// as AgentDefPolicy and EvaluationPolicy. The closed set lives on
+// config.AgentDef.HistoryScope.
+type ctxKeyHistoryPolicy struct{}
+
+// HistoryPolicyValue is the per-agent Context.history gate. Multi-
+// select; empty Scopes = default-deny (Context.history refuses).
+//
+// Closed set:
+//   - "self"        — caller may read its own run's transcript
+//   - "siblings"    — RESERVED (not yet active in v0.8.7 PR 3;
+//     RunIdentityValue lacks ParentAgentID, so the
+//     server can't derive sibling relationships
+//     without a separate plumbing PR)
+//   - "descendants" — RESERVED (same reason)
+//   - "named:<n>"   — RESERVED (same reason)
+//   - "any"         — UNRESTRICTED. Caller may read ANY agent's
+//     transcript INCLUDING transcripts owned by
+//     other users. Operator-trust grant; use only
+//     for admin/debug agents.
+type HistoryPolicyValue struct {
+	Scopes []string
+}
+
+// WithHistoryPolicy attaches the policy to ctx.
+func WithHistoryPolicy(ctx context.Context, p HistoryPolicyValue) context.Context {
+	return context.WithValue(ctx, ctxKeyHistoryPolicy{}, p)
+}
+
+// HistoryPolicy returns the policy from ctx. Zero value = no access.
+func HistoryPolicy(ctx context.Context) HistoryPolicyValue {
+	v, _ := ctx.Value(ctxKeyHistoryPolicy{}).(HistoryPolicyValue)
+	return v
+}
+
 // Execute looks up the named tool and runs it. Unknown tool names consult
 // the optional Fallback before returning the standard "tool not found"
 // error result (the model can self-correct on the error result; we never

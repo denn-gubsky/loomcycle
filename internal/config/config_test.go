@@ -713,9 +713,10 @@ agents:
 	if def.MaxTokens != 24576 {
 		t.Errorf("MaxTokens = %d, want 24576 (yaml override)", def.MaxTokens)
 	}
-	wantTools := []string{"Read", "Edit"}
-	if len(def.AllowedTools) != 2 || def.AllowedTools[0] != "Read" || def.AllowedTools[1] != "Edit" {
-		t.Errorf("AllowedTools = %v, want %v (yaml override)", def.AllowedTools, wantTools)
+	// v0.8.7 default-add: Context appended automatically.
+	wantTools := []string{"Read", "Edit", "Context"}
+	if len(def.AllowedTools) != 3 || def.AllowedTools[0] != "Read" || def.AllowedTools[1] != "Edit" || def.AllowedTools[2] != "Context" {
+		t.Errorf("AllowedTools = %v, want %v (yaml override + Context auto-add)", def.AllowedTools, wantTools)
 	}
 	if def.SystemPrompt != "prompt body\n" {
 		t.Errorf("SystemPrompt = %q, want body from MD", def.SystemPrompt)
@@ -1006,11 +1007,11 @@ agents:
 		t.Fatalf("Load: %v", err)
 	}
 	got := cfg.Agents["narrow"].AllowedTools
-	if got == nil {
-		t.Errorf("AllowedTools = nil; expected non-nil empty slice (yaml [] should override discovered)")
-	}
-	if len(got) != 0 {
-		t.Errorf("AllowedTools = %v; expected empty slice (yaml [] should zero out discovered list)", got)
+	// v0.8.7 default-add: empty-list yaml override clears the
+	// discovered list, then Context is appended by the default-add
+	// pass — so [Context] is the expected post-load shape, not [].
+	if len(got) != 1 || got[0] != "Context" {
+		t.Errorf("AllowedTools = %v; expected [Context] (yaml [] cleared discovered + Context auto-added)", got)
 	}
 }
 
@@ -1202,5 +1203,165 @@ agents:
 	}
 	if len(cfg.UserTiers) != 0 {
 		t.Errorf("UserTiers len = %d; want 0 (block absent)", len(cfg.UserTiers))
+	}
+}
+
+// ---- v0.8.7 Context default-add ----
+
+// TestContextAutoAddedToAllowedTools: every agent gets Context
+// appended to allowed_tools at config-load.
+func TestContextAutoAddedToAllowedTools(t *testing.T) {
+	tmp := t.TempDir()
+	yamlPath := filepath.Join(tmp, "c.yaml")
+	if err := os.WriteFile(yamlPath, []byte(`
+defaults: { provider: anthropic, model: claude-sonnet-4-6 }
+agents:
+  worker:
+    model: claude-sonnet-4-6
+    allowed_tools: [Read]
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(yamlPath)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	def := cfg.Agents["worker"]
+	hasContext := false
+	for _, tool := range def.AllowedTools {
+		if tool == "Context" {
+			hasContext = true
+			break
+		}
+	}
+	if !hasContext {
+		t.Errorf("Context not auto-added to allowed_tools; got %v", def.AllowedTools)
+	}
+}
+
+// TestContextAutoAddSkippedWhenDisabled: agent with
+// `disable_context: true` does NOT get Context appended.
+func TestContextAutoAddSkippedWhenDisabled(t *testing.T) {
+	tmp := t.TempDir()
+	yamlPath := filepath.Join(tmp, "c.yaml")
+	if err := os.WriteFile(yamlPath, []byte(`
+defaults: { provider: anthropic, model: claude-sonnet-4-6 }
+agents:
+  airgapped:
+    model: claude-sonnet-4-6
+    allowed_tools: [Read]
+    disable_context: true
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(yamlPath)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	def := cfg.Agents["airgapped"]
+	for _, tool := range def.AllowedTools {
+		if tool == "Context" {
+			t.Errorf("Context auto-added despite disable_context=true; got %v", def.AllowedTools)
+		}
+	}
+}
+
+// PR 3 review fix: case-insensitive duplicate-check. Operator-typed
+// lowercase `context` in yaml should not cause a `[context, Context]`
+// double-add (which would confuse the case-sensitive runtime
+// dispatcher).
+func TestContextNotDoubleAddedCaseInsensitive(t *testing.T) {
+	tmp := t.TempDir()
+	yamlPath := filepath.Join(tmp, "c.yaml")
+	if err := os.WriteFile(yamlPath, []byte(`
+defaults: { provider: anthropic, model: claude-sonnet-4-6 }
+agents:
+  lower:
+    model: claude-sonnet-4-6
+    allowed_tools: [Read, context]
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(yamlPath)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	def := cfg.Agents["lower"]
+	count := 0
+	for _, tool := range def.AllowedTools {
+		if strings.EqualFold(tool, "Context") {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Errorf("Context appears %d times (case-insensitive); want exactly 1 — got %v", count, def.AllowedTools)
+	}
+}
+
+// TestContextNotDoubleAdded: agent already listing Context doesn't
+// see it duplicated.
+func TestContextNotDoubleAdded(t *testing.T) {
+	tmp := t.TempDir()
+	yamlPath := filepath.Join(tmp, "c.yaml")
+	if err := os.WriteFile(yamlPath, []byte(`
+defaults: { provider: anthropic, model: claude-sonnet-4-6 }
+agents:
+  explicit:
+    model: claude-sonnet-4-6
+    allowed_tools: [Read, Context]
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(yamlPath)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	def := cfg.Agents["explicit"]
+	count := 0
+	for _, tool := range def.AllowedTools {
+		if tool == "Context" {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Errorf("Context appears %d times; want exactly 1", count)
+	}
+}
+
+// TestHistoryScopeValidation: closed set + named:<n> prefix.
+func TestHistoryScopeValidation(t *testing.T) {
+	tmp := t.TempDir()
+	yamlPath := filepath.Join(tmp, "c.yaml")
+	if err := os.WriteFile(yamlPath, []byte(`
+defaults: { provider: anthropic, model: claude-sonnet-4-6 }
+agents:
+  bad:
+    model: claude-sonnet-4-6
+    allowed_tools: [Read]
+    history_scope: [nonsense]
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Load(yamlPath)
+	if err == nil || !strings.Contains(err.Error(), "history_scope") {
+		t.Errorf("expected history_scope validation error; got %v", err)
+	}
+}
+
+func TestHistoryScopeAcceptsValid(t *testing.T) {
+	tmp := t.TempDir()
+	yamlPath := filepath.Join(tmp, "c.yaml")
+	if err := os.WriteFile(yamlPath, []byte(`
+defaults: { provider: anthropic, model: claude-sonnet-4-6 }
+agents:
+  good:
+    model: claude-sonnet-4-6
+    allowed_tools: [Read]
+    history_scope: [self, any, "named:friend"]
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(yamlPath); err != nil {
+		t.Errorf("Load: %v", err)
 	}
 }

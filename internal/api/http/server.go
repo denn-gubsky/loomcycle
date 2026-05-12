@@ -345,6 +345,12 @@ func (s *Server) substratePoliciesForAgent(agentDef config.AgentDef, selfName st
 		}
 }
 
+// historyPolicyForAgent returns the v0.8.7 Context.history scope policy
+// for one agent. Default-deny shape: empty Scopes = no access.
+func (s *Server) historyPolicyForAgent(agentDef config.AgentDef) tools.HistoryPolicyValue {
+	return tools.HistoryPolicyValue{Scopes: agentDef.HistoryScope}
+}
+
 // applyAgentDefOverlay overlays the v0.8.5 agent_defs.definition JSON
 // onto a static cfg.Agents entry, producing the effective AgentDef
 // for one sub-run. Mirrors the mutable-subset list maintained by the
@@ -730,6 +736,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	adPolicy, evPolicy := s.substratePoliciesForAgent(agentDef, effectiveAgentName)
 	loopCtx = tools.WithAgentDefPolicy(loopCtx, adPolicy)
 	loopCtx = tools.WithEvaluationPolicy(loopCtx, evPolicy)
+	loopCtx = tools.WithHistoryPolicy(loopCtx, s.historyPolicyForAgent(agentDef))
 
 	heartbeat := s.makeHeartbeat(runID)
 
@@ -1375,6 +1382,7 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 	adPolicy, evPolicy := s.substratePoliciesForAgent(agentDef, req.Agent)
 	loopCtx = tools.WithAgentDefPolicy(loopCtx, adPolicy)
 	loopCtx = tools.WithEvaluationPolicy(loopCtx, evPolicy)
+	loopCtx = tools.WithHistoryPolicy(loopCtx, s.historyPolicyForAgent(agentDef))
 
 	// Heartbeat hook: each loop iteration updates last_heartbeat_at so a
 	// future sweeper can detect crashed processes (no heartbeat for > N
@@ -1662,6 +1670,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	adPolicy, evPolicy := s.substratePoliciesForAgent(agentDef, sess.Agent)
 	loopCtx = tools.WithAgentDefPolicy(loopCtx, adPolicy)
 	loopCtx = tools.WithEvaluationPolicy(loopCtx, evPolicy)
+	loopCtx = tools.WithHistoryPolicy(loopCtx, s.historyPolicyForAgent(agentDef))
 	fbPolicy, fbReResolve := s.fallbackForRun(sess.Agent, body.UserTier)
 	loopRes, runErr := loop.Run(loopCtx, loop.RunOptions{
 		Provider:        provider,
@@ -2192,6 +2201,7 @@ func (s *Server) runSubAgent(ctx context.Context, name string, prompt string, de
 	subADPolicy, subEvPolicy := s.substratePoliciesForAgent(def, name)
 	subCtx = tools.WithAgentDefPolicy(subCtx, subADPolicy)
 	subCtx = tools.WithEvaluationPolicy(subCtx, subEvPolicy)
+	subCtx = tools.WithHistoryPolicy(subCtx, s.historyPolicyForAgent(def))
 
 	subHeartbeat := s.makeHeartbeat(subRunID)
 
