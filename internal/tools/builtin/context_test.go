@@ -623,3 +623,189 @@ func TestContextTool_EvaluationsRefusesWithoutStore(t *testing.T) {
 		t.Fatal("evaluations without Store should refuse")
 	}
 }
+
+// ---- channels / history (PR 3) ----
+
+func TestContextTool_ChannelsListsAccessible(t *testing.T) {
+	tool, _, ctx, _, _, _ := substrateFixture(t)
+	chCtx := tools.WithChannelPolicy(ctx, tools.ChannelPolicyValue{
+		Publish:   []string{"findings", "findings/*"},
+		Subscribe: []string{"findings", "alerts"},
+		Channels: map[string]tools.ChannelDef{
+			"findings": {Name: "findings", Scope: "agent", Semantic: "queue"},
+			"alerts":   {Name: "alerts", Scope: "global", DefaultTTL: 3600},
+		},
+	})
+	res, _ := tool.Execute(chCtx, json.RawMessage(`{"op":"channels"}`))
+	if res.IsError {
+		t.Fatalf("channels: %s", res.Text)
+	}
+	out := decodeResult(t, res.Text)
+	if out["count"].(float64) != 2 {
+		t.Errorf("count = %v, want 2", out["count"])
+	}
+	// Wildcards surface separately.
+	w := out["publish_wildcards"].([]any)
+	if len(w) != 1 || w[0].(string) != "findings/*" {
+		t.Errorf("publish_wildcards = %v, want [findings/*]", w)
+	}
+	// Per-channel bools.
+	got := out["channels"].([]any)
+	for _, c := range got {
+		m := c.(map[string]any)
+		switch m["name"].(string) {
+		case "findings":
+			if !m["publish"].(bool) || !m["subscribe"].(bool) {
+				t.Errorf("findings: publish=%v subscribe=%v, want true/true", m["publish"], m["subscribe"])
+			}
+		case "alerts":
+			if m["publish"].(bool) || !m["subscribe"].(bool) {
+				t.Errorf("alerts: publish=%v subscribe=%v, want false/true", m["publish"], m["subscribe"])
+			}
+		}
+	}
+}
+
+func TestContextTool_HistorySelfScope(t *testing.T) {
+	tool, s, ctx, agentName, _, _ := substrateFixture(t)
+	// Seed a real run + an event under THIS caller's agent_id.
+	sess, _ := s.CreateSession(context.Background(), "t", agentName, "alice")
+	run, _ := s.CreateRun(context.Background(), sess.ID, store.RunIdentity{AgentID: "a_caller", UserID: "alice"})
+	_ = s.AppendEvent(context.Background(), run.ID, "text", []byte(`{"text":"hello"}`))
+
+	histCtx := tools.WithRunIdentity(ctx, tools.RunIdentityValue{AgentID: "a_caller", UserID: "alice"})
+	histCtx = tools.WithHistoryPolicy(histCtx, tools.HistoryPolicyValue{Scopes: []string{"self"}})
+
+	res, _ := tool.Execute(histCtx, json.RawMessage(`{"op":"history"}`))
+	if res.IsError {
+		t.Fatalf("history: %s", res.Text)
+	}
+	out := decodeResult(t, res.Text)
+	if out["agent_id"] != "a_caller" {
+		t.Errorf("agent_id = %v, want a_caller", out["agent_id"])
+	}
+	if count := out["count"].(float64); count < 1 {
+		t.Errorf("count = %v, want >= 1", count)
+	}
+}
+
+func TestContextTool_HistoryRefusesOtherAgentUnderSelfScope(t *testing.T) {
+	tool, s, ctx, agentName, _, _ := substrateFixture(t)
+	sess, _ := s.CreateSession(context.Background(), "t", agentName, "alice")
+	_, _ = s.CreateRun(context.Background(), sess.ID, store.RunIdentity{AgentID: "a_other", UserID: "alice"})
+
+	histCtx := tools.WithRunIdentity(ctx, tools.RunIdentityValue{AgentID: "a_caller"})
+	histCtx = tools.WithHistoryPolicy(histCtx, tools.HistoryPolicyValue{Scopes: []string{"self"}})
+
+	res, _ := tool.Execute(histCtx, json.RawMessage(`{"op":"history","agent_id":"a_other"}`))
+	if !res.IsError {
+		t.Fatalf("history of other agent under self scope should refuse; got %s", res.Text)
+	}
+	if !strings.Contains(res.Text, "scope check") {
+		t.Errorf("error should mention scope check; got %q", res.Text)
+	}
+}
+
+func TestContextTool_HistoryAnyScopeAllowsOther(t *testing.T) {
+	tool, s, ctx, agentName, _, _ := substrateFixture(t)
+	sess, _ := s.CreateSession(context.Background(), "t", agentName, "alice")
+	run, _ := s.CreateRun(context.Background(), sess.ID, store.RunIdentity{AgentID: "a_other", UserID: "alice"})
+	_ = s.AppendEvent(context.Background(), run.ID, "text", []byte(`{"text":"hi"}`))
+
+	histCtx := tools.WithRunIdentity(ctx, tools.RunIdentityValue{AgentID: "a_caller"})
+	histCtx = tools.WithHistoryPolicy(histCtx, tools.HistoryPolicyValue{Scopes: []string{"any"}})
+
+	res, _ := tool.Execute(histCtx, json.RawMessage(`{"op":"history","agent_id":"a_other"}`))
+	if res.IsError {
+		t.Fatalf("history under `any` scope should succeed; got %s", res.Text)
+	}
+}
+
+func TestContextTool_HistoryRefusesEmptyScopes(t *testing.T) {
+	tool, _, ctx, _, _, _ := substrateFixture(t)
+	histCtx := tools.WithRunIdentity(ctx, tools.RunIdentityValue{AgentID: "a_caller"})
+	// No WithHistoryPolicy attached.
+	res, _ := tool.Execute(histCtx, json.RawMessage(`{"op":"history"}`))
+	if !res.IsError {
+		t.Fatal("history without any scope should refuse (default-deny)")
+	}
+}
+
+func TestContextTool_HistoryRefusesWithoutStore(t *testing.T) {
+	tool := &Context{}
+	ctx := tools.WithRunIdentity(context.Background(), tools.RunIdentityValue{AgentID: "a"})
+	ctx = tools.WithHistoryPolicy(ctx, tools.HistoryPolicyValue{Scopes: []string{"any"}})
+	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"history"}`))
+	if !res.IsError {
+		t.Fatal("history without Store should refuse")
+	}
+}
+
+// ---- permissions surfaces history_scope ----
+
+func TestContextTool_PermissionsSurfacesHistoryScope(t *testing.T) {
+	tool, ctx := contextFixture(t)
+	ctx = tools.WithHistoryPolicy(ctx, tools.HistoryPolicyValue{Scopes: []string{"self", "any"}})
+	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"permissions"}`))
+	out := decodeResult(t, res.Text)
+	scopes := out["history_scope"].([]any)
+	if len(scopes) != 2 || scopes[0] != "self" || scopes[1] != "any" {
+		t.Errorf("history_scope = %v, want [self any]", scopes)
+	}
+}
+
+// PR 3 review fix: truncated must be true ONLY when there are more
+// filter-matching events than the limit allows. Old code compared
+// limit to raw transcript size — false positive when event_types
+// filter excluded enough events that matchCount <= limit.
+func TestContextTool_HistoryTruncatedRespectsTypeFilter(t *testing.T) {
+	tool, s, ctx, agentName, _, _ := substrateFixture(t)
+	sess, _ := s.CreateSession(context.Background(), "t", agentName, "alice")
+	run, _ := s.CreateRun(context.Background(), sess.ID, store.RunIdentity{AgentID: "a_filtered", UserID: "alice"})
+	// Mix: 3 text events + 50 usage events. With a `text` filter +
+	// limit=10, only 3 events match — truncated MUST be false.
+	for i := 0; i < 3; i++ {
+		_ = s.AppendEvent(context.Background(), run.ID, "text", []byte(`{"text":"hi"}`))
+	}
+	for i := 0; i < 50; i++ {
+		_ = s.AppendEvent(context.Background(), run.ID, "usage", []byte(`{"tokens":1}`))
+	}
+
+	histCtx := tools.WithRunIdentity(ctx, tools.RunIdentityValue{AgentID: "a_filtered"})
+	histCtx = tools.WithHistoryPolicy(histCtx, tools.HistoryPolicyValue{Scopes: []string{"any"}})
+
+	res, _ := tool.Execute(histCtx, json.RawMessage(`{"op":"history","agent_id":"a_filtered","event_types":["text"],"limit":10}`))
+	if res.IsError {
+		t.Fatalf("history: %s", res.Text)
+	}
+	out := decodeResult(t, res.Text)
+	if c := out["count"].(float64); c != 3 {
+		t.Errorf("count = %v, want 3 (only text events match)", c)
+	}
+	if out["truncated"].(bool) {
+		t.Error("truncated = true; want false (only 3 matching events, all returned)")
+	}
+}
+
+// Same fixture but with limit=2 — now 3 matches exceeds limit, so
+// truncated MUST be true.
+func TestContextTool_HistoryTruncatedTrueWhenMatchesExceedLimit(t *testing.T) {
+	tool, s, ctx, agentName, _, _ := substrateFixture(t)
+	sess, _ := s.CreateSession(context.Background(), "t", agentName, "alice")
+	run, _ := s.CreateRun(context.Background(), sess.ID, store.RunIdentity{AgentID: "a_match", UserID: "alice"})
+	for i := 0; i < 3; i++ {
+		_ = s.AppendEvent(context.Background(), run.ID, "text", []byte(`{"text":"hi"}`))
+	}
+
+	histCtx := tools.WithRunIdentity(ctx, tools.RunIdentityValue{AgentID: "a_match"})
+	histCtx = tools.WithHistoryPolicy(histCtx, tools.HistoryPolicyValue{Scopes: []string{"any"}})
+
+	res, _ := tool.Execute(histCtx, json.RawMessage(`{"op":"history","agent_id":"a_match","event_types":["text"],"limit":2}`))
+	out := decodeResult(t, res.Text)
+	if c := out["count"].(float64); c != 2 {
+		t.Errorf("count = %v, want 2 (limit)", c)
+	}
+	if !out["truncated"].(bool) {
+		t.Error("truncated = false; want true (3 matches > limit 2)")
+	}
+}
