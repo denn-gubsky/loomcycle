@@ -1083,6 +1083,14 @@ func (s *Store) ChannelPublish(ctx context.Context, msg store.ChannelMessage, ma
 		// SQLite is single-writer (WAL) so the race doesn't occur,
 		// but the guard adds no cost and keeps the two backends'
 		// SQL identical.
+		//
+		// v0.8.6: the trim subquery orders by (visible_at, id) DESC
+		// to match the read path's delivery order. With pure id DESC
+		// (= publish-time order) a deferred message published earlier
+		// but with future visible_at would sort BEFORE a later
+		// immediate publish — the trim would drop the deferred row
+		// silently, even though it represents pending work the
+		// subscriber will eventually want to see.
 		res, err := tx.ExecContext(ctx,
 			`DELETE FROM channel_messages
 			 WHERE channel = ? AND scope = ? AND scope_id = ?
@@ -1090,7 +1098,7 @@ func (s *Store) ChannelPublish(ctx context.Context, msg store.ChannelMessage, ma
 			   AND id NOT IN (
 			     SELECT id FROM channel_messages
 			      WHERE channel = ? AND scope = ? AND scope_id = ?
-			      ORDER BY id DESC
+			      ORDER BY visible_at DESC, id DESC
 			      LIMIT ?
 			   )`,
 			msg.Channel, string(msg.Scope), msg.ScopeID, msg.ID,

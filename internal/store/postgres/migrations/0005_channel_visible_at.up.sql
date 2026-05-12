@@ -23,6 +23,11 @@
 -- preserving. Subscribers replay from the oldest non-expired message
 -- on first subscribe after the upgrade — operator note in the
 -- release notes.
+--
+-- Transactionality: golang-migrate's pgx5 driver wraps each
+-- migration file in a transaction by default (no `x-no-tx-wrap`
+-- param on our DSN). The TRUNCATE + ALTER + UPDATE below are
+-- therefore atomic — no in-flight reader sees a partial state.
 
 TRUNCATE TABLE channel_cursors;
 

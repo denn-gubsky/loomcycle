@@ -849,6 +849,12 @@ func (s *Store) ChannelPublish(ctx context.Context, msg store.ChannelMessage, ma
 		// concurrent publisher whose trim races). The next trim
 		// converges. This is the right safety property: no message
 		// that was reported as published is ever silently lost.
+		// v0.8.6: ORDER BY (visible_at, id) DESC to match the read
+		// path's delivery order — see the sqlite adapter for the
+		// full rationale. With pure id DESC, a deferred message
+		// published earlier but with a future visible_at would sort
+		// BEFORE a later immediate publish; the trim would silently
+		// drop the deferred row before it became deliverable.
 		tag, err := tx.Exec(ctx,
 			`DELETE FROM channel_messages
 			 WHERE channel = $1 AND scope = $2 AND scope_id = $3
@@ -856,7 +862,7 @@ func (s *Store) ChannelPublish(ctx context.Context, msg store.ChannelMessage, ma
 			   AND id NOT IN (
 			     SELECT id FROM channel_messages
 			      WHERE channel = $1 AND scope = $2 AND scope_id = $3
-			      ORDER BY id DESC
+			      ORDER BY visible_at DESC, id DESC
 			      LIMIT $4
 			   )`,
 			msg.Channel, string(msg.Scope), msg.ScopeID, maxMessages, msg.ID,

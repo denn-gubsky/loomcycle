@@ -95,6 +95,23 @@ func DecodeChannelCursor(token string) (visibleAt time.Time, msgID string, fromO
 	if msgID == "" {
 		return time.Time{}, "", false, fmt.Errorf("invalid channel cursor %q: empty msg_id", token)
 	}
+	// msg_id format check: MintChannelMessageID produces exactly
+	// `msg_<16hex-unixNanos><8hex-rand>` = 4 + 24 = 28 chars. Without
+	// this guard, a cursor like `cur_<vh>_msg_<hex>_junk` would pass
+	// the prefix check and then be stored verbatim via ChannelAck —
+	// later read queries comparing tuple (visible_at, msg_id) against
+	// the bogus suffix would find no rows and the subscriber would
+	// silently stall forever. Accept only the well-formed shape.
+	const msgIDLen = 4 + 16 + 8 // "msg_" + nanos-hex + rand-hex
+	if len(msgID) != msgIDLen || msgID[:4] != "msg_" {
+		return time.Time{}, "", false, fmt.Errorf("invalid channel cursor %q: malformed msg_id %q (want `msg_<24hex>`)", token, msgID)
+	}
+	for i := 4; i < len(msgID); i++ {
+		c := msgID[i]
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
+			return time.Time{}, "", false, fmt.Errorf("invalid channel cursor %q: msg_id contains non-hex char", token)
+		}
+	}
 	var nanos uint64
 	if _, err := fmt.Sscanf(hex16, "%016x", &nanos); err != nil {
 		return time.Time{}, "", false, fmt.Errorf("invalid channel cursor %q: timestamp parse: %w", token, err)
