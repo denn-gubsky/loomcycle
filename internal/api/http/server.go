@@ -19,6 +19,7 @@ import (
 
 	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/cancel"
+	"github.com/denn-gubsky/loomcycle/internal/channels"
 	"github.com/denn-gubsky/loomcycle/internal/concurrency"
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/hooks"
@@ -94,6 +95,11 @@ type Server struct {
 	// the MCP pool is built; nil-safe for tests + unit harnesses
 	// that don't exercise MCP at all. See internal/tools/mcp/lazy.go.
 	mcpFallback tools.FallbackFunc
+
+	// systemPublisher backs the v0.8.6 POST /v1/_channels/_system/...
+	// admin endpoint. Nil = endpoint refuses every request with a
+	// "system publisher not wired" 503. Set via SetSystemPublisher.
+	systemPublisher channels.SystemPublisher
 }
 
 // New constructs a Server. If st is non-nil, every run is recorded as a
@@ -135,6 +141,14 @@ func New(cfg *config.Config, pr ProviderResolver, builtinTools []tools.Tool, sem
 // cmd/loomcycle/main.go after the MCP pool is built.
 func (s *Server) SetMCPFallback(fn tools.FallbackFunc) {
 	s.mcpFallback = fn
+}
+
+// SetSystemPublisher installs the v0.8.6 system-channels publisher.
+// Without this call, POST /v1/_channels/_system/{name}/publish
+// refuses every request with 503. Wired from cmd/loomcycle/main.go
+// after the Store is open + the Bus/Scheduler are constructed.
+func (s *Server) SetSystemPublisher(p channels.SystemPublisher) {
+	s.systemPublisher = p
 }
 
 // newDispatcher centralises Dispatcher construction so the three call
@@ -439,6 +453,7 @@ func (s *Server) channelPolicyForAgent(agentDef config.AgentDef) tools.ChannelPo
 			DefaultTTL:  ch.DefaultTTL,
 			MaxMessages: ch.MaxMessages,
 			Semantic:    ch.Semantic,
+			Publisher:   ch.Publisher, // v0.8.6: agent publish refusal when "system"
 		}
 	}
 	return tools.ChannelPolicyValue{
@@ -830,6 +845,18 @@ func (s *Server) Mux() http.Handler {
 	// user_ids that have runs in the store. Bearer-authed; drives
 	// the Web UI's run-list user dropdown.
 	mux.Handle("GET /v1/_users", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleListUsers))))
+	// v0.8.6 system channels admin endpoint. Bearer-authed publish to
+	// _system/* channels. Used by external monitoring (push alerts in
+	// via webhook), ops dashboards (operator-issued alarms), and
+	// manual debugging (operator publishes from CLI/curl).
+	//
+	// {name...} is the multi-segment wildcard (Go's http.ServeMux
+	// requires `...` only at the END of the pattern). Handler
+	// validates the `_system/` prefix and rejects anything else with
+	// 403, so non-system-channel admin publishes are not enabled
+	// here. Future verbs (GET to peek, etc.) can use the same path
+	// with different methods.
+	mux.Handle("POST /v1/_channels/{name...}", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleSystemChannelPublish))))
 	// v0.8.0 Memory admin — read-only browsing of stored Memory rows.
 	// Drives the Web UI's Memory page. Bearer-authed; same admin
 	// posture as /v1/_users / /v1/_resolver.
@@ -882,6 +909,133 @@ func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.Write([]byte(`{"ok":true}`))
 }
+
+// systemChannelPublishRequest is the body shape for the v0.8.6
+// admin endpoint. payload is required; deliver_at is optional
+// (RFC3339; in-past treated as immediate, same as the Channel tool).
+type systemChannelPublishRequest struct {
+	Payload   json.RawMessage `json:"payload"`
+	DeliverAt string          `json:"deliver_at,omitempty"`
+}
+
+// handleSystemChannelPublish accepts bearer-authed publishes to
+// `_system/*` channels. Use cases per the system-channels RFC:
+//
+//   - External monitoring → push alerts via webhook
+//   - Ops dashboards → operator-issued alarms
+//   - Manual debugging (curl) → operator-triggered publishes
+//
+// The endpoint enforces:
+//   - Channel name MUST start with `_system/` (prefix is the wire
+//     contract; without this guard the admin endpoint would also
+//     be a bypass for regular agent channels' ACLs).
+//   - Channel MUST be declared in operator yaml (no auto-creation).
+//   - Bearer auth via the existing middleware (already enforced
+//     before this handler runs).
+//
+// published_by_user_id is set to the bearer's resolved user_id if
+// one is in context; otherwise falls back to "_admin" (operator
+// used a raw bearer with no user mapping).
+func (s *Server) handleSystemChannelPublish(w http.ResponseWriter, r *http.Request) {
+	if s.systemPublisher == nil {
+		writeJSONError(w, http.StatusServiceUnavailable, "system_publisher_unwired", "system publisher not wired (operator misconfiguration)")
+		return
+	}
+
+	name := r.PathValue("name")
+	if name == "" {
+		writeJSONError(w, http.StatusBadRequest, "missing_name", "missing channel name")
+		return
+	}
+	// Validate `_system/` prefix — the admin endpoint is only for
+	// system channels (operator-authored, bearer-authed). Agent
+	// channels are published via the Channel tool, not here.
+	if !strings.HasPrefix(name, "_system/") || strings.Contains(name, "..") {
+		writeJSONError(w, http.StatusForbidden, "non_system_channel", fmt.Sprintf("admin publish is only valid for `_system/*` channels; got %q", name))
+		return
+	}
+	fullName := name
+
+	def, ok := s.cfg.Channels[fullName]
+	if !ok {
+		writeJSONError(w, http.StatusNotFound, "channel_not_declared", fmt.Sprintf("channel %q not declared in operator yaml", fullName))
+		return
+	}
+
+	var body systemChannelPublishRequest
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid_body", fmt.Sprintf("invalid request body: %s", err))
+		return
+	}
+	if len(body.Payload) == 0 {
+		writeJSONError(w, http.StatusBadRequest, "missing_payload", "missing required field: payload")
+		return
+	}
+	if !json.Valid(body.Payload) {
+		writeJSONError(w, http.StatusBadRequest, "invalid_payload", "payload is not valid JSON")
+		return
+	}
+	if cap := s.cfg.Env.ChannelsMaxValueBytes; cap > 0 && len(body.Payload) > cap {
+		writeJSONError(w, http.StatusRequestEntityTooLarge, "payload_too_large", fmt.Sprintf("payload (%d bytes) exceeds max %d", len(body.Payload), cap))
+		return
+	}
+
+	var deliverAt time.Time
+	if body.DeliverAt != "" {
+		parsed, err := time.Parse(time.RFC3339, body.DeliverAt)
+		if err != nil {
+			writeJSONError(w, http.StatusBadRequest, "invalid_deliver_at", fmt.Sprintf("invalid deliver_at %q: %s", body.DeliverAt, err))
+			return
+		}
+		deliverAt = parsed
+	}
+
+	// Resolve scope_id from the channel's declared scope. System
+	// channels typically use scope=global (one shared cursor) but
+	// scope=user is valid for per-user system notifications. agent
+	// scope is rejected — agents aren't the audience for system
+	// channels and the scope wouldn't be meaningfully resolvable
+	// from an admin context anyway.
+	var scope store.MemoryScope
+	var scopeID string
+	switch def.Scope {
+	case "global":
+		scope, scopeID = store.MemoryScopeGlobal, ""
+	case "user":
+		writeJSONError(w, http.StatusNotImplemented, "scope_user_unsupported", "scope=user system channel admin publish is not yet supported (use the agent-tool publish path or scope=global)")
+		return
+	case "agent":
+		writeJSONError(w, http.StatusBadRequest, "scope_agent_invalid", "scope=agent is not valid for system channels (use global or user)")
+		return
+	default:
+		writeJSONError(w, http.StatusInternalServerError, "scope_unknown", fmt.Sprintf("channel %q has unknown scope %q", fullName, def.Scope))
+		return
+	}
+
+	// Audit attribution. tools.RunIdentity isn't on r.Context() (this
+	// isn't a run-bound request), so we fall back to "_admin".
+	publishedBy := "_admin"
+
+	msg, err := s.systemPublisher.Publish(r.Context(), fullName, scope, scopeID,
+		body.Payload, deliverAt, publishedBy, def.MaxMessages, def.DefaultTTL)
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "publish_failed", fmt.Sprintf("publish failed: %s", err))
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	resp := map[string]any{
+		"msg_id":     msg.ID,
+		"channel":    fullName,
+		"created_at": msg.PublishedAt.UTC().Format(time.RFC3339Nano),
+	}
+	if !msg.VisibleAt.IsZero() && !msg.VisibleAt.Equal(msg.PublishedAt) {
+		resp["visible_at"] = msg.VisibleAt.UTC().Format(time.RFC3339Nano)
+	}
+	_ = json.NewEncoder(w).Encode(resp)
+}
+
 
 // runRequest is the JSON body shape for POST /v1/runs.
 type runRequest struct {

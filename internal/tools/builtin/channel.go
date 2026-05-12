@@ -224,6 +224,18 @@ func (c *Channel) execPublish(ctx context.Context, policy tools.ChannelPolicyVal
 	if err != nil {
 		return errResult(err.Error()), nil
 	}
+	// v0.8.6: refuse agent publishes on `publisher: system` channels
+	// AND on `_system/*` channels (prefix is reserved for loomcycle-
+	// authoritative signals regardless of Publisher value). The admin
+	// endpoint and internal Go publisher bypass this check by going
+	// through SystemPublisher / Store.ChannelPublish directly, not
+	// through this tool layer.
+	if def.Publisher == "system" {
+		return errResult(fmt.Sprintf("publish: channel %q is `publisher: system` — agents may not publish (use admin endpoint POST /v1/_channels/_system/%s/publish or wait for internal publisher)", in.Channel, in.Channel)), nil
+	}
+	if strings.HasPrefix(in.Channel, "_system/") {
+		return errResult(fmt.Sprintf("publish: channel %q starts with `_system/` (reserved prefix) — agents may not publish to system channels", in.Channel)), nil
+	}
 	if len(in.Value) == 0 {
 		return errResult("publish: missing required field: value"), nil
 	}

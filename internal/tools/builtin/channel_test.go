@@ -513,3 +513,58 @@ func TestChannelTool_AckRejectsLegacyCursorFormat(t *testing.T) {
 		t.Errorf("error should explain invalid cursor; got %q", res.Text)
 	}
 }
+
+// ---- v0.8.6 system-channels refusals ----
+
+func TestChannelTool_AgentRefusedOnPublisherSystemChannel(t *testing.T) {
+	tool, ctx, cleanup := channelFixture(t)
+	defer cleanup()
+
+	// Override policy with a `publisher: system` channel.
+	ctx = tools.WithChannelPolicy(ctx, tools.ChannelPolicyValue{
+		Publish:   []string{"_system/heartbeat-1m"},
+		Subscribe: []string{"_system/heartbeat-1m"},
+		Channels: map[string]tools.ChannelDef{
+			"_system/heartbeat-1m": {
+				Name:      "_system/heartbeat-1m",
+				Scope:     "global",
+				Publisher: "system",
+			},
+		},
+	})
+
+	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"publish","channel":"_system/heartbeat-1m","value":{}}`))
+	if !res.IsError {
+		t.Fatalf("expected refusal on publisher:system channel; got %s", res.Text)
+	}
+	if !strings.Contains(res.Text, "publisher: system") {
+		t.Errorf("error should mention publisher: system; got %q", res.Text)
+	}
+}
+
+func TestChannelTool_AgentRefusedOnSystemPrefix(t *testing.T) {
+	tool, ctx, cleanup := channelFixture(t)
+	defer cleanup()
+
+	// Even if the operator forgot to set publisher: system but
+	// declared a `_system/...` channel, the prefix itself blocks
+	// agent publishes.
+	ctx = tools.WithChannelPolicy(ctx, tools.ChannelPolicyValue{
+		Publish: []string{"_system/alarms/info"},
+		Channels: map[string]tools.ChannelDef{
+			"_system/alarms/info": {
+				Name:  "_system/alarms/info",
+				Scope: "global",
+				// Publisher empty — but the prefix should still refuse.
+			},
+		},
+	})
+
+	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"publish","channel":"_system/alarms/info","value":{}}`))
+	if !res.IsError {
+		t.Fatalf("expected refusal on _system/ prefix; got %s", res.Text)
+	}
+	if !strings.Contains(res.Text, "_system/") {
+		t.Errorf("error should mention _system/ prefix; got %q", res.Text)
+	}
+}

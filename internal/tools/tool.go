@@ -280,6 +280,10 @@ type ChannelDef struct {
 	DefaultTTL  int    // seconds; 0 = no default
 	MaxMessages int    // 0 = unbounded (overflow trim disabled)
 	Semantic    string // "queue" | "broadcast" (informational; storage shape identical)
+	// v0.8.6: when "system", agent publishes are refused; only the
+	// internal Go publisher and the admin endpoint may write. Empty =
+	// agents may publish (ACL permitting).
+	Publisher string
 }
 
 // WithChannelPolicy attaches the agent's resolved Channel policy to ctx.
