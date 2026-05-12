@@ -967,7 +967,12 @@ func (s *Server) handleSystemChannelPublish(w http.ResponseWriter, r *http.Reque
 		writeJSONError(w, http.StatusBadRequest, "invalid_body", fmt.Sprintf("invalid request body: %s", err))
 		return
 	}
-	if len(body.Payload) == 0 {
+	// `len(body.Payload) == 0` catches the missing-key case, but a
+	// caller sending `{"payload": null}` produces a 4-byte literal
+	// `[]byte("null")` — len > 0, json.Valid returns true — which
+	// would silently store a null payload. Explicitly reject the
+	// JSON-null literal so the contract "payload required" holds.
+	if len(body.Payload) == 0 || string(body.Payload) == "null" {
 		writeJSONError(w, http.StatusBadRequest, "missing_payload", "missing required field: payload")
 		return
 	}

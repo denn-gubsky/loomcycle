@@ -178,6 +178,27 @@ func TestSystemChannelPublish_MissingPayloadRefused(t *testing.T) {
 	}
 }
 
+// PR 2 review fix: `{"payload": null}` must be rejected. Without the
+// fix the JSON-null literal decoded into json.RawMessage as 4-byte
+// `"null"`, passing both `len > 0` and `json.Valid` — silently
+// storing a null payload despite the "payload is required" contract.
+func TestSystemChannelPublish_NullPayloadRefused(t *testing.T) {
+	srv, _, cleanup := systemChannelFixture(t)
+	defer cleanup()
+
+	body := `{"payload": null}`
+	req := authedRequest("POST", "/v1/_channels/_system/alarms/critical", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	srv.Mux().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "missing_payload") {
+		t.Errorf("response should signal missing_payload; got %s", rec.Body.String())
+	}
+}
+
 func TestSystemChannelPublish_UnauthorizedWithoutBearer(t *testing.T) {
 	srv, _, cleanup := systemChannelFixture(t)
 	defer cleanup()
