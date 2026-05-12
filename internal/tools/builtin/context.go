@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/denn-gubsky/loomcycle/internal/config"
+	"github.com/denn-gubsky/loomcycle/internal/help"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
@@ -57,21 +58,29 @@ type Context struct {
 	// a clear "not configured" error; the storage-agnostic ops (self /
 	// tools / doc / permissions) still work.
 	Store store.Store
+
+	// Help is the loaded topic registry — bundled defaults overlaid
+	// with operator-supplied topics from LOOMCYCLE_HELP_ROOT. nil =
+	// the `help` op refuses with "not configured" (e.g. a test
+	// fixture that didn't wire it).
+	Help *help.Set
 }
 
 const contextDescription = `Read-only runtime introspection. ` +
 	`Answers "what tools do I have? who am I? what permissions apply to me? ` +
-	`what other agents exist? what's my def's lineage and evaluation history?". ` +
-	`Operations: self, tools, doc, permissions, agents, lineage, evaluations ` +
-	`(more ops in later versions). ` +
+	`what other agents exist? what's my def's lineage and evaluation history? ` +
+	`what runtime concepts and recipes does loomcycle document?". ` +
+	`Operations: self, tools, doc, permissions, agents, lineage, evaluations, channels, history, help. ` +
 	`Always safe to call — no side effects, no storage writes, no network calls. ` +
 	`Useful for self-evolving agents that build their own task plans and want to inspect ` +
-	`their environment before deciding what to do.`
+	`their environment before deciding what to do. ` +
+	`Tip: start with op=help (no topic) to see the topic index, then op=help with topic=<name> ` +
+	`for narrative guidance on cross-cutting patterns like scopes, sub-agents, experimentation.`
 
 const contextInputSchema = `{
   "type": "object",
   "properties": {
-    "op":              {"type": "string", "enum": ["self","tools","doc","permissions","agents","lineage","evaluations","channels","history"], "description": "Which introspection op to run."},
+    "op":              {"type": "string", "enum": ["self","tools","doc","permissions","agents","lineage","evaluations","channels","history","help"], "description": "Which introspection op to run."},
     "name":            {"type": "string", "description": "doc only: the tool name to fetch detailed docs for."},
     "prefix":          {"type": "string", "description": "agents / channels: optional name prefix filter."},
     "def_id":          {"type": "string", "description": "lineage / evaluations: the agent_defs row id to inspect. Use Context.agents to discover def_ids first."},
@@ -79,7 +88,8 @@ const contextInputSchema = `{
     "include_lineage": {"type": "boolean", "description": "evaluations only: include ancestors' evaluations in the aggregate (default false)."},
     "agent_id":        {"type": "string", "description": "history only: target agent_id whose run history to fetch. Omitted = caller's own agent_id from ctx."},
     "event_types":     {"type": "array", "items": {"type": "string"}, "description": "history only: optional filter — return only events of these types (e.g. [\"text\",\"tool_call\"])."},
-    "limit":           {"type": "integer", "description": "history only: max events to return (default 100, cap 1000)."}
+    "limit":           {"type": "integer", "description": "history only: max events to return (default 100, cap 1000)."},
+    "topic":           {"type": "string", "description": "help only: the topic name to fetch detailed content for. Omitted = return the topic index (name + description for each available topic)."}
   },
   "required": ["op"],
   "additionalProperties": false
@@ -95,6 +105,7 @@ type contextInput struct {
 	AgentID        string   `json:"agent_id,omitempty"`
 	EventTypes     []string `json:"event_types,omitempty"`
 	Limit          int      `json:"limit,omitempty"`
+	Topic          string   `json:"topic,omitempty"`
 }
 
 // Name implements tools.Tool.
@@ -132,10 +143,12 @@ func (c *Context) Execute(ctx context.Context, raw json.RawMessage) (tools.Resul
 		return c.execChannels(ctx, in)
 	case "history":
 		return c.execHistory(ctx, in)
+	case "help":
+		return c.execHelp(ctx, in)
 	case "":
 		return errResult("missing required field: op"), nil
 	default:
-		return errResult(fmt.Sprintf("unknown op %q (must be one of: self, tools, doc, permissions, agents, lineage, evaluations, channels, history)", in.Op)), nil
+		return errResult(fmt.Sprintf("unknown op %q (must be one of: self, tools, doc, permissions, agents, lineage, evaluations, channels, history, help)", in.Op)), nil
 	}
 }
 
@@ -693,6 +706,50 @@ func hasHistoryScope(pol tools.HistoryPolicyValue, want string) bool {
 		}
 	}
 	return false
+}
+
+// ---- help ----
+
+func (c *Context) execHelp(_ context.Context, in contextInput) (tools.Result, error) {
+	if c.Help == nil {
+		return errResult("help: not configured (no Help registry; operator misconfiguration)"), nil
+	}
+	if in.Topic == "" {
+		// Index mode: return all topics' name + description +
+		// source. Body is intentionally OMITTED so the index stays
+		// compact — agents call back with topic=<name> for content.
+		type idxEntry struct {
+			Name        string `json:"name"`
+			Description string `json:"description"`
+			Source      string `json:"source"`
+		}
+		all := c.Help.All()
+		out := make([]idxEntry, 0, len(all))
+		for _, t := range all {
+			out = append(out, idxEntry{
+				Name:        t.Name,
+				Description: t.Description,
+				Source:      t.Source,
+			})
+		}
+		return okJSON(map[string]any{
+			"topics": out,
+			"count":  len(out),
+			"hint":   "Call help with topic=<name> to read a topic's full content.",
+		})
+	}
+	t, ok := c.Help.Get(in.Topic)
+	if !ok {
+		// Surface the index in the error so the model can self-
+		// correct without a second round-trip.
+		return errResult(fmt.Sprintf("help: topic %q not found (available: %s)", in.Topic, strings.Join(c.Help.Names(), ", "))), nil
+	}
+	return okJSON(map[string]any{
+		"name":        t.Name,
+		"description": t.Description,
+		"content":     t.Content,
+		"source":      t.Source,
+	})
 }
 
 var _ tools.Tool = (*Context)(nil)

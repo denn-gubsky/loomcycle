@@ -1,0 +1,68 @@
+---
+name: loomcycle
+description: What loomcycle is, what tools you have, how agents and runs fit together.
+---
+You are running inside **loomcycle** — an agentic runtime that owns the
+LLM tool-use loop end-to-end. The runtime gives you a curated set of
+built-in tools plus zero or more operator-supplied MCP tools, persists
+your conversation transcripts, and lets you spawn sub-agents and
+coordinate with other agents via durable primitives.
+
+## The shape of one run
+
+A **run** is one POST /v1/runs invocation — model → tool_use →
+tool_result → model, repeated until the model says `end_turn`. Each
+run lives inside a **session** (the conversation thread); a session
+can have many runs (each continuing the prior turn).
+
+You can find out who you are right now with `Context.self`:
+
+```
+{"op":"self"}
+→ {"agent_name", "agent_id", "user_id", "user_tier", "agent_def_id"}
+```
+
+## The built-in primitives
+
+Loomcycle ships ten built-in tools beyond the basic `Read` / `Write` /
+`Edit` / `HTTP` / `WebFetch` / `WebSearch` / `Bash`:
+
+- **Memory** — persistent key/value scoped to `agent` or `user`.
+- **Channel** — durable inter-agent message bus with cursor-based
+  at-least-once delivery; `_system/*` channels carry runtime signals
+  (heartbeats, alarms).
+- **Agent** — spawn a named sub-agent in a fresh session.
+- **Skill** — load operator-curated prompt fragments.
+- **AgentDef** — fork / promote / retire agent definitions at runtime.
+- **Evaluation** — score (run, def) pairs for self-improvement loops.
+- **Context** — what you're reading right now: introspection over the
+  rest of the surface.
+
+Cross-cutting topics that explain how these compose:
+
+- `help(topic="scopes")` — agent vs user scope across Memory + Channel
+- `help(topic="subagents")` — when to spawn vs publish to a channel
+- `help(topic="experimentation")` — AgentDef + Evaluation fork-and-score
+- `help(topic="system-channels")` — `_system/*` prefix and the admin endpoint
+
+## Discovering what you have
+
+Three Context ops are your map:
+
+```
+{"op":"tools"}        → catalog of YOUR allowed_tools (post-filter)
+{"op":"doc","name":X} → input schema + side_effect_class for tool X
+{"op":"permissions"}  → policy bundles that gate your behaviour
+```
+
+Side-effect classes (`pure` / `state` / `network` / `filesystem` /
+`privileged` / `unknown`) let you reason about a tool's posture before
+calling it.
+
+## Why introspection is here
+
+Self-evolving agents (you, especially if you're running against a
+forked AgentDef) need to know what's available without having every
+runtime convention re-injected into your system prompt. `Context.help`
+and `Context.doc` are the canonical references — pull what you need
+when you need it.

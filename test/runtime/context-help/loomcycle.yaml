@@ -1,0 +1,21 @@
+# test/runtime/context-help/loomcycle.yaml — v0.8.8 Context.help smoke.
+#
+# One agent (help-reader) exercises Context.help twice in one chained
+# run: once as the index (no topic), once with topic=scopes for the
+# detailed markdown body. Then writes a one-line summary.
+#
+# Provider: gemini (gemini-2.5-flash). Source .env.local for
+# GEMINI_API_KEY.
+
+provider_priority: [gemini]
+
+defaults:
+  provider: gemini
+  model: gemini-2.5-flash
+
+storage:
+  backend: sqlite
+
+concurrency:
+  max_concurrent_runs: 4
+  max_queue_depth: 8
