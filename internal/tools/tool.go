@@ -425,7 +425,10 @@ type ctxKeyHistoryPolicy struct{}
 //                     without a separate plumbing PR)
 //   - "descendants" — RESERVED (same reason)
 //   - "named:<n>"   — RESERVED (same reason)
-//   - "any"         — caller may read any agent's transcript
+//   - "any"         — UNRESTRICTED. Caller may read ANY agent's
+//                     transcript INCLUDING transcripts owned by
+//                     other users. Operator-trust grant; use only
+//                     for admin/debug agents.
 type HistoryPolicyValue struct {
 	Scopes []string
 }

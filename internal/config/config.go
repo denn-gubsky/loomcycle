@@ -353,7 +353,16 @@ type AgentDef struct {
 	//	"siblings"    — RESERVED (not yet active in v0.8.7 PR 3)
 	//	"descendants" — RESERVED
 	//	"named:<n>"   — RESERVED
-	//	"any"         — caller may read any agent's transcript
+	//	"any"         — UNRESTRICTED. Caller may read ANY agent's
+	//	                transcript INCLUDING transcripts owned by
+	//	                OTHER users in multi-tenant deployments. There
+	//	                is no user_id check today; `any` is a flat
+	//	                operator-trust grant. Use only for admin /
+	//	                debugging agents under operator control. For
+	//	                "caller may read my own + my children's
+	//	                transcripts" wait for siblings/descendants
+	//	                scopes to activate (needs RunIdentityValue
+	//	                ParentAgentID plumbing).
 	//
 	// Empty / unset = default-deny. Mirror of the substrate-scope
 	// pattern (agent_def_scopes, evaluation_scopes).
@@ -1147,7 +1156,13 @@ func addContextToolDefaults(cfg *Config) {
 		}
 		alreadyHas := false
 		for _, t := range def.AllowedTools {
-			if t == "Context" {
+			// Case-insensitive match. An operator's lowercase
+			// `allowed_tools: [context]` is a typo, not an explicit
+			// listing — but case-sensitive eq would let the typo
+			// double-add (yielding [context, Context]) and confuse
+			// the per-run dispatcher's case-sensitive registry
+			// lookup. PR 3 review fix.
+			if strings.EqualFold(t, "Context") {
 				alreadyHas = true
 				break
 			}

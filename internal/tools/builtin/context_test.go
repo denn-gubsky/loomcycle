@@ -753,3 +753,59 @@ func TestContextTool_PermissionsSurfacesHistoryScope(t *testing.T) {
 		t.Errorf("history_scope = %v, want [self any]", scopes)
 	}
 }
+
+// PR 3 review fix: truncated must be true ONLY when there are more
+// filter-matching events than the limit allows. Old code compared
+// limit to raw transcript size — false positive when event_types
+// filter excluded enough events that matchCount <= limit.
+func TestContextTool_HistoryTruncatedRespectsTypeFilter(t *testing.T) {
+	tool, s, ctx, agentName, _, _ := substrateFixture(t)
+	sess, _ := s.CreateSession(context.Background(), "t", agentName, "alice")
+	run, _ := s.CreateRun(context.Background(), sess.ID, store.RunIdentity{AgentID: "a_filtered", UserID: "alice"})
+	// Mix: 3 text events + 50 usage events. With a `text` filter +
+	// limit=10, only 3 events match — truncated MUST be false.
+	for i := 0; i < 3; i++ {
+		_ = s.AppendEvent(context.Background(), run.ID, "text", []byte(`{"text":"hi"}`))
+	}
+	for i := 0; i < 50; i++ {
+		_ = s.AppendEvent(context.Background(), run.ID, "usage", []byte(`{"tokens":1}`))
+	}
+
+	histCtx := tools.WithRunIdentity(ctx, tools.RunIdentityValue{AgentID: "a_filtered"})
+	histCtx = tools.WithHistoryPolicy(histCtx, tools.HistoryPolicyValue{Scopes: []string{"any"}})
+
+	res, _ := tool.Execute(histCtx, json.RawMessage(`{"op":"history","agent_id":"a_filtered","event_types":["text"],"limit":10}`))
+	if res.IsError {
+		t.Fatalf("history: %s", res.Text)
+	}
+	out := decodeResult(t, res.Text)
+	if c := out["count"].(float64); c != 3 {
+		t.Errorf("count = %v, want 3 (only text events match)", c)
+	}
+	if out["truncated"].(bool) {
+		t.Error("truncated = true; want false (only 3 matching events, all returned)")
+	}
+}
+
+// Same fixture but with limit=2 — now 3 matches exceeds limit, so
+// truncated MUST be true.
+func TestContextTool_HistoryTruncatedTrueWhenMatchesExceedLimit(t *testing.T) {
+	tool, s, ctx, agentName, _, _ := substrateFixture(t)
+	sess, _ := s.CreateSession(context.Background(), "t", agentName, "alice")
+	run, _ := s.CreateRun(context.Background(), sess.ID, store.RunIdentity{AgentID: "a_match", UserID: "alice"})
+	for i := 0; i < 3; i++ {
+		_ = s.AppendEvent(context.Background(), run.ID, "text", []byte(`{"text":"hi"}`))
+	}
+
+	histCtx := tools.WithRunIdentity(ctx, tools.RunIdentityValue{AgentID: "a_match"})
+	histCtx = tools.WithHistoryPolicy(histCtx, tools.HistoryPolicyValue{Scopes: []string{"any"}})
+
+	res, _ := tool.Execute(histCtx, json.RawMessage(`{"op":"history","agent_id":"a_match","event_types":["text"],"limit":2}`))
+	out := decodeResult(t, res.Text)
+	if c := out["count"].(float64); c != 2 {
+		t.Errorf("count = %v, want 2 (limit)", c)
+	}
+	if !out["truncated"].(bool) {
+		t.Error("truncated = false; want true (3 matches > limit 2)")
+	}
+}

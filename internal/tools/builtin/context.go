@@ -648,21 +648,33 @@ func (c *Context) execHistory(ctx context.Context, in contextInput) (tools.Resul
 		Type      string          `json:"type"`
 		Payload   json.RawMessage `json:"payload,omitempty"`
 	}
+	// Track POST-FILTER match count separately so truncated is
+	// honest: it's true iff there are more matches than we returned.
+	// The old check (`len(out)==limit && len(events)>limit`) used
+	// the raw transcript size and gave false positives whenever an
+	// event_types filter excluded enough events that the filter-
+	// matching count was actually <= limit (PR 3 review fix).
 	out := make([]eventOut, 0, limit)
+	matchedCount := 0
 	for _, ev := range events {
 		if len(typeFilter) > 0 && !typeFilter[ev.Type] {
 			continue
 		}
-		out = append(out, eventOut{
-			Seq:       ev.Seq,
-			RunID:     ev.RunID,
-			Timestamp: ev.Timestamp.UTC().Format("2006-01-02T15:04:05.000000000Z"),
-			Type:      ev.Type,
-			Payload:   json.RawMessage(ev.Payload),
-		})
-		if len(out) >= limit {
-			break
+		matchedCount++
+		if len(out) < limit {
+			out = append(out, eventOut{
+				Seq:       ev.Seq,
+				RunID:     ev.RunID,
+				Timestamp: ev.Timestamp.UTC().Format("2006-01-02T15:04:05.000000000Z"),
+				Type:      ev.Type,
+				Payload:   json.RawMessage(ev.Payload),
+			})
 		}
+		// Loop continues even after limit so we get an accurate
+		// matchedCount. Worst case: O(len(events)) — bounded by
+		// GetTranscript's own paging. Acceptable cost for honest
+		// truncation reporting; agents using a tiny limit on a
+		// huge transcript pay marginal extra work.
 	}
 
 	return okJSON(map[string]any{
@@ -670,7 +682,7 @@ func (c *Context) execHistory(ctx context.Context, in contextInput) (tools.Resul
 		"session_id": run.SessionID,
 		"events":     out,
 		"count":      len(out),
-		"truncated":  len(out) == limit && len(events) > limit,
+		"truncated":  matchedCount > limit,
 	})
 }
 

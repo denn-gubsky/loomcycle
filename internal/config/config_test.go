@@ -1266,6 +1266,38 @@ agents:
 	}
 }
 
+// PR 3 review fix: case-insensitive duplicate-check. Operator-typed
+// lowercase `context` in yaml should not cause a `[context, Context]`
+// double-add (which would confuse the case-sensitive runtime
+// dispatcher).
+func TestContextNotDoubleAddedCaseInsensitive(t *testing.T) {
+	tmp := t.TempDir()
+	yamlPath := filepath.Join(tmp, "c.yaml")
+	if err := os.WriteFile(yamlPath, []byte(`
+defaults: { provider: anthropic, model: claude-sonnet-4-6 }
+agents:
+  lower:
+    model: claude-sonnet-4-6
+    allowed_tools: [Read, context]
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(yamlPath)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	def := cfg.Agents["lower"]
+	count := 0
+	for _, tool := range def.AllowedTools {
+		if strings.EqualFold(tool, "Context") {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Errorf("Context appears %d times (case-insensitive); want exactly 1 — got %v", count, def.AllowedTools)
+	}
+}
+
 // TestContextNotDoubleAdded: agent already listing Context doesn't
 // see it duplicated.
 func TestContextNotDoubleAdded(t *testing.T) {
