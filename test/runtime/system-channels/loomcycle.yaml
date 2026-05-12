@@ -1,0 +1,54 @@
+# test/runtime/system-channels/loomcycle.yaml — v0.8.6 system-channels runtime smoke test.
+#
+# Three exercise paths:
+#
+#   1. Heartbeat cadence: `_system/heartbeat-1s` ticks once per second.
+#      Driver waits 3s and asserts ~3 messages in the channel.
+#
+#   2. Admin endpoint: driver curls
+#      POST /v1/_channels/_system/alarms/info with a bearer.
+#      Asserts the message lands with published_by_user_id = "_admin".
+#
+#   3. Agent deferred publish: agent publishes to `findings` with
+#      deliver_at = now + 1s; immediate subscribe returns empty;
+#      after 1.2s subscribe returns the message.
+#
+# Provider: gemini (gemini-2.5-flash). Source .env.local for GEMINI_API_KEY.
+
+provider_priority: [gemini]
+
+defaults:
+  provider: gemini
+  model: gemini-2.5-flash
+
+storage:
+  backend: sqlite
+
+concurrency:
+  max_concurrent_runs: 4
+  max_queue_depth: 8
+
+# v0.8.6 — operator-declared system channels + a regular agent channel.
+channels:
+  # Cadence channel: heartbeats every 1s.
+  _system/heartbeat-1s:
+    scope: global
+    semantic: broadcast
+    default_ttl: 60
+    publisher: system
+    period: 1s
+
+  # Alarms channel: agents may publish AND admin endpoint may publish
+  # (no `publisher: system`, so the publisher field is "" = any allowed).
+  _system/alarms/info:
+    scope: global
+    semantic: queue
+    default_ttl: 3600
+    max_messages: 1000
+
+  # Regular agent channel for the deferred-publish exercise.
+  findings:
+    scope: user
+    semantic: queue
+    default_ttl: 3600
+    max_messages: 1000
