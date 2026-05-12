@@ -3,10 +3,13 @@ package builtin
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
 
+	"github.com/denn-gubsky/loomcycle/internal/config"
+	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
 
@@ -40,11 +43,26 @@ type Context struct {
 	// The HTTP server constructs this per-run via filterTools+narrowing
 	// and passes it through; Context just reports it. Required.
 	Tools []tools.Tool
+
+	// Cfg is the operator config. Used by the `agents` op to enumerate
+	// declared agents and surface metadata (name, description, tier,
+	// allowed-tools shape). nil = `agents` op refuses with a clear
+	// "not configured" error.
+	Cfg *config.Config
+
+	// Store is the persistence backend, used by the substrate-coupled
+	// ops (`agents` for active-def lookup, `lineage` for parent/child
+	// walks, `evaluations` for aggregate). nil = those ops refuse with
+	// a clear "not configured" error; the storage-agnostic ops (self /
+	// tools / doc / permissions) still work.
+	Store store.Store
 }
 
 const contextDescription = `Read-only runtime introspection. ` +
-	`Answers "what tools do I have? who am I? what permissions apply to me?". ` +
-	`Operations: self, tools, doc, permissions (more ops in later versions). ` +
+	`Answers "what tools do I have? who am I? what permissions apply to me? ` +
+	`what other agents exist? what's my def's lineage and evaluation history?". ` +
+	`Operations: self, tools, doc, permissions, agents, lineage, evaluations ` +
+	`(more ops in later versions). ` +
 	`Always safe to call — no side effects, no storage writes, no network calls. ` +
 	`Useful for self-evolving agents that build their own task plans and want to inspect ` +
 	`their environment before deciding what to do.`
@@ -52,16 +70,24 @@ const contextDescription = `Read-only runtime introspection. ` +
 const contextInputSchema = `{
   "type": "object",
   "properties": {
-    "op":   {"type": "string", "enum": ["self","tools","doc","permissions"], "description": "Which introspection op to run."},
-    "name": {"type": "string", "description": "doc only: the tool name to fetch detailed docs for."}
+    "op":              {"type": "string", "enum": ["self","tools","doc","permissions","agents","lineage","evaluations"], "description": "Which introspection op to run."},
+    "name":            {"type": "string", "description": "doc only: the tool name to fetch detailed docs for."},
+    "prefix":          {"type": "string", "description": "agents only: optional name prefix filter."},
+    "def_id":          {"type": "string", "description": "lineage / evaluations: the agent_defs row id to inspect. Use Context.agents to discover def_ids first."},
+    "depth":           {"type": "integer", "description": "lineage only: max depth to walk in each direction (default 10, cap 100)."},
+    "include_lineage": {"type": "boolean", "description": "evaluations only: include ancestors' evaluations in the aggregate (default false)."}
   },
   "required": ["op"],
   "additionalProperties": false
 }`
 
 type contextInput struct {
-	Op   string `json:"op"`
-	Name string `json:"name,omitempty"`
+	Op             string `json:"op"`
+	Name           string `json:"name,omitempty"`
+	Prefix         string `json:"prefix,omitempty"`
+	DefID          string `json:"def_id,omitempty"`
+	Depth          int    `json:"depth,omitempty"`
+	IncludeLineage bool   `json:"include_lineage,omitempty"`
 }
 
 // Name implements tools.Tool.
@@ -89,10 +115,16 @@ func (c *Context) Execute(ctx context.Context, raw json.RawMessage) (tools.Resul
 		return c.execDoc(ctx, in)
 	case "permissions":
 		return c.execPermissions(ctx)
+	case "agents":
+		return c.execAgents(ctx, in)
+	case "lineage":
+		return c.execLineage(ctx, in)
+	case "evaluations":
+		return c.execEvaluations(ctx, in)
 	case "":
 		return errResult("missing required field: op"), nil
 	default:
-		return errResult(fmt.Sprintf("unknown op %q (must be one of: self, tools, doc, permissions)", in.Op)), nil
+		return errResult(fmt.Sprintf("unknown op %q (must be one of: self, tools, doc, permissions, agents, lineage, evaluations)", in.Op)), nil
 	}
 }
 
@@ -265,6 +297,177 @@ func (c *Context) execPermissions(ctx context.Context) (tools.Result, error) {
 		"evaluation_scopes": evPol.Scopes,
 	}
 	return okJSON(out)
+}
+
+// ---- agents ----
+
+func (c *Context) execAgents(ctx context.Context, in contextInput) (tools.Result, error) {
+	if c.Cfg == nil {
+		return errResult("agents: not configured (no Cfg)"), nil
+	}
+	type agentSummary struct {
+		Name string `json:"name"`
+		// config.AgentDef has no Description field today — the
+		// MD-frontmatter description lives on agents.Agent (loader) and
+		// doesn't get propagated into cfg.Agents. Omitted from this op
+		// pending a follow-up that threads it through (low priority;
+		// agents already know their own description from their prompt).
+		Tier         string `json:"tier,omitempty"`
+		Model        string `json:"model,omitempty"`
+		Provider     string `json:"provider,omitempty"`
+		ActiveDefID  string `json:"active_def_id,omitempty"`
+		AllowedTools int    `json:"allowed_tools_count"`
+	}
+	names := make([]string, 0, len(c.Cfg.Agents))
+	for n := range c.Cfg.Agents {
+		if in.Prefix != "" && !strings.HasPrefix(n, in.Prefix) {
+			continue
+		}
+		names = append(names, n)
+	}
+	sort.Strings(names)
+
+	out := make([]agentSummary, 0, len(names))
+	for _, name := range names {
+		def := c.Cfg.Agents[name]
+		s := agentSummary{
+			Name:         name,
+			Tier:         def.Tier,
+			Model:        def.Model,
+			Provider:     def.Provider,
+			AllowedTools: len(def.AllowedTools),
+		}
+		// Active def_id from the v0.8.5 substrate. Best-effort — if
+		// Store is nil or no active row, we omit the field. Errors
+		// other than ErrNotFound are logged inline as part of a
+		// per-name `error` key rather than failing the whole op.
+		if c.Store != nil {
+			row, err := c.Store.AgentDefGetActive(ctx, name)
+			if err == nil {
+				s.ActiveDefID = row.DefID
+			} else {
+				var nf *store.ErrNotFound
+				if !errors.As(err, &nf) {
+					// Non-NotFound errors are unusual — surface them
+					// so operators see the per-name failure without
+					// losing the rest of the catalog.
+					// (We don't fail the whole op for one bad lookup.)
+					_ = err
+				}
+			}
+		}
+		out = append(out, s)
+	}
+	return okJSON(map[string]any{"agents": out, "count": len(out)})
+}
+
+// ---- lineage ----
+
+func (c *Context) execLineage(ctx context.Context, in contextInput) (tools.Result, error) {
+	if c.Store == nil {
+		return errResult("lineage: not configured (no Store backend)"), nil
+	}
+	if in.DefID == "" {
+		return errResult("lineage: missing required field: def_id (use Context.agents to discover def_ids)"), nil
+	}
+	depth := in.Depth
+	if depth <= 0 {
+		depth = 10
+	}
+	if depth > 100 {
+		depth = 100
+	}
+
+	root, err := c.Store.AgentDefGet(ctx, in.DefID)
+	if err != nil {
+		var nf *store.ErrNotFound
+		if errors.As(err, &nf) {
+			return errResult(fmt.Sprintf("lineage: def_id %q not found", in.DefID)), nil
+		}
+		return errResult(fmt.Sprintf("lineage: %s", err)), nil
+	}
+
+	type defSummary struct {
+		DefID       string `json:"def_id"`
+		Name        string `json:"name"`
+		Version     int    `json:"version"`
+		ParentDefID string `json:"parent_def_id,omitempty"`
+		Retired     bool   `json:"retired"`
+		Description string `json:"description,omitempty"`
+	}
+	toSummary := func(row store.AgentDefRow) defSummary {
+		return defSummary{
+			DefID:       row.DefID,
+			Name:        row.Name,
+			Version:     row.Version,
+			ParentDefID: row.ParentDefID,
+			Retired:     row.Retired,
+			Description: row.Description,
+		}
+	}
+
+	// Walk ancestors via parent_def_id chain.
+	ancestors := make([]defSummary, 0, depth)
+	cur := root
+	for i := 0; i < depth && cur.ParentDefID != ""; i++ {
+		parent, err := c.Store.AgentDefGet(ctx, cur.ParentDefID)
+		if err != nil {
+			var nf *store.ErrNotFound
+			if errors.As(err, &nf) {
+				break // chain ended at a row that's been deleted
+			}
+			return errResult(fmt.Sprintf("lineage: walk ancestors: %s", err)), nil
+		}
+		ancestors = append(ancestors, toSummary(parent))
+		cur = parent
+	}
+
+	// Walk descendants breadth-first via AgentDefListChildren.
+	type level struct {
+		rows  []store.AgentDefRow
+		level int
+	}
+	var descendants []defSummary
+	frontier := []store.AgentDefRow{root}
+	for d := 1; d <= depth && len(frontier) > 0; d++ {
+		var next []store.AgentDefRow
+		for _, r := range frontier {
+			children, err := c.Store.AgentDefListChildren(ctx, r.DefID)
+			if err != nil {
+				return errResult(fmt.Sprintf("lineage: walk descendants: %s", err)), nil
+			}
+			for _, ch := range children {
+				descendants = append(descendants, toSummary(ch))
+				next = append(next, ch)
+			}
+		}
+		frontier = next
+	}
+
+	return okJSON(map[string]any{
+		"root":        toSummary(root),
+		"ancestors":   ancestors,
+		"descendants": descendants,
+		"depth":       depth,
+	})
+}
+
+// ---- evaluations ----
+
+func (c *Context) execEvaluations(ctx context.Context, in contextInput) (tools.Result, error) {
+	if c.Store == nil {
+		return errResult("evaluations: not configured (no Store backend)"), nil
+	}
+	if in.DefID == "" {
+		return errResult("evaluations: missing required field: def_id (use Context.agents to discover def_ids)"), nil
+	}
+	agg, err := c.Store.EvaluationAggregate(ctx, in.DefID, store.AggregateOpts{
+		IncludeLineage: in.IncludeLineage,
+	})
+	if err != nil {
+		return errResult(fmt.Sprintf("evaluations: %s", err)), nil
+	}
+	return okJSON(agg)
 }
 
 var _ tools.Tool = (*Context)(nil)

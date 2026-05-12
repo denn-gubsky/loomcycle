@@ -250,8 +250,11 @@ func main() {
 	// other registration (MCP + localapi) so doc/tools ops reflect the
 	// complete catalog. Including Context itself in the catalog is
 	// intentional — agents introspecting "what tools do I have" should
-	// see Context, and `doc(name="Context")` should work.
-	contextTool := &builtin.Context{}
+	// see Context, and `doc(name="Context")` should work. Cfg + Store
+	// power the v0.8.7 PR 2 substrate-coupled ops (agents / lineage /
+	// evaluations); Store is late-bound below alongside the other
+	// substrate tools.
+	contextTool := &builtin.Context{Cfg: cfg}
 	allTools = append(allTools, contextTool)
 
 	// Local API MCP gateway (v0.4.0+). When `local_api.spec` is set
@@ -420,6 +423,7 @@ func main() {
 	channelTool.Store = storeIface
 	agentDefTool.Store = storeIface
 	evaluationTool.Store = storeIface
+	contextTool.Store = storeIface
 	// Back-fill Context tool's catalog with the FINAL allTools slice
 	// (including MCP-served tools registered above) so doc/tools ops
 	// reflect the complete runtime catalog. Must happen AFTER every
