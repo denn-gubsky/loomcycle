@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -136,6 +137,61 @@ func (s *Store) migrate(ctx context.Context) error {
 			updated_at INTEGER NOT NULL,
 			PRIMARY KEY (channel, scope, scope_id)
 		)`,
+		// v0.8.5 Self-Evolution Substrate — see
+		// internal/store/postgres/migrations/0006_agent_defs.up.sql for
+		// the full design rationale. SQLite mirrors the shape; INTEGER
+		// boolean (0/1) instead of Postgres BOOLEAN, unix-nano INTEGER
+		// timestamps instead of TIMESTAMPTZ, TEXT JSON instead of JSONB.
+		`CREATE TABLE IF NOT EXISTS agent_defs (
+			def_id                    TEXT    PRIMARY KEY,
+			name                      TEXT    NOT NULL,
+			version                   INTEGER NOT NULL,
+			parent_def_id             TEXT    REFERENCES agent_defs(def_id),
+			definition                TEXT    NOT NULL,
+			description               TEXT,
+			created_at                INTEGER NOT NULL,
+			created_by_agent_id       TEXT,
+			created_by_run_id         TEXT,
+			retired                   INTEGER NOT NULL DEFAULT 0,
+			bootstrapped_from_static  INTEGER NOT NULL DEFAULT 0,
+			UNIQUE(name, version)
+		)`,
+		`CREATE INDEX IF NOT EXISTS agent_defs_by_name   ON agent_defs(name, version DESC)`,
+		`CREATE INDEX IF NOT EXISTS agent_defs_by_parent ON agent_defs(parent_def_id) WHERE parent_def_id IS NOT NULL`,
+		`CREATE INDEX IF NOT EXISTS agent_defs_by_run    ON agent_defs(created_by_run_id) WHERE created_by_run_id IS NOT NULL`,
+		`CREATE TABLE IF NOT EXISTS agent_def_active (
+			name                  TEXT    PRIMARY KEY,
+			def_id                TEXT    NOT NULL REFERENCES agent_defs(def_id),
+			promoted_at           INTEGER NOT NULL,
+			promoted_by_agent_id  TEXT
+		)`,
+		// v0.8.5 evaluations table. emitter_role is server-derived in
+		// the tool layer; the store stores the string verbatim. Score
+		// is REAL (Go float64). Dimensions + Judgement are JSON-as-TEXT
+		// (sqlite has no JSONB).
+		//
+		// NO foreign keys on run_id or def_id: evaluations are an
+		// immutable audit log and must survive any future run/def
+		// pruning. Referential integrity is enforced at the
+		// application layer. A RESTRICT FK would block legitimate
+		// admin pruning workflows; CASCADE would silently delete
+		// audit data. Mirrors the postgres migration 0008.
+		`CREATE TABLE IF NOT EXISTS evaluations (
+			eval_id            TEXT    PRIMARY KEY,
+			run_id             TEXT    NOT NULL,
+			def_id             TEXT,
+			score              REAL    NOT NULL,
+			dimensions         TEXT,
+			judgement          TEXT,
+			rationale          TEXT,
+			emitter_role       TEXT    NOT NULL,
+			emitter_agent_id   TEXT,
+			emitter_run_id     TEXT,
+			created_at         INTEGER NOT NULL
+		)`,
+		`CREATE INDEX IF NOT EXISTS evaluations_by_run     ON evaluations(run_id)`,
+		`CREATE INDEX IF NOT EXISTS evaluations_by_def     ON evaluations(def_id) WHERE def_id IS NOT NULL`,
+		`CREATE INDEX IF NOT EXISTS evaluations_by_emitter ON evaluations(emitter_agent_id) WHERE emitter_agent_id IS NOT NULL`,
 	}
 	for _, q := range stmts {
 		if _, err := s.db.ExecContext(ctx, q); err != nil {
@@ -158,6 +214,12 @@ func (s *Store) migrate(ctx context.Context) error {
 		// new rows carry the name of the user_tier policy applied at
 		// run creation. Compliance + cost-retro queries facet on this.
 		`ALTER TABLE runs ADD COLUMN user_tier TEXT`,
+		// v0.8.5: agent_def_id audit column. NULL = the run resolved
+		// against the static cfg.Agents fallback (no DB-versioned def).
+		// Non-NULL = the run targeted a specific (name, version) row
+		// in agent_defs. Distinguishes static-resolved from DB-resolved
+		// runs without a separate flag.
+		`ALTER TABLE runs ADD COLUMN agent_def_id TEXT`,
 	}
 	for _, q := range addColumns {
 		if _, err := s.db.ExecContext(ctx, q); err != nil {
@@ -181,6 +243,10 @@ func (s *Store) migrate(ctx context.Context) error {
 		`CREATE INDEX IF NOT EXISTS runs_by_parent_agent_id ON runs(parent_agent_id) WHERE parent_agent_id IS NOT NULL`,
 		`CREATE INDEX IF NOT EXISTS runs_by_user_active     ON runs(user_id, status) WHERE user_id IS NOT NULL`,
 		`CREATE INDEX IF NOT EXISTS sessions_by_user        ON sessions(user_id)     WHERE user_id IS NOT NULL`,
+		// v0.8.5: facets cost retros + experiment audits by which
+		// agent_def_id the run actually ran against. Partial index
+		// keeps it small — only DB-resolved runs have a non-NULL value.
+		`CREATE INDEX IF NOT EXISTS runs_by_agent_def       ON runs(agent_def_id)    WHERE agent_def_id IS NOT NULL`,
 	}
 	for _, q := range addIndexes {
 		// Note the asymmetry vs addColumns above: indexes use
@@ -1115,6 +1181,574 @@ func (s *Store) ChannelSweepExpired(ctx context.Context) (int, error) {
 		return 0, nil
 	}
 	return int(n), nil
+}
+
+// ---- v0.8.5 Self-Evolution Substrate ----
+//
+// AgentDef methods. Append-only. Version is allocated under a
+// per-name lock (BEGIN IMMEDIATE in sqlite — coarse but correct for
+// single-writer WAL, mirrors MemoryIncrement's pattern).
+
+// AgentDefCreate allocates the next version for row.Name under a
+// per-name lock and inserts. The caller supplies row.DefID (UUID/
+// ULID-ish opaque string). Validates parent_def_id when set.
+//
+// SQLite concurrency: uses the same BEGIN IMMEDIATE + pinned-conn
+// pattern as MemoryIncrement — pinning the connection scopes the
+// write lock to this one transaction, and IMMEDIATE means concurrent
+// writers see SQLITE_BUSY at BEGIN time (database/sql retries) rather
+// than upgrade-deadlocking mid-tx. Without this, two concurrent
+// AgentDefCreate calls against the same name both start a DEFERRED
+// tx, both SELECT MAX(version) (returning the same value), then both
+// try to INSERT with the same version — one succeeds, one fails on
+// the UNIQUE(name, version) constraint.
+func (s *Store) AgentDefCreate(ctx context.Context, row store.AgentDefRow) (store.AgentDefRow, error) {
+	if row.DefID == "" || row.Name == "" {
+		return store.AgentDefRow{}, fmt.Errorf("agent_def: def_id + name required")
+	}
+	conn, err := s.db.Conn(ctx)
+	if err != nil {
+		return store.AgentDefRow{}, err
+	}
+	defer conn.Close()
+
+	if _, err := conn.ExecContext(ctx, "BEGIN IMMEDIATE"); err != nil {
+		return store.AgentDefRow{}, err
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_, _ = conn.ExecContext(context.Background(), "ROLLBACK")
+		}
+	}()
+
+	if row.ParentDefID != "" {
+		var n int
+		if err := conn.QueryRowContext(ctx, `SELECT COUNT(*) FROM agent_defs WHERE def_id = ?`, row.ParentDefID).Scan(&n); err != nil {
+			return store.AgentDefRow{}, err
+		}
+		if n == 0 {
+			return store.AgentDefRow{}, store.ErrAgentDefParentNotFound
+		}
+	}
+
+	var maxVer sql.NullInt64
+	if err := conn.QueryRowContext(ctx,
+		`SELECT MAX(version) FROM agent_defs WHERE name = ?`, row.Name,
+	).Scan(&maxVer); err != nil {
+		return store.AgentDefRow{}, err
+	}
+	row.Version = 1
+	if maxVer.Valid {
+		row.Version = int(maxVer.Int64) + 1
+	}
+	row.CreatedAt = time.Now()
+
+	if _, err := conn.ExecContext(ctx,
+		`INSERT INTO agent_defs (
+			def_id, name, version, parent_def_id, definition, description,
+			created_at, created_by_agent_id, created_by_run_id,
+			retired, bootstrapped_from_static
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		row.DefID, row.Name, row.Version, nilIfEmpty(row.ParentDefID),
+		string(row.Definition), nilIfEmpty(row.Description),
+		row.CreatedAt.UnixNano(),
+		nilIfEmpty(row.CreatedByAgentID), nilIfEmpty(row.CreatedByRunID),
+		boolToInt(row.Retired), boolToInt(row.BootstrappedFromStatic),
+	); err != nil {
+		return store.AgentDefRow{}, err
+	}
+	if _, err := conn.ExecContext(ctx, "COMMIT"); err != nil {
+		return store.AgentDefRow{}, err
+	}
+	committed = true
+	return row, nil
+}
+
+// AgentDefGet returns one row by def_id.
+func (s *Store) AgentDefGet(ctx context.Context, defID string) (store.AgentDefRow, error) {
+	row, err := s.scanAgentDef(s.db.QueryRowContext(ctx, agentDefSelect+` WHERE def_id = ?`, defID))
+	if err == sql.ErrNoRows {
+		return store.AgentDefRow{}, &store.ErrNotFound{Kind: "agent_def", ID: defID}
+	}
+	return row, err
+}
+
+// AgentDefGetByNameVersion returns one row by (name, version).
+func (s *Store) AgentDefGetByNameVersion(ctx context.Context, name string, version int) (store.AgentDefRow, error) {
+	row, err := s.scanAgentDef(s.db.QueryRowContext(ctx, agentDefSelect+` WHERE name = ? AND version = ?`, name, version))
+	if err == sql.ErrNoRows {
+		return store.AgentDefRow{}, &store.ErrNotFound{Kind: "agent_def", ID: fmt.Sprintf("%s@v%d", name, version)}
+	}
+	return row, err
+}
+
+// AgentDefListByName returns rows for one name, version DESC.
+func (s *Store) AgentDefListByName(ctx context.Context, name string) ([]store.AgentDefRow, error) {
+	rows, err := s.db.QueryContext(ctx, agentDefSelect+` WHERE name = ? ORDER BY version DESC`, name)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return s.scanAgentDefRows(rows)
+}
+
+// AgentDefListChildren returns immediate children (parent_def_id == arg).
+func (s *Store) AgentDefListChildren(ctx context.Context, parentDefID string) ([]store.AgentDefRow, error) {
+	rows, err := s.db.QueryContext(ctx, agentDefSelect+` WHERE parent_def_id = ? ORDER BY version DESC`, parentDefID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return s.scanAgentDefRows(rows)
+}
+
+// AgentDefListNames returns one summary row per distinct name. Joins
+// agent_def_active to surface the active def_id when one exists.
+func (s *Store) AgentDefListNames(ctx context.Context) ([]store.AgentDefNameSummary, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT
+			d.name,
+			COUNT(*)                  AS version_count,
+			MAX(d.version)            AS latest_version,
+			MAX(d.created_at)         AS last_updated,
+			COALESCE(a.def_id, '')    AS active_def_id
+		FROM agent_defs d
+		LEFT JOIN agent_def_active a ON a.name = d.name
+		GROUP BY d.name, a.def_id
+		ORDER BY d.name`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []store.AgentDefNameSummary
+	for rows.Next() {
+		var s store.AgentDefNameSummary
+		var updatedAt int64
+		if err := rows.Scan(&s.Name, &s.VersionCount, &s.LatestVersion, &updatedAt, &s.ActiveDefID); err != nil {
+			return nil, err
+		}
+		s.LastUpdated = time.Unix(0, updatedAt)
+		out = append(out, s)
+	}
+	return out, rows.Err()
+}
+
+// AgentDefSetActive UPSERTs the agent_def_active pointer for name.
+func (s *Store) AgentDefSetActive(ctx context.Context, name, defID, promotedByAgentID string) error {
+	// Validate def_id exists + matches name (defence-in-depth; the
+	// FK isn't enforced without foreign_keys PRAGMA).
+	var rowName string
+	err := s.db.QueryRowContext(ctx, `SELECT name FROM agent_defs WHERE def_id = ?`, defID).Scan(&rowName)
+	if err == sql.ErrNoRows {
+		return &store.ErrNotFound{Kind: "agent_def", ID: defID}
+	}
+	if err != nil {
+		return err
+	}
+	if rowName != name {
+		return fmt.Errorf("agent_def_active: def_id %q has name %q, refusing to promote under name %q", defID, rowName, name)
+	}
+	_, err = s.db.ExecContext(ctx, `
+		INSERT INTO agent_def_active (name, def_id, promoted_at, promoted_by_agent_id)
+		VALUES (?, ?, ?, ?)
+		ON CONFLICT(name) DO UPDATE SET
+		    def_id               = excluded.def_id,
+		    promoted_at          = excluded.promoted_at,
+		    promoted_by_agent_id = excluded.promoted_by_agent_id`,
+		name, defID, time.Now().UnixNano(), nilIfEmpty(promotedByAgentID),
+	)
+	return err
+}
+
+// AgentDefGetActive returns the active row for name. *ErrNotFound
+// when no pointer exists — caller falls through to cfg.Agents.
+func (s *Store) AgentDefGetActive(ctx context.Context, name string) (store.AgentDefRow, error) {
+	var defID string
+	err := s.db.QueryRowContext(ctx, `SELECT def_id FROM agent_def_active WHERE name = ?`, name).Scan(&defID)
+	if err == sql.ErrNoRows {
+		return store.AgentDefRow{}, &store.ErrNotFound{Kind: "agent_def_active", ID: name}
+	}
+	if err != nil {
+		return store.AgentDefRow{}, err
+	}
+	return s.AgentDefGet(ctx, defID)
+}
+
+// AgentDefSetRetired flips the `retired` flag on one row. The row
+// stays visible in lineage queries.
+func (s *Store) AgentDefSetRetired(ctx context.Context, defID string, retired bool) error {
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE agent_defs SET retired = ? WHERE def_id = ?`,
+		boolToInt(retired), defID,
+	)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return &store.ErrNotFound{Kind: "agent_def", ID: defID}
+	}
+	return nil
+}
+
+// agentDefSelect is the column list shared by every read. Kept in
+// one place so column additions (a future tenant_id, similarity_score,
+// ...) need only a single touch-point.
+const agentDefSelect = `SELECT
+	def_id, name, version,
+	COALESCE(parent_def_id, ''),
+	definition,
+	COALESCE(description, ''),
+	created_at,
+	COALESCE(created_by_agent_id, ''),
+	COALESCE(created_by_run_id, ''),
+	retired,
+	bootstrapped_from_static
+FROM agent_defs`
+
+func (s *Store) scanAgentDef(row *sql.Row) (store.AgentDefRow, error) {
+	var (
+		out        store.AgentDefRow
+		definition string
+		createdAt  int64
+		retired    int
+		bootstrap  int
+	)
+	err := row.Scan(
+		&out.DefID, &out.Name, &out.Version,
+		&out.ParentDefID,
+		&definition,
+		&out.Description,
+		&createdAt,
+		&out.CreatedByAgentID, &out.CreatedByRunID,
+		&retired, &bootstrap,
+	)
+	if err != nil {
+		return store.AgentDefRow{}, err
+	}
+	out.Definition = json.RawMessage(definition)
+	out.CreatedAt = time.Unix(0, createdAt)
+	out.Retired = retired != 0
+	out.BootstrappedFromStatic = bootstrap != 0
+	return out, nil
+}
+
+func (s *Store) scanAgentDefRows(rows *sql.Rows) ([]store.AgentDefRow, error) {
+	var out []store.AgentDefRow
+	for rows.Next() {
+		var (
+			r          store.AgentDefRow
+			definition string
+			createdAt  int64
+			retired    int
+			bootstrap  int
+		)
+		if err := rows.Scan(
+			&r.DefID, &r.Name, &r.Version,
+			&r.ParentDefID,
+			&definition,
+			&r.Description,
+			&createdAt,
+			&r.CreatedByAgentID, &r.CreatedByRunID,
+			&retired, &bootstrap,
+		); err != nil {
+			return nil, err
+		}
+		r.Definition = json.RawMessage(definition)
+		r.CreatedAt = time.Unix(0, createdAt)
+		r.Retired = retired != 0
+		r.BootstrappedFromStatic = bootstrap != 0
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// ---- Evaluation (pure-insert, no concurrency lock) ----
+
+// EvaluationSubmit inserts one evaluation row. CreatedAt set by store.
+func (s *Store) EvaluationSubmit(ctx context.Context, row store.EvaluationRow) (store.EvaluationRow, error) {
+	if row.EvalID == "" || row.RunID == "" || row.EmitterRole == "" {
+		return store.EvaluationRow{}, fmt.Errorf("evaluation: eval_id, run_id, emitter_role required")
+	}
+	row.CreatedAt = time.Now()
+	var dimsJSON, judgementJSON sql.NullString
+	if len(row.Dimensions) > 0 {
+		b, err := json.Marshal(row.Dimensions)
+		if err != nil {
+			return store.EvaluationRow{}, fmt.Errorf("evaluation: marshal dimensions: %w", err)
+		}
+		dimsJSON = sql.NullString{String: string(b), Valid: true}
+	}
+	if len(row.Judgement) > 0 {
+		judgementJSON = sql.NullString{String: string(row.Judgement), Valid: true}
+	}
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO evaluations (
+			eval_id, run_id, def_id, score, dimensions, judgement, rationale,
+			emitter_role, emitter_agent_id, emitter_run_id, created_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		row.EvalID, row.RunID, nilIfEmpty(row.DefID), row.Score,
+		dimsJSON, judgementJSON, nilIfEmpty(row.Rationale),
+		row.EmitterRole, nilIfEmpty(row.EmitterAgentID), nilIfEmpty(row.EmitterRunID),
+		row.CreatedAt.UnixNano(),
+	)
+	if err != nil {
+		return store.EvaluationRow{}, err
+	}
+	return row, nil
+}
+
+// EvaluationGet returns one row by eval_id.
+func (s *Store) EvaluationGet(ctx context.Context, evalID string) (store.EvaluationRow, error) {
+	row, err := s.scanEvaluation(s.db.QueryRowContext(ctx, evaluationSelect+` WHERE eval_id = ?`, evalID))
+	if err == sql.ErrNoRows {
+		return store.EvaluationRow{}, &store.ErrNotFound{Kind: "evaluation", ID: evalID}
+	}
+	return row, err
+}
+
+// EvaluationListForRun returns evals targeting one run.
+func (s *Store) EvaluationListForRun(ctx context.Context, runID string, limit int) ([]store.EvaluationRow, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	rows, err := s.db.QueryContext(ctx, evaluationSelect+` WHERE run_id = ? ORDER BY created_at DESC LIMIT ?`, runID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return s.scanEvaluationRows(rows)
+}
+
+// EvaluationListForDef returns evals targeting one def.
+func (s *Store) EvaluationListForDef(ctx context.Context, defID string, limit int) ([]store.EvaluationRow, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	rows, err := s.db.QueryContext(ctx, evaluationSelect+` WHERE def_id = ? ORDER BY created_at DESC LIMIT ?`, defID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return s.scanEvaluationRows(rows)
+}
+
+// EvaluationAggregate computes the score+dimension+by-role aggregates
+// for a def_id. When opts.IncludeLineage is true, walks parent_def_id
+// chain depth-first and includes ancestors.
+func (s *Store) EvaluationAggregate(ctx context.Context, defID string, opts store.AggregateOpts) (store.AggregateResult, error) {
+	defIDs := []string{defID}
+	if opts.IncludeLineage {
+		ancestors, err := s.walkAncestors(ctx, defID)
+		if err != nil {
+			return store.AggregateResult{}, err
+		}
+		defIDs = append(defIDs, ancestors...)
+	}
+
+	// Build the IN list. Limit defensively at 1000 ancestors so a
+	// pathological lineage can't blow query parser limits — the
+	// aggregator caller is responsible for not building megacycles.
+	if len(defIDs) > 1000 {
+		defIDs = defIDs[:1000]
+	}
+	placeholders := make([]string, len(defIDs))
+	args := make([]any, len(defIDs))
+	for i, id := range defIDs {
+		placeholders[i] = "?"
+		args[i] = id
+	}
+	q := evaluationSelect + ` WHERE def_id IN (` + strings.Join(placeholders, ",") + `) ORDER BY created_at ASC`
+	rows, err := s.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return store.AggregateResult{}, err
+	}
+	defer rows.Close()
+	evals, err := s.scanEvaluationRows(rows)
+	if err != nil {
+		return store.AggregateResult{}, err
+	}
+	return computeAggregate(defID, evals, opts.IncludeLineage), nil
+}
+
+// walkAncestors returns the parent_def_id chain for defID (NOT
+// including defID itself). Depth-first, bounded at 100 hops to
+// protect against the (impossible-by-construction-but-let's-be-safe)
+// case of a cycle. Empty when defID has no parent.
+func (s *Store) walkAncestors(ctx context.Context, defID string) ([]string, error) {
+	var ancestors []string
+	seen := map[string]bool{defID: true}
+	cur := defID
+	for i := 0; i < 100; i++ {
+		var parent sql.NullString
+		err := s.db.QueryRowContext(ctx, `SELECT parent_def_id FROM agent_defs WHERE def_id = ?`, cur).Scan(&parent)
+		if err == sql.ErrNoRows || !parent.Valid || parent.String == "" {
+			return ancestors, nil
+		}
+		if err != nil {
+			return nil, err
+		}
+		if seen[parent.String] {
+			return ancestors, nil // cycle guard
+		}
+		seen[parent.String] = true
+		ancestors = append(ancestors, parent.String)
+		cur = parent.String
+	}
+	return ancestors, nil
+}
+
+const evaluationSelect = `SELECT
+	eval_id, run_id,
+	COALESCE(def_id, ''),
+	score,
+	COALESCE(dimensions, ''),
+	COALESCE(judgement, ''),
+	COALESCE(rationale, ''),
+	emitter_role,
+	COALESCE(emitter_agent_id, ''),
+	COALESCE(emitter_run_id, ''),
+	created_at
+FROM evaluations`
+
+func (s *Store) scanEvaluation(row *sql.Row) (store.EvaluationRow, error) {
+	var (
+		out                   store.EvaluationRow
+		dimensions, judgement string
+		createdAt             int64
+	)
+	if err := row.Scan(
+		&out.EvalID, &out.RunID, &out.DefID, &out.Score,
+		&dimensions, &judgement, &out.Rationale,
+		&out.EmitterRole, &out.EmitterAgentID, &out.EmitterRunID,
+		&createdAt,
+	); err != nil {
+		return store.EvaluationRow{}, err
+	}
+	if dimensions != "" {
+		_ = json.Unmarshal([]byte(dimensions), &out.Dimensions)
+	}
+	if judgement != "" {
+		out.Judgement = json.RawMessage(judgement)
+	}
+	out.CreatedAt = time.Unix(0, createdAt)
+	return out, nil
+}
+
+func (s *Store) scanEvaluationRows(rows *sql.Rows) ([]store.EvaluationRow, error) {
+	var out []store.EvaluationRow
+	for rows.Next() {
+		var (
+			r                     store.EvaluationRow
+			dimensions, judgement string
+			createdAt             int64
+		)
+		if err := rows.Scan(
+			&r.EvalID, &r.RunID, &r.DefID, &r.Score,
+			&dimensions, &judgement, &r.Rationale,
+			&r.EmitterRole, &r.EmitterAgentID, &r.EmitterRunID,
+			&createdAt,
+		); err != nil {
+			return nil, err
+		}
+		if dimensions != "" {
+			_ = json.Unmarshal([]byte(dimensions), &r.Dimensions)
+		}
+		if judgement != "" {
+			r.Judgement = json.RawMessage(judgement)
+		}
+		r.CreatedAt = time.Unix(0, createdAt)
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// computeAggregate is the pure-Go aggregation kernel — shared by
+// sqlite + postgres adapters. Given a flat list of evaluations,
+// produce summary stats. Empty input → zero-valued AggregateResult
+// with Count=0 (well-defined "no evaluations yet").
+func computeAggregate(defID string, evals []store.EvaluationRow, lineageIncluded bool) store.AggregateResult {
+	out := store.AggregateResult{
+		DefID:           defID,
+		Count:           len(evals),
+		LineageIncluded: lineageIncluded,
+	}
+	if len(evals) == 0 {
+		return out
+	}
+
+	scores := make([]float64, len(evals))
+	dimAcc := map[string][]float64{}
+	roleAcc := map[string][]float64{}
+	for i, e := range evals {
+		scores[i] = e.Score
+		for k, v := range e.Dimensions {
+			dimAcc[k] = append(dimAcc[k], v)
+		}
+		roleAcc[e.EmitterRole] = append(roleAcc[e.EmitterRole], e.Score)
+	}
+	out.Score = statsOf(scores)
+	out.Score.Latest = evals[len(evals)-1].Score // evals is ASC by created_at
+
+	if len(dimAcc) > 0 {
+		out.Dimensions = make(map[string]store.ScoreStats, len(dimAcc))
+		for k, v := range dimAcc {
+			out.Dimensions[k] = statsOf(v)
+		}
+	}
+	if len(roleAcc) > 0 {
+		out.ByEmitterRole = make(map[string]store.ScoreStats, len(roleAcc))
+		for k, v := range roleAcc {
+			out.ByEmitterRole[k] = statsOf(v)
+		}
+	}
+	return out
+}
+
+// statsOf computes Mean/Median/Min/Max/Count for a non-empty slice.
+// Latest is set here as vals[len-1]: callers MUST append in
+// created_at ASC order so the last element is the newest. For the
+// top-level Score axis the caller currently overwrites Latest after
+// returning (the input slice for that axis is built differently); for
+// the Dimensions and ByEmitterRole axes the value set here stands.
+func statsOf(vals []float64) store.ScoreStats {
+	if len(vals) == 0 {
+		return store.ScoreStats{}
+	}
+	out := store.ScoreStats{Count: len(vals), Min: vals[0], Max: vals[0]}
+	sum := 0.0
+	for _, v := range vals {
+		sum += v
+		if v < out.Min {
+			out.Min = v
+		}
+		if v > out.Max {
+			out.Max = v
+		}
+	}
+	out.Mean = sum / float64(len(vals))
+	out.Latest = vals[len(vals)-1] // overwritten by caller for the top-level Score; ok for dim/role
+
+	// Median — sort a copy to avoid mutating caller's slice.
+	sorted := make([]float64, len(vals))
+	copy(sorted, vals)
+	sort.Float64s(sorted)
+	mid := len(sorted) / 2
+	if len(sorted)%2 == 1 {
+		out.Median = sorted[mid]
+	} else {
+		out.Median = (sorted[mid-1] + sorted[mid]) / 2
+	}
+	return out
+}
+
+func boolToInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
 }
 
 // escapeLikePrefix escapes the LIKE wildcards in `prefix` so an agent
