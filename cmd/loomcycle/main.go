@@ -414,6 +414,17 @@ func main() {
 	srv := lchttp.New(cfg, pr, allTools, sem, storeIface)
 	srv.SetMCPFallback(mcpLazyResolver.Resolve)
 
+	// v0.8.6 SystemPublisher — backs the POST /v1/_channels/_system/...
+	// admin endpoint AND the cadence/event-hook publishers added in
+	// PR 3. Wires the same Bus + Scheduler as the agent tool so
+	// long-poll subscribers wake whether the publish came from an
+	// agent, an internal goroutine, or the admin endpoint.
+	srv.SetSystemPublisher(&channels.StorePublisher{
+		Store:     storeIface,
+		Bus:       channelBus,
+		Scheduler: channelScheduler,
+	})
+
 	// Build the model-resolution matrix (resolve.Resolver). Providers
 	// without API keys are MARKED EXCLUDED so Snapshot() shows the
 	// distinct "no key configured" state — the resolver skips them

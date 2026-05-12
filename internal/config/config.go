@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -378,6 +379,38 @@ type Channel struct {
 	DefaultTTL  int    `yaml:"default_ttl"`
 	MaxMessages int    `yaml:"max_messages"`
 	Semantic    string `yaml:"semantic"`
+
+	// v0.8.6 system channels:
+	//
+	// Publisher restricts who may publish to this channel:
+	//   - "" (default) — agents may publish if their ACL allows;
+	//     admin endpoint may publish (bearer-authed).
+	//   - "system" — agent ACL publishes are REFUSED. Only
+	//     loomcycle's internal Go publisher AND the admin endpoint
+	//     (POST /v1/_channels/_system/{name}/publish) may publish.
+	//     Used for heartbeats, runtime-state, provider-events.
+	//
+	// Period sets the cadence for system-driven cadence publishes
+	// (heartbeats). Required when Publisher == "system" AND the
+	// channel name is NOT in the hard-coded event-driven set (see
+	// eventDrivenSystemChannels in validate()). Parsed as a Go
+	// time.Duration string (e.g. "1m", "5m", "1h") via the
+	// PeriodDuration() helper. Empty string when not declared.
+	//
+	// Channel names starting with `_system/` are reserved — only
+	// operator yaml may declare them; agents may subscribe (if their
+	// ACL allows) but may not publish regardless of Publisher value.
+	Publisher string `yaml:"publisher"`
+	Period    string `yaml:"period"`
+}
+
+// PeriodDuration parses Period as a Go time.Duration. Returns 0 + nil
+// when Period is empty; an error when the string is non-parseable.
+func (c Channel) PeriodDuration() (time.Duration, error) {
+	if c.Period == "" {
+		return 0, nil
+	}
+	return time.ParseDuration(c.Period)
 }
 
 // AgentChannelACL carries the per-agent publish / subscribe
@@ -1522,6 +1555,34 @@ var validChannelSemantics = map[string]bool{
 	"broadcast": true,
 }
 
+// eventDrivenSystemChannels is the closed set of `publisher: system`
+// channel names that publish on internal state transitions rather
+// than on a fixed cadence. These channels do NOT require `period:`
+// in operator yaml because loomcycle wires them via event hooks
+// (v0.8.6 PR 3 + downstream feature PRs).
+//
+// New entries here document the convention; the runtime hooks live
+// in the respective subsystems (heartbeat goroutine for cadence
+// channels; loop / runner / pause-state handlers for event-driven
+// channels).
+var eventDrivenSystemChannels = map[string]bool{
+	"_system/runtime-state":   true, // v0.8.9 pause/resume/restore
+	"_system/provider-events": true, // provider fallback / cache-invalidated
+	// v0.8.8 Question tool channels are agent-published (not
+	// publisher: system) so they don't appear here.
+}
+
+// eventDrivenSystemChannelNames returns the deterministic list for
+// error messages.
+func eventDrivenSystemChannelNames() []string {
+	out := make([]string, 0, len(eventDrivenSystemChannels))
+	for n := range eventDrivenSystemChannels {
+		out = append(out, n)
+	}
+	sort.Strings(out)
+	return out
+}
+
 // validEvaluationScopes is the closed set of Evaluation-tool scope
 // strings. See AgentDef.EvaluationScopes docstring for the meaning
 // of each.
@@ -1755,6 +1816,25 @@ func validate(c *Config) error {
 		if ch.Semantic != "" && !validChannelSemantics[ch.Semantic] {
 			return fmt.Errorf("channels.%s: unknown semantic %q (want one of: queue, broadcast)", name, ch.Semantic)
 		}
+		// v0.8.6 system-channels validation.
+		if ch.Publisher != "" && ch.Publisher != "system" {
+			return fmt.Errorf("channels.%s: unknown publisher %q (want: \"\" or \"system\")", name, ch.Publisher)
+		}
+		periodDur, err := ch.PeriodDuration()
+		if err != nil {
+			return fmt.Errorf("channels.%s: invalid period %q: %w", name, ch.Period, err)
+		}
+		if ch.Period != "" && ch.Publisher != "system" {
+			return fmt.Errorf("channels.%s: period is only valid on `publisher: system` channels", name)
+		}
+		if ch.Publisher == "system" && periodDur == 0 && !eventDrivenSystemChannels[name] {
+			return fmt.Errorf("channels.%s: publisher: system requires a `period:` (cadence) or the channel name must be in the event-driven set (%v)", name, eventDrivenSystemChannelNames())
+		}
+		// `_system/` prefix is reserved — channels with this prefix
+		// can only be operator-declared (we're inside the iteration
+		// over the operator yaml, so any channel here IS declared);
+		// agents still cannot publish to them regardless of Publisher
+		// (enforced at tool layer).
 	}
 	for name, srv := range c.MCPServers {
 		switch srv.Transport {

@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestLoadExample(t *testing.T) {
@@ -125,6 +126,96 @@ mcp_servers:
 	_, err := Load(yamlPath)
 	if err == nil {
 		t.Fatal("expected validation error for missing url")
+	}
+}
+
+// v0.8.6 system-channels validation rules.
+
+func TestValidationRejectsPeriodWithoutPublisherSystem(t *testing.T) {
+	tmp := t.TempDir()
+	yamlPath := filepath.Join(tmp, "c.yaml")
+	os.WriteFile(yamlPath, []byte(`
+defaults: { provider: anthropic, model: x }
+channels:
+  oops:
+    scope: global
+    period: 1m
+`), 0o600)
+	_, err := Load(yamlPath)
+	if err == nil || !strings.Contains(err.Error(), "period is only valid") {
+		t.Fatalf("expected period-without-system error; got %v", err)
+	}
+}
+
+func TestValidationRejectsPublisherSystemWithoutPeriod(t *testing.T) {
+	tmp := t.TempDir()
+	yamlPath := filepath.Join(tmp, "c.yaml")
+	os.WriteFile(yamlPath, []byte(`
+defaults: { provider: anthropic, model: x }
+channels:
+  _system/custom:
+    scope: global
+    publisher: system
+`), 0o600)
+	_, err := Load(yamlPath)
+	if err == nil || !strings.Contains(err.Error(), "requires a `period:`") {
+		t.Fatalf("expected publisher-without-period error; got %v", err)
+	}
+}
+
+func TestValidationAcceptsEventDrivenSystemChannelWithoutPeriod(t *testing.T) {
+	tmp := t.TempDir()
+	yamlPath := filepath.Join(tmp, "c.yaml")
+	os.WriteFile(yamlPath, []byte(`
+defaults: { provider: anthropic, model: x }
+channels:
+  _system/runtime-state:
+    scope: global
+    publisher: system
+`), 0o600)
+	_, err := Load(yamlPath)
+	if err != nil {
+		t.Fatalf("event-driven system channel should validate; got %v", err)
+	}
+}
+
+func TestValidationAcceptsCadenceSystemChannel(t *testing.T) {
+	tmp := t.TempDir()
+	yamlPath := filepath.Join(tmp, "c.yaml")
+	os.WriteFile(yamlPath, []byte(`
+defaults: { provider: anthropic, model: x }
+channels:
+  _system/heartbeat-1m:
+    scope: global
+    publisher: system
+    period: 1m
+`), 0o600)
+	cfg, err := Load(yamlPath)
+	if err != nil {
+		t.Fatalf("cadence system channel should validate; got %v", err)
+	}
+	d, err := cfg.Channels["_system/heartbeat-1m"].PeriodDuration()
+	if err != nil {
+		t.Fatalf("PeriodDuration: %v", err)
+	}
+	if d != time.Minute {
+		t.Errorf("PeriodDuration = %v, want 1m", d)
+	}
+}
+
+func TestValidationRejectsUnknownPublisher(t *testing.T) {
+	tmp := t.TempDir()
+	yamlPath := filepath.Join(tmp, "c.yaml")
+	os.WriteFile(yamlPath, []byte(`
+defaults: { provider: anthropic, model: x }
+channels:
+  bad:
+    scope: global
+    publisher: external
+`), 0o600)
+	_, err := Load(yamlPath)
+	if err == nil || !strings.Contains(err.Error(), "unknown publisher") {
+		t.Fatalf("expected unknown-publisher error; got %v", err)
 	}
 }
 
