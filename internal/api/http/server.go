@@ -2158,9 +2158,10 @@ func (s *Server) runSubAgent(ctx context.Context, name string, prompt string, de
 	// parent_agent_id (= subAgentID).
 	subCtx := tools.WithAgentTools(subRunCtx, toolNames(subTools))
 	subCtx = tools.WithRunIdentity(subCtx, tools.RunIdentityValue{
-		UserID:   parentIdentity.UserID,
-		AgentID:  subAgentID,
-		UserTier: parentIdentity.UserTier, // v0.8.2: sub-agents inherit parent's user_tier
+		UserID:     parentIdentity.UserID,
+		AgentID:    subAgentID,
+		UserTier:   parentIdentity.UserTier, // v0.8.2: sub-agents inherit parent's user_tier
+		AgentDefID: defID,                   // v0.8.7: surface pinned def_id via Context.self
 	})
 	subCtx = tools.WithAgentName(subCtx, name)
 	// Sub-agents get THEIR OWN Memory policy from yaml — the parent's
