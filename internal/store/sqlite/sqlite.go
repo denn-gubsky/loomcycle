@@ -118,17 +118,24 @@ func (s *Store) migrate(ctx context.Context) error {
 		// "msg_<unixnano>_<rand>" — sortable by publish time), per-(channel, scope,
 		// scope_id) composite PK so per-subscriber scans are index lookups. payload is
 		// TEXT-encoded JSON because SQLite doesn't have a native JSONB type.
+		//
+		// v0.8.6 system channels: visible_at + published_by_user_id columns
+		// land via the addColumns block below (idempotent ALTER pattern,
+		// works against both fresh + existing v0.8.4 schemas).
 		`CREATE TABLE IF NOT EXISTS channel_messages (
-			id           TEXT    NOT NULL,
-			channel      TEXT    NOT NULL,
-			scope        TEXT    NOT NULL,
-			scope_id     TEXT    NOT NULL,
-			payload      TEXT    NOT NULL,
-			published_at INTEGER NOT NULL,
-			expires_at   INTEGER,
+			id                   TEXT    NOT NULL,
+			channel              TEXT    NOT NULL,
+			scope                TEXT    NOT NULL,
+			scope_id             TEXT    NOT NULL,
+			payload              TEXT    NOT NULL,
+			published_at         INTEGER NOT NULL,
+			expires_at           INTEGER,
+			visible_at           INTEGER NOT NULL DEFAULT 0,
+			published_by_user_id TEXT,
 			PRIMARY KEY (channel, scope, scope_id, id)
 		)`,
 		`CREATE INDEX IF NOT EXISTS channel_messages_by_expires_at ON channel_messages(expires_at) WHERE expires_at IS NOT NULL`,
+		`CREATE INDEX IF NOT EXISTS channel_messages_by_visible ON channel_messages(channel, scope, scope_id, visible_at, id)`,
 		`CREATE TABLE IF NOT EXISTS channel_cursors (
 			channel    TEXT    NOT NULL,
 			scope      TEXT    NOT NULL,
@@ -220,6 +227,12 @@ func (s *Store) migrate(ctx context.Context) error {
 		// in agent_defs. Distinguishes static-resolved from DB-resolved
 		// runs without a separate flag.
 		`ALTER TABLE runs ADD COLUMN agent_def_id TEXT`,
+		// v0.8.6 system channels: visible_at + published_by_user_id on
+		// channel_messages. Idempotent ALTER for existing v0.8.4 / v0.8.5
+		// schemas; on fresh deploys the CREATE TABLE already declared
+		// them and the duplicate-column-name guard short-circuits these.
+		`ALTER TABLE channel_messages ADD COLUMN visible_at INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE channel_messages ADD COLUMN published_by_user_id TEXT`,
 	}
 	for _, q := range addColumns {
 		if _, err := s.db.ExecContext(ctx, q); err != nil {
@@ -258,6 +271,23 @@ func (s *Store) migrate(ctx context.Context) error {
 		// idempotent shape consistent across all index DDL.
 		if _, err := s.db.ExecContext(ctx, q); err != nil {
 			return fmt.Errorf("migrate add index: %w", err)
+		}
+	}
+
+	// v0.8.6 data fixups (run after column adds + indexes are in place).
+	//   - Backfill visible_at on pre-v0.8.6 rows so the new (visible_at, id)
+	//     read order matches publish order for legacy data.
+	//   - Wipe pre-v0.8.6 cursors. The v0.8.6 cursor format is
+	//     `cur_<hex>_<msg_id>` (tuple-shaped). Legacy `msg_<hex>` cursors
+	//     are not parsed — subscribers replay from oldest on first
+	//     subscribe after upgrade.
+	dataFixups := []string{
+		`UPDATE channel_messages SET visible_at = published_at WHERE visible_at = 0`,
+		`DELETE FROM channel_cursors WHERE cursor NOT LIKE 'cur_%' AND cursor != 'cur_0'`,
+	}
+	for _, q := range dataFixups {
+		if _, err := s.db.ExecContext(ctx, q); err != nil {
+			return fmt.Errorf("migrate data fixup: %w", err)
 		}
 	}
 	return nil
@@ -993,14 +1023,27 @@ func (s *Store) MemorySweep(ctx context.Context) (int, error) {
 // ChannelPublish appends one message and trims the channel down to
 // maxMessages inside the same txn (oldest rows go first). maxMessages
 // <= 0 disables the trim. Returns the assigned id and the trim count.
+//
+// v0.8.6: visible_at + published_by_user_id are honoured. Deferred
+// publishes (VisibleAt > now) land in storage immediately but are
+// hidden from reads until visible_at <= now; the tool layer's
+// scheduler schedules a Bus.Notify(channel) at visible_at so
+// long-poll subscribers wake on time.
 func (s *Store) ChannelPublish(ctx context.Context, msg store.ChannelMessage, maxMessages int) (string, int, error) {
 	now := time.Now()
 	msg.ID = store.MintChannelMessageID(now)
 	msg.PublishedAt = now
+	if msg.VisibleAt.IsZero() || msg.VisibleAt.Before(now) {
+		msg.VisibleAt = now
+	}
 
 	var expiresAt any
 	if !msg.ExpiresAt.IsZero() {
 		expiresAt = msg.ExpiresAt.UnixNano()
+	}
+	var publishedByUserID any
+	if msg.PublishedByUserID != "" {
+		publishedByUserID = msg.PublishedByUserID
 	}
 
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -1010,9 +1053,10 @@ func (s *Store) ChannelPublish(ctx context.Context, msg store.ChannelMessage, ma
 	defer func() { _ = tx.Rollback() }()
 
 	if _, err := tx.ExecContext(ctx,
-		`INSERT INTO channel_messages(id, channel, scope, scope_id, payload, published_at, expires_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		msg.ID, msg.Channel, string(msg.Scope), msg.ScopeID, string(msg.Payload), now.UnixNano(), expiresAt,
+		`INSERT INTO channel_messages(id, channel, scope, scope_id, payload, published_at, expires_at, visible_at, published_by_user_id)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		msg.ID, msg.Channel, string(msg.Scope), msg.ScopeID, string(msg.Payload),
+		now.UnixNano(), expiresAt, msg.VisibleAt.UnixNano(), publishedByUserID,
 	); err != nil {
 		return "", 0, err
 	}
@@ -1084,39 +1128,72 @@ func (s *Store) ChannelPeek(ctx context.Context, channel string, scope store.Mem
 
 // channelRead is the shared read body for Subscribe + Peek. expired-
 // at-read-time filter applies on both paths.
+//
+// v0.8.6: cursor is a (visible_at, msg_id) tuple. Delivery order =
+// visible_at first, then msg_id within the same visible_at. The
+// `visible_at <= now` filter hides deferred publishes until their
+// delivery time. nextCursor encodes the LAST row's (visible_at, id)
+// so subscribers can pick up exactly where they left off, including
+// deferred messages that become visible later than other messages
+// published in between.
 func (s *Store) channelRead(ctx context.Context, channel string, scope store.MemoryScope, scopeID, fromCursor string, limit int) ([]store.ChannelMessage, string, error) {
 	if limit <= 0 {
 		limit = 10
 	}
-	if fromCursor == "cur_0" {
-		fromCursor = ""
-	}
-	now := time.Now().UnixNano()
-	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, payload, published_at, expires_at
-		 FROM channel_messages
-		 WHERE channel = ? AND scope = ? AND scope_id = ?
-		   AND id > ?
-		   AND (expires_at IS NULL OR expires_at > ?)
-		 ORDER BY id ASC
-		 LIMIT ?`,
-		channel, string(scope), scopeID, fromCursor, now, limit,
-	)
+	cursorVisibleAt, cursorMsgID, fromOldest, err := store.DecodeChannelCursor(fromCursor)
 	if err != nil {
 		return nil, "", err
+	}
+
+	now := time.Now().UnixNano()
+	var (
+		rows  *sql.Rows
+		qErr  error
+		query string
+	)
+	if fromOldest {
+		query = `SELECT id, payload, published_at, expires_at, visible_at, published_by_user_id
+			 FROM channel_messages
+			 WHERE channel = ? AND scope = ? AND scope_id = ?
+			   AND visible_at <= ?
+			   AND (expires_at IS NULL OR expires_at > ?)
+			 ORDER BY visible_at ASC, id ASC
+			 LIMIT ?`
+		rows, qErr = s.db.QueryContext(ctx, query,
+			channel, string(scope), scopeID, now, now, limit)
+	} else {
+		// Strictly-greater-than tuple comparison: (visible_at, id) > (cv, cid).
+		query = `SELECT id, payload, published_at, expires_at, visible_at, published_by_user_id
+			 FROM channel_messages
+			 WHERE channel = ? AND scope = ? AND scope_id = ?
+			   AND visible_at <= ?
+			   AND (expires_at IS NULL OR expires_at > ?)
+			   AND (visible_at > ? OR (visible_at = ? AND id > ?))
+			 ORDER BY visible_at ASC, id ASC
+			 LIMIT ?`
+		rows, qErr = s.db.QueryContext(ctx, query,
+			channel, string(scope), scopeID, now, now,
+			cursorVisibleAt.UnixNano(), cursorVisibleAt.UnixNano(), cursorMsgID,
+			limit)
+	}
+	if qErr != nil {
+		return nil, "", qErr
 	}
 	defer rows.Close()
 
 	var msgs []store.ChannelMessage
+	var lastVisibleAt time.Time
 	var lastID string
 	for rows.Next() {
 		var (
-			id          string
-			payload     string
-			publishedAt int64
-			expiresAt   sql.NullInt64
+			id                string
+			payload           string
+			publishedAt       int64
+			expiresAt         sql.NullInt64
+			visibleAt         int64
+			publishedByUserID sql.NullString
 		)
-		if err := rows.Scan(&id, &payload, &publishedAt, &expiresAt); err != nil {
+		if err := rows.Scan(&id, &payload, &publishedAt, &expiresAt, &visibleAt, &publishedByUserID); err != nil {
 			return nil, "", err
 		}
 		msg := store.ChannelMessage{
@@ -1126,25 +1203,41 @@ func (s *Store) channelRead(ctx context.Context, channel string, scope store.Mem
 			ScopeID:     scopeID,
 			Payload:     json.RawMessage(payload),
 			PublishedAt: time.Unix(0, publishedAt),
+			VisibleAt:   time.Unix(0, visibleAt),
 		}
 		if expiresAt.Valid {
 			msg.ExpiresAt = time.Unix(0, expiresAt.Int64)
 		}
+		if publishedByUserID.Valid {
+			msg.PublishedByUserID = publishedByUserID.String
+		}
 		msgs = append(msgs, msg)
+		lastVisibleAt = msg.VisibleAt
 		lastID = id
 	}
 	if err := rows.Err(); err != nil {
 		return nil, "", err
 	}
-	return msgs, lastID, nil
+	var nextCursor string
+	if lastID != "" {
+		nextCursor = store.EncodeChannelCursor(lastVisibleAt, lastID)
+	}
+	return msgs, nextCursor, nil
 }
 
 // ChannelAck commits cursor to the per-subscriber row. Rejects cursor
-// values older than the currently committed one (ULID lexicographic
-// order). Idempotent re-ack of the SAME cursor is a no-op.
+// values older than the currently committed one (lexicographic order
+// matches tuple order because the v0.8.6 cursor format encodes
+// visible_at as a fixed-width hex prefix). Idempotent re-ack of the
+// SAME cursor is a no-op.
 func (s *Store) ChannelAck(ctx context.Context, channel string, scope store.MemoryScope, scopeID, cursor string) error {
 	if cursor == "" || cursor == "cur_0" {
 		return nil // nothing to commit
+	}
+	// Validate format — reject legacy `msg_<hex>` cursors and garbage
+	// rather than silently storing them.
+	if _, _, _, err := store.DecodeChannelCursor(cursor); err != nil {
+		return err
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {

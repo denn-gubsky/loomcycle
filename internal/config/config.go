@@ -656,6 +656,15 @@ type Env struct {
 	// Env: LOOMCYCLE_CHANNELS_LONGPOLL_CAP_MS.
 	ChannelsLongPollCapMS int
 
+	// ChannelsMaxPendingDeferred caps the v0.8.6 deferred-publish
+	// scheduler's live timer count. Excess publishes still land in
+	// storage; the scheduler silently skips the in-process Bus
+	// notification (subscribers see deferred messages on their next
+	// long-poll wake instead). Default 10000. 0 disables the cap
+	// (unbounded timers).
+	// Env: LOOMCYCLE_CHANNELS_MAX_PENDING_DEFERRED.
+	ChannelsMaxPendingDeferred int
+
 	// AgentDefMaxDefinitionBytes caps a single AgentDef.create or
 	// AgentDef.fork's serialised definition JSON (v0.8.5). Default
 	// 131072 (128 KB). 0 disables. Mirrors MemoryMaxValueBytes's
@@ -975,6 +984,16 @@ func Load(path string) (*Config, error) {
 				cfg.Env.ChannelsLongPollCapMS = 0
 			} else {
 				cfg.Env.ChannelsLongPollCapMS = n
+			}
+		}
+	}
+	cfg.Env.ChannelsMaxPendingDeferred = 10000
+	if v := os.Getenv("LOOMCYCLE_CHANNELS_MAX_PENDING_DEFERRED"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			if n <= 0 {
+				cfg.Env.ChannelsMaxPendingDeferred = 0
+			} else {
+				cfg.Env.ChannelsMaxPendingDeferred = n
 			}
 		}
 	}

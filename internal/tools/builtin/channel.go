@@ -48,6 +48,15 @@ type Channel struct {
 	// storage).
 	Bus *channels.Bus
 
+	// Scheduler arms timers for deferred publishes (v0.8.6). When
+	// the model passes `deliver_at` in the future, the tool stores
+	// the message immediately + asks the scheduler to fire
+	// Bus.Notify(channel) at visible_at. Nil scheduler = deferred
+	// publishes still land in storage but long-poll subscribers
+	// wake only on their periodic budget (no in-process latency
+	// optimisation).
+	Scheduler *channels.Scheduler
+
 	// MaxValueBytes caps a single publish's payload size. 0 = no
 	// cap. Sourced from LOOMCYCLE_CHANNELS_MAX_VALUE_BYTES.
 	MaxValueBytes int
@@ -72,6 +81,7 @@ const channelInputSchema = `{
     "channel":      {"type": "string", "description": "The channel name (required for publish/subscribe/ack/peek)."},
     "value":        {"description": "Publish only: the JSON payload to append."},
     "ttl":          {"type": "integer", "description": "Publish only: per-message TTL in seconds. Absent = channel default."},
+    "deliver_at":   {"type": "string", "description": "Publish only (optional): RFC3339 timestamp at which the message becomes deliverable. Absent or in the past = immediate. TTL counts from publish time, NOT deliver_at — size the TTL to cover both the deferral window AND the desired visibility window."},
     "from_cursor":  {"type": "string", "description": "Subscribe/peek only: read starting after this cursor. Absent = since last ack. \"cur_0\" = replay from oldest."},
     "max_messages": {"type": "integer", "description": "Subscribe/peek only: max messages to return (default 10, cap 100)."},
     "wait_ms":      {"type": "integer", "description": "Subscribe only: long-poll budget in ms. 0 = return immediately. Capped by operator config."},
@@ -86,6 +96,7 @@ type channelInput struct {
 	Channel     string          `json:"channel,omitempty"`
 	Value       json.RawMessage `json:"value,omitempty"`
 	TTL         int64           `json:"ttl,omitempty"`
+	DeliverAt   string          `json:"deliver_at,omitempty"`
 	FromCursor  string          `json:"from_cursor,omitempty"`
 	MaxMessages int             `json:"max_messages,omitempty"`
 	WaitMS      int             `json:"wait_ms,omitempty"`
@@ -228,17 +239,40 @@ func (c *Channel) execPublish(ctx context.Context, policy tools.ChannelPolicyVal
 	if ttlSecs == 0 {
 		ttlSecs = int64(def.DefaultTTL)
 	}
+	now := time.Now()
 	var expiresAt time.Time
 	if ttlSecs > 0 {
-		expiresAt = time.Now().Add(time.Duration(ttlSecs) * time.Second)
+		// TTL counts from publish time, not deliver_at — preserves
+		// total-lifetime semantics (a deferred message never survives
+		// beyond its declared TTL). Operator/agent's responsibility
+		// to size correctly if they want a meaningful visibility
+		// window after a long deferral.
+		expiresAt = now.Add(time.Duration(ttlSecs) * time.Second)
+	}
+
+	// deliver_at parsing (v0.8.6). Empty / parseable-as-past = visible
+	// immediately. Future-dated = deferred publish.
+	var visibleAt time.Time
+	deferred := false
+	if in.DeliverAt != "" {
+		parsed, err := time.Parse(time.RFC3339, in.DeliverAt)
+		if err != nil {
+			return errResult(fmt.Sprintf("publish: invalid deliver_at %q: %s (expected RFC3339)", in.DeliverAt, err)), nil
+		}
+		if parsed.After(now) {
+			visibleAt = parsed
+			deferred = true
+		}
 	}
 
 	id, dropped, err := c.Store.ChannelPublish(ctx, store.ChannelMessage{
-		Channel:   in.Channel,
-		Scope:     scope,
-		ScopeID:   scopeID,
-		Payload:   in.Value,
-		ExpiresAt: expiresAt,
+		Channel:           in.Channel,
+		Scope:             scope,
+		ScopeID:           scopeID,
+		Payload:           in.Value,
+		ExpiresAt:         expiresAt,
+		VisibleAt:         visibleAt, // zero = treated as "now" inside the store
+		PublishedByUserID: tools.RunIdentity(ctx).UserID,
 	}, def.MaxMessages)
 	if err != nil {
 		if errors.Is(err, store.ErrChannelValueTooLarge) {
@@ -246,7 +280,12 @@ func (c *Channel) execPublish(ctx context.Context, policy tools.ChannelPolicyVal
 		}
 		return errResult(fmt.Sprintf("publish: %s", err)), nil
 	}
-	if c.Bus != nil {
+	// Deferred publishes go via the scheduler so long-poll subscribers
+	// wake at visible_at. Immediate publishes notify the bus directly
+	// (same as v0.8.4).
+	if deferred && c.Scheduler != nil {
+		c.Scheduler.Schedule(in.Channel, id, visibleAt)
+	} else if c.Bus != nil {
 		c.Bus.Notify(in.Channel)
 	}
 	// Typed audit event (v0.8.4 polish): same payload as the
@@ -267,11 +306,15 @@ func (c *Channel) execPublish(ctx context.Context, policy tools.ChannelPolicyVal
 			DroppedOldest:  dropped,
 		},
 	})
-	return okJSON(map[string]any{
+	result := map[string]any{
 		"message_id":     id,
 		"channel":        in.Channel,
 		"dropped_oldest": dropped, // > 0 indicates max_messages overflow
-	})
+	}
+	if deferred {
+		result["visible_at"] = visibleAt.UTC().Format(time.RFC3339Nano)
+	}
+	return okJSON(result)
 }
 
 func (c *Channel) execSubscribe(ctx context.Context, policy tools.ChannelPolicyValue, in channelInput) (tools.Result, error) {
