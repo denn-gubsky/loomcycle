@@ -245,6 +245,15 @@ func main() {
 	}
 	allTools = append(allTools, evaluationTool)
 
+	// Context tool (v0.8.7). Read-only runtime introspection. The Tools
+	// field is back-filled with the FULL allTools slice after every
+	// other registration (MCP + localapi) so doc/tools ops reflect the
+	// complete catalog. Including Context itself in the catalog is
+	// intentional — agents introspecting "what tools do I have" should
+	// see Context, and `doc(name="Context")` should work.
+	contextTool := &builtin.Context{}
+	allTools = append(allTools, contextTool)
+
 	// Local API MCP gateway (v0.4.0+). When `local_api.spec` is set
 	// in loomcycle.yaml, parse the OpenAPI spec and register one tool
 	// per operation. Each tool forwards calls to local_api.base_url
@@ -411,6 +420,12 @@ func main() {
 	channelTool.Store = storeIface
 	agentDefTool.Store = storeIface
 	evaluationTool.Store = storeIface
+	// Back-fill Context tool's catalog with the FINAL allTools slice
+	// (including MCP-served tools registered above) so doc/tools ops
+	// reflect the complete runtime catalog. Must happen AFTER every
+	// allTools = append(...) line above.
+	contextTool.Tools = allTools
+
 	srv := lchttp.New(cfg, pr, allTools, sem, storeIface)
 	srv.SetMCPFallback(mcpLazyResolver.Resolve)
 
