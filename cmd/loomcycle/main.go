@@ -34,6 +34,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/concurrency"
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/heartbeat"
+	"github.com/denn-gubsky/loomcycle/internal/help"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/providers/anthropic"
 	"github.com/denn-gubsky/loomcycle/internal/providers/deepseek"
@@ -159,6 +160,18 @@ func main() {
 	if cfg.Env.SkillsRoot != "" {
 		log.Printf("skills: loaded %d from %s", len(skillSet.Names()), cfg.Env.SkillsRoot)
 	}
+	// v0.8.8 help topics — bundled defaults overlaid with operator
+	// .md files from LOOMCYCLE_HELP_ROOT. Always non-nil after this
+	// load; bundled-only deployments get the default topic set.
+	helpSet, err := help.LoadSet(cfg.Env.HelpRoot)
+	if err != nil {
+		log.Fatalf("help: %v", err)
+	}
+	if cfg.Env.HelpRoot != "" {
+		log.Printf("help: loaded %d topics (filesystem overlay at %s)", len(helpSet.Names()), cfg.Env.HelpRoot)
+	} else {
+		log.Printf("help: loaded %d bundled topics (no LOOMCYCLE_HELP_ROOT overlay)", len(helpSet.Names()))
+	}
 	if cfg.Env.AgentsRoot != "" {
 		// Agents-from-MD discovery happened inside config.Load (must run
 		// before resolveSystemPromptFiles so the merged map flows through
@@ -254,7 +267,7 @@ func main() {
 	// power the v0.8.7 PR 2 substrate-coupled ops (agents / lineage /
 	// evaluations); Store is late-bound below alongside the other
 	// substrate tools.
-	contextTool := &builtin.Context{Cfg: cfg}
+	contextTool := &builtin.Context{Cfg: cfg, Help: helpSet}
 	allTools = append(allTools, contextTool)
 
 	// Local API MCP gateway (v0.4.0+). When `local_api.spec` is set

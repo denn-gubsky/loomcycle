@@ -607,6 +607,15 @@ type Env struct {
 	// Sourced from LOOMCYCLE_AGENTS_ROOT.
 	AgentsRoot string
 
+	// HelpRoot points at a directory of flat `<name>.md` files holding
+	// help topics for the Context.help op. When set, files at this root
+	// overlay the binary's bundled topics (filesystem wins per topic
+	// name). When unset, only bundled topics are available. Operators
+	// use this to publish deployment-specific guidance (e.g. local
+	// policy docs, internal MCP server walkthroughs) without rebuilding
+	// loomcycle. Sourced from LOOMCYCLE_HELP_ROOT.
+	HelpRoot string
+
 	// HeartbeatSweeperEnabled controls the v0.5.0 stale-run sweeper.
 	// When true (default), a goroutine periodically marks runs whose
 	// heartbeat hasn't advanced in HeartbeatStaleAfter as failed —
@@ -862,6 +871,7 @@ func Load(path string) (*Config, error) {
 		BashCwd:                  os.Getenv("LOOMCYCLE_BASH_CWD"),
 		SkillsRoot:               os.Getenv("LOOMCYCLE_SKILLS_ROOT"),
 		AgentsRoot:               os.Getenv("LOOMCYCLE_AGENTS_ROOT"),
+		HelpRoot:                 os.Getenv("LOOMCYCLE_HELP_ROOT"),
 		// Sweeper / GC defaults — populated above zero only if the
 		// env var below was set. The fallbacks are applied in
 		// cmd/loomcycle/main.go where the goroutines are started.

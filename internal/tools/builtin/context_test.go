@@ -8,10 +8,16 @@ import (
 	"testing"
 
 	"github.com/denn-gubsky/loomcycle/internal/config"
+	"github.com/denn-gubsky/loomcycle/internal/help"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/store/sqlite"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
+
+func loadTestHelpSet(t *testing.T) (*help.Set, error) {
+	t.Helper()
+	return help.LoadSet("")
+}
 
 // fakeTool is a minimal tools.Tool used for the Context tool's
 // catalog tests. Name + Description + InputSchema are caller-supplied;
@@ -807,5 +813,83 @@ func TestContextTool_HistoryTruncatedTrueWhenMatchesExceedLimit(t *testing.T) {
 	}
 	if !out["truncated"].(bool) {
 		t.Error("truncated = false; want true (3 matches > limit 2)")
+	}
+}
+
+// ---- help ----
+
+func TestContextTool_HelpRefusesWithoutHelpRegistry(t *testing.T) {
+	tool, ctx := contextFixture(t)
+	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"help"}`))
+	if !res.IsError {
+		t.Fatalf("help with nil Help should refuse; got %s", res.Text)
+	}
+	if !strings.Contains(res.Text, "not configured") {
+		t.Errorf("error text = %q, want 'not configured'", res.Text)
+	}
+}
+
+func TestContextTool_HelpIndexListsAllTopics(t *testing.T) {
+	tool, ctx := contextFixture(t)
+	helpSet, err := loadTestHelpSet(t)
+	if err != nil {
+		t.Fatalf("loadTestHelpSet: %v", err)
+	}
+	tool.Help = helpSet
+	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"help"}`))
+	if res.IsError {
+		t.Fatalf("help index: %s", res.Text)
+	}
+	out := decodeResult(t, res.Text)
+	topics, ok := out["topics"].([]any)
+	if !ok || len(topics) == 0 {
+		t.Fatalf("topics missing/empty: %v", out)
+	}
+	first := topics[0].(map[string]any)
+	if first["name"] == "" || first["description"] == "" {
+		t.Errorf("topic entry missing name/description: %v", first)
+	}
+	if _, has := first["content"]; has {
+		t.Error("index entries must NOT include content")
+	}
+	if out["hint"] == "" {
+		t.Error("hint missing from index response")
+	}
+}
+
+func TestContextTool_HelpDetailReturnsContent(t *testing.T) {
+	tool, ctx := contextFixture(t)
+	helpSet, err := loadTestHelpSet(t)
+	if err != nil {
+		t.Fatalf("loadTestHelpSet: %v", err)
+	}
+	tool.Help = helpSet
+	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"help","topic":"scopes"}`))
+	if res.IsError {
+		t.Fatalf("help detail: %s", res.Text)
+	}
+	out := decodeResult(t, res.Text)
+	if out["name"] != "scopes" {
+		t.Errorf("name = %v, want scopes", out["name"])
+	}
+	content, _ := out["content"].(string)
+	if !strings.Contains(content, "scope") {
+		t.Errorf("content didn't include scope topic body: %q", content)
+	}
+}
+
+func TestContextTool_HelpUnknownTopic(t *testing.T) {
+	tool, ctx := contextFixture(t)
+	helpSet, err := loadTestHelpSet(t)
+	if err != nil {
+		t.Fatalf("loadTestHelpSet: %v", err)
+	}
+	tool.Help = helpSet
+	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"help","topic":"does-not-exist"}`))
+	if !res.IsError {
+		t.Fatalf("unknown topic should refuse; got %s", res.Text)
+	}
+	if !strings.Contains(res.Text, "available:") {
+		t.Errorf("error should list available topics: %q", res.Text)
 	}
 }
