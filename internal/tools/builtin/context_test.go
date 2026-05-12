@@ -38,9 +38,10 @@ func contextFixture(t *testing.T) (*Context, context.Context) {
 	}
 	ctx := tools.WithAgentName(context.Background(), "researcher")
 	ctx = tools.WithRunIdentity(ctx, tools.RunIdentityValue{
-		AgentID:  "a_test",
-		UserID:   "alice",
-		UserTier: "medium",
+		AgentID:    "a_test",
+		UserID:     "alice",
+		UserTier:   "medium",
+		AgentDefID: "def_abc",
 	})
 	ctx = tools.WithAgentTools(ctx, []string{"Read", "Memory", "Context", "mcp__jobs__patchApp"})
 	return tool, ctx
@@ -66,6 +67,27 @@ func TestContextTool_SelfReturnsIdentity(t *testing.T) {
 	}
 	if out["user_tier"] != "medium" {
 		t.Errorf("user_tier = %v, want medium", out["user_tier"])
+	}
+	// v0.8.7 PR 1 review fix: agent_def_id surfaced from RunIdentity.
+	if out["agent_def_id"] != "def_abc" {
+		t.Errorf("agent_def_id = %v, want def_abc", out["agent_def_id"])
+	}
+}
+
+// PR 1 review fix: empty AgentDefID (static-resolved run, no pin)
+// surfaces as empty string, not as a missing key.
+func TestContextTool_SelfEmptyAgentDefIDStillSurfaced(t *testing.T) {
+	tool := &Context{}
+	ctx := tools.WithRunIdentity(context.Background(), tools.RunIdentityValue{
+		AgentID: "a_static",
+	})
+	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"self"}`))
+	out := decodeResult(t, res.Text)
+	if _, ok := out["agent_def_id"]; !ok {
+		t.Error("agent_def_id key missing — should be present (empty string) for static runs")
+	}
+	if out["agent_def_id"] != "" {
+		t.Errorf("agent_def_id = %v, want empty string", out["agent_def_id"])
 	}
 }
 

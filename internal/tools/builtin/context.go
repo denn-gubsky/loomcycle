@@ -101,10 +101,11 @@ func (c *Context) Execute(ctx context.Context, raw json.RawMessage) (tools.Resul
 func (c *Context) execSelf(ctx context.Context) (tools.Result, error) {
 	ident := tools.RunIdentity(ctx)
 	out := map[string]any{
-		"agent_name": tools.AgentName(ctx),
-		"agent_id":   ident.AgentID,
-		"user_id":    ident.UserID,
-		"user_tier":  ident.UserTier,
+		"agent_name":   tools.AgentName(ctx),
+		"agent_id":     ident.AgentID,
+		"user_id":      ident.UserID,
+		"user_tier":    ident.UserTier,
+		"agent_def_id": ident.AgentDefID,
 	}
 	return okJSON(out)
 }
