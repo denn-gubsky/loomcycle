@@ -123,6 +123,14 @@ type Run struct {
 	// define a user_tiers block at all. Lets compliance / cost
 	// retrospective queries facet by tier without grepping logs.
 	UserTier string `json:"user_tier,omitempty"`
+
+	// AgentDefID is the v0.8.5 substrate audit column — populated
+	// when the parent's Agent tool call pinned a specific def_id, or
+	// when an admin path resolves through agent_def_active. Empty =
+	// the run resolved through static cfg.Agents only. The
+	// Evaluation tool's submit op reads this to denormalise def_id
+	// onto each evaluation row at write time.
+	AgentDefID string `json:"agent_def_id,omitempty"`
 }
 
 // Event is one streamed datum, persisted append-only. Payload is the JSON
@@ -172,6 +180,12 @@ type RunIdentity struct {
 	// creation. Empty when the request didn't carry user_tier (back-
 	// compat) or the operator's yaml has no user_tiers block.
 	UserTier string
+	// AgentDefID pins this run to a specific agent_defs row (v0.8.5).
+	// Empty = the run resolved through static cfg.Agents only; non-
+	// empty = parent called Agent tool with a def_id. Persisted as
+	// runs.agent_def_id so the Evaluation tool can denormalise it
+	// into evaluations.def_id at submit time.
+	AgentDefID string
 }
 
 // UserSummary is one row of ListUsers' output: distinct user_id with

@@ -12,7 +12,7 @@ import (
 // returned text is wrapped in a successful Result.
 func TestAgentTool_HappyPath(t *testing.T) {
 	var gotName, gotPrompt string
-	a := &AgentTool{Run: func(_ context.Context, name, prompt string) (string, error) {
+	a := &AgentTool{Run: func(_ context.Context, name, prompt, _ string) (string, error) {
 		gotName, gotPrompt = name, prompt
 		return "sub-agent output", nil
 	}}
@@ -36,7 +36,7 @@ func TestAgentTool_HappyPath(t *testing.T) {
 // Missing required fields surface as IsError tool_results so the model
 // can self-correct, NOT as Go errors that tear down the run.
 func TestAgentTool_MissingName(t *testing.T) {
-	a := &AgentTool{Run: func(context.Context, string, string) (string, error) {
+	a := &AgentTool{Run: func(context.Context, string, string, string) (string, error) {
 		t.Fatal("runner should not be called when name is missing")
 		return "", nil
 	}}
@@ -53,7 +53,7 @@ func TestAgentTool_MissingName(t *testing.T) {
 }
 
 func TestAgentTool_MissingPrompt(t *testing.T) {
-	a := &AgentTool{Run: func(context.Context, string, string) (string, error) {
+	a := &AgentTool{Run: func(context.Context, string, string, string) (string, error) {
 		t.Fatal("runner should not be called when prompt is missing")
 		return "", nil
 	}}
@@ -68,7 +68,7 @@ func TestAgentTool_MissingPrompt(t *testing.T) {
 // from the runner instead of a clean "missing field" response.
 func TestAgentTool_WhitespaceNameRejected(t *testing.T) {
 	called := false
-	a := &AgentTool{Run: func(context.Context, string, string) (string, error) {
+	a := &AgentTool{Run: func(context.Context, string, string, string) (string, error) {
 		called = true
 		return "", nil
 	}}
@@ -84,7 +84,7 @@ func TestAgentTool_WhitespaceNameRejected(t *testing.T) {
 // Malformed JSON input is also a model-correctable error, not a hard
 // crash. The model gets feedback "invalid input JSON" and can retry.
 func TestAgentTool_MalformedJSON(t *testing.T) {
-	a := &AgentTool{Run: func(context.Context, string, string) (string, error) {
+	a := &AgentTool{Run: func(context.Context, string, string, string) (string, error) {
 		t.Fatal("runner should not be called on malformed JSON")
 		return "", nil
 	}}
@@ -101,7 +101,7 @@ func TestAgentTool_MalformedJSON(t *testing.T) {
 // parent run continues so the model can decide how to recover (try a
 // different sub-agent, fall back, give up gracefully).
 func TestAgentTool_RunnerError(t *testing.T) {
-	a := &AgentTool{Run: func(context.Context, string, string) (string, error) {
+	a := &AgentTool{Run: func(context.Context, string, string, string) (string, error) {
 		return "", errors.New("provider returned 500")
 	}}
 	res, err := a.Execute(context.Background(),
@@ -121,7 +121,7 @@ func TestAgentTool_RunnerError(t *testing.T) {
 // only tool calls, then stopped). Surface a hint so the parent's
 // model has something concrete to read instead of empty Text.
 func TestAgentTool_EmptyOutputHint(t *testing.T) {
-	a := &AgentTool{Run: func(context.Context, string, string) (string, error) {
+	a := &AgentTool{Run: func(context.Context, string, string, string) (string, error) {
 		return "", nil
 	}}
 	res, _ := a.Execute(context.Background(),
@@ -139,7 +139,7 @@ func TestAgentTool_EmptyOutputHint(t *testing.T) {
 // the runner gets called instead of the IsError path.
 func TestAgentTool_MaxDepthGuard(t *testing.T) {
 	called := false
-	a := &AgentTool{Run: func(context.Context, string, string) (string, error) {
+	a := &AgentTool{Run: func(context.Context, string, string, string) (string, error) {
 		called = true
 		return "should not run", nil
 	}}
@@ -161,7 +161,7 @@ func TestAgentTool_MaxDepthGuard(t *testing.T) {
 // boundary by one.
 func TestAgentTool_DepthBelowCapAllowed(t *testing.T) {
 	called := false
-	a := &AgentTool{Run: func(context.Context, string, string) (string, error) {
+	a := &AgentTool{Run: func(context.Context, string, string, string) (string, error) {
 		called = true
 		return "ok", nil
 	}}
@@ -204,5 +204,42 @@ func TestAgentTool_NilRunner(t *testing.T) {
 		json.RawMessage(`{"name":"x","prompt":"y"}`))
 	if !res.IsError || !strings.Contains(res.Text, "not wired") {
 		t.Errorf("expected nil-runner IsError, got %+v", res)
+	}
+}
+
+// v0.8.5 PR 5: optional def_id pins this sub-run to a specific
+// agent_defs row. Test only that the tool propagates the field
+// through to the runner — actual lookup + overlay is wired in the
+// HTTP server's runSubAgent and tested at that layer.
+func TestAgentTool_DefIDPassthrough(t *testing.T) {
+	var gotDef string
+	a := &AgentTool{Run: func(_ context.Context, _, _, defID string) (string, error) {
+		gotDef = defID
+		return "ok", nil
+	}}
+	res, _ := a.Execute(context.Background(),
+		json.RawMessage(`{"name":"x","prompt":"y","def_id":"def_abc"}`))
+	if res.IsError {
+		t.Fatalf("unexpected error: %s", res.Text)
+	}
+	if gotDef != "def_abc" {
+		t.Errorf("def_id passthrough lost: %q", gotDef)
+	}
+}
+
+// Backwards-compat: omitting def_id leaves it empty (zero-value).
+func TestAgentTool_DefIDOmittedDefaultsEmpty(t *testing.T) {
+	var gotDef string
+	a := &AgentTool{Run: func(_ context.Context, _, _, defID string) (string, error) {
+		gotDef = defID
+		return "ok", nil
+	}}
+	res, _ := a.Execute(context.Background(),
+		json.RawMessage(`{"name":"x","prompt":"y"}`))
+	if res.IsError {
+		t.Fatalf("unexpected error: %s", res.Text)
+	}
+	if gotDef != "" {
+		t.Errorf("def_id should default empty, got %q", gotDef)
 	}
 }
