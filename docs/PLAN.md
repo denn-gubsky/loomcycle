@@ -2,7 +2,66 @@
 
 This is the public roadmap. For decision history, regret notes, and per-version commit-by-commit details, see `doc-internal/PLAN.md` (gitignored).
 
-## v0.8.4 — current
+## v0.8.8 — current
+
+**Status: shipped (2026-05-12).** **`Context.help`** — the tenth op on the v0.8.7 Context tool. With no `topic`, returns the topic index (`{topics: [{name, description, source}], count, hint}`); with `topic=<name>`, returns the full markdown body. Five topics ship bundled in the binary via `//go:embed` (`loomcycle`, `scopes`, `subagents`, `experimentation`, `system-channels`); operators override or extend with `LOOMCYCLE_HELP_ROOT`. Closes the gap between every tool's `doc` op (its own input schema) and cross-cutting guidance that no single tool's `doc` can return alone — how scopes compose across Memory + Channel, when sub-agents beat channels, what the AgentDef + Evaluation loop looks like end-to-end. PR #84.
+
+**What's in v0.8.8 (vs v0.8.7):**
+
+- **`help` op on the Context tool** with index-vs-detail split. Index mode keeps the response compact (no `content`); detail mode returns the full markdown body. Unknown topic surfaces the available list in the error so the model can self-correct in one round-trip.
+- **Filesystem overlay via `LOOMCYCLE_HELP_ROOT`.** Files at the root with names matching bundled topics REPLACE them; new names extend the set. Same Claude-Code-compatible frontmatter (`name:` must match filename stem; `description:` is the index one-liner; everything after the closing `---` is the body).
+- **Trust-boundary protections.** Symlinks under the help root are **refused** with a log line — a stray `escape.md` symlink would otherwise let an operator (intentionally or via misconfigured automation) exfiltrate any file the loomcycle process can read into the topic body the model sees. Per-file parse errors are **soft-skipped** rather than fatal so one malformed operator topic doesn't kill the runtime (bundled defaults remain intact).
+- **Test coverage:** 16 unit tests in `internal/help/loader_test.go` (bundled load, filesystem overlay, override-by-name, symlink refusal, malformed soft-skip, frontmatter validation, subdir skip, nil-safety) + 4 unit tests for `execHelp` (nil refusal, index mode, detail mode, unknown topic). Race-detector clean. Runtime smoke at `test/runtime/context-help/` exercises both modes against `gemini-2.5-flash`.
+- **`.env.example`** documents `LOOMCYCLE_HELP_ROOT` with frontmatter contract + override semantics.
+
+For the v0.8.7 baseline that drove this work, see [v0.8.7](#v087--earlier).
+
+## v0.8.7 — earlier
+
+**Status: shipped (2026-05-12).** **Context tool** — read-only runtime introspection. Lets self-evolving agents inspect their own runtime: what tools they have, who they are, what their definition's lineage looks like, what evaluations exist for it, what channels they can reach, what their conversation history is. Nine ops on a single discriminated `op` field; auto-attached to every agent's `allowed_tools` at config-load.
+
+**What's in v0.8.7 (vs v0.8.6):**
+
+- **Nine ops, all read-only.** `self` (identity bundle from `RunIdentity` + `AgentName` ctx-keys), `tools` (post-filter tool catalog with closed-set side-effect classifier — `pure` / `state` / `network` / `filesystem` / `privileged` / `unknown`), `doc` (input schema + description for one tool by name; refuses outside the per-run allowlist — no doc leak), `permissions` (bundle of every policy ctx-key — `allowed_tools`, `host_policy`, `memory`, `channels`, `agent_def_scopes`, `evaluation_scopes`, `history_scope`), `agents` (operator-declared agents from `cfg.Agents` with active `def_id` from the v0.8.5 substrate; optional `prefix` filter), `lineage` (walks ancestors via `parent_def_id` chain + descendants BFS; `depth` default 10/cap 100; **total-node cap 500** with `truncated` flag), `evaluations` (v0.8.5 `EvaluationAggregate` output — mean/median/min/max/latest + per-dimension + per-emitter-role; optional `include_lineage` walks ancestors), `channels` (operator-declared channels with per-caller publish/subscribe bools; wildcards surface separately), `history` (transcript events for the target agent — default caller's own; optional `event_types[]` filter + `limit`; `truncated` is **honest under filter**).
+- **Default-add behaviour.** Every agent's `allowed_tools` gets `Context` auto-appended at config-load. Opt-out is one yaml line: `disable_context: true`. The duplicate-check is **case-insensitive** so `[context, Context]` doesn't sneak through.
+- **`history_scope` yaml gate (closed set, default-deny).** `self` (caller's own run — practical default), `siblings` / `descendants` / `named:<n>` (reserved — need `RunIdentityValue.ParentAgentID` plumbing), `any` (UNRESTRICTED — operator-trust grant for admin/debug agents).
+- **PRs:** #79 (self/tools/doc/permissions), #80 (agents/lineage/evaluations), #82/#83 (channels/history + default-add + runtime smoke).
+
+For the v0.8.6 baseline that drove this work, see [v0.8.6](#v086--earlier).
+
+## v0.8.6 — earlier
+
+**Status: shipped (2026-05-12).** **System channels + deferred publish.** Operator-declared `_system/*` channels published by loomcycle itself (cadence ticker for heartbeats; event hooks for state transitions) AND/OR by a bearer-authed admin endpoint. General `deliver_at` on `Channel.publish` for scheduled / deferred delivery. The Event vs Channel architecture review landed here: per-run transcripts stay as Events; cross-cutting role-(B) typed notifications (heartbeats, alarms, runtime-state, provider events) migrate to Channels. Future Question + Pause-state subsystems publish to `_system/questions/*` and `_system/runtime-state` rather than minting new typed SSE events.
+
+**What's in v0.8.6 (vs v0.8.4):**
+
+- **Three categories of `_system/*` channels** all in the standard yaml: (1) **Cadence** — `_system/heartbeat-1m`/`-5m`/`-1h` published by a `HeartbeatRunner` goroutine at fixed intervals; payload `{ts, version, uptime_s}`. (2) **Event-driven** — `_system/runtime-state`, `_system/provider-events` fire from internal subsystem hooks; no `period:` needed. (3) **Agent-publishable system channels** — `_system/alarms/critical`/`/warning`/`/info` reserved-by-convention; operators publish via the admin endpoint.
+- **`SystemPublisher` interface + `StorePublisher` impl** — loomcycle-authoritative publish path that bypasses agent-tool ACL gates. Stamps `published_by_user_id="_system"` (internal) or `"_admin"` (admin-endpoint).
+- **Tool-layer refusals.** Agents can NEVER publish to (a) `publisher: system` channels or (b) anything with the `_system/` prefix — defense-in-depth even when operator yaml is misconfigured.
+- **Admin endpoint** `POST /v1/_channels/_system/{name…}` — bearer-authed, accepts `{payload, deliver_at?}` body.
+- **Deferred publish (general).** `Channel.publish` accepts optional RFC3339 `deliver_at`; message stored immediately but hidden from reads until `visible_at`. In-process `time.AfterFunc(visible_at)` scheduler wakes long-poll subscribers exactly at delivery time; bounded by `LOOMCYCLE_CHANNELS_MAX_PENDING_DEFERRED` (default 10000). **TTL counts from `published_at`, NOT from `deliver_at`** — size your TTL to cover both deferral and visibility windows.
+- **Tuple cursor `(visible_at, msg_id)`** replaces pure msg_id ordering — without it, subscribers would silently skip deferred messages once they progressed past the publish-time id. **Clean cursor break**: 0005 migration truncates `channel_cursors` (v0.8.4 only shipped two weeks earlier — no production cursor state worth preserving).
+- **Audit column** `channel_messages.published_by_user_id` distinguishes operator / system / agent activity without grepping logs.
+- **PRs:** #74 (deferred publish + tuple cursor), #75 (system publisher + admin endpoint), #76/#78 (heartbeat ticker + runtime smoke).
+
+For the v0.8.5 baseline that drove this work, see [v0.8.5](#v085--earlier).
+
+## v0.8.5 — earlier
+
+**Status: shipped (2026-05-11).** **Self-Evolution Substrate** — three primitives shipped together: `AgentDef` tool (mutate definitions), versioned `agent_defs` storage with lineage, `Evaluation` tool (score (run, def) pairs). Closes the gaps that block the planned self-evolving agentic research program. Loomcycle deliberately does NOT auto-promote based on score — selection stays policy, lives in operator orchestrators or in agents calling `aggregate` + `promote` per their own strategy (max / GA / PPO / RLHF / whatever).
+
+**What's in v0.8.5 (vs v0.8.4):**
+
+- **`AgentDef` built-in tool — 6 ops.** `create` / `fork` / `get` / `list` / `promote` / `retire`. Static `cfg.Agents` names inviolate (must `fork`, never `create`). **AllowedTools is the operator's static capability ceiling** — forks may NARROW, never widen; enforced via 100-hop cycle-guarded lineage walks. Per-agent yaml `agent_def_scopes` gates `self` / `descendants` / `named:[...]` / `any`, default-deny.
+- **`Evaluation` built-in tool — 5 ops.** `submit` / `get` / `list_for_run` / `list_for_def` / `aggregate`. Score model: required scalar + optional `dimensions` map + optional `judgement` JSON + optional `rationale` text. **`emitter_role` is derived server-side** from caller's `RunIdentity` vs target run's identity (`self` / `parent` / `external` / `unrelated`) — the model can't lie about who scored what. Known limitation: `sibling` collapses to `unrelated` (RunIdentityValue lacks emitter ParentAgentID); `submit_siblings` scope is reserved-but-inert.
+- **Append-only `agent_defs` with monotonic version per name.** `parent_def_id` for lineage; `bootstrapped_from_static` flag for static-derived roots. `agent_def_active` pointer table for "which version a name resolves to." Promote/retire flip pointers — they never rewrite definition rows. Postgres `pg_advisory_xact_lock(hashtextextended('agent_def:' || name, 0))` serialises version allocation per name; sqlite uses pinned-conn + `BEGIN IMMEDIATE`. Tested under contention: 250 parallel forks → exactly versions 1..250 with no gaps or duplicates on both backends.
+- **Sub-agent `def_id` pinning** via optional `def_id` on the `Agent` tool input. `runSubAgent` overlays the row onto static `cfg.Agents` for that one sub-run. `agent_def_id` persisted on the sub-run row + denormalised onto evaluations at submit — aggregate queries automatically partition by def. **Substrate policy fields stay with static yaml** (never in the overlay) so forks can't widen their own substrate-capability gates. **Cross-name pinning refused** — passing a `def_id` from a different agent name returns "cross-name pinning refused"; prevents namespace hijack.
+- **Migrations (additive):** Postgres `0006_agent_defs`, `0007_runs_agent_def`, `0008_evaluations`. SQLite: idempotent `CREATE TABLE` + `ALTER TABLE runs ADD COLUMN agent_def_id TEXT`.
+- **PRs:** #65 (storage + locks + aggregate kernel), #66 (config + ctx-key plumbing), #67 (AgentDef tool), #68 (Evaluation tool), #71 (runtime smoke), #72 (sub-agent def_id pinning).
+
+For the v0.8.4 baseline that drove this work, see [v0.8.4](#v084--earlier).
+
+## v0.8.4 — earlier
 
 **Status: shipped (2026-05-11).** The **Channel tool** — persistent inter-agent message bus. One agent publishes JSON payloads to a named channel; another subscribes and drains them with cursor-based at-least-once delivery. Closes the gap between Memory (state) and Agent (RPC spawn) — channels are the asynchronous decoupled handoff primitive. Framework primitive #3 (after Memory v0.8.0 and user_tier v0.8.2) on the way to the LoomCycle MCP capstone.
 
@@ -342,90 +401,30 @@ For usage: see [README](../README.md). For the architecture: see [ARCHITECTURE.m
 
 ## v0.8.x — next: framework primitives
 
-Sequenced 2026-05-09; renumbered 2026-05-10 after v0.8.1 absorbed three operational-hardening PRs (#47/#48/#49); renumbered again 2026-05-11 after v0.8.2 absorbed the `user_tier` resolver-overlay + runtime-fallback work (PRs #52/#53); renumbered once more 2026-05-11 to insert v0.8.5 Self-Evolution Substrate (AgentDef + versioning + Evaluation) ahead of Context (introspection) and LoomCycle MCP — the capstone must expose those tools, so they have to ship first; v0.8.3 took the ollama-split hot-fix and v0.8.4 shipped the Channel tool, so the remaining v0.8.x roadmap below begins at v0.8.5; **v0.8.8 Question tool added 2026-05-11 as the human-in-the-loop primitive that completes the substrate symmetry — Memory + Channel + AgentDef/Eval + Context + LoomCycle MCP + Question covers every direction of agent interaction (state, IPC, self-mutation, introspection, control plane, human bridge).** **v0.8.9 Pause / Resume / Snapshot added 2026-05-12 as the v0.8.x → v0.9.x bridge — runtime-wide quiesce + cross-version-portable JSON snapshot, the precondition for v0.9.x multi-replica HA and the missing primitive for long-running experiments surviving provider rate-limits and infrastructure maintenance. The v0.8.6 Context tool gains a ninth op (`history`) at the same time, paired with the snapshot's optional interaction-history bundling.** **v0.8.4.x system-channels + deferred-publish point release added 2026-05-12 — operator-declared `_system/*` channels for heartbeats, alarms, runtime state, provider events, plus a general `deliver_at` parameter on `Channel.publish` for scheduled / deferred delivery. Sequenced as a v0.8.4 point release before v0.8.5, so the subsequent RFCs (v0.8.5 / v0.8.6 / v0.8.7 / v0.8.8 / v0.8.9) can assume the primitive and stop inventing new typed-event surfaces for cross-cutting signals.** Each point release in the framework-primitive sequence ships one focused capability — the v1.0 capstone (LoomCycle MCP) needs them in this order because the MCP server's surface is built FROM these primitives. Detailed design (API schemas, storage shapes, retention semantics) lives in feature-branch RFCs at implementation time; the outlines below capture the shape but not the wire.
+**Roadmap renumbering note (2026-05-12).** Sequenced 2026-05-09; renumbered through v0.8.2 (operational hardening absorbed PRs #47–49), v0.8.3 (ollama split hot-fix), v0.8.4 (Channels), and v0.8.5 (Self-Evolution Substrate). The 2026-05-12 system-channels point release became v0.8.6 (rather than v0.8.4.x); the Context tool became v0.8.7 (rather than v0.8.6); the v0.8.8 Context.help follow-up shipped 2026-05-12 as the tenth Context op. The remaining v0.8.x roadmap below picks up at v0.8.9 (originally drafted as v0.8.7 — LoomCycle MCP, the v0.8.x capstone), v0.8.10 (Question tool, originally v0.8.8), and v0.8.11 (Pause / Resume / Snapshot, originally v0.8.9 — the v0.8.x → v0.9.x bridge). Each point release in the framework-primitive sequence ships one focused capability; the v1.0 capstone (LoomCycle MCP) needs the prior primitives to expose their tool surfaces, which is why it sits last in the v0.8.x arc. Detailed design (API schemas, storage shapes, retention semantics) lives in feature-branch RFCs at implementation time; the outlines below capture the shape but not the wire.
 
-**v0.8.0 Memory tool shipped 2026-05-09**; **v0.8.1 operational hardening shipped 2026-05-10**; **v0.8.2 user_tier shipped 2026-05-11**; **v0.8.3 ollama split shipped 2026-05-11**; **v0.8.4 Channel tool shipped 2026-05-11** — see the sections above for full release notes.
+**Shipped already:** v0.8.0 Memory tool (2026-05-09); v0.8.1 operational hardening (2026-05-10); v0.8.2 user_tier (2026-05-11); v0.8.3 ollama split (2026-05-11); v0.8.4 Channel tool (2026-05-11); v0.8.5 Self-Evolution Substrate (2026-05-11); v0.8.6 system channels + deferred publish (2026-05-12); v0.8.7 Context tool (2026-05-12); v0.8.8 Context.help (2026-05-12) — see the sections above for full release notes.
 
-### v0.8.4.x — System channels + deferred publish (point release on shipped v0.8.4 Channels)
-
-Extends the v0.8.4 Channel primitive in two coupled ways. Additive only — no breaking wire changes.
-
-**(1) System-driven channels (`_system/*`).** Operator-declared channels published by loomcycle itself (cadence ticker for heartbeats; event hooks for state transitions) AND/OR by an admin endpoint (`POST /v1/_channels/_system/{name}/publish`). Agents subscribe via the existing Channel ACL. Standard set in `loomcycle.example.yaml`:
-
-- `_system/heartbeat-1m`, `_system/heartbeat-5m`, `_system/heartbeat-1h` — fixed-cadence broadcasts; agents subscribe to observe the runtime's pulse.
-- `_system/alarms/critical`, `_system/alarms/warning`, `_system/alarms/info` — agent-publishable severity-by-name alarm channels.
-- `_system/runtime-state` — system publishes on pause/resume/restore (v0.8.9 plumbing).
-- `_system/provider-events` — system publishes on fallback / cache-invalidated.
-- `_system/questions/pending`, `_system/questions/answered` — pair with v0.8.8 Question tool.
-
-**(2) Deferred publish (general).** `Channel.publish` accepts optional `deliver_at` RFC3339 future timestamp. Message is stored with `visible_at = deliver_at`; subscribers + `Channel.peek` filter `WHERE visible_at <= now()`. Long-poll subscribers wake at `visible_at` via a scheduler goroutine. **General Channel capability** — not restricted to alarm channels. Use cases: deferred alarms (cooldown timer), scheduled inter-agent handoffs, retry-after-N-minutes patterns.
-
-**Why this is the v0.8.x → v0.8.5 bridge.** The Event vs Channel architecture review (2026-05-12) landed on a clean split: per-run transcripts stay as Events (ordered, replayable, run-scoped); cross-cutting role-(B) typed notifications migrate to Channels. Without `_system/*` channels and the system-publisher mechanism, v0.8.8 Question and v0.8.9 Pause would need to invent new SSE event types (`EventQuestion`, `EventPauseStateChanged`); with `_system/*`, the Channel primitive carries those signals and no new typed-event surface is needed. Ships before v0.8.5 substrate work begins so subsequent RFCs assume it.
-
-**What's not yet decided:** wake-on-deferred scheduler implementation (lean: `time.AfterFunc` per pending deferred message; bounded by `LOOMCYCLE_CHANNELS_MAX_PENDING_DEFERRED`); cadence-drift policy across v0.8.9 pause (lean: skip missed cadences — heartbeats represent "now," not "then"); per-tenant alarm namespaces (deferred to v0.9.x per-tenant fairness).
-
-Detailed design in `doc-internal/rfcs/system-channels.md` (gitignored). Build sequence: 3 PRs for the primitive (`deliver_at` + system publisher + standard channels in loomcycle.example.yaml); 2 follow-up PRs ride on v0.8.8 / v0.8.9 implementations (migrate Question and pause-state signals to `_system/*` channels). Total scope for the substrate: ~1 week.
-
-### v0.8.5 — Self-Evolution Substrate (AgentDef + versioning + Evaluation)
-
-Three substrate primitives shipped together; closes the gaps that block the planned self-evolving agentic research program. Sequenced before Context (v0.8.6) and LoomCycle MCP (v0.8.7) because the MCP capstone must expose both new tools.
-
-**Primitive 1 — `AgentDef` built-in tool.** Agents can `create` / `fork` / `retire` / `promote` / `get` / `list` agent definitions at runtime. Six-op surface, mirrors the Memory tool's discriminated-op shape. Operator-blessed static `<name>.md` files remain the immutable root; DB-held versions live in the derived layer. Per-agent yaml `agent_def_scopes` gate (`self` / `descendants` / `named:[...]` / `any`), default-deny. `AllowedTools` widening is REFUSED across forks — operator-blessed root is the permanent capability ceiling.
-
-**Primitive 2 — Versioned definitions + lineage.** Two new tables: append-only `agent_defs` (UUID `def_id`, monotonic `version` per `name`, `parent_def_id` for lineage, `bootstrapped_from_static` flag for static-derived roots) + `agent_def_active` pointer table for "which version a name resolves to." Additive `runs.agent_def_id` column for cost / experiment retros. Resolver becomes DB-first with static fallback: `defID` pin → `agent_def_active[name]` → `cfg.Agents[name]`. Sub-agent spawning re-resolves by name + uses active pointer; pinning via optional `def_id` on the `Agent` tool input.
-
-**Primitive 3 — `Evaluation` built-in tool.** Five-op surface (`submit` / `get` / `list_for_run` / `list_for_def` / `aggregate`) over a new `evaluations` table. Score model: required scalar (RL lingua franca) + optional `dimensions` map (multi-axis fitness) + optional `judgement` JSON + optional `rationale` text. Emitter role derived server-side from ctx (`self` / `sibling` / `parent` / `external` / `unrelated`) so the model can't lie about who scored what. Per-agent yaml `evaluation_scopes` gate (multi-select). Loomcycle does NOT auto-promote based on score — selection is policy, lives in user-agent orchestrators.
-
-**Three motivating experiments** the substrate enables: (A) existing hockeybot pipeline — zero-regression bar; (B) software-dev team where orchestrator forks specialized coder variants per task and a sibling reviewer scores them; (C) ecosystem evolution with random agents, grow/survive/eat/multiply/die rationales, lineage-based analysis.
-
-Detailed design in `doc-internal/rfcs/self-evolution-substrate.md` (gitignored). Build sequence: 7 PRs over ~3–4 weeks. PRs 1–5 are the experiment-enabling substrate (all three experiments run after PR 5 with no UI); PRs 6–7 are the admin API + Web UI agent-defs page — load-bearing for the v1.0 "Agentic OS" launch narrative.
-
-### v0.8.6 — Context tool (runtime introspection)
-
-Read-only tool that lets agents introspect their own runtime — what tools they have, what their identity / lineage looks like, what evaluations exist for their definition, what channels they can reach. Discriminated `op` field (same shape as Memory) lets agents narrow output instead of paying for a kitchen-sink dump on every call.
-
-**Nine ops:**
-
-| Op | Returns | Params |
-|---|---|---|
-| `self` | Identity bundle: `agent_id`, `agent_name`, `run_id`, `parent_agent_id`, `user_id`, `user_tier`, `agent_def_id` + `version` + `parent_def_id`, `iteration`, `provider`, `model`, loaded `skills`, Memory key-counts per scope | — |
-| `tools` | Post-filter tool catalog — builtins + MCP (`mcp__server__name`). Each entry: `name`, `description`, `side_effect_class`, runtime narrowing | — |
-| `doc` | Detailed tool documentation: input schema, op surface, examples, operator notes | `name?` |
-| `agents` | Visible agents — `name`, `description`, `tier`, `active_def_id` + `version`, spawn/mutate eligibility flags. **No `system_prompt` body** — that's behind `AgentDef.get` so the `agent_def_scopes` gate applies | `prefix?` |
-| `permissions` | Gates that apply to caller: `allowed_tools`, `allowed_hosts`, `memory_scopes`, `agent_def_scopes`, `evaluation_scopes`, `history_scope`, accessible MCP servers, active hooks | — |
-| `channels` | Accessible channels: name, description, publish/subscribe rights, recent activity counter | `prefix?` |
-| `lineage` | AgentDef lineage tree: ancestors + descendants + retire/promote markers (from v0.8.5 substrate) | `def_id?` (defaults to caller's); `depth?` |
-| `evaluations` | Evaluation aggregate: count, mean/median/min/max/latest, per-emitter-role breakdown, dimensions stats (from v0.8.5 substrate) | `def_id?`; `include_lineage?` |
-| `history` | Conversation events for one or more runs: text / thinking / tool_use / tool_result / usage / error / retry / done. Lets self-evolving agents reflect on past conversations and reproduced experiments (v0.8.9 snapshots) replay history into restored agents. **Gated by per-agent `history_scope` yaml field** (`self` / `siblings` / `descendants` / `named: [...]` / `any`, default-deny). Paginated for large histories | `run_id?` / `agent_id?` / `since?` / `until?` / `event_types[]?` / `limit?` / `cursor?` |
-
-**Default-add behaviour.** `Context` is auto-added to every agent's `allowed_tools` at config load — missing introspection is a footgun for self-evolving agents. Operators who want airgapped agents opt out via per-agent yaml `disable_context: true`.
-
-**Privacy boundary.** `Context.agents` returns metadata only (names, descriptions, tier). The full `system_prompt` body lives behind `AgentDef.get(def_id)`, which is gated by `agent_def_scopes`. Two layers: cheap discovery via Context, capability-gated content access via AgentDef.
-
-Single read-only tool — no mutations, no side effects beyond reads. Useful for the Comfort Agents pattern — agents that build their own task plans benefit from being able to inspect their environment before deciding what to do.
-
-What's not yet decided: response-size caps per op (default `LOOMCYCLE_CONTEXT_MAX_RESPONSE_BYTES`), schema for the `side_effect_class` taxonomy (pure / network / filesystem / privileged / state), whether `agents` shows agents the caller cannot spawn (current lean: yes, with an eligibility flag — discovery should be transparent even when access isn't).
-
-### v0.8.7 — LoomCycle MCP (the v0.8.x capstone)
+### v0.8.9 — LoomCycle MCP (the v0.8.x capstone)
 
 Loomcycle exposes itself as an **MCP server**. External orchestrators (Claude Code, agentic harnesses, other loomcycle instances) connect to it as an MCP client and:
 
 - Configure agents and spawn runs (alternate front-end to `/v1/runs`).
-- Send messages on Channels (built in the v0.8.3–0.8.4 Channel work).
-- Read/write Memory entries (built in v0.8.0).
-- **Create / fork / promote `AgentDef` versions (built in v0.8.5).**
-- **Submit / aggregate Evaluations (built in v0.8.5).**
-- Call Context for runtime introspection (built in v0.8.6).
-- **Surface `Question.ask` so external orchestrators can route human-in-the-loop questions through their own UI** (paired with v0.8.8 Question tool — the loomcycle Web UI is the default surface, the MCP exposure is the orchestrator-side override).
+- Send messages on Channels (v0.8.4 Channel tool + v0.8.6 `_system/*` namespace).
+- Read/write Memory entries (v0.8.0).
+- Create / fork / promote `AgentDef` versions (v0.8.5).
+- Submit / aggregate Evaluations (v0.8.5).
+- Call Context for runtime introspection (v0.8.7 / v0.8.8).
+- **Surface `Question.ask` so external orchestrators can route human-in-the-loop questions through their own UI** (paired with v0.8.10 Question tool — the loomcycle Web UI is the default surface, the MCP exposure is the orchestrator-side override).
 - Subscribe to run-event streams (alternate to SSE).
 
-This is the "MCP-configurable" axis: instead of writing YAML and POSTing JSON, an external tool drives loomcycle through standard MCP. Surface area maps roughly 1:1 to the existing `/v1/*` endpoints plus the v0.8.0–0.8.6 primitives, with auth via the operator's bearer token translated into MCP's auth scheme.
+This is the "MCP-configurable" axis: instead of writing YAML and POSTing JSON, an external tool drives loomcycle through standard MCP. Surface area maps roughly 1:1 to the existing `/v1/*` endpoints plus the v0.8.0–v0.8.8 primitives, with auth via the operator's bearer token translated into MCP's auth scheme.
 
 What's not yet decided: stdio vs HTTP transport (probably both — stdio for desktop-app integrations, HTTP for service-to-service), method naming (resources vs tools), whether MCP clients can register new agents at runtime or only spawn from operator-defined ones, handling of long-lived run streams across MCP's request/response shape.
 
-### v0.8.8 — Question tool (human-in-the-loop primitive)
+### v0.8.10 — Question tool (human-in-the-loop primitive)
 
-Closes the one direction the v0.8.0–v0.8.7 arc leaves uncovered: **agent ↔ human, mid-run**. The substrate primitives so far cover machine interaction — state (Memory), IPC (Channel), self-mutation (AgentDef), selection (Evaluation), introspection (Context), control plane (LoomCycle MCP). `Question` is the human bridge.
+Closes the one direction the v0.8.0–v0.8.9 arc leaves uncovered: **agent ↔ human, mid-run**. The substrate primitives so far cover machine interaction — state (Memory), IPC (Channel), self-mutation (AgentDef), selection (Evaluation), introspection (Context), control plane (LoomCycle MCP). `Question` is the human bridge.
 
 Agents call `Question.ask` to surface a clarifying question, request approval before a risky action, or present a multiple-choice decision to a human in the loop. The human's answer flows back into the agent's loop as the tool result.
 
@@ -443,13 +442,13 @@ The result of `ask` carries `{question_id, answered, answer?, answered_by_user_i
 |---|---|---|
 | **(1) Built-in with Web UI default** | `/ui/questions` modal/sidebar; operator (matching the run's `user_id`) answers via the existing bearer-cookie session | loomcycle |
 | **(2) MCP-implemented (consumer-side)** | Consumer runs its own MCP server exposing `mcp__<name>__ask`; loomcycle calls it like any other MCP tool (jobs-search-agent's pattern) | Consumer |
-| **(3) LoomCycle MCP exposure** | v0.8.7 LoomCycle MCP surfaces `Question.ask` so external orchestrators (Claude Code, custom dashboards) become the delivery surface | loomcycle + orchestrator |
+| **(3) LoomCycle MCP exposure** | v0.8.9 LoomCycle MCP surfaces `Question.ask` so external orchestrators (Claude Code, custom dashboards) become the delivery surface | loomcycle + orchestrator |
 
 Operator picks via `question.backend: webui | mcp_server:<name> | cli` in yaml. The Web UI is the default for production; `cli` lets local dev read answers from stdin.
 
 **Trust model:** per-agent `question_enabled: true` (default-deny, parallel to `memory_scopes` / `channels`). The run's `user_id` is the authoritative answerer — only that user (or operator admins via bearer) can submit. Operator env caps `LOOMCYCLE_QUESTION_DEFAULT_TIMEOUT_MS`, `LOOMCYCLE_QUESTION_MAX_TIMEOUT_MS`, `LOOMCYCLE_QUESTION_MAX_PENDING_PER_USER` bound the surface against runaway question floods.
 
-**Storage:** new `questions` table (additive migration, same pattern as `memory` / `channel_messages` / `agent_defs`). Wire: `POST /v1/runs/{run_id}/questions/{question_id}/answer` for the operator-side submit. **Signal flow goes through the v0.8.4.x system channels** — `Question.ask` publishes to `_system/questions/pending` (scope=`user`, per-user isolated via Channel ACL); on resolution, the answer endpoint publishes to `_system/questions/answered`. **No new `EventQuestion` SSE event types needed** — the Channel pub/sub primitive carries the signal; Web UI and external consumers subscribe to the system channels via the existing Channel interface.
+**Storage:** new `questions` table (additive migration, same pattern as `memory` / `channel_messages` / `agent_defs`). Wire: `POST /v1/runs/{run_id}/questions/{question_id}/answer` for the operator-side submit. **Signal flow goes through the v0.8.6 system channels** — `Question.ask` publishes to `_system/questions/pending` (scope=`user`, per-user isolated via Channel ACL); on resolution, the answer endpoint publishes to `_system/questions/answered`. **No new `EventQuestion` SSE event types needed** — the Channel pub/sub primitive carries the signal; Web UI and external consumers subscribe to the system channels via the existing Channel interface.
 
 **Run-lifecycle integration:** when `ask` is called, the agent loop enters a "waiting on human" state. The existing v0.5.0 heartbeat keeps the run alive; the v0.8.4 Channel long-poll wake pattern is reused for sub-millisecond wake on answer.
 
@@ -457,13 +456,13 @@ Operator picks via `question.backend: webui | mcp_server:<name> | cli` in yaml. 
 
 Detailed design at pickup time will lift the local addendum (in this session's plan file) into `doc-internal/rfcs/question-tool.md`.
 
-### v0.8.9 — Pause / Resume / Snapshot (the v0.8.x → v0.9.x bridge)
+### v0.8.11 — Pause / Resume / Snapshot (the v0.8.x → v0.9.x bridge)
 
 Runtime-wide quiesce + restore primitive. Closes the gap that today forces every long-running experiment to either run-to-completion-or-die or restart from scratch when the provider rate-limits, the infrastructure needs maintenance, or the operator wants to ship the experiment somewhere else.
 
 **Three motivating shapes the substrate enables:**
 
-| Pain shape today | With v0.8.9 |
+| Pain shape today | With v0.8.11 |
 |---|---|
 | Provider down or rate-limited (Ollama subscription paused, Gemini quota exhausted, Anthropic 5xx) → every active run dies after the v0.8.2 fallback budget exhausts | Operator pauses → waits for capacity → resumes from where each run left off |
 | Pre-backup quiesce (DB hot-backup captures partial transcripts mid-iteration) | Pause → snapshot → backup → resume; consistent across runtime + DB |
@@ -482,7 +481,7 @@ Runtime-wide quiesce + restore primitive. Closes the gap that today forces every
 
 CLI mirrors: `loomcycle pause` / `resume` / `snapshot` / `restore` / `state`.
 
-**Scope decisions (locked in the v0.8.9 RFC):**
+**Scope decisions (locked in the v0.8.11 RFC):**
 
 - **Runtime-wide pause**, not per-tenant. VM is the safety boundary; per-tenant pause defers to v0.9.x per-tenant fairness.
 - **Snapshot scope is running-state only.** External DB backups handle archival history. Snapshot stays small (paused runs + Memory + Channel + agent_defs + evaluations).
@@ -491,11 +490,11 @@ CLI mirrors: `loomcycle pause` / `resume` / `snapshot` / `restore` / `state`.
 - **Experiment identity = timestamp** (operator supplies `since_ts`). First-class `experiments` table deferred; promote if research needs it.
 - **Pause and snapshot are decoupled operations** that compose as the operator chooses. Pause alone for rate-limit-wait; pause + snapshot + export for migration; snapshot during running for backup-time-of-day capture.
 
-**State-change signals flow through `_system/runtime-state`** (v0.8.4.x system channels). Pause/resume/restore state transitions publish to that channel; operator dashboards subscribe; the future v0.8.7 LoomCycle MCP exposes the same channel to external orchestrators. **No new `EventPauseStateChanged` SSE event types needed** — the Channel pub/sub primitive carries the signal.
+**State-change signals flow through `_system/runtime-state`** (v0.8.6 system channels — shipped). Pause/resume/restore state transitions publish to that channel; operator dashboards subscribe; the future v0.8.9 LoomCycle MCP exposes the same channel to external orchestrators. **No new `EventPauseStateChanged` SSE event types needed** — the Channel pub/sub primitive carries the signal.
 
-**Pairs with the v0.8.6 `Context.history` op:** restored experiments contain interaction history; agents in the restored instance read it via `Context.history(since=<experiment_start_ts>)` to reflect on past conversations. Self-evolving experiments survive cross-version migration with their memory intact.
+**Pairs with the v0.8.7 `Context.history` op (shipped):** restored experiments contain interaction history; agents in the restored instance read it via `Context.history(since=<experiment_start_ts>)` to reflect on past conversations. Self-evolving experiments survive cross-version migration with their memory intact.
 
-**What's not yet decided:** snapshot encryption-at-rest (operator's disk-encryption policy applies — same as transcripts), automatic snapshot scheduling (lean: out of scope; operator integrates with their own scheduler), partial restore granularity (v0.8.9 is all-or-nothing per section; selective is a v0.9.x candidate).
+**What's not yet decided:** snapshot encryption-at-rest (operator's disk-encryption policy applies — same as transcripts), automatic snapshot scheduling (lean: out of scope; operator integrates with their own scheduler), partial restore granularity (v0.8.11 is all-or-nothing per section; selective is a v0.9.x candidate).
 
 Detailed design in `doc-internal/rfcs/pause-resume-snapshot.md` (gitignored).
 
@@ -527,7 +526,7 @@ Make `loomcycle` install with one command on every operator's preferred toolchai
 
 First-party integrations the runtime makes more valuable:
 
-- **Claude Desktop / Claude Code MCP integration** — pre-built `.mcp.json` recipe + a one-page operator guide for adding loomcycle to Claude Code's MCP server list (uses the v0.8.7 LoomCycle MCP surface).
+- **Claude Desktop / Claude Code MCP integration** — pre-built `.mcp.json` recipe + a one-page operator guide for adding loomcycle to Claude Code's MCP server list (uses the v0.8.9 LoomCycle MCP surface).
 - **OpenTelemetry exporter recipes** — example Helm values + `loomcycle.yaml` snippets for the three common backends (Tempo, Honeycomb, Datadog). The OTEL spans themselves ship in v0.9.x; v1.0 ships the operator-side wiring guide.
 - **Prometheus / Grafana dashboard** — JSON dashboard committed to the repo, importable in one click. Key panels: throughput, error rate by provider, p99 tool dispatch latency, per-tenant share of the semaphore.
 - **CLI scaffolding** — `loomcycle init` generates a minimal working `loomcycle.yaml` + `.env.local` for a fresh deploy. `loomcycle agent add <name>` scaffolds an agent yaml block. Lower the time-to-first-run for new operators from "read the docs" to "run two commands."
