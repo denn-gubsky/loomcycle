@@ -189,7 +189,7 @@ func (e *Evaluation) execSubmit(ctx context.Context, policy tools.EvaluationPoli
 	row := store.EvaluationRow{
 		EvalID:         mintEvalID(),
 		RunID:          in.RunID,
-		DefID:          "", // denormalised from target run; populated below if available
+		DefID:          target.AgentDefID, // denormalised from target run (v0.8.5 PR 5)
 		Score:          *in.Score,
 		Dimensions:     in.Dimensions,
 		Judgement:      in.Judgement,
@@ -197,12 +197,6 @@ func (e *Evaluation) execSubmit(ctx context.Context, policy tools.EvaluationPoli
 		EmitterRole:    role,
 		EmitterAgentID: emitter.AgentID,
 	}
-	// Capture target run's agent_def_id when present so def_id-keyed
-	// aggregates work. PR 5 wires runs.agent_def_id population; for
-	// PR 4 the column may be empty, which is fine — aggregates on
-	// def_id just won't find these rows.
-	// (The Run struct doesn't currently expose agent_def_id;
-	// future PR can plumb it. For now leave empty.)
 
 	saved, err := e.Store.EvaluationSubmit(ctx, row)
 	if err != nil {

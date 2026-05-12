@@ -312,14 +312,15 @@ func (s *Store) CreateRun(ctx context.Context, sessionID string, identity store.
 	id := newID("r_")
 	now := time.Now()
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO runs(id, session_id, status, started_at, agent_id, parent_agent_id, parent_run_id, user_id, user_tier)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO runs(id, session_id, status, started_at, agent_id, parent_agent_id, parent_run_id, user_id, user_tier, agent_def_id)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		id, sessionID, store.RunRunning, now.UnixNano(),
 		nilIfEmpty(identity.AgentID),
 		nilIfEmpty(identity.ParentAgentID),
 		nilIfEmpty(identity.ParentRunID),
 		nilIfEmpty(identity.UserID),
 		nilIfEmpty(identity.UserTier),
+		nilIfEmpty(identity.AgentDefID),
 	)
 	if err != nil {
 		return store.Run{}, err
@@ -334,6 +335,7 @@ func (s *Store) CreateRun(ctx context.Context, sessionID string, identity store.
 		ParentRunID:   identity.ParentRunID,
 		UserID:        identity.UserID,
 		UserTier:      identity.UserTier,
+		AgentDefID:    identity.AgentDefID,
 	}, nil
 }
 
@@ -423,6 +425,7 @@ func scanRun(scanner interface{ Scan(...any) error }) (store.Run, error) {
 	var lastHbNs sql.NullInt64
 	var stopReason, model, errMsg sql.NullString
 	var agentID, parentAgentID, parentRunID, userID, userTier sql.NullString
+	var agentDefID sql.NullString
 	var sessAgent sql.NullString
 	var status string
 	if err := scanner.Scan(
@@ -432,6 +435,7 @@ func scanRun(scanner interface{ Scan(...any) error }) (store.Run, error) {
 		&model, &errMsg,
 		&agentID, &parentAgentID, &parentRunID, &userID, &lastHbNs,
 		&userTier,
+		&agentDefID,
 		&sessAgent,
 	); err != nil {
 		return store.Run{}, err
@@ -470,6 +474,9 @@ func scanRun(scanner interface{ Scan(...any) error }) (store.Run, error) {
 	if userTier.Valid {
 		r.UserTier = userTier.String
 	}
+	if agentDefID.Valid {
+		r.AgentDefID = agentDefID.String
+	}
 	if sessAgent.Valid {
 		r.Agent = sessAgent.String
 	}
@@ -490,6 +497,7 @@ const runColumns = `r.id, r.session_id, r.status, r.started_at, r.completed_at,
 		r.model, r.error,
 		r.agent_id, r.parent_agent_id, r.parent_run_id, r.user_id, r.last_heartbeat_at,
 		r.user_tier,
+		r.agent_def_id,
 		s.agent`
 
 // runFromTable is the canonical FROM clause paired with runColumns.
