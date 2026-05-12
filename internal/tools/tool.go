@@ -339,6 +339,63 @@ func EventEmitter(ctx context.Context) EventEmitterFunc {
 	return func(providers.Event) {}
 }
 
+// ctxKeyAgentDefPolicy carries the v0.8.5 AgentDef-tool capability
+// gate. Mirrors MemoryPolicy / ChannelPolicy shape.
+type ctxKeyAgentDefPolicy struct{}
+
+// AgentDefPolicyValue is the per-agent AgentDef-tool access policy.
+//
+//   - Scopes is the operator-yaml agent_def_scopes list. Closed set:
+//     "self" / "descendants" / "any" / "named:<name>". Empty =
+//     default-deny.
+//
+// Auxiliary identity fields stamped server-side at ctx-attach so the
+// AgentDef tool can resolve self / siblings / descendants without
+// re-reading ctx values that may have been overwritten by sub-agent
+// chains:
+//
+//   - SelfName is the yaml agent name (== tools.AgentName(ctx) at
+//     attach time). Used for the "self" scope check.
+type AgentDefPolicyValue struct {
+	Scopes   []string
+	SelfName string
+}
+
+// WithAgentDefPolicy attaches the policy to ctx.
+func WithAgentDefPolicy(ctx context.Context, p AgentDefPolicyValue) context.Context {
+	return context.WithValue(ctx, ctxKeyAgentDefPolicy{}, p)
+}
+
+// AgentDefPolicy returns the policy from ctx. Zero value = no
+// access (default-deny — the tool refuses every mutation op until
+// scopes are explicitly granted via yaml).
+func AgentDefPolicy(ctx context.Context) AgentDefPolicyValue {
+	v, _ := ctx.Value(ctxKeyAgentDefPolicy{}).(AgentDefPolicyValue)
+	return v
+}
+
+// ctxKeyEvaluationPolicy carries the v0.8.5 Evaluation-tool gate.
+type ctxKeyEvaluationPolicy struct{}
+
+// EvaluationPolicyValue is the per-agent Evaluation policy.
+// Multi-select scopes; default-deny when Scopes is empty. See
+// config.AgentDef.EvaluationScopes docstring for the closed set.
+type EvaluationPolicyValue struct {
+	Scopes []string
+}
+
+// WithEvaluationPolicy attaches the policy to ctx.
+func WithEvaluationPolicy(ctx context.Context, p EvaluationPolicyValue) context.Context {
+	return context.WithValue(ctx, ctxKeyEvaluationPolicy{}, p)
+}
+
+// EvaluationPolicy returns the policy from ctx. Zero value =
+// no access.
+func EvaluationPolicy(ctx context.Context) EvaluationPolicyValue {
+	v, _ := ctx.Value(ctxKeyEvaluationPolicy{}).(EvaluationPolicyValue)
+	return v
+}
+
 // Execute looks up the named tool and runs it. Unknown tool names consult
 // the optional Fallback before returning the standard "tool not found"
 // error result (the model can self-correct on the error result; we never
