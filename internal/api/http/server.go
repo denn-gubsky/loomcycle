@@ -1041,7 +1041,6 @@ func (s *Server) handleSystemChannelPublish(w http.ResponseWriter, r *http.Reque
 	_ = json.NewEncoder(w).Encode(resp)
 }
 
-
 // runRequest is the JSON body shape for POST /v1/runs.
 type runRequest struct {
 	Agent        string               `json:"agent"`

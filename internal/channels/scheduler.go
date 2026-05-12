@@ -38,8 +38,8 @@ type Scheduler struct {
 	// alarms for the same minute).
 	MaxPending int
 
-	timers   sync.Map // msg_id (string) → *time.Timer
-	pendCnt  atomic.Int64
+	timers  sync.Map // msg_id (string) → *time.Timer
+	pendCnt atomic.Int64
 }
 
 // NewScheduler constructs a scheduler bound to the given Bus.
