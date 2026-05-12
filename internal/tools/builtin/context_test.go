@@ -3,9 +3,13 @@ package builtin
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 
+	"github.com/denn-gubsky/loomcycle/internal/config"
+	"github.com/denn-gubsky/loomcycle/internal/store"
+	"github.com/denn-gubsky/loomcycle/internal/store/sqlite"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
 
@@ -306,5 +310,316 @@ func TestContextTool_MalformedJSON(t *testing.T) {
 	res, _ := tool.Execute(ctx, json.RawMessage(`{not json`))
 	if !res.IsError {
 		t.Fatal("malformed JSON should error")
+	}
+}
+
+// ---- agents / lineage / evaluations fixtures + tests (PR 2) ----
+
+// substrateFixture builds a Context tool with Cfg + an in-memory
+// sqlite store seeded with two agent_defs rows (a v1 + a v2-child)
+// for a per-test unique name, and one Evaluation row against v2.
+//
+// The `:memory:` sqlite DSN uses `cache=shared`, so every Open returns
+// the same physical database within one test process — subtests share
+// state. Defeating that requires either a per-test file:: DSN or
+// per-test unique keys. We pick unique keys (per t.Name()) so the
+// fixture remains race-clean across subtests without filesystem
+// shenanigans.
+func substrateFixture(t *testing.T) (*Context, store.Store, context.Context, string, string, string) {
+	t.Helper()
+	s, err := sqlite.Open(":memory:")
+	if err != nil {
+		t.Fatalf("sqlite.Open: %v", err)
+	}
+	// `:memory:` with cache=shared persists for the lifetime of any
+	// open connection — without explicit Close, later tests that
+	// reopen `:memory:` see stale rows. Registering the close on
+	// t.Cleanup ensures the connection pool drains at test exit.
+	t.Cleanup(func() { _ = s.Close() })
+	ctx := context.Background()
+
+	// Per-test unique IDs so subtests don't collide on the shared
+	// in-memory DB. t.Name() is unique per subtest.
+	suffix := strings.ReplaceAll(t.Name(), "/", "_")
+	suffix = strings.ReplaceAll(suffix, "TestContextTool_", "")
+	agentName := "researcher_" + suffix
+	v1ID := "def_v1_" + suffix
+	v2ID := "def_v2_" + suffix
+
+	v1, err := s.AgentDefCreate(ctx, store.AgentDefRow{
+		DefID:      v1ID,
+		Name:       agentName,
+		Definition: json.RawMessage(`{"system_prompt":"v1"}`),
+	})
+	if err != nil {
+		t.Fatalf("AgentDefCreate v1: %v", err)
+	}
+	v2, err := s.AgentDefCreate(ctx, store.AgentDefRow{
+		DefID:       v2ID,
+		Name:        agentName,
+		ParentDefID: v1.DefID,
+		Definition:  json.RawMessage(`{"system_prompt":"v2"}`),
+		Description: "experimental",
+	})
+	if err != nil {
+		t.Fatalf("AgentDefCreate v2: %v", err)
+	}
+	if err := s.AgentDefSetActive(ctx, agentName, v2.DefID, ""); err != nil {
+		t.Fatalf("AgentDefSetActive: %v", err)
+	}
+
+	sess, _ := s.CreateSession(ctx, "t", agentName, "alice")
+	run, _ := s.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: "a_eval", AgentDefID: v2.DefID})
+	_, _ = s.EvaluationSubmit(ctx, store.EvaluationRow{
+		EvalID:      "eval_" + suffix,
+		RunID:       run.ID,
+		DefID:       v2.DefID,
+		Score:       0.8,
+		EmitterRole: "self",
+	})
+
+	cfg := &config.Config{
+		Agents: map[string]config.AgentDef{
+			agentName: {
+				Tier:         "low",
+				Provider:     "anthropic",
+				Model:        "claude-haiku-4-5",
+				AllowedTools: []string{"Read", "Context"},
+			},
+			"qa_" + suffix: {
+				Tier:         "middle",
+				AllowedTools: []string{"Read"},
+			},
+		},
+	}
+	tool := &Context{
+		Tools: []tools.Tool{
+			&fakeTool{NameVal: "Read", DescVal: "Read a file", SchemaVal: `{}`},
+			&fakeTool{NameVal: "Context", DescVal: "Introspect", SchemaVal: `{}`},
+		},
+		Cfg:   cfg,
+		Store: s,
+	}
+	runCtx := tools.WithAgentName(context.Background(), agentName)
+	runCtx = tools.WithRunIdentity(runCtx, tools.RunIdentityValue{AgentID: "a_test", UserID: "alice"})
+	runCtx = tools.WithAgentTools(runCtx, []string{"Read", "Context"})
+	return tool, s, runCtx, agentName, v1.DefID, v2.DefID
+}
+
+// ---- agents ----
+
+func TestContextTool_AgentsListsAll(t *testing.T) {
+	tool, _, ctx, _, _, _ := substrateFixture(t)
+	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"agents"}`))
+	if res.IsError {
+		t.Fatalf("agents: %s", res.Text)
+	}
+	out := decodeResult(t, res.Text)
+	if out["count"].(float64) != 2 {
+		t.Errorf("count = %v, want 2 (researcher + qa)", out["count"])
+	}
+	got := out["agents"].([]any)
+	// Sorted alphabetically; qa_ prefix sorts before researcher_.
+	first := got[0].(map[string]any)
+	if !strings.HasPrefix(first["name"].(string), "qa_") {
+		t.Errorf("first agent = %q, want qa_* prefix", first["name"])
+	}
+}
+
+func TestContextTool_AgentsPrefixFilter(t *testing.T) {
+	tool, _, ctx, _, _, _ := substrateFixture(t)
+	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"agents","prefix":"researcher_"}`))
+	out := decodeResult(t, res.Text)
+	if out["count"].(float64) != 1 {
+		t.Errorf("prefix=researcher_ count = %v, want 1", out["count"])
+	}
+	first := out["agents"].([]any)[0].(map[string]any)
+	if !strings.HasPrefix(first["name"].(string), "researcher_") {
+		t.Errorf("name = %q, want researcher_ prefix", first["name"])
+	}
+}
+
+func TestContextTool_AgentsIncludesActiveDefID(t *testing.T) {
+	tool, _, ctx, _, _, v2ID := substrateFixture(t)
+	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"agents","prefix":"researcher_"}`))
+	out := decodeResult(t, res.Text)
+	first := out["agents"].([]any)[0].(map[string]any)
+	if first["active_def_id"] != v2ID {
+		t.Errorf("active_def_id = %v, want %s", first["active_def_id"], v2ID)
+	}
+}
+
+func TestContextTool_AgentsRefusesWithoutCfg(t *testing.T) {
+	tool := &Context{} // no Cfg
+	res, _ := tool.Execute(context.Background(), json.RawMessage(`{"op":"agents"}`))
+	if !res.IsError {
+		t.Fatal("agents without Cfg should refuse")
+	}
+}
+
+// ---- lineage ----
+
+func TestContextTool_LineageWalksAncestorsAndDescendants(t *testing.T) {
+	tool, _, ctx, _, v1ID, v2ID := substrateFixture(t)
+	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"lineage","def_id":"`+v1ID+`"}`))
+	if res.IsError {
+		t.Fatalf("lineage: %s", res.Text)
+	}
+	out := decodeResult(t, res.Text)
+	root := out["root"].(map[string]any)
+	if root["def_id"] != v1ID {
+		t.Errorf("root.def_id = %v, want %s", root["def_id"], v1ID)
+	}
+	// v1 has no ancestors (it's the root).
+	if anc := out["ancestors"]; anc != nil {
+		if a, _ := anc.([]any); len(a) != 0 {
+			t.Errorf("ancestors = %v, want []", a)
+		}
+	}
+	// v1 has one descendant: v2.
+	desc := out["descendants"].([]any)
+	if len(desc) != 1 {
+		t.Fatalf("descendants len = %d, want 1", len(desc))
+	}
+	if d := desc[0].(map[string]any); d["def_id"] != v2ID {
+		t.Errorf("descendant.def_id = %v, want %s", d["def_id"], v2ID)
+	}
+}
+
+func TestContextTool_LineageFromChildShowsAncestor(t *testing.T) {
+	tool, _, ctx, _, v1ID, v2ID := substrateFixture(t)
+	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"lineage","def_id":"`+v2ID+`"}`))
+	out := decodeResult(t, res.Text)
+	anc := out["ancestors"].([]any)
+	if len(anc) != 1 {
+		t.Fatalf("ancestors len = %d, want 1", len(anc))
+	}
+	if a := anc[0].(map[string]any); a["def_id"] != v1ID {
+		t.Errorf("ancestor.def_id = %v, want %s", a["def_id"], v1ID)
+	}
+}
+
+func TestContextTool_LineageMissingDefID(t *testing.T) {
+	tool, _, ctx, _, _, _ := substrateFixture(t)
+	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"lineage"}`))
+	if !res.IsError {
+		t.Fatal("lineage without def_id should refuse")
+	}
+	if !strings.Contains(res.Text, "def_id") {
+		t.Errorf("error should mention def_id; got %q", res.Text)
+	}
+}
+
+func TestContextTool_LineageUnknownDefID(t *testing.T) {
+	tool, _, ctx, _, _, _ := substrateFixture(t)
+	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"lineage","def_id":"def_nope_does_not_exist"}`))
+	if !res.IsError {
+		t.Fatal("lineage for unknown def_id should refuse")
+	}
+	if !strings.Contains(res.Text, "not found") {
+		t.Errorf("error should mention not found; got %q", res.Text)
+	}
+}
+
+// PR 2 review fix: lineage BFS caps total node count (not just
+// depth) so a high-fan-out lineage doesn't blow up the response.
+// Seed > maxDescendants children and verify truncated=true.
+func TestContextTool_LineageTruncatesAtNodeCap(t *testing.T) {
+	s, err := sqlite.Open(":memory:")
+	if err != nil {
+		t.Fatalf("sqlite.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	ctx := context.Background()
+	suffix := strings.ReplaceAll(t.Name(), "/", "_")
+
+	root, _ := s.AgentDefCreate(ctx, store.AgentDefRow{
+		DefID:      "def_root_" + suffix,
+		Name:       "fanout_" + suffix,
+		Definition: json.RawMessage(`{}`),
+	})
+	// Create > 500 children (the maxDescendants cap). Just barely
+	// over the cap is enough to trigger truncation.
+	for i := 0; i < 510; i++ {
+		_, err := s.AgentDefCreate(ctx, store.AgentDefRow{
+			DefID:       fmt.Sprintf("def_child_%d_%s", i, suffix),
+			Name:        "fanout_" + suffix,
+			ParentDefID: root.DefID,
+			Definition:  json.RawMessage(`{}`),
+		})
+		if err != nil {
+			t.Fatalf("seed child %d: %v", i, err)
+		}
+	}
+
+	tool := &Context{Cfg: &config.Config{}, Store: s}
+	res, _ := tool.Execute(context.Background(), json.RawMessage(`{"op":"lineage","def_id":"`+root.DefID+`"}`))
+	if res.IsError {
+		t.Fatalf("lineage: %s", res.Text)
+	}
+	out := decodeResult(t, res.Text)
+	desc := out["descendants"].([]any)
+	if len(desc) > 500 {
+		t.Errorf("descendants len = %d, want <= 500 (the cap)", len(desc))
+	}
+	if !out["truncated"].(bool) {
+		t.Error("truncated should be true when cap hit")
+	}
+}
+
+func TestContextTool_LineageRefusesWithoutStore(t *testing.T) {
+	tool := &Context{Cfg: &config.Config{}} // no Store
+	res, _ := tool.Execute(context.Background(), json.RawMessage(`{"op":"lineage","def_id":"x"}`))
+	if !res.IsError {
+		t.Fatal("lineage without Store should refuse")
+	}
+}
+
+// ---- evaluations ----
+
+func TestContextTool_EvaluationsAggregate(t *testing.T) {
+	tool, _, ctx, _, _, v2ID := substrateFixture(t)
+	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"evaluations","def_id":"`+v2ID+`"}`))
+	if res.IsError {
+		t.Fatalf("evaluations: %s", res.Text)
+	}
+	out := decodeResult(t, res.Text)
+	if out["def_id"] != v2ID {
+		t.Errorf("def_id = %v, want %s", out["def_id"], v2ID)
+	}
+	if out["count"].(float64) != 1 {
+		t.Errorf("count = %v, want 1", out["count"])
+	}
+	score := out["score"].(map[string]any)
+	if score["mean"].(float64) != 0.8 {
+		t.Errorf("mean = %v, want 0.8", score["mean"])
+	}
+}
+
+func TestContextTool_EvaluationsEmptyDef(t *testing.T) {
+	tool, _, ctx, _, v1ID, _ := substrateFixture(t)
+	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"evaluations","def_id":"`+v1ID+`"}`))
+	if res.IsError {
+		t.Fatalf("evaluations: %s", res.Text)
+	}
+	out := decodeResult(t, res.Text)
+	if out["count"].(float64) != 0 {
+		t.Errorf("count = %v, want 0 (no evaluations for v1)", out["count"])
+	}
+}
+
+func TestContextTool_EvaluationsMissingDefID(t *testing.T) {
+	tool, _, ctx, _, _, _ := substrateFixture(t)
+	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"evaluations"}`))
+	if !res.IsError {
+		t.Fatal("evaluations without def_id should refuse")
+	}
+}
+
+func TestContextTool_EvaluationsRefusesWithoutStore(t *testing.T) {
+	tool := &Context{Cfg: &config.Config{}} // no Store
+	res, _ := tool.Execute(context.Background(), json.RawMessage(`{"op":"evaluations","def_id":"x"}`))
+	if !res.IsError {
+		t.Fatal("evaluations without Store should refuse")
 	}
 }
