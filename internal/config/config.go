@@ -346,6 +346,30 @@ type AgentDef struct {
 	// scope list gates WHICH emitter roles the agent is allowed to
 	// produce.
 	EvaluationScopes []string `yaml:"evaluation_scopes"`
+
+	// HistoryScope gates the v0.8.7 Context.history op. Closed set:
+	//
+	//	"self"        — caller may read its own run's transcript
+	//	"siblings"    — RESERVED (not yet active in v0.8.7 PR 3)
+	//	"descendants" — RESERVED
+	//	"named:<n>"   — RESERVED
+	//	"any"         — caller may read any agent's transcript
+	//
+	// Empty / unset = default-deny. Mirror of the substrate-scope
+	// pattern (agent_def_scopes, evaluation_scopes).
+	HistoryScope []string `yaml:"history_scope"`
+
+	// DisableContext opts the agent OUT of the v0.8.7 default-add
+	// behaviour. Normally every agent's allowed_tools is augmented
+	// with "Context" at config-load — introspection is foundational
+	// for self-evolving agents and missing it is a footgun. Operators
+	// running airgapped or strictly-deterministic agents can set
+	// `disable_context: true` to skip the default-add for that agent.
+	//
+	// Note: this only controls the AUTO-ADD. If an operator explicitly
+	// lists "Context" in allowed_tools, that wins regardless of this
+	// flag (explicit beats default).
+	DisableContext bool `yaml:"disable_context"`
 }
 
 // Channel is one operator-declared channel in the top-level
@@ -1099,10 +1123,41 @@ func Load(path string) (*Config, error) {
 		return nil, err
 	}
 
+	// v0.8.7 default-add: every agent gets Context auto-appended to
+	// its allowed_tools unless `disable_context: true` is set. Runs
+	// after resolveSkills so skill-driven AllowedTools widening has
+	// already taken effect.
+	addContextToolDefaults(cfg)
+
 	if err := validate(cfg); err != nil {
 		return nil, err
 	}
 	return cfg, nil
+}
+
+// addContextToolDefaults appends "Context" to every agent's
+// AllowedTools unless DisableContext is set (or "Context" is already
+// listed). v0.8.7 introspection is foundational for self-evolving
+// agents; missing it is a footgun. Operators with airgapped agents
+// opt out per-agent via `disable_context: true`.
+func addContextToolDefaults(cfg *Config) {
+	for name, def := range cfg.Agents {
+		if def.DisableContext {
+			continue
+		}
+		alreadyHas := false
+		for _, t := range def.AllowedTools {
+			if t == "Context" {
+				alreadyHas = true
+				break
+			}
+		}
+		if alreadyHas {
+			continue
+		}
+		def.AllowedTools = append(def.AllowedTools, "Context")
+		cfg.Agents[name] = def
+	}
 }
 
 // ResolveAgentModel returns (provider, model) for the named agent, walking
@@ -1594,6 +1649,19 @@ var validEvaluationScopes = map[string]bool{
 	"read_any":           true,
 }
 
+// validHistoryScopes is the closed set of Context.history scope
+// strings. "self" / "siblings" / "descendants" / "named:<n>" /
+// "any". The non-"self"/"any" entries are RESERVED in v0.8.7 PR 3
+// — granting them is well-formed but the runtime falls through to
+// default-deny until the plumbing PR lands.
+var validHistoryScopes = map[string]bool{
+	"self":        true,
+	"siblings":    true,
+	"descendants": true,
+	"any":         true,
+	// "named:<n>" handled by prefix check at validation time.
+}
+
 // validateAgentDefScope checks one entry in an agent's
 // agent_def_scopes list. Closed set:
 //
@@ -1797,6 +1865,21 @@ func validate(c *Config) error {
 			if !validEvaluationScopes[sc] {
 				return fmt.Errorf("agent %q: evaluation_scopes[%d]: unknown scope %q (want one of: submit_self, submit_siblings, submit_descendants, submit_any, read_any)", name, i, sc)
 			}
+		}
+		// Context.history (v0.8.7): validate history_scope entries.
+		// Closed set as documented on AgentDef.HistoryScope. The
+		// `named:<n>` prefix follows the same shape as agent_def_scopes.
+		for i, sc := range agent.HistoryScope {
+			if validHistoryScopes[sc] {
+				continue
+			}
+			if strings.HasPrefix(sc, "named:") {
+				if strings.TrimPrefix(sc, "named:") == "" {
+					return fmt.Errorf("agent %q: history_scope[%d]: empty name after `named:` prefix", name, i)
+				}
+				continue
+			}
+			return fmt.Errorf("agent %q: history_scope[%d]: unknown scope %q (want one of: self, siblings, descendants, any, named:<n>)", name, i, sc)
 		}
 	}
 	// Channel tool: validate the top-level `channels:` block.

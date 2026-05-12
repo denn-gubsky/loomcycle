@@ -71,24 +71,30 @@ const contextDescription = `Read-only runtime introspection. ` +
 const contextInputSchema = `{
   "type": "object",
   "properties": {
-    "op":              {"type": "string", "enum": ["self","tools","doc","permissions","agents","lineage","evaluations"], "description": "Which introspection op to run."},
+    "op":              {"type": "string", "enum": ["self","tools","doc","permissions","agents","lineage","evaluations","channels","history"], "description": "Which introspection op to run."},
     "name":            {"type": "string", "description": "doc only: the tool name to fetch detailed docs for."},
-    "prefix":          {"type": "string", "description": "agents only: optional name prefix filter."},
+    "prefix":          {"type": "string", "description": "agents / channels: optional name prefix filter."},
     "def_id":          {"type": "string", "description": "lineage / evaluations: the agent_defs row id to inspect. Use Context.agents to discover def_ids first."},
     "depth":           {"type": "integer", "description": "lineage only: max depth to walk in each direction (default 10, cap 100)."},
-    "include_lineage": {"type": "boolean", "description": "evaluations only: include ancestors' evaluations in the aggregate (default false)."}
+    "include_lineage": {"type": "boolean", "description": "evaluations only: include ancestors' evaluations in the aggregate (default false)."},
+    "agent_id":        {"type": "string", "description": "history only: target agent_id whose run history to fetch. Omitted = caller's own agent_id from ctx."},
+    "event_types":     {"type": "array", "items": {"type": "string"}, "description": "history only: optional filter — return only events of these types (e.g. [\"text\",\"tool_call\"])."},
+    "limit":           {"type": "integer", "description": "history only: max events to return (default 100, cap 1000)."}
   },
   "required": ["op"],
   "additionalProperties": false
 }`
 
 type contextInput struct {
-	Op             string `json:"op"`
-	Name           string `json:"name,omitempty"`
-	Prefix         string `json:"prefix,omitempty"`
-	DefID          string `json:"def_id,omitempty"`
-	Depth          int    `json:"depth,omitempty"`
-	IncludeLineage bool   `json:"include_lineage,omitempty"`
+	Op             string   `json:"op"`
+	Name           string   `json:"name,omitempty"`
+	Prefix         string   `json:"prefix,omitempty"`
+	DefID          string   `json:"def_id,omitempty"`
+	Depth          int      `json:"depth,omitempty"`
+	IncludeLineage bool     `json:"include_lineage,omitempty"`
+	AgentID        string   `json:"agent_id,omitempty"`
+	EventTypes     []string `json:"event_types,omitempty"`
+	Limit          int      `json:"limit,omitempty"`
 }
 
 // Name implements tools.Tool.
@@ -122,10 +128,14 @@ func (c *Context) Execute(ctx context.Context, raw json.RawMessage) (tools.Resul
 		return c.execLineage(ctx, in)
 	case "evaluations":
 		return c.execEvaluations(ctx, in)
+	case "channels":
+		return c.execChannels(ctx, in)
+	case "history":
+		return c.execHistory(ctx, in)
 	case "":
 		return errResult("missing required field: op"), nil
 	default:
-		return errResult(fmt.Sprintf("unknown op %q (must be one of: self, tools, doc, permissions, agents, lineage, evaluations)", in.Op)), nil
+		return errResult(fmt.Sprintf("unknown op %q (must be one of: self, tools, doc, permissions, agents, lineage, evaluations, channels, history)", in.Op)), nil
 	}
 }
 
@@ -279,6 +289,7 @@ func (c *Context) execPermissions(ctx context.Context) (tools.Result, error) {
 	adPol := tools.AgentDefPolicy(ctx)
 	evPol := tools.EvaluationPolicy(ctx)
 
+	histPol := tools.HistoryPolicy(ctx)
 	out := map[string]any{
 		"allowed_tools": tools.AgentTools(ctx),
 		"host_policy": map[string]any{
@@ -296,6 +307,7 @@ func (c *Context) execPermissions(ctx context.Context) (tools.Result, error) {
 		},
 		"agent_def_scopes":  adPol.Scopes,
 		"evaluation_scopes": evPol.Scopes,
+		"history_scope":     histPol.Scopes,
 	}
 	return okJSON(out)
 }
@@ -485,6 +497,190 @@ func (c *Context) execEvaluations(ctx context.Context, in contextInput) (tools.R
 		return errResult(fmt.Sprintf("evaluations: %s", err)), nil
 	}
 	return okJSON(agg)
+}
+
+// ---- channels ----
+
+func (c *Context) execChannels(ctx context.Context, in contextInput) (tools.Result, error) {
+	pol := tools.ChannelPolicy(ctx)
+	type channelSummary struct {
+		Name        string `json:"name"`
+		Scope       string `json:"scope,omitempty"`
+		Semantic    string `json:"semantic,omitempty"`
+		DefaultTTL  int    `json:"default_ttl,omitempty"`
+		MaxMessages int    `json:"max_messages,omitempty"`
+		Publisher   string `json:"publisher,omitempty"`
+		Publish     bool   `json:"publish"`
+		Subscribe   bool   `json:"subscribe"`
+	}
+	// Union of operator-declared channels + the caller's publish /
+	// subscribe lists. Operator may declare channels the agent has no
+	// ACL on — surfaced so the agent sees what exists even when it
+	// can't write/read (good for "what bus does the operator run?"
+	// discovery).
+	allNames := make(map[string]bool, len(pol.Channels))
+	for n := range pol.Channels {
+		allNames[n] = true
+	}
+	// publish/subscribe lists may contain wildcards (e.g. `findings/*`);
+	// those don't expand into the result set here — we surface the
+	// declared channels only. The bools below reflect whether the
+	// exact name appears in either list.
+	publishSet := stringSet(pol.Publish)
+	subscribeSet := stringSet(pol.Subscribe)
+
+	out := make([]channelSummary, 0, len(allNames))
+	for name := range allNames {
+		if in.Prefix != "" && !strings.HasPrefix(name, in.Prefix) {
+			continue
+		}
+		def := pol.Channels[name]
+		out = append(out, channelSummary{
+			Name:        name,
+			Scope:       def.Scope,
+			Semantic:    def.Semantic,
+			DefaultTTL:  def.DefaultTTL,
+			MaxMessages: def.MaxMessages,
+			Publisher:   def.Publisher,
+			Publish:     publishSet[name],
+			Subscribe:   subscribeSet[name],
+		})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return okJSON(map[string]any{
+		"channels":           out,
+		"count":              len(out),
+		"publish_wildcards":  filterWildcards(pol.Publish),
+		"subscribe_wildcards": filterWildcards(pol.Subscribe),
+	})
+}
+
+func stringSet(xs []string) map[string]bool {
+	out := make(map[string]bool, len(xs))
+	for _, x := range xs {
+		out[x] = true
+	}
+	return out
+}
+
+// filterWildcards returns only the entries that look like wildcards
+// (anchored prefix patterns ending in `/*`). The non-wildcard entries
+// are already surfaced via the per-channel publish/subscribe bools.
+func filterWildcards(xs []string) []string {
+	var out []string
+	for _, x := range xs {
+		if strings.HasSuffix(x, "/*") {
+			out = append(out, x)
+		}
+	}
+	return out
+}
+
+// ---- history ----
+
+func (c *Context) execHistory(ctx context.Context, in contextInput) (tools.Result, error) {
+	if c.Store == nil {
+		return errResult("history: not configured (no Store backend)"), nil
+	}
+
+	// Gate on history_scope. The closed set is documented on
+	// HistoryPolicyValue. Default-deny: empty scopes refuses.
+	pol := tools.HistoryPolicy(ctx)
+	if len(pol.Scopes) == 0 {
+		return errResult("history: agent has no `history_scope` policy (default-deny); add `history_scope: [...]` to the agent yaml"), nil
+	}
+
+	// Determine target agent_id. Omitted = caller's own.
+	emitter := tools.RunIdentity(ctx)
+	targetAgentID := in.AgentID
+	if targetAgentID == "" {
+		targetAgentID = emitter.AgentID
+	}
+	if targetAgentID == "" {
+		return errResult("history: no agent_id supplied and caller has no AgentID on ctx"), nil
+	}
+
+	// Scope check. v0.8.7 PR 3 supports:
+	//   - "self": caller's own agent_id only
+	//   - "any":  unrestricted
+	// "siblings" / "descendants" / "named:<n>" are reserved and not
+	// yet active; granting them yields default-deny until the
+	// follow-up plumbing lands.
+	allowed := false
+	if hasHistoryScope(pol, "any") {
+		allowed = true
+	} else if hasHistoryScope(pol, "self") && targetAgentID == emitter.AgentID {
+		allowed = true
+	}
+	if !allowed {
+		return errResult(fmt.Sprintf("history: scope check failed for agent_id %q (caller scopes: %v)", targetAgentID, pol.Scopes)), nil
+	}
+
+	// Resolve agent_id → Run row → session_id.
+	run, err := c.Store.GetRunByAgentID(ctx, targetAgentID)
+	if err != nil {
+		var nf *store.ErrNotFound
+		if errors.As(err, &nf) {
+			return errResult(fmt.Sprintf("history: agent_id %q not found", targetAgentID)), nil
+		}
+		return errResult(fmt.Sprintf("history: lookup run: %s", err)), nil
+	}
+
+	events, err := c.Store.GetTranscript(ctx, run.SessionID)
+	if err != nil {
+		return errResult(fmt.Sprintf("history: transcript: %s", err)), nil
+	}
+
+	// Optional event_types filter + limit.
+	typeFilter := stringSet(in.EventTypes)
+	limit := in.Limit
+	if limit <= 0 {
+		limit = 100
+	}
+	if limit > 1000 {
+		limit = 1000
+	}
+
+	type eventOut struct {
+		Seq       int64           `json:"seq"`
+		RunID     string          `json:"run_id"`
+		Timestamp string          `json:"ts"`
+		Type      string          `json:"type"`
+		Payload   json.RawMessage `json:"payload,omitempty"`
+	}
+	out := make([]eventOut, 0, limit)
+	for _, ev := range events {
+		if len(typeFilter) > 0 && !typeFilter[ev.Type] {
+			continue
+		}
+		out = append(out, eventOut{
+			Seq:       ev.Seq,
+			RunID:     ev.RunID,
+			Timestamp: ev.Timestamp.UTC().Format("2006-01-02T15:04:05.000000000Z"),
+			Type:      ev.Type,
+			Payload:   json.RawMessage(ev.Payload),
+		})
+		if len(out) >= limit {
+			break
+		}
+	}
+
+	return okJSON(map[string]any{
+		"agent_id":   targetAgentID,
+		"session_id": run.SessionID,
+		"events":     out,
+		"count":      len(out),
+		"truncated":  len(out) == limit && len(events) > limit,
+	})
+}
+
+func hasHistoryScope(pol tools.HistoryPolicyValue, want string) bool {
+	for _, s := range pol.Scopes {
+		if s == want {
+			return true
+		}
+	}
+	return false
 }
 
 var _ tools.Tool = (*Context)(nil)
