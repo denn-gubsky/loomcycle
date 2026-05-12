@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"sort"
 	"strings"
 
@@ -317,6 +318,12 @@ func (c *Context) execAgents(ctx context.Context, in contextInput) (tools.Result
 		Provider     string `json:"provider,omitempty"`
 		ActiveDefID  string `json:"active_def_id,omitempty"`
 		AllowedTools int    `json:"allowed_tools_count"`
+		// Error surfaces a per-name lookup failure (e.g. DB connection
+		// drop while resolving ActiveDefID). Empty when the lookup
+		// succeeded or the name has no DB row (the NotFound case
+		// silently omits ActiveDefID rather than reporting an error —
+		// not-yet-forked is the common "no active def" state).
+		Error string `json:"error,omitempty"`
 	}
 	names := make([]string, 0, len(c.Cfg.Agents))
 	for n := range c.Cfg.Agents {
@@ -338,9 +345,11 @@ func (c *Context) execAgents(ctx context.Context, in contextInput) (tools.Result
 			AllowedTools: len(def.AllowedTools),
 		}
 		// Active def_id from the v0.8.5 substrate. Best-effort — if
-		// Store is nil or no active row, we omit the field. Errors
-		// other than ErrNotFound are logged inline as part of a
-		// per-name `error` key rather than failing the whole op.
+		// Store is nil or no active row, we omit the field. Non-
+		// NotFound errors are unusual but possible (e.g. DB connection
+		// drop mid-call); surface them as a per-name `error` key + log
+		// so operators see the partial failure without losing the rest
+		// of the catalog. PR 2 review fix.
 		if c.Store != nil {
 			row, err := c.Store.AgentDefGetActive(ctx, name)
 			if err == nil {
@@ -348,11 +357,8 @@ func (c *Context) execAgents(ctx context.Context, in contextInput) (tools.Result
 			} else {
 				var nf *store.ErrNotFound
 				if !errors.As(err, &nf) {
-					// Non-NotFound errors are unusual — surface them
-					// so operators see the per-name failure without
-					// losing the rest of the catalog.
-					// (We don't fail the whole op for one bad lookup.)
-					_ = err
+					s.Error = err.Error()
+					log.Printf("context agents: AgentDefGetActive(%q): %v", name, err)
 				}
 			}
 		}
@@ -422,14 +428,17 @@ func (c *Context) execLineage(ctx context.Context, in contextInput) (tools.Resul
 		cur = parent
 	}
 
-	// Walk descendants breadth-first via AgentDefListChildren.
-	type level struct {
-		rows  []store.AgentDefRow
-		level int
-	}
+	// Walk descendants breadth-first via AgentDefListChildren. Cap
+	// the TOTAL node count (not just depth) so a high-fan-out lineage
+	// doesn't produce a multi-megabyte JSON blob — depth alone could
+	// still blow up under heavy fork branching (PR 2 review fix).
+	// On overflow we stop the BFS, set truncated=true, and return
+	// whatever was collected so far.
+	const maxDescendants = 500
 	var descendants []defSummary
+	truncated := false
 	frontier := []store.AgentDefRow{root}
-	for d := 1; d <= depth && len(frontier) > 0; d++ {
+	for d := 1; d <= depth && len(frontier) > 0 && !truncated; d++ {
 		var next []store.AgentDefRow
 		for _, r := range frontier {
 			children, err := c.Store.AgentDefListChildren(ctx, r.DefID)
@@ -437,8 +446,15 @@ func (c *Context) execLineage(ctx context.Context, in contextInput) (tools.Resul
 				return errResult(fmt.Sprintf("lineage: walk descendants: %s", err)), nil
 			}
 			for _, ch := range children {
+				if len(descendants) >= maxDescendants {
+					truncated = true
+					break
+				}
 				descendants = append(descendants, toSummary(ch))
 				next = append(next, ch)
+			}
+			if truncated {
+				break
 			}
 		}
 		frontier = next
@@ -449,6 +465,7 @@ func (c *Context) execLineage(ctx context.Context, in contextInput) (tools.Resul
 		"ancestors":   ancestors,
 		"descendants": descendants,
 		"depth":       depth,
+		"truncated":   truncated,
 	})
 }
 

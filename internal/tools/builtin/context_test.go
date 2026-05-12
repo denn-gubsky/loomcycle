@@ -3,6 +3,7 @@ package builtin
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -517,6 +518,52 @@ func TestContextTool_LineageUnknownDefID(t *testing.T) {
 	}
 	if !strings.Contains(res.Text, "not found") {
 		t.Errorf("error should mention not found; got %q", res.Text)
+	}
+}
+
+// PR 2 review fix: lineage BFS caps total node count (not just
+// depth) so a high-fan-out lineage doesn't blow up the response.
+// Seed > maxDescendants children and verify truncated=true.
+func TestContextTool_LineageTruncatesAtNodeCap(t *testing.T) {
+	s, err := sqlite.Open(":memory:")
+	if err != nil {
+		t.Fatalf("sqlite.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	ctx := context.Background()
+	suffix := strings.ReplaceAll(t.Name(), "/", "_")
+
+	root, _ := s.AgentDefCreate(ctx, store.AgentDefRow{
+		DefID:      "def_root_" + suffix,
+		Name:       "fanout_" + suffix,
+		Definition: json.RawMessage(`{}`),
+	})
+	// Create > 500 children (the maxDescendants cap). Just barely
+	// over the cap is enough to trigger truncation.
+	for i := 0; i < 510; i++ {
+		_, err := s.AgentDefCreate(ctx, store.AgentDefRow{
+			DefID:       fmt.Sprintf("def_child_%d_%s", i, suffix),
+			Name:        "fanout_" + suffix,
+			ParentDefID: root.DefID,
+			Definition:  json.RawMessage(`{}`),
+		})
+		if err != nil {
+			t.Fatalf("seed child %d: %v", i, err)
+		}
+	}
+
+	tool := &Context{Cfg: &config.Config{}, Store: s}
+	res, _ := tool.Execute(context.Background(), json.RawMessage(`{"op":"lineage","def_id":"`+root.DefID+`"}`))
+	if res.IsError {
+		t.Fatalf("lineage: %s", res.Text)
+	}
+	out := decodeResult(t, res.Text)
+	desc := out["descendants"].([]any)
+	if len(desc) > 500 {
+		t.Errorf("descendants len = %d, want <= 500 (the cap)", len(desc))
+	}
+	if !out["truncated"].(bool) {
+		t.Error("truncated should be true when cap hit")
 	}
 }
 
