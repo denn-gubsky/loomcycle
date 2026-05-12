@@ -419,11 +419,49 @@ func main() {
 	// PR 3. Wires the same Bus + Scheduler as the agent tool so
 	// long-poll subscribers wake whether the publish came from an
 	// agent, an internal goroutine, or the admin endpoint.
-	srv.SetSystemPublisher(&channels.StorePublisher{
+	sysPublisher := &channels.StorePublisher{
 		Store:     storeIface,
 		Bus:       channelBus,
 		Scheduler: channelScheduler,
-	})
+	}
+	srv.SetSystemPublisher(sysPublisher)
+
+	// v0.8.6 heartbeat runner — one goroutine per `_system/heartbeat-*`
+	// (or any other `publisher: system` + `period:` channel) declared
+	// in operator yaml. Stops on the same context cancellation that
+	// drains the HTTP server below. Skip-on-pause semantics: when
+	// v0.8.9 pause lands, the heartbeat goroutines pause naturally
+	// because their context is the same shutdown context the rest of
+	// the system uses.
+	heartbeatChannels := make(map[string]struct {
+		Period      string
+		Publisher   string
+		DefaultTTL  int
+		MaxMessages int
+	}, len(cfg.Channels))
+	for name, ch := range cfg.Channels {
+		heartbeatChannels[name] = struct {
+			Period      string
+			Publisher   string
+			DefaultTTL  int
+			MaxMessages int
+		}{
+			Period:      ch.Period,
+			Publisher:   ch.Publisher,
+			DefaultTTL:  ch.DefaultTTL,
+			MaxMessages: ch.MaxMessages,
+		}
+	}
+	heartbeatSpecs, err := channels.LoadHeartbeatSpecs(heartbeatChannels)
+	if err != nil {
+		log.Fatalf("heartbeat specs: %v", err)
+	}
+	var heartbeatRunner *channels.HeartbeatRunner
+	if len(heartbeatSpecs) > 0 {
+		heartbeatRunner = channels.NewHeartbeatRunner(sysPublisher, buildCommit, heartbeatSpecs)
+		log.Printf("system channels: starting %d heartbeat goroutine(s)", len(heartbeatSpecs))
+		heartbeatRunner.Start(context.Background())
+	}
 
 	// Build the model-resolution matrix (resolve.Resolver). Providers
 	// without API keys are MARKED EXCLUDED so Snapshot() shows the
@@ -573,6 +611,9 @@ func main() {
 	<-sig
 	log.Println("shutting down…")
 	bgCancel() // tear down sweeper + GC goroutines first
+	if heartbeatRunner != nil {
+		heartbeatRunner.Stop()
+	}
 	if grpcSrv != nil {
 		grpcSrv.GracefulStop()
 	}
