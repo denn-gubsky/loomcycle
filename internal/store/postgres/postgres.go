@@ -327,6 +327,30 @@ func (s *Store) GetRunByAgentID(ctx context.Context, agentID string) (store.Run,
 	return r, nil
 }
 
+// GetRun returns one row by run_id (the primary key on runs).
+func (s *Store) GetRun(ctx context.Context, runID string) (store.Run, error) {
+	if runID == "" {
+		return store.Run{}, &store.ErrNotFound{Kind: "run", ID: runID}
+	}
+	row := s.pool.QueryRow(ctx,
+		`SELECT r.id, r.session_id, r.status, r.started_at, r.completed_at, r.stop_reason,
+		        r.input_tokens, r.output_tokens, r.cache_creation_tokens, r.cache_read_tokens,
+		        r.model, r.error,
+		        r.agent_id, r.parent_agent_id, r.parent_run_id, r.user_id, r.last_heartbeat_at, r.user_tier,
+		        s.agent
+		 FROM runs r LEFT JOIN sessions s ON r.session_id = s.id
+		 WHERE r.id = $1`, runID,
+	)
+	r, err := scanRun(row)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return store.Run{}, &store.ErrNotFound{Kind: "run", ID: runID}
+		}
+		return store.Run{}, fmt.Errorf("get run: %w", err)
+	}
+	return r, nil
+}
+
 // ListUsers returns one row per distinct user_id with summary stats.
 // Drives the v0.7.3 Web UI user picker. Mirrors the SQLite shape so
 // behaviour is identical across backends.

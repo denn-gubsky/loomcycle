@@ -230,6 +230,16 @@ func main() {
 	}
 	allTools = append(allTools, agentDefTool)
 
+	// Evaluation tool (v0.8.5). Selection half of the substrate;
+	// emitter_role is derived server-side from the caller's RunIdentity
+	// vs the target run's identity, and per-agent yaml `evaluation_scopes`
+	// gate which roles may submit + whether read ops are allowed.
+	evaluationTool := &builtin.Evaluation{
+		MaxJudgementBytes: cfg.Env.EvaluationMaxJudgementBytes,
+		MaxRationaleBytes: cfg.Env.EvaluationMaxRationaleBytes,
+	}
+	allTools = append(allTools, evaluationTool)
+
 	// Local API MCP gateway (v0.4.0+). When `local_api.spec` is set
 	// in loomcycle.yaml, parse the OpenAPI spec and register one tool
 	// per operation. Each tool forwards calls to local_api.base_url
@@ -395,6 +405,7 @@ func main() {
 	memoryTool.Store = storeIface
 	channelTool.Store = storeIface
 	agentDefTool.Store = storeIface
+	evaluationTool.Store = storeIface
 	srv := lchttp.New(cfg, pr, allTools, sem, storeIface)
 	srv.SetMCPFallback(mcpLazyResolver.Resolve)
 

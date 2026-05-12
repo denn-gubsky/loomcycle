@@ -228,6 +228,14 @@ type Store interface {
 	// resolve the API-facing handle to a Run.
 	GetRunByAgentID(ctx context.Context, agentID string) (Run, error)
 
+	// GetRun returns one row by run_id (the primary key on runs).
+	// Distinct from GetRunByAgentID which queries by the caller-
+	// supplied tracking handle. v0.8.5 Evaluation tool uses this to
+	// look up the target run's AgentID + ParentAgentID at submit
+	// time so it can derive emitter_role (self / sibling / parent /
+	// external / unrelated) server-side. Returns *ErrNotFound on miss.
+	GetRun(ctx context.Context, runID string) (Run, error)
+
 	// ListActiveRunsByUser returns runs for userID whose status matches
 	// the supplied filter. An empty status returns ALL statuses
 	// (caller can filter further). Results are bounded — 100 rows max,
