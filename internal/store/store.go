@@ -48,6 +48,77 @@ func MintChannelMessageID(t time.Time) string {
 	return fmt.Sprintf("msg_%016x%s", uint64(t.UnixNano()), hex.EncodeToString(buf[:]))
 }
 
+// EncodeChannelCursor renders a (visible_at, msg_id) tuple as the
+// opaque cursor token agents receive. Format:
+//
+//	cur_<16hex-visible_at-unixNanos>_<msg_id>
+//
+// Lex-sortable by visible_at (16 hex digits cover unixNanos through
+// year 2262) and then by msg_id within the same nanosecond. The
+// `cur_0` sentinel (for replay-from-oldest) is the one input that
+// never round-trips through this function — callers check it
+// upstream.
+//
+// v0.8.6: this format REPLACES the v0.8.4 `msg_<hex>` cursor shape.
+// Legacy cursors are wiped by the 0005_channel_visible_at migration;
+// agents that stored cursors externally will see a one-shot
+// replay-from-oldest on first subscribe after the upgrade.
+func EncodeChannelCursor(visibleAt time.Time, msgID string) string {
+	if msgID == "" {
+		return ""
+	}
+	return fmt.Sprintf("cur_%016x_%s", uint64(visibleAt.UnixNano()), msgID)
+}
+
+// DecodeChannelCursor parses a cursor token into its (visible_at,
+// msg_id) tuple. Returns (zero-time, "", true) for "cur_0" and the
+// empty string (both interpreted as "from oldest non-expired"); the
+// last return reports the "from-oldest" sentinel form so callers can
+// skip the WHERE-tuple clause entirely.
+//
+// Malformed cursors return an error so the tool layer surfaces a
+// clear "invalid cursor" rejection rather than treating garbage as
+// "from oldest".
+func DecodeChannelCursor(token string) (visibleAt time.Time, msgID string, fromOldest bool, err error) {
+	if token == "" || token == "cur_0" {
+		return time.Time{}, "", true, nil
+	}
+	const prefix = "cur_"
+	if len(token) < len(prefix)+16+1 || token[:len(prefix)] != prefix {
+		return time.Time{}, "", false, fmt.Errorf("invalid channel cursor %q: expected `cur_<16hex>_<msg_id>` or `cur_0`", token)
+	}
+	hex16 := token[len(prefix) : len(prefix)+16]
+	if token[len(prefix)+16] != '_' {
+		return time.Time{}, "", false, fmt.Errorf("invalid channel cursor %q: missing `_` after timestamp", token)
+	}
+	msgID = token[len(prefix)+16+1:]
+	if msgID == "" {
+		return time.Time{}, "", false, fmt.Errorf("invalid channel cursor %q: empty msg_id", token)
+	}
+	// msg_id format check: MintChannelMessageID produces exactly
+	// `msg_<16hex-unixNanos><8hex-rand>` = 4 + 24 = 28 chars. Without
+	// this guard, a cursor like `cur_<vh>_msg_<hex>_junk` would pass
+	// the prefix check and then be stored verbatim via ChannelAck —
+	// later read queries comparing tuple (visible_at, msg_id) against
+	// the bogus suffix would find no rows and the subscriber would
+	// silently stall forever. Accept only the well-formed shape.
+	const msgIDLen = 4 + 16 + 8 // "msg_" + nanos-hex + rand-hex
+	if len(msgID) != msgIDLen || msgID[:4] != "msg_" {
+		return time.Time{}, "", false, fmt.Errorf("invalid channel cursor %q: malformed msg_id %q (want `msg_<24hex>`)", token, msgID)
+	}
+	for i := 4; i < len(msgID); i++ {
+		c := msgID[i]
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
+			return time.Time{}, "", false, fmt.Errorf("invalid channel cursor %q: msg_id contains non-hex char", token)
+		}
+	}
+	var nanos uint64
+	if _, err := fmt.Sscanf(hex16, "%016x", &nanos); err != nil {
+		return time.Time{}, "", false, fmt.Errorf("invalid channel cursor %q: timestamp parse: %w", token, err)
+	}
+	return time.Unix(0, int64(nanos)), msgID, false, nil
+}
+
 // Session is a logical conversation thread.
 type Session struct {
 	ID        string    `json:"id"`
@@ -572,14 +643,28 @@ func (e *MemoryError) Error() string { return e.Msg }
 // when the publisher passed no TTL AND the channel had no default;
 // the read path filters expired rows regardless of whether the
 // sweeper has run.
+//
+// v0.8.6 fields:
+//   - VisibleAt — when this message becomes deliverable. Equals
+//     PublishedAt for immediate publishes; set to deliver_at for
+//     deferred publishes. Subscribe/peek read paths filter
+//     `visible_at <= now()`. Delivery order = (VisibleAt, ID)
+//     tuple, NOT pure ID order, so deferred messages don't get
+//     silently skipped by subscribers that already progressed past
+//     their publish-time ID.
+//   - PublishedByUserID — audit column. Agent publishes set this
+//     from the run's UserID; system publishes use the "_system"
+//     sentinel; admin-endpoint publishes use the bearer's user.
 type ChannelMessage struct {
-	ID          string          `json:"id"`
-	Channel     string          `json:"channel"`
-	Scope       MemoryScope     `json:"scope"` // re-uses MemoryScope so operators don't track two enums
-	ScopeID     string          `json:"scope_id"`
-	Payload     json.RawMessage `json:"payload"`
-	PublishedAt time.Time       `json:"published_at"`
-	ExpiresAt   time.Time       `json:"expires_at,omitempty"`
+	ID                string          `json:"id"`
+	Channel           string          `json:"channel"`
+	Scope             MemoryScope     `json:"scope"` // re-uses MemoryScope so operators don't track two enums
+	ScopeID           string          `json:"scope_id"`
+	Payload           json.RawMessage `json:"payload"`
+	PublishedAt       time.Time       `json:"published_at"`
+	ExpiresAt         time.Time       `json:"expires_at,omitempty"`
+	VisibleAt         time.Time       `json:"visible_at,omitempty"`
+	PublishedByUserID string          `json:"published_by_user_id,omitempty"`
 }
 
 // ErrChannelCursorRegression is returned by ChannelAck when a caller

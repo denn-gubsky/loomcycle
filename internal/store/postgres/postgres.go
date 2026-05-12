@@ -792,14 +792,28 @@ func (s *Store) MemorySweep(ctx context.Context) (int, error) {
 // ChannelPublish appends one message and (if maxMessages > 0) trims
 // the channel down to maxMessages oldest-first inside the same txn.
 // Returns the new id + the count of rows trimmed (lossy-on-overflow).
+//
+// v0.8.6: visible_at + published_by_user_id are honoured. Deferred
+// publishes (VisibleAt > now) land in storage immediately but are
+// hidden from reads until visible_at <= now; the tool layer schedules
+// a Bus.Notify(channel) at visible_at so long-poll subscribers wake.
 func (s *Store) ChannelPublish(ctx context.Context, msg store.ChannelMessage, maxMessages int) (string, int, error) {
 	now := time.Now().UTC()
 	msg.ID = store.MintChannelMessageID(now)
 	msg.PublishedAt = now
+	if msg.VisibleAt.IsZero() || msg.VisibleAt.Before(now) {
+		msg.VisibleAt = now
+	} else {
+		msg.VisibleAt = msg.VisibleAt.UTC()
+	}
 
 	var expiresAt any
 	if !msg.ExpiresAt.IsZero() {
 		expiresAt = msg.ExpiresAt.UTC()
+	}
+	var publishedByUserID any
+	if msg.PublishedByUserID != "" {
+		publishedByUserID = msg.PublishedByUserID
 	}
 
 	tx, err := s.pool.Begin(ctx)
@@ -809,9 +823,10 @@ func (s *Store) ChannelPublish(ctx context.Context, msg store.ChannelMessage, ma
 	defer func() { _ = tx.Rollback(ctx) }()
 
 	if _, err := tx.Exec(ctx,
-		`INSERT INTO channel_messages (id, channel, scope, scope_id, payload, published_at, expires_at)
-		 VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7)`,
-		msg.ID, msg.Channel, string(msg.Scope), msg.ScopeID, string(msg.Payload), now, expiresAt,
+		`INSERT INTO channel_messages (id, channel, scope, scope_id, payload, published_at, expires_at, visible_at, published_by_user_id)
+		 VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9)`,
+		msg.ID, msg.Channel, string(msg.Scope), msg.ScopeID, string(msg.Payload),
+		now, expiresAt, msg.VisibleAt, publishedByUserID,
 	); err != nil {
 		return "", 0, fmt.Errorf("channel publish insert: %w", err)
 	}
@@ -834,6 +849,12 @@ func (s *Store) ChannelPublish(ctx context.Context, msg store.ChannelMessage, ma
 		// concurrent publisher whose trim races). The next trim
 		// converges. This is the right safety property: no message
 		// that was reported as published is ever silently lost.
+		// v0.8.6: ORDER BY (visible_at, id) DESC to match the read
+		// path's delivery order — see the sqlite adapter for the
+		// full rationale. With pure id DESC, a deferred message
+		// published earlier but with a future visible_at would sort
+		// BEFORE a later immediate publish; the trim would silently
+		// drop the deferred row before it became deliverable.
 		tag, err := tx.Exec(ctx,
 			`DELETE FROM channel_messages
 			 WHERE channel = $1 AND scope = $2 AND scope_id = $3
@@ -841,7 +862,7 @@ func (s *Store) ChannelPublish(ctx context.Context, msg store.ChannelMessage, ma
 			   AND id NOT IN (
 			     SELECT id FROM channel_messages
 			      WHERE channel = $1 AND scope = $2 AND scope_id = $3
-			      ORDER BY id DESC
+			      ORDER BY visible_at DESC, id DESC
 			      LIMIT $4
 			   )`,
 			msg.Channel, string(msg.Scope), msg.ScopeID, maxMessages, msg.ID,
@@ -871,39 +892,62 @@ func (s *Store) ChannelPeek(ctx context.Context, channel string, scope store.Mem
 	return msgs, err
 }
 
-// channelRead is the shared read body. Filters expired rows at WHERE.
+// channelRead is the shared read body. Filters expired + invisible
+// rows at WHERE; orders by (visible_at, id) tuple so deferred
+// messages don't get skipped by subscribers that already progressed
+// past their publish-time id (v0.8.6).
 func (s *Store) channelRead(ctx context.Context, channel string, scope store.MemoryScope, scopeID, fromCursor string, limit int) ([]store.ChannelMessage, string, error) {
 	if limit <= 0 {
 		limit = 10
 	}
-	if fromCursor == "cur_0" {
-		fromCursor = ""
-	}
-	rows, err := s.pool.Query(ctx,
-		`SELECT id, payload::text, published_at, expires_at
-		 FROM channel_messages
-		 WHERE channel = $1 AND scope = $2 AND scope_id = $3
-		   AND id > $4
-		   AND (expires_at IS NULL OR expires_at > NOW())
-		 ORDER BY id ASC
-		 LIMIT $5`,
-		channel, string(scope), scopeID, fromCursor, limit,
-	)
+	cursorVisibleAt, cursorMsgID, fromOldest, err := store.DecodeChannelCursor(fromCursor)
 	if err != nil {
-		return nil, "", fmt.Errorf("channel read: %w", err)
+		return nil, "", err
+	}
+
+	var rows pgx.Rows
+	var qErr error
+	if fromOldest {
+		rows, qErr = s.pool.Query(ctx,
+			`SELECT id, payload::text, published_at, expires_at, visible_at, published_by_user_id
+			 FROM channel_messages
+			 WHERE channel = $1 AND scope = $2 AND scope_id = $3
+			   AND visible_at <= NOW()
+			   AND (expires_at IS NULL OR expires_at > NOW())
+			 ORDER BY visible_at ASC, id ASC
+			 LIMIT $4`,
+			channel, string(scope), scopeID, limit)
+	} else {
+		rows, qErr = s.pool.Query(ctx,
+			`SELECT id, payload::text, published_at, expires_at, visible_at, published_by_user_id
+			 FROM channel_messages
+			 WHERE channel = $1 AND scope = $2 AND scope_id = $3
+			   AND visible_at <= NOW()
+			   AND (expires_at IS NULL OR expires_at > NOW())
+			   AND (visible_at > $4 OR (visible_at = $4 AND id > $5))
+			 ORDER BY visible_at ASC, id ASC
+			 LIMIT $6`,
+			channel, string(scope), scopeID,
+			cursorVisibleAt.UTC(), cursorMsgID, limit)
+	}
+	if qErr != nil {
+		return nil, "", fmt.Errorf("channel read: %w", qErr)
 	}
 	defer rows.Close()
 
 	var msgs []store.ChannelMessage
+	var lastVisibleAt time.Time
 	var lastID string
 	for rows.Next() {
 		var (
-			id          string
-			payloadText []byte
-			publishedAt time.Time
-			expiresAt   *time.Time
+			id                string
+			payloadText       []byte
+			publishedAt       time.Time
+			expiresAt         *time.Time
+			visibleAt         time.Time
+			publishedByUserID *string
 		)
-		if err := rows.Scan(&id, &payloadText, &publishedAt, &expiresAt); err != nil {
+		if err := rows.Scan(&id, &payloadText, &publishedAt, &expiresAt, &visibleAt, &publishedByUserID); err != nil {
 			return nil, "", fmt.Errorf("channel read scan: %w", err)
 		}
 		msg := store.ChannelMessage{
@@ -913,25 +957,40 @@ func (s *Store) channelRead(ctx context.Context, channel string, scope store.Mem
 			ScopeID:     scopeID,
 			Payload:     json.RawMessage(payloadText),
 			PublishedAt: publishedAt,
+			VisibleAt:   visibleAt,
 		}
 		if expiresAt != nil {
 			msg.ExpiresAt = *expiresAt
 		}
+		if publishedByUserID != nil {
+			msg.PublishedByUserID = *publishedByUserID
+		}
 		msgs = append(msgs, msg)
+		lastVisibleAt = visibleAt
 		lastID = id
 	}
 	if err := rows.Err(); err != nil {
 		return nil, "", fmt.Errorf("channel read rows: %w", err)
 	}
-	return msgs, lastID, nil
+	var nextCursor string
+	if lastID != "" {
+		nextCursor = store.EncodeChannelCursor(lastVisibleAt, lastID)
+	}
+	return msgs, nextCursor, nil
 }
 
 // ChannelAck advances the per-subscriber committed cursor. Rejects
-// cursor values older than the currently committed one (ULID
-// lexicographic order). Idempotent on re-ack.
+// cursor values older than the currently committed one (lexicographic
+// order matches tuple order because the v0.8.6 cursor format encodes
+// visible_at as a fixed-width hex prefix). Idempotent on re-ack.
 func (s *Store) ChannelAck(ctx context.Context, channel string, scope store.MemoryScope, scopeID, cursor string) error {
 	if cursor == "" || cursor == "cur_0" {
 		return nil
+	}
+	// Validate format — reject legacy `msg_<hex>` cursors and garbage
+	// rather than silently storing them.
+	if _, _, _, err := store.DecodeChannelCursor(cursor); err != nil {
+		return err
 	}
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {

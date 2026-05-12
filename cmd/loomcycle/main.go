@@ -213,8 +213,13 @@ func main() {
 	// `channels:` yaml + the operator-declared top-level `channels:`
 	// block.
 	channelBus := channels.NewBus()
+	// v0.8.6 scheduler — arms time.AfterFunc timers for deferred
+	// publishes so long-poll subscribers wake at visible_at. Bounded
+	// by LOOMCYCLE_CHANNELS_MAX_PENDING_DEFERRED (default 10000).
+	channelScheduler := channels.NewScheduler(channelBus, cfg.Env.ChannelsMaxPendingDeferred)
 	channelTool := &builtin.Channel{
 		Bus:           channelBus,
+		Scheduler:     channelScheduler,
 		MaxValueBytes: cfg.Env.ChannelsMaxValueBytes,
 		LongPollCapMS: cfg.Env.ChannelsLongPollCapMS,
 	}

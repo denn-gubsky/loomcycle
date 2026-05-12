@@ -10,6 +10,7 @@ import (
 
 	"github.com/denn-gubsky/loomcycle/internal/channels"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
+	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/store/sqlite"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
@@ -411,5 +412,104 @@ func TestChannelTool_PayloadPreviewTruncatedAt200Chars(t *testing.T) {
 	// PayloadBytes should reflect the FULL untruncated payload size.
 	if info.PayloadBytes < 500 {
 		t.Errorf("PayloadBytes = %d, want >= 500 (full payload size, not truncated)", info.PayloadBytes)
+	}
+}
+
+// ---- v0.8.6 deferred publish ----
+
+func TestChannelTool_DeferredPublishHiddenUntilVisible(t *testing.T) {
+	tool, ctx, cleanup := channelFixture(t)
+	defer cleanup()
+	tool.Scheduler = channels.NewScheduler(tool.Bus, 100)
+
+	deferTo := time.Now().Add(150 * time.Millisecond).UTC().Format(time.RFC3339Nano)
+	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"publish","channel":"findings","value":{"k":"v"},"deliver_at":"`+deferTo+`"}`))
+	if res.IsError {
+		t.Fatalf("publish: %s", res.Text)
+	}
+	out := decodeResult(t, res.Text)
+	if _, ok := out["visible_at"]; !ok {
+		t.Errorf("deferred publish result missing visible_at: %v", out)
+	}
+
+	res, _ = tool.Execute(ctx, json.RawMessage(`{"op":"subscribe","channel":"findings","max_messages":10}`))
+	out = decodeResult(t, res.Text)
+	if msgs, _ := out["messages"].([]any); len(msgs) != 0 {
+		t.Errorf("deferred message visible too early: got %d", len(msgs))
+	}
+
+	time.Sleep(200 * time.Millisecond)
+	res, _ = tool.Execute(ctx, json.RawMessage(`{"op":"subscribe","channel":"findings","max_messages":10}`))
+	out = decodeResult(t, res.Text)
+	if msgs, _ := out["messages"].([]any); len(msgs) != 1 {
+		t.Errorf("after visible_at: got %d messages, want 1", len(msgs))
+	}
+}
+
+func TestChannelTool_DeferredAtRejectsBadFormat(t *testing.T) {
+	tool, ctx, cleanup := channelFixture(t)
+	defer cleanup()
+
+	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"publish","channel":"findings","value":{},"deliver_at":"not-a-timestamp"}`))
+	if !res.IsError {
+		t.Fatalf("expected error on bad deliver_at; got %s", res.Text)
+	}
+	if !strings.Contains(res.Text, "deliver_at") {
+		t.Errorf("error should mention deliver_at; got %q", res.Text)
+	}
+}
+
+func TestChannelTool_DeferredAtInPastTreatedAsNow(t *testing.T) {
+	tool, ctx, cleanup := channelFixture(t)
+	defer cleanup()
+
+	past := time.Now().Add(-10 * time.Second).UTC().Format(time.RFC3339Nano)
+	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"publish","channel":"findings","value":{"k":"v"},"deliver_at":"`+past+`"}`))
+	if res.IsError {
+		t.Fatalf("publish: %s", res.Text)
+	}
+	out := decodeResult(t, res.Text)
+	// Past deliver_at is treated as immediate — no visible_at field on result.
+	if _, ok := out["visible_at"]; ok {
+		t.Errorf("past deliver_at should not produce visible_at field on result: %v", out)
+	}
+
+	res, _ = tool.Execute(ctx, json.RawMessage(`{"op":"subscribe","channel":"findings","max_messages":10}`))
+	out = decodeResult(t, res.Text)
+	if msgs, _ := out["messages"].([]any); len(msgs) != 1 {
+		t.Errorf("past deliver_at: got %d, want 1 (immediate)", len(msgs))
+	}
+}
+
+func TestChannelTool_PublishedByUserIDFromCtx(t *testing.T) {
+	tool, ctx, cleanup := channelFixture(t)
+	defer cleanup()
+
+	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"publish","channel":"findings","value":{"k":"v"}}`))
+	if res.IsError {
+		t.Fatalf("publish: %s", res.Text)
+	}
+	// Read back via subscribe + verify the store's row carries user_id.
+	msgs, _, err := tool.Store.ChannelSubscribe(ctx, "findings", store.MemoryScopeAgent, "researcher", "", 10)
+	if err != nil || len(msgs) != 1 {
+		t.Fatalf("read back: msgs=%d err=%v", len(msgs), err)
+	}
+	if msgs[0].PublishedByUserID != "alice" {
+		t.Errorf("PublishedByUserID = %q, want alice (from ctx)", msgs[0].PublishedByUserID)
+	}
+}
+
+func TestChannelTool_AckRejectsLegacyCursorFormat(t *testing.T) {
+	tool, ctx, cleanup := channelFixture(t)
+	defer cleanup()
+
+	// Publish + try to ack with the v0.8.4-shaped cursor (raw msg_id).
+	_, _ = tool.Execute(ctx, json.RawMessage(`{"op":"publish","channel":"findings","value":{}}`))
+	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"ack","channel":"findings","cursor":"msg_18aec3225c5a78b03dd59623"}`))
+	if !res.IsError {
+		t.Fatalf("legacy cursor should be rejected; got %s", res.Text)
+	}
+	if !strings.Contains(res.Text, "invalid channel cursor") {
+		t.Errorf("error should explain invalid cursor; got %q", res.Text)
 	}
 }
