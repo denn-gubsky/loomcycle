@@ -342,7 +342,7 @@ For usage: see [README](../README.md). For the architecture: see [ARCHITECTURE.m
 
 ## v0.8.x — next: framework primitives
 
-Sequenced 2026-05-09; renumbered 2026-05-10 after v0.8.1 absorbed three operational-hardening PRs (#47/#48/#49); renumbered again 2026-05-11 after v0.8.2 absorbed the `user_tier` resolver-overlay + runtime-fallback work (PRs #52/#53); renumbered once more 2026-05-11 to insert v0.8.5 Self-Evolution Substrate (AgentDef + versioning + Evaluation) ahead of Context (introspection) and LoomCycle MCP — the capstone must expose those tools, so they have to ship first; v0.8.3 took the ollama-split hot-fix and v0.8.4 shipped the Channel tool, so the remaining v0.8.x roadmap below begins at v0.8.5; **v0.8.8 Question tool added 2026-05-11 as the human-in-the-loop primitive that completes the substrate symmetry — Memory + Channel + AgentDef/Eval + Context + LoomCycle MCP + Question covers every direction of agent interaction (state, IPC, self-mutation, introspection, control plane, human bridge).** Each point release in the framework-primitive sequence ships one focused capability — the v1.0 capstone (LoomCycle MCP) needs them in this order because the MCP server's surface is built FROM these primitives. Detailed design (API schemas, storage shapes, retention semantics) lives in feature-branch RFCs at implementation time; the outlines below capture the shape but not the wire.
+Sequenced 2026-05-09; renumbered 2026-05-10 after v0.8.1 absorbed three operational-hardening PRs (#47/#48/#49); renumbered again 2026-05-11 after v0.8.2 absorbed the `user_tier` resolver-overlay + runtime-fallback work (PRs #52/#53); renumbered once more 2026-05-11 to insert v0.8.5 Self-Evolution Substrate (AgentDef + versioning + Evaluation) ahead of Context (introspection) and LoomCycle MCP — the capstone must expose those tools, so they have to ship first; v0.8.3 took the ollama-split hot-fix and v0.8.4 shipped the Channel tool, so the remaining v0.8.x roadmap below begins at v0.8.5; **v0.8.8 Question tool added 2026-05-11 as the human-in-the-loop primitive that completes the substrate symmetry — Memory + Channel + AgentDef/Eval + Context + LoomCycle MCP + Question covers every direction of agent interaction (state, IPC, self-mutation, introspection, control plane, human bridge).** **v0.8.9 Pause / Resume / Snapshot added 2026-05-12 as the v0.8.x → v0.9.x bridge — runtime-wide quiesce + cross-version-portable JSON snapshot, the precondition for v0.9.x multi-replica HA and the missing primitive for long-running experiments surviving provider rate-limits and infrastructure maintenance. The v0.8.6 Context tool gains a ninth op (`history`) at the same time, paired with the snapshot's optional interaction-history bundling.** Each point release in the framework-primitive sequence ships one focused capability — the v1.0 capstone (LoomCycle MCP) needs them in this order because the MCP server's surface is built FROM these primitives. Detailed design (API schemas, storage shapes, retention semantics) lives in feature-branch RFCs at implementation time; the outlines below capture the shape but not the wire.
 
 **v0.8.0 Memory tool shipped 2026-05-09**; **v0.8.1 operational hardening shipped 2026-05-10**; **v0.8.2 user_tier shipped 2026-05-11**; **v0.8.3 ollama split shipped 2026-05-11**; **v0.8.4 Channel tool shipped 2026-05-11** — see the sections above for full release notes.
 
@@ -364,7 +364,7 @@ Detailed design in `doc-internal/rfcs/self-evolution-substrate.md` (gitignored).
 
 Read-only tool that lets agents introspect their own runtime — what tools they have, what their identity / lineage looks like, what evaluations exist for their definition, what channels they can reach. Discriminated `op` field (same shape as Memory) lets agents narrow output instead of paying for a kitchen-sink dump on every call.
 
-**Eight ops:**
+**Nine ops:**
 
 | Op | Returns | Params |
 |---|---|---|
@@ -372,10 +372,11 @@ Read-only tool that lets agents introspect their own runtime — what tools they
 | `tools` | Post-filter tool catalog — builtins + MCP (`mcp__server__name`). Each entry: `name`, `description`, `side_effect_class`, runtime narrowing | — |
 | `doc` | Detailed tool documentation: input schema, op surface, examples, operator notes | `name?` |
 | `agents` | Visible agents — `name`, `description`, `tier`, `active_def_id` + `version`, spawn/mutate eligibility flags. **No `system_prompt` body** — that's behind `AgentDef.get` so the `agent_def_scopes` gate applies | `prefix?` |
-| `permissions` | Gates that apply to caller: `allowed_tools`, `allowed_hosts`, `memory_scopes`, `agent_def_scopes`, `evaluation_scopes`, accessible MCP servers, active hooks | — |
+| `permissions` | Gates that apply to caller: `allowed_tools`, `allowed_hosts`, `memory_scopes`, `agent_def_scopes`, `evaluation_scopes`, `history_scope`, accessible MCP servers, active hooks | — |
 | `channels` | Accessible channels: name, description, publish/subscribe rights, recent activity counter | `prefix?` |
 | `lineage` | AgentDef lineage tree: ancestors + descendants + retire/promote markers (from v0.8.5 substrate) | `def_id?` (defaults to caller's); `depth?` |
 | `evaluations` | Evaluation aggregate: count, mean/median/min/max/latest, per-emitter-role breakdown, dimensions stats (from v0.8.5 substrate) | `def_id?`; `include_lineage?` |
+| `history` | Conversation events for one or more runs: text / thinking / tool_use / tool_result / usage / error / retry / done. Lets self-evolving agents reflect on past conversations and reproduced experiments (v0.8.9 snapshots) replay history into restored agents. **Gated by per-agent `history_scope` yaml field** (`self` / `siblings` / `descendants` / `named: [...]` / `any`, default-deny). Paginated for large histories | `run_id?` / `agent_id?` / `since?` / `until?` / `event_types[]?` / `limit?` / `cursor?` |
 
 **Default-add behaviour.** `Context` is auto-added to every agent's `allowed_tools` at config load — missing introspection is a footgun for self-evolving agents. Operators who want airgapped agents opt out via per-agent yaml `disable_context: true`.
 
@@ -435,6 +436,46 @@ Operator picks via `question.backend: webui | mcp_server:<name> | cli` in yaml. 
 **What's not yet decided:** blocking vs polling tool semantics (lean: blocking, with heartbeat keeping the run alive), the relationship to Channel (could be implemented as a thin layer; lean: separate tool because request/response semantic is one-to-one, not many-to-many), the notification side-channel (how does the human learn to look at the UI — Slack bot subscribing to SSE? email digest? — lean: out of scope, operator integrates against the pending-queue endpoint).
 
 Detailed design at pickup time will lift the local addendum (in this session's plan file) into `doc-internal/rfcs/question-tool.md`.
+
+### v0.8.9 — Pause / Resume / Snapshot (the v0.8.x → v0.9.x bridge)
+
+Runtime-wide quiesce + restore primitive. Closes the gap that today forces every long-running experiment to either run-to-completion-or-die or restart from scratch when the provider rate-limits, the infrastructure needs maintenance, or the operator wants to ship the experiment somewhere else.
+
+**Three motivating shapes the substrate enables:**
+
+| Pain shape today | With v0.8.9 |
+|---|---|
+| Provider down or rate-limited (Ollama subscription paused, Gemini quota exhausted, Anthropic 5xx) → every active run dies after the v0.8.2 fallback budget exhausts | Operator pauses → waits for capacity → resumes from where each run left off |
+| Pre-backup quiesce (DB hot-backup captures partial transcripts mid-iteration) | Pause → snapshot → backup → resume; consistent across runtime + DB |
+| Migrate to a new VM / loomcycle version / ship a research artefact | Pause → snapshot → JSON export → restore on the new instance |
+
+**Also: pause/resume is the precondition for v0.9.x multi-replica HA.** Multi-replica deployments need to drain a node before maintenance; runtime-wide pause provides exactly that. Sequencing pause before HA avoids retrofitting drain semantics into an already-running HA system.
+
+**Wire surface:**
+
+- `POST /v1/_pause?timeout_ms=30000` — runtime-wide pause. LLM streams cancel immediately; MCP tools + non-idempotent built-ins (`Bash`, `Write`, `Edit`, `HTTP`-mutate, `Memory.set/incr/delete`, `Channel.publish/subscribe/ack`, `AgentDef.create/fork/promote/retire`, `Evaluation.submit`) wait up to `timeout_ms` for completion then force-cancel. Idempotent built-ins (`Read`, `WebFetch`, `WebSearch`, `Memory.get/list`, `Channel.peek`, `AgentDef.get/list`, `Context.*`, `Evaluation.get/aggregate`) cancel immediately. New `/v1/runs` requests get 503 during pause.
+- `POST /v1/_resume` — resume agent loops from each paused run's last completed iteration boundary. Re-issues the last LLM request with full transcript context; tool calls that were force-cancelled re-issue (non-idempotent tools are operator-side concerns — container isolation recommended for the agentic posture).
+- `POST /v1/_snapshot` — capture running-state into a new `snapshots` table. Captures: agent_defs (full lineage), agent_def_active, memory entries, channel state (messages + cursors + config), evaluations, paused runs (with transcripts). Optional `include_history=true` + `since_ts=<RFC3339>` adds interaction history events.
+- `POST /v1/_snapshots/{id}/export` — write a snapshot's JSON content to disk; portable across loomcycle versions.
+- `POST /v1/_restore` — restore from a `snapshot_id` (same instance) or `json` body (cross-instance / cross-version). Per-section semver versioning lets new loomcycle versions migrate older sections without breaking the rest.
+- `GET /v1/_state` — runtime state (`running` / `pausing` / `paused` / `resuming` / `restoring`) for dashboards.
+
+CLI mirrors: `loomcycle pause` / `resume` / `snapshot` / `restore` / `state`.
+
+**Scope decisions (locked in the v0.8.9 RFC):**
+
+- **Runtime-wide pause**, not per-tenant. VM is the safety boundary; per-tenant pause defers to v0.9.x per-tenant fairness.
+- **Snapshot scope is running-state only.** External DB backups handle archival history. Snapshot stays small (paused runs + Memory + Channel + agent_defs + evaluations).
+- **JSON format is per-section semver.** Each top-level section (`agent_defs`, `memory`, `channels`, ...) carries its own `version`; reader applies per-section migrations. Suits active development where sub-schemas change at different cadences.
+- **Interaction history is opt-in via flag** (`--include-history --since <ts>`). Default snapshot stays lightweight; the heavyweight reproducibility snapshot is an explicit operator action.
+- **Experiment identity = timestamp** (operator supplies `since_ts`). First-class `experiments` table deferred; promote if research needs it.
+- **Pause and snapshot are decoupled operations** that compose as the operator chooses. Pause alone for rate-limit-wait; pause + snapshot + export for migration; snapshot during running for backup-time-of-day capture.
+
+**Pairs with the v0.8.6 `Context.history` op:** restored experiments contain interaction history; agents in the restored instance read it via `Context.history(since=<experiment_start_ts>)` to reflect on past conversations. Self-evolving experiments survive cross-version migration with their memory intact.
+
+**What's not yet decided:** snapshot encryption-at-rest (operator's disk-encryption policy applies — same as transcripts), automatic snapshot scheduling (lean: out of scope; operator integrates with their own scheduler), partial restore granularity (v0.8.9 is all-or-nothing per section; selective is a v0.9.x candidate).
+
+Detailed design in `doc-internal/rfcs/pause-resume-snapshot.md` (gitignored).
 
 ## v0.9.x — high-load runtime sweep
 
