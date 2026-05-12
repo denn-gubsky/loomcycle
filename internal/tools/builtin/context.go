@@ -548,9 +548,9 @@ func (c *Context) execChannels(ctx context.Context, in contextInput) (tools.Resu
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return okJSON(map[string]any{
-		"channels":           out,
-		"count":              len(out),
-		"publish_wildcards":  filterWildcards(pol.Publish),
+		"channels":            out,
+		"count":               len(out),
+		"publish_wildcards":   filterWildcards(pol.Publish),
 		"subscribe_wildcards": filterWildcards(pol.Subscribe),
 	})
 }

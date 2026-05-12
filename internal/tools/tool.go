@@ -420,15 +420,15 @@ type ctxKeyHistoryPolicy struct{}
 // Closed set:
 //   - "self"        — caller may read its own run's transcript
 //   - "siblings"    — RESERVED (not yet active in v0.8.7 PR 3;
-//                     RunIdentityValue lacks ParentAgentID, so the
-//                     server can't derive sibling relationships
-//                     without a separate plumbing PR)
+//     RunIdentityValue lacks ParentAgentID, so the
+//     server can't derive sibling relationships
+//     without a separate plumbing PR)
 //   - "descendants" — RESERVED (same reason)
 //   - "named:<n>"   — RESERVED (same reason)
 //   - "any"         — UNRESTRICTED. Caller may read ANY agent's
-//                     transcript INCLUDING transcripts owned by
-//                     other users. Operator-trust grant; use only
-//                     for admin/debug agents.
+//     transcript INCLUDING transcripts owned by
+//     other users. Operator-trust grant; use only
+//     for admin/debug agents.
 type HistoryPolicyValue struct {
 	Scopes []string
 }
