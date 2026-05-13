@@ -658,6 +658,37 @@ type Env struct {
 	// day. Env: LOOMCYCLE_RESOLVE_PROBE_INTERVAL_MS.
 	ResolveProbeInterval time.Duration
 
+	// ---- v0.8.x process-resource metrics sampler (opt-in) ----
+
+	// MetricsEnabled enables the periodic process_samples
+	// recorder. Default OFF in v0.8.x (operator opts in via
+	// LOOMCYCLE_METRICS_ENABLED=1). Flip to default-on in v0.9.x
+	// once production-validated. When false, the sampler goroutine
+	// is not started at all — zero runtime overhead.
+	MetricsEnabled bool
+	// MetricsSampleInterval is the tick rate. Default 5s.
+	// Values below 1s are rejected at config-load (preventing
+	// accidental write-storms). Env:
+	// LOOMCYCLE_METRICS_SAMPLE_INTERVAL_MS.
+	MetricsSampleInterval time.Duration
+	// MetricsRetentionDays is how many days of process_samples
+	// rows the periodic sweeper keeps. Default 7. Cleared rows
+	// are gone. 0 means "no automatic cleanup" (operator must
+	// prune manually, or the table grows unbounded). Env:
+	// LOOMCYCLE_METRICS_RETENTION_DAYS.
+	MetricsRetentionDays int
+	// MetricsCollectSystem enables /proc/stat + /proc/meminfo
+	// reads for system-wide CPU% + memory usage in addition to
+	// loomcycle's own RSS. Linux only; silently ignored on other
+	// platforms. Env: LOOMCYCLE_METRICS_COLLECT_SYSTEM.
+	MetricsCollectSystem bool
+	// MetricsSweepInterval is the sweeper cadence for
+	// process_samples. Default 15 minutes. 0 disables the
+	// sweeper (combine with MetricsRetentionDays=0 if you
+	// want unbounded retention). Env:
+	// LOOMCYCLE_METRICS_SWEEP_INTERVAL_MS.
+	MetricsSweepInterval time.Duration
+
 	// ToolParallelism caps how many tool_calls from a single
 	// assistant turn run concurrently. Default 8. Set to 1 to
 	// force serial dispatch (debug / determinism). Field 0
@@ -1070,6 +1101,40 @@ func Load(path string) (*Config, error) {
 				cfg.Env.ChannelsMaxPendingDeferred = 0
 			} else {
 				cfg.Env.ChannelsMaxPendingDeferred = n
+			}
+		}
+	}
+
+	// v0.8.x process-resource metrics sampler. Default OFF; operator
+	// opts in via LOOMCYCLE_METRICS_ENABLED=1.
+	cfg.Env.MetricsEnabled = os.Getenv("LOOMCYCLE_METRICS_ENABLED") == "1"
+	cfg.Env.MetricsSampleInterval = 5 * time.Second
+	if v := os.Getenv("LOOMCYCLE_METRICS_SAMPLE_INTERVAL_MS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			d := time.Duration(n) * time.Millisecond
+			// Floor 1s to prevent accidental write-storms from a
+			// typo'd value like 50 (interpreted as 50ms not 5s).
+			const minInterval = 1 * time.Second
+			if d < minInterval {
+				d = minInterval
+			}
+			cfg.Env.MetricsSampleInterval = d
+		}
+	}
+	cfg.Env.MetricsRetentionDays = 7
+	if v := os.Getenv("LOOMCYCLE_METRICS_RETENTION_DAYS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			cfg.Env.MetricsRetentionDays = n
+		}
+	}
+	cfg.Env.MetricsCollectSystem = os.Getenv("LOOMCYCLE_METRICS_COLLECT_SYSTEM") == "1"
+	cfg.Env.MetricsSweepInterval = 15 * time.Minute
+	if v := os.Getenv("LOOMCYCLE_METRICS_SWEEP_INTERVAL_MS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			if n <= 0 {
+				cfg.Env.MetricsSweepInterval = 0
+			} else {
+				cfg.Env.MetricsSweepInterval = time.Duration(n) * time.Millisecond
 			}
 		}
 	}

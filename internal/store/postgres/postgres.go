@@ -498,6 +498,157 @@ func (s *Store) SweepStaleRuns(ctx context.Context, cutoff time.Time) (int, erro
 	return int(tag.RowsAffected()), nil
 }
 
+// ---- v0.8.x Process-resource metrics sampler ----
+
+// MetricsWriteSample inserts one process_samples row.
+func (s *Store) MetricsWriteSample(ctx context.Context, sample store.ProcessSample) error {
+	var sysCPU, sysMemUsed, sysMemAvail any
+	if sample.SystemCPUPctX100 != nil {
+		sysCPU = *sample.SystemCPUPctX100
+	}
+	if sample.SystemMemUsedMB != nil {
+		sysMemUsed = *sample.SystemMemUsedMB
+	}
+	if sample.SystemMemAvailableMB != nil {
+		sysMemAvail = *sample.SystemMemAvailableMB
+	}
+	_, err := s.pool.Exec(ctx, `INSERT INTO process_samples(
+		sample_id, sampled_at, active_runs, queued_runs,
+		loomcycle_rss_bytes, loomcycle_heap_alloc_bytes, loomcycle_heap_inuse_bytes,
+		loomcycle_num_goroutines, loomcycle_cpu_pct_x100,
+		system_cpu_pct_x100, system_mem_used_mb, system_mem_available_mb
+	) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
+		sample.SampleID, sample.SampledAt, sample.ActiveRuns, sample.QueuedRuns,
+		sample.LoomcycleRSSBytes, sample.LoomcycleHeapAlloc, sample.LoomcycleHeapInuse,
+		sample.LoomcycleGoroutines, sample.LoomcycleCPUPctX100,
+		sysCPU, sysMemUsed, sysMemAvail,
+	)
+	if err != nil {
+		return fmt.Errorf("metrics: write sample: %w", err)
+	}
+	return nil
+}
+
+// MetricsSampleWindow returns samples in [since, until] ordered by
+// sampled_at ASC then sample_id ASC. Pagination via the last
+// sample_id seen.
+func (s *Store) MetricsSampleWindow(ctx context.Context, since, until time.Time, limit int, cursor string) ([]store.ProcessSample, string, error) {
+	if limit <= 0 {
+		limit = 200
+	}
+	if limit > 1000 {
+		limit = 1000
+	}
+	q := `SELECT sample_id, sampled_at, active_runs, queued_runs,
+	             loomcycle_rss_bytes, loomcycle_heap_alloc_bytes, loomcycle_heap_inuse_bytes,
+	             loomcycle_num_goroutines, loomcycle_cpu_pct_x100,
+	             system_cpu_pct_x100, system_mem_used_mb, system_mem_available_mb
+	      FROM process_samples
+	      WHERE sampled_at BETWEEN $1 AND $2`
+	args := []any{since, until}
+	if cursor != "" {
+		q += ` AND sample_id > $3`
+		args = append(args, cursor)
+	}
+	q += ` ORDER BY sampled_at ASC, sample_id ASC LIMIT $` + fmt.Sprint(len(args)+1)
+	args = append(args, limit+1)
+	rows, err := s.pool.Query(ctx, q, args...)
+	if err != nil {
+		return nil, "", fmt.Errorf("metrics: query window: %w", err)
+	}
+	defer rows.Close()
+	out := make([]store.ProcessSample, 0, limit)
+	for rows.Next() {
+		var (
+			rec                          store.ProcessSample
+			sysCPU, sysMemU, sysMemAvail *int
+		)
+		if err := rows.Scan(
+			&rec.SampleID, &rec.SampledAt, &rec.ActiveRuns, &rec.QueuedRuns,
+			&rec.LoomcycleRSSBytes, &rec.LoomcycleHeapAlloc, &rec.LoomcycleHeapInuse,
+			&rec.LoomcycleGoroutines, &rec.LoomcycleCPUPctX100,
+			&sysCPU, &sysMemU, &sysMemAvail,
+		); err != nil {
+			return nil, "", fmt.Errorf("metrics: scan sample: %w", err)
+		}
+		rec.SystemCPUPctX100 = sysCPU
+		rec.SystemMemUsedMB = sysMemU
+		rec.SystemMemAvailableMB = sysMemAvail
+		out = append(out, rec)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, "", fmt.Errorf("metrics: iterate samples: %w", err)
+	}
+	nextCursor := ""
+	if len(out) > limit {
+		out = out[:limit]
+		nextCursor = out[len(out)-1].SampleID
+	}
+	return out, nextCursor, nil
+}
+
+// MetricsRunSummary aggregates samples overlapping the run's window.
+func (s *Store) MetricsRunSummary(ctx context.Context, runID string) (store.MetricsRunWindow, error) {
+	var (
+		startedAt   time.Time
+		completedAt *time.Time
+	)
+	row := s.pool.QueryRow(ctx, `SELECT started_at, completed_at FROM runs WHERE id = $1`, runID)
+	if err := row.Scan(&startedAt, &completedAt); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return store.MetricsRunWindow{}, &store.ErrNotFound{Kind: "run", ID: runID}
+		}
+		return store.MetricsRunWindow{}, fmt.Errorf("metrics: read run %s: %w", runID, err)
+	}
+	upper := time.Now().UTC()
+	if completedAt != nil {
+		upper = *completedAt
+	}
+	var (
+		sampleCount   int
+		peakRSS       *int64
+		meanRSS       *float64
+		maxCPUPctX100 *int
+	)
+	row = s.pool.QueryRow(ctx, `SELECT
+		COUNT(*),
+		MAX(loomcycle_rss_bytes),
+		AVG(loomcycle_rss_bytes),
+		MAX(loomcycle_cpu_pct_x100)
+	FROM process_samples
+	WHERE sampled_at BETWEEN $1 AND $2`, startedAt, upper)
+	if err := row.Scan(&sampleCount, &peakRSS, &meanRSS, &maxCPUPctX100); err != nil {
+		return store.MetricsRunWindow{}, fmt.Errorf("metrics: aggregate run %s: %w", runID, err)
+	}
+	out := store.MetricsRunWindow{
+		RunID:       runID,
+		StartedAt:   startedAt,
+		SampleCount: sampleCount,
+	}
+	if completedAt != nil {
+		out.CompletedAt = *completedAt
+	}
+	if peakRSS != nil {
+		out.PeakRSSBytes = *peakRSS
+	}
+	if meanRSS != nil {
+		out.MeanRSSBytes = int64(*meanRSS)
+	}
+	if maxCPUPctX100 != nil {
+		out.MaxCPUPctX100 = *maxCPUPctX100
+	}
+	return out, nil
+}
+
+// MetricsSweep deletes samples with sampled_at < cutoff.
+func (s *Store) MetricsSweep(ctx context.Context, cutoff time.Time) (int, error) {
+	tag, err := s.pool.Exec(ctx, `DELETE FROM process_samples WHERE sampled_at < $1`, cutoff)
+	if err != nil {
+		return 0, fmt.Errorf("metrics: sweep: %w", err)
+	}
+	return int(tag.RowsAffected()), nil
+}
+
 // Close releases the connection pool. Idempotent.
 func (s *Store) Close() error {
 	s.closeOnce.Do(func() {

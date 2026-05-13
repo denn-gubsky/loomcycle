@@ -112,6 +112,13 @@ func Run(t *testing.T, factory Factory) {
 		{"AgentDefStaticFallback", testAgentDefStaticFallback},
 		{"EvaluationSubmitAndAggregate", testEvaluationSubmitAndAggregate},
 		{"EvaluationAggregateWithLineage", testEvaluationAggregateWithLineage},
+		// v0.8.x Process-resource metrics sampler
+		{"MetricsWriteAndQuery", testMetricsWriteAndQuery},
+		{"MetricsSweep", testMetricsSweep},
+		{"MetricsRunSummaryEmpty", testMetricsRunSummaryEmpty},
+		{"MetricsRunSummaryWithSamples", testMetricsRunSummaryWithSamples},
+		{"MetricsRunSummaryInFlight", testMetricsRunSummaryInFlight},
+		{"MetricsRunSummaryNotFound", testMetricsRunSummaryNotFound},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1908,5 +1915,204 @@ func testEvaluationAggregateWithLineage(t *testing.T, s store.Store) {
 	}
 	if !agg.LineageIncluded {
 		t.Error("LineageIncluded flag not set")
+	}
+}
+
+// ---- v0.8.x Process-resource metrics sampler ----
+
+// metricsMakeSample builds a ProcessSample for tests. Caller may
+// adjust fields before passing to MetricsWriteSample.
+func metricsMakeSample(t *testing.T, sampledAt time.Time, active, queued int, rss int64) store.ProcessSample {
+	t.Helper()
+	return store.ProcessSample{
+		SampleID:            store.MintSampleID(sampledAt),
+		SampledAt:           sampledAt,
+		ActiveRuns:          active,
+		QueuedRuns:          queued,
+		LoomcycleRSSBytes:   rss,
+		LoomcycleHeapAlloc:  rss / 2,
+		LoomcycleHeapInuse:  rss / 3,
+		LoomcycleGoroutines: 50,
+		LoomcycleCPUPctX100: 1234,
+	}
+}
+
+func testMetricsWriteAndQuery(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	base := time.Now().UTC().Truncate(time.Microsecond)
+	samples := []store.ProcessSample{
+		metricsMakeSample(t, base.Add(-3*time.Second), 1, 0, 100<<20),
+		metricsMakeSample(t, base.Add(-2*time.Second), 2, 1, 110<<20),
+		metricsMakeSample(t, base.Add(-1*time.Second), 3, 0, 95<<20),
+	}
+	for _, sa := range samples {
+		if err := s.MetricsWriteSample(ctx, sa); err != nil {
+			t.Fatalf("MetricsWriteSample: %v", err)
+		}
+	}
+	got, nextCursor, err := s.MetricsSampleWindow(ctx, base.Add(-10*time.Second), base, 0, "")
+	if err != nil {
+		t.Fatalf("MetricsSampleWindow: %v", err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("got %d samples, want 3", len(got))
+	}
+	if nextCursor != "" {
+		t.Errorf("nextCursor = %q, want empty (only 3 rows ≤ default limit 200)", nextCursor)
+	}
+	// Ordering: sampled_at ASC.
+	for i := 1; i < len(got); i++ {
+		if !got[i].SampledAt.After(got[i-1].SampledAt) && !got[i].SampledAt.Equal(got[i-1].SampledAt) {
+			t.Errorf("sample %d at %v not >= sample %d at %v", i, got[i].SampledAt, i-1, got[i-1].SampledAt)
+		}
+	}
+	// Field round-trip on the first sample.
+	if got[0].ActiveRuns != 1 || got[0].QueuedRuns != 0 || got[0].LoomcycleRSSBytes != 100<<20 {
+		t.Errorf("sample[0] round-trip failed: %+v", got[0])
+	}
+}
+
+func testMetricsSweep(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	base := time.Now().UTC().Truncate(time.Microsecond)
+	// Two old samples, one fresh sample.
+	old1 := metricsMakeSample(t, base.Add(-10*time.Minute), 1, 0, 50<<20)
+	old2 := metricsMakeSample(t, base.Add(-5*time.Minute), 1, 0, 60<<20)
+	fresh := metricsMakeSample(t, base.Add(-30*time.Second), 1, 0, 70<<20)
+	for _, sa := range []store.ProcessSample{old1, old2, fresh} {
+		if err := s.MetricsWriteSample(ctx, sa); err != nil {
+			t.Fatalf("MetricsWriteSample: %v", err)
+		}
+	}
+	// Cutoff = 2 minutes ago. Should delete the two older samples.
+	deleted, err := s.MetricsSweep(ctx, base.Add(-2*time.Minute))
+	if err != nil {
+		t.Fatalf("MetricsSweep: %v", err)
+	}
+	if deleted != 2 {
+		t.Errorf("deleted %d, want 2", deleted)
+	}
+	// The fresh sample survives.
+	got, _, err := s.MetricsSampleWindow(ctx, base.Add(-1*time.Hour), base, 0, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 {
+		t.Errorf("post-sweep window len = %d, want 1", len(got))
+	}
+	// Second sweep with the same cutoff is idempotent (0 deleted).
+	deleted2, err := s.MetricsSweep(ctx, base.Add(-2*time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if deleted2 != 0 {
+		t.Errorf("second sweep deleted %d, want 0", deleted2)
+	}
+}
+
+func testMetricsRunSummaryEmpty(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	sess, _ := s.CreateSession(ctx, "t", "default", "")
+	run, _ := s.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: "a_metric_empty"})
+	if err := s.FinishRun(ctx, run.ID, store.RunCompleted, "end_turn", store.Usage{Model: "x"}, ""); err != nil {
+		t.Fatal(err)
+	}
+	// No samples written; summary should return zero-valued window
+	// (not an error) with SampleCount=0.
+	summary, err := s.MetricsRunSummary(ctx, run.ID)
+	if err != nil {
+		t.Fatalf("MetricsRunSummary on run with no samples: %v", err)
+	}
+	if summary.SampleCount != 0 {
+		t.Errorf("SampleCount = %d, want 0", summary.SampleCount)
+	}
+	if summary.PeakRSSBytes != 0 || summary.MeanRSSBytes != 0 || summary.MaxCPUPctX100 != 0 {
+		t.Errorf("expected zero-valued metrics, got %+v", summary)
+	}
+	if summary.RunID != run.ID {
+		t.Errorf("RunID = %q, want %q", summary.RunID, run.ID)
+	}
+}
+
+func testMetricsRunSummaryWithSamples(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	sess, _ := s.CreateSession(ctx, "t", "default", "")
+	run, _ := s.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: "a_metric_with"})
+	// Wait one ms so the samples fall strictly after started_at.
+	// (Postgres TIMESTAMPTZ has microsecond resolution; sqlite is
+	// nanosecond. Both are fine here.)
+	time.Sleep(2 * time.Millisecond)
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	// Three samples in this run's window, descending RSS.
+	for i, rss := range []int64{120 << 20, 200 << 20, 150 << 20} {
+		_ = i
+		sa := metricsMakeSample(t, now.Add(time.Duration(i)*time.Millisecond), 1, 0, rss)
+		sa.LoomcycleCPUPctX100 = 1000 + (i+1)*500 // 1500, 2000, 2500
+		if err := s.MetricsWriteSample(ctx, sa); err != nil {
+			t.Fatal(err)
+		}
+	}
+	time.Sleep(2 * time.Millisecond)
+	// Finish the run AFTER the samples so the window covers them.
+	if err := s.FinishRun(ctx, run.ID, store.RunCompleted, "end_turn", store.Usage{Model: "x"}, ""); err != nil {
+		t.Fatal(err)
+	}
+	summary, err := s.MetricsRunSummary(ctx, run.ID)
+	if err != nil {
+		t.Fatalf("MetricsRunSummary: %v", err)
+	}
+	if summary.SampleCount != 3 {
+		t.Errorf("SampleCount = %d, want 3", summary.SampleCount)
+	}
+	// Peak should match the largest of the three.
+	if summary.PeakRSSBytes != 200<<20 {
+		t.Errorf("PeakRSSBytes = %d, want %d", summary.PeakRSSBytes, int64(200<<20))
+	}
+	if summary.MaxCPUPctX100 != 2500 {
+		t.Errorf("MaxCPUPctX100 = %d, want 2500", summary.MaxCPUPctX100)
+	}
+	// Mean is approximately (120+200+150)/3 = ~156 MB.
+	if summary.MeanRSSBytes < 150<<20 || summary.MeanRSSBytes > 170<<20 {
+		t.Errorf("MeanRSSBytes = %d, want ~157 MB", summary.MeanRSSBytes)
+	}
+}
+
+func testMetricsRunSummaryInFlight(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	sess, _ := s.CreateSession(ctx, "t", "default", "")
+	run, _ := s.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: "a_metric_inflight"})
+	time.Sleep(2 * time.Millisecond)
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	sa := metricsMakeSample(t, now, 1, 0, 80<<20)
+	if err := s.MetricsWriteSample(ctx, sa); err != nil {
+		t.Fatal(err)
+	}
+	// Run NOT finished — completed_at is NULL. Summary must still
+	// pick up the sample by using COALESCE(completed_at, now) as
+	// the upper bound.
+	summary, err := s.MetricsRunSummary(ctx, run.ID)
+	if err != nil {
+		t.Fatalf("MetricsRunSummary on in-flight run: %v", err)
+	}
+	if summary.SampleCount != 1 {
+		t.Errorf("SampleCount = %d, want 1", summary.SampleCount)
+	}
+	if summary.PeakRSSBytes != 80<<20 {
+		t.Errorf("PeakRSSBytes = %d, want %d", summary.PeakRSSBytes, int64(80<<20))
+	}
+	// CompletedAt should be the zero value on in-flight runs.
+	if !summary.CompletedAt.IsZero() {
+		t.Errorf("CompletedAt = %v, want zero (run is in-flight)", summary.CompletedAt)
+	}
+}
+
+func testMetricsRunSummaryNotFound(t *testing.T, s store.Store) {
+	_, err := s.MetricsRunSummary(context.Background(), "r_does_not_exist")
+	var nf *store.ErrNotFound
+	if !errors.As(err, &nf) {
+		t.Errorf("got %v (%T), want *store.ErrNotFound", err, err)
+	}
+	if nf != nil && nf.Kind != "run" {
+		t.Errorf("Kind = %q, want run", nf.Kind)
 	}
 }

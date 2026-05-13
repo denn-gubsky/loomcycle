@@ -23,6 +23,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/concurrency"
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/hooks"
+	"github.com/denn-gubsky/loomcycle/internal/metrics"
 	"github.com/denn-gubsky/loomcycle/internal/loop"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/resolve"
@@ -100,6 +101,12 @@ type Server struct {
 	// admin endpoint. Nil = endpoint refuses every request with a
 	// "system publisher not wired" 503. Set via SetSystemPublisher.
 	systemPublisher channels.SystemPublisher
+
+	// metricsSampler is the v0.8.x process-resource sampler.
+	// Nil = the /v1/_metrics/* endpoints return 503. Set via
+	// SetMetricsSampler from main.go after the sampler is
+	// constructed.
+	metricsSampler *metrics.Sampler
 }
 
 // New constructs a Server. If st is non-nil, every run is recorded as a
@@ -141,6 +148,13 @@ func New(cfg *config.Config, pr ProviderResolver, builtinTools []tools.Tool, sem
 // cmd/loomcycle/main.go after the MCP pool is built.
 func (s *Server) SetMCPFallback(fn tools.FallbackFunc) {
 	s.mcpFallback = fn
+}
+
+// SetMetricsSampler installs the v0.8.x metrics sampler so the
+// /v1/_metrics/* endpoints have a backing object. Nil is the
+// default — endpoints return 503 until this is called.
+func (s *Server) SetMetricsSampler(m *metrics.Sampler) {
+	s.metricsSampler = m
 }
 
 // SetSystemPublisher installs the v0.8.6 system-channels publisher.
@@ -864,6 +878,12 @@ func (s *Server) Mux() http.Handler {
 	// here. Future verbs (GET to peek, etc.) can use the same path
 	// with different methods.
 	mux.Handle("POST /v1/_channels/{name...}", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleSystemChannelPublish))))
+	// v0.8.x process-resource metrics sampler endpoints. All
+	// bearer-authed. Return 503 when metricsSampler is nil
+	// (LOOMCYCLE_METRICS_ENABLED=0 deployment).
+	mux.Handle("GET /v1/_metrics/samples", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleMetricsSamples))))
+	mux.Handle("GET /v1/_metrics/runs/{run_id}", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleMetricsRunSummary))))
+	mux.Handle("GET /v1/_metrics/summary", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleMetricsSummary))))
 	// v0.8.0 Memory admin — read-only browsing of stored Memory rows.
 	// Drives the Web UI's Memory page. Bearer-authed; same admin
 	// posture as /v1/_users / /v1/_resolver.

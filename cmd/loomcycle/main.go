@@ -35,6 +35,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/heartbeat"
 	"github.com/denn-gubsky/loomcycle/internal/help"
+	"github.com/denn-gubsky/loomcycle/internal/metrics"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/providers/anthropic"
 	"github.com/denn-gubsky/loomcycle/internal/providers/deepseek"
@@ -561,6 +562,35 @@ func main() {
 	} else if storeIface != nil {
 		log.Printf("channels: sweeper disabled (LOOMCYCLE_CHANNELS_SWEEP_MS=0)")
 	}
+
+	// v0.8.x process-resource metrics sampler. Default OFF;
+	// operator opts in via LOOMCYCLE_METRICS_ENABLED=1. When
+	// enabled, samples loomcycle's CPU + memory usage at
+	// cfg.Env.MetricsSampleInterval cadence while at least one
+	// agent run is active (the semaphore's Stats() is the idle
+	// gate — no DB write, no /proc read while idle).
+	if cfg.Env.MetricsEnabled && storeIface != nil {
+		metricsSampler := metrics.New(storeIface, sem, metrics.Config{
+			Interval:      cfg.Env.MetricsSampleInterval,
+			CollectSystem: cfg.Env.MetricsCollectSystem,
+		})
+		go metricsSampler.Run(bgCtx)
+		srv.SetMetricsSampler(metricsSampler)
+		log.Printf("metrics: sampler enabled (interval=%s, system=%v)",
+			cfg.Env.MetricsSampleInterval, cfg.Env.MetricsCollectSystem)
+		if cfg.Env.MetricsSweepInterval > 0 && cfg.Env.MetricsRetentionDays > 0 {
+			go runMetricsSweeper(bgCtx, storeIface,
+				cfg.Env.MetricsRetentionDays, cfg.Env.MetricsSweepInterval)
+			log.Printf("metrics: sweeper enabled (retention=%dd, interval=%s)",
+				cfg.Env.MetricsRetentionDays, cfg.Env.MetricsSweepInterval)
+		} else {
+			log.Printf("metrics: sweeper disabled (retention=0 or sweep interval=0)")
+		}
+	} else if cfg.Env.MetricsEnabled {
+		log.Printf("metrics: sampler disabled (no Store backend)")
+	} else {
+		log.Printf("metrics: sampler disabled (LOOMCYCLE_METRICS_ENABLED=0)")
+	}
 	// Boot summary of operator-declared channels. Mirrors the
 	// "user_tiers: configured N — ..." line shape so operators see
 	// the framework-primitive state at startup.
@@ -972,6 +1002,32 @@ func runChannelsSweeper(ctx context.Context, s store.Store, interval time.Durati
 			}
 			if swept > 0 {
 				log.Printf("channels sweep: deleted %d expired row(s)", swept)
+			}
+		}
+	}
+}
+
+// runMetricsSweeper is the v0.8.x mirror of runChannelsSweeper for
+// the process_samples table. Deletes rows whose sampled_at <
+// (now - retentionDays). The retention guarantee is bounded-time,
+// not bounded-rows; operators on slow disks should set
+// MetricsRetentionDays to a smaller value if disk pressure shows up.
+func runMetricsSweeper(ctx context.Context, s store.Store, retentionDays int, interval time.Duration) {
+	t := time.NewTicker(interval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			cutoff := time.Now().Add(-time.Duration(retentionDays) * 24 * time.Hour)
+			swept, err := s.MetricsSweep(ctx, cutoff)
+			if err != nil {
+				log.Printf("metrics sweep: %v", err)
+				continue
+			}
+			if swept > 0 {
+				log.Printf("metrics sweep: deleted %d expired row(s)", swept)
 			}
 		}
 	}

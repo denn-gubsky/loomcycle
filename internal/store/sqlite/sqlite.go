@@ -206,6 +206,30 @@ func (s *Store) migrate(ctx context.Context) error {
 		`CREATE INDEX IF NOT EXISTS evaluations_by_run     ON evaluations(run_id)`,
 		`CREATE INDEX IF NOT EXISTS evaluations_by_def     ON evaluations(def_id) WHERE def_id IS NOT NULL`,
 		`CREATE INDEX IF NOT EXISTS evaluations_by_emitter ON evaluations(emitter_agent_id) WHERE emitter_agent_id IS NOT NULL`,
+		// v0.8.x Process-resource metrics sampler. process_samples
+		// is a time-series table: one row per sample tick while
+		// at least one agent run is active. NULLable system_* fields
+		// are populated only when LOOMCYCLE_METRICS_COLLECT_SYSTEM=1.
+		// See internal/metrics/sampler.go for the write path and
+		// the API endpoints under /v1/_metrics/* for read paths.
+		`CREATE TABLE IF NOT EXISTS process_samples (
+			sample_id                  TEXT    PRIMARY KEY,
+			sampled_at                 INTEGER NOT NULL,
+			active_runs                INTEGER NOT NULL,
+			queued_runs                INTEGER NOT NULL,
+			loomcycle_rss_bytes        INTEGER NOT NULL DEFAULT 0,
+			loomcycle_heap_alloc_bytes INTEGER NOT NULL DEFAULT 0,
+			loomcycle_heap_inuse_bytes INTEGER NOT NULL DEFAULT 0,
+			loomcycle_num_goroutines   INTEGER NOT NULL DEFAULT 0,
+			loomcycle_cpu_pct_x100     INTEGER NOT NULL DEFAULT 0,
+			system_cpu_pct_x100        INTEGER,
+			system_mem_used_mb         INTEGER,
+			system_mem_available_mb    INTEGER
+		)`,
+		// NOTE: process_samples_by_sampled_at is created in `addIndexes`
+		// below (defensive: future column additions via ALTER TABLE
+		// would otherwise risk the upgrade-path bug that hit
+		// channel_messages_by_visible in v0.8.6).
 	}
 	for _, q := range stmts {
 		if _, err := s.db.ExecContext(ctx, q); err != nil {
@@ -274,6 +298,10 @@ func (s *Store) migrate(ctx context.Context) error {
 		// v0.8.4/v0.8.5 → v0.8.6+ (channel_messages table exists
 		// from v0.8.4 without visible_at).
 		`CREATE INDEX IF NOT EXISTS channel_messages_by_visible ON channel_messages(channel, scope, scope_id, visible_at, id)`,
+		// v0.8.x process_samples_by_sampled_at. Drives the read
+		// path for /v1/_metrics/samples (window scan) and the
+		// sweep DELETE WHERE sampled_at < cutoff.
+		`CREATE INDEX IF NOT EXISTS process_samples_by_sampled_at ON process_samples(sampled_at)`,
 	}
 	for _, q := range addIndexes {
 		// Note the asymmetry vs addColumns above: indexes use
@@ -1920,6 +1948,183 @@ func nilIfEmpty(s string) any {
 		return nil
 	}
 	return s
+}
+
+// ---- v0.8.x Process-resource metrics sampler ----
+
+// MetricsWriteSample inserts one process_samples row. Nullable
+// system_* fields are stored as NULL when their pointer is nil.
+func (s *Store) MetricsWriteSample(ctx context.Context, sample store.ProcessSample) error {
+	var (
+		sysCPU, sysMemUsed, sysMemAvail sql.NullInt64
+	)
+	if sample.SystemCPUPctX100 != nil {
+		sysCPU = sql.NullInt64{Valid: true, Int64: int64(*sample.SystemCPUPctX100)}
+	}
+	if sample.SystemMemUsedMB != nil {
+		sysMemUsed = sql.NullInt64{Valid: true, Int64: int64(*sample.SystemMemUsedMB)}
+	}
+	if sample.SystemMemAvailableMB != nil {
+		sysMemAvail = sql.NullInt64{Valid: true, Int64: int64(*sample.SystemMemAvailableMB)}
+	}
+	_, err := s.db.ExecContext(ctx, `INSERT INTO process_samples(
+		sample_id, sampled_at, active_runs, queued_runs,
+		loomcycle_rss_bytes, loomcycle_heap_alloc_bytes, loomcycle_heap_inuse_bytes,
+		loomcycle_num_goroutines, loomcycle_cpu_pct_x100,
+		system_cpu_pct_x100, system_mem_used_mb, system_mem_available_mb
+	) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
+		sample.SampleID, sample.SampledAt.UnixNano(), sample.ActiveRuns, sample.QueuedRuns,
+		sample.LoomcycleRSSBytes, sample.LoomcycleHeapAlloc, sample.LoomcycleHeapInuse,
+		sample.LoomcycleGoroutines, sample.LoomcycleCPUPctX100,
+		sysCPU, sysMemUsed, sysMemAvail,
+	)
+	if err != nil {
+		return fmt.Errorf("metrics: write sample: %w", err)
+	}
+	return nil
+}
+
+// MetricsSampleWindow returns samples in [since, until] ordered by
+// sampled_at ASC then sample_id ASC. Cursor is the sample_id of the
+// last row from the previous page (empty = from start). limit ≤ 0
+// → 200, capped at 1000.
+func (s *Store) MetricsSampleWindow(ctx context.Context, since, until time.Time, limit int, cursor string) ([]store.ProcessSample, string, error) {
+	if limit <= 0 {
+		limit = 200
+	}
+	if limit > 1000 {
+		limit = 1000
+	}
+	// Use sampled_at as the primary order key; sample_id as
+	// tie-breaker. Cursor is just the last seen sample_id since
+	// MintSampleID encodes sampled_at in its prefix — strictly
+	// monotonic per ns.
+	args := []any{since.UnixNano(), until.UnixNano()}
+	q := `SELECT sample_id, sampled_at, active_runs, queued_runs,
+	             loomcycle_rss_bytes, loomcycle_heap_alloc_bytes, loomcycle_heap_inuse_bytes,
+	             loomcycle_num_goroutines, loomcycle_cpu_pct_x100,
+	             system_cpu_pct_x100, system_mem_used_mb, system_mem_available_mb
+	      FROM process_samples
+	      WHERE sampled_at BETWEEN ? AND ?`
+	if cursor != "" {
+		q += ` AND sample_id > ?`
+		args = append(args, cursor)
+	}
+	q += ` ORDER BY sampled_at ASC, sample_id ASC LIMIT ?`
+	args = append(args, limit+1) // fetch one extra to detect next page
+	rows, err := s.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, "", fmt.Errorf("metrics: query window: %w", err)
+	}
+	defer rows.Close()
+	out := make([]store.ProcessSample, 0, limit)
+	for rows.Next() {
+		var (
+			rec                          store.ProcessSample
+			sampledAtNs                  int64
+			sysCPU, sysMemU, sysMemAvail sql.NullInt64
+		)
+		if err := rows.Scan(
+			&rec.SampleID, &sampledAtNs, &rec.ActiveRuns, &rec.QueuedRuns,
+			&rec.LoomcycleRSSBytes, &rec.LoomcycleHeapAlloc, &rec.LoomcycleHeapInuse,
+			&rec.LoomcycleGoroutines, &rec.LoomcycleCPUPctX100,
+			&sysCPU, &sysMemU, &sysMemAvail,
+		); err != nil {
+			return nil, "", fmt.Errorf("metrics: scan sample: %w", err)
+		}
+		rec.SampledAt = time.Unix(0, sampledAtNs).UTC()
+		if sysCPU.Valid {
+			v := int(sysCPU.Int64)
+			rec.SystemCPUPctX100 = &v
+		}
+		if sysMemU.Valid {
+			v := int(sysMemU.Int64)
+			rec.SystemMemUsedMB = &v
+		}
+		if sysMemAvail.Valid {
+			v := int(sysMemAvail.Int64)
+			rec.SystemMemAvailableMB = &v
+		}
+		out = append(out, rec)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, "", fmt.Errorf("metrics: iterate samples: %w", err)
+	}
+	nextCursor := ""
+	if len(out) > limit {
+		// We fetched limit+1; the (limit+1)-th row is the marker
+		// for "more available." Truncate and return its predecessor
+		// as the cursor.
+		out = out[:limit]
+		nextCursor = out[len(out)-1].SampleID
+	}
+	return out, nextCursor, nil
+}
+
+// MetricsRunSummary aggregates process_samples whose sampled_at
+// overlaps the run's [started_at, COALESCE(completed_at, now)]
+// window. Returns *ErrNotFound when the run row doesn't exist.
+func (s *Store) MetricsRunSummary(ctx context.Context, runID string) (store.MetricsRunWindow, error) {
+	var (
+		startedAtNs   int64
+		completedAtNs sql.NullInt64
+	)
+	row := s.db.QueryRowContext(ctx, `SELECT started_at, completed_at FROM runs WHERE id = ?`, runID)
+	if err := row.Scan(&startedAtNs, &completedAtNs); err != nil {
+		if err == sql.ErrNoRows {
+			return store.MetricsRunWindow{}, &store.ErrNotFound{Kind: "run", ID: runID}
+		}
+		return store.MetricsRunWindow{}, fmt.Errorf("metrics: read run %s: %w", runID, err)
+	}
+	upper := time.Now().UnixNano()
+	if completedAtNs.Valid {
+		upper = completedAtNs.Int64
+	}
+	var (
+		sampleCount   int
+		peakRSS       sql.NullInt64
+		meanRSS       sql.NullFloat64
+		maxCPUPctX100 sql.NullInt64
+	)
+	row = s.db.QueryRowContext(ctx, `SELECT
+		COUNT(*),
+		MAX(loomcycle_rss_bytes),
+		AVG(loomcycle_rss_bytes),
+		MAX(loomcycle_cpu_pct_x100)
+	FROM process_samples
+	WHERE sampled_at BETWEEN ? AND ?`, startedAtNs, upper)
+	if err := row.Scan(&sampleCount, &peakRSS, &meanRSS, &maxCPUPctX100); err != nil {
+		return store.MetricsRunWindow{}, fmt.Errorf("metrics: aggregate run %s: %w", runID, err)
+	}
+	out := store.MetricsRunWindow{
+		RunID:       runID,
+		StartedAt:   time.Unix(0, startedAtNs).UTC(),
+		SampleCount: sampleCount,
+	}
+	if completedAtNs.Valid {
+		out.CompletedAt = time.Unix(0, completedAtNs.Int64).UTC()
+	}
+	if peakRSS.Valid {
+		out.PeakRSSBytes = peakRSS.Int64
+	}
+	if meanRSS.Valid {
+		out.MeanRSSBytes = int64(meanRSS.Float64)
+	}
+	if maxCPUPctX100.Valid {
+		out.MaxCPUPctX100 = int(maxCPUPctX100.Int64)
+	}
+	return out, nil
+}
+
+// MetricsSweep deletes samples with sampled_at < cutoff. Returns
+// the count deleted.
+func (s *Store) MetricsSweep(ctx context.Context, cutoff time.Time) (int, error) {
+	res, err := s.db.ExecContext(ctx, `DELETE FROM process_samples WHERE sampled_at < ?`, cutoff.UnixNano())
+	if err != nil {
+		return 0, fmt.Errorf("metrics: sweep: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	return int(n), nil
 }
 
 // Close closes the underlying *sql.DB. Idempotent.

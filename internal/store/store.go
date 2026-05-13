@@ -560,6 +560,35 @@ type Store interface {
 	// echoes the option for caller-side assertion.
 	EvaluationAggregate(ctx context.Context, defID string, opts AggregateOpts) (AggregateResult, error)
 
+	// ---- Metrics sampler (v0.8.x) -------------------------------------
+
+	// MetricsWriteSample persists one process_samples row. The caller
+	// pre-generates SampleID via MintSampleID. SampledAt must be set;
+	// the store does not stamp time on its own (the sampler decides
+	// when "now" is — important for unit tests with deterministic
+	// clocks).
+	MetricsWriteSample(ctx context.Context, s ProcessSample) error
+
+	// MetricsSampleWindow returns samples whose sampled_at falls in
+	// [since, until] (inclusive both ends). Returns up to `limit`
+	// rows (≤ 0 → 200 default; cap 1000). Cursor is an opaque token
+	// from a previous call's nextCursor (empty = from start of
+	// window). Returns nextCursor empty when no more rows.
+	MetricsSampleWindow(ctx context.Context, since, until time.Time, limit int, cursor string) (samples []ProcessSample, nextCursor string, err error)
+
+	// MetricsRunSummary returns peak/mean RSS + max CPU% from
+	// process_samples rows whose sampled_at overlaps the run's
+	// [started_at, COALESCE(completed_at, now())] window. Returns
+	// MetricsRunWindow with zero SampleCount + zero values when no
+	// samples overlap (in-flight run with metrics disabled, or a
+	// freshly-started run that hasn't ticked yet). *ErrNotFound when
+	// the run_id itself doesn't exist.
+	MetricsRunSummary(ctx context.Context, runID string) (MetricsRunWindow, error)
+
+	// MetricsSweep deletes samples whose sampled_at < cutoff. Returns
+	// the count deleted. Idempotent under concurrent sweepers.
+	MetricsSweep(ctx context.Context, cutoff time.Time) (int, error)
+
 	// Close releases backend resources. Idempotent.
 	Close() error
 }
@@ -689,6 +718,56 @@ type ChannelError struct {
 }
 
 func (e *ChannelError) Error() string { return e.Msg }
+
+// ---- v0.8.x Process-resource metrics sampler types ----
+
+// MintSampleID returns a fresh process_samples row id. Format:
+// "smp_<16-hex unixNanos><8-hex rand>" — sortable lexicographically
+// by sample time within the resolution of a single nanosecond.
+// Mirrors MintChannelMessageID; same trade-offs documented there.
+func MintSampleID(t time.Time) string {
+	var buf [4]byte
+	_, _ = rand.Read(buf[:])
+	return fmt.Sprintf("smp_%016x%s", uint64(t.UnixNano()), hex.EncodeToString(buf[:]))
+}
+
+// ProcessSample is one row in the process_samples table. Captured
+// by the metrics sampler when at least one agent run is active.
+// Linux-only fields (RSS, CPU%) are 0 on non-Linux platforms; the
+// sampler's build-tag-split readers handle the gating.
+//
+// System-wide fields are pointer-typed because they may be NULL —
+// they're only populated when LOOMCYCLE_METRICS_COLLECT_SYSTEM=1
+// AND the platform is Linux.
+type ProcessSample struct {
+	SampleID             string    `json:"sample_id"` // "smp_<16hex><8hex>"
+	SampledAt            time.Time `json:"sampled_at"`
+	ActiveRuns           int       `json:"active_runs"`
+	QueuedRuns           int       `json:"queued_runs"`
+	LoomcycleRSSBytes    int64     `json:"loomcycle_rss_bytes"` // 0 on non-Linux
+	LoomcycleHeapAlloc   int64     `json:"loomcycle_heap_alloc_bytes"`
+	LoomcycleHeapInuse   int64     `json:"loomcycle_heap_inuse_bytes"`
+	LoomcycleGoroutines  int       `json:"loomcycle_num_goroutines"`
+	LoomcycleCPUPctX100  int       `json:"loomcycle_cpu_pct_x100"` // 0 on non-Linux; %×100
+	SystemCPUPctX100     *int      `json:"system_cpu_pct_x100,omitempty"`
+	SystemMemUsedMB      *int      `json:"system_mem_used_mb,omitempty"`
+	SystemMemAvailableMB *int      `json:"system_mem_available_mb,omitempty"`
+}
+
+// MetricsRunWindow is the result of MetricsRunSummary — peak/mean
+// RSS + max CPU% from process_samples whose sampled_at overlaps the
+// run's lifetime window. SampleCount=0 means no overlapping samples
+// (in-flight run with no ticks yet, or metrics disabled when the
+// run executed).
+type MetricsRunWindow struct {
+	RunID         string    `json:"run_id"`
+	StartedAt     time.Time `json:"started_at"`
+	CompletedAt   time.Time `json:"completed_at,omitempty"` // zero when in-flight
+	SampleCount   int       `json:"sample_count"`
+	PeakRSSBytes  int64     `json:"peak_rss_bytes"`
+	MeanRSSBytes  int64     `json:"mean_rss_bytes"`
+	MaxCPUPctX100 int       `json:"max_cpu_pct_x100"`
+}
 
 // ---- v0.8.5 Self-Evolution Substrate types ----
 
