@@ -1577,3 +1577,70 @@ func readEvents(t *testing.T, r io.Reader) []string {
 	}
 	return types
 }
+
+// TestRunRequest_UserBearerValidation guards the v0.8.x per-run MCP
+// bearer charset and length check at the HTTP boundary. Charset:
+// [A-Za-z0-9._\-+/=], length 16..512. Empty string is accepted
+// (backwards compat — static-bearer setups omit the field).
+func TestRunRequest_UserBearerValidation(t *testing.T) {
+	cfg := &config.Config{
+		Defaults: config.Defaults{Provider: "stub", Model: "stub-model"},
+		Agents: map[string]config.AgentDef{
+			"default": {Model: "stub-model", AllowedTools: []string{"Read"}},
+		},
+		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4, QueueTimeoutMS: 1000},
+	}
+	cfg.Env.AuthToken = ""
+	provider := &stubProvider{events: []providers.Event{
+		{Type: providers.EventText, Text: "ok"},
+		{Type: providers.EventDone, StopReason: "end_turn"},
+	}}
+	sem := concurrency.New(4, 4, 100*time.Millisecond)
+	srv := New(cfg, &stubResolver{p: provider}, []tools.Tool{}, sem, nil)
+	ts := httptest.NewServer(srv.Mux())
+	defer ts.Close()
+
+	valid16 := strings.Repeat("a", 16)
+	valid512 := strings.Repeat("a", 512)
+	cases := []struct {
+		name       string
+		userBearer string
+		want400    bool
+	}{
+		{"empty_omitted_OK", "", false},
+		{"valid_16_char", valid16, false},
+		{"valid_512_char", valid512, false},
+		{"valid_jwt_shape", "eyJhbGciOi.payload-part.signature_part", false},
+		{"valid_with_slash_plus_eq", "abc+def/ghi=ABC=", false},
+		{"too_short_15", strings.Repeat("a", 15), true},
+		{"too_long_513", strings.Repeat("a", 513), true},
+		{"illegal_space", "valid_token_with space_inside", true},
+		{"illegal_exclaim", "token!!!!!!!!!!!!!!!!", true},
+		{"illegal_unicode", "тест" + strings.Repeat("a", 12), true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			body := fmt.Sprintf(
+				`{"agent":"default","user_bearer":%q,"segments":[{"role":"user","content":[{"type":"trusted-text","text":"hi"}]}]}`,
+				tc.userBearer,
+			)
+			resp, err := http.Post(ts.URL+"/v1/runs", "application/json", strings.NewReader(body))
+			if err != nil {
+				t.Fatalf("post: %v", err)
+			}
+			defer resp.Body.Close()
+			gotBad := resp.StatusCode == http.StatusBadRequest
+			if gotBad != tc.want400 {
+				slurp, _ := io.ReadAll(resp.Body)
+				t.Errorf("status=%d want400=%v body=%s", resp.StatusCode, tc.want400, slurp)
+				return
+			}
+			if tc.want400 {
+				slurp, _ := io.ReadAll(resp.Body)
+				if !strings.Contains(string(slurp), "user_bearer") {
+					t.Errorf("400 body should mention user_bearer, got %q", slurp)
+				}
+			}
+		})
+	}
+}

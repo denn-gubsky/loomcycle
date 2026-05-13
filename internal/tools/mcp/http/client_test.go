@@ -1,10 +1,12 @@
 package http
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -13,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/tools"
 	"github.com/denn-gubsky/loomcycle/internal/tools/mcp"
 )
 
@@ -541,5 +544,185 @@ func TestCloseIsIdempotent(t *testing.T) {
 	}
 	if err := c.Close(); err != nil {
 		t.Errorf("second Close errored: %v", err)
+	}
+}
+
+// recordingHeaderServer is a fake MCP HTTP server that records every
+// inbound request's headers (keyed by request count) and replies with
+// a minimal MCP-valid response. Used by the v0.8.x per-run bearer
+// tests below. Always tools/call-shaped: the test calls mcp.CallTool
+// directly without a full Initialize handshake (Initialize is
+// covered elsewhere; we exercise the header substitution path only).
+type recordingHeaderServer struct {
+	mu       sync.Mutex
+	requests []http.Header
+}
+
+func (r *recordingHeaderServer) handler(w http.ResponseWriter, req *http.Request) {
+	body, _ := io.ReadAll(req.Body)
+	var probe struct {
+		ID     *int64          `json:"id"`
+		Method string          `json:"method"`
+		Params json.RawMessage `json:"params"`
+	}
+	_ = json.Unmarshal(body, &probe)
+
+	r.mu.Lock()
+	r.requests = append(r.requests, req.Header.Clone())
+	r.mu.Unlock()
+
+	if probe.ID == nil {
+		w.WriteHeader(http.StatusAccepted)
+		return
+	}
+	writeJSON(w, map[string]any{
+		"jsonrpc": "2.0",
+		"id":      *probe.ID,
+		"result": map[string]any{
+			"content": []map[string]any{{"type": "text", "text": "ok"}},
+		},
+	})
+}
+
+// TestMcpHttpClient_PerRunBearerSubstitution covers the happy path:
+// header value `Bearer ${run.user_bearer}` + ctx with a non-empty
+// UserBearer → outbound Authorization header has the substituted token.
+func TestMcpHttpClient_PerRunBearerSubstitution(t *testing.T) {
+	rec := &recordingHeaderServer{}
+	srv := httptest.NewServer(http.HandlerFunc(rec.handler))
+	defer srv.Close()
+
+	c, _ := New(Config{
+		URL:     srv.URL,
+		Headers: map[string]string{"Authorization": "Bearer ${run.user_bearer}"},
+	})
+
+	ctx := tools.WithRunIdentity(context.Background(), tools.RunIdentityValue{
+		AgentID:    "a_test",
+		UserBearer: "run-token-abc123def4",
+	})
+	if _, err := mcp.CallTool(ctx, c, "search", json.RawMessage(`{}`)); err != nil {
+		t.Fatalf("CallTool: %v", err)
+	}
+
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	if len(rec.requests) != 1 {
+		t.Fatalf("got %d requests, want 1", len(rec.requests))
+	}
+	if got := rec.requests[0].Get("Authorization"); got != "Bearer run-token-abc123def4" {
+		t.Errorf("Authorization = %q, want %q", got, "Bearer run-token-abc123def4")
+	}
+}
+
+// TestMcpHttpClient_ConcurrentRunsSendDistinctBearers is the regression
+// guard for the per-run state bleed risk: two goroutines share the same
+// Client (single instance, single c.headers) but each carries its own
+// ctx-borne bearer. The fake server must see one request with bearer
+// AAA and one with bearer BBB, never crossed and never with a literal
+// "${run.*}" placeholder.
+func TestMcpHttpClient_ConcurrentRunsSendDistinctBearers(t *testing.T) {
+	rec := &recordingHeaderServer{}
+	srv := httptest.NewServer(http.HandlerFunc(rec.handler))
+	defer srv.Close()
+
+	c, _ := New(Config{
+		URL:     srv.URL,
+		Headers: map[string]string{"Authorization": "Bearer ${run.user_bearer}"},
+	})
+
+	const bearerA = "tokenAAA1234567890aa"
+	const bearerB = "tokenBBB1234567890bb"
+	var wg sync.WaitGroup
+	wg.Add(2)
+	call := func(b string) {
+		defer wg.Done()
+		ctx := tools.WithRunIdentity(context.Background(), tools.RunIdentityValue{
+			AgentID:    "a_" + b[:4],
+			UserBearer: b,
+		})
+		if _, err := mcp.CallTool(ctx, c, "search", json.RawMessage(`{}`)); err != nil {
+			t.Errorf("CallTool(%s): %v", b, err)
+		}
+	}
+	go call(bearerA)
+	go call(bearerB)
+	wg.Wait()
+
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	if len(rec.requests) != 2 {
+		t.Fatalf("got %d requests, want 2", len(rec.requests))
+	}
+	sawA, sawB := false, false
+	for i, h := range rec.requests {
+		auth := h.Get("Authorization")
+		if strings.Contains(auth, "${run.") {
+			t.Errorf("request #%d Authorization = %q contains unresolved placeholder", i, auth)
+		}
+		switch auth {
+		case "Bearer " + bearerA:
+			sawA = true
+		case "Bearer " + bearerB:
+			sawB = true
+		default:
+			t.Errorf("request #%d Authorization = %q matches neither bearer", i, auth)
+		}
+	}
+	if !sawA || !sawB {
+		t.Errorf("expected both bearers present, sawA=%v sawB=%v", sawA, sawB)
+	}
+}
+
+// TestMcpHttpClient_MissingBearerDropsHeader covers the strict-phase
+// failure mode: header value `Bearer ${run.user_bearer}` (no fallback)
+// + ctx with empty UserBearer → header is DROPPED, NOT shipped as
+// literal placeholder. A WARN log line is emitted with the agent_id
+// and triage-safe bearer prefix.
+func TestMcpHttpClient_MissingBearerDropsHeader(t *testing.T) {
+	rec := &recordingHeaderServer{}
+	srv := httptest.NewServer(http.HandlerFunc(rec.handler))
+	defer srv.Close()
+
+	// Capture log output so we can assert the WARN line shape.
+	var logBuf bytes.Buffer
+	prev := log.Writer()
+	log.SetOutput(&logBuf)
+	defer log.SetOutput(prev)
+
+	c, _ := New(Config{
+		URL:     srv.URL,
+		Headers: map[string]string{"Authorization": "Bearer ${run.user_bearer}"},
+	})
+
+	ctx := tools.WithRunIdentity(context.Background(), tools.RunIdentityValue{
+		AgentID: "a_test",
+		// UserBearer left empty intentionally.
+	})
+	if _, err := mcp.CallTool(ctx, c, "search", json.RawMessage(`{}`)); err != nil {
+		t.Fatalf("CallTool: %v", err)
+	}
+
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	if len(rec.requests) != 1 {
+		t.Fatalf("got %d requests, want 1", len(rec.requests))
+	}
+	if got := rec.requests[0].Get("Authorization"); got != "" {
+		t.Errorf("Authorization = %q, want empty (header dropped)", got)
+	}
+
+	logLine := logBuf.String()
+	if !strings.Contains(logLine, "${run.user_bearer} unresolved") {
+		t.Errorf("WARN log missing expected phrase, got: %q", logLine)
+	}
+	if !strings.Contains(logLine, "Authorization") {
+		t.Errorf("WARN log missing header name (Authorization), got: %q", logLine)
+	}
+	if !strings.Contains(logLine, "a_test") {
+		t.Errorf("WARN log missing agent_id, got: %q", logLine)
+	}
+	if !strings.Contains(logLine, "bearer=(empty)") {
+		t.Errorf("WARN log should report bearer=(empty), got: %q", logLine)
 	}
 }

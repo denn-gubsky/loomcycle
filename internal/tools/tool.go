@@ -178,6 +178,13 @@ type RunIdentityValue struct {
 	// can identify "which version of myself am I running" without a
 	// store roundtrip.
 	AgentDefID string
+	// UserBearer is the v0.8.x per-run MCP bearer token supplied by
+	// the caller on the run request (wire field "user_bearer"). The
+	// HTTP MCP transport substitutes it into header values containing
+	// ${run.user_bearer} at outbound request-build time. Sub-agents
+	// inherit it identically (NOT narrowed — they act on behalf of
+	// the same end-user). Never persisted; never logged in full.
+	UserBearer string
 }
 
 // WithRunIdentity attaches the current run's identity to ctx. The

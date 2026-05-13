@@ -1365,3 +1365,52 @@ agents:
 		t.Errorf("Load: %v", err)
 	}
 }
+
+// TestExpandEnv_DoesNotTouchRunNamespace documents the load-bearing
+// invariant that ${run.user_bearer} tokens (the v0.8.x per-run MCP
+// bearer substitution syntax) flow through expandEnv unchanged.
+//
+// Why this works: envVarRe is `\$\{([A-Za-z_][A-Za-z0-9_]*)\}`. The
+// "." in "run.user_bearer" fails the [A-Za-z0-9_]* character class so
+// the regex never matches the token, and expandEnv leaves the entire
+// `${run.user_bearer...}` string verbatim. Per-run substitution then
+// happens at request-build time in internal/tools/mcp/http/client.go.
+//
+// If someone widens the regex (e.g. to support nested namespaces),
+// they MUST also explicitly skip the "run.*" namespace here or the
+// MCP HTTP transport will see pre-resolved tokens and the per-run
+// bearer flow breaks.
+func TestExpandEnv_DoesNotTouchRunNamespace(t *testing.T) {
+	cases := []struct {
+		name, in string
+	}{
+		{"bare", "${run.user_bearer}"},
+		{"with_fallback", "${run.user_bearer:-foo}"},
+		{"embedded", "Bearer ${run.user_bearer}"},
+		{"with_fallback_embedded", "Authorization: Bearer ${run.user_bearer:-static}"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := expandEnv(tc.in)
+			if got != tc.in {
+				t.Errorf("expandEnv(%q) = %q, want unchanged", tc.in, got)
+			}
+		})
+	}
+}
+
+// TestExpandEnv_NestedRunInsideStaticEnv documents and guards the
+// operator-facing soak-phase migration mechanic from the per-run-mcp-
+// bearer-plan: `Bearer ${run.user_bearer:-${LOOMCYCLE_STATIC_BEARER}}`
+// resolves the INNER LOOMCYCLE_ token at yaml-load (here) and leaves
+// the OUTER ${run.user_bearer:-<resolved>} verbatim for request-time
+// substitution. This composition is what lets operators ship the
+// strict per-run config behind a static fallback during rollout.
+func TestExpandEnv_NestedRunInsideStaticEnv(t *testing.T) {
+	t.Setenv("LOOMCYCLE_STATIC_BEARER", "static123")
+	got := expandEnv("Bearer ${run.user_bearer:-${LOOMCYCLE_STATIC_BEARER}}")
+	want := "Bearer ${run.user_bearer:-static123}"
+	if got != want {
+		t.Errorf("expandEnv nested:\n got: %q\nwant: %q", got, want)
+	}
+}

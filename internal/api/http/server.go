@@ -731,9 +731,10 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 
 	loopCtx := tools.WithAgentTools(runCtx, toolNames(allowedTools))
 	loopCtx = tools.WithRunIdentity(loopCtx, tools.RunIdentityValue{
-		UserID:   effectiveUserID,
-		AgentID:  agentID,
-		UserTier: in.UserTier,
+		UserID:     effectiveUserID,
+		AgentID:    agentID,
+		UserTier:   in.UserTier,
+		UserBearer: in.UserBearer, // v0.8.x: per-run MCP bearer
 	})
 	loopCtx = tools.WithHostPolicy(loopCtx, hostPolicy)
 	// Memory tool policy: agent name + per-agent scope allowlist +
@@ -1117,6 +1118,14 @@ type runRequest struct {
 	// agent overrides. See docs/PLAN.md → v0.8.2 for the full
 	// resolver overlay precedence chain.
 	UserTier string `json:"user_tier,omitempty"`
+	// UserBearer is the v0.8.x per-run MCP bearer token. Substituted
+	// into MCP HTTP header values containing ${run.user_bearer} at
+	// outbound request-build time. Charset:
+	// [A-Za-z0-9._\-+/=]{16,512} when present → 400 otherwise. Empty
+	// is backwards compat (static-bearer setups unaffected). Sub-
+	// agents inherit identically. Never persisted; never logged in
+	// full.
+	UserBearer string `json:"user_bearer,omitempty"`
 }
 
 func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
@@ -1169,6 +1178,11 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, fmt.Sprintf("unknown user_tier %q", req.UserTier), http.StatusBadRequest)
 			return
 		}
+	}
+
+	if req.UserBearer != "" && !validUserBearer(req.UserBearer) {
+		http.Error(w, `user_bearer must match [A-Za-z0-9._\-+/=]{16,512}`, http.StatusBadRequest)
+		return
 	}
 
 	providerID, model, effort, err := s.resolveAgent(req.Agent, req.UserTier)
@@ -1385,9 +1399,10 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 	// SubAgentRunner can inherit user_id and set parent_agent_id on
 	// any sub-runs it spawns.
 	loopCtx = tools.WithRunIdentity(loopCtx, tools.RunIdentityValue{
-		UserID:   req.UserID,
-		AgentID:  agentID,
-		UserTier: req.UserTier,
+		UserID:     req.UserID,
+		AgentID:    agentID,
+		UserTier:   req.UserTier,
+		UserBearer: req.UserBearer, // v0.8.x: per-run MCP bearer
 	})
 	// Stash the caller's host policy so any sub-agents spawned by the
 	// Agent tool inherit the same allowed_hosts / WebSearchFilter
@@ -1461,6 +1476,11 @@ type messagesRequest struct {
 	// applied immediately. Empty falls through to
 	// cfg.UserTiers["default"] when user_tiers is configured.
 	UserTier string `json:"user_tier,omitempty"`
+	// UserBearer follows runRequest semantics. Per-request (not
+	// session-bound) so different continuations in the same session
+	// may carry different end-user tokens — natural for a future
+	// flow where each continuation gets a fresh short-lived bearer.
+	UserBearer string `json:"user_bearer,omitempty"`
 }
 
 func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
@@ -1527,6 +1547,10 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, fmt.Sprintf("unknown user_tier %q", body.UserTier), http.StatusBadRequest)
 			return
 		}
+	}
+	if body.UserBearer != "" && !validUserBearer(body.UserBearer) {
+		http.Error(w, `user_bearer must match [A-Za-z0-9._\-+/=]{16,512}`, http.StatusBadRequest)
+		return
 	}
 	providerID, model, effort, err := s.resolveAgent(sess.Agent, body.UserTier)
 	if err != nil {
@@ -1670,9 +1694,10 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 
 	loopCtx := tools.WithAgentTools(runCtx, toolNames(allowedTools))
 	loopCtx = tools.WithRunIdentity(loopCtx, tools.RunIdentityValue{
-		UserID:   sess.UserID,
-		AgentID:  agentID,
-		UserTier: body.UserTier,
+		UserID:     sess.UserID,
+		AgentID:    agentID,
+		UserTier:   body.UserTier,
+		UserBearer: body.UserBearer, // v0.8.x: per-run MCP bearer
 	})
 	// Sub-agents spawned by this continuation must inherit the
 	// caller-authoritative host narrowing, same as runRequest +
@@ -2190,8 +2215,9 @@ func (s *Server) runSubAgent(ctx context.Context, name string, prompt string, de
 	subCtx = tools.WithRunIdentity(subCtx, tools.RunIdentityValue{
 		UserID:     parentIdentity.UserID,
 		AgentID:    subAgentID,
-		UserTier:   parentIdentity.UserTier, // v0.8.2: sub-agents inherit parent's user_tier
-		AgentDefID: defID,                   // v0.8.7: surface pinned def_id via Context.self
+		UserTier:   parentIdentity.UserTier,   // v0.8.2: sub-agents inherit parent's user_tier
+		AgentDefID: defID,                     // v0.8.7: surface pinned def_id via Context.self
+		UserBearer: parentIdentity.UserBearer, // v0.8.x: bearer inherited identically (same end-user)
 	})
 	subCtx = tools.WithAgentName(subCtx, name)
 	// Sub-agents get THEIR OWN Memory policy from yaml — the parent's
@@ -2685,6 +2711,30 @@ func validIdent(s string) bool {
 			r >= 'A' && r <= 'Z',
 			r >= '0' && r <= '9',
 			r == '_', r == '-':
+			continue
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// validUserBearer reports whether s is a valid per-run MCP bearer
+// token. Charset: [A-Za-z0-9._\-+/=], length 16..512. Matches §5.1 of
+// per-run-mcp-bearer-plan: covers JWT shape (base64url + dots + maybe
+// padding) and opaque tokens. Empty is rejected here — callers that
+// want no bearer omit the field entirely (handled by an empty-check
+// before invoking this validator).
+func validUserBearer(s string) bool {
+	if len(s) < 16 || len(s) > 512 {
+		return false
+	}
+	for _, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z',
+			r >= 'A' && r <= 'Z',
+			r >= '0' && r <= '9',
+			r == '.', r == '_', r == '-', r == '+', r == '/', r == '=':
 			continue
 		default:
 			return false
