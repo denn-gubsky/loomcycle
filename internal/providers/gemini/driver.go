@@ -597,17 +597,17 @@ func (d *Driver) fetchModels(ctx context.Context) ([]string, error) {
 //     into a flat ref-string → schema lookup.
 //  2. Walk the tree:
 //     - Replace any `$ref` node with the looked-up definition
-//       (deep-copied; cycles emit `{}`; unresolved refs emit `{}`).
+//     (deep-copied; cycles emit `{}`; unresolved refs emit `{}`).
 //     - Collapse `allOf: [...]` by merging each variant's
-//       `properties` + `required` into the parent.
+//     `properties` + `required` into the parent.
 //     - Collapse `oneOf: [...]` / `anyOf: [...]` by inlining the
-//       FIRST variant's fields into the parent. This is lossy but
-//       Gemini-compatible — the alternative (drop entirely) loses
-//       type info; picking one variant preserves a usable shape for
-//       the model.
+//     FIRST variant's fields into the parent. This is lossy but
+//     Gemini-compatible — the alternative (drop entirely) loses
+//     type info; picking one variant preserves a usable shape for
+//     the model.
 //     - Strip the keys Gemini doesn't accept on each node:
-//       `additionalProperties`, `$schema`, `$id`, `$defs`,
-//       `definitions`.
+//     `additionalProperties`, `$schema`, `$id`, `$defs`,
+//     `definitions`.
 //
 // Best-effort: on parse failure (malformed schema), returns the
 // original bytes so Gemini surfaces a clear 400 rather than the

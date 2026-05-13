@@ -49,10 +49,10 @@ type procMetrics struct {
 // delta-CPU% on the next tick. The sampler carries this across
 // invocations.
 type cpuSnapshot struct {
-	at            time.Time
-	procTicks     uint64 // utime + stime of our process
-	systemTotal   uint64 // /proc/stat: sum of all CPU jiffies
-	systemIdle    uint64 // /proc/stat: idle jiffies
+	at              time.Time
+	procTicks       uint64 // utime + stime of our process
+	systemTotal     uint64 // /proc/stat: sum of all CPU jiffies
+	systemIdle      uint64 // /proc/stat: idle jiffies
 	systemPopulated bool
 }
 

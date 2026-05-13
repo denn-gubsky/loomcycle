@@ -489,11 +489,11 @@ func TestFallback_ReasoningStrippedOnProviderSwitch(t *testing.T) {
 	var mu sync.Mutex
 
 	opts := RunOptions{
-		Provider:       failing,
-		Model:          "gemini-2.5-flash",
-		MaxIterations:  5,
-		Segments:       []PromptSegment{{Role: "user", Content: []PromptContentBlock{{Type: "trusted-text", Text: "second prompt"}}}},
-		PriorMessages:  prior,
+		Provider:      failing,
+		Model:         "gemini-2.5-flash",
+		MaxIterations: 5,
+		Segments:      []PromptSegment{{Role: "user", Content: []PromptContentBlock{{Type: "trusted-text", Text: "second prompt"}}}},
+		PriorMessages: prior,
 		OnEvent: func(ev providers.Event) {
 			mu.Lock()
 			defer mu.Unlock()
@@ -569,11 +569,11 @@ func TestFallback_NoReasoningStrip_NothingToStrip(t *testing.T) {
 	var events []providers.Event
 	var mu sync.Mutex
 	opts := RunOptions{
-		Provider:       failing,
-		Model:          "claude-sonnet-4-6",
-		MaxIterations:  5,
-		Segments:       []PromptSegment{{Role: "user", Content: []PromptContentBlock{{Type: "trusted-text", Text: "second prompt"}}}},
-		PriorMessages:  prior,
+		Provider:      failing,
+		Model:         "claude-sonnet-4-6",
+		MaxIterations: 5,
+		Segments:      []PromptSegment{{Role: "user", Content: []PromptContentBlock{{Type: "trusted-text", Text: "second prompt"}}}},
+		PriorMessages: prior,
 		OnEvent: func(ev providers.Event) {
 			mu.Lock()
 			defer mu.Unlock()
@@ -849,4 +849,3 @@ func TestFallback_PinAfterSuccess_FlagOff_PreservesV082Behavior(t *testing.T) {
 		t.Errorf("StopReason = %q, want end_turn", res.StopReason)
 	}
 }
-

@@ -42,10 +42,20 @@ type Sampler struct {
 	store   store.Store
 	sem     *concurrency.Semaphore
 	prevCPU cpuSnapshot
-	// failures is the consecutive-write-error counter. Sampler
-	// logs loudly on the first failure, then every 10th to avoid
-	// log flood on a wedged disk / Postgres pool.
+	// failures is the consecutive-STORE-WRITE-error counter.
+	// Sampler logs loudly on the first failure, then every 10th to
+	// avoid log flood on a wedged disk / Postgres pool. /proc-read
+	// errors are environmental (hardened-container shapes), NOT
+	// store-write errors — they're tracked separately by
+	// procReadFailureLogged so they don't pollute this signal.
 	failures int
+	// procReadFailureLogged is set the first time readProcMetrics
+	// returns an error. On hardened containers (gVisor, etc.) or
+	// CI runners where /proc/self/status lacks VmRSS, the proc read
+	// fails every tick — we log ONCE at first occurrence and then
+	// silently zero the affected fields. Matches proc_linux.go's
+	// "log once, continue" contract.
+	procReadFailureLogged bool
 }
 
 // New constructs a Sampler. The store may be nil (writes will be
@@ -106,19 +116,21 @@ func (s *Sampler) sampleOnce(ctx context.Context, now time.Time) error {
 	}
 
 	// 3. Linux-only /proc reads (RSS + per-process CPU + optional
-	//    system-wide). Errors here are soft — we still write the
-	//    row with the cheap fields, leaving RSS/CPU as zero.
+	//    system-wide). Errors here are SOFT — we still write the
+	//    row with the cheap fields, leaving RSS/CPU as zero. We log
+	//    ONCE per program lifetime on the first failure
+	//    (hardened-container /proc shapes fail every tick; logging
+	//    each one would flood). Goes through log.Printf directly,
+	//    NOT cfg.Logf, so this environmental warning is decoupled
+	//    from the actionable store-write backoff signal that tests
+	//    drive via cfg.Logf.
 	if ProcMetricsAvailable {
 		pm, nextSnap, err := readProcMetrics(s.cfg.CollectSystem, s.prevCPU)
 		if err != nil {
-			// Log once-per-N to avoid spam on hardened-container
-			// /proc shapes.
-			if s.failures == 0 {
-				s.cfg.Logf("metrics: /proc read failed: %v (continuing with zero RSS/CPU)", err)
+			if !s.procReadFailureLogged {
+				log.Printf("metrics: /proc read failed: %v (continuing with zero RSS/CPU; further proc errors suppressed)", err)
+				s.procReadFailureLogged = true
 			}
-			// /proc soft failures count toward the same backoff
-			// budget as store-write failures.
-			s.failures++
 		} else {
 			sample.LoomcycleRSSBytes = pm.rssBytes
 			sample.LoomcycleCPUPctX100 = pm.cpuPctX100
