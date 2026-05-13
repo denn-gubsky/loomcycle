@@ -2,11 +2,43 @@
 
 Per-version release notes from v0.4.0 onward. The current and immediately previous releases are also summarised in the main [`README.md`](README.md); older releases live here.
 
-For the **public roadmap** (planned v0.8.9 through v1.0 work — LoomCycle MCP, Question tool, Pause / Resume / Snapshot, distribution, operator postures), see [`docs/PLAN.md`](docs/PLAN.md).
+For the **public roadmap** (planned v0.8.12 through v1.0 work — LoomCycle MCP, Question tool, Pause / Resume / Snapshot, distribution, operator postures), see [`docs/PLAN.md`](docs/PLAN.md).
 
 For pre-v0.4 history (single-tool runtime, library milestone, security patch), see the same `docs/PLAN.md` under the per-version sections.
 
 ---
+
+## What's in v0.8.11
+
+| Surface             | Status |
+|---------------------|--------|
+| **`internal/metrics/` package** | ✅ New process-resource sampler. Periodic ticker (default 5s) reads `runtime.ReadMemStats` for Go heap + goroutine count, `/proc/self/status` for VmRSS, `/proc/self/stat` for utime+stime delta CPU%, and optionally `/proc/stat` + `/proc/meminfo` for system-wide CPU/mem. **Idle-gated on `concurrency.Semaphore.Stats().active > 0`** — when no agent runs are in-flight, no DB write, no `/proc` read. Sleep cost is one in-process atomic load per tick. |
+| **`/v1/_metrics/*` HTTP API (3 endpoints)** | ✅ All bearer-authed, return 503 with `enable_hint` when sampler not configured: (1) `GET /v1/_metrics/samples?since=&until=&limit=&cursor=` — windowed raw samples with cursor pagination; (2) `GET /v1/_metrics/runs/{run_id}` — peak/mean RSS + max CPU% computed via SQL JOIN on `[started_at, COALESCE(completed_at, now)]`; (3) `GET /v1/_metrics/summary?period=1h\|24h\|7d` — aggregated buckets (mean/max RSS, p95 CPU%, max active_runs per bucket; in-Go aggregation acceptable at v0.8.x scale, ≤2016 rows for 7d/5min). |
+| **Build-tag-split `/proc` readers** | ✅ `proc_linux.go` (`//go:build linux`) reads `/proc/self/status` VmRSS, `/proc/self/stat` utime+stime delta (USER_HZ=100, hard-coded), optionally `/proc/stat` + `/proc/meminfo`. `proc_other.go` (`//go:build !linux`) returns zero values + `ProcMetricsAvailable=false`. macOS/Windows dev workstations still record platform-independent fields (active_runs, goroutine count, Go heap) — RSS/CPU columns land as 0. Hardened containers (gVisor, kata) get soft-failure handling: log once, continue with zero fields. |
+| **`process_samples` table** | ✅ Time-series, 12 columns. SQLite `CREATE TABLE IF NOT EXISTS` in `migrate.stmts`; index `process_samples_by_sampled_at` in `addIndexes` (defensive habit per the v0.8.6 lesson — future ALTER TABLE column adds can't break index creation order). Postgres migration `0009_process_samples.up.sql` with `TIMESTAMPTZ` + `BIGINT` types + same index. **No foreign keys to `runs`** — time-series correlation is a query-time JOIN, not a referential constraint. |
+| **`MintSampleID` helper** | ✅ `smp_<16hex unixnano><8hex rand>` — mirrors `MintChannelMessageID`. Sortable lexicographically by sample time; collision-safe within a single nanosecond via the 4-byte random suffix. |
+| **Bounded retention** | ✅ Sweeper goroutine deletes rows older than `LOOMCYCLE_METRICS_RETENTION_DAYS` (default 7) at `LOOMCYCLE_METRICS_SWEEP_INTERVAL_MS` cadence (default 15 min). Set retention=0 OR sweep interval=0 to disable (table grows unbounded). |
+| **Consecutive-failure rate-limited logging** | ✅ Sampler tracks a failure counter. Logs loudly on the first store-write error or `/proc` read error, then every 10th. Prevents log flood on a wedged disk / disconnected Postgres pool / hardened-container `/proc` filter. Successful write resets the counter + emits a recovery log line. |
+| **5 new env vars** | ✅ `LOOMCYCLE_METRICS_ENABLED` (default OFF; default-on planned for v0.9.x), `LOOMCYCLE_METRICS_SAMPLE_INTERVAL_MS` (default 5000; min-clamp 1000 to prevent write-storms from a typo'd `=50`), `LOOMCYCLE_METRICS_RETENTION_DAYS` (default 7), `LOOMCYCLE_METRICS_COLLECT_SYSTEM` (default OFF — Linux only), `LOOMCYCLE_METRICS_SWEEP_INTERVAL_MS` (default 900000). Documented in `.env.example` with storage estimate (~210 MB/week steady-state at defaults). |
+| **`cancel.Registry.ListAll()`** | ✅ General-purpose accessor returning a snapshot of every live entry regardless of user. **Not consumed by the sampler in v0.8.x** (the sampler uses `Semaphore.Stats()` for its active-runs gate); shipped as a forward-compat addition for future cross-cutting consumers with its own test coverage. |
+| **Test coverage** | ✅ 28 new tests: 6 storetest contract tests (auto-run on sqlite + postgres — write+query round-trip, sweep idempotency, run-summary empty/with-samples/in-flight/not-found), 5 sampler unit tests (idle skip, write on active, graceful store error with rate-limited log, nil store, recovery counter reset; uses embedded-`store.Store`-interface fake for forward-compat against future Store additions), 8 `/proc` parser unit tests (fixture-based so they run on macOS CI too), 9 HTTP handler tests (503-when-disabled, samples round-trip + cursor, run-summary 404 + happy path, summary period bucketing, validation errors), 2 cancel registry tests. 37 packages green; race-detector clean on the 5 changed packages. |
+| **Production-validated** | ✅ Deployed to operator's TrueNAS VM 2026-05-13. First exercised by an employer-profiler run that spawned company-researcher + 2 injection-judge sub-agents; captured 31 samples revealing loomcycle's per-process footprint at 21–33 MB RSS across the entire 3-way concurrent run tree. Per-run peak RSS for the 154-second orchestrator: 33 MB. |
+
+## What's in v0.8.10
+
+| Surface             | Status |
+|---------------------|--------|
+| **Gemini schema sanitizer (`$ref` + combinators)** | ✅ `sanitizeGeminiSchema` rewritten in `internal/providers/gemini/driver.go`. Inlines `$ref` (cycle-safe via per-path visited-set; diamond refs each inline independently; cycles emit `{}`; unresolved refs emit `{}`). Collapses `allOf` / `oneOf` / `anyOf` by **merging** ALL variants' `properties` + `required` into the parent (an earlier first-variant-wins draft was caught in code review — it silently dropped every discriminated-union variant past the first, which was exactly the bug the fix targeted). Type-conflict defense skips structural fields of variants with conflicting `type:` (e.g. `oneOf[object, array]` would otherwise produce a schema MORE broken than the input). Fixes `400 INVALID_ARGUMENT` rejection of Zod-shape MCP tool schemas. (PR #86) |
+| **Realistic-MCP regression test** | ✅ `TestSanitizeGeminiSchema_RealisticMcpSchema` mirrors a Zod-generated `discriminatedUnion` + nested `$defs` + `additionalProperties` at multiple levels. Asserts NO banned key (`$ref`, `$defs`, `definitions`, `oneOf`, `anyOf`, `allOf`, `additionalProperties`, `$schema`, `$id`) leaks through AND both discriminated-union variants' payload properties survive. |
+| **SQLite migration ordering fix** | ✅ `internal/store/sqlite/sqlite.go migrate()`. The v0.8.6 migration created `channel_messages_by_visible` index in the first `stmts` loop, BEFORE the `addColumns` ALTER block. Fresh deploys worked because the `CREATE TABLE IF NOT EXISTS channel_messages (...visible_at...)` declared the column up front; on an UPGRADE from v0.8.4/v0.8.5 the existing table had no `visible_at` and the CREATE INDEX failed with `SQL logic error: no such column: visible_at`. CI never caught this (every test run uses a fresh DB). Fix: moved the CREATE INDEX into `addIndexes` (which runs AFTER `addColumns`). Postgres unaffected. (PR #87) |
+| **Upgrade-path regression test** | ✅ `TestMigrate_UpgradeFromV084ChannelMessages` simulates the upgrade path by hand-creating a v0.8.4 schema, then re-opening through `migrate()`. Pre-fix fails with the exact production error message; post-fix asserts both columns added, by_visible index created, and legacy `visible_at` backfilled from `published_at`. |
+| **Both fixes consolidated** | ✅ v0.8.9 shipped the schema sanitizer; v0.8.10 added the sqlite migration fix that became necessary when deploying v0.8.9 from a v0.8.4 schema. Effectively v0.8.10 is the first release that's deployable to existing v0.8.4 / v0.8.5 sqlite-backed installations. |
+
+## What's in v0.8.9
+
+| Surface             | Status |
+|---------------------|--------|
+| **Gemini schema sanitizer (initial pass)** | ✅ See v0.8.10 above — v0.8.10 ships the consolidated description because v0.8.9 was followed by v0.8.10's sqlite migration fix within hours and the two are typically discussed together. v0.8.9 alone is deployable on a fresh (no prior `channel_messages` table) install. (PR #86) |
 
 ## What's in v0.8.8
 
