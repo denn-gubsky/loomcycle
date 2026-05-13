@@ -716,6 +716,9 @@ func TestMcpHttpClient_MissingBearerDropsHeader(t *testing.T) {
 	if !strings.Contains(logLine, "${run.user_bearer} unresolved") {
 		t.Errorf("WARN log missing expected phrase, got: %q", logLine)
 	}
+	if !strings.Contains(logLine, "Authorization") {
+		t.Errorf("WARN log missing header name (Authorization), got: %q", logLine)
+	}
 	if !strings.Contains(logLine, "a_test") {
 		t.Errorf("WARN log missing agent_id, got: %q", logLine)
 	}

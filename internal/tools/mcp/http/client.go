@@ -224,13 +224,12 @@ func (c *Client) do(ctx context.Context, body []byte) (*http.Response, error) {
 	// The MCP server's own auth check then returns a clean 401 that
 	// the loop surfaces as a typed tool error — more debuggable than
 	// a loomcycle-side dispatch failure.
-	runBearer := tools.RunIdentity(ctx).UserBearer
+	runIdent := tools.RunIdentity(ctx)
 	for k, v := range c.headers {
-		subV, drop := substituteRunVars(v, runBearer)
+		subV, drop := substituteRunVars(v, runIdent.UserBearer)
 		if drop {
-			ident := tools.RunIdentity(ctx)
 			log.Printf("mcp http: ${run.user_bearer} unresolved for header %q on %q (agent_id=%s, bearer=%s); dropping header",
-				k, c.url, ident.AgentID, tokenPrefix(runBearer))
+				k, c.url, runIdent.AgentID, tokenPrefix(runIdent.UserBearer))
 			continue
 		}
 		req.Header.Set(k, subV)

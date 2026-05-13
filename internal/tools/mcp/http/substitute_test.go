@@ -82,6 +82,12 @@ func TestSubstituteRunVars_MixedBareAndFallback(t *testing.T) {
 	if strings.Contains(got, "${run.") {
 		t.Errorf("got = %q, must not contain unresolved placeholder", got)
 	}
+	// Pin the full expected shape: bare token → empty, fallback → "fb".
+	// Without this, the test would pass even if the fallback branch were
+	// silently broken (returning empty too).
+	if got != "|fb" {
+		t.Errorf("got = %q, want %q (bare-token empty + fallback resolved)", got, "|fb")
+	}
 }
 
 func TestTokenPrefix(t *testing.T) {
