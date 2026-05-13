@@ -317,6 +317,53 @@ Two layers in scope:
 
 References: `internal/providers/anthropic/driver.go` (cache_control placement), `internal/cache/` (stub).
 
+## Observability (v0.8.11+)
+
+Built-in process-resource sampler. Periodic background goroutine; idle-gated on the concurrency semaphore so no work happens when no agents are running.
+
+**What it captures (per tick):**
+
+- `loomcycle_rss_bytes` — process RSS read from `/proc/self/status VmRSS` (Linux only; 0 on macOS/Windows)
+- `loomcycle_heap_alloc_bytes` + `loomcycle_heap_inuse_bytes` — Go runtime heap from `runtime.ReadMemStats`
+- `loomcycle_num_goroutines` — `runtime.NumGoroutine()`
+- `loomcycle_cpu_pct_x100` — delta CPU% computed from `/proc/self/stat utime + stime` between successive ticks (Linux only; ×100 for integer storage, so 1250 means 12.5%)
+- `active_runs` + `queued_runs` — from the concurrency semaphore at sample time
+- Optional system-wide fields (when `LOOMCYCLE_METRICS_COLLECT_SYSTEM=1`): `system_cpu_pct_x100`, `system_mem_used_mb`, `system_mem_available_mb` read from `/proc/stat` + `/proc/meminfo`
+
+**Persistence:**
+
+- Single new table `process_samples` (sqlite + postgres). One row per tick. Time-indexed.
+- Bounded retention: sweeper goroutine deletes rows older than `LOOMCYCLE_METRICS_RETENTION_DAYS` (default 7) at `LOOMCYCLE_METRICS_SWEEP_INTERVAL_MS` cadence.
+- Storage at defaults: ~30 MB/day, ~210 MB/week.
+
+**Wire surface (bearer-authed):**
+
+```
+GET /v1/_metrics/samples?since=<RFC3339>&until=<RFC3339>&limit=N&cursor=<opaque>
+    → { "samples": [ProcessSample,...], "next_cursor": "..." }
+
+GET /v1/_metrics/runs/{run_id}
+    → MetricsRunWindow JSON — peak / mean RSS + max CPU% for samples
+      overlapping [started_at, COALESCE(completed_at, now)].
+      Computed via SQL JOIN — no denormalized columns on `runs`.
+      404 if run unknown; 200 with SampleCount=0 if no overlap.
+
+GET /v1/_metrics/summary?period=1h|24h|7d
+    → Aggregated buckets (mean/max RSS, p95 CPU%, max active_runs)
+      computed in-Go from a single MetricsSampleWindow fetch.
+```
+
+All three endpoints return 503 with `enable_hint` when `LOOMCYCLE_METRICS_ENABLED=0` (the default — opt-in for v0.8.x; default-on planned for v0.9.x).
+
+**Design decisions worth flagging:**
+
+- **No denormalized `peak_rss` / `cpu_ms` columns on `runs`.** The `runs/{run_id}` endpoint computes via JOIN at API time. Avoids a hot-table UPDATE per sample tick AND avoids an unbounded in-memory `runID → peak` map in the sampler.
+- **Samples carry only counts, not agent identity.** Operators correlate which agents were active via the time-window JOIN with the `runs` table; samples stay at ~250 bytes each.
+- **Linux-only RSS/CPU** via build-tag-split (`proc_linux.go` / `proc_other.go`). Other platforms record the platform-independent fields with RSS/CPU as zero.
+- **Soft-failure on `/proc` errors.** A hardened container that blocks `/proc/self/status` (gVisor, kata) gets logged ONCE at startup; subsequent ticks still write the row with the available fields.
+
+References: `internal/metrics/sampler.go` (idle-gated ticker), `internal/metrics/proc_linux.go` (`/proc` readers), `internal/api/http/metrics_handlers.go` (three handlers), `internal/store/sqlite/sqlite.go` + `internal/store/postgres/postgres.go` (storage; the 4 `Metrics*` methods on the `Store` interface).
+
 ## What's deferred to v1.0
 
 - **Memory tool** — agent-scoped persistent storage (the substrate for self-improving agents).
