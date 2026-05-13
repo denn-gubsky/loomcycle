@@ -245,12 +245,21 @@ const (
 // (the only provider with operator-controlled cache_control
 // breakpoints today; gemini-implicit-cache and others don't surface
 // a knob, so swap-away isn't a meaningful invalidation event).
+// Emits EventReasoningInvalidated when the strip pass cleared any
+// assistant-turn Reasoning field on switching providers — see the
+// in-body comment for the cross-provider thinking-content rationale.
+//
+// `messages` is the in-flight conversation history. On a successful
+// switch, every assistant turn's Reasoning field is zeroed in place.
+// Slice-element write is required (not a range-copy) so the caller's
+// slice sees the update.
 func tryProviderFallback(
 	ctx context.Context,
 	opts *RunOptions,
 	attempts *int,
 	cause error,
 	emit func(providers.Event),
+	messages []providers.Message,
 ) fallbackOutcome {
 	if !opts.FallbackPolicy.Enabled || opts.ReResolve == nil {
 		return fallbackOutcomeNotEligible
@@ -308,6 +317,40 @@ func tryProviderFallback(
 		emit(providers.Event{
 			Type: providers.EventCacheInvalidated,
 			Text: fmt.Sprintf("Anthropic cache_control breakpoints lost on switch to %s; this run's downstream iterations will be cache-cold", newProvider.ID()),
+		})
+	}
+
+	// Reasoning strip on cross-provider switch. `Message.Reasoning`
+	// is a single string field with no provenance. The OpenAI driver
+	// (which also backs DeepSeek) echoes it back as `reasoning_content`
+	// on the wire. DeepSeek's API verifies that any echoed
+	// reasoning_content matches what IT produced and 400s on mismatch
+	// with "The reasoning_content in the thinking mode must be passed
+	// back to the API." Cross-provider echoes always fail this check
+	// because the content originated from a different provider.
+	//
+	// Production bug (2026-05-13): a tier=low run on gemini-2.5-flash
+	// fell back to deepseek-v4-flash mid-conversation after a gemini
+	// 503; the conversation carried Reasoning-populated assistant
+	// turns into the deepseek request and deepseek 400'd. Fixed by
+	// zeroing the field at fallback time so the new provider gets
+	// a clean history.
+	//
+	// Safe across all current providers: Anthropic uses content blocks
+	// for extended_thinking (not the Reasoning string field), Gemini's
+	// driver doesn't write Reasoning today, OpenAI o-series tolerates
+	// missing reasoning_content (treats as no prior thinking).
+	stripped := 0
+	for i := range messages {
+		if messages[i].Role == "assistant" && messages[i].Reasoning != "" {
+			messages[i].Reasoning = ""
+			stripped++
+		}
+	}
+	if stripped > 0 {
+		emit(providers.Event{
+			Type: providers.EventReasoningInvalidated,
+			Text: fmt.Sprintf("cleared reasoning_content from %d assistant turn(s) on switch from %s to %s; cross-provider echo would 400", stripped, failedProvider, newProvider.ID()),
 		})
 	}
 
@@ -437,7 +480,7 @@ outerLoop:
 			// place. Outcome==Switched → continue the outer loop
 			// without surfacing the error. Other outcomes fall
 			// through to the original error path.
-			if tryProviderFallback(ctx, &opts, &fallbackAttempts, err, emit) == fallbackOutcomeSwitched {
+			if tryProviderFallback(ctx, &opts, &fallbackAttempts, err, emit, messages) == fallbackOutcomeSwitched {
 				continue outerLoop
 			}
 			emit(providers.Event{Type: providers.EventError, Error: err.Error()})
@@ -503,7 +546,7 @@ outerLoop:
 				// obscure. The wrap is reserved for the FINAL
 				// return value when fallback isn't eligible.
 				rawErr := errors.New(ev.Error)
-				if tryProviderFallback(ctx, &opts, &fallbackAttempts, rawErr, emit) == fallbackOutcomeSwitched {
+				if tryProviderFallback(ctx, &opts, &fallbackAttempts, rawErr, emit, messages) == fallbackOutcomeSwitched {
 					for range ch {
 					}
 					continue outerLoop
