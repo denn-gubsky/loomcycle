@@ -284,3 +284,59 @@ func TestRegistry_Register_RejectsEmptyInputs(t *testing.T) {
 		t.Error("expected error on nil cancelFn")
 	}
 }
+
+// TestRegistry_ListAll returns a snapshot of every live entry,
+// regardless of user. Deregistered entries vanish from the snapshot.
+func TestRegistry_ListAll(t *testing.T) {
+	r := NewRegistry()
+	_, c1, _ := makeCancellable()
+	_, c2, _ := makeCancellable()
+	_, c3, _ := makeCancellable()
+
+	if err := r.Register(Entry{AgentID: "a_1", RunID: "r_1", UserID: "alice"}, c1); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Register(Entry{AgentID: "a_2", RunID: "r_2", UserID: "bob"}, c2); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Register(Entry{AgentID: "a_3", RunID: "r_3", UserID: "alice"}, c3); err != nil {
+		t.Fatal(err)
+	}
+
+	got := r.ListAll()
+	if len(got) != 3 {
+		t.Fatalf("len(ListAll()) = %d, want 3", len(got))
+	}
+	seen := map[string]bool{}
+	for _, e := range got {
+		seen[e.AgentID] = true
+	}
+	for _, want := range []string{"a_1", "a_2", "a_3"} {
+		if !seen[want] {
+			t.Errorf("ListAll() missing agent %q", want)
+		}
+	}
+
+	// Deregister one and confirm the snapshot reflects the change.
+	r.Deregister("a_2")
+	got = r.ListAll()
+	if len(got) != 2 {
+		t.Errorf("after Deregister, len(ListAll()) = %d, want 2", len(got))
+	}
+	for _, e := range got {
+		if e.AgentID == "a_2" {
+			t.Errorf("deregistered a_2 still in ListAll()")
+		}
+	}
+}
+
+// TestRegistry_ListAll_Empty returns a non-nil empty slice on a
+// fresh registry. (Some callers may iterate via range; a nil slice
+// also iterates safely, but documenting the contract.)
+func TestRegistry_ListAll_Empty(t *testing.T) {
+	r := NewRegistry()
+	got := r.ListAll()
+	if len(got) != 0 {
+		t.Errorf("fresh registry returned %d entries, want 0", len(got))
+	}
+}

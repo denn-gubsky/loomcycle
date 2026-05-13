@@ -275,6 +275,24 @@ func (r *Registry) Count() int {
 	return len(r.entries)
 }
 
+// ListAll returns a snapshot of every live entry regardless of
+// user or parent. General-purpose accessor for diagnostics and
+// future cross-cutting consumers (the v0.8.x metrics sampler
+// already gates on `concurrency.Semaphore.Stats()` for its
+// active-runs count; this method exists for richer per-agent
+// snapshots a future PR may need). The caller MUST NOT mutate
+// the returned slice; treat as read-only. O(n) under RLock; cheap
+// for typical run counts (≤ MaxConcurrentRuns).
+func (r *Registry) ListAll() []Entry {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	out := make([]Entry, 0, len(r.entries))
+	for _, e := range r.entries {
+		out = append(out, e)
+	}
+	return out
+}
+
 // cancelWithReason wraps the API-cancel sentinel with a human reason
 // so context.Cause carries both. errors.Is(cause, ErrCancelledByAPI)
 // continues to identify the cancel as API-originated; cause.Error()
