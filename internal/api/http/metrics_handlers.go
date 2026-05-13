@@ -121,12 +121,12 @@ func (s *Server) handleMetricsRunSummary(w http.ResponseWriter, r *http.Request)
 // metricsSummaryBucket is one aggregated time bucket in the
 // /v1/_metrics/summary response.
 type metricsSummaryBucket struct {
-	At             time.Time `json:"at"`
-	MeanRSSBytes   int64     `json:"mean_rss_bytes"`
-	MaxRSSBytes    int64     `json:"max_rss_bytes"`
-	P95CPUPctX100  int       `json:"p95_cpu_pct_x100"`
-	ActiveRunsMax  int       `json:"active_runs_max"`
-	SampleCount    int       `json:"sample_count"`
+	At            time.Time `json:"at"`
+	MeanRSSBytes  int64     `json:"mean_rss_bytes"`
+	MaxRSSBytes   int64     `json:"max_rss_bytes"`
+	P95CPUPctX100 int       `json:"p95_cpu_pct_x100"`
+	ActiveRunsMax int       `json:"active_runs_max"`
+	SampleCount   int       `json:"sample_count"`
 }
 
 // handleMetricsSummary implements `GET /v1/_metrics/summary` —
@@ -210,11 +210,11 @@ func summariseIntoBuckets(samples []store.ProcessSample, since, until time.Time,
 		numBuckets = 1
 	}
 	type bucketAgg struct {
-		rssSum   int64
-		rssMax   int64
-		runsMax  int
-		cpuList  []int
-		count    int
+		rssSum  int64
+		rssMax  int64
+		runsMax int
+		cpuList []int
+		count   int
 	}
 	aggs := make([]bucketAgg, numBuckets)
 	for _, s := range samples {
