@@ -219,6 +219,33 @@ const (
 	// Purely informational; the loop continues unchanged.
 	EventCacheInvalidated EventType = "cache_invalidated"
 
+	// EventReasoningInvalidated signals that a v0.8.x runtime
+	// fallback switched to a provider that must not receive
+	// reasoning_content produced by the prior provider. The loop
+	// zeroed the Reasoning field on every assistant turn in the
+	// conversation history before retrying on the new provider.
+	//
+	// Why: Message.Reasoning is a single string field with no
+	// provenance (provider.go:130). The OpenAI driver's
+	// flattenMessage unconditionally echoes it back as
+	// reasoning_content on the wire. DeepSeek's API verifies that
+	// any echoed reasoning_content matches what IT produced and
+	// 400s otherwise ("reasoning_content in the thinking mode must
+	// be passed back to the API"). Cross-provider echoes always
+	// fail this check. The strip pass at fallback time prevents
+	// the failure deterministically.
+	//
+	// Cost retros should treat this run's downstream iterations
+	// as reasoning-cold on the new provider — any benefit of the
+	// prior provider's chain-of-thought is discarded. Distinct
+	// from EventCacheInvalidated: cache and reasoning are
+	// orthogonal invalidation axes that may fire independently.
+	//
+	// The Text field carries a human-readable summary
+	// ("cleared reasoning_content from N assistant turn(s) on
+	// switch from <old> to <new>").
+	EventReasoningInvalidated EventType = "reasoning_invalidated"
+
 	// EventChannelPublish signals that the v0.8.4 Channel tool
 	// successfully appended a message to a channel. Emitted from
 	// inside the tool's Execute() via the ctx-attached event
