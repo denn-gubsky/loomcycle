@@ -135,7 +135,14 @@ func (s *Store) migrate(ctx context.Context) error {
 			PRIMARY KEY (channel, scope, scope_id, id)
 		)`,
 		`CREATE INDEX IF NOT EXISTS channel_messages_by_expires_at ON channel_messages(expires_at) WHERE expires_at IS NOT NULL`,
-		`CREATE INDEX IF NOT EXISTS channel_messages_by_visible ON channel_messages(channel, scope, scope_id, visible_at, id)`,
+		// NOTE: channel_messages_by_visible is created in `addIndexes`
+		// below, AFTER the `addColumns` block adds the visible_at
+		// column. On a fresh deploy the CREATE TABLE above already
+		// declares visible_at so the index could be created here too;
+		// on an UPGRADE from v0.8.4/v0.8.5 (channel_messages exists
+		// without visible_at), the CREATE TABLE IF NOT EXISTS is a
+		// no-op and creating the index here would fail with
+		// "no such column: visible_at". Keep the index in addIndexes.
 		`CREATE TABLE IF NOT EXISTS channel_cursors (
 			channel    TEXT    NOT NULL,
 			scope      TEXT    NOT NULL,
@@ -260,6 +267,13 @@ func (s *Store) migrate(ctx context.Context) error {
 		// agent_def_id the run actually ran against. Partial index
 		// keeps it small — only DB-resolved runs have a non-NULL value.
 		`CREATE INDEX IF NOT EXISTS runs_by_agent_def       ON runs(agent_def_id)    WHERE agent_def_id IS NOT NULL`,
+		// v0.8.6 channel_messages_by_visible — runs in addIndexes
+		// (NOT the earlier `stmts` loop) so the visible_at column
+		// added by addColumns above is guaranteed to exist when this
+		// index is created. Required for the upgrade path
+		// v0.8.4/v0.8.5 → v0.8.6+ (channel_messages table exists
+		// from v0.8.4 without visible_at).
+		`CREATE INDEX IF NOT EXISTS channel_messages_by_visible ON channel_messages(channel, scope, scope_id, visible_at, id)`,
 	}
 	for _, q := range addIndexes {
 		// Note the asymmetry vs addColumns above: indexes use
