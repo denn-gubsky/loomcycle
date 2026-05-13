@@ -219,6 +219,28 @@ const (
 	// Purely informational; the loop continues unchanged.
 	EventCacheInvalidated EventType = "cache_invalidated"
 
+	// EventFallbackSuppressed signals that a retryable error would
+	// have triggered a provider fallback, but the run was already
+	// past its first successful turn AND the operator opted into
+	// "pin provider after first successful turn" semantics
+	// (`LOOMCYCLE_FALLBACK_PIN_AFTER_SUCCESS=1`). The cause error
+	// propagates to the caller; the run fails. Purely informational.
+	//
+	// Why: cross-provider mid-conversation fallback exposes a
+	// growing surface of provider-specific transcript translation
+	// bugs (Anthropic cache_control, DeepSeek reasoning_content,
+	// gemini thoughtSignature, tool_call shape differences). Each
+	// requires its own translation layer. Pinning after first
+	// success closes the entire class of bug in exchange for
+	// dropping resilience to mid-conversation provider issues —
+	// existing same-provider rate-limit retry (internal/providers/
+	// ratelimit/) still covers transient errors within one provider.
+	//
+	// The Text field carries a human-readable summary:
+	// "fallback to <new> suppressed: provider <old> pinned after
+	// first successful turn".
+	EventFallbackSuppressed EventType = "fallback_suppressed"
+
 	// EventReasoningInvalidated signals that a v0.8.x runtime
 	// fallback switched to a provider that must not receive
 	// reasoning_content produced by the prior provider. The loop

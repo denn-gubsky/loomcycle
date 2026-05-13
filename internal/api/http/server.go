@@ -503,9 +503,10 @@ func (s *Server) fallbackForRun(agentName, userTier string) (loop.FallbackPolicy
 		return loop.FallbackPolicy{}, nil
 	}
 	policy := loop.FallbackPolicy{
-		Enabled:      true,
-		MaxAttempts:  overlay.MaxFallbackAttempts, // 0 = loop uses its own default (3)
-		UserTierName: overlay.Name,
+		Enabled:         true,
+		MaxAttempts:     overlay.MaxFallbackAttempts, // 0 = loop uses its own default (3)
+		UserTierName:    overlay.Name,
+		PinAfterSuccess: s.cfg.Env.FallbackPinAfterSuccess,
 	}
 	reResolve := func(ctx context.Context, failedProvider, failedModel string, cause error) (providers.Provider, string, string, error) {
 		// Mark the failed pair stalled BEFORE re-resolving so the

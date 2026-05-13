@@ -197,6 +197,33 @@ type FallbackPolicy struct {
 	// the EventProviderFallback payload so log + UI consumers can
 	// attribute the switch to a specific tier.
 	UserTierName string
+
+	// PinAfterSuccess, when true, suppresses provider fallback on
+	// retryable errors AFTER the run has completed at least one
+	// successful turn (assistant message appended to the
+	// conversation history). The initial turn can still fall back,
+	// so a stale-probe initial pick doesn't kill the run. Once a
+	// provider has touched the transcript, the run stays on it.
+	//
+	// Why: cross-provider mid-conversation fallback exposes a
+	// growing surface of provider-specific transcript translation
+	// bugs (Anthropic cache_control, DeepSeek reasoning_content +
+	// thinking-mode validation, gemini thoughtSignature, tool_call
+	// shape differences). Each requires its own translation
+	// layer. Pinning closes the entire class of bug in exchange
+	// for dropping resilience to MID-CONVERSATION provider issues —
+	// same-provider rate-limit retry (internal/providers/ratelimit/)
+	// still covers transient errors within one provider.
+	//
+	// Sourced from cfg.Env.FallbackPinAfterSuccess (env:
+	// LOOMCYCLE_FALLBACK_PIN_AFTER_SUCCESS). Default OFF in v0.8.x;
+	// plan to flip default-on in v0.9.x.
+	//
+	// When pinning suppresses a fallback, the loop emits
+	// EventFallbackSuppressed so operators can attribute the
+	// failure to the policy rather than thinking the resolver
+	// misbehaved.
+	PinAfterSuccess bool
 }
 
 // defaultMaxFallbackAttempts is the cumulative cap when the operator
@@ -260,6 +287,7 @@ func tryProviderFallback(
 	cause error,
 	emit func(providers.Event),
 	messages []providers.Message,
+	firstTurnSucceeded bool,
 ) fallbackOutcome {
 	if !opts.FallbackPolicy.Enabled || opts.ReResolve == nil {
 		return fallbackOutcomeNotEligible
@@ -273,6 +301,20 @@ func tryProviderFallback(
 		maxAttempts = defaultMaxFallbackAttempts
 	}
 	if *attempts >= maxAttempts {
+		return fallbackOutcomeNotEligible
+	}
+	// PinAfterSuccess: once a turn has succeeded, the conversation
+	// transcript has provider-specific state (tool_call format,
+	// possibly reasoning content, possibly Anthropic cache_control
+	// breakpoints). Cross-provider fallback past this point opens
+	// the same class of translation bugs the v0.8.12 reasoning
+	// strip was a point fix for. Suppress and emit a typed event
+	// so operators can attribute the failure to the policy.
+	if opts.FallbackPolicy.PinAfterSuccess && firstTurnSucceeded {
+		emit(providers.Event{
+			Type: providers.EventFallbackSuppressed,
+			Text: fmt.Sprintf("fallback from %s suppressed: provider pinned after first successful turn (LOOMCYCLE_FALLBACK_PIN_AFTER_SUCCESS=1); run will fail with cause: %s", opts.Provider.ID(), truncateError(cause)),
+		})
 		return fallbackOutcomeNotEligible
 	}
 	// Ctx already cancelled? Don't fall back — caller signalled
@@ -437,6 +479,13 @@ func Run(ctx context.Context, opts RunOptions) (RunResult, error) {
 	// — we don't decrement iter, because a deliberate switch should
 	// still count toward MaxIterations as work the run did.
 	var fallbackAttempts int
+	// firstTurnSucceeded flips true after the first iteration
+	// completes successfully (an assistant message has been
+	// appended to `messages`). Used by tryProviderFallback to
+	// honor RunOptions.FallbackPolicy.PinAfterSuccess — once the
+	// transcript has provider-specific state, fallback to a
+	// different provider risks cross-family translation bugs.
+	var firstTurnSucceeded bool
 
 outerLoop:
 	for iter := 0; iter < opts.MaxIterations; iter++ {
@@ -480,7 +529,7 @@ outerLoop:
 			// place. Outcome==Switched → continue the outer loop
 			// without surfacing the error. Other outcomes fall
 			// through to the original error path.
-			if tryProviderFallback(ctx, &opts, &fallbackAttempts, err, emit, messages) == fallbackOutcomeSwitched {
+			if tryProviderFallback(ctx, &opts, &fallbackAttempts, err, emit, messages, firstTurnSucceeded) == fallbackOutcomeSwitched {
 				continue outerLoop
 			}
 			emit(providers.Event{Type: providers.EventError, Error: err.Error()})
@@ -546,7 +595,7 @@ outerLoop:
 				// obscure. The wrap is reserved for the FINAL
 				// return value when fallback isn't eligible.
 				rawErr := errors.New(ev.Error)
-				if tryProviderFallback(ctx, &opts, &fallbackAttempts, rawErr, emit, messages) == fallbackOutcomeSwitched {
+				if tryProviderFallback(ctx, &opts, &fallbackAttempts, rawErr, emit, messages, firstTurnSucceeded) == fallbackOutcomeSwitched {
 					for range ch {
 					}
 					continue outerLoop
@@ -568,6 +617,11 @@ outerLoop:
 			Content:   assistantBlocks,
 			Reasoning: iterReasoning,
 		})
+		// Mark the run "past turn one." Any subsequent retryable
+		// error that would have triggered cross-provider fallback
+		// is suppressed when PinAfterSuccess is set — the
+		// transcript now has provider-specific state.
+		firstTurnSucceeded = true
 
 		if iterUsage != nil {
 			totalUsage.InputTokens += iterUsage.InputTokens
