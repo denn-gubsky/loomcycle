@@ -1345,6 +1345,16 @@ func expandEnv(s string) string {
 // inside YAML. Allowlist:
 //   - any LOOMCYCLE_-prefixed variable (the project's own namespace)
 //   - well-known third-party keys MCP servers commonly need
+//
+// Note on the v0.8.x ${run.user_bearer} tokens: these are intentionally
+// NOT handled here. envVarRe above requires var names matching
+// [A-Za-z_][A-Za-z0-9_]*; the "." in "run.user_bearer" structurally
+// cannot match, so those tokens survive yaml-load verbatim. Per-run
+// substitution happens at MCP outbound request time in
+// internal/tools/mcp/http/client.go Client.do(). This means a yaml
+// header value like `Bearer ${run.user_bearer:-${LOOMCYCLE_STATIC}}`
+// has its inner ${LOOMCYCLE_STATIC} resolved here, while the outer
+// ${run.user_bearer:-...} flows through to the request-time substitution.
 func expandEnvAllowed(name string) bool {
 	if strings.HasPrefix(name, "LOOMCYCLE_") {
 		return true

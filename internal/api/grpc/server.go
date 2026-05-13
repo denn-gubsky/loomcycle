@@ -509,6 +509,12 @@ func (s *Server) driveStream(ctx context.Context, stream runStreamSink, in runne
 
 // runInputFromProto maps the proto request fields into the
 // runner.RunInput shared between Run and Continue.
+//
+// v0.8.x gap: RunInput.UserBearer is not yet plumbed here — the proto
+// schema has no user_bearer field. When gRPC Run/Continue leave
+// Unimplemented status, add a user_bearer proto field and a parameter
+// to this function. The HTTP wire is the only path that currently
+// carries per-run bearers.
 func runInputFromProto(
 	agent, sessionID string,
 	segments []*loomcyclepb.PromptSegment,

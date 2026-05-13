@@ -141,6 +141,15 @@ type RunInput struct {
 	// See internal/api/http/server.go resolveAgent for the overlay
 	// semantics and docs/PLAN.md → v0.8.2 for the full design.
 	UserTier string
+
+	// UserBearer is the v0.8.x per-run MCP bearer token. When non-
+	// empty the HTTP MCP transport substitutes it at outbound
+	// request-build time wherever the operator's YAML header
+	// contains ${run.user_bearer}. Empty is backwards-compat:
+	// headers without ${run.*} tokens are unaffected; headers with
+	// ${run.user_bearer:-X} use fallback X; headers with bare
+	// ${run.user_bearer} drop the header and emit a WARN.
+	UserBearer string
 }
 
 // RunCallbacks is how the wire surfaces observe the run.

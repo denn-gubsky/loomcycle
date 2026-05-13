@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -456,5 +457,121 @@ func TestSubAgent_InheritsParentCallerHostAllowlist(t *testing.T) {
 	}
 	if !sawHTTPSuccess {
 		t.Errorf("expected child's HTTP tool to reach target and capture body 'child-saw-it' in a tool_result event;\nchild transcript had %d events", len(childTranscript))
+	}
+}
+
+// bearerCapturingProvider drives a scripted event sequence per call AND
+// records the ctx-carried tools.RunIdentity(ctx).UserBearer on every
+// Call. Used by TestSubAgent_InheritsParentUserBearer to verify the
+// child run's ctx carries the parent's bearer at provider-call time.
+type bearerCapturingProvider struct {
+	calls   atomic.Int32
+	scripts [][]providers.Event
+
+	mu       sync.Mutex
+	captured []string // RunIdentity.UserBearer per Call invocation, in call order
+}
+
+func (b *bearerCapturingProvider) ID() string                    { return "bearer-capturing" }
+func (b *bearerCapturingProvider) Probe(_ context.Context) error { return nil }
+func (b *bearerCapturingProvider) ListModels(_ context.Context) ([]string, error) {
+	return []string{"stub-model"}, nil
+}
+func (b *bearerCapturingProvider) Capabilities() providers.Capabilities {
+	return providers.Capabilities{Streaming: true}
+}
+func (b *bearerCapturingProvider) Call(ctx context.Context, _ providers.Request) (<-chan providers.Event, error) {
+	b.mu.Lock()
+	b.captured = append(b.captured, tools.RunIdentity(ctx).UserBearer)
+	b.mu.Unlock()
+	idx := int(b.calls.Add(1)) - 1
+	var events []providers.Event
+	if idx < len(b.scripts) {
+		events = b.scripts[idx]
+	}
+	ch := make(chan providers.Event, len(events))
+	for _, ev := range events {
+		ch <- ev
+	}
+	close(ch)
+	return ch, nil
+}
+
+// TestSubAgent_InheritsParentUserBearer guards the v0.8.x invariant
+// that sub-agents see the parent run's per-run MCP bearer in their
+// own ctx — identically, NOT narrowed (unlike caller-host policy).
+// Sub-agents act on behalf of the same end-user; the same downstream
+// MCP credential applies.
+//
+// Regression guard: if someone adds narrowing logic at the sub-agent
+// dispatch site (internal/api/http/server.go around runSubAgent's
+// WithRunIdentity call), this test catches it.
+func TestSubAgent_InheritsParentUserBearer(t *testing.T) {
+	cfg := makeBaseConfig()
+	cfg.Agents = map[string]config.AgentDef{
+		"parent": {Model: "stub-model", AllowedTools: []string{"Agent"}, SystemPrompt: "you are the parent"},
+		"child":  {Model: "stub-model", AllowedTools: []string{}, SystemPrompt: "you are the child"},
+	}
+
+	const parentBearer = "parent-bearer-xyz123456"
+
+	prov := &bearerCapturingProvider{
+		scripts: [][]providers.Event{
+			{
+				{
+					Type: providers.EventToolCall,
+					ToolUse: &providers.ToolUse{
+						ID:    "tu_parent_1",
+						Name:  "Agent",
+						Input: json.RawMessage(`{"name":"child","prompt":"go"}`),
+					},
+				},
+				{Type: providers.EventDone, StopReason: "tool_use", Usage: &providers.Usage{InputTokens: 10, OutputTokens: 2}},
+			},
+			{
+				{Type: providers.EventText, Text: "child done"},
+				{Type: providers.EventDone, StopReason: "end_turn", Usage: &providers.Usage{InputTokens: 3, OutputTokens: 2}},
+			},
+			{
+				{Type: providers.EventText, Text: "parent done"},
+				{Type: providers.EventDone, StopReason: "end_turn", Usage: &providers.Usage{InputTokens: 12, OutputTokens: 3}},
+			},
+		},
+	}
+
+	st, err := storesqlite.Open(filepath.Join(t.TempDir(), "subagent_bearer.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	srv := New(cfg, &stubResolver{p: prov}, []tools.Tool{}, concurrency.New(4, 4, time.Second), st)
+	ts := httptest.NewServer(srv.Mux())
+	defer ts.Close()
+
+	body := `{"agent":"parent","user_bearer":"` + parentBearer + `","segments":[{"role":"user","content":[{"type":"trusted-text","text":"start"}]}]}`
+	resp, err := http.Post(ts.URL+"/v1/runs", "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		slurp, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d body=%s", resp.StatusCode, slurp)
+	}
+	// Drain the SSE body so the run completes before we assert.
+	_, _ = io.ReadAll(resp.Body)
+
+	prov.mu.Lock()
+	captured := append([]string(nil), prov.captured...)
+	prov.mu.Unlock()
+	if len(captured) < 2 {
+		t.Fatalf("expected at least 2 provider calls (parent + child), got %d", len(captured))
+	}
+	// Every Call must have seen the parent's bearer in ctx — the child
+	// just as much as the parent (identical inheritance, no narrowing).
+	for i, b := range captured {
+		if b != parentBearer {
+			t.Errorf("call #%d: ctx bearer = %q, want %q", i, b, parentBearer)
+		}
 	}
 }
