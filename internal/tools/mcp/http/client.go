@@ -18,12 +18,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/tools"
 	"github.com/denn-gubsky/loomcycle/internal/tools/mcp"
 )
 
@@ -212,8 +214,26 @@ func (c *Client) do(ctx context.Context, body []byte) (*http.Response, error) {
 	// per-request whether to reply JSON or SSE based on what the response
 	// shape is; we must accept both.
 	req.Header.Set("Accept", "application/json, text/event-stream")
+	// v0.8.x per-run MCP bearer: substitute ${run.user_bearer} (and
+	// the ${run.user_bearer:-FALLBACK} POSIX form) at request-build
+	// time. The Client is shared across runs (see pool.go's contract),
+	// so substitution MUST be per-request — never against c.headers
+	// in-place. drop=true means a bare ${run.user_bearer} survived
+	// without a fallback because ctx carried no bearer; we drop the
+	// header rather than send a literal placeholder downstream.
+	// The MCP server's own auth check then returns a clean 401 that
+	// the loop surfaces as a typed tool error — more debuggable than
+	// a loomcycle-side dispatch failure.
+	runBearer := tools.RunIdentity(ctx).UserBearer
 	for k, v := range c.headers {
-		req.Header.Set(k, v)
+		subV, drop := substituteRunVars(v, runBearer)
+		if drop {
+			ident := tools.RunIdentity(ctx)
+			log.Printf("mcp http: ${run.user_bearer} unresolved for header %q on %q (agent_id=%s, bearer=%s); dropping header",
+				k, c.url, ident.AgentID, tokenPrefix(runBearer))
+			continue
+		}
+		req.Header.Set(k, subV)
 	}
 	c.sessMu.Lock()
 	sid := c.sessionID
