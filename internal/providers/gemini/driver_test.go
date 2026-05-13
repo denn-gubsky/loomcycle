@@ -410,3 +410,332 @@ func TestSanitizeGeminiSchema_EmptyInputPassthrough(t *testing.T) {
 		t.Errorf("empty input not preserved: got %d bytes", len(got))
 	}
 }
+
+// TestSanitizeGeminiSchema_InlinesTopLevelDefs — the canonical
+// shape zod-to-json-schema produces: a top-level `$defs` map
+// keyed by type name, plus inline `$ref` pointers into it. Gemini
+// rejects `$ref`; we must inline.
+func TestSanitizeGeminiSchema_InlinesTopLevelDefs(t *testing.T) {
+	in := json.RawMessage(`{
+		"type":"object",
+		"properties":{
+			"primary":{"$ref":"#/$defs/Address"},
+			"billing":{"$ref":"#/$defs/Address"}
+		},
+		"$defs":{
+			"Address":{
+				"type":"object",
+				"properties":{
+					"street":{"type":"string"},
+					"city":{"type":"string"}
+				},
+				"required":["street","city"]
+			}
+		}
+	}`)
+	got := sanitizeGeminiSchema(in)
+	gotStr := string(got)
+
+	if strings.Contains(gotStr, "$ref") {
+		t.Errorf("$ref not inlined: %s", gotStr)
+	}
+	if strings.Contains(gotStr, "$defs") {
+		t.Errorf("$defs not stripped from output: %s", gotStr)
+	}
+	if !strings.Contains(gotStr, `"street"`) {
+		t.Errorf("inlined definition missing `street` property: %s", gotStr)
+	}
+	// Both refs should be independently inlined (deep-copy, not
+	// shared aliases — subsequent edits to one shouldn't affect
+	// the other). Count the property definition (the type-info
+	// shape) rather than the bare key — `street` also appears in
+	// each variant's `required` slice.
+	if c := strings.Count(gotStr, `"street":{"type":"string"}`); c != 2 {
+		t.Errorf("expected inlined `street` property definition twice (once per ref site); got %d: %s", c, gotStr)
+	}
+}
+
+// TestSanitizeGeminiSchema_InlinesDefinitionsAlias — older
+// JSON-Schema drafts use `definitions` rather than `$defs`.
+// Both must be supported (some MCP servers emit `definitions`,
+// others emit `$defs`).
+func TestSanitizeGeminiSchema_InlinesDefinitionsAlias(t *testing.T) {
+	in := json.RawMessage(`{
+		"type":"object",
+		"properties":{"x":{"$ref":"#/definitions/Inner"}},
+		"definitions":{
+			"Inner":{"type":"object","properties":{"v":{"type":"string"}}}
+		}
+	}`)
+	got := sanitizeGeminiSchema(in)
+	gotStr := string(got)
+	if strings.Contains(gotStr, "$ref") || strings.Contains(gotStr, "definitions") {
+		t.Errorf("definitions-style $ref not inlined: %s", gotStr)
+	}
+	if !strings.Contains(gotStr, `"v"`) {
+		t.Errorf("inlined `v` property missing: %s", gotStr)
+	}
+}
+
+// TestSanitizeGeminiSchema_CycleSafe — direct cycles produce
+// `{}` rather than infinite recursion. (Indirect / mutual
+// recursion is rare in practice but uses the same visited-set
+// guard.)
+func TestSanitizeGeminiSchema_CycleSafe(t *testing.T) {
+	in := json.RawMessage(`{
+		"type":"object",
+		"properties":{"node":{"$ref":"#/$defs/Tree"}},
+		"$defs":{
+			"Tree":{
+				"type":"object",
+				"properties":{
+					"value":{"type":"string"},
+					"child":{"$ref":"#/$defs/Tree"}
+				}
+			}
+		}
+	}`)
+	got := sanitizeGeminiSchema(in)
+	gotStr := string(got)
+	if strings.Contains(gotStr, "$ref") {
+		t.Errorf("cycle not broken — $ref still present: %s", gotStr)
+	}
+	if !strings.Contains(gotStr, `"value"`) {
+		t.Errorf("Tree.value missing — cycle handling shouldn't drop the first inline: %s", gotStr)
+	}
+}
+
+// TestSanitizeGeminiSchema_UnresolvedRefEmitsEmpty — a `$ref`
+// pointing at a missing definition emits `{}` rather than
+// preserving the ref string (which would fail Gemini's parser).
+func TestSanitizeGeminiSchema_UnresolvedRefEmitsEmpty(t *testing.T) {
+	in := json.RawMessage(`{
+		"type":"object",
+		"properties":{"x":{"$ref":"#/$defs/Missing"}}
+	}`)
+	got := sanitizeGeminiSchema(in)
+	gotStr := string(got)
+	if strings.Contains(gotStr, "$ref") {
+		t.Errorf("unresolved $ref leaked into output: %s", gotStr)
+	}
+}
+
+// TestSanitizeGeminiSchema_CollapseOneOf — `oneOf` collapses to
+// a UNION of all variants' properties + required. Each variant's
+// payload shape survives; the discriminator field's per-variant
+// `enum` collapses to bare `type: string` (Gemini's OpenAPI
+// subset can't represent a discriminator anyway). This is the
+// failure mode the v0.8.x sanitizer fixes — every Zod
+// `z.discriminatedUnion` was previously losing every variant
+// past the first.
+func TestSanitizeGeminiSchema_CollapseOneOf(t *testing.T) {
+	in := json.RawMessage(`{
+		"type":"object",
+		"properties":{
+			"action":{
+				"oneOf":[
+					{"type":"object","properties":{"kind":{"type":"string","enum":["create"]},"name":{"type":"string"}},"required":["kind","name"]},
+					{"type":"object","properties":{"kind":{"type":"string","enum":["delete"]},"id":{"type":"string"}},"required":["kind","id"]}
+				]
+			}
+		}
+	}`)
+	got := sanitizeGeminiSchema(in)
+	gotStr := string(got)
+	if strings.Contains(gotStr, "oneOf") {
+		t.Errorf("oneOf not collapsed: %s", gotStr)
+	}
+	// BOTH variants' payload properties survive — this is the
+	// load-bearing assertion for the fix.
+	if !strings.Contains(gotStr, `"name"`) {
+		t.Errorf("first variant `name` property missing: %s", gotStr)
+	}
+	if !strings.Contains(gotStr, `"id"`) {
+		t.Errorf("second variant `id` property missing — discriminated union still lossy: %s", gotStr)
+	}
+}
+
+// TestSanitizeGeminiSchema_CollapseAnyOf — same merge semantics
+// as oneOf.
+func TestSanitizeGeminiSchema_CollapseAnyOf(t *testing.T) {
+	in := json.RawMessage(`{
+		"type":"object",
+		"properties":{
+			"u":{
+				"anyOf":[
+					{"type":"object","properties":{"a":{"type":"string"}}},
+					{"type":"object","properties":{"b":{"type":"number"}}}
+				]
+			}
+		}
+	}`)
+	got := sanitizeGeminiSchema(in)
+	gotStr := string(got)
+	if strings.Contains(gotStr, "anyOf") {
+		t.Errorf("anyOf not collapsed: %s", gotStr)
+	}
+	// Both variants merge.
+	if !strings.Contains(gotStr, `"a"`) || !strings.Contains(gotStr, `"b"`) {
+		t.Errorf("anyOf merge dropped a variant: %s", gotStr)
+	}
+}
+
+// TestSanitizeGeminiSchema_TypeConflictDefense — if combinator
+// variants declare different `type` values (e.g. `array` vs
+// `object`), `mergeGeminiSchemaInto` must NOT fold the conflicting
+// variant's structural fields (properties / items / required) into
+// the parent. The alternative produces a schema with conflicting
+// `type` + `properties` + `items` that's malformed and would 400.
+// dst's type wins; src's structural fields drop.
+func TestSanitizeGeminiSchema_TypeConflictDefense(t *testing.T) {
+	in := json.RawMessage(`{
+		"oneOf":[
+			{"type":"object","properties":{"obj_field":{"type":"string"}},"required":["obj_field"]},
+			{"type":"array","items":{"type":"string"}}
+		]
+	}`)
+	got := sanitizeGeminiSchema(in)
+	gotStr := string(got)
+
+	// First (object) variant wins on type + brings its properties.
+	if !strings.Contains(gotStr, `"obj_field"`) {
+		t.Errorf("first variant properties dropped: %s", gotStr)
+	}
+	if !strings.Contains(gotStr, `"type":"object"`) {
+		t.Errorf("first variant type lost: %s", gotStr)
+	}
+	// Second (array) variant's structural keys must NOT leak through —
+	// a schema with `type: object` + `items: {...}` is malformed.
+	if strings.Contains(gotStr, `"items"`) {
+		t.Errorf("conflicting `items` field leaked across type boundary: %s", gotStr)
+	}
+	// And no oneOf residue.
+	if strings.Contains(gotStr, "oneOf") {
+		t.Errorf("oneOf not collapsed: %s", gotStr)
+	}
+}
+
+// TestSanitizeGeminiSchema_MergeAllOf — `allOf` merges every
+// variant's properties + required into the parent (intersection
+// semantic — the value must satisfy all variants).
+func TestSanitizeGeminiSchema_MergeAllOf(t *testing.T) {
+	in := json.RawMessage(`{
+		"type":"object",
+		"allOf":[
+			{"properties":{"a":{"type":"string"}},"required":["a"]},
+			{"properties":{"b":{"type":"number"}},"required":["b"]}
+		]
+	}`)
+	got := sanitizeGeminiSchema(in)
+	gotStr := string(got)
+	if strings.Contains(gotStr, "allOf") {
+		t.Errorf("allOf not merged: %s", gotStr)
+	}
+	if !strings.Contains(gotStr, `"a"`) || !strings.Contains(gotStr, `"b"`) {
+		t.Errorf("merged properties missing a or b: %s", gotStr)
+	}
+	// Both `a` and `b` should end up in required.
+	if !strings.Contains(gotStr, `"a"`) || !strings.Contains(gotStr, `"b"`) {
+		t.Errorf("merged required missing: %s", gotStr)
+	}
+}
+
+// TestSanitizeGeminiSchema_RealisticMcpSchema — regression
+// fixture mirroring a real jobs-search-agent MCP tool input
+// schema (Zod's discriminatedUnion → JSON-Schema oneOf+$ref;
+// nested objects with their own $defs; additionalProperties at
+// multiple levels). Without the v0.8.x sanitizer, Gemini's
+// function-calling API rejects this with `400 INVALID_ARGUMENT`
+// at deeply nested paths
+// (tools[0].function_declarations[*].parameters.properties[*].value...).
+// The post-sanitize output must contain NO `$ref` / `$defs` /
+// `oneOf` / `additionalProperties` and remain valid JSON.
+func TestSanitizeGeminiSchema_RealisticMcpSchema(t *testing.T) {
+	in := json.RawMessage(`{
+		"$schema":"http://json-schema.org/draft-07/schema#",
+		"type":"object",
+		"additionalProperties":false,
+		"properties":{
+			"applicationId":{"type":"string"},
+			"patch":{
+				"type":"object",
+				"additionalProperties":false,
+				"properties":{
+					"status":{"$ref":"#/$defs/Status"},
+					"answers":{
+						"type":"array",
+						"items":{"$ref":"#/$defs/Answer"}
+					},
+					"feedback":{
+						"oneOf":[
+							{"$ref":"#/$defs/PositiveFeedback"},
+							{"$ref":"#/$defs/NegativeFeedback"}
+						]
+					}
+				}
+			}
+		},
+		"required":["applicationId","patch"],
+		"$defs":{
+			"Status":{
+				"type":"string",
+				"enum":["draft","submitted","won","lost"]
+			},
+			"Answer":{
+				"type":"object",
+				"additionalProperties":false,
+				"properties":{
+					"questionId":{"type":"string"},
+					"value":{"type":"string"}
+				},
+				"required":["questionId","value"]
+			},
+			"PositiveFeedback":{
+				"type":"object",
+				"additionalProperties":false,
+				"properties":{
+					"kind":{"type":"string","enum":["positive"]},
+					"highlights":{"type":"array","items":{"type":"string"}}
+				},
+				"required":["kind"]
+			},
+			"NegativeFeedback":{
+				"type":"object",
+				"additionalProperties":false,
+				"properties":{
+					"kind":{"type":"string","enum":["negative"]},
+					"concerns":{"type":"array","items":{"type":"string"}}
+				},
+				"required":["kind"]
+			}
+		}
+	}`)
+	got := sanitizeGeminiSchema(in)
+	gotStr := string(got)
+
+	for _, banned := range []string{"$ref", "$defs", "definitions", "oneOf", "anyOf", "allOf", "additionalProperties", "$schema", "$id"} {
+		if strings.Contains(gotStr, banned) {
+			t.Errorf("banned key %q leaked into Gemini-bound schema: %s", banned, gotStr)
+		}
+	}
+	// Output must still be valid JSON.
+	var roundtrip any
+	if err := json.Unmarshal(got, &roundtrip); err != nil {
+		t.Fatalf("output not valid JSON: %v\nraw: %s", err, gotStr)
+	}
+	// And it must still describe the surface — `applicationId`
+	// is the load-bearing field for the tool call to make sense.
+	if !strings.Contains(gotStr, `"applicationId"`) {
+		t.Errorf("applicationId lost from sanitized schema: %s", gotStr)
+	}
+	// Both discriminated-union variants merge: PositiveFeedback's
+	// `highlights` AND NegativeFeedback's `concerns` survive.
+	// (Pre-fix this test would have caught the first-variant-wins
+	// regression — second variant's payload was dropped entirely.)
+	if !strings.Contains(gotStr, `"highlights"`) {
+		t.Errorf("PositiveFeedback.highlights missing — first oneOf variant dropped: %s", gotStr)
+	}
+	if !strings.Contains(gotStr, `"concerns"`) {
+		t.Errorf("NegativeFeedback.concerns missing — second oneOf variant dropped (discriminated-union footgun): %s", gotStr)
+	}
+}
