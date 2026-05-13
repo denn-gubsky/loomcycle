@@ -2,7 +2,35 @@
 
 This is the public roadmap. For decision history, regret notes, and per-version commit-by-commit details, see `doc-internal/PLAN.md` (gitignored).
 
-## v0.8.12 — current
+## v0.8.14 — current
+
+**Status: shipped (2026-05-13).** **Per-run MCP bearer tokens + auto-version + metrics CI fix.** Three landings bundled: per-end-user auth for MCP tool calls (the marquee), build-identity self-reporting via Go's VCS stamp, and the metrics sampler bugfix that had been silently red-CI since v0.8.11. PRs #94, #95, #96.
+
+**What's in v0.8.14 (vs v0.8.13):**
+
+- **Per-run MCP bearer tokens (#94).** Operator yaml `mcp_servers.*.headers` can now reference `${run.user_bearer}` and `${run.user_bearer:-FALLBACK}` (POSIX-style default). The HTTP MCP transport substitutes at outbound request-build time inside `Client.do()` from a ctx-carried bearer (`tools.RunIdentityValue.UserBearer`); pool construction is unchanged so the `Client` stays shared across runs without per-run instantiation. New `user_bearer` wire field on `runRequest` + `messagesRequest` (per-request, not session-bound — continuations may rotate), charset `[A-Za-z0-9._\-+/=]{16,512}` → 400 otherwise. Sub-agents inherit the bearer identically (NOT narrowed — they act on behalf of the same end-user). Missing bearer with no fallback drops the header + WARN logs (downstream MCP returns clean 401, more debuggable than a loomcycle-side dispatch error). Nested `${run.user_bearer:-${LOOMCYCLE_STATIC_BEARER}}` composes by design: the existing `expandEnv` regex structurally cannot match `${run.*}` tokens (the `.` fails its `[A-Za-z0-9_]*` char class), so the inner `${LOOMCYCLE_*}` resolves at yaml-load and the outer survives to request-time. **Motivation:** JSA's `/api/mcp` route authenticates per-end-user via Bearer tokens; before v0.8.14, every run authenticated as the operator (`denn`), not the actual end-user — closing the per-tenant auth gap was the whole point. 10 validation cases + 7 substitute-helper unit tests + 3 client integration tests (incl. concurrent-run isolation regression guard) + sub-agent inheritance test + 2 expandEnv namespace regression guards.
+- **Auto-version from `runtime/debug` (#95).** `--version` now reports `version=<v> commit=<c> built=<t> go=<g>` derived automatically from Go's embedded VCS stamp (every binary built with `go build` / `go install` since Go 1.18). Release scripts can still override via `-X main.buildVersion=...` ldflags. Boot-log line carries the same identifiers so an operator running stale code spots it before any "but my code says X" spiral. Module-version path surfaces a clean `v0.8.14` for tagged-commit builds and a pseudo-version (`v0.8.14-0.YYYYMMDD-HASH`) for commits past a tag; dirty working trees append `-dirty`. **Motivation:** the v0.8.13 deploy used `-X main.gitCommit=...` (wrong variable name — the var is `buildCommit`) and silently shipped `commit=unknown` to the VM. Unattached versioning makes "is this the binary I just built?" answerable without release-script ceremony. 7 format cases + smoke test.
+- **Metrics sampler /proc-counter fix + gofmt drift (#96).** CI on every main commit since v0.8.11 had been failing on `TestSampler_GracefulStoreError` and `TestSampler_RecoveryResetsCounter`. Root cause: GitHub Actions Ubuntu runners' `/proc/self/status` lacks the `VmRSS:` line; the sampler conflated `/proc`-read errors with store-write errors in a single `s.failures` counter. One tick on CI produced `failures=2` (proc inc + write inc) and `logs=2` instead of the expected 1/1. Fix: new `Sampler.procReadFailureLogged bool` — proc errors log once per program lifetime via `log.Printf` (decoupled from `cfg.Logf` which tests use as the store-write counter); `s.failures` now means exclusively "consecutive store-write failures" matching the documented intent. Plus 5 gofmt-drift files cleaned up to unblock the CI gofmt check (`internal/api/http/metrics_handlers.go`, `internal/api/http/server.go`, `internal/loop/fallback_test.go`, `internal/metrics/proc_linux.go`, `internal/providers/gemini/driver.go` — pure whitespace / import-order / struct-tag-alignment drift from prior PRs that landed before the CI gofmt step was added).
+
+For the v0.8.13 baseline that drove this work, see [v0.8.13](#v0813--earlier).
+
+## v0.8.13 — earlier
+
+**Status: shipped (2026-05-13).** **Pin provider after first successful turn (opt-in).** Closes the entire class of cross-provider mid-conversation transcript bugs by suppressing provider fallback after a run has completed at least one successful turn. PR #93.
+
+**What's in v0.8.13 (vs v0.8.12):**
+
+- **New `FallbackPolicy.PinAfterSuccess bool` field** — when true, `tryProviderFallback` in `internal/loop/loop.go` suppresses fallback if any turn has succeeded (assistant message appended to conversation history). Initial-turn fallback still works (stale-probe safety net at run start); same-provider rate-limit retry continues to handle transient errors. Mid-conversation provider switches stop happening — the source of every DeepSeek 400 / Anthropic `cache_control` loss / Gemini `thoughtSignature` mismatch we'd discovered.
+- **New typed `EventFallbackSuppressed` event** — fires whenever the pin policy intercepts a would-be fallback. Wire-stable for adapters; mirrors the v0.8.2 `EventCacheInvalidated` / v0.8.12 `EventReasoningInvalidated` event-on-policy pattern. `Text` field carries the cause error so operators can attribute the failure.
+- **New env var `LOOMCYCLE_FALLBACK_PIN_AFTER_SUCCESS`** — default OFF in v0.8.x (opt-in); default-on planned for v0.9.x once production-validated. Wired from `cfg.Env` through to `FallbackPolicy` via the HTTP server's `fallbackForRun`.
+- **3 new regression tests** in `internal/loop/fallback_test.go`: headline (turn 2 503 is suppressed when flag on), initial-pick resilience (turn 0 fallback still works), and the flag-off-preserves-v0.8.2-behavior guard.
+- **v0.8.12 `Message.Reasoning` strip kept as belt-and-suspenders** — when a deployment opts back into mid-session fallback later, the strip still works.
+
+The trade: a sustained mid-conversation provider outage now fails the run instead of cascading. That's acceptable for most production deployments — provider outages are rare, clients retry, and mid-conversation translation bugs are subtle and silent (much worse failure mode).
+
+For the v0.8.12 baseline that drove this work, see [v0.8.12](#v0812--earlier).
+
+## v0.8.12 — earlier
 
 **Status: shipped (2026-05-13).** **Strip `reasoning_content` on cross-provider fallback.** Fixes a production bug where mid-conversation provider fallback would 400 on the new provider because the conversation history carried thinking/reasoning content from the previous provider. PR #91.
 
@@ -458,11 +486,11 @@ For usage: see [README](../README.md). For the architecture: see [ARCHITECTURE.m
 
 ## v0.8.x — next: framework primitives
 
-**Roadmap renumbering note (updated 2026-05-13, second wave).** Sequenced 2026-05-09; renumbered through v0.8.5 as one-feature-per-point-release. The 2026-05-12 system-channels point release became v0.8.6; Context tool v0.8.7; Context.help v0.8.8. The 2026-05-13 production-readiness window absorbed four more point releases: v0.8.9 + v0.8.10 (Gemini schema sanitizer + sqlite upgrade-path migration fix), v0.8.11 (process-resource metrics sampler), and v0.8.12 (cross-provider reasoning_content strip on fallback — closed the cv-batch-adapter mid-conversation 400 surfaced by the v0.8.11 metrics deploy). The remaining v0.8.x roadmap below picks up at v0.8.13 (LoomCycle MCP, the v0.8.x capstone), v0.8.14 (Question tool), and v0.8.15 (Pause / Resume / Snapshot — the v0.8.x → v0.9.x bridge). Each point release ships one focused capability; the v1.0 capstone (LoomCycle MCP) needs the prior primitives to expose their tool surfaces, which is why it sits last in the v0.8.x arc. Detailed design (API schemas, storage shapes, retention semantics) lives in feature-branch RFCs at implementation time; the outlines below capture the shape but not the wire.
+**Roadmap renumbering note (updated 2026-05-13, third wave).** Sequenced 2026-05-09; renumbered through v0.8.5 as one-feature-per-point-release. The 2026-05-12 system-channels point release became v0.8.6; Context tool v0.8.7; Context.help v0.8.8. The 2026-05-13 production-readiness window absorbed SIX more point releases: v0.8.9 + v0.8.10 (Gemini schema sanitizer + sqlite upgrade-path migration fix), v0.8.11 (process-resource metrics sampler), v0.8.12 (cross-provider reasoning_content strip on fallback — closed the cv-batch-adapter mid-conversation 400 surfaced by the v0.8.11 metrics deploy), v0.8.13 (pin provider after first successful turn — closes the entire class of cross-provider mid-conversation transcript bugs that v0.8.12 was patching one-by-one), and v0.8.14 (per-run MCP bearer tokens + auto-version + metrics CI fix — the per-tenant auth gap that blocked JSA from authenticating MCP tool calls as the actual end-user). The remaining v0.8.x roadmap below picks up at v0.8.15 (LoomCycle MCP, the v0.8.x capstone), v0.8.16 (Question tool), and v0.8.17 (Pause / Resume / Snapshot — the v0.8.x → v0.9.x bridge). Each point release ships one focused capability; the v1.0 capstone (LoomCycle MCP) needs the prior primitives to expose their tool surfaces, which is why it sits last in the v0.8.x arc. Detailed design (API schemas, storage shapes, retention semantics) lives in feature-branch RFCs at implementation time; the outlines below capture the shape but not the wire.
 
-**Shipped already:** v0.8.0 Memory tool (2026-05-09); v0.8.1 operational hardening (2026-05-10); v0.8.2 user_tier (2026-05-11); v0.8.3 ollama split (2026-05-11); v0.8.4 Channel tool (2026-05-11); v0.8.5 Self-Evolution Substrate (2026-05-11); v0.8.6 system channels + deferred publish (2026-05-12); v0.8.7 Context tool (2026-05-12); v0.8.8 Context.help (2026-05-12); v0.8.9 + v0.8.10 Gemini schema sanitizer + sqlite migration fix (2026-05-13); v0.8.11 process-resource metrics sampler (2026-05-13); v0.8.12 cross-provider reasoning_content strip (2026-05-13) — see the sections above for full release notes.
+**Shipped already:** v0.8.0 Memory tool (2026-05-09); v0.8.1 operational hardening (2026-05-10); v0.8.2 user_tier (2026-05-11); v0.8.3 ollama split (2026-05-11); v0.8.4 Channel tool (2026-05-11); v0.8.5 Self-Evolution Substrate (2026-05-11); v0.8.6 system channels + deferred publish (2026-05-12); v0.8.7 Context tool (2026-05-12); v0.8.8 Context.help (2026-05-12); v0.8.9 + v0.8.10 Gemini schema sanitizer + sqlite migration fix (2026-05-13); v0.8.11 process-resource metrics sampler (2026-05-13); v0.8.12 cross-provider reasoning_content strip (2026-05-13); v0.8.13 pin-after-success fallback policy (2026-05-13); v0.8.14 per-run MCP bearer tokens + auto-version + metrics CI fix (2026-05-13) — see the sections above for full release notes.
 
-### v0.8.13 — LoomCycle MCP (the v0.8.x capstone)
+### v0.8.15 — LoomCycle MCP (the v0.8.x capstone)
 
 Loomcycle exposes itself as an **MCP server**. External orchestrators (Claude Code, agentic harnesses, other loomcycle instances) connect to it as an MCP client and:
 
@@ -472,14 +500,14 @@ Loomcycle exposes itself as an **MCP server**. External orchestrators (Claude Co
 - Create / fork / promote `AgentDef` versions (v0.8.5).
 - Submit / aggregate Evaluations (v0.8.5).
 - Call Context for runtime introspection (v0.8.7 / v0.8.8).
-- **Surface `Question.ask` so external orchestrators can route human-in-the-loop questions through their own UI** (paired with v0.8.14 Question tool — the loomcycle Web UI is the default surface, the MCP exposure is the orchestrator-side override).
+- **Surface `Question.ask` so external orchestrators can route human-in-the-loop questions through their own UI** (paired with v0.8.16 Question tool — the loomcycle Web UI is the default surface, the MCP exposure is the orchestrator-side override).
 - Subscribe to run-event streams (alternate to SSE).
 
-This is the "MCP-configurable" axis: instead of writing YAML and POSTing JSON, an external tool drives loomcycle through standard MCP. Surface area maps roughly 1:1 to the existing `/v1/*` endpoints plus the v0.8.0–v0.8.11 primitives, with auth via the operator's bearer token translated into MCP's auth scheme.
+This is the "MCP-configurable" axis: instead of writing YAML and POSTing JSON, an external tool drives loomcycle through standard MCP. Surface area maps roughly 1:1 to the existing `/v1/*` endpoints plus the v0.8.0–v0.8.11 primitives, with auth via the operator's bearer token translated into MCP's auth scheme. Per-end-user auth flows through the v0.8.14 `${run.user_bearer}` substitution so external orchestrators can configure loomcycle MCP headers with the same template syntax that internal callers use.
 
 What's not yet decided: stdio vs HTTP transport (probably both — stdio for desktop-app integrations, HTTP for service-to-service), method naming (resources vs tools), whether MCP clients can register new agents at runtime or only spawn from operator-defined ones, handling of long-lived run streams across MCP's request/response shape.
 
-### v0.8.14 — Question tool (human-in-the-loop primitive)
+### v0.8.16 — Question tool (human-in-the-loop primitive)
 
 Closes the one direction the v0.8.0–v0.8.11 arc leaves uncovered: **agent ↔ human, mid-run**. The substrate primitives so far cover machine interaction — state (Memory), IPC (Channel), self-mutation (AgentDef), selection (Evaluation), introspection (Context), control plane (LoomCycle MCP). `Question` is the human bridge.
 
@@ -499,7 +527,7 @@ The result of `ask` carries `{question_id, answered, answer?, answered_by_user_i
 |---|---|---|
 | **(1) Built-in with Web UI default** | `/ui/questions` modal/sidebar; operator (matching the run's `user_id`) answers via the existing bearer-cookie session | loomcycle |
 | **(2) MCP-implemented (consumer-side)** | Consumer runs its own MCP server exposing `mcp__<name>__ask`; loomcycle calls it like any other MCP tool (jobs-search-agent's pattern) | Consumer |
-| **(3) LoomCycle MCP exposure** | v0.8.13 LoomCycle MCP surfaces `Question.ask` so external orchestrators (Claude Code, custom dashboards) become the delivery surface | loomcycle + orchestrator |
+| **(3) LoomCycle MCP exposure** | v0.8.15 LoomCycle MCP surfaces `Question.ask` so external orchestrators (Claude Code, custom dashboards) become the delivery surface | loomcycle + orchestrator |
 
 Operator picks via `question.backend: webui | mcp_server:<name> | cli` in yaml. The Web UI is the default for production; `cli` lets local dev read answers from stdin.
 
@@ -513,13 +541,13 @@ Operator picks via `question.backend: webui | mcp_server:<name> | cli` in yaml. 
 
 Detailed design at pickup time will lift the local addendum (in this session's plan file) into `doc-internal/rfcs/question-tool.md`.
 
-### v0.8.15 — Pause / Resume / Snapshot (the v0.8.x → v0.9.x bridge)
+### v0.8.17 — Pause / Resume / Snapshot (the v0.8.x → v0.9.x bridge)
 
 Runtime-wide quiesce + restore primitive. Closes the gap that today forces every long-running experiment to either run-to-completion-or-die or restart from scratch when the provider rate-limits, the infrastructure needs maintenance, or the operator wants to ship the experiment somewhere else.
 
 **Three motivating shapes the substrate enables:**
 
-| Pain shape today | With v0.8.15 |
+| Pain shape today | With v0.8.17 |
 |---|---|
 | Provider down or rate-limited (Ollama subscription paused, Gemini quota exhausted, Anthropic 5xx) → every active run dies after the v0.8.2 fallback budget exhausts | Operator pauses → waits for capacity → resumes from where each run left off |
 | Pre-backup quiesce (DB hot-backup captures partial transcripts mid-iteration) | Pause → snapshot → backup → resume; consistent across runtime + DB |
@@ -538,7 +566,7 @@ Runtime-wide quiesce + restore primitive. Closes the gap that today forces every
 
 CLI mirrors: `loomcycle pause` / `resume` / `snapshot` / `restore` / `state`.
 
-**Scope decisions (locked in the v0.8.15 RFC):**
+**Scope decisions (locked in the v0.8.17 RFC):**
 
 - **Runtime-wide pause**, not per-tenant. VM is the safety boundary; per-tenant pause defers to v0.9.x per-tenant fairness.
 - **Snapshot scope is running-state only.** External DB backups handle archival history. Snapshot stays small (paused runs + Memory + Channel + agent_defs + evaluations).
@@ -547,11 +575,11 @@ CLI mirrors: `loomcycle pause` / `resume` / `snapshot` / `restore` / `state`.
 - **Experiment identity = timestamp** (operator supplies `since_ts`). First-class `experiments` table deferred; promote if research needs it.
 - **Pause and snapshot are decoupled operations** that compose as the operator chooses. Pause alone for rate-limit-wait; pause + snapshot + export for migration; snapshot during running for backup-time-of-day capture.
 
-**State-change signals flow through `_system/runtime-state`** (v0.8.6 system channels — shipped). Pause/resume/restore state transitions publish to that channel; operator dashboards subscribe; the future v0.8.9 LoomCycle MCP exposes the same channel to external orchestrators. **No new `EventPauseStateChanged` SSE event types needed** — the Channel pub/sub primitive carries the signal.
+**State-change signals flow through `_system/runtime-state`** (v0.8.6 system channels — shipped). Pause/resume/restore state transitions publish to that channel; operator dashboards subscribe; the future v0.8.15 LoomCycle MCP exposes the same channel to external orchestrators. **No new `EventPauseStateChanged` SSE event types needed** — the Channel pub/sub primitive carries the signal.
 
 **Pairs with the v0.8.7 `Context.history` op (shipped):** restored experiments contain interaction history; agents in the restored instance read it via `Context.history(since=<experiment_start_ts>)` to reflect on past conversations. Self-evolving experiments survive cross-version migration with their memory intact.
 
-**What's not yet decided:** snapshot encryption-at-rest (operator's disk-encryption policy applies — same as transcripts), automatic snapshot scheduling (lean: out of scope; operator integrates with their own scheduler), partial restore granularity (v0.8.15 is all-or-nothing per section; selective is a v0.9.x candidate).
+**What's not yet decided:** snapshot encryption-at-rest (operator's disk-encryption policy applies — same as transcripts), automatic snapshot scheduling (lean: out of scope; operator integrates with their own scheduler), partial restore granularity (v0.8.17 is all-or-nothing per section; selective is a v0.9.x candidate).
 
 Detailed design in `doc-internal/rfcs/pause-resume-snapshot.md` (gitignored).
 
@@ -583,7 +611,7 @@ Make `loomcycle` install with one command on every operator's preferred toolchai
 
 First-party integrations the runtime makes more valuable:
 
-- **Claude Desktop / Claude Code MCP integration** — pre-built `.mcp.json` recipe + a one-page operator guide for adding loomcycle to Claude Code's MCP server list (uses the v0.8.13 LoomCycle MCP surface).
+- **Claude Desktop / Claude Code MCP integration** — pre-built `.mcp.json` recipe + a one-page operator guide for adding loomcycle to Claude Code's MCP server list (uses the v0.8.15 LoomCycle MCP surface).
 - **OpenTelemetry exporter recipes** — example Helm values + `loomcycle.yaml` snippets for the three common backends (Tempo, Honeycomb, Datadog). The OTEL spans themselves ship in v0.9.x; v1.0 ships the operator-side wiring guide.
 - **Prometheus / Grafana dashboard** — JSON dashboard committed to the repo, importable in one click. Key panels: throughput, error rate by provider, p99 tool dispatch latency, per-tenant share of the semaphore.
 - **CLI scaffolding** — `loomcycle init` generates a minimal working `loomcycle.yaml` + `.env.local` for a fresh deploy. `loomcycle agent add <name>` scaffolds an agent yaml block. Lower the time-to-first-run for new operators from "read the docs" to "run two commands."

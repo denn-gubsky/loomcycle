@@ -2,11 +2,37 @@
 
 Per-version release notes from v0.4.0 onward. The current and immediately previous releases are also summarised in the main [`README.md`](README.md); older releases live here.
 
-For the **public roadmap** (planned v0.8.13 through v1.0 work — LoomCycle MCP, Question tool, Pause / Resume / Snapshot, distribution, operator postures), see [`docs/PLAN.md`](docs/PLAN.md).
+For the **public roadmap** (planned v0.8.15 through v1.0 work — LoomCycle MCP, Question tool, Pause / Resume / Snapshot, distribution, operator postures), see [`docs/PLAN.md`](docs/PLAN.md).
 
 For pre-v0.4 history (single-tool runtime, library milestone, security patch), see the same `docs/PLAN.md` under the per-version sections.
 
 ---
+
+## What's in v0.8.14
+
+| Surface             | Status |
+|---------------------|--------|
+| **Per-run MCP bearer tokens (`${run.user_bearer}`)** | ✅ Operator yaml `mcp_servers.*.headers` can now reference `${run.user_bearer}` (strict) and `${run.user_bearer:-FALLBACK}` (POSIX-style default). The HTTP MCP transport substitutes per-request inside `Client.do()` reading a ctx-carried bearer from `tools.RunIdentityValue.UserBearer`. Pool construction is unchanged so the `Client` stays shared across runs without per-run instantiation — substitution happens against a per-call local map copy, never mutating `c.headers`. (PR #94) |
+| **New `user_bearer` wire field** | ✅ Added to `runRequest` + `messagesRequest` (per-request, not session-bound — continuations may rotate). Charset `[A-Za-z0-9._\-+/=]{16,512}` → 400 otherwise. Empty is backwards compat (static-bearer setups unaffected). Plumbed through `tools.WithRunIdentity` at all four attach sites (root run, sub-agent dispatch, message continuation, gRPC RunOnce). Sub-agents inherit identically — NOT narrowed, unlike caller-host policy — since the sub-agent is acting on behalf of the same end-user. |
+| **Drop-header-and-WARN on missing bearer** | ✅ When `${run.user_bearer}` (no fallback) appears in a header and ctx carries no bearer, the entire header is dropped and a WARN line emitted via `log.Printf` with `tokenPrefix(bearer)` (4-char prefix + `…`) — never the full token. Downstream MCP returns a clean 401, which the agent loop surfaces as a typed tool error. Better debug signal than a literal `Bearer ${run.user_bearer}` placeholder. |
+| **Nested substitution composes naturally** | ✅ `Bearer ${run.user_bearer:-${LOOMCYCLE_STATIC_BEARER}}` works during soak-phase rollouts because the existing `expandEnv` regex (`\$\{([A-Za-z_][A-Za-z0-9_]*)\}`) structurally cannot match `${run.*}` tokens (the `.` fails the `[A-Za-z0-9_]*` char class). Inner `${LOOMCYCLE_*}` resolves at yaml-load; outer `${run.user_bearer:-<resolved>}` flows to request-time. No allowlist extension needed, no precedence configuration. |
+| **Auto-version from `runtime/debug` (`--version`)** | ✅ Output shape: `loomcycle version=<v> commit=<c> built=<t> go=<g>`. Derived automatically from Go's embedded VCS stamp (`runtime/debug.ReadBuildInfo()` since Go 1.18) — no ldflags or wrapper tooling required. Release scripts can still override per identifier via `-X main.buildVersion=...`. Boot-log line carries the same identifiers so an operator running stale code spots it immediately. Module-version path surfaces clean `v0.8.14` for tagged builds, pseudo-version (`v0.8.14-0.YYYYMMDD-HASH`) for commits past a tag, and a `-dirty` suffix when the working tree was modified at build time. (PR #95) |
+| **Metrics sampler /proc-counter fix** | ✅ The v0.8.11 sampler conflated `/proc`-read errors with store-write errors in a single `s.failures` counter. CI on every main commit since v0.8.11 had been silently red on `TestSampler_GracefulStoreError` (`failures = 2, want 1`) because GitHub Actions Ubuntu runners' `/proc/self/status` lacks the `VmRSS:` line. Fix: new `Sampler.procReadFailureLogged bool` — proc errors log once per program lifetime via `log.Printf` (decoupled from `cfg.Logf` which tests use as the store-write counter); `s.failures` now means exclusively "consecutive store-write failures". (PR #96) |
+| **gofmt drift cleanup** | ✅ Five files (`internal/api/http/metrics_handlers.go`, `internal/api/http/server.go`, `internal/loop/fallback_test.go`, `internal/metrics/proc_linux.go`, `internal/providers/gemini/driver.go`) had accumulated whitespace / import-order / struct-tag-alignment drift across prior PRs landed before the CI gofmt check was added. Folded into PR #96 so CI lands green in one go. |
+| **23 new automated tests** | ✅ Per-run bearer: 7 substitute-helper unit tests + 3 MCP client integration tests (incl. concurrent-run isolation regression guard for R-2 per-run state bleed) + 10 validation cases at the HTTP boundary + sub-agent inheritance test + 2 expandEnv namespace regression guards. Auto-version: 7 format cases + smoke test. All tests on `go test -race ./...` clean. |
+
+**Operator migration table:** see [docs/PLAN.md](docs/PLAN.md) for the soak-phase → strict-phase yaml progression. Existing operator yaml without `${run.user_bearer}` references continues to work unchanged.
+
+## What's in v0.8.13
+
+| Surface             | Status |
+|---------------------|--------|
+| **`FallbackPolicy.PinAfterSuccess bool`** | ✅ New field on `loop.FallbackPolicy`. When true, `tryProviderFallback` in `internal/loop/loop.go` suppresses fallback after any turn has succeeded (assistant message appended to conversation history). Initial-turn fallback still works (stale-probe safety net at run start); same-provider rate-limit retry continues to handle transient errors. Mid-conversation provider switches — the source of every DeepSeek 400 / Anthropic `cache_control` loss / Gemini `thoughtSignature` mismatch we'd discovered — stop happening. (PR #93) |
+| **New typed event `EventFallbackSuppressed`** | ✅ Emitted whenever the pin policy intercepts a would-be fallback. Wire-stable for adapters; mirrors the v0.8.2 `EventCacheInvalidated` / v0.8.12 `EventReasoningInvalidated` event-on-policy pattern. `Text` field carries the cause error so operators can attribute the failure. Cost retros / dashboards consume this to distinguish "provider down" (run failed by design) from "fallback succeeded" (run survived). |
+| **New env var `LOOMCYCLE_FALLBACK_PIN_AFTER_SUCCESS`** | ✅ Default **OFF** in v0.8.x (opt-in); default-on planned for v0.9.x once production-validated. Wired from `cfg.Env` through to `FallbackPolicy` via the HTTP server's `fallbackForRun`. |
+| **v0.8.12 reasoning strip retained** | ✅ When a deployment opts back into mid-session fallback later, the `Message.Reasoning` strip in `tryProviderFallback` still works as a belt-and-suspenders safety net. Two complementary mechanisms for the same problem class — pin to AVOID the cross-provider transition; strip to SURVIVE one if it happens. |
+| **3 regression tests** | ✅ `TestFallback_PinAfterSuccess_SuppressesPostTurn1Failure` (headline; turn 2 503 is suppressed when flag on), `TestFallback_PinAfterSuccess_InitialTurnFailureStillFallsBack` (turn 0 fallback still works — stale-probe safety preserved), `TestFallback_PinAfterSuccess_FlagOff_PreservesV082Behavior` (regression guard against accidental default-on flip). |
+| **The trade** | ⚠️ A sustained mid-conversation provider outage now FAILS the run instead of cascading to alternates. Acceptable for most production deployments — provider outages are rare, clients retry, and mid-conversation transcript-translation bugs are subtle and silent (much worse failure mode). |
 
 ## What's in v0.8.12
 
