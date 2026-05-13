@@ -2,11 +2,22 @@
 
 Per-version release notes from v0.4.0 onward. The current and immediately previous releases are also summarised in the main [`README.md`](README.md); older releases live here.
 
-For the **public roadmap** (planned v0.8.12 through v1.0 work — LoomCycle MCP, Question tool, Pause / Resume / Snapshot, distribution, operator postures), see [`docs/PLAN.md`](docs/PLAN.md).
+For the **public roadmap** (planned v0.8.13 through v1.0 work — LoomCycle MCP, Question tool, Pause / Resume / Snapshot, distribution, operator postures), see [`docs/PLAN.md`](docs/PLAN.md).
 
 For pre-v0.4 history (single-tool runtime, library milestone, security patch), see the same `docs/PLAN.md` under the per-version sections.
 
 ---
+
+## What's in v0.8.12
+
+| Surface             | Status |
+|---------------------|--------|
+| **Cross-provider `reasoning_content` strip on fallback** | ✅ When `tryProviderFallback` (`internal/loop/loop.go`) successfully switches providers mid-conversation, walks the in-flight `messages` slice and zeroes `Message.Reasoning` on every assistant turn. The new provider gets a clean history. Fixes the 2026-05-13 production bug where a `gemini-2.5-flash → deepseek-v4-flash` fallback 400'd with `"The reasoning_content in the thinking mode must be passed back to the API."` (PR #91) |
+| **New typed event `EventReasoningInvalidated`** | ✅ Emitted when the strip pass cleared one or more assistant turns. Mirrors the v0.8.2 `EventCacheInvalidated` precedent. Wire-stable; consumed in the same way as other typed events. `Text` field carries: `"cleared reasoning_content from N assistant turn(s) on switch from <old> to <new>; cross-provider echo would 400"`. Cost retros should treat downstream iterations as reasoning-cold on the new provider. |
+| **Safe across all current providers** | ✅ Anthropic uses typed content blocks for `extended_thinking` (not the Reasoning string field) → immune. Gemini's driver doesn't write Reasoning today → strip is a no-op unless populated via PriorMessages from a continuation. OpenAI o-series tolerates missing `reasoning_content` (treats as no prior thinking). DeepSeek + OpenAI o-series within their own family continue to round-trip correctly because the strip only fires on cross-family fallback. Tool calls in the same turn unaffected: strip only touches the `Reasoning` string field, not `Content` (tool_use blocks + tool_use_id stay intact). |
+| **3 regression tests** | ✅ `TestFallback_ReasoningStrippedOnProviderSwitch` (headline regression; verified to fail on pre-fix code with the exact production failure mode), `TestFallback_NoReasoningStrip_NothingToStrip` (guards against spurious event emission when no Reasoning was set), `TestFallback_PartialStreamReasoning_NeverReachesMessages` (pins the drain-and-continue invariant for in-stream errors). New `recordingProvider` test wrapper captures the `providers.Request` the new provider receives so assertions can verify the strip happened on the wire. |
+| **No env-var changes** | ✅ Existing fallback behavior preserved on same-family round-trips. No new config required. |
+| **Adapter-side note** | ⚠️ TS adapter (`@loomcycle/client`) logs `[loomcycle: unknown event "reasoning_invalidated"]` until a handler is added. Cosmetic — doesn't affect run outcomes. Separate adapter PR. |
 
 ## What's in v0.8.11
 

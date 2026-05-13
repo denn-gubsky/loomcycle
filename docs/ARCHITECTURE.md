@@ -138,6 +138,14 @@ Six driver registrations ship as of v0.8.3 (one package per provider, except `ol
 
 Each driver has rate-limit retry logic (`internal/providers/ratelimit/`) — 429s and provider 5xx-with-retry-after preserve run context across the retry; observable as `event: retry` SSE frames.
 
+**Cross-provider fallback invariants (v0.8.12+).** When the user_tier policy permits and a retryable error fires, `tryProviderFallback` in `internal/loop/loop.go` swaps to the next candidate from the tier's queue. Provider-specific transcript state that doesn't carry across families gets invalidated atomically alongside the switch via three typed events on the wire:
+
+- **`EventProviderFallback`** (v0.8.2) — every successful switch emits this. Carries a structured `FallbackInfo` (failed_provider, failed_model, new_provider, new_model, attempt, user_tier, reason, cause_error).
+- **`EventCacheInvalidated`** (v0.8.2) — emitted only when switching AWAY from Anthropic, because the `cache_control` breakpoints on system blocks are Anthropic-specific and don't transfer to other providers.
+- **`EventReasoningInvalidated`** (v0.8.12) — emitted when the cross-provider strip pass cleared `Message.Reasoning` from one or more assistant turns in the in-flight conversation. `Message.Reasoning` (the single string field on `providers.Message`) carries no provider provenance; the OpenAI driver, which also backs DeepSeek, unconditionally echoes it back as `reasoning_content` on the wire. DeepSeek's API verifies the echo against what IT produced and 400s on mismatch (`"reasoning_content in the thinking mode must be passed back to the API"`). Cross-provider echoes always fail this check, so on every fallback the loop walks `messages` and zeroes the field on assistant turns where it was non-empty.
+
+Same shape across all three: typed wire events, adapter-stable, cost retros should treat the run's downstream iterations on the new provider as both cache- and reasoning-cold.
+
 As of v0.7.0 every driver also implements `Probe(ctx) error` and `ListModels(ctx) ([]string, error)` (used by the resolver — see below). Probe is a lightweight reachability + auth check; ListModels returns the wire aliases the provider currently serves. Both share the same round-trip in each driver's implementation.
 
 References: `internal/providers/`, `internal/providers/anthropic/driver.go`, `internal/providers/ratelimit/`.

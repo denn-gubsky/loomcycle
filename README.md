@@ -73,8 +73,9 @@ open "http://127.0.0.1:8787/ui?token=$LOOMCYCLE_AUTH_TOKEN"
 
 ## Current and planned
 
-**Shipped through v0.8.11:**
+**Shipped through v0.8.12:**
 
+- **v0.8.12** — **Strip `reasoning_content` on cross-provider fallback**. Fixes a production bug where mid-conversation fallback (e.g. `gemini-2.5-flash 503 → deepseek-v4-flash`) 400'd on the new provider because the conversation history carried thinking content from the previous provider. New typed event `EventReasoningInvalidated` mirrors v0.8.2's `EventCacheInvalidated` precedent. Safe across all current providers; tool-call shape unaffected.
 - **v0.8.11** — **Process-resource metrics sampler + `/v1/_metrics/*` API**. Built-in periodic sampler captures process RSS, Go heap, goroutine count, CPU% (and optionally system-wide CPU/mem) while at least one agent is running; sleep-when-idle. Three bearer-authed endpoints for windowed sample lists, per-run rollups (via SQL JOIN on `[started_at, completed_at]`), and aggregated 1h/24h/7d buckets. Default OFF; opt-in via `LOOMCYCLE_METRICS_ENABLED=1`.
 - **v0.8.10** — Gemini schema sanitizer with `$ref` inlining + `oneOf`/`anyOf`/`allOf` merge + type-conflict defense (closes the Zod-discriminatedUnion 400 bug), AND sqlite migration ordering fix that unblocks the v0.8.4 → v0.8.6+ upgrade path.
 - **v0.8.9** — Gemini schema sanitizer initial pass (superseded by v0.8.10).
@@ -86,11 +87,11 @@ open "http://127.0.0.1:8787/ui?token=$LOOMCYCLE_AUTH_TOKEN"
 - **v0.8.3** — Ollama provider split into `ollama` (cloud) + `ollama-local`. Operators target each backend distinctly in per-agent yaml.
 - **v0.8.2 and earlier** — six provider drivers, ten built-in tools (incl. persistent Memory), MCP integration (stdio pool + Streamable HTTP, with lazy retry on first agent call), embedded React Web UI, per-tier provider policy with runtime fallback, agent directory discovery (MD + yaml override), gRPC + HTTP+SSE wire surfaces, TypeScript + Python adapters, SQLite + Postgres backends.
 
-**Planned for v0.8.12 → v1.0:**
+**Planned for v0.8.13 → v1.0:**
 
-- **v0.8.12** — **LoomCycle MCP** (the v0.8.x capstone): loomcycle exposes itself as an MCP server so external orchestrators (Claude Code, agentic harnesses) drive it through standard MCP — Memory / Channel / AgentDef / Evaluation / Context / run-streams surfaced as MCP tools.
-- **v0.8.13** — **Question** tool: human-in-the-loop primitive. Three delivery surfaces (built-in Web UI, consumer-side MCP, LoomCycle MCP exposure). Signals flow through `_system/questions/*` channels.
-- **v0.8.14** — **Pause / Resume / Snapshot** (the v0.8.x → v0.9.x bridge): runtime-wide quiesce + cross-version-portable JSON snapshot. Precondition for v0.9.x multi-replica HA.
+- **v0.8.13** — **LoomCycle MCP** (the v0.8.x capstone): loomcycle exposes itself as an MCP server so external orchestrators (Claude Code, agentic harnesses) drive it through standard MCP — Memory / Channel / AgentDef / Evaluation / Context / run-streams surfaced as MCP tools.
+- **v0.8.14** — **Question** tool: human-in-the-loop primitive. Three delivery surfaces (built-in Web UI, consumer-side MCP, LoomCycle MCP exposure). Signals flow through `_system/questions/*` channels.
+- **v0.8.15** — **Pause / Resume / Snapshot** (the v0.8.x → v0.9.x bridge): runtime-wide quiesce + cross-version-portable JSON snapshot. Precondition for v0.9.x multi-replica HA.
 - **v0.9.x** — high-load capacity sweep: per-tenant fairness, OTEL traces, multi-replica HA via Redis cancel pubsub.
 - **v1.0** — distribution channels (Homebrew, Docker, Helm), settings UI, operator cookbook of postures.
 
@@ -129,7 +130,7 @@ Full security model + the two-layer default-deny walkthrough: [`docs/TOOLS.md`](
 - [`docs/TOOLS.md`](docs/TOOLS.md) — two-layer default-deny model, every built-in tool, MCP / LocalAPI integrations, per-request narrowing.
 - [`docs/POSTGRES.md`](docs/POSTGRES.md) — Postgres backend operator guide: configuration, migrations, sqlite→postgres runbook, concurrency benchmark.
 - [`docs/GRPC.md`](docs/GRPC.md) — gRPC surface: enablement, wire-shape parity with HTTP+SSE, error mapping, Python adapter quick-start.
-- [`docs/PLAN.md`](docs/PLAN.md) — public roadmap: shipped v0.4 → v0.8.11; planned v0.8.12 → v1.0.
+- [`docs/PLAN.md`](docs/PLAN.md) — public roadmap: shipped v0.4 → v0.8.12; planned v0.8.13 → v1.0.
 - [`REVISIONS.md`](REVISIONS.md) — per-version release notes (v0.4.0 onward).
 - [`CONTRIBUTING.md`](CONTRIBUTING.md) — contribution policy (closed for external PRs until v1.x).
 - [`CLAUDE.md`](CLAUDE.md) — project guide for agents working in this repo (Claude Code).

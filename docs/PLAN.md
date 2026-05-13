@@ -2,7 +2,22 @@
 
 This is the public roadmap. For decision history, regret notes, and per-version commit-by-commit details, see `doc-internal/PLAN.md` (gitignored).
 
-## v0.8.11 — current
+## v0.8.12 — current
+
+**Status: shipped (2026-05-13).** **Strip `reasoning_content` on cross-provider fallback.** Fixes a production bug where mid-conversation provider fallback would 400 on the new provider because the conversation history carried thinking/reasoning content from the previous provider. PR #91.
+
+**What's in v0.8.12 (vs v0.8.11):**
+
+- **The bug**: a cv-batch-adapter run on `user_tier=high` routed to `gemini-2.5-flash`, completed turn 1 (with a tool call), then turn 2's call to gemini returned `503` ("This model is currently experiencing high demand"). Runtime fallback fired → `deepseek-v4-flash`. DeepSeek 400'd with `"The reasoning_content in the thinking mode must be passed back to the API."` The run died unrecoverably.
+- **Root cause**: `Message.Reasoning` (single string field on `providers.Message`) carries no provider provenance. The OpenAI driver — which also backs DeepSeek (DeepSeek implements OpenAI-compatible chat completions) — unconditionally echoes `Reasoning` back as `reasoning_content` in the assistant turn on the wire. DeepSeek's API verifies that any echoed `reasoning_content` matches what IT produced for that turn and 400s if it can't verify. Cross-provider echoes always fail this check.
+- **Fix**: when `tryProviderFallback` successfully switches providers, walk the in-flight `messages` slice and zero `Message.Reasoning` on every assistant turn. The new provider gets a clean history. Approach C1 from the architect plan; C3 layered on top.
+- **New typed event `EventReasoningInvalidated`** — emitted when the strip pass cleared one or more assistant turns. Mirrors the v0.8.2 `EventCacheInvalidated` precedent (Anthropic cache_control on Anthropic→other fallback). Wire-stable for adapters; cost retros should treat the run's downstream iterations as reasoning-cold on the new provider. The `Text` field carries a human-readable summary (`"cleared reasoning_content from N assistant turn(s) on switch from <old> to <new>"`).
+- **Safe across all current providers**: Anthropic uses typed content blocks for `extended_thinking`, not the Reasoning string field → immune. Gemini's driver doesn't write Reasoning today → strip is a no-op unless populated via PriorMessages from a continuation. OpenAI o-series tolerates missing `reasoning_content` (treats as no prior thinking). DeepSeek/o-series within their own family continue to round-trip correctly — the strip only fires on cross-family fallback. Tool calls in the same turn are unaffected (strip only touches the Reasoning string field, not `Content`).
+- **3 regression tests** in `internal/loop/fallback_test.go`: `TestFallback_ReasoningStrippedOnProviderSwitch` (headline regression — verified to fail on pre-fix code with the EXACT production failure mode), `TestFallback_NoReasoningStrip_NothingToStrip` (guards against spurious event emission), `TestFallback_PartialStreamReasoning_NeverReachesMessages` (pins the drain-and-continue invariant for in-stream errors).
+
+For the v0.8.11 baseline that drove this work, see [v0.8.11](#v0811--earlier).
+
+## v0.8.11 — earlier
 
 **Status: shipped (2026-05-13).** **Process-resource metrics sampler + `/v1/_metrics/*` API.** Built-in periodic CPU + memory sampler that runs as a background goroutine inside loomcycle, captures process RSS + Go heap + goroutine count + CPU% (and optionally system-wide CPU/mem) while at least one agent run is active, persists samples to a new `process_samples` table, and exposes them via three bearer-authed HTTP endpoints. Idle-gate on the concurrency semaphore — zero DB writes and zero `/proc` reads when nothing is running. Closes the capacity-planning gap that previously forced operators to sample `ps`/`top` via external shell scripts. PR #89.
 
@@ -443,11 +458,11 @@ For usage: see [README](../README.md). For the architecture: see [ARCHITECTURE.m
 
 ## v0.8.x — next: framework primitives
 
-**Roadmap renumbering note (updated 2026-05-13).** Sequenced 2026-05-09; renumbered through v0.8.5 as one-feature-per-point-release. The 2026-05-12 system-channels point release became v0.8.6; Context tool v0.8.7; Context.help v0.8.8. The 2026-05-13 production-readiness window absorbed three more point releases: v0.8.9 + v0.8.10 (Gemini schema sanitizer + sqlite upgrade-path migration fix), then v0.8.11 (process-resource metrics sampler). The remaining v0.8.x roadmap below now picks up at v0.8.12 (originally drafted as v0.8.7 — LoomCycle MCP, the v0.8.x capstone), v0.8.13 (Question tool), and v0.8.14 (Pause / Resume / Snapshot — the v0.8.x → v0.9.x bridge). Each point release in the framework-primitive sequence ships one focused capability; the v1.0 capstone (LoomCycle MCP) needs the prior primitives to expose their tool surfaces, which is why it sits last in the v0.8.x arc. Detailed design (API schemas, storage shapes, retention semantics) lives in feature-branch RFCs at implementation time; the outlines below capture the shape but not the wire.
+**Roadmap renumbering note (updated 2026-05-13, second wave).** Sequenced 2026-05-09; renumbered through v0.8.5 as one-feature-per-point-release. The 2026-05-12 system-channels point release became v0.8.6; Context tool v0.8.7; Context.help v0.8.8. The 2026-05-13 production-readiness window absorbed four more point releases: v0.8.9 + v0.8.10 (Gemini schema sanitizer + sqlite upgrade-path migration fix), v0.8.11 (process-resource metrics sampler), and v0.8.12 (cross-provider reasoning_content strip on fallback — closed the cv-batch-adapter mid-conversation 400 surfaced by the v0.8.11 metrics deploy). The remaining v0.8.x roadmap below picks up at v0.8.13 (LoomCycle MCP, the v0.8.x capstone), v0.8.14 (Question tool), and v0.8.15 (Pause / Resume / Snapshot — the v0.8.x → v0.9.x bridge). Each point release ships one focused capability; the v1.0 capstone (LoomCycle MCP) needs the prior primitives to expose their tool surfaces, which is why it sits last in the v0.8.x arc. Detailed design (API schemas, storage shapes, retention semantics) lives in feature-branch RFCs at implementation time; the outlines below capture the shape but not the wire.
 
-**Shipped already:** v0.8.0 Memory tool (2026-05-09); v0.8.1 operational hardening (2026-05-10); v0.8.2 user_tier (2026-05-11); v0.8.3 ollama split (2026-05-11); v0.8.4 Channel tool (2026-05-11); v0.8.5 Self-Evolution Substrate (2026-05-11); v0.8.6 system channels + deferred publish (2026-05-12); v0.8.7 Context tool (2026-05-12); v0.8.8 Context.help (2026-05-12); v0.8.9 + v0.8.10 Gemini schema sanitizer + sqlite migration fix (2026-05-13); v0.8.11 process-resource metrics sampler (2026-05-13) — see the sections above for full release notes.
+**Shipped already:** v0.8.0 Memory tool (2026-05-09); v0.8.1 operational hardening (2026-05-10); v0.8.2 user_tier (2026-05-11); v0.8.3 ollama split (2026-05-11); v0.8.4 Channel tool (2026-05-11); v0.8.5 Self-Evolution Substrate (2026-05-11); v0.8.6 system channels + deferred publish (2026-05-12); v0.8.7 Context tool (2026-05-12); v0.8.8 Context.help (2026-05-12); v0.8.9 + v0.8.10 Gemini schema sanitizer + sqlite migration fix (2026-05-13); v0.8.11 process-resource metrics sampler (2026-05-13); v0.8.12 cross-provider reasoning_content strip (2026-05-13) — see the sections above for full release notes.
 
-### v0.8.12 — LoomCycle MCP (the v0.8.x capstone)
+### v0.8.13 — LoomCycle MCP (the v0.8.x capstone)
 
 Loomcycle exposes itself as an **MCP server**. External orchestrators (Claude Code, agentic harnesses, other loomcycle instances) connect to it as an MCP client and:
 
@@ -457,14 +472,14 @@ Loomcycle exposes itself as an **MCP server**. External orchestrators (Claude Co
 - Create / fork / promote `AgentDef` versions (v0.8.5).
 - Submit / aggregate Evaluations (v0.8.5).
 - Call Context for runtime introspection (v0.8.7 / v0.8.8).
-- **Surface `Question.ask` so external orchestrators can route human-in-the-loop questions through their own UI** (paired with v0.8.13 Question tool — the loomcycle Web UI is the default surface, the MCP exposure is the orchestrator-side override).
+- **Surface `Question.ask` so external orchestrators can route human-in-the-loop questions through their own UI** (paired with v0.8.14 Question tool — the loomcycle Web UI is the default surface, the MCP exposure is the orchestrator-side override).
 - Subscribe to run-event streams (alternate to SSE).
 
 This is the "MCP-configurable" axis: instead of writing YAML and POSTing JSON, an external tool drives loomcycle through standard MCP. Surface area maps roughly 1:1 to the existing `/v1/*` endpoints plus the v0.8.0–v0.8.11 primitives, with auth via the operator's bearer token translated into MCP's auth scheme.
 
 What's not yet decided: stdio vs HTTP transport (probably both — stdio for desktop-app integrations, HTTP for service-to-service), method naming (resources vs tools), whether MCP clients can register new agents at runtime or only spawn from operator-defined ones, handling of long-lived run streams across MCP's request/response shape.
 
-### v0.8.13 — Question tool (human-in-the-loop primitive)
+### v0.8.14 — Question tool (human-in-the-loop primitive)
 
 Closes the one direction the v0.8.0–v0.8.11 arc leaves uncovered: **agent ↔ human, mid-run**. The substrate primitives so far cover machine interaction — state (Memory), IPC (Channel), self-mutation (AgentDef), selection (Evaluation), introspection (Context), control plane (LoomCycle MCP). `Question` is the human bridge.
 
@@ -484,7 +499,7 @@ The result of `ask` carries `{question_id, answered, answer?, answered_by_user_i
 |---|---|---|
 | **(1) Built-in with Web UI default** | `/ui/questions` modal/sidebar; operator (matching the run's `user_id`) answers via the existing bearer-cookie session | loomcycle |
 | **(2) MCP-implemented (consumer-side)** | Consumer runs its own MCP server exposing `mcp__<name>__ask`; loomcycle calls it like any other MCP tool (jobs-search-agent's pattern) | Consumer |
-| **(3) LoomCycle MCP exposure** | v0.8.12 LoomCycle MCP surfaces `Question.ask` so external orchestrators (Claude Code, custom dashboards) become the delivery surface | loomcycle + orchestrator |
+| **(3) LoomCycle MCP exposure** | v0.8.13 LoomCycle MCP surfaces `Question.ask` so external orchestrators (Claude Code, custom dashboards) become the delivery surface | loomcycle + orchestrator |
 
 Operator picks via `question.backend: webui | mcp_server:<name> | cli` in yaml. The Web UI is the default for production; `cli` lets local dev read answers from stdin.
 
@@ -498,13 +513,13 @@ Operator picks via `question.backend: webui | mcp_server:<name> | cli` in yaml. 
 
 Detailed design at pickup time will lift the local addendum (in this session's plan file) into `doc-internal/rfcs/question-tool.md`.
 
-### v0.8.14 — Pause / Resume / Snapshot (the v0.8.x → v0.9.x bridge)
+### v0.8.15 — Pause / Resume / Snapshot (the v0.8.x → v0.9.x bridge)
 
 Runtime-wide quiesce + restore primitive. Closes the gap that today forces every long-running experiment to either run-to-completion-or-die or restart from scratch when the provider rate-limits, the infrastructure needs maintenance, or the operator wants to ship the experiment somewhere else.
 
 **Three motivating shapes the substrate enables:**
 
-| Pain shape today | With v0.8.14 |
+| Pain shape today | With v0.8.15 |
 |---|---|
 | Provider down or rate-limited (Ollama subscription paused, Gemini quota exhausted, Anthropic 5xx) → every active run dies after the v0.8.2 fallback budget exhausts | Operator pauses → waits for capacity → resumes from where each run left off |
 | Pre-backup quiesce (DB hot-backup captures partial transcripts mid-iteration) | Pause → snapshot → backup → resume; consistent across runtime + DB |
@@ -523,7 +538,7 @@ Runtime-wide quiesce + restore primitive. Closes the gap that today forces every
 
 CLI mirrors: `loomcycle pause` / `resume` / `snapshot` / `restore` / `state`.
 
-**Scope decisions (locked in the v0.8.14 RFC):**
+**Scope decisions (locked in the v0.8.15 RFC):**
 
 - **Runtime-wide pause**, not per-tenant. VM is the safety boundary; per-tenant pause defers to v0.9.x per-tenant fairness.
 - **Snapshot scope is running-state only.** External DB backups handle archival history. Snapshot stays small (paused runs + Memory + Channel + agent_defs + evaluations).
@@ -536,7 +551,7 @@ CLI mirrors: `loomcycle pause` / `resume` / `snapshot` / `restore` / `state`.
 
 **Pairs with the v0.8.7 `Context.history` op (shipped):** restored experiments contain interaction history; agents in the restored instance read it via `Context.history(since=<experiment_start_ts>)` to reflect on past conversations. Self-evolving experiments survive cross-version migration with their memory intact.
 
-**What's not yet decided:** snapshot encryption-at-rest (operator's disk-encryption policy applies — same as transcripts), automatic snapshot scheduling (lean: out of scope; operator integrates with their own scheduler), partial restore granularity (v0.8.14 is all-or-nothing per section; selective is a v0.9.x candidate).
+**What's not yet decided:** snapshot encryption-at-rest (operator's disk-encryption policy applies — same as transcripts), automatic snapshot scheduling (lean: out of scope; operator integrates with their own scheduler), partial restore granularity (v0.8.15 is all-or-nothing per section; selective is a v0.9.x candidate).
 
 Detailed design in `doc-internal/rfcs/pause-resume-snapshot.md` (gitignored).
 
@@ -568,7 +583,7 @@ Make `loomcycle` install with one command on every operator's preferred toolchai
 
 First-party integrations the runtime makes more valuable:
 
-- **Claude Desktop / Claude Code MCP integration** — pre-built `.mcp.json` recipe + a one-page operator guide for adding loomcycle to Claude Code's MCP server list (uses the v0.8.12 LoomCycle MCP surface).
+- **Claude Desktop / Claude Code MCP integration** — pre-built `.mcp.json` recipe + a one-page operator guide for adding loomcycle to Claude Code's MCP server list (uses the v0.8.13 LoomCycle MCP surface).
 - **OpenTelemetry exporter recipes** — example Helm values + `loomcycle.yaml` snippets for the three common backends (Tempo, Honeycomb, Datadog). The OTEL spans themselves ship in v0.9.x; v1.0 ships the operator-side wiring guide.
 - **Prometheus / Grafana dashboard** — JSON dashboard committed to the repo, importable in one click. Key panels: throughput, error rate by provider, p99 tool dispatch latency, per-tenant share of the semaphore.
 - **CLI scaffolding** — `loomcycle init` generates a minimal working `loomcycle.yaml` + `.env.local` for a fresh deploy. `loomcycle agent add <name>` scaffolds an agent yaml block. Lower the time-to-first-run for new operators from "read the docs" to "run two commands."
