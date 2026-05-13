@@ -217,10 +217,11 @@ References: `internal/tools/tool.go`, `internal/tools/policy/`, `internal/tools/
 
 ### MCP HTTP transport (Streamable HTTP)
 
-The HTTP MCP client (`internal/tools/mcp/http/client.go`) speaks Streamable HTTP per the MCP 2024-11-05 spec. Two behaviours worth knowing:
+The HTTP MCP client (`internal/tools/mcp/http/client.go`) speaks Streamable HTTP per the MCP 2024-11-05 spec. Three behaviours worth knowing:
 
 - **`Accept: application/json, text/event-stream`** on every outbound request. The official `@modelcontextprotocol/sdk` server-side transport returns 406 Not Acceptable if either media type is missing. Servers pick per-request whether to reply JSON (single-shot) or SSE (streaming), so the client must accept both.
 - **SSE response decoding.** When the server replies with `Content-Type: text/event-stream`, the client extracts the JSON payload from the first complete SSE frame's `data:` lines (with multi-line `data:` joining via `\n`, CRLF tolerance, ignored `event:` / `id:` / `retry:` fields). Plain `application/json` responses are decoded directly. Both shapes are spec-compliant.
+- **Per-run bearer substitution (v0.8.14+).** Operator yaml `mcp_servers.*.headers` can reference `${run.user_bearer}` and `${run.user_bearer:-FALLBACK}` (POSIX-style default). At outbound request-build time, `Client.do()` reads `tools.RunIdentity(ctx).UserBearer` and substitutes against a per-call local map copy — `c.headers` is never mutated, so the shared `Client` (one per server name, lives in `pool.go`'s registry) safely serves concurrent runs with distinct bearers. Missing bearer with no fallback drops the header and emits a once-per-call WARN log line; downstream MCP returns a clean 401. The substitution layer is fully decoupled from yaml-load-time `expandEnv` (`internal/config/config.go`) because that regex (`\$\{([A-Za-z_][A-Za-z0-9_]*)\}`) structurally cannot match `${run.*}` — the `.` fails its `[A-Za-z0-9_]*` char class. This composition lets nested `${run.user_bearer:-${LOOMCYCLE_STATIC_BEARER}}` work during soak-phase rollouts: inner `${LOOMCYCLE_*}` resolves at yaml-load; outer `${run.user_bearer:-<resolved>}` flows to request-time.
 
 ### MCP startup retry
 
