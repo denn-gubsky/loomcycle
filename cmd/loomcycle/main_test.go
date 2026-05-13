@@ -2,6 +2,7 @@ package main
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/denn-gubsky/loomcycle/internal/tools/mcp"
@@ -55,5 +56,118 @@ func TestApplyAllowedToolsFilter(t *testing.T) {
 				t.Errorf("got %v, want %v", gotNames, tc.want)
 			}
 		})
+	}
+}
+
+// TestFormatBuildInfo exhaustively covers the version/commit display
+// normalisation. Driving the pure formatter with synthetic inputs
+// avoids any dependency on whether the test binary itself was built
+// with VCS stamping (`go test` doesn't embed VCS info by default).
+func TestFormatBuildInfo(t *testing.T) {
+	cases := []struct {
+		name        string
+		mainVersion string
+		rev         string
+		builtAt     string
+		dirty       bool
+		wantVersion string
+		wantCommit  string
+		wantTS      string
+	}{
+		{
+			name:        "release_tag_clean",
+			mainVersion: "v0.8.14",
+			rev:         "7c2ca2e1f592abcd",
+			builtAt:     "2026-05-13T18:04:43Z",
+			wantVersion: "v0.8.14",
+			wantCommit:  "7c2ca2e1f592", // truncated to 12
+			wantTS:      "2026-05-13T18:04:43Z",
+		},
+		{
+			name:        "pseudo_version_dirty",
+			mainVersion: "v0.8.14-0.20260513180443-7c2ca2e1f592",
+			rev:         "7c2ca2e1f592abcd",
+			builtAt:     "2026-05-13T18:04:43Z",
+			dirty:       true,
+			wantVersion: "v0.8.14-0.20260513180443-7c2ca2e1f592",
+			wantCommit:  "7c2ca2e1f592-dirty",
+			wantTS:      "2026-05-13T18:04:43Z",
+		},
+		{
+			name:        "devel_marker_normalised",
+			mainVersion: "(devel)",
+			rev:         "abc123def456",
+			wantVersion: "devel",
+			wantCommit:  "abc123def456",
+		},
+		{
+			name:        "empty_main_version_normalised",
+			mainVersion: "",
+			rev:         "abc123",
+			wantVersion: "devel",
+			wantCommit:  "abc123",
+		},
+		{
+			name:        "short_rev_dirty",
+			mainVersion: "v0.8.14",
+			rev:         "abc",
+			dirty:       true,
+			wantVersion: "v0.8.14",
+			wantCommit:  "abc-dirty",
+		},
+		{
+			name:        "empty_rev_dirty_no_suffix",
+			mainVersion: "v0.8.14",
+			rev:         "",
+			dirty:       true,
+			wantVersion: "v0.8.14",
+			wantCommit:  "", // no "-dirty" appended to an empty rev
+		},
+		{
+			name:        "exactly_12_char_rev_untruncated",
+			mainVersion: "v0.8.14",
+			rev:         "abcdef012345", // exactly 12 chars
+			wantVersion: "v0.8.14",
+			wantCommit:  "abcdef012345",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			gotV, gotC, gotT := formatBuildInfo(tc.mainVersion, tc.rev, tc.builtAt, tc.dirty)
+			if gotV != tc.wantVersion {
+				t.Errorf("version: got %q want %q", gotV, tc.wantVersion)
+			}
+			if gotC != tc.wantCommit {
+				t.Errorf("commit: got %q want %q", gotC, tc.wantCommit)
+			}
+			if gotT != tc.wantTS {
+				t.Errorf("ts: got %q want %q", gotT, tc.wantTS)
+			}
+		})
+	}
+}
+
+// TestResolveBuildInfo_DoesNotPanic is a smoke test for the
+// runtime/debug.ReadBuildInfo() integration. The exact returned values
+// depend on the build mode — `go test` typically doesn't stamp VCS
+// info, while `go build` does — so we only assert the helper returns
+// without panicking and that any non-empty commit obeys the formatter's
+// shape contract (≤12 hex chars, possibly "-dirty" suffix).
+func TestResolveBuildInfo_DoesNotPanic(t *testing.T) {
+	_, commit, _ := resolveBuildInfo()
+	if commit == "" {
+		t.Logf("commit empty (no VCS info embedded in test binary — expected for go test)")
+		return
+	}
+	bare := strings.TrimSuffix(commit, "-dirty")
+	if len(bare) > 12 {
+		t.Errorf("commit %q exceeds 12-char truncation", commit)
+	}
+	for _, r := range bare {
+		isHex := (r >= '0' && r <= '9') || (r >= 'a' && r <= 'f')
+		if !isHex {
+			t.Errorf("commit %q contains non-hex char %q", commit, r)
+			break
+		}
 	}
 }

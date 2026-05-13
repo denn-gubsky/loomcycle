@@ -4,11 +4,12 @@
 //
 //	loomcycle --config loomcycle.yaml
 //
-// Build identification: the buildCommit and buildTime vars are populated
-// at link time via -ldflags so a running binary can identify itself.
-// Without ldflags injection they default to "unknown" — useful signal
-// when an operator is debugging "is this the binary I just built?".
-// See loomcycle.sh for the canonical build invocation.
+// Build identification: the buildVersion / buildCommit / buildTime vars
+// are resolved automatically from Go's VCS stamp (embedded by `go build`
+// since 1.18) and from the module's tagged version when present. A
+// release script may still override any of them via -ldflags to inject
+// explicit values, but the unattached default works for `go build`,
+// `go install`, and CI without any wrapper tooling.
 package main
 
 import (
@@ -22,6 +23,8 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
+	"runtime/debug"
 	"sort"
 	"strings"
 	"sync"
@@ -61,19 +64,96 @@ import (
 	mcpstdio "github.com/denn-gubsky/loomcycle/internal/tools/mcp/stdio"
 )
 
-// Build identification — overridden at link time via:
+// Build identification. Empty defaults are resolved at main()-entry
+// from Go's VCS stamp via runtime/debug.ReadBuildInfo() — no external
+// tooling required. ldflags overrides still win:
 //
-//	go build -ldflags "-X main.buildCommit=$(git rev-parse --short HEAD) \
+//	go build -ldflags "-X main.buildVersion=v0.8.14 \
+//	                   -X main.buildCommit=$(git rev-parse --short HEAD) \
 //	                   -X main.buildTime=$(date -u +%Y-%m-%dT%H:%M:%SZ)" ...
 //
-// Defaults make a forgotten -ldflags invocation visible at runtime
-// rather than silently shipping an unidentifiable binary.
+// Resolution precedence per var: ldflags override → runtime/debug →
+// "unknown". A binary built outside a VCS-aware context (e.g. `go run`
+// from an unpacked tarball) ends up with "unknown" — visible signal
+// that the operator should rebuild from a real checkout.
 var (
-	buildCommit = "unknown"
-	buildTime   = "unknown"
+	buildVersion = ""
+	buildCommit  = ""
+	buildTime    = ""
 )
 
+// resolveBuildInfo reads Go's automatically-embedded VCS stamp and
+// returns (version, commit, time). commit gets a "-dirty" suffix when
+// the working tree was modified at build time. Empty strings mean the
+// corresponding info wasn't available (binary built without VCS — e.g.
+// `go test` by default does not embed VCS info, but `go build` and
+// `go install` do).
+func resolveBuildInfo() (version, commit, builtAt string) {
+	info, ok := debug.ReadBuildInfo()
+	if !ok {
+		return "", "", ""
+	}
+	var rev string
+	var dirty bool
+	for _, s := range info.Settings {
+		switch s.Key {
+		case "vcs.revision":
+			rev = s.Value
+		case "vcs.time":
+			builtAt = s.Value
+		case "vcs.modified":
+			dirty = s.Value == "true"
+		}
+	}
+	return formatBuildInfo(info.Main.Version, rev, builtAt, dirty)
+}
+
+// formatBuildInfo normalises the raw VCS-stamp fields into the display
+// shape used by --version and startup logs. Split out from
+// resolveBuildInfo so it can be exhaustively unit-tested without
+// depending on whether the test binary itself had VCS info embedded.
+func formatBuildInfo(mainVersion, rev, builtAt string, dirty bool) (version, commit, ts string) {
+	version = mainVersion
+	if version == "(devel)" || version == "" {
+		// `go build` from a local checkout reports "(devel)"; surface a
+		// shorter form so operators can tell a release binary from a
+		// developer build at a glance.
+		version = "devel"
+	}
+	if len(rev) > 12 {
+		rev = rev[:12]
+	}
+	if dirty && rev != "" {
+		rev += "-dirty"
+	}
+	return version, rev, builtAt
+}
+
 func main() {
+	// Resolve build identifiers FIRST so subcommands (validate / agents
+	// / health / migrate) and --version see the same auto-resolved
+	// values. ldflags overrides win — release scripts that explicitly
+	// set buildVersion/buildCommit/buildTime get exactly those.
+	autoVersion, autoCommit, autoTime := resolveBuildInfo()
+	if buildVersion == "" {
+		buildVersion = autoVersion
+	}
+	if buildCommit == "" {
+		buildCommit = autoCommit
+	}
+	if buildTime == "" {
+		buildTime = autoTime
+	}
+	if buildVersion == "" {
+		buildVersion = "unknown"
+	}
+	if buildCommit == "" {
+		buildCommit = "unknown"
+	}
+	if buildTime == "" {
+		buildTime = "unknown"
+	}
+
 	// Subcommand dispatch BEFORE flag parsing — let `loomcycle
 	// validate ...` flow into the CLI surface without colliding with
 	// the server's own --config flag.
@@ -103,7 +183,8 @@ func main() {
 	flag.Parse()
 
 	if *showVersion {
-		fmt.Printf("loomcycle commit=%s built=%s\n", buildCommit, buildTime)
+		fmt.Printf("loomcycle version=%s commit=%s built=%s go=%s\n",
+			buildVersion, buildCommit, buildTime, runtime.Version())
 		return
 	}
 
@@ -111,7 +192,7 @@ func main() {
 	// binary spots it immediately — before any "but my code says X"
 	// debugging spiral. Critical when development cycle is "git pull
 	// && restart" without a rebuild step in between.
-	log.Printf("loomcycle build: commit=%s time=%s", buildCommit, buildTime)
+	log.Printf("loomcycle build: version=%s commit=%s time=%s", buildVersion, buildCommit, buildTime)
 
 	cfg, err := config.Load(*cfgPath)
 	if err != nil {
