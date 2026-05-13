@@ -2,6 +2,7 @@ package loop
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -9,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/denn-gubsky/loomcycle/internal/providers"
+	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
 
 // tieredProvider is a fakeProvider variant whose ID is configurable.
@@ -659,3 +661,192 @@ func TestFallback_PartialStreamReasoning_NeverReachesMessages(t *testing.T) {
 		}
 	}
 }
+
+// TestFallback_PinAfterSuccess_SuppressesFallbackOnTurnTwo —
+// headline regression for the 2026-05-13 cv-batch-adapter failure.
+// Provider A turn 1 succeeds (appends an assistant message). Turn 2
+// returns a retryable error. With PinAfterSuccess=true, the
+// fallback path MUST NOT switch providers — the original error
+// propagates, and EventFallbackSuppressed is emitted for observability.
+//
+// Without PinAfterSuccess this is the existing happy-path of
+// TestFallback_StreamMidErrorTriggers, which we don't break.
+func TestFallback_PinAfterSuccess_SuppressesFallbackOnTurnTwo(t *testing.T) {
+	failing := &tieredProvider{
+		id: "gemini",
+		responses: [][]providers.Event{
+			// Turn 1 succeeds with a tool_call. Loop appends the
+			// assistant message; firstTurnSucceeded flips true.
+			{
+				{Type: providers.EventToolCall, ToolUse: &providers.ToolUse{ID: "tu-1", Name: "Read", Input: []byte(`{"path":"x"}`)}},
+				{Type: providers.EventDone, StopReason: "tool_use", Usage: &providers.Usage{InputTokens: 10, OutputTokens: 5, Model: "gemini-2.5-flash"}},
+			},
+		},
+		// Turn 2: scripted error — gemini 503.
+		errors: []error{nil, fmt.Errorf("gemini 503: This model is currently experiencing high demand.")},
+	}
+	healthy := &recordingProvider{
+		tieredProvider: &tieredProvider{
+			id:        "deepseek",
+			responses: [][]providers.Event{successResponse()},
+		},
+	}
+
+	var events []providers.Event
+	var mu sync.Mutex
+
+	opts := RunOptions{
+		Provider:      failing,
+		Model:         "gemini-2.5-flash",
+		MaxIterations: 5,
+		Segments:      []PromptSegment{{Role: "user", Content: []PromptContentBlock{{Type: "trusted-text", Text: "hi"}}}},
+		// A fallback-only dispatcher that returns a stub tool_result
+		// so the loop reaches a second iteration after turn 1.
+		Dispatcher: tools.NewDispatcherWithFallback(nil, func(_ context.Context, _ string, _ json.RawMessage) (tools.Result, bool) {
+			return tools.Result{Text: `{"ok":true}`}, true
+		}),
+		OnEvent: func(ev providers.Event) {
+			mu.Lock()
+			defer mu.Unlock()
+			events = append(events, ev)
+		},
+		FallbackPolicy: FallbackPolicy{
+			Enabled:         true,
+			MaxAttempts:     3,
+			UserTierName:    "high",
+			PinAfterSuccess: true, // the policy under test
+		},
+		ReResolve: func(_ context.Context, _, _ string, _ error) (providers.Provider, string, string, error) {
+			return healthy, "deepseek-v4-flash", "", nil
+		},
+	}
+	_, err := Run(context.Background(), opts)
+	// Run must fail with the gemini 503 (NOT recover via fallback).
+	if err == nil {
+		t.Fatal("expected Run to fail with gemini 503; got nil (fallback fired despite PinAfterSuccess)")
+	}
+	if !strings.Contains(err.Error(), "gemini 503") {
+		t.Errorf("error = %q, want substring 'gemini 503'", err.Error())
+	}
+
+	// recordingProvider must have received ZERO calls — the
+	// fallback was suppressed.
+	if requests := healthy.snapshotRequests(); len(requests) != 0 {
+		t.Errorf("recordingProvider got %d calls, want 0 (fallback should have been suppressed)", len(requests))
+	}
+
+	// EventFallbackSuppressed must have been emitted.
+	mu.Lock()
+	defer mu.Unlock()
+	var suppressedEvent *providers.Event
+	for i := range events {
+		if events[i].Type == providers.EventFallbackSuppressed {
+			suppressedEvent = &events[i]
+			break
+		}
+	}
+	if suppressedEvent == nil {
+		t.Fatal("no EventFallbackSuppressed emitted")
+	}
+	if !strings.Contains(suppressedEvent.Text, "gemini") {
+		t.Errorf("EventFallbackSuppressed Text = %q, expected to mention the pinned gemini provider", suppressedEvent.Text)
+	}
+	// EventProviderFallback must NOT have been emitted — the
+	// suppression intercepts before the switch.
+	for _, ev := range events {
+		if ev.Type == providers.EventProviderFallback {
+			t.Errorf("EventProviderFallback emitted despite PinAfterSuccess + firstTurnSucceeded; payload=%+v", ev.Fallback)
+		}
+	}
+}
+
+// TestFallback_PinAfterSuccess_TurnOneStillFallsBack — the
+// initial-pick resilience case. With PinAfterSuccess=true, a
+// retryable error on TURN ZERO (before any assistant message has
+// been appended) MUST still fall back. This is the stale-probe
+// safety net: if the resolver picked a provider that's actually
+// stalled at request time, the run should survive the first call.
+func TestFallback_PinAfterSuccess_TurnOneStillFallsBack(t *testing.T) {
+	failing := &tieredProvider{
+		id:     "anthropic",
+		errors: []error{fmt.Errorf("anthropic 429: rate limit exceeded")},
+	}
+	healthy := &tieredProvider{
+		id:        "deepseek",
+		responses: [][]providers.Event{successResponse()},
+	}
+
+	opts := RunOptions{
+		Provider:      failing,
+		Model:         "claude-haiku-4-5",
+		MaxIterations: 5,
+		Segments:      []PromptSegment{{Role: "user", Content: []PromptContentBlock{{Type: "trusted-text", Text: "hi"}}}},
+		OnEvent:       func(ev providers.Event) {},
+		FallbackPolicy: FallbackPolicy{
+			Enabled:         true,
+			MaxAttempts:     3,
+			UserTierName:    "high",
+			PinAfterSuccess: true,
+		},
+		ReResolve: func(_ context.Context, _, _ string, _ error) (providers.Provider, string, string, error) {
+			return healthy, "deepseek-v4-flash", "", nil
+		},
+	}
+	res, err := Run(context.Background(), opts)
+	if err != nil {
+		t.Fatalf("Run: %v (expected success after turn-zero fallback)", err)
+	}
+	if res.StopReason != "end_turn" {
+		t.Errorf("StopReason = %q, want end_turn", res.StopReason)
+	}
+}
+
+// TestFallback_PinAfterSuccess_FlagOff_PreservesV082Behavior —
+// belt-and-suspenders. When PinAfterSuccess=false (the v0.8.x
+// default), the loop's behavior is identical to v0.8.2: a
+// retryable error on turn N>1 still fires fallback. Guards
+// against accidentally enabling pinning for everyone.
+func TestFallback_PinAfterSuccess_FlagOff_PreservesV082Behavior(t *testing.T) {
+	failing := &tieredProvider{
+		id: "gemini",
+		responses: [][]providers.Event{
+			{
+				{Type: providers.EventToolCall, ToolUse: &providers.ToolUse{ID: "tu-1", Name: "Read", Input: []byte(`{"path":"x"}`)}},
+				{Type: providers.EventDone, StopReason: "tool_use", Usage: &providers.Usage{InputTokens: 10, OutputTokens: 5, Model: "gemini-2.5-flash"}},
+			},
+		},
+		errors: []error{nil, fmt.Errorf("gemini 503: high demand")},
+	}
+	healthy := &tieredProvider{
+		id:        "deepseek",
+		responses: [][]providers.Event{successResponse()},
+	}
+
+	opts := RunOptions{
+		Provider:      failing,
+		Model:         "gemini-2.5-flash",
+		MaxIterations: 5,
+		Segments:      []PromptSegment{{Role: "user", Content: []PromptContentBlock{{Type: "trusted-text", Text: "hi"}}}},
+		Dispatcher: tools.NewDispatcherWithFallback(nil, func(_ context.Context, _ string, _ json.RawMessage) (tools.Result, bool) {
+			return tools.Result{Text: `{"ok":true}`}, true
+		}),
+		OnEvent: func(ev providers.Event) {},
+		FallbackPolicy: FallbackPolicy{
+			Enabled:         true,
+			MaxAttempts:     3,
+			UserTierName:    "high",
+			PinAfterSuccess: false, // explicitly off
+		},
+		ReResolve: func(_ context.Context, _, _ string, _ error) (providers.Provider, string, string, error) {
+			return healthy, "deepseek-v4-flash", "", nil
+		},
+	}
+	res, err := Run(context.Background(), opts)
+	if err != nil {
+		t.Fatalf("Run: %v (expected success — fallback should fire when flag is off)", err)
+	}
+	if res.StopReason != "end_turn" {
+		t.Errorf("StopReason = %q, want end_turn", res.StopReason)
+	}
+}
+

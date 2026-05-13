@@ -658,6 +658,26 @@ type Env struct {
 	// day. Env: LOOMCYCLE_RESOLVE_PROBE_INTERVAL_MS.
 	ResolveProbeInterval time.Duration
 
+	// FallbackPinAfterSuccess, when true, suppresses provider
+	// fallback on retryable errors AFTER the run has completed at
+	// least one successful turn (assistant message appended to
+	// the conversation history). The initial turn can still fall
+	// back — so a stale-probe initial pick survives — but once a
+	// provider has touched the transcript, the run sticks with
+	// it. Same-provider rate-limit retry (internal/providers/
+	// ratelimit/) still covers transient errors.
+	//
+	// Why: cross-provider mid-conversation fallback exposes a
+	// growing surface of provider-specific transcript translation
+	// bugs (the 2026-05-13 DeepSeek "reasoning_content must be
+	// passed back" 400 was one instance; thoughtSignature, tool_call
+	// shape, etc. are others). Pinning closes the class of bug.
+	//
+	// Default OFF in v0.8.x; plan to flip default-on in v0.9.x
+	// once production-validated. Env:
+	// LOOMCYCLE_FALLBACK_PIN_AFTER_SUCCESS.
+	FallbackPinAfterSuccess bool
+
 	// ---- v0.8.x process-resource metrics sampler (opt-in) ----
 
 	// MetricsEnabled enables the periodic process_samples
@@ -997,6 +1017,10 @@ func Load(path string) (*Config, error) {
 			cfg.Env.ResolveProbeInterval = d
 		}
 	}
+	// LOOMCYCLE_FALLBACK_PIN_AFTER_SUCCESS: when set to "1",
+	// suppress provider fallback after the first successful turn.
+	// Opt-in for v0.8.x; default-on planned for v0.9.x.
+	cfg.Env.FallbackPinAfterSuccess = os.Getenv("LOOMCYCLE_FALLBACK_PIN_AFTER_SUCCESS") == "1"
 	// LOOMCYCLE_SSE_KEEPALIVE_MS sets the SSE keepalive cadence.
 	// Default 20 s; 0 (or any value ≤ 0) disables. Floor 1 s for
 	// positive values so a misconfigured tiny value can't busy-loop
