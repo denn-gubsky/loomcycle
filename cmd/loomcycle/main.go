@@ -729,7 +729,8 @@ func main() {
 		grpcAdapter := loomgrpc.New(loomgrpc.Config{
 			Store:       storeIface,
 			CancelReg:   srv.CancelRegistry(),
-			Runner:      srv, // *http.Server satisfies runner.Runner
+			Connector:   srv, // v0.8.15: *http.Server satisfies connector.Connector
+			Runner:      srv, // *http.Server satisfies runner.Runner (streaming)
 			AuthToken:   cfg.Env.AuthToken,
 			BuildCommit: buildCommit,
 			BuildTime:   buildTime,
