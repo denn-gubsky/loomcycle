@@ -1,41 +1,58 @@
 id: mid-01-read-reason-write
 tier: middle
-description: Full MCP read-reason-write cycle. Fetch an application, infer a missing field, patch it back.
+description: Full MCP read-reason-write cycle. Fetch an application, choose a status based on its content, patch it back. Uses the real {id, body} schema.
 allowed_tools: ["mcp__jobs__getApplication", "mcp__jobs__patchApplication"]
 max_turns: 6
 input_text: |
-  Application id "bench-app-fixture-100" needs its `seniority_level`
-  field set. Steps:
+  Application id "bench-app-fixture-100" needs its `status` field
+  reviewed and updated. Steps:
 
-  1. Call mcp__jobs__getApplication to fetch the application.
-  2. From the job_title and job_description fields, infer the seniority
-     level. Use one of: "junior", "mid", "senior", "staff", "principal".
-  3. Call mcp__jobs__patchApplication with {seniority_level: "<inferred>"}.
-  4. Output: {"app_id": "bench-app-fixture-100", "seniority_level_set": "<value>", "rationale": "<one sentence>"}
+    1. Call `mcp__jobs__getApplication` with `{"id": "bench-app-fixture-100"}`
+       to fetch the row. The tool's path-param is named `id`.
+    2. Inspect the fetched row's existing status and any cvText /
+       coverLetterText fields. If CV and cover letter are both present
+       and non-empty, the row is application-ready → set status to
+       "ready". If either is missing → leave status "preparing".
+       Status enum: [preparing, ready, applied, archived].
+    3. Call `mcp__jobs__patchApplication` with the corresponding shape:
+         {"id": "bench-app-fixture-100",
+          "body": {"status": "<chosen>"}}
+    4. Output:
+         {"app_id": "bench-app-fixture-100",
+          "chosen_status": "<value>",
+          "rationale": "<one sentence — cite fields you saw>"}
+
+  IMPORTANT: the tool result for getApplication may be a "not found"
+  error (the fixture id may not exist in the test database). If so,
+  default to status "preparing" with rationale "fixture not in db,
+  defaulted to preparing".
 
 expected:
   structural:
     schema: |
-      {"type":"object","required":["app_id","seniority_level_set","rationale"],"properties":{
+      {"type":"object","required":["app_id","chosen_status","rationale"],"properties":{
         "app_id":{"type":"string"},
-        "seniority_level_set":{"type":"string","enum":["junior","mid","senior","staff","principal"]},
+        "chosen_status":{"type":"string","enum":["preparing","ready","applied","archived"]},
         "rationale":{"type":"string","minLength":10,"maxLength":300}
       }}
   functional:
     tool_calls:
       - name: "mcp__jobs__getApplication"
         args_must_include:
-          app_id: "bench-app-fixture-100"
+          id: "bench-app-fixture-100"
       - name: "mcp__jobs__patchApplication"
         args_must_include:
-          app_id: "bench-app-fixture-100"
-          has_seniority_level: true
+          id: "bench-app-fixture-100"
+          body_is_object: true
+        min_calls: 1
+        max_calls: 2
     order_strict: true
   semantic:
     rubric: |
-      Did the model GET before PATCH? (PATCH-then-GET = no context, fail.)
-      Did it set a seniority level (one of the 5 enum values)?
-      Did the rationale reference job_title or job_description content from the GET response?
-      Did it produce the final JSON?
-      Score 0-100. Wrong order = 0. Invented seniority not from enum = 30. Generic rationale = 60. Strong, sourced rationale = 100.
+      Did the model call getApplication BEFORE patchApplication?
+      Did patchApplication carry the correct nested {id, body: {status: "..."}} shape?
+      Did the rationale reference WHAT was seen in the get response
+      (or correctly default with the fixture-not-found rationale if 404)?
+      Score 0-100. PATCH-before-GET = 0. Missing nested body = 30.
+      Generic rationale = 60. Strong sourced rationale = 100.
     threshold: 70

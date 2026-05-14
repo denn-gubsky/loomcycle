@@ -30,7 +30,7 @@ const benchVersion = "0.1.0"
 func main() {
 	var (
 		loomcycleURL = flag.String("loomcycle", envOrDefault("LOOMCYCLE_URL", "http://127.0.0.1:8787"), "loomcycle base URL")
-		providersCSV = flag.String("providers", "deepseek,gemini,ollama-cloud,ollama-desktop", "comma-separated provider keys")
+		providersCSV = flag.String("providers", "deepseek,gemini,ollama,ollama-local", "comma-separated provider keys (must match loomcycle's registered provider IDs)")
 		modelsFilter = flag.String("models", "", "optional regexp; only models matching are tested")
 		tierFlag     = flag.String("tier", "", "limit to a tier (low|middle); empty = both")
 		budgetUSD    = flag.Float64("budget", 25.0, "hard ceiling on aggregate USD cost; sweep halts when exceeded")
@@ -40,6 +40,7 @@ func main() {
 		caseTimeout  = flag.Duration("case-timeout", 4*time.Minute, "per-case timeout")
 		noSemantic   = flag.Bool("no-semantic", false, "skip judge-model grading (pass-through semantic = 1.0)")
 		dryRun       = flag.Bool("dry-run", false, "show what would run without executing")
+		userTier     = flag.String("user-tier", "", "loomcycle user_tier name (recommended: 'bench' with fallback_on_error=false so first-turn failures don't leak fallback-provider errors into the matrix)")
 	)
 	flag.Parse()
 
@@ -159,6 +160,7 @@ func main() {
 				caseTimeout:  *caseTimeout,
 				budgetLeft:   *budgetUSD - totalCost,
 				dryRun:       *dryRun,
+				userTier:     *userTier,
 			})
 			outcomes = append(outcomes, modelOutcomes...)
 			totalCost += modelCost
@@ -177,13 +179,14 @@ done:
 }
 
 type runOneModelInput struct {
-	provider, model               string
-	benchCases                    []cases.Case
-	lowPrompt, middlePrompt       string
-	tracesDir                     string
-	caseTimeout                   time.Duration
-	budgetLeft                    float64
-	dryRun                        bool
+	provider, model         string
+	benchCases              []cases.Case
+	lowPrompt, middlePrompt string
+	tracesDir               string
+	caseTimeout             time.Duration
+	budgetLeft              float64
+	dryRun                  bool
+	userTier                string
 }
 
 func runOneModel(ctx context.Context, cli *runner.Client, judge grader.Judge, in runOneModelInput) ([]report.CaseOutcome, float64) {
@@ -218,7 +221,7 @@ func runOneModel(ctx context.Context, cli *runner.Client, judge grader.Judge, in
 
 		// Run + grade.
 		log.Printf("→ %s/%s %s/%s", in.provider, in.model, c.Tier, c.ID)
-		o := runOneCase(ctx, cli, judge, in.provider, in.model, agentName, c, in.tracesDir, in.caseTimeout, in.dryRun)
+		o := runOneCase(ctx, cli, judge, in.provider, in.model, agentName, c, in.tracesDir, in.caseTimeout, in.dryRun, in.userTier)
 		spent += o.CostUSD
 		outcomes = append(outcomes, o)
 	}
@@ -227,7 +230,7 @@ func runOneModel(ctx context.Context, cli *runner.Client, judge grader.Judge, in
 
 func runOneCase(ctx context.Context, cli *runner.Client, judge grader.Judge,
 	provider, model, agentName string, c cases.Case,
-	tracesDir string, perCaseTimeout time.Duration, dryRun bool,
+	tracesDir string, perCaseTimeout time.Duration, dryRun bool, userTier string,
 ) report.CaseOutcome {
 	o := report.CaseOutcome{
 		Provider: provider, Model: model,
@@ -252,6 +255,7 @@ func runOneCase(ctx context.Context, cli *runner.Client, judge grader.Judge,
 		Agent:    agentName,
 		Segments: []runner.PromptSegment{runner.UserTextSegment(c.InputText)},
 		UserID:   "bench-user-fixture-001",
+		UserTier: userTier,
 	})
 	o.DurationMS = time.Since(start).Milliseconds()
 	if err != nil {

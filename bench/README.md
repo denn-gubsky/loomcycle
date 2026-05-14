@@ -13,9 +13,9 @@ Prereqs:
 - `loomcycle` running on `127.0.0.1:8787` (default; override with `--loomcycle`)
 - `LOOMCYCLE_AUTH_TOKEN` env var set (the bench needs the operator bearer)
 - Provider credentials in env: `DEEPSEEK_API_KEY`, `GEMINI_API_KEY`,
-  `OLLAMA_API_KEY` (for Ollama Cloud), plus optional
-  `LOOMCYCLE_BENCH_OLLAMA_DESKTOP_URL` (default
-  `http://denn-desktop.local:11434`)
+  `OLLAMA_API_KEY` (Ollama Cloud Bearer), `OLLAMA_BASE_URL` (local
+  Ollama host; same env var loomcycle reads for its `ollama-local`
+  provider so the two agree on which host).
 - `ANTHROPIC_API_KEY` for the judge model (set
   `LOOMCYCLE_BENCH_JUDGE_MODEL` to override the default
   `claude-sonnet-4-6`). Without an API key the semantic axis becomes
@@ -31,8 +31,10 @@ go build -o bin/lc-bench ./bench/cmd/lc-bench
 Full sweep (≈$10–25, depending on which provider menus are large):
 
 ```sh
-./bin/lc-bench --providers deepseek,gemini,ollama-cloud,ollama-desktop --budget 25
+./bin/lc-bench --providers deepseek,gemini,ollama,ollama-local --user-tier bench --budget 25
 ```
+
+`--user-tier bench` is the recommended pattern — see the [Recommended operator yaml](#wiring-denn-desktop-ollama-into-loomcycle) section. Without it, a first-turn provider failure (rate limit, content filter, transient 5xx) escalates through the resolver's fallback chain and the error you see in the matrix may be from the wrong provider entirely.
 
 Output lands in `bench/results/<YYYY-MM-DD-HHMM>/`:
 - `matrix.md` — human-readable verdict table
@@ -85,7 +87,7 @@ overlay remains a deliberate operator decision (per the
 | Flag | Default | Purpose |
 |---|---|---|
 | `--loomcycle` | `http://127.0.0.1:8787` | base URL of the loomcycle instance |
-| `--providers` | `deepseek,gemini,ollama-cloud,ollama-desktop` | comma-separated provider keys |
+| `--providers` | `deepseek,gemini,ollama,ollama-local` | comma-separated provider keys (must match loomcycle's registered provider IDs) |
 | `--models` | (empty) | regexp filter applied to discovered model lists |
 | `--tier` | (empty) | limit to `low` or `middle` cases |
 | `--budget` | `25.0` | USD cap; sweep halts when exceeded |
@@ -95,24 +97,22 @@ overlay remains a deliberate operator decision (per the
 | `--case-timeout` | `4m` | per-case timeout |
 | `--no-semantic` | `false` | skip judge calls (semantic axis = pass-through) |
 | `--dry-run` | `false` | print plan without spawning runs |
+| `--user-tier` | (empty) | loomcycle user_tier name. Use `bench` (configured with `fallback_on_error: false`) so first-turn failures stay as failures of the model under test rather than leaking errors from the resolver's fallback chain. |
 
-## Wiring `denn-desktop` Ollama into loomcycle
+## Wiring a self-hosted Ollama into loomcycle
 
-Self-hosted models on `denn-desktop.local:11434` need an `ollama-desktop`
-provider entry in `~/.config/loomcycle/loomcycle.yaml`. The harness
-discovers the menu directly (no loomcycle round-trip) but the runs
-themselves go through loomcycle's provider stack, which requires the
-config:
+The `ollama-local` provider is configured via the `OLLAMA_BASE_URL`
+environment variable — the same one loomcycle itself reads at boot,
+so the bench and loomcycle agree on which host to use without a
+separate setting. Point it at any Ollama-compatible endpoint:
 
-```yaml
-providers:
-  ollama-desktop:
-    type: ollama
-    base_url: http://denn-desktop.local:11434
-    # No api_key — local Ollama is unauthenticated.
+```sh
+# In .env.local (loomcycle picks it up at boot; bench picks it up
+# from the inherited environment when it discovers / registers agents):
+OLLAMA_BASE_URL=http://denn-desktop.local:11434
 ```
 
-Restart loomcycle after editing.
+Restart loomcycle if changing the URL.
 
 ## Cases
 
@@ -151,7 +151,7 @@ bias. Out of scope for v1.
 | Full DeepSeek+Gemini | $5 – $12 | 30–60 min |
 | Full + Ollama Cloud + desktop | $10 – $25 | 1–2 hours |
 
-Local Ollama (`ollama-desktop`) is priced at $0/token in the harness
+Local Ollama (`ollama-local`) is priced at $0/token in the harness
 (self-hosted = no marginal $ cost). Cloud models use a coarse rate
 card hand-curated for the May 2026 menu; see
 `bench/internal/cost/cost.go`. The `--budget` cap is the hard

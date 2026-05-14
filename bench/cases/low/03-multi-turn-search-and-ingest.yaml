@@ -1,38 +1,58 @@
 id: low-03-multi-turn-search-and-ingest
 tier: low
-description: Two-turn loop. Search the web for Go remote jobs, then call postSearchIngest once with the URLs found. Tests basic multi-turn tool use.
+description: "Two-turn loop. Search Brave for jobs, then call postSearchIngest once with the matches. Tests multi-turn tool use against the actual postSearchIngest schema (body shape: date + matches)."
 allowed_tools: ["mcp__brave-search__brave_web_search", "mcp__jobs__postSearchIngest"]
 max_turns: 6
 input_text: |
-  Search Brave for "Go backend engineer remote 2026" and return the top 3
-  results. Then call mcp__jobs__postSearchIngest exactly once, ingesting
-  those 3 results for user_id "bench-user-fixture-001". Each ingest row
-  must have: url, title, snippet.
+  Workflow:
+    1. Search Brave for "Go backend engineer remote 2026" and capture
+       the top 3 results (URL + title + snippet from each).
+    2. Call `mcp__jobs__postSearchIngest` exactly ONCE with this body
+       shape (the tool's actual schema):
+         {"body": {
+           "date": "2026-05-14",
+           "matches": [
+             {"rank": 1, "title": "...", "company": "...", "applyUrl": "..."},
+             {"rank": 2, ...},
+             {"rank": 3, ...}
+           ]
+         }}
+       Required match fields are `rank`, `title`, `company`. Other
+       fields like applyUrl, location, description are optional.
+       Note: no `user_id` field is required — auth is derived from the
+       bearer token.
 
-  After ingest succeeds, output a final JSON summary:
-    {"search_count": <int>, "ingested_count": <int>, "first_url": "..."}
+  After ingest succeeds, output:
+    {"search_count": <int>,
+     "ingest_count": <int>,
+     "first_company": "..."}
 
 expected:
   structural:
     schema: |
-      {"type":"object","required":["search_count","ingested_count"],"properties":{
-        "search_count":{"type":"integer","minimum":1},
-        "ingested_count":{"type":"integer","minimum":1},
-        "first_url":{"type":"string"}
+      {"type":"object","required":["search_count","ingest_count"],"properties":{
+        "search_count":{"type":"integer","minimum":1,"maximum":2},
+        "ingest_count":{"type":"integer","minimum":1,"maximum":1},
+        "first_company":{"type":"string"}
       }}
   functional:
     tool_calls:
       - name: "mcp__brave-search__brave_web_search"
-        args_must_include:
-          query_contains: "Go"
+        min_calls: 1
+        max_calls: 2
       - name: "mcp__jobs__postSearchIngest"
         args_must_include:
-          user_id: "bench-user-fixture-001"
-    forbid_repeat_calls: false
+          has_body: true
+        min_calls: 1
+        max_calls: 1
+    order_strict: true
   semantic:
     rubric: |
-      Did the model search first, then ingest? (Order matters — ingest with no search results is fail.)
-      Did the ingest payload contain at least 2 URL+title+snippet rows derived from the search response?
-      Did it stop after one ingest? (Two ingests for 3 results is unnecessary.)
-      Score 0-100. Out-of-order = 0. Made-up URLs not from search results = 20. Two ingests = -20.
+      Did the model search first, then ingest? (Order matters — ingest
+      with no search results = 0.)
+      Did the ingest body include `date` and `matches` (a list of 2+
+      matches, each with rank+title+company at minimum)?
+      Did the model invent matches not derived from the search response?
+      Score 0-100. Wrong order = 0. Missing required fields = 30.
+      Hallucinated matches = 20. Real search-then-ingest pipeline = 100.
     threshold: 70

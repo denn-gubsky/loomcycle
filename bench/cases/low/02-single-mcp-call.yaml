@@ -1,36 +1,50 @@
 id: low-02-single-mcp-call
 tier: low
-description: Call mcp__jobs__getAgentContext once with the supplied user_id. Tests schema-correct single-shot tool invocation.
+description: Call mcp__jobs__getAgentContext exactly once with empty args (the tool takes no parameters — user identity is derived from the bearer token). Tests schema-correct tool invocation against the real MCP contract.
 allowed_tools: ["mcp__jobs__getAgentContext"]
 max_turns: 4
 input_text: |
-  Fetch the agent context for user_id "bench-user-fixture-001" using the
-  jobs MCP server's getAgentContext tool. Then summarize the response
-  fields you received in a single JSON object with shape:
-    {"tool_called": "<tool name>", "fields_returned": ["..."], "user_id_echo": "..."}
+  Call the jobs MCP server's `getAgentContext` tool to load this run's
+  agent context. The tool takes NO arguments — user identity is derived
+  from the bearer token automatically. Pass an empty object `{}` as
+  the input.
 
-  Make exactly ONE tool call. Do not retry. If the tool returns an error,
-  set tool_called to "<tool name>" anyway and include "error" in
-  fields_returned.
+  After the call, output a single JSON object summarising what came
+  back, with this shape:
+    {"tool_called": "<exact tool name>",
+     "top_level_fields": ["..."],
+     "call_count": <integer>}
+
+  top_level_fields = the keys present in the response (e.g., "profile",
+  "writingStyles"). call_count = how many times you invoked the tool
+  (should be 1).
+
+  Make exactly ONE tool call. Output ONLY the final JSON.
 
 expected:
   structural:
     schema: |
-      {"type":"object","required":["tool_called","fields_returned"],"properties":{
+      {"type":"object","required":["tool_called","top_level_fields","call_count"],"properties":{
         "tool_called":{"type":"string"},
-        "fields_returned":{"type":"array","items":{"type":"string"}},
-        "user_id_echo":{"type":"string"}
+        "top_level_fields":{"type":"array","items":{"type":"string"},"minItems":1},
+        "call_count":{"type":"integer","minimum":1,"maximum":1}
       }}
   functional:
     tool_calls:
       - name: "mcp__jobs__getAgentContext"
-        args_must_include:
-          user_id: "bench-user-fixture-001"
+        min_calls: 1
+        max_calls: 2
     forbid_repeat_calls: true
   semantic:
     rubric: |
-      Did the model call the exact tool name mcp__jobs__getAgentContext?
-      Did it pass user_id="bench-user-fixture-001" (exact string match, no extra characters)?
-      Did it produce the final JSON without unrelated narration around it?
-      Score 0-100. Wrong tool name = 0. Wrong user_id = 30. Extra prose around JSON = -20.
+      Did the model call mcp__jobs__getAgentContext exactly once?
+      Did it pass an empty `{}` input (no fabricated user_id or other
+      args)?
+      Did `top_level_fields` reflect REAL response keys
+      (profile / jobProfile / writingStyles / cvTemplates / clTemplates /
+      qaAnswers / jobSites / filterRules / projects / studies — at
+      least 5 of these should appear)?
+      Score 0-100. Wrong tool name = 0. Fabricated args = 30.
+      Hallucinated field names not in the actual response = 30.
+      Exactly one correct call with real fields = 100.
     threshold: 70

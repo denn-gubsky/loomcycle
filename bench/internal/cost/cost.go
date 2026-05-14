@@ -36,9 +36,12 @@ func Of(provider, model string) Rates {
 		return Rates{InputPerMTok: 0.30, OutputPerMTok: 1.20}
 	case "gemini":
 		return Rates{InputPerMTok: 0.30, OutputPerMTok: 2.50}
-	case "ollama-cloud":
+	case "ollama":
+		// Ollama Cloud (Bearer-auth, ollama.com). Coarse default; the
+		// per-model rate card below should pin specific entries if we
+		// learn a better number for kimi-k2.6 etc.
 		return Rates{InputPerMTok: 0.50, OutputPerMTok: 2.00}
-	case "ollama-desktop":
+	case "ollama-local":
 		// Self-hosted = no marginal $ cost beyond electricity. We
 		// score $0 here so local models don't dominate the budget cap.
 		return Rates{InputPerMTok: 0, OutputPerMTok: 0}
