@@ -15,7 +15,7 @@
 
 ---
 
-> **🚧 Closed for external contributions until v1.x.** Loomcycle is in active v0.8 → v0.9 → v1.0 development. PRs will be acknowledged but closed without merge during this window. Bug reports for clear-cut defects and security disclosures are still welcome. See [`CONTRIBUTING.md`](CONTRIBUTING.md) for the policy.
+> 🌱 **Apache-2.0 open source — external contributions open at v1.x.** Loomcycle is in active v0.8 → v0.9 → v1.0 development. We're stabilizing the core primitives before opening the floodgates; today we welcome bug reports, security disclosures, downstream consumers, and forks. See [`CONTRIBUTING.md`](CONTRIBUTING.md) for the details.
 
 ---
 
