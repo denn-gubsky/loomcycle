@@ -649,6 +649,112 @@ func (s *Store) MetricsSweep(ctx context.Context, cutoff time.Time) (int, error)
 	return int(tag.RowsAffected()), nil
 }
 
+// --- v0.8.15 dynamic_agents (LoomCycle MCP runtime registration) ---
+
+func (s *Store) DynamicAgentUpsert(ctx context.Context, a store.DynamicAgent) error {
+	if a.Name == "" {
+		return fmt.Errorf("dynamic_agents: name required")
+	}
+	if len(a.Definition) == 0 {
+		return fmt.Errorf("dynamic_agents: definition required")
+	}
+	createdAt := a.CreatedAt
+	if createdAt.IsZero() {
+		createdAt = time.Now()
+	}
+	// Postgres expires_at column defaults to 'epoch' for "no expiry".
+	expiresAt := a.ExpiresAt
+	if expiresAt.IsZero() {
+		expiresAt = time.Unix(0, 0).UTC()
+	}
+	_, err := s.pool.Exec(ctx, `
+		INSERT INTO dynamic_agents (name, definition, created_at, expires_at, description)
+		VALUES ($1, $2::jsonb, $3, $4, $5)
+		ON CONFLICT (name) DO UPDATE SET
+			definition  = EXCLUDED.definition,
+			created_at  = EXCLUDED.created_at,
+			expires_at  = EXCLUDED.expires_at,
+			description = EXCLUDED.description
+	`, a.Name, string(a.Definition), createdAt, expiresAt, a.Description)
+	if err != nil {
+		return fmt.Errorf("dynamic_agents: upsert: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) DynamicAgentGet(ctx context.Context, name string) (store.DynamicAgent, error) {
+	row := s.pool.QueryRow(ctx, `
+		SELECT name, definition::text, created_at, expires_at, COALESCE(description, '')
+		FROM dynamic_agents
+		WHERE name = $1 AND (expires_at = 'epoch' OR expires_at > $2)
+	`, name, time.Now())
+
+	var a store.DynamicAgent
+	var defStr string
+	if err := row.Scan(&a.Name, &defStr, &a.CreatedAt, &a.ExpiresAt, &a.Description); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return store.DynamicAgent{}, &store.ErrNotFound{Kind: "dynamic_agent", ID: name}
+		}
+		return store.DynamicAgent{}, fmt.Errorf("dynamic_agents: get: %w", err)
+	}
+	a.Definition = []byte(defStr)
+	// Normalise the "no expiry" marker back to zero-value Time so
+	// callers (and the connector layer) see a consistent shape across
+	// SQLite (0 unix-ns) and Postgres ('epoch').
+	if a.ExpiresAt.Unix() == 0 {
+		a.ExpiresAt = time.Time{}
+	}
+	return a, nil
+}
+
+func (s *Store) DynamicAgentList(ctx context.Context) ([]store.DynamicAgent, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT name, definition::text, created_at, expires_at, COALESCE(description, '')
+		FROM dynamic_agents
+		WHERE expires_at = 'epoch' OR expires_at > $1
+		ORDER BY created_at DESC
+		LIMIT 200
+	`, time.Now())
+	if err != nil {
+		return nil, fmt.Errorf("dynamic_agents: list: %w", err)
+	}
+	defer rows.Close()
+
+	out := []store.DynamicAgent{}
+	for rows.Next() {
+		var a store.DynamicAgent
+		var defStr string
+		if err := rows.Scan(&a.Name, &defStr, &a.CreatedAt, &a.ExpiresAt, &a.Description); err != nil {
+			return nil, fmt.Errorf("dynamic_agents: list scan: %w", err)
+		}
+		a.Definition = []byte(defStr)
+		if a.ExpiresAt.Unix() == 0 {
+			a.ExpiresAt = time.Time{}
+		}
+		out = append(out, a)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) DynamicAgentDelete(ctx context.Context, name string) (bool, error) {
+	tag, err := s.pool.Exec(ctx, `DELETE FROM dynamic_agents WHERE name = $1`, name)
+	if err != nil {
+		return false, fmt.Errorf("dynamic_agents: delete: %w", err)
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
+func (s *Store) DynamicAgentSweep(ctx context.Context) (int, error) {
+	tag, err := s.pool.Exec(ctx, `
+		DELETE FROM dynamic_agents
+		WHERE expires_at > 'epoch' AND expires_at < $1
+	`, time.Now())
+	if err != nil {
+		return 0, fmt.Errorf("dynamic_agents: sweep: %w", err)
+	}
+	return int(tag.RowsAffected()), nil
+}
+
 // Close releases the connection pool. Idempotent.
 func (s *Store) Close() error {
 	s.closeOnce.Do(func() {
