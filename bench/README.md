@@ -31,8 +31,10 @@ go build -o bin/lc-bench ./bench/cmd/lc-bench
 Full sweep (≈$10–25, depending on which provider menus are large):
 
 ```sh
-./bin/lc-bench --providers deepseek,gemini,ollama-cloud,ollama-desktop --budget 25
+./bin/lc-bench --providers deepseek,gemini,ollama-cloud,ollama-desktop --user-tier bench --budget 25
 ```
+
+`--user-tier bench` is the recommended pattern — see the [Recommended operator yaml](#wiring-denn-desktop-ollama-into-loomcycle) section. Without it, a first-turn provider failure (rate limit, content filter, transient 5xx) escalates through the resolver's fallback chain and the error you see in the matrix may be from the wrong provider entirely.
 
 Output lands in `bench/results/<YYYY-MM-DD-HHMM>/`:
 - `matrix.md` — human-readable verdict table
@@ -95,6 +97,7 @@ overlay remains a deliberate operator decision (per the
 | `--case-timeout` | `4m` | per-case timeout |
 | `--no-semantic` | `false` | skip judge calls (semantic axis = pass-through) |
 | `--dry-run` | `false` | print plan without spawning runs |
+| `--user-tier` | (empty) | loomcycle user_tier name. Use `bench` (configured with `fallback_on_error: false`) so first-turn failures stay as failures of the model under test rather than leaking errors from the resolver's fallback chain. |
 
 ## Wiring `denn-desktop` Ollama into loomcycle
 
