@@ -32,8 +32,11 @@ loomcycle.local.yaml
 # Per-user Claude Code state (permission grants, plans)
 .claude/
 
-# Internal docs not meant for publication (planning notes, decision logs)
-doc-internal/
+# Internal docs (planning notes, decision logs, RFCs) live in a separate
+# repository at ~/work/loomcycle-internal/doc-internal/ — historically
+# they shipped inside this repo under doc-internal/ (gitignored), but
+# v0.8.15 migrated them out so the operator can sync them independently
+# without touching this tree.
 
 # Adapter build output
 adapters/ts/dist/
