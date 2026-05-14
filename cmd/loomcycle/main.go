@@ -788,6 +788,31 @@ func main() {
 			}
 		}()
 	}
+
+	// v0.8.15.3: HTTP MCP transport. Always wired (both server and
+	// mcp modes), per RFC decision C-open-question rationale:
+	// service-to-service consumers don't use the stdio wrapper and
+	// need a network endpoint. Security posture is identical to all
+	// other /v1/* endpoints — bearer-authed via s.authMiddleware in
+	// the server's Mux(). Disabled implicitly by --no-http (no HTTP
+	// listener = no /v1/_mcp route reachable).
+	mcpHTTPHandler := lcmcp.NewHTTPHandler(lcmcp.Config{
+		Connector:     srv, // same *http.Server instance used by stdio MCP
+		Runner:        srv,
+		Store:         storeIface,
+		Logf:          log.Printf,
+		ServerName:    "loomcycle",
+		ServerVersion: buildVersion,
+	})
+	srv.SetMCPHTTPHandler(mcpHTTPHandler)
+	// Background session sweeper. Reuses the dynamic-agent sweeper
+	// pattern: bound to bgCtx, exits on shutdown, idempotent under
+	// concurrent invocations. 5-minute cadence is well under the
+	// 30-min session inactivity TTL — leaves at least ~25 min between
+	// a session's last access and its earliest possible reaping.
+	lcmcp.RunHTTPSessionSweeper(bgCtx, mcpHTTPHandler.Sessions(), 5*time.Minute, log.Printf)
+	log.Printf("mcp: HTTP transport enabled at POST /v1/_mcp (session sweeper interval=5m, TTL=30m)")
+
 	log.Printf("session-lock GC: interval=%s max_idle=%s", sessionGCInterval, sessionGCMaxIdle)
 
 	// Periodic probe loop: re-runs the resolver's reachability +

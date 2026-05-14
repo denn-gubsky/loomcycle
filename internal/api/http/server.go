@@ -107,6 +107,16 @@ type Server struct {
 	// SetMetricsSampler from main.go after the sampler is
 	// constructed.
 	metricsSampler *metrics.Sampler
+
+	// mcpHTTPHandler is the v0.8.15.3 HTTP MCP transport (alternate
+	// front-end to the stdio MCP server). Typed as http.Handler — NOT
+	// *lcmcp.HTTPHandler — so this package does NOT import
+	// internal/api/mcp. The coupling direction is one-way:
+	// internal/api/mcp CONSUMES connector.Connector (implemented by
+	// *Server here); internal/api/http stays unaware of MCP internals.
+	// Nil = POST /v1/_mcp returns 503. Set via SetMCPHTTPHandler from
+	// main.go after the handler is constructed.
+	mcpHTTPHandler http.Handler
 }
 
 // New constructs a Server. If st is non-nil, every run is recorded as a
@@ -155,6 +165,18 @@ func (s *Server) SetMCPFallback(fn tools.FallbackFunc) {
 // default — endpoints return 503 until this is called.
 func (s *Server) SetMetricsSampler(m *metrics.Sampler) {
 	s.metricsSampler = m
+}
+
+// SetMCPHTTPHandler installs the v0.8.15.3 HTTP MCP transport handler
+// so the POST /v1/_mcp endpoint has a backing dispatcher. Nil is the
+// default — the endpoint returns 503 until this is called.
+//
+// Typed as http.Handler (the standard library interface) rather than
+// *lcmcp.HTTPHandler so this package gains no import of
+// internal/api/mcp. main.go wires the concrete handler; this package
+// never sees its type.
+func (s *Server) SetMCPHTTPHandler(h http.Handler) {
+	s.mcpHTTPHandler = h
 }
 
 // SetSystemPublisher installs the v0.8.6 system-channels publisher.
@@ -900,6 +922,13 @@ func (s *Server) Mux() http.Handler {
 	mux.Handle("GET /v1/_metrics/samples", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleMetricsSamples))))
 	mux.Handle("GET /v1/_metrics/runs/{run_id}", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleMetricsRunSummary))))
 	mux.Handle("GET /v1/_metrics/summary", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleMetricsSummary))))
+	// v0.8.15.3 HTTP MCP transport — Streamable HTTP endpoint that
+	// dispatches the same 20 MCP tools as the stdio MCP server.
+	// POST is the JSON-RPC frame transport; DELETE terminates a
+	// session by Mcp-Session-Id. Returns 503 when no HTTP MCP
+	// handler is wired (operator didn't construct one in main.go).
+	mux.Handle("POST /v1/_mcp", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleMCPHTTP))))
+	mux.Handle("DELETE /v1/_mcp", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleMCPHTTP))))
 	// v0.8.0 Memory admin — read-only browsing of stored Memory rows.
 	// Drives the Web UI's Memory page. Bearer-authed; same admin
 	// posture as /v1/_users / /v1/_resolver.
@@ -979,6 +1008,26 @@ type systemChannelPublishRequest struct {
 // published_by_user_id is set to the bearer's resolved user_id if
 // one is in context; otherwise falls back to "_admin" (operator
 // used a raw bearer with no user mapping).
+// handleMCPHTTP routes POST/DELETE /v1/_mcp requests through the
+// installed HTTP MCP transport handler. Returns 503 with a JSON-RPC
+// error envelope when no handler is wired — distinct from the
+// transport-level "session not found or expired" 404 which only
+// happens once the handler is dispatching real requests.
+//
+// All the protocol logic (session management, SSE vs JSON, frame
+// dispatch through (*lcmcp.Server).handleFrame) lives in
+// internal/api/mcp/http_transport.go. This function is a thin guard
+// + delegate so internal/api/http stays free of MCP-internal types.
+func (s *Server) handleMCPHTTP(w http.ResponseWriter, r *http.Request) {
+	if s.mcpHTTPHandler == nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":0,"error":{"code":-32603,"message":"HTTP MCP transport not enabled"}}`))
+		return
+	}
+	s.mcpHTTPHandler.ServeHTTP(w, r)
+}
+
 func (s *Server) handleSystemChannelPublish(w http.ResponseWriter, r *http.Request) {
 	if s.systemPublisher == nil {
 		writeJSONError(w, http.StatusServiceUnavailable, "system_publisher_unwired", "system publisher not wired (operator misconfiguration)")
