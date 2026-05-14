@@ -1,8 +1,38 @@
 # Roadmap
 
-This is the public roadmap. For decision history, regret notes, and per-version commit-by-commit details, see `doc-internal/PLAN.md` (gitignored).
+This is the public roadmap. For decision history, regret notes, and per-version commit-by-commit details, see `~/work/loomcycle-internal/doc-internal/PLAN.md` (operator-side separate repo; migrated out of this tree as part of v0.8.15).
 
-## v0.8.14 — current
+## v0.8.15 — current
+
+**Status: shipped (2026-05-14).** **LoomCycle MCP server + `Connector` abstraction.** The v0.8.x **capstone**: loomcycle exposes itself as an **MCP server** over stdio (Claude Code first; HTTP-MCP transport deferred to v0.8.15.x). New `connector.Connector` Go interface unifies HTTP, gRPC, MCP, and future CLI surfaces around a single contract — HTTP server is the canonical implementation, others CONSUME via direct method dispatch. PRs #99, #100.
+
+**What's in v0.8.15 (vs v0.8.14):**
+
+- **`connector.Connector` interface (#99) — the architectural anchor.** New `internal/connector/` package: 20-method Go interface that every wire transport translates into. `*lchttp.Server` IMPLEMENTS it (530 LOC of method implementations in `connector_impl.go`); `*lcmcp.Server` + `*loomgrpc.Server` CONSUME it via direct method dispatch (no HTTP round-trips). Compile-time assertion `var _ connector.Connector = (*Server)(nil)` prevents drift. TS/Python adapters mirror the same operation surface in their own languages over the HTTP wire. Interface stays ADDITIVE through v0.8.x — adding methods is safe; signature changes are a v0.9.x semver break.
+- **MCP server (#99) — 20-tool surface.** New `internal/api/mcp/` package: stdio JSON-RPC loop + `initialize`/`tools/list`/`tools/call` handlers + per-session capability tracking + 20 tool handlers covering run lifecycle (spawn_run, cancel_run, get_run, list_runs), agent management (register_agent, unregister_agent, list_agents), all 5 v0.8.x builtins (memory, channel, agentdef, evaluation, context), and PREVIEW-mocked Pause/Resume/Snapshot (pause_runtime, resume_runtime, get_runtime_state, create_snapshot, list_snapshots, export_snapshot, restore_snapshot, delete_snapshot). Frame dispatch is sequential per MCP's initialization contract; concurrent tools/call within a connection is a v0.9.x optimization.
+- **Streaming via MCP notifications (#99).** When the client opts in via `initialize.capabilities.loomcycle.runEvents=true`, `spawn_run` drives `runner.RunOnce` directly and emits `notifications/loomcycle/run_event` per provider event before returning the final result. Wire-ordering invariant pinned: every notification lands on stdout BEFORE the response. Without opt-in, blocking-only path via `Connector.SpawnRun`. Both paths produce identical final `SpawnRunResult` shape.
+- **Dynamic agent registration (#99).** New `dynamic_agents` table (SQLite + Postgres migration 0010) + 5 Store methods + TTL sweeper. `mcp__loomcycle__register_agent` persists agents at runtime; `dynamic_agents_by_expires_at` partial index drives the periodic sweep. Privileged tools (Bash/Write/Edit) stripped from `allowed_tools` unless `LOOMCYCLE_MCP_ALLOW_PRIVILEGED_TOOLS=1` (default-deny per v0.8.7/v0.8.8 pattern). Name collisions with static yaml agents rejected.
+- **`loomcycle mcp --config Y` subcommand (#99).** New entry point that starts BOTH the HTTP listener AND the stdio MCP loop. Logs to stderr (stdout is the JSON-RPC wire). Companion `loomcycle-mcp.sh` wrapper at the repo root sources `.env.local` before exec — required because Claude Code's MCP spawn inherits an empty env, missing the `LOOMCYCLE_*` + provider keys that upstream MCP server `${...}` placeholders expect. Without the wrapper, upstream handshakes fail and stdio readiness blocks for ~32s of exponential backoff.
+- **gRPC server dispatches through Connector (#99).** `internal/api/grpc/server.go` now holds BOTH a `connector.Connector` field (used by `CancelAgent` and future proto handlers) AND the existing `runner.Runner` field (used by streaming `Run` / `Continue` — `Connector.SpawnRun` is blocking-only). Existing tests pass with `Connector=nil` (legacy direct path retained for backwards compat). New regression: `TestGrpcServer_CancelAgent_DispatchesThroughConnector`.
+- **Operator ctx for builtin wrappers (#99 review fix).** Caught during code review: bare-ctx dispatch to `tool.Execute` left every builtin wrapper failing with "no scope configured" because policy values weren't on ctx. New `internal/api/mcp/context.go operatorCtx()` enriches ctx with all 5 policy values (memory/channel/agentdef/evaluation/history) + synthetic `RunIdentity{UserID: "mcp-operator", AgentID: "a_mcp-operator"}` + `AgentName: "mcp-operator"` before each builtin wrapper invocation. Pinned by `TestOperatorCtx_AttachesAllRequiredPolicies` — future tools growing new policy gates force an update here.
+- **`spawn_run` schema fix (#99 review fix).** Original schema declared `["agent", "segments"]` required, blocking session_id-only continuations from schema-validating MCP clients (Claude Code). Replaced with `anyOf: [{required: agent}, {required: session_id}]`. `allowed_hosts` doc gap also closed (omit = no narrowing; `[]` = deny-all).
+- **Malformed-frame -32700 path (#99 review fix).** Bad probe-unmarshal previously silently swallowed the frame, stalling the MCP client forever waiting for a response. Now emits a best-effort `-32700` with `id=0` so the client gets some recovery signal.
+- **3 new env vars** documented in `.env.example` (#100): `LOOMCYCLE_MCP_ALLOW_PRIVILEGED_TOOLS` (default 0), `LOOMCYCLE_DYNAMIC_AGENT_DEFAULT_TTL_SECONDS` (default 86400), `LOOMCYCLE_DYNAMIC_AGENT_SWEEP_INTERVAL_MS` (default 900000).
+- **doc-internal migration (#100).** Internal design docs (PLAN.md, RFCs, decision history) moved from `doc-internal/` inside this repo to `~/work/loomcycle-internal/doc-internal/` — a separate operator-side repo. The in-repo folder (always gitignored) was deleted; `.gitignore` + `CLAUDE.md` references updated in lockstep.
+
+**11 MCP server unit tests** cover handshake, tools/list (20 tools), spawn_run blocking + streaming, notification-before-response ordering, register_agent dispatch, unknown tool → -32601, malformed frame → -32700, sequential dispatch (5 requests), pause_runtime preview shape, operatorCtx policy contract. Plus 1 gRPC dispatch-through-connector regression test. `go test -race ./...` clean across all 41 packages.
+
+**Sharp edges (deferred to v0.8.16):** boot-time upstream MCP init can block stdio readiness for ~32s if an upstream is misconfigured (wrapper mitigates); HTTP listener binds 127.0.0.1:8787 alongside MCP (operators can't run `loomcycle.sh` daemon AND `loomcycle mcp` simultaneously); Pause/Resume/Snapshot ship as PREVIEW shapes (real implementation in v0.8.16+, wire is stable).
+
+**Operator integration recipe** — project-root `.mcp.json`:
+```json
+{"mcpServers": {"loomcycle": {"command": "/abs/path/to/loomcycle/loomcycle-mcp.sh"}}}
+```
+Or via `claude mcp add loomcycle /path/to/loomcycle-mcp.sh` (writes to `~/.claude.json`). **Note:** `~/.claude/mcp.json` is NOT a discovered location.
+
+For the v0.8.14 baseline that drove this work, see [v0.8.14](#v0814--earlier).
+
+## v0.8.14 — earlier
 
 **Status: shipped (2026-05-13).** **Per-run MCP bearer tokens + auto-version + metrics CI fix.** Three landings bundled: per-end-user auth for MCP tool calls (the marquee), build-identity self-reporting via Go's VCS stamp, and the metrics sampler bugfix that had been silently red-CI since v0.8.11. PRs #94, #95, #96.
 
@@ -486,26 +516,9 @@ For usage: see [README](../README.md). For the architecture: see [ARCHITECTURE.m
 
 ## v0.8.x — next: framework primitives
 
-**Roadmap renumbering note (updated 2026-05-13, third wave).** Sequenced 2026-05-09; renumbered through v0.8.5 as one-feature-per-point-release. The 2026-05-12 system-channels point release became v0.8.6; Context tool v0.8.7; Context.help v0.8.8. The 2026-05-13 production-readiness window absorbed SIX more point releases: v0.8.9 + v0.8.10 (Gemini schema sanitizer + sqlite upgrade-path migration fix), v0.8.11 (process-resource metrics sampler), v0.8.12 (cross-provider reasoning_content strip on fallback — closed the cv-batch-adapter mid-conversation 400 surfaced by the v0.8.11 metrics deploy), v0.8.13 (pin provider after first successful turn — closes the entire class of cross-provider mid-conversation transcript bugs that v0.8.12 was patching one-by-one), and v0.8.14 (per-run MCP bearer tokens + auto-version + metrics CI fix — the per-tenant auth gap that blocked JSA from authenticating MCP tool calls as the actual end-user). The remaining v0.8.x roadmap below picks up at v0.8.15 (LoomCycle MCP, the v0.8.x capstone), v0.8.16 (Question tool), and v0.8.17 (Pause / Resume / Snapshot — the v0.8.x → v0.9.x bridge). Each point release ships one focused capability; the v1.0 capstone (LoomCycle MCP) needs the prior primitives to expose their tool surfaces, which is why it sits last in the v0.8.x arc. Detailed design (API schemas, storage shapes, retention semantics) lives in feature-branch RFCs at implementation time; the outlines below capture the shape but not the wire.
+**Roadmap renumbering note (updated 2026-05-14, fourth wave).** Sequenced 2026-05-09; renumbered through v0.8.5 as one-feature-per-point-release. The 2026-05-12 system-channels point release became v0.8.6; Context tool v0.8.7; Context.help v0.8.8. The 2026-05-13 production-readiness window absorbed six point releases: v0.8.9 + v0.8.10 (Gemini schema sanitizer + sqlite upgrade-path migration fix), v0.8.11 (process-resource metrics sampler), v0.8.12 (cross-provider reasoning_content strip), v0.8.13 (pin-after-success fallback policy), and v0.8.14 (per-run MCP bearer tokens + auto-version + metrics CI fix). The 2026-05-14 capstone window shipped v0.8.15 (LoomCycle MCP + Connector abstraction — the architectural anchor for every future wire transport). The remaining v0.8.x roadmap below picks up at v0.8.16 (Question tool) and v0.8.17 (Pause / Resume / Snapshot — the v0.8.x → v0.9.x bridge; wire shapes already locked in v0.8.15 mocks, just needs real implementations). Each point release ships one focused capability. Detailed design lives in feature-branch RFCs at implementation time; the outlines below capture the shape but not the wire.
 
-**Shipped already:** v0.8.0 Memory tool (2026-05-09); v0.8.1 operational hardening (2026-05-10); v0.8.2 user_tier (2026-05-11); v0.8.3 ollama split (2026-05-11); v0.8.4 Channel tool (2026-05-11); v0.8.5 Self-Evolution Substrate (2026-05-11); v0.8.6 system channels + deferred publish (2026-05-12); v0.8.7 Context tool (2026-05-12); v0.8.8 Context.help (2026-05-12); v0.8.9 + v0.8.10 Gemini schema sanitizer + sqlite migration fix (2026-05-13); v0.8.11 process-resource metrics sampler (2026-05-13); v0.8.12 cross-provider reasoning_content strip (2026-05-13); v0.8.13 pin-after-success fallback policy (2026-05-13); v0.8.14 per-run MCP bearer tokens + auto-version + metrics CI fix (2026-05-13) — see the sections above for full release notes.
-
-### v0.8.15 — LoomCycle MCP (the v0.8.x capstone)
-
-Loomcycle exposes itself as an **MCP server**. External orchestrators (Claude Code, agentic harnesses, other loomcycle instances) connect to it as an MCP client and:
-
-- Configure agents and spawn runs (alternate front-end to `/v1/runs`).
-- Send messages on Channels (v0.8.4 Channel tool + v0.8.6 `_system/*` namespace).
-- Read/write Memory entries (v0.8.0).
-- Create / fork / promote `AgentDef` versions (v0.8.5).
-- Submit / aggregate Evaluations (v0.8.5).
-- Call Context for runtime introspection (v0.8.7 / v0.8.8).
-- **Surface `Question.ask` so external orchestrators can route human-in-the-loop questions through their own UI** (paired with v0.8.16 Question tool — the loomcycle Web UI is the default surface, the MCP exposure is the orchestrator-side override).
-- Subscribe to run-event streams (alternate to SSE).
-
-This is the "MCP-configurable" axis: instead of writing YAML and POSTing JSON, an external tool drives loomcycle through standard MCP. Surface area maps roughly 1:1 to the existing `/v1/*` endpoints plus the v0.8.0–v0.8.11 primitives, with auth via the operator's bearer token translated into MCP's auth scheme. Per-end-user auth flows through the v0.8.14 `${run.user_bearer}` substitution so external orchestrators can configure loomcycle MCP headers with the same template syntax that internal callers use.
-
-What's not yet decided: stdio vs HTTP transport (probably both — stdio for desktop-app integrations, HTTP for service-to-service), method naming (resources vs tools), whether MCP clients can register new agents at runtime or only spawn from operator-defined ones, handling of long-lived run streams across MCP's request/response shape.
+**Shipped already:** v0.8.0 Memory tool (2026-05-09); v0.8.1 operational hardening (2026-05-10); v0.8.2 user_tier (2026-05-11); v0.8.3 ollama split (2026-05-11); v0.8.4 Channel tool (2026-05-11); v0.8.5 Self-Evolution Substrate (2026-05-11); v0.8.6 system channels + deferred publish (2026-05-12); v0.8.7 Context tool (2026-05-12); v0.8.8 Context.help (2026-05-12); v0.8.9 + v0.8.10 Gemini schema sanitizer + sqlite migration fix (2026-05-13); v0.8.11 process-resource metrics sampler (2026-05-13); v0.8.12 cross-provider reasoning_content strip (2026-05-13); v0.8.13 pin-after-success fallback policy (2026-05-13); v0.8.14 per-run MCP bearer tokens + auto-version + metrics CI fix (2026-05-13); v0.8.15 LoomCycle MCP server + Connector abstraction (2026-05-14) — see the sections above for full release notes.
 
 ### v0.8.16 — Question tool (human-in-the-loop primitive)
 
@@ -527,7 +540,7 @@ The result of `ask` carries `{question_id, answered, answer?, answered_by_user_i
 |---|---|---|
 | **(1) Built-in with Web UI default** | `/ui/questions` modal/sidebar; operator (matching the run's `user_id`) answers via the existing bearer-cookie session | loomcycle |
 | **(2) MCP-implemented (consumer-side)** | Consumer runs its own MCP server exposing `mcp__<name>__ask`; loomcycle calls it like any other MCP tool (jobs-search-agent's pattern) | Consumer |
-| **(3) LoomCycle MCP exposure** | v0.8.15 LoomCycle MCP surfaces `Question.ask` so external orchestrators (Claude Code, custom dashboards) become the delivery surface | loomcycle + orchestrator |
+| **(3) LoomCycle MCP exposure** | v0.8.15 LoomCycle MCP (shipped) will surface `Question.ask` as a 21st tool when v0.8.16 lands so external orchestrators (Claude Code, custom dashboards) become the delivery surface | loomcycle + orchestrator |
 
 Operator picks via `question.backend: webui | mcp_server:<name> | cli` in yaml. The Web UI is the default for production; `cli` lets local dev read answers from stdin.
 
@@ -575,7 +588,7 @@ CLI mirrors: `loomcycle pause` / `resume` / `snapshot` / `restore` / `state`.
 - **Experiment identity = timestamp** (operator supplies `since_ts`). First-class `experiments` table deferred; promote if research needs it.
 - **Pause and snapshot are decoupled operations** that compose as the operator chooses. Pause alone for rate-limit-wait; pause + snapshot + export for migration; snapshot during running for backup-time-of-day capture.
 
-**State-change signals flow through `_system/runtime-state`** (v0.8.6 system channels — shipped). Pause/resume/restore state transitions publish to that channel; operator dashboards subscribe; the future v0.8.15 LoomCycle MCP exposes the same channel to external orchestrators. **No new `EventPauseStateChanged` SSE event types needed** — the Channel pub/sub primitive carries the signal.
+**State-change signals flow through `_system/runtime-state`** (v0.8.6 system channels — shipped). Pause/resume/restore state transitions publish to that channel; operator dashboards subscribe; the v0.8.15 LoomCycle MCP server (shipped) exposes the same channel to external orchestrators. **No new `EventPauseStateChanged` SSE event types needed** — the Channel pub/sub primitive carries the signal.
 
 **Pairs with the v0.8.7 `Context.history` op (shipped):** restored experiments contain interaction history; agents in the restored instance read it via `Context.history(since=<experiment_start_ts>)` to reflect on past conversations. Self-evolving experiments survive cross-version migration with their memory intact.
 

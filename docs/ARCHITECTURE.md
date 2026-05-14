@@ -373,12 +373,46 @@ All three endpoints return 503 with `enable_hint` when `LOOMCYCLE_METRICS_ENABLE
 
 References: `internal/metrics/sampler.go` (idle-gated ticker), `internal/metrics/proc_linux.go` (`/proc` readers), `internal/api/http/metrics_handlers.go` (three handlers), `internal/store/sqlite/sqlite.go` + `internal/store/postgres/postgres.go` (storage; the 4 `Metrics*` methods on the `Store` interface).
 
+## Connector abstraction + LoomCycle MCP (v0.8.15+)
+
+v0.8.15 introduced the `connector.Connector` Go interface (`internal/connector/connector.go`) — a 20-method contract that defines the operation surface every wire transport translates into. Architectural intent:
+
+- `*lchttp.Server` **IMPLEMENTS** `connector.Connector` (`internal/api/http/connector_impl.go`, ~530 LOC of method bodies). This is the canonical business-logic surface.
+- `*lcmcp.Server` (`internal/api/mcp/`) and `*loomgrpc.Server` (`internal/api/grpc/`) **CONSUME** the interface — they hold a `connector.Connector` field and dispatch each wire request through it. **No HTTP round-trips** — direct Go method calls.
+- Future `*lccli.Server` (`loomcycle run --agent X "prompt"`) will follow the same pattern.
+- TypeScript (`adapters/ts/`) and future Python adapters MIRROR the same operation surface in their own languages over the HTTP wire.
+
+A compile-time interface assertion at `connector_impl.go:35` (`var _ connector.Connector = (*Server)(nil)`) means adding a method to `Connector` forces every implementation to update or the build breaks — drift is impossible.
+
+### LoomCycle MCP server (stdio, v0.8.15)
+
+`loomcycle mcp --config Y` starts BOTH the HTTP listener AND a stdio MCP listener on `os.Stdin` / `os.Stdout`. Operators wire it into MCP clients (Claude Code first) via `.mcp.json`:
+
+```json
+{"mcpServers": {"loomcycle": {"command": "/abs/path/to/loomcycle/loomcycle-mcp.sh"}}}
+```
+
+The companion `loomcycle-mcp.sh` wrapper at the repo root sources `.env.local` before exec — required because Claude Code spawns the binary with an empty env, missing the `LOOMCYCLE_*` + provider keys that upstream MCP server `${...}` placeholders expect.
+
+**20 tools exposed:** run lifecycle (`spawn_run`, `cancel_run`, `get_run`, `list_runs`), agent management (`register_agent`, `unregister_agent`, `list_agents`), all 5 builtins (`memory`, `channel`, `agentdef`, `evaluation`, `context`), Pause/Resume/Snapshot (8 tools — PREVIEW-mocked in v0.8.15; real impl deferred to v0.8.16+ per the locked RFC).
+
+**Streaming via notifications:** when the client opts in through `initialize.capabilities.loomcycle.runEvents=true`, `spawn_run` drives `runner.RunOnce` directly and emits `notifications/loomcycle/run_event` per provider event before returning the final response. Without opt-in, blocking-only Connector path. Both produce identical final `SpawnRunResult` shape.
+
+**Dynamic agents:** the new `dynamic_agents` table (SQLite + Postgres migration 0010) persists agents registered at runtime via `register_agent`. Periodic TTL sweeper (cadence: `LOOMCYCLE_DYNAMIC_AGENT_SWEEP_INTERVAL_MS`, default 15 min) reclaims expired rows. Privileged builtins (Bash, Write, Edit) are stripped from `allowed_tools` unless `LOOMCYCLE_MCP_ALLOW_PRIVILEGED_TOOLS=1`. Static yaml-defined agents take precedence on name collision.
+
+**Operator-policy ctx for MCP-direct builtin calls:** the underlying Memory / Channel / AgentDef / Evaluation / Context tools gate on per-agent policy values that don't exist for MCP-direct callers (no yaml agent definition behind a `tools/call`). `internal/api/mcp/context.go operatorCtx()` synthesises a permissive policy (all scopes allowed, `mcp-operator` synthetic agent name) before each builtin wrapper invocation. `TestOperatorCtx_AttachesAllRequiredPolicies` pins the contract — future tools growing policy gates force an update here.
+
+**Sharp edges (v0.8.16 follow-ups):**
+- Boot-time upstream MCP init can block stdio readiness for ~32 s if an upstream is misconfigured. The `.env.local`-sourcing wrapper mitigates; long-term, mcp-mode should make upstream init non-blocking.
+- The HTTP listener binds 127.0.0.1:8787 alongside the stdio loop. Operators running the `loomcycle.sh` daemon cannot simultaneously run `loomcycle mcp` from the same machine.
+
+References: `internal/connector/connector.go` (interface), `internal/api/http/connector_impl.go` (canonical implementation), `internal/api/mcp/server.go` (stdio I/O loop), `internal/api/mcp/handlers.go` (20 tool handlers), `internal/api/mcp/context.go` (`operatorCtx`), `loomcycle-mcp.sh` (env-loading wrapper), `cmd/loomcycle/main.go` (`mcp` subcommand dispatch).
+
 ## What's deferred to v1.0
 
 - **Memory tool** — agent-scoped persistent storage (the substrate for self-improving agents).
 - **Channel tool** — persistent inter-agent message bus.
 - **LoomHelp tool** — runtime introspection (the agent's view of its own toolset / config).
-- **LoomCycle MCP** — loomcycle exposes itself as an MCP server for external orchestrators (Claude Code, etc.).
 - **High-load runtime** — per-tenant fairness, Postgres `Store`, OTEL traces + Prometheus metrics, run-status memory cache, session-lock map GC, heartbeat sweeper.
 - **Web monitoring frontend** — observability UI on top of the stored events.
 - **Python adapter** — `pip install loomcycle`.
