@@ -481,21 +481,36 @@ func main() {
 	// on first request), the first handshake attempt may fail with
 	// ECONNREFUSED or a 404. GetWithRetry backs off (500ms, 1s, 2s, 4s,
 	// 8s, 16s) until success or ctx exhaustion. Each retry logs.
-	mcpInitCtx, mcpInitCancel := context.WithTimeout(context.Background(), 30*time.Second)
-	for name, srv := range cfg.MCPServers {
-		_, descs, err := mcpPool.GetWithRetry(mcpInitCtx, name, log.Printf)
-		if err != nil {
-			log.Printf("mcp[%s]: skipped — %v", name, err)
-			continue
+	//
+	// v0.8.15.1: skip the eager init entirely in `loomcycle mcp` mode.
+	// The consumer (Claude Code, custom MCP orchestrator) expects the
+	// stdio JSON-RPC loop to answer initialize / tools/list within
+	// its short discovery timeout — well under the ~32s exponential-
+	// backoff budget GetWithRetry can spend per unreachable upstream.
+	// The lazy resolver wired below handles "server wasn't in pool at
+	// boot" cleanly since v0.8.1; the first agent call that needs an
+	// mcp__<server>__<tool> tool triggers the handshake there. Server
+	// mode keeps eager init — fail-fast is correct when the operator
+	// is starting a long-lived daemon.
+	if mcpMode {
+		log.Printf("mcp mode: skipping eager upstream MCP init for %d server(s); lazy resolver will handshake on first agent call", len(cfg.MCPServers))
+	} else {
+		mcpInitCtx, mcpInitCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		for name, srv := range cfg.MCPServers {
+			_, descs, err := mcpPool.GetWithRetry(mcpInitCtx, name, log.Printf)
+			if err != nil {
+				log.Printf("mcp[%s]: skipped — %v", name, err)
+				continue
+			}
+			filtered := applyAllowedToolsFilter(descs, srv.AllowedTools)
+			for _, d := range filtered {
+				allTools = append(allTools, mcp.NewTool(mcpPool, name, d))
+			}
+			log.Printf("mcp[%s]: ready, %d/%d tools registered (transport=%s)",
+				name, len(filtered), len(descs), srv.Transport)
 		}
-		filtered := applyAllowedToolsFilter(descs, srv.AllowedTools)
-		for _, d := range filtered {
-			allTools = append(allTools, mcp.NewTool(mcpPool, name, d))
-		}
-		log.Printf("mcp[%s]: ready, %d/%d tools registered (transport=%s)",
-			name, len(filtered), len(descs), srv.Transport)
+		mcpInitCancel()
 	}
-	mcpInitCancel()
 
 	// Lazy MCP recovery — when an agent calls a tool from a server that
 	// failed initial handshake (skipped above), this resolver tries one
