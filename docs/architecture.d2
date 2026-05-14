@@ -12,7 +12,7 @@ direction: down
 
 # ---- External callers (left) ----
 
-clients: "App servers · CLIs\nTS / Python SDKs" {
+clients: "App servers · CLIs · TS / Python SDKs\nClaude Code & other MCP orchestrators (v0.8.15+)" {
   shape: rectangle
   style: {
     fill: "#eef2f7"
@@ -36,18 +36,31 @@ loomcycle: "loomcycle — single Go binary (~30 MB)" {
   direction: down
 
   surfaces: "Wire surfaces" {
-    grid-columns: 3
+    grid-columns: 4
     style.fill: "#f1f5f9"
 
-    http_sse: "HTTP + SSE" {style.fill: "#dbeafe"}
-    grpc: "gRPC" {style.fill: "#dbeafe"}
+    http_sse: "HTTP + SSE\n/v1/* endpoints" {style.fill: "#dbeafe"}
+    grpc: "gRPC\n(metadata + streaming RPCs)" {style.fill: "#dbeafe"}
     webui: "React Web UI (/ui)" {style.fill: "#dbeafe"}
+    mcp_stdio: "MCP server (stdio)\nv0.8.15 · 20 tools" {
+      style: {fill: "#c7d2fe"; bold: true}
+    }
   }
 
   middleware: "Auth (bearer, constant-time) · Concurrency semaphore · Cancel registry" {
     style: {
       fill: "#f8fafc"
       italic: true
+      font-size: 13
+    }
+  }
+
+  connector: "connector.Connector — 20-method Go interface (v0.8.15+)\nHTTP server IMPLEMENTS · MCP / gRPC / future CLI CONSUME\nTS / Python adapters MIRROR (over HTTP wire)" {
+    style: {
+      fill: "#fce7f3"
+      stroke: "#be185d"
+      stroke-width: 2
+      bold: true
       font-size: 13
     }
   }
@@ -66,10 +79,10 @@ loomcycle: "loomcycle — single Go binary (~30 MB)" {
     grid-columns: 3
     style.fill: "#fef3c7"
 
-    builtins: "10 built-in tools\nMemory · Read · Write · Edit\nHTTP · WebFetch · WebSearch\nBash · Agent · Skill" {
+    builtins: "14 built-in tools\nRead · Write · Edit · HTTP\nWebFetch · WebSearch · Bash\nAgent · Skill · Memory\nChannel · AgentDef · Evaluation\nContext (v0.8.7/8)" {
       style: {fill: "#fde68a"; font-size: 12}
     }
-    mcp_layer: "MCP transport\nstdio pool +\nStreamable HTTP" {
+    mcp_layer: "MCP client transport\nstdio pool +\nStreamable HTTP\n(consumes external MCP servers)" {
       style: {fill: "#fde68a"; font-size: 12}
     }
     subagents: "Sub-agent runner\n(Agent tool)\nctx-inherited policy" {
@@ -77,7 +90,7 @@ loomcycle: "loomcycle — single Go binary (~30 MB)" {
     }
   }
 
-  store: "Store\nSQLite (default) · Postgres (HA)" {
+  store: "Store\nSQLite (default) · Postgres (HA)\n+ dynamic_agents (v0.8.15)" {
     shape: cylinder
     style: {
       fill: "#fed7aa"
@@ -87,8 +100,9 @@ loomcycle: "loomcycle — single Go binary (~30 MB)" {
   }
 
   surfaces -> middleware: {style.stroke: "#94a3b8"}
-  middleware -> loop: {style.stroke: "#94a3b8"}
-  loop -> dispatcher: "dispatch" {style.stroke: "#4f46e5"}
+  middleware -> connector: {style.stroke: "#94a3b8"}
+  connector -> loop: "dispatch" {style.stroke: "#be185d"; style.stroke-width: 2}
+  loop -> dispatcher: "tool calls" {style.stroke: "#4f46e5"}
   loop -> store: "transcripts · events" {style.stroke: "#ea580c"}
   dispatcher.subagents -> loop: "spawn child" {
     style.stroke: "#4f46e5"
