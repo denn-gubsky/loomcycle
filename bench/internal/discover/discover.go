@@ -8,6 +8,12 @@
 // loomcycle resolver looks the key up in its registered providers.
 // A mismatch fails register_agent with "unknown provider".
 //
+//	anthropic     — Anthropic (api.anthropic.com). The baseline; not
+//	                in the default --providers list (would be redundant
+//	                with the judge), but available for diagnostic
+//	                "is the MCP integration broken?" sweeps that
+//	                isolate loomcycle/wire issues from third-party
+//	                model weaknesses.
 //	deepseek      — DeepSeek public API (api.deepseek.com)
 //	gemini        — Google Gemini (generativelanguage.googleapis.com)
 //	ollama        — Ollama Cloud (ollama.com, Bearer auth via OLLAMA_API_KEY)
@@ -26,6 +32,7 @@ import (
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/providers"
+	"github.com/denn-gubsky/loomcycle/internal/providers/anthropic"
 	"github.com/denn-gubsky/loomcycle/internal/providers/deepseek"
 	"github.com/denn-gubsky/loomcycle/internal/providers/gemini"
 	"github.com/denn-gubsky/loomcycle/internal/providers/ollama"
@@ -86,6 +93,13 @@ func newDriver(key string) (providers.Provider, error) {
 	opts := streamhttp.Options{HeaderTimeout: 10 * time.Second, IdleTimeout: 30 * time.Second}
 
 	switch key {
+	case "anthropic":
+		apiKey := os.Getenv("ANTHROPIC_API_KEY")
+		if apiKey == "" {
+			return nil, fmt.Errorf("ANTHROPIC_API_KEY not set")
+		}
+		return anthropic.New(apiKey, "", opts, httpc), nil
+
 	case "deepseek":
 		apiKey := os.Getenv("DEEPSEEK_API_KEY")
 		if apiKey == "" {
