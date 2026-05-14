@@ -2,11 +2,35 @@
 
 Per-version release notes from v0.4.0 onward. The current and immediately previous releases are also summarised in the main [`README.md`](README.md); older releases live here.
 
-For the **public roadmap** (planned v0.8.15 through v1.0 work — LoomCycle MCP, Question tool, Pause / Resume / Snapshot, distribution, operator postures), see [`docs/PLAN.md`](docs/PLAN.md).
+For the **public roadmap** (planned v0.8.16 through v1.0 work — Question tool, Pause / Resume / Snapshot, distribution, operator postures), see [`docs/PLAN.md`](docs/PLAN.md).
 
 For pre-v0.4 history (single-tool runtime, library milestone, security patch), see the same `docs/PLAN.md` under the per-version sections.
 
 ---
+
+## What's in v0.8.15
+
+| Surface             | Status |
+|---------------------|--------|
+| **`connector.Connector` interface** | ✅ New `internal/connector/` package — 20-method Go interface that every wire transport translates into. `*lchttp.Server` IMPLEMENTS it (530 LOC of method implementations in `connector_impl.go`); `*lcmcp.Server` + `*loomgrpc.Server` CONSUME it via direct method dispatch (no HTTP round-trips). Compile-time interface assertion prevents drift. TS/Python adapters mirror the same operation surface in their own languages over the HTTP wire. (PR #99) |
+| **MCP server — 20 tools** | ✅ New `internal/api/mcp/` package: stdio JSON-RPC I/O loop + handshake + 20 tool handlers. **Run lifecycle:** spawn_run, cancel_run, get_run, list_runs. **Agent management:** register_agent, unregister_agent, list_agents. **Builtin wrappers:** memory, channel, agentdef, evaluation, context (pass-through to tool.Execute via Connector). **Pause/Resume:** pause_runtime, resume_runtime, get_runtime_state (PREVIEW-mocked). **Snapshot:** create_snapshot, list_snapshots, export_snapshot, restore_snapshot, delete_snapshot (PREVIEW-mocked). (PR #99) |
+| **Streaming via MCP notifications** | ✅ When the client opts in via `initialize.capabilities.loomcycle.runEvents=true`, `spawn_run` drives `runner.RunOnce` directly and emits `notifications/loomcycle/run_event` per provider event before returning. Wire-ordering invariant pinned: every notification lands on stdout BEFORE the final response. Adapters rendering live agent output depend on this. (PR #99) |
+| **Dynamic agent registration** | ✅ New `dynamic_agents` table (SQLite + Postgres migration 0010) + 5 Store methods + TTL sweeper. `mcp__loomcycle__register_agent` persists agents at runtime; `dynamic_agents_by_expires_at` partial index drives the sweep. Privileged tools (Bash/Write/Edit) stripped from `allowed_tools` unless `LOOMCYCLE_MCP_ALLOW_PRIVILEGED_TOOLS=1`. Name collisions with static yaml agents rejected. (PR #99) |
+| **`loomcycle mcp --config Y` subcommand** | ✅ New entry point starts BOTH the HTTP listener AND the stdio MCP loop. Logs to stderr (stdout is the JSON-RPC wire). Companion `loomcycle-mcp.sh` wrapper at repo root sources `.env.local` before exec — required because Claude Code's MCP spawn inherits an empty env, missing the `LOOMCYCLE_*` keys upstream MCP server `${...}` placeholders expect. Without the wrapper, upstream handshakes block stdio readiness for ~32s. (PR #99) |
+| **gRPC server dispatches through Connector** | ✅ `internal/api/grpc/server.go` now holds BOTH a `connector.Connector` field (used by `CancelAgent` and future proto handlers) AND the existing `runner.Runner` field (streaming Run/Continue — Connector.SpawnRun is blocking-only). Legacy direct path retained when Connector is nil for backwards compat with older test fixtures. (PR #99) |
+| **`operatorCtx` policy enrichment** | ✅ Code-review catch: bare-ctx dispatch to `tool.Execute` from MCP would have failed every builtin wrapper with "no scope configured" because policy values weren't on ctx. New `internal/api/mcp/context.go operatorCtx()` enriches ctx with all 5 policy values (memory/channel/agentdef/evaluation/history) + synthetic RunIdentity + AgentName="mcp-operator" before each builtin wrapper invocation. Pinned by `TestOperatorCtx_AttachesAllRequiredPolicies`. (PR #99 review cycle) |
+| **3 new env vars** | ✅ `LOOMCYCLE_MCP_ALLOW_PRIVILEGED_TOOLS` (default 0 — strip Bash/Write/Edit from dynamic agent allowed_tools), `LOOMCYCLE_DYNAMIC_AGENT_DEFAULT_TTL_SECONDS` (default 86400 — TTL when register_agent omits ttl_seconds), `LOOMCYCLE_DYNAMIC_AGENT_SWEEP_INTERVAL_MS` (default 900000 — sweeper cadence; 0 disables). Documented in `.env.example`. (PR #99, PR #100) |
+| **doc-internal migration** | ✅ Internal design docs (PLAN.md, RFCs, decision history) moved from `~/work/loomcycle/doc-internal/` (in-repo, always gitignored) to `~/work/loomcycle-internal/doc-internal/` (separate operator-side repo). `.gitignore` + `CLAUDE.md` updated in lockstep; the in-repo folder deleted in PR #100. Future RFC reads/edits use the external path. (PR #100) |
+| **11 MCP unit tests** | ✅ Handshake, tools/list (20 tools), spawn_run blocking + streaming, notification-before-response ordering, register_agent dispatch, unknown tool → -32601, malformed frame → -32700, sequential dispatch (5 requests), pause_runtime PREVIEW shape, operatorCtx policy contract. Plus +1 gRPC regression `TestGrpcServer_CancelAgent_DispatchesThroughConnector`. `go test -race ./...` clean across 41 packages. |
+| **Sharp edges (v0.8.16 follow-ups)** | ⚠️ Boot-time upstream MCP init can block stdio readiness for ~32s if an upstream is misconfigured (`loomcycle-mcp.sh` wrapper mitigates); `loomcycle mcp` binds 127.0.0.1:8787 alongside MCP (operators can't run daemon + mcp simultaneously); Pause/Resume/Snapshot ship as PREVIEW shapes (real impl in v0.8.16+, wire is locked). |
+
+**Operator integration recipe** — project-root `.mcp.json`:
+
+```json
+{"mcpServers": {"loomcycle": {"command": "/abs/path/to/loomcycle/loomcycle-mcp.sh"}}}
+```
+
+Or via `claude mcp add loomcycle /path/to/loomcycle-mcp.sh` (writes to `~/.claude.json`). **Note:** `~/.claude/mcp.json` is NOT a discovered location.
 
 ## What's in v0.8.14
 
