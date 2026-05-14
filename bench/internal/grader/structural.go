@@ -95,17 +95,27 @@ func failAxis(reason string) AxisResult {
 //
 // Anything else in the schema is silently ignored — keep the
 // validator small and predictable.
+//
+// Response-text discipline:
+//   - First we strip outer whitespace + leading/trailing ``` fences.
+//   - If the result starts with `{` or `[`, validate it directly.
+//   - Otherwise extract the largest balanced `{...}` / `[...]` block
+//     and validate that. This handles the common "model leads with
+//     prose / 'I have called the tool...' before emitting the JSON"
+//     case — production agents can strip prose, so capability rank
+//     shouldn't fail on it. Cases that REQUIRE bare-JSON output
+//     (e.g., production injection-judge's downstream parser) can use
+//     `must_not_match` regex to flag pre-JSON narration as a separate
+//     structural sub-check.
 func validateJSONAgainstSchema(textBody, schemaJSON string) (bool, string) {
-	// Strip leading/trailing whitespace and optional code fences so the
-	// validator is forgiving about presentation. A case that wants to
-	// REJECT fences should use must_not_match alongside the schema.
 	text := strings.TrimSpace(textBody)
 	text = stripCodeFences(text)
-	if !looksLikeJSON(text) {
-		return false, "final text is not a JSON object/array (first char: " + firstChar(text) + ")"
+	jsonPart, ok := extractJSONBlock(text)
+	if !ok {
+		return false, "no JSON object or array found in response (first char: " + firstChar(text) + ")"
 	}
 	var value any
-	if err := json.Unmarshal([]byte(text), &value); err != nil {
+	if err := json.Unmarshal([]byte(jsonPart), &value); err != nil {
 		return false, "json parse: " + err.Error()
 	}
 	var schema map[string]any
@@ -118,11 +128,73 @@ func validateJSONAgainstSchema(textBody, schemaJSON string) (bool, string) {
 	return true, ""
 }
 
-func looksLikeJSON(s string) bool {
-	s = strings.TrimSpace(s)
-	return strings.HasPrefix(s, "{") || strings.HasPrefix(s, "[")
+// extractJSONBlock finds and returns the largest balanced {...} or
+// [...] substring in s. Returns ("", false) when no balanced block
+// exists.
+//
+// Implementation: walk s with a depth counter, tracking whether we're
+// inside a JSON string (to ignore brace/bracket chars within strings).
+// We seek the FIRST opening brace/bracket, then find its matching
+// close. This is good enough for the bench's use case — cases produce
+// one top-level JSON value preceded/followed by at most narration.
+//
+// Not a full JSON parser; just a balanced-delimiter scanner. The
+// json.Unmarshal call downstream is what enforces well-formedness.
+func extractJSONBlock(s string) (string, bool) {
+	first := -1
+	var open, close byte
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c == '{' {
+			first, open, close = i, '{', '}'
+			break
+		}
+		if c == '[' {
+			first, open, close = i, '[', ']'
+			break
+		}
+	}
+	if first < 0 {
+		return "", false
+	}
+	depth := 0
+	inString := false
+	escape := false
+	for i := first; i < len(s); i++ {
+		c := s[i]
+		if escape {
+			escape = false
+			continue
+		}
+		if inString {
+			if c == '\\' {
+				escape = true
+				continue
+			}
+			if c == '"' {
+				inString = false
+			}
+			continue
+		}
+		if c == '"' {
+			inString = true
+			continue
+		}
+		if c == open {
+			depth++
+		} else if c == close {
+			depth--
+			if depth == 0 {
+				return s[first : i+1], true
+			}
+		}
+	}
+	return "", false
 }
 
+// firstChar returns a short description of the leading character for
+// diagnostic messages. Exported (lowercase-helper) for the no-JSON
+// branch of validateJSONAgainstSchema.
 func firstChar(s string) string {
 	s = strings.TrimSpace(s)
 	if s == "" {
