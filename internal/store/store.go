@@ -589,6 +589,34 @@ type Store interface {
 	// the count deleted. Idempotent under concurrent sweepers.
 	MetricsSweep(ctx context.Context, cutoff time.Time) (int, error)
 
+	// DynamicAgentUpsert writes a dynamic agent row. The (name)
+	// column is the primary key — re-upserting the same name
+	// overwrites the definition and resets expires_at. expiresAt is
+	// zero-valued to mean "no expiry" (operator must explicitly
+	// DynamicAgentDelete). v0.8.15+.
+	DynamicAgentUpsert(ctx context.Context, agent DynamicAgent) error
+
+	// DynamicAgentGet reads one dynamic agent. Returns *ErrNotFound
+	// for both "row missing" and "row expired" — callers don't need
+	// to distinguish. Expired rows are filtered server-side
+	// regardless of whether the sweeper has reaped them yet.
+	DynamicAgentGet(ctx context.Context, name string) (DynamicAgent, error)
+
+	// DynamicAgentList enumerates non-expired dynamic agents.
+	// Capped at 200 rows ordered by created_at DESC.
+	DynamicAgentList(ctx context.Context) ([]DynamicAgent, error)
+
+	// DynamicAgentDelete removes one dynamic agent. Returns true
+	// when a row was actually deleted, false when the name didn't
+	// exist (or had already expired). Both are non-error paths.
+	DynamicAgentDelete(ctx context.Context, name string) (bool, error)
+
+	// DynamicAgentSweep deletes every dynamic_agents row whose
+	// expires_at has passed. Returns the row count deleted. Safe to
+	// run from a periodic goroutine; idempotent under concurrent
+	// sweepers (single atomic DELETE).
+	DynamicAgentSweep(ctx context.Context) (int, error)
+
 	// Close releases backend resources. Idempotent.
 	Close() error
 }
@@ -767,6 +795,23 @@ type MetricsRunWindow struct {
 	PeakRSSBytes  int64     `json:"peak_rss_bytes"`
 	MeanRSSBytes  int64     `json:"mean_rss_bytes"`
 	MaxCPUPctX100 int       `json:"max_cpu_pct_x100"`
+}
+
+// DynamicAgent is one row in the dynamic_agents table. Holds the JSON-
+// encoded AgentDef body verbatim (the store doesn't depend on
+// internal/config — dep direction would invert; the v0.8.5 AgentDefRow
+// uses the same pattern). v0.8.15 LoomCycle MCP adds runtime
+// registration via `mcp__loomcycle__register_agent`.
+//
+// ExpiresAt is zero when the agent has no TTL (operator must
+// explicitly unregister); non-zero rows are filtered by
+// DynamicAgentGet / DynamicAgentList when expires_at < now().
+type DynamicAgent struct {
+	Name        string    `json:"name"`       // primary key; charset [A-Za-z0-9_-]{1,64}
+	Definition  []byte    `json:"definition"` // JSON-encoded config.AgentDef body
+	CreatedAt   time.Time `json:"created_at"`
+	ExpiresAt   time.Time `json:"expires_at,omitempty"` // zero = no expiry
+	Description string    `json:"description,omitempty"`
 }
 
 // ---- v0.8.5 Self-Evolution Substrate types ----

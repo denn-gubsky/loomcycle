@@ -613,6 +613,20 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	}
 	agentDef, ok := s.cfg.Agents[effectiveAgentName]
 	if !ok {
+		// v0.8.15: fall back to dynamic agents registered at runtime
+		// via mcp__loomcycle__register_agent. TTL-expired rows are
+		// filtered server-side by DynamicAgentGet so we never see them.
+		if s.store != nil {
+			if row, derr := s.store.DynamicAgentGet(ctx, effectiveAgentName); derr == nil {
+				var def config.AgentDef
+				if uerr := json.Unmarshal(row.Definition, &def); uerr == nil {
+					agentDef = def
+					ok = true
+				}
+			}
+		}
+	}
+	if !ok {
 		return fmt.Errorf("%w: %s", runner.ErrUnknownAgent, effectiveAgentName)
 	}
 	providerID, model, effort, err := s.resolveAgent(effectiveAgentName, in.UserTier)

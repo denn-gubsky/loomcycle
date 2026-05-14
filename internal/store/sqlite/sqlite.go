@@ -230,6 +230,20 @@ func (s *Store) migrate(ctx context.Context) error {
 		// below (defensive: future column additions via ALTER TABLE
 		// would otherwise risk the upgrade-path bug that hit
 		// channel_messages_by_visible in v0.8.6).
+
+		// v0.8.15 LoomCycle MCP: dynamic_agents — runtime-registered
+		// agents from `mcp__loomcycle__register_agent`. Survive restart
+		// until TTL expiry (or explicit unregister). definition holds
+		// the JSON-encoded config.AgentDef body verbatim (the store
+		// doesn't depend on internal/config; same pattern as v0.8.5
+		// agent_defs). expires_at = 0 means "no expiry".
+		`CREATE TABLE IF NOT EXISTS dynamic_agents (
+			name        TEXT PRIMARY KEY,
+			definition  BLOB    NOT NULL,
+			created_at  INTEGER NOT NULL,
+			expires_at  INTEGER NOT NULL DEFAULT 0,
+			description TEXT
+		)`,
 	}
 	for _, q := range stmts {
 		if _, err := s.db.ExecContext(ctx, q); err != nil {
@@ -302,6 +316,10 @@ func (s *Store) migrate(ctx context.Context) error {
 		// path for /v1/_metrics/samples (window scan) and the
 		// sweep DELETE WHERE sampled_at < cutoff.
 		`CREATE INDEX IF NOT EXISTS process_samples_by_sampled_at ON process_samples(sampled_at)`,
+		// v0.8.15 dynamic_agents_by_expires_at. Drives the sweeper
+		// (DELETE WHERE expires_at < now() AND expires_at > 0) and the
+		// per-Get expiry filter. Partial: only TTL-bearing rows.
+		`CREATE INDEX IF NOT EXISTS dynamic_agents_by_expires_at ON dynamic_agents(expires_at) WHERE expires_at > 0`,
 	}
 	for _, q := range addIndexes {
 		// Note the asymmetry vs addColumns above: indexes use
@@ -2122,6 +2140,110 @@ func (s *Store) MetricsSweep(ctx context.Context, cutoff time.Time) (int, error)
 	res, err := s.db.ExecContext(ctx, `DELETE FROM process_samples WHERE sampled_at < ?`, cutoff.UnixNano())
 	if err != nil {
 		return 0, fmt.Errorf("metrics: sweep: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	return int(n), nil
+}
+
+// --- v0.8.15 dynamic_agents (LoomCycle MCP runtime registration) ---
+
+func (s *Store) DynamicAgentUpsert(ctx context.Context, a store.DynamicAgent) error {
+	if a.Name == "" {
+		return fmt.Errorf("dynamic_agents: name required")
+	}
+	if len(a.Definition) == 0 {
+		return fmt.Errorf("dynamic_agents: definition required")
+	}
+	createdAt := a.CreatedAt
+	if createdAt.IsZero() {
+		createdAt = time.Now()
+	}
+	var expiresAtNS int64
+	if !a.ExpiresAt.IsZero() {
+		expiresAtNS = a.ExpiresAt.UnixNano()
+	}
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO dynamic_agents (name, definition, created_at, expires_at, description)
+		VALUES (?, ?, ?, ?, ?)
+		ON CONFLICT(name) DO UPDATE SET
+			definition  = excluded.definition,
+			created_at  = excluded.created_at,
+			expires_at  = excluded.expires_at,
+			description = excluded.description
+	`, a.Name, a.Definition, createdAt.UnixNano(), expiresAtNS, a.Description)
+	if err != nil {
+		return fmt.Errorf("dynamic_agents: upsert: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) DynamicAgentGet(ctx context.Context, name string) (store.DynamicAgent, error) {
+	row := s.db.QueryRowContext(ctx, `
+		SELECT name, definition, created_at, expires_at, COALESCE(description, '')
+		FROM dynamic_agents
+		WHERE name = ? AND (expires_at = 0 OR expires_at > ?)
+	`, name, time.Now().UnixNano())
+
+	var a store.DynamicAgent
+	var createdAtNS, expiresAtNS int64
+	if err := row.Scan(&a.Name, &a.Definition, &createdAtNS, &expiresAtNS, &a.Description); err != nil {
+		if err == sql.ErrNoRows {
+			return store.DynamicAgent{}, &store.ErrNotFound{Kind: "dynamic_agent", ID: name}
+		}
+		return store.DynamicAgent{}, fmt.Errorf("dynamic_agents: get: %w", err)
+	}
+	a.CreatedAt = time.Unix(0, createdAtNS)
+	if expiresAtNS > 0 {
+		a.ExpiresAt = time.Unix(0, expiresAtNS)
+	}
+	return a, nil
+}
+
+func (s *Store) DynamicAgentList(ctx context.Context) ([]store.DynamicAgent, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT name, definition, created_at, expires_at, COALESCE(description, '')
+		FROM dynamic_agents
+		WHERE expires_at = 0 OR expires_at > ?
+		ORDER BY created_at DESC
+		LIMIT 200
+	`, time.Now().UnixNano())
+	if err != nil {
+		return nil, fmt.Errorf("dynamic_agents: list: %w", err)
+	}
+	defer rows.Close()
+
+	out := []store.DynamicAgent{}
+	for rows.Next() {
+		var a store.DynamicAgent
+		var createdAtNS, expiresAtNS int64
+		if err := rows.Scan(&a.Name, &a.Definition, &createdAtNS, &expiresAtNS, &a.Description); err != nil {
+			return nil, fmt.Errorf("dynamic_agents: list scan: %w", err)
+		}
+		a.CreatedAt = time.Unix(0, createdAtNS)
+		if expiresAtNS > 0 {
+			a.ExpiresAt = time.Unix(0, expiresAtNS)
+		}
+		out = append(out, a)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) DynamicAgentDelete(ctx context.Context, name string) (bool, error) {
+	res, err := s.db.ExecContext(ctx, `DELETE FROM dynamic_agents WHERE name = ?`, name)
+	if err != nil {
+		return false, fmt.Errorf("dynamic_agents: delete: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	return n > 0, nil
+}
+
+func (s *Store) DynamicAgentSweep(ctx context.Context) (int, error) {
+	res, err := s.db.ExecContext(ctx, `
+		DELETE FROM dynamic_agents
+		WHERE expires_at > 0 AND expires_at < ?
+	`, time.Now().UnixNano())
+	if err != nil {
+		return 0, fmt.Errorf("dynamic_agents: sweep: %w", err)
 	}
 	n, _ := res.RowsAffected()
 	return int(n), nil

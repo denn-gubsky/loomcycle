@@ -5,11 +5,16 @@
 //	loomcycle health [--target <url>]               — ping a running instance
 //	loomcycle migrate up|down|status [--config Y]   — run Postgres schema migrations
 //	loomcycle migrate sqlite-to-postgres            — copy data between adapters
+//	loomcycle mcp [--config <yaml>]                 — run as MCP server (stdio, v0.8.15+)
 //
 // Each subcommand exposes a Run* function returning an exit code so the
 // caller (cmd/loomcycle/main.go) can `os.Exit(rc)` cleanly. Stdout/
 // stderr are passed in so tests can assert on the produced output
 // without race-driving the global os.Stdout.
+//
+// Note: `mcp` is special — it's handled directly in main.go (not via
+// a Run* function here) because it reuses the full server boot path.
+// PrintHelp still lists it for discoverability.
 //
 // Design intent: these are thin wrappers around existing internal
 // packages. No business logic lives here — validate calls config.Load
@@ -43,6 +48,9 @@ func PrintHelp(w io.Writer) {
 	fmt.Fprintln(w, "  migrate status  [--config <y>]   show current schema version + dirty flag")
 	fmt.Fprintln(w, "  migrate sqlite-to-postgres --src <path> --dst <dsn>")
 	fmt.Fprintln(w, "                                   copy SQLite data into Postgres")
+	fmt.Fprintln(w, "  mcp [--config <yaml>]            run as MCP server over stdio (v0.8.15+)")
+	fmt.Fprintln(w, "                                   exposes 20 tools; consumed by Claude Code,")
+	fmt.Fprintln(w, "                                   custom MCP orchestrators, etc.")
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Run any subcommand with -h for its own flags.")
 }

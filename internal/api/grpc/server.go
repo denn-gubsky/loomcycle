@@ -31,6 +31,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/api/grpc/loomcyclepb"
 	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/cancel"
+	"github.com/denn-gubsky/loomcycle/internal/connector"
 	"github.com/denn-gubsky/loomcycle/internal/loop"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/runner"
@@ -38,18 +39,33 @@ import (
 )
 
 // Server implements loomcyclepb.LoomcycleServer. The metadata RPCs
-// (Health, GetAgent, CancelAgent, ListUserAgents, GetTranscript) read
-// from the same Store + cancel.Registry the HTTP server uses; the
-// streaming RPCs (Run, Continue) delegate to a runner.Runner — in
+// dispatch through the connector.Connector interface (v0.8.15+) — in
 // production this is the *internal/api/http.Server instance from
-// main.go, so a cancel issued via gRPC reaches a run started via
-// HTTP and vice versa.
+// main.go, so a cancel/get/list issued via gRPC reaches the same
+// business logic the HTTP /v1/* endpoints use. The streaming RPCs
+// (Run, Continue) keep using runner.Runner directly because Connector
+// only exposes a blocking SpawnRun — gRPC streaming needs the
+// callback-driven runner.RunOnce path.
+//
+// Future proto method additions (gRPC equivalents of the remaining
+// Connector methods — RegisterAgent, ListAgents, Memory, Channel,
+// AgentDef, Evaluation, Context, Pause/Snapshot) slot into the
+// Connector dispatch pattern mechanically.
 type Server struct {
 	loomcyclepb.UnimplementedLoomcycleServer
 
 	store     store.Store
 	cancelReg *cancel.Registry
-	runner    runner.Runner
+	// connector is the v0.8.15+ canonical operation surface. Used by
+	// the unary metadata RPCs (GetAgent, CancelAgent). May be nil for
+	// older callers that didn't supply one; the affected handlers
+	// fall back to the legacy direct-store + cancelReg path.
+	connector connector.Connector
+	// runner is the wire-agnostic loop driver used by Run + Continue
+	// streaming RPCs. Connector.SpawnRun is blocking-only; gRPC
+	// streaming needs the callback-driven runner.RunOnce path so this
+	// field stays alongside connector.
+	runner runner.Runner
 
 	// authToken is the bearer token clients must present in the
 	// `authorization` gRPC metadata header. Empty means open-mode
@@ -72,9 +88,15 @@ type Server struct {
 type Config struct {
 	Store     store.Store
 	CancelReg *cancel.Registry
-	// Runner is the wire-agnostic loop driver. *internal/api/http.Server
-	// satisfies it. May be nil — Run + Continue then return
-	// codes.Unimplemented (useful for tests that don't need streaming).
+	// Connector is the v0.8.15+ operation surface that unary metadata
+	// RPCs dispatch through. *internal/api/http.Server satisfies it.
+	// Optional — when nil, GetAgent/CancelAgent fall back to direct
+	// store+cancelReg paths (preserves backwards compatibility).
+	Connector connector.Connector
+	// Runner is the wire-agnostic loop driver for the streaming RPCs.
+	// *internal/api/http.Server also satisfies it. May be nil — Run +
+	// Continue then return codes.Unimplemented (useful for tests that
+	// don't need streaming).
 	Runner      runner.Runner
 	AuthToken   string
 	BuildCommit string
@@ -87,6 +109,7 @@ func New(cfg Config) *Server {
 	return &Server{
 		store:       cfg.Store,
 		cancelReg:   cfg.CancelReg,
+		connector:   cfg.Connector,
 		runner:      cfg.Runner,
 		authToken:   cfg.AuthToken,
 		buildCommit: cfg.BuildCommit,
@@ -165,16 +188,39 @@ func (s *Server) CancelAgent(ctx context.Context, req *loomcyclepb.CancelAgentRe
 	}
 	agentID := req.GetAgentId()
 
+	// v0.8.15+ dispatch through Connector. The Connector method
+	// already handles both "live in registry" (cascade-cancel) and
+	// "in store but already ended" (idempotent no-op) paths — we just
+	// translate its result into proto + gRPC status codes here.
+	if s.connector != nil {
+		res, err := s.connector.CancelRun(ctx, agentID, req.GetReason())
+		if err != nil {
+			var nf *store.ErrNotFound
+			if errors.As(err, &nf) {
+				return nil, status.Errorf(codes.NotFound, "no run found for agent_id %q", agentID)
+			}
+			return nil, status.Errorf(codes.Internal, "connector: %v", err)
+		}
+		// Cancelled=true means this call initiated the cancel (live in
+		// registry); AlreadyEnded=true means the run was already
+		// terminated. Both succeed; cancelled_count = 1+cascade on the
+		// active path, 0 on the idempotent path.
+		if res.Cancelled {
+			return &loomcyclepb.CancelAgentResponse{
+				CancelledCount: int32(1 + res.CascadeCount),
+			}, nil
+		}
+		return &loomcyclepb.CancelAgentResponse{CancelledCount: 0}, nil
+	}
+
+	// Legacy direct path (preserves backwards compat when no
+	// Connector was supplied — e.g., older callers, some tests).
 	res, ok := s.cancelReg.Cancel(agentID, req.GetReason())
 	if ok {
-		// The cascade walk captured this agent + every descendant; the
-		// proto's cancelled_count reports the total.
 		return &loomcyclepb.CancelAgentResponse{
 			CancelledCount: int32(1 + len(res.Cascaded)),
 		}, nil
 	}
-
-	// Not in registry — either already terminated or never existed.
 	if s.store == nil {
 		return nil, status.Errorf(codes.NotFound, "no live or terminated run for %q (no store configured)", agentID)
 	}
@@ -185,10 +231,6 @@ func (s *Server) CancelAgent(ctx context.Context, req *loomcyclepb.CancelAgentRe
 		}
 		return nil, status.Errorf(codes.Internal, "store: %v", err)
 	}
-	// Idempotent: agent exists in the store but is no longer live —
-	// cancelled_count = 0 signals "this call did not initiate the
-	// cancel" but the RPC succeeds (mirrors HTTP's 200 with
-	// cancelled=false).
 	return &loomcyclepb.CancelAgentResponse{CancelledCount: 0}, nil
 }
 

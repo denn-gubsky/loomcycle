@@ -56,6 +56,7 @@ import (
 
 	loomgrpc "github.com/denn-gubsky/loomcycle/internal/api/grpc"
 	"github.com/denn-gubsky/loomcycle/internal/api/grpc/loomcyclepb"
+	lcmcp "github.com/denn-gubsky/loomcycle/internal/api/mcp"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 	"github.com/denn-gubsky/loomcycle/internal/tools/builtin"
 	"github.com/denn-gubsky/loomcycle/internal/tools/localapi"
@@ -162,6 +163,16 @@ func main() {
 	// the known subcommands, hand off to internal/cli and exit.
 	// Otherwise fall through to the server entry point (preserves
 	// backwards compat: `loomcycle --config foo.yaml` still works).
+	//
+	// The `mcp` subcommand is a special case (v0.8.15+): it starts
+	// the SAME server setup as the default flow, plus a stdio MCP
+	// listener reading os.Stdin / writing os.Stdout. CRITICAL: in
+	// mcp mode, no code may write to os.Stdout outside the MCP loop
+	// — stdout is the JSON-RPC wire. The stdlib `log` package
+	// defaults to os.Stderr (so log lines are safe); any future
+	// `fmt.Println` / direct os.Stdout writes elsewhere in the
+	// binary would corrupt the protocol.
+	mcpMode := false
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
 		case "validate":
@@ -172,6 +183,11 @@ func main() {
 			os.Exit(cli.RunHealth(os.Args[2:], os.Stdout, os.Stderr))
 		case "migrate":
 			os.Exit(cli.RunMigrate(os.Args[2:], os.Stdout, os.Stderr))
+		case "mcp":
+			mcpMode = true
+			// Strip "mcp" from os.Args so flag.Parse() below sees
+			// the remaining flags (--config etc.) at index 1+.
+			os.Args = append([]string{os.Args[0]}, os.Args[2:]...)
 		case "help", "-h", "--help":
 			cli.PrintHelp(os.Stdout)
 			return
@@ -696,6 +712,46 @@ func main() {
 		sessionGCMaxIdle = 10 * time.Minute
 	}
 	go srv.RunSessionLockGC(bgCtx, sessionGCInterval, sessionGCMaxIdle)
+
+	// v0.8.15: LoomCycle MCP — when launched via `loomcycle mcp --config Y`,
+	// expose the runtime as an MCP server over stdio alongside the HTTP
+	// listener. Per the RFC, both surfaces run together; the HTTP server
+	// keeps serving /healthz, /v1/*, and the Web UI while MCP clients
+	// (Claude Code first) drive the same business logic through
+	// Connector dispatch.
+	//
+	// The dynamic-agent TTL sweeper runs in BOTH default and mcp modes:
+	// the dynamic_agents table is shared. operators who never use the
+	// `register_agent` MCP tool simply have an empty table the sweeper
+	// passes over with zero rows deleted.
+	if cfg.Env.DynamicAgentSweepInterval > 0 {
+		lcmcp.RunDynamicAgentSweeper(bgCtx, storeIface, cfg.Env.DynamicAgentSweepInterval, log.Printf)
+		log.Printf("dynamic_agents: sweeper enabled (interval=%s)", cfg.Env.DynamicAgentSweepInterval)
+	}
+	if mcpMode {
+		mcpSrv := lcmcp.New(lcmcp.Config{
+			Connector:     srv, // *http.Server satisfies connector.Connector
+			Runner:        srv, // *http.Server satisfies runner.Runner (streaming)
+			Store:         storeIface,
+			Logf:          log.Printf, // log goes to stderr; never stdout (stdout is the JSON-RPC wire)
+			ServerName:    "loomcycle",
+			ServerVersion: buildVersion,
+		})
+		// Run the MCP stdio loop in a goroutine. When stdin closes
+		// (Claude Code disconnects), Serve returns; we log and let
+		// the HTTP listener keep serving until the process is sent
+		// a signal. Operators who want MCP-disconnect = process-exit
+		// can wrap loomcycle in a supervisor that watches for the
+		// log line.
+		go func() {
+			log.Printf("mcp: stdio server starting (20 tools registered)")
+			if err := mcpSrv.Serve(bgCtx, os.Stdin, os.Stdout); err != nil {
+				log.Printf("mcp: serve ended: %v", err)
+			} else {
+				log.Printf("mcp: stdio closed; HTTP listener continues")
+			}
+		}()
+	}
 	log.Printf("session-lock GC: interval=%s max_idle=%s", sessionGCInterval, sessionGCMaxIdle)
 
 	// Periodic probe loop: re-runs the resolver's reachability +
@@ -729,7 +785,8 @@ func main() {
 		grpcAdapter := loomgrpc.New(loomgrpc.Config{
 			Store:       storeIface,
 			CancelReg:   srv.CancelRegistry(),
-			Runner:      srv, // *http.Server satisfies runner.Runner
+			Connector:   srv, // v0.8.15: *http.Server satisfies connector.Connector
+			Runner:      srv, // *http.Server satisfies runner.Runner (streaming)
 			AuthToken:   cfg.Env.AuthToken,
 			BuildCommit: buildCommit,
 			BuildTime:   buildTime,

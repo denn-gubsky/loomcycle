@@ -2,9 +2,11 @@ package grpc
 
 import (
 	"context"
+	"encoding/json"
 	"net"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -16,6 +18,7 @@ import (
 
 	"github.com/denn-gubsky/loomcycle/internal/api/grpc/loomcyclepb"
 	"github.com/denn-gubsky/loomcycle/internal/cancel"
+	"github.com/denn-gubsky/loomcycle/internal/connector"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/runner"
 	"github.com/denn-gubsky/loomcycle/internal/store"
@@ -579,6 +582,129 @@ func startTestServerWithRunner(t *testing.T, r runner.Runner) (loomcyclepb.Loomc
 		grpcSrv.GracefulStop()
 	}
 	return loomcyclepb.NewLoomcycleClient(conn), cleanup
+}
+
+// mockConnector is a minimal connector.Connector for the gRPC
+// dispatch-through-connector regression test. Every method records
+// it was called; only the methods exercised by the test (CancelRun)
+// return meaningful results — the rest return zero values, which is
+// fine because the test only calls CancelAgent.
+type mockConnector struct {
+	cancelCalls atomic.Int32
+	lastAgentID atomic.Value // string
+	lastReason  atomic.Value // string
+	cancelOK    atomic.Bool  // controls return value
+	cascade     atomic.Int32 // CascadeCount returned
+}
+
+func (m *mockConnector) CancelRun(_ context.Context, agentID, reason string) (connector.CancelRunResult, error) {
+	m.cancelCalls.Add(1)
+	m.lastAgentID.Store(agentID)
+	m.lastReason.Store(reason)
+	if !m.cancelOK.Load() {
+		return connector.CancelRunResult{}, &store.ErrNotFound{Kind: "run", ID: agentID}
+	}
+	return connector.CancelRunResult{
+		Cancelled:    true,
+		CascadeCount: int(m.cascade.Load()),
+	}, nil
+}
+
+// Every other Connector method returns a zero value — the dispatch
+// test only exercises CancelRun. Keeping them in one block so adding
+// a new Connector method forces a compile failure here (which is the
+// signal we want: "look at me, I'm new").
+func (m *mockConnector) SpawnRun(context.Context, connector.SpawnRunRequest) (connector.SpawnRunResult, error) {
+	return connector.SpawnRunResult{}, nil
+}
+func (m *mockConnector) GetRun(context.Context, string) (connector.Run, error) {
+	return connector.Run{}, nil
+}
+func (m *mockConnector) ListRuns(context.Context, connector.ListRunsFilter) ([]connector.Run, error) {
+	return nil, nil
+}
+func (m *mockConnector) RegisterAgent(context.Context, connector.RegisterAgentRequest) (connector.AgentDescriptor, error) {
+	return connector.AgentDescriptor{}, nil
+}
+func (m *mockConnector) UnregisterAgent(context.Context, string) error { return nil }
+func (m *mockConnector) ListAgents(context.Context, bool) ([]connector.AgentDescriptor, error) {
+	return nil, nil
+}
+func (m *mockConnector) Memory(context.Context, json.RawMessage) (connector.ToolResult, error) {
+	return connector.ToolResult{}, nil
+}
+func (m *mockConnector) Channel(context.Context, json.RawMessage) (connector.ToolResult, error) {
+	return connector.ToolResult{}, nil
+}
+func (m *mockConnector) AgentDef(context.Context, json.RawMessage) (connector.ToolResult, error) {
+	return connector.ToolResult{}, nil
+}
+func (m *mockConnector) Evaluation(context.Context, json.RawMessage) (connector.ToolResult, error) {
+	return connector.ToolResult{}, nil
+}
+func (m *mockConnector) Context(context.Context, json.RawMessage) (connector.ToolResult, error) {
+	return connector.ToolResult{}, nil
+}
+func (m *mockConnector) PauseRuntime(context.Context, int) (connector.PauseResult, error) {
+	return connector.PauseResult{}, nil
+}
+func (m *mockConnector) ResumeRuntime(context.Context) (connector.ResumeResult, error) {
+	return connector.ResumeResult{}, nil
+}
+func (m *mockConnector) GetRuntimeState(context.Context) (connector.RuntimeState, error) {
+	return connector.RuntimeState{}, nil
+}
+func (m *mockConnector) CreateSnapshot(context.Context, connector.CreateSnapshotRequest) (connector.SnapshotDescriptor, error) {
+	return connector.SnapshotDescriptor{}, nil
+}
+func (m *mockConnector) ListSnapshots(context.Context) ([]connector.SnapshotDescriptor, error) {
+	return nil, nil
+}
+func (m *mockConnector) ExportSnapshot(context.Context, string) (connector.ExportSnapshotResult, error) {
+	return connector.ExportSnapshotResult{}, nil
+}
+func (m *mockConnector) RestoreSnapshot(context.Context, connector.RestoreSnapshotRequest) (connector.RestoreSnapshotResult, error) {
+	return connector.RestoreSnapshotResult{}, nil
+}
+func (m *mockConnector) DeleteSnapshot(context.Context, string) error { return nil }
+
+// TestGrpcServer_CancelAgent_DispatchesThroughConnector is the v0.8.15
+// regression guard: when the gRPC Server is wired with a Connector,
+// CancelAgent dispatches through s.connector.CancelRun rather than the
+// legacy direct cancelReg+store path. Verifies the architectural
+// commitment: gRPC CONSUMES Connector.
+func TestGrpcServer_CancelAgent_DispatchesThroughConnector(t *testing.T) {
+	mc := &mockConnector{}
+	mc.cancelOK.Store(true)
+	mc.cascade.Store(3) // pretend 3 sub-agents got cascaded
+
+	adapter := New(Config{
+		Store:     newTestStore(t),
+		CancelReg: cancel.NewRegistry(),
+		Connector: mc,
+	})
+
+	resp, err := adapter.CancelAgent(context.Background(), &loomcyclepb.CancelAgentRequest{
+		AgentId: "a_test123",
+		Reason:  "user requested",
+	})
+	if err != nil {
+		t.Fatalf("CancelAgent: %v", err)
+	}
+
+	if mc.cancelCalls.Load() != 1 {
+		t.Errorf("Connector.CancelRun called %d times, want 1", mc.cancelCalls.Load())
+	}
+	if got := mc.lastAgentID.Load(); got != "a_test123" {
+		t.Errorf("Connector saw agent_id %q, want %q", got, "a_test123")
+	}
+	if got := mc.lastReason.Load(); got != "user requested" {
+		t.Errorf("Connector saw reason %q, want %q", got, "user requested")
+	}
+	// CascadeCount=3 from the mock → proto cancelled_count = 1+3 = 4.
+	if resp.GetCancelledCount() != 4 {
+		t.Errorf("CancelledCount=%d, want 4 (1 root + 3 cascade)", resp.GetCancelledCount())
+	}
 }
 
 // drain reads every Event from a Run/Continue stream until EOF or
