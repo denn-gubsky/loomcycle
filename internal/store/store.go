@@ -807,8 +807,8 @@ type MetricsRunWindow struct {
 // explicitly unregister); non-zero rows are filtered by
 // DynamicAgentGet / DynamicAgentList when expires_at < now().
 type DynamicAgent struct {
-	Name        string    `json:"name"`         // primary key; charset [A-Za-z0-9_-]{1,64}
-	Definition  []byte    `json:"definition"`   // JSON-encoded config.AgentDef body
+	Name        string    `json:"name"`       // primary key; charset [A-Za-z0-9_-]{1,64}
+	Definition  []byte    `json:"definition"` // JSON-encoded config.AgentDef body
 	CreatedAt   time.Time `json:"created_at"`
 	ExpiresAt   time.Time `json:"expires_at,omitempty"` // zero = no expiry
 	Description string    `json:"description,omitempty"`

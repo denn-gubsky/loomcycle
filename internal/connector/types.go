@@ -88,9 +88,9 @@ type SpawnRunResult struct {
 
 // CancelRunResult reports the outcome of CancelRun.
 type CancelRunResult struct {
-	Cancelled     bool `json:"cancelled"`
-	CascadeCount  int  `json:"cascade_count"` // sub-runs also cancelled
-	AlreadyEnded  bool `json:"already_ended"` // run had already completed/failed
+	Cancelled    bool `json:"cancelled"`
+	CascadeCount int  `json:"cascade_count"` // sub-runs also cancelled
+	AlreadyEnded bool `json:"already_ended"` // run had already completed/failed
 }
 
 // Run is the status snapshot returned by GetRun / ListRuns. Distinct
@@ -165,28 +165,28 @@ type AgentDescriptor struct {
 
 // PauseResult reports the outcome of PauseRuntime.
 type PauseResult struct {
-	Status              string `json:"status"`                        // "paused"
-	DurationMS          int64  `json:"duration_ms"`                   // time taken to reach paused state
-	ForceCancelledCount int    `json:"force_cancelled_count"`         // non-idempotent tool calls force-cancelled
-	FeatureStatus       string `json:"feature_status,omitempty"`      // "preview" in v0.8.15
-	Note                string `json:"note,omitempty"`                // human-readable feature-status explanation
+	Status              string `json:"status"`                   // "paused"
+	DurationMS          int64  `json:"duration_ms"`              // time taken to reach paused state
+	ForceCancelledCount int    `json:"force_cancelled_count"`    // non-idempotent tool calls force-cancelled
+	FeatureStatus       string `json:"feature_status,omitempty"` // "preview" in v0.8.15
+	Note                string `json:"note,omitempty"`           // human-readable feature-status explanation
 }
 
 // ResumeResult reports the outcome of ResumeRuntime.
 type ResumeResult struct {
-	Status           string `json:"status"`                   // "running"
-	ResumedRunCount  int    `json:"resumed_run_count"`        // paused runs resumed
-	FeatureStatus    string `json:"feature_status,omitempty"`
-	Note             string `json:"note,omitempty"`
+	Status          string `json:"status"`            // "running"
+	ResumedRunCount int    `json:"resumed_run_count"` // paused runs resumed
+	FeatureStatus   string `json:"feature_status,omitempty"`
+	Note            string `json:"note,omitempty"`
 }
 
 // RuntimeState is the response shape for GetRuntimeState.
 type RuntimeState struct {
-	Status          string     `json:"status"` // "running" | "pausing" | "paused" | "resuming" | "restoring"
-	PausedAt        *time.Time `json:"paused_at,omitempty"`
-	PausedRunCount  int        `json:"paused_run_count"`
-	SnapshotsCount  int        `json:"snapshots_count"`
-	FeatureStatus   string     `json:"feature_status,omitempty"`
+	Status         string     `json:"status"` // "running" | "pausing" | "paused" | "resuming" | "restoring"
+	PausedAt       *time.Time `json:"paused_at,omitempty"`
+	PausedRunCount int        `json:"paused_run_count"`
+	SnapshotsCount int        `json:"snapshots_count"`
+	FeatureStatus  string     `json:"feature_status,omitempty"`
 }
 
 // CreateSnapshotRequest is the input to CreateSnapshot.
@@ -228,7 +228,7 @@ type RestoreSnapshotRequest struct {
 
 // RestoreSnapshotResult is the response shape for RestoreSnapshot.
 type RestoreSnapshotResult struct {
-	Restored      map[string]int `json:"restored"` // section name → row count
-	FormatMigrations []string    `json:"format_migrations,omitempty"`
-	FeatureStatus    string      `json:"feature_status,omitempty"`
+	Restored         map[string]int `json:"restored"` // section name → row count
+	FormatMigrations []string       `json:"format_migrations,omitempty"`
+	FeatureStatus    string         `json:"feature_status,omitempty"`
 }
