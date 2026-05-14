@@ -1,0 +1,42 @@
+id: mid-04-tool-routing
+tier: middle
+description: Two plausible tools available (web vs MCP). Correct behavior depends on the question. Tests tool-routing judgment.
+allowed_tools: ["mcp__brave-search__brave_web_search", "mcp__jobs__getResearch"]
+max_turns: 4
+input_text: |
+  Task A: Find the latest Go version released (current as of today).
+  Task B: Find the existing research notes loomcycle has stored for
+          company_id "bench-co-001" (use the jobs MCP server's getResearch tool).
+
+  Use the right tool for each:
+    - Task A needs live web data → brave_web_search
+    - Task B needs stored project data → mcp__jobs__getResearch
+
+  Do BOTH tasks. Then output:
+    {"go_version": "<value>", "research_summary": "<value or 'no_data'>", "tools_used": ["..."]}
+
+expected:
+  structural:
+    schema: |
+      {"type":"object","required":["go_version","research_summary","tools_used"],"properties":{
+        "go_version":{"type":"string"},
+        "research_summary":{"type":"string"},
+        "tools_used":{"type":"array","items":{"type":"string"},"minItems":2,"maxItems":4}
+      }}
+  functional:
+    tool_calls:
+      - name: "mcp__brave-search__brave_web_search"
+        min_calls: 1
+        max_calls: 2
+      - name: "mcp__jobs__getResearch"
+        args_must_include:
+          company_id: "bench-co-001"
+        min_calls: 1
+        max_calls: 2
+  semantic:
+    rubric: |
+      Did the model use brave_web_search for Task A (Go version)?
+      Did it use mcp__jobs__getResearch for Task B (stored research)?
+      Did it confuse them? (Searching Brave for stored research = fail.)
+      Score 0-100. Used wrong tool for either task = 30. Both routed correctly = 100.
+    threshold: 70

@@ -1,0 +1,46 @@
+id: mid-02-cv-rewrite-faithful
+tier: middle
+description: Rewrite a CV bullet to match a JD without inventing experience. Tests semantic content quality and hallucination resistance.
+allowed_tools: []
+max_turns: 2
+input_text: |
+  Rewrite the CV bullet below to better target the JD. Keep it factually
+  faithful — do NOT add experience the candidate doesn't have. You may
+  reorder, rephrase, emphasize, or quantify, but you may not introduce
+  new technologies, employers, dates, or projects.
+
+  CV bullet:
+    "Built distributed microservices in Go at a 30-person startup,
+    handling 2k req/s peak. Wrote integration tests in PostgreSQL."
+
+  JD requires:
+    - Go
+    - distributed systems
+    - production observability (metrics, tracing, alerting)
+    - Kubernetes operations
+
+  Output:
+    {"rewritten": "<the rewritten bullet>", "claims_in_jd_not_in_cv": ["..."], "preserved_facts": ["..."]}
+
+  claims_in_jd_not_in_cv = JD requirements the CV doesn't support; you must NOT inject these.
+  preserved_facts = original CV facts your rewrite kept (Go, 30-person, 2k req/s, etc.).
+
+expected:
+  structural:
+    schema: |
+      {"type":"object","required":["rewritten","claims_in_jd_not_in_cv","preserved_facts"],"properties":{
+        "rewritten":{"type":"string","minLength":50,"maxLength":600},
+        "claims_in_jd_not_in_cv":{"type":"array","items":{"type":"string"}},
+        "preserved_facts":{"type":"array","items":{"type":"string"}}
+      }}
+  functional:
+    tool_calls: []
+  semantic:
+    rubric: |
+      Critical: does the rewritten bullet INVENT Kubernetes or production observability experience?
+      If yes (any "managed K8s clusters", "set up Prometheus alerts", etc.): score = 0.
+      Did the model correctly flag K8s + observability in claims_in_jd_not_in_cv?
+      Did preserved_facts list at least 3 of: Go, distributed/microservices, 30-person, 2k req/s, PostgreSQL?
+      Is the rewritten bullet professional in tone (not overstated, not understated)?
+      Score 0-100. Any hallucinated claim = 0. Strong faithfulness with good emphasis = 100.
+    threshold: 70

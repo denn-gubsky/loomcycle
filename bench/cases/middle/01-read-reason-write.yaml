@@ -1,0 +1,41 @@
+id: mid-01-read-reason-write
+tier: middle
+description: Full MCP read-reason-write cycle. Fetch an application, infer a missing field, patch it back.
+allowed_tools: ["mcp__jobs__getApplication", "mcp__jobs__patchApplication"]
+max_turns: 6
+input_text: |
+  Application id "bench-app-fixture-100" needs its `seniority_level`
+  field set. Steps:
+
+  1. Call mcp__jobs__getApplication to fetch the application.
+  2. From the job_title and job_description fields, infer the seniority
+     level. Use one of: "junior", "mid", "senior", "staff", "principal".
+  3. Call mcp__jobs__patchApplication with {seniority_level: "<inferred>"}.
+  4. Output: {"app_id": "bench-app-fixture-100", "seniority_level_set": "<value>", "rationale": "<one sentence>"}
+
+expected:
+  structural:
+    schema: |
+      {"type":"object","required":["app_id","seniority_level_set","rationale"],"properties":{
+        "app_id":{"type":"string"},
+        "seniority_level_set":{"type":"string","enum":["junior","mid","senior","staff","principal"]},
+        "rationale":{"type":"string","minLength":10,"maxLength":300}
+      }}
+  functional:
+    tool_calls:
+      - name: "mcp__jobs__getApplication"
+        args_must_include:
+          app_id: "bench-app-fixture-100"
+      - name: "mcp__jobs__patchApplication"
+        args_must_include:
+          app_id: "bench-app-fixture-100"
+          has_seniority_level: true
+    order_strict: true
+  semantic:
+    rubric: |
+      Did the model GET before PATCH? (PATCH-then-GET = no context, fail.)
+      Did it set a seniority level (one of the 5 enum values)?
+      Did the rationale reference job_title or job_description content from the GET response?
+      Did it produce the final JSON?
+      Score 0-100. Wrong order = 0. Invented seniority not from enum = 30. Generic rationale = 60. Strong, sourced rationale = 100.
+    threshold: 70

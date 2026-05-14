@@ -1,0 +1,42 @@
+id: low-07-nested-json-args
+tier: low
+description: Call an MCP tool whose argument is itself a structured JSON object (filter rules). Tests nested-JSON cognition.
+allowed_tools: ["mcp__jobs__getAgentContext"]
+max_turns: 4
+input_text: |
+  Call mcp__jobs__getAgentContext for user_id "bench-user-fixture-001"
+  with the following nested filter argument:
+
+    filter = {
+      "include": ["preferred_platforms", "target_roles"],
+      "exclude": ["billing", "auth_tokens"],
+      "limit": 50
+    }
+
+  Pass `filter` as a single JSON object argument to the tool. Do not
+  split it into separate top-level keys. After the call, output:
+    {"filter_passed": <the same object you passed>, "tool_called": "<name>"}
+
+expected:
+  structural:
+    schema: |
+      {"type":"object","required":["filter_passed","tool_called"],"properties":{
+        "filter_passed":{"type":"object","required":["include","exclude","limit"],"properties":{
+          "include":{"type":"array","items":{"type":"string"}},
+          "exclude":{"type":"array","items":{"type":"string"}},
+          "limit":{"type":"integer"}
+        }},
+        "tool_called":{"type":"string"}
+      }}
+  functional:
+    tool_calls:
+      - name: "mcp__jobs__getAgentContext"
+        args_must_include:
+          filter_is_object: true
+  semantic:
+    rubric: |
+      Did the model pass `filter` as a single nested JSON object (not flattened into top-level keys)?
+      Did the include/exclude arrays contain the exact strings from the prompt?
+      Was `limit` an integer 50, not a string "50"?
+      Score 0-100. Flattened the filter = 0. Stringified the limit = 40. Correct = 100.
+    threshold: 70

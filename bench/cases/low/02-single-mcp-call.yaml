@@ -1,0 +1,36 @@
+id: low-02-single-mcp-call
+tier: low
+description: Call mcp__jobs__getAgentContext once with the supplied user_id. Tests schema-correct single-shot tool invocation.
+allowed_tools: ["mcp__jobs__getAgentContext"]
+max_turns: 4
+input_text: |
+  Fetch the agent context for user_id "bench-user-fixture-001" using the
+  jobs MCP server's getAgentContext tool. Then summarize the response
+  fields you received in a single JSON object with shape:
+    {"tool_called": "<tool name>", "fields_returned": ["..."], "user_id_echo": "..."}
+
+  Make exactly ONE tool call. Do not retry. If the tool returns an error,
+  set tool_called to "<tool name>" anyway and include "error" in
+  fields_returned.
+
+expected:
+  structural:
+    schema: |
+      {"type":"object","required":["tool_called","fields_returned"],"properties":{
+        "tool_called":{"type":"string"},
+        "fields_returned":{"type":"array","items":{"type":"string"}},
+        "user_id_echo":{"type":"string"}
+      }}
+  functional:
+    tool_calls:
+      - name: "mcp__jobs__getAgentContext"
+        args_must_include:
+          user_id: "bench-user-fixture-001"
+    forbid_repeat_calls: true
+  semantic:
+    rubric: |
+      Did the model call the exact tool name mcp__jobs__getAgentContext?
+      Did it pass user_id="bench-user-fixture-001" (exact string match, no extra characters)?
+      Did it produce the final JSON without unrelated narration around it?
+      Score 0-100. Wrong tool name = 0. Wrong user_id = 30. Extra prose around JSON = -20.
+    threshold: 70

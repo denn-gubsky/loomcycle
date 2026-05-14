@@ -1,0 +1,65 @@
+id: low-04-batched-ingest
+tier: low
+description: Codifies the deepseek-v4-pro 659s incident from 2026-05-09. Given 25 result URLs upfront, the model must batch them into ~3 ingest calls instead of one giant call.
+allowed_tools: ["mcp__jobs__postSearchIngest"]
+max_turns: 8
+input_text: |
+  You have 25 job posting URLs to ingest for user_id "bench-user-fixture-001".
+  Each URL needs a row with: url, title (extracted from the URL slug or use
+  the URL itself if no slug), snippet (one-line synthetic).
+
+  IMPORTANT: Call mcp__jobs__postSearchIngest in BATCHES of ~10 rows each.
+  Do NOT call it once with all 25 rows — that has caused production
+  timeouts. Use 3 calls: 10 + 10 + 5.
+
+  URLs:
+    https://example.com/jobs/golang-backend-acme
+    https://example.com/jobs/rust-systems-fastco
+    https://example.com/jobs/staff-engineer-deepai
+    https://example.com/jobs/devops-sre-cloudbase
+    https://example.com/jobs/backend-platform-novateq
+    https://example.com/jobs/principal-eng-streamhub
+    https://example.com/jobs/senior-go-grandlab
+    https://example.com/jobs/sre-globalfin
+    https://example.com/jobs/distributed-sys-meshlab
+    https://example.com/jobs/data-platform-pulsarq
+    https://example.com/jobs/backend-go-orbital
+    https://example.com/jobs/observability-eng-tracehub
+    https://example.com/jobs/staff-backend-helixfx
+    https://example.com/jobs/sre-platform-neon
+    https://example.com/jobs/data-eng-quantastra
+    https://example.com/jobs/principal-platform-strata
+    https://example.com/jobs/senior-rust-corex
+    https://example.com/jobs/lead-go-aetherspace
+    https://example.com/jobs/distributed-go-blackwater
+    https://example.com/jobs/staff-sre-northwind
+    https://example.com/jobs/senior-platform-vega
+    https://example.com/jobs/backend-engineer-fluxlab
+    https://example.com/jobs/lead-systems-marshalspace
+    https://example.com/jobs/senior-go-luminari
+    https://example.com/jobs/principal-eng-cinderhall
+
+  After all batches succeed, output:
+    {"total_ingested": <int>, "batch_count": <int>, "batch_sizes": [<int>, ...]}
+
+expected:
+  structural:
+    schema: |
+      {"type":"object","required":["total_ingested","batch_count","batch_sizes"],"properties":{
+        "total_ingested":{"type":"integer","minimum":20,"maximum":25},
+        "batch_count":{"type":"integer","minimum":2,"maximum":5},
+        "batch_sizes":{"type":"array","items":{"type":"integer","minimum":1,"maximum":15}}
+      }}
+  functional:
+    tool_calls:
+      - name: "mcp__jobs__postSearchIngest"
+        min_calls: 2
+        max_calls: 5
+    forbid_repeat_calls: false
+  semantic:
+    rubric: |
+      Did the model split into 2-5 batches? (One call = FAIL; 6+ calls = waste.)
+      Did each batch carry between 3 and 15 rows? (No single-row batches.)
+      Did the cumulative total reach at least 20 rows? (Skipping rows is data loss.)
+      Score 0-100. One giant batch = 0. Single-row batches = 30. Skipped rows = -10 per dropped row.
+    threshold: 70

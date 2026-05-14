@@ -1,0 +1,45 @@
+id: low-08-websearch-summarize-json
+tier: low
+description: WebSearch + structural output combined. Search a query, summarize the top 3 results in a fixed JSON schema.
+allowed_tools: ["mcp__brave-search__brave_web_search"]
+max_turns: 4
+input_text: |
+  Search Brave for "Go programming language official documentation"
+  and summarize the top 3 results. Output ONLY:
+
+    {"results": [
+      {"rank": 1, "url": "...", "title": "...", "summary": "..."},
+      {"rank": 2, "url": "...", "title": "...", "summary": "..."},
+      {"rank": 3, "url": "...", "title": "...", "summary": "..."}
+    ]}
+
+  Summary should be 1-2 sentences. No commentary outside the JSON.
+
+expected:
+  structural:
+    must_match: '^\s*\{[\s\S]*\}\s*$'
+    must_not_match: '(?im)^here are|^let me|^i searched|^based on'
+    schema: |
+      {"type":"object","required":["results"],"properties":{
+        "results":{"type":"array","minItems":3,"maxItems":3,"items":{
+          "type":"object","required":["rank","url","title","summary"],
+          "properties":{
+            "rank":{"type":"integer","minimum":1,"maximum":3},
+            "url":{"type":"string","pattern":"^https?://"},
+            "title":{"type":"string","minLength":3},
+            "summary":{"type":"string","minLength":10,"maxLength":400}
+          }
+        }}
+      }}
+  functional:
+    tool_calls:
+      - name: "mcp__brave-search__brave_web_search"
+        min_calls: 1
+        max_calls: 2
+  semantic:
+    rubric: |
+      Did the model search before generating the summary? (Pure hallucination = fail.)
+      Are the URLs real (look plausible for Go docs: golang.org, go.dev, pkg.go.dev)?
+      Are the summaries derived from the search snippets, not invented?
+      Score 0-100. No search call = 0. Invented URLs = 30. Derived summaries with real URLs = 100.
+    threshold: 70

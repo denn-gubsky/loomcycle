@@ -275,11 +275,44 @@ func resolveErrorToStatus(err error) int {
 // overlay (v0.7.x behaviour). Unknown names are rejected upstream
 // before this is called.
 func (s *Server) resolveAgent(agentName, userTier string) (providerID, model, effort string, err error) {
-	def, ok := s.cfg.Agents[agentName]
+	def, ok := s.lookupAgent(context.Background(), agentName)
 	if !ok {
 		return "", "", "", fmt.Errorf("%w: %s", runner.ErrUnknownAgent, agentName)
 	}
 	return s.resolveAgentDef(def, agentName, userTier)
+}
+
+// lookupAgent returns the AgentDef for a registered agent name,
+// consulting static cfg.Agents first and then v0.8.15 dynamic_agents.
+// Returns (zero AgentDef, false) when neither source has the name.
+//
+// Centralizing the lookup here is the antidote to the v0.8.15
+// regression where each entry point (RunOnce / handleRuns / handle
+// continuation) had its own inline lookup against cfg.Agents — at
+// least two of them missed the dynamic-agent fallback, so any agent
+// registered via mcp__loomcycle__register_agent was reachable from
+// some paths and "unknown" from others. Every code path that needs
+// to resolve an agent name to a def goes through this helper.
+//
+// TTL filtering happens server-side in store.DynamicAgentGet, so a
+// row whose expires_at has passed surfaces as derr (not found).
+// Malformed Definition JSON also falls through to (zero, false).
+func (s *Server) lookupAgent(ctx context.Context, name string) (config.AgentDef, bool) {
+	if def, ok := s.cfg.Agents[name]; ok {
+		return def, true
+	}
+	if s.store == nil {
+		return config.AgentDef{}, false
+	}
+	row, err := s.store.DynamicAgentGet(ctx, name)
+	if err != nil {
+		return config.AgentDef{}, false
+	}
+	var def config.AgentDef
+	if uerr := json.Unmarshal(row.Definition, &def); uerr != nil {
+		return config.AgentDef{}, false
+	}
+	return def, true
 }
 
 // resolveAgentDef mirrors resolveAgent but takes a caller-supplied
@@ -633,25 +666,15 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	if effectiveAgentName == "" {
 		return fmt.Errorf("%w: agent is required", runner.ErrInvalidArgument)
 	}
-	agentDef, ok := s.cfg.Agents[effectiveAgentName]
-	if !ok {
-		// v0.8.15: fall back to dynamic agents registered at runtime
-		// via mcp__loomcycle__register_agent. TTL-expired rows are
-		// filtered server-side by DynamicAgentGet so we never see them.
-		if s.store != nil {
-			if row, derr := s.store.DynamicAgentGet(ctx, effectiveAgentName); derr == nil {
-				var def config.AgentDef
-				if uerr := json.Unmarshal(row.Definition, &def); uerr == nil {
-					agentDef = def
-					ok = true
-				}
-			}
-		}
-	}
+	agentDef, ok := s.lookupAgent(ctx, effectiveAgentName)
 	if !ok {
 		return fmt.Errorf("%w: %s", runner.ErrUnknownAgent, effectiveAgentName)
 	}
-	providerID, model, effort, err := s.resolveAgent(effectiveAgentName, in.UserTier)
+	// resolveAgent only consults s.cfg.Agents; dynamic agents loaded
+	// from the v0.8.15 fallback above are NOT in that map. Pass the
+	// already-resolved AgentDef through resolveAgentDef instead (same
+	// path the v0.8.5 sub-agent overlay uses).
+	providerID, model, effort, err := s.resolveAgentDef(agentDef, effectiveAgentName, in.UserTier)
 	if err != nil {
 		return err // already wrapped with runner.Err* sentinel
 	}
@@ -1226,7 +1249,7 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	agentDef, ok := s.cfg.Agents[req.Agent]
+	agentDef, ok := s.lookupAgent(r.Context(), req.Agent)
 	if !ok {
 		http.Error(w, fmt.Sprintf("unknown agent %q", req.Agent), http.StatusBadRequest)
 		return
@@ -1599,7 +1622,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 
 	// Resolve provider+model from the session's stored agent so the
 	// continuation runs against the same model as the original session.
-	agentDef, ok := s.cfg.Agents[sess.Agent]
+	agentDef, ok := s.lookupAgent(r.Context(), sess.Agent)
 	if !ok {
 		http.Error(w, fmt.Sprintf("session refers to unknown agent %q", sess.Agent), http.StatusBadRequest)
 		return
