@@ -3,12 +3,17 @@
 // internal/providers/. The bench imports those drivers in-process and
 // calls ListModels directly — no second loomcycle round-trip.
 //
-// Provider keys recognised by the bench (mirroring loomcycle's yaml):
+// Provider keys MUST mirror the IDs loomcycle uses in its yaml — the
+// bench registers dynamic agents with `provider: "<key>"` and the
+// loomcycle resolver looks the key up in its registered providers.
+// A mismatch fails register_agent with "unknown provider".
 //
-//	deepseek         — DeepSeek public API (api.deepseek.com)
-//	gemini           — Google Gemini (generativelanguage.googleapis.com)
-//	ollama-cloud     — Ollama Cloud (ollama.com, Bearer auth)
-//	ollama-desktop   — self-hosted Ollama at $LOOMCYCLE_BENCH_OLLAMA_DESKTOP_URL
+//	deepseek      — DeepSeek public API (api.deepseek.com)
+//	gemini        — Google Gemini (generativelanguage.googleapis.com)
+//	ollama        — Ollama Cloud (ollama.com, Bearer auth via OLLAMA_API_KEY)
+//	ollama-local  — local Ollama (uses OLLAMA_BASE_URL env var; same
+//	                env var loomcycle's main.go reads, so the bench
+//	                and loomcycle stay in agreement on which host)
 package discover
 
 import (
@@ -95,17 +100,20 @@ func newDriver(key string) (providers.Provider, error) {
 		}
 		return gemini.New(apiKey, "", opts, httpc), nil
 
-	case "ollama-cloud":
+	case "ollama":
 		token := os.Getenv("OLLAMA_API_KEY")
 		if token == "" {
 			return nil, fmt.Errorf("OLLAMA_API_KEY not set (Ollama Cloud Bearer)")
 		}
 		baseURL := envOrDefault("OLLAMA_CLOUD_URL", "https://ollama.com")
-		return ollama.New("ollama-cloud", token, baseURL, opts, httpc), nil
+		return ollama.New("ollama", token, baseURL, opts, httpc), nil
 
-	case "ollama-desktop":
-		baseURL := envOrDefault("LOOMCYCLE_BENCH_OLLAMA_DESKTOP_URL", "http://denn-desktop.local:11434")
-		return ollama.New("ollama-desktop", "", baseURL, opts, httpc), nil
+	case "ollama-local":
+		baseURL := os.Getenv("OLLAMA_BASE_URL")
+		if baseURL == "" || baseURL == "disabled" {
+			return nil, fmt.Errorf("OLLAMA_BASE_URL not set (or =disabled); ollama-local unavailable")
+		}
+		return ollama.New("ollama-local", "", baseURL, opts, httpc), nil
 
 	default:
 		return nil, fmt.Errorf("unknown provider key %q", key)

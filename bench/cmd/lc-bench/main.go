@@ -30,7 +30,7 @@ const benchVersion = "0.1.0"
 func main() {
 	var (
 		loomcycleURL = flag.String("loomcycle", envOrDefault("LOOMCYCLE_URL", "http://127.0.0.1:8787"), "loomcycle base URL")
-		providersCSV = flag.String("providers", "deepseek,gemini,ollama-cloud,ollama-desktop", "comma-separated provider keys")
+		providersCSV = flag.String("providers", "deepseek,gemini,ollama,ollama-local", "comma-separated provider keys (must match loomcycle's registered provider IDs)")
 		modelsFilter = flag.String("models", "", "optional regexp; only models matching are tested")
 		tierFlag     = flag.String("tier", "", "limit to a tier (low|middle); empty = both")
 		budgetUSD    = flag.Float64("budget", 25.0, "hard ceiling on aggregate USD cost; sweep halts when exceeded")
