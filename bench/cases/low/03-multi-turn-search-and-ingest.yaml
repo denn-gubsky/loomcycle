@@ -1,0 +1,38 @@
+id: low-03-multi-turn-search-and-ingest
+tier: low
+description: Two-turn loop. Search the web for Go remote jobs, then call postSearchIngest once with the URLs found. Tests basic multi-turn tool use.
+allowed_tools: ["mcp__brave-search__brave_web_search", "mcp__jobs__postSearchIngest"]
+max_turns: 6
+input_text: |
+  Search Brave for "Go backend engineer remote 2026" and return the top 3
+  results. Then call mcp__jobs__postSearchIngest exactly once, ingesting
+  those 3 results for user_id "bench-user-fixture-001". Each ingest row
+  must have: url, title, snippet.
+
+  After ingest succeeds, output a final JSON summary:
+    {"search_count": <int>, "ingested_count": <int>, "first_url": "..."}
+
+expected:
+  structural:
+    schema: |
+      {"type":"object","required":["search_count","ingested_count"],"properties":{
+        "search_count":{"type":"integer","minimum":1},
+        "ingested_count":{"type":"integer","minimum":1},
+        "first_url":{"type":"string"}
+      }}
+  functional:
+    tool_calls:
+      - name: "mcp__brave-search__brave_web_search"
+        args_must_include:
+          query_contains: "Go"
+      - name: "mcp__jobs__postSearchIngest"
+        args_must_include:
+          user_id: "bench-user-fixture-001"
+    forbid_repeat_calls: false
+  semantic:
+    rubric: |
+      Did the model search first, then ingest? (Order matters — ingest with no search results is fail.)
+      Did the ingest payload contain at least 2 URL+title+snippet rows derived from the search response?
+      Did it stop after one ingest? (Two ingests for 3 results is unnecessary.)
+      Score 0-100. Out-of-order = 0. Made-up URLs not from search results = 20. Two ingests = -20.
+    threshold: 70

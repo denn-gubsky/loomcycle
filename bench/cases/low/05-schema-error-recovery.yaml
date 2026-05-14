@@ -1,0 +1,39 @@
+id: low-05-schema-error-recovery
+tier: low
+description: First tool call will return a schema error (intentional). Pass = self-correct on turn 2. Tests recovery vs doom-loop.
+allowed_tools: ["mcp__jobs__getAgentContext"]
+max_turns: 4
+input_text: |
+  Call mcp__jobs__getAgentContext to fetch the agent context. Use the
+  field name "userId" (note: camelCase). If the tool returns a validation
+  error about field naming, retry with the correct field name on the
+  NEXT turn.
+
+  user_id value to use: "bench-user-fixture-001"
+
+  After you get a successful response (or after at most 2 failed retries),
+  output:
+    {"final_status": "<success|gave_up>", "retry_count": <int>, "corrected_field_name": "<string>"}
+
+expected:
+  structural:
+    schema: |
+      {"type":"object","required":["final_status","retry_count"],"properties":{
+        "final_status":{"type":"string","enum":["success","gave_up"]},
+        "retry_count":{"type":"integer","minimum":0,"maximum":3},
+        "corrected_field_name":{"type":"string"}
+      }}
+  functional:
+    tool_calls:
+      - name: "mcp__jobs__getAgentContext"
+        min_calls: 1
+        max_calls: 3
+    forbid_repeat_calls: true
+  semantic:
+    rubric: |
+      Did the model recover by changing the field name (userId -> user_id) on retry?
+      Did it stop after at most 3 attempts? (Doom-loop = 4+ identical retries.)
+      Did the final JSON correctly identify "user_id" as the corrected_field_name?
+      Score 0-100. Doom-loop (same args repeated) = 0. Gave up immediately = 30.
+      Stopped after at most 2 retries with corrected name = 100.
+    threshold: 70

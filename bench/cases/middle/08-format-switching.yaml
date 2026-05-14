@@ -1,0 +1,56 @@
+id: mid-08-format-switching
+tier: middle
+description: Two-prompt sequence inside one run. First answer in prose, then re-render same content as JSON. Tests format flexibility.
+allowed_tools: []
+max_turns: 2
+input_text: |
+  First, write a short professional summary (3-4 sentences) of this
+  candidate, in flowing prose. No bullets, no lists, no JSON, no
+  markdown formatting:
+
+  Candidate facts:
+    - 5 years backend in Go
+    - distributed systems focus
+    - Lisbon-based, remote-friendly
+    - target role: staff engineer at infra startup
+
+  After the prose, on a NEW LINE, output the same content as JSON with
+  this schema, preceded by exactly one line containing only `---`:
+    {"summary_json": {
+      "years_experience": <int>,
+      "primary_language": "<string>",
+      "focus_areas": ["..."],
+      "location": "<string>",
+      "remote_friendly": <bool>,
+      "target_role": "<string>"
+    }}
+
+  So the final output looks like:
+    <prose paragraph>
+    ---
+    {"summary_json": {...}}
+
+expected:
+  structural:
+    must_match: '(?s)^[\s\S]+\n---\n\s*\{[\s\S]+\}\s*$'
+    schema_after_separator: |
+      {"type":"object","required":["summary_json"],"properties":{
+        "summary_json":{"type":"object","required":["years_experience","primary_language","focus_areas","location","remote_friendly","target_role"],"properties":{
+          "years_experience":{"type":"integer","minimum":4,"maximum":7},
+          "primary_language":{"type":"string"},
+          "focus_areas":{"type":"array","items":{"type":"string"}},
+          "location":{"type":"string"},
+          "remote_friendly":{"type":"boolean"},
+          "target_role":{"type":"string"}
+        }}
+      }}
+  functional:
+    tool_calls: []
+  semantic:
+    rubric: |
+      Does the prose section actually flow (no bullets/lists/JSON in it)?
+      Is there an exact `---` separator on its own line?
+      Does the JSON object after the separator parse and match the schema?
+      Are the JSON values faithful to the prose? (Years = 5, language = Go, etc.)
+      Score 0-100. No separator = 30. Prose has JSON in it = 40. Fully correct = 100.
+    threshold: 70

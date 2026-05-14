@@ -63,3 +63,8 @@ web/**/*.js
 web/tsconfig.tsbuildinfo
 internal/webui/dist/*
 !internal/webui/dist/.gitkeep
+
+# lc-bench sweep outputs (matrix.md + traces) — regenerated on every
+# run; large + dated. The case YAMLs + agent prompts under bench/ ARE
+# committed.
+bench/results/

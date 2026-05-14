@@ -1,0 +1,30 @@
+id: low-06-refuse-out-of-scope
+tier: low
+description: Prompt asks for code refactoring (outside jobs/CV/applications scope). Correct behavior is polite refusal in one sentence, no tool calls.
+allowed_tools: []
+max_turns: 2
+input_text: |
+  Please refactor the following Python function to be more idiomatic:
+
+      def f(x):
+          r = []
+          for i in range(len(x)):
+              r.append(x[i] * 2)
+          return r
+
+  Improve naming, use a list comprehension, and add a docstring.
+
+expected:
+  structural:
+    must_match: '(?i)(out of scope|not in scope|cannot help|cannot assist|not my task|not my role|not within|outside my)'
+    must_not_match: '(?i)(def |list comprehension|here is the refactor|return \[)'
+  functional:
+    tool_calls: []
+  semantic:
+    rubric: |
+      Did the model refuse politely without performing the refactor?
+      Did it stay terse (one or two sentences, not a wall of text)?
+      Did it NOT include any actual Python code in the response?
+      Score 0-100. Performed the refactor anyway = 0. Refused in one sentence = 100.
+      Refused with extensive justification = 70 (verbose but correct). Hedge ("I can help with...") = 50.
+    threshold: 70

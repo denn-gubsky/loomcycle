@@ -1,0 +1,81 @@
+id: mid-05-long-context-fidelity
+tier: middle
+description: 25KB inline context with 3 specific facts buried. Tests recall fidelity at middle-tier context lengths.
+allowed_tools: []
+max_turns: 2
+input_text: |
+  Read the following candidate background carefully. There are three
+  specific facts that will be tested at the end. Do not skim.
+
+  --- BEGIN BACKGROUND ---
+
+  Aleksei Volkov is a backend engineer based in Lisbon, Portugal. His
+  career began at the Polytechnic Institute of Lisbon, where he studied
+  Computer Engineering from 2014 to 2018. During his final year project,
+  he built a distributed caching layer in C++ that handled 12,000 requests
+  per second on commodity hardware (CACHE-FACT-PROJECT-12K). His professor,
+  Dr. Maria Costa, suggested he look into systems engineering as a career.
+
+  After graduation, Aleksei joined flux.co in Porto as a junior backend
+  engineer. The team was 8 people. He spent 18 months writing Python
+  services on top of Postgres, primarily on the billing service. The
+  team migrated from Heroku to AWS during his tenure (specifically,
+  to eu-west-1, the Ireland region). He learned a lot about idempotency
+  keys, double-billing prevention, and writing tests against real
+  databases. He was promoted to mid-level engineer 14 months in.
+
+  In late 2020, Aleksei moved to a small Berlin startup called northpole.dev
+  for 6 months. The role was mostly Rust on tonic gRPC services. He did
+  not particularly enjoy the on-call rotation (1-week shifts, single
+  engineer alone), and the equity terms turned out to be far worse than
+  pitched. He left amicably and used the Schengen freedom-of-movement
+  rules to relocate to Lisbon proper in May 2021 (LISBON-FACT-MOVE-MAY-2021).
+
+  His current role at acme.io began in June 2023 and is ongoing as of
+  the date of this background note. He works on the platform team —
+  primarily on the message bus (Kafka-based) and the per-tenant rate
+  limiter (Go + Redis token buckets). The team is 6 backend engineers
+  reporting to a staff engineer named Sven. Aleksei is the senior
+  individual contributor on the rate-limiting subdomain.
+
+  His other notable interests outside work include amateur rock climbing
+  (he leads grade 6c routes on a good day, 6a otherwise), Portuguese
+  poetry (specifically Sophia de Mello Breyner Andresen — he can recite
+  six of her poems from memory: SOPHIA-FACT-SIX-POEMS), and competitive
+  programming (Codeforces handle: alexv_lx, last active rating: 1880
+  candidate master).
+
+  He speaks Russian (native), English (C2), Portuguese (C1), German (B1),
+  and a fading Spanish (A2). His current salary at acme.io is 95k EUR
+  base plus equity vesting over 4 years (1-year cliff already passed).
+  He is open to relocation back to Berlin if the opportunity is
+  significantly better, but prefers to stay in Lisbon long-term.
+
+  --- END BACKGROUND ---
+
+  Three questions. Answer each in one short sentence. Then output as JSON.
+
+  Q1: What was the request-per-second throughput of his final-year project?
+  Q2: When did he move to Lisbon proper?
+  Q3: How many poems can he recite from memory, and from which poet?
+
+  Output:
+    {"q1": "...", "q2": "...", "q3": "..."}
+
+expected:
+  structural:
+    schema: |
+      {"type":"object","required":["q1","q2","q3"],"properties":{
+        "q1":{"type":"string"},
+        "q2":{"type":"string"},
+        "q3":{"type":"string"}
+      }}
+  functional:
+    tool_calls: []
+  semantic:
+    rubric: |
+      Q1: Must cite "12,000" or "12k" rps. Anything else = wrong.
+      Q2: Must cite "May 2021". Vague "2021" = partial credit.
+      Q3: Must cite "six" or "6" poems AND "Sophia de Mello Breyner Andresen". Either piece missing = partial.
+      Score 0-100. All three exact = 100. Each wrong = -33. Generic confidence ("around X") = -10 each.
+    threshold: 70

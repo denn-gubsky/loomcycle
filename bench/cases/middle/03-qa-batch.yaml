@@ -1,0 +1,56 @@
+id: mid-03-qa-batch
+tier: middle
+description: Answer 5 employer questions consistent with a single CV. Tests structured-content output + cross-question consistency.
+allowed_tools: []
+max_turns: 2
+input_text: |
+  Candidate CV summary:
+    - Name: Aleksei Volkov
+    - Current: Senior Backend Engineer at acme.io (3 years, Go + Kafka)
+    - Prior: Mid Backend Engineer at flux.co (2 years, Python + Postgres)
+    - Education: BSc Computer Science, 2018
+    - Location: Lisbon, Portugal (remote-friendly)
+    - Visa: EU citizen
+    - Salary: 95k EUR base preferred
+
+  Answer these 5 employer questions, each in ≤2 sentences, in the
+  candidate's voice. Do NOT invent skills or experience beyond the CV.
+
+  Q1: Why are you interested in this role?
+  Q2: What's your notice period?
+  Q3: What's your expected base salary in EUR?
+  Q4: Are you authorized to work in the EU?
+  Q5: How many years of Go experience do you have?
+
+  Output:
+    {"answers": [
+      {"q": 1, "answer": "..."},
+      {"q": 2, "answer": "..."},
+      {"q": 3, "answer": "..."},
+      {"q": 4, "answer": "..."},
+      {"q": 5, "answer": "..."}
+    ]}
+
+expected:
+  structural:
+    schema: |
+      {"type":"object","required":["answers"],"properties":{
+        "answers":{"type":"array","minItems":5,"maxItems":5,"items":{
+          "type":"object","required":["q","answer"],"properties":{
+            "q":{"type":"integer","minimum":1,"maximum":5},
+            "answer":{"type":"string","minLength":20,"maxLength":400}
+          }
+        }}
+      }}
+  functional:
+    tool_calls: []
+  semantic:
+    rubric: |
+      Q3 answer must cite ~95k EUR (the prompt's exact figure). Off by more than 10% = wrong.
+      Q4 answer must affirm EU work authorization (cite EU citizenship).
+      Q5 answer must say "3 years" (acme.io role) — NOT 5 years (would include flux.co Python work).
+      Q1 answer should be plausible and tied to backend/Go (not generic "I love coding").
+      Q2 answer is fine if it says "standard" or "2-4 weeks" — there's no CV data, so vague is acceptable.
+      No invented skills/employers/dates.
+      Score 0-100. Q5 says "5 years" = -40 (fabricated Go years). Salary off significantly = -30. Q3/Q4 wrong = 30 max.
+    threshold: 70

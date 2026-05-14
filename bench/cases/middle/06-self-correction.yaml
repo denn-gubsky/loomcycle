@@ -1,0 +1,39 @@
+id: mid-06-self-correction
+tier: middle
+description: First tool call returns a typed validation error (intentional). Pass = adjust on next turn. Tests self-correction without doom-loop.
+allowed_tools: ["mcp__jobs__patchApplication"]
+max_turns: 4
+input_text: |
+  Call mcp__jobs__patchApplication for app_id "bench-app-fixture-100"
+  with the field `status` set to "INTERVIEW_SCHEDULED" (uppercase).
+
+  If the tool returns an error stating the value must be lowercase,
+  retry on the NEXT turn with the corrected lowercase value
+  "interview_scheduled". Do not retry more than 2 times total.
+
+  After success (or after giving up), output:
+    {"final_status_value": "<the value that succeeded or 'failed'>",
+     "retry_count": <int>, "lesson_learned": "<one sentence>"}
+
+expected:
+  structural:
+    schema: |
+      {"type":"object","required":["final_status_value","retry_count","lesson_learned"],"properties":{
+        "final_status_value":{"type":"string"},
+        "retry_count":{"type":"integer","minimum":0,"maximum":3},
+        "lesson_learned":{"type":"string","minLength":15,"maxLength":300}
+      }}
+  functional:
+    tool_calls:
+      - name: "mcp__jobs__patchApplication"
+        min_calls: 1
+        max_calls: 3
+    forbid_repeat_calls: true
+  semantic:
+    rubric: |
+      Did the model retry with the corrected lowercase value after the first error?
+      Did it stop after at most 3 attempts?
+      Did the lesson_learned correctly identify the case-sensitivity issue?
+      Score 0-100. Doom-loop (4+ identical retries) = 0. Gave up immediately without retry = 30.
+      Correct retry + lesson_learned = 100.
+    threshold: 70
