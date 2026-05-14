@@ -1,16 +1,25 @@
 id: low-04-batched-ingest
 tier: low
-description: Codifies the deepseek-v4-pro 659s incident from 2026-05-09. Given 25 result URLs upfront, the model must batch them into ~3 ingest calls instead of one giant call.
+description: Codifies the deepseek-v4-pro 659s incident from 2026-05-09. Given 25 URLs upfront, the model must batch them into ~3 postSearchIngest calls (the route supports multiple batches; one giant call is what caused the production timeout).
 allowed_tools: ["mcp__jobs__postSearchIngest"]
 max_turns: 8
 input_text: |
-  You have 25 job posting URLs to ingest for user_id "bench-user-fixture-001".
-  Each URL needs a row with: url, title (extracted from the URL slug or use
-  the URL itself if no slug), snippet (one-line synthetic).
+  You have 25 job posting URLs to ingest. Call `mcp__jobs__postSearchIngest`
+  in BATCHES — do NOT send all 25 matches in one call. Three calls of
+  ~10/10/5 matches each is the right shape; one giant 25-match call has
+  caused production timeouts.
 
-  IMPORTANT: Call mcp__jobs__postSearchIngest in BATCHES of ~10 rows each.
-  Do NOT call it once with all 25 rows — that has caused production
-  timeouts. Use 3 calls: 10 + 10 + 5.
+  Tool body schema (per call):
+    {"body": {
+      "date": "2026-05-14",
+      "matches": [
+        {"rank": <int>, "title": "...", "company": "...", "applyUrl": "..."},
+        ...
+      ]
+    }}
+
+  Required match fields: `rank`, `title`, `company`. Use the URL slug
+  to fabricate plausible title + company strings.
 
   URLs:
     https://example.com/jobs/golang-backend-acme
@@ -40,7 +49,9 @@ input_text: |
     https://example.com/jobs/principal-eng-cinderhall
 
   After all batches succeed, output:
-    {"total_ingested": <int>, "batch_count": <int>, "batch_sizes": [<int>, ...]}
+    {"total_ingested": <int>,
+     "batch_count": <int>,
+     "batch_sizes": [<int>, ...]}
 
 expected:
   structural:
@@ -53,13 +64,16 @@ expected:
   functional:
     tool_calls:
       - name: "mcp__jobs__postSearchIngest"
+        args_must_include:
+          has_body: true
         min_calls: 2
         max_calls: 5
-    forbid_repeat_calls: false
   semantic:
     rubric: |
-      Did the model split into 2-5 batches? (One call = FAIL; 6+ calls = waste.)
-      Did each batch carry between 3 and 15 rows? (No single-row batches.)
-      Did the cumulative total reach at least 20 rows? (Skipping rows is data loss.)
-      Score 0-100. One giant batch = 0. Single-row batches = 30. Skipped rows = -10 per dropped row.
+      Did the model split into 2-5 batches of postSearchIngest calls?
+      Did each call carry between 3 and 15 matches?
+      Did the cumulative total reach at least 20 matches?
+      Each body must include `date` and `matches`.
+      Score 0-100. One giant batch = 0. Single-match batches = 30.
+      Skipped URLs = -10 per dropped row. Clean 3-batch split = 100.
     threshold: 70

@@ -179,16 +179,21 @@ func WriteMarkdown(w io.Writer, m Matrix) error {
 
 	fmt.Fprintln(w, "## Verdicts")
 	fmt.Fprintln(w, "")
-	fmt.Fprintln(w, "| Provider | Model | Verdict | Struct% | Func% | Sem avg | Overall | Cost (USD) |")
-	fmt.Fprintln(w, "|---|---|---|---|---|---|---|---|")
+	fmt.Fprintln(w, "| Provider | Model | Verdict | Struct% | Func% | Sem avg | Overall | Cost (USD) | Avg s/case |")
+	fmt.Fprintln(w, "|---|---|---|---|---|---|---|---|---|")
 	for _, s := range m.Summaries {
-		fmt.Fprintf(w, "| %s | `%s` | **%s** | %d/%d | %d/%d | %.2f | %d/%d | $%.4f |\n",
+		avgSecPerCase := 0.0
+		if s.CasesTotal > 0 {
+			avgSecPerCase = float64(s.DurationMS) / float64(s.CasesTotal) / 1000.0
+		}
+		fmt.Fprintf(w, "| %s | `%s` | **%s** | %d/%d | %d/%d | %.2f | %d/%d | $%.4f | %.1f |\n",
 			s.Provider, s.Model, s.Verdict,
 			s.StructuralPass, s.CasesTotal,
 			s.FunctionalPass, s.CasesTotal,
 			s.SemanticAvg,
 			s.OverallPass, s.CasesTotal,
 			s.CostUSD,
+			avgSecPerCase,
 		)
 	}
 
@@ -199,21 +204,66 @@ func WriteMarkdown(w io.Writer, m Matrix) error {
 	fmt.Fprintln(w, "- **FAIL**: <50% on at least one axis.")
 	fmt.Fprintln(w, "- **INCONCLUSIVE**: a case run errored at transport level (network, timeout); insufficient evidence.")
 
+	writeSpeedRanking(w, m)
+
 	fmt.Fprintln(w, "")
 	fmt.Fprintln(w, "## Per-case outcomes")
 	fmt.Fprintln(w, "")
-	fmt.Fprintln(w, "| Provider | Model | Case | Status | S | F | Sem | Reasons |")
-	fmt.Fprintln(w, "|---|---|---|---|---|---|---|---|")
+	fmt.Fprintln(w, "| Provider | Model | Case | Status | S | F | Sem | Time (s) | Reasons |")
+	fmt.Fprintln(w, "|---|---|---|---|---|---|---|---|---|")
 	for _, o := range m.Outcomes {
-		fmt.Fprintf(w, "| %s | `%s` | `%s` | %s | %s | %s | %.2f | %s |\n",
+		fmt.Fprintf(w, "| %s | `%s` | `%s` | %s | %s | %s | %.2f | %.1f | %s |\n",
 			o.Provider, o.Model, o.CaseID, o.Status,
 			passMark(o.Result.Structural.Pass),
 			passMark(o.Result.Functional.Pass),
 			o.Result.Semantic.Score,
+			float64(o.DurationMS)/1000.0,
 			joinReasons(o.Result),
 		)
 	}
 	return nil
+}
+
+// writeSpeedRanking renders a speed-ranked section: per-model average
+// seconds per case, sorted fastest-first. Useful for picking between
+// two models that have the same verdict (e.g., two MARGINALs) when
+// throughput matters. Local Ollama on a single GPU is the dramatic
+// case — its inference rate can be 5-20× slower than a cloud Pro
+// model, which can flip a "cost-floor candidate" verdict into "too
+// slow for production load".
+func writeSpeedRanking(w io.Writer, m Matrix) {
+	if len(m.Summaries) <= 1 {
+		return
+	}
+	type row struct {
+		s             ModelSummary
+		avgSecPerCase float64
+	}
+	rows := make([]row, 0, len(m.Summaries))
+	for _, s := range m.Summaries {
+		avg := 0.0
+		if s.CasesTotal > 0 {
+			avg = float64(s.DurationMS) / float64(s.CasesTotal) / 1000.0
+		}
+		rows = append(rows, row{s: s, avgSecPerCase: avg})
+	}
+	sort.Slice(rows, func(i, j int) bool {
+		return rows[i].avgSecPerCase < rows[j].avgSecPerCase
+	})
+	fmt.Fprintln(w, "")
+	fmt.Fprintln(w, "## Speed ranking (fastest first)")
+	fmt.Fprintln(w, "")
+	fmt.Fprintln(w, "| Rank | Provider | Model | Avg s/case | Total s | Cost (USD) | Verdict |")
+	fmt.Fprintln(w, "|---|---|---|---|---|---|---|")
+	for i, r := range rows {
+		fmt.Fprintf(w, "| %d | %s | `%s` | %.2f | %.1f | $%.4f | %s |\n",
+			i+1, r.s.Provider, r.s.Model,
+			r.avgSecPerCase,
+			float64(r.s.DurationMS)/1000.0,
+			r.s.CostUSD,
+			r.s.Verdict,
+		)
+	}
 }
 
 func passMark(b bool) string {

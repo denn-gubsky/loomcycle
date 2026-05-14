@@ -1,26 +1,37 @@
 id: mid-04-tool-routing
 tier: middle
-description: Two plausible tools available (web vs MCP). Correct behavior depends on the question. Tests tool-routing judgment.
+description: Two tasks; each is plausibly served by one specific tool. Correct routing means web search for live data, MCP getResearch for stored data. Tests judgment about which tool fits which task.
 allowed_tools: ["mcp__brave-search__brave_web_search", "mcp__jobs__getResearch"]
-max_turns: 4
+max_turns: 6
 input_text: |
-  Task A: Find the latest Go version released (current as of today).
-  Task B: Find the existing research notes loomcycle has stored for
-          company_id "bench-co-001" (use the jobs MCP server's getResearch tool).
+  Task A: What is the latest stable Go version released? (Live web
+          data — requires brave_web_search.)
+  Task B: Load any existing research profiles stored in jobs for
+          the session date 2026-05-14. Use `mcp__jobs__getResearch`
+          with this exact body: `{"date": "2026-05-14"}`. The tool
+          returns `{exists, profiles}`; profiles may be empty.
 
-  Use the right tool for each:
-    - Task A needs live web data → brave_web_search
-    - Task B needs stored project data → mcp__jobs__getResearch
+  Routing rules:
+    - Task A → brave_web_search (never call getResearch — it has no
+      web data).
+    - Task B → getResearch (never call brave_web_search — research is
+      stored, not web-discoverable).
 
-  Do BOTH tasks. Then output:
-    {"go_version": "<value>", "research_summary": "<value or 'no_data'>", "tools_used": ["..."]}
+  Do both tasks. Then output:
+    {"go_version": "<value found via web search>",
+     "research_exists": <bool from getResearch response>,
+     "tools_used": ["brave_web_search", "getResearch"]}
+
+  If getResearch returns no data, set research_exists=false. If
+  brave_web_search produces no clear Go version answer, set
+  go_version="unknown".
 
 expected:
   structural:
     schema: |
-      {"type":"object","required":["go_version","research_summary","tools_used"],"properties":{
+      {"type":"object","required":["go_version","research_exists","tools_used"],"properties":{
         "go_version":{"type":"string"},
-        "research_summary":{"type":"string"},
+        "research_exists":{"type":"boolean"},
         "tools_used":{"type":"array","items":{"type":"string"},"minItems":2,"maxItems":4}
       }}
   functional:
@@ -30,13 +41,15 @@ expected:
         max_calls: 2
       - name: "mcp__jobs__getResearch"
         args_must_include:
-          company_id: "bench-co-001"
+          date: "2026-05-14"
         min_calls: 1
         max_calls: 2
   semantic:
     rubric: |
-      Did the model use brave_web_search for Task A (Go version)?
-      Did it use mcp__jobs__getResearch for Task B (stored research)?
-      Did it confuse them? (Searching Brave for stored research = fail.)
-      Score 0-100. Used wrong tool for either task = 30. Both routed correctly = 100.
+      Did the model call brave_web_search for Task A?
+      Did it call getResearch with `{date: "2026-05-14"}` for Task B?
+      Did it call EITHER tool with the wrong intent (e.g., brave for
+      stored research)? That's a routing failure.
+      Score 0-100. Wrong tool for either task = 30. Both tools called
+      correctly with right intent = 100.
     threshold: 70

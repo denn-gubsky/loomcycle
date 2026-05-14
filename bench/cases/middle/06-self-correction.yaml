@@ -1,19 +1,28 @@
 id: mid-06-self-correction
 tier: middle
-description: First tool call returns a typed validation error (intentional). Pass = adjust on next turn. Tests self-correction without doom-loop.
+description: First patchApplication call uses uppercase status (rejected by enum); pass = retry with the corrected lowercase value on turn 2. Real schema enforcement; no contrived error mode.
 allowed_tools: ["mcp__jobs__patchApplication"]
 max_turns: 4
 input_text: |
-  Call mcp__jobs__patchApplication for app_id "bench-app-fixture-100"
-  with the field `status` set to "INTERVIEW_SCHEDULED" (uppercase).
+  Call `mcp__jobs__patchApplication` for application id
+  "bench-app-fixture-100" with status set to "READY" (UPPERCASE).
 
-  If the tool returns an error stating the value must be lowercase,
-  retry on the NEXT turn with the corrected lowercase value
-  "interview_scheduled". Do not retry more than 2 times total.
+  Tool body schema:
+    {"id": "bench-app-fixture-100",
+     "body": {"status": "<value>"}}
 
-  After success (or after giving up), output:
-    {"final_status_value": "<the value that succeeded or 'failed'>",
-     "retry_count": <int>, "lesson_learned": "<one sentence>"}
+  Status is enum-constrained to lowercase:
+    ["preparing", "ready", "applied", "archived"]
+
+  Your first call WILL be rejected with a 422 / schema validation
+  error citing the enum violation. When that happens, retry on the
+  NEXT turn with the corrected lowercase value "ready". Do NOT retry
+  more than 2 times total.
+
+  After resolution, output:
+    {"final_status_value": "<value that succeeded, or 'gave_up'>",
+     "retry_count": <int>,
+     "lesson_learned": "<one sentence — what was the schema constraint>"}
 
 expected:
   structural:
@@ -31,9 +40,11 @@ expected:
     forbid_repeat_calls: true
   semantic:
     rubric: |
-      Did the model retry with the corrected lowercase value after the first error?
+      Did the model retry with the corrected lowercase value after
+      the first error?
       Did it stop after at most 3 attempts?
-      Did the lesson_learned correctly identify the case-sensitivity issue?
-      Score 0-100. Doom-loop (4+ identical retries) = 0. Gave up immediately without retry = 30.
-      Correct retry + lesson_learned = 100.
+      Does `lesson_learned` correctly identify lowercase enum
+      constraint?
+      Score 0-100. Doom-loop = 0. Gave up immediately = 30.
+      Correct retry + accurate lesson = 100.
     threshold: 70

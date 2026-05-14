@@ -1,42 +1,54 @@
 id: low-07-nested-json-args
 tier: low
-description: Call an MCP tool whose argument is itself a structured JSON object (filter rules). Tests nested-JSON cognition.
-allowed_tools: ["mcp__jobs__getAgentContext"]
+description: "Call patchApplication, which requires a nested top-level shape of id + body (where body is itself an object of fields). Tests the model's ability to construct correct nested-JSON tool args (vs flattening or stringifying)."
+allowed_tools: ["mcp__jobs__patchApplication"]
 max_turns: 4
 input_text: |
-  Call mcp__jobs__getAgentContext for user_id "bench-user-fixture-001"
-  with the following nested filter argument:
+  Call `mcp__jobs__patchApplication` for application id
+  "bench-app-fixture-100" to update three fields at once:
+    - status:   "ready"   (one of: preparing/ready/applied/archived)
+    - notes:    "Updated by lc-bench low-07 — nested JSON args test"
+    - jobTitle: "Senior Go Engineer (bench fixture)"
 
-    filter = {
-      "include": ["preferred_platforms", "target_roles"],
-      "exclude": ["billing", "auth_tokens"],
-      "limit": 50
-    }
+  The tool's body schema is intentionally nested:
+    {"id": "bench-app-fixture-100",
+     "body": {
+       "status": "ready",
+       "notes": "...",
+       "jobTitle": "..."
+     }}
 
-  Pass `filter` as a single JSON object argument to the tool. Do not
-  split it into separate top-level keys. After the call, output:
-    {"filter_passed": <the same object you passed>, "tool_called": "<name>"}
+  Do NOT flatten this. Do NOT stringify the body. The top-level
+  keys must be exactly `id` and `body`; `body` must be a JSON object
+  containing the three fields above.
+
+  After the call, output:
+    {"body_keys_sent": ["..."],
+     "body_is_object": <bool>,
+     "tool_called": "<name>"}
 
 expected:
   structural:
     schema: |
-      {"type":"object","required":["filter_passed","tool_called"],"properties":{
-        "filter_passed":{"type":"object","required":["include","exclude","limit"],"properties":{
-          "include":{"type":"array","items":{"type":"string"}},
-          "exclude":{"type":"array","items":{"type":"string"}},
-          "limit":{"type":"integer"}
-        }},
+      {"type":"object","required":["body_keys_sent","body_is_object","tool_called"],"properties":{
+        "body_keys_sent":{"type":"array","items":{"type":"string"},"minItems":3,"maxItems":3},
+        "body_is_object":{"type":"boolean"},
         "tool_called":{"type":"string"}
       }}
   functional:
     tool_calls:
-      - name: "mcp__jobs__getAgentContext"
+      - name: "mcp__jobs__patchApplication"
         args_must_include:
-          filter_is_object: true
+          id: "bench-app-fixture-100"
+          body_is_object: true
+        min_calls: 1
+        max_calls: 2
   semantic:
     rubric: |
-      Did the model pass `filter` as a single nested JSON object (not flattened into top-level keys)?
-      Did the include/exclude arrays contain the exact strings from the prompt?
-      Was `limit` an integer 50, not a string "50"?
-      Score 0-100. Flattened the filter = 0. Stringified the limit = 40. Correct = 100.
+      Did the model pass `body` as a single nested JSON object (not
+      flattened into top-level keys, not stringified)?
+      Did body contain the three exact fields (status, notes, jobTitle)?
+      Did `body_is_object` in the final output equal true?
+      Score 0-100. Flattened the body = 0. Stringified body = 30.
+      Missing fields = -10 per. All three correct + nested = 100.
     threshold: 70
