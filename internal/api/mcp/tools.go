@@ -20,23 +20,26 @@ func toolDescriptors() []loommcp.ToolDescriptor {
 		// --- Run lifecycle ---
 		{
 			Name:        "spawn_run",
-			Description: "Spawn an agent run. Blocks until completion; final text + usage returned. When the session opted into runEvents via initialize.capabilities.loomcycle.runEvents=true, intermediate events stream as notifications/loomcycle/run_event during the call.",
+			Description: "Spawn an agent run. Blocks until completion; final text + usage returned. When the session opted into runEvents via initialize.capabilities.loomcycle.runEvents=true, intermediate events stream as notifications/loomcycle/run_event during the call. Exactly one of `agent` (fresh run against a registered agent) or `session_id` (continuation of an existing session) must be supplied.",
 			InputSchema: rawJSON(`{
 				"type": "object",
-				"required": ["agent", "segments"],
 				"properties": {
-					"agent":            {"type": "string", "description": "Registered agent name (static or dynamic)."},
-					"segments":         {"type": "array",  "description": "Prompt segments (matches /v1/runs segments field)."},
-					"session_id":       {"type": "string", "description": "Optional — set to continue an existing session."},
+					"agent":            {"type": "string", "description": "Registered agent name. Required for fresh runs; ignored for continuations (session's stored agent is authoritative)."},
+					"segments":         {"type": "array",  "description": "Prompt segments. Typically required for fresh runs; continuations may omit when the caller has nothing new to add."},
+					"session_id":       {"type": "string", "description": "Set to continue an existing session. When set, agent is ignored."},
 					"tenant_id":        {"type": "string"},
 					"user_id":          {"type": "string"},
 					"agent_id":         {"type": "string", "description": "Optional caller-supplied tracking handle."},
 					"user_tier":        {"type": "string"},
 					"user_bearer":      {"type": "string", "description": "Per-run MCP bearer (substituted into ${run.user_bearer} in mcp_servers.*.headers)."},
 					"allowed_tools":    {"type": "array", "items": {"type": "string"}},
-					"allowed_hosts":    {"type": "array", "items": {"type": "string"}},
+					"allowed_hosts":    {"type": "array", "items": {"type": "string"}, "description": "OMIT for no narrowing (operator's static allowlist applies). Pass empty array [] to DENY ALL outbound HTTP. Pass non-empty array to intersect with operator's list."},
 					"web_search_filter": {"type": "string", "enum": ["drop", "keep"]}
-				}
+				},
+				"anyOf": [
+					{"required": ["agent"]},
+					{"required": ["session_id"]}
+				]
 			}`),
 		},
 		{

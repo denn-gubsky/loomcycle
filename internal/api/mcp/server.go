@@ -153,7 +153,13 @@ func (s *Server) handleFrame(ctx context.Context, frame []byte, stdout io.Writer
 		ID *int64 `json:"id"`
 	}
 	if err := json.Unmarshal(frame, &probe); err != nil {
+		// Malformed frame — emit a best-effort -32700 with id=0 (the
+		// "unknown id" convention) so the client gets SOME response
+		// instead of waiting forever for a request that never resolves.
+		// Without this, a single bad frame from a buggy client stalls
+		// the session permanently.
 		s.cfg.Logf("mcp: decode probe: %v", err)
+		s.writeError(stdout, 0, -32700, "parse error: "+err.Error())
 		return
 	}
 	if probe.ID == nil {

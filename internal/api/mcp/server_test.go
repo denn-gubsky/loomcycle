@@ -312,6 +312,77 @@ func TestServer_SpawnRun_StreamingPath(t *testing.T) {
 	}
 }
 
+// TestServer_SpawnRun_NotificationsArriveBeforeResponse pins the
+// wire-ordering invariant: every notifications/loomcycle/run_event
+// for a streaming spawn_run lands on stdout BEFORE the final
+// tools/call response. Without this guarantee, MCP orchestrators
+// rendering live agent output would see the run complete and only
+// then receive the event stream — useless for live progress UIs.
+//
+// Distinct from TestServer_SpawnRun_StreamingPath above (which only
+// counts notifications). This test re-runs the same fixture but
+// captures stdout in order to assert positional invariants.
+func TestServer_SpawnRun_NotificationsArriveBeforeResponse(t *testing.T) {
+	fr := &fakeRunner{
+		agentID:   "a_o",
+		runID:     "r_o",
+		sessionID: "s_o",
+		events: []providers.Event{
+			{Type: providers.EventStarted},
+			{Type: providers.EventText, Text: "hello"},
+			{Type: providers.EventDone, StopReason: "end_turn"},
+		},
+	}
+	mc := &mockConnector{}
+	srv := New(Config{Connector: mc, Runner: fr, Logf: func(string, ...any) {}})
+
+	in := strings.Join([]string{
+		`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{"loomcycle":{"runEvents":true}},"clientInfo":{"name":"t","version":"1"}}}`,
+		`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"spawn_run","arguments":{"agent":"qa-agent","segments":[]}}}`,
+	}, "\n") + "\n"
+
+	stdout := &bytes.Buffer{}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := srv.Serve(ctx, strings.NewReader(in), stdout); err != nil {
+		t.Fatalf("Serve: %v", err)
+	}
+
+	// Walk stdout lines in order. Track:
+	//   - index of the spawn_run response (id=2)
+	//   - indexes of all run_event notifications
+	lines := strings.Split(strings.TrimRight(stdout.String(), "\n"), "\n")
+	var spawnRespIdx int = -1
+	var notifIdxs []int
+	for i, line := range lines {
+		var probe struct {
+			ID     *int64 `json:"id"`
+			Method string `json:"method"`
+		}
+		if err := json.Unmarshal([]byte(line), &probe); err != nil {
+			t.Fatalf("undecodable line %d: %s", i, line)
+		}
+		if probe.ID != nil && *probe.ID == 2 {
+			spawnRespIdx = i
+		}
+		if probe.ID == nil && probe.Method == "notifications/loomcycle/run_event" {
+			notifIdxs = append(notifIdxs, i)
+		}
+	}
+	if spawnRespIdx < 0 {
+		t.Fatalf("spawn_run response (id=2) not found in stdout:\n%s", stdout.String())
+	}
+	if len(notifIdxs) == 0 {
+		t.Fatal("no run_event notifications observed")
+	}
+	for _, ni := range notifIdxs {
+		if ni >= spawnRespIdx {
+			t.Errorf("notification at line %d came at-or-after spawn response at line %d; ordering invariant broken",
+				ni, spawnRespIdx)
+		}
+	}
+}
+
 func TestServer_RegisterAgent_DispatchesThroughConnector(t *testing.T) {
 	mc := &mockConnector{
 		regResult: connector.AgentDescriptor{Name: "x", Source: "dynamic"},
@@ -372,11 +443,15 @@ func TestServer_PauseRuntime_ReturnsPreviewShape(t *testing.T) {
 	}
 }
 
-func TestServer_ConcurrentToolsCall_NoFrameInterleave(t *testing.T) {
-	// 5 concurrent list_runs calls; each handler blocks briefly to
-	// raise the chance of interleave. We assert: each output line
-	// parses as a valid JSON-RPC frame (no torn lines), and the IDs
-	// 1..5 are all present.
+// TestServer_SequentialDispatch_AllResponsesPresent pins the property
+// that 5 back-to-back requests on a single stdio connection each
+// receive a response with the correct id. Frame dispatch is sequential
+// (see Server.Serve doc); this test doesn't exercise concurrent goroutine
+// safety — that's an explicit v0.9.x non-goal. If the dispatch loop is
+// ever made concurrent (per-request goroutines), this test would still
+// pass but the writeMu would become load-bearing; in that future,
+// extend the test to assert no torn frames on stdout.
+func TestServer_SequentialDispatch_AllResponsesPresent(t *testing.T) {
 	var listCalls atomic.Int32
 	mc := &mockConnector{}
 	mc.listCallback = func() {

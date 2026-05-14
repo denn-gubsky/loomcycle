@@ -278,12 +278,19 @@ func handleListAgents(ctx context.Context, env *handlerEnv, args json.RawMessage
 // builtin method. The connector returns ToolResult{Text, IsError};
 // we map that 1:1 to the MCP tool/call response (content[].text +
 // isError).
+//
+// CRITICAL: enrich ctx with operatorCtx() BEFORE calling the Connector.
+// The underlying tools (Memory/Channel/AgentDef/Evaluation/Context)
+// gate every op on per-agent policy values from ctx. Without enrichment,
+// MCP-direct callers see "no scope configured" errors on every call —
+// the policies are missing from a bare bgCtx. See internal/api/mcp/
+// context.go for the policy synthesis rationale.
 func wrapBuiltin(toolName string, call func(connector.Connector, context.Context, json.RawMessage) (connector.ToolResult, error)) toolHandler {
 	return func(ctx context.Context, env *handlerEnv, args json.RawMessage) (*loommcp.CallToolResult, error) {
 		if env.connector == nil {
 			return nil, fmt.Errorf("%s: no connector wired", toolName)
 		}
-		res, err := call(env.connector, ctx, args)
+		res, err := call(env.connector, operatorCtx(ctx), args)
 		if err != nil {
 			return toolErr(toolName + ": " + err.Error()), nil
 		}

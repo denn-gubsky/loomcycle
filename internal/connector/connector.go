@@ -91,9 +91,15 @@ type Connector interface {
 	// Operator-level ctx is the responsibility of the TRANSPORT adapter
 	// (MCP / gRPC / future CLI), NOT the connector. The connector is
 	// intentionally policy-agnostic — the caller attaches the right
-	// memory_scopes / channel ACL / evaluation policy on ctx before
-	// calling. See operatorCtx helpers in each transport for the
-	// pattern.
+	// memory_scopes / channel ACL / evaluation / agent_def / history
+	// policy on ctx BEFORE calling, otherwise the underlying tools
+	// return default-deny refusals (every op fails).
+	//
+	// See internal/api/mcp/context.go (operatorCtx) for the MCP
+	// transport's policy-enrichment helper. Future gRPC/CLI transports
+	// that surface builtin tools directly will need their own
+	// equivalent — the gRPC server today only exposes run-lifecycle
+	// RPCs through Connector, so the issue doesn't arise there.
 
 	Memory(ctx context.Context, input json.RawMessage) (ToolResult, error)
 	Channel(ctx context.Context, input json.RawMessage) (ToolResult, error)
