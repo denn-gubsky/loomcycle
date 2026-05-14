@@ -7,6 +7,19 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 )
 
+// ToolResult is the output of a builtin-tool invocation through the
+// Connector. Mirrors tools.Result but lives in the connector package
+// so transport adapters don't need to depend on internal/tools.
+//
+// Text is the model-facing payload (typically JSON for builtin tools).
+// IsError signals a failed execution — the MCP wire layer maps this
+// to `{"isError": true}` in the tool/call response so the orchestrator
+// can render it differently.
+type ToolResult struct {
+	Text    string `json:"text"`
+	IsError bool   `json:"is_error,omitempty"`
+}
+
 // --- Run lifecycle types ---
 
 // SpawnRunRequest is the input to SpawnRun. Mirrors the union of

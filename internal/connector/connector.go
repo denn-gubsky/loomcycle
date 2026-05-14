@@ -84,15 +84,22 @@ type Connector interface {
 	//
 	// Each builtin's discriminated-op input shape stays the authority
 	// for inner-op validation. The connector passes raw JSON through
-	// to tool.Execute; transport adapters just route inputs+outputs.
-	// Operator-level ctx is built by the transport (full memory
-	// scopes, full channel ACL, full evaluation policy).
+	// to tool.Execute; the result Text is the model-facing payload
+	// (typically JSON for builtin tools). Transport adapters wrap
+	// (text, is_error) in their wire-shape (e.g. MCP's content+isError).
+	//
+	// Operator-level ctx is the responsibility of the TRANSPORT adapter
+	// (MCP / gRPC / future CLI), NOT the connector. The connector is
+	// intentionally policy-agnostic — the caller attaches the right
+	// memory_scopes / channel ACL / evaluation policy on ctx before
+	// calling. See operatorCtx helpers in each transport for the
+	// pattern.
 
-	Memory(ctx context.Context, input json.RawMessage) (json.RawMessage, error)
-	Channel(ctx context.Context, input json.RawMessage) (json.RawMessage, error)
-	AgentDef(ctx context.Context, input json.RawMessage) (json.RawMessage, error)
-	Evaluation(ctx context.Context, input json.RawMessage) (json.RawMessage, error)
-	Context(ctx context.Context, input json.RawMessage) (json.RawMessage, error)
+	Memory(ctx context.Context, input json.RawMessage) (ToolResult, error)
+	Channel(ctx context.Context, input json.RawMessage) (ToolResult, error)
+	AgentDef(ctx context.Context, input json.RawMessage) (ToolResult, error)
+	Evaluation(ctx context.Context, input json.RawMessage) (ToolResult, error)
+	Context(ctx context.Context, input json.RawMessage) (ToolResult, error)
 
 	// --- Pause/Resume/Snapshot (MOCKED in v0.8.15) ---
 	//

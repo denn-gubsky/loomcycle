@@ -709,6 +709,30 @@ type Env struct {
 	// LOOMCYCLE_METRICS_SWEEP_INTERVAL_MS.
 	MetricsSweepInterval time.Duration
 
+	// MCPAllowPrivilegedTools — v0.8.15. When true, dynamically-
+	// registered agents may include Bash/Write/Edit in their
+	// allowed_tools. Default false: those three are stripped from
+	// any register_agent request, matching the v0.8.7/v0.8.8
+	// default-deny pattern for new tool surfaces. Env:
+	// LOOMCYCLE_MCP_ALLOW_PRIVILEGED_TOOLS.
+	MCPAllowPrivilegedTools bool
+
+	// DynamicAgentDefaultTTLSeconds — v0.8.15. TTL applied to
+	// dynamic agents registered via mcp__loomcycle__register_agent
+	// when the caller omits ttl_seconds. Default 86400 (24h).
+	// Set to 0 to deny all default-TTL registrations (callers
+	// MUST supply an explicit ttl_seconds). Env:
+	// LOOMCYCLE_DYNAMIC_AGENT_DEFAULT_TTL_SECONDS.
+	DynamicAgentDefaultTTLSeconds int
+
+	// DynamicAgentSweepInterval — v0.8.15. Cadence for the
+	// dynamic_agents TTL sweeper. Default 15 minutes. 0 disables
+	// the sweeper (expired rows linger; DynamicAgentGet still
+	// filters them out at read time so functional correctness is
+	// preserved, but the table grows unbounded). Env:
+	// LOOMCYCLE_DYNAMIC_AGENT_SWEEP_INTERVAL_MS.
+	DynamicAgentSweepInterval time.Duration
+
 	// ToolParallelism caps how many tool_calls from a single
 	// assistant turn run concurrently. Default 8. Set to 1 to
 	// force serial dispatch (debug / determinism). Field 0
@@ -1159,6 +1183,25 @@ func Load(path string) (*Config, error) {
 				cfg.Env.MetricsSweepInterval = 0
 			} else {
 				cfg.Env.MetricsSweepInterval = time.Duration(n) * time.Millisecond
+			}
+		}
+	}
+
+	// v0.8.15 LoomCycle MCP: dynamic agent registration policy.
+	cfg.Env.MCPAllowPrivilegedTools = os.Getenv("LOOMCYCLE_MCP_ALLOW_PRIVILEGED_TOOLS") == "1"
+	cfg.Env.DynamicAgentDefaultTTLSeconds = 86400 // 24h
+	if v := os.Getenv("LOOMCYCLE_DYNAMIC_AGENT_DEFAULT_TTL_SECONDS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.Env.DynamicAgentDefaultTTLSeconds = n
+		}
+	}
+	cfg.Env.DynamicAgentSweepInterval = 15 * time.Minute
+	if v := os.Getenv("LOOMCYCLE_DYNAMIC_AGENT_SWEEP_INTERVAL_MS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			if n <= 0 {
+				cfg.Env.DynamicAgentSweepInterval = 0
+			} else {
+				cfg.Env.DynamicAgentSweepInterval = time.Duration(n) * time.Millisecond
 			}
 		}
 	}
