@@ -101,10 +101,12 @@ Public roadmap with v0.8.x → v1.0 design details: [`docs/PLAN.md`](docs/PLAN.m
 ## Architecture (one diagram)
 
 <p align="center">
-  <img src="docs/assets/architecture.png" alt="loomcycle architecture — app servers / SDKs at the top, the single Go binary in the middle (wire surfaces → middleware → agent loop → tool dispatcher → store), six LLM providers and external MCP servers at the bottom" width="780" />
+  <img src="docs/assets/architecture.png" alt="loomcycle architecture — app servers / CLIs / TS-Python SDKs / Claude Code at the top, the single Go binary in the middle (wire surfaces incl. MCP server stdio v0.8.15 → middleware → connector.Connector interface → agent loop → tool dispatcher with 14 builtins → store with dynamic_agents), six LLM providers and external MCP servers at the bottom" width="780" />
 </p>
 
 Diagram source: [`docs/architecture.d2`](docs/architecture.d2) (regenerate with `d2 docs/architecture.d2 docs/assets/architecture.png`).
+
+The v0.8.15 `Connector` abstraction layer (the pink block in the middle of the diagram) is the architectural anchor every wire transport dispatches through. For the dedicated detail diagram showing the Connector interface + its implementers, consumers, and mirroring adapters, see [`docs/assets/architecture-connector.png`](docs/assets/architecture-connector.png) (source: [`docs/architecture-connector.d2`](docs/architecture-connector.d2)).
 
 Full request flow, abstractions, and concurrency model: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 

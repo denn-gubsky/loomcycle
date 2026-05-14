@@ -1,0 +1,173 @@
+# LoomCycle Connector abstraction diagram (v0.8.15+)
+# Render: d2 docs/architecture-connector.d2 docs/assets/architecture-connector.png
+#
+# Shows the Connector interface as the single architectural contract
+# that every wire transport translates into. HTTP server is the canonical
+# implementation; MCP, gRPC, and (future) CLI servers CONSUME the
+# interface; TS / Python adapters MIRROR the operation surface in their
+# own languages over the HTTP wire.
+
+vars: {
+  d2-config: {
+    layout-engine: elk
+    pad: 24
+  }
+}
+
+direction: down
+
+# ---- The Connector interface (center) ----
+
+connector: "connector.Connector\n(internal/connector/connector.go)" {
+  style: {
+    fill: "#fce7f3"
+    stroke: "#be185d"
+    stroke-width: 3
+    border-radius: 8
+    bold: true
+    font-size: 16
+  }
+
+  methods: "20 methods" {
+    grid-columns: 4
+    style: {
+      fill: "#fdf2f8"
+      font-size: 11
+    }
+
+    spawn:   "SpawnRun" {style.fill: "#fbcfe8"}
+    cancel:  "CancelRun" {style.fill: "#fbcfe8"}
+    getrun:  "GetRun" {style.fill: "#fbcfe8"}
+    listrun: "ListRuns" {style.fill: "#fbcfe8"}
+
+    regag:   "RegisterAgent" {style.fill: "#fbcfe8"}
+    unreg:   "UnregisterAgent" {style.fill: "#fbcfe8"}
+    listag:  "ListAgents" {style.fill: "#fbcfe8"}
+    mem:     "Memory" {style.fill: "#fbcfe8"}
+
+    ch:      "Channel" {style.fill: "#fbcfe8"}
+    adef:    "AgentDef" {style.fill: "#fbcfe8"}
+    ev:      "Evaluation" {style.fill: "#fbcfe8"}
+    ctx:     "Context" {style.fill: "#fbcfe8"}
+
+    pause:   "PauseRuntime\n(PREVIEW)" {style.fill: "#e9d5ff"}
+    resume:  "ResumeRuntime\n(PREVIEW)" {style.fill: "#e9d5ff"}
+    state:   "GetRuntimeState\n(PREVIEW)" {style.fill: "#e9d5ff"}
+    snapc:   "CreateSnapshot\n(PREVIEW)" {style.fill: "#e9d5ff"}
+
+    snapl:   "ListSnapshots\n(PREVIEW)" {style.fill: "#e9d5ff"}
+    snape:   "ExportSnapshot\n(PREVIEW)" {style.fill: "#e9d5ff"}
+    snapr:   "RestoreSnapshot\n(PREVIEW)" {style.fill: "#e9d5ff"}
+    snapd:   "DeleteSnapshot\n(PREVIEW)" {style.fill: "#e9d5ff"}
+  }
+}
+
+# ---- IMPLEMENTERS (the canonical surface) ----
+
+implementers: "IMPLEMENTS" {
+  style: {
+    fill: "#dcfce7"
+    stroke: "#15803d"
+    stroke-width: 2
+    border-radius: 8
+    font-size: 13
+    italic: true
+  }
+
+  http: "*lchttp.Server\ninternal/api/http/\nconnector_impl.go" {
+    style: {
+      fill: "#bbf7d0"
+      stroke: "#15803d"
+      bold: true
+      font-size: 13
+    }
+  }
+
+  http_note: "Canonical business logic\nvar _ connector.Connector = (*Server)(nil)\n(compile-time drift prevention)" {
+    style: {
+      fill: "#dcfce7"
+      italic: true
+      font-size: 10
+    }
+  }
+
+  http -> http_note: {style.stroke: "#15803d"; style.stroke-dash: 2}
+}
+
+# ---- CONSUMERS (transport adapters) ----
+
+consumers: "CONSUMES" {
+  style: {
+    fill: "#dbeafe"
+    stroke: "#1d4ed8"
+    stroke-width: 2
+    border-radius: 8
+    font-size: 13
+    italic: true
+  }
+
+  direction: right
+
+  mcp: "*lcmcp.Server\nstdio MCP\n(v0.8.15)" {
+    style: {fill: "#bfdbfe"; bold: true; font-size: 12}
+  }
+  grpc: "*loomgrpc.Server\nproto handlers\n(v0.8.15 refactor)" {
+    style: {fill: "#bfdbfe"; bold: true; font-size: 12}
+  }
+  cli: "*lccli.Server\nloomcycle run X\n(deferred to v0.8.16+)" {
+    style: {fill: "#e0e7ff"; italic: true; font-size: 12; stroke-dash: 4}
+  }
+}
+
+# ---- MIRRORS (client-side adapters in other languages) ----
+
+mirrors: "MIRRORS (in other languages, over HTTP wire)" {
+  style: {
+    fill: "#fef3c7"
+    stroke: "#a16207"
+    stroke-width: 2
+    border-radius: 8
+    font-size: 13
+    italic: true
+  }
+
+  direction: right
+
+  ts: "@loomcycle/client\nadapters/ts/\n(TypeScript — shipped)" {
+    style: {fill: "#fde68a"; bold: true; font-size: 12}
+  }
+  py: "loomcycle-py\nadapters/python/\n(deferred to v0.8.x+)" {
+    style: {fill: "#fef3c7"; italic: true; font-size: 12; stroke-dash: 4}
+  }
+}
+
+# ---- Edges ----
+
+implementers.http -> connector: "satisfies" {
+  style: {stroke: "#15803d"; stroke-width: 2; bold: true}
+}
+
+consumers.mcp -> connector: "dispatches via" {style.stroke: "#1d4ed8"; style.stroke-width: 2}
+consumers.grpc -> connector: "dispatches via" {style.stroke: "#1d4ed8"; style.stroke-width: 2}
+consumers.cli -> connector: "dispatches via" {style.stroke: "#1d4ed8"; style.stroke-dash: 4}
+
+# Mirrors call into the running implementer via the HTTP wire, not the Go interface itself.
+mirrors.ts -> implementers.http: "HTTP /v1/*" {
+  style: {stroke: "#a16207"; stroke-width: 2}
+}
+mirrors.py -> implementers.http: "HTTP /v1/*" {
+  style: {stroke: "#a16207"; stroke-dash: 4}
+}
+
+# ---- Note: consumers hold the same business logic via the field ----
+
+field_note: "Consumers each hold a `connector.Connector` field\ntypically pointing at the running `*lchttp.Server` instance.\nDirect Go method dispatch — NO HTTP round-trips between\nMCP/gRPC handlers and the underlying business logic." {
+  style: {
+    fill: "#f8fafc"
+    italic: true
+    font-size: 11
+    stroke: "#64748b"
+  }
+}
+
+consumers -> field_note: {style.stroke: "#64748b"; style.stroke-dash: 2}

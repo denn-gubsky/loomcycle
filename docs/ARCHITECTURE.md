@@ -1,19 +1,26 @@
 # Architecture
 
-This document describes the v0.4.0 runtime end-to-end. v0.4.0 ships the MCP-integration story (Streamable HTTP transport, SSE response decoding, startup-retry, sub-agent host-policy inheritance) validated against jobs-search-agent as a real consumer; the LocalAPI gateway remains scaffolded as a convenience for OpenAPI-without-MCP-server cases but is no longer the integration vehicle. For a higher-level pitch and quick-start, see the README. For the public roadmap, see `docs/PLAN.md`.
+This document describes the runtime end-to-end through v0.8.15. The MCP-integration story originally shipped in v0.4.0 (Streamable HTTP transport, SSE response decoding, startup-retry, sub-agent host-policy inheritance) was inverted in v0.8.15: loomcycle now ALSO exposes itself as an MCP server alongside being an MCP consumer. The `connector.Connector` Go interface unifies HTTP, gRPC, MCP, and future CLI wire transports around a single contract — HTTP server IMPLEMENTS, others CONSUME via direct method dispatch. For a higher-level pitch and quick-start, see the README. For the public roadmap, see `docs/PLAN.md`.
+
+<p align="center">
+  <img src="assets/architecture.png" alt="loomcycle architecture — app servers / CLIs / TS-Python SDKs / Claude Code at the top, the single Go binary in the middle (wire surfaces incl. MCP server stdio v0.8.15 → middleware → connector.Connector interface → agent loop → tool dispatcher with 14 builtins → store with dynamic_agents), six LLM providers and external MCP servers at the bottom" width="780" />
+</p>
+
+Diagram source: [`docs/architecture.d2`](architecture.d2) (regenerate with `d2 docs/architecture.d2 docs/assets/architecture.png`).
 
 ## Shape
 
 `loomcycle` is a single Go binary (`bin/loomcycle` from `cmd/loomcycle/`) that:
 
 1. Owns the LLM **tool-use loop** end-to-end (model → tool_use → tool_result → model). No vendor SDK in the loop, no bundled binary.
-2. Talks to **providers** over their public HTTP APIs — Anthropic Messages, OpenAI Chat Completions, DeepSeek (OpenAI-compatible Chat Completions at a different base URL), Ollama `/api/chat`.
-3. Dispatches tool calls to **built-in tools**, **MCP servers** (stdio + HTTP), **LocalAPI gateways** (OpenAPI → tool-per-operation), or **sub-agents** (the `Agent` built-in).
-4. Streams every event back to callers as **SSE** over a small HTTP API (`/v1/runs`, `/v1/sessions/{id}/messages`, `/v1/agents/{agent_id}`, `/v1/users/{user_id}/agents`, `/healthz`).
-5. Persists sessions, runs, and events to a pluggable `Store` (SQLite default; Postgres + Redis adapters scaffolded for v1.0).
-6. Caps concurrency with a **semaphore + bounded FIFO queue** to keep memory predictable on a small VPS.
+2. Talks to **providers** over their public HTTP APIs — Anthropic Messages, OpenAI Chat Completions, DeepSeek (OpenAI-compatible Chat Completions at a different base URL), Ollama `/api/chat`, Gemini.
+3. Dispatches tool calls to **14 built-in tools** (v0.8.7/8 — Memory, Channel, AgentDef, Evaluation, Context joined the original 9), **MCP servers** (stdio + Streamable HTTP), **LocalAPI gateways** (OpenAPI → tool-per-operation), or **sub-agents** (the `Agent` built-in).
+4. Streams every event back to callers as **SSE** over a small HTTP API (`/v1/runs`, `/v1/sessions/{id}/messages`, `/v1/agents/{agent_id}`, `/v1/users/{user_id}/agents`, `/v1/_metrics/*`, `/healthz`).
+5. **Exposes itself as an MCP server** via the `loomcycle mcp` subcommand (v0.8.15+) — 20 meta-tools spanning run lifecycle, agent management, all 5 substrate builtins, and PREVIEW-mocked Pause/Resume/Snapshot. The `connector.Connector` interface is what every wire surface dispatches through.
+6. Persists sessions, runs, events, agent_defs, evaluations, memory rows, channel messages, process samples, and dynamic_agents to a pluggable `Store` (SQLite default; Postgres for HA).
+7. Caps concurrency with a **semaphore + bounded FIFO queue** to keep memory predictable on a small VPS.
 
-Single-tenant out of the box; multi-tenant ready (every run carries `user_id`; tracking + cancel APIs scope by user). Per-tenant fairness is v1.0 work.
+Single-tenant out of the box; multi-tenant ready (every run carries `user_id` + optional `user_tier` + optional `user_bearer`; tracking + cancel APIs scope by user; per-run MCP bearer substitution lets each agent authenticate to downstream MCP servers as the actual end-user). Per-tenant fairness on the concurrency layer is v0.9.x work.
 
 ## Repository layout (as shipped in v0.4.0)
 
@@ -374,6 +381,12 @@ All three endpoints return 503 with `enable_hint` when `LOOMCYCLE_METRICS_ENABLE
 References: `internal/metrics/sampler.go` (idle-gated ticker), `internal/metrics/proc_linux.go` (`/proc` readers), `internal/api/http/metrics_handlers.go` (three handlers), `internal/store/sqlite/sqlite.go` + `internal/store/postgres/postgres.go` (storage; the 4 `Metrics*` methods on the `Store` interface).
 
 ## Connector abstraction + LoomCycle MCP (v0.8.15+)
+
+<p align="center">
+  <img src="assets/architecture-connector.png" alt="Connector abstraction diagram — the connector.Connector interface (20 methods) in the centre; *lchttp.Server IMPLEMENTS it (canonical business logic); MCP, gRPC, and future CLI servers CONSUME via direct method dispatch; TS and Python adapters MIRROR the operation surface in their own languages over the HTTP wire" width="640" />
+</p>
+
+Diagram source: [`docs/architecture-connector.d2`](architecture-connector.d2) (regenerate with `d2 docs/architecture-connector.d2 docs/assets/architecture-connector.png`).
 
 v0.8.15 introduced the `connector.Connector` Go interface (`internal/connector/connector.go`) — a 20-method contract that defines the operation surface every wire transport translates into. Architectural intent:
 
