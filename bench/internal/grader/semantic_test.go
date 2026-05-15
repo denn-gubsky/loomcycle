@@ -22,7 +22,7 @@ func (f *fakeJudge) Score(_ context.Context, _ string) (int, string, error) {
 
 // TestSemantic_PassWhenJudgeMeetsThreshold.
 func TestSemantic_PassWhenJudgeMeetsThreshold(t *testing.T) {
-	r := Semantic(context.Background(), &fakeJudge{score: 85, notes: "good"}, "output", cases.Semantic{
+	r := Semantic(context.Background(), &fakeJudge{score: 85, notes: "good"}, "output", nil, cases.Semantic{
 		Rubric:    "score the output",
 		Threshold: 70,
 	})
@@ -36,7 +36,7 @@ func TestSemantic_PassWhenJudgeMeetsThreshold(t *testing.T) {
 
 // TestSemantic_FailBelowThreshold.
 func TestSemantic_FailBelowThreshold(t *testing.T) {
-	r := Semantic(context.Background(), &fakeJudge{score: 60}, "output", cases.Semantic{
+	r := Semantic(context.Background(), &fakeJudge{score: 60}, "output", nil, cases.Semantic{
 		Rubric:    "score the output",
 		Threshold: 70,
 	})
@@ -48,7 +48,7 @@ func TestSemantic_FailBelowThreshold(t *testing.T) {
 // TestSemantic_NoJudgeIsPassThrough — operators running --no-semantic
 // (or without ANTHROPIC_API_KEY) get pass=true on this axis.
 func TestSemantic_NoJudgeIsPassThrough(t *testing.T) {
-	r := Semantic(context.Background(), nil, "output", cases.Semantic{
+	r := Semantic(context.Background(), nil, "output", nil, cases.Semantic{
 		Rubric:    "rubric exists",
 		Threshold: 70,
 	})
@@ -60,7 +60,7 @@ func TestSemantic_NoJudgeIsPassThrough(t *testing.T) {
 // TestSemantic_JudgeErrorFailsTheAxis — a judge HTTP error shouldn't
 // silently pass; it must surface as a failure with the error in reasons.
 func TestSemantic_JudgeErrorFailsTheAxis(t *testing.T) {
-	r := Semantic(context.Background(), &fakeJudge{err: errors.New("HTTP 503")}, "output", cases.Semantic{
+	r := Semantic(context.Background(), &fakeJudge{err: errors.New("HTTP 503")}, "output", nil, cases.Semantic{
 		Rubric:    "score",
 		Threshold: 70,
 	})
@@ -99,11 +99,39 @@ func TestParseJudgeResponse_RegexFallback(t *testing.T) {
 
 // TestBuildJudgePrompt_IncludesRubric.
 func TestBuildJudgePrompt_IncludesRubric(t *testing.T) {
-	prompt := BuildJudgePrompt("the output", "the rubric body")
+	prompt := BuildJudgePrompt("the output", nil, "the rubric body")
 	if !strings.Contains(prompt, "the rubric body") {
 		t.Error("rubric not in prompt")
 	}
 	if !strings.Contains(prompt, "the output") {
 		t.Error("output not in prompt")
+	}
+}
+
+// TestBuildJudgePrompt_IncludesToolCallTrace — the operator's Issue 3
+// from the Sweep #6 analysis. Trace-dependent rubrics fail without
+// this evidence.
+func TestBuildJudgePrompt_IncludesToolCallTrace(t *testing.T) {
+	tools := []ToolCallSummary{
+		{Name: "mcp__jobs__getAgentContext", Args: "{}"},
+		{Name: "mcp__jobs__patchApplication", Args: `{"id":"x","body":{"status":"ready"}}`},
+	}
+	prompt := BuildJudgePrompt("final text", tools, "rubric")
+	if !strings.Contains(prompt, "mcp__jobs__getAgentContext({})") {
+		t.Errorf("expected first tool call in prompt; got %q", prompt)
+	}
+	if !strings.Contains(prompt, "mcp__jobs__patchApplication") {
+		t.Errorf("expected second tool call in prompt; got %q", prompt)
+	}
+}
+
+// TestBuildJudgePrompt_NoToolsExplicitlyNoted — when the model made
+// no tool calls, the prompt should say so explicitly rather than
+// being silent (silence misleads the judge into assuming traces are
+// hidden).
+func TestBuildJudgePrompt_NoToolsExplicitlyNoted(t *testing.T) {
+	prompt := BuildJudgePrompt("final text", nil, "rubric")
+	if !strings.Contains(prompt, "(none — model produced no tool calls)") {
+		t.Errorf("expected explicit no-tools note; got %q", prompt)
 	}
 }

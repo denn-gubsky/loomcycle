@@ -186,3 +186,32 @@ func TestStructural_MustNotMatchStillCatchesPreJSONNarration(t *testing.T) {
 		t.Fatal("expected must_not_match to flag the 'I have called' preamble")
 	}
 }
+
+// TestStructural_ExtractsLargestNotFirstJSON — Sweep #6 mid-04
+// failure pattern: model emits a tool-response JSON snippet inline
+// in prose ("getResearch returned {...}") BEFORE its actual answer
+// block in a fenced final output. Old "first balanced block"
+// extractor caught the inline snippet, schema rejected on missing
+// fields. New extractor picks the largest balanced block (the
+// actual answer).
+func TestStructural_ExtractsLargestNotFirstJSON(t *testing.T) {
+	text := `I'll run both tasks. Here are the findings:
+
+- Task B: getResearch returned {"exists": false, "profiles": {}} — no stored research.
+
+` + "```json\n" + `{
+  "go_version": "1.25",
+  "research_exists": false,
+  "tools_used": ["brave_web_search", "getResearch"]
+}` + "\n```"
+	exp := cases.Structural{
+		Schema: `{"type":"object","required":["go_version","research_exists","tools_used"],"properties":{
+			"go_version":{"type":"string"},
+			"research_exists":{"type":"boolean"},
+			"tools_used":{"type":"array"}}}`,
+	}
+	r := Structural(text, exp)
+	if !r.Pass {
+		t.Fatalf("expected the LARGEST JSON block (final answer) to be extracted, not the inline tool-response snippet; reasons: %v", r.Reasons)
+	}
+}

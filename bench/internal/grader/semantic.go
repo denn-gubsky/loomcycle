@@ -19,10 +19,26 @@ type Judge interface {
 	Score(ctx context.Context, prompt string) (int, string, error)
 }
 
+// ToolCallSummary is one entry in the tool-call trace shown to the
+// judge. Compact-by-design — full arg JSON is preserved (judges need
+// to verify shape), but every other field is just enough for the
+// rubric to make sense.
+type ToolCallSummary struct {
+	Name string `json:"name"`
+	Args string `json:"args"` // JSON-stringified, truncated to 300 chars
+}
+
 // Semantic grades the candidate text by handing it to the judge with
-// the case's rubric. Returns Pass=(score>=threshold) and score
-// normalised to 0..1.
-func Semantic(ctx context.Context, judge Judge, finalText string, exp cases.Semantic) AxisResult {
+// the case's rubric + a compact summary of which tools the candidate
+// actually called. The tool-call trace is critical: many case rubrics
+// ask the judge to grade behaviours that are only observable in the
+// trace ("did the model call X before Y", "did the body include
+// date and matches"). Without the trace, the judge sees only the
+// final summary text and defaults to "couldn't verify" → low scores.
+// Sweep #6 surfaced this on low-02, low-03, low-07, and mid-01: all
+// four cases scored 0-30/100 across every model when models had
+// actually behaved correctly per the functional axis.
+func Semantic(ctx context.Context, judge Judge, finalText string, toolCalls []ToolCallSummary, exp cases.Semantic) AxisResult {
 	if exp.Rubric == "" {
 		// No rubric = trivial pass. Used by cases that don't care
 		// about content quality (e.g., a pure tool-routing test).
@@ -37,7 +53,7 @@ func Semantic(ctx context.Context, judge Judge, finalText string, exp cases.Sema
 			Reasons: []string{"semantic grading disabled (no judge wired)"},
 		}
 	}
-	prompt := BuildJudgePrompt(finalText, exp.Rubric)
+	prompt := BuildJudgePrompt(finalText, toolCalls, exp.Rubric)
 	score, notes, err := judge.Score(ctx, prompt)
 	if err != nil {
 		return AxisResult{
@@ -57,8 +73,11 @@ func Semantic(ctx context.Context, judge Judge, finalText string, exp cases.Sema
 }
 
 // BuildJudgePrompt assembles the rubric prompt sent to the judge.
+// Includes both the final assistant text AND the captured tool-call
+// trace, so trace-dependent rubric questions ("did the model call X
+// with arg Y?") have evidence to grade against.
 // Exposed for tests + so the cmd layer can dump it on --verbose.
-func BuildJudgePrompt(finalText, rubric string) string {
+func BuildJudgePrompt(finalText string, toolCalls []ToolCallSummary, rubric string) string {
 	var b strings.Builder
 	b.WriteString("You are a strict but fair benchmark judge.\n\n")
 	b.WriteString("Below is a candidate model's output for a capability test. ")
@@ -69,7 +88,15 @@ func BuildJudgePrompt(finalText, rubric string) string {
 	b.WriteString("No prose around the JSON. No code fences. The first character must be `{`.\n\n")
 	b.WriteString("RUBRIC:\n")
 	b.WriteString(strings.TrimSpace(rubric))
-	b.WriteString("\n\nCANDIDATE OUTPUT (between <BEGIN> and <END>):\n<BEGIN>\n")
+	b.WriteString("\n\nTOOL CALLS THE CANDIDATE MADE (in order):\n")
+	if len(toolCalls) == 0 {
+		b.WriteString("(none — model produced no tool calls)\n")
+	} else {
+		for i, tc := range toolCalls {
+			fmt.Fprintf(&b, "  %d. %s(%s)\n", i+1, tc.Name, tc.Args)
+		}
+	}
+	b.WriteString("\nFINAL ASSISTANT TEXT (between <BEGIN> and <END>):\n<BEGIN>\n")
 	// Bound the candidate text to keep judge input from exploding.
 	b.WriteString(truncateForJudge(finalText, 8000))
 	b.WriteString("\n<END>\n")

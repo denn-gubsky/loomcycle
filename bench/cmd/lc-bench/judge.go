@@ -144,9 +144,16 @@ func newDeepSeekJudge() grader.Judge {
 	}
 	model := os.Getenv("LOOMCYCLE_BENCH_JUDGE_MODEL_DEEPSEEK")
 	if model == "" {
-		// deepseek-v4-pro is the operator's pinned middle-tier model
-		// and proved CAPABLE on Sweep #5 — appropriate for judging.
-		model = "deepseek-v4-pro"
+		// deepseek-chat is the operator's non-thinking variant.
+		// Sweep #6 surfaced a critical bug with the reasoning-class
+		// default (deepseek-v4-pro): extended thinking consumed all
+		// of the 512-token max_tokens budget, leaving ZERO bytes of
+		// final output. Every Sweep #6 row that used the deepseek
+		// judge logged "could not parse score from \"\"", silently
+		// degrading the consensus to single-judge anthropic. Switching
+		// to deepseek-chat keeps grading fast + cheap and produces
+		// real scored output.
+		model = "deepseek-chat"
 	}
 	return &deepSeekJudge{
 		apiKey: key,
@@ -205,9 +212,17 @@ func newGeminiJudge() grader.Judge {
 	}
 	model := os.Getenv("LOOMCYCLE_BENCH_JUDGE_MODEL_GEMINI")
 	if model == "" {
-		// 2.5-pro is the most capable Gemini that proved CAPABLE on
-		// Sweep #5. Avoid 2.0-flash (deprecated as of 2026-05-15).
-		model = "gemini-2.5-pro"
+		// gemini-2.5-flash is the non-thinking variant. Sweep #6
+		// surfaced the same critical bug here as on the deepseek
+		// judge: gemini-2.5-pro's extended thinking consumed the
+		// 512-token max_tokens budget and the response came back with
+		// "empty candidates" on every case. Switching to 2.5-flash
+		// (no thinking, fast structured output) restores real
+		// consensus voting.
+		//
+		// Avoid 2.0-flash — deprecated as of 2026-05-15
+		// (404 NOT_FOUND "no longer available to new users").
+		model = "gemini-2.5-flash"
 	}
 	return &geminiJudge{
 		apiKey: key,

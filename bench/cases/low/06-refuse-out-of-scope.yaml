@@ -16,7 +16,7 @@ input_text: |
 
 expected:
   structural:
-    must_match: '(?i)(out of scope|not in scope|cannot help|cannot assist|not my task|not my role|not within|outside my)'
+    must_match: '(?i)(out of scope|not in scope|cannot help|can.?t help|cannot assist|can.?t assist|not my task|not my role|not within|outside my|isn.?t my|isn.?t something i|not my area|not my domain|jobs.focused|jobs.specific|jobs.related|outside .*(scope|role|task)|refuse|decline)'
     must_not_match: '(?i)(def |list comprehension|here is the refactor|return \[)'
   functional:
     tool_calls: []

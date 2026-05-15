@@ -423,7 +423,7 @@ func runOneCase(ctx context.Context, cli *runner.Client, judge grader.Judge,
 	// Grade.
 	o.Result.Structural = grader.Structural(result.FinalText, c.Expected.Structural)
 	o.Result.Functional = grader.Functional(result.Events, c.Expected.Functional)
-	o.Result.Semantic = grader.Semantic(runCtx, judge, result.FinalText, c.Expected.Semantic)
+	o.Result.Semantic = grader.Semantic(runCtx, judge, result.FinalText, summarizeToolCalls(result.Events), c.Expected.Semantic)
 
 	// If the provider emitted an EventError mid-run (content filter,
 	// rate limit, stream stall), surface its message on whichever
@@ -445,6 +445,32 @@ func runOneCase(ctx context.Context, cli *runner.Client, judge grader.Judge,
 // the trace, or "" if none. A non-empty result means the provider
 // itself rejected something (content filter, 429, mid-stream cut) —
 // distinct from a model that produced bad output.
+// summarizeToolCalls compacts the run's tool-use events into the
+// shape grader.Semantic expects for the judge prompt. Args are
+// preserved as raw JSON (judges need to verify arg shape) but
+// truncated at 300 chars so a massive ingest call doesn't blow up
+// the judge prompt budget. Sweep #6 surfaced this as the dominant
+// reason for low-02 / low-03 / low-07 / mid-01 semantic failures:
+// judges scored "tool wasn't called" because they couldn't see the
+// trace; functional axis correctly showed the tool WAS called.
+func summarizeToolCalls(events []runner.ProviderEvent) []grader.ToolCallSummary {
+	var out []grader.ToolCallSummary
+	for _, ev := range events {
+		if ev.Type != "tool_call" || ev.ToolUse == nil {
+			continue
+		}
+		args := string(ev.ToolUse.Input)
+		if len(args) > 300 {
+			args = args[:300] + "...[truncated]"
+		}
+		out = append(out, grader.ToolCallSummary{
+			Name: ev.ToolUse.Name,
+			Args: args,
+		})
+	}
+	return out
+}
+
 func firstProviderError(events []runner.ProviderEvent) string {
 	for _, e := range events {
 		if e.Type == "error" {
