@@ -138,8 +138,9 @@ func TestDriver_CapabilitiesMostlyMatchOpenAI(t *testing.T) {
 
 // TestIsThinkingModel covers the per-model affordance the driver
 // uses internally for thinking-class decisions. Naming convention:
-//   thinking-class: deepseek-v4-pro, deepseek-reasoner, deepseek-r1
-//   non-thinking:   deepseek-chat, deepseek-v4-flash, deepseek-v3.2
+//
+//	thinking-class: deepseek-v4-pro, deepseek-reasoner, deepseek-r1
+//	non-thinking:   deepseek-chat, deepseek-v4-flash, deepseek-v3.2
 func TestIsThinkingModel(t *testing.T) {
 	cases := []struct {
 		model string

@@ -14,10 +14,10 @@ import (
 //
 //   - tool name (exact)
 //   - argument shape: args_must_include map with these keys:
-//       "<field>": <value>        — exact field == value
-//       "<field>_contains": substr — field contains substring
-//       "has_<field>": true       — field present, any value
-//       "<field>_is_object": true — field is a non-empty object
+//     "<field>": <value>        — exact field == value
+//     "<field>_contains": substr — field contains substring
+//     "has_<field>": true       — field present, any value
+//     "<field>_is_object": true — field is a non-empty object
 //   - min/max call count for the named tool
 //
 // Plus case-level OrderStrict (calls must appear in declared order)
