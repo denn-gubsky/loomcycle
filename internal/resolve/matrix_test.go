@@ -358,6 +358,88 @@ func TestSetReachable_NilModelsKeepsPriorList(t *testing.T) {
 	}
 }
 
+// ---- ClearStall tests (clear-on-success, 2026-05-15) ----
+
+// TestClearStall_RestoresStalledModelToAvailable is the headline path:
+// a model marked stalled by an earlier transient failure becomes
+// available again after ClearStall, without waiting for the periodic
+// probe. The live incident that motivated this fix: free-tier middle
+// had only two candidates and both were stalled simultaneously, so the
+// next request 503'd even though the operator had observed successful
+// calls against one of them seconds earlier.
+func TestClearStall_RestoresStalledModelToAvailable(t *testing.T) {
+	priority, tiers := fixtureLibrary()
+	r := NewResolver(priority, tiers)
+	seedAll(t, r, tiers)
+	r.MarkStalled("deepseek", "deepseek-v4-flash", "transient 5xx")
+
+	// Sanity: while stalled, resolver falls through past deepseek.
+	dec, err := r.Resolve(AgentRequest{Name: "ats-filter", Tier: "low"})
+	if err != nil {
+		t.Fatalf("Resolve while stalled: %v", err)
+	}
+	if dec.Provider != "ollama-local" {
+		t.Fatalf("decision = %+v, want ollama-local (deepseek stalled)", dec)
+	}
+
+	r.ClearStall("deepseek", "deepseek-v4-flash")
+
+	// After clear, deepseek is preferred again (library priority).
+	dec, err = r.Resolve(AgentRequest{Name: "ats-filter", Tier: "low"})
+	if err != nil {
+		t.Fatalf("Resolve after clear: %v", err)
+	}
+	if dec.Provider != "deepseek" {
+		t.Errorf("decision = %+v, want deepseek (stall cleared by ClearStall)", dec)
+	}
+	if snap := r.Snapshot()["deepseek"].Models["deepseek-v4-flash"]; snap.Stalled || snap.LastError != "" {
+		t.Errorf("model status after clear = %+v, want {Stalled:false, LastError:\"\"}", snap)
+	}
+}
+
+// TestClearStall_NoOpOnNonStalledModel: ClearStall against a healthy
+// (provider, model) must not perturb its status. The loop calls
+// ClearStall on every successful iteration, including the common case
+// where there was no prior stall — must be cheap and side-effect-free.
+func TestClearStall_NoOpOnNonStalledModel(t *testing.T) {
+	priority, tiers := fixtureLibrary()
+	r := NewResolver(priority, tiers)
+	seedAll(t, r, tiers)
+	before := r.Snapshot()["deepseek"].Models["deepseek-v4-flash"]
+	if before.Stalled {
+		t.Fatal("fixture invariant violated: model should not be stalled before ClearStall")
+	}
+
+	r.ClearStall("deepseek", "deepseek-v4-flash")
+
+	after := r.Snapshot()["deepseek"].Models["deepseek-v4-flash"]
+	if after != before {
+		t.Errorf("ClearStall on non-stalled model perturbed status: before=%+v after=%+v", before, after)
+	}
+}
+
+// TestClearStall_NoOpOnUnknownProviderOrModel: ClearStall must not
+// create a matrix entry for an unknown (provider, model). The loop
+// call passes whatever (provider, model) the iteration ran against,
+// and a misconfigured agent could in principle land here with a pair
+// that was never seeded.
+func TestClearStall_NoOpOnUnknownProviderOrModel(t *testing.T) {
+	priority, tiers := fixtureLibrary()
+	r := NewResolver(priority, tiers)
+	seedAll(t, r, tiers)
+
+	r.ClearStall("never-heard-of-it", "ghost-model")
+	if _, ok := r.Snapshot()["never-heard-of-it"]; ok {
+		t.Error("ClearStall on unknown provider created a matrix entry")
+	}
+
+	// Known provider, unknown model — same no-op shape.
+	r.ClearStall("deepseek", "deepseek-v9-nonexistent")
+	if _, ok := r.Snapshot()["deepseek"].Models["deepseek-v9-nonexistent"]; ok {
+		t.Error("ClearStall on unknown model created a model entry under a known provider")
+	}
+}
+
 // ---- Excluded-flag tests (PR 2) ----
 
 func TestSetExcluded_SkipsProviderInResolution(t *testing.T) {

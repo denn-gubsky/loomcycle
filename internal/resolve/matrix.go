@@ -625,6 +625,39 @@ func (r *Resolver) MarkStalled(provider, model, reason string) {
 	avail.LastCheck = time.Now()
 }
 
+// ClearStall records a runtime SUCCESS for a (provider, model) and
+// clears any stale Stalled flag the matrix may be holding. The loop
+// calls this when an iteration completes without error against the
+// pair — the most direct possible evidence that the model is healthy
+// right now.
+//
+// Without this, a per-model stall flag was process-lifetime: it
+// persisted until the next periodic probe (default several minutes)
+// even if the operator had since had successful calls against the
+// same pair. Observed 2026-05-15: a free user_tier with two
+// candidates collapsed into a 503 because both were stalled by
+// transient failures, and the staleness outlasted the next call's
+// resolve attempt. Clear-on-success eliminates that class of bug.
+//
+// Idempotent: clearing a non-stalled or non-existent (provider, model)
+// is a no-op. Doesn't touch Listed (the probe owns that field) or
+// the provider-level Reachable flag.
+func (r *Resolver) ClearStall(provider, model string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	avail, ok := r.matrix[provider]
+	if !ok || avail.Models == nil {
+		return
+	}
+	st, ok := avail.Models[model]
+	if !ok || !st.Stalled {
+		return
+	}
+	st.Stalled = false
+	st.LastError = ""
+	avail.Models[model] = st
+}
+
 // Snapshot returns a read-only copy of the current matrix for
 // observability (operator dashboards, /healthz extension, debug logs).
 // Cheap enough to call on every healthz hit; the inner maps are

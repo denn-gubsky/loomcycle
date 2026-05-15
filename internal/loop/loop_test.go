@@ -383,6 +383,57 @@ func TestLoop_NoMarkStalledOnContextCancel(t *testing.T) {
 	}
 }
 
+// TestLoop_ClearStallOnSuccessfulIteration pins the clear-on-success
+// hook: every iteration that produces an assistant message must call
+// ClearStall with the live (provider, model). The companion to
+// MarkStalled — without this, a per-model stall set by an earlier
+// transient failure persists until the next periodic probe, which can
+// collapse a tier's cascade between probes (the 2026-05-15 incident).
+func TestLoop_ClearStallOnSuccessfulIteration(t *testing.T) {
+	prov := &scriptedProvider{toolCalls: nil} // turn 0 emits text then end_turn immediately
+	type clearCall struct {
+		provider, model string
+	}
+	var clears []clearCall
+	_, err := Run(context.Background(), RunOptions{
+		Provider:   prov,
+		Model:      "scripted-model",
+		Segments:   []PromptSegment{{Role: "user", Content: []PromptContentBlock{{Type: "trusted-text", Text: "x"}}}},
+		ClearStall: func(p, m string) { clears = append(clears, clearCall{p, m}) },
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(clears) == 0 {
+		t.Fatal("ClearStall not called on successful iteration; expected ≥ 1 call")
+	}
+	if clears[0].provider != "scripted" || clears[0].model != "scripted-model" {
+		t.Errorf("first ClearStall = %+v, want scripted / scripted-model", clears[0])
+	}
+}
+
+// TestLoop_NoClearStallOnDriverError pins the negative case: a failed
+// iteration must NOT invoke ClearStall. Otherwise the loop would
+// undo the matching MarkStalled call by clearing the flag a few
+// instructions later — a self-cancelling bug. Verifies the call site
+// sits AFTER the success path's append-to-messages, not in a defer.
+func TestLoop_NoClearStallOnDriverError(t *testing.T) {
+	prov := &erroringProvider{err: fmt.Errorf("anthropic 500: upstream timeout")}
+	var clearCount int
+	_, err := Run(context.Background(), RunOptions{
+		Provider:   prov,
+		Model:      "claude-opus-4-7",
+		Segments:   []PromptSegment{{Role: "user", Content: []PromptContentBlock{{Type: "trusted-text", Text: "x"}}}},
+		ClearStall: func(_, _ string) { clearCount++ },
+	})
+	if err == nil {
+		t.Fatal("Run should propagate driver error")
+	}
+	if clearCount != 0 {
+		t.Errorf("ClearStall called %d times on driver-error path; want 0 (must not undo MarkStalled)", clearCount)
+	}
+}
+
 func TestLoopUntrustedBlockWrapping(t *testing.T) {
 	provider := &fakeProvider{
 		responses: [][]providers.Event{
