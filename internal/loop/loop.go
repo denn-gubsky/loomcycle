@@ -168,6 +168,21 @@ type RunOptions struct {
 	// simple; tighten in follow-ups if over-reporting becomes
 	// observable noise.
 	MarkStalled func(provider, model, reason string)
+
+	// ClearStall is the resolver-recovery hook companion to
+	// MarkStalled. The loop calls it once per iteration that
+	// completes WITHOUT a provider/stream error against the
+	// current (provider, model) — the most direct possible
+	// evidence the pair is healthy now. Clears any prior
+	// process-lifetime stall flag the matrix may still be
+	// holding from an older transient failure.
+	//
+	// Optional: nil disables success feedback (preserves the
+	// previous behavior where stalls only cleared on the next
+	// periodic probe). Addressed 2026-05-15: with N=2 candidate
+	// tiers, a stall surviving past a successful call on the
+	// same pair was collapsing the cascade between probes.
+	ClearStall func(provider, model string)
 }
 
 // FallbackPolicy controls the v0.8.2 runtime fallback path. The HTTP
@@ -628,6 +643,17 @@ outerLoop:
 		// is suppressed when PinAfterSuccess is set — the
 		// transcript now has provider-specific state.
 		firstTurnSucceeded = true
+
+		// Clear any stale per-model stall flag in the resolver
+		// matrix: this iteration just succeeded against
+		// (provider, model), which is the most direct possible
+		// evidence the pair is healthy. Without this, a stall
+		// from an earlier transient failure could outlive a
+		// proven recovery and collapse a tier's cascade between
+		// probes. Idempotent at the resolver layer.
+		if opts.ClearStall != nil {
+			opts.ClearStall(opts.Provider.ID(), opts.Model)
+		}
 
 		if iterUsage != nil {
 			totalUsage.InputTokens += iterUsage.InputTokens

@@ -233,6 +233,24 @@ func (s *Server) markStalledFn(provider, model string) func(p, m, reason string)
 	}
 }
 
+// clearStallFn returns a closure suitable for loop.RunOptions.ClearStall.
+// Companion to markStalledFn: the loop calls it on a SUCCESSFUL
+// iteration, which is direct evidence the (provider, model) is
+// healthy now and any prior stall flag is stale. Idempotent at the
+// resolver layer.
+//
+// Pinning the provider+model here (same shape as markStalledFn) keeps
+// the resolver-feedback contract symmetric — both sides receive an
+// authoritative (provider, model) regardless of what the loop passes.
+func (s *Server) clearStallFn(provider, model string) func(p, m string) {
+	if s.resolver == nil {
+		return nil
+	}
+	return func(_, _ string) {
+		s.resolver.ClearStall(provider, model)
+	}
+}
+
 // resolveErrorToStatus maps a resolver error to the appropriate HTTP
 // status code. Tier / pin unavailability returns 503 so caller-side
 // retry-with-backoff hits the right path. Anything else (typo on
@@ -828,6 +846,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		MaxTokens:       agentDef.MaxTokens,
 		Effort:          effort,
 		MarkStalled:     s.markStalledFn(providerID, model),
+		ClearStall:      s.clearStallFn(providerID, model),
 		ToolParallelism: s.cfg.Env.ToolParallelism,
 		AgentName:       effectiveAgentName,
 		UserTier:        in.UserTier,
@@ -1523,6 +1542,7 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		MaxTokens:       agentDef.MaxTokens, // 0 → driver default
 		Effort:          effort,
 		MarkStalled:     s.markStalledFn(providerID, model),
+		ClearStall:      s.clearStallFn(providerID, model),
 		ToolParallelism: s.cfg.Env.ToolParallelism,
 		AgentName:       req.Agent,
 		UserTier:        req.UserTier,
@@ -1816,6 +1836,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		MaxTokens:       agentDef.MaxTokens, // 0 → driver default
 		Effort:          effort,
 		MarkStalled:     s.markStalledFn(providerID, model),
+		ClearStall:      s.clearStallFn(providerID, model),
 		ToolParallelism: s.cfg.Env.ToolParallelism,
 		AgentName:       sess.Agent,
 		UserTier:        body.UserTier,
@@ -2350,6 +2371,7 @@ func (s *Server) runSubAgent(ctx context.Context, name string, prompt string, de
 		MaxTokens:       def.MaxTokens, // 0 → driver default
 		Effort:          effort,
 		MarkStalled:     s.markStalledFn(providerID, model),
+		ClearStall:      s.clearStallFn(providerID, model),
 		ToolParallelism: s.cfg.Env.ToolParallelism,
 		AgentName:       name,
 		UserTier:        parentTier,
