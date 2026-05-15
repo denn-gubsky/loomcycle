@@ -49,6 +49,7 @@ type Driver struct {
 	baseURL     string
 	http        *http.Client
 	idleTimeout time.Duration
+	numCtx      int // 0 = omit (Ollama server default applies)
 }
 
 // New constructs a Driver.
@@ -80,6 +81,37 @@ func New(providerID, apiKey, baseURL string, streamOpts streamhttp.Options, http
 	return &Driver{providerID: providerID, apiKey: apiKey, baseURL: baseURL, http: httpClient, idleTimeout: streamOpts.IdleTimeout}
 }
 
+// WithNumCtx sets the Ollama options.num_ctx that the driver includes
+// on every chat request. Returns the same Driver for chaining at
+// registration time:
+//
+//	pr.ollamaLocal = ollama.New(...).WithNumCtx(32768)
+//
+// Default 0 = don't set, which means the Ollama server falls back to
+// the model's Modelfile PARAMETER num_ctx, or 4096 if the Modelfile
+// doesn't specify. The 4096 ceiling is a documented Ollama default
+// and the load-bearing reason this knob exists: without an explicit
+// num_ctx, Ollama silently truncates the prompt at 4096 tokens with
+// no error returned (the request just produces a partial completion).
+// Caught live 2026-05-15: employer-profiler against
+// ollama-local/glm-4.7-flash:q4_K_M produced 190 output tokens with
+// stop_reason empty (not "end_turn") at 4797 input tokens — exactly
+// the truncation signature.
+//
+// Operators wanting per-model overrides can rely on the Modelfile's
+// PARAMETER num_ctx; the driver's num_ctx wins when both are set
+// (Ollama treats request options as overrides). Setting a value
+// larger than the model can handle is safe — Ollama clamps to the
+// trained max for that architecture.
+//
+// Not safe to call concurrently with Call(); intended for registration.
+func (d *Driver) WithNumCtx(n int) *Driver {
+	if n > 0 {
+		d.numCtx = n
+	}
+	return d
+}
+
 func (d *Driver) ID() string { return d.providerID }
 
 func (d *Driver) Capabilities() providers.Capabilities {
@@ -107,7 +139,7 @@ func (d *Driver) Capabilities() providers.Capabilities {
 // server). Ollama Cloud may emit a standard Retry-After; we handle it
 // defensively. Same body-bytes-preserved retry as the cloud providers.
 func (d *Driver) Call(ctx context.Context, req providers.Request) (<-chan providers.Event, error) {
-	body, err := buildRequestBody(req)
+	body, err := d.buildRequestBody(req)
 	if err != nil {
 		return nil, fmt.Errorf("build request: %w", err)
 	}
@@ -184,6 +216,7 @@ type wireRequest struct {
 type wireOptions struct {
 	Temperature *float64 `json:"temperature,omitempty"`
 	NumPredict  int      `json:"num_predict,omitempty"` // Ollama's name for max_tokens
+	NumCtx      int      `json:"num_ctx,omitempty"`     // input-window size; 0 = Ollama server default
 }
 
 type wireMessage struct {
@@ -212,14 +245,18 @@ type wireFunction struct {
 	Parameters  json.RawMessage `json:"parameters"`
 }
 
-func buildRequestBody(req providers.Request) ([]byte, error) {
+func (d *Driver) buildRequestBody(req providers.Request) ([]byte, error) {
 	w := wireRequest{
 		Model:  req.Model,
 		Stream: true,
 	}
 
-	if req.Temperature != nil || req.MaxTokens > 0 {
-		w.Options = &wireOptions{Temperature: req.Temperature, NumPredict: req.MaxTokens}
+	if req.Temperature != nil || req.MaxTokens > 0 || d.numCtx > 0 {
+		w.Options = &wireOptions{
+			Temperature: req.Temperature,
+			NumPredict:  req.MaxTokens,
+			NumCtx:      d.numCtx,
+		}
 	}
 
 	// System blocks → one role:"system" message.
