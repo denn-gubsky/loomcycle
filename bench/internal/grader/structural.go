@@ -128,39 +128,69 @@ func validateJSONAgainstSchema(textBody, schemaJSON string) (bool, string) {
 	return true, ""
 }
 
-// extractJSONBlock finds and returns the largest balanced {...} or
+// extractJSONBlock finds and returns the LARGEST balanced {...} or
 // [...] substring in s. Returns ("", false) when no balanced block
 // exists.
 //
-// Implementation: walk s with a depth counter, tracking whether we're
-// inside a JSON string (to ignore brace/bracket chars within strings).
-// We seek the FIRST opening brace/bracket, then find its matching
-// close. This is good enough for the bench's use case — cases produce
-// one top-level JSON value preceded/followed by at most narration.
+// "Largest" (not "first") matters because models routinely quote a
+// short JSON snippet earlier in the response — e.g., a model showing
+// the tool's response inline ("getResearch returned {\"exists\": false,
+// \"profiles\": {}}") before emitting the actual structured answer
+// in a ```json fence at the end. The Sweep #6 mid-04 case had this
+// exact pattern across 23/25 models: first-block extraction caught
+// the inline quote and the schema rejected it as missing required
+// fields.
 //
-// Not a full JSON parser; just a balanced-delimiter scanner. The
-// json.Unmarshal call downstream is what enforces well-formedness.
+// Implementation: scan every balanced block starting from each `{`
+// or `[`, track the longest one. Depth counter is string-aware
+// (braces inside JSON string values don't count toward depth).
+//
+// Not a full JSON parser; the downstream json.Unmarshal call
+// enforces well-formedness on the returned candidate.
 func extractJSONBlock(s string) (string, bool) {
-	first := -1
-	var open, close byte
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		if c == '{' {
-			first, open, close = i, '{', '}'
-			break
+	var best string
+	for start := 0; start < len(s); start++ {
+		c := s[start]
+		if c != '{' && c != '[' {
+			continue
 		}
-		if c == '[' {
-			first, open, close = i, '[', ']'
-			break
+		block, ok := scanBalanced(s, start)
+		if !ok {
+			continue
 		}
+		if len(block) > len(best) {
+			best = block
+		}
+		// Skip past this block to avoid re-scanning its interior.
+		// scanBalanced returns the substring including its delimiters,
+		// so advancing by len(block)-1 (the loop will +1) lands at
+		// the first byte after the close.
+		start += len(block) - 1
 	}
-	if first < 0 {
+	if best == "" {
+		return "", false
+	}
+	return best, true
+}
+
+// scanBalanced reads from s[start] (which must be `{` or `[`) and
+// returns the substring spanning to the matching close, with proper
+// JSON-string awareness (braces in string values are ignored).
+// Returns ("", false) when no matching close exists in s.
+func scanBalanced(s string, start int) (string, bool) {
+	open := s[start]
+	var close byte
+	if open == '{' {
+		close = '}'
+	} else if open == '[' {
+		close = ']'
+	} else {
 		return "", false
 	}
 	depth := 0
 	inString := false
 	escape := false
-	for i := first; i < len(s); i++ {
+	for i := start; i < len(s); i++ {
 		c := s[i]
 		if escape {
 			escape = false
@@ -185,7 +215,7 @@ func extractJSONBlock(s string) (string, bool) {
 		} else if c == close {
 			depth--
 			if depth == 0 {
-				return s[first : i+1], true
+				return s[start : i+1], true
 			}
 		}
 	}
