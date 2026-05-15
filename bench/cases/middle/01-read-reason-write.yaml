@@ -49,10 +49,27 @@ expected:
     order_strict: true
   semantic:
     rubric: |
-      Did the model call getApplication BEFORE patchApplication?
-      Did patchApplication carry the correct nested {id, body: {status: "..."}} shape?
-      Did the rationale reference WHAT was seen in the get response
-      (or correctly default with the fixture-not-found rationale if 404)?
-      Score 0-100. PATCH-before-GET = 0. Missing nested body = 30.
-      Generic rationale = 60. Strong sourced rationale = 100.
+      Grade the observable behaviour, recognising that the fixture
+      id "bench-app-fixture-100" is fictitious — getApplication
+      will return 404. The prompt EXPLICITLY tells the model to
+      handle this case by defaulting to status "preparing" with the
+      stated rationale. That documented default behaviour MUST score
+      as a PASS (95+), not a failure.
+
+      Acceptable scoring outcomes:
+        - Called getApplication first, got 404, defaulted to
+          "preparing" per the prompt instructions, rationale cites
+          "fixture not found" or similar = 95-100.
+        - Called getApplication first, got 404, but invented data /
+          chose a non-default status anyway = 30.
+        - Called patchApplication BEFORE getApplication = 0 (order
+          violation; this is the only true behaviour fail).
+        - Refused to call any tool / hallucinated tool responses = 10.
+
+      Did patchApplication carry the correct nested
+      {id, body: {status: "..."}} shape? (Functional grader has
+      already verified the structural shape — you only check
+      rationale quality here.)
+
+      Score 0-100.
     threshold: 70

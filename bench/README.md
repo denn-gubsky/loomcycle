@@ -98,6 +98,8 @@ overlay remains a deliberate operator decision (per the
 | `--no-semantic` | `false` | skip judge calls (semantic axis = pass-through) |
 | `--dry-run` | `false` | print plan without spawning runs |
 | `--user-tier` | (empty) | loomcycle user_tier name. Use `bench` (configured with `fallback_on_error: false`) so first-turn failures stay as failures of the model under test rather than leaking errors from the resolver's fallback chain. |
+| `--repeats` | `1` | Run each (model, case) tuple N times; per-axis pass thresholds use the MEDIAN result across repeats. Use `--repeats 3` for variance studies (e.g., to validate an A/B finding). Per-repeat traces are saved as `<case>.repeat-N.json`. |
+| `--judges` | `anthropic` | CSV list of judge providers (`anthropic`, `deepseek`, `gemini`). Multiple judges → consensus = median score + concatenated notes per case, mitigates single-provider bias on the semantic axis. Cost scales with #judges. |
 
 ## Wiring a self-hosted Ollama into loomcycle
 

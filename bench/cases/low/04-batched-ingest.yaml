@@ -70,10 +70,24 @@ expected:
         max_calls: 5
   semantic:
     rubric: |
-      Did the model split into 2-5 batches of postSearchIngest calls?
-      Did each call carry between 3 and 15 matches?
-      Did the cumulative total reach at least 20 matches?
-      Each body must include `date` and `matches`.
-      Score 0-100. One giant batch = 0. Single-match batches = 30.
-      Skipped URLs = -10 per dropped row. Clean 3-batch split = 100.
+      Grade the actual structural+functional behaviour reflected in
+      the final JSON output, NOT the model's writing style.
+
+      The model's tool calls have already been verified by the
+      functional grader (2-5 postSearchIngest invocations, each with
+      a body containing date + matches). You are checking only:
+
+        - Does the final JSON match what the prompt asked for
+          (total_ingested, batch_count, batch_sizes fields)?
+        - Are the reported numbers internally consistent
+          (sum of batch_sizes ≈ total_ingested)?
+        - total_ingested in [20, 25] is acceptable (route may dedup
+          a couple of URLs).
+
+      Score 0-100. Internally consistent + close to 25 ingested = 95+.
+      Off-by-one on totals = 80. One field missing = 50.
+      Output is irrelevant prose / no JSON = 0.
+
+      Do NOT penalize the model for the SHAPE of the call batches as
+      long as functional pass=true — that axis is already graded.
     threshold: 70

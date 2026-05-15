@@ -34,17 +34,23 @@ type CaseOutcome struct {
 // across all cases. The Verdict field is the operator-facing
 // CAPABLE / MARGINAL / FAIL classification.
 type ModelSummary struct {
-	Provider        string  `json:"provider"`
-	Model           string  `json:"model"`
-	Verdict         string  `json:"verdict"` // "CAPABLE" | "MARGINAL" | "FAIL" | "INCONCLUSIVE"
-	CasesTotal      int     `json:"cases_total"`
-	StructuralPass  int     `json:"structural_pass"`
-	FunctionalPass  int     `json:"functional_pass"`
-	SemanticAvg     float64 `json:"semantic_avg"`     // 0..1
-	OverallPass     int     `json:"overall_pass"`
-	CostUSD         float64 `json:"cost_usd"`
-	DurationMS      int64   `json:"duration_ms"`
-	Notes           string  `json:"notes,omitempty"`
+	Provider       string  `json:"provider"`
+	Model          string  `json:"model"`
+	Verdict        string  `json:"verdict"` // "CAPABLE" | "MARGINAL" | "FAIL" | "INCONCLUSIVE"
+	CasesTotal     int     `json:"cases_total"`
+	StructuralPass int     `json:"structural_pass"`
+	FunctionalPass int     `json:"functional_pass"`
+	SemanticAvg    float64 `json:"semantic_avg"` // 0..1
+	OverallPass    int     `json:"overall_pass"`
+	CostUSD        float64 `json:"cost_usd"`
+	// CostPerPassUSD is CostUSD / OverallPass. Set to -1 when
+	// OverallPass = 0 (avoids JSON serialising +Inf, which breaks
+	// most consumers). Renderers print "n/a" for the negative
+	// sentinel. Lets the operator pick the cheapest-per-success
+	// model when multiple candidates are CAPABLE.
+	CostPerPassUSD float64 `json:"cost_per_pass_usd"`
+	DurationMS     int64   `json:"duration_ms"`
+	Notes          string  `json:"notes,omitempty"`
 }
 
 // Matrix is the top-level report shape. Holds per-case outcomes and
@@ -140,6 +146,11 @@ func summarize(rows []CaseOutcome) ModelSummary {
 			s.Verdict = verdictMarginal
 		}
 	}
+	if s.OverallPass > 0 {
+		s.CostPerPassUSD = s.CostUSD / float64(s.OverallPass)
+	} else {
+		s.CostPerPassUSD = -1 // sentinel for n/a — see CostPerPassUSD field doc
+	}
 	return s
 }
 
@@ -179,20 +190,21 @@ func WriteMarkdown(w io.Writer, m Matrix) error {
 
 	fmt.Fprintln(w, "## Verdicts")
 	fmt.Fprintln(w, "")
-	fmt.Fprintln(w, "| Provider | Model | Verdict | Struct% | Func% | Sem avg | Overall | Cost (USD) | Avg s/case |")
-	fmt.Fprintln(w, "|---|---|---|---|---|---|---|---|---|")
+	fmt.Fprintln(w, "| Provider | Model | Verdict | Struct% | Func% | Sem avg | Overall | Cost (USD) | $/pass | Avg s/case |")
+	fmt.Fprintln(w, "|---|---|---|---|---|---|---|---|---|---|")
 	for _, s := range m.Summaries {
 		avgSecPerCase := 0.0
 		if s.CasesTotal > 0 {
 			avgSecPerCase = float64(s.DurationMS) / float64(s.CasesTotal) / 1000.0
 		}
-		fmt.Fprintf(w, "| %s | `%s` | **%s** | %d/%d | %d/%d | %.2f | %d/%d | $%.4f | %.1f |\n",
+		fmt.Fprintf(w, "| %s | `%s` | **%s** | %d/%d | %d/%d | %.2f | %d/%d | $%.4f | %s | %.1f |\n",
 			s.Provider, s.Model, s.Verdict,
 			s.StructuralPass, s.CasesTotal,
 			s.FunctionalPass, s.CasesTotal,
 			s.SemanticAvg,
 			s.OverallPass, s.CasesTotal,
 			s.CostUSD,
+			formatCostPerPass(s.CostPerPassUSD),
 			avgSecPerCase,
 		)
 	}
@@ -235,17 +247,13 @@ func writeSpeedRanking(w io.Writer, m Matrix) {
 	if len(m.Summaries) <= 1 {
 		return
 	}
-	type row struct {
-		s             ModelSummary
-		avgSecPerCase float64
-	}
-	rows := make([]row, 0, len(m.Summaries))
+	rows := make([]costPerPassRow, 0, len(m.Summaries))
 	for _, s := range m.Summaries {
 		avg := 0.0
 		if s.CasesTotal > 0 {
 			avg = float64(s.DurationMS) / float64(s.CasesTotal) / 1000.0
 		}
-		rows = append(rows, row{s: s, avgSecPerCase: avg})
+		rows = append(rows, costPerPassRow{s: s, avgSecPerCase: avg})
 	}
 	sort.Slice(rows, func(i, j int) bool {
 		return rows[i].avgSecPerCase < rows[j].avgSecPerCase
@@ -253,17 +261,73 @@ func writeSpeedRanking(w io.Writer, m Matrix) {
 	fmt.Fprintln(w, "")
 	fmt.Fprintln(w, "## Speed ranking (fastest first)")
 	fmt.Fprintln(w, "")
-	fmt.Fprintln(w, "| Rank | Provider | Model | Avg s/case | Total s | Cost (USD) | Verdict |")
-	fmt.Fprintln(w, "|---|---|---|---|---|---|---|")
+	fmt.Fprintln(w, "| Rank | Provider | Model | Avg s/case | Total s | Cost (USD) | $/pass | Verdict |")
+	fmt.Fprintln(w, "|---|---|---|---|---|---|---|---|")
 	for i, r := range rows {
-		fmt.Fprintf(w, "| %d | %s | `%s` | %.2f | %.1f | $%.4f | %s |\n",
+		fmt.Fprintf(w, "| %d | %s | `%s` | %.2f | %.1f | $%.4f | %s | %s |\n",
 			i+1, r.s.Provider, r.s.Model,
 			r.avgSecPerCase,
 			float64(r.s.DurationMS)/1000.0,
 			r.s.CostUSD,
+			formatCostPerPass(r.s.CostPerPassUSD),
 			r.s.Verdict,
 		)
 	}
+	writeCostPerPassRanking(w, rows)
+}
+
+// writeCostPerPassRanking emits a separate section ranked by
+// cost-per-pass. The speed-ranking and cost-per-pass-ranking tables
+// share row data; we shouldn't conflate them in a single sort.
+// Cost-per-pass is the cleanest signal for "cheapest model that
+// produces a working result on this battery".
+func writeCostPerPassRanking(w io.Writer, rows []costPerPassRow) {
+	type costRow struct {
+		s        ModelSummary
+		costPP   float64
+		avgSec   float64
+	}
+	cr := make([]costRow, 0, len(rows))
+	for _, r := range rows {
+		// Skip models that scored 0 overall pass — they have no
+		// pass to compute cost-per-pass for, and would dominate the
+		// "cheapest" end of the table with $0 noise.
+		if r.s.OverallPass == 0 {
+			continue
+		}
+		cr = append(cr, costRow{s: r.s, costPP: r.s.CostPerPassUSD, avgSec: r.avgSecPerCase})
+	}
+	if len(cr) <= 1 {
+		return
+	}
+	sort.Slice(cr, func(i, j int) bool {
+		return cr[i].costPP < cr[j].costPP
+	})
+	fmt.Fprintln(w, "")
+	fmt.Fprintln(w, "## Cost-per-pass ranking (cheapest passing first)")
+	fmt.Fprintln(w, "")
+	fmt.Fprintln(w, "Models with zero overall-pass excluded (n/a cost-per-pass).")
+	fmt.Fprintln(w, "")
+	fmt.Fprintln(w, "| Rank | Provider | Model | $/pass | Overall | Total cost | Avg s/case | Verdict |")
+	fmt.Fprintln(w, "|---|---|---|---|---|---|---|---|")
+	for i, r := range cr {
+		fmt.Fprintf(w, "| %d | %s | `%s` | %s | %d/%d | $%.4f | %.2f | %s |\n",
+			i+1, r.s.Provider, r.s.Model,
+			formatCostPerPass(r.costPP),
+			r.s.OverallPass, r.s.CasesTotal,
+			r.s.CostUSD,
+			r.avgSec,
+			r.s.Verdict,
+		)
+	}
+}
+
+// costPerPassRow is the shared row type between speed + cost-per-pass
+// rankings — pre-computed avg-seconds-per-case avoids recomputing it
+// in both renderers.
+type costPerPassRow struct {
+	s             ModelSummary
+	avgSecPerCase float64
 }
 
 func passMark(b bool) string {
@@ -271,6 +335,16 @@ func passMark(b bool) string {
 		return "PASS"
 	}
 	return "FAIL"
+}
+
+// formatCostPerPass renders the cost-per-pass column. Negative sentinel
+// (set when overall_pass = 0) renders as "n/a" — avoids the misleading
+// $0.0000 a naive zero-division-suppressing format would produce.
+func formatCostPerPass(v float64) string {
+	if v < 0 {
+		return "n/a"
+	}
+	return fmt.Sprintf("$%.4f", v)
 }
 
 func joinReasons(r grader.Result) string {

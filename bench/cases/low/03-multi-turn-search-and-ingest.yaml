@@ -22,17 +22,22 @@ input_text: |
        Note: no `user_id` field is required — auth is derived from the
        bearer token.
 
-  After ingest succeeds, output:
-    {"search_count": <int>,
-     "ingest_count": <int>,
+  After ingest succeeds, output (note: `postSearchIngest_call_count`
+  is the number of tool INVOCATIONS, NOT the number of matches sent.
+  For this case there will be exactly 1 call carrying 3 matches —
+  so `postSearchIngest_call_count: 1` and `matches_ingested: 3`):
+    {"search_count": <integer — number of brave_web_search invocations>,
+     "postSearchIngest_call_count": <integer — number of postSearchIngest invocations, exactly 1>,
+     "matches_ingested": <integer — total matches sent across all calls, 3 here>,
      "first_company": "..."}
 
 expected:
   structural:
     schema: |
-      {"type":"object","required":["search_count","ingest_count"],"properties":{
+      {"type":"object","required":["search_count","postSearchIngest_call_count","matches_ingested"],"properties":{
         "search_count":{"type":"integer","minimum":1,"maximum":5},
-        "ingest_count":{"type":"integer","minimum":1,"maximum":1},
+        "postSearchIngest_call_count":{"type":"integer","minimum":1,"maximum":1},
+        "matches_ingested":{"type":"integer","minimum":2,"maximum":10},
         "first_company":{"type":"string"}
       }}
   functional:
