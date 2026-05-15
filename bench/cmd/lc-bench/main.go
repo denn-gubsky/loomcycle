@@ -13,6 +13,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"syscall"
 	"time"
@@ -41,6 +42,8 @@ func main() {
 		noSemantic   = flag.Bool("no-semantic", false, "skip judge-model grading (pass-through semantic = 1.0)")
 		dryRun       = flag.Bool("dry-run", false, "show what would run without executing")
 		userTier     = flag.String("user-tier", "", "loomcycle user_tier name (recommended: 'bench' with fallback_on_error=false so first-turn failures don't leak fallback-provider errors into the matrix)")
+		repeats      = flag.Int("repeats", 1, "run each (model, case) tuple N times; per-axis pass thresholds use the MEDIAN result across repeats. Use >1 for variance studies (N=3 is the operator's typical setting for A/B verification).")
+		judges       = flag.String("judges", "anthropic", "CSV list of judge providers (anthropic,deepseek,gemini). Multiple judges → consensus = median score + concatenated notes, mitigates single-provider bias.")
 	)
 	flag.Parse()
 
@@ -108,10 +111,18 @@ func main() {
 	}()
 	log.Printf("MCP session: %s (server: %s)", cli.SessionID(), cli.SessionID())
 
-	// --- 4. Optional: judge for semantic grading ---
+	// --- 4. Optional: judge(s) for semantic grading ---
 	var judge grader.Judge
 	if !*noSemantic {
-		judge = newAnthropicJudge()
+		judgeNames := splitCSV(*judges)
+		judge = newJudge(judgeNames)
+		if judge == nil {
+			log.Printf("⚠ no judge active — none of [%s] have an API key configured. Semantic axis will be pass-through.", strings.Join(judgeNames, ", "))
+		} else if len(judgeNames) > 1 {
+			log.Printf("judge consensus enabled: %s (median score + concatenated notes)", strings.Join(judgeNames, ", "))
+		} else {
+			log.Printf("judge: %s", judgeNames[0])
+		}
 	}
 
 	// --- 5. Read agent system prompts once ---
@@ -129,6 +140,18 @@ func main() {
 	if err := os.MkdirAll(tracesDir, 0o755); err != nil {
 		log.Fatalf("mkdir traces: %v", err)
 	}
+
+	// Total expected runs = sum(models per provider) * cases * repeats.
+	// Used for ETA reporting. Discoveries with errors are skipped so
+	// their case-count contribution is the placeholder INCONCLUSIVE
+	// rows below, NOT real runs in the ETA.
+	totalRuns := 0
+	for _, d := range discoveries {
+		if d.Err == nil {
+			totalRuns += len(d.Models) * len(allCases) * (*repeats)
+		}
+	}
+	prog := &progressTracker{total: totalRuns, start: time.Now()}
 
 	var outcomes []report.CaseOutcome
 	var totalCost float64
@@ -161,6 +184,8 @@ func main() {
 				budgetLeft:   *budgetUSD - totalCost,
 				dryRun:       *dryRun,
 				userTier:     *userTier,
+				repeats:      *repeats,
+				progress:     prog,
 			})
 			outcomes = append(outcomes, modelOutcomes...)
 			totalCost += modelCost
@@ -187,6 +212,35 @@ type runOneModelInput struct {
 	budgetLeft              float64
 	dryRun                  bool
 	userTier                string
+	repeats                 int
+	progress                *progressTracker
+}
+
+// progressTracker reports cumulative completion + ETA across the
+// whole sweep. The Bench tool calls Tick() at the end of every
+// case-run; Tick logs "i/N (P%, ETA T)" so background sweeps signal
+// progress without waiting for matrix-write.
+type progressTracker struct {
+	total int
+	done  int
+	start time.Time
+}
+
+// Tick records one completed run and emits a progress log line.
+// Called from runOneCase after the run + grade is finished.
+func (p *progressTracker) Tick() {
+	if p == nil || p.total <= 0 {
+		return
+	}
+	p.done++
+	elapsed := time.Since(p.start)
+	pct := float64(p.done) / float64(p.total) * 100
+	var eta time.Duration
+	if p.done > 0 {
+		per := elapsed / time.Duration(p.done)
+		eta = per * time.Duration(p.total-p.done)
+	}
+	log.Printf("  progress: %d/%d (%.0f%%, ETA %s)", p.done, p.total, pct, eta.Round(time.Second))
 }
 
 func runOneModel(ctx context.Context, cli *runner.Client, judge grader.Judge, in runOneModelInput) ([]report.CaseOutcome, float64) {
@@ -219,18 +273,95 @@ func runOneModel(ctx context.Context, cli *runner.Client, judge grader.Judge, in
 			agentName = n
 		}
 
-		// Run + grade.
-		log.Printf("→ %s/%s %s/%s", in.provider, in.model, c.Tier, c.ID)
-		o := runOneCase(ctx, cli, judge, in.provider, in.model, agentName, c, in.tracesDir, in.caseTimeout, in.dryRun, in.userTier)
-		spent += o.CostUSD
-		outcomes = append(outcomes, o)
+		// Run + grade. When --repeats > 1, run the case N times and
+		// aggregate via the median-pass rule (see aggregateRepeats).
+		repeats := in.repeats
+		if repeats <= 0 {
+			repeats = 1
+		}
+		var runs []report.CaseOutcome
+		for i := 0; i < repeats; i++ {
+			repeatLabel := ""
+			if repeats > 1 {
+				repeatLabel = fmt.Sprintf(" repeat=%d/%d", i+1, repeats)
+			}
+			log.Printf("→ %s/%s %s/%s%s", in.provider, in.model, c.Tier, c.ID, repeatLabel)
+			o := runOneCase(ctx, cli, judge, in.provider, in.model, agentName, c, in.tracesDir, in.caseTimeout, in.dryRun, in.userTier, repeats, i)
+			spent += o.CostUSD
+			runs = append(runs, o)
+			in.progress.Tick()
+		}
+		outcomes = append(outcomes, aggregateRepeats(runs))
 	}
 	return outcomes, spent
+}
+
+// aggregateRepeats collapses N repeats of the same (model, case) into
+// a single CaseOutcome using median-pass semantics:
+//
+//   - Structural / Functional: pass if MAJORITY of repeats pass.
+//   - Semantic: median score across repeats.
+//   - Cost / DurationMS: SUM (total spent / wall time).
+//   - Status: "completed" if every repeat completed, else the first
+//     non-completed status.
+//   - Error / reasons: concatenated across repeats (truncated).
+//
+// Majority-pass on binary axes avoids the "1 flake out of 3 sinks
+// the row" failure mode; median on semantic is robust against the
+// judge giving one wild score.
+func aggregateRepeats(runs []report.CaseOutcome) report.CaseOutcome {
+	if len(runs) == 1 {
+		return runs[0]
+	}
+	base := runs[0]
+	structPass, funcPass, semScores := 0, 0, make([]float64, 0, len(runs))
+	var costSum float64
+	var durSum int64
+	var firstNonCompletedStatus string
+	for _, r := range runs {
+		if r.Result.Structural.Pass {
+			structPass++
+		}
+		if r.Result.Functional.Pass {
+			funcPass++
+		}
+		semScores = append(semScores, r.Result.Semantic.Score)
+		costSum += r.CostUSD
+		durSum += r.DurationMS
+		if r.Status != "completed" && firstNonCompletedStatus == "" {
+			firstNonCompletedStatus = r.Status
+		}
+	}
+	sort.Float64s(semScores)
+	median := semScores[len(semScores)/2]
+	majority := len(runs)/2 + 1
+	base.Result.Structural.Pass = structPass >= majority
+	base.Result.Functional.Pass = funcPass >= majority
+	base.Result.Semantic.Score = median
+	base.Result.Semantic.Pass = median >= 0.7
+	if !base.Result.Structural.Pass {
+		base.Result.Structural.Score = 0
+	}
+	if !base.Result.Functional.Pass {
+		base.Result.Functional.Score = 0
+	}
+	base.CostUSD = costSum
+	base.DurationMS = durSum
+	if firstNonCompletedStatus != "" {
+		base.Status = firstNonCompletedStatus
+	}
+	// Surface that this was an aggregated row so the reasons column
+	// in the markdown matrix makes the N visible.
+	note := fmt.Sprintf("aggregated %d repeats: S=%d/%d F=%d/%d sem median=%.2f",
+		len(runs), structPass, len(runs), funcPass, len(runs), median)
+	base.Result.Semantic.Reasons = append([]string{note}, base.Result.Semantic.Reasons...)
+	return base
 }
 
 func runOneCase(ctx context.Context, cli *runner.Client, judge grader.Judge,
 	provider, model, agentName string, c cases.Case,
 	tracesDir string, perCaseTimeout time.Duration, dryRun bool, userTier string,
+	repeats, repeatIdx int,
 ) report.CaseOutcome {
 	o := report.CaseOutcome{
 		Provider: provider, Model: model,
@@ -251,25 +382,40 @@ func runOneCase(ctx context.Context, cli *runner.Client, judge grader.Judge,
 	defer cancel()
 
 	start := time.Now()
+	// Per-case allowed_tools narrowing: pass the case-declared
+	// allow-list as the per-run AllowedTools. When the case declares
+	// `allowed_tools: []` this disables tools entirely for the run.
+	// When non-empty, loomcycle intersects with the registered
+	// dynamic-agent allowlist (which is the union of all cases'
+	// tools, since one agent serves all cases at a tier).
 	result, err := cli.SpawnRun(runCtx, runner.SpawnRunArgs{
-		Agent:    agentName,
-		Segments: []runner.PromptSegment{runner.UserTextSegment(c.InputText)},
-		UserID:   "bench-user-fixture-001",
-		UserTier: userTier,
+		Agent:        agentName,
+		Segments:     []runner.PromptSegment{runner.UserTextSegment(c.InputText)},
+		UserID:       "bench-user-fixture-001",
+		UserTier:     userTier,
+		AllowedTools: c.AllowedTools,
 	})
 	o.DurationMS = time.Since(start).Milliseconds()
 	if err != nil {
 		o.Status = "failed"
 		o.Error = err.Error()
+		if looksLikeDeprecatedModel(err.Error()) {
+			log.Printf("⚠ DEPRECATED MODEL: %s/%s returned a 'no longer available' error. Exclude this model from --models filter on the next sweep. Full error: %s", provider, model, err.Error())
+		}
 		return o
 	}
 	o.Status = result.Status
 	o.CostUSD = cost.EstimateUSD(provider, model, result)
 
-	// Trace dump per (model, case).
+	// Trace dump per (model, case[, repeat]). When repeats > 1, each
+	// repeat gets its own trace file so we can inspect variance later.
 	traceDir := filepath.Join(tracesDir, sanitize(provider)+"-"+sanitize(model))
 	_ = os.MkdirAll(traceDir, 0o755)
-	if f, err := os.Create(filepath.Join(traceDir, c.ID+".json")); err == nil {
+	traceName := c.ID + ".json"
+	if repeats > 1 {
+		traceName = fmt.Sprintf("%s.repeat-%d.json", c.ID, repeatIdx+1)
+	}
+	if f, err := os.Create(filepath.Join(traceDir, traceName)); err == nil {
 		_ = json.NewEncoder(f).Encode(result)
 		f.Close()
 	}
@@ -309,6 +455,28 @@ func firstProviderError(events []runner.ProviderEvent) string {
 		}
 	}
 	return ""
+}
+
+// looksLikeDeprecatedModel returns true when the error message
+// matches a provider's "this model is no longer available / has
+// been deprecated" pattern. The bench logs a prominent warning
+// when this fires so operators can prune the deprecated model
+// from their filter regexp on the next sweep without digging
+// through traces. (Encountered 2026-05-15 when gemini-2.0-flash
+// began returning 404 NOT_FOUND with "no longer available to new
+// users" — a deprecation, not a transient outage.)
+//
+// Match patterns are intentionally permissive — false positives
+// here just produce an extra warning log, not a real failure.
+func looksLikeDeprecatedModel(msg string) bool {
+	if msg == "" {
+		return false
+	}
+	lower := strings.ToLower(msg)
+	return strings.Contains(lower, "no longer available") ||
+		strings.Contains(lower, "has been deprecated") ||
+		strings.Contains(lower, "model is deprecated") ||
+		(strings.Contains(lower, "not_found") && strings.Contains(lower, "model"))
 }
 
 // registerForTier registers one dynamic agent for this (model, tier).

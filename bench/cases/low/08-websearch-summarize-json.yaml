@@ -35,11 +35,31 @@ expected:
     tool_calls:
       - name: "mcp__brave-search__brave_web_search"
         min_calls: 1
-        max_calls: 2
+        max_calls: 3
   semantic:
     rubric: |
-      Did the model search before generating the summary? (Pure hallucination = fail.)
-      Are the URLs real (look plausible for Go docs: golang.org, go.dev, pkg.go.dev)?
-      Are the summaries derived from the search snippets, not invented?
-      Score 0-100. No search call = 0. Invented URLs = 30. Derived summaries with real URLs = 100.
+      Grade what's actually in the response, not what you wish was there.
+
+      Did the model search before generating the summary? (Pure
+      hallucination without a search call = 0.) The functional grader
+      already verified a search happened — you're checking content
+      quality.
+
+      Are the URLs plausible Go-related references? Acceptable sources
+      include (non-exhaustive): golang.org, go.dev, pkg.go.dev,
+      docs.go.dev, github.com/golang, learn.golang.org, Wikipedia's
+      Go article, popular tutorial sites (yourbasic.org, gobyexample.com,
+      tour.golang.org), reputable engineering blogs, Stack Overflow.
+      The exact canonical-docs domain isn't required — Brave's top
+      results vary, and faithful summarization of whatever Brave
+      returned is the actual test.
+
+      Are the summaries grounded in (or at least plausibly consistent
+      with) what the URL is about? Invented URLs paired with invented
+      content = fail. Real URLs with derived summaries = pass.
+
+      Score 0-100.
+        - No search call OR all 3 URLs invented = 0
+        - Real URLs but generic / wishfully-canned summaries = 50
+        - Real URLs with concrete, faithful summaries = 95+
     threshold: 70

@@ -235,13 +235,22 @@ func (c *Client) SpawnRun(ctx context.Context, args SpawnRunArgs) (RunResult, er
 // SpawnRunArgs mirrors the spawn_run MCP tool's arguments
 // (internal/api/mcp/tools.go:25). The bench always sends one user
 // segment with one trusted-text content block.
+//
+// AllowedTools narrows the agent's tool surface for THIS call.
+// Empty/nil = use the agent's registered allowlist (the union we
+// register on first agent-create); non-empty = intersect with that
+// allowlist. The bench uses this to make cases that declare
+// `allowed_tools: ["X"]` actually restrict the model to X at
+// runtime, not just check at grading time. Pass an empty (non-nil)
+// slice to deny all tools for a case.
 type SpawnRunArgs struct {
-	Agent    string           `json:"agent"`
-	Segments []PromptSegment  `json:"segments"`
-	TenantID string           `json:"tenant_id,omitempty"`
-	UserID   string           `json:"user_id,omitempty"`
-	AgentID  string           `json:"agent_id,omitempty"`
-	UserTier string           `json:"user_tier,omitempty"`
+	Agent        string          `json:"agent"`
+	Segments     []PromptSegment `json:"segments"`
+	TenantID     string          `json:"tenant_id,omitempty"`
+	UserID       string          `json:"user_id,omitempty"`
+	AgentID      string          `json:"agent_id,omitempty"`
+	UserTier     string          `json:"user_tier,omitempty"`
+	AllowedTools []string        `json:"allowed_tools,omitempty"`
 }
 
 // PromptSegment mirrors loop.PromptSegment on the wire.

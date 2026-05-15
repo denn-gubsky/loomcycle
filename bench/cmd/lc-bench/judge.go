@@ -8,17 +8,70 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/bench/internal/grader"
 )
 
-// anthropicJudge is the production Judge. Calls Anthropic's
-// /v1/messages directly (no loomcycle round-trip — keeps the judge
-// independent of the system under test). Reads ANTHROPIC_API_KEY at
-// construction time and pins to claude-sonnet-4-6 with temperature=0
-// for repeatable grading.
+// Three judge backends + a consensus wrapper. The bench used to use
+// just Anthropic; v3 adds DeepSeek and Gemini so the operator can
+// `--judges anthropic,deepseek,gemini` and get a vote-and-average
+// semantic score that's less biased toward any single provider's
+// idea of "good".
+//
+// Operator-side caveats:
+//   - Single-judge runs are still allowed (default = anthropic) and
+//     are cheaper / faster. Use single-judge when grading speed
+//     matters more than judge-bias reduction.
+//   - The consensus is a simple median + concatenated notes. We do
+//     NOT weight by judge confidence or model size.
+//   - Each judge runs in parallel for one (case, run) — no fan-in
+//     latency penalty beyond the slowest judge's response time.
+//   - When ANY judge in the consensus errors out, the consensus uses
+//     the median of the surviving judges. All-error = full failure.
+
+// newJudge constructs the judge specified by names. names is a CSV
+// list like "anthropic,deepseek,gemini" (or just "anthropic"). Empty
+// names disables judging (returns nil, which the grader treats as
+// pass-through).
+//
+// Skips named judges whose API key is not set (logs once at startup).
+// If all named judges are unavailable, returns nil.
+func newJudge(names []string) grader.Judge {
+	var judges []grader.Judge
+	for _, name := range names {
+		switch strings.TrimSpace(strings.ToLower(name)) {
+		case "anthropic":
+			if j := newAnthropicJudge(); j != nil {
+				judges = append(judges, j)
+			}
+		case "deepseek":
+			if j := newDeepSeekJudge(); j != nil {
+				judges = append(judges, j)
+			}
+		case "gemini":
+			if j := newGeminiJudge(); j != nil {
+				judges = append(judges, j)
+			}
+		default:
+			// Unknown name — operator typo. Skip with a log, don't
+			// fail the sweep.
+		}
+	}
+	if len(judges) == 0 {
+		return nil
+	}
+	if len(judges) == 1 {
+		return judges[0]
+	}
+	return &consensusJudge{judges: judges}
+}
+
+// --- Anthropic judge ---
+
 type anthropicJudge struct {
 	apiKey string
 	model  string
@@ -28,9 +81,6 @@ type anthropicJudge struct {
 func newAnthropicJudge() grader.Judge {
 	key := os.Getenv("ANTHROPIC_API_KEY")
 	if key == "" {
-		// No key = semantic axis becomes pass-through. The grader
-		// surfaces a note so the matrix shows the operator that
-		// semantic was skipped.
 		return nil
 	}
 	model := os.Getenv("LOOMCYCLE_BENCH_JUDGE_MODEL")
@@ -40,24 +90,10 @@ func newAnthropicJudge() grader.Judge {
 	return &anthropicJudge{
 		apiKey: key,
 		model:  model,
-		httpc: &http.Client{
-			Timeout: 90 * time.Second,
-		},
+		httpc:  &http.Client{Timeout: 90 * time.Second},
 	}
 }
 
-// maxJudgeRetries is the cap on retry attempts for transient
-// Anthropic responses (429, 5xx). Past v0.1 of the bench surfaced
-// 529 "overloaded" on a long sweep; without retry the mid-07/v4-pro
-// run lost its semantic score and the row dropped to FAIL despite
-// the model itself producing valid output. Capping at 3 keeps a
-// stuck judge from indefinitely blocking a budget-capped sweep.
-const maxJudgeRetries = 3
-
-// Score runs the rubric prompt through the judge model and parses
-// the {score, notes} JSON reply. Retries on transient errors (HTTP
-// 429, 529, and 5xx) with exponential backoff honoring the
-// Retry-After header when present.
 func (j *anthropicJudge) Score(ctx context.Context, prompt string) (int, string, error) {
 	body := map[string]any{
 		"model":       j.model,
@@ -68,69 +104,261 @@ func (j *anthropicJudge) Score(ctx context.Context, prompt string) (int, string,
 		},
 	}
 	raw, _ := json.Marshal(body)
+	resp, err := httpJudgeCall(ctx, j.httpc, http.MethodPost,
+		"https://api.anthropic.com/v1/messages", raw,
+		map[string]string{
+			"Content-Type":      "application/json",
+			"x-api-key":         j.apiKey,
+			"anthropic-version": "2023-06-01",
+		})
+	if err != nil {
+		return 0, "", err
+	}
+	var env struct {
+		Content []struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		} `json:"content"`
+	}
+	if err := json.Unmarshal(resp, &env); err != nil {
+		return 0, "", fmt.Errorf("anthropic-judge decode: %w", err)
+	}
+	if len(env.Content) == 0 {
+		return 0, "", fmt.Errorf("anthropic-judge: empty content")
+	}
+	return extractScoreOrErr(env.Content[0].Text, "anthropic")
+}
 
+// --- DeepSeek judge (OpenAI-compatible chat completions) ---
+
+type deepSeekJudge struct {
+	apiKey string
+	model  string
+	httpc  *http.Client
+}
+
+func newDeepSeekJudge() grader.Judge {
+	key := os.Getenv("DEEPSEEK_API_KEY")
+	if key == "" {
+		return nil
+	}
+	model := os.Getenv("LOOMCYCLE_BENCH_JUDGE_MODEL_DEEPSEEK")
+	if model == "" {
+		// deepseek-v4-pro is the operator's pinned middle-tier model
+		// and proved CAPABLE on Sweep #5 — appropriate for judging.
+		model = "deepseek-v4-pro"
+	}
+	return &deepSeekJudge{
+		apiKey: key,
+		model:  model,
+		httpc:  &http.Client{Timeout: 90 * time.Second},
+	}
+}
+
+func (j *deepSeekJudge) Score(ctx context.Context, prompt string) (int, string, error) {
+	body := map[string]any{
+		"model":       j.model,
+		"max_tokens":  512,
+		"temperature": 0,
+		"messages": []map[string]any{
+			{"role": "user", "content": prompt},
+		},
+	}
+	raw, _ := json.Marshal(body)
+	resp, err := httpJudgeCall(ctx, j.httpc, http.MethodPost,
+		"https://api.deepseek.com/v1/chat/completions", raw,
+		map[string]string{
+			"Content-Type":  "application/json",
+			"Authorization": "Bearer " + j.apiKey,
+		})
+	if err != nil {
+		return 0, "", err
+	}
+	var env struct {
+		Choices []struct {
+			Message struct {
+				Content string `json:"content"`
+			} `json:"message"`
+		} `json:"choices"`
+	}
+	if err := json.Unmarshal(resp, &env); err != nil {
+		return 0, "", fmt.Errorf("deepseek-judge decode: %w", err)
+	}
+	if len(env.Choices) == 0 {
+		return 0, "", fmt.Errorf("deepseek-judge: empty choices")
+	}
+	return extractScoreOrErr(env.Choices[0].Message.Content, "deepseek")
+}
+
+// --- Gemini judge ---
+
+type geminiJudge struct {
+	apiKey string
+	model  string
+	httpc  *http.Client
+}
+
+func newGeminiJudge() grader.Judge {
+	key := os.Getenv("GEMINI_API_KEY")
+	if key == "" {
+		return nil
+	}
+	model := os.Getenv("LOOMCYCLE_BENCH_JUDGE_MODEL_GEMINI")
+	if model == "" {
+		// 2.5-pro is the most capable Gemini that proved CAPABLE on
+		// Sweep #5. Avoid 2.0-flash (deprecated as of 2026-05-15).
+		model = "gemini-2.5-pro"
+	}
+	return &geminiJudge{
+		apiKey: key,
+		model:  model,
+		httpc:  &http.Client{Timeout: 90 * time.Second},
+	}
+}
+
+func (j *geminiJudge) Score(ctx context.Context, prompt string) (int, string, error) {
+	body := map[string]any{
+		"contents": []map[string]any{
+			{"role": "user", "parts": []map[string]any{{"text": prompt}}},
+		},
+		"generationConfig": map[string]any{
+			"temperature":     0,
+			"maxOutputTokens": 512,
+		},
+	}
+	raw, _ := json.Marshal(body)
+	url := fmt.Sprintf("https://generativelanguage.googleapis.com/v1beta/models/%s:generateContent?key=%s",
+		j.model, j.apiKey)
+	resp, err := httpJudgeCall(ctx, j.httpc, http.MethodPost, url, raw,
+		map[string]string{"Content-Type": "application/json"})
+	if err != nil {
+		return 0, "", err
+	}
+	var env struct {
+		Candidates []struct {
+			Content struct {
+				Parts []struct {
+					Text string `json:"text"`
+				} `json:"parts"`
+			} `json:"content"`
+		} `json:"candidates"`
+	}
+	if err := json.Unmarshal(resp, &env); err != nil {
+		return 0, "", fmt.Errorf("gemini-judge decode: %w", err)
+	}
+	if len(env.Candidates) == 0 || len(env.Candidates[0].Content.Parts) == 0 {
+		return 0, "", fmt.Errorf("gemini-judge: empty candidates")
+	}
+	return extractScoreOrErr(env.Candidates[0].Content.Parts[0].Text, "gemini")
+}
+
+// --- Consensus judge ---
+
+// consensusJudge fans out a score request to N child judges in
+// parallel and aggregates the results: median score, concatenated
+// notes from each judge with the judge's name as a prefix.
+//
+// Operator-side bias mitigation: each judge has its own model
+// preferences. Anthropic Sonnet tends to score Anthropic-style
+// outputs higher; DeepSeek scores DeepSeek-style more leniently;
+// Gemini has its own quirks. Median across the three smooths out
+// any one judge's bias.
+type consensusJudge struct {
+	judges []grader.Judge
+}
+
+func (c *consensusJudge) Score(ctx context.Context, prompt string) (int, string, error) {
+	type result struct {
+		idx     int
+		score   int
+		notes   string
+		err     error
+	}
+	out := make(chan result, len(c.judges))
+	for i, j := range c.judges {
+		go func(i int, j grader.Judge) {
+			score, notes, err := j.Score(ctx, prompt)
+			out <- result{idx: i, score: score, notes: notes, err: err}
+		}(i, j)
+	}
+	var scores []int
+	var noteParts []string
+	errCount := 0
+	for range c.judges {
+		r := <-out
+		if r.err != nil {
+			errCount++
+			noteParts = append(noteParts, fmt.Sprintf("[judge-%d ERROR: %s]", r.idx, r.err.Error()))
+			continue
+		}
+		scores = append(scores, r.score)
+		noteParts = append(noteParts, fmt.Sprintf("[judge-%d %d/100: %s]", r.idx, r.score, r.notes))
+	}
+	if len(scores) == 0 {
+		return 0, "", fmt.Errorf("all %d judges errored: %s", errCount, strings.Join(noteParts, "; "))
+	}
+	sort.Ints(scores)
+	median := scores[len(scores)/2]
+	return median, strings.Join(noteParts, " | "), nil
+}
+
+// --- Shared HTTP helpers ---
+
+const maxJudgeRetries = 3
+
+// httpJudgeCall executes a single HTTP POST with retry on transient
+// errors (429, 5xx, network blips). Returns the raw response body
+// bytes for the caller to decode.
+func httpJudgeCall(ctx context.Context, hc *http.Client, method, url string, body []byte, headers map[string]string) ([]byte, error) {
 	var lastErr error
 	for attempt := 0; attempt <= maxJudgeRetries; attempt++ {
 		if attempt > 0 {
 			wait := backoffFor(attempt, lastErr)
 			select {
 			case <-ctx.Done():
-				return 0, "", ctx.Err()
+				return nil, ctx.Err()
 			case <-time.After(wait):
 			}
 		}
-
-		req, err := http.NewRequestWithContext(ctx, http.MethodPost,
-			"https://api.anthropic.com/v1/messages", bytes.NewReader(raw))
+		req, err := http.NewRequestWithContext(ctx, method, url, bytes.NewReader(body))
 		if err != nil {
-			return 0, "", err
+			return nil, err
 		}
-		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("x-api-key", j.apiKey)
-		req.Header.Set("anthropic-version", "2023-06-01")
-
-		resp, err := j.httpc.Do(req)
+		for k, v := range headers {
+			req.Header.Set(k, v)
+		}
+		resp, err := hc.Do(req)
 		if err != nil {
-			// Network errors are retryable — connection-reset and
-			// DNS hiccups happen on long sweeps.
-			lastErr = fmt.Errorf("judge HTTP: %w", err)
+			lastErr = fmt.Errorf("HTTP: %w", err)
 			continue
 		}
-
 		bodyBytes, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 		resp.Body.Close()
-
 		if resp.StatusCode == http.StatusOK {
-			var env struct {
-				Content []struct {
-					Type string `json:"type"`
-					Text string `json:"text"`
-				} `json:"content"`
-			}
-			if err := json.Unmarshal(bodyBytes, &env); err != nil {
-				return 0, "", fmt.Errorf("judge decode: %w", err)
-			}
-			if len(env.Content) == 0 {
-				return 0, "", fmt.Errorf("judge: empty content")
-			}
-			score, notes := grader.ParseJudgeResponse(env.Content[0].Text)
-			if score < 0 {
-				return 0, "", fmt.Errorf("judge: could not parse score from %q", env.Content[0].Text)
-			}
-			return score, notes, nil
+			return bodyBytes, nil
 		}
-
 		err = &judgeHTTPError{status: resp.StatusCode, body: string(bodyBytes), retryAfter: resp.Header.Get("Retry-After")}
 		if !isRetryable(resp.StatusCode) {
-			return 0, "", err
+			return nil, err
 		}
 		lastErr = err
 	}
-	return 0, "", fmt.Errorf("judge: gave up after %d retries: %w", maxJudgeRetries, lastErr)
+	return nil, fmt.Errorf("gave up after %d retries: %w", maxJudgeRetries, lastErr)
 }
 
-// judgeHTTPError carries the response context across the retry loop
-// so backoffFor can honor Retry-After.
+// extractScoreOrErr parses the judge's text reply into a (score, notes)
+// tuple using the standard ParseJudgeResponse helper. Returns a
+// provider-tagged error when the score can't be parsed (so consensus
+// logs identify which judge produced the bad output).
+func extractScoreOrErr(text, providerTag string) (int, string, error) {
+	score, notes := grader.ParseJudgeResponse(text)
+	if score < 0 {
+		return 0, "", fmt.Errorf("%s-judge: could not parse score from %q", providerTag, text)
+	}
+	return score, notes, nil
+}
+
+// judgeHTTPError + isRetryable + backoffFor stay unchanged from v1.
 type judgeHTTPError struct {
 	status     int
 	body       string
@@ -141,9 +369,6 @@ func (e *judgeHTTPError) Error() string {
 	return fmt.Sprintf("judge HTTP %d: %s", e.status, e.body)
 }
 
-// isRetryable returns true for status codes Anthropic surfaces under
-// transient load: 408 (timeout), 425 (too-early), 429 (rate limit),
-// 500/502/503/504/529 (server overload).
 func isRetryable(status int) bool {
 	switch status {
 	case 408, 425, 429, 500, 502, 503, 504, 529:
@@ -152,10 +377,6 @@ func isRetryable(status int) bool {
 	return false
 }
 
-// backoffFor returns the delay before the next retry. Honors a
-// numeric Retry-After header when the last error carries one;
-// otherwise uses exponential backoff capped at 16 s so a stuck
-// judge can't drag a sweep out indefinitely. attempt is 1-indexed.
 func backoffFor(attempt int, lastErr error) time.Duration {
 	if je, ok := lastErr.(*judgeHTTPError); ok && je.retryAfter != "" {
 		if secs, err := strconv.Atoi(je.retryAfter); err == nil && secs > 0 {
