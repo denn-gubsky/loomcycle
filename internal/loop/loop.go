@@ -293,7 +293,13 @@ func tryProviderFallback(
 		return fallbackOutcomeNotEligible
 	}
 	cls := providers.ClassifyError(cause)
-	if cls != providers.ErrorClassRetryable {
+	// ErrorClassDeprecated is treated like Retryable for fallback
+	// purposes (mark stalled + re-resolve to next candidate) — the
+	// downstream effect on the resolver matrix is the same. The
+	// difference is operator-visible: EventProviderFallback's Reason
+	// surfaces "deprecated" so the operator can distinguish a
+	// retired-model event from a transient 5xx.
+	if cls != providers.ErrorClassRetryable && cls != providers.ErrorClassDeprecated {
 		return fallbackOutcomeNotEligible
 	}
 	maxAttempts := opts.FallbackPolicy.MaxAttempts

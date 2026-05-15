@@ -27,6 +27,15 @@ func TestClassifyError_Table(t *testing.T) {
 		{"deepseek 403", fmt.Errorf("deepseek 403: forbidden"), ErrorClassPermanent},
 		{"gemini 422", fmt.Errorf("gemini 422: unprocessable entity"), ErrorClassPermanent},
 		{"openai 404", fmt.Errorf("openai 404: model not found"), ErrorClassPermanent},
+		// Deprecated — distinct from generic 404. Body contains a
+		// retirement marker. The real exemplar from 2026-05-15 when
+		// gemini-2.0-flash was retired:
+		{"gemini 404 deprecated", fmt.Errorf(`gemini 404: {"error":{"code":404,"message":"This model models/gemini-2.0-flash is no longer available to new users. Please update your code to use a newer model","status":"NOT_FOUND"}}`), ErrorClassDeprecated},
+		{"anthropic 404 deprecated", fmt.Errorf("anthropic 404: this model has been deprecated"), ErrorClassDeprecated},
+		{"openai 404 retired", fmt.Errorf("openai 404: model retired, please use the latest version"), ErrorClassDeprecated},
+		// 404 without a retirement marker stays Permanent (typo / wrong
+		// model id). False-negative on deprecation is acceptable UX.
+		{"openai 404 plain", fmt.Errorf("openai 404: not found"), ErrorClassPermanent},
 		// Ctx-side outcomes.
 		{"ctx canceled", context.Canceled, ErrorClassCancelled},
 		{"ctx canceled wrapped", fmt.Errorf("call: %w", context.Canceled), ErrorClassCancelled},

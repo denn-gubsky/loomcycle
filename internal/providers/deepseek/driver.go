@@ -27,6 +27,7 @@ package deepseek
 import (
 	"context"
 	"net/http"
+	"strings"
 
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/providers/openai"
@@ -63,22 +64,55 @@ func New(apiKey, baseURL string, streamOpts streamhttp.Options, httpClient *http
 // — that's what makes the wrapper worth its weight.
 func (d *Driver) ID() string { return "deepseek" }
 
-// Capabilities mirrors OpenAI's today. DeepSeek's V3 chat / coder
-// models behave identically to OpenAI Chat Completions for tool use
-// and streaming. Diverges later if/when:
+// Capabilities reports the provider's MAXIMUM surface — what at
+// least one model on DeepSeek can do — not the per-model details.
+// The interface contract is per-provider, not per-model (see
+// providers.Provider's Capabilities() signature), so the driver
+// surfaces the union and decides per-call (via IsThinkingModel)
+// whether to actually attach thinking-related wire params.
 //
-//   - reasoner model support lands (SupportsThinking → true, plus
-//     reasoning_content event handling)
-//   - DeepSeek's prompt-cache plumbing graduates from
-//     auto-on-server to a caller-controlled knob like Anthropic's
-//     cache_control (NativePromptCache → true)
-//
-// MaxContextTokens left at OpenAI's 128K default; DeepSeek-V3 is
-// 128K-context too. The reasoner model is 64K — when we add it,
-// callers should pass MaxTokens explicitly rather than rely on this
-// default.
+// Key divergence from OpenAI's defaults: SupportsThinking=true.
+// DeepSeek's reasoner / v4-pro variants are thinking-class models;
+// the OpenAI driver returns false because OpenAI's chat-class
+// models don't think. Operators picking deepseek-v4-pro should
+// budget max_tokens accordingly — the 2026-05-15 bench discovered
+// that judge calls with max_tokens=512 returned empty content
+// because the model consumed the budget on hidden reasoning.
 func (d *Driver) Capabilities() providers.Capabilities {
-	return d.inner.Capabilities()
+	caps := d.inner.Capabilities()
+	caps.SupportsThinking = true
+	return caps
+}
+
+// IsThinkingModel reports whether the named DeepSeek model is a
+// thinking-class variant (extended reasoning enabled by default).
+// Used by future per-call decisions where the driver needs to
+// distinguish v4-pro/reasoner from v4-flash/chat — the interface
+// doesn't take a model parameter on Capabilities() so this helper
+// is the per-model affordance.
+//
+// Naming convention as of 2026-05-15:
+//   - thinking-class: deepseek-v4-pro, deepseek-reasoner,
+//     deepseek-r1, deepseek-v3-pro (and future *-pro / *-reasoner)
+//   - non-thinking: deepseek-chat, deepseek-v4-flash,
+//     deepseek-v3.2, deepseek-coder
+//
+// Conservative default for unknown model names: false. This
+// reflects the assumption that new releases default to chat-class;
+// thinking variants tend to be explicit.
+func IsThinkingModel(model string) bool {
+	lower := strings.ToLower(model)
+	thinkingMarkers := []string{
+		"-pro",
+		"reasoner",
+		"-r1",
+	}
+	for _, m := range thinkingMarkers {
+		if strings.Contains(lower, m) {
+			return true
+		}
+	}
+	return false
 }
 
 // Call delegates to the OpenAI driver. The request body, retry
