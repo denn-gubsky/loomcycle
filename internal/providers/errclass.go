@@ -64,6 +64,24 @@ const (
 	// won't extend it. Distinct from Permanent so callers see a
 	// "deadline_exceeded" stop reason.
 	ErrorClassDeadlineExceeded
+
+	// ErrorClassDeprecated — HTTP 404 with a body indicating the
+	// model has been retired by the provider ("no longer available",
+	// "has been deprecated", "model retired", etc.). Distinct from
+	// generic Permanent because the operator's intended action is
+	// different: with a deprecated model the right move is to pick
+	// a different model from the same provider (or update the agent
+	// yaml to a current model), not to give up on the provider
+	// entirely. The resolver can mark the (provider, model) pair
+	// as permanently-unavailable for the process lifetime and skip
+	// it on re-resolve.
+	//
+	// Encountered 2026-05-15 when gemini-2.0-flash returned 404
+	// "no longer available to new users". The bench rendered it as
+	// a generic 404 and the operator couldn't tell at a glance
+	// whether the model was retired, the API key was bad, or the
+	// model ID had a typo. ErrorClassDeprecated disambiguates.
+	ErrorClassDeprecated
 )
 
 // String returns a human-readable label for log + event payloads.
@@ -77,6 +95,8 @@ func (c ErrorClass) String() string {
 		return "cancelled"
 	case ErrorClassDeadlineExceeded:
 		return "deadline_exceeded"
+	case ErrorClassDeprecated:
+		return "deprecated"
 	default:
 		return "unknown"
 	}
@@ -126,6 +146,11 @@ func ClassifyError(err error) ErrorClass {
 		case code == 400 || code == 401 || code == 403 || code == 422:
 			return ErrorClassPermanent
 		}
+		// 404 with a "model retired / no longer available" body is
+		// a distinct case from a generic 404. See ErrorClassDeprecated.
+		if code == 404 && looksLikeDeprecatedModel(err.Error()) {
+			return ErrorClassDeprecated
+		}
 		// Other 4xx (404/409/etc.) → Permanent. The agent / model id
 		// is wrong in a way another provider won't fix.
 		if code >= 400 && code <= 499 {
@@ -159,4 +184,31 @@ func statusFromError(err error) int {
 	}
 	code, _ := strconv.Atoi(match[1])
 	return code
+}
+
+// looksLikeDeprecatedModel returns true when the error body carries a
+// "this model is no longer available / has been retired" pattern. The
+// matchers are intentionally permissive — false negatives (treated as
+// generic 404 → Permanent) match the pre-existing UX, and false
+// positives (treating a real-404 as deprecation) are harmless because
+// the resolver's reaction to ErrorClassDeprecated is just "skip this
+// model on re-resolve" which is also the right move for a typoed model
+// ID.
+//
+// Patterns observed so far:
+//   - gemini-2.0-flash, 2026-05-15: "This model models/gemini-2.0-flash
+//     is no longer available to new users. Please update your code..."
+//   - hypothetical future Anthropic: "this model has been deprecated"
+//   - hypothetical future OpenAI: "model X retired"
+func looksLikeDeprecatedModel(msg string) bool {
+	if msg == "" {
+		return false
+	}
+	lower := strings.ToLower(msg)
+	return strings.Contains(lower, "no longer available") ||
+		strings.Contains(lower, "has been deprecated") ||
+		strings.Contains(lower, "model is deprecated") ||
+		strings.Contains(lower, "model retired") ||
+		strings.Contains(lower, "is deprecated") ||
+		strings.Contains(lower, "update your code to use")
 }

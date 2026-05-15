@@ -112,13 +112,14 @@ func TestDriver_CustomBaseURLOverridesDefault(t *testing.T) {
 	}
 }
 
-func TestDriver_CapabilitiesMatchOpenAI(t *testing.T) {
+func TestDriver_CapabilitiesMostlyMatchOpenAI(t *testing.T) {
 	// DeepSeek's V3 chat / coder models behave identically to
-	// OpenAI Chat Completions for tool use + streaming, so the
-	// capability flags should not diverge in v0.6.0. This test
-	// pins the assumption so a future change to OpenAI's flags
-	// surfaces here as a deliberate decision rather than silent
-	// drift.
+	// OpenAI Chat Completions for tool use + streaming. The one
+	// deliberate divergence is SupportsThinking: DeepSeek's
+	// reasoner / v4-pro variants are thinking-class models, even
+	// though OpenAI's chat-class models aren't. We surface the
+	// union (provider-max) at the Capabilities() level; per-call
+	// decisions use IsThinkingModel(name).
 	d := New("test-key", "", streamhttp.Options{}, nil)
 	caps := d.Capabilities()
 	if caps.NativePromptCache {
@@ -130,8 +131,38 @@ func TestDriver_CapabilitiesMatchOpenAI(t *testing.T) {
 	if !caps.Streaming {
 		t.Errorf("Streaming = false, want true")
 	}
-	if caps.SupportsThinking {
-		t.Errorf("SupportsThinking = true, want false (reasoner model not yet wired)")
+	if !caps.SupportsThinking {
+		t.Errorf("SupportsThinking = false, want true (deepseek-v4-pro / deepseek-reasoner are thinking-class)")
+	}
+}
+
+// TestIsThinkingModel covers the per-model affordance the driver
+// uses internally for thinking-class decisions. Naming convention:
+//   thinking-class: deepseek-v4-pro, deepseek-reasoner, deepseek-r1
+//   non-thinking:   deepseek-chat, deepseek-v4-flash, deepseek-v3.2
+func TestIsThinkingModel(t *testing.T) {
+	cases := []struct {
+		model string
+		want  bool
+	}{
+		{"deepseek-v4-pro", true},
+		{"deepseek-v3-pro", true},
+		{"deepseek-reasoner", true},
+		{"deepseek-r1", true},
+		{"deepseek-r1-distill", true},
+		{"deepseek-chat", false},
+		{"deepseek-v4-flash", false},
+		{"deepseek-v3.2", false},
+		{"deepseek-coder", false},
+		{"DeepSeek-V4-Pro", true}, // case-insensitive
+		{"", false},
+		{"unknown-model", false},
+	}
+	for _, tc := range cases {
+		got := IsThinkingModel(tc.model)
+		if got != tc.want {
+			t.Errorf("IsThinkingModel(%q) = %v, want %v", tc.model, got, tc.want)
+		}
 	}
 }
 
