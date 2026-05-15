@@ -284,10 +284,10 @@ type consensusJudge struct {
 
 func (c *consensusJudge) Score(ctx context.Context, prompt string) (int, string, error) {
 	type result struct {
-		idx     int
-		score   int
-		notes   string
-		err     error
+		idx   int
+		score int
+		notes string
+		err   error
 	}
 	out := make(chan result, len(c.judges))
 	for i, j := range c.judges {

@@ -19,7 +19,7 @@ import (
 // no derived state lives here.
 type Case struct {
 	ID           string   `yaml:"id"`
-	Tier         string   `yaml:"tier"`     // "low" | "middle"
+	Tier         string   `yaml:"tier"` // "low" | "middle"
 	Description  string   `yaml:"description"`
 	AllowedTools []string `yaml:"allowed_tools"`
 	MaxTurns     int      `yaml:"max_turns"`

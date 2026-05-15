@@ -19,15 +19,15 @@ import (
 
 // CaseOutcome is one (provider, model, tier, case) row.
 type CaseOutcome struct {
-	Provider   string         `json:"provider"`
-	Model      string         `json:"model"`
-	Tier       string         `json:"tier"`
-	CaseID     string         `json:"case_id"`
-	Status     string         `json:"status"`     // run status: "completed" | "failed" | "cancelled"
-	Result     grader.Result  `json:"result"`
-	CostUSD    float64        `json:"cost_usd"`
-	DurationMS int64          `json:"duration_ms"`
-	Error      string         `json:"error,omitempty"`
+	Provider   string        `json:"provider"`
+	Model      string        `json:"model"`
+	Tier       string        `json:"tier"`
+	CaseID     string        `json:"case_id"`
+	Status     string        `json:"status"` // run status: "completed" | "failed" | "cancelled"
+	Result     grader.Result `json:"result"`
+	CostUSD    float64       `json:"cost_usd"`
+	DurationMS int64         `json:"duration_ms"`
+	Error      string        `json:"error,omitempty"`
 }
 
 // ModelSummary is the rolled-up verdict for one (provider, model)
@@ -57,10 +57,10 @@ type ModelSummary struct {
 // per-model summaries side by side so consumers can either inspect
 // individual cases or skip to the bottom-line verdict.
 type Matrix struct {
-	GeneratedAt time.Time      `json:"generated_at"`
+	GeneratedAt  time.Time      `json:"generated_at"`
 	BenchVersion string         `json:"bench_version"`
-	Outcomes    []CaseOutcome  `json:"outcomes"`
-	Summaries   []ModelSummary `json:"summaries"`
+	Outcomes     []CaseOutcome  `json:"outcomes"`
+	Summaries    []ModelSummary `json:"summaries"`
 }
 
 // Verdict thresholds (per the plan):
@@ -283,9 +283,9 @@ func writeSpeedRanking(w io.Writer, m Matrix) {
 // produces a working result on this battery".
 func writeCostPerPassRanking(w io.Writer, rows []costPerPassRow) {
 	type costRow struct {
-		s        ModelSummary
-		costPP   float64
-		avgSec   float64
+		s      ModelSummary
+		costPP float64
+		avgSec float64
 	}
 	cr := make([]costRow, 0, len(rows))
 	for _, r := range rows {

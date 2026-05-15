@@ -122,10 +122,10 @@ func (c *Client) Initialize(ctx context.Context) error {
 		JSONRPC string `json:"jsonrpc"`
 		ID      int64  `json:"id"`
 		Result  struct {
-			ProtocolVersion string                 `json:"protocolVersion"`
-			ServerInfo      ServerInfo             `json:"serverInfo"`
-			Capabilities    map[string]any         `json:"capabilities"`
-			Instructions    string                 `json:"instructions,omitempty"`
+			ProtocolVersion string         `json:"protocolVersion"`
+			ServerInfo      ServerInfo     `json:"serverInfo"`
+			Capabilities    map[string]any `json:"capabilities"`
+			Instructions    string         `json:"instructions,omitempty"`
 		} `json:"result"`
 		Error *jsonRPCError `json:"error,omitempty"`
 	}
@@ -281,15 +281,15 @@ func UserTextSegment(text string) PromptSegment {
 // (graded structurally + semantically) and the captured event trace
 // (graded functionally). Status mirrors connector.SpawnRunResult.Status.
 type RunResult struct {
-	AgentID    string         `json:"agent_id"`
-	RunID      string         `json:"run_id"`
-	SessionID  string         `json:"session_id"`
-	Status     string         `json:"status"` // "completed" | "failed" | "cancelled"
-	StopReason string         `json:"stop_reason"`
-	FinalText  string         `json:"final_text"`
-	Usage      *UsageInfo     `json:"usage,omitempty"`
+	AgentID    string          `json:"agent_id"`
+	RunID      string          `json:"run_id"`
+	SessionID  string          `json:"session_id"`
+	Status     string          `json:"status"` // "completed" | "failed" | "cancelled"
+	StopReason string          `json:"stop_reason"`
+	FinalText  string          `json:"final_text"`
+	Usage      *UsageInfo      `json:"usage,omitempty"`
 	Events     []ProviderEvent `json:"events,omitempty"`
-	Error      string         `json:"error,omitempty"`
+	Error      string          `json:"error,omitempty"`
 }
 
 // UsageInfo mirrors providers.Usage on the wire (input/output token

@@ -22,8 +22,8 @@ type Result struct {
 // judge's 0..100 rating divided by 100.
 type AxisResult struct {
 	Pass    bool     `json:"pass"`
-	Score   float64  `json:"score"`              // 0..1
-	Reasons []string `json:"reasons,omitempty"`   // human-readable diagnostics
+	Score   float64  `json:"score"`             // 0..1
+	Reasons []string `json:"reasons,omitempty"` // human-readable diagnostics
 }
 
 // Passed reports whether the overall (case, run) is a success — all
