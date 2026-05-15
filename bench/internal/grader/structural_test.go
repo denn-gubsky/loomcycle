@@ -117,3 +117,72 @@ func contains(ss []string, sub string) bool {
 	}
 	return false
 }
+
+// TestStructural_ExtractsJSONAfterProse — Sweep #4 surfaced the
+// pattern where models lead with narration like "I have called the
+// tool...\n{...}". The bench should extract the JSON object and
+// validate THAT against the schema, not reject on the first 'I' char.
+//
+// Cases that require bare-JSON output can use must_not_match to
+// flag pre-JSON prose as a separate structural sub-check.
+func TestStructural_ExtractsJSONAfterProse(t *testing.T) {
+	text := `I have called the tool successfully. Here is the result:
+
+{"verdicts": [{"index": 0, "safe": true, "score": 0.0, "reason": "ok"}]}`
+	exp := cases.Structural{
+		Schema: `{"type":"object","required":["verdicts"],"properties":{
+			"verdicts":{"type":"array","items":{"type":"object",
+			"required":["index","safe","score","reason"]}}}}`,
+	}
+	r := Structural(text, exp)
+	if !r.Pass {
+		t.Fatalf("expected pass after extraction; reasons: %v", r.Reasons)
+	}
+}
+
+// TestStructural_ExtractsNestedJSONWithBracesInStrings — verifies
+// the extractor correctly accounts for `{` / `}` inside JSON strings
+// (a regex-based extractor would get this wrong).
+func TestStructural_ExtractsNestedJSONWithBracesInStrings(t *testing.T) {
+	text := `Output below.\n\n{"note": "value with {braces} inside the string", "n": 1}`
+	exp := cases.Structural{
+		Schema: `{"type":"object","required":["note","n"],"properties":{
+			"note":{"type":"string"},"n":{"type":"integer"}}}`,
+	}
+	r := Structural(text, exp)
+	if !r.Pass {
+		t.Fatalf("expected pass; reasons: %v", r.Reasons)
+	}
+}
+
+// TestStructural_BareProseIsStillRejected — when the response has
+// no JSON at all, structural should still fail with a clear message.
+func TestStructural_BareProseIsStillRejected(t *testing.T) {
+	text := "The model decided not to produce a JSON output."
+	exp := cases.Structural{
+		Schema: `{"type":"object","required":["x"]}`,
+	}
+	r := Structural(text, exp)
+	if r.Pass {
+		t.Fatal("expected fail when no JSON block present")
+	}
+	if !contains(r.Reasons, "no JSON object or array found") {
+		t.Errorf("expected diagnostic about missing JSON; got %v", r.Reasons)
+	}
+}
+
+// TestStructural_MustNotMatchStillCatchesPreJSONNarration — cases
+// that need bare-JSON output (e.g., production injection-judge's
+// downstream parser) can use must_not_match to fail on prose-before-
+// JSON even though the schema now extracts and passes.
+func TestStructural_MustNotMatchStillCatchesPreJSONNarration(t *testing.T) {
+	text := "I have called the tool successfully:\n{\"x\": 1}"
+	exp := cases.Structural{
+		MustNotMatch: `(?im)^I have called|^Here is`,
+		Schema:       `{"type":"object","required":["x"]}`,
+	}
+	r := Structural(text, exp)
+	if r.Pass {
+		t.Fatal("expected must_not_match to flag the 'I have called' preamble")
+	}
+}

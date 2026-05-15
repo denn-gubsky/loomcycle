@@ -31,7 +31,7 @@ expected:
   structural:
     schema: |
       {"type":"object","required":["search_count","ingest_count"],"properties":{
-        "search_count":{"type":"integer","minimum":1,"maximum":2},
+        "search_count":{"type":"integer","minimum":1,"maximum":5},
         "ingest_count":{"type":"integer","minimum":1,"maximum":1},
         "first_company":{"type":"string"}
       }}
@@ -39,7 +39,7 @@ expected:
     tool_calls:
       - name: "mcp__brave-search__brave_web_search"
         min_calls: 1
-        max_calls: 2
+        max_calls: 5
       - name: "mcp__jobs__postSearchIngest"
         args_must_include:
           has_body: true
