@@ -205,10 +205,16 @@ func looksLikeDeprecatedModel(msg string) bool {
 		return false
 	}
 	lower := strings.ToLower(msg)
+	// Each pattern must be specific enough that a non-model 404
+	// (e.g., 404 NOT_FOUND for a missing fine-tune artifact whose
+	// body happens to mention a deprecated API parameter) doesn't
+	// trigger. "model is deprecated" and "model retired" anchor on
+	// the word "model"; "no longer available" / "has been deprecated"
+	// / "update your code" are common enough in retirement messages
+	// across providers but rare in unrelated 404 bodies.
 	return strings.Contains(lower, "no longer available") ||
 		strings.Contains(lower, "has been deprecated") ||
 		strings.Contains(lower, "model is deprecated") ||
 		strings.Contains(lower, "model retired") ||
-		strings.Contains(lower, "is deprecated") ||
 		strings.Contains(lower, "update your code to use")
 }

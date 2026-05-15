@@ -36,6 +36,12 @@ func TestClassifyError_Table(t *testing.T) {
 		// 404 without a retirement marker stays Permanent (typo / wrong
 		// model id). False-negative on deprecation is acceptable UX.
 		{"openai 404 plain", fmt.Errorf("openai 404: not found"), ErrorClassPermanent},
+		// 404 mentioning an unrelated deprecated PARAMETER (not the
+		// model itself) must stay Permanent. The pattern set
+		// deliberately anchors on "model" or "no longer available"
+		// rather than the bare phrase "is deprecated" to avoid this
+		// false-positive (review finding on PR #111).
+		{"openai 404 parameter deprecation note", fmt.Errorf("openai 404: artifact not found; note: parameter X is deprecated, use Y"), ErrorClassPermanent},
 		// Ctx-side outcomes.
 		{"ctx canceled", context.Canceled, ErrorClassCancelled},
 		{"ctx canceled wrapped", fmt.Errorf("call: %w", context.Canceled), ErrorClassCancelled},
@@ -82,6 +88,7 @@ func TestErrorClass_StringIsHumanReadable(t *testing.T) {
 		ErrorClassPermanent:        "permanent",
 		ErrorClassCancelled:        "cancelled",
 		ErrorClassDeadlineExceeded: "deadline_exceeded",
+		ErrorClassDeprecated:       "deprecated",
 	}
 	for cls, want := range cases {
 		if got := cls.String(); got != want {
