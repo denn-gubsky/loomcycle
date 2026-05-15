@@ -755,7 +755,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	}
 
 	// ---- Session+run creation ----
-	identity := store.RunIdentity{AgentID: agentID, UserID: effectiveUserID, UserTier: in.UserTier}
+	identity := store.RunIdentity{AgentID: agentID, UserID: effectiveUserID, UserTier: in.UserTier, Model: model}
 	sessionID, runID, sessErr := s.openOrCreateSessionAndRun(ctx, in.SessionID, effectiveAgentName, effectiveTenantID, effectiveUserID, identity)
 	if sessErr != nil {
 		var nf *store.ErrNotFound
@@ -1400,7 +1400,7 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 	// emitted event through the store before forwarding to SSE. With
 	// s.store == nil the recording becomes a no-op so v0.2 callers see no
 	// behaviour change.
-	identity := store.RunIdentity{AgentID: agentID, UserID: req.UserID, UserTier: req.UserTier}
+	identity := store.RunIdentity{AgentID: agentID, UserID: req.UserID, UserTier: req.UserTier, Model: model}
 	sessionID, runID, sessErr := s.openOrCreateSessionAndRun(r.Context(), req.SessionID, req.Agent, req.TenantID, req.UserID, identity)
 	if sessErr != nil {
 		var nf *store.ErrNotFound
@@ -1739,6 +1739,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		AgentID:  agentID,
 		UserID:   sess.UserID,
 		UserTier: body.UserTier,
+		Model:    model,
 	})
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -2224,6 +2225,7 @@ func (s *Server) runSubAgent(ctx context.Context, name string, prompt string, de
 		UserID:     parentIdentity.UserID,
 		UserTier:   parentIdentity.UserTier, // v0.8.2: same user_tier across the sub-run tree
 		AgentDefID: defID,                   // v0.8.5: pin defID on the sub-run for evaluation denormalisation
+		Model:      model,                   // resolved model — written at create so the UI sees it during the run
 	}
 	subSessionID, subRunID, err := s.openOrCreateSessionAndRun(ctx, "", name, "", parentIdentity.UserID, subIdentity)
 	if err != nil {

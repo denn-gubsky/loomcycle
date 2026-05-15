@@ -192,8 +192,8 @@ func (s *Store) CreateRun(ctx context.Context, sessionID string, identity store.
 	if _, err := s.pool.Exec(ctx,
 		`INSERT INTO runs (
 			id, session_id, status, started_at,
-			agent_id, parent_agent_id, parent_run_id, user_id, user_tier, agent_def_id
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+			agent_id, parent_agent_id, parent_run_id, user_id, user_tier, agent_def_id, model
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
 		id, sessionID, string(store.RunRunning), now,
 		nullableText(identity.AgentID),
 		nullableText(identity.ParentAgentID),
@@ -201,6 +201,7 @@ func (s *Store) CreateRun(ctx context.Context, sessionID string, identity store.
 		nullableText(identity.UserID),
 		nullableText(identity.UserTier),
 		nullableText(identity.AgentDefID),
+		nullableText(identity.Model),
 	); err != nil {
 		return store.Run{}, fmt.Errorf("create run: %w", err)
 	}
@@ -215,6 +216,7 @@ func (s *Store) CreateRun(ctx context.Context, sessionID string, identity store.
 		UserID:        identity.UserID,
 		UserTier:      identity.UserTier,
 		AgentDefID:    identity.AgentDefID,
+		Model:         identity.Model,
 	}, nil
 }
 

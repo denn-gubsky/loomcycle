@@ -402,8 +402,8 @@ func (s *Store) CreateRun(ctx context.Context, sessionID string, identity store.
 	id := newID("r_")
 	now := time.Now()
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO runs(id, session_id, status, started_at, agent_id, parent_agent_id, parent_run_id, user_id, user_tier, agent_def_id)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO runs(id, session_id, status, started_at, agent_id, parent_agent_id, parent_run_id, user_id, user_tier, agent_def_id, model)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		id, sessionID, store.RunRunning, now.UnixNano(),
 		nilIfEmpty(identity.AgentID),
 		nilIfEmpty(identity.ParentAgentID),
@@ -411,6 +411,7 @@ func (s *Store) CreateRun(ctx context.Context, sessionID string, identity store.
 		nilIfEmpty(identity.UserID),
 		nilIfEmpty(identity.UserTier),
 		nilIfEmpty(identity.AgentDefID),
+		nilIfEmpty(identity.Model),
 	)
 	if err != nil {
 		return store.Run{}, err
@@ -426,6 +427,7 @@ func (s *Store) CreateRun(ctx context.Context, sessionID string, identity store.
 		UserID:        identity.UserID,
 		UserTier:      identity.UserTier,
 		AgentDefID:    identity.AgentDefID,
+		Model:         identity.Model,
 	}, nil
 }
 

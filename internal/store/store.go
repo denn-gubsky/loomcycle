@@ -257,6 +257,14 @@ type RunIdentity struct {
 	// runs.agent_def_id so the Evaluation tool can denormalise it
 	// into evaluations.def_id at submit time.
 	AgentDefID string
+	// Model is the resolved (provider, model) decision applied at
+	// run creation — written to runs.model immediately so the row is
+	// queryable mid-flight, not just after FinishRun. Empty = unknown
+	// at creation time (back-compat with callers that haven't been
+	// updated yet). FinishRun overwrites this with the final model
+	// recorded by the loop, which may differ if cross-provider
+	// fallback fired mid-run.
+	Model string
 }
 
 // UserSummary is one row of ListUsers' output: distinct user_id with
