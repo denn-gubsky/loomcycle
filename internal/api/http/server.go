@@ -108,6 +108,15 @@ type Server struct {
 	// constructed.
 	metricsSampler *metrics.Sampler
 
+	// interruptionBus is the v0.8.16 in-process notification bus used
+	// by the resolve handler to wake the blocked Interruption tool.
+	// Same instance as the Channel tool's Bus — re-using one Bus per
+	// process keeps wake-up paths uniform. Nil = resolve handler
+	// still writes the row (the bus.Wait timer will fire once the
+	// row's expires_at passes) but in-process wakeup is skipped. Set
+	// via SetInterruptionBus from main.go.
+	interruptionBus *channels.Bus
+
 	// mcpHTTPHandler is the v0.8.15.3 HTTP MCP transport (alternate
 	// front-end to the stdio MCP server). Typed as http.Handler — NOT
 	// *lcmcp.HTTPHandler — so this package does NOT import
@@ -185,6 +194,13 @@ func (s *Server) SetMCPHTTPHandler(h http.Handler) {
 // after the Store is open + the Bus/Scheduler are constructed.
 func (s *Server) SetSystemPublisher(p channels.SystemPublisher) {
 	s.systemPublisher = p
+}
+
+// SetInterruptionBus wires the v0.8.16 in-process notification bus
+// used by the Interruption-resolve HTTP handler to wake the blocked
+// tool. Same Bus instance the Channel tool uses.
+func (s *Server) SetInterruptionBus(b *channels.Bus) {
+	s.interruptionBus = b
 }
 
 // newDispatcher centralises Dispatcher construction so the three call
@@ -436,6 +452,18 @@ func (s *Server) substratePoliciesForAgent(agentDef config.AgentDef, selfName st
 // for one agent. Default-deny shape: empty Scopes = no access.
 func (s *Server) historyPolicyForAgent(agentDef config.AgentDef) tools.HistoryPolicyValue {
 	return tools.HistoryPolicyValue{Scopes: agentDef.HistoryScope}
+}
+
+// interruptionPolicyForAgent maps the agent's yaml ACL into the
+// runtime policy struct the Interruption tool reads via ctx.
+// Default-deny: absent block in yaml → Enabled=false → tool returns
+// is_error on every op.
+func (s *Server) interruptionPolicyForAgent(agentDef config.AgentDef) tools.InterruptionPolicyValue {
+	return tools.InterruptionPolicyValue{
+		Enabled:    agentDef.Interruption.Enabled,
+		Kinds:      agentDef.Interruption.Kinds,
+		MaxPending: agentDef.Interruption.MaxPending,
+	}
 }
 
 // applyAgentDefOverlay overlays the v0.8.5 agent_defs.definition JSON
@@ -830,6 +858,8 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	loopCtx = tools.WithAgentDefPolicy(loopCtx, adPolicy)
 	loopCtx = tools.WithEvaluationPolicy(loopCtx, evPolicy)
 	loopCtx = tools.WithHistoryPolicy(loopCtx, s.historyPolicyForAgent(agentDef))
+	loopCtx = tools.WithInterruptionPolicy(loopCtx, s.interruptionPolicyForAgent(agentDef))
+	loopCtx = tools.WithRunID(loopCtx, runID)
 
 	heartbeat := s.makeHeartbeat(runID)
 
@@ -981,6 +1011,12 @@ func (s *Server) Mux() http.Handler {
 	// `/`-prefixed paths (e.g. `events/2026-05-09T10:00`) and a
 	// single-segment {key} would 404 on those.
 	mux.Handle("GET /v1/_memory/scopes/{scope}/{scope_id}/keys/{key...}", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleGetMemoryEntry))))
+	// v0.8.16 Interruption tool. resolve is the human-side answer
+	// submit; the two list endpoints drive the Web UI (run-scoped
+	// audit + user-scoped inbox).
+	mux.Handle("POST /v1/runs/{run_id}/interrupts/{interrupt_id}/resolve", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleResolveInterrupt))))
+	mux.Handle("GET /v1/runs/{run_id}/interrupts", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleListRunInterrupts))))
+	mux.Handle("GET /v1/users/{user_id}/interrupts", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleListUserInterrupts))))
 	// v0.7.3 Web UI — embedded React SPA. The cookie-set landing
 	// page (/ui with a ?token= query) is intentionally NOT
 	// auth-middleware-wrapped; it sets the cookie that the
@@ -1524,6 +1560,8 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 	loopCtx = tools.WithAgentDefPolicy(loopCtx, adPolicy)
 	loopCtx = tools.WithEvaluationPolicy(loopCtx, evPolicy)
 	loopCtx = tools.WithHistoryPolicy(loopCtx, s.historyPolicyForAgent(agentDef))
+	loopCtx = tools.WithInterruptionPolicy(loopCtx, s.interruptionPolicyForAgent(agentDef))
+	loopCtx = tools.WithRunID(loopCtx, runID)
 
 	// Heartbeat hook: each loop iteration updates last_heartbeat_at so a
 	// future sweeper can detect crashed processes (no heartbeat for > N
@@ -1824,6 +1862,8 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	loopCtx = tools.WithAgentDefPolicy(loopCtx, adPolicy)
 	loopCtx = tools.WithEvaluationPolicy(loopCtx, evPolicy)
 	loopCtx = tools.WithHistoryPolicy(loopCtx, s.historyPolicyForAgent(agentDef))
+	loopCtx = tools.WithInterruptionPolicy(loopCtx, s.interruptionPolicyForAgent(agentDef))
+	loopCtx = tools.WithRunID(loopCtx, run.ID)
 	fbPolicy, fbReResolve := s.fallbackForRun(sess.Agent, body.UserTier)
 	loopRes, runErr := loop.Run(loopCtx, loop.RunOptions{
 		Provider:        provider,
@@ -2358,6 +2398,8 @@ func (s *Server) runSubAgent(ctx context.Context, name string, prompt string, de
 	subCtx = tools.WithAgentDefPolicy(subCtx, subADPolicy)
 	subCtx = tools.WithEvaluationPolicy(subCtx, subEvPolicy)
 	subCtx = tools.WithHistoryPolicy(subCtx, s.historyPolicyForAgent(def))
+	subCtx = tools.WithInterruptionPolicy(subCtx, s.interruptionPolicyForAgent(def))
+	subCtx = tools.WithRunID(subCtx, subRunID)
 
 	subHeartbeat := s.makeHeartbeat(subRunID)
 
@@ -2629,6 +2671,219 @@ func (s *Server) handleListUserAgents(w http.ResponseWriter, r *http.Request) {
 		out = append(out, runToAgentResponse(run, live))
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"agents": out})
+}
+
+// ---- Interruption (v0.8.16) ---------------------------------------
+
+// resolveInterruptRequest is the JSON body for the resolve endpoint.
+// kind-discriminated: v0.8.16 supports only kind="question"; future
+// kinds (pause/wait_until/approval) parse different fields.
+type resolveInterruptRequest struct {
+	Kind       string `json:"kind"`
+	Answer     string `json:"answer"`
+	ResolvedBy string `json:"resolved_by,omitempty"`
+}
+
+// handleResolveInterrupt accepts a human's answer to a pending
+// interruption + wakes the blocked tool. The path captures
+// {run_id, interrupt_id}; the body carries the kind-discriminated
+// payload. 422 on invalid answer, 409 on already-terminal, 410 on
+// expired-but-not-yet-swept.
+func (s *Server) handleResolveInterrupt(w http.ResponseWriter, r *http.Request) {
+	if s.store == nil {
+		http.Error(w, "interrupts require persistence (Store not configured)", http.StatusServiceUnavailable)
+		return
+	}
+	runID := r.PathValue("run_id")
+	interruptID := r.PathValue("interrupt_id")
+	if !validIdent(runID) || !validIdent(interruptID) {
+		http.Error(w, "run_id / interrupt_id must match [A-Za-z0-9_-]{1,128}", http.StatusBadRequest)
+		return
+	}
+
+	var req resolveInterruptRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, fmt.Sprintf("invalid JSON body: %v", err), http.StatusBadRequest)
+		return
+	}
+	if req.Kind == "" {
+		req.Kind = store.InterruptKindQuestion
+	}
+	if req.Kind != store.InterruptKindQuestion {
+		// v0.8.16 supports only "question". Future kinds add their
+		// own validators here; the closed-enum contract means the
+		// resolve handler is the gate, not the model or the
+		// caller.
+		http.Error(w, fmt.Sprintf("unsupported kind %q (v0.8.16 supports: question)", req.Kind), http.StatusUnprocessableEntity)
+		return
+	}
+	if req.ResolvedBy == "" {
+		// Authoritative attribution: cookie session (Web UI) writes
+		// "webui"; bearer-only API calls write "api". The Web UI
+		// resolve flow runs through the same handler.
+		if hasSessionCookie(r) {
+			req.ResolvedBy = store.InterruptResolvedByWebUI
+		} else {
+			req.ResolvedBy = store.InterruptResolvedByAPI
+		}
+	}
+
+	// Validate the answer against the stored row's options + expiry.
+	row, err := s.store.InterruptGet(r.Context(), interruptID)
+	var nf *store.ErrNotFound
+	if errors.As(err, &nf) {
+		http.Error(w, "interrupt not found", http.StatusNotFound)
+		return
+	}
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if row.RunID != runID {
+		// Defensive: the URL path's run_id must match the stored
+		// row's run_id. Prevents one user's resolve from being
+		// retargeted at another run's interrupt by URL manipulation.
+		http.Error(w, "interrupt does not belong to that run", http.StatusNotFound)
+		return
+	}
+	if row.Status != store.InterruptStatusPending {
+		if row.Status == store.InterruptStatusTimedOut && !row.ExpiresAt.IsZero() && row.ExpiresAt.Before(time.Now()) {
+			http.Error(w, "interrupt expired", http.StatusGone)
+			return
+		}
+		http.Error(w, fmt.Sprintf("interrupt already %s", row.Status), http.StatusConflict)
+		return
+	}
+	if !row.ExpiresAt.IsZero() && row.ExpiresAt.Before(time.Now()) {
+		http.Error(w, "interrupt expired", http.StatusGone)
+		return
+	}
+
+	// Option-list validation: when the original ask declared
+	// options, the answer must be one of them. Free-text answers
+	// (no options) accept any non-empty string.
+	if len(row.Options) > 0 {
+		var opts []string
+		if err := json.Unmarshal(row.Options, &opts); err == nil && len(opts) > 0 {
+			ok := false
+			for _, o := range opts {
+				if o == req.Answer {
+					ok = true
+					break
+				}
+			}
+			if !ok {
+				http.Error(w, fmt.Sprintf("answer %q is not one of the declared options: %v", req.Answer, opts), http.StatusUnprocessableEntity)
+				return
+			}
+		}
+	} else if req.Answer == "" {
+		http.Error(w, "answer is required for free-text interrupts", http.StatusUnprocessableEntity)
+		return
+	}
+
+	if err := s.store.InterruptResolve(r.Context(), interruptID, req.Answer, req.ResolvedBy, nil); err != nil {
+		if errors.Is(err, store.ErrInterruptAlreadyTerminal) {
+			http.Error(w, "interrupt already resolved, timed out, or cancelled", http.StatusConflict)
+			return
+		}
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// Wake the blocked tool. Bus.Notify is best-effort — if no
+	// waiter, it's a no-op. If we crash before Notify fires, the
+	// next bus.Wait cycle exits via timeout and the storage row
+	// is the source of truth.
+	if s.interruptionBus != nil {
+		s.interruptionBus.Notify("intr:" + interruptID)
+	}
+
+	// Publish the external `_system/interrupts/resolved` signal so
+	// non-run Channel subscribers (dashboards, Slack bots) see the
+	// terminal state. Best-effort.
+	if s.systemPublisher != nil && row.UserID != "" {
+		payload, _ := json.Marshal(map[string]any{
+			"interrupt_id": interruptID,
+			"run_id":       runID,
+			"kind":         row.Kind,
+			"status":       store.InterruptStatusResolved,
+			"answer":       req.Answer,
+			"resolved_by":  req.ResolvedBy,
+		})
+		_, _ = s.systemPublisher.PublishNow(
+			r.Context(),
+			"_system/interrupts/resolved",
+			store.MemoryScopeUser, row.UserID,
+			payload, channels.SystemPublisherUserID, 0, 0,
+		)
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"interrupt_id": interruptID,
+		"status":       store.InterruptStatusResolved,
+		"resolved_at":  time.Now().UTC().Format(time.RFC3339Nano),
+	})
+}
+
+// handleListRunInterrupts serves GET /v1/runs/{run_id}/interrupts.
+// Capped at 200 rows by the store; ordering is created_at DESC.
+func (s *Server) handleListRunInterrupts(w http.ResponseWriter, r *http.Request) {
+	if s.store == nil {
+		http.Error(w, "interrupts require persistence", http.StatusServiceUnavailable)
+		return
+	}
+	runID := r.PathValue("run_id")
+	if !validIdent(runID) {
+		http.Error(w, "run_id must match [A-Za-z0-9_-]{1,128}", http.StatusBadRequest)
+		return
+	}
+	statusFilter := r.URL.Query().Get("status")
+	if statusFilter == "all" {
+		statusFilter = ""
+	}
+	rows, err := s.store.InterruptListByRun(r.Context(), runID, statusFilter)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"interrupts": rows, "total": len(rows)})
+}
+
+// handleListUserInterrupts serves GET /v1/users/{user_id}/interrupts.
+// Drives the Web UI inbox view. Same status filter as the run-scoped
+// variant; defaults to pending (most useful view for "what do I need
+// to answer?").
+func (s *Server) handleListUserInterrupts(w http.ResponseWriter, r *http.Request) {
+	if s.store == nil {
+		http.Error(w, "interrupts require persistence", http.StatusServiceUnavailable)
+		return
+	}
+	userID := r.PathValue("user_id")
+	if !validIdent(userID) {
+		http.Error(w, "user_id must match [A-Za-z0-9_-]{1,128}", http.StatusBadRequest)
+		return
+	}
+	statusFilter := r.URL.Query().Get("status")
+	if statusFilter == "" {
+		statusFilter = store.InterruptStatusPending
+	}
+	if statusFilter == "all" {
+		statusFilter = ""
+	}
+	rows, err := s.store.InterruptListByUser(r.Context(), userID, statusFilter)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"interrupts": rows, "total": len(rows)})
+}
+
+// hasSessionCookie returns true when the request carries the
+// Web UI session cookie — drives the resolved_by attribution.
+func hasSessionCookie(r *http.Request) bool {
+	c, err := r.Cookie("loomcycle_session")
+	return err == nil && c != nil && c.Value != ""
 }
 
 // writeJSON is a small helper for the new endpoints that avoids

@@ -316,6 +316,69 @@ func ChannelPolicy(ctx context.Context) ChannelPolicyValue {
 	return v
 }
 
+// InterruptionPolicyValue is the per-agent Interruption access
+// policy (v0.8.16). Default-deny: an absent block means Enabled is
+// false and every Interruption op returns is_error with a clear
+// "not enabled" message.
+//
+//   - Enabled gates the tool entirely. False → tool returns is_error
+//     on every op.
+//   - Kinds is the allowlist of interrupt kinds this agent may
+//     create. v0.8.16 supports only "question"; future "pause" /
+//     "wait_until" / "approval" will land here as additive opt-ins.
+//     Empty means default (["question"]) when Enabled=true.
+//   - MaxPending caps the number of pending interrupts this run may
+//     hold simultaneously. 0 = use the operator's global default
+//     (LOOMCYCLE_INTERRUPTION_MAX_PENDING_PER_RUN).
+type InterruptionPolicyValue struct {
+	Enabled    bool
+	Kinds      []string
+	MaxPending int
+}
+
+type ctxKeyInterruptionPolicy struct{}
+
+// WithInterruptionPolicy attaches the agent's resolved Interruption
+// policy to ctx. The HTTP server's RunOnce / handleRuns wraps the
+// loop ctx with this so any Interruption.Execute downstream can
+// recover the policy in one call.
+func WithInterruptionPolicy(ctx context.Context, p InterruptionPolicyValue) context.Context {
+	return context.WithValue(ctx, ctxKeyInterruptionPolicy{}, p)
+}
+
+// InterruptionPolicy returns the agent's Interruption policy from
+// ctx. Zero value (Enabled=false) means "not enabled" — the tool
+// surfaces this as a clear refusal so operators see one explicit
+// failure instead of a stack trace.
+func InterruptionPolicy(ctx context.Context) InterruptionPolicyValue {
+	v, _ := ctx.Value(ctxKeyInterruptionPolicy{}).(InterruptionPolicyValue)
+	return v
+}
+
+// ctxKeyRunID is the context key under which the runtime stores
+// the current run's store row ID. The Interruption tool uses this
+// at create time to associate the interrupt row with the run for
+// listing and ACL purposes — the model never supplies it, so it
+// must travel via ctx alongside RunIdentity (which carries the
+// agent-facing IDs; run.ID is operator-facing and stays out of the
+// model's view).
+type ctxKeyRunID struct{}
+
+// WithRunID attaches the run's store row ID to ctx. Same call site
+// as WithRunIdentity (HTTP handler at run start).
+func WithRunID(ctx context.Context, runID string) context.Context {
+	if runID == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, ctxKeyRunID{}, runID)
+}
+
+// RunID returns the run row ID from ctx, or "" when unset.
+func RunID(ctx context.Context) string {
+	v, _ := ctx.Value(ctxKeyRunID{}).(string)
+	return v
+}
+
 // ctxKeyEventEmitter is the context key for the v0.8.4 typed-audit-
 // event emitter. The loop's OnEvent callback is attached at run
 // start; tools that want to surface structured wire events (e.g.
