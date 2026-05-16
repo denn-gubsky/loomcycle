@@ -244,6 +244,34 @@ func (s *Store) migrate(ctx context.Context) error {
 			expires_at  INTEGER NOT NULL DEFAULT 0,
 			description TEXT
 		)`,
+		// v0.8.16 Interruption tool. Agents call Interruption.ask /
+		// .notify / .cancel; pending rows block the run until resolved.
+		// kind is the closed-enum future-proofing for v0.9.x pause /
+		// wait_until / approval — v0.8.16 writes only kind='question'.
+		// user_id / agent_id / agent_name denormalised from the run
+		// row so listing queries never need a JOIN. Timestamps as
+		// INTEGER (unix-nano) per existing sqlite pattern. No FK on
+		// run_id (same reasoning as evaluations — immutable audit log
+		// must survive any future run pruning).
+		`CREATE TABLE IF NOT EXISTS interrupts (
+			interrupt_id    TEXT    PRIMARY KEY,
+			run_id          TEXT    NOT NULL,
+			kind            TEXT    NOT NULL DEFAULT 'question',
+			status          TEXT    NOT NULL DEFAULT 'pending',
+			question        TEXT,
+			options         TEXT,
+			context_data    TEXT,
+			priority        TEXT    NOT NULL DEFAULT 'normal',
+			answer          TEXT,
+			answer_meta     TEXT,
+			created_at      INTEGER NOT NULL,
+			expires_at      INTEGER,
+			resolved_at     INTEGER,
+			resolved_by     TEXT,
+			user_id         TEXT,
+			agent_id        TEXT,
+			agent_name      TEXT
+		)`,
 	}
 	for _, q := range stmts {
 		if _, err := s.db.ExecContext(ctx, q); err != nil {
@@ -320,6 +348,17 @@ func (s *Store) migrate(ctx context.Context) error {
 		// (DELETE WHERE expires_at < now() AND expires_at > 0) and the
 		// per-Get expiry filter. Partial: only TTL-bearing rows.
 		`CREATE INDEX IF NOT EXISTS dynamic_agents_by_expires_at ON dynamic_agents(expires_at) WHERE expires_at > 0`,
+		// v0.8.16 Interruption tool indexes.
+		//   * by_run_status drives "is this run blocked?" + listing.
+		//   * by_user_status drives the Web UI inbox view (the
+		//     denormalised user_id column makes this a single-table
+		//     scan, no JOIN against runs).
+		//   * by_expires_pending drives the timeout sweeper.
+		// Partial on by_user / by_expires so the index stays small
+		// when the bulk of rows are resolved/terminal.
+		`CREATE INDEX IF NOT EXISTS interrupts_by_run_status  ON interrupts(run_id, status)`,
+		`CREATE INDEX IF NOT EXISTS interrupts_by_user_status ON interrupts(user_id, status) WHERE user_id IS NOT NULL`,
+		`CREATE INDEX IF NOT EXISTS interrupts_by_expires     ON interrupts(expires_at) WHERE expires_at IS NOT NULL AND status = 'pending'`,
 	}
 	for _, q := range addIndexes {
 		// Note the asymmetry vs addColumns above: indexes use
@@ -2246,6 +2285,332 @@ func (s *Store) DynamicAgentSweep(ctx context.Context) (int, error) {
 	`, time.Now().UnixNano())
 	if err != nil {
 		return 0, fmt.Errorf("dynamic_agents: sweep: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	return int(n), nil
+}
+
+// ---- Interruption (v0.8.16) ----------------------------------------
+
+// nanosOrNull returns NULL when t is zero, unix-nanos otherwise. The
+// zero-time → NULL contract is documented on InterruptRow.ExpiresAt.
+func nanosOrNull(t time.Time) any {
+	if t.IsZero() {
+		return nil
+	}
+	return t.UnixNano()
+}
+
+// nullableNanos scans an INTEGER-or-NULL column into a time. NULL
+// becomes time.Time{} (zero value).
+func nullableNanos(ns sql.NullInt64) time.Time {
+	if !ns.Valid || ns.Int64 == 0 {
+		return time.Time{}
+	}
+	return time.Unix(0, ns.Int64)
+}
+
+// nullableString scans a TEXT-or-NULL column into a string. NULL
+// becomes "" — matches how the upper layer treats absent values.
+func nullableString(ns sql.NullString) string {
+	if !ns.Valid {
+		return ""
+	}
+	return ns.String
+}
+
+// nullableRawJSON scans a TEXT-or-NULL column holding JSON. NULL
+// returns nil, not the JSON null literal; callers distinguish via
+// `len(...) == 0`.
+func nullableRawJSON(ns sql.NullString) json.RawMessage {
+	if !ns.Valid || ns.String == "" {
+		return nil
+	}
+	return json.RawMessage(ns.String)
+}
+
+func (s *Store) InterruptCreate(ctx context.Context, r store.InterruptRow) (string, error) {
+	if r.InterruptID == "" {
+		return "", fmt.Errorf("interrupts: interrupt_id required")
+	}
+	if r.RunID == "" {
+		return "", fmt.Errorf("interrupts: run_id required")
+	}
+	if r.Kind == "" {
+		r.Kind = store.InterruptKindQuestion
+	}
+	if r.Status == "" {
+		r.Status = store.InterruptStatusPending
+	}
+	if r.Priority == "" {
+		r.Priority = store.InterruptPriorityNormal
+	}
+	createdAt := r.CreatedAt
+	if createdAt.IsZero() {
+		createdAt = time.Now()
+	}
+	// Question/options/context_data are NULLed when empty so the
+	// column distinguishes "not set" from "empty string". Same
+	// pattern as channel_messages payload.
+	var question, contextData, answer, resolvedBy any
+	if r.Question != "" {
+		question = r.Question
+	}
+	if r.ContextData != "" {
+		contextData = r.ContextData
+	}
+	if r.Answer != "" {
+		answer = r.Answer
+	}
+	if r.ResolvedBy != "" {
+		resolvedBy = r.ResolvedBy
+	}
+	var options, answerMeta any
+	if len(r.Options) > 0 {
+		options = string(r.Options)
+	}
+	if len(r.AnswerMeta) > 0 {
+		answerMeta = string(r.AnswerMeta)
+	}
+	var userID, agentID, agentName any
+	if r.UserID != "" {
+		userID = r.UserID
+	}
+	if r.AgentID != "" {
+		agentID = r.AgentID
+	}
+	if r.AgentName != "" {
+		agentName = r.AgentName
+	}
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO interrupts (
+			interrupt_id, run_id, kind, status,
+			question, options, context_data, priority,
+			answer, answer_meta,
+			created_at, expires_at, resolved_at, resolved_by,
+			user_id, agent_id, agent_name
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?)
+	`,
+		r.InterruptID, r.RunID, r.Kind, r.Status,
+		question, options, contextData, r.Priority,
+		answer, answerMeta,
+		createdAt.UnixNano(), nanosOrNull(r.ExpiresAt), resolvedBy,
+		userID, agentID, agentName,
+	)
+	if err != nil {
+		return "", fmt.Errorf("interrupts: create: %w", err)
+	}
+	return r.InterruptID, nil
+}
+
+func (s *Store) InterruptGet(ctx context.Context, interruptID string) (store.InterruptRow, error) {
+	row := s.db.QueryRowContext(ctx, `
+		SELECT interrupt_id, run_id, kind, status,
+		       question, options, context_data, priority,
+		       answer, answer_meta,
+		       created_at, expires_at, resolved_at, resolved_by,
+		       user_id, agent_id, agent_name
+		FROM interrupts
+		WHERE interrupt_id = ?
+	`, interruptID)
+	r, err := scanInterruptRow(row)
+	if err == sql.ErrNoRows {
+		return store.InterruptRow{}, &store.ErrNotFound{Kind: "interrupt", ID: interruptID}
+	}
+	if err != nil {
+		return store.InterruptRow{}, fmt.Errorf("interrupts: get: %w", err)
+	}
+	return r, nil
+}
+
+// rowScanner abstracts *sql.Row / *sql.Rows so scanInterruptRow works
+// for both Get (single row) and List (loop). Same trick used by other
+// adapter helpers.
+type rowScanner interface {
+	Scan(dest ...any) error
+}
+
+func scanInterruptRow(row rowScanner) (store.InterruptRow, error) {
+	var r store.InterruptRow
+	var question, contextData, answer, resolvedBy, userID, agentID, agentName sql.NullString
+	var options, answerMeta sql.NullString
+	var createdAtNS int64
+	var expiresAtNS, resolvedAtNS sql.NullInt64
+	if err := row.Scan(
+		&r.InterruptID, &r.RunID, &r.Kind, &r.Status,
+		&question, &options, &contextData, &r.Priority,
+		&answer, &answerMeta,
+		&createdAtNS, &expiresAtNS, &resolvedAtNS, &resolvedBy,
+		&userID, &agentID, &agentName,
+	); err != nil {
+		return store.InterruptRow{}, err
+	}
+	r.Question = nullableString(question)
+	r.ContextData = nullableString(contextData)
+	r.Answer = nullableString(answer)
+	r.ResolvedBy = nullableString(resolvedBy)
+	r.UserID = nullableString(userID)
+	r.AgentID = nullableString(agentID)
+	r.AgentName = nullableString(agentName)
+	r.Options = nullableRawJSON(options)
+	r.AnswerMeta = nullableRawJSON(answerMeta)
+	r.CreatedAt = time.Unix(0, createdAtNS)
+	r.ExpiresAt = nullableNanos(expiresAtNS)
+	r.ResolvedAt = nullableNanos(resolvedAtNS)
+	return r, nil
+}
+
+func (s *Store) InterruptResolve(ctx context.Context, interruptID, answer, resolvedBy string, answerMeta json.RawMessage) error {
+	var meta any
+	if len(answerMeta) > 0 {
+		meta = string(answerMeta)
+	}
+	// Gated by status='pending' so the resolve loses cleanly when
+	// another resolver / sweeper has already finalised the row.
+	// RowsAffected==0 distinguishes "row missing" (still 0 affected)
+	// from "row already terminal" (also 0 affected) — we resolve the
+	// ambiguity with a follow-up SELECT.
+	res, err := s.db.ExecContext(ctx, `
+		UPDATE interrupts
+		SET status      = ?,
+		    answer      = ?,
+		    answer_meta = ?,
+		    resolved_at = ?,
+		    resolved_by = ?
+		WHERE interrupt_id = ? AND status = ?
+	`,
+		store.InterruptStatusResolved,
+		answer, meta,
+		time.Now().UnixNano(), resolvedBy,
+		interruptID, store.InterruptStatusPending,
+	)
+	if err != nil {
+		return fmt.Errorf("interrupts: resolve: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		// Disambiguate: not-found vs already-terminal.
+		var existing string
+		err := s.db.QueryRowContext(ctx, `SELECT status FROM interrupts WHERE interrupt_id = ?`, interruptID).Scan(&existing)
+		if err == sql.ErrNoRows {
+			return &store.ErrNotFound{Kind: "interrupt", ID: interruptID}
+		}
+		if err != nil {
+			return fmt.Errorf("interrupts: resolve probe: %w", err)
+		}
+		return store.ErrInterruptAlreadyTerminal
+	}
+	return nil
+}
+
+func (s *Store) InterruptFinish(ctx context.Context, interruptID, status, resolvedBy string) error {
+	switch status {
+	case store.InterruptStatusTimedOut, store.InterruptStatusCancelled:
+		// ok
+	default:
+		return fmt.Errorf("interrupts: finish: invalid terminal status %q", status)
+	}
+	res, err := s.db.ExecContext(ctx, `
+		UPDATE interrupts
+		SET status      = ?,
+		    resolved_at = ?,
+		    resolved_by = ?
+		WHERE interrupt_id = ? AND status = ?
+	`,
+		status,
+		time.Now().UnixNano(), resolvedBy,
+		interruptID, store.InterruptStatusPending,
+	)
+	if err != nil {
+		return fmt.Errorf("interrupts: finish: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		var existing string
+		err := s.db.QueryRowContext(ctx, `SELECT status FROM interrupts WHERE interrupt_id = ?`, interruptID).Scan(&existing)
+		if err == sql.ErrNoRows {
+			return &store.ErrNotFound{Kind: "interrupt", ID: interruptID}
+		}
+		if err != nil {
+			return fmt.Errorf("interrupts: finish probe: %w", err)
+		}
+		return store.ErrInterruptAlreadyTerminal
+	}
+	return nil
+}
+
+func (s *Store) InterruptListByRun(ctx context.Context, runID, statusFilter string) ([]store.InterruptRow, error) {
+	return s.interruptList(ctx, "run_id", runID, statusFilter)
+}
+
+func (s *Store) InterruptListByUser(ctx context.Context, userID, statusFilter string) ([]store.InterruptRow, error) {
+	return s.interruptList(ctx, "user_id", userID, statusFilter)
+}
+
+// interruptList is the shared SELECT body for ListByRun / ListByUser.
+// `col` is the indexed filter column; we never embed user input here,
+// so a static switch keeps the query parameter-binding safe.
+func (s *Store) interruptList(ctx context.Context, col, val, statusFilter string) ([]store.InterruptRow, error) {
+	if col != "run_id" && col != "user_id" {
+		return nil, fmt.Errorf("interrupts: list: unknown filter column %q", col)
+	}
+	q := `
+		SELECT interrupt_id, run_id, kind, status,
+		       question, options, context_data, priority,
+		       answer, answer_meta,
+		       created_at, expires_at, resolved_at, resolved_by,
+		       user_id, agent_id, agent_name
+		FROM interrupts
+		WHERE ` + col + ` = ?`
+	args := []any{val}
+	if statusFilter != "" {
+		q += ` AND status = ?`
+		args = append(args, statusFilter)
+	}
+	q += ` ORDER BY created_at DESC LIMIT 200`
+
+	rows, err := s.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("interrupts: list: %w", err)
+	}
+	defer rows.Close()
+
+	out := []store.InterruptRow{}
+	for rows.Next() {
+		r, err := scanInterruptRow(rows)
+		if err != nil {
+			return nil, fmt.Errorf("interrupts: list scan: %w", err)
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) InterruptCountPendingByRun(ctx context.Context, runID string) (int, error) {
+	var n int
+	err := s.db.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM interrupts WHERE run_id = ? AND status = ?
+	`, runID, store.InterruptStatusPending).Scan(&n)
+	if err != nil {
+		return 0, fmt.Errorf("interrupts: count pending: %w", err)
+	}
+	return n, nil
+}
+
+func (s *Store) InterruptSweepExpired(ctx context.Context) (int, error) {
+	res, err := s.db.ExecContext(ctx, `
+		UPDATE interrupts
+		SET status      = ?,
+		    resolved_at = ?,
+		    resolved_by = ?
+		WHERE status = ? AND expires_at IS NOT NULL AND expires_at < ?
+	`,
+		store.InterruptStatusTimedOut,
+		time.Now().UnixNano(), store.InterruptResolvedByTimeout,
+		store.InterruptStatusPending, time.Now().UnixNano(),
+	)
+	if err != nil {
+		return 0, fmt.Errorf("interrupts: sweep: %w", err)
 	}
 	n, _ := res.RowsAffected()
 	return int(n), nil

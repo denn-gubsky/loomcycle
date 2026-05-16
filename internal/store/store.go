@@ -625,6 +625,68 @@ type Store interface {
 	// sweepers (single atomic DELETE).
 	DynamicAgentSweep(ctx context.Context) (int, error)
 
+	// ---- Interruption (v0.8.16) -------------------------------------
+	//
+	// Durable row that survives process restart + drives the listing
+	// APIs. The tool-layer waiter (channels.Bus key) carries the
+	// in-process wake; the row carries the state.
+	//
+	// kind is a closed enum owned by loomcycle. v0.8.16 writes only
+	// "question". Future kinds (pause / wait_until / approval) are
+	// additive enum values on the same column; the schema does not
+	// need to change. See doc-internal/rfcs/interruption-tool.md §8.
+
+	// InterruptCreate inserts a fresh interrupt row in status=pending.
+	// The caller pre-generates row.InterruptID via MintInterruptID.
+	// CreatedAt is set by the store. Returns the persisted ID. On
+	// row.ExpiresAt zero-value, no expiry is recorded (NULL column).
+	InterruptCreate(ctx context.Context, row InterruptRow) (string, error)
+
+	// InterruptGet returns one row by interrupt_id. *ErrNotFound on
+	// miss (Kind: "interrupt").
+	InterruptGet(ctx context.Context, interruptID string) (InterruptRow, error)
+
+	// InterruptResolve transitions a pending interrupt to status=
+	// resolved with the supplied answer + answer_meta. Sets
+	// resolved_at = now() server-side. Returns ErrInterruptAlreadyTerminal
+	// when the row was already in a terminal state (resolved /
+	// timed_out / cancelled) — the UPDATE is gated by status='pending'.
+	// answerMeta may be nil; the column then writes SQL NULL.
+	InterruptResolve(ctx context.Context, interruptID, answer, resolvedBy string, answerMeta json.RawMessage) error
+
+	// InterruptFinish transitions a pending interrupt to a terminal
+	// status WITHOUT an answer (used for timeout sweeper + agent-side
+	// cancel). status must be one of: "timed_out" / "cancelled".
+	// resolvedBy is recorded for audit. Returns
+	// ErrInterruptAlreadyTerminal on a non-pending row.
+	InterruptFinish(ctx context.Context, interruptID, status, resolvedBy string) error
+
+	// InterruptListByRun returns interrupts for the given run_id,
+	// newest first. statusFilter is one of: ""="all",
+	// "pending" / "resolved" / "timed_out" / "cancelled".
+	// Capped at 200 rows.
+	InterruptListByRun(ctx context.Context, runID, statusFilter string) ([]InterruptRow, error)
+
+	// InterruptListByUser returns interrupts owned by user_id,
+	// newest first. statusFilter same shape as ListByRun. The
+	// denormalised user_id column drives this query without a JOIN
+	// against runs. Capped at 200 rows.
+	InterruptListByUser(ctx context.Context, userID, statusFilter string) ([]InterruptRow, error)
+
+	// InterruptCountPendingByRun returns the count of status=pending
+	// interrupts for the given run_id. Drives max_pending enforcement
+	// at the tool layer (the count check is a single round trip; the
+	// subsequent InterruptCreate is a separate transaction — operators
+	// SHOULD treat max_pending as advisory, not a hard concurrency
+	// guard. See rfcs/interruption-tool.md §6).
+	InterruptCountPendingByRun(ctx context.Context, runID string) (int, error)
+
+	// InterruptSweepExpired marks every status=pending interrupt
+	// whose expires_at < now as timed_out. Returns the count
+	// transitioned. Safe to run from a periodic goroutine;
+	// idempotent under concurrent sweepers (single atomic UPDATE).
+	InterruptSweepExpired(ctx context.Context) (int, error)
+
 	// Close releases backend resources. Idempotent.
 	Close() error
 }
@@ -947,6 +1009,85 @@ var ErrAgentDefParentNotFound = &SubstrateError{Code: "parent_not_found", Msg: "
 // someone tries to UPDATE an agent_defs row's definition column.
 // Append-only invariant. The adapter's contract test pins this.
 var ErrAgentDefImmutable = &SubstrateError{Code: "immutable", Msg: "agent_def: rows are append-only; create a new version"}
+
+// ---- Interruption (v0.8.16) -----------------------------------------
+
+// Interrupt kind / status / resolved-by enum values. v0.8.16 only
+// uses kind=question; future values land here as additive enum
+// extensions.
+const (
+	InterruptKindQuestion = "question"
+
+	InterruptStatusPending   = "pending"
+	InterruptStatusResolved  = "resolved"
+	InterruptStatusTimedOut  = "timed_out"
+	InterruptStatusCancelled = "cancelled"
+
+	InterruptPriorityLow    = "low"
+	InterruptPriorityNormal = "normal"
+	InterruptPriorityHigh   = "high"
+
+	// ResolvedBy attribution values. The set is open at the type
+	// level (TEXT column) but semantically closed — these are the
+	// values loomcycle itself writes. External admin tooling may
+	// invent its own (e.g. "claude_code") and that's allowed.
+	InterruptResolvedByWebUI       = "webui"
+	InterruptResolvedByMCP         = "mcp"
+	InterruptResolvedByCLI         = "cli"
+	InterruptResolvedByAPI         = "api"
+	InterruptResolvedByTimeout     = "timeout"
+	InterruptResolvedByAgentCancel = "agent_cancel"
+)
+
+// MintInterruptID returns a fresh interrupt_id that's monotonic-by-
+// create-time AND globally unique. Format:
+// "intr_<16-hex unixNanos><8-hex rand>" — 24 hex chars after the
+// prefix. Mirrors MintChannelMessageID / MintSampleID; same lex-
+// sortable invariant through year 2262.
+func MintInterruptID(t time.Time) string {
+	var buf [4]byte
+	_, _ = rand.Read(buf[:])
+	return fmt.Sprintf("intr_%016x%s", uint64(t.UnixNano()), hex.EncodeToString(buf[:]))
+}
+
+// InterruptRow is one row in the `interrupts` table. Caller supplies
+// InterruptID + RunID + Kind + (kind-specific fields); the store
+// fills CreatedAt and (on resolve / finish) ResolvedAt + ResolvedBy.
+//
+// user_id / agent_id / agent_name are denormalised at create time
+// from the run identity so listing queries don't need a JOIN. The
+// caller MUST stamp them — the store never JOINs.
+//
+// Options and AnswerMeta are JSON-encoded blobs. For kind=question,
+// Options is a JSON array of strings (NULL = free-text). AnswerMeta
+// is kind-discriminated extra resolve data (NULL for v0.8.16
+// question — the scalar Answer field carries everything).
+type InterruptRow struct {
+	InterruptID string          `json:"interrupt_id"`
+	RunID       string          `json:"run_id"`
+	Kind        string          `json:"kind"`
+	Status      string          `json:"status"`
+	Question    string          `json:"question,omitempty"`
+	Options     json.RawMessage `json:"options,omitempty"`
+	ContextData string          `json:"context_data,omitempty"`
+	Priority    string          `json:"priority"`
+	Answer      string          `json:"answer,omitempty"`
+	AnswerMeta  json.RawMessage `json:"answer_meta,omitempty"`
+	CreatedAt   time.Time       `json:"created_at"`
+	ExpiresAt   time.Time       `json:"expires_at,omitempty"` // zero = no expiry
+	ResolvedAt  time.Time       `json:"resolved_at,omitempty"`
+	ResolvedBy  string          `json:"resolved_by,omitempty"`
+	UserID      string          `json:"user_id,omitempty"`
+	AgentID     string          `json:"agent_id,omitempty"`
+	AgentName   string          `json:"agent_name,omitempty"`
+}
+
+// ErrInterruptAlreadyTerminal is returned by InterruptResolve /
+// InterruptFinish when the row is already in a terminal status
+// (resolved / timed_out / cancelled). Distinct from ErrNotFound:
+// the row exists, but the resolve / finish race lost. The tool
+// layer maps this to HTTP 409 Conflict.
+var ErrInterruptAlreadyTerminal = &SubstrateError{Code: "already_terminal", Msg: "interrupt: already resolved, timed out, or cancelled"}
 
 // SubstrateError envelopes substrate-specific errors so the tool
 // layer can pattern-match on Code. Mirror of MemoryError /
