@@ -57,6 +57,9 @@ var handlersByName = map[string]toolHandler{
 	"export_snapshot":  handleExportSnapshot,
 	"restore_snapshot": handleRestoreSnapshot,
 	"delete_snapshot":  handleDeleteSnapshot,
+
+	// Interruption (v0.8.16) — 21st meta-tool
+	"interruption_resolve": handleInterruptionResolve,
 }
 
 func toolHandlerByName(name string) (toolHandler, bool) {
@@ -437,4 +440,28 @@ func toolErrWith(msg string, payload any) *loommcp.CallToolResult {
 		},
 		IsError: true,
 	}
+}
+
+// --- Interruption (v0.8.16) ---
+
+// handleInterruptionResolve is the 21st LoomCycle MCP meta-tool. Lets
+// an external orchestrator (Claude Code etc.) resolve a pending
+// interrupt without speaking HTTP to loomcycle directly. Wraps
+// connector.InterruptionResolve.
+func handleInterruptionResolve(ctx context.Context, env *handlerEnv, args json.RawMessage) (*loommcp.CallToolResult, error) {
+	if env.connector == nil {
+		return nil, fmt.Errorf("interruption_resolve: no connector wired")
+	}
+	var req connector.InterruptionResolveRequest
+	if err := json.Unmarshal(args, &req); err != nil {
+		return toolErr("invalid interruption_resolve arguments: " + err.Error()), nil
+	}
+	if req.RunID == "" || req.InterruptID == "" {
+		return toolErr("interruption_resolve: run_id and interrupt_id are required"), nil
+	}
+	res, err := env.connector.InterruptionResolve(ctx, req)
+	if err != nil {
+		return toolErr("interruption_resolve: " + err.Error()), nil
+	}
+	return toolResultJSON(res), nil
 }

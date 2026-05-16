@@ -667,6 +667,9 @@ func (m *mockConnector) RestoreSnapshot(context.Context, connector.RestoreSnapsh
 	return connector.RestoreSnapshotResult{}, nil
 }
 func (m *mockConnector) DeleteSnapshot(context.Context, string) error { return nil }
+func (m *mockConnector) InterruptionResolve(context.Context, connector.InterruptionResolveRequest) (connector.InterruptionResolveResult, error) {
+	return connector.InterruptionResolveResult{}, nil
+}
 
 // TestGrpcServer_CancelAgent_DispatchesThroughConnector is the v0.8.15
 // regression guard: when the gRPC Server is wired with a Connector,

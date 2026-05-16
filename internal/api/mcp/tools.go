@@ -220,6 +220,22 @@ func toolDescriptors() []loommcp.ToolDescriptor {
 				"properties": {"snapshot_id": {"type": "string"}}
 			}`),
 		},
+		// --- Interruption (v0.8.16) — the 21st meta-tool ---
+		{
+			Name: "interruption_resolve",
+			Description: "Resolve a pending Interruption.ask from outside the agent loop. Lets an external orchestrator (Claude Code, custom dashboard) act as the human answerer when the operator yaml configures `interruption.backend: mcp_server:...` or when the orchestrator wants to take over the webui default. Writes the answer, wakes the blocked agent loop, publishes _system/interrupts/resolved for downstream consumers. Returns 409-equivalent error on already-resolved / timed-out / cancelled rows.",
+			InputSchema: rawJSON(`{
+				"type": "object",
+				"required": ["run_id", "interrupt_id", "answer"],
+				"properties": {
+					"run_id":       {"type": "string", "description": "The run that owns the pending interrupt."},
+					"interrupt_id": {"type": "string", "description": "The intr_... id surfaced via _system/interrupts/pending or EventInterruptionPending."},
+					"kind":         {"type": "string", "enum": ["question"], "description": "Discriminator. v0.8.16 supports only 'question'. Optional; defaults to 'question'."},
+					"answer":       {"type": "string", "description": "The human's answer. When the original ask declared options, MUST be one of them (server-side validated)."},
+					"resolved_by":  {"type": "string", "description": "Audit attribution for who resolved it (free-form). Defaults to 'mcp' when surfaced via this tool."}
+				}
+			}`),
+		},
 	}
 }
 

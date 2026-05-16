@@ -123,4 +123,41 @@ type Connector interface {
 	ExportSnapshot(ctx context.Context, snapshotID string) (ExportSnapshotResult, error)
 	RestoreSnapshot(ctx context.Context, req RestoreSnapshotRequest) (RestoreSnapshotResult, error)
 	DeleteSnapshot(ctx context.Context, snapshotID string) error
+
+	// --- Interruption (v0.8.16) ---
+
+	// InterruptionResolve writes a resolution to a pending interrupt
+	// row + wakes any blocked Interruption.ask waiter via the bus.
+	// The LoomCycle MCP server's `interruption_resolve` meta-tool
+	// surfaces this on its 21st tool slot so external orchestrators
+	// (Claude Code, custom dashboards) can act as the answerer.
+	//
+	// The req payload is `kind`-discriminated; v0.8.16 supports only
+	// kind=question with {answer, resolved_by?}. Future kinds slot
+	// in as additional discriminator branches in the server-side
+	// validator (closed enum: see doc-internal/rfcs/interruption-tool.md
+	// §8).
+	//
+	// Returns ErrInterruptAlreadyTerminal-equivalent on conflict
+	// (409 from the HTTP layer maps to this); ErrNotFound on a
+	// missing interrupt_id; nil on success.
+	InterruptionResolve(ctx context.Context, req InterruptionResolveRequest) (InterruptionResolveResult, error)
+}
+
+// InterruptionResolveRequest is the input to Connector.InterruptionResolve.
+type InterruptionResolveRequest struct {
+	RunID         string `json:"run_id"`
+	InterruptID   string `json:"interrupt_id"`
+	Kind          string `json:"kind"`           // "question" in v0.8.16; future: "pause" / "wait_until" / "approval"
+	Answer        string `json:"answer"`         // for kind=question
+	ResolvedBy    string `json:"resolved_by"`    // operator attribution; default "mcp" when surfaced via LoomCycle MCP
+}
+
+// InterruptionResolveResult is what the resolve op returns. The
+// terminal status is always "resolved" on success; failure modes
+// surface as Go errors (typed where useful).
+type InterruptionResolveResult struct {
+	InterruptID string `json:"interrupt_id"`
+	Status      string `json:"status"`
+	ResolvedAt  string `json:"resolved_at"` // RFC3339Nano
 }

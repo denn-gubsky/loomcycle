@@ -86,6 +86,24 @@ type Interruption struct {
 	// own lower cap) but cannot exceed this. 0 = unbounded.
 	// Sourced from LOOMCYCLE_INTERRUPTION_MAX_PENDING_PER_RUN.
 	MaxPendingPerRun int
+
+	// Backend selects the delivery surface. Valid values:
+	//   - ""      / "webui" — default; agent loop blocks on bus.Wait;
+	//                          humans answer via /ui/interrupts → POST
+	//                          .../resolve.
+	//   - "mcp_server:<name>" — instead of bus.Wait, the tool calls
+	//                          the consumer's `mcp__<name>__ask` tool
+	//                          via the per-run Dispatcher (recovered
+	//                          from ctx). The consumer is responsible
+	//                          for blocking until the human answers;
+	//                          its tool result becomes the answer.
+	//   - "cli"               — local-dev only; treated as webui from
+	//                          the tool's POV (a separate process
+	//                          consumes `_system/interrupts/pending`
+	//                          and posts the resolve endpoint).
+	//
+	// Sourced from cfg.Interruption.Backend at boot.
+	Backend string
 }
 
 const interruptionDescription = `Human-in-the-loop primitive (v0.8.16). ` +
@@ -282,6 +300,17 @@ func (it *Interruption) execAsk(ctx context.Context, policy tools.InterruptionPo
 		)
 	}
 
+	// Backend selection:
+	//   - mcp_server:<name> → call the consumer's MCP tool directly
+	//     via the per-run Dispatcher. The consumer's tool blocks
+	//     until the human answers; we just write the row, dispatch,
+	//     persist the answer, return.
+	//   - webui / cli / "" → block on bus.Wait. The resolve handler
+	//     (or the cli answerer) writes the row + notifies.
+	if mcpName, ok := mcpServerFromBackend(it.Backend); ok {
+		return it.execAskViaMCP(ctx, id, mcpName, in, optsJSON, expiresAt, timeout)
+	}
+
 	// Block on the bus. Heartbeat ticker fires in a sibling goroutine
 	// so the run stays alive across long waits.
 	if err := it.blockWithHeartbeat(ctx, id, timeout); err != nil {
@@ -299,6 +328,97 @@ func (it *Interruption) execAsk(ctx context.Context, policy tools.InterruptionPo
 		return errResult(fmt.Sprintf("ask: post-resolve read: %s", err)), nil
 	}
 	return it.toolResultForStatus(final), nil
+}
+
+// execAskViaMCP is the consumer-MCP delivery path. Calls the named
+// MCP server's `ask` tool via the per-run Dispatcher; the consumer
+// blocks on its own (HTTP round-trip from loomcycle → consumer →
+// human → consumer → loomcycle). Result becomes the answer.
+//
+// On success we finalise the row as resolved + return the answer to
+// the agent. On dispatch error (consumer down, etc.) we mark the
+// row cancelled (audit attribution = "agent_cancel" since the agent
+// triggered the dispatch but couldn't complete it).
+func (it *Interruption) execAskViaMCP(ctx context.Context, interruptID, mcpName string, in interruptionInput, _ json.RawMessage, _ time.Time, timeout time.Duration) (tools.Result, error) {
+	disp := tools.DispatcherFromCtx(ctx)
+	if disp == nil {
+		// No dispatcher → fall back to webui path. Operator misconfig
+		// (yaml says mcp_server but server registration absent),
+		// surfaces clearly as a tool error rather than silently
+		// blocking.
+		_ = it.Store.InterruptFinish(ctx, interruptID, store.InterruptStatusCancelled, store.InterruptResolvedByAgentCancel)
+		return errResult(fmt.Sprintf(
+			"ask: backend mcp_server:%s configured but no dispatcher attached to ctx (server wiring bug)",
+			mcpName,
+		)), nil
+	}
+	toolName := "mcp__" + mcpName + "__ask"
+
+	// Build the args payload — the consumer's tool decides its own
+	// schema, but we forward the agent-supplied question+options+
+	// context unchanged so the consumer can render them faithfully.
+	argMap := map[string]any{
+		"question":     in.Question,
+		"interrupt_id": interruptID,
+	}
+	if len(in.Options) > 0 {
+		argMap["options"] = in.Options
+	}
+	if in.Context != "" {
+		argMap["context"] = in.Context
+	}
+	if timeout > 0 {
+		argMap["timeout_ms"] = int(timeout / time.Millisecond)
+	}
+	args, _ := json.Marshal(argMap)
+
+	// Apply timeout to the dispatch ctx so a hung consumer doesn't
+	// pin the run forever.
+	callCtx := ctx
+	if timeout > 0 {
+		var cancel context.CancelFunc
+		callCtx, cancel = context.WithTimeout(ctx, timeout)
+		defer cancel()
+	}
+
+	res := disp.Execute(callCtx, toolName, args)
+	if res.IsError {
+		// Consumer surfaced an error tool result — treat as a
+		// failed delivery, mark cancelled.
+		_ = it.Store.InterruptFinish(context.WithoutCancel(ctx), interruptID, store.InterruptStatusCancelled, store.InterruptResolvedByAgentCancel)
+		return res, nil
+	}
+
+	// Consumer returned a successful tool result. The result text is
+	// the human's answer (typically free-text JSON). Persist it +
+	// return it to the agent.
+	if err := it.Store.InterruptResolve(context.WithoutCancel(ctx), interruptID, res.Text, store.InterruptResolvedByMCP, nil); err != nil {
+		// Resolve write failed but the consumer already collected
+		// the answer. Surface as is_error so the agent doesn't see
+		// a phantom-success answer that doesn't match storage.
+		return errResult(fmt.Sprintf("ask: persist answer from mcp_server:%s: %s", mcpName, err)), nil
+	}
+
+	out, _ := json.Marshal(map[string]any{
+		"interrupt_id": interruptID,
+		"answer":       res.Text,
+		"resolved_at":  time.Now().UTC().Format(time.RFC3339Nano),
+		"resolved_by":  store.InterruptResolvedByMCP,
+	})
+	return tools.Result{Text: string(out)}, nil
+}
+
+// mcpServerFromBackend parses "mcp_server:<name>" into (<name>, true).
+// Returns ("", false) for any other backend value.
+func mcpServerFromBackend(backend string) (string, bool) {
+	const prefix = "mcp_server:"
+	if strings.HasPrefix(backend, prefix) {
+		name := backend[len(prefix):]
+		if name != "" {
+			return name, true
+		}
+	}
+	return "", false
 }
 
 // execNotify is fire-and-forget — no blocking. Writes a row with
