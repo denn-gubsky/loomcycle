@@ -2495,14 +2495,16 @@ func testInterruptSweepExpiredMarksOnlyExpiredPending(t *testing.T, s store.Stor
 		CreatedAt: time.Now(),
 		// ExpiresAt zero → no expiry
 	})
-	// Row 4: expired but already resolved — must NOT change status.
+	// Row 4: future-expiry + already resolved — must NOT change
+	// status. (Resolved at within the validity window; the sweeper
+	// should never touch a non-pending row regardless of expiry.)
 	id4 := store.MintInterruptID(time.Now())
 	_, _ = s.InterruptCreate(ctx, store.InterruptRow{
 		InterruptID: id4, RunID: runID, UserID: "u_alice", Question: "Q4",
-		CreatedAt: time.Now().Add(-2 * time.Hour),
-		ExpiresAt: time.Now().Add(-1 * time.Hour),
+		CreatedAt: time.Now(),
+		ExpiresAt: time.Now().Add(1 * time.Hour),
 	})
-	_ = s.InterruptResolve(ctx, id4, "answered before expiry", store.InterruptResolvedByWebUI, nil)
+	_ = s.InterruptResolve(ctx, id4, "answered within window", store.InterruptResolvedByWebUI, nil)
 
 	n, err := s.InterruptSweepExpired(ctx)
 	if err != nil {

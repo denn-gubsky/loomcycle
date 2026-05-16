@@ -222,7 +222,7 @@ func toolDescriptors() []loommcp.ToolDescriptor {
 		},
 		// --- Interruption (v0.8.16) — the 21st meta-tool ---
 		{
-			Name: "interruption_resolve",
+			Name:        "interruption_resolve",
 			Description: "Resolve a pending Interruption.ask from outside the agent loop. Lets an external orchestrator (Claude Code, custom dashboard) act as the human answerer when the operator yaml configures `interruption.backend: mcp_server:...` or when the orchestrator wants to take over the webui default. Writes the answer, wakes the blocked agent loop, publishes _system/interrupts/resolved for downstream consumers. Returns 409-equivalent error on already-resolved / timed-out / cancelled rows.",
 			InputSchema: rawJSON(`{
 				"type": "object",
