@@ -978,14 +978,16 @@ func newProviderResolver(cfg *config.Config) *providerResolver {
 	// OLLAMA_CLOUD_BASE_URL overrides the public endpoint for staged
 	// rollouts or vendor mirrors.
 	if cfg.Env.OllamaAPIKey != "" {
-		pr.ollama = ollama.New("ollama", cfg.Env.OllamaAPIKey, cfg.Env.OllamaCloudBaseURL, streamOpts, nil)
+		pr.ollama = ollama.New("ollama", cfg.Env.OllamaAPIKey, cfg.Env.OllamaCloudBaseURL, streamOpts, nil).
+			WithNumCtx(cfg.Env.OllamaNumCtx)
 	}
 	// Local-network Ollama — no API key, local trust model. The loader
 	// defaults OLLAMA_BASE_URL to http://localhost:11434, so this is
 	// effectively always-on. Operators disable it via
 	// OLLAMA_BASE_URL=disabled (or an empty string in shell env).
 	if cfg.Env.OllamaBaseURL != "" && cfg.Env.OllamaBaseURL != "disabled" {
-		pr.ollamaLocal = ollama.New("ollama-local", "", cfg.Env.OllamaBaseURL, streamOpts, nil)
+		pr.ollamaLocal = ollama.New("ollama-local", "", cfg.Env.OllamaBaseURL, streamOpts, nil).
+			WithNumCtx(cfg.Env.OllamaLocalNumCtx)
 	}
 	// DeepSeek opts in via DEEPSEEK_API_KEY. Optional DEEPSEEK_BASE_URL
 	// overrides the public endpoint for self-hosted OpenAI-compatible

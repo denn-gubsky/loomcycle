@@ -518,6 +518,23 @@ type Env struct {
 	// Defaults to the public hosted endpoint; ignored when
 	// OllamaAPIKey is empty.
 	OllamaCloudBaseURL string
+	// OllamaLocalNumCtx sets options.num_ctx on every chat request the
+	// `ollama-local` driver sends. Default 0 = omit (Ollama server
+	// uses model's Modelfile PARAMETER num_ctx, falling back to 4096).
+	// The 4096 default is the load-bearing reason this knob exists:
+	// without an explicit value, Ollama silently truncates prompts at
+	// 4096 tokens with no error — a long input produces a partial
+	// completion that doesn't reach end_turn. See
+	// internal/providers/ollama/driver.go Driver.WithNumCtx for the
+	// full incident context. Env: LOOMCYCLE_OLLAMA_LOCAL_NUM_CTX.
+	OllamaLocalNumCtx int
+	// OllamaNumCtx is the hosted-ollama-cloud counterpart. Empty
+	// default lets the cloud apply its own per-model context. Env:
+	// LOOMCYCLE_OLLAMA_NUM_CTX. Separate from OllamaLocalNumCtx
+	// because the relevant model menu (kimi-k2.6, etc.) differs from
+	// what runs on a local box, so the right value almost certainly
+	// differs too.
+	OllamaNumCtx int
 	// DeepSeekAPIKey enables the `provider: deepseek` driver. Empty
 	// = provider not registered (agents that ask for it fail at
 	// resolve time, mirroring OpenAI / Anthropic behaviour).
@@ -1019,6 +1036,20 @@ func Load(path string) (*Config, error) {
 				n = 64
 			}
 			cfg.Env.ToolParallelism = n
+		}
+	}
+	// LOOMCYCLE_OLLAMA_LOCAL_NUM_CTX overrides the ollama-local
+	// driver's options.num_ctx. Required when running prompts above
+	// ~4k tokens against a local Ollama whose Modelfile doesn't pin
+	// num_ctx — see the field doc on Env.OllamaLocalNumCtx.
+	if v := os.Getenv("LOOMCYCLE_OLLAMA_LOCAL_NUM_CTX"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			cfg.Env.OllamaLocalNumCtx = n
+		}
+	}
+	if v := os.Getenv("LOOMCYCLE_OLLAMA_NUM_CTX"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			cfg.Env.OllamaNumCtx = n
 		}
 	}
 	// LOOMCYCLE_RESOLVE_PROBE_INTERVAL_MS overrides the default 15-min

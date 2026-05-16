@@ -1414,3 +1414,63 @@ func TestExpandEnv_NestedRunInsideStaticEnv(t *testing.T) {
 		t.Errorf("expandEnv nested:\n got: %q\nwant: %q", got, want)
 	}
 }
+
+// TestEnv_OllamaNumCtxLoading pins that LOOMCYCLE_OLLAMA_LOCAL_NUM_CTX
+// and LOOMCYCLE_OLLAMA_NUM_CTX env vars populate the matching Env
+// fields. Defends against typos in the loader's strconv.Atoi block
+// (the kind that silently leaves the value at 0 → Ollama falls back
+// to the 4096-token cliff). The 2026-05-15 employer-profiler
+// truncation incident was caused by this same class of "value present
+// but never reached the driver".
+func TestEnv_OllamaNumCtxLoading(t *testing.T) {
+	tmp := t.TempDir()
+	yamlPath := filepath.Join(tmp, "c.yaml")
+	if err := os.WriteFile(yamlPath, []byte(`
+defaults: { provider: anthropic, model: claude-sonnet-4-6 }
+agents:
+  default: { model: claude-sonnet-4-6 }
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("LOOMCYCLE_OLLAMA_LOCAL_NUM_CTX", "32768")
+	t.Setenv("LOOMCYCLE_OLLAMA_NUM_CTX", "65536")
+
+	cfg, err := Load(yamlPath)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Env.OllamaLocalNumCtx != 32768 {
+		t.Errorf("OllamaLocalNumCtx = %d, want 32768", cfg.Env.OllamaLocalNumCtx)
+	}
+	if cfg.Env.OllamaNumCtx != 65536 {
+		t.Errorf("OllamaNumCtx = %d, want 65536", cfg.Env.OllamaNumCtx)
+	}
+}
+
+// TestEnv_OllamaNumCtxRejectsGarbage: a non-numeric value must leave
+// the field at zero (not crash, not pin to a partial parse). Same
+// shape as every other strconv.Atoi-guarded env var.
+func TestEnv_OllamaNumCtxRejectsGarbage(t *testing.T) {
+	tmp := t.TempDir()
+	yamlPath := filepath.Join(tmp, "c.yaml")
+	if err := os.WriteFile(yamlPath, []byte(`
+defaults: { provider: anthropic, model: claude-sonnet-4-6 }
+agents:
+  default: { model: claude-sonnet-4-6 }
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("LOOMCYCLE_OLLAMA_LOCAL_NUM_CTX", "huge")
+	t.Setenv("LOOMCYCLE_OLLAMA_NUM_CTX", "-1")
+
+	cfg, err := Load(yamlPath)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Env.OllamaLocalNumCtx != 0 {
+		t.Errorf("garbage value parsed to %d, want 0", cfg.Env.OllamaLocalNumCtx)
+	}
+	if cfg.Env.OllamaNumCtx != 0 {
+		t.Errorf("negative value parsed to %d, want 0", cfg.Env.OllamaNumCtx)
+	}
+}

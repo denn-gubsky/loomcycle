@@ -208,6 +208,130 @@ func TestRequestBodyShape(t *testing.T) {
 	}
 }
 
+// TestRequestBody_NumCtxOmittedByDefault pins that the wire body
+// contains NO num_ctx field when the driver was constructed without
+// WithNumCtx — preserves the v0.8.x default (Ollama applies its
+// server-side num_ctx). The omitempty tag is load-bearing: a literal
+// "num_ctx":0 would CLAMP every model's context to zero and break
+// every Ollama deploy.
+func TestRequestBody_NumCtxOmittedByDefault(t *testing.T) {
+	var captured []byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		captured, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/x-ndjson")
+		fmt.Fprint(w, `{"model":"x","message":{"role":"assistant","content":""},"done":true}`+"\n")
+	}))
+	defer srv.Close()
+
+	d := New("", "", srv.URL, streamhttp.Options{}, nil)
+	ch, err := d.Call(context.Background(), providers.Request{
+		Model:    "llama3.1",
+		Messages: []providers.Message{{Role: "user", Content: []providers.ContentBlock{{Type: "text", Text: "hi"}}}},
+	})
+	if err != nil {
+		t.Fatalf("Call: %v", err)
+	}
+	for range ch {
+	}
+
+	if strings.Contains(string(captured), `"num_ctx"`) {
+		t.Errorf("num_ctx appeared in body without WithNumCtx; body:\n%s", string(captured))
+	}
+}
+
+// TestRequestBody_NumCtxPropagated pins the headline path: after
+// WithNumCtx(N), every chat request carries options.num_ctx=N. The
+// load-bearing assertion behind the 2026-05-15 employer-profiler
+// truncation incident — without this, Ollama silently truncates at
+// the server's 4096-token default.
+func TestRequestBody_NumCtxPropagated(t *testing.T) {
+	var captured []byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		captured, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/x-ndjson")
+		fmt.Fprint(w, `{"model":"x","message":{"role":"assistant","content":""},"done":true}`+"\n")
+	}))
+	defer srv.Close()
+
+	d := New("", "", srv.URL, streamhttp.Options{}, nil).WithNumCtx(32768)
+	ch, err := d.Call(context.Background(), providers.Request{
+		Model:    "glm-4.7-flash:q4_K_M",
+		Messages: []providers.Message{{Role: "user", Content: []providers.ContentBlock{{Type: "text", Text: "hi"}}}},
+	})
+	if err != nil {
+		t.Fatalf("Call: %v", err)
+	}
+	for range ch {
+	}
+
+	if !strings.Contains(string(captured), `"num_ctx":32768`) {
+		t.Errorf("num_ctx=32768 missing from body; body:\n%s", string(captured))
+	}
+	// Other options fields must remain absent (omitempty) when not
+	// set by the caller — a bare WithNumCtx must not accidentally
+	// pin temperature or num_predict to zero.
+	if strings.Contains(string(captured), `"temperature"`) || strings.Contains(string(captured), `"num_predict"`) {
+		t.Errorf("WithNumCtx leaked unrelated options fields; body:\n%s", string(captured))
+	}
+}
+
+// TestRequestBody_NumCtxCombinesWithTemperatureAndMaxTokens: when the
+// caller passes Temperature + MaxTokens AND the driver was configured
+// with WithNumCtx, all three end up in the single options object. Pins
+// that the v0.8.x conditional that builds wireOptions correctly merges
+// the per-request hints with the driver-level num_ctx.
+func TestRequestBody_NumCtxCombinesWithTemperatureAndMaxTokens(t *testing.T) {
+	var captured []byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		captured, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/x-ndjson")
+		fmt.Fprint(w, `{"model":"x","message":{"role":"assistant","content":""},"done":true}`+"\n")
+	}))
+	defer srv.Close()
+
+	d := New("", "", srv.URL, streamhttp.Options{}, nil).WithNumCtx(16384)
+	temp := 0.3
+	ch, err := d.Call(context.Background(), providers.Request{
+		Model:       "glm-4.7-flash:q4_K_M",
+		Temperature: &temp,
+		MaxTokens:   2048,
+		Messages:    []providers.Message{{Role: "user", Content: []providers.ContentBlock{{Type: "text", Text: "hi"}}}},
+	})
+	if err != nil {
+		t.Fatalf("Call: %v", err)
+	}
+	for range ch {
+	}
+
+	body := string(captured)
+	for _, want := range []string{`"temperature":0.3`, `"num_predict":2048`, `"num_ctx":16384`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("body missing %q; body:\n%s", want, body)
+		}
+	}
+}
+
+// TestWithNumCtx_RejectsNonPositive: a zero or negative value passed
+// to WithNumCtx must be treated as "no change", not as "explicitly
+// disable" — explicitly disabling would be a footgun (the driver
+// would always send "num_ctx":0 and break every model). Pins the
+// idempotent guard inside WithNumCtx.
+func TestWithNumCtx_RejectsNonPositive(t *testing.T) {
+	d := New("", "", "http://localhost:11434", streamhttp.Options{}, nil)
+	d.WithNumCtx(0)
+	if d.numCtx != 0 {
+		t.Errorf("WithNumCtx(0) modified numCtx to %d; want 0 unchanged", d.numCtx)
+	}
+	d.WithNumCtx(-1)
+	if d.numCtx != 0 {
+		t.Errorf("WithNumCtx(-1) modified numCtx to %d; want 0 unchanged", d.numCtx)
+	}
+	d.WithNumCtx(8192)
+	if d.numCtx != 8192 {
+		t.Errorf("WithNumCtx(8192) failed to set; numCtx = %d", d.numCtx)
+	}
+}
+
 // Regression: cancelling ctx mid-stream must not leak the streaming goroutine
 // when nobody drains the channel. See the Anthropic driver test for the
 // rationale on why `runtime.Stack(all=true)` is the right signal here.
