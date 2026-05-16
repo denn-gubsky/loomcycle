@@ -8,6 +8,28 @@ For pre-v0.4 history (single-tool runtime, library milestone, security patch), s
 
 ---
 
+## What's in v0.8.16
+
+The v0.8.x substrate arc closes with the **Interruption** tool — the human-in-the-loop primitive. Memory + Channel + AgentDef + Evaluation + Context + LoomCycle MCP + **Interruption** is the full substrate operators promised back in v0.8.0's planning.
+
+| Surface | Status |
+|---|---|
+| **Interruption tool — 3 ops** | ✅ `Interruption.ask` (blocks the loop until a human answers), `notify` (fire-and-forget), `cancel` (agent unblocks an unanswered question). Per-agent ACL via `interruption: {enabled, kinds, max_pending}` yaml (default-deny). v0.8.16 supports only `kind: question`; the schema's closed-enum `kind` discriminator is forward-compatible for future `pause` / `wait_until` / `approval` kinds without reopening the design. |
+| **Three delivery surfaces, one tool interface** | ✅ Operator picks via `interruption.backend:`. `webui` (default — embedded React inbox at `/ui/interrupts`), `mcp_server:<name>` (consumer's own MCP server tool), `cli` (local-dev stdin/stdout). Agent-facing surface is identical across all three. |
+| **Blocking via `channels.Bus`** | ✅ `ask` blocks on `bus.Wait` with key `intr:<id>`. The resolve HTTP handler writes the row + calls `bus.Notify`; the wait wakes in O(1). Same Bus instance the v0.8.4 Channel tool uses. |
+| **During-block heartbeat** | ✅ Dedicated ticker fires `Store.UpdateHeartbeat` every 30s while blocked. Without it, the v0.5.0 sweeper (default `StaleAfter` 10 min) would reap a long-pending question as a crashed run. |
+| **System channels for the signal flow** | ✅ Rides on v0.8.6 `_system/*` namespace — `_system/interrupts/pending` (publish on ask) + `_system/interrupts/resolved` (publish on resolve / timeout). No new SSE event-type proliferation. |
+| **Storage — new `interrupts` table (migration 0011)** | ✅ Both sqlite + postgres. 17 columns including `kind` discriminator, denormalised `user_id`/`agent_id`/`agent_name`. 8 new Store methods + 12 cross-backend contract tests. |
+| **HTTP endpoints** | ✅ `POST /v1/runs/{run_id}/interrupts/{interrupt_id}/resolve` (kind-discriminated; 422 / 409 / 410 errors); `GET /v1/runs/{run_id}/interrupts`; `GET /v1/users/{user_id}/interrupts`. |
+| **21st LoomCycle MCP meta-tool** | ✅ `mcp__loomcycle__interruption_resolve` exposes the resolve op so external orchestrators (Claude Code) can act as the answerer regardless of backend. Closes the v0.8.15 LoomCycle MCP capstone loop. |
+| **`EventInterruptionPending` SSE event** | ✅ Run's SSE stream carries `{interrupt_id, kind, question, options, context, priority, expires_at}`. Web UI renders modals in real-time without a follow-up fetch. |
+| **Web UI `/ui/interrupts` inbox** | ✅ React route polling the user-scoped listing endpoint. Answer modal supports option-list (button choices) + free-text (textarea). |
+| **Tests** | ✅ 12 storage contract tests + 11 tool unit tests + 1 sentinel-error test. `go test ./...` clean. PRs #119 + #120 + #121 + #122 + this PR. |
+
+**Origin note.** Generalised from the parked v0.8.16 "Question tool" design following the 2026-05-16 LangChain comparison RFC. LangGraph's `interrupt()` is more general than HITL — it covers debug step-through, scheduled wakes, approval gates. Position 2 was selected: same v0.8.16 ops (ask/notify/cancel) but namespace + storage + channel namespace generalised so future kinds slot in additively. Full design: `doc-internal/rfcs/interruption-tool.md`.
+
+---
+
 ## What's in v0.8.15
 
 | Surface             | Status |

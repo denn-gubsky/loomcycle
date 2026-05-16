@@ -16,7 +16,7 @@ func TestLoadSet_BundledOnly(t *testing.T) {
 	if len(names) == 0 {
 		t.Fatal("no bundled topics")
 	}
-	want := []string{"experimentation", "loomcycle", "scopes", "subagents", "system-channels"}
+	want := []string{"experimentation", "interruption", "loomcycle", "scopes", "subagents", "system-channels"}
 	for _, w := range want {
 		if _, ok := set.Get(w); !ok {
 			t.Errorf("bundled topic %q missing (got: %v)", w, names)
