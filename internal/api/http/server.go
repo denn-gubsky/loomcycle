@@ -860,6 +860,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	loopCtx = tools.WithHistoryPolicy(loopCtx, s.historyPolicyForAgent(agentDef))
 	loopCtx = tools.WithInterruptionPolicy(loopCtx, s.interruptionPolicyForAgent(agentDef))
 	loopCtx = tools.WithRunID(loopCtx, runID)
+	loopCtx = tools.WithDispatcher(loopCtx, dispatcher)
 
 	heartbeat := s.makeHeartbeat(runID)
 
@@ -1562,6 +1563,7 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 	loopCtx = tools.WithHistoryPolicy(loopCtx, s.historyPolicyForAgent(agentDef))
 	loopCtx = tools.WithInterruptionPolicy(loopCtx, s.interruptionPolicyForAgent(agentDef))
 	loopCtx = tools.WithRunID(loopCtx, runID)
+	loopCtx = tools.WithDispatcher(loopCtx, dispatcher)
 
 	// Heartbeat hook: each loop iteration updates last_heartbeat_at so a
 	// future sweeper can detect crashed processes (no heartbeat for > N
@@ -1864,6 +1866,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	loopCtx = tools.WithHistoryPolicy(loopCtx, s.historyPolicyForAgent(agentDef))
 	loopCtx = tools.WithInterruptionPolicy(loopCtx, s.interruptionPolicyForAgent(agentDef))
 	loopCtx = tools.WithRunID(loopCtx, run.ID)
+	loopCtx = tools.WithDispatcher(loopCtx, dispatcher)
 	fbPolicy, fbReResolve := s.fallbackForRun(sess.Agent, body.UserTier)
 	loopRes, runErr := loop.Run(loopCtx, loop.RunOptions{
 		Provider:        provider,
@@ -2400,6 +2403,7 @@ func (s *Server) runSubAgent(ctx context.Context, name string, prompt string, de
 	subCtx = tools.WithHistoryPolicy(subCtx, s.historyPolicyForAgent(def))
 	subCtx = tools.WithInterruptionPolicy(subCtx, s.interruptionPolicyForAgent(def))
 	subCtx = tools.WithRunID(subCtx, subRunID)
+	subCtx = tools.WithDispatcher(subCtx, subDispatcher)
 
 	subHeartbeat := s.makeHeartbeat(subRunID)
 

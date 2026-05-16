@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/channels"
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/connector"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
@@ -460,6 +461,95 @@ func (s *Server) RestoreSnapshot(_ context.Context, _ connector.RestoreSnapshotR
 
 func (s *Server) DeleteSnapshot(_ context.Context, _ string) error {
 	return fmt.Errorf("delete_snapshot: %s", previewNote)
+}
+
+// --- Interruption (v0.8.16) ---
+
+// InterruptionResolve implements connector.Connector. It mirrors the
+// HTTP resolve endpoint's logic without round-tripping through HTTP:
+// validate row + answer, transition status, fire bus.Notify,
+// publish to _system/interrupts/resolved.
+//
+// Used by the LoomCycle MCP server's `interruption_resolve` meta-tool
+// so external orchestrators (Claude Code, custom dashboards) can act
+// as the answerer without speaking HTTP to loomcycle.
+func (s *Server) InterruptionResolve(ctx context.Context, req connector.InterruptionResolveRequest) (connector.InterruptionResolveResult, error) {
+	if s.store == nil {
+		return connector.InterruptionResolveResult{}, fmt.Errorf("interruption_resolve: store not configured")
+	}
+	kind := req.Kind
+	if kind == "" {
+		kind = store.InterruptKindQuestion
+	}
+	if kind != store.InterruptKindQuestion {
+		return connector.InterruptionResolveResult{}, fmt.Errorf("interruption_resolve: unsupported kind %q (v0.8.16 supports: question)", kind)
+	}
+	resolvedBy := req.ResolvedBy
+	if resolvedBy == "" {
+		resolvedBy = store.InterruptResolvedByMCP
+	}
+
+	row, err := s.store.InterruptGet(ctx, req.InterruptID)
+	if err != nil {
+		return connector.InterruptionResolveResult{}, err
+	}
+	if row.RunID != req.RunID {
+		return connector.InterruptionResolveResult{}, fmt.Errorf("interruption_resolve: interrupt %q does not belong to run %q", req.InterruptID, req.RunID)
+	}
+	if row.Status != store.InterruptStatusPending {
+		return connector.InterruptionResolveResult{}, fmt.Errorf("interruption_resolve: already %s", row.Status)
+	}
+	if !row.ExpiresAt.IsZero() && row.ExpiresAt.Before(time.Now()) {
+		return connector.InterruptionResolveResult{}, fmt.Errorf("interruption_resolve: expired")
+	}
+
+	// Option-list validation. Same shape as the HTTP handler.
+	if len(row.Options) > 0 {
+		var opts []string
+		if err := json.Unmarshal(row.Options, &opts); err == nil && len(opts) > 0 {
+			ok := false
+			for _, o := range opts {
+				if o == req.Answer {
+					ok = true
+					break
+				}
+			}
+			if !ok {
+				return connector.InterruptionResolveResult{}, fmt.Errorf("interruption_resolve: answer %q is not in declared options %v", req.Answer, opts)
+			}
+		}
+	} else if req.Answer == "" {
+		return connector.InterruptionResolveResult{}, fmt.Errorf("interruption_resolve: answer required for free-text interrupts")
+	}
+
+	if err := s.store.InterruptResolve(ctx, req.InterruptID, req.Answer, resolvedBy, nil); err != nil {
+		return connector.InterruptionResolveResult{}, err
+	}
+	if s.interruptionBus != nil {
+		s.interruptionBus.Notify("intr:" + req.InterruptID)
+	}
+	if s.systemPublisher != nil && row.UserID != "" {
+		payload, _ := json.Marshal(map[string]any{
+			"interrupt_id": req.InterruptID,
+			"run_id":       req.RunID,
+			"kind":         row.Kind,
+			"status":       store.InterruptStatusResolved,
+			"answer":       req.Answer,
+			"resolved_by":  resolvedBy,
+		})
+		_, _ = s.systemPublisher.PublishNow(
+			ctx,
+			"_system/interrupts/resolved",
+			store.MemoryScopeUser, row.UserID,
+			payload, channels.SystemPublisherUserID, 0, 0,
+		)
+	}
+
+	return connector.InterruptionResolveResult{
+		InterruptID: req.InterruptID,
+		Status:      store.InterruptStatusResolved,
+		ResolvedAt:  time.Now().UTC().Format(time.RFC3339Nano),
+	}, nil
 }
 
 // --- Helpers ---
