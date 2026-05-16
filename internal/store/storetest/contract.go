@@ -58,6 +58,8 @@ func Run(t *testing.T, factory Factory) {
 		{"GetTranscriptEmpty", testGetTranscriptEmpty},
 		{"CreateSessionUserIDRoundTrip", testCreateSessionUserIDRoundTrip},
 		{"CreateRunIdentityRoundTrip", testCreateRunIdentityRoundTrip},
+		{"CreateRunModelVisibleMidFlight", testCreateRunModelVisibleMidFlight},
+		{"CreateRunModelEmptyStaysEmpty", testCreateRunModelEmptyStaysEmpty},
 		{"GetRunByAgentIDNotFound", testGetRunByAgentIDNotFound},
 		{"GetRunByAgentIDReturnsMostRecent", testGetRunByAgentIDReturnsMostRecent},
 		{"ListActiveRunsByUser", testListActiveRunsByUser},
@@ -326,6 +328,67 @@ func testCreateRunIdentityRoundTrip(t *testing.T, s store.Store) {
 	}
 	if got.AgentID != "a_top" || got.UserID != "user-1" {
 		t.Errorf("identity not preserved through GetRunByAgentID: %+v", got)
+	}
+}
+
+// testCreateRunModelVisibleMidFlight pins the v0.8.x contract added
+// after the Web UI started showing "—" for the model column on every
+// running run: CreateRun must persist RunIdentity.Model so a SELECT
+// against the row returns the resolved model BEFORE FinishRun. The
+// previous shape (model written only at FinishRun) made the running
+// UI useless for diagnosing tier resolution mid-flight.
+func testCreateRunModelVisibleMidFlight(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	sess, _ := s.CreateSession(ctx, "t", "agent-x", "user-1")
+
+	run, err := s.CreateRun(ctx, sess.ID, store.RunIdentity{
+		AgentID: "a_midflight",
+		UserID:  "user-1",
+		Model:   "claude-sonnet-4-6",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.Model != "claude-sonnet-4-6" {
+		t.Errorf("CreateRun returned Model=%q; want claude-sonnet-4-6", run.Model)
+	}
+
+	// Critical: read back BEFORE FinishRun. The bug shape this guards
+	// against is a backend that accepts Model on the struct but doesn't
+	// write it to the row until FinishRun.
+	got, err := s.GetRunByAgentID(ctx, "a_midflight")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != store.RunRunning {
+		t.Fatalf("expected status=running before FinishRun, got %q", got.Status)
+	}
+	if got.Model != "claude-sonnet-4-6" {
+		t.Errorf("GetRunByAgentID returned Model=%q on a still-running row; want claude-sonnet-4-6", got.Model)
+	}
+}
+
+// testCreateRunModelEmptyStaysEmpty: a CreateRun without Model must
+// leave the column unset (NULL / empty). Back-compat with older
+// callers and with sub-agent paths where the model is filled in later.
+func testCreateRunModelEmptyStaysEmpty(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	sess, _ := s.CreateSession(ctx, "t", "agent-x", "user-1")
+
+	run, err := s.CreateRun(ctx, sess.ID, store.RunIdentity{
+		AgentID: "a_nomodel",
+		UserID:  "user-1",
+		// Model deliberately empty
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.Model != "" {
+		t.Errorf("CreateRun returned Model=%q on empty input; want empty", run.Model)
+	}
+	got, _ := s.GetRunByAgentID(ctx, "a_nomodel")
+	if got.Model != "" {
+		t.Errorf("read-back Model=%q on empty input; want empty", got.Model)
 	}
 }
 
