@@ -69,6 +69,20 @@ func runFakeServer(mode string) {
 				},
 			})
 			if mode == "crash" {
+				// Wait for the client's notifications/initialized to
+				// arrive on stdin BEFORE exiting. Without this, the
+				// client's notification write races with our exit:
+				// on macOS the pipe closes first, the client's write
+				// returns "broken pipe", and Initialize fails before
+				// the test's assertion ("server should crash after
+				// initialize, so tool_call fails with transport
+				// error") can run. The CI-passing flow needs the
+				// MCP handshake to complete cleanly first; the crash
+				// is only meaningful when measured against a
+				// subsequent operation.
+				if scanner.Scan() {
+					_ = scanner.Bytes()
+				}
 				os.Exit(1)
 			}
 		case "tools/list":
