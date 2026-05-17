@@ -313,6 +313,25 @@ const (
 	// moment. The external `_system/interrupts/resolved` channel
 	// publishes the resolve notification for non-run consumers.
 	EventInterruptionPending EventType = "interruption_pending"
+
+	// EventHostWidened is the v0.8.17 audit event emitted by the loop
+	// whenever a permitted Pre-hook's allow_hosts grant fires for a
+	// specific tool call. Emitted ONCE per dispatched tool call that
+	// the hook actually widened (not on every call — the common
+	// "no widening" path is silent).
+	//
+	// The HostWidening field carries the structured payload: the
+	// requesting tool_call_id + tool_name, the originating URL (so
+	// operators can spot confused-deputy patterns where the model's
+	// requested host equals the hook's grant), the granting
+	// hook's owner + name, and the list of hosts added.
+	//
+	// The event is purely informational — it does NOT itself widen
+	// anything; the widening already happened in the dispatcher and
+	// the ctx-extras path. Persistence is via the standard
+	// makeRecordingEmit path so the events table carries an audit
+	// row for every grant.
+	EventHostWidened EventType = "host_widened"
 )
 
 // Event is one streamed datum from a provider call (or, after the loop layer
@@ -350,6 +369,14 @@ type Event struct {
 	// types. Renders directly into the Web UI's modal/sidebar
 	// without a follow-up fetch.
 	Interruption *InterruptionEventInfo `json:"interruption,omitempty"`
+
+	// HostWidening carries the structured payload on EventHostWidened
+	// (v0.8.17). Nil on all other event types. Operators audit
+	// confused-deputy patterns by comparing HostWidening.URL's host
+	// to the granted HostsAdded — if they're always identical, the
+	// hook is probably echoing model input without independent
+	// validation.
+	HostWidening *HostWideningEventInfo `json:"host_widening,omitempty"`
 
 	// StopReason is set on the final assistant Event of a provider call:
 	// "end_turn" | "tool_use" | "max_tokens" | "stop_sequence".
@@ -495,6 +522,43 @@ type InterruptionEventInfo struct {
 	// interruption will time out. RFC3339. Empty when no timeout
 	// was set.
 	ExpiresAt string `json:"expires_at,omitempty"`
+}
+
+// HostWideningEventInfo is the structured payload on EventHostWidened
+// (v0.8.17). Emitted once per dispatched tool call that a permitted
+// Pre-hook widened. Operators correlate (ToolCallID, URL, HostsAdded)
+// to detect confused-deputy patterns where the hook is just echoing
+// the model's requested host without independent validation — those
+// cases show URL.Host == HostsAdded[0] for every event from one owner.
+type HostWideningEventInfo struct {
+	// ToolCallID is the loop-issued or provider-issued tool_use id
+	// (the same id that appears on the surrounding EventToolCall /
+	// EventToolResult). Lets a UI thread the audit row to its tool
+	// call.
+	ToolCallID string `json:"tool_call_id"`
+	// ToolName is "HTTP" / "WebFetch" / etc — whichever tool this
+	// widening applies to. Carried explicitly so an operator can
+	// filter audit logs by tool without joining to events of other
+	// types.
+	ToolName string `json:"tool_name"`
+	// URL is the originating URL the model asked the tool to fetch.
+	// Recorded verbatim (not normalised) so operators can spot
+	// patterns where a hook echoes a model-supplied URL's host.
+	// CAREFUL: the URL itself may carry tokens or sensitive query
+	// params; operators should redact in downstream log forwarders.
+	URL string `json:"url"`
+	// HookOwner is the registered hook's Owner UID — the app that
+	// the operator yaml opted in to via hooks.permit_host_widen.owners.
+	HookOwner string `json:"hook_owner"`
+	// HookName is the hook's Name (the Owner+Name identity). Same
+	// hook can register multiple Names; this discriminates the
+	// specific one that contributed.
+	HookName string `json:"hook_name"`
+	// HostsAdded is the deduplicated list of hostnames the
+	// dispatcher accumulated for THIS tool call. Matches the
+	// PreOutcome.AllowHosts value. Leading-dot entries appear here
+	// verbatim (they're semantic — suffix-match opt-in).
+	HostsAdded []string `json:"hosts_added"`
 }
 
 // ToolUse is the model's request to invoke a tool.

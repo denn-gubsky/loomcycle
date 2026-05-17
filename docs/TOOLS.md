@@ -584,11 +584,98 @@ DELETE /v1/hooks/{id}          // remove a registration
 
 ### Trust-boundary invariants
 
-- Hooks run **after** the policy layer (`allowed_tools` / `allowed_hosts`). Hooks may narrow further or rewrite content — **never widen**.
+- Hooks run **after** the policy layer (`allowed_tools` / `allowed_hosts`). Hooks may narrow further or rewrite content. The **only** exception is the per-call host-widening capability below, which requires explicit operator opt-in.
 - Hooks **cannot** tear down the agent run. The worst they can do is short-circuit one tool call with a synthetic `IsError: true` result.
 - Webhook payloads include `agent_id` and `user_id` for correlation but **do NOT** include the agent's prompt or message history.
 
-References: `internal/hooks/`, `internal/api/http/hooks.go` (registration routes), `internal/loop/loop.go::dispatchOneTool` (chain invocation).
+### Per-call host widening (v0.8.17)
+
+A Pre-hook can grant the model permission to fetch a hostname that's *not* on the operator's static `LOOMCYCLE_HTTP_HOST_ALLOWLIST` and *not* on the runtime caller's `runRequest.allowed_hosts`. The grant is **per-tool-call** — scoped to exactly one `Execute()`, never cached server-side, never inherited by sub-agents.
+
+This solves the dynamic-discovery problem: `job-searcher` finds a job posting on a site nobody pre-enumerated; the calling service's hook checks its own per-user allowlist + reputation oracle + business rules and approves the URL on the spot.
+
+#### Opt-in (operator yaml only)
+
+```yaml
+hooks:
+  permit_host_widen:
+    owners: ["jobs-search-web"]
+```
+
+Or env: `LOOMCYCLE_HOOKS_PERMIT_HOST_WIDEN_OWNERS=jobs-search-web,company-research`
+
+- **Exact-string match** against `Hook.Owner`. No globs.
+- Without an entry here, ANY hook's `allow_hosts` field is silently dropped at the dispatcher (with a `hooks: pre ... dropping grant` WARN log + counter increment via `Dispatcher.Stats().HostWidenDenied`). The model and the runtime caller cannot enable this — only the operator yaml can.
+- **Caller-authoritative mode interaction**: when `LOOMCYCLE_HTTP_CALLER_AUTHORITATIVE=true`, a permitted hook STILL widens on top of the caller's authoritative list. Operator yaml is the floor for *behaviors* (including hook delegation), not just for the static host list.
+
+#### Wire shape
+
+A Pre-hook returns an optional `allow_hosts` field alongside the existing `input` / `deny`:
+
+```json
+{
+  "input": {...},
+  "deny": {"is_error": true, "text": "..."},
+  "allow_hosts": ["acme.com", ".trusted-cdn.com"]
+}
+```
+
+#### Matching semantics
+
+Intentionally **stricter** than the operator allowlist:
+
+- `"acme.com"` (no leading dot) → **exact hostname match only**. Won't widen `careers.acme.com`.
+- `".acme.com"` (leading dot) → **suffix-match** (matches `acme.com` AND any subdomain). Symmetric with the operator-list shape.
+
+This lets cautious hook authors be surgical ("approve only the literal URL the model asked about") while supporting the broader case via the leading-dot opt-in.
+
+#### Composition
+
+- Multiple permitted-owner hooks contributing `allow_hosts` in one chain → the dispatcher returns the **deduplicated UNION** (case-insensitive on hostname).
+- A `deny` anywhere in the chain **discards all prior** `allow_hosts` grants (we don't carry policy widenings into a denied call — confused-deputy hardening).
+- Order of `AllowHosts` in the outcome is first-seen across the Pre chain.
+
+#### Audit event
+
+The loop emits one `EventHostWidened` per dispatched call where widening fired:
+
+```json
+{
+  "type": "host_widened",
+  "host_widening": {
+    "tool_call_id": "lc-0-0",
+    "tool_name": "WebFetch",
+    "url": "https://acme.com/careers/123",
+    "hook_owner": "jobs-search-web",
+    "hook_name": "url-gate",
+    "hosts_added": ["acme.com"]
+  }
+}
+```
+
+Persisted to the `events` table via `makeRecordingEmit` like every other typed event. Operators audit confused-deputy patterns by joining on `tool_call_id` and comparing the requested URL's host to the granted `HostsAdded` — if they're always identical for one owner, the hook is probably echoing model input without independent validation.
+
+Aggregate counters via `Dispatcher.Stats()`:
+
+```go
+type DispatcherStats struct {
+    HostWidenPermitted int64 // grants honoured
+    HostWidenDenied    int64 // grants dropped (owner not in permit list)
+}
+```
+
+#### SECURITY — confused-deputy hazard
+
+The Pre-hook's `tool_call.input` is **model-generated and untrusted**. A naive hook that echoes `input.url`'s hostname back as `allow_hosts` literally lets the model widen its own allowlist. **Validate independently** — against the user's own preferences, a per-tenant allowlist, a domain-reputation service, your own business rules. Never trust the URL the model is asking about as authority for whether the URL should be approved.
+
+#### Known limitations (v1)
+
+1. **Redirect to a new unknown host within a single fetch** is NOT re-validated by the hook. The extras attached pre-dispatch cover the entire tool call (initial URL + all redirects), so a redirect to a hostname the hook *did* approve up-front works. But a redirect to a brand-new host nobody approved fails. Practical workaround: hooks for redirect-heavy use cases (job boards proxied through ATS trackers) should approve the likely redirect targets too.
+2. **Dial-time private-IP block is NOT bypassable.** Even if `allow_hosts` includes `localhost`, the host's resolved private IP is still blocked unless the operator separately opted in via `HTTPPrivateHostAllowlist`. This is a separate, orthogonal trust boundary — hooks widen at the hostname layer, never at the IP layer.
+3. **Sub-agents do NOT inherit a parent's widening.** Per-tool-call scope means the grant evaporates the moment Execute() returns. If a sub-agent needs the same widening, the same hook needs to be registered against the sub-agent's name (via the hook's `agents:` glob).
+4. **No server-side caching.** Every WebFetch to a hostname outside the static list triggers a fresh callback. Hooks should cache client-side if their decision is stable for the user/tenant.
+
+References: `internal/hooks/`, `internal/api/http/hooks.go` (registration routes), `internal/loop/loop.go::dispatchOneTool` (chain invocation), `internal/config/config.go::HooksConfig` (operator opt-in shape), `internal/tools/builtin/httptool.go::hostAllowedExtras` (matcher).
 
 ## The `Interruption` tool — human-in-the-loop primitive (v0.8.16)
 

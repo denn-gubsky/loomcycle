@@ -141,7 +141,12 @@ type Server struct {
 // (empty if no run has started) so handler code can call its methods
 // unconditionally without nil-checking.
 func New(cfg *config.Config, pr ProviderResolver, builtinTools []tools.Tool, sem *concurrency.Semaphore, st store.Store) *Server {
-	hookReg := hooks.NewRegistry()
+	// Hook registry is constructed with the operator-yaml host-widen
+	// permit list (cfg.Hooks.PermitHostWiden.Owners). Without an entry
+	// there, any Pre-hook's allow_hosts response is silently dropped
+	// at dispatch time. The list is frozen at construction — the only
+	// way to mutate the trust boundary is a restart with new yaml.
+	hookReg := hooks.NewRegistryWithPermissions(cfg.Hooks.PermitHostWiden.Owners)
 	s := &Server{
 		cfg:            cfg,
 		providers:      pr,

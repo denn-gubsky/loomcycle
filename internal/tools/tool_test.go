@@ -100,3 +100,65 @@ func TestDispatcher_FallbackHandledFalseFallsThrough(t *testing.T) {
 		t.Errorf("expected 'tool not found: Unknown' substring; got %q", r.Text)
 	}
 }
+
+// TestExtraAllowedHosts_RoundTripsThroughCtx pins the basic ctx
+// helper contract for the v0.8.17 per-call host-widening mechanism.
+// The list is attached unmodified and retrieved unmodified — no
+// normalisation in this layer (the dispatcher already normalised
+// before calling WithExtraAllowedHosts; httptool will pattern-match
+// at the enforcement site).
+func TestExtraAllowedHosts_RoundTripsThroughCtx(t *testing.T) {
+	ctx := context.Background()
+	if got := ExtraAllowedHosts(ctx); got != nil {
+		t.Errorf("bare ctx returned %v, want nil", got)
+	}
+
+	in := []string{"acme.com", ".trusted-cdn.com"}
+	ctx2 := WithExtraAllowedHosts(ctx, in)
+	got := ExtraAllowedHosts(ctx2)
+	if len(got) != 2 || got[0] != "acme.com" || got[1] != ".trusted-cdn.com" {
+		t.Errorf("ExtraAllowedHosts = %v, want %v (unmodified)", got, in)
+	}
+
+	// Parent ctx is unaffected (Go context immutability).
+	if got := ExtraAllowedHosts(ctx); got != nil {
+		t.Errorf("parent ctx mutated; ExtraAllowedHosts now = %v", got)
+	}
+}
+
+// TestWithExtraAllowedHosts_NilEmptyIsNoOp confirms the optimization:
+// passing nil or [] returns the input ctx unchanged. This matters
+// because loop.dispatchOneTool calls WithExtraAllowedHosts on every
+// tool dispatch — the common case (no permitted hook contributed)
+// must not allocate a new ctx for nothing.
+func TestWithExtraAllowedHosts_NilEmptyIsNoOp(t *testing.T) {
+	ctx := context.Background()
+	if WithExtraAllowedHosts(ctx, nil) != ctx {
+		t.Error("nil extras: WithExtraAllowedHosts must return the input ctx unchanged")
+	}
+	if WithExtraAllowedHosts(ctx, []string{}) != ctx {
+		t.Error("empty extras: WithExtraAllowedHosts must return the input ctx unchanged")
+	}
+}
+
+// TestExtraAllowedHosts_NoLeakAcrossSiblingDerivations pins the
+// scope invariant: a ctx derived AFTER WithExtraAllowedHosts sees the
+// extras; a SIBLING derivation off the parent ctx does NOT. This is
+// the property that keeps per-tool-call grants from leaking into
+// sub-agent calls (sub-agents derive a fresh ctx from the loop's
+// pre-dispatch ctx, not from the per-call execCtx).
+func TestExtraAllowedHosts_NoLeakAcrossSiblingDerivations(t *testing.T) {
+	parent := context.Background()
+	widened := WithExtraAllowedHosts(parent, []string{"acme.com"})
+
+	// Child of widened sees the extras.
+	if got := ExtraAllowedHosts(widened); len(got) != 1 {
+		t.Errorf("widened ctx: extras = %v, want [acme.com]", got)
+	}
+
+	// Sibling of widened (derived off `parent`) does NOT see them.
+	sibling := WithExtraAllowedHosts(parent, nil) // == parent
+	if got := ExtraAllowedHosts(sibling); got != nil {
+		t.Errorf("sibling ctx (not derived from widened): extras = %v, want nil", got)
+	}
+}

@@ -214,3 +214,66 @@ func hookNames(hs []*Hook) []string {
 	}
 	return out
 }
+
+// TestRegistry_HostWidenPermit_ExactMatch pins the trust-boundary
+// contract: only exact-match owner UIDs in the operator yaml are
+// permitted to widen the host allowlist via Pre-hook allow_hosts.
+// Globs / prefix-matches must NOT match — the operator names each
+// app explicitly. Whitespace is trimmed so a yaml entry with
+// surrounding spaces still matches.
+func TestRegistry_HostWidenPermit_ExactMatch(t *testing.T) {
+	r := NewRegistryWithPermissions([]string{
+		"jobs-search-web",
+		"  company-research  ", // surrounding whitespace tolerated
+		"",                     // empty entry silently dropped
+	})
+
+	cases := []struct {
+		owner string
+		want  bool
+	}{
+		{"jobs-search-web", true},          // exact match
+		{"company-research", true},         // trimmed match
+		{"jobs-search-web-staging", false}, // prefix is NOT a match (no globs)
+		{"jobs-search", false},             // partial prefix not a match
+		{"web", false},                     // suffix not a match
+		{"", false},                        // empty owner never matches
+		{"unknown", false},                 // not in list
+		{"  jobs-search-web  ", false},     // lookup doesn't trim — operator names canonicalise on registration
+	}
+	for _, tc := range cases {
+		t.Run(tc.owner, func(t *testing.T) {
+			got := r.IsHostWidenPermitted(tc.owner)
+			if got != tc.want {
+				t.Errorf("IsHostWidenPermitted(%q) = %v, want %v", tc.owner, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestRegistry_HostWidenPermit_DefaultDeny verifies the default
+// stance: a registry constructed without a permit list (NewRegistry)
+// returns false for every owner — preserving the "operator yaml is
+// the trust-boundary floor" invariant for back-compat installs that
+// don't opt in.
+func TestRegistry_HostWidenPermit_DefaultDeny(t *testing.T) {
+	r := NewRegistry()
+	if r.IsHostWidenPermitted("any-owner") {
+		t.Error("NewRegistry() should default-deny host widening for every owner")
+	}
+	if r.IsHostWidenPermitted("") {
+		t.Error("NewRegistry() must default-deny the empty-string owner")
+	}
+}
+
+// TestRegistry_HostWidenPermit_NilReceiver pins defensive behavior:
+// a nil *Registry must return false rather than panic. The dispatcher
+// is wired with a non-nil registry by Server.New, but defensive
+// programming on a hot-path check costs nothing and removes a
+// latent crash class.
+func TestRegistry_HostWidenPermit_NilReceiver(t *testing.T) {
+	var r *Registry
+	if r.IsHostWidenPermitted("anyone") {
+		t.Error("nil receiver should return false")
+	}
+}

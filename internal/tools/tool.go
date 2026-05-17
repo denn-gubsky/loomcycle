@@ -151,6 +151,42 @@ func HostPolicy(ctx context.Context) HostPolicyValue {
 	return v
 }
 
+// ctxKeyExtraAllowedHosts is the context key for v0.8.17 per-call
+// host-widening grants from permitted Pre-hooks. Distinct from
+// HostPolicy: HostPolicy carries the caller-authoritative narrowing
+// that applies for the entire run and is inherited by sub-agents.
+// ExtraAllowedHosts is per-tool-call only — set by loop.dispatchOneTool
+// for the SINGLE Execute() call after a permitted Pre-hook returned
+// allow_hosts, then dropped when control returns to the loop.
+// Sub-agents do NOT inherit it; the v1 scope is one Execute() per
+// hook callback (CLAUDE.md confused-deputy guidance).
+type ctxKeyExtraAllowedHosts struct{}
+
+// WithExtraAllowedHosts derives a ctx with the per-call host-widening
+// grants attached. extras is the deduplicated list from the
+// dispatcher's PreOutcome.AllowHosts. Matching semantics live in the
+// enforcement-site helper (httptool.hostAllowedWithExtras): bare
+// entries are exact-match; entries with a leading dot are suffix-match.
+//
+// Calling this with a nil / empty slice is a no-op (returns the
+// input ctx unchanged) so the loop can call it unconditionally
+// without paying for an extra ctx allocation per tool call.
+func WithExtraAllowedHosts(ctx context.Context, extras []string) context.Context {
+	if len(extras) == 0 {
+		return ctx
+	}
+	return context.WithValue(ctx, ctxKeyExtraAllowedHosts{}, extras)
+}
+
+// ExtraAllowedHosts returns the per-call host-widening grants from
+// ctx, or nil when nothing was attached. Tools that enforce a host
+// allowlist consult this AFTER their operator-floor + caller-narrowed
+// check fails, allowing the per-call grant to widen JUST this call.
+func ExtraAllowedHosts(ctx context.Context) []string {
+	v, _ := ctx.Value(ctxKeyExtraAllowedHosts{}).([]string)
+	return v
+}
+
 // ctxKeyRunIdentity is the context key under which the runtime
 // stashes the current run's user_id and agent_id (v0.4 tracking
 // fields). Sub-agents read these via RunIdentity to inherit the

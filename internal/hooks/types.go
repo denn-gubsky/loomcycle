@@ -103,18 +103,43 @@ type PreHookCall struct {
 	ToolCall ToolCall `json:"tool_call"`
 }
 
-// PreHookResult is the response a Pre webhook returns. Either field can
-// be set independently:
+// PreHookResult is the response a Pre webhook returns. Fields can be set
+// independently:
 //   - Input non-nil: the tool runs with this input instead of the model's.
 //   - Deny non-nil: the tool does NOT run. The Deny payload becomes the
 //     synthetic tool_result the model sees.
+//   - AllowHosts non-empty: hostnames the hook approves for THIS tool
+//     call (per-call scope, no server-side cache, not inherited by
+//     sub-agents). Only takes effect when the hook's owner is listed
+//     in the operator yaml's hooks.permit_host_widen.owners (or the
+//     LOOMCYCLE_HOOKS_PERMIT_HOST_WIDEN_OWNERS env). Un-permitted
+//     entries are dropped at the dispatcher with a WARN log + metric.
+//     Matching semantics for each entry: a literal hostname (no
+//     leading dot) is EXACT-match only ("acme.com" does not match
+//     "careers.acme.com"); a leading-dot entry (".acme.com") is
+//     suffix-match like the operator allowlist (matches "acme.com"
+//     AND any subdomain). This is intentionally stricter than the
+//     operator-list default so cautious hook authors can be surgical.
 //
-// If both are set, Deny wins (short-circuit takes precedence). If neither
-// is set (or response body is empty / 204), the call passes through
-// unchanged.
+// Precedence: if Deny is set, AllowHosts is DROPPED (deny wins; we do
+// not let a denied hook contribute hostnames to peers in the chain).
+// If both Input and AllowHosts are set, both apply — the rewritten
+// input executes against the widened policy.
+//
+// SECURITY — confused-deputy hazard: AllowHosts MUST NOT be derived
+// blindly from PreHookCall.ToolCall.Input. The URL the model wants to
+// fetch is untrusted. Hook authors must validate independently — e.g.,
+// against the user's own preferences, a per-tenant allowlist, or a
+// domain-reputation service. The audit event (host_widened) and the
+// hooks_host_widen_total metric exist so operators can detect
+// confused-deputy patterns post-hoc.
+//
+// If no field is set (or response body is empty / 204), the call
+// passes through unchanged.
 type PreHookResult struct {
-	Input json.RawMessage `json:"input,omitempty"`
-	Deny  *ToolResult     `json:"deny,omitempty"`
+	Input      json.RawMessage `json:"input,omitempty"`
+	Deny       *ToolResult     `json:"deny,omitempty"`
+	AllowHosts []string        `json:"allow_hosts,omitempty"`
 }
 
 // PostHookCall is the JSON payload sent to a Post webhook.

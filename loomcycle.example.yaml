@@ -237,6 +237,34 @@ interruption:
   max_pending_per_run: 10         # operator-global cap; per-agent yaml narrows
   heartbeat_interval_ms: 30000    # during-block heartbeat cadence (sweeper-safe)
 
+# ─── Tool-use hooks (v0.7.x+; widening capability v0.8.17) ────────────
+# Hook registrations themselves are RUNTIME — apps register via
+# POST /v1/hooks. This block carries the few operator-side knobs that
+# CANNOT be set via the runtime API (so the registering app can't
+# escalate its own trust boundary).
+#
+# permit_host_widen.owners: the exact-string list of registered-hook
+# Owner UIDs whose Pre-hook `allow_hosts` response is HONOURED at
+# dispatch time. Without an entry here, any hook's allow_hosts is
+# silently dropped (with a WARN log + Dispatcher.HostWidenDenied
+# counter increment). The model and the runtime caller cannot enable
+# widening — only this yaml can. See docs/TOOLS.md "Per-call host
+# widening" for the wire shape, audit event, and known limitations.
+#
+# Env equivalent (APPENDS to whatever yaml has, not replaces):
+#   LOOMCYCLE_HOOKS_PERMIT_HOST_WIDEN_OWNERS=jobs-search-web,company-research
+#
+# SECURITY: the named app is trusted to make ad-hoc per-call URL
+# decisions. The hook receives the URL the model wants to fetch +
+# agent/user identity, and decides allow/deny. The hook MUST NOT
+# blindly echo the model's URL host as `allow_hosts` (that would let
+# the model widen its own allowlist — see confused-deputy notes in
+# docs/TOOLS.md). Audit the operator-yaml addition like you'd audit
+# any trust delegation.
+hooks:
+  permit_host_widen:
+    owners: []                    # e.g. ["jobs-search-web"] — empty default-denies for all owners
+
 # ─── Default routing for agents that don't specify their own ──────────
 # Used by agents that declare neither `tier:` nor an explicit
 # `provider:`+`model:` pin. v0.6.x back-compat path; tier-based agents

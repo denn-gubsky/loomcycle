@@ -735,12 +735,20 @@ func executeTool(ctx context.Context, d *tools.Dispatcher, tu providers.ToolUse)
 // O(N) over registered hooks; with no hooks registered this is a
 // nil-slice return and the function shape is identical to pre-hook
 // behaviour.
+//
+// emit is the same callback used by the loop for SSE/store emissions.
+// It's invoked here for the v0.8.17 EventHostWidened audit event,
+// fired ONCE per dispatched call that a permitted Pre-hook widened.
+// emit may be nil (some tests inject a dispatcher without one) —
+// host_widened emission is silently skipped in that case; the
+// widening itself still applies.
 func dispatchOneTool(
 	ctx context.Context,
 	dispatcher *tools.Dispatcher,
 	tu providers.ToolUse,
 	hookDispatcher *hooks.Dispatcher,
 	ident hooks.Identity,
+	emit func(providers.Event),
 ) tools.Result {
 	if hookDispatcher == nil {
 		return executeTool(ctx, dispatcher, tu)
@@ -761,11 +769,54 @@ func dispatchOneTool(
 		if pre.Input != nil {
 			running.Input = pre.Input
 		}
-		r = executeTool(ctx, dispatcher, running)
+		// Emit the v0.8.17 host-widened audit event BEFORE executing
+		// the tool, so the SSE stream ordering reads
+		// tool_call → host_widened → tool_result. Persisted via
+		// makeRecordingEmit so the events table carries an audit row.
+		if emit != nil && len(pre.AllowHosts) > 0 {
+			emit(providers.Event{
+				Type: providers.EventHostWidened,
+				HostWidening: &providers.HostWideningEventInfo{
+					ToolCallID: tu.ID,
+					ToolName:   tu.Name,
+					URL:        extractToolURL(running.Input),
+					HookOwner:  pre.GrantingHookOwner,
+					HookName:   pre.GrantingHookName,
+					HostsAdded: pre.AllowHosts,
+				},
+			})
+		}
+		// Attach any per-call host-widening grants from permitted
+		// Pre-hooks (v0.8.17). WithExtraAllowedHosts is a no-op when
+		// pre.AllowHosts is empty, so this is cost-free for the common
+		// path. The widened ctx is per-tool-call — sub-agents and the
+		// loop's next iteration see the original ctx without the
+		// extras (CLAUDE.md confused-deputy guidance: grant scope is
+		// one Execute call, no implicit propagation).
+		execCtx := tools.WithExtraAllowedHosts(ctx, pre.AllowHosts)
+		r = executeTool(execCtx, dispatcher, running)
 	}
 
 	post := hookDispatcher.RunPost(ctx, ident, hookTC, hooks.ToolResult{Text: r.Text, IsError: r.IsError})
 	return tools.Result{Text: post.Text, IsError: post.IsError}
+}
+
+// extractToolURL best-effort pulls a URL string out of common tool
+// input shapes (HTTP, WebFetch). Returns "" when no URL field is
+// present — the audit event still emits, with an empty URL field,
+// rather than failing the dispatch. JSON-parse failures are silent
+// for the same reason.
+func extractToolURL(input json.RawMessage) string {
+	if len(input) == 0 {
+		return ""
+	}
+	var probe struct {
+		URL string `json:"url"`
+	}
+	if err := json.Unmarshal(input, &probe); err != nil {
+		return ""
+	}
+	return probe.URL
 }
 
 // executePendingTools runs the assistant turn's tool_calls concurrently,
@@ -780,10 +831,16 @@ func dispatchOneTool(
 // (the existing dispatcher contract); they do NOT abort the batch — the
 // other tools still run, and the model gets to see every result.
 //
-// All emit() calls happen from THIS goroutine (the caller's), reading
-// from a results channel. That preserves the existing single-writer
-// contract for emit and avoids forcing every emit implementation to be
-// thread-safe.
+// emit() concurrency: most emits (EventToolResult below) happen from
+// THIS goroutine, reading from a results channel — single-writer.
+// EXCEPTIONS (v0.8.4 EventChannel* from Channel tool's Execute;
+// v0.8.17 EventHostWidened from dispatchOneTool when a permitted
+// Pre-hook widens) are emitted from worker goroutines inside
+// dispatchOneTool. The production emit (api/http/server.go's
+// makeRecordingEmit) is mutex-protected to handle this; test-side
+// emit collectors used with ToolParallelism > 1 MUST take the same
+// precaution (a plain `func(ev) { events = append(events, ev) }`
+// would data-race on the slice).
 func executePendingTools(
 	ctx context.Context,
 	dispatcher *tools.Dispatcher,
@@ -827,7 +884,7 @@ func executePendingTools(
 				}}
 				return
 			}
-			r := dispatchOneTool(ctx, dispatcher, tu, hookDispatcher, hookIdent)
+			r := dispatchOneTool(ctx, dispatcher, tu, hookDispatcher, hookIdent, emit)
 			resCh <- result{idx: i, tu: tu, res: r}
 		}(i, tu)
 	}

@@ -25,11 +25,19 @@ var ErrNotFound = errors.New("hook not found")
 // Concurrency: Register / Delete take the write lock; Match takes
 // the read lock. Match is on the hot path (every tool call) so the
 // implementation favours read-heavy access patterns.
+//
+// hostWidenPermitted is an operator-yaml-derived set (loaded once at
+// New time, never mutated post-construction). The dispatcher consults
+// it via IsHostWidenPermitted() to decide whether a Pre-hook's
+// allow_hosts is honoured. Read access is lock-free — the set is
+// frozen.
 type Registry struct {
 	mu    sync.RWMutex
 	byID  map[string]*Hook    // id → hook, for DELETE / GET by id
 	byKey map[ownerName]*Hook // (owner, name) → hook, for replace-on-conflict
 	order []string            // ids in registration order; chain order in Match()
+
+	hostWidenPermitted map[string]struct{} // owner UID set; frozen post-construction
 }
 
 type ownerName struct {
@@ -37,12 +45,50 @@ type ownerName struct {
 	Name  string
 }
 
-// NewRegistry constructs an empty Registry.
+// NewRegistry constructs an empty Registry with the default policy
+// (no host-widen permissions). Use NewRegistryWithPermissions to wire
+// the operator-yaml permit list at server New time.
 func NewRegistry() *Registry {
-	return &Registry{
-		byID:  make(map[string]*Hook),
-		byKey: make(map[ownerName]*Hook),
+	return NewRegistryWithPermissions(nil)
+}
+
+// NewRegistryWithPermissions constructs a Registry with the operator's
+// host-widen permit list baked in. permitHostWidenOwners is the
+// exact-match set of registered-hook owner UIDs whose Pre-hook
+// allow_hosts is honoured at dispatch time. nil / empty = no widening
+// permitted for anyone (default-deny stance).
+//
+// The set is built once at construction and never mutated — so the
+// trust boundary is "what the operator declared at boot", not "what
+// some runtime API ended up writing." That property is load-bearing
+// for CLAUDE.md rule #8.
+func NewRegistryWithPermissions(permitHostWidenOwners []string) *Registry {
+	permit := make(map[string]struct{}, len(permitHostWidenOwners))
+	for _, owner := range permitHostWidenOwners {
+		owner = strings.TrimSpace(owner)
+		if owner == "" {
+			continue
+		}
+		permit[owner] = struct{}{}
 	}
+	return &Registry{
+		byID:               make(map[string]*Hook),
+		byKey:              make(map[ownerName]*Hook),
+		hostWidenPermitted: permit,
+	}
+}
+
+// IsHostWidenPermitted reports whether the given hook Owner is on the
+// operator-yaml permit list (exact-string match, no globs). Used by
+// the dispatcher to decide whether to honour a Pre-hook's allow_hosts
+// field. False for any owner not explicitly listed at server boot —
+// including the empty string.
+func (r *Registry) IsHostWidenPermitted(owner string) bool {
+	if r == nil || r.hostWidenPermitted == nil {
+		return false
+	}
+	_, ok := r.hostWidenPermitted[owner]
+	return ok
 }
 
 // Register adds a hook. If a hook with the same (Owner, Name) is
