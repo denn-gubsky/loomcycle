@@ -355,6 +355,34 @@ func InterruptionPolicy(ctx context.Context) InterruptionPolicyValue {
 	return v
 }
 
+// ctxKeyDispatcher is the context key carrying the run's tool
+// dispatcher (v0.8.16). The Interruption tool's mcp_server delivery
+// backend uses this to call the consumer's `mcp__<name>__ask` tool
+// without re-implementing dispatch + retry + bearer substitution.
+//
+// Nil-safe — the helper Dispatcher(ctx) returns nil when no
+// dispatcher is attached; the Interruption tool falls back to its
+// webui code path when the operator config requests
+// mcp_server:<name> but no dispatcher is available.
+type ctxKeyDispatcher struct{}
+
+// WithDispatcher attaches the run's Dispatcher to ctx. Called at run
+// start in the HTTP server (same locations as WithRunID /
+// WithRunIdentity).
+func WithDispatcher(ctx context.Context, d *Dispatcher) context.Context {
+	if d == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, ctxKeyDispatcher{}, d)
+}
+
+// DispatcherFromCtx returns the run's Dispatcher from ctx, or nil
+// when none was attached.
+func DispatcherFromCtx(ctx context.Context) *Dispatcher {
+	v, _ := ctx.Value(ctxKeyDispatcher{}).(*Dispatcher)
+	return v
+}
+
 // ctxKeyRunID is the context key under which the runtime stores
 // the current run's store row ID. The Interruption tool uses this
 // at create time to associate the interrupt row with the run for

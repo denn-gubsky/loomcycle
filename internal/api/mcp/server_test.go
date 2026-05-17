@@ -95,6 +95,10 @@ func (m *mockConnector) DeleteSnapshot(_ context.Context, _ string) error {
 	return errors.New("not implemented")
 }
 
+func (m *mockConnector) InterruptionResolve(_ context.Context, _ connector.InterruptionResolveRequest) (connector.InterruptionResolveResult, error) {
+	return connector.InterruptionResolveResult{}, errors.New("not implemented")
+}
+
 // driveServer runs the server against the given input lines and
 // returns the response frames (one per request). Notifications are
 // captured separately.
@@ -165,7 +169,7 @@ func TestServer_Handshake(t *testing.T) {
 	}
 }
 
-func TestServer_ToolsList_Returns20Tools(t *testing.T) {
+func TestServer_ToolsList_Returns21Tools(t *testing.T) {
 	srv := New(Config{Connector: &mockConnector{}, Logf: func(string, ...any) {}})
 	in := `{"jsonrpc":"2.0","id":1,"method":"tools/list"}` + "\n"
 	resps, _ := driveServer(t, srv, in)
@@ -176,15 +180,15 @@ func TestServer_ToolsList_Returns20Tools(t *testing.T) {
 	if err := json.Unmarshal(resps[0].Result, &result); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if len(result.Tools) != 20 {
-		t.Errorf("got %d tools, want 20", len(result.Tools))
+	if len(result.Tools) != 21 {
+		t.Errorf("got %d tools, want 21 (v0.8.16 adds interruption_resolve)", len(result.Tools))
 	}
 	names := map[string]bool{}
 	for _, td := range result.Tools {
 		names[td.Name] = true
 	}
-	// Spot-check a few across categories.
-	for _, want := range []string{"spawn_run", "register_agent", "memory", "pause_runtime", "create_snapshot"} {
+	// Spot-check a few across categories — including the v0.8.16 addition.
+	for _, want := range []string{"spawn_run", "register_agent", "memory", "pause_runtime", "create_snapshot", "interruption_resolve"} {
 		if !names[want] {
 			t.Errorf("missing tool %q in tools/list", want)
 		}

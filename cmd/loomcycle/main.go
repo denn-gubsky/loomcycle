@@ -387,6 +387,7 @@ func main() {
 	// Slack notifier).
 	interruptionTool := &builtin.Interruption{
 		Bus:               channelBus,
+		Backend:           cfg.Interruption.Backend,
 		DefaultTimeout:    time.Duration(cfg.Interruption.DefaultTimeoutMS) * time.Millisecond,
 		MaxTimeout:        time.Duration(cfg.Interruption.MaxTimeoutMS) * time.Millisecond,
 		HeartbeatInterval: time.Duration(cfg.Interruption.HeartbeatIntervalMS) * time.Millisecond,
