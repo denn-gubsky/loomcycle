@@ -97,6 +97,12 @@ type Config struct {
 	// Empty (zero-value) = backend=webui implicitly.
 	Interruption InterruptionConfig `yaml:"interruption"`
 
+	// Hooks is the v0.8.17 top-level config block for the tool-use
+	// hooks subsystem. Today it only carries the host-widen
+	// permission allowlist; the existing hook-registration HTTP
+	// endpoints (POST /v1/hooks) are unchanged. See HooksConfig.
+	Hooks HooksConfig `yaml:"hooks"`
+
 	// Env-derived; not in YAML.
 	Env Env `yaml:"-"`
 
@@ -191,6 +197,42 @@ type StorageConfig struct {
 // callers that need to resolve relative paths declared in the config
 // (the local-api spec path, additional resource files).
 func (c *Config) ConfigDir() string { return c.configDir }
+
+// HooksConfig is the v0.8.17 top-level config block for the tool-use
+// hooks subsystem. Carries operator-side knobs that can't be set via
+// the dynamic POST /v1/hooks endpoint — they need a trust boundary
+// the registering app can't influence.
+type HooksConfig struct {
+	// PermitHostWiden lists hook owners whose Pre-hook responses are
+	// honoured when they include an `allow_hosts` field. A hook
+	// registers via POST /v1/hooks with an Owner UID; if that Owner
+	// appears here (exact string match, no globs), the dispatcher
+	// will UNION the hook's per-call allow_hosts entries into a
+	// ctx-scoped extra list that HTTP/WebFetch consult at the
+	// host-allowed gate.
+	//
+	// Without an entry here, allow_hosts from any hook is silently
+	// dropped (with a WARN log + metric increment) — preserving the
+	// "operator yaml is the trust-boundary floor" invariant
+	// (CLAUDE.md rule #8): the runtime caller and the model both
+	// cannot enable widening.
+	//
+	// Env-var equivalent: LOOMCYCLE_HOOKS_PERMIT_HOST_WIDEN_OWNERS
+	// (comma-separated). Env wins over yaml when both are set (same
+	// rule as storage / cache blocks).
+	PermitHostWiden HostWidenPermitConfig `yaml:"permit_host_widen"`
+}
+
+// HostWidenPermitConfig is the per-capability slice of HooksConfig
+// for the per-call host-widening capability. Kept as its own struct
+// so future widening axes (memory scopes, channel ACLs) can hang off
+// HooksConfig without flattening the namespace.
+type HostWidenPermitConfig struct {
+	// Owners is the exact-match list of registered-hook owner UIDs
+	// whose allow_hosts entries are honoured. Empty / nil = no
+	// widening permitted (default — the safe stance).
+	Owners []string `yaml:"owners"`
+}
 
 // Defaults are the fall-throughs for agents that don't specify them.
 type Defaults struct {
@@ -1071,6 +1113,17 @@ func Load(path string) (*Config, error) {
 	// Default backend is sqlite (back-compat with pre-Storage configs).
 	if cfg.Storage.Backend == "" {
 		cfg.Storage.Backend = "sqlite"
+	}
+
+	// Hooks block (v0.8.17). The env-var override APPENDS to whatever
+	// yaml already declared rather than replacing, so an operator can
+	// keep their static list in yaml and add an ops-only entry via env
+	// without rewriting the config file. Duplicates are tolerated — the
+	// registry's IsHostWidenPermitted() does set membership.
+	if v := os.Getenv("LOOMCYCLE_HOOKS_PERMIT_HOST_WIDEN_OWNERS"); v != "" {
+		for _, owner := range splitCSV(v) {
+			cfg.Hooks.PermitHostWiden.Owners = append(cfg.Hooks.PermitHostWiden.Owners, owner)
+		}
 	}
 
 	// gRPC server (v0.5.5+). Disabled by default; operator opts in
