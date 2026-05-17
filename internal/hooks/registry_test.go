@@ -232,14 +232,14 @@ func TestRegistry_HostWidenPermit_ExactMatch(t *testing.T) {
 		owner string
 		want  bool
 	}{
-		{"jobs-search-web", true},                  // exact match
-		{"company-research", true},                 // trimmed match
-		{"jobs-search-web-staging", false},         // prefix is NOT a match (no globs)
-		{"jobs-search", false},                     // partial prefix not a match
-		{"web", false},                             // suffix not a match
-		{"", false},                                // empty owner never matches
-		{"unknown", false},                         // not in list
-		{"  jobs-search-web  ", false},             // lookup doesn't trim — operator names canonicalise on registration
+		{"jobs-search-web", true},          // exact match
+		{"company-research", true},         // trimmed match
+		{"jobs-search-web-staging", false}, // prefix is NOT a match (no globs)
+		{"jobs-search", false},             // partial prefix not a match
+		{"web", false},                     // suffix not a match
+		{"", false},                        // empty owner never matches
+		{"unknown", false},                 // not in list
+		{"  jobs-search-web  ", false},     // lookup doesn't trim — operator names canonicalise on registration
 	}
 	for _, tc := range cases {
 		t.Run(tc.owner, func(t *testing.T) {

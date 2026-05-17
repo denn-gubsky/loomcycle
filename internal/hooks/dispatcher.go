@@ -87,9 +87,9 @@ type Identity struct {
 //     is the attribution the audit log shows; operators can correlate
 //     to the metric for the full picture.
 type PreOutcome struct {
-	Input            json.RawMessage
-	Deny             *ToolResult
-	AllowHosts       []string
+	Input             json.RawMessage
+	Deny              *ToolResult
+	AllowHosts        []string
 	GrantingHookOwner string
 	GrantingHookName  string
 }
