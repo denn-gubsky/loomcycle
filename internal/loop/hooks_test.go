@@ -209,3 +209,197 @@ func TestLoop_HooksPreDeny(t *testing.T) {
 		t.Errorf("model saw tool_result = %q, want deny synthetic text", seen)
 	}
 }
+
+// hostCheckingTool simulates the HTTP tool's host-allowed gate at the
+// loop-integration layer: it consults ctx for ExtraAllowedHosts and
+// fails when the URL's host is not in the union of operator-floor +
+// ctx-extras. Lets us prove end-to-end that a permitted Pre-hook's
+// allow_hosts flows through dispatchOneTool into the tool's ctx.
+type hostCheckingTool struct {
+	floor      []string // operator-static allowlist
+	lastInput  string
+	lastExtras []string
+}
+
+func (t *hostCheckingTool) Name() string                 { return "WebFetch" }
+func (t *hostCheckingTool) Description() string          { return "" }
+func (t *hostCheckingTool) InputSchema() json.RawMessage { return json.RawMessage(`{"type":"object"}`) }
+func (t *hostCheckingTool) Execute(ctx context.Context, input json.RawMessage) (tools.Result, error) {
+	t.lastInput = string(input)
+	t.lastExtras = tools.ExtraAllowedHosts(ctx)
+	var args struct {
+		URL string `json:"url"`
+	}
+	_ = json.Unmarshal(input, &args)
+	// Tiny host-matcher: exact match against floor OR against extras.
+	host := args.URL
+	// Strip scheme prefix for the test's sake.
+	for _, prefix := range []string{"https://", "http://"} {
+		if strings.HasPrefix(host, prefix) {
+			host = host[len(prefix):]
+			break
+		}
+	}
+	for i := 0; i < len(host); i++ {
+		if host[i] == '/' {
+			host = host[:i]
+			break
+		}
+	}
+	for _, h := range t.floor {
+		if h == host {
+			return tools.Result{Text: "ok: " + host}, nil
+		}
+	}
+	for _, h := range t.lastExtras {
+		if h == host {
+			return tools.Result{Text: "ok via extras: " + host}, nil
+		}
+	}
+	return tools.Result{IsError: true, Text: "host not in allowlist: " + host}, nil
+}
+
+// TestLoop_HostWiden_PermittedHookApprovesUnknownHost is the end-to-end
+// integration for v0.8.17: a Pre-hook whose owner is on the operator's
+// host-widen permit list returns allow_hosts; the loop attaches them
+// to ctx; the tool sees the widening and succeeds; an
+// EventHostWidened event fires with the right payload.
+func TestLoop_HostWiden_PermittedHookApprovesUnknownHost(t *testing.T) {
+	// Webhook returns the unknown host as an allow_hosts grant.
+	hookSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		out := hooks.PreHookResult{AllowHosts: []string{"unknown.example"}}
+		_ = json.NewEncoder(w).Encode(out)
+	}))
+	defer hookSrv.Close()
+
+	// Registry built with the hook's owner in the permit list.
+	reg := hooks.NewRegistryWithPermissions([]string{"jobs-search-web"})
+	if _, err := reg.Register(&hooks.Hook{
+		Owner: "jobs-search-web", Name: "url-gate", Phase: hooks.PhasePre,
+		CallbackURL: hookSrv.URL, Tools: []string{"WebFetch"},
+	}); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	dispatcher := hooks.NewDispatcher(reg, nil)
+
+	prov := &scriptedProvider{toolCalls: []providers.ToolUse{
+		{ID: "call_1", Name: "WebFetch", Input: json.RawMessage(`{"url":"https://unknown.example/"}`)},
+	}}
+	tool := &hostCheckingTool{floor: []string{"only-allowed.example"}} // unknown.example NOT in floor
+	disp := tools.NewDispatcher([]tools.Tool{tool})
+
+	// Capture emitted events to assert on EventHostWidened.
+	var emitted []providers.Event
+	_, err := Run(context.Background(), RunOptions{
+		Provider:        prov,
+		Model:           "x",
+		Tools:           []tools.Tool{tool},
+		Dispatcher:      disp,
+		Segments:        []PromptSegment{{Role: "user", Content: []PromptContentBlock{{Type: "trusted-text", Text: "go"}}}},
+		ToolParallelism: 4,
+		AgentName:       "job-searcher",
+		Hooks:           dispatcher,
+		OnEvent:         func(ev providers.Event) { emitted = append(emitted, ev) },
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	// Tool succeeded via the extras path.
+	if !strings.Contains(tool.lastInput, "unknown.example") {
+		t.Errorf("tool didn't see expected URL; got %q", tool.lastInput)
+	}
+	if len(tool.lastExtras) != 1 || tool.lastExtras[0] != "unknown.example" {
+		t.Errorf("tool ctx extras = %v, want [unknown.example]", tool.lastExtras)
+	}
+
+	// Find the EventHostWidened event in the emitted stream.
+	var wideningEvent *providers.Event
+	for i := range emitted {
+		if emitted[i].Type == providers.EventHostWidened {
+			wideningEvent = &emitted[i]
+			break
+		}
+	}
+	if wideningEvent == nil {
+		var seenTypes []providers.EventType
+		for _, e := range emitted {
+			seenTypes = append(seenTypes, e.Type)
+		}
+		t.Fatalf("EventHostWidened not emitted; saw events: %v", seenTypes)
+	}
+	if wideningEvent.HostWidening == nil {
+		t.Fatal("EventHostWidened payload (HostWidening) is nil")
+	}
+	w := wideningEvent.HostWidening
+	if w.ToolCallID != "call_1" {
+		t.Errorf("HostWidening.ToolCallID = %q, want call_1", w.ToolCallID)
+	}
+	if w.ToolName != "WebFetch" {
+		t.Errorf("HostWidening.ToolName = %q, want WebFetch", w.ToolName)
+	}
+	if w.URL != "https://unknown.example/" {
+		t.Errorf("HostWidening.URL = %q, want https://unknown.example/", w.URL)
+	}
+	if w.HookOwner != "jobs-search-web" || w.HookName != "url-gate" {
+		t.Errorf("HostWidening attribution = %s/%s, want jobs-search-web/url-gate",
+			w.HookOwner, w.HookName)
+	}
+	if len(w.HostsAdded) != 1 || w.HostsAdded[0] != "unknown.example" {
+		t.Errorf("HostWidening.HostsAdded = %v, want [unknown.example]", w.HostsAdded)
+	}
+}
+
+// TestLoop_HostWiden_UnpermittedHookHasNoEffect is the negative case:
+// same setup but the hook's owner is NOT on the permit list. The
+// dispatcher drops the grant; the tool ctx is empty; the tool fails
+// because the URL isn't in the operator floor; NO EventHostWidened
+// fires.
+func TestLoop_HostWiden_UnpermittedHookHasNoEffect(t *testing.T) {
+	hookSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		out := hooks.PreHookResult{AllowHosts: []string{"unknown.example"}}
+		_ = json.NewEncoder(w).Encode(out)
+	}))
+	defer hookSrv.Close()
+
+	// Registry permits a DIFFERENT owner; our hook's owner is NOT.
+	reg := hooks.NewRegistryWithPermissions([]string{"some-other-owner"})
+	_, _ = reg.Register(&hooks.Hook{
+		Owner: "jobs-search-web", Name: "url-gate", Phase: hooks.PhasePre,
+		CallbackURL: hookSrv.URL, Tools: []string{"WebFetch"},
+	})
+
+	prov := &scriptedProvider{toolCalls: []providers.ToolUse{
+		{ID: "call_1", Name: "WebFetch", Input: json.RawMessage(`{"url":"https://unknown.example/"}`)},
+	}}
+	tool := &hostCheckingTool{floor: []string{"only-allowed.example"}}
+	disp := tools.NewDispatcher([]tools.Tool{tool})
+
+	var emitted []providers.Event
+	_, err := Run(context.Background(), RunOptions{
+		Provider:        prov,
+		Model:           "x",
+		Tools:           []tools.Tool{tool},
+		Dispatcher:      disp,
+		Segments:        []PromptSegment{{Role: "user", Content: []PromptContentBlock{{Type: "trusted-text", Text: "go"}}}},
+		ToolParallelism: 4,
+		AgentName:       "job-searcher",
+		Hooks:           hooks.NewDispatcher(reg, nil),
+		OnEvent:         func(ev providers.Event) { emitted = append(emitted, ev) },
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	// Tool was called but with no extras — the dispatcher dropped the grant.
+	if len(tool.lastExtras) != 0 {
+		t.Errorf("tool ctx extras = %v, want empty (un-permitted owner)", tool.lastExtras)
+	}
+
+	// No EventHostWidened should have fired.
+	for _, e := range emitted {
+		if e.Type == providers.EventHostWidened {
+			t.Errorf("EventHostWidened fired for un-permitted owner: %+v", e.HostWidening)
+		}
+	}
+}

@@ -735,12 +735,20 @@ func executeTool(ctx context.Context, d *tools.Dispatcher, tu providers.ToolUse)
 // O(N) over registered hooks; with no hooks registered this is a
 // nil-slice return and the function shape is identical to pre-hook
 // behaviour.
+//
+// emit is the same callback used by the loop for SSE/store emissions.
+// It's invoked here for the v0.8.17 EventHostWidened audit event,
+// fired ONCE per dispatched call that a permitted Pre-hook widened.
+// emit may be nil (some tests inject a dispatcher without one) —
+// host_widened emission is silently skipped in that case; the
+// widening itself still applies.
 func dispatchOneTool(
 	ctx context.Context,
 	dispatcher *tools.Dispatcher,
 	tu providers.ToolUse,
 	hookDispatcher *hooks.Dispatcher,
 	ident hooks.Identity,
+	emit func(providers.Event),
 ) tools.Result {
 	if hookDispatcher == nil {
 		return executeTool(ctx, dispatcher, tu)
@@ -761,6 +769,23 @@ func dispatchOneTool(
 		if pre.Input != nil {
 			running.Input = pre.Input
 		}
+		// Emit the v0.8.17 host-widened audit event BEFORE executing
+		// the tool, so the SSE stream ordering reads
+		// tool_call → host_widened → tool_result. Persisted via
+		// makeRecordingEmit so the events table carries an audit row.
+		if emit != nil && len(pre.AllowHosts) > 0 {
+			emit(providers.Event{
+				Type: providers.EventHostWidened,
+				HostWidening: &providers.HostWideningEventInfo{
+					ToolCallID: tu.ID,
+					ToolName:   tu.Name,
+					URL:        extractToolURL(running.Input),
+					HookOwner:  pre.GrantingHookOwner,
+					HookName:   pre.GrantingHookName,
+					HostsAdded: pre.AllowHosts,
+				},
+			})
+		}
 		// Attach any per-call host-widening grants from permitted
 		// Pre-hooks (v0.8.17). WithExtraAllowedHosts is a no-op when
 		// pre.AllowHosts is empty, so this is cost-free for the common
@@ -774,6 +799,24 @@ func dispatchOneTool(
 
 	post := hookDispatcher.RunPost(ctx, ident, hookTC, hooks.ToolResult{Text: r.Text, IsError: r.IsError})
 	return tools.Result{Text: post.Text, IsError: post.IsError}
+}
+
+// extractToolURL best-effort pulls a URL string out of common tool
+// input shapes (HTTP, WebFetch). Returns "" when no URL field is
+// present — the audit event still emits, with an empty URL field,
+// rather than failing the dispatch. JSON-parse failures are silent
+// for the same reason.
+func extractToolURL(input json.RawMessage) string {
+	if len(input) == 0 {
+		return ""
+	}
+	var probe struct {
+		URL string `json:"url"`
+	}
+	if err := json.Unmarshal(input, &probe); err != nil {
+		return ""
+	}
+	return probe.URL
 }
 
 // executePendingTools runs the assistant turn's tool_calls concurrently,
@@ -835,7 +878,7 @@ func executePendingTools(
 				}}
 				return
 			}
-			r := dispatchOneTool(ctx, dispatcher, tu, hookDispatcher, hookIdent)
+			r := dispatchOneTool(ctx, dispatcher, tu, hookDispatcher, hookIdent, emit)
 			resCh <- result{idx: i, tu: tu, res: r}
 		}(i, tu)
 	}
