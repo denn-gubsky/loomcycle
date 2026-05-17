@@ -91,6 +91,12 @@ type Config struct {
 	// plus a new "global" scope for cross-tenant fan-out streams.
 	Channels map[string]Channel `yaml:"channels"`
 
+	// Interruption is the v0.8.16 top-level config block for the
+	// Interruption tool. Operator picks the delivery backend
+	// (webui / mcp_server:<name> / cli) and the env-cap defaults.
+	// Empty (zero-value) = backend=webui implicitly.
+	Interruption InterruptionConfig `yaml:"interruption"`
+
 	// Env-derived; not in YAML.
 	Env Env `yaml:"-"`
 
@@ -107,6 +113,48 @@ type LocalAPIConfig struct {
 	SpecPath       string `yaml:"spec"`
 	BaseURL        string `yaml:"base_url"`
 	ToolNamePrefix string `yaml:"tool_name_prefix"`
+}
+
+// InterruptionConfig is the v0.8.16 top-level config block for the
+// Interruption tool. Operator selects which delivery surface the
+// "ask" op uses for human input, plus the timeout / heartbeat env
+// caps. Most fields have env-var equivalents (see Env.Interruption*)
+// for ops who prefer env over yaml; env wins where both are set.
+type InterruptionConfig struct {
+	// Backend selects the delivery surface. Valid values:
+	//   - "webui"             (default) — humans answer via /ui/interrupts
+	//   - "mcp_server:<name>" — loomcycle calls <name>'s MCP server
+	//                            tool (e.g. mcp__myconsumer__ask)
+	//   - "cli"               — local-dev only; a separate process
+	//                            (loomcycle-interrupt-cli) subscribes
+	//                            to _system/interrupts/pending and
+	//                            resolves via the HTTP endpoint
+	// Empty = webui.
+	Backend string `yaml:"backend"`
+
+	// DefaultTimeoutMS is the timeout applied when an ask doesn't
+	// pass timeout_ms. 0 = no timeout (interruption sits pending
+	// indefinitely; operators relying on long-running questions
+	// SHOULD set a sweeper-friendly value).
+	DefaultTimeoutMS int `yaml:"default_timeout_ms"`
+
+	// MaxTimeoutMS is the hard ceiling. timeout_ms above this is
+	// clamped down. 0 = no ceiling. Useful for capping
+	// model-passed timeouts so the model can't pin a run open for
+	// arbitrary time.
+	MaxTimeoutMS int `yaml:"max_timeout_ms"`
+
+	// MaxPendingPerRun caps simultaneous pending interrupts on one
+	// run. 0 = no cap (operator trusts agent yaml's max_pending
+	// alone). Per-agent yaml may narrow further.
+	MaxPendingPerRun int `yaml:"max_pending_per_run"`
+
+	// HeartbeatIntervalMS governs the during-block heartbeat
+	// ticker. 0 = use the 30-second default. Tighter intervals
+	// shorten the post-crash detection window (the sweeper sees
+	// missed heartbeats sooner) at the cost of more DB write
+	// traffic.
+	HeartbeatIntervalMS int `yaml:"heartbeat_interval_ms"`
 }
 
 // StorageConfig selects the Store backend and its connection settings.
@@ -379,6 +427,34 @@ type AgentDef struct {
 	// lists "Context" in allowed_tools, that wins regardless of this
 	// flag (explicit beats default).
 	DisableContext bool `yaml:"disable_context"`
+
+	// Interruption is the v0.8.16 Interruption tool ACL. Default-
+	// deny: an absent block means Enabled is false and every
+	// Interruption op returns is_error with a clear refusal.
+	// Mirror of the substrate-ACL pattern (memory_scopes,
+	// agent_def_scopes, evaluation_scopes) — operator-yaml is the
+	// floor; the model can never enlarge its own access.
+	Interruption AgentInterruptionACL `yaml:"interruption"`
+}
+
+// AgentInterruptionACL is the per-agent v0.8.16 Interruption tool
+// gate. Three fields:
+//
+//   - Enabled gates the tool entirely. False (default) → every op
+//     returns is_error with a "not enabled" refusal.
+//   - Kinds is the allowlist of interrupt kinds this agent may
+//     create. v0.8.16 supports only "question". Empty (when
+//     Enabled=true) defaults to ["question"]. Future "pause" /
+//     "wait_until" / "approval" kinds land here as additive opt-ins
+//     without a yaml shape change.
+//   - MaxPending caps simultaneous pending interrupts on a single
+//     run. 0 = use the operator's global default
+//     (LOOMCYCLE_INTERRUPTION_MAX_PENDING_PER_RUN). The lower of
+//     the agent and operator caps wins.
+type AgentInterruptionACL struct {
+	Enabled    bool     `yaml:"enabled"`
+	Kinds      []string `yaml:"kinds"`
+	MaxPending int      `yaml:"max_pending"`
 }
 
 // Channel is one operator-declared channel in the top-level

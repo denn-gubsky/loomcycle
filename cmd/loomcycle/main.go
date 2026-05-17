@@ -377,6 +377,23 @@ func main() {
 	}
 	allTools = append(allTools, evaluationTool)
 
+	// Interruption tool (v0.8.16) — human-in-the-loop primitive. Three
+	// ops (ask / notify / cancel) gated by per-agent
+	// `interruption: {enabled, kinds, max_pending}` yaml. The tool
+	// blocks via channels.Bus, so it reuses the same bus instance the
+	// Channel tool's long-poll subscribe uses. SystemPublisher (set
+	// below alongside Store) carries the external `_system/interrupts/
+	// pending` / `resolved` signal for non-run consumers (Web UI inbox,
+	// Slack notifier).
+	interruptionTool := &builtin.Interruption{
+		Bus:               channelBus,
+		DefaultTimeout:    time.Duration(cfg.Interruption.DefaultTimeoutMS) * time.Millisecond,
+		MaxTimeout:        time.Duration(cfg.Interruption.MaxTimeoutMS) * time.Millisecond,
+		HeartbeatInterval: time.Duration(cfg.Interruption.HeartbeatIntervalMS) * time.Millisecond,
+		MaxPendingPerRun:  cfg.Interruption.MaxPendingPerRun,
+	}
+	allTools = append(allTools, interruptionTool)
+
 	// Context tool (v0.8.7). Read-only runtime introspection. The Tools
 	// field is back-filled with the FULL allTools slice after every
 	// other registration (MCP + localapi) so doc/tools ops reflect the
@@ -571,6 +588,7 @@ func main() {
 	agentDefTool.Store = storeIface
 	evaluationTool.Store = storeIface
 	contextTool.Store = storeIface
+	interruptionTool.Store = storeIface
 	// Back-fill Context tool's catalog with the FINAL allTools slice
 	// (including MCP-served tools registered above) so doc/tools ops
 	// reflect the complete runtime catalog. Must happen AFTER every
@@ -591,6 +609,15 @@ func main() {
 		Scheduler: channelScheduler,
 	}
 	srv.SetSystemPublisher(sysPublisher)
+	// Wire the SystemPublisher onto the Interruption tool too — same
+	// instance, so _system/interrupts/* publishes from inside the
+	// tool wake the same Channel long-poll subscribers.
+	interruptionTool.SystemPublisher = sysPublisher
+	// v0.8.16 — wire the same Bus to the server so the resolve
+	// handler can wake the blocked tool's bus.Wait via the
+	// "intr:<id>" key. Without this the resolve writes the row but
+	// the tool re-checks storage only when its own timer fires.
+	srv.SetInterruptionBus(channelBus)
 
 	// v0.8.6 heartbeat runner — one goroutine per `_system/heartbeat-*`
 	// (or any other `publisher: system` + `period:` channel) declared

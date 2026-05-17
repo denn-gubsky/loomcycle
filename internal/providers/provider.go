@@ -294,6 +294,25 @@ const (
 	// subscribe that returns 100 messages, expect 100
 	// EventChannelDelivery events emitted in order.
 	EventChannelDelivery EventType = "channel_delivery"
+
+	// EventInterruptionPending signals that the v0.8.16 Interruption
+	// tool just created a pending interrupt and the agent's loop is
+	// about to block on a human (or other delivery surface) resolve.
+	// Emitted from inside the tool's Execute() via the ctx-attached
+	// event emitter (tools.EventEmitter). The Interruption field
+	// carries the structured payload — interrupt_id, kind, question,
+	// options, priority, expires_at — enough for the Web UI to render
+	// without a separate fetch.
+	//
+	// Only `ask` ops emit this event; `notify` (fire-and-forget) and
+	// `cancel` (terminating) don't block, so SSE consumers don't see
+	// a corresponding "pending" event. There is intentionally NO
+	// EventInterruptionResolved sibling event on the run's SSE stream
+	// because the run is BLOCKED inside the Interruption tool when
+	// the resolve arrives — there's no SSE writer pumping at that
+	// moment. The external `_system/interrupts/resolved` channel
+	// publishes the resolve notification for non-run consumers.
+	EventInterruptionPending EventType = "interruption_pending"
 )
 
 // Event is one streamed datum from a provider call (or, after the loop layer
@@ -325,6 +344,12 @@ type Event struct {
 	// channel-activity dashboards can filter on Type and key the
 	// row by (channel, message_id) without two parsers.
 	Channel *ChannelEventInfo `json:"channel,omitempty"`
+
+	// Interruption carries the structured payload on
+	// EventInterruptionPending (v0.8.16). Nil on all other event
+	// types. Renders directly into the Web UI's modal/sidebar
+	// without a follow-up fetch.
+	Interruption *InterruptionEventInfo `json:"interruption,omitempty"`
 
 	// StopReason is set on the final assistant Event of a provider call:
 	// "end_turn" | "tool_use" | "max_tokens" | "stop_sequence".
@@ -439,6 +464,37 @@ type ChannelEventInfo struct {
 	// MessageID of THIS event (since delivery events fire per
 	// message in order). Empty on EventChannelPublish.
 	Cursor string `json:"cursor,omitempty"`
+}
+
+// InterruptionEventInfo is the structured payload on
+// EventInterruptionPending (v0.8.16). Carries enough for the Web UI
+// or external dashboard to render the question without a follow-up
+// fetch of the interrupt row.
+type InterruptionEventInfo struct {
+	// InterruptID is the row's primary key. Same shape as the
+	// minter: "intr_<16hex unixNanos><8hex rand>".
+	InterruptID string `json:"interrupt_id"`
+	// Kind is the discriminator. v0.8.16 emits only "question";
+	// future "pause" / "wait_until" / "approval" land as additive
+	// values.
+	Kind string `json:"kind"`
+	// Question is the prompt text for kind=question. Empty for
+	// future non-question kinds.
+	Question string `json:"question,omitempty"`
+	// Options is the JSON-encoded array of option strings for
+	// kind=question (NULL/empty = free-text answer). Verbatim from
+	// the interrupt row; the Web UI parses it.
+	Options json.RawMessage `json:"options,omitempty"`
+	// Context is the optional hint string the agent provides ("47
+	// records pending"). Empty when the agent didn't pass context.
+	Context string `json:"context,omitempty"`
+	// Priority is "low" / "normal" / "high" — informational, drives
+	// UI badge styling.
+	Priority string `json:"priority"`
+	// ExpiresAt is the absolute UTC timestamp at which the
+	// interruption will time out. RFC3339. Empty when no timeout
+	// was set.
+	ExpiresAt string `json:"expires_at,omitempty"`
 }
 
 // ToolUse is the model's request to invoke a tool.
