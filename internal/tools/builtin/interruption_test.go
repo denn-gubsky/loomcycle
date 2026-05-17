@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -318,9 +319,18 @@ func TestInterruption_EmitsPendingSSEEvent(t *testing.T) {
 	tool, ctx, _, cleanup := interruptionFixture(t)
 	defer cleanup()
 
-	var events []providers.Event
+	// The emitter fires from the goroutine that calls tool.Execute below;
+	// the assertion loop runs from the test goroutine. Both touch the
+	// `events` slice, so guard it with a mutex — without this, -race
+	// flags the unsynchronised slice access (CI run 25993107457).
+	var (
+		eventsMu sync.Mutex
+		events   []providers.Event
+	)
 	ctx = tools.WithEventEmitter(ctx, func(e providers.Event) {
+		eventsMu.Lock()
 		events = append(events, e)
+		eventsMu.Unlock()
 	})
 
 	resCh := make(chan tools.Result, 1)
@@ -330,9 +340,15 @@ func TestInterruption_EmitsPendingSSEEvent(t *testing.T) {
 	}()
 	time.Sleep(50 * time.Millisecond)
 
+	// Snapshot under the lock so the iteration below operates on a
+	// stable slice header that won't race with further emitter writes.
+	eventsMu.Lock()
+	snapshot := append([]providers.Event(nil), events...)
+	eventsMu.Unlock()
+
 	// At least one EventInterruptionPending must have fired.
 	found := false
-	for _, e := range events {
+	for _, e := range snapshot {
 		if e.Type == providers.EventInterruptionPending && e.Interruption != nil {
 			found = true
 			if e.Interruption.Question != "Hi?" {
