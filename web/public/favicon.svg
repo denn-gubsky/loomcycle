@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" role="img">
+  <title>Loomcycle</title>
+  <rect width="32" height="32" rx="6" fill="#FAF8F3"/>
+  <path d="M 16 5 C 25 5, 28 12, 28 20 C 28 27, 23 29, 16 29 C 9 29, 4 27, 4 20 C 4 12, 7 5, 16 5 Z"
+        fill="#E8923D" stroke="#1A1A2E" stroke-width="2" stroke-linejoin="round"/>
+  <ellipse cx="11" cy="15" rx="2.3" ry="3" fill="#1A1A2E"/>
+  <ellipse cx="21" cy="15" rx="2.3" ry="3" fill="#1A1A2E"/>
+  <circle cx="10.3" cy="13.8" r="1" fill="#FAF8F3"/>
+  <circle cx="20.3" cy="13.8" r="1" fill="#FAF8F3"/>
+  <path d="M 11 22 Q 16 26 21 22" stroke="#1A1A2E" stroke-width="2" fill="none" stroke-linecap="round"/>
+</svg>
