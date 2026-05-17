@@ -224,3 +224,69 @@ export async function cancelAgent(agentId: string, reason?: string): Promise<unk
   }
   return resp.json();
 }
+
+// ---- Interruption (v0.8.16) ----------------------------------------
+
+export interface InterruptRow {
+  interrupt_id: string;
+  run_id: string;
+  kind: string;
+  status: string;
+  question?: string;
+  options?: string[]; // server stores as JSON array
+  context_data?: string;
+  priority: string;
+  answer?: string;
+  created_at: string;
+  expires_at?: string;
+  resolved_at?: string;
+  resolved_by?: string;
+  user_id?: string;
+  agent_id?: string;
+  agent_name?: string;
+}
+
+export interface InterruptListResponse {
+  interrupts: InterruptRow[];
+  total: number;
+}
+
+export function listUserInterrupts(
+  userID: string,
+  status: string = "pending",
+): Promise<InterruptListResponse> {
+  return jsonFetch<InterruptListResponse>(
+    `/v1/users/${encodeURIComponent(userID)}/interrupts?status=${encodeURIComponent(status)}`,
+  );
+}
+
+export function listRunInterrupts(
+  runID: string,
+  status: string = "pending",
+): Promise<InterruptListResponse> {
+  return jsonFetch<InterruptListResponse>(
+    `/v1/runs/${encodeURIComponent(runID)}/interrupts?status=${encodeURIComponent(status)}`,
+  );
+}
+
+export async function resolveInterrupt(
+  runID: string,
+  interruptID: string,
+  answer: string,
+  resolvedBy: string = "webui",
+): Promise<unknown> {
+  const resp = await fetch(
+    `/v1/runs/${encodeURIComponent(runID)}/interrupts/${encodeURIComponent(interruptID)}/resolve`,
+    {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "Content-Type": "application/json", Accept: "application/json" },
+      body: JSON.stringify({ kind: "question", answer, resolved_by: resolvedBy }),
+    },
+  );
+  if (!resp.ok) {
+    const body = await resp.text();
+    throw new Error(`${resp.status} ${resp.statusText}: ${body.slice(0, 200)}`);
+  }
+  return resp.json();
+}

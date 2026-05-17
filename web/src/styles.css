@@ -596,3 +596,188 @@ pre {
   font-size: 12px;
   max-width: 400px;
 }
+
+/* ---- Interruption inbox (v0.8.16) ---- */
+
+.interrupt-inbox .toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+}
+
+.interrupt-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.interrupt-row {
+  padding: 16px;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.interrupt-row.priority-high {
+  border-left: 4px solid var(--failed);
+}
+.interrupt-row.priority-low {
+  border-left: 4px solid var(--bg-soft);
+}
+
+.interrupt-meta {
+  display: flex;
+  gap: 12px;
+  font-size: 12px;
+  color: var(--fg-soft);
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.interrupt-question {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--fg);
+}
+
+.interrupt-context {
+  font-size: 13px;
+  color: var(--fg-soft);
+  font-style: italic;
+}
+
+.interrupt-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.interrupt-actions button {
+  padding: 6px 14px;
+  background: var(--running);
+  color: white;
+  border: 0;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.interrupt-actions button:hover {
+  filter: brightness(1.1);
+}
+
+.expires {
+  color: var(--failed);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---- Answer modal ---- */
+
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+}
+
+.modal {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 24px;
+  max-width: 600px;
+  width: 90%;
+  max-height: 80vh;
+  overflow: auto;
+}
+
+.modal h3 {
+  margin: 0 0 12px 0;
+  font-size: 16px;
+}
+
+.modal-context {
+  color: var(--fg-soft);
+  font-style: italic;
+  font-size: 13px;
+  margin-bottom: 16px;
+}
+
+.modal-options {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
+.modal-options .option {
+  padding: 12px 16px;
+  background: var(--bg-soft);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  cursor: pointer;
+  text-align: left;
+  font-size: 14px;
+}
+
+.modal-options .option:hover {
+  border-color: var(--running);
+}
+
+.modal-options .option.selected {
+  background: var(--running);
+  color: white;
+  border-color: var(--running);
+}
+
+.modal-textarea {
+  width: 100%;
+  font-family: inherit;
+  font-size: 14px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--fg);
+  margin-bottom: 16px;
+  box-sizing: border-box;
+  resize: vertical;
+}
+
+.modal-err {
+  color: var(--failed);
+  font-size: 13px;
+  margin-bottom: 12px;
+}
+
+.modal-buttons {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.modal-buttons button {
+  padding: 8px 16px;
+  border: 1px solid var(--border);
+  background: var(--bg-soft);
+  color: var(--fg);
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.modal-buttons button.primary {
+  background: var(--running);
+  color: white;
+  border-color: var(--running);
+}
+
+.modal-buttons button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}

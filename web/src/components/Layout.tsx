@@ -57,6 +57,7 @@ export default function Layout() {
         </div>
         <nav className="nav-tabs">
           <Link to="/">runs</Link>
+          <Link to="/interrupts">interrupts</Link>
           <Link to="/memory">memory</Link>
         </nav>
         <div className="user-picker">
