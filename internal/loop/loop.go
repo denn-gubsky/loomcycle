@@ -761,7 +761,15 @@ func dispatchOneTool(
 		if pre.Input != nil {
 			running.Input = pre.Input
 		}
-		r = executeTool(ctx, dispatcher, running)
+		// Attach any per-call host-widening grants from permitted
+		// Pre-hooks (v0.8.17). WithExtraAllowedHosts is a no-op when
+		// pre.AllowHosts is empty, so this is cost-free for the common
+		// path. The widened ctx is per-tool-call — sub-agents and the
+		// loop's next iteration see the original ctx without the
+		// extras (CLAUDE.md confused-deputy guidance: grant scope is
+		// one Execute call, no implicit propagation).
+		execCtx := tools.WithExtraAllowedHosts(ctx, pre.AllowHosts)
+		r = executeTool(execCtx, dispatcher, running)
 	}
 
 	post := hookDispatcher.RunPost(ctx, ident, hookTC, hooks.ToolResult{Text: r.Text, IsError: r.IsError})
