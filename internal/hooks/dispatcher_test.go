@@ -267,6 +267,48 @@ func TestDispatcher_PreAllowHosts_UnpermittedOwnerDropped(t *testing.T) {
 	}
 }
 
+// TestDispatcher_PreAllowHosts_FailClosedTimeoutDiscardsPriorGrants
+// pins the symmetric case to DenyDiscardsPriorGrants: a permitted
+// hook contributes allow_hosts, then a FailClosed hook TIMES OUT and
+// the fail-mode synthesises a deny. The outcome must be a clean deny
+// with NO leaked widening — the same security property as explicit
+// deny, but driven via the error-induced fail-closed path. Without
+// this test, a future refactor that "preserves AllowHosts across
+// FailClosed denials for observability" would silently widen policy
+// for a tool call that was supposed to be aborted.
+func TestDispatcher_PreAllowHosts_FailClosedTimeoutDiscardsPriorGrants(t *testing.T) {
+	granter := newFakeHook(t, `{"allow_hosts":["acme.com"]}`)
+	slowFailClosed := newFakeHook(t, ``)
+	slowFailClosed.delay = 200 * time.Millisecond
+
+	r := NewRegistryWithPermissions([]string{"jobs-search-web"})
+	mustRegister(t, r, &Hook{
+		Owner: "jobs-search-web", Name: "grant", Phase: PhasePre,
+		CallbackURL: granter.srv.URL, Tools: []string{"WebFetch"},
+	})
+	mustRegister(t, r, &Hook{
+		Owner: "jobs-search-web", Name: "slow", Phase: PhasePre,
+		CallbackURL: slowFailClosed.srv.URL, Tools: []string{"WebFetch"},
+		FailMode: FailClosed, TimeoutMs: 50,
+	})
+	d := NewDispatcher(r, nil)
+
+	out := d.RunPre(context.Background(),
+		Identity{Agent: "a"},
+		ToolCall{ID: "t1", Name: "WebFetch", Input: json.RawMessage(`{}`)},
+	)
+	if out.Deny == nil {
+		t.Fatal("expected deny (FailClosed hook timed out), got pass-through")
+	}
+	if !out.Deny.IsError {
+		t.Errorf("deny.IsError = false, want true")
+	}
+	if len(out.AllowHosts) != 0 {
+		t.Errorf("AllowHosts = %v, want empty (FailClosed-induced deny must discard prior grants — same property as explicit deny)",
+			out.AllowHosts)
+	}
+}
+
 // TestDispatcher_PreAllowHosts_DenyDiscardsPriorGrants: a permitted
 // hook contributes allow_hosts, then a later hook denies. The
 // outcome must be a clean deny with NO leaked widening — denied

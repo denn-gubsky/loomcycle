@@ -831,10 +831,16 @@ func extractToolURL(input json.RawMessage) string {
 // (the existing dispatcher contract); they do NOT abort the batch — the
 // other tools still run, and the model gets to see every result.
 //
-// All emit() calls happen from THIS goroutine (the caller's), reading
-// from a results channel. That preserves the existing single-writer
-// contract for emit and avoids forcing every emit implementation to be
-// thread-safe.
+// emit() concurrency: most emits (EventToolResult below) happen from
+// THIS goroutine, reading from a results channel — single-writer.
+// EXCEPTIONS (v0.8.4 EventChannel* from Channel tool's Execute;
+// v0.8.17 EventHostWidened from dispatchOneTool when a permitted
+// Pre-hook widens) are emitted from worker goroutines inside
+// dispatchOneTool. The production emit (api/http/server.go's
+// makeRecordingEmit) is mutex-protected to handle this; test-side
+// emit collectors used with ToolParallelism > 1 MUST take the same
+// precaution (a plain `func(ev) { events = append(events, ev) }`
+// would data-race on the slice).
 func executePendingTools(
 	ctx context.Context,
 	dispatcher *tools.Dispatcher,
