@@ -1895,10 +1895,10 @@ var validChannelSemantics = map[string]bool{
 // channels; loop / runner / pause-state handlers for event-driven
 // channels).
 var eventDrivenSystemChannels = map[string]bool{
-	"_system/runtime-state":   true, // v0.8.9 pause/resume/restore
-	"_system/provider-events": true, // provider fallback / cache-invalidated
-	// v0.8.8 Question tool channels are agent-published (not
-	// publisher: system) so they don't appear here.
+	"_system/runtime-state":       true, // v0.8.9 pause/resume/restore
+	"_system/provider-events":     true, // provider fallback / cache-invalidated
+	"_system/interrupts/pending":  true, // v0.8.16 Interruption.ask publishes
+	"_system/interrupts/resolved": true, // v0.8.16 resolve endpoint + sweeper publishes
 }
 
 // eventDrivenSystemChannelNames returns the deterministic list for

@@ -430,9 +430,15 @@ func (it *Interruption) execNotify(ctx context.Context, policy tools.Interruptio
 		return errResult("notify: missing required field: message"), nil
 	}
 	if !kindAllowed("question", policy.Kinds) {
-		// Same gate as ask — operator opts into question-shaped
-		// interactions, which includes notify (a degenerate ask).
-		return errResult("notify: kind 'question' is not in this agent's allowed kinds"), nil
+		// notify writes a row with kind=question (a degenerate
+		// no-answer ask), so it gates on the same "question" kind
+		// as ask. An operator that wants notify-but-not-ask
+		// granularity must wait for a future v0.9.x split; v0.8.16
+		// treats notify as a degenerate ask deliberately, because
+		// both surfaces share the same delivery channels +
+		// audit-row shape and splitting them would proliferate the
+		// kind enum without a real use case.
+		return errResult("notify: kind 'question' is not in this agent's allowed kinds (interruption.kinds must include 'question')"), nil
 	}
 
 	ident := tools.RunIdentity(ctx)

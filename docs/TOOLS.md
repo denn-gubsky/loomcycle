@@ -589,3 +589,104 @@ DELETE /v1/hooks/{id}          // remove a registration
 - Webhook payloads include `agent_id` and `user_id` for correlation but **do NOT** include the agent's prompt or message history.
 
 References: `internal/hooks/`, `internal/api/http/hooks.go` (registration routes), `internal/loop/loop.go::dispatchOneTool` (chain invocation).
+
+## The `Interruption` tool — human-in-the-loop primitive (v0.8.16)
+
+The human bridge in the v0.8.x substrate. Three ops:
+
+```
+Interruption.ask(question, options?, context?, timeout_ms?, priority?)
+  → blocks the loop; tool result carries the human's answer
+Interruption.notify(message, priority?)
+  → fire-and-forget message
+Interruption.cancel(interruption_id)
+  → agent unblocks a previously-asked question it answered itself
+```
+
+### Why "Interruption" not "Question"?
+
+Generalises the previously-planned Question tool with a broader option set — v0.8.16 only writes `kind: question`, but the schema's `kind` column + the `_system/interrupts/*` channel namespace are forward-compatible for future `pause` / `wait_until` / `approval` kinds without reopening the design.
+
+### Three delivery surfaces
+
+Operator picks one via `interruption.backend:`:
+
+| Backend | Where the human sees it | When to pick it |
+|---|---|---|
+| `webui` (default) | `/ui/interrupts` inbox in the embedded Web UI | Production. The cookie-authed session matches the run's `user_id`. |
+| `mcp_server:<name>` | Consumer's own MCP server tool (`mcp__<name>__ask`) | When the consumer already runs an MCP server (e.g. jobs-search-agent's `/api/mcp`) and wants to integrate question rendering into its own UI. |
+| `cli` | Local-dev stdin/stdout (operator runs a separate `loomcycle-interrupt-cli`-style script that subscribes to `_system/interrupts/pending` and posts the resolve endpoint) | Local development. |
+
+The agent-facing tool surface is identical across all three; only the resolve path differs.
+
+### Per-agent ACL
+
+```yaml
+agents:
+  batch-processor:
+    allowed_tools: [Read, Memory, Interruption, Context]
+    interruption:
+      enabled: true
+      kinds: [question]      # v0.8.16 only value; future: "pause", "approval"
+      max_pending: 1         # per-run cap; 0 = use operator default
+```
+
+Default-deny: missing the `interruption` block means every op returns `is_error` with a clear "not enabled" refusal. Same shape as `memory_scopes` / `agent_def_scopes` / `evaluation_scopes`.
+
+### Operator config
+
+```yaml
+interruption:
+  backend: webui                     # webui | mcp_server:<name> | cli
+  default_timeout_ms: 3600000        # 1h — when an `ask` doesn't pass timeout_ms
+  max_timeout_ms: 86400000           # 24h — hard ceiling
+  max_pending_per_run: 10            # operator global cap; agent yaml narrows
+  heartbeat_interval_ms: 30000       # how often the during-block heartbeat ticks
+```
+
+The during-block heartbeat is load-bearing — without it, a question that waits an hour gets reaped by the v0.5.0 sweeper (default `StaleAfter` 10 min, calibrated for tool-dispatch durations). The Interruption tool spawns a dedicated ticker that fires `Store.UpdateHeartbeat` directly while blocked.
+
+### System channels
+
+The signal flow rides on the v0.8.6 `_system/*` namespace — operator declares two channels in the top-level `channels:` block:
+
+```yaml
+channels:
+  _system/interrupts/pending:
+    scope: user
+    semantic: broadcast
+    publisher: system
+    default_ttl: 3600
+  _system/interrupts/resolved:
+    scope: user
+    semantic: broadcast
+    publisher: system
+    default_ttl: 86400
+```
+
+The Web UI inbox subscribes to `_system/interrupts/pending` via the existing Channel subscribe path. The resolve endpoint publishes to `_system/interrupts/resolved` so external dashboards / Slack bots can render the audit trail.
+
+### Wire surface
+
+| Endpoint | Purpose |
+|---|---|
+| `POST /v1/runs/{run_id}/interrupts/{interrupt_id}/resolve` | Submit an answer. Validates options (422), expiry (410), already-terminal (409). |
+| `GET /v1/runs/{run_id}/interrupts?status=<pending\|resolved\|...>` | List per-run interrupts (audit trail). |
+| `GET /v1/users/{user_id}/interrupts?status=pending` | User-scoped inbox (drives the Web UI). |
+| `mcp__loomcycle__interruption_resolve` | 21st LoomCycle MCP meta-tool. Lets an external orchestrator (Claude Code) act as the answerer for any pending interrupt. |
+
+### Storage
+
+New `interrupts` table (migration 0011). Columns: `interrupt_id`, `run_id`, `kind` (closed enum), `status` (`pending`/`resolved`/`timed_out`/`cancelled`), `question`, `options` (JSON array), `context_data`, `priority`, `answer`, `answer_meta` (JSON; future-kind discriminated), timestamps, `resolved_by`, and denormalised `user_id` / `agent_id` / `agent_name` for the listing queries.
+
+### SSE event
+
+`EventInterruptionPending` (type `interruption_pending`) on the run's SSE stream with `interruption: {interrupt_id, kind, question, options, context, priority, expires_at}`. Web UI consumers use this for real-time modal rendering without a follow-up fetch.
+
+### Architecture references
+
+- `doc-internal/rfcs/interruption-tool.md` — RFC bundling concept + 5-PR implementation plan
+- `internal/tools/builtin/interruption.go` — tool implementation (Bus.Wait blocking + heartbeat ticker + ACL gate)
+- `internal/api/http/server.go::handleResolveInterrupt` — resolve endpoint
+- `internal/api/mcp/handlers.go::handleInterruptionResolve` — 21st MCP meta-tool
+

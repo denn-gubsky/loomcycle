@@ -910,6 +910,7 @@ func (s *Store) scanInterruptRow(row pgRowScanner) (store.InterruptRow, error) {
 }
 
 func (s *Store) InterruptResolve(ctx context.Context, interruptID, answer, resolvedBy string, answerMeta json.RawMessage) error {
+	now := time.Now()
 	tag, err := s.pool.Exec(ctx, `
 		UPDATE interrupts
 		SET status      = $1,
@@ -917,12 +918,14 @@ func (s *Store) InterruptResolve(ctx context.Context, interruptID, answer, resol
 		    answer_meta = $3::jsonb,
 		    resolved_at = $4,
 		    resolved_by = $5
-		WHERE interrupt_id = $6 AND status = $7
+		WHERE interrupt_id = $6
+		  AND status = $7
+		  AND (expires_at IS NULL OR expires_at > $8)
 	`,
 		store.InterruptStatusResolved,
 		answer, nullableJSONArg(answerMeta),
-		time.Now(), resolvedBy,
-		interruptID, store.InterruptStatusPending,
+		now, resolvedBy,
+		interruptID, store.InterruptStatusPending, now,
 	)
 	if err != nil {
 		return fmt.Errorf("interrupts: resolve: %w", err)

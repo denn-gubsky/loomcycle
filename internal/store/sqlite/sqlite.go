@@ -2470,6 +2470,7 @@ func (s *Store) InterruptResolve(ctx context.Context, interruptID, answer, resol
 	// RowsAffected==0 distinguishes "row missing" (still 0 affected)
 	// from "row already terminal" (also 0 affected) — we resolve the
 	// ambiguity with a follow-up SELECT.
+	now := time.Now()
 	res, err := s.db.ExecContext(ctx, `
 		UPDATE interrupts
 		SET status      = ?,
@@ -2477,27 +2478,38 @@ func (s *Store) InterruptResolve(ctx context.Context, interruptID, answer, resol
 		    answer_meta = ?,
 		    resolved_at = ?,
 		    resolved_by = ?
-		WHERE interrupt_id = ? AND status = ?
+		WHERE interrupt_id = ?
+		  AND status = ?
+		  AND (expires_at IS NULL OR expires_at > ?)
 	`,
 		store.InterruptStatusResolved,
 		answer, meta,
-		time.Now().UnixNano(), resolvedBy,
-		interruptID, store.InterruptStatusPending,
+		now.UnixNano(), resolvedBy,
+		interruptID, store.InterruptStatusPending, now.UnixNano(),
 	)
 	if err != nil {
 		return fmt.Errorf("interrupts: resolve: %w", err)
 	}
 	n, _ := res.RowsAffected()
 	if n == 0 {
-		// Disambiguate: not-found vs already-terminal.
+		// Disambiguate three failure modes:
+		//   - missing row → ErrNotFound
+		//   - already-terminal row → ErrInterruptAlreadyTerminal
+		//   - still-pending row whose expires_at < now → also
+		//     ErrInterruptAlreadyTerminal (the row is on track to
+		//     timed_out via the sweeper; treat the same as "already
+		//     terminal" from the caller's POV).
 		var existing string
-		err := s.db.QueryRowContext(ctx, `SELECT status FROM interrupts WHERE interrupt_id = ?`, interruptID).Scan(&existing)
+		var expiresAtNS sql.NullInt64
+		err := s.db.QueryRowContext(ctx, `SELECT status, expires_at FROM interrupts WHERE interrupt_id = ?`, interruptID).Scan(&existing, &expiresAtNS)
 		if err == sql.ErrNoRows {
 			return &store.ErrNotFound{Kind: "interrupt", ID: interruptID}
 		}
 		if err != nil {
 			return fmt.Errorf("interrupts: resolve probe: %w", err)
 		}
+		_ = existing
+		_ = expiresAtNS
 		return store.ErrInterruptAlreadyTerminal
 	}
 	return nil

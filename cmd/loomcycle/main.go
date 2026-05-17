@@ -724,6 +724,19 @@ func main() {
 		log.Printf("channels: sweeper disabled (LOOMCYCLE_CHANNELS_SWEEP_MS=0)")
 	}
 
+	// v0.8.16 Interruption tool TTL sweeper. Marks pending rows
+	// whose expires_at < now as timed_out. Distinct from the
+	// in-process timeout path (bus.Wait's own timer fires + the
+	// tool calls InterruptFinish itself) — this sweeper catches
+	// rows orphaned by a process crash mid-block, so the inbox
+	// view doesn't keep showing dead interrupts as pending forever.
+	// Cadence reuses the channels sweeper's interval — both are
+	// "keep the substrate tables bounded" jobs at the same priority.
+	if cfg.Env.ChannelsSweepInterval > 0 && storeIface != nil {
+		go runInterruptsSweeper(bgCtx, storeIface, cfg.Env.ChannelsSweepInterval)
+		log.Printf("interrupts: sweeper interval=%s", cfg.Env.ChannelsSweepInterval)
+	}
+
 	// v0.8.x process-resource metrics sampler. Default OFF;
 	// operator opts in via LOOMCYCLE_METRICS_ENABLED=1. When
 	// enabled, samples loomcycle's CPU + memory usage at
@@ -1219,6 +1232,32 @@ func runMemorySweeper(ctx context.Context, s store.Store, interval time.Duration
 			}
 			if swept > 0 {
 				log.Printf("memory sweep: deleted %d expired row(s)", swept)
+			}
+		}
+	}
+}
+
+// runInterruptsSweeper is the v0.8.16 mirror of runChannelsSweeper
+// for the interrupts table. Transitions pending rows whose
+// expires_at < now to status=timed_out. Distinct from the in-process
+// timeout path (bus.Wait's own timer + the tool's InterruptFinish
+// call) — this catches rows orphaned by a process crash mid-block
+// so the user inbox doesn't show ghost-pending interrupts forever.
+func runInterruptsSweeper(ctx context.Context, s store.Store, interval time.Duration) {
+	t := time.NewTicker(interval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			swept, err := s.InterruptSweepExpired(ctx)
+			if err != nil {
+				log.Printf("interrupts sweep: %v", err)
+				continue
+			}
+			if swept > 0 {
+				log.Printf("interrupts sweep: timed_out %d expired row(s)", swept)
 			}
 		}
 	}

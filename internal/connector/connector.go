@@ -146,11 +146,11 @@ type Connector interface {
 
 // InterruptionResolveRequest is the input to Connector.InterruptionResolve.
 type InterruptionResolveRequest struct {
-	RunID         string `json:"run_id"`
-	InterruptID   string `json:"interrupt_id"`
-	Kind          string `json:"kind"`           // "question" in v0.8.16; future: "pause" / "wait_until" / "approval"
-	Answer        string `json:"answer"`         // for kind=question
-	ResolvedBy    string `json:"resolved_by"`    // operator attribution; default "mcp" when surfaced via LoomCycle MCP
+	RunID       string `json:"run_id"`
+	InterruptID string `json:"interrupt_id"`
+	Kind        string `json:"kind"`        // "question" in v0.8.16; future: "pause" / "wait_until" / "approval"
+	Answer      string `json:"answer"`      // for kind=question
+	ResolvedBy  string `json:"resolved_by"` // operator attribution; default "mcp" when surfaced via LoomCycle MCP
 }
 
 // InterruptionResolveResult is what the resolve op returns. The

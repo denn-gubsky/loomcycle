@@ -218,6 +218,25 @@ channels:
   # _system/runtime-state:   { scope: global, semantic: broadcast, default_ttl: 7d, publisher: system }
   # _system/provider-events: { scope: global, semantic: broadcast, default_ttl: 24h, publisher: system }
 
+  # v0.8.16 Interruption tool — the signal flow that the
+  # Interruption tool publishes to. pending = "human needs to
+  # answer this"; resolved = "answer recorded, run resuming". Web UI
+  # subscribes to both; consumer-side notifiers (Slack bots etc.)
+  # can subscribe to pending to alert the human.
+  # _system/interrupts/pending:  { scope: user, semantic: broadcast, default_ttl: 3600,  publisher: system }
+  # _system/interrupts/resolved: { scope: user, semantic: broadcast, default_ttl: 86400, publisher: system }
+
+# ─── v0.8.16 Interruption tool ───────────────────────────────────────
+# Human-in-the-loop primitive. Operator picks the delivery surface;
+# per-agent yaml grants access. See docs/TOOLS.md "The Interruption
+# tool" for the full surface.
+interruption:
+  backend: webui                  # webui | mcp_server:<name> | cli
+  default_timeout_ms: 3600000     # 1h — when an `ask` doesn't pass timeout_ms
+  max_timeout_ms: 86400000        # 24h — hard ceiling on a single ask
+  max_pending_per_run: 10         # operator-global cap; per-agent yaml narrows
+  heartbeat_interval_ms: 30000    # during-block heartbeat cadence (sweeper-safe)
+
 # ─── Default routing for agents that don't specify their own ──────────
 # Used by agents that declare neither `tier:` nor an explicit
 # `provider:`+`model:` pin. v0.6.x back-compat path; tier-based agents
