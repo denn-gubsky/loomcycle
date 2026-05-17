@@ -410,6 +410,31 @@ func streamEvents(ctx context.Context, body io.ReadCloser, out chan<- providers.
 	// at end-of-stream without buffering the user's view of progress.
 	var textBuf strings.Builder
 
+	// coalesceBuf batches consecutive content deltas into phrase-sized
+	// EventText emissions. Ollama (both local /api/chat and ollama.com
+	// cloud) streams one token per chunk — pre-fix the events table
+	// recorded one row per token, the SSE wire emitted one frame per
+	// token, and the Web UI rendered one card per token. Mirrors the
+	// openai driver's 64-byte coalesce (PR #28); we land it separately
+	// here because deepseek-v4-pro served via the ollama-cloud
+	// subscription path goes through THIS driver, not the openai/deepseek
+	// pair, so PR #28's fix didn't reach it.
+	//
+	// Flush points: ≥64 bytes accumulated, newline in the current
+	// delta (preserve paragraph breaks), before any tool_call emission
+	// (preserves the "text precedes tool_call" ordering loop.go expects),
+	// and end-of-stream / scanner-error / done frame.
+	var coalesceBuf strings.Builder
+	const textCoalesceMin = 64
+	flushText := func() bool {
+		if coalesceBuf.Len() == 0 {
+			return true
+		}
+		s := coalesceBuf.String()
+		coalesceBuf.Reset()
+		return send(providers.Event{Type: providers.EventText, Text: s})
+	}
+
 	for scanner.Scan() {
 		line := bytes.TrimSpace(scanner.Bytes())
 		if len(line) == 0 {
@@ -430,7 +455,18 @@ func streamEvents(ctx context.Context, body io.ReadCloser, out chan<- providers.
 		}
 		if c.Message.Content != "" {
 			textBuf.WriteString(c.Message.Content)
-			if !send(providers.Event{Type: providers.EventText, Text: c.Message.Content}) {
+			coalesceBuf.WriteString(c.Message.Content)
+			if coalesceBuf.Len() >= textCoalesceMin || strings.ContainsRune(c.Message.Content, '\n') {
+				if !flushText() {
+					return
+				}
+			}
+		}
+		if len(c.Message.ToolCalls) > 0 {
+			// Flush buffered text BEFORE tool_call emissions so the loop's
+			// "text precedes tool_call within an iteration" invariant holds
+			// (loop.go:629 prepends iterText into the assistant block).
+			if !flushText() {
 				return
 			}
 		}
@@ -465,7 +501,19 @@ func streamEvents(ctx context.Context, body io.ReadCloser, out chan<- providers.
 		}
 	}
 	if err := scanner.Err(); err != nil {
+		// Flush any buffered text before the error event so bytes the
+		// wire delivered aren't silently dropped on mid-stream read
+		// failure. Mirrors the openai driver's same-position flush.
+		_ = flushText()
 		send(providers.Event{Type: providers.EventError, Error: "stream read: " + err.Error()})
+		return
+	}
+
+	// End-of-stream flush. Covers the common case where the final
+	// content delta brought the buffer to <64 bytes and contained no
+	// newline (e.g. a short final sentence). Without this, that tail
+	// would be silently dropped.
+	if !flushText() {
 		return
 	}
 
