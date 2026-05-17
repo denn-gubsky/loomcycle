@@ -26,7 +26,7 @@ The v0.8.x substrate arc closes with the **Interruption** tool — the human-in-
 | **Web UI `/ui/interrupts` inbox** | ✅ React route polling the user-scoped listing endpoint. Answer modal supports option-list (button choices) + free-text (textarea). |
 | **Tests** | ✅ 12 storage contract tests + 11 tool unit tests + 1 sentinel-error test. `go test ./...` clean. PRs #119 + #120 + #121 + #122 + this PR. |
 
-**Origin note.** Generalised from the parked v0.8.16 "Question tool" design following the 2026-05-16 LangChain comparison RFC. LangGraph's `interrupt()` is more general than HITL — it covers debug step-through, scheduled wakes, approval gates. Position 2 was selected: same v0.8.16 ops (ask/notify/cancel) but namespace + storage + channel namespace generalised so future kinds slot in additively. Full design: `doc-internal/rfcs/interruption-tool.md`.
+**Origin note.** Generalised from the previously-planned "Question tool" design with a broader option set. v0.8.16 ships `ask` / `notify` / `cancel` (the original Question shape); the schema's `kind` column + the `_system/interrupts/*` channel namespace are forward-compatible for future kinds (debug step-through, scheduled wakes, approval gates) without reopening the design.
 
 ---
 

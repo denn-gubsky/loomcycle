@@ -605,7 +605,7 @@ Interruption.cancel(interruption_id)
 
 ### Why "Interruption" not "Question"?
 
-Generalises the LangGraph `interrupt()` primitive — v0.8.16 only writes `kind: question`, but the schema's `kind` column + the `_system/interrupts/*` channel namespace are forward-compatible for future `pause` / `wait_until` / `approval` kinds without reopening the design. See `doc-internal/rfcs/interruption-tool.md` Part A § 8 for the forward-compat proof.
+Generalises the previously-planned Question tool with a broader option set — v0.8.16 only writes `kind: question`, but the schema's `kind` column + the `_system/interrupts/*` channel namespace are forward-compatible for future `pause` / `wait_until` / `approval` kinds without reopening the design.
 
 ### Three delivery surfaces
 
