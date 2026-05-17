@@ -55,7 +55,7 @@ export default function AgentDetail() {
     }
   }, [events.length, agent?.status]);
 
-  const renderedEvents = useMemo(() => events.filter(visible), [events]);
+  const renderedEvents = useMemo(() => coalesceText(events.filter(visible)), [events]);
 
   if (!agentId) {
     return <div className="empty">Missing agent id in URL.</div>;
@@ -132,6 +132,42 @@ export default function AgentDetail() {
 function visible(ev: TranscriptEvent): boolean {
   const t = ev.event?.type ?? ev.type;
   return t !== "started" && t !== "usage" && t !== "session" && t !== "agent" && t !== "user_input";
+}
+
+// coalesceText folds runs of consecutive `text` (and `thinking`) events
+// into a single merged event for rendering. Providers that stream one
+// token per delta (DeepSeek, Ollama Cloud) used to produce hundreds of
+// single-token cards per run — illegible in the operator dashboard.
+// The backend now coalesces at the driver level (PR addressing
+// r_935214273f141fb9 on 2026-05-17), but the UI keeps its own pass for
+// two reasons: (1) historical transcripts persisted pre-fix still
+// contain per-token rows that we want to render compactly, (2) the
+// driver's 64-byte threshold still produces ~phrase-sized chunks
+// which look better as one paragraph than as many cards.
+//
+// The merged event reuses the FIRST input event's seq (React key) and
+// ts_ns (timestamp label). text is concatenated in order, preserving
+// whitespace exactly as the provider wrote it. Only consecutive
+// same-type events merge; a tool_call between two text events is a
+// hard boundary.
+function coalesceText(events: TranscriptEvent[]): TranscriptEvent[] {
+  const out: TranscriptEvent[] = [];
+  for (const ev of events) {
+    const last = out[out.length - 1];
+    const kind = ev.event?.type ?? ev.type;
+    const lastKind = last ? (last.event?.type ?? last.type) : "";
+    if (last && (kind === "text" || kind === "thinking") && kind === lastKind) {
+      // Append text to the existing merged event. Clone rather than
+      // mutate so React's reference equality picks up the change.
+      out[out.length - 1] = {
+        ...last,
+        event: { ...last.event, text: (last.event?.text ?? "") + (ev.event?.text ?? "") },
+      };
+    } else {
+      out.push(ev);
+    }
+  }
+  return out;
 }
 
 // EventCard renders one transcript row as a collapsed panel by

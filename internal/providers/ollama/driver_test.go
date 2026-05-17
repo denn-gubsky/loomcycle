@@ -601,3 +601,104 @@ func TestDriver_NonOKErrorUsesProviderID(t *testing.T) {
 		t.Errorf("err = %q, want prefix \"ollama-local 503:\"", err.Error())
 	}
 }
+
+// Regression: Ollama (both local /api/chat and ollama.com cloud) streams
+// one token per chunk. Pre-fix the driver emitted one EventText per
+// chunk, producing one events-table row per token and one Web UI card
+// per token (job-searcher r_935214273f141fb9 on 2026-05-17 logged 317
+// text events for a single run). The driver now coalesces consecutive
+// content deltas into ≥64-byte EventText emissions; this test asserts
+// that 14 single-token deltas (~70 chars total) emit ≤2 EventText
+// events instead of 14, and that the joined text is byte-identical to
+// the wire content.
+func TestStreamCoalescesPerTokenContentDeltas(t *testing.T) {
+	tokens := []string{
+		"Now", " let", " me", " load", " the", " relevance",
+		"-filter", "ing", " skill", " and", " then", " start",
+		" searching", ".",
+	}
+	var frames []string
+	for _, tok := range tokens {
+		frames = append(frames,
+			`{"model":"llama3.1","message":{"role":"assistant","content":`+jsonString(tok)+`},"done":false}`+"\n",
+		)
+	}
+	frames = append(frames,
+		`{"model":"llama3.1","message":{"role":"assistant","content":""},"done":true,"done_reason":"stop","prompt_eval_count":10,"eval_count":14}`+"\n",
+	)
+
+	srv := fakeStream(t, frames)
+	defer srv.Close()
+
+	d := New("", "", srv.URL, streamhttp.Options{}, nil)
+	ch, err := d.Call(context.Background(), providers.Request{Model: "llama3.1"})
+	if err != nil {
+		t.Fatalf("Call: %v", err)
+	}
+
+	var joined strings.Builder
+	textCount := 0
+	for ev := range ch {
+		if ev.Type == providers.EventText {
+			textCount++
+			joined.WriteString(ev.Text)
+		}
+	}
+
+	want := strings.Join(tokens, "")
+	if joined.String() != want {
+		t.Errorf("joined text = %q, want %q", joined.String(), want)
+	}
+	// 14 tokens × ~5 chars = ~70 chars total. With a 64-byte threshold
+	// the buffer should flush exactly once during the stream (when it
+	// crosses 64) and once more at end-of-stream for the tail. So
+	// textCount ∈ {1, 2}; anything ≥3 means the coalesce regressed.
+	if textCount > 2 {
+		t.Errorf("EventText count = %d, want ≤2 (coalesce regressed; pre-fix would emit %d)", textCount, len(tokens))
+	}
+	if textCount < 1 {
+		t.Errorf("EventText count = %d, want ≥1 (text was silently dropped)", textCount)
+	}
+}
+
+// Regression: a newline in a content delta must force a flush so
+// paragraph breaks survive coalescing. Without this, a 60-byte buffer
+// would swallow the newline boundary and concatenate two paragraphs
+// into one EventText.
+func TestStreamCoalesceFlushesOnNewline(t *testing.T) {
+	frames := []string{
+		`{"model":"x","message":{"role":"assistant","content":"first paragraph\n"},"done":false}` + "\n",
+		`{"model":"x","message":{"role":"assistant","content":"second paragraph"},"done":true,"done_reason":"stop","prompt_eval_count":1,"eval_count":2}` + "\n",
+	}
+	srv := fakeStream(t, frames)
+	defer srv.Close()
+	d := New("", "", srv.URL, streamhttp.Options{}, nil)
+	ch, err := d.Call(context.Background(), providers.Request{Model: "x"})
+	if err != nil {
+		t.Fatalf("Call: %v", err)
+	}
+
+	var events []string
+	for ev := range ch {
+		if ev.Type == providers.EventText {
+			events = append(events, ev.Text)
+		}
+	}
+	if len(events) != 2 {
+		t.Fatalf("EventText count = %d, want 2 (newline must split); got events %#v", len(events), events)
+	}
+	if events[0] != "first paragraph\n" {
+		t.Errorf("event[0] = %q, want %q (newline-bearing delta should flush including the newline)", events[0], "first paragraph\n")
+	}
+	if events[1] != "second paragraph" {
+		t.Errorf("event[1] = %q, want %q (post-newline delta should land in a fresh buffer flushed at end-of-stream)", events[1], "second paragraph")
+	}
+}
+
+// jsonString quotes a string as a JSON literal — handy for building
+// stream frames inline above without dragging in encoding/json
+// just to write a token.
+func jsonString(s string) string {
+	b, _ := json.Marshal(s)
+	return string(b)
+}
