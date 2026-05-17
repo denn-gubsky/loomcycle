@@ -121,6 +121,19 @@ func Run(t *testing.T, factory Factory) {
 		{"MetricsRunSummaryWithSamples", testMetricsRunSummaryWithSamples},
 		{"MetricsRunSummaryInFlight", testMetricsRunSummaryInFlight},
 		{"MetricsRunSummaryNotFound", testMetricsRunSummaryNotFound},
+		// v0.8.16 Interruption tool storage layer
+		{"InterruptCreateAndGet", testInterruptCreateAndGet},
+		{"InterruptGetNotFound", testInterruptGetNotFound},
+		{"InterruptResolveSetsStatusAndFields", testInterruptResolveSetsStatusAndFields},
+		{"InterruptResolveRejectsAlreadyTerminal", testInterruptResolveRejectsAlreadyTerminal},
+		{"InterruptResolveRoundTripsAnswerMeta", testInterruptResolveRoundTripsAnswerMeta},
+		{"InterruptFinishSetsTimedOut", testInterruptFinishSetsTimedOut},
+		{"InterruptFinishRejectsAlreadyTerminal", testInterruptFinishRejectsAlreadyTerminal},
+		{"InterruptListByRunFiltersByStatus", testInterruptListByRunFiltersByStatus},
+		{"InterruptListByUserFiltersByStatus", testInterruptListByUserFiltersByStatus},
+		{"InterruptCountPendingByRunIsAccurateUnderConcurrency", testInterruptCountPendingByRunIsAccurateUnderConcurrency},
+		{"InterruptSweepExpiredMarksOnlyExpiredPending", testInterruptSweepExpiredMarksOnlyExpiredPending},
+		{"InterruptIDIsMonotonicByTime", testInterruptIDIsMonotonicByTime},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -2177,5 +2190,363 @@ func testMetricsRunSummaryNotFound(t *testing.T, s store.Store) {
 	}
 	if nf != nil && nf.Kind != "run" {
 		t.Errorf("Kind = %q, want run", nf.Kind)
+	}
+}
+
+// ---- Interruption (v0.8.16) ----------------------------------------
+
+// makeRunForInterrupt creates a session + run with given identity
+// fields. Returns the run_id. Helper so each interruption test
+// doesn't repeat the boilerplate.
+func makeRunForInterrupt(t *testing.T, s store.Store, userID, agentID, agentName string) (sessID, runID string) {
+	t.Helper()
+	ctx := context.Background()
+	sess, err := s.CreateSession(ctx, "t", agentName, userID)
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	run, err := s.CreateRun(ctx, sess.ID, store.RunIdentity{
+		AgentID: agentID,
+		UserID:  userID,
+	})
+	if err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+	return sess.ID, run.ID
+}
+
+func testInterruptCreateAndGet(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	_, runID := makeRunForInterrupt(t, s, "u_alice", "a_intr_1", "batch-processor")
+
+	id := store.MintInterruptID(time.Now())
+	row := store.InterruptRow{
+		InterruptID: id,
+		RunID:       runID,
+		Kind:        store.InterruptKindQuestion,
+		Question:    "Proceed with delete?",
+		Options:     json.RawMessage(`["Yes","No"]`),
+		ContextData: "47 records pending",
+		Priority:    store.InterruptPriorityNormal,
+		UserID:      "u_alice",
+		AgentID:     "a_intr_1",
+		AgentName:   "batch-processor",
+		CreatedAt:   time.Now(),
+		ExpiresAt:   time.Now().Add(1 * time.Hour),
+	}
+	got, err := s.InterruptCreate(ctx, row)
+	if err != nil {
+		t.Fatalf("InterruptCreate: %v", err)
+	}
+	if got != id {
+		t.Errorf("returned id = %q, want %q", got, id)
+	}
+
+	r, err := s.InterruptGet(ctx, id)
+	if err != nil {
+		t.Fatalf("InterruptGet: %v", err)
+	}
+	if r.Status != store.InterruptStatusPending {
+		t.Errorf("Status = %q, want pending", r.Status)
+	}
+	if r.Question != "Proceed with delete?" {
+		t.Errorf("Question = %q", r.Question)
+	}
+	if string(r.Options) == "" || string(r.Options) == "null" {
+		t.Errorf("Options round-trip empty: %q", string(r.Options))
+	}
+	if r.UserID != "u_alice" {
+		t.Errorf("UserID = %q, want u_alice (denormalised at create)", r.UserID)
+	}
+	if r.ExpiresAt.IsZero() {
+		t.Error("ExpiresAt round-tripped zero; want non-zero")
+	}
+}
+
+func testInterruptGetNotFound(t *testing.T, s store.Store) {
+	_, err := s.InterruptGet(context.Background(), "intr_doesnotexist")
+	var nf *store.ErrNotFound
+	if !errors.As(err, &nf) {
+		t.Errorf("got %v (%T), want *store.ErrNotFound", err, err)
+	}
+	if nf != nil && nf.Kind != "interrupt" {
+		t.Errorf("Kind = %q, want interrupt", nf.Kind)
+	}
+}
+
+func testInterruptResolveSetsStatusAndFields(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	_, runID := makeRunForInterrupt(t, s, "u_alice", "a_intr_r", "batch")
+
+	id := store.MintInterruptID(time.Now())
+	if _, err := s.InterruptCreate(ctx, store.InterruptRow{
+		InterruptID: id, RunID: runID, UserID: "u_alice",
+		Question: "Q?", Priority: store.InterruptPriorityNormal,
+		CreatedAt: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s.InterruptResolve(ctx, id, "Yes", store.InterruptResolvedByWebUI, nil); err != nil {
+		t.Fatalf("InterruptResolve: %v", err)
+	}
+	r, _ := s.InterruptGet(ctx, id)
+	if r.Status != store.InterruptStatusResolved {
+		t.Errorf("Status = %q, want resolved", r.Status)
+	}
+	if r.Answer != "Yes" {
+		t.Errorf("Answer = %q, want Yes", r.Answer)
+	}
+	if r.ResolvedBy != store.InterruptResolvedByWebUI {
+		t.Errorf("ResolvedBy = %q", r.ResolvedBy)
+	}
+	if r.ResolvedAt.IsZero() {
+		t.Error("ResolvedAt is zero; want set")
+	}
+}
+
+func testInterruptResolveRejectsAlreadyTerminal(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	_, runID := makeRunForInterrupt(t, s, "u_alice", "a_intr_dup", "batch")
+
+	id := store.MintInterruptID(time.Now())
+	_, _ = s.InterruptCreate(ctx, store.InterruptRow{
+		InterruptID: id, RunID: runID, UserID: "u_alice",
+		Question: "Q?", CreatedAt: time.Now(),
+	})
+	if err := s.InterruptResolve(ctx, id, "Yes", store.InterruptResolvedByWebUI, nil); err != nil {
+		t.Fatal(err)
+	}
+	// Second resolve must fail with ErrInterruptAlreadyTerminal.
+	err := s.InterruptResolve(ctx, id, "No", store.InterruptResolvedByWebUI, nil)
+	if !errors.Is(err, store.ErrInterruptAlreadyTerminal) {
+		t.Errorf("got %v, want ErrInterruptAlreadyTerminal", err)
+	}
+}
+
+func testInterruptResolveRoundTripsAnswerMeta(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	_, runID := makeRunForInterrupt(t, s, "u_alice", "a_intr_meta", "approver")
+
+	id := store.MintInterruptID(time.Now())
+	_, _ = s.InterruptCreate(ctx, store.InterruptRow{
+		InterruptID: id, RunID: runID, UserID: "u_alice",
+		Question: "Approve delete?", CreatedAt: time.Now(),
+	})
+	meta := json.RawMessage(`{"approved":true,"reason":"verified manually"}`)
+	if err := s.InterruptResolve(ctx, id, "Yes", store.InterruptResolvedByWebUI, meta); err != nil {
+		t.Fatal(err)
+	}
+	r, _ := s.InterruptGet(ctx, id)
+	if len(r.AnswerMeta) == 0 {
+		t.Fatal("AnswerMeta round-tripped empty")
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(r.AnswerMeta, &decoded); err != nil {
+		t.Fatalf("AnswerMeta unmarshal: %v (raw %q)", err, string(r.AnswerMeta))
+	}
+	if decoded["approved"] != true || decoded["reason"] != "verified manually" {
+		t.Errorf("AnswerMeta decoded = %+v", decoded)
+	}
+}
+
+func testInterruptFinishSetsTimedOut(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	_, runID := makeRunForInterrupt(t, s, "u_alice", "a_intr_fin", "batch")
+
+	id := store.MintInterruptID(time.Now())
+	_, _ = s.InterruptCreate(ctx, store.InterruptRow{
+		InterruptID: id, RunID: runID, UserID: "u_alice",
+		Question: "Q?", CreatedAt: time.Now(),
+	})
+	if err := s.InterruptFinish(ctx, id, store.InterruptStatusTimedOut, store.InterruptResolvedByTimeout); err != nil {
+		t.Fatalf("InterruptFinish: %v", err)
+	}
+	r, _ := s.InterruptGet(ctx, id)
+	if r.Status != store.InterruptStatusTimedOut {
+		t.Errorf("Status = %q, want timed_out", r.Status)
+	}
+	if r.Answer != "" {
+		t.Errorf("Answer = %q on timeout path; want empty", r.Answer)
+	}
+}
+
+func testInterruptFinishRejectsAlreadyTerminal(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	_, runID := makeRunForInterrupt(t, s, "u_alice", "a_intr_fin_dup", "batch")
+
+	id := store.MintInterruptID(time.Now())
+	_, _ = s.InterruptCreate(ctx, store.InterruptRow{
+		InterruptID: id, RunID: runID, UserID: "u_alice",
+		Question: "Q?", CreatedAt: time.Now(),
+	})
+	_ = s.InterruptResolve(ctx, id, "Yes", store.InterruptResolvedByWebUI, nil)
+	err := s.InterruptFinish(ctx, id, store.InterruptStatusCancelled, store.InterruptResolvedByAgentCancel)
+	if !errors.Is(err, store.ErrInterruptAlreadyTerminal) {
+		t.Errorf("got %v, want ErrInterruptAlreadyTerminal", err)
+	}
+}
+
+func testInterruptListByRunFiltersByStatus(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	_, runID := makeRunForInterrupt(t, s, "u_alice", "a_intr_list", "batch")
+
+	// Three interrupts: one pending, one resolved, one cancelled.
+	id1 := store.MintInterruptID(time.Now())
+	_, _ = s.InterruptCreate(ctx, store.InterruptRow{InterruptID: id1, RunID: runID, UserID: "u_alice", Question: "Q1", CreatedAt: time.Now()})
+	id2 := store.MintInterruptID(time.Now().Add(time.Millisecond))
+	_, _ = s.InterruptCreate(ctx, store.InterruptRow{InterruptID: id2, RunID: runID, UserID: "u_alice", Question: "Q2", CreatedAt: time.Now().Add(time.Millisecond)})
+	_ = s.InterruptResolve(ctx, id2, "ok", store.InterruptResolvedByWebUI, nil)
+	id3 := store.MintInterruptID(time.Now().Add(2 * time.Millisecond))
+	_, _ = s.InterruptCreate(ctx, store.InterruptRow{InterruptID: id3, RunID: runID, UserID: "u_alice", Question: "Q3", CreatedAt: time.Now().Add(2 * time.Millisecond)})
+	_ = s.InterruptFinish(ctx, id3, store.InterruptStatusCancelled, store.InterruptResolvedByAgentCancel)
+
+	all, err := s.InterruptListByRun(ctx, runID, "")
+	if err != nil {
+		t.Fatalf("List all: %v", err)
+	}
+	if len(all) != 3 {
+		t.Errorf("list-all returned %d rows, want 3", len(all))
+	}
+
+	pending, _ := s.InterruptListByRun(ctx, runID, store.InterruptStatusPending)
+	if len(pending) != 1 || pending[0].InterruptID != id1 {
+		t.Errorf("pending filter returned %d rows; want 1 (id=%s)", len(pending), id1)
+	}
+}
+
+func testInterruptListByUserFiltersByStatus(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	_, runA := makeRunForInterrupt(t, s, "u_bob", "a_intr_ub_1", "agent-a")
+	_, runB := makeRunForInterrupt(t, s, "u_bob", "a_intr_ub_2", "agent-b")
+	_, runC := makeRunForInterrupt(t, s, "u_other", "a_intr_uo_1", "agent-c")
+
+	id1 := store.MintInterruptID(time.Now())
+	_, _ = s.InterruptCreate(ctx, store.InterruptRow{InterruptID: id1, RunID: runA, UserID: "u_bob", Question: "Q from A", CreatedAt: time.Now()})
+	id2 := store.MintInterruptID(time.Now().Add(time.Millisecond))
+	_, _ = s.InterruptCreate(ctx, store.InterruptRow{InterruptID: id2, RunID: runB, UserID: "u_bob", Question: "Q from B", CreatedAt: time.Now().Add(time.Millisecond)})
+	// Unrelated user — must not appear in u_bob's listing.
+	id3 := store.MintInterruptID(time.Now().Add(2 * time.Millisecond))
+	_, _ = s.InterruptCreate(ctx, store.InterruptRow{InterruptID: id3, RunID: runC, UserID: "u_other", Question: "Q from C", CreatedAt: time.Now().Add(2 * time.Millisecond)})
+
+	rows, err := s.InterruptListByUser(ctx, "u_bob", store.InterruptStatusPending)
+	if err != nil {
+		t.Fatalf("ListByUser: %v", err)
+	}
+	if len(rows) != 2 {
+		t.Errorf("got %d rows for u_bob, want 2", len(rows))
+	}
+	for _, r := range rows {
+		if r.UserID != "u_bob" {
+			t.Errorf("listing leaked row from %q", r.UserID)
+		}
+	}
+}
+
+func testInterruptCountPendingByRunIsAccurateUnderConcurrency(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	_, runID := makeRunForInterrupt(t, s, "u_alice", "a_intr_count", "batch")
+
+	const N = 20
+	var wg sync.WaitGroup
+	wg.Add(N)
+	for i := 0; i < N; i++ {
+		go func(i int) {
+			defer wg.Done()
+			id := store.MintInterruptID(time.Now())
+			_, _ = s.InterruptCreate(ctx, store.InterruptRow{
+				InterruptID: id, RunID: runID, UserID: "u_alice",
+				Question: "Q?", CreatedAt: time.Now(),
+			})
+		}(i)
+	}
+	wg.Wait()
+	n, err := s.InterruptCountPendingByRun(ctx, runID)
+	if err != nil {
+		t.Fatalf("InterruptCountPendingByRun: %v", err)
+	}
+	if n != N {
+		t.Errorf("count = %d, want %d under parallel inserts", n, N)
+	}
+}
+
+func testInterruptSweepExpiredMarksOnlyExpiredPending(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	_, runID := makeRunForInterrupt(t, s, "u_alice", "a_intr_sweep", "batch")
+
+	// Row 1: expired pending — should be swept.
+	id1 := store.MintInterruptID(time.Now())
+	_, _ = s.InterruptCreate(ctx, store.InterruptRow{
+		InterruptID: id1, RunID: runID, UserID: "u_alice", Question: "Q1",
+		CreatedAt: time.Now().Add(-2 * time.Hour),
+		ExpiresAt: time.Now().Add(-1 * time.Hour),
+	})
+	// Row 2: future expiry — must NOT be swept.
+	id2 := store.MintInterruptID(time.Now())
+	_, _ = s.InterruptCreate(ctx, store.InterruptRow{
+		InterruptID: id2, RunID: runID, UserID: "u_alice", Question: "Q2",
+		CreatedAt: time.Now(),
+		ExpiresAt: time.Now().Add(1 * time.Hour),
+	})
+	// Row 3: no expiry — must NOT be swept.
+	id3 := store.MintInterruptID(time.Now())
+	_, _ = s.InterruptCreate(ctx, store.InterruptRow{
+		InterruptID: id3, RunID: runID, UserID: "u_alice", Question: "Q3",
+		CreatedAt: time.Now(),
+		// ExpiresAt zero → no expiry
+	})
+	// Row 4: expired but already resolved — must NOT change status.
+	id4 := store.MintInterruptID(time.Now())
+	_, _ = s.InterruptCreate(ctx, store.InterruptRow{
+		InterruptID: id4, RunID: runID, UserID: "u_alice", Question: "Q4",
+		CreatedAt: time.Now().Add(-2 * time.Hour),
+		ExpiresAt: time.Now().Add(-1 * time.Hour),
+	})
+	_ = s.InterruptResolve(ctx, id4, "answered before expiry", store.InterruptResolvedByWebUI, nil)
+
+	n, err := s.InterruptSweepExpired(ctx)
+	if err != nil {
+		t.Fatalf("InterruptSweepExpired: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("swept %d rows, want 1", n)
+	}
+	r1, _ := s.InterruptGet(ctx, id1)
+	if r1.Status != store.InterruptStatusTimedOut {
+		t.Errorf("Row1 status = %q, want timed_out", r1.Status)
+	}
+	if r1.ResolvedBy != store.InterruptResolvedByTimeout {
+		t.Errorf("Row1 ResolvedBy = %q, want timeout", r1.ResolvedBy)
+	}
+	r2, _ := s.InterruptGet(ctx, id2)
+	if r2.Status != store.InterruptStatusPending {
+		t.Errorf("Row2 status = %q, want pending (future expiry)", r2.Status)
+	}
+	r3, _ := s.InterruptGet(ctx, id3)
+	if r3.Status != store.InterruptStatusPending {
+		t.Errorf("Row3 status = %q, want pending (no expiry)", r3.Status)
+	}
+	r4, _ := s.InterruptGet(ctx, id4)
+	if r4.Status != store.InterruptStatusResolved {
+		t.Errorf("Row4 status = %q, want resolved (must not re-finalise)", r4.Status)
+	}
+}
+
+func testInterruptIDIsMonotonicByTime(t *testing.T, s store.Store) {
+	// Pure unit-style check on the MintInterruptID format — IDs minted
+	// later in time must lex-compare greater than earlier IDs. The
+	// `interrupts_by_run_status` index orders by created_at internally,
+	// but ID monotonicity is the operator-debugging-eyeball property
+	// described on MintInterruptID's docstring.
+	t1 := time.Date(2026, 5, 16, 10, 0, 0, 0, time.UTC)
+	t2 := t1.Add(time.Microsecond)
+	id1 := store.MintInterruptID(t1)
+	id2 := store.MintInterruptID(t2)
+	if !(id1 < id2) {
+		t.Errorf("MintInterruptID not monotonic by time: %s ≥ %s (t1=%v t2=%v)", id1, id2, t1, t2)
+	}
+	const wantLen = len("intr_") + 16 + 8
+	if len(id1) != wantLen {
+		t.Errorf("id length = %d, want %d", len(id1), wantLen)
 	}
 }

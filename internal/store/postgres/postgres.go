@@ -757,6 +757,299 @@ func (s *Store) DynamicAgentSweep(ctx context.Context) (int, error) {
 	return int(tag.RowsAffected()), nil
 }
 
+// ---- Interruption (v0.8.16) ----------------------------------------
+
+// nullableTimePtr returns a *time.Time pointing at t when non-zero,
+// nil otherwise. Postgres expires_at / resolved_at are nullable
+// TIMESTAMPTZ; pgx writes SQL NULL on nil pointers.
+func nullableTimePtr(t time.Time) any {
+	if t.IsZero() {
+		return nil
+	}
+	return t
+}
+
+// nullableStringArg returns the string when non-empty, nil otherwise
+// (writes SQL NULL via pgx).
+func nullableStringArg(s string) any {
+	if s == "" {
+		return nil
+	}
+	return s
+}
+
+// nullableJSONArg returns the raw JSON as a string when non-empty,
+// nil otherwise. Postgres column type is JSONB; pgx-side we send TEXT
+// + cast via the ::jsonb in the INSERT/UPDATE query.
+func nullableJSONArg(b json.RawMessage) any {
+	if len(b) == 0 {
+		return nil
+	}
+	return string(b)
+}
+
+func (s *Store) InterruptCreate(ctx context.Context, r store.InterruptRow) (string, error) {
+	if r.InterruptID == "" {
+		return "", fmt.Errorf("interrupts: interrupt_id required")
+	}
+	if r.RunID == "" {
+		return "", fmt.Errorf("interrupts: run_id required")
+	}
+	if r.Kind == "" {
+		r.Kind = store.InterruptKindQuestion
+	}
+	if r.Status == "" {
+		r.Status = store.InterruptStatusPending
+	}
+	if r.Priority == "" {
+		r.Priority = store.InterruptPriorityNormal
+	}
+	createdAt := r.CreatedAt
+	if createdAt.IsZero() {
+		createdAt = time.Now()
+	}
+	_, err := s.pool.Exec(ctx, `
+		INSERT INTO interrupts (
+			interrupt_id, run_id, kind, status,
+			question, options, context_data, priority,
+			answer, answer_meta,
+			created_at, expires_at, resolved_at, resolved_by,
+			user_id, agent_id, agent_name
+		) VALUES (
+			$1, $2, $3, $4,
+			$5, $6::jsonb, $7, $8,
+			$9, $10::jsonb,
+			$11, $12, NULL, $13,
+			$14, $15, $16
+		)
+	`,
+		r.InterruptID, r.RunID, r.Kind, r.Status,
+		nullableStringArg(r.Question), nullableJSONArg(r.Options), nullableStringArg(r.ContextData), r.Priority,
+		nullableStringArg(r.Answer), nullableJSONArg(r.AnswerMeta),
+		createdAt, nullableTimePtr(r.ExpiresAt), nullableStringArg(r.ResolvedBy),
+		nullableStringArg(r.UserID), nullableStringArg(r.AgentID), nullableStringArg(r.AgentName),
+	)
+	if err != nil {
+		return "", fmt.Errorf("interrupts: create: %w", err)
+	}
+	return r.InterruptID, nil
+}
+
+func (s *Store) InterruptGet(ctx context.Context, interruptID string) (store.InterruptRow, error) {
+	row := s.pool.QueryRow(ctx, `
+		SELECT interrupt_id, run_id, kind, status,
+		       question, options::text, context_data, priority,
+		       answer, answer_meta::text,
+		       created_at, expires_at, resolved_at, resolved_by,
+		       user_id, agent_id, agent_name
+		FROM interrupts
+		WHERE interrupt_id = $1
+	`, interruptID)
+	r, err := s.scanInterruptRow(row)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return store.InterruptRow{}, &store.ErrNotFound{Kind: "interrupt", ID: interruptID}
+	}
+	if err != nil {
+		return store.InterruptRow{}, fmt.Errorf("interrupts: get: %w", err)
+	}
+	return r, nil
+}
+
+// pgRowScanner abstracts pgx.Row / pgx.Rows for scanInterruptRow.
+type pgRowScanner interface {
+	Scan(dest ...any) error
+}
+
+func (s *Store) scanInterruptRow(row pgRowScanner) (store.InterruptRow, error) {
+	var r store.InterruptRow
+	var question, options, contextData, answer, answerMeta, resolvedBy, userID, agentID, agentName *string
+	var expiresAt, resolvedAt *time.Time
+	if err := row.Scan(
+		&r.InterruptID, &r.RunID, &r.Kind, &r.Status,
+		&question, &options, &contextData, &r.Priority,
+		&answer, &answerMeta,
+		&r.CreatedAt, &expiresAt, &resolvedAt, &resolvedBy,
+		&userID, &agentID, &agentName,
+	); err != nil {
+		return store.InterruptRow{}, err
+	}
+	if question != nil {
+		r.Question = *question
+	}
+	if contextData != nil {
+		r.ContextData = *contextData
+	}
+	if answer != nil {
+		r.Answer = *answer
+	}
+	if resolvedBy != nil {
+		r.ResolvedBy = *resolvedBy
+	}
+	if userID != nil {
+		r.UserID = *userID
+	}
+	if agentID != nil {
+		r.AgentID = *agentID
+	}
+	if agentName != nil {
+		r.AgentName = *agentName
+	}
+	if options != nil && *options != "" {
+		r.Options = json.RawMessage(*options)
+	}
+	if answerMeta != nil && *answerMeta != "" {
+		r.AnswerMeta = json.RawMessage(*answerMeta)
+	}
+	if expiresAt != nil {
+		r.ExpiresAt = *expiresAt
+	}
+	if resolvedAt != nil {
+		r.ResolvedAt = *resolvedAt
+	}
+	return r, nil
+}
+
+func (s *Store) InterruptResolve(ctx context.Context, interruptID, answer, resolvedBy string, answerMeta json.RawMessage) error {
+	tag, err := s.pool.Exec(ctx, `
+		UPDATE interrupts
+		SET status      = $1,
+		    answer      = $2,
+		    answer_meta = $3::jsonb,
+		    resolved_at = $4,
+		    resolved_by = $5
+		WHERE interrupt_id = $6 AND status = $7
+	`,
+		store.InterruptStatusResolved,
+		answer, nullableJSONArg(answerMeta),
+		time.Now(), resolvedBy,
+		interruptID, store.InterruptStatusPending,
+	)
+	if err != nil {
+		return fmt.Errorf("interrupts: resolve: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		var existing string
+		err := s.pool.QueryRow(ctx, `SELECT status FROM interrupts WHERE interrupt_id = $1`, interruptID).Scan(&existing)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return &store.ErrNotFound{Kind: "interrupt", ID: interruptID}
+		}
+		if err != nil {
+			return fmt.Errorf("interrupts: resolve probe: %w", err)
+		}
+		return store.ErrInterruptAlreadyTerminal
+	}
+	return nil
+}
+
+func (s *Store) InterruptFinish(ctx context.Context, interruptID, status, resolvedBy string) error {
+	switch status {
+	case store.InterruptStatusTimedOut, store.InterruptStatusCancelled:
+		// ok
+	default:
+		return fmt.Errorf("interrupts: finish: invalid terminal status %q", status)
+	}
+	tag, err := s.pool.Exec(ctx, `
+		UPDATE interrupts
+		SET status      = $1,
+		    resolved_at = $2,
+		    resolved_by = $3
+		WHERE interrupt_id = $4 AND status = $5
+	`,
+		status,
+		time.Now(), resolvedBy,
+		interruptID, store.InterruptStatusPending,
+	)
+	if err != nil {
+		return fmt.Errorf("interrupts: finish: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		var existing string
+		err := s.pool.QueryRow(ctx, `SELECT status FROM interrupts WHERE interrupt_id = $1`, interruptID).Scan(&existing)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return &store.ErrNotFound{Kind: "interrupt", ID: interruptID}
+		}
+		if err != nil {
+			return fmt.Errorf("interrupts: finish probe: %w", err)
+		}
+		return store.ErrInterruptAlreadyTerminal
+	}
+	return nil
+}
+
+func (s *Store) InterruptListByRun(ctx context.Context, runID, statusFilter string) ([]store.InterruptRow, error) {
+	return s.interruptList(ctx, "run_id", runID, statusFilter)
+}
+
+func (s *Store) InterruptListByUser(ctx context.Context, userID, statusFilter string) ([]store.InterruptRow, error) {
+	return s.interruptList(ctx, "user_id", userID, statusFilter)
+}
+
+func (s *Store) interruptList(ctx context.Context, col, val, statusFilter string) ([]store.InterruptRow, error) {
+	if col != "run_id" && col != "user_id" {
+		return nil, fmt.Errorf("interrupts: list: unknown filter column %q", col)
+	}
+	q := `
+		SELECT interrupt_id, run_id, kind, status,
+		       question, options::text, context_data, priority,
+		       answer, answer_meta::text,
+		       created_at, expires_at, resolved_at, resolved_by,
+		       user_id, agent_id, agent_name
+		FROM interrupts
+		WHERE ` + col + ` = $1`
+	args := []any{val}
+	if statusFilter != "" {
+		q += ` AND status = $2`
+		args = append(args, statusFilter)
+	}
+	q += ` ORDER BY created_at DESC LIMIT 200`
+
+	rows, err := s.pool.Query(ctx, q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("interrupts: list: %w", err)
+	}
+	defer rows.Close()
+
+	out := []store.InterruptRow{}
+	for rows.Next() {
+		r, err := s.scanInterruptRow(rows)
+		if err != nil {
+			return nil, fmt.Errorf("interrupts: list scan: %w", err)
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) InterruptCountPendingByRun(ctx context.Context, runID string) (int, error) {
+	var n int
+	err := s.pool.QueryRow(ctx, `
+		SELECT COUNT(*) FROM interrupts WHERE run_id = $1 AND status = $2
+	`, runID, store.InterruptStatusPending).Scan(&n)
+	if err != nil {
+		return 0, fmt.Errorf("interrupts: count pending: %w", err)
+	}
+	return n, nil
+}
+
+func (s *Store) InterruptSweepExpired(ctx context.Context) (int, error) {
+	now := time.Now()
+	tag, err := s.pool.Exec(ctx, `
+		UPDATE interrupts
+		SET status      = $1,
+		    resolved_at = $2,
+		    resolved_by = $3
+		WHERE status = $4 AND expires_at IS NOT NULL AND expires_at < $5
+	`,
+		store.InterruptStatusTimedOut,
+		now, store.InterruptResolvedByTimeout,
+		store.InterruptStatusPending, now,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("interrupts: sweep: %w", err)
+	}
+	return int(tag.RowsAffected()), nil
+}
+
 // Close releases the connection pool. Idempotent.
 func (s *Store) Close() error {
 	s.closeOnce.Do(func() {
