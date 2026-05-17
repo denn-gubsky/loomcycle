@@ -117,7 +117,14 @@ func (h *HTTP) do(ctx context.Context, method, rawURL string, headers map[string
 	if parsed.Scheme != "http" && parsed.Scheme != "https" {
 		return tools.Result{Text: "url scheme must be http or https", IsError: true}, nil
 	}
-	if !hostAllowed(parsed.Hostname(), h.HostAllowlist) {
+	if !hostAllowed(parsed.Hostname(), h.HostAllowlist) &&
+		!hostAllowedExtras(parsed.Hostname(), tools.ExtraAllowedHosts(ctx)) {
+		// Operator floor + caller-narrowed list rejected, and no
+		// permitted Pre-hook contributed a per-call grant covering
+		// this hostname either. (Trust-boundary reminder: the
+		// extras list comes ONLY from operator-opted-in hooks via
+		// the dispatcher; the model and the runtime caller cannot
+		// inject into it.)
 		return tools.Result{Text: fmt.Sprintf("host %q not in allowlist", parsed.Hostname()), IsError: true}, nil
 	}
 
@@ -157,11 +164,19 @@ func (h *HTTP) do(ctx context.Context, method, rawURL string, headers map[string
 		// this, an allowlisted host could 302 to an internal URL and
 		// the second TCP connect would happen to a non-allowlisted
 		// destination — only blocked by the IP-level guard.
+		//
+		// Per-call host-widening (v0.8.17) ALSO applies here: the
+		// extras list attached to ctx pre-dispatch covers the entire
+		// tool call including any redirects within it. KNOWN
+		// LIMITATION: the hook is not re-invoked mid-redirect, so a
+		// redirect to a brand-new hostname not approved up front
+		// will fail. Document loudly in TOOLS.md.
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			if len(via) >= 5 {
 				return errors.New("too many redirects")
 			}
-			if !hostAllowed(req.URL.Hostname(), h.HostAllowlist) {
+			if !hostAllowed(req.URL.Hostname(), h.HostAllowlist) &&
+				!hostAllowedExtras(req.URL.Hostname(), tools.ExtraAllowedHosts(ctx)) {
 				return fmt.Errorf("redirect host %q not in allowlist", req.URL.Hostname())
 			}
 			return nil
@@ -287,6 +302,52 @@ func hostAllowed(host string, allowlist []string) bool {
 			return true
 		}
 		if strings.HasSuffix(host, "."+entry) {
+			return true
+		}
+	}
+	return false
+}
+
+// hostAllowedExtras is the matcher for per-call host-widening grants
+// from permitted Pre-hooks (v0.8.17). Intentionally stricter than
+// hostAllowed:
+//
+//   - A bare entry "acme.com" matches "acme.com" ONLY (NOT
+//     "careers.acme.com"). Useful for hooks that want to approve
+//     exactly the URL the model asked about, no broader.
+//   - A leading-dot entry ".acme.com" suffix-matches: "acme.com" AND
+//     any subdomain. The leading dot is an explicit opt-in to the
+//     "operator-list-style" suffix semantics, so cautious hook
+//     authors get exact-match by default.
+//
+// Returns false on nil / empty extras (the common path) without
+// allocating.
+func hostAllowedExtras(host string, extras []string) bool {
+	if len(extras) == 0 {
+		return false
+	}
+	host = strings.ToLower(strings.TrimSuffix(host, "."))
+	if host == "" {
+		return false
+	}
+	for _, entry := range extras {
+		entry = strings.ToLower(strings.TrimSuffix(entry, "."))
+		if entry == "" {
+			continue
+		}
+		if strings.HasPrefix(entry, ".") {
+			// Leading-dot: suffix-match (operator-style).
+			anchor := entry[1:]
+			if anchor == "" {
+				continue // ".  alone" isn't meaningful
+			}
+			if host == anchor || strings.HasSuffix(host, "."+anchor) {
+				return true
+			}
+			continue
+		}
+		// Bare entry: exact match only.
+		if host == entry {
 			return true
 		}
 	}

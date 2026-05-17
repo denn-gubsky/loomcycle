@@ -10,6 +10,8 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+
+	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
 
 func TestHTTPRefusesEmptyAllowlist(t *testing.T) {
@@ -342,4 +344,201 @@ func mustHost(t *testing.T, raw string) string {
 		t.Fatalf("parse url: %v", err)
 	}
 	return u.Hostname()
+}
+
+// TestHTTPAllowsHostFromCtxExtras: a host NOT in the operator's
+// allowlist but PRESENT in the ctx-attached extras (placed there by a
+// permitted Pre-hook earlier in dispatch) must succeed. This is the
+// end-to-end of the v0.8.17 per-call host-widening capability — proves
+// the gate consults ctx-extras after the static-list check fails.
+func TestHTTPAllowsHostFromCtxExtras(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, "ok via extras")
+	}))
+	defer srv.Close()
+
+	host := mustHost(t, srv.URL)
+	// Operator's static allowlist deliberately does NOT include `host`.
+	// A throwaway entry keeps the deny-all branch out of the way so
+	// we're specifically testing the "operator-floor rejects, extras
+	// approves" branch.
+	h := &HTTP{
+		HostAllowlist:        []string{"some-other-host.example"},
+		PrivateHostAllowlist: []string{host}, // dial-layer exception so loopback succeeds
+		AllowPrivateIPs:      false,
+	}
+
+	body, _ := json.Marshal(map[string]string{"method": "GET", "url": srv.URL})
+	// Attach the host as a per-call extra (mirrors what
+	// loop.dispatchOneTool does after a permitted Pre-hook).
+	ctx := tools.WithExtraAllowedHosts(context.Background(), []string{host})
+	res, err := h.Execute(ctx, body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.IsError {
+		t.Fatalf("host in ctx-extras should be reachable; got %q", res.Text)
+	}
+	if !strings.Contains(res.Text, "ok via extras") {
+		t.Errorf("response body unexpected: %q", res.Text)
+	}
+}
+
+// TestHTTPCtxExtrasEmptyDoesNotWiden: a ctx with NO extras attached
+// must NOT widen — the host stays blocked. Catches a regression where
+// a future refactor accidentally treats nil/empty extras as "allow
+// everything" (an easy reversal-of-meaning bug).
+func TestHTTPCtxExtrasEmptyDoesNotWiden(t *testing.T) {
+	h := &HTTP{HostAllowlist: []string{"only.allowed.example"}}
+	body, _ := json.Marshal(map[string]string{"method": "GET", "url": "https://unknown.example/"})
+	res, err := h.Execute(context.Background(), body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.IsError {
+		t.Fatalf("expected refusal — empty ctx-extras must not widen; got %q", res.Text)
+	}
+	if !strings.Contains(res.Text, "not in allowlist") {
+		t.Errorf("expected 'not in allowlist' error; got %q", res.Text)
+	}
+}
+
+// TestHTTPCtxExtrasIPBlockNotBypassable: even if extras include a
+// hostname that resolves to a private IP (e.g. "localhost"), the
+// dial-time private-IP block still fires when PrivateHostAllowlist
+// does NOT opt that host in. Pins the design: a Pre-hook can widen
+// at the hostname layer, but cannot bypass the SSRF-defense at the
+// IP layer — that's a separate, orthogonal trust boundary.
+func TestHTTPCtxExtrasIPBlockNotBypassable(t *testing.T) {
+	h := &HTTP{
+		HostAllowlist: []string{"some-other-host.example"},
+		// PrivateHostAllowlist deliberately empty — no IP-layer exemption.
+	}
+	body, _ := json.Marshal(map[string]string{"method": "GET", "url": "http://localhost:1/"})
+	ctx := tools.WithExtraAllowedHosts(context.Background(), []string{"localhost"})
+	res, err := h.Execute(ctx, body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.IsError {
+		t.Fatalf("expected dial-layer refusal even with extras; got %q", res.Text)
+	}
+	// The error surface depends on resolver/dial behavior; what matters
+	// is that the call DID NOT succeed. Either "no public addresses"
+	// (private-IP guard) or a connect failure on the bogus port — both
+	// are acceptable. We just assert the request was rejected.
+	if strings.Contains(res.Text, "HTTP GET") && !strings.Contains(res.Text, "-> 4") && !strings.Contains(res.Text, "-> 5") {
+		t.Errorf("response looked like a successful round-trip; got %q", res.Text)
+	}
+}
+
+// TestHTTPRedirectConsultsCtxExtras: initial URL on the operator
+// allowlist, redirect target in the ctx-extras. CheckRedirect must
+// allow the hop because the extras attached at dispatch cover the
+// entire tool call.
+func TestHTTPRedirectConsultsCtxExtras(t *testing.T) {
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, "ok at redirect target")
+	}))
+	defer target.Close()
+
+	source := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, target.URL, http.StatusFound)
+	}))
+	defer source.Close()
+
+	sourceHost := mustHost(t, source.URL)
+	targetHost := mustHost(t, target.URL)
+	h := &HTTP{
+		HostAllowlist:        []string{sourceHost},
+		PrivateHostAllowlist: []string{sourceHost, targetHost},
+		AllowPrivateIPs:      false,
+	}
+
+	body, _ := json.Marshal(map[string]string{"method": "GET", "url": source.URL})
+	// Source is in the static list; target is only in the per-call extras.
+	ctx := tools.WithExtraAllowedHosts(context.Background(), []string{targetHost})
+	res, err := h.Execute(ctx, body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.IsError {
+		t.Fatalf("expected redirect to extras-approved host to succeed; got %q", res.Text)
+	}
+	if !strings.Contains(res.Text, "ok at redirect target") {
+		t.Errorf("redirect did not land at target; body = %q", res.Text)
+	}
+}
+
+// TestHTTPRedirectToUnknownHostStillBlocked: a redirect to a host
+// covered by NEITHER the static list NOR the extras still fails.
+// Pins the "extras don't blanket-approve" property — they cover
+// exactly the hostnames the hook named, no more.
+func TestHTTPRedirectToUnknownHostStillBlocked(t *testing.T) {
+	source := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "http://attacker.example/", http.StatusFound)
+	}))
+	defer source.Close()
+
+	sourceHost := mustHost(t, source.URL)
+	h := &HTTP{
+		HostAllowlist:   []string{sourceHost},
+		AllowPrivateIPs: true,
+	}
+
+	body, _ := json.Marshal(map[string]string{"method": "GET", "url": source.URL})
+	// Extras approve a different host than the redirect target.
+	ctx := tools.WithExtraAllowedHosts(context.Background(), []string{"acme.com"})
+	res, err := h.Execute(ctx, body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.IsError {
+		t.Errorf("expected redirect rejection (target not in static OR extras); got %q", res.Text)
+	}
+	if !strings.Contains(res.Text, "redirect host") && !strings.Contains(res.Text, "not in allowlist") {
+		t.Errorf("expected redirect-host error; got %q", res.Text)
+	}
+}
+
+// TestHostAllowedExtras_LeadingDotSuffix unit-tests the matcher
+// semantics: dotless entries are exact-match; leading-dot entries
+// are suffix-match. This is intentionally stricter than the
+// operator allowlist's hostAllowed() which is suffix-match always.
+func TestHostAllowedExtras_LeadingDotSuffix(t *testing.T) {
+	cases := []struct {
+		host    string
+		extras  []string
+		want    bool
+		comment string
+	}{
+		// Dotless: exact match only.
+		{"acme.com", []string{"acme.com"}, true, "exact"},
+		{"careers.acme.com", []string{"acme.com"}, false, "subdomain of dotless entry should NOT match"},
+		{"acme.co", []string{"acme.com"}, false, "different host"},
+		// Leading-dot: suffix-match including the bare anchor.
+		{"acme.com", []string{".acme.com"}, true, "anchor of leading-dot matches"},
+		{"careers.acme.com", []string{".acme.com"}, true, "subdomain of leading-dot matches"},
+		{"evilacme.com", []string{".acme.com"}, false, "non-dot-boundary suffix must NOT match"},
+		// Empty / edge cases.
+		{"acme.com", []string{}, false, "empty extras"},
+		{"acme.com", nil, false, "nil extras"},
+		{"acme.com", []string{"", "."}, false, "empty + bare-dot entries are no-ops"},
+		// Trailing dot on host (FQDN form) normalised.
+		{"acme.com.", []string{"acme.com"}, true, "trailing-dot host normalises"},
+		// Case-insensitivity.
+		{"ACME.COM", []string{"acme.com"}, true, "case-insensitive host"},
+		{"acme.com", []string{"ACME.COM"}, true, "case-insensitive entry"},
+		// Empty host never matches.
+		{"", []string{"acme.com"}, false, "empty host"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.comment, func(t *testing.T) {
+			got := hostAllowedExtras(tc.host, tc.extras)
+			if got != tc.want {
+				t.Errorf("hostAllowedExtras(%q, %v) = %v, want %v (%s)",
+					tc.host, tc.extras, got, tc.want, tc.comment)
+			}
+		})
+	}
 }
