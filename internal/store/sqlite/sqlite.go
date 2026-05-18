@@ -300,6 +300,14 @@ func (s *Store) migrate(ctx context.Context) error {
 		// in agent_defs. Distinguishes static-resolved from DB-resolved
 		// runs without a separate flag.
 		`ALTER TABLE runs ADD COLUMN agent_def_id TEXT`,
+		// v0.8.17: pause_state for the runtime-wide quiesce protocol.
+		// Three values are valid at the Store boundary: 'running'
+		// (default), 'pausing' (operator issued pause; loop winding
+		// down), 'paused' (loop reached iteration boundary; awaiting
+		// resume). SetRunPauseState validates the value; the column
+		// has no CHECK constraint because SQLite-version-portability
+		// is more valuable than a redundant guard.
+		`ALTER TABLE runs ADD COLUMN pause_state TEXT NOT NULL DEFAULT 'running'`,
 		// v0.8.6 system channels: visible_at + published_by_user_id on
 		// channel_messages. Idempotent ALTER for existing v0.8.4 / v0.8.5
 		// schemas; on fresh deploys the CREATE TABLE already declared
@@ -557,6 +565,7 @@ func scanRun(scanner interface{ Scan(...any) error }) (store.Run, error) {
 	var stopReason, model, errMsg sql.NullString
 	var agentID, parentAgentID, parentRunID, userID, userTier sql.NullString
 	var agentDefID sql.NullString
+	var pauseState sql.NullString
 	var sessAgent sql.NullString
 	var status string
 	if err := scanner.Scan(
@@ -566,7 +575,7 @@ func scanRun(scanner interface{ Scan(...any) error }) (store.Run, error) {
 		&model, &errMsg,
 		&agentID, &parentAgentID, &parentRunID, &userID, &lastHbNs,
 		&userTier,
-		&agentDefID,
+		&agentDefID, &pauseState,
 		&sessAgent,
 	); err != nil {
 		return store.Run{}, err
@@ -608,6 +617,9 @@ func scanRun(scanner interface{ Scan(...any) error }) (store.Run, error) {
 	if agentDefID.Valid {
 		r.AgentDefID = agentDefID.String
 	}
+	if pauseState.Valid {
+		r.PauseState = pauseState.String
+	}
 	if sessAgent.Valid {
 		r.Agent = sessAgent.String
 	}
@@ -628,7 +640,7 @@ const runColumns = `r.id, r.session_id, r.status, r.started_at, r.completed_at,
 		r.model, r.error,
 		r.agent_id, r.parent_agent_id, r.parent_run_id, r.user_id, r.last_heartbeat_at,
 		r.user_tier,
-		r.agent_def_id,
+		r.agent_def_id, r.pause_state,
 		s.agent`
 
 // runFromTable is the canonical FROM clause paired with runColumns.
@@ -823,6 +835,58 @@ func (s *Store) SweepStaleRuns(ctx context.Context, cutoff time.Time) (int, erro
 		return 0, nil
 	}
 	return int(n), nil
+}
+
+// SetRunPauseState implements store.Store. Validates the state at the
+// boundary (refuses anything outside the PauseState* constants) and
+// writes runs.pause_state. Returns *ErrNotFound when no row matches.
+func (s *Store) SetRunPauseState(ctx context.Context, runID, state string) error {
+	switch state {
+	case store.PauseStateRunning, store.PauseStatePausing, store.PauseStatePaused:
+	default:
+		return fmt.Errorf("set run pause_state: unknown state %q", state)
+	}
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE runs SET pause_state = ? WHERE id = ?`, state, runID)
+	if err != nil {
+		return fmt.Errorf("set run pause_state: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		// Driver doesn't report RowsAffected — assume the UPDATE landed
+		// (the alternative is double-write on retry which is worse).
+		return nil
+	}
+	if n == 0 {
+		return &store.ErrNotFound{Kind: "run", ID: runID}
+	}
+	return nil
+}
+
+// ListPausedRuns implements store.Store. Returns runs at pause_state =
+// 'paused' (NOT 'pausing' — the column distinguishes in-flight pause
+// transitions from at-rest paused state). Ordered by started_at ASC
+// so resume processes oldest pauses first.
+func (s *Store) ListPausedRuns(ctx context.Context) ([]store.Run, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT `+runColumns+` FROM `+runFromTable+`
+		 WHERE r.pause_state = ?
+		 ORDER BY r.started_at ASC`,
+		store.PauseStatePaused,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list paused runs: %w", err)
+	}
+	defer rows.Close()
+	var out []store.Run
+	for rows.Next() {
+		r, err := scanRun(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
 }
 
 // MemorySet upserts a Memory row. ttl > 0 sets expires_at = now+ttl;

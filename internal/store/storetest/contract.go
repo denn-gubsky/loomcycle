@@ -69,6 +69,12 @@ func Run(t *testing.T, factory Factory) {
 		{"FinishRunCancelledTerminal", testFinishRunCancelledTerminal},
 		{"TranscriptOrderedAcrossRuns", testTranscriptOrderedAcrossRuns},
 		{"SweepStaleRuns", testSweepStaleRuns},
+		{"SetRunPauseStateRoundTrip", testSetRunPauseStateRoundTrip},
+		{"SetRunPauseStateUnknownStateRefused", testSetRunPauseStateUnknownStateRefused},
+		{"SetRunPauseStateMissingRunReturnsNotFound", testSetRunPauseStateMissingRunReturnsNotFound},
+		{"ListPausedRunsEmpty", testListPausedRunsEmpty},
+		{"ListPausedRunsExcludesPausingAndRunning", testListPausedRunsExcludesPausingAndRunning},
+		{"ListPausedRunsOrderedByStartedAtAsc", testListPausedRunsOrderedByStartedAtAsc},
 		{"MemorySetGetRoundTrip", testMemorySetGetRoundTrip},
 		{"MemoryGetNotFound", testMemoryGetNotFound},
 		{"MemoryOverwriteUpdatesValue", testMemoryOverwriteUpdatesValue},
@@ -682,6 +688,154 @@ func testSweepStaleRuns(t *testing.T, s store.Store) {
 	}
 	if swept2 != 0 {
 		t.Errorf("second sweep returned %d, want 0", swept2)
+	}
+}
+
+// SetRunPauseState writes the column; the value round-trips through a
+// fresh GetRunByAgentID; same-value writes are idempotent.
+func testSetRunPauseStateRoundTrip(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	sess, _ := s.CreateSession(ctx, "t", "a", "u")
+	run, _ := s.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: "a_pause_rt", UserID: "u"})
+
+	// Default after create.
+	got, _ := s.GetRunByAgentID(ctx, "a_pause_rt")
+	if got.PauseState != store.PauseStateRunning {
+		t.Errorf("default PauseState = %q, want %q", got.PauseState, store.PauseStateRunning)
+	}
+
+	// running → pausing → paused → running.
+	for _, state := range []string{store.PauseStatePausing, store.PauseStatePaused, store.PauseStateRunning} {
+		if err := s.SetRunPauseState(ctx, run.ID, state); err != nil {
+			t.Fatalf("SetRunPauseState(%q): %v", state, err)
+		}
+		got, _ := s.GetRunByAgentID(ctx, "a_pause_rt")
+		if got.PauseState != state {
+			t.Errorf("after SetRunPauseState(%q): got %q", state, got.PauseState)
+		}
+	}
+
+	// Idempotent: writing the current value succeeds with no side effect.
+	if err := s.SetRunPauseState(ctx, run.ID, store.PauseStateRunning); err != nil {
+		t.Errorf("idempotent write rejected: %v", err)
+	}
+}
+
+// SetRunPauseState refuses unknown state strings — the boundary check
+// catches a future caller bug before garbage lands in the column.
+func testSetRunPauseStateUnknownStateRefused(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	sess, _ := s.CreateSession(ctx, "t", "a", "u")
+	run, _ := s.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: "a_pause_bad", UserID: "u"})
+
+	for _, bad := range []string{"", "PAUSED", "stopped", "halt", " paused"} {
+		err := s.SetRunPauseState(ctx, run.ID, bad)
+		if err == nil {
+			t.Errorf("SetRunPauseState(%q) accepted; want refusal", bad)
+		}
+	}
+	// Confirm the column wasn't touched by any of the rejected writes.
+	got, _ := s.GetRunByAgentID(ctx, "a_pause_bad")
+	if got.PauseState != store.PauseStateRunning {
+		t.Errorf("rejected writes leaked through: PauseState = %q", got.PauseState)
+	}
+}
+
+// SetRunPauseState on a missing run_id returns *ErrNotFound — the
+// pause manager relies on this to distinguish "row exists but stuck"
+// from "row was deleted out from under us."
+func testSetRunPauseStateMissingRunReturnsNotFound(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	err := s.SetRunPauseState(ctx, "run_does_not_exist", store.PauseStatePaused)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	var nf *store.ErrNotFound
+	if !errors.As(err, &nf) {
+		t.Errorf("err = %v, want *ErrNotFound", err)
+	}
+}
+
+// ListPausedRuns on a fresh store returns no rows. Establishes the
+// baseline so the next test can prove non-paused rows don't leak in.
+func testListPausedRunsEmpty(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	got, err := s.ListPausedRuns(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 0 {
+		t.Errorf("ListPausedRuns on empty store returned %d rows", len(got))
+	}
+}
+
+// ListPausedRuns filters strictly on pause_state = 'paused' (NOT
+// 'pausing', NOT 'running'). The distinction matters: 'pausing' is
+// the in-flight transition; the pause manager only resumes runs that
+// reached the at-rest paused state.
+func testListPausedRunsExcludesPausingAndRunning(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	sess, _ := s.CreateSession(ctx, "t", "a", "u")
+
+	running, _ := s.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: "a_running", UserID: "u"})
+	pausing, _ := s.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: "a_pausing", UserID: "u"})
+	paused, _ := s.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: "a_paused", UserID: "u"})
+
+	_ = s.SetRunPauseState(ctx, pausing.ID, store.PauseStatePausing)
+	_ = s.SetRunPauseState(ctx, paused.ID, store.PauseStatePaused)
+
+	got, err := s.ListPausedRuns(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("ListPausedRuns = %d rows, want 1; got %+v", len(got), got)
+	}
+	if got[0].ID != paused.ID {
+		t.Errorf("ListPausedRuns returned run_id %q, want %q (the only paused row)",
+			got[0].ID, paused.ID)
+	}
+	// Defensive check the other two weren't accidentally flipped.
+	_ = running
+	rGot, _ := s.GetRunByAgentID(ctx, "a_running")
+	if rGot.PauseState != store.PauseStateRunning {
+		t.Errorf("a_running PauseState = %q, want running", rGot.PauseState)
+	}
+}
+
+// ListPausedRuns orders by started_at ASC so the resume sweep
+// processes the oldest pauses first. Tests against three rows
+// inserted with deliberate started_at gaps.
+func testListPausedRunsOrderedByStartedAtAsc(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	sess, _ := s.CreateSession(ctx, "t", "a", "u")
+
+	first, _ := s.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: "a_first", UserID: "u"})
+	time.Sleep(10 * time.Millisecond)
+	second, _ := s.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: "a_second", UserID: "u"})
+	time.Sleep(10 * time.Millisecond)
+	third, _ := s.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: "a_third", UserID: "u"})
+
+	// Flip them all to paused in REVERSE order of creation — making
+	// sure the ordering reflects started_at, not the order of
+	// SetRunPauseState calls or any insertion-position artefact.
+	_ = s.SetRunPauseState(ctx, third.ID, store.PauseStatePaused)
+	_ = s.SetRunPauseState(ctx, second.ID, store.PauseStatePaused)
+	_ = s.SetRunPauseState(ctx, first.ID, store.PauseStatePaused)
+
+	got, err := s.ListPausedRuns(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("ListPausedRuns = %d, want 3", len(got))
+	}
+	want := []string{first.ID, second.ID, third.ID}
+	for i, r := range got {
+		if r.ID != want[i] {
+			t.Errorf("ListPausedRuns[%d] = %q, want %q (oldest-first ordering)",
+				i, r.ID, want[i])
+		}
 	}
 }
 

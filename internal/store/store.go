@@ -202,7 +202,31 @@ type Run struct {
 	// Evaluation tool's submit op reads this to denormalise def_id
 	// onto each evaluation row at write time.
 	AgentDefID string `json:"agent_def_id,omitempty"`
+
+	// PauseState is the v0.8.17 substrate marker for a run's
+	// participation in the runtime-wide quiesce protocol. One of
+	// PauseStateRunning (default, never paused or already resumed),
+	// PauseStatePausing (operator issued POST /v1/runtime/pause; the
+	// loop is between tool calls or waiting on a non-idempotent tool's
+	// timeout), or PauseStatePaused (the loop has reached an
+	// iteration boundary and persisted the pause).
+	//
+	// The column default is "running" so existing rows back-fill
+	// without surprise. The loop reads this column on resume to
+	// distinguish runs that need to re-enter from runs that finished
+	// during pause (status terminal already).
+	PauseState string `json:"pause_state,omitempty"`
 }
+
+// PauseState constants — the wire string values stored in runs.pause_state.
+// Validation lives at the Store boundary (SetRunPauseState refuses unknown
+// values) so the loop and HTTP handlers can rely on these being the only
+// possible reads.
+const (
+	PauseStateRunning = "running" // default; the run is executing or already finished
+	PauseStatePausing = "pausing" // pause requested; loop is winding down to an iteration boundary
+	PauseStatePaused  = "paused"  // loop reached the boundary and persisted; awaiting resume
+)
 
 // Event is one streamed datum, persisted append-only. Payload is the JSON
 // representation of the loop's providers.Event so we never lose typed
@@ -371,6 +395,30 @@ type Store interface {
 	// see WHERE status='running' fail-match and update zero rows.
 	// Used by internal/heartbeat for the periodic sweep goroutine.
 	SweepStaleRuns(ctx context.Context, cutoff time.Time) (int, error)
+
+	// SetRunPauseState writes runs.pause_state. The v0.8.17 PauseManager
+	// uses this to transition runs through running → pausing → paused
+	// (on pause), then back to running (on resume). Refuses unknown
+	// state strings — callers must use the PauseState* constants.
+	// Returns *ErrNotFound when no row matches runID.
+	//
+	// Idempotent: writing the current value is a no-op. Does NOT clear
+	// pause_state for terminal runs (status in {completed, failed,
+	// cancelled}) — the pause column is only meaningful while a run
+	// could still be resumed; the column on terminal runs records what
+	// state they were in when the loop exited.
+	SetRunPauseState(ctx context.Context, runID, state string) error
+
+	// ListPausedRuns returns runs whose pause_state is "paused" (the
+	// at-rest paused state, not the in-flight "pausing" transition).
+	// Used by the PauseManager on resume to find which runs need to
+	// re-enter their loops, and by GET /v1/runtime/state for operator
+	// visibility (the response payload's paused_run_count).
+	//
+	// Ordering: by started_at ASC so resume processes the oldest
+	// pauses first (lower risk of stale state being overwritten by
+	// fresher runs that paused later in the same window).
+	ListPausedRuns(ctx context.Context) ([]Run, error)
 
 	// MemorySet writes a Memory entry. ttl > 0 sets an expiry; ttl <= 0
 	// stores with no expiry (the row's expires_at column is NULL). The
