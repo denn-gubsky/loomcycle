@@ -1299,6 +1299,281 @@ func (s *Store) SnapshotReadEvaluations(ctx context.Context) ([]store.Evaluation
 	return out, rows.Err()
 }
 
+// ---- v0.8.17 Snapshot restore — idempotent raw inserts (PR 3.2a) ----
+
+// SnapshotRestoreSession implements store.Store. Preserves caller-
+// supplied ID + CreatedAt. INSERT OR IGNORE → idempotent.
+func (s *Store) SnapshotRestoreSession(ctx context.Context, sess store.Session) error {
+	if sess.ID == "" {
+		return fmt.Errorf("snapshot restore session: id required")
+	}
+	createdNs := sess.CreatedAt.UnixNano()
+	if sess.CreatedAt.IsZero() {
+		createdNs = time.Now().UnixNano()
+	}
+	_, err := s.db.ExecContext(ctx,
+		`INSERT OR IGNORE INTO sessions(id, tenant_id, agent, created_at, user_id) VALUES (?, ?, ?, ?, ?)`,
+		sess.ID, sess.TenantID, sess.Agent, createdNs, nilIfEmpty(sess.UserID),
+	)
+	if err != nil {
+		return fmt.Errorf("snapshot restore session: %w", err)
+	}
+	return nil
+}
+
+// SnapshotRestoreRun implements store.Store. Preserves every field
+// including PauseState. INSERT OR IGNORE → idempotent.
+func (s *Store) SnapshotRestoreRun(ctx context.Context, r store.Run) error {
+	if r.ID == "" || r.SessionID == "" {
+		return fmt.Errorf("snapshot restore run: id and session_id required")
+	}
+	startedNs := r.StartedAt.UnixNano()
+	if r.StartedAt.IsZero() {
+		startedNs = time.Now().UnixNano()
+	}
+	var completedNs any
+	if !r.CompletedAt.IsZero() {
+		completedNs = r.CompletedAt.UnixNano()
+	}
+	var lastHbNs any
+	if !r.LastHeartbeatAt.IsZero() {
+		lastHbNs = r.LastHeartbeatAt.UnixNano()
+	}
+	status := string(r.Status)
+	if status == "" {
+		status = string(store.RunRunning)
+	}
+	pauseState := r.PauseState
+	if pauseState == "" {
+		pauseState = store.PauseStateRunning
+	}
+	_, err := s.db.ExecContext(ctx,
+		`INSERT OR IGNORE INTO runs(
+			id, session_id, status, started_at, completed_at, stop_reason,
+			input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens,
+			model, error,
+			agent_id, parent_agent_id, parent_run_id, user_id, last_heartbeat_at,
+			user_tier, agent_def_id, pause_state
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		r.ID, r.SessionID, status, startedNs, completedNs, nilIfEmpty(r.StopReason),
+		r.InputTokens, r.OutputTokens, r.CacheCreationTokens, r.CacheReadTokens,
+		nilIfEmpty(r.Model), nilIfEmpty(r.ErrorMsg),
+		nilIfEmpty(r.AgentID), nilIfEmpty(r.ParentAgentID), nilIfEmpty(r.ParentRunID),
+		nilIfEmpty(r.UserID), lastHbNs,
+		nilIfEmpty(r.UserTier), nilIfEmpty(r.AgentDefID), pauseState,
+	)
+	if err != nil {
+		return fmt.Errorf("snapshot restore run: %w", err)
+	}
+	return nil
+}
+
+// SnapshotRestoreEvent implements store.Store. Writes one event with
+// caller-supplied seq + run_id. INSERT OR IGNORE on (run_id, seq) →
+// idempotent. seq is normally AUTOINCREMENT but restore needs the
+// explicit value to preserve transcript order across the boundary.
+func (s *Store) SnapshotRestoreEvent(ctx context.Context, e store.Event) error {
+	if e.RunID == "" || e.SessionID == "" {
+		return fmt.Errorf("snapshot restore event: run_id and session_id required")
+	}
+	tsNs := e.Timestamp.UnixNano()
+	if e.Timestamp.IsZero() {
+		tsNs = time.Now().UnixNano()
+	}
+	// Build the INSERT to include seq when non-zero. SQLite's
+	// INSERT OR IGNORE on the (seq) PK is the idempotency anchor.
+	if e.Seq != 0 {
+		_, err := s.db.ExecContext(ctx,
+			`INSERT OR IGNORE INTO events(seq, session_id, run_id, ts, type, payload) VALUES (?, ?, ?, ?, ?, ?)`,
+			e.Seq, e.SessionID, e.RunID, tsNs, e.Type, e.Payload,
+		)
+		if err != nil {
+			return fmt.Errorf("snapshot restore event: %w", err)
+		}
+		return nil
+	}
+	// Caller didn't supply a seq — let the AUTOINCREMENT mint one.
+	// Used when the snapshot envelope's event had seq=0 (rare;
+	// usually all events carry a seq from capture).
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO events(session_id, run_id, ts, type, payload) VALUES (?, ?, ?, ?, ?)`,
+		e.SessionID, e.RunID, tsNs, e.Type, e.Payload,
+	)
+	if err != nil {
+		return fmt.Errorf("snapshot restore event (auto-seq): %w", err)
+	}
+	return nil
+}
+
+// SnapshotRestoreAgentDef implements store.Store. Preserves DefID +
+// Version + parent linkage. INSERT OR IGNORE → idempotent.
+func (s *Store) SnapshotRestoreAgentDef(ctx context.Context, r store.AgentDefRow) error {
+	if r.DefID == "" || r.Name == "" {
+		return fmt.Errorf("snapshot restore agent_def: def_id and name required")
+	}
+	createdNs := r.CreatedAt.UnixNano()
+	if r.CreatedAt.IsZero() {
+		createdNs = time.Now().UnixNano()
+	}
+	_, err := s.db.ExecContext(ctx,
+		`INSERT OR IGNORE INTO agent_defs(
+			def_id, name, version, parent_def_id, definition, description,
+			created_at, created_by_agent_id, created_by_run_id,
+			retired, bootstrapped_from_static
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		r.DefID, r.Name, r.Version, nilIfEmpty(r.ParentDefID),
+		string(r.Definition), nilIfEmpty(r.Description),
+		createdNs, nilIfEmpty(r.CreatedByAgentID), nilIfEmpty(r.CreatedByRunID),
+		boolToInt(r.Retired), boolToInt(r.BootstrappedFromStatic),
+	)
+	if err != nil {
+		return fmt.Errorf("snapshot restore agent_def: %w", err)
+	}
+	return nil
+}
+
+// SnapshotRestoreAgentDefActive implements store.Store. UPSERT on
+// name PK — restore overwrites the active pointer with the
+// snapshot's promoted_at + promoted_by_agent_id.
+func (s *Store) SnapshotRestoreAgentDefActive(ctx context.Context, e store.AgentDefActiveEntry) error {
+	if e.Name == "" || e.DefID == "" {
+		return fmt.Errorf("snapshot restore agent_def_active: name and def_id required")
+	}
+	promotedNs := e.PromotedAt.UnixNano()
+	if e.PromotedAt.IsZero() {
+		promotedNs = time.Now().UnixNano()
+	}
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO agent_def_active(name, def_id, promoted_at, promoted_by_agent_id) VALUES (?, ?, ?, ?)
+		 ON CONFLICT(name) DO UPDATE SET def_id = excluded.def_id, promoted_at = excluded.promoted_at, promoted_by_agent_id = excluded.promoted_by_agent_id`,
+		e.Name, e.DefID, promotedNs, nilIfEmpty(e.PromotedByAgentID),
+	)
+	if err != nil {
+		return fmt.Errorf("snapshot restore agent_def_active: %w", err)
+	}
+	return nil
+}
+
+// SnapshotRestoreMemory implements store.Store. Preserves CreatedAt /
+// UpdatedAt / ExpiresAt / Value. INSERT OR IGNORE on (scope, scope_id,
+// key) PK → idempotent.
+func (s *Store) SnapshotRestoreMemory(ctx context.Context, e store.MemorySnapshotEntry) error {
+	if e.Scope == "" || e.Key == "" {
+		return fmt.Errorf("snapshot restore memory: scope and key required")
+	}
+	createdNs := e.CreatedAt.UnixNano()
+	if e.CreatedAt.IsZero() {
+		createdNs = time.Now().UnixNano()
+	}
+	updatedNs := e.UpdatedAt.UnixNano()
+	if e.UpdatedAt.IsZero() {
+		updatedNs = createdNs
+	}
+	var expiresNs any
+	if !e.ExpiresAt.IsZero() {
+		expiresNs = e.ExpiresAt.UnixNano()
+	}
+	_, err := s.db.ExecContext(ctx,
+		`INSERT OR IGNORE INTO memory(scope, scope_id, key, value, expires_at, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		string(e.Scope), e.ScopeID, e.Key, string(e.Value), expiresNs, createdNs, updatedNs,
+	)
+	if err != nil {
+		return fmt.Errorf("snapshot restore memory: %w", err)
+	}
+	return nil
+}
+
+// SnapshotRestoreChannelMessage implements store.Store. INSERT OR
+// IGNORE on id PK → idempotent.
+func (s *Store) SnapshotRestoreChannelMessage(ctx context.Context, m store.ChannelMessage) error {
+	if m.ID == "" || m.Channel == "" {
+		return fmt.Errorf("snapshot restore channel_message: id and channel required")
+	}
+	publishedNs := m.PublishedAt.UnixNano()
+	if m.PublishedAt.IsZero() {
+		publishedNs = time.Now().UnixNano()
+	}
+	var expiresNs any
+	if !m.ExpiresAt.IsZero() {
+		expiresNs = m.ExpiresAt.UnixNano()
+	}
+	visibleNs := int64(0)
+	if !m.VisibleAt.IsZero() {
+		visibleNs = m.VisibleAt.UnixNano()
+	} else {
+		visibleNs = publishedNs
+	}
+	_, err := s.db.ExecContext(ctx,
+		`INSERT OR IGNORE INTO channel_messages(id, channel, scope, scope_id, payload, published_at, expires_at, visible_at, published_by_user_id)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		m.ID, m.Channel, string(m.Scope), m.ScopeID, string(m.Payload),
+		publishedNs, expiresNs, visibleNs, nilIfEmpty(m.PublishedByUserID),
+	)
+	if err != nil {
+		return fmt.Errorf("snapshot restore channel_message: %w", err)
+	}
+	return nil
+}
+
+// SnapshotRestoreChannelCursor implements store.Store. UPSERT on
+// (channel, scope, scope_id) PK — restore overwrites the cursor
+// with the snapshot's value.
+func (s *Store) SnapshotRestoreChannelCursor(ctx context.Context, c store.ChannelCursorEntry) error {
+	if c.Channel == "" || c.Cursor == "" {
+		return fmt.Errorf("snapshot restore channel_cursor: channel and cursor required")
+	}
+	updatedNs := c.UpdatedAt.UnixNano()
+	if c.UpdatedAt.IsZero() {
+		updatedNs = time.Now().UnixNano()
+	}
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO channel_cursors(channel, scope, scope_id, cursor, updated_at) VALUES (?, ?, ?, ?, ?)
+		 ON CONFLICT(channel, scope, scope_id) DO UPDATE SET cursor = excluded.cursor, updated_at = excluded.updated_at`,
+		c.Channel, string(c.Scope), c.ScopeID, c.Cursor, updatedNs,
+	)
+	if err != nil {
+		return fmt.Errorf("snapshot restore channel_cursor: %w", err)
+	}
+	return nil
+}
+
+// SnapshotRestoreEvaluation implements store.Store. INSERT OR IGNORE
+// on eval_id PK → idempotent.
+func (s *Store) SnapshotRestoreEvaluation(ctx context.Context, r store.EvaluationRow) error {
+	if r.EvalID == "" || r.RunID == "" {
+		return fmt.Errorf("snapshot restore evaluation: eval_id and run_id required")
+	}
+	createdNs := r.CreatedAt.UnixNano()
+	if r.CreatedAt.IsZero() {
+		createdNs = time.Now().UnixNano()
+	}
+	var dimensions, judgement sql.NullString
+	if len(r.Dimensions) > 0 {
+		b, err := json.Marshal(r.Dimensions)
+		if err == nil {
+			dimensions = sql.NullString{String: string(b), Valid: true}
+		}
+	}
+	if len(r.Judgement) > 0 {
+		judgement = sql.NullString{String: string(r.Judgement), Valid: true}
+	}
+	_, err := s.db.ExecContext(ctx,
+		`INSERT OR IGNORE INTO evaluations(
+			eval_id, run_id, def_id, score, dimensions, judgement, rationale,
+			emitter_role, emitter_agent_id, emitter_run_id, created_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		r.EvalID, r.RunID, nilIfEmpty(r.DefID), r.Score,
+		dimensions, judgement, nilIfEmpty(r.Rationale),
+		r.EmitterRole, nilIfEmpty(r.EmitterAgentID), nilIfEmpty(r.EmitterRunID),
+		createdNs,
+	)
+	if err != nil {
+		return fmt.Errorf("snapshot restore evaluation: %w", err)
+	}
+	return nil
+}
+
 // MemorySet upserts a Memory row. ttl > 0 sets expires_at = now+ttl;
 // ttl <= 0 clears the column to NULL (no expiry).
 //

@@ -492,6 +492,62 @@ type Store interface {
 	// queries see the same time series.
 	SnapshotReadEvaluations(ctx context.Context) ([]EvaluationRow, error)
 
+	// ---- v0.8.17 Snapshot restore — idempotent raw inserts (PR 3.2a) ----
+	//
+	// The methods below INSERT rows with caller-supplied IDs +
+	// timestamps + values, using ON CONFLICT DO NOTHING (Postgres) /
+	// INSERT OR IGNORE (SQLite) semantics so a second restore of the
+	// same envelope is a clean no-op. Distinct from the "live" insert
+	// methods (CreateSession, AppendEvent, etc.) which mint their own
+	// IDs and assume an empty starting state.
+	//
+	// All SnapshotRestore* methods are best-effort idempotent — if a
+	// row with the same PK exists, the call silently succeeds. The
+	// snapshot.Restore function relies on this to support partial
+	// re-runs after a failed restore.
+
+	// SnapshotRestoreSession inserts a session row preserving the
+	// caller-supplied ID + CreatedAt. Idempotent.
+	SnapshotRestoreSession(ctx context.Context, sess Session) error
+
+	// SnapshotRestoreRun inserts a run row preserving every field
+	// including PauseState. Idempotent.
+	SnapshotRestoreRun(ctx context.Context, r Run) error
+
+	// SnapshotRestoreEvent inserts one transcript event preserving
+	// the supplied seq + RunID + Timestamp + Payload. Note: events
+	// use BIGSERIAL/AUTOINCREMENT seq normally; this method writes
+	// the seq explicitly. Idempotent on (run_id, seq).
+	SnapshotRestoreEvent(ctx context.Context, e Event) error
+
+	// SnapshotRestoreAgentDef inserts one agent_defs row preserving
+	// the supplied DefID + Version + parent linkage. Idempotent.
+	SnapshotRestoreAgentDef(ctx context.Context, r AgentDefRow) error
+
+	// SnapshotRestoreAgentDefActive UPSERTs one agent_def_active
+	// pointer. ON CONFLICT (name) DO UPDATE — preserves snapshot's
+	// promoted_at + promoted_by_agent_id.
+	SnapshotRestoreAgentDefActive(ctx context.Context, entry AgentDefActiveEntry) error
+
+	// SnapshotRestoreMemory inserts one memory row preserving
+	// CreatedAt + UpdatedAt + ExpiresAt + Value. Idempotent on
+	// (scope, scope_id, key).
+	SnapshotRestoreMemory(ctx context.Context, entry MemorySnapshotEntry) error
+
+	// SnapshotRestoreChannelMessage inserts one channel_messages row
+	// preserving the ID + timestamps. Idempotent on id (PK).
+	SnapshotRestoreChannelMessage(ctx context.Context, msg ChannelMessage) error
+
+	// SnapshotRestoreChannelCursor UPSERTs one channel_cursors row.
+	// ON CONFLICT (channel, scope, scope_id) DO UPDATE — preserves
+	// the snapshot's cursor + updated_at.
+	SnapshotRestoreChannelCursor(ctx context.Context, entry ChannelCursorEntry) error
+
+	// SnapshotRestoreEvaluation inserts one evaluation row
+	// preserving EvalID + CreatedAt + emitter fields. Idempotent
+	// on eval_id.
+	SnapshotRestoreEvaluation(ctx context.Context, r EvaluationRow) error
+
 	// MemorySet writes a Memory entry. ttl > 0 sets an expiry; ttl <= 0
 	// stores with no expiry (the row's expires_at column is NULL). The
 	// row is upserted on the (scope, scopeID, key) primary key —
