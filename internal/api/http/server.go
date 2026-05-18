@@ -1024,6 +1024,12 @@ func (s *Server) Mux() http.Handler {
 	mux.Handle("GET /v1/_snapshots", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleListSnapshots))))
 	mux.Handle("GET /v1/_snapshots/{id}", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleGetSnapshot))))
 	mux.Handle("DELETE /v1/_snapshots/{id}", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleDeleteSnapshot))))
+	// v0.8.17 PR 3: restore + export. /restore consumes the
+	// envelope (looked up by {id} or supplied inline); /export
+	// returns the canonical JSON with a Content-Disposition header
+	// for `curl -O`.
+	mux.Handle("POST /v1/_snapshots/{id}/restore", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleRestoreSnapshot))))
+	mux.Handle("GET /v1/_snapshots/{id}/export", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleExportSnapshot))))
 	// v0.8.16 Interruption tool. resolve is the human-side answer
 	// submit; the two list endpoints drive the Web UI (run-scoped
 	// audit + user-scoped inbox).

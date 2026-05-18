@@ -9,6 +9,7 @@ import (
 
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/snapshot"
+	"github.com/denn-gubsky/loomcycle/internal/snapshot/migrations"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 )
 
@@ -197,6 +198,129 @@ func (s *Server) handleDeleteSnapshot(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// snapshotRestoreRequest is the body of POST /v1/_snapshots/{id}/restore.
+type snapshotRestoreRequest struct {
+	// IncludeHistory toggles restoring the optional
+	// interaction_history section. Default false (the running-state
+	// restore most operators want).
+	IncludeHistory bool `json:"include_history,omitempty"`
+	// JSON, when set, overrides the {id} path — restore from the
+	// supplied envelope rather than looking up by id. Used by the
+	// CLI's `loomcycle snapshot restore <file.json>` flow which
+	// posts the envelope directly without persisting first.
+	JSON json.RawMessage `json:"json,omitempty"`
+}
+
+// snapshotRestoreResponse mirrors snapshot.RestoreResult for the wire.
+type snapshotRestoreResponse struct {
+	AgentDefsRestored          int      `json:"agent_defs_restored"`
+	AgentDefActiveRestored     int      `json:"agent_def_active_restored"`
+	MemoryRestored             int      `json:"memory_restored"`
+	ChannelMessagesRestored    int      `json:"channel_messages_restored"`
+	ChannelCursorsRestored     int      `json:"channel_cursors_restored"`
+	EvaluationsRestored        int      `json:"evaluations_restored"`
+	PausedRunsRestored         int      `json:"paused_runs_restored"`
+	SynthesizedSessions        int      `json:"synthesized_sessions"`
+	TranscriptEventsRestored   int      `json:"transcript_events_restored"`
+	InteractionHistoryRestored int      `json:"interaction_history_restored"`
+	Warnings                   []string `json:"warnings,omitempty"`
+}
+
+func (s *Server) handleRestoreSnapshot(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+
+	var req snapshotRestoreRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && err.Error() != "EOF" {
+		writeJSONError(w, http.StatusBadRequest, "invalid_json", "request body must be JSON object (or empty)")
+		return
+	}
+
+	// Resolve the envelope bytes — either the supplied JSON or
+	// fetch by id.
+	var rawBytes []byte
+	if len(req.JSON) > 0 {
+		rawBytes = req.JSON
+	} else {
+		row, err := s.store.SnapshotGet(r.Context(), id)
+		if err != nil {
+			var nf *store.ErrNotFound
+			if errors.As(err, &nf) {
+				writeJSONError(w, http.StatusNotFound, "snapshot_not_found", "no snapshot with id "+id)
+				return
+			}
+			writeJSONError(w, http.StatusInternalServerError, "get_failed", err.Error())
+			return
+		}
+		rawBytes = row.JSONContent
+	}
+
+	// Restore — passes ForceProbe so the resolver matrix is
+	// refreshed before this returns. Operators can call Resume
+	// immediately after a successful restore without waiting for
+	// the periodic probe.
+	opts := snapshot.RestoreOptions{
+		IncludeHistory: req.IncludeHistory,
+	}
+	if s.resolver != nil {
+		opts.ForceProbe = s.resolver.ForceProbe
+	}
+	result, err := snapshot.Restore(r.Context(), s.store, rawBytes, opts)
+	if err != nil {
+		// Migration / version errors map to 422 (semantically valid
+		// JSON, semantically invalid state). The error message
+		// carries the section + version strings so operators see
+		// what to do.
+		var tooNew *migrations.ErrSnapshotVersionTooNew
+		var unknown *migrations.ErrUnknownSectionVersion
+		switch {
+		case errors.As(err, &tooNew):
+			writeJSONError(w, http.StatusUnprocessableEntity, "snapshot_version_too_new", err.Error())
+			return
+		case errors.As(err, &unknown):
+			writeJSONError(w, http.StatusUnprocessableEntity, "snapshot_version_unknown", err.Error())
+			return
+		}
+		writeJSONError(w, http.StatusInternalServerError, "restore_failed", err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, snapshotRestoreResponse{
+		AgentDefsRestored:          result.AgentDefsRestored,
+		AgentDefActiveRestored:     result.AgentDefActiveRestored,
+		MemoryRestored:             result.MemoryRestored,
+		ChannelMessagesRestored:    result.ChannelMessagesRestored,
+		ChannelCursorsRestored:     result.ChannelCursorsRestored,
+		EvaluationsRestored:        result.EvaluationsRestored,
+		PausedRunsRestored:         result.PausedRunsRestored,
+		SynthesizedSessions:        result.SynthesizedSessions,
+		TranscriptEventsRestored:   result.TranscriptEventsRestored,
+		InteractionHistoryRestored: result.InteractionHistoryRestored,
+		Warnings:                   result.Warnings,
+	})
+}
+
+func (s *Server) handleExportSnapshot(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	row, err := s.store.SnapshotGet(r.Context(), id)
+	if err != nil {
+		var nf *store.ErrNotFound
+		if errors.As(err, &nf) {
+			writeJSONError(w, http.StatusNotFound, "snapshot_not_found", "no snapshot with id "+id)
+			return
+		}
+		writeJSONError(w, http.StatusInternalServerError, "get_failed", err.Error())
+		return
+	}
+	// Serve the raw JSON content with a Content-Disposition header
+	// so CLI consumers using `curl -O` save it under the snapshot's
+	// id. The bytes are already canonical (Capture stored them via
+	// json.Marshal); no re-marshal needed.
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Content-Disposition", `attachment; filename="`+id+`.json"`)
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(row.JSONContent)
 }
 
 // channelConfigForSnapshot translates cfg.Channels (operator-yaml
