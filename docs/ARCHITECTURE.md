@@ -1,6 +1,6 @@
 # Architecture
 
-This document describes the runtime end-to-end through v0.8.15. The MCP-integration story originally shipped in v0.4.0 (Streamable HTTP transport, SSE response decoding, startup-retry, sub-agent host-policy inheritance) was inverted in v0.8.15: loomcycle now ALSO exposes itself as an MCP server alongside being an MCP consumer. The `connector.Connector` Go interface unifies HTTP, gRPC, MCP, and future CLI wire transports around a single contract — HTTP server IMPLEMENTS, others CONSUME via direct method dispatch. For a higher-level pitch and quick-start, see the README. For the public roadmap, see `docs/PLAN.md`.
+This document describes the runtime end-to-end through v0.8.17. The MCP-integration story originally shipped in v0.4.0 (Streamable HTTP transport, SSE response decoding, startup-retry, sub-agent host-policy inheritance) was inverted in v0.8.15: loomcycle now ALSO exposes itself as an MCP server alongside being an MCP consumer. The `connector.Connector` Go interface unifies HTTP, gRPC, MCP, and future CLI wire transports around a single contract — HTTP server IMPLEMENTS, others CONSUME via direct method dispatch. v0.8.16 added the Interruption tool (human-in-the-loop primitive); v0.8.17 added Pause / Resume / Snapshot — runtime-wide quiesce + cross-version-portable JSON snapshot, the precondition for v0.9.x multi-replica HA. For a higher-level pitch and quick-start, see the README. For the public roadmap, see `docs/PLAN.md`.
 
 <p align="center">
   <img src="assets/architecture.png" alt="loomcycle architecture — app servers / CLIs / TS-Python SDKs / Claude Code at the top, the single Go binary in the middle (wire surfaces incl. MCP server stdio v0.8.15 → middleware → connector.Connector interface → agent loop → tool dispatcher with 14 builtins → store with dynamic_agents), six LLM providers and external MCP servers at the bottom" width="780" />
@@ -14,11 +14,12 @@ Diagram source: [`docs/architecture.d2`](architecture.d2) (regenerate with `d2 d
 
 1. Owns the LLM **tool-use loop** end-to-end (model → tool_use → tool_result → model). No vendor SDK in the loop, no bundled binary.
 2. Talks to **providers** over their public HTTP APIs — Anthropic Messages, OpenAI Chat Completions, DeepSeek (OpenAI-compatible Chat Completions at a different base URL), Ollama `/api/chat`, Gemini.
-3. Dispatches tool calls to **14 built-in tools** (v0.8.7/8 — Memory, Channel, AgentDef, Evaluation, Context joined the original 9), **MCP servers** (stdio + Streamable HTTP), **LocalAPI gateways** (OpenAPI → tool-per-operation), or **sub-agents** (the `Agent` built-in).
-4. Streams every event back to callers as **SSE** over a small HTTP API (`/v1/runs`, `/v1/sessions/{id}/messages`, `/v1/agents/{agent_id}`, `/v1/users/{user_id}/agents`, `/v1/_metrics/*`, `/healthz`).
-5. **Exposes itself as an MCP server** via the `loomcycle mcp` subcommand (v0.8.15+) — 20 meta-tools spanning run lifecycle, agent management, all 5 substrate builtins, and PREVIEW-mocked Pause/Resume/Snapshot. The `connector.Connector` interface is what every wire surface dispatches through.
-6. Persists sessions, runs, events, agent_defs, evaluations, memory rows, channel messages, process samples, and dynamic_agents to a pluggable `Store` (SQLite default; Postgres for HA).
-7. Caps concurrency with a **semaphore + bounded FIFO queue** to keep memory predictable on a small VPS.
+3. Dispatches tool calls to **15 built-in tools** (v0.8.7/8/16 — Memory, Channel, AgentDef, Evaluation, Interruption, Context joined the original 9), **MCP servers** (stdio + Streamable HTTP), **LocalAPI gateways** (OpenAPI → tool-per-operation), or **sub-agents** (the `Agent` built-in).
+4. Streams every event back to callers as **SSE** over a small HTTP API (`/v1/runs`, `/v1/sessions/{id}/messages`, `/v1/agents/{agent_id}`, `/v1/users/{user_id}/agents`, `/v1/_metrics/*`, `/v1/_pause`, `/v1/_resume`, `/v1/_state`, `/v1/_snapshots*`, `/healthz`).
+5. **Exposes itself as an MCP server** via the `loomcycle mcp` subcommand (v0.8.15+) — 21 meta-tools spanning run lifecycle, agent management, all 6 substrate builtins, the v0.8.16 Interruption resolve bridge, and the v0.8.17 real Pause/Resume/Snapshot impls (which swapped in behind the v0.8.15 PREVIEW-shape wire contracts). The `connector.Connector` interface is what every wire surface dispatches through.
+6. **Quiesces on operator command** via `/v1/_pause` (v0.8.17) — idempotent tools cancel immediately, non-idempotent + external tools get a configurable grace window then force-cancel, new `/v1/runs` get 503; `/v1/_resume` releases the brakes; `/v1/_snapshots` captures running-state into a per-section-semver JSON envelope portable across loomcycle versions.
+7. Persists sessions, runs, events, agent_defs, evaluations, memory rows, channel messages, process samples, dynamic_agents, interrupts, and snapshots to a pluggable `Store` (SQLite default; Postgres for HA). Runs carry a `pause_state` column (`running` / `pausing` / `paused`) so the resume sweep finds quiesced runs efficiently.
+8. Caps concurrency with a **semaphore + bounded FIFO queue** to keep memory predictable on a small VPS.
 
 Single-tenant out of the box; multi-tenant ready (every run carries `user_id` + optional `user_tier` + optional `user_bearer`; tracking + cancel APIs scope by user; per-run MCP bearer substitution lets each agent authenticate to downstream MCP servers as the actual end-user). Per-tenant fairness on the concurrency layer is v0.9.x work.
 
@@ -407,7 +408,7 @@ A compile-time interface assertion at `connector_impl.go:35` (`var _ connector.C
 
 The companion `loomcycle-mcp.sh` wrapper at the repo root sources `.env.local` before exec — required because Claude Code spawns the binary with an empty env, missing the `LOOMCYCLE_*` + provider keys that upstream MCP server `${...}` placeholders expect.
 
-**20 tools exposed:** run lifecycle (`spawn_run`, `cancel_run`, `get_run`, `list_runs`), agent management (`register_agent`, `unregister_agent`, `list_agents`), all 5 builtins (`memory`, `channel`, `agentdef`, `evaluation`, `context`), Pause/Resume/Snapshot (8 tools — PREVIEW-mocked in v0.8.15; real impl deferred to v0.8.16+ per the locked RFC).
+**21 tools exposed:** run lifecycle (`spawn_run`, `cancel_run`, `get_run`, `list_runs`), agent management (`register_agent`, `unregister_agent`, `list_agents`), all 6 builtins (`memory`, `channel`, `agentdef`, `evaluation`, `context`, `interruption_resolve` — the v0.8.16 bridge that lets external orchestrators be the answerer), and Pause/Resume/Snapshot (8 tools: `pause_runtime`, `resume_runtime`, `get_runtime_state`, `create_snapshot`, `list_snapshots`, `export_snapshot`, `restore_snapshot`, `delete_snapshot` — PREVIEW-mocked in v0.8.15; real impls landed in v0.8.17 behind the same Connector signatures, so MCP orchestrators written against the v0.8.15 wire contracts continue to work).
 
 **Streaming via notifications:** when the client opts in through `initialize.capabilities.loomcycle.runEvents=true`, `spawn_run` drives `runner.RunOnce` directly and emits `notifications/loomcycle/run_event` per provider event before returning the final response. Without opt-in, blocking-only Connector path. Both produce identical final `SpawnRunResult` shape.
 
@@ -415,11 +416,27 @@ The companion `loomcycle-mcp.sh` wrapper at the repo root sources `.env.local` b
 
 **Operator-policy ctx for MCP-direct builtin calls:** the underlying Memory / Channel / AgentDef / Evaluation / Context tools gate on per-agent policy values that don't exist for MCP-direct callers (no yaml agent definition behind a `tools/call`). `internal/api/mcp/context.go operatorCtx()` synthesises a permissive policy (all scopes allowed, `mcp-operator` synthetic agent name) before each builtin wrapper invocation. `TestOperatorCtx_AttachesAllRequiredPolicies` pins the contract — future tools growing policy gates force an update here.
 
-**Sharp edges (v0.8.16 follow-ups):**
+**Sharp edges (still open):**
 - Boot-time upstream MCP init can block stdio readiness for ~32 s if an upstream is misconfigured. The `.env.local`-sourcing wrapper mitigates; long-term, mcp-mode should make upstream init non-blocking.
 - The HTTP listener binds 127.0.0.1:8787 alongside the stdio loop. Operators running the `loomcycle.sh` daemon cannot simultaneously run `loomcycle mcp` from the same machine.
 
-References: `internal/connector/connector.go` (interface), `internal/api/http/connector_impl.go` (canonical implementation), `internal/api/mcp/server.go` (stdio I/O loop), `internal/api/mcp/handlers.go` (20 tool handlers), `internal/api/mcp/context.go` (`operatorCtx`), `loomcycle-mcp.sh` (env-loading wrapper), `cmd/loomcycle/main.go` (`mcp` subcommand dispatch).
+References: `internal/connector/connector.go` (interface), `internal/api/http/connector_impl.go` (canonical implementation), `internal/api/mcp/server.go` (stdio I/O loop), `internal/api/mcp/handlers.go` (21 tool handlers), `internal/api/mcp/context.go` (`operatorCtx`), `loomcycle-mcp.sh` (env-loading wrapper), `cmd/loomcycle/main.go` (`mcp` subcommand dispatch).
+
+## Pause / Resume / Snapshot (v0.8.17)
+
+The runtime-wide quiesce primitive sits on top of three additions:
+
+1. **`internal/pause/Manager`** — a per-process coordinator. Holds an atomic `RuntimeState` enum (`StateRunning` / `StatePausing` / `StatePaused`), a broadcast `pauseCh` (closed when pause is declared so blocked goroutines wake), and a `sync.Map` of `activeTools` (per-call cancel handles for every in-flight tool). The manager is always constructed in `cmd/loomcycle/main.go` and wired into `*http.Server` via `SetPauseManager`.
+2. **Per-tool category dispatch.** `pause.ToolCtx(parent, toolID, toolName, input)` is the iteration-boundary hook called once per dispatched tool. Under `StateRunning` it returns the parent ctx unchanged + registers the entry. Under `StatePausing` / `StatePaused`, idempotent tools (`Read`, `WebFetch`, `WebSearch`, `Memory.get/list`, `Channel.peek`, `AgentDef.get/list`, `Context.*`, `Evaluation.get/aggregate`) get an immediately-cancelled ctx; non-idempotent + external (MCP) tools get a `WithTimeout(defaultTimeout)` ctx and the entry registers in `activeTools` so a deadline-fired drain can find and force-cancel them.
+3. **Per-run `pause_state` column.** Additive migration `0012_runs_pause_state` on both SQLite + Postgres adds the column with a partial index on `('pausing', 'paused')` so the resume sweep is O(paused). Three values: `running` / `pausing` / `paused`.
+
+The snapshot envelope is a JSON object with `schema_version` (envelope-level) + a `sections` map (`agent_defs`, `agent_def_active`, `memory`, `channels`, `evaluations`, `paused_runs`, optional `interaction_history`). Each section carries its own `version` (all at `"1.0"` today); `internal/snapshot/migrations` holds a per-section migration registry that walks chained migrators when a reader at a newer section version restores an older snapshot.
+
+The Memory section's per-row schema includes an optional `embedding` field that is always null in v0.8.17. v0.9.x semantic memory populates it without bumping the section version — that's the additive-fields forward-compat rule, locked in the v0.8.17 RFC so the just-shipped snapshot format doesn't need a 1.0 → 1.1 migration when vector memory lands.
+
+State transitions publish to `_system/runtime-state` (operator-declared channel; v0.8.6 system channels). No new SSE event types — the existing Channel pub/sub primitive carries the signal.
+
+References: `internal/pause/manager.go` (Manager + ToolCtx), `internal/pause/tool_policy.go` (CategoryForInput), `internal/snapshot/snapshot.go` (Capture), `internal/snapshot/restore.go` (Restore with session-FK synthesis), `internal/snapshot/migrations/registry.go` (per-section migration), `internal/api/http/pause.go` (handlers), `internal/api/http/snapshots.go` (handlers), `internal/cli/pause.go` + `snapshot.go` (7 CLI subcommands), `web/src/components/PauseControls.tsx` + `web/src/pages/SnapshotsView.tsx` (operator UI).
 
 ## What's deferred to v1.0
 
