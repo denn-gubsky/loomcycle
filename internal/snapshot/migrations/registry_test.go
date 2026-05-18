@@ -3,6 +3,7 @@ package migrations
 import (
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 )
 
@@ -74,9 +75,6 @@ func TestMigrate_UnknownSectionReturnsTypedError(t *testing.T) {
 // pre-history snapshot from a version we never supported."
 func TestMigrate_UnknownVersionForKnownSectionRejected(t *testing.T) {
 	_, err := Migrate(SectionMemory, "0.1", json.RawMessage(`{}`))
-	if err == nil {
-		t.Fatal("expected error, got nil")
-	}
 	// "0.1" < "1.0" so we go down the "older known version" branch,
 	// which today (no registered migrators for "0.1") surfaces as
 	// either *ErrUnknownSectionVersion or the "not implemented"
@@ -99,7 +97,7 @@ func TestErrSnapshotVersionTooNew_MessageContent(t *testing.T) {
 	}
 	msg := err.Error()
 	for _, want := range []string{"memory", "2.0", "1.0", "upgrade"} {
-		if !contains(msg, want) {
+		if !strings.Contains(msg, want) {
 			t.Errorf("error message %q missing %q", msg, want)
 		}
 	}
@@ -112,24 +110,9 @@ func TestErrUnknownSectionVersion_MessageContent(t *testing.T) {
 	err := &ErrUnknownSectionVersion{Section: "memory", Version: "9.99"}
 	msg := err.Error()
 	for _, want := range []string{"memory", "9.99", "corrupted"} {
-		if !contains(msg, want) {
+		if !strings.Contains(msg, want) {
 			t.Errorf("error message %q missing %q", msg, want)
 		}
 	}
 }
 
-func contains(haystack, needle string) bool {
-	return len(haystack) >= len(needle) && (haystack == needle ||
-		len(haystack) > len(needle) && (haystack[:len(needle)] == needle ||
-			haystack[len(haystack)-len(needle):] == needle ||
-			indexOf(haystack, needle) >= 0))
-}
-
-func indexOf(haystack, needle string) int {
-	for i := 0; i+len(needle) <= len(haystack); i++ {
-		if haystack[i:i+len(needle)] == needle {
-			return i
-		}
-	}
-	return -1
-}

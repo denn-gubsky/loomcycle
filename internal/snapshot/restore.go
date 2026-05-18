@@ -114,7 +114,7 @@ func Restore(ctx context.Context, s store.Store, raw []byte, opts RestoreOptions
 			return result, err
 		}
 		for _, e := range sec.Entries {
-			if err := s.SnapshotRestoreAgentDef(ctx, store.AgentDefRow{
+			inserted, err := s.SnapshotRestoreAgentDef(ctx, store.AgentDefRow{
 				DefID:                  e.DefID,
 				Name:                   e.Name,
 				Version:                e.Version,
@@ -126,11 +126,14 @@ func Restore(ctx context.Context, s store.Store, raw []byte, opts RestoreOptions
 				CreatedByRunID:         e.CreatedByRunID,
 				Retired:                e.Retired,
 				BootstrappedFromStatic: e.BootstrappedFromStatic,
-			}); err != nil {
+			})
+			if err != nil {
 				result.Warnings = append(result.Warnings, fmt.Sprintf("agent_def %s: %v", e.DefID, err))
 				continue
 			}
-			result.AgentDefsRestored++
+			if inserted {
+				result.AgentDefsRestored++
+			}
 		}
 	}
 
@@ -141,16 +144,19 @@ func Restore(ctx context.Context, s store.Store, raw []byte, opts RestoreOptions
 			return result, err
 		}
 		for _, e := range sec.Entries {
-			if err := s.SnapshotRestoreAgentDefActive(ctx, store.AgentDefActiveEntry{
+			inserted, err := s.SnapshotRestoreAgentDefActive(ctx, store.AgentDefActiveEntry{
 				Name:              e.Name,
 				DefID:             e.DefID,
 				PromotedAt:        e.PromotedAt,
 				PromotedByAgentID: e.PromotedByAgentID,
-			}); err != nil {
+			})
+			if err != nil {
 				result.Warnings = append(result.Warnings, fmt.Sprintf("agent_def_active %s: %v", e.Name, err))
 				continue
 			}
-			result.AgentDefActiveRestored++
+			if inserted {
+				result.AgentDefActiveRestored++
+			}
 		}
 	}
 
@@ -177,11 +183,14 @@ func Restore(ctx context.Context, s store.Store, raw []byte, opts RestoreOptions
 					UpdatedAt: e.UpdatedAt,
 				},
 			}
-			if err := s.SnapshotRestoreMemory(ctx, entry); err != nil {
+			inserted, err := s.SnapshotRestoreMemory(ctx, entry)
+			if err != nil {
 				result.Warnings = append(result.Warnings, fmt.Sprintf("memory %s/%s/%s: %v", e.Scope, e.ScopeID, e.Key, err))
 				continue
 			}
-			result.MemoryRestored++
+			if inserted {
+				result.MemoryRestored++
+			}
 		}
 		// Phase 2 will check e.Embedding != nil and populate the
 		// memory_embeddings table. Phase 1 silently drops the field
@@ -209,7 +218,7 @@ func Restore(ctx context.Context, s store.Store, raw []byte, opts RestoreOptions
 			if m.VisibleAt != nil {
 				visible = *m.VisibleAt
 			}
-			if err := s.SnapshotRestoreChannelMessage(ctx, store.ChannelMessage{
+			inserted, err := s.SnapshotRestoreChannelMessage(ctx, store.ChannelMessage{
 				ID:                m.ID,
 				Channel:           m.Channel,
 				Scope:             store.MemoryScope(m.Scope),
@@ -219,24 +228,30 @@ func Restore(ctx context.Context, s store.Store, raw []byte, opts RestoreOptions
 				ExpiresAt:         expires,
 				VisibleAt:         visible,
 				PublishedByUserID: m.PublishedByUserID,
-			}); err != nil {
+			})
+			if err != nil {
 				result.Warnings = append(result.Warnings, fmt.Sprintf("channel_message %s: %v", m.ID, err))
 				continue
 			}
-			result.ChannelMessagesRestored++
+			if inserted {
+				result.ChannelMessagesRestored++
+			}
 		}
 		for _, c := range sec.Cursors {
-			if err := s.SnapshotRestoreChannelCursor(ctx, store.ChannelCursorEntry{
+			inserted, err := s.SnapshotRestoreChannelCursor(ctx, store.ChannelCursorEntry{
 				Channel:   c.Channel,
 				Scope:     store.MemoryScope(c.Scope),
 				ScopeID:   c.ScopeID,
 				Cursor:    c.Cursor,
 				UpdatedAt: c.UpdatedAt,
-			}); err != nil {
+			})
+			if err != nil {
 				result.Warnings = append(result.Warnings, fmt.Sprintf("channel_cursor %s/%s/%s: %v", c.Channel, c.Scope, c.ScopeID, err))
 				continue
 			}
-			result.ChannelCursorsRestored++
+			if inserted {
+				result.ChannelCursorsRestored++
+			}
 		}
 	}
 
@@ -249,7 +264,7 @@ func Restore(ctx context.Context, s store.Store, raw []byte, opts RestoreOptions
 			return result, err
 		}
 		for _, e := range sec.Entries {
-			if err := s.SnapshotRestoreEvaluation(ctx, store.EvaluationRow{
+			inserted, err := s.SnapshotRestoreEvaluation(ctx, store.EvaluationRow{
 				EvalID:         e.EvalID,
 				RunID:          e.RunID,
 				DefID:          e.DefID,
@@ -261,11 +276,14 @@ func Restore(ctx context.Context, s store.Store, raw []byte, opts RestoreOptions
 				EmitterAgentID: e.EmitterAgentID,
 				EmitterRunID:   e.EmitterRunID,
 				CreatedAt:      e.CreatedAt,
-			}); err != nil {
+			})
+			if err != nil {
 				result.Warnings = append(result.Warnings, fmt.Sprintf("evaluation %s: %v", e.EvalID, err))
 				continue
 			}
-			result.EvaluationsRestored++
+			if inserted {
+				result.EvaluationsRestored++
+			}
 		}
 	}
 
@@ -293,14 +311,18 @@ func Restore(ctx context.Context, s store.Store, raw []byte, opts RestoreOptions
 				CreatedAt: e.StartedAt,
 				UserID:    e.UserID,
 			}
-			if err := s.SnapshotRestoreSession(ctx, synthSession); err != nil {
+			sessInserted, err := s.SnapshotRestoreSession(ctx, synthSession)
+			if err != nil {
 				result.Warnings = append(result.Warnings, fmt.Sprintf("synthesized session %s: %v", sessionID, err))
 				continue
 			}
 			// The architect's blueprint flagged this as the load-
 			// bearing correctness detail — count synthesized
-			// sessions explicitly for operator visibility.
-			if e.SessionID == "" || e.SessionID == synthesizedID {
+			// sessions explicitly for operator visibility. Only
+			// count when an INSERT actually happened so a re-restore
+			// reads as "0 synthesized" rather than re-reporting
+			// the first restore's count.
+			if sessInserted && (e.SessionID == "" || e.SessionID == synthesizedID) {
 				result.SynthesizedSessions++
 			}
 
@@ -317,26 +339,32 @@ func Restore(ctx context.Context, s store.Store, raw []byte, opts RestoreOptions
 				AgentDefID:    e.AgentDefID,
 				PauseState:    e.PauseState,
 			}
-			if err := s.SnapshotRestoreRun(ctx, runRow); err != nil {
+			runInserted, err := s.SnapshotRestoreRun(ctx, runRow)
+			if err != nil {
 				result.Warnings = append(result.Warnings, fmt.Sprintf("paused_run %s: %v", e.RunID, err))
 				continue
 			}
-			result.PausedRunsRestored++
+			if runInserted {
+				result.PausedRunsRestored++
+			}
 
 			// Transcript events for the run.
 			for _, te := range e.TranscriptEvents {
-				if err := s.SnapshotRestoreEvent(ctx, store.Event{
+				evtInserted, err := s.SnapshotRestoreEvent(ctx, store.Event{
 					Seq:       te.Seq,
 					SessionID: sessionID,
 					RunID:     e.RunID,
 					Timestamp: time.Unix(0, te.TsNs),
 					Type:      te.Type,
 					Payload:   te.Payload,
-				}); err != nil {
+				})
+				if err != nil {
 					result.Warnings = append(result.Warnings, fmt.Sprintf("transcript event run=%s seq=%d: %v", e.RunID, te.Seq, err))
 					continue
 				}
-				result.TranscriptEventsRestored++
+				if evtInserted {
+					result.TranscriptEventsRestored++
+				}
 			}
 		}
 	}

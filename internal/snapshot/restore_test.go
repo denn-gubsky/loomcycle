@@ -146,12 +146,13 @@ func TestRestore_Idempotent_SecondCallNoDuplicates(t *testing.T) {
 	if err != nil {
 		t.Fatalf("second Restore: %v", err)
 	}
-	// MemoryRestored counts INSERT-attempts that succeeded; the second
-	// call's INSERTs all hit ON CONFLICT DO NOTHING, which still
-	// "succeeds" (no error). The SnapshotRestore* contract says rows-
-	// affected isn't surfaced — what matters is that the dst still
-	// has exactly one row.
-	_ = r2
+	// SnapshotRestore* methods return (inserted bool, error) — on a
+	// re-restore the INSERTs all hit ON CONFLICT DO NOTHING and report
+	// rows_affected=0, so the counters reflect actual writes (0) and
+	// not attempted writes (1). This is the PR #131 review fix.
+	if r2.MemoryRestored != 0 {
+		t.Errorf("second restore MemoryRestored = %d, want 0 (no new rows written)", r2.MemoryRestored)
+	}
 
 	mem, _ := dst.SnapshotReadMemory(ctx)
 	if len(mem) != 1 {

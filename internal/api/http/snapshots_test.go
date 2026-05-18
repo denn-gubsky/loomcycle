@@ -324,14 +324,14 @@ func TestRestoreSnapshot_FromStoredID(t *testing.T) {
 	}
 	var resp snapshotRestoreResponse
 	_ = json.Unmarshal(rec.Body.Bytes(), &resp)
-	// MemoryRestored may be 1 OR 0 depending on whether the second
-	// (re-)insert succeeded (it shouldn't — the row already exists,
-	// ON CONFLICT DO NOTHING means INSERT counts as a no-op). The
-	// counter semantics are "INSERT-attempts that didn't error"; SQLite's
-	// driver returns nil err on ON CONFLICT IGNORE, so counter goes up
-	// even on no-op. Test for "≥ 0 and no error" rather than exact 1.
-	if resp.MemoryRestored < 0 {
-		t.Errorf("MemoryRestored = %d, want >= 0", resp.MemoryRestored)
+	// Capture-then-restore against the SAME store: the existing row
+	// hits ON CONFLICT DO NOTHING and reports rows_affected=0, so the
+	// PR #131 (bool, error) contract gives MemoryRestored = 0 even
+	// though the section had 1 entry. Compare to TestRestoreSnapshot_
+	// FromInlineJSON below which restores against a fresh row not
+	// previously present → MemoryRestored = 1.
+	if resp.MemoryRestored != 0 {
+		t.Errorf("MemoryRestored = %d, want 0 (row already exists in same store)", resp.MemoryRestored)
 	}
 }
 

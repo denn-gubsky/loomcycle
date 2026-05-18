@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -12,10 +13,16 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/store/sqlite"
 )
 
-// newTestStore builds an in-memory SQLite store for snapshot tests.
+// newTestStore builds a per-test SQLite store under t.TempDir().
+// On-disk (not ":memory:") because modernc's ":memory:" DSN uses
+// shared-cache mode in production code; two newTestStore calls under
+// the same process would otherwise alias to the same DB and make
+// round-trip tests (src capture → dst restore) silently no-op via
+// ON CONFLICT DO NOTHING. The store contract tests do the same.
 func newTestStore(t *testing.T) (store.Store, func()) {
 	t.Helper()
-	s, err := sqlite.Open(":memory:")
+	path := filepath.Join(t.TempDir(), "snapshot_test.db")
+	s, err := sqlite.Open(path)
 	if err != nil {
 		t.Fatalf("sqlite.Open: %v", err)
 	}

@@ -905,9 +905,9 @@ func (s *Store) SnapshotReadEvaluations(ctx context.Context) ([]store.Evaluation
 // ---- v0.8.17 Snapshot restore — idempotent raw inserts (PR 3.2a) ----
 
 // SnapshotRestoreSession implements store.Store.
-func (s *Store) SnapshotRestoreSession(ctx context.Context, sess store.Session) error {
+func (s *Store) SnapshotRestoreSession(ctx context.Context, sess store.Session) (bool, error) {
 	if sess.ID == "" {
-		return fmt.Errorf("snapshot restore session: id required")
+		return false, fmt.Errorf("snapshot restore session: id required")
 	}
 	createdAt := sess.CreatedAt
 	if createdAt.IsZero() {
@@ -917,21 +917,21 @@ func (s *Store) SnapshotRestoreSession(ctx context.Context, sess store.Session) 
 	if sess.UserID != "" {
 		userID = sess.UserID
 	}
-	_, err := s.pool.Exec(ctx,
+	tag, err := s.pool.Exec(ctx,
 		`INSERT INTO sessions(id, tenant_id, agent, created_at, user_id) VALUES ($1, $2, $3, $4, $5)
 		 ON CONFLICT (id) DO NOTHING`,
 		sess.ID, sess.TenantID, sess.Agent, createdAt, userID,
 	)
 	if err != nil {
-		return fmt.Errorf("snapshot restore session: %w", err)
+		return false, fmt.Errorf("snapshot restore session: %w", err)
 	}
-	return nil
+	return tag.RowsAffected() > 0, nil
 }
 
 // SnapshotRestoreRun implements store.Store.
-func (s *Store) SnapshotRestoreRun(ctx context.Context, r store.Run) error {
+func (s *Store) SnapshotRestoreRun(ctx context.Context, r store.Run) (bool, error) {
 	if r.ID == "" || r.SessionID == "" {
-		return fmt.Errorf("snapshot restore run: id and session_id required")
+		return false, fmt.Errorf("snapshot restore run: id and session_id required")
 	}
 	startedAt := r.StartedAt
 	if startedAt.IsZero() {
@@ -954,7 +954,7 @@ func (s *Store) SnapshotRestoreRun(ctx context.Context, r store.Run) error {
 	if pauseState == "" {
 		pauseState = store.PauseStateRunning
 	}
-	_, err := s.pool.Exec(ctx,
+	tag, err := s.pool.Exec(ctx,
 		`INSERT INTO runs(
 			id, session_id, status, started_at, completed_at, stop_reason,
 			input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens,
@@ -971,51 +971,51 @@ func (s *Store) SnapshotRestoreRun(ctx context.Context, r store.Run) error {
 		nullIfEmpty(r.UserTier), nullIfEmpty(r.AgentDefID), pauseState,
 	)
 	if err != nil {
-		return fmt.Errorf("snapshot restore run: %w", err)
+		return false, fmt.Errorf("snapshot restore run: %w", err)
 	}
-	return nil
+	return tag.RowsAffected() > 0, nil
 }
 
 // SnapshotRestoreEvent implements store.Store.
-func (s *Store) SnapshotRestoreEvent(ctx context.Context, e store.Event) error {
+func (s *Store) SnapshotRestoreEvent(ctx context.Context, e store.Event) (bool, error) {
 	if e.RunID == "" || e.SessionID == "" {
-		return fmt.Errorf("snapshot restore event: run_id and session_id required")
+		return false, fmt.Errorf("snapshot restore event: run_id and session_id required")
 	}
 	ts := e.Timestamp
 	if ts.IsZero() {
 		ts = time.Now().UTC()
 	}
 	if e.Seq != 0 {
-		_, err := s.pool.Exec(ctx,
+		tag, err := s.pool.Exec(ctx,
 			`INSERT INTO events(seq, session_id, run_id, ts, type, payload) VALUES ($1, $2, $3, $4, $5, $6)
 			 ON CONFLICT (seq) DO NOTHING`,
 			e.Seq, e.SessionID, e.RunID, ts, e.Type, e.Payload,
 		)
 		if err != nil {
-			return fmt.Errorf("snapshot restore event: %w", err)
+			return false, fmt.Errorf("snapshot restore event: %w", err)
 		}
-		return nil
+		return tag.RowsAffected() > 0, nil
 	}
 	_, err := s.pool.Exec(ctx,
 		`INSERT INTO events(session_id, run_id, ts, type, payload) VALUES ($1, $2, $3, $4, $5)`,
 		e.SessionID, e.RunID, ts, e.Type, e.Payload,
 	)
 	if err != nil {
-		return fmt.Errorf("snapshot restore event (auto-seq): %w", err)
+		return false, fmt.Errorf("snapshot restore event (auto-seq): %w", err)
 	}
-	return nil
+	return true, nil
 }
 
 // SnapshotRestoreAgentDef implements store.Store.
-func (s *Store) SnapshotRestoreAgentDef(ctx context.Context, r store.AgentDefRow) error {
+func (s *Store) SnapshotRestoreAgentDef(ctx context.Context, r store.AgentDefRow) (bool, error) {
 	if r.DefID == "" || r.Name == "" {
-		return fmt.Errorf("snapshot restore agent_def: def_id and name required")
+		return false, fmt.Errorf("snapshot restore agent_def: def_id and name required")
 	}
 	createdAt := r.CreatedAt
 	if createdAt.IsZero() {
 		createdAt = time.Now().UTC()
 	}
-	_, err := s.pool.Exec(ctx,
+	tag, err := s.pool.Exec(ctx,
 		`INSERT INTO agent_defs(
 			def_id, name, version, parent_def_id, definition, description,
 			created_at, created_by_agent_id, created_by_run_id,
@@ -1028,35 +1028,39 @@ func (s *Store) SnapshotRestoreAgentDef(ctx context.Context, r store.AgentDefRow
 		r.Retired, r.BootstrappedFromStatic,
 	)
 	if err != nil {
-		return fmt.Errorf("snapshot restore agent_def: %w", err)
+		return false, fmt.Errorf("snapshot restore agent_def: %w", err)
 	}
-	return nil
+	return tag.RowsAffected() > 0, nil
 }
 
-// SnapshotRestoreAgentDefActive implements store.Store. UPSERT on name.
-func (s *Store) SnapshotRestoreAgentDefActive(ctx context.Context, e store.AgentDefActiveEntry) error {
+// SnapshotRestoreAgentDefActive implements store.Store. ON CONFLICT
+// DO NOTHING — first restore writes the snapshot's promoted_at +
+// def_id; subsequent restores leave the existing row alone so the
+// (bool, error) return reads as "not inserted" and the caller's
+// counter stays honest on a re-restore.
+func (s *Store) SnapshotRestoreAgentDefActive(ctx context.Context, e store.AgentDefActiveEntry) (bool, error) {
 	if e.Name == "" || e.DefID == "" {
-		return fmt.Errorf("snapshot restore agent_def_active: name and def_id required")
+		return false, fmt.Errorf("snapshot restore agent_def_active: name and def_id required")
 	}
 	promotedAt := e.PromotedAt
 	if promotedAt.IsZero() {
 		promotedAt = time.Now().UTC()
 	}
-	_, err := s.pool.Exec(ctx,
+	tag, err := s.pool.Exec(ctx,
 		`INSERT INTO agent_def_active(name, def_id, promoted_at, promoted_by_agent_id) VALUES ($1, $2, $3, $4)
-		 ON CONFLICT (name) DO UPDATE SET def_id = excluded.def_id, promoted_at = excluded.promoted_at, promoted_by_agent_id = excluded.promoted_by_agent_id`,
+		 ON CONFLICT (name) DO NOTHING`,
 		e.Name, e.DefID, promotedAt, nullIfEmpty(e.PromotedByAgentID),
 	)
 	if err != nil {
-		return fmt.Errorf("snapshot restore agent_def_active: %w", err)
+		return false, fmt.Errorf("snapshot restore agent_def_active: %w", err)
 	}
-	return nil
+	return tag.RowsAffected() > 0, nil
 }
 
 // SnapshotRestoreMemory implements store.Store.
-func (s *Store) SnapshotRestoreMemory(ctx context.Context, e store.MemorySnapshotEntry) error {
+func (s *Store) SnapshotRestoreMemory(ctx context.Context, e store.MemorySnapshotEntry) (bool, error) {
 	if e.Scope == "" || e.Key == "" {
-		return fmt.Errorf("snapshot restore memory: scope and key required")
+		return false, fmt.Errorf("snapshot restore memory: scope and key required")
 	}
 	createdAt := e.CreatedAt
 	if createdAt.IsZero() {
@@ -1071,7 +1075,7 @@ func (s *Store) SnapshotRestoreMemory(ctx context.Context, e store.MemorySnapsho
 		t := e.ExpiresAt
 		expiresAt = &t
 	}
-	_, err := s.pool.Exec(ctx,
+	tag, err := s.pool.Exec(ctx,
 		`INSERT INTO memory(scope, scope_id, key, value, expires_at, created_at, updated_at)
 		 VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7)
 		 ON CONFLICT (scope, scope_id, key) DO NOTHING`,
@@ -1079,15 +1083,15 @@ func (s *Store) SnapshotRestoreMemory(ctx context.Context, e store.MemorySnapsho
 		expiresAt, createdAt, updatedAt,
 	)
 	if err != nil {
-		return fmt.Errorf("snapshot restore memory: %w", err)
+		return false, fmt.Errorf("snapshot restore memory: %w", err)
 	}
-	return nil
+	return tag.RowsAffected() > 0, nil
 }
 
 // SnapshotRestoreChannelMessage implements store.Store.
-func (s *Store) SnapshotRestoreChannelMessage(ctx context.Context, m store.ChannelMessage) error {
+func (s *Store) SnapshotRestoreChannelMessage(ctx context.Context, m store.ChannelMessage) (bool, error) {
 	if m.ID == "" || m.Channel == "" {
-		return fmt.Errorf("snapshot restore channel_message: id and channel required")
+		return false, fmt.Errorf("snapshot restore channel_message: id and channel required")
 	}
 	publishedAt := m.PublishedAt
 	if publishedAt.IsZero() {
@@ -1102,7 +1106,7 @@ func (s *Store) SnapshotRestoreChannelMessage(ctx context.Context, m store.Chann
 	if visibleAt.IsZero() {
 		visibleAt = publishedAt
 	}
-	_, err := s.pool.Exec(ctx,
+	tag, err := s.pool.Exec(ctx,
 		`INSERT INTO channel_messages(id, channel, scope, scope_id, payload, published_at, expires_at, visible_at, published_by_user_id)
 		 VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9)
 		 ON CONFLICT (id) DO NOTHING`,
@@ -1110,35 +1114,38 @@ func (s *Store) SnapshotRestoreChannelMessage(ctx context.Context, m store.Chann
 		publishedAt, expiresAt, visibleAt, nullIfEmpty(m.PublishedByUserID),
 	)
 	if err != nil {
-		return fmt.Errorf("snapshot restore channel_message: %w", err)
+		return false, fmt.Errorf("snapshot restore channel_message: %w", err)
 	}
-	return nil
+	return tag.RowsAffected() > 0, nil
 }
 
-// SnapshotRestoreChannelCursor implements store.Store. UPSERT.
-func (s *Store) SnapshotRestoreChannelCursor(ctx context.Context, c store.ChannelCursorEntry) error {
+// SnapshotRestoreChannelCursor implements store.Store. ON CONFLICT
+// DO NOTHING — first restore writes the snapshot's cursor; subsequent
+// restores leave an evolved live cursor alone so the (bool, error)
+// return reads as "not inserted" on a re-restore.
+func (s *Store) SnapshotRestoreChannelCursor(ctx context.Context, c store.ChannelCursorEntry) (bool, error) {
 	if c.Channel == "" || c.Cursor == "" {
-		return fmt.Errorf("snapshot restore channel_cursor: channel and cursor required")
+		return false, fmt.Errorf("snapshot restore channel_cursor: channel and cursor required")
 	}
 	updatedAt := c.UpdatedAt
 	if updatedAt.IsZero() {
 		updatedAt = time.Now().UTC()
 	}
-	_, err := s.pool.Exec(ctx,
+	tag, err := s.pool.Exec(ctx,
 		`INSERT INTO channel_cursors(channel, scope, scope_id, cursor, updated_at) VALUES ($1, $2, $3, $4, $5)
-		 ON CONFLICT (channel, scope, scope_id) DO UPDATE SET cursor = excluded.cursor, updated_at = excluded.updated_at`,
+		 ON CONFLICT (channel, scope, scope_id) DO NOTHING`,
 		c.Channel, string(c.Scope), c.ScopeID, c.Cursor, updatedAt,
 	)
 	if err != nil {
-		return fmt.Errorf("snapshot restore channel_cursor: %w", err)
+		return false, fmt.Errorf("snapshot restore channel_cursor: %w", err)
 	}
-	return nil
+	return tag.RowsAffected() > 0, nil
 }
 
 // SnapshotRestoreEvaluation implements store.Store.
-func (s *Store) SnapshotRestoreEvaluation(ctx context.Context, r store.EvaluationRow) error {
+func (s *Store) SnapshotRestoreEvaluation(ctx context.Context, r store.EvaluationRow) (bool, error) {
 	if r.EvalID == "" || r.RunID == "" {
-		return fmt.Errorf("snapshot restore evaluation: eval_id and run_id required")
+		return false, fmt.Errorf("snapshot restore evaluation: eval_id and run_id required")
 	}
 	createdAt := r.CreatedAt
 	if createdAt.IsZero() {
@@ -1154,7 +1161,7 @@ func (s *Store) SnapshotRestoreEvaluation(ctx context.Context, r store.Evaluatio
 	if len(r.Judgement) > 0 {
 		judgement = string(r.Judgement)
 	}
-	_, err := s.pool.Exec(ctx,
+	tag, err := s.pool.Exec(ctx,
 		`INSERT INTO evaluations(
 			eval_id, run_id, def_id, score, dimensions, judgement, rationale,
 			emitter_role, emitter_agent_id, emitter_run_id, created_at
@@ -1166,9 +1173,9 @@ func (s *Store) SnapshotRestoreEvaluation(ctx context.Context, r store.Evaluatio
 		createdAt,
 	)
 	if err != nil {
-		return fmt.Errorf("snapshot restore evaluation: %w", err)
+		return false, fmt.Errorf("snapshot restore evaluation: %w", err)
 	}
-	return nil
+	return tag.RowsAffected() > 0, nil
 }
 
 // nullIfEmpty converts an empty string to a *string nil so pgx writes

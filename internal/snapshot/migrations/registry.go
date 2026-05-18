@@ -17,6 +17,8 @@ package migrations
 import (
 	"encoding/json"
 	"fmt"
+	"strconv"
+	"strings"
 )
 
 // CurrentVersion is the reader's declared section version. Each
@@ -148,23 +150,41 @@ func Migrate(section, snapshotVersion string, raw json.RawMessage) (json.RawMess
 		section, snapshotVersion, CurrentVersion)
 }
 
-// compareVersions does a lexicographic compare on dot-separated
-// numeric version strings. Returns -1, 0, or +1. Treats malformed
-// versions as equal to the empty string (sorts below everything).
+// compareVersions does a numeric per-component compare on
+// dot-separated version strings. Returns -1, 0, or +1.
 //
-// v0.8.17 uses simple "<major>.<minor>" strings; this comparator
-// will need extending if we ever introduce "<major>.<minor>.<patch>"
-// or pre-release suffixes. Documented limitation rather than a bug.
+// Components that fail to parse as int compare as 0 (e.g. "1.x" vs
+// "1.0" tie on the second component, which is the cautious behaviour
+// — we don't want a malformed version to silently sort above or
+// below a real one and flip the ErrSnapshotVersionTooNew gate).
+//
+// Per-component numeric ordering matters: lexicographic "1.10" <
+// "1.9" would make a reader at v1.10 wrongly reject a valid older
+// snapshot at v1.9 as "too new" once minor versions reach 10.
 func compareVersions(a, b string) int {
 	if a == b {
 		return 0
 	}
-	// Cheap path: lexicographic for the simple <int>.<int> shape.
-	// "1.0" < "1.1" < "1.10" lex-fails ("1.10" < "1.1" lex) but
-	// we're well below that scale today; revisit when a section
-	// passes v1.9.
-	if a < b {
-		return -1
+	aParts := strings.Split(a, ".")
+	bParts := strings.Split(b, ".")
+	n := len(aParts)
+	if len(bParts) > n {
+		n = len(bParts)
 	}
-	return 1
+	for i := 0; i < n; i++ {
+		var ax, bx int
+		if i < len(aParts) {
+			ax, _ = strconv.Atoi(aParts[i])
+		}
+		if i < len(bParts) {
+			bx, _ = strconv.Atoi(bParts[i])
+		}
+		if ax < bx {
+			return -1
+		}
+		if ax > bx {
+			return 1
+		}
+	}
+	return 0
 }

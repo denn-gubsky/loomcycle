@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/config"
@@ -317,10 +318,30 @@ func (s *Server) handleExportSnapshot(w http.ResponseWriter, r *http.Request) {
 	// so CLI consumers using `curl -O` save it under the snapshot's
 	// id. The bytes are already canonical (Capture stored them via
 	// json.Marshal); no re-marshal needed.
+	//
+	// Sanitize the id before splicing into the header value: snapshot
+	// IDs from mintID are clean ("snap_<ms>_<hex>") but the id here is
+	// a path param under operator control, and trusting it would
+	// permit header injection / response-splitting via embedded
+	// quotes, CR, or LF. Replace those with '_' rather than rejecting
+	// so a misuse still gets the body (just with a sanitized filename).
 	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("Content-Disposition", `attachment; filename="`+id+`.json"`)
+	w.Header().Set("Content-Disposition", `attachment; filename="`+sanitizeSnapshotFilename(id)+`.json"`)
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(row.JSONContent)
+}
+
+// sanitizeSnapshotFilename strips characters that would break the
+// Content-Disposition header value (double quote, CR, LF) and replaces
+// them with '_'. mintID-produced ids never trip this in practice; it's
+// defense-in-depth against operator-supplied or future-format ids.
+func sanitizeSnapshotFilename(id string) string {
+	return strings.Map(func(r rune) rune {
+		if r == '"' || r == '\r' || r == '\n' {
+			return '_'
+		}
+		return r
+	}, id)
 }
 
 // channelConfigForSnapshot translates cfg.Channels (operator-yaml
