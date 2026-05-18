@@ -1017,6 +1017,13 @@ func (s *Server) Mux() http.Handler {
 	// `/`-prefixed paths (e.g. `events/2026-05-09T10:00`) and a
 	// single-segment {key} would 404 on those.
 	mux.Handle("GET /v1/_memory/scopes/{scope}/{scope_id}/keys/{key...}", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleGetMemoryEntry))))
+	// v0.8.17 Snapshot capture (PR 2). Bearer-authed; same posture
+	// as /v1/_resolver. The full runtime-state JSON envelope; see
+	// internal/snapshot/snapshot.go for the wire shape.
+	mux.Handle("POST /v1/_snapshots", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleCreateSnapshot))))
+	mux.Handle("GET /v1/_snapshots", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleListSnapshots))))
+	mux.Handle("GET /v1/_snapshots/{id}", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleGetSnapshot))))
+	mux.Handle("DELETE /v1/_snapshots/{id}", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleDeleteSnapshot))))
 	// v0.8.16 Interruption tool. resolve is the human-side answer
 	// submit; the two list endpoints drive the Web UI (run-scoped
 	// audit + user-scoped inbox).
