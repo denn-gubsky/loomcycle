@@ -2,7 +2,55 @@
 
 This is the public roadmap. For decision history, regret notes, and per-version commit-by-commit details, see `~/work/loomcycle-internal/doc-internal/PLAN.md` (operator-side separate repo; migrated out of this tree as part of v0.8.15).
 
-## v0.8.15 — current
+## v0.8.17 — current
+
+**Status: shipped (2026-05-18).** **Pause / Resume / Snapshot** — the v0.8.x → v0.9.x bridge. Runtime-wide quiesce + cross-version-portable JSON snapshot. PRs #129, #132, #134 (5-PR plan, re-bundled into 3 squash merges after the stacked-PR base-targeting quirk: PR #129 = pause primitive; PR #132 = snapshot storage + capture + export/restore; PR #134 = pause/resume/state HTTP endpoints + CLI subcommands + Web UI).
+
+**What's in v0.8.17 (vs v0.8.16):**
+
+- **Pause / Resume HTTP endpoints (#134).** `POST /v1/_pause` body `{"timeout_ms"?: N}` declares the runtime is quiescing. Idempotent tools (`Read`, `WebFetch`, `WebSearch`, `Memory.get/list`, `Channel.peek`, `AgentDef.get/list`, `Context.*`, `Evaluation.get/aggregate`) are cancelled IMMEDIATELY — their ctx flips to Done at pause-declare time. Non-idempotent + external (MCP) tools get a 30 s default grace window (operator-configurable via `LOOMCYCLE_PAUSE_DEFAULT_TIMEOUT_MS`, clamped at 5 min) then force-cancel. New `/v1/runs` requests get 503 while in `pausing` or `paused`. `POST /v1/_resume` flips back to `running` and re-marks each previously-paused run; the runner goroutines pick up the broadcast channel and re-enter their loops. `GET /v1/_state` returns `{state, paused_runs_count}` for dashboards.
+- **Pause manager (#129).** New `internal/pause/` package: atomic state + broadcast channel + in-flight tool registry. `Manager.ToolCtx` is the iteration-boundary hook that wraps every tool dispatch with the per-category cancel policy (`CategoryIdempotent` cancels immediately; `CategoryNonIdempotent`/`CategoryExternal` get the deadline). Race-clean post-drain sweep in `finalizePause` ensures `activeTools` is empty when state transitions to `StatePaused` — operators relying on `PausedRunsCount` as a quiescence signal need this guarantee.
+- **Per-run `pause_state` column on `runs` (#129).** Additive migration `0012_runs_pause_state.up.sql` (SQLite + Postgres). Partial index `runs_by_pause_state` keeps the resume sweep cheap. Three values: `running` (default), `pausing` (loop winding down to boundary), `paused` (loop hit the boundary, awaiting resume).
+- **Snapshot storage + capture (#132).** New `snapshots` table (additive migration `0013_snapshots.up.sql`; SQLite TEXT-as-JSON, Postgres JSONB). `internal/snapshot/` package: `Capture(ctx, store, opts)` reads seven sections (`agent_defs`, `agent_def_active`, `memory`, `channels`, `evaluations`, `paused_runs`, optional `interaction_history`) into a JSON envelope with per-section semver. `DefaultMaxBytes = 512 MB`. `ID` format `snap_<unix_ms>_<8hex>` — sortable by capture time. Six new Store bulk-reader methods (`SnapshotReadAgentDefs`, `SnapshotReadMemory`, etc.); existing tools (Memory, Channel, Evaluation) unchanged.
+- **Per-run transcript reads are best-effort.** Capture's `capturePausedRuns` continues on a single bad transcript — the failing run's entry gets a `transcript_error` field set; capture proceeds with remaining runs + sections. The RFC describes capture as best-effort representing store state at the read instant; losing every other section to one bad transcript would contradict that.
+- **Restore + per-section migration registry (#132).** `Restore(ctx, store, raw, opts)` decodes via a deferred `map[string]json.RawMessage` so each section's bytes pass through `migrations.Migrate()` before typed decode. Nine new Store methods (`SnapshotRestoreSession` / `Run` / `Event` / `AgentDef` / `AgentDefActive` / `Memory` / `ChannelMessage` / `ChannelCursor` / `Evaluation`) all return `(inserted bool, err error)` using `rows_affected` from the driver. Idempotent: `ON CONFLICT DO NOTHING` (Postgres) / `INSERT OR IGNORE` (SQLite). Restore counters reflect `rows_actually_written`, not `rows_attempted` — a re-restore reports 0 even though every per-row INSERT "succeeded".
+- **Session FK synthesis.** `paused_runs` reference `session_id` but sessions aren't a captured section. Restore synthesizes `snap_sess_<run_id>` deterministically before inserting the run; the `synthesized_sessions` counter on the response surfaces this so operators can audit cross-instance restore behaviour.
+- **Resolver `ForceProbe` callback (#132).** Restore triggers an immediate resolver-matrix refresh before returning so operators can call `/v1/_resume` right after restore without waiting for the periodic probe. Implemented via `Resolver.SetForceProbeCallback(fn)` wired from `main.go` after the probe loop starts.
+- **Numeric per-component version compare.** The per-section migration registry compares versions numerically (`"1.10" > "1.9"`) rather than lexicographically — a reader at section-version "1.10" no longer wrongly rejects a valid older snapshot at "1.9" as "too new" once a section bumps past minor 10.
+- **Export + restore HTTP endpoints (#132).** `GET /v1/_snapshots/{id}/export` streams the raw JSON envelope with `Content-Disposition: attachment; filename="<id>.json"` (snapshot id sanitized against header injection). `POST /v1/_snapshots/{id}/restore` body `{"include_history?": false, "json?": <envelope>}` — the inline-JSON path bypasses the id lookup for CLI / cross-instance restore.
+- **CLI subcommands (#134).** Seven new verbs: `loomcycle pause [--timeout-ms N]`, `resume`, `state`, `snapshot [--description S] [--include-history --since RFC3339]`, `snapshots list [--limit N] [--label-contains S]`, `snapshots export <id> [--out file.json]`, `snapshots delete <id>`, `restore <file.json>`. All share `--target` / `--token` flags defaulting to `LOOMCYCLE_BASE_URL` / `LOOMCYCLE_AUTH_TOKEN`. Exit codes: `0` success, `1` operational (5xx, network, 409 runtime-state), `2` user error (bad flag, 4xx other than 409). 409 → exit 1 matches scripts using `set -e` around idempotent pause loops.
+- **Web UI (#134).** New `<PauseControls>` topbar component: pill showing current state (`running` / `pausing` / `paused`) with paused-runs overlay; Pause / Resume button confirms before action. Polls `/v1/_state` every 5 s; renders nothing on 503 so dev setups without a pause manager stay clean. New `/ui/snapshots` admin page: capture / restore-from-file / export-as-download / delete. Restore confirm flow shows per-section counters + warnings.
+- **Context tool `history` op `since_ts` addendum (#132).** The v0.8.7 history op now accepts a `since_ts` RFC3339 filter. Pairs with the snapshot's interaction_history section: restored experiments call `Context.history(since=<experiment_start_ts>)` to reflect on past conversations after cross-version migration.
+- **State-change signals flow through `_system/runtime-state`** (v0.8.6 system channels, shipped). No new SSE event types — operator dashboards and external orchestrators subscribe to the existing channel.
+
+**Tests:** 8 HTTP handler tests (pause/resume/state — happy paths, 409 conflict, body-timeout override, invalid JSON, state-with-paused-rows). 16 CLI tests (httptest stub servers — exit-code mapping including 409 → exit 1, bearer-token plumbing, file I/O for export/restore, missing-arg user-error paths). 18 store contract sub-tests for SnapshotCreate/Get/List/Delete across SQLite + Postgres. 9 snapshot.Capture() unit tests + 14 Restore round-trip tests (idempotent, version-rejection, session-FK synthesis). 15 pause manager tests including the post-drain sweep + late-Store race regression.
+
+**Sharp edges / forward-compat notes:**
+
+- Memory section's schema reserves an optional `embedding` field (always null in v0.8.17; populated by v0.9.x semantic memory) so a snapshot captured today round-trips cleanly through a future loomcycle that does have vector ops — no v1.0 → v1.1 schema migration of the just-shipped data.
+- Snapshot scope is running-state only. External DB backups handle archival history. The optional `include_history` flag adds an interaction-history section but is not how you back up a busy production database.
+- Pause is runtime-wide. Per-tenant fairness defers to v0.9.x.
+- Not encrypted at rest. Operator's disk-encryption policy applies — same posture as transcripts and Memory.
+
+For the v0.8.16 baseline that drove this work, see [v0.8.16](#v0816--earlier). For RFC-level design, see `~/work/loomcycle-internal/doc-internal/rfcs/pause-resume-snapshot.md`.
+
+## v0.8.16 — earlier
+
+**Status: shipped (2026-05-16).** **Interruption tool** — human-in-the-loop primitive. The v0.8.x arc complete (Memory + Channel + AgentDef/Eval + Context + LoomCycle MCP + Interruption = full substrate). PRs #119–#123.
+
+**What's in v0.8.16 (vs v0.8.15):**
+
+- **Three ops on a closed-enum `kind` discriminator**: `ask(question, options?, context?, timeout_ms?, priority?)`, `notify(message, priority?)`, `cancel(interrupt_id)`. The `kind` enum is `question` today; `pause` / `wait_until` / `approval` reserved for future additive enum values so the storage schema and channel namespace stay stable.
+- **Three delivery backends**: built-in Web UI (`/ui/interrupts`, default for production), consumer-side MCP (`mcp_server:<name>` — agent reaches the consumer's MCP server like any other), CLI (local dev reads answers from stdin). Operator picks via `interruption.backend` in yaml.
+- **Storage**: new `interrupts` table (additive migration `0011`, SQLite + Postgres) + 8 Store methods. `id` format `intr_<unix_ms>_<8hex>` sortable. Status discriminator (`pending` / `answered` / `cancelled` / `expired`); periodic sweeper marks expired rows.
+- **Signal flow via `_system/interrupts/*` channels** (v0.8.6 system channels — shipped). `interrupts/pending` (scope=`user`, per-user isolation via Channel ACL) + `interrupts/answered`. The Web UI subscribes via the existing Channel SSE; consumer-MCP and CLI backends consume the same channels. **No new SSE event types** — channels carry the signal.
+- **bus.Wait blocking with sub-ms wake.** The tool's `ask` op blocks the agent loop on a `bus.Wait(interrupt_id, timeout)` — the v0.8.4 Channel bus pattern. On resolve, the answer endpoint publishes to the bus + the channel; the blocked agent wakes within sub-ms.
+- **LoomCycle MCP gains a 21st meta-tool**: `interruption_resolve` (#121) so Claude Code or any external MCP orchestrator can be the answerer — completing the consumer-MCP backend trio.
+- **Per-agent ACL**: `interruption: {enabled, kinds, max_pending}` yaml. Default-deny (parallel to `memory_scopes` / `channels`). The run's `user_id` is the authoritative answerer.
+
+For the v0.8.15 baseline that drove this work, see [v0.8.15](#v0815--earlier). For RFC, see `~/work/loomcycle-internal/doc-internal/rfcs/interruption-tool.md`.
+
+## v0.8.15 — earlier
 
 **Status: shipped (2026-05-14).** **LoomCycle MCP server + `Connector` abstraction.** The v0.8.x **capstone**: loomcycle exposes itself as an **MCP server** over stdio (Claude Code first; HTTP-MCP transport deferred to v0.8.15.x). New `connector.Connector` Go interface unifies HTTP, gRPC, MCP, and future CLI surfaces around a single contract — HTTP server is the canonical implementation, others CONSUME via direct method dispatch. PRs #99, #100.
 
@@ -514,92 +562,19 @@ Architecture decision: DeepSeek is a separate `provider: deepseek` rather than `
 
 For usage: see [README](../README.md). For the architecture: see [ARCHITECTURE.md](ARCHITECTURE.md). For tool policy: see [TOOLS.md](TOOLS.md).
 
-## v0.8.x — next: framework primitives
+## v0.8.x — shipped (full timeline)
 
-**Roadmap renumbering note (updated 2026-05-14, fourth wave).** Sequenced 2026-05-09; renumbered through v0.8.5 as one-feature-per-point-release. The 2026-05-12 system-channels point release became v0.8.6; Context tool v0.8.7; Context.help v0.8.8. The 2026-05-13 production-readiness window absorbed six point releases: v0.8.9 + v0.8.10 (Gemini schema sanitizer + sqlite upgrade-path migration fix), v0.8.11 (process-resource metrics sampler), v0.8.12 (cross-provider reasoning_content strip), v0.8.13 (pin-after-success fallback policy), and v0.8.14 (per-run MCP bearer tokens + auto-version + metrics CI fix). The 2026-05-14 capstone window shipped v0.8.15 (LoomCycle MCP + Connector abstraction — the architectural anchor for every future wire transport). The remaining v0.8.x roadmap below picks up at v0.8.16 (Question tool) and v0.8.17 (Pause / Resume / Snapshot — the v0.8.x → v0.9.x bridge; wire shapes already locked in v0.8.15 mocks, just needs real implementations). Each point release ships one focused capability. Detailed design lives in feature-branch RFCs at implementation time; the outlines below capture the shape but not the wire.
+**Roadmap-renumbering postscript (updated 2026-05-18, fifth wave).** Sequenced 2026-05-09; renumbered through v0.8.5 as one-feature-per-point-release. The 2026-05-12 system-channels point release became v0.8.6; Context tool v0.8.7; Context.help v0.8.8. The 2026-05-13 production-readiness window absorbed six point releases: v0.8.9 + v0.8.10 (Gemini schema sanitizer + sqlite upgrade-path migration fix), v0.8.11 (process-resource metrics sampler), v0.8.12 (cross-provider reasoning_content strip), v0.8.13 (pin-after-success fallback policy), and v0.8.14 (per-run MCP bearer tokens + auto-version + metrics CI fix). The 2026-05-14 capstone window shipped v0.8.15 (LoomCycle MCP + Connector abstraction — the architectural anchor for every future wire transport). The 2026-05-16 Interruption wave shipped v0.8.16 (human-in-the-loop primitive). The 2026-05-18 bridge wave shipped v0.8.17 (Pause / Resume / Snapshot — the v0.8.x → v0.9.x bridge), completing the v0.8.x arc.
 
-**Shipped already:** v0.8.0 Memory tool (2026-05-09); v0.8.1 operational hardening (2026-05-10); v0.8.2 user_tier (2026-05-11); v0.8.3 ollama split (2026-05-11); v0.8.4 Channel tool (2026-05-11); v0.8.5 Self-Evolution Substrate (2026-05-11); v0.8.6 system channels + deferred publish (2026-05-12); v0.8.7 Context tool (2026-05-12); v0.8.8 Context.help (2026-05-12); v0.8.9 + v0.8.10 Gemini schema sanitizer + sqlite migration fix (2026-05-13); v0.8.11 process-resource metrics sampler (2026-05-13); v0.8.12 cross-provider reasoning_content strip (2026-05-13); v0.8.13 pin-after-success fallback policy (2026-05-13); v0.8.14 per-run MCP bearer tokens + auto-version + metrics CI fix (2026-05-13); v0.8.15 LoomCycle MCP server + Connector abstraction (2026-05-14) — see the sections above for full release notes.
+**v0.8.x shipped (full list):** v0.8.0 Memory tool (2026-05-09); v0.8.1 operational hardening (2026-05-10); v0.8.2 user_tier (2026-05-11); v0.8.3 ollama split (2026-05-11); v0.8.4 Channel tool (2026-05-11); v0.8.5 Self-Evolution Substrate (2026-05-11); v0.8.6 system channels + deferred publish (2026-05-12); v0.8.7 Context tool (2026-05-12); v0.8.8 Context.help (2026-05-12); v0.8.9 + v0.8.10 Gemini schema sanitizer + sqlite migration fix (2026-05-13); v0.8.11 process-resource metrics sampler (2026-05-13); v0.8.12 cross-provider reasoning_content strip (2026-05-13); v0.8.13 pin-after-success fallback policy (2026-05-13); v0.8.14 per-run MCP bearer tokens + auto-version + metrics CI fix (2026-05-13); v0.8.15 LoomCycle MCP server + Connector abstraction (2026-05-14); v0.8.16 Interruption tool (2026-05-16); v0.8.17 Pause / Resume / Snapshot (2026-05-18) — see the sections above for full release notes.
 
-### v0.8.16 — Question tool (human-in-the-loop primitive)
+**v0.8.x arc complete.** The substrate primitives that compose into the agentic-OS kernel — Memory (state), Channel (IPC), AgentDef + Evaluation (self-mutation + selection), Context (introspection), Interruption (human bridge), LoomCycle MCP (control plane), Pause / Resume / Snapshot (runtime quiesce) — all shipped. v0.9.x picks up at the high-load runtime sweep + Semantic Memory (vector retrieval, RFC locked 2026-05-18).
 
-Closes the one direction the v0.8.0–v0.8.11 arc leaves uncovered: **agent ↔ human, mid-run**. The substrate primitives so far cover machine interaction — state (Memory), IPC (Channel), self-mutation (AgentDef), selection (Evaluation), introspection (Context), control plane (LoomCycle MCP). `Question` is the human bridge.
+## v0.9.x — high-load runtime sweep + Semantic Memory
 
-Agents call `Question.ask` to surface a clarifying question, request approval before a risky action, or present a multiple-choice decision to a human in the loop. The human's answer flows back into the agent's loop as the tool result.
+Cross-cutting capacity items + one substrate feature (Semantic Memory). Not a single feature; collectively they take the runtime from "single-tenant comfortable on a 4–8 GiB VPS" to "10k concurrent agents per replica" while extending the v0.8.0 Memory tool with vector retrieval. Sequenced into v0.9.x as a series of small focused PRs.
 
-**Tool surface (sketch):** three ops on the discriminated-`op` shape that matches Memory / Channel / Context.
-
-- `ask(question, options?, context?, timeout_ms?, priority?)` — surface a question; agent loop pauses until answered, timed out, or cancelled.
-- `notify(message, priority?)` — fire-and-forget (no answer expected).
-- `cancel(question_id)` — cancel a pending question (e.g. agent figured it out itself before the human got there).
-
-The result of `ask` carries `{question_id, answered, answer?, answered_by_user_id?, answered_at?, timed_out, cancelled}`. The model never supplies `answered_by_user_id` — server-resolved from the bearer / cookie context of whoever submits the answer.
-
-**Three delivery surfaces, one tool interface:**
-
-| Path | Where the human sees it | Owner |
-|---|---|---|
-| **(1) Built-in with Web UI default** | `/ui/questions` modal/sidebar; operator (matching the run's `user_id`) answers via the existing bearer-cookie session | loomcycle |
-| **(2) MCP-implemented (consumer-side)** | Consumer runs its own MCP server exposing `mcp__<name>__ask`; loomcycle calls it like any other MCP tool (jobs-search-agent's pattern) | Consumer |
-| **(3) LoomCycle MCP exposure** | v0.8.15 LoomCycle MCP (shipped) will surface `Question.ask` as a 21st tool when v0.8.16 lands so external orchestrators (Claude Code, custom dashboards) become the delivery surface | loomcycle + orchestrator |
-
-Operator picks via `question.backend: webui | mcp_server:<name> | cli` in yaml. The Web UI is the default for production; `cli` lets local dev read answers from stdin.
-
-**Trust model:** per-agent `question_enabled: true` (default-deny, parallel to `memory_scopes` / `channels`). The run's `user_id` is the authoritative answerer — only that user (or operator admins via bearer) can submit. Operator env caps `LOOMCYCLE_QUESTION_DEFAULT_TIMEOUT_MS`, `LOOMCYCLE_QUESTION_MAX_TIMEOUT_MS`, `LOOMCYCLE_QUESTION_MAX_PENDING_PER_USER` bound the surface against runaway question floods.
-
-**Storage:** new `questions` table (additive migration, same pattern as `memory` / `channel_messages` / `agent_defs`). Wire: `POST /v1/runs/{run_id}/questions/{question_id}/answer` for the operator-side submit. **Signal flow goes through the v0.8.6 system channels** — `Question.ask` publishes to `_system/questions/pending` (scope=`user`, per-user isolated via Channel ACL); on resolution, the answer endpoint publishes to `_system/questions/answered`. **No new `EventQuestion` SSE event types needed** — the Channel pub/sub primitive carries the signal; Web UI and external consumers subscribe to the system channels via the existing Channel interface.
-
-**Run-lifecycle integration:** when `ask` is called, the agent loop enters a "waiting on human" state. The existing v0.5.0 heartbeat keeps the run alive; the v0.8.4 Channel long-poll wake pattern is reused for sub-millisecond wake on answer.
-
-**What's not yet decided:** blocking vs polling tool semantics (lean: blocking, with heartbeat keeping the run alive); the notification side-channel (how does the human learn to look at the UI — Slack bot subscribing to `_system/questions/pending`, email digest, etc. — lean: out of scope, operator integrates against the channel subscriber surface).
-
-Detailed design at pickup time will lift the local addendum (in this session's plan file) into `doc-internal/rfcs/question-tool.md`.
-
-### v0.8.17 — Pause / Resume / Snapshot (the v0.8.x → v0.9.x bridge)
-
-Runtime-wide quiesce + restore primitive. Closes the gap that today forces every long-running experiment to either run-to-completion-or-die or restart from scratch when the provider rate-limits, the infrastructure needs maintenance, or the operator wants to ship the experiment somewhere else.
-
-**Three motivating shapes the substrate enables:**
-
-| Pain shape today | With v0.8.17 |
-|---|---|
-| Provider down or rate-limited (Ollama subscription paused, Gemini quota exhausted, Anthropic 5xx) → every active run dies after the v0.8.2 fallback budget exhausts | Operator pauses → waits for capacity → resumes from where each run left off |
-| Pre-backup quiesce (DB hot-backup captures partial transcripts mid-iteration) | Pause → snapshot → backup → resume; consistent across runtime + DB |
-| Migrate to a new VM / loomcycle version / ship a research artefact | Pause → snapshot → JSON export → restore on the new instance |
-
-**Also: pause/resume is the precondition for v0.9.x multi-replica HA.** Multi-replica deployments need to drain a node before maintenance; runtime-wide pause provides exactly that. Sequencing pause before HA avoids retrofitting drain semantics into an already-running HA system.
-
-**Wire surface:**
-
-- `POST /v1/_pause?timeout_ms=30000` — runtime-wide pause. LLM streams cancel immediately; MCP tools + non-idempotent built-ins (`Bash`, `Write`, `Edit`, `HTTP`-mutate, `Memory.set/incr/delete`, `Channel.publish/subscribe/ack`, `AgentDef.create/fork/promote/retire`, `Evaluation.submit`) wait up to `timeout_ms` for completion then force-cancel. Idempotent built-ins (`Read`, `WebFetch`, `WebSearch`, `Memory.get/list`, `Channel.peek`, `AgentDef.get/list`, `Context.*`, `Evaluation.get/aggregate`) cancel immediately. New `/v1/runs` requests get 503 during pause.
-- `POST /v1/_resume` — resume agent loops from each paused run's last completed iteration boundary. Re-issues the last LLM request with full transcript context; tool calls that were force-cancelled re-issue (non-idempotent tools are operator-side concerns — container isolation recommended for the agentic posture).
-- `POST /v1/_snapshot` — capture running-state into a new `snapshots` table. Captures: agent_defs (full lineage), agent_def_active, memory entries, channel state (messages + cursors + config), evaluations, paused runs (with transcripts). Optional `include_history=true` + `since_ts=<RFC3339>` adds interaction history events.
-- `POST /v1/_snapshots/{id}/export` — write a snapshot's JSON content to disk; portable across loomcycle versions.
-- `POST /v1/_restore` — restore from a `snapshot_id` (same instance) or `json` body (cross-instance / cross-version). Per-section semver versioning lets new loomcycle versions migrate older sections without breaking the rest.
-- `GET /v1/_state` — runtime state (`running` / `pausing` / `paused` / `resuming` / `restoring`) for dashboards.
-
-CLI mirrors: `loomcycle pause` / `resume` / `snapshot` / `restore` / `state`.
-
-**Scope decisions (locked in the v0.8.17 RFC):**
-
-- **Runtime-wide pause**, not per-tenant. VM is the safety boundary; per-tenant pause defers to v0.9.x per-tenant fairness.
-- **Snapshot scope is running-state only.** External DB backups handle archival history. Snapshot stays small (paused runs + Memory + Channel + agent_defs + evaluations).
-- **JSON format is per-section semver.** Each top-level section (`agent_defs`, `memory`, `channels`, ...) carries its own `version`; reader applies per-section migrations. Suits active development where sub-schemas change at different cadences.
-- **Interaction history is opt-in via flag** (`--include-history --since <ts>`). Default snapshot stays lightweight; the heavyweight reproducibility snapshot is an explicit operator action.
-- **Experiment identity = timestamp** (operator supplies `since_ts`). First-class `experiments` table deferred; promote if research needs it.
-- **Pause and snapshot are decoupled operations** that compose as the operator chooses. Pause alone for rate-limit-wait; pause + snapshot + export for migration; snapshot during running for backup-time-of-day capture.
-
-**State-change signals flow through `_system/runtime-state`** (v0.8.6 system channels — shipped). Pause/resume/restore state transitions publish to that channel; operator dashboards subscribe; the v0.8.15 LoomCycle MCP server (shipped) exposes the same channel to external orchestrators. **No new `EventPauseStateChanged` SSE event types needed** — the Channel pub/sub primitive carries the signal.
-
-**Pairs with the v0.8.7 `Context.history` op (shipped):** restored experiments contain interaction history; agents in the restored instance read it via `Context.history(since=<experiment_start_ts>)` to reflect on past conversations. Self-evolving experiments survive cross-version migration with their memory intact.
-
-**What's not yet decided:** snapshot encryption-at-rest (operator's disk-encryption policy applies — same as transcripts), automatic snapshot scheduling (lean: out of scope; operator integrates with their own scheduler), partial restore granularity (v0.8.17 is all-or-nothing per section; selective is a v0.9.x candidate).
-
-Detailed design in `doc-internal/rfcs/pause-resume-snapshot.md` (gitignored).
-
-## v0.9.x — high-load runtime sweep
-
-Cross-cutting capacity items. Not a single feature; collectively they take the runtime from "single-tenant comfortable on a 4–8 GiB VPS" to "10k concurrent agents per replica." Sequenced into v0.9.x as a series of small focused PRs once the v0.8.x framework primitives are in.
-
+- **Semantic Memory (vector retrieval).** RFC locked 2026-05-18 (`~/work/loomcycle-internal/doc-internal/rfcs/semantic-memory.md`). Extends the v0.8.0 Memory tool with a `search` op + an `embed: true` field on `set`; new `memory_embeddings` table joined on `(scope, scope_id, key)`. Backends: pgvector (Postgres) + sqlite-vec (SQLite), gated on operator env opt-in (`LOOMCYCLE_PGVECTOR_ENABLED=1`, `LOOMCYCLE_SQLITE_VEC_PATH=<.so>`). Server-side embedding via a new `providers.Embedder` interface (Anthropic + OpenAI + Gemini drivers). Quota math excludes embedding bytes. **Forward-compat:** the v0.8.17 Snapshot Memory section schema already reserves the optional `embedding` field (always null today), so snapshots captured before v0.9.x round-trip cleanly into a future loomcycle that has vector ops — no v1.0 → v1.1 schema migration of the just-shipped data.
 - **Per-tenant fairness** in the concurrency layer. Currently every caller competes for one global semaphore — a noisy tenant monopolises the pool. Token bucket per `user_id` (or per `tenant_id` once that lands), with a small unfair share for global priorities.
 - **In-memory run-status cache.** Today every `GET /v1/agents/{agent_id}` hits SQLite/Postgres. At 10k concurrent runs this is a hot path. LRU keyed on `agent_id` with sub-second TTL.
 - **OpenTelemetry traces + Prometheus metrics endpoint.** Currently logs only. Per-run trace, per-tool-call span (the v0.7.1 hook seam is the wiring point), request rate / queue depth / semaphore-occupancy / provider-RTT histograms.

@@ -24,17 +24,19 @@ You can find out who you are right now with `Context.self`:
 
 ## The built-in primitives
 
-Loomcycle ships ten built-in tools beyond the basic `Read` / `Write` /
+Loomcycle ships eleven built-in tools beyond the basic `Read` / `Write` /
 `Edit` / `HTTP` / `WebFetch` / `WebSearch` / `Bash`:
 
 - **Memory** — persistent key/value scoped to `agent` or `user`.
 - **Channel** — durable inter-agent message bus with cursor-based
   at-least-once delivery; `_system/*` channels carry runtime signals
-  (heartbeats, alarms).
+  (heartbeats, alarms, pause/resume state).
 - **Agent** — spawn a named sub-agent in a fresh session.
 - **Skill** — load operator-curated prompt fragments.
 - **AgentDef** — fork / promote / retire agent definitions at runtime.
 - **Evaluation** — score (run, def) pairs for self-improvement loops.
+- **Interruption** — human-in-the-loop primitive: ask / notify / cancel
+  (v0.8.16).
 - **Context** — what you're reading right now: introspection over the
   rest of the surface.
 
@@ -44,6 +46,9 @@ Cross-cutting topics that explain how these compose:
 - `help(topic="subagents")` — when to spawn vs publish to a channel
 - `help(topic="experimentation")` — AgentDef + Evaluation fork-and-score
 - `help(topic="system-channels")` — `_system/*` prefix and the admin endpoint
+- `help(topic="interruption")` — human-in-the-loop ask / notify / cancel
+- `help(topic="pause-resume-snapshot")` — runtime quiesce + portable
+  JSON snapshot (operator-driven; agents don't call these directly)
 
 ## Discovering what you have
 
