@@ -844,6 +844,15 @@ type Env struct {
 	// LOOMCYCLE_METRICS_SWEEP_INTERVAL_MS.
 	MetricsSweepInterval time.Duration
 
+	// PauseDefaultTimeoutMs is the wait-for-non-idempotent-tools cap
+	// applied when POST /v1/_pause omits timeout_ms. 0 ⇒ use the
+	// internal default (pause.DefaultPauseTimeout = 30s). Capped at
+	// pause.MaxPauseTimeout (5 min) regardless of operator value to
+	// avoid an operator typo (300000 vs 30000) leaving the runtime
+	// in StatePausing for an extended period. Env:
+	// LOOMCYCLE_PAUSE_DEFAULT_TIMEOUT_MS.
+	PauseDefaultTimeoutMs int64
+
 	// MCPAllowPrivilegedTools — v0.8.15. When true, dynamically-
 	// registered agents may include Bash/Write/Edit in their
 	// allowed_tools. Default false: those three are stripped from
@@ -1344,6 +1353,15 @@ func Load(path string) (*Config, error) {
 			} else {
 				cfg.Env.MetricsSweepInterval = time.Duration(n) * time.Millisecond
 			}
+		}
+	}
+
+	// v0.8.17 pause manager default timeout. 0 ⇒ pause package
+	// default (30s). The manager itself clamps at pause.MaxPauseTimeout
+	// regardless of what we set here.
+	if v := os.Getenv("LOOMCYCLE_PAUSE_DEFAULT_TIMEOUT_MS"); v != "" {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil && n > 0 {
+			cfg.Env.PauseDefaultTimeoutMs = n
 		}
 	}
 

@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Link, Outlet, useOutletContext } from "react-router-dom";
 import { UserSummary, listUsers } from "../api";
+import PauseControls from "./PauseControls";
 
 const USER_ID_KEY = "loomcycle.userId";
 // Refresh the user picker every 30 s. Activity stats (running counts)
@@ -53,13 +54,15 @@ export default function Layout() {
       <header className="topbar">
         <div className="brand">
           <Link to="/">loomcycle</Link>
-          <span className="version">v0.8.0</span>
+          <span className="version">v0.8.17</span>
         </div>
         <nav className="nav-tabs">
           <Link to="/">runs</Link>
           <Link to="/interrupts">interrupts</Link>
           <Link to="/memory">memory</Link>
+          <Link to="/snapshots">snapshots</Link>
         </nav>
+        <PauseControls />
         <div className="user-picker">
           {usersErr && <span className="picker-err" title={usersErr}>users unavailable</span>}
           {!showManual && (

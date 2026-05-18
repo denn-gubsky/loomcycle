@@ -3,6 +3,7 @@ package http
 import (
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -82,7 +83,7 @@ type snapshotGetResponse struct {
 
 func (s *Server) handleCreateSnapshot(w http.ResponseWriter, r *http.Request) {
 	var req snapshotCreateRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && err.Error() != "EOF" {
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
 		// Empty body is fine (all fields optional); only error on
 		// malformed JSON.
 		writeJSONError(w, http.StatusBadRequest, "invalid_json", "request body must be JSON object (or empty)")
@@ -236,7 +237,7 @@ func (s *Server) handleRestoreSnapshot(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 
 	var req snapshotRestoreRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && err.Error() != "EOF" {
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
 		writeJSONError(w, http.StatusBadRequest, "invalid_json", "request body must be JSON object (or empty)")
 		return
 	}
