@@ -867,6 +867,15 @@ func main() {
 	if probeInterval <= 0 {
 		probeInterval = 15 * time.Minute
 	}
+	// v0.8.17: register the force-probe callback. The snapshot restore
+	// handler (POST /v1/_snapshots/{id}/restore) calls
+	// resolver.ForceProbe(ctx) to refresh the matrix before the
+	// operator can call Resume — the pause-resume-snapshot RFC says
+	// the resolver state is excluded from snapshots, so a fresh probe
+	// closes the gap.
+	resolver.SetForceProbeCallback(func(ctx context.Context) {
+		runResolveProbeOnce(ctx, resolver, pr, cfg)
+	})
 	go runResolveProbeLoop(bgCtx, resolver, pr, cfg, probeInterval)
 	log.Printf("resolve probe: interval=%s", probeInterval)
 

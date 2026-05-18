@@ -420,6 +420,146 @@ type Store interface {
 	// fresher runs that paused later in the same window).
 	ListPausedRuns(ctx context.Context) ([]Run, error)
 
+	// ---- v0.8.17 Pause/Resume/Snapshot — Snapshot storage (PR 2) ----
+
+	// SnapshotCreate inserts one row into the snapshots table.
+	// Caller computes byte_size + JSON content; store records
+	// created_at if zero. Returns *ErrConflict if the id already
+	// exists (idempotent caller can detect the collision and skip).
+	SnapshotCreate(ctx context.Context, row SnapshotRow) error
+
+	// SnapshotGet returns one row by id, INCLUDING the JSON content
+	// (export endpoints need the full payload). Returns *ErrNotFound
+	// when no row matches.
+	SnapshotGet(ctx context.Context, id string) (SnapshotRow, error)
+
+	// SnapshotList returns snapshot metadata (no JSON content — the
+	// list endpoint shows id/created_at/label/byte_size only, keeping
+	// the response cheap when there are hundreds of snapshots). The
+	// optional labelContains parameter narrows by case-insensitive
+	// substring match; empty string returns all. limit caps the
+	// result count (0 = no cap; recommend 200 default at the handler
+	// layer to bound payload size).
+	SnapshotList(ctx context.Context, labelContains string, limit int) ([]SnapshotListEntry, error)
+
+	// SnapshotDelete removes one snapshot. Returns true when a row
+	// was removed (existed pre-call); false when no match. Never
+	// returns an error for the "doesn't exist" case — idempotent
+	// delete is the operator-friendly default.
+	SnapshotDelete(ctx context.Context, id string) (bool, error)
+
+	// ---- v0.8.17 Snapshot capture — bulk readers (PR 2.3a) ----
+	//
+	// The methods below return ALL rows in their tables. They power
+	// the snapshot package's Capture(), which reads every section
+	// into a single in-memory JSON envelope. Cost profile is
+	// O(rows-in-table); operators should size LOOMCYCLE_SNAPSHOT_
+	// MAX_BYTES accordingly. NOT for hot-path queries.
+
+	// SnapshotReadAgentDefs returns every row in agent_defs across
+	// all names + versions. Ordered by (name ASC, version ASC) so
+	// the snapshot envelope's section is deterministic across
+	// repeated captures of an unchanged store (round-trip tests
+	// depend on this).
+	SnapshotReadAgentDefs(ctx context.Context) ([]AgentDefRow, error)
+
+	// SnapshotReadAgentDefActive returns every row in
+	// agent_def_active. Ordered by name ASC for determinism.
+	SnapshotReadAgentDefActive(ctx context.Context) ([]AgentDefActiveEntry, error)
+
+	// SnapshotReadMemory returns every memory row across all scopes,
+	// tagged with scope + scope_id. Ordered by (scope ASC, scope_id
+	// ASC, key ASC). Filters out expired rows (consistent with
+	// MemoryGet's behaviour) so the snapshot doesn't carry
+	// already-stale entries.
+	SnapshotReadMemory(ctx context.Context) ([]MemorySnapshotEntry, error)
+
+	// SnapshotReadChannelMessages returns every channel_messages row.
+	// Filters out expired rows. Ordered by (channel ASC, scope ASC,
+	// scope_id ASC, visible_at ASC, id ASC) — matches the natural
+	// delivery order so restore replays messages in their original
+	// sequence.
+	SnapshotReadChannelMessages(ctx context.Context) ([]ChannelMessage, error)
+
+	// SnapshotReadChannelCursors returns every channel_cursors row.
+	// Ordered by (channel ASC, scope ASC, scope_id ASC) for
+	// determinism.
+	SnapshotReadChannelCursors(ctx context.Context) ([]ChannelCursorEntry, error)
+
+	// SnapshotReadEvaluations returns every evaluations row, ordered
+	// by created_at ASC. The snapshot envelope's evaluations section
+	// preserves submission order so post-restore Evaluation.aggregate
+	// queries see the same time series.
+	SnapshotReadEvaluations(ctx context.Context) ([]EvaluationRow, error)
+
+	// ---- v0.8.17 Snapshot restore — idempotent raw inserts (PR 3.2a) ----
+	//
+	// The methods below INSERT rows with caller-supplied IDs +
+	// timestamps + values, using ON CONFLICT DO NOTHING (Postgres) /
+	// INSERT OR IGNORE (SQLite) semantics so a second restore of the
+	// same envelope is a clean no-op. Distinct from the "live" insert
+	// methods (CreateSession, AppendEvent, etc.) which mint their own
+	// IDs and assume an empty starting state.
+	//
+	// All SnapshotRestore* methods are best-effort idempotent — if a
+	// row with the same PK exists, the call silently succeeds. The
+	// snapshot.Restore function relies on this to support partial
+	// re-runs after a failed restore.
+	//
+	// Each method returns (inserted bool, err error). `inserted` is
+	// true when a new row was actually written; false when the
+	// underlying ON CONFLICT DO NOTHING / INSERT OR IGNORE swallowed
+	// the row (or the equivalent UPSERT path observed an existing
+	// row). Callers in internal/snapshot use this to increment
+	// per-section counters only on real inserts so the
+	// snapshotRestoreResponse a second (idempotent) restore returns
+	// reads as "0 inserted" rather than misleadingly repeating the
+	// first call's counts.
+
+	// SnapshotRestoreSession inserts a session row preserving the
+	// caller-supplied ID + CreatedAt. Idempotent.
+	SnapshotRestoreSession(ctx context.Context, sess Session) (bool, error)
+
+	// SnapshotRestoreRun inserts a run row preserving every field
+	// including PauseState. Idempotent.
+	SnapshotRestoreRun(ctx context.Context, r Run) (bool, error)
+
+	// SnapshotRestoreEvent inserts one transcript event preserving
+	// the supplied seq + RunID + Timestamp + Payload. Note: events
+	// use BIGSERIAL/AUTOINCREMENT seq normally; this method writes
+	// the seq explicitly. Idempotent on (run_id, seq).
+	SnapshotRestoreEvent(ctx context.Context, e Event) (bool, error)
+
+	// SnapshotRestoreAgentDef inserts one agent_defs row preserving
+	// the supplied DefID + Version + parent linkage. Idempotent.
+	SnapshotRestoreAgentDef(ctx context.Context, r AgentDefRow) (bool, error)
+
+	// SnapshotRestoreAgentDefActive UPSERTs one agent_def_active
+	// pointer. ON CONFLICT (name) DO UPDATE — preserves snapshot's
+	// promoted_at + promoted_by_agent_id. `inserted` is true only on
+	// the first write (no prior row for the name).
+	SnapshotRestoreAgentDefActive(ctx context.Context, entry AgentDefActiveEntry) (bool, error)
+
+	// SnapshotRestoreMemory inserts one memory row preserving
+	// CreatedAt + UpdatedAt + ExpiresAt + Value. Idempotent on
+	// (scope, scope_id, key).
+	SnapshotRestoreMemory(ctx context.Context, entry MemorySnapshotEntry) (bool, error)
+
+	// SnapshotRestoreChannelMessage inserts one channel_messages row
+	// preserving the ID + timestamps. Idempotent on id (PK).
+	SnapshotRestoreChannelMessage(ctx context.Context, msg ChannelMessage) (bool, error)
+
+	// SnapshotRestoreChannelCursor UPSERTs one channel_cursors row.
+	// ON CONFLICT (channel, scope, scope_id) DO UPDATE — preserves
+	// the snapshot's cursor + updated_at. `inserted` is true only on
+	// the first write.
+	SnapshotRestoreChannelCursor(ctx context.Context, entry ChannelCursorEntry) (bool, error)
+
+	// SnapshotRestoreEvaluation inserts one evaluation row
+	// preserving EvalID + CreatedAt + emitter fields. Idempotent
+	// on eval_id.
+	SnapshotRestoreEvaluation(ctx context.Context, r EvaluationRow) (bool, error)
+
 	// MemorySet writes a Memory entry. ttl > 0 sets an expiry; ttl <= 0
 	// stores with no expiry (the row's expires_at column is NULL). The
 	// row is upserted on the (scope, scopeID, key) primary key —
@@ -1154,3 +1294,70 @@ type ErrNotFound struct {
 }
 
 func (e *ErrNotFound) Error() string { return e.Kind + " not found: " + e.ID }
+
+// ErrConflict is returned by inserts that collide with an existing
+// primary key. Used by SnapshotCreate so a caller doing
+// captureOrSkip can distinguish "row already there" from a deeper
+// DB error. Kind is "snapshot" for now; future tables that need
+// the same shape can reuse this type with their own kind.
+type ErrConflict struct {
+	Kind string
+	ID   string
+}
+
+func (e *ErrConflict) Error() string { return e.Kind + " already exists: " + e.ID }
+
+// SnapshotRow is the persisted shape of one snapshots row, used by
+// SnapshotCreate/Get. The JSONContent is the full envelope per the
+// pause-resume-snapshot RFC § "Wire surface"; the store treats it
+// as an opaque blob (validation happens at the snapshot package
+// layer before insert).
+type SnapshotRow struct {
+	ID            string
+	CreatedAt     time.Time
+	Label         string
+	SchemaVersion int
+	ByteSize      int64
+	JSONContent   []byte
+}
+
+// SnapshotListEntry is the metadata-only projection returned by
+// SnapshotList. Excludes JSONContent so the list endpoint stays
+// cheap when there are hundreds of snapshots in the table.
+type SnapshotListEntry struct {
+	ID            string
+	CreatedAt     time.Time
+	Label         string
+	SchemaVersion int
+	ByteSize      int64
+}
+
+// AgentDefActiveEntry is one row in the agent_def_active table —
+// returned by SnapshotReadAgentDefActive for snapshot capture.
+// Pairs an agent name with the def_id currently promoted to active.
+type AgentDefActiveEntry struct {
+	Name              string    `json:"name"`
+	DefID             string    `json:"def_id"`
+	PromotedAt        time.Time `json:"promoted_at"`
+	PromotedByAgentID string    `json:"promoted_by_agent_id,omitempty"`
+}
+
+// MemorySnapshotEntry is one memory row enriched with its scope +
+// scope_id columns. Returned by SnapshotReadMemory so the snapshot
+// envelope can serialise rows without an additional lookup per row.
+type MemorySnapshotEntry struct {
+	Scope   MemoryScope `json:"scope"`
+	ScopeID string      `json:"scope_id"`
+	MemoryEntry
+}
+
+// ChannelCursorEntry is one row in the channel_cursors table —
+// returned by SnapshotReadChannelCursors for snapshot capture. The
+// cursor field is the opaque string form ack'd by the subscriber.
+type ChannelCursorEntry struct {
+	Channel   string      `json:"channel"`
+	Scope     MemoryScope `json:"scope"`
+	ScopeID   string      `json:"scope_id"`
+	Cursor    string      `json:"cursor"`
+	UpdatedAt time.Time   `json:"updated_at"`
+}

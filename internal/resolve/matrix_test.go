@@ -1,6 +1,7 @@
 package resolve
 
 import (
+	"context"
 	"errors"
 	"testing"
 )
@@ -782,5 +783,55 @@ func TestResolve_OllamaLocalAndOllamaAreDistinct(t *testing.T) {
 	}
 	if dec.Provider != "ollama-local" || dec.Model != "gemma4:9b" {
 		t.Errorf("post-stall resolve = %+v; want ollama-local/gemma4:9b (proves the two are distinct)", dec)
+	}
+}
+
+// TestForceProbe_NoCallbackIsNoOp pins the nil-safe contract: a
+// resolver without SetForceProbeCallback called returns immediately
+// from ForceProbe rather than panicking. Tests + simple consumers
+// can call ForceProbe unconditionally.
+func TestForceProbe_NoCallbackIsNoOp(t *testing.T) {
+	r := NewResolver(nil, nil)
+	// Must not panic. No assertion on side effects — the contract is
+	// just "safe to call."
+	r.ForceProbe(context.Background())
+}
+
+// TestForceProbe_InvokesRegisteredCallback — when a callback is
+// registered, ForceProbe calls it with the supplied ctx.
+func TestForceProbe_InvokesRegisteredCallback(t *testing.T) {
+	r := NewResolver(nil, nil)
+	called := false
+	var receivedCtx context.Context
+	r.SetForceProbeCallback(func(ctx context.Context) {
+		called = true
+		receivedCtx = ctx
+	})
+
+	ctx := context.WithValue(context.Background(), struct{ k int }{1}, "test")
+	r.ForceProbe(ctx)
+	if !called {
+		t.Error("callback not invoked")
+	}
+	if receivedCtx == nil {
+		t.Error("callback got nil ctx")
+	}
+}
+
+// TestForceProbe_ReplacingCallbackUsesLatest — SetForceProbeCallback
+// replaces any prior registration. The latest fn is what ForceProbe
+// invokes.
+func TestForceProbe_ReplacingCallbackUsesLatest(t *testing.T) {
+	r := NewResolver(nil, nil)
+	old := 0
+	new := 0
+	r.SetForceProbeCallback(func(ctx context.Context) { old++ })
+	r.SetForceProbeCallback(func(ctx context.Context) { new++ })
+	r.ForceProbe(context.Background())
+	if old != 0 {
+		t.Errorf("old callback called %d times; expected 0 (should have been replaced)", old)
+	}
+	if new != 1 {
+		t.Errorf("new callback called %d times; expected 1", new)
 	}
 }

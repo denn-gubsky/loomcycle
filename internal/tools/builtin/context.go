@@ -8,6 +8,7 @@ import (
 	"log"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/help"
@@ -89,6 +90,7 @@ const contextInputSchema = `{
     "agent_id":        {"type": "string", "description": "history only: target agent_id whose run history to fetch. Omitted = caller's own agent_id from ctx."},
     "event_types":     {"type": "array", "items": {"type": "string"}, "description": "history only: optional filter — return only events of these types (e.g. [\"text\",\"tool_call\"])."},
     "limit":           {"type": "integer", "description": "history only: max events to return (default 100, cap 1000)."},
+    "since_ts":        {"type": "string", "description": "history only: RFC3339 timestamp; events older than this are excluded. Empty = no filter. Useful for reflecting on a recent time window."},
     "topic":           {"type": "string", "description": "help only: the topic name to fetch detailed content for. Omitted = return the topic index (name + description for each available topic)."}
   },
   "required": ["op"],
@@ -106,6 +108,13 @@ type contextInput struct {
 	EventTypes     []string `json:"event_types,omitempty"`
 	Limit          int      `json:"limit,omitempty"`
 	Topic          string   `json:"topic,omitempty"`
+	// SinceTs is the v0.8.17 addendum (PR 3.5): RFC3339 timestamp.
+	// Events with ts < SinceTs are excluded from the history op's
+	// result + the truncated/count calculation. Empty / zero =
+	// no filter (current behavior). Agents reflecting on a recent
+	// time window (e.g. an experiment that started 2 hours ago) use
+	// this to narrow the transcript walk.
+	SinceTs string `json:"since_ts,omitempty"`
 }
 
 // Name implements tools.Tool.
@@ -603,6 +612,18 @@ func (c *Context) execHistory(ctx context.Context, in contextInput) (tools.Resul
 		return errResult("history: agent has no `history_scope` policy (default-deny); add `history_scope: [...]` to the agent yaml"), nil
 	}
 
+	// v0.8.17 addendum: validate since_ts BEFORE the run lookup so
+	// bad input fails fast without wasting a DB query. Empty / zero
+	// = no filter.
+	var sinceTs time.Time
+	if in.SinceTs != "" {
+		t, err := time.Parse(time.RFC3339, in.SinceTs)
+		if err != nil {
+			return errResult(fmt.Sprintf("history: since_ts must be RFC3339: %v", err)), nil
+		}
+		sinceTs = t
+	}
+
 	// Determine target agent_id. Omitted = caller's own.
 	emitter := tools.RunIdentity(ctx)
 	targetAgentID := in.AgentID
@@ -671,6 +692,9 @@ func (c *Context) execHistory(ctx context.Context, in contextInput) (tools.Resul
 	matchedCount := 0
 	for _, ev := range events {
 		if len(typeFilter) > 0 && !typeFilter[ev.Type] {
+			continue
+		}
+		if !sinceTs.IsZero() && ev.Timestamp.Before(sinceTs) {
 			continue
 		}
 		matchedCount++

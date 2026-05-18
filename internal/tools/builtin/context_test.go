@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/help"
@@ -724,6 +725,55 @@ func TestContextTool_HistoryAnyScopeAllowsOther(t *testing.T) {
 	res, _ := tool.Execute(histCtx, json.RawMessage(`{"op":"history","agent_id":"a_other"}`))
 	if res.IsError {
 		t.Fatalf("history under `any` scope should succeed; got %s", res.Text)
+	}
+}
+
+// TestContextTool_HistorySinceTsFiltersOlder pins the v0.8.17 PR 3.5
+// addendum: an RFC3339 since_ts filters out events older than the
+// timestamp. Two events seeded — one before since_ts, one after —
+// only the recent one appears in the result.
+func TestContextTool_HistorySinceTsFiltersOlder(t *testing.T) {
+	tool, s, ctx, agentName, _, _ := substrateFixture(t)
+	bg := context.Background()
+	sess, _ := s.CreateSession(bg, "t", agentName, "alice")
+	run, _ := s.CreateRun(bg, sess.ID, store.RunIdentity{AgentID: "a_caller", UserID: "alice"})
+
+	// First event NOW; second event 100ms later. The since_ts will
+	// be 50ms after the first so the filter excludes it.
+	_ = s.AppendEvent(bg, run.ID, "text", []byte(`{"text":"old"}`))
+	t0 := time.Now()
+	time.Sleep(100 * time.Millisecond)
+	_ = s.AppendEvent(bg, run.ID, "text", []byte(`{"text":"new"}`))
+
+	histCtx := tools.WithRunIdentity(ctx, tools.RunIdentityValue{AgentID: "a_caller", UserID: "alice"})
+	histCtx = tools.WithHistoryPolicy(histCtx, tools.HistoryPolicyValue{Scopes: []string{"self"}})
+
+	// since_ts at t0+50ms — between the two events.
+	since := t0.Add(50 * time.Millisecond).UTC().Format(time.RFC3339Nano)
+	body := fmt.Sprintf(`{"op":"history","since_ts":%q}`, since)
+	res, _ := tool.Execute(histCtx, json.RawMessage(body))
+	if res.IsError {
+		t.Fatalf("history with since_ts: %s", res.Text)
+	}
+	out := decodeResult(t, res.Text)
+	count := out["count"].(float64)
+	if count != 1 {
+		t.Errorf("count = %v, want 1 (older event excluded by since_ts)", count)
+	}
+}
+
+// TestContextTool_HistorySinceTsInvalidFormat — bad RFC3339 string
+// returns a clear error.
+func TestContextTool_HistorySinceTsInvalidFormat(t *testing.T) {
+	tool, _, ctx, _, _, _ := substrateFixture(t)
+	histCtx := tools.WithRunIdentity(ctx, tools.RunIdentityValue{AgentID: "a_caller"})
+	histCtx = tools.WithHistoryPolicy(histCtx, tools.HistoryPolicyValue{Scopes: []string{"self"}})
+	res, _ := tool.Execute(histCtx, json.RawMessage(`{"op":"history","since_ts":"not-a-date"}`))
+	if !res.IsError {
+		t.Fatal("history with bad since_ts should error")
+	}
+	if !strings.Contains(res.Text, "RFC3339") {
+		t.Errorf("error should mention RFC3339; got %q", res.Text)
 	}
 }
 
