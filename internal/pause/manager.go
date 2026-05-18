@@ -230,8 +230,26 @@ func (m *Manager) ToolCtx(parent context.Context, toolID, toolName string, input
 			cancel() // immediate
 			return c, func() {}
 		}
+		// Non-idempotent / external: register the entry so the
+		// drain loop / post-drain sweep in Pause can find and
+		// force-cancel it at the deadline. Without this Store,
+		// late-registering tools would escape the pause barrier.
 		c, cancel := context.WithTimeout(parent, m.defaultTimeout)
-		return c, cancel
+		id := toolID
+		if id == "" {
+			id = fmt.Sprintf("tool-%d-%p", time.Now().UnixNano(), &cancel)
+		}
+		entry := &toolEntry{
+			cancel:   cancel,
+			category: cat,
+			toolName: toolName,
+			id:       id,
+		}
+		m.activeTools.Store(id, entry)
+		return c, func() {
+			m.activeTools.Delete(id)
+			cancel()
+		}
 
 	default:
 		return parent, func() {}
@@ -285,7 +303,6 @@ func (m *Manager) Pause(ctx context.Context, timeout time.Duration) (PauseResult
 	// ToolCtx fired BEFORE pause was declared, we apply category
 	// policy here defensively.
 	var (
-		forceCancelMu   sync.Mutex
 		forceCancel     int
 		idempotentCount int
 	)
@@ -318,12 +335,12 @@ func (m *Manager) Pause(ctx context.Context, timeout time.Duration) (PauseResult
 			// Caller cancelled the pause request; mark anything
 			// still in flight as force-cancelled, transition to
 			// StatePaused, return the partial result.
-			m.forceCancelRemaining(&forceCancelMu, &forceCancel)
-			return m.finalizePause(start, forceCancel, idempotentCount, []string{
+			forceCancel += m.forceCancelRemaining()
+			return m.finalizePause(start, &forceCancel, idempotentCount, []string{
 				fmt.Sprintf("pause request cancelled by caller: %v", ctx.Err()),
 			}), nil
 		case <-deadline.C:
-			m.forceCancelRemaining(&forceCancelMu, &forceCancel)
+			forceCancel += m.forceCancelRemaining()
 			break
 		case <-tick.C:
 			continue
@@ -333,28 +350,45 @@ func (m *Manager) Pause(ctx context.Context, timeout time.Duration) (PauseResult
 		break
 	}
 
-	return m.finalizePause(start, forceCancel, idempotentCount, nil), nil
+	return m.finalizePause(start, &forceCancel, idempotentCount, nil), nil
 }
 
 // forceCancelRemaining cancels every entry still in activeTools and
-// removes them from the registry. Called from the deadline / caller-
-// cancellation paths in Pause.
-func (m *Manager) forceCancelRemaining(mu *sync.Mutex, counter *int) {
+// removes them from the registry. Returns the number of entries it
+// cancelled. Called from the deadline / caller-cancellation paths in
+// Pause and from the post-drain sweep in finalizePause. Single-
+// goroutine-call discipline: callers must not invoke it concurrently
+// with another forceCancelRemaining; sync.Map's per-key atomicity
+// covers concurrent ToolCtx writers.
+func (m *Manager) forceCancelRemaining() int {
+	count := 0
 	m.activeTools.Range(func(k, v any) bool {
 		e := v.(*toolEntry)
 		e.cancel()
-		mu.Lock()
-		*counter++
-		mu.Unlock()
+		count++
 		m.activeTools.Delete(k)
 		return true
 	})
+	return count
 }
 
 // finalizePause transitions to StatePaused, queries the count of
 // runs that committed pause_state='paused' to the DB, and assembles
-// the PauseResult payload.
-func (m *Manager) finalizePause(start time.Time, forceCancel, idempotentCount int, warnings []string) PauseResult {
+// the PauseResult payload. forceCancel is a pointer so the post-drain
+// sweep (which closes a race where a tool registers AFTER the drain
+// loop's empty check but BEFORE we transition to StatePaused) can add
+// any late-arrivers to the count surfaced in PauseResult.
+func (m *Manager) finalizePause(start time.Time, forceCancel *int, idempotentCount int, warnings []string) PauseResult {
+	// Post-drain sweep: a tool can register via ToolCtx after the
+	// drain loop's empty check passed but before we transition to
+	// StatePaused below. The transition makes the StatePausing-state
+	// race window indistinguishable from StatePaused for ToolCtx, but
+	// any goroutine already past its state-check at this point can
+	// still call Store. Sweep here so the registry is empty at
+	// StatePaused — operators relying on PausedRunsCount as a
+	// quiescence signal need this guarantee.
+	*forceCancel += m.forceCancelRemaining()
+
 	m.state.Store(int32(StatePaused))
 
 	paused, err := m.store.ListPausedRuns(context.Background())
@@ -369,14 +403,14 @@ func (m *Manager) finalizePause(start time.Time, forceCancel, idempotentCount in
 	if idempotentCount > 0 {
 		log.Printf("pause: cancelled %d idempotent tools immediately", idempotentCount)
 	}
-	if forceCancel > 0 {
-		log.Printf("pause: force-cancelled %d tools at deadline", forceCancel)
+	if *forceCancel > 0 {
+		log.Printf("pause: force-cancelled %d tools at deadline", *forceCancel)
 	}
 
 	return PauseResult{
 		State:               StatePaused.String(),
 		DurationMs:          time.Since(start).Milliseconds(),
-		ForceCancelledCount: forceCancel,
+		ForceCancelledCount: *forceCancel,
 		PausedRunsCount:     pausedCount,
 		Warnings:            warnings,
 	}
@@ -440,16 +474,13 @@ func (m *Manager) Snapshot(ctx context.Context) (StateSnapshot, error) {
 		return StateSnapshot{State: StateRunning.String()}, nil
 	}
 	state := m.State()
-	if state == StateRunning {
-		// Fast path: no need to query when we know no runs are paused.
-		// (Edge case: a run in StatePaused while manager is StateRunning
-		// is impossible — paused runs only exist after Pause completes,
-		// and Resume flips them all back. Still, query for safety.)
-		paused, _ := m.store.ListPausedRuns(ctx)
-		return StateSnapshot{State: state.String(), PausedRunsCount: len(paused)}, nil
-	}
 	paused, err := m.store.ListPausedRuns(ctx)
 	if err != nil {
+		// Propagate the store error in both StateRunning and the
+		// pausing/paused paths. Operators watching /v1/runtime/state
+		// rely on the paused_runs_count being authoritative; silently
+		// returning 0 on a DB hiccup would hide that the runtime is
+		// flying blind on quiescence.
 		return StateSnapshot{State: state.String()}, err
 	}
 	return StateSnapshot{State: state.String(), PausedRunsCount: len(paused)}, nil

@@ -234,6 +234,34 @@ func TestManager_PauseCancelsIdempotentToolsImmediately(t *testing.T) {
 	<-pauseDone
 }
 
+// TestManager_ToolCtx_RegistersEntryDuringPausing — regression for
+// the PR #129 review fix: when ToolCtx is called WHILE state is
+// StatePausing or StatePaused, the non-idempotent entry must be
+// stored in activeTools so the drain loop's force-cancel sweep can
+// find it. Without the Store, late-registering tools would escape
+// the pause barrier and operators would see a quiescent runtime that
+// still has in-flight side-effect work.
+func TestManager_ToolCtx_RegistersEntryDuringPausing(t *testing.T) {
+	m, _, cleanup := newTestManager(t)
+	defer cleanup()
+
+	// Force StatePausing directly so we exercise the StatePausing
+	// branch of ToolCtx without racing Pause's drain loop.
+	m.state.Store(int32(StatePausing))
+
+	_, toolCleanup := m.ToolCtx(context.Background(), "t-late", "Write", []byte(`{"path":"/tmp/x"}`))
+	defer toolCleanup()
+
+	count := 0
+	m.activeTools.Range(func(_, _ any) bool {
+		count++
+		return true
+	})
+	if count != 1 {
+		t.Errorf("activeTools count after late ToolCtx in StatePausing = %d, want 1", count)
+	}
+}
+
 // TestManager_PauseCountsForceCancelled — when Pause's deadline
 // fires with non-idempotent tools still active, those get force-
 // cancelled and counted in the returned ForceCancelledCount.
