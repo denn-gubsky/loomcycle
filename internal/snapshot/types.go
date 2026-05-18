@@ -215,6 +215,12 @@ type PausedRunEntry struct {
 	Model            string            `json:"model,omitempty"`
 	PauseState       string            `json:"pause_state"`
 	TranscriptEvents []TranscriptEvent `json:"transcript_events"`
+	// TranscriptError records a per-run transcript-read failure. Set
+	// when GetTranscript returned an error during capture; the entry
+	// is otherwise included in the snapshot (RunID, AgentID etc.
+	// survive). Operators inspect this field to know which runs lost
+	// their replay context and may need manual recovery.
+	TranscriptError string `json:"transcript_error,omitempty"`
 }
 
 // TranscriptEvent is one event from the run's transcript — replayed

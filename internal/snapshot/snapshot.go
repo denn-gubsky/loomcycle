@@ -339,9 +339,18 @@ func capturePausedRuns(ctx context.Context, s store.Store, out *PausedRunsSectio
 		// O(events-in-session). For long-running sessions this is
 		// the largest single read in the snapshot; the maxBytes cap
 		// catches runaway payloads at marshal time.
-		events, err := s.GetTranscript(ctx, r.SessionID)
-		if err != nil {
-			return fmt.Errorf("snapshot paused_runs.transcript[%s]: %w", r.ID, err)
+		//
+		// Per-run transcript reads are best-effort: a single corrupt
+		// row or transient DB error MUST NOT abort the whole capture.
+		// Record the per-run error on the entry and continue with the
+		// remaining runs + sections. Operators inspecting
+		// TranscriptError can re-capture or recover manually.
+		events, terr := s.GetTranscript(ctx, r.SessionID)
+		if terr != nil {
+			entry.TranscriptError = terr.Error()
+			entry.TranscriptEvents = []TranscriptEvent{}
+			out.Entries = append(out.Entries, entry)
+			continue
 		}
 		entry.TranscriptEvents = make([]TranscriptEvent, 0)
 		for _, e := range events {

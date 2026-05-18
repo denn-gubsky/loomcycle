@@ -144,10 +144,13 @@ func (s *Server) handleListSnapshots(w http.ResponseWriter, r *http.Request) {
 			writeJSONError(w, http.StatusBadRequest, "invalid_limit", "limit must be a non-negative integer")
 			return
 		}
+		// limit=0 keeps the default (200). The codebase convention is
+		// "0 = use default", not "no limit" — an operator scripting
+		// curl ?limit=0 expecting empty results would otherwise get
+		// the entire table. True unlimited isn't a wire feature; bump
+		// the limit param when more rows are needed.
 		if n > 0 {
 			limit = n
-		} else {
-			limit = 0 // explicit unlimited
 		}
 	}
 	rows, err := s.store.SnapshotList(r.Context(), labelContains, limit)
