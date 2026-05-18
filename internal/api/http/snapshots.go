@@ -3,6 +3,7 @@ package http
 import (
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"strconv"
 	"time"
@@ -80,9 +81,11 @@ type snapshotGetResponse struct {
 
 func (s *Server) handleCreateSnapshot(w http.ResponseWriter, r *http.Request) {
 	var req snapshotCreateRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && err.Error() != "EOF" {
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
 		// Empty body is fine (all fields optional); only error on
-		// malformed JSON.
+		// malformed JSON. Use errors.Is rather than string-comparing
+		// err.Error() — the json package may wrap io.EOF on streaming
+		// decoders depending on Go version.
 		writeJSONError(w, http.StatusBadRequest, "invalid_json", "request body must be JSON object (or empty)")
 		return
 	}
@@ -142,10 +145,13 @@ func (s *Server) handleListSnapshots(w http.ResponseWriter, r *http.Request) {
 			writeJSONError(w, http.StatusBadRequest, "invalid_limit", "limit must be a non-negative integer")
 			return
 		}
+		// limit=0 keeps the default (200). The codebase convention is
+		// "0 = use default", not "no limit" — an operator scripting
+		// curl ?limit=0 expecting empty results would otherwise get
+		// the entire table. True unlimited isn't a wire feature; bump
+		// the limit param when more rows are needed.
 		if n > 0 {
 			limit = n
-		} else {
-			limit = 0 // explicit unlimited
 		}
 	}
 	rows, err := s.store.SnapshotList(r.Context(), labelContains, limit)
