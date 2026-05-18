@@ -25,6 +25,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/hooks"
 	"github.com/denn-gubsky/loomcycle/internal/loop"
 	"github.com/denn-gubsky/loomcycle/internal/metrics"
+	"github.com/denn-gubsky/loomcycle/internal/pause"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/resolve"
 	"github.com/denn-gubsky/loomcycle/internal/runner"
@@ -108,6 +109,12 @@ type Server struct {
 	// constructed.
 	metricsSampler *metrics.Sampler
 
+	// pauseMgr is the v0.8.17 runtime pause/resume coordinator.
+	// Nil = the /v1/_pause, /v1/_resume, /v1/_state endpoints return
+	// 503. Set via SetPauseManager from main.go after the manager is
+	// constructed (same wiring shape as metricsSampler).
+	pauseMgr *pause.Manager
+
 	// interruptionBus is the v0.8.16 in-process notification bus used
 	// by the resolve handler to wake the blocked Interruption tool.
 	// Same instance as the Channel tool's Bus — re-using one Bus per
@@ -179,6 +186,22 @@ func (s *Server) SetMCPFallback(fn tools.FallbackFunc) {
 // default — endpoints return 503 until this is called.
 func (s *Server) SetMetricsSampler(m *metrics.Sampler) {
 	s.metricsSampler = m
+}
+
+// SetPauseManager installs the v0.8.17 pause/resume coordinator so the
+// /v1/_pause, /v1/_resume, /v1/_state endpoints have a backing manager.
+// Nil is the default — endpoints return 503 until this is called.
+// Same wiring shape as SetMetricsSampler.
+func (s *Server) SetPauseManager(m *pause.Manager) {
+	s.pauseMgr = m
+}
+
+// PauseManager returns the wired pause manager (or nil). Read-only
+// accessor for components outside this package (e.g. main.go's
+// graceful shutdown path, MCP handlers that bridge into the same
+// state). Don't expose mutation through this — use SetPauseManager.
+func (s *Server) PauseManager() *pause.Manager {
+	return s.pauseMgr
 }
 
 // SetMCPHTTPHandler installs the v0.8.15.3 HTTP MCP transport handler
@@ -1030,6 +1053,13 @@ func (s *Server) Mux() http.Handler {
 	// for `curl -O`.
 	mux.Handle("POST /v1/_snapshots/{id}/restore", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleRestoreSnapshot))))
 	mux.Handle("GET /v1/_snapshots/{id}/export", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleExportSnapshot))))
+	// v0.8.17 PR 4: pause / resume / state. Each returns 503 until
+	// main.go calls SetPauseManager. Operators drive the runtime-wide
+	// quiesce + snapshot cycle via these three; the CLI subcommands
+	// (loomcycle pause / resume / state) wrap them for ergonomics.
+	mux.Handle("POST /v1/_pause", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handlePauseRuntime))))
+	mux.Handle("POST /v1/_resume", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleResumeRuntime))))
+	mux.Handle("GET /v1/_state", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleRuntimeState))))
 	// v0.8.16 Interruption tool. resolve is the human-side answer
 	// submit; the two list endpoints drive the Web UI (run-scoped
 	// audit + user-scoped inbox).

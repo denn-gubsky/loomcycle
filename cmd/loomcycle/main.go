@@ -39,6 +39,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/heartbeat"
 	"github.com/denn-gubsky/loomcycle/internal/help"
 	"github.com/denn-gubsky/loomcycle/internal/metrics"
+	"github.com/denn-gubsky/loomcycle/internal/pause"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/providers/anthropic"
 	"github.com/denn-gubsky/loomcycle/internal/providers/deepseek"
@@ -183,6 +184,37 @@ func main() {
 			os.Exit(cli.RunHealth(os.Args[2:], os.Stdout, os.Stderr))
 		case "migrate":
 			os.Exit(cli.RunMigrate(os.Args[2:], os.Stdout, os.Stderr))
+		// v0.8.17 runtime admin subcommands. Each is a thin HTTP
+		// client to the corresponding /v1/_pause / _resume / _state /
+		// _snapshots endpoint on the running instance addressed by
+		// $LOOMCYCLE_BASE_URL.
+		case "pause":
+			os.Exit(cli.RunPause(os.Args[2:], os.Stdout, os.Stderr))
+		case "resume":
+			os.Exit(cli.RunResume(os.Args[2:], os.Stdout, os.Stderr))
+		case "state":
+			os.Exit(cli.RunState(os.Args[2:], os.Stdout, os.Stderr))
+		case "snapshot":
+			os.Exit(cli.RunSnapshot(os.Args[2:], os.Stdout, os.Stderr))
+		case "snapshots":
+			// `snapshots <verb>` dispatch — list / export / delete.
+			if len(os.Args) < 3 {
+				fmt.Fprintln(os.Stderr, "loomcycle: error: usage: loomcycle snapshots <list|export|delete> ...")
+				os.Exit(2)
+			}
+			switch os.Args[2] {
+			case "list":
+				os.Exit(cli.RunSnapshotsList(os.Args[3:], os.Stdout, os.Stderr))
+			case "export":
+				os.Exit(cli.RunSnapshotsExport(os.Args[3:], os.Stdout, os.Stderr))
+			case "delete":
+				os.Exit(cli.RunSnapshotsDelete(os.Args[3:], os.Stdout, os.Stderr))
+			default:
+				fmt.Fprintf(os.Stderr, "loomcycle: error: unknown snapshots subcommand %q (want: list / export / delete)\n", os.Args[2])
+				os.Exit(2)
+			}
+		case "restore":
+			os.Exit(cli.RunRestore(os.Args[2:], os.Stdout, os.Stderr))
 		case "mcp":
 			mcpMode = true
 			// Strip "mcp" from os.Args so flag.Parse() below sees
@@ -743,6 +775,21 @@ func main() {
 	// cfg.Env.MetricsSampleInterval cadence while at least one
 	// agent run is active (the semaphore's Stats() is the idle
 	// gate — no DB write, no /proc read while idle).
+	// v0.8.17 PR 4: pause/resume/state HTTP endpoints. The Manager is
+	// always constructed (cheap; one atomic + one channel) so the
+	// endpoints respond rather than 503. Operator's default timeout
+	// comes from cfg.Env.PauseDefaultTimeoutMs; 0 ⇒ pause.DefaultPauseTimeout.
+	if storeIface != nil {
+		pauseDefault := time.Duration(cfg.Env.PauseDefaultTimeoutMs) * time.Millisecond
+		pauseMgr := pause.NewManager(storeIface, pauseDefault)
+		srv.SetPauseManager(pauseMgr)
+		if pauseDefault > 0 {
+			log.Printf("pause: manager wired (default timeout=%s)", pauseDefault)
+		} else {
+			log.Printf("pause: manager wired (default timeout=%s)", pause.DefaultPauseTimeout)
+		}
+	}
+
 	if cfg.Env.MetricsEnabled && storeIface != nil {
 		metricsSampler := metrics.New(storeIface, sem, metrics.Config{
 			Interval:      cfg.Env.MetricsSampleInterval,
