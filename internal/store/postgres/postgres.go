@@ -26,6 +26,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/denn-gubsky/loomcycle/internal/store"
@@ -546,6 +547,124 @@ func (s *Store) ListPausedRuns(ctx context.Context) ([]store.Run, error) {
 	}
 	defer rows.Close()
 	return scanRunRows(rows)
+}
+
+// ---- v0.8.17 Pause/Resume/Snapshot — Snapshot storage (PR 2) ----
+
+// SnapshotCreate inserts one snapshot row. Returns *store.ErrConflict
+// on PK violation (id already exists).
+func (s *Store) SnapshotCreate(ctx context.Context, row store.SnapshotRow) error {
+	if row.ID == "" {
+		return fmt.Errorf("snapshot create: id required")
+	}
+	if len(row.JSONContent) == 0 {
+		return fmt.Errorf("snapshot create: json_content required")
+	}
+	createdAt := row.CreatedAt
+	if createdAt.IsZero() {
+		createdAt = time.Now().UTC()
+	}
+	var label any
+	if row.Label != "" {
+		label = row.Label
+	}
+	_, err := s.pool.Exec(ctx,
+		`INSERT INTO snapshots(id, created_at, label, schema_version, byte_size, json_content)
+		 VALUES ($1, $2, $3, $4, $5, $6::jsonb)`,
+		row.ID, createdAt, label, row.SchemaVersion, row.ByteSize, string(row.JSONContent),
+	)
+	if err != nil {
+		// pgx returns *pgconn.PgError with Code 23505 (unique_violation)
+		// on PK conflict. Match by code so a future column constraint
+		// addition can't be silently caught as a "conflict."
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+			return &store.ErrConflict{Kind: "snapshot", ID: row.ID}
+		}
+		return fmt.Errorf("snapshot create: %w", err)
+	}
+	return nil
+}
+
+// SnapshotGet returns the full snapshot row including the JSON payload.
+func (s *Store) SnapshotGet(ctx context.Context, id string) (store.SnapshotRow, error) {
+	if id == "" {
+		return store.SnapshotRow{}, &store.ErrNotFound{Kind: "snapshot", ID: id}
+	}
+	var (
+		row         store.SnapshotRow
+		label       *string
+		jsonContent []byte
+	)
+	err := s.pool.QueryRow(ctx,
+		`SELECT id, created_at, label, schema_version, byte_size, json_content
+		 FROM snapshots WHERE id = $1`, id,
+	).Scan(&row.ID, &row.CreatedAt, &label, &row.SchemaVersion, &row.ByteSize, &jsonContent)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return store.SnapshotRow{}, &store.ErrNotFound{Kind: "snapshot", ID: id}
+		}
+		return store.SnapshotRow{}, fmt.Errorf("snapshot get: %w", err)
+	}
+	if label != nil {
+		row.Label = *label
+	}
+	row.JSONContent = jsonContent
+	return row, nil
+}
+
+// SnapshotList returns the metadata-only projections, optionally
+// filtered by case-insensitive label substring and capped at limit.
+func (s *Store) SnapshotList(ctx context.Context, labelContains string, limit int) ([]store.SnapshotListEntry, error) {
+	var (
+		rows pgx.Rows
+		err  error
+	)
+	query := `SELECT id, created_at, label, schema_version, byte_size
+	          FROM snapshots `
+	args := []any{}
+	if labelContains != "" {
+		query += `WHERE COALESCE(label, '') ILIKE $1 `
+		args = append(args, "%"+labelContains+"%")
+	}
+	query += `ORDER BY created_at DESC`
+	if limit > 0 {
+		query += fmt.Sprintf(" LIMIT $%d", len(args)+1)
+		args = append(args, limit)
+	}
+	rows, err = s.pool.Query(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("snapshot list: %w", err)
+	}
+	defer rows.Close()
+	var out []store.SnapshotListEntry
+	for rows.Next() {
+		var (
+			e     store.SnapshotListEntry
+			label *string
+		)
+		if err := rows.Scan(&e.ID, &e.CreatedAt, &label, &e.SchemaVersion, &e.ByteSize); err != nil {
+			return nil, fmt.Errorf("snapshot list scan: %w", err)
+		}
+		if label != nil {
+			e.Label = *label
+		}
+		out = append(out, e)
+	}
+	return out, rows.Err()
+}
+
+// SnapshotDelete removes one snapshot row. Idempotent — returns
+// (false, nil) when nothing matched.
+func (s *Store) SnapshotDelete(ctx context.Context, id string) (bool, error) {
+	if id == "" {
+		return false, nil
+	}
+	tag, err := s.pool.Exec(ctx, `DELETE FROM snapshots WHERE id = $1`, id)
+	if err != nil {
+		return false, fmt.Errorf("snapshot delete: %w", err)
+	}
+	return tag.RowsAffected() > 0, nil
 }
 
 // ---- v0.8.x Process-resource metrics sampler ----

@@ -420,6 +420,34 @@ type Store interface {
 	// fresher runs that paused later in the same window).
 	ListPausedRuns(ctx context.Context) ([]Run, error)
 
+	// ---- v0.8.17 Pause/Resume/Snapshot — Snapshot storage (PR 2) ----
+
+	// SnapshotCreate inserts one row into the snapshots table.
+	// Caller computes byte_size + JSON content; store records
+	// created_at if zero. Returns *ErrConflict if the id already
+	// exists (idempotent caller can detect the collision and skip).
+	SnapshotCreate(ctx context.Context, row SnapshotRow) error
+
+	// SnapshotGet returns one row by id, INCLUDING the JSON content
+	// (export endpoints need the full payload). Returns *ErrNotFound
+	// when no row matches.
+	SnapshotGet(ctx context.Context, id string) (SnapshotRow, error)
+
+	// SnapshotList returns snapshot metadata (no JSON content — the
+	// list endpoint shows id/created_at/label/byte_size only, keeping
+	// the response cheap when there are hundreds of snapshots). The
+	// optional labelContains parameter narrows by case-insensitive
+	// substring match; empty string returns all. limit caps the
+	// result count (0 = no cap; recommend 200 default at the handler
+	// layer to bound payload size).
+	SnapshotList(ctx context.Context, labelContains string, limit int) ([]SnapshotListEntry, error)
+
+	// SnapshotDelete removes one snapshot. Returns true when a row
+	// was removed (existed pre-call); false when no match. Never
+	// returns an error for the "doesn't exist" case — idempotent
+	// delete is the operator-friendly default.
+	SnapshotDelete(ctx context.Context, id string) (bool, error)
+
 	// MemorySet writes a Memory entry. ttl > 0 sets an expiry; ttl <= 0
 	// stores with no expiry (the row's expires_at column is NULL). The
 	// row is upserted on the (scope, scopeID, key) primary key —
@@ -1154,3 +1182,40 @@ type ErrNotFound struct {
 }
 
 func (e *ErrNotFound) Error() string { return e.Kind + " not found: " + e.ID }
+
+// ErrConflict is returned by inserts that collide with an existing
+// primary key. Used by SnapshotCreate so a caller doing
+// captureOrSkip can distinguish "row already there" from a deeper
+// DB error. Kind is "snapshot" for now; future tables that need
+// the same shape can reuse this type with their own kind.
+type ErrConflict struct {
+	Kind string
+	ID   string
+}
+
+func (e *ErrConflict) Error() string { return e.Kind + " already exists: " + e.ID }
+
+// SnapshotRow is the persisted shape of one snapshots row, used by
+// SnapshotCreate/Get. The JSONContent is the full envelope per the
+// pause-resume-snapshot RFC § "Wire surface"; the store treats it
+// as an opaque blob (validation happens at the snapshot package
+// layer before insert).
+type SnapshotRow struct {
+	ID            string
+	CreatedAt     time.Time
+	Label         string
+	SchemaVersion int
+	ByteSize      int64
+	JSONContent   []byte
+}
+
+// SnapshotListEntry is the metadata-only projection returned by
+// SnapshotList. Excludes JSONContent so the list endpoint stays
+// cheap when there are hundreds of snapshots in the table.
+type SnapshotListEntry struct {
+	ID            string
+	CreatedAt     time.Time
+	Label         string
+	SchemaVersion int
+	ByteSize      int64
+}

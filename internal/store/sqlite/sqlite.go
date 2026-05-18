@@ -272,6 +272,19 @@ func (s *Store) migrate(ctx context.Context) error {
 			agent_id        TEXT,
 			agent_name      TEXT
 		)`,
+		// v0.8.17 Pause/Resume/Snapshot — full-runtime snapshots
+		// captured by the snapshot package. JSON envelope per the
+		// pause-resume-snapshot RFC § "Wire surface". JSON stored as
+		// TEXT on SQLite (no native JSONB type); Postgres uses JSONB.
+		`CREATE TABLE IF NOT EXISTS snapshots (
+			id             TEXT PRIMARY KEY,
+			created_at     INTEGER NOT NULL,
+			label          TEXT,
+			schema_version INTEGER NOT NULL,
+			byte_size      INTEGER NOT NULL,
+			json_content   TEXT NOT NULL
+		)`,
+		`CREATE INDEX IF NOT EXISTS snapshots_by_created_at_desc ON snapshots(created_at DESC)`,
 	}
 	for _, q := range stmts {
 		if _, err := s.db.ExecContext(ctx, q); err != nil {
@@ -887,6 +900,141 @@ func (s *Store) ListPausedRuns(ctx context.Context) ([]store.Run, error) {
 		out = append(out, r)
 	}
 	return out, rows.Err()
+}
+
+// ---- v0.8.17 Pause/Resume/Snapshot — Snapshot storage (PR 2) ----
+
+// SnapshotCreate inserts one row. Returns *store.ErrConflict when the
+// id collides with an existing row (caller's id allocation is the
+// source of truth; UUID-shaped IDs make this rare in practice).
+func (s *Store) SnapshotCreate(ctx context.Context, row store.SnapshotRow) error {
+	if row.ID == "" {
+		return fmt.Errorf("snapshot create: id required")
+	}
+	if len(row.JSONContent) == 0 {
+		return fmt.Errorf("snapshot create: json_content required")
+	}
+	createdAt := row.CreatedAt
+	if createdAt.IsZero() {
+		createdAt = time.Now().UTC()
+	}
+	var label any
+	if row.Label != "" {
+		label = row.Label
+	}
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO snapshots(id, created_at, label, schema_version, byte_size, json_content)
+		 VALUES (?, ?, ?, ?, ?, ?)`,
+		row.ID, createdAt.UnixNano(), label, row.SchemaVersion, row.ByteSize, string(row.JSONContent),
+	)
+	if err != nil {
+		// SQLite's UNIQUE-constraint-violation surfaces as a string;
+		// match defensively rather than depending on driver-specific
+		// error types. The PK violation is the only conflict path
+		// snapshots can take (no other UNIQUE constraints exist).
+		if strings.Contains(err.Error(), "UNIQUE constraint failed") {
+			return &store.ErrConflict{Kind: "snapshot", ID: row.ID}
+		}
+		return fmt.Errorf("snapshot create: %w", err)
+	}
+	return nil
+}
+
+// SnapshotGet returns the full snapshot row including the JSON
+// payload. Returns *store.ErrNotFound when no row matches.
+func (s *Store) SnapshotGet(ctx context.Context, id string) (store.SnapshotRow, error) {
+	if id == "" {
+		return store.SnapshotRow{}, &store.ErrNotFound{Kind: "snapshot", ID: id}
+	}
+	var (
+		row         store.SnapshotRow
+		createdNs   int64
+		label       sql.NullString
+		jsonContent string
+	)
+	err := s.db.QueryRowContext(ctx,
+		`SELECT id, created_at, label, schema_version, byte_size, json_content
+		 FROM snapshots WHERE id = ?`, id,
+	).Scan(&row.ID, &createdNs, &label, &row.SchemaVersion, &row.ByteSize, &jsonContent)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return store.SnapshotRow{}, &store.ErrNotFound{Kind: "snapshot", ID: id}
+		}
+		return store.SnapshotRow{}, fmt.Errorf("snapshot get: %w", err)
+	}
+	row.CreatedAt = time.Unix(0, createdNs)
+	if label.Valid {
+		row.Label = label.String
+	}
+	row.JSONContent = []byte(jsonContent)
+	return row, nil
+}
+
+// SnapshotList returns metadata projections (no JSON payload),
+// optionally filtered by case-insensitive label substring and capped
+// at limit (0 = no cap; recommend bounding at the handler layer).
+func (s *Store) SnapshotList(ctx context.Context, labelContains string, limit int) ([]store.SnapshotListEntry, error) {
+	var (
+		rows *sql.Rows
+		err  error
+	)
+	query := `SELECT id, created_at, label, schema_version, byte_size
+	          FROM snapshots `
+	args := []any{}
+	if labelContains != "" {
+		// LOWER + LIKE for case-insensitive substring match. The
+		// %...% wildcards on both sides — operators search for
+		// label fragments without needing to know exact case.
+		query += `WHERE LOWER(COALESCE(label, '')) LIKE LOWER(?) `
+		args = append(args, "%"+labelContains+"%")
+	}
+	query += `ORDER BY created_at DESC`
+	if limit > 0 {
+		query += ` LIMIT ?`
+		args = append(args, limit)
+	}
+	rows, err = s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("snapshot list: %w", err)
+	}
+	defer rows.Close()
+	var out []store.SnapshotListEntry
+	for rows.Next() {
+		var (
+			e         store.SnapshotListEntry
+			createdNs int64
+			label     sql.NullString
+		)
+		if err := rows.Scan(&e.ID, &createdNs, &label, &e.SchemaVersion, &e.ByteSize); err != nil {
+			return nil, fmt.Errorf("snapshot list scan: %w", err)
+		}
+		e.CreatedAt = time.Unix(0, createdNs)
+		if label.Valid {
+			e.Label = label.String
+		}
+		out = append(out, e)
+	}
+	return out, rows.Err()
+}
+
+// SnapshotDelete removes one row by id. Returns true when a row was
+// removed; false when nothing matched (idempotent — the operator
+// scripting `loomcycle snapshot delete` repeatedly never errors).
+func (s *Store) SnapshotDelete(ctx context.Context, id string) (bool, error) {
+	if id == "" {
+		return false, nil
+	}
+	res, err := s.db.ExecContext(ctx, `DELETE FROM snapshots WHERE id = ?`, id)
+	if err != nil {
+		return false, fmt.Errorf("snapshot delete: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		// Driver doesn't report; assume delete landed (the operator
+		// retry will idempotently see 0 rows on the next call).
+		return true, nil
+	}
+	return n > 0, nil
 }
 
 // MemorySet upserts a Memory row. ttl > 0 sets expires_at = now+ttl;
