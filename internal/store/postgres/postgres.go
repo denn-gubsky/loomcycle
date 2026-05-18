@@ -317,7 +317,7 @@ func (s *Store) GetRunByAgentID(ctx context.Context, agentID string) (store.Run,
 		        r.input_tokens, r.output_tokens, r.cache_creation_tokens, r.cache_read_tokens,
 		        r.model, r.error,
 		        r.agent_id, r.parent_agent_id, r.parent_run_id, r.user_id, r.last_heartbeat_at, r.user_tier,
-		        r.agent_def_id,
+		        r.agent_def_id, r.pause_state,
 		        s.agent
 		 FROM runs r LEFT JOIN sessions s ON r.session_id = s.id
 		 WHERE r.agent_id = $1 ORDER BY r.started_at DESC LIMIT 1`, agentID,
@@ -342,7 +342,7 @@ func (s *Store) GetRun(ctx context.Context, runID string) (store.Run, error) {
 		        r.input_tokens, r.output_tokens, r.cache_creation_tokens, r.cache_read_tokens,
 		        r.model, r.error,
 		        r.agent_id, r.parent_agent_id, r.parent_run_id, r.user_id, r.last_heartbeat_at, r.user_tier,
-		        r.agent_def_id,
+		        r.agent_def_id, r.pause_state,
 		        s.agent
 		 FROM runs r LEFT JOIN sessions s ON r.session_id = s.id
 		 WHERE r.id = $1`, runID,
@@ -405,7 +405,7 @@ func (s *Store) ListActiveRunsByUser(ctx context.Context, userID string, status 
 			        r.input_tokens, r.output_tokens, r.cache_creation_tokens, r.cache_read_tokens,
 			        r.model, r.error,
 			        r.agent_id, r.parent_agent_id, r.parent_run_id, r.user_id, r.last_heartbeat_at, r.user_tier,
-			        r.agent_def_id,
+			        r.agent_def_id, r.pause_state,
 			        s.agent
 			 FROM runs r LEFT JOIN sessions s ON r.session_id = s.id
 			 WHERE r.user_id = $1
@@ -416,7 +416,7 @@ func (s *Store) ListActiveRunsByUser(ctx context.Context, userID string, status 
 			        r.input_tokens, r.output_tokens, r.cache_creation_tokens, r.cache_read_tokens,
 			        r.model, r.error,
 			        r.agent_id, r.parent_agent_id, r.parent_run_id, r.user_id, r.last_heartbeat_at, r.user_tier,
-			        r.agent_def_id,
+			        r.agent_def_id, r.pause_state,
 			        s.agent
 			 FROM runs r LEFT JOIN sessions s ON r.session_id = s.id
 			 WHERE r.user_id = $1 AND r.status = $2
@@ -441,7 +441,7 @@ func (s *Store) ListRunsByParentAgentID(ctx context.Context, parentAgentID strin
 		        r.input_tokens, r.output_tokens, r.cache_creation_tokens, r.cache_read_tokens,
 		        r.model, r.error,
 		        r.agent_id, r.parent_agent_id, r.parent_run_id, r.user_id, r.last_heartbeat_at, r.user_tier,
-		        r.agent_def_id,
+		        r.agent_def_id, r.pause_state,
 		        s.agent
 		 FROM runs r LEFT JOIN sessions s ON r.session_id = s.id
 		 WHERE r.parent_agent_id = $1
@@ -498,6 +498,54 @@ func (s *Store) SweepStaleRuns(ctx context.Context, cutoff time.Time) (int, erro
 		return 0, fmt.Errorf("sweep stale runs: %w", err)
 	}
 	return int(tag.RowsAffected()), nil
+}
+
+// SetRunPauseState implements store.Store. Writes runs.pause_state.
+// Refuses unknown state strings — the v0.8.17 PauseManager always uses
+// the PauseState* constants but a forward-compat guard at this layer
+// prevents a future caller bug from inserting garbage. Returns
+// *ErrNotFound when no row matches.
+//
+// Idempotent — writing the current value is a no-op (UPDATE still
+// affects 1 row but the value doesn't change). Does NOT clear
+// pause_state for terminal runs; the column on terminal runs records
+// what state they were in when the loop exited.
+func (s *Store) SetRunPauseState(ctx context.Context, runID, state string) error {
+	switch state {
+	case store.PauseStateRunning, store.PauseStatePausing, store.PauseStatePaused:
+	default:
+		return fmt.Errorf("set run pause_state: unknown state %q", state)
+	}
+	tag, err := s.pool.Exec(ctx,
+		`UPDATE runs SET pause_state = $1 WHERE id = $2`, state, runID)
+	if err != nil {
+		return fmt.Errorf("set run pause_state: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return &store.ErrNotFound{Kind: "run", ID: runID}
+	}
+	return nil
+}
+
+// ListPausedRuns implements store.Store. Returns runs with
+// pause_state = 'paused' (at-rest only, not 'pausing'), ordered by
+// started_at ASC. Uses the partial index from 0012_runs_pause_state.
+func (s *Store) ListPausedRuns(ctx context.Context) ([]store.Run, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT r.id, r.session_id, r.status, r.started_at, r.completed_at, r.stop_reason,
+		        r.input_tokens, r.output_tokens, r.cache_creation_tokens, r.cache_read_tokens,
+		        r.model, r.error,
+		        r.agent_id, r.parent_agent_id, r.parent_run_id, r.user_id, r.last_heartbeat_at, r.user_tier,
+		        r.agent_def_id, r.pause_state,
+		        s.agent
+		 FROM runs r LEFT JOIN sessions s ON r.session_id = s.id
+		 WHERE r.pause_state = $1
+		 ORDER BY r.started_at ASC`, store.PauseStatePaused)
+	if err != nil {
+		return nil, fmt.Errorf("list paused runs: %w", err)
+	}
+	defer rows.Close()
+	return scanRunRows(rows)
 }
 
 // ---- v0.8.x Process-resource metrics sampler ----
@@ -2166,6 +2214,7 @@ func scanRun(r rowScanner) (store.Run, error) {
 
 		agentID, parentAgentID, parentRunID, userID, userTier *string
 		agentDefID                                            *string
+		pauseState                                            *string
 		lastHeartbeatAt                                       *time.Time
 		sessAgent                                             *string
 
@@ -2177,7 +2226,7 @@ func scanRun(r rowScanner) (store.Run, error) {
 		&model, &errMsg,
 		&agentID, &parentAgentID, &parentRunID, &userID, &lastHeartbeatAt,
 		&userTier,
-		&agentDefID,
+		&agentDefID, &pauseState,
 		&sessAgent,
 	); err != nil {
 		return store.Run{}, err
@@ -2216,6 +2265,9 @@ func scanRun(r rowScanner) (store.Run, error) {
 	}
 	if agentDefID != nil {
 		out.AgentDefID = *agentDefID
+	}
+	if pauseState != nil {
+		out.PauseState = *pauseState
 	}
 	if sessAgent != nil {
 		out.Agent = *sessAgent
