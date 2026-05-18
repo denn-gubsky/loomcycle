@@ -781,3 +781,203 @@ pre {
   opacity: 0.6;
   cursor: not-allowed;
 }
+
+/* v0.8.17 PauseControls — topbar runtime quiesce pill + actions. */
+.pause-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  margin-left: auto;
+}
+.runtime-state {
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  font-size: 11px;
+  letter-spacing: 0.5px;
+}
+.runtime-state-running {
+  background: rgba(74, 222, 128, 0.15);
+  color: #4ade80;
+  border: 1px solid rgba(74, 222, 128, 0.35);
+}
+.runtime-state-pausing {
+  background: rgba(240, 160, 64, 0.18);
+  color: var(--running);
+  border: 1px solid rgba(240, 160, 64, 0.4);
+}
+.runtime-state-paused {
+  background: rgba(255, 93, 104, 0.18);
+  color: var(--failed);
+  border: 1px solid rgba(255, 93, 104, 0.4);
+}
+.pause-controls button {
+  padding: 4px 12px;
+  border: 1px solid var(--border);
+  background: var(--bg-soft);
+  color: var(--fg);
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 12px;
+}
+.pause-controls button:hover:not(:disabled) {
+  border-color: var(--running);
+}
+.pause-controls button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+.pause-controls .hint {
+  color: var(--fg-soft);
+  font-style: italic;
+}
+.pause-controls .flash {
+  color: #4ade80;
+  font-size: 12px;
+}
+.pause-controls .err {
+  color: var(--failed);
+  font-size: 12px;
+}
+
+/* v0.8.17 SnapshotsView — admin page for capture / restore / export. */
+.snapshots-view {
+  padding: 16px 24px;
+}
+.snapshots-view .toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 16px;
+}
+.snapshots-view .toolbar .meta {
+  display: flex;
+  gap: 12px;
+  color: var(--fg-soft);
+  font-size: 13px;
+}
+.snapshot-actions {
+  display: flex;
+  gap: 24px;
+  padding: 12px 16px;
+  background: var(--bg-soft);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  margin-bottom: 16px;
+  flex-wrap: wrap;
+}
+.snapshot-actions .capture,
+.snapshot-actions .restore {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.snapshot-actions label {
+  font-size: 13px;
+  color: var(--fg-soft);
+}
+.snapshot-actions input[type="text"] {
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--fg);
+  border-radius: 4px;
+  font-family: inherit;
+  font-size: 13px;
+  min-width: 220px;
+}
+.snapshot-actions input[type="file"] {
+  font-size: 13px;
+}
+.snapshot-actions button {
+  padding: 4px 12px;
+  border: 1px solid var(--border);
+  background: var(--bg-soft-2);
+  color: var(--fg);
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 13px;
+}
+.snapshot-actions button:hover:not(:disabled) {
+  border-color: var(--running);
+}
+.snapshot-actions button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+.flash-ok {
+  background: rgba(74, 222, 128, 0.12);
+  border: 1px solid rgba(74, 222, 128, 0.35);
+  color: #d1fae5;
+  padding: 8px 12px;
+  border-radius: 4px;
+  margin-bottom: 12px;
+  font-size: 13px;
+}
+.flash-err {
+  background: rgba(255, 93, 104, 0.12);
+  border: 1px solid rgba(255, 93, 104, 0.35);
+  color: #fee2e2;
+  padding: 8px 12px;
+  border-radius: 4px;
+  margin-bottom: 12px;
+  font-size: 13px;
+}
+.restore-warnings {
+  margin: 6px 0 0 16px;
+  padding: 0;
+  color: var(--fg-soft);
+  font-size: 12px;
+}
+.snapshots-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+.snapshots-table th,
+.snapshots-table td {
+  text-align: left;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+}
+.snapshots-table th {
+  font-weight: 600;
+  color: var(--fg-soft);
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+.snapshots-table td.mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+}
+.snapshots-table td.actions {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+}
+.snapshots-table td.actions a,
+.snapshots-table td.actions .link-btn {
+  color: var(--running);
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  text-decoration: underline;
+  font-size: 13px;
+  font-family: inherit;
+}
+.snapshots-table td.actions a:hover,
+.snapshots-table td.actions .link-btn:hover {
+  color: var(--fg);
+}
+.snapshots-table .empty {
+  color: var(--fg-soft);
+  text-align: center;
+  font-style: italic;
+}
+.snapshots-table .muted {
+  color: var(--fg-soft);
+}

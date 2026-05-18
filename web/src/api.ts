@@ -269,6 +269,138 @@ export function listRunInterrupts(
   );
 }
 
+// v0.8.17 — runtime pause / resume / state + snapshot admin.
+
+export interface RuntimeStateResponse {
+  state: "running" | "pausing" | "paused";
+  paused_runs_count: number;
+}
+
+export interface PauseResult {
+  state: string;
+  duration_ms: number;
+  force_cancelled_count: number;
+  paused_runs_count: number;
+  warnings?: string[];
+}
+
+export interface ResumeResult {
+  state: string;
+  resumed_runs_count: number;
+  warnings?: string[];
+}
+
+export function getRuntimeState(): Promise<RuntimeStateResponse> {
+  return jsonFetch<RuntimeStateResponse>("/v1/_state");
+}
+
+export async function pauseRuntime(timeoutMs?: number): Promise<PauseResult> {
+  const body = timeoutMs && timeoutMs > 0 ? JSON.stringify({ timeout_ms: timeoutMs }) : undefined;
+  return postJSON<PauseResult>("/v1/_pause", body);
+}
+
+export async function resumeRuntime(): Promise<ResumeResult> {
+  return postJSON<ResumeResult>("/v1/_resume", undefined);
+}
+
+export interface SnapshotListEntry {
+  id: string;
+  created_at: string;
+  label?: string;
+  schema_version: number;
+  byte_size: number;
+}
+
+export interface SnapshotListResponse {
+  entries: SnapshotListEntry[];
+}
+
+export interface SnapshotCreateResponse {
+  id: string;
+  created_at: string;
+  label?: string;
+  schema_version: number;
+  byte_size: number;
+}
+
+export interface SnapshotRestoreResponse {
+  agent_defs_restored?: number;
+  agent_def_active_restored?: number;
+  memory_restored?: number;
+  channel_messages_restored?: number;
+  channel_cursors_restored?: number;
+  evaluations_restored?: number;
+  paused_runs_restored?: number;
+  synthesized_sessions?: number;
+  transcript_events_restored?: number;
+  interaction_history_restored?: number;
+  warnings?: string[];
+}
+
+export function listSnapshots(limit = 200, labelContains = ""): Promise<SnapshotListResponse> {
+  const q = new URLSearchParams();
+  if (limit > 0) q.set("limit", String(limit));
+  if (labelContains) q.set("label_contains", labelContains);
+  const path = q.toString() ? `/v1/_snapshots?${q}` : "/v1/_snapshots";
+  return jsonFetch<SnapshotListResponse>(path);
+}
+
+export async function createSnapshot(label?: string): Promise<SnapshotCreateResponse> {
+  const body = label ? JSON.stringify({ label }) : undefined;
+  return postJSON<SnapshotCreateResponse>("/v1/_snapshots", body);
+}
+
+export async function deleteSnapshot(id: string): Promise<void> {
+  const resp = await fetch(baseURL + `/v1/_snapshots/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+    credentials: "same-origin",
+  });
+  if (!resp.ok) {
+    const body = await resp.text();
+    throw new Error(`${resp.status} ${resp.statusText}: ${body.slice(0, 200)}`);
+  }
+}
+
+// exportSnapshotURL returns the URL the browser can navigate to (or
+// the user can right-click + "save link as…") to download the
+// envelope. The server sets Content-Disposition so the browser names
+// the file using the snapshot id.
+export function exportSnapshotURL(id: string): string {
+  return baseURL + `/v1/_snapshots/${encodeURIComponent(id)}/export`;
+}
+
+export async function restoreSnapshotFromText(
+  envelopeJSON: string,
+  includeHistory = false,
+): Promise<SnapshotRestoreResponse> {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(envelopeJSON);
+  } catch (e) {
+    throw new Error(`envelope is not valid JSON: ${e instanceof Error ? e.message : String(e)}`);
+  }
+  return postJSON<SnapshotRestoreResponse>(
+    "/v1/_snapshots/inline/restore",
+    JSON.stringify({ include_history: includeHistory, json: parsed }),
+  );
+}
+
+async function postJSON<T>(path: string, body: string | undefined): Promise<T> {
+  const resp = await fetch(baseURL + path, {
+    method: "POST",
+    credentials: "same-origin",
+    headers: body
+      ? { "Content-Type": "application/json", Accept: "application/json" }
+      : { Accept: "application/json" },
+    body,
+  });
+  if (!resp.ok) {
+    const raw = await resp.text();
+    throw new Error(`${resp.status} ${resp.statusText}: ${raw.slice(0, 200)}`);
+  }
+  return resp.json() as Promise<T>;
+}
+
 export async function resolveInterrupt(
   runID: string,
   interruptID: string,
