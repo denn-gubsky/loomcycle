@@ -19,6 +19,7 @@
 package resolve
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"sync"
@@ -176,6 +177,16 @@ type Resolver struct {
 	// outer map is treated as not-yet-probed (effectively unavailable
 	// in PR 1's stub-probe world).
 	matrix map[string]*Availability
+
+	// forceProbe is the v0.8.17 hook the periodic probe loop sets so
+	// out-of-band callers (POST /v1/_snapshots/{id}/restore handler)
+	// can request an immediate matrix refresh. main.go's
+	// runResolveProbeLoop sets this to a closure that triggers
+	// runResolveProbeOnce; tests + callers that don't set it just
+	// see ForceProbe() return immediately. Lock-free via mu —
+	// SetForceProbeCallback writes under the write lock; ForceProbe
+	// reads under the read lock.
+	forceProbe func(ctx context.Context)
 }
 
 // Availability is the resolver's view of one provider's reachability
@@ -681,4 +692,38 @@ func (r *Resolver) Snapshot() map[string]Availability {
 		}
 	}
 	return out
+}
+
+// SetForceProbeCallback installs the closure ForceProbe invokes.
+// Used by cmd/loomcycle/main.go to wire the probe loop's
+// runResolveProbeOnce as the immediate-probe trigger. Callers that
+// don't set this see ForceProbe() return immediately (matrix stays
+// stale until the next periodic sweep).
+func (r *Resolver) SetForceProbeCallback(fn func(ctx context.Context)) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.forceProbe = fn
+}
+
+// ForceProbe triggers an immediate refresh of the resolver matrix.
+// Called by the snapshot restore handler so the resolver's view of
+// provider availability is populated before the operator calls
+// Resume — the pause-resume-snapshot RFC excludes the resolver
+// state from snapshots (re-probe on restore).
+//
+// Blocking: returns when the underlying probe completes. Operator
+// behind a slow / unreachable provider sees the restore response
+// wait briefly (~3-5s in the worst case); main.go's probe loop has
+// per-provider timeouts that bound this.
+//
+// No-op when SetForceProbeCallback hasn't been called (tests, or
+// runtime configurations without a probe loop).
+func (r *Resolver) ForceProbe(ctx context.Context) {
+	r.mu.RLock()
+	fn := r.forceProbe
+	r.mu.RUnlock()
+	if fn == nil {
+		return
+	}
+	fn(ctx)
 }

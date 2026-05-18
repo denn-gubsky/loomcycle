@@ -26,6 +26,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/denn-gubsky/loomcycle/internal/store"
@@ -546,6 +547,644 @@ func (s *Store) ListPausedRuns(ctx context.Context) ([]store.Run, error) {
 	}
 	defer rows.Close()
 	return scanRunRows(rows)
+}
+
+// ---- v0.8.17 Pause/Resume/Snapshot — Snapshot storage (PR 2) ----
+
+// SnapshotCreate inserts one snapshot row. Returns *store.ErrConflict
+// on PK violation (id already exists).
+func (s *Store) SnapshotCreate(ctx context.Context, row store.SnapshotRow) error {
+	if row.ID == "" {
+		return fmt.Errorf("snapshot create: id required")
+	}
+	if len(row.JSONContent) == 0 {
+		return fmt.Errorf("snapshot create: json_content required")
+	}
+	createdAt := row.CreatedAt
+	if createdAt.IsZero() {
+		createdAt = time.Now().UTC()
+	}
+	var label any
+	if row.Label != "" {
+		label = row.Label
+	}
+	_, err := s.pool.Exec(ctx,
+		`INSERT INTO snapshots(id, created_at, label, schema_version, byte_size, json_content)
+		 VALUES ($1, $2, $3, $4, $5, $6::jsonb)`,
+		row.ID, createdAt, label, row.SchemaVersion, row.ByteSize, string(row.JSONContent),
+	)
+	if err != nil {
+		// pgx returns *pgconn.PgError with Code 23505 (unique_violation)
+		// on PK conflict. Match by code so a future column constraint
+		// addition can't be silently caught as a "conflict."
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+			return &store.ErrConflict{Kind: "snapshot", ID: row.ID}
+		}
+		return fmt.Errorf("snapshot create: %w", err)
+	}
+	return nil
+}
+
+// SnapshotGet returns the full snapshot row including the JSON payload.
+func (s *Store) SnapshotGet(ctx context.Context, id string) (store.SnapshotRow, error) {
+	if id == "" {
+		return store.SnapshotRow{}, &store.ErrNotFound{Kind: "snapshot", ID: id}
+	}
+	var (
+		row         store.SnapshotRow
+		label       *string
+		jsonContent []byte
+	)
+	err := s.pool.QueryRow(ctx,
+		`SELECT id, created_at, label, schema_version, byte_size, json_content
+		 FROM snapshots WHERE id = $1`, id,
+	).Scan(&row.ID, &row.CreatedAt, &label, &row.SchemaVersion, &row.ByteSize, &jsonContent)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return store.SnapshotRow{}, &store.ErrNotFound{Kind: "snapshot", ID: id}
+		}
+		return store.SnapshotRow{}, fmt.Errorf("snapshot get: %w", err)
+	}
+	if label != nil {
+		row.Label = *label
+	}
+	row.JSONContent = jsonContent
+	return row, nil
+}
+
+// SnapshotList returns the metadata-only projections, optionally
+// filtered by case-insensitive label substring and capped at limit.
+func (s *Store) SnapshotList(ctx context.Context, labelContains string, limit int) ([]store.SnapshotListEntry, error) {
+	var (
+		rows pgx.Rows
+		err  error
+	)
+	query := `SELECT id, created_at, label, schema_version, byte_size
+	          FROM snapshots `
+	args := []any{}
+	if labelContains != "" {
+		query += `WHERE COALESCE(label, '') ILIKE $1 `
+		args = append(args, "%"+labelContains+"%")
+	}
+	query += `ORDER BY created_at DESC`
+	if limit > 0 {
+		query += fmt.Sprintf(" LIMIT $%d", len(args)+1)
+		args = append(args, limit)
+	}
+	rows, err = s.pool.Query(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("snapshot list: %w", err)
+	}
+	defer rows.Close()
+	var out []store.SnapshotListEntry
+	for rows.Next() {
+		var (
+			e     store.SnapshotListEntry
+			label *string
+		)
+		if err := rows.Scan(&e.ID, &e.CreatedAt, &label, &e.SchemaVersion, &e.ByteSize); err != nil {
+			return nil, fmt.Errorf("snapshot list scan: %w", err)
+		}
+		if label != nil {
+			e.Label = *label
+		}
+		out = append(out, e)
+	}
+	return out, rows.Err()
+}
+
+// SnapshotDelete removes one snapshot row. Idempotent — returns
+// (false, nil) when nothing matched.
+func (s *Store) SnapshotDelete(ctx context.Context, id string) (bool, error) {
+	if id == "" {
+		return false, nil
+	}
+	tag, err := s.pool.Exec(ctx, `DELETE FROM snapshots WHERE id = $1`, id)
+	if err != nil {
+		return false, fmt.Errorf("snapshot delete: %w", err)
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
+// ---- v0.8.17 Snapshot capture — bulk readers (PR 2.3a) ----
+
+// SnapshotReadAgentDefs implements store.Store.
+func (s *Store) SnapshotReadAgentDefs(ctx context.Context) ([]store.AgentDefRow, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT def_id, name, version, parent_def_id, definition::text, description,
+		        created_at, created_by_agent_id, created_by_run_id,
+		        retired, bootstrapped_from_static
+		 FROM agent_defs
+		 ORDER BY name ASC, version ASC`,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("snapshot read agent_defs: %w", err)
+	}
+	defer rows.Close()
+	var out []store.AgentDefRow
+	for rows.Next() {
+		var (
+			r           store.AgentDefRow
+			parentDefID *string
+			description *string
+			createdBy   *string
+			createdRun  *string
+			definition  string
+		)
+		if err := rows.Scan(
+			&r.DefID, &r.Name, &r.Version, &parentDefID,
+			&definition, &description,
+			&r.CreatedAt, &createdBy, &createdRun,
+			&r.Retired, &r.BootstrappedFromStatic,
+		); err != nil {
+			return nil, fmt.Errorf("scan agent_def: %w", err)
+		}
+		r.Definition = json.RawMessage(definition)
+		if parentDefID != nil {
+			r.ParentDefID = *parentDefID
+		}
+		if description != nil {
+			r.Description = *description
+		}
+		if createdBy != nil {
+			r.CreatedByAgentID = *createdBy
+		}
+		if createdRun != nil {
+			r.CreatedByRunID = *createdRun
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// SnapshotReadAgentDefActive implements store.Store.
+func (s *Store) SnapshotReadAgentDefActive(ctx context.Context) ([]store.AgentDefActiveEntry, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT name, def_id, promoted_at, promoted_by_agent_id
+		 FROM agent_def_active
+		 ORDER BY name ASC`)
+	if err != nil {
+		return nil, fmt.Errorf("snapshot read agent_def_active: %w", err)
+	}
+	defer rows.Close()
+	var out []store.AgentDefActiveEntry
+	for rows.Next() {
+		var (
+			e        store.AgentDefActiveEntry
+			promoter *string
+		)
+		if err := rows.Scan(&e.Name, &e.DefID, &e.PromotedAt, &promoter); err != nil {
+			return nil, fmt.Errorf("scan agent_def_active: %w", err)
+		}
+		if promoter != nil {
+			e.PromotedByAgentID = *promoter
+		}
+		out = append(out, e)
+	}
+	return out, rows.Err()
+}
+
+// SnapshotReadMemory implements store.Store. Filters expired rows.
+func (s *Store) SnapshotReadMemory(ctx context.Context) ([]store.MemorySnapshotEntry, error) {
+	now := time.Now().UTC()
+	rows, err := s.pool.Query(ctx,
+		`SELECT scope, scope_id, key, value::text, expires_at, created_at, updated_at
+		 FROM memory
+		 WHERE expires_at IS NULL OR expires_at > $1
+		 ORDER BY scope ASC, scope_id ASC, key ASC`, now)
+	if err != nil {
+		return nil, fmt.Errorf("snapshot read memory: %w", err)
+	}
+	defer rows.Close()
+	var out []store.MemorySnapshotEntry
+	for rows.Next() {
+		var (
+			e         store.MemorySnapshotEntry
+			scopeStr  string
+			value     string
+			expiresAt *time.Time
+		)
+		if err := rows.Scan(&scopeStr, &e.ScopeID, &e.Key, &value, &expiresAt, &e.CreatedAt, &e.UpdatedAt); err != nil {
+			return nil, fmt.Errorf("scan memory: %w", err)
+		}
+		e.Scope = store.MemoryScope(scopeStr)
+		e.Value = json.RawMessage(value)
+		if expiresAt != nil {
+			e.ExpiresAt = *expiresAt
+		}
+		out = append(out, e)
+	}
+	return out, rows.Err()
+}
+
+// SnapshotReadChannelMessages implements store.Store. Filters expired
+// rows.
+func (s *Store) SnapshotReadChannelMessages(ctx context.Context) ([]store.ChannelMessage, error) {
+	now := time.Now().UTC()
+	rows, err := s.pool.Query(ctx,
+		`SELECT id, channel, scope, scope_id, payload::text, published_at, expires_at, visible_at, published_by_user_id
+		 FROM channel_messages
+		 WHERE expires_at IS NULL OR expires_at > $1
+		 ORDER BY channel ASC, scope ASC, scope_id ASC, visible_at ASC, id ASC`, now)
+	if err != nil {
+		return nil, fmt.Errorf("snapshot read channel_messages: %w", err)
+	}
+	defer rows.Close()
+	var out []store.ChannelMessage
+	for rows.Next() {
+		var (
+			m           store.ChannelMessage
+			scopeStr    string
+			payload     string
+			expiresAt   *time.Time
+			visibleAt   *time.Time
+			publishedBy *string
+		)
+		if err := rows.Scan(&m.ID, &m.Channel, &scopeStr, &m.ScopeID, &payload, &m.PublishedAt, &expiresAt, &visibleAt, &publishedBy); err != nil {
+			return nil, fmt.Errorf("scan channel_message: %w", err)
+		}
+		m.Scope = store.MemoryScope(scopeStr)
+		m.Payload = json.RawMessage(payload)
+		if expiresAt != nil {
+			m.ExpiresAt = *expiresAt
+		}
+		if visibleAt != nil {
+			m.VisibleAt = *visibleAt
+		}
+		if publishedBy != nil {
+			m.PublishedByUserID = *publishedBy
+		}
+		out = append(out, m)
+	}
+	return out, rows.Err()
+}
+
+// SnapshotReadChannelCursors implements store.Store.
+func (s *Store) SnapshotReadChannelCursors(ctx context.Context) ([]store.ChannelCursorEntry, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT channel, scope, scope_id, cursor, updated_at
+		 FROM channel_cursors
+		 ORDER BY channel ASC, scope ASC, scope_id ASC`)
+	if err != nil {
+		return nil, fmt.Errorf("snapshot read channel_cursors: %w", err)
+	}
+	defer rows.Close()
+	var out []store.ChannelCursorEntry
+	for rows.Next() {
+		var (
+			c        store.ChannelCursorEntry
+			scopeStr string
+		)
+		if err := rows.Scan(&c.Channel, &scopeStr, &c.ScopeID, &c.Cursor, &c.UpdatedAt); err != nil {
+			return nil, fmt.Errorf("scan channel_cursor: %w", err)
+		}
+		c.Scope = store.MemoryScope(scopeStr)
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
+// SnapshotReadEvaluations implements store.Store. Ordered by
+// created_at ASC so the envelope preserves submission order.
+func (s *Store) SnapshotReadEvaluations(ctx context.Context) ([]store.EvaluationRow, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT eval_id, run_id, def_id, score, dimensions::text, judgement::text, rationale,
+		        emitter_role, emitter_agent_id, emitter_run_id, created_at
+		 FROM evaluations
+		 ORDER BY created_at ASC`)
+	if err != nil {
+		return nil, fmt.Errorf("snapshot read evaluations: %w", err)
+	}
+	defer rows.Close()
+	var out []store.EvaluationRow
+	for rows.Next() {
+		var (
+			r              store.EvaluationRow
+			defID          *string
+			dimensions     *string
+			judgement      *string
+			rationale      *string
+			emitterAgentID *string
+			emitterRunID   *string
+		)
+		if err := rows.Scan(
+			&r.EvalID, &r.RunID, &defID, &r.Score,
+			&dimensions, &judgement, &rationale,
+			&r.EmitterRole, &emitterAgentID, &emitterRunID,
+			&r.CreatedAt,
+		); err != nil {
+			return nil, fmt.Errorf("scan evaluation: %w", err)
+		}
+		if defID != nil {
+			r.DefID = *defID
+		}
+		if dimensions != nil && *dimensions != "" {
+			var dim map[string]float64
+			if err := json.Unmarshal([]byte(*dimensions), &dim); err == nil {
+				r.Dimensions = dim
+			}
+		}
+		if judgement != nil && *judgement != "" {
+			r.Judgement = json.RawMessage(*judgement)
+		}
+		if rationale != nil {
+			r.Rationale = *rationale
+		}
+		if emitterAgentID != nil {
+			r.EmitterAgentID = *emitterAgentID
+		}
+		if emitterRunID != nil {
+			r.EmitterRunID = *emitterRunID
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// ---- v0.8.17 Snapshot restore — idempotent raw inserts (PR 3.2a) ----
+
+// SnapshotRestoreSession implements store.Store.
+func (s *Store) SnapshotRestoreSession(ctx context.Context, sess store.Session) (bool, error) {
+	if sess.ID == "" {
+		return false, fmt.Errorf("snapshot restore session: id required")
+	}
+	createdAt := sess.CreatedAt
+	if createdAt.IsZero() {
+		createdAt = time.Now().UTC()
+	}
+	var userID any
+	if sess.UserID != "" {
+		userID = sess.UserID
+	}
+	tag, err := s.pool.Exec(ctx,
+		`INSERT INTO sessions(id, tenant_id, agent, created_at, user_id) VALUES ($1, $2, $3, $4, $5)
+		 ON CONFLICT (id) DO NOTHING`,
+		sess.ID, sess.TenantID, sess.Agent, createdAt, userID,
+	)
+	if err != nil {
+		return false, fmt.Errorf("snapshot restore session: %w", err)
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
+// SnapshotRestoreRun implements store.Store.
+func (s *Store) SnapshotRestoreRun(ctx context.Context, r store.Run) (bool, error) {
+	if r.ID == "" || r.SessionID == "" {
+		return false, fmt.Errorf("snapshot restore run: id and session_id required")
+	}
+	startedAt := r.StartedAt
+	if startedAt.IsZero() {
+		startedAt = time.Now().UTC()
+	}
+	var completedAt, lastHbAt *time.Time
+	if !r.CompletedAt.IsZero() {
+		t := r.CompletedAt
+		completedAt = &t
+	}
+	if !r.LastHeartbeatAt.IsZero() {
+		t := r.LastHeartbeatAt
+		lastHbAt = &t
+	}
+	status := string(r.Status)
+	if status == "" {
+		status = string(store.RunRunning)
+	}
+	pauseState := r.PauseState
+	if pauseState == "" {
+		pauseState = store.PauseStateRunning
+	}
+	tag, err := s.pool.Exec(ctx,
+		`INSERT INTO runs(
+			id, session_id, status, started_at, completed_at, stop_reason,
+			input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens,
+			model, error,
+			agent_id, parent_agent_id, parent_run_id, user_id, last_heartbeat_at,
+			user_tier, agent_def_id, pause_state
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
+		 ON CONFLICT (id) DO NOTHING`,
+		r.ID, r.SessionID, status, startedAt, completedAt, nullIfEmpty(r.StopReason),
+		r.InputTokens, r.OutputTokens, r.CacheCreationTokens, r.CacheReadTokens,
+		nullIfEmpty(r.Model), nullIfEmpty(r.ErrorMsg),
+		nullIfEmpty(r.AgentID), nullIfEmpty(r.ParentAgentID), nullIfEmpty(r.ParentRunID),
+		nullIfEmpty(r.UserID), lastHbAt,
+		nullIfEmpty(r.UserTier), nullIfEmpty(r.AgentDefID), pauseState,
+	)
+	if err != nil {
+		return false, fmt.Errorf("snapshot restore run: %w", err)
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
+// SnapshotRestoreEvent implements store.Store.
+func (s *Store) SnapshotRestoreEvent(ctx context.Context, e store.Event) (bool, error) {
+	if e.RunID == "" || e.SessionID == "" {
+		return false, fmt.Errorf("snapshot restore event: run_id and session_id required")
+	}
+	ts := e.Timestamp
+	if ts.IsZero() {
+		ts = time.Now().UTC()
+	}
+	if e.Seq != 0 {
+		tag, err := s.pool.Exec(ctx,
+			`INSERT INTO events(seq, session_id, run_id, ts, type, payload) VALUES ($1, $2, $3, $4, $5, $6)
+			 ON CONFLICT (seq) DO NOTHING`,
+			e.Seq, e.SessionID, e.RunID, ts, e.Type, e.Payload,
+		)
+		if err != nil {
+			return false, fmt.Errorf("snapshot restore event: %w", err)
+		}
+		return tag.RowsAffected() > 0, nil
+	}
+	_, err := s.pool.Exec(ctx,
+		`INSERT INTO events(session_id, run_id, ts, type, payload) VALUES ($1, $2, $3, $4, $5)`,
+		e.SessionID, e.RunID, ts, e.Type, e.Payload,
+	)
+	if err != nil {
+		return false, fmt.Errorf("snapshot restore event (auto-seq): %w", err)
+	}
+	return true, nil
+}
+
+// SnapshotRestoreAgentDef implements store.Store.
+func (s *Store) SnapshotRestoreAgentDef(ctx context.Context, r store.AgentDefRow) (bool, error) {
+	if r.DefID == "" || r.Name == "" {
+		return false, fmt.Errorf("snapshot restore agent_def: def_id and name required")
+	}
+	createdAt := r.CreatedAt
+	if createdAt.IsZero() {
+		createdAt = time.Now().UTC()
+	}
+	tag, err := s.pool.Exec(ctx,
+		`INSERT INTO agent_defs(
+			def_id, name, version, parent_def_id, definition, description,
+			created_at, created_by_agent_id, created_by_run_id,
+			retired, bootstrapped_from_static
+		) VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10, $11)
+		 ON CONFLICT (def_id) DO NOTHING`,
+		r.DefID, r.Name, r.Version, nullIfEmpty(r.ParentDefID),
+		string(r.Definition), nullIfEmpty(r.Description),
+		createdAt, nullIfEmpty(r.CreatedByAgentID), nullIfEmpty(r.CreatedByRunID),
+		r.Retired, r.BootstrappedFromStatic,
+	)
+	if err != nil {
+		return false, fmt.Errorf("snapshot restore agent_def: %w", err)
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
+// SnapshotRestoreAgentDefActive implements store.Store. ON CONFLICT
+// DO NOTHING — first restore writes the snapshot's promoted_at +
+// def_id; subsequent restores leave the existing row alone so the
+// (bool, error) return reads as "not inserted" and the caller's
+// counter stays honest on a re-restore.
+func (s *Store) SnapshotRestoreAgentDefActive(ctx context.Context, e store.AgentDefActiveEntry) (bool, error) {
+	if e.Name == "" || e.DefID == "" {
+		return false, fmt.Errorf("snapshot restore agent_def_active: name and def_id required")
+	}
+	promotedAt := e.PromotedAt
+	if promotedAt.IsZero() {
+		promotedAt = time.Now().UTC()
+	}
+	tag, err := s.pool.Exec(ctx,
+		`INSERT INTO agent_def_active(name, def_id, promoted_at, promoted_by_agent_id) VALUES ($1, $2, $3, $4)
+		 ON CONFLICT (name) DO NOTHING`,
+		e.Name, e.DefID, promotedAt, nullIfEmpty(e.PromotedByAgentID),
+	)
+	if err != nil {
+		return false, fmt.Errorf("snapshot restore agent_def_active: %w", err)
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
+// SnapshotRestoreMemory implements store.Store.
+func (s *Store) SnapshotRestoreMemory(ctx context.Context, e store.MemorySnapshotEntry) (bool, error) {
+	if e.Scope == "" || e.Key == "" {
+		return false, fmt.Errorf("snapshot restore memory: scope and key required")
+	}
+	createdAt := e.CreatedAt
+	if createdAt.IsZero() {
+		createdAt = time.Now().UTC()
+	}
+	updatedAt := e.UpdatedAt
+	if updatedAt.IsZero() {
+		updatedAt = createdAt
+	}
+	var expiresAt *time.Time
+	if !e.ExpiresAt.IsZero() {
+		t := e.ExpiresAt
+		expiresAt = &t
+	}
+	tag, err := s.pool.Exec(ctx,
+		`INSERT INTO memory(scope, scope_id, key, value, expires_at, created_at, updated_at)
+		 VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7)
+		 ON CONFLICT (scope, scope_id, key) DO NOTHING`,
+		string(e.Scope), e.ScopeID, e.Key, string(e.Value),
+		expiresAt, createdAt, updatedAt,
+	)
+	if err != nil {
+		return false, fmt.Errorf("snapshot restore memory: %w", err)
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
+// SnapshotRestoreChannelMessage implements store.Store.
+func (s *Store) SnapshotRestoreChannelMessage(ctx context.Context, m store.ChannelMessage) (bool, error) {
+	if m.ID == "" || m.Channel == "" {
+		return false, fmt.Errorf("snapshot restore channel_message: id and channel required")
+	}
+	publishedAt := m.PublishedAt
+	if publishedAt.IsZero() {
+		publishedAt = time.Now().UTC()
+	}
+	var expiresAt *time.Time
+	if !m.ExpiresAt.IsZero() {
+		t := m.ExpiresAt
+		expiresAt = &t
+	}
+	visibleAt := m.VisibleAt
+	if visibleAt.IsZero() {
+		visibleAt = publishedAt
+	}
+	tag, err := s.pool.Exec(ctx,
+		`INSERT INTO channel_messages(id, channel, scope, scope_id, payload, published_at, expires_at, visible_at, published_by_user_id)
+		 VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9)
+		 ON CONFLICT (id) DO NOTHING`,
+		m.ID, m.Channel, string(m.Scope), m.ScopeID, string(m.Payload),
+		publishedAt, expiresAt, visibleAt, nullIfEmpty(m.PublishedByUserID),
+	)
+	if err != nil {
+		return false, fmt.Errorf("snapshot restore channel_message: %w", err)
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
+// SnapshotRestoreChannelCursor implements store.Store. ON CONFLICT
+// DO NOTHING — first restore writes the snapshot's cursor; subsequent
+// restores leave an evolved live cursor alone so the (bool, error)
+// return reads as "not inserted" on a re-restore.
+func (s *Store) SnapshotRestoreChannelCursor(ctx context.Context, c store.ChannelCursorEntry) (bool, error) {
+	if c.Channel == "" || c.Cursor == "" {
+		return false, fmt.Errorf("snapshot restore channel_cursor: channel and cursor required")
+	}
+	updatedAt := c.UpdatedAt
+	if updatedAt.IsZero() {
+		updatedAt = time.Now().UTC()
+	}
+	tag, err := s.pool.Exec(ctx,
+		`INSERT INTO channel_cursors(channel, scope, scope_id, cursor, updated_at) VALUES ($1, $2, $3, $4, $5)
+		 ON CONFLICT (channel, scope, scope_id) DO NOTHING`,
+		c.Channel, string(c.Scope), c.ScopeID, c.Cursor, updatedAt,
+	)
+	if err != nil {
+		return false, fmt.Errorf("snapshot restore channel_cursor: %w", err)
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
+// SnapshotRestoreEvaluation implements store.Store.
+func (s *Store) SnapshotRestoreEvaluation(ctx context.Context, r store.EvaluationRow) (bool, error) {
+	if r.EvalID == "" || r.RunID == "" {
+		return false, fmt.Errorf("snapshot restore evaluation: eval_id and run_id required")
+	}
+	createdAt := r.CreatedAt
+	if createdAt.IsZero() {
+		createdAt = time.Now().UTC()
+	}
+	var dimensions, judgement any
+	if len(r.Dimensions) > 0 {
+		b, err := json.Marshal(r.Dimensions)
+		if err == nil {
+			dimensions = string(b)
+		}
+	}
+	if len(r.Judgement) > 0 {
+		judgement = string(r.Judgement)
+	}
+	tag, err := s.pool.Exec(ctx,
+		`INSERT INTO evaluations(
+			eval_id, run_id, def_id, score, dimensions, judgement, rationale,
+			emitter_role, emitter_agent_id, emitter_run_id, created_at
+		) VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb, $7, $8, $9, $10, $11)
+		 ON CONFLICT (eval_id) DO NOTHING`,
+		r.EvalID, r.RunID, nullIfEmpty(r.DefID), r.Score,
+		dimensions, judgement, nullIfEmpty(r.Rationale),
+		r.EmitterRole, nullIfEmpty(r.EmitterAgentID), nullIfEmpty(r.EmitterRunID),
+		createdAt,
+	)
+	if err != nil {
+		return false, fmt.Errorf("snapshot restore evaluation: %w", err)
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
+// nullIfEmpty converts an empty string to a *string nil so pgx writes
+// SQL NULL into nullable text columns rather than "".
+func nullIfEmpty(s string) any {
+	if s == "" {
+		return nil
+	}
+	return s
 }
 
 // ---- v0.8.x Process-resource metrics sampler ----

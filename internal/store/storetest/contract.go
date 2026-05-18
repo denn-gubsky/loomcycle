@@ -25,6 +25,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"strconv"
 	"strings"
 	"sync"
@@ -75,6 +76,24 @@ func Run(t *testing.T, factory Factory) {
 		{"ListPausedRunsEmpty", testListPausedRunsEmpty},
 		{"ListPausedRunsExcludesPausingAndRunning", testListPausedRunsExcludesPausingAndRunning},
 		{"ListPausedRunsOrderedByStartedAtAsc", testListPausedRunsOrderedByStartedAtAsc},
+		{"SnapshotCreateRoundTrip", testSnapshotCreateRoundTrip},
+		{"SnapshotCreateConflictOnDuplicateID", testSnapshotCreateConflictOnDuplicateID},
+		{"SnapshotCreateRejectsEmptyFields", testSnapshotCreateRejectsEmptyFields},
+		{"SnapshotGetNotFound", testSnapshotGetNotFound},
+		{"SnapshotListOrderedByCreatedAtDesc", testSnapshotListOrderedByCreatedAtDesc},
+		{"SnapshotListLabelSubstringFilter", testSnapshotListLabelSubstringFilter},
+		{"SnapshotListLimitBounds", testSnapshotListLimitBounds},
+		{"SnapshotListExcludesJSONPayload", testSnapshotListExcludesJSONPayload},
+		{"SnapshotDeleteIdempotent", testSnapshotDeleteIdempotent},
+		{"SnapshotReadAgentDefsEmpty", testSnapshotReadAgentDefsEmpty},
+		{"SnapshotReadAgentDefActiveEmpty", testSnapshotReadAgentDefActiveEmpty},
+		{"SnapshotReadMemoryEmpty", testSnapshotReadMemoryEmpty},
+		{"SnapshotReadMemoryFiltersExpired", testSnapshotReadMemoryFiltersExpired},
+		{"SnapshotReadMemoryOrdered", testSnapshotReadMemoryOrdered},
+		{"SnapshotReadChannelMessagesEmpty", testSnapshotReadChannelMessagesEmpty},
+		{"SnapshotReadChannelCursorsEmpty", testSnapshotReadChannelCursorsEmpty},
+		{"SnapshotReadEvaluationsEmpty", testSnapshotReadEvaluationsEmpty},
+		{"SnapshotReadEvaluationsOrderedByCreatedAt", testSnapshotReadEvaluationsOrderedByCreatedAt},
 		{"MemorySetGetRoundTrip", testMemorySetGetRoundTrip},
 		{"MemoryGetNotFound", testMemoryGetNotFound},
 		{"MemoryOverwriteUpdatesValue", testMemoryOverwriteUpdatesValue},
@@ -836,6 +855,482 @@ func testListPausedRunsOrderedByStartedAtAsc(t *testing.T, s store.Store) {
 			t.Errorf("ListPausedRuns[%d] = %q, want %q (oldest-first ordering)",
 				i, r.ID, want[i])
 		}
+	}
+}
+
+// SnapshotCreate writes one row; SnapshotGet retrieves it; the
+// JSON payload, label, schema_version, and byte_size round-trip
+// byte-equal.
+func testSnapshotCreateRoundTrip(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	payload := []byte(`{"schema_version":1,"sections":{"memory":{"version":"1.0","entries":[]}}}`)
+	row := store.SnapshotRow{
+		ID:            "snap_test_1",
+		Label:         "before-backup",
+		SchemaVersion: 1,
+		ByteSize:      int64(len(payload)),
+		JSONContent:   payload,
+	}
+	if err := s.SnapshotCreate(ctx, row); err != nil {
+		t.Fatalf("SnapshotCreate: %v", err)
+	}
+	got, err := s.SnapshotGet(ctx, "snap_test_1")
+	if err != nil {
+		t.Fatalf("SnapshotGet: %v", err)
+	}
+	if got.ID != row.ID || got.Label != row.Label || got.SchemaVersion != row.SchemaVersion || got.ByteSize != row.ByteSize {
+		t.Errorf("metadata mismatch: got %+v want %+v", got, row)
+	}
+	// JSONContent round-trips SEMANTICALLY equivalent — Postgres JSONB
+	// reorders keys canonically; SQLite TEXT preserves byte-for-byte.
+	// The contract is that any consumer parsing the returned bytes as
+	// JSON sees the same logical object as what was written.
+	var wantAny, gotAny any
+	if err := json.Unmarshal(payload, &wantAny); err != nil {
+		t.Fatalf("test fixture is invalid JSON: %v", err)
+	}
+	if err := json.Unmarshal(got.JSONContent, &gotAny); err != nil {
+		t.Fatalf("returned JSONContent is invalid JSON: %v", err)
+	}
+	if !reflect.DeepEqual(wantAny, gotAny) {
+		t.Errorf("JSONContent round-trip differs semantically:\n got: %s\nwant: %s", got.JSONContent, payload)
+	}
+	if got.CreatedAt.IsZero() {
+		t.Error("CreatedAt should default to now() when not supplied")
+	}
+}
+
+// SnapshotCreate with a colliding id returns *store.ErrConflict —
+// distinguishable from generic insert errors so callers doing
+// captureOrSkip can branch cleanly.
+func testSnapshotCreateConflictOnDuplicateID(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	payload := []byte(`{"v":1}`)
+	row := store.SnapshotRow{ID: "snap_dup_1", SchemaVersion: 1, ByteSize: 5, JSONContent: payload}
+	if err := s.SnapshotCreate(ctx, row); err != nil {
+		t.Fatalf("first SnapshotCreate: %v", err)
+	}
+	err := s.SnapshotCreate(ctx, row)
+	if err == nil {
+		t.Fatal("second SnapshotCreate accepted; expected ErrConflict")
+	}
+	var conflict *store.ErrConflict
+	if !errors.As(err, &conflict) {
+		t.Errorf("err = %v, want *ErrConflict", err)
+	}
+}
+
+// Empty id or empty json_content is rejected at the store boundary
+// rather than landing as a malformed row.
+func testSnapshotCreateRejectsEmptyFields(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	// Empty ID.
+	if err := s.SnapshotCreate(ctx, store.SnapshotRow{JSONContent: []byte(`{}`)}); err == nil {
+		t.Error("empty id accepted; expected refusal")
+	}
+	// Empty JSON content.
+	if err := s.SnapshotCreate(ctx, store.SnapshotRow{ID: "snap_empty"}); err == nil {
+		t.Error("empty json_content accepted; expected refusal")
+	}
+}
+
+// SnapshotGet on a missing id returns *store.ErrNotFound (typed,
+// not a generic error).
+func testSnapshotGetNotFound(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	_, err := s.SnapshotGet(ctx, "snap_no_such_id")
+	if err == nil {
+		t.Fatal("expected error on missing snapshot, got nil")
+	}
+	var nf *store.ErrNotFound
+	if !errors.As(err, &nf) {
+		t.Errorf("err = %v, want *ErrNotFound", err)
+	}
+	if nf.Kind != "snapshot" {
+		t.Errorf("err Kind = %q, want %q", nf.Kind, "snapshot")
+	}
+}
+
+// SnapshotList returns rows newest-first (created_at DESC). Tests
+// against three snapshots inserted with deliberate created_at gaps.
+func testSnapshotListOrderedByCreatedAtDesc(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	now := time.Now().UTC()
+	for i, dt := range []time.Duration{0, 10 * time.Millisecond, 20 * time.Millisecond} {
+		row := store.SnapshotRow{
+			ID:            fmt.Sprintf("snap_ord_%d", i),
+			CreatedAt:     now.Add(dt),
+			SchemaVersion: 1,
+			ByteSize:      4,
+			JSONContent:   []byte(`{}`),
+		}
+		if err := s.SnapshotCreate(ctx, row); err != nil {
+			t.Fatalf("create %d: %v", i, err)
+		}
+	}
+	got, err := s.SnapshotList(ctx, "", 0)
+	if err != nil {
+		t.Fatalf("SnapshotList: %v", err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("got %d entries, want 3", len(got))
+	}
+	// Newest first.
+	wantIDs := []string{"snap_ord_2", "snap_ord_1", "snap_ord_0"}
+	for i, e := range got {
+		if e.ID != wantIDs[i] {
+			t.Errorf("[%d] ID = %q, want %q (newest-first)", i, e.ID, wantIDs[i])
+		}
+	}
+}
+
+// SnapshotList(labelContains) filters case-insensitively and matches
+// substrings. Operators search for label fragments without knowing
+// exact case.
+func testSnapshotListLabelSubstringFilter(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	for i, label := range []string{"Pre-Migration-A", "pre-migration-B", "morning-stop"} {
+		row := store.SnapshotRow{
+			ID:            fmt.Sprintf("snap_lab_%d", i),
+			Label:         label,
+			SchemaVersion: 1,
+			ByteSize:      4,
+			JSONContent:   []byte(`{}`),
+		}
+		if err := s.SnapshotCreate(ctx, row); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Lowercase substring — should match both Pre-Migration variants.
+	got, err := s.SnapshotList(ctx, "migration", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 {
+		t.Errorf("len = %d, want 2 (both labels containing 'migration' case-insensitive); got %+v", len(got), got)
+	}
+	// Filter that matches none.
+	got, _ = s.SnapshotList(ctx, "evening", 0)
+	if len(got) != 0 {
+		t.Errorf("no-match filter returned %d rows", len(got))
+	}
+}
+
+// SnapshotList(limit=N) caps the result count; limit=0 means no cap.
+func testSnapshotListLimitBounds(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	for i := 0; i < 5; i++ {
+		_ = s.SnapshotCreate(ctx, store.SnapshotRow{
+			ID:            fmt.Sprintf("snap_lim_%d", i),
+			SchemaVersion: 1,
+			ByteSize:      4,
+			JSONContent:   []byte(`{}`),
+		})
+	}
+	got, _ := s.SnapshotList(ctx, "", 2)
+	if len(got) != 2 {
+		t.Errorf("limit=2 returned %d rows", len(got))
+	}
+	got, _ = s.SnapshotList(ctx, "", 0)
+	if len(got) != 5 {
+		t.Errorf("limit=0 returned %d rows, want 5 (no cap)", len(got))
+	}
+	got, _ = s.SnapshotList(ctx, "", 100)
+	if len(got) != 5 {
+		t.Errorf("limit > rows returned %d, want 5", len(got))
+	}
+}
+
+// SnapshotList projection MUST NOT include the JSON payload — that's
+// the entire point of the metadata-only shape (cheap responses when
+// operators have hundreds of snapshots). Implementations that
+// accidentally select json_content into a list response are a real
+// performance regression risk; this test pins the absence.
+func testSnapshotListExcludesJSONPayload(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	// Build a valid JSON object with 1000 keys. The trailing-comma
+	// trap means we must construct via json.Marshal rather than
+	// string concatenation — SQLite stores TEXT and accepts garbage
+	// but Postgres JSONB rejects with SQLSTATE 22P02.
+	bigMap := make(map[string]string, 1000)
+	for i := 0; i < 1000; i++ {
+		bigMap[fmt.Sprintf("k%d", i)] = "v"
+	}
+	bigPayload, err := json.Marshal(bigMap)
+	if err != nil {
+		t.Fatalf("build fixture: %v", err)
+	}
+	row := store.SnapshotRow{
+		ID:            "snap_big",
+		SchemaVersion: 1,
+		ByteSize:      int64(len(bigPayload)),
+		JSONContent:   bigPayload,
+	}
+	if err := s.SnapshotCreate(ctx, row); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.SnapshotList(ctx, "", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) == 0 {
+		t.Fatal("list empty after create")
+	}
+	// Find OUR row in the list — other contract tests may have
+	// inserted rows ahead of us in this shared fixture run.
+	var found *store.SnapshotListEntry
+	for i := range got {
+		if got[i].ID == "snap_big" {
+			found = &got[i]
+			break
+		}
+	}
+	if found == nil {
+		t.Fatalf("snap_big not in list (%d entries)", len(got))
+	}
+	// SnapshotListEntry has no JSONContent field — the type itself
+	// enforces the exclusion. This test is a defensive
+	// type-existence check + a byte_size round-trip confirmation
+	// (operators rely on byte_size to know whether to download).
+	if found.ByteSize != int64(len(bigPayload)) {
+		t.Errorf("ByteSize = %d, want %d", found.ByteSize, len(bigPayload))
+	}
+}
+
+// SnapshotDelete returns (true, nil) on a present row; (false, nil)
+// on a missing row. Idempotent — operators scripting
+// `loomcycle snapshot delete <id>` repeatedly never error.
+func testSnapshotDeleteIdempotent(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	row := store.SnapshotRow{
+		ID:            "snap_del_1",
+		SchemaVersion: 1,
+		ByteSize:      4,
+		JSONContent:   []byte(`{}`),
+	}
+	if err := s.SnapshotCreate(ctx, row); err != nil {
+		t.Fatal(err)
+	}
+	deleted, err := s.SnapshotDelete(ctx, "snap_del_1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !deleted {
+		t.Errorf("first Delete returned false; expected true (row was present)")
+	}
+	// Second delete: idempotent, no error, returns false.
+	deleted, err = s.SnapshotDelete(ctx, "snap_del_1")
+	if err != nil {
+		t.Errorf("second Delete err = %v, want nil (idempotent)", err)
+	}
+	if deleted {
+		t.Errorf("second Delete returned true; expected false (already gone)")
+	}
+	// Get after delete returns NotFound.
+	_, err = s.SnapshotGet(ctx, "snap_del_1")
+	var nf *store.ErrNotFound
+	if !errors.As(err, &nf) {
+		t.Errorf("Get after Delete: err = %v, want *ErrNotFound", err)
+	}
+}
+
+// SnapshotReadAgentDefs returns [] on a fresh store. Establishes the
+// baseline contract — the bulk readers are non-nil-safe; empty result
+// is an empty slice + nil error, NOT nil slice + nil error.
+func testSnapshotReadAgentDefsEmpty(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	got, err := s.SnapshotReadAgentDefs(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got == nil {
+		// Allow either nil or empty slice; the contract is "no error,
+		// loop-safe result." Convert nil to empty for the length check.
+		got = []store.AgentDefRow{}
+	}
+	if len(got) != 0 {
+		t.Errorf("fresh store: got %d rows, want 0", len(got))
+	}
+}
+
+// SnapshotReadAgentDefActive returns [] on a fresh store.
+func testSnapshotReadAgentDefActiveEmpty(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	got, err := s.SnapshotReadAgentDefActive(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 0 {
+		t.Errorf("fresh store: got %d rows, want 0", len(got))
+	}
+}
+
+// SnapshotReadMemory returns [] on a fresh store.
+func testSnapshotReadMemoryEmpty(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	got, err := s.SnapshotReadMemory(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 0 {
+		t.Errorf("fresh store: got %d rows, want 0", len(got))
+	}
+}
+
+// SnapshotReadMemory filters out expired rows. Insert one row with
+// a TTL that's already in the past; bulk read must NOT include it.
+func testSnapshotReadMemoryFiltersExpired(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	// Live row.
+	if err := s.MemorySet(ctx, store.MemoryScope("agent"), "agentA", "live", json.RawMessage(`"hello"`), 0); err != nil {
+		t.Fatal(err)
+	}
+	// Expired row: TTL of 1ns; wait briefly so wall-clock advances past.
+	if err := s.MemorySet(ctx, store.MemoryScope("agent"), "agentA", "expired", json.RawMessage(`"gone"`), time.Nanosecond); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(10 * time.Millisecond)
+
+	got, err := s.SnapshotReadMemory(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Look for both keys — only "live" should be present.
+	var liveSeen, expiredSeen bool
+	for _, e := range got {
+		switch e.Key {
+		case "live":
+			liveSeen = true
+		case "expired":
+			expiredSeen = true
+		}
+	}
+	if !liveSeen {
+		t.Error("live row missing from snapshot read")
+	}
+	if expiredSeen {
+		t.Error("expired row appeared in snapshot read; expected filtered")
+	}
+}
+
+// SnapshotReadMemory returns rows ordered by (scope, scope_id, key)
+// for deterministic snapshot envelopes.
+func testSnapshotReadMemoryOrdered(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	// Insert in deliberately scrambled order — must come back sorted.
+	type seed struct {
+		scope store.MemoryScope
+		sid   string
+		key   string
+	}
+	seeds := []seed{
+		{store.MemoryScope("user"), "userX", "z_key"},
+		{store.MemoryScope("agent"), "agentB", "key_b"},
+		{store.MemoryScope("agent"), "agentA", "key_z"},
+		{store.MemoryScope("agent"), "agentA", "key_a"},
+	}
+	for _, sd := range seeds {
+		if err := s.MemorySet(ctx, sd.scope, sd.sid, sd.key, json.RawMessage(`"x"`), 0); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, err := s.SnapshotReadMemory(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) < len(seeds) {
+		t.Fatalf("got %d rows, expected at least %d (other tests may have inserted more — ordering check below)", len(got), len(seeds))
+	}
+	// Verify ascending order on (scope, scope_id, key) for the seeded
+	// rows. We can't assume the result is *only* our seeds (Postgres
+	// fixture is shared across contract tests), but the ordering
+	// invariant applies globally.
+	prev := got[0]
+	for i := 1; i < len(got); i++ {
+		cur := got[i]
+		if string(cur.Scope) < string(prev.Scope) ||
+			(string(cur.Scope) == string(prev.Scope) && cur.ScopeID < prev.ScopeID) ||
+			(string(cur.Scope) == string(prev.Scope) && cur.ScopeID == prev.ScopeID && cur.Key < prev.Key) {
+			t.Errorf("ordering violated at index %d: %s/%s/%s before %s/%s/%s",
+				i, prev.Scope, prev.ScopeID, prev.Key, cur.Scope, cur.ScopeID, cur.Key)
+		}
+		prev = cur
+	}
+}
+
+// SnapshotReadChannelMessages returns [] on a fresh store.
+func testSnapshotReadChannelMessagesEmpty(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	got, err := s.SnapshotReadChannelMessages(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 0 {
+		t.Errorf("fresh store: got %d rows, want 0", len(got))
+	}
+}
+
+// SnapshotReadChannelCursors returns [] on a fresh store.
+func testSnapshotReadChannelCursorsEmpty(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	got, err := s.SnapshotReadChannelCursors(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 0 {
+		t.Errorf("fresh store: got %d rows, want 0", len(got))
+	}
+}
+
+// SnapshotReadEvaluations returns [] on a fresh store.
+func testSnapshotReadEvaluationsEmpty(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	got, err := s.SnapshotReadEvaluations(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 0 {
+		t.Errorf("fresh store: got %d rows, want 0", len(got))
+	}
+}
+
+// SnapshotReadEvaluations orders by created_at ASC. Submit three
+// evaluations with deliberate wall-clock gaps; read order must match
+// submission order.
+func testSnapshotReadEvaluationsOrderedByCreatedAt(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	sess, _ := s.CreateSession(ctx, "t", "a", "u")
+	run, _ := s.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: "a_eval_ord", UserID: "u"})
+
+	for i := 0; i < 3; i++ {
+		_, err := s.EvaluationSubmit(ctx, store.EvaluationRow{
+			EvalID:      fmt.Sprintf("eval_ord_%d", i),
+			RunID:       run.ID,
+			Score:       float64(i),
+			EmitterRole: "self",
+		})
+		if err != nil {
+			t.Fatalf("submit %d: %v", i, err)
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+
+	got, err := s.SnapshotReadEvaluations(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) < 3 {
+		t.Fatalf("got %d rows, want at least 3", len(got))
+	}
+	// Ordering invariant: monotonic non-decreasing on CreatedAt
+	// across the WHOLE slice (the shared fixture may have rows from
+	// other tests inserted before / after).
+	prev := got[0]
+	for i := 1; i < len(got); i++ {
+		if got[i].CreatedAt.Before(prev.CreatedAt) {
+			t.Errorf("ordering violated at %d: %v before %v", i, prev.CreatedAt, got[i].CreatedAt)
+		}
+		prev = got[i]
 	}
 }
 
