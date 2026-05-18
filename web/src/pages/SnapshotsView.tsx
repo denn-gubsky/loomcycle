@@ -102,6 +102,10 @@ export default function SnapshotsView() {
         `Restore ${file.name} into this runtime?\n\nIdempotent: existing rows with the same PK aren't overwritten (per-section ON CONFLICT DO NOTHING). The response counters reflect rows actually written.`,
       )
     ) {
+      // Reset the input on cancel too — without this, re-selecting
+      // the same file does nothing because the browser suppresses
+      // onChange when the value doesn't change.
+      if (fileInputRef.current) fileInputRef.current.value = "";
       return;
     }
     setRestoreBusy(true);

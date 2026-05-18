@@ -2,10 +2,13 @@ package cli
 
 import (
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
+	iofs "io/fs"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -125,23 +128,25 @@ func RunSnapshotsList(args []string, stdout, stderr io.Writer) int {
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
-	url := strings.TrimRight(*target, "/") + "/v1/_snapshots"
+	endpoint := strings.TrimRight(*target, "/") + "/v1/_snapshots"
 	q := []string{}
 	if *limit > 0 {
 		q = append(q, fmt.Sprintf("limit=%d", *limit))
 	}
 	if *labelContains != "" {
-		q = append(q, "label_contains="+queryEscape(*labelContains))
+		// url.QueryEscape (stdlib) handles UTF-8 bytes correctly —
+		// e.g. "é" encodes as %C3%A9, not %E9 from the codepoint.
+		q = append(q, "label_contains="+url.QueryEscape(*labelContains))
 	}
 	if len(q) > 0 {
-		url += "?" + strings.Join(q, "&")
+		endpoint += "?" + strings.Join(q, "&")
 	}
-	rc, resp, err := doAdminRequest(http.MethodGet, url, *token, nil, *httpTimeout)
+	rc, resp, err := doAdminRequest(http.MethodGet, endpoint, *token, nil, *httpTimeout)
 	if err != nil {
-		return failOp(stderr, "GET %s: %v", url, err)
+		return failOp(stderr, "GET %s: %v", endpoint, err)
 	}
 	if rc != 0 {
-		return failPrintingBody(stderr, url, resp, rc)
+		return failPrintingBody(stderr, endpoint, resp, rc)
 	}
 	var out snapshotListResp
 	if err := json.Unmarshal(resp, &out); err != nil {
@@ -240,7 +245,14 @@ func RunRestore(args []string, stdout, stderr io.Writer) int {
 	path := rest[0]
 	envelope, err := os.ReadFile(path)
 	if err != nil {
-		return fail(stderr, "read %s: %v", path, err)
+		// "File not found" is a user error (typo'd path) → exit 2.
+		// Permission denied / I/O error is operational (disk full,
+		// mounted-fs failure) → exit 1. Scripts branching on exit
+		// code can distinguish "fix the path" from "fix the host".
+		if errors.Is(err, iofs.ErrNotExist) {
+			return fail(stderr, "read %s: %v", path, err)
+		}
+		return failOp(stderr, "read %s: %v", path, err)
 	}
 	body, _ := json.Marshal(snapshotRestoreBody{
 		IncludeHistory: *includeHistory,
@@ -268,21 +280,3 @@ func RunRestore(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
-// queryEscape is a tiny wrapper around url.QueryEscape so callers
-// don't import "net/url" just for this. Path doesn't need escaping
-// (snapshot ids from mintID are [a-z0-9_-]) but query values from
-// --label-contains can contain anything operator types.
-func queryEscape(s string) string {
-	var b strings.Builder
-	for _, r := range s {
-		switch {
-		case r >= '0' && r <= '9', r >= 'A' && r <= 'Z', r >= 'a' && r <= 'z':
-			b.WriteRune(r)
-		case r == '-' || r == '_' || r == '.' || r == '~':
-			b.WriteRune(r)
-		default:
-			fmt.Fprintf(&b, "%%%02X", r)
-		}
-	}
-	return b.String()
-}

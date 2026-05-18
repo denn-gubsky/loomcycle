@@ -19,18 +19,20 @@ import (
 func TestPause_ReturnsServiceUnavailableWhenNoManager(t *testing.T) {
 	srv, _, cleanup := minimalServerWithSnapshotStore(t)
 	defer cleanup()
-	for _, path := range []string{"/v1/_pause", "/v1/_resume"} {
-		rec := httptest.NewRecorder()
-		srv.handlePauseRuntime(rec, httptest.NewRequest("POST", path, nil))
-		if path == "/v1/_resume" {
-			rec = httptest.NewRecorder()
-			srv.handleResumeRuntime(rec, httptest.NewRequest("POST", path, nil))
-		}
-		if rec.Code != http.StatusServiceUnavailable {
-			t.Errorf("%s: status = %d, want 503", path, rec.Code)
-		}
-	}
+
 	rec := httptest.NewRecorder()
+	srv.handlePauseRuntime(rec, httptest.NewRequest("POST", "/v1/_pause", nil))
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Errorf("POST /v1/_pause: status = %d, want 503", rec.Code)
+	}
+
+	rec = httptest.NewRecorder()
+	srv.handleResumeRuntime(rec, httptest.NewRequest("POST", "/v1/_resume", nil))
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Errorf("POST /v1/_resume: status = %d, want 503", rec.Code)
+	}
+
+	rec = httptest.NewRecorder()
 	srv.handleRuntimeState(rec, httptest.NewRequest("GET", "/v1/_state", nil))
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Errorf("GET /v1/_state: status = %d, want 503", rec.Code)

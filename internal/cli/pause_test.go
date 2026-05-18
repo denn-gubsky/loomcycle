@@ -69,16 +69,19 @@ func TestRunPause_NoTimeoutSendsEmptyBody(t *testing.T) {
 	}
 }
 
-// TestRunPause_409ReturnsUserErrorExit — server 409 (already_pausing)
-// maps to exit 2.
-func TestRunPause_409ReturnsUserErrorExit(t *testing.T) {
+// TestRunPause_409ReturnsOpErrorExit — server 409 (already_pausing)
+// maps to exit 1 (operational), NOT exit 2 (user error). The verb
+// itself is well-formed; the server's runtime state means it can't
+// be honoured right now. Scripts using `set -e` around idempotent
+// pause loops bail incorrectly on exit 2.
+func TestRunPause_409ReturnsOpErrorExit(t *testing.T) {
 	srv := stubServer(t, "POST", "/v1/_pause", 409, `{"error":"already_pausing","message":"runtime is already pausing or paused"}`, nil)
 	defer srv.Close()
 
 	var stdout, stderr bytes.Buffer
 	rc := RunPause([]string{"--target", srv.URL}, &stdout, &stderr)
-	if rc != 2 {
-		t.Errorf("rc = %d, want 2 (4xx → user-error)", rc)
+	if rc != 1 {
+		t.Errorf("rc = %d, want 1 (409 → operational, not user-error)", rc)
 	}
 	if !strings.Contains(stderr.String(), "already_pausing") {
 		t.Errorf("stderr = %q, expected to mention already_pausing", stderr.String())
@@ -117,8 +120,9 @@ func TestRunResume_409NotPaused(t *testing.T) {
 
 	var stdout, stderr bytes.Buffer
 	rc := RunResume([]string{"--target", srv.URL}, &stdout, &stderr)
-	if rc != 2 {
-		t.Errorf("rc = %d, want 2", rc)
+	// 409 is runtime-state, not user error → exit 1 (operational).
+	if rc != 1 {
+		t.Errorf("rc = %d, want 1", rc)
 	}
 }
 

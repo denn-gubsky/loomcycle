@@ -168,8 +168,16 @@ func doAdminRequest(method, url, token string, body []byte, timeout time.Duratio
 	switch {
 	case resp.StatusCode >= 200 && resp.StatusCode < 300:
 		return 0, raw, nil
+	case resp.StatusCode == http.StatusConflict:
+		// 409 means the server is in the wrong state for this verb
+		// (e.g. `pause` when already paused; `resume` when running).
+		// That's a runtime-state condition, NOT a bad invocation,
+		// so map it to exit 1 (operational) alongside 5xx. Scripts
+		// using `set -e` + `|| true` around an idempotent pause loop
+		// expect this so they don't bail on a benign no-op.
+		return 1, raw, nil
 	case resp.StatusCode >= 400 && resp.StatusCode < 500:
-		return 2, raw, nil // user error (bad flag / 4xx)
+		return 2, raw, nil // user error (bad flag / 4xx other than 409)
 	default:
 		return 1, raw, nil // operational (5xx)
 	}

@@ -87,7 +87,10 @@ func TestRunSnapshotsList_AppendsQueryParams(t *testing.T) {
 	if rc != 0 {
 		t.Fatalf("rc = %d", rc)
 	}
-	if !strings.Contains(gotQuery, "limit=5") || !strings.Contains(gotQuery, "label_contains=before%20backup") {
+	// url.QueryEscape encodes space as '+' (HTML form-encoding) —
+	// servers using net/url's Query().Get() decode both '+' and
+	// '%20' as space.
+	if !strings.Contains(gotQuery, "limit=5") || !strings.Contains(gotQuery, "label_contains=before+backup") {
 		t.Errorf("query = %q", gotQuery)
 	}
 }
