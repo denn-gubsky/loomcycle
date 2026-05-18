@@ -448,6 +448,50 @@ type Store interface {
 	// delete is the operator-friendly default.
 	SnapshotDelete(ctx context.Context, id string) (bool, error)
 
+	// ---- v0.8.17 Snapshot capture — bulk readers (PR 2.3a) ----
+	//
+	// The methods below return ALL rows in their tables. They power
+	// the snapshot package's Capture(), which reads every section
+	// into a single in-memory JSON envelope. Cost profile is
+	// O(rows-in-table); operators should size LOOMCYCLE_SNAPSHOT_
+	// MAX_BYTES accordingly. NOT for hot-path queries.
+
+	// SnapshotReadAgentDefs returns every row in agent_defs across
+	// all names + versions. Ordered by (name ASC, version ASC) so
+	// the snapshot envelope's section is deterministic across
+	// repeated captures of an unchanged store (round-trip tests
+	// depend on this).
+	SnapshotReadAgentDefs(ctx context.Context) ([]AgentDefRow, error)
+
+	// SnapshotReadAgentDefActive returns every row in
+	// agent_def_active. Ordered by name ASC for determinism.
+	SnapshotReadAgentDefActive(ctx context.Context) ([]AgentDefActiveEntry, error)
+
+	// SnapshotReadMemory returns every memory row across all scopes,
+	// tagged with scope + scope_id. Ordered by (scope ASC, scope_id
+	// ASC, key ASC). Filters out expired rows (consistent with
+	// MemoryGet's behaviour) so the snapshot doesn't carry
+	// already-stale entries.
+	SnapshotReadMemory(ctx context.Context) ([]MemorySnapshotEntry, error)
+
+	// SnapshotReadChannelMessages returns every channel_messages row.
+	// Filters out expired rows. Ordered by (channel ASC, scope ASC,
+	// scope_id ASC, visible_at ASC, id ASC) — matches the natural
+	// delivery order so restore replays messages in their original
+	// sequence.
+	SnapshotReadChannelMessages(ctx context.Context) ([]ChannelMessage, error)
+
+	// SnapshotReadChannelCursors returns every channel_cursors row.
+	// Ordered by (channel ASC, scope ASC, scope_id ASC) for
+	// determinism.
+	SnapshotReadChannelCursors(ctx context.Context) ([]ChannelCursorEntry, error)
+
+	// SnapshotReadEvaluations returns every evaluations row, ordered
+	// by created_at ASC. The snapshot envelope's evaluations section
+	// preserves submission order so post-restore Evaluation.aggregate
+	// queries see the same time series.
+	SnapshotReadEvaluations(ctx context.Context) ([]EvaluationRow, error)
+
 	// MemorySet writes a Memory entry. ttl > 0 sets an expiry; ttl <= 0
 	// stores with no expiry (the row's expires_at column is NULL). The
 	// row is upserted on the (scope, scopeID, key) primary key —
@@ -1218,4 +1262,34 @@ type SnapshotListEntry struct {
 	Label         string
 	SchemaVersion int
 	ByteSize      int64
+}
+
+// AgentDefActiveEntry is one row in the agent_def_active table —
+// returned by SnapshotReadAgentDefActive for snapshot capture.
+// Pairs an agent name with the def_id currently promoted to active.
+type AgentDefActiveEntry struct {
+	Name              string    `json:"name"`
+	DefID             string    `json:"def_id"`
+	PromotedAt        time.Time `json:"promoted_at"`
+	PromotedByAgentID string    `json:"promoted_by_agent_id,omitempty"`
+}
+
+// MemorySnapshotEntry is one memory row enriched with its scope +
+// scope_id columns. Returned by SnapshotReadMemory so the snapshot
+// envelope can serialise rows without an additional lookup per row.
+type MemorySnapshotEntry struct {
+	Scope   MemoryScope `json:"scope"`
+	ScopeID string      `json:"scope_id"`
+	MemoryEntry
+}
+
+// ChannelCursorEntry is one row in the channel_cursors table —
+// returned by SnapshotReadChannelCursors for snapshot capture. The
+// cursor field is the opaque string form ack'd by the subscriber.
+type ChannelCursorEntry struct {
+	Channel   string      `json:"channel"`
+	Scope     MemoryScope `json:"scope"`
+	ScopeID   string      `json:"scope_id"`
+	Cursor    string      `json:"cursor"`
+	UpdatedAt time.Time   `json:"updated_at"`
 }

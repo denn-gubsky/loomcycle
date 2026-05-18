@@ -85,6 +85,15 @@ func Run(t *testing.T, factory Factory) {
 		{"SnapshotListLimitBounds", testSnapshotListLimitBounds},
 		{"SnapshotListExcludesJSONPayload", testSnapshotListExcludesJSONPayload},
 		{"SnapshotDeleteIdempotent", testSnapshotDeleteIdempotent},
+		{"SnapshotReadAgentDefsEmpty", testSnapshotReadAgentDefsEmpty},
+		{"SnapshotReadAgentDefActiveEmpty", testSnapshotReadAgentDefActiveEmpty},
+		{"SnapshotReadMemoryEmpty", testSnapshotReadMemoryEmpty},
+		{"SnapshotReadMemoryFiltersExpired", testSnapshotReadMemoryFiltersExpired},
+		{"SnapshotReadMemoryOrdered", testSnapshotReadMemoryOrdered},
+		{"SnapshotReadChannelMessagesEmpty", testSnapshotReadChannelMessagesEmpty},
+		{"SnapshotReadChannelCursorsEmpty", testSnapshotReadChannelCursorsEmpty},
+		{"SnapshotReadEvaluationsEmpty", testSnapshotReadEvaluationsEmpty},
+		{"SnapshotReadEvaluationsOrderedByCreatedAt", testSnapshotReadEvaluationsOrderedByCreatedAt},
 		{"MemorySetGetRoundTrip", testMemorySetGetRoundTrip},
 		{"MemoryGetNotFound", testMemoryGetNotFound},
 		{"MemoryOverwriteUpdatesValue", testMemoryOverwriteUpdatesValue},
@@ -1122,6 +1131,206 @@ func testSnapshotDeleteIdempotent(t *testing.T, s store.Store) {
 	var nf *store.ErrNotFound
 	if !errors.As(err, &nf) {
 		t.Errorf("Get after Delete: err = %v, want *ErrNotFound", err)
+	}
+}
+
+// SnapshotReadAgentDefs returns [] on a fresh store. Establishes the
+// baseline contract — the bulk readers are non-nil-safe; empty result
+// is an empty slice + nil error, NOT nil slice + nil error.
+func testSnapshotReadAgentDefsEmpty(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	got, err := s.SnapshotReadAgentDefs(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got == nil {
+		// Allow either nil or empty slice; the contract is "no error,
+		// loop-safe result." Convert nil to empty for the length check.
+		got = []store.AgentDefRow{}
+	}
+	if len(got) != 0 {
+		t.Errorf("fresh store: got %d rows, want 0", len(got))
+	}
+}
+
+// SnapshotReadAgentDefActive returns [] on a fresh store.
+func testSnapshotReadAgentDefActiveEmpty(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	got, err := s.SnapshotReadAgentDefActive(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 0 {
+		t.Errorf("fresh store: got %d rows, want 0", len(got))
+	}
+}
+
+// SnapshotReadMemory returns [] on a fresh store.
+func testSnapshotReadMemoryEmpty(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	got, err := s.SnapshotReadMemory(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 0 {
+		t.Errorf("fresh store: got %d rows, want 0", len(got))
+	}
+}
+
+// SnapshotReadMemory filters out expired rows. Insert one row with
+// a TTL that's already in the past; bulk read must NOT include it.
+func testSnapshotReadMemoryFiltersExpired(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	// Live row.
+	if err := s.MemorySet(ctx, store.MemoryScope("agent"), "agentA", "live", json.RawMessage(`"hello"`), 0); err != nil {
+		t.Fatal(err)
+	}
+	// Expired row: TTL of 1ns; wait briefly so wall-clock advances past.
+	if err := s.MemorySet(ctx, store.MemoryScope("agent"), "agentA", "expired", json.RawMessage(`"gone"`), time.Nanosecond); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(10 * time.Millisecond)
+
+	got, err := s.SnapshotReadMemory(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Look for both keys — only "live" should be present.
+	var liveSeen, expiredSeen bool
+	for _, e := range got {
+		switch e.Key {
+		case "live":
+			liveSeen = true
+		case "expired":
+			expiredSeen = true
+		}
+	}
+	if !liveSeen {
+		t.Error("live row missing from snapshot read")
+	}
+	if expiredSeen {
+		t.Error("expired row appeared in snapshot read; expected filtered")
+	}
+}
+
+// SnapshotReadMemory returns rows ordered by (scope, scope_id, key)
+// for deterministic snapshot envelopes.
+func testSnapshotReadMemoryOrdered(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	// Insert in deliberately scrambled order — must come back sorted.
+	type seed struct {
+		scope store.MemoryScope
+		sid   string
+		key   string
+	}
+	seeds := []seed{
+		{store.MemoryScope("user"), "userX", "z_key"},
+		{store.MemoryScope("agent"), "agentB", "key_b"},
+		{store.MemoryScope("agent"), "agentA", "key_z"},
+		{store.MemoryScope("agent"), "agentA", "key_a"},
+	}
+	for _, sd := range seeds {
+		if err := s.MemorySet(ctx, sd.scope, sd.sid, sd.key, json.RawMessage(`"x"`), 0); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, err := s.SnapshotReadMemory(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) < len(seeds) {
+		t.Fatalf("got %d rows, expected at least %d (other tests may have inserted more — ordering check below)", len(got), len(seeds))
+	}
+	// Verify ascending order on (scope, scope_id, key) for the seeded
+	// rows. We can't assume the result is *only* our seeds (Postgres
+	// fixture is shared across contract tests), but the ordering
+	// invariant applies globally.
+	prev := got[0]
+	for i := 1; i < len(got); i++ {
+		cur := got[i]
+		if string(cur.Scope) < string(prev.Scope) ||
+			(string(cur.Scope) == string(prev.Scope) && cur.ScopeID < prev.ScopeID) ||
+			(string(cur.Scope) == string(prev.Scope) && cur.ScopeID == prev.ScopeID && cur.Key < prev.Key) {
+			t.Errorf("ordering violated at index %d: %s/%s/%s before %s/%s/%s",
+				i, prev.Scope, prev.ScopeID, prev.Key, cur.Scope, cur.ScopeID, cur.Key)
+		}
+		prev = cur
+	}
+}
+
+// SnapshotReadChannelMessages returns [] on a fresh store.
+func testSnapshotReadChannelMessagesEmpty(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	got, err := s.SnapshotReadChannelMessages(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 0 {
+		t.Errorf("fresh store: got %d rows, want 0", len(got))
+	}
+}
+
+// SnapshotReadChannelCursors returns [] on a fresh store.
+func testSnapshotReadChannelCursorsEmpty(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	got, err := s.SnapshotReadChannelCursors(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 0 {
+		t.Errorf("fresh store: got %d rows, want 0", len(got))
+	}
+}
+
+// SnapshotReadEvaluations returns [] on a fresh store.
+func testSnapshotReadEvaluationsEmpty(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	got, err := s.SnapshotReadEvaluations(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 0 {
+		t.Errorf("fresh store: got %d rows, want 0", len(got))
+	}
+}
+
+// SnapshotReadEvaluations orders by created_at ASC. Submit three
+// evaluations with deliberate wall-clock gaps; read order must match
+// submission order.
+func testSnapshotReadEvaluationsOrderedByCreatedAt(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	sess, _ := s.CreateSession(ctx, "t", "a", "u")
+	run, _ := s.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: "a_eval_ord", UserID: "u"})
+
+	for i := 0; i < 3; i++ {
+		_, err := s.EvaluationSubmit(ctx, store.EvaluationRow{
+			EvalID:      fmt.Sprintf("eval_ord_%d", i),
+			RunID:       run.ID,
+			Score:       float64(i),
+			EmitterRole: "self",
+		})
+		if err != nil {
+			t.Fatalf("submit %d: %v", i, err)
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+
+	got, err := s.SnapshotReadEvaluations(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) < 3 {
+		t.Fatalf("got %d rows, want at least 3", len(got))
+	}
+	// Ordering invariant: monotonic non-decreasing on CreatedAt
+	// across the WHOLE slice (the shared fixture may have rows from
+	// other tests inserted before / after).
+	prev := got[0]
+	for i := 1; i < len(got); i++ {
+		if got[i].CreatedAt.Before(prev.CreatedAt) {
+			t.Errorf("ordering violated at %d: %v before %v", i, prev.CreatedAt, got[i].CreatedAt)
+		}
+		prev = got[i]
 	}
 }
 

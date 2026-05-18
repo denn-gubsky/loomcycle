@@ -667,6 +667,241 @@ func (s *Store) SnapshotDelete(ctx context.Context, id string) (bool, error) {
 	return tag.RowsAffected() > 0, nil
 }
 
+// ---- v0.8.17 Snapshot capture — bulk readers (PR 2.3a) ----
+
+// SnapshotReadAgentDefs implements store.Store.
+func (s *Store) SnapshotReadAgentDefs(ctx context.Context) ([]store.AgentDefRow, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT def_id, name, version, parent_def_id, definition::text, description,
+		        created_at, created_by_agent_id, created_by_run_id,
+		        retired, bootstrapped_from_static
+		 FROM agent_defs
+		 ORDER BY name ASC, version ASC`,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("snapshot read agent_defs: %w", err)
+	}
+	defer rows.Close()
+	var out []store.AgentDefRow
+	for rows.Next() {
+		var (
+			r           store.AgentDefRow
+			parentDefID *string
+			description *string
+			createdBy   *string
+			createdRun  *string
+			definition  string
+		)
+		if err := rows.Scan(
+			&r.DefID, &r.Name, &r.Version, &parentDefID,
+			&definition, &description,
+			&r.CreatedAt, &createdBy, &createdRun,
+			&r.Retired, &r.BootstrappedFromStatic,
+		); err != nil {
+			return nil, fmt.Errorf("scan agent_def: %w", err)
+		}
+		r.Definition = json.RawMessage(definition)
+		if parentDefID != nil {
+			r.ParentDefID = *parentDefID
+		}
+		if description != nil {
+			r.Description = *description
+		}
+		if createdBy != nil {
+			r.CreatedByAgentID = *createdBy
+		}
+		if createdRun != nil {
+			r.CreatedByRunID = *createdRun
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// SnapshotReadAgentDefActive implements store.Store.
+func (s *Store) SnapshotReadAgentDefActive(ctx context.Context) ([]store.AgentDefActiveEntry, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT name, def_id, promoted_at, promoted_by_agent_id
+		 FROM agent_def_active
+		 ORDER BY name ASC`)
+	if err != nil {
+		return nil, fmt.Errorf("snapshot read agent_def_active: %w", err)
+	}
+	defer rows.Close()
+	var out []store.AgentDefActiveEntry
+	for rows.Next() {
+		var (
+			e        store.AgentDefActiveEntry
+			promoter *string
+		)
+		if err := rows.Scan(&e.Name, &e.DefID, &e.PromotedAt, &promoter); err != nil {
+			return nil, fmt.Errorf("scan agent_def_active: %w", err)
+		}
+		if promoter != nil {
+			e.PromotedByAgentID = *promoter
+		}
+		out = append(out, e)
+	}
+	return out, rows.Err()
+}
+
+// SnapshotReadMemory implements store.Store. Filters expired rows.
+func (s *Store) SnapshotReadMemory(ctx context.Context) ([]store.MemorySnapshotEntry, error) {
+	now := time.Now().UTC()
+	rows, err := s.pool.Query(ctx,
+		`SELECT scope, scope_id, key, value::text, expires_at, created_at, updated_at
+		 FROM memory
+		 WHERE expires_at IS NULL OR expires_at > $1
+		 ORDER BY scope ASC, scope_id ASC, key ASC`, now)
+	if err != nil {
+		return nil, fmt.Errorf("snapshot read memory: %w", err)
+	}
+	defer rows.Close()
+	var out []store.MemorySnapshotEntry
+	for rows.Next() {
+		var (
+			e         store.MemorySnapshotEntry
+			scopeStr  string
+			value     string
+			expiresAt *time.Time
+		)
+		if err := rows.Scan(&scopeStr, &e.ScopeID, &e.Key, &value, &expiresAt, &e.CreatedAt, &e.UpdatedAt); err != nil {
+			return nil, fmt.Errorf("scan memory: %w", err)
+		}
+		e.Scope = store.MemoryScope(scopeStr)
+		e.Value = json.RawMessage(value)
+		if expiresAt != nil {
+			e.ExpiresAt = *expiresAt
+		}
+		out = append(out, e)
+	}
+	return out, rows.Err()
+}
+
+// SnapshotReadChannelMessages implements store.Store. Filters expired
+// rows.
+func (s *Store) SnapshotReadChannelMessages(ctx context.Context) ([]store.ChannelMessage, error) {
+	now := time.Now().UTC()
+	rows, err := s.pool.Query(ctx,
+		`SELECT id, channel, scope, scope_id, payload::text, published_at, expires_at, visible_at, published_by_user_id
+		 FROM channel_messages
+		 WHERE expires_at IS NULL OR expires_at > $1
+		 ORDER BY channel ASC, scope ASC, scope_id ASC, visible_at ASC, id ASC`, now)
+	if err != nil {
+		return nil, fmt.Errorf("snapshot read channel_messages: %w", err)
+	}
+	defer rows.Close()
+	var out []store.ChannelMessage
+	for rows.Next() {
+		var (
+			m           store.ChannelMessage
+			scopeStr    string
+			payload     string
+			expiresAt   *time.Time
+			visibleAt   *time.Time
+			publishedBy *string
+		)
+		if err := rows.Scan(&m.ID, &m.Channel, &scopeStr, &m.ScopeID, &payload, &m.PublishedAt, &expiresAt, &visibleAt, &publishedBy); err != nil {
+			return nil, fmt.Errorf("scan channel_message: %w", err)
+		}
+		m.Scope = store.MemoryScope(scopeStr)
+		m.Payload = json.RawMessage(payload)
+		if expiresAt != nil {
+			m.ExpiresAt = *expiresAt
+		}
+		if visibleAt != nil {
+			m.VisibleAt = *visibleAt
+		}
+		if publishedBy != nil {
+			m.PublishedByUserID = *publishedBy
+		}
+		out = append(out, m)
+	}
+	return out, rows.Err()
+}
+
+// SnapshotReadChannelCursors implements store.Store.
+func (s *Store) SnapshotReadChannelCursors(ctx context.Context) ([]store.ChannelCursorEntry, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT channel, scope, scope_id, cursor, updated_at
+		 FROM channel_cursors
+		 ORDER BY channel ASC, scope ASC, scope_id ASC`)
+	if err != nil {
+		return nil, fmt.Errorf("snapshot read channel_cursors: %w", err)
+	}
+	defer rows.Close()
+	var out []store.ChannelCursorEntry
+	for rows.Next() {
+		var (
+			c        store.ChannelCursorEntry
+			scopeStr string
+		)
+		if err := rows.Scan(&c.Channel, &scopeStr, &c.ScopeID, &c.Cursor, &c.UpdatedAt); err != nil {
+			return nil, fmt.Errorf("scan channel_cursor: %w", err)
+		}
+		c.Scope = store.MemoryScope(scopeStr)
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
+// SnapshotReadEvaluations implements store.Store. Ordered by
+// created_at ASC so the envelope preserves submission order.
+func (s *Store) SnapshotReadEvaluations(ctx context.Context) ([]store.EvaluationRow, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT eval_id, run_id, def_id, score, dimensions::text, judgement::text, rationale,
+		        emitter_role, emitter_agent_id, emitter_run_id, created_at
+		 FROM evaluations
+		 ORDER BY created_at ASC`)
+	if err != nil {
+		return nil, fmt.Errorf("snapshot read evaluations: %w", err)
+	}
+	defer rows.Close()
+	var out []store.EvaluationRow
+	for rows.Next() {
+		var (
+			r              store.EvaluationRow
+			defID          *string
+			dimensions     *string
+			judgement      *string
+			rationale      *string
+			emitterAgentID *string
+			emitterRunID   *string
+		)
+		if err := rows.Scan(
+			&r.EvalID, &r.RunID, &defID, &r.Score,
+			&dimensions, &judgement, &rationale,
+			&r.EmitterRole, &emitterAgentID, &emitterRunID,
+			&r.CreatedAt,
+		); err != nil {
+			return nil, fmt.Errorf("scan evaluation: %w", err)
+		}
+		if defID != nil {
+			r.DefID = *defID
+		}
+		if dimensions != nil && *dimensions != "" {
+			var dim map[string]float64
+			if err := json.Unmarshal([]byte(*dimensions), &dim); err == nil {
+				r.Dimensions = dim
+			}
+		}
+		if judgement != nil && *judgement != "" {
+			r.Judgement = json.RawMessage(*judgement)
+		}
+		if rationale != nil {
+			r.Rationale = *rationale
+		}
+		if emitterAgentID != nil {
+			r.EmitterAgentID = *emitterAgentID
+		}
+		if emitterRunID != nil {
+			r.EmitterRunID = *emitterRunID
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
 // ---- v0.8.x Process-resource metrics sampler ----
 
 // MetricsWriteSample inserts one process_samples row.
