@@ -71,3 +71,11 @@ class UnavailableError(LoomcycleError):
     """Raised when the gRPC channel can't reach the server (network
     error, server down, TLS handshake failure). Adapters should
     retry with backoff."""
+
+
+class HookNotFoundError(LoomcycleError):
+    """Raised by ``delete_hook`` when no hook is registered with the
+    supplied id. Maps from gRPC ``codes.NOT_FOUND`` whose message
+    mentions ``"hook"`` — the dispatcher in ``_raise_from_grpc``
+    checks for the keyword BEFORE falling through to
+    ``AgentNotFoundError``."""

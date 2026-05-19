@@ -73,6 +73,21 @@ class LoomcycleStub(object):
                 request_serializer=loomcycle__pb2.HealthRequest.SerializeToString,
                 response_deserializer=loomcycle__pb2.HealthResponse.FromString,
                 _registered_method=True)
+        self.RegisterHook = channel.unary_unary(
+                '/loomcycle.v1.Loomcycle/RegisterHook',
+                request_serializer=loomcycle__pb2.RegisterHookRequest.SerializeToString,
+                response_deserializer=loomcycle__pb2.RegisterHookResponse.FromString,
+                _registered_method=True)
+        self.ListHooks = channel.unary_unary(
+                '/loomcycle.v1.Loomcycle/ListHooks',
+                request_serializer=loomcycle__pb2.ListHooksRequest.SerializeToString,
+                response_deserializer=loomcycle__pb2.ListHooksResponse.FromString,
+                _registered_method=True)
+        self.DeleteHook = channel.unary_unary(
+                '/loomcycle.v1.Loomcycle/DeleteHook',
+                request_serializer=loomcycle__pb2.DeleteHookRequest.SerializeToString,
+                response_deserializer=loomcycle__pb2.DeleteHookResponse.FromString,
+                _registered_method=True)
 
 
 class LoomcycleServicer(object):
@@ -156,6 +171,40 @@ class LoomcycleServicer(object):
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def RegisterHook(self, request, context):
+        """RegisterHook registers a pre- or post-tool webhook. The
+        callback_url must be an http:// or https:// endpoint the consumer
+        runs. Returns the loomcycle-assigned id. Re-registering the same
+        (owner, name) replaces the prior entry in-place (idempotent on
+        app restart).
+
+        Mirrors POST /v1/hooks.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def ListHooks(self, request, context):
+        """ListHooks returns every currently-registered hook. Useful for
+        debug; no pagination — the registry is intentionally small
+        (operator-curated set).
+
+        Mirrors GET /v1/hooks.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def DeleteHook(self, request, context):
+        """DeleteHook removes a registered hook by id. Returns
+        codes.NotFound when no hook has that id.
+
+        Mirrors DELETE /v1/hooks/{id}.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
 
 def add_LoomcycleServicer_to_server(servicer, server):
     rpc_method_handlers = {
@@ -193,6 +242,21 @@ def add_LoomcycleServicer_to_server(servicer, server):
                     servicer.Health,
                     request_deserializer=loomcycle__pb2.HealthRequest.FromString,
                     response_serializer=loomcycle__pb2.HealthResponse.SerializeToString,
+            ),
+            'RegisterHook': grpc.unary_unary_rpc_method_handler(
+                    servicer.RegisterHook,
+                    request_deserializer=loomcycle__pb2.RegisterHookRequest.FromString,
+                    response_serializer=loomcycle__pb2.RegisterHookResponse.SerializeToString,
+            ),
+            'ListHooks': grpc.unary_unary_rpc_method_handler(
+                    servicer.ListHooks,
+                    request_deserializer=loomcycle__pb2.ListHooksRequest.FromString,
+                    response_serializer=loomcycle__pb2.ListHooksResponse.SerializeToString,
+            ),
+            'DeleteHook': grpc.unary_unary_rpc_method_handler(
+                    servicer.DeleteHook,
+                    request_deserializer=loomcycle__pb2.DeleteHookRequest.FromString,
+                    response_serializer=loomcycle__pb2.DeleteHookResponse.SerializeToString,
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
@@ -388,6 +452,87 @@ class Loomcycle(object):
             '/loomcycle.v1.Loomcycle/Health',
             loomcycle__pb2.HealthRequest.SerializeToString,
             loomcycle__pb2.HealthResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def RegisterHook(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/loomcycle.v1.Loomcycle/RegisterHook',
+            loomcycle__pb2.RegisterHookRequest.SerializeToString,
+            loomcycle__pb2.RegisterHookResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ListHooks(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/loomcycle.v1.Loomcycle/ListHooks',
+            loomcycle__pb2.ListHooksRequest.SerializeToString,
+            loomcycle__pb2.ListHooksResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def DeleteHook(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/loomcycle.v1.Loomcycle/DeleteHook',
+            loomcycle__pb2.DeleteHookRequest.SerializeToString,
+            loomcycle__pb2.DeleteHookResponse.FromString,
             options,
             channel_credentials,
             insecure,
