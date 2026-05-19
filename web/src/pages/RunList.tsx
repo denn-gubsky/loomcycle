@@ -23,6 +23,14 @@ export default function RunList() {
       setAgents([]);
       return;
     }
+    // Clear stale data synchronously on filter (or user) change so the
+    // previous filter's results don't linger during the ~50–300ms
+    // network round-trip — and don't persist indefinitely if the new
+    // fetch errors (the catch below only sets `err`; without this
+    // clear, the prior agents would stay visible under the new
+    // filter's label until the next successful poll).
+    setAgents([]);
+    setErr(null);
     let cancelled = false;
     const fetchOnce = async () => {
       try {
