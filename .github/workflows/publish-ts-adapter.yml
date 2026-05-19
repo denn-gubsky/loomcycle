@@ -1,0 +1,74 @@
+name: Publish @loomcycle/client to npm
+
+# Triggered on annotated tags matching the loomcycle release pattern.
+# The Go binary's release tags use v0.8.x; this workflow piggy-backs
+# on the same tag so the TS adapter version stays in lockstep.
+#
+# Safety: the workflow refuses to publish if package.json's version
+# doesn't match the tag. Tagging without bumping package.json fails
+# loudly without touching npm.
+#
+# Inputs reaching `run` steps are limited to GITHUB_REF_NAME (from a
+# git tag — git rejects metacharacters in ref names) and constants.
+# Per the GitHub workflow-injection guide we route the tag through
+# `env:` rather than direct template expansion as defence in depth.
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    name: Publish @loomcycle/client
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          registry-url: "https://registry.npmjs.org"
+          cache: npm
+          cache-dependency-path: adapters/ts/package-lock.json
+
+      - name: Verify package version matches tag
+        working-directory: adapters/ts
+        # Refuse to publish when package.json hasn't been bumped to
+        # match the release tag. Strip leading `v` because npm tags
+        # don't carry it; git tags do.
+        env:
+          TAG_REF: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          PKG_VER=$(node -p "require('./package.json').version")
+          TAG_VER="${TAG_REF#v}"
+          if [ "$PKG_VER" != "$TAG_VER" ]; then
+            echo "::error::package.json version ($PKG_VER) does not match tag ($TAG_VER)"
+            echo "Bump adapters/ts/package.json to $TAG_VER and re-tag, or fix the tag."
+            exit 1
+          fi
+          echo "::notice::Publishing @loomcycle/client@$PKG_VER (tag $TAG_REF)"
+
+      - name: Install
+        working-directory: adapters/ts
+        run: npm ci
+
+      - name: Build
+        working-directory: adapters/ts
+        run: npm run build
+
+      - name: Test
+        working-directory: adapters/ts
+        run: npm test
+
+      - name: Publish
+        working-directory: adapters/ts
+        # --access public required for scoped packages on the npmjs
+        # free tier. The NPM_TOKEN secret needs publish permission
+        # on the @loomcycle scope.
+        run: npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
