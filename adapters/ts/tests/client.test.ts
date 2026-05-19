@@ -81,6 +81,96 @@ describe("runStreaming", () => {
     }
     expect(caught).toBeInstanceOf(BackpressureError);
   });
+
+  it("forwards the v0.4+/v0.8.x wire fields when set", async () => {
+    const { client, fetchMock } = makeClient([
+      sseResponse(['event: done\ndata: {"type":"done"}\n\n']),
+    ]);
+    for await (const _ of client.runStreaming({
+      agent: "qa",
+      segments: [],
+      allowedHosts: ["example.com"],
+      webSearchFilter: "drop",
+      sessionId: "s1",
+      tenantId: "t1",
+      userId: "u1",
+      agentId: "a1",
+      userTier: "high",
+      userBearer: "user-token-xyz",
+    })) {}
+    const body = JSON.parse(fetchMock.mock.calls[0]![1]!.body as string);
+    expect(body).toEqual({
+      agent: "qa",
+      segments: [],
+      allowed_hosts: ["example.com"],
+      web_search_filter: "drop",
+      session_id: "s1",
+      tenant_id: "t1",
+      user_id: "u1",
+      agent_id: "a1",
+      user_tier: "high",
+      user_bearer: "user-token-xyz",
+    });
+  });
+
+  it("omits allowed_hosts when null (pass-through semantics)", async () => {
+    const { client, fetchMock } = makeClient([
+      sseResponse(['event: done\ndata: {"type":"done"}\n\n']),
+    ]);
+    for await (const _ of client.runStreaming({
+      agent: "qa",
+      segments: [],
+      allowedHosts: null,
+    })) {}
+    const body = JSON.parse(fetchMock.mock.calls[0]![1]!.body as string);
+    expect("allowed_hosts" in body).toBe(false);
+  });
+
+  it("sends allowed_hosts: [] for deny-all", async () => {
+    const { client, fetchMock } = makeClient([
+      sseResponse(['event: done\ndata: {"type":"done"}\n\n']),
+    ]);
+    for await (const _ of client.runStreaming({
+      agent: "qa",
+      segments: [],
+      allowedHosts: [],
+    })) {}
+    const body = JSON.parse(fetchMock.mock.calls[0]![1]!.body as string);
+    expect(body.allowed_hosts).toEqual([]);
+  });
+
+  it("parses retry / host_widened / session / agent side-channel events", async () => {
+    const { client } = makeClient([
+      sseResponse([
+        'event: started\ndata: {"type":"started"}\n\n',
+        'event: retry\ndata: {"type":"retry","retry":{"provider":"anthropic","attempt":1,"wait_ms":2000,"reason":"retry-after header"}}\n\n',
+        // sendRaw side-channel: JSON payload has NO `type` field; parser
+        // backfills it from the SSE event name.
+        'event: session\ndata: {"text":"s-123"}\n\n',
+        'event: agent\ndata: {"agent_id":"a-1","run_id":"r-1","session_id":"s-123","parent_agent_id":null}\n\n',
+        'event: host_widened\ndata: {"type":"host_widened","host_widening":{"tool_call_id":"tc1","tool_name":"WebFetch","url":"https://x.com/a","hook_owner":"jobs","hook_name":"narrow","hosts_added":["x.com"]}}\n\n',
+        'event: done\ndata: {"type":"done"}\n\n',
+      ]),
+    ]);
+    const events = [];
+    for await (const ev of client.runStreaming({ agent: "qa", segments: [] })) {
+      events.push(ev);
+    }
+    expect(events.map((e) => e.type)).toEqual([
+      "started",
+      "retry",
+      "session",
+      "agent",
+      "host_widened",
+      "done",
+    ]);
+    expect(events[1]!.retry?.provider).toBe("anthropic");
+    expect(events[1]!.retry?.wait_ms).toBe(2000);
+    expect(events[2]!.text).toBe("s-123");
+    expect(events[3]!.agent_id).toBe("a-1");
+    expect(events[3]!.parent_agent_id).toBeNull();
+    expect(events[4]!.host_widening?.hosts_added).toEqual(["x.com"]);
+  });
 });
 
 describe("continueSession", () => {
@@ -113,6 +203,30 @@ describe("continueSession", () => {
     expect(fetchMock.mock.calls[0]![0]).toBe(
       "http://test-loomcycle:8787/v1/sessions/sess%20with%20spaces/messages",
     );
+  });
+
+  it("forwards continuation-side wire fields when set", async () => {
+    const { client, fetchMock } = makeClient([
+      sseResponse(['event: done\ndata: {"type":"done"}\n\n']),
+    ]);
+    for await (const _ of client.continueSession({
+      sessionId: "s1",
+      segments: [],
+      allowedHosts: ["a.com", "b.com"],
+      webSearchFilter: "keep",
+      agentId: "a2",
+      userTier: "free",
+      userBearer: "cont-token",
+    })) {}
+    const body = JSON.parse(fetchMock.mock.calls[0]![1]!.body as string);
+    expect(body).toEqual({
+      segments: [],
+      allowed_hosts: ["a.com", "b.com"],
+      web_search_filter: "keep",
+      agent_id: "a2",
+      user_tier: "free",
+      user_bearer: "cont-token",
+    });
   });
 });
 
