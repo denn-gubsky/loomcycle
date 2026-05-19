@@ -8,6 +8,14 @@ name: Publish @loomcycle/client to npm
 # doesn't match the tag. Tagging without bumping package.json fails
 # loudly without touching npm.
 #
+# Auth: npm Trusted Publisher (OIDC) — no NPM_TOKEN secret required.
+# Configure the trust relationship at
+# https://www.npmjs.com/package/@loomcycle/client/access by adding a
+# GitHub Actions trusted publisher with repository
+# `denn-gubsky/loomcycle` and workflow filename `publish-ts-adapter.yml`.
+# `id-token: write` below is the permission setup-node needs to mint
+# the OIDC token that npm exchanges for a short-lived publish token.
+#
 # Inputs reaching `run` steps are limited to GITHUB_REF_NAME (from a
 # git tag — git rejects metacharacters in ref names) and constants.
 # Per the GitHub workflow-injection guide we route the tag through
@@ -19,6 +27,7 @@ on:
 
 permissions:
   contents: read
+  id-token: write
 
 jobs:
   publish:
@@ -66,9 +75,14 @@ jobs:
 
       - name: Publish
         working-directory: adapters/ts
-        # --access public required for scoped packages on the npmjs
-        # free tier. The NPM_TOKEN secret needs publish permission
-        # on the @loomcycle scope.
-        run: npm publish --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        # --access public is required for scoped packages.
+        # --provenance is free with OIDC trusted publishing: npm
+        # embeds an SLSA-style build attestation in the published
+        # tarball, surfaced as a green "Provenance" badge on the
+        # package page that links back to this workflow run. Worth
+        # ~zero effort for verifiable supply-chain origin.
+        #
+        # No NODE_AUTH_TOKEN env — setup-node negotiates the OIDC
+        # handshake against npmjs.com using the id-token permission
+        # granted above.
+        run: npm publish --access public --provenance
