@@ -616,4 +616,19 @@ describe("hook management", () => {
       name: "HookNotFoundError",
     });
   });
+
+  // Priority guard: when the 404 body contains BOTH "hook" and "agent"
+  // (e.g. a hook id like "hook_agent_scan"), the "hook" check must
+  // still win. Hook IDs containing "agent" are not unusual — anyone
+  // registering a hook for an agent-related concern would name it
+  // that way. Pins the keyword-ordering invariant in raiseFromResponse.
+  it("deleteHook 404 with body containing both 'hook' and 'agent' routes to HookNotFoundError", async () => {
+    const { client } = makeClient([
+      errorResponse(404, `no hook with id "hook_agent_scan"`),
+    ]);
+    await expect(client.deleteHook("hook_agent_scan")).rejects.toMatchObject({
+      name: "HookNotFoundError",
+      status: 404,
+    });
+  });
 });
