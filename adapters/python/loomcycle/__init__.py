@@ -54,6 +54,13 @@ from .errors import (
     BackpressureError,
     AuthError,
     UnavailableError,
+    # v0.8.18 — pause/snapshot typed errors.
+    PauseNotConfiguredError,
+    AlreadyPausingError,
+    NotPausedError,
+    SnapshotNotFoundError,
+    SnapshotTooLargeError,
+    SnapshotVersionError,
 )
 
 __all__ = [
@@ -71,6 +78,13 @@ __all__ = [
     "BackpressureError",
     "AuthError",
     "UnavailableError",
+    # v0.8.18 additions.
+    "PauseNotConfiguredError",
+    "AlreadyPausingError",
+    "NotPausedError",
+    "SnapshotNotFoundError",
+    "SnapshotTooLargeError",
+    "SnapshotVersionError",
 ]
 
-__version__ = "0.5.5"
+__version__ = "0.6.0"

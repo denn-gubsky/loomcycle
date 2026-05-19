@@ -94,6 +94,15 @@ All methods are coroutine methods on `LoomcycleClient`.
 | `get_transcript(session_id)` | `list[dict]` | Persisted event log; `payload` is raw JSON bytes. |
 | `health()` | `dict` | Liveness + build info. Unauthenticated. |
 | `close()` | `None` | Idempotent. Use `async with` to do this automatically. |
+| `pause_runtime(timeout_ms=0)` | `dict` | v0.8.18 — quiesce the runtime. Returns `{status, duration_ms, force_cancelled_count, paused_runs_count, warnings}`. |
+| `resume_runtime()` | `dict` | v0.8.18 — release the quiesce. Returns `{status, resumed_run_count, warnings}`. |
+| `get_runtime_state()` | `dict` | v0.8.18 — current state. Returns `{status, paused_at, paused_run_count, snapshots_count}`. |
+| `create_snapshot(description="", include_history=False, since_ts=None, max_bytes=0)` | `dict` | v0.8.18 — capture running-state JSON envelope. |
+| `list_snapshots()` | `list[dict]` | v0.8.18 — metadata only; up to 200 most-recent. |
+| `get_snapshot(snapshot_id)` | `dict` | v0.8.18 — full envelope including `json_content` bytes. |
+| `export_snapshot(snapshot_id)` | `dict` | v0.8.18 — canonical bytes via `raw_json` for streaming consumers. |
+| `restore_snapshot(snapshot_id=..., raw_json=..., include_history=False)` | `dict` | v0.8.18 — exactly one of `snapshot_id` / `raw_json`. Per-section counters returned. |
+| `delete_snapshot(snapshot_id)` | `bool` | v0.8.18 — idempotent; returns True. |
 
 ## Errors
 
@@ -106,9 +115,15 @@ Every method translates gRPC error codes to typed Python exceptions:
 | `FAILED_PRECONDITION` (session busy) | `SessionBusyError` |
 | `FAILED_PRECONDITION` (other) | `LoomcycleError` |
 | `ALREADY_EXISTS` | `AgentIDInUseError` |
-| `RESOURCE_EXHAUSTED` | `BackpressureError` |
+| `RESOURCE_EXHAUSTED` (snapshot) | `SnapshotTooLargeError` (v0.8.18) |
+| `RESOURCE_EXHAUSTED` (other) | `BackpressureError` |
 | `UNAUTHENTICATED` | `AuthError` |
-| `UNAVAILABLE` | `UnavailableError` |
+| `UNAVAILABLE` (pause not configured) | `PauseNotConfiguredError` (v0.8.18, subclass of UnavailableError) |
+| `UNAVAILABLE` (other) | `UnavailableError` |
+| `NOT_FOUND` (with snapshot ctx) | `SnapshotNotFoundError` (v0.8.18) |
+| `FAILED_PRECONDITION` (already pausing) | `AlreadyPausingError` (v0.8.18) |
+| `FAILED_PRECONDITION` (not paused) | `NotPausedError` (v0.8.18) |
+| `FAILED_PRECONDITION` (snapshot version) | `SnapshotVersionError` (v0.8.18) |
 | `INVALID_ARGUMENT` / `INTERNAL` / other | `LoomcycleError` |
 
 All exceptions inherit from `LoomcycleError` and preserve the

@@ -44,11 +44,17 @@ from .events import AgentEvent
 from .errors import (
     AgentIDInUseError,
     AgentNotFoundError,
+    AlreadyPausingError,
     AuthError,
     BackpressureError,
     LoomcycleError,
+    NotPausedError,
+    PauseNotConfiguredError,
     SessionBusyError,
     SessionNotFoundError,
+    SnapshotNotFoundError,
+    SnapshotTooLargeError,
+    SnapshotVersionError,
     UnavailableError,
 )
 
@@ -205,6 +211,231 @@ class LoomcycleClient:
             }
             for e in resp.events
         ]
+
+    # ---- v0.8.18 Pause / Resume / State + Snapshot lifecycle ----
+
+    async def pause_runtime(self, *, timeout_ms: int = 0) -> Mapping[str, Any]:
+        """Quiesce the runtime. Idempotent tools cancel immediately;
+        non-idempotent + external tools get a grace window (default
+        30 s; max 5 min) then force-cancel. New /v1/runs return 503
+        while paused. Returns a dict matching ``PauseRuntimeResponse``
+        (status, duration_ms, force_cancelled_count, paused_runs_count,
+        warnings).
+
+        Raises ``AlreadyPausingError`` (FailedPrecondition) when the
+        runtime is already pausing or paused. Raises
+        ``PauseNotConfiguredError`` (Unavailable) when the deployment
+        doesn't have a Store backend wired."""
+        try:
+            resp = await self._stub.PauseRuntime(
+                pb.PauseRuntimeRequest(timeout_ms=timeout_ms),
+                metadata=self._auth_metadata(),
+            )
+        except grpc.aio.AioRpcError as e:
+            _raise_from_grpc(e)
+        return {
+            "status": resp.status,
+            "duration_ms": resp.duration_ms,
+            "force_cancelled_count": resp.force_cancelled_count,
+            "paused_runs_count": resp.paused_runs_count,
+            "warnings": list(resp.warnings),
+        }
+
+    async def resume_runtime(self) -> Mapping[str, Any]:
+        """Release the runtime quiesce. Each previously-paused run
+        flips back to running; the runner goroutines re-enter their
+        loops. Returns a dict matching ``ResumeRuntimeResponse``
+        (status, resumed_run_count, warnings).
+
+        Raises ``NotPausedError`` (FailedPrecondition) when the runtime
+        is not paused."""
+        try:
+            resp = await self._stub.ResumeRuntime(
+                pb.ResumeRuntimeRequest(), metadata=self._auth_metadata(),
+            )
+        except grpc.aio.AioRpcError as e:
+            _raise_from_grpc(e)
+        return {
+            "status": resp.status,
+            "resumed_run_count": resp.resumed_run_count,
+            "warnings": list(resp.warnings),
+        }
+
+    async def get_runtime_state(self) -> Mapping[str, Any]:
+        """Return the current runtime quiesce state. Returns a dict
+        with ``status`` (``"running"`` | ``"pausing"`` | ``"paused"``),
+        ``paused_at`` (ISO8601 string or empty), ``paused_run_count``,
+        and ``snapshots_count`` (best-effort count from the snapshots
+        table)."""
+        try:
+            resp = await self._stub.GetRuntimeState(
+                pb.GetRuntimeStateRequest(), metadata=self._auth_metadata(),
+            )
+        except grpc.aio.AioRpcError as e:
+            _raise_from_grpc(e)
+        return {
+            "status": resp.status,
+            "paused_at": _ts_to_iso(resp.paused_at),
+            "paused_run_count": resp.paused_run_count,
+            "snapshots_count": resp.snapshots_count,
+        }
+
+    async def create_snapshot(
+        self,
+        *,
+        description: str = "",
+        include_history: bool = False,
+        since_ts: Optional[str] = None,
+        max_bytes: int = 0,
+    ) -> Mapping[str, Any]:
+        """Capture running-state into a per-section-semver JSON
+        envelope. Returns a SnapshotDescriptor dict (snapshot_id,
+        created_at, size_bytes, includes_history, since_ts, description,
+        format_version). The envelope itself is fetched via
+        ``get_snapshot`` / ``export_snapshot``.
+
+        ``since_ts`` is RFC3339; only honoured when ``include_history``
+        is True. ``max_bytes`` overrides the server's
+        LOOMCYCLE_SNAPSHOT_MAX_BYTES cap for this call.
+
+        Raises ``SnapshotTooLargeError`` (ResourceExhausted) when the
+        envelope exceeds the cap."""
+        req = pb.CreateSnapshotRequest(
+            include_history=include_history,
+            description=description,
+            max_bytes=max_bytes,
+        )
+        if since_ts:
+            req.since_ts.FromJsonString(since_ts)
+        try:
+            resp = await self._stub.CreateSnapshot(
+                req, metadata=self._auth_metadata(),
+            )
+        except grpc.aio.AioRpcError as e:
+            _raise_from_grpc(e)
+        return _snapshot_descriptor_to_dict(resp)
+
+    async def list_snapshots(self) -> Sequence[Mapping[str, Any]]:
+        """List captured snapshots (most-recent first; capped at 200).
+        Returns metadata only — use ``get_snapshot`` / ``export_snapshot``
+        for the JSON envelope."""
+        try:
+            resp = await self._stub.ListSnapshots(
+                pb.ListSnapshotsRequest(), metadata=self._auth_metadata(),
+            )
+        except grpc.aio.AioRpcError as e:
+            _raise_from_grpc(e)
+        return [_snapshot_descriptor_to_dict(s) for s in resp.snapshots]
+
+    async def get_snapshot(self, snapshot_id: str) -> Mapping[str, Any]:
+        """Return the full snapshot envelope including JSON content.
+        Returns a dict with snapshot_id, created_at, description,
+        format_version, size_bytes, and ``json_content`` (raw bytes —
+        caller decodes via ``json.loads``).
+
+        Raises ``SnapshotNotFoundError`` (NotFound) when no snapshot
+        matches."""
+        try:
+            resp = await self._stub.GetSnapshot(
+                pb.GetSnapshotRequest(snapshot_id=snapshot_id),
+                metadata=self._auth_metadata(),
+            )
+        except grpc.aio.AioRpcError as e:
+            _raise_from_grpc(e)
+        return {
+            "snapshot_id": resp.snapshot_id,
+            "created_at": _ts_to_iso(resp.created_at),
+            "description": resp.description,
+            "format_version": resp.format_version,
+            "size_bytes": resp.size_bytes,
+            "json_content": bytes(resp.json_content),
+        }
+
+    async def export_snapshot(self, snapshot_id: str) -> Mapping[str, Any]:
+        """Return canonical envelope bytes for a snapshot id.
+        Returns a dict with snapshot_id, file_path (empty unless the
+        server materialised to disk), checksum (ditto), size_bytes,
+        and ``raw_json`` (raw bytes for streaming consumers).
+
+        Raises ``SnapshotNotFoundError`` (NotFound) when no snapshot
+        matches."""
+        try:
+            resp = await self._stub.ExportSnapshot(
+                pb.ExportSnapshotRequest(snapshot_id=snapshot_id),
+                metadata=self._auth_metadata(),
+            )
+        except grpc.aio.AioRpcError as e:
+            _raise_from_grpc(e)
+        return {
+            "snapshot_id": resp.snapshot_id,
+            "file_path": resp.file_path,
+            "checksum": resp.checksum,
+            "size_bytes": resp.size_bytes,
+            "raw_json": bytes(resp.raw_json),
+        }
+
+    async def restore_snapshot(
+        self,
+        *,
+        snapshot_id: str = "",
+        raw_json: Optional[bytes] = None,
+        include_history: bool = False,
+    ) -> Mapping[str, Any]:
+        """Restore from a same-instance ``snapshot_id`` OR cross-
+        instance ``raw_json`` bytes. Exactly one must be supplied.
+        Idempotent: ON CONFLICT DO NOTHING per row; counters reflect
+        rows actually written.
+
+        Returns a dict with per-section counters
+        (memory_restored, paused_runs_restored, transcript_events_restored,
+        synthesized_sessions, etc.) plus warnings + format_migrations.
+
+        Raises ``SnapshotNotFoundError`` (NotFound) when ``snapshot_id``
+        doesn't exist. Raises ``SnapshotVersionError`` (FailedPrecondition)
+        when a section's declared version is newer than the reader
+        supports."""
+        if not snapshot_id and not raw_json:
+            raise LoomcycleError("restore_snapshot: snapshot_id or raw_json required")
+        if snapshot_id and raw_json:
+            raise LoomcycleError("restore_snapshot: pass only one of snapshot_id or raw_json")
+        req = pb.RestoreSnapshotRequest(
+            snapshot_id=snapshot_id,
+            raw_json=raw_json or b"",
+            include_history=include_history,
+        )
+        try:
+            resp = await self._stub.RestoreSnapshot(
+                req, metadata=self._auth_metadata(),
+            )
+        except grpc.aio.AioRpcError as e:
+            _raise_from_grpc(e)
+        return {
+            "agent_defs_restored": resp.agent_defs_restored,
+            "agent_def_active_restored": resp.agent_def_active_restored,
+            "memory_restored": resp.memory_restored,
+            "channel_messages_restored": resp.channel_messages_restored,
+            "channel_cursors_restored": resp.channel_cursors_restored,
+            "evaluations_restored": resp.evaluations_restored,
+            "paused_runs_restored": resp.paused_runs_restored,
+            "synthesized_sessions": resp.synthesized_sessions,
+            "transcript_events_restored": resp.transcript_events_restored,
+            "interaction_history_restored": resp.interaction_history_restored,
+            "warnings": list(resp.warnings),
+            "format_migrations": list(resp.format_migrations),
+        }
+
+    async def delete_snapshot(self, snapshot_id: str) -> bool:
+        """Delete a snapshot. Idempotent — succeeds whether or not the
+        row existed (mirrors HTTP DELETE /v1/_snapshots/{id} = 204).
+        Returns True on success."""
+        try:
+            resp = await self._stub.DeleteSnapshot(
+                pb.DeleteSnapshotRequest(snapshot_id=snapshot_id),
+                metadata=self._auth_metadata(),
+            )
+        except grpc.aio.AioRpcError as e:
+            _raise_from_grpc(e)
+        return resp.deleted
 
     # ---- Streaming RPCs ----
 
@@ -415,6 +646,20 @@ def _agent_to_dict(a: pb.Agent) -> Mapping[str, Any]:
     }
 
 
+def _snapshot_descriptor_to_dict(d: pb.SnapshotDescriptor) -> Mapping[str, Any]:
+    """Convert proto SnapshotDescriptor → public dict. Reused by
+    create_snapshot + list_snapshots."""
+    return {
+        "snapshot_id": d.snapshot_id,
+        "created_at": _ts_to_iso(d.created_at),
+        "size_bytes": d.size_bytes,
+        "includes_history": d.includes_history,
+        "since_ts": _ts_to_iso(d.since_ts) if d.HasField("since_ts") else "",
+        "description": d.description,
+        "format_version": d.format_version,
+    }
+
+
 def _ts_to_iso(ts) -> str:
     """Convert google.protobuf.Timestamp → ISO 8601 string. Empty
     timestamps surface as ``""`` (the caller distinguishes via the
@@ -453,22 +698,45 @@ def _raise_from_grpc(err: grpc.aio.AioRpcError) -> "None":
     msg = err.details() or str(err)
     msg_lower = msg.lower()
     if code == grpc.StatusCode.NOT_FOUND:
+        # v0.8.18: snapshot not-found gets its own typed error to
+        # distinguish from session / agent NotFound cases that
+        # other RPCs return.
+        if "snapshot" in msg_lower:
+            raise SnapshotNotFoundError(msg, code=code) from err
         if "session" in msg_lower:
             raise SessionNotFoundError(msg, code=code) from err
         raise AgentNotFoundError(msg, code=code) from err
     if code == grpc.StatusCode.FAILED_PRECONDITION:
-        # Server uses FailedPrecondition for both ErrSessionRequired
-        # and ErrSessionBusy. The message carries the discriminator.
+        # Server uses FailedPrecondition for ErrSessionRequired /
+        # ErrSessionBusy / pause-state mismatches (AlreadyPausing /
+        # NotPaused) / snapshot version skew. The message string is
+        # the discriminator (matches connector.Err* sentinels).
+        if "already pausing" in msg_lower or "already paused" in msg_lower:
+            raise AlreadyPausingError(msg, code=code) from err
+        if "not paused" in msg_lower:
+            raise NotPausedError(msg, code=code) from err
+        if "snapshot section version" in msg_lower or "version too new" in msg_lower or "version unknown" in msg_lower:
+            raise SnapshotVersionError(msg, code=code) from err
         if "session busy" in msg_lower or "another request" in msg_lower:
             raise SessionBusyError(msg, code=code) from err
         raise LoomcycleError(msg, code=code) from err
     if code == grpc.StatusCode.ALREADY_EXISTS:
         raise AgentIDInUseError(msg, code=code) from err
     if code == grpc.StatusCode.RESOURCE_EXHAUSTED:
+        # v0.8.18: snapshot-too-large reuses ResourceExhausted; the
+        # message discriminates from BackpressureError (concurrency
+        # semaphore rejection).
+        if "snapshot" in msg_lower:
+            raise SnapshotTooLargeError(msg, code=code) from err
         raise BackpressureError(msg, code=code) from err
     if code == grpc.StatusCode.UNAUTHENTICATED:
         raise AuthError(msg, code=code) from err
     if code == grpc.StatusCode.UNAVAILABLE:
+        # v0.8.18: pause-not-configured is a specific Unavailable
+        # subcase (operator hasn't wired a pause Manager) — distinct
+        # from generic network failures.
+        if "pause manager not configured" in msg_lower or "pause_not_configured" in msg_lower:
+            raise PauseNotConfiguredError(msg, code=code) from err
         raise UnavailableError(msg, code=code) from err
     if code == grpc.StatusCode.INVALID_ARGUMENT:
         raise LoomcycleError(msg, code=code) from err

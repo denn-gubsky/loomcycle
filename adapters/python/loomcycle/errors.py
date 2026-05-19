@@ -71,3 +71,43 @@ class UnavailableError(LoomcycleError):
     """Raised when the gRPC channel can't reach the server (network
     error, server down, TLS handshake failure). Adapters should
     retry with backoff."""
+
+
+# v0.8.18 — Pause/Resume/Snapshot typed errors. Each maps from a
+# specific gRPC status code on the new Pause/Snapshot RPCs.
+
+class PauseNotConfiguredError(UnavailableError):
+    """Raised when the server has no pause Manager wired (no Store
+    backend on the deployment). Operator config issue; not a transient
+    failure. Server returns gRPC Unavailable for this case."""
+
+
+class AlreadyPausingError(LoomcycleError):
+    """Raised by ``pause_runtime`` when the runtime is already pausing
+    or paused. Server returns gRPC FailedPrecondition. Idempotent —
+    a scripted ``pause if not paused`` loop can swallow this."""
+
+
+class NotPausedError(LoomcycleError):
+    """Raised by ``resume_runtime`` when the runtime is not paused.
+    Server returns gRPC FailedPrecondition. Symmetric with
+    ``AlreadyPausingError``."""
+
+
+class SnapshotNotFoundError(LoomcycleError):
+    """Raised by ``get_snapshot`` / ``export_snapshot`` /
+    ``restore_snapshot`` / ``delete_snapshot`` when no snapshot has
+    the supplied id. Server returns gRPC NotFound."""
+
+
+class SnapshotTooLargeError(LoomcycleError):
+    """Raised by ``create_snapshot`` when the serialised envelope
+    exceeds ``LOOMCYCLE_SNAPSHOT_MAX_BYTES`` (default 512 MiB).
+    Server returns gRPC ResourceExhausted."""
+
+
+class SnapshotVersionError(LoomcycleError):
+    """Raised by ``restore_snapshot`` when a section's declared
+    version is newer than the reader supports OR unknown to the
+    migration registry. Operator upgrades loomcycle before restoring.
+    Server returns gRPC FailedPrecondition for both subcases."""
