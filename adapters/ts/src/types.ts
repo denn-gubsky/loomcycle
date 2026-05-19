@@ -63,6 +63,13 @@ export interface ContinueOptions {
   sessionId: string;
   segments: PromptSegment[];
   allowedTools?: string[];
+  /** Pin the continuation to a specific running agent_id.
+   *  Optional — when set, the server validates that the agent is
+   *  live for this session before accepting; rejects with
+   *  AgentNotFoundError / SessionBusyError otherwise. Mirrors
+   *  Python adapter's ContinueOptions.agent_id (the Python field
+   *  is snake_case; the wire field server-side is `agent_id`). */
+  agentId?: string;
   signal?: AbortSignal;
 }
 

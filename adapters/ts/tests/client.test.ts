@@ -46,7 +46,7 @@ describe("runStreaming", () => {
     expect(call[1]!.method).toBe("POST");
     const headers = call[1]!.headers as Record<string, string>;
     expect(headers["Authorization"]).toBe("Bearer test-bearer");
-    expect(headers["Accept"]).toBe("text/event-stream");
+    expect(headers["Accept"]).toBe("text/event-stream, application/json");
     const body = JSON.parse(call[1]!.body as string);
     expect(body).toEqual({
       agent: "qa-agent",
@@ -471,5 +471,26 @@ describe("interruption", () => {
       answer: "yes",
       resolved_by: "operator-dashboard",
     });
+  });
+
+  // Regression: PR #141 review surfaced that 404 on the interrupt
+  // routes had no test coverage. The new NotFoundError base ensures
+  // an interrupt 404 (which doesn't mention "agent" in the body)
+  // falls through to NotFoundError, not AgentNotFoundError.
+  it("listRunInterrupts on 404 raises NotFoundError (not AgentNotFoundError)", async () => {
+    const { client } = makeClient([errorResponse(404, "run not found")]);
+    await expect(client.listRunInterrupts("missing-run")).rejects.toMatchObject({
+      name: "NotFoundError",
+      status: 404,
+    });
+  });
+
+  it("resolveInterrupt on 404 raises NotFoundError when interrupt is unknown", async () => {
+    const { client } = makeClient([
+      errorResponse(404, "interrupt not found"),
+    ]);
+    await expect(
+      client.resolveInterrupt("r1", "intr_gone", { answer: "yes" }),
+    ).rejects.toMatchObject({ name: "NotFoundError", status: 404 });
   });
 });

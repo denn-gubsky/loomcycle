@@ -103,6 +103,7 @@ export class LoomcycleClient {
       {
         segments: opts.segments,
         allowed_tools: opts.allowedTools,
+        ...(opts.agentId ? { agent_id: opts.agentId } : {}),
       },
       opts.signal,
     );
@@ -250,13 +251,13 @@ export class LoomcycleClient {
     );
   }
 
-  /** URL of the snapshot's canonical envelope. Operators can curl
-   *  this directly or piping into a file (the response has a
-   *  Content-Disposition header). When the client has an
-   *  authToken set, callers add `?token=...` query-param manually
-   *  if the server enforces it on this route — the default
-   *  loomcycle binding accepts Authorization header on all
-   *  bearer-authed routes. */
+  /** Returns the URL of the snapshot's canonical envelope —
+   *  synchronous and side-effect-free; does NOT issue an HTTP
+   *  request. The endpoint is bearer-authed like every other
+   *  `/v1/_snapshots/*` route, so callers must attach the same
+   *  `Authorization: Bearer <token>` header when fetching this
+   *  URL (e.g. `curl -H "Authorization: Bearer $TOKEN" ...`).
+   *  There is no token query-param fallback. */
   exportSnapshotURL(snapshotId: string): string {
     return `${this.ctx.baseUrl}/v1/_snapshots/${encodeURIComponent(snapshotId)}/export`;
   }
@@ -348,7 +349,11 @@ export class LoomcycleClient {
   ): Promise<MemoryEntriesResponse> {
     const params = new URLSearchParams();
     if (opts?.prefix) params.set("prefix", opts.prefix);
-    if (opts?.limit) params.set("limit", String(opts.limit));
+    // Guard against `limit: 0` (falsy but valid-looking) and negatives —
+    // both would either send `limit=0` (server treats as default but the
+    // semantic is unclear) or `limit=-N` (server rejects). Only send the
+    // param when the caller passed a meaningful positive number.
+    if (opts?.limit && opts.limit > 0) params.set("limit", String(opts.limit));
     const qs = params.toString();
     const path = `/v1/_memory/scopes/${encodeURIComponent(scope)}/${encodeURIComponent(scopeID)}/keys${qs ? "?" + qs : ""}`;
     return jsonFetch<MemoryEntriesResponse>(this.ctx, path, opts);
