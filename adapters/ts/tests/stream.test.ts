@@ -95,4 +95,33 @@ describe("parseSSE", () => {
     expect(out.length).toBe(1);
     expect(out[0]!.text).toBe("after-heartbeat");
   });
+
+  it("drains a trailing line with no final newline", async () => {
+    // Connection drop mid-frame: the last line never received its `\n`.
+    // The pre-fix parser silently lost this frame; the drain-on-eof path
+    // recovers it.
+    const reader = streamFromChunks([
+      'event: text\ndata: {"type":"text","text":"truncated"}',
+    ]);
+    const out = [];
+    for await (const ev of parseSSE(reader)) out.push(ev);
+    expect(out.length).toBe(1);
+    expect(out[0]!.text).toBe("truncated");
+  });
+
+  it("backfills `type` from SSE event-name when JSON payload omits it", async () => {
+    // The v0.4 `event: agent` side-channel uses sse.sendRaw — the JSON
+    // payload carries only {agent_id, run_id, session_id, parent_agent_id}.
+    // Consumers switch on ev.type, so the parser backfills `type` from
+    // the SSE event-name so these frames don't slip past.
+    const reader = streamFromChunks([
+      'event: agent\ndata: {"agent_id":"a-1","run_id":"r-1","session_id":"s-1","parent_agent_id":null}\n\n',
+    ]);
+    const out = [];
+    for await (const ev of parseSSE(reader)) out.push(ev);
+    expect(out.length).toBe(1);
+    expect(out[0]!.type).toBe("agent");
+    expect(out[0]!.agent_id).toBe("a-1");
+    expect(out[0]!.parent_agent_id).toBeNull();
+  });
 });

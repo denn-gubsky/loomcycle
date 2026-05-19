@@ -88,11 +88,28 @@ export class LoomcycleClient {
    * errors (e.g. AuthError for 401, BackpressureError for 429).
    */
   async *runStreaming(opts: RunOptions): AsyncIterable<AgentEvent> {
-    yield* this.streamSSE("/v1/runs", {
+    // Build the body conditionally so omitted fields stay off the wire.
+    // The pointer-vs-empty distinction on allowed_hosts is preserved by
+    // treating `null` as "omit" — same as the server's nil semantics —
+    // so callers threading a possibly-unset slice don't accidentally
+    // send `allowed_hosts: null` (which JSON-decodes to a deny-all on
+    // some implementations).
+    const body: Record<string, unknown> = {
       agent: opts.agent,
       segments: opts.segments,
-      allowed_tools: opts.allowedTools,
-    }, opts.signal);
+    };
+    if (opts.allowedTools !== undefined) body.allowed_tools = opts.allowedTools;
+    if (opts.allowedHosts !== undefined && opts.allowedHosts !== null) {
+      body.allowed_hosts = opts.allowedHosts;
+    }
+    if (opts.webSearchFilter !== undefined) body.web_search_filter = opts.webSearchFilter;
+    if (opts.sessionId !== undefined) body.session_id = opts.sessionId;
+    if (opts.tenantId !== undefined) body.tenant_id = opts.tenantId;
+    if (opts.userId !== undefined) body.user_id = opts.userId;
+    if (opts.agentId !== undefined) body.agent_id = opts.agentId;
+    if (opts.userTier !== undefined) body.user_tier = opts.userTier;
+    if (opts.userBearer !== undefined) body.user_bearer = opts.userBearer;
+    yield* this.streamSSE("/v1/runs", body, opts.signal);
   }
 
   /**
@@ -105,13 +122,20 @@ export class LoomcycleClient {
    * session.
    */
   async *continueSession(opts: ContinueOptions): AsyncIterable<AgentEvent> {
+    const body: Record<string, unknown> = {
+      segments: opts.segments,
+    };
+    if (opts.allowedTools !== undefined) body.allowed_tools = opts.allowedTools;
+    if (opts.allowedHosts !== undefined && opts.allowedHosts !== null) {
+      body.allowed_hosts = opts.allowedHosts;
+    }
+    if (opts.webSearchFilter !== undefined) body.web_search_filter = opts.webSearchFilter;
+    if (opts.agentId !== undefined) body.agent_id = opts.agentId;
+    if (opts.userTier !== undefined) body.user_tier = opts.userTier;
+    if (opts.userBearer !== undefined) body.user_bearer = opts.userBearer;
     yield* this.streamSSE(
       `/v1/sessions/${encodeURIComponent(opts.sessionId)}/messages`,
-      {
-        segments: opts.segments,
-        allowed_tools: opts.allowedTools,
-        ...(opts.agentId ? { agent_id: opts.agentId } : {}),
-      },
+      body,
       opts.signal,
     );
   }

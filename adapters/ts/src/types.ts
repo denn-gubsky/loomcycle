@@ -17,7 +17,18 @@ export type EventType =
   | "tool_result"
   | "usage"
   | "done"
-  | "error";
+  | "error"
+  // v0.8.x extras already on the wire from internal/providers/provider.go.
+  // Adding them here as additive options — consumers that only switch on
+  // the base seven keep working, while consumers that already render
+  // retries/host-widening/etc. can type-narrow.
+  | "retry"
+  | "host_widened"
+  // v0.4 side-channel SSE frames emitted via sse.sendRaw (the JSON payload
+  // doesn't carry `type` server-side; parseSSE backfills it from the SSE
+  // event-name so the consumer sees a well-formed AgentEvent).
+  | "session"
+  | "agent";
 
 export interface ToolUse {
   id: string;
@@ -31,6 +42,37 @@ export interface Usage {
   cache_creation_input_tokens?: number;
   cache_read_input_tokens?: number;
   model?: string;
+  /** Forward-compat: a future wire bump may include the provider-billed
+   *  USD cost alongside token counts. Today the sidecar never populates
+   *  this; the field stays optional so consumers can plumb it without a
+   *  wire change. */
+  cost_usd?: number;
+}
+
+/** RetryInfo accompanies an `event: retry` frame (EventRetry in the Go
+ *  server). Surfaced live during the retry sleep — useful for "waiting on
+ *  rate limit" UI. The agent loop is unaffected; the retry is invisible
+ *  to it. Wire-stable; mirrors providers.RetryInfo. */
+export interface RetryInfo {
+  provider: string;
+  attempt: number;
+  wait_ms: number;
+  /** One of providers.RetryReason* constants — "retry-after header" or
+   *  "exponential backoff" today. Stable wire string; do not parse. */
+  reason: string;
+}
+
+/** HostWidening accompanies an `event: host_widened` frame (v0.8.17+).
+ *  Emitted once per dispatched tool call whose Pre-hook allow_hosts grant
+ *  fired. Operators audit confused-deputy patterns by comparing `url`'s
+ *  host to `hosts_added`. Wire-stable; mirrors providers.HostWideningEventInfo. */
+export interface HostWidening {
+  tool_call_id: string;
+  tool_name: string;
+  url: string;
+  hook_owner: string;
+  hook_name: string;
+  hosts_added: string[];
 }
 
 export interface AgentEvent {
@@ -39,7 +81,23 @@ export interface AgentEvent {
   tool_use?: ToolUse;
   usage?: Usage;
   error?: string;
+  /** is_error flags a tool_result whose execution failed. Surviving the
+   *  persist+replay round-trip matters because a continuation that lost
+   *  the flag would re-feed the model a successful-looking result. */
+  is_error?: boolean;
   stop_reason?: string;
+  /** Retry payload on `event: retry`. Nil on all other event types. */
+  retry?: RetryInfo;
+  /** Host-widening payload on `event: host_widened`. Nil on all other
+   *  event types. */
+  host_widening?: HostWidening;
+  // v0.4 `event: agent` side-channel announces the run's tracking IDs
+  // immediately after the `event: session` frame. parent_agent_id is null
+  // for top-level runs.
+  agent_id?: string;
+  run_id?: string;
+  session_id?: string;
+  parent_agent_id?: string | null;
 }
 
 export type PromptContent =
@@ -55,6 +113,47 @@ export interface RunOptions {
   agent: string;
   segments: PromptSegment[];
   allowedTools?: string[];
+  /** Per-request URL allowlist (v0.3.3+). Three-state on the wire:
+   *  - omitted / `undefined` — no narrowing (operator's static list applies).
+   *  - `null` — same as omitted (pass-through; convenience for callers
+   *    that thread a possibly-unset slice).
+   *  - `[]` — deny all (every network call refuses).
+   *  - `["host1.com", ...]` — intersection with the operator's list
+   *    (caller can shrink, never widen). */
+  allowedHosts?: string[] | null;
+  /** Brave-side filtering when `allowedHosts` is set:
+   *  - "drop" (default) — Brave results outside the intersected list
+   *    are omitted; the model only sees URLs it can follow up with WebFetch.
+   *  - "keep" — Brave's full result set passes through; caller filters
+   *    downstream.
+   *  Ignored when `allowedHosts` is unset. */
+  webSearchFilter?: "drop" | "keep";
+  /** Bind the run to an existing session (v0.x). When set, the new run is
+   *  appended to that session (transcript is NOT replayed by /v1/runs —
+   *  use continueSession for replay semantics). When empty, a fresh
+   *  session is created and announced as the first SSE frame. */
+  sessionId?: string;
+  tenantId?: string;
+  /** Caller-supplied user binding (v0.4+). Records the run under this
+   *  user_id for cancel/list endpoints; sub-agents inherit it. Charset:
+   *  [A-Za-z0-9_-]{1,128}. */
+  userId?: string;
+  /** Caller-supplied tracking handle (v0.4+). When omitted, the server
+   *  generates one and announces it in `event: agent`. Addresses the run
+   *  for status/cancel via /v1/agents/{agent_id}. Charset:
+   *  [A-Za-z0-9_-]{1,128}. */
+  agentId?: string;
+  /** Per-user tier name (v0.8.2+). Maps to `user_tiers.{name}` in the
+   *  sidecar config (provider_priority + optional per-agent overlay).
+   *  Server 400s on unknown tier. When omitted, falls through to
+   *  `user_tiers.default`. */
+  userTier?: string;
+  /** Per-run MCP bearer token (v0.8.x+). Substituted into MCP HTTP header
+   *  values containing `${run.user_bearer}` at outbound request-build time.
+   *  Charset: [A-Za-z0-9._\-+/=]{16,512}. Empty is backwards-compatible
+   *  (static-bearer setups unaffected). Sub-agents inherit identically.
+   *  Never persisted; never logged in full. */
+  userBearer?: string;
   signal?: AbortSignal;
 }
 
@@ -63,6 +162,12 @@ export interface ContinueOptions {
   sessionId: string;
   segments: PromptSegment[];
   allowedTools?: string[];
+  /** Per-call URL allowlist. Same three-state semantics as
+   *  RunOptions.allowedHosts — continuations re-supply the list each
+   *  time rather than inheriting from the seed run. */
+  allowedHosts?: string[] | null;
+  /** Brave-side filtering when allowedHosts is set. See RunOptions. */
+  webSearchFilter?: "drop" | "keep";
   /** Pin the continuation to a specific running agent_id.
    *  Optional — when set, the server validates that the agent is
    *  live for this session before accepting; rejects with
@@ -70,6 +175,14 @@ export interface ContinueOptions {
    *  Python adapter's ContinueOptions.agent_id (the Python field
    *  is snake_case; the wire field server-side is `agent_id`). */
   agentId?: string;
+  /** Per-call user tier (v0.8.2+). Unlike user_id (session-bound),
+   *  user_tier is per-request so a user upgrading mid-session sees
+   *  the new tier applied to the next continuation. */
+  userTier?: string;
+  /** Per-call MCP bearer (v0.8.x+). Per-request (not session-bound)
+   *  so different continuations in the same session may carry
+   *  different end-user tokens. */
+  userBearer?: string;
   signal?: AbortSignal;
 }
 
