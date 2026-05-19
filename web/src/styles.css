@@ -196,13 +196,232 @@ pre {
 }
 .node .row {
   display: grid;
-  grid-template-columns: 80px 1fr 200px 120px auto;
+  grid-template-columns: 14px 80px 1fr 200px 120px auto;
   gap: 12px;
   align-items: center;
   padding: 6px 8px;
   background: var(--bg-soft);
   border: 1px solid var(--border);
   border-radius: 4px;
+}
+.tree-caret {
+  background: transparent;
+  border: none;
+  color: var(--fg-soft);
+  cursor: pointer;
+  width: 14px;
+  height: 14px;
+  font-size: 10px;
+  padding: 0;
+  user-select: none;
+  line-height: 1;
+}
+.tree-caret:disabled {
+  cursor: default;
+  opacity: 0.35;
+}
+.tree-caret:hover:not(:disabled) {
+  color: var(--accent);
+}
+
+/* Breadcrumbs (v0.8.20 Web UI refactor) replace the standalone
+ * "← runs" link on the agent detail. Shows ancestor chain from
+ * root down to the selected agent. */
+.crumbs-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  padding: 8px 12px;
+  font-size: 12px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 12px;
+}
+.crumb-link {
+  background: transparent;
+  border: none;
+  color: var(--accent);
+  cursor: pointer;
+  padding: 0;
+  font-size: 12px;
+  font-family: inherit;
+  text-decoration: none;
+}
+.crumb-link:hover { text-decoration: underline; }
+.crumb-orphan {
+  color: var(--fg-soft);
+  font-family: var(--mono);
+}
+.crumb-sep {
+  color: var(--fg-soft);
+  margin: 0 4px;
+  user-select: none;
+}
+.crumb-current {
+  color: var(--fg);
+  font-weight: 600;
+}
+.crumb-home {
+  font-family: var(--mono);
+  font-size: 11px;
+}
+
+/* Split agents view (v0.8.20). Two side-by-side panels: tree on
+ * the left, selected agent's detail on the right. Both fill the
+ * available height of the .content area; each has its own
+ * internal scroll so headers stay sticky. */
+.agents-view {
+  display: grid;
+  grid-template-columns: 420px 1fr;
+  gap: 12px;
+  height: 100%;
+  min-height: 0;
+}
+.agents-view > .left,
+.agents-view > .right {
+  background: var(--bg-soft);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+.agents-tree-panel {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  height: 100%;
+}
+.agents-tree-panel .toolbar {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+}
+.agents-tree-panel .tree-scroll {
+  flex: 1;
+  overflow: auto;
+  padding: 8px 10px;
+  min-height: 0;
+}
+.agents-view > .right > .agent-detail {
+  flex: 1;
+  overflow: auto;
+  min-height: 0;
+  padding: 0 14px 14px;
+}
+.agents-view > .right > .empty {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+/* Tighten the tree row layout inside the narrow left pane — the
+ * 80px / 200px / 120px columns from the standalone tree don't fit
+ * a 420px panel. Drop model + time to single-line truncated. */
+.agents-view .node .row {
+  /* Status pill column = `auto` (grid sizes to widest content
+   * across rows so all pills align). The pill has min-width 70px
+   * but COMPLETED/CANCELLED naturally render ~84px; a fixed
+   * column at 70px causes the pill to overflow into the agent
+   * name. */
+  grid-template-columns: 14px auto 1fr 80px;
+  gap: 8px;
+  padding: 5px 7px;
+  font-size: 12px;
+}
+.agents-view .node .row .model,
+.agents-view .node .row .error-flag {
+  display: none;
+}
+.agents-view .node .row .time {
+  text-align: right;
+  color: var(--fg-soft);
+  font-size: 11px;
+  white-space: nowrap;
+}
+.agents-view .node.selected > .row {
+  background: var(--bg-soft-2);
+  border-left: 2px solid var(--accent);
+}
+.agents-view .agent-link {
+  background: transparent;
+  border: none;
+  color: inherit;
+  padding: 0;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.agents-view .agent-link:hover strong {
+  color: var(--accent);
+}
+
+/* View toggle (panels | terminal) sits between the breadcrumb
+ * bar and the transcript body. Reuses .scope-tabs button styling. */
+.view-toggle {
+  padding: 6px 0 10px;
+  margin-bottom: 8px;
+}
+
+/* Terminal transcript — log-tail-style monospace stream. Used when
+ * ?view=terminal. Tight rows; auto-tails on new events when the
+ * operator is already near the bottom. */
+.terminal-transcript {
+  background: #0a0c10;
+  color: #c8cdd6;
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.5;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  height: calc(100vh - 280px);
+  overflow: auto;
+  margin: 0;
+}
+.tl-row {
+  display: grid;
+  grid-template-columns: 110px 110px 12px 1fr;
+  column-gap: 8px;
+  align-items: start;
+  padding: 1px 0;
+}
+.tl-ts {
+  color: var(--fg-soft);
+  font-variant-numeric: tabular-nums;
+  white-space: pre;
+}
+.tl-kind {
+  color: var(--fg-soft);
+  text-transform: lowercase;
+  white-space: pre;
+}
+.tl-sep {
+  color: var(--fg-soft);
+  text-align: center;
+}
+.tl-payload {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.tl-row.tl-error .tl-payload,
+.tl-row.tl-error .tl-kind {
+  color: var(--failed);
+}
+.tl-row.tl-tool .tl-payload,
+.tl-row.tl-tool .tl-kind {
+  color: var(--accent);
+}
+.tl-row.tl-result .tl-payload {
+  color: var(--completed);
+}
+.tl-row.tl-done .tl-payload {
+  color: var(--cancelled);
+}
+.tl-row.tl-meta .tl-payload,
+.tl-row.tl-meta .tl-kind {
+  color: var(--fg-soft);
+  opacity: 0.75;
 }
 .agent-link {
   display: flex;

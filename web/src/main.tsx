@@ -2,26 +2,32 @@ import React from "react";
 import ReactDOM from "react-dom/client";
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import "./styles.css";
-import RunList from "./pages/RunList";
-import AgentDetail from "./pages/AgentDetail";
+import AgentsView from "./pages/AgentsView";
 import MemoryView from "./pages/MemoryView";
 import InterruptInbox from "./pages/InterruptInbox";
 import SnapshotsView from "./pages/SnapshotsView";
 import Layout from "./components/Layout";
+import AgentIdRedirect from "./components/AgentIdRedirect";
 
 // Mounted at /ui/ in production; the BrowserRouter basename matches
 // so links / navigation generate correct paths.
+//
+// Routing notes (v0.8.20 split-view refactor):
+//   / (index) → redirect to /agents
+//   /agents → split-view tree + detail (selection via ?agent=)
+//   /agents/:agentId → legacy redirect to /agents?agent=:agentId
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
     <BrowserRouter basename="/ui">
       <Routes>
         <Route path="/" element={<Layout />}>
-          <Route index element={<RunList />} />
-          <Route path="agents/:agentId" element={<AgentDetail />} />
+          <Route index element={<Navigate to="/agents" replace />} />
+          <Route path="agents" element={<AgentsView />} />
+          <Route path="agents/:agentId" element={<AgentIdRedirect />} />
           <Route path="memory" element={<MemoryView />} />
           <Route path="interrupts" element={<InterruptInbox />} />
           <Route path="snapshots" element={<SnapshotsView />} />
-          <Route path="*" element={<Navigate to="/" replace />} />
+          <Route path="*" element={<Navigate to="/agents" replace />} />
         </Route>
       </Routes>
     </BrowserRouter>
