@@ -53,9 +53,10 @@ loomcycle/
 │       ├── policy/                    per-agent allow/deny + glob matching
 │       └── tool.go                    Tool interface, Dispatcher, ctx-stash helpers
 ├── adapters/ts/                       @loomcycle/client (npm)
-├── docs/                              public docs (this file, TOOLS.md, PLAN.md)
-└── doc-internal/                      internal planning notes (gitignored)
+└── docs/                              public docs (this file, TOOLS.md, PLAN.md)
 ```
+
+Internal planning notes (RFCs, decision history, ground-truth PLAN.md) live OUT of this repo at `~/work/loomcycle-internal/doc-internal/` — migrated from the in-repo `doc-internal/` folder in PR #100 (v0.8.15).
 
 ## Request flow (POST /v1/runs)
 
@@ -420,7 +421,7 @@ The companion `loomcycle-mcp.sh` wrapper at the repo root sources `.env.local` b
 - Boot-time upstream MCP init can block stdio readiness for ~32 s if an upstream is misconfigured. The `.env.local`-sourcing wrapper mitigates; long-term, mcp-mode should make upstream init non-blocking.
 - The HTTP listener binds 127.0.0.1:8787 alongside the stdio loop. Operators running the `loomcycle.sh` daemon cannot simultaneously run `loomcycle mcp` from the same machine.
 
-References: `internal/connector/connector.go` (interface), `internal/api/http/connector_impl.go` (canonical implementation), `internal/api/mcp/server.go` (stdio I/O loop), `internal/api/mcp/handlers.go` (21 tool handlers), `internal/api/mcp/context.go` (`operatorCtx`), `loomcycle-mcp.sh` (env-loading wrapper), `cmd/loomcycle/main.go` (`mcp` subcommand dispatch).
+References: `internal/connector/connector.go` (interface), `internal/api/http/connector_impl.go` (canonical implementation), `internal/api/mcp/server.go` (stdio I/O loop), `internal/api/mcp/handlers.go` (22 tool handlers), `internal/api/mcp/context.go` (`operatorCtx`), `loomcycle-mcp.sh` (env-loading wrapper), `cmd/loomcycle/main.go` (`mcp` subcommand dispatch).
 
 ## Pause / Resume / Snapshot (v0.8.17)
 
