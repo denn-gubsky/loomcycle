@@ -1,7 +1,7 @@
 {
   "name": "@loomcycle/client",
-  "version": "0.1.0-alpha.0",
-  "description": "TypeScript client for the loomcycle sidecar (HTTP+SSE).",
+  "version": "0.8.18",
+  "description": "TypeScript client for the loomcycle sidecar (HTTP+SSE). 24 methods covering run streaming, agent metadata, pause/resume/state, snapshot lifecycle, memory admin, and interruption resolve.",
   "license": "Apache-2.0",
   "type": "module",
   "main": "./dist/index.js",
