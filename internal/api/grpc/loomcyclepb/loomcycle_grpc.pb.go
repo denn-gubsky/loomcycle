@@ -38,16 +38,25 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	Loomcycle_Run_FullMethodName            = "/loomcycle.v1.Loomcycle/Run"
-	Loomcycle_Continue_FullMethodName       = "/loomcycle.v1.Loomcycle/Continue"
-	Loomcycle_GetTranscript_FullMethodName  = "/loomcycle.v1.Loomcycle/GetTranscript"
-	Loomcycle_GetAgent_FullMethodName       = "/loomcycle.v1.Loomcycle/GetAgent"
-	Loomcycle_CancelAgent_FullMethodName    = "/loomcycle.v1.Loomcycle/CancelAgent"
-	Loomcycle_ListUserAgents_FullMethodName = "/loomcycle.v1.Loomcycle/ListUserAgents"
-	Loomcycle_Health_FullMethodName         = "/loomcycle.v1.Loomcycle/Health"
-	Loomcycle_RegisterHook_FullMethodName   = "/loomcycle.v1.Loomcycle/RegisterHook"
-	Loomcycle_ListHooks_FullMethodName      = "/loomcycle.v1.Loomcycle/ListHooks"
-	Loomcycle_DeleteHook_FullMethodName     = "/loomcycle.v1.Loomcycle/DeleteHook"
+	Loomcycle_Run_FullMethodName             = "/loomcycle.v1.Loomcycle/Run"
+	Loomcycle_Continue_FullMethodName        = "/loomcycle.v1.Loomcycle/Continue"
+	Loomcycle_GetTranscript_FullMethodName   = "/loomcycle.v1.Loomcycle/GetTranscript"
+	Loomcycle_GetAgent_FullMethodName        = "/loomcycle.v1.Loomcycle/GetAgent"
+	Loomcycle_CancelAgent_FullMethodName     = "/loomcycle.v1.Loomcycle/CancelAgent"
+	Loomcycle_ListUserAgents_FullMethodName  = "/loomcycle.v1.Loomcycle/ListUserAgents"
+	Loomcycle_Health_FullMethodName          = "/loomcycle.v1.Loomcycle/Health"
+	Loomcycle_RegisterHook_FullMethodName    = "/loomcycle.v1.Loomcycle/RegisterHook"
+	Loomcycle_ListHooks_FullMethodName       = "/loomcycle.v1.Loomcycle/ListHooks"
+	Loomcycle_DeleteHook_FullMethodName      = "/loomcycle.v1.Loomcycle/DeleteHook"
+	Loomcycle_PauseRuntime_FullMethodName    = "/loomcycle.v1.Loomcycle/PauseRuntime"
+	Loomcycle_ResumeRuntime_FullMethodName   = "/loomcycle.v1.Loomcycle/ResumeRuntime"
+	Loomcycle_GetRuntimeState_FullMethodName = "/loomcycle.v1.Loomcycle/GetRuntimeState"
+	Loomcycle_CreateSnapshot_FullMethodName  = "/loomcycle.v1.Loomcycle/CreateSnapshot"
+	Loomcycle_ListSnapshots_FullMethodName   = "/loomcycle.v1.Loomcycle/ListSnapshots"
+	Loomcycle_GetSnapshot_FullMethodName     = "/loomcycle.v1.Loomcycle/GetSnapshot"
+	Loomcycle_ExportSnapshot_FullMethodName  = "/loomcycle.v1.Loomcycle/ExportSnapshot"
+	Loomcycle_RestoreSnapshot_FullMethodName = "/loomcycle.v1.Loomcycle/RestoreSnapshot"
+	Loomcycle_DeleteSnapshot_FullMethodName  = "/loomcycle.v1.Loomcycle/DeleteSnapshot"
 )
 
 // LoomcycleClient is the client API for Loomcycle service.
@@ -112,6 +121,61 @@ type LoomcycleClient interface {
 	//
 	// Mirrors DELETE /v1/hooks/{id}.
 	DeleteHook(ctx context.Context, in *DeleteHookRequest, opts ...grpc.CallOption) (*DeleteHookResponse, error)
+	// PauseRuntime quiesces the runtime. Idempotent tools cancel
+	// immediately; non-idempotent + external tools get a grace window
+	// (default 30 s; max 5 min) then force-cancel. Returns 409-equivalent
+	// when the runtime is already pausing or paused.
+	//
+	// Mirrors POST /v1/_pause.
+	PauseRuntime(ctx context.Context, in *PauseRuntimeRequest, opts ...grpc.CallOption) (*PauseRuntimeResponse, error)
+	// ResumeRuntime releases the quiesce. Paused runs re-enter their
+	// loops. Returns 409-equivalent when the runtime is not paused.
+	//
+	// Mirrors POST /v1/_resume.
+	ResumeRuntime(ctx context.Context, in *ResumeRuntimeRequest, opts ...grpc.CallOption) (*ResumeRuntimeResponse, error)
+	// GetRuntimeState returns the current quiesce state for dashboards.
+	//
+	// Mirrors GET /v1/_state.
+	GetRuntimeState(ctx context.Context, in *GetRuntimeStateRequest, opts ...grpc.CallOption) (*RuntimeStateResponse, error)
+	// CreateSnapshot captures running-state into a per-section-semver
+	// JSON envelope (agent_defs, agent_def_active, memory, channels,
+	// evaluations, paused_runs, optional interaction_history). Returns
+	// 413-equivalent when the serialised envelope exceeds the configured
+	// cap (LOOMCYCLE_SNAPSHOT_MAX_BYTES; default 512 MiB).
+	//
+	// Mirrors POST /v1/_snapshots.
+	CreateSnapshot(ctx context.Context, in *CreateSnapshotRequest, opts ...grpc.CallOption) (*SnapshotDescriptor, error)
+	// ListSnapshots returns metadata for the most-recent snapshots
+	// (capped at 200). The JSON envelope itself is not included; use
+	// GetSnapshot / ExportSnapshot to fetch.
+	//
+	// Mirrors GET /v1/_snapshots.
+	ListSnapshots(ctx context.Context, in *ListSnapshotsRequest, opts ...grpc.CallOption) (*ListSnapshotsResponse, error)
+	// GetSnapshot returns the full envelope including JSON content.
+	// Distinct from ExportSnapshot, which is operator-facing "where did
+	// this land on the host" semantics.
+	//
+	// Mirrors GET /v1/_snapshots/{id}.
+	GetSnapshot(ctx context.Context, in *GetSnapshotRequest, opts ...grpc.CallOption) (*SnapshotEnvelope, error)
+	// ExportSnapshot returns canonical envelope bytes (raw_json) for a
+	// snapshot id. Transports that stream large exports use raw_json
+	// directly; file_path / checksum stay empty unless materialised.
+	//
+	// Mirrors GET /v1/_snapshots/{id}/export.
+	ExportSnapshot(ctx context.Context, in *ExportSnapshotRequest, opts ...grpc.CallOption) (*ExportSnapshotResponse, error)
+	// RestoreSnapshot restores from a same-instance snapshot_id OR
+	// cross-instance raw_json. Idempotent: ON CONFLICT DO NOTHING per
+	// row. Counters in the response reflect rows actually written.
+	// Returns 422-equivalent on snapshot version newer than reader
+	// supports.
+	//
+	// Mirrors POST /v1/_snapshots/{id}/restore.
+	RestoreSnapshot(ctx context.Context, in *RestoreSnapshotRequest, opts ...grpc.CallOption) (*RestoreSnapshotResponse, error)
+	// DeleteSnapshot removes a snapshot. Idempotent — succeeds whether
+	// or not the row existed.
+	//
+	// Mirrors DELETE /v1/_snapshots/{id}.
+	DeleteSnapshot(ctx context.Context, in *DeleteSnapshotRequest, opts ...grpc.CallOption) (*DeleteSnapshotResponse, error)
 }
 
 type loomcycleClient struct {
@@ -240,6 +304,96 @@ func (c *loomcycleClient) DeleteHook(ctx context.Context, in *DeleteHookRequest,
 	return out, nil
 }
 
+func (c *loomcycleClient) PauseRuntime(ctx context.Context, in *PauseRuntimeRequest, opts ...grpc.CallOption) (*PauseRuntimeResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(PauseRuntimeResponse)
+	err := c.cc.Invoke(ctx, Loomcycle_PauseRuntime_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *loomcycleClient) ResumeRuntime(ctx context.Context, in *ResumeRuntimeRequest, opts ...grpc.CallOption) (*ResumeRuntimeResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ResumeRuntimeResponse)
+	err := c.cc.Invoke(ctx, Loomcycle_ResumeRuntime_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *loomcycleClient) GetRuntimeState(ctx context.Context, in *GetRuntimeStateRequest, opts ...grpc.CallOption) (*RuntimeStateResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(RuntimeStateResponse)
+	err := c.cc.Invoke(ctx, Loomcycle_GetRuntimeState_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *loomcycleClient) CreateSnapshot(ctx context.Context, in *CreateSnapshotRequest, opts ...grpc.CallOption) (*SnapshotDescriptor, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SnapshotDescriptor)
+	err := c.cc.Invoke(ctx, Loomcycle_CreateSnapshot_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *loomcycleClient) ListSnapshots(ctx context.Context, in *ListSnapshotsRequest, opts ...grpc.CallOption) (*ListSnapshotsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListSnapshotsResponse)
+	err := c.cc.Invoke(ctx, Loomcycle_ListSnapshots_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *loomcycleClient) GetSnapshot(ctx context.Context, in *GetSnapshotRequest, opts ...grpc.CallOption) (*SnapshotEnvelope, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SnapshotEnvelope)
+	err := c.cc.Invoke(ctx, Loomcycle_GetSnapshot_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *loomcycleClient) ExportSnapshot(ctx context.Context, in *ExportSnapshotRequest, opts ...grpc.CallOption) (*ExportSnapshotResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ExportSnapshotResponse)
+	err := c.cc.Invoke(ctx, Loomcycle_ExportSnapshot_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *loomcycleClient) RestoreSnapshot(ctx context.Context, in *RestoreSnapshotRequest, opts ...grpc.CallOption) (*RestoreSnapshotResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(RestoreSnapshotResponse)
+	err := c.cc.Invoke(ctx, Loomcycle_RestoreSnapshot_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *loomcycleClient) DeleteSnapshot(ctx context.Context, in *DeleteSnapshotRequest, opts ...grpc.CallOption) (*DeleteSnapshotResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(DeleteSnapshotResponse)
+	err := c.cc.Invoke(ctx, Loomcycle_DeleteSnapshot_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // LoomcycleServer is the server API for Loomcycle service.
 // All implementations must embed UnimplementedLoomcycleServer
 // for forward compatibility.
@@ -302,6 +456,61 @@ type LoomcycleServer interface {
 	//
 	// Mirrors DELETE /v1/hooks/{id}.
 	DeleteHook(context.Context, *DeleteHookRequest) (*DeleteHookResponse, error)
+	// PauseRuntime quiesces the runtime. Idempotent tools cancel
+	// immediately; non-idempotent + external tools get a grace window
+	// (default 30 s; max 5 min) then force-cancel. Returns 409-equivalent
+	// when the runtime is already pausing or paused.
+	//
+	// Mirrors POST /v1/_pause.
+	PauseRuntime(context.Context, *PauseRuntimeRequest) (*PauseRuntimeResponse, error)
+	// ResumeRuntime releases the quiesce. Paused runs re-enter their
+	// loops. Returns 409-equivalent when the runtime is not paused.
+	//
+	// Mirrors POST /v1/_resume.
+	ResumeRuntime(context.Context, *ResumeRuntimeRequest) (*ResumeRuntimeResponse, error)
+	// GetRuntimeState returns the current quiesce state for dashboards.
+	//
+	// Mirrors GET /v1/_state.
+	GetRuntimeState(context.Context, *GetRuntimeStateRequest) (*RuntimeStateResponse, error)
+	// CreateSnapshot captures running-state into a per-section-semver
+	// JSON envelope (agent_defs, agent_def_active, memory, channels,
+	// evaluations, paused_runs, optional interaction_history). Returns
+	// 413-equivalent when the serialised envelope exceeds the configured
+	// cap (LOOMCYCLE_SNAPSHOT_MAX_BYTES; default 512 MiB).
+	//
+	// Mirrors POST /v1/_snapshots.
+	CreateSnapshot(context.Context, *CreateSnapshotRequest) (*SnapshotDescriptor, error)
+	// ListSnapshots returns metadata for the most-recent snapshots
+	// (capped at 200). The JSON envelope itself is not included; use
+	// GetSnapshot / ExportSnapshot to fetch.
+	//
+	// Mirrors GET /v1/_snapshots.
+	ListSnapshots(context.Context, *ListSnapshotsRequest) (*ListSnapshotsResponse, error)
+	// GetSnapshot returns the full envelope including JSON content.
+	// Distinct from ExportSnapshot, which is operator-facing "where did
+	// this land on the host" semantics.
+	//
+	// Mirrors GET /v1/_snapshots/{id}.
+	GetSnapshot(context.Context, *GetSnapshotRequest) (*SnapshotEnvelope, error)
+	// ExportSnapshot returns canonical envelope bytes (raw_json) for a
+	// snapshot id. Transports that stream large exports use raw_json
+	// directly; file_path / checksum stay empty unless materialised.
+	//
+	// Mirrors GET /v1/_snapshots/{id}/export.
+	ExportSnapshot(context.Context, *ExportSnapshotRequest) (*ExportSnapshotResponse, error)
+	// RestoreSnapshot restores from a same-instance snapshot_id OR
+	// cross-instance raw_json. Idempotent: ON CONFLICT DO NOTHING per
+	// row. Counters in the response reflect rows actually written.
+	// Returns 422-equivalent on snapshot version newer than reader
+	// supports.
+	//
+	// Mirrors POST /v1/_snapshots/{id}/restore.
+	RestoreSnapshot(context.Context, *RestoreSnapshotRequest) (*RestoreSnapshotResponse, error)
+	// DeleteSnapshot removes a snapshot. Idempotent — succeeds whether
+	// or not the row existed.
+	//
+	// Mirrors DELETE /v1/_snapshots/{id}.
+	DeleteSnapshot(context.Context, *DeleteSnapshotRequest) (*DeleteSnapshotResponse, error)
 	mustEmbedUnimplementedLoomcycleServer()
 }
 
@@ -341,6 +550,33 @@ func (UnimplementedLoomcycleServer) ListHooks(context.Context, *ListHooksRequest
 }
 func (UnimplementedLoomcycleServer) DeleteHook(context.Context, *DeleteHookRequest) (*DeleteHookResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method DeleteHook not implemented")
+}
+func (UnimplementedLoomcycleServer) PauseRuntime(context.Context, *PauseRuntimeRequest) (*PauseRuntimeResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method PauseRuntime not implemented")
+}
+func (UnimplementedLoomcycleServer) ResumeRuntime(context.Context, *ResumeRuntimeRequest) (*ResumeRuntimeResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ResumeRuntime not implemented")
+}
+func (UnimplementedLoomcycleServer) GetRuntimeState(context.Context, *GetRuntimeStateRequest) (*RuntimeStateResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetRuntimeState not implemented")
+}
+func (UnimplementedLoomcycleServer) CreateSnapshot(context.Context, *CreateSnapshotRequest) (*SnapshotDescriptor, error) {
+	return nil, status.Error(codes.Unimplemented, "method CreateSnapshot not implemented")
+}
+func (UnimplementedLoomcycleServer) ListSnapshots(context.Context, *ListSnapshotsRequest) (*ListSnapshotsResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListSnapshots not implemented")
+}
+func (UnimplementedLoomcycleServer) GetSnapshot(context.Context, *GetSnapshotRequest) (*SnapshotEnvelope, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetSnapshot not implemented")
+}
+func (UnimplementedLoomcycleServer) ExportSnapshot(context.Context, *ExportSnapshotRequest) (*ExportSnapshotResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ExportSnapshot not implemented")
+}
+func (UnimplementedLoomcycleServer) RestoreSnapshot(context.Context, *RestoreSnapshotRequest) (*RestoreSnapshotResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method RestoreSnapshot not implemented")
+}
+func (UnimplementedLoomcycleServer) DeleteSnapshot(context.Context, *DeleteSnapshotRequest) (*DeleteSnapshotResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method DeleteSnapshot not implemented")
 }
 func (UnimplementedLoomcycleServer) mustEmbedUnimplementedLoomcycleServer() {}
 func (UnimplementedLoomcycleServer) testEmbeddedByValue()                   {}
@@ -529,6 +765,168 @@ func _Loomcycle_DeleteHook_Handler(srv interface{}, ctx context.Context, dec fun
 	return interceptor(ctx, in, info, handler)
 }
 
+func _Loomcycle_PauseRuntime_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(PauseRuntimeRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(LoomcycleServer).PauseRuntime(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Loomcycle_PauseRuntime_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(LoomcycleServer).PauseRuntime(ctx, req.(*PauseRuntimeRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Loomcycle_ResumeRuntime_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ResumeRuntimeRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(LoomcycleServer).ResumeRuntime(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Loomcycle_ResumeRuntime_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(LoomcycleServer).ResumeRuntime(ctx, req.(*ResumeRuntimeRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Loomcycle_GetRuntimeState_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetRuntimeStateRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(LoomcycleServer).GetRuntimeState(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Loomcycle_GetRuntimeState_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(LoomcycleServer).GetRuntimeState(ctx, req.(*GetRuntimeStateRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Loomcycle_CreateSnapshot_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(CreateSnapshotRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(LoomcycleServer).CreateSnapshot(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Loomcycle_CreateSnapshot_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(LoomcycleServer).CreateSnapshot(ctx, req.(*CreateSnapshotRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Loomcycle_ListSnapshots_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListSnapshotsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(LoomcycleServer).ListSnapshots(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Loomcycle_ListSnapshots_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(LoomcycleServer).ListSnapshots(ctx, req.(*ListSnapshotsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Loomcycle_GetSnapshot_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetSnapshotRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(LoomcycleServer).GetSnapshot(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Loomcycle_GetSnapshot_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(LoomcycleServer).GetSnapshot(ctx, req.(*GetSnapshotRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Loomcycle_ExportSnapshot_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ExportSnapshotRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(LoomcycleServer).ExportSnapshot(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Loomcycle_ExportSnapshot_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(LoomcycleServer).ExportSnapshot(ctx, req.(*ExportSnapshotRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Loomcycle_RestoreSnapshot_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RestoreSnapshotRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(LoomcycleServer).RestoreSnapshot(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Loomcycle_RestoreSnapshot_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(LoomcycleServer).RestoreSnapshot(ctx, req.(*RestoreSnapshotRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Loomcycle_DeleteSnapshot_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(DeleteSnapshotRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(LoomcycleServer).DeleteSnapshot(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Loomcycle_DeleteSnapshot_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(LoomcycleServer).DeleteSnapshot(ctx, req.(*DeleteSnapshotRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // Loomcycle_ServiceDesc is the grpc.ServiceDesc for Loomcycle service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -567,6 +965,42 @@ var Loomcycle_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "DeleteHook",
 			Handler:    _Loomcycle_DeleteHook_Handler,
+		},
+		{
+			MethodName: "PauseRuntime",
+			Handler:    _Loomcycle_PauseRuntime_Handler,
+		},
+		{
+			MethodName: "ResumeRuntime",
+			Handler:    _Loomcycle_ResumeRuntime_Handler,
+		},
+		{
+			MethodName: "GetRuntimeState",
+			Handler:    _Loomcycle_GetRuntimeState_Handler,
+		},
+		{
+			MethodName: "CreateSnapshot",
+			Handler:    _Loomcycle_CreateSnapshot_Handler,
+		},
+		{
+			MethodName: "ListSnapshots",
+			Handler:    _Loomcycle_ListSnapshots_Handler,
+		},
+		{
+			MethodName: "GetSnapshot",
+			Handler:    _Loomcycle_GetSnapshot_Handler,
+		},
+		{
+			MethodName: "ExportSnapshot",
+			Handler:    _Loomcycle_ExportSnapshot_Handler,
+		},
+		{
+			MethodName: "RestoreSnapshot",
+			Handler:    _Loomcycle_RestoreSnapshot_Handler,
+		},
+		{
+			MethodName: "DeleteSnapshot",
+			Handler:    _Loomcycle_DeleteSnapshot_Handler,
 		},
 	},
 	Streams: []grpc.StreamDesc{

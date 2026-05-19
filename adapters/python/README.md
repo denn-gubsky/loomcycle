@@ -1,8 +1,10 @@
 # loomcycle — async Python client
 
 `loomcycle` is the async Python client for [loomcycle][1]'s gRPC API
-(introduced in v0.5.5). It exposes the seven RPC methods on the
-`Loomcycle` service through an ergonomic `LoomcycleClient` class —
+(introduced in v0.5.5; expanded to ~22 methods in v0.6.0). It exposes
+the full RPC surface (run streaming, agent metadata, transcript,
+pause / snapshot lifecycle, memory admin, interruption resolve) on
+the `Loomcycle` service through an ergonomic `LoomcycleClient` class —
 no need to import generated protobuf types in your application code.
 
 [1]: https://github.com/denn-gubsky/loomcycle
@@ -12,7 +14,7 @@ no need to import generated protobuf types in your application code.
 - Wraps loomcycle ≥ v0.5.5's gRPC server (`LOOMCYCLE_GRPC_ADDR`).
 - Async-only (`grpc.aio`). Python 3.9+.
 - Equivalent surface to the TypeScript adapter at `adapters/ts/`.
-- Production tag: `0.6.0` (adds hook management; ships alongside the v0.8.x hooks-connector loomcycle release).
+- Production tag: `0.6.0` (full ~22-method parity + hook management; ships alongside the v0.8.18 cross-transport hardening loomcycle release).
 
 ## Install
 
@@ -97,6 +99,15 @@ All methods are coroutine methods on `LoomcycleClient`.
 | `list_hooks()` | `list[dict]` | Every registered hook (in-memory only). |
 | `delete_hook(hook_id)` | `bool` | Idempotent on missing id is NOT supported — raises `HookNotFoundError`. |
 | `close()` | `None` | Idempotent. Use `async with` to do this automatically. |
+| `pause_runtime(timeout_ms=0)` | `dict` | v0.8.18 — quiesce the runtime. Returns `{status, duration_ms, force_cancelled_count, paused_runs_count, warnings}`. |
+| `resume_runtime()` | `dict` | v0.8.18 — release the quiesce. Returns `{status, resumed_run_count, warnings}`. |
+| `get_runtime_state()` | `dict` | v0.8.18 — current state. Returns `{status, paused_at, paused_run_count, snapshots_count}`. |
+| `create_snapshot(description="", include_history=False, since_ts=None, max_bytes=0)` | `dict` | v0.8.18 — capture running-state JSON envelope. |
+| `list_snapshots()` | `list[dict]` | v0.8.18 — metadata only; up to 200 most-recent. |
+| `get_snapshot(snapshot_id)` | `dict` | v0.8.18 — full envelope including `json_content` bytes. |
+| `export_snapshot(snapshot_id)` | `dict` | v0.8.18 — canonical bytes via `raw_json` for streaming consumers. |
+| `restore_snapshot(snapshot_id=..., raw_json=..., include_history=False)` | `dict` | v0.8.18 — exactly one of `snapshot_id` / `raw_json`. Per-section counters returned. |
+| `delete_snapshot(snapshot_id)` | `bool` | v0.8.18 — idempotent; returns True. |
 
 ## Errors
 
@@ -110,9 +121,15 @@ Every method translates gRPC error codes to typed Python exceptions:
 | `FAILED_PRECONDITION` (session busy) | `SessionBusyError` |
 | `FAILED_PRECONDITION` (other) | `LoomcycleError` |
 | `ALREADY_EXISTS` | `AgentIDInUseError` |
-| `RESOURCE_EXHAUSTED` | `BackpressureError` |
+| `RESOURCE_EXHAUSTED` (snapshot) | `SnapshotTooLargeError` (v0.8.18) |
+| `RESOURCE_EXHAUSTED` (other) | `BackpressureError` |
 | `UNAUTHENTICATED` | `AuthError` |
-| `UNAVAILABLE` | `UnavailableError` |
+| `UNAVAILABLE` (pause not configured) | `PauseNotConfiguredError` (v0.8.18, subclass of UnavailableError) |
+| `UNAVAILABLE` (other) | `UnavailableError` |
+| `NOT_FOUND` (with snapshot ctx) | `SnapshotNotFoundError` (v0.8.18) |
+| `FAILED_PRECONDITION` (already pausing) | `AlreadyPausingError` (v0.8.18) |
+| `FAILED_PRECONDITION` (not paused) | `NotPausedError` (v0.8.18) |
+| `FAILED_PRECONDITION` (snapshot version) | `SnapshotVersionError` (v0.8.18) |
 | `INVALID_ARGUMENT` / `INTERNAL` / other | `LoomcycleError` |
 
 All exceptions inherit from `LoomcycleError` and preserve the

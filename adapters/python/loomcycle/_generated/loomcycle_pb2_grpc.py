@@ -88,6 +88,51 @@ class LoomcycleStub(object):
                 request_serializer=loomcycle__pb2.DeleteHookRequest.SerializeToString,
                 response_deserializer=loomcycle__pb2.DeleteHookResponse.FromString,
                 _registered_method=True)
+        self.PauseRuntime = channel.unary_unary(
+                '/loomcycle.v1.Loomcycle/PauseRuntime',
+                request_serializer=loomcycle__pb2.PauseRuntimeRequest.SerializeToString,
+                response_deserializer=loomcycle__pb2.PauseRuntimeResponse.FromString,
+                _registered_method=True)
+        self.ResumeRuntime = channel.unary_unary(
+                '/loomcycle.v1.Loomcycle/ResumeRuntime',
+                request_serializer=loomcycle__pb2.ResumeRuntimeRequest.SerializeToString,
+                response_deserializer=loomcycle__pb2.ResumeRuntimeResponse.FromString,
+                _registered_method=True)
+        self.GetRuntimeState = channel.unary_unary(
+                '/loomcycle.v1.Loomcycle/GetRuntimeState',
+                request_serializer=loomcycle__pb2.GetRuntimeStateRequest.SerializeToString,
+                response_deserializer=loomcycle__pb2.RuntimeStateResponse.FromString,
+                _registered_method=True)
+        self.CreateSnapshot = channel.unary_unary(
+                '/loomcycle.v1.Loomcycle/CreateSnapshot',
+                request_serializer=loomcycle__pb2.CreateSnapshotRequest.SerializeToString,
+                response_deserializer=loomcycle__pb2.SnapshotDescriptor.FromString,
+                _registered_method=True)
+        self.ListSnapshots = channel.unary_unary(
+                '/loomcycle.v1.Loomcycle/ListSnapshots',
+                request_serializer=loomcycle__pb2.ListSnapshotsRequest.SerializeToString,
+                response_deserializer=loomcycle__pb2.ListSnapshotsResponse.FromString,
+                _registered_method=True)
+        self.GetSnapshot = channel.unary_unary(
+                '/loomcycle.v1.Loomcycle/GetSnapshot',
+                request_serializer=loomcycle__pb2.GetSnapshotRequest.SerializeToString,
+                response_deserializer=loomcycle__pb2.SnapshotEnvelope.FromString,
+                _registered_method=True)
+        self.ExportSnapshot = channel.unary_unary(
+                '/loomcycle.v1.Loomcycle/ExportSnapshot',
+                request_serializer=loomcycle__pb2.ExportSnapshotRequest.SerializeToString,
+                response_deserializer=loomcycle__pb2.ExportSnapshotResponse.FromString,
+                _registered_method=True)
+        self.RestoreSnapshot = channel.unary_unary(
+                '/loomcycle.v1.Loomcycle/RestoreSnapshot',
+                request_serializer=loomcycle__pb2.RestoreSnapshotRequest.SerializeToString,
+                response_deserializer=loomcycle__pb2.RestoreSnapshotResponse.FromString,
+                _registered_method=True)
+        self.DeleteSnapshot = channel.unary_unary(
+                '/loomcycle.v1.Loomcycle/DeleteSnapshot',
+                request_serializer=loomcycle__pb2.DeleteSnapshotRequest.SerializeToString,
+                response_deserializer=loomcycle__pb2.DeleteSnapshotResponse.FromString,
+                _registered_method=True)
 
 
 class LoomcycleServicer(object):
@@ -205,6 +250,119 @@ class LoomcycleServicer(object):
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def PauseRuntime(self, request, context):
+        """----- v0.8.17 Pause / Resume / Snapshot (real impls in v0.8.18) -----
+
+        Runtime-wide quiesce + cross-version-portable JSON snapshot. Wire
+        shapes mirror the connector.Connector method signatures. Typed
+        errors from internal/connector/errors.go map to gRPC codes:
+        ErrPauseNotConfigured     → Unavailable (503-equivalent)
+        ErrAlreadyPausing         → FailedPrecondition (409-equivalent)
+        ErrNotPaused              → FailedPrecondition (409-equivalent)
+        ErrSnapshotNotFound       → NotFound (404-equivalent)
+        ErrSnapshotTooLarge       → ResourceExhausted (413-equivalent)
+        ErrSnapshotVersionTooNew  → FailedPrecondition (422-equivalent)
+        ErrSnapshotVersionUnknown → FailedPrecondition (422-equivalent)
+
+        PauseRuntime quiesces the runtime. Idempotent tools cancel
+        immediately; non-idempotent + external tools get a grace window
+        (default 30 s; max 5 min) then force-cancel. Returns 409-equivalent
+        when the runtime is already pausing or paused.
+
+        Mirrors POST /v1/_pause.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def ResumeRuntime(self, request, context):
+        """ResumeRuntime releases the quiesce. Paused runs re-enter their
+        loops. Returns 409-equivalent when the runtime is not paused.
+
+        Mirrors POST /v1/_resume.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def GetRuntimeState(self, request, context):
+        """GetRuntimeState returns the current quiesce state for dashboards.
+
+        Mirrors GET /v1/_state.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def CreateSnapshot(self, request, context):
+        """CreateSnapshot captures running-state into a per-section-semver
+        JSON envelope (agent_defs, agent_def_active, memory, channels,
+        evaluations, paused_runs, optional interaction_history). Returns
+        413-equivalent when the serialised envelope exceeds the configured
+        cap (LOOMCYCLE_SNAPSHOT_MAX_BYTES; default 512 MiB).
+
+        Mirrors POST /v1/_snapshots.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def ListSnapshots(self, request, context):
+        """ListSnapshots returns metadata for the most-recent snapshots
+        (capped at 200). The JSON envelope itself is not included; use
+        GetSnapshot / ExportSnapshot to fetch.
+
+        Mirrors GET /v1/_snapshots.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def GetSnapshot(self, request, context):
+        """GetSnapshot returns the full envelope including JSON content.
+        Distinct from ExportSnapshot, which is operator-facing "where did
+        this land on the host" semantics.
+
+        Mirrors GET /v1/_snapshots/{id}.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def ExportSnapshot(self, request, context):
+        """ExportSnapshot returns canonical envelope bytes (raw_json) for a
+        snapshot id. Transports that stream large exports use raw_json
+        directly; file_path / checksum stay empty unless materialised.
+
+        Mirrors GET /v1/_snapshots/{id}/export.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def RestoreSnapshot(self, request, context):
+        """RestoreSnapshot restores from a same-instance snapshot_id OR
+        cross-instance raw_json. Idempotent: ON CONFLICT DO NOTHING per
+        row. Counters in the response reflect rows actually written.
+        Returns 422-equivalent on snapshot version newer than reader
+        supports.
+
+        Mirrors POST /v1/_snapshots/{id}/restore.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def DeleteSnapshot(self, request, context):
+        """DeleteSnapshot removes a snapshot. Idempotent — succeeds whether
+        or not the row existed.
+
+        Mirrors DELETE /v1/_snapshots/{id}.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
 
 def add_LoomcycleServicer_to_server(servicer, server):
     rpc_method_handlers = {
@@ -257,6 +415,51 @@ def add_LoomcycleServicer_to_server(servicer, server):
                     servicer.DeleteHook,
                     request_deserializer=loomcycle__pb2.DeleteHookRequest.FromString,
                     response_serializer=loomcycle__pb2.DeleteHookResponse.SerializeToString,
+            ),
+            'PauseRuntime': grpc.unary_unary_rpc_method_handler(
+                    servicer.PauseRuntime,
+                    request_deserializer=loomcycle__pb2.PauseRuntimeRequest.FromString,
+                    response_serializer=loomcycle__pb2.PauseRuntimeResponse.SerializeToString,
+            ),
+            'ResumeRuntime': grpc.unary_unary_rpc_method_handler(
+                    servicer.ResumeRuntime,
+                    request_deserializer=loomcycle__pb2.ResumeRuntimeRequest.FromString,
+                    response_serializer=loomcycle__pb2.ResumeRuntimeResponse.SerializeToString,
+            ),
+            'GetRuntimeState': grpc.unary_unary_rpc_method_handler(
+                    servicer.GetRuntimeState,
+                    request_deserializer=loomcycle__pb2.GetRuntimeStateRequest.FromString,
+                    response_serializer=loomcycle__pb2.RuntimeStateResponse.SerializeToString,
+            ),
+            'CreateSnapshot': grpc.unary_unary_rpc_method_handler(
+                    servicer.CreateSnapshot,
+                    request_deserializer=loomcycle__pb2.CreateSnapshotRequest.FromString,
+                    response_serializer=loomcycle__pb2.SnapshotDescriptor.SerializeToString,
+            ),
+            'ListSnapshots': grpc.unary_unary_rpc_method_handler(
+                    servicer.ListSnapshots,
+                    request_deserializer=loomcycle__pb2.ListSnapshotsRequest.FromString,
+                    response_serializer=loomcycle__pb2.ListSnapshotsResponse.SerializeToString,
+            ),
+            'GetSnapshot': grpc.unary_unary_rpc_method_handler(
+                    servicer.GetSnapshot,
+                    request_deserializer=loomcycle__pb2.GetSnapshotRequest.FromString,
+                    response_serializer=loomcycle__pb2.SnapshotEnvelope.SerializeToString,
+            ),
+            'ExportSnapshot': grpc.unary_unary_rpc_method_handler(
+                    servicer.ExportSnapshot,
+                    request_deserializer=loomcycle__pb2.ExportSnapshotRequest.FromString,
+                    response_serializer=loomcycle__pb2.ExportSnapshotResponse.SerializeToString,
+            ),
+            'RestoreSnapshot': grpc.unary_unary_rpc_method_handler(
+                    servicer.RestoreSnapshot,
+                    request_deserializer=loomcycle__pb2.RestoreSnapshotRequest.FromString,
+                    response_serializer=loomcycle__pb2.RestoreSnapshotResponse.SerializeToString,
+            ),
+            'DeleteSnapshot': grpc.unary_unary_rpc_method_handler(
+                    servicer.DeleteSnapshot,
+                    request_deserializer=loomcycle__pb2.DeleteSnapshotRequest.FromString,
+                    response_serializer=loomcycle__pb2.DeleteSnapshotResponse.SerializeToString,
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
@@ -533,6 +736,249 @@ class Loomcycle(object):
             '/loomcycle.v1.Loomcycle/DeleteHook',
             loomcycle__pb2.DeleteHookRequest.SerializeToString,
             loomcycle__pb2.DeleteHookResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def PauseRuntime(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/loomcycle.v1.Loomcycle/PauseRuntime',
+            loomcycle__pb2.PauseRuntimeRequest.SerializeToString,
+            loomcycle__pb2.PauseRuntimeResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ResumeRuntime(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/loomcycle.v1.Loomcycle/ResumeRuntime',
+            loomcycle__pb2.ResumeRuntimeRequest.SerializeToString,
+            loomcycle__pb2.ResumeRuntimeResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def GetRuntimeState(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/loomcycle.v1.Loomcycle/GetRuntimeState',
+            loomcycle__pb2.GetRuntimeStateRequest.SerializeToString,
+            loomcycle__pb2.RuntimeStateResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def CreateSnapshot(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/loomcycle.v1.Loomcycle/CreateSnapshot',
+            loomcycle__pb2.CreateSnapshotRequest.SerializeToString,
+            loomcycle__pb2.SnapshotDescriptor.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ListSnapshots(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/loomcycle.v1.Loomcycle/ListSnapshots',
+            loomcycle__pb2.ListSnapshotsRequest.SerializeToString,
+            loomcycle__pb2.ListSnapshotsResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def GetSnapshot(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/loomcycle.v1.Loomcycle/GetSnapshot',
+            loomcycle__pb2.GetSnapshotRequest.SerializeToString,
+            loomcycle__pb2.SnapshotEnvelope.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ExportSnapshot(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/loomcycle.v1.Loomcycle/ExportSnapshot',
+            loomcycle__pb2.ExportSnapshotRequest.SerializeToString,
+            loomcycle__pb2.ExportSnapshotResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def RestoreSnapshot(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/loomcycle.v1.Loomcycle/RestoreSnapshot',
+            loomcycle__pb2.RestoreSnapshotRequest.SerializeToString,
+            loomcycle__pb2.RestoreSnapshotResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def DeleteSnapshot(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/loomcycle.v1.Loomcycle/DeleteSnapshot',
+            loomcycle__pb2.DeleteSnapshotRequest.SerializeToString,
+            loomcycle__pb2.DeleteSnapshotResponse.FromString,
             options,
             channel_credentials,
             insecure,

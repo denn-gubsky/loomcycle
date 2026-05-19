@@ -62,6 +62,7 @@ jobs:
           cache-dependency-path: adapters/ts/package-lock.json
       - run: npm ci
       - run: npx tsc --noEmit
+      - run: npm test
 
   web-ui:
     name: Web UI build

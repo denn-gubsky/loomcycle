@@ -216,7 +216,7 @@ func TestServer_ToolsList_Returns25Tools(t *testing.T) {
 		t.Fatalf("unmarshal: %v", err)
 	}
 	if len(result.Tools) != 25 {
-		t.Errorf("got %d tools, want 25 (hooks-connector PR B adds register_hook/list_hooks/delete_hook)", len(result.Tools))
+		t.Errorf("got %d tools, want 25 (v0.8.18: get_snapshot + register_hook/list_hooks/delete_hook)", len(result.Tools))
 	}
 	names := map[string]bool{}
 	for _, td := range result.Tools {

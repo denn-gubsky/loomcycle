@@ -79,3 +79,52 @@ class HookNotFoundError(LoomcycleError):
     mentions ``"hook"`` — the dispatcher in ``_raise_from_grpc``
     checks for the keyword BEFORE falling through to
     ``AgentNotFoundError``."""
+
+
+class InvalidArgumentError(LoomcycleError):
+    """Raised by client-side validation (v0.8.18+) when caller-supplied
+    arguments fail a precondition before any wire call is made — e.g.
+    ``restore_snapshot`` invoked with neither ``snapshot_id`` nor
+    ``raw_json``, or ``create_snapshot`` given an invalid RFC3339
+    ``since_ts``. ``code`` is always ``None`` to distinguish from
+    server-returned ``LoomcycleError`` with a real gRPC code."""
+
+
+# v0.8.18 — Pause/Resume/Snapshot typed errors. Each maps from a
+# specific gRPC status code on the new Pause/Snapshot RPCs.
+
+class PauseNotConfiguredError(UnavailableError):
+    """Raised when the server has no pause Manager wired (no Store
+    backend on the deployment). Operator config issue; not a transient
+    failure. Server returns gRPC Unavailable for this case."""
+
+
+class AlreadyPausingError(LoomcycleError):
+    """Raised by ``pause_runtime`` when the runtime is already pausing
+    or paused. Server returns gRPC FailedPrecondition. Idempotent —
+    a scripted ``pause if not paused`` loop can swallow this."""
+
+
+class NotPausedError(LoomcycleError):
+    """Raised by ``resume_runtime`` when the runtime is not paused.
+    Server returns gRPC FailedPrecondition. Symmetric with
+    ``AlreadyPausingError``."""
+
+
+class SnapshotNotFoundError(LoomcycleError):
+    """Raised by ``get_snapshot`` / ``export_snapshot`` /
+    ``restore_snapshot`` / ``delete_snapshot`` when no snapshot has
+    the supplied id. Server returns gRPC NotFound."""
+
+
+class SnapshotTooLargeError(LoomcycleError):
+    """Raised by ``create_snapshot`` when the serialised envelope
+    exceeds ``LOOMCYCLE_SNAPSHOT_MAX_BYTES`` (default 512 MiB).
+    Server returns gRPC ResourceExhausted."""
+
+
+class SnapshotVersionError(LoomcycleError):
+    """Raised by ``restore_snapshot`` when a section's declared
+    version is newer than the reader supports OR unknown to the
+    migration registry. Operator upgrades loomcycle before restoring.
+    Server returns gRPC FailedPrecondition for both subcases."""

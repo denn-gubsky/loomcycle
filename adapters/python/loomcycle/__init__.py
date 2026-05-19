@@ -55,6 +55,14 @@ from .errors import (
     AuthError,
     UnavailableError,
     HookNotFoundError,
+    # v0.8.18 — pause/snapshot typed errors.
+    PauseNotConfiguredError,
+    AlreadyPausingError,
+    NotPausedError,
+    SnapshotNotFoundError,
+    SnapshotTooLargeError,
+    SnapshotVersionError,
+    InvalidArgumentError,
 )
 
 __all__ = [
@@ -73,6 +81,14 @@ __all__ = [
     "AuthError",
     "UnavailableError",
     "HookNotFoundError",
+    # v0.8.18 additions.
+    "PauseNotConfiguredError",
+    "AlreadyPausingError",
+    "NotPausedError",
+    "SnapshotNotFoundError",
+    "SnapshotTooLargeError",
+    "SnapshotVersionError",
+    "InvalidArgumentError",
 ]
 
 __version__ = "0.6.0"
