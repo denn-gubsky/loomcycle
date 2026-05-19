@@ -6,55 +6,35 @@ import (
 	"fmt"
 	"net/http"
 
-	"github.com/denn-gubsky/loomcycle/internal/hooks"
+	"github.com/denn-gubsky/loomcycle/internal/connector"
 )
 
-// hookRegisterRequest is the wire shape POSTed to /v1/hooks. Mirrors
-// hooks.Hook minus the loomcycle-assigned fields (ID, RegisteredAt).
-type hookRegisterRequest struct {
-	Owner       string         `json:"owner"`
-	Name        string         `json:"name"`
-	Phase       hooks.Phase    `json:"phase"`
-	Agents      []string       `json:"agents"`
-	Tools       []string       `json:"tools"`
-	CallbackURL string         `json:"callback_url"`
-	FailMode    hooks.FailMode `json:"fail_mode"`
-	TimeoutMs   int            `json:"timeout_ms"`
-}
-
-// hookRegisterResponse is the wire shape returned on success. The id
-// is loomcycle-assigned; clients use it on DELETE /v1/hooks/{id}.
-type hookRegisterResponse struct {
-	ID string `json:"id"`
-}
-
-// handleRegisterHook accepts a hookRegisterRequest, registers it
-// against the in-memory registry, and returns the assigned id.
+// handleRegisterHook accepts a connector.RegisterHookRequest, registers
+// it through the Connector layer, and returns the assigned id.
 //
 // Idempotency: if the (owner, name) tuple already maps to a registered
 // hook, the prior entry is replaced in-place (preserving chain order)
 // and a fresh id is assigned. Apps re-registering on their own startup
 // don't have to worry about cascading duplicates.
+//
+// Refactored in the hooks-connector series: business logic moved to
+// Server.RegisterHook (connector_impl_hooks.go); this handler is now
+// pure wire-translation, mirroring the v0.8.18 handlePauseRuntime /
+// handleSnapshot style.
 func (s *Server) handleRegisterHook(w http.ResponseWriter, r *http.Request) {
-	var req hookRegisterRequest
+	var req connector.RegisterHookRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSONError(w, http.StatusBadRequest, "invalid_json", "request body must be JSON: "+err.Error())
 		return
 	}
-	h := &hooks.Hook{
-		Owner:       req.Owner,
-		Name:        req.Name,
-		Phase:       req.Phase,
-		Agents:      req.Agents,
-		Tools:       req.Tools,
-		CallbackURL: req.CallbackURL,
-		FailMode:    req.FailMode,
-		TimeoutMs:   req.TimeoutMs,
-	}
-	id, err := s.hookRegistry.Register(h)
+	resp, err := s.RegisterHook(r.Context(), req)
 	if err != nil {
-		if errors.Is(err, hooks.ErrInvalidRegistration) {
+		if errors.Is(err, connector.ErrHookInvalidRegistration) {
 			writeJSONError(w, http.StatusBadRequest, "invalid_registration", err.Error())
+			return
+		}
+		if errors.Is(err, connector.ErrHookNotConfigured) {
+			writeJSONError(w, http.StatusServiceUnavailable, "hooks_not_configured", err.Error())
 			return
 		}
 		writeJSONError(w, http.StatusInternalServerError, "internal", err.Error())
@@ -62,18 +42,25 @@ func (s *Server) handleRegisterHook(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	_ = json.NewEncoder(w).Encode(hookRegisterResponse{ID: id})
+	_ = json.NewEncoder(w).Encode(resp)
 }
 
 // handleListHooks returns every currently-registered hook in
 // registration order. Useful for debug; no pagination because the
 // registry is intentionally small (operator-curated set).
-func (s *Server) handleListHooks(w http.ResponseWriter, _ *http.Request) {
+func (s *Server) handleListHooks(w http.ResponseWriter, r *http.Request) {
+	resp, err := s.ListHooks(r.Context())
+	if err != nil {
+		if errors.Is(err, connector.ErrHookNotConfigured) {
+			writeJSONError(w, http.StatusServiceUnavailable, "hooks_not_configured", err.Error())
+			return
+		}
+		writeJSONError(w, http.StatusInternalServerError, "internal", err.Error())
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	_ = json.NewEncoder(w).Encode(map[string]any{
-		"hooks": s.hookRegistry.List(),
-	})
+	_ = json.NewEncoder(w).Encode(resp)
 }
 
 // handleDeleteHook removes the hook with the given id from the
@@ -86,9 +73,13 @@ func (s *Server) handleDeleteHook(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusBadRequest, "missing_id", "hook id required in path")
 		return
 	}
-	if err := s.hookRegistry.Delete(id); err != nil {
-		if errors.Is(err, hooks.ErrNotFound) {
+	if err := s.DeleteHook(r.Context(), id); err != nil {
+		if errors.Is(err, connector.ErrHookNotFound) {
 			writeJSONError(w, http.StatusNotFound, "not_found", fmt.Sprintf("no hook with id %q", id))
+			return
+		}
+		if errors.Is(err, connector.ErrHookNotConfigured) {
+			writeJSONError(w, http.StatusServiceUnavailable, "hooks_not_configured", err.Error())
 			return
 		}
 		writeJSONError(w, http.StatusInternalServerError, "internal", err.Error())

@@ -54,4 +54,23 @@ var (
 	// section's declared version isn't in the migration registry at
 	// all (corrupted snapshot or pre-history version).
 	ErrSnapshotVersionUnknown = errors.New("connector: snapshot section version unknown")
+
+	// ErrHookInvalidRegistration is returned by RegisterHook when the
+	// supplied request fails the hooks.Registry validation (missing
+	// owner/name/callback_url, unsupported phase, non-http(s) scheme).
+	// Transports map to 400 / InvalidArgument. Wrap with %w + the
+	// underlying message so the caller sees what specifically failed.
+	ErrHookInvalidRegistration = errors.New("connector: invalid hook registration")
+
+	// ErrHookNotFound is returned by DeleteHook when no hook is
+	// registered with the supplied id. Transports map to 404 / NotFound.
+	ErrHookNotFound = errors.New("connector: hook not found")
+
+	// ErrHookNotConfigured is returned by the hook methods when the
+	// Server was constructed without a hookRegistry (e.g. a test harness
+	// that builds *Server directly via struct literal). The HTTP New()
+	// constructor always wires one, so production deployments never hit
+	// this — it's a defensive guard for the gRPC/MCP code paths that
+	// dispatch through Connector and would otherwise nil-panic.
+	ErrHookNotConfigured = errors.New("connector: hook registry not configured on this server")
 )
