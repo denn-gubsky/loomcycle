@@ -453,6 +453,122 @@ func TestRun_Streaming(t *testing.T) {
 	}
 }
 
+// TestRun_PerRunPolicyFields confirms that the v0.8.x per-run policy
+// fields (tenant_id, user_tier, user_bearer) on RunRequest reach
+// runner.RunInput — proto regen + runInputFromProto wiring regression
+// guard. Without this, gRPC consumers (the Python adapter) couldn't
+// pass per-tenant / per-tier / per-user-bearer signals and the HTTP
+// surface was the only path that did.
+func TestRun_PerRunPolicyFields(t *testing.T) {
+	fr := &fakeRunner{
+		registered: registrationFrame{AgentID: "a_top", RunID: "r_top", SessionID: "s_top"},
+		events:     []proverevent{{typ: "done", stopReason: "end_turn"}},
+	}
+	client, cleanup := startTestServerWithRunner(t, fr)
+	defer cleanup()
+
+	stream, err := client.Run(context.Background(), &loomcyclepb.RunRequest{
+		Agent:      "default",
+		TenantId:   "acme-corp",
+		UserTier:   "pro",
+		UserBearer: "bearer_AbCdEfGhIjKlMnOpQrStUv0123456789",
+		UserId:     "u_test",
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	// Drain to ensure the RunOnce call completes before we read lastInput.
+	if _, err := stream.Recv(); err != nil {
+		t.Fatalf("Recv: %v", err)
+	}
+	if fr.lastInput.TenantID != "acme-corp" {
+		t.Errorf("TenantID = %q, want acme-corp", fr.lastInput.TenantID)
+	}
+	if fr.lastInput.UserTier != "pro" {
+		t.Errorf("UserTier = %q, want pro", fr.lastInput.UserTier)
+	}
+	if fr.lastInput.UserBearer != "bearer_AbCdEfGhIjKlMnOpQrStUv0123456789" {
+		t.Errorf("UserBearer = %q, want the long bearer", fr.lastInput.UserBearer)
+	}
+	if fr.lastInput.UserID != "u_test" {
+		t.Errorf("UserID = %q, want u_test (regression guard for v0.4 wiring)", fr.lastInput.UserID)
+	}
+}
+
+// TestContinue_PerRunPolicyFields confirms ContinueRequest's per-call
+// policy fields (user_tier, user_bearer) reach runner.RunInput. Note:
+// tenant_id is deliberately NOT on ContinueRequest — the server
+// inherits the session's tenant; this test pins that wire decision by
+// confirming the fields that ARE accepted flow through.
+func TestContinue_PerRunPolicyFields(t *testing.T) {
+	fr := &fakeRunner{
+		registered: registrationFrame{AgentID: "a_top", RunID: "r_top", SessionID: "s_existing"},
+		events:     []proverevent{{typ: "done", stopReason: "end_turn"}},
+	}
+	client, cleanup := startTestServerWithRunner(t, fr)
+	defer cleanup()
+
+	stream, err := client.Continue(context.Background(), &loomcyclepb.ContinueRequest{
+		SessionId:  "s_existing",
+		UserTier:   "enterprise",
+		UserBearer: "bearer_ZyXwVuTsRqPoNmLkJiHgFeDcBa9876543210",
+	})
+	if err != nil {
+		t.Fatalf("Continue: %v", err)
+	}
+	if _, err := stream.Recv(); err != nil {
+		t.Fatalf("Recv: %v", err)
+	}
+	if fr.lastInput.UserTier != "enterprise" {
+		t.Errorf("UserTier = %q, want enterprise", fr.lastInput.UserTier)
+	}
+	if fr.lastInput.UserBearer != "bearer_ZyXwVuTsRqPoNmLkJiHgFeDcBa9876543210" {
+		t.Errorf("UserBearer = %q, want the long bearer", fr.lastInput.UserBearer)
+	}
+	if fr.lastInput.SessionID != "s_existing" {
+		t.Errorf("SessionID = %q, want s_existing", fr.lastInput.SessionID)
+	}
+}
+
+// TestEventToProto_HostWidening confirms the v0.8.17 host_widening
+// payload survives provider.Event → proto.Event conversion. Without
+// this, the gRPC stream would emit a `host_widened` event with no
+// structured payload and consumers couldn't audit confused-deputy
+// patterns.
+func TestEventToProto_HostWidening(t *testing.T) {
+	ev := providers.Event{
+		Type: "host_widened",
+		HostWidening: &providers.HostWideningEventInfo{
+			ToolCallID: "tu_abc123",
+			ToolName:   "WebFetch",
+			URL:        "https://api.example.com/v1/things",
+			HookOwner:  "jobs-search-web",
+			HookName:   "scan-webfetch",
+			HostsAdded: []string{"api.example.com", ".example.org"},
+		},
+	}
+	pb := eventToProto(ev)
+	if pb.GetType() != "host_widened" {
+		t.Errorf("type = %q, want host_widened", pb.GetType())
+	}
+	hw := pb.GetHostWidening()
+	if hw == nil {
+		t.Fatal("host_widening unset on proto Event")
+	}
+	if hw.GetToolCallId() != "tu_abc123" || hw.GetToolName() != "WebFetch" {
+		t.Errorf("host_widening identity: %+v", hw)
+	}
+	if hw.GetUrl() != "https://api.example.com/v1/things" {
+		t.Errorf("host_widening url: %q", hw.GetUrl())
+	}
+	if hw.GetHookOwner() != "jobs-search-web" || hw.GetHookName() != "scan-webfetch" {
+		t.Errorf("host_widening hook identity: owner=%q name=%q", hw.GetHookOwner(), hw.GetHookName())
+	}
+	if got := hw.GetHostsAdded(); len(got) != 2 || got[0] != "api.example.com" || got[1] != ".example.org" {
+		t.Errorf("host_widening hosts_added: %v", got)
+	}
+}
+
 func TestRun_StreamingErrorMapping(t *testing.T) {
 	cases := []struct {
 		name     string
@@ -506,11 +622,14 @@ func TestContinue_RequiresSessionID(t *testing.T) {
 
 // fakeRunner satisfies runner.Runner without spinning up a real
 // agent loop. Tests configure it with a registration frame + a list
-// of events to emit + an optional error to return.
+// of events to emit + an optional error to return. lastInput records
+// the most recent RunOnce invocation so tests can verify how proto
+// fields land in the runner.RunInput.
 type fakeRunner struct {
 	registered registrationFrame
 	events     []proverevent
 	returnErr  error
+	lastInput  runner.RunInput
 }
 
 type registrationFrame struct {
@@ -526,6 +645,7 @@ type proverevent struct {
 }
 
 func (f *fakeRunner) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunCallbacks) error {
+	f.lastInput = in
 	if f.returnErr != nil {
 		return f.returnErr
 	}

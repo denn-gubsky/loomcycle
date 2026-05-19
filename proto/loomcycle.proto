@@ -214,6 +214,23 @@ message RunRequest {
   // to a user for ListUserAgents + cancel-cascade.
   string agent_id = 7;
   string user_id = 8;
+
+  // v0.8.x per-run policy fields. Mirror the HTTP wire on
+  // POST /v1/runs (handleRuns runRequest in internal/api/http/server.go).
+  //
+  // tenant_id is recorded on a fresh session; ignored for continuations
+  // (server inherits the seed run's tenant). Empty = no tenant tag.
+  string tenant_id = 9;
+  // user_tier (v0.8.2+) is the user-facing tier policy name; maps to
+  // cfg.UserTiers[<name>] for provider_priority + per-agent overlay.
+  // Server returns InvalidArgument on unknown tier. Empty falls
+  // through to cfg.UserTiers["default"] when configured.
+  string user_tier = 10;
+  // user_bearer (v0.8.x+) is the per-run MCP bearer token. Substituted
+  // into outbound MCP HTTP header values containing `${run.user_bearer}`
+  // at request-build time. Charset [A-Za-z0-9._\-+/=]{16,512}. Never
+  // persisted, never logged in full. Sub-agents inherit identically.
+  string user_bearer = 11;
 }
 
 message ContinueRequest {
@@ -223,6 +240,13 @@ message ContinueRequest {
   HostAllowlist allowed_hosts = 4;
   string web_search_filter = 5;
   string agent_id = 6;  // fresh tracking handle for this continuation
+
+  // v0.8.x per-call policy fields. Continuations re-supply these each
+  // turn (rather than inheriting from the seed run) so a user upgrading
+  // mid-session sees the new tier on the next turn. tenant_id is NOT
+  // accepted on Continue — the server inherits it from the session.
+  string user_tier = 7;
+  string user_bearer = 8;
 }
 
 // HostAllowlist wraps a repeated string so the absence-of-list state
@@ -260,7 +284,7 @@ message PromptContentBlock {
 // "this event is just text" or "this event is a tool_use" or "this
 // event is a usage update" without per-type subclassing.
 message Event {
-  string type = 1;  // text | tool_use | tool_result | usage | retry | done | error
+  string type = 1;  // text | tool_use | tool_result | usage | retry | done | error | host_widened
   string text = 2;
   ToolUse tool_use = 3;
   Usage usage = 4;
@@ -268,6 +292,24 @@ message Event {
   bool is_error = 6;        // tool_result with execution failure
   Retry retry = 7;
   string stop_reason = 8;   // end_turn | tool_use | max_tokens | stop_sequence
+  // host_widening carries the structured payload on type=host_widened
+  // frames (v0.8.17+). Emitted once per dispatched tool call whose
+  // Pre-hook allow_hosts grant fired. Nil on every other event type.
+  HostWidening host_widening = 9;
+}
+
+// HostWidening is the structured payload on EventHostWidened frames
+// (v0.8.17+). Operators correlate (tool_call_id, url, hosts_added)
+// to detect confused-deputy patterns where the hook is just echoing
+// the model's requested host without independent validation.
+// Mirrors providers.HostWideningEventInfo on the Go side.
+message HostWidening {
+  string tool_call_id = 1;  // loop-issued tool_use id; same as the surrounding EventToolCall
+  string tool_name = 2;      // "HTTP" / "WebFetch" / etc.
+  string url = 3;            // originating URL the model asked the tool to fetch
+  string hook_owner = 4;     // (owner, name) identifies the registered hook
+  string hook_name = 5;
+  repeated string hosts_added = 6;
 }
 
 // ToolUse carries one tool_use block emitted by the model. The id is

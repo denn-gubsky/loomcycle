@@ -44,7 +44,7 @@ documented in the project README.
 """
 
 from .client import LoomcycleClient, RunHandle
-from .events import AgentEvent, ToolUse, Usage, Retry
+from .events import AgentEvent, ToolUse, Usage, Retry, HostWidening
 from .errors import (
     LoomcycleError,
     AgentNotFoundError,
@@ -72,6 +72,7 @@ __all__ = [
     "ToolUse",
     "Usage",
     "Retry",
+    "HostWidening",
     "LoomcycleError",
     "AgentNotFoundError",
     "SessionNotFoundError",
@@ -91,4 +92,4 @@ __all__ = [
     "InvalidArgumentError",
 ]
 
-__version__ = "0.6.0"
+__version__ = "0.6.1"
