@@ -6,7 +6,10 @@ import (
 	loommcp "github.com/denn-gubsky/loomcycle/internal/tools/mcp"
 )
 
-// toolDescriptors returns the v0.8.15 catalogue of 20 MCP tools.
+// toolDescriptors returns the MCP tool catalogue. Count is asserted
+// by TestServer_ToolsList in server_test.go — let that test be the
+// authoritative source of "how many tools" rather than restating it
+// here (the comment would otherwise drift on every new addition).
 // Each descriptor carries name + description + input schema; the
 // schemas are intentionally minimal — full input validation lives
 // at the connector layer (or, for builtin wrappers, at the

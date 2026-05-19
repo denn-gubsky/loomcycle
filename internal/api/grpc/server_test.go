@@ -19,6 +19,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/api/grpc/loomcyclepb"
 	"github.com/denn-gubsky/loomcycle/internal/cancel"
 	"github.com/denn-gubsky/loomcycle/internal/connector"
+	"github.com/denn-gubsky/loomcycle/internal/hooks"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/runner"
 	"github.com/denn-gubsky/loomcycle/internal/store"
@@ -731,6 +732,7 @@ type hookConnector struct {
 	registerErr  error
 	registerResp connector.RegisterHookResponse
 	listResp     connector.ListHooksResponse
+	listErr      error
 	deleteErr    error
 
 	gotRegister atomic.Value // connector.RegisterHookRequest
@@ -742,7 +744,7 @@ func (m *hookConnector) RegisterHook(_ context.Context, req connector.RegisterHo
 	return m.registerResp, m.registerErr
 }
 func (m *hookConnector) ListHooks(_ context.Context) (connector.ListHooksResponse, error) {
-	return m.listResp, nil
+	return m.listResp, m.listErr
 }
 func (m *hookConnector) DeleteHook(_ context.Context, id string) error {
 	m.gotDeleteID.Store(id)
@@ -810,6 +812,62 @@ func TestGrpc_DeleteHook_MissingID(t *testing.T) {
 func TestGrpc_NoConnector_RegisterHookUnavailable(t *testing.T) {
 	adapter := New(Config{CancelReg: cancel.NewRegistry()}) // no Connector
 	_, err := adapter.RegisterHook(context.Background(), &loomcyclepb.RegisterHookRequest{})
+	if status.Code(err) != codes.Unavailable {
+		t.Errorf("code = %s, want Unavailable", status.Code(err))
+	}
+}
+
+// TestGrpc_ListHooks_ReturnsHookSlice covers hookToProto's
+// field-by-field conversion (time.Time → timestamppb, int → int32
+// cast, string-typed Phase/FailMode pass-through). Without this
+// test the typo "TimeoutMs vs TimeoutMS" or a swapped phase/fail_mode
+// would silently ship.
+func TestGrpc_ListHooks_ReturnsHookSlice(t *testing.T) {
+	registered := time.Date(2026, 5, 19, 12, 0, 0, 0, time.UTC)
+	hc := &hookConnector{listResp: connector.ListHooksResponse{
+		Hooks: []*hooks.Hook{{
+			ID:           "hook_a",
+			Owner:        "jobs-search-web",
+			Name:         "scan",
+			Phase:        hooks.PhasePost,
+			Agents:       []string{"*"},
+			Tools:        []string{"WebFetch"},
+			CallbackURL:  "https://e.test/h",
+			FailMode:     hooks.FailClosed,
+			TimeoutMs:    3000,
+			RegisteredAt: registered,
+		}},
+	}}
+	adapter := New(Config{Connector: hc, CancelReg: cancel.NewRegistry()})
+
+	resp, err := adapter.ListHooks(context.Background(), &loomcyclepb.ListHooksRequest{})
+	if err != nil {
+		t.Fatalf("ListHooks: %v", err)
+	}
+	if len(resp.GetHooks()) != 1 {
+		t.Fatalf("got %d hooks, want 1", len(resp.GetHooks()))
+	}
+	h := resp.GetHooks()[0]
+	if h.GetId() != "hook_a" || h.GetOwner() != "jobs-search-web" || h.GetName() != "scan" {
+		t.Errorf("identity fields: id=%q owner=%q name=%q", h.GetId(), h.GetOwner(), h.GetName())
+	}
+	if h.GetPhase() != "post" || h.GetFailMode() != "closed" {
+		t.Errorf("phase/fail_mode: %q/%q", h.GetPhase(), h.GetFailMode())
+	}
+	if h.GetTimeoutMs() != 3000 {
+		t.Errorf("timeout_ms = %d, want 3000", h.GetTimeoutMs())
+	}
+	if h.GetCallbackUrl() != "https://e.test/h" {
+		t.Errorf("callback_url = %q", h.GetCallbackUrl())
+	}
+	if got := h.GetRegisteredAt().AsTime(); !got.Equal(registered) {
+		t.Errorf("registered_at = %v, want %v", got, registered)
+	}
+}
+
+func TestGrpc_NoConnector_ListHooksUnavailable(t *testing.T) {
+	adapter := New(Config{CancelReg: cancel.NewRegistry()}) // no Connector
+	_, err := adapter.ListHooks(context.Background(), &loomcyclepb.ListHooksRequest{})
 	if status.Code(err) != codes.Unavailable {
 		t.Errorf("code = %s, want Unavailable", status.Code(err))
 	}
