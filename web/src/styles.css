@@ -350,6 +350,74 @@ pre {
 .agents-view .agent-link:hover strong {
   color: var(--accent);
 }
+
+/* View toggle (panels | terminal) sits between the breadcrumb
+ * bar and the transcript body. Reuses .scope-tabs button styling. */
+.view-toggle {
+  padding: 6px 0 10px;
+  margin-bottom: 8px;
+}
+
+/* Terminal transcript — log-tail-style monospace stream. Used when
+ * ?view=terminal. Tight rows; auto-tails on new events when the
+ * operator is already near the bottom. */
+.terminal-transcript {
+  background: #0a0c10;
+  color: #c8cdd6;
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.5;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  height: calc(100vh - 280px);
+  overflow: auto;
+  margin: 0;
+}
+.tl-row {
+  display: grid;
+  grid-template-columns: 110px 110px 12px 1fr;
+  column-gap: 8px;
+  align-items: start;
+  padding: 1px 0;
+}
+.tl-ts {
+  color: var(--fg-soft);
+  font-variant-numeric: tabular-nums;
+  white-space: pre;
+}
+.tl-kind {
+  color: var(--fg-soft);
+  text-transform: lowercase;
+  white-space: pre;
+}
+.tl-sep {
+  color: var(--fg-soft);
+  text-align: center;
+}
+.tl-payload {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.tl-row.tl-error .tl-payload,
+.tl-row.tl-error .tl-kind {
+  color: var(--failed);
+}
+.tl-row.tl-tool .tl-payload,
+.tl-row.tl-tool .tl-kind {
+  color: var(--accent);
+}
+.tl-row.tl-result .tl-payload {
+  color: var(--completed);
+}
+.tl-row.tl-done .tl-payload {
+  color: var(--cancelled);
+}
+.tl-row.tl-meta .tl-payload,
+.tl-row.tl-meta .tl-kind {
+  color: var(--fg-soft);
+  opacity: 0.75;
+}
 .agent-link {
   display: flex;
   gap: 8px;

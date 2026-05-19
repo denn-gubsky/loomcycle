@@ -2,6 +2,8 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { Agent, EventPayload, TranscriptEvent, cancelAgent, getAgent, getTranscript } from "../api";
 import Breadcrumbs, { type BreadcrumbAncestor } from "./Breadcrumbs";
+import TerminalTranscript from "./TerminalTranscript";
+import ViewToggle, { useViewMode } from "./ViewToggle";
 
 // AgentDetailPane renders one agent's status header + the
 // scrollable event-card stream. Takes agentId as a prop so it can
@@ -117,6 +119,7 @@ export default function AgentDetailPane({ agentId, ancestors, onSelect }: AgentD
   }, [ancestors, agent?.parent_agent_id, parentAgent]);
 
   const renderedEvents = useMemo(() => coalesceText(events.filter(visible)), [events]);
+  const [viewMode, setViewMode] = useViewMode();
 
   return (
     <div className="agent-detail">
@@ -171,12 +174,17 @@ export default function AgentDetailPane({ agentId, ancestors, onSelect }: AgentD
       ) : (
         <div className="empty">loading…</div>
       )}
-      <div className="events">
-        {renderedEvents.map((ev) => (
-          <EventCard key={ev.seq} row={ev} />
-        ))}
-        <div ref={tailRef} />
-      </div>
+      <ViewToggle mode={viewMode} onChange={setViewMode} />
+      {viewMode === "panels" ? (
+        <div className="events">
+          {renderedEvents.map((ev) => (
+            <EventCard key={ev.seq} row={ev} />
+          ))}
+          <div ref={tailRef} />
+        </div>
+      ) : (
+        <TerminalTranscript events={events} />
+      )}
     </div>
   );
 }
