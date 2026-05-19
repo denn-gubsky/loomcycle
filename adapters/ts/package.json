@@ -4,6 +4,15 @@
   "description": "TypeScript client for the loomcycle sidecar (HTTP+SSE). 27 methods covering run streaming, agent metadata, pause/resume/state, snapshot lifecycle, memory admin, interruption resolve, and hook management.",
   "license": "Apache-2.0",
   "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/denn-gubsky/loomcycle.git",
+    "directory": "adapters/ts"
+  },
+  "homepage": "https://github.com/denn-gubsky/loomcycle/tree/main/adapters/ts#readme",
+  "bugs": {
+    "url": "https://github.com/denn-gubsky/loomcycle/issues"
+  },
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
