@@ -144,3 +144,14 @@ export class SnapshotVersionError extends LoomcycleError {
     this.name = "SnapshotVersionError";
   }
 }
+
+/** HookNotFoundError — raised by deleteHook when no hook has the
+ *  supplied id (HTTP 404 with "hook" in the body). Extends
+ *  NotFoundError so consumers catching the broader category get this
+ *  one too. */
+export class HookNotFoundError extends NotFoundError {
+  constructor(message: string, opts?: { status?: number; bodyText?: string }) {
+    super(message, opts);
+    this.name = "HookNotFoundError";
+  }
+}

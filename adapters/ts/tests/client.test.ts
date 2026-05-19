@@ -494,3 +494,126 @@ describe("interruption", () => {
     ).rejects.toMatchObject({ name: "NotFoundError", status: 404 });
   });
 });
+
+describe("hook management", () => {
+  it("registerHook POSTs the snake_case body shape", async () => {
+    const { client, fetchMock } = makeClient([
+      jsonResponse({ id: "hook_abc" }),
+    ]);
+    const resp = await client.registerHook({
+      owner: "jobs-search-web",
+      name: "scan",
+      phase: "pre",
+      tools: ["WebFetch"],
+      callbackUrl: "https://callback.local/h",
+      failMode: "closed",
+      timeoutMs: 2500,
+    });
+    expect(resp.id).toBe("hook_abc");
+    const call = fetchMock.mock.calls[0]!;
+    expect(call[0]).toBe("http://test-loomcycle:8787/v1/hooks");
+    expect(call[1]!.method).toBe("POST");
+    const body = JSON.parse(call[1]!.body as string);
+    expect(body).toEqual({
+      owner: "jobs-search-web",
+      name: "scan",
+      phase: "pre",
+      tools: ["WebFetch"],
+      callback_url: "https://callback.local/h",
+      fail_mode: "closed",
+      timeout_ms: 2500,
+    });
+  });
+
+  it("registerHook omits optional fields when not set", async () => {
+    const { client, fetchMock } = makeClient([
+      jsonResponse({ id: "hook_min" }),
+    ]);
+    await client.registerHook({
+      owner: "x",
+      name: "y",
+      phase: "post",
+      callbackUrl: "https://e.test/h",
+    });
+    const body = JSON.parse(fetchMock.mock.calls[0]![1]!.body as string);
+    // Omitted: agents, tools, fail_mode (defaults at server), timeout_ms.
+    expect(body).toEqual({
+      owner: "x",
+      name: "y",
+      phase: "post",
+      callback_url: "https://e.test/h",
+    });
+  });
+
+  it("registerHook on 400 raises InvalidArgumentError", async () => {
+    const { client } = makeClient([
+      errorResponse(400, "invalid_registration: callback_url required"),
+    ]);
+    await expect(
+      client.registerHook({
+        owner: "x",
+        name: "y",
+        phase: "pre",
+        callbackUrl: "",
+      }),
+    ).rejects.toMatchObject({ name: "InvalidArgumentError", status: 400 });
+  });
+
+  it("listHooks unwraps the envelope and returns the array", async () => {
+    const { client, fetchMock } = makeClient([
+      jsonResponse({
+        hooks: [
+          {
+            id: "hook_a",
+            owner: "x",
+            name: "y",
+            phase: "pre",
+            agents: ["*"],
+            tools: ["WebFetch"],
+            callback_url: "https://e.test/h",
+            fail_mode: "open",
+            timeout_ms: 0,
+            registered_at: "2026-05-19T11:00:00Z",
+          },
+        ],
+      }),
+    ]);
+    const hooks = await client.listHooks();
+    expect(hooks).toHaveLength(1);
+    expect(hooks[0]!.id).toBe("hook_a");
+    expect(fetchMock.mock.calls[0]![0]).toBe("http://test-loomcycle:8787/v1/hooks");
+    expect(fetchMock.mock.calls[0]![1]!.method).toBe("GET");
+  });
+
+  it("deleteHook DELETEs the encoded id and returns void", async () => {
+    const { client, fetchMock } = makeClient([noContentResponse()]);
+    await client.deleteHook("hook_with spaces");
+    expect(fetchMock.mock.calls[0]![0]).toBe(
+      "http://test-loomcycle:8787/v1/hooks/hook_with%20spaces",
+    );
+    expect(fetchMock.mock.calls[0]![1]!.method).toBe("DELETE");
+  });
+
+  it("deleteHook on 404 raises HookNotFoundError", async () => {
+    const { client } = makeClient([
+      errorResponse(404, `no hook with id "hook_gone"`),
+    ]);
+    await expect(client.deleteHook("hook_gone")).rejects.toMatchObject({
+      name: "HookNotFoundError",
+      status: 404,
+    });
+  });
+
+  // Regression: the 404 dispatch in fetch-helpers.ts puts "hook" BEFORE
+  // "agent" in the keyword priority. Without the new branch, the hook
+  // 404 body — which doesn't say "agent" — would fall through to
+  // NotFoundError (base); this test pins the typed-error class.
+  it("deleteHook 404 with mixed-case keyword still routes to HookNotFoundError", async () => {
+    const { client } = makeClient([
+      errorResponse(404, "No HOOK with id matches"),
+    ]);
+    await expect(client.deleteHook("hook_x")).rejects.toMatchObject({
+      name: "HookNotFoundError",
+    });
+  });
+});

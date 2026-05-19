@@ -342,3 +342,133 @@ export interface ResolveInterruptOptions {
    *  for v0.9.x future kinds. */
   kind?: string;
 }
+
+// ---- Hook management (hooks-connector series, PR C) ----
+//
+// Hook *registration* is a client concern surfaced here. Hook
+// *callback delivery* is server-side: loomcycle POSTs PreHookCall /
+// PostHookCall payloads to the consumer's registered callback_url —
+// that endpoint is whatever web framework JobEmber / the consumer
+// runs. The TS adapter exports the PreHookCall / PostHookCall /
+// PreHookResult / PostHookResult shapes so consumers can type their
+// receiver code identically to the server's wire emit, but the adapter
+// itself never runs them — it only manages the registration.
+
+export type HookPhase = "pre" | "post";
+
+export type HookFailMode = "open" | "closed";
+
+/** Hook is the full descriptor returned by listHooks. The id +
+ *  registered_at are loomcycle-assigned; the rest mirrors what was
+ *  POSTed to registerHook. Field names use snake_case to match the
+ *  Go server's JSON output. */
+export interface Hook {
+  id: string;
+  owner: string;
+  name: string;
+  phase: HookPhase;
+  agents: string[];
+  tools: string[];
+  callback_url: string;
+  fail_mode: HookFailMode;
+  timeout_ms: number;
+  registered_at: string; // ISO 8601
+}
+
+/** RegisterHookOptions uses camelCase (JS norm for method parameters)
+ *  and is translated to snake_case in the request body — same split as
+ *  RunOptions / CreateSnapshotOptions. */
+export interface RegisterHookOptions {
+  /** App UID; (owner, name) is the identity tuple. Re-registering the
+   *  same pair replaces the prior entry with a fresh id. */
+  owner: string;
+  name: string;
+  phase: HookPhase;
+  /** Agent name globs (exact match or trailing-* prefix). Empty list
+   *  matches every agent (equivalent to ["*"]). */
+  agents?: string[];
+  /** Tool name globs (same syntax). Empty matches every tool. */
+  tools?: string[];
+  /** http:// or https:// URL loomcycle POSTs PreHookCall /
+   *  PostHookCall payloads to. */
+  callbackUrl: string;
+  /** "open" (default) — webhook errors pass through. "closed" — webhook
+   *  errors fail the tool call with IsError=true. */
+  failMode?: HookFailMode;
+  /** Per-call timeout. 0 / omitted = registry default (5 s). */
+  timeoutMs?: number;
+}
+
+export interface RegisterHookResponse {
+  /** Loomcycle-assigned id. Use it on deleteHook. */
+  id: string;
+}
+
+export interface ListHooksResponse {
+  hooks: Hook[];
+}
+
+// ---- Hook callback payloads ----
+//
+// These describe what the consumer's callback_url endpoint RECEIVES
+// from loomcycle. The adapter doesn't post these — the operator's
+// hooks.Dispatcher does. Exposed here so consumers can type their
+// receiver code (e.g. an Express handler, a Next.js route) against
+// the same shapes the server emits.
+
+export interface HookToolCall {
+  id: string;
+  name: string;
+  /** Raw JSON the model produced; consumers parse as needed. */
+  input: unknown;
+}
+
+export interface HookToolResult {
+  text: string;
+  is_error?: boolean;
+}
+
+export interface PreHookCall {
+  phase: "pre";
+  owner: string;
+  hook_name: string;
+  agent: string;
+  user_id?: string;
+  agent_id?: string;
+  tool_call: HookToolCall;
+}
+
+/** Response a Pre webhook returns. All fields optional; empty body
+ *  means "pass through unchanged". See the server-side docs for the
+ *  allow_hosts confused-deputy hazard before populating it. */
+export interface PreHookResult {
+  /** Rewrite the tool input. Tool runs with this instead of the
+   *  model's original payload. */
+  input?: unknown;
+  /** Short-circuit the call: model sees this synthetic result. When
+   *  set, allow_hosts is dropped (deny wins; we do not let a denied
+   *  hook contribute hostnames to peers in the chain). */
+  deny?: HookToolResult;
+  /** Per-call host approvals. Only takes effect when the registering
+   *  owner is in the operator yaml's hooks.permit_host_widen.owners.
+   *  Read the SECURITY note in internal/hooks/types.go before using —
+   *  this is a confused-deputy attack surface. */
+  allow_hosts?: string[];
+}
+
+export interface PostHookCall {
+  phase: "post";
+  owner: string;
+  hook_name: string;
+  agent: string;
+  user_id?: string;
+  agent_id?: string;
+  tool_call: HookToolCall;
+  tool_result: HookToolResult;
+}
+
+/** Response a Post webhook returns. When result is omitted the tool
+ *  result passes through unchanged. */
+export interface PostHookResult {
+  result?: HookToolResult;
+}

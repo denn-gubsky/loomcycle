@@ -110,6 +110,19 @@ export type {
   InterruptRow,
   InterruptStatus,
   ResolveInterruptOptions,
+  // Hook management (PR C)
+  Hook,
+  HookFailMode,
+  HookPhase,
+  HookToolCall,
+  HookToolResult,
+  ListHooksResponse,
+  PostHookCall,
+  PostHookResult,
+  PreHookCall,
+  PreHookResult,
+  RegisterHookOptions,
+  RegisterHookResponse,
 } from "./types.js";
 
 export {
@@ -118,6 +131,7 @@ export {
   AlreadyPausingError,
   AuthError,
   BackpressureError,
+  HookNotFoundError,
   NotFoundError,
   InvalidArgumentError,
   LoomcycleError,

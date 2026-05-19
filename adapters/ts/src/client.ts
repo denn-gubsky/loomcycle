@@ -2,12 +2,13 @@
  * LoomcycleClient — the single public class exported by
  * @loomcycle/client. Speaks HTTP+SSE to a running loomcycle sidecar.
  *
- * v0.8.18: full Python-adapter parity. 24 methods total — 23 async
- * (run streaming, continuation, agent metadata, transcript, health,
- * users, pause/resume/state, snapshot lifecycle capture / list /
- * get / restore / delete, memory admin, interruption listing +
- * resolve) plus one synchronous helper (exportSnapshotURL builds a
- * URL string without issuing a request).
+ * hooks-connector PR C: full Python-adapter parity + hook management.
+ * 27 methods total — 26 async (run streaming, continuation, agent
+ * metadata, transcript, health, users, pause/resume/state, snapshot
+ * lifecycle capture / list / get / restore / delete, memory admin,
+ * interruption listing + resolve, hook registration / list / delete)
+ * plus one synchronous helper (exportSnapshotURL builds a URL string
+ * without issuing a request).
  *
  * Construction:
  *
@@ -40,15 +41,19 @@ import type {
   ContinueOptions,
   CreateSnapshotOptions,
   HealthResponse,
+  Hook,
   InterruptListResponse,
   InterruptStatus,
   ListAgentsResponse,
+  ListHooksResponse,
   ListUsersResponse,
   MemoryEntriesResponse,
   MemoryEntryResponse,
   MemoryScopeIDsResponse,
   MemoryScopesResponse,
   PauseResult,
+  RegisterHookOptions,
+  RegisterHookResponse,
   ResolveInterruptOptions,
   ResumeResult,
   RunOptions,
@@ -421,6 +426,57 @@ export class LoomcycleClient {
         answer: opts.answer,
         resolved_by: opts.resolvedBy ?? "client",
       },
+      opts,
+    );
+  }
+
+  // ---- Hook management (hooks-connector series, PR C) ----
+
+  /** Register a pre- or post-tool webhook. The callback_url must be
+   *  an http:// or https:// endpoint the CONSUMER runs — loomcycle
+   *  POSTs PreHookCall / PostHookCall payloads to it. This method
+   *  manages registration only; the receiver is the consumer's own
+   *  HTTP framework (Express, Next.js, etc.).
+   *
+   *  Re-registering the same (owner, name) replaces the prior entry
+   *  with a fresh id (idempotent app-restart contract).
+   *
+   *  Raises InvalidArgumentError on 400 (bad URL / phase / missing
+   *  required fields). */
+  async registerHook(
+    opts: RegisterHookOptions & { signal?: AbortSignal },
+  ): Promise<RegisterHookResponse> {
+    const body: Record<string, unknown> = {
+      owner: opts.owner,
+      name: opts.name,
+      phase: opts.phase,
+      callback_url: opts.callbackUrl,
+    };
+    if (opts.agents !== undefined) body.agents = opts.agents;
+    if (opts.tools !== undefined) body.tools = opts.tools;
+    if (opts.failMode !== undefined) body.fail_mode = opts.failMode;
+    if (opts.timeoutMs !== undefined && opts.timeoutMs > 0) {
+      body.timeout_ms = opts.timeoutMs;
+    }
+    return postJSON<RegisterHookResponse>(this.ctx, "/v1/hooks", body, opts);
+  }
+
+  /** List every currently-registered hook. Returns the array
+   *  unwrapped (the wire envelope is `{hooks: [...]}` — we strip
+   *  the envelope to match listUserAgents). In-memory only — empty
+   *  after a loomcycle restart. */
+  async listHooks(opts?: { signal?: AbortSignal }): Promise<Hook[]> {
+    const resp = await jsonFetch<ListHooksResponse>(this.ctx, "/v1/hooks", opts);
+    return resp.hooks ?? [];
+  }
+
+  /** Delete a registered hook by id. Raises HookNotFoundError on
+   *  404. Returns void on success (the HTTP 200 body `{deleted: id}`
+   *  is dropped — callers already know the id they passed). */
+  async deleteHook(id: string, opts?: { signal?: AbortSignal }): Promise<void> {
+    await deleteRequest(
+      this.ctx,
+      `/v1/hooks/${encodeURIComponent(id)}`,
       opts,
     );
   }

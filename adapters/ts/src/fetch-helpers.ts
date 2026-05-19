@@ -16,6 +16,7 @@ import {
   AlreadyPausingError,
   AuthError,
   BackpressureError,
+  HookNotFoundError,
   InvalidArgumentError,
   LoomcycleError,
   NotFoundError,
@@ -136,9 +137,9 @@ export async function deleteRequest(
  *   401         → AuthError
  *   404 + "snapshot"   → SnapshotNotFoundError ────────┐
  *   404 + "session"    → SessionNotFoundError          │  All extend
- *   404 + "agent"      → AgentNotFoundError            │  NotFoundError —
- *   404 + (other)      → NotFoundError (base)          │  callers can
- *                                                      │  catch any 404
+ *   404 + "hook"       → HookNotFoundError             │  NotFoundError —
+ *   404 + "agent"      → AgentNotFoundError            │  callers can
+ *   404 + (other)      → NotFoundError (base)          │  catch any 404
  *                                                      │  with one
  *                                                      │  instanceof.
  *   409 + "already_pausing" / "already paused" → AlreadyPausingError
@@ -190,12 +191,16 @@ export async function raiseFromResponse(resp: Response): Promise<never> {
       // Priority: most-specific keyword wins.
       // - "snapshot" → SnapshotNotFoundError
       // - "session"  → SessionNotFoundError
+      // - "hook"     → HookNotFoundError (must precede "agent" — the
+      //                hooks 404 body is `no hook with id "..."`,
+      //                doesn't mention "agent")
       // - "agent" or "agent_id" → AgentNotFoundError
       // - otherwise → NotFoundError (base) — e.g. memory rows, interrupts,
       //   or any future 404-returning endpoint that doesn't fit the
       //   existing keyword set.
       if (bodyLower.includes("snapshot")) throw new SnapshotNotFoundError(msg, opts);
       if (bodyLower.includes("session")) throw new SessionNotFoundError(msg, opts);
+      if (bodyLower.includes("hook")) throw new HookNotFoundError(msg, opts);
       if (bodyLower.includes("agent")) throw new AgentNotFoundError(msg, opts);
       throw new NotFoundError(msg, opts);
     case 409:
