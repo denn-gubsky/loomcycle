@@ -19,7 +19,7 @@
  * from errors.ts via fetch-helpers.ts:raiseFromResponse.
  */
 
-import type { FetchContext } from "./fetch-helpers.js";
+import type { _FetchContext } from "./fetch-helpers.js";
 import { raiseFromResponse } from "./fetch-helpers.js";
 import { parseSSE } from "./stream.js";
 import type {
@@ -29,7 +29,7 @@ import type {
 } from "./types.js";
 
 export class LoomcycleClient {
-  private ctx: FetchContext;
+  private ctx: _FetchContext;
 
   constructor(opts: ClientOptions = {}) {
     this.ctx = {
@@ -55,7 +55,13 @@ export class LoomcycleClient {
   async *runStreaming(opts: RunOptions): AsyncIterable<AgentEvent> {
     const headers: Record<string, string> = {
       "Content-Type": "application/json",
-      Accept: "text/event-stream",
+      // Accept BOTH text/event-stream (the success path) AND
+      // application/json (the error path — non-2xx responses come
+      // back as JSON so raiseFromResponse can extract typed errors).
+      // Per the Streamable HTTP spec; strict reverse proxies in
+      // front of the sidecar 406 otherwise. Same rationale as the
+      // v0.8.x MCP HTTP-transport hardening note in CLAUDE.md.
+      Accept: "text/event-stream, application/json",
     };
     if (this.ctx.authToken) headers.Authorization = `Bearer ${this.ctx.authToken}`;
 

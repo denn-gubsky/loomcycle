@@ -48,6 +48,7 @@ export {
   AlreadyPausingError,
   AuthError,
   BackpressureError,
+  NotFoundError,
   InvalidArgumentError,
   LoomcycleError,
   NotPausedError,

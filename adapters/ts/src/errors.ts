@@ -30,14 +30,26 @@ export class LoomcycleError extends Error {
   }
 }
 
-export class AgentNotFoundError extends LoomcycleError {
+/** Base class for every HTTP 404 the client surfaces. Lets callers
+ *  catch any not-found case with a single `instanceof NotFoundError`
+ *  check, regardless of which specific resource was missing
+ *  (agent / session / snapshot / generic 404 like a missing memory
+ *  row or interrupt). */
+export class NotFoundError extends LoomcycleError {
+  constructor(message: string, opts?: { status?: number; bodyText?: string }) {
+    super(message, opts);
+    this.name = "NotFoundError";
+  }
+}
+
+export class AgentNotFoundError extends NotFoundError {
   constructor(message: string, opts?: { status?: number; bodyText?: string }) {
     super(message, opts);
     this.name = "AgentNotFoundError";
   }
 }
 
-export class SessionNotFoundError extends LoomcycleError {
+export class SessionNotFoundError extends NotFoundError {
   constructor(message: string, opts?: { status?: number; bodyText?: string }) {
     super(message, opts);
     this.name = "SessionNotFoundError";
@@ -112,7 +124,7 @@ export class NotPausedError extends LoomcycleError {
   }
 }
 
-export class SnapshotNotFoundError extends LoomcycleError {
+export class SnapshotNotFoundError extends NotFoundError {
   constructor(message: string, opts?: { status?: number; bodyText?: string }) {
     super(message, opts);
     this.name = "SnapshotNotFoundError";

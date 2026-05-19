@@ -18,6 +18,7 @@ import {
   BackpressureError,
   InvalidArgumentError,
   LoomcycleError,
+  NotFoundError,
   NotPausedError,
   PauseNotConfiguredError,
   SessionBusyError,
@@ -28,10 +29,21 @@ import {
   UnavailableError,
 } from "./errors.js";
 
-/** Snapshot of the constructor inputs each method needs. Passed
- *  to the helpers below as a small bag rather than threading
- *  individual fields. */
-export interface FetchContext {
+/**
+ * @internal — not part of @loomcycle/client's public API surface.
+ *
+ * Snapshot of the LoomcycleClient constructor inputs threaded through
+ * the helpers below. The leading underscore + this docstring signal
+ * "internal type; consumers MUST NOT depend on it". TypeScript's
+ * declaration emit still publishes it under dist/fetch-helpers.d.ts
+ * (no --stripInternal in tsconfig today), but the rename + comment
+ * make accidental dependence implausible: a consumer doing
+ * `import type { _FetchContext } from "@loomcycle/client"` would have
+ * to deliberately reach for a name marked internal, which is a
+ * "contract violation" gesture rather than a casual import. The
+ * fields here (authToken in plaintext, fetchImpl) are implementation
+ * details that may change without notice. */
+export interface _FetchContext {
   baseUrl: string;
   authToken: string | undefined;
   fetchImpl: typeof fetch;
@@ -40,7 +52,7 @@ export interface FetchContext {
 /** authHeaders builds the standard request header set: JSON Accept
  *  + Bearer token when the client was constructed with one. The
  *  caller adds Content-Type when posting a body. */
-export function authHeaders(ctx: FetchContext): Record<string, string> {
+export function authHeaders(ctx: _FetchContext): Record<string, string> {
   const h: Record<string, string> = { Accept: "application/json" };
   if (ctx.authToken) h.Authorization = `Bearer ${ctx.authToken}`;
   return h;
@@ -49,7 +61,7 @@ export function authHeaders(ctx: FetchContext): Record<string, string> {
 /** jsonFetch performs a GET and unwraps the JSON body. Non-2xx
  *  status maps to a typed error via raiseFromResponse. */
 export async function jsonFetch<T>(
-  ctx: FetchContext,
+  ctx: _FetchContext,
   path: string,
   opts?: { signal?: AbortSignal },
 ): Promise<T> {
@@ -68,7 +80,7 @@ export async function jsonFetch<T>(
  *  When `body` is undefined, no body is sent (Content-Type
  *  omitted). */
 export async function postJSON<T>(
-  ctx: FetchContext,
+  ctx: _FetchContext,
   path: string,
   body?: unknown,
   opts?: { signal?: AbortSignal },
@@ -98,7 +110,7 @@ export async function postJSON<T>(
 /** deleteRequest sends a DELETE and tolerates 204/200/404-with-
  *  idempotent-semantics per the loomcycle wire contract. */
 export async function deleteRequest(
-  ctx: FetchContext,
+  ctx: _FetchContext,
   path: string,
   opts?: { signal?: AbortSignal },
 ): Promise<void> {
@@ -122,9 +134,13 @@ export async function deleteRequest(
  *
  *   400         → InvalidArgumentError
  *   401         → AuthError
- *   404 + "snapshot"   → SnapshotNotFoundError
- *   404 + "session"    → SessionNotFoundError
- *   404 + (other)      → AgentNotFoundError (the catch-all)
+ *   404 + "snapshot"   → SnapshotNotFoundError ────────┐
+ *   404 + "session"    → SessionNotFoundError          │  All extend
+ *   404 + "agent"      → AgentNotFoundError            │  NotFoundError —
+ *   404 + (other)      → NotFoundError (base)          │  callers can
+ *                                                      │  catch any 404
+ *                                                      │  with one
+ *                                                      │  instanceof.
  *   409 + "already_pausing" / "already paused" → AlreadyPausingError
  *   409 + "not_paused" / "not paused"          → NotPausedError
  *   409 + "session"                            → SessionBusyError
@@ -134,13 +150,17 @@ export async function deleteRequest(
  *   422         → SnapshotVersionError (snapshot-version-too-new/unknown)
  *   429         → BackpressureError
  *   503 + "pause manager not configured" → PauseNotConfiguredError
+ *                                          (subclass of UnavailableError)
  *   503 + (other)                        → UnavailableError
  *   500-599 (other) → LoomcycleError (base)
  *   default     → LoomcycleError (base)
  *
  * Priority within a status group is most-specific-first; an unknown
  * 409 falls through to base LoomcycleError so callers see a
- * meaningful message + status.
+ * meaningful message + status. For 404, the catch-all is NotFoundError
+ * (base) so the v0.8.18-added memory + interrupt routes don't
+ * misclassify into AgentNotFoundError when the 404 body doesn't
+ * mention "agent".
  */
 export async function raiseFromResponse(resp: Response): Promise<never> {
   const status = resp.status;
@@ -153,7 +173,12 @@ export async function raiseFromResponse(resp: Response): Promise<never> {
     // network-level body read failure — fall through with empty body
   }
   const bodyLower = bodyText.toLowerCase();
-  const msg = bodyText.trim() ? bodyText.slice(0, 1024) : `${status} ${resp.statusText}`;
+  // HTTP/2 strips reason phrases — Node's undici fetch returns "" for
+  // resp.statusText on HTTP/2 responses. Fall back to a stock phrase
+  // for the common status codes so the error message reads cleanly
+  // ("401 Unauthorized" not "401 " with a trailing space).
+  const statusPhrase = resp.statusText || stockStatusPhrase(status);
+  const msg = bodyText.trim() ? bodyText.slice(0, 1024) : `${status} ${statusPhrase}`;
   const opts = { status, bodyText: bodyText.slice(0, 1024) };
 
   switch (status) {
@@ -162,9 +187,17 @@ export async function raiseFromResponse(resp: Response): Promise<never> {
     case 401:
       throw new AuthError(msg, opts);
     case 404:
+      // Priority: most-specific keyword wins.
+      // - "snapshot" → SnapshotNotFoundError
+      // - "session"  → SessionNotFoundError
+      // - "agent" or "agent_id" → AgentNotFoundError
+      // - otherwise → NotFoundError (base) — e.g. memory rows, interrupts,
+      //   or any future 404-returning endpoint that doesn't fit the
+      //   existing keyword set.
       if (bodyLower.includes("snapshot")) throw new SnapshotNotFoundError(msg, opts);
       if (bodyLower.includes("session")) throw new SessionNotFoundError(msg, opts);
-      throw new AgentNotFoundError(msg, opts);
+      if (bodyLower.includes("agent")) throw new AgentNotFoundError(msg, opts);
+      throw new NotFoundError(msg, opts);
     case 409:
       if (bodyLower.includes("already_pausing") || bodyLower.includes("already paused"))
         throw new AlreadyPausingError(msg, opts);
@@ -185,5 +218,26 @@ export async function raiseFromResponse(resp: Response): Promise<never> {
       throw new UnavailableError(msg, opts);
     default:
       throw new LoomcycleError(msg, opts);
+  }
+}
+
+/** stockStatusPhrase returns a stock reason phrase for the common
+ *  HTTP statuses raiseFromResponse handles. Used as a fallback when
+ *  Response.statusText is empty (HTTP/2 strips reason phrases). */
+function stockStatusPhrase(status: number): string {
+  switch (status) {
+    case 400: return "Bad Request";
+    case 401: return "Unauthorized";
+    case 403: return "Forbidden";
+    case 404: return "Not Found";
+    case 409: return "Conflict";
+    case 413: return "Payload Too Large";
+    case 422: return "Unprocessable Entity";
+    case 429: return "Too Many Requests";
+    case 500: return "Internal Server Error";
+    case 502: return "Bad Gateway";
+    case 503: return "Service Unavailable";
+    case 504: return "Gateway Timeout";
+    default: return "HTTP " + status;
   }
 }
