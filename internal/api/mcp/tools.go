@@ -247,6 +247,39 @@ func toolDescriptors() []loommcp.ToolDescriptor {
 				}
 			}`),
 		},
+		// --- Hook management (hooks-connector series, PR B) ---
+		{
+			Name:        "register_hook",
+			Description: "Register a pre- or post-tool webhook. The callback_url must be an http:// or https:// endpoint the consumer runs — loomcycle POSTs PreHookCall/PostHookCall payloads to it. Returns {id}. Re-registering the same (owner, name) replaces the prior entry with a fresh id (idempotent app-restart contract). Use the id with delete_hook.",
+			InputSchema: rawJSON(`{
+				"type": "object",
+				"required": ["owner", "name", "phase", "callback_url"],
+				"properties": {
+					"owner":        {"type": "string", "description": "App UID; (owner, name) is the identity tuple."},
+					"name":         {"type": "string"},
+					"phase":        {"type": "string", "enum": ["pre", "post"]},
+					"agents":       {"type": "array", "items": {"type": "string"}, "description": "Agent name globs (exact or 'prefix*'). Empty = match all."},
+					"tools":        {"type": "array", "items": {"type": "string"}, "description": "Tool name globs (same syntax). Empty = match all."},
+					"callback_url": {"type": "string", "description": "http:// or https:// URL loomcycle POSTs to."},
+					"fail_mode":    {"type": "string", "enum": ["open", "closed"], "description": "open (default) = errors pass through; closed = errors fail the tool call."},
+					"timeout_ms":   {"type": "integer", "minimum": 0, "description": "Per-call timeout. 0 = registry default (5 s)."}
+				}
+			}`),
+		},
+		{
+			Name:        "list_hooks",
+			Description: "List every currently-registered hook in registration order. Returns {hooks: [Hook, ...]}. In-memory only — empty after a loomcycle restart.",
+			InputSchema: rawJSON(`{"type": "object"}`),
+		},
+		{
+			Name:        "delete_hook",
+			Description: "Delete a hook by id. Returns {deleted: id} on success. Errors with 'not found' text when no hook has that id.",
+			InputSchema: rawJSON(`{
+				"type": "object",
+				"required": ["id"],
+				"properties": {"id": {"type": "string"}}
+			}`),
+		},
 	}
 }
 

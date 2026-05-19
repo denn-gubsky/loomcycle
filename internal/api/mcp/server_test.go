@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/connector"
+	"github.com/denn-gubsky/loomcycle/internal/hooks"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/runner"
 	loommcp "github.com/denn-gubsky/loomcycle/internal/tools/mcp"
@@ -29,6 +30,14 @@ type mockConnector struct {
 	regResult    connector.AgentDescriptor
 	pauseResult  connector.PauseResult
 	listCallback func()
+
+	// Hook-management injection points.
+	registerHookID      string                          // return value for RegisterHook (default "hook_test")
+	registerHookErr     error                           // overrides ID when set
+	lastRegisterHookReq connector.RegisterHookRequest   // captures the most recent call
+	listHookHooks       []*hooks.Hook                   // return slice for ListHooks
+	deleteHookErr       error                           // return value for DeleteHook
+	lastDeleteHookID    string                          // id passed to the most recent DeleteHook call
 }
 
 func (m *mockConnector) SpawnRun(_ context.Context, r connector.SpawnRunRequest) (connector.SpawnRunResult, error) {
@@ -96,6 +105,29 @@ func (m *mockConnector) RestoreSnapshot(_ context.Context, _ connector.RestoreSn
 }
 func (m *mockConnector) DeleteSnapshot(_ context.Context, _ string) error {
 	return errors.New("not implemented")
+}
+
+// Hook-management methods. The hook fields on mockConnector let the
+// MCP handler tests below inject canned responses (registerHookID +
+// registerHookErr drive register_hook; deleteHookErr drives
+// delete_hook; listHookHooks drives list_hooks).
+func (m *mockConnector) RegisterHook(_ context.Context, req connector.RegisterHookRequest) (connector.RegisterHookResponse, error) {
+	m.lastRegisterHookReq = req
+	if m.registerHookErr != nil {
+		return connector.RegisterHookResponse{}, m.registerHookErr
+	}
+	id := m.registerHookID
+	if id == "" {
+		id = "hook_test"
+	}
+	return connector.RegisterHookResponse{ID: id}, nil
+}
+func (m *mockConnector) ListHooks(_ context.Context) (connector.ListHooksResponse, error) {
+	return connector.ListHooksResponse{Hooks: m.listHookHooks}, nil
+}
+func (m *mockConnector) DeleteHook(_ context.Context, id string) error {
+	m.lastDeleteHookID = id
+	return m.deleteHookErr
 }
 
 func (m *mockConnector) InterruptionResolve(_ context.Context, _ connector.InterruptionResolveRequest) (connector.InterruptionResolveResult, error) {
@@ -172,7 +204,7 @@ func TestServer_Handshake(t *testing.T) {
 	}
 }
 
-func TestServer_ToolsList_Returns22Tools(t *testing.T) {
+func TestServer_ToolsList_Returns25Tools(t *testing.T) {
 	srv := New(Config{Connector: &mockConnector{}, Logf: func(string, ...any) {}})
 	in := `{"jsonrpc":"2.0","id":1,"method":"tools/list"}` + "\n"
 	resps, _ := driveServer(t, srv, in)
@@ -183,15 +215,15 @@ func TestServer_ToolsList_Returns22Tools(t *testing.T) {
 	if err := json.Unmarshal(resps[0].Result, &result); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if len(result.Tools) != 22 {
-		t.Errorf("got %d tools, want 22 (v0.8.18 adds get_snapshot)", len(result.Tools))
+	if len(result.Tools) != 25 {
+		t.Errorf("got %d tools, want 25 (hooks-connector PR B adds register_hook/list_hooks/delete_hook)", len(result.Tools))
 	}
 	names := map[string]bool{}
 	for _, td := range result.Tools {
 		names[td.Name] = true
 	}
-	// Spot-check a few across categories — including the v0.8.16 + v0.8.18 additions.
-	for _, want := range []string{"spawn_run", "register_agent", "memory", "pause_runtime", "create_snapshot", "get_snapshot", "interruption_resolve"} {
+	// Spot-check a few across categories — including the v0.8.16 + v0.8.18 + hook additions.
+	for _, want := range []string{"spawn_run", "register_agent", "memory", "pause_runtime", "create_snapshot", "get_snapshot", "interruption_resolve", "register_hook", "list_hooks", "delete_hook"} {
 		if !names[want] {
 			t.Errorf("missing tool %q in tools/list", want)
 		}
@@ -500,6 +532,97 @@ func TestServer_SequentialDispatch_AllResponsesPresent(t *testing.T) {
 	}
 	if listCalls.Load() != 5 {
 		t.Errorf("Connector.ListRuns called %d times, want 5", listCalls.Load())
+	}
+}
+
+// ---- Hook management (PR B of the hooks-connector series) ----
+
+func TestServer_RegisterHook_DispatchesAndReturnsID(t *testing.T) {
+	mc := &mockConnector{registerHookID: "hook_abc"}
+	srv := New(Config{Connector: mc, Logf: func(string, ...any) {}})
+	in := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"register_hook","arguments":{"owner":"jobs-search-web","name":"scan","phase":"pre","tools":["WebFetch"],"callback_url":"https://callback.local/h","fail_mode":"open","timeout_ms":3000}}}` + "\n"
+	resps, _ := driveServer(t, srv, in)
+	if len(resps) != 1 {
+		t.Fatalf("got %d responses, want 1", len(resps))
+	}
+	var callRes loommcp.CallToolResult
+	if err := json.Unmarshal(resps[0].Result, &callRes); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if callRes.IsError {
+		t.Errorf("register_hook should not be a tool error on happy path")
+	}
+	var inner connector.RegisterHookResponse
+	if err := json.Unmarshal([]byte(callRes.Content[0].Text), &inner); err != nil {
+		t.Fatalf("unmarshal inner: %v", err)
+	}
+	if inner.ID != "hook_abc" {
+		t.Errorf("id = %q, want hook_abc", inner.ID)
+	}
+	// Verify the connector received the full body shape.
+	if mc.lastRegisterHookReq.Owner != "jobs-search-web" ||
+		mc.lastRegisterHookReq.CallbackURL != "https://callback.local/h" ||
+		mc.lastRegisterHookReq.Phase != "pre" ||
+		mc.lastRegisterHookReq.TimeoutMs != 3000 {
+		t.Errorf("connector saw %+v", mc.lastRegisterHookReq)
+	}
+}
+
+func TestServer_RegisterHook_InvalidArguments_ToolError(t *testing.T) {
+	srv := New(Config{Connector: &mockConnector{}, Logf: func(string, ...any) {}})
+	// malformed JSON inside `arguments`
+	in := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"register_hook","arguments":"not-an-object"}}` + "\n"
+	resps, _ := driveServer(t, srv, in)
+	if len(resps) != 1 {
+		t.Fatalf("got %d responses, want 1", len(resps))
+	}
+	var callRes loommcp.CallToolResult
+	if err := json.Unmarshal(resps[0].Result, &callRes); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if !callRes.IsError {
+		t.Errorf("expected IsError=true on malformed args")
+	}
+}
+
+func TestServer_DeleteHook_SurfacesConnectorError(t *testing.T) {
+	mc := &mockConnector{deleteHookErr: connector.ErrHookNotFound}
+	srv := New(Config{Connector: mc, Logf: func(string, ...any) {}})
+	in := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"delete_hook","arguments":{"id":"hook_gone"}}}` + "\n"
+	resps, _ := driveServer(t, srv, in)
+	if len(resps) != 1 {
+		t.Fatalf("got %d responses, want 1", len(resps))
+	}
+	var callRes loommcp.CallToolResult
+	if err := json.Unmarshal(resps[0].Result, &callRes); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if !callRes.IsError {
+		t.Error("expected IsError=true on ErrHookNotFound")
+	}
+	if mc.lastDeleteHookID != "hook_gone" {
+		t.Errorf("connector saw id %q, want hook_gone", mc.lastDeleteHookID)
+	}
+}
+
+func TestServer_ListHooks_ReturnsConnectorList(t *testing.T) {
+	mc := &mockConnector{listHookHooks: []*hooks.Hook{{ID: "h_1", Owner: "a"}, {ID: "h_2", Owner: "b"}}}
+	srv := New(Config{Connector: mc, Logf: func(string, ...any) {}})
+	in := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"list_hooks","arguments":{}}}` + "\n"
+	resps, _ := driveServer(t, srv, in)
+	if len(resps) != 1 {
+		t.Fatalf("got %d responses, want 1", len(resps))
+	}
+	var callRes loommcp.CallToolResult
+	if err := json.Unmarshal(resps[0].Result, &callRes); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	var inner connector.ListHooksResponse
+	if err := json.Unmarshal([]byte(callRes.Content[0].Text), &inner); err != nil {
+		t.Fatalf("unmarshal inner: %v", err)
+	}
+	if len(inner.Hooks) != 2 || inner.Hooks[0].ID != "h_1" {
+		t.Errorf("inner = %+v", inner)
 	}
 }
 
