@@ -79,9 +79,19 @@ func (s *Scheduler) Schedule(channel, msgID string, visibleAt time.Time) bool {
 	}
 
 	t := time.AfterFunc(delay, func() {
-		s.bus.Notify(channel)
+		// Order matters: do the bookkeeping BEFORE calling Notify.
+		// Notify hands off to the waiting goroutine synchronously
+		// (bus.Wait returns true the moment Notify lands). If we
+		// notified first, an observer reading PendingCount() right
+		// after their Wait returned could see a stale count of 1
+		// because the Delete + Add(-1) below hadn't completed yet
+		// — the race detector exposed this as a flaky
+		// TestScheduler_FiresAtVisibleAt failure. With this order,
+		// PendingCount is post-fire by the time any subscriber
+		// observes Notify.
 		s.timers.Delete(msgID)
 		s.pendCnt.Add(-1)
+		s.bus.Notify(channel)
 	})
 	if _, loaded := s.timers.LoadOrStore(msgID, t); loaded {
 		// Race: another caller registered the same msgID between
