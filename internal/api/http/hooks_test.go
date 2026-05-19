@@ -3,6 +3,7 @@ package http
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -11,6 +12,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/cancel"
 	"github.com/denn-gubsky/loomcycle/internal/concurrency"
 	"github.com/denn-gubsky/loomcycle/internal/config"
+	"github.com/denn-gubsky/loomcycle/internal/connector"
 	"github.com/denn-gubsky/loomcycle/internal/hooks"
 	"github.com/denn-gubsky/loomcycle/internal/runner"
 )
@@ -53,7 +55,7 @@ func TestHooksAPI_RegisterListDelete(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("Register status = %d, body = %s", rec.Code, rec.Body.String())
 	}
-	var regResp hookRegisterResponse
+	var regResp connector.RegisterHookResponse
 	if err := json.Unmarshal(rec.Body.Bytes(), &regResp); err != nil {
 		t.Fatalf("decode register response: %v", err)
 	}
@@ -111,14 +113,14 @@ func TestHooksAPI_ReplaceOnDuplicate(t *testing.T) {
 	req := httptest.NewRequest("POST", "/v1/hooks", bytes.NewReader([]byte(body("https://a/x"))))
 	rec := httptest.NewRecorder()
 	s.handleRegisterHook(rec, req)
-	var first hookRegisterResponse
+	var first connector.RegisterHookResponse
 	_ = json.Unmarshal(rec.Body.Bytes(), &first)
 
 	// Second registration, same (owner, name)
 	req = httptest.NewRequest("POST", "/v1/hooks", bytes.NewReader([]byte(body("https://b/x"))))
 	rec = httptest.NewRecorder()
 	s.handleRegisterHook(rec, req)
-	var second hookRegisterResponse
+	var second connector.RegisterHookResponse
 	_ = json.Unmarshal(rec.Body.Bytes(), &second)
 
 	if first.ID == second.ID {
@@ -155,5 +157,48 @@ func TestHooksAPI_RejectsInvalid(t *testing.T) {
 		if rec.Code != http.StatusBadRequest {
 			t.Errorf("%s: status = %d, want 400 (body=%s)", name, rec.Code, rec.Body.String())
 		}
+	}
+}
+
+// TestConnector_RegisterHook_InvalidRegistration confirms the
+// Connector-layer typed-error contract: when the registry rejects a
+// hook, the wrapped sentinel is connector.ErrHookInvalidRegistration —
+// what gRPC/MCP will errors.Is against to pick the right protocol code.
+func TestConnector_RegisterHook_InvalidRegistration(t *testing.T) {
+	s := minimalServer(t)
+	_, err := s.RegisterHook(t.Context(), connector.RegisterHookRequest{
+		// missing owner / callback_url → registry validation fails
+		Name:  "x",
+		Phase: "pre",
+	})
+	if !errors.Is(err, connector.ErrHookInvalidRegistration) {
+		t.Errorf("err = %v, want errors.Is ErrHookInvalidRegistration", err)
+	}
+}
+
+// TestConnector_DeleteHook_NotFound confirms unknown-id deletes wrap
+// connector.ErrHookNotFound. This is the seam gRPC + MCP rely on to
+// emit codes.NotFound / a 404-shaped tool_error.
+func TestConnector_DeleteHook_NotFound(t *testing.T) {
+	s := minimalServer(t)
+	err := s.DeleteHook(t.Context(), "hook_does_not_exist")
+	if !errors.Is(err, connector.ErrHookNotFound) {
+		t.Errorf("err = %v, want errors.Is ErrHookNotFound", err)
+	}
+}
+
+// TestConnector_Hooks_NotConfigured exercises the defensive nil-guard
+// for *Server values constructed without a hookRegistry (test harnesses
+// using struct literals). Production New() always wires one.
+func TestConnector_Hooks_NotConfigured(t *testing.T) {
+	s := &Server{} // no hookRegistry
+	if _, err := s.RegisterHook(t.Context(), connector.RegisterHookRequest{}); !errors.Is(err, connector.ErrHookNotConfigured) {
+		t.Errorf("RegisterHook err = %v, want ErrHookNotConfigured", err)
+	}
+	if _, err := s.ListHooks(t.Context()); !errors.Is(err, connector.ErrHookNotConfigured) {
+		t.Errorf("ListHooks err = %v, want ErrHookNotConfigured", err)
+	}
+	if err := s.DeleteHook(t.Context(), "x"); !errors.Is(err, connector.ErrHookNotConfigured) {
+		t.Errorf("DeleteHook err = %v, want ErrHookNotConfigured", err)
 	}
 }
