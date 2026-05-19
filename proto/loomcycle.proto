@@ -96,6 +96,83 @@ service Loomcycle {
   //
   // Mirrors DELETE /v1/hooks/{id}.
   rpc DeleteHook(DeleteHookRequest) returns (DeleteHookResponse);
+
+  // ----- v0.8.17 Pause / Resume / Snapshot (real impls in v0.8.18) -----
+  //
+  // Runtime-wide quiesce + cross-version-portable JSON snapshot. Wire
+  // shapes mirror the connector.Connector method signatures. Typed
+  // errors from internal/connector/errors.go map to gRPC codes:
+  //   ErrPauseNotConfigured     → Unavailable (503-equivalent)
+  //   ErrAlreadyPausing         → FailedPrecondition (409-equivalent)
+  //   ErrNotPaused              → FailedPrecondition (409-equivalent)
+  //   ErrSnapshotNotFound       → NotFound (404-equivalent)
+  //   ErrSnapshotTooLarge       → ResourceExhausted (413-equivalent)
+  //   ErrSnapshotVersionTooNew  → FailedPrecondition (422-equivalent)
+  //   ErrSnapshotVersionUnknown → FailedPrecondition (422-equivalent)
+
+  // PauseRuntime quiesces the runtime. Idempotent tools cancel
+  // immediately; non-idempotent + external tools get a grace window
+  // (default 30 s; max 5 min) then force-cancel. Returns 409-equivalent
+  // when the runtime is already pausing or paused.
+  //
+  // Mirrors POST /v1/_pause.
+  rpc PauseRuntime(PauseRuntimeRequest) returns (PauseRuntimeResponse);
+
+  // ResumeRuntime releases the quiesce. Paused runs re-enter their
+  // loops. Returns 409-equivalent when the runtime is not paused.
+  //
+  // Mirrors POST /v1/_resume.
+  rpc ResumeRuntime(ResumeRuntimeRequest) returns (ResumeRuntimeResponse);
+
+  // GetRuntimeState returns the current quiesce state for dashboards.
+  //
+  // Mirrors GET /v1/_state.
+  rpc GetRuntimeState(GetRuntimeStateRequest) returns (RuntimeStateResponse);
+
+  // CreateSnapshot captures running-state into a per-section-semver
+  // JSON envelope (agent_defs, agent_def_active, memory, channels,
+  // evaluations, paused_runs, optional interaction_history). Returns
+  // 413-equivalent when the serialised envelope exceeds the configured
+  // cap (LOOMCYCLE_SNAPSHOT_MAX_BYTES; default 512 MiB).
+  //
+  // Mirrors POST /v1/_snapshots.
+  rpc CreateSnapshot(CreateSnapshotRequest) returns (SnapshotDescriptor);
+
+  // ListSnapshots returns metadata for the most-recent snapshots
+  // (capped at 200). The JSON envelope itself is not included; use
+  // GetSnapshot / ExportSnapshot to fetch.
+  //
+  // Mirrors GET /v1/_snapshots.
+  rpc ListSnapshots(ListSnapshotsRequest) returns (ListSnapshotsResponse);
+
+  // GetSnapshot returns the full envelope including JSON content.
+  // Distinct from ExportSnapshot, which is operator-facing "where did
+  // this land on the host" semantics.
+  //
+  // Mirrors GET /v1/_snapshots/{id}.
+  rpc GetSnapshot(GetSnapshotRequest) returns (SnapshotEnvelope);
+
+  // ExportSnapshot returns canonical envelope bytes (raw_json) for a
+  // snapshot id. Transports that stream large exports use raw_json
+  // directly; file_path / checksum stay empty unless materialised.
+  //
+  // Mirrors GET /v1/_snapshots/{id}/export.
+  rpc ExportSnapshot(ExportSnapshotRequest) returns (ExportSnapshotResponse);
+
+  // RestoreSnapshot restores from a same-instance snapshot_id OR
+  // cross-instance raw_json. Idempotent: ON CONFLICT DO NOTHING per
+  // row. Counters in the response reflect rows actually written.
+  // Returns 422-equivalent on snapshot version newer than reader
+  // supports.
+  //
+  // Mirrors POST /v1/_snapshots/{id}/restore.
+  rpc RestoreSnapshot(RestoreSnapshotRequest) returns (RestoreSnapshotResponse);
+
+  // DeleteSnapshot removes a snapshot. Idempotent — succeeds whether
+  // or not the row existed.
+  //
+  // Mirrors DELETE /v1/_snapshots/{id}.
+  rpc DeleteSnapshot(DeleteSnapshotRequest) returns (DeleteSnapshotResponse);
 }
 
 // ========================
@@ -390,4 +467,149 @@ message DeleteHookResponse {
   // RPC returns codes.NotFound in that case; this field is for the
   // success path's audit trail).
   string deleted = 1;
+}
+
+// ========================
+// Pause / Resume / State (v0.8.17 primitives; gRPC surface v0.8.18)
+// ========================
+
+message PauseRuntimeRequest {
+  // Wait-for-non-idempotent-tools cap, in milliseconds. 0 falls
+  // through to LOOMCYCLE_PAUSE_DEFAULT_TIMEOUT_MS (default 30 s).
+  // Clamped server-side at pause.MaxPauseTimeout (5 min). int64
+  // for consistency with every other _ms field in this proto
+  // (duration_ms in PauseRuntimeResponse, wait_ms in Retry) —
+  // server clamping makes the larger range unobservable but the
+  // type matches.
+  int64 timeout_ms = 1;
+}
+
+message PauseRuntimeResponse {
+  string status = 1;              // "paused"
+  int64 duration_ms = 2;
+  int32 force_cancelled_count = 3;
+  int32 paused_runs_count = 4;
+  repeated string warnings = 5;
+}
+
+message ResumeRuntimeRequest {}
+
+message ResumeRuntimeResponse {
+  string status = 1;              // "running"
+  int32 resumed_run_count = 2;
+  repeated string warnings = 3;
+}
+
+message GetRuntimeStateRequest {}
+
+message RuntimeStateResponse {
+  string status = 1;              // "running" | "pausing" | "paused"
+  google.protobuf.Timestamp paused_at = 2;
+  int32 paused_run_count = 3;
+  int32 snapshots_count = 4;
+}
+
+// ========================
+// Snapshot (v0.8.17 primitives; gRPC surface v0.8.18)
+// ========================
+
+message CreateSnapshotRequest {
+  bool include_history = 1;
+  google.protobuf.Timestamp since_ts = 2;
+  string description = 3;
+  // Override LOOMCYCLE_SNAPSHOT_MAX_BYTES for this call. 0 = default.
+  int64 max_bytes = 4;
+}
+
+// SnapshotDescriptor is the metadata-only view used by CreateSnapshot
+// + ListSnapshots. The full JSON envelope lives in GetSnapshot /
+// ExportSnapshot responses.
+message SnapshotDescriptor {
+  string snapshot_id = 1;
+  google.protobuf.Timestamp created_at = 2;
+  int64 size_bytes = 3;
+  bool includes_history = 4;
+  google.protobuf.Timestamp since_ts = 5;
+  string description = 6;
+  string format_version = 7;
+}
+
+message ListSnapshotsRequest {}
+
+message ListSnapshotsResponse {
+  repeated SnapshotDescriptor snapshots = 1;
+}
+
+message GetSnapshotRequest {
+  string snapshot_id = 1;
+}
+
+// SnapshotEnvelope carries the full row including JSON content.
+// Distinct from ExportSnapshotResponse, which is operator-facing
+// "where did this land on the host" semantics.
+message SnapshotEnvelope {
+  string snapshot_id = 1;
+  google.protobuf.Timestamp created_at = 2;
+  string description = 3;
+  string format_version = 4;
+  int64 size_bytes = 5;
+  // Canonical envelope bytes.
+  bytes json_content = 6;
+}
+
+message ExportSnapshotRequest {
+  string snapshot_id = 1;
+}
+
+message ExportSnapshotResponse {
+  string snapshot_id = 1;
+  // file_path + checksum are populated when a transport materialises
+  // the export to disk first (CLI's --out flag). Otherwise empty —
+  // raw_json carries the canonical bytes directly.
+  string file_path = 2;
+  string checksum = 3;
+  int64 size_bytes = 4;
+  bytes raw_json = 5;
+}
+
+message RestoreSnapshotRequest {
+  // Exactly one of snapshot_id (same-instance lookup) or raw_json
+  // (cross-instance restore from inline bytes) must be non-empty.
+  // file_path restore is intentionally not supported on the gRPC
+  // surface — supply raw_json inline (CLI reads the file client-side).
+  string snapshot_id = 1;
+  bytes raw_json = 2;
+  bool include_history = 3;
+}
+
+message RestoreSnapshotResponse {
+  // Per-section counters. Reflect rows actually written
+  // (ON CONFLICT DO NOTHING — a re-restore reports 0 even though
+  // every per-row INSERT "succeeded").
+  int32 agent_defs_restored = 1;
+  int32 agent_def_active_restored = 2;
+  int32 memory_restored = 3;
+  int32 channel_messages_restored = 4;
+  int32 channel_cursors_restored = 5;
+  int32 evaluations_restored = 6;
+  int32 paused_runs_restored = 7;
+  // Sessions synthesized for cross-instance restore (paused_runs
+  // reference session_ids; restore creates snap_sess_<run_id>
+  // entries deterministically when needed).
+  int32 synthesized_sessions = 8;
+  int32 transcript_events_restored = 9;
+  int32 interaction_history_restored = 10;
+  repeated string warnings = 11;
+  repeated string format_migrations = 12;
+}
+
+message DeleteSnapshotRequest {
+  string snapshot_id = 1;
+}
+
+message DeleteSnapshotResponse {
+  // Always true — DELETE is idempotent (returns ok whether or not
+  // the row existed; mirrors HTTP DELETE /v1/_snapshots/{id} = 204).
+  bool deleted = 1;
+  string snapshot_id = 2;
 }

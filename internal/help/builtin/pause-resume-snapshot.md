@@ -80,6 +80,24 @@ Web UI surface: PauseControls in the topbar shows the current
 state pill + Pause/Resume button; `/ui/snapshots` is the admin
 page for capture / restore-from-file / export-as-download / delete.
 
+The **same surface** is exposed through every wire transport
+(v0.8.18+) — orchestrators pick whichever protocol fits:
+
+- **HTTP** (above): canonical wire shape; the CLI + Web UI talk it.
+- **gRPC** (`proto/loomcycle.proto`): 9 RPCs covering the full
+  surface (`PauseRuntime`, `ResumeRuntime`, `GetRuntimeState`,
+  `CreateSnapshot`, `ListSnapshots`, `GetSnapshot`, `ExportSnapshot`,
+  `RestoreSnapshot`, `DeleteSnapshot`). Typed errors map to
+  `Unavailable` / `FailedPrecondition` / `NotFound` /
+  `ResourceExhausted` status codes.
+- **LoomCycle MCP** (`loomcycle mcp`): 9 of the 22 meta-tools
+  cover this surface (`pause_runtime`, `resume_runtime`,
+  `get_runtime_state`, plus the 6 snapshot ops). External
+  orchestrators (Claude Code etc.) drive it through standard MCP.
+- **Python adapter** (`pip install loomcycle`, v0.6.0+): 9 async
+  methods on `LoomcycleClient` with typed exception subclasses
+  (`AlreadyPausingError`, `SnapshotNotFoundError`, etc.).
+
 ## Restore semantics
 
 Restore is idempotent: each section's per-row insert is
