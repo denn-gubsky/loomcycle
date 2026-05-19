@@ -46,19 +46,20 @@ var handlersByName = map[string]toolHandler{
 		return c.Context(ctx, in)
 	}),
 
-	// Pause/Resume (PREVIEW mocks in v0.8.15)
+	// Pause/Resume (v0.8.17 primitives; exposed via Connector in v0.8.18)
 	"pause_runtime":     handlePauseRuntime,
 	"resume_runtime":    handleResumeRuntime,
 	"get_runtime_state": handleGetRuntimeState,
 
-	// Snapshot (PREVIEW mocks in v0.8.15)
+	// Snapshot (v0.8.17 primitives; exposed via Connector in v0.8.18)
 	"create_snapshot":  handleCreateSnapshot,
 	"list_snapshots":   handleListSnapshots,
+	"get_snapshot":     handleGetSnapshot,
 	"export_snapshot":  handleExportSnapshot,
 	"restore_snapshot": handleRestoreSnapshot,
 	"delete_snapshot":  handleDeleteSnapshot,
 
-	// Interruption (v0.8.16) — 21st meta-tool
+	// Interruption (v0.8.16)
 	"interruption_resolve": handleInterruptionResolve,
 }
 
@@ -354,6 +355,20 @@ func handleListSnapshots(ctx context.Context, env *handlerEnv, _ json.RawMessage
 	}{Snapshots: res}), nil
 }
 
+func handleGetSnapshot(ctx context.Context, env *handlerEnv, args json.RawMessage) (*loommcp.CallToolResult, error) {
+	var p struct {
+		SnapshotID string `json:"snapshot_id"`
+	}
+	if err := json.Unmarshal(args, &p); err != nil {
+		return toolErr("invalid get_snapshot arguments: " + err.Error()), nil
+	}
+	res, err := env.connector.GetSnapshot(ctx, p.SnapshotID)
+	if err != nil {
+		return toolErr("get_snapshot: " + err.Error()), nil
+	}
+	return toolResultJSON(res), nil
+}
+
 func handleExportSnapshot(ctx context.Context, env *handlerEnv, args json.RawMessage) (*loommcp.CallToolResult, error) {
 	var p struct {
 		SnapshotID string `json:"snapshot_id"`
@@ -363,8 +378,7 @@ func handleExportSnapshot(ctx context.Context, env *handlerEnv, args json.RawMes
 	}
 	res, err := env.connector.ExportSnapshot(ctx, p.SnapshotID)
 	if err != nil {
-		// v0.8.15 mock returns (result, err) — surface as tool error.
-		return toolErrWith(err.Error(), res), nil
+		return toolErr("export_snapshot: " + err.Error()), nil
 	}
 	return toolResultJSON(res), nil
 }
@@ -376,7 +390,7 @@ func handleRestoreSnapshot(ctx context.Context, env *handlerEnv, args json.RawMe
 	}
 	res, err := env.connector.RestoreSnapshot(ctx, req)
 	if err != nil {
-		return toolErrWith(err.Error(), res), nil
+		return toolErr("restore_snapshot: " + err.Error()), nil
 	}
 	return toolResultJSON(res), nil
 }
@@ -424,20 +438,6 @@ func toolResultJSON(v any) *loommcp.CallToolResult {
 func toolErr(msg string) *loommcp.CallToolResult {
 	return &loommcp.CallToolResult{
 		Content: []loommcp.ContentBlock{{Type: "text", Text: msg}},
-		IsError: true,
-	}
-}
-
-// toolErrWith returns an MCP tool error with structured content.
-// Used for the v0.8.15 Pause/Snapshot mocks that surface
-// feature_status=preview placeholder data alongside the error.
-func toolErrWith(msg string, payload any) *loommcp.CallToolResult {
-	raw, _ := json.Marshal(payload)
-	return &loommcp.CallToolResult{
-		Content: []loommcp.ContentBlock{
-			{Type: "text", Text: msg},
-			{Type: "text", Text: string(raw)},
-		},
 		IsError: true,
 	}
 }

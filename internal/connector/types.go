@@ -1,6 +1,7 @@
 package connector
 
 import (
+	"encoding/json"
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/loop"
@@ -157,32 +158,37 @@ type AgentDescriptor struct {
 	CreatedAt    *time.Time `json:"created_at,omitempty"` // dynamic only
 }
 
-// --- Pause/Resume/Snapshot types (mocked in v0.8.15) ---
+// --- Pause/Resume/Snapshot types (real in v0.8.18) ---
 //
-// All include FeatureStatus="preview" in v0.8.15 responses to signal
-// the stub state. Real implementations in v0.8.16+ leave the field
-// empty (or set "stable") and populate the meaningful fields.
+// Wire shapes locked in v0.8.15; real implementations landed in
+// v0.8.18 behind the same field shapes. The FeatureStatus field is
+// retained on every response type as `omitempty` for back-compat
+// with v0.8.15 PREVIEW clients (the field is now always left empty
+// in real responses).
 
 // PauseResult reports the outcome of PauseRuntime.
 type PauseResult struct {
-	Status              string `json:"status"`                   // "paused"
-	DurationMS          int64  `json:"duration_ms"`              // time taken to reach paused state
-	ForceCancelledCount int    `json:"force_cancelled_count"`    // non-idempotent tool calls force-cancelled
-	FeatureStatus       string `json:"feature_status,omitempty"` // "preview" in v0.8.15
-	Note                string `json:"note,omitempty"`           // human-readable feature-status explanation
+	Status              string   `json:"status"`                   // "paused"
+	DurationMS          int64    `json:"duration_ms"`              // time taken to reach paused state
+	ForceCancelledCount int      `json:"force_cancelled_count"`    // non-idempotent tool calls force-cancelled
+	PausedRunsCount     int      `json:"paused_runs_count"`        // runs marked pause_state='paused' in the store
+	Warnings            []string `json:"warnings,omitempty"`       // non-fatal issues encountered during pause
+	FeatureStatus       string   `json:"feature_status,omitempty"` // empty in v0.8.18+; "preview" historically
+	Note                string   `json:"note,omitempty"`           // human-readable feature-status explanation
 }
 
 // ResumeResult reports the outcome of ResumeRuntime.
 type ResumeResult struct {
-	Status          string `json:"status"`            // "running"
-	ResumedRunCount int    `json:"resumed_run_count"` // paused runs resumed
-	FeatureStatus   string `json:"feature_status,omitempty"`
-	Note            string `json:"note,omitempty"`
+	Status          string   `json:"status"`             // "running"
+	ResumedRunCount int      `json:"resumed_run_count"`  // paused runs resumed
+	Warnings        []string `json:"warnings,omitempty"` // non-fatal issues encountered during resume
+	FeatureStatus   string   `json:"feature_status,omitempty"`
+	Note            string   `json:"note,omitempty"`
 }
 
 // RuntimeState is the response shape for GetRuntimeState.
 type RuntimeState struct {
-	Status         string     `json:"status"` // "running" | "pausing" | "paused" | "resuming" | "restoring"
+	Status         string     `json:"status"` // "running" | "pausing" | "paused"
 	PausedAt       *time.Time `json:"paused_at,omitempty"`
 	PausedRunCount int        `json:"paused_run_count"`
 	SnapshotsCount int        `json:"snapshots_count"`
@@ -194,6 +200,9 @@ type CreateSnapshotRequest struct {
 	IncludeHistory bool       `json:"include_history,omitempty"`
 	SinceTS        *time.Time `json:"since_ts,omitempty"`
 	Description    string     `json:"description,omitempty"`
+	// MaxBytes overrides the operator's LOOMCYCLE_SNAPSHOT_MAX_BYTES
+	// cap for this call. 0 = use the default.
+	MaxBytes int64 `json:"max_bytes,omitempty"`
 }
 
 // SnapshotDescriptor is the response shape for CreateSnapshot /
@@ -209,26 +218,75 @@ type SnapshotDescriptor struct {
 	FeatureStatus   string     `json:"feature_status,omitempty"`
 }
 
-// ExportSnapshotResult is the response shape for ExportSnapshot.
-type ExportSnapshotResult struct {
-	SnapshotID    string `json:"snapshot_id"`
-	FilePath      string `json:"file_path"` // absolute path on the loomcycle host
-	Checksum      string `json:"checksum"`  // "sha256:..."
-	SizeBytes     int64  `json:"size_bytes"`
-	FeatureStatus string `json:"feature_status,omitempty"`
+// SnapshotEnvelope is the response shape for GetSnapshot — the full
+// stored snapshot row including the JSON content. Distinct from
+// ExportSnapshotResult, which is operator-facing "where did this
+// land on the host" semantics.
+type SnapshotEnvelope struct {
+	SnapshotID    string          `json:"snapshot_id"`
+	CreatedAt     time.Time       `json:"created_at"`
+	Description   string          `json:"description,omitempty"`
+	FormatVersion string          `json:"format_version"`
+	SizeBytes     int64           `json:"size_bytes"`
+	JSONContent   json.RawMessage `json:"json_content"`
 }
 
-// RestoreSnapshotRequest is the input to RestoreSnapshot — exactly
-// one of SnapshotID (restore from same-instance snapshot) or
-// FilePath (load from disk) must be non-empty.
+// ExportSnapshotResult is the response shape for ExportSnapshot.
+// In v0.8.18+, the canonical envelope bytes are returned via the
+// RawJSON field — transports that want to stream the export use
+// these bytes (HTTP /v1/_snapshots/{id}/export, gRPC streaming).
+// FilePath / Checksum remain operator-facing fields for transports
+// that materialise the export to disk first (CLI's --out flag); they
+// are empty when the bytes-only path is used.
+//
+// RawJSON is typed as json.RawMessage so it marshals onto the JSON
+// wire AS-IS (a nested JSON object), not as a base64-encoded string —
+// Go's default []byte marshalling would base64-encode it, breaking
+// any caller that tries to pipe `export_snapshot` output back into
+// `restore_snapshot` input. gRPC transports convert their proto
+// `bytes` field into this via json.RawMessage(...) cast.
+type ExportSnapshotResult struct {
+	SnapshotID    string          `json:"snapshot_id"`
+	FilePath      string          `json:"file_path,omitempty"` // absolute path on the loomcycle host (when materialised)
+	Checksum      string          `json:"checksum,omitempty"`  // "sha256:..." (when materialised)
+	SizeBytes     int64           `json:"size_bytes"`
+	RawJSON       json.RawMessage `json:"raw_json,omitempty"` // canonical envelope bytes (v0.8.18+); see type comment for marshalling rationale
+	FeatureStatus string          `json:"feature_status,omitempty"`
+}
+
+// RestoreSnapshotRequest is the input to RestoreSnapshot. Exactly
+// one of SnapshotID (restore from same-instance snapshot), RawJSON
+// (cross-instance restore from inline bytes), or FilePath (load
+// from disk) must be non-empty.
+//
+// RawJSON is typed as json.RawMessage so JSON-encoded transports
+// (MCP, HTTP body) accept the envelope as a nested JSON object
+// rather than a base64-encoded string — see ExportSnapshotResult's
+// type comment for the same-shape rationale.
 type RestoreSnapshotRequest struct {
-	SnapshotID string `json:"snapshot_id,omitempty"`
-	FilePath   string `json:"file_path,omitempty"`
+	SnapshotID     string          `json:"snapshot_id,omitempty"`
+	FilePath       string          `json:"file_path,omitempty"`
+	RawJSON        json.RawMessage `json:"raw_json,omitempty"`
+	IncludeHistory bool            `json:"include_history,omitempty"`
 }
 
 // RestoreSnapshotResult is the response shape for RestoreSnapshot.
+// The Restored map is preserved for backwards-compat — populated
+// from the per-section counters. Individual counter fields are also
+// surfaced for transports that want strongly-typed access.
 type RestoreSnapshotResult struct {
-	Restored         map[string]int `json:"restored"` // section name → row count
-	FormatMigrations []string       `json:"format_migrations,omitempty"`
-	FeatureStatus    string         `json:"feature_status,omitempty"`
+	Restored                   map[string]int `json:"restored"`
+	AgentDefsRestored          int            `json:"agent_defs_restored"`
+	AgentDefActiveRestored     int            `json:"agent_def_active_restored"`
+	MemoryRestored             int            `json:"memory_restored"`
+	ChannelMessagesRestored    int            `json:"channel_messages_restored"`
+	ChannelCursorsRestored     int            `json:"channel_cursors_restored"`
+	EvaluationsRestored        int            `json:"evaluations_restored"`
+	PausedRunsRestored         int            `json:"paused_runs_restored"`
+	SynthesizedSessions        int            `json:"synthesized_sessions"`
+	TranscriptEventsRestored   int            `json:"transcript_events_restored"`
+	InteractionHistoryRestored int            `json:"interaction_history_restored"`
+	Warnings                   []string       `json:"warnings,omitempty"`
+	FormatMigrations           []string       `json:"format_migrations,omitempty"`
+	FeatureStatus              string         `json:"feature_status,omitempty"`
 }

@@ -80,6 +80,9 @@ func (m *httpMockConnector) CreateSnapshot(context.Context, connector.CreateSnap
 func (m *httpMockConnector) ListSnapshots(context.Context) ([]connector.SnapshotDescriptor, error) {
 	return nil, nil
 }
+func (m *httpMockConnector) GetSnapshot(context.Context, string) (connector.SnapshotEnvelope, error) {
+	return connector.SnapshotEnvelope{}, errors.New("not implemented")
+}
 func (m *httpMockConnector) ExportSnapshot(context.Context, string) (connector.ExportSnapshotResult, error) {
 	return connector.ExportSnapshotResult{}, errors.New("not implemented")
 }

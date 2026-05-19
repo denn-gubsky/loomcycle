@@ -85,6 +85,9 @@ func (m *mockConnector) CreateSnapshot(_ context.Context, _ connector.CreateSnap
 func (m *mockConnector) ListSnapshots(_ context.Context) ([]connector.SnapshotDescriptor, error) {
 	return nil, nil
 }
+func (m *mockConnector) GetSnapshot(_ context.Context, _ string) (connector.SnapshotEnvelope, error) {
+	return connector.SnapshotEnvelope{}, errors.New("not implemented")
+}
 func (m *mockConnector) ExportSnapshot(_ context.Context, _ string) (connector.ExportSnapshotResult, error) {
 	return connector.ExportSnapshotResult{}, errors.New("not implemented")
 }
@@ -169,7 +172,7 @@ func TestServer_Handshake(t *testing.T) {
 	}
 }
 
-func TestServer_ToolsList_Returns21Tools(t *testing.T) {
+func TestServer_ToolsList_Returns22Tools(t *testing.T) {
 	srv := New(Config{Connector: &mockConnector{}, Logf: func(string, ...any) {}})
 	in := `{"jsonrpc":"2.0","id":1,"method":"tools/list"}` + "\n"
 	resps, _ := driveServer(t, srv, in)
@@ -180,15 +183,15 @@ func TestServer_ToolsList_Returns21Tools(t *testing.T) {
 	if err := json.Unmarshal(resps[0].Result, &result); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if len(result.Tools) != 21 {
-		t.Errorf("got %d tools, want 21 (v0.8.16 adds interruption_resolve)", len(result.Tools))
+	if len(result.Tools) != 22 {
+		t.Errorf("got %d tools, want 22 (v0.8.18 adds get_snapshot)", len(result.Tools))
 	}
 	names := map[string]bool{}
 	for _, td := range result.Tools {
 		names[td.Name] = true
 	}
-	// Spot-check a few across categories — including the v0.8.16 addition.
-	for _, want := range []string{"spawn_run", "register_agent", "memory", "pause_runtime", "create_snapshot", "interruption_resolve"} {
+	// Spot-check a few across categories — including the v0.8.16 + v0.8.18 additions.
+	for _, want := range []string{"spawn_run", "register_agent", "memory", "pause_runtime", "create_snapshot", "get_snapshot", "interruption_resolve"} {
 		if !names[want] {
 			t.Errorf("missing tool %q in tools/list", want)
 		}
@@ -417,16 +420,22 @@ func TestServer_UnknownTool_Returns32601(t *testing.T) {
 	}
 }
 
-func TestServer_PauseRuntime_ReturnsPreviewShape(t *testing.T) {
+// TestServer_PauseRuntime_DispatchesToConnector — v0.8.18: pause_runtime
+// returns the real Connector result. mockConnector.pauseResult is
+// what the test plumbs through; the wire shape carries Status,
+// DurationMs, ForceCancelledCount, PausedRunsCount — no FeatureStatus
+// in the real path.
+func TestServer_PauseRuntime_DispatchesToConnector(t *testing.T) {
 	mc := &mockConnector{
 		pauseResult: connector.PauseResult{
-			Status:        "paused",
-			FeatureStatus: "preview",
-			Note:          "v0.8.15 mock",
+			Status:              "paused",
+			DurationMS:          12,
+			ForceCancelledCount: 1,
+			PausedRunsCount:     2,
 		},
 	}
 	srv := New(Config{Connector: mc, Logf: func(string, ...any) {}})
-	in := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"pause_runtime","arguments":{}}}` + "\n"
+	in := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"pause_runtime","arguments":{"timeout_ms":5000}}}` + "\n"
 	resps, _ := driveServer(t, srv, in)
 	if len(resps) != 1 {
 		t.Fatalf("got %d responses, want 1", len(resps))
@@ -436,14 +445,20 @@ func TestServer_PauseRuntime_ReturnsPreviewShape(t *testing.T) {
 		t.Fatalf("unmarshal: %v", err)
 	}
 	if callRes.IsError {
-		t.Errorf("pause_runtime should NOT be a tool error in v0.8.15 (mocks return success with feature_status=preview)")
+		t.Errorf("pause_runtime should NOT be a tool error on the happy path")
 	}
 	var inner connector.PauseResult
 	if err := json.Unmarshal([]byte(callRes.Content[0].Text), &inner); err != nil {
 		t.Fatalf("unmarshal inner: %v", err)
 	}
-	if inner.FeatureStatus != "preview" {
-		t.Errorf("feature_status = %q, want %q", inner.FeatureStatus, "preview")
+	if inner.Status != "paused" {
+		t.Errorf("status = %q, want paused", inner.Status)
+	}
+	if inner.PausedRunsCount != 2 {
+		t.Errorf("paused_runs_count = %d, want 2", inner.PausedRunsCount)
+	}
+	if inner.FeatureStatus != "" {
+		t.Errorf("feature_status = %q, want empty (v0.8.18 real impls drop the marker)", inner.FeatureStatus)
 	}
 }
 
