@@ -842,4 +842,3 @@ func computeExpiresAt(now time.Time, ttlSeconds, defaultTTLSeconds int) time.Tim
 	}
 	return now.Add(time.Duration(ttlSeconds) * time.Second)
 }
-

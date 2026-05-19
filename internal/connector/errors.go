@@ -5,11 +5,11 @@ import "errors"
 // Typed errors returned by the Connector's Pause/Snapshot methods.
 // Wire transports translate these into protocol-specific error codes:
 //
-//   HTTP    — 503 / 409 / 404 / 413 / 422 status + JSON error body
-//   gRPC    — codes.Unavailable / FailedPrecondition / NotFound /
-//             ResourceExhausted / FailedPrecondition
-//   MCP     — tool_result with IsError=true + a descriptive Text
-//   Python  — typed subclasses of LoomcycleError in adapters/python/
+//	HTTP    — 503 / 409 / 404 / 413 / 422 status + JSON error body
+//	gRPC    — codes.Unavailable / FailedPrecondition / NotFound /
+//	          ResourceExhausted / FailedPrecondition
+//	MCP     — tool_result with IsError=true + a descriptive Text
+//	Python  — typed subclasses of LoomcycleError in adapters/python/
 //
 // Implementations (currently only internal/api/http) return these
 // sentinels (or wrap them) so transport layers can use errors.Is /

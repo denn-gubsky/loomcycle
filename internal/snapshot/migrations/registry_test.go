@@ -115,4 +115,3 @@ func TestErrUnknownSectionVersion_MessageContent(t *testing.T) {
 		}
 	}
 }
-

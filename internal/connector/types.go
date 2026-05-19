@@ -179,11 +179,11 @@ type PauseResult struct {
 
 // ResumeResult reports the outcome of ResumeRuntime.
 type ResumeResult struct {
-	Status           string   `json:"status"`             // "running"
-	ResumedRunCount  int      `json:"resumed_run_count"`  // paused runs resumed
-	Warnings         []string `json:"warnings,omitempty"` // non-fatal issues encountered during resume
-	FeatureStatus    string   `json:"feature_status,omitempty"`
-	Note             string   `json:"note,omitempty"`
+	Status          string   `json:"status"`             // "running"
+	ResumedRunCount int      `json:"resumed_run_count"`  // paused runs resumed
+	Warnings        []string `json:"warnings,omitempty"` // non-fatal issues encountered during resume
+	FeatureStatus   string   `json:"feature_status,omitempty"`
+	Note            string   `json:"note,omitempty"`
 }
 
 // RuntimeState is the response shape for GetRuntimeState.
