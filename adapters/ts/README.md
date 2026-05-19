@@ -6,7 +6,9 @@ TypeScript client for the [loomcycle](https://github.com/denn-gubsky/loomcycle) 
 
 ## Status
 
-**v0.8.18** — full Python-adapter parity. 24 methods covering run streaming, agent metadata, transcript, pause/resume/state, snapshot lifecycle, memory admin, interruption resolve, and health.
+**v0.8.18** — full Python-adapter parity + hook management. 27 methods covering run streaming, agent metadata, transcript, pause/resume/state, snapshot lifecycle, memory admin, interruption resolve, hook registration, and health.
+
+> Migrating from raw `fetch` against `/v1/*`? See **[docs/MIGRATING-FROM-HTTP.md](./docs/MIGRATING-FROM-HTTP.md)** for a side-by-side walkthrough.
 
 ## Install
 
@@ -124,6 +126,87 @@ console.log(`restored memory rows: ${result.memory_restored}`);
 | `listRunInterrupts(runId, opts?)` | `Promise<InterruptListResponse>` | Per-run interrupts. |
 | `resolveInterrupt(runId, interruptId, opts: ResolveInterruptOptions)` | `Promise<unknown>` | Answer a pending interrupt. |
 
+### Hook management (v0.8.18)
+
+| Method | Returns | Notes |
+|---|---|---|
+| `registerHook(opts: RegisterHookOptions)` | `Promise<RegisterHookResponse>` | Register a pre- or post-tool webhook. Re-registering the same `(owner, name)` replaces in-place with a fresh id. Raises `InvalidArgumentError` on 400 (bad URL / phase / missing field). |
+| `listHooks()` | `Promise<Hook[]>` | Every registered hook. **In-memory only — empty after a loomcycle restart.** |
+| `deleteHook(id)` | `Promise<void>` | Raises `HookNotFoundError` on 404. |
+
+Hook registration is one side; the other side is the **callback receiver** — a small HTTP endpoint your app runs at the URL you registered. The adapter exports the wire shapes (`PreHookCall` / `PostHookCall` / `PreHookResult` / `PostHookResult`) so you can type the handler against the same JSON loomcycle posts.
+
+**Register from your app's startup:**
+
+```ts
+import { LoomcycleClient } from "@loomcycle/client";
+
+const client = new LoomcycleClient({
+  baseUrl: process.env.LOOMCYCLE_BASE_URL!,
+  authToken: process.env.LOOMCYCLE_AUTH_TOKEN,
+});
+
+await client.registerHook({
+  owner: "jobember-web",                     // (owner, name) is the identity tuple
+  name: "scan-webfetch",                     // re-registering same pair replaces in place
+  phase: "post",                             // "pre" or "post"
+  tools: ["WebFetch"],                       // empty/omitted = all tools
+  callbackUrl: "https://jobember.example/hooks/scan",
+  failMode: "open",                          // "open" = errors pass through; "closed" = errors fail the tool call
+  timeoutMs: 3000,                           // 0 = registry default (5s)
+});
+```
+
+**Run the callback receiver** (Next.js App Router example — adapt to your framework):
+
+```ts
+// app/hooks/scan/route.ts
+import { NextResponse } from "next/server";
+import type { PostHookCall, PostHookResult } from "@loomcycle/client";
+
+export async function POST(req: Request) {
+  const body = (await req.json()) as PostHookCall;
+  // body.phase === "post", body.agent, body.tool_call.{id,name,input}, body.tool_result.{text,is_error}
+
+  // Telemetry-shaped: log + pass through.
+  console.log(`[hook] ${body.agent}.${body.tool_call.name} -> ${body.tool_result.is_error ? "error" : "ok"}`);
+
+  // Empty body = pass through unchanged. Return a PostHookResult to rewrite:
+  const reply: PostHookResult = {}; // or { result: { text: "redacted", is_error: false } }
+  return NextResponse.json(reply);
+}
+```
+
+**Pre-hook example** (short-circuit a tool call):
+
+```ts
+// app/hooks/guard/route.ts
+import { NextResponse } from "next/server";
+import type { PreHookCall, PreHookResult } from "@loomcycle/client";
+
+export async function POST(req: Request) {
+  const body = (await req.json()) as PreHookCall;
+
+  // Deny outbound fetches to disallowed hosts
+  const input = body.tool_call.input as { url?: string };
+  if (input.url && new URL(input.url).hostname.endsWith(".internal")) {
+    const reply: PreHookResult = {
+      deny: { text: "internal hosts are not reachable from agents", is_error: true },
+    };
+    return NextResponse.json(reply);
+  }
+
+  return NextResponse.json({}); // pass through
+}
+```
+
+**Important constraints**:
+
+- Hook registrations are **in-memory** on the loomcycle server. Re-register on every app startup; the `(owner, name)` idempotency contract makes this safe (replaces in place).
+- Auth flows one-way: loomcycle → your callback URL. Loomcycle does NOT attach a bearer token to callback POSTs by default. If you need to authenticate the caller, validate by source IP or include a shared secret in the `callback_url` path/query (`https://jobember.example/hooks/scan?secret=...`).
+- `fail_mode: "open"` (default) is right for telemetry hooks where a down receiver shouldn't break tool dispatch. `"closed"` is right for security hooks where a down receiver should fail the tool call (don't let bypassed payloads through).
+- `allow_hosts` in `PreHookResult` is a **trust-sensitive surface** — it widens the agent's outbound network policy for one tool call. Server enforces an operator-yaml allowlist (`hooks.permit_host_widen.owners`); your owner has to be on that list for `allow_hosts` to take effect. See the SECURITY note in `internal/hooks/types.go` before using.
+
 ## Errors
 
 Non-2xx responses throw typed subclasses of `LoomcycleError`. The original HTTP status is on `e.status`; the truncated response body is on `e.bodyText` (≤1 KiB).
@@ -132,9 +215,11 @@ Non-2xx responses throw typed subclasses of `LoomcycleError`. The original HTTP 
 |---|---|
 | 400 | `InvalidArgumentError` |
 | 401 | `AuthError` |
-| 404 + "snapshot" | `SnapshotNotFoundError` |
-| 404 + "session" | `SessionNotFoundError` |
-| 404 (other) | `AgentNotFoundError` (catch-all) |
+| 404 + "snapshot" | `SnapshotNotFoundError` ⎫ |
+| 404 + "session" | `SessionNotFoundError` ⎬ all extend `NotFoundError` |
+| 404 + "hook" | `HookNotFoundError` ⎬ |
+| 404 + "agent" | `AgentNotFoundError` ⎬ |
+| 404 (other) | `NotFoundError` (base) ⎭ catch any 404 with one `instanceof` |
 | 409 + "already_pausing" / "already paused" | `AlreadyPausingError` |
 | 409 + "not_paused" / "not paused" | `NotPausedError` |
 | 409 + "session" | `SessionBusyError` |
@@ -146,6 +231,8 @@ Non-2xx responses throw typed subclasses of `LoomcycleError`. The original HTTP 
 | 503 + "pause manager not configured" | `PauseNotConfiguredError` (subclass of `UnavailableError` — back-compat) |
 | 503 (other) | `UnavailableError` |
 | 500 / other | `LoomcycleError` (base) |
+
+Priority within `404`: most-specific keyword wins (`snapshot` → `session` → `hook` → `agent` → base). The dispatch is keyword-matched on the response body lowercase; a hook with id `hook_agent_scan` still routes to `HookNotFoundError`, not `AgentNotFoundError`.
 
 ```ts
 import {
