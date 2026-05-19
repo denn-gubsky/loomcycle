@@ -1,15 +1,16 @@
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import type { Agent } from "../api";
 
 // AgentsTree renders the parent → children agent hierarchy as a
-// nested <ul>. Each node link navigates to /agents/:id; a caret
-// button to the left of the status pill toggles whether the
-// children subtree is rendered.
+// nested <ul>. A caret button on each row toggles whether the
+// children subtree is rendered. The row's agent-name affordance
+// either navigates to /agents/:id (standalone) or fires onSelect
+// (split-view; commit 5).
 //
 // Expand state lives in a single Map<agent_id, boolean> owned by
-// the tree (not per-node) — that way a render-time effect can
-// expand ancestors of a selected node centrally, and a future
+// the tree (not per-node) so a render-time effect can expand
+// ancestors of a selected node centrally, and a future
 // "collapse all" / "expand all" toolbar gets a single setter to
 // flip. Default-expanded: missing key OR true is "expanded";
 // only an explicit `false` collapses. This preserves the v0.8.19
@@ -57,9 +58,15 @@ export function relativeTime(iso: string): string {
 
 export interface AgentsTreeProps {
   tree: TreeNode[];
+  // Optional selection highlight + click callback. When onSelect
+  // is set, clicking the row fires the callback (split-view).
+  // When omitted, the row navigates via <Link to=/agents/:id/>
+  // (standalone tree usage; legacy /agents/:agentId route).
+  selectedId?: string;
+  onSelect?: (agentId: string) => void;
 }
 
-export default function AgentsTree({ tree }: AgentsTreeProps) {
+export default function AgentsTree({ tree, selectedId, onSelect }: AgentsTreeProps) {
   const [expandedMap, setExpandedMap] = useState<Map<string, boolean>>(() => new Map());
   // Clone the Map on every write so React picks up the change via
   // reference inequality — Maps are reference-compared like all
@@ -71,6 +78,28 @@ export default function AgentsTree({ tree }: AgentsTreeProps) {
       return next;
     });
   }, []);
+
+  // Auto-expand the ancestors of the currently-selected node so a
+  // deep-link reload doesn't leave the selection buried under a
+  // collapsed parent. Walks parent_agent_id back to root using the
+  // tree itself as the lookup (each node is reachable via DFS).
+  useEffect(() => {
+    if (!selectedId) return;
+    const parentIds = collectAncestorIds(tree, selectedId);
+    if (parentIds.length === 0) return;
+    setExpandedMap((prev) => {
+      let mutated = false;
+      const next = new Map(prev);
+      for (const id of parentIds) {
+        if (next.get(id) === false) {
+          next.set(id, true);
+          mutated = true;
+        }
+      }
+      return mutated ? next : prev;
+    });
+  }, [tree, selectedId]);
+
   return (
     <ul className="tree">
       {tree.map((node) => (
@@ -80,10 +109,31 @@ export default function AgentsTree({ tree }: AgentsTreeProps) {
           depth={0}
           expandedMap={expandedMap}
           setExpanded={setExpanded}
+          selectedId={selectedId}
+          onSelect={onSelect}
         />
       ))}
     </ul>
   );
+}
+
+// collectAncestorIds walks the tree to find the node with id ===
+// selectedId and returns every parent_agent_id on the path from
+// root down to (but not including) that node. Empty if not found.
+function collectAncestorIds(roots: TreeNode[], selectedId: string): string[] {
+  const path: string[] = [];
+  const walk = (nodes: TreeNode[], parents: string[]): boolean => {
+    for (const n of nodes) {
+      if (n.agent.agent_id === selectedId) {
+        path.push(...parents);
+        return true;
+      }
+      if (walk(n.children, [...parents, n.agent.agent_id])) return true;
+    }
+    return false;
+  };
+  walk(roots, []);
+  return path;
 }
 
 interface NodeProps {
@@ -91,15 +141,18 @@ interface NodeProps {
   depth: number;
   expandedMap: Map<string, boolean>;
   setExpanded: (id: string, expanded: boolean) => void;
+  selectedId?: string;
+  onSelect?: (agentId: string) => void;
 }
 
-function AgentsTreeNode({ node, depth, expandedMap, setExpanded }: NodeProps) {
+function AgentsTreeNode({ node, depth, expandedMap, setExpanded, selectedId, onSelect }: NodeProps) {
   const a = node.agent;
   const hasChildren = node.children.length > 0;
   // Default-expanded: only an explicit `false` collapses.
   const expanded = expandedMap.get(a.agent_id) !== false;
+  const isSelected = selectedId === a.agent_id;
   return (
-    <li className={`node depth-${depth} status-${a.status}`}>
+    <li className={`node depth-${depth} status-${a.status} ${isSelected ? "selected" : ""}`}>
       <div className="row">
         <button
           type="button"
@@ -107,9 +160,9 @@ function AgentsTreeNode({ node, depth, expandedMap, setExpanded }: NodeProps) {
           aria-label={expanded ? "collapse" : "expand"}
           disabled={!hasChildren}
           onClick={(e) => {
-            // Don't bubble to the row — the row click navigates via
-            // the <Link> on the agent name; the caret is the only
-            // expand/collapse affordance.
+            // Don't bubble to the row — the row click navigates
+            // or selects via the affordance below; the caret is
+            // the only expand/collapse control.
             e.stopPropagation();
             if (hasChildren) setExpanded(a.agent_id, !expanded);
           }}
@@ -117,10 +170,21 @@ function AgentsTreeNode({ node, depth, expandedMap, setExpanded }: NodeProps) {
           {hasChildren ? (expanded ? "▼" : "▶") : "·"}
         </button>
         <span className={`pill ${a.status}`}>{a.status}</span>
-        <Link to={`/agents/${a.agent_id}`} className="agent-link">
-          <strong>{a.agent || "(unknown agent)"}</strong>
-          <code className="agent-id">{a.agent_id.slice(0, 12)}…</code>
-        </Link>
+        {onSelect ? (
+          <button
+            type="button"
+            className="agent-link"
+            onClick={() => onSelect(a.agent_id)}
+          >
+            <strong>{a.agent || "(unknown agent)"}</strong>
+            <code className="agent-id">{a.agent_id.slice(0, 12)}…</code>
+          </button>
+        ) : (
+          <Link to={`/agents/${a.agent_id}`} className="agent-link">
+            <strong>{a.agent || "(unknown agent)"}</strong>
+            <code className="agent-id">{a.agent_id.slice(0, 12)}…</code>
+          </Link>
+        )}
         <span className="model">{a.usage?.model || "—"}</span>
         <span className="time">{relativeTime(a.started_at)}</span>
         {a.error && <span className="error-flag" title={a.error}>error</span>}
@@ -134,6 +198,8 @@ function AgentsTreeNode({ node, depth, expandedMap, setExpanded }: NodeProps) {
               depth={depth + 1}
               expandedMap={expandedMap}
               setExpanded={setExpanded}
+              selectedId={selectedId}
+              onSelect={onSelect}
             />
           ))}
         </ul>
