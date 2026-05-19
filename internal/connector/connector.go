@@ -161,6 +161,26 @@ type Connector interface {
 	// (409 from the HTTP layer maps to this); ErrNotFound on a
 	// missing interrupt_id; nil on success.
 	InterruptionResolve(ctx context.Context, req InterruptionResolveRequest) (InterruptionResolveResult, error)
+
+	// --- Hook management (PR A of the hooks-connector series) ---
+	//
+	// Hooks are in-memory only; registrations do not survive restarts.
+	// The callback half is HTTP-only (consumer's own web server receives
+	// the Pre/PostHookCall payloads); these Connector methods cover the
+	// registration management surface only.
+	//
+	// Typed errors:
+	//   ErrHookInvalidRegistration — bad owner/name/callback_url, etc.
+	//                                Transports: HTTP 400 / InvalidArgument.
+	//   ErrHookNotFound            — DeleteHook on unknown id.
+	//                                Transports: HTTP 404 / NotFound.
+	//   ErrHookNotConfigured       — Server has no hookRegistry wired
+	//                                (test-harness guard; not seen in
+	//                                production). Transports: Unavailable.
+
+	RegisterHook(ctx context.Context, req RegisterHookRequest) (RegisterHookResponse, error)
+	ListHooks(ctx context.Context) (ListHooksResponse, error)
+	DeleteHook(ctx context.Context, id string) error
 }
 
 // InterruptionResolveRequest is the input to Connector.InterruptionResolve.
