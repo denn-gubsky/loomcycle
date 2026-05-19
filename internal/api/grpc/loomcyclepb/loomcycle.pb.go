@@ -1477,8 +1477,12 @@ type PauseRuntimeRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Wait-for-non-idempotent-tools cap, in milliseconds. 0 falls
 	// through to LOOMCYCLE_PAUSE_DEFAULT_TIMEOUT_MS (default 30 s).
-	// Clamped server-side at pause.MaxPauseTimeout (5 min).
-	TimeoutMs     int32 `protobuf:"varint,1,opt,name=timeout_ms,json=timeoutMs,proto3" json:"timeout_ms,omitempty"`
+	// Clamped server-side at pause.MaxPauseTimeout (5 min). int64
+	// for consistency with every other _ms field in this proto
+	// (duration_ms in PauseRuntimeResponse, wait_ms in Retry) —
+	// server clamping makes the larger range unobservable but the
+	// type matches.
+	TimeoutMs     int64 `protobuf:"varint,1,opt,name=timeout_ms,json=timeoutMs,proto3" json:"timeout_ms,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1513,7 +1517,7 @@ func (*PauseRuntimeRequest) Descriptor() ([]byte, []int) {
 	return file_loomcycle_proto_rawDescGZIP(), []int{21}
 }
 
-func (x *PauseRuntimeRequest) GetTimeoutMs() int32 {
+func (x *PauseRuntimeRequest) GetTimeoutMs() int64 {
 	if x != nil {
 		return x.TimeoutMs
 	}
@@ -2712,7 +2716,7 @@ const file_loomcycle_proto_rawDesc = "" +
 	"\x0euptime_seconds\x18\x04 \x01(\x03R\ruptimeSeconds\"4\n" +
 	"\x13PauseRuntimeRequest\x12\x1d\n" +
 	"\n" +
-	"timeout_ms\x18\x01 \x01(\x05R\ttimeoutMs\"\xcb\x01\n" +
+	"timeout_ms\x18\x01 \x01(\x03R\ttimeoutMs\"\xcb\x01\n" +
 	"\x14PauseRuntimeResponse\x12\x16\n" +
 	"\x06status\x18\x01 \x01(\tR\x06status\x12\x1f\n" +
 	"\vduration_ms\x18\x02 \x01(\x03R\n" +

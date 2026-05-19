@@ -384,8 +384,12 @@ message HealthResponse {
 message PauseRuntimeRequest {
   // Wait-for-non-idempotent-tools cap, in milliseconds. 0 falls
   // through to LOOMCYCLE_PAUSE_DEFAULT_TIMEOUT_MS (default 30 s).
-  // Clamped server-side at pause.MaxPauseTimeout (5 min).
-  int32 timeout_ms = 1;
+  // Clamped server-side at pause.MaxPauseTimeout (5 min). int64
+  // for consistency with every other _ms field in this proto
+  // (duration_ms in PauseRuntimeResponse, wait_ms in Retry) —
+  // server clamping makes the larger range unobservable but the
+  // type matches.
+  int64 timeout_ms = 1;
 }
 
 message PauseRuntimeResponse {

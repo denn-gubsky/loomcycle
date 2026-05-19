@@ -40,6 +40,7 @@ type pauseSnapshotMock struct {
 	createSnapshotResp  connector.SnapshotDescriptor
 	createSnapshotErr   error
 	listSnapshotsResp   []connector.SnapshotDescriptor
+	listSnapshotsErr    error
 	getSnapshotResp     connector.SnapshotEnvelope
 	getSnapshotErr      error
 	exportSnapshotResp  connector.ExportSnapshotResult
@@ -71,7 +72,7 @@ func (m *pauseSnapshotMock) CreateSnapshot(_ context.Context, req connector.Crea
 	return m.createSnapshotResp, m.createSnapshotErr
 }
 func (m *pauseSnapshotMock) ListSnapshots(context.Context) ([]connector.SnapshotDescriptor, error) {
-	return m.listSnapshotsResp, nil
+	return m.listSnapshotsResp, m.listSnapshotsErr
 }
 func (m *pauseSnapshotMock) GetSnapshot(_ context.Context, id string) (connector.SnapshotEnvelope, error) {
 	m.lastGetID = id
@@ -230,6 +231,41 @@ func TestGrpcGetRuntimeState(t *testing.T) {
 	if resp.GetSnapshotsCount() != 7 {
 		t.Errorf("snapshots_count = %d, want 7", resp.GetSnapshotsCount())
 	}
+	// PausedAt is nil on the mock — the handler's nil-guard at
+	// pause_snapshot.go (if res.PausedAt != nil) means the proto
+	// PausedAt field stays unset; assert that explicitly.
+	if resp.GetPausedAt() != nil {
+		t.Errorf("paused_at = %v, want nil when connector RuntimeState.PausedAt is nil", resp.GetPausedAt())
+	}
+}
+
+// TestGrpcGetRuntimeState_Paused exercises the non-nil PausedAt
+// branch in GetRuntimeState. Without this, the nil-guard at
+// pause_snapshot.go:69 was tested only on the nil side; the dereference +
+// timestamppb.New path was dead code from the test's perspective.
+func TestGrpcGetRuntimeState_Paused(t *testing.T) {
+	pausedAt := time.Date(2026, 5, 19, 12, 0, 0, 0, time.UTC)
+	mc := &pauseSnapshotMock{
+		stateResult: connector.RuntimeState{
+			Status:         "paused",
+			PausedAt:       &pausedAt,
+			PausedRunCount: 1,
+			SnapshotsCount: 1,
+		},
+	}
+	client, cleanup := startTestServerWithConnector(t, mc)
+	defer cleanup()
+
+	resp, err := client.GetRuntimeState(context.Background(), &loomcyclepb.GetRuntimeStateRequest{})
+	if err != nil {
+		t.Fatalf("GetRuntimeState: %v", err)
+	}
+	if resp.GetPausedAt() == nil {
+		t.Fatal("paused_at = nil, want non-nil Timestamp")
+	}
+	if got := resp.GetPausedAt().AsTime().UTC(); !got.Equal(pausedAt) {
+		t.Errorf("paused_at = %v, want %v", got, pausedAt)
+	}
 }
 
 // --- Snapshot lifecycle ---
@@ -288,6 +324,23 @@ func TestGrpcListSnapshots(t *testing.T) {
 	}
 	if len(resp.GetSnapshots()) != 2 {
 		t.Errorf("len(snapshots) = %d, want 2", len(resp.GetSnapshots()))
+	}
+}
+
+// TestGrpcListSnapshots_PauseNotConfigured pins that typed
+// connector errors flow through ListSnapshots's
+// translatePauseSnapshotError. Without this, the error path was
+// untested — the mock previously hardcoded nil for the error
+// return so the translatePauseSnapshotError branch in
+// pause_snapshot.go was dead code from the test's perspective.
+func TestGrpcListSnapshots_PauseNotConfigured(t *testing.T) {
+	mc := &pauseSnapshotMock{listSnapshotsErr: connector.ErrPauseNotConfigured}
+	client, cleanup := startTestServerWithConnector(t, mc)
+	defer cleanup()
+
+	_, err := client.ListSnapshots(context.Background(), &loomcyclepb.ListSnapshotsRequest{})
+	if status.Code(err) != codes.Unavailable {
+		t.Errorf("code = %v, want Unavailable", status.Code(err))
 	}
 }
 
