@@ -1473,6 +1473,453 @@ func (x *HealthResponse) GetUptimeSeconds() int64 {
 	return 0
 }
 
+type RegisterHookRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// App UID; (owner, name) is the identity tuple. Re-registering the
+	// same pair replaces the prior registration with a fresh id.
+	Owner string `protobuf:"bytes,1,opt,name=owner,proto3" json:"owner,omitempty"`
+	Name  string `protobuf:"bytes,2,opt,name=name,proto3" json:"name,omitempty"`
+	// "pre" | "post". Anything else → InvalidArgument.
+	Phase string `protobuf:"bytes,3,opt,name=phase,proto3" json:"phase,omitempty"`
+	// Agent name globs (exact match or trailing-* prefix). Empty list
+	// matches every agent (equivalent to ["*"]).
+	Agents []string `protobuf:"bytes,4,rep,name=agents,proto3" json:"agents,omitempty"`
+	// Tool name globs (same syntax as agents). Empty matches every tool.
+	Tools []string `protobuf:"bytes,5,rep,name=tools,proto3" json:"tools,omitempty"`
+	// http:// or https:// endpoint the consumer runs. The dispatcher
+	// POSTs PreHookCall / PostHookCall payloads here.
+	CallbackUrl string `protobuf:"bytes,6,opt,name=callback_url,json=callbackUrl,proto3" json:"callback_url,omitempty"`
+	// "open" (default) | "closed". Open = webhook errors pass through;
+	// closed = errors fail the tool call with IsError=true.
+	FailMode string `protobuf:"bytes,7,opt,name=fail_mode,json=failMode,proto3" json:"fail_mode,omitempty"`
+	// Per-call timeout. 0 = registry default (5 s).
+	TimeoutMs     int32 `protobuf:"varint,8,opt,name=timeout_ms,json=timeoutMs,proto3" json:"timeout_ms,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RegisterHookRequest) Reset() {
+	*x = RegisterHookRequest{}
+	mi := &file_loomcycle_proto_msgTypes[21]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RegisterHookRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RegisterHookRequest) ProtoMessage() {}
+
+func (x *RegisterHookRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_loomcycle_proto_msgTypes[21]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RegisterHookRequest.ProtoReflect.Descriptor instead.
+func (*RegisterHookRequest) Descriptor() ([]byte, []int) {
+	return file_loomcycle_proto_rawDescGZIP(), []int{21}
+}
+
+func (x *RegisterHookRequest) GetOwner() string {
+	if x != nil {
+		return x.Owner
+	}
+	return ""
+}
+
+func (x *RegisterHookRequest) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *RegisterHookRequest) GetPhase() string {
+	if x != nil {
+		return x.Phase
+	}
+	return ""
+}
+
+func (x *RegisterHookRequest) GetAgents() []string {
+	if x != nil {
+		return x.Agents
+	}
+	return nil
+}
+
+func (x *RegisterHookRequest) GetTools() []string {
+	if x != nil {
+		return x.Tools
+	}
+	return nil
+}
+
+func (x *RegisterHookRequest) GetCallbackUrl() string {
+	if x != nil {
+		return x.CallbackUrl
+	}
+	return ""
+}
+
+func (x *RegisterHookRequest) GetFailMode() string {
+	if x != nil {
+		return x.FailMode
+	}
+	return ""
+}
+
+func (x *RegisterHookRequest) GetTimeoutMs() int32 {
+	if x != nil {
+		return x.TimeoutMs
+	}
+	return 0
+}
+
+type RegisterHookResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Loomcycle-assigned id. Caller uses this on DeleteHook.
+	Id            string `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RegisterHookResponse) Reset() {
+	*x = RegisterHookResponse{}
+	mi := &file_loomcycle_proto_msgTypes[22]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RegisterHookResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RegisterHookResponse) ProtoMessage() {}
+
+func (x *RegisterHookResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_loomcycle_proto_msgTypes[22]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RegisterHookResponse.ProtoReflect.Descriptor instead.
+func (*RegisterHookResponse) Descriptor() ([]byte, []int) {
+	return file_loomcycle_proto_rawDescGZIP(), []int{22}
+}
+
+func (x *RegisterHookResponse) GetId() string {
+	if x != nil {
+		return x.Id
+	}
+	return ""
+}
+
+type ListHooksRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListHooksRequest) Reset() {
+	*x = ListHooksRequest{}
+	mi := &file_loomcycle_proto_msgTypes[23]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListHooksRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListHooksRequest) ProtoMessage() {}
+
+func (x *ListHooksRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_loomcycle_proto_msgTypes[23]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListHooksRequest.ProtoReflect.Descriptor instead.
+func (*ListHooksRequest) Descriptor() ([]byte, []int) {
+	return file_loomcycle_proto_rawDescGZIP(), []int{23}
+}
+
+// Hook mirrors hooks.Hook for the wire — the full descriptor as it
+// lives in the in-memory registry. The bool `Timeout` is the resolved
+// duration; we don't surface it on the wire (callers care about
+// timeout_ms which is the source).
+type Hook struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Id            string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	Owner         string                 `protobuf:"bytes,2,opt,name=owner,proto3" json:"owner,omitempty"`
+	Name          string                 `protobuf:"bytes,3,opt,name=name,proto3" json:"name,omitempty"`
+	Phase         string                 `protobuf:"bytes,4,opt,name=phase,proto3" json:"phase,omitempty"`
+	Agents        []string               `protobuf:"bytes,5,rep,name=agents,proto3" json:"agents,omitempty"`
+	Tools         []string               `protobuf:"bytes,6,rep,name=tools,proto3" json:"tools,omitempty"`
+	CallbackUrl   string                 `protobuf:"bytes,7,opt,name=callback_url,json=callbackUrl,proto3" json:"callback_url,omitempty"`
+	FailMode      string                 `protobuf:"bytes,8,opt,name=fail_mode,json=failMode,proto3" json:"fail_mode,omitempty"`
+	TimeoutMs     int32                  `protobuf:"varint,9,opt,name=timeout_ms,json=timeoutMs,proto3" json:"timeout_ms,omitempty"`
+	RegisteredAt  *timestamppb.Timestamp `protobuf:"bytes,10,opt,name=registered_at,json=registeredAt,proto3" json:"registered_at,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *Hook) Reset() {
+	*x = Hook{}
+	mi := &file_loomcycle_proto_msgTypes[24]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Hook) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Hook) ProtoMessage() {}
+
+func (x *Hook) ProtoReflect() protoreflect.Message {
+	mi := &file_loomcycle_proto_msgTypes[24]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use Hook.ProtoReflect.Descriptor instead.
+func (*Hook) Descriptor() ([]byte, []int) {
+	return file_loomcycle_proto_rawDescGZIP(), []int{24}
+}
+
+func (x *Hook) GetId() string {
+	if x != nil {
+		return x.Id
+	}
+	return ""
+}
+
+func (x *Hook) GetOwner() string {
+	if x != nil {
+		return x.Owner
+	}
+	return ""
+}
+
+func (x *Hook) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *Hook) GetPhase() string {
+	if x != nil {
+		return x.Phase
+	}
+	return ""
+}
+
+func (x *Hook) GetAgents() []string {
+	if x != nil {
+		return x.Agents
+	}
+	return nil
+}
+
+func (x *Hook) GetTools() []string {
+	if x != nil {
+		return x.Tools
+	}
+	return nil
+}
+
+func (x *Hook) GetCallbackUrl() string {
+	if x != nil {
+		return x.CallbackUrl
+	}
+	return ""
+}
+
+func (x *Hook) GetFailMode() string {
+	if x != nil {
+		return x.FailMode
+	}
+	return ""
+}
+
+func (x *Hook) GetTimeoutMs() int32 {
+	if x != nil {
+		return x.TimeoutMs
+	}
+	return 0
+}
+
+func (x *Hook) GetRegisteredAt() *timestamppb.Timestamp {
+	if x != nil {
+		return x.RegisteredAt
+	}
+	return nil
+}
+
+type ListHooksResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Hooks         []*Hook                `protobuf:"bytes,1,rep,name=hooks,proto3" json:"hooks,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListHooksResponse) Reset() {
+	*x = ListHooksResponse{}
+	mi := &file_loomcycle_proto_msgTypes[25]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListHooksResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListHooksResponse) ProtoMessage() {}
+
+func (x *ListHooksResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_loomcycle_proto_msgTypes[25]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListHooksResponse.ProtoReflect.Descriptor instead.
+func (*ListHooksResponse) Descriptor() ([]byte, []int) {
+	return file_loomcycle_proto_rawDescGZIP(), []int{25}
+}
+
+func (x *ListHooksResponse) GetHooks() []*Hook {
+	if x != nil {
+		return x.Hooks
+	}
+	return nil
+}
+
+type DeleteHookRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Id            string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DeleteHookRequest) Reset() {
+	*x = DeleteHookRequest{}
+	mi := &file_loomcycle_proto_msgTypes[26]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DeleteHookRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DeleteHookRequest) ProtoMessage() {}
+
+func (x *DeleteHookRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_loomcycle_proto_msgTypes[26]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DeleteHookRequest.ProtoReflect.Descriptor instead.
+func (*DeleteHookRequest) Descriptor() ([]byte, []int) {
+	return file_loomcycle_proto_rawDescGZIP(), []int{26}
+}
+
+func (x *DeleteHookRequest) GetId() string {
+	if x != nil {
+		return x.Id
+	}
+	return ""
+}
+
+type DeleteHookResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Echoed id of the deleted hook. Empty when no row matched (the
+	// RPC returns codes.NotFound in that case; this field is for the
+	// success path's audit trail).
+	Deleted       string `protobuf:"bytes,1,opt,name=deleted,proto3" json:"deleted,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DeleteHookResponse) Reset() {
+	*x = DeleteHookResponse{}
+	mi := &file_loomcycle_proto_msgTypes[27]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DeleteHookResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DeleteHookResponse) ProtoMessage() {}
+
+func (x *DeleteHookResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_loomcycle_proto_msgTypes[27]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DeleteHookResponse.ProtoReflect.Descriptor instead.
+func (*DeleteHookResponse) Descriptor() ([]byte, []int) {
+	return file_loomcycle_proto_rawDescGZIP(), []int{27}
+}
+
+func (x *DeleteHookResponse) GetDeleted() string {
+	if x != nil {
+		return x.Deleted
+	}
+	return ""
+}
+
 var File_loomcycle_proto protoreflect.FileDescriptor
 
 const file_loomcycle_proto_rawDesc = "" +
@@ -1587,7 +2034,39 @@ const file_loomcycle_proto_rawDesc = "" +
 	"\x02ok\x18\x01 \x01(\bR\x02ok\x12\x16\n" +
 	"\x06commit\x18\x02 \x01(\tR\x06commit\x12\x14\n" +
 	"\x05built\x18\x03 \x01(\tR\x05built\x12%\n" +
-	"\x0euptime_seconds\x18\x04 \x01(\x03R\ruptimeSeconds2\x8a\x04\n" +
+	"\x0euptime_seconds\x18\x04 \x01(\x03R\ruptimeSeconds\"\xe2\x01\n" +
+	"\x13RegisterHookRequest\x12\x14\n" +
+	"\x05owner\x18\x01 \x01(\tR\x05owner\x12\x12\n" +
+	"\x04name\x18\x02 \x01(\tR\x04name\x12\x14\n" +
+	"\x05phase\x18\x03 \x01(\tR\x05phase\x12\x16\n" +
+	"\x06agents\x18\x04 \x03(\tR\x06agents\x12\x14\n" +
+	"\x05tools\x18\x05 \x03(\tR\x05tools\x12!\n" +
+	"\fcallback_url\x18\x06 \x01(\tR\vcallbackUrl\x12\x1b\n" +
+	"\tfail_mode\x18\a \x01(\tR\bfailMode\x12\x1d\n" +
+	"\n" +
+	"timeout_ms\x18\b \x01(\x05R\ttimeoutMs\"&\n" +
+	"\x14RegisterHookResponse\x12\x0e\n" +
+	"\x02id\x18\x01 \x01(\tR\x02id\"\x12\n" +
+	"\x10ListHooksRequest\"\xa4\x02\n" +
+	"\x04Hook\x12\x0e\n" +
+	"\x02id\x18\x01 \x01(\tR\x02id\x12\x14\n" +
+	"\x05owner\x18\x02 \x01(\tR\x05owner\x12\x12\n" +
+	"\x04name\x18\x03 \x01(\tR\x04name\x12\x14\n" +
+	"\x05phase\x18\x04 \x01(\tR\x05phase\x12\x16\n" +
+	"\x06agents\x18\x05 \x03(\tR\x06agents\x12\x14\n" +
+	"\x05tools\x18\x06 \x03(\tR\x05tools\x12!\n" +
+	"\fcallback_url\x18\a \x01(\tR\vcallbackUrl\x12\x1b\n" +
+	"\tfail_mode\x18\b \x01(\tR\bfailMode\x12\x1d\n" +
+	"\n" +
+	"timeout_ms\x18\t \x01(\x05R\ttimeoutMs\x12?\n" +
+	"\rregistered_at\x18\n" +
+	" \x01(\v2\x1a.google.protobuf.TimestampR\fregisteredAt\"=\n" +
+	"\x11ListHooksResponse\x12(\n" +
+	"\x05hooks\x18\x01 \x03(\v2\x12.loomcycle.v1.HookR\x05hooks\"#\n" +
+	"\x11DeleteHookRequest\x12\x0e\n" +
+	"\x02id\x18\x01 \x01(\tR\x02id\".\n" +
+	"\x12DeleteHookResponse\x12\x18\n" +
+	"\adeleted\x18\x01 \x01(\tR\adeleted2\x80\x06\n" +
 	"\tLoomcycle\x126\n" +
 	"\x03Run\x12\x18.loomcycle.v1.RunRequest\x1a\x13.loomcycle.v1.Event0\x01\x12@\n" +
 	"\bContinue\x12\x1d.loomcycle.v1.ContinueRequest\x1a\x13.loomcycle.v1.Event0\x01\x12M\n" +
@@ -1595,7 +2074,11 @@ const file_loomcycle_proto_rawDesc = "" +
 	"\bGetAgent\x12\x1d.loomcycle.v1.GetAgentRequest\x1a\x13.loomcycle.v1.Agent\x12R\n" +
 	"\vCancelAgent\x12 .loomcycle.v1.CancelAgentRequest\x1a!.loomcycle.v1.CancelAgentResponse\x12[\n" +
 	"\x0eListUserAgents\x12#.loomcycle.v1.ListUserAgentsRequest\x1a$.loomcycle.v1.ListUserAgentsResponse\x12C\n" +
-	"\x06Health\x12\x1b.loomcycle.v1.HealthRequest\x1a\x1c.loomcycle.v1.HealthResponseBLZJgithub.com/denn-gubsky/loomcycle/internal/api/grpc/loomcyclepb;loomcyclepbb\x06proto3"
+	"\x06Health\x12\x1b.loomcycle.v1.HealthRequest\x1a\x1c.loomcycle.v1.HealthResponse\x12U\n" +
+	"\fRegisterHook\x12!.loomcycle.v1.RegisterHookRequest\x1a\".loomcycle.v1.RegisterHookResponse\x12L\n" +
+	"\tListHooks\x12\x1e.loomcycle.v1.ListHooksRequest\x1a\x1f.loomcycle.v1.ListHooksResponse\x12O\n" +
+	"\n" +
+	"DeleteHook\x12\x1f.loomcycle.v1.DeleteHookRequest\x1a .loomcycle.v1.DeleteHookResponseBLZJgithub.com/denn-gubsky/loomcycle/internal/api/grpc/loomcyclepb;loomcyclepbb\x06proto3"
 
 var (
 	file_loomcycle_proto_rawDescOnce sync.Once
@@ -1609,7 +2092,7 @@ func file_loomcycle_proto_rawDescGZIP() []byte {
 	return file_loomcycle_proto_rawDescData
 }
 
-var file_loomcycle_proto_msgTypes = make([]protoimpl.MessageInfo, 21)
+var file_loomcycle_proto_msgTypes = make([]protoimpl.MessageInfo, 28)
 var file_loomcycle_proto_goTypes = []any{
 	(*RunRequest)(nil),             // 0: loomcycle.v1.RunRequest
 	(*ContinueRequest)(nil),        // 1: loomcycle.v1.ContinueRequest
@@ -1632,7 +2115,14 @@ var file_loomcycle_proto_goTypes = []any{
 	(*ListUserAgentsResponse)(nil), // 18: loomcycle.v1.ListUserAgentsResponse
 	(*HealthRequest)(nil),          // 19: loomcycle.v1.HealthRequest
 	(*HealthResponse)(nil),         // 20: loomcycle.v1.HealthResponse
-	(*timestamppb.Timestamp)(nil),  // 21: google.protobuf.Timestamp
+	(*RegisterHookRequest)(nil),    // 21: loomcycle.v1.RegisterHookRequest
+	(*RegisterHookResponse)(nil),   // 22: loomcycle.v1.RegisterHookResponse
+	(*ListHooksRequest)(nil),       // 23: loomcycle.v1.ListHooksRequest
+	(*Hook)(nil),                   // 24: loomcycle.v1.Hook
+	(*ListHooksResponse)(nil),      // 25: loomcycle.v1.ListHooksResponse
+	(*DeleteHookRequest)(nil),      // 26: loomcycle.v1.DeleteHookRequest
+	(*DeleteHookResponse)(nil),     // 27: loomcycle.v1.DeleteHookResponse
+	(*timestamppb.Timestamp)(nil),  // 28: google.protobuf.Timestamp
 }
 var file_loomcycle_proto_depIdxs = []int32{
 	3,  // 0: loomcycle.v1.RunRequest.segments:type_name -> loomcycle.v1.PromptSegment
@@ -1644,31 +2134,39 @@ var file_loomcycle_proto_depIdxs = []int32{
 	7,  // 6: loomcycle.v1.Event.usage:type_name -> loomcycle.v1.Usage
 	8,  // 7: loomcycle.v1.Event.retry:type_name -> loomcycle.v1.Retry
 	11, // 8: loomcycle.v1.Transcript.events:type_name -> loomcycle.v1.TranscriptEvent
-	21, // 9: loomcycle.v1.TranscriptEvent.ts:type_name -> google.protobuf.Timestamp
-	21, // 10: loomcycle.v1.Agent.started_at:type_name -> google.protobuf.Timestamp
-	21, // 11: loomcycle.v1.Agent.completed_at:type_name -> google.protobuf.Timestamp
+	28, // 9: loomcycle.v1.TranscriptEvent.ts:type_name -> google.protobuf.Timestamp
+	28, // 10: loomcycle.v1.Agent.started_at:type_name -> google.protobuf.Timestamp
+	28, // 11: loomcycle.v1.Agent.completed_at:type_name -> google.protobuf.Timestamp
 	14, // 12: loomcycle.v1.Agent.usage:type_name -> loomcycle.v1.AgentUsage
-	21, // 13: loomcycle.v1.Agent.last_heartbeat_at:type_name -> google.protobuf.Timestamp
+	28, // 13: loomcycle.v1.Agent.last_heartbeat_at:type_name -> google.protobuf.Timestamp
 	13, // 14: loomcycle.v1.ListUserAgentsResponse.agents:type_name -> loomcycle.v1.Agent
-	0,  // 15: loomcycle.v1.Loomcycle.Run:input_type -> loomcycle.v1.RunRequest
-	1,  // 16: loomcycle.v1.Loomcycle.Continue:input_type -> loomcycle.v1.ContinueRequest
-	9,  // 17: loomcycle.v1.Loomcycle.GetTranscript:input_type -> loomcycle.v1.GetTranscriptRequest
-	12, // 18: loomcycle.v1.Loomcycle.GetAgent:input_type -> loomcycle.v1.GetAgentRequest
-	15, // 19: loomcycle.v1.Loomcycle.CancelAgent:input_type -> loomcycle.v1.CancelAgentRequest
-	17, // 20: loomcycle.v1.Loomcycle.ListUserAgents:input_type -> loomcycle.v1.ListUserAgentsRequest
-	19, // 21: loomcycle.v1.Loomcycle.Health:input_type -> loomcycle.v1.HealthRequest
-	5,  // 22: loomcycle.v1.Loomcycle.Run:output_type -> loomcycle.v1.Event
-	5,  // 23: loomcycle.v1.Loomcycle.Continue:output_type -> loomcycle.v1.Event
-	10, // 24: loomcycle.v1.Loomcycle.GetTranscript:output_type -> loomcycle.v1.Transcript
-	13, // 25: loomcycle.v1.Loomcycle.GetAgent:output_type -> loomcycle.v1.Agent
-	16, // 26: loomcycle.v1.Loomcycle.CancelAgent:output_type -> loomcycle.v1.CancelAgentResponse
-	18, // 27: loomcycle.v1.Loomcycle.ListUserAgents:output_type -> loomcycle.v1.ListUserAgentsResponse
-	20, // 28: loomcycle.v1.Loomcycle.Health:output_type -> loomcycle.v1.HealthResponse
-	22, // [22:29] is the sub-list for method output_type
-	15, // [15:22] is the sub-list for method input_type
-	15, // [15:15] is the sub-list for extension type_name
-	15, // [15:15] is the sub-list for extension extendee
-	0,  // [0:15] is the sub-list for field type_name
+	28, // 15: loomcycle.v1.Hook.registered_at:type_name -> google.protobuf.Timestamp
+	24, // 16: loomcycle.v1.ListHooksResponse.hooks:type_name -> loomcycle.v1.Hook
+	0,  // 17: loomcycle.v1.Loomcycle.Run:input_type -> loomcycle.v1.RunRequest
+	1,  // 18: loomcycle.v1.Loomcycle.Continue:input_type -> loomcycle.v1.ContinueRequest
+	9,  // 19: loomcycle.v1.Loomcycle.GetTranscript:input_type -> loomcycle.v1.GetTranscriptRequest
+	12, // 20: loomcycle.v1.Loomcycle.GetAgent:input_type -> loomcycle.v1.GetAgentRequest
+	15, // 21: loomcycle.v1.Loomcycle.CancelAgent:input_type -> loomcycle.v1.CancelAgentRequest
+	17, // 22: loomcycle.v1.Loomcycle.ListUserAgents:input_type -> loomcycle.v1.ListUserAgentsRequest
+	19, // 23: loomcycle.v1.Loomcycle.Health:input_type -> loomcycle.v1.HealthRequest
+	21, // 24: loomcycle.v1.Loomcycle.RegisterHook:input_type -> loomcycle.v1.RegisterHookRequest
+	23, // 25: loomcycle.v1.Loomcycle.ListHooks:input_type -> loomcycle.v1.ListHooksRequest
+	26, // 26: loomcycle.v1.Loomcycle.DeleteHook:input_type -> loomcycle.v1.DeleteHookRequest
+	5,  // 27: loomcycle.v1.Loomcycle.Run:output_type -> loomcycle.v1.Event
+	5,  // 28: loomcycle.v1.Loomcycle.Continue:output_type -> loomcycle.v1.Event
+	10, // 29: loomcycle.v1.Loomcycle.GetTranscript:output_type -> loomcycle.v1.Transcript
+	13, // 30: loomcycle.v1.Loomcycle.GetAgent:output_type -> loomcycle.v1.Agent
+	16, // 31: loomcycle.v1.Loomcycle.CancelAgent:output_type -> loomcycle.v1.CancelAgentResponse
+	18, // 32: loomcycle.v1.Loomcycle.ListUserAgents:output_type -> loomcycle.v1.ListUserAgentsResponse
+	20, // 33: loomcycle.v1.Loomcycle.Health:output_type -> loomcycle.v1.HealthResponse
+	22, // 34: loomcycle.v1.Loomcycle.RegisterHook:output_type -> loomcycle.v1.RegisterHookResponse
+	25, // 35: loomcycle.v1.Loomcycle.ListHooks:output_type -> loomcycle.v1.ListHooksResponse
+	27, // 36: loomcycle.v1.Loomcycle.DeleteHook:output_type -> loomcycle.v1.DeleteHookResponse
+	27, // [27:37] is the sub-list for method output_type
+	17, // [17:27] is the sub-list for method input_type
+	17, // [17:17] is the sub-list for extension type_name
+	17, // [17:17] is the sub-list for extension extendee
+	0,  // [0:17] is the sub-list for field type_name
 }
 
 func init() { file_loomcycle_proto_init() }
@@ -1682,7 +2180,7 @@ func file_loomcycle_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_loomcycle_proto_rawDesc), len(file_loomcycle_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   21,
+			NumMessages:   28,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
