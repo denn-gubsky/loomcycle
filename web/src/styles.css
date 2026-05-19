@@ -223,6 +223,48 @@ pre {
 .tree-caret:hover:not(:disabled) {
   color: var(--accent);
 }
+
+/* Breadcrumbs (v0.8.20 Web UI refactor) replace the standalone
+ * "← runs" link on the agent detail. Shows ancestor chain from
+ * root down to the selected agent. */
+.crumbs-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  padding: 8px 12px;
+  font-size: 12px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 12px;
+}
+.crumb-link {
+  background: transparent;
+  border: none;
+  color: var(--accent);
+  cursor: pointer;
+  padding: 0;
+  font-size: 12px;
+  font-family: inherit;
+  text-decoration: none;
+}
+.crumb-link:hover { text-decoration: underline; }
+.crumb-orphan {
+  color: var(--fg-soft);
+  font-family: var(--mono);
+}
+.crumb-sep {
+  color: var(--fg-soft);
+  margin: 0 4px;
+  user-select: none;
+}
+.crumb-current {
+  color: var(--fg);
+  font-weight: 600;
+}
+.crumb-home {
+  font-family: var(--mono);
+  font-size: 11px;
+}
 .agent-link {
   display: flex;
   gap: 8px;

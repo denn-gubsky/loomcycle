@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { Agent, EventPayload, TranscriptEvent, cancelAgent, getAgent, getTranscript } from "../api";
+import Breadcrumbs, { type BreadcrumbAncestor } from "./Breadcrumbs";
 
 // AgentDetailPane renders one agent's status header + the
 // scrollable event-card stream. Takes agentId as a prop so it can
@@ -17,13 +18,25 @@ const REFRESH_MS = 1_500;
 
 export interface AgentDetailPaneProps {
   agentId: string;
+  // Optional ancestors chain — used by the split-view parent
+  // (commit 5+) to feed the full hierarchy without per-pane
+  // re-fetching. When omitted, the pane derives a single-level
+  // ancestor (the parent_agent_id of the loaded agent, if any)
+  // from a one-shot fetch — enough for the standalone
+  // /agents/:agentId deep-link route.
+  ancestors?: BreadcrumbAncestor[];
+  // Optional select callback — used by the split-view parent to
+  // re-target the right pane on breadcrumb click. When omitted,
+  // breadcrumbs fall back to <Link to=/agents/:id/>.
+  onSelect?: (agentId: string) => void;
 }
 
-export default function AgentDetailPane({ agentId }: AgentDetailPaneProps) {
+export default function AgentDetailPane({ agentId, ancestors, onSelect }: AgentDetailPaneProps) {
   const [agent, setAgent] = useState<Agent | null>(null);
   const [events, setEvents] = useState<TranscriptEvent[]>([]);
   const [err, setErr] = useState<string | null>(null);
   const [cancelInFlight, setCancelInFlight] = useState(false);
+  const [parentAgent, setParentAgent] = useState<Agent | null>(null);
   const tailRef = useRef<HTMLDivElement | null>(null);
 
   // Initial fetch + auto-refresh while running.
@@ -67,13 +80,47 @@ export default function AgentDetailPane({ agentId }: AgentDetailPaneProps) {
     }
   }, [events.length, agent?.status]);
 
+  // Fetch the immediate parent for the breadcrumb when no
+  // ancestors prop is supplied. One-level only — for full
+  // multi-level ancestry the split-view parent passes `ancestors`
+  // and skips this branch.
+  useEffect(() => {
+    if (ancestors !== undefined) return;
+    if (!agent?.parent_agent_id) {
+      setParentAgent(null);
+      return;
+    }
+    let cancelled = false;
+    getAgent(agent.parent_agent_id)
+      .then((p) => { if (!cancelled) setParentAgent(p); })
+      .catch(() => { if (!cancelled) setParentAgent(null); });
+    return () => { cancelled = true; };
+  }, [ancestors, agent?.parent_agent_id]);
+
+  // Resolve which ancestors to render. Either the prop the parent
+  // supplied (split-view), or the one-shot parentAgent fetch
+  // above (standalone deep link).
+  const resolvedAncestors: BreadcrumbAncestor[] = useMemo(() => {
+    if (ancestors !== undefined) return ancestors;
+    if (!agent?.parent_agent_id) return [];
+    if (parentAgent) {
+      return [{
+        agent_id: parentAgent.agent_id,
+        agent: parentAgent.agent,
+        status: parentAgent.status,
+        inResultSet: true,
+      }];
+    }
+    // Parent id known but row not yet loaded — render the slug
+    // dimmed so the user still sees the hierarchy depth.
+    return [{ agent_id: agent.parent_agent_id, inResultSet: false }];
+  }, [ancestors, agent?.parent_agent_id, parentAgent]);
+
   const renderedEvents = useMemo(() => coalesceText(events.filter(visible)), [events]);
 
   return (
     <div className="agent-detail">
-      <nav className="crumbs">
-        <Link to="/">← runs</Link>
-      </nav>
+      <Breadcrumbs ancestors={resolvedAncestors} selected={agent} onSelect={onSelect} />
       {err && <div className="err">{err}</div>}
       {agent ? (
         <div className="agent-header">
