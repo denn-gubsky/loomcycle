@@ -673,6 +673,13 @@ func (m *mockConnector) DeleteSnapshot(context.Context, string) error { return n
 func (m *mockConnector) InterruptionResolve(context.Context, connector.InterruptionResolveRequest) (connector.InterruptionResolveResult, error) {
 	return connector.InterruptionResolveResult{}, nil
 }
+func (m *mockConnector) RegisterHook(context.Context, connector.RegisterHookRequest) (connector.RegisterHookResponse, error) {
+	return connector.RegisterHookResponse{}, nil
+}
+func (m *mockConnector) ListHooks(context.Context) (connector.ListHooksResponse, error) {
+	return connector.ListHooksResponse{}, nil
+}
+func (m *mockConnector) DeleteHook(context.Context, string) error { return nil }
 
 // TestGrpcServer_CancelAgent_DispatchesThroughConnector is the v0.8.15
 // regression guard: when the gRPC Server is wired with a Connector,
@@ -710,6 +717,101 @@ func TestGrpcServer_CancelAgent_DispatchesThroughConnector(t *testing.T) {
 	// CascadeCount=3 from the mock → proto cancelled_count = 1+3 = 4.
 	if resp.GetCancelledCount() != 4 {
 		t.Errorf("CancelledCount=%d, want 4 (1 root + 3 cascade)", resp.GetCancelledCount())
+	}
+}
+
+// ---- Hook RPCs ----
+
+// hookConnector is a minimal Connector that exercises the gRPC hook
+// handlers' error translation without spinning up a real *http.Server.
+// Configurable per-call via the fields below.
+type hookConnector struct {
+	mockConnector
+
+	registerErr  error
+	registerResp connector.RegisterHookResponse
+	listResp     connector.ListHooksResponse
+	deleteErr    error
+
+	gotRegister atomic.Value // connector.RegisterHookRequest
+	gotDeleteID atomic.Value // string
+}
+
+func (m *hookConnector) RegisterHook(_ context.Context, req connector.RegisterHookRequest) (connector.RegisterHookResponse, error) {
+	m.gotRegister.Store(req)
+	return m.registerResp, m.registerErr
+}
+func (m *hookConnector) ListHooks(_ context.Context) (connector.ListHooksResponse, error) {
+	return m.listResp, nil
+}
+func (m *hookConnector) DeleteHook(_ context.Context, id string) error {
+	m.gotDeleteID.Store(id)
+	return m.deleteErr
+}
+
+func TestGrpc_RegisterHook_DelegatesAndMapsBody(t *testing.T) {
+	hc := &hookConnector{registerResp: connector.RegisterHookResponse{ID: "hook_abc"}}
+	adapter := New(Config{Connector: hc, CancelReg: cancel.NewRegistry()})
+
+	resp, err := adapter.RegisterHook(context.Background(), &loomcyclepb.RegisterHookRequest{
+		Owner:       "jobs-search-web",
+		Name:        "scan-fetch",
+		Phase:       "pre",
+		Agents:      []string{"*"},
+		Tools:       []string{"WebFetch"},
+		CallbackUrl: "https://callback.local/h",
+		FailMode:    "closed",
+		TimeoutMs:   2500,
+	})
+	if err != nil {
+		t.Fatalf("RegisterHook: %v", err)
+	}
+	if resp.GetId() != "hook_abc" {
+		t.Errorf("id = %q, want hook_abc", resp.GetId())
+	}
+	got := hc.gotRegister.Load().(connector.RegisterHookRequest)
+	if got.Owner != "jobs-search-web" || got.Phase != "pre" || got.CallbackURL != "https://callback.local/h" || got.TimeoutMs != 2500 {
+		t.Errorf("connector saw %+v", got)
+	}
+}
+
+func TestGrpc_RegisterHook_InvalidArgument(t *testing.T) {
+	hc := &hookConnector{registerErr: connector.ErrHookInvalidRegistration}
+	adapter := New(Config{Connector: hc, CancelReg: cancel.NewRegistry()})
+
+	_, err := adapter.RegisterHook(context.Background(), &loomcyclepb.RegisterHookRequest{Owner: "x"})
+	if status.Code(err) != codes.InvalidArgument {
+		t.Errorf("code = %s, want InvalidArgument", status.Code(err))
+	}
+}
+
+func TestGrpc_DeleteHook_NotFound(t *testing.T) {
+	hc := &hookConnector{deleteErr: connector.ErrHookNotFound}
+	adapter := New(Config{Connector: hc, CancelReg: cancel.NewRegistry()})
+
+	_, err := adapter.DeleteHook(context.Background(), &loomcyclepb.DeleteHookRequest{Id: "hook_gone"})
+	if status.Code(err) != codes.NotFound {
+		t.Errorf("code = %s, want NotFound", status.Code(err))
+	}
+	if got := hc.gotDeleteID.Load(); got != "hook_gone" {
+		t.Errorf("connector saw id %q, want hook_gone", got)
+	}
+}
+
+func TestGrpc_DeleteHook_MissingID(t *testing.T) {
+	adapter := New(Config{Connector: &hookConnector{}, CancelReg: cancel.NewRegistry()})
+
+	_, err := adapter.DeleteHook(context.Background(), &loomcyclepb.DeleteHookRequest{Id: ""})
+	if status.Code(err) != codes.InvalidArgument {
+		t.Errorf("code = %s, want InvalidArgument", status.Code(err))
+	}
+}
+
+func TestGrpc_NoConnector_RegisterHookUnavailable(t *testing.T) {
+	adapter := New(Config{CancelReg: cancel.NewRegistry()}) // no Connector
+	_, err := adapter.RegisterHook(context.Background(), &loomcyclepb.RegisterHookRequest{})
+	if status.Code(err) != codes.Unavailable {
+		t.Errorf("code = %s, want Unavailable", status.Code(err))
 	}
 }
 
