@@ -35,10 +35,13 @@ import (
 // Connector is the operation surface every wire transport exposes.
 // See package doc for the architectural rationale.
 //
-// v0.8.15 mock policy: PauseRuntime / ResumeRuntime / GetRuntimeState /
-// CreateSnapshot / ListSnapshots / ExportSnapshot / RestoreSnapshot /
-// DeleteSnapshot return placeholder responses with FeatureStatus="preview".
-// Wire shapes are stable; real implementations land in v0.8.16+.
+// v0.8.18 status: Pause/Resume/Snapshot impls are real and delegate
+// to the pause Manager + snapshot package. Wire shapes are identical
+// to v0.8.15 (where the same methods returned PREVIEW placeholders)
+// — orchestrators built against the v0.8.15 contracts continue to
+// work; only the response semantics flip from placeholder to
+// authoritative data. See errors.go for the typed errors transports
+// translate into protocol-specific status codes.
 type Connector interface {
 	// --- Run lifecycle ---
 
@@ -107,12 +110,21 @@ type Connector interface {
 	Evaluation(ctx context.Context, input json.RawMessage) (ToolResult, error)
 	Context(ctx context.Context, input json.RawMessage) (ToolResult, error)
 
-	// --- Pause/Resume/Snapshot (MOCKED in v0.8.15) ---
+	// --- Pause/Resume/Snapshot (real in v0.8.18) ---
 	//
-	// Wire shapes are stable; real implementations land in v0.8.16+
-	// per doc-internal/rfcs/pause-resume-snapshot.md (RFC locked
-	// 2026-05-12). Mock responses include FeatureStatus="preview" so
-	// adapters can detect the stub state without surprise.
+	// Wire shapes finalised v0.8.15. Real implementations landed in
+	// v0.8.18 behind the same signatures. Per the locked RFC at
+	// doc-internal/rfcs/pause-resume-snapshot.md.
+	//
+	// Error semantics: typed errors from errors.go let transports
+	// map to protocol-specific status codes:
+	//   ErrPauseNotConfigured     — 503 / Unavailable
+	//   ErrAlreadyPausing         — 409 / FailedPrecondition
+	//   ErrNotPaused              — 409 / FailedPrecondition
+	//   ErrSnapshotNotFound       — 404 / NotFound
+	//   ErrSnapshotTooLarge       — 413 / ResourceExhausted
+	//   ErrSnapshotVersionTooNew  — 422 / FailedPrecondition
+	//   ErrSnapshotVersionUnknown — 422 / FailedPrecondition
 
 	PauseRuntime(ctx context.Context, timeoutMS int) (PauseResult, error)
 	ResumeRuntime(ctx context.Context) (ResumeResult, error)
@@ -120,6 +132,13 @@ type Connector interface {
 
 	CreateSnapshot(ctx context.Context, req CreateSnapshotRequest) (SnapshotDescriptor, error)
 	ListSnapshots(ctx context.Context) ([]SnapshotDescriptor, error)
+
+	// GetSnapshot returns the full JSON envelope for a snapshot id —
+	// distinct from ExportSnapshot, which is operator-facing "where
+	// did this land on the host" semantics with a FilePath/Checksum.
+	// Added in v0.8.18 (additive); transports map to GET /v1/_snapshots/{id}.
+	GetSnapshot(ctx context.Context, snapshotID string) (SnapshotEnvelope, error)
+
 	ExportSnapshot(ctx context.Context, snapshotID string) (ExportSnapshotResult, error)
 	RestoreSnapshot(ctx context.Context, req RestoreSnapshotRequest) (RestoreSnapshotResult, error)
 	DeleteSnapshot(ctx context.Context, snapshotID string) error

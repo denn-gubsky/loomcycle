@@ -149,10 +149,10 @@ func toolDescriptors() []loommcp.ToolDescriptor {
 			InputSchema: rawJSON(`{"type": "object"}`),
 		},
 
-		// --- Pause/Resume (PREVIEW in v0.8.15) ---
+		// --- Pause/Resume (v0.8.17 primitives, exposed via Connector in v0.8.18) ---
 		{
 			Name:        "pause_runtime",
-			Description: "PREVIEW (v0.8.15): wire shape stable; real implementation in v0.8.16+. Currently returns placeholder data — does NOT actually pause the runtime.",
+			Description: "Quiesce the runtime. Idempotent tools cancel immediately; non-idempotent + external tools get a grace window (default 30 s) then force-cancel. New /v1/runs return 503 while paused. Returns {status, duration_ms, force_cancelled_count, paused_runs_count, warnings?}. 409 when the runtime is already pausing or paused.",
 			InputSchema: rawJSON(`{
 				"type": "object",
 				"properties": {"timeout_ms": {"type": "integer", "default": 30000}}
@@ -160,36 +160,46 @@ func toolDescriptors() []loommcp.ToolDescriptor {
 		},
 		{
 			Name:        "resume_runtime",
-			Description: "PREVIEW (v0.8.15): wire shape stable; real implementation in v0.8.16+. Currently a no-op.",
+			Description: "Release the runtime quiesce. Each previously-paused run's pause_state flips back to 'running'; the runner goroutines re-enter their loops. Returns {status, resumed_run_count, warnings?}. 409 when the runtime is not paused.",
 			InputSchema: rawJSON(`{"type": "object"}`),
 		},
 		{
 			Name:        "get_runtime_state",
-			Description: "PREVIEW (v0.8.15): always returns {status: running, feature_status: preview} in v0.8.15.",
+			Description: "Return the current runtime quiesce state. Returns {status: 'running'|'pausing'|'paused', paused_run_count, snapshots_count}.",
 			InputSchema: rawJSON(`{"type": "object"}`),
 		},
 
-		// --- Snapshot (PREVIEW in v0.8.15) ---
+		// --- Snapshot (v0.8.17 primitives, exposed via Connector in v0.8.18) ---
 		{
 			Name:        "create_snapshot",
-			Description: "PREVIEW (v0.8.15): wire shape stable; returns a placeholder snapshot_id with feature_status=preview. Does NOT write a snapshot.",
+			Description: "Capture running-state into a per-section-semver JSON envelope (agent_defs, agent_def_active, memory, channels, evaluations, paused_runs, optional interaction_history). Returns a SnapshotDescriptor; the envelope is persisted in the snapshots table and retrievable via get_snapshot / export_snapshot.",
 			InputSchema: rawJSON(`{
 				"type": "object",
 				"properties": {
 					"include_history": {"type": "boolean"},
 					"since_ts":        {"type": "string", "format": "date-time"},
-					"description":     {"type": "string"}
+					"description":     {"type": "string"},
+					"max_bytes":       {"type": "integer"}
 				}
 			}`),
 		},
 		{
 			Name:        "list_snapshots",
-			Description: "PREVIEW (v0.8.15): always returns an empty list (mocks don't persist).",
+			Description: "List captured snapshots (most-recent first, capped at 200). Returns metadata only; use get_snapshot / export_snapshot to fetch the JSON envelope.",
 			InputSchema: rawJSON(`{"type": "object"}`),
 		},
 		{
+			Name:        "get_snapshot",
+			Description: "Return the full snapshot envelope including JSON content (v0.8.18+). Distinct from export_snapshot, which is operator-facing 'where did this land on the host' semantics. Returns 404-equivalent error when no snapshot matches.",
+			InputSchema: rawJSON(`{
+				"type": "object",
+				"required": ["snapshot_id"],
+				"properties": {"snapshot_id": {"type": "string"}}
+			}`),
+		},
+		{
 			Name:        "export_snapshot",
-			Description: "PREVIEW (v0.8.15): not implemented; returns a tool error.",
+			Description: "Return the canonical envelope bytes for a snapshot id. Transports that stream large exports (HTTP /v1/_snapshots/{id}/export) write raw_json directly to the response body. Returns 404-equivalent error when no snapshot matches.",
 			InputSchema: rawJSON(`{
 				"type": "object",
 				"required": ["snapshot_id"],
@@ -198,22 +208,23 @@ func toolDescriptors() []loommcp.ToolDescriptor {
 		},
 		{
 			Name:        "restore_snapshot",
-			Description: "PREVIEW (v0.8.15): not implemented; returns a tool error.",
+			Description: "Restore from a same-instance snapshot_id OR cross-instance raw_json. Idempotent: ON CONFLICT DO NOTHING per row. Counters reflect rows actually written. paused_runs reference session_ids; restore synthesizes a session row when needed (counted as synthesized_sessions). 422-equivalent error on snapshot version newer than reader supports.",
 			InputSchema: rawJSON(`{
 				"type": "object",
 				"oneOf": [
 					{"required": ["snapshot_id"]},
-					{"required": ["file_path"]}
+					{"required": ["raw_json"]}
 				],
 				"properties": {
-					"snapshot_id": {"type": "string"},
-					"file_path":   {"type": "string"}
+					"snapshot_id":     {"type": "string"},
+					"raw_json":        {"type": "string", "description": "Inline JSON envelope (base64 or raw JSON; the connector accepts both)."},
+					"include_history": {"type": "boolean"}
 				}
 			}`),
 		},
 		{
 			Name:        "delete_snapshot",
-			Description: "PREVIEW (v0.8.15): not implemented; returns a tool error.",
+			Description: "Delete a snapshot. Idempotent — succeeds whether or not the row existed (mirrors HTTP DELETE /v1/_snapshots/{id} = 204).",
 			InputSchema: rawJSON(`{
 				"type": "object",
 				"required": ["snapshot_id"],

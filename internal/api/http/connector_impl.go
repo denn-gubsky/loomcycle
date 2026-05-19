@@ -1,4 +1,4 @@
-// Package http — v0.8.15 Connector interface implementation.
+// Package http — Connector interface implementation.
 //
 // The HTTP Server is the canonical connector.Connector implementation.
 // Other wire transports (MCP, gRPC, future CLI) CONSUME the Connector
@@ -8,14 +8,13 @@
 //   1. Run lifecycle: SpawnRun, CancelRun, GetRun, ListRuns
 //   2. Agent management: RegisterAgent, UnregisterAgent, ListAgents
 //   3. Builtin tool wrappers: Memory, Channel, AgentDef, Evaluation, Context
-//   4. Pause/Resume/Snapshot: MOCKED in v0.8.15 (see RFC)
+//   4. Pause/Resume/Snapshot: real impls (v0.8.18; wire shapes locked in v0.8.15)
+//   5. Interruption (v0.8.16)
 
 package http
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -24,8 +23,11 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/channels"
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/connector"
+	"github.com/denn-gubsky/loomcycle/internal/pause"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/runner"
+	"github.com/denn-gubsky/loomcycle/internal/snapshot"
+	"github.com/denn-gubsky/loomcycle/internal/snapshot/migrations"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
@@ -401,66 +403,295 @@ func (s *Server) dispatchBuiltin(ctx context.Context, name string, input json.Ra
 	return connector.ToolResult{Text: res.Text, IsError: res.IsError}, nil
 }
 
-// --- 4. Pause/Resume/Snapshot (MOCKED in v0.8.15) ---
+// --- 4. Pause/Resume/Snapshot (real in v0.8.18; wire shapes locked v0.8.15) ---
 //
-// Wire shapes stable; real implementations land in v0.8.16+ per
-// doc-internal/rfcs/pause-resume-snapshot.md.
+// Each method delegates to the pause Manager + snapshot package + Store,
+// translating typed errors from those packages into the Connector's
+// typed errors (connector.Err*) so MCP / gRPC / Python transports can
+// errors.Is() against a single canonical set.
 
-const previewNote = "Pause/Resume/Snapshot implementation pending in v0.8.16+; wire shape is stable. See doc-internal/rfcs/pause-resume-snapshot.md."
-
-func (s *Server) PauseRuntime(_ context.Context, _ int) (connector.PauseResult, error) {
+// PauseRuntime delegates to pause.Manager.Pause. Returns
+// connector.ErrPauseNotConfigured when the manager hasn't been wired
+// (e.g. no Store backend), ErrAlreadyPausing when the runtime is
+// already past Running.
+func (s *Server) PauseRuntime(ctx context.Context, timeoutMS int) (connector.PauseResult, error) {
+	if s.pauseMgr == nil {
+		return connector.PauseResult{}, connector.ErrPauseNotConfigured
+	}
+	timeout := time.Duration(timeoutMS) * time.Millisecond
+	res, err := s.pauseMgr.Pause(ctx, timeout)
+	if err != nil {
+		if errors.Is(err, pause.ErrAlreadyPausing) {
+			return connector.PauseResult{Status: res.State}, connector.ErrAlreadyPausing
+		}
+		return connector.PauseResult{}, err
+	}
 	return connector.PauseResult{
-		Status:        "paused",
-		FeatureStatus: "preview",
-		Note:          previewNote,
+		Status:              res.State,
+		DurationMS:          res.DurationMs,
+		ForceCancelledCount: res.ForceCancelledCount,
+		PausedRunsCount:     res.PausedRunsCount,
+		Warnings:            res.Warnings,
 	}, nil
 }
 
-func (s *Server) ResumeRuntime(_ context.Context) (connector.ResumeResult, error) {
+// ResumeRuntime delegates to pause.Manager.Resume.
+func (s *Server) ResumeRuntime(ctx context.Context) (connector.ResumeResult, error) {
+	if s.pauseMgr == nil {
+		return connector.ResumeResult{}, connector.ErrPauseNotConfigured
+	}
+	res, err := s.pauseMgr.Resume(ctx)
+	if err != nil {
+		if errors.Is(err, pause.ErrNotPaused) {
+			return connector.ResumeResult{Status: res.State}, connector.ErrNotPaused
+		}
+		return connector.ResumeResult{}, err
+	}
 	return connector.ResumeResult{
-		Status:        "running",
-		FeatureStatus: "preview",
-		Note:          previewNote,
+		Status:          res.State,
+		ResumedRunCount: res.ResumedRunsCount,
+		Warnings:        res.Warnings,
 	}, nil
 }
 
-func (s *Server) GetRuntimeState(_ context.Context) (connector.RuntimeState, error) {
-	return connector.RuntimeState{
-		Status:        "running",
-		FeatureStatus: "preview",
+// GetRuntimeState delegates to pause.Manager.Snapshot. Augmented with
+// SnapshotsCount via a cheap COUNT against the snapshots table.
+func (s *Server) GetRuntimeState(ctx context.Context) (connector.RuntimeState, error) {
+	if s.pauseMgr == nil {
+		return connector.RuntimeState{}, connector.ErrPauseNotConfigured
+	}
+	snap, err := s.pauseMgr.Snapshot(ctx)
+	if err != nil {
+		return connector.RuntimeState{}, err
+	}
+	out := connector.RuntimeState{
+		Status:         snap.State,
+		PausedRunCount: snap.PausedRunsCount,
+	}
+	// Best-effort: include the snapshots count so dashboards can
+	// render it without a second round-trip. Failure here is
+	// non-fatal; the state itself is still authoritative.
+	if s.store != nil {
+		if rows, lerr := s.store.SnapshotList(ctx, "", 0); lerr == nil {
+			out.SnapshotsCount = len(rows)
+		}
+	}
+	return out, nil
+}
+
+// CreateSnapshot delegates to snapshot.Capture + Store.SnapshotCreate.
+// MaxBytes / IncludeHistory / SinceTS / Description flow through.
+func (s *Server) CreateSnapshot(ctx context.Context, req connector.CreateSnapshotRequest) (connector.SnapshotDescriptor, error) {
+	if s.store == nil {
+		return connector.SnapshotDescriptor{}, fmt.Errorf("create_snapshot: store not configured")
+	}
+	opts := snapshot.CaptureOptions{
+		Label:          req.Description,
+		MaxBytes:       req.MaxBytes,
+		IncludeHistory: req.IncludeHistory,
+		Channels:       channelConfigForSnapshot(s.cfg),
+	}
+	if req.SinceTS != nil {
+		opts.IncludeHistorySince = *req.SinceTS
+	}
+	row, _, err := snapshot.Capture(ctx, s.store, opts)
+	if err != nil {
+		var tooLarge *snapshot.ErrSnapshotTooLarge
+		if errors.As(err, &tooLarge) {
+			return connector.SnapshotDescriptor{}, fmt.Errorf("%w: %s", connector.ErrSnapshotTooLarge, tooLarge.Error())
+		}
+		return connector.SnapshotDescriptor{}, fmt.Errorf("create_snapshot: %w", err)
+	}
+	if err := s.store.SnapshotCreate(ctx, *row); err != nil {
+		return connector.SnapshotDescriptor{}, fmt.Errorf("create_snapshot persist: %w", err)
+	}
+	return snapshotRowToDescriptor(*row, req.IncludeHistory, req.SinceTS), nil
+}
+
+// ListSnapshots delegates to Store.SnapshotList. Returns up to 200
+// most-recent rows; transports that need more issue follow-ups (a
+// pagination cursor in a future revision).
+func (s *Server) ListSnapshots(ctx context.Context) ([]connector.SnapshotDescriptor, error) {
+	if s.store == nil {
+		return nil, fmt.Errorf("list_snapshots: store not configured")
+	}
+	rows, err := s.store.SnapshotList(ctx, "", 200)
+	if err != nil {
+		return nil, fmt.Errorf("list_snapshots: %w", err)
+	}
+	out := make([]connector.SnapshotDescriptor, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, connector.SnapshotDescriptor{
+			SnapshotID:    r.ID,
+			CreatedAt:     r.CreatedAt,
+			SizeBytes:     r.ByteSize,
+			Description:   r.Label,
+			FormatVersion: fmt.Sprintf("%d", r.SchemaVersion),
+		})
+	}
+	return out, nil
+}
+
+// GetSnapshot delegates to Store.SnapshotGet and returns the full
+// envelope JSON. ErrSnapshotNotFound when no row matches.
+func (s *Server) GetSnapshot(ctx context.Context, snapshotID string) (connector.SnapshotEnvelope, error) {
+	if s.store == nil {
+		return connector.SnapshotEnvelope{}, fmt.Errorf("get_snapshot: store not configured")
+	}
+	row, err := s.store.SnapshotGet(ctx, snapshotID)
+	if err != nil {
+		var nf *store.ErrNotFound
+		if errors.As(err, &nf) {
+			return connector.SnapshotEnvelope{}, fmt.Errorf("%w: %s", connector.ErrSnapshotNotFound, snapshotID)
+		}
+		return connector.SnapshotEnvelope{}, fmt.Errorf("get_snapshot: %w", err)
+	}
+	return connector.SnapshotEnvelope{
+		SnapshotID:    row.ID,
+		CreatedAt:     row.CreatedAt,
+		Description:   row.Label,
+		FormatVersion: fmt.Sprintf("%d", row.SchemaVersion),
+		SizeBytes:     row.ByteSize,
+		JSONContent:   row.JSONContent,
 	}, nil
 }
 
-func (s *Server) CreateSnapshot(_ context.Context, _ connector.CreateSnapshotRequest) (connector.SnapshotDescriptor, error) {
-	return connector.SnapshotDescriptor{
-		SnapshotID:    mintPreviewSnapshotID(),
-		CreatedAt:     time.Now().UTC(),
-		FormatVersion: "preview",
-		FeatureStatus: "preview",
-	}, nil
-}
-
-func (s *Server) ListSnapshots(_ context.Context) ([]connector.SnapshotDescriptor, error) {
-	// Mocks don't persist — list is always empty in v0.8.15.
-	return []connector.SnapshotDescriptor{}, nil
-}
-
-func (s *Server) ExportSnapshot(_ context.Context, snapshotID string) (connector.ExportSnapshotResult, error) {
+// ExportSnapshot returns the canonical envelope bytes for an id.
+// In v0.8.18+, transports use RawJSON directly (HTTP writes it to
+// the response body with a Content-Disposition; gRPC could stream
+// future). FilePath / Checksum are left empty unless a transport
+// chooses to materialise to disk first.
+func (s *Server) ExportSnapshot(ctx context.Context, snapshotID string) (connector.ExportSnapshotResult, error) {
+	if s.store == nil {
+		return connector.ExportSnapshotResult{}, fmt.Errorf("export_snapshot: store not configured")
+	}
+	row, err := s.store.SnapshotGet(ctx, snapshotID)
+	if err != nil {
+		var nf *store.ErrNotFound
+		if errors.As(err, &nf) {
+			return connector.ExportSnapshotResult{}, fmt.Errorf("%w: %s", connector.ErrSnapshotNotFound, snapshotID)
+		}
+		return connector.ExportSnapshotResult{}, fmt.Errorf("export_snapshot: %w", err)
+	}
 	return connector.ExportSnapshotResult{
-		SnapshotID:    snapshotID,
-		FeatureStatus: "preview",
-	}, fmt.Errorf("export_snapshot: %s", previewNote)
+		SnapshotID: row.ID,
+		SizeBytes:  row.ByteSize,
+		RawJSON:    row.JSONContent,
+	}, nil
 }
 
-func (s *Server) RestoreSnapshot(_ context.Context, _ connector.RestoreSnapshotRequest) (connector.RestoreSnapshotResult, error) {
+// RestoreSnapshot delegates to snapshot.Restore. The envelope bytes
+// can come from one of three sources (mutually exclusive per request):
+// RawJSON (inline), SnapshotID (fetch from this store), or FilePath
+// (read from disk — operator must have placed the file at a path
+// readable by the loomcycle process).
+//
+// When the request hits SnapshotID lookup, the store error path
+// returns ErrSnapshotNotFound. Restore wraps version-skew errors as
+// ErrSnapshotVersionTooNew / ErrSnapshotVersionUnknown.
+//
+// The resolver matrix is refreshed via ForceProbe before this
+// returns, so operators can call ResumeRuntime immediately after
+// without waiting for the periodic probe.
+func (s *Server) RestoreSnapshot(ctx context.Context, req connector.RestoreSnapshotRequest) (connector.RestoreSnapshotResult, error) {
+	if s.store == nil {
+		return connector.RestoreSnapshotResult{}, fmt.Errorf("restore_snapshot: store not configured")
+	}
+	var rawBytes []byte
+	switch {
+	case len(req.RawJSON) > 0:
+		rawBytes = req.RawJSON
+	case req.SnapshotID != "":
+		row, err := s.store.SnapshotGet(ctx, req.SnapshotID)
+		if err != nil {
+			var nf *store.ErrNotFound
+			if errors.As(err, &nf) {
+				return connector.RestoreSnapshotResult{}, fmt.Errorf("%w: %s", connector.ErrSnapshotNotFound, req.SnapshotID)
+			}
+			return connector.RestoreSnapshotResult{}, fmt.Errorf("restore_snapshot lookup: %w", err)
+		}
+		rawBytes = row.JSONContent
+	case req.FilePath != "":
+		// File-on-disk restore is intentionally not supported via
+		// the Connector — it would require the loomcycle process
+		// to have filesystem access to the operator's chosen path
+		// and a trust model around what's permitted there. Use
+		// inline RawJSON instead (CLI reads the file client-side).
+		return connector.RestoreSnapshotResult{}, fmt.Errorf("restore_snapshot: FilePath restore not supported via connector — supply RawJSON inline")
+	default:
+		return connector.RestoreSnapshotResult{}, fmt.Errorf("restore_snapshot: one of snapshot_id, raw_json, or file_path is required")
+	}
+
+	opts := snapshot.RestoreOptions{IncludeHistory: req.IncludeHistory}
+	if s.resolver != nil {
+		opts.ForceProbe = s.resolver.ForceProbe
+	}
+	result, err := snapshot.Restore(ctx, s.store, rawBytes, opts)
+	if err != nil {
+		var tooNew *migrations.ErrSnapshotVersionTooNew
+		var unknown *migrations.ErrUnknownSectionVersion
+		switch {
+		case errors.As(err, &tooNew):
+			return connector.RestoreSnapshotResult{}, fmt.Errorf("%w: %s", connector.ErrSnapshotVersionTooNew, err.Error())
+		case errors.As(err, &unknown):
+			return connector.RestoreSnapshotResult{}, fmt.Errorf("%w: %s", connector.ErrSnapshotVersionUnknown, err.Error())
+		}
+		return connector.RestoreSnapshotResult{}, fmt.Errorf("restore_snapshot: %w", err)
+	}
+
 	return connector.RestoreSnapshotResult{
-		Restored:      map[string]int{},
-		FeatureStatus: "preview",
-	}, fmt.Errorf("restore_snapshot: %s", previewNote)
+		Restored: map[string]int{
+			"agent_defs":          result.AgentDefsRestored,
+			"agent_def_active":    result.AgentDefActiveRestored,
+			"memory":              result.MemoryRestored,
+			"channel_messages":    result.ChannelMessagesRestored,
+			"channel_cursors":     result.ChannelCursorsRestored,
+			"evaluations":         result.EvaluationsRestored,
+			"paused_runs":         result.PausedRunsRestored,
+			"transcript_events":   result.TranscriptEventsRestored,
+			"interaction_history": result.InteractionHistoryRestored,
+		},
+		AgentDefsRestored:          result.AgentDefsRestored,
+		AgentDefActiveRestored:     result.AgentDefActiveRestored,
+		MemoryRestored:             result.MemoryRestored,
+		ChannelMessagesRestored:    result.ChannelMessagesRestored,
+		ChannelCursorsRestored:     result.ChannelCursorsRestored,
+		EvaluationsRestored:        result.EvaluationsRestored,
+		PausedRunsRestored:         result.PausedRunsRestored,
+		SynthesizedSessions:        result.SynthesizedSessions,
+		TranscriptEventsRestored:   result.TranscriptEventsRestored,
+		InteractionHistoryRestored: result.InteractionHistoryRestored,
+		Warnings:                   result.Warnings,
+	}, nil
 }
 
-func (s *Server) DeleteSnapshot(_ context.Context, _ string) error {
-	return fmt.Errorf("delete_snapshot: %s", previewNote)
+// DeleteSnapshot delegates to Store.SnapshotDelete. Idempotent —
+// returns nil whether or not a row was present (mirrors the HTTP
+// DELETE /v1/_snapshots/{id} = 204 contract).
+func (s *Server) DeleteSnapshot(ctx context.Context, snapshotID string) error {
+	if s.store == nil {
+		return fmt.Errorf("delete_snapshot: store not configured")
+	}
+	if _, err := s.store.SnapshotDelete(ctx, snapshotID); err != nil {
+		return fmt.Errorf("delete_snapshot: %w", err)
+	}
+	return nil
+}
+
+// snapshotRowToDescriptor maps a stored row into the wire-facing
+// SnapshotDescriptor. includesHistory + sinceTS are supplied by the
+// caller (CreateSnapshot remembers them from the request; ListSnapshots
+// can't reconstruct them from the row, so leaves them zero).
+func snapshotRowToDescriptor(row store.SnapshotRow, includesHistory bool, sinceTS *time.Time) connector.SnapshotDescriptor {
+	return connector.SnapshotDescriptor{
+		SnapshotID:      row.ID,
+		CreatedAt:       row.CreatedAt,
+		SizeBytes:       row.ByteSize,
+		IncludesHistory: includesHistory,
+		SinceTS:         sinceTS,
+		Description:     row.Label,
+		FormatVersion:   fmt.Sprintf("%d", row.SchemaVersion),
+	}
 }
 
 // --- Interruption (v0.8.16) ---
@@ -612,11 +843,3 @@ func computeExpiresAt(now time.Time, ttlSeconds, defaultTTLSeconds int) time.Tim
 	return now.Add(time.Duration(ttlSeconds) * time.Second)
 }
 
-// mintPreviewSnapshotID produces a snap_preview_<8hex> identifier.
-// Real snapshot IDs in v0.8.16+ will use a different prefix
-// (snap_<time><rand>) so callers can distinguish preview-only IDs.
-func mintPreviewSnapshotID() string {
-	var b [4]byte
-	_, _ = rand.Read(b[:])
-	return "snap_preview_" + hex.EncodeToString(b[:])
-}

@@ -660,6 +660,9 @@ func (m *mockConnector) CreateSnapshot(context.Context, connector.CreateSnapshot
 func (m *mockConnector) ListSnapshots(context.Context) ([]connector.SnapshotDescriptor, error) {
 	return nil, nil
 }
+func (m *mockConnector) GetSnapshot(context.Context, string) (connector.SnapshotEnvelope, error) {
+	return connector.SnapshotEnvelope{}, nil
+}
 func (m *mockConnector) ExportSnapshot(context.Context, string) (connector.ExportSnapshotResult, error) {
 	return connector.ExportSnapshotResult{}, nil
 }
