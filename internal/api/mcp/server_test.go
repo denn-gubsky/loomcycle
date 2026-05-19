@@ -32,12 +32,12 @@ type mockConnector struct {
 	listCallback func()
 
 	// Hook-management injection points.
-	registerHookID      string                          // return value for RegisterHook (default "hook_test")
-	registerHookErr     error                           // overrides ID when set
-	lastRegisterHookReq connector.RegisterHookRequest   // captures the most recent call
-	listHookHooks       []*hooks.Hook                   // return slice for ListHooks
-	deleteHookErr       error                           // return value for DeleteHook
-	lastDeleteHookID    string                          // id passed to the most recent DeleteHook call
+	registerHookID      string                        // return value for RegisterHook (default "hook_test")
+	registerHookErr     error                         // overrides ID when set
+	lastRegisterHookReq connector.RegisterHookRequest // captures the most recent call
+	listHookHooks       []*hooks.Hook                 // return slice for ListHooks
+	deleteHookErr       error                         // return value for DeleteHook
+	lastDeleteHookID    string                        // id passed to the most recent DeleteHook call
 }
 
 func (m *mockConnector) SpawnRun(_ context.Context, r connector.SpawnRunRequest) (connector.SpawnRunResult, error) {
