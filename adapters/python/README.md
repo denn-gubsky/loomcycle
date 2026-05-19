@@ -12,7 +12,7 @@ no need to import generated protobuf types in your application code.
 - Wraps loomcycle ≥ v0.5.5's gRPC server (`LOOMCYCLE_GRPC_ADDR`).
 - Async-only (`grpc.aio`). Python 3.9+.
 - Equivalent surface to the TypeScript adapter at `adapters/ts/`.
-- Production tag: `0.5.5` (matches loomcycle release that ships gRPC).
+- Production tag: `0.6.0` (adds hook management; ships alongside the v0.8.x hooks-connector loomcycle release).
 
 ## Install
 
@@ -93,6 +93,9 @@ All methods are coroutine methods on `LoomcycleClient`.
 | `list_user_agents(user_id, status="")` | `list[dict]` | Filters: `running`, `completed`, `failed`, `cancelled`. |
 | `get_transcript(session_id)` | `list[dict]` | Persisted event log; `payload` is raw JSON bytes. |
 | `health()` | `dict` | Liveness + build info. Unauthenticated. |
+| `register_hook(owner, name, phase, callback_url, ...)` | `dict` | Pre/PostTool webhook registration. Returns `{"id": ...}`. |
+| `list_hooks()` | `list[dict]` | Every registered hook (in-memory only). |
+| `delete_hook(hook_id)` | `bool` | Idempotent on missing id is NOT supported — raises `HookNotFoundError`. |
 | `close()` | `None` | Idempotent. Use `async with` to do this automatically. |
 
 ## Errors
@@ -101,8 +104,9 @@ Every method translates gRPC error codes to typed Python exceptions:
 
 | gRPC code | Exception |
 |---|---|
-| `NOT_FOUND` (with agent_id ctx) | `AgentNotFoundError` |
-| `NOT_FOUND` (with session_id ctx) | `SessionNotFoundError` |
+| `NOT_FOUND` (with session in msg) | `SessionNotFoundError` |
+| `NOT_FOUND` (with hook in msg) | `HookNotFoundError` |
+| `NOT_FOUND` (otherwise — agent ctx) | `AgentNotFoundError` |
 | `FAILED_PRECONDITION` (session busy) | `SessionBusyError` |
 | `FAILED_PRECONDITION` (other) | `LoomcycleError` |
 | `ALREADY_EXISTS` | `AgentIDInUseError` |

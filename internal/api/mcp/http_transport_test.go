@@ -96,6 +96,15 @@ func (m *httpMockConnector) DeleteSnapshot(context.Context, string) error {
 func (m *httpMockConnector) InterruptionResolve(context.Context, connector.InterruptionResolveRequest) (connector.InterruptionResolveResult, error) {
 	return connector.InterruptionResolveResult{}, errors.New("not implemented")
 }
+func (m *httpMockConnector) RegisterHook(context.Context, connector.RegisterHookRequest) (connector.RegisterHookResponse, error) {
+	return connector.RegisterHookResponse{}, errors.New("not implemented")
+}
+func (m *httpMockConnector) ListHooks(context.Context) (connector.ListHooksResponse, error) {
+	return connector.ListHooksResponse{}, errors.New("not implemented")
+}
+func (m *httpMockConnector) DeleteHook(context.Context, string) error {
+	return errors.New("not implemented")
+}
 
 // httpTestServer wires an HTTPHandler against the mock connector and
 // returns an httptest.Server speaking the loomcycle MCP transport over

@@ -74,6 +74,28 @@ service Loomcycle {
   // Mirrors GET /healthz (which is unauthenticated on the HTTP side;
   // the gRPC equivalent stays unauthenticated for parity).
   rpc Health(HealthRequest) returns (HealthResponse);
+
+  // RegisterHook registers a pre- or post-tool webhook. The
+  // callback_url must be an http:// or https:// endpoint the consumer
+  // runs. Returns the loomcycle-assigned id. Re-registering the same
+  // (owner, name) replaces the prior entry in-place (idempotent on
+  // app restart).
+  //
+  // Mirrors POST /v1/hooks.
+  rpc RegisterHook(RegisterHookRequest) returns (RegisterHookResponse);
+
+  // ListHooks returns every currently-registered hook. Useful for
+  // debug; no pagination — the registry is intentionally small
+  // (operator-curated set).
+  //
+  // Mirrors GET /v1/hooks.
+  rpc ListHooks(ListHooksRequest) returns (ListHooksResponse);
+
+  // DeleteHook removes a registered hook by id. Returns
+  // codes.NotFound when no hook has that id.
+  //
+  // Mirrors DELETE /v1/hooks/{id}.
+  rpc DeleteHook(DeleteHookRequest) returns (DeleteHookResponse);
 }
 
 // ========================
@@ -298,4 +320,74 @@ message HealthResponse {
   string built = 3;
   // Uptime in seconds since process start.
   int64 uptime_seconds = 4;
+}
+
+// ========================
+// Hook management
+// ========================
+//
+// phase + fail_mode stay as proto strings (not enums) for the same
+// reason `status` does — adding a new value on the HTTP side doesn't
+// require regenerating stubs everywhere. The hooks.Phase / hooks.FailMode
+// Go types are already string-typed so there's no impedance to convert.
+
+message RegisterHookRequest {
+  // App UID; (owner, name) is the identity tuple. Re-registering the
+  // same pair replaces the prior registration with a fresh id.
+  string owner = 1;
+  string name = 2;
+  // "pre" | "post". Anything else → InvalidArgument.
+  string phase = 3;
+  // Agent name globs (exact match or trailing-* prefix). Empty list
+  // matches every agent (equivalent to ["*"]).
+  repeated string agents = 4;
+  // Tool name globs (same syntax as agents). Empty matches every tool.
+  repeated string tools = 5;
+  // http:// or https:// endpoint the consumer runs. The dispatcher
+  // POSTs PreHookCall / PostHookCall payloads here.
+  string callback_url = 6;
+  // "open" (default) | "closed". Open = webhook errors pass through;
+  // closed = errors fail the tool call with IsError=true.
+  string fail_mode = 7;
+  // Per-call timeout. 0 = registry default (5 s).
+  int32 timeout_ms = 8;
+}
+
+message RegisterHookResponse {
+  // Loomcycle-assigned id. Caller uses this on DeleteHook.
+  string id = 1;
+}
+
+message ListHooksRequest {}
+
+// Hook mirrors hooks.Hook for the wire — the full descriptor as it
+// lives in the in-memory registry. The bool `Timeout` is the resolved
+// duration; we don't surface it on the wire (callers care about
+// timeout_ms which is the source).
+message Hook {
+  string id = 1;
+  string owner = 2;
+  string name = 3;
+  string phase = 4;
+  repeated string agents = 5;
+  repeated string tools = 6;
+  string callback_url = 7;
+  string fail_mode = 8;
+  int32 timeout_ms = 9;
+  google.protobuf.Timestamp registered_at = 10;
+}
+
+message ListHooksResponse {
+  repeated Hook hooks = 1;
+}
+
+message DeleteHookRequest {
+  string id = 1;
+}
+
+message DeleteHookResponse {
+  // Echoed id of the deleted hook. Empty when no row matched (the
+  // RPC returns codes.NotFound in that case; this field is for the
+  // success path's audit trail).
+  string deleted = 1;
 }
