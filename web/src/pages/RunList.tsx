@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
-import { Link } from "react-router-dom";
 import { Agent, listAgents } from "../api";
 import { useUserId } from "../components/Layout";
+import AgentsTree, { buildTree } from "../components/AgentsTree";
 
 type StatusFilter = "all" | "running" | "completed" | "failed" | "cancelled";
 
@@ -55,10 +55,6 @@ export default function RunList() {
     };
   }, [userId, filter]);
 
-  // Build the parent → children tree. Top-level entries are agents
-  // whose parent_agent_id is null OR whose parent isn't in the
-  // current result set (e.g. parent completed and was filtered out
-  // by the status query).
   const tree = useMemo(() => buildTree(agents), [agents]);
 
   if (!userId) {
@@ -94,72 +90,7 @@ export default function RunList() {
           <p>No <code>{filter}</code> runs for <code>{userId}</code>.</p>
         </div>
       )}
-      <ul className="tree">
-        {tree.map((node) => (
-          <RunNode key={node.agent.agent_id} node={node} depth={0} />
-        ))}
-      </ul>
+      <AgentsTree tree={tree} />
     </div>
   );
-}
-
-interface TreeNode {
-  agent: Agent;
-  children: TreeNode[];
-}
-
-function buildTree(agents: Agent[]): TreeNode[] {
-  const byId = new Map<string, TreeNode>();
-  agents.forEach((a) => byId.set(a.agent_id, { agent: a, children: [] }));
-  const roots: TreeNode[] = [];
-  agents.forEach((a) => {
-    const node = byId.get(a.agent_id)!;
-    if (a.parent_agent_id && byId.has(a.parent_agent_id)) {
-      byId.get(a.parent_agent_id)!.children.push(node);
-    } else {
-      roots.push(node);
-    }
-  });
-  // Sort by started_at desc at every level so newest run is first.
-  const sortRecursive = (nodes: TreeNode[]) => {
-    nodes.sort((a, b) => b.agent.started_at.localeCompare(a.agent.started_at));
-    nodes.forEach((n) => sortRecursive(n.children));
-  };
-  sortRecursive(roots);
-  return roots;
-}
-
-function RunNode({ node, depth }: { node: TreeNode; depth: number }) {
-  const a = node.agent;
-  return (
-    <li className={`node depth-${depth} status-${a.status}`}>
-      <div className="row">
-        <span className={`pill ${a.status}`}>{a.status}</span>
-        <Link to={`/agents/${a.agent_id}`} className="agent-link">
-          <strong>{a.agent || "(unknown agent)"}</strong>
-          <code className="agent-id">{a.agent_id.slice(0, 12)}…</code>
-        </Link>
-        <span className="model">{a.usage?.model || "—"}</span>
-        <span className="time">{relativeTime(a.started_at)}</span>
-        {a.error && <span className="error-flag" title={a.error}>error</span>}
-      </div>
-      {node.children.length > 0 && (
-        <ul className="children">
-          {node.children.map((c) => (
-            <RunNode key={c.agent.agent_id} node={c} depth={depth + 1} />
-          ))}
-        </ul>
-      )}
-    </li>
-  );
-}
-
-function relativeTime(iso: string): string {
-  const t = new Date(iso).getTime();
-  if (!Number.isFinite(t)) return iso;
-  const ms = Date.now() - t;
-  if (ms < 60_000) return `${Math.floor(ms / 1000)}s ago`;
-  if (ms < 3_600_000) return `${Math.floor(ms / 60_000)}m ago`;
-  if (ms < 86_400_000) return `${Math.floor(ms / 3_600_000)}h ago`;
-  return new Date(iso).toLocaleString();
 }
