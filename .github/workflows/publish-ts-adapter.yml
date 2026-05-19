@@ -43,6 +43,17 @@ jobs:
           cache: npm
           cache-dependency-path: adapters/ts/package-lock.json
 
+      - name: Upgrade npm CLI for Trusted Publisher OIDC support
+        # Trusted Publishing requires npm CLI 11.5.1+ to negotiate the
+        # GitHub Actions → npm OIDC handshake. Node 20 ships with npm
+        # 10.x, which silently falls back to looking for NODE_AUTH_TOKEN
+        # in .npmrc and emits a misleading "404 not in this registry"
+        # error from the unauthenticated PUT (npm hides scoped-package
+        # existence from anonymous callers). Pinning to npm@latest
+        # avoids tracking minor-version bumps; the action only runs on
+        # tag pushes so the version drift surface is small.
+        run: npm install -g npm@latest
+
       - name: Verify package version matches tag
         working-directory: adapters/ts
         # Refuse to publish when package.json hasn't been bumped to
