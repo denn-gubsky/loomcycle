@@ -536,6 +536,9 @@ class LoomcycleClient:
         user_id: str = "",
         agent_id: str = "",
         session_id: str = "",
+        tenant_id: str = "",
+        user_tier: str = "",
+        user_bearer: str = "",
         on_handle: Optional[Callable[["RunHandle"], None]] = None,
     ) -> AsyncIterator[AgentEvent]:
         """Drive one agent run end-to-end, yielding each
@@ -553,6 +556,20 @@ class LoomcycleClient:
           - ``[]``          → deny-all
           - ``["foo.com"]`` → intersection with operator's static list
 
+        Per-run policy fields (v0.8.x):
+
+          - ``tenant_id``    — recorded on a fresh session; ignored
+            for continuations.
+          - ``user_tier``    — v0.8.2+ tier policy name (maps to
+            ``cfg.UserTiers[<name>]``). Server returns
+            ``InvalidArgumentError`` (INVALID_ARGUMENT) on unknown
+            tier. Empty falls through to ``default``.
+          - ``user_bearer``  — v0.8.x+ per-run MCP bearer substituted
+            into outbound MCP headers containing
+            ``${run.user_bearer}``. Charset
+            ``[A-Za-z0-9._\\-+/=]{16,512}``. Sub-agents inherit
+            identically. Never persisted, never logged in full.
+
         Returns an ``AsyncIterator[AgentEvent]`` directly (this
         method is sync — the underlying gRPC stub call is lazy
         enough that no ``await`` is needed at the call site;
@@ -566,6 +583,9 @@ class LoomcycleClient:
             web_search_filter=web_search_filter,
             user_id=user_id,
             agent_id=agent_id,
+            tenant_id=tenant_id,
+            user_tier=user_tier,
+            user_bearer=user_bearer,
         )
         if allowed_hosts is not None:
             req.allowed_hosts.list.extend(allowed_hosts)
@@ -584,18 +604,30 @@ class LoomcycleClient:
         allowed_hosts: Optional[Sequence[str]] = None,
         web_search_filter: str = "",
         agent_id: str = "",
+        user_tier: str = "",
+        user_bearer: str = "",
         on_handle: Optional[Callable[["RunHandle"], None]] = None,
     ) -> AsyncIterator[AgentEvent]:
         """Continue an existing session. Same yield shape as
-        ``run_streaming``; the agent + user_id are inherited from
-        the existing session row server-side. Sync-returning — see
-        ``run_streaming`` for consumption pattern."""
+        ``run_streaming``; the agent + user_id + tenant_id are
+        inherited from the existing session row server-side.
+
+        ``user_tier`` and ``user_bearer`` are per-call (not session-
+        bound) — a user upgrading mid-session sees the new tier
+        applied to the next continuation; the bearer threads through
+        for ``${run.user_bearer}`` substitution on each turn. See
+        ``run_streaming`` for the policy field semantics.
+
+        Sync-returning — see ``run_streaming`` for consumption
+        pattern."""
         req = pb.ContinueRequest(
             session_id=session_id,
             segments=_segments_to_proto(segments),
             allowed_tools=list(allowed_tools or ()),
             web_search_filter=web_search_filter,
             agent_id=agent_id,
+            user_tier=user_tier,
+            user_bearer=user_bearer,
         )
         if allowed_hosts is not None:
             req.allowed_hosts.list.extend(allowed_hosts)

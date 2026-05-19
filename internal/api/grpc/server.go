@@ -451,9 +451,19 @@ func (s *Server) Run(req *loomcyclepb.RunRequest, stream loomcyclepb.Loomcycle_R
 	if s.runner == nil {
 		return status.Error(codes.Unimplemented, "Run streaming requires a runner; this Server was constructed without one")
 	}
-	in := runInputFromProto(req.GetAgent(), req.GetSessionId(), req.GetSegments(),
-		req.GetAllowedTools(), req.GetAllowedHosts(), req.GetWebSearchFilter(),
-		req.GetUserId(), req.GetAgentId())
+	in := runInputFromProto(runInputProtoArgs{
+		Agent:           req.GetAgent(),
+		SessionID:       req.GetSessionId(),
+		Segments:        req.GetSegments(),
+		AllowedTools:    req.GetAllowedTools(),
+		AllowedHosts:    req.GetAllowedHosts(),
+		WebSearchFilter: req.GetWebSearchFilter(),
+		UserID:          req.GetUserId(),
+		AgentID:         req.GetAgentId(),
+		TenantID:        req.GetTenantId(),
+		UserTier:        req.GetUserTier(),
+		UserBearer:      req.GetUserBearer(),
+	})
 	return s.driveStream(stream.Context(), stream, in)
 }
 
@@ -468,9 +478,18 @@ func (s *Server) Continue(req *loomcyclepb.ContinueRequest, stream loomcyclepb.L
 	if req.GetSessionId() == "" {
 		return status.Error(codes.InvalidArgument, "session_id is required for Continue")
 	}
-	in := runInputFromProto( /*agent=*/ "", req.GetSessionId(), req.GetSegments(),
-		req.GetAllowedTools(), req.GetAllowedHosts(), req.GetWebSearchFilter(),
-		/*userID=*/ "", req.GetAgentId())
+	in := runInputFromProto(runInputProtoArgs{
+		// Agent + TenantID + UserID omitted — server inherits from the
+		// existing session per the HTTP wire's messagesRequest contract.
+		SessionID:       req.GetSessionId(),
+		Segments:        req.GetSegments(),
+		AllowedTools:    req.GetAllowedTools(),
+		AllowedHosts:    req.GetAllowedHosts(),
+		WebSearchFilter: req.GetWebSearchFilter(),
+		AgentID:         req.GetAgentId(),
+		UserTier:        req.GetUserTier(),
+		UserBearer:      req.GetUserBearer(),
+	})
 	return s.driveStream(stream.Context(), stream, in)
 }
 
@@ -549,35 +568,45 @@ func (s *Server) driveStream(ctx context.Context, stream runStreamSink, in runne
 	return mapRunnerErr(runErr)
 }
 
+// runInputProtoArgs gathers the proto fields runInputFromProto reads.
+// Struct-arg shape rather than positional parameters because the field
+// set has grown past the comfortable positional limit (per-run policy
+// fields TenantID/UserTier/UserBearer were added when gRPC reached
+// HTTP wire parity).
+type runInputProtoArgs struct {
+	Agent           string
+	SessionID       string
+	Segments        []*loomcyclepb.PromptSegment
+	AllowedTools    []string
+	AllowedHosts    *loomcyclepb.HostAllowlist
+	WebSearchFilter string
+	UserID          string
+	AgentID         string
+	TenantID        string
+	UserTier        string
+	UserBearer      string
+}
+
 // runInputFromProto maps the proto request fields into the
 // runner.RunInput shared between Run and Continue.
-//
-// v0.8.x gap: RunInput.UserBearer is not yet plumbed here — the proto
-// schema has no user_bearer field. When gRPC Run/Continue leave
-// Unimplemented status, add a user_bearer proto field and a parameter
-// to this function. The HTTP wire is the only path that currently
-// carries per-run bearers.
-func runInputFromProto(
-	agent, sessionID string,
-	segments []*loomcyclepb.PromptSegment,
-	allowedTools []string,
-	allowedHosts *loomcyclepb.HostAllowlist,
-	webSearchFilter, userID, agentID string,
-) runner.RunInput {
+func runInputFromProto(a runInputProtoArgs) runner.RunInput {
 	in := runner.RunInput{
-		Agent:           agent,
-		SessionID:       sessionID,
-		Segments:        segmentsFromProto(segments),
-		AllowedTools:    allowedTools,
-		WebSearchFilter: webSearchFilter,
-		UserID:          userID,
-		AgentID:         agentID,
+		Agent:           a.Agent,
+		SessionID:       a.SessionID,
+		Segments:        segmentsFromProto(a.Segments),
+		AllowedTools:    a.AllowedTools,
+		WebSearchFilter: a.WebSearchFilter,
+		UserID:          a.UserID,
+		AgentID:         a.AgentID,
+		TenantID:        a.TenantID,
+		UserTier:        a.UserTier,
+		UserBearer:      a.UserBearer,
 	}
-	if allowedHosts != nil {
+	if a.AllowedHosts != nil {
 		// Proto3 message-type field present → caller did supply a
 		// list (possibly empty). Mirrors HTTP's *[]string distinction
 		// between nil (no narrowing) and []string{} (deny-all).
-		list := allowedHosts.GetList()
+		list := a.AllowedHosts.GetList()
 		in.AllowedHosts = &list
 	}
 	return in
@@ -634,6 +663,16 @@ func eventToProto(ev providers.Event) *loomcyclepb.Event {
 			Attempt:  int32(ev.Retry.Attempt),
 			WaitMs:   ev.Retry.WaitMs,
 			Reason:   ev.Retry.Reason,
+		}
+	}
+	if ev.HostWidening != nil {
+		out.HostWidening = &loomcyclepb.HostWidening{
+			ToolCallId: ev.HostWidening.ToolCallID,
+			ToolName:   ev.HostWidening.ToolName,
+			Url:        ev.HostWidening.URL,
+			HookOwner:  ev.HostWidening.HookOwner,
+			HookName:   ev.HostWidening.HookName,
+			HostsAdded: ev.HostWidening.HostsAdded,
 		}
 	}
 	return out

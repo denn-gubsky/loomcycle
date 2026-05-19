@@ -49,24 +49,44 @@ class Retry:
 
 
 @dataclass(frozen=True)
+class HostWidening:
+    """Structured payload on ``host_widened`` events (v0.8.17+).
+
+    Emitted once per dispatched tool call whose Pre-hook
+    ``allow_hosts`` grant fired. Operators correlate
+    ``(tool_call_id, url, hosts_added)`` to detect confused-deputy
+    patterns where the hook echoes the model's requested host
+    without independent validation. Mirrors
+    ``providers.HostWideningEventInfo`` on the Go side."""
+
+    tool_call_id: str
+    tool_name: str
+    url: str
+    hook_owner: str
+    hook_name: str
+    hosts_added: tuple  # tuple of str — frozen for the dataclass
+
+
+@dataclass(frozen=True)
 class AgentEvent:
     """One frame from a Run/Continue stream.
 
     Field semantics mirror loomcycle's ``providers.Event`` Go type
     1:1. The proto encoding nullable-message fields as
     sub-messages translates here to ``Optional[T]`` for tool_use /
-    usage / retry — they're only set on events of the matching
-    type. Adapters should switch on ``event.type`` to know which
-    sub-fields to read.
+    usage / retry / host_widening — they're only set on events of
+    the matching type. Adapters should switch on ``event.type`` to
+    know which sub-fields to read.
     """
 
     # "text" | "tool_use" | "tool_result" | "usage" | "retry" |
-    # "done" | "error" | "session" | "agent"
+    # "done" | "error" | "session" | "agent" | "host_widened"
     type: str
     text: str = ""
     tool_use: Optional[ToolUse] = None
     usage: Optional[Usage] = None
     retry: Optional[Retry] = None
+    host_widening: Optional[HostWidening] = None
     error: str = ""
     is_error: bool = False
     stop_reason: str = ""
@@ -100,12 +120,23 @@ class AgentEvent:
                 wait_ms=ev.retry.wait_ms,
                 reason=ev.retry.reason,
             )
+        hw: Optional[HostWidening] = None
+        if ev.HasField("host_widening"):
+            hw = HostWidening(
+                tool_call_id=ev.host_widening.tool_call_id,
+                tool_name=ev.host_widening.tool_name,
+                url=ev.host_widening.url,
+                hook_owner=ev.host_widening.hook_owner,
+                hook_name=ev.host_widening.hook_name,
+                hosts_added=tuple(ev.host_widening.hosts_added),
+            )
         return cls(
             type=ev.type,
             text=ev.text,
             tool_use=tu,
             usage=u,
             retry=r,
+            host_widening=hw,
             error=ev.error,
             is_error=ev.is_error,
             stop_reason=ev.stop_reason,
