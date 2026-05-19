@@ -217,7 +217,7 @@ func toolDescriptors() []loommcp.ToolDescriptor {
 				],
 				"properties": {
 					"snapshot_id":     {"type": "string"},
-					"raw_json":        {"type": "string", "description": "Inline JSON envelope (base64 or raw JSON; the connector accepts both)."},
+					"raw_json":        {"type": "object", "description": "Inline JSON envelope — pass the same JSON object you'd get from get_snapshot.json_content. Per v0.8.18, raw_json is a JSON object on the MCP wire (not a base64 string), so export_snapshot.raw_json → restore_snapshot.raw_json round-trips natively."},
 					"include_history": {"type": "boolean"}
 				}
 			}`),

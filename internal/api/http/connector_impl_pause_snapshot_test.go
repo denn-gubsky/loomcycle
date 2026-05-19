@@ -198,6 +198,50 @@ func TestConnector_ExportSnapshot_NotFound(t *testing.T) {
 	}
 }
 
+// TestConnector_ExportSnapshot_RawJSONRoundTripsAsJSONNotBase64 pins
+// the wire-shape fix from the v0.8.18 code review: RawJSON is
+// json.RawMessage so it marshals onto the JSON wire AS-IS (a nested
+// JSON object), not as a base64 string. Without this, an MCP client
+// piping export_snapshot.raw_json directly into restore_snapshot.raw_json
+// would see base64 mismatches.
+func TestConnector_ExportSnapshot_RawJSONRoundTripsAsJSONNotBase64(t *testing.T) {
+	srv, _, cleanup := newConnectorTestServer(t, true)
+	defer cleanup()
+
+	desc, _ := srv.CreateSnapshot(context.Background(), connector.CreateSnapshotRequest{})
+	out, err := srv.ExportSnapshot(context.Background(), desc.SnapshotID)
+	if err != nil {
+		t.Fatalf("ExportSnapshot: %v", err)
+	}
+	// Marshal the result the way MCP's toolResultJSON would.
+	wire, err := json.Marshal(out)
+	if err != nil {
+		t.Fatalf("Marshal ExportSnapshotResult: %v", err)
+	}
+	// The raw_json field on the wire must be a JSON object, not a
+	// quoted base64 string. We probe by checking that the field
+	// value starts with '{' (the envelope's leading brace) when
+	// extracted as RawMessage.
+	var probe struct {
+		RawJSON json.RawMessage `json:"raw_json"`
+	}
+	if err := json.Unmarshal(wire, &probe); err != nil {
+		t.Fatalf("Unmarshal probe: %v", err)
+	}
+	if len(probe.RawJSON) == 0 || probe.RawJSON[0] != '{' {
+		t.Errorf("raw_json wire shape = %q, want a JSON object starting with '{' (would be a base64 string if []byte was used)", string(probe.RawJSON))
+	}
+	// And confirm we can pipe it back into a structured decode —
+	// the canonical round-trip a real consumer does.
+	var envelope map[string]json.RawMessage
+	if err := json.Unmarshal(probe.RawJSON, &envelope); err != nil {
+		t.Errorf("piped raw_json is not valid JSON: %v", err)
+	}
+	if _, ok := envelope["sections"]; !ok {
+		t.Errorf("piped envelope missing 'sections' key")
+	}
+}
+
 func TestConnector_ExportSnapshot_RawJSONPopulated(t *testing.T) {
 	srv, _, cleanup := newConnectorTestServer(t, true)
 	defer cleanup()

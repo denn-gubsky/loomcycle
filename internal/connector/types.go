@@ -238,24 +238,36 @@ type SnapshotEnvelope struct {
 // FilePath / Checksum remain operator-facing fields for transports
 // that materialise the export to disk first (CLI's --out flag); they
 // are empty when the bytes-only path is used.
+//
+// RawJSON is typed as json.RawMessage so it marshals onto the JSON
+// wire AS-IS (a nested JSON object), not as a base64-encoded string —
+// Go's default []byte marshalling would base64-encode it, breaking
+// any caller that tries to pipe `export_snapshot` output back into
+// `restore_snapshot` input. gRPC transports convert their proto
+// `bytes` field into this via json.RawMessage(...) cast.
 type ExportSnapshotResult struct {
-	SnapshotID    string `json:"snapshot_id"`
-	FilePath      string `json:"file_path,omitempty"` // absolute path on the loomcycle host (when materialised)
-	Checksum      string `json:"checksum,omitempty"`  // "sha256:..." (when materialised)
-	SizeBytes     int64  `json:"size_bytes"`
-	RawJSON       []byte `json:"raw_json,omitempty"` // canonical envelope bytes (v0.8.18+)
-	FeatureStatus string `json:"feature_status,omitempty"`
+	SnapshotID    string          `json:"snapshot_id"`
+	FilePath      string          `json:"file_path,omitempty"` // absolute path on the loomcycle host (when materialised)
+	Checksum      string          `json:"checksum,omitempty"`  // "sha256:..." (when materialised)
+	SizeBytes     int64           `json:"size_bytes"`
+	RawJSON       json.RawMessage `json:"raw_json,omitempty"` // canonical envelope bytes (v0.8.18+); see type comment for marshalling rationale
+	FeatureStatus string          `json:"feature_status,omitempty"`
 }
 
 // RestoreSnapshotRequest is the input to RestoreSnapshot. Exactly
 // one of SnapshotID (restore from same-instance snapshot), RawJSON
 // (cross-instance restore from inline bytes), or FilePath (load
 // from disk) must be non-empty.
+//
+// RawJSON is typed as json.RawMessage so JSON-encoded transports
+// (MCP, HTTP body) accept the envelope as a nested JSON object
+// rather than a base64-encoded string — see ExportSnapshotResult's
+// type comment for the same-shape rationale.
 type RestoreSnapshotRequest struct {
-	SnapshotID     string `json:"snapshot_id,omitempty"`
-	FilePath       string `json:"file_path,omitempty"`
-	RawJSON        []byte `json:"raw_json,omitempty"`
-	IncludeHistory bool   `json:"include_history,omitempty"`
+	SnapshotID     string          `json:"snapshot_id,omitempty"`
+	FilePath       string          `json:"file_path,omitempty"`
+	RawJSON        json.RawMessage `json:"raw_json,omitempty"`
+	IncludeHistory bool            `json:"include_history,omitempty"`
 }
 
 // RestoreSnapshotResult is the response shape for RestoreSnapshot.

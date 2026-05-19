@@ -470,9 +470,14 @@ func (s *Server) GetRuntimeState(ctx context.Context) (connector.RuntimeState, e
 	}
 	// Best-effort: include the snapshots count so dashboards can
 	// render it without a second round-trip. Failure here is
-	// non-fatal; the state itself is still authoritative.
+	// non-fatal; the state itself is still authoritative. Cap the
+	// query at the same default as ListSnapshots so we don't full-
+	// table-scan a large snapshots table just to surface a count;
+	// dashboards consuming this value treat the cap as a saturation
+	// signal ("≥ 200 snapshots"). True precise counts defer to a
+	// future SnapshotCount Store method.
 	if s.store != nil {
-		if rows, lerr := s.store.SnapshotList(ctx, "", 0); lerr == nil {
+		if rows, lerr := s.store.SnapshotList(ctx, "", 200); lerr == nil {
 			out.SnapshotsCount = len(rows)
 		}
 	}
@@ -576,7 +581,7 @@ func (s *Server) ExportSnapshot(ctx context.Context, snapshotID string) (connect
 	return connector.ExportSnapshotResult{
 		SnapshotID: row.ID,
 		SizeBytes:  row.ByteSize,
-		RawJSON:    row.JSONContent,
+		RawJSON:    json.RawMessage(row.JSONContent),
 	}, nil
 }
 
