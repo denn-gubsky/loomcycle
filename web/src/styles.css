@@ -196,13 +196,32 @@ pre {
 }
 .node .row {
   display: grid;
-  grid-template-columns: 80px 1fr 200px 120px auto;
+  grid-template-columns: 14px 80px 1fr 200px 120px auto;
   gap: 12px;
   align-items: center;
   padding: 6px 8px;
   background: var(--bg-soft);
   border: 1px solid var(--border);
   border-radius: 4px;
+}
+.tree-caret {
+  background: transparent;
+  border: none;
+  color: var(--fg-soft);
+  cursor: pointer;
+  width: 14px;
+  height: 14px;
+  font-size: 10px;
+  padding: 0;
+  user-select: none;
+  line-height: 1;
+}
+.tree-caret:disabled {
+  cursor: default;
+  opacity: 0.35;
+}
+.tree-caret:hover:not(:disabled) {
+  color: var(--accent);
 }
 .agent-link {
   display: flex;

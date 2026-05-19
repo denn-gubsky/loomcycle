@@ -1,12 +1,19 @@
+import { useCallback, useState } from "react";
 import { Link } from "react-router-dom";
 import type { Agent } from "../api";
 
 // AgentsTree renders the parent → children agent hierarchy as a
-// nested <ul>. Each node link navigates to /agents/:id. Stateless;
-// the parent owns the agents list and feeds in the built tree.
+// nested <ul>. Each node link navigates to /agents/:id; a caret
+// button to the left of the status pill toggles whether the
+// children subtree is rendered.
 //
-// Extracted from RunList.tsx in commit 2 of the v0.8.20 Web UI
-// refactor — pure refactor with byte-identical render.
+// Expand state lives in a single Map<agent_id, boolean> owned by
+// the tree (not per-node) — that way a render-time effect can
+// expand ancestors of a selected node centrally, and a future
+// "collapse all" / "expand all" toolbar gets a single setter to
+// flip. Default-expanded: missing key OR true is "expanded";
+// only an explicit `false` collapses. This preserves the v0.8.19
+// behaviour of "everything visible on first render".
 
 export interface TreeNode {
   agent: Agent;
@@ -53,20 +60,62 @@ export interface AgentsTreeProps {
 }
 
 export default function AgentsTree({ tree }: AgentsTreeProps) {
+  const [expandedMap, setExpandedMap] = useState<Map<string, boolean>>(() => new Map());
+  // Clone the Map on every write so React picks up the change via
+  // reference inequality — Maps are reference-compared like all
+  // objects, but their internals aren't.
+  const setExpanded = useCallback((id: string, expanded: boolean) => {
+    setExpandedMap((prev) => {
+      const next = new Map(prev);
+      next.set(id, expanded);
+      return next;
+    });
+  }, []);
   return (
     <ul className="tree">
       {tree.map((node) => (
-        <AgentsTreeNode key={node.agent.agent_id} node={node} depth={0} />
+        <AgentsTreeNode
+          key={node.agent.agent_id}
+          node={node}
+          depth={0}
+          expandedMap={expandedMap}
+          setExpanded={setExpanded}
+        />
       ))}
     </ul>
   );
 }
 
-function AgentsTreeNode({ node, depth }: { node: TreeNode; depth: number }) {
+interface NodeProps {
+  node: TreeNode;
+  depth: number;
+  expandedMap: Map<string, boolean>;
+  setExpanded: (id: string, expanded: boolean) => void;
+}
+
+function AgentsTreeNode({ node, depth, expandedMap, setExpanded }: NodeProps) {
   const a = node.agent;
+  const hasChildren = node.children.length > 0;
+  // Default-expanded: only an explicit `false` collapses.
+  const expanded = expandedMap.get(a.agent_id) !== false;
   return (
     <li className={`node depth-${depth} status-${a.status}`}>
       <div className="row">
+        <button
+          type="button"
+          className="tree-caret"
+          aria-label={expanded ? "collapse" : "expand"}
+          disabled={!hasChildren}
+          onClick={(e) => {
+            // Don't bubble to the row — the row click navigates via
+            // the <Link> on the agent name; the caret is the only
+            // expand/collapse affordance.
+            e.stopPropagation();
+            if (hasChildren) setExpanded(a.agent_id, !expanded);
+          }}
+        >
+          {hasChildren ? (expanded ? "▼" : "▶") : "·"}
+        </button>
         <span className={`pill ${a.status}`}>{a.status}</span>
         <Link to={`/agents/${a.agent_id}`} className="agent-link">
           <strong>{a.agent || "(unknown agent)"}</strong>
@@ -76,10 +125,16 @@ function AgentsTreeNode({ node, depth }: { node: TreeNode; depth: number }) {
         <span className="time">{relativeTime(a.started_at)}</span>
         {a.error && <span className="error-flag" title={a.error}>error</span>}
       </div>
-      {node.children.length > 0 && (
+      {hasChildren && expanded && (
         <ul className="children">
           {node.children.map((c) => (
-            <AgentsTreeNode key={c.agent.agent_id} node={c} depth={depth + 1} />
+            <AgentsTreeNode
+              key={c.agent.agent_id}
+              node={c}
+              depth={depth + 1}
+              expandedMap={expandedMap}
+              setExpanded={setExpanded}
+            />
           ))}
         </ul>
       )}
