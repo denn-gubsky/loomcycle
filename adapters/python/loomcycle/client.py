@@ -225,15 +225,20 @@ class LoomcycleClient:
 
     async def delete_hook(self, hook_id: str) -> bool:
         """Delete a hook by id. Returns ``True`` on success. Raises
-        ``HookNotFoundError`` when no hook has that id."""
+        ``HookNotFoundError`` when no hook has that id.
+
+        Success is determined by the RPC returning at all (no
+        ``AioRpcError`` raised); the proto's ``deleted`` echo field
+        is not inspected — the server's wire contract is "raise
+        NotFound for unknown, return DeleteHookResponse for known"."""
         try:
-            resp = await self._stub.DeleteHook(
+            await self._stub.DeleteHook(
                 pb.DeleteHookRequest(id=hook_id),
                 metadata=self._auth_metadata(),
             )
         except grpc.aio.AioRpcError as e:
             _raise_from_grpc(e)
-        return bool(resp.deleted)
+        return True
 
     async def list_user_agents(
         self,

@@ -12,7 +12,7 @@ no need to import generated protobuf types in your application code.
 - Wraps loomcycle ≥ v0.5.5's gRPC server (`LOOMCYCLE_GRPC_ADDR`).
 - Async-only (`grpc.aio`). Python 3.9+.
 - Equivalent surface to the TypeScript adapter at `adapters/ts/`.
-- Production tag: `0.5.5` (matches loomcycle release that ships gRPC).
+- Production tag: `0.6.0` (adds hook management; ships alongside the v0.8.x hooks-connector loomcycle release).
 
 ## Install
 
