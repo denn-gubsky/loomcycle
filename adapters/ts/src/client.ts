@@ -2,10 +2,12 @@
  * LoomcycleClient — the single public class exported by
  * @loomcycle/client. Speaks HTTP+SSE to a running loomcycle sidecar.
  *
- * v0.8.18: full Python-adapter parity. 22 methods covering run
- * streaming, agent metadata, transcript, pause/resume/state,
- * snapshot lifecycle (capture / list / get / export / restore /
- * delete), memory admin, interruption resolve, and health.
+ * v0.8.18: full Python-adapter parity. 24 methods total — 23 async
+ * (run streaming, continuation, agent metadata, transcript, health,
+ * users, pause/resume/state, snapshot lifecycle capture / list /
+ * get / restore / delete, memory admin, interruption listing +
+ * resolve) plus one synchronous helper (exportSnapshotURL builds a
+ * URL string without issuing a request).
  *
  * Construction:
  *

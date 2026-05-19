@@ -1,8 +1,10 @@
 # loomcycle — async Python client
 
 `loomcycle` is the async Python client for [loomcycle][1]'s gRPC API
-(introduced in v0.5.5). It exposes the seven RPC methods on the
-`Loomcycle` service through an ergonomic `LoomcycleClient` class —
+(introduced in v0.5.5; expanded to ~22 methods in v0.6.0). It exposes
+the full RPC surface (run streaming, agent metadata, transcript,
+pause / snapshot lifecycle, memory admin, interruption resolve) on
+the `Loomcycle` service through an ergonomic `LoomcycleClient` class —
 no need to import generated protobuf types in your application code.
 
 [1]: https://github.com/denn-gubsky/loomcycle
@@ -12,7 +14,8 @@ no need to import generated protobuf types in your application code.
 - Wraps loomcycle ≥ v0.5.5's gRPC server (`LOOMCYCLE_GRPC_ADDR`).
 - Async-only (`grpc.aio`). Python 3.9+.
 - Equivalent surface to the TypeScript adapter at `adapters/ts/`.
-- Production tag: `0.5.5` (matches loomcycle release that ships gRPC).
+- Production tag: `0.6.0` (matches loomcycle v0.8.18 release that
+  expanded the adapter to full ~22-method parity).
 
 ## Install
 
