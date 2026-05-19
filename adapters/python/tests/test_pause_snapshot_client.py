@@ -91,6 +91,31 @@ async def test_get_runtime_state_round_trips_fields():
     assert result["status"] == "paused"
     assert result["paused_run_count"] == 4
     assert result["snapshots_count"] == 7
+    # paused_at was not set on the proto — _ts_to_iso returns "" for
+    # zero Timestamp. Pin that explicitly so a future regression in
+    # the helper doesn't silently produce 1970-01-01T00:00:00Z.
+    assert result["paused_at"] == ""
+
+
+@pytest.mark.asyncio
+async def test_get_runtime_state_round_trips_paused_at_when_set():
+    """Mirror of the gRPC TestGrpcGetRuntimeState_Paused — covers the
+    non-zero-timestamp branch of _ts_to_iso for paused_at."""
+    from google.protobuf import timestamp_pb2
+
+    ts = timestamp_pb2.Timestamp(seconds=1747652400, nanos=0)  # 2025-05-19T11:00:00Z-ish
+    fake, _ = _async_returning(pb.RuntimeStateResponse(
+        status="paused",
+        paused_at=ts,
+        paused_run_count=1,
+    ))
+    client = _make_client()
+    client._stub.GetRuntimeState = fake  # type: ignore[attr-defined]
+
+    result = await client.get_runtime_state()
+    # _ts_to_iso renders as ISO 8601; non-empty for a non-zero ts.
+    assert result["paused_at"] != ""
+    assert "T" in result["paused_at"]
 
 
 # ---- Snapshot lifecycle ----
@@ -111,8 +136,29 @@ async def test_create_snapshot_round_trips_fields():
     assert result["snapshot_id"] == "snap_abc"
     assert result["size_bytes"] == 1024
     assert result["description"] == "test"
+    # since_ts not supplied — proto field unset, HasField returns False,
+    # so _snapshot_descriptor_to_dict surfaces empty string.
+    assert result["since_ts"] == ""
     assert captured["req"].description == "test"
     assert captured["req"].max_bytes == 12345
+    # since_ts also not set on the outbound request when caller
+    # omits the kwarg.
+    assert not captured["req"].HasField("since_ts")
+
+
+@pytest.mark.asyncio
+async def test_create_snapshot_invalid_since_ts_raises_invalid_argument():
+    """Pins the FromJsonString try/except fix: a malformed RFC3339
+    string raises InvalidArgumentError before any wire call is made
+    (rather than leaking a bare protobuf ValueError)."""
+    from loomcycle import InvalidArgumentError
+
+    client = _make_client()
+    # Never installed; if the validation passes through, the call
+    # would NPE here. Asserting the validation catches first.
+    with pytest.raises(InvalidArgumentError) as excinfo:
+        await client.create_snapshot(since_ts="not-a-real-rfc3339-string")
+    assert excinfo.value.code is None  # client-side validation, no gRPC code
 
 
 @pytest.mark.asyncio
@@ -195,11 +241,19 @@ async def test_restore_snapshot_by_raw_json():
 
 @pytest.mark.asyncio
 async def test_restore_snapshot_requires_one_of_id_or_raw_json():
+    """Client-side validation raises the typed InvalidArgumentError
+    (not the catch-all LoomcycleError) so callers can ``except`` on
+    "I called the API wrong" distinctly from "server returned an
+    unexpected error code"."""
+    from loomcycle import InvalidArgumentError
+
     client = _make_client()
-    with pytest.raises(Exception):
+    with pytest.raises(InvalidArgumentError) as missing:
         await client.restore_snapshot()
-    with pytest.raises(Exception):
+    assert missing.value.code is None
+    with pytest.raises(InvalidArgumentError) as both:
         await client.restore_snapshot(snapshot_id="x", raw_json=b"y")
+    assert both.value.code is None
 
 
 @pytest.mark.asyncio

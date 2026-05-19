@@ -61,6 +61,7 @@ from .errors import (
     SnapshotNotFoundError,
     SnapshotTooLargeError,
     SnapshotVersionError,
+    InvalidArgumentError,
 )
 
 __all__ = [
@@ -85,6 +86,7 @@ __all__ = [
     "SnapshotNotFoundError",
     "SnapshotTooLargeError",
     "SnapshotVersionError",
+    "InvalidArgumentError",
 ]
 
 __version__ = "0.6.0"

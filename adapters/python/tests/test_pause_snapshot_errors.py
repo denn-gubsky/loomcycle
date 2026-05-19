@@ -84,6 +84,21 @@ def test_not_found_snapshot_routes_to_snapshot_not_found():
         _raise_from_grpc(err)
 
 
+def test_not_found_snapshot_wins_over_session_in_overlapping_message():
+    """Pins the priority order documented in _raise_from_grpc: when a
+    message contains both "snapshot" and "session" (e.g., a restore
+    diagnostic referencing the synthesized session_id for a missing
+    snapshot), the snapshot keyword wins. This is a deliberate
+    choice — the snapshot is the operation that failed; the session
+    reference is incidental."""
+    err = _FakeAioRpcError(
+        grpc.StatusCode.NOT_FOUND,
+        "connector: snapshot not found (session snap_sess_X for run Y was incidentally referenced)",
+    )
+    with pytest.raises(SnapshotNotFoundError):
+        _raise_from_grpc(err)
+
+
 # ---- SnapshotTooLarge (ResourceExhausted) ----
 #
 # ResourceExhausted is overloaded: BackpressureError for concurrency

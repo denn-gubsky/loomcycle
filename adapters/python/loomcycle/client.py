@@ -47,6 +47,7 @@ from .errors import (
     AlreadyPausingError,
     AuthError,
     BackpressureError,
+    InvalidArgumentError,
     LoomcycleError,
     NotPausedError,
     PauseNotConfiguredError,
@@ -306,7 +307,16 @@ class LoomcycleClient:
             max_bytes=max_bytes,
         )
         if since_ts:
-            req.since_ts.FromJsonString(since_ts)
+            # FromJsonString raises a bare ValueError on malformed RFC3339.
+            # Catch + re-raise as InvalidArgumentError so callers can
+            # discriminate client-side validation from server-returned
+            # errors (which carry a non-None gRPC code).
+            try:
+                req.since_ts.FromJsonString(since_ts)
+            except ValueError as exc:
+                raise InvalidArgumentError(
+                    f"create_snapshot: invalid since_ts (expected RFC3339): {exc}"
+                ) from exc
         try:
             resp = await self._stub.CreateSnapshot(
                 req, metadata=self._auth_metadata(),
@@ -395,9 +405,9 @@ class LoomcycleClient:
         when a section's declared version is newer than the reader
         supports."""
         if not snapshot_id and not raw_json:
-            raise LoomcycleError("restore_snapshot: snapshot_id or raw_json required")
+            raise InvalidArgumentError("restore_snapshot: snapshot_id or raw_json required")
         if snapshot_id and raw_json:
-            raise LoomcycleError("restore_snapshot: pass only one of snapshot_id or raw_json")
+            raise InvalidArgumentError("restore_snapshot: pass only one of snapshot_id or raw_json")
         req = pb.RestoreSnapshotRequest(
             snapshot_id=snapshot_id,
             raw_json=raw_json or b"",
@@ -701,6 +711,17 @@ def _raise_from_grpc(err: grpc.aio.AioRpcError) -> "None":
         # v0.8.18: snapshot not-found gets its own typed error to
         # distinguish from session / agent NotFound cases that
         # other RPCs return.
+        #
+        # Priority order (most-specific first): "snapshot" wins
+        # over "session" wins over "agent" (the default). This
+        # matters when a server message contains multiple keywords —
+        # e.g., "restore_snapshot: session_id snap_sess_X not found"
+        # routes to SnapshotNotFoundError rather than
+        # SessionNotFoundError because the snapshot is the operation
+        # that failed; the session reference is incidental.
+        # If new RPCs introduce overlapping keywords, document the
+        # priority here and add a regression test in
+        # tests/test_pause_snapshot_errors.py.
         if "snapshot" in msg_lower:
             raise SnapshotNotFoundError(msg, code=code) from err
         if "session" in msg_lower:
