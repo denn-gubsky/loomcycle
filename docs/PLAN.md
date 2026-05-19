@@ -2,7 +2,28 @@
 
 This is the public roadmap. For decision history, regret notes, and per-version commit-by-commit details, see `~/work/loomcycle-internal/doc-internal/PLAN.md` (operator-side separate repo; migrated out of this tree as part of v0.8.15).
 
-## v0.8.17 — current
+## v0.8.18 — current
+
+**Status: shipped (2026-05-19).** **Cross-transport hardening of v0.8.17 Pause/Resume/Snapshot.** v0.8.17 shipped real implementations behind HTTP + CLI + Web UI but left the `connector.Connector` interface — the architectural seam every wire transport translates through — in its v0.8.15 PREVIEW state. MCP handlers dispatched correctly through the Connector but received mocked data; gRPC had no pause/snapshot RPCs at all; Python adapter had no methods. v0.8.18 fixes all three in three focused PRs. PRs #136, #137, #138.
+
+**What's in v0.8.18 (vs v0.8.17):**
+
+- **Real Connector impls (PR #136 — the keystone).** `internal/api/http/connector_impl.go` swaps the 8 mocked Pause/Snapshot method bodies to real delegation: `PauseRuntime` → `s.pauseMgr.Pause`, `CreateSnapshot` → `snapshot.Capture + Store.SnapshotCreate`, `RestoreSnapshot` → `snapshot.Restore` (with `resolver.ForceProbe` callback for matrix refresh), etc. Wire shapes byte-compatible with v0.8.15 — only the response semantics flip from placeholder to authoritative data. MCP becomes real for free (handlers already dispatch through Connector).
+- **New `GetSnapshot` Connector method.** Additive — distinct from `ExportSnapshot` (operator-facing "where did this land on the host") and `GetSnapshot` returns the full envelope including JSON content. Brings MCP tool count 21 → 22.
+- **Typed Connector errors.** New `internal/connector/errors.go`: `ErrPauseNotConfigured`, `ErrAlreadyPausing`, `ErrNotPaused`, `ErrSnapshotNotFound`, `ErrSnapshotTooLarge`, `ErrSnapshotVersionTooNew`, `ErrSnapshotVersionUnknown`. Every transport translates to protocol-specific status codes (HTTP 503/409/404/413/422; gRPC `Unavailable` / `FailedPrecondition` / `NotFound` / `ResourceExhausted` / `FailedPrecondition`; Python typed exception subclasses).
+- **`ExportSnapshotResult.RawJSON []byte`** (additive) — canonical envelope bytes for transports that stream exports. `FilePath` / `Checksum` stay empty when bytes-only path is used.
+- **MCP PREVIEW markers removed.** Tool descriptions in `internal/api/mcp/tools.go` rewritten to describe the real behavior. The mock-only `toolErrWith` helper (which returned `(result, isError=true)` simultaneously for the export/restore mock path) is deleted; real impls return `(result, nil)` on success or `toolErr(...)` on failure.
+- **gRPC surface (PR #137 — the catch-up).** 9 new RPCs in `proto/loomcycle.proto`: `PauseRuntime`, `ResumeRuntime`, `GetRuntimeState`, `CreateSnapshot`, `ListSnapshots`, `GetSnapshot`, `ExportSnapshot`, `RestoreSnapshot`, `DeleteSnapshot`. Each handler dispatches `s.connector.X(ctx, ...)` + maps typed errors to gRPC status codes via `translatePauseSnapshotError`. 17 handler tests using a `pauseSnapshotMock` purpose-built stub.
+- **Python adapter (PR #138).** 9 async methods on `LoomcycleClient` mirroring the gRPC RPCs. 6 new typed errors with smart `_raise_from_grpc` discrimination by message text (e.g., `NotFound` + "snapshot" → `SnapshotNotFoundError`; `Unavailable` + "pause not configured" → `PauseNotConfiguredError`, a subclass of `UnavailableError` for back-compat). Version bump v0.5.5 → v0.6.0 (additive). 20 new tests; existing 35 unchanged.
+- **TypeScript adapter (deferred).** TS is at v0.1.0-alpha.0 with one method (`runStreaming`). Expanding to pause/snapshot defers to v0.9.x when TS exits alpha — per the locked plan.
+
+**Tests:** 16 new HTTP Connector impl tests + 17 new gRPC handler tests + 20 new Python tests (9 error mappings + 11 client integration). Existing test suites untouched. Total v0.8.18 PR cycle: ~53 new tests, all green.
+
+**Architectural note:** the v0.8.15 `Connector` abstraction worked exactly as intended — it absorbed the v0.8.17 → v0.8.18 cycle without protocol breakage. The 8 PREVIEW wire shapes locked in v0.8.15 carried unchanged through v0.8.18; orchestrators built against the v0.8.15 contracts (mock or not) keep working. This is the architectural seam paying off.
+
+For the v0.8.17 baseline that drove this work, see [v0.8.17](#v0817--earlier).
+
+## v0.8.17 — earlier
 
 **Status: shipped (2026-05-18).** **Pause / Resume / Snapshot** — the v0.8.x → v0.9.x bridge. Runtime-wide quiesce + cross-version-portable JSON snapshot. PRs #129, #132, #134 (5-PR plan, re-bundled into 3 squash merges after the stacked-PR base-targeting quirk: PR #129 = pause primitive; PR #132 = snapshot storage + capture + export/restore; PR #134 = pause/resume/state HTTP endpoints + CLI subcommands + Web UI).
 
