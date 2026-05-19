@@ -19,6 +19,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/api/grpc/loomcyclepb"
 	"github.com/denn-gubsky/loomcycle/internal/cancel"
 	"github.com/denn-gubsky/loomcycle/internal/connector"
+	"github.com/denn-gubsky/loomcycle/internal/hooks"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/runner"
 	"github.com/denn-gubsky/loomcycle/internal/store"
@@ -673,6 +674,13 @@ func (m *mockConnector) DeleteSnapshot(context.Context, string) error { return n
 func (m *mockConnector) InterruptionResolve(context.Context, connector.InterruptionResolveRequest) (connector.InterruptionResolveResult, error) {
 	return connector.InterruptionResolveResult{}, nil
 }
+func (m *mockConnector) RegisterHook(context.Context, connector.RegisterHookRequest) (connector.RegisterHookResponse, error) {
+	return connector.RegisterHookResponse{}, nil
+}
+func (m *mockConnector) ListHooks(context.Context) (connector.ListHooksResponse, error) {
+	return connector.ListHooksResponse{}, nil
+}
+func (m *mockConnector) DeleteHook(context.Context, string) error { return nil }
 
 // TestGrpcServer_CancelAgent_DispatchesThroughConnector is the v0.8.15
 // regression guard: when the gRPC Server is wired with a Connector,
@@ -710,6 +718,158 @@ func TestGrpcServer_CancelAgent_DispatchesThroughConnector(t *testing.T) {
 	// CascadeCount=3 from the mock → proto cancelled_count = 1+3 = 4.
 	if resp.GetCancelledCount() != 4 {
 		t.Errorf("CancelledCount=%d, want 4 (1 root + 3 cascade)", resp.GetCancelledCount())
+	}
+}
+
+// ---- Hook RPCs ----
+
+// hookConnector is a minimal Connector that exercises the gRPC hook
+// handlers' error translation without spinning up a real *http.Server.
+// Configurable per-call via the fields below.
+type hookConnector struct {
+	mockConnector
+
+	registerErr  error
+	registerResp connector.RegisterHookResponse
+	listResp     connector.ListHooksResponse
+	listErr      error
+	deleteErr    error
+
+	gotRegister atomic.Value // connector.RegisterHookRequest
+	gotDeleteID atomic.Value // string
+}
+
+func (m *hookConnector) RegisterHook(_ context.Context, req connector.RegisterHookRequest) (connector.RegisterHookResponse, error) {
+	m.gotRegister.Store(req)
+	return m.registerResp, m.registerErr
+}
+func (m *hookConnector) ListHooks(_ context.Context) (connector.ListHooksResponse, error) {
+	return m.listResp, m.listErr
+}
+func (m *hookConnector) DeleteHook(_ context.Context, id string) error {
+	m.gotDeleteID.Store(id)
+	return m.deleteErr
+}
+
+func TestGrpc_RegisterHook_DelegatesAndMapsBody(t *testing.T) {
+	hc := &hookConnector{registerResp: connector.RegisterHookResponse{ID: "hook_abc"}}
+	adapter := New(Config{Connector: hc, CancelReg: cancel.NewRegistry()})
+
+	resp, err := adapter.RegisterHook(context.Background(), &loomcyclepb.RegisterHookRequest{
+		Owner:       "jobs-search-web",
+		Name:        "scan-fetch",
+		Phase:       "pre",
+		Agents:      []string{"*"},
+		Tools:       []string{"WebFetch"},
+		CallbackUrl: "https://callback.local/h",
+		FailMode:    "closed",
+		TimeoutMs:   2500,
+	})
+	if err != nil {
+		t.Fatalf("RegisterHook: %v", err)
+	}
+	if resp.GetId() != "hook_abc" {
+		t.Errorf("id = %q, want hook_abc", resp.GetId())
+	}
+	got := hc.gotRegister.Load().(connector.RegisterHookRequest)
+	if got.Owner != "jobs-search-web" || got.Phase != "pre" || got.CallbackURL != "https://callback.local/h" || got.TimeoutMs != 2500 {
+		t.Errorf("connector saw %+v", got)
+	}
+}
+
+func TestGrpc_RegisterHook_InvalidArgument(t *testing.T) {
+	hc := &hookConnector{registerErr: connector.ErrHookInvalidRegistration}
+	adapter := New(Config{Connector: hc, CancelReg: cancel.NewRegistry()})
+
+	_, err := adapter.RegisterHook(context.Background(), &loomcyclepb.RegisterHookRequest{Owner: "x"})
+	if status.Code(err) != codes.InvalidArgument {
+		t.Errorf("code = %s, want InvalidArgument", status.Code(err))
+	}
+}
+
+func TestGrpc_DeleteHook_NotFound(t *testing.T) {
+	hc := &hookConnector{deleteErr: connector.ErrHookNotFound}
+	adapter := New(Config{Connector: hc, CancelReg: cancel.NewRegistry()})
+
+	_, err := adapter.DeleteHook(context.Background(), &loomcyclepb.DeleteHookRequest{Id: "hook_gone"})
+	if status.Code(err) != codes.NotFound {
+		t.Errorf("code = %s, want NotFound", status.Code(err))
+	}
+	if got := hc.gotDeleteID.Load(); got != "hook_gone" {
+		t.Errorf("connector saw id %q, want hook_gone", got)
+	}
+}
+
+func TestGrpc_DeleteHook_MissingID(t *testing.T) {
+	adapter := New(Config{Connector: &hookConnector{}, CancelReg: cancel.NewRegistry()})
+
+	_, err := adapter.DeleteHook(context.Background(), &loomcyclepb.DeleteHookRequest{Id: ""})
+	if status.Code(err) != codes.InvalidArgument {
+		t.Errorf("code = %s, want InvalidArgument", status.Code(err))
+	}
+}
+
+func TestGrpc_NoConnector_RegisterHookUnavailable(t *testing.T) {
+	adapter := New(Config{CancelReg: cancel.NewRegistry()}) // no Connector
+	_, err := adapter.RegisterHook(context.Background(), &loomcyclepb.RegisterHookRequest{})
+	if status.Code(err) != codes.Unavailable {
+		t.Errorf("code = %s, want Unavailable", status.Code(err))
+	}
+}
+
+// TestGrpc_ListHooks_ReturnsHookSlice covers hookToProto's
+// field-by-field conversion (time.Time → timestamppb, int → int32
+// cast, string-typed Phase/FailMode pass-through). Without this
+// test the typo "TimeoutMs vs TimeoutMS" or a swapped phase/fail_mode
+// would silently ship.
+func TestGrpc_ListHooks_ReturnsHookSlice(t *testing.T) {
+	registered := time.Date(2026, 5, 19, 12, 0, 0, 0, time.UTC)
+	hc := &hookConnector{listResp: connector.ListHooksResponse{
+		Hooks: []*hooks.Hook{{
+			ID:           "hook_a",
+			Owner:        "jobs-search-web",
+			Name:         "scan",
+			Phase:        hooks.PhasePost,
+			Agents:       []string{"*"},
+			Tools:        []string{"WebFetch"},
+			CallbackURL:  "https://e.test/h",
+			FailMode:     hooks.FailClosed,
+			TimeoutMs:    3000,
+			RegisteredAt: registered,
+		}},
+	}}
+	adapter := New(Config{Connector: hc, CancelReg: cancel.NewRegistry()})
+
+	resp, err := adapter.ListHooks(context.Background(), &loomcyclepb.ListHooksRequest{})
+	if err != nil {
+		t.Fatalf("ListHooks: %v", err)
+	}
+	if len(resp.GetHooks()) != 1 {
+		t.Fatalf("got %d hooks, want 1", len(resp.GetHooks()))
+	}
+	h := resp.GetHooks()[0]
+	if h.GetId() != "hook_a" || h.GetOwner() != "jobs-search-web" || h.GetName() != "scan" {
+		t.Errorf("identity fields: id=%q owner=%q name=%q", h.GetId(), h.GetOwner(), h.GetName())
+	}
+	if h.GetPhase() != "post" || h.GetFailMode() != "closed" {
+		t.Errorf("phase/fail_mode: %q/%q", h.GetPhase(), h.GetFailMode())
+	}
+	if h.GetTimeoutMs() != 3000 {
+		t.Errorf("timeout_ms = %d, want 3000", h.GetTimeoutMs())
+	}
+	if h.GetCallbackUrl() != "https://e.test/h" {
+		t.Errorf("callback_url = %q", h.GetCallbackUrl())
+	}
+	if got := h.GetRegisteredAt().AsTime(); !got.Equal(registered) {
+		t.Errorf("registered_at = %v, want %v", got, registered)
+	}
+}
+
+func TestGrpc_NoConnector_ListHooksUnavailable(t *testing.T) {
+	adapter := New(Config{CancelReg: cancel.NewRegistry()}) // no Connector
+	_, err := adapter.ListHooks(context.Background(), &loomcyclepb.ListHooksRequest{})
+	if status.Code(err) != codes.Unavailable {
+		t.Errorf("code = %s, want Unavailable", status.Code(err))
 	}
 }
 
