@@ -18,18 +18,20 @@ export function listUsers(): Promise<ListUsersResponse> {
   return jsonFetch<ListUsersResponse>("/v1/_users");
 }
 
-// HealthResponse mirrors handleHealthz on the server. Extended in
-// v0.8.21 to surface buildVersion / buildCommit / buildTime so the
-// Web UI can render the real running version instead of a hard-coded
-// string. Older binaries (<= v0.8.20) return just {"ok":true} —
-// the version field is missing on those responses; callers must
-// tolerate undefined.
+// HealthResponse mirrors handleHealthz on the server. v0.8.21 added
+// build identifiers (version/commit/built/uptime_seconds) so the UI
+// topbar can show the real running version, plus metrics_enabled so
+// the Activity Monitor can render its "metrics off" empty state on
+// mount without probing /v1/_metrics and getting 503. Pre-v0.8.21
+// servers return just {"ok":true}; the new fields are undefined on
+// those responses, which the UI treats accordingly.
 export interface HealthResponse {
   ok: boolean;
   version?: string;
   commit?: string;
   built?: string;
   uptime_seconds?: number;
+  metrics_enabled?: boolean;
 }
 
 export function getHealth(): Promise<HealthResponse> {
