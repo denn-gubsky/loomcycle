@@ -1741,6 +1741,28 @@ pre {
   color: var(--fg);
 }
 
+/* Note card rendered when 'advanced' is on but mode != live —
+ * diagnostic series aren't bucketed by the summary endpoint. */
+.advanced-window-note {
+  align-items: flex-start;
+  justify-content: flex-start;
+  gap: 6px;
+}
+.advanced-window-note p {
+  color: var(--fg-soft);
+  font-size: 12px;
+  line-height: 1.5;
+  margin: 0;
+}
+.advanced-window-note code {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 1px 6px;
+  font-family: var(--mono);
+  color: var(--fg);
+}
+
 /* v0.8.21 Activity Monitor — LineChart. Hand-rolled SVG; the
  * component owns its sizing via ResizeObserver and a matching
  * viewBox. CSS handles the tooltip overlay + empty state. */

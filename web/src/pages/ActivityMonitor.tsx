@@ -45,6 +45,11 @@ const C_QUEUED = "#5b9dff";     // accent (top of stack)
 const C_ACTIVE = "#f0a040";     // --running (bottom of stack)
 const C_CPU_PROCESS = "#5b9dff";
 const C_CPU_SYSTEM = "#9aa0ad"; // --fg-soft, dashed via opacity
+const C_GOROUTINES = "#6ee7a3";   // await-running green
+const C_HEAP_ALLOC = "#5b9dff";   // accent
+const C_HEAP_INUSE = "#c9a8ff";   // await-interrupted violet
+const C_SYSMEM_USED = "#ffb766";  // await-channel orange
+const C_SYSMEM_AVAIL = "#6ee7a3"; // await-running green
 
 function readLSBool(key: string, fallback: boolean): boolean {
   const v = localStorage.getItem(key);
@@ -199,6 +204,27 @@ export default function ActivityMonitor() {
           <MemoryVsAgentsCard samples={samples} buckets={summary} mode={mode} />
           <CPUCard samples={samples} buckets={summary} mode={mode} showSystem={showSystem && systemAvailable} />
           <QueueDepthCard samples={samples} buckets={summary} mode={mode} />
+          {/* Diagnostic cards are live-mode only — the summary
+              endpoint doesn't bucket goroutines / heap / system
+              memory, so window modes can't render them. */}
+          {showAdvanced && mode === "live" && (
+            <>
+              <GoroutinesCard samples={samples} />
+              <HeapCard samples={samples} />
+              <SystemMemoryCard samples={samples} />
+            </>
+          )}
+          {showAdvanced && mode !== "live" && (
+            <div className="chart-card advanced-window-note">
+              <div className="chart-card-title">advanced diagnostics</div>
+              <p>
+                Goroutines, heap breakdown, and system memory are only available
+                in <strong>live</strong> mode — the summary endpoint aggregates
+                only memory, CPU, and agent counts. Switch the window to
+                <code> live </code> to see them.
+              </p>
+            </div>
+          )}
         </div>
       )}
     </div>
@@ -366,6 +392,128 @@ function QueueDepthCard({ samples, buckets, mode }: CardProps) {
       />
     </ChartCard>
   );
+}
+
+// --- diagnostic cards (advanced toggle) ----------------------------
+
+function GoroutinesCard({ samples }: { samples: ProcessSample[] }) {
+  const series: Series[] = [
+    {
+      label: "goroutines",
+      color: C_GOROUTINES,
+      points: samples.map((s) => ({ t: tsMs(s.sampled_at), y: s.loomcycle_num_goroutines })),
+    },
+  ];
+  const cur = latestPoint(series[0].points)?.y;
+  return (
+    <ChartCard
+      title="goroutines"
+      currentValue={cur != null ? cur.toLocaleString() : undefined}
+      legend={[{ label: "go runtime goroutine count", color: C_GOROUTINES }]}
+    >
+      <LineChart
+        series={series}
+        yLeftFormat={(v) => v.toFixed(0)}
+        xFormat={xFormatForMode("live")}
+      />
+    </ChartCard>
+  );
+}
+
+function HeapCard({ samples }: { samples: ProcessSample[] }) {
+  const series: Series[] = [
+    {
+      label: "heap alloc",
+      color: C_HEAP_ALLOC,
+      points: samples.map((s) => ({
+        t: tsMs(s.sampled_at),
+        y: bytesToMB(s.loomcycle_heap_alloc_bytes),
+      })),
+    },
+    {
+      label: "heap inuse",
+      color: C_HEAP_INUSE,
+      points: samples.map((s) => ({
+        t: tsMs(s.sampled_at),
+        y: bytesToMB(s.loomcycle_heap_inuse_bytes),
+      })),
+    },
+  ];
+  const allocNow = latestPoint(series[0].points)?.y;
+  const inuseNow = latestPoint(series[1].points)?.y;
+  return (
+    <ChartCard
+      title="go heap"
+      currentValue={
+        allocNow != null && inuseNow != null
+          ? `${formatMB(allocNow)} alloc / ${formatMB(inuseNow)} inuse`
+          : undefined
+      }
+      legend={[
+        { label: "heap alloc (MB)", color: C_HEAP_ALLOC },
+        { label: "heap inuse (MB)", color: C_HEAP_INUSE },
+      ]}
+    >
+      <LineChart
+        series={series}
+        yLeftFormat={(v) => `${v.toFixed(0)} MB`}
+        xFormat={xFormatForMode("live")}
+      />
+    </ChartCard>
+  );
+}
+
+function SystemMemoryCard({ samples }: { samples: ProcessSample[] }) {
+  // Auto-suppress: if no sample has a non-null system_mem_used_mb,
+  // we render nothing instead of a perpetually-empty card. (The
+  // page suppresses too, but defending here keeps the card
+  // self-contained if reused.)
+  const hasData = samples.some((s) => s.system_mem_used_mb != null);
+  if (!hasData) return null;
+
+  const series: Series[] = [
+    {
+      label: "used",
+      color: C_SYSMEM_USED,
+      points: samples
+        .filter((s) => s.system_mem_used_mb != null)
+        .map((s) => ({ t: tsMs(s.sampled_at), y: s.system_mem_used_mb as number })),
+    },
+    {
+      label: "available",
+      color: C_SYSMEM_AVAIL,
+      points: samples
+        .filter((s) => s.system_mem_available_mb != null)
+        .map((s) => ({ t: tsMs(s.sampled_at), y: s.system_mem_available_mb as number })),
+    },
+  ];
+  const usedNow = latestPoint(series[0].points)?.y;
+  const availNow = latestPoint(series[1].points)?.y;
+  return (
+    <ChartCard
+      title="system memory"
+      currentValue={
+        usedNow != null && availNow != null
+          ? `${formatMBFromMB(usedNow)} used / ${formatMBFromMB(availNow)} free`
+          : undefined
+      }
+      legend={[
+        { label: "used (MB)", color: C_SYSMEM_USED },
+        { label: "available (MB)", color: C_SYSMEM_AVAIL },
+      ]}
+    >
+      <LineChart
+        series={series}
+        yLeftFormat={(v) => `${v.toFixed(0)} MB`}
+        xFormat={xFormatForMode("live")}
+      />
+    </ChartCard>
+  );
+}
+
+function formatMBFromMB(v: number): string {
+  if (v >= 1024) return `${(v / 1024).toFixed(2)} GB`;
+  return `${v.toFixed(0)} MB`;
 }
 
 // --- formatting helpers --------------------------------------------
