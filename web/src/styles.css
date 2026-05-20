@@ -1391,10 +1391,31 @@ pre {
   height: 100%;
   min-height: 0;
 }
+
+/* v0.8.21 Activity Monitor — page layout, toolbar, chart cards.
+ * Three primary charts ship in this commit; diagnostic charts
+ * land in the next one behind the `advanced` toolbar toggle. */
+.activity-view {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  height: 100%;
+  min-height: 0;
+}
 .audit-toolbar {
   display: flex;
   flex-direction: column;
   gap: 6px;
+  padding: 10px 12px;
+  background: var(--bg-soft);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+.activity-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
   padding: 10px 12px;
   background: var(--bg-soft);
   border: 1px solid var(--border);
@@ -1558,6 +1579,166 @@ pre {
   background: var(--accent);
   color: white;
   border-color: var(--accent);
+}
+
+.activity-toolbar-group {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.activity-toolbar-label {
+  color: var(--fg-soft);
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.mode-tabs {
+  display: flex;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  overflow: hidden;
+}
+.mode-tab {
+  background: transparent;
+  color: var(--fg-soft);
+  border: none;
+  padding: 4px 12px;
+  font-family: var(--mono);
+  font-size: 12px;
+  cursor: pointer;
+  border-right: 1px solid var(--border);
+}
+.mode-tab:last-child { border-right: none; }
+.mode-tab.on {
+  background: var(--accent);
+  color: white;
+}
+.mode-tab:hover:not(.on) {
+  background: var(--bg-soft-2);
+  color: var(--fg);
+}
+.toggle {
+  background: var(--bg);
+  color: var(--fg-soft);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 4px 10px;
+  font-size: 12px;
+  font-family: var(--mono);
+  cursor: pointer;
+}
+.toggle.on {
+  background: var(--accent);
+  color: white;
+  border-color: var(--accent);
+}
+.toggle:hover:not(:disabled):not(.disabled) {
+  background: var(--bg-soft-2);
+  color: var(--fg);
+}
+.toggle.on:hover {
+  background: var(--accent);
+  color: white;
+}
+.toggle:disabled,
+.toggle.disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.activity-toolbar-status {
+  margin-left: auto;
+  color: var(--fg-soft);
+  font-size: 11px;
+  font-family: var(--mono);
+}
+
+.activity-grid {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(420px, 1fr));
+  gap: 12px;
+  padding-bottom: 12px;
+}
+
+.chart-card {
+  background: var(--bg-soft);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 220px;
+}
+.chart-card-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+.chart-card-title {
+  font-size: 13px;
+  color: var(--fg);
+  font-weight: 600;
+}
+.chart-card-current {
+  font-family: var(--mono);
+  font-size: 13px;
+  color: var(--accent);
+  font-variant-numeric: tabular-nums;
+}
+.chart-card-body {
+  flex: 1;
+  min-height: 180px;
+  position: relative;
+}
+.chart-card-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  font-size: 11px;
+  color: var(--fg-soft);
+}
+.legend-entry {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.legend-swatch {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+}
+
+.metrics-disabled {
+  padding: 40px 24px;
+  text-align: center;
+  background: var(--bg-soft);
+  border: 1px dashed var(--border);
+  border-radius: 6px;
+  color: var(--fg-soft);
+}
+.metrics-disabled-title {
+  font-size: 16px;
+  color: var(--fg);
+  margin-bottom: 10px;
+}
+.metrics-disabled-body {
+  max-width: 540px;
+  margin: 6px auto;
+  line-height: 1.6;
+}
+.metrics-disabled code {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 1px 6px;
+  font-family: var(--mono);
+  color: var(--fg);
 }
 
 /* v0.8.21 Activity Monitor — LineChart. Hand-rolled SVG; the
