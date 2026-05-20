@@ -2,7 +2,29 @@
 
 This is the public roadmap. For decision history, regret notes, and per-version commit-by-commit details, see `~/work/loomcycle-internal/doc-internal/PLAN.md` (operator-side separate repo; migrated out of this tree as part of v0.8.15).
 
-## v0.8.22 — current
+## v0.8.23 — current
+
+**Status: shipped (2026-05-20).** **`SkillDef` + `AgentDef` on every wire surface.** PR #163 lifts the v0.8.22 SkillDef substrate (and the previously MCP-only AgentDef substrate) onto HTTP admin endpoints + gRPC RPCs + TS + Python adapter methods. Symmetric exposure across all five transports; same connector dispatch path under each wire.
+
+**What's in v0.8.23 (vs v0.8.22):**
+
+- **Connector interface extension.** `connector.Connector` gains `SkillDef(ctx, input) (ToolResult, error)`. HTTP server implements via the existing `dispatchBuiltin` pattern. Same architectural seam every other transport consumes.
+- **MCP meta-tool.** New 26th meta-tool `skilldef` mirrors `agentdef`. The stdio MCP server's `operatorCtx` grants `SkillDefPolicy` with scope=[any] alongside the existing AgentDef grant.
+- **HTTP admin endpoints (NEW for both tools).** `POST /v1/_agentdef` + `POST /v1/_skilldef` — bearer-authed, accept the op-discriminated JSON body the in-process tools accept, dispatch through the Connector with operator-trust ctx. Tool refusals (scope deny, empty body) map to 422 with `{code: "tool_refused", error, tool}`. AgentDef admin access was previously MCP-only.
+- **gRPC RPCs (NEW for both tools).** New `AgentDef(SubstrateRequest)` and `SkillDef(SubstrateRequest)` RPCs on the Loomcycle service. Single op-discriminated method per tool; `SubstrateResponse { bytes output_json, bool is_error }`. Tool-level refusals come back as `is_error=true` on the response body; transport-level failures (auth, malformed input) come back as gRPC status codes.
+- **TS adapter (NEW for both tools).** `LoomcycleClient` gains `agentDef(input)` + `skillDef(input)` methods. New typed error `SubstrateToolRefusedError` (extends `LoomcycleError`); `raiseFromResponse` disambiguates 422 by body shape (`code=tool_refused` → typed error; other 422s → existing `SnapshotVersionError`). 7 Vitest cases; total now 85 tests across 4 files. `@loomcycle/client` 0.8.20 → 0.8.23 (skipping .21 + .22 since the TS adapter didn't ship intermediate releases).
+- **Python adapter (NEW for both tools).** `LoomcycleClient` gains `agent_def(input)` + `skill_def(input)` async methods. Same `SubstrateToolRefusedError` exception with a `tool` attribute. Server-side `INVALID_ARGUMENT` now maps to `InvalidArgumentError` (was bare `LoomcycleError`) — `code` attribute distinguishes server-side (`grpc.StatusCode.INVALID_ARGUMENT`) from client-side (`None`). 5 pytest cases; total now 77 tests. `loomcycle` 0.6.1 → 0.7.0 (minor bump for new public methods + typed error).
+- **Substrate hotfixes.** Code review of the v0.8.22 substrate surfaced two production bugs, fixed in this release:
+  1. `runSubAgent` bypassed `resolveSkillBodiesForRun` — sub-agents silently kept the static baked body forever. Now matches the three top-level run-creation sites.
+  2. `resolveSkillBodiesForRun` aborted the whole agent on a single store error instead of falling back per-skill. Now `continue`s like the JSON-parse branch directly below.
+- **Operator-trust ctx synthesis fix.** The first cut of the gRPC substrate handlers (PR #163 commits 4) passed the raw inbound ctx straight to the Connector. Result: every gRPC AgentDef/SkillDef call hit the in-process tool's default-deny scope gate. Tests passed because the mock bypassed the gate. Now a `substrateGRPCCtx` mirrors the HTTP `substrateAdminCtx` and MCP `operatorCtx` — synthetic identity `grpc-admin` distinguishes the transport in audit logs. Both admin-ctx helpers widened to grant all six policies (Memory + Channel + AgentDef + SkillDef + Evaluation + History) for symmetry with MCP, so the shared `dispatchSubstrate` helpers are safe to extend.
+- **Regression test.** `TestGrpcSubstrate_OperatorCtxLetsRealToolThrough` wires a real `*builtin.SkillDef` (not the mock) and asserts the scope gate permits a `list` op. If the ctx synthesis ever regresses, the test fails — the kind of bug that's invisible under mock-based tests but breaks production.
+
+**Tests:** ~25 new tests across Go (+10), TS (+7), Python (+5), plus 3 regression/refactor updates to existing tests. Full sweep clean.
+
+**Out of scope:** Exposing `Memory` / `Channel` / `Evaluation` / `Context` on HTTP/gRPC/adapters (they have MCP meta-tools today; same gap AgentDef had before this PR). Convenience wrappers (`forkSkillDef`, `promoteSkillDef`) on the adapters — single op-discriminated method per tool keeps the wire surface minimal.
+
+## v0.8.22 — earlier
 
 **Status: shipped (2026-05-20).** **`SkillDef` tool — runtime-mutable skill substrate.** Mirror of `AgentDef` (v0.8.5) but for SKILL bodies. Six PRs land the storage layer, the tool, policy plumbing, the API wiring, and snapshot completeness.
 
