@@ -146,6 +146,44 @@ async function jsonFetch<T>(path: string, init?: RequestInit): Promise<T> {
   return resp.json() as Promise<T>;
 }
 
+// jsonFetchAllowing is a sibling of jsonFetch that does NOT throw on
+// the status codes in `allow` — instead it returns a discriminated
+// {ok:false, status, body} so the caller can branch. Used by the
+// metrics helpers: the /v1/_metrics/* endpoints return 503 when the
+// server-side sampler is off (LOOMCYCLE_METRICS_ENABLED unset), and
+// the Activity Monitor wants to render an instructional empty
+// state instead of surfacing the 503 as a thrown error.
+async function jsonFetchAllowing<T>(
+  path: string,
+  allow: number[],
+  init?: RequestInit,
+): Promise<{ ok: true; data: T } | { ok: false; status: number; body: any }> {
+  const resp = await fetch(baseURL + path, {
+    credentials: "same-origin",
+    ...init,
+    headers: {
+      Accept: "application/json",
+      ...(init?.headers ?? {}),
+    },
+  });
+  if (resp.ok) {
+    return { ok: true, data: (await resp.json()) as T };
+  }
+  if (allow.includes(resp.status)) {
+    // Best-effort JSON decode; the server's 503 carries an
+    // enable_hint string in the body for the metrics path.
+    let body: any = null;
+    try {
+      body = await resp.json();
+    } catch {
+      // non-JSON body — leave as null
+    }
+    return { ok: false, status: resp.status, body };
+  }
+  const text = await resp.text();
+  throw new Error(`${resp.status} ${resp.statusText}: ${text.slice(0, 200)}`);
+}
+
 export function listAgents(userId: string, status?: string): Promise<ListAgentsResponse> {
   const q = status ? `?status=${encodeURIComponent(status)}` : "";
   return jsonFetch<ListAgentsResponse>(`/v1/users/${encodeURIComponent(userId)}/agents${q}`);
@@ -489,4 +527,102 @@ export async function resolveInterrupt(
     throw new Error(`${resp.status} ${resp.statusText}: ${body.slice(0, 200)}`);
   }
   return resp.json();
+}
+
+// --- v0.8.21 Process-resource metrics ---
+//
+// ProcessSample mirrors the server's ProcessSample row. Optional
+// system_* fields are populated only when LOOMCYCLE_METRICS_COLLECT_SYSTEM=1
+// — null/undefined on installs where the operator didn't opt in.
+// The UI detects system-availability by inspecting the first
+// non-null row.
+export interface ProcessSample {
+  sampled_at: string;
+  active_runs: number;
+  queued_runs: number;
+  loomcycle_rss_bytes: number;
+  loomcycle_heap_alloc_bytes: number;
+  loomcycle_heap_inuse_bytes: number;
+  loomcycle_num_goroutines: number;
+  loomcycle_cpu_pct_x100: number;
+  system_cpu_pct_x100?: number | null;
+  system_mem_used_mb?: number | null;
+  system_mem_available_mb?: number | null;
+}
+
+export interface SamplesResponse {
+  samples: ProcessSample[];
+  next_cursor?: string;
+}
+
+export interface SummaryBucket {
+  at: string;
+  mean_rss_bytes: number;
+  max_rss_bytes: number;
+  p95_cpu_pct_x100: number;
+  active_runs_max: number;
+  sample_count: number;
+}
+
+export interface SummaryResponse {
+  period: "1h" | "24h" | "7d";
+  buckets: SummaryBucket[];
+}
+
+// MetricsResult is the typed-disabled discriminated union returned
+// by the metrics helpers. The page's render branch reads this:
+//   if (r.disabled) → show MetricsDisabledEmpty with enableHint
+//   else            → render charts from r.data
+//
+// We deliberately don't throw on 503 — the disabled state is a
+// LEGITIMATE runtime mode, not an error.
+export type MetricsResult<T> =
+  | { disabled: false; data: T }
+  | { disabled: true; enableHint: string };
+
+const DEFAULT_METRICS_DISABLED_HINT =
+  "set LOOMCYCLE_METRICS_ENABLED=1 and restart loomcycle";
+
+function asMetricsResult<T>(
+  r: { ok: true; data: T } | { ok: false; status: number; body: any },
+): MetricsResult<T> {
+  if (r.ok) return { disabled: false, data: r.data };
+  const hint =
+    (r.body && typeof r.body.enable_hint === "string"
+      ? r.body.enable_hint
+      : null) ?? DEFAULT_METRICS_DISABLED_HINT;
+  return { disabled: true, enableHint: hint };
+}
+
+export interface MetricsSamplesParams {
+  since?: string;
+  until?: string;
+  limit?: number;
+  cursor?: string;
+}
+
+export async function getMetricsSamples(
+  params: MetricsSamplesParams = {},
+): Promise<MetricsResult<SamplesResponse>> {
+  const q = new URLSearchParams();
+  if (params.since) q.set("since", params.since);
+  if (params.until) q.set("until", params.until);
+  if (params.limit !== undefined) q.set("limit", String(params.limit));
+  if (params.cursor) q.set("cursor", params.cursor);
+  const qs = q.toString();
+  const r = await jsonFetchAllowing<SamplesResponse>(
+    `/v1/_metrics/samples${qs ? "?" + qs : ""}`,
+    [503],
+  );
+  return asMetricsResult(r);
+}
+
+export async function getMetricsSummary(
+  period: "1h" | "24h" | "7d",
+): Promise<MetricsResult<SummaryResponse>> {
+  const r = await jsonFetchAllowing<SummaryResponse>(
+    `/v1/_metrics/summary?period=${encodeURIComponent(period)}`,
+    [503],
+  );
+  return asMetricsResult(r);
 }
