@@ -44,7 +44,8 @@ Each built-in is registered into the dispatcher at process startup but **refuses
 | `WebSearch` | `BRAVE_API_KEY=...`                                   |
 | `Bash`      | `LOOMCYCLE_BASH_ENABLED=1` + `LOOMCYCLE_BASH_CWD=...` |
 | `Agent`     | Always registered (server-internal); per-agent `allowed_tools` controls who can spawn. |
-| `Skill`     | `LOOMCYCLE_SKILLS_ROOT=/path/to/skills` (or skills inlined per-agent via YAML `skills:` list) |
+| `Skill`     | `LOOMCYCLE_SKILLS_ROOT=/path/to/skills` (or skills inlined per-agent via YAML `skills:` list). v0.8.22+ also consults the `skill_defs` store for DB-active overrides. |
+| `SkillDef`  | Always registered (v0.8.22). Per-agent `skill_def_scopes:` YAML gate (default-deny); no extra env var. Storage shared with the rest of the substrate. |
 | `Memory`    | Storage backend (SQLite default; Postgres opt-in) + per-agent `memory_scopes:` allowlist. |
 
 Bash has additional warnings: it is **not a true sandbox** even when enabled. Run loomcycle inside a container or VM if Bash is exposed to untrusted prompts. See `internal/tools/builtin/bash.go` for the full warning.
@@ -718,7 +719,7 @@ agents:
       max_pending: 1         # per-run cap; 0 = use operator default
 ```
 
-Default-deny: missing the `interruption` block means every op returns `is_error` with a clear "not enabled" refusal. Same shape as `memory_scopes` / `agent_def_scopes` / `evaluation_scopes`.
+Default-deny: missing the `interruption` block means every op returns `is_error` with a clear "not enabled" refusal. Same shape as `memory_scopes` / `agent_def_scopes` / `skill_def_scopes` / `evaluation_scopes`.
 
 ### Operator config
 

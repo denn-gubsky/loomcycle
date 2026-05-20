@@ -124,3 +124,13 @@ pick best metric → promote
 
 See `help(topic="subagents")` for spawn mechanics; `help(topic="scopes")`
 for how Memory + Channel state lives across forks.
+
+## Sibling substrate: SkillDef
+
+`SkillDef` (v0.8.22) mirrors `AgentDef` for SKILL bodies — same
+fork / promote / retire surface, same lineage model, same active
+pointer. Use it when you want to evolve a skill's prompt content
+without binary or filesystem redeploys. See
+`help(topic="skills-evolution")` for the full overlay shape +
+how DB-active rows override the static SKILL.md body in both
+consumption paths (system-prompt baking AND the `Skill` tool).
