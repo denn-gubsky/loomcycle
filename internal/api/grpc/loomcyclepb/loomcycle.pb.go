@@ -3203,6 +3203,112 @@ func (x *DeleteSnapshotResponse) GetSnapshotId() string {
 	return ""
 }
 
+// SubstrateRequest carries the substrate tool's input JSON
+// verbatim. Shape (op + name + def_id + overlay + ...) is owned
+// by the in-process tool; the gRPC layer is content-agnostic.
+type SubstrateRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	InputJson     []byte                 `protobuf:"bytes,1,opt,name=input_json,json=inputJson,proto3" json:"input_json,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SubstrateRequest) Reset() {
+	*x = SubstrateRequest{}
+	mi := &file_loomcycle_proto_msgTypes[47]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SubstrateRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SubstrateRequest) ProtoMessage() {}
+
+func (x *SubstrateRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_loomcycle_proto_msgTypes[47]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SubstrateRequest.ProtoReflect.Descriptor instead.
+func (*SubstrateRequest) Descriptor() ([]byte, []int) {
+	return file_loomcycle_proto_rawDescGZIP(), []int{47}
+}
+
+func (x *SubstrateRequest) GetInputJson() []byte {
+	if x != nil {
+		return x.InputJson
+	}
+	return nil
+}
+
+// SubstrateResponse carries the tool's output JSON + a flag
+// distinguishing successful output from a tool-level refusal.
+// `is_error == true` means the call reached the tool but the
+// tool refused (scope deny, empty-body, etc.); `output_json`
+// then carries the human-readable error text. Transport-level
+// failures (auth, malformed input) come back as gRPC status
+// codes, not in this body.
+type SubstrateResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	OutputJson    []byte                 `protobuf:"bytes,1,opt,name=output_json,json=outputJson,proto3" json:"output_json,omitempty"`
+	IsError       bool                   `protobuf:"varint,2,opt,name=is_error,json=isError,proto3" json:"is_error,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SubstrateResponse) Reset() {
+	*x = SubstrateResponse{}
+	mi := &file_loomcycle_proto_msgTypes[48]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SubstrateResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SubstrateResponse) ProtoMessage() {}
+
+func (x *SubstrateResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_loomcycle_proto_msgTypes[48]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SubstrateResponse.ProtoReflect.Descriptor instead.
+func (*SubstrateResponse) Descriptor() ([]byte, []int) {
+	return file_loomcycle_proto_rawDescGZIP(), []int{48}
+}
+
+func (x *SubstrateResponse) GetOutputJson() []byte {
+	if x != nil {
+		return x.OutputJson
+	}
+	return nil
+}
+
+func (x *SubstrateResponse) GetIsError() bool {
+	if x != nil {
+		return x.IsError
+	}
+	return false
+}
+
 var File_loomcycle_proto protoreflect.FileDescriptor
 
 const file_loomcycle_proto_rawDesc = "" +
@@ -3458,7 +3564,14 @@ const file_loomcycle_proto_rawDesc = "" +
 	"\x16DeleteSnapshotResponse\x12\x18\n" +
 	"\adeleted\x18\x01 \x01(\bR\adeleted\x12\x1f\n" +
 	"\vsnapshot_id\x18\x02 \x01(\tR\n" +
-	"snapshotId2\xac\f\n" +
+	"snapshotId\"1\n" +
+	"\x10SubstrateRequest\x12\x1d\n" +
+	"\n" +
+	"input_json\x18\x01 \x01(\fR\tinputJson\"O\n" +
+	"\x11SubstrateResponse\x12\x1f\n" +
+	"\voutput_json\x18\x01 \x01(\fR\n" +
+	"outputJson\x12\x19\n" +
+	"\bis_error\x18\x02 \x01(\bR\aisError2\xc6\r\n" +
 	"\tLoomcycle\x126\n" +
 	"\x03Run\x12\x18.loomcycle.v1.RunRequest\x1a\x13.loomcycle.v1.Event0\x01\x12@\n" +
 	"\bContinue\x12\x1d.loomcycle.v1.ContinueRequest\x1a\x13.loomcycle.v1.Event0\x01\x12M\n" +
@@ -3479,7 +3592,9 @@ const file_loomcycle_proto_rawDesc = "" +
 	"\vGetSnapshot\x12 .loomcycle.v1.GetSnapshotRequest\x1a\x1e.loomcycle.v1.SnapshotEnvelope\x12[\n" +
 	"\x0eExportSnapshot\x12#.loomcycle.v1.ExportSnapshotRequest\x1a$.loomcycle.v1.ExportSnapshotResponse\x12^\n" +
 	"\x0fRestoreSnapshot\x12$.loomcycle.v1.RestoreSnapshotRequest\x1a%.loomcycle.v1.RestoreSnapshotResponse\x12[\n" +
-	"\x0eDeleteSnapshot\x12#.loomcycle.v1.DeleteSnapshotRequest\x1a$.loomcycle.v1.DeleteSnapshotResponseBLZJgithub.com/denn-gubsky/loomcycle/internal/api/grpc/loomcyclepb;loomcyclepbb\x06proto3"
+	"\x0eDeleteSnapshot\x12#.loomcycle.v1.DeleteSnapshotRequest\x1a$.loomcycle.v1.DeleteSnapshotResponse\x12K\n" +
+	"\bAgentDef\x12\x1e.loomcycle.v1.SubstrateRequest\x1a\x1f.loomcycle.v1.SubstrateResponse\x12K\n" +
+	"\bSkillDef\x12\x1e.loomcycle.v1.SubstrateRequest\x1a\x1f.loomcycle.v1.SubstrateResponseBLZJgithub.com/denn-gubsky/loomcycle/internal/api/grpc/loomcyclepb;loomcyclepbb\x06proto3"
 
 var (
 	file_loomcycle_proto_rawDescOnce sync.Once
@@ -3493,7 +3608,7 @@ func file_loomcycle_proto_rawDescGZIP() []byte {
 	return file_loomcycle_proto_rawDescData
 }
 
-var file_loomcycle_proto_msgTypes = make([]protoimpl.MessageInfo, 47)
+var file_loomcycle_proto_msgTypes = make([]protoimpl.MessageInfo, 49)
 var file_loomcycle_proto_goTypes = []any{
 	(*RunRequest)(nil),              // 0: loomcycle.v1.RunRequest
 	(*ContinueRequest)(nil),         // 1: loomcycle.v1.ContinueRequest
@@ -3542,7 +3657,9 @@ var file_loomcycle_proto_goTypes = []any{
 	(*RestoreSnapshotResponse)(nil), // 44: loomcycle.v1.RestoreSnapshotResponse
 	(*DeleteSnapshotRequest)(nil),   // 45: loomcycle.v1.DeleteSnapshotRequest
 	(*DeleteSnapshotResponse)(nil),  // 46: loomcycle.v1.DeleteSnapshotResponse
-	(*timestamppb.Timestamp)(nil),   // 47: google.protobuf.Timestamp
+	(*SubstrateRequest)(nil),        // 47: loomcycle.v1.SubstrateRequest
+	(*SubstrateResponse)(nil),       // 48: loomcycle.v1.SubstrateResponse
+	(*timestamppb.Timestamp)(nil),   // 49: google.protobuf.Timestamp
 }
 var file_loomcycle_proto_depIdxs = []int32{
 	3,  // 0: loomcycle.v1.RunRequest.segments:type_name -> loomcycle.v1.PromptSegment
@@ -3555,20 +3672,20 @@ var file_loomcycle_proto_depIdxs = []int32{
 	9,  // 7: loomcycle.v1.Event.retry:type_name -> loomcycle.v1.Retry
 	6,  // 8: loomcycle.v1.Event.host_widening:type_name -> loomcycle.v1.HostWidening
 	12, // 9: loomcycle.v1.Transcript.events:type_name -> loomcycle.v1.TranscriptEvent
-	47, // 10: loomcycle.v1.TranscriptEvent.ts:type_name -> google.protobuf.Timestamp
-	47, // 11: loomcycle.v1.Agent.started_at:type_name -> google.protobuf.Timestamp
-	47, // 12: loomcycle.v1.Agent.completed_at:type_name -> google.protobuf.Timestamp
+	49, // 10: loomcycle.v1.TranscriptEvent.ts:type_name -> google.protobuf.Timestamp
+	49, // 11: loomcycle.v1.Agent.started_at:type_name -> google.protobuf.Timestamp
+	49, // 12: loomcycle.v1.Agent.completed_at:type_name -> google.protobuf.Timestamp
 	15, // 13: loomcycle.v1.Agent.usage:type_name -> loomcycle.v1.AgentUsage
-	47, // 14: loomcycle.v1.Agent.last_heartbeat_at:type_name -> google.protobuf.Timestamp
+	49, // 14: loomcycle.v1.Agent.last_heartbeat_at:type_name -> google.protobuf.Timestamp
 	14, // 15: loomcycle.v1.ListUserAgentsResponse.agents:type_name -> loomcycle.v1.Agent
-	47, // 16: loomcycle.v1.Hook.registered_at:type_name -> google.protobuf.Timestamp
+	49, // 16: loomcycle.v1.Hook.registered_at:type_name -> google.protobuf.Timestamp
 	25, // 17: loomcycle.v1.ListHooksResponse.hooks:type_name -> loomcycle.v1.Hook
-	47, // 18: loomcycle.v1.RuntimeStateResponse.paused_at:type_name -> google.protobuf.Timestamp
-	47, // 19: loomcycle.v1.CreateSnapshotRequest.since_ts:type_name -> google.protobuf.Timestamp
-	47, // 20: loomcycle.v1.SnapshotDescriptor.created_at:type_name -> google.protobuf.Timestamp
-	47, // 21: loomcycle.v1.SnapshotDescriptor.since_ts:type_name -> google.protobuf.Timestamp
+	49, // 18: loomcycle.v1.RuntimeStateResponse.paused_at:type_name -> google.protobuf.Timestamp
+	49, // 19: loomcycle.v1.CreateSnapshotRequest.since_ts:type_name -> google.protobuf.Timestamp
+	49, // 20: loomcycle.v1.SnapshotDescriptor.created_at:type_name -> google.protobuf.Timestamp
+	49, // 21: loomcycle.v1.SnapshotDescriptor.since_ts:type_name -> google.protobuf.Timestamp
 	36, // 22: loomcycle.v1.ListSnapshotsResponse.snapshots:type_name -> loomcycle.v1.SnapshotDescriptor
-	47, // 23: loomcycle.v1.SnapshotEnvelope.created_at:type_name -> google.protobuf.Timestamp
+	49, // 23: loomcycle.v1.SnapshotEnvelope.created_at:type_name -> google.protobuf.Timestamp
 	0,  // 24: loomcycle.v1.Loomcycle.Run:input_type -> loomcycle.v1.RunRequest
 	1,  // 25: loomcycle.v1.Loomcycle.Continue:input_type -> loomcycle.v1.ContinueRequest
 	10, // 26: loomcycle.v1.Loomcycle.GetTranscript:input_type -> loomcycle.v1.GetTranscriptRequest
@@ -3588,27 +3705,31 @@ var file_loomcycle_proto_depIdxs = []int32{
 	41, // 40: loomcycle.v1.Loomcycle.ExportSnapshot:input_type -> loomcycle.v1.ExportSnapshotRequest
 	43, // 41: loomcycle.v1.Loomcycle.RestoreSnapshot:input_type -> loomcycle.v1.RestoreSnapshotRequest
 	45, // 42: loomcycle.v1.Loomcycle.DeleteSnapshot:input_type -> loomcycle.v1.DeleteSnapshotRequest
-	5,  // 43: loomcycle.v1.Loomcycle.Run:output_type -> loomcycle.v1.Event
-	5,  // 44: loomcycle.v1.Loomcycle.Continue:output_type -> loomcycle.v1.Event
-	11, // 45: loomcycle.v1.Loomcycle.GetTranscript:output_type -> loomcycle.v1.Transcript
-	14, // 46: loomcycle.v1.Loomcycle.GetAgent:output_type -> loomcycle.v1.Agent
-	17, // 47: loomcycle.v1.Loomcycle.CancelAgent:output_type -> loomcycle.v1.CancelAgentResponse
-	19, // 48: loomcycle.v1.Loomcycle.ListUserAgents:output_type -> loomcycle.v1.ListUserAgentsResponse
-	21, // 49: loomcycle.v1.Loomcycle.Health:output_type -> loomcycle.v1.HealthResponse
-	23, // 50: loomcycle.v1.Loomcycle.RegisterHook:output_type -> loomcycle.v1.RegisterHookResponse
-	26, // 51: loomcycle.v1.Loomcycle.ListHooks:output_type -> loomcycle.v1.ListHooksResponse
-	28, // 52: loomcycle.v1.Loomcycle.DeleteHook:output_type -> loomcycle.v1.DeleteHookResponse
-	30, // 53: loomcycle.v1.Loomcycle.PauseRuntime:output_type -> loomcycle.v1.PauseRuntimeResponse
-	32, // 54: loomcycle.v1.Loomcycle.ResumeRuntime:output_type -> loomcycle.v1.ResumeRuntimeResponse
-	34, // 55: loomcycle.v1.Loomcycle.GetRuntimeState:output_type -> loomcycle.v1.RuntimeStateResponse
-	36, // 56: loomcycle.v1.Loomcycle.CreateSnapshot:output_type -> loomcycle.v1.SnapshotDescriptor
-	38, // 57: loomcycle.v1.Loomcycle.ListSnapshots:output_type -> loomcycle.v1.ListSnapshotsResponse
-	40, // 58: loomcycle.v1.Loomcycle.GetSnapshot:output_type -> loomcycle.v1.SnapshotEnvelope
-	42, // 59: loomcycle.v1.Loomcycle.ExportSnapshot:output_type -> loomcycle.v1.ExportSnapshotResponse
-	44, // 60: loomcycle.v1.Loomcycle.RestoreSnapshot:output_type -> loomcycle.v1.RestoreSnapshotResponse
-	46, // 61: loomcycle.v1.Loomcycle.DeleteSnapshot:output_type -> loomcycle.v1.DeleteSnapshotResponse
-	43, // [43:62] is the sub-list for method output_type
-	24, // [24:43] is the sub-list for method input_type
+	47, // 43: loomcycle.v1.Loomcycle.AgentDef:input_type -> loomcycle.v1.SubstrateRequest
+	47, // 44: loomcycle.v1.Loomcycle.SkillDef:input_type -> loomcycle.v1.SubstrateRequest
+	5,  // 45: loomcycle.v1.Loomcycle.Run:output_type -> loomcycle.v1.Event
+	5,  // 46: loomcycle.v1.Loomcycle.Continue:output_type -> loomcycle.v1.Event
+	11, // 47: loomcycle.v1.Loomcycle.GetTranscript:output_type -> loomcycle.v1.Transcript
+	14, // 48: loomcycle.v1.Loomcycle.GetAgent:output_type -> loomcycle.v1.Agent
+	17, // 49: loomcycle.v1.Loomcycle.CancelAgent:output_type -> loomcycle.v1.CancelAgentResponse
+	19, // 50: loomcycle.v1.Loomcycle.ListUserAgents:output_type -> loomcycle.v1.ListUserAgentsResponse
+	21, // 51: loomcycle.v1.Loomcycle.Health:output_type -> loomcycle.v1.HealthResponse
+	23, // 52: loomcycle.v1.Loomcycle.RegisterHook:output_type -> loomcycle.v1.RegisterHookResponse
+	26, // 53: loomcycle.v1.Loomcycle.ListHooks:output_type -> loomcycle.v1.ListHooksResponse
+	28, // 54: loomcycle.v1.Loomcycle.DeleteHook:output_type -> loomcycle.v1.DeleteHookResponse
+	30, // 55: loomcycle.v1.Loomcycle.PauseRuntime:output_type -> loomcycle.v1.PauseRuntimeResponse
+	32, // 56: loomcycle.v1.Loomcycle.ResumeRuntime:output_type -> loomcycle.v1.ResumeRuntimeResponse
+	34, // 57: loomcycle.v1.Loomcycle.GetRuntimeState:output_type -> loomcycle.v1.RuntimeStateResponse
+	36, // 58: loomcycle.v1.Loomcycle.CreateSnapshot:output_type -> loomcycle.v1.SnapshotDescriptor
+	38, // 59: loomcycle.v1.Loomcycle.ListSnapshots:output_type -> loomcycle.v1.ListSnapshotsResponse
+	40, // 60: loomcycle.v1.Loomcycle.GetSnapshot:output_type -> loomcycle.v1.SnapshotEnvelope
+	42, // 61: loomcycle.v1.Loomcycle.ExportSnapshot:output_type -> loomcycle.v1.ExportSnapshotResponse
+	44, // 62: loomcycle.v1.Loomcycle.RestoreSnapshot:output_type -> loomcycle.v1.RestoreSnapshotResponse
+	46, // 63: loomcycle.v1.Loomcycle.DeleteSnapshot:output_type -> loomcycle.v1.DeleteSnapshotResponse
+	48, // 64: loomcycle.v1.Loomcycle.AgentDef:output_type -> loomcycle.v1.SubstrateResponse
+	48, // 65: loomcycle.v1.Loomcycle.SkillDef:output_type -> loomcycle.v1.SubstrateResponse
+	45, // [45:66] is the sub-list for method output_type
+	24, // [24:45] is the sub-list for method input_type
 	24, // [24:24] is the sub-list for extension type_name
 	24, // [24:24] is the sub-list for extension extendee
 	0,  // [0:24] is the sub-list for field type_name
@@ -3625,7 +3746,7 @@ func file_loomcycle_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_loomcycle_proto_rawDesc), len(file_loomcycle_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   47,
+			NumMessages:   49,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
