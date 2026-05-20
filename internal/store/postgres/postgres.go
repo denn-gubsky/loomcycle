@@ -170,6 +170,25 @@ func Open(ctx context.Context, cfg Config) (*Store, error) {
 			pool.Close()
 			return nil, errors.New("postgres: LOOMCYCLE_PGVECTOR_ENABLED=1 but the `vector` extension is not loaded. Install pgvector on your Postgres (`apt install postgresql-<ver>-pgvector` or use the pgvector/pgvector docker image), then restart loomcycle")
 		}
+		// The migration 0017 wraps CREATE TABLE inside a conditional
+		// IF has_vector block. Operators who installed pgvector AFTER
+		// first running migrations would pass the extension probe
+		// above (extension present) but lack the table itself
+		// (migration ran in tolerant-skip mode). Detect that here so
+		// the first vector op doesn't crash with a raw pgx
+		// "relation does not exist" error.
+		var tableExists bool
+		err = pool.QueryRow(probeCtx,
+			`SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'memory_embeddings')`,
+		).Scan(&tableExists)
+		if err != nil {
+			pool.Close()
+			return nil, fmt.Errorf("postgres: probe memory_embeddings table: %w", err)
+		}
+		if !tableExists {
+			pool.Close()
+			return nil, errors.New("postgres: pgvector is installed but the `memory_embeddings` table is missing. This means the 0017 migration ran in tolerant-skip mode before pgvector was available. Re-run `loomcycle migrate up` (or restart with LOOMCYCLE_PG_AUTOMIGRATE=1) to create the table")
+		}
 		s.pgvectorEnabled = true
 	}
 

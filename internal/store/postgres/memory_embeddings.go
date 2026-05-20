@@ -128,8 +128,13 @@ func (s *Store) MemoryEmbedSearch(ctx context.Context, scope store.MemoryScope, 
 	if topK <= 0 {
 		topK = 10
 	}
-	if topK > 50 {
-		topK = 50
+	// Defensive upper cap. Agents may request at most 50 per the
+	// RFC; the tool layer surfaces 50 as its hard max. We accept 51
+	// internally so the tool layer's "topK+1" truncation probe at
+	// the boundary still returns the extra row used to detect
+	// overflow.
+	if topK > 51 {
+		topK = 51
 	}
 
 	// Dimension pre-check. Read one row's dimension under (scope,

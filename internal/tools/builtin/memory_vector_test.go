@@ -109,8 +109,10 @@ func (v *vectorStore) MemoryEmbedSearch(ctx context.Context, scope store.MemoryS
 	if topK <= 0 {
 		topK = 10
 	}
-	if topK > 50 {
-		topK = 50
+	// Match the Postgres adapter's 51-cap so the tool layer's
+	// topK+1 truncation probe works at the boundary.
+	if topK > 51 {
+		topK = 51
 	}
 	// Dim mismatch detection — take the first stored vector under (scope, scope_id).
 	prefix := string(scope) + "|" + scopeID + "|"
@@ -563,5 +565,146 @@ func TestMemoryVector_UnknownOpStillNamesSearch(t *testing.T) {
 	}
 	if !strings.Contains(res.Text, "search") {
 		t.Errorf("error message should list search among valid ops: %s", res.Text)
+	}
+}
+
+// ---- Regression tests for the 2026-05-20 code review fixes ----
+
+// I1 fix: embed:true with no embedder configured must refuse UPFRONT
+// (before any k/v write). The earlier behaviour silently wrote an
+// unembedded row + a warning — agents had no way to tell "transient
+// failure, retry" apart from "permanent misconfig, give up."
+func TestMemoryVector_SetEmbedTrueRefusesUpfrontWhenNoEmbedder(t *testing.T) {
+	tool, _, ctx, cleanup := vectorMemoryFixture(t)
+	defer cleanup()
+	tool.Embedder = nil
+
+	res, _ := tool.Execute(ctx, json.RawMessage(`{
+		"op":"set","scope":"user","key":"k",
+		"value":{"v":1},"embed":true,"embed_text":"alice"
+	}`))
+	if !res.IsError {
+		t.Fatalf("expected refusal, got %s", res.Text)
+	}
+	if !strings.Contains(res.Text, "no embedder configured") {
+		t.Errorf("error should mention embedder_not_configured: %s", res.Text)
+	}
+	// Critical: the k/v row must NOT have been written. Operators
+	// shouldn't see silent partial state when misconfigured.
+	res, _ = tool.Execute(ctx, json.RawMessage(`{"op":"get","scope":"user","key":"k"}`))
+	if res.IsError {
+		t.Fatalf("get: %s", res.Text)
+	}
+	if !strings.Contains(res.Text, `"value":null`) {
+		t.Errorf("k/v should NOT have been written when embed:true refused upfront: %s", res.Text)
+	}
+}
+
+// I1 fix: same refusal-upfront contract when SupportsVectors() == false.
+func TestMemoryVector_SetEmbedTrueRefusesUpfrontWhenNoVectorSupport(t *testing.T) {
+	tool, _, ctx, cleanup := vectorMemoryFixture(t)
+	defer cleanup()
+	tool.Store.(*vectorStore).enabled = false
+
+	res, _ := tool.Execute(ctx, json.RawMessage(`{
+		"op":"set","scope":"user","key":"k",
+		"value":{"v":1},"embed":true,"embed_text":"alice"
+	}`))
+	if !res.IsError {
+		t.Fatalf("expected refusal, got %s", res.Text)
+	}
+	if !strings.Contains(res.Text, "vector index not configured") {
+		t.Errorf("error should mention vector_unsupported: %s", res.Text)
+	}
+	// k/v row must NOT have been written.
+	res, _ = tool.Execute(ctx, json.RawMessage(`{"op":"get","scope":"user","key":"k"}`))
+	if !strings.Contains(res.Text, `"value":null`) {
+		t.Errorf("k/v should NOT have been written: %s", res.Text)
+	}
+}
+
+// I1 fix verification: embed:false still works on misconfigured
+// stack (k/v ops are independent of vector configuration).
+func TestMemoryVector_SetEmbedFalseSucceedsWithoutVectorStack(t *testing.T) {
+	tool, _, ctx, cleanup := vectorMemoryFixture(t)
+	defer cleanup()
+	tool.Embedder = nil
+	tool.Store.(*vectorStore).enabled = false
+
+	res, _ := tool.Execute(ctx, json.RawMessage(`{
+		"op":"set","scope":"user","key":"k","value":{"v":1}
+	}`))
+	if res.IsError {
+		t.Fatalf("set without embed should succeed on bare config: %s", res.Text)
+	}
+}
+
+// I2 fix: truncated must be false when result count exactly equals
+// top_k (no overflow). Previously this was a false-positive trigger.
+func TestMemoryVector_SearchTruncatedFalseWhenExactlyTopK(t *testing.T) {
+	tool, _, ctx, cleanup := vectorMemoryFixture(t)
+	defer cleanup()
+	// Write exactly 3 rows.
+	for _, name := range []string{"a", "b", "c"} {
+		body := fmt.Sprintf(`{"op":"set","scope":"agent","key":%q,"value":1,"embed":true,"embed_text":"alice"}`, name)
+		res, _ := tool.Execute(ctx, json.RawMessage(body))
+		if res.IsError {
+			t.Fatalf("set %s: %s", name, res.Text)
+		}
+	}
+	// Ask for top_k=3 — got 3 — must NOT report truncated.
+	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"search","scope":"agent","query":"alice","top_k":3}`))
+	if res.IsError {
+		t.Fatalf("search: %s", res.Text)
+	}
+	if !strings.Contains(res.Text, `"truncated":false`) {
+		t.Errorf("top_k=3 with exactly 3 rows must NOT mark truncated: %s", res.Text)
+	}
+}
+
+// I2 fix: truncated must be true when there are STRICTLY more rows
+// than top_k. Validates the topK+1 probe semantics.
+func TestMemoryVector_SearchTruncatedTrueWhenMoreRowsExist(t *testing.T) {
+	tool, _, ctx, cleanup := vectorMemoryFixture(t)
+	defer cleanup()
+	for _, name := range []string{"a", "b", "c", "d", "e"} {
+		body := fmt.Sprintf(`{"op":"set","scope":"agent","key":%q,"value":1,"embed":true,"embed_text":"alice"}`, name)
+		tool.Execute(ctx, json.RawMessage(body))
+	}
+	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"search","scope":"agent","query":"alice","top_k":2}`))
+	if !strings.Contains(res.Text, `"truncated":true`) {
+		t.Errorf("top_k=2 with 5 rows should mark truncated: %s", res.Text)
+	}
+	// Critical: result count must still be exactly top_k (the
+	// probe row must be trimmed before rendering).
+	count := strings.Count(res.Text, `"key":`)
+	if count != 2 {
+		t.Errorf("result count = %d, want 2 (probe row leaked into output): %s", count, res.Text)
+	}
+}
+
+// C1 fix verification: errors.Is matches by Code across different
+// *MemoryError pointer values (e.g. the postgres adapter constructs
+// a fresh *MemoryError with the same Code but a unique message).
+func TestMemoryError_IsMatchesByCode(t *testing.T) {
+	freshDim := &store.MemoryError{
+		Code: store.ErrDimensionMismatch.Code,
+		Msg:  "memory: query embedding dimension 8 does not match stored rows' dimension 4 — etc.",
+	}
+	if !errors.Is(freshDim, store.ErrDimensionMismatch) {
+		t.Errorf("errors.Is must match by Code; sentinel pattern is dead otherwise")
+	}
+	// Different code → no match.
+	freshUnsupported := &store.MemoryError{Code: store.ErrVectorUnsupported.Code, Msg: "x"}
+	if errors.Is(freshUnsupported, store.ErrDimensionMismatch) {
+		t.Errorf("errors.Is must NOT match across different Codes")
+	}
+	if !errors.Is(freshUnsupported, store.ErrVectorUnsupported) {
+		t.Errorf("errors.Is must match same Code")
+	}
+	// Wrapped chain still resolves.
+	wrapped := fmt.Errorf("outer: %w", freshDim)
+	if !errors.Is(wrapped, store.ErrDimensionMismatch) {
+		t.Errorf("errors.Is must traverse wrapped chain")
 	}
 }

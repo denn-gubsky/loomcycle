@@ -226,22 +226,40 @@ func (m *Memory) execSet(ctx context.Context, scope store.MemoryScope, scopeID s
 	if err := m.checkQuota(ctx, scope, scopeID, in.Key, len(in.Value)); err != nil {
 		return errResult(err.Error()), nil
 	}
+
+	// v0.9.0 Vector Memory pre-flight: when embed=true, refuse
+	// upfront BEFORE writing the k/v row if the configuration is
+	// permanently broken (no embedder configured, or backend has no
+	// vector support). Without this check, an agent diligently
+	// calling embed=true against a misconfigured loomcycle would
+	// silently build up an unembedded corpus that never participates
+	// in search — a quality regression that's hard to diagnose.
+	// Transient embedder failures (network, 5xx, ctx deadline) AFTER
+	// the k/v lands stay in partial-write mode: the row persists
+	// with an embed_warning so the agent sees the outcome and can
+	// re-embed via the admin endpoint.
+	if in.Embed {
+		if m.Embedder == nil {
+			return errResult(store.ErrEmbedderNotConfigured.Msg), nil
+		}
+		if !m.Store.SupportsVectors() {
+			return errResult(store.ErrVectorUnsupported.Msg), nil
+		}
+	}
+
 	ttl := time.Duration(in.TTL) * time.Second
 	if err := m.Store.MemorySet(ctx, scope, scopeID, in.Key, in.Value, ttl); err != nil {
 		return errResult(fmt.Sprintf("set: %s", err)), nil
 	}
 
-	// v0.9.0 Vector Memory: when embed=true, generate an embedding
-	// alongside the k/v write. Failures here DO NOT roll back the
-	// base row — the operator can re-embed later via the admin
-	// endpoint. We surface a warning in the response so the model
-	// sees the partial-write outcome and can decide whether to
-	// retry. Quota math already excluded embedding bytes above.
+	// embed=true with a configured stack: try to write the
+	// embedding alongside the k/v row. Transient failures here DO
+	// NOT roll back; we surface a warning so the agent sees the
+	// partial-write outcome and can decide whether to retry / re-
+	// embed via the admin endpoint.
 	resp := map[string]any{"ok": true}
 	if in.Embed {
 		if err := m.persistEmbedding(ctx, scope, scopeID, in); err != nil {
-			// Tool returns ok=true (k/v landed) but embedded=false +
-			// warning so the model sees the partial outcome.
 			log.Printf("memory.set: embed failed for (scope=%s, key=%s): %v", scope, in.Key, err)
 			resp["embedded"] = false
 			resp["embed_warning"] = err.Error()
@@ -255,14 +273,10 @@ func (m *Memory) execSet(ctx context.Context, scope store.MemoryScope, scopeID s
 // persistEmbedding embeds the supplied text (or the JSON-stringified
 // value when embed_text is empty) and writes the embedding row.
 // Returns nil on success; the caller surfaces failures as a
-// non-fatal warning rather than refusing the whole set.
+// non-fatal warning. Pre-flight configuration checks (Embedder ==
+// nil, !SupportsVectors) are handled upfront in execSet — this
+// function assumes both are valid.
 func (m *Memory) persistEmbedding(ctx context.Context, scope store.MemoryScope, scopeID string, in memoryInput) error {
-	if m.Embedder == nil {
-		return errors.New(store.ErrEmbedderNotConfigured.Msg)
-	}
-	if !m.Store.SupportsVectors() {
-		return errors.New(store.ErrVectorUnsupported.Msg)
-	}
 	text := in.EmbedText
 	if text == "" {
 		// Fall back to the JSON-stringified value. Useful for
@@ -333,25 +347,32 @@ func (m *Memory) execSearch(ctx context.Context, scope store.MemoryScope, scopeI
 	}
 	queryVec := vecs[0]
 
-	results, err := m.Store.MemoryEmbedSearch(ctx, scope, scopeID, in.Prefix, queryVec, topK)
+	// Request topK+1 from the store so we can distinguish "result set
+	// exactly fills the limit" (truncated=false) from "result set
+	// overflowed the limit by ≥1" (truncated=true). Without the +1
+	// probe, len(results)==topK is ambiguous and agents using
+	// "paginate until truncated=false" make spurious extra calls.
+	// The store's defensive cap accepts up to 51 — see
+	// MemoryEmbedSearch's contract comment.
+	results, err := m.Store.MemoryEmbedSearch(ctx, scope, scopeID, in.Prefix, queryVec, topK+1)
 	if err != nil {
 		// ErrDimensionMismatch is the user-actionable one — operators
 		// swap embedder models and forget to re-embed. Surface it as a
 		// clear refusal with the admin-endpoint migration hint.
+		// errors.Is works on backend-constructed *MemoryError values
+		// thanks to MemoryError.Is(target) comparing by Code.
 		if errors.Is(err, store.ErrDimensionMismatch) || errors.Is(err, store.ErrVectorUnsupported) {
-			return errResult(err.Error()), nil
-		}
-		// Also catch the typed-Code form; the dimension-mismatch
-		// helper in the postgres adapter wraps the message with the
-		// concrete dims so we need to recognise it by Code, not by
-		// exact value comparison.
-		var me *store.MemoryError
-		if errors.As(err, &me) && me.Code == store.ErrDimensionMismatch.Code {
 			return errResult(err.Error()), nil
 		}
 		return errResult(fmt.Sprintf("search: %s", err)), nil
 	}
 
+	// The +1 probe row (if present) signals truncation; trim before
+	// rendering so the agent never sees more than topK entries.
+	truncated := len(results) > topK
+	if truncated {
+		results = results[:topK]
+	}
 	entries := make([]map[string]any, 0, len(results))
 	for _, r := range results {
 		entries = append(entries, map[string]any{
@@ -368,7 +389,7 @@ func (m *Memory) execSearch(ctx context.Context, scope store.MemoryScope, scopeI
 	return okJSON(map[string]any{
 		"entries":             entries,
 		"query_embedding_dim": len(queryVec),
-		"truncated":           len(entries) == topK, // soft-truncation hint; reader can re-search with higher top_k
+		"truncated":           truncated,
 	})
 }
 

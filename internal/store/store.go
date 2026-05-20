@@ -20,6 +20,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 )
@@ -693,7 +694,10 @@ type Store interface {
 	//
 	// Dimension mismatch (query vector dimension ≠ stored dimension)
 	// returns ErrDimensionMismatch with a message that includes both
-	// dimensions. topK <= 0 is treated as 10; topK > 50 is clamped.
+	// dimensions. topK <= 0 is treated as 10; topK > 51 is clamped.
+	// (The 51 cap, vs the RFC's agent-facing 50, lets the Memory
+	// tool layer request topK+1 for its truncation-detection probe
+	// at the boundary.)
 	// Empty results return (nil, nil) — not an error.
 	//
 	// Backends MUST honour the base table's expires_at filter — a
@@ -1160,6 +1164,21 @@ type MemoryError struct {
 }
 
 func (e *MemoryError) Error() string { return e.Msg }
+
+// Is implements errors.Is comparison by Code so backend
+// implementations that construct a NEW *MemoryError with the same
+// Code (e.g. the postgres adapter formatting a dimension-mismatch
+// message with the concrete dims) still match the package-level
+// sentinel via `errors.Is(err, ErrDimensionMismatch)`. Without this,
+// errors.Is would only match by pointer identity — the sentinel
+// would never be reached and callers would silently fall through.
+func (e *MemoryError) Is(target error) bool {
+	var t *MemoryError
+	if !errors.As(target, &t) {
+		return false
+	}
+	return e.Code == t.Code
+}
 
 // ChannelMessage is one row in the channel_messages table. ID is a
 // ULID assigned by the store at publish time (sortable by publish
