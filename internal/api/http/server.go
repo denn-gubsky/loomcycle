@@ -1160,6 +1160,13 @@ func (s *Server) Mux() http.Handler {
 	// optional type + date-range filter. Drives the Web UI's
 	// /ui/audit page. Bearer-authed admin surface.
 	mux.Handle("GET /v1/_events", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleListEvents))))
+	// v0.8.22 substrate admin endpoints. Bearer-authed; accept the
+	// same op-discriminated JSON body as the in-process tool +
+	// dispatch through the Connector with operator-trust ctx.
+	// Mirrors the MCP `agentdef` / `skilldef` meta-tool dispatch —
+	// same connector path, different wire surface.
+	mux.Handle("POST /v1/_agentdef", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleSubstrateAgentDef))))
+	mux.Handle("POST /v1/_skilldef", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleSubstrateSkillDef))))
 	// v0.8.15.3 HTTP MCP transport — Streamable HTTP endpoint that
 	// dispatches the same 20 MCP tools as the stdio MCP server.
 	// POST is the JSON-RPC frame transport; DELETE terminates a
