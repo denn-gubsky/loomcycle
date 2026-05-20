@@ -24,9 +24,23 @@ You can find out who you are right now with `Context.self`:
 
 ## The built-in primitives
 
-Loomcycle ships twelve built-in tools beyond the basic `Read` / `Write` /
-`Edit` / `HTTP` / `WebFetch` / `WebSearch` / `Bash`:
+Loomcycle ships twelve built-in tools beyond the basic file/network
+group (`Read` / `Write` / `Edit` / `Grep` / `Glob` / `NotebookEdit` /
+`HTTP` / `WebFetch` / `WebSearch` / `Bash`):
 
+- **Grep** (v0.8.24) — content search with RE2 regex over the sandbox
+  root. Three output modes: `files_with_matches` (default), `content`
+  (with `-A`/`-B`/`-C` context lines), and `count`. Skips binary files
+  automatically; respects `case_insensitive`, `multiline`, `glob`
+  filename filter, and `head_limit`. Pure-Go — no `ripgrep` dependency.
+- **Glob** (v0.8.24) — file pattern matcher with `**` for recursive
+  segment match. Returns paths sorted by mtime DESC (newest first),
+  capped at 100 results. Useful for "find all `.tsx` files I touched
+  recently."
+- **NotebookEdit** (v0.8.24) — surgical Jupyter `.ipynb` cell mutation:
+  `replace` (by `cell_id`), `insert` (after `cell_id`, or at index 0 when
+  empty), `delete`. Writes atomically; preserves all other cells +
+  notebook metadata verbatim.
 - **Memory** — persistent key/value scoped to `agent` or `user`.
 - **Channel** — durable inter-agent message bus with cursor-based
   at-least-once delivery; `_system/*` channels carry runtime signals

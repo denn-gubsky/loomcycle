@@ -388,6 +388,7 @@ func main() {
 		// .ipynb files atomically, same posture as Edit).
 		&builtin.Grep{Root: cfg.Env.ReadRoot},
 		&builtin.Glob{Root: cfg.Env.ReadRoot},
+		&builtin.NotebookEdit{Root: cfg.Env.WriteRoot},
 		httpTool,
 		&builtin.WebFetch{HTTP: httpTool},
 		&builtin.WebSearch{APIKey: cfg.Env.BraveAPIKey},
