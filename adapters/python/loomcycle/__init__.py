@@ -62,6 +62,7 @@ from .errors import (
     SnapshotNotFoundError,
     SnapshotTooLargeError,
     SnapshotVersionError,
+    SubstrateToolRefusedError,
     InvalidArgumentError,
 )
 
@@ -90,6 +91,8 @@ __all__ = [
     "SnapshotTooLargeError",
     "SnapshotVersionError",
     "InvalidArgumentError",
+    # v0.8.22 substrate admin
+    "SubstrateToolRefusedError",
 ]
 
-__version__ = "0.6.1"
+__version__ = "0.7.0"

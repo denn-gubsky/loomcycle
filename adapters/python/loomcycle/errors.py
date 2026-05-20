@@ -128,3 +128,21 @@ class SnapshotVersionError(LoomcycleError):
     version is newer than the reader supports OR unknown to the
     migration registry. Operator upgrades loomcycle before restoring.
     Server returns gRPC FailedPrecondition for both subcases."""
+
+
+class SubstrateToolRefusedError(LoomcycleError):
+    """Raised by ``agent_def`` / ``skill_def`` when the in-process
+    substrate tool refused the call (scope deny, empty body,
+    allowed-tools widening, etc.). Distinct from transport
+    failures: the request reached the server, the substrate tool
+    ran, and the tool itself returned is_error=True with a
+    human-readable reason in ``message``.
+
+    The ``tool`` attribute identifies which substrate tool refused
+    ("AgentDef" or "SkillDef"). Operators catching this error
+    should surface ``message`` to the calling agent / user rather
+    than retrying."""
+
+    def __init__(self, message: str, *, tool: str = "") -> None:
+        super().__init__(message)
+        self.tool = tool
