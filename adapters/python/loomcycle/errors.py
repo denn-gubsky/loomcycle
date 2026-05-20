@@ -82,12 +82,21 @@ class HookNotFoundError(LoomcycleError):
 
 
 class InvalidArgumentError(LoomcycleError):
-    """Raised by client-side validation (v0.8.18+) when caller-supplied
-    arguments fail a precondition before any wire call is made — e.g.
-    ``restore_snapshot`` invoked with neither ``snapshot_id`` nor
-    ``raw_json``, or ``create_snapshot`` given an invalid RFC3339
-    ``since_ts``. ``code`` is always ``None`` to distinguish from
-    server-returned ``LoomcycleError`` with a real gRPC code."""
+    """Raised on caller-supplied input validation failures.
+
+    Two sources, distinguished by the ``code`` attribute:
+
+    * Client-side validation (v0.8.18+): a caller-side
+      precondition fails before any wire call is made — e.g.
+      ``restore_snapshot`` invoked with neither ``snapshot_id`` nor
+      ``raw_json``, or ``create_snapshot`` given an invalid RFC3339
+      ``since_ts``. ``code`` is ``None`` for these cases.
+    * Server-side validation (v0.8.22+): the server returns gRPC
+      ``INVALID_ARGUMENT`` — typically on substrate admin RPCs with
+      malformed JSON in ``input_json``. ``code`` is
+      ``grpc.StatusCode.INVALID_ARGUMENT`` for these cases.
+
+    Callers wanting to distinguish should inspect ``e.code``."""
 
 
 # v0.8.18 — Pause/Resume/Snapshot typed errors. Each maps from a

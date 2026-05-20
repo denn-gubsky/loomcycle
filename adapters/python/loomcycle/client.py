@@ -948,7 +948,13 @@ def _raise_from_grpc(err: grpc.aio.AioRpcError) -> "None":
             raise PauseNotConfiguredError(msg, code=code) from err
         raise UnavailableError(msg, code=code) from err
     if code == grpc.StatusCode.INVALID_ARGUMENT:
-        raise LoomcycleError(msg, code=code) from err
+        # Surface server-side INVALID_ARGUMENT as InvalidArgumentError
+        # so callers can branch on the typed exception class. The
+        # client-side variant of this exception has code=None; the
+        # server-side variant carries the gRPC code — see the
+        # InvalidArgumentError docstring for the discrimination
+        # contract.
+        raise InvalidArgumentError(msg, code=code) from err
     raise LoomcycleError(msg, code=code) from err
 
 
