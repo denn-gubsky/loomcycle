@@ -137,6 +137,15 @@ func Run(t *testing.T, factory Factory) {
 		{"AgentDefActivePointerIdempotent", testAgentDefActivePointerIdempotent},
 		{"AgentDefRetireReversible", testAgentDefRetireReversible},
 		{"AgentDefStaticFallback", testAgentDefStaticFallback},
+		// v0.8.22 SkillDef substrate — mirror of the AgentDef tests.
+		{"SkillDefCreateAndGet", testSkillDefCreateAndGet},
+		{"SkillDefVersionMonotonicUnderContention", testSkillDefVersionMonotonicUnderContention},
+		{"SkillDefParallelForksDistinctVersions", testSkillDefParallelForksDistinctVersions},
+		{"SkillDefAppendOnlyDefinition", testSkillDefAppendOnlyDefinition},
+		{"SkillDefActivePointerIdempotent", testSkillDefActivePointerIdempotent},
+		{"SkillDefRetireReversible", testSkillDefRetireReversible},
+		{"SkillDefStaticFallback", testSkillDefStaticFallback},
+		{"SkillDefSnapshotReadEmpty", testSkillDefSnapshotReadEmpty},
 		{"EvaluationSubmitAndAggregate", testEvaluationSubmitAndAggregate},
 		{"EvaluationAggregateWithLineage", testEvaluationAggregateWithLineage},
 		// v0.8.x Process-resource metrics sampler
@@ -2548,6 +2557,269 @@ func testAgentDefStaticFallback(t *testing.T, s store.Store) {
 	var nf *store.ErrNotFound
 	if !errors.As(err, &nf) {
 		t.Errorf("got %v, want *ErrNotFound", err)
+	}
+}
+
+// ---- v0.8.22 SkillDef contract tests ----
+//
+// Direct mirror of the AgentDef tests above. Same invariants:
+// monotonic versioning under contention, append-only definition
+// column, idempotent active pointer, reversible retire flag.
+
+func mkSkillDef(id, name string, parent string) store.SkillDefRow {
+	return store.SkillDefRow{
+		DefID:       id,
+		Name:        name,
+		ParentDefID: parent,
+		Definition:  json.RawMessage(`{"body":"## Skill body","description":"test row"}`),
+		Description: "test row",
+	}
+}
+
+func testSkillDefCreateAndGet(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	row, err := s.SkillDefCreate(ctx, mkSkillDef("sd-1", "skill-alpha", ""))
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if row.Version != 1 {
+		t.Errorf("first version = %d, want 1", row.Version)
+	}
+	got, err := s.SkillDefGet(ctx, "sd-1")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.Name != "skill-alpha" || got.Version != 1 {
+		t.Errorf("got %+v", got)
+	}
+	if got.CreatedAt.IsZero() {
+		t.Error("created_at not populated")
+	}
+}
+
+func testSkillDefVersionMonotonicUnderContention(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	const G = 50
+	const Per = 5
+	var wg sync.WaitGroup
+	errs := make(chan error, G*Per)
+	for g := 0; g < G; g++ {
+		wg.Add(1)
+		go func(g int) {
+			defer wg.Done()
+			for i := 0; i < Per; i++ {
+				id := fmt.Sprintf("sd-%d-%d", g, i)
+				_, err := s.SkillDefCreate(ctx, mkSkillDef(id, "skill-race", ""))
+				if err != nil {
+					errs <- err
+					return
+				}
+			}
+		}(g)
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Fatalf("create error: %v", err)
+	}
+	rows, err := s.SkillDefListByName(ctx, "skill-race")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != G*Per {
+		t.Fatalf("got %d versions, want %d", len(rows), G*Per)
+	}
+	versions := make(map[int]bool, len(rows))
+	for _, r := range rows {
+		if versions[r.Version] {
+			t.Errorf("duplicate version %d", r.Version)
+		}
+		versions[r.Version] = true
+	}
+	for v := 1; v <= G*Per; v++ {
+		if !versions[v] {
+			t.Errorf("missing version %d", v)
+		}
+	}
+}
+
+func testSkillDefParallelForksDistinctVersions(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	parent, err := s.SkillDefCreate(ctx, mkSkillDef("sd-p-1", "skill-forkparent", ""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	const N = 10
+	var wg sync.WaitGroup
+	errs := make(chan error, N)
+	for i := 0; i < N; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			_, err := s.SkillDefCreate(ctx, mkSkillDef(fmt.Sprintf("sd-f-%d", i), "skill-forkparent", parent.DefID))
+			if err != nil {
+				errs <- err
+			}
+		}(i)
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Errorf("fork: %v", err)
+	}
+	children, err := s.SkillDefListChildren(ctx, parent.DefID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(children) != N {
+		t.Errorf("got %d children, want %d", len(children), N)
+	}
+	versions := make(map[int]bool)
+	for _, c := range children {
+		if versions[c.Version] {
+			t.Errorf("duplicate child version %d", c.Version)
+		}
+		versions[c.Version] = true
+		if c.ParentDefID != parent.DefID {
+			t.Errorf("child %s has wrong parent: %s", c.DefID, c.ParentDefID)
+		}
+	}
+}
+
+func testSkillDefAppendOnlyDefinition(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	original := mkSkillDef("sd-immutable-1", "skill-frozen", "")
+	original.Definition = json.RawMessage(`{"body":"original"}`)
+	row, err := s.SkillDefCreate(ctx, original)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.SkillDefGet(ctx, row.DefID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got.Definition) != `{"body":"original"}` {
+		t.Errorf("definition: got %s, want original", got.Definition)
+	}
+}
+
+func testSkillDefActivePointerIdempotent(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	a, err := s.SkillDefCreate(ctx, mkSkillDef("sd-a", "skill-promo", ""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := s.SkillDefCreate(ctx, mkSkillDef("sd-b", "skill-promo", ""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SkillDefSetActive(ctx, "skill-promo", a.DefID, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SkillDefSetActive(ctx, "skill-promo", b.DefID, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SkillDefSetActive(ctx, "skill-promo", a.DefID, ""); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.SkillDefGetActive(ctx, "skill-promo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.DefID != a.DefID {
+		t.Errorf("active = %s, want %s", got.DefID, a.DefID)
+	}
+}
+
+func testSkillDefRetireReversible(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	row, err := s.SkillDefCreate(ctx, mkSkillDef("sd-r-1", "skill-retireagent", ""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SkillDefSetRetired(ctx, row.DefID, true); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := s.SkillDefGet(ctx, row.DefID)
+	if !got.Retired {
+		t.Error("retire(true) didn't stick")
+	}
+	if err := s.SkillDefSetRetired(ctx, row.DefID, false); err != nil {
+		t.Fatal(err)
+	}
+	got, _ = s.SkillDefGet(ctx, row.DefID)
+	if got.Retired {
+		t.Error("retire(false) didn't reverse")
+	}
+	rows, _ := s.SkillDefListByName(ctx, "skill-retireagent")
+	if len(rows) != 1 {
+		t.Errorf("list after retire toggle: got %d, want 1", len(rows))
+	}
+}
+
+func testSkillDefStaticFallback(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	_, err := s.SkillDefGetActive(ctx, "no-such-skill-name")
+	var nf *store.ErrNotFound
+	if !errors.As(err, &nf) {
+		t.Errorf("got %v, want *ErrNotFound", err)
+	}
+}
+
+// testSkillDefSnapshotReadEmpty verifies the two snapshot reads
+// return empty (not error) on a store with no skill_defs rows.
+// Mirrors the implicit behaviour the AgentDef snapshot reads rely
+// on. Also smoke-checks the restore round-trip for one row.
+func testSkillDefSnapshotReadEmpty(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	rows, err := s.SnapshotReadSkillDefs(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 0 {
+		t.Errorf("expected empty, got %d rows", len(rows))
+	}
+	ptrs, err := s.SnapshotReadSkillDefActive(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ptrs) != 0 {
+		t.Errorf("expected empty, got %d pointers", len(ptrs))
+	}
+	// Restore round-trip: write one row + active pointer, read back.
+	row := mkSkillDef("snap-sd-1", "snap-skill", "")
+	row.Version = 7
+	row.CreatedAt = time.Now().UTC().Truncate(time.Second)
+	inserted, err := s.SnapshotRestoreSkillDef(ctx, row)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !inserted {
+		t.Error("first restore didn't insert")
+	}
+	// Idempotent — second restore is silent.
+	inserted2, err := s.SnapshotRestoreSkillDef(ctx, row)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if inserted2 {
+		t.Error("second restore reported inserted; want idempotent")
+	}
+	_, err = s.SnapshotRestoreSkillDefActive(ctx, store.SkillDefActiveEntry{
+		Name:       row.Name,
+		DefID:      row.DefID,
+		PromotedAt: time.Now().UTC().Truncate(time.Second),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows, _ = s.SnapshotReadSkillDefs(ctx)
+	if len(rows) != 1 {
+		t.Errorf("after restore: %d rows", len(rows))
+	}
+	ptrs, _ = s.SnapshotReadSkillDefActive(ctx)
+	if len(ptrs) != 1 {
+		t.Errorf("after restore: %d pointers", len(ptrs))
 	}
 }
 

@@ -189,6 +189,33 @@ func (s *Store) migrate(ctx context.Context) error {
 			promoted_at           INTEGER NOT NULL,
 			promoted_by_agent_id  TEXT
 		)`,
+		// v0.8.22 SkillDef substrate — mirror of agent_defs with
+		// the same identity / lineage / promotion semantics. The
+		// `definition` column carries the JSON-encoded skill body
+		// + metadata (body / description / allowed_tools).
+		`CREATE TABLE IF NOT EXISTS skill_defs (
+			def_id                    TEXT    PRIMARY KEY,
+			name                      TEXT    NOT NULL,
+			version                   INTEGER NOT NULL,
+			parent_def_id             TEXT    REFERENCES skill_defs(def_id),
+			definition                TEXT    NOT NULL,
+			description               TEXT,
+			created_at                INTEGER NOT NULL,
+			created_by_agent_id       TEXT,
+			created_by_run_id         TEXT,
+			retired                   INTEGER NOT NULL DEFAULT 0,
+			bootstrapped_from_static  INTEGER NOT NULL DEFAULT 0,
+			UNIQUE(name, version)
+		)`,
+		`CREATE INDEX IF NOT EXISTS skill_defs_by_name   ON skill_defs(name, version DESC)`,
+		`CREATE INDEX IF NOT EXISTS skill_defs_by_parent ON skill_defs(parent_def_id) WHERE parent_def_id IS NOT NULL`,
+		`CREATE INDEX IF NOT EXISTS skill_defs_by_run    ON skill_defs(created_by_run_id) WHERE created_by_run_id IS NOT NULL`,
+		`CREATE TABLE IF NOT EXISTS skill_def_active (
+			name                  TEXT    PRIMARY KEY,
+			def_id                TEXT    NOT NULL REFERENCES skill_defs(def_id),
+			promoted_at           INTEGER NOT NULL,
+			promoted_by_agent_id  TEXT
+		)`,
 		// v0.8.5 evaluations table. emitter_role is server-derived in
 		// the tool layer; the store stores the string verbatim. Score
 		// is REAL (Go float64). Dimensions + Judgement are JSON-as-TEXT
@@ -1227,6 +1254,91 @@ func (s *Store) SnapshotReadAgentDefActive(ctx context.Context) ([]store.AgentDe
 	return out, rows.Err()
 }
 
+// SnapshotReadSkillDefs implements store.Store. Mirror of
+// SnapshotReadAgentDefs against the skill_defs table.
+func (s *Store) SnapshotReadSkillDefs(ctx context.Context) ([]store.SkillDefRow, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT def_id, name, version, parent_def_id, definition, description,
+		        created_at, created_by_agent_id, created_by_run_id,
+		        retired, bootstrapped_from_static
+		 FROM skill_defs
+		 ORDER BY name ASC, version ASC`,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("snapshot read skill_defs: %w", err)
+	}
+	defer rows.Close()
+	var out []store.SkillDefRow
+	for rows.Next() {
+		var (
+			r           store.SkillDefRow
+			createdNs   int64
+			parentDefID sql.NullString
+			description sql.NullString
+			createdBy   sql.NullString
+			createdRun  sql.NullString
+			definition  string
+			retiredInt  int
+			bootstrap   int
+		)
+		if err := rows.Scan(
+			&r.DefID, &r.Name, &r.Version, &parentDefID,
+			&definition, &description,
+			&createdNs, &createdBy, &createdRun,
+			&retiredInt, &bootstrap,
+		); err != nil {
+			return nil, fmt.Errorf("scan skill_def: %w", err)
+		}
+		r.Definition = json.RawMessage(definition)
+		r.CreatedAt = time.Unix(0, createdNs)
+		if parentDefID.Valid {
+			r.ParentDefID = parentDefID.String
+		}
+		if description.Valid {
+			r.Description = description.String
+		}
+		if createdBy.Valid {
+			r.CreatedByAgentID = createdBy.String
+		}
+		if createdRun.Valid {
+			r.CreatedByRunID = createdRun.String
+		}
+		r.Retired = retiredInt != 0
+		r.BootstrappedFromStatic = bootstrap != 0
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// SnapshotReadSkillDefActive implements store.Store.
+func (s *Store) SnapshotReadSkillDefActive(ctx context.Context) ([]store.SkillDefActiveEntry, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT name, def_id, promoted_at, promoted_by_agent_id
+		 FROM skill_def_active
+		 ORDER BY name ASC`)
+	if err != nil {
+		return nil, fmt.Errorf("snapshot read skill_def_active: %w", err)
+	}
+	defer rows.Close()
+	var out []store.SkillDefActiveEntry
+	for rows.Next() {
+		var (
+			e          store.SkillDefActiveEntry
+			promotedNs int64
+			promoter   sql.NullString
+		)
+		if err := rows.Scan(&e.Name, &e.DefID, &promotedNs, &promoter); err != nil {
+			return nil, fmt.Errorf("scan skill_def_active: %w", err)
+		}
+		e.PromotedAt = time.Unix(0, promotedNs)
+		if promoter.Valid {
+			e.PromotedByAgentID = promoter.String
+		}
+		out = append(out, e)
+	}
+	return out, rows.Err()
+}
+
 // SnapshotReadMemory implements store.Store. Filters expired rows
 // (consistent with MemoryGet's behaviour at the same layer).
 func (s *Store) SnapshotReadMemory(ctx context.Context) ([]store.MemorySnapshotEntry, error) {
@@ -1560,6 +1672,55 @@ func (s *Store) SnapshotRestoreAgentDefActive(ctx context.Context, e store.Agent
 	)
 	if err != nil {
 		return false, fmt.Errorf("snapshot restore agent_def_active: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	return n > 0, nil
+}
+
+// SnapshotRestoreSkillDef implements store.Store. Mirror of
+// SnapshotRestoreAgentDef against skill_defs.
+func (s *Store) SnapshotRestoreSkillDef(ctx context.Context, r store.SkillDefRow) (bool, error) {
+	if r.DefID == "" || r.Name == "" {
+		return false, fmt.Errorf("snapshot restore skill_def: def_id and name required")
+	}
+	createdNs := r.CreatedAt.UnixNano()
+	if r.CreatedAt.IsZero() {
+		createdNs = time.Now().UnixNano()
+	}
+	res, err := s.db.ExecContext(ctx,
+		`INSERT OR IGNORE INTO skill_defs(
+			def_id, name, version, parent_def_id, definition, description,
+			created_at, created_by_agent_id, created_by_run_id,
+			retired, bootstrapped_from_static
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		r.DefID, r.Name, r.Version, nilIfEmpty(r.ParentDefID),
+		string(r.Definition), nilIfEmpty(r.Description),
+		createdNs, nilIfEmpty(r.CreatedByAgentID), nilIfEmpty(r.CreatedByRunID),
+		boolToInt(r.Retired), boolToInt(r.BootstrappedFromStatic),
+	)
+	if err != nil {
+		return false, fmt.Errorf("snapshot restore skill_def: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	return n > 0, nil
+}
+
+// SnapshotRestoreSkillDefActive implements store.Store. Mirror of
+// SnapshotRestoreAgentDefActive against skill_def_active.
+func (s *Store) SnapshotRestoreSkillDefActive(ctx context.Context, e store.SkillDefActiveEntry) (bool, error) {
+	if e.Name == "" || e.DefID == "" {
+		return false, fmt.Errorf("snapshot restore skill_def_active: name and def_id required")
+	}
+	promotedNs := e.PromotedAt.UnixNano()
+	if e.PromotedAt.IsZero() {
+		promotedNs = time.Now().UnixNano()
+	}
+	res, err := s.db.ExecContext(ctx,
+		`INSERT OR IGNORE INTO skill_def_active(name, def_id, promoted_at, promoted_by_agent_id) VALUES (?, ?, ?, ?)`,
+		e.Name, e.DefID, promotedNs, nilIfEmpty(e.PromotedByAgentID),
+	)
+	if err != nil {
+		return false, fmt.Errorf("snapshot restore skill_def_active: %w", err)
 	}
 	n, _ := res.RowsAffected()
 	return n > 0, nil
@@ -2537,6 +2698,262 @@ func (s *Store) scanAgentDefRows(rows *sql.Rows) ([]store.AgentDefRow, error) {
 	for rows.Next() {
 		var (
 			r          store.AgentDefRow
+			definition string
+			createdAt  int64
+			retired    int
+			bootstrap  int
+		)
+		if err := rows.Scan(
+			&r.DefID, &r.Name, &r.Version,
+			&r.ParentDefID,
+			&definition,
+			&r.Description,
+			&createdAt,
+			&r.CreatedByAgentID, &r.CreatedByRunID,
+			&retired, &bootstrap,
+		); err != nil {
+			return nil, err
+		}
+		r.Definition = json.RawMessage(definition)
+		r.CreatedAt = time.Unix(0, createdAt)
+		r.Retired = retired != 0
+		r.BootstrappedFromStatic = bootstrap != 0
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// ---- v0.8.22 SkillDef substrate ----
+//
+// Direct mirror of the AgentDef methods above. Same per-name lock
+// for version monotonicity, same scan/select helpers, same error
+// surfaces. The only divergence is the table name and the typed
+// error (ErrSkillDefParentNotFound instead of ErrAgentDefParentNotFound).
+// If you fix a bug in one of these methods, fix it in the AgentDef
+// twin as well.
+
+func (s *Store) SkillDefCreate(ctx context.Context, row store.SkillDefRow) (store.SkillDefRow, error) {
+	if row.DefID == "" || row.Name == "" {
+		return store.SkillDefRow{}, fmt.Errorf("skill_def: def_id + name required")
+	}
+	conn, err := s.db.Conn(ctx)
+	if err != nil {
+		return store.SkillDefRow{}, err
+	}
+	defer conn.Close()
+
+	if _, err := conn.ExecContext(ctx, "BEGIN IMMEDIATE"); err != nil {
+		return store.SkillDefRow{}, err
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_, _ = conn.ExecContext(context.Background(), "ROLLBACK")
+		}
+	}()
+
+	if row.ParentDefID != "" {
+		var n int
+		if err := conn.QueryRowContext(ctx, `SELECT COUNT(*) FROM skill_defs WHERE def_id = ?`, row.ParentDefID).Scan(&n); err != nil {
+			return store.SkillDefRow{}, err
+		}
+		if n == 0 {
+			return store.SkillDefRow{}, store.ErrSkillDefParentNotFound
+		}
+	}
+
+	var maxVer sql.NullInt64
+	if err := conn.QueryRowContext(ctx,
+		`SELECT MAX(version) FROM skill_defs WHERE name = ?`, row.Name,
+	).Scan(&maxVer); err != nil {
+		return store.SkillDefRow{}, err
+	}
+	row.Version = 1
+	if maxVer.Valid {
+		row.Version = int(maxVer.Int64) + 1
+	}
+	row.CreatedAt = time.Now()
+
+	if _, err := conn.ExecContext(ctx,
+		`INSERT INTO skill_defs (
+			def_id, name, version, parent_def_id, definition, description,
+			created_at, created_by_agent_id, created_by_run_id,
+			retired, bootstrapped_from_static
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		row.DefID, row.Name, row.Version, nilIfEmpty(row.ParentDefID),
+		string(row.Definition), nilIfEmpty(row.Description),
+		row.CreatedAt.UnixNano(),
+		nilIfEmpty(row.CreatedByAgentID), nilIfEmpty(row.CreatedByRunID),
+		boolToInt(row.Retired), boolToInt(row.BootstrappedFromStatic),
+	); err != nil {
+		return store.SkillDefRow{}, err
+	}
+	if _, err := conn.ExecContext(ctx, "COMMIT"); err != nil {
+		return store.SkillDefRow{}, err
+	}
+	committed = true
+	return row, nil
+}
+
+func (s *Store) SkillDefGet(ctx context.Context, defID string) (store.SkillDefRow, error) {
+	row, err := s.scanSkillDef(s.db.QueryRowContext(ctx, skillDefSelect+` WHERE def_id = ?`, defID))
+	if err == sql.ErrNoRows {
+		return store.SkillDefRow{}, &store.ErrNotFound{Kind: "skill_def", ID: defID}
+	}
+	return row, err
+}
+
+func (s *Store) SkillDefGetByNameVersion(ctx context.Context, name string, version int) (store.SkillDefRow, error) {
+	row, err := s.scanSkillDef(s.db.QueryRowContext(ctx, skillDefSelect+` WHERE name = ? AND version = ?`, name, version))
+	if err == sql.ErrNoRows {
+		return store.SkillDefRow{}, &store.ErrNotFound{Kind: "skill_def", ID: fmt.Sprintf("%s@v%d", name, version)}
+	}
+	return row, err
+}
+
+func (s *Store) SkillDefListByName(ctx context.Context, name string) ([]store.SkillDefRow, error) {
+	rows, err := s.db.QueryContext(ctx, skillDefSelect+` WHERE name = ? ORDER BY version DESC`, name)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return s.scanSkillDefRows(rows)
+}
+
+func (s *Store) SkillDefListChildren(ctx context.Context, parentDefID string) ([]store.SkillDefRow, error) {
+	rows, err := s.db.QueryContext(ctx, skillDefSelect+` WHERE parent_def_id = ? ORDER BY version DESC`, parentDefID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return s.scanSkillDefRows(rows)
+}
+
+func (s *Store) SkillDefListNames(ctx context.Context) ([]store.SkillDefNameSummary, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT
+			d.name,
+			COUNT(*)                  AS version_count,
+			MAX(d.version)            AS latest_version,
+			MAX(d.created_at)         AS last_updated,
+			COALESCE(a.def_id, '')    AS active_def_id
+		FROM skill_defs d
+		LEFT JOIN skill_def_active a ON a.name = d.name
+		GROUP BY d.name, a.def_id
+		ORDER BY d.name`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []store.SkillDefNameSummary
+	for rows.Next() {
+		var ns store.SkillDefNameSummary
+		var updatedAt int64
+		if err := rows.Scan(&ns.Name, &ns.VersionCount, &ns.LatestVersion, &updatedAt, &ns.ActiveDefID); err != nil {
+			return nil, err
+		}
+		ns.LastUpdated = time.Unix(0, updatedAt)
+		out = append(out, ns)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) SkillDefSetActive(ctx context.Context, name, defID, promotedByAgentID string) error {
+	var rowName string
+	err := s.db.QueryRowContext(ctx, `SELECT name FROM skill_defs WHERE def_id = ?`, defID).Scan(&rowName)
+	if err == sql.ErrNoRows {
+		return &store.ErrNotFound{Kind: "skill_def", ID: defID}
+	}
+	if err != nil {
+		return err
+	}
+	if rowName != name {
+		return fmt.Errorf("skill_def_active: def_id %q has name %q, refusing to promote under name %q", defID, rowName, name)
+	}
+	_, err = s.db.ExecContext(ctx, `
+		INSERT INTO skill_def_active (name, def_id, promoted_at, promoted_by_agent_id)
+		VALUES (?, ?, ?, ?)
+		ON CONFLICT(name) DO UPDATE SET
+		    def_id               = excluded.def_id,
+		    promoted_at          = excluded.promoted_at,
+		    promoted_by_agent_id = excluded.promoted_by_agent_id`,
+		name, defID, time.Now().UnixNano(), nilIfEmpty(promotedByAgentID),
+	)
+	return err
+}
+
+func (s *Store) SkillDefGetActive(ctx context.Context, name string) (store.SkillDefRow, error) {
+	var defID string
+	err := s.db.QueryRowContext(ctx, `SELECT def_id FROM skill_def_active WHERE name = ?`, name).Scan(&defID)
+	if err == sql.ErrNoRows {
+		return store.SkillDefRow{}, &store.ErrNotFound{Kind: "skill_def_active", ID: name}
+	}
+	if err != nil {
+		return store.SkillDefRow{}, err
+	}
+	return s.SkillDefGet(ctx, defID)
+}
+
+func (s *Store) SkillDefSetRetired(ctx context.Context, defID string, retired bool) error {
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE skill_defs SET retired = ? WHERE def_id = ?`,
+		boolToInt(retired), defID,
+	)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return &store.ErrNotFound{Kind: "skill_def", ID: defID}
+	}
+	return nil
+}
+
+const skillDefSelect = `SELECT
+	def_id, name, version,
+	COALESCE(parent_def_id, ''),
+	definition,
+	COALESCE(description, ''),
+	created_at,
+	COALESCE(created_by_agent_id, ''),
+	COALESCE(created_by_run_id, ''),
+	retired,
+	bootstrapped_from_static
+FROM skill_defs`
+
+func (s *Store) scanSkillDef(row *sql.Row) (store.SkillDefRow, error) {
+	var (
+		out        store.SkillDefRow
+		definition string
+		createdAt  int64
+		retired    int
+		bootstrap  int
+	)
+	err := row.Scan(
+		&out.DefID, &out.Name, &out.Version,
+		&out.ParentDefID,
+		&definition,
+		&out.Description,
+		&createdAt,
+		&out.CreatedByAgentID, &out.CreatedByRunID,
+		&retired, &bootstrap,
+	)
+	if err != nil {
+		return store.SkillDefRow{}, err
+	}
+	out.Definition = json.RawMessage(definition)
+	out.CreatedAt = time.Unix(0, createdAt)
+	out.Retired = retired != 0
+	out.BootstrappedFromStatic = bootstrap != 0
+	return out, nil
+}
+
+func (s *Store) scanSkillDefRows(rows *sql.Rows) ([]store.SkillDefRow, error) {
+	var out []store.SkillDefRow
+	for rows.Next() {
+		var (
+			r          store.SkillDefRow
 			definition string
 			createdAt  int64
 			retired    int
