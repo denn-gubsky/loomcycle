@@ -105,6 +105,10 @@ func (s *Store) migrate(ctx context.Context) error {
 		// indexes to avoid full-table scans on busy installs.
 		`CREATE INDEX IF NOT EXISTS events_by_ts ON events(ts DESC)`,
 		`CREATE INDEX IF NOT EXISTS events_by_type_ts ON events(type, ts DESC)`,
+		// v0.8.21 awaited-state derivation needs the last event per
+		// run cheaply for every running agent — (run_id, seq DESC)
+		// is the covering shape.
+		`CREATE INDEX IF NOT EXISTS events_by_run_seq ON events(run_id, seq DESC)`,
 		// v0.8 Memory tool. PRIMARY KEY (scope, scope_id, key) gives
 		// the natural lookup index; the partial expires_at index keeps
 		// the sweeper's DELETE cheap (no full-table scan).
@@ -567,6 +571,31 @@ func (s *Store) GetTranscript(ctx context.Context, sessionID string) ([]store.Ev
 		out = append(out, ev)
 	}
 	return out, rows.Err()
+}
+
+// GetLastEventForRun returns the latest event by seq for the given
+// run. Indexed by events.run_id under the existing schema; the
+// composite (session_id, seq) index doesn't cover this query, but
+// SQLite's automatic indexing on the run_id column is sufficient
+// for the typical N<20 running-agents case.
+func (s *Store) GetLastEventForRun(ctx context.Context, runID string) (store.Event, error) {
+	var (
+		ev store.Event
+		ts int64
+	)
+	err := s.db.QueryRowContext(ctx,
+		`SELECT seq, session_id, run_id, ts, type, payload
+		 FROM events WHERE run_id = ? ORDER BY seq DESC LIMIT 1`,
+		runID,
+	).Scan(&ev.Seq, &ev.SessionID, &ev.RunID, &ts, &ev.Type, &ev.Payload)
+	if errors.Is(err, sql.ErrNoRows) {
+		return store.Event{}, &store.ErrNotFound{Kind: "event", ID: runID}
+	}
+	if err != nil {
+		return store.Event{}, err
+	}
+	ev.Timestamp = time.Unix(0, ts)
+	return ev, nil
 }
 
 // ListEvents serves the v0.8.21 audit view's cross-session query.

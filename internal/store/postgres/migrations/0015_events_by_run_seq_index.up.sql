@@ -1,0 +1,13 @@
+-- 0015_events_by_run_seq_index.up.sql — v0.8.21 awaited-state tree tint.
+--
+-- The Web UI's left agents-tree panel needs the most-recent event
+-- per running run to derive what each agent is currently blocked
+-- on (Channel.subscribe long-poll → orange; Interruption.ask →
+-- violet; otherwise green). The list-agents handler invokes
+-- GetLastEventForRun once per running row.
+--
+-- Without this index the (run_id, ORDER BY seq DESC LIMIT 1)
+-- subquery scans every event the run has emitted; for chatty
+-- agents this is hundreds of rows per call, repeated for every
+-- agent in the polling fan-out.
+CREATE INDEX IF NOT EXISTS events_by_run_seq ON events(run_id, seq DESC);

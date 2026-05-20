@@ -66,6 +66,13 @@ export interface Agent {
   };
   last_heartbeat_at: string | null;
   live: boolean;
+  // v0.8.21 awaited-state surface. Empty/absent for non-running
+  // runs AND for running runs making normal progress. When set,
+  // `awaited_state` is "channel" (open Channel.subscribe) or
+  // "interrupted" (open Interruption.ask), and `awaited_on` carries
+  // the channel name or interruption kind respectively.
+  awaited_state?: "channel" | "interrupted" | "";
+  awaited_on?: string;
 }
 
 export interface ListAgentsResponse {

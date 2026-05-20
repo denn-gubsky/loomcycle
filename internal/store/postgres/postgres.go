@@ -306,6 +306,28 @@ func (s *Store) GetTranscript(ctx context.Context, sessionID string) ([]store.Ev
 	return out, nil
 }
 
+// GetLastEventForRun returns the latest event by seq for the given
+// run. Index hint: events_by_run_seq (added in migration 0015).
+func (s *Store) GetLastEventForRun(ctx context.Context, runID string) (store.Event, error) {
+	var (
+		ev store.Event
+		ts time.Time
+	)
+	err := s.pool.QueryRow(ctx,
+		`SELECT seq, session_id, run_id, ts, type, payload
+		 FROM events WHERE run_id = $1 ORDER BY seq DESC LIMIT 1`,
+		runID,
+	).Scan(&ev.Seq, &ev.SessionID, &ev.RunID, &ts, &ev.Type, &ev.Payload)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return store.Event{}, &store.ErrNotFound{Kind: "event", ID: runID}
+	}
+	if err != nil {
+		return store.Event{}, fmt.Errorf("get last event for run: %w", err)
+	}
+	ev.Timestamp = ts
+	return ev, nil
+}
+
 // ListEvents serves the v0.8.21 /v1/_events audit endpoint. Same
 // filter semantics as the SQLite adapter; uses $N placeholders and
 // numeric args. Index hint: events_by_ts / events_by_type_ts (added

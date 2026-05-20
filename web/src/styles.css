@@ -497,6 +497,32 @@ pre {
   color: var(--fg-soft);
 }
 
+/* v0.8.21 awaited-state row tint — applied to running rows in the
+ * agents tree so the operator can scan the tree and see at a glance
+ * which agents are progressing vs. blocked. Colours mirror the
+ * detail-pane chip (.await-chip-*) using lower-alpha fills so the
+ * tint never overpowers the row content. The `.row` selector keeps
+ * children rows (.children) un-tinted — only the immediate row
+ * paints, since children inherit their own state via their own
+ * tint class. */
+.node.await-running > .row {
+  background-color: rgba(110, 231, 163, 0.08);
+  border-left: 3px solid #2a5a3a;
+}
+.node.await-channel > .row {
+  background-color: rgba(255, 183, 102, 0.12);
+  border-left: 3px solid #b97a30;
+}
+.node.await-interrupted > .row {
+  background-color: rgba(201, 168, 255, 0.13);
+  border-left: 3px solid #6b50b8;
+}
+/* Selected outranks the tint border so the operator can still tell
+ * which row is currently open in the detail pane. */
+.node.selected > .row {
+  border-left-color: var(--accent);
+}
+
 /* v0.8.21 awaited-state chip — small pill that says what the
  * running agent is blocked on (a Channel.subscribe long-poll, a
  * pending Interruption, or none → plain "running"). Colours follow

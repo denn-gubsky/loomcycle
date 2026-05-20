@@ -2578,6 +2578,16 @@ type agentResponse struct {
 	Usage           agentResponseUsage `json:"usage"`
 	LastHeartbeatAt *time.Time         `json:"last_heartbeat_at,omitempty"`
 	Live            bool               `json:"live"`
+	// v0.8.21 awaited-state surface — what the running agent is
+	// currently blocked on. Empty for non-running rows AND for
+	// running rows where the agent is making progress (no
+	// unresolved Channel.subscribe / Interruption.ask). Two-field
+	// shape avoids encoding a parser into the wire:
+	//   AwaitedState = "" | "channel" | "interrupted"
+	//   AwaitedOn    = channel name (when state=channel) or
+	//                  interruption kind (when state=interrupted)
+	AwaitedState string `json:"awaited_state,omitempty"`
+	AwaitedOn    string `json:"awaited_on,omitempty"`
 }
 
 type agentResponseUsage struct {
@@ -2671,7 +2681,13 @@ func (s *Server) handleGetAgent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_, live := s.cancelReg.Get(agentID)
-	writeJSON(w, http.StatusOK, runToAgentResponse(run, live))
+	resp := runToAgentResponse(run, live)
+	if resp.Status == store.RunRunning {
+		single := []agentResponse{resp}
+		fillAwaitedStateForRunning(r.Context(), s.store, single)
+		resp = single[0]
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 // cancelRequest is the (optional) JSON body for POST /v1/agents/{id}/cancel.
@@ -2777,6 +2793,7 @@ func (s *Server) handleListUserAgents(w http.ResponseWriter, r *http.Request) {
 		_, live := s.cancelReg.Get(run.AgentID)
 		out = append(out, runToAgentResponse(run, live))
 	}
+	fillAwaitedStateForRunning(r.Context(), s.store, out)
 	writeJSON(w, http.StatusOK, map[string]any{"agents": out})
 }
 

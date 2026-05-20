@@ -162,6 +162,9 @@ func Run(t *testing.T, factory Factory) {
 		// v0.8.21 audit-view cross-session event listing.
 		{"ListEventsFilterByTypeAndRange", testListEventsFilterByTypeAndRange},
 		{"ListEventsPaginationAndTotal", testListEventsPaginationAndTotal},
+		// v0.8.21 awaited-state derivation needs last-event-per-run.
+		{"GetLastEventForRunEmpty", testGetLastEventForRunEmpty},
+		{"GetLastEventForRunReturnsHighestSeq", testGetLastEventForRunReturnsHighestSeq},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -3272,6 +3275,82 @@ func testListEventsFilterByTypeAndRange(t *testing.T, s store.Store) {
 	if total3 != 1 || len(got3) != 1 || got3[0].Type != "tool_call" {
 		t.Errorf("type+to mismatch: total=%d got=%v", total3, got3)
 	}
+}
+
+// testGetLastEventForRunEmpty confirms a freshly-created run with no
+// events yet yields ErrNotFound{Kind:"event"}. The list-agents
+// handler treats this as "no awaited state" — common immediately
+// after a run is registered.
+func testGetLastEventForRunEmpty(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	sess, _ := s.CreateSession(ctx, "t", "default", "u")
+	run, _ := s.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: "a_empty"})
+
+	_, err := s.GetLastEventForRun(ctx, run.ID)
+	var nf *store.ErrNotFound
+	if !errors.As(err, &nf) {
+		t.Fatalf("got %v (%T), want *ErrNotFound", err, err)
+	}
+	if nf.Kind != "event" {
+		t.Errorf("Kind = %q, want event", nf.Kind)
+	}
+}
+
+// testGetLastEventForRunReturnsHighestSeq writes a sequence of
+// events and asserts the lookup returns the LATEST one (highest
+// seq), with the correct session/run/type/payload round-tripped.
+func testGetLastEventForRunReturnsHighestSeq(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	sess, _ := s.CreateSession(ctx, "t", "default", "u")
+	run, _ := s.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: "a_last"})
+
+	for _, p := range []struct{ typ, body string }{
+		{"text", `{"text":"hi"}`},
+		{"tool_call", `{"tool_use":{"id":"tu_1","name":"Read"}}`},
+		{"tool_call", `{"tool_use":{"id":"tu_2","name":"Channel","input":{"op":"subscribe","channel":"findings"}}}`},
+	} {
+		if err := s.AppendEvent(ctx, run.ID, p.typ, []byte(p.body)); err != nil {
+			t.Fatalf("AppendEvent: %v", err)
+		}
+	}
+
+	ev, err := s.GetLastEventForRun(ctx, run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ev.Type != "tool_call" {
+		t.Errorf("Type = %q, want tool_call (latest)", ev.Type)
+	}
+	if ev.SessionID != sess.ID || ev.RunID != run.ID {
+		t.Errorf("session/run id mismatch: %+v", ev)
+	}
+	if !contains(string(ev.Payload), "Channel") {
+		t.Errorf("payload should be the Channel.subscribe row, got %s", string(ev.Payload))
+	}
+
+	// Adding an event on a DIFFERENT run must not leak into this one.
+	other, _ := s.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: "a_other"})
+	if err := s.AppendEvent(ctx, other.ID, "text", []byte(`{"text":"other"}`)); err != nil {
+		t.Fatal(err)
+	}
+	ev2, err := s.GetLastEventForRun(ctx, run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ev2.RunID != run.ID || ev2.Type != "tool_call" {
+		t.Errorf("scope leak: got %+v", ev2)
+	}
+}
+
+// contains is a local helper to avoid pulling strings.Contains in
+// a test-only file — keeps the contract package import-light.
+func contains(haystack, needle string) bool {
+	for i := 0; i+len(needle) <= len(haystack); i++ {
+		if haystack[i:i+len(needle)] == needle {
+			return true
+		}
+	}
+	return false
 }
 
 // testListEventsPaginationAndTotal confirms limit + offset slice the

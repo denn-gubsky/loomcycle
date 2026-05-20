@@ -360,6 +360,15 @@ type Store interface {
 	// follow-up if scale demands.
 	ListEvents(ctx context.Context, filter EventFilter, limit, offset int) ([]Event, int64, error)
 
+	// GetLastEventForRun returns the highest-seq event recorded for
+	// the given run. v0.8.21 introduces this so the list-agents
+	// endpoint can derive "awaited state" (channel/interrupted/
+	// running) cheaply from one row per running agent — without
+	// pulling the full transcript. Returns *ErrNotFound{Kind:"event"}
+	// when the run has no events yet (just-created, hasn't streamed
+	// anything).
+	GetLastEventForRun(ctx context.Context, runID string) (Event, error)
+
 	// GetRunByAgentID returns the most recently started run carrying
 	// the given agent_id. Returns *ErrNotFound when no such row.
 	// Used by the GET /v1/agents/{agent_id} and cancel endpoints to
