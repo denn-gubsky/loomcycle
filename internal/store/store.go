@@ -498,6 +498,15 @@ type Store interface {
 	// agent_def_active. Ordered by name ASC for determinism.
 	SnapshotReadAgentDefActive(ctx context.Context) ([]AgentDefActiveEntry, error)
 
+	// SnapshotReadSkillDefs returns every row in skill_defs across
+	// all names + versions. Ordered by (name ASC, version ASC) for
+	// snapshot determinism. Mirrors SnapshotReadAgentDefs.
+	SnapshotReadSkillDefs(ctx context.Context) ([]SkillDefRow, error)
+
+	// SnapshotReadSkillDefActive returns every row in
+	// skill_def_active. Ordered by name ASC for determinism.
+	SnapshotReadSkillDefActive(ctx context.Context) ([]SkillDefActiveEntry, error)
+
 	// SnapshotReadMemory returns every memory row across all scopes,
 	// tagged with scope + scope_id. Ordered by (scope ASC, scope_id
 	// ASC, key ASC). Filters out expired rows (consistent with
@@ -570,6 +579,14 @@ type Store interface {
 	// promoted_at + promoted_by_agent_id. `inserted` is true only on
 	// the first write (no prior row for the name).
 	SnapshotRestoreAgentDefActive(ctx context.Context, entry AgentDefActiveEntry) (bool, error)
+
+	// SnapshotRestoreSkillDef mirrors SnapshotRestoreAgentDef for
+	// skill_defs. Idempotent on def_id.
+	SnapshotRestoreSkillDef(ctx context.Context, r SkillDefRow) (bool, error)
+
+	// SnapshotRestoreSkillDefActive mirrors SnapshotRestoreAgentDefActive
+	// for skill_def_active.
+	SnapshotRestoreSkillDefActive(ctx context.Context, entry SkillDefActiveEntry) (bool, error)
 
 	// SnapshotRestoreMemory inserts one memory row preserving
 	// CreatedAt + UpdatedAt + ExpiresAt + Value. Idempotent on
@@ -755,6 +772,24 @@ type Store interface {
 	// the resolver skips retired rows when picking the next default
 	// for runs that don't pin def_id.
 	AgentDefSetRetired(ctx context.Context, defID string, retired bool) error
+
+	// ---- v0.8.22 SkillDef substrate ----
+	//
+	// Mirror of AgentDef* with the same invariants. Concurrency
+	// posture is identical: a per-name lock makes version monotonic
+	// across concurrent forks. The Definition payload is a skill
+	// body + metadata instead of an agent body — the store stays
+	// content-agnostic.
+
+	SkillDefCreate(ctx context.Context, row SkillDefRow) (SkillDefRow, error)
+	SkillDefGet(ctx context.Context, defID string) (SkillDefRow, error)
+	SkillDefGetByNameVersion(ctx context.Context, name string, version int) (SkillDefRow, error)
+	SkillDefListByName(ctx context.Context, name string) ([]SkillDefRow, error)
+	SkillDefListChildren(ctx context.Context, parentDefID string) ([]SkillDefRow, error)
+	SkillDefListNames(ctx context.Context) ([]SkillDefNameSummary, error)
+	SkillDefSetActive(ctx context.Context, name, defID, promotedByAgentID string) error
+	SkillDefGetActive(ctx context.Context, name string) (SkillDefRow, error)
+	SkillDefSetRetired(ctx context.Context, defID string, retired bool) error
 
 	// ---- Evaluation ----
 	//
@@ -1151,6 +1186,48 @@ type AgentDefNameSummary struct {
 	LastUpdated   time.Time `json:"last_updated"`
 }
 
+// ---- v0.8.22 SkillDef substrate types ----
+//
+// Mirror of AgentDef* — same identity / lineage / provenance
+// semantics, but the Definition payload is a skill body + metadata
+// instead of an agent body. See internal/tools/builtin/skilldef.go
+// for the JSON shape (body / description / allowed_tools).
+//
+// Identity, lineage, and provenance fields carry identical
+// invariants to AgentDefRow. See the AgentDefRow doc for full
+// detail — the comments below only call out skill-specific quirks.
+type SkillDefRow struct {
+	DefID                  string          `json:"def_id"`
+	Name                   string          `json:"name"`
+	Version                int             `json:"version"`
+	ParentDefID            string          `json:"parent_def_id,omitempty"`
+	Definition             json.RawMessage `json:"definition"`
+	Description            string          `json:"description,omitempty"`
+	CreatedAt              time.Time       `json:"created_at"`
+	CreatedByAgentID       string          `json:"created_by_agent_id,omitempty"`
+	CreatedByRunID         string          `json:"created_by_run_id,omitempty"`
+	Retired                bool            `json:"retired"`
+	BootstrappedFromStatic bool            `json:"bootstrapped_from_static"`
+}
+
+// SkillDefNameSummary mirrors AgentDefNameSummary.
+type SkillDefNameSummary struct {
+	Name          string    `json:"name"`
+	VersionCount  int       `json:"version_count"`
+	ActiveDefID   string    `json:"active_def_id,omitempty"`
+	LatestVersion int       `json:"latest_version"`
+	LastUpdated   time.Time `json:"last_updated"`
+}
+
+// SkillDefActiveEntry mirrors AgentDefActiveEntry. Pairs a skill
+// name with the def_id currently promoted to active.
+type SkillDefActiveEntry struct {
+	Name              string    `json:"name"`
+	DefID             string    `json:"def_id"`
+	PromotedAt        time.Time `json:"promoted_at"`
+	PromotedByAgentID string    `json:"promoted_by_agent_id,omitempty"`
+}
+
 // EvaluationRow is one row in the evaluations table.
 //
 // DefID is denormalised from runs.agent_def_id at submit time —
@@ -1223,6 +1300,10 @@ type ScoreStats struct {
 // ErrNotFound so the tool layer can surface "your fork parent
 // vanished" with a clean code.
 var ErrAgentDefParentNotFound = &SubstrateError{Code: "parent_not_found", Msg: "agent_def: parent_def_id does not exist"}
+
+// ErrSkillDefParentNotFound mirrors ErrAgentDefParentNotFound for
+// the SkillDef substrate.
+var ErrSkillDefParentNotFound = &SubstrateError{Code: "parent_not_found", Msg: "skill_def: parent_def_id does not exist"}
 
 // ErrAgentDefImmutable is returned by store-layer assertions if
 // someone tries to UPDATE an agent_defs row's definition column.
