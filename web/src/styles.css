@@ -271,14 +271,14 @@ pre {
  * available height of the .content area; each has its own
  * internal scroll so headers stay sticky. */
 .agents-view {
-  display: grid;
-  grid-template-columns: 420px 1fr;
-  gap: 12px;
+  /* Layout (grid-template-columns + gap) comes from .splitter. The
+   * old static rules are retained for any non-splitter consumer
+   * that still expects the visual styling. */
   height: 100%;
   min-height: 0;
 }
-.agents-view > .left,
-.agents-view > .right {
+.agents-view .left,
+.agents-view .right {
   background: var(--bg-soft);
   border: 1px solid var(--border);
   border-radius: 6px;
@@ -286,6 +286,7 @@ pre {
   flex-direction: column;
   min-height: 0;
   overflow: hidden;
+  flex: 1;
 }
 .agents-tree-panel {
   display: flex;
@@ -303,13 +304,13 @@ pre {
   padding: 8px 10px;
   min-height: 0;
 }
-.agents-view > .right > .agent-detail {
+.agents-view .right > .agent-detail {
   flex: 1;
   overflow: auto;
   min-height: 0;
   padding: 0 14px 14px;
 }
-.agents-view > .right > .empty {
+.agents-view .right > .empty {
   flex: 1;
   display: flex;
   align-items: center;
@@ -481,6 +482,12 @@ pre {
   align-items: center;
   gap: 12px;
 }
+.agent-header .line-await {
+  margin-top: 6px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
 .agent-header .line2 {
   margin-top: 6px;
   display: flex;
@@ -488,6 +495,43 @@ pre {
   gap: 16px;
   font-size: 12px;
   color: var(--fg-soft);
+}
+
+/* v0.8.21 awaited-state chip — small pill that says what the
+ * running agent is blocked on (a Channel.subscribe long-poll, a
+ * pending Interruption, or none → plain "running"). Colours follow
+ * the operator's mental model: green = healthy/active, orange =
+ * waiting on inter-agent comms, violet = waiting on a human. */
+.await-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 11px;
+  font-family: var(--mono);
+  line-height: 1.4;
+  border: 1px solid transparent;
+}
+.await-chip code {
+  font-size: 11px;
+  background: transparent;
+  color: inherit;
+}
+.await-chip-running {
+  background: #1a3a26;
+  color: #6ee7a3;
+  border-color: #2a5a3a;
+}
+.await-chip-channel {
+  background: #3a2a14;
+  color: #ffb766;
+  border-color: #5a3a1e;
+}
+.await-chip-interrupted {
+  background: #2a1f3a;
+  color: #c9a8ff;
+  border-color: #46347a;
 }
 .cancel-btn {
   background: var(--failed);
@@ -681,11 +725,27 @@ pre {
 }
 
 /* v0.8.0 Memory page — three-pane layout. */
-.memory-view {
-  display: grid;
-  grid-template-columns: 280px 320px 1fr;
-  gap: 12px;
+.memory-view-wrapper {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
   padding: 12px;
+  gap: 8px;
+}
+.memory-view-wrapper > .err {
+  flex-shrink: 0;
+}
+.memory-view {
+  /* Layout owned by .splitter (display:grid, grid-template-columns
+   * via inline style). The previous static three-column grid is
+   * replaced by an outer + inner Splitter so each gutter is
+   * draggable. Pane styling (.memory-pane) still applies. */
+  height: 100%;
+  min-height: 0;
+  flex: 1;
+}
+.memory-view-inner {
   height: 100%;
   min-height: 0;
 }
@@ -1248,6 +1308,53 @@ pre {
 }
 .snapshots-table .muted {
   color: var(--fg-soft);
+}
+
+/* v0.8.21 Splitter — draggable resizable two-pane container used by
+ * Runs and Memory views. Owner: web/src/components/Splitter.tsx.
+ * Layout is grid (left / handle / right); the inline style sets the
+ * left column width, handle is fixed 6px, right grows. */
+.splitter {
+  display: grid;
+  gap: 0;
+  height: 100%;
+  min-height: 0;
+}
+.splitter.dragging {
+  /* Suppress text-select highlighting during a drag — without this
+   * the user's mouse sweep grabs the pane content as a selection. */
+  user-select: none;
+  cursor: col-resize;
+}
+.splitter > .splitter-pane {
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.splitter > .splitter-handle {
+  background: transparent;
+  cursor: col-resize;
+  position: relative;
+  z-index: 1;
+}
+.splitter > .splitter-handle::before {
+  /* Thin centred line that becomes visible on hover/drag — the
+   * 6px handle has 1px of visible vibe and 5px of forgiving hit
+   * area. */
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 2px;
+  width: 2px;
+  background: var(--border);
+  transition: background 80ms ease;
+}
+.splitter > .splitter-handle:hover::before,
+.splitter.dragging > .splitter-handle::before {
+  background: var(--accent);
 }
 
 /* v0.8.21 Audit view — cross-session paginated event log. */

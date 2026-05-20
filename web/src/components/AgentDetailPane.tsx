@@ -119,6 +119,7 @@ export default function AgentDetailPane({ agentId, ancestors, onSelect }: AgentD
   }, [ancestors, agent?.parent_agent_id, parentAgent]);
 
   const renderedEvents = useMemo(() => coalesceText(events.filter(visible)), [events]);
+  const awaited = useMemo(() => deriveAwaitedState(events), [events]);
   const [viewMode, setViewMode] = useViewMode();
 
   return (
@@ -150,6 +151,11 @@ export default function AgentDetailPane({ agentId, ancestors, onSelect }: AgentD
               </button>
             )}
           </div>
+          {agent.status === "running" && (
+            <div className="line-await">
+              <AwaitChip state={awaited} />
+            </div>
+          )}
           <div className="line2">
             <span>{agent.usage?.model || "—"}</span>
             <span>user: {agent.user_id || "—"}</span>
@@ -196,6 +202,84 @@ export default function AgentDetailPane({ agentId, ancestors, onSelect }: AgentD
 function visible(ev: TranscriptEvent): boolean {
   const t = ev.event?.type ?? ev.type;
   return t !== "started" && t !== "usage" && t !== "session" && t !== "agent" && t !== "user_input";
+}
+
+// AwaitedState is what the agent is currently blocked on (or
+// "running" if it's actively making progress / waiting on a
+// provider response, which we can't distinguish from real CPU
+// work from outside the loop).
+type AwaitedState =
+  | { kind: "running" }
+  | { kind: "channel"; channel: string }
+  | { kind: "interrupted"; op: string };
+
+// deriveAwaitedState walks the transcript and identifies the last
+// tool_call that hasn't received a matching tool_result. If that
+// open call is a Channel.subscribe or an Interruption.ask, the
+// agent is blocked on a long-poll; otherwise it's "running".
+//
+// Why look at unresolved tool_calls (not a server-side flag): the
+// loomcycle loop doesn't currently surface "I'm inside a tool that
+// is blocking on i/o" anywhere — the only signal is the absence of
+// a tool_result for the most recent tool_call. The events stream
+// already carries that signal; computing it client-side keeps the
+// wire shape stable and avoids a server roundtrip. Note this is
+// best-effort: if the operator filters events somehow, the
+// derivation degrades to "running".
+function deriveAwaitedState(events: TranscriptEvent[]): AwaitedState {
+  const settledIDs = new Set<string>();
+  for (const row of events) {
+    const ev = row.event ?? ({ type: row.type } as EventPayload);
+    if (ev.type === "tool_result" && ev.tool_use_id) {
+      settledIDs.add(ev.tool_use_id);
+    }
+  }
+  // Walk from newest to oldest looking for an unresolved tool_call.
+  for (let i = events.length - 1; i >= 0; i--) {
+    const row = events[i];
+    const ev = row.event ?? ({ type: row.type } as EventPayload);
+    if (ev.type !== "tool_call" || !ev.tool_use) continue;
+    if (settledIDs.has(ev.tool_use.id)) continue;
+    const input = (ev.tool_use.input ?? {}) as Record<string, unknown>;
+    if (ev.tool_use.name === "Channel" && input.op === "subscribe") {
+      const channel = typeof input.channel === "string" ? input.channel : "?";
+      return { kind: "channel", channel };
+    }
+    if (ev.tool_use.name === "Interruption") {
+      const op = typeof input.op === "string" ? input.op : "";
+      // v0.8.16 emits kind="question" for every blocking ask, but
+      // call sites may set kind explicitly in future versions —
+      // prefer it when present, fall back to a human-friendly
+      // mapping of op.
+      const kind = typeof input.kind === "string" ? input.kind : op === "ask" ? "question" : op;
+      return { kind: "interrupted", op: kind || "?" };
+    }
+    // First unresolved tool_call is neither Channel nor Interruption
+    // — agent is doing normal tool work. Stop walking; no blocking
+    // state.
+    return { kind: "running" };
+  }
+  return { kind: "running" };
+}
+
+// AwaitChip renders one of three pills next to a running agent's
+// status. Colour comes from CSS class — see styles.css .await-chip.*.
+function AwaitChip({ state }: { state: AwaitedState }) {
+  if (state.kind === "channel") {
+    return (
+      <span className="await-chip await-chip-channel">
+        channel <code>{state.channel}</code>
+      </span>
+    );
+  }
+  if (state.kind === "interrupted") {
+    return (
+      <span className="await-chip await-chip-interrupted">
+        interrupted: <code>{state.op}</code>
+      </span>
+    );
+  }
+  return <span className="await-chip await-chip-running">running</span>;
 }
 
 // coalesceText folds runs of consecutive `text` (and `thinking`) events

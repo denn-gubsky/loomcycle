@@ -23,6 +23,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"runtime/debug"
 	"sort"
@@ -122,6 +123,15 @@ func formatBuildInfo(mainVersion, rev, builtAt string, dirty bool) (version, com
 		// developer build at a glance.
 		version = "devel"
 	}
+	// Go's module proxy synthesises a "pseudo-version" for a commit
+	// that has no semver tag yet. Shape:
+	//   vX.Y.Z-0.YYYYMMDDHHMMSS-abcdef012345
+	// (the "0." form means "before any vX.Y.Z tag"). Operators want
+	// to see the meaningful base ("v0.8.21"), not the 40-char
+	// timestamped suffix that's redundant with `commit` + `built`
+	// fields. Strip it. Real prerelease tags like "v0.8.14-rc1" are
+	// left alone — the regex only matches the precise pseudo shape.
+	version = stripPseudoVersionSuffix(version)
 	if len(rev) > 12 {
 		rev = rev[:12]
 	}
@@ -129,6 +139,26 @@ func formatBuildInfo(mainVersion, rev, builtAt string, dirty bool) (version, com
 		rev += "-dirty"
 	}
 	return version, rev, builtAt
+}
+
+// pseudoVersionRE matches Go's auto-synthesised pseudo-versions:
+//
+//	vMAJOR.MINOR.PATCH-0.YYYYMMDDHHMMSS-<12+ hex>
+//
+// (Go also emits a leading "0." for the pre-tag case; the v2-style
+// post-tag pseudo-version is "<base>-<n>.YYYYMMDDHHMMSS-…" but our
+// repo is sub-v2 so the 0.-prefixed form is the only one we see.)
+// `(\+\w+)?` tolerates Go's module-level "+dirty" suffix that gets
+// appended to the pseudo-version when the working tree has uncommitted
+// changes — the version field still reports a clean semver, the
+// dirty signal is preserved on the separate commit field.
+var pseudoVersionRE = regexp.MustCompile(`^(v\d+\.\d+\.\d+)-0\.\d{14}-[0-9a-f]+(?:\+\w+)?$`)
+
+func stripPseudoVersionSuffix(v string) string {
+	if m := pseudoVersionRE.FindStringSubmatch(v); m != nil {
+		return m[1]
+	}
+	return v
 }
 
 func main() {

@@ -84,14 +84,52 @@ func TestFormatBuildInfo(t *testing.T) {
 			wantTS:      "2026-05-13T18:04:43Z",
 		},
 		{
-			name:        "pseudo_version_dirty",
+			// Go pseudo-versions get stripped to their semver base —
+			// the timestamped suffix is redundant with the separate
+			// commit + built fields. Operators want "v0.8.14" in the
+			// topbar, not "v0.8.14-0.20260513180443-7c2ca2e1f592".
+			name:        "pseudo_version_stripped_dirty",
 			mainVersion: "v0.8.14-0.20260513180443-7c2ca2e1f592",
 			rev:         "7c2ca2e1f592abcd",
 			builtAt:     "2026-05-13T18:04:43Z",
 			dirty:       true,
-			wantVersion: "v0.8.14-0.20260513180443-7c2ca2e1f592",
+			wantVersion: "v0.8.14",
 			wantCommit:  "7c2ca2e1f592-dirty",
 			wantTS:      "2026-05-13T18:04:43Z",
+		},
+		{
+			name:        "pseudo_version_stripped_clean",
+			mainVersion: "v0.8.21-0.20260520061001-1107844c6cf7",
+			rev:         "1107844c6cf7",
+			builtAt:     "2026-05-20T06:10:01Z",
+			wantVersion: "v0.8.21",
+			wantCommit:  "1107844c6cf7",
+			wantTS:      "2026-05-20T06:10:01Z",
+		},
+		{
+			// `go build` on a dirty working tree appends "+dirty" to
+			// the synthesised Main.Version. The strip must tolerate
+			// this suffix — the "-dirty" signal still surfaces via
+			// commit (driven by the separate vcs.modified setting).
+			name:        "pseudo_version_with_plus_dirty_stripped",
+			mainVersion: "v0.8.21-0.20260520061001-1107844c6cf7+dirty",
+			rev:         "1107844c6cf7",
+			builtAt:     "2026-05-20T06:10:01Z",
+			dirty:       true,
+			wantVersion: "v0.8.21",
+			wantCommit:  "1107844c6cf7-dirty",
+			wantTS:      "2026-05-20T06:10:01Z",
+		},
+		{
+			// Real semver prerelease tags must NOT be stripped. The
+			// pseudo-version regex is intentionally narrow (requires
+			// the literal "-0.<14 digits>-<hex>" tail) so legitimate
+			// suffixes like "-rc1" pass through unchanged.
+			name:        "real_prerelease_tag_preserved",
+			mainVersion: "v0.8.14-rc1",
+			rev:         "abcdef012345",
+			wantVersion: "v0.8.14-rc1",
+			wantCommit:  "abcdef012345",
 		},
 		{
 			name:        "devel_marker_normalised",

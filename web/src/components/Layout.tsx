@@ -80,7 +80,7 @@ export default function Layout() {
           </span>
         </div>
         <nav className="nav-tabs">
-          <NavLink to="/" end>runs</NavLink>
+          <NavLink to="/agents">runs</NavLink>
           <NavLink to="/interrupts">interrupts</NavLink>
           <NavLink to="/memory">memory</NavLink>
           <NavLink to="/snapshots">snapshots</NavLink>

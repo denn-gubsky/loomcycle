@@ -18,7 +18,14 @@ const PAGE_SIZE = 50;
 
 // Well-known event types loomcycle emits. The dropdown lists these
 // for discoverability; the user can also type a free-form value (the
-// server filters on exact string match).
+// server filters on exact string match). Kept in sync with
+// internal/providers/provider.go EventType constants.
+//
+// Note on "hook calls": hooks are dispatched synchronously by the
+// loop and do not emit a dedicated `hook_*` event type. Their
+// audit footprint is the side-effects they produce — most notably
+// `host_widened` when a Pre-hook grants `allow_hosts`. Filter on
+// `host_widened` to see all hook-driven URL widenings.
 const COMMON_TYPES = [
   "text",
   "thinking",
@@ -29,11 +36,14 @@ const COMMON_TYPES = [
   "error",
   "started",
   "retry",
+  "provider_fallback",
+  "fallback_suppressed",
   "cache_invalidated",
   "reasoning_invalidated",
-  "fallback_suppressed",
-  "interrupt_raised",
-  "interrupt_resolved",
+  "host_widened",
+  "channel_publish",
+  "channel_delivery",
+  "interruption_pending",
 ];
 
 // toRFC3339 converts an <input type="datetime-local"> value (which is
