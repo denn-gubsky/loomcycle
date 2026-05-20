@@ -39,6 +39,9 @@ Each built-in is registered into the dispatcher at process startup but **refuses
 | `Read`      | `LOOMCYCLE_READ_ROOT=/path/to/sandbox`                |
 | `Write`     | `LOOMCYCLE_WRITE_ROOT=/path/to/sandbox`               |
 | `Edit`      | `LOOMCYCLE_WRITE_ROOT=/path/to/sandbox` (shared)      |
+| `Grep`      | `LOOMCYCLE_READ_ROOT=...` (shared with Read; v0.8.24) |
+| `Glob`      | `LOOMCYCLE_READ_ROOT=...` (shared with Read; v0.8.24) |
+| `NotebookEdit` | `LOOMCYCLE_WRITE_ROOT=...` (shared with Write; v0.8.24) |
 | `HTTP`      | `LOOMCYCLE_HTTP_HOST_ALLOWLIST=api.example.com,...`   |
 | `WebFetch`  | (same allowlist as HTTP — shared backend)             |
 | `WebSearch` | `BRAVE_API_KEY=...`                                   |
@@ -52,8 +55,11 @@ Bash has additional warnings: it is **not a true sandbox** even when enabled. Ru
 
 Sandbox semantics (file tools):
 - Paths must resolve **inside** the sandbox root after full `EvalSymlinks` evaluation. Symlinks pointing outside the root are refused.
-- `Write` resolves the **parent** dir (target may not exist yet); `Read` and `Edit` resolve the target itself.
+- `Write` resolves the **parent** dir (target may not exist yet); `Read`, `Edit`, `Grep`, `Glob`, and `NotebookEdit` resolve the target itself.
 - All file writes are atomic via tempfile + same-directory rename.
+- `Grep` skips binary files via NUL-byte heuristic on the first 8 KiB; caps output at 256 KiB + `head_limit` (default 100).
+- `Glob` supports `**` for recursive segment match; returns paths sorted by mtime DESC, capped at 100 results.
+- `NotebookEdit` accepts `replace` / `insert` / `delete` modes; preserves all non-target cells and notebook metadata verbatim.
 
 SSRF semantics (network tools):
 - `HostAllowlist` is **suffix-anchored** at a dot boundary: an entry `example.com` matches `example.com` and `api.example.com` but not `evilexample.com`.
