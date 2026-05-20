@@ -405,18 +405,12 @@ func main() {
 	// reference. Registered unconditionally; access is gated per-agent
 	// via memory_scopes yaml + the Memory.Store==nil branch when the
 	// runtime hasn't configured a store backend.
-	memoryTool := &builtin.Memory{
-		MaxValueBytes:     cfg.Env.MemoryMaxValueBytes,
-		DefaultQuotaBytes: cfg.Env.MemoryMaxScopeBytes,
-	}
-	allTools = append(allTools, memoryTool)
-
 	// v0.9.0 Vector Memory: construct the embedder from
-	// cfg.Memory.Embedder when the operator yaml set one. The
-	// instance is held in the local `embedder` var for PR 3 (Memory
-	// tool's search op) + PR 4 (admin /v1/_memory/reembed). When the
-	// embedder block is unset, vector ops refuse with
-	// embedder_not_configured at the tool layer.
+	// cfg.Memory.Embedder when the operator yaml set one. Held in
+	// the local `embedder` var so the admin /v1/_memory/reembed
+	// endpoint (PR 4) can reach it too. When the embedder block is
+	// unset, vector ops refuse with embedder_not_configured at the
+	// tool layer.
 	embedder, err := buildEmbedder(cfg)
 	if err != nil {
 		log.Fatalf("embedder: %v", err)
@@ -424,7 +418,13 @@ func main() {
 	if embedder != nil {
 		log.Printf("embedder: %s/%s (dim=%d)", embedder.Provider(), embedder.Model(), embedder.Dimension())
 	}
-	_ = embedder // wired into Memory tool in PR 3
+
+	memoryTool := &builtin.Memory{
+		MaxValueBytes:     cfg.Env.MemoryMaxValueBytes,
+		DefaultQuotaBytes: cfg.Env.MemoryMaxScopeBytes,
+		Embedder:          embedder,
+	}
+	allTools = append(allTools, memoryTool)
 
 	// Channel tool (v0.8.4) — persistent inter-agent message bus.
 	// One Bus instance per process so in-process subscribers waiting

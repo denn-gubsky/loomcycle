@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
@@ -52,40 +54,60 @@ type Memory struct {
 	// the agent yaml doesn't override it. 0 = no cap. Sourced from
 	// LOOMCYCLE_MEMORY_MAX_SCOPE_BYTES.
 	DefaultQuotaBytes int
+
+	// Embedder is the v0.9.0 Vector Memory provider. Nil = vector ops
+	// refuse with ErrEmbedderNotConfigured ("set memory.embedder in
+	// operator yaml"); the k/v ops continue to work unchanged.
+	//
+	// Wired into main.go at boot from cfg.Memory.Embedder. Late-bound
+	// like Store so the Memory tool can be constructed before
+	// embedder construction (the order matters when operators have
+	// memory.embedder unset — we don't want a nil dereference in
+	// boot ordering).
+	Embedder providers.Embedder
 }
 
 const memoryDescription = `Persistent key/value storage scoped to this agent or end-user. ` +
 	`Survives across runs and sessions. Use for: counters, summaries, voice/preferences, ` +
 	`learned facts, notes for your future self. ` +
-	`Operations: get, set, delete, list, incr. ` +
+	`Operations: get, set, delete, list, incr, search. ` +
 	`Scope is "agent" (this agent's keyspace, shared across users) or "user" (this end-user's keyspace, shared across agents). ` +
-	`Values are JSON. Optional TTL is in seconds.`
+	`Values are JSON. Optional TTL is in seconds. ` +
+	`v0.9.0: pass embed=true with embed_text on set to enable semantic search; use op=search with query to find rows by similarity.`
 
 const memoryInputSchema = `{
   "type": "object",
   "properties": {
-    "op":     {"type": "string", "enum": ["get","set","delete","list","incr"], "description": "Which operation to perform."},
-    "scope":  {"type": "string", "enum": ["agent","user"], "description": "Which keyspace: this agent's (cross-run, cross-user) or this user's (cross-agent)."},
-    "key":    {"type": "string", "description": "The entry's key. Required for get / set / delete / incr."},
-    "value":  {"description": "The JSON value to store. Required for set."},
-    "delta":  {"type": "integer", "description": "Increment delta for incr (default 1, may be negative)."},
-    "ttl":    {"type": "integer", "description": "Optional time-to-live in seconds. Applies to set and incr; 0 means no expiry."},
-    "prefix": {"type": "string", "description": "Optional key prefix filter for list."},
-    "limit":  {"type": "integer", "description": "Maximum entries to return for list (default 100)."}
+    "op":         {"type": "string", "enum": ["get","set","delete","list","incr","search"], "description": "Which operation to perform."},
+    "scope":      {"type": "string", "enum": ["agent","user"], "description": "Which keyspace: this agent's (cross-run, cross-user) or this user's (cross-agent)."},
+    "key":        {"type": "string", "description": "The entry's key. Required for get / set / delete / incr."},
+    "value":      {"description": "The JSON value to store. Required for set."},
+    "delta":      {"type": "integer", "description": "Increment delta for incr (default 1, may be negative)."},
+    "ttl":        {"type": "integer", "description": "Optional time-to-live in seconds. Applies to set and incr; 0 means no expiry."},
+    "prefix":     {"type": "string", "description": "Optional key prefix filter for list / search."},
+    "limit":      {"type": "integer", "description": "Maximum entries to return for list (default 100)."},
+    "embed":      {"type": "boolean", "description": "v0.9.0 set-only: when true, also generates and stores an embedding so this row is reachable via op=search."},
+    "embed_text": {"type": "string", "description": "v0.9.0 set-only: the text to embed when embed=true. Defaults to the JSON-stringified value when omitted."},
+    "query":      {"type": "string", "description": "v0.9.0 search-only: the text to embed and use as the similarity query."},
+    "top_k":      {"type": "integer", "description": "v0.9.0 search-only: max results (default 10, max 50)."}
   },
   "required": ["op","scope"],
   "additionalProperties": false
 }`
 
 type memoryInput struct {
-	Op     string          `json:"op"`
-	Scope  string          `json:"scope"`
-	Key    string          `json:"key,omitempty"`
-	Value  json.RawMessage `json:"value,omitempty"`
-	Delta  *int64          `json:"delta,omitempty"`
-	TTL    int64           `json:"ttl,omitempty"`
-	Prefix string          `json:"prefix,omitempty"`
-	Limit  int             `json:"limit,omitempty"`
+	Op        string          `json:"op"`
+	Scope     string          `json:"scope"`
+	Key       string          `json:"key,omitempty"`
+	Value     json.RawMessage `json:"value,omitempty"`
+	Delta     *int64          `json:"delta,omitempty"`
+	TTL       int64           `json:"ttl,omitempty"`
+	Prefix    string          `json:"prefix,omitempty"`
+	Limit     int             `json:"limit,omitempty"`
+	Embed     bool            `json:"embed,omitempty"`      // v0.9.0
+	EmbedText string          `json:"embed_text,omitempty"` // v0.9.0
+	Query     string          `json:"query,omitempty"`      // v0.9.0
+	TopK      int             `json:"top_k,omitempty"`      // v0.9.0
 }
 
 // Name implements tools.Tool.
@@ -124,10 +146,12 @@ func (m *Memory) Execute(ctx context.Context, raw json.RawMessage) (tools.Result
 		return m.execList(ctx, scope, scopeID, in)
 	case "incr":
 		return m.execIncr(ctx, scope, scopeID, in)
+	case "search":
+		return m.execSearch(ctx, scope, scopeID, in)
 	case "":
 		return errResult("missing required field: op"), nil
 	default:
-		return errResult(fmt.Sprintf("unknown op %q (must be one of: get, set, delete, list, incr)", in.Op)), nil
+		return errResult(fmt.Sprintf("unknown op %q (must be one of: get, set, delete, list, incr, search)", in.Op)), nil
 	}
 }
 
@@ -196,6 +220,9 @@ func (m *Memory) execSet(ctx context.Context, scope store.MemoryScope, scopeID s
 	if m.MaxValueBytes > 0 && len(in.Value) > m.MaxValueBytes {
 		return errResult(fmt.Sprintf("set: value (%d bytes) exceeds max %d bytes", len(in.Value), m.MaxValueBytes)), nil
 	}
+	// Quota math charges only the k/v row's key + value bytes;
+	// embeddings are excluded per RFC §8. Operators don't pay for
+	// the vector's storage in their per-scope cap.
 	if err := m.checkQuota(ctx, scope, scopeID, in.Key, len(in.Value)); err != nil {
 		return errResult(err.Error()), nil
 	}
@@ -203,7 +230,146 @@ func (m *Memory) execSet(ctx context.Context, scope store.MemoryScope, scopeID s
 	if err := m.Store.MemorySet(ctx, scope, scopeID, in.Key, in.Value, ttl); err != nil {
 		return errResult(fmt.Sprintf("set: %s", err)), nil
 	}
-	return okJSON(map[string]any{"ok": true})
+
+	// v0.9.0 Vector Memory: when embed=true, generate an embedding
+	// alongside the k/v write. Failures here DO NOT roll back the
+	// base row — the operator can re-embed later via the admin
+	// endpoint. We surface a warning in the response so the model
+	// sees the partial-write outcome and can decide whether to
+	// retry. Quota math already excluded embedding bytes above.
+	resp := map[string]any{"ok": true}
+	if in.Embed {
+		if err := m.persistEmbedding(ctx, scope, scopeID, in); err != nil {
+			// Tool returns ok=true (k/v landed) but embedded=false +
+			// warning so the model sees the partial outcome.
+			log.Printf("memory.set: embed failed for (scope=%s, key=%s): %v", scope, in.Key, err)
+			resp["embedded"] = false
+			resp["embed_warning"] = err.Error()
+		} else {
+			resp["embedded"] = true
+		}
+	}
+	return okJSON(resp)
+}
+
+// persistEmbedding embeds the supplied text (or the JSON-stringified
+// value when embed_text is empty) and writes the embedding row.
+// Returns nil on success; the caller surfaces failures as a
+// non-fatal warning rather than refusing the whole set.
+func (m *Memory) persistEmbedding(ctx context.Context, scope store.MemoryScope, scopeID string, in memoryInput) error {
+	if m.Embedder == nil {
+		return errors.New(store.ErrEmbedderNotConfigured.Msg)
+	}
+	if !m.Store.SupportsVectors() {
+		return errors.New(store.ErrVectorUnsupported.Msg)
+	}
+	text := in.EmbedText
+	if text == "" {
+		// Fall back to the JSON-stringified value. Useful for
+		// agents that store small text snippets directly — they
+		// don't have to repeat the text in both `value` and
+		// `embed_text`.
+		text = string(in.Value)
+	}
+	vecs, err := m.Embedder.Embed(ctx, []string{text})
+	if err != nil {
+		return fmt.Errorf("embed: %w", err)
+	}
+	if len(vecs) != 1 {
+		return fmt.Errorf("embed: got %d vectors, want 1", len(vecs))
+	}
+	emb := store.MemoryEmbedding{
+		Provider:  m.Embedder.Provider(),
+		Model:     m.Embedder.Model(),
+		Dimension: len(vecs[0]),
+		Vector:    vecs[0],
+		EmbedText: text,
+		CreatedAt: time.Now().UTC(),
+	}
+	return m.Store.MemoryEmbedSet(ctx, scope, scopeID, in.Key, emb)
+}
+
+// execSearch implements the v0.9.0 Memory.search op. Refuses with
+// a typed error when the backend has no vector support OR when no
+// embedder is configured. Embeds the query, runs the cosine
+// similarity search via the Store, and returns the ranked rows.
+//
+// JSON response shape (matches the RFC's verification example):
+//
+//	{ "entries": [
+//	    { "key": "...", "value": <json>, "score": 0.91,
+//	      "embedded_with": {"provider": "openai", "model": "..."} },
+//	    ...
+//	  ],
+//	  "query_embedding_dim": 1536,
+//	  "truncated": false }
+func (m *Memory) execSearch(ctx context.Context, scope store.MemoryScope, scopeID string, in memoryInput) (tools.Result, error) {
+	if !m.Store.SupportsVectors() {
+		return errResult(store.ErrVectorUnsupported.Msg), nil
+	}
+	if m.Embedder == nil {
+		return errResult(store.ErrEmbedderNotConfigured.Msg), nil
+	}
+	if in.Query == "" {
+		return errResult("search: missing required field: query"), nil
+	}
+	topK := in.TopK
+	if topK <= 0 {
+		topK = 10
+	}
+	if topK > 50 {
+		topK = 50
+	}
+
+	// Embed the query text. Failures here are the embedder's
+	// problem — surface them directly so operators see exactly
+	// what went wrong.
+	vecs, err := m.Embedder.Embed(ctx, []string{in.Query})
+	if err != nil {
+		return errResult(fmt.Sprintf("search: embed query: %s", err)), nil
+	}
+	if len(vecs) != 1 {
+		return errResult(fmt.Sprintf("search: embed query: got %d vectors, want 1", len(vecs))), nil
+	}
+	queryVec := vecs[0]
+
+	results, err := m.Store.MemoryEmbedSearch(ctx, scope, scopeID, in.Prefix, queryVec, topK)
+	if err != nil {
+		// ErrDimensionMismatch is the user-actionable one — operators
+		// swap embedder models and forget to re-embed. Surface it as a
+		// clear refusal with the admin-endpoint migration hint.
+		if errors.Is(err, store.ErrDimensionMismatch) || errors.Is(err, store.ErrVectorUnsupported) {
+			return errResult(err.Error()), nil
+		}
+		// Also catch the typed-Code form; the dimension-mismatch
+		// helper in the postgres adapter wraps the message with the
+		// concrete dims so we need to recognise it by Code, not by
+		// exact value comparison.
+		var me *store.MemoryError
+		if errors.As(err, &me) && me.Code == store.ErrDimensionMismatch.Code {
+			return errResult(err.Error()), nil
+		}
+		return errResult(fmt.Sprintf("search: %s", err)), nil
+	}
+
+	entries := make([]map[string]any, 0, len(results))
+	for _, r := range results {
+		entries = append(entries, map[string]any{
+			"key":   r.Key,
+			"value": r.Value,
+			"score": r.Score,
+			"embedded_with": map[string]any{
+				"provider": r.EmbeddedWith.Provider,
+				"model":    r.EmbeddedWith.Model,
+			},
+			"expires_at": expiresAtRFC3339(r.ExpiresAt),
+		})
+	}
+	return okJSON(map[string]any{
+		"entries":             entries,
+		"query_embedding_dim": len(queryVec),
+		"truncated":           len(entries) == topK, // soft-truncation hint; reader can re-search with higher top_k
+	})
 }
 
 func (m *Memory) execDelete(ctx context.Context, scope store.MemoryScope, scopeID string, in memoryInput) (tools.Result, error) {
