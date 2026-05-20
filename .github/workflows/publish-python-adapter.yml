@@ -1,0 +1,78 @@
+name: Publish loomcycle to PyPI
+
+# Triggered on annotated tags matching the Python-adapter release
+# pattern. The Python adapter is versioned independently of the Go
+# binary (Python at 0.6.x, Go at 0.8.x) so it uses its own tag
+# namespace — never collides with the `v*` tags consumed by the
+# Go-release + npm-publish workflow.
+#
+# Auth: PyPI Trusted Publisher (OIDC). No PYPI_API_TOKEN secret
+# needed. One-time PyPI configuration:
+#   1. Log in to https://pypi.org.
+#   2. Account settings → "Publishing".
+#   3. "Add a new pending publisher" if `loomcycle` isn't yet on
+#      PyPI; otherwise "Add a new trusted publisher" on the existing
+#      project's Publishing settings page.
+#   4. Owner: denn-gubsky, Repository: loomcycle,
+#      Workflow filename: publish-python-adapter.yml,
+#      Environment name: (blank).
+#
+# Per the GitHub workflow-injection guide, GITHUB_REF_NAME is
+# routed through `env:` rather than direct template expansion as
+# defence in depth — git rejects metacharacters in ref names so
+# this is belt-and-braces.
+on:
+  push:
+    tags:
+      - "python-v*"
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish:
+    name: Publish loomcycle (Python adapter)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+          cache-dependency-path: adapters/python/pyproject.toml
+
+      - name: Verify package version matches tag
+        working-directory: adapters/python
+        env:
+          TAG_REF: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          PKG_VER=$(python -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")
+          TAG_VER="${TAG_REF#python-v}"
+          if [ "$PKG_VER" != "$TAG_VER" ]; then
+            echo "::error::pyproject.toml version ($PKG_VER) does not match tag ($TAG_VER)"
+            echo "Bump adapters/python/pyproject.toml + loomcycle/__init__.py to $TAG_VER and re-tag, or fix the tag."
+            exit 1
+          fi
+          echo "::notice::Publishing loomcycle@$PKG_VER (tag $TAG_REF)"
+
+      - name: Install package + dev deps
+        working-directory: adapters/python
+        run: |
+          python -m pip install --upgrade pip build
+          pip install -e ".[dev]"
+
+      - name: Run tests
+        working-directory: adapters/python
+        run: pytest -v
+
+      - name: Build wheel + sdist
+        working-directory: adapters/python
+        run: python -m build
+
+      - name: Publish to PyPI via OIDC trusted publisher
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: adapters/python/dist/

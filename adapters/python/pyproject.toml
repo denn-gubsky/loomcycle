@@ -9,10 +9,17 @@
 #   make -C ../.. python-proto    # regenerate _generated/*.py from proto
 #   pytest
 #
-# Publish (CI on tag):
-#   pip install build twine
-#   python -m build
-#   twine upload dist/*
+# Publish (automated, CI on tag):
+#   1. Bump `version` below + adapters/python/loomcycle/__init__.py.
+#   2. Tag with the python-v* prefix to keep Python versioning
+#      independent of the Go release tag:
+#        git tag -a python-v0.6.X -m "..."
+#        git push origin python-v0.6.X
+#   3. The .github/workflows/publish-python-adapter.yml workflow runs
+#      the version-match gate, pytest, `python -m build`, and publishes
+#      via PyPI Trusted Publisher (OIDC, no API token). One-time PyPI
+#      setup: account settings → publishing → add pending publisher
+#      for project `loomcycle` with workflow `publish-python-adapter.yml`.
 
 [build-system]
 requires = ["setuptools>=68", "wheel"]
@@ -35,7 +42,12 @@ classifiers = [
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
     "Topic :: Software Development :: Libraries",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Framework :: AsyncIO",
+    "Typing :: Typed",
+    "Operating System :: OS Independent",
 ]
 # grpcio floor matches the GRPC_GENERATED_VERSION baked into the
 # committed _generated/loomcycle_pb2_grpc.py stubs (1.80.0). The
@@ -58,6 +70,9 @@ dev = [
 [project.urls]
 Homepage = "https://github.com/denn-gubsky/loomcycle"
 Repository = "https://github.com/denn-gubsky/loomcycle"
+Source = "https://github.com/denn-gubsky/loomcycle/tree/main/adapters/python"
+Documentation = "https://github.com/denn-gubsky/loomcycle/tree/main/adapters/python#readme"
+Changelog = "https://github.com/denn-gubsky/loomcycle/releases"
 Issues = "https://github.com/denn-gubsky/loomcycle/issues"
 
 [tool.setuptools.packages.find]
