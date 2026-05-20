@@ -308,6 +308,13 @@ type AgentDef struct {
 	// SystemPrompt is the agent's system prompt as an inline YAML
 	// string. Mutually exclusive with SystemPromptFile.
 	SystemPrompt string `yaml:"system_prompt"`
+	// SystemPromptBase is the pre-skill-bake SystemPrompt as it was
+	// at config-load (before resolveSkills appended any skill
+	// bodies). v0.8.22 SkillDef per-run resolution rebuilds the
+	// effective SystemPrompt from this base + each skill's
+	// DB-active-or-static body. Not yaml-driven; set by
+	// resolveSkills.
+	SystemPromptBase string `yaml:"-"`
 	// SystemPromptFile points at a file whose contents become
 	// SystemPrompt. Resolved relative to the YAML config file's
 	// directory (so "agents/qa.md" works regardless of cwd). Useful
@@ -416,6 +423,21 @@ type AgentDef struct {
 	// wildcard pattern so the model never authors mass-mutation
 	// access via a templated string.
 	AgentDefScopes []string `yaml:"agent_def_scopes"`
+
+	// SkillDefScopes is the v0.8.22 SkillDef tool capability gate.
+	// Default-deny when empty. Mirrors AgentDefScopes minus the
+	// "self" scope (skills have no agent identity, so "self" is
+	// meaningless for them). Closed set:
+	//
+	//   - "named:<skill-name>" → may operate on the specified single
+	//                            skill name (multi-entry)
+	//   - "descendants"        → may operate on any skill def whose
+	//                            lineage chain traces back to one
+	//                            the agent created (TODO v0.9.x —
+	//                            currently equivalent to "any")
+	//   - "any"                → unrestricted (operator-blessed
+	//                            orchestrator privilege)
+	SkillDefScopes []string `yaml:"skill_def_scopes"`
 
 	// EvaluationScopes is the v0.8.5 Evaluation tool capability gate.
 	// Multi-select; default-deny when empty. Closed set:
@@ -972,6 +994,18 @@ type Env struct {
 	// Env: LOOMCYCLE_AGENT_DEF_MAX_DESCRIPTION_BYTES.
 	AgentDefMaxDescriptionBytes int
 
+	// SkillDefMaxBodyBytes caps the overlay.body field on
+	// SkillDef.create / fork (v0.8.22). Default 131072 (128 KB).
+	// 0 disables.
+	// Env: LOOMCYCLE_SKILL_DEF_MAX_BODY_BYTES.
+	SkillDefMaxBodyBytes int
+
+	// SkillDefMaxDescriptionBytes caps the free-text description
+	// field on SkillDef.create / fork (v0.8.22). Default 8192 (8 KB).
+	// 0 disables.
+	// Env: LOOMCYCLE_SKILL_DEF_MAX_DESCRIPTION_BYTES.
+	SkillDefMaxDescriptionBytes int
+
 	// EvaluationMaxJudgementBytes caps the structured-judgement JSON
 	// on Evaluation.submit (v0.8.5). Default 32768 (32 KB). 0 disables.
 	// Env: LOOMCYCLE_EVALUATION_MAX_JUDGEMENT_BYTES.
@@ -1406,6 +1440,27 @@ func Load(path string) (*Config, error) {
 			}
 		}
 	}
+	// v0.8.22 SkillDef caps. Mirror of AgentDef caps.
+	cfg.Env.SkillDefMaxBodyBytes = 131072
+	if v := os.Getenv("LOOMCYCLE_SKILL_DEF_MAX_BODY_BYTES"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			if n <= 0 {
+				cfg.Env.SkillDefMaxBodyBytes = 0
+			} else {
+				cfg.Env.SkillDefMaxBodyBytes = n
+			}
+		}
+	}
+	cfg.Env.SkillDefMaxDescriptionBytes = 8192
+	if v := os.Getenv("LOOMCYCLE_SKILL_DEF_MAX_DESCRIPTION_BYTES"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			if n <= 0 {
+				cfg.Env.SkillDefMaxDescriptionBytes = 0
+			} else {
+				cfg.Env.SkillDefMaxDescriptionBytes = n
+			}
+		}
+	}
 	cfg.Env.EvaluationMaxJudgementBytes = 32768
 	if v := os.Getenv("LOOMCYCLE_EVALUATION_MAX_JUDGEMENT_BYTES"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
@@ -1660,6 +1715,7 @@ func agentFromDiscovered(d *agents.Agent) AgentDef {
 			Subscribe: d.Channels.Subscribe,
 		},
 		AgentDefScopes:   d.AgentDefScopes,
+		SkillDefScopes:   d.SkillDefScopes,
 		EvaluationScopes: d.EvaluationScopes,
 	}
 	if len(d.Models) > 0 {
@@ -1751,6 +1807,9 @@ func mergeAgentDef(base, override AgentDef) AgentDef {
 	}
 	if override.AgentDefScopes != nil {
 		out.AgentDefScopes = override.AgentDefScopes
+	}
+	if override.SkillDefScopes != nil {
+		out.SkillDefScopes = override.SkillDefScopes
 	}
 	if override.EvaluationScopes != nil {
 		out.EvaluationScopes = override.EvaluationScopes
@@ -1849,6 +1908,10 @@ func resolveSkills(cfg *Config) error {
 		if len(def.Skills) == 0 {
 			continue
 		}
+		// Capture the base (pre-skill-bake) prompt so v0.8.22 SkillDef
+		// per-run resolution can rebuild from it when a DB-active row
+		// shadows the static body.
+		def.SystemPromptBase = def.SystemPrompt
 		// Build agent rule set once per agent.
 		agentSet := make(map[string]bool, len(def.AllowedTools))
 		for _, t := range def.AllowedTools {
@@ -2033,6 +2096,23 @@ func validateAgentDefScope(sc string) error {
 	return fmt.Errorf("unknown scope %q (want one of: self, descendants, any, or \"named:<name>\")", sc)
 }
 
+// validateSkillDefScope mirrors validateAgentDefScope minus "self"
+// (skills have no agent identity).
+func validateSkillDefScope(sc string) error {
+	switch sc {
+	case "descendants", "any":
+		return nil
+	}
+	if strings.HasPrefix(sc, "named:") {
+		ref := strings.TrimPrefix(sc, "named:")
+		if ref == "" {
+			return fmt.Errorf("skill_def_scopes: \"named:\" requires a non-empty skill name (e.g. \"named:karpathy-guidelines\")")
+		}
+		return nil
+	}
+	return fmt.Errorf("unknown scope %q (want one of: descendants, any, or \"named:<skill-name>\")", sc)
+}
+
 // validateAgentChannelEntry checks one publish/subscribe entry on
 // an AgentDef.Channels list. Exact match → must reference a declared
 // channel. Trailing "/*" wildcard → must match at least one declared
@@ -2202,6 +2282,14 @@ func validate(c *Config) error {
 		for i, sc := range agent.AgentDefScopes {
 			if err := validateAgentDefScope(sc); err != nil {
 				return fmt.Errorf("agent %q: agent_def_scopes[%d]: %w", name, i, err)
+			}
+		}
+		// SkillDef tool (v0.8.22): validate skill_def_scopes entries.
+		// Closed set: "descendants" / "named:<skill-name>" / "any".
+		// No "self" — skills have no agent identity.
+		for i, sc := range agent.SkillDefScopes {
+			if err := validateSkillDefScope(sc); err != nil {
+				return fmt.Errorf("agent %q: skill_def_scopes[%d]: %w", name, i, err)
 			}
 		}
 		// Evaluation tool (v0.8.5): validate evaluation_scopes entries.

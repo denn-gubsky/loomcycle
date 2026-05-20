@@ -24,7 +24,7 @@ You can find out who you are right now with `Context.self`:
 
 ## The built-in primitives
 
-Loomcycle ships eleven built-in tools beyond the basic `Read` / `Write` /
+Loomcycle ships twelve built-in tools beyond the basic `Read` / `Write` /
 `Edit` / `HTTP` / `WebFetch` / `WebSearch` / `Bash`:
 
 - **Memory** — persistent key/value scoped to `agent` or `user`.
@@ -32,8 +32,11 @@ Loomcycle ships eleven built-in tools beyond the basic `Read` / `Write` /
   at-least-once delivery; `_system/*` channels carry runtime signals
   (heartbeats, alarms, pause/resume state).
 - **Agent** — spawn a named sub-agent in a fresh session.
-- **Skill** — load operator-curated prompt fragments.
+- **Skill** — load operator-curated prompt fragments. DB-active
+  `SkillDef` rows override the static SKILL.md body when present.
 - **AgentDef** — fork / promote / retire agent definitions at runtime.
+- **SkillDef** (v0.8.22) — fork / promote / retire SKILL bodies at
+  runtime. Mirror of AgentDef for skills.
 - **Evaluation** — score (run, def) pairs for self-improvement loops.
 - **Interruption** — human-in-the-loop primitive: ask / notify / cancel
   (v0.8.16).
@@ -45,6 +48,8 @@ Cross-cutting topics that explain how these compose:
 - `help(topic="scopes")` — agent vs user scope across Memory + Channel
 - `help(topic="subagents")` — when to spawn vs publish to a channel
 - `help(topic="experimentation")` — AgentDef + Evaluation fork-and-score
+- `help(topic="skills-evolution")` — SkillDef substrate for runtime
+  skill body evolution (v0.8.22)
 - `help(topic="system-channels")` — `_system/*` prefix and the admin endpoint
 - `help(topic="interruption")` — human-in-the-loop ask / notify / cancel
 - `help(topic="pause-resume-snapshot")` — runtime quiesce + portable

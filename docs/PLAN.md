@@ -2,7 +2,31 @@
 
 This is the public roadmap. For decision history, regret notes, and per-version commit-by-commit details, see `~/work/loomcycle-internal/doc-internal/PLAN.md` (operator-side separate repo; migrated out of this tree as part of v0.8.15).
 
-## v0.8.18 — current
+## v0.8.22 — current
+
+**Status: shipped (2026-05-20).** **`SkillDef` tool — runtime-mutable skill substrate.** Mirror of `AgentDef` (v0.8.5) but for SKILL bodies. Six PRs land the storage layer, the tool, policy plumbing, the API wiring, and snapshot completeness.
+
+**What's in v0.8.22 (vs v0.8.21):**
+
+- **Six new operations.** `SkillDef.{create, fork, get, list, retire, promote}` mirror `AgentDef`'s surface exactly. `create` refuses names that exist in the static `skills.Set` (operator's SKILL.md is ground truth); `fork` bootstraps v1 from the static body when no DB row exists yet (`bootstrapped_from_static=TRUE`). `promote` is explicit — selection stays policy, loomcycle does NOT auto-promote.
+- **Storage parity with AgentDef.** Two new tables (`skill_defs` + `skill_def_active`) via Postgres migration 0016 + SQLite inline schema. Same `(name, version)` UNIQUE for monotonicity, same `parent_def_id` lineage chain, same per-name advisory lock (Postgres) / `BEGIN IMMEDIATE` (SQLite) for concurrent forks. Nine new Store CRUD methods + four snapshot methods. New `ErrSkillDefParentNotFound` typed error.
+- **Overlay shape.** `{body, description, allowed_tools}` — three fields, not the AgentDef union. `body` is required on `create`/`fork` (empty / whitespace-only is rejected — zero-body skill is silent prompt corruption). `allowed_tools` ⊆ calling agent's effective `AllowedTools` (reuses `assertAllowedToolsSubset` from `agentdef.go` — same package).
+- **Scope policy.** New `tools.SkillDefPolicyValue{Scopes}` ctx-attached at all four run-creation sites + the sub-agent dispatch. Closed grammar: `any` / `named:<skill-name>` / `descendants`. No `self` — skills have no agent identity, so the scope is meaningless. Yaml field `skill_def_scopes:` with `validateSkillDefScope` (config-load).
+- **Runtime resolution — Approach A (system-prompt bake).** `Server.resolveSkillBodiesForRun` rebuilds the agent's effective `SystemPrompt` at session creation when any of the declared `skills:` has a DB-active row. Fast path: no DB rows → unchanged (the config-load baked prompt is correct). Slow path: `SystemPromptBase` (captured at config-load by the now-non-destructive `resolveSkills`) + per-skill (DB-active OR static) body. In-flight runs keep their locked prompt — no mid-run skill swap.
+- **Runtime resolution — Approach B (`Skill` tool).** The `Skill` tool gains a `Store` field; `Execute` consults `SkillDefGetActive(name)` first, falls back to the static `Set` on miss. Same allowed-tools-subset security check on both paths.
+- **Context tool integration.** `Context.permissions` op gains a `skill_def_scopes` field alongside the existing `agent_def_scopes`.
+- **Snapshot completeness.** Envelope grows two new sections (`skill_defs` / `skill_def_active`) with identity migrators at `"1.0"`. `RestoreResult` gains `SkillDefsRestored` + `SkillDefActiveRestored` counters. Migration registry test asserts both new sections walk cleanly.
+- **Internal RFC reversal.** The loomcycle-internal Hermes comparison RFC currently places runtime skill mutation in "Tier D — deliberately don't adopt." This work reverses that *as substrate only* — selection remains policy, no autonomous skill creation. The RFC entry moves Tier D → Tier A in a follow-up on the operator-side repo.
+
+**Tests:** 8 new storetest contract tests (mirroring the AgentDef cases) + 10 SkillDef tool tests + 4 per-run resolver tests + extended Skill tool + Context permissions tests. All pass on SQLite; Postgres adapter is covered by the shared contract suite.
+
+**Out of scope:** Hermes-style autonomous skill creation. Admin HTTP endpoint for SkillDef inspection (tool-only surface in this PR). `prefix:` scope for either AgentDef or SkillDef (kept symmetric). Live filesystem-watcher reload of the static `skills.Set`. Per-tenant `skill_def_active` pointer (same TODO posture as AgentDef). gRPC + MCP exposure of SkillDef (tool-only).
+
+## v0.8.21 — earlier
+
+**Status: shipped (2026-05-20).** **Activity Monitor tab + audit view + UI polish.** New `/ui/activity` page exposes the v0.8.11 process-resource sampler as live charts (memory vs running agents, CPU load, queue depth, plus diagnostic charts behind an `advanced` toggle). New `/ui/audit` page over a new `GET /v1/_events` admin endpoint (paginated cross-session event log, filterable by event type + date range). `/healthz` extended with `metrics_enabled` so the UI renders its "sampler off" empty state without probing `/v1/_metrics` first. Web UI polish — proper nav-tab underlines, dynamic version surfaced from the running binary (was hard-coded `v0.8.17`), copy buttons on every expanded EventCard, resizable panes on `runs` + `memory` via a new `<Splitter>` component, running-agent tree rows get tinted backgrounds matching their await-state chip colour (green = running, orange = waiting on `Channel.subscribe`, violet = waiting on `Interruption.ask`).
+
+## v0.8.18 — earlier
 
 **Status: shipped (2026-05-19).** **Cross-transport hardening of v0.8.17 Pause/Resume/Snapshot.** v0.8.17 shipped real implementations behind HTTP + CLI + Web UI but left the `connector.Connector` interface — the architectural seam every wire transport translates through — in its v0.8.15 PREVIEW state. MCP handlers dispatched correctly through the Connector but received mocked data; gRPC had no pause/snapshot RPCs at all; Python adapter had no methods. v0.8.18 fixes all three in three focused PRs. PRs #136, #137, #138.
 

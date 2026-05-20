@@ -58,6 +58,8 @@ type Envelope struct {
 type Sections struct {
 	AgentDefs          AgentDefsSection           `json:"agent_defs"`
 	AgentDefActive     AgentDefActiveSection      `json:"agent_def_active"`
+	SkillDefs          SkillDefsSection           `json:"skill_defs"`
+	SkillDefActive     SkillDefActiveSection      `json:"skill_def_active"`
 	Memory             MemorySection              `json:"memory"`
 	Channels           ChannelsSection            `json:"channels"`
 	Evaluations        EvaluationsSection         `json:"evaluations"`
@@ -96,6 +98,42 @@ type AgentDefActiveSection struct {
 }
 
 type AgentDefActiveEntry struct {
+	Name              string    `json:"name"`
+	DefID             string    `json:"def_id"`
+	PromotedAt        time.Time `json:"promoted_at"`
+	PromotedByAgentID string    `json:"promoted_by_agent_id,omitempty"`
+}
+
+// SkillDefsSection mirrors AgentDefsSection. v0.8.22.
+type SkillDefsSection struct {
+	Version string          `json:"version"`
+	Entries []SkillDefEntry `json:"entries"`
+}
+
+// SkillDefEntry mirrors AgentDefEntry. Same field set; the
+// definition payload's JSON schema (body / description /
+// allowed_tools) is owned by the SkillDef tool.
+type SkillDefEntry struct {
+	DefID                  string          `json:"def_id"`
+	Name                   string          `json:"name"`
+	Version                int             `json:"version"`
+	ParentDefID            string          `json:"parent_def_id,omitempty"`
+	Definition             json.RawMessage `json:"definition"`
+	Description            string          `json:"description,omitempty"`
+	CreatedAt              time.Time       `json:"created_at"`
+	CreatedByAgentID       string          `json:"created_by_agent_id,omitempty"`
+	CreatedByRunID         string          `json:"created_by_run_id,omitempty"`
+	Retired                bool            `json:"retired"`
+	BootstrappedFromStatic bool            `json:"bootstrapped_from_static"`
+}
+
+// SkillDefActiveSection mirrors AgentDefActiveSection.
+type SkillDefActiveSection struct {
+	Version string                `json:"version"`
+	Entries []SkillDefActiveEntry `json:"entries"`
+}
+
+type SkillDefActiveEntry struct {
 	Name              string    `json:"name"`
 	DefID             string    `json:"def_id"`
 	PromotedAt        time.Time `json:"promoted_at"`

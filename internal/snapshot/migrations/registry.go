@@ -33,6 +33,8 @@ const CurrentVersion = "1.0"
 const (
 	SectionAgentDefs          = "agent_defs"
 	SectionAgentDefActive     = "agent_def_active"
+	SectionSkillDefs          = "skill_defs"
+	SectionSkillDefActive     = "skill_def_active"
 	SectionMemory             = "memory"
 	SectionChannels           = "channels"
 	SectionEvaluations        = "evaluations"
@@ -91,6 +93,8 @@ func (e *ErrUnknownSectionVersion) Error() string {
 var registry = map[string]map[string]Migrator{
 	SectionAgentDefs:          {"1.0": identityMigrator},
 	SectionAgentDefActive:     {"1.0": identityMigrator},
+	SectionSkillDefs:          {"1.0": identityMigrator},
+	SectionSkillDefActive:     {"1.0": identityMigrator},
 	SectionMemory:             {"1.0": identityMigrator},
 	SectionChannels:           {"1.0": identityMigrator},
 	SectionEvaluations:        {"1.0": identityMigrator},

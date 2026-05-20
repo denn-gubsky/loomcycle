@@ -12,7 +12,9 @@ import (
 // unchanged.
 func TestMigrate_SameVersionIdentity(t *testing.T) {
 	for _, section := range []string{
-		SectionAgentDefs, SectionAgentDefActive, SectionMemory,
+		SectionAgentDefs, SectionAgentDefActive,
+		SectionSkillDefs, SectionSkillDefActive,
+		SectionMemory,
 		SectionChannels, SectionEvaluations, SectionPausedRuns,
 		SectionInteractionHistory,
 	} {

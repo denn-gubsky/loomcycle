@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/denn-gubsky/loomcycle/internal/skills"
+	"github.com/denn-gubsky/loomcycle/internal/store/sqlite"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
 
@@ -241,5 +242,56 @@ func TestSkillTool_MalformedJSON(t *testing.T) {
 	}
 	if !res.IsError {
 		t.Error("expected IsError on malformed JSON")
+	}
+}
+
+// TestSkillTool_ResolvesDBActiveOverStatic verifies the v0.8.22
+// DB-first resolution behaviour. A promoted SkillDef row must
+// override the same-named static SKILL.md body.
+func TestSkillTool_ResolvesDBActiveOverStatic(t *testing.T) {
+	// Static set carries one entry.
+	set := loadSetWithSkills(t, []struct {
+		Name         string
+		AllowedTools []string
+		Body         string
+	}{
+		{Name: "shared-skill", AllowedTools: []string{"Read"}, Body: "STATIC BODY"},
+	})
+	// Store contains a promoted SkillDef row for the same name
+	// with a DIFFERENT body.
+	s, err := sqlite.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	ctx := tools.WithAgentTools(context.Background(), []string{"Read"})
+
+	skillDefTool := &SkillDef{Store: s, Set: set}
+	dctx := tools.WithSkillDefPolicy(ctx, tools.SkillDefPolicyValue{Scopes: []string{"any"}})
+	dctx = tools.WithRunIdentity(dctx, tools.RunIdentityValue{AgentID: "a_seed"})
+	res, _ := skillDefTool.Execute(dctx, json.RawMessage(`{"op":"fork","name":"shared-skill","overlay":{"body":"DB BODY"},"promote":true}`))
+	if res.IsError {
+		t.Fatalf("seed fork+promote: %s", res.Text)
+	}
+
+	// Skill tool with Store wired: should return DB body.
+	skillTool := &SkillTool{Set: set, Store: s}
+	res, _ = skillTool.Execute(ctx, json.RawMessage(`{"name":"shared-skill"}`))
+	if res.IsError {
+		t.Fatalf("Skill lookup: %s", res.Text)
+	}
+	if res.Text != "DB BODY" {
+		t.Errorf("body = %q, want DB BODY (DB-active should override static)", res.Text)
+	}
+
+	// Skill tool without Store: should fall back to static body.
+	staticOnly := &SkillTool{Set: set}
+	res, _ = staticOnly.Execute(ctx, json.RawMessage(`{"name":"shared-skill"}`))
+	if res.IsError {
+		t.Fatalf("Skill lookup (static-only): %s", res.Text)
+	}
+	if res.Text != "STATIC BODY" {
+		t.Errorf("static-only body = %q, want STATIC BODY", res.Text)
 	}
 }
