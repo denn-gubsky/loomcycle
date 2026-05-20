@@ -9,7 +9,7 @@ import (
 // Operator-trust constants. The stdio MCP server runs in the operator's
 // process — when Claude Code (or any other MCP orchestrator) spawns
 // `loomcycle mcp ...`, the operator IS the launcher and has full process
-// authority. Builtin tools (Memory, Channel, AgentDef, Evaluation,
+// authority. Builtin tools (Memory, Channel, AgentDef, SkillDef, Evaluation,
 // Context) gate on per-agent ACLs that don't exist for MCP-direct
 // callers — there's no yaml agent definition behind a `tools/call`
 // invocation. We synthesise a permissive policy that mirrors operator
@@ -42,7 +42,7 @@ const (
 // default-deny refusals because the underlying tools check per-agent
 // policy from ctx and find zero values.
 //
-// Use this for the 5 builtin-wrapper handlers ONLY. Do NOT use it for
+// Use this for the 6 builtin-wrapper handlers ONLY. Do NOT use it for
 // run-lifecycle handlers (spawn_run / cancel_run / etc.) — those go
 // through RunOnce which builds the right ctx for each agent from
 // cfg.Agents.
@@ -83,6 +83,12 @@ func operatorCtx(ctx context.Context) context.Context {
 	ctx = tools.WithAgentDefPolicy(ctx, tools.AgentDefPolicyValue{
 		Scopes:   []string{"any"},
 		SelfName: operatorAgentName,
+	})
+
+	// SkillDef (v0.8.22): "any" scope, same operator-trust grant as
+	// AgentDef. Skills have no agent identity, so no SelfName field.
+	ctx = tools.WithSkillDefPolicy(ctx, tools.SkillDefPolicyValue{
+		Scopes: []string{"any"},
 	})
 
 	// Evaluation: all 4 valid scope values. submit_any + read_any

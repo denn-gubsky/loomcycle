@@ -39,6 +39,9 @@ var handlersByName = map[string]toolHandler{
 	"agentdef": wrapBuiltin("agentdef", func(c connector.Connector, ctx context.Context, in json.RawMessage) (connector.ToolResult, error) {
 		return c.AgentDef(ctx, in)
 	}),
+	"skilldef": wrapBuiltin("skilldef", func(c connector.Connector, ctx context.Context, in json.RawMessage) (connector.ToolResult, error) {
+		return c.SkillDef(ctx, in)
+	}),
 	"evaluation": wrapBuiltin("evaluation", func(c connector.Connector, ctx context.Context, in json.RawMessage) (connector.ToolResult, error) {
 		return c.Evaluation(ctx, in)
 	}),

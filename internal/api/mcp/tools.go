@@ -16,7 +16,7 @@ import (
 // underlying tool's discriminated-op schema).
 //
 // Naming convention: flat `verb_noun` for actions; single-word for
-// builtin wrappers (memory, channel, agentdef, evaluation, context)
+// builtin wrappers (memory, channel, agentdef, skilldef, evaluation, context)
 // whose inner `op` field already discriminates the operation.
 func toolDescriptors() []loommcp.ToolDescriptor {
 	return []loommcp.ToolDescriptor{
@@ -139,6 +139,11 @@ func toolDescriptors() []loommcp.ToolDescriptor {
 		{
 			Name:        "agentdef",
 			Description: "AgentDef tool ops (create/fork/get/list/promote/retire). Pass-through.",
+			InputSchema: rawJSON(`{"type": "object"}`),
+		},
+		{
+			Name:        "skilldef",
+			Description: "SkillDef tool ops (create/fork/get/list/promote/retire). Runtime-mutable skill substrate; mirror of AgentDef for skills. Pass-through.",
 			InputSchema: rawJSON(`{"type": "object"}`),
 		},
 		{
