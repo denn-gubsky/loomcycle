@@ -49,6 +49,11 @@ __pycache__/
 *.pyc
 .pytest_cache/
 
+# goreleaser snapshot + release output. `goreleaser release --snapshot`
+# writes here for local smoke-testing; CI's release workflow also
+# uses this directory before uploading to the GitHub release.
+/dist/
+
 # v0.7.3 web UI build artefacts. The .gitkeep placeholder is the only
 # committed file under internal/webui/dist/ — `make build-ui` replaces
 # it with index.html + assets/, which we don't commit (CI runs the

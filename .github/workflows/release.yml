@@ -1,0 +1,63 @@
+name: Release (goreleaser)
+
+# Cross-platform binary builds + Homebrew formula bump, fired on
+# every `v*` tag. The TS adapter's publish-ts-adapter workflow and
+# this one BOTH trigger on `v*`; they run in parallel and don't
+# conflict (TS publishes to npm, this builds Go binaries + uploads
+# release assets + bumps the homebrew tap formula).
+#
+# Manual setup required ONCE per repo:
+#   1. Generate a fine-grained personal access token at
+#      https://github.com/settings/personal-access-tokens scoped to
+#      ONLY denn-gubsky/homebrew-loomcycle with `Contents: Read and
+#      write` permission. No other scopes.
+#   2. Add the token as a repository secret named HOMEBREW_TAP_TOKEN
+#      under Settings -> Secrets and variables -> Actions.
+#
+# That token is needed because the workflow's default GITHUB_TOKEN
+# is scoped to THIS repository (denn-gubsky/loomcycle) only; pushing
+# the formula bump to the tap repo requires cross-repo write access.
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write  # needed for goreleaser to upload release assets
+
+jobs:
+  goreleaser:
+    name: goreleaser
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # goreleaser needs full git history for the version
+          # template + commit-date stamp.
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+          cache: true
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Build embedded Web UI
+        # The web UI is embedded via go:embed in internal/webui/dist
+        # which `make build-ui` populates. Every cross-compiled
+        # binary ships the same UI bundle.
+        run: make build-ui
+
+      - name: Run goreleaser
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          version: latest
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HOMEBREW_TAP_GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}

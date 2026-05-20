@@ -1,0 +1,119 @@
+# goreleaser config — cross-platform release + Homebrew tap update.
+#
+# Triggered by .github/workflows/release.yml on `v*` tag push. Builds
+# loomcycle for darwin-{arm64,amd64} + linux-{arm64,amd64}, packages
+# each as tar.gz with LICENSE + README, attaches everything to the
+# GitHub release at the tag, generates SHA256SUMS, then bumps
+# Formula/loomcycle.rb in denn-gubsky/homebrew-loomcycle with the new
+# version + per-platform sha256 values.
+#
+# The Web UI is built once before the goreleaser run (the workflow's
+# `make build-ui` step) so internal/webui/dist/ is populated for
+# go:embed across every cross-compiled binary.
+#
+# https://goreleaser.com/
+version: 2
+
+project_name: loomcycle
+
+builds:
+  - id: loomcycle
+    main: ./cmd/loomcycle
+    binary: loomcycle
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - darwin
+      - linux
+    goarch:
+      - amd64
+      - arm64
+    # -s -w strips DWARF + symbol table (~30% smaller). buildVersion /
+    # buildCommit / buildTime are read by cmd/loomcycle/main.go via
+    # the auto-version fallback chain (runtime/debug VCS stamp first;
+    # these ldflags override when the operator runs `make build` from
+    # a clean tag, which goreleaser always does).
+    ldflags:
+      - -s
+      - -w
+      - -X main.buildVersion={{ .Version }}
+      - -X main.buildCommit={{ .ShortCommit }}
+      - -X main.buildTime={{ .CommitDate }}
+    # Reproducible: pin mod_timestamp so multi-platform builds at the
+    # same tag produce identical archives (only the embedded binary
+    # differs by architecture).
+    mod_timestamp: "{{ .CommitTimestamp }}"
+
+archives:
+  - id: loomcycle-binary
+    ids:
+      - loomcycle
+    # Naming mirrors what the Formula's url template expects.
+    # Lowercase OS/Arch so darwin-arm64 etc. match.
+    name_template: "{{ .ProjectName }}-{{ .Os }}-{{ .Arch }}"
+    formats:
+      - tar.gz
+    files:
+      - LICENSE
+      - README.md
+
+checksum:
+  name_template: "SHA256SUMS"
+  algorithm: sha256
+
+# Snapshot mode is what `goreleaser release --snapshot` uses to test
+# the config locally without pushing anywhere. The tag template
+# emits {next-tag}-next + commit so local snapshot artifacts can't
+# be confused with real releases.
+snapshot:
+  version_template: "{{ incpatch .Version }}-next-{{ .ShortCommit }}"
+
+# Release notes are managed manually on the GitHub release page
+# (curated narrative). goreleaser's auto-changelog would produce a
+# raw git-log dump that adds noise on top of the hand-written notes.
+changelog:
+  disable: true
+
+release:
+  github:
+    owner: denn-gubsky
+    name: loomcycle
+  # Don't overwrite manually-curated release notes if the release
+  # was created ahead of time (the v0.8.20 release was; future tags
+  # might be too).
+  mode: keep-existing
+
+# Homebrew formula — generated AND pushed to the tap repo on each
+# tag. `directory: Formula` matches the tap's layout. The token used
+# to push is HOMEBREW_TAP_GITHUB_TOKEN (a separate fine-grained PAT
+# scoped to denn-gubsky/homebrew-loomcycle with `contents: write`);
+# the default GITHUB_TOKEN is scoped to this repo only and can't
+# write to the tap.
+brews:
+  - name: loomcycle
+    repository:
+      owner: denn-gubsky
+      name: homebrew-loomcycle
+      branch: main
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+    directory: Formula
+    homepage: "https://github.com/denn-gubsky/loomcycle"
+    description: "Agentic runtime — one Go binary owning the LLM tool-use loop"
+    license: "Apache-2.0"
+    # commit_author surfaces in the tap's git history.
+    commit_author:
+      name: goreleaser-bot
+      email: bot@goreleaser.com
+    commit_msg_template: "loomcycle {{ .Tag }} — formula bump"
+    # caveats prints on `brew install` — mirrors what we wrote
+    # by hand for v0.8.20.
+    caveats: |
+      loomcycle ships as a single Go binary that reads configuration from
+      a YAML file. Quick start:
+
+        mkdir -p ~/.config/loomcycle
+        # Drop your loomcycle.yaml into ~/.config/loomcycle/
+        # See https://github.com/denn-gubsky/loomcycle for examples.
+        loomcycle --config ~/.config/loomcycle/loomcycle.yaml
+    test: |
+      assert_match "version=", shell_output("#{bin}/loomcycle --version")
