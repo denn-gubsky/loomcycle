@@ -387,8 +387,14 @@ func main() {
 		&builtin.WebFetch{HTTP: httpTool},
 		&builtin.WebSearch{APIKey: cfg.Env.BraveAPIKey},
 		&builtin.Bash{Enabled: cfg.Env.BashEnabled, Cwd: cfg.Env.BashCwd},
-		&builtin.SkillTool{Set: skillSet},
+		// SkillTool's Store is late-bound below (so DB-active SkillDef
+		// rows override the static Set body). Nil-Store before
+		// late-binding falls back to the static Set; the assignment
+		// after storeIface is constructed switches the resolution
+		// order to DB-first.
 	}
+	skillTool := &builtin.SkillTool{Set: skillSet}
+	allTools = append(allTools, skillTool)
 	// Memory tool — wired post-store so it can grab the live Store
 	// reference. Registered unconditionally; access is gated per-agent
 	// via memory_scopes yaml + the Memory.Store==nil branch when the
@@ -428,6 +434,17 @@ func main() {
 		MaxDescriptionBytes: cfg.Env.AgentDefMaxDescriptionBytes,
 	}
 	allTools = append(allTools, agentDefTool)
+
+	// SkillDef tool (v0.8.22). Mirror of AgentDef for runtime skill
+	// mutation. Same default-deny gate (skill_def_scopes yaml). Set
+	// is shared with the SkillTool above so static-name guard +
+	// fork-bootstrap see the same static skills.
+	skillDefTool := &builtin.SkillDef{
+		Set:                 skillSet,
+		MaxBodyBytes:        cfg.Env.SkillDefMaxBodyBytes,
+		MaxDescriptionBytes: cfg.Env.SkillDefMaxDescriptionBytes,
+	}
+	allTools = append(allTools, skillDefTool)
 
 	// Evaluation tool (v0.8.5). Selection half of the substrate;
 	// emitter_role is derived server-side from the caller's RunIdentity
@@ -649,6 +666,8 @@ func main() {
 	memoryTool.Store = storeIface
 	channelTool.Store = storeIface
 	agentDefTool.Store = storeIface
+	skillDefTool.Store = storeIface
+	skillTool.Store = storeIface
 	evaluationTool.Store = storeIface
 	contextTool.Store = storeIface
 	interruptionTool.Store = storeIface
@@ -665,6 +684,10 @@ func main() {
 	// since v0.5.5; HTTP only adopted this in v0.8.21.
 	srv.SetBuildInfo(buildVersion, buildCommit, buildTime)
 	srv.SetMCPFallback(mcpLazyResolver.Resolve)
+	// v0.8.22: hand the static skills.Set to the server so the
+	// per-run SkillDef resolver can fall back to static bodies when
+	// no DB-active row exists for a skill name.
+	srv.SetSkillSet(skillSet)
 
 	// v0.8.6 SystemPublisher — backs the POST /v1/_channels/_system/...
 	// admin endpoint AND the cadence/event-hook publishers added in

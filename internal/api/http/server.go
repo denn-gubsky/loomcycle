@@ -29,6 +29,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/resolve"
 	"github.com/denn-gubsky/loomcycle/internal/runner"
+	"github.com/denn-gubsky/loomcycle/internal/skills"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 	"github.com/denn-gubsky/loomcycle/internal/tools/builtin"
@@ -108,6 +109,15 @@ type Server struct {
 	// SetMetricsSampler from main.go after the sampler is
 	// constructed.
 	metricsSampler *metrics.Sampler
+
+	// skillSet is the static skills.Set loaded at boot from
+	// LOOMCYCLE_SKILLS_ROOT. Used by resolveSkillBodiesForRun (v0.8.22)
+	// to fall back to the static body when a skill name has no
+	// DB-active SkillDef row. Nil when LOOMCYCLE_SKILLS_ROOT is unset
+	// or when the server is constructed without a SetSkillSet call —
+	// the per-run resolver tolerates nil and emits no override in
+	// that case.
+	skillSet *skills.Set
 
 	// pauseMgr is the v0.8.17 runtime pause/resume coordinator.
 	// Nil = the /v1/_pause, /v1/_resume, /v1/_state endpoints return
@@ -211,6 +221,14 @@ func (s *Server) SetMCPFallback(fn tools.FallbackFunc) {
 // default — endpoints return 503 until this is called.
 func (s *Server) SetMetricsSampler(m *metrics.Sampler) {
 	s.metricsSampler = m
+}
+
+// SetSkillSet installs the static skills.Set so v0.8.22 SkillDef
+// per-run resolution can fall back to the static body when a skill
+// name has no DB-active SkillDef row. Nil is fine — the per-run
+// resolver tolerates nil (no override).
+func (s *Server) SetSkillSet(set *skills.Set) {
+	s.skillSet = set
 }
 
 // SetPauseManager installs the v0.8.17 pause/resume coordinator so the
@@ -499,6 +517,91 @@ func (s *Server) substratePoliciesForAgent(agentDef config.AgentDef, selfName st
 		tools.EvaluationPolicyValue{
 			Scopes: agentDef.EvaluationScopes,
 		}
+}
+
+// skillDefPolicyForAgent returns the v0.8.22 SkillDef policy for
+// one agent. Default-deny: empty SkillDefScopes → no SkillDef ops.
+func (s *Server) skillDefPolicyForAgent(agentDef config.AgentDef) tools.SkillDefPolicyValue {
+	return tools.SkillDefPolicyValue{Scopes: agentDef.SkillDefScopes}
+}
+
+// resolveSkillBodiesForRun rebuilds agentDef.SystemPrompt for a
+// single run with v0.8.22 SkillDef per-run resolution. For each
+// skill named in agentDef.Skills, the active SkillDef row's body
+// (when present) overrides the static SKILL.md body baked at
+// config-load.
+//
+// Fast path: if NO skill name has a DB-active row, the unmodified
+// agentDef is returned (the config-load baked SystemPrompt is
+// already correct). Slow path: rebuild from SystemPromptBase +
+// per-skill (DB-or-static) bodies.
+//
+// Returns agentDef unchanged on any error (logged) — the run
+// continues with the static baked prompt rather than fail. The
+// agent loop is unchanged; only SystemPrompt may differ.
+func (s *Server) resolveSkillBodiesForRun(ctx context.Context, agentDef config.AgentDef) config.AgentDef {
+	if len(agentDef.Skills) == 0 || s.store == nil {
+		return agentDef
+	}
+	// Fast pre-check: any DB-active row for any skill name?
+	anyActive := false
+	activeBodies := make(map[string]string, len(agentDef.Skills))
+	for _, skillName := range agentDef.Skills {
+		row, err := s.store.SkillDefGetActive(ctx, skillName)
+		if err != nil {
+			var nf *store.ErrNotFound
+			if errors.As(err, &nf) {
+				continue
+			}
+			log.Printf("resolveSkillBodiesForRun: SkillDefGetActive(%q) failed: %v", skillName, err)
+			return agentDef
+		}
+		var def skillDefOverlay
+		if err := json.Unmarshal(row.Definition, &def); err != nil {
+			log.Printf("resolveSkillBodiesForRun: parse %s definition: %v", row.DefID, err)
+			continue
+		}
+		if strings.TrimSpace(def.Body) == "" {
+			continue
+		}
+		activeBodies[skillName] = def.Body
+		anyActive = true
+	}
+	if !anyActive {
+		return agentDef
+	}
+	// Slow path: rebuild SystemPrompt from base + per-skill body.
+	rebuilt := agentDef
+	rebuilt.SystemPrompt = agentDef.SystemPromptBase
+	for _, skillName := range agentDef.Skills {
+		body, ok := activeBodies[skillName]
+		if !ok {
+			// No DB override — fall back to the static skill body.
+			if s.skillSet == nil {
+				continue
+			}
+			sk, has := s.skillSet.Get(skillName)
+			if !has {
+				continue
+			}
+			body = sk.Body
+		}
+		if rebuilt.SystemPrompt != "" {
+			rebuilt.SystemPrompt += "\n\n---\n\n"
+		}
+		rebuilt.SystemPrompt += body
+	}
+	return rebuilt
+}
+
+// skillDefOverlay mirrors internal/tools/builtin.skillDefOverlay.
+// Re-declared here so the api/http package doesn't import
+// tools/builtin (which would invert the existing dependency
+// direction).
+type skillDefOverlay struct {
+	Body         string   `json:"body,omitempty"`
+	Description  string   `json:"description,omitempty"`
+	AllowedTools []string `json:"allowed_tools,omitempty"`
 }
 
 // historyPolicyForAgent returns the v0.8.7 Context.history scope policy
@@ -820,6 +923,10 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 
 	// ---- Segments: prepend agent's system prompt ----
 	segments := in.Segments
+	// v0.8.22: rebuild SystemPrompt from per-run SkillDef bodies
+	// when any of the agent's skills has a DB-active row. No-op
+	// fast path when none do.
+	agentDef = s.resolveSkillBodiesForRun(ctx, agentDef)
 	if agentDef.SystemPrompt != "" {
 		segments = append([]loop.PromptSegment{{
 			Role: "system",
@@ -909,6 +1016,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	loopCtx = tools.WithEventEmitter(loopCtx, emit)
 	adPolicy, evPolicy := s.substratePoliciesForAgent(agentDef, effectiveAgentName)
 	loopCtx = tools.WithAgentDefPolicy(loopCtx, adPolicy)
+	loopCtx = tools.WithSkillDefPolicy(loopCtx, s.skillDefPolicyForAgent(agentDef))
 	loopCtx = tools.WithEvaluationPolicy(loopCtx, evPolicy)
 	loopCtx = tools.WithHistoryPolicy(loopCtx, s.historyPolicyForAgent(agentDef))
 	loopCtx = tools.WithInterruptionPolicy(loopCtx, s.interruptionPolicyForAgent(agentDef))
@@ -1524,6 +1632,8 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 	}
 	dispatcher := s.newDispatcher(allowedTools)
 
+	// v0.8.22: rebuild SystemPrompt from per-run SkillDef bodies.
+	agentDef = s.resolveSkillBodiesForRun(r.Context(), agentDef)
 	// Optional system prompt from agent def.
 	if agentDef.SystemPrompt != "" {
 		req.Segments = append([]loop.PromptSegment{{
@@ -1672,6 +1782,7 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 	loopCtx = tools.WithEventEmitter(loopCtx, emit)
 	adPolicy, evPolicy := s.substratePoliciesForAgent(agentDef, req.Agent)
 	loopCtx = tools.WithAgentDefPolicy(loopCtx, adPolicy)
+	loopCtx = tools.WithSkillDefPolicy(loopCtx, s.skillDefPolicyForAgent(agentDef))
 	loopCtx = tools.WithEvaluationPolicy(loopCtx, evPolicy)
 	loopCtx = tools.WithHistoryPolicy(loopCtx, s.historyPolicyForAgent(agentDef))
 	loopCtx = tools.WithInterruptionPolicy(loopCtx, s.interruptionPolicyForAgent(agentDef))
@@ -1863,6 +1974,10 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	// Re-prepend the agent's system prompt — it isn't in the transcript
 	// (it's per-call configuration, not conversation content).
 	segments := body.Segments
+	// v0.8.22: rebuild SystemPrompt from per-run SkillDef bodies
+	// when any of the agent's skills has a DB-active row. No-op
+	// fast path when none do.
+	agentDef = s.resolveSkillBodiesForRun(r.Context(), agentDef)
 	if agentDef.SystemPrompt != "" {
 		segments = append([]loop.PromptSegment{{
 			Role: "system",
@@ -1975,6 +2090,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	loopCtx = tools.WithEventEmitter(loopCtx, emit)
 	adPolicy, evPolicy := s.substratePoliciesForAgent(agentDef, sess.Agent)
 	loopCtx = tools.WithAgentDefPolicy(loopCtx, adPolicy)
+	loopCtx = tools.WithSkillDefPolicy(loopCtx, s.skillDefPolicyForAgent(agentDef))
 	loopCtx = tools.WithEvaluationPolicy(loopCtx, evPolicy)
 	loopCtx = tools.WithHistoryPolicy(loopCtx, s.historyPolicyForAgent(agentDef))
 	loopCtx = tools.WithInterruptionPolicy(loopCtx, s.interruptionPolicyForAgent(agentDef))
@@ -2512,6 +2628,7 @@ func (s *Server) runSubAgent(ctx context.Context, name string, prompt string, de
 	// parent's.
 	subADPolicy, subEvPolicy := s.substratePoliciesForAgent(def, name)
 	subCtx = tools.WithAgentDefPolicy(subCtx, subADPolicy)
+	subCtx = tools.WithSkillDefPolicy(subCtx, s.skillDefPolicyForAgent(def))
 	subCtx = tools.WithEvaluationPolicy(subCtx, subEvPolicy)
 	subCtx = tools.WithHistoryPolicy(subCtx, s.historyPolicyForAgent(def))
 	subCtx = tools.WithInterruptionPolicy(subCtx, s.interruptionPolicyForAgent(def))

@@ -308,6 +308,13 @@ type AgentDef struct {
 	// SystemPrompt is the agent's system prompt as an inline YAML
 	// string. Mutually exclusive with SystemPromptFile.
 	SystemPrompt string `yaml:"system_prompt"`
+	// SystemPromptBase is the pre-skill-bake SystemPrompt as it was
+	// at config-load (before resolveSkills appended any skill
+	// bodies). v0.8.22 SkillDef per-run resolution rebuilds the
+	// effective SystemPrompt from this base + each skill's
+	// DB-active-or-static body. Not yaml-driven; set by
+	// resolveSkills.
+	SystemPromptBase string `yaml:"-"`
 	// SystemPromptFile points at a file whose contents become
 	// SystemPrompt. Resolved relative to the YAML config file's
 	// directory (so "agents/qa.md" works regardless of cwd). Useful
@@ -987,6 +994,18 @@ type Env struct {
 	// Env: LOOMCYCLE_AGENT_DEF_MAX_DESCRIPTION_BYTES.
 	AgentDefMaxDescriptionBytes int
 
+	// SkillDefMaxBodyBytes caps the overlay.body field on
+	// SkillDef.create / fork (v0.8.22). Default 131072 (128 KB).
+	// 0 disables.
+	// Env: LOOMCYCLE_SKILL_DEF_MAX_BODY_BYTES.
+	SkillDefMaxBodyBytes int
+
+	// SkillDefMaxDescriptionBytes caps the free-text description
+	// field on SkillDef.create / fork (v0.8.22). Default 8192 (8 KB).
+	// 0 disables.
+	// Env: LOOMCYCLE_SKILL_DEF_MAX_DESCRIPTION_BYTES.
+	SkillDefMaxDescriptionBytes int
+
 	// EvaluationMaxJudgementBytes caps the structured-judgement JSON
 	// on Evaluation.submit (v0.8.5). Default 32768 (32 KB). 0 disables.
 	// Env: LOOMCYCLE_EVALUATION_MAX_JUDGEMENT_BYTES.
@@ -1418,6 +1437,27 @@ func Load(path string) (*Config, error) {
 				cfg.Env.AgentDefMaxDescriptionBytes = 0
 			} else {
 				cfg.Env.AgentDefMaxDescriptionBytes = n
+			}
+		}
+	}
+	// v0.8.22 SkillDef caps. Mirror of AgentDef caps.
+	cfg.Env.SkillDefMaxBodyBytes = 131072
+	if v := os.Getenv("LOOMCYCLE_SKILL_DEF_MAX_BODY_BYTES"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			if n <= 0 {
+				cfg.Env.SkillDefMaxBodyBytes = 0
+			} else {
+				cfg.Env.SkillDefMaxBodyBytes = n
+			}
+		}
+	}
+	cfg.Env.SkillDefMaxDescriptionBytes = 8192
+	if v := os.Getenv("LOOMCYCLE_SKILL_DEF_MAX_DESCRIPTION_BYTES"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			if n <= 0 {
+				cfg.Env.SkillDefMaxDescriptionBytes = 0
+			} else {
+				cfg.Env.SkillDefMaxDescriptionBytes = n
 			}
 		}
 	}
@@ -1868,6 +1908,10 @@ func resolveSkills(cfg *Config) error {
 		if len(def.Skills) == 0 {
 			continue
 		}
+		// Capture the base (pre-skill-bake) prompt so v0.8.22 SkillDef
+		// per-run resolution can rebuild from it when a DB-active row
+		// shadows the static body.
+		def.SystemPromptBase = def.SystemPrompt
 		// Build agent rule set once per agent.
 		agentSet := make(map[string]bool, len(def.AllowedTools))
 		for _, t := range def.AllowedTools {
