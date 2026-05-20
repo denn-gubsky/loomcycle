@@ -14,6 +14,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/denn-gubsky/loomcycle/internal/agents"
+	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/skills"
 	"github.com/denn-gubsky/loomcycle/internal/tools/policy"
 )
@@ -102,6 +103,13 @@ type Config struct {
 	// permission allowlist; the existing hook-registration HTTP
 	// endpoints (POST /v1/hooks) are unchanged. See HooksConfig.
 	Hooks HooksConfig `yaml:"hooks"`
+
+	// Memory is the v0.9.0 top-level config block for the Memory
+	// tool's vector / semantic features. Only sub-field today is
+	// `embedder:` (provider + model + timeouts). When unset,
+	// vector ops on the Memory tool refuse with
+	// embedder_not_configured. K/V Memory is unaffected.
+	Memory MemoryConfig `yaml:"memory"`
 
 	// Env-derived; not in YAML.
 	Env Env `yaml:"-"`
@@ -221,6 +229,39 @@ type HooksConfig struct {
 	// (comma-separated). Env wins over yaml when both are set (same
 	// rule as storage / cache blocks).
 	PermitHostWiden HostWidenPermitConfig `yaml:"permit_host_widen"`
+}
+
+// MemoryConfig is the v0.9.0 top-level Memory tool config block.
+// Only sub-field today is `embedder:`. K/v Memory ops have no
+// per-block config (the byte caps live on Env). When the entire
+// block is unset, vector ops refuse with embedder_not_configured.
+type MemoryConfig struct {
+	// Embedder picks the provider + model loomcycle uses to embed
+	// memory rows (when an agent calls Memory.set with embed=true)
+	// and queries (Memory.search). Exactly one embedder is
+	// supported in v0.9.0 — per-agent overrides ship in v0.10.x.
+	//
+	// When Provider is empty (default), vector ops on the Memory
+	// tool refuse with embedder_not_configured. K/V Memory is
+	// unaffected.
+	Embedder EmbedderConfig `yaml:"embedder"`
+}
+
+// EmbedderConfig selects the v0.9.0 embedder. Validated at config
+// load: Provider must be in the registered set (providers.NewEmbedder
+// catches unknown names); Model is required when Provider is set.
+type EmbedderConfig struct {
+	// Provider is the registered embedder driver name
+	// ("openai" / "gemini" / "anthropic" in v0.9.0).
+	Provider string `yaml:"provider"`
+	// Model is the wire model id ("text-embedding-3-large" etc.).
+	Model string `yaml:"model"`
+	// TimeoutMs overrides LOOMCYCLE_MEMORY_EMBED_TIMEOUT_MS for
+	// this specific embedder. 0 = inherit env (30000 default).
+	TimeoutMs int `yaml:"timeout_ms"`
+	// BatchSize overrides LOOMCYCLE_MEMORY_EMBED_BATCH_SIZE.
+	// 0 = inherit env (100 default).
+	BatchSize int `yaml:"batch_size"`
 }
 
 // HostWidenPermitConfig is the per-capability slice of HooksConfig
@@ -2419,6 +2460,35 @@ func validate(c *Config) error {
 			}
 		default:
 			return fmt.Errorf("mcp_servers.%s: unknown transport %q", name, srv.Transport)
+		}
+	}
+	// v0.9.0 Vector Memory: validate the memory.embedder block when
+	// set. Empty block = vector ops refuse with embedder_not_configured
+	// at the tool layer (caught at first use, not boot). Set block
+	// must have a known provider AND a model.
+	if c.Memory.Embedder.Provider != "" || c.Memory.Embedder.Model != "" {
+		if c.Memory.Embedder.Provider == "" {
+			return fmt.Errorf("memory.embedder: provider is required when embedder block is set")
+		}
+		if c.Memory.Embedder.Model == "" {
+			return fmt.Errorf("memory.embedder: model is required when embedder block is set")
+		}
+		known := providers.RegisteredEmbedders()
+		seen := false
+		for _, p := range known {
+			if p == c.Memory.Embedder.Provider {
+				seen = true
+				break
+			}
+		}
+		if !seen {
+			return fmt.Errorf("memory.embedder.provider: unknown provider %q (known: %v)", c.Memory.Embedder.Provider, known)
+		}
+		if c.Memory.Embedder.TimeoutMs < 0 {
+			return fmt.Errorf("memory.embedder.timeout_ms must be >= 0")
+		}
+		if c.Memory.Embedder.BatchSize < 0 {
+			return fmt.Errorf("memory.embedder.batch_size must be >= 0")
 		}
 	}
 	return nil

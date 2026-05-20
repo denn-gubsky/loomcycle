@@ -411,6 +411,21 @@ func main() {
 	}
 	allTools = append(allTools, memoryTool)
 
+	// v0.9.0 Vector Memory: construct the embedder from
+	// cfg.Memory.Embedder when the operator yaml set one. The
+	// instance is held in the local `embedder` var for PR 3 (Memory
+	// tool's search op) + PR 4 (admin /v1/_memory/reembed). When the
+	// embedder block is unset, vector ops refuse with
+	// embedder_not_configured at the tool layer.
+	embedder, err := buildEmbedder(cfg)
+	if err != nil {
+		log.Fatalf("embedder: %v", err)
+	}
+	if embedder != nil {
+		log.Printf("embedder: %s/%s (dim=%d)", embedder.Provider(), embedder.Model(), embedder.Dimension())
+	}
+	_ = embedder // wired into Memory tool in PR 3
+
 	// Channel tool (v0.8.4) — persistent inter-agent message bus.
 	// One Bus instance per process so in-process subscribers waiting
 	// in long-poll mode get sub-millisecond notification. Same
@@ -1120,6 +1135,52 @@ type providerResolver struct {
 	ollamaLocal providers.Provider
 	deepseek    providers.Provider
 	gemini      providers.Provider
+}
+
+// buildEmbedder turns cfg.Memory.Embedder into a constructed
+// providers.Embedder, sourcing the API key + base URL from the same
+// env vars the chat-completion drivers use. Returns (nil, nil) when
+// no embedder is configured — the Memory tool refuses vector ops
+// with embedder_not_configured in that case.
+//
+// Per-embedder yaml knobs (timeout_ms, batch_size) override the
+// env-var defaults when set; the env-var fallback gives operators
+// a single-place override for many embedders without touching yaml.
+func buildEmbedder(cfg *config.Config) (providers.Embedder, error) {
+	provider := cfg.Memory.Embedder.Provider
+	if provider == "" {
+		return nil, nil
+	}
+
+	// Reuse the chat-completion driver's auth + base URL. Embedders
+	// hit the same provider account, so a separate set of env vars
+	// would be operator friction without benefit.
+	var apiKey, baseURL string
+	switch provider {
+	case "openai":
+		apiKey, baseURL = cfg.Env.OpenAIAPIKey, ""
+	case "gemini":
+		apiKey, baseURL = cfg.Env.GeminiAPIKey, cfg.Env.GeminiBaseURL
+	case "anthropic":
+		apiKey, baseURL = cfg.Env.AnthropicAPIKey, ""
+	}
+
+	timeoutMs := cfg.Memory.Embedder.TimeoutMs
+	if timeoutMs == 0 {
+		timeoutMs = cfg.Env.MemoryEmbedTimeoutMs
+	}
+	batchSize := cfg.Memory.Embedder.BatchSize
+	if batchSize == 0 {
+		batchSize = cfg.Env.MemoryEmbedBatchSize
+	}
+
+	return providers.NewEmbedder(provider, providers.EmbedderOptions{
+		APIKey:    apiKey,
+		BaseURL:   baseURL,
+		Model:     cfg.Memory.Embedder.Model,
+		Timeout:   time.Duration(timeoutMs) * time.Millisecond,
+		BatchSize: batchSize,
+	})
 }
 
 func newProviderResolver(cfg *config.Config) *providerResolver {

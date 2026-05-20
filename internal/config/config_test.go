@@ -6,6 +6,15 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	// Blank imports populate the providers embedder registry via
+	// each driver's init() — the v0.9.0 memory.embedder validation
+	// path calls providers.RegisteredEmbedders() and needs the
+	// driver set populated. Mirrors how cmd/loomcycle/main.go pulls
+	// each provider package for the chat-completion side.
+	_ "github.com/denn-gubsky/loomcycle/internal/providers/anthropic"
+	_ "github.com/denn-gubsky/loomcycle/internal/providers/gemini"
+	_ "github.com/denn-gubsky/loomcycle/internal/providers/openai"
 )
 
 func TestLoadExample(t *testing.T) {
@@ -1472,5 +1481,122 @@ agents:
 	}
 	if cfg.Env.OllamaNumCtx != 0 {
 		t.Errorf("negative value parsed to %d, want 0", cfg.Env.OllamaNumCtx)
+	}
+}
+
+// v0.9.0 Vector Memory — Embedder yaml validation.
+
+func TestMemoryEmbedder_HappyPath(t *testing.T) {
+	tmp := t.TempDir()
+	yamlPath := filepath.Join(tmp, "c.yaml")
+	os.WriteFile(yamlPath, []byte(`
+defaults: { provider: anthropic, model: claude-sonnet-4-6 }
+memory:
+  embedder:
+    provider: openai
+    model: text-embedding-3-large
+    timeout_ms: 60000
+    batch_size: 50
+`), 0o600)
+	cfg, err := Load(yamlPath)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Memory.Embedder.Provider != "openai" {
+		t.Errorf("provider: got %q, want openai", cfg.Memory.Embedder.Provider)
+	}
+	if cfg.Memory.Embedder.Model != "text-embedding-3-large" {
+		t.Errorf("model: got %q, want text-embedding-3-large", cfg.Memory.Embedder.Model)
+	}
+	if cfg.Memory.Embedder.TimeoutMs != 60000 {
+		t.Errorf("timeout_ms: got %d, want 60000", cfg.Memory.Embedder.TimeoutMs)
+	}
+	if cfg.Memory.Embedder.BatchSize != 50 {
+		t.Errorf("batch_size: got %d, want 50", cfg.Memory.Embedder.BatchSize)
+	}
+}
+
+func TestMemoryEmbedder_UnsetIsAllowed(t *testing.T) {
+	tmp := t.TempDir()
+	yamlPath := filepath.Join(tmp, "c.yaml")
+	os.WriteFile(yamlPath, []byte(`
+defaults: { provider: anthropic, model: claude-sonnet-4-6 }
+`), 0o600)
+	cfg, err := Load(yamlPath)
+	if err != nil {
+		t.Fatalf("unset block should be allowed: %v", err)
+	}
+	if cfg.Memory.Embedder.Provider != "" {
+		t.Errorf("expected empty provider, got %q", cfg.Memory.Embedder.Provider)
+	}
+}
+
+func TestMemoryEmbedder_UnknownProviderRefused(t *testing.T) {
+	tmp := t.TempDir()
+	yamlPath := filepath.Join(tmp, "c.yaml")
+	os.WriteFile(yamlPath, []byte(`
+defaults: { provider: anthropic, model: claude-sonnet-4-6 }
+memory:
+  embedder:
+    provider: cohere
+    model: embed-v3
+`), 0o600)
+	_, err := Load(yamlPath)
+	if err == nil {
+		t.Fatal("expected unknown-provider error")
+	}
+	if !strings.Contains(err.Error(), "cohere") {
+		t.Errorf("error should name the unknown provider: %v", err)
+	}
+	// Should list at least one known one so operators see the alternatives.
+	if !strings.Contains(err.Error(), "openai") && !strings.Contains(err.Error(), "gemini") {
+		t.Errorf("error should list known providers: %v", err)
+	}
+}
+
+func TestMemoryEmbedder_ModelRequiredWhenProviderSet(t *testing.T) {
+	tmp := t.TempDir()
+	yamlPath := filepath.Join(tmp, "c.yaml")
+	os.WriteFile(yamlPath, []byte(`
+defaults: { provider: anthropic, model: claude-sonnet-4-6 }
+memory:
+  embedder:
+    provider: openai
+`), 0o600)
+	_, err := Load(yamlPath)
+	if err == nil || !strings.Contains(err.Error(), "model is required") {
+		t.Errorf("expected model-required error, got %v", err)
+	}
+}
+
+func TestMemoryEmbedder_ProviderRequiredWhenModelSet(t *testing.T) {
+	tmp := t.TempDir()
+	yamlPath := filepath.Join(tmp, "c.yaml")
+	os.WriteFile(yamlPath, []byte(`
+defaults: { provider: anthropic, model: claude-sonnet-4-6 }
+memory:
+  embedder:
+    model: text-embedding-3-large
+`), 0o600)
+	_, err := Load(yamlPath)
+	if err == nil || !strings.Contains(err.Error(), "provider is required") {
+		t.Errorf("expected provider-required error, got %v", err)
+	}
+}
+
+func TestMemoryEmbedder_NegativeTimeoutRefused(t *testing.T) {
+	tmp := t.TempDir()
+	yamlPath := filepath.Join(tmp, "c.yaml")
+	os.WriteFile(yamlPath, []byte(`
+defaults: { provider: anthropic, model: claude-sonnet-4-6 }
+memory:
+  embedder:
+    provider: openai
+    model: text-embedding-3-large
+    timeout_ms: -1
+`), 0o600)
+	_, err := Load(yamlPath)
+	if err == nil || !strings.Contains(err.Error(), "timeout_ms") {
+		t.Errorf("expected timeout_ms validation error, got %v", err)
 	}
 }
