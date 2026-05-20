@@ -1089,15 +1089,16 @@ func openStore(cfg *config.Config) (store.Store, func(), error) {
 			return nil, nil, fmt.Errorf("postgres backend selected but storage.pg_dsn / LOOMCYCLE_PG_DSN is empty")
 		}
 		st, err := storepostgres.Open(context.Background(), storepostgres.Config{
-			DSN:          cfg.Storage.PgDSN,
-			MaxOpenConns: cfg.Storage.PgMaxOpenConns,
-			MinIdleConns: cfg.Storage.PgMinIdleConns,
-			AutoMigrate:  cfg.Storage.PgAutoMigrate,
+			DSN:             cfg.Storage.PgDSN,
+			MaxOpenConns:    cfg.Storage.PgMaxOpenConns,
+			MinIdleConns:    cfg.Storage.PgMinIdleConns,
+			AutoMigrate:     cfg.Storage.PgAutoMigrate,
+			PgvectorEnabled: cfg.Env.PgvectorEnabled,
 		})
 		if err != nil {
 			return nil, nil, fmt.Errorf("postgres open: %w", err)
 		}
-		log.Printf("store: postgres (automigrate=%v)", cfg.Storage.PgAutoMigrate)
+		log.Printf("store: postgres (automigrate=%v pgvector=%v)", cfg.Storage.PgAutoMigrate, cfg.Env.PgvectorEnabled)
 		return st, func() { _ = st.Close() }, nil
 
 	default:

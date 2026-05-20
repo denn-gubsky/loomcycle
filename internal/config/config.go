@@ -951,6 +951,37 @@ type Env struct {
 	// Env: LOOMCYCLE_MEMORY_SWEEP_MS.
 	MemorySweepInterval time.Duration
 
+	// PgvectorEnabled opts in to v0.9.0 Vector Memory on the
+	// Postgres backend. When true, Open() probes the `vector`
+	// extension and refuses to start if it's not loaded; Memory's
+	// `search` op + `embed: true` field become available. When
+	// false (default), vector ops refuse with ErrVectorUnsupported.
+	// SQLite is unaffected — sqlite-vec ships in v0.9.1.
+	// Env: LOOMCYCLE_PGVECTOR_ENABLED.
+	PgvectorEnabled bool
+
+	// SqliteVecPath is the path to the sqlite-vec shared library.
+	// Reserved for v0.9.1 (the build-tag swap to cgosqlite); parsed
+	// in v0.9.0 so operator yaml/env doesn't need a v0.9.0→v0.9.1
+	// migration. Currently unused — SQLite vector ops always refuse
+	// in v0.9.0.
+	// Env: LOOMCYCLE_SQLITE_VEC_PATH.
+	SqliteVecPath string
+
+	// MemoryEmbedBatchSize is the default batch size embedder
+	// drivers use when grouping texts into one provider call.
+	// Provider-specific caps (OpenAI's 2048-item limit etc.) still
+	// apply on top. Default 100. 0 disables batching (one call per
+	// text — useful for debugging cost surprises).
+	// Env: LOOMCYCLE_MEMORY_EMBED_BATCH_SIZE.
+	MemoryEmbedBatchSize int
+
+	// MemoryEmbedTimeoutMs caps a single embedder HTTP call. Default
+	// 30000 (30 s). 0 disables (rely on outer context). Negative
+	// treated as 0 (matches MemoryMaxValueBytes convention).
+	// Env: LOOMCYCLE_MEMORY_EMBED_TIMEOUT_MS.
+	MemoryEmbedTimeoutMs int
+
 	// ChannelsMaxValueBytes caps a single Channel.publish payload
 	// (v0.8.4). Default 65536 (64 KB) — mirrors MemoryMaxValueBytes.
 	// 0 disables. Env: LOOMCYCLE_CHANNELS_MAX_VALUE_BYTES.
@@ -1308,6 +1339,30 @@ func Load(path string) (*Config, error) {
 				cfg.Env.MemorySweepInterval = 0
 			} else {
 				cfg.Env.MemorySweepInterval = time.Duration(n) * time.Millisecond
+			}
+		}
+	}
+
+	// v0.9.0 Vector Memory env vars.
+	cfg.Env.PgvectorEnabled = os.Getenv("LOOMCYCLE_PGVECTOR_ENABLED") == "1"
+	cfg.Env.SqliteVecPath = os.Getenv("LOOMCYCLE_SQLITE_VEC_PATH")
+	cfg.Env.MemoryEmbedBatchSize = 100
+	if v := os.Getenv("LOOMCYCLE_MEMORY_EMBED_BATCH_SIZE"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			if n <= 0 {
+				cfg.Env.MemoryEmbedBatchSize = 0
+			} else {
+				cfg.Env.MemoryEmbedBatchSize = n
+			}
+		}
+	}
+	cfg.Env.MemoryEmbedTimeoutMs = 30000
+	if v := os.Getenv("LOOMCYCLE_MEMORY_EMBED_TIMEOUT_MS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			if n <= 0 {
+				cfg.Env.MemoryEmbedTimeoutMs = 0
+			} else {
+				cfg.Env.MemoryEmbedTimeoutMs = n
 			}
 		}
 	}
