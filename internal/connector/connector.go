@@ -107,6 +107,7 @@ type Connector interface {
 	Memory(ctx context.Context, input json.RawMessage) (ToolResult, error)
 	Channel(ctx context.Context, input json.RawMessage) (ToolResult, error)
 	AgentDef(ctx context.Context, input json.RawMessage) (ToolResult, error)
+	SkillDef(ctx context.Context, input json.RawMessage) (ToolResult, error)
 	Evaluation(ctx context.Context, input json.RawMessage) (ToolResult, error)
 	Context(ctx context.Context, input json.RawMessage) (ToolResult, error)
 

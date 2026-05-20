@@ -73,6 +73,9 @@ func (m *mockConnector) Channel(_ context.Context, _ json.RawMessage) (connector
 func (m *mockConnector) AgentDef(_ context.Context, _ json.RawMessage) (connector.ToolResult, error) {
 	return connector.ToolResult{}, nil
 }
+func (m *mockConnector) SkillDef(_ context.Context, _ json.RawMessage) (connector.ToolResult, error) {
+	return connector.ToolResult{}, nil
+}
 func (m *mockConnector) Evaluation(_ context.Context, _ json.RawMessage) (connector.ToolResult, error) {
 	return connector.ToolResult{}, nil
 }
