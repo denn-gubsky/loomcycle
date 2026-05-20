@@ -10,6 +10,8 @@ import (
 
 	"github.com/denn-gubsky/loomcycle/internal/api/grpc/loomcyclepb"
 	"github.com/denn-gubsky/loomcycle/internal/connector"
+	storesqlite "github.com/denn-gubsky/loomcycle/internal/store/sqlite"
+	"github.com/denn-gubsky/loomcycle/internal/tools/builtin"
 )
 
 // substrateMock is a programmable Connector stub purpose-built
@@ -141,5 +143,57 @@ func TestGrpcSubstrate_RejectsMalformedJSON(t *testing.T) {
 	}
 	if status.Code(err) != codes.InvalidArgument {
 		t.Errorf("status code = %v, want InvalidArgument", status.Code(err))
+	}
+}
+
+// realToolConnector is a tiny Connector that dispatches SkillDef
+// to a real in-process *builtin.SkillDef tool. Used by the ctx-
+// synthesis regression test below — substrateMock bypasses the
+// in-process policy gate, which is exactly what we DON'T want to
+// test here. This mock makes the policy gate fire if-and-only-if
+// the gRPC handler forgets to stamp the operator-trust ctx.
+type realToolConnector struct {
+	mockConnector
+
+	skillTool *builtin.SkillDef
+}
+
+func (c *realToolConnector) SkillDef(ctx context.Context, in json.RawMessage) (connector.ToolResult, error) {
+	res, err := c.skillTool.Execute(ctx, in)
+	return connector.ToolResult{Text: res.Text, IsError: res.IsError}, err
+}
+
+// TestGrpcSubstrate_OperatorCtxLetsRealToolThrough is the
+// regression test for the CRITICAL bug surfaced by code review:
+// without operator-trust ctx synthesis in the gRPC handler, every
+// substrate call from gRPC hits the in-process tool's default-deny
+// scope gate and returns is_error=true. This test wires a real
+// SkillDef tool (not the substrateMock) and asserts a `list` op
+// succeeds — proving the ctx synthesis actually delivers the
+// "any" scope.
+func TestGrpcSubstrate_OperatorCtxLetsRealToolThrough(t *testing.T) {
+	st, err := storesqlite.Open(":memory:")
+	if err != nil {
+		t.Fatalf("sqlite.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	skillTool := &builtin.SkillDef{Store: st}
+	mc := &realToolConnector{skillTool: skillTool}
+
+	client, cleanup := startTestServerWithConnector(t, mc)
+	defer cleanup()
+
+	// `list` on an unknown name returns an empty version slice on
+	// the happy path (no rows). Anything else means either the
+	// scope gate refused (is_error=true) or the dispatcher mis-
+	// routed.
+	resp, err := client.SkillDef(context.Background(), &loomcyclepb.SubstrateRequest{
+		InputJson: []byte(`{"op":"list","name":"unknown-skill"}`),
+	})
+	if err != nil {
+		t.Fatalf("SkillDef: %v", err)
+	}
+	if resp.GetIsError() {
+		t.Errorf("is_error = true with output_json = %s — gRPC ctx synthesis didn't grant scope=[any]", resp.GetOutputJson())
 	}
 }

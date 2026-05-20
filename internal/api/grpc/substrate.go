@@ -8,7 +8,41 @@ import (
 	"google.golang.org/grpc/status"
 
 	"github.com/denn-gubsky/loomcycle/internal/api/grpc/loomcyclepb"
+	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
+
+// Operator-trust constants for gRPC substrate dispatches.
+// Without these, the inbound gRPC ctx carries no policy and the
+// in-process tools default-deny every call. Same pattern as the
+// HTTP substrate_admin.go's substrateAdminCtx and the MCP
+// operatorCtx — distinct synthetic identifiers so audit logs
+// distinguish gRPC-admin from HTTP-admin from MCP-direct.
+const (
+	grpcSubstrateAdminAgentID   = "a_grpc-admin"
+	grpcSubstrateAdminUserID    = "grpc-admin"
+	grpcSubstrateAdminAgentName = "grpc-admin"
+)
+
+// substrateGRPCCtx stamps the operator-trust ctx for gRPC
+// substrate admin dispatches. Mirror of HTTP substrateAdminCtx
+// and MCP operatorCtx — without this every gRPC AgentDef /
+// SkillDef call hits the in-process tool's default-deny scope
+// gate and returns is_error=true with the "no scopes" refusal.
+func substrateGRPCCtx(ctx context.Context) context.Context {
+	ctx = tools.WithRunIdentity(ctx, tools.RunIdentityValue{
+		UserID:  grpcSubstrateAdminUserID,
+		AgentID: grpcSubstrateAdminAgentID,
+	})
+	ctx = tools.WithAgentName(ctx, grpcSubstrateAdminAgentName)
+	ctx = tools.WithAgentDefPolicy(ctx, tools.AgentDefPolicyValue{
+		Scopes:   []string{"any"},
+		SelfName: grpcSubstrateAdminAgentName,
+	})
+	ctx = tools.WithSkillDefPolicy(ctx, tools.SkillDefPolicyValue{
+		Scopes: []string{"any"},
+	})
+	return ctx
+}
 
 // v0.8.22 substrate admin RPCs. Mirror of the
 // /v1/_agentdef + /v1/_skilldef HTTP endpoints — different
@@ -64,6 +98,12 @@ func (s *Server) dispatchSubstrateRPC(
 	if !json.Valid(in) {
 		return nil, status.Errorf(codes.InvalidArgument, "%s: input_json is not valid JSON", toolName)
 	}
+	// Stamp the operator-trust ctx so the in-process tool's
+	// default-deny scope policy lets the call through. Without
+	// this, every substrate call from gRPC returns is_error=true
+	// with the "no scopes" refusal — invisible under mock-based
+	// tests, broken in production.
+	ctx = substrateGRPCCtx(ctx)
 	out, isErr, err := callerFn(ctx, json.RawMessage(in))
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "%s: %v", toolName, err)
