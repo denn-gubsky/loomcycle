@@ -383,6 +383,10 @@ func main() {
 		&builtin.Read{Root: cfg.Env.ReadRoot},
 		&builtin.Write{Root: cfg.Env.WriteRoot},
 		&builtin.Edit{Root: cfg.Env.WriteRoot},
+		// Grep + Glob ride the Read sandbox (read-only content/path
+		// search). NotebookEdit rides the Write sandbox (it mutates
+		// .ipynb files atomically, same posture as Edit).
+		&builtin.Grep{Root: cfg.Env.ReadRoot},
 		httpTool,
 		&builtin.WebFetch{HTTP: httpTool},
 		&builtin.WebSearch{APIKey: cfg.Env.BraveAPIKey},
