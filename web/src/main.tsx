@@ -6,6 +6,7 @@ import AgentsView from "./pages/AgentsView";
 import MemoryView from "./pages/MemoryView";
 import InterruptInbox from "./pages/InterruptInbox";
 import SnapshotsView from "./pages/SnapshotsView";
+import AuditView from "./pages/AuditView";
 import Layout from "./components/Layout";
 import AgentIdRedirect from "./components/AgentIdRedirect";
 
@@ -27,6 +28,7 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
           <Route path="memory" element={<MemoryView />} />
           <Route path="interrupts" element={<InterruptInbox />} />
           <Route path="snapshots" element={<SnapshotsView />} />
+          <Route path="audit" element={<AuditView />} />
           <Route path="*" element={<Navigate to="/agents" replace />} />
         </Route>
       </Routes>

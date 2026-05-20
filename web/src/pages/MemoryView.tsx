@@ -7,6 +7,7 @@ import {
   listMemoryScopeIDs,
   listMemoryScopes,
 } from "../api";
+import Splitter from "../components/Splitter";
 
 // MemoryView — operator browse-only view over the v0.8.0 Memory tool's
 // stored rows.
@@ -125,7 +126,15 @@ export default function MemoryView() {
   }, [entries, selectedKey]);
 
   return (
-    <div className="memory-view">
+    <div className="memory-view-wrapper">
+    {err && <div className="err memory-err">{err}</div>}
+    <Splitter
+      className="memory-view"
+      defaultLeftWidth={280}
+      minLeftWidth={200}
+      minRightWidth={460}
+      storageKey="loomcycle.split.memory.outer"
+    >
       <div className="memory-pane scopes-pane">
         <div className="pane-header">scopes</div>
         <div className="scope-tabs">
@@ -162,6 +171,13 @@ export default function MemoryView() {
           ))}
         </ul>
       </div>
+      <Splitter
+        className="memory-view-inner"
+        defaultLeftWidth={320}
+        minLeftWidth={220}
+        minRightWidth={320}
+        storageKey="loomcycle.split.memory.inner"
+      >
       <div className="memory-pane keys-pane">
         <div className="pane-header">
           keys {scopeID && <code>{scope}/{scopeID}</code>}
@@ -210,7 +226,8 @@ export default function MemoryView() {
           </div>
         )}
       </div>
-      {err && <div className="err memory-err">{err}</div>}
+      </Splitter>
+    </Splitter>
     </div>
   );
 }

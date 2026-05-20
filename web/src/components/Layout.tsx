@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
-import { Link, Outlet, useOutletContext } from "react-router-dom";
-import { UserSummary, listUsers } from "../api";
+import { Link, NavLink, Outlet, useOutletContext } from "react-router-dom";
+import { UserSummary, getHealth, listUsers } from "../api";
 import PauseControls from "./PauseControls";
 
 const USER_ID_KEY = "loomcycle.userId";
@@ -19,10 +19,31 @@ export default function Layout() {
   const [usersErr, setUsersErr] = useState<string | null>(null);
   const [showManual, setShowManual] = useState(false);
   const [draft, setDraft] = useState(userId);
+  // Fetched from /healthz once on mount. Falls back to the static
+  // shipped version on failure (offline server or pre-v0.8.21 binary
+  // that only returns {"ok":true}). Undefined while in-flight.
+  const [version, setVersion] = useState<string | null>(null);
 
   useEffect(() => {
     localStorage.setItem(USER_ID_KEY, userId);
   }, [userId]);
+
+  // Fetch the running binary's version once on mount. Not polled —
+  // the version doesn't change without a process restart, at which
+  // point the UI bundle is likely reloaded too.
+  useEffect(() => {
+    let cancelled = false;
+    getHealth()
+      .then((h) => {
+        if (!cancelled) setVersion(h.version || "unknown");
+      })
+      .catch(() => {
+        if (!cancelled) setVersion("offline");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   // Poll /v1/_users so the dropdown reflects who has active runs in
   // near-real-time. Server response is bounded (LIMIT 200) and fast.
@@ -54,13 +75,16 @@ export default function Layout() {
       <header className="topbar">
         <div className="brand">
           <Link to="/">loomcycle</Link>
-          <span className="version">v0.8.17</span>
+          <span className="version">
+            {version === null ? "…" : version}
+          </span>
         </div>
         <nav className="nav-tabs">
-          <Link to="/">runs</Link>
-          <Link to="/interrupts">interrupts</Link>
-          <Link to="/memory">memory</Link>
-          <Link to="/snapshots">snapshots</Link>
+          <NavLink to="/agents">runs</NavLink>
+          <NavLink to="/interrupts">interrupts</NavLink>
+          <NavLink to="/memory">memory</NavLink>
+          <NavLink to="/snapshots">snapshots</NavLink>
+          <NavLink to="/audit">audit</NavLink>
         </nav>
         <PauseControls />
         <div className="user-picker">

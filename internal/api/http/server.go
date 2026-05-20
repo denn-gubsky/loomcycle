@@ -133,6 +133,19 @@ type Server struct {
 	// Nil = POST /v1/_mcp returns 503. Set via SetMCPHTTPHandler from
 	// main.go after the handler is constructed.
 	mcpHTTPHandler http.Handler
+
+	// Build identifiers surfaced via /healthz so the Web UI topbar
+	// can display the running binary's version instead of a stale
+	// hard-coded string. Set via SetBuildInfo from cmd/loomcycle/main.go
+	// after the buildVersion / buildCommit / buildTime vars have been
+	// resolved (ldflags overrides → runtime/debug VCS stamp → "unknown").
+	// Empty values render as "unknown" on /healthz.
+	buildVersion string
+	buildCommit  string
+	buildTime    string
+	// startedAt records process start so /healthz can report uptime
+	// in seconds. Set in New().
+	startedAt time.Time
 }
 
 // New constructs a Server. If st is non-nil, every run is recorded as a
@@ -164,9 +177,21 @@ func New(cfg *config.Config, pr ProviderResolver, builtinTools []tools.Tool, sem
 		sessionLocks:   runner.NewSessionLockMap(),
 		hookRegistry:   hookReg,
 		hookDispatcher: hooks.NewDispatcher(hookReg, nil),
+		startedAt:      time.Now(),
 	}
 	s.tools = append(s.tools, &builtin.AgentTool{Run: s.runSubAgent})
 	return s
+}
+
+// SetBuildInfo records the binary's identification triple. Called from
+// cmd/loomcycle/main.go after the buildVersion/buildCommit/buildTime
+// vars are resolved. The values flow through /healthz so the Web UI
+// can render a real version label instead of a hard-coded string that
+// drifts every release.
+func (s *Server) SetBuildInfo(version, commit, builtAt string) {
+	s.buildVersion = version
+	s.buildCommit = commit
+	s.buildTime = builtAt
 }
 
 // SetMCPFallback installs the optional MCP lazy-resolution fallback.
@@ -1023,6 +1048,10 @@ func (s *Server) Mux() http.Handler {
 	mux.Handle("GET /v1/_metrics/samples", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleMetricsSamples))))
 	mux.Handle("GET /v1/_metrics/runs/{run_id}", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleMetricsRunSummary))))
 	mux.Handle("GET /v1/_metrics/summary", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleMetricsSummary))))
+	// v0.8.21 audit view — paginated cross-session event log with
+	// optional type + date-range filter. Drives the Web UI's
+	// /ui/audit page. Bearer-authed admin surface.
+	mux.Handle("GET /v1/_events", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleListEvents))))
 	// v0.8.15.3 HTTP MCP transport — Streamable HTTP endpoint that
 	// dispatches the same 20 MCP tools as the stdio MCP server.
 	// POST is the JSON-RPC frame transport; DELETE terminates a
@@ -1104,9 +1133,35 @@ func recoveryMiddleware(next http.Handler) http.Handler {
 
 // --- handlers ---
 
+// healthzResponse mirrors the gRPC HealthResponse shape so adapters
+// switching between the two transports decode the same JSON keys.
+// uptime_seconds is computed at request time (not cached) so a long-
+// running process surfaces its real uptime, not the moment New() ran.
+type healthzResponse struct {
+	OK            bool   `json:"ok"`
+	Version       string `json:"version,omitempty"`
+	Commit        string `json:"commit,omitempty"`
+	Built         string `json:"built,omitempty"`
+	UptimeSeconds int64  `json:"uptime_seconds,omitempty"`
+}
+
 func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-	w.Write([]byte(`{"ok":true}`))
+	// Compute uptime relative to startedAt. The fallback to time.Time{}
+	// case is for *Server values constructed via struct literal in
+	// tests — uptime would otherwise be ~negative-epoch.
+	var uptime int64
+	if !s.startedAt.IsZero() {
+		uptime = int64(time.Since(s.startedAt).Seconds())
+	}
+	resp := healthzResponse{
+		OK:            true,
+		Version:       s.buildVersion,
+		Commit:        s.buildCommit,
+		Built:         s.buildTime,
+		UptimeSeconds: uptime,
+	}
+	_ = json.NewEncoder(w).Encode(resp)
 }
 
 // systemChannelPublishRequest is the body shape for the v0.8.6
@@ -2523,6 +2578,16 @@ type agentResponse struct {
 	Usage           agentResponseUsage `json:"usage"`
 	LastHeartbeatAt *time.Time         `json:"last_heartbeat_at,omitempty"`
 	Live            bool               `json:"live"`
+	// v0.8.21 awaited-state surface — what the running agent is
+	// currently blocked on. Empty for non-running rows AND for
+	// running rows where the agent is making progress (no
+	// unresolved Channel.subscribe / Interruption.ask). Two-field
+	// shape avoids encoding a parser into the wire:
+	//   AwaitedState = "" | "channel" | "interrupted"
+	//   AwaitedOn    = channel name (when state=channel) or
+	//                  interruption kind (when state=interrupted)
+	AwaitedState string `json:"awaited_state,omitempty"`
+	AwaitedOn    string `json:"awaited_on,omitempty"`
 }
 
 type agentResponseUsage struct {
@@ -2616,7 +2681,13 @@ func (s *Server) handleGetAgent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_, live := s.cancelReg.Get(agentID)
-	writeJSON(w, http.StatusOK, runToAgentResponse(run, live))
+	resp := runToAgentResponse(run, live)
+	if resp.Status == store.RunRunning {
+		single := []agentResponse{resp}
+		fillAwaitedStateForRunning(r.Context(), s.store, single)
+		resp = single[0]
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 // cancelRequest is the (optional) JSON body for POST /v1/agents/{id}/cancel.
@@ -2722,6 +2793,7 @@ func (s *Server) handleListUserAgents(w http.ResponseWriter, r *http.Request) {
 		_, live := s.cancelReg.Get(run.AgentID)
 		out = append(out, runToAgentResponse(run, live))
 	}
+	fillAwaitedStateForRunning(r.Context(), s.store, out)
 	writeJSON(w, http.StatusOK, map[string]any{"agents": out})
 }
 

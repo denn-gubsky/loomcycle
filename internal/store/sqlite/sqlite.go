@@ -99,6 +99,16 @@ func (s *Store) migrate(ctx context.Context) error {
 			payload    BLOB NOT NULL
 		)`,
 		`CREATE INDEX IF NOT EXISTS events_by_session ON events(session_id, seq)`,
+		// v0.8.21 audit view — cross-session queries by ts (descending)
+		// and ts-with-type-equality. Mirrors the postgres
+		// 0014_events_audit_index migration; both stores need the
+		// indexes to avoid full-table scans on busy installs.
+		`CREATE INDEX IF NOT EXISTS events_by_ts ON events(ts DESC)`,
+		`CREATE INDEX IF NOT EXISTS events_by_type_ts ON events(type, ts DESC)`,
+		// v0.8.21 awaited-state derivation needs the last event per
+		// run cheaply for every running agent — (run_id, seq DESC)
+		// is the covering shape.
+		`CREATE INDEX IF NOT EXISTS events_by_run_seq ON events(run_id, seq DESC)`,
 		// v0.8 Memory tool. PRIMARY KEY (scope, scope_id, key) gives
 		// the natural lookup index; the partial expires_at index keeps
 		// the sweeper's DELETE cheap (no full-table scan).
@@ -561,6 +571,100 @@ func (s *Store) GetTranscript(ctx context.Context, sessionID string) ([]store.Ev
 		out = append(out, ev)
 	}
 	return out, rows.Err()
+}
+
+// GetLastEventForRun returns the latest event by seq for the given
+// run. Indexed by events.run_id under the existing schema; the
+// composite (session_id, seq) index doesn't cover this query, but
+// SQLite's automatic indexing on the run_id column is sufficient
+// for the typical N<20 running-agents case.
+func (s *Store) GetLastEventForRun(ctx context.Context, runID string) (store.Event, error) {
+	var (
+		ev store.Event
+		ts int64
+	)
+	err := s.db.QueryRowContext(ctx,
+		`SELECT seq, session_id, run_id, ts, type, payload
+		 FROM events WHERE run_id = ? ORDER BY seq DESC LIMIT 1`,
+		runID,
+	).Scan(&ev.Seq, &ev.SessionID, &ev.RunID, &ts, &ev.Type, &ev.Payload)
+	if errors.Is(err, sql.ErrNoRows) {
+		return store.Event{}, &store.ErrNotFound{Kind: "event", ID: runID}
+	}
+	if err != nil {
+		return store.Event{}, err
+	}
+	ev.Timestamp = time.Unix(0, ts)
+	return ev, nil
+}
+
+// ListEvents serves the v0.8.21 audit view's cross-session query.
+// Filter clauses are conditionally appended so unset dimensions don't
+// constrain the index lookup. Total is computed via a sibling COUNT(*)
+// over the same WHERE clause so pagination UIs can show "page N of M"
+// without a separate API call.
+func (s *Store) ListEvents(ctx context.Context, filter store.EventFilter, limit, offset int) ([]store.Event, int64, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	if limit > 500 {
+		limit = 500 // cap to keep memory bounded
+	}
+	if offset < 0 {
+		offset = 0
+	}
+
+	var (
+		conds []string
+		args  []any
+	)
+	if filter.Type != "" {
+		conds = append(conds, "type = ?")
+		args = append(args, filter.Type)
+	}
+	if !filter.From.IsZero() {
+		conds = append(conds, "ts >= ?")
+		args = append(args, filter.From.UnixNano())
+	}
+	if !filter.To.IsZero() {
+		conds = append(conds, "ts <= ?")
+		args = append(args, filter.To.UnixNano())
+	}
+	where := ""
+	if len(conds) > 0 {
+		where = "WHERE " + strings.Join(conds, " AND ")
+	}
+
+	// COUNT(*) first — same WHERE, but separate to avoid window-fn
+	// complexity on SQLite. Cheap because the WHERE narrows via the
+	// new indexes.
+	var total int64
+	if err := s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM events "+where, args...).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+
+	args = append(args, limit, offset)
+	rows, err := s.db.QueryContext(ctx,
+		"SELECT seq, session_id, run_id, ts, type, payload FROM events "+where+
+			" ORDER BY ts DESC, seq DESC LIMIT ? OFFSET ?",
+		args...,
+	)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+
+	out := make([]store.Event, 0, limit)
+	for rows.Next() {
+		var ev store.Event
+		var ts int64
+		if err := rows.Scan(&ev.Seq, &ev.SessionID, &ev.RunID, &ts, &ev.Type, &ev.Payload); err != nil {
+			return nil, 0, err
+		}
+		ev.Timestamp = time.Unix(0, ts)
+		out = append(out, ev)
+	}
+	return out, total, rows.Err()
 }
 
 // scanRun decodes one row from a runs SELECT into a store.Run. The

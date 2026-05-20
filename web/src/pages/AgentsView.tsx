@@ -6,6 +6,7 @@ import AgentsTreePanel, { type StatusFilter } from "../components/AgentsTreePane
 import AgentDetailPane from "../components/AgentDetailPane";
 import type { BreadcrumbAncestor } from "../components/Breadcrumbs";
 import { buildTree } from "../components/AgentsTree";
+import Splitter from "../components/Splitter";
 
 // AgentsView is the v0.8.20 split-view replacement for the
 // sequential RunList → AgentDetail navigation. Two side-by-side
@@ -121,7 +122,13 @@ export default function AgentsView() {
   }
 
   return (
-    <div className="agents-view">
+    <Splitter
+      className="agents-view"
+      defaultLeftWidth={420}
+      minLeftWidth={260}
+      minRightWidth={320}
+      storageKey="loomcycle.split.agents"
+    >
       <div className="left">
         <AgentsTreePanel
           agents={agents}
@@ -148,6 +155,6 @@ export default function AgentsView() {
           </div>
         )}
       </div>
-    </div>
+    </Splitter>
   );
 }

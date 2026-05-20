@@ -152,7 +152,7 @@ function AgentsTreeNode({ node, depth, expandedMap, setExpanded, selectedId, onS
   const expanded = expandedMap.get(a.agent_id) !== false;
   const isSelected = selectedId === a.agent_id;
   return (
-    <li className={`node depth-${depth} status-${a.status} ${isSelected ? "selected" : ""}`}>
+    <li className={`node depth-${depth} status-${a.status} ${awaitClass(a.awaited_state, a.status)} ${isSelected ? "selected" : ""}`}>
       <div className="row">
         <button
           type="button"
@@ -206,4 +206,17 @@ function AgentsTreeNode({ node, depth, expandedMap, setExpanded, selectedId, onS
       )}
     </li>
   );
+}
+
+// awaitClass maps a row to one of three tint classes. The server
+// only emits awaited_state for the channel / interrupted cases;
+// every other running row falls through to await-running (so the
+// whole running-status set is visually distinguishable in the
+// tree). Terminal rows (completed / failed / cancelled) return no
+// extra class — they keep the existing status-* styling.
+function awaitClass(state: Agent["awaited_state"] | undefined, status: Agent["status"]): string {
+  if (state === "channel") return "await-channel";
+  if (state === "interrupted") return "await-interrupted";
+  if (status === "running") return "await-running";
+  return "";
 }

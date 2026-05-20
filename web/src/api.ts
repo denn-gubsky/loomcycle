@@ -18,6 +18,26 @@ export function listUsers(): Promise<ListUsersResponse> {
   return jsonFetch<ListUsersResponse>("/v1/_users");
 }
 
+// HealthResponse mirrors handleHealthz on the server. Extended in
+// v0.8.21 to surface buildVersion / buildCommit / buildTime so the
+// Web UI can render the real running version instead of a hard-coded
+// string. Older binaries (<= v0.8.20) return just {"ok":true} —
+// the version field is missing on those responses; callers must
+// tolerate undefined.
+export interface HealthResponse {
+  ok: boolean;
+  version?: string;
+  commit?: string;
+  built?: string;
+  uptime_seconds?: number;
+}
+
+export function getHealth(): Promise<HealthResponse> {
+  // /healthz isn't under /v1/ — it's unauthenticated and lives at
+  // the root mux per the server's pattern.
+  return jsonFetch<HealthResponse>("/healthz");
+}
+
 // Agent mirrors agentResponse on the server (internal/api/http/server.go).
 // Field names use snake_case to match the wire shape; renaming any of
 // them is a wire change, not a UI change.
@@ -46,6 +66,13 @@ export interface Agent {
   };
   last_heartbeat_at: string | null;
   live: boolean;
+  // v0.8.21 awaited-state surface. Empty/absent for non-running
+  // runs AND for running runs making normal progress. When set,
+  // `awaited_state` is "channel" (open Channel.subscribe) or
+  // "interrupted" (open Interruption.ask), and `awaited_on` carries
+  // the channel name or interruption kind respectively.
+  awaited_state?: "channel" | "interrupted" | "";
+  awaited_on?: string;
 }
 
 export interface ListAgentsResponse {
@@ -399,6 +426,45 @@ async function postJSON<T>(path: string, body: string | undefined): Promise<T> {
     throw new Error(`${resp.status} ${resp.statusText}: ${raw.slice(0, 200)}`);
   }
   return resp.json() as Promise<T>;
+}
+
+// AuditEvent mirrors wireEvent in internal/api/http/events_audit.go.
+// Payload is left as `unknown` because event payloads vary by type
+// (text / tool_call / tool_result / usage / done / …); the audit
+// view stringifies + pretty-prints them rather than decoding.
+export interface AuditEvent {
+  seq: number;
+  session_id: string;
+  run_id: string;
+  timestamp: string;
+  type: string;
+  payload: unknown;
+}
+
+export interface ListEventsResponse {
+  events: AuditEvent[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+export interface ListEventsParams {
+  type?: string;
+  from?: string;
+  to?: string;
+  limit?: number;
+  offset?: number;
+}
+
+export function listEvents(params: ListEventsParams = {}): Promise<ListEventsResponse> {
+  const q = new URLSearchParams();
+  if (params.type) q.set("type", params.type);
+  if (params.from) q.set("from", params.from);
+  if (params.to) q.set("to", params.to);
+  if (params.limit !== undefined) q.set("limit", String(params.limit));
+  if (params.offset !== undefined) q.set("offset", String(params.offset));
+  const qs = q.toString();
+  return jsonFetch<ListEventsResponse>(`/v1/_events${qs ? "?" + qs : ""}`);
 }
 
 export async function resolveInterrupt(

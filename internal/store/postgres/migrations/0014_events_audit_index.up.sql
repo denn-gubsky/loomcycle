@@ -1,0 +1,25 @@
+-- 0014_events_audit_index.up.sql — v0.8.21 Audit view tab.
+--
+-- The Web UI's new /ui/audit page queries events across all
+-- sessions, filtered by event type and date range, paginated by
+-- limit + offset. The existing `events_by_session (session_id,
+-- seq)` index serves session-scoped queries; cross-session reads
+-- table-scan without help. Two new indexes:
+--
+-- events_by_ts            — covers the common "show me everything
+--                           since timestamp X" view with descending
+--                           ts ordering. PK seq is monotonically
+--                           increasing alongside ts (events insert
+--                           in order) so this is the audit-view
+--                           default sort.
+--
+-- events_by_type_ts       — covers type-filtered queries
+--                           ("show me only tool_call events since X").
+--                           Composite (type, ts DESC) supports both
+--                           the equality + range scan in one B-tree.
+--
+-- No DOWN counterpart drops the indexes — they're additive and
+-- cheap to keep. If a future reader runs the down migration, they
+-- explicitly want the indexes gone.
+CREATE INDEX IF NOT EXISTS events_by_ts ON events(ts DESC);
+CREATE INDEX IF NOT EXISTS events_by_type_ts ON events(type, ts DESC);
