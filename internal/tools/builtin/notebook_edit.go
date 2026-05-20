@@ -165,14 +165,29 @@ func (n *NotebookEdit) Execute(ctx context.Context, input json.RawMessage) (tool
 		if idx < 0 {
 			return errResult(fmt.Sprintf("cell %q not found", args.CellID)), nil
 		}
+		wasCode := nb.Cells[idx].CellType == "code"
 		nb.Cells[idx].Source = splitSourceLines(args.Source)
 		if args.CellType != "" {
 			nb.Cells[idx].CellType = args.CellType
-			// If we just demoted code → markdown, outputs/execution_count
-			// no longer make sense; null them out to keep the file valid.
-			if args.CellType == "markdown" {
+			switch args.CellType {
+			case "markdown":
+				// Demoted code → markdown: outputs/execution_count no
+				// longer make sense; null them out to keep the file
+				// valid.
 				nb.Cells[idx].Outputs = nil
 				nb.Cells[idx].ExecutionCount = nil
+			case "code":
+				// Promoted non-code → code: the .ipynb spec requires
+				// `outputs` and `execution_count` on code cells.
+				// `omitempty` on json.RawMessage drops nil values, so
+				// without re-seeding here the resulting file would be
+				// missing both keys.
+				if !wasCode && nb.Cells[idx].Outputs == nil {
+					nb.Cells[idx].Outputs = json.RawMessage("[]")
+				}
+				if !wasCode && nb.Cells[idx].ExecutionCount == nil {
+					nb.Cells[idx].ExecutionCount = json.RawMessage("null")
+				}
 			}
 		}
 

@@ -107,6 +107,15 @@ func (g *Grep) Execute(ctx context.Context, input json.RawMessage) (tools.Result
 	if err != nil {
 		return errResult(fmt.Sprintf("invalid regex: %v", err)), nil
 	}
+	// Validate the optional `glob` filename filter up-front. Without
+	// this pre-check, a malformed glob (e.g. `[unclosed`) would make
+	// every filepath.Match return ErrBadPattern silently and the agent
+	// would see "no matches" instead of a clear error.
+	if args.Glob != "" {
+		if _, gerr := filepath.Match(args.Glob, ""); gerr != nil {
+			return errResult(fmt.Sprintf("invalid glob pattern: %v", gerr)), nil
+		}
+	}
 
 	// Resolve effective search root. Empty path = the sandbox root
 	// itself; non-empty = subpath of it (resolved + symlink-checked).
@@ -205,7 +214,9 @@ func grepWalk(searchRoot string, re *regexp.Regexp, glob, mode string, headLimit
 	// explicit so the contract is testable.
 	sort.Slice(perFile, func(i, j int) bool { return perFile[i].path < perFile[j].path })
 
-	// Render per mode.
+	// Render per mode. The headLimit/maxBytes checks fire BEFORE
+	// writing each entry so a result set that exactly fills the cap
+	// doesn't get a spurious truncation marker.
 	for _, fm := range perFile {
 		rel, _ := filepath.Rel(searchRoot, fm.path)
 		if rel == "" {
@@ -213,14 +224,27 @@ func grepWalk(searchRoot string, re *regexp.Regexp, glob, mode string, headLimit
 		}
 		switch mode {
 		case "files_with_matches":
+			if results >= headLimit {
+				truncate = true
+				break
+			}
 			out.WriteString(rel + "\n")
 			results++
 		case "count":
+			if results >= headLimit {
+				truncate = true
+				break
+			}
 			fmt.Fprintf(&out, "%s:%d\n", rel, len(fm.matches))
 			results++
 		case "content":
 			for _, m := range fm.matches {
 				if results >= headLimit {
+					truncate = true
+					break
+				}
+				if out.Len() >= maxBytes {
+					truncate = true
 					break
 				}
 				for _, line := range m.contextBefore {
@@ -231,14 +255,9 @@ func grepWalk(searchRoot string, re *regexp.Regexp, glob, mode string, headLimit
 					fmt.Fprintf(&out, "%s-%d-%s\n", rel, line.num, line.text)
 				}
 				results++
-				if out.Len() >= maxBytes {
-					truncate = true
-					break
-				}
 			}
 		}
-		if results >= headLimit {
-			truncate = true
+		if truncate {
 			break
 		}
 		if out.Len() >= maxBytes {

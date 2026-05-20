@@ -220,3 +220,36 @@ func TestGrep_HeadLimitTruncates(t *testing.T) {
 		t.Errorf("expected truncation marker, got %q", res.Text)
 	}
 }
+
+// Regression: head_limit exactly equal to the result count must NOT
+// emit a truncation marker. Previously the post-write check fired on
+// the last in-bounds result, flagging truncation that didn't happen.
+func TestGrep_HeadLimitExactCountNoTruncation(t *testing.T) {
+	root := t.TempDir()
+	for i := 0; i < 5; i++ {
+		p := filepath.Join(root, "f"+string(rune('0'+i))+".txt")
+		if err := os.WriteFile(p, []byte("MATCH\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	g := &Grep{Root: root}
+	res, _ := g.Execute(context.Background(), json.RawMessage(`{"pattern":"MATCH","head_limit":5}`))
+	if res.IsError {
+		t.Fatalf("%s", res.Text)
+	}
+	if strings.Contains(res.Text, "truncated") {
+		t.Errorf("head_limit==results should not emit truncation marker, got %q", res.Text)
+	}
+}
+
+func TestGrep_InvalidGlobFilterIsError(t *testing.T) {
+	root := makeGrepTree(t)
+	g := &Grep{Root: root}
+	res, _ := g.Execute(context.Background(), json.RawMessage(`{"pattern":"x","glob":"[unclosed"}`))
+	if !res.IsError {
+		t.Errorf("invalid glob filter must be reported, got %q", res.Text)
+	}
+	if !strings.Contains(res.Text, "glob") {
+		t.Errorf("error message should mention glob, got %q", res.Text)
+	}
+}

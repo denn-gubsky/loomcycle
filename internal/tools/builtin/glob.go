@@ -74,6 +74,20 @@ func (g *Glob) Execute(ctx context.Context, input json.RawMessage) (tools.Result
 	if g.Root == "" {
 		return errResult("Glob tool is not configured with a sandbox root; set LOOMCYCLE_READ_ROOT"), nil
 	}
+	// Validate every pattern segment up-front. filepath.Match returns
+	// ErrBadPattern on malformed brackets etc.; without this pre-check
+	// each per-file Match() call would silently return non-match,
+	// leaving the agent with "no matches" instead of a clear error.
+	// `**` survives as a literal segment for doublestarMatch — Match()
+	// would also accept it as a no-op pattern against an empty string.
+	for _, seg := range strings.Split(args.Pattern, "/") {
+		if seg == "**" {
+			continue
+		}
+		if _, err := filepath.Match(seg, ""); err != nil {
+			return errResult(fmt.Sprintf("invalid glob pattern: %v", err)), nil
+		}
+	}
 
 	searchRoot := g.Root
 	if args.Path != "" {

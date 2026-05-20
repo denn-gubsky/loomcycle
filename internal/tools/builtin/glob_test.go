@@ -191,6 +191,21 @@ func TestGlob_MissingRootRefuses(t *testing.T) {
 	}
 }
 
+// Regression: a syntactically invalid glob pattern (e.g. `[unclosed`)
+// must surface as IsError, not silently yield "no matches" via the
+// per-file filepath.Match's swallowed ErrBadPattern.
+func TestGlob_InvalidPatternIsError(t *testing.T) {
+	root := makeGlobTree(t)
+	g := &Glob{Root: root}
+	res, _ := g.Execute(context.Background(), json.RawMessage(`{"pattern":"[unclosed"}`))
+	if !res.IsError {
+		t.Errorf("invalid pattern must return IsError, got %q", res.Text)
+	}
+	if !strings.Contains(res.Text, "invalid glob pattern") {
+		t.Errorf("expected 'invalid glob pattern' in error, got %q", res.Text)
+	}
+}
+
 func TestGlob_PathSubdirScopes(t *testing.T) {
 	root := makeGlobTree(t)
 	g := &Glob{Root: root}

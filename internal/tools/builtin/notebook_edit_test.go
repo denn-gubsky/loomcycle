@@ -165,8 +165,19 @@ func TestNotebookEdit_NonIpynbExtensionRejected(t *testing.T) {
 
 func TestNotebookEdit_PathEscapeRejected(t *testing.T) {
 	root, _ := writeFixture(t)
+	// Create a real .ipynb file in a SEPARATE temp dir so the test
+	// exercises the "resolved path outside sandbox" refusal rather
+	// than the trivially-easier "file doesn't exist" branch. We
+	// deliberately avoid the canonical `/etc/passwd*` test target so
+	// secret-scanners don't false-positive on the substring.
+	outsideRoot := t.TempDir()
+	outsideFile := filepath.Join(outsideRoot, "off-limits.ipynb")
+	if err := os.WriteFile(outsideFile, []byte(fixtureNotebook), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	n := &NotebookEdit{Root: root}
-	res, _ := n.Execute(context.Background(), json.RawMessage(`{"file_path":"/etc/passwd.ipynb","cell_id":"x","source":"y","mode":"replace"}`))
+	body := json.RawMessage(`{"file_path":"` + outsideFile + `","cell_id":"aaaaaaaa","source":"y","mode":"replace"}`)
+	res, _ := n.Execute(context.Background(), body)
 	if !res.IsError {
 		t.Errorf("path outside root must refuse, got %q", res.Text)
 	}
@@ -199,6 +210,45 @@ func TestNotebookEdit_AtomicWriteLeavesNoTempfile(t *testing.T) {
 		if strings.HasPrefix(e.Name(), ".loomcycle-nbedit-") {
 			t.Errorf("tempfile %q leaked", e.Name())
 		}
+	}
+}
+
+// Regression: replacing a markdown cell with cell_type=code must
+// seed the required `outputs: []` and `execution_count: null` fields.
+// Without this, the resulting .ipynb is spec-invalid (Jupyter requires
+// both keys on code cells).
+func TestNotebookEdit_PromoteToCodeSeedsRequiredFields(t *testing.T) {
+	root, file := writeFixture(t)
+	n := &NotebookEdit{Root: root}
+	// bbbbbbbb is the markdown cell in the fixture. Promote to code.
+	res, _ := n.Execute(context.Background(), json.RawMessage(`{"file_path":"nb.ipynb","cell_id":"bbbbbbbb","source":"x = 1","cell_type":"code","mode":"replace"}`))
+	if res.IsError {
+		t.Fatalf("promote-to-code: %s", res.Text)
+	}
+	// Parse the raw file back so we can assert on the on-disk shape
+	// (the typed `notebook` struct can't distinguish missing keys from
+	// nil RawMessage).
+	raw, err := os.ReadFile(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var disk map[string]any
+	if err := json.Unmarshal(raw, &disk); err != nil {
+		t.Fatal(err)
+	}
+	cells, _ := disk["cells"].([]any)
+	if len(cells) != 2 {
+		t.Fatalf("cell count: %d", len(cells))
+	}
+	promoted, _ := cells[1].(map[string]any)
+	if promoted["cell_type"] != "code" {
+		t.Errorf("cell_type not promoted: %v", promoted["cell_type"])
+	}
+	if _, has := promoted["outputs"]; !has {
+		t.Errorf("promoted code cell missing required 'outputs' key: %v", promoted)
+	}
+	if _, has := promoted["execution_count"]; !has {
+		t.Errorf("promoted code cell missing required 'execution_count' key: %v", promoted)
 	}
 }
 
