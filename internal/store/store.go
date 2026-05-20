@@ -228,6 +228,17 @@ const (
 	PauseStatePaused  = "paused"  // loop reached the boundary and persisted; awaiting resume
 )
 
+// EventFilter narrows a ListEvents query. Zero values mean "no
+// filter on this dimension":
+//   - Type == ""  → all event types
+//   - From / To zero-value time.Time → unbounded on that side
+// Use From + To together for a window; either alone is supported.
+type EventFilter struct {
+	Type string
+	From time.Time
+	To   time.Time
+}
+
 // Event is one streamed datum, persisted append-only. Payload is the JSON
 // representation of the loop's providers.Event so we never lose typed
 // fields when reading back; the API package re-decodes it on replay.
@@ -338,6 +349,16 @@ type Store interface {
 	// GetTranscript returns all events for a session, ordered by Seq.
 	// Returns an empty slice (not error) for a session with no runs yet.
 	GetTranscript(ctx context.Context, sessionID string) ([]Event, error)
+
+	// ListEvents returns events across all sessions matching the
+	// filter, ordered by ts DESC (newest first). Used by the v0.8.21
+	// /v1/_events audit endpoint. Returns the rows AND the total
+	// match count (for pagination UIs that show "page N of M");
+	// total is an unbounded COUNT(*) over the same filter — bounded
+	// by indexes events_by_ts / events_by_type_ts. Pagination is
+	// offset-based for simplicity; cursor-based pagination is a
+	// follow-up if scale demands.
+	ListEvents(ctx context.Context, filter EventFilter, limit, offset int) ([]Event, int64, error)
 
 	// GetRunByAgentID returns the most recently started run carrying
 	// the given agent_id. Returns *ErrNotFound when no such row.

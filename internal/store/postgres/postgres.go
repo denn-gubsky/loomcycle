@@ -306,6 +306,80 @@ func (s *Store) GetTranscript(ctx context.Context, sessionID string) ([]store.Ev
 	return out, nil
 }
 
+// ListEvents serves the v0.8.21 /v1/_events audit endpoint. Same
+// filter semantics as the SQLite adapter; uses $N placeholders and
+// numeric args. Index hint: events_by_ts / events_by_type_ts (added
+// in migration 0014).
+func (s *Store) ListEvents(ctx context.Context, filter store.EventFilter, limit, offset int) ([]store.Event, int64, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	if limit > 500 {
+		limit = 500
+	}
+	if offset < 0 {
+		offset = 0
+	}
+
+	var (
+		conds []string
+		args  []any
+		i     = 1
+	)
+	if filter.Type != "" {
+		conds = append(conds, fmt.Sprintf("type = $%d", i))
+		args = append(args, filter.Type)
+		i++
+	}
+	if !filter.From.IsZero() {
+		conds = append(conds, fmt.Sprintf("ts >= $%d", i))
+		args = append(args, filter.From)
+		i++
+	}
+	if !filter.To.IsZero() {
+		conds = append(conds, fmt.Sprintf("ts <= $%d", i))
+		args = append(args, filter.To)
+		i++
+	}
+	where := ""
+	if len(conds) > 0 {
+		where = "WHERE " + strings.Join(conds, " AND ")
+	}
+
+	var total int64
+	if err := s.pool.QueryRow(ctx, "SELECT COUNT(*) FROM events "+where, args...).Scan(&total); err != nil {
+		return nil, 0, fmt.Errorf("count events: %w", err)
+	}
+
+	args = append(args, limit, offset)
+	rows, err := s.pool.Query(ctx,
+		"SELECT seq, session_id, run_id, ts, type, payload FROM events "+where+
+			fmt.Sprintf(" ORDER BY ts DESC, seq DESC LIMIT $%d OFFSET $%d", i, i+1),
+		args...,
+	)
+	if err != nil {
+		return nil, 0, fmt.Errorf("query events: %w", err)
+	}
+	defer rows.Close()
+
+	out := make([]store.Event, 0, limit)
+	for rows.Next() {
+		var (
+			ev store.Event
+			ts time.Time
+		)
+		if err := rows.Scan(&ev.Seq, &ev.SessionID, &ev.RunID, &ts, &ev.Type, &ev.Payload); err != nil {
+			return nil, 0, fmt.Errorf("scan event: %w", err)
+		}
+		ev.Timestamp = ts
+		out = append(out, ev)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, 0, fmt.Errorf("iter events: %w", err)
+	}
+	return out, total, nil
+}
+
 // GetRunByAgentID returns the most recently started run with the given
 // agent_id. Empty agentID short-circuits to ErrNotFound (callers don't
 // have to pre-check, matching SQLite adapter behaviour).

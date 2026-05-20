@@ -84,6 +84,7 @@ export default function Layout() {
           <NavLink to="/interrupts">interrupts</NavLink>
           <NavLink to="/memory">memory</NavLink>
           <NavLink to="/snapshots">snapshots</NavLink>
+          <NavLink to="/audit">audit</NavLink>
         </nav>
         <PauseControls />
         <div className="user-picker">

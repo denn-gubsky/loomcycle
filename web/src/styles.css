@@ -1249,3 +1249,180 @@ pre {
 .snapshots-table .muted {
   color: var(--fg-soft);
 }
+
+/* v0.8.21 Audit view — cross-session paginated event log. */
+.audit-view {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  height: 100%;
+  min-height: 0;
+}
+.audit-toolbar {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  background: var(--bg-soft);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+.audit-toolbar-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+}
+.audit-toolbar label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--fg-soft);
+  font-size: 12px;
+}
+.audit-toolbar input {
+  background: var(--bg);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  padding: 4px 8px;
+  border-radius: 3px;
+  font-family: var(--mono);
+  font-size: 12px;
+  min-width: 140px;
+}
+.audit-toolbar button {
+  background: var(--bg-soft-2);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  padding: 4px 10px;
+  border-radius: 3px;
+  cursor: pointer;
+  font-size: 12px;
+}
+.audit-toolbar button:hover:not(:disabled) {
+  background: var(--accent);
+  color: white;
+  border-color: var(--accent);
+}
+.audit-toolbar button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+.audit-status {
+  color: var(--fg-soft);
+  font-size: 12px;
+}
+
+.audit-table {
+  flex: 1;
+  overflow: auto;
+  background: var(--bg-soft);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  min-height: 0;
+}
+.audit-row {
+  display: grid;
+  grid-template-columns: 180px 160px 220px 1fr;
+  gap: 12px;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+  font-family: var(--mono);
+  cursor: pointer;
+  align-items: center;
+}
+.audit-row:hover {
+  background: var(--bg-soft-2);
+}
+.audit-row.expanded {
+  background: var(--bg-soft-2);
+  border-bottom: none;
+}
+.audit-row.audit-head {
+  background: var(--bg);
+  color: var(--fg-soft);
+  font-weight: 600;
+  cursor: default;
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+.audit-row.audit-head:hover {
+  background: var(--bg);
+}
+.audit-type {
+  display: inline-block;
+  padding: 1px 6px;
+  border-radius: 3px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+}
+.audit-ids .muted {
+  color: var(--fg-soft);
+}
+.audit-preview {
+  color: var(--fg-soft);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.audit-detail {
+  position: relative;
+  padding: 10px 14px 14px 14px;
+  background: var(--bg);
+  border-bottom: 1px solid var(--border);
+  font-family: var(--mono);
+  font-size: 12px;
+}
+.audit-detail-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  color: var(--fg-soft);
+  margin-bottom: 8px;
+}
+.audit-detail-meta strong {
+  color: var(--fg);
+  margin-right: 4px;
+}
+.audit-detail-payload {
+  margin: 0;
+  padding: 10px 12px;
+  background: var(--bg-soft);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  max-height: 400px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--fg);
+}
+
+.audit-pager {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  padding: 8px;
+  color: var(--fg-soft);
+  font-size: 12px;
+}
+.audit-pager button {
+  background: var(--bg-soft);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  padding: 4px 12px;
+  border-radius: 3px;
+  cursor: pointer;
+}
+.audit-pager button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+.audit-pager button:hover:not(:disabled) {
+  background: var(--accent);
+  color: white;
+  border-color: var(--accent);
+}

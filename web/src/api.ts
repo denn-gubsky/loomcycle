@@ -421,6 +421,45 @@ async function postJSON<T>(path: string, body: string | undefined): Promise<T> {
   return resp.json() as Promise<T>;
 }
 
+// AuditEvent mirrors wireEvent in internal/api/http/events_audit.go.
+// Payload is left as `unknown` because event payloads vary by type
+// (text / tool_call / tool_result / usage / done / …); the audit
+// view stringifies + pretty-prints them rather than decoding.
+export interface AuditEvent {
+  seq: number;
+  session_id: string;
+  run_id: string;
+  timestamp: string;
+  type: string;
+  payload: unknown;
+}
+
+export interface ListEventsResponse {
+  events: AuditEvent[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+export interface ListEventsParams {
+  type?: string;
+  from?: string;
+  to?: string;
+  limit?: number;
+  offset?: number;
+}
+
+export function listEvents(params: ListEventsParams = {}): Promise<ListEventsResponse> {
+  const q = new URLSearchParams();
+  if (params.type) q.set("type", params.type);
+  if (params.from) q.set("from", params.from);
+  if (params.to) q.set("to", params.to);
+  if (params.limit !== undefined) q.set("limit", String(params.limit));
+  if (params.offset !== undefined) q.set("offset", String(params.offset));
+  const qs = q.toString();
+  return jsonFetch<ListEventsResponse>(`/v1/_events${qs ? "?" + qs : ""}`);
+}
+
 export async function resolveInterrupt(
   runID: string,
   interruptID: string,
