@@ -22,6 +22,12 @@ This is the public roadmap. For decision history, regret notes, and per-version 
 
 **Tests:** ~25 new tests across Go (+10), TS (+7), Python (+5), plus 3 regression/refactor updates to existing tests. Full sweep clean.
 
+**Release artifacts:**
+
+- **Binary (goreleaser → Homebrew tap):** v0.8.23 tag — release.yml re-fired after the v0.8.23 initial-tag-attempt hit `git is in a dirty state` (Makefile's `npm install` mutated `web/package-lock.json` before goreleaser ran; fixed by switching to `npm ci`).
+- **TypeScript adapter (`@loomcycle/client@0.8.23`):** published to npm on the v0.8.23 tag.
+- **Python adapter (`loomcycle==0.7.0`):** **NOT** on PyPI as of v0.8.23. The PyPI Trusted Publisher needs configuration at pypi.org; until then the Python adapter ships from source via `pip install "git+https://github.com/denn-gubsky/loomcycle@python-v0.7.0#subdirectory=adapters/python"`. The `python-v0.7.0` tag still exists for source installs even though the PyPI publish failed. Operator action: configure Trusted Publisher at pypi.org/manage/account/publishing/ then re-run the failed `Publish loomcycle to PyPI` job from the Actions tab.
+
 **Out of scope:** Exposing `Memory` / `Channel` / `Evaluation` / `Context` on HTTP/gRPC/adapters (they have MCP meta-tools today; same gap AgentDef had before this PR). Convenience wrappers (`forkSkillDef`, `promoteSkillDef`) on the adapters — single op-discriminated method per tool keeps the wire surface minimal.
 
 ## v0.8.22 — earlier

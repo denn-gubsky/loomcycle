@@ -25,7 +25,7 @@ PG_DSN := postgres://$(PG_USER):$(PG_PASSWORD)@127.0.0.1:$(PG_PORT)/$(PG_DATABAS
 help:
 	@echo "loomcycle dev targets:"
 	@echo "  build       — go build ./..."
-	@echo "  build-ui    — npm install + npm build for web/ (output → internal/webui/dist/)"
+	@echo "  build-ui    — npm ci + npm build for web/ (output → internal/webui/dist/)"
 	@echo "  build-all   — build-ui + build (produces a binary with the latest UI embedded)"
 	@echo "  test        — go test ./... (Postgres tests skip without LOOMCYCLE_TEST_PG_DSN)"
 	@echo "  test-pg     — go test ./... with LOOMCYCLE_TEST_PG_DSN set against the local fixture"
@@ -46,8 +46,13 @@ build-ui:
 	# the .gitkeep placeholder is restored so go:embed always has at
 	# least one matching file (a fresh checkout without npm-build still
 	# compiles Go).
+	#
+	# `npm ci` (not `npm install`) so the lock file is treated as
+	# authoritative AND is never mutated. The release.yml goreleaser
+	# job fails on a dirty working tree; `npm install` would touch
+	# web/package-lock.json on any silent drift and break the release.
 	rm -rf internal/webui/dist/*
-	cd web && npm install --silent && npm run build
+	cd web && npm ci --silent && npm run build
 	touch internal/webui/dist/.gitkeep
 
 build-all: build-ui build
