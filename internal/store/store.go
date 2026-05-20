@@ -657,6 +657,64 @@ type Store interface {
 	// state only. Capped at 200 rows ordered by updated_at DESC.
 	MemoryListScopeIDs(ctx context.Context, scope MemoryScope) ([]MemoryScopeIDSummary, error)
 
+	// SupportsVectors reports whether this backend instance can serve
+	// the MemoryEmbed* family. Backends without a vector index loaded
+	// return false; the Memory tool's `search` op + `embed: true`
+	// field check this before calling and surface ErrVectorUnsupported
+	// to the agent. v0.9.0: Postgres returns true iff
+	// LOOMCYCLE_PGVECTOR_ENABLED=1 AND the pgvector extension is
+	// installed; SQLite returns false unconditionally (sqlite-vec
+	// support deferred to v0.9.1).
+	SupportsVectors() bool
+
+	// MemoryEmbedSet writes the embedding vector for the (scope,
+	// scopeID, key) tuple. Idempotent — re-writes overwrite the
+	// existing embedding row. Returns ErrVectorUnsupported when the
+	// backend doesn't have a vector index. The base memory row must
+	// exist; backends MUST enforce this (the FK CASCADE in the
+	// memory_embeddings schema covers the inverse — base-row delete
+	// drops the embedding).
+	//
+	// Embedding bytes do NOT count toward the per-(scope, scopeID)
+	// quota — quota math is k/v-only per the v0.9.0 RFC §8 decision.
+	MemoryEmbedSet(ctx context.Context, scope MemoryScope, scopeID, key string, e MemoryEmbedding) error
+
+	// MemoryEmbedGet returns the stored embedding for one key, or
+	// *ErrNotFound if no embedding exists. Used by the snapshot
+	// Capture path (v0.9.0 PR 5) and the admin reembed endpoint.
+	// ErrVectorUnsupported on backends without a vector index.
+	MemoryEmbedGet(ctx context.Context, scope MemoryScope, scopeID, key string) (MemoryEmbedding, error)
+
+	// MemoryEmbedSearch runs a Top-K cosine-similarity search over
+	// rows in (scope, scopeID). keyPrefix is optional — empty string
+	// matches every key. The returned MemorySearchEntry slice is
+	// sorted by score DESC (higher = closer); Score is in [0, 1]
+	// where 1.0 means identical direction.
+	//
+	// Dimension mismatch (query vector dimension ≠ stored dimension)
+	// returns ErrDimensionMismatch with a message that includes both
+	// dimensions. topK <= 0 is treated as 10; topK > 50 is clamped.
+	// Empty results return (nil, nil) — not an error.
+	//
+	// Backends MUST honour the base table's expires_at filter — a
+	// matching vector for an expired row MUST NOT appear in results.
+	MemoryEmbedSearch(ctx context.Context, scope MemoryScope, scopeID, keyPrefix string, query []float32, topK int) ([]MemorySearchEntry, error)
+
+	// MemoryEmbedListByModel returns entries whose stored embedding
+	// was produced by a DIFFERENT (provider, model) than the supplied
+	// pair. Drives the v0.9.0 PR 4 admin endpoint `/v1/_memory/
+	// reembed` — operators query "which rows need re-embedding under
+	// my current embedder config." limit <= 0 is treated as 1000.
+	//
+	// Returns ErrVectorUnsupported on backends without vector ops.
+	MemoryEmbedListByModel(ctx context.Context, scope MemoryScope, scopeID, currentProvider, currentModel string, limit int) ([]MemoryEntry, error)
+
+	// MemoryEmbedStats returns per-(provider, model) row counts and
+	// total embedding bytes for the given scope. Drives the v0.9.0
+	// PR 4 admin endpoint `/v1/_memory/embed_stats`. ErrVectorUnsupported
+	// on backends without vector ops.
+	MemoryEmbedStats(ctx context.Context, scope MemoryScope) (MemoryEmbedStats, error)
+
 	// ChannelPublish appends one message to a channel. The message's
 	// ID is assigned by the store (ULID — sortable by publish time);
 	// the returned id is the cursor agents pass back on subsequent
@@ -993,6 +1051,61 @@ type MemoryScopeIDSummary struct {
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
+// MemoryEmbedding is the vector + metadata stored alongside a memory
+// row. The wire format for Vector is float32 little-endian on the
+// SQLite side; pgvector accepts its native `[1.0,2.0,...]` text
+// representation. Provider + Model + Dimension are stored explicitly
+// so dimension-mismatch checks at search time are O(1) — we don't
+// need to inspect the vector itself to know its shape.
+//
+// CreatedAt is the embedding's own write time, independent of the
+// base memory row's created_at / updated_at. A row that's been
+// re-embedded twice has memory.updated_at < embedding.created_at.
+type MemoryEmbedding struct {
+	Provider  string    `json:"provider"`
+	Model     string    `json:"model"`
+	Dimension int       `json:"dimension"`
+	Vector    []float32 `json:"-"` // not JSON-serialised here; snapshot uses its own base64 path
+	EmbedText string    `json:"embed_text"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+// MemorySearchEntry is one result row of MemoryEmbedSearch. It
+// embeds the base memory entry plus the similarity score and the
+// (provider, model) that produced the stored embedding — the latter
+// lets a caller spot rows embedded under an older model without a
+// separate query.
+//
+// Score is cosine similarity in [0, 1] (higher = closer). Backends
+// convert from their native distance function before returning.
+type MemorySearchEntry struct {
+	MemoryEntry
+	Score        float64 `json:"score"`
+	EmbeddedWith struct {
+		Provider string `json:"provider"`
+		Model    string `json:"model"`
+	} `json:"embedded_with"`
+}
+
+// MemoryEmbedStats summarises the embedded rows under one scope.
+// Drives the v0.9.0 admin endpoint `/v1/_memory/embed_stats`. The
+// per-model row_count + dimension lets operators see at a glance
+// when they have rows under multiple embedders (the dimension-
+// mismatch + reembed migration cue).
+type MemoryEmbedStats struct {
+	Scope               MemoryScope             `json:"scope"`
+	Models              []MemoryEmbedModelStats `json:"models"`
+	TotalEmbeddingBytes int64                   `json:"total_embedding_bytes"`
+}
+
+// MemoryEmbedModelStats is one row inside MemoryEmbedStats.Models.
+type MemoryEmbedModelStats struct {
+	Provider  string `json:"provider"`
+	Model     string `json:"model"`
+	Dimension int    `json:"dimension"`
+	RowCount  int    `json:"row_count"`
+}
+
 // ErrMemoryWrongType is returned by MemoryIncrement when the existing
 // value at the target key is not a JSON number. Callers (the Memory
 // tool) surface this as a typed tool-result error.
@@ -1007,6 +1120,36 @@ var ErrMemoryQuotaExceeded = &MemoryError{Code: "quota_exceeded", Msg: "memory: 
 // ErrMemoryValueTooLarge is returned when a single value exceeds the
 // per-write byte cap (LOOMCYCLE_MEMORY_MAX_VALUE_BYTES).
 var ErrMemoryValueTooLarge = &MemoryError{Code: "value_too_large", Msg: "memory: value exceeds max bytes"}
+
+// ErrVectorUnsupported is returned by every MemoryEmbed* method when
+// the backend was built or configured without vector index support.
+// v0.9.0: SQLite returns this for every Memory.search call;
+// Postgres returns this when LOOMCYCLE_PGVECTOR_ENABLED is unset.
+// The Memory tool layer surfaces this as a tool-result error so
+// agents see a clear "vectors not configured" message rather than
+// a runtime exception.
+var ErrVectorUnsupported = &MemoryError{Code: "vector_unsupported", Msg: "memory: vector index not configured (set LOOMCYCLE_PGVECTOR_ENABLED=1 on Postgres; SQLite vector backend ships in v0.9.1)"}
+
+// ErrDimensionMismatch is returned by MemoryEmbedSearch when the
+// query vector's dimension doesn't match the stored rows' dimension.
+// The error's Msg includes both dimensions so the operator can spot
+// the model swap that caused it; the admin reembed endpoint is the
+// migration path.
+var ErrDimensionMismatch = &MemoryError{Code: "dimension_mismatch", Msg: "memory: query embedding dimension does not match stored rows — run /v1/_memory/reembed to migrate"}
+
+// ErrEmbedderNotConfigured is returned by the Memory tool's `search`
+// op + `set` with `embed: true` when no `memory.embedder:` block was
+// provided in the operator yaml. The Store itself doesn't raise this
+// error — the tool layer does, since the Store doesn't know about
+// the embedder. Defined here for code-locality with the rest of the
+// MemoryError set so callers can switch on a single error family.
+var ErrEmbedderNotConfigured = &MemoryError{Code: "embedder_not_configured", Msg: "memory: no embedder configured — set memory.embedder in operator yaml"}
+
+// ErrEmbedderNotImplemented is returned by the Anthropic embedder
+// driver in v0.9.0. Operators selecting `provider: anthropic` in the
+// yaml see this until v0.9.1 ships the Voyage AI proxy. Tool-layer
+// error, like ErrEmbedderNotConfigured.
+var ErrEmbedderNotImplemented = &MemoryError{Code: "embedder_not_implemented", Msg: "memory: this embedder is not yet implemented (Anthropic embeddings ship in v0.9.1 via Voyage AI proxy; use openai or gemini for now)"}
 
 // MemoryError is a typed error so the Memory tool can surface a
 // stable error code to the agent. The Code is wire-stable; the Msg

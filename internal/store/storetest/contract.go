@@ -109,6 +109,19 @@ func Run(t *testing.T, factory Factory) {
 		{"MemoryScopeIsolation", testMemoryScopeIsolation},
 		{"MemoryListScopeIDs", testMemoryListScopeIDs},
 		{"MemoryIncrementIsAtomicUnderConcurrency", testMemoryIncrementIsAtomicUnderConcurrency},
+		// v0.9.0 Vector Memory (commit 1 of PR 1).
+		// Each test forks at the top on SupportsVectors() and asserts
+		// either the refusal path (SQLite, or Postgres without
+		// pgvector) or the real round-trip (Postgres + pgvector).
+		// Both backends run the same test cases.
+		{"MemoryEmbedSetRoundTrip", testMemoryEmbedSetRoundTrip},
+		{"MemoryEmbedSearchTopK", testMemoryEmbedSearchTopK},
+		{"MemoryEmbedSearchScopeIsolation", testMemoryEmbedSearchScopeIsolation},
+		{"MemoryEmbedSearchDimensionMismatch", testMemoryEmbedSearchDimensionMismatch},
+		{"MemoryEmbedSearchEmptyScope", testMemoryEmbedSearchEmptyScope},
+		{"MemoryDeleteCascadesEmbedding", testMemoryDeleteCascadesEmbedding},
+		{"MemoryEmbedListByModelFiltersCurrent", testMemoryEmbedListByModelFiltersCurrent},
+		{"MemoryEmbedStatsReportsPerModelCount", testMemoryEmbedStatsReportsPerModelCount},
 		{"ChannelPublishSubscribeRoundTrip", testChannelPublishSubscribeRoundTrip},
 		{"ChannelSubscribeEmptyChannel", testChannelSubscribeEmptyChannel},
 		{"ChannelCursorAdvancesAcrossSubscribes", testChannelCursorAdvancesAcrossSubscribes},
@@ -1779,6 +1792,283 @@ func intToKey(i int) string {
 		return string(digits[i])
 	}
 	return string(digits[i/10]) + string(digits[i%10])
+}
+
+// ---- v0.9.0 Vector Memory contract ----
+//
+// These tests fork at the top on store.SupportsVectors() and assert
+// either the refusal path (every method returns ErrVectorUnsupported,
+// SupportsVectors == false) or the round-trip path (vector index
+// loaded; cosine-similarity ranking; FK CASCADE on base-row delete).
+//
+// In v0.9.0 only Postgres + pgvector takes the round-trip path; SQLite
+// + Postgres-without-pgvector both run the refusal path. Commit 1 of
+// PR 1 leaves Postgres at false too — it flips to true in commit 2
+// when the real backend lands.
+
+// floats32 is a tiny helper for building test vectors. The contract
+// tests use 4-dim vectors so the search ordering is hand-verifiable;
+// the wire path doesn't care about dimension (the schema's `vector`
+// column is dim-agnostic). Production embedders return 1536+ dim.
+func floats32(xs ...float32) []float32 { return xs }
+
+// vectorRefusalCheck is the pre-amble every refusal-path test runs.
+// Returns true when the backend declares vector support — caller
+// continues to the real test body. Returns false when the backend
+// refuses — caller has already asserted the refusal shape and should
+// return immediately. Centralises the assertions so the per-test
+// bodies don't repeat boilerplate.
+func vectorRefusalCheck(t *testing.T, s store.Store) bool {
+	t.Helper()
+	if s.SupportsVectors() {
+		return true
+	}
+	ctx := context.Background()
+	err := s.MemoryEmbedSet(ctx, store.MemoryScopeAgent, "qa", "k", store.MemoryEmbedding{
+		Provider: "openai", Model: "text-embedding-3-small", Dimension: 4,
+		Vector: floats32(1, 0, 0, 0), EmbedText: "x", CreatedAt: time.Now(),
+	})
+	if !errors.Is(err, store.ErrVectorUnsupported) {
+		t.Errorf("MemoryEmbedSet on backend without vectors: got %v, want ErrVectorUnsupported", err)
+	}
+	_, err = s.MemoryEmbedGet(ctx, store.MemoryScopeAgent, "qa", "k")
+	if !errors.Is(err, store.ErrVectorUnsupported) {
+		t.Errorf("MemoryEmbedGet on backend without vectors: got %v, want ErrVectorUnsupported", err)
+	}
+	_, err = s.MemoryEmbedSearch(ctx, store.MemoryScopeAgent, "qa", "", floats32(1, 0, 0, 0), 5)
+	if !errors.Is(err, store.ErrVectorUnsupported) {
+		t.Errorf("MemoryEmbedSearch on backend without vectors: got %v, want ErrVectorUnsupported", err)
+	}
+	_, err = s.MemoryEmbedListByModel(ctx, store.MemoryScopeAgent, "qa", "openai", "text-embedding-3-large", 10)
+	if !errors.Is(err, store.ErrVectorUnsupported) {
+		t.Errorf("MemoryEmbedListByModel on backend without vectors: got %v, want ErrVectorUnsupported", err)
+	}
+	_, err = s.MemoryEmbedStats(ctx, store.MemoryScopeAgent)
+	if !errors.Is(err, store.ErrVectorUnsupported) {
+		t.Errorf("MemoryEmbedStats on backend without vectors: got %v, want ErrVectorUnsupported", err)
+	}
+	return false
+}
+
+func testMemoryEmbedSetRoundTrip(t *testing.T, s store.Store) {
+	if !vectorRefusalCheck(t, s) {
+		return
+	}
+	ctx := context.Background()
+	// Base memory row must exist (FK CASCADE in the embeddings schema).
+	if err := s.MemorySet(ctx, store.MemoryScopeAgent, "qa", "rec1", json.RawMessage(`"hello"`), 0); err != nil {
+		t.Fatal(err)
+	}
+	want := store.MemoryEmbedding{
+		Provider:  "openai",
+		Model:     "text-embedding-3-small",
+		Dimension: 4,
+		Vector:    floats32(0.5, 0.5, 0.5, 0.5),
+		EmbedText: "hello in agent qa",
+		CreatedAt: time.Now().UTC().Truncate(time.Microsecond),
+	}
+	if err := s.MemoryEmbedSet(ctx, store.MemoryScopeAgent, "qa", "rec1", want); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.MemoryEmbedGet(ctx, store.MemoryScopeAgent, "qa", "rec1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Provider != want.Provider || got.Model != want.Model || got.Dimension != want.Dimension {
+		t.Errorf("metadata round-trip: got %+v, want %+v", got, want)
+	}
+	if !reflect.DeepEqual(got.Vector, want.Vector) {
+		t.Errorf("vector bytes mismatch: got %v, want %v", got.Vector, want.Vector)
+	}
+	if got.EmbedText != want.EmbedText {
+		t.Errorf("embed_text: got %q, want %q", got.EmbedText, want.EmbedText)
+	}
+}
+
+func testMemoryEmbedSearchTopK(t *testing.T, s store.Store) {
+	if !vectorRefusalCheck(t, s) {
+		return
+	}
+	ctx := context.Background()
+	// Three rows pointing in different 4-D unit directions. A query
+	// aligned with row1 must rank row1 first, then row2 (45° off),
+	// then row3 (orthogonal).
+	rows := []struct {
+		key string
+		vec []float32
+	}{
+		{"row1", floats32(1, 0, 0, 0)},                          // aligned with query
+		{"row2", floats32(0.7071, 0.7071, 0, 0)},                // 45° off
+		{"row3", floats32(0, 1, 0, 0)},                          // 90° off
+	}
+	for _, r := range rows {
+		if err := s.MemorySet(ctx, store.MemoryScopeAgent, "qa", r.key, json.RawMessage(`"x"`), 0); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.MemoryEmbedSet(ctx, store.MemoryScopeAgent, "qa", r.key, store.MemoryEmbedding{
+			Provider: "openai", Model: "text-embedding-3-small", Dimension: 4,
+			Vector: r.vec, EmbedText: r.key, CreatedAt: time.Now(),
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	results, err := s.MemoryEmbedSearch(ctx, store.MemoryScopeAgent, "qa", "", floats32(1, 0, 0, 0), 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 3 {
+		t.Fatalf("got %d results, want 3", len(results))
+	}
+	if results[0].Key != "row1" || results[1].Key != "row2" || results[2].Key != "row3" {
+		t.Errorf("ordering: got [%s, %s, %s], want [row1, row2, row3]",
+			results[0].Key, results[1].Key, results[2].Key)
+	}
+	// Score must be monotonically decreasing.
+	if !(results[0].Score >= results[1].Score && results[1].Score >= results[2].Score) {
+		t.Errorf("scores not monotone-DESC: %v", []float64{results[0].Score, results[1].Score, results[2].Score})
+	}
+}
+
+func testMemoryEmbedSearchScopeIsolation(t *testing.T, s store.Store) {
+	if !vectorRefusalCheck(t, s) {
+		return
+	}
+	ctx := context.Background()
+	// Write the embedding under agent scope.
+	_ = s.MemorySet(ctx, store.MemoryScopeAgent, "qa", "rec", json.RawMessage(`"x"`), 0)
+	_ = s.MemoryEmbedSet(ctx, store.MemoryScopeAgent, "qa", "rec", store.MemoryEmbedding{
+		Provider: "openai", Model: "text-embedding-3-small", Dimension: 4,
+		Vector: floats32(1, 0, 0, 0), EmbedText: "x", CreatedAt: time.Now(),
+	})
+	// Search the same key from user scope — must return empty.
+	results, err := s.MemoryEmbedSearch(ctx, store.MemoryScopeUser, "qa", "", floats32(1, 0, 0, 0), 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 0 {
+		t.Errorf("cross-scope leak: user scope returned %d results, want 0", len(results))
+	}
+}
+
+func testMemoryEmbedSearchDimensionMismatch(t *testing.T, s store.Store) {
+	if !vectorRefusalCheck(t, s) {
+		return
+	}
+	ctx := context.Background()
+	_ = s.MemorySet(ctx, store.MemoryScopeAgent, "qa", "rec", json.RawMessage(`"x"`), 0)
+	_ = s.MemoryEmbedSet(ctx, store.MemoryScopeAgent, "qa", "rec", store.MemoryEmbedding{
+		Provider: "openai", Model: "text-embedding-3-small", Dimension: 4,
+		Vector: floats32(1, 0, 0, 0), EmbedText: "x", CreatedAt: time.Now(),
+	})
+	// Query with dimension 8 against stored dimension 4.
+	_, err := s.MemoryEmbedSearch(ctx, store.MemoryScopeAgent, "qa", "", floats32(1, 0, 0, 0, 1, 0, 0, 0), 5)
+	if !errors.Is(err, store.ErrDimensionMismatch) {
+		t.Errorf("dim mismatch: got %v, want ErrDimensionMismatch", err)
+	}
+}
+
+func testMemoryEmbedSearchEmptyScope(t *testing.T, s store.Store) {
+	if !vectorRefusalCheck(t, s) {
+		return
+	}
+	ctx := context.Background()
+	results, err := s.MemoryEmbedSearch(ctx, store.MemoryScopeAgent, "empty", "", floats32(1, 0, 0, 0), 10)
+	if err != nil {
+		t.Errorf("empty scope search: %v", err)
+	}
+	if len(results) != 0 {
+		t.Errorf("empty scope: got %d results, want 0", len(results))
+	}
+}
+
+func testMemoryDeleteCascadesEmbedding(t *testing.T, s store.Store) {
+	if !vectorRefusalCheck(t, s) {
+		return
+	}
+	ctx := context.Background()
+	_ = s.MemorySet(ctx, store.MemoryScopeAgent, "qa", "doomed", json.RawMessage(`"x"`), 0)
+	_ = s.MemoryEmbedSet(ctx, store.MemoryScopeAgent, "qa", "doomed", store.MemoryEmbedding{
+		Provider: "openai", Model: "text-embedding-3-small", Dimension: 4,
+		Vector: floats32(1, 0, 0, 0), EmbedText: "x", CreatedAt: time.Now(),
+	})
+	// Delete the base row — embedding row must vanish via FK CASCADE.
+	if _, err := s.MemoryDelete(ctx, store.MemoryScopeAgent, "qa", "doomed"); err != nil {
+		t.Fatal(err)
+	}
+	_, err := s.MemoryEmbedGet(ctx, store.MemoryScopeAgent, "qa", "doomed")
+	var nf *store.ErrNotFound
+	if !errors.As(err, &nf) {
+		t.Errorf("after base-row delete: got %v (%T), want *store.ErrNotFound (CASCADE failed)", err, err)
+	}
+}
+
+func testMemoryEmbedListByModelFiltersCurrent(t *testing.T, s store.Store) {
+	if !vectorRefusalCheck(t, s) {
+		return
+	}
+	ctx := context.Background()
+	// Two rows under the OLD model.
+	for _, k := range []string{"old1", "old2"} {
+		_ = s.MemorySet(ctx, store.MemoryScopeAgent, "qa", k, json.RawMessage(`"x"`), 0)
+		_ = s.MemoryEmbedSet(ctx, store.MemoryScopeAgent, "qa", k, store.MemoryEmbedding{
+			Provider: "openai", Model: "text-embedding-3-small", Dimension: 4,
+			Vector: floats32(1, 0, 0, 0), EmbedText: k, CreatedAt: time.Now(),
+		})
+	}
+	// One row under the NEW model.
+	_ = s.MemorySet(ctx, store.MemoryScopeAgent, "qa", "new1", json.RawMessage(`"x"`), 0)
+	_ = s.MemoryEmbedSet(ctx, store.MemoryScopeAgent, "qa", "new1", store.MemoryEmbedding{
+		Provider: "openai", Model: "text-embedding-3-large", Dimension: 8,
+		Vector: floats32(1, 0, 0, 0, 0, 0, 0, 0), EmbedText: "new1", CreatedAt: time.Now(),
+	})
+	// Ask "which rows are NOT on text-embedding-3-large?" — expect old1 + old2.
+	got, err := s.MemoryEmbedListByModel(ctx, store.MemoryScopeAgent, "qa", "openai", "text-embedding-3-large", 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 {
+		t.Errorf("got %d rows-needing-reembed, want 2 (rows: %+v)", len(got), got)
+	}
+	for _, r := range got {
+		if r.Key == "new1" {
+			t.Errorf("ListByModel returned the current-model row %q", r.Key)
+		}
+	}
+}
+
+func testMemoryEmbedStatsReportsPerModelCount(t *testing.T, s store.Store) {
+	if !vectorRefusalCheck(t, s) {
+		return
+	}
+	ctx := context.Background()
+	// Two rows on model A (dim 4), one row on model B (dim 8).
+	for _, k := range []string{"a1", "a2"} {
+		_ = s.MemorySet(ctx, store.MemoryScopeAgent, "qa", k, json.RawMessage(`"x"`), 0)
+		_ = s.MemoryEmbedSet(ctx, store.MemoryScopeAgent, "qa", k, store.MemoryEmbedding{
+			Provider: "openai", Model: "text-embedding-3-small", Dimension: 4,
+			Vector: floats32(1, 0, 0, 0), EmbedText: k, CreatedAt: time.Now(),
+		})
+	}
+	_ = s.MemorySet(ctx, store.MemoryScopeAgent, "qa", "b1", json.RawMessage(`"x"`), 0)
+	_ = s.MemoryEmbedSet(ctx, store.MemoryScopeAgent, "qa", "b1", store.MemoryEmbedding{
+		Provider: "openai", Model: "text-embedding-3-large", Dimension: 8,
+		Vector: floats32(1, 0, 0, 0, 0, 0, 0, 0), EmbedText: "b1", CreatedAt: time.Now(),
+	})
+	stats, err := s.MemoryEmbedStats(ctx, store.MemoryScopeAgent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Build a (provider,model) → row_count lookup off the slice.
+	counts := map[string]int{}
+	for _, m := range stats.Models {
+		counts[m.Provider+"/"+m.Model] = m.RowCount
+	}
+	if counts["openai/text-embedding-3-small"] != 2 {
+		t.Errorf("small-model row_count: %d, want 2", counts["openai/text-embedding-3-small"])
+	}
+	if counts["openai/text-embedding-3-large"] != 1 {
+		t.Errorf("large-model row_count: %d, want 1", counts["openai/text-embedding-3-large"])
+	}
 }
 
 // ---- v0.8.4 Channel tool contract ----
