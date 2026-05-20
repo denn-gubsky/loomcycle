@@ -232,6 +232,7 @@ const (
 // filter on this dimension":
 //   - Type == ""  → all event types
 //   - From / To zero-value time.Time → unbounded on that side
+//
 // Use From + To together for a window; either alone is supported.
 type EventFilter struct {
 	Type string

@@ -198,6 +198,24 @@ func TestHealthz(t *testing.T) {
 	if resp.StatusCode != 200 {
 		t.Errorf("status = %d", resp.StatusCode)
 	}
+	// v0.8.21: response is JSON {ok, metrics_enabled}. metrics
+	// sampler isn't wired in this test, so metrics_enabled must
+	// be false — the Activity Monitor UI keys off this flag to
+	// render its "metrics off" empty state immediately, without
+	// probing /v1/_metrics and getting 503.
+	var body struct {
+		OK             bool `json:"ok"`
+		MetricsEnabled bool `json:"metrics_enabled"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if !body.OK {
+		t.Errorf("ok = %v, want true", body.OK)
+	}
+	if body.MetricsEnabled {
+		t.Errorf("metrics_enabled = %v, want false (sampler not wired in test)", body.MetricsEnabled)
+	}
 }
 
 func TestAuthRequired(t *testing.T) {

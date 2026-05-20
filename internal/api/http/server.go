@@ -1135,14 +1135,23 @@ func recoveryMiddleware(next http.Handler) http.Handler {
 
 // healthzResponse mirrors the gRPC HealthResponse shape so adapters
 // switching between the two transports decode the same JSON keys.
+//
 // uptime_seconds is computed at request time (not cached) so a long-
 // running process surfaces its real uptime, not the moment New() ran.
+//
+// v0.8.21 also adds `metrics_enabled` so the Web UI's Activity
+// Monitor can render its "metrics are off, set
+// LOOMCYCLE_METRICS_ENABLED=1" empty state without first probing
+// /v1/_metrics and getting a 503. metricsSampler is constructed in
+// main.go only when cfg.Env.MetricsEnabled is true, so its nil-ness
+// is the single source of truth — no separate field on Server.
 type healthzResponse struct {
-	OK            bool   `json:"ok"`
-	Version       string `json:"version,omitempty"`
-	Commit        string `json:"commit,omitempty"`
-	Built         string `json:"built,omitempty"`
-	UptimeSeconds int64  `json:"uptime_seconds,omitempty"`
+	OK             bool   `json:"ok"`
+	Version        string `json:"version,omitempty"`
+	Commit         string `json:"commit,omitempty"`
+	Built          string `json:"built,omitempty"`
+	UptimeSeconds  int64  `json:"uptime_seconds,omitempty"`
+	MetricsEnabled bool   `json:"metrics_enabled"`
 }
 
 func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
@@ -1155,11 +1164,12 @@ func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 		uptime = int64(time.Since(s.startedAt).Seconds())
 	}
 	resp := healthzResponse{
-		OK:            true,
-		Version:       s.buildVersion,
-		Commit:        s.buildCommit,
-		Built:         s.buildTime,
-		UptimeSeconds: uptime,
+		OK:             true,
+		Version:        s.buildVersion,
+		Commit:         s.buildCommit,
+		Built:          s.buildTime,
+		UptimeSeconds:  uptime,
+		MetricsEnabled: s.metricsSampler != nil,
 	}
 	_ = json.NewEncoder(w).Encode(resp)
 }
