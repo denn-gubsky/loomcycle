@@ -107,23 +107,46 @@ func (s *Server) dispatchSubstrate(
 }
 
 // substrateAdminCtx stamps the operator-trust ctx for HTTP
-// substrate admin dispatches. Mirrors the MCP operatorCtx but
-// with distinct synthetic identifiers so audit logs distinguish
-// HTTP-admin from MCP-direct activity.
+// substrate admin dispatches. Mirror of the MCP operatorCtx —
+// same six policy grants, distinct synthetic identifiers so
+// audit logs distinguish HTTP-admin from MCP-direct.
+//
+// Why all six policies even though the only handlers today are
+// AgentDef + SkillDef: dispatchSubstrate is already generalized
+// (it accepts any connectorFn). A future endpoint like
+// POST /v1/_memory or POST /v1/_evaluation reusing this helper
+// would silently default-deny without these grants. Keep them
+// symmetric with operatorCtx so the helper stays safe to extend.
 func substrateAdminCtx(ctx context.Context) context.Context {
 	ctx = tools.WithRunIdentity(ctx, tools.RunIdentityValue{
 		UserID:  substrateAdminUserID,
 		AgentID: substrateAdminAgentID,
 	})
 	ctx = tools.WithAgentName(ctx, substrateAdminAgentName)
-	// Scope=[any] mirrors the MCP operator grant. The in-process
-	// tool's default-deny gate refuses any call without an
-	// explicit scope; "any" is the operator-blessed admin posture.
+	// Memory: full scope access. QuotaBytes=0 falls back to the
+	// global default (LOOMCYCLE_MEMORY_MAX_SCOPE_BYTES).
+	ctx = tools.WithMemoryPolicy(ctx, tools.MemoryPolicyValue{
+		AllowedScopes: []string{"agent", "user", "global"},
+	})
+	// Channel: "*" wildcard matches every channel name.
+	ctx = tools.WithChannelPolicy(ctx, tools.ChannelPolicyValue{
+		Publish:   []string{"*"},
+		Subscribe: []string{"*"},
+	})
+	// AgentDef + SkillDef: "any" scope (operator-blessed admin).
 	ctx = tools.WithAgentDefPolicy(ctx, tools.AgentDefPolicyValue{
 		Scopes:   []string{"any"},
 		SelfName: substrateAdminAgentName,
 	})
 	ctx = tools.WithSkillDefPolicy(ctx, tools.SkillDefPolicyValue{
+		Scopes: []string{"any"},
+	})
+	// Evaluation: all 4 valid scope values.
+	ctx = tools.WithEvaluationPolicy(ctx, tools.EvaluationPolicyValue{
+		Scopes: []string{"submit_self", "submit_descendants", "submit_any", "read_any"},
+	})
+	// Context.history: "any" — read every agent's transcript.
+	ctx = tools.WithHistoryPolicy(ctx, tools.HistoryPolicyValue{
 		Scopes: []string{"any"},
 	})
 	return ctx

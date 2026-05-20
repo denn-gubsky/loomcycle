@@ -28,17 +28,36 @@ const (
 // and MCP operatorCtx — without this every gRPC AgentDef /
 // SkillDef call hits the in-process tool's default-deny scope
 // gate and returns is_error=true with the "no scopes" refusal.
+//
+// Grants all six policies (Memory + Channel + AgentDef + SkillDef
+// + Evaluation + History) even though only AgentDef + SkillDef
+// have RPCs today. dispatchSubstrateRPC is a shared helper; a
+// future RPC reusing it would silently default-deny without these
+// grants. Keep symmetric with operatorCtx / substrateAdminCtx.
 func substrateGRPCCtx(ctx context.Context) context.Context {
 	ctx = tools.WithRunIdentity(ctx, tools.RunIdentityValue{
 		UserID:  grpcSubstrateAdminUserID,
 		AgentID: grpcSubstrateAdminAgentID,
 	})
 	ctx = tools.WithAgentName(ctx, grpcSubstrateAdminAgentName)
+	ctx = tools.WithMemoryPolicy(ctx, tools.MemoryPolicyValue{
+		AllowedScopes: []string{"agent", "user", "global"},
+	})
+	ctx = tools.WithChannelPolicy(ctx, tools.ChannelPolicyValue{
+		Publish:   []string{"*"},
+		Subscribe: []string{"*"},
+	})
 	ctx = tools.WithAgentDefPolicy(ctx, tools.AgentDefPolicyValue{
 		Scopes:   []string{"any"},
 		SelfName: grpcSubstrateAdminAgentName,
 	})
 	ctx = tools.WithSkillDefPolicy(ctx, tools.SkillDefPolicyValue{
+		Scopes: []string{"any"},
+	})
+	ctx = tools.WithEvaluationPolicy(ctx, tools.EvaluationPolicyValue{
+		Scopes: []string{"submit_self", "submit_descendants", "submit_any", "read_any"},
+	})
+	ctx = tools.WithHistoryPolicy(ctx, tools.HistoryPolicyValue{
 		Scopes: []string{"any"},
 	})
 	return ctx
