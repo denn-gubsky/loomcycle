@@ -82,12 +82,21 @@ class HookNotFoundError(LoomcycleError):
 
 
 class InvalidArgumentError(LoomcycleError):
-    """Raised by client-side validation (v0.8.18+) when caller-supplied
-    arguments fail a precondition before any wire call is made — e.g.
-    ``restore_snapshot`` invoked with neither ``snapshot_id`` nor
-    ``raw_json``, or ``create_snapshot`` given an invalid RFC3339
-    ``since_ts``. ``code`` is always ``None`` to distinguish from
-    server-returned ``LoomcycleError`` with a real gRPC code."""
+    """Raised on caller-supplied input validation failures.
+
+    Two sources, distinguished by the ``code`` attribute:
+
+    * Client-side validation (v0.8.18+): a caller-side
+      precondition fails before any wire call is made — e.g.
+      ``restore_snapshot`` invoked with neither ``snapshot_id`` nor
+      ``raw_json``, or ``create_snapshot`` given an invalid RFC3339
+      ``since_ts``. ``code`` is ``None`` for these cases.
+    * Server-side validation (v0.8.22+): the server returns gRPC
+      ``INVALID_ARGUMENT`` — typically on substrate admin RPCs with
+      malformed JSON in ``input_json``. ``code`` is
+      ``grpc.StatusCode.INVALID_ARGUMENT`` for these cases.
+
+    Callers wanting to distinguish should inspect ``e.code``."""
 
 
 # v0.8.18 — Pause/Resume/Snapshot typed errors. Each maps from a
@@ -128,3 +137,21 @@ class SnapshotVersionError(LoomcycleError):
     version is newer than the reader supports OR unknown to the
     migration registry. Operator upgrades loomcycle before restoring.
     Server returns gRPC FailedPrecondition for both subcases."""
+
+
+class SubstrateToolRefusedError(LoomcycleError):
+    """Raised by ``agent_def`` / ``skill_def`` when the in-process
+    substrate tool refused the call (scope deny, empty body,
+    allowed-tools widening, etc.). Distinct from transport
+    failures: the request reached the server, the substrate tool
+    ran, and the tool itself returned is_error=True with a
+    human-readable reason in ``message``.
+
+    The ``tool`` attribute identifies which substrate tool refused
+    ("AgentDef" or "SkillDef"). Operators catching this error
+    should surface ``message`` to the calling agent / user rather
+    than retrying."""
+
+    def __init__(self, message: str, *, tool: str = "") -> None:
+        super().__init__(message)
+        self.tool = tool

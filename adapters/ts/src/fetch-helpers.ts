@@ -27,6 +27,7 @@ import {
   SnapshotNotFoundError,
   SnapshotTooLargeError,
   SnapshotVersionError,
+  SubstrateToolRefusedError,
   UnavailableError,
 } from "./errors.js";
 
@@ -213,8 +214,26 @@ export async function raiseFromResponse(resp: Response): Promise<never> {
       throw new LoomcycleError(msg, opts);
     case 413:
       throw new SnapshotTooLargeError(msg, opts);
-    case 422:
+    case 422: {
+      // 422 is shared between snapshot version errors (existing)
+      // and v0.8.22 substrate tool refusals. Discriminate by body:
+      // the substrate path returns `{code: "tool_refused", tool,
+      // error}` JSON; the snapshot path returns a free-form text.
+      try {
+        const parsed = JSON.parse(bodyText) as { code?: string; tool?: string; error?: string };
+        if (parsed.code === "tool_refused") {
+          throw new SubstrateToolRefusedError(
+            parsed.error ?? msg,
+            { status, bodyText, tool: parsed.tool },
+          );
+        }
+      } catch (e) {
+        // Re-throw our typed error if we matched; fall through to
+        // SnapshotVersionError on any JSON-parse failure.
+        if (e instanceof SubstrateToolRefusedError) throw e;
+      }
       throw new SnapshotVersionError(msg, opts);
+    }
     case 429:
       throw new BackpressureError(msg, opts);
     case 503:

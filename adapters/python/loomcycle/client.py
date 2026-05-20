@@ -57,6 +57,7 @@ from .errors import (
     SnapshotNotFoundError,
     SnapshotTooLargeError,
     SnapshotVersionError,
+    SubstrateToolRefusedError,
     UnavailableError,
 )
 
@@ -523,6 +524,62 @@ class LoomcycleClient:
             _raise_from_grpc(e)
         return resp.deleted
 
+    # ---- v0.8.22 substrate admin (AgentDef + SkillDef) ----
+
+    async def agent_def(self, input: Mapping[str, Any]) -> Mapping[str, Any]:
+        """Invoke the AgentDef substrate tool. Mirror of the MCP
+        `agentdef` meta-tool and the HTTP POST /v1/_agentdef
+        endpoint — different transport, identical semantics.
+
+        ``input`` is the op-discriminated body the in-process tool
+        accepts: ``{op: "create"|"fork"|"get"|"list"|"promote"|"retire",
+        name?, def_id?, parent_def_id?, overlay?, description?,
+        promote?, retired?}``. Returns the tool's output JSON
+        deserialised as a dict.
+
+        Raises :class:`SubstrateToolRefusedError` when the tool
+        itself refused the call (scope deny, empty body, allowed-
+        tools widening, etc.) — distinct from transport failures
+        like :class:`UnavailableError` (503) or
+        :class:`InvalidArgumentError` (malformed JSON body)."""
+        return await self._dispatch_substrate("AgentDef", input)
+
+    async def skill_def(self, input: Mapping[str, Any]) -> Mapping[str, Any]:
+        """Invoke the SkillDef substrate tool. Mirror of
+        :meth:`agent_def` for skills (v0.8.22+). Same input
+        grammar, same error contract. See :meth:`agent_def` for
+        the full shape."""
+        return await self._dispatch_substrate("SkillDef", input)
+
+    async def _dispatch_substrate(
+        self, tool: str, input: Mapping[str, Any]
+    ) -> Mapping[str, Any]:
+        """Shared body of agent_def + skill_def. Serialises ``input``
+        as JSON, dispatches the matching gRPC RPC, decodes the
+        response. Tool-level refusals (is_error=True) raise
+        :class:`SubstrateToolRefusedError`; transport-level errors
+        map via _raise_from_grpc as usual."""
+        input_json = json.dumps(input).encode("utf-8")
+        req = pb.SubstrateRequest(input_json=input_json)
+        try:
+            if tool == "AgentDef":
+                resp = await self._stub.AgentDef(req, metadata=self._auth_metadata())
+            else:
+                resp = await self._stub.SkillDef(req, metadata=self._auth_metadata())
+        except grpc.aio.AioRpcError as e:
+            _raise_from_grpc(e)
+        output_text = (resp.output_json or b"").decode("utf-8")
+        if resp.is_error:
+            raise SubstrateToolRefusedError(output_text, tool=tool)
+        if not output_text:
+            return {}
+        parsed = json.loads(output_text)
+        if not isinstance(parsed, dict):
+            raise LoomcycleError(
+                f"{tool}: unexpected non-dict response: {output_text[:200]}"
+            )
+        return parsed
+
     # ---- Streaming RPCs ----
 
     def run_streaming(
@@ -891,7 +948,13 @@ def _raise_from_grpc(err: grpc.aio.AioRpcError) -> "None":
             raise PauseNotConfiguredError(msg, code=code) from err
         raise UnavailableError(msg, code=code) from err
     if code == grpc.StatusCode.INVALID_ARGUMENT:
-        raise LoomcycleError(msg, code=code) from err
+        # Surface server-side INVALID_ARGUMENT as InvalidArgumentError
+        # so callers can branch on the typed exception class. The
+        # client-side variant of this exception has code=None; the
+        # server-side variant carries the gRPC code — see the
+        # InvalidArgumentError docstring for the discrimination
+        # contract.
+        raise InvalidArgumentError(msg, code=code) from err
     raise LoomcycleError(msg, code=code) from err
 
 

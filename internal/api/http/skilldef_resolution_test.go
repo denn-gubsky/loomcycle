@@ -135,3 +135,42 @@ func TestResolveSkillBodiesForRun_StaleRowIsIgnored(t *testing.T) {
 		t.Errorf("empty-body DB row should NOT trigger rebuild; got %q", got.SystemPrompt)
 	}
 }
+
+// TestResolveSkillBodiesForRun_OneSkillResolvesEvenIfAnotherIsMissing
+// pins the per-skill-error fallback. With skill-a active in DB and
+// skill-b having no DB row, the rebuild includes the DB body for
+// skill-a AND the static fallback chain (or no body) for skill-b —
+// it does NOT abort the whole agent.
+func TestResolveSkillBodiesForRun_OneSkillResolvesEvenIfAnotherIsMissing(t *testing.T) {
+	s, err := sqlite.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	ctx := context.Background()
+
+	// skill-a has a DB-active row; skill-b does not.
+	defJSON, _ := json.Marshal(map[string]string{"body": "DB BODY A"})
+	row, err := s.SkillDefCreate(ctx, store.SkillDefRow{
+		DefID:      "sdf_a",
+		Name:       "skill-a",
+		Definition: defJSON,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SkillDefSetActive(ctx, "skill-a", row.DefID, ""); err != nil {
+		t.Fatal(err)
+	}
+
+	srv := &Server{store: s}
+	def := config.AgentDef{
+		Skills:           []string{"skill-a", "skill-b"},
+		SystemPrompt:     "base prompt\n\n---\n\nstatic A\n\n---\n\nstatic B",
+		SystemPromptBase: "base prompt",
+	}
+	got := srv.resolveSkillBodiesForRun(ctx, def)
+	if !strings.Contains(got.SystemPrompt, "DB BODY A") {
+		t.Errorf("DB body for skill-a should be substituted; got %q", got.SystemPrompt)
+	}
+}

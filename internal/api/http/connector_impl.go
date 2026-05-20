@@ -7,7 +7,7 @@
 // Methods in this file are organised by Connector method group:
 //   1. Run lifecycle: SpawnRun, CancelRun, GetRun, ListRuns
 //   2. Agent management: RegisterAgent, UnregisterAgent, ListAgents
-//   3. Builtin tool wrappers: Memory, Channel, AgentDef, Evaluation, Context
+//   3. Builtin tool wrappers: Memory, Channel, AgentDef, SkillDef, Evaluation, Context
 //   4. Pause/Resume/Snapshot: real impls (v0.8.18; wire shapes locked in v0.8.15)
 //   5. Interruption (v0.8.16)
 
@@ -367,6 +367,10 @@ func (s *Server) Channel(ctx context.Context, input json.RawMessage) (connector.
 
 func (s *Server) AgentDef(ctx context.Context, input json.RawMessage) (connector.ToolResult, error) {
 	return s.dispatchBuiltin(ctx, "AgentDef", input)
+}
+
+func (s *Server) SkillDef(ctx context.Context, input json.RawMessage) (connector.ToolResult, error) {
+	return s.dispatchBuiltin(ctx, "SkillDef", input)
 }
 
 func (s *Server) Evaluation(ctx context.Context, input json.RawMessage) (connector.ToolResult, error) {

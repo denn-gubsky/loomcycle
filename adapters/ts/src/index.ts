@@ -42,6 +42,10 @@
  *     listRunInterrupts(runId, opts?): Promise<InterruptListResponse>
  *     resolveInterrupt(runId, interruptId, opts): Promise<unknown>
  *
+ *     // Substrate admin (v0.8.22)
+ *     agentDef(input): Promise<SubstrateToolResponse>
+ *     skillDef(input): Promise<SubstrateToolResponse>
+ *
  *   Errors (typed subclasses of LoomcycleError; see README for the
  *   full HTTP-status → typed-error mapping table):
  *     LoomcycleError, AgentNotFoundError, SessionNotFoundError,
@@ -49,7 +53,8 @@
  *     AuthError, UnavailableError, InvalidArgumentError,
  *     PauseNotConfiguredError (subclass of UnavailableError),
  *     AlreadyPausingError, NotPausedError, SnapshotNotFoundError,
- *     SnapshotTooLargeError, SnapshotVersionError
+ *     SnapshotTooLargeError, SnapshotVersionError,
+ *     SubstrateToolRefusedError (v0.8.22)
  *
  * Transport: HTTP+SSE. Auth: Bearer token via the Authorization
  * header. Designed for Node ≥18 (engines pinned); Bun/Deno likely
@@ -125,6 +130,9 @@ export type {
   PreHookResult,
   RegisterHookOptions,
   RegisterHookResponse,
+  // Substrate admin (v0.8.22)
+  SubstrateToolInput,
+  SubstrateToolResponse,
 } from "./types.js";
 
 export {
@@ -144,5 +152,6 @@ export {
   SnapshotNotFoundError,
   SnapshotTooLargeError,
   SnapshotVersionError,
+  SubstrateToolRefusedError,
   UnavailableError,
 } from "./errors.js";

@@ -580,6 +580,35 @@ export interface PostHookCall {
   tool_result: HookToolResult;
 }
 
+// ---- v0.8.22 substrate admin (AgentDef + SkillDef) ----
+
+/** Input shape for {@link LoomcycleClient.agentDef} and
+ *  {@link LoomcycleClient.skillDef}. Mirrors the in-process tool
+ *  input — `op` discriminates create / fork / get / list / promote
+ *  / retire and the remaining fields are op-specific.
+ *
+ *  Typed loosely because the in-process tool owns the full schema;
+ *  the adapter doesn't re-validate. Use the optional `extra` index
+ *  signature for forward-compat fields. */
+export type SubstrateToolInput = {
+  op: "create" | "fork" | "get" | "list" | "promote" | "retire";
+  name?: string;
+  def_id?: string;
+  parent_def_id?: string;
+  overlay?: Record<string, unknown>;
+  description?: string;
+  promote?: boolean;
+  retired?: boolean;
+  [extra: string]: unknown;
+};
+
+/** Response shape for {@link LoomcycleClient.agentDef} and
+ *  {@link LoomcycleClient.skillDef}. `unknown` because the shape
+ *  varies per op — create/fork return a row envelope, list returns
+ *  `{name, versions: [...]}`, promote/retire return summary shapes.
+ *  Callers narrow as needed. */
+export type SubstrateToolResponse = unknown;
+
 /** Response a Post webhook returns. When result is omitted the tool
  *  result passes through unchanged. */
 export interface PostHookResult {

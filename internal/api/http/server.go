@@ -553,8 +553,13 @@ func (s *Server) resolveSkillBodiesForRun(ctx context.Context, agentDef config.A
 			if errors.As(err, &nf) {
 				continue
 			}
+			// Degrade THIS skill to static; keep checking the rest.
+			// A transient store hiccup on one skill must not drop DB
+			// overrides for the other skills in the same run — the
+			// doc-string promise of "fall back to baked static prompt
+			// rather than fail" is per-skill, not whole-agent.
 			log.Printf("resolveSkillBodiesForRun: SkillDefGetActive(%q) failed: %v", skillName, err)
-			return agentDef
+			continue
 		}
 		var def skillDefOverlay
 		if err := json.Unmarshal(row.Definition, &def); err != nil {
@@ -1160,6 +1165,13 @@ func (s *Server) Mux() http.Handler {
 	// optional type + date-range filter. Drives the Web UI's
 	// /ui/audit page. Bearer-authed admin surface.
 	mux.Handle("GET /v1/_events", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleListEvents))))
+	// v0.8.22 substrate admin endpoints. Bearer-authed; accept the
+	// same op-discriminated JSON body as the in-process tool +
+	// dispatch through the Connector with operator-trust ctx.
+	// Mirrors the MCP `agentdef` / `skilldef` meta-tool dispatch —
+	// same connector path, different wire surface.
+	mux.Handle("POST /v1/_agentdef", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleSubstrateAgentDef))))
+	mux.Handle("POST /v1/_skilldef", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleSubstrateSkillDef))))
 	// v0.8.15.3 HTTP MCP transport — Streamable HTTP endpoint that
 	// dispatches the same 20 MCP tools as the stdio MCP server.
 	// POST is the JSON-RPC frame transport; DELETE terminates a
@@ -2528,6 +2540,13 @@ func (s *Server) runSubAgent(ctx context.Context, name string, prompt string, de
 		defer s.cancelReg.Deregister(subAgentID)
 	}
 
+	// v0.8.22: rebuild SystemPrompt from per-run SkillDef bodies
+	// when any of the sub-agent's skills has a DB-active row. Same
+	// call as the three top-level run-creation sites — without it,
+	// sub-agents would silently keep the static baked body and
+	// SkillDef promotions never take effect for agents only spawned
+	// as sub-agents.
+	def = s.resolveSkillBodiesForRun(ctx, def)
 	// Build segments: agent's system_prompt (with cache_control) + the
 	// caller-supplied prompt as the first user message. Mirrors the
 	// shape of /v1/runs.

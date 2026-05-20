@@ -133,6 +133,16 @@ class LoomcycleStub(object):
                 request_serializer=loomcycle__pb2.DeleteSnapshotRequest.SerializeToString,
                 response_deserializer=loomcycle__pb2.DeleteSnapshotResponse.FromString,
                 _registered_method=True)
+        self.AgentDef = channel.unary_unary(
+                '/loomcycle.v1.Loomcycle/AgentDef',
+                request_serializer=loomcycle__pb2.SubstrateRequest.SerializeToString,
+                response_deserializer=loomcycle__pb2.SubstrateResponse.FromString,
+                _registered_method=True)
+        self.SkillDef = channel.unary_unary(
+                '/loomcycle.v1.Loomcycle/SkillDef',
+                request_serializer=loomcycle__pb2.SubstrateRequest.SerializeToString,
+                response_deserializer=loomcycle__pb2.SubstrateResponse.FromString,
+                _registered_method=True)
 
 
 class LoomcycleServicer(object):
@@ -363,6 +373,36 @@ class LoomcycleServicer(object):
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def AgentDef(self, request, context):
+        """----- v0.8.22 substrate admin RPCs -----
+
+        Two op-discriminated RPCs expose the AgentDef + SkillDef
+        substrate tools to gRPC callers (and through the gRPC adapter
+        path to Python clients). Same connector dispatch as the MCP
+        meta-tools and the HTTP /v1/_agentdef + /v1/_skilldef
+        endpoints — different transport, identical semantics.
+
+        Request body is the substrate tool's input JSON (op + name +
+        def_id + overlay + ...); response carries the tool's output
+        JSON + an is_error flag. Errors that aren't tool refusals
+        (transport, auth, malformed body) come back as gRPC status
+        codes per the existing convention.
+
+        AgentDef dispatches to the in-process AgentDef tool. Mirrors
+        POST /v1/_agentdef.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def SkillDef(self, request, context):
+        """SkillDef dispatches to the in-process SkillDef tool. Mirrors
+        POST /v1/_skilldef.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
 
 def add_LoomcycleServicer_to_server(servicer, server):
     rpc_method_handlers = {
@@ -460,6 +500,16 @@ def add_LoomcycleServicer_to_server(servicer, server):
                     servicer.DeleteSnapshot,
                     request_deserializer=loomcycle__pb2.DeleteSnapshotRequest.FromString,
                     response_serializer=loomcycle__pb2.DeleteSnapshotResponse.SerializeToString,
+            ),
+            'AgentDef': grpc.unary_unary_rpc_method_handler(
+                    servicer.AgentDef,
+                    request_deserializer=loomcycle__pb2.SubstrateRequest.FromString,
+                    response_serializer=loomcycle__pb2.SubstrateResponse.SerializeToString,
+            ),
+            'SkillDef': grpc.unary_unary_rpc_method_handler(
+                    servicer.SkillDef,
+                    request_deserializer=loomcycle__pb2.SubstrateRequest.FromString,
+                    response_serializer=loomcycle__pb2.SubstrateResponse.SerializeToString,
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
@@ -979,6 +1029,60 @@ class Loomcycle(object):
             '/loomcycle.v1.Loomcycle/DeleteSnapshot',
             loomcycle__pb2.DeleteSnapshotRequest.SerializeToString,
             loomcycle__pb2.DeleteSnapshotResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def AgentDef(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/loomcycle.v1.Loomcycle/AgentDef',
+            loomcycle__pb2.SubstrateRequest.SerializeToString,
+            loomcycle__pb2.SubstrateResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def SkillDef(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/loomcycle.v1.Loomcycle/SkillDef',
+            loomcycle__pb2.SubstrateRequest.SerializeToString,
+            loomcycle__pb2.SubstrateResponse.FromString,
             options,
             channel_credentials,
             insecure,

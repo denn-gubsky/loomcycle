@@ -173,6 +173,28 @@ service Loomcycle {
   //
   // Mirrors DELETE /v1/_snapshots/{id}.
   rpc DeleteSnapshot(DeleteSnapshotRequest) returns (DeleteSnapshotResponse);
+
+  // ----- v0.8.22 substrate admin RPCs -----
+  //
+  // Two op-discriminated RPCs expose the AgentDef + SkillDef
+  // substrate tools to gRPC callers (and through the gRPC adapter
+  // path to Python clients). Same connector dispatch as the MCP
+  // meta-tools and the HTTP /v1/_agentdef + /v1/_skilldef
+  // endpoints — different transport, identical semantics.
+  //
+  // Request body is the substrate tool's input JSON (op + name +
+  // def_id + overlay + ...); response carries the tool's output
+  // JSON + an is_error flag. Errors that aren't tool refusals
+  // (transport, auth, malformed body) come back as gRPC status
+  // codes per the existing convention.
+
+  // AgentDef dispatches to the in-process AgentDef tool. Mirrors
+  // POST /v1/_agentdef.
+  rpc AgentDef(SubstrateRequest) returns (SubstrateResponse);
+
+  // SkillDef dispatches to the in-process SkillDef tool. Mirrors
+  // POST /v1/_skilldef.
+  rpc SkillDef(SubstrateRequest) returns (SubstrateResponse);
 }
 
 // ========================
@@ -654,4 +676,27 @@ message DeleteSnapshotResponse {
   // the row existed; mirrors HTTP DELETE /v1/_snapshots/{id} = 204).
   bool deleted = 1;
   string snapshot_id = 2;
+}
+
+// ========================
+// Substrate admin (v0.8.22)
+// ========================
+
+// SubstrateRequest carries the substrate tool's input JSON
+// verbatim. Shape (op + name + def_id + overlay + ...) is owned
+// by the in-process tool; the gRPC layer is content-agnostic.
+message SubstrateRequest {
+  bytes input_json = 1;
+}
+
+// SubstrateResponse carries the tool's output JSON + a flag
+// distinguishing successful output from a tool-level refusal.
+// `is_error == true` means the call reached the tool but the
+// tool refused (scope deny, empty-body, etc.); `output_json`
+// then carries the human-readable error text. Transport-level
+// failures (auth, malformed input) come back as gRPC status
+// codes, not in this body.
+message SubstrateResponse {
+  bytes output_json = 1;
+  bool is_error = 2;
 }

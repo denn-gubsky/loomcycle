@@ -57,6 +57,8 @@ const (
 	Loomcycle_ExportSnapshot_FullMethodName  = "/loomcycle.v1.Loomcycle/ExportSnapshot"
 	Loomcycle_RestoreSnapshot_FullMethodName = "/loomcycle.v1.Loomcycle/RestoreSnapshot"
 	Loomcycle_DeleteSnapshot_FullMethodName  = "/loomcycle.v1.Loomcycle/DeleteSnapshot"
+	Loomcycle_AgentDef_FullMethodName        = "/loomcycle.v1.Loomcycle/AgentDef"
+	Loomcycle_SkillDef_FullMethodName        = "/loomcycle.v1.Loomcycle/SkillDef"
 )
 
 // LoomcycleClient is the client API for Loomcycle service.
@@ -176,6 +178,12 @@ type LoomcycleClient interface {
 	//
 	// Mirrors DELETE /v1/_snapshots/{id}.
 	DeleteSnapshot(ctx context.Context, in *DeleteSnapshotRequest, opts ...grpc.CallOption) (*DeleteSnapshotResponse, error)
+	// AgentDef dispatches to the in-process AgentDef tool. Mirrors
+	// POST /v1/_agentdef.
+	AgentDef(ctx context.Context, in *SubstrateRequest, opts ...grpc.CallOption) (*SubstrateResponse, error)
+	// SkillDef dispatches to the in-process SkillDef tool. Mirrors
+	// POST /v1/_skilldef.
+	SkillDef(ctx context.Context, in *SubstrateRequest, opts ...grpc.CallOption) (*SubstrateResponse, error)
 }
 
 type loomcycleClient struct {
@@ -394,6 +402,26 @@ func (c *loomcycleClient) DeleteSnapshot(ctx context.Context, in *DeleteSnapshot
 	return out, nil
 }
 
+func (c *loomcycleClient) AgentDef(ctx context.Context, in *SubstrateRequest, opts ...grpc.CallOption) (*SubstrateResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SubstrateResponse)
+	err := c.cc.Invoke(ctx, Loomcycle_AgentDef_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *loomcycleClient) SkillDef(ctx context.Context, in *SubstrateRequest, opts ...grpc.CallOption) (*SubstrateResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SubstrateResponse)
+	err := c.cc.Invoke(ctx, Loomcycle_SkillDef_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // LoomcycleServer is the server API for Loomcycle service.
 // All implementations must embed UnimplementedLoomcycleServer
 // for forward compatibility.
@@ -511,6 +539,12 @@ type LoomcycleServer interface {
 	//
 	// Mirrors DELETE /v1/_snapshots/{id}.
 	DeleteSnapshot(context.Context, *DeleteSnapshotRequest) (*DeleteSnapshotResponse, error)
+	// AgentDef dispatches to the in-process AgentDef tool. Mirrors
+	// POST /v1/_agentdef.
+	AgentDef(context.Context, *SubstrateRequest) (*SubstrateResponse, error)
+	// SkillDef dispatches to the in-process SkillDef tool. Mirrors
+	// POST /v1/_skilldef.
+	SkillDef(context.Context, *SubstrateRequest) (*SubstrateResponse, error)
 	mustEmbedUnimplementedLoomcycleServer()
 }
 
@@ -577,6 +611,12 @@ func (UnimplementedLoomcycleServer) RestoreSnapshot(context.Context, *RestoreSna
 }
 func (UnimplementedLoomcycleServer) DeleteSnapshot(context.Context, *DeleteSnapshotRequest) (*DeleteSnapshotResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method DeleteSnapshot not implemented")
+}
+func (UnimplementedLoomcycleServer) AgentDef(context.Context, *SubstrateRequest) (*SubstrateResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method AgentDef not implemented")
+}
+func (UnimplementedLoomcycleServer) SkillDef(context.Context, *SubstrateRequest) (*SubstrateResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method SkillDef not implemented")
 }
 func (UnimplementedLoomcycleServer) mustEmbedUnimplementedLoomcycleServer() {}
 func (UnimplementedLoomcycleServer) testEmbeddedByValue()                   {}
@@ -927,6 +967,42 @@ func _Loomcycle_DeleteSnapshot_Handler(srv interface{}, ctx context.Context, dec
 	return interceptor(ctx, in, info, handler)
 }
 
+func _Loomcycle_AgentDef_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SubstrateRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(LoomcycleServer).AgentDef(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Loomcycle_AgentDef_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(LoomcycleServer).AgentDef(ctx, req.(*SubstrateRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Loomcycle_SkillDef_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SubstrateRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(LoomcycleServer).SkillDef(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Loomcycle_SkillDef_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(LoomcycleServer).SkillDef(ctx, req.(*SubstrateRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // Loomcycle_ServiceDesc is the grpc.ServiceDesc for Loomcycle service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -1001,6 +1077,14 @@ var Loomcycle_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "DeleteSnapshot",
 			Handler:    _Loomcycle_DeleteSnapshot_Handler,
+		},
+		{
+			MethodName: "AgentDef",
+			Handler:    _Loomcycle_AgentDef_Handler,
+		},
+		{
+			MethodName: "SkillDef",
+			Handler:    _Loomcycle_SkillDef_Handler,
 		},
 	},
 	Streams: []grpc.StreamDesc{

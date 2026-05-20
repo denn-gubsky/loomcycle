@@ -59,6 +59,9 @@ func (m *httpMockConnector) Channel(context.Context, json.RawMessage) (connector
 func (m *httpMockConnector) AgentDef(context.Context, json.RawMessage) (connector.ToolResult, error) {
 	return connector.ToolResult{}, nil
 }
+func (m *httpMockConnector) SkillDef(context.Context, json.RawMessage) (connector.ToolResult, error) {
+	return connector.ToolResult{}, nil
+}
 func (m *httpMockConnector) Evaluation(context.Context, json.RawMessage) (connector.ToolResult, error) {
 	return connector.ToolResult{}, nil
 }

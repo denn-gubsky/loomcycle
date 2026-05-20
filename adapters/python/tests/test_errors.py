@@ -17,6 +17,7 @@ from loomcycle.errors import (
     AuthError,
     BackpressureError,
     HookNotFoundError,
+    InvalidArgumentError,
     LoomcycleError,
     SessionBusyError,
     SessionNotFoundError,
@@ -158,13 +159,16 @@ def test_unavailable_raises_unavailable_error():
         _raise_from_grpc(err)
 
 
-def test_invalid_argument_raises_base_loomcycle_error():
+def test_invalid_argument_raises_invalid_argument_error():
+    """Server-side INVALID_ARGUMENT (v0.8.22+) maps to
+    InvalidArgumentError with the gRPC code set. The client-side
+    variant of this exception has code=None — see the
+    InvalidArgumentError docstring for the discrimination."""
     err = _FakeAioRpcError(
         grpc.StatusCode.INVALID_ARGUMENT, "missing required field 'agent'"
     )
-    with pytest.raises(LoomcycleError) as ei:
+    with pytest.raises(InvalidArgumentError) as ei:
         _raise_from_grpc(err)
-    assert not isinstance(ei.value, (AgentNotFoundError, SessionNotFoundError))
     assert ei.value.code == grpc.StatusCode.INVALID_ARGUMENT
 
 

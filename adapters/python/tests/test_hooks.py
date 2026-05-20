@@ -15,7 +15,7 @@ from google.protobuf.timestamp_pb2 import Timestamp
 
 from loomcycle._generated import loomcycle_pb2 as pb
 from loomcycle.client import _hook_to_dict
-from loomcycle.errors import HookNotFoundError, LoomcycleError
+from loomcycle.errors import HookNotFoundError, InvalidArgumentError, LoomcycleError
 
 
 class _FakeAioRpcError(grpc.aio.AioRpcError):
@@ -134,22 +134,21 @@ async def test_register_hook_defaults_fail_mode_open():
 
 
 @pytest.mark.asyncio
-async def test_register_hook_invalid_argument_raises_loomcycle_error():
-    """INVALID_ARGUMENT does not currently get a typed subclass —
-    it falls through to the base LoomcycleError. Confirm that contract."""
+async def test_register_hook_invalid_argument_raises_typed_error():
+    """Server-side INVALID_ARGUMENT (v0.8.22+) maps to the typed
+    InvalidArgumentError subclass with the gRPC code populated.
+    Prior to v0.8.22 this fell through to bare LoomcycleError."""
     stub = _FakeStub()
     stub.raise_on_register = _FakeAioRpcError(
         grpc.StatusCode.INVALID_ARGUMENT,
         "invalid_registration: callback_url required",
     )
     c = _client_with_stub(stub)
-    with pytest.raises(LoomcycleError) as ei:
+    with pytest.raises(InvalidArgumentError) as ei:
         await c.register_hook(
             owner="x", name="y", phase="pre", callback_url=""
         )
-    # The typed subclass is just LoomcycleError, NOT one of the more
-    # specific subclasses.
-    assert type(ei.value) is LoomcycleError
+    assert ei.value.code == grpc.StatusCode.INVALID_ARGUMENT
     assert ei.value.code == grpc.StatusCode.INVALID_ARGUMENT
 
 

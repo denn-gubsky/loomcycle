@@ -63,6 +63,8 @@ import type {
   SnapshotEnvelope,
   SnapshotListResponse,
   SnapshotRestoreResponse,
+  SubstrateToolInput,
+  SubstrateToolResponse,
   TranscriptResponse,
 } from "./types.js";
 
@@ -503,6 +505,42 @@ export class LoomcycleClient {
       `/v1/hooks/${encodeURIComponent(id)}`,
       opts,
     );
+  }
+
+  // ---- v0.8.22 substrate admin (AgentDef + SkillDef) ----
+
+  /** Invoke the AgentDef substrate tool over HTTP. Mirrors the
+   *  MCP `agentdef` meta-tool and the in-band agent tool_use of
+   *  the same name — different transport, identical semantics.
+   *
+   *  The `input.op` field discriminates create / fork / get /
+   *  list / promote / retire. The remaining fields are op-specific;
+   *  see the in-process tool's documentation.
+   *
+   *  Raises {@link SubstrateToolRefusedError} when the tool itself
+   *  refuses the call (scope deny, empty body, allowed-tools
+   *  widening, etc.) — distinct from transport failures so callers
+   *  can branch on the typed error class.
+   *
+   *  Raises {@link InvalidArgumentError} on 400 (malformed JSON
+   *  body); {@link AuthError} on 401; {@link UnavailableError} on
+   *  503 (store / connector unwired). */
+  async agentDef(
+    input: SubstrateToolInput,
+    opts?: { signal?: AbortSignal },
+  ): Promise<SubstrateToolResponse> {
+    return postJSON<SubstrateToolResponse>(this.ctx, "/v1/_agentdef", input, opts);
+  }
+
+  /** Invoke the SkillDef substrate tool over HTTP. Mirror of
+   *  {@link LoomcycleClient.agentDef} for skills (v0.8.22+). Same
+   *  input grammar, same error class on refusal. See the
+   *  agentDef() doc for the full shape and error contract. */
+  async skillDef(
+    input: SubstrateToolInput,
+    opts?: { signal?: AbortSignal },
+  ): Promise<SubstrateToolResponse> {
+    return postJSON<SubstrateToolResponse>(this.ctx, "/v1/_skilldef", input, opts);
   }
 
   // ---- Internal helpers ----
