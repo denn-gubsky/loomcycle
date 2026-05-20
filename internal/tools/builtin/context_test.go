@@ -268,6 +268,9 @@ func TestContextTool_PermissionsBundle(t *testing.T) {
 		Scopes:   []string{"self"},
 		SelfName: "researcher",
 	})
+	ctx = tools.WithSkillDefPolicy(ctx, tools.SkillDefPolicyValue{
+		Scopes: []string{"named:karpathy-guidelines"},
+	})
 	ctx = tools.WithEvaluationPolicy(ctx, tools.EvaluationPolicyValue{
 		Scopes: []string{"submit_self", "read_any"},
 	})
@@ -291,6 +294,9 @@ func TestContextTool_PermissionsBundle(t *testing.T) {
 	}
 	if adScopes := out["agent_def_scopes"].([]any); adScopes[0] != "self" {
 		t.Errorf("agent_def_scopes[0] = %v, want self", adScopes[0])
+	}
+	if sdScopes := out["skill_def_scopes"].([]any); sdScopes[0] != "named:karpathy-guidelines" {
+		t.Errorf("skill_def_scopes[0] = %v, want named:karpathy-guidelines", sdScopes[0])
 	}
 }
 

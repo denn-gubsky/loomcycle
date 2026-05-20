@@ -3,10 +3,12 @@ package builtin
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 
 	"github.com/denn-gubsky/loomcycle/internal/skills"
+	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 	"github.com/denn-gubsky/loomcycle/internal/tools/policy"
 )
@@ -57,6 +59,13 @@ type SkillTool struct {
 	// it varies per request and is read from ctx via tools.AgentTools.
 	// The HTTP server attaches it before invoking the loop.
 	Set *skills.Set
+
+	// Store is the persistence backend used by the v0.8.22 SkillDef
+	// substrate. When non-nil, Execute consults SkillDefGetActive
+	// before falling back to the static Set — so a promoted
+	// SkillDef row overrides the on-disk SKILL.md body for the same
+	// name. Nil = pre-v0.8.22 behaviour (Set only).
+	Store store.Store
 }
 
 const skillInputSchema = `{
@@ -87,23 +96,16 @@ func (s *SkillTool) Description() string { return skillDescription }
 func (s *SkillTool) InputSchema() json.RawMessage { return json.RawMessage(skillInputSchema) }
 
 // Execute implements tools.Tool.
+//
+// Resolution order (v0.8.22):
+//  1. SkillDefGetActive(name) — DB-promoted active definition wins
+//     when the Store is wired. Body + allowed_tools come from the
+//     DB row.
+//  2. Set.Get(name) — fall back to the static filesystem-loaded
+//     SKILL.md.
+//
+// Pre-v0.8.22 behaviour (no Store) collapses to step 2 only.
 func (s *SkillTool) Execute(ctx context.Context, input json.RawMessage) (tools.Result, error) {
-	// Two paths land here that look like "no skills available":
-	//   1. Set == nil — direct construction without a loader (defensive,
-	//      not reachable from main.go which always passes a non-nil set).
-	//   2. Set is non-nil but empty — main.go's path when
-	//      LOOMCYCLE_SKILLS_ROOT is unset (skills.LoadSet("") returns a
-	//      non-nil empty Set so callers can always Get without a guard).
-	// Both produce the same operator-facing diagnostic: "set
-	// LOOMCYCLE_SKILLS_ROOT to use this tool" — distinguishing them in
-	// the error text would only matter to a unit test, never an operator.
-	if s.Set == nil || len(s.Set.Names()) == 0 {
-		return tools.Result{
-			IsError: true,
-			Text:    "Skill tool: no skills configured (set LOOMCYCLE_SKILLS_ROOT and populate <root>/<name>/SKILL.md)",
-		}, nil
-	}
-
 	var in skillInput
 	if err := json.Unmarshal(input, &in); err != nil {
 		return tools.Result{IsError: true, Text: fmt.Sprintf("invalid input JSON: %s", err)}, nil
@@ -113,11 +115,64 @@ func (s *SkillTool) Execute(ctx context.Context, input json.RawMessage) (tools.R
 		return tools.Result{IsError: true, Text: "missing required field: name"}, nil
 	}
 
-	sk, ok := s.Set.Get(in.Name)
+	body, allowedTools, source, err := s.resolveSkill(ctx, in.Name)
+	if err != nil {
+		return tools.Result{IsError: true, Text: err.Error()}, nil
+	}
+
+	// SECURITY: enforce skill.allowed-tools ⊆ agent.allowed_tools at
+	// tool-call time. Mirrors the config-load check in resolveSkills.
+	// Agent tools are pulled from ctx (see tools.WithAgentTools) so
+	// the SkillTool struct stays per-server, not per-run.
+	agentTools := tools.AgentTools(ctx)
+	if widening := skillToolsExceedingAgent(allowedTools, agentTools); len(widening) > 0 {
+		return tools.Result{
+			IsError: true,
+			Text: fmt.Sprintf(
+				"skill %q (%s) requires tools %v not granted by this agent's allowed_tools — skills cannot widen the agent's tool set",
+				in.Name, source, widening,
+			),
+		}, nil
+	}
+
+	return tools.Result{Text: body}, nil
+}
+
+// resolveSkill looks up a skill by name. Returns (body, allowed_tools,
+// source, err) where `source` is "skill_def" or "static" for the
+// resolution branch — useful for operator diagnostics in widening
+// refusals.
+func (s *SkillTool) resolveSkill(ctx context.Context, name string) (string, []string, string, error) {
+	// 1. DB-promoted active SkillDef wins when Store is wired.
+	if s.Store != nil {
+		row, err := s.Store.SkillDefGetActive(ctx, name)
+		if err == nil {
+			var def skillDefOverlay
+			if uerr := json.Unmarshal(row.Definition, &def); uerr != nil {
+				return "", nil, "", fmt.Errorf("skill %q: corrupt active def %s: %v", name, row.DefID, uerr)
+			}
+			if strings.TrimSpace(def.Body) == "" {
+				// Shouldn't happen — SkillDef.create/fork reject empty
+				// bodies — but defend against a hand-mucked DB row
+				// rather than silently emitting an empty tool_result.
+				return "", nil, "", fmt.Errorf("skill %q: active def %s has empty body", name, row.DefID)
+			}
+			return def.Body, def.AllowedTools, "skill_def", nil
+		}
+		var nf *store.ErrNotFound
+		if !errors.As(err, &nf) {
+			return "", nil, "", fmt.Errorf("skill %q: lookup active def: %v", name, err)
+		}
+		// Fall through to static lookup.
+	}
+
+	// 2. Static filesystem fallback.
+	if s.Set == nil || len(s.Set.Names()) == 0 {
+		return "", nil, "", fmt.Errorf("Skill tool: no skills configured (set LOOMCYCLE_SKILLS_ROOT and populate <root>/<name>/SKILL.md)")
+	}
+	sk, ok := s.Set.Get(name)
 	if !ok {
-		// Hint with the available names so the model can recover. Cap
-		// at a reasonable count so a misconfigured root with hundreds
-		// of skills doesn't flood the tool_result.
+		// Hint with the available names so the model can recover.
 		names := s.Set.Names()
 		hint := ""
 		if len(names) > 0 {
@@ -131,25 +186,9 @@ func (s *SkillTool) Execute(ctx context.Context, input json.RawMessage) (tools.R
 			}
 			hint += ")"
 		}
-		return tools.Result{IsError: true, Text: fmt.Sprintf("unknown skill %q%s", in.Name, hint)}, nil
+		return "", nil, "", fmt.Errorf("unknown skill %q%s", name, hint)
 	}
-
-	// SECURITY: enforce skill.allowed-tools ⊆ agent.allowed_tools at
-	// tool-call time. Mirrors the config-load check in resolveSkills.
-	// Agent tools are pulled from ctx (see tools.WithAgentTools) so the
-	// SkillTool struct stays per-server, not per-run.
-	agentTools := tools.AgentTools(ctx)
-	if widening := skillToolsExceedingAgent(sk.AllowedTools, agentTools); len(widening) > 0 {
-		return tools.Result{
-			IsError: true,
-			Text: fmt.Sprintf(
-				"skill %q requires tools %v not granted by this agent's allowed_tools — skills cannot widen the agent's tool set",
-				in.Name, widening,
-			),
-		}, nil
-	}
-
-	return tools.Result{Text: sk.Body}, nil
+	return sk.Body, sk.AllowedTools, "static", nil
 }
 
 // skillToolsExceedingAgent returns the subset of skill tools that the

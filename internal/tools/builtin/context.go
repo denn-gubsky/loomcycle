@@ -309,6 +309,7 @@ func (c *Context) execPermissions(ctx context.Context) (tools.Result, error) {
 	memPol := tools.MemoryPolicy(ctx)
 	chPol := tools.ChannelPolicy(ctx)
 	adPol := tools.AgentDefPolicy(ctx)
+	sdPol := tools.SkillDefPolicy(ctx)
 	evPol := tools.EvaluationPolicy(ctx)
 
 	histPol := tools.HistoryPolicy(ctx)
@@ -328,6 +329,7 @@ func (c *Context) execPermissions(ctx context.Context) (tools.Result, error) {
 			"subscribe": chPol.Subscribe,
 		},
 		"agent_def_scopes":  adPol.Scopes,
+		"skill_def_scopes":  sdPol.Scopes,
 		"evaluation_scopes": evPol.Scopes,
 		"history_scope":     histPol.Scopes,
 	}
