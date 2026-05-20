@@ -387,6 +387,7 @@ func main() {
 		// search). NotebookEdit rides the Write sandbox (it mutates
 		// .ipynb files atomically, same posture as Edit).
 		&builtin.Grep{Root: cfg.Env.ReadRoot},
+		&builtin.Glob{Root: cfg.Env.ReadRoot},
 		httpTool,
 		&builtin.WebFetch{HTTP: httpTool},
 		&builtin.WebSearch{APIKey: cfg.Env.BraveAPIKey},

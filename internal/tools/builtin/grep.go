@@ -110,9 +110,15 @@ func (g *Grep) Execute(ctx context.Context, input json.RawMessage) (tools.Result
 
 	// Resolve effective search root. Empty path = the sandbox root
 	// itself; non-empty = subpath of it (resolved + symlink-checked).
+	// Relative paths are joined with the root; absolute paths flow
+	// through and get the same escape check.
 	searchRoot := g.Root
 	if args.Path != "" {
-		resolved, rerr := resolveInsideRoot(g.Root, args.Path)
+		target := args.Path
+		if !filepath.IsAbs(target) {
+			target = filepath.Join(g.Root, target)
+		}
+		resolved, rerr := resolveInsideRoot(g.Root, target)
 		if rerr != nil {
 			return errResult(rerr.Error()), nil
 		}
