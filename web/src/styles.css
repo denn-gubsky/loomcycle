@@ -1559,3 +1559,62 @@ pre {
   color: white;
   border-color: var(--accent);
 }
+
+/* v0.8.21 Activity Monitor — LineChart. Hand-rolled SVG; the
+ * component owns its sizing via ResizeObserver and a matching
+ * viewBox. CSS handles the tooltip overlay + empty state. */
+.line-chart-wrap {
+  width: 100%;
+  position: relative;
+}
+.line-chart {
+  width: 100%;
+  display: block;
+}
+.line-chart-empty {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--fg-soft);
+  font-size: 12px;
+  font-style: italic;
+  pointer-events: none;
+}
+.line-chart-tooltip {
+  background: rgba(15, 17, 21, 0.96);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 6px 8px;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--fg);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
+  min-width: 140px;
+}
+.line-chart-tooltip .tt-time {
+  color: var(--fg-soft);
+  margin-bottom: 4px;
+}
+.line-chart-tooltip .tt-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  line-height: 1.5;
+}
+.line-chart-tooltip .tt-swatch {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.line-chart-tooltip .tt-label {
+  flex: 1;
+  color: var(--fg-soft);
+}
+.line-chart-tooltip .tt-value {
+  color: var(--fg);
+  font-variant-numeric: tabular-nums;
+}
