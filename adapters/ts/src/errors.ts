@@ -155,3 +155,26 @@ export class HookNotFoundError extends NotFoundError {
     this.name = "HookNotFoundError";
   }
 }
+
+/** SubstrateToolRefusedError — raised by `client.agentDef()` /
+ *  `client.skillDef()` when the in-process tool refused the call
+ *  (scope deny, empty body, allowed-tools widening, etc.). HTTP
+ *  status 422 with `{code: "tool_refused", error, tool}` body.
+ *
+ *  Distinct from transport failures: the request reached the
+ *  server, the substrate tool ran, and the tool itself returned
+ *  IsError=true. Operators catching this error should surface the
+ *  reason in `message` to the calling agent / user rather than
+ *  retrying. */
+export class SubstrateToolRefusedError extends LoomcycleError {
+  /** Which substrate tool refused — "AgentDef" or "SkillDef". */
+  readonly tool: string;
+  constructor(
+    message: string,
+    opts?: { status?: number; bodyText?: string; tool?: string },
+  ) {
+    super(message, opts);
+    this.name = "SubstrateToolRefusedError";
+    this.tool = opts?.tool ?? "";
+  }
+}
