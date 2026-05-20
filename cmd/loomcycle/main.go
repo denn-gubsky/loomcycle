@@ -629,6 +629,11 @@ func main() {
 	contextTool.Tools = allTools
 
 	srv := lchttp.New(cfg, pr, allTools, sem, storeIface)
+	// Surface the resolved build identifiers via /healthz so the Web UI
+	// can render the running binary's real version instead of a stale
+	// hard-coded string. Mirrors what gRPC's Health RPC has reported
+	// since v0.5.5; HTTP only adopted this in v0.8.21.
+	srv.SetBuildInfo(buildVersion, buildCommit, buildTime)
 	srv.SetMCPFallback(mcpLazyResolver.Resolve)
 
 	// v0.8.6 SystemPublisher — backs the POST /v1/_channels/_system/...

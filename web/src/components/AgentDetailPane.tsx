@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { Agent, EventPayload, TranscriptEvent, cancelAgent, getAgent, getTranscript } from "../api";
 import Breadcrumbs, { type BreadcrumbAncestor } from "./Breadcrumbs";
@@ -241,6 +241,11 @@ function coalesceText(events: TranscriptEvent[]): TranscriptEvent[] {
 // without a wall of text; clicking dives into a specific event.
 function EventCard({ row }: { row: TranscriptEvent }) {
   const [open, setOpen] = useState(false);
+  // copyState shows feedback after click: idle → copied → idle.
+  // "error" fires when the clipboard API is blocked (insecure
+  // origin, no document focus, etc.) so the operator sees that
+  // copy didn't happen instead of silently swallowing.
+  const [copyState, setCopyState] = useState<"idle" | "copied" | "error">("idle");
   const ev = row.event ?? ({ type: row.type } as EventPayload);
   const kind = ev.type ?? row.type;
 
@@ -248,6 +253,19 @@ function EventCard({ row }: { row: TranscriptEvent }) {
   const detail = detailFor(ev);
 
   const toggle = () => setOpen((v) => !v);
+
+  const copyPayload = async (e: ReactMouseEvent) => {
+    e.stopPropagation(); // don't collapse the card on copy click
+    const text = textPayloadFor(ev);
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopyState("copied");
+      window.setTimeout(() => setCopyState("idle"), 1200);
+    } catch {
+      setCopyState("error");
+      window.setTimeout(() => setCopyState("idle"), 1500);
+    }
+  };
 
   return (
     <div
@@ -268,9 +286,61 @@ function EventCard({ row }: { row: TranscriptEvent }) {
         {!open && <span className="summary">{summary}</span>}
         {row.ts_ns > 0 && <span className="ts">{formatTime(row.ts_ns)}</span>}
       </div>
-      {open && <div className="ev-detail">{detail}</div>}
+      {open && (
+        <div className="ev-detail">
+          <button
+            type="button"
+            className={`copy-btn copy-state-${copyState}`}
+            onClick={copyPayload}
+            aria-label="Copy event content to clipboard"
+            title={
+              copyState === "copied"
+                ? "copied"
+                : copyState === "error"
+                  ? "copy failed (clipboard blocked)"
+                  : "copy to clipboard"
+            }
+          >
+            {copyState === "copied" ? "✓ copied" : copyState === "error" ? "✗" : "⧉ copy"}
+          </button>
+          {detail}
+        </div>
+      )}
     </div>
   );
+}
+
+// textPayloadFor produces the plain-text representation copied to
+// the clipboard when the operator hits the copy button on an
+// expanded EventCard. Each branch mirrors detailFor's React render
+// but in flat text — keeps tool input/result/usage/etc. captured
+// without leaking React's escape-sequence artifacts.
+function textPayloadFor(ev: EventPayload): string {
+  switch (ev.type) {
+    case "text":
+    case "thinking":
+      return ev.text ?? "";
+    case "tool_call": {
+      const t = ev.tool_use;
+      const head = `tool: ${t?.name ?? "?"}${t?.id ? `  id: ${t.id}` : ""}`;
+      const input = `input:\n${prettyJSON(t?.input)}`;
+      return `${head}\n${input}`;
+    }
+    case "tool_result":
+      return ev.text ?? "";
+    case "error":
+      return ev.error ?? "";
+    case "retry":
+      return JSON.stringify(ev.retry ?? {}, null, 2);
+    case "done": {
+      const lines = [`stop_reason: ${ev.stop_reason ?? "?"}`];
+      if (ev.reasoning) lines.push("", "reasoning:", ev.reasoning);
+      if (ev.usage) lines.push("", "usage:", JSON.stringify(ev.usage, null, 2));
+      return lines.join("\n");
+    }
+    default:
+      return JSON.stringify(ev, null, 2);
+  }
 }
 
 // labelFor is the small uppercase tag on the left side of each card.

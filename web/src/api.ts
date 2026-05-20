@@ -18,6 +18,26 @@ export function listUsers(): Promise<ListUsersResponse> {
   return jsonFetch<ListUsersResponse>("/v1/_users");
 }
 
+// HealthResponse mirrors handleHealthz on the server. Extended in
+// v0.8.21 to surface buildVersion / buildCommit / buildTime so the
+// Web UI can render the real running version instead of a hard-coded
+// string. Older binaries (<= v0.8.20) return just {"ok":true} —
+// the version field is missing on those responses; callers must
+// tolerate undefined.
+export interface HealthResponse {
+  ok: boolean;
+  version?: string;
+  commit?: string;
+  built?: string;
+  uptime_seconds?: number;
+}
+
+export function getHealth(): Promise<HealthResponse> {
+  // /healthz isn't under /v1/ — it's unauthenticated and lives at
+  // the root mux per the server's pattern.
+  return jsonFetch<HealthResponse>("/healthz");
+}
+
 // Agent mirrors agentResponse on the server (internal/api/http/server.go).
 // Field names use snake_case to match the wire shape; renaming any of
 // them is a wire change, not a UI change.

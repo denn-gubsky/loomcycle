@@ -569,6 +569,39 @@ pre {
 .ev-detail {
   padding: 6px 12px 10px 36px;
   border-top: 1px dashed var(--border);
+  position: relative;
+}
+/* Copy-to-clipboard button anchored top-right in every expanded
+ * EventCard. The card's onClick toggles open/closed, so the button
+ * uses e.stopPropagation() (in the React handler) to suppress that.
+ * State flips between idle / copied / error briefly. */
+.copy-btn {
+  position: absolute;
+  top: 8px;
+  right: 12px;
+  background: var(--bg-soft);
+  color: var(--fg-soft);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 3px 8px;
+  font-family: var(--mono);
+  font-size: 11px;
+  cursor: pointer;
+  transition: color 80ms ease, border-color 80ms ease, background 80ms ease;
+  z-index: 1;
+}
+.copy-btn:hover {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: var(--bg);
+}
+.copy-btn.copy-state-copied {
+  color: var(--completed);
+  border-color: var(--completed);
+}
+.copy-btn.copy-state-error {
+  color: var(--failed);
+  border-color: var(--failed);
 }
 .ev-detail .full-text {
   margin: 4px 0;
@@ -614,21 +647,37 @@ pre {
 .ev-done { border-left-color: var(--fg-soft); }
 
 /* v0.8.0 nav tabs (top bar between brand and user picker). */
+/* Topbar nav rendered as proper tabs. NavLink from react-router-dom
+ * adds .active to the matching link; we use that to draw an
+ * underline indicator on the current tab. */
 .nav-tabs {
   display: flex;
-  gap: 4px;
+  gap: 0;
   margin-left: 24px;
+  align-self: stretch;
+  align-items: flex-end;
 }
 .nav-tabs a {
   color: var(--fg-soft);
-  padding: 4px 10px;
-  border-radius: 4px;
+  padding: 8px 14px 9px;
   font-size: 13px;
+  /* Reserve the underline space on inactive tabs so the layout
+   * doesn't shift when the active tab gains its 2px border. */
+  border-bottom: 2px solid transparent;
+  /* Offset so the underline sits on the topbar's own bottom border,
+   * not above it. */
+  margin-bottom: -1px;
+  transition: color 80ms ease, border-color 80ms ease, background 80ms ease;
 }
 .nav-tabs a:hover {
-  background: var(--bg-soft-2);
   color: var(--fg);
+  background: var(--bg-soft-2);
   text-decoration: none;
+}
+.nav-tabs a.active {
+  color: var(--fg);
+  border-bottom-color: var(--accent);
+  font-weight: 600;
 }
 
 /* v0.8.0 Memory page — three-pane layout. */

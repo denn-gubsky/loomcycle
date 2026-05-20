@@ -133,6 +133,19 @@ type Server struct {
 	// Nil = POST /v1/_mcp returns 503. Set via SetMCPHTTPHandler from
 	// main.go after the handler is constructed.
 	mcpHTTPHandler http.Handler
+
+	// Build identifiers surfaced via /healthz so the Web UI topbar
+	// can display the running binary's version instead of a stale
+	// hard-coded string. Set via SetBuildInfo from cmd/loomcycle/main.go
+	// after the buildVersion / buildCommit / buildTime vars have been
+	// resolved (ldflags overrides → runtime/debug VCS stamp → "unknown").
+	// Empty values render as "unknown" on /healthz.
+	buildVersion string
+	buildCommit  string
+	buildTime    string
+	// startedAt records process start so /healthz can report uptime
+	// in seconds. Set in New().
+	startedAt time.Time
 }
 
 // New constructs a Server. If st is non-nil, every run is recorded as a
@@ -164,9 +177,21 @@ func New(cfg *config.Config, pr ProviderResolver, builtinTools []tools.Tool, sem
 		sessionLocks:   runner.NewSessionLockMap(),
 		hookRegistry:   hookReg,
 		hookDispatcher: hooks.NewDispatcher(hookReg, nil),
+		startedAt:      time.Now(),
 	}
 	s.tools = append(s.tools, &builtin.AgentTool{Run: s.runSubAgent})
 	return s
+}
+
+// SetBuildInfo records the binary's identification triple. Called from
+// cmd/loomcycle/main.go after the buildVersion/buildCommit/buildTime
+// vars are resolved. The values flow through /healthz so the Web UI
+// can render a real version label instead of a hard-coded string that
+// drifts every release.
+func (s *Server) SetBuildInfo(version, commit, builtAt string) {
+	s.buildVersion = version
+	s.buildCommit = commit
+	s.buildTime = builtAt
 }
 
 // SetMCPFallback installs the optional MCP lazy-resolution fallback.
@@ -1104,9 +1129,35 @@ func recoveryMiddleware(next http.Handler) http.Handler {
 
 // --- handlers ---
 
+// healthzResponse mirrors the gRPC HealthResponse shape so adapters
+// switching between the two transports decode the same JSON keys.
+// uptime_seconds is computed at request time (not cached) so a long-
+// running process surfaces its real uptime, not the moment New() ran.
+type healthzResponse struct {
+	OK            bool   `json:"ok"`
+	Version       string `json:"version,omitempty"`
+	Commit        string `json:"commit,omitempty"`
+	Built         string `json:"built,omitempty"`
+	UptimeSeconds int64  `json:"uptime_seconds,omitempty"`
+}
+
 func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-	w.Write([]byte(`{"ok":true}`))
+	// Compute uptime relative to startedAt. The fallback to time.Time{}
+	// case is for *Server values constructed via struct literal in
+	// tests — uptime would otherwise be ~negative-epoch.
+	var uptime int64
+	if !s.startedAt.IsZero() {
+		uptime = int64(time.Since(s.startedAt).Seconds())
+	}
+	resp := healthzResponse{
+		OK:            true,
+		Version:       s.buildVersion,
+		Commit:        s.buildCommit,
+		Built:         s.buildTime,
+		UptimeSeconds: uptime,
+	}
+	_ = json.NewEncoder(w).Encode(resp)
 }
 
 // systemChannelPublishRequest is the body shape for the v0.8.6
