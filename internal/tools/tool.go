@@ -520,6 +520,37 @@ func AgentDefPolicy(ctx context.Context) AgentDefPolicyValue {
 	return v
 }
 
+// ctxKeySkillDefPolicy carries the v0.8.22 SkillDef-tool capability
+// gate. Mirrors AgentDefPolicy shape, sans the SelfName field —
+// skills have no agent identity so a "self" scope is meaningless.
+type ctxKeySkillDefPolicy struct{}
+
+// SkillDefPolicyValue is the per-agent SkillDef-tool access policy.
+//
+//   - Scopes is the operator-yaml skill_def_scopes list. Closed set:
+//     "any" / "descendants" / "named:<skill-name>". Empty =
+//     default-deny.
+//
+// `descendants` is reserved for symmetry with AgentDefPolicy and
+// currently behaves equivalent to "any" pending lineage-walk
+// implementation (same v0.9.x TODO as AgentDef).
+type SkillDefPolicyValue struct {
+	Scopes []string
+}
+
+// WithSkillDefPolicy attaches the policy to ctx.
+func WithSkillDefPolicy(ctx context.Context, p SkillDefPolicyValue) context.Context {
+	return context.WithValue(ctx, ctxKeySkillDefPolicy{}, p)
+}
+
+// SkillDefPolicy returns the policy from ctx. Zero value = no
+// access (default-deny — the tool refuses every mutation op until
+// scopes are explicitly granted via yaml).
+func SkillDefPolicy(ctx context.Context) SkillDefPolicyValue {
+	v, _ := ctx.Value(ctxKeySkillDefPolicy{}).(SkillDefPolicyValue)
+	return v
+}
+
 // ctxKeyEvaluationPolicy carries the v0.8.5 Evaluation-tool gate.
 type ctxKeyEvaluationPolicy struct{}
 

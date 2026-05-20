@@ -76,6 +76,10 @@ type Agent struct {
 	// Closed set: "self" / "descendants" / "named:<name>" / "any".
 	// Empty = default-deny.
 	AgentDefScopes []string
+	// SkillDefScopes is the v0.8.22 SkillDef-tool capability gate.
+	// Closed set: "descendants" / "named:<skill-name>" / "any".
+	// Empty = default-deny. No "self" (skills have no agent identity).
+	SkillDefScopes []string
 	// EvaluationScopes is the v0.8.5 Evaluation-tool capability gate.
 	// Closed set: "submit_self" / "submit_siblings" /
 	// "submit_descendants" / "submit_any" / "read_any". Empty =
@@ -221,6 +225,7 @@ type frontmatter struct {
 	MemoryQuotaBytes int                        `yaml:"memory_quota_bytes"`
 	Channels         AgentChannelACL            `yaml:"channels"`
 	AgentDefScopes   []string                   `yaml:"agent_def_scopes"`
+	SkillDefScopes   []string                   `yaml:"skill_def_scopes"`
 	EvaluationScopes []string                   `yaml:"evaluation_scopes"`
 	SystemPromptFile string                     `yaml:"system_prompt_file"`
 	// SystemPrompt as an inline frontmatter field is intentionally
@@ -283,6 +288,7 @@ func parseAgent(raw []byte) (*Agent, error) {
 	a.MemoryQuotaBytes = fm.MemoryQuotaBytes
 	a.Channels = fm.Channels
 	a.AgentDefScopes = fm.AgentDefScopes
+	a.SkillDefScopes = fm.SkillDefScopes
 	a.EvaluationScopes = fm.EvaluationScopes
 	a.SystemPromptFile = fm.SystemPromptFile
 	a.SystemPrompt = body

@@ -417,6 +417,21 @@ type AgentDef struct {
 	// access via a templated string.
 	AgentDefScopes []string `yaml:"agent_def_scopes"`
 
+	// SkillDefScopes is the v0.8.22 SkillDef tool capability gate.
+	// Default-deny when empty. Mirrors AgentDefScopes minus the
+	// "self" scope (skills have no agent identity, so "self" is
+	// meaningless for them). Closed set:
+	//
+	//   - "named:<skill-name>" → may operate on the specified single
+	//                            skill name (multi-entry)
+	//   - "descendants"        → may operate on any skill def whose
+	//                            lineage chain traces back to one
+	//                            the agent created (TODO v0.9.x —
+	//                            currently equivalent to "any")
+	//   - "any"                → unrestricted (operator-blessed
+	//                            orchestrator privilege)
+	SkillDefScopes []string `yaml:"skill_def_scopes"`
+
 	// EvaluationScopes is the v0.8.5 Evaluation tool capability gate.
 	// Multi-select; default-deny when empty. Closed set:
 	//
@@ -1660,6 +1675,7 @@ func agentFromDiscovered(d *agents.Agent) AgentDef {
 			Subscribe: d.Channels.Subscribe,
 		},
 		AgentDefScopes:   d.AgentDefScopes,
+		SkillDefScopes:   d.SkillDefScopes,
 		EvaluationScopes: d.EvaluationScopes,
 	}
 	if len(d.Models) > 0 {
@@ -1751,6 +1767,9 @@ func mergeAgentDef(base, override AgentDef) AgentDef {
 	}
 	if override.AgentDefScopes != nil {
 		out.AgentDefScopes = override.AgentDefScopes
+	}
+	if override.SkillDefScopes != nil {
+		out.SkillDefScopes = override.SkillDefScopes
 	}
 	if override.EvaluationScopes != nil {
 		out.EvaluationScopes = override.EvaluationScopes
@@ -2033,6 +2052,23 @@ func validateAgentDefScope(sc string) error {
 	return fmt.Errorf("unknown scope %q (want one of: self, descendants, any, or \"named:<name>\")", sc)
 }
 
+// validateSkillDefScope mirrors validateAgentDefScope minus "self"
+// (skills have no agent identity).
+func validateSkillDefScope(sc string) error {
+	switch sc {
+	case "descendants", "any":
+		return nil
+	}
+	if strings.HasPrefix(sc, "named:") {
+		ref := strings.TrimPrefix(sc, "named:")
+		if ref == "" {
+			return fmt.Errorf("skill_def_scopes: \"named:\" requires a non-empty skill name (e.g. \"named:karpathy-guidelines\")")
+		}
+		return nil
+	}
+	return fmt.Errorf("unknown scope %q (want one of: descendants, any, or \"named:<skill-name>\")", sc)
+}
+
 // validateAgentChannelEntry checks one publish/subscribe entry on
 // an AgentDef.Channels list. Exact match → must reference a declared
 // channel. Trailing "/*" wildcard → must match at least one declared
@@ -2202,6 +2238,14 @@ func validate(c *Config) error {
 		for i, sc := range agent.AgentDefScopes {
 			if err := validateAgentDefScope(sc); err != nil {
 				return fmt.Errorf("agent %q: agent_def_scopes[%d]: %w", name, i, err)
+			}
+		}
+		// SkillDef tool (v0.8.22): validate skill_def_scopes entries.
+		// Closed set: "descendants" / "named:<skill-name>" / "any".
+		// No "self" — skills have no agent identity.
+		for i, sc := range agent.SkillDefScopes {
+			if err := validateSkillDefScope(sc); err != nil {
+				return fmt.Errorf("agent %q: skill_def_scopes[%d]: %w", name, i, err)
 			}
 		}
 		// Evaluation tool (v0.8.5): validate evaluation_scopes entries.
