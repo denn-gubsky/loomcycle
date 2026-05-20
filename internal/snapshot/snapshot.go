@@ -106,6 +106,12 @@ func Capture(ctx context.Context, s store.Store, opts CaptureOptions) (*store.Sn
 	if err := captureAgentDefActive(ctx, s, &envelope.Sections.AgentDefActive); err != nil {
 		return nil, nil, err
 	}
+	if err := captureSkillDefs(ctx, s, &envelope.Sections.SkillDefs); err != nil {
+		return nil, nil, err
+	}
+	if err := captureSkillDefActive(ctx, s, &envelope.Sections.SkillDefActive); err != nil {
+		return nil, nil, err
+	}
 	if err := captureMemory(ctx, s, &envelope.Sections.Memory); err != nil {
 		return nil, nil, err
 	}
@@ -197,6 +203,50 @@ func captureAgentDefActive(ctx context.Context, s store.Store, out *AgentDefActi
 	out.Entries = make([]AgentDefActiveEntry, 0, len(rows))
 	for _, r := range rows {
 		out.Entries = append(out.Entries, AgentDefActiveEntry{
+			Name:              r.Name,
+			DefID:             r.DefID,
+			PromotedAt:        r.PromotedAt,
+			PromotedByAgentID: r.PromotedByAgentID,
+		})
+	}
+	return nil
+}
+
+// captureSkillDefs mirrors captureAgentDefs against skill_defs.
+func captureSkillDefs(ctx context.Context, s store.Store, out *SkillDefsSection) error {
+	out.Version = SectionVersion
+	rows, err := s.SnapshotReadSkillDefs(ctx)
+	if err != nil {
+		return fmt.Errorf("snapshot skill_defs: %w", err)
+	}
+	out.Entries = make([]SkillDefEntry, 0, len(rows))
+	for _, r := range rows {
+		out.Entries = append(out.Entries, SkillDefEntry{
+			DefID:                  r.DefID,
+			Name:                   r.Name,
+			Version:                r.Version,
+			ParentDefID:            r.ParentDefID,
+			Definition:             r.Definition,
+			Description:            r.Description,
+			CreatedAt:              r.CreatedAt,
+			CreatedByAgentID:       r.CreatedByAgentID,
+			CreatedByRunID:         r.CreatedByRunID,
+			Retired:                r.Retired,
+			BootstrappedFromStatic: r.BootstrappedFromStatic,
+		})
+	}
+	return nil
+}
+
+func captureSkillDefActive(ctx context.Context, s store.Store, out *SkillDefActiveSection) error {
+	out.Version = SectionVersion
+	rows, err := s.SnapshotReadSkillDefActive(ctx)
+	if err != nil {
+		return fmt.Errorf("snapshot skill_def_active: %w", err)
+	}
+	out.Entries = make([]SkillDefActiveEntry, 0, len(rows))
+	for _, r := range rows {
+		out.Entries = append(out.Entries, SkillDefActiveEntry{
 			Name:              r.Name,
 			DefID:             r.DefID,
 			PromotedAt:        r.PromotedAt,

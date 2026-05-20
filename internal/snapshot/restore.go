@@ -36,6 +36,8 @@ type RestoreOptions struct {
 type RestoreResult struct {
 	AgentDefsRestored          int      `json:"agent_defs_restored"`
 	AgentDefActiveRestored     int      `json:"agent_def_active_restored"`
+	SkillDefsRestored          int      `json:"skill_defs_restored"`
+	SkillDefActiveRestored     int      `json:"skill_def_active_restored"`
 	MemoryRestored             int      `json:"memory_restored"`
 	ChannelMessagesRestored    int      `json:"channel_messages_restored"`
 	ChannelCursorsRestored     int      `json:"channel_cursors_restored"`
@@ -156,6 +158,59 @@ func Restore(ctx context.Context, s store.Store, raw []byte, opts RestoreOptions
 			}
 			if inserted {
 				result.AgentDefActiveRestored++
+			}
+		}
+	}
+
+	// skill_defs (v0.8.22) — mirror of agent_defs restore
+	if rawSection, ok := outer.Sections[migrations.SectionSkillDefs]; ok {
+		var sec SkillDefsSection
+		if err := decodeWithMigration(migrations.SectionSkillDefs, rawSection, &sec); err != nil {
+			return result, err
+		}
+		for _, e := range sec.Entries {
+			inserted, err := s.SnapshotRestoreSkillDef(ctx, store.SkillDefRow{
+				DefID:                  e.DefID,
+				Name:                   e.Name,
+				Version:                e.Version,
+				ParentDefID:            e.ParentDefID,
+				Definition:             e.Definition,
+				Description:            e.Description,
+				CreatedAt:              e.CreatedAt,
+				CreatedByAgentID:       e.CreatedByAgentID,
+				CreatedByRunID:         e.CreatedByRunID,
+				Retired:                e.Retired,
+				BootstrappedFromStatic: e.BootstrappedFromStatic,
+			})
+			if err != nil {
+				result.Warnings = append(result.Warnings, fmt.Sprintf("skill_def %s: %v", e.DefID, err))
+				continue
+			}
+			if inserted {
+				result.SkillDefsRestored++
+			}
+		}
+	}
+
+	// skill_def_active (after skill_defs for FK)
+	if rawSection, ok := outer.Sections[migrations.SectionSkillDefActive]; ok {
+		var sec SkillDefActiveSection
+		if err := decodeWithMigration(migrations.SectionSkillDefActive, rawSection, &sec); err != nil {
+			return result, err
+		}
+		for _, e := range sec.Entries {
+			inserted, err := s.SnapshotRestoreSkillDefActive(ctx, store.SkillDefActiveEntry{
+				Name:              e.Name,
+				DefID:             e.DefID,
+				PromotedAt:        e.PromotedAt,
+				PromotedByAgentID: e.PromotedByAgentID,
+			})
+			if err != nil {
+				result.Warnings = append(result.Warnings, fmt.Sprintf("skill_def_active %s: %v", e.Name, err))
+				continue
+			}
+			if inserted {
+				result.SkillDefActiveRestored++
 			}
 		}
 	}
