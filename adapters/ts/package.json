@@ -1,7 +1,7 @@
 {
   "name": "@loomcycle/client",
-  "version": "0.8.23",
-  "description": "TypeScript client for the loomcycle sidecar (HTTP+SSE). 29 methods covering run streaming, agent metadata, pause/resume/state, snapshot lifecycle, memory admin, interruption resolve, hook management, and v0.8.22 substrate admin (agentDef + skillDef).",
+  "version": "0.9.0",
+  "description": "TypeScript client for the loomcycle sidecar (HTTP+SSE). 29 methods covering run streaming, agent metadata, pause/resume/state, snapshot lifecycle, memory admin (incl. v0.9.0 Vector Memory embed_stats + reembed), interruption resolve, hook management, and v0.8.22 substrate admin (agentDef + skillDef).",
   "license": "Apache-2.0",
   "type": "module",
   "repository": {
