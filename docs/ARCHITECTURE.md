@@ -1,9 +1,9 @@
 # Architecture
 
-This document describes the runtime end-to-end through v0.8.18. The MCP-integration story originally shipped in v0.4.0 (Streamable HTTP transport, SSE response decoding, startup-retry, sub-agent host-policy inheritance) was inverted in v0.8.15: loomcycle now ALSO exposes itself as an MCP server alongside being an MCP consumer. The `connector.Connector` Go interface unifies HTTP, gRPC, MCP, and future CLI wire transports around a single contract — HTTP server IMPLEMENTS, others CONSUME via direct method dispatch. v0.8.16 added the Interruption tool (human-in-the-loop primitive); v0.8.17 added Pause / Resume / Snapshot — runtime-wide quiesce + cross-version-portable JSON snapshot, the precondition for v0.9.x multi-replica HA. v0.8.18 promoted the v0.8.15 PREVIEW Connector methods to real impls (MCP tools become real for free; new `GetSnapshot` brings count 22) and added the gRPC + Python adapter surfaces — closing the cross-transport gap left after v0.8.17. For a higher-level pitch and quick-start, see the README. For the public roadmap, see `docs/PLAN.md`.
+This document describes the runtime end-to-end through v0.9.1. The MCP-integration story originally shipped in v0.4.0 (Streamable HTTP transport, SSE response decoding, startup-retry, sub-agent host-policy inheritance) was inverted in v0.8.15: loomcycle now ALSO exposes itself as an MCP server alongside being an MCP consumer. The `connector.Connector` Go interface unifies HTTP, gRPC, MCP, and future CLI wire transports around a single contract — HTTP server IMPLEMENTS, others CONSUME via direct method dispatch. v0.8.16 added the Interruption tool (human-in-the-loop primitive); v0.8.17 added Pause / Resume / Snapshot — runtime-wide quiesce + cross-version-portable JSON snapshot, the precondition for v0.9.x multi-replica HA. v0.8.18 promoted the v0.8.15 PREVIEW Connector methods to real impls (MCP tools become real for free; added `GetSnapshot`) and added the gRPC + Python adapter surfaces. v0.8.22 introduced the SkillDef substrate (versioned skills with active-pointer overlay parallel to AgentDef). v0.8.24 added the parity built-ins (`Grep`, `Glob`, `NotebookEdit`) so loomcycle agents have the same filesystem surface as Claude Code. v0.9.0 shipped Vector Memory (pgvector-backed semantic search on the existing `Memory` tool, gated by `LOOMCYCLE_PGVECTOR_ENABLED=1`) and per-agent `max_iterations` (yaml + AgentDef overlay). v0.9.1 made the resolved system prompt and the caller's initial user input the first two cards of every run transcript, so operators can audit "what the agent actually received" directly from the Web UI. The Connector interface is now 26 methods. For a higher-level pitch and quick-start, see the README. For the public roadmap, see `docs/PLAN.md`.
 
 <p align="center">
-  <img src="assets/architecture.png" alt="loomcycle architecture — app servers / CLIs / TS-Python SDKs / Claude Code at the top, the single Go binary in the middle (wire surfaces incl. MCP server stdio v0.8.15 → middleware → connector.Connector interface → agent loop → tool dispatcher with 14 builtins → store with dynamic_agents), six LLM providers and external MCP servers at the bottom" width="780" />
+  <img src="assets/architecture.png" alt="loomcycle architecture — app servers / CLIs / TS-Python SDKs / Claude Code at the top, the single Go binary in the middle (wire surfaces incl. MCP server stdio+HTTP v0.8.15+ with 26 meta-tools → middleware → connector.Connector 26-method interface → agent loop → tool dispatcher with 19 builtins → store with sessions/runs/events plus agent_defs/skill_defs/evaluations/memory(+embeddings)/channels/interrupts/snapshots/process_samples/dynamic_agents), six LLM providers and external MCP servers at the bottom" width="780" />
 </p>
 
 Diagram source: [`docs/architecture.d2`](architecture.d2) (regenerate with `d2 docs/architecture.d2 docs/assets/architecture.png`).
@@ -13,47 +13,68 @@ Diagram source: [`docs/architecture.d2`](architecture.d2) (regenerate with `d2 d
 `loomcycle` is a single Go binary (`bin/loomcycle` from `cmd/loomcycle/`) that:
 
 1. Owns the LLM **tool-use loop** end-to-end (model → tool_use → tool_result → model). No vendor SDK in the loop, no bundled binary.
-2. Talks to **providers** over their public HTTP APIs — Anthropic Messages, OpenAI Chat Completions, DeepSeek (OpenAI-compatible Chat Completions at a different base URL), Ollama `/api/chat`, Gemini.
-3. Dispatches tool calls to **15 built-in tools** (v0.8.7/8/16 — Memory, Channel, AgentDef, Evaluation, Interruption, Context joined the original 9), **MCP servers** (stdio + Streamable HTTP), **LocalAPI gateways** (OpenAPI → tool-per-operation), or **sub-agents** (the `Agent` built-in).
-4. Streams every event back to callers as **SSE** over a small HTTP API (`/v1/runs`, `/v1/sessions/{id}/messages`, `/v1/agents/{agent_id}`, `/v1/users/{user_id}/agents`, `/v1/_metrics/*`, `/v1/_pause`, `/v1/_resume`, `/v1/_state`, `/v1/_snapshots*`, `/healthz`).
-5. **Exposes itself as an MCP server** via the `loomcycle mcp` subcommand (v0.8.15+) — 22 meta-tools (v0.8.18 added `get_snapshot`) spanning run lifecycle, agent management, all 6 substrate builtins, the v0.8.16 Interruption resolve bridge, and the v0.8.17 Pause/Resume/Snapshot surface (real-impl-backed since v0.8.18 swapped the Connector mocks). The `connector.Connector` interface is what every wire surface dispatches through.
+2. Talks to **providers** over their public HTTP APIs — Anthropic Messages, OpenAI Chat Completions, DeepSeek (OpenAI-compatible Chat Completions at a different base URL), Gemini Generative Language API, Ollama `/api/chat` (cloud + local).
+3. Dispatches tool calls to **19 built-in tools** (`Read`, `Write`, `Edit`, `Grep` (v0.8.24), `Glob` (v0.8.24), `NotebookEdit` (v0.8.24), `HTTP`, `WebFetch`, `WebSearch`, `Bash`, `Agent`, `Skill`, `Memory` (v0.8.0, + vector-search v0.9.0), `Channel` (v0.8.4), `AgentDef` (v0.8.5), `SkillDef` (v0.8.22), `Evaluation` (v0.8.5), `Interruption` (v0.8.16), `Context` (v0.8.7/8)), **MCP servers** (stdio + Streamable HTTP), **LocalAPI gateways** (OpenAPI → tool-per-operation), or **sub-agents** (the `Agent` built-in).
+4. Streams every event back to callers as **SSE** over a small HTTP API (`/v1/runs`, `/v1/sessions/{id}/messages`, `/v1/sessions/{id}/transcript`, `/v1/agents/{agent_id}`, `/v1/users/{user_id}/agents`, `/v1/agent_defs/*`, `/v1/skill_defs/*`, `/v1/evaluations/*`, `/v1/interrupts/*`, `/v1/hooks/*`, `/v1/_metrics/*`, `/v1/_pause`, `/v1/_resume`, `/v1/_state`, `/v1/_snapshots*`, `/healthz`).
+5. **Exposes itself as an MCP server** via the `loomcycle mcp` subcommand (v0.8.15+) — 26 meta-tools (`spawn_run`, `cancel_run`, `get_run`, `list_runs`, `register_agent`, `unregister_agent`, `list_agents`, the seven substrate builtins `memory` / `channel` / `agentdef` / `skilldef` / `evaluation` / `context` / `interruption_resolve`, `pause_runtime`, `resume_runtime`, `get_runtime_state`, `create_snapshot`, `list_snapshots`, `get_snapshot`, `export_snapshot`, `restore_snapshot`, `delete_snapshot`, `register_hook`, `list_hooks`, `delete_hook`). The `connector.Connector` interface is what every wire surface dispatches through.
 6. **Quiesces on operator command** via `/v1/_pause` (v0.8.17) — idempotent tools cancel immediately, non-idempotent + external tools get a configurable grace window then force-cancel, new `/v1/runs` get 503; `/v1/_resume` releases the brakes; `/v1/_snapshots` captures running-state into a per-section-semver JSON envelope portable across loomcycle versions.
-7. Persists sessions, runs, events, agent_defs, evaluations, memory rows, channel messages, process samples, dynamic_agents, interrupts, and snapshots to a pluggable `Store` (SQLite default; Postgres for HA). Runs carry a `pause_state` column (`running` / `pausing` / `paused`) so the resume sweep finds quiesced runs efficiently.
+7. Persists sessions, runs, events (including the v0.9.1 `system_prompt` + `user_input` first-cycle events), agent_defs, skill_defs, evaluations, memory rows (with optional pgvector embeddings since v0.9.0), channel messages, process samples, dynamic_agents, interrupts, and snapshots to a pluggable `Store` (SQLite default; Postgres for HA, with pgvector when `LOOMCYCLE_PGVECTOR_ENABLED=1`). Runs carry a `pause_state` column (`running` / `pausing` / `paused`) so the resume sweep finds quiesced runs efficiently; runs also carry an optional `max_iterations` overlay (v0.9.0) sourced from yaml or the pinned AgentDef.
 8. Caps concurrency with a **semaphore + bounded FIFO queue** to keep memory predictable on a small VPS.
 
 Single-tenant out of the box; multi-tenant ready (every run carries `user_id` + optional `user_tier` + optional `user_bearer`; tracking + cancel APIs scope by user; per-run MCP bearer substitution lets each agent authenticate to downstream MCP servers as the actual end-user). Per-tenant fairness on the concurrency layer is v0.9.x work.
 
-## Repository layout (as shipped in v0.4.0)
+## Repository layout (current — v0.9.1)
 
 ```
 loomcycle/
-├── cmd/loomcycle/                     binary entry-point
+├── cmd/loomcycle/                     binary entry-point (server / mcp / cli subcommands)
 ├── internal/
-│   ├── api/http/                      HTTP+SSE server, auth, recovery, cancel routing
-│   ├── cancel/                        in-memory registry (agent_id → cancelFn)
+│   ├── agents/                        agent directory loader (yaml map + <name>.md overlay)
+│   ├── api/
+│   │   ├── http/                      HTTP+SSE server, auth, recovery, cancel routing (canonical Connector impl)
+│   │   ├── grpc/                      *loomgrpc.Server — proto handlers dispatching via Connector (v0.8.15+)
+│   │   └── mcp/                       *lcmcp.Server — stdio + HTTP MCP server, 26 meta-tools
+│   ├── auth/                          bearer-token middleware (constant-time compare)
+│   ├── cancel/                        in-memory registry (agent_id → cancelFn) + cascade
+│   ├── channels/                      persistent channel storage + notification bus (v0.8.4)
+│   ├── cli/                           subcommands (pause/resume/snapshot/agent/run)
 │   ├── concurrency/                   semaphore + bounded FIFO queue
-│   ├── config/                        YAML + .env loader, agent/model/MCP definitions
-│   ├── loop/                          model→tool_use→tool_result iteration
+│   ├── config/                        YAML + .env loader, agent/model/MCP/user-tier definitions
+│   ├── connector/                     connector.Connector — 26-method Go interface (v0.8.15+)
+│   ├── heartbeat/                     per-run last_heartbeat_at sweeper
+│   ├── help/                          embedded help corpus for the Context tool (FS overlay via LOOMCYCLE_HELP_ROOT)
+│   ├── hooks/                         operator hook substrate (register/list/delete + dispatch)
+│   ├── loop/                          model→tool_use→tool_result iteration, RunOptions.MaxIterations
+│   ├── metrics/                       process-resource sampler + windowed handlers (v0.8.11)
+│   ├── pause/                         Manager (RuntimeState, pauseCh, activeTools) — v0.8.17
 │   ├── providers/
 │   │   ├── anthropic/                 Messages API + native cache_control
 │   │   ├── openai/                    Chat Completions
 │   │   ├── deepseek/                  Wraps openai/ with the DeepSeek base URL pre-baked
+│   │   ├── gemini/                    Generative Language API + thinking_config (v0.7.x)
 │   │   ├── ollama/                    /api/chat NDJSON (registered as both `ollama` cloud + `ollama-local`)
+│   │   ├── embedder/                  OpenAI + Gemini embedding drivers (v0.9.0)
 │   │   ├── ratelimit/                 per-driver retry-after + backoff
 │   │   └── provider.go                Provider interface (Call, Probe, ListModels) + Capabilities
 │   ├── resolve/                       v0.7.0 model resolution matrix (tier + effort + availability)
-│   ├── skills/                        Approach A: static skill bundling at config-load
+│   ├── runner/                        loop driver shared by HTTP and MCP-streaming paths
+│   ├── skills/                        static skills (Approach A) + dynamic SkillDef substrate (v0.8.22)
+│   ├── snapshot/                      Capture / Restore + per-section migration registry (v0.8.17)
 │   ├── store/
-│   │   ├── store.go                   Store interface (sessions / runs / events)
-│   │   └── sqlite/                    modernc.org/sqlite (pure Go, no cgo)
-│   └── tools/
-│       ├── builtin/                   Read, Write, Edit, HTTP, WebFetch, WebSearch, Bash, Agent, Skill
-│       ├── mcp/{stdio,http}/          MCP transports
-│       ├── localapi/                  OpenAPI → tools
-│       ├── policy/                    per-agent allow/deny + glob matching
-│       └── tool.go                    Tool interface, Dispatcher, ctx-stash helpers
-├── adapters/ts/                       @loomcycle/client (npm)
-└── docs/                              public docs (this file, TOOLS.md, PLAN.md)
+│   │   ├── store.go                   Store interface (sessions / runs / events / + 13 substrate tables)
+│   │   ├── sqlite/                    modernc.org/sqlite (pure Go, no cgo) — 17 migrations
+│   │   └── postgres/                  pgx-based; pgvector-aware Memory store (v0.9.0)
+│   ├── tools/
+│   │   ├── builtin/                   19 builtins (see Shape §3)
+│   │   ├── mcp/{stdio,http}/          MCP client transports
+│   │   ├── localapi/                  OpenAPI → tools
+│   │   ├── policy/                    per-agent allow/deny + glob matching
+│   │   └── tool.go                    Tool interface, Dispatcher, ctx-stash helpers
+│   └── webui/                         embedded React Web UI served at /ui (assets bundled)
+├── adapters/
+│   ├── ts/                            @loomcycle/client (npm — v0.9.1)
+│   └── python/                        loomcycle-py (v0.7.0; lags TS by a few releases)
+└── docs/                              public docs (this file, TOOLS.md, PLAN.md, MCP_INTEGRATION.md, ...)
 ```
 
 Internal planning notes (RFCs, decision history, ground-truth PLAN.md) live OUT of this repo at `~/work/loomcycle-internal/doc-internal/` — migrated from the in-repo `doc-internal/` folder in PR #100 (v0.8.15).
@@ -258,13 +279,15 @@ Recursion is depth-capped at 16 by default (`MaxAgentDepth` on the `AgentTool`).
 
 References: `internal/tools/builtin/agent.go` (the tool), `internal/api/http/server.go runSubAgent` (the runner), `internal/tools/tool.go` (`HostPolicy` / `RunIdentity` ctx helpers).
 
-## Skills (Approach A)
+## Skills (Approach A + SkillDef substrate)
 
 `internal/skills/` — at config-load, every directory under `LOOMCYCLE_SKILLS_ROOT` named `<skill>/SKILL.md` is read and parsed. Agents that list a skill in their YAML `skills: [voice-applier, position-relevance-filtering]` block get the skill's body **concatenated into their system prompt** — cacheable, baked into the agent's runtime view of the world. The skill's `allowed-tools` declared in its frontmatter must be a subset of the agent's `allowed_tools`; mismatches are rejected at config-load.
 
-This is "Approach A" in the skills design. Approach B (a dynamic `Skill` tool the model invokes at runtime to load skills it didn't statically know about) is scaffolded but not fully wired; the Skill tool returns "unknown skill" today. v1.0 work.
+This is "Approach A" in the skills design — static bundling at config-load.
 
-References: `internal/skills/`, `internal/tools/builtin/skill.go`.
+**SkillDef substrate (v0.8.22)** adds the dynamic counterpart: versioned skill definitions stored in `skill_defs` with active-pointer overlay (parallel to AgentDef). The model can author / fork / promote skills via the `SkillDef` built-in (`set`, `get`, `list`, `activate`, `fork`); the resolver overlay (`server.go resolveSkillBodiesForRun`) prefers an active DB row over the on-disk SKILL.md when one exists. The v0.9.1 `system_prompt` event carries a `skill_def_ids` map (skill name → resolved def_id) so operators can audit exactly which version of each skill the agent received.
+
+References: `internal/skills/` (loader), `internal/tools/builtin/skill.go` (static-bundle dispatcher), `internal/tools/builtin/skilldef.go` (5-op dynamic tool), `internal/api/http/server.go resolveSkillBodiesForRun` (overlay resolution).
 
 ## LocalAPI gateway (scaffolded; not the v0.4 integration vehicle)
 
@@ -287,19 +310,32 @@ References: `internal/tools/localapi/`, `cmd/loomcycle/main.go` (registration), 
 
 ## Storage
 
-`internal/store/sqlite/sqlite.go` — three tables, all keyed primarily by short hex IDs:
+`internal/store/{sqlite,postgres}/` — `Store` is a single Go interface with a SQLite-backed default (`modernc.org/sqlite`, pure-Go, no cgo) and a Postgres backend (`pgx`) for HA. Migrations live in numbered up/down SQL files (currently 17, `0001_init` → `0017_memory_embeddings`).
 
-| Table       | Purpose | Notable fields |
+| Table | Added | Purpose |
 |---|---|---|
-| `sessions`  | One per logical session (a /v1/runs call or a continuation) | `id`, `tenant_id`, `agent`, `user_id` (v0.4+), `created_at` |
-| `runs`      | One per loop invocation | `id`, `session_id`, `status`, `started_at`, `completed_at`, `stop_reason`, token counts (`input_tokens`, `output_tokens`, `cache_creation_tokens`, `cache_read_tokens`), `model`, `agent_id` (v0.4+), `parent_agent_id` (v0.4+), `last_heartbeat_at`, `error` |
-| `events`    | Every SSE event the loop emitted | `seq` (auto-increment PK), `session_id`, `run_id`, `ts`, `type`, `payload` (raw JSON BLOB) |
+| `sessions` | 0001 | One per logical session (a /v1/runs call or a continuation). |
+| `runs` | 0001 | One per loop invocation. Columns include `status`, `started_at`, `completed_at`, `stop_reason`, token counts, `model`, `agent_id`, `parent_agent_id`, `last_heartbeat_at`, `error`, and (later additions) `user_tier`, `agent_def_id`, `pause_state`, `max_iterations`. |
+| `events` | 0001 | Every SSE event the loop emitted — `seq` (autoinc PK), `session_id`, `run_id`, `ts`, `type`, `payload` (raw JSON BLOB). v0.9.1's `system_prompt` + `user_input` records ride this table verbatim. |
+| `memory` | 0002 | Persistent `Memory` tool storage (agent + user scopes, atomic incr, TTL). |
+| `user_tier` index | 0003 | Sparse indexing for per-tier rollups. |
+| `channels` (+ `channel_messages`) | 0004–5 | Persistent inter-agent message bus + deferred-publish `visible_at` cursor. |
+| `agent_defs` (+ `runs.agent_def_id`) | 0006–7 | Versioned AgentDef storage with lineage + per-run pin. |
+| `evaluations` | 0008 | Versioned evaluation records (5-op AgentDef peer). |
+| `process_samples` | 0009 | Built-in metrics sampler rows (v0.8.11). |
+| `dynamic_agents` | 0010 | Agents registered at runtime via the MCP `register_agent` meta-tool. |
+| `interrupts` | 0011 | Human-in-the-loop pending questions (v0.8.16). |
+| `runs.pause_state` | 0012 | Per-run pause state with partial index on `('pausing','paused')`. |
+| `snapshots` | 0013 | Captured runtime envelopes (v0.8.17). |
+| `events` audit + by-run-seq indexes | 0014–15 | Operator audit + run-scoped transcript reads. |
+| `skill_defs` | 0016 | Versioned skills substrate parallel to AgentDef (v0.8.22). |
+| `memory_embeddings` | 0017 | Optional pgvector-backed semantic search rows (v0.9.0; Postgres-only, gated by `LOOMCYCLE_PGVECTOR_ENABLED=1`; SQLite refuses with `vector_unsupported`). |
 
-Indexes: partial indexes on the v0.4 sparse columns (`agent_id`, `parent_agent_id`, `user_id`) so cardinality stays low while sub-agent tracking works at scale. Read replays for session continuation use `events_by_session(session_id, seq)`.
+Indexes: partial indexes on sparse columns (`agent_id`, `parent_agent_id`, `user_id`, `pause_state`) so cardinality stays low while sub-agent tracking + resume sweeps work at scale. Read replays for session continuation use `events_by_session(session_id, seq)`; per-run transcript reads use the v0.8.x by-run-seq index.
 
-WAL mode + `foreign_keys=ON`. Single-writer is the SQLite trade-off; Postgres adapter is v1.0 work.
+SQLite ships in WAL mode + `foreign_keys=ON` (single-writer is the SQLite trade-off). Postgres is the HA path — connection-pooled, multi-writer, and the only backend where Vector Memory works.
 
-References: `internal/store/store.go` (interface), `internal/store/sqlite/sqlite.go` (default backend).
+References: `internal/store/store.go` (interface), `internal/store/sqlite/` + `internal/store/postgres/` (backends), `internal/store/storetest/` (shared conformance suite).
 
 ## Concurrency
 
@@ -310,7 +346,7 @@ References: `internal/store/store.go` (interface), `internal/store/sqlite/sqlite
 - Past the queue depth, `Acquire()` returns `BackpressureError` → HTTP 429 with `code:"backpressure"`.
 - `QueueTimeoutMS` per acquire.
 
-Single global pool — no per-tenant fairness in v0.4.0. A noisy tenant can monopolise the pool. Per-tenant token-bucket on top is the obvious v1.0 step.
+Single global pool — no per-tenant fairness through v0.9.x. A noisy tenant can monopolise the pool. Per-tenant token-bucket on top is the obvious v0.9.x high-load step.
 
 References: `internal/concurrency/semaphore.go`, YAML `concurrency:` block in `loomcycle.example.yaml`.
 
@@ -385,12 +421,12 @@ References: `internal/metrics/sampler.go` (idle-gated ticker), `internal/metrics
 ## Connector abstraction + LoomCycle MCP (v0.8.15+)
 
 <p align="center">
-  <img src="assets/architecture-connector.png" alt="Connector abstraction diagram — the connector.Connector interface (20 methods) in the centre; *lchttp.Server IMPLEMENTS it (canonical business logic); MCP, gRPC, and future CLI servers CONSUME via direct method dispatch; TS and Python adapters MIRROR the operation surface in their own languages over the HTTP wire" width="640" />
+  <img src="assets/architecture-connector.png" alt="Connector abstraction diagram — the connector.Connector interface (26 methods at v0.9.1) in the centre; *lchttp.Server IMPLEMENTS it (canonical business logic); MCP, gRPC, and future CLI servers CONSUME via direct method dispatch; TS and Python adapters MIRROR the operation surface in their own languages over the HTTP wire" width="640" />
 </p>
 
 Diagram source: [`docs/architecture-connector.d2`](architecture-connector.d2) (regenerate with `d2 docs/architecture-connector.d2 docs/assets/architecture-connector.png`).
 
-v0.8.15 introduced the `connector.Connector` Go interface (`internal/connector/connector.go`) — a 20-method contract that defines the operation surface every wire transport translates into. Architectural intent:
+v0.8.15 introduced the `connector.Connector` Go interface (`internal/connector/connector.go`) — a 26-method contract (at v0.9.1; grown from the original 20 by v0.8.16 `InterruptionResolve`, v0.8.18 `GetSnapshot`, v0.8.22 `SkillDef`, and the three hook ops `RegisterHook` / `ListHooks` / `DeleteHook`) that defines the operation surface every wire transport translates into. Architectural intent:
 
 - `*lchttp.Server` **IMPLEMENTS** `connector.Connector` (`internal/api/http/connector_impl.go`, ~530 LOC of method bodies). This is the canonical business-logic surface.
 - `*lcmcp.Server` (`internal/api/mcp/`) and `*loomgrpc.Server` (`internal/api/grpc/`) **CONSUME** the interface — they hold a `connector.Connector` field and dispatch each wire request through it. **No HTTP round-trips** — direct Go method calls.
@@ -409,7 +445,7 @@ A compile-time interface assertion at `connector_impl.go:35` (`var _ connector.C
 
 The companion `loomcycle-mcp.sh` wrapper at the repo root sources `.env.local` before exec — required because Claude Code spawns the binary with an empty env, missing the `LOOMCYCLE_*` + provider keys that upstream MCP server `${...}` placeholders expect.
 
-**22 tools exposed:** run lifecycle (`spawn_run`, `cancel_run`, `get_run`, `list_runs`), agent management (`register_agent`, `unregister_agent`, `list_agents`), all 6 builtins (`memory`, `channel`, `agentdef`, `evaluation`, `context`, `interruption_resolve` — the v0.8.16 bridge that lets external orchestrators be the answerer), and Pause/Resume/Snapshot (9 tools: `pause_runtime`, `resume_runtime`, `get_runtime_state`, `create_snapshot`, `list_snapshots`, `get_snapshot` (added v0.8.18), `export_snapshot`, `restore_snapshot`, `delete_snapshot`). PREVIEW-mocked in v0.8.15; v0.8.17 shipped the real underlying primitives via HTTP+CLI+UI; v0.8.18 promoted the Connector layer from mocks to real delegation so MCP receives authoritative data. Wire shapes locked in v0.8.15 are unchanged across all three versions — orchestrators built against v0.8.15 keep working.
+**26 tools exposed (at v0.9.1):** run lifecycle (`spawn_run`, `cancel_run`, `get_run`, `list_runs`), agent management (`register_agent`, `unregister_agent`, `list_agents`), the seven substrate builtins (`memory`, `channel`, `agentdef`, `skilldef` (v0.8.22), `evaluation`, `context`, `interruption_resolve` — the v0.8.16 bridge that lets external orchestrators be the answerer), Pause/Resume/Snapshot (9 tools: `pause_runtime`, `resume_runtime`, `get_runtime_state`, `create_snapshot`, `list_snapshots`, `get_snapshot` (added v0.8.18), `export_snapshot`, `restore_snapshot`, `delete_snapshot`), and hook management (`register_hook`, `list_hooks`, `delete_hook`). PREVIEW-mocked in v0.8.15; v0.8.17 shipped the real underlying primitives via HTTP+CLI+UI; v0.8.18 promoted the Connector layer from mocks to real delegation so MCP receives authoritative data. Wire shapes locked in v0.8.15 are unchanged across all three versions — orchestrators built against v0.8.15 keep working.
 
 **Streaming via notifications:** when the client opts in through `initialize.capabilities.loomcycle.runEvents=true`, `spawn_run` drives `runner.RunOnce` directly and emits `notifications/loomcycle/run_event` per provider event before returning the final response. Without opt-in, blocking-only Connector path. Both produce identical final `SpawnRunResult` shape.
 
@@ -421,7 +457,7 @@ The companion `loomcycle-mcp.sh` wrapper at the repo root sources `.env.local` b
 - Boot-time upstream MCP init can block stdio readiness for ~32 s if an upstream is misconfigured. The `.env.local`-sourcing wrapper mitigates; long-term, mcp-mode should make upstream init non-blocking.
 - The HTTP listener binds 127.0.0.1:8787 alongside the stdio loop. Operators running the `loomcycle.sh` daemon cannot simultaneously run `loomcycle mcp` from the same machine.
 
-References: `internal/connector/connector.go` (interface), `internal/api/http/connector_impl.go` (canonical implementation), `internal/api/mcp/server.go` (stdio I/O loop), `internal/api/mcp/handlers.go` (22 tool handlers), `internal/api/mcp/context.go` (`operatorCtx`), `loomcycle-mcp.sh` (env-loading wrapper), `cmd/loomcycle/main.go` (`mcp` subcommand dispatch).
+References: `internal/connector/connector.go` (interface), `internal/api/http/connector_impl.go` (canonical implementation), `internal/api/mcp/server.go` (stdio I/O loop), `internal/api/mcp/handlers.go` (26 tool handlers), `internal/api/mcp/context.go` (`operatorCtx`), `loomcycle-mcp.sh` (env-loading wrapper), `cmd/loomcycle/main.go` (`mcp` subcommand dispatch).
 
 ## Pause / Resume / Snapshot (v0.8.17)
 
@@ -439,16 +475,50 @@ State transitions publish to `_system/runtime-state` (operator-declared channel;
 
 References: `internal/pause/manager.go` (Manager + ToolCtx), `internal/pause/tool_policy.go` (CategoryForInput), `internal/snapshot/snapshot.go` (Capture), `internal/snapshot/restore.go` (Restore with session-FK synthesis), `internal/snapshot/migrations/registry.go` (per-section migration), `internal/api/http/pause.go` (handlers), `internal/api/http/snapshots.go` (handlers), `internal/cli/pause.go` + `snapshot.go` (7 CLI subcommands), `web/src/components/PauseControls.tsx` + `web/src/pages/SnapshotsView.tsx` (operator UI).
 
-## What's deferred to v1.0
+## Vector Memory (v0.9.0)
 
-- **Memory tool** — agent-scoped persistent storage (the substrate for self-improving agents).
-- **Channel tool** — persistent inter-agent message bus.
-- **LoomHelp tool** — runtime introspection (the agent's view of its own toolset / config).
-- **High-load runtime** — per-tenant fairness, Postgres `Store`, OTEL traces + Prometheus metrics, run-status memory cache, session-lock map GC, heartbeat sweeper.
-- **Web monitoring frontend** — observability UI on top of the stored events.
-- **Python adapter** — `pip install loomcycle`.
+The persistent `Memory` tool gained an optional semantic-search backend: `Memory.search` over agent or user-scoped rows by vector similarity rather than key lookup. The wire surface, scope model, and `(set/get/list/incr/delete)` ops are unchanged — `search` is purely additive.
 
-See `docs/PLAN.md` for the public roadmap with one-paragraph outlines per item.
+- **Backend gating.** Postgres + pgvector only; opt-in via `LOOMCYCLE_PGVECTOR_ENABLED=1` (default off). SQLite refuses `search` calls with the structured error `vector_unsupported` so operators get a clear migration signal. `sqlite-vec` is deferred to v0.9.x.
+- **Embedder substrate.** `internal/providers/embedder/` ships real OpenAI + Gemini drivers. Anthropic stubs out as `ErrEmbedderNotImplemented` (no public embedding API). Operator picks via `LOOMCYCLE_EMBEDDER_PROVIDER` + `LOOMCYCLE_EMBEDDER_MODEL`; the loop and tools are embedder-agnostic.
+- **Schema.** Migration `0017_memory_embeddings` adds a side table keyed on `(scope, scope_id, key)` with a `vector` column (dimensionality fixed at embedder-load time). Writes are best-effort: a memory `set` always succeeds even if embedding generation fails — operators see the row with `embedding=null` and can trigger a backfill via `/v1/_memory/reembed`.
+- **Snapshot forward-compat.** The v0.8.17 snapshot envelope's Memory section already reserves an `embedding` field (always null in v0.8.x). v0.9.0 populates it without bumping the section version — the additive-fields rule locked in the snapshot RFC means v0.8.x → v0.9.0 snapshots restore cleanly and forward.
+
+References: `internal/store/postgres/memory_embeddings.go`, `internal/providers/embedder/`, `internal/api/http/memory_handlers.go` (admin endpoints: `embed_stats`, `reembed`).
+
+## Per-agent max_iterations (v0.9.0)
+
+Agents can override the loop's iteration cap via yaml frontmatter (`max_iterations: 32`) or via a versioned AgentDef overlay (`AgentDef.set max_iterations=32`). The value flows: agent definition → resolver → `loop.RunOptions.MaxIterations` → loop. Top-level + sub-agent runs both honour it; the MCP `register_agent` + `agentdef` meta-tools accept it; the TS + Python adapters and the Web UI surface it.
+
+References: `internal/loop/loop.go RunOptions`, `internal/agents/agent.go MaxIterations`, `internal/api/http/server.go runRequest`, `internal/api/http/connector_impl.go RegisterAgent`.
+
+## Transcript first-cycle visibility (v0.9.1)
+
+Every run's event stream now starts with two events that describe **what the agent actually received**, before any model output:
+
+- **`system_prompt`** — the fully-resolved system prompt (AgentDef body + skill bodies, after overlay + merge). Payload carries the resolved text plus provenance (`agent_def_id`, `skill_def_ids` map: skill name → active def_id). Emitted only when the agent has a non-empty system prompt.
+- **`user_input`** — the caller's `Segments` from the original `POST /v1/runs` (or continuation `POST /v1/sessions/{id}/messages`). Already persisted since earlier versions; the v0.9.1 work made it actually render in the Web UI.
+
+Both events sort first in the timeline by virtue of being emitted before the first model call. The Web UI renders them as two cards at the top of every run view (`AgentDetailPane.tsx`); the terminal transcript renderer (`TerminalTranscript`) renders them as plain text blocks. Adapters consume the events as flexible JSON; the TS adapter ships typed `UserInputPayload` + `SystemPromptPayload` interfaces.
+
+The change is purely additive: existing transcript readers ignore unknown event types. Runs created before v0.9.1 won't have a `system_prompt` event; their Web UI view degrades gracefully (cards just don't appear).
+
+References: `internal/api/http/server.go` (emission in `handleRuns`, `handleMessages`, `runSubAgent`), `internal/api/http/server.go resolveSkillBodiesForRun` (skill-provenance extension), `web/src/components/AgentDetailPane.tsx` (`case "system_prompt"` + `case "user_input"`), `web/src/api.ts` (typed payload interfaces).
+
+## What's deferred to v0.9.x → v1.0
+
+The v0.4.0-era deferred list is no longer accurate. The current pipeline (see `docs/PLAN.md` for one-paragraph outlines):
+
+- **n8n integration** (Phase 0+1) — first-class workflow runner so non-developers can compose loomcycle runs.
+- **OTEL trace export** — OpenTelemetry traces over the loop iteration boundary; Prometheus metrics later.
+- **Multi-agent fan-out** — formalised the implicit Agent-tool pattern that jobs-search-agent already exercises in production; needs a documented contract + concurrency-safe sub-run accounting.
+- **Anthropic OAuth-dev** — operator OAuth flow for internal experimentation against Anthropic.
+- **`loomcycle doctor`** — a one-shot diagnostics CLI for provider reachability, MCP server handshake, and config validation.
+- **Per-tenant fairness** + **run-status memory cache** + **heartbeat sweeper hardening** — high-load capacity work, the v0.9.x track.
+- **`sqlite-vec`** semantic-memory backend — local-friendly counterpart to v0.9.0's pgvector path.
+- **Python adapter version parity** — currently lags TS by a few releases.
+
+See `docs/PLAN.md` for the public roadmap.
 
 ## Verifying the runtime
 

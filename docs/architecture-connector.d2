@@ -28,7 +28,7 @@ connector: "connector.Connector\n(internal/connector/connector.go)" {
     font-size: 16
   }
 
-  methods: "20 methods" {
+  methods: "26 methods (v0.9.1)" {
     grid-columns: 4
     style: {
       fill: "#fdf2f8"
@@ -47,18 +47,26 @@ connector: "connector.Connector\n(internal/connector/connector.go)" {
 
     ch:      "Channel" {style.fill: "#fbcfe8"}
     adef:    "AgentDef" {style.fill: "#fbcfe8"}
+    sdef:    "SkillDef\n(v0.8.22)" {style.fill: "#fbcfe8"}
     ev:      "Evaluation" {style.fill: "#fbcfe8"}
+
     ctx:     "Context" {style.fill: "#fbcfe8"}
+    intres:  "InterruptionResolve\n(v0.8.16)" {style.fill: "#fbcfe8"}
+    pause:   "PauseRuntime\n(v0.8.17)" {style.fill: "#e9d5ff"}
+    resume:  "ResumeRuntime\n(v0.8.17)" {style.fill: "#e9d5ff"}
 
-    pause:   "PauseRuntime\n(PREVIEW)" {style.fill: "#e9d5ff"}
-    resume:  "ResumeRuntime\n(PREVIEW)" {style.fill: "#e9d5ff"}
-    state:   "GetRuntimeState\n(PREVIEW)" {style.fill: "#e9d5ff"}
-    snapc:   "CreateSnapshot\n(PREVIEW)" {style.fill: "#e9d5ff"}
+    state:   "GetRuntimeState\n(v0.8.17)" {style.fill: "#e9d5ff"}
+    snapc:   "CreateSnapshot\n(v0.8.17)" {style.fill: "#e9d5ff"}
+    snapl:   "ListSnapshots\n(v0.8.17)" {style.fill: "#e9d5ff"}
+    snapg:   "GetSnapshot\n(v0.8.18)" {style.fill: "#e9d5ff"}
 
-    snapl:   "ListSnapshots\n(PREVIEW)" {style.fill: "#e9d5ff"}
-    snape:   "ExportSnapshot\n(PREVIEW)" {style.fill: "#e9d5ff"}
-    snapr:   "RestoreSnapshot\n(PREVIEW)" {style.fill: "#e9d5ff"}
-    snapd:   "DeleteSnapshot\n(PREVIEW)" {style.fill: "#e9d5ff"}
+    snape:   "ExportSnapshot\n(v0.8.17)" {style.fill: "#e9d5ff"}
+    snapr:   "RestoreSnapshot\n(v0.8.17)" {style.fill: "#e9d5ff"}
+    snapd:   "DeleteSnapshot\n(v0.8.17)" {style.fill: "#e9d5ff"}
+    hookr:   "RegisterHook\n(v0.8.x)" {style.fill: "#fbcfe8"}
+
+    hookl:   "ListHooks\n(v0.8.x)" {style.fill: "#fbcfe8"}
+    hookd:   "DeleteHook\n(v0.8.x)" {style.fill: "#fbcfe8"}
   }
 }
 
@@ -108,13 +116,13 @@ consumers: "CONSUMES" {
 
   direction: right
 
-  mcp: "*lcmcp.Server\nstdio MCP\n(v0.8.15)" {
+  mcp: "*lcmcp.Server\nstdio + HTTP MCP\n26 meta-tools (v0.8.15+)" {
     style: {fill: "#bfdbfe"; bold: true; font-size: 12}
   }
   grpc: "*loomgrpc.Server\nproto handlers\n(v0.8.15 refactor)" {
     style: {fill: "#bfdbfe"; bold: true; font-size: 12}
   }
-  cli: "*lccli.Server\nloomcycle run X\n(deferred to v0.8.16+)" {
+  cli: "*lccli.Server\nloomcycle run X\n(deferred)" {
     style: {fill: "#e0e7ff"; italic: true; font-size: 12; stroke-dash: 4}
   }
 }
@@ -133,10 +141,10 @@ mirrors: "MIRRORS (in other languages, over HTTP wire)" {
 
   direction: right
 
-  ts: "@loomcycle/client\nadapters/ts/\n(TypeScript — shipped)" {
+  ts: "@loomcycle/client\nadapters/ts/\n(TypeScript — v0.9.1)" {
     style: {fill: "#fde68a"; bold: true; font-size: 12}
   }
-  py: "loomcycle-py\nadapters/python/\n(deferred to v0.8.x+)" {
+  py: "loomcycle-py\nadapters/python/\n(deferred)" {
     style: {fill: "#fef3c7"; italic: true; font-size: 12; stroke-dash: 4}
   }
 }

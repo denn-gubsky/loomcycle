@@ -42,7 +42,7 @@ loomcycle: "loomcycle — single Go binary (~30 MB)" {
     http_sse: "HTTP + SSE\n/v1/* endpoints" {style.fill: "#dbeafe"}
     grpc: "gRPC\n(metadata + streaming RPCs)" {style.fill: "#dbeafe"}
     webui: "React Web UI (/ui)" {style.fill: "#dbeafe"}
-    mcp_stdio: "MCP server (stdio)\nv0.8.15 · 20 tools" {
+    mcp_stdio: "MCP server (stdio + HTTP)\nv0.8.15+ · 26 tools" {
       style: {fill: "#c7d2fe"; bold: true}
     }
   }
@@ -55,7 +55,7 @@ loomcycle: "loomcycle — single Go binary (~30 MB)" {
     }
   }
 
-  connector: "connector.Connector — 20-method Go interface (v0.8.15+)\nHTTP server IMPLEMENTS · MCP / gRPC / future CLI CONSUME\nTS / Python adapters MIRROR (over HTTP wire)" {
+  connector: "connector.Connector — 26-method Go interface (v0.8.15+)\nHTTP server IMPLEMENTS · MCP / gRPC / future CLI CONSUME\nTS / Python adapters MIRROR (over HTTP wire)" {
     style: {
       fill: "#fce7f3"
       stroke: "#be185d"
@@ -79,7 +79,7 @@ loomcycle: "loomcycle — single Go binary (~30 MB)" {
     grid-columns: 3
     style.fill: "#fef3c7"
 
-    builtins: "14 built-in tools\nRead · Write · Edit · HTTP\nWebFetch · WebSearch · Bash\nAgent · Skill · Memory\nChannel · AgentDef · Evaluation\nContext (v0.8.7/8)" {
+    builtins: "19 built-in tools\nRead · Write · Edit · Grep · Glob\nNotebookEdit · HTTP · WebFetch\nWebSearch · Bash · Agent · Skill\nMemory (+ vector search) · Channel\nAgentDef · SkillDef · Evaluation\nInterruption · Context" {
       style: {fill: "#fde68a"; font-size: 12}
     }
     mcp_layer: "MCP client transport\nstdio pool +\nStreamable HTTP\n(consumes external MCP servers)" {
@@ -90,12 +90,13 @@ loomcycle: "loomcycle — single Go binary (~30 MB)" {
     }
   }
 
-  store: "Store\nSQLite (default) · Postgres (HA)\n+ dynamic_agents (v0.8.15)" {
+  store: "Store — SQLite (default) · Postgres (HA, + pgvector)\nsessions · runs · events · memory · channels\nagent_defs · skill_defs · evaluations · interrupts\nsnapshots · process_samples · dynamic_agents\nmemory_embeddings (v0.9.0)" {
     shape: cylinder
     style: {
       fill: "#fed7aa"
       stroke: "#ea580c"
       bold: true
+      font-size: 12
     }
   }
 
