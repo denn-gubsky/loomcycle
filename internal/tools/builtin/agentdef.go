@@ -582,11 +582,11 @@ func (a *AgentDef) bootstrapStatic(ctx context.Context, name string, static conf
 // mirrors the mutable subset of config.AgentDef — keeps the DB
 // layer config-agnostic.
 type mergedDef struct {
-	Provider         string                            `json:"provider,omitempty"`
-	Model            string                            `json:"model,omitempty"`
-	Tier             string                            `json:"tier,omitempty"`
-	Effort           string                            `json:"effort,omitempty"`
-	MaxTokens        int                               `json:"max_tokens,omitempty"`
+	Provider  string `json:"provider,omitempty"`
+	Model     string `json:"model,omitempty"`
+	Tier      string `json:"tier,omitempty"`
+	Effort    string `json:"effort,omitempty"`
+	MaxTokens int    `json:"max_tokens,omitempty"`
 	// MaxIterations caps the loop at N provider calls before
 	// terminating with stop_reason="max_iterations". 0 = use the
 	// loop default (16). Set higher for discovery-style forks

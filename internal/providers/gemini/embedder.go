@@ -35,8 +35,9 @@ import (
 // with `:batchEmbedContents` action suffix.
 //
 // Known models + dimensions:
-//   text-embedding-004      → 768
-//   gemini-embedding-001    → 3072 (when released)
+//
+//	text-embedding-004      → 768
+//	gemini-embedding-001    → 3072 (when released)
 //
 // We don't ship a `dimensions` param; Gemini's API allows it on some
 // models but the matrix is small and the default is the typical

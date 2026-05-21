@@ -1897,9 +1897,9 @@ func testMemoryEmbedSearchTopK(t *testing.T, s store.Store) {
 		key string
 		vec []float32
 	}{
-		{"row1", floats32(1, 0, 0, 0)},                          // aligned with query
-		{"row2", floats32(0.7071, 0.7071, 0, 0)},                // 45° off
-		{"row3", floats32(0, 1, 0, 0)},                          // 90° off
+		{"row1", floats32(1, 0, 0, 0)},           // aligned with query
+		{"row2", floats32(0.7071, 0.7071, 0, 0)}, // 45° off
+		{"row3", floats32(0, 1, 0, 0)},           // 90° off
 	}
 	for _, r := range rows {
 		if err := s.MemorySet(ctx, store.MemoryScopeAgent, "qa", r.key, json.RawMessage(`"x"`), 0); err != nil {
