@@ -386,6 +386,18 @@ type AgentDef struct {
 	// use, 16384+ for batch scoring agents.
 	MaxTokens int `yaml:"max_tokens"`
 
+	// MaxIterations caps the agent loop at this many provider calls
+	// before terminating with stop_reason="max_iterations". Zero =
+	// use the loop default (16). Set higher for discovery-style
+	// agents whose workflow is intrinsically iterative
+	// (search → enumerate → fetch → score across many tool calls).
+	// The default 16 is fine for tightly-scoped agents (ats-filter,
+	// qa-agent, cv-adapter) but too low for job-searcher /
+	// employer-profiler / job-site-searcher which observed
+	// max_iterations stop_reason in production at the 16-cap
+	// (2026-05-21).
+	MaxIterations int `yaml:"max_iterations"`
+
 	// Tier is the model-tier the resolver should pick from when
 	// the agent doesn't declare an explicit Provider+Model pin.
 	// One of "low" / "middle" / "high". Empty = no tier-based
@@ -1801,6 +1813,7 @@ func agentFromDiscovered(d *agents.Agent) AgentDef {
 		AllowedTools:     d.AllowedTools,
 		Skills:           d.Skills,
 		MaxTokens:        d.MaxTokens,
+		MaxIterations:    d.MaxIterations,
 		Tier:             d.Tier,
 		Effort:           d.Effort,
 		Providers:        d.Providers,
@@ -1876,6 +1889,9 @@ func mergeAgentDef(base, override AgentDef) AgentDef {
 	}
 	if override.MaxTokens != 0 {
 		out.MaxTokens = override.MaxTokens
+	}
+	if override.MaxIterations != 0 {
+		out.MaxIterations = override.MaxIterations
 	}
 	if override.Tier != "" {
 		out.Tier = override.Tier

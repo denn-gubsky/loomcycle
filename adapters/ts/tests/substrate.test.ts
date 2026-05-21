@@ -62,6 +62,26 @@ describe("agentDef", () => {
       client.agentDef({ op: "create" } as any),
     ).rejects.toBeInstanceOf(InvalidArgumentError);
   });
+
+  // v0.9.x — the overlay field is server-side opaque (the AgentDef
+  // tool owns the schema). The adapter must pass it through
+  // verbatim so new fields like max_iterations work without an
+  // adapter version bump. This test pins the contract.
+  it("passes max_iterations through the overlay verbatim", async () => {
+    const { client, fetchMock } = makeClient([
+      jsonResponse({ def_id: "def_xyz", name: "discovery", version: 1 }),
+    ]);
+    await client.agentDef({
+      op: "create",
+      name: "discovery",
+      overlay: { system_prompt: "explore", max_iterations: 64 },
+    });
+    const body = JSON.parse(
+      (fetchMock.mock.calls[0]![1] as RequestInit).body as string,
+    );
+    expect(body.overlay.max_iterations).toBe(64);
+    expect(body.overlay.system_prompt).toBe("explore");
+  });
 });
 
 describe("skillDef", () => {

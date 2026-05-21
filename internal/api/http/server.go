@@ -646,8 +646,8 @@ func (s *Server) interruptionPolicyForAgent(agentDef config.AgentDef) tools.Inte
 // onto a static cfg.Agents entry, producing the effective AgentDef
 // for one sub-run. Mirrors the mutable-subset list maintained by the
 // AgentDef tool's `mergedDef`: provider, model, tier, effort,
-// max_tokens, system_prompt, allowed_tools, skills, providers, models,
-// memory_scopes, memory_quota_bytes. Substrate policy fields
+// max_tokens, max_iterations, system_prompt, allowed_tools, skills,
+// providers, models, memory_scopes, memory_quota_bytes. Substrate policy fields
 // (agent_def_scopes, evaluation_scopes) are NOT overlaid — they stay
 // with the static yaml so the operator's substrate-capability gate
 // can't be widened by a fork. AllowedTools narrowing is enforced at
@@ -670,6 +670,7 @@ func applyAgentDefOverlay(base config.AgentDef, definition json.RawMessage) conf
 		Tier             string                            `json:"tier,omitempty"`
 		Effort           string                            `json:"effort,omitempty"`
 		MaxTokens        int                               `json:"max_tokens,omitempty"`
+		MaxIterations    int                               `json:"max_iterations,omitempty"`
 		SystemPrompt     string                            `json:"system_prompt,omitempty"`
 		AllowedTools     []string                          `json:"allowed_tools,omitempty"`
 		Skills           []string                          `json:"skills,omitempty"`
@@ -710,6 +711,9 @@ func applyAgentDefOverlay(base config.AgentDef, definition json.RawMessage) conf
 	}
 	if ov.MaxTokens != 0 {
 		out.MaxTokens = ov.MaxTokens
+	}
+	if ov.MaxIterations != 0 {
+		out.MaxIterations = ov.MaxIterations
 	}
 	if ov.SystemPrompt != "" {
 		out.SystemPrompt = ov.SystemPrompt
@@ -1056,6 +1060,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		OnEvent:         emit,
 		OnHeartbeat:     heartbeat,
 		MaxTokens:       agentDef.MaxTokens,
+		MaxIterations:   agentDef.MaxIterations, // 0 → loop default (16)
 		Effort:          effort,
 		MarkStalled:     s.markStalledFn(providerID, model),
 		ClearStall:      s.clearStallFn(providerID, model),
@@ -1837,6 +1842,7 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		OnEvent:         emit,
 		OnHeartbeat:     heartbeat,
 		MaxTokens:       agentDef.MaxTokens, // 0 → driver default
+		MaxIterations:   agentDef.MaxIterations, // 0 → loop default (16)
 		Effort:          effort,
 		MarkStalled:     s.markStalledFn(providerID, model),
 		ClearStall:      s.clearStallFn(providerID, model),
@@ -2140,6 +2146,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		OnEvent:         emit,
 		OnHeartbeat:     heartbeat,
 		MaxTokens:       agentDef.MaxTokens, // 0 → driver default
+		MaxIterations:   agentDef.MaxIterations, // 0 → loop default (16)
 		Effort:          effort,
 		MarkStalled:     s.markStalledFn(providerID, model),
 		ClearStall:      s.clearStallFn(providerID, model),
@@ -2687,6 +2694,7 @@ func (s *Server) runSubAgent(ctx context.Context, name string, prompt string, de
 		OnEvent:         subEmit,
 		OnHeartbeat:     subHeartbeat,
 		MaxTokens:       def.MaxTokens, // 0 → driver default
+		MaxIterations:   def.MaxIterations, // 0 → loop default (16)
 		Effort:          effort,
 		MarkStalled:     s.markStalledFn(providerID, model),
 		ClearStall:      s.clearStallFn(providerID, model),

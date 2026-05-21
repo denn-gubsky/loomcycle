@@ -60,6 +60,29 @@ async def test_agent_def_happy_path():
     assert sent["overlay"]["system_prompt"] == "hi"
 
 
+# v0.9.x — the overlay field is server-side opaque (the AgentDef
+# tool owns the schema). The adapter must pass it through verbatim
+# so new fields like max_iterations work without an adapter version
+# bump. This test pins the contract.
+@pytest.mark.asyncio
+async def test_agent_def_passes_max_iterations_through_overlay():
+    client = _make_client()
+    out_json = json.dumps({"def_id": "def_xyz", "name": "discovery", "version": 1}).encode()
+    fake, captured = _async_returning(
+        pb.SubstrateResponse(output_json=out_json, is_error=False),
+    )
+    client._stub.AgentDef = fake  # type: ignore[attr-defined]
+
+    await client.agent_def({
+        "op": "create",
+        "name": "discovery",
+        "overlay": {"system_prompt": "explore", "max_iterations": 64},
+    })
+    sent = json.loads(captured["req"].input_json)
+    assert sent["overlay"]["max_iterations"] == 64
+    assert sent["overlay"]["system_prompt"] == "explore"
+
+
 @pytest.mark.asyncio
 async def test_skill_def_happy_path():
     client = _make_client()

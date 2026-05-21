@@ -61,6 +61,15 @@ type Agent struct {
 	Tier             string
 	Effort           string
 	MaxTokens        int
+	// MaxIterations caps the agent loop at this many provider calls
+	// before terminating with stop_reason="max_iterations". 0 means
+	// use the loop default (16). Set higher for discovery-style
+	// agents (job-searcher, employer-profiler) whose workflow is
+	// intrinsically iterative: search → enumerate → fetch → score
+	// across many tool calls. Default 16 is too low for those; a
+	// 1.09M-input run was observed in production hitting the cap
+	// before reaching the final write (2026-05-21).
+	MaxIterations    int
 	AllowedTools     []string
 	Skills           []string
 	SystemPrompt     string
@@ -218,6 +227,7 @@ type frontmatter struct {
 	Tier             string                     `yaml:"tier"`
 	Effort           string                     `yaml:"effort"`
 	MaxTokens        int                        `yaml:"max_tokens"`
+	MaxIterations    int                        `yaml:"max_iterations"`
 	Skills           []string                   `yaml:"skills"`
 	Providers        []string                   `yaml:"providers"`
 	Models           map[string][]TierCandidate `yaml:"models"`
@@ -281,6 +291,7 @@ func parseAgent(raw []byte) (*Agent, error) {
 	a.Tier = fm.Tier
 	a.Effort = fm.Effort
 	a.MaxTokens = fm.MaxTokens
+	a.MaxIterations = fm.MaxIterations
 	a.Skills = fm.Skills
 	a.Providers = fm.Providers
 	a.Models = fm.Models
