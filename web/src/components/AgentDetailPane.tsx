@@ -1,6 +1,15 @@
 import { useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
 import { Link } from "react-router-dom";
-import { Agent, EventPayload, TranscriptEvent, cancelAgent, getAgent, getTranscript } from "../api";
+import {
+  Agent,
+  EventPayload,
+  SystemPromptPayload,
+  TranscriptEvent,
+  UserInputPayload,
+  cancelAgent,
+  getAgent,
+  getTranscript,
+} from "../api";
 import Breadcrumbs, { type BreadcrumbAncestor } from "./Breadcrumbs";
 import TerminalTranscript from "./TerminalTranscript";
 import ViewToggle, { useViewMode } from "./ViewToggle";
@@ -201,7 +210,12 @@ export default function AgentDetailPane({ agentId, ancestors, onSelect }: AgentD
 // initial prompt, separately rendered in v0.8).
 function visible(ev: TranscriptEvent): boolean {
   const t = ev.event?.type ?? ev.type;
-  return t !== "started" && t !== "usage" && t !== "session" && t !== "agent" && t !== "user_input";
+  // v0.9.x: user_input + system_prompt are explicitly visible now —
+  // they're the "what the agent received" cards that anchor the
+  // transcript. Before v0.9.x user_input was filtered because there
+  // was no renderer for it; the new switch branches in detailFor /
+  // summaryFor / labelFor handle both.
+  return t !== "started" && t !== "usage" && t !== "session" && t !== "agent";
 }
 
 // AwaitedState is what the agent is currently blocked on (or
@@ -333,14 +347,14 @@ function EventCard({ row }: { row: TranscriptEvent }) {
   const ev = row.event ?? ({ type: row.type } as EventPayload);
   const kind = ev.type ?? row.type;
 
-  const summary = summaryFor(ev);
-  const detail = detailFor(ev);
+  const summary = summaryFor(ev, row);
+  const detail = detailFor(ev, row);
 
   const toggle = () => setOpen((v) => !v);
 
   const copyPayload = async (e: ReactMouseEvent) => {
     e.stopPropagation(); // don't collapse the card on copy click
-    const text = textPayloadFor(ev);
+    const text = textPayloadFor(ev, row);
     try {
       await navigator.clipboard.writeText(text);
       setCopyState("copied");
@@ -366,7 +380,7 @@ function EventCard({ row }: { row: TranscriptEvent }) {
     >
       <div className="ev-header">
         <span className="caret">{open ? "▼" : "▶"}</span>
-        <span className="kind">{labelFor(ev)}</span>
+        <span className="kind">{labelFor(ev, row)}</span>
         {!open && <span className="summary">{summary}</span>}
         {row.ts_ns > 0 && <span className="ts">{formatTime(row.ts_ns)}</span>}
       </div>
@@ -399,7 +413,7 @@ function EventCard({ row }: { row: TranscriptEvent }) {
 // expanded EventCard. Each branch mirrors detailFor's React render
 // but in flat text — keeps tool input/result/usage/etc. captured
 // without leaking React's escape-sequence artifacts.
-function textPayloadFor(ev: EventPayload): string {
+function textPayloadFor(ev: EventPayload, row?: TranscriptEvent): string {
   switch (ev.type) {
     case "text":
     case "thinking":
@@ -422,6 +436,20 @@ function textPayloadFor(ev: EventPayload): string {
       if (ev.usage) lines.push("", "usage:", JSON.stringify(ev.usage, null, 2));
       return lines.join("\n");
     }
+    case "user_input": {
+      const segs = (row?.payload as UserInputPayload[] | undefined) ?? [];
+      return JSON.stringify(segs, null, 2);
+    }
+    case "system_prompt": {
+      const p = row?.payload as SystemPromptPayload | undefined;
+      if (!p) return "";
+      const lines = [p.system_prompt ?? ""];
+      if (p.agent_def_id) lines.push("", `agent_def_id: ${p.agent_def_id}`);
+      if (p.skill_def_ids) {
+        lines.push("", `skill_def_ids: ${JSON.stringify(p.skill_def_ids, null, 2)}`);
+      }
+      return lines.join("\n");
+    }
     default:
       return JSON.stringify(ev, null, 2);
   }
@@ -430,7 +458,7 @@ function textPayloadFor(ev: EventPayload): string {
 // labelFor is the small uppercase tag on the left side of each card.
 // Tool calls embed the tool name to reduce the click-to-discover
 // distance for "what tool was this".
-function labelFor(ev: EventPayload): string {
+function labelFor(ev: EventPayload, _row?: TranscriptEvent): string {
   switch (ev.type) {
     case "tool_call":
       return `tool_call · ${ev.tool_use?.name ?? "?"}`;
@@ -440,6 +468,10 @@ function labelFor(ev: EventPayload): string {
       return `done · ${ev.stop_reason ?? "?"}`;
     case "retry":
       return `retry · ${ev.retry?.reason ?? ""}`.trim();
+    case "user_input":
+      return "input · user";
+    case "system_prompt":
+      return "input · system";
     default:
       return ev.type ?? "?";
   }
@@ -448,7 +480,7 @@ function labelFor(ev: EventPayload): string {
 // summaryFor is the one-line preview shown when the card is
 // collapsed. Keeps the transcript scannable; full content opens on
 // click.
-function summaryFor(ev: EventPayload): string {
+function summaryFor(ev: EventPayload, row?: TranscriptEvent): string {
   switch (ev.type) {
     case "text":
     case "thinking":
@@ -473,6 +505,20 @@ function summaryFor(ev: EventPayload): string {
             ev.usage.model ? ` · ${ev.usage.model}` : ""
           }`
         : "";
+    case "user_input": {
+      const segs = (row?.payload as UserInputPayload[] | undefined) ?? [];
+      // Surface the first user-role content text (typical: the
+      // initial prompt the caller sent). Skip system-role segments
+      // — those usually duplicate the AgentDef prompt that the
+      // separate system_prompt card already surfaces.
+      const userSeg = segs.find((s) => s.role === "user") ?? segs[0];
+      const text = userSeg?.content?.[0]?.text ?? "";
+      return firstLine(text, 200);
+    }
+    case "system_prompt": {
+      const p = row?.payload as SystemPromptPayload | undefined;
+      return firstLine(p?.system_prompt ?? "", 200);
+    }
     default:
       return "";
   }
@@ -481,7 +527,7 @@ function summaryFor(ev: EventPayload): string {
 // detailFor is the full content shown when the card is expanded.
 // Returns React nodes so each event type can format its payload how
 // it wants (raw text, pretty-printed JSON, etc).
-function detailFor(ev: EventPayload): ReactNode {
+function detailFor(ev: EventPayload, row?: TranscriptEvent): ReactNode {
   switch (ev.type) {
     case "text":
     case "thinking":
@@ -529,6 +575,47 @@ function detailFor(ev: EventPayload): ReactNode {
           )}
         </div>
       );
+    case "user_input": {
+      const segs = (row?.payload as UserInputPayload[] | undefined) ?? [];
+      return (
+        <div className="user-input-detail">
+          {segs.map((seg, i) => (
+            <div key={i} className="user-input-segment">
+              <div className="seg-role">role: <code>{seg.role}</code></div>
+              {seg.content?.map((c, j) => (
+                <pre key={j} className="full-text">{c.text ?? JSON.stringify(c)}</pre>
+              ))}
+            </div>
+          ))}
+        </div>
+      );
+    }
+    case "system_prompt": {
+      const p = row?.payload as SystemPromptPayload | undefined;
+      if (!p) {
+        return <pre className="full-text">(no payload)</pre>;
+      }
+      return (
+        <div className="system-prompt-detail">
+          <pre className="full-text">{p.system_prompt ?? ""}</pre>
+          {(p.agent_def_id || p.skill_def_ids) && (
+            <div className="system-prompt-provenance">
+              {p.agent_def_id && (
+                <div>
+                  <span>agent_def_id:</span> <code>{p.agent_def_id}</code>
+                </div>
+              )}
+              {p.skill_def_ids && Object.keys(p.skill_def_ids).length > 0 && (
+                <div>
+                  <span>skill_def_ids:</span>
+                  <pre className="full-text">{JSON.stringify(p.skill_def_ids, null, 2)}</pre>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      );
+    }
     default:
       return <pre className="full-text">{JSON.stringify(ev, null, 2)}</pre>;
   }

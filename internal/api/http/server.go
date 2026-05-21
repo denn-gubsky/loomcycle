@@ -2387,12 +2387,20 @@ type transcriptResponse struct {
 // transcriptEvent is one event row, with payload re-decoded into a typed
 // providers.Event so the caller doesn't have to round-trip through
 // json.RawMessage. ts is unix-nanos so it round-trips losslessly.
+//
+// v0.9.x: for event types whose payload doesn't map cleanly onto
+// providers.Event (user_input carries []loop.PromptSegment;
+// system_prompt carries {system_prompt, agent_def_id, skill_def_ids}),
+// the raw JSON is surfaced via the Payload sidecar so adapters /
+// Web UI parse it without inflating providers.Event with
+// transcript-only fields. Empty for the streaming event types.
 type transcriptEvent struct {
-	Seq   int64           `json:"seq"`
-	RunID string          `json:"run_id"`
-	TsNs  int64           `json:"ts_ns"`
-	Type  string          `json:"type"`
-	Event providers.Event `json:"event"`
+	Seq     int64           `json:"seq"`
+	RunID   string          `json:"run_id"`
+	TsNs    int64           `json:"ts_ns"`
+	Type    string          `json:"type"`
+	Event   providers.Event `json:"event"`
+	Payload json.RawMessage `json:"payload,omitempty"`
 }
 
 func (s *Server) handleTranscript(w http.ResponseWriter, r *http.Request) {
@@ -2429,10 +2437,21 @@ func (s *Server) handleTranscript(w http.ResponseWriter, r *http.Request) {
 			TsNs:  ev.Timestamp.UnixNano(),
 			Type:  ev.Type,
 		}
-		// Decode payload back to a typed Event. If it fails (corrupt row),
-		// surface a minimal record so the rest of the transcript still ships.
-		if err := json.Unmarshal(ev.Payload, &te.Event); err != nil {
+		// v0.9.x: payload-only event types (no fields on providers.Event)
+		// — surface the raw JSON via the Payload sidecar so the Web UI
+		// and adapter consumers can parse it directly. The Event field
+		// stays minimal (just the Type) for these.
+		switch ev.Type {
+		case "user_input", "system_prompt":
 			te.Event = providers.Event{Type: providers.EventType(ev.Type)}
+			te.Payload = append(json.RawMessage(nil), ev.Payload...)
+		default:
+			// Decode payload back to a typed Event. If it fails (corrupt
+			// row), surface a minimal record so the rest of the
+			// transcript still ships.
+			if err := json.Unmarshal(ev.Payload, &te.Event); err != nil {
+				te.Event = providers.Event{Type: providers.EventType(ev.Type)}
+			}
 		}
 		resp.Events = append(resp.Events, te)
 	}
