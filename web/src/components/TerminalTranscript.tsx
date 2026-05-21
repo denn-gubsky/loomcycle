@@ -1,5 +1,10 @@
 import { useEffect, useMemo, useRef } from "react";
-import type { EventPayload, TranscriptEvent } from "../api";
+import type {
+  EventPayload,
+  SystemPromptPayload,
+  TranscriptEvent,
+  UserInputPayload,
+} from "../api";
 
 // TerminalTranscript renders the run's events as a chronological
 // flat stream of "[hh:mm:ss.SSS] event_type | payload" lines,
@@ -138,8 +143,27 @@ function formatLine(row: TranscriptEvent): FormattedLine {
     case "session":
     case "agent":
       return { key, ts, kind, cls: "tl-meta", payload: oneLine(JSON.stringify(ev)) };
-    case "user_input":
-      return { key, ts, kind, cls: "tl-text", payload: ev.text ?? "" };
+    case "user_input": {
+      // v0.9.x: user_input's payload lives on the sidecar (the
+      // raw segments JSON) — `ev.text` is empty because the event
+      // doesn't fit providers.Event. Show the first user-role
+      // segment's text as a one-liner; expanded view lives in
+      // the panels (AgentDetailPane).
+      const segs = (row.payload as UserInputPayload[] | undefined) ?? [];
+      const userSeg = segs.find((s) => s.role === "user") ?? segs[0];
+      const text = userSeg?.content?.[0]?.text ?? "";
+      return { key, ts, kind, cls: "tl-text", payload: oneLine(text) };
+    }
+    case "system_prompt": {
+      // v0.9.x: same sidecar pattern as user_input. Surface the
+      // first line of the resolved prompt + an agent_def_id chip
+      // when present so operators eyeballing the terminal stream
+      // can correlate two runs' prompt versions at a glance.
+      const p = row.payload as SystemPromptPayload | undefined;
+      const head = p?.system_prompt ?? "";
+      const tail = p?.agent_def_id ? ` [${p.agent_def_id}]` : "";
+      return { key, ts, kind, cls: "tl-text", payload: oneLine(head) + tail };
+    }
     default:
       return { key, ts, kind, cls: "tl-other", payload: oneLine(JSON.stringify(ev)) };
   }

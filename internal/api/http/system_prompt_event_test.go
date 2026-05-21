@@ -181,6 +181,82 @@ func TestEmitSystemPromptEvent_NoOpOnEmptyInputs(t *testing.T) {
 	srv2.emitSystemPromptEvent(context.Background(), "run_test", "", "def_1", runPromptProvenance{})
 }
 
+// Pin the contract that the sub-agent path's `agent_def_id` field
+// actually lands in the persisted event payload. The two HTTP-level
+// tests above don't exercise the sub-agent code path (which would
+// require a much larger fixture — spawning the Agent tool against a
+// fake parent run). A unit-level call of `emitSystemPromptEvent` is
+// sufficient because the helper is the single source of truth for
+// the payload shape — any future refactor that drops `agentDefID`
+// at the runSubAgent emission site would leave THIS test passing
+// but the surface broken. So this test pins the helper contract;
+// the HTTP-level test pins the integration. Both are needed.
+func TestEmitSystemPromptEvent_AgentDefIDPersistedInPayload(t *testing.T) {
+	st, err := storesqlite.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	// Create a session + run row so AppendEvent's FK is satisfied.
+	ctx := context.Background()
+	sess, err := st.CreateSession(ctx, "t1", "test-agent", "u1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := st.CreateRun(ctx, sess.ID, store.RunIdentity{
+		AgentID:    "a_sub_test",
+		AgentDefID: "def_pinned_xyz", // mirrors the sub-agent pin
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	srv := &Server{store: st}
+	srv.emitSystemPromptEvent(
+		ctx,
+		run.ID,
+		"You are a sub-agent fork.",
+		"def_pinned_xyz", // ← the sub-agent path's agent_def_id parameter
+		runPromptProvenance{SkillDefIDs: map[string]string{"voice": "sdf_abc123"}},
+	)
+
+	// Read the events back + assert the system_prompt row carries both
+	// the agent_def_id AND the skill_def_ids in its JSON payload.
+	transcript, err := st.GetTranscript(ctx, sess.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var found *store.Event
+	for i := range transcript {
+		if transcript[i].Type == "system_prompt" {
+			found = &transcript[i]
+			break
+		}
+	}
+	if found == nil {
+		t.Fatalf("no system_prompt event in transcript; got types: %v", typeList(transcript))
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(found.Payload, &payload); err != nil {
+		t.Fatalf("decode payload: %v", err)
+	}
+	if got := payload["system_prompt"]; got != "You are a sub-agent fork." {
+		t.Errorf("system_prompt mismatch: %v", got)
+	}
+	if got := payload["agent_def_id"]; got != "def_pinned_xyz" {
+		t.Errorf("agent_def_id mismatch: got %v, want def_pinned_xyz", got)
+	}
+	skills, ok := payload["skill_def_ids"].(map[string]any)
+	if !ok {
+		t.Fatalf("skill_def_ids missing or wrong shape: %v", payload["skill_def_ids"])
+	}
+	if skills["voice"] != "sdf_abc123" {
+		t.Errorf("skill_def_ids[voice] = %v, want sdf_abc123", skills["voice"])
+	}
+}
+
 // Helper: extract event types into a flat slice for error messages.
 func typeList(events []store.Event) []string {
 	out := make([]string, len(events))
