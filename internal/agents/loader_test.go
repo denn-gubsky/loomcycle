@@ -32,6 +32,7 @@ tools: Read, mcp__jobs__getAgentContext, Skill
 model: haiku
 tier: low
 max_tokens: 24576
+max_iterations: 64
 skills: [position-relevance-filtering]
 memory_scopes: [agent]
 ---
@@ -71,6 +72,9 @@ Body for cv-adapter.
 	}
 	if a.MaxTokens != 24576 {
 		t.Errorf("MaxTokens = %d, want 24576", a.MaxTokens)
+	}
+	if a.MaxIterations != 64 {
+		t.Errorf("MaxIterations = %d, want 64", a.MaxIterations)
 	}
 	wantTools := []string{"Read", "mcp__jobs__getAgentContext", "Skill"}
 	if !reflect.DeepEqual(a.AllowedTools, wantTools) {

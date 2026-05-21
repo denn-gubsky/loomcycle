@@ -1056,6 +1056,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		OnEvent:         emit,
 		OnHeartbeat:     heartbeat,
 		MaxTokens:       agentDef.MaxTokens,
+		MaxIterations:   agentDef.MaxIterations, // 0 → loop default (16)
 		Effort:          effort,
 		MarkStalled:     s.markStalledFn(providerID, model),
 		ClearStall:      s.clearStallFn(providerID, model),
@@ -1837,6 +1838,7 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		OnEvent:         emit,
 		OnHeartbeat:     heartbeat,
 		MaxTokens:       agentDef.MaxTokens, // 0 → driver default
+		MaxIterations:   agentDef.MaxIterations, // 0 → loop default (16)
 		Effort:          effort,
 		MarkStalled:     s.markStalledFn(providerID, model),
 		ClearStall:      s.clearStallFn(providerID, model),
@@ -2140,6 +2142,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		OnEvent:         emit,
 		OnHeartbeat:     heartbeat,
 		MaxTokens:       agentDef.MaxTokens, // 0 → driver default
+		MaxIterations:   agentDef.MaxIterations, // 0 → loop default (16)
 		Effort:          effort,
 		MarkStalled:     s.markStalledFn(providerID, model),
 		ClearStall:      s.clearStallFn(providerID, model),
@@ -2687,6 +2690,7 @@ func (s *Server) runSubAgent(ctx context.Context, name string, prompt string, de
 		OnEvent:         subEmit,
 		OnHeartbeat:     subHeartbeat,
 		MaxTokens:       def.MaxTokens, // 0 → driver default
+		MaxIterations:   def.MaxIterations, // 0 → loop default (16)
 		Effort:          effort,
 		MarkStalled:     s.markStalledFn(providerID, model),
 		ClearStall:      s.clearStallFn(providerID, model),
