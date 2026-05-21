@@ -1841,7 +1841,7 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		Segments:        req.Segments,
 		OnEvent:         emit,
 		OnHeartbeat:     heartbeat,
-		MaxTokens:       agentDef.MaxTokens, // 0 → driver default
+		MaxTokens:       agentDef.MaxTokens,     // 0 → driver default
 		MaxIterations:   agentDef.MaxIterations, // 0 → loop default (16)
 		Effort:          effort,
 		MarkStalled:     s.markStalledFn(providerID, model),
@@ -2145,7 +2145,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		PriorMessages:   priorMessages,
 		OnEvent:         emit,
 		OnHeartbeat:     heartbeat,
-		MaxTokens:       agentDef.MaxTokens, // 0 → driver default
+		MaxTokens:       agentDef.MaxTokens,     // 0 → driver default
 		MaxIterations:   agentDef.MaxIterations, // 0 → loop default (16)
 		Effort:          effort,
 		MarkStalled:     s.markStalledFn(providerID, model),
@@ -2693,7 +2693,7 @@ func (s *Server) runSubAgent(ctx context.Context, name string, prompt string, de
 		Segments:        segs,
 		OnEvent:         subEmit,
 		OnHeartbeat:     subHeartbeat,
-		MaxTokens:       def.MaxTokens, // 0 → driver default
+		MaxTokens:       def.MaxTokens,     // 0 → driver default
 		MaxIterations:   def.MaxIterations, // 0 → loop default (16)
 		Effort:          effort,
 		MarkStalled:     s.markStalledFn(providerID, model),

@@ -74,7 +74,7 @@ type grepInput struct {
 	Multiline       bool   `json:"multiline,omitempty"`
 	HeadLimit       int    `json:"head_limit,omitempty"`
 	After           int    `json:"-A,omitempty"`
-	Before           int    `json:"-B,omitempty"`
+	Before          int    `json:"-B,omitempty"`
 	Context         int    `json:"-C,omitempty"`
 }
 

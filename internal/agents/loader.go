@@ -54,13 +54,13 @@ import (
 // returns these instead of config.AgentDef directly so the
 // dependency arrow stays config → agents (config converts on merge).
 type Agent struct {
-	Name             string
-	Description      string
-	Provider         string
-	Model            string
-	Tier             string
-	Effort           string
-	MaxTokens        int
+	Name        string
+	Description string
+	Provider    string
+	Model       string
+	Tier        string
+	Effort      string
+	MaxTokens   int
 	// MaxIterations caps the agent loop at this many provider calls
 	// before terminating with stop_reason="max_iterations". 0 means
 	// use the loop default (16). Set higher for discovery-style
