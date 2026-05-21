@@ -165,3 +165,42 @@ func TestApplyAgentDefOverlay_NilSlicesKeepBase(t *testing.T) {
 		t.Errorf("Skills drifted on partial overlay: %v", got.Skills)
 	}
 }
+
+// v0.9.x — applyAgentDefOverlay must read max_iterations from the
+// agent_defs row's definition JSON and surface it on the effective
+// AgentDef. Without this the runSubAgent loop.Run call site (which
+// reads agentDef.MaxIterations) defaults to 0 → loop default 16,
+// which is the exact failure mode PR #168 fixes for yaml-declared
+// agents but NOT for dynamic forks.
+func TestApplyAgentDefOverlay_MaxIterationsThreadsThrough(t *testing.T) {
+	base := config.AgentDef{
+		Provider:      "anthropic",
+		Model:         "claude-haiku-4-5",
+		MaxIterations: 16, // pretend static yaml set this
+	}
+	def := json.RawMessage(`{"max_iterations": 64}`)
+	got := applyAgentDefOverlay(base, def)
+	if got.MaxIterations != 64 {
+		t.Errorf("MaxIterations = %d, want 64 (overlay must win over static)", got.MaxIterations)
+	}
+}
+
+// Zero-value overlay must NOT clobber the static yaml's
+// max_iterations. Mirrors the MaxTokens contract — only positive
+// values override.
+func TestApplyAgentDefOverlay_ZeroMaxIterationsFallsThrough(t *testing.T) {
+	base := config.AgentDef{
+		Provider:      "anthropic",
+		Model:         "claude-haiku-4-5",
+		MaxIterations: 32,
+	}
+	// Overlay carries max_tokens but no max_iterations.
+	def := json.RawMessage(`{"max_tokens": 8192}`)
+	got := applyAgentDefOverlay(base, def)
+	if got.MaxIterations != 32 {
+		t.Errorf("static MaxIterations should pass through when overlay omits it; got %d, want 32", got.MaxIterations)
+	}
+	if got.MaxTokens != 8192 {
+		t.Errorf("MaxTokens = %d, want 8192", got.MaxTokens)
+	}
+}

@@ -314,3 +314,68 @@ func TestAgentDefTool_DescendantsScopeIsCurrentlyEquivalentToAny(t *testing.T) {
 	// When this test starts failing, descendants has been tightened —
 	// update the test and the inline comment in checkScopeForName.
 }
+
+// v0.9.x — per-agent max_iterations override on the dynamic AgentDef
+// path. The yaml-frontmatter knob shipped in PR #168; this is the
+// runtime mirror so agents forking themselves to handle discovery-
+// style workloads (1.09M-input runs hitting the 16-iteration cap)
+// can tune the limit without an operator yaml round-trip.
+func TestAgentDefTool_ForkPersistsMaxIterations(t *testing.T) {
+	tool, ctx, cleanup := agentDefFixture(t)
+	defer cleanup()
+
+	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"fork","name":"researcher","overlay":{"max_iterations":64}}`))
+	if res.IsError {
+		t.Fatalf("fork: %s", res.Text)
+	}
+	out := decodeResult(t, res.Text)
+	defID, _ := out["def_id"].(string)
+	if defID == "" {
+		t.Fatal("fork response missing def_id")
+	}
+
+	// The tool's `get` response doesn't include the raw definition
+	// JSON, so we reach into the Store directly to assert what got
+	// persisted.
+	row, err := tool.Store.AgentDefGet(ctx, defID)
+	if err != nil {
+		t.Fatalf("AgentDefGet: %v", err)
+	}
+	var defJSON map[string]any
+	if err := json.Unmarshal(row.Definition, &defJSON); err != nil {
+		t.Fatalf("unmarshal definition: %v", err)
+	}
+	n, ok := defJSON["max_iterations"].(float64)
+	if !ok || int(n) != 64 {
+		t.Errorf("definition.max_iterations = %v, want 64 (full def: %s)", defJSON["max_iterations"], row.Definition)
+	}
+}
+
+// Forking without max_iterations in the overlay must NOT leak a
+// zero value into the JSON — `omitempty` keeps the row clean so
+// applyAgentDefOverlay falls through to the static yaml value (if
+// any) rather than overwriting it with 0.
+func TestAgentDefTool_ForkWithoutMaxIterationsOmitsField(t *testing.T) {
+	tool, ctx, cleanup := agentDefFixture(t)
+	defer cleanup()
+
+	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"fork","name":"researcher","overlay":{"system_prompt":"forked"}}`))
+	if res.IsError {
+		t.Fatalf("fork: %s", res.Text)
+	}
+	out := decodeResult(t, res.Text)
+	defID, _ := out["def_id"].(string)
+
+	row, err := tool.Store.AgentDefGet(ctx, defID)
+	if err != nil {
+		t.Fatalf("AgentDefGet: %v", err)
+	}
+	var defJSON map[string]any
+	if err := json.Unmarshal(row.Definition, &defJSON); err != nil {
+		t.Fatalf("unmarshal definition: %v", err)
+	}
+	if _, present := defJSON["max_iterations"]; present {
+		t.Errorf("max_iterations should be omitted (omitempty) when not in overlay; got %v in %s",
+			defJSON["max_iterations"], row.Definition)
+	}
+}

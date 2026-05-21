@@ -587,6 +587,12 @@ type mergedDef struct {
 	Tier             string                            `json:"tier,omitempty"`
 	Effort           string                            `json:"effort,omitempty"`
 	MaxTokens        int                               `json:"max_tokens,omitempty"`
+	// MaxIterations caps the loop at N provider calls before
+	// terminating with stop_reason="max_iterations". 0 = use the
+	// loop default (16). Set higher for discovery-style forks
+	// whose workflow is intrinsically iterative — same knob the
+	// yaml frontmatter exposes via PR #168's `max_iterations` field.
+	MaxIterations    int                               `json:"max_iterations,omitempty"`
 	SystemPrompt     string                            `json:"system_prompt,omitempty"`
 	AllowedTools     []string                          `json:"allowed_tools,omitempty"`
 	Skills           []string                          `json:"skills,omitempty"`
@@ -612,6 +618,9 @@ func (d *mergedDef) applyOverlay(ov mergedDef) {
 	}
 	if ov.MaxTokens != 0 {
 		d.MaxTokens = ov.MaxTokens
+	}
+	if ov.MaxIterations != 0 {
+		d.MaxIterations = ov.MaxIterations
 	}
 	if ov.SystemPrompt != "" {
 		d.SystemPrompt = ov.SystemPrompt
@@ -646,6 +655,7 @@ func staticToMergedDef(s config.AgentDef) mergedDef {
 		Tier:             s.Tier,
 		Effort:           s.Effort,
 		MaxTokens:        s.MaxTokens,
+		MaxIterations:    s.MaxIterations,
 		SystemPrompt:     s.SystemPrompt,
 		AllowedTools:     s.AllowedTools,
 		Skills:           s.Skills,
