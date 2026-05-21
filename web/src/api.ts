@@ -104,18 +104,51 @@ export interface EventPayload {
   retry?: { provider?: string; attempt?: number; wait_ms?: number; reason?: string };
 }
 
+// v0.9.x — payloads for event types whose shape doesn't fit
+// providers.Event (and is carried via the `payload` sidecar on
+// TranscriptEvent rather than `event`).
+
+/** UserInputPayload mirrors the JSON of `[]loop.PromptSegment` —
+ *  what the caller supplied as `segments` on POST /v1/runs +
+ *  /v1/sessions/{id}/messages. Surfaced as the run's "user input"
+ *  card in the Web UI. */
+export interface UserInputPayload {
+  role: string; // "system" | "user"
+  content: Array<{ type: string; text?: string; cacheable?: boolean }>;
+}
+
+/** SystemPromptPayload mirrors the v0.9.x system_prompt event
+ *  payload — the resolved system prompt + provenance metadata so
+ *  operators can see WHICH AgentDef + WHICH SkillDef rows fed in. */
+export interface SystemPromptPayload {
+  system_prompt: string;
+  /** Empty for yaml-only agents (no AgentDef row). Pinned for
+   *  sub-runs spawned via the Agent tool with a def_id. */
+  agent_def_id?: string;
+  /** skillName → active SkillDef def_id. Only present for skills
+   *  whose DB-active row supplied the body; static-fallback skills
+   *  are absent. */
+  skill_def_ids?: Record<string, string>;
+}
+
 // TranscriptEvent is one persisted row from
 // /v1/sessions/{id}/transcript. The server wraps each providers.Event
 // in {seq, run_id, ts_ns, type, event:{...}} — the type field at the
 // top level mirrors event.type so consumers can filter without
 // digging into the payload, but the actual content lives under
 // `event`.
+//
+// v0.9.x: for event types whose payload doesn't fit providers.Event
+// (`user_input`, `system_prompt`), the server surfaces the raw JSON
+// via the optional `payload` field. Streaming event types
+// (text/tool_call/tool_result/done/...) leave `payload` undefined.
 export interface TranscriptEvent {
   seq: number;
   run_id: string;
   ts_ns: number;
   type: string;
   event: EventPayload;
+  payload?: UserInputPayload[] | SystemPromptPayload | unknown;
 }
 
 export interface TranscriptResponse {

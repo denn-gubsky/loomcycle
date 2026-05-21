@@ -540,6 +540,21 @@ func (s *Server) skillDefPolicyForAgent(agentDef config.AgentDef) tools.SkillDef
 	return tools.SkillDefPolicyValue{Scopes: agentDef.SkillDefScopes}
 }
 
+// runPromptProvenance captures the per-run metadata that fed into
+// the resolved system prompt. Used as the payload sidecar on the
+// v0.9.x `system_prompt` event so an operator inspecting the run
+// can see WHICH AgentDef row + WHICH SkillDef rows produced the
+// instructions the agent received — not just the merged text.
+//
+// SkillDefIDs maps the agent's declared skill names to the def_id
+// of the DB-active SkillDef row that supplied the skill body for
+// this specific run. Skills falling back to the static SKILL.md
+// body (no DB-active row) are NOT in this map — only DB overrides.
+// Empty map (or absent field on the wire) = pure static prompt.
+type runPromptProvenance struct {
+	SkillDefIDs map[string]string `json:"skill_def_ids,omitempty"`
+}
+
 // resolveSkillBodiesForRun rebuilds agentDef.SystemPrompt for a
 // single run with v0.8.22 SkillDef per-run resolution. For each
 // skill named in agentDef.Skills, the active SkillDef row's body
@@ -554,13 +569,19 @@ func (s *Server) skillDefPolicyForAgent(agentDef config.AgentDef) tools.SkillDef
 // Returns agentDef unchanged on any error (logged) — the run
 // continues with the static baked prompt rather than fail. The
 // agent loop is unchanged; only SystemPrompt may differ.
-func (s *Server) resolveSkillBodiesForRun(ctx context.Context, agentDef config.AgentDef) config.AgentDef {
+//
+// Second return value is the per-run provenance (skillName → active
+// SkillDef def_id) for callers emitting the v0.9.x `system_prompt`
+// transcript event. Empty when no DB-active rows were used.
+func (s *Server) resolveSkillBodiesForRun(ctx context.Context, agentDef config.AgentDef) (config.AgentDef, runPromptProvenance) {
+	var prov runPromptProvenance
 	if len(agentDef.Skills) == 0 || s.store == nil {
-		return agentDef
+		return agentDef, prov
 	}
 	// Fast pre-check: any DB-active row for any skill name?
 	anyActive := false
 	activeBodies := make(map[string]string, len(agentDef.Skills))
+	activeDefIDs := make(map[string]string, len(agentDef.Skills))
 	for _, skillName := range agentDef.Skills {
 		row, err := s.store.SkillDefGetActive(ctx, skillName)
 		if err != nil {
@@ -585,11 +606,13 @@ func (s *Server) resolveSkillBodiesForRun(ctx context.Context, agentDef config.A
 			continue
 		}
 		activeBodies[skillName] = def.Body
+		activeDefIDs[skillName] = row.DefID
 		anyActive = true
 	}
 	if !anyActive {
-		return agentDef
+		return agentDef, prov
 	}
+	prov.SkillDefIDs = activeDefIDs
 	// Slow path: rebuild SystemPrompt from base + per-skill body.
 	rebuilt := agentDef
 	rebuilt.SystemPrompt = agentDef.SystemPromptBase
@@ -611,7 +634,46 @@ func (s *Server) resolveSkillBodiesForRun(ctx context.Context, agentDef config.A
 		}
 		rebuilt.SystemPrompt += body
 	}
-	return rebuilt
+	return rebuilt, prov
+}
+
+// emitSystemPromptEvent persists the resolved system prompt + its
+// provenance as a `system_prompt` transcript event so an operator
+// inspecting the run can see what instructions the agent received —
+// not just the model's subsequent output. Mirror of the existing
+// `user_input` emission (which captures the caller's segments).
+// Emitted ONCE per run, right after the user_input event so the two
+// "what the agent saw" cards sort naturally at the top of the
+// transcript.
+//
+// No-op when the store isn't configured, runID is empty, or the
+// agent has no system prompt. Store errors are logged + swallowed
+// (same posture as user_input); never blocks the run.
+func (s *Server) emitSystemPromptEvent(
+	ctx context.Context,
+	runID string,
+	systemPrompt string,
+	agentDefID string,
+	prov runPromptProvenance,
+) {
+	if s.store == nil || runID == "" || systemPrompt == "" {
+		return
+	}
+	payload := map[string]any{"system_prompt": systemPrompt}
+	if agentDefID != "" {
+		payload["agent_def_id"] = agentDefID
+	}
+	if len(prov.SkillDefIDs) > 0 {
+		payload["skill_def_ids"] = prov.SkillDefIDs
+	}
+	b, err := json.Marshal(payload)
+	if err != nil {
+		log.Printf("store: marshal system_prompt event for run %s: %v", runID, err)
+		return
+	}
+	if err := s.store.AppendEvent(ctx, runID, "system_prompt", b); err != nil {
+		log.Printf("store: AppendEvent(system_prompt) failed for run %s: %v", runID, err)
+	}
 }
 
 // skillDefOverlay mirrors internal/tools/builtin.skillDefOverlay.
@@ -950,7 +1012,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	// v0.8.22: rebuild SystemPrompt from per-run SkillDef bodies
 	// when any of the agent's skills has a DB-active row. No-op
 	// fast path when none do.
-	agentDef = s.resolveSkillBodiesForRun(ctx, agentDef)
+	agentDef, promptProv := s.resolveSkillBodiesForRun(ctx, agentDef)
 	if agentDef.SystemPrompt != "" {
 		segments = append([]loop.PromptSegment{{
 			Role: "system",
@@ -1005,6 +1067,13 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 			}
 		}
 	}
+	// v0.9.x: persist the resolved system prompt + provenance so the
+	// transcript carries WHAT the agent received, not just WHAT the
+	// model emitted. The companion Web UI rendering surfaces this as
+	// the first card on /ui run views. agent_def_id is empty here —
+	// RunInput doesn't pin a def, so the field stays unset (operators
+	// inspecting can look up the run row's AgentDefID column directly).
+	s.emitSystemPromptEvent(ctx, runID, agentDef.SystemPrompt, "", promptProv)
 
 	// ---- Caller registration callback ----
 	if cb.OnRegistered != nil {
@@ -1671,7 +1740,7 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 	dispatcher := s.newDispatcher(allowedTools)
 
 	// v0.8.22: rebuild SystemPrompt from per-run SkillDef bodies.
-	agentDef = s.resolveSkillBodiesForRun(r.Context(), agentDef)
+	agentDef, promptProv := s.resolveSkillBodiesForRun(r.Context(), agentDef)
 	// Optional system prompt from agent def.
 	if agentDef.SystemPrompt != "" {
 		req.Segments = append([]loop.PromptSegment{{
@@ -1756,6 +1825,10 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+	// v0.9.x: persist the resolved system prompt + provenance so the
+	// Web UI surfaces it as a card on the run timeline. Mirrors the
+	// emission in RunOnce + handleMessages + runSubAgent.
+	s.emitSystemPromptEvent(r.Context(), runID, agentDef.SystemPrompt, "", promptProv)
 
 	stream, ok := newSSE(w)
 	if !ok {
@@ -2016,7 +2089,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	// v0.8.22: rebuild SystemPrompt from per-run SkillDef bodies
 	// when any of the agent's skills has a DB-active row. No-op
 	// fast path when none do.
-	agentDef = s.resolveSkillBodiesForRun(r.Context(), agentDef)
+	agentDef, promptProv := s.resolveSkillBodiesForRun(r.Context(), agentDef)
 	if agentDef.SystemPrompt != "" {
 		segments = append([]loop.PromptSegment{{
 			Role: "system",
@@ -2086,6 +2159,11 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 			log.Printf("store: AppendEvent(user_input) failed: %v", err)
 		}
 	}
+	// v0.9.x: also persist the resolved system prompt + provenance.
+	// On a continuation run, AgentDef could have been promoted to a
+	// new version between turns — emit on EVERY run so each cycle
+	// records the instructions the agent saw at THAT moment.
+	s.emitSystemPromptEvent(r.Context(), run.ID, agentDef.SystemPrompt, "", promptProv)
 
 	stream, ok := newSSE(w)
 	if !ok {
@@ -2309,12 +2387,20 @@ type transcriptResponse struct {
 // transcriptEvent is one event row, with payload re-decoded into a typed
 // providers.Event so the caller doesn't have to round-trip through
 // json.RawMessage. ts is unix-nanos so it round-trips losslessly.
+//
+// v0.9.x: for event types whose payload doesn't map cleanly onto
+// providers.Event (user_input carries []loop.PromptSegment;
+// system_prompt carries {system_prompt, agent_def_id, skill_def_ids}),
+// the raw JSON is surfaced via the Payload sidecar so adapters /
+// Web UI parse it without inflating providers.Event with
+// transcript-only fields. Empty for the streaming event types.
 type transcriptEvent struct {
-	Seq   int64           `json:"seq"`
-	RunID string          `json:"run_id"`
-	TsNs  int64           `json:"ts_ns"`
-	Type  string          `json:"type"`
-	Event providers.Event `json:"event"`
+	Seq     int64           `json:"seq"`
+	RunID   string          `json:"run_id"`
+	TsNs    int64           `json:"ts_ns"`
+	Type    string          `json:"type"`
+	Event   providers.Event `json:"event"`
+	Payload json.RawMessage `json:"payload,omitempty"`
 }
 
 func (s *Server) handleTranscript(w http.ResponseWriter, r *http.Request) {
@@ -2351,10 +2437,21 @@ func (s *Server) handleTranscript(w http.ResponseWriter, r *http.Request) {
 			TsNs:  ev.Timestamp.UnixNano(),
 			Type:  ev.Type,
 		}
-		// Decode payload back to a typed Event. If it fails (corrupt row),
-		// surface a minimal record so the rest of the transcript still ships.
-		if err := json.Unmarshal(ev.Payload, &te.Event); err != nil {
+		// v0.9.x: payload-only event types (no fields on providers.Event)
+		// — surface the raw JSON via the Payload sidecar so the Web UI
+		// and adapter consumers can parse it directly. The Event field
+		// stays minimal (just the Type) for these.
+		switch ev.Type {
+		case "user_input", "system_prompt":
 			te.Event = providers.Event{Type: providers.EventType(ev.Type)}
+			te.Payload = append(json.RawMessage(nil), ev.Payload...)
+		default:
+			// Decode payload back to a typed Event. If it fails (corrupt
+			// row), surface a minimal record so the rest of the
+			// transcript still ships.
+			if err := json.Unmarshal(ev.Payload, &te.Event); err != nil {
+				te.Event = providers.Event{Type: providers.EventType(ev.Type)}
+			}
 		}
 		resp.Events = append(resp.Events, te)
 	}
@@ -2574,7 +2671,7 @@ func (s *Server) runSubAgent(ctx context.Context, name string, prompt string, de
 	// sub-agents would silently keep the static baked body and
 	// SkillDef promotions never take effect for agents only spawned
 	// as sub-agents.
-	def = s.resolveSkillBodiesForRun(ctx, def)
+	def, promptProv := s.resolveSkillBodiesForRun(ctx, def)
 	// Build segments: agent's system_prompt (with cache_control) + the
 	// caller-supplied prompt as the first user message. Mirrors the
 	// shape of /v1/runs.
@@ -2624,6 +2721,10 @@ func (s *Server) runSubAgent(ctx context.Context, name string, prompt string, de
 			}
 		}
 	}
+	// v0.9.x: also persist the resolved system prompt + provenance.
+	// On sub-runs we have the explicit def_id (parameter), so the
+	// event payload includes agent_def_id — unique to this path.
+	s.emitSystemPromptEvent(ctx, subRunID, def.SystemPrompt, defID, promptProv)
 
 	// Sub-emit records to the sub's transcript only — the parent's SSE
 	// stream is fwd=no-op so sub events don't bleed into the parent's

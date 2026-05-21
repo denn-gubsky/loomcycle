@@ -23,7 +23,7 @@ func TestResolveSkillBodiesForRun_NoSkillsIsNoop(t *testing.T) {
 
 	srv := &Server{store: s}
 	def := config.AgentDef{SystemPrompt: "base prompt", SystemPromptBase: "base prompt"}
-	got := srv.resolveSkillBodiesForRun(context.Background(), def)
+	got, _ := srv.resolveSkillBodiesForRun(context.Background(), def)
 	if got.SystemPrompt != "base prompt" {
 		t.Errorf("got %q, want unchanged base prompt", got.SystemPrompt)
 	}
@@ -46,7 +46,7 @@ func TestResolveSkillBodiesForRun_NoActiveRowsIsNoop(t *testing.T) {
 		SystemPrompt:     baked,
 		SystemPromptBase: "base prompt",
 	}
-	got := srv.resolveSkillBodiesForRun(context.Background(), def)
+	got, _ := srv.resolveSkillBodiesForRun(context.Background(), def)
 	if got.SystemPrompt != baked {
 		t.Errorf("no DB-active row should leave baked prompt unchanged; got %q", got.SystemPrompt)
 	}
@@ -85,7 +85,7 @@ func TestResolveSkillBodiesForRun_DBActiveOverrides(t *testing.T) {
 		SystemPrompt:     "base prompt\n\n---\n\nSTATIC BODY",
 		SystemPromptBase: "base prompt",
 	}
-	got := srv.resolveSkillBodiesForRun(ctx, def)
+	got, _ := srv.resolveSkillBodiesForRun(ctx, def)
 	if !strings.Contains(got.SystemPrompt, "DB BODY") {
 		t.Errorf("DB body should be substituted into SystemPrompt; got %q", got.SystemPrompt)
 	}
@@ -130,7 +130,7 @@ func TestResolveSkillBodiesForRun_StaleRowIsIgnored(t *testing.T) {
 		SystemPrompt:     baked,
 		SystemPromptBase: "base prompt",
 	}
-	got := srv.resolveSkillBodiesForRun(ctx, def)
+	got, _ := srv.resolveSkillBodiesForRun(ctx, def)
 	if got.SystemPrompt != baked {
 		t.Errorf("empty-body DB row should NOT trigger rebuild; got %q", got.SystemPrompt)
 	}
@@ -169,7 +169,7 @@ func TestResolveSkillBodiesForRun_OneSkillResolvesEvenIfAnotherIsMissing(t *test
 		SystemPrompt:     "base prompt\n\n---\n\nstatic A\n\n---\n\nstatic B",
 		SystemPromptBase: "base prompt",
 	}
-	got := srv.resolveSkillBodiesForRun(ctx, def)
+	got, _ := srv.resolveSkillBodiesForRun(ctx, def)
 	if !strings.Contains(got.SystemPrompt, "DB BODY A") {
 		t.Errorf("DB body for skill-a should be substituted; got %q", got.SystemPrompt)
 	}

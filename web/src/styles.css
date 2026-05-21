@@ -715,6 +715,42 @@ pre {
 .ev-error .kind { color: var(--failed); }
 .ev-retry { border-left-color: var(--running); }
 .ev-done { border-left-color: var(--fg-soft); }
+/* v0.9.x — the "what the agent received" cards. Distinguish them
+   from model output (which uses cool blues / greens) so operators
+   eye-track to the run's inputs at a glance. Warm gold for the
+   system prompt; muted teal for the user input. */
+.ev-system_prompt { border-left-color: #d4a056; background: rgba(212, 160, 86, 0.04); }
+.ev-system_prompt .kind { color: #d4a056; }
+.ev-user_input { border-left-color: #5fa9a3; background: rgba(95, 169, 163, 0.04); }
+.ev-user_input .kind { color: #5fa9a3; }
+.user-input-segment { margin-bottom: 12px; }
+.user-input-segment:last-child { margin-bottom: 0; }
+.user-input-segment .seg-role {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--fg-soft);
+  margin-bottom: 4px;
+}
+.user-input-segment .seg-role code { color: var(--fg); }
+.system-prompt-provenance {
+  margin-top: 12px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--border);
+  font-size: 11px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.system-prompt-provenance span {
+  font-family: var(--mono);
+  color: var(--fg-soft);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.system-prompt-provenance code {
+  font-family: var(--mono);
+  color: var(--fg);
+}
 
 /* v0.8.0 nav tabs (top bar between brand and user picker). */
 /* Topbar nav rendered as proper tabs. NavLink from react-router-dom
