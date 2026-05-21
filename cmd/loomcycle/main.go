@@ -709,6 +709,11 @@ func main() {
 	// per-run SkillDef resolver can fall back to static bodies when
 	// no DB-active row exists for a skill name.
 	srv.SetSkillSet(skillSet)
+	// v0.9.0: hand the embedder to the server so the
+	// /v1/_memory/reembed + /v1/_memory/embed_stats admin endpoints
+	// have a backing object. Nil-safe — endpoints return 503 when
+	// no embedder is configured.
+	srv.SetEmbedder(embedder)
 
 	// v0.8.6 SystemPublisher — backs the POST /v1/_channels/_system/...
 	// admin endpoint AND the cadence/event-hook publishers added in
