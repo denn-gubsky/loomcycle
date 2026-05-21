@@ -1,11 +1,15 @@
 import { useEffect, useMemo, useState } from "react";
 import {
+  MemoryEmbedModelStats,
   MemoryEntry,
+  MemoryReembedResponse,
   MemoryScopeIDSummary,
   MemoryScopeKind,
+  listMemoryEmbedStats,
   listMemoryEntries,
   listMemoryScopeIDs,
   listMemoryScopes,
+  reembedMemory,
 } from "../api";
 import Splitter from "../components/Splitter";
 
@@ -20,9 +24,20 @@ import Splitter from "../components/Splitter";
 //   right  : the selected entry's value pretty-printed JSON, plus
 //            timestamps and TTL.
 //
-// Polling, not SSE — Memory rows are slow-changing (counters tick on
-// the order of one-per-iteration; preferences barely change). 5 s
-// refresh is plenty to feel live without hammering the store.
+// v0.9.0 additions:
+//   - Per-scope model-distribution badge (top of the keys pane) —
+//     shows which embedder(s) wrote the rows in this scope.
+//   - "reembed missing" button when the model badge surfaces rows
+//     under a NON-current embedder; opens a dry-run plan, then a
+//     confirm-and-commit flow.
+//   - Embedding indicator dot on each key row when the listing
+//     spans a scope that has embeddings; the dot is only a hint
+//     (the embed_stats endpoint reports aggregate counts, not
+//     per-key presence — we render the dot when at least one
+//     model exists in the scope).
+//
+// Polling, not SSE — Memory rows are slow-changing. 5 s refresh is
+// plenty to feel live without hammering the store.
 const REFRESH_MS = 5_000;
 
 export default function MemoryView() {
@@ -36,8 +51,15 @@ export default function MemoryView() {
   const [prefix, setPrefix] = useState("");
   const [err, setErr] = useState<string | null>(null);
 
-  // Bootstrap: fetch the (constant) scope list once on mount, default
-  // the selection to "agent" so the page lands on actual data.
+  // v0.9.0 Vector Memory state.
+  // null = endpoint returned 503 (vectors not configured); the UI
+  // renders a "vector search not available" hint instead of the
+  // model badge.
+  const [embedStats, setEmbedStats] = useState<MemoryEmbedModelStats[] | null>(null);
+  const [reembedBanner, setReembedBanner] = useState<MemoryReembedResponse | null>(null);
+  const [reembedBusy, setReembedBusy] = useState(false);
+
+  // Bootstrap: fetch the (constant) scope list once on mount.
   useEffect(() => {
     let cancelled = false;
     listMemoryScopes()
@@ -78,6 +100,34 @@ export default function MemoryView() {
     };
   }, [scope]);
 
+  // v0.9.0: poll the embed_stats endpoint for the selected scope so
+  // the UI knows which models wrote what. Refreshes on the same
+  // cadence as scope_ids so the badge stays in sync.
+  useEffect(() => {
+    if (!scope) {
+      setEmbedStats(null);
+      return;
+    }
+    let cancelled = false;
+    const fetchOnce = async () => {
+      const result = await listMemoryEmbedStats(scope);
+      if (cancelled) return;
+      if (result.ok) {
+        setEmbedStats(result.data.models ?? []);
+      } else {
+        // 503 = vectors not configured. Surface as null so the UI
+        // renders the "not available" hint instead of an error.
+        setEmbedStats(null);
+      }
+    };
+    fetchOnce();
+    const t = setInterval(fetchOnce, REFRESH_MS);
+    return () => {
+      cancelled = true;
+      clearInterval(t);
+    };
+  }, [scope]);
+
   // When the scope changes, blow away the scope_id selection so the
   // user always picks fresh under the new scope.
   useEffect(() => {
@@ -85,12 +135,10 @@ export default function MemoryView() {
     setSelectedKey("");
     setEntries([]);
     setPrefix("");
+    setReembedBanner(null);
   }, [scope]);
 
-  // Poll entries under the selected (scope, scope_id, prefix). Debounce
-  // the prefix input by piggy-backing on the polling clock — typing
-  // doesn't fire a request per keystroke; the next tick picks up the
-  // new prefix.
+  // Poll entries under the selected (scope, scope_id, prefix).
   useEffect(() => {
     if (!scope || !scopeID) {
       setEntries([]);
@@ -117,13 +165,49 @@ export default function MemoryView() {
     };
   }, [scope, scopeID, prefix]);
 
-  // Resolve the currently selected entry from the in-memory list — no
-  // separate fetch required because the list response already carries
-  // the value. (Drops one round-trip and one source of staleness.)
   const selectedEntry = useMemo(() => {
     if (!selectedKey) return null;
     return entries.find((e) => e.key === selectedKey) ?? null;
   }, [entries, selectedKey]);
+
+  // Are there embeddings under this scope? Used to render the
+  // per-row indicator dot. The embed_stats endpoint reports
+  // aggregate counts, not per-key presence — the dot is a hint that
+  // SOME rows are embedded, not which specific ones.
+  const scopeHasEmbeddings = useMemo(() => {
+    if (!embedStats) return false;
+    return embedStats.some((m) => m.row_count > 0);
+  }, [embedStats]);
+
+  const handleReembedDryRun = async () => {
+    if (!scope || !scopeID) return;
+    setReembedBusy(true);
+    setReembedBanner(null);
+    try {
+      const resp = await reembedMemory(scope, scopeID, true);
+      setReembedBanner(resp);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setReembedBusy(false);
+    }
+  };
+
+  const handleReembedCommit = async () => {
+    if (!scope || !scopeID) return;
+    if (!window.confirm(`Re-embed all rows under ${scope}/${scopeID} using the current embedder? This calls the provider API and may incur cost.`)) {
+      return;
+    }
+    setReembedBusy(true);
+    try {
+      const resp = await reembedMemory(scope, scopeID, false);
+      setReembedBanner(resp);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setReembedBusy(false);
+    }
+  };
 
   return (
     <div className="memory-view-wrapper">
@@ -161,6 +245,7 @@ export default function MemoryView() {
               onClick={() => {
                 setScopeID(row.scope_id);
                 setSelectedKey("");
+                setReembedBanner(null);
               }}
             >
               <code>{row.scope_id}</code>
@@ -182,6 +267,48 @@ export default function MemoryView() {
         <div className="pane-header">
           keys {scopeID && <code>{scope}/{scopeID}</code>}
         </div>
+        {/* v0.9.0 — embedding model badge + reembed action. Only
+            renders when embed_stats reports rows for this scope. */}
+        {scope && embedStats !== null && embedStats.length > 0 && (
+          <div className="embed-badge-row">
+            <span className="embed-badge-label">embeddings:</span>
+            {embedStats.map((m) => (
+              <span
+                key={m.provider + "/" + m.model + "/" + m.dimension}
+                className="embed-badge"
+                title={`${m.row_count} row(s) under this model, dim=${m.dimension}`}
+              >
+                {m.provider}/{m.model}
+                <span className="embed-badge-count">×{m.row_count}</span>
+              </span>
+            ))}
+            {scopeID && (
+              <button
+                className="embed-reembed-btn"
+                disabled={reembedBusy}
+                onClick={handleReembedDryRun}
+                title="See which rows would be re-embedded under the current embedder"
+              >
+                {reembedBusy ? "…" : "reembed plan"}
+              </button>
+            )}
+          </div>
+        )}
+        {scope && embedStats === null && (
+          <div className="embed-badge-row embed-badge-disabled">
+            <span className="embed-badge-label">embeddings: not configured</span>
+          </div>
+        )}
+        {/* v0.9.0 — reembed banner. Shows dry-run results + commit
+            button, or the real-run outcome. */}
+        {reembedBanner && (
+          <ReembedBanner
+            banner={reembedBanner}
+            busy={reembedBusy}
+            onCommit={handleReembedCommit}
+            onDismiss={() => setReembedBanner(null)}
+          />
+        )}
         {scopeID && (
           <input
             type="text"
@@ -200,6 +327,13 @@ export default function MemoryView() {
               className={e.key === selectedKey ? "on" : ""}
               onClick={() => setSelectedKey(e.key)}
             >
+              {/* v0.9.0 — embedding indicator dot. Hint, not
+                  authoritative: shows when ANY row in the scope is
+                  embedded, not whether THIS row is. Per-key embed
+                  presence is a v0.9.x follow-up. */}
+              {scopeHasEmbeddings && (
+                <span className="embed-dot" title="scope has embeddings (use Memory.search from an agent)" />
+              )}
               <code>{e.key}</code>
               {e.expires_at && <span className="ttl-flag" title={`expires ${e.expires_at}`}>ttl</span>}
             </li>
@@ -228,6 +362,72 @@ export default function MemoryView() {
       </div>
       </Splitter>
     </Splitter>
+    </div>
+  );
+}
+
+// ReembedBanner renders the dry-run plan or the real-run outcome.
+// Dry-run shape carries sample_keys + a "commit" button; real-run
+// carries reembedded + failed counts and a dismiss button.
+function ReembedBanner(props: {
+  banner: MemoryReembedResponse;
+  busy: boolean;
+  onCommit: () => void;
+  onDismiss: () => void;
+}) {
+  const { banner, busy, onCommit, onDismiss } = props;
+  if (banner.dry_run) {
+    return (
+      <div className="reembed-banner reembed-dryrun">
+        <div className="reembed-summary">
+          <strong>{banner.rows_to_reembed}</strong> row{banner.rows_to_reembed === 1 ? "" : "s"} would be re-embedded under{" "}
+          <code>{banner.current_embedder.provider}/{banner.current_embedder.model}</code>.
+        </div>
+        {banner.sample_keys.length > 0 && (
+          <div className="reembed-samples">
+            sample: {banner.sample_keys.slice(0, 8).map((k) => (
+              <code key={k}>{k}</code>
+            ))}
+            {banner.sample_keys_capped && <span className="meta">…</span>}
+          </div>
+        )}
+        <div className="reembed-actions">
+          {banner.rows_to_reembed > 0 && (
+            <button onClick={onCommit} disabled={busy} className="reembed-commit-btn">
+              {busy ? "re-embedding…" : `commit (${banner.rows_to_reembed} row${banner.rows_to_reembed === 1 ? "" : "s"})`}
+            </button>
+          )}
+          <button onClick={onDismiss} disabled={busy} className="reembed-dismiss-btn">
+            dismiss
+          </button>
+        </div>
+      </div>
+    );
+  }
+  return (
+    <div className="reembed-banner reembed-realrun">
+      <div className="reembed-summary">
+        re-embedded <strong>{banner.rows_reembedded}</strong>
+        {banner.rows_failed > 0 && (
+          <>
+            {" "}· <span className="meta-failed">{banner.rows_failed} failed</span>
+          </>
+        )}
+        {" "}under{" "}
+        <code>{banner.current_embedder.provider}/{banner.current_embedder.model}</code>.
+      </div>
+      {banner.failed_keys && banner.failed_keys.length > 0 && (
+        <div className="reembed-samples">
+          failed: {banner.failed_keys.slice(0, 8).map((k) => (
+            <code key={k}>{k}</code>
+          ))}
+        </div>
+      )}
+      <div className="reembed-actions">
+        <button onClick={onDismiss} className="reembed-dismiss-btn">
+          dismiss
+        </button>
+      </div>
     </div>
   );
 }

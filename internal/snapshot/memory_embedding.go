@@ -1,15 +1,20 @@
 package snapshot
 
-import "time"
+import (
+	"context"
+	"encoding/base64"
+	"encoding/binary"
+	"errors"
+	"fmt"
+	"math"
+	"time"
+
+	"github.com/denn-gubsky/loomcycle/internal/store"
+)
 
 // MemoryEmbeddingSnapshot is the optional per-memory-row embedding
-// payload. In Phase 1 (this package's current shape) every memory
-// entry's Embedding field is nil → serialises as JSON null. Phase 2
-// (vector ops) reads the embedding from a new store table and
-// populates this struct.
-//
-// The wire shape is locked in doc-internal/rfcs/semantic-memory.md
-// § "Snapshot integration":
+// payload. The wire shape is locked in
+// doc-internal/rfcs/semantic-memory.md § "Snapshot integration":
 //
 //	{
 //	  "provider": "openai",
@@ -35,14 +40,84 @@ type MemoryEmbeddingSnapshot struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
-// nilEmbedding is the canonical "no embedding" value used in Phase 1
-// by Capture(). Returns nil so json.Marshal emits null.
+// captureEmbedding looks up the embedding row for (scope, scopeID,
+// key) and returns the wire shape. Returns (nil, nil) when:
 //
-// Phase 2 will replace this with a store-driven lookup: for each
-// memory entry, call store.MemoryEmbedGet(scope, scope_id, key) and
-// either return nil (no embedding stored) or a populated struct. The
-// Phase 1 → Phase 2 transition is transparent at the wire level:
-// the JSON shape is the same; only the Phase 1 value is null.
-func nilEmbedding() *MemoryEmbeddingSnapshot {
-	return nil
+//   - the backend doesn't support vectors (refusal stub backends);
+//   - no embedding exists for this row (operators wrote it with
+//     embed=false, or it was deleted via the admin reembed endpoint
+//     after the k/v row landed).
+//
+// Capture failures (e.g. a DB error) bubble out so the snapshot
+// fails loudly rather than silently dropping vectors. Operators
+// re-run capture on a healthy DB.
+func captureEmbedding(ctx context.Context, s store.Store, scope store.MemoryScope, scopeID, key string) (*MemoryEmbeddingSnapshot, error) {
+	if !s.SupportsVectors() {
+		return nil, nil
+	}
+	emb, err := s.MemoryEmbedGet(ctx, scope, scopeID, key)
+	if err != nil {
+		var nf *store.ErrNotFound
+		if errors.As(err, &nf) {
+			return nil, nil
+		}
+		// ErrVectorUnsupported is a guard against backends whose
+		// SupportsVectors() lied — treat as "no embedding" so a
+		// flapping config doesn't fail the whole snapshot.
+		if errors.Is(err, store.ErrVectorUnsupported) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("capture embedding %s/%s/%s: %w", scope, scopeID, key, err)
+	}
+	return &MemoryEmbeddingSnapshot{
+		Provider:  emb.Provider,
+		Model:     emb.Model,
+		Dimension: emb.Dimension,
+		Vector:    encodeFloat32LEBase64(emb.Vector),
+		EmbedText: emb.EmbedText,
+		CreatedAt: emb.CreatedAt,
+	}, nil
+}
+
+// nilEmbedding is preserved for back-compat with the Phase-1
+// captureMemory call site. It returns nil → JSON null. New call
+// sites should use captureEmbedding directly.
+//
+// Deprecated: use captureEmbedding for snapshot Phase-2 paths.
+func nilEmbedding() *MemoryEmbeddingSnapshot { return nil }
+
+// encodeFloat32LEBase64 packs []float32 into little-endian bytes
+// then base64-encodes the result. Matches the on-disk pgvector +
+// sqlite-vec wire formats so a JSON snapshot can move bytes
+// directly to either backend.
+func encodeFloat32LEBase64(vec []float32) string {
+	if len(vec) == 0 {
+		return ""
+	}
+	b := make([]byte, 4*len(vec))
+	for i, f := range vec {
+		binary.LittleEndian.PutUint32(b[i*4:], math.Float32bits(f))
+	}
+	return base64.StdEncoding.EncodeToString(b)
+}
+
+// decodeFloat32LEBase64 reverses encodeFloat32LEBase64. Returns an
+// error when the base64 payload doesn't decode OR its byte length
+// isn't a multiple of 4 — both are corruption signals.
+func decodeFloat32LEBase64(s string) ([]float32, error) {
+	if s == "" {
+		return []float32{}, nil
+	}
+	raw, err := base64.StdEncoding.DecodeString(s)
+	if err != nil {
+		return nil, fmt.Errorf("base64 decode: %w", err)
+	}
+	if len(raw)%4 != 0 {
+		return nil, fmt.Errorf("vector byte length %d is not a multiple of 4", len(raw))
+	}
+	out := make([]float32, len(raw)/4)
+	for i := range out {
+		out[i] = math.Float32frombits(binary.LittleEndian.Uint32(raw[i*4:]))
+	}
+	return out, nil
 }

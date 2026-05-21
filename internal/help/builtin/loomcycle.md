@@ -42,6 +42,10 @@ file/network group (`Read` / `Write` / `Edit` / `Grep` / `Glob` /
   empty), `delete`. Writes atomically; preserves all other cells +
   notebook metadata verbatim.
 - **Memory** — persistent key/value scoped to `agent` or `user`.
+  v0.9.0 adds **semantic search**: pass `embed: true` + `embed_text`
+  on `set` to make a row searchable, then `op: search` to retrieve
+  by cosine similarity. See `help(topic="vector-memory")` for the
+  full surface + failure modes.
 - **Channel** — durable inter-agent message bus with cursor-based
   at-least-once delivery; `_system/*` channels carry runtime signals
   (heartbeats, alarms, pause/resume state).
@@ -64,6 +68,9 @@ Cross-cutting topics that explain how these compose:
 - `help(topic="experimentation")` — AgentDef + Evaluation fork-and-score
 - `help(topic="skills-evolution")` — SkillDef substrate for runtime
   skill body evolution (v0.8.22)
+- `help(topic="vector-memory")` — semantic search on Memory: when to
+  use it, the `embed: true` / `embed_text` / `search` shape, and the
+  four failure modes (v0.9.0)
 - `help(topic="system-channels")` — `_system/*` prefix and the admin endpoint
 - `help(topic="interruption")` — human-in-the-loop ask / notify / cancel
 - `help(topic="pause-resume-snapshot")` — runtime quiesce + portable

@@ -894,6 +894,126 @@ pre {
   border-radius: 2px;
   letter-spacing: 0.04em;
 }
+
+/* v0.9.0 Vector Memory — model-distribution badge + reembed banner. */
+.embed-badge-row {
+  margin: 8px 12px 4px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--fg-soft);
+}
+.embed-badge-label {
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.embed-badge {
+  background: var(--bg-soft, #1f2937);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 2px 8px;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--fg);
+}
+.embed-badge-count {
+  margin-left: 6px;
+  color: var(--fg-soft);
+}
+.embed-badge-disabled .embed-badge-label {
+  color: var(--fg-muted, #6b7280);
+  font-style: italic;
+}
+.embed-reembed-btn {
+  margin-left: auto;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--fg);
+  font-family: var(--mono);
+  font-size: 11px;
+  padding: 2px 8px;
+  cursor: pointer;
+}
+.embed-reembed-btn:hover:not(:disabled) {
+  background: var(--bg-soft, #1f2937);
+}
+.embed-reembed-btn:disabled {
+  opacity: 0.5;
+  cursor: wait;
+}
+
+.embed-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent, #60a5fa);
+  margin-right: 6px;
+  vertical-align: middle;
+}
+
+.reembed-banner {
+  margin: 6px 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-size: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.reembed-dryrun {
+  background: var(--bg-soft, #1f2937);
+}
+.reembed-realrun {
+  background: var(--success-soft, #064e3b);
+}
+.reembed-summary code {
+  font-family: var(--mono);
+  font-size: 11px;
+}
+.reembed-samples {
+  font-size: 11px;
+  color: var(--fg-soft);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  align-items: center;
+}
+.reembed-samples code {
+  background: var(--bg);
+  padding: 1px 4px;
+  border-radius: 2px;
+}
+.reembed-actions {
+  display: flex;
+  gap: 8px;
+}
+.reembed-commit-btn,
+.reembed-dismiss-btn {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--fg);
+  font-family: var(--mono);
+  font-size: 11px;
+  padding: 4px 12px;
+  cursor: pointer;
+}
+.reembed-commit-btn:hover:not(:disabled) {
+  background: var(--accent, #60a5fa);
+  color: var(--bg);
+}
+.reembed-commit-btn:disabled {
+  opacity: 0.5;
+  cursor: wait;
+}
+.meta-failed {
+  color: var(--err, #f87171);
+}
 .entry-detail {
   padding: 12px;
   display: flex;

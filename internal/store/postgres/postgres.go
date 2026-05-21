@@ -51,11 +51,32 @@ type Config struct {
 	// PingTimeout caps the initial connection check. Default 5s. The
 	// pool is otherwise lazy — connections open on first query.
 	PingTimeout time.Duration
+	// PgvectorEnabled opts in to v0.9.0 Vector Memory on this Store.
+	// When true, Open() verifies pgvector is installed (the migration
+	// set's 0017_memory_embeddings.up.sql does the CREATE EXTENSION;
+	// Open() re-checks pg_extension after migrations run and refuses
+	// to start if the extension is missing) and SupportsVectors()
+	// returns true. When false, vector ops refuse with
+	// ErrVectorUnsupported regardless of whether the migration ran.
+	//
+	// The pgvector extension itself must be installable on the host
+	// Postgres (`apt install postgresql-16-pgvector` or the
+	// pgvector/pgvector docker image). Operators with a non-pgvector
+	// Postgres set this to false and migration 0017 still applies
+	// successfully because PostgreSQL ships `CREATE EXTENSION IF NOT
+	// EXISTS vector` either way — only LOAD failures during search
+	// would surface, and search refuses upfront in that case.
+	PgvectorEnabled bool
 }
 
 // Store is the Postgres implementation of store.Store.
 type Store struct {
 	pool *pgxpool.Pool
+
+	// pgvectorEnabled is set in Open() from Config.PgvectorEnabled
+	// AND the post-migration `SELECT FROM pg_extension WHERE
+	// extname='vector'` probe. SupportsVectors() returns this.
+	pgvectorEnabled bool
 
 	// closeOnce guards the Close() idempotency contract.
 	closeOnce sync.Once
@@ -124,7 +145,54 @@ func Open(ctx context.Context, cfg Config) (*Store, error) {
 		}
 	}
 
-	return &Store{pool: pool}, nil
+	s := &Store{pool: pool}
+
+	// v0.9.0 Vector Memory: when operator opted in via
+	// LOOMCYCLE_PGVECTOR_ENABLED=1, verify the extension actually
+	// loaded — migration 0017 will have done `CREATE EXTENSION IF
+	// NOT EXISTS vector`, but pg_extension is the authoritative
+	// runtime check. If the binary isn't installed in the Postgres
+	// image, `CREATE EXTENSION` already failed during migration
+	// (loud) so we'd never reach this — but the probe also catches
+	// the rare case where the extension was dropped between boots.
+	if cfg.PgvectorEnabled {
+		var loaded bool
+		probeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		defer cancel()
+		err := pool.QueryRow(probeCtx,
+			`SELECT EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'vector')`,
+		).Scan(&loaded)
+		if err != nil {
+			pool.Close()
+			return nil, fmt.Errorf("postgres: probe pgvector: %w", err)
+		}
+		if !loaded {
+			pool.Close()
+			return nil, errors.New("postgres: LOOMCYCLE_PGVECTOR_ENABLED=1 but the `vector` extension is not loaded. Install pgvector on your Postgres (`apt install postgresql-<ver>-pgvector` or use the pgvector/pgvector docker image), then restart loomcycle")
+		}
+		// The migration 0017 wraps CREATE TABLE inside a conditional
+		// IF has_vector block. Operators who installed pgvector AFTER
+		// first running migrations would pass the extension probe
+		// above (extension present) but lack the table itself
+		// (migration ran in tolerant-skip mode). Detect that here so
+		// the first vector op doesn't crash with a raw pgx
+		// "relation does not exist" error.
+		var tableExists bool
+		err = pool.QueryRow(probeCtx,
+			`SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'memory_embeddings')`,
+		).Scan(&tableExists)
+		if err != nil {
+			pool.Close()
+			return nil, fmt.Errorf("postgres: probe memory_embeddings table: %w", err)
+		}
+		if !tableExists {
+			pool.Close()
+			return nil, errors.New("postgres: pgvector is installed but the `memory_embeddings` table is missing. This means the 0017 migration ran in tolerant-skip mode before pgvector was available. Re-run `loomcycle migrate up` (or restart with LOOMCYCLE_PG_AUTOMIGRATE=1) to create the table")
+		}
+		s.pgvectorEnabled = true
+	}
+
+	return s, nil
 }
 
 // CreateSession inserts a new session with a generated ID. userID may be

@@ -50,6 +50,17 @@ type freshFixture struct {
 // devs only need ONE database (loomcycle_test) provisioned in advance —
 // the test creates the per-test schema on the fly via search_path.
 func freshSchema(t *testing.T, dsn string) freshFixture {
+	return freshSchemaWithVectors(t, dsn, false)
+}
+
+// freshSchemaWithVectors is the pgvector-aware variant. Pass
+// pgvectorEnabled=true to set Config.PgvectorEnabled (the test
+// Postgres must have the pgvector binary installed for this path
+// to succeed — see TestStoreContractWithPgvector for the gating
+// env var). v0.9.0: lets the Postgres contract tests exercise the
+// real vector round-trip path against pgvector instead of the
+// refusal path that the default freshSchema covers.
+func freshSchemaWithVectors(t *testing.T, dsn string, pgvectorEnabled bool) freshFixture {
 	t.Helper()
 
 	schema := uniqueSchemaName(t)
@@ -77,10 +88,11 @@ func freshSchema(t *testing.T, dsn string) freshFixture {
 	// schema. AutoMigrate=true so the schema gets the v0001 init.
 	storeDSN := appendOption(dsn, "search_path", schema)
 	s, err := Open(context.Background(), Config{
-		DSN:          storeDSN,
-		MaxOpenConns: 8,
-		MinIdleConns: 0,
-		AutoMigrate:  true,
+		DSN:             storeDSN,
+		MaxOpenConns:    8,
+		MinIdleConns:    0,
+		AutoMigrate:     true,
+		PgvectorEnabled: pgvectorEnabled,
 	})
 	if err != nil {
 		// Best-effort cleanup on Open failure.
@@ -164,10 +176,40 @@ func appendOption(dsn, key, value string) string {
 // Postgres adapter. Identical surface to the SQLite contract test —
 // drift between the two adapters surfaces as a failed sub-test on
 // whichever side regressed.
+//
+// v0.9.0: this variant runs with PgvectorEnabled=false, so the
+// Vector Memory contract tests exercise the refusal path. The
+// pgvector round-trip path is covered by TestStoreContractWithPgvector
+// below, which requires LOOMCYCLE_TEST_PG_VECTOR=1 + a pgvector-
+// installed Postgres.
 func TestStoreContract(t *testing.T) {
 	dsn := pgDSNFromEnv(t)
 	storetest.Run(t, func(t *testing.T) (store.Store, func()) {
 		fix := freshSchema(t, dsn)
+		return fix.store, fix.cleanup
+	})
+}
+
+// TestStoreContractWithPgvector runs the same shared suite against
+// Postgres with PgvectorEnabled=true. The vector contract tests
+// take the round-trip path here — set + search + ordering +
+// dimension-mismatch + CASCADE.
+//
+// Requires:
+//   - LOOMCYCLE_TEST_PG_DSN set (same as the base suite)
+//   - LOOMCYCLE_TEST_PG_VECTOR=1 (opt-in flag)
+//   - pgvector binary installed on the test Postgres
+//     (pgvector/pgvector docker image is the easy path)
+//
+// Without LOOMCYCLE_TEST_PG_VECTOR, this test skips and the
+// refusal-path coverage in TestStoreContract is all you get.
+func TestStoreContractWithPgvector(t *testing.T) {
+	if os.Getenv("LOOMCYCLE_TEST_PG_VECTOR") != "1" {
+		t.Skip("LOOMCYCLE_TEST_PG_VECTOR not set; skipping pgvector round-trip contract tests")
+	}
+	dsn := pgDSNFromEnv(t)
+	storetest.Run(t, func(t *testing.T) (store.Store, func()) {
+		fix := freshSchemaWithVectors(t, dsn, true)
 		return fix.store, fix.cleanup
 	})
 }

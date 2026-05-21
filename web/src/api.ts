@@ -278,6 +278,83 @@ export function getMemoryEntry(
   );
 }
 
+// ---- v0.9.0 Vector Memory admin ----
+//
+// Both endpoints return 503 when the backend lacks vector support
+// (LOOMCYCLE_PGVECTOR_ENABLED unset on Postgres / SQLite always) or
+// when no embedder is configured. The MemoryView uses
+// jsonFetchAllowing(..., [503]) so the UI can render an
+// instructional empty state instead of a thrown error banner.
+
+export interface MemoryEmbedModelStats {
+  provider: string;
+  model: string;
+  dimension: number;
+  row_count: number;
+}
+
+export interface MemoryEmbedStatsResponse {
+  scope: string;
+  models: MemoryEmbedModelStats[];
+  total_embedding_bytes: number;
+}
+
+export type MemoryEmbedStatsResult =
+  | { ok: true; data: MemoryEmbedStatsResponse }
+  | { ok: false; status: number; body: any };
+
+export function listMemoryEmbedStats(scope: string): Promise<MemoryEmbedStatsResult> {
+  return jsonFetchAllowing<MemoryEmbedStatsResponse>(
+    `/v1/_memory/embed_stats?scope=${encodeURIComponent(scope)}`,
+    [503],
+  );
+}
+
+export interface MemoryReembedCurrentEmbedder {
+  provider: string;
+  model: string;
+  dimension: number;
+}
+
+export interface MemoryReembedDryRunResponse {
+  scope: string;
+  scope_id: string;
+  dry_run: true;
+  rows_total: number;
+  rows_to_reembed: number;
+  current_embedder: MemoryReembedCurrentEmbedder;
+  sample_keys: string[];
+  sample_keys_capped: boolean;
+}
+
+export interface MemoryReembedRealResponse {
+  scope: string;
+  scope_id: string;
+  dry_run: false;
+  rows_reembedded: number;
+  rows_failed: number;
+  current_embedder: MemoryReembedCurrentEmbedder;
+  failed_keys?: string[];
+}
+
+export type MemoryReembedResponse = MemoryReembedDryRunResponse | MemoryReembedRealResponse;
+
+export function reembedMemory(
+  scope: string,
+  scopeID: string,
+  dryRun: boolean,
+): Promise<MemoryReembedResponse> {
+  const params = new URLSearchParams({
+    scope,
+    scope_id: scopeID,
+    dry_run: String(dryRun),
+  });
+  return jsonFetch<MemoryReembedResponse>(
+    `/v1/_memory/reembed?${params.toString()}`,
+    { method: "POST" },
+  );
+}
+
 export async function cancelAgent(agentId: string, reason?: string): Promise<unknown> {
   const resp = await fetch(`/v1/agents/${encodeURIComponent(agentId)}/cancel`, {
     method: "POST",

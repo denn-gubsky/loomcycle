@@ -144,6 +144,13 @@ type Server struct {
 	// main.go after the handler is constructed.
 	mcpHTTPHandler http.Handler
 
+	// embedder is the v0.9.0 Vector Memory embedder. Same instance
+	// the Memory tool holds. Nil = the /v1/_memory/reembed +
+	// /v1/_memory/embed_stats endpoints return 503. Set via
+	// SetEmbedder from main.go after the embedder is constructed.
+	// Same wiring shape as the other late-bound deps above.
+	embedder providers.Embedder
+
 	// Build identifiers surfaced via /healthz so the Web UI topbar
 	// can display the running binary's version instead of a stale
 	// hard-coded string. Set via SetBuildInfo from cmd/loomcycle/main.go
@@ -245,6 +252,14 @@ func (s *Server) SetPauseManager(m *pause.Manager) {
 // state). Don't expose mutation through this — use SetPauseManager.
 func (s *Server) PauseManager() *pause.Manager {
 	return s.pauseMgr
+}
+
+// SetEmbedder installs the v0.9.0 Vector Memory embedder so the
+// /v1/_memory/reembed + /v1/_memory/embed_stats endpoints have a
+// backing object. Nil is the default — those endpoints return 503
+// until this is called. Same wiring shape as SetMetricsSampler.
+func (s *Server) SetEmbedder(e providers.Embedder) {
+	s.embedder = e
 }
 
 // SetMCPHTTPHandler installs the v0.8.15.3 HTTP MCP transport handler
@@ -1189,6 +1204,12 @@ func (s *Server) Mux() http.Handler {
 	// `/`-prefixed paths (e.g. `events/2026-05-09T10:00`) and a
 	// single-segment {key} would 404 on those.
 	mux.Handle("GET /v1/_memory/scopes/{scope}/{scope_id}/keys/{key...}", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleGetMemoryEntry))))
+	// v0.9.0 Vector Memory admin — per-scope embedding stats +
+	// operator-driven re-embedding for model migrations. Bearer-
+	// authed; refuse with 503 when the backend has no vector
+	// support OR no embedder is configured.
+	mux.Handle("GET /v1/_memory/embed_stats", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleMemoryEmbedStats))))
+	mux.Handle("POST /v1/_memory/reembed", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleMemoryReembed))))
 	// v0.8.17 Snapshot capture (PR 2). Bearer-authed; same posture
 	// as /v1/_resolver. The full runtime-state JSON envelope; see
 	// internal/snapshot/snapshot.go for the wire shape.

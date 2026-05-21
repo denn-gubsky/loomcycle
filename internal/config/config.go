@@ -14,6 +14,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/denn-gubsky/loomcycle/internal/agents"
+	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/skills"
 	"github.com/denn-gubsky/loomcycle/internal/tools/policy"
 )
@@ -102,6 +103,13 @@ type Config struct {
 	// permission allowlist; the existing hook-registration HTTP
 	// endpoints (POST /v1/hooks) are unchanged. See HooksConfig.
 	Hooks HooksConfig `yaml:"hooks"`
+
+	// Memory is the v0.9.0 top-level config block for the Memory
+	// tool's vector / semantic features. Only sub-field today is
+	// `embedder:` (provider + model + timeouts). When unset,
+	// vector ops on the Memory tool refuse with
+	// embedder_not_configured. K/V Memory is unaffected.
+	Memory MemoryConfig `yaml:"memory"`
 
 	// Env-derived; not in YAML.
 	Env Env `yaml:"-"`
@@ -221,6 +229,39 @@ type HooksConfig struct {
 	// (comma-separated). Env wins over yaml when both are set (same
 	// rule as storage / cache blocks).
 	PermitHostWiden HostWidenPermitConfig `yaml:"permit_host_widen"`
+}
+
+// MemoryConfig is the v0.9.0 top-level Memory tool config block.
+// Only sub-field today is `embedder:`. K/v Memory ops have no
+// per-block config (the byte caps live on Env). When the entire
+// block is unset, vector ops refuse with embedder_not_configured.
+type MemoryConfig struct {
+	// Embedder picks the provider + model loomcycle uses to embed
+	// memory rows (when an agent calls Memory.set with embed=true)
+	// and queries (Memory.search). Exactly one embedder is
+	// supported in v0.9.0 — per-agent overrides ship in v0.10.x.
+	//
+	// When Provider is empty (default), vector ops on the Memory
+	// tool refuse with embedder_not_configured. K/V Memory is
+	// unaffected.
+	Embedder EmbedderConfig `yaml:"embedder"`
+}
+
+// EmbedderConfig selects the v0.9.0 embedder. Validated at config
+// load: Provider must be in the registered set (providers.NewEmbedder
+// catches unknown names); Model is required when Provider is set.
+type EmbedderConfig struct {
+	// Provider is the registered embedder driver name
+	// ("openai" / "gemini" / "anthropic" in v0.9.0).
+	Provider string `yaml:"provider"`
+	// Model is the wire model id ("text-embedding-3-large" etc.).
+	Model string `yaml:"model"`
+	// TimeoutMs overrides LOOMCYCLE_MEMORY_EMBED_TIMEOUT_MS for
+	// this specific embedder. 0 = inherit env (30000 default).
+	TimeoutMs int `yaml:"timeout_ms"`
+	// BatchSize overrides LOOMCYCLE_MEMORY_EMBED_BATCH_SIZE.
+	// 0 = inherit env (100 default).
+	BatchSize int `yaml:"batch_size"`
 }
 
 // HostWidenPermitConfig is the per-capability slice of HooksConfig
@@ -951,6 +992,37 @@ type Env struct {
 	// Env: LOOMCYCLE_MEMORY_SWEEP_MS.
 	MemorySweepInterval time.Duration
 
+	// PgvectorEnabled opts in to v0.9.0 Vector Memory on the
+	// Postgres backend. When true, Open() probes the `vector`
+	// extension and refuses to start if it's not loaded; Memory's
+	// `search` op + `embed: true` field become available. When
+	// false (default), vector ops refuse with ErrVectorUnsupported.
+	// SQLite is unaffected — sqlite-vec ships in v0.9.1.
+	// Env: LOOMCYCLE_PGVECTOR_ENABLED.
+	PgvectorEnabled bool
+
+	// SqliteVecPath is the path to the sqlite-vec shared library.
+	// Reserved for v0.9.1 (the build-tag swap to cgosqlite); parsed
+	// in v0.9.0 so operator yaml/env doesn't need a v0.9.0→v0.9.1
+	// migration. Currently unused — SQLite vector ops always refuse
+	// in v0.9.0.
+	// Env: LOOMCYCLE_SQLITE_VEC_PATH.
+	SqliteVecPath string
+
+	// MemoryEmbedBatchSize is the default batch size embedder
+	// drivers use when grouping texts into one provider call.
+	// Provider-specific caps (OpenAI's 2048-item limit etc.) still
+	// apply on top. Default 100. 0 disables batching (one call per
+	// text — useful for debugging cost surprises).
+	// Env: LOOMCYCLE_MEMORY_EMBED_BATCH_SIZE.
+	MemoryEmbedBatchSize int
+
+	// MemoryEmbedTimeoutMs caps a single embedder HTTP call. Default
+	// 30000 (30 s). 0 disables (rely on outer context). Negative
+	// treated as 0 (matches MemoryMaxValueBytes convention).
+	// Env: LOOMCYCLE_MEMORY_EMBED_TIMEOUT_MS.
+	MemoryEmbedTimeoutMs int
+
 	// ChannelsMaxValueBytes caps a single Channel.publish payload
 	// (v0.8.4). Default 65536 (64 KB) — mirrors MemoryMaxValueBytes.
 	// 0 disables. Env: LOOMCYCLE_CHANNELS_MAX_VALUE_BYTES.
@@ -1308,6 +1380,30 @@ func Load(path string) (*Config, error) {
 				cfg.Env.MemorySweepInterval = 0
 			} else {
 				cfg.Env.MemorySweepInterval = time.Duration(n) * time.Millisecond
+			}
+		}
+	}
+
+	// v0.9.0 Vector Memory env vars.
+	cfg.Env.PgvectorEnabled = os.Getenv("LOOMCYCLE_PGVECTOR_ENABLED") == "1"
+	cfg.Env.SqliteVecPath = os.Getenv("LOOMCYCLE_SQLITE_VEC_PATH")
+	cfg.Env.MemoryEmbedBatchSize = 100
+	if v := os.Getenv("LOOMCYCLE_MEMORY_EMBED_BATCH_SIZE"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			if n <= 0 {
+				cfg.Env.MemoryEmbedBatchSize = 0
+			} else {
+				cfg.Env.MemoryEmbedBatchSize = n
+			}
+		}
+	}
+	cfg.Env.MemoryEmbedTimeoutMs = 30000
+	if v := os.Getenv("LOOMCYCLE_MEMORY_EMBED_TIMEOUT_MS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			if n <= 0 {
+				cfg.Env.MemoryEmbedTimeoutMs = 0
+			} else {
+				cfg.Env.MemoryEmbedTimeoutMs = n
 			}
 		}
 	}
@@ -2364,6 +2460,35 @@ func validate(c *Config) error {
 			}
 		default:
 			return fmt.Errorf("mcp_servers.%s: unknown transport %q", name, srv.Transport)
+		}
+	}
+	// v0.9.0 Vector Memory: validate the memory.embedder block when
+	// set. Empty block = vector ops refuse with embedder_not_configured
+	// at the tool layer (caught at first use, not boot). Set block
+	// must have a known provider AND a model.
+	if c.Memory.Embedder.Provider != "" || c.Memory.Embedder.Model != "" {
+		if c.Memory.Embedder.Provider == "" {
+			return fmt.Errorf("memory.embedder: provider is required when embedder block is set")
+		}
+		if c.Memory.Embedder.Model == "" {
+			return fmt.Errorf("memory.embedder: model is required when embedder block is set")
+		}
+		known := providers.RegisteredEmbedders()
+		seen := false
+		for _, p := range known {
+			if p == c.Memory.Embedder.Provider {
+				seen = true
+				break
+			}
+		}
+		if !seen {
+			return fmt.Errorf("memory.embedder.provider: unknown provider %q (known: %v)", c.Memory.Embedder.Provider, known)
+		}
+		if c.Memory.Embedder.TimeoutMs < 0 {
+			return fmt.Errorf("memory.embedder.timeout_ms must be >= 0")
+		}
+		if c.Memory.Embedder.BatchSize < 0 {
+			return fmt.Errorf("memory.embedder.batch_size must be >= 0")
 		}
 	}
 	return nil
