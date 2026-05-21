@@ -76,6 +76,27 @@ Cross-cutting topics that explain how these compose:
 - `help(topic="pause-resume-snapshot")` — runtime quiesce + portable
   JSON snapshot (operator-driven; agents don't call these directly)
 
+## Your transcript records what YOU received
+
+v0.9.x: every run persists two transcript events BEFORE the loop's
+first model call:
+
+- `user_input` — the caller's `segments` from `POST /v1/runs` /
+  `POST /v1/sessions/{id}/messages` (or from `Agent.spawn` on a
+  sub-run). Surfaced in the Web UI as the **"input · user"** card.
+- `system_prompt` — the resolved system prompt: the
+  AgentDef-derived template + AgentDef overlay (when forked) +
+  SkillDef bodies (when DB-active rows override the static
+  SKILL.md). Payload carries provenance — `agent_def_id` (when
+  pinned) + `skill_def_ids` (the active SkillDef row id per
+  resolved skill). Surfaced as the **"input · system"** card.
+
+Operators inspecting a run see exactly what instructions you saw
+at THAT moment, not just what the AgentDef template says NOW (the
+template may have been forked + promoted between runs). If an
+agent's behaviour drifts after a SkillDef promote, comparing two
+runs' `system_prompt` events shows the diff directly.
+
 ## Discovering what you have
 
 Three Context ops are your map:
