@@ -226,6 +226,36 @@ channels:
   # _system/interrupts/pending:  { scope: user, semantic: broadcast, default_ttl: 3600,  publisher: system }
   # _system/interrupts/resolved: { scope: user, semantic: broadcast, default_ttl: 86400, publisher: system }
 
+# ─── v0.9.0 Vector Memory ────────────────────────────────────────────
+# Adds semantic search to the Memory tool. Agents set rows with
+# `embed: true` and query via `op: search`. Off by default — agents
+# without the embedder block see vector ops refuse with
+# `embedder_not_configured`; k/v Memory is unaffected.
+#
+# Backend requirements:
+#   - Postgres + pgvector extension (`LOOMCYCLE_PGVECTOR_ENABLED=1`)
+#   - SQLite vector backend ships in v0.9.1 (sqlite-vec via build-tag
+#     swap to cgosqlite). v0.9.0 SQLite always refuses vector ops.
+#
+# Env vars that ride alongside:
+#   LOOMCYCLE_PGVECTOR_ENABLED=1                     # opt in on Postgres
+#   LOOMCYCLE_MEMORY_EMBED_BATCH_SIZE=100            # per-call batch cap
+#   LOOMCYCLE_MEMORY_EMBED_TIMEOUT_MS=30000          # per-call HTTP timeout
+#
+# Anthropic note: v0.9.0 ships an Anthropic *stub* that refuses with
+# `embedder_not_implemented`. Anthropic has no native embeddings API
+# today; v0.9.1 wires Voyage AI under the `anthropic` driver name. Use
+# `openai` or `gemini` for v0.9.0.
+#
+# See docs/TOOLS.md → "Vector / semantic search (v0.9.0)" for the
+# wire shape, failure modes, and the admin reembed flow.
+# memory:
+#   embedder:
+#     provider: openai                       # openai | gemini | anthropic(stub)
+#     model: text-embedding-3-large          # see docs for known model→dim map
+#     timeout_ms: 30000                      # optional; overrides env
+#     batch_size: 100                        # optional; overrides env
+
 # ─── v0.8.16 Interruption tool ───────────────────────────────────────
 # Human-in-the-loop primitive. Operator picks the delivery surface;
 # per-agent yaml grants access. See docs/TOOLS.md "The Interruption

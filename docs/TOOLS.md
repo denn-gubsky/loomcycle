@@ -272,20 +272,25 @@ References: `internal/skills/`, `internal/tools/builtin/skill.go`.
 
 ## The `Memory` tool — persistent agent-scoped storage (v0.8.0)
 
-The `Memory` built-in gives agents a place to write down state that survives across runs and sessions. Five operations behind one tool, discriminated by an `op` field: **`get`**, **`set`**, **`delete`**, **`list`**, **`incr`**.
+The `Memory` built-in gives agents a place to write down state that survives across runs and sessions. Six operations behind one tool, discriminated by an `op` field: **`get`**, **`set`**, **`delete`**, **`list`**, **`incr`**, **`search`** (v0.9.0).
 
 ### Wire shape
 
 ```jsonc
 {
-  "op":     "get" | "set" | "delete" | "list" | "incr",
+  "op":     "get" | "set" | "delete" | "list" | "incr" | "search",
   "scope":  "agent" | "user",
   "key":    "string",     // get/set/delete/incr
   "value":  any,          // set
   "delta":  number,       // incr (default 1, may be negative)
   "ttl":    number,       // set/incr — seconds; absent = no expiry
-  "prefix": "string",     // list filter
-  "limit":  number        // list cap (default 100, max 1000)
+  "prefix": "string",     // list/search filter
+  "limit":  number,       // list cap (default 100, max 1000)
+  // v0.9.0 Vector Memory:
+  "embed":      bool,     // set — also store an embedding for this row
+  "embed_text": "string", // set — text to embed (defaults to JSON-stringified value)
+  "query":      "string", // search — text to embed and use as similarity query
+  "top_k":      number    // search — max results (default 10, max 50)
 }
 ```
 
@@ -293,10 +298,12 @@ Result shapes:
 
 ```jsonc
 get    → { "value": <stored> | null, "expires_at": "RFC3339" | null }
-set    → { "ok": true }
+set    → { "ok": true, "embedded"?: bool, "embed_warning"?: "string" }
 incr   → { "value": <new int> }
 delete → { "deleted": true | false }
 list   → { "entries": [{"key", "value", "expires_at"}], "truncated": bool }
+search → { "entries": [{"key", "value", "score", "embedded_with", "expires_at"}],
+           "query_embedding_dim": number, "truncated": bool }
 ```
 
 ### Scopes
@@ -340,15 +347,109 @@ agents:
 
 `ttl: 3600` on a `set` makes the row expire in one hour. Reads filter expired rows out **before** the sweeper runs them — agents never see stale values, even on a slow sweep cadence. The sweep goroutine just keeps the table bounded over the long haul.
 
-### What's NOT in v0.8.0
+### Vector / semantic search (v0.9.0)
+
+The `search` op turns Memory into a retrieval substrate: agents `set` a row with `embed: true` and `embed_text: "..."`, then later `search` for rows by **semantic similarity** to a query. Exact-key lookup (`get`, `list`) is for state retrieval; semantic search is for "what have I learned that's *close to* this?"
+
+```jsonc
+// embedding-on-set
+{
+  "op": "set", "scope": "agent", "key": "rec1",
+  "value": { "name": "Alice", "skills": ["Go", "Rust"] },
+  "embed": true, "embed_text": "Alice is a Go and Rust developer"
+}
+// → { "ok": true, "embedded": true }
+
+// search
+{
+  "op": "search", "scope": "agent",
+  "query": "systems programmer",
+  "top_k": 5
+}
+// → { "entries": [
+//       { "key": "rec1", "value": {...}, "score": 0.91,
+//         "embedded_with": {"provider": "openai", "model": "text-embedding-3-large"},
+//         "expires_at": null }, ... ],
+//     "query_embedding_dim": 3072, "truncated": false }
+```
+
+**Score** is cosine similarity in `[0, 1]` (higher = closer). Backends convert from their native distance function before returning.
+
+**top_k** defaults to 10 and is hard-capped at 50 (RFC §6). Use the `prefix` field to scope `search` to a key-prefix the same way `list` does.
+
+**`embedded_with`** carries the `(provider, model)` of the row's stored embedding so callers can spot rows under an older embedder before running a reembed migration.
+
+#### Configuration
+
+Two pieces of operator config gate vector ops:
+
+1. **Backend** — Postgres with the `pgvector` extension is the only supported backend in v0.9.0. SQLite refuses with `vector_unsupported` (sqlite-vec ships in v0.9.1). Set `LOOMCYCLE_PGVECTOR_ENABLED=1` to opt in; loomcycle probes `pg_extension` at boot and refuses to start when the extension isn't installed.
+2. **Embedder** — exactly one embedder per loomcycle instance, declared in yaml:
+
+   ```yaml
+   memory:
+     embedder:
+       provider: openai     # openai | gemini | anthropic (stub in v0.9.0)
+       model: text-embedding-3-large
+       timeout_ms: 30000    # optional; env fallback LOOMCYCLE_MEMORY_EMBED_TIMEOUT_MS
+       batch_size: 100      # optional; env fallback LOOMCYCLE_MEMORY_EMBED_BATCH_SIZE
+   ```
+
+When `memory.embedder:` is unset, the `search` op and `embed: true` on `set` refuse with `embedder_not_configured`. The k/v ops are unaffected — operators not wanting semantic search don't have to configure anything.
+
+**Anthropic embedder note:** v0.9.0 ships an Anthropic *stub* that refuses with `embedder_not_implemented`. Anthropic has no native embeddings API today; v0.9.1 will wire Voyage AI under this driver name. Use `openai` or `gemini` for v0.9.0.
+
+#### Failure modes
+
+| Code | When | Recovery |
+|---|---|---|
+| `vector_unsupported` | Backend has no vector index (SQLite, or Postgres without `LOOMCYCLE_PGVECTOR_ENABLED`). | Install pgvector + set the env var, OR drop `embed: true` / `search` from the agent's flow. |
+| `embedder_not_configured` | No `memory.embedder` in yaml. | Add the yaml block, or drop vector ops. |
+| `embedder_not_implemented` | Operator picked `provider: anthropic` in v0.9.0. | Switch to `openai` or `gemini`; Voyage proxy ships v0.9.1. |
+| `dimension_mismatch` | Stored rows are at one dim; query embedder runs at another (typical mid-migration). | Run `POST /v1/_memory/reembed` to update stored rows. |
+
+`embed: true` failures *after* the k/v row landed (transient embedder network failure, etc.) do NOT roll back. The response carries `embedded: false` + `embed_warning: "..."` so the agent sees the partial outcome. Permanent configuration errors (no embedder, no vector support) refuse UPFRONT — the k/v row is not written.
+
+#### Quota accounting
+
+Embedding bytes do NOT count toward `memory_quota_bytes`. Operators don't pay for the vector's storage in their per-scope cap — only the k/v row's key + value bytes count (RFC §8).
+
+#### Operator admin endpoints
+
+```
+GET  /v1/_memory/embed_stats?scope=
+POST /v1/_memory/reembed?scope=&scope_id=&dry_run=true|false
+```
+
+**`embed_stats`** returns per-`(provider, model, dimension)` row counts + total embedding bytes for a scope. Operators run this BEFORE a model swap to estimate impact.
+
+**`reembed`** walks rows whose stored `(provider, model)` doesn't match the configured embedder and re-embeds them via the live embedder. `dry_run=true` (the safe default — even without the flag) returns the plan plus sample keys; `dry_run=false` commits and returns `rows_reembedded` + `rows_failed` + `failed_keys`. Partial failures are non-fatal — operators see exactly which rows to retry.
+
+The Web UI's `/ui/memory` page exposes both as a model-distribution badge + a "reembed plan" → confirm-and-commit flow.
+
+#### Operator env vars (v0.9.0)
+
+| Env var | Default | Purpose |
+|---|---|---|
+| `LOOMCYCLE_PGVECTOR_ENABLED` | `0` | Opt in to vector support on Postgres. Boot-time `pg_extension` probe; refuses to start when missing. |
+| `LOOMCYCLE_SQLITE_VEC_PATH` | (unset) | **Reserved for v0.9.1.** Path to the sqlite-vec shared library. Currently parsed but unused; SQLite vector ops always refuse in v0.9.0. |
+| `LOOMCYCLE_MEMORY_EMBED_BATCH_SIZE` | `100` | Default batch size for embedder calls. Provider hard caps still apply on top. |
+| `LOOMCYCLE_MEMORY_EMBED_TIMEOUT_MS` | `30000` | Per-call embedder HTTP timeout. 0 = rely on outer ctx. |
+
+#### Snapshot integration
+
+Snapshots round-trip embeddings: `Capture()` packs the float32 vector as base64 little-endian + writes it under each memory row's optional `embedding` field. `Restore()` decodes + writes via `MemoryEmbedSet` on the destination. Destinations without vector support drop the embedding with a warning per row (k/v always lands; operators re-embed after enabling pgvector). The envelope shape is locked at v1.0 — Phase 1 readers (v0.8.x) emit `embedding: null` for every row; Phase 2 readers (v0.9.0+) populate it. No envelope migration is needed.
+
+### What's NOT in v0.8.0 / v0.9.0
 
 - Cross-tenant sharing (no `tenant` scope yet).
 - Append-log primitive — agents wanting an event stream write `events/<timestamp>` keys + `list` with prefix.
 - Automatic eviction / LRU — quota exceeded → the write fails with `quota_exceeded`. Agents call `delete` explicitly.
 - Encryption-at-rest — disk encryption is operator-config-wide, not Memory-specific. Revisit alongside v0.9.x HA work.
 - Server-side schema validation — values are JSON; agents own their schemas.
+- v0.9.0 vector-specific deferrals: SQLite vector backend (v0.9.1), Anthropic native embedder (v0.9.1, via Voyage), HNSW index on `memory_embeddings` (v0.9.x perf pass — requires single-dim scope), per-agent embedder override (v0.10.x), hybrid search + rerankers (post-v1).
 
-References: `internal/store/store.go` (interface), `internal/store/sqlite/sqlite.go` + `internal/store/postgres/postgres.go` (adapters), `internal/tools/builtin/memory.go` (tool).
+References: `internal/store/store.go` (interface), `internal/store/sqlite/sqlite.go` + `internal/store/postgres/postgres.go` (adapters), `internal/tools/builtin/memory.go` (tool), `internal/providers/embedder.go` (embedder substrate), `internal/api/http/memory_admin.go` (admin endpoints).
 
 ## The `Channel` tool — persistent inter-agent message bus (v0.8.4)
 
