@@ -246,10 +246,46 @@ func Restore(ctx context.Context, s store.Store, raw []byte, opts RestoreOptions
 			if inserted {
 				result.MemoryRestored++
 			}
+			// v0.9.0 Vector Memory: when the snapshot carries an
+			// embedding, write it after the base row lands. Skipped
+			// silently (with a warning) when the restoring backend
+			// has no vector support — the k/v row still restores,
+			// just without the searchable embedding. Operators can
+			// re-embed via /v1/_memory/reembed once they've enabled
+			// pgvector on the new backend.
+			if e.Embedding != nil {
+				if !s.SupportsVectors() {
+					result.Warnings = append(result.Warnings,
+						fmt.Sprintf("memory %s/%s/%s: embedding dropped (target backend has no vector support; enable LOOMCYCLE_PGVECTOR_ENABLED then re-embed via /v1/_memory/reembed)",
+							e.Scope, e.ScopeID, e.Key))
+					continue
+				}
+				vec, err := decodeFloat32LEBase64(e.Embedding.Vector)
+				if err != nil {
+					result.Warnings = append(result.Warnings,
+						fmt.Sprintf("memory %s/%s/%s embedding: %v", e.Scope, e.ScopeID, e.Key, err))
+					continue
+				}
+				if len(vec) != e.Embedding.Dimension {
+					result.Warnings = append(result.Warnings,
+						fmt.Sprintf("memory %s/%s/%s embedding: decoded %d floats, expected dimension %d",
+							e.Scope, e.ScopeID, e.Key, len(vec), e.Embedding.Dimension))
+					continue
+				}
+				emb := store.MemoryEmbedding{
+					Provider:  e.Embedding.Provider,
+					Model:     e.Embedding.Model,
+					Dimension: e.Embedding.Dimension,
+					Vector:    vec,
+					EmbedText: e.Embedding.EmbedText,
+					CreatedAt: e.Embedding.CreatedAt,
+				}
+				if err := s.MemoryEmbedSet(ctx, entry.Scope, entry.ScopeID, e.Key, emb); err != nil {
+					result.Warnings = append(result.Warnings,
+						fmt.Sprintf("memory %s/%s/%s embedding write: %v", e.Scope, e.ScopeID, e.Key, err))
+				}
+			}
 		}
-		// Phase 2 will check e.Embedding != nil and populate the
-		// memory_embeddings table. Phase 1 silently drops the field
-		// (snapshots have it as null on every row anyway).
 	}
 
 	// channels (config + messages + cursors). Config is operator-

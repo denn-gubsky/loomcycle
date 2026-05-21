@@ -256,10 +256,17 @@ func captureSkillDefActive(ctx context.Context, s store.Store, out *SkillDefActi
 	return nil
 }
 
-// captureMemory builds the memory section. Every entry's Embedding
-// field is set to nilEmbedding() (returns nil → JSON null) in
-// Phase 1; Phase 2's vector ops will fill it in by looking up the
-// embedding table per row.
+// captureMemory builds the memory section. For each k/v row,
+// captureEmbedding looks up the matching embedding (if any) and
+// populates the wire shape. Backends without vector support
+// (SQLite in v0.9.0, or Postgres without LOOMCYCLE_PGVECTOR_ENABLED)
+// silently return nil → JSON null, matching the Phase 1 contract.
+//
+// Embedding-capture failures are fatal: a backend that can't
+// answer MemoryEmbedGet for a row that should have an embedding
+// indicates a corruption/consistency issue; the snapshot must
+// fail loudly so operators investigate rather than silently
+// shipping a degraded archive.
 func captureMemory(ctx context.Context, s store.Store, out *MemorySection) error {
 	out.Version = SectionVersion
 	rows, err := s.SnapshotReadMemory(ctx)
@@ -268,6 +275,10 @@ func captureMemory(ctx context.Context, s store.Store, out *MemorySection) error
 	}
 	out.Entries = make([]MemoryEntry, 0, len(rows))
 	for _, r := range rows {
+		emb, err := captureEmbedding(ctx, s, r.Scope, r.ScopeID, r.Key)
+		if err != nil {
+			return fmt.Errorf("snapshot memory embedding: %w", err)
+		}
 		entry := MemoryEntry{
 			Scope:     string(r.Scope),
 			ScopeID:   r.ScopeID,
@@ -275,7 +286,7 @@ func captureMemory(ctx context.Context, s store.Store, out *MemorySection) error
 			Value:     r.Value,
 			CreatedAt: r.CreatedAt,
 			UpdatedAt: r.UpdatedAt,
-			Embedding: nilEmbedding(),
+			Embedding: emb,
 		}
 		if !r.ExpiresAt.IsZero() {
 			t := r.ExpiresAt
