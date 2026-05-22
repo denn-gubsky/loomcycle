@@ -271,6 +271,8 @@ func main() {
 			}
 		case "restore":
 			os.Exit(cli.RunRestore(os.Args[2:], os.Stdout, os.Stderr))
+		case "hash":
+			os.Exit(cli.RunHash(os.Args[2:], os.Stdout, os.Stderr))
 		case "mcp":
 			mcpMode = true
 			// Strip "mcp" from os.Args so flag.Parse() below sees

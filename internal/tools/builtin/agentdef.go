@@ -96,6 +96,11 @@ type agentDefInput struct {
 	Description string          `json:"description,omitempty"`
 	Promote     *bool           `json:"promote,omitempty"`
 	Retired     *bool           `json:"retired,omitempty"`
+	// ContentSHA256 — input for `op: verify`. Operator passes the
+	// hash they computed locally (via `loomcycle hash agent`); the
+	// tool compares against the active row's content_sha256 and
+	// returns { matches, current_sha256, current_def_id, version }.
+	ContentSHA256 string `json:"content_sha256,omitempty"`
 }
 
 // Name implements tools.Tool.
@@ -134,10 +139,12 @@ func (a *AgentDef) Execute(ctx context.Context, raw json.RawMessage) (tools.Resu
 		return a.execRetire(ctx, policy, in)
 	case "promote":
 		return a.execPromote(ctx, policy, in)
+	case "verify":
+		return a.execVerify(ctx, policy, in)
 	case "":
 		return errResult("missing required field: op"), nil
 	default:
-		return errResult(fmt.Sprintf("unknown op %q (must be one of: create, fork, get, list, retire, promote)", in.Op)), nil
+		return errResult(fmt.Sprintf("unknown op %q (must be one of: create, fork, get, list, retire, promote, verify)", in.Op)), nil
 	}
 }
 
@@ -420,6 +427,50 @@ func (a *AgentDef) execPromote(ctx context.Context, policy tools.AgentDefPolicyV
 		return errResult(fmt.Sprintf("promote: %s", err)), nil
 	}
 	return okJSON(map[string]any{"def_id": row.DefID, "name": row.Name, "promoted": true})
+}
+
+// execVerify answers "is the supplied content_sha256 the hash of the
+// currently-active agent definition with this name?" Operators with
+// Docker-bundled agents compute the hash of their local source via
+// `loomcycle hash agent <path>` and pass it here; matches=false +
+// the returned current_sha256 + current_def_id tells them they should
+// re-push via `AgentDef set`. matches=true is the no-op signal.
+//
+// Returns matches=false + empty current_sha256 + empty current_def_id
+// when the name doesn't exist at all. Doesn't fall back to the static
+// cfg.Agents row — the question is specifically "what's IN THE DB?"
+// since that's what loomcycle actually loads from.
+func (a *AgentDef) execVerify(ctx context.Context, policy tools.AgentDefPolicyValue, in agentDefInput) (tools.Result, error) {
+	if in.Name == "" {
+		return errResult("verify: missing required field: name"), nil
+	}
+	if err := a.checkScopeForName(policy, in.Name, ""); err != nil {
+		return errResult(err.Error()), nil
+	}
+	row, err := a.Store.AgentDefGetActive(ctx, in.Name)
+	if err != nil {
+		var nf *store.ErrNotFound
+		if errors.As(err, &nf) {
+			// Name not promoted → no deployed version → never matches.
+			return okJSON(map[string]any{
+				"matches":         false,
+				"current_sha256":  "",
+				"current_def_id":  "",
+				"version":         0,
+				"name":            in.Name,
+				"deployed":        false,
+			})
+		}
+		return errResult(fmt.Sprintf("verify: %s", err)), nil
+	}
+	return okJSON(map[string]any{
+		"matches":        in.ContentSHA256 != "" && in.ContentSHA256 == row.ContentSHA256,
+		"current_sha256": row.ContentSHA256,
+		"current_def_id": row.DefID,
+		"version":        row.Version,
+		"name":           row.Name,
+		"deployed":       true,
+	})
 }
 
 // ---- helpers ----

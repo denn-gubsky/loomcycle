@@ -92,6 +92,87 @@ func TestAgentDefTool_GetSurfacesContentSHA256(t *testing.T) {
 	}
 }
 
+func TestAgentDefTool_VerifyMatchesOnSameHash(t *testing.T) {
+	tool, ctx, cleanup := agentDefFixture(t)
+	defer cleanup()
+
+	// Fork + promote one row so verify has an active deployment to
+	// answer against.
+	forkRes, _ := tool.Execute(ctx, json.RawMessage(`{"op":"fork","name":"researcher","overlay":{"system_prompt":"deployed"},"promote":true}`))
+	deployedHash := decodeResult(t, forkRes.Text)["content_sha256"].(string)
+
+	verifyRes, _ := tool.Execute(ctx, json.RawMessage(`{"op":"verify","name":"researcher","content_sha256":"`+deployedHash+`"}`))
+	if verifyRes.IsError {
+		t.Fatalf("verify: %s", verifyRes.Text)
+	}
+	out := decodeResult(t, verifyRes.Text)
+	if matches, _ := out["matches"].(bool); !matches {
+		t.Errorf("matches = false, want true: %+v", out)
+	}
+	if got, _ := out["current_sha256"].(string); got != deployedHash {
+		t.Errorf("current_sha256 = %q, want %q", got, deployedHash)
+	}
+	if deployed, _ := out["deployed"].(bool); !deployed {
+		t.Error("deployed = false")
+	}
+}
+
+func TestAgentDefTool_VerifyFalseOnDifferentHash(t *testing.T) {
+	tool, ctx, cleanup := agentDefFixture(t)
+	defer cleanup()
+	_, _ = tool.Execute(ctx, json.RawMessage(`{"op":"fork","name":"researcher","overlay":{"system_prompt":"deployed"},"promote":true}`))
+
+	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"verify","name":"researcher","content_sha256":"sha256:0000000000000000000000000000000000000000000000000000000000000000"}`))
+	if res.IsError {
+		t.Fatalf("verify: %s", res.Text)
+	}
+	out := decodeResult(t, res.Text)
+	if m, _ := out["matches"].(bool); m {
+		t.Errorf("matches = true on different hash: %+v", out)
+	}
+	if h, _ := out["current_sha256"].(string); !strings.HasPrefix(h, "sha256:") {
+		t.Errorf("current_sha256 = %q (want sha256:<hex>)", h)
+	}
+}
+
+func TestAgentDefTool_VerifyDeployedFalseOnUnknownName(t *testing.T) {
+	tool, ctx, cleanup := agentDefFixture(t)
+	defer cleanup()
+
+	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"verify","name":"never-existed","content_sha256":"sha256:abc"}`))
+	if res.IsError {
+		t.Fatalf("verify: %s", res.Text)
+	}
+	out := decodeResult(t, res.Text)
+	if m, _ := out["matches"].(bool); m {
+		t.Error("matches=true on unknown name")
+	}
+	if d, _ := out["deployed"].(bool); d {
+		t.Error("deployed=true on unknown name")
+	}
+	if h, _ := out["current_sha256"].(string); h != "" {
+		t.Errorf("current_sha256 = %q (want empty)", h)
+	}
+}
+
+func TestAgentDefTool_VerifyFalseWhenCallerOmitsHash(t *testing.T) {
+	tool, ctx, cleanup := agentDefFixture(t)
+	defer cleanup()
+	_, _ = tool.Execute(ctx, json.RawMessage(`{"op":"fork","name":"researcher","overlay":{"system_prompt":"deployed"},"promote":true}`))
+
+	// Omitting content_sha256 from the input must NEVER report matches=true
+	// (avoid the empty-string == empty-string trap that would falsely
+	// report "in sync" against a row whose hash hasn't been backfilled yet).
+	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"verify","name":"researcher"}`))
+	if res.IsError {
+		t.Fatalf("verify: %s", res.Text)
+	}
+	out := decodeResult(t, res.Text)
+	if m, _ := out["matches"].(bool); m {
+		t.Errorf("matches = true on empty caller hash: %+v", out)
+	}
+}
+
 func TestAgentDefTool_ListIncludesContentSHA256(t *testing.T) {
 	tool, ctx, cleanup := agentDefFixture(t)
 	defer cleanup()

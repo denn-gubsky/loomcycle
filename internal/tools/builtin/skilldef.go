@@ -107,14 +107,15 @@ const skillDefInputSchema = `{
 }`
 
 type skillDefInput struct {
-	Op          string          `json:"op"`
-	Name        string          `json:"name,omitempty"`
-	DefID       string          `json:"def_id,omitempty"`
-	ParentDefID string          `json:"parent_def_id,omitempty"`
-	Overlay     json.RawMessage `json:"overlay,omitempty"`
-	Description string          `json:"description,omitempty"`
-	Promote     *bool           `json:"promote,omitempty"`
-	Retired     *bool           `json:"retired,omitempty"`
+	Op            string          `json:"op"`
+	Name          string          `json:"name,omitempty"`
+	DefID         string          `json:"def_id,omitempty"`
+	ParentDefID   string          `json:"parent_def_id,omitempty"`
+	Overlay       json.RawMessage `json:"overlay,omitempty"`
+	Description   string          `json:"description,omitempty"`
+	Promote       *bool           `json:"promote,omitempty"`
+	Retired       *bool           `json:"retired,omitempty"`
+	ContentSHA256 string          `json:"content_sha256,omitempty"` // input for op: verify
 }
 
 // skillDefOverlay is the JSON shape of overlay + the persisted
@@ -170,10 +171,12 @@ func (s *SkillDef) Execute(ctx context.Context, raw json.RawMessage) (tools.Resu
 		return s.execRetire(ctx, policy, in)
 	case "promote":
 		return s.execPromote(ctx, policy, in)
+	case "verify":
+		return s.execVerify(ctx, policy, in)
 	case "":
 		return errResult("missing required field: op"), nil
 	default:
-		return errResult(fmt.Sprintf("unknown op %q (must be one of: create, fork, get, list, retire, promote)", in.Op)), nil
+		return errResult(fmt.Sprintf("unknown op %q (must be one of: create, fork, get, list, retire, promote, verify)", in.Op)), nil
 	}
 }
 
@@ -444,6 +447,41 @@ func (s *SkillDef) execPromote(ctx context.Context, policy tools.SkillDefPolicyV
 		return errResult(fmt.Sprintf("promote: %s", err)), nil
 	}
 	return okJSON(map[string]any{"def_id": row.DefID, "name": row.Name, "promoted": true})
+}
+
+// execVerify — see agentdef.go execVerify for full doc. Same shape
+// for skills: caller passes name + content_sha256 from a local
+// hash, tool reads the active row + answers matches.
+func (s *SkillDef) execVerify(ctx context.Context, policy tools.SkillDefPolicyValue, in skillDefInput) (tools.Result, error) {
+	if in.Name == "" {
+		return errResult("verify: missing required field: name"), nil
+	}
+	if err := s.checkScopeForName(policy, in.Name, ""); err != nil {
+		return errResult(err.Error()), nil
+	}
+	row, err := s.Store.SkillDefGetActive(ctx, in.Name)
+	if err != nil {
+		var nf *store.ErrNotFound
+		if errors.As(err, &nf) {
+			return okJSON(map[string]any{
+				"matches":        false,
+				"current_sha256": "",
+				"current_def_id": "",
+				"version":        0,
+				"name":           in.Name,
+				"deployed":       false,
+			})
+		}
+		return errResult(fmt.Sprintf("verify: %s", err)), nil
+	}
+	return okJSON(map[string]any{
+		"matches":        in.ContentSHA256 != "" && in.ContentSHA256 == row.ContentSHA256,
+		"current_sha256": row.ContentSHA256,
+		"current_def_id": row.DefID,
+		"version":        row.Version,
+		"name":           row.Name,
+		"deployed":       true,
+	})
 }
 
 // ---- helpers ----

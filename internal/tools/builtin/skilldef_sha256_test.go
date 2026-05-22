@@ -66,6 +66,40 @@ func TestSkillDefTool_ForkDifferentBodyDifferentHash(t *testing.T) {
 	}
 }
 
+func TestSkillDefTool_VerifyMatchesOnSameHash(t *testing.T) {
+	tool, ctx, cleanup := skillDefFixture(t)
+	defer cleanup()
+
+	createRes, _ := tool.Execute(ctx, json.RawMessage(`{"op":"create","name":"my-skill","overlay":{"body":"v1"},"promote":true}`))
+	deployedHash := decodeResult(t, createRes.Text)["content_sha256"].(string)
+
+	verifyRes, _ := tool.Execute(ctx, json.RawMessage(`{"op":"verify","name":"my-skill","content_sha256":"`+deployedHash+`"}`))
+	if verifyRes.IsError {
+		t.Fatalf("verify: %s", verifyRes.Text)
+	}
+	out := decodeResult(t, verifyRes.Text)
+	if m, _ := out["matches"].(bool); !m {
+		t.Errorf("matches = false: %+v", out)
+	}
+}
+
+func TestSkillDefTool_VerifyFalseOnUnknownName(t *testing.T) {
+	tool, ctx, cleanup := skillDefFixture(t)
+	defer cleanup()
+
+	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"verify","name":"nope","content_sha256":"sha256:abc"}`))
+	if res.IsError {
+		t.Fatalf("verify: %s", res.Text)
+	}
+	out := decodeResult(t, res.Text)
+	if m, _ := out["matches"].(bool); m {
+		t.Error("matches=true on unknown skill")
+	}
+	if d, _ := out["deployed"].(bool); d {
+		t.Error("deployed=true on unknown skill")
+	}
+}
+
 func TestSkillDefTool_GetSurfacesContentSHA256(t *testing.T) {
 	tool, ctx, cleanup := skillDefFixture(t)
 	defer cleanup()

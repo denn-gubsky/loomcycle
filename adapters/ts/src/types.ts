@@ -679,3 +679,62 @@ export interface StreamUserRunStatesOptions {
   agent?: string;
   signal?: AbortSignal;
 }
+
+// ---- v0.9.x content_sha256 verify op (AgentDef + SkillDef) ----
+
+/** Response shape for `AgentDef set/fork/get/list` rows. Mirrors what
+ *  the server-side rowResponseMap emits. The `content_sha256` field is
+ *  the deterministic SHA-256 of the agent's content-bearing fields,
+ *  prefixed `sha256:` (Docker image-digest convention). Empty on rows
+ *  that pre-date v0.9.x and haven't been backfilled yet. */
+export interface AgentDefRowResponse {
+  def_id: string;
+  name: string;
+  version: number;
+  parent_def_id?: string;
+  description?: string;
+  created_at: string;
+  created_by_agent_id?: string;
+  retired: boolean;
+  bootstrapped_from_static: boolean;
+  /** "sha256:" + 64 hex chars; empty for not-yet-backfilled rows. */
+  content_sha256?: string;
+  /** Only populated on `set` / `fork` responses (was the new row
+   *  auto-promoted to active?). Absent on get/list. */
+  promoted?: boolean;
+}
+
+/** Response shape for `AgentDef verify`. Answers "is the supplied
+ *  content_sha256 the active deployed version of this name?"
+ *
+ *  - `matches: true`  — caller's local hash matches the deployed
+ *                       active version; no push needed.
+ *  - `matches: false` — bundle is out of sync; the operator should
+ *                       push a new version via `agentDef({op: "set",
+ *                       overlay: ...})`.
+ *  - `deployed: false` — no active row exists for this name (no
+ *                       deployment yet). matches is always false. */
+export interface AgentDefVerifyResult {
+  matches: boolean;
+  /** Deployed active row's hash; empty when not deployed. */
+  current_sha256: string;
+  /** Deployed active row's def_id; empty when not deployed. */
+  current_def_id: string;
+  /** Deployed active row's version; 0 when not deployed. */
+  version: number;
+  name: string;
+  /** True if an active row exists for this name. */
+  deployed: boolean;
+}
+
+/** Response shape for `SkillDef verify`. Same semantics as
+ *  AgentDefVerifyResult; the per-skill content basis is just
+ *  smaller (name + description + body + allowed_tools). */
+export interface SkillDefVerifyResult {
+  matches: boolean;
+  current_sha256: string;
+  current_def_id: string;
+  version: number;
+  name: string;
+  deployed: boolean;
+}
