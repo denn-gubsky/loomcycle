@@ -786,6 +786,17 @@ func main() {
 	} else if n > 0 {
 		log.Printf("mcp_server_defs: backfilled %d rows with content_sha256", n)
 	}
+	// v0.9.x system_prompt_base backfill — fills the field that PR #186's
+	// read-side normalizer derives at runtime. Closes the on-disk data
+	// gap for legacy rows; new rows persist the field directly via the
+	// write-side mergedDef.normalize() (agentdef.go). Idempotent: a
+	// second boot after a full backfill finds zero rows missing the
+	// field. Shares the same bfCtx — bounded boot wait.
+	if n, err := storeIface.BackfillAgentDefSystemPromptBase(bfCtx); err != nil {
+		log.Printf("agent_defs: backfill system_prompt_base partial — %v (rows updated before error: %d)", err, n)
+	} else if n > 0 {
+		log.Printf("agent_defs: backfilled %d rows with system_prompt_base", n)
+	}
 	bfCancel()
 
 	// Memory tool depends on the Store; wire the live backend in now

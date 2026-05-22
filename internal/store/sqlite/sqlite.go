@@ -2487,6 +2487,80 @@ func (s *Store) ChannelStats(ctx context.Context) ([]store.ChannelStats, error) 
 	return out, nil
 }
 
+// BackfillAgentDefSystemPromptBase walks rows missing the
+// system_prompt_base JSON field + copies system_prompt into it. See
+// store.Store doc for the rationale (PR #186 follow-up).
+func (s *Store) BackfillAgentDefSystemPromptBase(ctx context.Context) (int, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT def_id, definition FROM agent_defs`)
+	if err != nil {
+		return 0, fmt.Errorf("backfill system_prompt_base read: %w", err)
+	}
+	type pending struct {
+		DefID string
+		Def   []byte
+	}
+	var todo []pending
+	for rows.Next() {
+		var p pending
+		if err := rows.Scan(&p.DefID, &p.Def); err != nil {
+			rows.Close()
+			return 0, fmt.Errorf("backfill system_prompt_base scan: %w", err)
+		}
+		todo = append(todo, p)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return 0, fmt.Errorf("backfill system_prompt_base iterate: %w", err)
+	}
+
+	n := 0
+	for _, p := range todo {
+		updated, ok, err := backfillSystemPromptBase(p.Def)
+		if err != nil {
+			// Hand-edited row with broken JSON — log + skip rather than
+			// abort the whole backfill.
+			continue
+		}
+		if !ok {
+			continue
+		}
+		if _, err := s.db.ExecContext(ctx,
+			`UPDATE agent_defs SET definition = ? WHERE def_id = ?`,
+			updated, p.DefID); err != nil {
+			return n, fmt.Errorf("backfill system_prompt_base update %s: %w", p.DefID, err)
+		}
+		n++
+	}
+	return n, nil
+}
+
+// backfillSystemPromptBase is the JSON-layer transform shared by
+// the sqlite + postgres backfill methods. Returns (newDef, true,
+// nil) when the row needed a fill; (nil, false, nil) when it didn't;
+// (nil, false, err) on JSON parse failure.
+func backfillSystemPromptBase(def []byte) ([]byte, bool, error) {
+	var raw map[string]any
+	if err := json.Unmarshal(def, &raw); err != nil {
+		return nil, false, err
+	}
+	existing, _ := raw["system_prompt_base"].(string)
+	if existing != "" {
+		return nil, false, nil
+	}
+	sp, _ := raw["system_prompt"].(string)
+	if sp == "" {
+		// No system_prompt either — nothing to backfill from. Leave
+		// the row as-is; the read-side normalizer is a no-op too.
+		return nil, false, nil
+	}
+	raw["system_prompt_base"] = sp
+	out, err := json.Marshal(raw)
+	if err != nil {
+		return nil, false, err
+	}
+	return out, true, nil
+}
+
 // BackfillAgentDefContentSHA256 walks NULL/empty rows + populates the
 // column via the injected signFn. See store.Store doc for invariants.
 func (s *Store) BackfillAgentDefContentSHA256(ctx context.Context, signFn func(name string, def []byte) (string, error)) (int, error) {
