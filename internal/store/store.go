@@ -508,6 +508,12 @@ type Store interface {
 	// skill_def_active. Ordered by name ASC for determinism.
 	SnapshotReadSkillDefActive(ctx context.Context) ([]SkillDefActiveEntry, error)
 
+	// SnapshotReadMCPServerDefs — v0.9.x mirror of SnapshotReadSkillDefs.
+	SnapshotReadMCPServerDefs(ctx context.Context) ([]MCPServerDefRow, error)
+
+	// SnapshotReadMCPServerDefActive — v0.9.x mirror.
+	SnapshotReadMCPServerDefActive(ctx context.Context) ([]MCPServerDefActiveEntry, error)
+
 	// SnapshotReadMemory returns every memory row across all scopes,
 	// tagged with scope + scope_id. Ordered by (scope ASC, scope_id
 	// ASC, key ASC). Filters out expired rows (consistent with
@@ -588,6 +594,12 @@ type Store interface {
 	// SnapshotRestoreSkillDefActive mirrors SnapshotRestoreAgentDefActive
 	// for skill_def_active.
 	SnapshotRestoreSkillDefActive(ctx context.Context, entry SkillDefActiveEntry) (bool, error)
+
+	// SnapshotRestoreMCPServerDef — v0.9.x mirror.
+	SnapshotRestoreMCPServerDef(ctx context.Context, r MCPServerDefRow) (bool, error)
+
+	// SnapshotRestoreMCPServerDefActive — v0.9.x mirror.
+	SnapshotRestoreMCPServerDefActive(ctx context.Context, entry MCPServerDefActiveEntry) (bool, error)
 
 	// SnapshotRestoreMemory inserts one memory row preserving
 	// CreatedAt + UpdatedAt + ExpiresAt + Value. Idempotent on

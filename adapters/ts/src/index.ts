@@ -147,6 +147,9 @@ export type {
   AgentDefRowResponse,
   AgentDefVerifyResult,
   SkillDefVerifyResult,
+  // Dynamic MCP server registration (v0.9.x)
+  MCPServerDefRowResponse,
+  MCPServerDefVerifyResult,
 } from "./types.js";
 
 export {

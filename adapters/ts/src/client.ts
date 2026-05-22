@@ -546,6 +546,38 @@ export class LoomcycleClient {
     return postJSON<SubstrateToolResponse>(this.ctx, "/v1/_skilldef", input, opts);
   }
 
+  /** Invoke the v0.9.x MCPServerDef substrate tool over HTTP.
+   *  Dynamic MCP server registration — register an HTTP /
+   *  Streamable-HTTP MCP server at runtime so its tools become
+   *  callable from any agent's `allowed_tools` list without a yaml
+   *  edit + restart.
+   *
+   *  Operator-admin-only: this endpoint requires the bearer token.
+   *
+   *  Op-discriminated input: `{op: "create" | "fork" | "get" | "list"
+   *  | "promote" | "retire" | "rediscover" | "verify", ...}`. Returns
+   *  shape varies — narrow with {@link MCPServerDefRowResponse} for
+   *  create/fork/get/list rows, {@link MCPServerDefVerifyResult} for
+   *  verify responses.
+   *
+   *  Hard constraints (substrate refuses these):
+   *  - Transport must be `http` or `streamable-http` (stdio stays
+   *    yaml-only — dynamic registration doesn't allow process spawn).
+   *  - URL hostname must be in LOOMCYCLE_HTTP_HOST_ALLOWLIST (SSRF
+   *    defence at the registration boundary).
+   *  - Name colliding with a static cfg.MCPServers entry is refused
+   *    (yaml is ground truth; use a different name).
+   *
+   *  Raises {@link SubstrateToolRefusedError} on tool-level refusals
+   *  (transport/host/yaml-name); {@link InvalidArgumentError} on 400
+   *  (malformed JSON); {@link AuthError} on 401. */
+  async mcpServerDef(
+    input: SubstrateToolInput,
+    opts?: { signal?: AbortSignal },
+  ): Promise<SubstrateToolResponse> {
+    return postJSON<SubstrateToolResponse>(this.ctx, "/v1/_mcpserverdef", input, opts);
+  }
+
   // ---- Internal helpers ----
 
   /** Shared SSE POST → stream-of-AgentEvent path. Used by

@@ -115,6 +115,65 @@ func TestRoundTrip_WithMemoryAndAgentDefs(t *testing.T) {
 	}
 }
 
+// TestRoundTrip_WithMCPServerDefs — v0.9.x dynamic MCP server defs
+// survive capture+restore round-trip with their lineage / definition /
+// active-pointer intact. Counterpart to TestRoundTrip_WithMemoryAndAgentDefs
+// pinning the new substrate's snapshot contract.
+func TestRoundTrip_WithMCPServerDefs(t *testing.T) {
+	src, srcClose := newTestStore(t)
+	defer srcClose()
+	dst, dstClose := newTestStore(t)
+	defer dstClose()
+
+	ctx := context.Background()
+
+	// Seed src with a single dynamic MCP server registration + promote.
+	def, err := src.MCPServerDefCreate(ctx, store.MCPServerDefRow{
+		DefID:       "mcpdef_n8n_mailgun_v1",
+		Name:        "n8n-mailgun",
+		Version:     1,
+		Definition:  json.RawMessage(`{"transport":"streamable-http","url":"https://example.test/mcp","headers":{},"description":"n8n test"}`),
+		Description: "n8n test",
+		CreatedAt:   mustParseTime(t, "2026-05-22T00:00:00Z"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := src.MCPServerDefSetActive(ctx, def.Name, def.DefID, ""); err != nil {
+		t.Fatal(err)
+	}
+
+	_, raw, err := Capture(ctx, src, CaptureOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := Restore(ctx, dst, raw, RestoreOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.MCPServerDefsRestored != 1 {
+		t.Errorf("MCPServerDefsRestored = %d, want 1", result.MCPServerDefsRestored)
+	}
+	if result.MCPServerDefActiveRestored != 1 {
+		t.Errorf("MCPServerDefActiveRestored = %d, want 1", result.MCPServerDefActiveRestored)
+	}
+
+	rows, err := dst.SnapshotReadMCPServerDefs(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 || rows[0].DefID != "mcpdef_n8n_mailgun_v1" {
+		t.Errorf("dst mcp_server_defs = %+v", rows)
+	}
+	active, err := dst.SnapshotReadMCPServerDefActive(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(active) != 1 || active[0].DefID != "mcpdef_n8n_mailgun_v1" {
+		t.Errorf("dst mcp_server_def_active = %+v", active)
+	}
+}
+
 // TestRestore_Idempotent_SecondCallNoDuplicates — restoring the same
 // envelope twice produces the same end state. Catches a regression
 // where SnapshotRestore* methods accidentally use plain INSERT

@@ -773,3 +773,41 @@ export interface SkillDefVerifyResult {
   name: string;
   deployed: boolean;
 }
+
+// ---- v0.9.x MCPServerDef substrate (dynamic MCP server registration) ----
+
+/** Response shape for `MCPServerDef set/fork/get/list` rows. Mirrors
+ *  what the server-side rowResponseMap emits. `discovered_tools` is the
+ *  cached tools/list snapshot — refreshed via the `rediscover` op; not
+ *  part of the content_sha256 basis. */
+export interface MCPServerDefRowResponse {
+  def_id: string;
+  name: string;
+  version: number;
+  parent_def_id?: string;
+  description?: string;
+  created_at: string;
+  created_by_agent_id?: string;
+  retired: boolean;
+  bootstrapped_from_static: boolean;
+  /** "sha256:" + 64 hex chars; empty for not-yet-backfilled rows. */
+  content_sha256?: string;
+  /** Only populated on `set` / `fork` responses (auto-promoted?). */
+  promoted?: boolean;
+}
+
+/** Response shape for `MCPServerDef verify`. Same semantics as
+ *  AgentDefVerifyResult / SkillDefVerifyResult — answers "is the
+ *  supplied content_sha256 the deployed active version of this name?" */
+export interface MCPServerDefVerifyResult {
+  matches: boolean;
+  /** Deployed active row's hash; empty when not deployed. */
+  current_sha256: string;
+  /** Deployed active row's def_id; empty when not deployed. */
+  current_def_id: string;
+  /** Deployed active row's version; 0 when not deployed. */
+  version: number;
+  name: string;
+  /** True if an active row exists for this name. */
+  deployed: boolean;
+}

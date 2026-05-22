@@ -43,6 +43,13 @@ var handlersByName = map[string]toolHandler{
 	"skilldef": wrapBuiltin("skilldef", func(c connector.Connector, ctx context.Context, in json.RawMessage) (connector.ToolResult, error) {
 		return c.SkillDef(ctx, in)
 	}),
+	// v0.9.x dynamic MCP server registration. Operator-admin-only;
+	// the LoomCycle MCP server is bearer-authed so external
+	// orchestrators (Claude Code, n8n via the MCP Client Tool) can
+	// register MCP servers at runtime through this meta-tool.
+	"mcpserverdef": wrapBuiltin("mcpserverdef", func(c connector.Connector, ctx context.Context, in json.RawMessage) (connector.ToolResult, error) {
+		return c.MCPServerDef(ctx, in)
+	}),
 	"evaluation": wrapBuiltin("evaluation", func(c connector.Connector, ctx context.Context, in json.RawMessage) (connector.ToolResult, error) {
 		return c.Evaluation(ctx, in)
 	}),

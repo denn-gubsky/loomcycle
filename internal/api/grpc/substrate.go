@@ -98,6 +98,20 @@ func (s *Server) SkillDef(ctx context.Context, req *loomcyclepb.SubstrateRequest
 	})
 }
 
+// MCPServerDef serves the v0.9.x MCPServerDef gRPC RPC — dynamic MCP
+// server registration substrate. Mirror of AgentDef + SkillDef RPC
+// shape; the body is op-discriminated input_json the Connector method
+// dispatches.
+func (s *Server) MCPServerDef(ctx context.Context, req *loomcyclepb.SubstrateRequest) (*loomcyclepb.SubstrateResponse, error) {
+	return s.dispatchSubstrateRPC(ctx, "MCPServerDef", req, func(ctx context.Context, in json.RawMessage) (json.RawMessage, bool, error) {
+		res, err := s.connector.MCPServerDef(ctx, in)
+		if err != nil {
+			return nil, false, err
+		}
+		return json.RawMessage(res.Text), res.IsError, nil
+	})
+}
+
 // dispatchSubstrateRPC is the shared body of the two substrate
 // handlers. callerFn closes over the specific Connector method
 // (AgentDef or SkillDef).

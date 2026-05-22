@@ -239,7 +239,7 @@ func TestServer_Handshake(t *testing.T) {
 	}
 }
 
-func TestServer_ToolsList_Returns28Tools(t *testing.T) {
+func TestServer_ToolsList_Returns29Tools(t *testing.T) {
 	srv := New(Config{Connector: &mockConnector{}, Logf: func(string, ...any) {}})
 	in := `{"jsonrpc":"2.0","id":1,"method":"tools/list"}` + "\n"
 	resps, _ := driveServer(t, srv, in)
@@ -250,15 +250,15 @@ func TestServer_ToolsList_Returns28Tools(t *testing.T) {
 	if err := json.Unmarshal(resps[0].Result, &result); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if len(result.Tools) != 28 {
-		t.Errorf("got %d tools, want 28 (v0.9.x adds list_channels + stream_user_run_states)", len(result.Tools))
+	if len(result.Tools) != 29 {
+		t.Errorf("got %d tools, want 29 (v0.9.x adds list_channels + stream_user_run_states + mcpserverdef)", len(result.Tools))
 	}
 	names := map[string]bool{}
 	for _, td := range result.Tools {
 		names[td.Name] = true
 	}
-	// Spot-check across categories — through the v0.9.x n8n additions.
-	for _, want := range []string{"spawn_run", "register_agent", "memory", "agentdef", "skilldef", "pause_runtime", "create_snapshot", "get_snapshot", "interruption_resolve", "register_hook", "list_hooks", "delete_hook", "list_channels", "stream_user_run_states"} {
+	// Spot-check across categories — through the v0.9.x additions.
+	for _, want := range []string{"spawn_run", "register_agent", "memory", "agentdef", "skilldef", "mcpserverdef", "pause_runtime", "create_snapshot", "get_snapshot", "interruption_resolve", "register_hook", "list_hooks", "delete_hook", "list_channels", "stream_user_run_states"} {
 		if !names[want] {
 			t.Errorf("missing tool %q in tools/list", want)
 		}
