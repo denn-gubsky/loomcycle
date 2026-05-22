@@ -736,3 +736,137 @@ export async function getMetricsSummary(
   );
   return asMetricsResult(r);
 }
+
+// ---- v0.9.x Introspection — Library + Channels + Agent sub-views ----
+
+// Substrate name summary — same shape across AgentDef / SkillDef /
+// MCPServerDef. Returned by the three GET /v1/_*/names endpoints.
+export interface DefNameSummary {
+  name: string;
+  version_count: number;
+  active_def_id?: string;
+  latest_version: number;
+  last_updated: string;
+}
+
+export interface DefNamesResponse {
+  names: DefNameSummary[];
+}
+
+// Substrate row — what `op:list` returns inside its `versions: []`
+// array. Same fields across AgentDef / SkillDef / MCPServerDef so the
+// UI's lineage tree can render any of them with one component.
+export interface DefRow {
+  def_id: string;
+  name: string;
+  version: number;
+  parent_def_id?: string;
+  description?: string;
+  retired?: boolean;
+  bootstrapped_from_static?: boolean;
+  content_sha256?: string;
+  created_at: string;
+  created_by_agent_id?: string;
+  created_by_run_id?: string;
+  definition?: unknown;
+}
+
+export interface DefListByNameResponse {
+  name: string;
+  versions: DefRow[];
+}
+
+export interface ChannelDescriptor {
+  name: string;
+  scope?: string;
+  semantic?: string;
+  publisher?: string;
+  period?: string;
+  default_ttl?: number;
+  max_messages?: number;
+  message_count: number;
+  oldest_visible_at?: string;
+  newest_visible_at?: string;
+}
+
+export interface ListChannelsResponse {
+  channels: ChannelDescriptor[];
+}
+
+export interface ChannelMessageItem {
+  id: string;
+  value: unknown;
+  published_at: string;
+}
+
+export interface ChannelPeekResponse {
+  channel: string;
+  messages: ChannelMessageItem[];
+}
+
+export interface ChannelCursorEntry {
+  channel: string;
+  scope: string;
+  scope_id: string;
+  cursor: string;
+  updated_at: string;
+}
+
+export interface AgentChannelsResponse {
+  channels: ChannelCursorEntry[];
+}
+
+// ---- Library fetchers ----
+
+export function listAgentDefNames(): Promise<DefNamesResponse> {
+  return jsonFetch<DefNamesResponse>("/v1/_agentdef/names");
+}
+
+export function listSkillDefNames(): Promise<DefNamesResponse> {
+  return jsonFetch<DefNamesResponse>("/v1/_skilldef/names");
+}
+
+export function listMcpServerDefNames(): Promise<DefNamesResponse> {
+  return jsonFetch<DefNamesResponse>("/v1/_mcpserverdef/names");
+}
+
+// listDefVersionsByName uses the existing op-discriminated POST
+// endpoint with `{op:"list", name}` to retrieve every version of one
+// declared name. Used by the Library UI when an operator clicks into
+// a name to inspect its lineage.
+export function listDefVersionsByName(
+  kind: "agentdef" | "skilldef" | "mcpserverdef",
+  name: string,
+): Promise<DefListByNameResponse> {
+  return jsonFetch<DefListByNameResponse>(`/v1/_${kind}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ op: "list", name }),
+  });
+}
+
+// ---- Channel fetchers ----
+
+export function listChannels(): Promise<ListChannelsResponse> {
+  return jsonFetch<ListChannelsResponse>("/v1/_channels");
+}
+
+export function peekChannel(
+  name: string,
+  opts: { maxMessages?: number; fromCursor?: string } = {},
+): Promise<ChannelPeekResponse> {
+  const q = new URLSearchParams();
+  if (opts.maxMessages !== undefined)
+    q.set("max_messages", String(opts.maxMessages));
+  if (opts.fromCursor) q.set("from_cursor", opts.fromCursor);
+  const qs = q.toString();
+  return jsonFetch<ChannelPeekResponse>(
+    `/v1/_channels/${encodeURIComponent(name)}/peek${qs ? "?" + qs : ""}`,
+  );
+}
+
+export function listAgentChannels(agentName: string): Promise<AgentChannelsResponse> {
+  return jsonFetch<AgentChannelsResponse>(
+    `/v1/agents/${encodeURIComponent(agentName)}/channels`,
+  );
+}

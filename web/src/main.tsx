@@ -8,6 +8,8 @@ import InterruptInbox from "./pages/InterruptInbox";
 import SnapshotsView from "./pages/SnapshotsView";
 import AuditView from "./pages/AuditView";
 import ActivityMonitor from "./pages/ActivityMonitor";
+import LibraryView from "./pages/LibraryView";
+import ChannelsView from "./pages/ChannelsView";
 import Layout from "./components/Layout";
 import AgentIdRedirect from "./components/AgentIdRedirect";
 
@@ -26,6 +28,13 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
           <Route index element={<Navigate to="/agents" replace />} />
           <Route path="agents" element={<AgentsView />} />
           <Route path="agents/:agentId" element={<AgentIdRedirect />} />
+          <Route path="library" element={<LibraryView />}>
+            <Route index element={<Navigate to="/library/agents" replace />} />
+          </Route>
+          <Route path="library/agents" element={<LibraryView />} />
+          <Route path="library/skills" element={<LibraryView />} />
+          <Route path="library/mcp-servers" element={<LibraryView />} />
+          <Route path="channels" element={<ChannelsView />} />
           <Route path="memory" element={<MemoryView />} />
           <Route path="interrupts" element={<InterruptInbox />} />
           <Route path="snapshots" element={<SnapshotsView />} />
