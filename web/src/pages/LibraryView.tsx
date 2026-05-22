@@ -305,26 +305,45 @@ function renderMcpDefinition(row: DefRow) {
           </div>
         </div>
       )}
-      {body.discovered_tools && body.discovered_tools.length > 0 && (
-        <div className="def-field">
-          <span className="def-field-label">
-            discovered_tools ({body.discovered_tools.length})
-          </span>
+      <div className="def-field">
+        <span className="def-field-label">
+          discovered_tools
+          {body.discovered_tools && body.discovered_tools.length > 0
+            ? ` (${body.discovered_tools.length})`
+            : ""}
+        </span>
+        {body.discovered_tools && body.discovered_tools.length > 0 ? (
           <div className="def-tool-list">
-            {body.discovered_tools.map((tool) => (
-              <MCPToolEntry key={tool.name} tool={tool} />
+            {body.discovered_tools.map((tool, i) => (
+              <MCPToolEntry
+                key={tool.name || `unnamed-${i}`}
+                tool={tool}
+                index={i}
+              />
             ))}
           </div>
-        </div>
-      )}
+        ) : (
+          <div className="def-tool-empty">
+            no tools cached — MCP handshake pending, the server is
+            unreachable, or <code>rediscover</code> hasn't been called
+            for a substrate entry. Check the loomcycle log for{" "}
+            <code>mcp[{"<name>"}]: handshake failed</code> lines.
+          </div>
+        )}
+      </div>
     </div>
   );
 }
 
 // MCPToolEntry renders one discovered MCP tool as a pill that
 // expands inline to show the tool's description + input_schema.
-function MCPToolEntry({ tool }: { tool: MCPDiscoveredTool }) {
+// The defensive `(unnamed tool #N)` fallback covers the case where
+// an upstream MCP server returns a tools/list result with empty/
+// missing name fields — surfaces a visible signal instead of a blank
+// pill that looks like a render bug.
+function MCPToolEntry({ tool, index }: { tool: MCPDiscoveredTool; index: number }) {
   const [open, setOpen] = useState(false);
+  const label = tool.name && tool.name.length > 0 ? tool.name : `(unnamed tool #${index})`;
   return (
     <div className="def-tool-entry">
       <button
@@ -334,7 +353,7 @@ function MCPToolEntry({ tool }: { tool: MCPDiscoveredTool }) {
         aria-expanded={open}
       >
         <span className="def-tool-caret">{open ? "▾" : "▸"}</span>
-        {tool.name}
+        <span className="def-tool-name">{label}</span>
       </button>
       {open && (
         <div className="def-tool-detail">

@@ -121,10 +121,6 @@ export default function LineagePanel({
 
   const tree = useMemo(() => buildLineageTree(versions), [versions]);
   const activeDefID = selectedEntry?.active_def_id ?? "";
-  const selectedRow = useMemo(
-    () => versions.find((v) => v.def_id === selectedDefID),
-    [versions, selectedDefID],
-  );
 
   if (entries.length === 0) {
     return (
@@ -162,29 +158,6 @@ export default function LineagePanel({
           onSelect={setSelectedDefID}
           renderDefinition={renderDefinition}
         />
-        {selectedRow && (
-          <div className="lineage-detail">
-            <div className="lineage-detail-header">
-              <span className="mono">{selectedRow.def_id}</span>
-              {selectedRow.parent_def_id && (
-                <span className="lineage-detail-meta">
-                  ← {selectedRow.parent_def_id}
-                </span>
-              )}
-              {selectedRow.created_at && (
-                <span className="lineage-detail-meta">
-                  created {new Date(selectedRow.created_at).toLocaleString()}
-                </span>
-              )}
-              {selectedRow.content_sha256 && (
-                <span className="mono lineage-detail-meta" title={selectedRow.content_sha256}>
-                  {shortenSHA(selectedRow.content_sha256)}
-                </span>
-              )}
-            </div>
-            {renderDefinition(selectedRow)}
-          </div>
-        )}
       </div>
     </Splitter>
   );
@@ -248,8 +221,3 @@ function entryCountLabel(e: LibraryEntry): string {
   return `${n} version${n === 1 ? "" : "s"}`;
 }
 
-function shortenSHA(s: string): string {
-  // `sha256:64hex` → `sha256:8hex…` for compact display; hover for full.
-  if (s.length <= 18) return s;
-  return s.slice(0, 14) + "…";
-}
