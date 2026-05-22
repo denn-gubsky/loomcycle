@@ -2333,11 +2333,13 @@ pre {
 .def-tool-pill {
   background: transparent;
   border: 1px solid var(--border);
+  color: var(--fg);
   cursor: pointer;
   text-align: left;
   display: inline-flex;
   align-items: center;
   gap: 4px;
+  padding: 2px 8px;
 }
 .def-tool-pill:hover {
   border-color: var(--accent);
