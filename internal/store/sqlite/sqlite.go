@@ -178,11 +178,13 @@ func (s *Store) migrate(ctx context.Context) error {
 			created_by_run_id         TEXT,
 			retired                   INTEGER NOT NULL DEFAULT 0,
 			bootstrapped_from_static  INTEGER NOT NULL DEFAULT 0,
+			content_sha256            TEXT,
 			UNIQUE(name, version)
 		)`,
-		`CREATE INDEX IF NOT EXISTS agent_defs_by_name   ON agent_defs(name, version DESC)`,
-		`CREATE INDEX IF NOT EXISTS agent_defs_by_parent ON agent_defs(parent_def_id) WHERE parent_def_id IS NOT NULL`,
-		`CREATE INDEX IF NOT EXISTS agent_defs_by_run    ON agent_defs(created_by_run_id) WHERE created_by_run_id IS NOT NULL`,
+		`CREATE INDEX IF NOT EXISTS agent_defs_by_name           ON agent_defs(name, version DESC)`,
+		`CREATE INDEX IF NOT EXISTS agent_defs_by_parent         ON agent_defs(parent_def_id) WHERE parent_def_id IS NOT NULL`,
+		`CREATE INDEX IF NOT EXISTS agent_defs_by_run            ON agent_defs(created_by_run_id) WHERE created_by_run_id IS NOT NULL`,
+		`CREATE INDEX IF NOT EXISTS agent_defs_by_content_sha256 ON agent_defs(content_sha256) WHERE content_sha256 IS NOT NULL`,
 		`CREATE TABLE IF NOT EXISTS agent_def_active (
 			name                  TEXT    PRIMARY KEY,
 			def_id                TEXT    NOT NULL REFERENCES agent_defs(def_id),
@@ -205,11 +207,13 @@ func (s *Store) migrate(ctx context.Context) error {
 			created_by_run_id         TEXT,
 			retired                   INTEGER NOT NULL DEFAULT 0,
 			bootstrapped_from_static  INTEGER NOT NULL DEFAULT 0,
+			content_sha256            TEXT,
 			UNIQUE(name, version)
 		)`,
-		`CREATE INDEX IF NOT EXISTS skill_defs_by_name   ON skill_defs(name, version DESC)`,
-		`CREATE INDEX IF NOT EXISTS skill_defs_by_parent ON skill_defs(parent_def_id) WHERE parent_def_id IS NOT NULL`,
-		`CREATE INDEX IF NOT EXISTS skill_defs_by_run    ON skill_defs(created_by_run_id) WHERE created_by_run_id IS NOT NULL`,
+		`CREATE INDEX IF NOT EXISTS skill_defs_by_name           ON skill_defs(name, version DESC)`,
+		`CREATE INDEX IF NOT EXISTS skill_defs_by_parent         ON skill_defs(parent_def_id) WHERE parent_def_id IS NOT NULL`,
+		`CREATE INDEX IF NOT EXISTS skill_defs_by_run            ON skill_defs(created_by_run_id) WHERE created_by_run_id IS NOT NULL`,
+		`CREATE INDEX IF NOT EXISTS skill_defs_by_content_sha256 ON skill_defs(content_sha256) WHERE content_sha256 IS NOT NULL`,
 		`CREATE TABLE IF NOT EXISTS skill_def_active (
 			name                  TEXT    PRIMARY KEY,
 			def_id                TEXT    NOT NULL REFERENCES skill_defs(def_id),
@@ -364,6 +368,11 @@ func (s *Store) migrate(ctx context.Context) error {
 		// them and the duplicate-column-name guard short-circuits these.
 		`ALTER TABLE channel_messages ADD COLUMN visible_at INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE channel_messages ADD COLUMN published_by_user_id TEXT`,
+		// v0.9.x content_sha256 — see internal/store/postgres/migrations/
+		// 0018_agent_defs_content_sha256.up.sql for the rationale. NULL
+		// until the boot-time backfill walks pre-migration rows.
+		`ALTER TABLE agent_defs ADD COLUMN content_sha256 TEXT`,
+		`ALTER TABLE skill_defs ADD COLUMN content_sha256 TEXT`,
 	}
 	for _, q := range addColumns {
 		if _, err := s.db.ExecContext(ctx, q); err != nil {
@@ -1639,12 +1648,13 @@ func (s *Store) SnapshotRestoreAgentDef(ctx context.Context, r store.AgentDefRow
 		`INSERT OR IGNORE INTO agent_defs(
 			def_id, name, version, parent_def_id, definition, description,
 			created_at, created_by_agent_id, created_by_run_id,
-			retired, bootstrapped_from_static
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			retired, bootstrapped_from_static, content_sha256
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		r.DefID, r.Name, r.Version, nilIfEmpty(r.ParentDefID),
 		string(r.Definition), nilIfEmpty(r.Description),
 		createdNs, nilIfEmpty(r.CreatedByAgentID), nilIfEmpty(r.CreatedByRunID),
 		boolToInt(r.Retired), boolToInt(r.BootstrappedFromStatic),
+		nilIfEmpty(r.ContentSHA256),
 	)
 	if err != nil {
 		return false, fmt.Errorf("snapshot restore agent_def: %w", err)
@@ -1691,12 +1701,13 @@ func (s *Store) SnapshotRestoreSkillDef(ctx context.Context, r store.SkillDefRow
 		`INSERT OR IGNORE INTO skill_defs(
 			def_id, name, version, parent_def_id, definition, description,
 			created_at, created_by_agent_id, created_by_run_id,
-			retired, bootstrapped_from_static
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			retired, bootstrapped_from_static, content_sha256
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		r.DefID, r.Name, r.Version, nilIfEmpty(r.ParentDefID),
 		string(r.Definition), nilIfEmpty(r.Description),
 		createdNs, nilIfEmpty(r.CreatedByAgentID), nilIfEmpty(r.CreatedByRunID),
 		boolToInt(r.Retired), boolToInt(r.BootstrappedFromStatic),
+		nilIfEmpty(r.ContentSHA256),
 	)
 	if err != nil {
 		return false, fmt.Errorf("snapshot restore skill_def: %w", err)
@@ -2298,6 +2309,64 @@ func (s *Store) ChannelStats(ctx context.Context) ([]store.ChannelStats, error) 
 	return out, nil
 }
 
+// BackfillAgentDefContentSHA256 walks NULL/empty rows + populates the
+// column via the injected signFn. See store.Store doc for invariants.
+func (s *Store) BackfillAgentDefContentSHA256(ctx context.Context, signFn func(name string, def []byte) (string, error)) (int, error) {
+	return s.backfillContentSHA256(ctx, "agent_defs", signFn)
+}
+
+// BackfillSkillDefContentSHA256 — mirror against skill_defs.
+func (s *Store) BackfillSkillDefContentSHA256(ctx context.Context, signFn func(name string, def []byte) (string, error)) (int, error) {
+	return s.backfillContentSHA256(ctx, "skill_defs", signFn)
+}
+
+func (s *Store) backfillContentSHA256(ctx context.Context, table string, signFn func(name string, def []byte) (string, error)) (int, error) {
+	if table != "agent_defs" && table != "skill_defs" {
+		return 0, fmt.Errorf("backfill: unexpected table %q", table)
+	}
+	// Table name is whitelisted above, so safe to interpolate; we
+	// avoid prepared-statement reuse on the read because the column
+	// list is identical for both tables.
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT def_id, name, definition FROM `+table+` WHERE content_sha256 IS NULL OR content_sha256 = ''`)
+	if err != nil {
+		return 0, fmt.Errorf("backfill %s read: %w", table, err)
+	}
+	type pending struct {
+		DefID string
+		Name  string
+		Def   []byte
+	}
+	var todo []pending
+	for rows.Next() {
+		var p pending
+		if err := rows.Scan(&p.DefID, &p.Name, &p.Def); err != nil {
+			rows.Close()
+			return 0, fmt.Errorf("backfill %s scan: %w", table, err)
+		}
+		todo = append(todo, p)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return 0, fmt.Errorf("backfill %s iterate: %w", table, err)
+	}
+
+	n := 0
+	for _, p := range todo {
+		hash, err := signFn(p.Name, p.Def)
+		if err != nil {
+			return n, fmt.Errorf("backfill %s sign def_id=%s: %w", table, p.DefID, err)
+		}
+		if _, err := s.db.ExecContext(ctx,
+			`UPDATE `+table+` SET content_sha256 = ? WHERE def_id = ?`,
+			hash, p.DefID); err != nil {
+			return n, fmt.Errorf("backfill %s update def_id=%s: %w", table, p.DefID, err)
+		}
+		n++
+	}
+	return n, nil
+}
+
 // channelRead is the shared read body for Subscribe + Peek. expired-
 // at-read-time filter applies on both paths.
 //
@@ -2544,13 +2613,14 @@ func (s *Store) AgentDefCreate(ctx context.Context, row store.AgentDefRow) (stor
 		`INSERT INTO agent_defs (
 			def_id, name, version, parent_def_id, definition, description,
 			created_at, created_by_agent_id, created_by_run_id,
-			retired, bootstrapped_from_static
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			retired, bootstrapped_from_static, content_sha256
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		row.DefID, row.Name, row.Version, nilIfEmpty(row.ParentDefID),
 		string(row.Definition), nilIfEmpty(row.Description),
 		row.CreatedAt.UnixNano(),
 		nilIfEmpty(row.CreatedByAgentID), nilIfEmpty(row.CreatedByRunID),
 		boolToInt(row.Retired), boolToInt(row.BootstrappedFromStatic),
+		nilIfEmpty(row.ContentSHA256),
 	); err != nil {
 		return store.AgentDefRow{}, err
 	}
@@ -2701,7 +2771,8 @@ const agentDefSelect = `SELECT
 	COALESCE(created_by_agent_id, ''),
 	COALESCE(created_by_run_id, ''),
 	retired,
-	bootstrapped_from_static
+	bootstrapped_from_static,
+	COALESCE(content_sha256, '')
 FROM agent_defs`
 
 func (s *Store) scanAgentDef(row *sql.Row) (store.AgentDefRow, error) {
@@ -2720,6 +2791,7 @@ func (s *Store) scanAgentDef(row *sql.Row) (store.AgentDefRow, error) {
 		&createdAt,
 		&out.CreatedByAgentID, &out.CreatedByRunID,
 		&retired, &bootstrap,
+		&out.ContentSHA256,
 	)
 	if err != nil {
 		return store.AgentDefRow{}, err
@@ -2749,6 +2821,7 @@ func (s *Store) scanAgentDefRows(rows *sql.Rows) ([]store.AgentDefRow, error) {
 			&createdAt,
 			&r.CreatedByAgentID, &r.CreatedByRunID,
 			&retired, &bootstrap,
+			&r.ContentSHA256,
 		); err != nil {
 			return nil, err
 		}
@@ -2816,13 +2889,14 @@ func (s *Store) SkillDefCreate(ctx context.Context, row store.SkillDefRow) (stor
 		`INSERT INTO skill_defs (
 			def_id, name, version, parent_def_id, definition, description,
 			created_at, created_by_agent_id, created_by_run_id,
-			retired, bootstrapped_from_static
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			retired, bootstrapped_from_static, content_sha256
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		row.DefID, row.Name, row.Version, nilIfEmpty(row.ParentDefID),
 		string(row.Definition), nilIfEmpty(row.Description),
 		row.CreatedAt.UnixNano(),
 		nilIfEmpty(row.CreatedByAgentID), nilIfEmpty(row.CreatedByRunID),
 		boolToInt(row.Retired), boolToInt(row.BootstrappedFromStatic),
+		nilIfEmpty(row.ContentSHA256),
 	); err != nil {
 		return store.SkillDefRow{}, err
 	}
@@ -2957,7 +3031,8 @@ const skillDefSelect = `SELECT
 	COALESCE(created_by_agent_id, ''),
 	COALESCE(created_by_run_id, ''),
 	retired,
-	bootstrapped_from_static
+	bootstrapped_from_static,
+	COALESCE(content_sha256, '')
 FROM skill_defs`
 
 func (s *Store) scanSkillDef(row *sql.Row) (store.SkillDefRow, error) {
@@ -2976,6 +3051,7 @@ func (s *Store) scanSkillDef(row *sql.Row) (store.SkillDefRow, error) {
 		&createdAt,
 		&out.CreatedByAgentID, &out.CreatedByRunID,
 		&retired, &bootstrap,
+		&out.ContentSHA256,
 	)
 	if err != nil {
 		return store.SkillDefRow{}, err
@@ -3005,6 +3081,7 @@ func (s *Store) scanSkillDefRows(rows *sql.Rows) ([]store.SkillDefRow, error) {
 			&createdAt,
 			&r.CreatedByAgentID, &r.CreatedByRunID,
 			&retired, &bootstrap,
+			&r.ContentSHA256,
 		); err != nil {
 			return nil, err
 		}

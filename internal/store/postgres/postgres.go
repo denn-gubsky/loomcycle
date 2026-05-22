@@ -1260,13 +1260,14 @@ func (s *Store) SnapshotRestoreAgentDef(ctx context.Context, r store.AgentDefRow
 		`INSERT INTO agent_defs(
 			def_id, name, version, parent_def_id, definition, description,
 			created_at, created_by_agent_id, created_by_run_id,
-			retired, bootstrapped_from_static
-		) VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10, $11)
+			retired, bootstrapped_from_static, content_sha256
+		) VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10, $11, $12)
 		 ON CONFLICT (def_id) DO NOTHING`,
 		r.DefID, r.Name, r.Version, nullIfEmpty(r.ParentDefID),
 		string(r.Definition), nullIfEmpty(r.Description),
 		createdAt, nullIfEmpty(r.CreatedByAgentID), nullIfEmpty(r.CreatedByRunID),
 		r.Retired, r.BootstrappedFromStatic,
+		nullIfEmpty(r.ContentSHA256),
 	)
 	if err != nil {
 		return false, fmt.Errorf("snapshot restore agent_def: %w", err)
@@ -1312,13 +1313,14 @@ func (s *Store) SnapshotRestoreSkillDef(ctx context.Context, r store.SkillDefRow
 		`INSERT INTO skill_defs(
 			def_id, name, version, parent_def_id, definition, description,
 			created_at, created_by_agent_id, created_by_run_id,
-			retired, bootstrapped_from_static
-		) VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10, $11)
+			retired, bootstrapped_from_static, content_sha256
+		) VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10, $11, $12)
 		 ON CONFLICT (def_id) DO NOTHING`,
 		r.DefID, r.Name, r.Version, nullIfEmpty(r.ParentDefID),
 		string(r.Definition), nullIfEmpty(r.Description),
 		createdAt, nullIfEmpty(r.CreatedByAgentID), nullIfEmpty(r.CreatedByRunID),
 		r.Retired, r.BootstrappedFromStatic,
+		nullIfEmpty(r.ContentSHA256),
 	)
 	if err != nil {
 		return false, fmt.Errorf("snapshot restore skill_def: %w", err)
@@ -2460,6 +2462,62 @@ func (s *Store) ChannelStats(ctx context.Context) ([]store.ChannelStats, error) 
 	return out, nil
 }
 
+// BackfillAgentDefContentSHA256 — see store.Store doc.
+func (s *Store) BackfillAgentDefContentSHA256(ctx context.Context, signFn func(name string, def []byte) (string, error)) (int, error) {
+	return s.backfillContentSHA256(ctx, "agent_defs", signFn)
+}
+
+// BackfillSkillDefContentSHA256 — mirror.
+func (s *Store) BackfillSkillDefContentSHA256(ctx context.Context, signFn func(name string, def []byte) (string, error)) (int, error) {
+	return s.backfillContentSHA256(ctx, "skill_defs", signFn)
+}
+
+func (s *Store) backfillContentSHA256(ctx context.Context, table string, signFn func(name string, def []byte) (string, error)) (int, error) {
+	if table != "agent_defs" && table != "skill_defs" {
+		return 0, fmt.Errorf("backfill: unexpected table %q", table)
+	}
+	rows, err := s.pool.Query(ctx,
+		`SELECT def_id, name, definition::text FROM `+table+` WHERE content_sha256 IS NULL OR content_sha256 = ''`)
+	if err != nil {
+		return 0, fmt.Errorf("backfill %s read: %w", table, err)
+	}
+	type pending struct {
+		DefID string
+		Name  string
+		Def   []byte
+	}
+	var todo []pending
+	for rows.Next() {
+		var p pending
+		var defText string
+		if err := rows.Scan(&p.DefID, &p.Name, &defText); err != nil {
+			rows.Close()
+			return 0, fmt.Errorf("backfill %s scan: %w", table, err)
+		}
+		p.Def = []byte(defText)
+		todo = append(todo, p)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return 0, fmt.Errorf("backfill %s iterate: %w", table, err)
+	}
+
+	n := 0
+	for _, p := range todo {
+		hash, err := signFn(p.Name, p.Def)
+		if err != nil {
+			return n, fmt.Errorf("backfill %s sign def_id=%s: %w", table, p.DefID, err)
+		}
+		if _, err := s.pool.Exec(ctx,
+			`UPDATE `+table+` SET content_sha256 = $1 WHERE def_id = $2`,
+			hash, p.DefID); err != nil {
+			return n, fmt.Errorf("backfill %s update def_id=%s: %w", table, p.DefID, err)
+		}
+		n++
+	}
+	return n, nil
+}
+
 // channelRead is the shared read body. Filters expired + invisible
 // rows at WHERE; orders by (visible_at, id) tuple so deferred
 // messages don't get skipped by subscribers that already progressed
@@ -2677,13 +2735,14 @@ func (s *Store) AgentDefCreate(ctx context.Context, row store.AgentDefRow) (stor
 		INSERT INTO agent_defs (
 			def_id, name, version, parent_def_id, definition, description,
 			created_at, created_by_agent_id, created_by_run_id,
-			retired, bootstrapped_from_static
-		) VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10, $11)`,
+			retired, bootstrapped_from_static, content_sha256
+		) VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10, $11, $12)`,
 		row.DefID, row.Name, row.Version, nullableString(row.ParentDefID),
 		string(row.Definition), nullableString(row.Description),
 		row.CreatedAt,
 		nullableString(row.CreatedByAgentID), nullableString(row.CreatedByRunID),
 		row.Retired, row.BootstrappedFromStatic,
+		nullableString(row.ContentSHA256),
 	); err != nil {
 		return store.AgentDefRow{}, fmt.Errorf("agent_def insert: %w", err)
 	}
@@ -2823,7 +2882,8 @@ const agentDefSelect = `SELECT
 	COALESCE(created_by_agent_id, ''),
 	COALESCE(created_by_run_id, ''),
 	retired,
-	bootstrapped_from_static
+	bootstrapped_from_static,
+	COALESCE(content_sha256, '')
 FROM agent_defs`
 
 func (s *Store) scanAgentDef(row pgx.Row) (store.AgentDefRow, error) {
@@ -2839,6 +2899,7 @@ func (s *Store) scanAgentDef(row pgx.Row) (store.AgentDefRow, error) {
 		&out.CreatedAt,
 		&out.CreatedByAgentID, &out.CreatedByRunID,
 		&out.Retired, &out.BootstrappedFromStatic,
+		&out.ContentSHA256,
 	)
 	if err != nil {
 		return store.AgentDefRow{}, err
@@ -2862,6 +2923,7 @@ func (s *Store) scanAgentDefRows(rows pgx.Rows) ([]store.AgentDefRow, error) {
 			&r.CreatedAt,
 			&r.CreatedByAgentID, &r.CreatedByRunID,
 			&r.Retired, &r.BootstrappedFromStatic,
+			&r.ContentSHA256,
 		); err != nil {
 			return nil, err
 		}
@@ -2919,13 +2981,14 @@ func (s *Store) SkillDefCreate(ctx context.Context, row store.SkillDefRow) (stor
 		INSERT INTO skill_defs (
 			def_id, name, version, parent_def_id, definition, description,
 			created_at, created_by_agent_id, created_by_run_id,
-			retired, bootstrapped_from_static
-		) VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10, $11)`,
+			retired, bootstrapped_from_static, content_sha256
+		) VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10, $11, $12)`,
 		row.DefID, row.Name, row.Version, nullableString(row.ParentDefID),
 		string(row.Definition), nullableString(row.Description),
 		row.CreatedAt,
 		nullableString(row.CreatedByAgentID), nullableString(row.CreatedByRunID),
 		row.Retired, row.BootstrappedFromStatic,
+		nullableString(row.ContentSHA256),
 	); err != nil {
 		return store.SkillDefRow{}, fmt.Errorf("skill_def insert: %w", err)
 	}
@@ -3056,7 +3119,8 @@ const skillDefSelect = `SELECT
 	COALESCE(created_by_agent_id, ''),
 	COALESCE(created_by_run_id, ''),
 	retired,
-	bootstrapped_from_static
+	bootstrapped_from_static,
+	COALESCE(content_sha256, '')
 FROM skill_defs`
 
 func (s *Store) scanSkillDef(row pgx.Row) (store.SkillDefRow, error) {
@@ -3072,6 +3136,7 @@ func (s *Store) scanSkillDef(row pgx.Row) (store.SkillDefRow, error) {
 		&out.CreatedAt,
 		&out.CreatedByAgentID, &out.CreatedByRunID,
 		&out.Retired, &out.BootstrappedFromStatic,
+		&out.ContentSHA256,
 	)
 	if err != nil {
 		return store.SkillDefRow{}, err
@@ -3095,6 +3160,7 @@ func (s *Store) scanSkillDefRows(rows pgx.Rows) ([]store.SkillDefRow, error) {
 			&r.CreatedAt,
 			&r.CreatedByAgentID, &r.CreatedByRunID,
 			&r.Retired, &r.BootstrappedFromStatic,
+			&r.ContentSHA256,
 		); err != nil {
 			return nil, err
 		}

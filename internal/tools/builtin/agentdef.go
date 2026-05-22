@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/denn-gubsky/loomcycle/internal/agents"
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
@@ -196,6 +197,7 @@ func (a *AgentDef) execCreate(ctx context.Context, policy tools.AgentDefPolicyVa
 		Definition:       defJSON,
 		Description:      in.Description,
 		CreatedByAgentID: ident.AgentID,
+		ContentSHA256:    signFromMergedDef(in.Name, def),
 		// CreatedByRunID stays empty here — there's no run_id on
 		// RunIdentityValue today; carried via the run ctx separately.
 	}
@@ -316,6 +318,7 @@ func (a *AgentDef) execFork(ctx context.Context, policy tools.AgentDefPolicyValu
 		Definition:       defJSON,
 		Description:      in.Description,
 		CreatedByAgentID: ident.AgentID,
+		ContentSHA256:    signFromMergedDef(in.Name, def),
 	}
 	created, err := a.Store.AgentDefCreate(ctx, row)
 	if err != nil {
@@ -570,6 +573,7 @@ func (a *AgentDef) bootstrapStatic(ctx context.Context, name string, static conf
 		Description:            "bootstrapped from static cfg.Agents",
 		CreatedByAgentID:       ident.AgentID,
 		BootstrappedFromStatic: true,
+		ContentSHA256:          signFromMergedDef(name, def),
 	}
 	created, err := a.Store.AgentDefCreate(ctx, row)
 	if err != nil {
@@ -685,7 +689,47 @@ func rowResponseMap(row store.AgentDefRow) map[string]any {
 		"created_by_agent_id":      row.CreatedByAgentID,
 		"retired":                  row.Retired,
 		"bootstrapped_from_static": row.BootstrappedFromStatic,
+		"content_sha256":           row.ContentSHA256,
 	}
+}
+
+// signFromMergedDef computes the v0.9.x content_sha256 for a row
+// whose Definition shape is the substrate's mergedDef. Maps the
+// content-bearing subset onto agents.AgentContent (same name +
+// every mutable field) and delegates to agents.Sign. The mapping
+// is explicit (vs marshal+unmarshal) so future field additions on
+// mergedDef get caught at compile time when they're added here.
+func signFromMergedDef(name string, def mergedDef) string {
+	// Convert config.TierCandidate map to agents.TierCandidate map so
+	// the agents package stays free of any config import.
+	var models map[string][]agents.TierCandidate
+	if len(def.Models) > 0 {
+		models = make(map[string][]agents.TierCandidate, len(def.Models))
+		for k, v := range def.Models {
+			out := make([]agents.TierCandidate, 0, len(v))
+			for _, tc := range v {
+				out = append(out, agents.TierCandidate{Provider: tc.Provider, Model: tc.Model})
+			}
+			models[k] = out
+		}
+	}
+	return agents.Sign(agents.AgentContent{
+		Name:             name,
+		Description:      def.Description,
+		Provider:         def.Provider,
+		Model:            def.Model,
+		Tier:             def.Tier,
+		Effort:           def.Effort,
+		MaxTokens:        def.MaxTokens,
+		MaxIterations:    def.MaxIterations,
+		AllowedTools:     def.AllowedTools,
+		Skills:           def.Skills,
+		SystemPrompt:     def.SystemPrompt,
+		Providers:        def.Providers,
+		Models:           models,
+		MemoryScopes:     def.MemoryScopes,
+		MemoryQuotaBytes: def.MemoryQuotaBytes,
+	})
 }
 
 // mintDefID returns a fresh opaque ID for a new row. 16 hex chars

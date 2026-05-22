@@ -226,6 +226,7 @@ func (s *SkillDef) execCreate(ctx context.Context, policy tools.SkillDefPolicyVa
 		Definition:       defJSON,
 		Description:      in.Description,
 		CreatedByAgentID: ident.AgentID,
+		ContentSHA256:    signFromSkillDef(in.Name, def),
 	}
 	created, err := s.Store.SkillDefCreate(ctx, row)
 	if err != nil {
@@ -341,6 +342,7 @@ func (s *SkillDef) execFork(ctx context.Context, policy tools.SkillDefPolicyValu
 		Definition:       defJSON,
 		Description:      in.Description,
 		CreatedByAgentID: ident.AgentID,
+		ContentSHA256:    signFromSkillDef(in.Name, def),
 	}
 	created, err := s.Store.SkillDefCreate(ctx, row)
 	if err != nil {
@@ -568,6 +570,7 @@ func (s *SkillDef) bootstrapStatic(ctx context.Context, name string, static *ski
 		Description:            "bootstrapped from static SKILL.md",
 		CreatedByAgentID:       ident.AgentID,
 		BootstrappedFromStatic: true,
+		ContentSHA256:          signFromSkillDef(name, def),
 	}
 	return s.Store.SkillDefCreate(ctx, row)
 }
@@ -601,7 +604,20 @@ func skillDefRowResponseMap(row store.SkillDefRow) map[string]any {
 		"created_by_agent_id":      row.CreatedByAgentID,
 		"retired":                  row.Retired,
 		"bootstrapped_from_static": row.BootstrappedFromStatic,
+		"content_sha256":           row.ContentSHA256,
 	}
+}
+
+// signFromSkillDef computes the v0.9.x content_sha256 from the
+// substrate's skillDefOverlay shape. Same explicit-mapping pattern
+// as signFromMergedDef in agentdef.go.
+func signFromSkillDef(name string, def skillDefOverlay) string {
+	return skills.Sign(skills.SkillContent{
+		Name:         name,
+		Description:  def.Description,
+		Body:         def.Body,
+		AllowedTools: def.AllowedTools,
+	})
 }
 
 // mintSkillDefID returns a fresh opaque ID for a new row. Same

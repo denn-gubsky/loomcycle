@@ -152,6 +152,8 @@ func Run(t *testing.T, factory Factory) {
 		{"AgentDefActivePointerIdempotent", testAgentDefActivePointerIdempotent},
 		{"AgentDefRetireReversible", testAgentDefRetireReversible},
 		{"AgentDefStaticFallback", testAgentDefStaticFallback},
+		{"AgentDefContentSHA256RoundTrip", testAgentDefContentSHA256RoundTrip},
+		{"BackfillAgentDefContentSHA256", testBackfillAgentDefContentSHA256},
 		// v0.8.22 SkillDef substrate — mirror of the AgentDef tests.
 		{"SkillDefCreateAndGet", testSkillDefCreateAndGet},
 		{"SkillDefVersionMonotonicUnderContention", testSkillDefVersionMonotonicUnderContention},
@@ -160,6 +162,8 @@ func Run(t *testing.T, factory Factory) {
 		{"SkillDefActivePointerIdempotent", testSkillDefActivePointerIdempotent},
 		{"SkillDefRetireReversible", testSkillDefRetireReversible},
 		{"SkillDefStaticFallback", testSkillDefStaticFallback},
+		{"SkillDefContentSHA256RoundTrip", testSkillDefContentSHA256RoundTrip},
+		{"BackfillSkillDefContentSHA256", testBackfillSkillDefContentSHA256},
 		{"SkillDefSnapshotReadEmpty", testSkillDefSnapshotReadEmpty},
 		{"EvaluationSubmitAndAggregate", testEvaluationSubmitAndAggregate},
 		{"EvaluationAggregateWithLineage", testEvaluationAggregateWithLineage},
@@ -2900,6 +2904,85 @@ func testAgentDefStaticFallback(t *testing.T, s store.Store) {
 	}
 }
 
+func testAgentDefContentSHA256RoundTrip(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	row := mkDef("d-hash", "alpha-hash", "")
+	row.ContentSHA256 = "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+	written, err := s.AgentDefCreate(ctx, row)
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if written.ContentSHA256 != row.ContentSHA256 {
+		t.Errorf("write echo: got %q, want %q", written.ContentSHA256, row.ContentSHA256)
+	}
+	got, err := s.AgentDefGet(ctx, "d-hash")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.ContentSHA256 != row.ContentSHA256 {
+		t.Errorf("get: ContentSHA256 = %q, want %q", got.ContentSHA256, row.ContentSHA256)
+	}
+
+	// A row created without a hash (the pre-migration shape) must come
+	// back with an empty ContentSHA256, NOT a NULL-decode error.
+	plain, err := s.AgentDefCreate(ctx, mkDef("d-no-hash", "alpha-no-hash", ""))
+	if err != nil {
+		t.Fatalf("create no-hash: %v", err)
+	}
+	if plain.ContentSHA256 != "" {
+		t.Errorf("hashless row: got %q, want empty", plain.ContentSHA256)
+	}
+}
+
+func testBackfillAgentDefContentSHA256(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	// Two rows without a hash (simulates the upgrade-from-v0.8.x shape).
+	for i, name := range []string{"alpha-bf", "beta-bf"} {
+		if _, err := s.AgentDefCreate(ctx, mkDef(fmt.Sprintf("d-bf-%d", i), name, "")); err != nil {
+			t.Fatalf("create: %v", err)
+		}
+	}
+	// One row that ALREADY has a hash — backfill must not touch it.
+	pre := mkDef("d-bf-pre", "gamma-bf", "")
+	pre.ContentSHA256 = "sha256:9999999999999999999999999999999999999999999999999999999999999999"
+	if _, err := s.AgentDefCreate(ctx, pre); err != nil {
+		t.Fatalf("create pre-hashed: %v", err)
+	}
+
+	signFn := func(name string, def []byte) (string, error) {
+		// Stable deterministic value the test can recompute for assertions.
+		return "sha256:" + name + "-hash", nil
+	}
+	n, err := s.BackfillAgentDefContentSHA256(ctx, signFn)
+	if err != nil {
+		t.Fatalf("backfill: %v", err)
+	}
+	if n != 2 {
+		t.Errorf("backfilled %d rows, want 2", n)
+	}
+
+	// Second call must be a no-op.
+	n2, err := s.BackfillAgentDefContentSHA256(ctx, signFn)
+	if err != nil {
+		t.Fatalf("second backfill: %v", err)
+	}
+	if n2 != 0 {
+		t.Errorf("idempotent? second pass backfilled %d rows, want 0", n2)
+	}
+
+	// Pre-hashed row was preserved.
+	got, _ := s.AgentDefGet(ctx, "d-bf-pre")
+	if got.ContentSHA256 != "sha256:9999999999999999999999999999999999999999999999999999999999999999" {
+		t.Errorf("backfill clobbered pre-existing hash: %q", got.ContentSHA256)
+	}
+
+	// Backfilled rows have the expected hash.
+	alpha, _ := s.AgentDefGet(ctx, "d-bf-0")
+	if alpha.ContentSHA256 != "sha256:alpha-bf-hash" {
+		t.Errorf("backfill alpha hash = %q", alpha.ContentSHA256)
+	}
+}
+
 // ---- v0.8.22 SkillDef contract tests ----
 //
 // Direct mirror of the AgentDef tests above. Same invariants:
@@ -3103,6 +3186,57 @@ func testSkillDefStaticFallback(t *testing.T, s store.Store) {
 	var nf *store.ErrNotFound
 	if !errors.As(err, &nf) {
 		t.Errorf("got %v, want *ErrNotFound", err)
+	}
+}
+
+func testSkillDefContentSHA256RoundTrip(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	row := mkSkillDef("sd-hash", "skill-alpha-hash", "")
+	row.ContentSHA256 = "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+	written, err := s.SkillDefCreate(ctx, row)
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if written.ContentSHA256 != row.ContentSHA256 {
+		t.Errorf("write echo: got %q, want %q", written.ContentSHA256, row.ContentSHA256)
+	}
+	got, err := s.SkillDefGet(ctx, "sd-hash")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.ContentSHA256 != row.ContentSHA256 {
+		t.Errorf("get: ContentSHA256 = %q, want %q", got.ContentSHA256, row.ContentSHA256)
+	}
+
+	plain, err := s.SkillDefCreate(ctx, mkSkillDef("sd-no-hash", "skill-alpha-no-hash", ""))
+	if err != nil {
+		t.Fatalf("create no-hash: %v", err)
+	}
+	if plain.ContentSHA256 != "" {
+		t.Errorf("hashless row: got %q, want empty", plain.ContentSHA256)
+	}
+}
+
+func testBackfillSkillDefContentSHA256(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	for i, name := range []string{"skill-bf-a", "skill-bf-b"} {
+		if _, err := s.SkillDefCreate(ctx, mkSkillDef(fmt.Sprintf("sd-bf-%d", i), name, "")); err != nil {
+			t.Fatalf("create: %v", err)
+		}
+	}
+	signFn := func(name string, def []byte) (string, error) {
+		return "sha256:" + name + "-hash", nil
+	}
+	n, err := s.BackfillSkillDefContentSHA256(ctx, signFn)
+	if err != nil {
+		t.Fatalf("backfill: %v", err)
+	}
+	if n != 2 {
+		t.Errorf("backfilled %d rows, want 2", n)
+	}
+	got, _ := s.SkillDefGet(ctx, "sd-bf-0")
+	if got.ContentSHA256 != "sha256:skill-bf-a-hash" {
+		t.Errorf("backfill hash = %q", got.ContentSHA256)
 	}
 }
 
