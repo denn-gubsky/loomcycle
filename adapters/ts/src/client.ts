@@ -671,11 +671,16 @@ export class LoomcycleClient {
     }
 
     // Debug shape: synthetic open + close around the real stream.
-    // `meta_reason` distinguishes normal EOF from caller-side abort
-    // or a typed-error throw mid-stream. The close frame is emitted
-    // in `finally` so it fires regardless of how the inner iterator
-    // exited.
-    yield { type: "_meta", meta_subtype: "stream_open", meta_reason: "open" };
+    // The open frame carries no meta_reason — the frame itself IS the
+    // signal. The close frame's meta_reason distinguishes normal EOF
+    // from caller-side abort or a typed-error throw mid-stream.
+    //
+    // Close is emitted on both paths via try/catch/throw: success path
+    // emits AFTER the try block; error path emits INSIDE the catch
+    // before re-throwing. NOT a try/finally — the duplication is
+    // intentional so the close-then-throw ordering is explicit and
+    // a refactor adding `finally` doesn't accidentally double-emit.
+    yield { type: "_meta", meta_subtype: "stream_open" };
     let closeReason = "eof";
     try {
       yield* parseSSE(resp.body.getReader());

@@ -1222,4 +1222,105 @@ describe("v0.9.x n8n polish — debug toggle + parentAgentId filter", () => {
       (await empty.client.listUserAgents("u", { parentAgentId: "" })).length,
     ).toBe(2);
   });
+
+  // Defensive: when the dataset contains a row with parent_agent_id === null
+  // AND the filter is a non-null string, the null row MUST be excluded.
+  // JS `null === "parent_target"` is false at runtime, but a future
+  // refactor that uses == or a different comparator could regress this.
+  it("listUserAgents excludes parent_agent_id=null rows when filter is set to a non-null string", async () => {
+    const { client } = makeClient([
+      jsonResponse({
+        agents: [
+          { agent_id: "match",  run_id: "r1", session_id: "s1", agent: "x", parent_agent_id: "parent_target", status: "running", started_at: "2026-05-22T00:00:00Z" },
+          { agent_id: "null_p", run_id: "r2", session_id: "s2", agent: "x", parent_agent_id: null,             status: "running", started_at: "2026-05-22T00:00:01Z" },
+          { agent_id: "other",  run_id: "r3", session_id: "s3", agent: "x", parent_agent_id: "parent_other",  status: "running", started_at: "2026-05-22T00:00:02Z" },
+        ],
+      }),
+    ]);
+    const out = await client.listUserAgents("u", {
+      parentAgentId: "parent_target",
+    });
+    // Only the "match" row should survive. The null-parent row must
+    // NOT silently match the "parent_target" filter.
+    expect(out.map((a) => a.agent_id)).toEqual(["match"]);
+  });
+
+  // Stream-side error with debug:true: the close frame fires (with
+  // meta_reason set to the error class name) before the error
+  // propagates to the consumer's try/catch. Simulates the abort path
+  // by building an SSE response whose stream errors on first read.
+  it("runStreaming debug:true yields a stream_close frame before re-throwing on stream-side error", async () => {
+    const failingStream = new ReadableStream({
+      start(controller) {
+        const err = new DOMException("aborted by signal", "AbortError");
+        controller.error(err);
+      },
+    });
+    const failingResponse = () =>
+      new Response(failingStream, {
+        status: 200,
+        headers: { "Content-Type": "text/event-stream" },
+      });
+
+    const { client } = makeClient([failingResponse]);
+    const events: Array<{ type: string; meta_subtype?: string; meta_reason?: string }> = [];
+    let caught: unknown;
+    try {
+      for await (const ev of client.runStreaming({
+        agent: "qa",
+        segments: [],
+        debug: true,
+      })) {
+        events.push({
+          type: ev.type,
+          meta_subtype: ev.meta_subtype,
+          meta_reason: ev.meta_reason,
+        });
+      }
+    } catch (e) {
+      caught = e;
+    }
+    // Two synthetic frames before the throw — open then close
+    // (with meta_reason captured from the inner error's `.name`).
+    expect(events.length).toBe(2);
+    expect(events[0]!.meta_subtype).toBe("stream_open");
+    expect(events[1]!.meta_subtype).toBe("stream_close");
+    expect(events[1]!.meta_reason).toBe("AbortError");
+    // The original error still surfaces to the consumer.
+    expect((caught as Error | undefined)?.name).toBe("AbortError");
+  });
+
+  // streamUserRunStates analogue: a close item with reason set to the
+  // error class name fires before the stream-side throw propagates.
+  it("streamUserRunStates debug:true yields a kind=close item with error reason before re-throwing", async () => {
+    const failingStream = new ReadableStream({
+      start(controller) {
+        const err = new DOMException("aborted by signal", "AbortError");
+        controller.error(err);
+      },
+    });
+    const failingResponse = () =>
+      new Response(failingStream, {
+        status: 200,
+        headers: { "Content-Type": "text/event-stream" },
+      });
+
+    const { client } = makeClient([failingResponse]);
+    const items: Array<{ kind: string; reason?: string }> = [];
+    let caught: unknown;
+    try {
+      for await (const item of client.streamUserRunStates("u", { debug: true })) {
+        items.push({
+          kind: item.kind,
+          reason: item.kind === "close" ? item.payload.reason : undefined,
+        });
+      }
+    } catch (e) {
+      caught = e;
+    }
+    expect(items.length).toBe(1);
+    expect(items[0]!.kind).toBe("close");
+    expect(items[0]!.reason).toBe("AbortError");
+    expect((caught as Error | undefined)?.name).toBe("AbortError");
+  });
 });

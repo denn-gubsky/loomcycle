@@ -104,10 +104,12 @@ export interface AgentEvent {
   session_id?: string;
   parent_agent_id?: string | null;
   // v0.9.x — client-synthesized observability fields, populated only on
-  // events of `type: "_meta"`. Subtype distinguishes connection
-  // lifecycle frames; reason is the cause (HTTP status, "abort",
-  // "eof", typed-error name). All other event types leave them
-  // undefined.
+  // events of `type: "_meta"`. `meta_subtype` is always set on a
+  // _meta event (distinguishes open from close). `meta_reason` is set
+  // ONLY on stream_close frames — carrying the cause ("eof" on clean
+  // close, "AbortError"/"AuthError"/etc on a typed-error throw). The
+  // stream_open frame leaves meta_reason undefined — the frame itself
+  // is the signal that the stream just opened.
   meta_subtype?: "stream_open" | "stream_close";
   meta_reason?: string;
 }
@@ -842,12 +844,14 @@ export interface StreamUserRunStatesOptions {
    *  load. Server-side filtering is a separate (future) request.
    *  Pass the empty string to opt out (default). */
   parentAgentId?: string;
-  /** v0.9.x — opt-in observability: when true, the iterator emits a
-   *  client-synthesized `{ kind: "open", payload: { ... reason: "..." } }`
-   *  before any real frames AND a `{ kind: "close", payload: { reason } }`
-   *  on stream EOF / abort / error. Reason carries the cause
-   *  ("eof", "abort", or an error class name). Default false leaves
-   *  behaviour identical to v0.9.x earlier. */
+  /** v0.9.x — opt-in observability: when true, the iterator yields a
+   *  client-synthesized `{ kind: "close", payload: { reason } }` item
+   *  when the stream ends (EOF, abort, or error). `reason` carries
+   *  the cause ("eof" on clean close or an error class name like
+   *  "AbortError" / "AuthError"). The opening `kind: "open"` frame
+   *  that always appears first is server-emitted, not synthetic;
+   *  `debug` has no effect on it. Default false leaves behaviour
+   *  identical to v0.9.x earlier. */
   debug?: boolean;
   signal?: AbortSignal;
 }
