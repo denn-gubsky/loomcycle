@@ -45,9 +45,17 @@ type MCPServerSpec struct {
 // the same order at the lookup boundary so future refactors that add
 // a third tier can't accidentally invert it.
 //
-// The current pool build callback in cmd/loomcycle/main.go is the
-// primary consumer; the /ui/library/mcp-servers page also calls this
-// through the bearer-authed GET endpoint to render the source badge.
+// LIMITATION (intentional): MCPServerSpec is the HTTP / streamable-http
+// subset. The stdio transport carries additional yaml-only fields
+// (Command/Args/Env/PoolSize) that this resolver deliberately omits
+// because the substrate refuses stdio at the create boundary — there's
+// no path by which a dynamic row could carry those fields. As a
+// consequence, this function cannot replace the inline pool build
+// callback in cmd/loomcycle/main.go for the stdio case; that callback
+// reads cfg.MCPServer directly to get the stdio fields. Use this
+// resolver from HTTP-only call sites: the /ui/library/mcp-servers
+// page's bearer-authed GET endpoint + any future tool that needs to
+// resolve a name → spec for an http-transport server.
 func MCPServer(cfg *config.Config, dyn MCPDynamicRegistry, name string) (MCPServerSpec, bool) {
 	if cfg != nil {
 		if srv, ok := cfg.MCPServers[name]; ok {

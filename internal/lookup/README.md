@@ -23,7 +23,7 @@ This package consolidates the lookup chain + the normalizer chain + the adapter 
 
 ## When to use it
 
-Every code path that needs to resolve an agent / skill / MCP server NAME to its effective runtime def must go through this package:
+Every code path that needs to resolve an agent / skill / MCP server NAME to its effective runtime def should go through this package:
 
 ```go
 def, ok := lookup.Agent(ctx, s.store, s.cfg, name)
@@ -31,7 +31,15 @@ sk, ok  := lookup.Skill(ctx, s.store, s.skillSet, name)
 spec, ok := lookup.MCPServer(s.cfg, dynRegistry, name)
 ```
 
-Don't read substrate rows directly. Don't unmarshal into `config.AgentDef` (use the json-tagged adapters). The pattern is enforced by the drift tests (`TestAgent_DriftDetection` etc.) — a future field added to one shape without the other fails CI.
+Don't read substrate rows directly. Don't unmarshal into `config.AgentDef` (use the json-tagged adapters). The pattern is enforced by the drift tests (`TestAgent_DriftDetection` + `TestMergedDef_DriftDetection_VsLookupSubstrateAgentDef`) — a future field added to one shape without the other fails CI.
+
+### Coverage matrix
+
+| Resolver | Production callers | Notes |
+|----------|-------------------|-------|
+| `lookup.Agent` | `api/http/server.go:lookupAgent` (covers `/v1/runs`, `/v1/messages`, sub-agent spawn). | Drives the load-bearing static-vs-substrate equalization. |
+| `lookup.Skill` | `api/http/server.go:resolveSkillBodiesForRun` (slow-path bake). | Logs non-NotFound substrate errors as a side effect — operator gets a signal when a transient store hiccup forces a substrate→static fallback for one skill. |
+| `lookup.MCPServer` | `/ui/library/mcp-servers` GET endpoint (when added; HTTP-only call sites). | **CANNOT** replace `cmd/loomcycle/main.go`'s pool build callback — that callback needs `Command/Args/Env/PoolSize` for stdio, which `MCPServerSpec` deliberately omits because the substrate refuses stdio at the create boundary. The stdio path stays inline-in-main.go by design. |
 
 ## Architectural pattern for new substrates
 

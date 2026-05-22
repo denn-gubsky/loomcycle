@@ -3,6 +3,8 @@ package lookup
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"log"
 
 	"github.com/denn-gubsky/loomcycle/internal/skills"
 	"github.com/denn-gubsky/loomcycle/internal/store"
@@ -44,17 +46,29 @@ type SkillResolution struct {
 func Skill(ctx context.Context, s SkillStore, set *skills.Set, name string) (SkillResolution, bool) {
 	if s != nil {
 		row, err := s.SkillDefGetActive(ctx, name)
-		if err == nil {
+		switch {
+		case err == nil:
 			var sd SubstrateSkillDef
-			if uerr := json.Unmarshal(row.Definition, &sd); uerr == nil {
-				if sd.Body != "" {
-					return SkillResolution{
-						Body:         sd.Body,
-						AllowedTools: sd.AllowedTools,
-						DefID:        row.DefID,
-						Source:       "substrate",
-					}, true
-				}
+			if uerr := json.Unmarshal(row.Definition, &sd); uerr != nil {
+				// Hand-edited / corrupted row — log + fall through to
+				// static so the run can continue with the boot bake.
+				log.Printf("lookup.Skill(%q): parse %s definition failed: %v", name, row.DefID, uerr)
+			} else if sd.Body != "" {
+				return SkillResolution{
+					Body:         sd.Body,
+					AllowedTools: sd.AllowedTools,
+					DefID:        row.DefID,
+					Source:       "substrate",
+				}, true
+			}
+		default:
+			var nf *store.ErrNotFound
+			if !errors.As(err, &nf) {
+				// Transient store hiccup. Static fallback preserves
+				// correctness (the static bake still runs); the log line
+				// is the operator's signal that a substrate override was
+				// skipped this run.
+				log.Printf("lookup.Skill(%q): SkillDefGetActive failed: %v", name, err)
 			}
 		}
 	}

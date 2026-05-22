@@ -615,61 +615,44 @@ func (s *Server) resolveSkillBodiesForRun(ctx context.Context, agentDef config.A
 	if len(agentDef.Skills) == 0 || s.store == nil {
 		return agentDef, prov
 	}
-	// Fast pre-check: any DB-active row for any skill name?
-	anyActive := false
-	activeBodies := make(map[string]string, len(agentDef.Skills))
+	// Resolve each skill via the canonical lookup chain (substrate →
+	// static). lookup.Skill returns Source="substrate" when a DB-active
+	// row resolved + Source="static" when falling back to the boot
+	// SkillsRoot bundle.
+	resolutions := make(map[string]lookup.SkillResolution, len(agentDef.Skills))
 	activeDefIDs := make(map[string]string, len(agentDef.Skills))
+	anySubstrate := false
 	for _, skillName := range agentDef.Skills {
-		row, err := s.store.SkillDefGetActive(ctx, skillName)
-		if err != nil {
-			var nf *store.ErrNotFound
-			if errors.As(err, &nf) {
-				continue
-			}
-			// Degrade THIS skill to static; keep checking the rest.
-			// A transient store hiccup on one skill must not drop DB
-			// overrides for the other skills in the same run — the
-			// doc-string promise of "fall back to baked static prompt
-			// rather than fail" is per-skill, not whole-agent.
-			log.Printf("resolveSkillBodiesForRun: SkillDefGetActive(%q) failed: %v", skillName, err)
+		sr, ok := lookup.Skill(ctx, s.store, s.skillSet, skillName)
+		if !ok {
 			continue
 		}
-		var def lookup.SubstrateSkillDef
-		if err := json.Unmarshal(row.Definition, &def); err != nil {
-			log.Printf("resolveSkillBodiesForRun: parse %s definition: %v", row.DefID, err)
-			continue
+		resolutions[skillName] = sr
+		if sr.Source == "substrate" {
+			activeDefIDs[skillName] = sr.DefID
+			anySubstrate = true
 		}
-		if strings.TrimSpace(def.Body) == "" {
-			continue
-		}
-		activeBodies[skillName] = def.Body
-		activeDefIDs[skillName] = row.DefID
-		anyActive = true
 	}
-	if !anyActive {
+	// Fast path: when no substrate-active row contributed, the
+	// boot-time bake of agentDef.SystemPrompt already reflects the
+	// static skill bodies — return unchanged.
+	if !anySubstrate {
 		return agentDef, prov
 	}
 	prov.SkillDefIDs = activeDefIDs
-	// Slow path: rebuild SystemPrompt from base + per-skill body.
+	// Slow path: rebuild SystemPrompt from base + per-skill body so
+	// substrate overrides land in place of the static bake.
 	rebuilt := agentDef
 	rebuilt.SystemPrompt = agentDef.SystemPromptBase
 	for _, skillName := range agentDef.Skills {
-		body, ok := activeBodies[skillName]
-		if !ok {
-			// No DB override — fall back to the static skill body.
-			if s.skillSet == nil {
-				continue
-			}
-			sk, has := s.skillSet.Get(skillName)
-			if !has {
-				continue
-			}
-			body = sk.Body
+		sr, ok := resolutions[skillName]
+		if !ok || strings.TrimSpace(sr.Body) == "" {
+			continue
 		}
 		if rebuilt.SystemPrompt != "" {
 			rebuilt.SystemPrompt += "\n\n---\n\n"
 		}
-		rebuilt.SystemPrompt += body
+		rebuilt.SystemPrompt += sr.Body
 	}
 	return rebuilt, prov
 }
