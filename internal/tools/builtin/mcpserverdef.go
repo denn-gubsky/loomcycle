@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net/url"
 	"strings"
+	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/mcp"
@@ -472,7 +473,15 @@ func (m *MCPServerDef) execRediscover(ctx context.Context, in mcpServerDefInput)
 	// Force a fresh pool handshake: evict + Get triggers tools/list.
 	if m.Pool != nil {
 		m.Pool.Evict(in.Name)
-		_, descs, err := m.Pool.Get(ctx, in.Name)
+		// Bound the handshake — a non-responding upstream would otherwise
+		// park this goroutine forever AND block every subsequent
+		// rediscover on the same name (they queue on e.ready). 30s
+		// matches the boot-time MCP-init budget shape so an operator
+		// who deployed a working server can still rediscover even on
+		// the slowest legitimate handshake path.
+		hsCtx, hsCancel := context.WithTimeout(ctx, 30*time.Second)
+		_, descs, err := m.Pool.Get(hsCtx, in.Name)
+		hsCancel()
 		if err != nil {
 			return errResult(fmt.Sprintf("rediscover: pool.Get: %s", err)), nil
 		}

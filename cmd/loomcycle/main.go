@@ -778,6 +778,14 @@ func main() {
 	} else if n > 0 {
 		log.Printf("skill_defs: backfilled %d rows with content_sha256", n)
 	}
+	// v0.9.x mcp_server_defs backfill — shares the same 30-second
+	// bfCtx so the cumulative "boot blocked on slow store" wait is
+	// bounded. Documented best-effort posture as for the other two.
+	if n, err := storeIface.BackfillMCPServerDefContentSHA256(bfCtx, backfillMCPServerDefSignFn); err != nil {
+		log.Printf("mcp_server_defs: backfill content_sha256 partial — %v (rows updated before error: %d)", err, n)
+	} else if n > 0 {
+		log.Printf("mcp_server_defs: backfilled %d rows with content_sha256", n)
+	}
 	bfCancel()
 
 	// Memory tool depends on the Store; wire the live backend in now
@@ -830,13 +838,6 @@ func main() {
 		log.Printf("mcp_server_defs: list active failed at boot: %v (dynamic MCP servers will be empty until first registration)", err)
 	}
 
-	// v0.9.x MCPServerDef content_sha256 backfill — same pattern as
-	// agent_defs / skill_defs. Idempotent on subsequent boots.
-	if n, err := storeIface.BackfillMCPServerDefContentSHA256(context.Background(), backfillMCPServerDefSignFn); err != nil {
-		log.Printf("mcp_server_defs: backfill content_sha256 partial — %v (rows updated before error: %d)", err, n)
-	} else if n > 0 {
-		log.Printf("mcp_server_defs: backfilled %d rows with content_sha256", n)
-	}
 	// Back-fill Context tool's catalog with the FINAL allTools slice
 	// (including MCP-served tools registered above) so doc/tools ops
 	// reflect the complete runtime catalog. Must happen AFTER every
