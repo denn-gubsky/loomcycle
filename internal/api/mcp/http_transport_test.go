@@ -122,6 +122,20 @@ func (m *httpMockConnector) MCPServerDef(context.Context, json.RawMessage) (conn
 	return connector.ToolResult{}, errors.New("not implemented")
 }
 
+// v0.9.x Channel CRUD stubs.
+func (m *httpMockConnector) PublishChannel(context.Context, connector.ChannelPublishRequest) (connector.ChannelPublishResult, error) {
+	return connector.ChannelPublishResult{}, errors.New("not implemented")
+}
+func (m *httpMockConnector) SubscribeChannel(context.Context, connector.ChannelSubscribeRequest) (connector.ChannelSubscribeResult, error) {
+	return connector.ChannelSubscribeResult{}, errors.New("not implemented")
+}
+func (m *httpMockConnector) PeekChannel(context.Context, connector.ChannelPeekRequest) (connector.ChannelPeekResult, error) {
+	return connector.ChannelPeekResult{}, errors.New("not implemented")
+}
+func (m *httpMockConnector) AckChannel(context.Context, connector.ChannelAckRequest) (connector.ChannelAckResult, error) {
+	return connector.ChannelAckResult{}, errors.New("not implemented")
+}
+
 // httpTestServer wires an HTTPHandler against the mock connector and
 // returns an httptest.Server speaking the loomcycle MCP transport over
 // real HTTP. Test bodies POST to ts.URL + "/" (the test server has no

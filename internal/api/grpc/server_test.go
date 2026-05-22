@@ -816,6 +816,20 @@ func (m *mockConnector) MCPServerDef(context.Context, json.RawMessage) (connecto
 	return connector.ToolResult{}, nil
 }
 
+// v0.9.x Channel CRUD stubs.
+func (m *mockConnector) PublishChannel(context.Context, connector.ChannelPublishRequest) (connector.ChannelPublishResult, error) {
+	return connector.ChannelPublishResult{}, nil
+}
+func (m *mockConnector) SubscribeChannel(context.Context, connector.ChannelSubscribeRequest) (connector.ChannelSubscribeResult, error) {
+	return connector.ChannelSubscribeResult{}, nil
+}
+func (m *mockConnector) PeekChannel(context.Context, connector.ChannelPeekRequest) (connector.ChannelPeekResult, error) {
+	return connector.ChannelPeekResult{}, nil
+}
+func (m *mockConnector) AckChannel(context.Context, connector.ChannelAckRequest) (connector.ChannelAckResult, error) {
+	return connector.ChannelAckResult{}, nil
+}
+
 // TestGrpcServer_CancelAgent_DispatchesThroughConnector is the v0.8.15
 // regression guard: when the gRPC Server is wired with a Connector,
 // CancelAgent dispatches through s.connector.CancelRun rather than the

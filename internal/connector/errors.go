@@ -85,4 +85,28 @@ var (
 	// nil (not this sentinel) when the visitor returns it; the
 	// sentinel is the visitor's way of saying "I have what I need."
 	ErrStopStreaming = errors.New("connector: stop streaming")
+
+	// ErrChannelNotDeclared is returned by the Channel CRUD methods
+	// when the requested channel name isn't in the operator's yaml
+	// `channels:` block. Transports map to NotFound / HTTP 404.
+	ErrChannelNotDeclared = errors.New("connector: channel not declared in operator yaml")
+
+	// ErrChannelScopeInvalid is returned when the scope field on a
+	// Channel CRUD request is not one of "global" / "user". Transports
+	// map to InvalidArgument / HTTP 400.
+	ErrChannelScopeInvalid = errors.New("connector: channel scope must be 'global' or 'user'")
+
+	// ErrChannelCursorRegression is returned by AckChannel when the
+	// caller-supplied cursor is older than the currently-committed
+	// cursor. Mirrors store.ErrChannelCursorRegression at the connector
+	// boundary so transports can surface it without importing
+	// internal/store. Transports map to FailedPrecondition / HTTP 409.
+	ErrChannelCursorRegression = errors.New("connector: channel ack cursor is older than committed")
+
+	// ErrSystemPublisherUnwired is returned by PublishChannel when the
+	// underlying server has no SystemPublisher wired (operator
+	// embedding skipped SetSystemPublisher). Transports map to
+	// Unavailable / HTTP 503. Mirror of the existing
+	// ErrRunStateStreamUnavailable pattern.
+	ErrSystemPublisherUnwired = errors.New("connector: system publisher not configured on this server")
 )

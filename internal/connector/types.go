@@ -316,6 +316,96 @@ type ListChannelsResponse struct {
 	Channels []ChannelDescriptor `json:"channels"`
 }
 
+// --- Channel CRUD types (v0.9.x admin + per-user surface) ---
+
+// ChannelPublishRequest is the input to Connector.PublishChannel. Scope
+// + ScopeID determine the cursor namespace: scope="global" + ScopeID=""
+// addresses the admin surface; scope="user" + ScopeID=<user_id>
+// addresses a per-user channel cursor. DeliverAt is RFC3339Nano; empty
+// means publish immediately.
+type ChannelPublishRequest struct {
+	Channel   string          `json:"channel"`
+	Scope     string          `json:"scope"`
+	ScopeID   string          `json:"scope_id,omitempty"`
+	Payload   json.RawMessage `json:"payload"`
+	DeliverAt string          `json:"deliver_at,omitempty"`
+}
+
+// ChannelPublishResult mirrors the in-band Channel tool's publish
+// response. MsgID is the server-assigned id; CreatedAt is the
+// PublishedAt time; VisibleAt is set only when the publish was
+// deferred (deliver_at > created_at).
+type ChannelPublishResult struct {
+	MsgID     string `json:"msg_id"`
+	Channel   string `json:"channel"`
+	CreatedAt string `json:"created_at"`           // RFC3339Nano
+	VisibleAt string `json:"visible_at,omitempty"` // RFC3339Nano; omitted when not deferred
+}
+
+// ChannelSubscribeRequest is the input to Connector.SubscribeChannel.
+// FromCursor empty means "from the committed cursor"; FromCursor "cur_0"
+// means "from the beginning" (replay). MaxMessages clamped to [1, 100],
+// default 10. WaitMS is the long-poll timeout; 0 = poll-and-return.
+type ChannelSubscribeRequest struct {
+	Channel     string `json:"channel"`
+	Scope       string `json:"scope"`
+	ScopeID     string `json:"scope_id,omitempty"`
+	FromCursor  string `json:"from_cursor,omitempty"`
+	MaxMessages int    `json:"max_messages,omitempty"`
+	WaitMS      int    `json:"wait_ms,omitempty"`
+}
+
+// ChannelSubscribeResult is the synchronous batch result. Auto-commits
+// the cursor when Messages is non-empty (mirror of the in-band tool's
+// at-most-once shape). NextCursor is the cursor to pass on the next
+// call to continue forward.
+type ChannelSubscribeResult struct {
+	Channel    string           `json:"channel"`
+	Messages   []ChannelMessage `json:"messages"`
+	NextCursor string           `json:"next_cursor"`
+}
+
+// ChannelMessage is one delivered message. The wire shape is stable
+// from v0.8.4+: id, value (the JSON payload), published_at RFC3339Nano.
+type ChannelMessage struct {
+	ID          string          `json:"id"`
+	Value       json.RawMessage `json:"value"`
+	PublishedAt string          `json:"published_at"`
+}
+
+// ChannelPeekRequest is the input to Connector.PeekChannel. Non-
+// destructive read (does NOT advance the committed cursor).
+type ChannelPeekRequest struct {
+	Channel     string `json:"channel"`
+	Scope       string `json:"scope"`
+	ScopeID     string `json:"scope_id,omitempty"`
+	FromCursor  string `json:"from_cursor,omitempty"`
+	MaxMessages int    `json:"max_messages,omitempty"`
+}
+
+// ChannelPeekResult mirrors ChannelSubscribeResult minus NextCursor —
+// peek never advances the cursor.
+type ChannelPeekResult struct {
+	Channel  string           `json:"channel"`
+	Messages []ChannelMessage `json:"messages"`
+}
+
+// ChannelAckRequest advances the committed cursor for a subscriber.
+// Returns ErrChannelCursorRegression if Cursor is older than the
+// committed value (monotonic-cursor contract).
+type ChannelAckRequest struct {
+	Channel string `json:"channel"`
+	Scope   string `json:"scope"`
+	ScopeID string `json:"scope_id,omitempty"`
+	Cursor  string `json:"cursor"`
+}
+
+// ChannelAckResult is `{"ok": true}` on success. Failure modes propagate
+// as Go errors (cursor regression, store error).
+type ChannelAckResult struct {
+	OK bool `json:"ok"`
+}
+
 // StreamUserRunStatesRequest is the input to Connector.StreamUserRunStates.
 // UserID is required; Statuses and Agent are optional filters that match
 // the SSE handler's ?status=...&agent=... query params.

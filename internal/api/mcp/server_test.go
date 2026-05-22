@@ -169,6 +169,20 @@ func (m *mockConnector) MCPServerDef(context.Context, json.RawMessage) (connecto
 	return connector.ToolResult{}, nil
 }
 
+// v0.9.x Channel CRUD stubs.
+func (m *mockConnector) PublishChannel(context.Context, connector.ChannelPublishRequest) (connector.ChannelPublishResult, error) {
+	return connector.ChannelPublishResult{}, nil
+}
+func (m *mockConnector) SubscribeChannel(context.Context, connector.ChannelSubscribeRequest) (connector.ChannelSubscribeResult, error) {
+	return connector.ChannelSubscribeResult{}, nil
+}
+func (m *mockConnector) PeekChannel(context.Context, connector.ChannelPeekRequest) (connector.ChannelPeekResult, error) {
+	return connector.ChannelPeekResult{}, nil
+}
+func (m *mockConnector) AckChannel(context.Context, connector.ChannelAckRequest) (connector.ChannelAckResult, error) {
+	return connector.ChannelAckResult{}, nil
+}
+
 // driveServer runs the server against the given input lines and
 // returns the response frames (one per request). Notifications are
 // captured separately.
