@@ -144,13 +144,12 @@ function formatLine(row: TranscriptEvent): FormattedLine {
     case "agent":
       return { key, ts, kind, cls: "tl-meta", payload: oneLine(JSON.stringify(ev)) };
     case "user_input": {
-      // v0.9.x: user_input's payload lives on the sidecar (the
-      // raw segments JSON) — `ev.text` is empty because the event
-      // doesn't fit providers.Event. Show the first user-role
-      // segment's text as a one-liner; expanded view lives in
-      // the panels (AgentDetailPane).
+      // v0.9.x: user_input's payload lives on the sidecar (the raw
+      // segments JSON). Show the first user-role segment's text as a
+      // one-liner; system-role segments are skipped because the
+      // dedicated system_prompt event already surfaces them.
       const segs = (row.payload as UserInputPayload[] | undefined) ?? [];
-      const userSeg = segs.find((s) => s.role === "user") ?? segs[0];
+      const userSeg = segs.find((s) => s.role === "user");
       const text = userSeg?.content?.[0]?.text ?? "";
       return { key, ts, kind, cls: "tl-text", payload: oneLine(text) };
     }

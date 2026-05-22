@@ -455,7 +455,16 @@ function textPayloadFor(ev: EventPayload, row?: TranscriptEvent): string {
       return lines.join("\n");
     }
     case "user_input": {
-      const segs = (row?.payload as UserInputPayload[] | undefined) ?? [];
+      // Filter out role="system" segments — the agent's system prompt
+      // is already surfaced by the dedicated system_prompt card; showing
+      // it again here makes the operator scroll past it to find what
+      // was actually said to the agent. Sub-agent spawns + run-creation
+      // paths prepend a system segment for provider wire-shape reasons
+      // (see server.go runSubAgent), but the operator dashboard wants
+      // the "user said" view.
+      const segs = ((row?.payload as UserInputPayload[] | undefined) ?? []).filter(
+        (s) => s.role === "user",
+      );
       return JSON.stringify(segs, null, 2);
     }
     case "system_prompt": {
@@ -525,11 +534,10 @@ function summaryFor(ev: EventPayload, row?: TranscriptEvent): string {
         : "";
     case "user_input": {
       const segs = (row?.payload as UserInputPayload[] | undefined) ?? [];
-      // Surface the first user-role content text (typical: the
-      // initial prompt the caller sent). Skip system-role segments
-      // — those usually duplicate the AgentDef prompt that the
-      // separate system_prompt card already surfaces.
-      const userSeg = segs.find((s) => s.role === "user") ?? segs[0];
+      // Surface the first user-role content text (the prompt the
+      // caller sent). Skip system-role segments — those duplicate the
+      // AgentDef prompt that the separate system_prompt card surfaces.
+      const userSeg = segs.find((s) => s.role === "user");
       const text = userSeg?.content?.[0]?.text ?? "";
       return firstLine(text, 200);
     }
@@ -594,12 +602,13 @@ function detailFor(ev: EventPayload, row?: TranscriptEvent): ReactNode {
         </div>
       );
     case "user_input": {
-      const segs = (row?.payload as UserInputPayload[] | undefined) ?? [];
+      const segs = ((row?.payload as UserInputPayload[] | undefined) ?? []).filter(
+        (s) => s.role === "user",
+      );
       return (
         <div className="user-input-detail">
           {segs.map((seg, i) => (
             <div key={i} className="user-input-segment">
-              <div className="seg-role">role: <code>{seg.role}</code></div>
               {seg.content?.map((c, j) => (
                 <pre key={j} className="full-text">{c.text ?? JSON.stringify(c)}</pre>
               ))}
