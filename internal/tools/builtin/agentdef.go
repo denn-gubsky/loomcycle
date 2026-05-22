@@ -795,6 +795,11 @@ func rowResponseMap(row store.AgentDefRow) map[string]any {
 		"retired":                  row.Retired,
 		"bootstrapped_from_static": row.BootstrappedFromStatic,
 		"content_sha256":           row.ContentSHA256,
+		// v0.9.x Library v2: include the persisted definition body so
+		// the UI's inline-content view + side panel can render it
+		// without a second round-trip. json.RawMessage embeds verbatim;
+		// nil renders as `null` which the renderer treats as empty.
+		"definition": row.Definition,
 	}
 }
 

@@ -464,3 +464,37 @@ func jsonTagsOfFields(t reflect.Type) map[string]bool {
 	}
 	return out
 }
+
+// TestAgentDefTool_ListIncludesDefinition pins the v0.9.x Library v2
+// contract: the list op's per-version rows include the persisted
+// `definition` JSON so the UI can render content inline without a
+// second round-trip. Before this fix, rowResponseMap omitted the
+// definition field — `row.definition` was undefined on the wire,
+// every inline-content expansion rendered empty.
+func TestAgentDefTool_ListIncludesDefinition(t *testing.T) {
+	tool, ctx, cleanup := agentDefFixture(t)
+	defer cleanup()
+	ctx = tools.WithAgentTools(ctx, []string{"Read"})
+
+	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"create","name":"with-body","overlay":{"system_prompt":"hello world","allowed_tools":["Read"]},"promote":true}`))
+	if res.IsError {
+		t.Fatalf("create: %s", res.Text)
+	}
+
+	res, _ = tool.Execute(ctx, json.RawMessage(`{"op":"list","name":"with-body"}`))
+	if res.IsError {
+		t.Fatalf("list: %s", res.Text)
+	}
+	out := decodeResult(t, res.Text)
+	versions, _ := out["versions"].([]any)
+	if len(versions) != 1 {
+		t.Fatalf("versions = %d, want 1", len(versions))
+	}
+	v0, _ := versions[0].(map[string]any)
+	if v0["definition"] == nil {
+		t.Fatalf("list response missing definition field: %v", v0)
+	}
+	// definition rides through as embedded JSON bytes; on the wire it
+	// surfaces as a JSON-decoded object. Either shape is acceptable —
+	// what matters is that the field is non-null.
+}
