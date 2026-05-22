@@ -78,6 +78,9 @@ Cross-cutting topics that explain how these compose:
 - `help(topic="n8n-integration")` — three patterns for composing
   loomcycle with n8n's workflow builder (bidirectional MCP +
   planned community node)
+- `help(topic="content-signatures")` — SHA-256 content_sha256 on
+  AgentDef + SkillDef rows; the bundle-vs-deployed comparison
+  workflow for Docker-bundled operators
 
 ## Your transcript records what YOU received
 

@@ -181,10 +181,12 @@ func (s *Store) migrate(ctx context.Context) error {
 			content_sha256            TEXT,
 			UNIQUE(name, version)
 		)`,
-		`CREATE INDEX IF NOT EXISTS agent_defs_by_name           ON agent_defs(name, version DESC)`,
-		`CREATE INDEX IF NOT EXISTS agent_defs_by_parent         ON agent_defs(parent_def_id) WHERE parent_def_id IS NOT NULL`,
-		`CREATE INDEX IF NOT EXISTS agent_defs_by_run            ON agent_defs(created_by_run_id) WHERE created_by_run_id IS NOT NULL`,
-		`CREATE INDEX IF NOT EXISTS agent_defs_by_content_sha256 ON agent_defs(content_sha256) WHERE content_sha256 IS NOT NULL`,
+		`CREATE INDEX IF NOT EXISTS agent_defs_by_name   ON agent_defs(name, version DESC)`,
+		`CREATE INDEX IF NOT EXISTS agent_defs_by_parent ON agent_defs(parent_def_id) WHERE parent_def_id IS NOT NULL`,
+		`CREATE INDEX IF NOT EXISTS agent_defs_by_run    ON agent_defs(created_by_run_id) WHERE created_by_run_id IS NOT NULL`,
+		// agent_defs_by_content_sha256 is created in addIndexes below
+		// (runs AFTER addColumns adds the column on upgrade-from-v0.8.x
+		// DBs where this CREATE TABLE IF NOT EXISTS is a no-op).
 		`CREATE TABLE IF NOT EXISTS agent_def_active (
 			name                  TEXT    PRIMARY KEY,
 			def_id                TEXT    NOT NULL REFERENCES agent_defs(def_id),
@@ -210,10 +212,10 @@ func (s *Store) migrate(ctx context.Context) error {
 			content_sha256            TEXT,
 			UNIQUE(name, version)
 		)`,
-		`CREATE INDEX IF NOT EXISTS skill_defs_by_name           ON skill_defs(name, version DESC)`,
-		`CREATE INDEX IF NOT EXISTS skill_defs_by_parent         ON skill_defs(parent_def_id) WHERE parent_def_id IS NOT NULL`,
-		`CREATE INDEX IF NOT EXISTS skill_defs_by_run            ON skill_defs(created_by_run_id) WHERE created_by_run_id IS NOT NULL`,
-		`CREATE INDEX IF NOT EXISTS skill_defs_by_content_sha256 ON skill_defs(content_sha256) WHERE content_sha256 IS NOT NULL`,
+		`CREATE INDEX IF NOT EXISTS skill_defs_by_name   ON skill_defs(name, version DESC)`,
+		`CREATE INDEX IF NOT EXISTS skill_defs_by_parent ON skill_defs(parent_def_id) WHERE parent_def_id IS NOT NULL`,
+		`CREATE INDEX IF NOT EXISTS skill_defs_by_run    ON skill_defs(created_by_run_id) WHERE created_by_run_id IS NOT NULL`,
+		// skill_defs_by_content_sha256 — see agent_defs_by_content_sha256 note above.
 		`CREATE TABLE IF NOT EXISTS skill_def_active (
 			name                  TEXT    PRIMARY KEY,
 			def_id                TEXT    NOT NULL REFERENCES skill_defs(def_id),
@@ -400,6 +402,13 @@ func (s *Store) migrate(ctx context.Context) error {
 		// agent_def_id the run actually ran against. Partial index
 		// keeps it small — only DB-resolved runs have a non-NULL value.
 		`CREATE INDEX IF NOT EXISTS runs_by_agent_def       ON runs(agent_def_id)    WHERE agent_def_id IS NOT NULL`,
+		// v0.9.x content_sha256 — partial-index lookup for the verify
+		// op. Lives here in addIndexes (not the CREATE TABLE block)
+		// so the column added by addColumns above is guaranteed to
+		// exist when this index runs. Required for the v0.8.x →
+		// v0.9.x upgrade path where the table exists without the column.
+		`CREATE INDEX IF NOT EXISTS agent_defs_by_content_sha256 ON agent_defs(content_sha256) WHERE content_sha256 IS NOT NULL`,
+		`CREATE INDEX IF NOT EXISTS skill_defs_by_content_sha256 ON skill_defs(content_sha256) WHERE content_sha256 IS NOT NULL`,
 		// v0.8.6 channel_messages_by_visible — runs in addIndexes
 		// (NOT the earlier `stmts` loop) so the visible_at column
 		// added by addColumns above is guaranteed to exist when this
