@@ -89,6 +89,13 @@ type AgentDefEntry struct {
 	CreatedByRunID         string          `json:"created_by_run_id,omitempty"`
 	Retired                bool            `json:"retired"`
 	BootstrappedFromStatic bool            `json:"bootstrapped_from_static"`
+	// ContentSHA256 — v0.9.x deterministic hash of the agent's content-
+	// bearing fields. Empty on snapshots captured before v0.9.x; the
+	// boot-time backfill in cmd/loomcycle/main.go computes the hash for
+	// rows restored without one on the next startup. Additive field
+	// (omitempty); restoring older snapshots into newer readers works
+	// without a section-version bump.
+	ContentSHA256 string `json:"content_sha256,omitempty"`
 }
 
 // AgentDefActiveSection wraps the active-pointer entries.
@@ -125,6 +132,8 @@ type SkillDefEntry struct {
 	CreatedByRunID         string          `json:"created_by_run_id,omitempty"`
 	Retired                bool            `json:"retired"`
 	BootstrappedFromStatic bool            `json:"bootstrapped_from_static"`
+	// ContentSHA256 — see AgentDefEntry.ContentSHA256.
+	ContentSHA256 string `json:"content_sha256,omitempty"`
 }
 
 // SkillDefActiveSection mirrors AgentDefActiveSection.

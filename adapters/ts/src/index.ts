@@ -133,6 +133,20 @@ export type {
   // Substrate admin (v0.8.22)
   SubstrateToolInput,
   SubstrateToolResponse,
+  // Transcript first-cycle types (v0.9.1)
+  SystemPromptPayload,
+  UserInputPayload,
+  // n8n RFC Phase 0 (v0.9.x)
+  ChannelDescriptor,
+  ListChannelsResponse,
+  RunStateEvent,
+  RunStateStreamItem,
+  RunStateStreamOpen,
+  StreamUserRunStatesOptions,
+  // Content signatures (v0.9.x)
+  AgentDefRowResponse,
+  AgentDefVerifyResult,
+  SkillDefVerifyResult,
 } from "./types.js";
 
 export {

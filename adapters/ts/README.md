@@ -6,9 +6,17 @@ TypeScript client for the [loomcycle](https://github.com/denn-gubsky/loomcycle) 
 
 ## Status
 
-**v0.8.18** — full Python-adapter parity + hook management. 27 methods covering run streaming, agent metadata, transcript, pause/resume/state, snapshot lifecycle, memory admin, interruption resolve, hook registration, and health.
+**v0.11.0** — 31 methods covering run streaming, agent metadata, transcript, pause/resume/state, snapshot lifecycle, memory admin, interruption resolve, hook registration, **v0.8.22 substrate admin (agentDef + skillDef)**, **v0.9.x n8n Phase 0 (listChannels + streamUserRunStates)**, **v0.9.x content_sha256** (the bundle-vs-deployed comparison workflow for Docker-bundled operators), and health.
 
 > Migrating from raw `fetch` against `/v1/*`? See **[docs/MIGRATING-FROM-HTTP.md](./docs/MIGRATING-FROM-HTTP.md)** for a side-by-side walkthrough.
+
+### What's new since v0.8.18
+
+- **`agentDef` / `skillDef`** (v0.8.22) — runtime fork / promote / retire / get / list / `verify` on the substrate. Lets a containerised app push agent + skill definitions to a remote loomcycle at startup without restarting it.
+- **`listChannels`** (v0.9.x) — list operator-declared channels with aggregate stats (message_count, oldest/newest visible_at). The substrate companion to the existing Channel tool; useful for credential pickers + dashboards.
+- **`streamUserRunStates`** (v0.9.x) — SSE stream of run state transitions scoped to one `user_id`. Yields `{ kind: "open" | "event", payload }` items until the connection closes (30-min server cap). The primary substrate hook for orchestration UIs that need to react when an agent run completes / fails / cancels.
+- **Content signatures** (v0.9.x) — every `agent_defs` / `skill_defs` row now carries a deterministic `content_sha256`. Combined with the `verify` op and the `loomcycle hash agent|skill` CLI subcommand, this gives Docker-bundled operators a one-call answer to *"is what I have in my image identical to what's deployed?"* — see [Content signatures](#content-signatures-v09x) below for the end-to-end workflow.
+- **Transcript first-cycle types** (v0.9.1) — `UserInputPayload` + `SystemPromptPayload` typed interfaces for the two new transcript events that surface "what the agent actually received" (the resolved system prompt + the caller's segments) as the first frames of every run.
 
 ## Install
 
@@ -206,6 +214,165 @@ export async function POST(req: Request) {
 - Auth flows one-way: loomcycle → your callback URL. Loomcycle does NOT attach a bearer token to callback POSTs by default. If you need to authenticate the caller, validate by source IP or include a shared secret in the `callback_url` path/query (`https://jobember.example/hooks/scan?secret=...`).
 - `fail_mode: "open"` (default) is right for telemetry hooks where a down receiver shouldn't break tool dispatch. `"closed"` is right for security hooks where a down receiver should fail the tool call (don't let bypassed payloads through).
 - `allow_hosts` in `PreHookResult` is a **trust-sensitive surface** — it widens the agent's outbound network policy for one tool call. Server enforces an operator-yaml allowlist (`hooks.permit_host_widen.owners`); your owner has to be on that list for `allow_hosts` to take effect. See the SECURITY note in `internal/hooks/types.go` before using.
+
+### Substrate admin: AgentDef + SkillDef (v0.8.22)
+
+Two op-discriminated methods that mirror the in-process `AgentDef` / `SkillDef` built-in tools over HTTP. The same `op` values an agent's tool_use would invoke are reachable directly from your app code — useful for runtime fork / promote / retire / list, and for the `verify` op covered in [Content signatures](#content-signatures-v09x).
+
+| Method | Returns | Notes |
+|---|---|---|
+| `agentDef(input)` | `Promise<SubstrateToolResponse>` | Op-discriminated. Mirrors `POST /v1/_agentdef`. |
+| `skillDef(input)` | `Promise<SubstrateToolResponse>` | Op-discriminated. Mirrors `POST /v1/_skilldef`. |
+
+The response type is intentionally `unknown` because the shape varies per op (`create`/`fork` return a row envelope; `list` returns `{name, versions: [...]}`; `verify` returns `AgentDefVerifyResult` / `SkillDefVerifyResult`). Cast / narrow as needed:
+
+```ts
+import type { AgentDefRowResponse } from "@loomcycle/client";
+
+const forked = (await client.agentDef({
+  op: "fork",
+  name: "researcher",
+  overlay: { system_prompt: "be very thorough", max_iterations: 32 },
+  promote: true,
+})) as AgentDefRowResponse;
+
+console.log(`forked def_id=${forked.def_id} hash=${forked.content_sha256}`);
+```
+
+Operations on AgentDef: `create` / `fork` / `get` / `list` / `promote` / `retire` / **`verify`** (v0.9.x). SkillDef has the same set minus `retire`'s edge cases. See `internal/tools/builtin/agentdef.go` for the canonical input schema; each op enforces the agent's `agent_def_scopes` / `skill_def_scopes` capability gate from the operator yaml.
+
+Refusals throw `SubstrateToolRefusedError` (a scope deny / empty body / allowed-tools widening); transport failures throw the usual typed errors (`AuthError`, `UnavailableError`, etc.).
+
+### Channels + run-state stream (v0.9.x n8n Phase 0)
+
+Two substrate-side surfaces added in the n8n integration's Phase 0 wire-API work. Useful for any orchestrator (not just n8n) that needs to see channel state or subscribe to run-state transitions.
+
+| Method | Returns | Notes |
+|---|---|---|
+| `listChannels()` | `Promise<ListChannelsResponse>` | Operator-declared channels + aggregate stats (`message_count`, `oldest_visible_at`, `newest_visible_at`). Mirrors `GET /v1/_channels`. |
+| `streamUserRunStates(userId, opts?)` | `AsyncIterable<RunStateStreamItem>` | SSE stream of run state transitions for one user. Yields one `{ kind: "open", ... }` frame then one `{ kind: "event", payload: RunStateEvent }` per matching transition until close. |
+
+**Streaming run-state events** — for orchestration UIs that want to react when an agent run completes / fails / cancels:
+
+```ts
+import type { RunStateEvent } from "@loomcycle/client";
+
+const ac = new AbortController();
+const stream = client.streamUserRunStates(userId, {
+  statuses: ["completed", "failed", "cancelled"], // optional filter
+  agent: "researcher",                            // optional filter
+  signal: ac.signal,
+});
+
+for await (const item of stream) {
+  if (item.kind === "open") {
+    console.log(`stream open for user=${item.payload.user_id}`);
+    continue;
+  }
+  const evt: RunStateEvent = item.payload;
+  console.log(`${evt.agent}/${evt.run_id} -> ${evt.status} (stop_reason=${evt.stop_reason ?? "-"})`);
+  // ... persist to DB, push to UI websocket, fire webhook, etc.
+}
+```
+
+The stream stays open for up to 30 minutes (server-enforced); reconnect on close for long-running orchestrators. Filters apply server-side; an empty filter delivers all transitions.
+
+### Content signatures (v0.9.x)
+
+**The bundle-vs-deployed comparison feature.** Every persisted `agent_defs` and `skill_defs` row carries a deterministic SHA-256 of its content-bearing fields (`content_sha256`). Combined with the CLI helper `loomcycle hash agent|skill <path>`, this lets Docker-bundled operators answer *"is what I have in my image identical to what's deployed?"* with one cheap call instead of fetching the full Definition JSONB and diffing it field by field.
+
+**The workflow** — three steps, fully Dockerfile-friendly:
+
+1. **At image-build time** (in your Dockerfile or CI): run the CLI against each bundled MD to capture the expected hash.
+
+   ```dockerfile
+   # Dockerfile
+   COPY agents/    /bundle/agents/
+   COPY skills/    /bundle/skills/
+   RUN /usr/local/bin/loomcycle hash agent /bundle/agents/researcher.md > /bundle/agents/researcher.sha256
+   RUN /usr/local/bin/loomcycle hash skill /bundle/skills/summariser   > /bundle/skills/summariser.sha256
+   ```
+
+2. **At container startup**: ask the deployed loomcycle whether each agent is in sync. Use `agentDef({op:"verify"})` / `skillDef({op:"verify"})` and narrow the response to `AgentDefVerifyResult` / `SkillDefVerifyResult`:
+
+   ```ts
+   import { readFile } from "node:fs/promises";
+   import type { AgentDefVerifyResult } from "@loomcycle/client";
+
+   const localHash = (await readFile("/bundle/agents/researcher.sha256", "utf-8")).trim();
+   const verify = (await client.agentDef({
+     op: "verify",
+     name: "researcher",
+     content_sha256: localHash,
+   })) as AgentDefVerifyResult;
+
+   if (verify.matches) {
+     console.log("researcher in sync");
+   } else if (!verify.deployed) {
+     console.log("researcher not deployed yet; pushing first version");
+     await pushAgent("/bundle/agents/researcher.md"); // your set-agent helper
+   } else {
+     console.log(`researcher drifted; deployed=${verify.current_sha256} local=${localHash}; pushing update`);
+     await pushAgent("/bundle/agents/researcher.md");
+   }
+   ```
+
+3. **Pushing on mismatch** is `agentDef({op:"set"|"fork", overlay: {...}})` with the same content the YAML expresses, parsed from your bundle.
+
+| Method | Returns | Notes |
+|---|---|---|
+| `agentDef({op:"verify", name, content_sha256})` | `Promise<AgentDefVerifyResult>` | `{matches, current_sha256, current_def_id, version, name, deployed}`. |
+| `skillDef({op:"verify", name, content_sha256})` | `Promise<SkillDefVerifyResult>` | Same shape. |
+
+**Key invariants:**
+
+- `matches: true` only when both hashes are non-empty AND equal. An empty caller hash NEVER matches (no false-positive when the deployed row's hash is also empty due to a not-yet-completed backfill).
+- `deployed: false` ⇒ `matches: false`. Use this to distinguish "no active row" (first deploy) from "drift" (push update).
+- The CLI hash and the substrate's hash are guaranteed identical for matching content — both compute through the same Go function in `internal/agents.Sign`.
+- Agent hash covers `name + description + system_prompt + allowed_tools + skills + model + provider + tier + effort + max_tokens + max_iterations + providers + models + memory_scopes + memory_quota_bytes`. Explicitly excluded: `def_id`, `version`, `created_at`, `retired`, **plus** `channels` and `*_scopes` (operator-yaml-only ACL fields that don't round-trip through `set` / `fork`).
+- Skill hash covers `name + description + body + allowed_tools`. Skill bodies are normalised before hashing (CRLF → LF; trailing whitespace stripped) so editor drift doesn't cause spurious mismatches.
+
+See `help(topic="content-signatures")` from inside an agent run for the full operator narrative.
+
+### Transcript first-cycle types (v0.9.1)
+
+Every run's persisted transcript now records two events that describe **what the agent actually received** before any model output:
+
+- **`system_prompt`** — the resolved system prompt (AgentDef body + skill bodies, after overlay + merge), with provenance (`agent_def_id` + `skill_def_ids` map).
+- **`user_input`** — the caller's `segments` from the original `POST /v1/runs`.
+
+Surface them via `getTranscript(sessionId)` and narrow on `event.type`:
+
+```ts
+import type {
+  SystemPromptPayload,
+  TranscriptEvent,
+  UserInputPayload,
+} from "@loomcycle/client";
+
+const { events } = await client.getTranscript(sessionId);
+
+for (const ev of events as TranscriptEvent[]) {
+  if (ev.type === "system_prompt") {
+    const p = ev.payload as SystemPromptPayload;
+    console.log(`prompt (def_id=${p.agent_def_id ?? "-"}): ${p.system_prompt.slice(0, 80)}...`);
+    if (p.skill_def_ids) {
+      for (const [skill, defId] of Object.entries(p.skill_def_ids)) {
+        console.log(`  skill ${skill} resolved to def_id=${defId}`);
+      }
+    }
+  } else if (ev.type === "user_input") {
+    const segs = ev.payload as UserInputPayload[];
+    console.log(`caller sent ${segs.length} segment(s):`);
+    for (const seg of segs) {
+      const firstText = seg.content.find((c) => c.type.endsWith("text"))?.text ?? "";
+      console.log(`  [${seg.role}] ${firstText.slice(0, 80)}`);
+    }
+  }
+}
+```
+
+These events are part of the persisted transcript (not the live `runStreaming` event channel — they fire before the first model call, before the SSE stream consumer typically attaches). Existing transcript readers that don't know the new types see them as `event: unknown` with the typed body in `payload` and ignore them safely.
 
 ## Errors
 

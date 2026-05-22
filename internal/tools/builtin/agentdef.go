@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/denn-gubsky/loomcycle/internal/agents"
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
@@ -95,6 +96,11 @@ type agentDefInput struct {
 	Description string          `json:"description,omitempty"`
 	Promote     *bool           `json:"promote,omitempty"`
 	Retired     *bool           `json:"retired,omitempty"`
+	// ContentSHA256 — input for `op: verify`. Operator passes the
+	// hash they computed locally (via `loomcycle hash agent`); the
+	// tool compares against the active row's content_sha256 and
+	// returns { matches, current_sha256, current_def_id, version }.
+	ContentSHA256 string `json:"content_sha256,omitempty"`
 }
 
 // Name implements tools.Tool.
@@ -133,10 +139,12 @@ func (a *AgentDef) Execute(ctx context.Context, raw json.RawMessage) (tools.Resu
 		return a.execRetire(ctx, policy, in)
 	case "promote":
 		return a.execPromote(ctx, policy, in)
+	case "verify":
+		return a.execVerify(ctx, policy, in)
 	case "":
 		return errResult("missing required field: op"), nil
 	default:
-		return errResult(fmt.Sprintf("unknown op %q (must be one of: create, fork, get, list, retire, promote)", in.Op)), nil
+		return errResult(fmt.Sprintf("unknown op %q (must be one of: create, fork, get, list, retire, promote, verify)", in.Op)), nil
 	}
 }
 
@@ -196,6 +204,7 @@ func (a *AgentDef) execCreate(ctx context.Context, policy tools.AgentDefPolicyVa
 		Definition:       defJSON,
 		Description:      in.Description,
 		CreatedByAgentID: ident.AgentID,
+		ContentSHA256:    signFromMergedDef(in.Name, def),
 		// CreatedByRunID stays empty here — there's no run_id on
 		// RunIdentityValue today; carried via the run ctx separately.
 	}
@@ -316,6 +325,7 @@ func (a *AgentDef) execFork(ctx context.Context, policy tools.AgentDefPolicyValu
 		Definition:       defJSON,
 		Description:      in.Description,
 		CreatedByAgentID: ident.AgentID,
+		ContentSHA256:    signFromMergedDef(in.Name, def),
 	}
 	created, err := a.Store.AgentDefCreate(ctx, row)
 	if err != nil {
@@ -417,6 +427,50 @@ func (a *AgentDef) execPromote(ctx context.Context, policy tools.AgentDefPolicyV
 		return errResult(fmt.Sprintf("promote: %s", err)), nil
 	}
 	return okJSON(map[string]any{"def_id": row.DefID, "name": row.Name, "promoted": true})
+}
+
+// execVerify answers "is the supplied content_sha256 the hash of the
+// currently-active agent definition with this name?" Operators with
+// Docker-bundled agents compute the hash of their local source via
+// `loomcycle hash agent <path>` and pass it here; matches=false +
+// the returned current_sha256 + current_def_id tells them they should
+// re-push via `AgentDef set`. matches=true is the no-op signal.
+//
+// Returns matches=false + empty current_sha256 + empty current_def_id
+// when the name doesn't exist at all. Doesn't fall back to the static
+// cfg.Agents row — the question is specifically "what's IN THE DB?"
+// since that's what loomcycle actually loads from.
+func (a *AgentDef) execVerify(ctx context.Context, policy tools.AgentDefPolicyValue, in agentDefInput) (tools.Result, error) {
+	if in.Name == "" {
+		return errResult("verify: missing required field: name"), nil
+	}
+	if err := a.checkScopeForName(policy, in.Name, ""); err != nil {
+		return errResult(err.Error()), nil
+	}
+	row, err := a.Store.AgentDefGetActive(ctx, in.Name)
+	if err != nil {
+		var nf *store.ErrNotFound
+		if errors.As(err, &nf) {
+			// Name not promoted → no deployed version → never matches.
+			return okJSON(map[string]any{
+				"matches":         false,
+				"current_sha256":  "",
+				"current_def_id":  "",
+				"version":         0,
+				"name":            in.Name,
+				"deployed":        false,
+			})
+		}
+		return errResult(fmt.Sprintf("verify: %s", err)), nil
+	}
+	return okJSON(map[string]any{
+		"matches":        in.ContentSHA256 != "" && in.ContentSHA256 == row.ContentSHA256,
+		"current_sha256": row.ContentSHA256,
+		"current_def_id": row.DefID,
+		"version":        row.Version,
+		"name":           row.Name,
+		"deployed":       true,
+	})
 }
 
 // ---- helpers ----
@@ -570,6 +624,7 @@ func (a *AgentDef) bootstrapStatic(ctx context.Context, name string, static conf
 		Description:            "bootstrapped from static cfg.Agents",
 		CreatedByAgentID:       ident.AgentID,
 		BootstrappedFromStatic: true,
+		ContentSHA256:          signFromMergedDef(name, def),
 	}
 	created, err := a.Store.AgentDefCreate(ctx, row)
 	if err != nil {
@@ -685,7 +740,47 @@ func rowResponseMap(row store.AgentDefRow) map[string]any {
 		"created_by_agent_id":      row.CreatedByAgentID,
 		"retired":                  row.Retired,
 		"bootstrapped_from_static": row.BootstrappedFromStatic,
+		"content_sha256":           row.ContentSHA256,
 	}
+}
+
+// signFromMergedDef computes the v0.9.x content_sha256 for a row
+// whose Definition shape is the substrate's mergedDef. Maps the
+// content-bearing subset onto agents.AgentContent (same name +
+// every mutable field) and delegates to agents.Sign. The mapping
+// is explicit (vs marshal+unmarshal) so future field additions on
+// mergedDef get caught at compile time when they're added here.
+func signFromMergedDef(name string, def mergedDef) string {
+	// Convert config.TierCandidate map to agents.TierCandidate map so
+	// the agents package stays free of any config import.
+	var models map[string][]agents.TierCandidate
+	if len(def.Models) > 0 {
+		models = make(map[string][]agents.TierCandidate, len(def.Models))
+		for k, v := range def.Models {
+			out := make([]agents.TierCandidate, 0, len(v))
+			for _, tc := range v {
+				out = append(out, agents.TierCandidate{Provider: tc.Provider, Model: tc.Model})
+			}
+			models[k] = out
+		}
+	}
+	return agents.Sign(agents.AgentContent{
+		Name:             name,
+		Description:      def.Description,
+		Provider:         def.Provider,
+		Model:            def.Model,
+		Tier:             def.Tier,
+		Effort:           def.Effort,
+		MaxTokens:        def.MaxTokens,
+		MaxIterations:    def.MaxIterations,
+		AllowedTools:     def.AllowedTools,
+		Skills:           def.Skills,
+		SystemPrompt:     def.SystemPrompt,
+		Providers:        def.Providers,
+		Models:           models,
+		MemoryScopes:     def.MemoryScopes,
+		MemoryQuotaBytes: def.MemoryQuotaBytes,
+	})
 }
 
 // mintDefID returns a fresh opaque ID for a new row. 16 hex chars

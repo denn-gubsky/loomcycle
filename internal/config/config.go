@@ -292,9 +292,15 @@ type ModelRef struct {
 // the first (provider, model) where the provider is reachable, the
 // model is listed by the provider, and neither is currently marked
 // stalled in the availability matrix.
+//
+// json: tags MUST be present + lowercase for the v0.9.x content_sha256
+// — without them, encoding/json defaults to capitalized field names and
+// the substrate's hash of a non-empty `models:` value diverges from the
+// CLI's hash of the same source YAML. See internal/agents.TierCandidate
+// for the parallel pin + sign_test.go's known-vector test.
 type TierCandidate struct {
-	Provider string `yaml:"provider"`
-	Model    string `yaml:"model"`
+	Provider string `json:"provider" yaml:"provider"`
+	Model    string `json:"model"    yaml:"model"`
 }
 
 // UserTier is one named user-facing-tier policy. Operators define

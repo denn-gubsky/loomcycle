@@ -189,6 +189,7 @@ func captureAgentDefs(ctx context.Context, s store.Store, out *AgentDefsSection)
 			CreatedByRunID:         r.CreatedByRunID,
 			Retired:                r.Retired,
 			BootstrappedFromStatic: r.BootstrappedFromStatic,
+			ContentSHA256:          r.ContentSHA256,
 		})
 	}
 	return nil
@@ -233,6 +234,7 @@ func captureSkillDefs(ctx context.Context, s store.Store, out *SkillDefsSection)
 			CreatedByRunID:         r.CreatedByRunID,
 			Retired:                r.Retired,
 			BootstrappedFromStatic: r.BootstrappedFromStatic,
+			ContentSHA256:          r.ContentSHA256,
 		})
 	}
 	return nil

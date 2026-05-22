@@ -781,6 +781,30 @@ type Store interface {
 	// n8n integration RFC).
 	ChannelStats(ctx context.Context) ([]ChannelStats, error)
 
+	// BackfillAgentDefContentSHA256 walks every agent_defs row with a
+	// NULL or empty content_sha256, calls signFn with the row's
+	// (name, definition) JSON to compute the canonical hash, and
+	// writes it back. Returns the count of rows updated.
+	//
+	// Idempotent: a second call after a complete backfill finds zero
+	// NULL rows and returns 0. Boot-time hook runs this once after
+	// migrations; subsequent boots are O(0) once the column is
+	// fully populated.
+	//
+	// signFn is injected so the store package stays free of any
+	// agents/skills import — the v0.9.x hash algorithm lives in
+	// internal/agents.Sign, and main.go assembles the closure that
+	// calls it.
+	//
+	// Errors from signFn ABORT the backfill (return on first error)
+	// rather than skipping the row, because a hash-compute failure on
+	// any well-formed Definition JSONB indicates a code bug, not a
+	// data problem.
+	BackfillAgentDefContentSHA256(ctx context.Context, signFn func(name string, def []byte) (string, error)) (int, error)
+
+	// BackfillSkillDefContentSHA256 — mirror of the AgentDef backfill.
+	BackfillSkillDefContentSHA256(ctx context.Context, signFn func(name string, def []byte) (string, error)) (int, error)
+
 	// ---- v0.8.5 Self-Evolution Substrate ----
 	//
 	// `AgentDef` is the agent-authored agent-definition versioning
@@ -1357,6 +1381,11 @@ type AgentDefRow struct {
 	CreatedByRunID         string          `json:"created_by_run_id,omitempty"`
 	Retired                bool            `json:"retired"`
 	BootstrappedFromStatic bool            `json:"bootstrapped_from_static"`
+	// ContentSHA256 is the v0.9.x deterministic content-hash of the
+	// agent's content-bearing fields, computed by internal/agents.Sign.
+	// "sha256:" + 64 hex chars; empty when the row pre-dates the
+	// content-signature migration and hasn't been backfilled yet.
+	ContentSHA256 string `json:"content_sha256,omitempty"`
 }
 
 // AgentDefNameSummary is one entry of AgentDefListNames' output.
@@ -1392,6 +1421,8 @@ type SkillDefRow struct {
 	CreatedByRunID         string          `json:"created_by_run_id,omitempty"`
 	Retired                bool            `json:"retired"`
 	BootstrappedFromStatic bool            `json:"bootstrapped_from_static"`
+	// ContentSHA256 — see AgentDefRow.ContentSHA256. Same semantics.
+	ContentSHA256 string `json:"content_sha256,omitempty"`
 }
 
 // SkillDefNameSummary mirrors AgentDefNameSummary.

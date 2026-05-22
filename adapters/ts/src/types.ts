@@ -248,13 +248,48 @@ export interface CancelAgentResult {
 
 /** TranscriptEvent — one persisted store.Event from
  *  GET /v1/sessions/{id}/transcript. The server wraps each
- *  providers.Event in {seq, run_id, ts_ns, type, event:{...}}. */
+ *  providers.Event in {seq, run_id, ts_ns, type, event:{...}}.
+ *
+ *  `payload` is the v0.9.1 sidecar field carrying the typed body of
+ *  events that don't fit the providers.Event union (the first-cycle
+ *  `system_prompt` + `user_input` transcript events). Narrow on
+ *  `type` to pick the right payload interface — see
+ *  {@link SystemPromptPayload} and {@link UserInputPayload}. */
 export interface TranscriptEvent {
   seq: number;
   run_id: string;
   ts_ns: number;
   type: string;
   event: unknown;
+  /** v0.9.1+ sidecar for typed transcript events:
+   *    type === "system_prompt" → SystemPromptPayload
+   *    type === "user_input"    → UserInputPayload[]
+   *  Absent for events the server hands through via `event`. */
+  payload?: SystemPromptPayload | UserInputPayload[] | unknown;
+}
+
+/** UserInputPayload mirrors the JSON of one `loop.PromptSegment` —
+ *  what the caller supplied as `segments` on POST /v1/runs +
+ *  /v1/sessions/{id}/messages. The transcript event's `payload`
+ *  field carries the FULL array (`UserInputPayload[]`) because one
+ *  call may include multiple segments (system + user prepends, etc.). */
+export interface UserInputPayload {
+  role: string; // "system" | "user"
+  content: Array<{ type: string; text?: string; cacheable?: boolean }>;
+}
+
+/** SystemPromptPayload mirrors the v0.9.1 system_prompt transcript
+ *  event payload — the resolved system prompt + provenance metadata
+ *  so operators can see WHICH AgentDef + WHICH SkillDef rows fed in. */
+export interface SystemPromptPayload {
+  system_prompt: string;
+  /** Empty for yaml-only agents (no AgentDef row). Pinned for
+   *  sub-runs spawned via the Agent tool with a def_id. */
+  agent_def_id?: string;
+  /** skillName → active SkillDef def_id. Only present for skills
+   *  whose DB-active row supplied the body; static-fallback skills
+   *  are absent. */
+  skill_def_ids?: Record<string, string>;
 }
 
 export interface TranscriptResponse {
@@ -678,4 +713,63 @@ export interface StreamUserRunStatesOptions {
   /** Filter to one agent name. Empty means any. */
   agent?: string;
   signal?: AbortSignal;
+}
+
+// ---- v0.9.x content_sha256 verify op (AgentDef + SkillDef) ----
+
+/** Response shape for `AgentDef set/fork/get/list` rows. Mirrors what
+ *  the server-side rowResponseMap emits. The `content_sha256` field is
+ *  the deterministic SHA-256 of the agent's content-bearing fields,
+ *  prefixed `sha256:` (Docker image-digest convention). Empty on rows
+ *  that pre-date v0.9.x and haven't been backfilled yet. */
+export interface AgentDefRowResponse {
+  def_id: string;
+  name: string;
+  version: number;
+  parent_def_id?: string;
+  description?: string;
+  created_at: string;
+  created_by_agent_id?: string;
+  retired: boolean;
+  bootstrapped_from_static: boolean;
+  /** "sha256:" + 64 hex chars; empty for not-yet-backfilled rows. */
+  content_sha256?: string;
+  /** Only populated on `set` / `fork` responses (was the new row
+   *  auto-promoted to active?). Absent on get/list. */
+  promoted?: boolean;
+}
+
+/** Response shape for `AgentDef verify`. Answers "is the supplied
+ *  content_sha256 the active deployed version of this name?"
+ *
+ *  - `matches: true`  — caller's local hash matches the deployed
+ *                       active version; no push needed.
+ *  - `matches: false` — bundle is out of sync; the operator should
+ *                       push a new version via `agentDef({op: "set",
+ *                       overlay: ...})`.
+ *  - `deployed: false` — no active row exists for this name (no
+ *                       deployment yet). matches is always false. */
+export interface AgentDefVerifyResult {
+  matches: boolean;
+  /** Deployed active row's hash; empty when not deployed. */
+  current_sha256: string;
+  /** Deployed active row's def_id; empty when not deployed. */
+  current_def_id: string;
+  /** Deployed active row's version; 0 when not deployed. */
+  version: number;
+  name: string;
+  /** True if an active row exists for this name. */
+  deployed: boolean;
+}
+
+/** Response shape for `SkillDef verify`. Same semantics as
+ *  AgentDefVerifyResult; the per-skill content basis is just
+ *  smaller (name + description + body + allowed_tools). */
+export interface SkillDefVerifyResult {
+  matches: boolean;
+  current_sha256: string;
+  current_def_id: string;
+  version: number;
+  name: string;
+  deployed: boolean;
 }

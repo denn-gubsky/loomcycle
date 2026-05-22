@@ -1,7 +1,7 @@
 {
   "name": "@loomcycle/client",
-  "version": "0.10.0",
-  "description": "TypeScript client for the loomcycle sidecar (HTTP+SSE). 31 methods covering run streaming, agent metadata, pause/resume/state, snapshot lifecycle, memory admin (incl. v0.9.0 Vector Memory embed_stats + reembed), interruption resolve, hook management, v0.8.22 substrate admin (agentDef + skillDef), and v0.9.x n8n Phase 0 (listChannels + streamUserRunStates). v0.9.1 adds typed UserInputPayload + SystemPromptPayload for the transcript event sidecar.",
+  "version": "0.11.1",
+  "description": "TypeScript client for the loomcycle sidecar (HTTP+SSE). 31 methods covering run streaming, agent metadata, pause/resume/state, snapshot lifecycle, memory admin (incl. v0.9.0 Vector Memory embed_stats + reembed), interruption resolve, hook management, v0.8.22 substrate admin (agentDef + skillDef), v0.9.x n8n Phase 0 (listChannels + streamUserRunStates), v0.9.x content_sha256 (AgentDefVerifyResult + SkillDefVerifyResult types for the bundle-vs-deployed comparison workflow), and v0.9.1 transcript first-cycle (SystemPromptPayload + UserInputPayload types for the typed first-frame events on /v1/sessions/{id}/transcript).",
   "license": "Apache-2.0",
   "type": "module",
   "repository": {

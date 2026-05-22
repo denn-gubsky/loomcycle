@@ -32,6 +32,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/agents"
 	lchttp "github.com/denn-gubsky/loomcycle/internal/api/http"
 	"github.com/denn-gubsky/loomcycle/internal/channels"
 	"github.com/denn-gubsky/loomcycle/internal/cli"
@@ -92,6 +93,30 @@ var (
 // corresponding info wasn't available (binary built without VCS — e.g.
 // `go test` by default does not embed VCS info, but `go build` and
 // `go install` do).
+// backfillAgentDefSignFn computes the v0.9.x content_sha256 for an
+// existing agent_defs row whose hash column is NULL/empty. The
+// Definition JSONB is the mergedDef shape; agents.FromOverlay
+// deserializes the content-bearing subset, then we layer the row's
+// Name in (the agent name lives on the row column, not in JSONB).
+func backfillAgentDefSignFn(name string, def []byte) (string, error) {
+	content, err := agents.FromOverlay(def)
+	if err != nil {
+		return "", fmt.Errorf("decode agent_defs.definition: %w", err)
+	}
+	content.Name = name
+	return agents.Sign(content), nil
+}
+
+// backfillSkillDefSignFn is the mirror against skill_defs rows.
+func backfillSkillDefSignFn(name string, def []byte) (string, error) {
+	content, err := skills.FromOverlay(def)
+	if err != nil {
+		return "", fmt.Errorf("decode skill_defs.definition: %w", err)
+	}
+	content.Name = name
+	return skills.Sign(content), nil
+}
+
 func resolveBuildInfo() (version, commit, builtAt string) {
 	info, ok := debug.ReadBuildInfo()
 	if !ok {
@@ -246,6 +271,8 @@ func main() {
 			}
 		case "restore":
 			os.Exit(cli.RunRestore(os.Args[2:], os.Stdout, os.Stderr))
+		case "hash":
+			os.Exit(cli.RunHash(os.Args[2:], os.Stdout, os.Stderr))
 		case "mcp":
 			mcpMode = true
 			// Strip "mcp" from os.Args so flag.Parse() below sees
@@ -681,6 +708,27 @@ func main() {
 		log.Fatalf("store: %v", err)
 	}
 	defer storeCloser()
+
+	// v0.9.x content_sha256 backfill — populate the new column on
+	// every NULL/empty row left over from a pre-v0.9.x upgrade OR
+	// restored from a pre-v0.9.x snapshot. Idempotent + fast: a
+	// second boot scans zero NULL rows. Failures here don't fatal
+	// the start — the column just stays NULL and `verify` returns
+	// matches=false until the row is naturally re-touched via
+	// AgentDef set/fork.
+	bfCtx, bfCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	if n, err := storeIface.BackfillAgentDefContentSHA256(bfCtx, backfillAgentDefSignFn); err != nil {
+		log.Printf("agent_defs: backfill content_sha256 partial — %v (rows updated before error: %d)", err, n)
+	} else if n > 0 {
+		log.Printf("agent_defs: backfilled %d rows with content_sha256", n)
+	}
+	if n, err := storeIface.BackfillSkillDefContentSHA256(bfCtx, backfillSkillDefSignFn); err != nil {
+		log.Printf("skill_defs: backfill content_sha256 partial — %v (rows updated before error: %d)", err, n)
+	} else if n > 0 {
+		log.Printf("skill_defs: backfilled %d rows with content_sha256", n)
+	}
+	bfCancel()
+
 	// Memory tool depends on the Store; wire the live backend in now
 	// that the adapter is open. This keeps the per-agent registration
 	// at boot (allTools assembled once) and the tool's nil-Store
