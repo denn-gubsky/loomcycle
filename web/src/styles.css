@@ -2266,6 +2266,26 @@ pre {
   color: var(--failed);
   border: 1px solid var(--failed);
 }
+/* v0.9.x Library v2 source chips — name-level marker showing where
+   the entity lives (yaml-only / substrate-only / both). The existing
+   bootstrapped chip stays as the row-level marker inside the
+   lineage tree (different scope). */
+.def-chip-static {
+  background: rgba(125, 165, 220, 0.15);
+  color: #7da5dc;
+  border: 1px solid #7da5dc;
+}
+.def-chip-dynamic {
+  background: rgba(176, 139, 208, 0.15);
+  color: #b08bd0;
+  border: 1px solid #b08bd0;
+}
+.lineage-name-chips {
+  display: inline-flex;
+  gap: 4px;
+  flex-wrap: wrap;
+  margin-left: 6px;
+}
 
 /* ---- Channels page ---- */
 .channels-view {

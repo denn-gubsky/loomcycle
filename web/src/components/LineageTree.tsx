@@ -149,7 +149,14 @@ function LineageNodeRow({
           className="lineage-row-button"
           onClick={() => onSelect?.(row.def_id)}
         >
-          <span className="lineage-version">v{row.version}</span>
+          {row.version === 0 && row.def_id.startsWith("static:") ? (
+            <span className="lineage-version">static</span>
+          ) : (
+            <span className="lineage-version">v{row.version}</span>
+          )}
+          {row.version === 0 && row.def_id.startsWith("static:") && (
+            <span className="def-chip def-chip-static">static</span>
+          )}
           {isActive && <span className="def-chip def-chip-active">active ★</span>}
           {row.retired && <span className="def-chip def-chip-retired">retired</span>}
           {row.bootstrapped_from_static && (

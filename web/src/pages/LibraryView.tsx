@@ -1,11 +1,11 @@
 import { useEffect, useState } from "react";
 import { NavLink, Outlet, useLocation } from "react-router-dom";
 import {
-  DefNameSummary,
   DefRow,
-  listAgentDefNames,
-  listMcpServerDefNames,
-  listSkillDefNames,
+  LibraryEntry,
+  listLibraryAgents,
+  listLibraryMcpServers,
+  listLibrarySkills,
 } from "../api";
 import LineagePanel from "../components/LineagePanel";
 
@@ -14,16 +14,20 @@ import LineagePanel from "../components/LineagePanel";
 // sub-tab uses the shared LineagePanel (list-left + lineage-right
 // Splitter) with a substrate-specific definition renderer.
 //
+// v0.9.x Library v2: surfaces yaml-only entries alongside substrate
+// rows. STATIC / DYNAMIC source chips at the name level; static-only
+// entries appear as a synthetic v0 row inside the lineage tree.
+//
 // Polling cadence: 10 s for the name list. Lineage trees per name
 // refresh on selection.
 
 const REFRESH_MS = 10_000;
 
 export default function LibraryView() {
-  // Three independent name lists. Polled in parallel from one effect.
-  const [agents, setAgents] = useState<DefNameSummary[]>([]);
-  const [skills, setSkills] = useState<DefNameSummary[]>([]);
-  const [mcps, setMcps] = useState<DefNameSummary[]>([]);
+  // Three independent unified entry lists. Polled in parallel.
+  const [agents, setAgents] = useState<LibraryEntry[]>([]);
+  const [skills, setSkills] = useState<LibraryEntry[]>([]);
+  const [mcps, setMcps] = useState<LibraryEntry[]>([]);
   const [err, setErr] = useState<string | null>(null);
 
   useEffect(() => {
@@ -31,14 +35,14 @@ export default function LibraryView() {
     const fetchAll = async () => {
       try {
         const [a, s, m] = await Promise.all([
-          listAgentDefNames(),
-          listSkillDefNames(),
-          listMcpServerDefNames(),
+          listLibraryAgents(),
+          listLibrarySkills(),
+          listLibraryMcpServers(),
         ]);
         if (cancelled) return;
-        setAgents(a.names ?? []);
-        setSkills(s.names ?? []);
-        setMcps(m.names ?? []);
+        setAgents(a.entries ?? []);
+        setSkills(s.entries ?? []);
+        setMcps(m.entries ?? []);
         setErr(null);
       } catch (e) {
         if (!cancelled) setErr(e instanceof Error ? e.message : String(e));
@@ -79,7 +83,7 @@ export default function LibraryView() {
           <LineagePanel
             kind="agentdef"
             kindLabel="agents"
-            names={agents}
+            entries={agents}
             splitterStorageKey="loomcycle.library.agents.split"
             renderDefinition={renderAgentDefinition}
           />
@@ -88,7 +92,7 @@ export default function LibraryView() {
           <LineagePanel
             kind="skilldef"
             kindLabel="skills"
-            names={skills}
+            entries={skills}
             splitterStorageKey="loomcycle.library.skills.split"
             renderDefinition={renderSkillDefinition}
           />
@@ -97,7 +101,7 @@ export default function LibraryView() {
           <LineagePanel
             kind="mcpserverdef"
             kindLabel="MCP servers"
-            names={mcps}
+            entries={mcps}
             splitterStorageKey="loomcycle.library.mcp.split"
             renderDefinition={renderMcpDefinition}
           />
@@ -212,12 +216,35 @@ function renderSkillDefinition(row: DefRow) {
   );
 }
 
+interface MCPDiscoveredTool {
+  name: string;
+  description?: string;
+  input_schema?: unknown;
+}
+
 interface MCPServerDefBody {
   transport?: string;
   url?: string;
   description?: string;
   headers?: Record<string, string>;
-  discovered_tools?: string[];
+  /**
+   * Stdio-only fields (present for static yaml MCP servers; the
+   * substrate refuses stdio at create-time, so substrate rows never
+   * carry these).
+   */
+  command?: string;
+  args?: string[];
+  env?: Record<string, string>;
+  pool_size?: number;
+  allowed_tools?: string[];
+  /**
+   * Cached tools/list result. Shape mirrors the substrate's
+   * mcp_server_defs.definition `discovered_tools` field —
+   * `[{name, description, input_schema}]`. Older revisions of this
+   * type declared `string[]`; the persisted JSON has always been the
+   * object shape — the wire type was just wrong.
+   */
+  discovered_tools?: MCPDiscoveredTool[];
 }
 
 function renderMcpDefinition(row: DefRow) {
@@ -234,16 +261,48 @@ function renderMcpDefinition(row: DefRow) {
         items={[
           ["transport", body.transport],
           ["url", body.url],
+          ["command", body.command],
+          ["pool_size", body.pool_size?.toString()],
         ]}
       />
+      {body.args && body.args.length > 0 && (
+        <div className="def-field">
+          <span className="def-field-label">args</span>
+          <div className="def-pill-row">
+            {body.args.map((a, i) => (
+              <span key={`${i}-${a}`} className="def-pill mono">{a}</span>
+            ))}
+          </div>
+        </div>
+      )}
       {body.headers && Object.keys(body.headers).length > 0 && (
         <div className="def-field">
           <span className="def-field-label">headers</span>
           <pre className="def-prompt mono">
             {Object.entries(body.headers)
-              .map(([k, v]) => `${k}: ${maskHeaderValue(k, v)}`)
+              .map(([k, v]) => `${k}: ${maskSensitiveValue(k, v)}`)
               .join("\n")}
           </pre>
+        </div>
+      )}
+      {body.env && Object.keys(body.env).length > 0 && (
+        <div className="def-field">
+          <span className="def-field-label">env</span>
+          <pre className="def-prompt mono">
+            {Object.entries(body.env)
+              .map(([k, v]) => `${k}: ${maskSensitiveValue(k, v)}`)
+              .join("\n")}
+          </pre>
+        </div>
+      )}
+      {body.allowed_tools && body.allowed_tools.length > 0 && (
+        <div className="def-field">
+          <span className="def-field-label">allowed_tools</span>
+          <div className="def-pill-row">
+            {body.allowed_tools.map((t) => (
+              <span key={t} className="def-pill mono">{t}</span>
+            ))}
+          </div>
         </div>
       )}
       {body.discovered_tools && body.discovered_tools.length > 0 && (
@@ -251,11 +310,42 @@ function renderMcpDefinition(row: DefRow) {
           <span className="def-field-label">
             discovered_tools ({body.discovered_tools.length})
           </span>
-          <div className="def-pill-row">
-            {body.discovered_tools.map((t) => (
-              <span key={t} className="def-pill mono">{t}</span>
+          <div className="def-tool-list">
+            {body.discovered_tools.map((tool) => (
+              <MCPToolEntry key={tool.name} tool={tool} />
             ))}
           </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// MCPToolEntry renders one discovered MCP tool as a pill that
+// expands inline to show the tool's description + input_schema.
+function MCPToolEntry({ tool }: { tool: MCPDiscoveredTool }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="def-tool-entry">
+      <button
+        type="button"
+        className="def-pill def-tool-pill mono"
+        onClick={() => setOpen((v) => !v)}
+        aria-expanded={open}
+      >
+        <span className="def-tool-caret">{open ? "▾" : "▸"}</span>
+        {tool.name}
+      </button>
+      {open && (
+        <div className="def-tool-detail">
+          {tool.description && (
+            <div className="def-tool-desc">{tool.description}</div>
+          )}
+          {tool.input_schema !== undefined && tool.input_schema !== null && (
+            <pre className="def-prompt mono">
+              {JSON.stringify(tool.input_schema, null, 2)}
+            </pre>
+          )}
         </div>
       )}
     </div>
@@ -277,12 +367,25 @@ function DefMetaRow({ items }: { items: [string, string | undefined][] }) {
   );
 }
 
-// maskHeaderValue redacts the value of Authorization-shaped headers
-// so a bearer token or API key in an MCP server registration's
-// headers map doesn't get displayed in plaintext.
-function maskHeaderValue(key: string, value: string): string {
+// maskSensitiveValue redacts the value of secret-shaped key/value
+// pairs — Authorization-style HTTP headers AND stdio env vars whose
+// key matches the *_TOKEN / *_KEY / *_SECRET / *_PASSWORD heuristic.
+// Static MCP stdio servers (cfg.MCPServers entries) routinely carry
+// API keys in their Env map; this filter keeps them from leaking
+// into the Library UI's plaintext renderer.
+function maskSensitiveValue(key: string, value: string): string {
   const k = key.toLowerCase();
-  if (k === "authorization" || k.includes("token") || k.includes("api-key") || k.includes("apikey")) {
+  const sensitive =
+    k === "authorization" ||
+    k.includes("token") ||
+    k.includes("api-key") ||
+    k.includes("apikey") ||
+    k.endsWith("_key") ||
+    k.endsWith("_secret") ||
+    k.endsWith("_password") ||
+    k.endsWith("_credential") ||
+    k.endsWith("_auth");
+  if (sensitive) {
     if (value.length <= 12) return "•".repeat(value.length);
     return value.slice(0, 4) + "…" + "•".repeat(8);
   }
