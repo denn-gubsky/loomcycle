@@ -110,9 +110,16 @@ type AgentChannelACL struct {
 // package doesn't import config (which would create a cycle:
 // config → agents → config). The merger in config converts these to
 // config.TierCandidate when populating AgentDef.Models.
+//
+// json: tags are LOAD-BEARING for the v0.9.x content_sha256: without
+// them, encoding/json falls back to capitalized field names (`Provider`,
+// `Model`) and downstream readers expecting lowercase break. Adding the
+// tags later would silently invalidate every deployed agent's hash with
+// a non-empty `models:` field — see sign_test.go's TierCandidate
+// known-vector test for the pin.
 type TierCandidate struct {
-	Provider string `yaml:"provider"`
-	Model    string `yaml:"model"`
+	Provider string `json:"provider" yaml:"provider"`
+	Model    string `json:"model"    yaml:"model"`
 }
 
 // Set is a name→Agent registry.

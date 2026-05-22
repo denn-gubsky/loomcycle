@@ -252,3 +252,33 @@ func TestSign_KnownVector(t *testing.T) {
 		t.Errorf("canonical encoding drift: got %s, want %s — update only with intent (bump every existing row + re-backfill)", got, want)
 	}
 }
+
+// TestSign_KnownVectorWithModels covers the second hot canonical-
+// encoding case: an AgentContent with a non-empty `Models` map.
+// Without explicit `json:` tags on TierCandidate, Go's encoding/json
+// would default to capitalized field names (`Provider`, `Model`) —
+// which works as a self-consistent convention TODAY (all three sign
+// paths produce the same bytes) but is a hidden landmine: anyone
+// adding lowercase `json:` tags later would silently invalidate every
+// deployed agent's hash with a non-empty `models:` field. The tags
+// are present on the struct as of v0.9.x; this pin makes any future
+// tag removal/case-change fail at PR time.
+func TestSign_KnownVectorWithModels(t *testing.T) {
+	c := AgentContent{
+		Name: "researcher",
+		Models: map[string][]TierCandidate{
+			"high": {
+				{Provider: "anthropic", Model: "claude-opus-4-5"},
+				{Provider: "openai", Model: "gpt-5-2025-08-07"},
+			},
+			"low": {
+				{Provider: "deepseek", Model: "deepseek-chat"},
+			},
+		},
+	}
+	const want = "sha256:c23827d24ac610aa96718ea32a8e3c22783c3beb1ad3cc0830165ba82f9fc701"
+	got := Sign(c)
+	if got != want {
+		t.Errorf("canonical encoding drift on Models: got %s, want %s — update only with intent (bump every existing row + re-backfill); see TierCandidate's json: tag for context", got, want)
+	}
+}
