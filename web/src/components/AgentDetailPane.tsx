@@ -13,6 +13,13 @@ import {
 import Breadcrumbs, { type BreadcrumbAncestor } from "./Breadcrumbs";
 import TerminalTranscript from "./TerminalTranscript";
 import ViewToggle, { useViewMode } from "./ViewToggle";
+import {
+  AgentTabStrip,
+  ChannelsTab,
+  InterruptsTab,
+  MemoryTab,
+  useAgentTab,
+} from "./AgentDetailTabs";
 
 // AgentDetailPane renders one agent's status header + the
 // scrollable event-card stream. Takes agentId as a prop so it can
@@ -130,6 +137,9 @@ export default function AgentDetailPane({ agentId, ancestors, onSelect }: AgentD
   const renderedEvents = useMemo(() => coalesceText(events.filter(visible)), [events]);
   const awaited = useMemo(() => deriveAwaitedState(events), [events]);
   const [viewMode, setViewMode] = useViewMode();
+  // v0.9.x — sub-tab strip above the transcript. Default "transcript"
+  // shows the existing event-card stream + view toggle.
+  const [activeTab, setActiveTab] = useAgentTab();
 
   return (
     <div className="agent-detail">
@@ -189,17 +199,25 @@ export default function AgentDetailPane({ agentId, ancestors, onSelect }: AgentD
       ) : (
         <div className="empty">loading…</div>
       )}
-      <ViewToggle mode={viewMode} onChange={setViewMode} />
-      {viewMode === "panels" ? (
-        <div className="events">
-          {renderedEvents.map((ev) => (
-            <EventCard key={ev.seq} row={ev} />
-          ))}
-          <div ref={tailRef} />
-        </div>
-      ) : (
-        <TerminalTranscript events={events} />
+      <AgentTabStrip tab={activeTab} onChange={setActiveTab} />
+      {activeTab === "transcript" && (
+        <>
+          <ViewToggle mode={viewMode} onChange={setViewMode} />
+          {viewMode === "panels" ? (
+            <div className="events">
+              {renderedEvents.map((ev) => (
+                <EventCard key={ev.seq} row={ev} />
+              ))}
+              <div ref={tailRef} />
+            </div>
+          ) : (
+            <TerminalTranscript events={events} />
+          )}
+        </>
       )}
+      {activeTab === "memory" && <MemoryTab agentName={agent?.agent ?? ""} />}
+      {activeTab === "interrupts" && <InterruptsTab runID={agent?.run_id ?? ""} />}
+      {activeTab === "channels" && <ChannelsTab agentName={agent?.agent ?? ""} />}
     </div>
   );
 }

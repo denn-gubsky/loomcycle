@@ -1436,6 +1436,16 @@ func (s *Server) Mux() http.Handler {
 	// admin-only (no per-agent surface). Same dispatch shape as the
 	// other two substrate admin endpoints.
 	mux.Handle("POST /v1/_mcpserverdef", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleSubstrateMCPServerDef))))
+	// v0.9.x Introspection — bearer-authed read-only enumeration of
+	// declared names per substrate. The companion to the op-dispatched
+	// substrate write endpoints; drives the Web UI's /ui/library tab.
+	mux.Handle("GET /v1/_agentdef/names", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleListAgentDefNames))))
+	mux.Handle("GET /v1/_skilldef/names", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleListSkillDefNames))))
+	mux.Handle("GET /v1/_mcpserverdef/names", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleListMCPServerDefNames))))
+	// v0.9.x Introspection — channels an agent has cursored on
+	// (scope=agent, scope_id={agent_name}). Drives the Web UI's
+	// per-agent "channels this agent is subscribed to" sub-tab.
+	mux.Handle("GET /v1/agents/{agent_name}/channels", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleAgentChannels))))
 	// v0.8.15.3 HTTP MCP transport — Streamable HTTP endpoint that
 	// dispatches the same 20 MCP tools as the stdio MCP server.
 	// POST is the JSON-RPC frame transport; DELETE terminates a

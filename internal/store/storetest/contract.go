@@ -127,6 +127,7 @@ func Run(t *testing.T, factory Factory) {
 		{"ChannelCursorAdvancesAcrossSubscribes", testChannelCursorAdvancesAcrossSubscribes},
 		{"ChannelAckIsIdempotent", testChannelAckIsIdempotent},
 		{"ChannelAckRejectsCursorRegression", testChannelAckRejectsCursorRegression},
+		{"ChannelListCursorsForScopeReturnsOnlyMatchingTuple", testChannelListCursorsForScope},
 		{"ChannelTTLFilteredAtRead", testChannelTTLFilteredAtRead},
 		{"ChannelSweepReapsExpired", testChannelSweepReapsExpired},
 		{"ChannelMaxMessagesTrimsOldest", testChannelMaxMessagesTrimsOldest},
@@ -2237,6 +2238,79 @@ func testChannelAckRejectsCursorRegression(t *testing.T, s store.Store) {
 	err = s.ChannelAck(ctx, "ch", store.MemoryScopeAgent, "x", cur1)
 	if !errors.Is(err, store.ErrChannelCursorRegression) {
 		t.Errorf("got %v, want ErrChannelCursorRegression", err)
+	}
+}
+
+// testChannelListCursorsForScope pins the v0.9.x introspection contract:
+// the method returns every cursor row matching (scope, scope_id),
+// ordered by channel ASC, and rows for a different scope_id MUST NOT
+// leak.
+func testChannelListCursorsForScope(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	// Seed two distinct (scope, scope_id) tuples with cursors on two
+	// channels each. Then verify per-tuple isolation + ordering.
+	for _, ch := range []string{"channel-a", "channel-b"} {
+		_, _, _ = s.ChannelPublish(ctx, store.ChannelMessage{
+			Channel: ch, Scope: store.MemoryScopeAgent, ScopeID: "alice",
+			Payload: json.RawMessage(`{}`),
+		}, 0)
+		time.Sleep(time.Microsecond)
+		_, _, _ = s.ChannelPublish(ctx, store.ChannelMessage{
+			Channel: ch, Scope: store.MemoryScopeAgent, ScopeID: "bob",
+			Payload: json.RawMessage(`{}`),
+		}, 0)
+	}
+	// Alice acks both channels; bob acks only channel-a.
+	for _, ch := range []string{"channel-a", "channel-b"} {
+		_, next, _ := s.ChannelSubscribe(ctx, ch, store.MemoryScopeAgent, "alice", "", 1)
+		if next != "" {
+			_ = s.ChannelAck(ctx, ch, store.MemoryScopeAgent, "alice", next)
+		}
+	}
+	_, next, _ := s.ChannelSubscribe(ctx, "channel-a", store.MemoryScopeAgent, "bob", "", 1)
+	if next != "" {
+		_ = s.ChannelAck(ctx, "channel-a", store.MemoryScopeAgent, "bob", next)
+	}
+
+	// Alice's view: two rows, ordered ASC.
+	aliceRows, err := s.ChannelListCursorsForScope(ctx, store.MemoryScopeAgent, "alice")
+	if err != nil {
+		t.Fatalf("alice list: %v", err)
+	}
+	if len(aliceRows) != 2 {
+		t.Fatalf("alice rows = %d, want 2: %+v", len(aliceRows), aliceRows)
+	}
+	if aliceRows[0].Channel != "channel-a" || aliceRows[1].Channel != "channel-b" {
+		t.Errorf("alice ordering wrong: %+v", aliceRows)
+	}
+	for _, r := range aliceRows {
+		if r.ScopeID != "alice" || r.Scope != store.MemoryScopeAgent {
+			t.Errorf("alice row has wrong scope/scope_id: %+v", r)
+		}
+		if r.Cursor == "" {
+			t.Errorf("alice row %q has empty cursor", r.Channel)
+		}
+		if r.UpdatedAt.IsZero() {
+			t.Errorf("alice row %q has zero UpdatedAt", r.Channel)
+		}
+	}
+
+	// Bob's view: one row (channel-a only).
+	bobRows, err := s.ChannelListCursorsForScope(ctx, store.MemoryScopeAgent, "bob")
+	if err != nil {
+		t.Fatalf("bob list: %v", err)
+	}
+	if len(bobRows) != 1 || bobRows[0].Channel != "channel-a" {
+		t.Errorf("bob rows = %+v, want one channel-a row", bobRows)
+	}
+
+	// Mismatched scope: scope=user, scope_id=alice. No rows.
+	userRows, err := s.ChannelListCursorsForScope(ctx, store.MemoryScopeUser, "alice")
+	if err != nil {
+		t.Fatalf("user-scope list: %v", err)
+	}
+	if len(userRows) != 0 {
+		t.Errorf("scope=user/alice rows = %+v, want 0 (must not leak agent-scope rows)", userRows)
 	}
 }
 
