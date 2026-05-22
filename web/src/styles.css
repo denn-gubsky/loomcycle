@@ -2287,6 +2287,76 @@ pre {
   margin-left: 6px;
 }
 
+/* v0.9.x Library v2 inline content expansion — each row gets a
+   chevron at the row-end; clicking it expands the definition body
+   right under the row. Independent of the parent/child collapse
+   chevron at the row-start. */
+.lineage-content-toggle {
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--muted);
+  font-size: 10px;
+  padding: 1px 6px;
+  margin-left: auto;
+  cursor: pointer;
+}
+.lineage-content-toggle:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.lineage-content-toggle[aria-expanded="true"] {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.lineage-row-detail {
+  padding-top: 8px;
+  padding-bottom: 8px;
+  padding-right: 8px;
+  border-left: 2px solid var(--accent);
+  margin-left: 8px;
+  margin-bottom: 6px;
+}
+
+/* MCP discovered_tools per-tool expansion — pill that opens to show
+   description + JSON schema beneath. */
+.def-tool-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.def-tool-entry {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.def-tool-pill {
+  background: transparent;
+  border: 1px solid var(--border);
+  cursor: pointer;
+  text-align: left;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.def-tool-pill:hover {
+  border-color: var(--accent);
+}
+.def-tool-caret {
+  font-size: 9px;
+  color: var(--muted);
+}
+.def-tool-detail {
+  padding-left: 16px;
+  padding-top: 4px;
+  padding-bottom: 4px;
+}
+.def-tool-desc {
+  font-size: 12px;
+  color: var(--muted);
+  margin-bottom: 4px;
+}
+
 /* ---- Channels page ---- */
 .channels-view {
   display: flex;

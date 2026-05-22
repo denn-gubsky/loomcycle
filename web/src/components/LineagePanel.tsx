@@ -160,6 +160,7 @@ export default function LineagePanel({
           activeDefID={activeDefID}
           selectedDefID={selectedDefID}
           onSelect={setSelectedDefID}
+          renderDefinition={renderDefinition}
         />
         {selectedRow && (
           <div className="lineage-detail">

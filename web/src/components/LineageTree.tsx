@@ -48,6 +48,11 @@ export interface LineageTreeProps {
   activeDefID?: string;
   selectedDefID?: string;
   onSelect?: (defID: string) => void;
+  // Inline-detail renderer (v0.9.x Library v2). When set, each row
+  // gets a content-toggle chevron at the row-end; clicking it
+  // expands the definition body inline under the row. Independent
+  // of the parent/child collapse chevron at the row-start.
+  renderDefinition?: (row: DefRow) => React.ReactNode;
 }
 
 export default function LineageTree({
@@ -55,8 +60,12 @@ export default function LineageTree({
   activeDefID,
   selectedDefID,
   onSelect,
+  renderDefinition,
 }: LineageTreeProps) {
   const [expanded, setExpanded] = useState<Map<string, boolean>>(() => new Map());
+  const [detailExpanded, setDetailExpanded] = useState<Map<string, boolean>>(
+    () => new Map(),
+  );
 
   // Auto-expand ancestors of the selected node so a deep-link / fresh
   // click never leaves the selection buried under a collapsed parent.
@@ -88,6 +97,19 @@ export default function LineageTree({
     });
   }, []);
 
+  // Default-COLLAPSED for the content detail toggle — opposite of the
+  // parent/child collapse default. Operators opt into content view
+  // per-row; the detail body can be long and we don't want every
+  // row's body rendered by default.
+  const toggleDetail = useCallback((id: string) => {
+    setDetailExpanded((prev) => {
+      const next = new Map(prev);
+      const currentExpanded = next.get(id) === true;
+      next.set(id, !currentExpanded);
+      return next;
+    });
+  }, []);
+
   return (
     <ul className="lineage-tree" role="tree">
       {tree.map((node) => (
@@ -97,9 +119,12 @@ export default function LineageTree({
           depth={0}
           expanded={expanded}
           toggleExpanded={toggleExpanded}
+          detailExpanded={detailExpanded}
+          toggleDetail={toggleDetail}
           activeDefID={activeDefID}
           selectedDefID={selectedDefID}
           onSelect={onSelect}
+          renderDefinition={renderDefinition}
         />
       ))}
     </ul>
@@ -111,19 +136,26 @@ function LineageNodeRow({
   depth,
   expanded,
   toggleExpanded,
+  detailExpanded,
+  toggleDetail,
   activeDefID,
   selectedDefID,
   onSelect,
+  renderDefinition,
 }: {
   node: LineageNode;
   depth: number;
   expanded: Map<string, boolean>;
   toggleExpanded: (id: string) => void;
+  detailExpanded: Map<string, boolean>;
+  toggleDetail: (id: string) => void;
   activeDefID?: string;
   selectedDefID?: string;
   onSelect?: (defID: string) => void;
+  renderDefinition?: (row: DefRow) => React.ReactNode;
 }) {
   const isExpanded = expanded.get(node.row.def_id) !== false;
+  const isDetailOpen = detailExpanded.get(node.row.def_id) === true;
   const hasChildren = node.children.length > 0;
   const isActive = node.row.def_id === activeDefID;
   const isSelected = node.row.def_id === selectedDefID;
@@ -164,7 +196,27 @@ function LineageNodeRow({
           )}
           <span className="lineage-defid mono">{shortDefID(row.def_id)}</span>
         </button>
+        {renderDefinition && (
+          <button
+            type="button"
+            className="lineage-content-toggle"
+            onClick={() => toggleDetail(row.def_id)}
+            aria-expanded={isDetailOpen}
+            aria-label={isDetailOpen ? "Hide content" : "Show content"}
+            title={isDetailOpen ? "Hide content" : "Show content"}
+          >
+            {isDetailOpen ? "▾" : "▸"} content
+          </button>
+        )}
       </div>
+      {isDetailOpen && renderDefinition && (
+        <div
+          className="lineage-row-detail"
+          style={{ paddingLeft: `${(depth + 1) * 16 + 12}px` }}
+        >
+          {renderDefinition(row)}
+        </div>
+      )}
       {isExpanded && hasChildren && (
         <ul role="group">
           {node.children.map((child) => (
@@ -174,9 +226,12 @@ function LineageNodeRow({
               depth={depth + 1}
               expanded={expanded}
               toggleExpanded={toggleExpanded}
+              detailExpanded={detailExpanded}
+              toggleDetail={toggleDetail}
               activeDefID={activeDefID}
               selectedDefID={selectedDefID}
               onSelect={onSelect}
+              renderDefinition={renderDefinition}
             />
           ))}
         </ul>
