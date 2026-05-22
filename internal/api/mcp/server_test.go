@@ -38,6 +38,13 @@ type mockConnector struct {
 	listHookHooks       []*hooks.Hook                 // return slice for ListHooks
 	deleteHookErr       error                         // return value for DeleteHook
 	lastDeleteHookID    string                        // id passed to the most recent DeleteHook call
+
+	// v0.9.x n8n RFC Phase 0 injection points.
+	listChannelsResp connector.ListChannelsResponse
+	listChannelsErr  error
+	streamEvents     []connector.RunStateEvent
+	streamErr        error
+	lastStreamReq    connector.StreamUserRunStatesRequest
 }
 
 func (m *mockConnector) SpawnRun(_ context.Context, r connector.SpawnRunRequest) (connector.SpawnRunResult, error) {
@@ -137,12 +144,24 @@ func (m *mockConnector) InterruptionResolve(_ context.Context, _ connector.Inter
 	return connector.InterruptionResolveResult{}, errors.New("not implemented")
 }
 
-// v0.9.x n8n RFC Phase 0 stubs.
+// v0.9.x n8n RFC Phase 0 — overridable surface.
 func (m *mockConnector) ListChannels(context.Context) (connector.ListChannelsResponse, error) {
-	return connector.ListChannelsResponse{}, nil
+	if m.listChannelsResp.Channels != nil {
+		return m.listChannelsResp, m.listChannelsErr
+	}
+	return connector.ListChannelsResponse{}, m.listChannelsErr
 }
-func (m *mockConnector) StreamUserRunStates(context.Context, connector.StreamUserRunStatesRequest, connector.RunStateVisitor) error {
-	return nil
+func (m *mockConnector) StreamUserRunStates(_ context.Context, req connector.StreamUserRunStatesRequest, visit connector.RunStateVisitor) error {
+	m.lastStreamReq = req
+	for _, evt := range m.streamEvents {
+		if err := visit(evt); err != nil {
+			if errors.Is(err, connector.ErrStopStreaming) {
+				return nil
+			}
+			return err
+		}
+	}
+	return m.streamErr
 }
 
 // driveServer runs the server against the given input lines and
@@ -215,7 +234,7 @@ func TestServer_Handshake(t *testing.T) {
 	}
 }
 
-func TestServer_ToolsList_Returns26Tools(t *testing.T) {
+func TestServer_ToolsList_Returns28Tools(t *testing.T) {
 	srv := New(Config{Connector: &mockConnector{}, Logf: func(string, ...any) {}})
 	in := `{"jsonrpc":"2.0","id":1,"method":"tools/list"}` + "\n"
 	resps, _ := driveServer(t, srv, in)
@@ -226,15 +245,15 @@ func TestServer_ToolsList_Returns26Tools(t *testing.T) {
 	if err := json.Unmarshal(resps[0].Result, &result); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if len(result.Tools) != 26 {
-		t.Errorf("got %d tools, want 26 (v0.8.22 adds skilldef meta-tool)", len(result.Tools))
+	if len(result.Tools) != 28 {
+		t.Errorf("got %d tools, want 28 (v0.9.x adds list_channels + stream_user_run_states)", len(result.Tools))
 	}
 	names := map[string]bool{}
 	for _, td := range result.Tools {
 		names[td.Name] = true
 	}
-	// Spot-check a few across categories — including the v0.8.16 + v0.8.18 + hook + v0.8.22 additions.
-	for _, want := range []string{"spawn_run", "register_agent", "memory", "agentdef", "skilldef", "pause_runtime", "create_snapshot", "get_snapshot", "interruption_resolve", "register_hook", "list_hooks", "delete_hook"} {
+	// Spot-check across categories — through the v0.9.x n8n additions.
+	for _, want := range []string{"spawn_run", "register_agent", "memory", "agentdef", "skilldef", "pause_runtime", "create_snapshot", "get_snapshot", "interruption_resolve", "register_hook", "list_hooks", "delete_hook", "list_channels", "stream_user_run_states"} {
 		if !names[want] {
 			t.Errorf("missing tool %q in tools/list", want)
 		}
@@ -634,6 +653,111 @@ func TestServer_ListHooks_ReturnsConnectorList(t *testing.T) {
 	}
 	if len(inner.Hooks) != 2 || inner.Hooks[0].ID != "h_1" {
 		t.Errorf("inner = %+v", inner)
+	}
+}
+
+// v0.9.x n8n RFC Phase 0 meta-tools.
+
+func TestServer_ListChannels_DispatchesToConnector(t *testing.T) {
+	mc := &mockConnector{
+		listChannelsResp: connector.ListChannelsResponse{
+			Channels: []connector.ChannelDescriptor{
+				{Name: "alpha", MessageCount: 5},
+				{Name: "beta", MessageCount: 0},
+			},
+		},
+	}
+	srv := New(Config{Connector: mc, Logf: func(string, ...any) {}})
+	in := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"list_channels","arguments":{}}}` + "\n"
+	resps, _ := driveServer(t, srv, in)
+	if len(resps) != 1 {
+		t.Fatalf("got %d responses, want 1", len(resps))
+	}
+	var callRes loommcp.CallToolResult
+	if err := json.Unmarshal(resps[0].Result, &callRes); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	var inner connector.ListChannelsResponse
+	if err := json.Unmarshal([]byte(callRes.Content[0].Text), &inner); err != nil {
+		t.Fatalf("unmarshal inner: %v", err)
+	}
+	if len(inner.Channels) != 2 || inner.Channels[0].Name != "alpha" {
+		t.Errorf("inner = %+v", inner)
+	}
+}
+
+func TestServer_StreamUserRunStates_BlockingPath_CollectsEvents(t *testing.T) {
+	mc := &mockConnector{
+		streamEvents: []connector.RunStateEvent{
+			{RunID: "r1", UserID: "user-a", Status: "running"},
+			{RunID: "r2", UserID: "user-a", Status: "completed"},
+		},
+	}
+	srv := New(Config{Connector: mc, Logf: func(string, ...any) {}})
+	in := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"stream_user_run_states","arguments":{"user_id":"user-a","max_events":2,"timeout_ms":500}}}` + "\n"
+	resps, _ := driveServer(t, srv, in)
+	if len(resps) != 1 {
+		t.Fatalf("got %d responses", len(resps))
+	}
+	var callRes loommcp.CallToolResult
+	if err := json.Unmarshal(resps[0].Result, &callRes); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	var inner struct {
+		Events []connector.RunStateEvent `json:"events"`
+		Count  int                       `json:"count"`
+	}
+	if err := json.Unmarshal([]byte(callRes.Content[0].Text), &inner); err != nil {
+		t.Fatalf("unmarshal inner: %v", err)
+	}
+	if inner.Count != 2 || len(inner.Events) != 2 || inner.Events[0].RunID != "r1" {
+		t.Errorf("inner = %+v", inner)
+	}
+	if mc.lastStreamReq.UserID != "user-a" {
+		t.Errorf("connector got wrong req: %+v", mc.lastStreamReq)
+	}
+}
+
+func TestServer_StreamUserRunStates_StreamingPath_EmitsNotifications(t *testing.T) {
+	mc := &mockConnector{
+		streamEvents: []connector.RunStateEvent{
+			{RunID: "r1", UserID: "user-a", Status: "completed"},
+			{RunID: "r2", UserID: "user-a", Status: "completed"},
+		},
+	}
+	srv := New(Config{Connector: mc, Logf: func(string, ...any) {}})
+	// First initialize with runEvents=true so the streaming path engages.
+	in := `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{"loomcycle":{"runEvents":true}},"clientInfo":{"name":"t","version":"v"}}}` + "\n" +
+		`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"stream_user_run_states","arguments":{"user_id":"user-a","max_events":2,"timeout_ms":500}}}` + "\n"
+	resps, notifs := driveServer(t, srv, in)
+	if len(resps) != 2 {
+		t.Fatalf("got %d responses, want 2 (initialize + tools/call)", len(resps))
+	}
+	// Expect two notifications (one per event), each with method run_state.
+	got := 0
+	for _, n := range notifs {
+		if n.Method == "notifications/loomcycle/run_state" {
+			got++
+		}
+	}
+	if got != 2 {
+		t.Errorf("got %d run_state notifications, want 2 (all %d notifs: %+v)", got, len(notifs), notifs)
+	}
+}
+
+func TestServer_StreamUserRunStates_RequiresUserID(t *testing.T) {
+	srv := New(Config{Connector: &mockConnector{}, Logf: func(string, ...any) {}})
+	in := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"stream_user_run_states","arguments":{}}}` + "\n"
+	resps, _ := driveServer(t, srv, in)
+	if len(resps) != 1 {
+		t.Fatalf("got %d responses", len(resps))
+	}
+	var callRes loommcp.CallToolResult
+	if err := json.Unmarshal(resps[0].Result, &callRes); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if !callRes.IsError {
+		t.Error("expected IsError=true on missing user_id")
 	}
 }
 
