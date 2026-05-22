@@ -168,7 +168,32 @@ func (s *SkillTool) resolveSkill(ctx context.Context, name string) (string, []st
 
 	// 2. Static filesystem fallback.
 	if s.Set == nil || len(s.Set.Names()) == 0 {
-		return "", nil, "", fmt.Errorf("Skill tool: no skills configured (set LOOMCYCLE_SKILLS_ROOT and populate <root>/<name>/SKILL.md)")
+		// The static set is unset — common for registry-first operators
+		// who deliberately unset LOOMCYCLE_SKILLS_ROOT to force every
+		// skill through the substrate. The original error here pushed
+		// operators toward the static path even when their actual
+		// registry (the substrate) was healthy but missing this name.
+		// Differentiate: substrate registered some skills (just not
+		// this one) vs neither source configured at all.
+		if s.Store != nil {
+			names, lerr := s.Store.SkillDefListNames(ctx)
+			if lerr == nil && len(names) > 0 {
+				cap := 10
+				if len(names) < cap {
+					cap = len(names)
+				}
+				avail := make([]string, 0, cap)
+				for _, n := range names[:cap] {
+					avail = append(avail, n.Name)
+				}
+				more := ""
+				if len(names) > cap {
+					more = ", ..."
+				}
+				return "", nil, "", fmt.Errorf("unknown skill %q (substrate has: %s%s)", name, strings.Join(avail, ", "), more)
+			}
+		}
+		return "", nil, "", fmt.Errorf("Skill tool: no skills configured (push via POST /v1/_skilldef create, or set LOOMCYCLE_SKILLS_ROOT and populate <root>/<name>/SKILL.md for the static-MD path)")
 	}
 	sk, ok := s.Set.Get(name)
 	if !ok {
