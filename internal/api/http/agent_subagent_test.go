@@ -16,6 +16,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/concurrency"
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
+	"github.com/denn-gubsky/loomcycle/internal/store"
 	storesqlite "github.com/denn-gubsky/loomcycle/internal/store/sqlite"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 	"github.com/denn-gubsky/loomcycle/internal/tools/builtin"
@@ -313,7 +314,110 @@ func TestSubAgent_UnknownChildName(t *testing.T) {
 	}
 }
 
-// TestSubAgent_InheritsParentCallerHostAllowlist asserts that when a
+// TestSubAgent_SpawnsDynamicallyRegisteredChild is the regression for
+// the 2026-05-22 cv-batch-adapter ↔ cv-adapter incident: a parent
+// agent (statically yaml-defined) tried to spawn a child registered
+// via the dynamic_agents table (RegisterAgent / connector path) and
+// got "unknown sub-agent" because runSubAgent was reading
+// `s.cfg.Agents[name]` directly instead of going through lookup.Agent.
+//
+// PR #188 consolidated the lookup chain but missed this site;
+// runSubAgent now calls lookup.Agent which walks cfg.Agents →
+// dynamic_agents → agent_def_active.
+//
+// Production symptom: cv-batch-adapter (yaml) tried to spawn N
+// instances of cv-adapter (registered dynamically per user at boot
+// of jobs-search-agent's own MCP server) and every spawn failed.
+func TestSubAgent_SpawnsDynamicallyRegisteredChild(t *testing.T) {
+	cfg := &config.Config{
+		Defaults: config.Defaults{Provider: "scripted", Model: "stub-model"},
+		Agents: map[string]config.AgentDef{
+			"parent": {
+				Model:        "stub-model",
+				AllowedTools: []string{"Agent"},
+				SystemPrompt: "you are the parent",
+			},
+			// NB: "child" is NOT in cfg.Agents — it's registered
+			// dynamically below. The pre-fix runSubAgent would fail
+			// here at the s.cfg.Agents[name] read.
+		},
+		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4, QueueTimeoutMS: 1000},
+	}
+	cfg.Env.AuthToken = ""
+
+	prov := &scriptedProvider{
+		scripts: [][]providers.Event{
+			// 1) parent emits a tool_call(Agent, name="child")
+			{
+				{
+					Type: providers.EventToolCall,
+					ToolUse: &providers.ToolUse{
+						ID:    "tu_parent_1",
+						Name:  "Agent",
+						Input: json.RawMessage(`{"name":"child","prompt":"hi"}`),
+					},
+				},
+				{Type: providers.EventDone, StopReason: "tool_use"},
+			},
+			// 2) child emits final text
+			{
+				{Type: providers.EventText, Text: "dynamic child says hi"},
+				{Type: providers.EventDone, StopReason: "end_turn"},
+			},
+			// 3) parent wraps up
+			{
+				{Type: providers.EventText, Text: "parent done"},
+				{Type: providers.EventDone, StopReason: "end_turn"},
+			},
+		},
+	}
+
+	st, err := storesqlite.Open(filepath.Join(t.TempDir(), "subagent_dynamic.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	// Register "child" via the dynamic_agents path — same shape
+	// connector.RegisterAgent persists.
+	childDef := config.AgentDef{
+		Model:        "stub-model",
+		AllowedTools: []string{},
+		SystemPrompt: "you are the dynamic child",
+	}
+	childDefJSON, err := json.Marshal(childDef)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.DynamicAgentUpsert(context.Background(), store.DynamicAgent{
+		Name:       "child",
+		Definition: childDefJSON,
+		CreatedAt:  time.Now(),
+	}); err != nil {
+		t.Fatalf("DynamicAgentUpsert: %v", err)
+	}
+
+	srv := New(cfg, &stubResolver{p: prov}, []tools.Tool{}, concurrency.New(4, 4, time.Second), st)
+	ts := httptest.NewServer(srv.Mux())
+	defer ts.Close()
+
+	resp, err := http.Post(ts.URL+"/v1/runs", "application/json", strings.NewReader(
+		`{"agent":"parent","segments":[{"role":"user","content":[{"type":"trusted-text","text":"start"}]}]}`,
+	))
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	bodyStr := string(body)
+
+	if strings.Contains(bodyStr, "unknown sub-agent") {
+		t.Fatalf("regression: dynamic-only sub-agent failed to resolve, got:\n%s", bodyStr)
+	}
+	if !strings.Contains(bodyStr, "dynamic child says hi") {
+		t.Errorf("parent stream missing dynamic child output:\n%s", bodyStr)
+	}
+}
 // parent run was started under CALLER_AUTHORITATIVE with a per-call
 // allowed_hosts list, sub-agents spawned via the Agent tool inherit
 // that same host policy and can reach the same hosts.
