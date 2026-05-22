@@ -653,6 +653,10 @@ func mcpServerDefRowResponseMap(row store.MCPServerDefRow) map[string]any {
 		"retired":                  row.Retired,
 		"bootstrapped_from_static": row.BootstrappedFromStatic,
 		"content_sha256":           row.ContentSHA256,
+		// v0.9.x Library v2: include the persisted transport/url/
+		// headers/discovered_tools body so the UI can render MCP
+		// server content inline without a second round-trip.
+		"definition": row.Definition,
 	}
 }
 

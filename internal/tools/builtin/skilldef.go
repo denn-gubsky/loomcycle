@@ -643,6 +643,10 @@ func skillDefRowResponseMap(row store.SkillDefRow) map[string]any {
 		"retired":                  row.Retired,
 		"bootstrapped_from_static": row.BootstrappedFromStatic,
 		"content_sha256":           row.ContentSHA256,
+		// v0.9.x Library v2: include the persisted body so the UI can
+		// render skill content inline + in the side panel without a
+		// second round-trip.
+		"definition": row.Definition,
 	}
 }
 
