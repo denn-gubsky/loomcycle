@@ -816,7 +816,51 @@ export interface AgentChannelsResponse {
   channels: ChannelCursorEntry[];
 }
 
-// ---- Library fetchers ----
+// ---- Library v2 (unified — yaml + substrate merged) ----
+
+// LibraryEntry is one row of the v0.9.x /v1/_library/* endpoints. It
+// merges substrate name-summary fields with cfg-side staticDefinition,
+// plus the source discriminator (computed server-side from
+// in_static + in_substrate booleans).
+export interface LibraryEntry {
+  name: string;
+  source: "static-only" | "dynamic-only" | "both";
+  in_static: boolean;
+  in_substrate: boolean;
+  version_count: number;
+  active_def_id?: string;
+  latest_version?: number;
+  last_updated?: string;
+  /**
+   * Static-side definition payload. Same JSON shape as the substrate
+   * body (snake_case keys mirroring lookup.SubstrateAgentDef /
+   * skillDefOverlay / mcpServerOverlay) so the same renderer consumes
+   * both static and dynamic sources. Omitted when in_static is false.
+   */
+  static_definition?: unknown;
+}
+
+export interface LibraryListResponse {
+  entries: LibraryEntry[];
+}
+
+export function listLibraryAgents(): Promise<LibraryListResponse> {
+  return jsonFetch<LibraryListResponse>("/v1/_library/agents");
+}
+
+export function listLibrarySkills(): Promise<LibraryListResponse> {
+  return jsonFetch<LibraryListResponse>("/v1/_library/skills");
+}
+
+export function listLibraryMcpServers(): Promise<LibraryListResponse> {
+  return jsonFetch<LibraryListResponse>("/v1/_library/mcp-servers");
+}
+
+// ---- Legacy /names fetchers (substrate-only) ----
+//
+// Kept for the existing Library UI v1 surface + any external adapter
+// consumers that pinned the substrate-only wire shape. Library UI v2
+// uses listLibrary{Agents,Skills,McpServers} above.
 
 export function listAgentDefNames(): Promise<DefNamesResponse> {
   return jsonFetch<DefNamesResponse>("/v1/_agentdef/names");

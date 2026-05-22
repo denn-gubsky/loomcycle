@@ -1,29 +1,34 @@
 import { useEffect, useMemo, useState } from "react";
 import {
-  DefNameSummary,
   DefRow,
+  LibraryEntry,
   listDefVersionsByName,
 } from "../api";
 import Splitter from "./Splitter";
 import LineageTree, { buildLineageTree } from "./LineageTree";
 
 // LineagePanel is the shared shape that backs each Library sub-tab
-// (Agents / Skills / MCP Servers). Left pane lists declared NAMES
-// supplied by the parent page; right pane shows the lineage tree
-// for the selected name + the selected version's definition JSON.
+// (Agents / Skills / MCP Servers). Left pane lists entries with
+// STATIC / DYNAMIC source chips; right pane shows the lineage tree
+// for the selected entry + the selected version's definition JSON.
 //
-// Polling cadence: name list refresh is owned by the parent (Library
-// page calls listAgentDefNames / listSkillDefNames / etc.); version
-// lineage refreshes on selection change.
+// v0.9.x Library v2: each entry can be source=static-only,
+// dynamic-only, or both. Static-only entries appear as a synthetic
+// v0 row in the tree (def_id="static:<name>") so the same LineageTree
+// component renders them uniformly with substrate-backed rows.
+//
+// Polling cadence: entry list refresh is owned by the parent
+// (LibraryView calls listLibraryAgents / listLibrarySkills / etc.);
+// version lineage refreshes on selection change.
 
 export interface LineagePanelProps {
   // Substrate kind used in the listDefVersionsByName API call.
   kind: "agentdef" | "skilldef" | "mcpserverdef";
   // Human-readable label for the empty-state copy.
   kindLabel: string;
-  // List of declared names — fetched by the parent so the polling
+  // Unified entries — fetched by the parent so the polling
   // strategy stays uniform with other admin pages.
-  names: DefNameSummary[];
+  entries: LibraryEntry[];
   // Storage key for the Splitter's persisted width (per sub-tab so
   // the operator can size them independently).
   splitterStorageKey: string;
@@ -36,31 +41,53 @@ export interface LineagePanelProps {
 export default function LineagePanel({
   kind,
   kindLabel,
-  names,
+  entries,
   splitterStorageKey,
   renderDefinition,
 }: LineagePanelProps) {
   const [selectedName, setSelectedName] = useState<string>(() =>
-    names.length > 0 ? names[0]!.name : "",
+    entries.length > 0 ? entries[0]!.name : "",
   );
   const [versions, setVersions] = useState<DefRow[]>([]);
   const [versionsErr, setVersionsErr] = useState<string | null>(null);
   const [versionsLoading, setVersionsLoading] = useState(false);
   const [selectedDefID, setSelectedDefID] = useState<string>("");
 
-  // When the names list updates and the currently-selected name is
+  const selectedEntry = useMemo(
+    () => entries.find((e) => e.name === selectedName),
+    [entries, selectedName],
+  );
+
+  // When the entries list updates and the currently-selected name is
   // gone (renamed / retired tree), fall back to the first available.
   useEffect(() => {
-    if (selectedName && names.find((n) => n.name === selectedName)) return;
-    setSelectedName(names.length > 0 ? names[0]!.name : "");
-  }, [names, selectedName]);
+    if (selectedName && entries.find((e) => e.name === selectedName)) return;
+    setSelectedName(entries.length > 0 ? entries[0]!.name : "");
+  }, [entries, selectedName]);
 
-  // Fetch the lineage for the selected name. Selecting a different
-  // name resets the selectedDefID + clears the previous lineage.
+  // Fetch the lineage for the selected entry.
+  // - Static-only: synthesize a single v0 pseudo-row from
+  //   entry.static_definition. Skip the network call entirely.
+  // - dynamic-only / both: fetch the substrate lineage chain.
   useEffect(() => {
-    if (!selectedName) {
+    if (!selectedName || !selectedEntry) {
       setVersions([]);
       setSelectedDefID("");
+      return;
+    }
+    if (!selectedEntry.in_substrate) {
+      // Static-only — synthesize the pseudo-row inline. No network.
+      const syntheticRow: DefRow = {
+        def_id: `static:${selectedEntry.name}`,
+        name: selectedEntry.name,
+        version: 0,
+        created_at: "",
+        definition: selectedEntry.static_definition,
+      };
+      setVersions([syntheticRow]);
+      setSelectedDefID(syntheticRow.def_id);
+      setVersionsLoading(false);
+      setVersionsErr(null);
       return;
     }
     let cancelled = false;
@@ -73,9 +100,8 @@ export default function LineagePanel({
         setVersionsLoading(false);
         // Pre-select the active version if available, else the
         // highest-version (most recent) row.
-        const summary = names.find((n) => n.name === selectedName);
-        if (summary?.active_def_id) {
-          setSelectedDefID(summary.active_def_id);
+        if (selectedEntry.active_def_id) {
+          setSelectedDefID(selectedEntry.active_def_id);
         } else if (r.versions && r.versions.length > 0) {
           const top = [...r.versions].sort((a, b) => b.version - a.version)[0]!;
           setSelectedDefID(top.def_id);
@@ -91,23 +117,20 @@ export default function LineagePanel({
     return () => {
       cancelled = true;
     };
-  }, [kind, selectedName, names]);
+  }, [kind, selectedName, selectedEntry]);
 
   const tree = useMemo(() => buildLineageTree(versions), [versions]);
-  const activeDefID = useMemo(
-    () => names.find((n) => n.name === selectedName)?.active_def_id ?? "",
-    [names, selectedName],
-  );
+  const activeDefID = selectedEntry?.active_def_id ?? "";
   const selectedRow = useMemo(
     () => versions.find((v) => v.def_id === selectedDefID),
     [versions, selectedDefID],
   );
 
-  if (names.length === 0) {
+  if (entries.length === 0) {
     return (
       <div className="empty-state">
         No {kindLabel} declared yet. Use the substrate admin API
-        (POST /v1/_{kind}) to create one.
+        (POST /v1/_{kind}) or add one to loomcycle.yaml.
       </div>
     );
   }
@@ -119,8 +142,8 @@ export default function LineagePanel({
       minLeftWidth={220}
       minRightWidth={320}
     >
-      <NameList
-        names={names}
+      <EntryList
+        entries={entries}
         selectedName={selectedName}
         onSelect={setSelectedName}
       />
@@ -137,6 +160,7 @@ export default function LineagePanel({
           activeDefID={activeDefID}
           selectedDefID={selectedDefID}
           onSelect={setSelectedDefID}
+          renderDefinition={renderDefinition}
         />
         {selectedRow && (
           <div className="lineage-detail">
@@ -147,9 +171,11 @@ export default function LineagePanel({
                   ← {selectedRow.parent_def_id}
                 </span>
               )}
-              <span className="lineage-detail-meta">
-                created {new Date(selectedRow.created_at).toLocaleString()}
-              </span>
+              {selectedRow.created_at && (
+                <span className="lineage-detail-meta">
+                  created {new Date(selectedRow.created_at).toLocaleString()}
+                </span>
+              )}
               {selectedRow.content_sha256 && (
                 <span className="mono lineage-detail-meta" title={selectedRow.content_sha256}>
                   {shortenSHA(selectedRow.content_sha256)}
@@ -164,22 +190,22 @@ export default function LineagePanel({
   );
 }
 
-function NameList({
-  names,
+function EntryList({
+  entries,
   selectedName,
   onSelect,
 }: {
-  names: DefNameSummary[];
+  entries: LibraryEntry[];
   selectedName: string;
   onSelect: (name: string) => void;
 }) {
   return (
     <ul className="lineage-name-list">
-      {names.map((n) => (
+      {entries.map((e) => (
         <li
-          key={n.name}
+          key={e.name}
           className={
-            n.name === selectedName
+            e.name === selectedName
               ? "lineage-name-row lineage-name-selected"
               : "lineage-name-row"
           }
@@ -187,22 +213,39 @@ function NameList({
           <button
             type="button"
             className="lineage-name-button"
-            onClick={() => onSelect(n.name)}
+            onClick={() => onSelect(e.name)}
           >
-            <span className="lineage-name-label">{n.name}</span>
+            <span className="lineage-name-label">{e.name}</span>
             <span className="lineage-name-versions">
-              {n.version_count} version{n.version_count === 1 ? "" : "s"}
+              {entryCountLabel(e)}
             </span>
-            {n.active_def_id ? (
-              <span className="def-chip def-chip-active">v{n.latest_version} ★</span>
-            ) : (
-              <span className="def-chip def-chip-no-active">no active</span>
-            )}
+            <span className="lineage-name-chips">
+              {e.in_static && (
+                <span className="def-chip def-chip-static">static</span>
+              )}
+              {e.in_substrate && (
+                <span className="def-chip def-chip-dynamic">dynamic</span>
+              )}
+              {e.in_substrate && e.active_def_id && (
+                <span className="def-chip def-chip-active">
+                  v{e.latest_version ?? "?"} ★
+                </span>
+              )}
+              {e.in_substrate && !e.active_def_id && (
+                <span className="def-chip def-chip-no-active">no active</span>
+              )}
+            </span>
           </button>
         </li>
       ))}
     </ul>
   );
+}
+
+function entryCountLabel(e: LibraryEntry): string {
+  if (!e.in_substrate) return "static only";
+  const n = e.version_count;
+  return `${n} version${n === 1 ? "" : "s"}`;
 }
 
 function shortenSHA(s: string): string {

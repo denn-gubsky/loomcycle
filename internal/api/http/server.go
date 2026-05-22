@@ -112,6 +112,16 @@ type Server struct {
 	// constructed.
 	metricsSampler *metrics.Sampler
 
+	// mcpPoolInspector returns the cached tools/list result for a
+	// named MCP server as already-marshaled JSON. The "already JSON"
+	// wire keeps this package free of internal/tools/mcp imports.
+	// Returns nil when the Pool has no cached entry (init pending or
+	// failed; server unknown). Used by the v0.9.x unified library
+	// endpoints to surface static MCP servers' discovered_tools
+	// alongside the substrate-side discovered_tools field. Wired in
+	// cmd/loomcycle/main.go via SetMCPPoolInspector.
+	mcpPoolInspector MCPPoolInspector
+
 	// skillSet is the static skills.Set loaded at boot from
 	// LOOMCYCLE_SKILLS_ROOT. Used by resolveSkillBodiesForRun (v0.8.22)
 	// to fall back to the static body when a skill name has no
@@ -246,6 +256,22 @@ func (s *Server) SetBuildInfo(version, commit, builtAt string) {
 // cmd/loomcycle/main.go after the MCP pool is built.
 func (s *Server) SetMCPFallback(fn tools.FallbackFunc) {
 	s.mcpFallback = fn
+}
+
+// MCPPoolInspector returns the cached tools/list result for an MCP
+// server name as already-JSON-marshaled bytes ([{name, description,
+// input_schema}, …]) or nil when the Pool has no cached entry. The
+// "already JSON" wire keeps this package free of internal/tools/mcp
+// imports — the http layer doesn't need ToolDescriptor's Go shape,
+// only the marshaled output for embedding into the library response.
+type MCPPoolInspector func(name string) json.RawMessage
+
+// SetMCPPoolInspector wires the live Pool's PeekTools accessor so the
+// v0.9.x /v1/_library/mcp-servers endpoint can enumerate static
+// servers' tool lists. Nil leaves the inspector unset — static MCP
+// entries in the library response will omit `discovered_tools`.
+func (s *Server) SetMCPPoolInspector(fn MCPPoolInspector) {
+	s.mcpPoolInspector = fn
 }
 
 // SetMetricsSampler installs the v0.8.x metrics sampler so the
@@ -1315,6 +1341,14 @@ func (s *Server) Mux() http.Handler {
 	mux.Handle("GET /v1/_agentdef/names", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleListAgentDefNames))))
 	mux.Handle("GET /v1/_skilldef/names", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleListSkillDefNames))))
 	mux.Handle("GET /v1/_mcpserverdef/names", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleListMCPServerDefNames))))
+	// v0.9.x Library v2 — unified enumeration that merges static cfg
+	// + substrate views into one envelope per entry. The names/* sister
+	// endpoints above stay as-is for backwards compat with external
+	// adapter consumers; these new endpoints back the /ui/library v2
+	// tab which shows STATIC + DYNAMIC entries with source chips.
+	mux.Handle("GET /v1/_library/agents", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleListLibraryAgents))))
+	mux.Handle("GET /v1/_library/skills", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleListLibrarySkills))))
+	mux.Handle("GET /v1/_library/mcp-servers", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleListLibraryMcpServers))))
 	// v0.9.x Introspection — channels an agent has cursored on
 	// (scope=agent, scope_id={agent_name}). Drives the Web UI's
 	// per-agent "channels this agent is subscribed to" sub-tab.
