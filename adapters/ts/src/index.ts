@@ -140,6 +140,7 @@ export type {
   ChannelDescriptor,
   ListChannelsResponse,
   RunStateEvent,
+  RunStateStreamClose,
   RunStateStreamItem,
   RunStateStreamOpen,
   StreamUserRunStatesOptions,

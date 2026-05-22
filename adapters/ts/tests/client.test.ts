@@ -1039,3 +1039,288 @@ describe("v0.9.x Channel CRUD — publish / subscribe / peek / ack", () => {
     );
   });
 });
+
+describe("v0.9.x n8n polish — debug toggle + parentAgentId filter", () => {
+  it("runStreaming yields no _meta events when debug is omitted (default)", async () => {
+    const { client } = makeClient([
+      sseResponse([
+        'event: text\ndata: {"type":"text","text":"hi"}\n\n',
+        'event: done\ndata: {"type":"done"}\n\n',
+      ]),
+    ]);
+    const types: string[] = [];
+    for await (const ev of client.runStreaming({
+      agent: "qa",
+      segments: [],
+    })) {
+      types.push(ev.type);
+    }
+    expect(types).toEqual(["text", "done"]);
+  });
+
+  it("runStreaming with debug:true brackets the real events with synthetic _meta open + close", async () => {
+    const { client } = makeClient([
+      sseResponse([
+        'event: text\ndata: {"type":"text","text":"hi"}\n\n',
+        'event: done\ndata: {"type":"done"}\n\n',
+      ]),
+    ]);
+    const events = [];
+    for await (const ev of client.runStreaming({
+      agent: "qa",
+      segments: [],
+      debug: true,
+    })) {
+      events.push(ev);
+    }
+    expect(events.length).toBe(4);
+    expect(events[0]!.type).toBe("_meta");
+    expect(events[0]!.meta_subtype).toBe("stream_open");
+    expect(events[1]!.type).toBe("text");
+    expect(events[2]!.type).toBe("done");
+    expect(events[3]!.type).toBe("_meta");
+    expect(events[3]!.meta_subtype).toBe("stream_close");
+    expect(events[3]!.meta_reason).toBe("eof");
+  });
+
+  it("continueSession debug:true wraps the inner stream too", async () => {
+    const { client } = makeClient([
+      sseResponse(['event: done\ndata: {"type":"done"}\n\n']),
+    ]);
+    const events = [];
+    for await (const ev of client.continueSession({
+      sessionId: "s1",
+      segments: [],
+      debug: true,
+    })) {
+      events.push(ev);
+    }
+    expect(events.map((e) => e.type)).toEqual([
+      "_meta",
+      "done",
+      "_meta",
+    ]);
+    expect(events[0]!.meta_subtype).toBe("stream_open");
+    expect(events[2]!.meta_subtype).toBe("stream_close");
+  });
+
+  it("streamUserRunStates with debug:true yields a kind=close item on EOF", async () => {
+    const { client } = makeClient([
+      sseResponse([
+        `event: run_state\ndata: ${JSON.stringify({
+          run_id: "r1",
+          agent_id: "ag1",
+          agent: "x",
+          user_id: "u",
+          status: "running",
+          ts: "2026-05-22T00:00:00Z",
+        })}\n\n`,
+      ]),
+    ]);
+    const kinds = [];
+    for await (const item of client.streamUserRunStates("u", { debug: true })) {
+      kinds.push(item.kind);
+    }
+    expect(kinds).toEqual(["event", "close"]);
+  });
+
+  it("streamUserRunStates without debug yields no close item", async () => {
+    const { client } = makeClient([
+      sseResponse([
+        `event: run_state\ndata: ${JSON.stringify({
+          run_id: "r1",
+          agent_id: "ag1",
+          agent: "x",
+          user_id: "u",
+          status: "running",
+          ts: "2026-05-22T00:00:00Z",
+        })}\n\n`,
+      ]),
+    ]);
+    const kinds = [];
+    for await (const item of client.streamUserRunStates("u")) {
+      kinds.push(item.kind);
+    }
+    expect(kinds).toEqual(["event"]);
+  });
+
+  it("streamUserRunStates parentAgentId filters out events whose parent_agent_id differs", async () => {
+    const { client } = makeClient([
+      sseResponse([
+        `event: stream_open\ndata: ${JSON.stringify({
+          user_id: "u",
+          filter_status: null,
+          filter_agent: "",
+          keepalive_interval: 25,
+        })}\n\n`,
+        // Two events with different parent_agent_ids.
+        `event: run_state\ndata: ${JSON.stringify({
+          run_id: "r1",
+          agent_id: "ag1",
+          agent: "x",
+          user_id: "u",
+          parent_agent_id: "parent_target",
+          status: "completed",
+          ts: "2026-05-22T00:00:00Z",
+        })}\n\n`,
+        `event: run_state\ndata: ${JSON.stringify({
+          run_id: "r2",
+          agent_id: "ag2",
+          agent: "x",
+          user_id: "u",
+          parent_agent_id: "parent_other",
+          status: "completed",
+          ts: "2026-05-22T00:00:01Z",
+        })}\n\n`,
+      ]),
+    ]);
+    const items = [];
+    for await (const item of client.streamUserRunStates("u", {
+      parentAgentId: "parent_target",
+    })) {
+      items.push(item);
+    }
+    // open frame always yielded, then only the event with the matching
+    // parent — the second event is filtered out client-side.
+    expect(items.length).toBe(2);
+    expect(items[0]!.kind).toBe("open");
+    expect(items[1]!.kind).toBe("event");
+    expect(items[1]!.kind === "event" && items[1]!.payload.run_id).toBe("r1");
+  });
+
+  it("listUserAgents parentAgentId narrows the result client-side", async () => {
+    const { client, fetchMock } = makeClient([
+      jsonResponse({
+        agents: [
+          { agent_id: "a1", run_id: "r1", session_id: "s1", agent: "x", parent_agent_id: "parent_target", status: "running", started_at: "2026-05-22T00:00:00Z" },
+          { agent_id: "a2", run_id: "r2", session_id: "s2", agent: "x", parent_agent_id: "parent_other", status: "running", started_at: "2026-05-22T00:00:01Z" },
+          { agent_id: "a3", run_id: "r3", session_id: "s3", agent: "x", parent_agent_id: "parent_target", status: "running", started_at: "2026-05-22T00:00:02Z" },
+        ],
+      }),
+    ]);
+    const out = await client.listUserAgents("u", {
+      parentAgentId: "parent_target",
+    });
+    expect(out.length).toBe(2);
+    expect(out.map((a) => a.agent_id).sort()).toEqual(["a1", "a3"]);
+    // Server-side: no query param for parent (filter is client-side).
+    expect(fetchMock.mock.calls[0]![0]).toBe(
+      "http://test-loomcycle:8787/v1/users/u/agents",
+    );
+  });
+
+  it("listUserAgents returns all agents when parentAgentId is omitted or empty string", async () => {
+    const seed = [
+      { agent_id: "a1", run_id: "r1", session_id: "s1", agent: "x", parent_agent_id: "p", status: "running", started_at: "2026-05-22T00:00:00Z" },
+      { agent_id: "a2", run_id: "r2", session_id: "s2", agent: "x", parent_agent_id: null, status: "running", started_at: "2026-05-22T00:00:01Z" },
+    ];
+    const omitted = makeClient([jsonResponse({ agents: seed })]);
+    expect((await omitted.client.listUserAgents("u")).length).toBe(2);
+
+    const empty = makeClient([jsonResponse({ agents: seed })]);
+    expect(
+      (await empty.client.listUserAgents("u", { parentAgentId: "" })).length,
+    ).toBe(2);
+  });
+
+  // Defensive: when the dataset contains a row with parent_agent_id === null
+  // AND the filter is a non-null string, the null row MUST be excluded.
+  // JS `null === "parent_target"` is false at runtime, but a future
+  // refactor that uses == or a different comparator could regress this.
+  it("listUserAgents excludes parent_agent_id=null rows when filter is set to a non-null string", async () => {
+    const { client } = makeClient([
+      jsonResponse({
+        agents: [
+          { agent_id: "match",  run_id: "r1", session_id: "s1", agent: "x", parent_agent_id: "parent_target", status: "running", started_at: "2026-05-22T00:00:00Z" },
+          { agent_id: "null_p", run_id: "r2", session_id: "s2", agent: "x", parent_agent_id: null,             status: "running", started_at: "2026-05-22T00:00:01Z" },
+          { agent_id: "other",  run_id: "r3", session_id: "s3", agent: "x", parent_agent_id: "parent_other",  status: "running", started_at: "2026-05-22T00:00:02Z" },
+        ],
+      }),
+    ]);
+    const out = await client.listUserAgents("u", {
+      parentAgentId: "parent_target",
+    });
+    // Only the "match" row should survive. The null-parent row must
+    // NOT silently match the "parent_target" filter.
+    expect(out.map((a) => a.agent_id)).toEqual(["match"]);
+  });
+
+  // Stream-side error with debug:true: the close frame fires (with
+  // meta_reason set to the error class name) before the error
+  // propagates to the consumer's try/catch. Simulates the abort path
+  // by building an SSE response whose stream errors on first read.
+  it("runStreaming debug:true yields a stream_close frame before re-throwing on stream-side error", async () => {
+    const failingStream = new ReadableStream({
+      start(controller) {
+        const err = new DOMException("aborted by signal", "AbortError");
+        controller.error(err);
+      },
+    });
+    const failingResponse = () =>
+      new Response(failingStream, {
+        status: 200,
+        headers: { "Content-Type": "text/event-stream" },
+      });
+
+    const { client } = makeClient([failingResponse]);
+    const events: Array<{ type: string; meta_subtype?: string; meta_reason?: string }> = [];
+    let caught: unknown;
+    try {
+      for await (const ev of client.runStreaming({
+        agent: "qa",
+        segments: [],
+        debug: true,
+      })) {
+        events.push({
+          type: ev.type,
+          meta_subtype: ev.meta_subtype,
+          meta_reason: ev.meta_reason,
+        });
+      }
+    } catch (e) {
+      caught = e;
+    }
+    // Two synthetic frames before the throw — open then close
+    // (with meta_reason captured from the inner error's `.name`).
+    expect(events.length).toBe(2);
+    expect(events[0]!.meta_subtype).toBe("stream_open");
+    expect(events[1]!.meta_subtype).toBe("stream_close");
+    expect(events[1]!.meta_reason).toBe("AbortError");
+    // The original error still surfaces to the consumer.
+    expect((caught as Error | undefined)?.name).toBe("AbortError");
+  });
+
+  // streamUserRunStates analogue: a close item with reason set to the
+  // error class name fires before the stream-side throw propagates.
+  it("streamUserRunStates debug:true yields a kind=close item with error reason before re-throwing", async () => {
+    const failingStream = new ReadableStream({
+      start(controller) {
+        const err = new DOMException("aborted by signal", "AbortError");
+        controller.error(err);
+      },
+    });
+    const failingResponse = () =>
+      new Response(failingStream, {
+        status: 200,
+        headers: { "Content-Type": "text/event-stream" },
+      });
+
+    const { client } = makeClient([failingResponse]);
+    const items: Array<{ kind: string; reason?: string }> = [];
+    let caught: unknown;
+    try {
+      for await (const item of client.streamUserRunStates("u", { debug: true })) {
+        items.push({
+          kind: item.kind,
+          reason: item.kind === "close" ? item.payload.reason : undefined,
+        });
+      }
+    } catch (e) {
+      caught = e;
+    }
+    expect(items.length).toBe(1);
+    expect(items[0]!.kind).toBe("close");
+    expect(items[0]!.reason).toBe("AbortError");
+    expect((caught as Error | undefined)?.name).toBe("AbortError");
+  });
+});
