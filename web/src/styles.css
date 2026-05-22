@@ -2400,3 +2400,146 @@ pre {
   white-space: pre-wrap;
   word-break: break-all;
 }
+
+/* ---- v0.9.x AgentDetailPane sub-tabs (Transcript/Memory/Interrupts/Channels) ---- */
+.agent-tabs {
+  display: flex;
+  gap: 0;
+  border-bottom: 1px solid var(--border);
+  margin: 0 0 8px 0;
+}
+.agent-tab {
+  background: transparent;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  color: var(--fg-soft);
+  padding: 6px 14px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.agent-tab:hover {
+  color: var(--fg);
+}
+.agent-tab-active {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+}
+.agent-tab-body {
+  padding: 8px 0;
+  overflow-y: auto;
+}
+.agent-tab-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  font-size: 11px;
+  color: var(--fg-soft);
+  font-family: var(--mono);
+  margin-bottom: 12px;
+}
+.agent-tab-meta-key {
+  color: var(--fg-soft);
+}
+.agent-tab-note {
+  font-size: 11px;
+  color: var(--fg-soft);
+  font-style: italic;
+  margin-top: 12px;
+}
+.agent-tab-note a {
+  color: var(--accent);
+}
+
+/* Memory tab: per-key entry rows */
+.memory-entry-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.memory-entry {
+  margin-bottom: 10px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 8px 10px;
+  background: var(--bg-soft);
+}
+.memory-entry-key {
+  font-size: 12px;
+  color: var(--fg);
+  margin-bottom: 4px;
+  font-weight: 500;
+}
+.memory-entry-value {
+  font-size: 11px;
+  margin: 0 0 4px 0;
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 200px;
+  overflow-y: auto;
+}
+.memory-entry-meta {
+  font-size: 10px;
+  color: var(--fg-soft);
+}
+
+/* Interrupts tab */
+.interrupt-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.interrupt-row {
+  margin-bottom: 10px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 8px 10px;
+  background: var(--bg-soft);
+}
+.interrupt-header {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  margin-bottom: 6px;
+}
+.interrupt-kind {
+  font-size: 11px;
+  color: var(--fg-soft);
+}
+.interrupt-id {
+  font-size: 10px;
+  color: var(--fg-soft);
+  margin-left: auto;
+}
+.interrupt-question {
+  font-size: 13px;
+  margin-bottom: 4px;
+}
+.interrupt-answer {
+  font-size: 12px;
+  margin-bottom: 4px;
+  font-family: var(--mono);
+}
+
+/* Channels tab */
+.channel-cursor-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.channel-cursor-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+}
+.channel-cursor-name {
+  font-size: 13px;
+  font-weight: 500;
+}
+.channel-cursor-meta {
+  display: flex;
+  gap: 16px;
+  font-size: 11px;
+  color: var(--fg-soft);
+}
