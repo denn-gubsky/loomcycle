@@ -2260,6 +2260,44 @@ func (s *Store) ChannelPeek(ctx context.Context, channel string, scope store.Mem
 	return msgs, err
 }
 
+func (s *Store) ChannelStats(ctx context.Context) ([]store.ChannelStats, error) {
+	now := time.Now().UnixNano()
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT channel, COUNT(*), MIN(visible_at), MAX(visible_at)
+		FROM channel_messages
+		WHERE (expires_at IS NULL OR expires_at > ?)
+		GROUP BY channel
+		ORDER BY channel`, now)
+	if err != nil {
+		return nil, fmt.Errorf("channel stats query: %w", err)
+	}
+	defer rows.Close()
+
+	var out []store.ChannelStats
+	for rows.Next() {
+		var (
+			name             string
+			count            int64
+			oldestNS, newest sql.NullInt64
+		)
+		if err := rows.Scan(&name, &count, &oldestNS, &newest); err != nil {
+			return nil, fmt.Errorf("channel stats scan: %w", err)
+		}
+		st := store.ChannelStats{Channel: name, MessageCount: count}
+		if oldestNS.Valid {
+			st.OldestVisibleAt = time.Unix(0, oldestNS.Int64).UTC()
+		}
+		if newest.Valid {
+			st.NewestVisibleAt = time.Unix(0, newest.Int64).UTC()
+		}
+		out = append(out, st)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("channel stats iterate: %w", err)
+	}
+	return out, nil
+}
+
 // channelRead is the shared read body for Subscribe + Peek. expired-
 // at-read-time filter applies on both paths.
 //

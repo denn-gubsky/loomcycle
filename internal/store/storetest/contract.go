@@ -133,6 +133,8 @@ func Run(t *testing.T, factory Factory) {
 		{"ChannelScopeIsolation", testChannelScopeIsolation},
 		{"ChannelPeekDoesNotConsume", testChannelPeekDoesNotConsume},
 		{"ChannelReplayFromCursorZero", testChannelReplayFromCursorZero},
+		{"ChannelStatsAggregatesNonExpired", testChannelStatsAggregatesNonExpired},
+		{"ChannelStatsEmptyOnNoMessages", testChannelStatsEmptyOnNoMessages},
 		// v0.8.6 deferred publish (PR 1)
 		{"ChannelDeferredHiddenUntilVisible", testChannelDeferredHiddenUntilVisible},
 		{"ChannelDeferredDeliversAfterProgressedCursor", testChannelDeferredDeliversAfterProgressedCursor},
@@ -2350,6 +2352,54 @@ func testChannelPeekDoesNotConsume(t *testing.T, s store.Store) {
 	}
 	if committed != "" {
 		t.Errorf("peek advanced committed cursor to %q (must stay empty)", committed)
+	}
+}
+
+func testChannelStatsAggregatesNonExpired(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	// Publish 3 to "alpha", 1 to "beta".
+	for i := 0; i < 3; i++ {
+		_, _, _ = s.ChannelPublish(ctx, store.ChannelMessage{
+			Channel: "alpha", Scope: store.MemoryScopeAgent, ScopeID: "x",
+			Payload: json.RawMessage(`{}`),
+		}, 0)
+		time.Sleep(time.Millisecond)
+	}
+	_, _, _ = s.ChannelPublish(ctx, store.ChannelMessage{
+		Channel: "beta", Scope: store.MemoryScopeAgent, ScopeID: "x",
+		Payload: json.RawMessage(`{}`),
+	}, 0)
+
+	stats, err := s.ChannelStats(ctx)
+	if err != nil {
+		t.Fatalf("ChannelStats: %v", err)
+	}
+	byName := map[string]store.ChannelStats{}
+	for _, st := range stats {
+		byName[st.Channel] = st
+	}
+	if byName["alpha"].MessageCount != 3 {
+		t.Errorf("alpha count = %d, want 3", byName["alpha"].MessageCount)
+	}
+	if byName["beta"].MessageCount != 1 {
+		t.Errorf("beta count = %d, want 1", byName["beta"].MessageCount)
+	}
+	if byName["alpha"].OldestVisibleAt.After(byName["alpha"].NewestVisibleAt) {
+		t.Errorf("alpha oldest %v after newest %v", byName["alpha"].OldestVisibleAt, byName["alpha"].NewestVisibleAt)
+	}
+	if byName["alpha"].OldestVisibleAt.IsZero() {
+		t.Error("alpha oldest_visible_at should be set")
+	}
+}
+
+func testChannelStatsEmptyOnNoMessages(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	stats, err := s.ChannelStats(ctx)
+	if err != nil {
+		t.Fatalf("ChannelStats: %v", err)
+	}
+	if len(stats) != 0 {
+		t.Errorf("expected empty stats, got %d rows: %+v", len(stats), stats)
 	}
 }
 

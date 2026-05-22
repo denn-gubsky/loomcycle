@@ -1244,6 +1244,11 @@ func (s *Server) Mux() http.Handler {
 	// here. Future verbs (GET to peek, etc.) can use the same path
 	// with different methods.
 	mux.Handle("POST /v1/_channels/{name...}", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleSystemChannelPublish))))
+	// v0.9.x n8n RFC Phase 0: list declared channels + aggregate
+	// stats (count, oldest/newest visible_at). Used by n8n's
+	// credential-picker for the channel-name dropdown; also useful
+	// for operator dashboards. Bearer-authed.
+	mux.Handle("GET /v1/_channels", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleListChannels))))
 	// v0.8.x process-resource metrics sampler endpoints. All
 	// bearer-authed. Return 503 when metricsSampler is nil
 	// (LOOMCYCLE_METRICS_ENABLED=0 deployment).
