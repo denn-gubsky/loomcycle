@@ -634,7 +634,7 @@ func (s *Server) resolveSkillBodiesForRun(ctx context.Context, agentDef config.A
 			log.Printf("resolveSkillBodiesForRun: SkillDefGetActive(%q) failed: %v", skillName, err)
 			continue
 		}
-		var def skillDefOverlay
+		var def lookup.SubstrateSkillDef
 		if err := json.Unmarshal(row.Definition, &def); err != nil {
 			log.Printf("resolveSkillBodiesForRun: parse %s definition: %v", row.DefID, err)
 			continue
@@ -711,16 +711,6 @@ func (s *Server) emitSystemPromptEvent(
 	if err := s.store.AppendEvent(ctx, runID, "system_prompt", b); err != nil {
 		log.Printf("store: AppendEvent(system_prompt) failed for run %s: %v", runID, err)
 	}
-}
-
-// skillDefOverlay mirrors internal/tools/builtin.skillDefOverlay.
-// Re-declared here so the api/http package doesn't import
-// tools/builtin (which would invert the existing dependency
-// direction).
-type skillDefOverlay struct {
-	Body         string   `json:"body,omitempty"`
-	Description  string   `json:"description,omitempty"`
-	AllowedTools []string `json:"allowed_tools,omitempty"`
 }
 
 // historyPolicyForAgent returns the v0.8.7 Context.history scope policy
