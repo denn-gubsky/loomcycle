@@ -112,6 +112,12 @@ func Capture(ctx context.Context, s store.Store, opts CaptureOptions) (*store.Sn
 	if err := captureSkillDefActive(ctx, s, &envelope.Sections.SkillDefActive); err != nil {
 		return nil, nil, err
 	}
+	if err := captureMCPServerDefs(ctx, s, &envelope.Sections.MCPServerDefs); err != nil {
+		return nil, nil, err
+	}
+	if err := captureMCPServerDefActive(ctx, s, &envelope.Sections.MCPServerDefActive); err != nil {
+		return nil, nil, err
+	}
 	if err := captureMemory(ctx, s, &envelope.Sections.Memory); err != nil {
 		return nil, nil, err
 	}
@@ -249,6 +255,53 @@ func captureSkillDefActive(ctx context.Context, s store.Store, out *SkillDefActi
 	out.Entries = make([]SkillDefActiveEntry, 0, len(rows))
 	for _, r := range rows {
 		out.Entries = append(out.Entries, SkillDefActiveEntry{
+			Name:              r.Name,
+			DefID:             r.DefID,
+			PromotedAt:        r.PromotedAt,
+			PromotedByAgentID: r.PromotedByAgentID,
+		})
+	}
+	return nil
+}
+
+// captureMCPServerDefs mirrors captureSkillDefs against mcp_server_defs.
+// v0.9.x dynamic MCP server registration substrate. Additive section —
+// pre-v0.9.x readers don't know about it.
+func captureMCPServerDefs(ctx context.Context, s store.Store, out *MCPServerDefsSection) error {
+	out.Version = SectionVersion
+	rows, err := s.SnapshotReadMCPServerDefs(ctx)
+	if err != nil {
+		return fmt.Errorf("snapshot mcp_server_defs: %w", err)
+	}
+	out.Entries = make([]MCPServerDefEntry, 0, len(rows))
+	for _, r := range rows {
+		out.Entries = append(out.Entries, MCPServerDefEntry{
+			DefID:                  r.DefID,
+			Name:                   r.Name,
+			Version:                r.Version,
+			ParentDefID:            r.ParentDefID,
+			Definition:             r.Definition,
+			Description:            r.Description,
+			CreatedAt:              r.CreatedAt,
+			CreatedByAgentID:       r.CreatedByAgentID,
+			CreatedByRunID:         r.CreatedByRunID,
+			Retired:                r.Retired,
+			BootstrappedFromStatic: r.BootstrappedFromStatic,
+			ContentSHA256:          r.ContentSHA256,
+		})
+	}
+	return nil
+}
+
+func captureMCPServerDefActive(ctx context.Context, s store.Store, out *MCPServerDefActiveSection) error {
+	out.Version = SectionVersion
+	rows, err := s.SnapshotReadMCPServerDefActive(ctx)
+	if err != nil {
+		return fmt.Errorf("snapshot mcp_server_def_active: %w", err)
+	}
+	out.Entries = make([]MCPServerDefActiveEntry, 0, len(rows))
+	for _, r := range rows {
+		out.Entries = append(out.Entries, MCPServerDefActiveEntry{
 			Name:              r.Name,
 			DefID:             r.DefID,
 			PromotedAt:        r.PromotedAt,

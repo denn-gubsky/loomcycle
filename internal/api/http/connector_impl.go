@@ -381,6 +381,21 @@ func (s *Server) Context(ctx context.Context, input json.RawMessage) (connector.
 	return s.dispatchBuiltin(ctx, "Context", input)
 }
 
+// MCPServerDef dispatches to the v0.9.x dynamic MCP-server-registration
+// substrate tool. The tool is NOT in the per-agent dispatcher (operator-
+// admin-only) — dispatchBuiltinDirect looks it up via the dedicated
+// registered-but-not-attached slot. See SetMCPServerDefTool for wiring.
+func (s *Server) MCPServerDef(ctx context.Context, input json.RawMessage) (connector.ToolResult, error) {
+	if s.mcpServerDefTool == nil {
+		return connector.ToolResult{}, fmt.Errorf("MCPServerDef: not configured (no tool wired via SetMCPServerDefTool)")
+	}
+	res, err := s.mcpServerDefTool.Execute(ctx, input)
+	if err != nil {
+		return connector.ToolResult{}, err
+	}
+	return connector.ToolResult{Text: res.Text, IsError: res.IsError}, nil
+}
+
 // dispatchBuiltin is the shared lookup-and-execute path for the five
 // builtin wrappers. tools.Result {Text, IsError} maps directly onto
 // connector.ToolResult; the transport adapter (MCP) then wraps both

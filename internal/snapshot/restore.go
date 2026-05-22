@@ -38,6 +38,8 @@ type RestoreResult struct {
 	AgentDefActiveRestored     int      `json:"agent_def_active_restored"`
 	SkillDefsRestored          int      `json:"skill_defs_restored"`
 	SkillDefActiveRestored     int      `json:"skill_def_active_restored"`
+	MCPServerDefsRestored      int      `json:"mcp_server_defs_restored"`
+	MCPServerDefActiveRestored int      `json:"mcp_server_def_active_restored"`
 	MemoryRestored             int      `json:"memory_restored"`
 	ChannelMessagesRestored    int      `json:"channel_messages_restored"`
 	ChannelCursorsRestored     int      `json:"channel_cursors_restored"`
@@ -213,6 +215,60 @@ func Restore(ctx context.Context, s store.Store, raw []byte, opts RestoreOptions
 			}
 			if inserted {
 				result.SkillDefActiveRestored++
+			}
+		}
+	}
+
+	// mcp_server_defs (v0.9.x) — mirror of agent_defs / skill_defs restore
+	if rawSection, ok := outer.Sections[migrations.SectionMCPServerDefs]; ok {
+		var sec MCPServerDefsSection
+		if err := decodeWithMigration(migrations.SectionMCPServerDefs, rawSection, &sec); err != nil {
+			return result, err
+		}
+		for _, e := range sec.Entries {
+			inserted, err := s.SnapshotRestoreMCPServerDef(ctx, store.MCPServerDefRow{
+				DefID:                  e.DefID,
+				Name:                   e.Name,
+				Version:                e.Version,
+				ParentDefID:            e.ParentDefID,
+				Definition:             e.Definition,
+				Description:            e.Description,
+				CreatedAt:              e.CreatedAt,
+				CreatedByAgentID:       e.CreatedByAgentID,
+				CreatedByRunID:         e.CreatedByRunID,
+				Retired:                e.Retired,
+				BootstrappedFromStatic: e.BootstrappedFromStatic,
+				ContentSHA256:          e.ContentSHA256,
+			})
+			if err != nil {
+				result.Warnings = append(result.Warnings, fmt.Sprintf("mcp_server_def %s: %v", e.DefID, err))
+				continue
+			}
+			if inserted {
+				result.MCPServerDefsRestored++
+			}
+		}
+	}
+
+	// mcp_server_def_active (after mcp_server_defs for FK)
+	if rawSection, ok := outer.Sections[migrations.SectionMCPServerDefActive]; ok {
+		var sec MCPServerDefActiveSection
+		if err := decodeWithMigration(migrations.SectionMCPServerDefActive, rawSection, &sec); err != nil {
+			return result, err
+		}
+		for _, e := range sec.Entries {
+			inserted, err := s.SnapshotRestoreMCPServerDefActive(ctx, store.MCPServerDefActiveEntry{
+				Name:              e.Name,
+				DefID:             e.DefID,
+				PromotedAt:        e.PromotedAt,
+				PromotedByAgentID: e.PromotedByAgentID,
+			})
+			if err != nil {
+				result.Warnings = append(result.Warnings, fmt.Sprintf("mcp_server_def_active %s: %v", e.Name, err))
+				continue
+			}
+			if inserted {
+				result.MCPServerDefActiveRestored++
 			}
 		}
 	}

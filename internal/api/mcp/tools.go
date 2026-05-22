@@ -147,6 +147,11 @@ func toolDescriptors() []loommcp.ToolDescriptor {
 			InputSchema: rawJSON(`{"type": "object"}`),
 		},
 		{
+			Name:        "mcpserverdef",
+			Description: "MCPServerDef tool ops (create/fork/get/list/promote/retire/rediscover/verify). v0.9.x dynamic MCP server registration. Operator-admin-only — register HTTP / Streamable-HTTP MCP servers at runtime; stdio stays yaml. URL hostname must be in LOOMCYCLE_HTTP_HOST_ALLOWLIST. Pass-through.",
+			InputSchema: rawJSON(`{"type": "object"}`),
+		},
+		{
 			Name:        "evaluation",
 			Description: "Evaluation tool ops (submit/get/list_for_run/list_for_def/aggregate). Pass-through.",
 			InputSchema: rawJSON(`{"type": "object"}`),

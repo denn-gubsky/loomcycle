@@ -29,11 +29,11 @@ func newTestStore(t *testing.T) (store.Store, func()) {
 	return s, func() { _ = s.Close() }
 }
 
-// TestCapture_EmptyStoreReturnsAllSevenSections — a fresh store
+// TestCapture_EmptyStoreReturnsAllSections — a fresh store
 // produces a valid envelope with every section present and empty.
 // Pins the structural contract: section keys must exist even when
 // there's nothing to serialise (so restore can rely on the shape).
-func TestCapture_EmptyStoreReturnsAllSevenSections(t *testing.T) {
+func TestCapture_EmptyStoreReturnsAllSections(t *testing.T) {
 	s, cleanup := newTestStore(t)
 	defer cleanup()
 
@@ -64,6 +64,12 @@ func TestCapture_EmptyStoreReturnsAllSevenSections(t *testing.T) {
 	}
 	if env.Sections.AgentDefActive.Version != SectionVersion {
 		t.Errorf("AgentDefActive.Version = %q", env.Sections.AgentDefActive.Version)
+	}
+	if env.Sections.MCPServerDefs.Version != SectionVersion {
+		t.Errorf("MCPServerDefs.Version = %q", env.Sections.MCPServerDefs.Version)
+	}
+	if env.Sections.MCPServerDefActive.Version != SectionVersion {
+		t.Errorf("MCPServerDefActive.Version = %q", env.Sections.MCPServerDefActive.Version)
 	}
 	if env.Sections.Memory.Version != SectionVersion {
 		t.Errorf("Memory.Version = %q", env.Sections.Memory.Version)

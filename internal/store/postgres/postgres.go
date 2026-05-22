@@ -986,6 +986,86 @@ func (s *Store) SnapshotReadSkillDefActive(ctx context.Context) ([]store.SkillDe
 	return out, rows.Err()
 }
 
+// SnapshotReadMCPServerDefs — v0.9.x mirror.
+func (s *Store) SnapshotReadMCPServerDefs(ctx context.Context) ([]store.MCPServerDefRow, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT def_id, name, version, parent_def_id, definition::text, description,
+		        created_at, created_by_agent_id, created_by_run_id,
+		        retired, bootstrapped_from_static, content_sha256
+		 FROM mcp_server_defs
+		 ORDER BY name ASC, version ASC`,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("snapshot read mcp_server_defs: %w", err)
+	}
+	defer rows.Close()
+	var out []store.MCPServerDefRow
+	for rows.Next() {
+		var (
+			r           store.MCPServerDefRow
+			parentDefID *string
+			description *string
+			createdBy   *string
+			createdRun  *string
+			definition  string
+			contentHash *string
+		)
+		if err := rows.Scan(
+			&r.DefID, &r.Name, &r.Version, &parentDefID,
+			&definition, &description,
+			&r.CreatedAt, &createdBy, &createdRun,
+			&r.Retired, &r.BootstrappedFromStatic, &contentHash,
+		); err != nil {
+			return nil, fmt.Errorf("scan mcp_server_def: %w", err)
+		}
+		r.Definition = json.RawMessage(definition)
+		if parentDefID != nil {
+			r.ParentDefID = *parentDefID
+		}
+		if description != nil {
+			r.Description = *description
+		}
+		if createdBy != nil {
+			r.CreatedByAgentID = *createdBy
+		}
+		if createdRun != nil {
+			r.CreatedByRunID = *createdRun
+		}
+		if contentHash != nil {
+			r.ContentSHA256 = *contentHash
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// SnapshotReadMCPServerDefActive — v0.9.x mirror.
+func (s *Store) SnapshotReadMCPServerDefActive(ctx context.Context) ([]store.MCPServerDefActiveEntry, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT name, def_id, promoted_at, promoted_by_agent_id
+		 FROM mcp_server_def_active
+		 ORDER BY name ASC`)
+	if err != nil {
+		return nil, fmt.Errorf("snapshot read mcp_server_def_active: %w", err)
+	}
+	defer rows.Close()
+	var out []store.MCPServerDefActiveEntry
+	for rows.Next() {
+		var (
+			e        store.MCPServerDefActiveEntry
+			promoter *string
+		)
+		if err := rows.Scan(&e.Name, &e.DefID, &e.PromotedAt, &promoter); err != nil {
+			return nil, fmt.Errorf("scan mcp_server_def_active: %w", err)
+		}
+		if promoter != nil {
+			e.PromotedByAgentID = *promoter
+		}
+		out = append(out, e)
+	}
+	return out, rows.Err()
+}
+
 // SnapshotReadMemory implements store.Store. Filters expired rows.
 func (s *Store) SnapshotReadMemory(ctx context.Context) ([]store.MemorySnapshotEntry, error) {
 	now := time.Now().UTC()
@@ -1344,6 +1424,54 @@ func (s *Store) SnapshotRestoreSkillDefActive(ctx context.Context, e store.Skill
 	)
 	if err != nil {
 		return false, fmt.Errorf("snapshot restore skill_def_active: %w", err)
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
+// SnapshotRestoreMCPServerDef — v0.9.x mirror.
+func (s *Store) SnapshotRestoreMCPServerDef(ctx context.Context, r store.MCPServerDefRow) (bool, error) {
+	if r.DefID == "" || r.Name == "" {
+		return false, fmt.Errorf("snapshot restore mcp_server_def: def_id and name required")
+	}
+	createdAt := r.CreatedAt
+	if createdAt.IsZero() {
+		createdAt = time.Now().UTC()
+	}
+	tag, err := s.pool.Exec(ctx,
+		`INSERT INTO mcp_server_defs(
+			def_id, name, version, parent_def_id, definition, description,
+			created_at, created_by_agent_id, created_by_run_id,
+			retired, bootstrapped_from_static, content_sha256
+		) VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10, $11, $12)
+		 ON CONFLICT (def_id) DO NOTHING`,
+		r.DefID, r.Name, r.Version, nullIfEmpty(r.ParentDefID),
+		string(r.Definition), nullIfEmpty(r.Description),
+		createdAt, nullIfEmpty(r.CreatedByAgentID), nullIfEmpty(r.CreatedByRunID),
+		r.Retired, r.BootstrappedFromStatic,
+		nullIfEmpty(r.ContentSHA256),
+	)
+	if err != nil {
+		return false, fmt.Errorf("snapshot restore mcp_server_def: %w", err)
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
+// SnapshotRestoreMCPServerDefActive — v0.9.x mirror.
+func (s *Store) SnapshotRestoreMCPServerDefActive(ctx context.Context, e store.MCPServerDefActiveEntry) (bool, error) {
+	if e.Name == "" || e.DefID == "" {
+		return false, fmt.Errorf("snapshot restore mcp_server_def_active: name and def_id required")
+	}
+	promotedAt := e.PromotedAt
+	if promotedAt.IsZero() {
+		promotedAt = time.Now().UTC()
+	}
+	tag, err := s.pool.Exec(ctx,
+		`INSERT INTO mcp_server_def_active(name, def_id, promoted_at, promoted_by_agent_id) VALUES ($1, $2, $3, $4)
+		 ON CONFLICT (name) DO NOTHING`,
+		e.Name, e.DefID, promotedAt, nullIfEmpty(e.PromotedByAgentID),
+	)
+	if err != nil {
+		return false, fmt.Errorf("snapshot restore mcp_server_def_active: %w", err)
 	}
 	return tag.RowsAffected() > 0, nil
 }
@@ -2473,7 +2601,7 @@ func (s *Store) BackfillSkillDefContentSHA256(ctx context.Context, signFn func(n
 }
 
 func (s *Store) backfillContentSHA256(ctx context.Context, table string, signFn func(name string, def []byte) (string, error)) (int, error) {
-	if table != "agent_defs" && table != "skill_defs" {
+	if table != "agent_defs" && table != "skill_defs" && table != "mcp_server_defs" {
 		return 0, fmt.Errorf("backfill: unexpected table %q", table)
 	}
 	rows, err := s.pool.Query(ctx,
@@ -3150,6 +3278,248 @@ func (s *Store) scanSkillDefRows(rows pgx.Rows) ([]store.SkillDefRow, error) {
 	for rows.Next() {
 		var (
 			r          store.SkillDefRow
+			definition string
+		)
+		if err := rows.Scan(
+			&r.DefID, &r.Name, &r.Version,
+			&r.ParentDefID,
+			&definition,
+			&r.Description,
+			&r.CreatedAt,
+			&r.CreatedByAgentID, &r.CreatedByRunID,
+			&r.Retired, &r.BootstrappedFromStatic,
+			&r.ContentSHA256,
+		); err != nil {
+			return nil, err
+		}
+		r.Definition = json.RawMessage(definition)
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// ---- v0.9.x MCPServerDef substrate ----
+//
+// Direct mirror of the SkillDef methods above. Uses the same
+// pg_advisory_xact_lock pattern for per-name version monotonicity
+// (lock key derived from "mcp_server_def:"+name so it never collides
+// with the agent_def / skill_def lock namespaces).
+
+func (s *Store) MCPServerDefCreate(ctx context.Context, row store.MCPServerDefRow) (store.MCPServerDefRow, error) {
+	if row.DefID == "" || row.Name == "" {
+		return store.MCPServerDefRow{}, fmt.Errorf("mcp_server_def: def_id + name required")
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return store.MCPServerDefRow{}, fmt.Errorf("mcp_server_def create begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	if _, err := tx.Exec(ctx,
+		`SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`,
+		"mcp_server_def:"+row.Name,
+	); err != nil {
+		return store.MCPServerDefRow{}, fmt.Errorf("mcp_server_def create lock: %w", err)
+	}
+
+	if row.ParentDefID != "" {
+		var n int
+		if err := tx.QueryRow(ctx, `SELECT COUNT(*) FROM mcp_server_defs WHERE def_id = $1`, row.ParentDefID).Scan(&n); err != nil {
+			return store.MCPServerDefRow{}, fmt.Errorf("mcp_server_def create parent check: %w", err)
+		}
+		if n == 0 {
+			return store.MCPServerDefRow{}, store.ErrMCPServerDefParentNotFound
+		}
+	}
+
+	var maxVer sql.NullInt64
+	if err := tx.QueryRow(ctx, `SELECT MAX(version) FROM mcp_server_defs WHERE name = $1`, row.Name).Scan(&maxVer); err != nil {
+		return store.MCPServerDefRow{}, fmt.Errorf("mcp_server_def create max version: %w", err)
+	}
+	row.Version = 1
+	if maxVer.Valid {
+		row.Version = int(maxVer.Int64) + 1
+	}
+	row.CreatedAt = time.Now().UTC()
+
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO mcp_server_defs (
+			def_id, name, version, parent_def_id, definition, description,
+			created_at, created_by_agent_id, created_by_run_id,
+			retired, bootstrapped_from_static, content_sha256
+		) VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10, $11, $12)`,
+		row.DefID, row.Name, row.Version, nullableString(row.ParentDefID),
+		string(row.Definition), nullableString(row.Description),
+		row.CreatedAt,
+		nullableString(row.CreatedByAgentID), nullableString(row.CreatedByRunID),
+		row.Retired, row.BootstrappedFromStatic,
+		nullableString(row.ContentSHA256),
+	); err != nil {
+		return store.MCPServerDefRow{}, fmt.Errorf("mcp_server_def insert: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return store.MCPServerDefRow{}, fmt.Errorf("mcp_server_def commit: %w", err)
+	}
+	return row, nil
+}
+
+func (s *Store) MCPServerDefGet(ctx context.Context, defID string) (store.MCPServerDefRow, error) {
+	row, err := s.scanMCPServerDef(s.pool.QueryRow(ctx, mcpServerDefSelect+` WHERE def_id = $1`, defID))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return store.MCPServerDefRow{}, &store.ErrNotFound{Kind: "mcp_server_def", ID: defID}
+	}
+	return row, err
+}
+
+func (s *Store) MCPServerDefGetByNameVersion(ctx context.Context, name string, version int) (store.MCPServerDefRow, error) {
+	row, err := s.scanMCPServerDef(s.pool.QueryRow(ctx, mcpServerDefSelect+` WHERE name = $1 AND version = $2`, name, version))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return store.MCPServerDefRow{}, &store.ErrNotFound{Kind: "mcp_server_def", ID: fmt.Sprintf("%s@v%d", name, version)}
+	}
+	return row, err
+}
+
+func (s *Store) MCPServerDefListByName(ctx context.Context, name string) ([]store.MCPServerDefRow, error) {
+	rows, err := s.pool.Query(ctx, mcpServerDefSelect+` WHERE name = $1 ORDER BY version DESC`, name)
+	if err != nil {
+		return nil, fmt.Errorf("mcp_server_def list by name: %w", err)
+	}
+	defer rows.Close()
+	return s.scanMCPServerDefRows(rows)
+}
+
+func (s *Store) MCPServerDefListChildren(ctx context.Context, parentDefID string) ([]store.MCPServerDefRow, error) {
+	rows, err := s.pool.Query(ctx, mcpServerDefSelect+` WHERE parent_def_id = $1 ORDER BY version DESC`, parentDefID)
+	if err != nil {
+		return nil, fmt.Errorf("mcp_server_def list children: %w", err)
+	}
+	defer rows.Close()
+	return s.scanMCPServerDefRows(rows)
+}
+
+func (s *Store) MCPServerDefListNames(ctx context.Context) ([]store.MCPServerDefNameSummary, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT
+			d.name,
+			COUNT(*)                  AS version_count,
+			MAX(d.version)            AS latest_version,
+			MAX(d.created_at)         AS last_updated,
+			COALESCE(a.def_id, '')    AS active_def_id
+		FROM mcp_server_defs d
+		LEFT JOIN mcp_server_def_active a ON a.name = d.name
+		GROUP BY d.name, a.def_id
+		ORDER BY d.name`)
+	if err != nil {
+		return nil, fmt.Errorf("mcp_server_def list names: %w", err)
+	}
+	defer rows.Close()
+
+	var out []store.MCPServerDefNameSummary
+	for rows.Next() {
+		var ns store.MCPServerDefNameSummary
+		if err := rows.Scan(&ns.Name, &ns.VersionCount, &ns.LatestVersion, &ns.LastUpdated, &ns.ActiveDefID); err != nil {
+			return nil, err
+		}
+		out = append(out, ns)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) MCPServerDefSetActive(ctx context.Context, name, defID, promotedByAgentID string) error {
+	var rowName string
+	err := s.pool.QueryRow(ctx, `SELECT name FROM mcp_server_defs WHERE def_id = $1`, defID).Scan(&rowName)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return &store.ErrNotFound{Kind: "mcp_server_def", ID: defID}
+	}
+	if err != nil {
+		return fmt.Errorf("mcp_server_def_active check: %w", err)
+	}
+	if rowName != name {
+		return fmt.Errorf("mcp_server_def_active: def_id %q has name %q, refusing to promote under name %q", defID, rowName, name)
+	}
+	_, err = s.pool.Exec(ctx, `
+		INSERT INTO mcp_server_def_active (name, def_id, promoted_at, promoted_by_agent_id)
+		VALUES ($1, $2, $3, $4)
+		ON CONFLICT (name) DO UPDATE SET
+		    def_id               = EXCLUDED.def_id,
+		    promoted_at          = EXCLUDED.promoted_at,
+		    promoted_by_agent_id = EXCLUDED.promoted_by_agent_id`,
+		name, defID, time.Now().UTC(), nullableString(promotedByAgentID),
+	)
+	if err != nil {
+		return fmt.Errorf("mcp_server_def_active upsert: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) MCPServerDefGetActive(ctx context.Context, name string) (store.MCPServerDefRow, error) {
+	var defID string
+	err := s.pool.QueryRow(ctx, `SELECT def_id FROM mcp_server_def_active WHERE name = $1`, name).Scan(&defID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return store.MCPServerDefRow{}, &store.ErrNotFound{Kind: "mcp_server_def_active", ID: name}
+	}
+	if err != nil {
+		return store.MCPServerDefRow{}, fmt.Errorf("mcp_server_def_active lookup: %w", err)
+	}
+	return s.MCPServerDefGet(ctx, defID)
+}
+
+func (s *Store) MCPServerDefSetRetired(ctx context.Context, defID string, retired bool) error {
+	tag, err := s.pool.Exec(ctx, `UPDATE mcp_server_defs SET retired = $1 WHERE def_id = $2`, retired, defID)
+	if err != nil {
+		return fmt.Errorf("mcp_server_def set retired: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return &store.ErrNotFound{Kind: "mcp_server_def", ID: defID}
+	}
+	return nil
+}
+
+// BackfillMCPServerDefContentSHA256 — see store.Store doc.
+func (s *Store) BackfillMCPServerDefContentSHA256(ctx context.Context, signFn func(name string, def []byte) (string, error)) (int, error) {
+	return s.backfillContentSHA256(ctx, "mcp_server_defs", signFn)
+}
+
+const mcpServerDefSelect = `SELECT
+	def_id, name, version,
+	COALESCE(parent_def_id, ''),
+	definition::text,
+	COALESCE(description, ''),
+	created_at,
+	COALESCE(created_by_agent_id, ''),
+	COALESCE(created_by_run_id, ''),
+	retired,
+	bootstrapped_from_static,
+	COALESCE(content_sha256, '')
+FROM mcp_server_defs`
+
+func (s *Store) scanMCPServerDef(row pgx.Row) (store.MCPServerDefRow, error) {
+	var (
+		out        store.MCPServerDefRow
+		definition string
+	)
+	err := row.Scan(
+		&out.DefID, &out.Name, &out.Version,
+		&out.ParentDefID,
+		&definition,
+		&out.Description,
+		&out.CreatedAt,
+		&out.CreatedByAgentID, &out.CreatedByRunID,
+		&out.Retired, &out.BootstrappedFromStatic,
+		&out.ContentSHA256,
+	)
+	if err != nil {
+		return store.MCPServerDefRow{}, err
+	}
+	out.Definition = json.RawMessage(definition)
+	return out, nil
+}
+
+func (s *Store) scanMCPServerDefRows(rows pgx.Rows) ([]store.MCPServerDefRow, error) {
+	var out []store.MCPServerDefRow
+	for rows.Next() {
+		var (
+			r          store.MCPServerDefRow
 			definition string
 		)
 		if err := rows.Scan(

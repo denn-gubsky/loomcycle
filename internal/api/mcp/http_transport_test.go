@@ -117,6 +117,11 @@ func (m *httpMockConnector) StreamUserRunStates(context.Context, connector.Strea
 	return errors.New("not implemented")
 }
 
+// v0.9.x MCPServerDef stub.
+func (m *httpMockConnector) MCPServerDef(context.Context, json.RawMessage) (connector.ToolResult, error) {
+	return connector.ToolResult{}, errors.New("not implemented")
+}
+
 // httpTestServer wires an HTTPHandler against the mock connector and
 // returns an httptest.Server speaking the loomcycle MCP transport over
 // real HTTP. Test bodies POST to ts.URL + "/" (the test server has no

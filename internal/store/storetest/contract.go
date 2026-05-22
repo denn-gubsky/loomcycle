@@ -165,6 +165,13 @@ func Run(t *testing.T, factory Factory) {
 		{"SkillDefContentSHA256RoundTrip", testSkillDefContentSHA256RoundTrip},
 		{"BackfillSkillDefContentSHA256", testBackfillSkillDefContentSHA256},
 		{"SkillDefSnapshotReadEmpty", testSkillDefSnapshotReadEmpty},
+		// v0.9.x MCPServerDef substrate — mirror of the AgentDef + SkillDef tests.
+		{"MCPServerDefCreateAndGet", testMCPServerDefCreateAndGet},
+		{"MCPServerDefVersionMonotonic", testMCPServerDefVersionMonotonic},
+		{"MCPServerDefActivePointerIdempotent", testMCPServerDefActivePointerIdempotent},
+		{"MCPServerDefRetireReversible", testMCPServerDefRetireReversible},
+		{"MCPServerDefContentSHA256RoundTrip", testMCPServerDefContentSHA256RoundTrip},
+		{"BackfillMCPServerDefContentSHA256", testBackfillMCPServerDefContentSHA256},
 		{"EvaluationSubmitAndAggregate", testEvaluationSubmitAndAggregate},
 		{"EvaluationAggregateWithLineage", testEvaluationAggregateWithLineage},
 		// v0.8.x Process-resource metrics sampler
@@ -3294,6 +3301,144 @@ func testSkillDefSnapshotReadEmpty(t *testing.T, s store.Store) {
 	ptrs, _ = s.SnapshotReadSkillDefActive(ctx)
 	if len(ptrs) != 1 {
 		t.Errorf("after restore: %d pointers", len(ptrs))
+	}
+}
+
+// ---- v0.9.x MCPServerDef contract tests ----
+
+func mkMCPServerDef(id, name string, parent string) store.MCPServerDefRow {
+	return store.MCPServerDefRow{
+		DefID:       id,
+		Name:        name,
+		ParentDefID: parent,
+		Definition:  json.RawMessage(`{"transport":"streamable-http","url":"https://example.com/mcp"}`),
+		Description: "test row",
+	}
+}
+
+func testMCPServerDefCreateAndGet(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	row, err := s.MCPServerDefCreate(ctx, mkMCPServerDef("md-1", "mcp-alpha", ""))
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if row.Version != 1 {
+		t.Errorf("first version = %d, want 1", row.Version)
+	}
+	got, err := s.MCPServerDefGet(ctx, "md-1")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.Name != "mcp-alpha" || got.Version != 1 {
+		t.Errorf("got %+v", got)
+	}
+}
+
+func testMCPServerDefVersionMonotonic(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	for i := 0; i < 5; i++ {
+		row := mkMCPServerDef(fmt.Sprintf("md-mono-%d", i), "mcp-mono", "")
+		written, err := s.MCPServerDefCreate(ctx, row)
+		if err != nil {
+			t.Fatalf("create #%d: %v", i, err)
+		}
+		if want := i + 1; written.Version != want {
+			t.Errorf("create #%d: version = %d, want %d", i, written.Version, want)
+		}
+	}
+}
+
+func testMCPServerDefActivePointerIdempotent(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	r1, _ := s.MCPServerDefCreate(ctx, mkMCPServerDef("md-active-1", "mcp-active", ""))
+	r2, _ := s.MCPServerDefCreate(ctx, mkMCPServerDef("md-active-2", "mcp-active", ""))
+
+	if err := s.MCPServerDefSetActive(ctx, "mcp-active", r1.DefID, "test"); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := s.MCPServerDefGetActive(ctx, "mcp-active")
+	if got.DefID != r1.DefID {
+		t.Errorf("active = %s, want %s", got.DefID, r1.DefID)
+	}
+	if err := s.MCPServerDefSetActive(ctx, "mcp-active", r2.DefID, "test"); err != nil {
+		t.Fatal(err)
+	}
+	got, _ = s.MCPServerDefGetActive(ctx, "mcp-active")
+	if got.DefID != r2.DefID {
+		t.Errorf("after re-promote: active = %s, want %s", got.DefID, r2.DefID)
+	}
+}
+
+func testMCPServerDefRetireReversible(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	row, _ := s.MCPServerDefCreate(ctx, mkMCPServerDef("md-retire", "mcp-retire", ""))
+	if row.Retired {
+		t.Error("freshly created row should not be retired")
+	}
+	if err := s.MCPServerDefSetRetired(ctx, row.DefID, true); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := s.MCPServerDefGet(ctx, row.DefID)
+	if !got.Retired {
+		t.Error("after retire(true): row should be retired")
+	}
+	if err := s.MCPServerDefSetRetired(ctx, row.DefID, false); err != nil {
+		t.Fatal(err)
+	}
+	got, _ = s.MCPServerDefGet(ctx, row.DefID)
+	if got.Retired {
+		t.Error("after retire(false): row should be un-retired")
+	}
+}
+
+func testMCPServerDefContentSHA256RoundTrip(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	row := mkMCPServerDef("md-hash", "mcp-alpha-hash", "")
+	row.ContentSHA256 = "sha256:3333333333333333333333333333333333333333333333333333333333333333"
+	written, err := s.MCPServerDefCreate(ctx, row)
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if written.ContentSHA256 != row.ContentSHA256 {
+		t.Errorf("write echo: got %q, want %q", written.ContentSHA256, row.ContentSHA256)
+	}
+	got, err := s.MCPServerDefGet(ctx, "md-hash")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.ContentSHA256 != row.ContentSHA256 {
+		t.Errorf("get: ContentSHA256 = %q, want %q", got.ContentSHA256, row.ContentSHA256)
+	}
+
+	plain, err := s.MCPServerDefCreate(ctx, mkMCPServerDef("md-no-hash", "mcp-alpha-no-hash", ""))
+	if err != nil {
+		t.Fatalf("create no-hash: %v", err)
+	}
+	if plain.ContentSHA256 != "" {
+		t.Errorf("hashless row: got %q, want empty", plain.ContentSHA256)
+	}
+}
+
+func testBackfillMCPServerDefContentSHA256(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	for i, name := range []string{"mcp-bf-a", "mcp-bf-b"} {
+		if _, err := s.MCPServerDefCreate(ctx, mkMCPServerDef(fmt.Sprintf("md-bf-%d", i), name, "")); err != nil {
+			t.Fatalf("create: %v", err)
+		}
+	}
+	signFn := func(name string, def []byte) (string, error) {
+		return "sha256:" + name + "-hash", nil
+	}
+	n, err := s.BackfillMCPServerDefContentSHA256(ctx, signFn)
+	if err != nil {
+		t.Fatalf("backfill: %v", err)
+	}
+	if n != 2 {
+		t.Errorf("backfilled %d rows, want 2", n)
+	}
+	got, _ := s.MCPServerDefGet(ctx, "md-bf-0")
+	if got.ContentSHA256 != "sha256:mcp-bf-a-hash" {
+		t.Errorf("backfill hash = %q", got.ContentSHA256)
 	}
 }
 

@@ -196,6 +196,13 @@ service Loomcycle {
   // POST /v1/_skilldef.
   rpc SkillDef(SubstrateRequest) returns (SubstrateResponse);
 
+  // MCPServerDef dispatches to the v0.9.x dynamic MCP server
+  // registration substrate. Mirrors POST /v1/_mcpserverdef.
+  // Operator-admin-only — same SubstrateRequest body shape as
+  // AgentDef + SkillDef (op-discriminated input_json + is_error
+  // tool refusals in the response).
+  rpc MCPServerDef(SubstrateRequest) returns (SubstrateResponse);
+
   // ----- v0.9.x n8n RFC Phase 0 -----
   //
   // ListChannels mirrors GET /v1/_channels — operator-declared

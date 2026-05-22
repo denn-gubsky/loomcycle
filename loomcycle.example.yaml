@@ -460,6 +460,15 @@ agents:
 # (http). Their tools register as `mcp__{server}__{tool}` after
 # tools/list discovery. Operator-level allowed_tools narrows what the
 # server exposes BEFORE any agent's allowed_tools is consulted.
+#
+# v0.9.x — HTTP / Streamable-HTTP MCP servers can ALSO be registered
+# at runtime via the MCPServerDef substrate (no yaml edit, no restart).
+# Bearer-authed `POST /v1/_mcpserverdef` + the same op surface as
+# AgentDef/SkillDef (create/fork/get/list/promote/retire/rediscover/
+# verify). See `help(topic="dynamic-mcp")` for the n8n self-registration
+# pattern. Static yaml entries (this block) and dynamic rows coexist;
+# name collisions are refused (yaml is ground truth). Stdio is yaml-
+# only — dynamic registration is HTTP / Streamable-HTTP only by design.
 mcp_servers:
 
   # ─ Stdio MCP server (subprocess) ────────────────────────────────────

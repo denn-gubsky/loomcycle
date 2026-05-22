@@ -118,6 +118,33 @@ work that violates loomcycle's substrate stance. Building them
 in n8n is what n8n is for. The MCP bridge makes the boundary
 clean — loomcycle stays small; the ecosystem lives in n8n.
 
+### Dynamic registration (no yaml edit, no restart)
+
+The yaml-block approach above is the simplest setup, but every n8n
+workflow change requires a `loomcycle.yaml` edit + restart. The
+v0.9.x **MCPServerDef** substrate solves this: an operator (or the
+n8n workflow's own deploy step) registers the MCP endpoint at
+runtime over a bearer-authed admin endpoint. Tools become callable
+on the next agent invocation via the lazy resolver — no restart, no
+dispatcher refresh.
+
+Two-line example via the loomcycle MCP server's `mcpserverdef`
+meta-tool (run from the n8n workflow's first node, against the
+operator's bearer):
+
+```json
+{"op": "create", "name": "n8n-mailgun", "overlay": {
+  "transport": "streamable-http",
+  "url": "https://your-n8n.example.com/mcp/abc123",
+  "headers": {"Authorization": "Bearer ${LOOMCYCLE_N8N_TOKEN}"}
+}, "promote": true}
+```
+
+See `help(topic="dynamic-mcp")` for the full op set
+(create / fork / get / list / promote / retire / rediscover /
+verify), the host-allowlist + name-collision rules, and the n8n
+self-registration walkthrough.
+
 ### Per-user bearer with ${run.user_bearer}
 
 For per-end-user authentication (each agent run authenticates
@@ -242,6 +269,9 @@ substrate-neutral — none of them lock you in.
 
 - `help(topic="loomcycle")` — the substrate overview, what each
   built-in does, when to spawn vs publish.
+- `help(topic="dynamic-mcp")` — Pattern 2's runtime side: register
+  n8n's MCP Server Trigger URL via the MCPServerDef substrate
+  without yaml edits.
 - `help(topic="system-channels")` — the `_system/*` prefix and
   the admin-publish endpoint Pattern 2 / 3 workflows can post to.
 - `help(topic="subagents")` — Agent-tool semantics that

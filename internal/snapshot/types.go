@@ -60,6 +60,8 @@ type Sections struct {
 	AgentDefActive     AgentDefActiveSection      `json:"agent_def_active"`
 	SkillDefs          SkillDefsSection           `json:"skill_defs"`
 	SkillDefActive     SkillDefActiveSection      `json:"skill_def_active"`
+	MCPServerDefs      MCPServerDefsSection       `json:"mcp_server_defs"`
+	MCPServerDefActive MCPServerDefActiveSection  `json:"mcp_server_def_active"`
 	Memory             MemorySection              `json:"memory"`
 	Channels           ChannelsSection            `json:"channels"`
 	Evaluations        EvaluationsSection         `json:"evaluations"`
@@ -143,6 +145,47 @@ type SkillDefActiveSection struct {
 }
 
 type SkillDefActiveEntry struct {
+	Name              string    `json:"name"`
+	DefID             string    `json:"def_id"`
+	PromotedAt        time.Time `json:"promoted_at"`
+	PromotedByAgentID string    `json:"promoted_by_agent_id,omitempty"`
+}
+
+// MCPServerDefsSection mirrors SkillDefsSection. v0.9.x dynamic MCP
+// server registration substrate. Additive snapshot section — pre-
+// v0.9.x readers don't know about it; pre-v0.9.x snapshots restored
+// to v0.9.x readers find this section empty.
+type MCPServerDefsSection struct {
+	Version string              `json:"version"`
+	Entries []MCPServerDefEntry `json:"entries"`
+}
+
+// MCPServerDefEntry mirrors AgentDefEntry / SkillDefEntry. The
+// definition payload schema (transport / url / headers / description
+// / discovered_tools) is owned by the MCPServerDef tool.
+type MCPServerDefEntry struct {
+	DefID                  string          `json:"def_id"`
+	Name                   string          `json:"name"`
+	Version                int             `json:"version"`
+	ParentDefID            string          `json:"parent_def_id,omitempty"`
+	Definition             json.RawMessage `json:"definition"`
+	Description            string          `json:"description,omitempty"`
+	CreatedAt              time.Time       `json:"created_at"`
+	CreatedByAgentID       string          `json:"created_by_agent_id,omitempty"`
+	CreatedByRunID         string          `json:"created_by_run_id,omitempty"`
+	Retired                bool            `json:"retired"`
+	BootstrappedFromStatic bool            `json:"bootstrapped_from_static"`
+	// ContentSHA256 — see AgentDefEntry.ContentSHA256.
+	ContentSHA256 string `json:"content_sha256,omitempty"`
+}
+
+// MCPServerDefActiveSection mirrors SkillDefActiveSection.
+type MCPServerDefActiveSection struct {
+	Version string                    `json:"version"`
+	Entries []MCPServerDefActiveEntry `json:"entries"`
+}
+
+type MCPServerDefActiveEntry struct {
 	Name              string    `json:"name"`
 	DefID             string    `json:"def_id"`
 	PromotedAt        time.Time `json:"promoted_at"`

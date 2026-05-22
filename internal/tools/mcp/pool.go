@@ -263,6 +263,43 @@ func (p *Pool) Close() {
 	}
 }
 
+// Evict tears down the named entry if one exists. Used by the v0.9.x
+// MCPServerDef substrate when a server is retired or replaced (a new
+// version promoted) — the cached client must not keep serving against
+// the old URL / bearer / transport metadata.
+//
+// In-flight tool calls against the evicted entry continue to use the
+// caller object they already hold; the underlying transport closes
+// gracefully when those calls finish. A subsequent Get(name) finds the
+// map empty and triggers a fresh build() — which consults the dynamic
+// registry for the up-to-date spec.
+//
+// Returns true if an entry was evicted (existed in the map).
+func (p *Pool) Evict(name string) bool {
+	p.mu.Lock()
+	e, exists := p.servers[name]
+	if exists {
+		delete(p.servers, name)
+	}
+	p.mu.Unlock()
+	if !exists {
+		return false
+	}
+	// Only tear down if init completed successfully — half-built entries
+	// have their teardown handled by the initEntry failure path.
+	select {
+	case <-e.ready:
+		if e.err == nil && e.caller != nil && p.teardown != nil {
+			p.teardown(e.caller)
+		}
+	default:
+		// Still initialising — leave it alone; the in-progress
+		// initEntry will close ready and the next Get(name) finds the
+		// map empty.
+	}
+	return true
+}
+
 // mcpTool wraps an MCP server-side tool descriptor as a loomcycle tools.Tool
 // so the dispatcher can route to it the same way it routes to built-ins.
 //
