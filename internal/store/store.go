@@ -824,6 +824,29 @@ type Store interface {
 	// data problem.
 	BackfillAgentDefContentSHA256(ctx context.Context, signFn func(name string, def []byte) (string, error)) (int, error)
 
+	// BackfillAgentDefSystemPromptBase walks every agent_defs row,
+	// decodes its definition, fills the `system_prompt_base` field
+	// from `system_prompt` when the former is empty, and writes the
+	// row back. Returns the count of rows updated.
+	//
+	// Idempotent: a second call after a complete backfill finds no
+	// rows missing the field and returns 0. Boot-time hook runs this
+	// once after migrations.
+	//
+	// Why: PR #186 fixed the runtime symptom (substrate-loaded agents
+	// losing their instructions on skill-enabled runs) via a read-side
+	// normalizer. This backfill closes the on-disk data gap so the
+	// field is materialized for legacy rows too — useful when
+	// snapshot/restore round-trips a substrate-only deployment to a
+	// reader that strictly trusts the persisted shape.
+	//
+	// The transform happens at the JSON layer (the store doesn't
+	// import mergedDef from internal/tools/builtin). Rows whose
+	// definition JSON fails to decode are skipped with a log line
+	// rather than aborting the backfill — a single hand-edited row
+	// shouldn't block the rest.
+	BackfillAgentDefSystemPromptBase(ctx context.Context) (int, error)
+
 	// BackfillSkillDefContentSHA256 — mirror of the AgentDef backfill.
 	BackfillSkillDefContentSHA256(ctx context.Context, signFn func(name string, def []byte) (string, error)) (int, error)
 

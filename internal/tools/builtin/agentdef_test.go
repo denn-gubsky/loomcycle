@@ -3,10 +3,12 @@ package builtin
 import (
 	"context"
 	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/denn-gubsky/loomcycle/internal/config"
+	"github.com/denn-gubsky/loomcycle/internal/lookup"
 	"github.com/denn-gubsky/loomcycle/internal/store/sqlite"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
@@ -398,4 +400,67 @@ func TestAgentDefTool_ForkWithoutMaxIterationsOmitsField(t *testing.T) {
 		t.Errorf("max_iterations should be omitted (omitempty) when not in overlay; got %v in %s",
 			defJSON["max_iterations"], row.Definition)
 	}
+}
+
+// TestMergedDef_DriftDetection_VsLookupSubstrateAgentDef closes the
+// drift-test gap the code review of PR #188 surfaced: the test in
+// internal/lookup/agent_test.go reflects only SubstrateAgentDef. A
+// behavioural field added to mergedDef + config.AgentDef but
+// accidentally omitted from SubstrateAgentDef would silently leak
+// through. This test lives in the builtin package where mergedDef is
+// in-scope and reflects BOTH shapes against each other.
+//
+// Exemptions list non-behavioural fields that mergedDef carries for
+// substrate-storage reasons but that SubstrateAgentDef deliberately
+// omits because they don't round-trip into config.AgentDef:
+//   - description: stored on AgentDefRow, not in config.AgentDef
+func TestMergedDef_DriftDetection_VsLookupSubstrateAgentDef(t *testing.T) {
+	// Fields in mergedDef that are intentionally NOT mirrored in
+	// SubstrateAgentDef. Adding to this set is the conscious decision
+	// the test forces — drop a tag here only when you've checked the
+	// field genuinely doesn't need to flow into the runtime config.
+	exempt := map[string]bool{
+		"description": true,
+	}
+
+	mergedTags := jsonTagsOfFields(reflect.TypeOf(mergedDef{}))
+	substrateTags := jsonTagsOfFields(reflect.TypeOf(lookup.SubstrateAgentDef{}))
+
+	for tag := range mergedTags {
+		if exempt[tag] {
+			continue
+		}
+		if !substrateTags[tag] {
+			t.Errorf("mergedDef has json tag %q but lookup.SubstrateAgentDef does not — either mirror it on the lookup side OR add %q to the exempt set with a comment justifying why it stays substrate-internal",
+				tag, tag)
+		}
+	}
+	for tag := range substrateTags {
+		if !mergedTags[tag] {
+			t.Errorf("lookup.SubstrateAgentDef has json tag %q but mergedDef does not — substrate persistence is the source-of-truth shape; remove from SubstrateAgentDef OR add the field to mergedDef in this package",
+				tag)
+		}
+	}
+}
+
+// jsonTagsOfFields walks a struct's exported fields and returns the
+// set of json tag names (the part before any "," for `,omitempty`).
+// Mirrors the helper in internal/lookup/agent_test.go; duplicated
+// because that one is _test.go scoped and not importable.
+func jsonTagsOfFields(t reflect.Type) map[string]bool {
+	out := map[string]bool{}
+	for i := 0; i < t.NumField(); i++ {
+		tag := t.Field(i).Tag.Get("json")
+		if tag == "" || tag == "-" {
+			continue
+		}
+		for j, c := range tag {
+			if c == ',' {
+				tag = tag[:j]
+				break
+			}
+		}
+		out[tag] = true
+	}
+	return out
 }

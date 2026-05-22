@@ -19,6 +19,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"sort"
 	"strconv"
 	"strings"
@@ -2593,6 +2594,80 @@ func (s *Store) ChannelStats(ctx context.Context) ([]store.ChannelStats, error) 
 // BackfillAgentDefContentSHA256 — see store.Store doc.
 func (s *Store) BackfillAgentDefContentSHA256(ctx context.Context, signFn func(name string, def []byte) (string, error)) (int, error) {
 	return s.backfillContentSHA256(ctx, "agent_defs", signFn)
+}
+
+// BackfillAgentDefSystemPromptBase — see store.Store doc.
+func (s *Store) BackfillAgentDefSystemPromptBase(ctx context.Context) (int, error) {
+	rows, err := s.pool.Query(ctx, `SELECT def_id, definition FROM agent_defs`)
+	if err != nil {
+		return 0, fmt.Errorf("backfill system_prompt_base read: %w", err)
+	}
+	type pending struct {
+		DefID string
+		Def   []byte
+	}
+	var todo []pending
+	for rows.Next() {
+		var p pending
+		if err := rows.Scan(&p.DefID, &p.Def); err != nil {
+			rows.Close()
+			return 0, fmt.Errorf("backfill system_prompt_base scan: %w", err)
+		}
+		todo = append(todo, p)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return 0, fmt.Errorf("backfill system_prompt_base iterate: %w", err)
+	}
+
+	n := 0
+	for _, p := range todo {
+		updated, ok, err := backfillSystemPromptBase(p.Def)
+		if err != nil {
+			// Hand-edited row with broken JSON — log + skip rather than
+			// abort the whole backfill. The read-side normalizer in
+			// internal/lookup will still fill SystemPromptBase at runtime,
+			// but this log line is the operator's only signal that a row
+			// was left untouched.
+			log.Printf("agent_defs: backfill system_prompt_base: def_id=%s: JSON parse failed, skipping: %v", p.DefID, err)
+			continue
+		}
+		if !ok {
+			continue
+		}
+		if _, err := s.pool.Exec(ctx,
+			`UPDATE agent_defs SET definition = $1 WHERE def_id = $2`,
+			updated, p.DefID); err != nil {
+			return n, fmt.Errorf("backfill system_prompt_base update %s: %w", p.DefID, err)
+		}
+		n++
+	}
+	return n, nil
+}
+
+// backfillSystemPromptBase is the JSON-layer transform shared by the
+// sqlite + postgres backfill methods. Returns (newDef, true, nil)
+// when the row needed a fill; (nil, false, nil) when it didn't;
+// (nil, false, err) on JSON parse failure.
+func backfillSystemPromptBase(def []byte) ([]byte, bool, error) {
+	var raw map[string]any
+	if err := json.Unmarshal(def, &raw); err != nil {
+		return nil, false, err
+	}
+	existing, _ := raw["system_prompt_base"].(string)
+	if existing != "" {
+		return nil, false, nil
+	}
+	sp, _ := raw["system_prompt"].(string)
+	if sp == "" {
+		return nil, false, nil
+	}
+	raw["system_prompt_base"] = sp
+	out, err := json.Marshal(raw)
+	if err != nil {
+		return nil, false, err
+	}
+	return out, true, nil
 }
 
 // BackfillSkillDefContentSHA256 — mirror.

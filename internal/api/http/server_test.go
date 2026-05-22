@@ -16,6 +16,7 @@ import (
 
 	"github.com/denn-gubsky/loomcycle/internal/concurrency"
 	"github.com/denn-gubsky/loomcycle/internal/config"
+	"github.com/denn-gubsky/loomcycle/internal/lookup"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	storesqlite "github.com/denn-gubsky/loomcycle/internal/store/sqlite"
@@ -1873,7 +1874,7 @@ func TestLookupAgent_SystemPromptBaseSetFromDynamic(t *testing.T) {
 // regress the static-config invariant.
 func TestLookupAgent_PreservesNonEmptySystemPromptBase(t *testing.T) {
 	d := &config.AgentDef{SystemPrompt: "rebuilt prompt", SystemPromptBase: "original base"}
-	normalizeSystemPromptBase(d)
+	lookup.NormalizeAgentDef(d)
 	if d.SystemPromptBase != "original base" {
 		t.Errorf("SystemPromptBase overwritten: got %q, want %q", d.SystemPromptBase, "original base")
 	}

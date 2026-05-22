@@ -186,6 +186,7 @@ func (a *AgentDef) execCreate(ctx context.Context, policy tools.AgentDefPolicyVa
 			return errResult(fmt.Sprintf("create: %s", err)), nil
 		}
 	}
+	def.normalize()
 	defJSON, err := json.Marshal(def)
 	if err != nil {
 		return errResult(fmt.Sprintf("create: marshal: %s", err)), nil
@@ -306,6 +307,7 @@ func (a *AgentDef) execFork(ctx context.Context, policy tools.AgentDefPolicyValu
 		return errResult(fmt.Sprintf("fork: %s", err)), nil
 	}
 
+	def.normalize()
 	defJSON, err := json.Marshal(def)
 	if err != nil {
 		return errResult(fmt.Sprintf("fork: marshal: %s", err)), nil
@@ -625,6 +627,7 @@ func assertAllowedToolsSubset(proposed, root []string) error {
 // the immortal lineage root.
 func (a *AgentDef) bootstrapStatic(ctx context.Context, name string, static config.AgentDef) (store.AgentDefRow, error) {
 	def := staticToMergedDef(static)
+	def.normalize()
 	defJSON, err := json.Marshal(def)
 	if err != nil {
 		return store.AgentDefRow{}, fmt.Errorf("marshal: %w", err)
@@ -660,8 +663,21 @@ type mergedDef struct {
 	// loop default (16). Set higher for discovery-style forks
 	// whose workflow is intrinsically iterative — same knob the
 	// yaml frontmatter exposes via PR #168's `max_iterations` field.
-	MaxIterations    int                               `json:"max_iterations,omitempty"`
-	SystemPrompt     string                            `json:"system_prompt,omitempty"`
+	MaxIterations int    `json:"max_iterations,omitempty"`
+	SystemPrompt  string `json:"system_prompt,omitempty"`
+	// SystemPromptBase is the pre-skill-bake snapshot of SystemPrompt.
+	// Persisted alongside SystemPrompt so the v0.8.22 SkillDef per-run
+	// resolver (`resolveSkillBodiesForRun` in api/http/server.go) can
+	// rebuild the effective prompt from this base + each skill body
+	// when DB-active SkillDef rows shadow the static body.
+	//
+	// For statically-yaml-defined agents, `resolveSkills` sets this at
+	// config-load. For agents persisted via `AgentDef.create` /
+	// `AgentDef.fork`, `normalize()` below copies SystemPrompt into it
+	// when not explicitly supplied. The read-side
+	// `lookup.NormalizeAgentDef` is defense-in-depth for legacy rows
+	// that pre-date this field. See PR #186 for the production bug.
+	SystemPromptBase string                            `json:"system_prompt_base,omitempty"`
 	AllowedTools     []string                          `json:"allowed_tools,omitempty"`
 	Skills           []string                          `json:"skills,omitempty"`
 	Providers        []string                          `json:"providers,omitempty"`
@@ -693,6 +709,9 @@ func (d *mergedDef) applyOverlay(ov mergedDef) {
 	if ov.SystemPrompt != "" {
 		d.SystemPrompt = ov.SystemPrompt
 	}
+	if ov.SystemPromptBase != "" {
+		d.SystemPromptBase = ov.SystemPromptBase
+	}
 	if ov.AllowedTools != nil {
 		d.AllowedTools = ov.AllowedTools
 	}
@@ -716,6 +735,27 @@ func (d *mergedDef) applyOverlay(ov mergedDef) {
 	}
 }
 
+// normalize fills derived fields that the static config-load path
+// applies via `resolveSkills` but the substrate write path would
+// otherwise skip. Called at every write site (execCreate / execFork /
+// bootstrapStatic) right before json.Marshal so persisted rows match
+// what `cfg.Agents[name]` would have looked like after boot
+// normalization for the same content.
+//
+// Today the only field this fills is SystemPromptBase — see the field
+// doc on the struct. Future static-path normalizers added to
+// resolveSkills should grow a sibling assignment here.
+//
+// The read-side `lookup.NormalizeAgentDef` does the same work
+// defensively for legacy rows that pre-date this method; together,
+// the read + write normalizers form belt-and-suspenders against the
+// drift PR #186 fixed.
+func (d *mergedDef) normalize() {
+	if d.SystemPromptBase == "" {
+		d.SystemPromptBase = d.SystemPrompt
+	}
+}
+
 func staticToMergedDef(s config.AgentDef) mergedDef {
 	return mergedDef{
 		Provider:         s.Provider,
@@ -725,6 +765,7 @@ func staticToMergedDef(s config.AgentDef) mergedDef {
 		MaxTokens:        s.MaxTokens,
 		MaxIterations:    s.MaxIterations,
 		SystemPrompt:     s.SystemPrompt,
+		SystemPromptBase: s.SystemPromptBase,
 		AllowedTools:     s.AllowedTools,
 		Skills:           s.Skills,
 		Providers:        s.Providers,
