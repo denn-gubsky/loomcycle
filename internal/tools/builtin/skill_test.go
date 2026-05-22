@@ -295,3 +295,84 @@ func TestSkillTool_ResolvesDBActiveOverStatic(t *testing.T) {
 		t.Errorf("static-only body = %q, want STATIC BODY", res.Text)
 	}
 }
+
+// TestSkillTool_SubstrateOnlyHintsAtAvailable confirms the registry-first
+// deployment story: when LOOMCYCLE_SKILLS_ROOT is unset (Set==nil or
+// empty) BUT the substrate has skills registered, asking for an unknown
+// name returns an error that points the operator at the substrate names
+// — NOT at "set LOOMCYCLE_SKILLS_ROOT" which would be wrong guidance.
+// Mirrors the JobEmber deployment where every skill ships via
+// /v1/_skilldef create at boot.
+func TestSkillTool_SubstrateOnlyHintsAtAvailable(t *testing.T) {
+	emptySet, err := skills.LoadSet("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := sqlite.Open(":memory:")
+	if err != nil {
+		t.Fatalf("sqlite.Open: %v", err)
+	}
+	defer store.Close()
+
+	// Seed two skills via SkillDef create + promote. Mirrors the
+	// substrate write path JobEmber uses on first boot.
+	ctx := tools.WithAgentTools(context.Background(), []string{"Read"})
+	dctx := tools.WithSkillDefPolicy(ctx, tools.SkillDefPolicyValue{Scopes: []string{"any"}})
+	dctx = tools.WithRunIdentity(dctx, tools.RunIdentityValue{AgentID: "a_seed"})
+	skillDefTool := &SkillDef{Store: store, Set: emptySet}
+	for _, name := range []string{"position-relevance-filtering", "voice-applier"} {
+		body := `{"op":"create","name":"` + name + `","overlay":{"body":"body of ` + name + `"},"promote":true}`
+		res, _ := skillDefTool.Execute(dctx, json.RawMessage(body))
+		if res.IsError {
+			t.Fatalf("seed %s: %s", name, res.Text)
+		}
+	}
+
+	// Skill tool: substrate wired, no static skills. Ask for a name
+	// that ISN'T in the substrate.
+	skillTool := &SkillTool{Set: emptySet, Store: store}
+	res, _ := skillTool.Execute(ctx, json.RawMessage(`{"name":"does-not-exist"}`))
+	if !res.IsError {
+		t.Fatalf("expected IsError for unknown skill; got %+v", res)
+	}
+	// Must NOT mention LOOMCYCLE_SKILLS_ROOT — that would mislead a
+	// registry-first operator into reverting their deployment model.
+	if strings.Contains(res.Text, "LOOMCYCLE_SKILLS_ROOT") {
+		t.Errorf("error text leaks misleading LOOMCYCLE_SKILLS_ROOT guidance for registry-first deployment: %s", res.Text)
+	}
+	// Must surface the substrate names so the model can recover.
+	if !strings.Contains(res.Text, "position-relevance-filtering") || !strings.Contains(res.Text, "voice-applier") {
+		t.Errorf("error text should list substrate-registered skills, got: %s", res.Text)
+	}
+	if !strings.Contains(res.Text, "substrate") {
+		t.Errorf("error text should mention the substrate source, got: %s", res.Text)
+	}
+}
+
+// TestSkillTool_NoSourcesConfigured exercises the path where neither
+// the substrate nor the static set has any skills. The error message
+// should point at BOTH paths — substrate first (the modern default)
+// and the static path second (legacy).
+func TestSkillTool_NoSourcesConfigured(t *testing.T) {
+	emptySet, err := skills.LoadSet("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := sqlite.Open(":memory:")
+	if err != nil {
+		t.Fatalf("sqlite.Open: %v", err)
+	}
+	defer store.Close()
+
+	tool := &SkillTool{Set: emptySet, Store: store}
+	res, _ := tool.Execute(context.Background(), json.RawMessage(`{"name":"anything"}`))
+	if !res.IsError {
+		t.Fatalf("expected IsError; got %+v", res)
+	}
+	if !strings.Contains(res.Text, "/v1/_skilldef") {
+		t.Errorf("error should point at the substrate path, got: %s", res.Text)
+	}
+	if !strings.Contains(res.Text, "LOOMCYCLE_SKILLS_ROOT") {
+		t.Errorf("error should also keep the static-path hint for legacy operators, got: %s", res.Text)
+	}
+}
