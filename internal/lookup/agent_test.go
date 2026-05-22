@@ -177,19 +177,17 @@ func TestAgent_LegacyRowGetsSystemPromptBaseFilledOnRead(t *testing.T) {
 	}
 }
 
-// TestAgent_DriftDetection is the reflection-based audit pinning the
-// architectural invariant: every json-tagged field in the substrate's
-// persistence shape (mergedDef in internal/tools/builtin/agentdef.go,
-// reflected here via SubstrateAgentDef which is its public mirror)
-// must have a corresponding json tag in SubstrateAgentDef so the
-// unmarshal slot exists. A future field added to mergedDef without
-// being added here would fail this test BEFORE it ships, catching
-// the bug PR #184 fixed.
+// TestAgent_DriftDetection pins the SubstrateAgentDef field set
+// against an explicit `want` enumeration. A field added to or removed
+// from SubstrateAgentDef without updating this enumeration fails.
 //
-// This test is intentionally fragile against ADDITIONS to
-// SubstrateAgentDef — when growing the substrate persistence shape,
-// the developer MUST update this enumeration. That coupling is the
-// point: it forces a conscious decision rather than silent drift.
+// This test catches one direction of drift: changes to
+// SubstrateAgentDef. The complementary direction — a field added to
+// mergedDef in internal/tools/builtin/agentdef.go but accidentally
+// NOT mirrored in SubstrateAgentDef — is covered by
+// TestMergedDef_DriftDetection_VsLookupSubstrateAgentDef in the
+// builtin package, where mergedDef is in-scope for reflection. Both
+// tests are needed to close the full drift loop.
 func TestAgent_DriftDetection(t *testing.T) {
 	// Expected json tags on SubstrateAgentDef as of v0.9.x. Keep in
 	// sync with mergedDef + SubstrateAgentDef field definitions.
