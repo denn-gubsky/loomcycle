@@ -319,14 +319,14 @@ func toolDescriptors() []loommcp.ToolDescriptor {
 		// the cursor namespace.
 		{
 			Name:        "publish_channel",
-			Description: "Publish a message to an operator-declared channel. scope is 'global' (admin surface) or 'user' (per-user, requires scope_id). payload is the JSON object/array/value to deliver. deliver_at (RFC3339Nano) defers the publish; subscribers wake at visible_at. Returns {msg_id, channel, created_at, visible_at?}.",
+			Description: "Publish a message to an operator-declared channel. scope is 'global' (admin surface) or 'user' (per-user). When scope is 'user', scope_id is REQUIRED and must be the user_id; when scope is 'global', scope_id is ignored. payload is the JSON object/array/value to deliver. deliver_at (RFC3339Nano) defers the publish; subscribers wake at visible_at. Returns {msg_id, channel, created_at, visible_at?}.",
 			InputSchema: rawJSON(`{
 				"type": "object",
 				"required": ["channel", "scope", "payload"],
 				"properties": {
 					"channel":    {"type": "string"},
 					"scope":      {"type": "string", "enum": ["global", "user"]},
-					"scope_id":   {"type": "string"},
+					"scope_id":   {"type": "string", "description": "REQUIRED when scope=user (must be the user_id); ignored when scope=global."},
 					"payload":    {},
 					"deliver_at": {"type": "string"}
 				}
@@ -334,14 +334,14 @@ func toolDescriptors() []loommcp.ToolDescriptor {
 		},
 		{
 			Name:        "subscribe_channel",
-			Description: "Read the next batch of messages from a channel. Single-round-trip long-poll: returns immediately if messages are present, otherwise waits up to wait_ms (capped at operator's ChannelsLongPollCapMS). Auto-commits the cursor on non-empty batch (at-most-once shape). Returns {channel, messages: [{id, value, published_at}...], next_cursor}.",
+			Description: "Read the next batch of messages from a channel. Single-round-trip long-poll: returns immediately if messages are present, otherwise waits up to wait_ms (capped at operator's ChannelsLongPollCapMS). Auto-commits the cursor on non-empty batch (at-most-once shape). scope is 'global' or 'user'; scope_id is REQUIRED when scope=user. Returns {channel, messages: [{id, value, published_at}...], next_cursor}.",
 			InputSchema: rawJSON(`{
 				"type": "object",
 				"required": ["channel", "scope"],
 				"properties": {
 					"channel":      {"type": "string"},
 					"scope":        {"type": "string", "enum": ["global", "user"]},
-					"scope_id":     {"type": "string"},
+					"scope_id":     {"type": "string", "description": "REQUIRED when scope=user (must be the user_id); ignored when scope=global."},
 					"from_cursor":  {"type": "string"},
 					"max_messages": {"type": "integer", "minimum": 1, "maximum": 100, "default": 10},
 					"wait_ms":      {"type": "integer", "minimum": 0, "default": 0}
@@ -350,14 +350,14 @@ func toolDescriptors() []loommcp.ToolDescriptor {
 		},
 		{
 			Name:        "peek_channel",
-			Description: "Non-destructive read — never advances the committed cursor. Useful for at-least-once processing patterns (peek + explicit ack after durable processing). Returns {channel, messages: [...]}.",
+			Description: "Non-destructive read — never advances the committed cursor. Useful for at-least-once processing patterns (peek + explicit ack after durable processing). scope is 'global' or 'user'; scope_id is REQUIRED when scope=user. Returns {channel, messages: [...]}.",
 			InputSchema: rawJSON(`{
 				"type": "object",
 				"required": ["channel", "scope"],
 				"properties": {
 					"channel":      {"type": "string"},
 					"scope":        {"type": "string", "enum": ["global", "user"]},
-					"scope_id":     {"type": "string"},
+					"scope_id":     {"type": "string", "description": "REQUIRED when scope=user (must be the user_id); ignored when scope=global."},
 					"from_cursor":  {"type": "string"},
 					"max_messages": {"type": "integer", "minimum": 1, "maximum": 100, "default": 10}
 				}
@@ -365,14 +365,14 @@ func toolDescriptors() []loommcp.ToolDescriptor {
 		},
 		{
 			Name:        "ack_channel",
-			Description: "Advance the committed cursor for a (channel, scope, scope_id) tuple. Cursor must be monotonically forward — older cursors return a channel_cursor_regression error. Returns {ok: true}.",
+			Description: "Advance the committed cursor for a (channel, scope, scope_id) tuple. Cursor must be monotonically forward — older cursors return a channel_cursor_regression error. scope is 'global' or 'user'; scope_id is REQUIRED when scope=user. Returns {ok: true}.",
 			InputSchema: rawJSON(`{
 				"type": "object",
 				"required": ["channel", "scope", "cursor"],
 				"properties": {
 					"channel":  {"type": "string"},
 					"scope":    {"type": "string", "enum": ["global", "user"]},
-					"scope_id": {"type": "string"},
+					"scope_id": {"type": "string", "description": "REQUIRED when scope=user (must be the user_id); ignored when scope=global."},
 					"cursor":   {"type": "string"}
 				}
 			}`),

@@ -266,3 +266,64 @@ func TestAdminChannelAck_CursorRegression(t *testing.T) {
 		t.Errorf("status = %d, want 409 (channel_cursor_regression); body=%s", ackRec.Code, ackRec.Body.String())
 	}
 }
+
+// TestAdminChannelSubscribe_ZeroWaitMSReturnsImmediately confirms that
+// wait_ms=0 (the poll-and-return shape) does NOT block waiting for new
+// messages. Without this guard, a future regression that always called
+// Bus.Wait could hang n8n workers indefinitely on empty channels.
+func TestAdminChannelSubscribe_ZeroWaitMSReturnsImmediately(t *testing.T) {
+	srv, _, cleanup := channelCRUDFixture(t)
+	defer cleanup()
+
+	start := time.Now()
+	req := authedRequest("POST", "/v1/_channels/team-updates/subscribe", strings.NewReader(`{"wait_ms":0}`))
+	rec := httptest.NewRecorder()
+	srv.Mux().ServeHTTP(rec, req)
+	elapsed := time.Since(start)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", rec.Code, rec.Body.String())
+	}
+	// Empty channel + wait_ms=0 → must return well under the
+	// ChannelsLongPollCapMS (1000ms in this fixture). A real return
+	// is sub-millisecond; we give 250ms of headroom for slow CI.
+	if elapsed > 250*time.Millisecond {
+		t.Errorf("wait_ms=0 on empty channel took %v — should return immediately", elapsed)
+	}
+	var resp connector.ChannelSubscribeResult
+	_ = json.NewDecoder(rec.Body).Decode(&resp)
+	if len(resp.Messages) != 0 {
+		t.Errorf("Messages = %d, want 0 (empty channel)", len(resp.Messages))
+	}
+}
+
+// TestAdminChannelSubscribe_LongPollCappedToOperatorLimit pins that a
+// caller-requested wait_ms exceeding the operator's configured
+// ChannelsLongPollCapMS is clamped to the cap. Fixture sets the cap
+// to 1000ms; we request 999999ms (~16 minutes) and assert the call
+// returns within ~1500ms (the cap plus generous slack).
+func TestAdminChannelSubscribe_LongPollCappedToOperatorLimit(t *testing.T) {
+	srv, _, cleanup := channelCRUDFixture(t)
+	defer cleanup()
+
+	start := time.Now()
+	req := authedRequest("POST", "/v1/_channels/team-updates/subscribe", strings.NewReader(`{"wait_ms":999999}`))
+	rec := httptest.NewRecorder()
+	srv.Mux().ServeHTTP(rec, req)
+	elapsed := time.Since(start)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", rec.Code, rec.Body.String())
+	}
+	// The fixture's ChannelsLongPollCapMS = 1000ms. With 1500ms of
+	// slack the test stays robust on slow CI while failing loudly if
+	// the cap is bypassed (a regression would block for ~999s).
+	if elapsed > 1500*time.Millisecond {
+		t.Errorf("subscribe wait_ms=999999 took %v — operator cap (1000ms) not enforced", elapsed)
+	}
+	var resp connector.ChannelSubscribeResult
+	_ = json.NewDecoder(rec.Body).Decode(&resp)
+	if len(resp.Messages) != 0 {
+		t.Errorf("Messages = %d on empty channel, want 0", len(resp.Messages))
+	}
+}
