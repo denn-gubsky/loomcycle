@@ -3309,6 +3309,377 @@ func (x *SubstrateResponse) GetIsError() bool {
 	return false
 }
 
+// ListChannelsRequest is empty — the channel list is global within
+// the loomcycle process, no per-call selectors.
+type ListChannelsRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListChannelsRequest) Reset() {
+	*x = ListChannelsRequest{}
+	mi := &file_loomcycle_proto_msgTypes[49]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListChannelsRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListChannelsRequest) ProtoMessage() {}
+
+func (x *ListChannelsRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_loomcycle_proto_msgTypes[49]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListChannelsRequest.ProtoReflect.Descriptor instead.
+func (*ListChannelsRequest) Descriptor() ([]byte, []int) {
+	return file_loomcycle_proto_rawDescGZIP(), []int{49}
+}
+
+type ListChannelsResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Channels      []*ChannelDescriptor   `protobuf:"bytes,1,rep,name=channels,proto3" json:"channels,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListChannelsResponse) Reset() {
+	*x = ListChannelsResponse{}
+	mi := &file_loomcycle_proto_msgTypes[50]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListChannelsResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListChannelsResponse) ProtoMessage() {}
+
+func (x *ListChannelsResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_loomcycle_proto_msgTypes[50]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListChannelsResponse.ProtoReflect.Descriptor instead.
+func (*ListChannelsResponse) Descriptor() ([]byte, []int) {
+	return file_loomcycle_proto_rawDescGZIP(), []int{50}
+}
+
+func (x *ListChannelsResponse) GetChannels() []*ChannelDescriptor {
+	if x != nil {
+		return x.Channels
+	}
+	return nil
+}
+
+type ChannelDescriptor struct {
+	state        protoimpl.MessageState `protogen:"open.v1"`
+	Name         string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	Scope        string                 `protobuf:"bytes,2,opt,name=scope,proto3" json:"scope,omitempty"`
+	Semantic     string                 `protobuf:"bytes,3,opt,name=semantic,proto3" json:"semantic,omitempty"`
+	Publisher    string                 `protobuf:"bytes,4,opt,name=publisher,proto3" json:"publisher,omitempty"`
+	Period       string                 `protobuf:"bytes,5,opt,name=period,proto3" json:"period,omitempty"`
+	DefaultTtl   int32                  `protobuf:"varint,6,opt,name=default_ttl,json=defaultTtl,proto3" json:"default_ttl,omitempty"`
+	MaxMessages  int32                  `protobuf:"varint,7,opt,name=max_messages,json=maxMessages,proto3" json:"max_messages,omitempty"`
+	MessageCount int64                  `protobuf:"varint,8,opt,name=message_count,json=messageCount,proto3" json:"message_count,omitempty"`
+	// RFC3339 strings — empty when count == 0.
+	OldestVisibleAt string `protobuf:"bytes,9,opt,name=oldest_visible_at,json=oldestVisibleAt,proto3" json:"oldest_visible_at,omitempty"`
+	NewestVisibleAt string `protobuf:"bytes,10,opt,name=newest_visible_at,json=newestVisibleAt,proto3" json:"newest_visible_at,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
+}
+
+func (x *ChannelDescriptor) Reset() {
+	*x = ChannelDescriptor{}
+	mi := &file_loomcycle_proto_msgTypes[51]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ChannelDescriptor) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ChannelDescriptor) ProtoMessage() {}
+
+func (x *ChannelDescriptor) ProtoReflect() protoreflect.Message {
+	mi := &file_loomcycle_proto_msgTypes[51]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ChannelDescriptor.ProtoReflect.Descriptor instead.
+func (*ChannelDescriptor) Descriptor() ([]byte, []int) {
+	return file_loomcycle_proto_rawDescGZIP(), []int{51}
+}
+
+func (x *ChannelDescriptor) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *ChannelDescriptor) GetScope() string {
+	if x != nil {
+		return x.Scope
+	}
+	return ""
+}
+
+func (x *ChannelDescriptor) GetSemantic() string {
+	if x != nil {
+		return x.Semantic
+	}
+	return ""
+}
+
+func (x *ChannelDescriptor) GetPublisher() string {
+	if x != nil {
+		return x.Publisher
+	}
+	return ""
+}
+
+func (x *ChannelDescriptor) GetPeriod() string {
+	if x != nil {
+		return x.Period
+	}
+	return ""
+}
+
+func (x *ChannelDescriptor) GetDefaultTtl() int32 {
+	if x != nil {
+		return x.DefaultTtl
+	}
+	return 0
+}
+
+func (x *ChannelDescriptor) GetMaxMessages() int32 {
+	if x != nil {
+		return x.MaxMessages
+	}
+	return 0
+}
+
+func (x *ChannelDescriptor) GetMessageCount() int64 {
+	if x != nil {
+		return x.MessageCount
+	}
+	return 0
+}
+
+func (x *ChannelDescriptor) GetOldestVisibleAt() string {
+	if x != nil {
+		return x.OldestVisibleAt
+	}
+	return ""
+}
+
+func (x *ChannelDescriptor) GetNewestVisibleAt() string {
+	if x != nil {
+		return x.NewestVisibleAt
+	}
+	return ""
+}
+
+type StreamUserRunStatesRequest struct {
+	state  protoimpl.MessageState `protogen:"open.v1"`
+	UserId string                 `protobuf:"bytes,1,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
+	// Optional filter — empty means all transitions match.
+	Statuses []string `protobuf:"bytes,2,rep,name=statuses,proto3" json:"statuses,omitempty"`
+	// Optional filter — empty means any agent matches.
+	Agent         string `protobuf:"bytes,3,opt,name=agent,proto3" json:"agent,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *StreamUserRunStatesRequest) Reset() {
+	*x = StreamUserRunStatesRequest{}
+	mi := &file_loomcycle_proto_msgTypes[52]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *StreamUserRunStatesRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*StreamUserRunStatesRequest) ProtoMessage() {}
+
+func (x *StreamUserRunStatesRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_loomcycle_proto_msgTypes[52]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use StreamUserRunStatesRequest.ProtoReflect.Descriptor instead.
+func (*StreamUserRunStatesRequest) Descriptor() ([]byte, []int) {
+	return file_loomcycle_proto_rawDescGZIP(), []int{52}
+}
+
+func (x *StreamUserRunStatesRequest) GetUserId() string {
+	if x != nil {
+		return x.UserId
+	}
+	return ""
+}
+
+func (x *StreamUserRunStatesRequest) GetStatuses() []string {
+	if x != nil {
+		return x.Statuses
+	}
+	return nil
+}
+
+func (x *StreamUserRunStatesRequest) GetAgent() string {
+	if x != nil {
+		return x.Agent
+	}
+	return ""
+}
+
+// RunStateEvent mirrors the SSE wire shape from the HTTP transport.
+// TS is RFC3339 for language-portability.
+type RunStateEvent struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	RunId         string                 `protobuf:"bytes,1,opt,name=run_id,json=runId,proto3" json:"run_id,omitempty"`
+	AgentId       string                 `protobuf:"bytes,2,opt,name=agent_id,json=agentId,proto3" json:"agent_id,omitempty"`
+	Agent         string                 `protobuf:"bytes,3,opt,name=agent,proto3" json:"agent,omitempty"`
+	UserId        string                 `protobuf:"bytes,4,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
+	ParentAgentId string                 `protobuf:"bytes,5,opt,name=parent_agent_id,json=parentAgentId,proto3" json:"parent_agent_id,omitempty"`
+	Status        string                 `protobuf:"bytes,6,opt,name=status,proto3" json:"status,omitempty"`
+	StopReason    string                 `protobuf:"bytes,7,opt,name=stop_reason,json=stopReason,proto3" json:"stop_reason,omitempty"`
+	Error         string                 `protobuf:"bytes,8,opt,name=error,proto3" json:"error,omitempty"`
+	Ts            string                 `protobuf:"bytes,9,opt,name=ts,proto3" json:"ts,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RunStateEvent) Reset() {
+	*x = RunStateEvent{}
+	mi := &file_loomcycle_proto_msgTypes[53]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RunStateEvent) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RunStateEvent) ProtoMessage() {}
+
+func (x *RunStateEvent) ProtoReflect() protoreflect.Message {
+	mi := &file_loomcycle_proto_msgTypes[53]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RunStateEvent.ProtoReflect.Descriptor instead.
+func (*RunStateEvent) Descriptor() ([]byte, []int) {
+	return file_loomcycle_proto_rawDescGZIP(), []int{53}
+}
+
+func (x *RunStateEvent) GetRunId() string {
+	if x != nil {
+		return x.RunId
+	}
+	return ""
+}
+
+func (x *RunStateEvent) GetAgentId() string {
+	if x != nil {
+		return x.AgentId
+	}
+	return ""
+}
+
+func (x *RunStateEvent) GetAgent() string {
+	if x != nil {
+		return x.Agent
+	}
+	return ""
+}
+
+func (x *RunStateEvent) GetUserId() string {
+	if x != nil {
+		return x.UserId
+	}
+	return ""
+}
+
+func (x *RunStateEvent) GetParentAgentId() string {
+	if x != nil {
+		return x.ParentAgentId
+	}
+	return ""
+}
+
+func (x *RunStateEvent) GetStatus() string {
+	if x != nil {
+		return x.Status
+	}
+	return ""
+}
+
+func (x *RunStateEvent) GetStopReason() string {
+	if x != nil {
+		return x.StopReason
+	}
+	return ""
+}
+
+func (x *RunStateEvent) GetError() string {
+	if x != nil {
+		return x.Error
+	}
+	return ""
+}
+
+func (x *RunStateEvent) GetTs() string {
+	if x != nil {
+		return x.Ts
+	}
+	return ""
+}
+
 var File_loomcycle_proto protoreflect.FileDescriptor
 
 const file_loomcycle_proto_rawDesc = "" +
@@ -3571,7 +3942,38 @@ const file_loomcycle_proto_rawDesc = "" +
 	"\x11SubstrateResponse\x12\x1f\n" +
 	"\voutput_json\x18\x01 \x01(\fR\n" +
 	"outputJson\x12\x19\n" +
-	"\bis_error\x18\x02 \x01(\bR\aisError2\xc6\r\n" +
+	"\bis_error\x18\x02 \x01(\bR\aisError\"\x15\n" +
+	"\x13ListChannelsRequest\"S\n" +
+	"\x14ListChannelsResponse\x12;\n" +
+	"\bchannels\x18\x01 \x03(\v2\x1f.loomcycle.v1.ChannelDescriptorR\bchannels\"\xd0\x02\n" +
+	"\x11ChannelDescriptor\x12\x12\n" +
+	"\x04name\x18\x01 \x01(\tR\x04name\x12\x14\n" +
+	"\x05scope\x18\x02 \x01(\tR\x05scope\x12\x1a\n" +
+	"\bsemantic\x18\x03 \x01(\tR\bsemantic\x12\x1c\n" +
+	"\tpublisher\x18\x04 \x01(\tR\tpublisher\x12\x16\n" +
+	"\x06period\x18\x05 \x01(\tR\x06period\x12\x1f\n" +
+	"\vdefault_ttl\x18\x06 \x01(\x05R\n" +
+	"defaultTtl\x12!\n" +
+	"\fmax_messages\x18\a \x01(\x05R\vmaxMessages\x12#\n" +
+	"\rmessage_count\x18\b \x01(\x03R\fmessageCount\x12*\n" +
+	"\x11oldest_visible_at\x18\t \x01(\tR\x0foldestVisibleAt\x12*\n" +
+	"\x11newest_visible_at\x18\n" +
+	" \x01(\tR\x0fnewestVisibleAt\"g\n" +
+	"\x1aStreamUserRunStatesRequest\x12\x17\n" +
+	"\auser_id\x18\x01 \x01(\tR\x06userId\x12\x1a\n" +
+	"\bstatuses\x18\x02 \x03(\tR\bstatuses\x12\x14\n" +
+	"\x05agent\x18\x03 \x01(\tR\x05agent\"\xf7\x01\n" +
+	"\rRunStateEvent\x12\x15\n" +
+	"\x06run_id\x18\x01 \x01(\tR\x05runId\x12\x19\n" +
+	"\bagent_id\x18\x02 \x01(\tR\aagentId\x12\x14\n" +
+	"\x05agent\x18\x03 \x01(\tR\x05agent\x12\x17\n" +
+	"\auser_id\x18\x04 \x01(\tR\x06userId\x12&\n" +
+	"\x0fparent_agent_id\x18\x05 \x01(\tR\rparentAgentId\x12\x16\n" +
+	"\x06status\x18\x06 \x01(\tR\x06status\x12\x1f\n" +
+	"\vstop_reason\x18\a \x01(\tR\n" +
+	"stopReason\x12\x14\n" +
+	"\x05error\x18\b \x01(\tR\x05error\x12\x0e\n" +
+	"\x02ts\x18\t \x01(\tR\x02ts2\xfd\x0e\n" +
 	"\tLoomcycle\x126\n" +
 	"\x03Run\x12\x18.loomcycle.v1.RunRequest\x1a\x13.loomcycle.v1.Event0\x01\x12@\n" +
 	"\bContinue\x12\x1d.loomcycle.v1.ContinueRequest\x1a\x13.loomcycle.v1.Event0\x01\x12M\n" +
@@ -3594,7 +3996,9 @@ const file_loomcycle_proto_rawDesc = "" +
 	"\x0fRestoreSnapshot\x12$.loomcycle.v1.RestoreSnapshotRequest\x1a%.loomcycle.v1.RestoreSnapshotResponse\x12[\n" +
 	"\x0eDeleteSnapshot\x12#.loomcycle.v1.DeleteSnapshotRequest\x1a$.loomcycle.v1.DeleteSnapshotResponse\x12K\n" +
 	"\bAgentDef\x12\x1e.loomcycle.v1.SubstrateRequest\x1a\x1f.loomcycle.v1.SubstrateResponse\x12K\n" +
-	"\bSkillDef\x12\x1e.loomcycle.v1.SubstrateRequest\x1a\x1f.loomcycle.v1.SubstrateResponseBLZJgithub.com/denn-gubsky/loomcycle/internal/api/grpc/loomcyclepb;loomcyclepbb\x06proto3"
+	"\bSkillDef\x12\x1e.loomcycle.v1.SubstrateRequest\x1a\x1f.loomcycle.v1.SubstrateResponse\x12U\n" +
+	"\fListChannels\x12!.loomcycle.v1.ListChannelsRequest\x1a\".loomcycle.v1.ListChannelsResponse\x12^\n" +
+	"\x13StreamUserRunStates\x12(.loomcycle.v1.StreamUserRunStatesRequest\x1a\x1b.loomcycle.v1.RunStateEvent0\x01BLZJgithub.com/denn-gubsky/loomcycle/internal/api/grpc/loomcyclepb;loomcyclepbb\x06proto3"
 
 var (
 	file_loomcycle_proto_rawDescOnce sync.Once
@@ -3608,58 +4012,63 @@ func file_loomcycle_proto_rawDescGZIP() []byte {
 	return file_loomcycle_proto_rawDescData
 }
 
-var file_loomcycle_proto_msgTypes = make([]protoimpl.MessageInfo, 49)
+var file_loomcycle_proto_msgTypes = make([]protoimpl.MessageInfo, 54)
 var file_loomcycle_proto_goTypes = []any{
-	(*RunRequest)(nil),              // 0: loomcycle.v1.RunRequest
-	(*ContinueRequest)(nil),         // 1: loomcycle.v1.ContinueRequest
-	(*HostAllowlist)(nil),           // 2: loomcycle.v1.HostAllowlist
-	(*PromptSegment)(nil),           // 3: loomcycle.v1.PromptSegment
-	(*PromptContentBlock)(nil),      // 4: loomcycle.v1.PromptContentBlock
-	(*Event)(nil),                   // 5: loomcycle.v1.Event
-	(*HostWidening)(nil),            // 6: loomcycle.v1.HostWidening
-	(*ToolUse)(nil),                 // 7: loomcycle.v1.ToolUse
-	(*Usage)(nil),                   // 8: loomcycle.v1.Usage
-	(*Retry)(nil),                   // 9: loomcycle.v1.Retry
-	(*GetTranscriptRequest)(nil),    // 10: loomcycle.v1.GetTranscriptRequest
-	(*Transcript)(nil),              // 11: loomcycle.v1.Transcript
-	(*TranscriptEvent)(nil),         // 12: loomcycle.v1.TranscriptEvent
-	(*GetAgentRequest)(nil),         // 13: loomcycle.v1.GetAgentRequest
-	(*Agent)(nil),                   // 14: loomcycle.v1.Agent
-	(*AgentUsage)(nil),              // 15: loomcycle.v1.AgentUsage
-	(*CancelAgentRequest)(nil),      // 16: loomcycle.v1.CancelAgentRequest
-	(*CancelAgentResponse)(nil),     // 17: loomcycle.v1.CancelAgentResponse
-	(*ListUserAgentsRequest)(nil),   // 18: loomcycle.v1.ListUserAgentsRequest
-	(*ListUserAgentsResponse)(nil),  // 19: loomcycle.v1.ListUserAgentsResponse
-	(*HealthRequest)(nil),           // 20: loomcycle.v1.HealthRequest
-	(*HealthResponse)(nil),          // 21: loomcycle.v1.HealthResponse
-	(*RegisterHookRequest)(nil),     // 22: loomcycle.v1.RegisterHookRequest
-	(*RegisterHookResponse)(nil),    // 23: loomcycle.v1.RegisterHookResponse
-	(*ListHooksRequest)(nil),        // 24: loomcycle.v1.ListHooksRequest
-	(*Hook)(nil),                    // 25: loomcycle.v1.Hook
-	(*ListHooksResponse)(nil),       // 26: loomcycle.v1.ListHooksResponse
-	(*DeleteHookRequest)(nil),       // 27: loomcycle.v1.DeleteHookRequest
-	(*DeleteHookResponse)(nil),      // 28: loomcycle.v1.DeleteHookResponse
-	(*PauseRuntimeRequest)(nil),     // 29: loomcycle.v1.PauseRuntimeRequest
-	(*PauseRuntimeResponse)(nil),    // 30: loomcycle.v1.PauseRuntimeResponse
-	(*ResumeRuntimeRequest)(nil),    // 31: loomcycle.v1.ResumeRuntimeRequest
-	(*ResumeRuntimeResponse)(nil),   // 32: loomcycle.v1.ResumeRuntimeResponse
-	(*GetRuntimeStateRequest)(nil),  // 33: loomcycle.v1.GetRuntimeStateRequest
-	(*RuntimeStateResponse)(nil),    // 34: loomcycle.v1.RuntimeStateResponse
-	(*CreateSnapshotRequest)(nil),   // 35: loomcycle.v1.CreateSnapshotRequest
-	(*SnapshotDescriptor)(nil),      // 36: loomcycle.v1.SnapshotDescriptor
-	(*ListSnapshotsRequest)(nil),    // 37: loomcycle.v1.ListSnapshotsRequest
-	(*ListSnapshotsResponse)(nil),   // 38: loomcycle.v1.ListSnapshotsResponse
-	(*GetSnapshotRequest)(nil),      // 39: loomcycle.v1.GetSnapshotRequest
-	(*SnapshotEnvelope)(nil),        // 40: loomcycle.v1.SnapshotEnvelope
-	(*ExportSnapshotRequest)(nil),   // 41: loomcycle.v1.ExportSnapshotRequest
-	(*ExportSnapshotResponse)(nil),  // 42: loomcycle.v1.ExportSnapshotResponse
-	(*RestoreSnapshotRequest)(nil),  // 43: loomcycle.v1.RestoreSnapshotRequest
-	(*RestoreSnapshotResponse)(nil), // 44: loomcycle.v1.RestoreSnapshotResponse
-	(*DeleteSnapshotRequest)(nil),   // 45: loomcycle.v1.DeleteSnapshotRequest
-	(*DeleteSnapshotResponse)(nil),  // 46: loomcycle.v1.DeleteSnapshotResponse
-	(*SubstrateRequest)(nil),        // 47: loomcycle.v1.SubstrateRequest
-	(*SubstrateResponse)(nil),       // 48: loomcycle.v1.SubstrateResponse
-	(*timestamppb.Timestamp)(nil),   // 49: google.protobuf.Timestamp
+	(*RunRequest)(nil),                 // 0: loomcycle.v1.RunRequest
+	(*ContinueRequest)(nil),            // 1: loomcycle.v1.ContinueRequest
+	(*HostAllowlist)(nil),              // 2: loomcycle.v1.HostAllowlist
+	(*PromptSegment)(nil),              // 3: loomcycle.v1.PromptSegment
+	(*PromptContentBlock)(nil),         // 4: loomcycle.v1.PromptContentBlock
+	(*Event)(nil),                      // 5: loomcycle.v1.Event
+	(*HostWidening)(nil),               // 6: loomcycle.v1.HostWidening
+	(*ToolUse)(nil),                    // 7: loomcycle.v1.ToolUse
+	(*Usage)(nil),                      // 8: loomcycle.v1.Usage
+	(*Retry)(nil),                      // 9: loomcycle.v1.Retry
+	(*GetTranscriptRequest)(nil),       // 10: loomcycle.v1.GetTranscriptRequest
+	(*Transcript)(nil),                 // 11: loomcycle.v1.Transcript
+	(*TranscriptEvent)(nil),            // 12: loomcycle.v1.TranscriptEvent
+	(*GetAgentRequest)(nil),            // 13: loomcycle.v1.GetAgentRequest
+	(*Agent)(nil),                      // 14: loomcycle.v1.Agent
+	(*AgentUsage)(nil),                 // 15: loomcycle.v1.AgentUsage
+	(*CancelAgentRequest)(nil),         // 16: loomcycle.v1.CancelAgentRequest
+	(*CancelAgentResponse)(nil),        // 17: loomcycle.v1.CancelAgentResponse
+	(*ListUserAgentsRequest)(nil),      // 18: loomcycle.v1.ListUserAgentsRequest
+	(*ListUserAgentsResponse)(nil),     // 19: loomcycle.v1.ListUserAgentsResponse
+	(*HealthRequest)(nil),              // 20: loomcycle.v1.HealthRequest
+	(*HealthResponse)(nil),             // 21: loomcycle.v1.HealthResponse
+	(*RegisterHookRequest)(nil),        // 22: loomcycle.v1.RegisterHookRequest
+	(*RegisterHookResponse)(nil),       // 23: loomcycle.v1.RegisterHookResponse
+	(*ListHooksRequest)(nil),           // 24: loomcycle.v1.ListHooksRequest
+	(*Hook)(nil),                       // 25: loomcycle.v1.Hook
+	(*ListHooksResponse)(nil),          // 26: loomcycle.v1.ListHooksResponse
+	(*DeleteHookRequest)(nil),          // 27: loomcycle.v1.DeleteHookRequest
+	(*DeleteHookResponse)(nil),         // 28: loomcycle.v1.DeleteHookResponse
+	(*PauseRuntimeRequest)(nil),        // 29: loomcycle.v1.PauseRuntimeRequest
+	(*PauseRuntimeResponse)(nil),       // 30: loomcycle.v1.PauseRuntimeResponse
+	(*ResumeRuntimeRequest)(nil),       // 31: loomcycle.v1.ResumeRuntimeRequest
+	(*ResumeRuntimeResponse)(nil),      // 32: loomcycle.v1.ResumeRuntimeResponse
+	(*GetRuntimeStateRequest)(nil),     // 33: loomcycle.v1.GetRuntimeStateRequest
+	(*RuntimeStateResponse)(nil),       // 34: loomcycle.v1.RuntimeStateResponse
+	(*CreateSnapshotRequest)(nil),      // 35: loomcycle.v1.CreateSnapshotRequest
+	(*SnapshotDescriptor)(nil),         // 36: loomcycle.v1.SnapshotDescriptor
+	(*ListSnapshotsRequest)(nil),       // 37: loomcycle.v1.ListSnapshotsRequest
+	(*ListSnapshotsResponse)(nil),      // 38: loomcycle.v1.ListSnapshotsResponse
+	(*GetSnapshotRequest)(nil),         // 39: loomcycle.v1.GetSnapshotRequest
+	(*SnapshotEnvelope)(nil),           // 40: loomcycle.v1.SnapshotEnvelope
+	(*ExportSnapshotRequest)(nil),      // 41: loomcycle.v1.ExportSnapshotRequest
+	(*ExportSnapshotResponse)(nil),     // 42: loomcycle.v1.ExportSnapshotResponse
+	(*RestoreSnapshotRequest)(nil),     // 43: loomcycle.v1.RestoreSnapshotRequest
+	(*RestoreSnapshotResponse)(nil),    // 44: loomcycle.v1.RestoreSnapshotResponse
+	(*DeleteSnapshotRequest)(nil),      // 45: loomcycle.v1.DeleteSnapshotRequest
+	(*DeleteSnapshotResponse)(nil),     // 46: loomcycle.v1.DeleteSnapshotResponse
+	(*SubstrateRequest)(nil),           // 47: loomcycle.v1.SubstrateRequest
+	(*SubstrateResponse)(nil),          // 48: loomcycle.v1.SubstrateResponse
+	(*ListChannelsRequest)(nil),        // 49: loomcycle.v1.ListChannelsRequest
+	(*ListChannelsResponse)(nil),       // 50: loomcycle.v1.ListChannelsResponse
+	(*ChannelDescriptor)(nil),          // 51: loomcycle.v1.ChannelDescriptor
+	(*StreamUserRunStatesRequest)(nil), // 52: loomcycle.v1.StreamUserRunStatesRequest
+	(*RunStateEvent)(nil),              // 53: loomcycle.v1.RunStateEvent
+	(*timestamppb.Timestamp)(nil),      // 54: google.protobuf.Timestamp
 }
 var file_loomcycle_proto_depIdxs = []int32{
 	3,  // 0: loomcycle.v1.RunRequest.segments:type_name -> loomcycle.v1.PromptSegment
@@ -3672,67 +4081,72 @@ var file_loomcycle_proto_depIdxs = []int32{
 	9,  // 7: loomcycle.v1.Event.retry:type_name -> loomcycle.v1.Retry
 	6,  // 8: loomcycle.v1.Event.host_widening:type_name -> loomcycle.v1.HostWidening
 	12, // 9: loomcycle.v1.Transcript.events:type_name -> loomcycle.v1.TranscriptEvent
-	49, // 10: loomcycle.v1.TranscriptEvent.ts:type_name -> google.protobuf.Timestamp
-	49, // 11: loomcycle.v1.Agent.started_at:type_name -> google.protobuf.Timestamp
-	49, // 12: loomcycle.v1.Agent.completed_at:type_name -> google.protobuf.Timestamp
+	54, // 10: loomcycle.v1.TranscriptEvent.ts:type_name -> google.protobuf.Timestamp
+	54, // 11: loomcycle.v1.Agent.started_at:type_name -> google.protobuf.Timestamp
+	54, // 12: loomcycle.v1.Agent.completed_at:type_name -> google.protobuf.Timestamp
 	15, // 13: loomcycle.v1.Agent.usage:type_name -> loomcycle.v1.AgentUsage
-	49, // 14: loomcycle.v1.Agent.last_heartbeat_at:type_name -> google.protobuf.Timestamp
+	54, // 14: loomcycle.v1.Agent.last_heartbeat_at:type_name -> google.protobuf.Timestamp
 	14, // 15: loomcycle.v1.ListUserAgentsResponse.agents:type_name -> loomcycle.v1.Agent
-	49, // 16: loomcycle.v1.Hook.registered_at:type_name -> google.protobuf.Timestamp
+	54, // 16: loomcycle.v1.Hook.registered_at:type_name -> google.protobuf.Timestamp
 	25, // 17: loomcycle.v1.ListHooksResponse.hooks:type_name -> loomcycle.v1.Hook
-	49, // 18: loomcycle.v1.RuntimeStateResponse.paused_at:type_name -> google.protobuf.Timestamp
-	49, // 19: loomcycle.v1.CreateSnapshotRequest.since_ts:type_name -> google.protobuf.Timestamp
-	49, // 20: loomcycle.v1.SnapshotDescriptor.created_at:type_name -> google.protobuf.Timestamp
-	49, // 21: loomcycle.v1.SnapshotDescriptor.since_ts:type_name -> google.protobuf.Timestamp
+	54, // 18: loomcycle.v1.RuntimeStateResponse.paused_at:type_name -> google.protobuf.Timestamp
+	54, // 19: loomcycle.v1.CreateSnapshotRequest.since_ts:type_name -> google.protobuf.Timestamp
+	54, // 20: loomcycle.v1.SnapshotDescriptor.created_at:type_name -> google.protobuf.Timestamp
+	54, // 21: loomcycle.v1.SnapshotDescriptor.since_ts:type_name -> google.protobuf.Timestamp
 	36, // 22: loomcycle.v1.ListSnapshotsResponse.snapshots:type_name -> loomcycle.v1.SnapshotDescriptor
-	49, // 23: loomcycle.v1.SnapshotEnvelope.created_at:type_name -> google.protobuf.Timestamp
-	0,  // 24: loomcycle.v1.Loomcycle.Run:input_type -> loomcycle.v1.RunRequest
-	1,  // 25: loomcycle.v1.Loomcycle.Continue:input_type -> loomcycle.v1.ContinueRequest
-	10, // 26: loomcycle.v1.Loomcycle.GetTranscript:input_type -> loomcycle.v1.GetTranscriptRequest
-	13, // 27: loomcycle.v1.Loomcycle.GetAgent:input_type -> loomcycle.v1.GetAgentRequest
-	16, // 28: loomcycle.v1.Loomcycle.CancelAgent:input_type -> loomcycle.v1.CancelAgentRequest
-	18, // 29: loomcycle.v1.Loomcycle.ListUserAgents:input_type -> loomcycle.v1.ListUserAgentsRequest
-	20, // 30: loomcycle.v1.Loomcycle.Health:input_type -> loomcycle.v1.HealthRequest
-	22, // 31: loomcycle.v1.Loomcycle.RegisterHook:input_type -> loomcycle.v1.RegisterHookRequest
-	24, // 32: loomcycle.v1.Loomcycle.ListHooks:input_type -> loomcycle.v1.ListHooksRequest
-	27, // 33: loomcycle.v1.Loomcycle.DeleteHook:input_type -> loomcycle.v1.DeleteHookRequest
-	29, // 34: loomcycle.v1.Loomcycle.PauseRuntime:input_type -> loomcycle.v1.PauseRuntimeRequest
-	31, // 35: loomcycle.v1.Loomcycle.ResumeRuntime:input_type -> loomcycle.v1.ResumeRuntimeRequest
-	33, // 36: loomcycle.v1.Loomcycle.GetRuntimeState:input_type -> loomcycle.v1.GetRuntimeStateRequest
-	35, // 37: loomcycle.v1.Loomcycle.CreateSnapshot:input_type -> loomcycle.v1.CreateSnapshotRequest
-	37, // 38: loomcycle.v1.Loomcycle.ListSnapshots:input_type -> loomcycle.v1.ListSnapshotsRequest
-	39, // 39: loomcycle.v1.Loomcycle.GetSnapshot:input_type -> loomcycle.v1.GetSnapshotRequest
-	41, // 40: loomcycle.v1.Loomcycle.ExportSnapshot:input_type -> loomcycle.v1.ExportSnapshotRequest
-	43, // 41: loomcycle.v1.Loomcycle.RestoreSnapshot:input_type -> loomcycle.v1.RestoreSnapshotRequest
-	45, // 42: loomcycle.v1.Loomcycle.DeleteSnapshot:input_type -> loomcycle.v1.DeleteSnapshotRequest
-	47, // 43: loomcycle.v1.Loomcycle.AgentDef:input_type -> loomcycle.v1.SubstrateRequest
-	47, // 44: loomcycle.v1.Loomcycle.SkillDef:input_type -> loomcycle.v1.SubstrateRequest
-	5,  // 45: loomcycle.v1.Loomcycle.Run:output_type -> loomcycle.v1.Event
-	5,  // 46: loomcycle.v1.Loomcycle.Continue:output_type -> loomcycle.v1.Event
-	11, // 47: loomcycle.v1.Loomcycle.GetTranscript:output_type -> loomcycle.v1.Transcript
-	14, // 48: loomcycle.v1.Loomcycle.GetAgent:output_type -> loomcycle.v1.Agent
-	17, // 49: loomcycle.v1.Loomcycle.CancelAgent:output_type -> loomcycle.v1.CancelAgentResponse
-	19, // 50: loomcycle.v1.Loomcycle.ListUserAgents:output_type -> loomcycle.v1.ListUserAgentsResponse
-	21, // 51: loomcycle.v1.Loomcycle.Health:output_type -> loomcycle.v1.HealthResponse
-	23, // 52: loomcycle.v1.Loomcycle.RegisterHook:output_type -> loomcycle.v1.RegisterHookResponse
-	26, // 53: loomcycle.v1.Loomcycle.ListHooks:output_type -> loomcycle.v1.ListHooksResponse
-	28, // 54: loomcycle.v1.Loomcycle.DeleteHook:output_type -> loomcycle.v1.DeleteHookResponse
-	30, // 55: loomcycle.v1.Loomcycle.PauseRuntime:output_type -> loomcycle.v1.PauseRuntimeResponse
-	32, // 56: loomcycle.v1.Loomcycle.ResumeRuntime:output_type -> loomcycle.v1.ResumeRuntimeResponse
-	34, // 57: loomcycle.v1.Loomcycle.GetRuntimeState:output_type -> loomcycle.v1.RuntimeStateResponse
-	36, // 58: loomcycle.v1.Loomcycle.CreateSnapshot:output_type -> loomcycle.v1.SnapshotDescriptor
-	38, // 59: loomcycle.v1.Loomcycle.ListSnapshots:output_type -> loomcycle.v1.ListSnapshotsResponse
-	40, // 60: loomcycle.v1.Loomcycle.GetSnapshot:output_type -> loomcycle.v1.SnapshotEnvelope
-	42, // 61: loomcycle.v1.Loomcycle.ExportSnapshot:output_type -> loomcycle.v1.ExportSnapshotResponse
-	44, // 62: loomcycle.v1.Loomcycle.RestoreSnapshot:output_type -> loomcycle.v1.RestoreSnapshotResponse
-	46, // 63: loomcycle.v1.Loomcycle.DeleteSnapshot:output_type -> loomcycle.v1.DeleteSnapshotResponse
-	48, // 64: loomcycle.v1.Loomcycle.AgentDef:output_type -> loomcycle.v1.SubstrateResponse
-	48, // 65: loomcycle.v1.Loomcycle.SkillDef:output_type -> loomcycle.v1.SubstrateResponse
-	45, // [45:66] is the sub-list for method output_type
-	24, // [24:45] is the sub-list for method input_type
-	24, // [24:24] is the sub-list for extension type_name
-	24, // [24:24] is the sub-list for extension extendee
-	0,  // [0:24] is the sub-list for field type_name
+	54, // 23: loomcycle.v1.SnapshotEnvelope.created_at:type_name -> google.protobuf.Timestamp
+	51, // 24: loomcycle.v1.ListChannelsResponse.channels:type_name -> loomcycle.v1.ChannelDescriptor
+	0,  // 25: loomcycle.v1.Loomcycle.Run:input_type -> loomcycle.v1.RunRequest
+	1,  // 26: loomcycle.v1.Loomcycle.Continue:input_type -> loomcycle.v1.ContinueRequest
+	10, // 27: loomcycle.v1.Loomcycle.GetTranscript:input_type -> loomcycle.v1.GetTranscriptRequest
+	13, // 28: loomcycle.v1.Loomcycle.GetAgent:input_type -> loomcycle.v1.GetAgentRequest
+	16, // 29: loomcycle.v1.Loomcycle.CancelAgent:input_type -> loomcycle.v1.CancelAgentRequest
+	18, // 30: loomcycle.v1.Loomcycle.ListUserAgents:input_type -> loomcycle.v1.ListUserAgentsRequest
+	20, // 31: loomcycle.v1.Loomcycle.Health:input_type -> loomcycle.v1.HealthRequest
+	22, // 32: loomcycle.v1.Loomcycle.RegisterHook:input_type -> loomcycle.v1.RegisterHookRequest
+	24, // 33: loomcycle.v1.Loomcycle.ListHooks:input_type -> loomcycle.v1.ListHooksRequest
+	27, // 34: loomcycle.v1.Loomcycle.DeleteHook:input_type -> loomcycle.v1.DeleteHookRequest
+	29, // 35: loomcycle.v1.Loomcycle.PauseRuntime:input_type -> loomcycle.v1.PauseRuntimeRequest
+	31, // 36: loomcycle.v1.Loomcycle.ResumeRuntime:input_type -> loomcycle.v1.ResumeRuntimeRequest
+	33, // 37: loomcycle.v1.Loomcycle.GetRuntimeState:input_type -> loomcycle.v1.GetRuntimeStateRequest
+	35, // 38: loomcycle.v1.Loomcycle.CreateSnapshot:input_type -> loomcycle.v1.CreateSnapshotRequest
+	37, // 39: loomcycle.v1.Loomcycle.ListSnapshots:input_type -> loomcycle.v1.ListSnapshotsRequest
+	39, // 40: loomcycle.v1.Loomcycle.GetSnapshot:input_type -> loomcycle.v1.GetSnapshotRequest
+	41, // 41: loomcycle.v1.Loomcycle.ExportSnapshot:input_type -> loomcycle.v1.ExportSnapshotRequest
+	43, // 42: loomcycle.v1.Loomcycle.RestoreSnapshot:input_type -> loomcycle.v1.RestoreSnapshotRequest
+	45, // 43: loomcycle.v1.Loomcycle.DeleteSnapshot:input_type -> loomcycle.v1.DeleteSnapshotRequest
+	47, // 44: loomcycle.v1.Loomcycle.AgentDef:input_type -> loomcycle.v1.SubstrateRequest
+	47, // 45: loomcycle.v1.Loomcycle.SkillDef:input_type -> loomcycle.v1.SubstrateRequest
+	49, // 46: loomcycle.v1.Loomcycle.ListChannels:input_type -> loomcycle.v1.ListChannelsRequest
+	52, // 47: loomcycle.v1.Loomcycle.StreamUserRunStates:input_type -> loomcycle.v1.StreamUserRunStatesRequest
+	5,  // 48: loomcycle.v1.Loomcycle.Run:output_type -> loomcycle.v1.Event
+	5,  // 49: loomcycle.v1.Loomcycle.Continue:output_type -> loomcycle.v1.Event
+	11, // 50: loomcycle.v1.Loomcycle.GetTranscript:output_type -> loomcycle.v1.Transcript
+	14, // 51: loomcycle.v1.Loomcycle.GetAgent:output_type -> loomcycle.v1.Agent
+	17, // 52: loomcycle.v1.Loomcycle.CancelAgent:output_type -> loomcycle.v1.CancelAgentResponse
+	19, // 53: loomcycle.v1.Loomcycle.ListUserAgents:output_type -> loomcycle.v1.ListUserAgentsResponse
+	21, // 54: loomcycle.v1.Loomcycle.Health:output_type -> loomcycle.v1.HealthResponse
+	23, // 55: loomcycle.v1.Loomcycle.RegisterHook:output_type -> loomcycle.v1.RegisterHookResponse
+	26, // 56: loomcycle.v1.Loomcycle.ListHooks:output_type -> loomcycle.v1.ListHooksResponse
+	28, // 57: loomcycle.v1.Loomcycle.DeleteHook:output_type -> loomcycle.v1.DeleteHookResponse
+	30, // 58: loomcycle.v1.Loomcycle.PauseRuntime:output_type -> loomcycle.v1.PauseRuntimeResponse
+	32, // 59: loomcycle.v1.Loomcycle.ResumeRuntime:output_type -> loomcycle.v1.ResumeRuntimeResponse
+	34, // 60: loomcycle.v1.Loomcycle.GetRuntimeState:output_type -> loomcycle.v1.RuntimeStateResponse
+	36, // 61: loomcycle.v1.Loomcycle.CreateSnapshot:output_type -> loomcycle.v1.SnapshotDescriptor
+	38, // 62: loomcycle.v1.Loomcycle.ListSnapshots:output_type -> loomcycle.v1.ListSnapshotsResponse
+	40, // 63: loomcycle.v1.Loomcycle.GetSnapshot:output_type -> loomcycle.v1.SnapshotEnvelope
+	42, // 64: loomcycle.v1.Loomcycle.ExportSnapshot:output_type -> loomcycle.v1.ExportSnapshotResponse
+	44, // 65: loomcycle.v1.Loomcycle.RestoreSnapshot:output_type -> loomcycle.v1.RestoreSnapshotResponse
+	46, // 66: loomcycle.v1.Loomcycle.DeleteSnapshot:output_type -> loomcycle.v1.DeleteSnapshotResponse
+	48, // 67: loomcycle.v1.Loomcycle.AgentDef:output_type -> loomcycle.v1.SubstrateResponse
+	48, // 68: loomcycle.v1.Loomcycle.SkillDef:output_type -> loomcycle.v1.SubstrateResponse
+	50, // 69: loomcycle.v1.Loomcycle.ListChannels:output_type -> loomcycle.v1.ListChannelsResponse
+	53, // 70: loomcycle.v1.Loomcycle.StreamUserRunStates:output_type -> loomcycle.v1.RunStateEvent
+	48, // [48:71] is the sub-list for method output_type
+	25, // [25:48] is the sub-list for method input_type
+	25, // [25:25] is the sub-list for extension type_name
+	25, // [25:25] is the sub-list for extension extendee
+	0,  // [0:25] is the sub-list for field type_name
 }
 
 func init() { file_loomcycle_proto_init() }
@@ -3746,7 +4160,7 @@ func file_loomcycle_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_loomcycle_proto_rawDesc), len(file_loomcycle_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   49,
+			NumMessages:   54,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

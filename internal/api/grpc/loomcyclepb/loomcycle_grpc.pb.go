@@ -38,27 +38,29 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	Loomcycle_Run_FullMethodName             = "/loomcycle.v1.Loomcycle/Run"
-	Loomcycle_Continue_FullMethodName        = "/loomcycle.v1.Loomcycle/Continue"
-	Loomcycle_GetTranscript_FullMethodName   = "/loomcycle.v1.Loomcycle/GetTranscript"
-	Loomcycle_GetAgent_FullMethodName        = "/loomcycle.v1.Loomcycle/GetAgent"
-	Loomcycle_CancelAgent_FullMethodName     = "/loomcycle.v1.Loomcycle/CancelAgent"
-	Loomcycle_ListUserAgents_FullMethodName  = "/loomcycle.v1.Loomcycle/ListUserAgents"
-	Loomcycle_Health_FullMethodName          = "/loomcycle.v1.Loomcycle/Health"
-	Loomcycle_RegisterHook_FullMethodName    = "/loomcycle.v1.Loomcycle/RegisterHook"
-	Loomcycle_ListHooks_FullMethodName       = "/loomcycle.v1.Loomcycle/ListHooks"
-	Loomcycle_DeleteHook_FullMethodName      = "/loomcycle.v1.Loomcycle/DeleteHook"
-	Loomcycle_PauseRuntime_FullMethodName    = "/loomcycle.v1.Loomcycle/PauseRuntime"
-	Loomcycle_ResumeRuntime_FullMethodName   = "/loomcycle.v1.Loomcycle/ResumeRuntime"
-	Loomcycle_GetRuntimeState_FullMethodName = "/loomcycle.v1.Loomcycle/GetRuntimeState"
-	Loomcycle_CreateSnapshot_FullMethodName  = "/loomcycle.v1.Loomcycle/CreateSnapshot"
-	Loomcycle_ListSnapshots_FullMethodName   = "/loomcycle.v1.Loomcycle/ListSnapshots"
-	Loomcycle_GetSnapshot_FullMethodName     = "/loomcycle.v1.Loomcycle/GetSnapshot"
-	Loomcycle_ExportSnapshot_FullMethodName  = "/loomcycle.v1.Loomcycle/ExportSnapshot"
-	Loomcycle_RestoreSnapshot_FullMethodName = "/loomcycle.v1.Loomcycle/RestoreSnapshot"
-	Loomcycle_DeleteSnapshot_FullMethodName  = "/loomcycle.v1.Loomcycle/DeleteSnapshot"
-	Loomcycle_AgentDef_FullMethodName        = "/loomcycle.v1.Loomcycle/AgentDef"
-	Loomcycle_SkillDef_FullMethodName        = "/loomcycle.v1.Loomcycle/SkillDef"
+	Loomcycle_Run_FullMethodName                 = "/loomcycle.v1.Loomcycle/Run"
+	Loomcycle_Continue_FullMethodName            = "/loomcycle.v1.Loomcycle/Continue"
+	Loomcycle_GetTranscript_FullMethodName       = "/loomcycle.v1.Loomcycle/GetTranscript"
+	Loomcycle_GetAgent_FullMethodName            = "/loomcycle.v1.Loomcycle/GetAgent"
+	Loomcycle_CancelAgent_FullMethodName         = "/loomcycle.v1.Loomcycle/CancelAgent"
+	Loomcycle_ListUserAgents_FullMethodName      = "/loomcycle.v1.Loomcycle/ListUserAgents"
+	Loomcycle_Health_FullMethodName              = "/loomcycle.v1.Loomcycle/Health"
+	Loomcycle_RegisterHook_FullMethodName        = "/loomcycle.v1.Loomcycle/RegisterHook"
+	Loomcycle_ListHooks_FullMethodName           = "/loomcycle.v1.Loomcycle/ListHooks"
+	Loomcycle_DeleteHook_FullMethodName          = "/loomcycle.v1.Loomcycle/DeleteHook"
+	Loomcycle_PauseRuntime_FullMethodName        = "/loomcycle.v1.Loomcycle/PauseRuntime"
+	Loomcycle_ResumeRuntime_FullMethodName       = "/loomcycle.v1.Loomcycle/ResumeRuntime"
+	Loomcycle_GetRuntimeState_FullMethodName     = "/loomcycle.v1.Loomcycle/GetRuntimeState"
+	Loomcycle_CreateSnapshot_FullMethodName      = "/loomcycle.v1.Loomcycle/CreateSnapshot"
+	Loomcycle_ListSnapshots_FullMethodName       = "/loomcycle.v1.Loomcycle/ListSnapshots"
+	Loomcycle_GetSnapshot_FullMethodName         = "/loomcycle.v1.Loomcycle/GetSnapshot"
+	Loomcycle_ExportSnapshot_FullMethodName      = "/loomcycle.v1.Loomcycle/ExportSnapshot"
+	Loomcycle_RestoreSnapshot_FullMethodName     = "/loomcycle.v1.Loomcycle/RestoreSnapshot"
+	Loomcycle_DeleteSnapshot_FullMethodName      = "/loomcycle.v1.Loomcycle/DeleteSnapshot"
+	Loomcycle_AgentDef_FullMethodName            = "/loomcycle.v1.Loomcycle/AgentDef"
+	Loomcycle_SkillDef_FullMethodName            = "/loomcycle.v1.Loomcycle/SkillDef"
+	Loomcycle_ListChannels_FullMethodName        = "/loomcycle.v1.Loomcycle/ListChannels"
+	Loomcycle_StreamUserRunStates_FullMethodName = "/loomcycle.v1.Loomcycle/StreamUserRunStates"
 )
 
 // LoomcycleClient is the client API for Loomcycle service.
@@ -184,6 +186,15 @@ type LoomcycleClient interface {
 	// SkillDef dispatches to the in-process SkillDef tool. Mirrors
 	// POST /v1/_skilldef.
 	SkillDef(ctx context.Context, in *SubstrateRequest, opts ...grpc.CallOption) (*SubstrateResponse, error)
+	// ----- v0.9.x n8n RFC Phase 0 -----
+	//
+	// ListChannels mirrors GET /v1/_channels — operator-declared
+	// channels joined with runtime stats.
+	ListChannels(ctx context.Context, in *ListChannelsRequest, opts ...grpc.CallOption) (*ListChannelsResponse, error)
+	// StreamUserRunStates mirrors GET /v1/users/{user_id}/agents/stream.
+	// Server-streams one RunStateEvent per matching state transition
+	// until ctx cancels or the client closes the stream.
+	StreamUserRunStates(ctx context.Context, in *StreamUserRunStatesRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[RunStateEvent], error)
 }
 
 type loomcycleClient struct {
@@ -422,6 +433,35 @@ func (c *loomcycleClient) SkillDef(ctx context.Context, in *SubstrateRequest, op
 	return out, nil
 }
 
+func (c *loomcycleClient) ListChannels(ctx context.Context, in *ListChannelsRequest, opts ...grpc.CallOption) (*ListChannelsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListChannelsResponse)
+	err := c.cc.Invoke(ctx, Loomcycle_ListChannels_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *loomcycleClient) StreamUserRunStates(ctx context.Context, in *StreamUserRunStatesRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[RunStateEvent], error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	stream, err := c.cc.NewStream(ctx, &Loomcycle_ServiceDesc.Streams[2], Loomcycle_StreamUserRunStates_FullMethodName, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	x := &grpc.GenericClientStream[StreamUserRunStatesRequest, RunStateEvent]{ClientStream: stream}
+	if err := x.ClientStream.SendMsg(in); err != nil {
+		return nil, err
+	}
+	if err := x.ClientStream.CloseSend(); err != nil {
+		return nil, err
+	}
+	return x, nil
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type Loomcycle_StreamUserRunStatesClient = grpc.ServerStreamingClient[RunStateEvent]
+
 // LoomcycleServer is the server API for Loomcycle service.
 // All implementations must embed UnimplementedLoomcycleServer
 // for forward compatibility.
@@ -545,6 +585,15 @@ type LoomcycleServer interface {
 	// SkillDef dispatches to the in-process SkillDef tool. Mirrors
 	// POST /v1/_skilldef.
 	SkillDef(context.Context, *SubstrateRequest) (*SubstrateResponse, error)
+	// ----- v0.9.x n8n RFC Phase 0 -----
+	//
+	// ListChannels mirrors GET /v1/_channels — operator-declared
+	// channels joined with runtime stats.
+	ListChannels(context.Context, *ListChannelsRequest) (*ListChannelsResponse, error)
+	// StreamUserRunStates mirrors GET /v1/users/{user_id}/agents/stream.
+	// Server-streams one RunStateEvent per matching state transition
+	// until ctx cancels or the client closes the stream.
+	StreamUserRunStates(*StreamUserRunStatesRequest, grpc.ServerStreamingServer[RunStateEvent]) error
 	mustEmbedUnimplementedLoomcycleServer()
 }
 
@@ -617,6 +666,12 @@ func (UnimplementedLoomcycleServer) AgentDef(context.Context, *SubstrateRequest)
 }
 func (UnimplementedLoomcycleServer) SkillDef(context.Context, *SubstrateRequest) (*SubstrateResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method SkillDef not implemented")
+}
+func (UnimplementedLoomcycleServer) ListChannels(context.Context, *ListChannelsRequest) (*ListChannelsResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListChannels not implemented")
+}
+func (UnimplementedLoomcycleServer) StreamUserRunStates(*StreamUserRunStatesRequest, grpc.ServerStreamingServer[RunStateEvent]) error {
+	return status.Error(codes.Unimplemented, "method StreamUserRunStates not implemented")
 }
 func (UnimplementedLoomcycleServer) mustEmbedUnimplementedLoomcycleServer() {}
 func (UnimplementedLoomcycleServer) testEmbeddedByValue()                   {}
@@ -1003,6 +1058,35 @@ func _Loomcycle_SkillDef_Handler(srv interface{}, ctx context.Context, dec func(
 	return interceptor(ctx, in, info, handler)
 }
 
+func _Loomcycle_ListChannels_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListChannelsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(LoomcycleServer).ListChannels(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Loomcycle_ListChannels_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(LoomcycleServer).ListChannels(ctx, req.(*ListChannelsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Loomcycle_StreamUserRunStates_Handler(srv interface{}, stream grpc.ServerStream) error {
+	m := new(StreamUserRunStatesRequest)
+	if err := stream.RecvMsg(m); err != nil {
+		return err
+	}
+	return srv.(LoomcycleServer).StreamUserRunStates(m, &grpc.GenericServerStream[StreamUserRunStatesRequest, RunStateEvent]{ServerStream: stream})
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type Loomcycle_StreamUserRunStatesServer = grpc.ServerStreamingServer[RunStateEvent]
+
 // Loomcycle_ServiceDesc is the grpc.ServiceDesc for Loomcycle service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -1086,6 +1170,10 @@ var Loomcycle_ServiceDesc = grpc.ServiceDesc{
 			MethodName: "SkillDef",
 			Handler:    _Loomcycle_SkillDef_Handler,
 		},
+		{
+			MethodName: "ListChannels",
+			Handler:    _Loomcycle_ListChannels_Handler,
+		},
 	},
 	Streams: []grpc.StreamDesc{
 		{
@@ -1096,6 +1184,11 @@ var Loomcycle_ServiceDesc = grpc.ServiceDesc{
 		{
 			StreamName:    "Continue",
 			Handler:       _Loomcycle_Continue_Handler,
+			ServerStreams: true,
+		},
+		{
+			StreamName:    "StreamUserRunStates",
+			Handler:       _Loomcycle_StreamUserRunStates_Handler,
 			ServerStreams: true,
 		},
 	},
