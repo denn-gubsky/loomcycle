@@ -213,6 +213,24 @@ service Loomcycle {
   // Server-streams one RunStateEvent per matching state transition
   // until ctx cancels or the client closes the stream.
   rpc StreamUserRunStates(StreamUserRunStatesRequest) returns (stream RunStateEvent);
+
+  // ----- v0.9.x Channel CRUD (admin + per-user) -----
+  //
+  // Mirrors the four HTTP routes:
+  //   PublishChannel   → POST /v1/_channels/{name}/publish (and the
+  //                       /v1/users/{user_id}/channels/... variant)
+  //   SubscribeChannel → POST /v1/_channels/{name}/subscribe (single-
+  //                       round-trip long-poll; not streaming)
+  //   PeekChannel      → GET  /v1/_channels/{name}/peek (non-destructive)
+  //   AckChannel       → POST /v1/_channels/{name}/ack
+  //
+  // Scope + scope_id select the cursor namespace: scope="global" with
+  // empty scope_id addresses the admin surface; scope="user" with a
+  // non-empty scope_id addresses a per-end-user channel.
+  rpc PublishChannel(PublishChannelRequest) returns (PublishChannelResponse);
+  rpc SubscribeChannel(SubscribeChannelRequest) returns (SubscribeChannelResponse);
+  rpc PeekChannel(PeekChannelRequest) returns (PeekChannelResponse);
+  rpc AckChannel(AckChannelRequest) returns (AckChannelResponse);
 }
 
 // ========================
@@ -765,4 +783,78 @@ message RunStateEvent {
   string stop_reason = 7;
   string error = 8;
   string ts = 9;
+}
+
+// ========================
+// v0.9.x Channel CRUD
+// ========================
+//
+// scope is "global" or "user"; scope_id is the user_id when scope==user,
+// empty otherwise. The wire shape is symmetrical across the four ops so
+// callers can build one helper with a (channel, scope, scope_id) tuple.
+
+message PublishChannelRequest {
+  string channel = 1;
+  string scope = 2;
+  string scope_id = 3;
+  // payload is raw JSON (bytes so the proto layer doesn't have to
+  // model the user's JSON schema). The Go-side connector validates
+  // json.Valid + the configured size cap.
+  bytes payload = 4;
+  // RFC3339Nano; empty = publish immediately.
+  string deliver_at = 5;
+}
+
+message PublishChannelResponse {
+  string msg_id = 1;
+  string channel = 2;
+  string created_at = 3;  // RFC3339Nano
+  string visible_at = 4;  // RFC3339Nano; empty when not deferred
+}
+
+message SubscribeChannelRequest {
+  string channel = 1;
+  string scope = 2;
+  string scope_id = 3;
+  string from_cursor = 4;  // empty = committed cursor; "cur_0" = replay from oldest
+  int32 max_messages = 5;  // 0 = default 10; capped at 100
+  int32 wait_ms = 6;       // 0 = poll-and-return; capped by operator's LongPollCapMS
+}
+
+message SubscribeChannelResponse {
+  string channel = 1;
+  repeated ChannelMessage messages = 2;
+  string next_cursor = 3;
+}
+
+// ChannelMessage is one delivered message. value is the raw JSON
+// payload (bytes for the same reason as PublishChannelRequest.payload).
+message ChannelMessage {
+  string id = 1;
+  bytes value = 2;
+  string published_at = 3;  // RFC3339Nano
+}
+
+message PeekChannelRequest {
+  string channel = 1;
+  string scope = 2;
+  string scope_id = 3;
+  string from_cursor = 4;
+  int32 max_messages = 5;
+}
+
+message PeekChannelResponse {
+  string channel = 1;
+  repeated ChannelMessage messages = 2;
+}
+
+message AckChannelRequest {
+  string channel = 1;
+  string scope = 2;
+  string scope_id = 3;
+  string cursor = 4;
+}
+
+message AckChannelResponse {
+  bool ok = 1;
 }

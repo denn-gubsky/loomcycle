@@ -156,6 +156,23 @@ export class HookNotFoundError extends NotFoundError {
   }
 }
 
+/** ChannelCursorRegressionError — raised by `client.ackChannel()`
+ *  when the caller-supplied cursor is older than the currently-
+ *  committed cursor for the (channel, scope, scope_id) tuple. HTTP
+ *  409 with `{code: "channel_cursor_regression", ...}` body.
+ *
+ *  Mirrors `store.ErrChannelCursorRegression` on the loomcycle
+ *  side. Distinct from `SessionBusyError` etc. (which also map to
+ *  409) so the n8n adapter can distinguish "this cursor is stale,
+ *  re-fetch and retry from the new committed position" from other
+ *  409 conditions. */
+export class ChannelCursorRegressionError extends LoomcycleError {
+  constructor(message: string, opts?: { status?: number; bodyText?: string }) {
+    super(message, opts);
+    this.name = "ChannelCursorRegressionError";
+  }
+}
+
 /** SubstrateToolRefusedError — raised by `client.agentDef()` /
  *  `client.skillDef()` when the in-process tool refused the call
  *  (scope deny, empty body, allowed-tools widening, etc.). HTTP

@@ -3680,6 +3680,600 @@ func (x *RunStateEvent) GetTs() string {
 	return ""
 }
 
+type PublishChannelRequest struct {
+	state   protoimpl.MessageState `protogen:"open.v1"`
+	Channel string                 `protobuf:"bytes,1,opt,name=channel,proto3" json:"channel,omitempty"`
+	Scope   string                 `protobuf:"bytes,2,opt,name=scope,proto3" json:"scope,omitempty"`
+	ScopeId string                 `protobuf:"bytes,3,opt,name=scope_id,json=scopeId,proto3" json:"scope_id,omitempty"`
+	// payload is raw JSON (bytes so the proto layer doesn't have to
+	// model the user's JSON schema). The Go-side connector validates
+	// json.Valid + the configured size cap.
+	Payload []byte `protobuf:"bytes,4,opt,name=payload,proto3" json:"payload,omitempty"`
+	// RFC3339Nano; empty = publish immediately.
+	DeliverAt     string `protobuf:"bytes,5,opt,name=deliver_at,json=deliverAt,proto3" json:"deliver_at,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *PublishChannelRequest) Reset() {
+	*x = PublishChannelRequest{}
+	mi := &file_loomcycle_proto_msgTypes[54]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *PublishChannelRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*PublishChannelRequest) ProtoMessage() {}
+
+func (x *PublishChannelRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_loomcycle_proto_msgTypes[54]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use PublishChannelRequest.ProtoReflect.Descriptor instead.
+func (*PublishChannelRequest) Descriptor() ([]byte, []int) {
+	return file_loomcycle_proto_rawDescGZIP(), []int{54}
+}
+
+func (x *PublishChannelRequest) GetChannel() string {
+	if x != nil {
+		return x.Channel
+	}
+	return ""
+}
+
+func (x *PublishChannelRequest) GetScope() string {
+	if x != nil {
+		return x.Scope
+	}
+	return ""
+}
+
+func (x *PublishChannelRequest) GetScopeId() string {
+	if x != nil {
+		return x.ScopeId
+	}
+	return ""
+}
+
+func (x *PublishChannelRequest) GetPayload() []byte {
+	if x != nil {
+		return x.Payload
+	}
+	return nil
+}
+
+func (x *PublishChannelRequest) GetDeliverAt() string {
+	if x != nil {
+		return x.DeliverAt
+	}
+	return ""
+}
+
+type PublishChannelResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	MsgId         string                 `protobuf:"bytes,1,opt,name=msg_id,json=msgId,proto3" json:"msg_id,omitempty"`
+	Channel       string                 `protobuf:"bytes,2,opt,name=channel,proto3" json:"channel,omitempty"`
+	CreatedAt     string                 `protobuf:"bytes,3,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"` // RFC3339Nano
+	VisibleAt     string                 `protobuf:"bytes,4,opt,name=visible_at,json=visibleAt,proto3" json:"visible_at,omitempty"` // RFC3339Nano; empty when not deferred
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *PublishChannelResponse) Reset() {
+	*x = PublishChannelResponse{}
+	mi := &file_loomcycle_proto_msgTypes[55]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *PublishChannelResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*PublishChannelResponse) ProtoMessage() {}
+
+func (x *PublishChannelResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_loomcycle_proto_msgTypes[55]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use PublishChannelResponse.ProtoReflect.Descriptor instead.
+func (*PublishChannelResponse) Descriptor() ([]byte, []int) {
+	return file_loomcycle_proto_rawDescGZIP(), []int{55}
+}
+
+func (x *PublishChannelResponse) GetMsgId() string {
+	if x != nil {
+		return x.MsgId
+	}
+	return ""
+}
+
+func (x *PublishChannelResponse) GetChannel() string {
+	if x != nil {
+		return x.Channel
+	}
+	return ""
+}
+
+func (x *PublishChannelResponse) GetCreatedAt() string {
+	if x != nil {
+		return x.CreatedAt
+	}
+	return ""
+}
+
+func (x *PublishChannelResponse) GetVisibleAt() string {
+	if x != nil {
+		return x.VisibleAt
+	}
+	return ""
+}
+
+type SubscribeChannelRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Channel       string                 `protobuf:"bytes,1,opt,name=channel,proto3" json:"channel,omitempty"`
+	Scope         string                 `protobuf:"bytes,2,opt,name=scope,proto3" json:"scope,omitempty"`
+	ScopeId       string                 `protobuf:"bytes,3,opt,name=scope_id,json=scopeId,proto3" json:"scope_id,omitempty"`
+	FromCursor    string                 `protobuf:"bytes,4,opt,name=from_cursor,json=fromCursor,proto3" json:"from_cursor,omitempty"`     // empty = committed cursor; "cur_0" = replay from oldest
+	MaxMessages   int32                  `protobuf:"varint,5,opt,name=max_messages,json=maxMessages,proto3" json:"max_messages,omitempty"` // 0 = default 10; capped at 100
+	WaitMs        int32                  `protobuf:"varint,6,opt,name=wait_ms,json=waitMs,proto3" json:"wait_ms,omitempty"`                // 0 = poll-and-return; capped by operator's LongPollCapMS
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SubscribeChannelRequest) Reset() {
+	*x = SubscribeChannelRequest{}
+	mi := &file_loomcycle_proto_msgTypes[56]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SubscribeChannelRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SubscribeChannelRequest) ProtoMessage() {}
+
+func (x *SubscribeChannelRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_loomcycle_proto_msgTypes[56]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SubscribeChannelRequest.ProtoReflect.Descriptor instead.
+func (*SubscribeChannelRequest) Descriptor() ([]byte, []int) {
+	return file_loomcycle_proto_rawDescGZIP(), []int{56}
+}
+
+func (x *SubscribeChannelRequest) GetChannel() string {
+	if x != nil {
+		return x.Channel
+	}
+	return ""
+}
+
+func (x *SubscribeChannelRequest) GetScope() string {
+	if x != nil {
+		return x.Scope
+	}
+	return ""
+}
+
+func (x *SubscribeChannelRequest) GetScopeId() string {
+	if x != nil {
+		return x.ScopeId
+	}
+	return ""
+}
+
+func (x *SubscribeChannelRequest) GetFromCursor() string {
+	if x != nil {
+		return x.FromCursor
+	}
+	return ""
+}
+
+func (x *SubscribeChannelRequest) GetMaxMessages() int32 {
+	if x != nil {
+		return x.MaxMessages
+	}
+	return 0
+}
+
+func (x *SubscribeChannelRequest) GetWaitMs() int32 {
+	if x != nil {
+		return x.WaitMs
+	}
+	return 0
+}
+
+type SubscribeChannelResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Channel       string                 `protobuf:"bytes,1,opt,name=channel,proto3" json:"channel,omitempty"`
+	Messages      []*ChannelMessage      `protobuf:"bytes,2,rep,name=messages,proto3" json:"messages,omitempty"`
+	NextCursor    string                 `protobuf:"bytes,3,opt,name=next_cursor,json=nextCursor,proto3" json:"next_cursor,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SubscribeChannelResponse) Reset() {
+	*x = SubscribeChannelResponse{}
+	mi := &file_loomcycle_proto_msgTypes[57]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SubscribeChannelResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SubscribeChannelResponse) ProtoMessage() {}
+
+func (x *SubscribeChannelResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_loomcycle_proto_msgTypes[57]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SubscribeChannelResponse.ProtoReflect.Descriptor instead.
+func (*SubscribeChannelResponse) Descriptor() ([]byte, []int) {
+	return file_loomcycle_proto_rawDescGZIP(), []int{57}
+}
+
+func (x *SubscribeChannelResponse) GetChannel() string {
+	if x != nil {
+		return x.Channel
+	}
+	return ""
+}
+
+func (x *SubscribeChannelResponse) GetMessages() []*ChannelMessage {
+	if x != nil {
+		return x.Messages
+	}
+	return nil
+}
+
+func (x *SubscribeChannelResponse) GetNextCursor() string {
+	if x != nil {
+		return x.NextCursor
+	}
+	return ""
+}
+
+// ChannelMessage is one delivered message. value is the raw JSON
+// payload (bytes for the same reason as PublishChannelRequest.payload).
+type ChannelMessage struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Id            string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	Value         []byte                 `protobuf:"bytes,2,opt,name=value,proto3" json:"value,omitempty"`
+	PublishedAt   string                 `protobuf:"bytes,3,opt,name=published_at,json=publishedAt,proto3" json:"published_at,omitempty"` // RFC3339Nano
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ChannelMessage) Reset() {
+	*x = ChannelMessage{}
+	mi := &file_loomcycle_proto_msgTypes[58]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ChannelMessage) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ChannelMessage) ProtoMessage() {}
+
+func (x *ChannelMessage) ProtoReflect() protoreflect.Message {
+	mi := &file_loomcycle_proto_msgTypes[58]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ChannelMessage.ProtoReflect.Descriptor instead.
+func (*ChannelMessage) Descriptor() ([]byte, []int) {
+	return file_loomcycle_proto_rawDescGZIP(), []int{58}
+}
+
+func (x *ChannelMessage) GetId() string {
+	if x != nil {
+		return x.Id
+	}
+	return ""
+}
+
+func (x *ChannelMessage) GetValue() []byte {
+	if x != nil {
+		return x.Value
+	}
+	return nil
+}
+
+func (x *ChannelMessage) GetPublishedAt() string {
+	if x != nil {
+		return x.PublishedAt
+	}
+	return ""
+}
+
+type PeekChannelRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Channel       string                 `protobuf:"bytes,1,opt,name=channel,proto3" json:"channel,omitempty"`
+	Scope         string                 `protobuf:"bytes,2,opt,name=scope,proto3" json:"scope,omitempty"`
+	ScopeId       string                 `protobuf:"bytes,3,opt,name=scope_id,json=scopeId,proto3" json:"scope_id,omitempty"`
+	FromCursor    string                 `protobuf:"bytes,4,opt,name=from_cursor,json=fromCursor,proto3" json:"from_cursor,omitempty"`
+	MaxMessages   int32                  `protobuf:"varint,5,opt,name=max_messages,json=maxMessages,proto3" json:"max_messages,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *PeekChannelRequest) Reset() {
+	*x = PeekChannelRequest{}
+	mi := &file_loomcycle_proto_msgTypes[59]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *PeekChannelRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*PeekChannelRequest) ProtoMessage() {}
+
+func (x *PeekChannelRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_loomcycle_proto_msgTypes[59]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use PeekChannelRequest.ProtoReflect.Descriptor instead.
+func (*PeekChannelRequest) Descriptor() ([]byte, []int) {
+	return file_loomcycle_proto_rawDescGZIP(), []int{59}
+}
+
+func (x *PeekChannelRequest) GetChannel() string {
+	if x != nil {
+		return x.Channel
+	}
+	return ""
+}
+
+func (x *PeekChannelRequest) GetScope() string {
+	if x != nil {
+		return x.Scope
+	}
+	return ""
+}
+
+func (x *PeekChannelRequest) GetScopeId() string {
+	if x != nil {
+		return x.ScopeId
+	}
+	return ""
+}
+
+func (x *PeekChannelRequest) GetFromCursor() string {
+	if x != nil {
+		return x.FromCursor
+	}
+	return ""
+}
+
+func (x *PeekChannelRequest) GetMaxMessages() int32 {
+	if x != nil {
+		return x.MaxMessages
+	}
+	return 0
+}
+
+type PeekChannelResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Channel       string                 `protobuf:"bytes,1,opt,name=channel,proto3" json:"channel,omitempty"`
+	Messages      []*ChannelMessage      `protobuf:"bytes,2,rep,name=messages,proto3" json:"messages,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *PeekChannelResponse) Reset() {
+	*x = PeekChannelResponse{}
+	mi := &file_loomcycle_proto_msgTypes[60]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *PeekChannelResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*PeekChannelResponse) ProtoMessage() {}
+
+func (x *PeekChannelResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_loomcycle_proto_msgTypes[60]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use PeekChannelResponse.ProtoReflect.Descriptor instead.
+func (*PeekChannelResponse) Descriptor() ([]byte, []int) {
+	return file_loomcycle_proto_rawDescGZIP(), []int{60}
+}
+
+func (x *PeekChannelResponse) GetChannel() string {
+	if x != nil {
+		return x.Channel
+	}
+	return ""
+}
+
+func (x *PeekChannelResponse) GetMessages() []*ChannelMessage {
+	if x != nil {
+		return x.Messages
+	}
+	return nil
+}
+
+type AckChannelRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Channel       string                 `protobuf:"bytes,1,opt,name=channel,proto3" json:"channel,omitempty"`
+	Scope         string                 `protobuf:"bytes,2,opt,name=scope,proto3" json:"scope,omitempty"`
+	ScopeId       string                 `protobuf:"bytes,3,opt,name=scope_id,json=scopeId,proto3" json:"scope_id,omitempty"`
+	Cursor        string                 `protobuf:"bytes,4,opt,name=cursor,proto3" json:"cursor,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *AckChannelRequest) Reset() {
+	*x = AckChannelRequest{}
+	mi := &file_loomcycle_proto_msgTypes[61]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *AckChannelRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*AckChannelRequest) ProtoMessage() {}
+
+func (x *AckChannelRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_loomcycle_proto_msgTypes[61]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use AckChannelRequest.ProtoReflect.Descriptor instead.
+func (*AckChannelRequest) Descriptor() ([]byte, []int) {
+	return file_loomcycle_proto_rawDescGZIP(), []int{61}
+}
+
+func (x *AckChannelRequest) GetChannel() string {
+	if x != nil {
+		return x.Channel
+	}
+	return ""
+}
+
+func (x *AckChannelRequest) GetScope() string {
+	if x != nil {
+		return x.Scope
+	}
+	return ""
+}
+
+func (x *AckChannelRequest) GetScopeId() string {
+	if x != nil {
+		return x.ScopeId
+	}
+	return ""
+}
+
+func (x *AckChannelRequest) GetCursor() string {
+	if x != nil {
+		return x.Cursor
+	}
+	return ""
+}
+
+type AckChannelResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Ok            bool                   `protobuf:"varint,1,opt,name=ok,proto3" json:"ok,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *AckChannelResponse) Reset() {
+	*x = AckChannelResponse{}
+	mi := &file_loomcycle_proto_msgTypes[62]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *AckChannelResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*AckChannelResponse) ProtoMessage() {}
+
+func (x *AckChannelResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_loomcycle_proto_msgTypes[62]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use AckChannelResponse.ProtoReflect.Descriptor instead.
+func (*AckChannelResponse) Descriptor() ([]byte, []int) {
+	return file_loomcycle_proto_rawDescGZIP(), []int{62}
+}
+
+func (x *AckChannelResponse) GetOk() bool {
+	if x != nil {
+		return x.Ok
+	}
+	return false
+}
+
 var File_loomcycle_proto protoreflect.FileDescriptor
 
 const file_loomcycle_proto_rawDesc = "" +
@@ -3973,7 +4567,55 @@ const file_loomcycle_proto_rawDesc = "" +
 	"\vstop_reason\x18\a \x01(\tR\n" +
 	"stopReason\x12\x14\n" +
 	"\x05error\x18\b \x01(\tR\x05error\x12\x0e\n" +
-	"\x02ts\x18\t \x01(\tR\x02ts2\xce\x0f\n" +
+	"\x02ts\x18\t \x01(\tR\x02ts\"\x9b\x01\n" +
+	"\x15PublishChannelRequest\x12\x18\n" +
+	"\achannel\x18\x01 \x01(\tR\achannel\x12\x14\n" +
+	"\x05scope\x18\x02 \x01(\tR\x05scope\x12\x19\n" +
+	"\bscope_id\x18\x03 \x01(\tR\ascopeId\x12\x18\n" +
+	"\apayload\x18\x04 \x01(\fR\apayload\x12\x1d\n" +
+	"\n" +
+	"deliver_at\x18\x05 \x01(\tR\tdeliverAt\"\x87\x01\n" +
+	"\x16PublishChannelResponse\x12\x15\n" +
+	"\x06msg_id\x18\x01 \x01(\tR\x05msgId\x12\x18\n" +
+	"\achannel\x18\x02 \x01(\tR\achannel\x12\x1d\n" +
+	"\n" +
+	"created_at\x18\x03 \x01(\tR\tcreatedAt\x12\x1d\n" +
+	"\n" +
+	"visible_at\x18\x04 \x01(\tR\tvisibleAt\"\xc1\x01\n" +
+	"\x17SubscribeChannelRequest\x12\x18\n" +
+	"\achannel\x18\x01 \x01(\tR\achannel\x12\x14\n" +
+	"\x05scope\x18\x02 \x01(\tR\x05scope\x12\x19\n" +
+	"\bscope_id\x18\x03 \x01(\tR\ascopeId\x12\x1f\n" +
+	"\vfrom_cursor\x18\x04 \x01(\tR\n" +
+	"fromCursor\x12!\n" +
+	"\fmax_messages\x18\x05 \x01(\x05R\vmaxMessages\x12\x17\n" +
+	"\await_ms\x18\x06 \x01(\x05R\x06waitMs\"\x8f\x01\n" +
+	"\x18SubscribeChannelResponse\x12\x18\n" +
+	"\achannel\x18\x01 \x01(\tR\achannel\x128\n" +
+	"\bmessages\x18\x02 \x03(\v2\x1c.loomcycle.v1.ChannelMessageR\bmessages\x12\x1f\n" +
+	"\vnext_cursor\x18\x03 \x01(\tR\n" +
+	"nextCursor\"Y\n" +
+	"\x0eChannelMessage\x12\x0e\n" +
+	"\x02id\x18\x01 \x01(\tR\x02id\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\fR\x05value\x12!\n" +
+	"\fpublished_at\x18\x03 \x01(\tR\vpublishedAt\"\xa3\x01\n" +
+	"\x12PeekChannelRequest\x12\x18\n" +
+	"\achannel\x18\x01 \x01(\tR\achannel\x12\x14\n" +
+	"\x05scope\x18\x02 \x01(\tR\x05scope\x12\x19\n" +
+	"\bscope_id\x18\x03 \x01(\tR\ascopeId\x12\x1f\n" +
+	"\vfrom_cursor\x18\x04 \x01(\tR\n" +
+	"fromCursor\x12!\n" +
+	"\fmax_messages\x18\x05 \x01(\x05R\vmaxMessages\"i\n" +
+	"\x13PeekChannelResponse\x12\x18\n" +
+	"\achannel\x18\x01 \x01(\tR\achannel\x128\n" +
+	"\bmessages\x18\x02 \x03(\v2\x1c.loomcycle.v1.ChannelMessageR\bmessages\"v\n" +
+	"\x11AckChannelRequest\x12\x18\n" +
+	"\achannel\x18\x01 \x01(\tR\achannel\x12\x14\n" +
+	"\x05scope\x18\x02 \x01(\tR\x05scope\x12\x19\n" +
+	"\bscope_id\x18\x03 \x01(\tR\ascopeId\x12\x16\n" +
+	"\x06cursor\x18\x04 \x01(\tR\x06cursor\"$\n" +
+	"\x12AckChannelResponse\x12\x0e\n" +
+	"\x02ok\x18\x01 \x01(\bR\x02ok2\xb3\x12\n" +
 	"\tLoomcycle\x126\n" +
 	"\x03Run\x12\x18.loomcycle.v1.RunRequest\x1a\x13.loomcycle.v1.Event0\x01\x12@\n" +
 	"\bContinue\x12\x1d.loomcycle.v1.ContinueRequest\x1a\x13.loomcycle.v1.Event0\x01\x12M\n" +
@@ -3999,7 +4641,12 @@ const file_loomcycle_proto_rawDesc = "" +
 	"\bSkillDef\x12\x1e.loomcycle.v1.SubstrateRequest\x1a\x1f.loomcycle.v1.SubstrateResponse\x12O\n" +
 	"\fMCPServerDef\x12\x1e.loomcycle.v1.SubstrateRequest\x1a\x1f.loomcycle.v1.SubstrateResponse\x12U\n" +
 	"\fListChannels\x12!.loomcycle.v1.ListChannelsRequest\x1a\".loomcycle.v1.ListChannelsResponse\x12^\n" +
-	"\x13StreamUserRunStates\x12(.loomcycle.v1.StreamUserRunStatesRequest\x1a\x1b.loomcycle.v1.RunStateEvent0\x01BLZJgithub.com/denn-gubsky/loomcycle/internal/api/grpc/loomcyclepb;loomcyclepbb\x06proto3"
+	"\x13StreamUserRunStates\x12(.loomcycle.v1.StreamUserRunStatesRequest\x1a\x1b.loomcycle.v1.RunStateEvent0\x01\x12[\n" +
+	"\x0ePublishChannel\x12#.loomcycle.v1.PublishChannelRequest\x1a$.loomcycle.v1.PublishChannelResponse\x12a\n" +
+	"\x10SubscribeChannel\x12%.loomcycle.v1.SubscribeChannelRequest\x1a&.loomcycle.v1.SubscribeChannelResponse\x12R\n" +
+	"\vPeekChannel\x12 .loomcycle.v1.PeekChannelRequest\x1a!.loomcycle.v1.PeekChannelResponse\x12O\n" +
+	"\n" +
+	"AckChannel\x12\x1f.loomcycle.v1.AckChannelRequest\x1a .loomcycle.v1.AckChannelResponseBLZJgithub.com/denn-gubsky/loomcycle/internal/api/grpc/loomcyclepb;loomcyclepbb\x06proto3"
 
 var (
 	file_loomcycle_proto_rawDescOnce sync.Once
@@ -4013,7 +4660,7 @@ func file_loomcycle_proto_rawDescGZIP() []byte {
 	return file_loomcycle_proto_rawDescData
 }
 
-var file_loomcycle_proto_msgTypes = make([]protoimpl.MessageInfo, 54)
+var file_loomcycle_proto_msgTypes = make([]protoimpl.MessageInfo, 63)
 var file_loomcycle_proto_goTypes = []any{
 	(*RunRequest)(nil),                 // 0: loomcycle.v1.RunRequest
 	(*ContinueRequest)(nil),            // 1: loomcycle.v1.ContinueRequest
@@ -4069,7 +4716,16 @@ var file_loomcycle_proto_goTypes = []any{
 	(*ChannelDescriptor)(nil),          // 51: loomcycle.v1.ChannelDescriptor
 	(*StreamUserRunStatesRequest)(nil), // 52: loomcycle.v1.StreamUserRunStatesRequest
 	(*RunStateEvent)(nil),              // 53: loomcycle.v1.RunStateEvent
-	(*timestamppb.Timestamp)(nil),      // 54: google.protobuf.Timestamp
+	(*PublishChannelRequest)(nil),      // 54: loomcycle.v1.PublishChannelRequest
+	(*PublishChannelResponse)(nil),     // 55: loomcycle.v1.PublishChannelResponse
+	(*SubscribeChannelRequest)(nil),    // 56: loomcycle.v1.SubscribeChannelRequest
+	(*SubscribeChannelResponse)(nil),   // 57: loomcycle.v1.SubscribeChannelResponse
+	(*ChannelMessage)(nil),             // 58: loomcycle.v1.ChannelMessage
+	(*PeekChannelRequest)(nil),         // 59: loomcycle.v1.PeekChannelRequest
+	(*PeekChannelResponse)(nil),        // 60: loomcycle.v1.PeekChannelResponse
+	(*AckChannelRequest)(nil),          // 61: loomcycle.v1.AckChannelRequest
+	(*AckChannelResponse)(nil),         // 62: loomcycle.v1.AckChannelResponse
+	(*timestamppb.Timestamp)(nil),      // 63: google.protobuf.Timestamp
 }
 var file_loomcycle_proto_depIdxs = []int32{
 	3,  // 0: loomcycle.v1.RunRequest.segments:type_name -> loomcycle.v1.PromptSegment
@@ -4082,74 +4738,84 @@ var file_loomcycle_proto_depIdxs = []int32{
 	9,  // 7: loomcycle.v1.Event.retry:type_name -> loomcycle.v1.Retry
 	6,  // 8: loomcycle.v1.Event.host_widening:type_name -> loomcycle.v1.HostWidening
 	12, // 9: loomcycle.v1.Transcript.events:type_name -> loomcycle.v1.TranscriptEvent
-	54, // 10: loomcycle.v1.TranscriptEvent.ts:type_name -> google.protobuf.Timestamp
-	54, // 11: loomcycle.v1.Agent.started_at:type_name -> google.protobuf.Timestamp
-	54, // 12: loomcycle.v1.Agent.completed_at:type_name -> google.protobuf.Timestamp
+	63, // 10: loomcycle.v1.TranscriptEvent.ts:type_name -> google.protobuf.Timestamp
+	63, // 11: loomcycle.v1.Agent.started_at:type_name -> google.protobuf.Timestamp
+	63, // 12: loomcycle.v1.Agent.completed_at:type_name -> google.protobuf.Timestamp
 	15, // 13: loomcycle.v1.Agent.usage:type_name -> loomcycle.v1.AgentUsage
-	54, // 14: loomcycle.v1.Agent.last_heartbeat_at:type_name -> google.protobuf.Timestamp
+	63, // 14: loomcycle.v1.Agent.last_heartbeat_at:type_name -> google.protobuf.Timestamp
 	14, // 15: loomcycle.v1.ListUserAgentsResponse.agents:type_name -> loomcycle.v1.Agent
-	54, // 16: loomcycle.v1.Hook.registered_at:type_name -> google.protobuf.Timestamp
+	63, // 16: loomcycle.v1.Hook.registered_at:type_name -> google.protobuf.Timestamp
 	25, // 17: loomcycle.v1.ListHooksResponse.hooks:type_name -> loomcycle.v1.Hook
-	54, // 18: loomcycle.v1.RuntimeStateResponse.paused_at:type_name -> google.protobuf.Timestamp
-	54, // 19: loomcycle.v1.CreateSnapshotRequest.since_ts:type_name -> google.protobuf.Timestamp
-	54, // 20: loomcycle.v1.SnapshotDescriptor.created_at:type_name -> google.protobuf.Timestamp
-	54, // 21: loomcycle.v1.SnapshotDescriptor.since_ts:type_name -> google.protobuf.Timestamp
+	63, // 18: loomcycle.v1.RuntimeStateResponse.paused_at:type_name -> google.protobuf.Timestamp
+	63, // 19: loomcycle.v1.CreateSnapshotRequest.since_ts:type_name -> google.protobuf.Timestamp
+	63, // 20: loomcycle.v1.SnapshotDescriptor.created_at:type_name -> google.protobuf.Timestamp
+	63, // 21: loomcycle.v1.SnapshotDescriptor.since_ts:type_name -> google.protobuf.Timestamp
 	36, // 22: loomcycle.v1.ListSnapshotsResponse.snapshots:type_name -> loomcycle.v1.SnapshotDescriptor
-	54, // 23: loomcycle.v1.SnapshotEnvelope.created_at:type_name -> google.protobuf.Timestamp
+	63, // 23: loomcycle.v1.SnapshotEnvelope.created_at:type_name -> google.protobuf.Timestamp
 	51, // 24: loomcycle.v1.ListChannelsResponse.channels:type_name -> loomcycle.v1.ChannelDescriptor
-	0,  // 25: loomcycle.v1.Loomcycle.Run:input_type -> loomcycle.v1.RunRequest
-	1,  // 26: loomcycle.v1.Loomcycle.Continue:input_type -> loomcycle.v1.ContinueRequest
-	10, // 27: loomcycle.v1.Loomcycle.GetTranscript:input_type -> loomcycle.v1.GetTranscriptRequest
-	13, // 28: loomcycle.v1.Loomcycle.GetAgent:input_type -> loomcycle.v1.GetAgentRequest
-	16, // 29: loomcycle.v1.Loomcycle.CancelAgent:input_type -> loomcycle.v1.CancelAgentRequest
-	18, // 30: loomcycle.v1.Loomcycle.ListUserAgents:input_type -> loomcycle.v1.ListUserAgentsRequest
-	20, // 31: loomcycle.v1.Loomcycle.Health:input_type -> loomcycle.v1.HealthRequest
-	22, // 32: loomcycle.v1.Loomcycle.RegisterHook:input_type -> loomcycle.v1.RegisterHookRequest
-	24, // 33: loomcycle.v1.Loomcycle.ListHooks:input_type -> loomcycle.v1.ListHooksRequest
-	27, // 34: loomcycle.v1.Loomcycle.DeleteHook:input_type -> loomcycle.v1.DeleteHookRequest
-	29, // 35: loomcycle.v1.Loomcycle.PauseRuntime:input_type -> loomcycle.v1.PauseRuntimeRequest
-	31, // 36: loomcycle.v1.Loomcycle.ResumeRuntime:input_type -> loomcycle.v1.ResumeRuntimeRequest
-	33, // 37: loomcycle.v1.Loomcycle.GetRuntimeState:input_type -> loomcycle.v1.GetRuntimeStateRequest
-	35, // 38: loomcycle.v1.Loomcycle.CreateSnapshot:input_type -> loomcycle.v1.CreateSnapshotRequest
-	37, // 39: loomcycle.v1.Loomcycle.ListSnapshots:input_type -> loomcycle.v1.ListSnapshotsRequest
-	39, // 40: loomcycle.v1.Loomcycle.GetSnapshot:input_type -> loomcycle.v1.GetSnapshotRequest
-	41, // 41: loomcycle.v1.Loomcycle.ExportSnapshot:input_type -> loomcycle.v1.ExportSnapshotRequest
-	43, // 42: loomcycle.v1.Loomcycle.RestoreSnapshot:input_type -> loomcycle.v1.RestoreSnapshotRequest
-	45, // 43: loomcycle.v1.Loomcycle.DeleteSnapshot:input_type -> loomcycle.v1.DeleteSnapshotRequest
-	47, // 44: loomcycle.v1.Loomcycle.AgentDef:input_type -> loomcycle.v1.SubstrateRequest
-	47, // 45: loomcycle.v1.Loomcycle.SkillDef:input_type -> loomcycle.v1.SubstrateRequest
-	47, // 46: loomcycle.v1.Loomcycle.MCPServerDef:input_type -> loomcycle.v1.SubstrateRequest
-	49, // 47: loomcycle.v1.Loomcycle.ListChannels:input_type -> loomcycle.v1.ListChannelsRequest
-	52, // 48: loomcycle.v1.Loomcycle.StreamUserRunStates:input_type -> loomcycle.v1.StreamUserRunStatesRequest
-	5,  // 49: loomcycle.v1.Loomcycle.Run:output_type -> loomcycle.v1.Event
-	5,  // 50: loomcycle.v1.Loomcycle.Continue:output_type -> loomcycle.v1.Event
-	11, // 51: loomcycle.v1.Loomcycle.GetTranscript:output_type -> loomcycle.v1.Transcript
-	14, // 52: loomcycle.v1.Loomcycle.GetAgent:output_type -> loomcycle.v1.Agent
-	17, // 53: loomcycle.v1.Loomcycle.CancelAgent:output_type -> loomcycle.v1.CancelAgentResponse
-	19, // 54: loomcycle.v1.Loomcycle.ListUserAgents:output_type -> loomcycle.v1.ListUserAgentsResponse
-	21, // 55: loomcycle.v1.Loomcycle.Health:output_type -> loomcycle.v1.HealthResponse
-	23, // 56: loomcycle.v1.Loomcycle.RegisterHook:output_type -> loomcycle.v1.RegisterHookResponse
-	26, // 57: loomcycle.v1.Loomcycle.ListHooks:output_type -> loomcycle.v1.ListHooksResponse
-	28, // 58: loomcycle.v1.Loomcycle.DeleteHook:output_type -> loomcycle.v1.DeleteHookResponse
-	30, // 59: loomcycle.v1.Loomcycle.PauseRuntime:output_type -> loomcycle.v1.PauseRuntimeResponse
-	32, // 60: loomcycle.v1.Loomcycle.ResumeRuntime:output_type -> loomcycle.v1.ResumeRuntimeResponse
-	34, // 61: loomcycle.v1.Loomcycle.GetRuntimeState:output_type -> loomcycle.v1.RuntimeStateResponse
-	36, // 62: loomcycle.v1.Loomcycle.CreateSnapshot:output_type -> loomcycle.v1.SnapshotDescriptor
-	38, // 63: loomcycle.v1.Loomcycle.ListSnapshots:output_type -> loomcycle.v1.ListSnapshotsResponse
-	40, // 64: loomcycle.v1.Loomcycle.GetSnapshot:output_type -> loomcycle.v1.SnapshotEnvelope
-	42, // 65: loomcycle.v1.Loomcycle.ExportSnapshot:output_type -> loomcycle.v1.ExportSnapshotResponse
-	44, // 66: loomcycle.v1.Loomcycle.RestoreSnapshot:output_type -> loomcycle.v1.RestoreSnapshotResponse
-	46, // 67: loomcycle.v1.Loomcycle.DeleteSnapshot:output_type -> loomcycle.v1.DeleteSnapshotResponse
-	48, // 68: loomcycle.v1.Loomcycle.AgentDef:output_type -> loomcycle.v1.SubstrateResponse
-	48, // 69: loomcycle.v1.Loomcycle.SkillDef:output_type -> loomcycle.v1.SubstrateResponse
-	48, // 70: loomcycle.v1.Loomcycle.MCPServerDef:output_type -> loomcycle.v1.SubstrateResponse
-	50, // 71: loomcycle.v1.Loomcycle.ListChannels:output_type -> loomcycle.v1.ListChannelsResponse
-	53, // 72: loomcycle.v1.Loomcycle.StreamUserRunStates:output_type -> loomcycle.v1.RunStateEvent
-	49, // [49:73] is the sub-list for method output_type
-	25, // [25:49] is the sub-list for method input_type
-	25, // [25:25] is the sub-list for extension type_name
-	25, // [25:25] is the sub-list for extension extendee
-	0,  // [0:25] is the sub-list for field type_name
+	58, // 25: loomcycle.v1.SubscribeChannelResponse.messages:type_name -> loomcycle.v1.ChannelMessage
+	58, // 26: loomcycle.v1.PeekChannelResponse.messages:type_name -> loomcycle.v1.ChannelMessage
+	0,  // 27: loomcycle.v1.Loomcycle.Run:input_type -> loomcycle.v1.RunRequest
+	1,  // 28: loomcycle.v1.Loomcycle.Continue:input_type -> loomcycle.v1.ContinueRequest
+	10, // 29: loomcycle.v1.Loomcycle.GetTranscript:input_type -> loomcycle.v1.GetTranscriptRequest
+	13, // 30: loomcycle.v1.Loomcycle.GetAgent:input_type -> loomcycle.v1.GetAgentRequest
+	16, // 31: loomcycle.v1.Loomcycle.CancelAgent:input_type -> loomcycle.v1.CancelAgentRequest
+	18, // 32: loomcycle.v1.Loomcycle.ListUserAgents:input_type -> loomcycle.v1.ListUserAgentsRequest
+	20, // 33: loomcycle.v1.Loomcycle.Health:input_type -> loomcycle.v1.HealthRequest
+	22, // 34: loomcycle.v1.Loomcycle.RegisterHook:input_type -> loomcycle.v1.RegisterHookRequest
+	24, // 35: loomcycle.v1.Loomcycle.ListHooks:input_type -> loomcycle.v1.ListHooksRequest
+	27, // 36: loomcycle.v1.Loomcycle.DeleteHook:input_type -> loomcycle.v1.DeleteHookRequest
+	29, // 37: loomcycle.v1.Loomcycle.PauseRuntime:input_type -> loomcycle.v1.PauseRuntimeRequest
+	31, // 38: loomcycle.v1.Loomcycle.ResumeRuntime:input_type -> loomcycle.v1.ResumeRuntimeRequest
+	33, // 39: loomcycle.v1.Loomcycle.GetRuntimeState:input_type -> loomcycle.v1.GetRuntimeStateRequest
+	35, // 40: loomcycle.v1.Loomcycle.CreateSnapshot:input_type -> loomcycle.v1.CreateSnapshotRequest
+	37, // 41: loomcycle.v1.Loomcycle.ListSnapshots:input_type -> loomcycle.v1.ListSnapshotsRequest
+	39, // 42: loomcycle.v1.Loomcycle.GetSnapshot:input_type -> loomcycle.v1.GetSnapshotRequest
+	41, // 43: loomcycle.v1.Loomcycle.ExportSnapshot:input_type -> loomcycle.v1.ExportSnapshotRequest
+	43, // 44: loomcycle.v1.Loomcycle.RestoreSnapshot:input_type -> loomcycle.v1.RestoreSnapshotRequest
+	45, // 45: loomcycle.v1.Loomcycle.DeleteSnapshot:input_type -> loomcycle.v1.DeleteSnapshotRequest
+	47, // 46: loomcycle.v1.Loomcycle.AgentDef:input_type -> loomcycle.v1.SubstrateRequest
+	47, // 47: loomcycle.v1.Loomcycle.SkillDef:input_type -> loomcycle.v1.SubstrateRequest
+	47, // 48: loomcycle.v1.Loomcycle.MCPServerDef:input_type -> loomcycle.v1.SubstrateRequest
+	49, // 49: loomcycle.v1.Loomcycle.ListChannels:input_type -> loomcycle.v1.ListChannelsRequest
+	52, // 50: loomcycle.v1.Loomcycle.StreamUserRunStates:input_type -> loomcycle.v1.StreamUserRunStatesRequest
+	54, // 51: loomcycle.v1.Loomcycle.PublishChannel:input_type -> loomcycle.v1.PublishChannelRequest
+	56, // 52: loomcycle.v1.Loomcycle.SubscribeChannel:input_type -> loomcycle.v1.SubscribeChannelRequest
+	59, // 53: loomcycle.v1.Loomcycle.PeekChannel:input_type -> loomcycle.v1.PeekChannelRequest
+	61, // 54: loomcycle.v1.Loomcycle.AckChannel:input_type -> loomcycle.v1.AckChannelRequest
+	5,  // 55: loomcycle.v1.Loomcycle.Run:output_type -> loomcycle.v1.Event
+	5,  // 56: loomcycle.v1.Loomcycle.Continue:output_type -> loomcycle.v1.Event
+	11, // 57: loomcycle.v1.Loomcycle.GetTranscript:output_type -> loomcycle.v1.Transcript
+	14, // 58: loomcycle.v1.Loomcycle.GetAgent:output_type -> loomcycle.v1.Agent
+	17, // 59: loomcycle.v1.Loomcycle.CancelAgent:output_type -> loomcycle.v1.CancelAgentResponse
+	19, // 60: loomcycle.v1.Loomcycle.ListUserAgents:output_type -> loomcycle.v1.ListUserAgentsResponse
+	21, // 61: loomcycle.v1.Loomcycle.Health:output_type -> loomcycle.v1.HealthResponse
+	23, // 62: loomcycle.v1.Loomcycle.RegisterHook:output_type -> loomcycle.v1.RegisterHookResponse
+	26, // 63: loomcycle.v1.Loomcycle.ListHooks:output_type -> loomcycle.v1.ListHooksResponse
+	28, // 64: loomcycle.v1.Loomcycle.DeleteHook:output_type -> loomcycle.v1.DeleteHookResponse
+	30, // 65: loomcycle.v1.Loomcycle.PauseRuntime:output_type -> loomcycle.v1.PauseRuntimeResponse
+	32, // 66: loomcycle.v1.Loomcycle.ResumeRuntime:output_type -> loomcycle.v1.ResumeRuntimeResponse
+	34, // 67: loomcycle.v1.Loomcycle.GetRuntimeState:output_type -> loomcycle.v1.RuntimeStateResponse
+	36, // 68: loomcycle.v1.Loomcycle.CreateSnapshot:output_type -> loomcycle.v1.SnapshotDescriptor
+	38, // 69: loomcycle.v1.Loomcycle.ListSnapshots:output_type -> loomcycle.v1.ListSnapshotsResponse
+	40, // 70: loomcycle.v1.Loomcycle.GetSnapshot:output_type -> loomcycle.v1.SnapshotEnvelope
+	42, // 71: loomcycle.v1.Loomcycle.ExportSnapshot:output_type -> loomcycle.v1.ExportSnapshotResponse
+	44, // 72: loomcycle.v1.Loomcycle.RestoreSnapshot:output_type -> loomcycle.v1.RestoreSnapshotResponse
+	46, // 73: loomcycle.v1.Loomcycle.DeleteSnapshot:output_type -> loomcycle.v1.DeleteSnapshotResponse
+	48, // 74: loomcycle.v1.Loomcycle.AgentDef:output_type -> loomcycle.v1.SubstrateResponse
+	48, // 75: loomcycle.v1.Loomcycle.SkillDef:output_type -> loomcycle.v1.SubstrateResponse
+	48, // 76: loomcycle.v1.Loomcycle.MCPServerDef:output_type -> loomcycle.v1.SubstrateResponse
+	50, // 77: loomcycle.v1.Loomcycle.ListChannels:output_type -> loomcycle.v1.ListChannelsResponse
+	53, // 78: loomcycle.v1.Loomcycle.StreamUserRunStates:output_type -> loomcycle.v1.RunStateEvent
+	55, // 79: loomcycle.v1.Loomcycle.PublishChannel:output_type -> loomcycle.v1.PublishChannelResponse
+	57, // 80: loomcycle.v1.Loomcycle.SubscribeChannel:output_type -> loomcycle.v1.SubscribeChannelResponse
+	60, // 81: loomcycle.v1.Loomcycle.PeekChannel:output_type -> loomcycle.v1.PeekChannelResponse
+	62, // 82: loomcycle.v1.Loomcycle.AckChannel:output_type -> loomcycle.v1.AckChannelResponse
+	55, // [55:83] is the sub-list for method output_type
+	27, // [27:55] is the sub-list for method input_type
+	27, // [27:27] is the sub-list for extension type_name
+	27, // [27:27] is the sub-list for extension extendee
+	0,  // [0:27] is the sub-list for field type_name
 }
 
 func init() { file_loomcycle_proto_init() }
@@ -4163,7 +4829,7 @@ func file_loomcycle_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_loomcycle_proto_rawDesc), len(file_loomcycle_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   54,
+			NumMessages:   63,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

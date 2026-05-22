@@ -45,7 +45,15 @@ import type {
   InterruptListResponse,
   InterruptStatus,
   ListAgentsResponse,
+  AckChannelOptions,
+  ChannelAckResult,
+  ChannelPeekResult,
+  ChannelPublishResult,
+  ChannelSubscribeResult,
   ListChannelsResponse,
+  PeekChannelOptions,
+  PublishChannelOptions,
+  SubscribeChannelOptions,
   ListHooksResponse,
   ListUsersResponse,
   MemoryEntriesResponse,
@@ -633,6 +641,101 @@ export class LoomcycleClient {
     );
   }
 
+  // ---- v0.9.x Channel CRUD ----
+  //
+  // Four bearer-authed ops mirroring the in-band Channel tool's
+  // publish/subscribe/peek/ack. Two URL families behind the
+  // `scope` field:
+  //   - scope: "global" → POST /v1/_channels/{name}/{op} (admin)
+  //   - scope: "user"   → POST /v1/users/{userId}/channels/{name}/{op}
+  //
+  // The same operator bearer token guards both surfaces; the per-user
+  // URL embeds the user_id in the path so a caller can't forge a
+  // different user_id by lying in the body.
+  //
+  // Subscribe is a SINGLE-ROUND-TRIP long-poll, not an open stream.
+  // For continuous delivery, call `subscribeChannel` in a loop (the
+  // n8n trigger node's pattern). Auto-commits the cursor on non-empty
+  // batches (at-most-once shape) — use `peekChannel` + explicit
+  // `ackChannel` for at-least-once semantics.
+
+  /** Publish a JSON payload to an operator-declared channel. Mirrors
+   *  the in-band Channel tool's publish op semantics — including
+   *  deferred delivery via `deliverAt` (RFC3339Nano).
+   *
+   *  Errors:
+   *  - {@link NotFoundError} (404) when the channel isn't in operator
+   *    yaml. The wire `code` is `channel_not_declared`.
+   *  - {@link InvalidArgumentError} (400) on invalid scope / payload.
+   *  - {@link AuthError} (401) on bearer mismatch. */
+  async publishChannel(
+    channel: string,
+    opts: PublishChannelOptions,
+  ): Promise<ChannelPublishResult> {
+    const path = channelOpPath(channel, opts.scope, opts.userId, "publish");
+    const body: Record<string, unknown> = { payload: opts.payload };
+    if (opts.deliverAt) body.deliver_at = opts.deliverAt;
+    return postJSON<ChannelPublishResult>(this.ctx, path, body, {
+      signal: opts.signal,
+    });
+  }
+
+  /** Read the next batch of messages from a channel. Single-round-
+   *  trip long-poll: returns immediately if messages are present,
+   *  otherwise waits up to `waitMs` for a publish. AUTO-COMMITS the
+   *  cursor on a non-empty batch.
+   *
+   *  For at-least-once delivery (crash safety between "loomcycle
+   *  returned the batch" and "consumer finished processing"), use
+   *  {@link LoomcycleClient.peekChannel} + an explicit
+   *  {@link LoomcycleClient.ackChannel} after durable processing. */
+  async subscribeChannel(
+    channel: string,
+    opts: SubscribeChannelOptions,
+  ): Promise<ChannelSubscribeResult> {
+    const path = channelOpPath(channel, opts.scope, opts.userId, "subscribe");
+    const body: Record<string, unknown> = {};
+    if (opts.fromCursor !== undefined) body.from_cursor = opts.fromCursor;
+    if (opts.maxMessages !== undefined) body.max_messages = opts.maxMessages;
+    if (opts.waitMs !== undefined) body.wait_ms = opts.waitMs;
+    return postJSON<ChannelSubscribeResult>(this.ctx, path, body, {
+      signal: opts.signal,
+    });
+  }
+
+  /** Non-destructive read — never advances the committed cursor.
+   *  Use for at-least-once consumption patterns: peek, process the
+   *  batch durably, then `ackChannel` to advance. Multiple consumers
+   *  can peek the same channel without disturbing each other. */
+  async peekChannel(
+    channel: string,
+    opts: PeekChannelOptions,
+  ): Promise<ChannelPeekResult> {
+    let path = channelOpPath(channel, opts.scope, opts.userId, "peek");
+    const params: string[] = [];
+    if (opts.fromCursor) params.push(`from_cursor=${encodeURIComponent(opts.fromCursor)}`);
+    if (opts.maxMessages) params.push(`max_messages=${opts.maxMessages}`);
+    if (params.length > 0) path += `?${params.join("&")}`;
+    return jsonFetch<ChannelPeekResult>(this.ctx, path, { signal: opts.signal });
+  }
+
+  /** Advance the committed cursor for a (channel, scope, scope_id)
+   *  tuple. Cursor must be monotonically forward — older cursors
+   *  raise a {@link ConflictError} (HTTP 409, code
+   *  `channel_cursor_regression`). */
+  async ackChannel(
+    channel: string,
+    opts: AckChannelOptions,
+  ): Promise<ChannelAckResult> {
+    const path = channelOpPath(channel, opts.scope, opts.userId, "ack");
+    return postJSON<ChannelAckResult>(
+      this.ctx,
+      path,
+      { cursor: opts.cursor },
+      { signal: opts.signal },
+    );
+  }
+
   /** Subscribe to run state transitions for one user_id via SSE.
    *  Yields one `{ kind: "open", ... }` item first (confirms the
    *  connection is live), then one `{ kind: "event", ... }` per
@@ -735,4 +838,27 @@ async function* parseRunStateSSE(
       else if (line.startsWith("data:")) data = line.slice("data:".length).trim();
     }
   }
+}
+
+// channelOpPath builds the v0.9.x Channel CRUD URL. Two families:
+//   - scope === "global" → /v1/_channels/{channel}/{op}
+//   - scope === "user"   → /v1/users/{userId}/channels/{channel}/{op}
+// Channel name is URL-encoded so names containing slashes
+// ("findings/alpha", "_system/foo") survive transport.
+function channelOpPath(
+  channel: string,
+  scope: "global" | "user",
+  userId: string | undefined,
+  op: "publish" | "subscribe" | "peek" | "ack",
+): string {
+  const enc = encodeURIComponent(channel);
+  if (scope === "user") {
+    if (!userId) {
+      throw new Error(
+        `loomcycle: scope="user" requires opts.userId for the channel ${op} call`,
+      );
+    }
+    return `/v1/users/${encodeURIComponent(userId)}/channels/${enc}/${op}`;
+  }
+  return `/v1/_channels/${enc}/${op}`;
 }

@@ -62,6 +62,10 @@ const (
 	Loomcycle_MCPServerDef_FullMethodName        = "/loomcycle.v1.Loomcycle/MCPServerDef"
 	Loomcycle_ListChannels_FullMethodName        = "/loomcycle.v1.Loomcycle/ListChannels"
 	Loomcycle_StreamUserRunStates_FullMethodName = "/loomcycle.v1.Loomcycle/StreamUserRunStates"
+	Loomcycle_PublishChannel_FullMethodName      = "/loomcycle.v1.Loomcycle/PublishChannel"
+	Loomcycle_SubscribeChannel_FullMethodName    = "/loomcycle.v1.Loomcycle/SubscribeChannel"
+	Loomcycle_PeekChannel_FullMethodName         = "/loomcycle.v1.Loomcycle/PeekChannel"
+	Loomcycle_AckChannel_FullMethodName          = "/loomcycle.v1.Loomcycle/AckChannel"
 )
 
 // LoomcycleClient is the client API for Loomcycle service.
@@ -202,6 +206,24 @@ type LoomcycleClient interface {
 	// Server-streams one RunStateEvent per matching state transition
 	// until ctx cancels or the client closes the stream.
 	StreamUserRunStates(ctx context.Context, in *StreamUserRunStatesRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[RunStateEvent], error)
+	// ----- v0.9.x Channel CRUD (admin + per-user) -----
+	//
+	// Mirrors the four HTTP routes:
+	//
+	//	PublishChannel   → POST /v1/_channels/{name}/publish (and the
+	//	                    /v1/users/{user_id}/channels/... variant)
+	//	SubscribeChannel → POST /v1/_channels/{name}/subscribe (single-
+	//	                    round-trip long-poll; not streaming)
+	//	PeekChannel      → GET  /v1/_channels/{name}/peek (non-destructive)
+	//	AckChannel       → POST /v1/_channels/{name}/ack
+	//
+	// Scope + scope_id select the cursor namespace: scope="global" with
+	// empty scope_id addresses the admin surface; scope="user" with a
+	// non-empty scope_id addresses a per-end-user channel.
+	PublishChannel(ctx context.Context, in *PublishChannelRequest, opts ...grpc.CallOption) (*PublishChannelResponse, error)
+	SubscribeChannel(ctx context.Context, in *SubscribeChannelRequest, opts ...grpc.CallOption) (*SubscribeChannelResponse, error)
+	PeekChannel(ctx context.Context, in *PeekChannelRequest, opts ...grpc.CallOption) (*PeekChannelResponse, error)
+	AckChannel(ctx context.Context, in *AckChannelRequest, opts ...grpc.CallOption) (*AckChannelResponse, error)
 }
 
 type loomcycleClient struct {
@@ -479,6 +501,46 @@ func (c *loomcycleClient) StreamUserRunStates(ctx context.Context, in *StreamUse
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type Loomcycle_StreamUserRunStatesClient = grpc.ServerStreamingClient[RunStateEvent]
 
+func (c *loomcycleClient) PublishChannel(ctx context.Context, in *PublishChannelRequest, opts ...grpc.CallOption) (*PublishChannelResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(PublishChannelResponse)
+	err := c.cc.Invoke(ctx, Loomcycle_PublishChannel_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *loomcycleClient) SubscribeChannel(ctx context.Context, in *SubscribeChannelRequest, opts ...grpc.CallOption) (*SubscribeChannelResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SubscribeChannelResponse)
+	err := c.cc.Invoke(ctx, Loomcycle_SubscribeChannel_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *loomcycleClient) PeekChannel(ctx context.Context, in *PeekChannelRequest, opts ...grpc.CallOption) (*PeekChannelResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(PeekChannelResponse)
+	err := c.cc.Invoke(ctx, Loomcycle_PeekChannel_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *loomcycleClient) AckChannel(ctx context.Context, in *AckChannelRequest, opts ...grpc.CallOption) (*AckChannelResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(AckChannelResponse)
+	err := c.cc.Invoke(ctx, Loomcycle_AckChannel_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // LoomcycleServer is the server API for Loomcycle service.
 // All implementations must embed UnimplementedLoomcycleServer
 // for forward compatibility.
@@ -617,6 +679,24 @@ type LoomcycleServer interface {
 	// Server-streams one RunStateEvent per matching state transition
 	// until ctx cancels or the client closes the stream.
 	StreamUserRunStates(*StreamUserRunStatesRequest, grpc.ServerStreamingServer[RunStateEvent]) error
+	// ----- v0.9.x Channel CRUD (admin + per-user) -----
+	//
+	// Mirrors the four HTTP routes:
+	//
+	//	PublishChannel   → POST /v1/_channels/{name}/publish (and the
+	//	                    /v1/users/{user_id}/channels/... variant)
+	//	SubscribeChannel → POST /v1/_channels/{name}/subscribe (single-
+	//	                    round-trip long-poll; not streaming)
+	//	PeekChannel      → GET  /v1/_channels/{name}/peek (non-destructive)
+	//	AckChannel       → POST /v1/_channels/{name}/ack
+	//
+	// Scope + scope_id select the cursor namespace: scope="global" with
+	// empty scope_id addresses the admin surface; scope="user" with a
+	// non-empty scope_id addresses a per-end-user channel.
+	PublishChannel(context.Context, *PublishChannelRequest) (*PublishChannelResponse, error)
+	SubscribeChannel(context.Context, *SubscribeChannelRequest) (*SubscribeChannelResponse, error)
+	PeekChannel(context.Context, *PeekChannelRequest) (*PeekChannelResponse, error)
+	AckChannel(context.Context, *AckChannelRequest) (*AckChannelResponse, error)
 	mustEmbedUnimplementedLoomcycleServer()
 }
 
@@ -698,6 +778,18 @@ func (UnimplementedLoomcycleServer) ListChannels(context.Context, *ListChannelsR
 }
 func (UnimplementedLoomcycleServer) StreamUserRunStates(*StreamUserRunStatesRequest, grpc.ServerStreamingServer[RunStateEvent]) error {
 	return status.Error(codes.Unimplemented, "method StreamUserRunStates not implemented")
+}
+func (UnimplementedLoomcycleServer) PublishChannel(context.Context, *PublishChannelRequest) (*PublishChannelResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method PublishChannel not implemented")
+}
+func (UnimplementedLoomcycleServer) SubscribeChannel(context.Context, *SubscribeChannelRequest) (*SubscribeChannelResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method SubscribeChannel not implemented")
+}
+func (UnimplementedLoomcycleServer) PeekChannel(context.Context, *PeekChannelRequest) (*PeekChannelResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method PeekChannel not implemented")
+}
+func (UnimplementedLoomcycleServer) AckChannel(context.Context, *AckChannelRequest) (*AckChannelResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method AckChannel not implemented")
 }
 func (UnimplementedLoomcycleServer) mustEmbedUnimplementedLoomcycleServer() {}
 func (UnimplementedLoomcycleServer) testEmbeddedByValue()                   {}
@@ -1131,6 +1223,78 @@ func _Loomcycle_StreamUserRunStates_Handler(srv interface{}, stream grpc.ServerS
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type Loomcycle_StreamUserRunStatesServer = grpc.ServerStreamingServer[RunStateEvent]
 
+func _Loomcycle_PublishChannel_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(PublishChannelRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(LoomcycleServer).PublishChannel(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Loomcycle_PublishChannel_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(LoomcycleServer).PublishChannel(ctx, req.(*PublishChannelRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Loomcycle_SubscribeChannel_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SubscribeChannelRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(LoomcycleServer).SubscribeChannel(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Loomcycle_SubscribeChannel_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(LoomcycleServer).SubscribeChannel(ctx, req.(*SubscribeChannelRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Loomcycle_PeekChannel_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(PeekChannelRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(LoomcycleServer).PeekChannel(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Loomcycle_PeekChannel_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(LoomcycleServer).PeekChannel(ctx, req.(*PeekChannelRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Loomcycle_AckChannel_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(AckChannelRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(LoomcycleServer).AckChannel(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Loomcycle_AckChannel_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(LoomcycleServer).AckChannel(ctx, req.(*AckChannelRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // Loomcycle_ServiceDesc is the grpc.ServiceDesc for Loomcycle service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -1221,6 +1385,22 @@ var Loomcycle_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ListChannels",
 			Handler:    _Loomcycle_ListChannels_Handler,
+		},
+		{
+			MethodName: "PublishChannel",
+			Handler:    _Loomcycle_PublishChannel_Handler,
+		},
+		{
+			MethodName: "SubscribeChannel",
+			Handler:    _Loomcycle_SubscribeChannel_Handler,
+		},
+		{
+			MethodName: "PeekChannel",
+			Handler:    _Loomcycle_PeekChannel_Handler,
+		},
+		{
+			MethodName: "AckChannel",
+			Handler:    _Loomcycle_AckChannel_Handler,
 		},
 	},
 	Streams: []grpc.StreamDesc{

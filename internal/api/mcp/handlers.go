@@ -81,6 +81,16 @@ var handlersByName = map[string]toolHandler{
 	// v0.9.x n8n RFC Phase 0: channel listing + run-state streaming.
 	"list_channels":          handleListChannels,
 	"stream_user_run_states": handleStreamUserRunStates,
+
+	// v0.9.x Channel CRUD — admin + per-user publish / subscribe /
+	// peek / ack. Bearer-authed at the MCP server boundary; scope +
+	// scope_id in the args select the cursor namespace. Same wire
+	// semantics as the HTTP routes (single-round-trip long-poll for
+	// subscribe; non-destructive peek; monotonic-cursor ack).
+	"publish_channel":   handlePublishChannel,
+	"subscribe_channel": handleSubscribeChannel,
+	"peek_channel":      handlePeekChannel,
+	"ack_channel":       handleAckChannel,
 }
 
 func toolHandlerByName(name string) (toolHandler, bool) {
@@ -628,4 +638,74 @@ func handleDeleteHook(ctx context.Context, env *handlerEnv, args json.RawMessage
 		return toolErr("delete_hook: " + err.Error()), nil
 	}
 	return toolResultJSON(map[string]any{"deleted": p.ID}), nil
+}
+
+// --- v0.9.x Channel CRUD handlers ---
+//
+// Each takes the Connector request shape verbatim — scope + scope_id
+// + channel + op-specific fields. No URL-path-derived scope_id like
+// the HTTP per-user route family; MCP callers supply both scope and
+// scope_id directly. The MCP server is bearer-authed (LoomCycle MCP
+// server's stdio transport runs inside the operator's trust boundary)
+// so the cross-channel + cross-user reach is equivalent to the
+// admin HTTP routes.
+
+func handlePublishChannel(ctx context.Context, env *handlerEnv, args json.RawMessage) (*loommcp.CallToolResult, error) {
+	if env.connector == nil {
+		return nil, fmt.Errorf("publish_channel: no connector wired")
+	}
+	var req connector.ChannelPublishRequest
+	if err := json.Unmarshal(args, &req); err != nil {
+		return toolErr("invalid publish_channel arguments: " + err.Error()), nil
+	}
+	res, err := env.connector.PublishChannel(ctx, req)
+	if err != nil {
+		return toolErr("publish_channel: " + err.Error()), nil
+	}
+	return toolResultJSON(res), nil
+}
+
+func handleSubscribeChannel(ctx context.Context, env *handlerEnv, args json.RawMessage) (*loommcp.CallToolResult, error) {
+	if env.connector == nil {
+		return nil, fmt.Errorf("subscribe_channel: no connector wired")
+	}
+	var req connector.ChannelSubscribeRequest
+	if err := json.Unmarshal(args, &req); err != nil {
+		return toolErr("invalid subscribe_channel arguments: " + err.Error()), nil
+	}
+	res, err := env.connector.SubscribeChannel(ctx, req)
+	if err != nil {
+		return toolErr("subscribe_channel: " + err.Error()), nil
+	}
+	return toolResultJSON(res), nil
+}
+
+func handlePeekChannel(ctx context.Context, env *handlerEnv, args json.RawMessage) (*loommcp.CallToolResult, error) {
+	if env.connector == nil {
+		return nil, fmt.Errorf("peek_channel: no connector wired")
+	}
+	var req connector.ChannelPeekRequest
+	if err := json.Unmarshal(args, &req); err != nil {
+		return toolErr("invalid peek_channel arguments: " + err.Error()), nil
+	}
+	res, err := env.connector.PeekChannel(ctx, req)
+	if err != nil {
+		return toolErr("peek_channel: " + err.Error()), nil
+	}
+	return toolResultJSON(res), nil
+}
+
+func handleAckChannel(ctx context.Context, env *handlerEnv, args json.RawMessage) (*loommcp.CallToolResult, error) {
+	if env.connector == nil {
+		return nil, fmt.Errorf("ack_channel: no connector wired")
+	}
+	var req connector.ChannelAckRequest
+	if err := json.Unmarshal(args, &req); err != nil {
+		return toolErr("invalid ack_channel arguments: " + err.Error()), nil
+	}
+	res, err := env.connector.AckChannel(ctx, req)
+	if err != nil {
+		return toolErr("ack_channel: " + err.Error()), nil
+	}
+	return toolResultJSON(res), nil
 }

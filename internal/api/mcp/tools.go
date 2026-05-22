@@ -314,6 +314,69 @@ func toolDescriptors() []loommcp.ToolDescriptor {
 				}
 			}`),
 		},
+		// v0.9.x Channel CRUD — admin + per-user publish / subscribe /
+		// peek / ack. Mirrors the HTTP routes; scope + scope_id select
+		// the cursor namespace.
+		{
+			Name:        "publish_channel",
+			Description: "Publish a message to an operator-declared channel. scope is 'global' (admin surface) or 'user' (per-user, requires scope_id). payload is the JSON object/array/value to deliver. deliver_at (RFC3339Nano) defers the publish; subscribers wake at visible_at. Returns {msg_id, channel, created_at, visible_at?}.",
+			InputSchema: rawJSON(`{
+				"type": "object",
+				"required": ["channel", "scope", "payload"],
+				"properties": {
+					"channel":    {"type": "string"},
+					"scope":      {"type": "string", "enum": ["global", "user"]},
+					"scope_id":   {"type": "string"},
+					"payload":    {},
+					"deliver_at": {"type": "string"}
+				}
+			}`),
+		},
+		{
+			Name:        "subscribe_channel",
+			Description: "Read the next batch of messages from a channel. Single-round-trip long-poll: returns immediately if messages are present, otherwise waits up to wait_ms (capped at operator's ChannelsLongPollCapMS). Auto-commits the cursor on non-empty batch (at-most-once shape). Returns {channel, messages: [{id, value, published_at}...], next_cursor}.",
+			InputSchema: rawJSON(`{
+				"type": "object",
+				"required": ["channel", "scope"],
+				"properties": {
+					"channel":      {"type": "string"},
+					"scope":        {"type": "string", "enum": ["global", "user"]},
+					"scope_id":     {"type": "string"},
+					"from_cursor":  {"type": "string"},
+					"max_messages": {"type": "integer", "minimum": 1, "maximum": 100, "default": 10},
+					"wait_ms":      {"type": "integer", "minimum": 0, "default": 0}
+				}
+			}`),
+		},
+		{
+			Name:        "peek_channel",
+			Description: "Non-destructive read — never advances the committed cursor. Useful for at-least-once processing patterns (peek + explicit ack after durable processing). Returns {channel, messages: [...]}.",
+			InputSchema: rawJSON(`{
+				"type": "object",
+				"required": ["channel", "scope"],
+				"properties": {
+					"channel":      {"type": "string"},
+					"scope":        {"type": "string", "enum": ["global", "user"]},
+					"scope_id":     {"type": "string"},
+					"from_cursor":  {"type": "string"},
+					"max_messages": {"type": "integer", "minimum": 1, "maximum": 100, "default": 10}
+				}
+			}`),
+		},
+		{
+			Name:        "ack_channel",
+			Description: "Advance the committed cursor for a (channel, scope, scope_id) tuple. Cursor must be monotonically forward — older cursors return a channel_cursor_regression error. Returns {ok: true}.",
+			InputSchema: rawJSON(`{
+				"type": "object",
+				"required": ["channel", "scope", "cursor"],
+				"properties": {
+					"channel":  {"type": "string"},
+					"scope":    {"type": "string", "enum": ["global", "user"]},
+					"scope_id": {"type": "string"},
+					"cursor":   {"type": "string"}
+				}
+			}`),
+		},
 	}
 }
 
