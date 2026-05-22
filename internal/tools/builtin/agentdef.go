@@ -593,7 +593,20 @@ func (a *AgentDef) resolveAllowedToolsRoot(ctx context.Context, name string, par
 // also appears in `root`. Empty proposed = empty subset = OK (narrowing
 // to zero tools is allowed). Empty root = no permitted tools — proposed
 // must also be empty.
+//
+// Wildcard: a root containing "*" accepts any proposed list. Used by
+// the substrate-admin HTTP context (substrateAdminCtx) where the
+// operator's bearer-auth is the security boundary, not a per-agent
+// allowed_tools ceiling. Lineage roots (the v1 row's actual tool
+// list) never contain "*" — they're real tool names persisted by an
+// earlier `create`, so the fork narrowing check at lines 305 / 328
+// is unaffected.
 func assertAllowedToolsSubset(proposed, root []string) error {
+	for _, t := range root {
+		if t == "*" {
+			return nil
+		}
+	}
 	rootSet := make(map[string]bool, len(root))
 	for _, t := range root {
 		rootSet[t] = true

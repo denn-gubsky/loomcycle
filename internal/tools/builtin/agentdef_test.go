@@ -265,6 +265,26 @@ func TestAgentDefTool_CreateRefusedOnAllowedToolsWidening(t *testing.T) {
 	}
 }
 
+// Wildcard caller tools — used by the substrate-admin HTTP context
+// (substrateAdminCtx in internal/api/http/substrate_admin.go) so the
+// operator can register agents whose allowed_tools the operator
+// chooses, without first listing every per-tool name as their own
+// callerTools list. assertAllowedToolsSubset short-circuits on a
+// "*" entry in root.
+func TestAgentDefTool_CreateWithWildcardCallerToolsAllowsAnyOverlay(t *testing.T) {
+	tool, ctx, cleanup := agentDefFixture(t)
+	defer cleanup()
+
+	wildCtx := tools.WithAgentTools(ctx, []string{"*"})
+
+	// Operator picks a broad allowed_tools list — every entry should
+	// pass even though "*" alone is the caller's ceiling.
+	res, _ := tool.Execute(wildCtx, json.RawMessage(`{"op":"create","name":"opagent","overlay":{"allowed_tools":["Read","Write","WebFetch","Bash"]}}`))
+	if res.IsError {
+		t.Fatalf("create with wildcard ctx + arbitrary allowed_tools should pass; got %s", res.Text)
+	}
+}
+
 // Missing AgentTools(ctx) — runtime misconfiguration. With a
 // non-empty overlay AllowedTools, refuse rather than silently
 // allow the wider value.

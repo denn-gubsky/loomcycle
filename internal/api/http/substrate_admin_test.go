@@ -139,6 +139,58 @@ func TestSubstrateAdmin_AgentDef_MaxIterationsThreadsThrough(t *testing.T) {
 	}
 }
 
+// HTTP-admin AgentDef.create with a non-empty allowed_tools list
+// MUST succeed. Before the substrateAdminCtx wildcard fix, the
+// in-process tool refused with "caller's effective allowed_tools
+// not on ctx" because the admin context didn't set WithAgentTools,
+// blocking containerised callers (JobEmber) from registering their
+// agents at boot. Pin the contract so the regression has teeth.
+func TestSubstrateAdmin_AgentDef_CreateWithAllowedToolsSucceeds(t *testing.T) {
+	ts := substrateAdminFixture(t)
+	defer ts.Close()
+
+	body := `{"op":"create","name":"cv-adapter","overlay":{"system_prompt":"adapt the CV","allowed_tools":["Read","Write","WebFetch"]}}`
+	resp := postAdmin(t, ts, "/v1/_agentdef", body)
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		raw, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d, want 200; body=%s", resp.StatusCode, raw)
+	}
+	var out map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if out["name"] != "cv-adapter" {
+		t.Errorf("name = %v, want cv-adapter", out["name"])
+	}
+	if out["version"].(float64) != 1 {
+		t.Errorf("version = %v, want 1", out["version"])
+	}
+}
+
+// Mirror test for SkillDef — same gap, same fix. Skills with their
+// own allowed_tools (e.g. position-relevance-filtering carries
+// mcp__jobs__matchUserLocations) must register over HTTP admin.
+func TestSubstrateAdmin_SkillDef_CreateWithAllowedToolsSucceeds(t *testing.T) {
+	ts := substrateAdminFixture(t)
+	defer ts.Close()
+
+	body := `{"op":"create","name":"position-relevance-filtering","overlay":{"body":"Evaluate postings.","allowed_tools":["Read","WebFetch"]}}`
+	resp := postAdmin(t, ts, "/v1/_skilldef", body)
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		raw, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d, want 200; body=%s", resp.StatusCode, raw)
+	}
+	var out map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if out["name"] != "position-relevance-filtering" {
+		t.Errorf("name = %v, want position-relevance-filtering", out["name"])
+	}
+}
+
 func TestSubstrateAdmin_RejectsMalformedBody(t *testing.T) {
 	ts := substrateAdminFixture(t)
 	defer ts.Close()
