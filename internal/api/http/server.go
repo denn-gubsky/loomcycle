@@ -1341,6 +1341,14 @@ func (s *Server) Mux() http.Handler {
 	mux.Handle("GET /v1/_agentdef/names", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleListAgentDefNames))))
 	mux.Handle("GET /v1/_skilldef/names", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleListSkillDefNames))))
 	mux.Handle("GET /v1/_mcpserverdef/names", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleListMCPServerDefNames))))
+	// v0.9.x Library v2 — unified enumeration that merges static cfg
+	// + substrate views into one envelope per entry. The names/* sister
+	// endpoints above stay as-is for backwards compat with external
+	// adapter consumers; these new endpoints back the /ui/library v2
+	// tab which shows STATIC + DYNAMIC entries with source chips.
+	mux.Handle("GET /v1/_library/agents", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleListLibraryAgents))))
+	mux.Handle("GET /v1/_library/skills", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleListLibrarySkills))))
+	mux.Handle("GET /v1/_library/mcp-servers", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleListLibraryMcpServers))))
 	// v0.9.x Introspection — channels an agent has cursored on
 	// (scope=agent, scope_id={agent_name}). Drives the Web UI's
 	// per-agent "channels this agent is subscribed to" sub-tab.
