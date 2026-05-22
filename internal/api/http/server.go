@@ -451,8 +451,9 @@ func (s *Server) resolveAgent(agentName, userTier string) (providerID, model, ef
 }
 
 // lookupAgent returns the AgentDef for a registered agent name,
-// consulting static cfg.Agents first and then v0.8.15 dynamic_agents.
-// Returns (zero AgentDef, false) when neither source has the name.
+// consulting static cfg.Agents first, then the v0.8.15 dynamic_agents
+// table, then the v0.8.22 substrate registry (agent_def_active +
+// agent_defs). Returns (zero AgentDef, false) when no source has it.
 //
 // Centralizing the lookup here is the antidote to the v0.8.15
 // regression where each entry point (RunOnce / handleRuns / handle
@@ -465,6 +466,15 @@ func (s *Server) resolveAgent(agentName, userTier string) (providerID, model, ef
 // TTL filtering happens server-side in store.DynamicAgentGet, so a
 // row whose expires_at has passed surfaces as derr (not found).
 // Malformed Definition JSON also falls through to (zero, false).
+//
+// Substrate fallback (v0.8.22+): agents registered via POST
+// /v1/_agentdef land in `agent_defs` + `agent_def_active`, NOT in
+// dynamic_agents. Without the third tier here those agents are
+// invisible to /v1/runs even though `list` / `verify` / `get`
+// confirm they exist — a "registered but unknown" paradox surfaced
+// by the JobEmber boot-sync (PR #69 downstream) which only writes
+// to the substrate. Same JSON shape (mergedDef <:> mutable subset
+// of config.AgentDef), so json.Unmarshal slots in cleanly.
 func (s *Server) lookupAgent(ctx context.Context, name string) (config.AgentDef, bool) {
 	if def, ok := s.cfg.Agents[name]; ok {
 		return def, true
@@ -472,15 +482,70 @@ func (s *Server) lookupAgent(ctx context.Context, name string) (config.AgentDef,
 	if s.store == nil {
 		return config.AgentDef{}, false
 	}
-	row, err := s.store.DynamicAgentGet(ctx, name)
+	if row, err := s.store.DynamicAgentGet(ctx, name); err == nil {
+		var def config.AgentDef
+		if uerr := json.Unmarshal(row.Definition, &def); uerr == nil {
+			return def, true
+		}
+	}
+	activeRow, err := s.store.AgentDefGetActive(ctx, name)
 	if err != nil {
 		return config.AgentDef{}, false
 	}
-	var def config.AgentDef
-	if uerr := json.Unmarshal(row.Definition, &def); uerr != nil {
+	var sd substrateAgentDef
+	if uerr := json.Unmarshal(activeRow.Definition, &sd); uerr != nil {
 		return config.AgentDef{}, false
 	}
-	return def, true
+	return sd.toConfigDef(), true
+}
+
+// substrateAgentDef mirrors the JSON shape `AgentDef.create` persists
+// in agent_defs.definition (snake_case via the json struct tags on
+// mergedDef in internal/tools/builtin/agentdef.go). Unmarshalling
+// substrate JSON directly into config.AgentDef silently drops every
+// field because config.AgentDef carries only yaml tags — json.Unmarshal
+// then matches Go field names ("SystemPrompt", "AllowedTools", …) and
+// none of the snake_case keys land. This local struct + toConfigDef
+// adapter is the seam that converts the substrate's JSON shape to
+// the in-process config.AgentDef the rest of the runtime expects.
+//
+// Kept in sync with mergedDef (same field set, same json tags). The
+// TestLookupAgent_FallsThroughToSubstrate test pins a representative
+// subset — a future field added to mergedDef without a matching
+// addition here would silently drop on resolve, mirroring the bug
+// this struct exists to fix.
+type substrateAgentDef struct {
+	Provider         string                            `json:"provider,omitempty"`
+	Model            string                            `json:"model,omitempty"`
+	Tier             string                            `json:"tier,omitempty"`
+	Effort           string                            `json:"effort,omitempty"`
+	MaxTokens        int                               `json:"max_tokens,omitempty"`
+	MaxIterations    int                               `json:"max_iterations,omitempty"`
+	SystemPrompt     string                            `json:"system_prompt,omitempty"`
+	AllowedTools     []string                          `json:"allowed_tools,omitempty"`
+	Skills           []string                          `json:"skills,omitempty"`
+	Providers        []string                          `json:"providers,omitempty"`
+	Models           map[string][]config.TierCandidate `json:"models,omitempty"`
+	MemoryScopes     []string                          `json:"memory_scopes,omitempty"`
+	MemoryQuotaBytes int                               `json:"memory_quota_bytes,omitempty"`
+}
+
+func (s substrateAgentDef) toConfigDef() config.AgentDef {
+	return config.AgentDef{
+		Provider:         s.Provider,
+		Model:            s.Model,
+		Tier:             s.Tier,
+		Effort:           s.Effort,
+		MaxTokens:        s.MaxTokens,
+		MaxIterations:    s.MaxIterations,
+		SystemPrompt:     s.SystemPrompt,
+		AllowedTools:     s.AllowedTools,
+		Skills:           s.Skills,
+		Providers:        s.Providers,
+		Models:           s.Models,
+		MemoryScopes:     s.MemoryScopes,
+		MemoryQuotaBytes: s.MemoryQuotaBytes,
+	}
 }
 
 // resolveAgentDef mirrors resolveAgent but takes a caller-supplied
