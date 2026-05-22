@@ -130,6 +130,19 @@ func substrateAdminCtx(ctx context.Context) context.Context {
 		AgentID: substrateAdminAgentID,
 	})
 	ctx = tools.WithAgentName(ctx, substrateAdminAgentName)
+	// AgentTools wildcard: substrate admin = operator trust. Without
+	// this, AgentDef.create / SkillDef.create with a non-empty
+	// allowed_tools overlay refuse with "caller's effective
+	// allowed_tools not on ctx (runtime misconfiguration)" because
+	// the create-time ceiling check (assertAllowedToolsSubset against
+	// callerTools) treats a nil callerTools as "unknown ceiling →
+	// refuse". For operator-trust paths the operator is the security
+	// boundary (bearer-authed /v1/_*), so attach a wildcard ceiling
+	// the subset check recognises. Regular per-run contexts continue
+	// to set WithAgentTools to the agent's actual allowed_tools list,
+	// so the capability-escalation guard for in-loop AgentDef calls
+	// is unchanged.
+	ctx = tools.WithAgentTools(ctx, []string{"*"})
 	// Memory: full scope access. QuotaBytes=0 falls back to the
 	// global default (LOOMCYCLE_MEMORY_MAX_SCOPE_BYTES).
 	ctx = tools.WithMemoryPolicy(ctx, tools.MemoryPolicyValue{
