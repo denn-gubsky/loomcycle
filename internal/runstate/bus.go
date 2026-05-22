@@ -58,9 +58,9 @@ func (s *subscription) DroppedEvents() int64 {
 
 // Bus is the in-process run-state pub/sub.
 type Bus struct {
-	mu          sync.Mutex
-	byUser      map[string][]*subscription
-	bufferSize  int
+	mu         sync.Mutex
+	byUser     map[string][]*subscription
+	bufferSize int
 }
 
 // NewBus returns a fresh, empty bus. Single instance per loomcycle

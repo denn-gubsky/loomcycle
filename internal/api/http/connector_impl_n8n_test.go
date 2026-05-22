@@ -80,7 +80,7 @@ func TestConnector_StreamUserRunStates_VisitsMatchingEvents(t *testing.T) {
 	// sleep — under the race detector a 20ms sleep is unreliable.
 	waitForSubscriber(t, bus)
 
-	bus.Publish(runstate.RunStateEvent{RunID: "r1", UserID: "user-a", Status: "running"})  // filtered out
+	bus.Publish(runstate.RunStateEvent{RunID: "r1", UserID: "user-a", Status: "running"})   // filtered out
 	bus.Publish(runstate.RunStateEvent{RunID: "r2", UserID: "user-a", Status: "completed"}) // passes
 	bus.Publish(runstate.RunStateEvent{RunID: "r3", UserID: "user-b", Status: "completed"}) // wrong user
 

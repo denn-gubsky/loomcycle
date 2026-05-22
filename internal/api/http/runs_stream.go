@@ -13,8 +13,9 @@
 // publisher being a finishRun* call site we MUST NEVER stall).
 //
 // Filter shape (all optional):
-//   ?status=running,completed,failed,cancelled   — comma-separated allowlist
-//   ?agent=<name>                                 — exact-match agent name
+//
+//	?status=running,completed,failed,cancelled   — comma-separated allowlist
+//	?agent=<name>                                 — exact-match agent name
 //
 // Filters apply at the handler (not the bus) so the bus stays
 // uniform across all subscribers and the same Subscription is
@@ -72,10 +73,10 @@ func parseStreamFilter(userID string, q map[string][]string) connector.StreamUse
 // Failure modes:
 //   - missing user_id path arg     → 400 invalid_request
 //   - writer doesn't support SSE   → 500 sse_not_supported (rare; most
-//                                     test recorders DO support Flusher)
+//     test recorders DO support Flusher)
 //   - runStateBus not configured   → 503 stream_unavailable (operator
-//                                     wired loomcycle without the bus;
-//                                     defensive — main.go always wires it)
+//     wired loomcycle without the bus;
+//     defensive — main.go always wires it)
 func (s *Server) handleStreamUserAgents(w http.ResponseWriter, r *http.Request) {
 	userID := r.PathValue("user_id")
 	if userID == "" {

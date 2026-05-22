@@ -453,12 +453,12 @@ func (a *AgentDef) execVerify(ctx context.Context, policy tools.AgentDefPolicyVa
 		if errors.As(err, &nf) {
 			// Name not promoted → no deployed version → never matches.
 			return okJSON(map[string]any{
-				"matches":         false,
-				"current_sha256":  "",
-				"current_def_id":  "",
-				"version":         0,
-				"name":            in.Name,
-				"deployed":        false,
+				"matches":        false,
+				"current_sha256": "",
+				"current_def_id": "",
+				"version":        0,
+				"name":           in.Name,
+				"deployed":       false,
 			})
 		}
 		return errResult(fmt.Sprintf("verify: %s", err)), nil
