@@ -161,14 +161,40 @@ function LineageNodeRow({
   const isSelected = node.row.def_id === selectedDefID;
   const row = node.row;
 
+  // Whole-row click toggles content visibility (when renderDefinition is
+  // wired) AND records selection (highlights + auto-expands ancestors).
+  // The tree caret for parent/child collapse stays separate — its own
+  // click stops propagation so it never accidentally toggles content.
+  const handleRowClick = () => {
+    onSelect?.(row.def_id);
+    if (renderDefinition) toggleDetail(row.def_id);
+  };
+  const handleRowKey = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      handleRowClick();
+    }
+  };
+
   return (
     <li className={isSelected ? "lineage-row lineage-row-selected" : "lineage-row"}>
-      <div className="lineage-row-line" style={{ paddingLeft: `${depth * 16}px` }}>
+      <div
+        className="lineage-row-line"
+        style={{ paddingLeft: `${depth * 16}px` }}
+        onClick={handleRowClick}
+        onKeyDown={handleRowKey}
+        role={renderDefinition ? "button" : undefined}
+        tabIndex={renderDefinition ? 0 : undefined}
+        aria-expanded={renderDefinition ? isDetailOpen : undefined}
+      >
         {hasChildren ? (
           <button
             type="button"
             className="lineage-caret"
-            onClick={() => toggleExpanded(row.def_id)}
+            onClick={(e) => {
+              e.stopPropagation();
+              toggleExpanded(row.def_id);
+            }}
             aria-label={isExpanded ? "Collapse" : "Expand"}
           >
             {isExpanded ? "▾" : "▸"}
@@ -176,11 +202,7 @@ function LineageNodeRow({
         ) : (
           <span className="lineage-caret lineage-caret-empty">·</span>
         )}
-        <button
-          type="button"
-          className="lineage-row-button"
-          onClick={() => onSelect?.(row.def_id)}
-        >
+        <span className="lineage-row-content">
           {row.version === 0 && row.def_id.startsWith("static:") ? (
             <span className="lineage-version">static</span>
           ) : (
@@ -195,18 +217,14 @@ function LineageNodeRow({
             <span className="def-chip def-chip-bootstrap">bootstrapped</span>
           )}
           <span className="lineage-defid mono">{shortDefID(row.def_id)}</span>
-        </button>
+        </span>
         {renderDefinition && (
-          <button
-            type="button"
-            className="lineage-content-toggle"
-            onClick={() => toggleDetail(row.def_id)}
-            aria-expanded={isDetailOpen}
-            aria-label={isDetailOpen ? "Hide content" : "Show content"}
-            title={isDetailOpen ? "Hide content" : "Show content"}
+          <span
+            className="lineage-content-indicator"
+            aria-hidden="true"
           >
             {isDetailOpen ? "▾" : "▸"} content
-          </button>
+          </span>
         )}
       </div>
       {isDetailOpen && renderDefinition && (
