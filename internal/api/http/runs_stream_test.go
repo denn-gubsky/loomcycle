@@ -231,24 +231,28 @@ func TestStreamUserAgents_503WhenBusUnwired(t *testing.T) {
 	}
 }
 
-func TestParseRunStateFilter_AcceptsCommaSeparated(t *testing.T) {
-	f := parseRunStateFilter(map[string][]string{"status": {"running,completed,failed"}})
-	if len(f.statuses) != 3 {
-		t.Fatalf("got %d statuses, want 3: %v", len(f.statuses), f.statuses)
+func TestParseStreamFilter_AcceptsCommaSeparated(t *testing.T) {
+	req := parseStreamFilter("user-a", map[string][]string{"status": {"running,completed,failed"}})
+	if req.UserID != "user-a" {
+		t.Errorf("user_id = %q, want user-a", req.UserID)
 	}
-	for _, s := range []string{"running", "completed", "failed"} {
-		if !f.statuses[s] {
-			t.Errorf("status %q missing", s)
+	if len(req.Statuses) != 3 {
+		t.Fatalf("got %d statuses, want 3: %v", len(req.Statuses), req.Statuses)
+	}
+	want := map[string]bool{"running": true, "completed": true, "failed": true}
+	for _, s := range req.Statuses {
+		if !want[s] {
+			t.Errorf("status %q not expected", s)
 		}
 	}
 }
 
-func TestParseRunStateFilter_MatchesEverythingWhenEmpty(t *testing.T) {
-	f := parseRunStateFilter(map[string][]string{})
-	if !f.matches(runstate.RunStateEvent{Status: "running"}) {
-		t.Error("zero filter should match")
+func TestParseStreamFilter_EmptyMeansNoFilter(t *testing.T) {
+	req := parseStreamFilter("user-a", map[string][]string{})
+	if len(req.Statuses) != 0 {
+		t.Errorf("expected empty statuses, got %v", req.Statuses)
 	}
-	if !f.matches(runstate.RunStateEvent{Status: "completed", Agent: "any"}) {
-		t.Error("zero filter should match")
+	if req.Agent != "" {
+		t.Errorf("expected empty agent, got %q", req.Agent)
 	}
 }

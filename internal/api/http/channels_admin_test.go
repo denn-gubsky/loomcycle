@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/denn-gubsky/loomcycle/internal/connector"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 )
 
@@ -20,14 +21,14 @@ func TestListChannels_ReturnsDeclaredWithZeroCounts(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
 	}
-	var resp channelsListResponse
+	var resp connector.ListChannelsResponse
 	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
 	if len(resp.Channels) != 2 {
 		t.Fatalf("got %d channels, want 2 (the two declared in fixture): %+v", len(resp.Channels), resp.Channels)
 	}
-	names := map[string]ChannelDescriptor{}
+	names := map[string]connector.ChannelDescriptor{}
 	for _, c := range resp.Channels {
 		names[c.Name] = c
 	}
@@ -63,7 +64,7 @@ func TestListChannels_PopulatesCountsAfterPublish(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, body=%s", rec.Code, rec.Body.String())
 	}
-	var resp channelsListResponse
+	var resp connector.ListChannelsResponse
 	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
@@ -72,7 +73,7 @@ func TestListChannels_PopulatesCountsAfterPublish(t *testing.T) {
 			if c.MessageCount != 2 {
 				t.Errorf("message_count = %d, want 2", c.MessageCount)
 			}
-			if c.OldestVisibleAt.IsZero() || c.NewestVisibleAt.IsZero() {
+			if c.OldestVisibleAt == "" || c.NewestVisibleAt == "" {
 				t.Errorf("visible_at bounds should be populated: %+v", c)
 			}
 			return

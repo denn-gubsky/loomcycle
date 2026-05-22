@@ -804,6 +804,12 @@ func (m *mockConnector) ListHooks(context.Context) (connector.ListHooksResponse,
 	return connector.ListHooksResponse{}, nil
 }
 func (m *mockConnector) DeleteHook(context.Context, string) error { return nil }
+func (m *mockConnector) ListChannels(context.Context) (connector.ListChannelsResponse, error) {
+	return connector.ListChannelsResponse{}, nil
+}
+func (m *mockConnector) StreamUserRunStates(context.Context, connector.StreamUserRunStatesRequest, connector.RunStateVisitor) error {
+	return nil
+}
 
 // TestGrpcServer_CancelAgent_DispatchesThroughConnector is the v0.8.15
 // regression guard: when the gRPC Server is wired with a Connector,

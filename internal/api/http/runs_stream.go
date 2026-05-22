@@ -27,7 +27,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/denn-gubsky/loomcycle/internal/runstate"
+	"github.com/denn-gubsky/loomcycle/internal/connector"
 )
 
 const (
@@ -43,40 +43,27 @@ const (
 	streamMaxLifetime = 30 * time.Minute
 )
 
-// runStateFilter is the per-request filter parsed from query params.
-// A zero filter matches every event.
-type runStateFilter struct {
-	statuses map[string]bool
-	agent    string
-}
-
-func parseRunStateFilter(q map[string][]string) runStateFilter {
-	f := runStateFilter{}
+// parseStreamFilter converts URL query params to a
+// connector.StreamUserRunStatesRequest. `?status=...,...` is
+// comma-decomposed; `?agent=<name>` is taken literally.
+func parseStreamFilter(userID string, q map[string][]string) connector.StreamUserRunStatesRequest {
+	out := connector.StreamUserRunStatesRequest{UserID: userID}
 	if vals := q["status"]; len(vals) > 0 && vals[0] != "" {
-		f.statuses = make(map[string]bool)
+		var statuses []string
 		for _, v := range vals {
 			for _, s := range strings.Split(v, ",") {
 				s = strings.TrimSpace(s)
 				if s != "" {
-					f.statuses[s] = true
+					statuses = append(statuses, s)
 				}
 			}
 		}
+		out.Statuses = statuses
 	}
 	if vals := q["agent"]; len(vals) > 0 {
-		f.agent = strings.TrimSpace(vals[0])
+		out.Agent = strings.TrimSpace(vals[0])
 	}
-	return f
-}
-
-func (f runStateFilter) matches(evt runstate.RunStateEvent) bool {
-	if f.agent != "" && evt.Agent != f.agent {
-		return false
-	}
-	if f.statuses != nil && !f.statuses[evt.Status] {
-		return false
-	}
-	return true
+	return out
 }
 
 // handleStreamUserAgents serves GET /v1/users/{user_id}/agents/stream.
@@ -106,59 +93,41 @@ func (s *Server) handleStreamUserAgents(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	filter := parseRunStateFilter(r.URL.Query())
+	req := parseStreamFilter(userID, r.URL.Query())
 
 	stream.start()
 
-	// Cap connection lifetime so a hung client doesn't pin a
-	// goroutine forever.
 	ctx, cancel := context.WithTimeout(r.Context(), streamMaxLifetime)
 	defer cancel()
 	stream.startKeepalive(ctx, streamKeepaliveInterval)
 
-	sub := s.runStateBus.Subscribe(userID)
-	defer sub.Close()
-
-	// Emit an initial "stream_open" frame so adapters can confirm
-	// the connection is live before any real events flow. Helpful
-	// for n8n's trigger-setup phase where the workflow waits for
-	// the credential test before arming.
+	// stream_open frame: adapters consume this to confirm the
+	// connection is live before any real events flow. Useful for
+	// n8n's trigger-setup phase where the workflow waits for the
+	// credential test before arming.
 	stream.sendRaw("stream_open", map[string]any{
 		"user_id":            userID,
-		"filter_status":      filterStatusesList(filter),
-		"filter_agent":       filter.agent,
+		"filter_status":      sortedCopy(req.Statuses),
+		"filter_agent":       req.Agent,
 		"keepalive_interval": int(streamKeepaliveInterval.Seconds()),
 	})
 
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case evt, ok := <-sub.C:
-			if !ok {
-				return
-			}
-			if !filter.matches(evt) {
-				continue
-			}
-			stream.sendRaw("run_state", evt)
-		}
-	}
-}
-
-// filterStatusesList is a stable representation of f.statuses for
-// the stream_open frame (the map iteration order is non-deterministic;
-// adapters that snapshot the open frame need stable bytes).
-func filterStatusesList(f runStateFilter) []string {
-	if len(f.statuses) == 0 {
+	visit := func(evt connector.RunStateEvent) error {
+		stream.sendRaw("run_state", evt)
 		return nil
 	}
-	out := make([]string, 0, len(f.statuses))
-	for s := range f.statuses {
-		out = append(out, s)
+	_ = s.StreamUserRunStates(ctx, req, visit)
+}
+
+// sortedCopy returns a sorted copy of statuses so the stream_open
+// frame's filter_status field is byte-stable regardless of query
+// ordering (adapters that snapshot the open frame for caching need
+// stable bytes).
+func sortedCopy(statuses []string) []string {
+	if len(statuses) == 0 {
+		return nil
 	}
-	// Tiny deterministic sort — len(statuses) is at most 5 in
-	// practice (running, completed, failed, cancelled, queued).
+	out := append([]string(nil), statuses...)
 	for i := 1; i < len(out); i++ {
 		for j := i; j > 0 && out[j-1] > out[j]; j-- {
 			out[j-1], out[j] = out[j], out[j-1]

@@ -290,3 +290,53 @@ type RestoreSnapshotResult struct {
 	FormatMigrations           []string       `json:"format_migrations,omitempty"`
 	FeatureStatus              string         `json:"feature_status,omitempty"`
 }
+
+// ---- v0.9.x n8n RFC Phase 0 ----
+
+// ChannelDescriptor is one row in ListChannels. Joins the operator-
+// declared yaml channel with the runtime aggregate stats over
+// channel_messages. Channels declared with no published messages
+// still surface (MessageCount=0); rows for channels NOT declared but
+// holding orphaned messages also surface, for forensics.
+type ChannelDescriptor struct {
+	Name            string `json:"name"`
+	Scope           string `json:"scope,omitempty"`
+	Semantic        string `json:"semantic,omitempty"`
+	Publisher       string `json:"publisher,omitempty"`
+	Period          string `json:"period,omitempty"`
+	DefaultTTL      int    `json:"default_ttl,omitempty"`
+	MaxMessages     int    `json:"max_messages,omitempty"`
+	MessageCount    int64  `json:"message_count"`
+	OldestVisibleAt string `json:"oldest_visible_at,omitempty"` // RFC3339; empty when count=0
+	NewestVisibleAt string `json:"newest_visible_at,omitempty"`
+}
+
+// ListChannelsResponse is the response shape for Connector.ListChannels.
+type ListChannelsResponse struct {
+	Channels []ChannelDescriptor `json:"channels"`
+}
+
+// StreamUserRunStatesRequest is the input to Connector.StreamUserRunStates.
+// UserID is required; Statuses and Agent are optional filters that match
+// the SSE handler's ?status=...&agent=... query params.
+type StreamUserRunStatesRequest struct {
+	UserID   string   `json:"user_id"`
+	Statuses []string `json:"statuses,omitempty"`
+	Agent    string   `json:"agent,omitempty"`
+}
+
+// RunStateEvent is the payload yielded by RunStateVisitor for each
+// state transition. Mirrors runstate.RunStateEvent exactly; defined
+// here so the Connector interface doesn't depend on internal/runstate
+// (mcp / grpc adapters use only the connector package).
+type RunStateEvent struct {
+	RunID         string `json:"run_id"`
+	AgentID       string `json:"agent_id"`
+	Agent         string `json:"agent"`
+	UserID        string `json:"user_id"`
+	ParentAgentID string `json:"parent_agent_id,omitempty"`
+	Status        string `json:"status"`
+	StopReason    string `json:"stop_reason,omitempty"`
+	Error         string `json:"error,omitempty"`
+	TS            string `json:"ts"` // RFC3339
+}

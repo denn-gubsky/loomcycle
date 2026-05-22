@@ -137,6 +137,14 @@ func (m *mockConnector) InterruptionResolve(_ context.Context, _ connector.Inter
 	return connector.InterruptionResolveResult{}, errors.New("not implemented")
 }
 
+// v0.9.x n8n RFC Phase 0 stubs.
+func (m *mockConnector) ListChannels(context.Context) (connector.ListChannelsResponse, error) {
+	return connector.ListChannelsResponse{}, nil
+}
+func (m *mockConnector) StreamUserRunStates(context.Context, connector.StreamUserRunStatesRequest, connector.RunStateVisitor) error {
+	return nil
+}
+
 // driveServer runs the server against the given input lines and
 // returns the response frames (one per request). Notifications are
 // captured separately.
