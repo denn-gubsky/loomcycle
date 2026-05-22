@@ -555,3 +555,48 @@ func TestGetWithRetryGivesUpWhenCtxExpires(t *testing.T) {
 		t.Errorf("retry kept running well past ctx deadline (took %s)", elapsed)
 	}
 }
+
+func TestPool_PeekTools_ReturnsNilForUnknownServer(t *testing.T) {
+	pool := newPoolWithFake(t, "ok")
+	if got := pool.PeekTools("does-not-exist"); got != nil {
+		t.Errorf("PeekTools on unknown name = %+v, want nil", got)
+	}
+}
+
+func TestPool_PeekTools_ReturnsCachedSnapshotAfterGet(t *testing.T) {
+	pool := newPoolWithFake(t, "ok")
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, _, err := pool.Get(ctx, "search"); err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	descs := pool.PeekTools("search")
+	if len(descs) != 1 || descs[0].Name != "web_search" {
+		t.Errorf("PeekTools = %+v, want one entry web_search", descs)
+	}
+}
+
+func TestPool_PeekTools_ReturnsNilAfterEvictedInitFailure(t *testing.T) {
+	// build returns an error on the first call — Pool deletes the
+	// entry from p.servers on init failure (pool.go:121-123), so the
+	// nil-return path here is "entry no longer in map" rather than
+	// "entry has err set". Same external observation, different
+	// internal branch; documented here so a future refactor that
+	// keeps failed entries in the map still produces nil from
+	// PeekTools.
+	pool := mcp.NewPool(
+		func(name string) (mcp.Caller, error) {
+			return nil, errors.New("transient build failure")
+		},
+		func(c mcp.Caller) {},
+	)
+	t.Cleanup(pool.Close)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if _, _, err := pool.Get(ctx, "broken"); err == nil {
+		t.Fatal("expected init to fail")
+	}
+	if got := pool.PeekTools("broken"); got != nil {
+		t.Errorf("PeekTools after init failure = %+v, want nil", got)
+	}
+}

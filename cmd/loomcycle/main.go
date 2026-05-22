@@ -884,6 +884,28 @@ func main() {
 	// since v0.5.5; HTTP only adopted this in v0.8.21.
 	srv.SetBuildInfo(buildVersion, buildCommit, buildTime)
 	srv.SetMCPFallback(mcpLazyResolver.Resolve)
+	// v0.9.x: expose Pool's cached tools/list snapshots to the unified
+	// /v1/_library/mcp-servers endpoint so static MCP servers' tools
+	// surface alongside substrate-side discovered_tools. The closure
+	// marshals into the substrate-mirror shape ({name, description,
+	// input_schema}) so the wire stays uniform across static + dynamic.
+	srv.SetMCPPoolInspector(func(name string) json.RawMessage {
+		descs := mcpPool.PeekTools(name)
+		if descs == nil {
+			return nil
+		}
+		type td struct {
+			Name        string          `json:"name"`
+			Description string          `json:"description,omitempty"`
+			InputSchema json.RawMessage `json:"input_schema,omitempty"`
+		}
+		out := make([]td, len(descs))
+		for i, d := range descs {
+			out[i] = td{Name: d.Name, Description: d.Description, InputSchema: d.InputSchema}
+		}
+		b, _ := json.Marshal(out)
+		return b
+	})
 	// v0.8.22: hand the static skills.Set to the server so the
 	// per-run SkillDef resolver can fall back to static bodies when
 	// no DB-active row exists for a skill name.

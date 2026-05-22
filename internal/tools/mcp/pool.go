@@ -240,6 +240,38 @@ func (p *Pool) Tools() []tools.Tool {
 	return out
 }
 
+// PeekTools returns a snapshot of the cached tools/list result for
+// name. Returns nil when the entry is absent, still initialising, or
+// init failed — none of those mean "no tools", they mean "no cached
+// answer to surface." Callers should treat nil as "ask again later"
+// rather than "this server has zero tools".
+//
+// Read-only — never triggers handshake or eviction. Used by the
+// Library introspection endpoint to enumerate static MCP servers'
+// tool lists without forcing wire round-trips.
+func (p *Pool) PeekTools(name string) []ToolDescriptor {
+	p.mu.Lock()
+	e, ok := p.servers[name]
+	p.mu.Unlock()
+	if !ok {
+		return nil
+	}
+	select {
+	case <-e.ready:
+		if e.err != nil {
+			return nil
+		}
+		// Defensive snapshot — descriptors are immutable post-init,
+		// but returning the slice header directly would let a caller
+		// mutate p's state by appending past cap.
+		out := make([]ToolDescriptor, len(e.tools))
+		copy(out, e.tools)
+		return out
+	default:
+		return nil
+	}
+}
+
 // Close tears down all live connections. Idempotent. Skips entries that
 // are still initialising or that failed init (no caller to tear down).
 func (p *Pool) Close() {
