@@ -214,6 +214,25 @@ function LineageNodeRow({
           className="lineage-row-detail"
           style={{ paddingLeft: `${(depth + 1) * 16 + 12}px` }}
         >
+          <div className="lineage-detail-header">
+            <span className="mono">{row.def_id}</span>
+            {row.parent_def_id && (
+              <span className="lineage-detail-meta">← {row.parent_def_id}</span>
+            )}
+            {row.created_at && (
+              <span className="lineage-detail-meta">
+                created {new Date(row.created_at).toLocaleString()}
+              </span>
+            )}
+            {row.content_sha256 && (
+              <span
+                className="mono lineage-detail-meta"
+                title={row.content_sha256}
+              >
+                {shortenSHA(row.content_sha256)}
+              </span>
+            )}
+          </div>
           {renderDefinition(row)}
         </div>
       )}
@@ -261,4 +280,11 @@ function shortDefID(defID: string): string {
   // doesn't need the full 24; full id available via tooltip in caller.
   if (defID.length <= 12) return defID;
   return defID.slice(0, 12) + "…";
+}
+
+function shortenSHA(s: string): string {
+  // `sha256:64hex` → compact form for the inline-detail header; hover
+  // shows the full value via the title attribute.
+  if (s.length <= 18) return s;
+  return s.slice(0, 14) + "…";
 }
