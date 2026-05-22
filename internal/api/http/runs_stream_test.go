@@ -53,6 +53,31 @@ func readSSEFrame(t *testing.T, r *bufio.Reader) (string, string, bool) {
 	}
 }
 
+// waitForSubscriber polls bus.ActiveSubscriberCount until at least
+// one subscription is registered (or until a 2s deadline fires).
+// The SSE handler emits the `stream_open` frame BEFORE the
+// Connector-dispatched StreamUserRunStates path calls bus.Subscribe —
+// so reading stream_open from the wire does NOT guarantee the
+// subscription is in place. Tests that publish events immediately
+// after open MUST sync on this; otherwise the publish races the
+// subscription and the test hangs (caught in CI under the race
+// detector — see TestStreamUserAgents_FiltersByStatus pre-fix).
+//
+// Production callers don't need this — n8n's trigger framework
+// reconnects long-running streams and continuous publishes always
+// land within milliseconds of subscription registration.
+func waitForSubscriber(t *testing.T, bus *runstate.Bus) {
+	t.Helper()
+	deadline := time.After(2 * time.Second)
+	for bus.ActiveSubscriberCount() == 0 {
+		select {
+		case <-deadline:
+			t.Fatal("subscriber never registered within 2s — likely a regression in the handler's Subscribe path")
+		case <-time.After(2 * time.Millisecond):
+		}
+	}
+}
+
 // openStream starts an httptest.NewServer-backed SSE connection and
 // returns a bufio.Reader over the response body plus a cancel func.
 // The caller must call cancel() to clean up.
@@ -105,6 +130,7 @@ func TestStreamUserAgents_EmitsStreamOpenAndRunStateEvents(t *testing.T) {
 		t.Errorf("stream_open user_id = %v, want user-a", openPayload["user_id"])
 	}
 
+	waitForSubscriber(t, bus)
 	bus.Publish(runstate.RunStateEvent{
 		RunID: "r1", Agent: "researcher", UserID: "user-a", Status: "running",
 	})
@@ -137,6 +163,7 @@ func TestStreamUserAgents_FiltersByStatus(t *testing.T) {
 		t.Fatal("no stream_open")
 	}
 
+	waitForSubscriber(t, bus)
 	bus.Publish(runstate.RunStateEvent{RunID: "r1", UserID: "user-a", Status: "running"})
 	bus.Publish(runstate.RunStateEvent{RunID: "r2", UserID: "user-a", Status: "completed"})
 
@@ -165,6 +192,7 @@ func TestStreamUserAgents_FiltersByAgent(t *testing.T) {
 		t.Fatal("no stream_open")
 	}
 
+	waitForSubscriber(t, bus)
 	bus.Publish(runstate.RunStateEvent{RunID: "r1", UserID: "user-a", Agent: "reader", Status: "running"})
 	bus.Publish(runstate.RunStateEvent{RunID: "r2", UserID: "user-a", Agent: "writer", Status: "running"})
 
@@ -190,6 +218,7 @@ func TestStreamUserAgents_OtherUsersEventsNotDelivered(t *testing.T) {
 		t.Fatal("no stream_open")
 	}
 
+	waitForSubscriber(t, bus)
 	// Event for a different user.
 	bus.Publish(runstate.RunStateEvent{RunID: "r1", UserID: "user-b", Status: "running"})
 
