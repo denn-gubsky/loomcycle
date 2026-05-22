@@ -23,6 +23,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/concurrency"
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/hooks"
+	"github.com/denn-gubsky/loomcycle/internal/lookup"
 	"github.com/denn-gubsky/loomcycle/internal/loop"
 	"github.com/denn-gubsky/loomcycle/internal/metrics"
 	"github.com/denn-gubsky/loomcycle/internal/pause"
@@ -450,126 +451,25 @@ func (s *Server) resolveAgent(agentName, userTier string) (providerID, model, ef
 	return s.resolveAgentDef(def, agentName, userTier)
 }
 
-// lookupAgent returns the AgentDef for a registered agent name,
-// consulting static cfg.Agents first, then the v0.8.15 dynamic_agents
-// table, then the v0.8.22 substrate registry (agent_def_active +
-// agent_defs). Returns (zero AgentDef, false) when no source has it.
+// lookupAgent delegates to internal/lookup.Agent — the canonical
+// agent-name resolver consolidating the static / dynamic_agents /
+// substrate lookup chain + the normalizer chain. See the lookup
+// package doc for the rationale + the "future substrate" contract.
 //
-// Centralizing the lookup here is the antidote to the v0.8.15
-// regression where each entry point (RunOnce / handleRuns / handle
-// continuation) had its own inline lookup against cfg.Agents — at
-// least two of them missed the dynamic-agent fallback, so any agent
-// registered via mcp__loomcycle__register_agent was reachable from
-// some paths and "unknown" from others. Every code path that needs
-// to resolve an agent name to a def goes through this helper.
-//
-// TTL filtering happens server-side in store.DynamicAgentGet, so a
-// row whose expires_at has passed surfaces as derr (not found).
-// Malformed Definition JSON also falls through to (zero, false).
-//
-// Substrate fallback (v0.8.22+): agents registered via POST
-// /v1/_agentdef land in `agent_defs` + `agent_def_active`, NOT in
-// dynamic_agents. Without the third tier here those agents are
-// invisible to /v1/runs even though `list` / `verify` / `get`
-// confirm they exist — a "registered but unknown" paradox surfaced
-// by the JobEmber boot-sync (PR #69 downstream) which only writes
-// to the substrate. Same JSON shape (mergedDef <:> mutable subset
-// of config.AgentDef), so json.Unmarshal slots in cleanly.
+// Centralizing the lookup at the package boundary is the antidote
+// to the v0.8.15 regression where each entry point had its own
+// inline lookup, AND the v0.9.x lookups that silently skipped the
+// boot-time normalizer chain (PRs #184 + #186). Every code path
+// that needs an agent name → def goes through here.
 func (s *Server) lookupAgent(ctx context.Context, name string) (config.AgentDef, bool) {
-	if def, ok := s.cfg.Agents[name]; ok {
-		return def, true
-	}
+	// nil-store guard at the boundary so the lookup package can
+	// type-assert an interface receiver. The lookup package treats
+	// "no store" identically to "store didn't have the name" — both
+	// fall through to (zero, false).
 	if s.store == nil {
-		return config.AgentDef{}, false
+		return lookup.Agent(ctx, nil, s.cfg, name)
 	}
-	if row, err := s.store.DynamicAgentGet(ctx, name); err == nil {
-		var def config.AgentDef
-		if uerr := json.Unmarshal(row.Definition, &def); uerr == nil {
-			normalizeSystemPromptBase(&def)
-			return def, true
-		}
-	}
-	activeRow, err := s.store.AgentDefGetActive(ctx, name)
-	if err != nil {
-		return config.AgentDef{}, false
-	}
-	var sd substrateAgentDef
-	if uerr := json.Unmarshal(activeRow.Definition, &sd); uerr != nil {
-		return config.AgentDef{}, false
-	}
-	def := sd.toConfigDef()
-	normalizeSystemPromptBase(&def)
-	return def, true
-}
-
-// normalizeSystemPromptBase fills the SystemPromptBase invariant for
-// runtime-resolved agents. resolveSkills (config-load) sets this for
-// statically yaml-defined agents — it's the pre-skill-bake copy of
-// SystemPrompt used by resolveSkillBodiesForRun to rebuild the
-// effective prompt when DB-active SkillDef rows are present. Agents
-// resolved at runtime from dynamic_agents or the v0.8.22 substrate
-// never go through resolveSkills, so SystemPromptBase stays empty
-// even though their SystemPrompt IS the base (no skill body has been
-// pre-appended). Without this normalisation, resolveSkillBodiesForRun's
-// rebuild starts from "" and concatenates the skill body — replacing
-// the agent's actual instructions entirely. Symptom: an agent like
-// ats-filter that declares skills: ["position-relevance-filtering"]
-// loses its own body at run time, with only the skill text reaching
-// the model — the agent never sees its "call mcp__jobs__getAgentContext
-// first" instructions.
-func normalizeSystemPromptBase(def *config.AgentDef) {
-	if def.SystemPromptBase == "" {
-		def.SystemPromptBase = def.SystemPrompt
-	}
-}
-
-// substrateAgentDef mirrors the JSON shape `AgentDef.create` persists
-// in agent_defs.definition (snake_case via the json struct tags on
-// mergedDef in internal/tools/builtin/agentdef.go). Unmarshalling
-// substrate JSON directly into config.AgentDef silently drops every
-// field because config.AgentDef carries only yaml tags — json.Unmarshal
-// then matches Go field names ("SystemPrompt", "AllowedTools", …) and
-// none of the snake_case keys land. This local struct + toConfigDef
-// adapter is the seam that converts the substrate's JSON shape to
-// the in-process config.AgentDef the rest of the runtime expects.
-//
-// Kept in sync with mergedDef (same field set, same json tags). The
-// TestLookupAgent_FallsThroughToSubstrate test pins a representative
-// subset — a future field added to mergedDef without a matching
-// addition here would silently drop on resolve, mirroring the bug
-// this struct exists to fix.
-type substrateAgentDef struct {
-	Provider         string                            `json:"provider,omitempty"`
-	Model            string                            `json:"model,omitempty"`
-	Tier             string                            `json:"tier,omitempty"`
-	Effort           string                            `json:"effort,omitempty"`
-	MaxTokens        int                               `json:"max_tokens,omitempty"`
-	MaxIterations    int                               `json:"max_iterations,omitempty"`
-	SystemPrompt     string                            `json:"system_prompt,omitempty"`
-	AllowedTools     []string                          `json:"allowed_tools,omitempty"`
-	Skills           []string                          `json:"skills,omitempty"`
-	Providers        []string                          `json:"providers,omitempty"`
-	Models           map[string][]config.TierCandidate `json:"models,omitempty"`
-	MemoryScopes     []string                          `json:"memory_scopes,omitempty"`
-	MemoryQuotaBytes int                               `json:"memory_quota_bytes,omitempty"`
-}
-
-func (s substrateAgentDef) toConfigDef() config.AgentDef {
-	return config.AgentDef{
-		Provider:         s.Provider,
-		Model:            s.Model,
-		Tier:             s.Tier,
-		Effort:           s.Effort,
-		MaxTokens:        s.MaxTokens,
-		MaxIterations:    s.MaxIterations,
-		SystemPrompt:     s.SystemPrompt,
-		AllowedTools:     s.AllowedTools,
-		Skills:           s.Skills,
-		Providers:        s.Providers,
-		Models:           s.Models,
-		MemoryScopes:     s.MemoryScopes,
-		MemoryQuotaBytes: s.MemoryQuotaBytes,
-	}
+	return lookup.Agent(ctx, s.store, s.cfg, name)
 }
 
 // resolveAgentDef mirrors resolveAgent but takes a caller-supplied
