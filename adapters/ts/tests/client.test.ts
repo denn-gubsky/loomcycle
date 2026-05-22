@@ -746,3 +746,128 @@ describe("hook management", () => {
     });
   });
 });
+
+describe("v0.9.x n8n RFC Phase 0 — listChannels + streamUserRunStates", () => {
+  it("listChannels GETs /v1/_channels and returns the envelope", async () => {
+    const { client, fetchMock } = makeClient([
+      jsonResponse({
+        channels: [
+          {
+            name: "_system/alarms",
+            scope: "global",
+            semantic: "broadcast",
+            publisher: "system",
+            message_count: 4,
+            oldest_visible_at: "2026-05-20T10:00:00Z",
+            newest_visible_at: "2026-05-21T15:30:00Z",
+          },
+          { name: "scratch", message_count: 0 },
+        ],
+      }),
+    ]);
+    const resp = await client.listChannels();
+    expect(resp.channels).toHaveLength(2);
+    expect(resp.channels[0]?.name).toBe("_system/alarms");
+    expect(resp.channels[0]?.message_count).toBe(4);
+    expect(resp.channels[1]?.message_count).toBe(0);
+    expect(fetchMock.mock.calls[0]![0]).toBe(
+      "http://test-loomcycle:8787/v1/_channels",
+    );
+    expect((fetchMock.mock.calls[0]![1]!.headers as Record<string, string>).Authorization).toBe(
+      "Bearer test-bearer",
+    );
+  });
+
+  it("streamUserRunStates yields stream_open then run_state frames", async () => {
+    const frames = [
+      `event: stream_open\ndata: ${JSON.stringify({
+        user_id: "user-a",
+        filter_status: null,
+        filter_agent: "",
+        keepalive_interval: 25,
+      })}\n\n`,
+      `event: run_state\ndata: ${JSON.stringify({
+        run_id: "r1",
+        agent_id: "ag1",
+        agent: "researcher",
+        user_id: "user-a",
+        status: "running",
+        ts: "2026-05-22T00:00:00Z",
+      })}\n\n`,
+      `event: run_state\ndata: ${JSON.stringify({
+        run_id: "r1",
+        agent_id: "ag1",
+        agent: "researcher",
+        user_id: "user-a",
+        status: "completed",
+        stop_reason: "end_turn",
+        ts: "2026-05-22T00:00:01Z",
+      })}\n\n`,
+    ];
+    const { client, fetchMock } = makeClient([sseResponse(frames)]);
+
+    const items = [];
+    for await (const item of client.streamUserRunStates("user-a")) {
+      items.push(item);
+    }
+    expect(items).toHaveLength(3);
+    expect(items[0]?.kind).toBe("open");
+    expect(items[1]?.kind).toBe("event");
+    if (items[1]?.kind === "event") {
+      expect(items[1].payload.run_id).toBe("r1");
+      expect(items[1].payload.status).toBe("running");
+    }
+    if (items[2]?.kind === "event") {
+      expect(items[2].payload.status).toBe("completed");
+      expect(items[2].payload.stop_reason).toBe("end_turn");
+    }
+    expect(fetchMock.mock.calls[0]![0]).toBe(
+      "http://test-loomcycle:8787/v1/users/user-a/agents/stream",
+    );
+  });
+
+  it("streamUserRunStates encodes status + agent filters as query params", async () => {
+    const { client, fetchMock } = makeClient([sseResponse([])]);
+    const iter = client.streamUserRunStates("user-a", {
+      statuses: ["completed", "failed"],
+      agent: "writer",
+    });
+    for await (const _ of iter) {
+      // drain
+    }
+    const url = fetchMock.mock.calls[0]![0] as string;
+    expect(url).toContain("/v1/users/user-a/agents/stream?");
+    expect(url).toContain("status=completed%2Cfailed");
+    expect(url).toContain("agent=writer");
+  });
+
+  it("streamUserRunStates ignores keepalive comment lines", async () => {
+    const frames = [
+      ": keepalive\n\n",
+      `event: run_state\ndata: ${JSON.stringify({
+        run_id: "r1",
+        agent_id: "ag1",
+        agent: "x",
+        user_id: "user-a",
+        status: "running",
+        ts: "2026-05-22T00:00:00Z",
+      })}\n\n`,
+    ];
+    const { client } = makeClient([sseResponse(frames)]);
+    const items = [];
+    for await (const item of client.streamUserRunStates("user-a")) {
+      items.push(item);
+    }
+    expect(items).toHaveLength(1);
+    expect(items[0]?.kind).toBe("event");
+  });
+
+  it("streamUserRunStates raises typed error on 401", async () => {
+    const { client } = makeClient([errorResponse(401, "bad bearer")]);
+    await expect(async () => {
+      for await (const _ of client.streamUserRunStates("user-a")) {
+        // unreached
+      }
+    }).rejects.toMatchObject({ name: "AuthError", status: 401 });
+  });
+});
