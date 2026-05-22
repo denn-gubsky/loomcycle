@@ -2710,6 +2710,35 @@ func (s *Store) ChannelCommittedCursor(ctx context.Context, channel string, scop
 	return cursor, nil
 }
 
+// ChannelListCursorsForScope — see store.Store doc. v0.9.x
+// introspection. Ordered by channel ASC for deterministic UI render.
+func (s *Store) ChannelListCursorsForScope(ctx context.Context, scope store.MemoryScope, scopeID string) ([]store.ChannelCursorEntry, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT channel, scope, scope_id, cursor, updated_at
+		 FROM channel_cursors
+		 WHERE scope = ? AND scope_id = ?
+		 ORDER BY channel ASC`,
+		string(scope), scopeID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []store.ChannelCursorEntry{}
+	for rows.Next() {
+		var entry store.ChannelCursorEntry
+		var scopeStr string
+		var updatedNanos int64
+		if err := rows.Scan(&entry.Channel, &scopeStr, &entry.ScopeID, &entry.Cursor, &updatedNanos); err != nil {
+			return nil, err
+		}
+		entry.Scope = store.MemoryScope(scopeStr)
+		entry.UpdatedAt = time.Unix(0, updatedNanos).UTC()
+		out = append(out, entry)
+	}
+	return out, rows.Err()
+}
+
 // ChannelSweepExpired deletes every expired row. Mirror of MemorySweep.
 func (s *Store) ChannelSweepExpired(ctx context.Context) (int, error) {
 	res, err := s.db.ExecContext(ctx,

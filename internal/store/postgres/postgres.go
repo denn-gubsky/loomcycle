@@ -2797,6 +2797,33 @@ func (s *Store) ChannelCommittedCursor(ctx context.Context, channel string, scop
 	return cursor, nil
 }
 
+// ChannelListCursorsForScope — see store.Store doc. v0.9.x introspection.
+func (s *Store) ChannelListCursorsForScope(ctx context.Context, scope store.MemoryScope, scopeID string) ([]store.ChannelCursorEntry, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT channel, scope, scope_id, cursor, updated_at
+		 FROM channel_cursors
+		 WHERE scope = $1 AND scope_id = $2
+		 ORDER BY channel ASC`,
+		string(scope), scopeID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list channel cursors: %w", err)
+	}
+	defer rows.Close()
+	out := []store.ChannelCursorEntry{}
+	for rows.Next() {
+		var entry store.ChannelCursorEntry
+		var scopeStr string
+		if err := rows.Scan(&entry.Channel, &scopeStr, &entry.ScopeID, &entry.Cursor, &entry.UpdatedAt); err != nil {
+			return nil, err
+		}
+		entry.Scope = store.MemoryScope(scopeStr)
+		entry.UpdatedAt = entry.UpdatedAt.UTC()
+		out = append(out, entry)
+	}
+	return out, rows.Err()
+}
+
 // ChannelSweepExpired drops every expired channel_messages row.
 func (s *Store) ChannelSweepExpired(ctx context.Context) (int, error) {
 	tag, err := s.pool.Exec(ctx,

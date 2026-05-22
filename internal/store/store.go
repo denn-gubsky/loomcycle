@@ -770,6 +770,16 @@ type Store interface {
 	// when callers omit fromCursor — "pick up where I left off".
 	ChannelCommittedCursor(ctx context.Context, channel string, scope MemoryScope, scopeID string) (string, error)
 
+	// ChannelListCursorsForScope returns every channel_cursors row
+	// matching (scope, scope_id). v0.9.x introspection — drives the
+	// Web UI's "channels this agent has subscribed to" view via the
+	// admin endpoint at GET /v1/agents/{name}/channels (scope=agent)
+	// and the equivalent per-user path. Empty slice when the
+	// (scope, scope_id) tuple has no cursors. Returns the full set so
+	// the UI can render "all channels this agent has ack'd on"
+	// without N+1 per-channel queries.
+	ChannelListCursorsForScope(ctx context.Context, scope MemoryScope, scopeID string) ([]ChannelCursorEntry, error)
+
 	// ChannelSweepExpired deletes every channel_messages row whose
 	// expires_at has passed. Returns the deleted row count for the
 	// sweeper's log line. Safe under concurrent sweepers; mirrors
