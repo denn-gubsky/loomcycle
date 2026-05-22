@@ -155,6 +155,7 @@ func Run(t *testing.T, factory Factory) {
 		{"AgentDefStaticFallback", testAgentDefStaticFallback},
 		{"AgentDefContentSHA256RoundTrip", testAgentDefContentSHA256RoundTrip},
 		{"BackfillAgentDefContentSHA256", testBackfillAgentDefContentSHA256},
+		{"BackfillAgentDefSystemPromptBaseFillsLegacyRows", testBackfillAgentDefSystemPromptBase},
 		// v0.8.22 SkillDef substrate — mirror of the AgentDef tests.
 		{"SkillDefCreateAndGet", testSkillDefCreateAndGet},
 		{"SkillDefVersionMonotonicUnderContention", testSkillDefVersionMonotonicUnderContention},
@@ -3061,6 +3062,101 @@ func testBackfillAgentDefContentSHA256(t *testing.T, s store.Store) {
 	alpha, _ := s.AgentDefGet(ctx, "d-bf-0")
 	if alpha.ContentSHA256 != "sha256:alpha-bf-hash" {
 		t.Errorf("backfill alpha hash = %q", alpha.ContentSHA256)
+	}
+}
+
+// testBackfillAgentDefSystemPromptBase pins the boot-time backfill
+// for the v0.9.x system_prompt_base field added by the
+// static-vs-dynamic equalization PR. Three fixture rows cover the
+// three cases the backfill must handle:
+//
+//  1. Legacy row WITHOUT system_prompt_base → backfill fills it from
+//     system_prompt.
+//  2. Row that ALREADY has system_prompt_base → backfill leaves it
+//     untouched (don't clobber explicit values).
+//  3. Row without system_prompt either → backfill leaves it as-is
+//     (nothing to fill from; the read-side normalizer is a no-op
+//     too).
+//
+// Idempotent: a second call after a complete backfill returns 0.
+func testBackfillAgentDefSystemPromptBase(t *testing.T, s store.Store) {
+	ctx := context.Background()
+
+	// 1. Legacy row — missing system_prompt_base.
+	legacy := store.AgentDefRow{
+		DefID:       "spb-legacy",
+		Name:        "spb-legacy-name",
+		Description: "legacy",
+		Definition:  json.RawMessage(`{"system_prompt":"be helpful","allowed_tools":["Read"]}`),
+	}
+	if _, err := s.AgentDefCreate(ctx, legacy); err != nil {
+		t.Fatalf("create legacy: %v", err)
+	}
+
+	// 2. Already-filled row — must not be touched.
+	filled := store.AgentDefRow{
+		DefID:       "spb-filled",
+		Name:        "spb-filled-name",
+		Description: "filled",
+		Definition:  json.RawMessage(`{"system_prompt":"new","system_prompt_base":"original base"}`),
+	}
+	if _, err := s.AgentDefCreate(ctx, filled); err != nil {
+		t.Fatalf("create filled: %v", err)
+	}
+
+	// 3. Row with no system_prompt either — must be left as-is.
+	empty := store.AgentDefRow{
+		DefID:       "spb-empty",
+		Name:        "spb-empty-name",
+		Description: "empty",
+		Definition:  json.RawMessage(`{"allowed_tools":["Read"]}`),
+	}
+	if _, err := s.AgentDefCreate(ctx, empty); err != nil {
+		t.Fatalf("create empty: %v", err)
+	}
+
+	n, err := s.BackfillAgentDefSystemPromptBase(ctx)
+	if err != nil {
+		t.Fatalf("backfill: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("backfilled %d rows, want 1 (only the legacy row)", n)
+	}
+
+	// Verify legacy row got the field.
+	got, _ := s.AgentDefGet(ctx, "spb-legacy")
+	var legacyOut map[string]any
+	_ = json.Unmarshal(got.Definition, &legacyOut)
+	if legacyOut["system_prompt_base"] != "be helpful" {
+		t.Errorf("legacy.system_prompt_base = %v, want %q", legacyOut["system_prompt_base"], "be helpful")
+	}
+	if legacyOut["system_prompt"] != "be helpful" {
+		t.Errorf("legacy.system_prompt mutated: %v", legacyOut["system_prompt"])
+	}
+
+	// Filled row untouched.
+	gotF, _ := s.AgentDefGet(ctx, "spb-filled")
+	var filledOut map[string]any
+	_ = json.Unmarshal(gotF.Definition, &filledOut)
+	if filledOut["system_prompt_base"] != "original base" {
+		t.Errorf("filled.system_prompt_base clobbered: %v", filledOut["system_prompt_base"])
+	}
+
+	// Empty row untouched (no field added).
+	gotE, _ := s.AgentDefGet(ctx, "spb-empty")
+	var emptyOut map[string]any
+	_ = json.Unmarshal(gotE.Definition, &emptyOut)
+	if _, hasField := emptyOut["system_prompt_base"]; hasField {
+		t.Errorf("empty row spuriously got system_prompt_base: %v", emptyOut["system_prompt_base"])
+	}
+
+	// Idempotent: second call returns 0.
+	n2, err := s.BackfillAgentDefSystemPromptBase(ctx)
+	if err != nil {
+		t.Fatalf("second backfill: %v", err)
+	}
+	if n2 != 0 {
+		t.Errorf("idempotent? second pass backfilled %d rows, want 0", n2)
 	}
 }
 
