@@ -507,6 +507,38 @@ mcp_servers:
     headers:
       Authorization: "Bearer ${LOOMCYCLE_JOBS_SEARCH_API_TOKEN}"
 
+  # ─ n8n workflow as an MCP tool (Pattern 2 of the n8n integration) ────
+  # Optional. Documented so operators wiring loomcycle agents to call
+  # n8n workflows have a copy-pasteable starting point. See
+  # `help(topic="n8n-integration")` for the three patterns + when to
+  # pick which.
+  #
+  # The general shape: build a workflow in n8n that does the integration
+  # you want (Mailgun email, Slack DM, Notion DB write, GitHub issue
+  # create, …), front it with n8n's MCP Server Trigger node (which
+  # mints a bearer + a /mcp/<id> endpoint), then declare that endpoint
+  # here. Loomcycle agents then call it like any other MCP tool.
+  #
+  # Bearer naming: same constraint as the jobs block above — the env-var
+  # MUST be LOOMCYCLE_*-prefixed or on the documented third-party
+  # allowlist. ${run.user_bearer:-fallback} additionally substitutes
+  # the per-run bearer field from POST /v1/runs (v0.8.14+), letting
+  # each end-user authenticate to n8n as themselves rather than as a
+  # single service account; the :- fallback covers runs without a
+  # user_bearer (cron jobs, internal operators).
+  #
+  # n8n-mailgun:
+  #   transport: http
+  #   url: https://your-n8n.example.com/mcp/abc123
+  #   headers:
+  #     Authorization: "Bearer ${LOOMCYCLE_N8N_MCP_TOKEN}"
+  #
+  # n8n-per-user:
+  #   transport: http
+  #   url: https://your-n8n.example.com/mcp/scoped
+  #   headers:
+  #     Authorization: "Bearer ${run.user_bearer:-${LOOMCYCLE_N8N_FALLBACK_TOKEN}}"
+
 # ─── Local API MCP gateway (v0.4.0+) ─────────────────────────────────
 # Reads an OpenAPI 3.0 spec at boot and exposes one typed tool per
 # operation, named `<prefix>__<operationId>`. Forwards calls to

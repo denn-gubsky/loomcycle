@@ -75,6 +75,9 @@ Cross-cutting topics that explain how these compose:
 - `help(topic="interruption")` — human-in-the-loop ask / notify / cancel
 - `help(topic="pause-resume-snapshot")` — runtime quiesce + portable
   JSON snapshot (operator-driven; agents don't call these directly)
+- `help(topic="n8n-integration")` — three patterns for composing
+  loomcycle with n8n's workflow builder (bidirectional MCP +
+  planned community node)
 
 ## Your transcript records what YOU received
 
