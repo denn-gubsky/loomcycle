@@ -17,6 +17,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/concurrency"
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
+	"github.com/denn-gubsky/loomcycle/internal/store"
 	storesqlite "github.com/denn-gubsky/loomcycle/internal/store/sqlite"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 	"github.com/denn-gubsky/loomcycle/internal/tools/builtin"
@@ -1660,5 +1661,117 @@ func TestRunRequest_UserBearerValidation(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestLookupAgent_FallsThroughToSubstrate pins the v0.8.22 fall-through:
+// agents registered via the substrate (POST /v1/_agentdef → agent_defs +
+// agent_def_active) must be resolvable by `lookupAgent` even though
+// the historical `dynamic_agents` path is empty. Without the third
+// tier in lookupAgent, JobEmber-style callers that only push through
+// the substrate get an "unknown agent" 400 on /v1/runs even though
+// `agentDef({op:"list"})` confirms the row exists.
+func TestLookupAgent_FallsThroughToSubstrate(t *testing.T) {
+	st, err := storesqlite.Open(":memory:")
+	if err != nil {
+		t.Fatalf("sqlite.Open: %v", err)
+	}
+	defer st.Close()
+
+	cfg := &config.Config{
+		// Empty cfg.Agents — the substrate is the only registry.
+		Concurrency: config.Concurrency{MaxConcurrentRuns: 1, MaxQueueDepth: 1, QueueTimeoutMS: 100},
+	}
+	srv := New(cfg, &stubResolver{}, nil, concurrency.New(1, 1, time.Second), st)
+	ctx := context.Background()
+
+	// Insert directly into agent_defs + agent_def_active, mirroring
+	// what /v1/_agentdef create+promote does.
+	defJSON, _ := json.Marshal(map[string]any{
+		"system_prompt": "be brief",
+		"allowed_tools": []string{"Read"},
+		"model":         "stub-model",
+	})
+	row := store.AgentDefRow{
+		DefID:      "def_test_substrate",
+		Name:       "substrate-only-agent",
+		Definition: defJSON,
+	}
+	if _, err := st.AgentDefCreate(ctx, row); err != nil {
+		t.Fatalf("AgentDefCreate: %v", err)
+	}
+	if err := st.AgentDefSetActive(ctx, "substrate-only-agent", "def_test_substrate", "a_test"); err != nil {
+		t.Fatalf("AgentDefSetActive: %v", err)
+	}
+
+	// Before this PR, lookupAgent only consulted dynamic_agents (empty)
+	// and returned (zero, false). After this PR it falls through to
+	// AgentDefGetActive and resolves.
+	def, ok := srv.lookupAgent(ctx, "substrate-only-agent")
+	if !ok {
+		t.Fatal("lookupAgent returned ok=false; expected substrate fall-through to resolve the agent")
+	}
+	if def.SystemPrompt != "be brief" {
+		t.Errorf("SystemPrompt = %q, want %q", def.SystemPrompt, "be brief")
+	}
+	if len(def.AllowedTools) != 1 || def.AllowedTools[0] != "Read" {
+		t.Errorf("AllowedTools = %v, want [Read]", def.AllowedTools)
+	}
+}
+
+// TestLookupAgent_DynamicAgentsStillWins preserves backwards
+// compatibility: the legacy RegisterAgent → DynamicAgentUpsert path
+// must keep resolving. If a name happens to exist in BOTH dynamic_agents
+// AND agent_def_active, dynamic_agents wins (older code path; would
+// only happen during a transition where both paths get used).
+func TestLookupAgent_DynamicAgentsStillWins(t *testing.T) {
+	st, err := storesqlite.Open(":memory:")
+	if err != nil {
+		t.Fatalf("sqlite.Open: %v", err)
+	}
+	defer st.Close()
+
+	cfg := &config.Config{
+		Concurrency: config.Concurrency{MaxConcurrentRuns: 1, MaxQueueDepth: 1, QueueTimeoutMS: 100},
+	}
+	srv := New(cfg, &stubResolver{}, nil, concurrency.New(1, 1, time.Second), st)
+	ctx := context.Background()
+
+	// The legacy RegisterAgent path stores json.Marshal(config.AgentDef{...})
+	// which, because config.AgentDef has no json tags, serializes with
+	// Go field names (PascalCase). Mirror that exactly so the
+	// dynamic-path branch unmarshals correctly.
+	dynDefJSON, _ := json.Marshal(config.AgentDef{
+		SystemPrompt: "dynamic wins",
+		AllowedTools: []string{"Bash"},
+	})
+	if err := st.DynamicAgentUpsert(ctx, store.DynamicAgent{
+		Name:       "shared-name",
+		Definition: dynDefJSON,
+		CreatedAt:  time.Now(),
+	}); err != nil {
+		t.Fatalf("DynamicAgentUpsert: %v", err)
+	}
+	substrateDefJSON, _ := json.Marshal(map[string]any{
+		"system_prompt": "substrate loses tie",
+		"allowed_tools": []string{"Read"},
+	})
+	if _, err := st.AgentDefCreate(ctx, store.AgentDefRow{
+		DefID:      "def_shared",
+		Name:       "shared-name",
+		Definition: substrateDefJSON,
+	}); err != nil {
+		t.Fatalf("AgentDefCreate: %v", err)
+	}
+	if err := st.AgentDefSetActive(ctx, "shared-name", "def_shared", "a_test"); err != nil {
+		t.Fatalf("AgentDefSetActive: %v", err)
+	}
+
+	def, ok := srv.lookupAgent(ctx, "shared-name")
+	if !ok {
+		t.Fatal("lookupAgent returned ok=false; want ok=true")
+	}
+	if def.SystemPrompt != "dynamic wins" {
+		t.Errorf("SystemPrompt = %q, want %q (dynamic_agents must beat substrate when both have a row)", def.SystemPrompt, "dynamic wins")
 	}
 }
