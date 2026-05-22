@@ -485,6 +485,7 @@ func (s *Server) lookupAgent(ctx context.Context, name string) (config.AgentDef,
 	if row, err := s.store.DynamicAgentGet(ctx, name); err == nil {
 		var def config.AgentDef
 		if uerr := json.Unmarshal(row.Definition, &def); uerr == nil {
+			normalizeSystemPromptBase(&def)
 			return def, true
 		}
 	}
@@ -496,7 +497,30 @@ func (s *Server) lookupAgent(ctx context.Context, name string) (config.AgentDef,
 	if uerr := json.Unmarshal(activeRow.Definition, &sd); uerr != nil {
 		return config.AgentDef{}, false
 	}
-	return sd.toConfigDef(), true
+	def := sd.toConfigDef()
+	normalizeSystemPromptBase(&def)
+	return def, true
+}
+
+// normalizeSystemPromptBase fills the SystemPromptBase invariant for
+// runtime-resolved agents. resolveSkills (config-load) sets this for
+// statically yaml-defined agents — it's the pre-skill-bake copy of
+// SystemPrompt used by resolveSkillBodiesForRun to rebuild the
+// effective prompt when DB-active SkillDef rows are present. Agents
+// resolved at runtime from dynamic_agents or the v0.8.22 substrate
+// never go through resolveSkills, so SystemPromptBase stays empty
+// even though their SystemPrompt IS the base (no skill body has been
+// pre-appended). Without this normalisation, resolveSkillBodiesForRun's
+// rebuild starts from "" and concatenates the skill body — replacing
+// the agent's actual instructions entirely. Symptom: an agent like
+// ats-filter that declares skills: ["position-relevance-filtering"]
+// loses its own body at run time, with only the skill text reaching
+// the model — the agent never sees its "call mcp__jobs__getAgentContext
+// first" instructions.
+func normalizeSystemPromptBase(def *config.AgentDef) {
+	if def.SystemPromptBase == "" {
+		def.SystemPromptBase = def.SystemPrompt
+	}
 }
 
 // substrateAgentDef mirrors the JSON shape `AgentDef.create` persists

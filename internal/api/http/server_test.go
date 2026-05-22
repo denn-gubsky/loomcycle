@@ -1775,3 +1775,106 @@ func TestLookupAgent_DynamicAgentsStillWins(t *testing.T) {
 		t.Errorf("SystemPrompt = %q, want %q (dynamic_agents must beat substrate when both have a row)", def.SystemPrompt, "dynamic wins")
 	}
 }
+
+// TestLookupAgent_SystemPromptBaseSetFromSubstrate pins the v0.8.22
+// SystemPromptBase normalisation invariant: an agent resolved from the
+// substrate (agent_def_active) MUST have SystemPromptBase populated to
+// equal SystemPrompt at lookup time. Without this, resolveSkillBodiesForRun
+// rebuilds from an empty base and the agent's own body is silently
+// dropped when any skill bundles in — only the skill text reaches the
+// model. Repro of the production bug: ats-filter (which declares
+// skills: ["position-relevance-filtering"]) stopped knowing to call
+// mcp__jobs__getAgentContext because its body was replaced by the skill.
+func TestLookupAgent_SystemPromptBaseSetFromSubstrate(t *testing.T) {
+	st, err := storesqlite.Open(":memory:")
+	if err != nil {
+		t.Fatalf("sqlite.Open: %v", err)
+	}
+	defer st.Close()
+
+	cfg := &config.Config{
+		Concurrency: config.Concurrency{MaxConcurrentRuns: 1, MaxQueueDepth: 1, QueueTimeoutMS: 100},
+	}
+	srv := New(cfg, &stubResolver{}, nil, concurrency.New(1, 1, time.Second), st)
+	ctx := context.Background()
+
+	const agentBody = "You are ats-filter. First call mcp__jobs__getAgentContext, then score."
+	defJSON, _ := json.Marshal(map[string]any{
+		"system_prompt": agentBody,
+		"allowed_tools": []string{"mcp__jobs__getAgentContext", "Skill"},
+		"skills":        []string{"position-relevance-filtering"},
+	})
+	if _, err := st.AgentDefCreate(ctx, store.AgentDefRow{
+		DefID: "def_substrate_ats", Name: "ats-filter", Definition: defJSON,
+	}); err != nil {
+		t.Fatalf("AgentDefCreate: %v", err)
+	}
+	if err := st.AgentDefSetActive(ctx, "ats-filter", "def_substrate_ats", "a_test"); err != nil {
+		t.Fatalf("AgentDefSetActive: %v", err)
+	}
+
+	def, ok := srv.lookupAgent(ctx, "ats-filter")
+	if !ok {
+		t.Fatal("lookupAgent returned ok=false")
+	}
+	if def.SystemPrompt != agentBody {
+		t.Errorf("SystemPrompt = %q, want agent body", def.SystemPrompt)
+	}
+	// THE invariant this test exists to pin.
+	if def.SystemPromptBase != agentBody {
+		t.Errorf("SystemPromptBase = %q, want it set to SystemPrompt %q so resolveSkillBodiesForRun rebuilds from the agent's actual body, not an empty string", def.SystemPromptBase, agentBody)
+	}
+}
+
+// TestLookupAgent_SystemPromptBaseSetFromDynamic mirrors the substrate
+// invariant for the legacy dynamic_agents path. Same gap, same fix.
+// Documented as defensive because the bug never surfaced in production
+// — historical dynamic_agents callers didn't declare skills: — but
+// the invariant should hold uniformly across both runtime paths.
+func TestLookupAgent_SystemPromptBaseSetFromDynamic(t *testing.T) {
+	st, err := storesqlite.Open(":memory:")
+	if err != nil {
+		t.Fatalf("sqlite.Open: %v", err)
+	}
+	defer st.Close()
+
+	cfg := &config.Config{
+		Concurrency: config.Concurrency{MaxConcurrentRuns: 1, MaxQueueDepth: 1, QueueTimeoutMS: 100},
+	}
+	srv := New(cfg, &stubResolver{}, nil, concurrency.New(1, 1, time.Second), st)
+	ctx := context.Background()
+
+	const agentBody = "You are a legacy dynamic agent. Body must survive."
+	defJSON, _ := json.Marshal(config.AgentDef{
+		SystemPrompt: agentBody,
+		AllowedTools: []string{"Skill"},
+		Skills:       []string{"some-skill"},
+	})
+	if err := st.DynamicAgentUpsert(ctx, store.DynamicAgent{
+		Name: "legacy-with-skills", Definition: defJSON, CreatedAt: time.Now(),
+	}); err != nil {
+		t.Fatalf("DynamicAgentUpsert: %v", err)
+	}
+
+	def, ok := srv.lookupAgent(ctx, "legacy-with-skills")
+	if !ok {
+		t.Fatal("lookupAgent returned ok=false")
+	}
+	if def.SystemPromptBase != agentBody {
+		t.Errorf("SystemPromptBase = %q, want %q", def.SystemPromptBase, agentBody)
+	}
+}
+
+// TestLookupAgent_PreservesNonEmptySystemPromptBase confirms the
+// normalisation is non-destructive: when an upstream caller already
+// populated SystemPromptBase (the static-cfg path via resolveSkills),
+// the normaliser MUST NOT overwrite it. Pins the "fill only when empty"
+// semantic so a future refactor that flips the order doesn't silently
+// regress the static-config invariant.
+func TestLookupAgent_PreservesNonEmptySystemPromptBase(t *testing.T) {
+	d := &config.AgentDef{SystemPrompt: "rebuilt prompt", SystemPromptBase: "original base"}
+	normalizeSystemPromptBase(d)
+	if d.SystemPromptBase != "original base" {
+		t.Errorf("SystemPromptBase overwritten: got %q, want %q", d.SystemPromptBase, "original base")
+	}
+}
