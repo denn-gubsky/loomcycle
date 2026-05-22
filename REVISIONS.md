@@ -8,6 +8,59 @@ For pre-v0.4 history (single-tool runtime, library milestone, security patch), s
 
 ---
 
+## What's in v0.9.3
+
+Two coordinated themes plus four follow-up fixes. The headline is **Web UI Library v2** — the `/ui/library` surface stops being substrate-only and shows every agent / skill / MCP server the runtime knows about, with STATIC / DYNAMIC source chips and inline content expansion. The second theme is the **static-vs-dynamic resolver consolidation** that turned PRs #184/#185/#186 into a canonical `internal/lookup` package + a four-rule contract for future substrates. The follow-ups close a latent UI dead-body limitation, fix sub-agent spawn name resolution, and disambiguate the transcript USER/SYSTEM cards that PR #171 (v0.9.1) shipped duplicating content.
+
+### What's new
+
+**Web UI Library v2** (PRs #191 + #193 + main commits 21b2e2e + 21cc512). The shipped `/ui/library` surface (PR #187) enumerated only substrate rows. Two operator complaints surfaced immediately: static yaml-only entities (the operator's bread and butter) were invisible, and static MCP servers' tool lists (cached in `Pool.entry.tools`, never persisted) had no path to the UI. v2 closes both:
+
+- **Three new bearer-authed read-only endpoints**: `GET /v1/_library/agents`, `GET /v1/_library/skills`, `GET /v1/_library/mcp-servers` — each merges cfg-side + substrate-side views into one envelope per entry. The existing `/v1/_*def/names` endpoints stay byte-identical so external adapter consumers see no breakage.
+- **Source taxonomy**: every entry carries `source` (`static-only` | `dynamic-only` | `both`) + `in_static` + `in_substrate` booleans + an optional `static_definition` payload. The UI renders STATIC and DYNAMIC chips at the name level; bootstrapped entities (existing in both) get both chips.
+- **Whole-row click toggles content** (commit 21cc512): clicking anywhere on the row in the lineage tree expands or collapses the definition body inline. Multiple rows can be open simultaneously — operators inspecting a fork chain can visually diff v3 vs v4 without re-clicking. The tree caret keeps its own click handler with `stopPropagation`. Full keyboard a11y: `role="button"`, `tabIndex=0`, `aria-expanded`, Enter / Space.
+- **Static MCP tools surface**: new `Pool.PeekTools(name) []ToolDescriptor` snapshot accessor on `internal/tools/mcp` + an `MCPPoolInspector func(name) json.RawMessage` typedef + `SetMCPPoolInspector` setter on the Server. `cmd/loomcycle/main.go` wires a closure that marshals into the substrate-mirror shape (`[{name, description, input_schema}]`), so the wire shape is uniform across static + dynamic MCP servers. Per-tool pill expansion shows the description + pretty-printed JSON schema.
+- **Diagnostic empty-state**: when an MCP server's `discovered_tools` is absent on the wire (handshake failed, init pending, or `rediscover` not called for a substrate row), the UI renders a hint pointing operators at the loomcycle log for `mcp[<name>]: handshake failed` lines instead of silently omitting the section.
+- **Static stdio MCP rendering**: stdio servers from `cfg.MCPServers` now render with `command` / `args` / `env` / `pool_size` alongside http servers' `url` / `headers`. The redactor widens from Authorization-only to env vars matching `*_TOKEN` / `*_KEY` / `*_SECRET` / `*_PASSWORD` / `*_CREDENTIAL` / `*_AUTH`.
+
+**Static-vs-dynamic resolver consolidation** (PR #188 + PR #189 — full retrospective in [`doc-internal/static-vs-dynamic-equalization.md`](../loomcycle-internal/doc-internal/static-vs-dynamic-equalization.md)). Pre-v0.8 loomcycle had ONE load path for `config.AgentDef`: yaml → `config.LoadConfig` → `resolveSkills` / `resolveAgent` → `cfg.Agents`. v0.8.15 added `dynamic_agents` (`RegisterAgent` path) and v0.8.22 added the AgentDef substrate (`agent_defs` + `agent_def_active`). Both new READ paths skipped the boot-time normalizer chain, leaving `SystemPromptBase` empty on every runtime-resolved agent. The same drift class produced multiple symptoms patched piecemeal by PRs #184 (lookupAgent didn't consult `agent_def_active`; substrate-registered names 404 on `/v1/runs`) + PR #185 (a misleading "skills not loaded" error when substrate had the skill but not under that name) + PR #186 (`resolveSkillBodiesForRun` rebuilt `SystemPrompt = SystemPromptBase + skill bodies` and started from `""`, silently erasing the agent's instructions on every skill-enabled run).
+
+PR #188 consolidates: new `internal/lookup` package with canonical `Agent` / `Skill` / `MCPServer` resolvers + `Substrate*` json-tagged adapter structs (the AgentDef-side close of the latent JSON-tag mismatch where `config.AgentDef` has yaml-only tags but the substrate persists snake_case via `mergedDef`) + a `NormalizeAgentDef` read-side normalizer + `mergedDef.normalize()` write-side fix + a `BackfillAgentDefSystemPromptBase` boot-time backfill for legacy rows. Equivalence test (`TestAgent_EquivalenceYamlVsSubstrate`) pins yaml-vs-substrate parity at CI time; reflection-based drift test pins json-tag coverage so a future field added to `mergedDef` without a matching `SubstrateAgentDef` entry fails CI rather than silently dropping. Documented in `internal/lookup/README.md`.
+
+PR #189 closes the last missed call site: `runSubAgent` (the closure the Agent built-in tool calls for sub-agent spawns) was still doing `s.cfg.Agents[name]` directly, so a yaml parent could not spawn a child registered via `RegisterAgent`. Production symptom: `cv-batch-adapter` (yaml) trying to spawn N `cv-adapter` (dynamic) children — every spawn surfaced `unknown sub-agent` as an IsError tool_result and no CV adaptation happened end-to-end. The fix routes through `lookup.Agent`; a new regression test pins it.
+
+**Transcript USER/SYSTEM card disambiguation** (PR #190). The v0.9.1 `user_input` event payload is the full `[]loop.PromptSegment` array. For sub-agent spawns + the run-creation paths that prepend a system segment for provider wire-shape reasons, that array contains `{role:"system", content: <agent.SystemPrompt>}` followed by `{role:"user", content: <actual prompt>}`. The Web UI's USER card mapped over ALL segments — so it led with the agent's system prompt before showing the actual user content, duplicating exactly what the SYSTEM card surfaces separately. The fix filters `role === "system"` segments out of the three `user_input` renderer branches in `AgentDetailPane.tsx` + the matching one in `TerminalTranscript.tsx`. Backend persistence stays as-is: replay (`server.go:2378` already filters role at message-reconstruction time) and external transcript consumers (TS adapter, snapshot/restore) need the full segs preservation.
+
+**Substrate list-op completes** (PR #192). The three substrate `op:"list"` response builders (`rowResponseMap` / `skillDefRowResponseMap` / `mcpServerDefRowResponseMap`) omitted the persisted `definition` field — so `row.definition` was undefined on every wire response. The pre-existing UI side panel (PR #187) had the same dead-body problem; it only became user-visible with v2's inline content expansion, when operators explicitly click a row's content chevron and see "...nothing happens." The fix adds `"definition": row.Definition` to all three response maps. `json.RawMessage` marshals verbatim; no new round-trips. Same root cause produces the "MCP discovered_tools pills show no tool names" report — with `body.discovered_tools` undefined for substrate MCP rows, no pills rendered.
+
+### Adapter releases
+
+- **`@loomcycle/client` 0.9.2 → 0.9.3** (npm) — no method additions; no wire-shape additions. Version bump for binary-tag-to-adapter-version lockstep. The Library v2 surface is read-only and isn't routinely consumed from JS adapters today (it's a Web UI concern); when adapters need it, the existing `jsonFetch` pattern handles the new endpoints without typed wrappers.
+- **`loomcycle` Python** held at 0.7.0 — no Python-side surface change in v0.9.3.
+
+### Wire-surface counts
+
+| Surface | v0.9.2 | v0.9.3 |
+|---|---|---|
+| HTTP endpoints (admin read) | n | n + 3 (`/v1/_library/{agents,skills,mcp-servers}`) |
+| MCP meta-tools | 33 | 33 (no change) |
+| gRPC RPCs | n | n (no change) |
+| TS adapter methods | 36 | 36 (no change) |
+| Substrate list-op response fields | 11 | 12 (+`definition`) |
+
+### Migration notes
+
+- **No schema migrations are required.** No new tables, no envelope sections. The substrate list-op now includes the `definition` field — additive, backwards-compatible for any consumer that ignored extra fields.
+- **No yaml changes required.** The `agents:` / `mcp_servers:` blocks are unchanged. Library v2 enumerates existing yaml entries; no new keys.
+- **MCP server cache surface**: operators noticing "no tools cached" in `/ui/library/mcp-servers` for static yaml MCP servers should check the loomcycle boot log for `mcp[<name>]: handshake failed` lines — the UI's empty-state hint now points there. Pool init is lazy + retried with backoff; if a server is slow to start, the cache populates after handshake succeeds.
+- **TS adapter consumers**: bump `@loomcycle/client` to `0.9.3` if you tag your loomcycle binary to v0.9.3 (release lockstep enforced by `publish-ts-adapter.yml`). No code changes required.
+
+### Downloads
+
+Assets attached to this release: `loomcycle-{darwin,linux}-{amd64,arm64}.tar.gz` + `SHA256SUMS`.
+
+---
+
 ## What's in v0.8.16
 
 The v0.8.x substrate arc closes with the **Interruption** tool — the human-in-the-loop primitive. Memory + Channel + AgentDef + Evaluation + Context + LoomCycle MCP + **Interruption** is the full substrate operators promised back in v0.8.0's planning.
