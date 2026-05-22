@@ -28,7 +28,12 @@ export type EventType =
   // doesn't carry `type` server-side; parseSSE backfills it from the SSE
   // event-name so the consumer sees a well-formed AgentEvent).
   | "session"
-  | "agent";
+  | "agent"
+  // v0.9.x — client-synthesized lifecycle events emitted ONLY when the
+  // streaming caller passes `debug: true`. Never originate from the
+  // server. The leading underscore signals "synthetic, not on the wire."
+  // Consumers that opt out (default) never see this `type`.
+  | "_meta";
 
 export interface ToolUse {
   id: string;
@@ -98,6 +103,13 @@ export interface AgentEvent {
   run_id?: string;
   session_id?: string;
   parent_agent_id?: string | null;
+  // v0.9.x — client-synthesized observability fields, populated only on
+  // events of `type: "_meta"`. Subtype distinguishes connection
+  // lifecycle frames; reason is the cause (HTTP status, "abort",
+  // "eof", typed-error name). All other event types leave them
+  // undefined.
+  meta_subtype?: "stream_open" | "stream_close";
+  meta_reason?: string;
 }
 
 export type PromptContent =
@@ -154,6 +166,14 @@ export interface RunOptions {
    *  (static-bearer setups unaffected). Sub-agents inherit identically.
    *  Never persisted; never logged in full. */
   userBearer?: string;
+  /** Opt-in observability: when true, the iterator emits client-
+   *  synthesized `{ type: "_meta", meta_subtype: "stream_open" | "stream_close" }`
+   *  events around the real event stream. `meta_reason` carries the
+   *  trigger ("eof", "abort", or an error class name). Default is
+   *  false — existing consumers see no behaviour change. Useful for
+   *  n8n nodes that want to surface "stream re-opened" / "stream
+   *  closed" log entries without inferring from event timing. */
+  debug?: boolean;
   signal?: AbortSignal;
 }
 
@@ -183,6 +203,8 @@ export interface ContinueOptions {
    *  so different continuations in the same session may carry
    *  different end-user tokens. */
   userBearer?: string;
+  /** Opt-in observability: see {@link RunOptions.debug}. Same shape. */
+  debug?: boolean;
   signal?: AbortSignal;
 }
 
@@ -802,7 +824,10 @@ export interface RunStateStreamOpen {
  *  the connection before any real events flow. */
 export type RunStateStreamItem =
   | { kind: "open"; payload: RunStateStreamOpen }
-  | { kind: "event"; payload: RunStateEvent };
+  | { kind: "event"; payload: RunStateEvent }
+  // v0.9.x — emitted ONLY when StreamUserRunStatesOptions.debug=true.
+  // Never on the wire; synthesized client-side at stream-close time.
+  | { kind: "close"; payload: RunStateStreamClose };
 
 /** Optional filter for {@link LoomcycleClient.streamUserRunStates}. */
 export interface StreamUserRunStatesOptions {
@@ -810,7 +835,28 @@ export interface StreamUserRunStatesOptions {
   statuses?: string[];
   /** Filter to one agent name. Empty means any. */
   agent?: string;
+  /** v0.9.x — client-side filter on the run's parent_agent_id.
+   *  Useful for "show me only the sub-runs spawned by agent X."
+   *  The filter is applied AFTER the SSE frame is parsed, so this
+   *  shrinks what your callback sees but doesn't reduce server-side
+   *  load. Server-side filtering is a separate (future) request.
+   *  Pass the empty string to opt out (default). */
+  parentAgentId?: string;
+  /** v0.9.x — opt-in observability: when true, the iterator emits a
+   *  client-synthesized `{ kind: "open", payload: { ... reason: "..." } }`
+   *  before any real frames AND a `{ kind: "close", payload: { reason } }`
+   *  on stream EOF / abort / error. Reason carries the cause
+   *  ("eof", "abort", or an error class name). Default false leaves
+   *  behaviour identical to v0.9.x earlier. */
+  debug?: boolean;
   signal?: AbortSignal;
+}
+
+/** v0.9.x — close-event payload emitted only under
+ *  {@link StreamUserRunStatesOptions.debug}. Synthetic; never on the
+ *  wire. */
+export interface RunStateStreamClose {
+  reason: string;
 }
 
 // ---- v0.9.x content_sha256 verify op (AgentDef + SkillDef) ----

@@ -99,6 +99,19 @@ export class LoomcycleClient {
    * Errors during the run surface as `{ type: "error", error }` events;
    * only transport / HTTP-level failures throw — and those throw typed
    * errors (e.g. AuthError for 401, BackpressureError for 429).
+   *
+   * **Blocking semantics.** This iterator is alive for the FULL
+   * duration of the run — typically seconds, occasionally minutes for
+   * long tool chains. Callers that need fire-and-forget completion
+   * notifications (n8n's worker model, dashboards that don't want to
+   * hold a connection per active run) should subscribe to
+   * {@link LoomcycleClient.streamUserRunStates} instead, which yields
+   * one terminal-state frame per completed run without holding the
+   * run's stream open.
+   *
+   * v0.9.x — pass `opts.debug = true` to emit synthetic
+   * `{ type: "_meta", meta_subtype: "stream_open" | "stream_close" }`
+   * events around the real frames. Silent (default) when omitted.
    */
   async *runStreaming(opts: RunOptions): AsyncIterable<AgentEvent> {
     // Build the body conditionally so omitted fields stay off the wire.
@@ -122,7 +135,7 @@ export class LoomcycleClient {
     if (opts.agentId !== undefined) body.agent_id = opts.agentId;
     if (opts.userTier !== undefined) body.user_tier = opts.userTier;
     if (opts.userBearer !== undefined) body.user_bearer = opts.userBearer;
-    yield* this.streamSSE("/v1/runs", body, opts.signal);
+    yield* this.streamSSE("/v1/runs", body, opts.signal, opts.debug);
   }
 
   /**
@@ -133,6 +146,14 @@ export class LoomcycleClient {
    * Raises SessionNotFoundError when sessionId is unknown,
    * SessionBusyError when another request is in flight on the same
    * session.
+   *
+   * **Blocking semantics.** Same as {@link LoomcycleClient.runStreaming} —
+   * the iterator stays alive for the duration of the new run. For
+   * async fire-and-forget completion patterns, see
+   * {@link LoomcycleClient.streamUserRunStates}.
+   *
+   * v0.9.x — pass `opts.debug = true` for synthetic
+   * `_meta` open/close events.
    */
   async *continueSession(opts: ContinueOptions): AsyncIterable<AgentEvent> {
     const body: Record<string, unknown> = {
@@ -150,6 +171,7 @@ export class LoomcycleClient {
       `/v1/sessions/${encodeURIComponent(opts.sessionId)}/messages`,
       body,
       opts.signal,
+      opts.debug,
     );
   }
 
@@ -177,10 +199,20 @@ export class LoomcycleClient {
     return { cancelledCount: resp.cancelled_count };
   }
 
-  /** List a user's recent agent runs, optionally filtered by status. */
+  /** List a user's recent agent runs, optionally filtered by status.
+   *
+   *  v0.9.x — `parentAgentId` narrows the result CLIENT-SIDE to runs
+   *  whose `parent_agent_id` matches. The server still returns the
+   *  full set (server-side `?parent_agent_id=` filter is a future
+   *  request); the adapter trims before returning. Useful for the
+   *  n8n trigger pattern "show me all sub-runs spawned by parent X." */
   async listUserAgents(
     userId: string,
-    opts?: { status?: AgentStatus; signal?: AbortSignal },
+    opts?: {
+      status?: AgentStatus;
+      parentAgentId?: string;
+      signal?: AbortSignal;
+    },
   ): Promise<Agent[]> {
     const q = opts?.status ? `?status=${encodeURIComponent(opts.status)}` : "";
     const resp = await jsonFetch<ListAgentsResponse>(
@@ -188,7 +220,11 @@ export class LoomcycleClient {
       `/v1/users/${encodeURIComponent(userId)}/agents${q}`,
       opts,
     );
-    return resp.agents ?? [];
+    const all = resp.agents ?? [];
+    if (opts?.parentAgentId !== undefined && opts.parentAgentId !== "") {
+      return all.filter((a) => a.parent_agent_id === opts.parentAgentId);
+    }
+    return all;
   }
 
   /** Read the full event log for a session. Each entry has seq,
@@ -589,11 +625,18 @@ export class LoomcycleClient {
   // ---- Internal helpers ----
 
   /** Shared SSE POST → stream-of-AgentEvent path. Used by
-   *  runStreaming + continueSession. */
+   *  runStreaming + continueSession.
+   *
+   *  When `debug` is true, the iterator yields a synthetic
+   *  `{ type: "_meta", meta_subtype: "stream_open" }` before any real
+   *  events AND a `{ type: "_meta", meta_subtype: "stream_close",
+   *  meta_reason }` on EOF / abort / error. The default is silent
+   *  (matches pre-v0.9.x behaviour). */
   private async *streamSSE(
     path: string,
     body: Record<string, unknown>,
     signal?: AbortSignal,
+    debug?: boolean,
   ): AsyncIterable<AgentEvent> {
     const headers: Record<string, string> = {
       "Content-Type": "application/json",
@@ -621,7 +664,40 @@ export class LoomcycleClient {
       throw new Error("loomcycle: response has no body");
     }
 
-    yield* parseSSE(resp.body.getReader());
+    if (!debug) {
+      // Silent default — pre-v0.9.x shape.
+      yield* parseSSE(resp.body.getReader());
+      return;
+    }
+
+    // Debug shape: synthetic open + close around the real stream.
+    // `meta_reason` distinguishes normal EOF from caller-side abort
+    // or a typed-error throw mid-stream. The close frame is emitted
+    // in `finally` so it fires regardless of how the inner iterator
+    // exited.
+    yield { type: "_meta", meta_subtype: "stream_open", meta_reason: "open" };
+    let closeReason = "eof";
+    try {
+      yield* parseSSE(resp.body.getReader());
+    } catch (e) {
+      // Capture the error type for the close frame, then re-throw so
+      // typed-error handling at the consumer site still works.
+      closeReason =
+        e && typeof e === "object" && "name" in e
+          ? String((e as { name: string }).name)
+          : "error";
+      yield {
+        type: "_meta",
+        meta_subtype: "stream_close",
+        meta_reason: closeReason,
+      };
+      throw e;
+    }
+    yield {
+      type: "_meta",
+      meta_subtype: "stream_close",
+      meta_reason: closeReason,
+    };
   }
 
   // ---- v0.9.x n8n RFC Phase 0 ----
@@ -745,7 +821,18 @@ export class LoomcycleClient {
    *  Callers running indefinitely should reconnect on close.
    *
    *  Errors during the stream throw — they do NOT surface as items.
-   *  Pass an AbortSignal to terminate cleanly from the consumer side. */
+   *  Pass an AbortSignal to terminate cleanly from the consumer side.
+   *
+   *  v0.9.x options:
+   *  - `parentAgentId` — client-side filter: only `kind: "event"`
+   *    items whose payload's `parent_agent_id` matches are yielded.
+   *    The server still streams every matching event; the adapter
+   *    filters before yielding. Empty/omitted = no filter.
+   *  - `debug` — when true, an additional `{ kind: "close", payload:
+   *    { reason } }` item is yielded when the stream ends (EOF,
+   *    abort, or pre-yield error). Useful for n8n nodes that surface
+   *    "stream re-opened / closed" log entries without inferring
+   *    from timing. Default false. */
   async *streamUserRunStates(
     userId: string,
     opts?: StreamUserRunStatesOptions,
@@ -782,7 +869,39 @@ export class LoomcycleClient {
       throw new Error("loomcycle: streamUserRunStates response has no body");
     }
 
-    yield* parseRunStateSSE(resp.body.getReader());
+    const parentFilter = opts?.parentAgentId ?? "";
+    const debug = opts?.debug === true;
+
+    let closeReason = "eof";
+    try {
+      for await (const item of parseRunStateSSE(resp.body.getReader())) {
+        // Client-side parent_agent_id filter. Pre-v1 the server has no
+        // ?parent_agent_id= query param; n8n-style consumers that need
+        // a narrow view get a smaller iterator at the cost of
+        // unchanged server load. See StreamUserRunStatesOptions for
+        // the trade-off note.
+        if (
+          parentFilter !== "" &&
+          item.kind === "event" &&
+          item.payload.parent_agent_id !== parentFilter
+        ) {
+          continue;
+        }
+        yield item;
+      }
+    } catch (e) {
+      closeReason =
+        e && typeof e === "object" && "name" in e
+          ? String((e as { name: string }).name)
+          : "error";
+      if (debug) {
+        yield { kind: "close", payload: { reason: closeReason } };
+      }
+      throw e;
+    }
+    if (debug) {
+      yield { kind: "close", payload: { reason: closeReason } };
+    }
   }
 }
 
