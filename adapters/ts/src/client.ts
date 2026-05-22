@@ -45,6 +45,7 @@ import type {
   InterruptListResponse,
   InterruptStatus,
   ListAgentsResponse,
+  ListChannelsResponse,
   ListHooksResponse,
   ListUsersResponse,
   MemoryEntriesResponse,
@@ -57,12 +58,14 @@ import type {
   ResolveInterruptOptions,
   ResumeResult,
   RunOptions,
+  RunStateStreamItem,
   RuntimeStateResponse,
   SnapshotCreateResponse,
   SnapshotDescriptor,
   SnapshotEnvelope,
   SnapshotListResponse,
   SnapshotRestoreResponse,
+  StreamUserRunStatesOptions,
   SubstrateToolInput,
   SubstrateToolResponse,
   TranscriptResponse,
@@ -579,5 +582,125 @@ export class LoomcycleClient {
     }
 
     yield* parseSSE(resp.body.getReader());
+  }
+
+  // ---- v0.9.x n8n RFC Phase 0 ----
+
+  /** List every operator-declared channel with aggregate stats
+   *  (message_count, oldest_visible_at, newest_visible_at).
+   *  Channels with no published messages still appear with
+   *  message_count=0. Orphaned message rows for un-declared channels
+   *  also appear (forensic visibility). Mirrors GET /v1/_channels. */
+  async listChannels(opts?: {
+    signal?: AbortSignal;
+  }): Promise<ListChannelsResponse> {
+    return await jsonFetch<ListChannelsResponse>(
+      this.ctx,
+      "/v1/_channels",
+      opts,
+    );
+  }
+
+  /** Subscribe to run state transitions for one user_id via SSE.
+   *  Yields one `{ kind: "open", ... }` item first (confirms the
+   *  connection is live), then one `{ kind: "event", ... }` per
+   *  matching state transition until the stream closes.
+   *
+   *  The stream stays open for at most 30 minutes (server-enforced).
+   *  Callers running indefinitely should reconnect on close.
+   *
+   *  Errors during the stream throw — they do NOT surface as items.
+   *  Pass an AbortSignal to terminate cleanly from the consumer side. */
+  async *streamUserRunStates(
+    userId: string,
+    opts?: StreamUserRunStatesOptions,
+  ): AsyncIterable<RunStateStreamItem> {
+    const params = new URLSearchParams();
+    if (opts?.statuses && opts.statuses.length > 0) {
+      params.set("status", opts.statuses.join(","));
+    }
+    if (opts?.agent) {
+      params.set("agent", opts.agent);
+    }
+    const qs = params.toString();
+    const path =
+      `/v1/users/${encodeURIComponent(userId)}/agents/stream` +
+      (qs ? `?${qs}` : "");
+
+    const headers: Record<string, string> = {
+      Accept: "text/event-stream",
+    };
+    if (this.ctx.authToken) {
+      headers.Authorization = `Bearer ${this.ctx.authToken}`;
+    }
+
+    const resp = await this.ctx.fetchImpl(this.ctx.baseUrl + path, {
+      method: "GET",
+      headers,
+      signal: opts?.signal,
+    });
+
+    if (!resp.ok) {
+      await raiseFromResponse(resp);
+    }
+    if (!resp.body) {
+      throw new Error("loomcycle: streamUserRunStates response has no body");
+    }
+
+    yield* parseRunStateSSE(resp.body.getReader());
+  }
+}
+
+/** Lightweight SSE parser tailored to the run-state stream. Each
+ *  frame's event name distinguishes the two kinds; data is JSON.
+ *  Comment lines (": keepalive") are ignored. */
+async function* parseRunStateSSE(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+): AsyncIterable<RunStateStreamItem> {
+  const decoder = new TextDecoder("utf-8");
+  let buf = "";
+  let event = "";
+  let data = "";
+
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buf += decoder.decode(value, { stream: true });
+
+    let idx;
+    while ((idx = buf.indexOf("\n")) !== -1) {
+      const line = buf.slice(0, idx).replace(/\r$/, "");
+      buf = buf.slice(idx + 1);
+
+      if (line === "") {
+        if (event && data) {
+          try {
+            const parsed = JSON.parse(data) as unknown;
+            if (event === "stream_open") {
+              yield {
+                kind: "open",
+                payload: parsed as RunStateStreamItem extends { kind: "open" }
+                  ? RunStateStreamItem["payload"]
+                  : never,
+              } as RunStateStreamItem;
+            } else if (event === "run_state") {
+              yield {
+                kind: "event",
+                payload: parsed as RunStateStreamItem extends { kind: "event" }
+                  ? RunStateStreamItem["payload"]
+                  : never,
+              } as RunStateStreamItem;
+            }
+          } catch {
+            // Drop malformed frame silently — same posture as parseSSE.
+          }
+        }
+        event = "";
+        data = "";
+        continue;
+      }
+      if (line.startsWith("event:")) event = line.slice("event:".length).trim();
+      else if (line.startsWith("data:")) data = line.slice("data:".length).trim();
+    }
   }
 }

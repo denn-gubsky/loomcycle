@@ -182,7 +182,38 @@ type Connector interface {
 	RegisterHook(ctx context.Context, req RegisterHookRequest) (RegisterHookResponse, error)
 	ListHooks(ctx context.Context) (ListHooksResponse, error)
 	DeleteHook(ctx context.Context, id string) error
+
+	// --- v0.9.x n8n RFC Phase 0 ---
+	//
+	// Two methods that surface the new HTTP endpoints (GET /v1/_channels
+	// and GET /v1/users/{user_id}/agents/stream) to MCP + gRPC. Both
+	// pure read paths; no business-logic divergence between transports.
+	//
+	// ListChannels is synchronous request/response — the operator
+	// listing of declared channels with aggregate stats.
+	//
+	// StreamUserRunStates is the streaming counterpart to the SSE
+	// endpoint. Visitor-pattern shape (callback per event) rather than
+	// channel-return so the interface stays sync-style for transports
+	// that don't natively stream (CLI's tabular output, future REST
+	// long-poll). Visitors that return ErrStopStreaming exit cleanly;
+	// other errors propagate. ctx cancel ends the stream with nil.
+	//
+	// Typed errors:
+	//   ErrRunStateStreamUnavailable — runStateBus not wired on the
+	//                                  underlying server (operator
+	//                                  embedding skipped SetRunStateBus).
+	//                                  Transports: Unavailable.
+
+	ListChannels(ctx context.Context) (ListChannelsResponse, error)
+	StreamUserRunStates(ctx context.Context, req StreamUserRunStatesRequest, visit RunStateVisitor) error
 }
+
+// RunStateVisitor is the visitor callback for StreamUserRunStates.
+// Return ErrStopStreaming to end the stream cleanly; any other
+// non-nil error aborts the stream and propagates out of
+// StreamUserRunStates.
+type RunStateVisitor func(evt RunStateEvent) error
 
 // InterruptionResolveRequest is the input to Connector.InterruptionResolve.
 type InterruptionResolveRequest struct {

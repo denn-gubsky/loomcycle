@@ -770,6 +770,17 @@ type Store interface {
 	// from cur_0 without disturbing the consumer's position.
 	ChannelPeek(ctx context.Context, channel string, scope MemoryScope, scopeID, fromCursor string, limit int) ([]ChannelMessage, error)
 
+	// ChannelStats returns one row per channel that has at least one
+	// non-expired message, with the aggregate count + oldest/newest
+	// visible_at timestamps. Channels declared in operator yaml but
+	// holding no messages do NOT appear in this result — the caller
+	// joins against the declared list to surface "declared but empty"
+	// channels with zero counts.
+	//
+	// Used by the GET /v1/_channels admin listing (Phase 0 of the
+	// n8n integration RFC).
+	ChannelStats(ctx context.Context) ([]ChannelStats, error)
+
 	// ---- v0.8.5 Self-Evolution Substrate ----
 	//
 	// `AgentDef` is the agent-authored agent-definition versioning
@@ -1208,6 +1219,17 @@ type ChannelMessage struct {
 	ExpiresAt         time.Time       `json:"expires_at,omitempty"`
 	VisibleAt         time.Time       `json:"visible_at,omitempty"`
 	PublishedByUserID string          `json:"published_by_user_id,omitempty"`
+}
+
+// ChannelStats is one row in the result of ChannelStats — the
+// aggregate over channel_messages for a single channel name. Expired
+// rows are excluded from MessageCount + the visible_at bounds so the
+// admin listing reflects what subscribers would actually receive.
+type ChannelStats struct {
+	Channel         string    `json:"channel"`
+	MessageCount    int64     `json:"message_count"`
+	OldestVisibleAt time.Time `json:"oldest_visible_at,omitempty"`
+	NewestVisibleAt time.Time `json:"newest_visible_at,omitempty"`
 }
 
 // ErrChannelCursorRegression is returned by ChannelAck when a caller

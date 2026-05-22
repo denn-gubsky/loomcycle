@@ -73,4 +73,16 @@ var (
 	// this — it's a defensive guard for the gRPC/MCP code paths that
 	// dispatch through Connector and would otherwise nil-panic.
 	ErrHookNotConfigured = errors.New("connector: hook registry not configured on this server")
+
+	// ErrRunStateStreamUnavailable is returned by StreamUserRunStates
+	// when the underlying server has no runstate.Bus wired (operator
+	// embedding skipped SetRunStateBus). Transports map to
+	// Unavailable / HTTP 503.
+	ErrRunStateStreamUnavailable = errors.New("connector: run-state stream not configured on this server")
+
+	// ErrStopStreaming is the visitor-side sentinel a RunStateVisitor
+	// returns to end the stream cleanly. StreamUserRunStates returns
+	// nil (not this sentinel) when the visitor returns it; the
+	// sentinel is the visitor's way of saying "I have what I need."
+	ErrStopStreaming = errors.New("connector: stop streaming")
 )

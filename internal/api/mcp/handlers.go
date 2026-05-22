@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/connector"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
@@ -69,6 +70,10 @@ var handlersByName = map[string]toolHandler{
 	"register_hook": handleRegisterHook,
 	"list_hooks":    handleListHooks,
 	"delete_hook":   handleDeleteHook,
+
+	// v0.9.x n8n RFC Phase 0: channel listing + run-state streaming.
+	"list_channels":          handleListChannels,
+	"stream_user_run_states": handleStreamUserRunStates,
 }
 
 func toolHandlerByName(name string) (toolHandler, bool) {
@@ -506,6 +511,97 @@ func handleListHooks(ctx context.Context, env *handlerEnv, _ json.RawMessage) (*
 		return toolErr("list_hooks: " + err.Error()), nil
 	}
 	return toolResultJSON(res), nil
+}
+
+// handleListChannels — v0.9.x n8n RFC Phase 0. Dispatches through
+// Connector.ListChannels and returns the result as a JSON tool result.
+func handleListChannels(ctx context.Context, env *handlerEnv, _ json.RawMessage) (*loommcp.CallToolResult, error) {
+	if env.connector == nil {
+		return nil, fmt.Errorf("list_channels: no connector wired")
+	}
+	resp, err := env.connector.ListChannels(ctx)
+	if err != nil {
+		return toolErr("list_channels: " + err.Error()), nil
+	}
+	return toolResultJSON(resp), nil
+}
+
+// streamUserRunStatesArgs is the input to the stream_user_run_states
+// meta-tool. Mirrors connector.StreamUserRunStatesRequest plus two
+// extra fields that bound the blocking-aggregate code path (the
+// streaming code path uses ctx done instead).
+type streamUserRunStatesArgs struct {
+	UserID    string   `json:"user_id"`
+	Statuses  []string `json:"statuses,omitempty"`
+	Agent     string   `json:"agent,omitempty"`
+	MaxEvents int      `json:"max_events,omitempty"`
+	TimeoutMS int      `json:"timeout_ms,omitempty"`
+}
+
+// handleStreamUserRunStates has two code paths analogous to spawn_run:
+//
+//  1. Streaming (session opted into runEvents): each matching event
+//     gets emitted as notifications/loomcycle/run_state; the tool
+//     call returns when ctx fires or MaxEvents hit, with the count
+//     of forwarded events.
+//
+//  2. Blocking (no opt-in): collects matching events into a slice
+//     until MaxEvents or TimeoutMS, then returns the slice as the
+//     tool result.
+//
+// Either way the final response is { "events": [...], "count": N }
+// so adapters can branch on whether they want streaming or polled
+// behaviour by setting the capability flag.
+func handleStreamUserRunStates(ctx context.Context, env *handlerEnv, args json.RawMessage) (*loommcp.CallToolResult, error) {
+	if env.connector == nil {
+		return nil, fmt.Errorf("stream_user_run_states: no connector wired")
+	}
+	var a streamUserRunStatesArgs
+	if err := json.Unmarshal(args, &a); err != nil {
+		return toolErr("invalid stream_user_run_states arguments: " + err.Error()), nil
+	}
+	if a.UserID == "" {
+		return toolErr("stream_user_run_states: user_id is required"), nil
+	}
+	if a.MaxEvents <= 0 {
+		a.MaxEvents = 16
+	}
+	if a.TimeoutMS <= 0 {
+		a.TimeoutMS = 30000
+	}
+
+	useStreaming := env.session != nil && env.session.RunEventsEnabled()
+	collected := make([]connector.RunStateEvent, 0, a.MaxEvents)
+	var count int
+
+	streamCtx, cancel := context.WithTimeout(ctx, time.Duration(a.TimeoutMS)*time.Millisecond)
+	defer cancel()
+
+	visit := func(evt connector.RunStateEvent) error {
+		count++
+		if useStreaming {
+			env.notify("notifications/loomcycle/run_state", evt)
+		} else {
+			collected = append(collected, evt)
+		}
+		if count >= a.MaxEvents {
+			return connector.ErrStopStreaming
+		}
+		return nil
+	}
+
+	err := env.connector.StreamUserRunStates(streamCtx, connector.StreamUserRunStatesRequest{
+		UserID:   a.UserID,
+		Statuses: a.Statuses,
+		Agent:    a.Agent,
+	}, visit)
+	if err != nil {
+		return toolErr("stream_user_run_states: " + err.Error()), nil
+	}
+	return toolResultJSON(struct {
+		Events []connector.RunStateEvent `json:"events"`
+		Count  int                       `json:"count"`
+	}{Events: collected, Count: count}), nil
 }
 
 func handleDeleteHook(ctx context.Context, env *handlerEnv, args json.RawMessage) (*loommcp.CallToolResult, error) {

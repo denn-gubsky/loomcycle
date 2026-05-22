@@ -614,3 +614,68 @@ export type SubstrateToolResponse = unknown;
 export interface PostHookResult {
   result?: HookToolResult;
 }
+
+// ---- v0.9.x n8n RFC Phase 0 ----
+
+/** Aggregate stats for one operator-declared channel. Returned by
+ *  {@link LoomcycleClient.listChannels}. */
+export interface ChannelDescriptor {
+  name: string;
+  scope?: string;
+  semantic?: string;
+  publisher?: string;
+  period?: string;
+  default_ttl?: number;
+  max_messages?: number;
+  message_count: number;
+  /** RFC3339 — empty when count == 0. */
+  oldest_visible_at?: string;
+  newest_visible_at?: string;
+}
+
+/** Response shape for {@link LoomcycleClient.listChannels}. */
+export interface ListChannelsResponse {
+  channels: ChannelDescriptor[];
+}
+
+/** One run state transition emitted by
+ *  {@link LoomcycleClient.streamUserRunStates}. The TS field is RFC3339. */
+export interface RunStateEvent {
+  run_id: string;
+  agent_id: string;
+  agent: string;
+  user_id: string;
+  parent_agent_id?: string;
+  status: string;
+  stop_reason?: string;
+  error?: string;
+  ts: string;
+}
+
+/** Initial stream_open frame emitted before the first run_state. */
+export interface RunStateStreamOpen {
+  user_id: string;
+  filter_status: string[] | null;
+  filter_agent: string;
+  keepalive_interval: number;
+}
+
+/** Yielded by {@link LoomcycleClient.streamUserRunStates}.
+ *
+ *  The first item is always `{ kind: "open", payload: RunStateStreamOpen }`.
+ *  Subsequent items are `{ kind: "event", payload: RunStateEvent }`.
+ *
+ *  Consumers branch on `kind`; the `open` frame is useful for confirming
+ *  the connection before any real events flow. */
+export type RunStateStreamItem =
+  | { kind: "open"; payload: RunStateStreamOpen }
+  | { kind: "event"; payload: RunStateEvent };
+
+/** Optional filter for {@link LoomcycleClient.streamUserRunStates}. */
+export interface StreamUserRunStatesOptions {
+  /** Subset of states to receive. Empty means all states. */
+  statuses?: string[];
+  /** Filter to one agent name. Empty means any. */
+  agent?: string;
+  signal?: AbortSignal;
+}

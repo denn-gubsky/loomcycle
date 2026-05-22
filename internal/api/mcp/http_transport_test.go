@@ -109,6 +109,14 @@ func (m *httpMockConnector) DeleteHook(context.Context, string) error {
 	return errors.New("not implemented")
 }
 
+// v0.9.x n8n RFC Phase 0 stubs.
+func (m *httpMockConnector) ListChannels(context.Context) (connector.ListChannelsResponse, error) {
+	return connector.ListChannelsResponse{}, errors.New("not implemented")
+}
+func (m *httpMockConnector) StreamUserRunStates(context.Context, connector.StreamUserRunStatesRequest, connector.RunStateVisitor) error {
+	return errors.New("not implemented")
+}
+
 // httpTestServer wires an HTTPHandler against the mock connector and
 // returns an httptest.Server speaking the loomcycle MCP transport over
 // real HTTP. Test bodies POST to ts.URL + "/" (the test server has no

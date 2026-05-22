@@ -288,6 +288,27 @@ func toolDescriptors() []loommcp.ToolDescriptor {
 				"properties": {"id": {"type": "string"}}
 			}`),
 		},
+		// v0.9.x n8n RFC Phase 0 — channel listing + run-state streaming.
+		{
+			Name:        "list_channels",
+			Description: "List every operator-declared channel with aggregate runtime stats (message_count, oldest_visible_at, newest_visible_at). Mirrors GET /v1/_channels. No arguments.",
+			InputSchema: rawJSON(`{"type": "object"}`),
+		},
+		{
+			Name:        "stream_user_run_states",
+			Description: "Subscribe to run state transitions for one user_id. Returns {events: [RunStateEvent...], count}. When the session opted into capabilities.loomcycle.runEvents=true, each matching event also arrives as a notifications/loomcycle/run_state notification and the response carries an empty events array (count only). Filters: statuses (e.g. ['completed','failed']) and agent (exact name). max_events caps the response at N events; timeout_ms bounds the blocking wait.",
+			InputSchema: rawJSON(`{
+				"type": "object",
+				"required": ["user_id"],
+				"properties": {
+					"user_id":    {"type": "string"},
+					"statuses":   {"type": "array", "items": {"type": "string"}},
+					"agent":      {"type": "string"},
+					"max_events": {"type": "integer", "minimum": 1, "default": 16},
+					"timeout_ms": {"type": "integer", "minimum": 100, "default": 30000}
+				}
+			}`),
+		},
 	}
 }
 

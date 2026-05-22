@@ -49,6 +49,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/providers/openai"
 	"github.com/denn-gubsky/loomcycle/internal/providers/streamhttp"
 	"github.com/denn-gubsky/loomcycle/internal/resolve"
+	"github.com/denn-gubsky/loomcycle/internal/runstate"
 	"github.com/denn-gubsky/loomcycle/internal/skills"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	storepostgres "github.com/denn-gubsky/loomcycle/internal/store/postgres"
@@ -735,6 +736,15 @@ func main() {
 	// "intr:<id>" key. Without this the resolve writes the row but
 	// the tool re-checks storage only when its own timer fires.
 	srv.SetInterruptionBus(channelBus)
+
+	// v0.9.x n8n RFC Phase 0 — run-state pub/sub bus that backs the
+	// GET /v1/users/{user_id}/agents/stream SSE endpoint. One
+	// instance per process; subscribers (typically the SSE handler)
+	// register per user_id; the finishRun* paths publish state
+	// transitions. Decoupled from channelBus so a slow run-state
+	// consumer can't stall the channel notification path.
+	runStateBus := runstate.NewBus()
+	srv.SetRunStateBus(runStateBus)
 
 	// v0.8.6 heartbeat runner — one goroutine per `_system/heartbeat-*`
 	// (or any other `publisher: system` + `period:` channel) declared

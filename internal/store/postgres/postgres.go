@@ -2423,6 +2423,43 @@ func (s *Store) ChannelPeek(ctx context.Context, channel string, scope store.Mem
 	return msgs, err
 }
 
+func (s *Store) ChannelStats(ctx context.Context) ([]store.ChannelStats, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT channel, COUNT(*), MIN(visible_at), MAX(visible_at)
+		FROM channel_messages
+		WHERE (expires_at IS NULL OR expires_at > NOW())
+		GROUP BY channel
+		ORDER BY channel`)
+	if err != nil {
+		return nil, fmt.Errorf("channel stats query: %w", err)
+	}
+	defer rows.Close()
+
+	var out []store.ChannelStats
+	for rows.Next() {
+		var (
+			name           string
+			count          int64
+			oldest, newest *time.Time
+		)
+		if err := rows.Scan(&name, &count, &oldest, &newest); err != nil {
+			return nil, fmt.Errorf("channel stats scan: %w", err)
+		}
+		st := store.ChannelStats{Channel: name, MessageCount: count}
+		if oldest != nil {
+			st.OldestVisibleAt = oldest.UTC()
+		}
+		if newest != nil {
+			st.NewestVisibleAt = newest.UTC()
+		}
+		out = append(out, st)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("channel stats iterate: %w", err)
+	}
+	return out, nil
+}
+
 // channelRead is the shared read body. Filters expired + invisible
 // rows at WHERE; orders by (visible_at, id) tuple so deferred
 // messages don't get skipped by subscribers that already progressed
