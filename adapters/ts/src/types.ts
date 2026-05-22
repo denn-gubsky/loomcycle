@@ -248,13 +248,48 @@ export interface CancelAgentResult {
 
 /** TranscriptEvent — one persisted store.Event from
  *  GET /v1/sessions/{id}/transcript. The server wraps each
- *  providers.Event in {seq, run_id, ts_ns, type, event:{...}}. */
+ *  providers.Event in {seq, run_id, ts_ns, type, event:{...}}.
+ *
+ *  `payload` is the v0.9.1 sidecar field carrying the typed body of
+ *  events that don't fit the providers.Event union (the first-cycle
+ *  `system_prompt` + `user_input` transcript events). Narrow on
+ *  `type` to pick the right payload interface — see
+ *  {@link SystemPromptPayload} and {@link UserInputPayload}. */
 export interface TranscriptEvent {
   seq: number;
   run_id: string;
   ts_ns: number;
   type: string;
   event: unknown;
+  /** v0.9.1+ sidecar for typed transcript events:
+   *    type === "system_prompt" → SystemPromptPayload
+   *    type === "user_input"    → UserInputPayload[]
+   *  Absent for events the server hands through via `event`. */
+  payload?: SystemPromptPayload | UserInputPayload[] | unknown;
+}
+
+/** UserInputPayload mirrors the JSON of one `loop.PromptSegment` —
+ *  what the caller supplied as `segments` on POST /v1/runs +
+ *  /v1/sessions/{id}/messages. The transcript event's `payload`
+ *  field carries the FULL array (`UserInputPayload[]`) because one
+ *  call may include multiple segments (system + user prepends, etc.). */
+export interface UserInputPayload {
+  role: string; // "system" | "user"
+  content: Array<{ type: string; text?: string; cacheable?: boolean }>;
+}
+
+/** SystemPromptPayload mirrors the v0.9.1 system_prompt transcript
+ *  event payload — the resolved system prompt + provenance metadata
+ *  so operators can see WHICH AgentDef + WHICH SkillDef rows fed in. */
+export interface SystemPromptPayload {
+  system_prompt: string;
+  /** Empty for yaml-only agents (no AgentDef row). Pinned for
+   *  sub-runs spawned via the Agent tool with a def_id. */
+  agent_def_id?: string;
+  /** skillName → active SkillDef def_id. Only present for skills
+   *  whose DB-active row supplied the body; static-fallback skills
+   *  are absent. */
+  skill_def_ids?: Record<string, string>;
 }
 
 export interface TranscriptResponse {
