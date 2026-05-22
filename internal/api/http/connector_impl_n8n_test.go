@@ -76,8 +76,9 @@ func TestConnector_StreamUserRunStates_VisitsMatchingEvents(t *testing.T) {
 		})
 	}()
 
-	// Wait briefly so the subscriber is registered before publishing.
-	time.Sleep(20 * time.Millisecond)
+	// Sync on actual subscription registration rather than a fixed
+	// sleep — under the race detector a 20ms sleep is unreliable.
+	waitForSubscriber(t, bus)
 
 	bus.Publish(runstate.RunStateEvent{RunID: "r1", UserID: "user-a", Status: "running"})  // filtered out
 	bus.Publish(runstate.RunStateEvent{RunID: "r2", UserID: "user-a", Status: "completed"}) // passes
@@ -114,7 +115,7 @@ func TestConnector_StreamUserRunStates_StopOnSentinel(t *testing.T) {
 			})
 	}()
 
-	time.Sleep(20 * time.Millisecond)
+	waitForSubscriber(t, bus)
 	bus.Publish(runstate.RunStateEvent{RunID: "r1", UserID: "user-a", Status: "running"})
 
 	select {
