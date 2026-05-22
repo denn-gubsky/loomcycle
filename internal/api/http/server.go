@@ -2614,8 +2614,9 @@ func (s *Server) makeRecordingEmit(ctx context.Context, runID string, fwd func(p
 }
 
 // runSubAgent is the SubAgentRunner closure injected into the Agent
-// built-in tool. It looks up the named agent in cfg.Agents, builds a
-// fresh session+run for the sub-execution, drives loop.Run with the
+// built-in tool. It resolves the named agent through lookup.Agent
+// (cfg.Agents → dynamic_agents → agent_def_active), builds a fresh
+// session+run for the sub-execution, drives loop.Run with the
 // sub-agent's full declared tool set, and returns the FinalText.
 //
 // Trust model: the sub-agent's `allowed_tools` is the SOLE authority on
@@ -2639,9 +2640,9 @@ func (s *Server) makeRecordingEmit(ctx context.Context, runID string, fwd func(p
 // them as IsError tool_results to the parent's model rather than
 // tearing down the parent run.
 func (s *Server) runSubAgent(ctx context.Context, name string, prompt string, defID string) (string, error) {
-	def, ok := s.cfg.Agents[name]
+	def, ok := lookup.Agent(ctx, s.store, s.cfg, name)
 	if !ok {
-		return "", fmt.Errorf("unknown sub-agent %q (not in loomcycle.yaml agents map)", name)
+		return "", fmt.Errorf("unknown sub-agent %q (not in cfg.Agents, dynamic_agents, or agent_def_active)", name)
 	}
 
 	// v0.8.5 substrate: when defID is set, overlay the named def's
