@@ -164,6 +164,11 @@ func (m *mockConnector) StreamUserRunStates(_ context.Context, req connector.Str
 	return m.streamErr
 }
 
+// v0.9.x MCPServerDef stub.
+func (m *mockConnector) MCPServerDef(context.Context, json.RawMessage) (connector.ToolResult, error) {
+	return connector.ToolResult{}, nil
+}
+
 // driveServer runs the server against the given input lines and
 // returns the response frames (one per request). Notifications are
 // captured separately.

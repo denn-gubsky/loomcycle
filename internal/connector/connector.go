@@ -111,6 +111,16 @@ type Connector interface {
 	Evaluation(ctx context.Context, input json.RawMessage) (ToolResult, error)
 	Context(ctx context.Context, input json.RawMessage) (ToolResult, error)
 
+	// MCPServerDef — v0.9.x dynamic MCP server registration substrate.
+	// Op-discriminated (create / fork / get / list / promote / retire
+	// / rediscover / verify). Operator-admin-only: NOT auto-attached
+	// to any agent's per-run dispatcher. Reachable via the
+	// POST /v1/_mcpserverdef admin endpoint, the LoomCycle MCP
+	// meta-tool `mcpserverdef`, the gRPC MCPServerDef RPC, and the
+	// TS adapter's client.mcpServerDef() method — all four dispatch
+	// through this single Connector method.
+	MCPServerDef(ctx context.Context, input json.RawMessage) (ToolResult, error)
+
 	// --- Pause/Resume/Snapshot (real in v0.8.18) ---
 	//
 	// Wire shapes finalised v0.8.15. Real implementations landed in

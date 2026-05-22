@@ -811,6 +811,11 @@ func (m *mockConnector) StreamUserRunStates(context.Context, connector.StreamUse
 	return nil
 }
 
+// v0.9.x MCPServerDef stub.
+func (m *mockConnector) MCPServerDef(context.Context, json.RawMessage) (connector.ToolResult, error) {
+	return connector.ToolResult{}, nil
+}
+
 // TestGrpcServer_CancelAgent_DispatchesThroughConnector is the v0.8.15
 // regression guard: when the gRPC Server is wired with a Connector,
 // CancelAgent dispatches through s.connector.CancelRun rather than the

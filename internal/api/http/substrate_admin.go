@@ -48,6 +48,13 @@ func (s *Server) handleSubstrateSkillDef(w http.ResponseWriter, r *http.Request)
 	s.dispatchSubstrate(w, r, "SkillDef", s.SkillDef)
 }
 
+// handleSubstrateMCPServerDef serves POST /v1/_mcpserverdef.
+// v0.9.x dynamic MCP server registration. Bearer-authed; same
+// dispatch shape as the AgentDef + SkillDef admin endpoints.
+func (s *Server) handleSubstrateMCPServerDef(w http.ResponseWriter, r *http.Request) {
+	s.dispatchSubstrate(w, r, "MCPServerDef", s.MCPServerDef)
+}
+
 // dispatchSubstrate is the shared body of the two handlers.
 // connectorFn is the Connector method (already a method value
 // bound to the Server). toolName is the label used in error

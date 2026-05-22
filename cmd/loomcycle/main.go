@@ -14,6 +14,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -40,6 +41,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/heartbeat"
 	"github.com/denn-gubsky/loomcycle/internal/help"
+	mcpsign "github.com/denn-gubsky/loomcycle/internal/mcp"
 	"github.com/denn-gubsky/loomcycle/internal/metrics"
 	"github.com/denn-gubsky/loomcycle/internal/pause"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
@@ -115,6 +117,16 @@ func backfillSkillDefSignFn(name string, def []byte) (string, error) {
 	}
 	content.Name = name
 	return skills.Sign(content), nil
+}
+
+// backfillMCPServerDefSignFn — v0.9.x mirror against mcp_server_defs rows.
+func backfillMCPServerDefSignFn(name string, def []byte) (string, error) {
+	content, err := mcpsign.FromOverlay(def)
+	if err != nil {
+		return "", fmt.Errorf("decode mcp_server_defs.definition: %w", err)
+	}
+	content.Name = name
+	return mcpsign.Sign(content), nil
 }
 
 func resolveBuildInfo() (version, commit, builtAt string) {
@@ -495,6 +507,10 @@ func main() {
 	}
 	allTools = append(allTools, skillDefTool)
 
+	// MCPServerDef tool construction is deferred until after the pool
+	// + dynamic registry are built (operator-admin-only — NOT appended
+	// to allTools; wired via SetMCPServerDefTool after the pool exists).
+
 	// Evaluation tool (v0.8.5). Selection half of the substrate;
 	// emitter_role is derived server-side from the caller's RunIdentity
 	// vs the target run's identity, and per-agent yaml `evaluation_scopes`
@@ -598,23 +614,44 @@ func main() {
 	// register each as `mcp__{server}__{tool}` alongside the built-ins.
 	// Failures to spawn or handshake are logged and the server is skipped —
 	// the other servers still come up.
+	// v0.9.x dynamic MCP server registration substrate. In-process
+	// registry consulted by the pool's build callback on every name
+	// not found in the static yaml map. Mutated by the MCPServerDef
+	// substrate tool's create / promote / retire ops; loaded from DB
+	// at boot below so previous-deployment registrations survive
+	// restart.
+	dynamicMCPRegistry := mcp.NewDynamicRegistry()
+
 	mcpPool := mcp.NewPool(
 		func(name string) (mcp.Caller, error) {
-			srv, ok := cfg.MCPServers[name]
-			if !ok {
-				return nil, fmt.Errorf("mcp_servers.%s: not in config", name)
+			// Static yaml entries are ground truth + take precedence.
+			if srv, ok := cfg.MCPServers[name]; ok {
+				switch srv.Transport {
+				case "stdio":
+					return spawnStdioMCP(name, srv)
+				case "http":
+					return mcphttp.New(mcphttp.Config{
+						URL:     srv.URL,
+						Headers: srv.Headers,
+					})
+				default:
+					return nil, fmt.Errorf("mcp_servers.%s: unknown transport %q", name, srv.Transport)
+				}
 			}
-			switch srv.Transport {
-			case "stdio":
-				return spawnStdioMCP(name, srv)
-			case "http":
-				return mcphttp.New(mcphttp.Config{
-					URL:     srv.URL,
-					Headers: srv.Headers,
-				})
-			default:
-				return nil, fmt.Errorf("mcp_servers.%s: unknown transport %q", name, srv.Transport)
+			// v0.9.x dynamic registration. Restricted to http + streamable-http
+			// at the substrate-tool layer; stdio cannot reach this path.
+			if spec, ok := dynamicMCPRegistry.Get(name); ok {
+				switch spec.Transport {
+				case "http", "streamable-http":
+					return mcphttp.New(mcphttp.Config{
+						URL:     spec.URL,
+						Headers: spec.Headers,
+					})
+				default:
+					return nil, fmt.Errorf("mcp_servers.%s: dynamic registration has invalid transport %q (substrate should have refused this; data corruption?)", name, spec.Transport)
+				}
 			}
+			return nil, fmt.Errorf("mcp_servers.%s: not in static yaml or dynamic registry", name)
 		},
 		func(c mcp.Caller) {
 			// Both stdio.Client and http.Client implement Close() error.
@@ -630,6 +667,20 @@ func main() {
 		},
 	)
 	defer mcpPool.Close()
+
+	// v0.9.x MCPServerDef tool — operator-admin-only. NOT appended to
+	// allTools; wired into the HTTP server via SetMCPServerDefTool
+	// below. Registry + Pool wired so create/promote installs entries
+	// into both the DB AND the in-process registry the pool's build
+	// callback consults; Pool is used for evict on retire / promote-
+	// replaces and for the `rediscover` op's tools/list refresh.
+	mcpServerDefTool := &builtin.MCPServerDef{
+		Cfg:                 cfg,
+		Registry:            dynamicMCPRegistry,
+		Pool:                mcpPool,
+		MaxDefinitionBytes:  cfg.Env.AgentDefMaxDefinitionBytes,
+		MaxDescriptionBytes: cfg.Env.AgentDefMaxDescriptionBytes,
+	}
 
 	// Initialise each server, apply per-server allowed_tools filter, and
 	// register the resulting tools alongside the built-ins.
@@ -741,6 +792,51 @@ func main() {
 	evaluationTool.Store = storeIface
 	contextTool.Store = storeIface
 	interruptionTool.Store = storeIface
+	mcpServerDefTool.Store = storeIface
+
+	// v0.9.x — load active mcp_server_defs rows into the in-process
+	// registry so previous-deployment registrations survive a restart.
+	// The pool's build callback consults this registry on first agent
+	// call (after a tool-not-in-frozen-allTools fallthrough via the
+	// existing v0.8.1 lazy resolver). Errors are logged + non-fatal —
+	// a corrupted row blocks only its own server from being callable.
+	if names, err := storeIface.MCPServerDefListNames(context.Background()); err == nil {
+		for _, ns := range names {
+			if ns.ActiveDefID == "" {
+				continue
+			}
+			active, err := storeIface.MCPServerDefGet(context.Background(), ns.ActiveDefID)
+			if err != nil {
+				log.Printf("mcp_server_defs: load active %q: %v", ns.Name, err)
+				continue
+			}
+			var ov struct {
+				Transport string            `json:"transport"`
+				URL       string            `json:"url"`
+				Headers   map[string]string `json:"headers"`
+			}
+			if err := json.Unmarshal(active.Definition, &ov); err != nil {
+				log.Printf("mcp_server_defs: parse active %q: %v", ns.Name, err)
+				continue
+			}
+			dynamicMCPRegistry.Set(mcp.DynamicMCPServerSpec{
+				Name: active.Name, Transport: ov.Transport, URL: ov.URL, Headers: ov.Headers,
+			})
+		}
+		if size := dynamicMCPRegistry.Size(); size > 0 {
+			log.Printf("mcp_server_defs: loaded %d active registration(s) into pool registry", size)
+		}
+	} else {
+		log.Printf("mcp_server_defs: list active failed at boot: %v (dynamic MCP servers will be empty until first registration)", err)
+	}
+
+	// v0.9.x MCPServerDef content_sha256 backfill — same pattern as
+	// agent_defs / skill_defs. Idempotent on subsequent boots.
+	if n, err := storeIface.BackfillMCPServerDefContentSHA256(context.Background(), backfillMCPServerDefSignFn); err != nil {
+		log.Printf("mcp_server_defs: backfill content_sha256 partial — %v (rows updated before error: %d)", err, n)
+	} else if n > 0 {
+		log.Printf("mcp_server_defs: backfilled %d rows with content_sha256", n)
+	}
 	// Back-fill Context tool's catalog with the FINAL allTools slice
 	// (including MCP-served tools registered above) so doc/tools ops
 	// reflect the complete runtime catalog. Must happen AFTER every
@@ -748,6 +844,10 @@ func main() {
 	contextTool.Tools = allTools
 
 	srv := lchttp.New(cfg, pr, allTools, sem, storeIface)
+	// v0.9.x — wire the MCPServerDef substrate tool. NOT in allTools
+	// (operator-admin-only); reached via Connector.MCPServerDef + the
+	// admin endpoint + the LoomCycle MCP meta-tool.
+	srv.SetMCPServerDefTool(mcpServerDefTool)
 	// Surface the resolved build identifiers via /healthz so the Web UI
 	// can render the running binary's real version instead of a stale
 	// hard-coded string. Mirrors what gRPC's Health RPC has reported

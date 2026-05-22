@@ -143,6 +143,13 @@ type Server struct {
 	// SetRunStateBus from main.go.
 	runStateBus *runstate.Bus
 
+	// mcpServerDefTool is the v0.9.x MCPServerDef substrate tool.
+	// NOT in s.tools (no per-agent dispatcher attachment — operator-
+	// admin-only). Reached via Connector.MCPServerDef + the admin
+	// endpoint + LoomCycle MCP meta-tool. Nil = the surface returns
+	// "not configured" errors. Set via SetMCPServerDefTool.
+	mcpServerDefTool tools.Tool
+
 	// mcpHTTPHandler is the v0.8.15.3 HTTP MCP transport (alternate
 	// front-end to the stdio MCP server). Typed as http.Handler — NOT
 	// *lcmcp.HTTPHandler — so this package does NOT import
@@ -303,6 +310,14 @@ func (s *Server) SetInterruptionBus(b *channels.Bus) {
 // endpoint refuses with 503. Constructed once per process in main.go.
 func (s *Server) SetRunStateBus(b *runstate.Bus) {
 	s.runStateBus = b
+}
+
+// SetMCPServerDefTool wires the v0.9.x MCPServerDef substrate tool.
+// Without this call, Connector.MCPServerDef + POST /v1/_mcpserverdef
+// + the LoomCycle MCP meta-tool all refuse with "not configured".
+// Set from main.go once the tool + dynamic registry + pool are built.
+func (s *Server) SetMCPServerDefTool(t tools.Tool) {
+	s.mcpServerDefTool = t
 }
 
 // newDispatcher centralises Dispatcher construction so the three call
@@ -1297,6 +1312,10 @@ func (s *Server) Mux() http.Handler {
 	// same connector path, different wire surface.
 	mux.Handle("POST /v1/_agentdef", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleSubstrateAgentDef))))
 	mux.Handle("POST /v1/_skilldef", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleSubstrateSkillDef))))
+	// v0.9.x dynamic MCP server registration. Bearer-authed; operator-
+	// admin-only (no per-agent surface). Same dispatch shape as the
+	// other two substrate admin endpoints.
+	mux.Handle("POST /v1/_mcpserverdef", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleSubstrateMCPServerDef))))
 	// v0.8.15.3 HTTP MCP transport — Streamable HTTP endpoint that
 	// dispatches the same 20 MCP tools as the stdio MCP server.
 	// POST is the JSON-RPC frame transport; DELETE terminates a
