@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
-	"strings"
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/config"
@@ -593,26 +592,14 @@ func (m *MCPServerDef) validateOverlay(ov mcpServerOverlay) error {
 	return nil
 }
 
-// hostAllowed mirrors the existing allowlist check on the HTTP +
-// WebFetch tools. An empty allowlist means deny-all (consistent with
-// the rest of the substrate's default-deny posture).
+// hostAllowed delegates to the canonical package-level helper used by
+// HTTP + WebFetch (httptool.go). Identical semantics across every
+// tool that gates outbound HTTP on `LOOMCYCLE_HTTP_HOST_ALLOWLIST` is
+// the load-bearing operator contract: the same yaml allowlist must
+// produce the same allow/deny decision regardless of which tool the
+// call goes through.
 func (m *MCPServerDef) hostAllowed(host string) bool {
-	allowlist := m.Cfg.Env.HTTPHostAllowlist
-	if len(allowlist) == 0 {
-		return false
-	}
-	hostLower := strings.ToLower(host)
-	for _, allowed := range allowlist {
-		if strings.EqualFold(allowed, hostLower) {
-			return true
-		}
-		// Operator-yaml supports the leading-dot subdomain match form
-		// (".example.com" matches "api.example.com"). Mirror that.
-		if strings.HasPrefix(allowed, ".") && strings.HasSuffix(hostLower, strings.ToLower(allowed)) {
-			return true
-		}
-	}
-	return false
+	return hostAllowed(host, m.Cfg.Env.HTTPHostAllowlist)
 }
 
 // buildDefinition merges parent JSON (or empty for create) with the

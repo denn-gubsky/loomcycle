@@ -813,9 +813,27 @@ func main() {
 			if ns.ActiveDefID == "" {
 				continue
 			}
+			// Skip names that collide with a static yaml `mcp_servers:` entry.
+			// The pool's build callback prefers yaml over the dynamic
+			// registry, so loading a colliding name here would only inflate
+			// Registry.Size() + lie in operator diagnostics (the registry
+			// entry is unreachable). Mirrors the execCreate refusal.
+			if _, ok := cfg.MCPServers[ns.Name]; ok {
+				log.Printf("mcp_server_defs: skipping %q at boot — name collides with static yaml entry (yaml takes precedence)", ns.Name)
+				continue
+			}
 			active, err := storeIface.MCPServerDefGet(context.Background(), ns.ActiveDefID)
 			if err != nil {
 				log.Printf("mcp_server_defs: load active %q: %v", ns.Name, err)
+				continue
+			}
+			// Skip retired active rows. SetRetired leaves the active overlay
+			// pointing at the retired def_id (matches AgentDef/SkillDef
+			// semantics — the substrate doesn't auto-clear the pointer).
+			// Rehydrating a retired spec would silently revive a name the
+			// operator explicitly retired.
+			if active.Retired {
+				log.Printf("mcp_server_defs: skipping %q at boot — active row is retired (def_id=%s)", ns.Name, active.DefID)
 				continue
 			}
 			var ov struct {

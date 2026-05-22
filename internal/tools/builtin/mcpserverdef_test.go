@@ -23,7 +23,7 @@ func mcpServerDefFixture(t *testing.T) (*MCPServerDef, context.Context, func()) 
 	}
 	cfg := &config.Config{
 		Env: config.Env{
-			HTTPHostAllowlist: []string{"n8n.example.com", ".internal.example", "localhost"},
+			HTTPHostAllowlist: []string{"n8n.example.com", "internal.example", "localhost"},
 		},
 		MCPServers: map[string]config.MCPServer{
 			"yaml-stable": {Transport: "http", URL: "https://yaml.example/mcp"},
@@ -77,6 +77,50 @@ func TestMCPServerDefTool_CreateRefusedOnHostNotInAllowlist(t *testing.T) {
 	}
 	if !strings.Contains(res.Text, "allowlist") {
 		t.Errorf("refusal should mention allowlist; got %s", res.Text)
+	}
+}
+
+// TestMCPServerDefTool_HostAllowlistMatchesCanonical pins the contract
+// that this tool's allowlist semantics MATCH the canonical hostAllowed
+// helper used by HTTP + WebFetch. Specifically: a bare allowlist entry
+// "n8n.example.com" must also permit subdomains ("api.n8n.example.com")
+// — the same behaviour an operator gets when the agent calls the URL
+// via the HTTP tool. The previous bespoke matcher in this file required
+// a leading dot for subdomain expansion and produced silent allow/deny
+// divergence between the two tools on identical operator config.
+func TestMCPServerDefTool_HostAllowlistMatchesCanonical(t *testing.T) {
+	tool, ctx, cleanup := mcpServerDefFixture(t)
+	defer cleanup()
+
+	cases := []struct {
+		name      string
+		url       string
+		shouldOK  bool
+		shouldHit string
+	}{
+		// Bare entry "n8n.example.com" — exact + subdomain.
+		{"bare-exact", "https://n8n.example.com/mcp", true, ""},
+		{"bare-subdomain", "https://api.n8n.example.com/mcp", true, ""},
+		// Bare entry "internal.example" — exact + subdomain (same rule).
+		{"bare-exact-2", "https://internal.example/mcp", true, ""},
+		{"bare-subdomain-2", "https://api.internal.example/mcp", true, ""},
+		// Not on the list.
+		{"unrelated-host", "https://evil.example.org/mcp", false, "allowlist"},
+		// The classic "evil-prefix" attack the canonical matcher's
+		// dot-anchored suffix is designed to defeat.
+		{"prefix-attack", "https://evilexample.com/mcp", false, "allowlist"},
+	}
+	for i, tc := range cases {
+		body := []byte(`{"op":"create","name":"probe-` + tc.name + `","overlay":{"transport":"http","url":"` + tc.url + `"}}`)
+		res, _ := tool.Execute(ctx, body)
+		gotOK := !res.IsError
+		if gotOK != tc.shouldOK {
+			t.Errorf("case %d %q (url=%s): IsError=%v want shouldOK=%v body=%s",
+				i, tc.name, tc.url, res.IsError, tc.shouldOK, res.Text)
+		}
+		if !tc.shouldOK && tc.shouldHit != "" && !strings.Contains(res.Text, tc.shouldHit) {
+			t.Errorf("case %d %q: refusal should mention %q; got %s", i, tc.name, tc.shouldHit, res.Text)
+		}
 	}
 }
 
