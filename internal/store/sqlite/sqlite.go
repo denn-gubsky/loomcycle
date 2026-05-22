@@ -222,6 +222,38 @@ func (s *Store) migrate(ctx context.Context) error {
 			promoted_at           INTEGER NOT NULL,
 			promoted_by_agent_id  TEXT
 		)`,
+		// v0.9.x MCPServerDef substrate — third member of the
+		// AgentDef / SkillDef / MCPServerDef family. Mirror of the
+		// agent_defs / skill_defs schema; the definition JSONB carries
+		// the operator-authored connection metadata (transport / url
+		// / headers) plus the cached discovered_tools list refreshed
+		// via the tool's `rediscover` op. content_sha256 is computed
+		// over the content-bearing subset (excluding discovered_tools).
+		`CREATE TABLE IF NOT EXISTS mcp_server_defs (
+			def_id                    TEXT    PRIMARY KEY,
+			name                      TEXT    NOT NULL,
+			version                   INTEGER NOT NULL,
+			parent_def_id             TEXT    REFERENCES mcp_server_defs(def_id),
+			definition                TEXT    NOT NULL,
+			description               TEXT,
+			created_at                INTEGER NOT NULL,
+			created_by_agent_id       TEXT,
+			created_by_run_id         TEXT,
+			retired                   INTEGER NOT NULL DEFAULT 0,
+			bootstrapped_from_static  INTEGER NOT NULL DEFAULT 0,
+			content_sha256            TEXT,
+			UNIQUE(name, version)
+		)`,
+		`CREATE INDEX IF NOT EXISTS mcp_server_defs_by_name   ON mcp_server_defs(name, version DESC)`,
+		`CREATE INDEX IF NOT EXISTS mcp_server_defs_by_parent ON mcp_server_defs(parent_def_id) WHERE parent_def_id IS NOT NULL`,
+		`CREATE INDEX IF NOT EXISTS mcp_server_defs_by_run    ON mcp_server_defs(created_by_run_id) WHERE created_by_run_id IS NOT NULL`,
+		// mcp_server_defs_by_content_sha256 — see agent_defs_by_content_sha256 note above.
+		`CREATE TABLE IF NOT EXISTS mcp_server_def_active (
+			name                  TEXT    PRIMARY KEY,
+			def_id                TEXT    NOT NULL REFERENCES mcp_server_defs(def_id),
+			promoted_at           INTEGER NOT NULL,
+			promoted_by_agent_id  TEXT
+		)`,
 		// v0.8.5 evaluations table. emitter_role is server-derived in
 		// the tool layer; the store stores the string verbatim. Score
 		// is REAL (Go float64). Dimensions + Judgement are JSON-as-TEXT
@@ -407,8 +439,9 @@ func (s *Store) migrate(ctx context.Context) error {
 		// so the column added by addColumns above is guaranteed to
 		// exist when this index runs. Required for the v0.8.x →
 		// v0.9.x upgrade path where the table exists without the column.
-		`CREATE INDEX IF NOT EXISTS agent_defs_by_content_sha256 ON agent_defs(content_sha256) WHERE content_sha256 IS NOT NULL`,
-		`CREATE INDEX IF NOT EXISTS skill_defs_by_content_sha256 ON skill_defs(content_sha256) WHERE content_sha256 IS NOT NULL`,
+		`CREATE INDEX IF NOT EXISTS agent_defs_by_content_sha256      ON agent_defs(content_sha256)      WHERE content_sha256 IS NOT NULL`,
+		`CREATE INDEX IF NOT EXISTS skill_defs_by_content_sha256      ON skill_defs(content_sha256)      WHERE content_sha256 IS NOT NULL`,
+		`CREATE INDEX IF NOT EXISTS mcp_server_defs_by_content_sha256 ON mcp_server_defs(content_sha256) WHERE content_sha256 IS NOT NULL`,
 		// v0.8.6 channel_messages_by_visible — runs in addIndexes
 		// (NOT the earlier `stmts` loop) so the visible_at column
 		// added by addColumns above is guaranteed to exist when this
@@ -2330,7 +2363,7 @@ func (s *Store) BackfillSkillDefContentSHA256(ctx context.Context, signFn func(n
 }
 
 func (s *Store) backfillContentSHA256(ctx context.Context, table string, signFn func(name string, def []byte) (string, error)) (int, error) {
-	if table != "agent_defs" && table != "skill_defs" {
+	if table != "agent_defs" && table != "skill_defs" && table != "mcp_server_defs" {
 		return 0, fmt.Errorf("backfill: unexpected table %q", table)
 	}
 	// Table name is whitelisted above, so safe to interpolate; we
@@ -3077,6 +3110,269 @@ func (s *Store) scanSkillDefRows(rows *sql.Rows) ([]store.SkillDefRow, error) {
 	for rows.Next() {
 		var (
 			r          store.SkillDefRow
+			definition string
+			createdAt  int64
+			retired    int
+			bootstrap  int
+		)
+		if err := rows.Scan(
+			&r.DefID, &r.Name, &r.Version,
+			&r.ParentDefID,
+			&definition,
+			&r.Description,
+			&createdAt,
+			&r.CreatedByAgentID, &r.CreatedByRunID,
+			&retired, &bootstrap,
+			&r.ContentSHA256,
+		); err != nil {
+			return nil, err
+		}
+		r.Definition = json.RawMessage(definition)
+		r.CreatedAt = time.Unix(0, createdAt)
+		r.Retired = retired != 0
+		r.BootstrappedFromStatic = bootstrap != 0
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// ---- v0.9.x MCPServerDef substrate ----
+//
+// Direct mirror of the SkillDef methods above. Same per-name lock
+// for version monotonicity, same scan/select helpers, same error
+// surfaces. The only divergence is the table name and the typed
+// error (ErrMCPServerDefParentNotFound instead of ErrSkillDefParentNotFound).
+
+func (s *Store) MCPServerDefCreate(ctx context.Context, row store.MCPServerDefRow) (store.MCPServerDefRow, error) {
+	if row.DefID == "" || row.Name == "" {
+		return store.MCPServerDefRow{}, fmt.Errorf("mcp_server_def: def_id + name required")
+	}
+	conn, err := s.db.Conn(ctx)
+	if err != nil {
+		return store.MCPServerDefRow{}, err
+	}
+	defer conn.Close()
+
+	if _, err := conn.ExecContext(ctx, "BEGIN IMMEDIATE"); err != nil {
+		return store.MCPServerDefRow{}, err
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_, _ = conn.ExecContext(context.Background(), "ROLLBACK")
+		}
+	}()
+
+	if row.ParentDefID != "" {
+		var n int
+		if err := conn.QueryRowContext(ctx, `SELECT COUNT(*) FROM mcp_server_defs WHERE def_id = ?`, row.ParentDefID).Scan(&n); err != nil {
+			return store.MCPServerDefRow{}, err
+		}
+		if n == 0 {
+			return store.MCPServerDefRow{}, store.ErrMCPServerDefParentNotFound
+		}
+	}
+
+	var maxVer sql.NullInt64
+	if err := conn.QueryRowContext(ctx,
+		`SELECT MAX(version) FROM mcp_server_defs WHERE name = ?`, row.Name,
+	).Scan(&maxVer); err != nil {
+		return store.MCPServerDefRow{}, err
+	}
+	row.Version = 1
+	if maxVer.Valid {
+		row.Version = int(maxVer.Int64) + 1
+	}
+	row.CreatedAt = time.Now()
+
+	if _, err := conn.ExecContext(ctx,
+		`INSERT INTO mcp_server_defs (
+			def_id, name, version, parent_def_id, definition, description,
+			created_at, created_by_agent_id, created_by_run_id,
+			retired, bootstrapped_from_static, content_sha256
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		row.DefID, row.Name, row.Version, nilIfEmpty(row.ParentDefID),
+		string(row.Definition), nilIfEmpty(row.Description),
+		row.CreatedAt.UnixNano(),
+		nilIfEmpty(row.CreatedByAgentID), nilIfEmpty(row.CreatedByRunID),
+		boolToInt(row.Retired), boolToInt(row.BootstrappedFromStatic),
+		nilIfEmpty(row.ContentSHA256),
+	); err != nil {
+		return store.MCPServerDefRow{}, err
+	}
+	if _, err := conn.ExecContext(ctx, "COMMIT"); err != nil {
+		return store.MCPServerDefRow{}, err
+	}
+	committed = true
+	return row, nil
+}
+
+func (s *Store) MCPServerDefGet(ctx context.Context, defID string) (store.MCPServerDefRow, error) {
+	row, err := s.scanMCPServerDef(s.db.QueryRowContext(ctx, mcpServerDefSelect+` WHERE def_id = ?`, defID))
+	if err == sql.ErrNoRows {
+		return store.MCPServerDefRow{}, &store.ErrNotFound{Kind: "mcp_server_def", ID: defID}
+	}
+	return row, err
+}
+
+func (s *Store) MCPServerDefGetByNameVersion(ctx context.Context, name string, version int) (store.MCPServerDefRow, error) {
+	row, err := s.scanMCPServerDef(s.db.QueryRowContext(ctx, mcpServerDefSelect+` WHERE name = ? AND version = ?`, name, version))
+	if err == sql.ErrNoRows {
+		return store.MCPServerDefRow{}, &store.ErrNotFound{Kind: "mcp_server_def", ID: fmt.Sprintf("%s@v%d", name, version)}
+	}
+	return row, err
+}
+
+func (s *Store) MCPServerDefListByName(ctx context.Context, name string) ([]store.MCPServerDefRow, error) {
+	rows, err := s.db.QueryContext(ctx, mcpServerDefSelect+` WHERE name = ? ORDER BY version DESC`, name)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return s.scanMCPServerDefRows(rows)
+}
+
+func (s *Store) MCPServerDefListChildren(ctx context.Context, parentDefID string) ([]store.MCPServerDefRow, error) {
+	rows, err := s.db.QueryContext(ctx, mcpServerDefSelect+` WHERE parent_def_id = ? ORDER BY version DESC`, parentDefID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return s.scanMCPServerDefRows(rows)
+}
+
+func (s *Store) MCPServerDefListNames(ctx context.Context) ([]store.MCPServerDefNameSummary, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT
+			d.name,
+			COUNT(*)                  AS version_count,
+			MAX(d.version)            AS latest_version,
+			MAX(d.created_at)         AS last_updated,
+			COALESCE(a.def_id, '')    AS active_def_id
+		FROM mcp_server_defs d
+		LEFT JOIN mcp_server_def_active a ON a.name = d.name
+		GROUP BY d.name, a.def_id
+		ORDER BY d.name`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []store.MCPServerDefNameSummary
+	for rows.Next() {
+		var ns store.MCPServerDefNameSummary
+		var updatedAt int64
+		if err := rows.Scan(&ns.Name, &ns.VersionCount, &ns.LatestVersion, &updatedAt, &ns.ActiveDefID); err != nil {
+			return nil, err
+		}
+		ns.LastUpdated = time.Unix(0, updatedAt)
+		out = append(out, ns)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) MCPServerDefSetActive(ctx context.Context, name, defID, promotedByAgentID string) error {
+	var rowName string
+	err := s.db.QueryRowContext(ctx, `SELECT name FROM mcp_server_defs WHERE def_id = ?`, defID).Scan(&rowName)
+	if err == sql.ErrNoRows {
+		return &store.ErrNotFound{Kind: "mcp_server_def", ID: defID}
+	}
+	if err != nil {
+		return err
+	}
+	if rowName != name {
+		return fmt.Errorf("mcp_server_def_active: def_id %q has name %q, refusing to promote under name %q", defID, rowName, name)
+	}
+	_, err = s.db.ExecContext(ctx, `
+		INSERT INTO mcp_server_def_active (name, def_id, promoted_at, promoted_by_agent_id)
+		VALUES (?, ?, ?, ?)
+		ON CONFLICT(name) DO UPDATE SET
+		    def_id               = excluded.def_id,
+		    promoted_at          = excluded.promoted_at,
+		    promoted_by_agent_id = excluded.promoted_by_agent_id`,
+		name, defID, time.Now().UnixNano(), nilIfEmpty(promotedByAgentID),
+	)
+	return err
+}
+
+func (s *Store) MCPServerDefGetActive(ctx context.Context, name string) (store.MCPServerDefRow, error) {
+	var defID string
+	err := s.db.QueryRowContext(ctx, `SELECT def_id FROM mcp_server_def_active WHERE name = ?`, name).Scan(&defID)
+	if err == sql.ErrNoRows {
+		return store.MCPServerDefRow{}, &store.ErrNotFound{Kind: "mcp_server_def_active", ID: name}
+	}
+	if err != nil {
+		return store.MCPServerDefRow{}, err
+	}
+	return s.MCPServerDefGet(ctx, defID)
+}
+
+func (s *Store) MCPServerDefSetRetired(ctx context.Context, defID string, retired bool) error {
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE mcp_server_defs SET retired = ? WHERE def_id = ?`,
+		boolToInt(retired), defID,
+	)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return &store.ErrNotFound{Kind: "mcp_server_def", ID: defID}
+	}
+	return nil
+}
+
+// BackfillMCPServerDefContentSHA256 — see store.Store doc.
+func (s *Store) BackfillMCPServerDefContentSHA256(ctx context.Context, signFn func(name string, def []byte) (string, error)) (int, error) {
+	return s.backfillContentSHA256(ctx, "mcp_server_defs", signFn)
+}
+
+const mcpServerDefSelect = `SELECT
+	def_id, name, version,
+	COALESCE(parent_def_id, ''),
+	definition,
+	COALESCE(description, ''),
+	created_at,
+	COALESCE(created_by_agent_id, ''),
+	COALESCE(created_by_run_id, ''),
+	retired,
+	bootstrapped_from_static,
+	COALESCE(content_sha256, '')
+FROM mcp_server_defs`
+
+func (s *Store) scanMCPServerDef(row *sql.Row) (store.MCPServerDefRow, error) {
+	var (
+		out        store.MCPServerDefRow
+		definition string
+		createdAt  int64
+		retired    int
+		bootstrap  int
+	)
+	err := row.Scan(
+		&out.DefID, &out.Name, &out.Version,
+		&out.ParentDefID,
+		&definition,
+		&out.Description,
+		&createdAt,
+		&out.CreatedByAgentID, &out.CreatedByRunID,
+		&retired, &bootstrap,
+		&out.ContentSHA256,
+	)
+	if err != nil {
+		return store.MCPServerDefRow{}, err
+	}
+	out.Definition = json.RawMessage(definition)
+	out.CreatedAt = time.Unix(0, createdAt)
+	out.Retired = retired != 0
+	out.BootstrappedFromStatic = bootstrap != 0
+	return out, nil
+}
+
+func (s *Store) scanMCPServerDefRows(rows *sql.Rows) ([]store.MCPServerDefRow, error) {
+	var out []store.MCPServerDefRow
+	for rows.Next() {
+		var (
+			r          store.MCPServerDefRow
 			definition string
 			createdAt  int64
 			retired    int

@@ -888,6 +888,34 @@ type Store interface {
 	SkillDefGetActive(ctx context.Context, name string) (SkillDefRow, error)
 	SkillDefSetRetired(ctx context.Context, defID string, retired bool) error
 
+	// ---- v0.9.x MCPServerDef substrate ----
+	//
+	// Third substrate primitive after AgentDef + SkillDef. Same shape
+	// (per-name lock, monotonic versioning, append-only definition,
+	// active-pointer overlay, retire flag). The Definition payload
+	// carries the MCP server's connection metadata + discovered tools
+	// — see internal/tools/builtin/mcpserverdef.go for the schema.
+	//
+	// Coexists with the static yaml `mcp_servers:` block: yaml entries
+	// stay boot-loaded with no row representation; dynamic registrations
+	// have rows. Name collisions with yaml entries are refused at the
+	// tool layer.
+
+	MCPServerDefCreate(ctx context.Context, row MCPServerDefRow) (MCPServerDefRow, error)
+	MCPServerDefGet(ctx context.Context, defID string) (MCPServerDefRow, error)
+	MCPServerDefGetByNameVersion(ctx context.Context, name string, version int) (MCPServerDefRow, error)
+	MCPServerDefListByName(ctx context.Context, name string) ([]MCPServerDefRow, error)
+	MCPServerDefListChildren(ctx context.Context, parentDefID string) ([]MCPServerDefRow, error)
+	MCPServerDefListNames(ctx context.Context) ([]MCPServerDefNameSummary, error)
+	MCPServerDefSetActive(ctx context.Context, name, defID, promotedByAgentID string) error
+	MCPServerDefGetActive(ctx context.Context, name string) (MCPServerDefRow, error)
+	MCPServerDefSetRetired(ctx context.Context, defID string, retired bool) error
+
+	// BackfillMCPServerDefContentSHA256 — mirror of the AgentDef /
+	// SkillDef backfills. Walks NULL/empty content_sha256 rows + calls
+	// the injected signFn. Idempotent; boot-time-only.
+	BackfillMCPServerDefContentSHA256(ctx context.Context, signFn func(name string, def []byte) (string, error)) (int, error)
+
 	// ---- Evaluation ----
 	//
 	// `Evaluation` is the score-attached-to-(run, def) primitive.
@@ -1443,6 +1471,46 @@ type SkillDefActiveEntry struct {
 	PromotedByAgentID string    `json:"promoted_by_agent_id,omitempty"`
 }
 
+// ---- v0.9.x MCPServerDef substrate types ----
+//
+// Mirror of AgentDef* / SkillDef* with the same identity / lineage /
+// provenance semantics. The Definition payload is an MCP server's
+// connection metadata + the cached discovered tools (see
+// internal/tools/builtin/mcpserverdef.go for the JSON shape:
+// transport / url / headers / discovered_tools).
+type MCPServerDefRow struct {
+	DefID                  string          `json:"def_id"`
+	Name                   string          `json:"name"`
+	Version                int             `json:"version"`
+	ParentDefID            string          `json:"parent_def_id,omitempty"`
+	Definition             json.RawMessage `json:"definition"`
+	Description            string          `json:"description,omitempty"`
+	CreatedAt              time.Time       `json:"created_at"`
+	CreatedByAgentID       string          `json:"created_by_agent_id,omitempty"`
+	CreatedByRunID         string          `json:"created_by_run_id,omitempty"`
+	Retired                bool            `json:"retired"`
+	BootstrappedFromStatic bool            `json:"bootstrapped_from_static"`
+	// ContentSHA256 — see AgentDefRow.ContentSHA256.
+	ContentSHA256 string `json:"content_sha256,omitempty"`
+}
+
+// MCPServerDefNameSummary mirrors AgentDefNameSummary.
+type MCPServerDefNameSummary struct {
+	Name          string    `json:"name"`
+	VersionCount  int       `json:"version_count"`
+	ActiveDefID   string    `json:"active_def_id,omitempty"`
+	LatestVersion int       `json:"latest_version"`
+	LastUpdated   time.Time `json:"last_updated"`
+}
+
+// MCPServerDefActiveEntry mirrors AgentDefActiveEntry / SkillDefActiveEntry.
+type MCPServerDefActiveEntry struct {
+	Name              string    `json:"name"`
+	DefID             string    `json:"def_id"`
+	PromotedAt        time.Time `json:"promoted_at"`
+	PromotedByAgentID string    `json:"promoted_by_agent_id,omitempty"`
+}
+
 // EvaluationRow is one row in the evaluations table.
 //
 // DefID is denormalised from runs.agent_def_id at submit time —
@@ -1519,6 +1587,10 @@ var ErrAgentDefParentNotFound = &SubstrateError{Code: "parent_not_found", Msg: "
 // ErrSkillDefParentNotFound mirrors ErrAgentDefParentNotFound for
 // the SkillDef substrate.
 var ErrSkillDefParentNotFound = &SubstrateError{Code: "parent_not_found", Msg: "skill_def: parent_def_id does not exist"}
+
+// ErrMCPServerDefParentNotFound mirrors the AgentDef + SkillDef
+// pattern for the v0.9.x MCPServerDef substrate.
+var ErrMCPServerDefParentNotFound = &SubstrateError{Code: "parent_not_found", Msg: "mcp_server_def: parent_def_id does not exist"}
 
 // ErrAgentDefImmutable is returned by store-layer assertions if
 // someone tries to UPDATE an agent_defs row's definition column.
