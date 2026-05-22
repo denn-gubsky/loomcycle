@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"sort"
 	"strconv"
 	"strings"
@@ -2518,7 +2519,11 @@ func (s *Store) BackfillAgentDefSystemPromptBase(ctx context.Context) (int, erro
 		updated, ok, err := backfillSystemPromptBase(p.Def)
 		if err != nil {
 			// Hand-edited row with broken JSON — log + skip rather than
-			// abort the whole backfill.
+			// abort the whole backfill. The read-side normalizer in
+			// internal/lookup will still fill SystemPromptBase at runtime,
+			// but this log line is the operator's only signal that a row
+			// was left untouched.
+			log.Printf("agent_defs: backfill system_prompt_base: def_id=%s: JSON parse failed, skipping: %v", p.DefID, err)
 			continue
 		}
 		if !ok {
