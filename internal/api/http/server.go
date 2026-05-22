@@ -29,6 +29,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/resolve"
 	"github.com/denn-gubsky/loomcycle/internal/runner"
+	"github.com/denn-gubsky/loomcycle/internal/runstate"
 	"github.com/denn-gubsky/loomcycle/internal/skills"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
@@ -133,6 +134,14 @@ type Server struct {
 	// row's expires_at passes) but in-process wakeup is skipped. Set
 	// via SetInterruptionBus from main.go.
 	interruptionBus *channels.Bus
+
+	// runStateBus is the v0.9.x n8n RFC Phase 0 in-process pub/sub
+	// for run state transitions. Powers GET /v1/users/{user_id}/
+	// agents/stream (SSE). Every finishRun* call site + the run-
+	// creation moment publish here; the SSE handler subscribes.
+	// Nil = the /agents/stream endpoint returns 503. Set via
+	// SetRunStateBus from main.go.
+	runStateBus *runstate.Bus
 
 	// mcpHTTPHandler is the v0.8.15.3 HTTP MCP transport (alternate
 	// front-end to the stdio MCP server). Typed as http.Handler — NOT
@@ -287,6 +296,13 @@ func (s *Server) SetSystemPublisher(p channels.SystemPublisher) {
 // tool. Same Bus instance the Channel tool uses.
 func (s *Server) SetInterruptionBus(b *channels.Bus) {
 	s.interruptionBus = b
+}
+
+// SetRunStateBus wires the v0.9.x run-state pub/sub bus that backs
+// GET /v1/users/{user_id}/agents/stream. Without this call the SSE
+// endpoint refuses with 503. Constructed once per process in main.go.
+func (s *Server) SetRunStateBus(b *runstate.Bus) {
+	s.runStateBus = b
 }
 
 // newDispatcher centralises Dispatcher construction so the three call
@@ -1049,15 +1065,25 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		UserID:    effectiveUserID,
 		StartedAt: time.Now(),
 	}, cancelFn)
+	// v0.9.x n8n RFC Phase 0: identity bundle for runstate.Bus
+	// publishes. Constructed once; passed to every finishRun* below
+	// AND used right now for the "running" transition.
+	meta := runStateMeta{
+		RunID:   runID,
+		AgentID: agentID,
+		Agent:   effectiveAgentName,
+		UserID:  effectiveUserID,
+	}
 	if errors.Is(regErr, cancel.ErrInUse) {
-		s.finishRunFailedReason(runID, "agent_id collision; run never started")
+		s.finishRunFailedReason(runID, "agent_id collision; run never started", meta)
 		return fmt.Errorf("%w: agent_id %q is already mapped to an active run", runner.ErrAgentIDInUse, agentID)
 	}
 	if regErr != nil {
-		s.finishRunFailedReason(runID, "registry register failed: "+regErr.Error())
+		s.finishRunFailedReason(runID, "registry register failed: "+regErr.Error(), meta)
 		return fmt.Errorf("%w: %v", runner.ErrInternal, regErr)
 	}
 	defer s.cancelReg.Deregister(agentID)
+	s.publishRunState(meta, "running", "", "")
 
 	// ---- Persist input segments ----
 	if s.store != nil && runID != "" {
@@ -1140,7 +1166,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		ReResolve:       fbReResolve,
 		Hooks:           s.hookDispatcher,
 	})
-	s.finishRunWithCancel(ctx, runCtx, runID, res, runErr)
+	s.finishRunWithCancel(ctx, runCtx, runID, res, runErr, meta)
 	return nil
 }
 
@@ -1222,6 +1248,11 @@ func (s *Server) Mux() http.Handler {
 	mux.Handle("GET /v1/agents/{agent_id}", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleGetAgent))))
 	mux.Handle("POST /v1/agents/{agent_id}/cancel", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleCancelAgent))))
 	mux.Handle("GET /v1/users/{user_id}/agents", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleListUserAgents))))
+	// v0.9.x n8n RFC Phase 0: SSE stream of run state transitions
+	// scoped to one user_id. Filters via ?status=...&agent=...
+	// Bearer-authed. Returns 503 when the runStateBus isn't wired
+	// (operator-constructed Server without SetRunStateBus).
+	mux.Handle("GET /v1/users/{user_id}/agents/stream", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleStreamUserAgents))))
 	// v0.7.x tool-use hook registration API.
 	mux.Handle("POST /v1/hooks", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleRegisterHook))))
 	mux.Handle("GET /v1/hooks", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleListHooks))))
@@ -1798,6 +1829,14 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		UserID:    req.UserID,
 		StartedAt: time.Now(),
 	}, cancelFn)
+	// v0.9.x: identity bundle threaded into finishRun* + the
+	// "running" transition publish below.
+	meta := runStateMeta{
+		RunID:   runID,
+		AgentID: agentID,
+		Agent:   req.Agent,
+		UserID:  req.UserID,
+	}
 	if errors.Is(regErr, cancel.ErrInUse) {
 		// We've already created the session+run row in the store
 		// (session creation is unavoidable to satisfy the FK on
@@ -1806,18 +1845,19 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		// eventually catch it, but in the meantime it pollutes
 		// ListActiveRunsByUser. Mark it failed with a clear reason
 		// so the row is terminal from this exit path.
-		s.finishRunFailedReason(runID, "agent_id collision; run never started")
+		s.finishRunFailedReason(runID, "agent_id collision; run never started", meta)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusConflict)
 		fmt.Fprintf(w, `{"code":"agent_id_in_use","error":"agent_id %q is already mapped to an active run"}`, agentID)
 		return
 	}
 	if regErr != nil {
-		s.finishRunFailedReason(runID, "registry register failed: "+regErr.Error())
+		s.finishRunFailedReason(runID, "registry register failed: "+regErr.Error(), meta)
 		http.Error(w, regErr.Error(), http.StatusInternalServerError)
 		return
 	}
 	defer s.cancelReg.Deregister(agentID)
+	s.publishRunState(meta, "running", "", "")
 
 	// If we're persisting, record the caller's input segments as the first
 	// event in the run. The loop never emits the caller's input itself, so
@@ -1935,7 +1975,7 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		stream.send(providers.Event{Type: providers.EventError, Error: runErr.Error()})
 	}
 
-	s.finishRunWithCancel(r.Context(), runCtx, runID, loopRes, runErr)
+	s.finishRunWithCancel(r.Context(), runCtx, runID, loopRes, runErr, meta)
 }
 
 // messagesRequest is the JSON body for POST /v1/sessions/{id}/messages. It
@@ -2142,21 +2182,29 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		UserID:    sess.UserID,
 		StartedAt: time.Now(),
 	}, cancelFn)
+	// v0.9.x: per-run meta for runstate.Bus.
+	meta := runStateMeta{
+		RunID:   run.ID,
+		AgentID: agentID,
+		Agent:   sess.Agent,
+		UserID:  sess.UserID,
+	}
 	if errors.Is(regErr, cancel.ErrInUse) {
 		// Same orphan-row mitigation as handleRuns — the run was
 		// already inserted at status=running.
-		s.finishRunFailedReason(run.ID, "agent_id collision; run never started")
+		s.finishRunFailedReason(run.ID, "agent_id collision; run never started", meta)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusConflict)
 		fmt.Fprintf(w, `{"code":"agent_id_in_use","error":"agent_id %q is already mapped to an active run"}`, agentID)
 		return
 	}
 	if regErr != nil {
-		s.finishRunFailedReason(run.ID, "registry register failed: "+regErr.Error())
+		s.finishRunFailedReason(run.ID, "registry register failed: "+regErr.Error(), meta)
 		http.Error(w, regErr.Error(), http.StatusInternalServerError)
 		return
 	}
 	defer s.cancelReg.Deregister(agentID)
+	s.publishRunState(meta, "running", "", "")
 
 	// Persist the new user input segments so a future replay sees them.
 	if inputJSON, err := json.Marshal(body.Segments); err == nil {
@@ -2244,7 +2292,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		stream.send(providers.Event{Type: providers.EventError, Error: runErr.Error()})
 	}
 
-	s.finishRunWithCancel(r.Context(), runCtx, run.ID, loopRes, runErr)
+	s.finishRunWithCancel(r.Context(), runCtx, run.ID, loopRes, runErr, meta)
 }
 
 // replayTranscript walks the persisted events of a session and reconstructs
@@ -2669,6 +2717,16 @@ func (s *Server) runSubAgent(ctx context.Context, name string, prompt string, de
 	} else {
 		defer s.cancelReg.Deregister(subAgentID)
 	}
+	// v0.9.x: sub-agent meta for runstate.Bus. ParentAgentID lets
+	// SSE subscribers see the lineage edge.
+	subMeta := runStateMeta{
+		RunID:         subRunID,
+		AgentID:       subAgentID,
+		Agent:         name,
+		UserID:        parentIdentity.UserID,
+		ParentAgentID: parentIdentity.AgentID,
+	}
+	s.publishRunState(subMeta, "running", "", "")
 
 	// v0.8.22: rebuild SystemPrompt from per-run SkillDef bodies
 	// when any of the sub-agent's skills has a DB-active row. Same
@@ -2811,7 +2869,7 @@ func (s *Server) runSubAgent(ctx context.Context, name string, prompt string, de
 		ReResolve:       fbReResolve,
 		Hooks:           s.hookDispatcher,
 	})
-	s.finishRunWithCancel(ctx, subRunCtx, subRunID, res, runErr)
+	s.finishRunWithCancel(ctx, subRunCtx, subRunID, res, runErr, subMeta)
 
 	if runErr != nil {
 		// Wrap with session/run IDs so a developer reading parent logs
@@ -3301,6 +3359,42 @@ func writeJSON(w http.ResponseWriter, status int, body any) {
 	}
 }
 
+// runStateMeta is the per-run identity bundle the finishRun* helpers
+// need to publish a meaningful event on the runstate.Bus. Every call
+// site (handleRuns / handleMessages / runSubAgent / connector
+// spawn_run + their collision-fail / register-fail subpaths) has the
+// fields in scope at the moment they call finishRun*; assembling the
+// struct is one line at each site.
+//
+// Zero-valued meta is safe (every finishRun* helper nil-guards on
+// s.runStateBus and publishes the event verbatim — the SSE handler's
+// filter shape tolerates empty agent / user_id).
+type runStateMeta struct {
+	RunID         string
+	AgentID       string
+	Agent         string
+	UserID        string
+	ParentAgentID string
+}
+
+// publishRunState fans out one event to the v0.9.x runstate.Bus.
+// No-op when the bus isn't wired (tests / minimal embeddings).
+func (s *Server) publishRunState(m runStateMeta, status, stopReason, errMsg string) {
+	if s.runStateBus == nil {
+		return
+	}
+	s.runStateBus.Publish(runstate.RunStateEvent{
+		RunID:         m.RunID,
+		AgentID:       m.AgentID,
+		Agent:         m.Agent,
+		UserID:        m.UserID,
+		ParentAgentID: m.ParentAgentID,
+		Status:        status,
+		StopReason:    stopReason,
+		Error:         errMsg,
+	})
+}
+
 // makeHeartbeat returns a callback the loop fires at each iteration.
 // It updates runs.last_heartbeat_at via a fire-and-forget background
 // context (the loop's ctx may be cancelled mid-write; the heartbeat
@@ -3333,7 +3427,7 @@ func (s *Server) makeHeartbeat(runID string) func() {
 // context.WithCancelCause. ctx (the first arg) is the outer ctx used
 // only by finishRun for its store write — passing both keeps the
 // background-write fallback in finishRun reusable for both code paths.
-func (s *Server) finishRunWithCancel(ctx context.Context, runCtx context.Context, runID string, res loop.RunResult, runErr error) {
+func (s *Server) finishRunWithCancel(ctx context.Context, runCtx context.Context, runID string, res loop.RunResult, runErr error, meta runStateMeta) {
 	if cause := context.Cause(runCtx); errors.Is(cause, cancel.ErrCancelledByAPI) {
 		// API-cancel terminal write. Reason text comes from the
 		// optional wrapper; falls back to the sentinel string.
@@ -3341,10 +3435,10 @@ func (s *Server) finishRunWithCancel(ctx context.Context, runCtx context.Context
 		if reason == "" {
 			reason = "cancelled by api"
 		}
-		s.finishRunCancelled(ctx, runID, res, reason)
+		s.finishRunCancelled(ctx, runID, res, reason, meta)
 		return
 	}
-	s.finishRun(ctx, runID, res, runErr)
+	s.finishRun(ctx, runID, res, runErr, meta)
 }
 
 // finishRunFailedReason marks a run terminal with status=failed and
@@ -3355,7 +3449,7 @@ func (s *Server) finishRunWithCancel(ctx context.Context, runCtx context.Context
 //
 // Mirrors finishRun's structure: fresh background ctx with 5s timeout
 // so the write isn't lost when the request ctx is already torn down.
-func (s *Server) finishRunFailedReason(runID, reason string) {
+func (s *Server) finishRunFailedReason(runID, reason string, meta runStateMeta) {
 	if s.store == nil || runID == "" {
 		return
 	}
@@ -3364,6 +3458,7 @@ func (s *Server) finishRunFailedReason(runID, reason string) {
 	if err := s.store.FinishRun(bg, runID, store.RunFailed, "", store.Usage{}, reason); err != nil {
 		log.Printf("store: FinishRun(failed reason=%q) failed (run=%s): %v", reason, runID, err)
 	}
+	s.publishRunState(meta, "failed", "", reason)
 }
 
 // finishRunCancelled writes the terminal cancelled status with the
@@ -3377,7 +3472,7 @@ func (s *Server) finishRunFailedReason(runID, reason string) {
 // two are interchangeable at the call site (finishRunWithCancel
 // dispatches to one or the other), but it's a no-op input. If you
 // add real ctx propagation here, audit every caller.
-func (s *Server) finishRunCancelled(_ context.Context, runID string, res loop.RunResult, reason string) {
+func (s *Server) finishRunCancelled(_ context.Context, runID string, res loop.RunResult, reason string, meta runStateMeta) {
 	if s.store == nil || runID == "" {
 		return
 	}
@@ -3393,13 +3488,14 @@ func (s *Server) finishRunCancelled(_ context.Context, runID string, res loop.Ru
 	if err := s.store.FinishRun(bg, runID, store.RunCancelled, reason, usage, ""); err != nil {
 		log.Printf("store: FinishRun(cancelled) failed (run=%s): %v", runID, err)
 	}
+	s.publishRunState(meta, "cancelled", reason, "")
 }
 
 // finishRun marks the run terminal in the store. status is derived from
 // runErr: nil → completed, non-nil → failed. ctx may already be cancelled
 // (the client disconnected); we use a fresh background context with a short
 // timeout so the FinishRun write isn't lost.
-func (s *Server) finishRun(_ context.Context, runID string, res loop.RunResult, runErr error) {
+func (s *Server) finishRun(_ context.Context, runID string, res loop.RunResult, runErr error, meta runStateMeta) {
 	if s.store == nil || runID == "" {
 		return
 	}
@@ -3421,6 +3517,11 @@ func (s *Server) finishRun(_ context.Context, runID string, res loop.RunResult, 
 	if err := s.store.FinishRun(bg, runID, status, res.StopReason, usage, errMsg); err != nil {
 		log.Printf("store: FinishRun failed (run=%s): %v", runID, err)
 	}
+	publishStatus := "completed"
+	if runErr != nil {
+		publishStatus = "failed"
+	}
+	s.publishRunState(meta, publishStatus, res.StopReason, errMsg)
 }
 
 // authMiddleware enforces LOOMCYCLE_AUTH_TOKEN bearer auth, except for /healthz which
