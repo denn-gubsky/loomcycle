@@ -418,6 +418,7 @@ func TestSubAgent_SpawnsDynamicallyRegisteredChild(t *testing.T) {
 		t.Errorf("parent stream missing dynamic child output:\n%s", bodyStr)
 	}
 }
+
 // parent run was started under CALLER_AUTHORITATIVE with a per-call
 // allowed_hosts list, sub-agents spawned via the Agent tool inherit
 // that same host policy and can reach the same hosts.
