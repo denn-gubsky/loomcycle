@@ -63,9 +63,20 @@ if [[ -f "$ENV_FILE" ]]; then
   # `set -a` exports every assignment without needing each line to use
   # `export`. `set +a` switches it back off so we don't unintentionally
   # export later script-locals.
+  #
+  # `set +u` while sourcing: dotenv files commonly reference upstream
+  # vars (e.g. `FOO="${UPSTREAM_VAR}/x"`) that aren't required for the
+  # script itself but are kept for parity across machines. Under `set -u`
+  # any such expansion against an unset upstream var aborts the script
+  # before loomcycle starts — even when loomcycle itself doesn't need
+  # that var. Restore `set -u` immediately after; the binary's own
+  # required-config validation still surfaces actually-missing vars
+  # with a clear log line.
   set -a
+  set +u
   # shellcheck disable=SC1090
   source "$ENV_FILE"
+  set -u
   set +a
 else
   echo "loomcycle.sh: no $ENV_FILE found (ok for first run; copy from .env.example)" >&2
