@@ -673,6 +673,104 @@ export interface ListChannelsResponse {
   channels: ChannelDescriptor[];
 }
 
+// ---- v0.9.x Channel CRUD types ----
+
+/** Scope selector for the Channel CRUD methods. `"global"` addresses
+ *  the admin surface; `"user"` requires `userId` and addresses the
+ *  per-end-user URL family. */
+export type ChannelScope = "global" | "user";
+
+/** Options for {@link LoomcycleClient.publishChannel}. `payload` is
+ *  the raw JSON value (object, array, string, number) to publish.
+ *  `deliverAt` (RFC3339Nano) defers the publish so long-poll
+ *  subscribers wake at the visible_at time. */
+export interface PublishChannelOptions {
+  scope: ChannelScope;
+  /** Required when scope === "user". The per-user URL is
+   *  /v1/users/{userId}/channels/{channel}/publish. */
+  userId?: string;
+  payload: unknown;
+  /** RFC3339Nano deferred-publish time. Omit for "publish now". */
+  deliverAt?: string;
+  signal?: AbortSignal;
+}
+
+/** Response shape for {@link LoomcycleClient.publishChannel}. */
+export interface ChannelPublishResult {
+  msg_id: string;
+  channel: string;
+  /** RFC3339Nano. */
+  created_at: string;
+  /** RFC3339Nano. Omitted when the publish was immediate. */
+  visible_at?: string;
+}
+
+/** Options for {@link LoomcycleClient.subscribeChannel}. The call is a
+ *  single-round-trip long-poll, NOT an open SSE stream — returns
+ *  immediately if messages are present, otherwise waits up to
+ *  `waitMs` for a publish. Auto-commits the cursor on a non-empty
+ *  batch (at-most-once shape). For at-least-once, use
+ *  {@link LoomcycleClient.peekChannel} + explicit ack. */
+export interface SubscribeChannelOptions {
+  scope: ChannelScope;
+  userId?: string;
+  /** Cursor to read forward from. Empty/omitted = the committed
+   *  cursor. `"cur_0"` = replay from the oldest non-expired row. */
+  fromCursor?: string;
+  /** Defaults to 10; clamped at 100 by the server. */
+  maxMessages?: number;
+  /** Long-poll timeout in ms. 0 / omitted = poll once and return.
+   *  Capped at the operator's `ChannelsLongPollCapMS` (default 30s). */
+  waitMs?: number;
+  signal?: AbortSignal;
+}
+
+/** One delivered message — same wire shape as the in-band Channel
+ *  tool's subscribe response. */
+export interface ChannelMessageItem {
+  id: string;
+  value: unknown;
+  /** RFC3339Nano. */
+  published_at: string;
+}
+
+/** Response shape for {@link LoomcycleClient.subscribeChannel}. */
+export interface ChannelSubscribeResult {
+  channel: string;
+  messages: ChannelMessageItem[];
+  /** Cursor to pass on the next subscribe call to continue forward.
+   *  Empty when the batch is empty. */
+  next_cursor: string;
+}
+
+/** Options for {@link LoomcycleClient.peekChannel}. */
+export interface PeekChannelOptions {
+  scope: ChannelScope;
+  userId?: string;
+  fromCursor?: string;
+  maxMessages?: number;
+  signal?: AbortSignal;
+}
+
+/** Response shape for {@link LoomcycleClient.peekChannel}. */
+export interface ChannelPeekResult {
+  channel: string;
+  messages: ChannelMessageItem[];
+}
+
+/** Options for {@link LoomcycleClient.ackChannel}. */
+export interface AckChannelOptions {
+  scope: ChannelScope;
+  userId?: string;
+  cursor: string;
+  signal?: AbortSignal;
+}
+
+/** Response shape for {@link LoomcycleClient.ackChannel}. */
+export interface ChannelAckResult {
+  ok: boolean;
+}
+
 /** One run state transition emitted by
  *  {@link LoomcycleClient.streamUserRunStates}. The TS field is RFC3339. */
 export interface RunStateEvent {

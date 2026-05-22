@@ -169,6 +169,20 @@ func (m *mockConnector) MCPServerDef(context.Context, json.RawMessage) (connecto
 	return connector.ToolResult{}, nil
 }
 
+// v0.9.x Channel CRUD stubs.
+func (m *mockConnector) PublishChannel(context.Context, connector.ChannelPublishRequest) (connector.ChannelPublishResult, error) {
+	return connector.ChannelPublishResult{}, nil
+}
+func (m *mockConnector) SubscribeChannel(context.Context, connector.ChannelSubscribeRequest) (connector.ChannelSubscribeResult, error) {
+	return connector.ChannelSubscribeResult{}, nil
+}
+func (m *mockConnector) PeekChannel(context.Context, connector.ChannelPeekRequest) (connector.ChannelPeekResult, error) {
+	return connector.ChannelPeekResult{}, nil
+}
+func (m *mockConnector) AckChannel(context.Context, connector.ChannelAckRequest) (connector.ChannelAckResult, error) {
+	return connector.ChannelAckResult{}, nil
+}
+
 // driveServer runs the server against the given input lines and
 // returns the response frames (one per request). Notifications are
 // captured separately.
@@ -239,7 +253,7 @@ func TestServer_Handshake(t *testing.T) {
 	}
 }
 
-func TestServer_ToolsList_Returns29Tools(t *testing.T) {
+func TestServer_ToolsList_Returns33Tools(t *testing.T) {
 	srv := New(Config{Connector: &mockConnector{}, Logf: func(string, ...any) {}})
 	in := `{"jsonrpc":"2.0","id":1,"method":"tools/list"}` + "\n"
 	resps, _ := driveServer(t, srv, in)
@@ -250,15 +264,15 @@ func TestServer_ToolsList_Returns29Tools(t *testing.T) {
 	if err := json.Unmarshal(resps[0].Result, &result); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if len(result.Tools) != 29 {
-		t.Errorf("got %d tools, want 29 (v0.9.x adds list_channels + stream_user_run_states + mcpserverdef)", len(result.Tools))
+	if len(result.Tools) != 33 {
+		t.Errorf("got %d tools, want 33 (v0.9.x adds list_channels + stream_user_run_states + mcpserverdef + publish_channel + subscribe_channel + peek_channel + ack_channel)", len(result.Tools))
 	}
 	names := map[string]bool{}
 	for _, td := range result.Tools {
 		names[td.Name] = true
 	}
 	// Spot-check across categories — through the v0.9.x additions.
-	for _, want := range []string{"spawn_run", "register_agent", "memory", "agentdef", "skilldef", "mcpserverdef", "pause_runtime", "create_snapshot", "get_snapshot", "interruption_resolve", "register_hook", "list_hooks", "delete_hook", "list_channels", "stream_user_run_states"} {
+	for _, want := range []string{"spawn_run", "register_agent", "memory", "agentdef", "skilldef", "mcpserverdef", "pause_runtime", "create_snapshot", "get_snapshot", "interruption_resolve", "register_hook", "list_hooks", "delete_hook", "list_channels", "stream_user_run_states", "publish_channel", "subscribe_channel", "peek_channel", "ack_channel"} {
 		if !names[want] {
 			t.Errorf("missing tool %q in tools/list", want)
 		}

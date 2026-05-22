@@ -903,6 +903,10 @@ func main() {
 	// "intr:<id>" key. Without this the resolve writes the row but
 	// the tool re-checks storage only when its own timer fires.
 	srv.SetInterruptionBus(channelBus)
+	// v0.9.x — same Bus also drives the Channel CRUD subscribe path
+	// (Connector + HTTP /v1/_channels/{name}/subscribe). Wire-side
+	// subscribers wake on the same Notify() the in-band tool would.
+	srv.SetChannelBus(channelBus)
 
 	// v0.9.x n8n RFC Phase 0 — run-state pub/sub bus that backs the
 	// GET /v1/users/{user_id}/agents/stream SSE endpoint. One

@@ -16,6 +16,7 @@ import {
   AlreadyPausingError,
   AuthError,
   BackpressureError,
+  ChannelCursorRegressionError,
   HookNotFoundError,
   InvalidArgumentError,
   LoomcycleError,
@@ -209,6 +210,10 @@ export async function raiseFromResponse(resp: Response): Promise<never> {
         throw new AlreadyPausingError(msg, opts);
       if (bodyLower.includes("not_paused") || bodyLower.includes("not paused"))
         throw new NotPausedError(msg, opts);
+      // v0.9.x — Channel CRUD ack with a stale cursor. Distinct so
+      // the n8n adapter / consumer can branch on `instanceof`.
+      if (bodyLower.includes("channel_cursor_regression"))
+        throw new ChannelCursorRegressionError(msg, opts);
       if (bodyLower.includes("session")) throw new SessionBusyError(msg, opts);
       if (bodyLower.includes("agent_id")) throw new AgentIDInUseError(msg, opts);
       throw new LoomcycleError(msg, opts);

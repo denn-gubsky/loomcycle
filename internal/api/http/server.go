@@ -135,6 +135,14 @@ type Server struct {
 	// via SetInterruptionBus from main.go.
 	interruptionBus *channels.Bus
 
+	// channelBus is the in-process notification bus the Channel tool
+	// uses for long-poll wake-up. v0.9.x SubscribeChannel
+	// (Connector + HTTP) consults the SAME instance so wire callers
+	// wake on the same Notify() the in-band tool would have woken on.
+	// Nil = subscribe falls back to polling (poll-read once + return,
+	// no wait). Set via SetChannelBus from main.go.
+	channelBus *channels.Bus
+
 	// runStateBus is the v0.9.x n8n RFC Phase 0 in-process pub/sub
 	// for run state transitions. Powers GET /v1/users/{user_id}/
 	// agents/stream (SSE). Every finishRun* call site + the run-
@@ -303,6 +311,15 @@ func (s *Server) SetSystemPublisher(p channels.SystemPublisher) {
 // tool. Same Bus instance the Channel tool uses.
 func (s *Server) SetInterruptionBus(b *channels.Bus) {
 	s.interruptionBus = b
+}
+
+// SetChannelBus wires the v0.9.x in-process notification bus used by
+// SubscribeChannel (Connector + HTTP) to wake long-poll subscribers
+// on publish. Same instance as the in-band Channel tool's Bus —
+// reusing one bus per process keeps wake-up paths uniform and ensures
+// agent publishes wake wire-side subscribers and vice versa.
+func (s *Server) SetChannelBus(b *channels.Bus) {
+	s.channelBus = b
 }
 
 // SetRunStateBus wires the v0.9.x run-state pub/sub bus that backs
@@ -1290,6 +1307,20 @@ func (s *Server) Mux() http.Handler {
 	// here. Future verbs (GET to peek, etc.) can use the same path
 	// with different methods.
 	mux.Handle("POST /v1/_channels/{name...}", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleSystemChannelPublish))))
+	// v0.9.x Channel CRUD — admin (scope=global) + per-user (scope=user)
+	// surfaces. Bearer-authed. The trailing /publish|/subscribe|/peek|
+	// /ack segment makes these patterns strictly more specific than the
+	// system-publish route above so Go 1.22+ mux picks them when both
+	// would match. {name} is single-segment; channel names containing
+	// slashes (e.g. `findings/alpha`) must URL-encode the slash.
+	mux.Handle("POST /v1/_channels/{name}/publish", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleAdminChannelPublish))))
+	mux.Handle("POST /v1/_channels/{name}/subscribe", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleAdminChannelSubscribe))))
+	mux.Handle("GET /v1/_channels/{name}/peek", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleAdminChannelPeek))))
+	mux.Handle("POST /v1/_channels/{name}/ack", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleAdminChannelAck))))
+	mux.Handle("POST /v1/users/{user_id}/channels/{name}/publish", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleUserChannelPublish))))
+	mux.Handle("POST /v1/users/{user_id}/channels/{name}/subscribe", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleUserChannelSubscribe))))
+	mux.Handle("GET /v1/users/{user_id}/channels/{name}/peek", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleUserChannelPeek))))
+	mux.Handle("POST /v1/users/{user_id}/channels/{name}/ack", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleUserChannelAck))))
 	// v0.9.x n8n RFC Phase 0: list declared channels + aggregate
 	// stats (count, oldest/newest visible_at). Used by n8n's
 	// credential-picker for the channel-name dropdown; also useful

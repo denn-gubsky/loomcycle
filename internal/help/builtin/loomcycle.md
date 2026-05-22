@@ -84,6 +84,10 @@ Cross-cutting topics that explain how these compose:
 - `help(topic="dynamic-mcp")` — operator-admin-only MCPServerDef
   substrate for registering HTTP / Streamable-HTTP MCP servers at
   runtime without a yaml edit; the n8n self-registration pattern
+- `help(topic="channel-admin")` — bearer-authed HTTP/gRPC/MCP/TS
+  surface for the Channel ops (publish / subscribe / peek / ack)
+  on operator-declared channels; admin (scope=global) + per-user
+  (scope=user) URL families
 
 ## Your transcript records what YOU received
 

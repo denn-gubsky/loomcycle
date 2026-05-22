@@ -871,3 +871,171 @@ describe("v0.9.x n8n RFC Phase 0 — listChannels + streamUserRunStates", () => 
     }).rejects.toMatchObject({ name: "AuthError", status: 401 });
   });
 });
+
+describe("v0.9.x Channel CRUD — publish / subscribe / peek / ack", () => {
+  it("publishChannel scope=global POSTs to /v1/_channels/{name}/publish", async () => {
+    const { client, fetchMock } = makeClient([
+      jsonResponse({
+        msg_id: "msg_abc123",
+        channel: "team-updates",
+        created_at: "2026-05-22T12:00:00.000Z",
+      }),
+    ]);
+    const resp = await client.publishChannel("team-updates", {
+      scope: "global",
+      payload: { event: "hello" },
+    });
+    expect(resp.msg_id).toBe("msg_abc123");
+    expect(resp.channel).toBe("team-updates");
+    expect(fetchMock.mock.calls[0]![0]).toBe(
+      "http://test-loomcycle:8787/v1/_channels/team-updates/publish",
+    );
+    expect(fetchMock.mock.calls[0]![1]!.method).toBe("POST");
+    expect(JSON.parse(fetchMock.mock.calls[0]![1]!.body as string)).toEqual({
+      payload: { event: "hello" },
+    });
+  });
+
+  it("publishChannel scope=user uses /v1/users/{userId}/channels/{name}/publish", async () => {
+    const { client, fetchMock } = makeClient([
+      jsonResponse({
+        msg_id: "msg_def456",
+        channel: "inbox",
+        created_at: "2026-05-22T12:00:00.000Z",
+      }),
+    ]);
+    await client.publishChannel("inbox", {
+      scope: "user",
+      userId: "alice",
+      payload: { subject: "hi" },
+    });
+    expect(fetchMock.mock.calls[0]![0]).toBe(
+      "http://test-loomcycle:8787/v1/users/alice/channels/inbox/publish",
+    );
+  });
+
+  it("publishChannel scope=user without userId throws synchronously", async () => {
+    const { client } = makeClient([]);
+    await expect(
+      client.publishChannel("inbox", {
+        scope: "user",
+        payload: {},
+      } as never),
+    ).rejects.toThrow(/userId/);
+  });
+
+  it("publishChannel maps wire 404 to NotFoundError", async () => {
+    const { client } = makeClient([
+      errorResponse(404, "channel team-updates not declared in operator yaml"),
+    ]);
+    await expect(
+      client.publishChannel("team-updates", {
+        scope: "global",
+        payload: {},
+      }),
+    ).rejects.toMatchObject({ name: "NotFoundError", status: 404 });
+  });
+
+  it("subscribeChannel POSTs the long-poll body and returns the batch", async () => {
+    const { client, fetchMock } = makeClient([
+      jsonResponse({
+        channel: "team-updates",
+        messages: [
+          {
+            id: "msg_1",
+            value: { event: "first" },
+            published_at: "2026-05-22T12:00:00.000Z",
+          },
+        ],
+        next_cursor: "cur_xyz",
+      }),
+    ]);
+    const resp = await client.subscribeChannel("team-updates", {
+      scope: "global",
+      waitMs: 5000,
+      maxMessages: 25,
+    });
+    expect(resp.messages).toHaveLength(1);
+    expect(resp.next_cursor).toBe("cur_xyz");
+    expect(fetchMock.mock.calls[0]![0]).toBe(
+      "http://test-loomcycle:8787/v1/_channels/team-updates/subscribe",
+    );
+    expect(JSON.parse(fetchMock.mock.calls[0]![1]!.body as string)).toEqual({
+      wait_ms: 5000,
+      max_messages: 25,
+    });
+  });
+
+  it("peekChannel GETs with query params and never POSTs", async () => {
+    const { client, fetchMock } = makeClient([
+      jsonResponse({
+        channel: "team-updates",
+        messages: [
+          { id: "msg_1", value: { x: 1 }, published_at: "2026-05-22T12:00:00.000Z" },
+        ],
+      }),
+    ]);
+    const resp = await client.peekChannel("team-updates", {
+      scope: "global",
+      maxMessages: 5,
+      fromCursor: "cur_0",
+    });
+    expect(resp.messages).toHaveLength(1);
+    expect(fetchMock.mock.calls[0]![0]).toBe(
+      "http://test-loomcycle:8787/v1/_channels/team-updates/peek?from_cursor=cur_0&max_messages=5",
+    );
+    expect(fetchMock.mock.calls[0]![1]!.method).toBe("GET");
+  });
+
+  it("ackChannel POSTs the cursor and maps 409 to ConflictError", async () => {
+    // First call: happy path.
+    const happy = makeClient([jsonResponse({ ok: true })]);
+    const r = await happy.client.ackChannel("team-updates", {
+      scope: "global",
+      cursor: "cur_xyz",
+    });
+    expect(r.ok).toBe(true);
+    expect(happy.fetchMock.mock.calls[0]![0]).toBe(
+      "http://test-loomcycle:8787/v1/_channels/team-updates/ack",
+    );
+
+    // Second call: cursor regression. The server returns
+    // `code: channel_cursor_regression` in the JSON body; the
+    // adapter dispatches that to the typed ChannelCursorRegressionError.
+    const conflict = makeClient([
+      errorResponse(
+        409,
+        JSON.stringify({
+          code: "channel_cursor_regression",
+          error: "cursor older than committed",
+        }),
+      ),
+    ]);
+    await expect(
+      conflict.client.ackChannel("team-updates", {
+        scope: "global",
+        cursor: "cur_0",
+      }),
+    ).rejects.toMatchObject({
+      name: "ChannelCursorRegressionError",
+      status: 409,
+    });
+  });
+
+  it("channel names with slashes are URL-encoded", async () => {
+    const { client, fetchMock } = makeClient([
+      jsonResponse({
+        msg_id: "msg_1",
+        channel: "findings/alpha",
+        created_at: "2026-05-22T12:00:00.000Z",
+      }),
+    ]);
+    await client.publishChannel("findings/alpha", {
+      scope: "global",
+      payload: {},
+    });
+    expect(fetchMock.mock.calls[0]![0]).toBe(
+      "http://test-loomcycle:8787/v1/_channels/findings%2Falpha/publish",
+    );
+  });
+});

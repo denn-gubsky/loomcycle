@@ -166,6 +166,16 @@ user_tiers:
 #
 # Empty / absent `channels:` block = Channel tool effectively
 # disabled (every publish/subscribe op refuses).
+#
+# v0.9.x — Channels declared here are reachable by EXTERNAL callers
+# (n8n nodes, dashboards, CLIs) via four bearer-authed CRUD routes per
+# scope:
+#   - Admin (scope=global): /v1/_channels/{name}/{publish|subscribe|peek|ack}
+#   - Per-user (scope=user): /v1/users/{user_id}/channels/{name}/{publish|...}
+# Same code path as the in-band Channel tool. The system-publish route
+# /v1/_channels/{name...} (for _system/* channels) stays unchanged.
+# See `help(topic="channel-admin")` for the operator workflow + the
+# n8n-nodes-loomcycle composition pattern.
 channels:
 
   # Researcher-to-analyst work queue. Each researcher agent's

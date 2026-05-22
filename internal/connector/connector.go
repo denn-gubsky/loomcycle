@@ -217,6 +217,32 @@ type Connector interface {
 
 	ListChannels(ctx context.Context) (ListChannelsResponse, error)
 	StreamUserRunStates(ctx context.Context, req StreamUserRunStatesRequest, visit RunStateVisitor) error
+
+	// Channel CRUD (v0.9.x): admin + per-user publish / subscribe /
+	// peek / ack on operator-declared channels. Bearer-authed at the
+	// HTTP transport boundary; scope + scope_id select the cursor
+	// namespace (global = admin surface; user = per-end-user surface
+	// via the /v1/users/{user_id}/channels/* route family). Mirrors
+	// the in-band Channel tool's four ops by calling the SAME store
+	// helpers — wire-surface parity for the n8n integration's
+	// drop-in agentic-OS use case.
+	//
+	// SubscribeChannel returns a synchronous batch (long-poll up to
+	// WaitMS, single round-trip). For a server-pushed stream use
+	// StreamUserRunStates or rebuild via repeated SubscribeChannel
+	// calls.
+	//
+	// Typed errors:
+	//   ErrChannelNotDeclared  — channel name not in operator yaml.
+	//                            Transports: NotFound.
+	//   ErrChannelScopeInvalid — scope is not one of global/user.
+	//                            Transports: InvalidArgument.
+	//   ErrChannelCursorRegression — ack cursor is older than committed.
+	//                            Transports: FailedPrecondition.
+	PublishChannel(ctx context.Context, req ChannelPublishRequest) (ChannelPublishResult, error)
+	SubscribeChannel(ctx context.Context, req ChannelSubscribeRequest) (ChannelSubscribeResult, error)
+	PeekChannel(ctx context.Context, req ChannelPeekRequest) (ChannelPeekResult, error)
+	AckChannel(ctx context.Context, req ChannelAckRequest) (ChannelAckResult, error)
 }
 
 // RunStateVisitor is the visitor callback for StreamUserRunStates.
