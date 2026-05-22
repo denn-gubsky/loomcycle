@@ -81,6 +81,9 @@ Cross-cutting topics that explain how these compose:
 - `help(topic="content-signatures")` — SHA-256 content_sha256 on
   AgentDef + SkillDef rows; the bundle-vs-deployed comparison
   workflow for Docker-bundled operators
+- `help(topic="dynamic-mcp")` — operator-admin-only MCPServerDef
+  substrate for registering HTTP / Streamable-HTTP MCP servers at
+  runtime without a yaml edit; the n8n self-registration pattern
 
 ## Your transcript records what YOU received
 
