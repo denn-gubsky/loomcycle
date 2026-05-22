@@ -61,23 +61,31 @@ fi
 if [[ -f "$ENV_FILE" ]]; then
   echo "loomcycle.sh: sourcing $ENV_FILE"
   # `set -a` exports every assignment without needing each line to use
-  # `export`. `set +a` switches it back off so we don't unintentionally
-  # export later script-locals.
+  # `export`. `set +a` after the source switches it back off so we
+  # don't unintentionally export later script-locals.
   #
   # `set +u` while sourcing: dotenv files commonly reference upstream
   # vars (e.g. `FOO="${UPSTREAM_VAR}/x"`) that aren't required for the
   # script itself but are kept for parity across machines. Under `set -u`
   # any such expansion against an unset upstream var aborts the script
   # before loomcycle starts — even when loomcycle itself doesn't need
-  # that var. Restore `set -u` immediately after; the binary's own
-  # required-config validation still surfaces actually-missing vars
-  # with a clear log line.
+  # that var. The binary's own required-config validation still
+  # surfaces actually-missing vars with a clear log line.
+  #
+  # Save-then-restore via `$-` instead of unconditional `set -u`: if a
+  # future invocation runs loomcycle.sh with `-u` explicitly off (or
+  # a wrapper unsets it), we don't want to reintroduce strict-undefined
+  # checking that the caller deliberately disabled. `$-` carries the
+  # currently-enabled shell options as letter flags; we restore only
+  # what was set going in.
+  _loomcycle_saved_opts="$-"
   set -a
   set +u
   # shellcheck disable=SC1090
   source "$ENV_FILE"
-  set -u
+  [[ "$_loomcycle_saved_opts" == *u* ]] && set -u
   set +a
+  unset _loomcycle_saved_opts
 else
   echo "loomcycle.sh: no $ENV_FILE found (ok for first run; copy from .env.example)" >&2
 fi
