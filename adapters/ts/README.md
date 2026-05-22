@@ -17,6 +17,7 @@ TypeScript client for the [loomcycle](https://github.com/denn-gubsky/loomcycle) 
 - **`streamUserRunStates`** (v0.9.x) — SSE stream of run state transitions scoped to one `user_id`. Yields `{ kind: "open" | "event", payload }` items until the connection closes (30-min server cap). The primary substrate hook for orchestration UIs that need to react when an agent run completes / fails / cancels.
 - **Content signatures** (v0.9.x) — every `agent_defs` / `skill_defs` row now carries a deterministic `content_sha256`. Combined with the `verify` op and the `loomcycle hash agent|skill` CLI subcommand, this gives Docker-bundled operators a one-call answer to *"is what I have in my image identical to what's deployed?"* — see [Content signatures](#content-signatures-v09x) below for the end-to-end workflow.
 - **Transcript first-cycle types** (v0.9.1) — `UserInputPayload` + `SystemPromptPayload` typed interfaces for the two new transcript events that surface "what the agent actually received" (the resolved system prompt + the caller's segments) as the first frames of every run.
+- **n8n polish — `debug` toggle + `parentAgentId` filter** (v0.13.0) — opt-in synthetic `stream_open` / `stream_close` frames on `runStreaming` / `continueSession` / `streamUserRunStates` plus a client-side `parentAgentId` filter on `listUserAgents` + `streamUserRunStates`. Default behaviour is unchanged for existing callers; both knobs are off until set. See [Patterns](#patterns) for when to reach for them.
 
 ## Install
 
@@ -420,6 +421,80 @@ try {
   }
 }
 ```
+
+## Patterns
+
+A short field guide for the common consumer shapes — when to use which method, what each one costs, and how the v0.9.x polish hooks (`debug`, `parentAgentId`) fit in.
+
+### Sync vs async run consumption
+
+`runStreaming` and `continueSession` are **sync**: the iterator stays alive for the FULL duration of the run. Use them when:
+
+- You have a single agent run and want to render its output progressively (UI streaming, CLI tail-like display).
+- The caller can hold a connection per active run without worker-thread starvation.
+
+For async fire-and-forget patterns (the n8n trigger node's model), use `streamUserRunStates` instead:
+
+```ts
+// Don't do this in an n8n worker — blocks the worker for the full run:
+for await (const ev of client.runStreaming({ agent: "long-task", segments })) { ... }
+
+// Do this instead — kick off the run, get back a tracking ID, and watch run-state transitions:
+const seedRun = await runOnce(...);  // your one-shot dispatch
+for await (const item of client.streamUserRunStates(userId, {
+  statuses: ["completed", "failed", "cancelled"],
+})) {
+  if (item.kind === "event" && item.payload.agent_id === seedRun.agentId) {
+    // fire downstream workflow, persist to DB, etc.
+    break;
+  }
+}
+```
+
+`streamUserRunStates` holds ONE connection per user regardless of how many concurrent runs that user has. Server-enforced 30-minute timeout; reconnect on close.
+
+### `debug: true` — synthetic open/close frames
+
+All three streaming methods (`runStreaming`, `continueSession`, `streamUserRunStates`) accept `debug?: boolean`. Default off; behaviour is exactly the pre-v0.9.x shape.
+
+When `debug: true`:
+- `runStreaming` / `continueSession` brackets the real events with `{ type: "_meta", meta_subtype: "stream_open" | "stream_close", meta_reason }` frames. The leading-underscore type signals "client-synthesized; never on the wire." The `meta_reason` is `"eof"` on clean close or an error class name (e.g. `"AuthError"`) when the inner iterator threw mid-stream.
+- `streamUserRunStates` yields an extra `{ kind: "close", payload: { reason } }` item on stream end (in addition to the existing `kind: "open" | "event"` frames).
+
+```ts
+for await (const ev of client.runStreaming({ agent: "qa", segments, debug: true })) {
+  if (ev.type === "_meta") {
+    console.log(`[stream ${ev.meta_subtype}] reason=${ev.meta_reason}`);
+    continue;
+  }
+  // ... handle real events
+}
+```
+
+Use case: n8n trigger nodes that surface "stream re-opened / closed" log entries to the operator without inferring from event timing. Non-n8n consumers don't need to know the toggle exists.
+
+### `parentAgentId` — client-side narrowing
+
+`listUserAgents(userId, { parentAgentId })` and `streamUserRunStates(userId, { parentAgentId })` apply a client-side filter on the run's `parent_agent_id`. The server still returns / streams the full set; the adapter trims before yielding.
+
+```ts
+// All sub-runs spawned by a specific parent (one-shot snapshot)
+const subRuns = await client.listUserAgents(userId, {
+  parentAgentId: "ag_parent_abc",
+  status: "running",
+});
+
+// Same shape, but as a live stream
+for await (const item of client.streamUserRunStates(userId, {
+  parentAgentId: "ag_parent_abc",
+  statuses: ["completed", "failed"],
+})) {
+  // Only events whose payload.parent_agent_id === "ag_parent_abc"
+  // (open and close frames always pass through).
+}
+```
+
+**Cost note:** because the filter is client-side, the server doesn't shed any load. If the result set is large enough that you care about server-side narrowing, raise an issue — server-side `?parent_agent_id=` is a planned addition.
 
 ## Why HTTP, not gRPC
 
