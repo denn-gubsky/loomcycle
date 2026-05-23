@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	lcotel "github.com/denn-gubsky/loomcycle/internal/otel"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
 
@@ -372,8 +373,16 @@ func (t *mcpTool) InputSchema() json.RawMessage {
 }
 
 func (t *mcpTool) Execute(ctx context.Context, input json.RawMessage) (tools.Result, error) {
+	// v0.10.0 OTEL: nested loomcycle.mcp.call span under the outer
+	// loomcycle.tool.call opened by the dispatcher. server + tool
+	// attributes give operators a "which MCP request failed" view
+	// without parsing tool names.
+	ctx, span := lcotel.RecordMCPCall(ctx, t.server, t.toolName)
+	defer span.End()
+
 	caller, _, err := t.pool.Get(ctx, t.server)
 	if err != nil {
+		lcotel.SetSpanError(span, err)
 		// Pool spawn / handshake failed. ctx cancellation goes through as
 		// a hard error; everything else as a recoverable IsError so the
 		// model can see "MCP server unavailable" and decide what to do.
@@ -384,6 +393,7 @@ func (t *mcpTool) Execute(ctx context.Context, input json.RawMessage) (tools.Res
 	}
 	res, err := CallTool(ctx, caller, t.toolName, input)
 	if err != nil {
+		lcotel.SetSpanError(span, err)
 		// Distinguish two failure modes:
 		//   1. ctx cancellation — the run is going away; the model should
 		//      not see a "tool failed, retry" message because the next
@@ -397,6 +407,9 @@ func (t *mcpTool) Execute(ctx context.Context, input json.RawMessage) (tools.Res
 			return tools.Result{}, err
 		}
 		return tools.Result{Text: err.Error(), IsError: true}, nil
+	}
+	if res.IsError {
+		lcotel.SetSpanErrorMessage(span, "mcp tool returned isError=true")
 	}
 	return tools.Result{
 		Text:    JoinTextContent(res),

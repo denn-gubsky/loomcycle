@@ -40,6 +40,7 @@ import (
 	"strings"
 	"time"
 
+	lcotel "github.com/denn-gubsky/loomcycle/internal/otel"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/providers/ratelimit"
 	"github.com/denn-gubsky/loomcycle/internal/providers/streamhttp"
@@ -113,8 +114,16 @@ func (d *Driver) Call(ctx context.Context, req providers.Request) (<-chan provid
 
 	url := d.baseURL + "/models/" + req.Model + ":streamGenerateContent?alt=sse"
 	attempt := func(attemptCtx context.Context) (*http.Response, error) {
-		httpReq, err := http.NewRequestWithContext(attemptCtx, "POST", url, bytes.NewReader(body))
+		// v0.10.0 OTEL: one loomcycle.provider.call span per attempt.
+		spanCtx, span := lcotel.RecordProviderCall(attemptCtx, lcotel.ProviderCallAttrs{
+			Provider: "gemini",
+			Model:    req.Model,
+			Effort:   req.Effort,
+		})
+		defer span.End()
+		httpReq, err := http.NewRequestWithContext(spanCtx, "POST", url, bytes.NewReader(body))
 		if err != nil {
+			lcotel.SetSpanError(span, err)
 			return nil, err
 		}
 		httpReq.Header.Set("Content-Type", "application/json")
@@ -122,7 +131,13 @@ func (d *Driver) Call(ctx context.Context, req providers.Request) (<-chan provid
 		if d.apiKey != "" {
 			httpReq.Header.Set("x-goog-api-key", d.apiKey)
 		}
-		return d.http.Do(httpReq)
+		resp, err := d.http.Do(httpReq)
+		if err != nil {
+			lcotel.SetSpanError(span, err)
+		} else if resp != nil && resp.StatusCode >= 400 {
+			lcotel.SetSpanErrorMessage(span, "http "+resp.Status)
+		}
+		return resp, err
 	}
 
 	resp, err := ratelimit.Do(streamCtx, ratelimit.Config{

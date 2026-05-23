@@ -29,6 +29,7 @@ import (
 	"net/http"
 	"strings"
 
+	lcotel "github.com/denn-gubsky/loomcycle/internal/otel"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/providers/openai"
 	"github.com/denn-gubsky/loomcycle/internal/providers/streamhttp"
@@ -117,8 +118,24 @@ func IsThinkingModel(model string) bool {
 
 // Call delegates to the OpenAI driver. The request body, retry
 // strategy, and SSE framing are identical between the two services.
+//
+// v0.10.0 OTEL: opens an outer loomcycle.provider.call span with
+// provider="deepseek" so operators filtering on provider see DeepSeek
+// requests distinctly. The inner openai driver opens its own per-
+// attempt sub-span(s); operators see the deepseek → openai → http
+// chain in the run timeline, honest about the wrapping.
 func (d *Driver) Call(ctx context.Context, req providers.Request) (<-chan providers.Event, error) {
-	return d.inner.Call(ctx, req)
+	spanCtx, span := lcotel.RecordProviderCall(ctx, lcotel.ProviderCallAttrs{
+		Provider: "deepseek",
+		Model:    req.Model,
+		Effort:   req.Effort,
+	})
+	defer span.End()
+	ch, err := d.inner.Call(spanCtx, req)
+	if err != nil {
+		lcotel.SetSpanError(span, err)
+	}
+	return ch, err
 }
 
 // Probe delegates to the OpenAI driver, which hits GET /v1/models
