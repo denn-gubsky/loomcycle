@@ -27,6 +27,24 @@ npm install @loomcycle/client
 
 Requires Node ≥ 18. Bun and Deno likely work but are untested. Browser support is not a target — for browser-side operator control, use loomcycle's built-in Web UI at `/ui`.
 
+### Module systems
+
+From v0.10.1 the package ships as a **dual ESM + CommonJS** distribution:
+
+```ts
+// ESM (recommended)
+import { LoomcycleClient } from "@loomcycle/client";
+
+// CommonJS (legacy consumers — n8n's community-node loader, older Node
+// scripts, anything not yet on ESM)
+const { LoomcycleClient } = require("@loomcycle/client");
+```
+
+The `exports` field routes each consumer to the right build:
+- `import` → `dist/index.js` (ESM)
+- `require` → `dist/cjs/index.js` (CJS)
+- `types` → `dist/index.d.ts` (single .d.ts set; works for both)
+
 ## Quick start
 
 ```ts
