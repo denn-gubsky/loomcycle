@@ -53,10 +53,55 @@ jobs:
         # binary ships the same UI bundle.
         run: make build-ui
 
+      - name: Pre-create GitHub release with annotated tag body
+        # Why this step exists: goreleaser's `release.mode: keep-existing`
+        # (set in .goreleaser.yaml) skips updating the release body when
+        # one already exists — perfect for the operator workflow where
+        # the curated release notes live in the annotated tag message.
+        # BUT when no release exists yet, goreleaser falls back to a
+        # two-step "create draft → finish-publish" path. The
+        # finish-publish PATCH intermittently 401's against the
+        # workflow-issued GITHUB_TOKEN (the asset uploads work, only
+        # the draft→published PATCH fails). v0.10.1 hit this on
+        # 2026-05-23; v0.10.0 squeaked through three days earlier.
+        #
+        # By pre-creating the release as PUBLISHED here with notes from
+        # the annotated tag, goreleaser's keep-existing mode finds an
+        # actual published release and only appends assets — no risky
+        # draft→published PATCH.
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME}"
+          # Extract the annotated tag's message as the release body.
+          # Empty body = unannotated tag → fail loud so we don't ship
+          # a release with no notes.
+          git tag -l --format='%(contents)' "$TAG" > /tmp/release-notes.md
+          if [ ! -s /tmp/release-notes.md ]; then
+            echo "::error::Tag $TAG has no annotated message. Push annotated tag (git tag -a $TAG -m ...) before triggering the release workflow."
+            exit 1
+          fi
+          # Skip if release already exists (manual pre-create or retry).
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "::notice::Release $TAG already exists — skipping pre-create. Goreleaser will append assets to it."
+            exit 0
+          fi
+          gh release create "$TAG" \
+            --notes-file /tmp/release-notes.md \
+            --latest \
+            --verify-tag \
+            --title "$TAG"
+
       - name: Run goreleaser
+        # Pinned to v2.15.4 (the version that built v0.10.0 + v0.10.1
+        # successfully on the build side). `version: latest` previously
+        # left us at the mercy of any breaking change in a future
+        # goreleaser release; pinning gives reproducible behavior
+        # across the v0.10.x release line.
         uses: goreleaser/goreleaser-action@v6
         with:
-          version: latest
+          version: "v2.15.4"
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
