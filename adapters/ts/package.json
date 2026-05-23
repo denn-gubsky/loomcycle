@@ -1,7 +1,7 @@
 {
   "name": "@loomcycle/client",
-  "version": "0.10.0",
-  "description": "TypeScript client for the loomcycle sidecar (HTTP+SSE). 36 methods covering run streaming, agent metadata, pause/resume/state, snapshot lifecycle, memory admin (incl. v0.9.0 Vector Memory embed_stats + reembed), interruption resolve, hook management, v0.8.22 substrate admin (agentDef + skillDef), v0.9.x n8n Phase 0 (listChannels + streamUserRunStates — with debug-mode synthetic open/close meta-frames + client-side parentAgentId filter), v0.9.x Channel CRUD (publishChannel + subscribeChannel + peekChannel + ackChannel — admin scope=global + per-user scope=user surfaces), v0.9.x content_sha256 (AgentDefVerifyResult + SkillDefVerifyResult types for the bundle-vs-deployed comparison workflow), v0.9.1 transcript first-cycle (SystemPromptPayload + UserInputPayload), and v0.9.x dynamic MCP server registration (mcpServerDef + MCPServerDefVerifyResult — register HTTP/Streamable-HTTP MCP servers at runtime without yaml edits).",
+  "version": "0.10.1",
+  "description": "TypeScript client for the loomcycle sidecar (HTTP+SSE). 36 methods covering run streaming, agent metadata, pause/resume/state, snapshot lifecycle, memory admin (incl. v0.9.0 Vector Memory embed_stats + reembed), interruption resolve, hook management, v0.8.22 substrate admin (agentDef + skillDef), v0.9.x n8n Phase 0 (listChannels + streamUserRunStates — with debug-mode synthetic open/close meta-frames + client-side parentAgentId filter), v0.9.x Channel CRUD (publishChannel + subscribeChannel + peekChannel + ackChannel — admin scope=global + per-user scope=user surfaces), v0.9.x content_sha256 (AgentDefVerifyResult + SkillDefVerifyResult types for the bundle-vs-deployed comparison workflow), v0.9.1 transcript first-cycle (SystemPromptPayload + UserInputPayload), and v0.9.x dynamic MCP server registration (mcpServerDef + MCPServerDefVerifyResult — register HTTP/Streamable-HTTP MCP servers at runtime without yaml edits). v0.10.1 — dual ESM + CommonJS distribution (additive — ESM consumers unchanged; CJS consumers like n8n's community-node loader now work).",
   "license": "Apache-2.0",
   "type": "module",
   "repository": {
@@ -13,12 +13,14 @@
   "bugs": {
     "url": "https://github.com/denn-gubsky/loomcycle/issues"
   },
-  "main": "./dist/index.js",
+  "main": "./dist/cjs/index.js",
+  "module": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
     ".": {
+      "types": "./dist/index.d.ts",
       "import": "./dist/index.js",
-      "types": "./dist/index.d.ts"
+      "require": "./dist/cjs/index.js"
     }
   },
   "files": [
@@ -26,7 +28,9 @@
     "README.md"
   ],
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && tsc -p tsconfig.cjs.json && node -e \"require('fs').writeFileSync('dist/cjs/package.json', JSON.stringify({type:'commonjs'}, null, 2))\"",
+    "build:esm": "tsc",
+    "build:cjs": "tsc -p tsconfig.cjs.json && node -e \"require('fs').writeFileSync('dist/cjs/package.json', JSON.stringify({type:'commonjs'}, null, 2))\"",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest"
