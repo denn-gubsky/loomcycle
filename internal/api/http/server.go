@@ -1053,7 +1053,9 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	}
 
 	// ---- Concurrency slot ----
+	acquireStart := time.Now()
 	release, err := s.sem.AcquireForUser(ctx, effectiveUserID)
+	queueWait := time.Since(acquireStart)
 	if err != nil {
 		if concurrency.IsPerUserQuotaExhausted(err) {
 			return fmt.Errorf("%w: %v", runner.ErrPerUserQuotaExhausted, err)
@@ -1129,6 +1131,10 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		UserID:    effectiveUserID,
 	})
 	defer runSpan.End()
+	// v0.10.1: surface the semaphore queue wait on the run span. 0
+	// means immediate acquire; a sustained non-zero distribution per
+	// user_id is the operator's signal that fairness is engaging.
+	lcotel.RecordQueueWait(runSpan, queueWait)
 	regErr := s.cancelReg.Register(cancel.Entry{
 		AgentID:   agentID,
 		RunID:     runID,
@@ -1374,6 +1380,10 @@ func (s *Server) Mux() http.Handler {
 	mux.Handle("GET /v1/_metrics/samples", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleMetricsSamples))))
 	mux.Handle("GET /v1/_metrics/runs/{run_id}", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleMetricsRunSummary))))
 	mux.Handle("GET /v1/_metrics/summary", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleMetricsSummary))))
+	// v0.10.1 — per-tenant fairness inspection. Bearer-authed snapshot
+	// of the global semaphore + per-user counts. Sister of the
+	// /v1/_metrics/* family; same auth posture.
+	mux.Handle("GET /v1/_concurrency/stats", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleConcurrencyStats))))
 	// v0.8.21 audit view — paginated cross-session event log with
 	// optional type + date-range filter. Drives the Web UI's
 	// /ui/audit page. Bearer-authed admin surface.
@@ -1846,7 +1856,9 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 
 	// Acquire concurrency slot first so backpressure is reported as 429
 	// before we open the SSE stream.
+	acquireStart := time.Now()
 	release, err := s.sem.AcquireForUser(r.Context(), req.UserID)
+	queueWait := time.Since(acquireStart)
 	if err != nil {
 		writeQuotaError(w, err)
 		return
@@ -1934,6 +1946,7 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		UserID:    req.UserID,
 	})
 	defer runSpan.End()
+	lcotel.RecordQueueWait(runSpan, queueWait)
 
 	regErr := s.cancelReg.Register(cancel.Entry{
 		AgentID:   agentID,
@@ -2215,7 +2228,9 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	// Acquire concurrency slot before opening the SSE stream so backpressure
 	// is reported as 429. user_id comes from the session (set at original
 	// creation); continuations don't accept a new user_id.
+	acquireStart := time.Now()
 	release, err := s.sem.AcquireForUser(r.Context(), sess.UserID)
+	queueWait := time.Since(acquireStart)
 	if err != nil {
 		writeQuotaError(w, err)
 		return
@@ -2294,6 +2309,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		UserID:    sess.UserID,
 	})
 	defer runSpan.End()
+	lcotel.RecordQueueWait(runSpan, queueWait)
 
 	regErr := s.cancelReg.Register(cancel.Entry{
 		AgentID:   agentID,

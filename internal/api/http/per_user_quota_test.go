@@ -156,4 +156,3 @@ func TestPerUserQuota_Disabled_NoBehaviorChange(t *testing.T) {
 	close(prov.release)
 	wg.Wait()
 }
-
