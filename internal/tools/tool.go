@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 
+	lcotel "github.com/denn-gubsky/loomcycle/internal/otel"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 )
 
@@ -613,18 +614,47 @@ func HistoryPolicy(ctx context.Context) HistoryPolicyValue {
 // the optional Fallback before returning the standard "tool not found"
 // error result (the model can self-correct on the error result; we never
 // return a hard Go error here).
+//
+// v0.10.0 OTEL: opens loomcycle.tool.call for every dispatched call.
+// Errors (Go-level + IsError-true results) mark the span Error. MCP
+// tools open a nested loomcycle.mcp.call inside this outer span (the
+// MCP-aware nesting happens in the mcpTool wrapper at
+// internal/tools/mcp/pool.go).
 func (d *Dispatcher) Execute(ctx context.Context, name string, input json.RawMessage) Result {
+	ctx, span := lcotel.RecordToolCall(ctx, name)
+	defer span.End()
 	if t, ok := d.tools[name]; ok {
 		res, err := t.Execute(ctx, input)
 		if err != nil {
+			lcotel.SetSpanError(span, err)
 			return Result{Text: err.Error(), IsError: true}
+		}
+		if res.IsError {
+			lcotel.SetSpanErrorMessage(span, firstLineForSpan(res.Text))
 		}
 		return res
 	}
 	if d.fallback != nil {
 		if res, handled := d.fallback(ctx, name, input); handled {
+			if res.IsError {
+				lcotel.SetSpanErrorMessage(span, firstLineForSpan(res.Text))
+			}
 			return res
 		}
 	}
+	lcotel.SetSpanErrorMessage(span, "tool not found")
 	return Result{Text: fmt.Sprintf("tool not found: %s", name), IsError: true}
+}
+
+// firstLineForSpan extracts the first line of a tool's error text for
+// the span status description. Multi-line tool errors otherwise blow
+// up Jaeger's status field; the truncation in SetSpanErrorMessage
+// hard-caps at 500 chars on top of this.
+func firstLineForSpan(s string) string {
+	for i, c := range s {
+		if c == '\n' {
+			return s[:i]
+		}
+	}
+	return s
 }

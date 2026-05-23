@@ -16,6 +16,7 @@ import (
 	"sync"
 
 	"github.com/denn-gubsky/loomcycle/internal/hooks"
+	lcotel "github.com/denn-gubsky/loomcycle/internal/otel"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
@@ -510,6 +511,15 @@ func Run(ctx context.Context, opts RunOptions) (RunResult, error) {
 
 outerLoop:
 	for iter := 0; iter < opts.MaxIterations; iter++ {
+		// v0.10.0 OTEL: one loomcycle.iteration span per turn. Nested
+		// under the caller-opened loomcycle.run span (api/http opens
+		// the run span at each of the 4 run-creation sites). The
+		// iteration body has multiple exit paths (fallback continue,
+		// unrecoverable return, terminal break, normal fall-through),
+		// so End() is called explicitly at each — Go's `defer` runs
+		// at function-scope only, not loop-iteration-scope.
+		iterCtx, iterSpan := lcotel.RecordIteration(ctx, iter)
+
 		// Heartbeat fires at the top of each iteration. Cheap path —
 		// implementations are expected to be ~one UPDATE. Failures
 		// should NOT propagate (a sweeper in the future is the
@@ -531,7 +541,7 @@ outerLoop:
 			// the retry would be invisible to SSE consumers.
 			OnEvent: emit,
 		}
-		ch, err := opts.Provider.Call(ctx, req)
+		ch, err := opts.Provider.Call(iterCtx, req)
 		if err != nil {
 			// Resolver stall feedback: any non-context error from
 			// Call() is a driver giving up after its own retries.
@@ -551,9 +561,13 @@ outerLoop:
 			// without surfacing the error. Other outcomes fall
 			// through to the original error path.
 			if tryProviderFallback(ctx, &opts, &fallbackAttempts, err, emit, messages, firstTurnSucceeded) == fallbackOutcomeSwitched {
+				lcotel.SetSpanErrorMessage(iterSpan, "provider call failed; fallback engaged")
+				iterSpan.End()
 				continue outerLoop
 			}
 			emit(providers.Event{Type: providers.EventError, Error: err.Error()})
+			lcotel.SetSpanError(iterSpan, err)
+			iterSpan.End()
 			return RunResult{Iterations: iter}, err
 		}
 
@@ -619,9 +633,13 @@ outerLoop:
 				if tryProviderFallback(ctx, &opts, &fallbackAttempts, rawErr, emit, messages, firstTurnSucceeded) == fallbackOutcomeSwitched {
 					for range ch {
 					}
+					lcotel.SetSpanErrorMessage(iterSpan, "in-stream provider error; fallback engaged")
+					iterSpan.End()
 					continue outerLoop
 				}
 				emit(ev)
+				lcotel.SetSpanErrorMessage(iterSpan, ev.Error)
+				iterSpan.End()
 				return RunResult{Iterations: iter}, fmt.Errorf("provider error: %s", ev.Error)
 			}
 		}
@@ -669,6 +687,7 @@ outerLoop:
 
 		// Terminal: model is done.
 		if iterStop != "tool_use" || len(pendingTools) == 0 {
+			iterSpan.End()
 			break
 		}
 
@@ -691,8 +710,11 @@ outerLoop:
 			UserID:  ident.UserID,
 			AgentID: ident.AgentID,
 		}
-		toolResults := executePendingTools(ctx, opts.Dispatcher, pendingTools, opts.ToolParallelism, opts.Hooks, hookIdent, emit)
+		toolResults := executePendingTools(iterCtx, opts.Dispatcher, pendingTools, opts.ToolParallelism, opts.Hooks, hookIdent, emit)
 		messages = append(messages, providers.Message{Role: "user", Content: toolResults})
+		// Normal fall-through to next iteration. End the iteration span
+		// here — the for loop's continue will open a fresh one.
+		iterSpan.End()
 	}
 
 	// If the for loop exited by exhausting MaxIterations while the model was

@@ -26,6 +26,7 @@ import (
 	"strings"
 	"time"
 
+	lcotel "github.com/denn-gubsky/loomcycle/internal/otel"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/providers/ratelimit"
 	"github.com/denn-gubsky/loomcycle/internal/providers/streamhttp"
@@ -147,16 +148,32 @@ func (d *Driver) Call(ctx context.Context, req providers.Request) (<-chan provid
 	streamCtx, cancelStream := context.WithCancel(ctx)
 
 	attempt := func(attemptCtx context.Context) (*http.Response, error) {
-		req, err := http.NewRequestWithContext(attemptCtx, "POST", d.baseURL+"/api/chat", bytes.NewReader(body))
+		// v0.10.0 OTEL: one loomcycle.provider.call span per attempt.
+		// d.providerID is "ollama" (cloud) or "ollama-local" — the
+		// resolver distinguishes the two; span attribute mirrors.
+		spanCtx, span := lcotel.RecordProviderCall(attemptCtx, lcotel.ProviderCallAttrs{
+			Provider: d.providerID,
+			Model:    req.Model,
+			Effort:   req.Effort,
+		})
+		defer span.End()
+		httpReq, err := http.NewRequestWithContext(spanCtx, "POST", d.baseURL+"/api/chat", bytes.NewReader(body))
 		if err != nil {
+			lcotel.SetSpanError(span, err)
 			return nil, err
 		}
-		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("Accept", "application/x-ndjson")
+		httpReq.Header.Set("Content-Type", "application/json")
+		httpReq.Header.Set("Accept", "application/x-ndjson")
 		if d.apiKey != "" {
-			req.Header.Set("Authorization", "Bearer "+d.apiKey)
+			httpReq.Header.Set("Authorization", "Bearer "+d.apiKey)
 		}
-		return d.http.Do(req)
+		resp, err := d.http.Do(httpReq)
+		if err != nil {
+			lcotel.SetSpanError(span, err)
+		} else if resp != nil && resp.StatusCode >= 400 {
+			lcotel.SetSpanErrorMessage(span, "http "+resp.Status)
+		}
+		return resp, err
 	}
 
 	resp, err := ratelimit.Do(streamCtx, ratelimit.Config{

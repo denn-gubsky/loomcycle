@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	lcotel "github.com/denn-gubsky/loomcycle/internal/otel"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/providers/ratelimit"
 	"github.com/denn-gubsky/loomcycle/internal/providers/streamhttp"
@@ -84,17 +85,33 @@ func (d *Driver) Call(ctx context.Context, req providers.Request) (<-chan provid
 	streamCtx, cancelStream := context.WithCancel(ctx)
 
 	attempt := func(attemptCtx context.Context) (*http.Response, error) {
+		// v0.10.0 OTEL: one loomcycle.provider.call span per attempt.
+		// Retries surface as separate sibling spans so operators see
+		// retry latency in the run timeline.
+		spanCtx, span := lcotel.RecordProviderCall(attemptCtx, lcotel.ProviderCallAttrs{
+			Provider: "anthropic",
+			Model:    req.Model,
+			Effort:   req.Effort,
+		})
+		defer span.End()
 		// Build a fresh request each attempt — http.Request.Body is
 		// consumed by Do, so a single Reader can't be reused.
-		req, err := http.NewRequestWithContext(attemptCtx, "POST", d.baseURL+"/v1/messages", bytes.NewReader(body))
+		httpReq, err := http.NewRequestWithContext(spanCtx, "POST", d.baseURL+"/v1/messages", bytes.NewReader(body))
 		if err != nil {
+			lcotel.SetSpanError(span, err)
 			return nil, err
 		}
-		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("Accept", "text/event-stream")
-		req.Header.Set("x-api-key", d.apiKey)
-		req.Header.Set("anthropic-version", apiVersion)
-		return d.http.Do(req)
+		httpReq.Header.Set("Content-Type", "application/json")
+		httpReq.Header.Set("Accept", "text/event-stream")
+		httpReq.Header.Set("x-api-key", d.apiKey)
+		httpReq.Header.Set("anthropic-version", apiVersion)
+		resp, err := d.http.Do(httpReq)
+		if err != nil {
+			lcotel.SetSpanError(span, err)
+		} else if resp != nil && resp.StatusCode >= 400 {
+			lcotel.SetSpanErrorMessage(span, "http "+resp.Status)
+		}
+		return resp, err
 	}
 
 	resp, err := ratelimit.Do(streamCtx, ratelimit.Config{

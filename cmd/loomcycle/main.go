@@ -43,6 +43,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/help"
 	mcpsign "github.com/denn-gubsky/loomcycle/internal/mcp"
 	"github.com/denn-gubsky/loomcycle/internal/metrics"
+	lcotel "github.com/denn-gubsky/loomcycle/internal/otel"
 	"github.com/denn-gubsky/loomcycle/internal/pause"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/providers/anthropic"
@@ -338,6 +339,28 @@ func main() {
 		// Allow running with no YAML at all if a default agent can be derived
 		// from defaults. Most callers will hit the same error path though.
 		log.Fatalf("config: %v", err)
+	}
+
+	// v0.10.0 OpenTelemetry tracer bootstrap. No-op when
+	// LOOMCYCLE_OTEL_EXPORTER_OTLP_ENDPOINT is unset, so zero runtime
+	// cost on deployments that haven't opted in. When set, every
+	// otel.Tracer(...).Start(ctx, ...) call across the codebase emits
+	// to the configured OTLP/HTTP collector.
+	otelShutdown, otelErr := lcotel.Init(lcotel.Config{
+		Endpoint:       cfg.Env.OTELExporterEndpoint,
+		Headers:        cfg.Env.OTELExporterHeaders,
+		ServiceName:    cfg.Env.OTELServiceName,
+		ServiceVersion: buildVersion,
+		SamplerRatio:   cfg.Env.OTELTracesSamplerRatio,
+	})
+	if otelErr != nil {
+		log.Fatalf("otel: %v", otelErr)
+	}
+	if cfg.Env.OTELExporterEndpoint != "" {
+		log.Printf("otel: tracer enabled — endpoint=%s service=%s sampler=traceidratio@%g",
+			cfg.Env.OTELExporterEndpoint, cfg.Env.OTELServiceName, cfg.Env.OTELTracesSamplerRatio)
+	} else {
+		log.Printf("otel: disabled (set LOOMCYCLE_OTEL_EXPORTER_OTLP_ENDPOINT to enable)")
 	}
 
 	pr := newProviderResolver(cfg)
@@ -1293,6 +1316,14 @@ func main() {
 	defer cancel()
 	if !skipHTTP {
 		_ = httpServer.Shutdown(ctx)
+	}
+	// Flush OTEL spans before exit. The OTLP exporter batches; without
+	// this, in-flight spans never reach the collector. Same 5s deadline
+	// as the HTTP shutdown — exporters honor ctx.
+	if otelShutdown != nil {
+		if err := otelShutdown(ctx); err != nil {
+			log.Printf("otel: shutdown failed: %v", err)
+		}
 	}
 }
 
