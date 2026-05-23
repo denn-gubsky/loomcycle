@@ -252,19 +252,26 @@ channels:
 #   LOOMCYCLE_MEMORY_EMBED_BATCH_SIZE=100            # per-call batch cap
 #   LOOMCYCLE_MEMORY_EMBED_TIMEOUT_MS=30000          # per-call HTTP timeout
 #
-# Anthropic note: v0.9.0 ships an Anthropic *stub* that refuses with
-# `embedder_not_implemented`. Anthropic has no native embeddings API
-# today; v0.9.1 wires Voyage AI under the `anthropic` driver name. Use
-# `openai` or `gemini` for v0.9.0.
+# Anthropic note (v0.10.2+): `provider: anthropic` is now a working
+# Voyage AI proxy — Anthropic has no native embedding API and
+# explicitly recommends Voyage. Set VOYAGE_API_KEY env var (separate
+# from ANTHROPIC_API_KEY which is for chat completions). See
+# `help voyage-embedder` for the model menu + pricing.
+#
+# SQLite + vectors: the default-build SQLite refuses vector ops
+# (`vector_unsupported`). Operators wanting vectors on SQLite build
+# with `CGO_ENABLED=1 go install -tags=sqlite_vec ...`; the build-tag
+# mechanism is shipped in v0.10.2, full MemoryEmbed* impl lands in
+# v0.10.3. See `help sqlite-vec` for the build flow.
 #
 # See docs/TOOLS.md → "Vector / semantic search (v0.9.0)" for the
 # wire shape, failure modes, and the admin reembed flow.
 # memory:
 #   embedder:
-#     provider: openai                       # openai | gemini | anthropic(stub)
-#     model: text-embedding-3-large          # see docs for known model→dim map
+#     provider: openai                       # openai | gemini | anthropic (Voyage AI)
+#     model: text-embedding-3-large          # voyage-3 / voyage-4 for anthropic
 #     timeout_ms: 30000                      # optional; overrides env
-#     batch_size: 100                        # optional; overrides env
+#     batch_size: 100                        # optional; overrides env (Voyage caps voyage-3 at 128)
 
 # ─── v0.10.0 OpenTelemetry distributed traces ───────────────────────
 # Off by default — when LOOMCYCLE_OTEL_EXPORTER_OTLP_ENDPOINT is unset,
