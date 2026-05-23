@@ -368,7 +368,11 @@ func main() {
 		cfg.Concurrency.MaxConcurrentRuns,
 		cfg.Concurrency.MaxQueueDepth,
 		cfg.Concurrency.QueueTimeout(),
-	)
+	).WithPerUserCap(cfg.Concurrency.MaxConcurrentRunsPerUser)
+	if cfg.Concurrency.MaxConcurrentRunsPerUser > 0 {
+		log.Printf("concurrency: per-user cap enabled — max_concurrent_runs_per_user=%d (global cap=%d)",
+			cfg.Concurrency.MaxConcurrentRunsPerUser, cfg.Concurrency.MaxConcurrentRuns)
+	}
 	// All built-in tools are SANDBOXED: each refuses every call until the
 	// operator explicitly enables it via env. We register every tool and
 	// log a note for any that's still disabled — that way the model sees

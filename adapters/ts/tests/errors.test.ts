@@ -18,6 +18,7 @@ import {
   LoomcycleError,
   NotPausedError,
   PauseNotConfiguredError,
+  PerUserQuotaExhaustedError,
   SessionBusyError,
   SessionNotFoundError,
   SnapshotNotFoundError,
@@ -128,6 +129,49 @@ describe("raiseFromResponse — status + body-text → typed error", () => {
     expect(await expectErrorFor(429, "queue full")).toBeInstanceOf(
       BackpressureError,
     );
+  });
+
+  it("429 + code:per_user_quota_exhausted → PerUserQuotaExhaustedError", async () => {
+    // v0.10.1: the shape distinguishes from BackpressureError via the
+    // JSON body's `code` field. PerUserQuotaExhaustedError carries
+    // userId + cap + retryAfterMs derived from the body + header.
+    const body = JSON.stringify({
+      code: "per_user_quota_exhausted",
+      error: "per-user quota exhausted: user=user_a cap=4",
+      user_id: "user_a",
+      cap: 4,
+    });
+    const resp = new Response(body, {
+      status: 429,
+      headers: { "Retry-After": "5", "Content-Type": "application/json" },
+    });
+    try {
+      await raiseFromResponse(resp);
+      throw new Error("expected raiseFromResponse to throw");
+    } catch (e) {
+      expect(e).toBeInstanceOf(PerUserQuotaExhaustedError);
+      // It's NOT a BackpressureError — distinct branch.
+      expect(e).not.toBeInstanceOf(BackpressureError);
+      const pue = e as PerUserQuotaExhaustedError;
+      expect(pue.userId).toBe("user_a");
+      expect(pue.cap).toBe(4);
+      expect(pue.retryAfterMs).toBe(5000);
+    }
+  });
+
+  it("429 + code:backpressure → BackpressureError (not the v0.10.1 typed flavor)", async () => {
+    // Sanity-check that the v0.9.x backpressure body still routes to
+    // BackpressureError — the per_user_quota_exhausted branch must
+    // ONLY match the explicit code.
+    const body = JSON.stringify({ code: "backpressure", error: "queue full" });
+    const resp = new Response(body, { status: 429 });
+    try {
+      await raiseFromResponse(resp);
+      throw new Error("expected throw");
+    } catch (e) {
+      expect(e).toBeInstanceOf(BackpressureError);
+      expect(e).not.toBeInstanceOf(PerUserQuotaExhaustedError);
+    }
   });
 
   it("503 + 'pause manager not configured' → PauseNotConfiguredError", async () => {

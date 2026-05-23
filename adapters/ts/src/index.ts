@@ -177,6 +177,7 @@ export {
   LoomcycleError,
   NotPausedError,
   PauseNotConfiguredError,
+  PerUserQuotaExhaustedError,
   SessionBusyError,
   SessionNotFoundError,
   SnapshotNotFoundError,
