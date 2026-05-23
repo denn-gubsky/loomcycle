@@ -266,6 +266,47 @@ channels:
 #     timeout_ms: 30000                      # optional; overrides env
 #     batch_size: 100                        # optional; overrides env
 
+# ─── v0.10.0 OpenTelemetry distributed traces ───────────────────────
+# Off by default — when LOOMCYCLE_OTEL_EXPORTER_OTLP_ENDPOINT is unset,
+# the tracer is a no-op and there is zero runtime cost. When set,
+# loomcycle emits a span tree per agent run:
+#
+#   loomcycle.run
+#   ├─ loomcycle.iteration (one per loop turn)
+#   │  ├─ loomcycle.provider.call (provider/model/effort attrs)
+#   │  └─ loomcycle.tool.call (tool name)
+#   │     └─ loomcycle.mcp.call (server + tool, when applicable)
+#   └─ done (input_tokens/output_tokens/stop_reason)
+#
+# Sub-agent runs nest as children of the parent's iteration span via
+# context propagation. Operators see the full cv-batch-adapter →
+# cv-adapter tree in one Jaeger view.
+#
+# Spans deliberately do NOT carry transcript bodies, tool I/O, system
+# prompts, user prompts, API keys, or any secrets. Only shape, cost,
+# latency, and identity (run_id/agent_id/user_id). The transcript view
+# at /ui/agents/<id> stays the authoritative record of agent content.
+#
+# Run `help observability` (Context tool) for the Jaeger / Tempo /
+# Honeycomb / DataDog walkthroughs + the full attribute reference.
+#
+# Env vars:
+#   LOOMCYCLE_OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
+#       # Empty disables. host:port OR http(s)://host:port — http://
+#       # opts into WithInsecure automatically. Use https:// for
+#       # Honeycomb / cloud collectors.
+#   LOOMCYCLE_OTEL_EXPORTER_OTLP_HEADERS=x-honeycomb-team=$KEY
+#       # Comma-separated key=value list for collector auth. Multiple
+#       # headers compose with `,`.
+#   LOOMCYCLE_OTEL_SERVICE_NAME=loomcycle
+#       # Populates service.name resource attribute. Override per
+#       # replica for multi-replica HA grouping.
+#   LOOMCYCLE_OTEL_TRACES_SAMPLER_RATIO=1.0
+#       # Head-based sampling ratio, clamped to [0,1]. parentbased so
+#       # a sampled parent always produces sampled children. Reduce
+#       # (0.1, 0.01) on high-volume deployments to fit SaaS APM
+#       # event caps (Honeycomb free tier: ~0.05 for 200 runs/hour).
+
 # ─── v0.8.16 Interruption tool ───────────────────────────────────────
 # Human-in-the-loop primitive. Operator picks the delivery surface;
 # per-agent yaml grants access. See docs/TOOLS.md "The Interruption

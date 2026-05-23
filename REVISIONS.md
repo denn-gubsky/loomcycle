@@ -8,6 +8,86 @@ For pre-v0.4 history (single-tool runtime, library milestone, security patch), s
 
 ---
 
+## What's in v0.10.0
+
+Production-grade observability lands. Loomcycle emits OpenTelemetry distributed traces for every agent run — operators see latency p99s, cost-per-provider attribution, and span-level error rates within seconds of opening Jaeger / Grafana Tempo / Honeycomb / DataDog APM. The v1.0 release gate moves from "implementation complete" to "instrumented + observable under load."
+
+This is the first of the v0.10.x production-sweep slices. Per-tenant fairness on the semaphore, multi-replica HA via Redis cancel pubsub, and the in-memory run-status cache follow in subsequent v0.10.x releases.
+
+### What's new
+
+**Span tree per agent run.** Every run emits a hierarchical trace:
+
+```
+loomcycle.run
+├─ loomcycle.iteration (one per loop turn)
+│  ├─ loomcycle.provider.call (provider, model, tier, effort)
+│  └─ loomcycle.tool.call (tool name)
+│     └─ loomcycle.mcp.call (mcp_server, mcp_tool) — when applicable
+└─ done attrs (input_tokens, output_tokens, cache_read_tokens, stop_reason)
+```
+
+Sub-agent spawns nest as children of the parent's iteration span via context propagation — operators see the full `cv-batch-adapter → cv-adapter → ...` tree in one Jaeger view, no per-replica linking needed.
+
+**Default OFF.** When `LOOMCYCLE_OTEL_EXPORTER_OTLP_ENDPOINT` is unset, the global tracer is a no-op. Every `tracer.Start(ctx, name)` call across the codebase returns the SDK's no-op span singleton — zero allocations, zero goroutines, zero atomic operations in the hot path beyond a single `otel.globalTracer` pointer load. The load-bearing assumption is that operators who haven't opted in pay nothing.
+
+**Five env vars** to opt in:
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `LOOMCYCLE_OTEL_EXPORTER_OTLP_ENDPOINT` | empty | Empty disables. `host:port` or `http(s)://host:port` — `http://` triggers `WithInsecure` automatically. |
+| `LOOMCYCLE_OTEL_EXPORTER_OTLP_HEADERS` | empty | Comma-separated `key=value` list for collector auth (e.g. `x-honeycomb-team=$KEY`). |
+| `LOOMCYCLE_OTEL_SERVICE_NAME` | `loomcycle` | `service.name` resource attribute. Override per replica for multi-replica HA grouping. |
+| `LOOMCYCLE_OTEL_TRACES_SAMPLER_RATIO` | `1.0` | Head-based sampling ratio, clamped to `[0,1]`. `ParentBased(TraceIDRatioBased(r))` so sampled parents always produce sampled children — traces stay whole. |
+
+**Provider driver instrumentation.** Each of the four cloud providers (Anthropic, OpenAI, Gemini, Ollama — both ollama-cloud and ollama-local) opens one `loomcycle.provider.call` span per HTTP attempt inside its `attempt` closure. The closure runs under `ratelimit.Do` which retries on 429/5xx — each retry surfaces as a sibling span, giving operators clean retry-latency visibility. Spans stamp `Error` status on Go-level errors AND HTTP non-2xx responses.
+
+**DeepSeek wrapping** uses a ctx-key provider-override (`lcotel.WithProviderOverride`) instead of a wrapping span. The wrapping driver-call returns before the streaming channel is consumed, so a span there would mismeasure latency. Instead, the inner OpenAI driver reads the override from ctx and stamps `loomcycle.provider="deepseek"` on its per-attempt span. Operators filtering by provider see DeepSeek calls distinctly with correct streaming-attempt durations.
+
+**Tool dispatcher + MCP nesting.** `Dispatcher.Execute` is the single canonical wrap-point for every dispatched tool (built-in + MCP + sub-agent). One `loomcycle.tool.call` span per dispatch. MCP tools open a nested `loomcycle.mcp.call` inside the outer tool span — operators see two nested spans for any MCP-tool invocation, with `mcp_server` + `mcp_tool` attributes parsed from the dispatched name. Errors at all three sites (unknown tool, Go-level Execute error, IsError=true result) mark the span Error.
+
+**What spans deliberately don't carry.** No transcript bodies, no tool inputs, no tool results, no system prompts, no user prompts, no API keys, no header values. Span attributes go to operator-side telemetry endpoints (Honeycomb, DataDog, etc.) which have different trust postures than loomcycle's bearer-auth — keeping secrets out of spans means opting into tracing doesn't widen the secret surface. The transcript view at `/ui/agents/<id>` stays the authoritative record of agent content.
+
+**UTF-8-safe truncation** for span error messages. Loomcycle's `SetSpanError` and `SetSpanErrorMessage` cap error text at 500 bytes; the truncate helper backs the cut to the nearest preceding rune boundary so non-ASCII provider error messages (DeepSeek's Chinese status messages, Anthropic's Unicode JSON error bodies) never split mid-rune.
+
+### Operator setup walkthroughs
+
+The new bundled `Context.help` topic `observability` covers four concrete setups:
+
+- **Local Jaeger via Docker** — `docker run jaegertracing/all-in-one:latest`, set the endpoint env var, open `http://localhost:16686`. Fastest path to first trace.
+- **Grafana Tempo + Grafana** — production-grade open-source alternative. Includes minimum docker-compose and tempo.yaml.
+- **Honeycomb** — hosted SaaS option. Free tier (~20M events/month) covers a JobEmber-class workload at ~0.05 sampling. Uses the `x-honeycomb-team` header.
+- **DataDog APM** — set the local DataDog Agent's `otlp_config` and point loomcycle at `127.0.0.1:4318`. Same OTLP/HTTP wire.
+
+### Adapter releases
+
+- **`@loomcycle/client` 0.9.3 → 0.10.0** (npm) — no method additions; no wire-shape additions. Version bump for binary-tag-to-adapter-version lockstep. The OTEL surface is server-side telemetry; consumers don't interact with it through the adapter.
+- **`loomcycle` Python** held at 0.7.0 — no Python-side surface change.
+
+### Wire-surface counts
+
+| Surface | v0.9.3 | v0.10.0 |
+|---|---|---|
+| HTTP endpoints | n | n (no change) |
+| MCP meta-tools | 33 | 33 (no change) |
+| gRPC RPCs | n | n (no change) |
+| TS adapter methods | 36 | 36 (no change) |
+| Env vars | n | n + 4 (OTEL exporter / headers / service-name / sampler-ratio) |
+
+### Migration notes
+
+- **No schema migrations are required.** No new tables, no envelope sections. The OTEL surface is purely additive.
+- **No yaml changes required.** The `agents:` / `mcp_servers:` / `memory:` blocks are unchanged. A new commented-out OTEL section in `loomcycle.example.yaml` documents the env vars.
+- **Default-OFF posture means existing deployments see zero behavior change** on upgrade. To enable, set the endpoint env var and restart.
+- **Trace tree breaks across replicas** for sub-runs spawned on a different loomcycle instance. This is expected — multi-replica HA ships in a later v0.10.x slice. Single-replica deployments see the full tree.
+- **TS adapter consumers**: bump `@loomcycle/client` to `0.10.0` if you tag your loomcycle binary to v0.10.0 (release lockstep enforced by `publish-ts-adapter.yml`). No code changes required.
+
+### Downloads
+
+Assets attached to this release: `loomcycle-{darwin,linux}-{amd64,arm64}.tar.gz` + `SHA256SUMS`.
+
+---
+
 ## What's in v0.9.3
 
 Two coordinated themes plus four follow-up fixes. The headline is **Web UI Library v2** — the `/ui/library` surface stops being substrate-only and shows every agent / skill / MCP server the runtime knows about, with STATIC / DYNAMIC source chips and inline content expansion. The second theme is the **static-vs-dynamic resolver consolidation** that turned PRs #184/#185/#186 into a canonical `internal/lookup` package + a four-rule contract for future substrates. The follow-ups close a latent UI dead-body limitation, fix sub-agent spawn name resolution, and disambiguate the transcript USER/SYSTEM cards that PR #171 (v0.9.1) shipped duplicating content.
