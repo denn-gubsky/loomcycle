@@ -1,6 +1,6 @@
 ---
 name: voyage-embedder
-description: Voyage AI embedder behind the `provider: anthropic` slot — Anthropic has no native embedding API and explicitly recommends Voyage.
+description: "Voyage AI embedder behind the `provider: anthropic` slot — Anthropic has no native embedding API and explicitly recommends Voyage."
 ---
 Loomcycle v0.10.2 ships a real Voyage AI embedder behind the
 `memory.embedder.provider: anthropic` yaml slot. Anthropic has no
