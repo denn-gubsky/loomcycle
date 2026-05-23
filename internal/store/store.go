@@ -1257,11 +1257,13 @@ var ErrDimensionMismatch = &MemoryError{Code: "dimension_mismatch", Msg: "memory
 // MemoryError set so callers can switch on a single error family.
 var ErrEmbedderNotConfigured = &MemoryError{Code: "embedder_not_configured", Msg: "memory: no embedder configured — set memory.embedder in operator yaml"}
 
-// ErrEmbedderNotImplemented is returned by the Anthropic embedder
-// driver in v0.9.0. Operators selecting `provider: anthropic` in the
-// yaml see this until v0.9.1 ships the Voyage AI proxy. Tool-layer
-// error, like ErrEmbedderNotConfigured.
-var ErrEmbedderNotImplemented = &MemoryError{Code: "embedder_not_implemented", Msg: "memory: this embedder is not yet implemented (Anthropic embeddings ship in v0.9.1 via Voyage AI proxy; use openai or gemini for now)"}
+// ErrEmbedderNotImplemented is returned by an embedder driver that
+// is registered but not functionally implemented. v0.9.0–v0.10.1
+// shipped this for the Anthropic stub; v0.10.2 made the Anthropic
+// slot a working Voyage AI proxy so this error is now reserved for
+// any future placeholder drivers. Tool-layer error, like
+// ErrEmbedderNotConfigured.
+var ErrEmbedderNotImplemented = &MemoryError{Code: "embedder_not_implemented", Msg: "memory: this embedder is not implemented in this build"}
 
 // MemoryError is a typed error so the Memory tool can surface a
 // stable error code to the agent. The Code is wire-stable; the Msg

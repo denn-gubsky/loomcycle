@@ -708,6 +708,16 @@ type NativeCacheConfig struct {
 type Env struct {
 	AnthropicAPIKey string
 	OpenAIAPIKey    string
+	// VoyageAPIKey enables the v0.10.2 Voyage AI embedder, registered
+	// under the `anthropic` provider slot (Anthropic has no native
+	// embeddings API and explicitly recommends Voyage AI). When
+	// `memory.embedder.provider: anthropic` is set in yaml, main.go's
+	// buildEmbedder uses this key rather than AnthropicAPIKey for the
+	// Voyage HTTP calls. Empty = the anthropic embedder driver
+	// constructs but every Embed() call surfaces 401. Voyage's
+	// canonical env-var name is reused verbatim.
+	// Env: VOYAGE_API_KEY.
+	VoyageAPIKey string
 	// OllamaBaseURL is the local-network Ollama endpoint. Drives the
 	// `ollama-local` provider registration. Default
 	// `http://localhost:11434` keeps existing deploys unchanged across
@@ -1240,6 +1250,7 @@ func Load(path string) (*Config, error) {
 	cfg.Env = Env{
 		AnthropicAPIKey:          os.Getenv("ANTHROPIC_API_KEY"),
 		OpenAIAPIKey:             os.Getenv("OPENAI_API_KEY"),
+		VoyageAPIKey:             os.Getenv("VOYAGE_API_KEY"),
 		OllamaBaseURL:            getenvDefault("OLLAMA_BASE_URL", "http://localhost:11434"),
 		OllamaAPIKey:             os.Getenv("OLLAMA_API_KEY"),
 		OllamaCloudBaseURL:       getenvDefault("OLLAMA_CLOUD_BASE_URL", "https://ollama.com"),

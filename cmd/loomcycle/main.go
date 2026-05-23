@@ -1409,6 +1409,12 @@ func buildEmbedder(cfg *config.Config) (providers.Embedder, error) {
 	// Reuse the chat-completion driver's auth + base URL. Embedders
 	// hit the same provider account, so a separate set of env vars
 	// would be operator friction without benefit.
+	//
+	// EXCEPTION: the `anthropic` embedder slot is a Voyage AI proxy
+	// (v0.10.2) — Anthropic has no native embeddings API and points
+	// users at Voyage. The operator yaml stays `provider: anthropic`
+	// for ergonomics, but the underlying auth is the separate
+	// VOYAGE_API_KEY env var routed to cfg.Env.VoyageAPIKey.
 	var apiKey, baseURL string
 	switch provider {
 	case "openai":
@@ -1416,7 +1422,10 @@ func buildEmbedder(cfg *config.Config) (providers.Embedder, error) {
 	case "gemini":
 		apiKey, baseURL = cfg.Env.GeminiAPIKey, cfg.Env.GeminiBaseURL
 	case "anthropic":
-		apiKey, baseURL = cfg.Env.AnthropicAPIKey, ""
+		apiKey, baseURL = cfg.Env.VoyageAPIKey, ""
+		if apiKey == "" {
+			log.Printf("memory.embedder: provider=anthropic uses Voyage AI; set VOYAGE_API_KEY or Embed() calls will fail at 401")
+		}
 	}
 
 	timeoutMs := cfg.Memory.Embedder.TimeoutMs
