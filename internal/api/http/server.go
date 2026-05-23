@@ -26,6 +26,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/lookup"
 	"github.com/denn-gubsky/loomcycle/internal/loop"
 	"github.com/denn-gubsky/loomcycle/internal/metrics"
+	lcotel "github.com/denn-gubsky/loomcycle/internal/otel"
 	"github.com/denn-gubsky/loomcycle/internal/pause"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/resolve"
@@ -37,6 +38,8 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/tools/builtin"
 	"github.com/denn-gubsky/loomcycle/internal/tools/policy"
 	"github.com/denn-gubsky/loomcycle/internal/webui"
+
+	"go.opentelemetry.io/otel/trace"
 )
 
 // ProviderResolver returns a Provider by ID. The cmd/loomcycle main constructs one
@@ -1078,6 +1081,18 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	// ---- Cancel registry ----
 	runCtx, cancelFn := context.WithCancelCause(ctx)
 	defer cancelFn(nil)
+	// v0.10.0 OTEL: top-level loomcycle.run span covers the entire
+	// run. Loop iterations + provider calls + tool dispatch nest
+	// under it via context propagation. Span name + attribute set
+	// stable across all 4 run-creation sites (RunOnce, handleRuns,
+	// handleMessages, runSubAgent).
+	runCtx, runSpan := lcotel.RecordRunStart(runCtx, lcotel.RunStartAttrs{
+		RunID:     runID,
+		AgentID:   agentID,
+		AgentName: effectiveAgentName,
+		UserID:    effectiveUserID,
+	})
+	defer runSpan.End()
 	regErr := s.cancelReg.Register(cancel.Entry{
 		AgentID:   agentID,
 		RunID:     runID,
@@ -1094,6 +1109,9 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		Agent:   effectiveAgentName,
 		UserID:  effectiveUserID,
 	}
+	// Stash the run span on the meta so finishRun* can close it with
+	// final attrs (usage totals + stop_reason + error status).
+	meta.otelSpan = runSpan
 	if errors.Is(regErr, cancel.ErrInUse) {
 		s.finishRunFailedReason(runID, "agent_id collision; run never started", meta)
 		return fmt.Errorf("%w: agent_id %q is already mapped to an active run", runner.ErrAgentIDInUse, agentID)
@@ -1877,6 +1895,14 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 	// call can fire it.
 	runCtx, cancelFn := context.WithCancelCause(r.Context())
 	defer cancelFn(nil) // ensure ctx leaks don't survive the handler
+	// v0.10.0 OTEL: top-level loomcycle.run span covers the whole run.
+	runCtx, runSpan := lcotel.RecordRunStart(runCtx, lcotel.RunStartAttrs{
+		RunID:     runID,
+		AgentID:   agentID,
+		AgentName: req.Agent,
+		UserID:    req.UserID,
+	})
+	defer runSpan.End()
 
 	regErr := s.cancelReg.Register(cancel.Entry{
 		AgentID:   agentID,
@@ -1888,10 +1914,11 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 	// v0.9.x: identity bundle threaded into finishRun* + the
 	// "running" transition publish below.
 	meta := runStateMeta{
-		RunID:   runID,
-		AgentID: agentID,
-		Agent:   req.Agent,
-		UserID:  req.UserID,
+		RunID:    runID,
+		AgentID:  agentID,
+		Agent:    req.Agent,
+		UserID:   req.UserID,
+		otelSpan: runSpan,
 	}
 	if errors.Is(regErr, cancel.ErrInUse) {
 		// We've already created the session+run row in the store
@@ -2231,6 +2258,16 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	// registry. Same shape as handleRuns.
 	runCtx, cancelFn := context.WithCancelCause(r.Context())
 	defer cancelFn(nil)
+	// v0.10.0 OTEL: top-level loomcycle.run span for session
+	// continuations. Each /v1/messages turn = one span.
+	runCtx, runSpan := lcotel.RecordRunStart(runCtx, lcotel.RunStartAttrs{
+		RunID:     run.ID,
+		AgentID:   agentID,
+		AgentName: sess.Agent,
+		UserID:    sess.UserID,
+	})
+	defer runSpan.End()
+
 	regErr := s.cancelReg.Register(cancel.Entry{
 		AgentID:   agentID,
 		RunID:     run.ID,
@@ -2240,10 +2277,11 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	}, cancelFn)
 	// v0.9.x: per-run meta for runstate.Bus.
 	meta := runStateMeta{
-		RunID:   run.ID,
-		AgentID: agentID,
-		Agent:   sess.Agent,
-		UserID:  sess.UserID,
+		RunID:    run.ID,
+		AgentID:  agentID,
+		Agent:    sess.Agent,
+		UserID:   sess.UserID,
+		otelSpan: runSpan,
 	}
 	if errors.Is(regErr, cancel.ErrInUse) {
 		// Same orphan-row mitigation as handleRuns — the run was
@@ -2774,6 +2812,21 @@ func (s *Server) runSubAgent(ctx context.Context, name string, prompt string, de
 	} else {
 		defer s.cancelReg.Deregister(subAgentID)
 	}
+	// v0.10.0 OTEL: sub-runs open their own loomcycle.run span. The
+	// span is automatically a child of the parent's
+	// loomcycle.iteration span via ctx propagation (the Agent built-in
+	// tool's Execute runs inside an iteration span; spawning a sub-run
+	// passes that ctx through to runSubAgent → here). Operators see
+	// the full multi-level run tree in Jaeger.
+	subRunCtx, subRunSpan := lcotel.RecordRunStart(subRunCtx, lcotel.RunStartAttrs{
+		RunID:         subRunID,
+		AgentID:       subAgentID,
+		AgentName:     name,
+		UserID:        parentIdentity.UserID,
+		ParentAgentID: parentIdentity.AgentID,
+	})
+	defer subRunSpan.End()
+
 	// v0.9.x: sub-agent meta for runstate.Bus. ParentAgentID lets
 	// SSE subscribers see the lineage edge.
 	subMeta := runStateMeta{
@@ -2782,6 +2835,7 @@ func (s *Server) runSubAgent(ctx context.Context, name string, prompt string, de
 		Agent:         name,
 		UserID:        parentIdentity.UserID,
 		ParentAgentID: parentIdentity.AgentID,
+		otelSpan:      subRunSpan,
 	}
 	s.publishRunState(subMeta, "running", "", "")
 
@@ -3432,6 +3486,13 @@ type runStateMeta struct {
 	Agent         string
 	UserID        string
 	ParentAgentID string
+	// otelSpan is the top-level loomcycle.run span the four run-creation
+	// sites open before kicking off the loop. finishRun* attaches final
+	// attributes (usage totals, stop_reason, error status) to it via
+	// lcotel.SetRunDone right before End() — End() itself is deferred at
+	// the open site. nil-safe (zero meta from tests + early-failure
+	// paths produces nil; SetRunDone is a no-op then).
+	otelSpan trace.Span
 }
 
 // publishRunState fans out one event to the v0.9.x runstate.Bus.
@@ -3507,6 +3568,15 @@ func (s *Server) finishRunWithCancel(ctx context.Context, runCtx context.Context
 // Mirrors finishRun's structure: fresh background ctx with 5s timeout
 // so the write isn't lost when the request ctx is already torn down.
 func (s *Server) finishRunFailedReason(runID, reason string, meta runStateMeta) {
+	// v0.10.0 OTEL: stamp final attrs on the run span even when we
+	// can't write to the store (s.store == nil path). Span.End() is
+	// deferred at the open site, so failing to record here means the
+	// span closes without stop_reason — survivable, but skipping the
+	// store guard here gives operators consistent telemetry.
+	lcotel.SetRunDone(meta.otelSpan, lcotel.RunDoneAttrs{
+		StopReason: "failed",
+		Err:        errors.New(reason),
+	})
 	if s.store == nil || runID == "" {
 		return
 	}
@@ -3530,6 +3600,13 @@ func (s *Server) finishRunFailedReason(runID, reason string, meta runStateMeta) 
 // dispatches to one or the other), but it's a no-op input. If you
 // add real ctx propagation here, audit every caller.
 func (s *Server) finishRunCancelled(_ context.Context, runID string, res loop.RunResult, reason string, meta runStateMeta) {
+	// v0.10.0 OTEL: final attrs on the run span.
+	lcotel.SetRunDone(meta.otelSpan, lcotel.RunDoneAttrs{
+		InputTokens:     res.Usage.InputTokens,
+		OutputTokens:    res.Usage.OutputTokens,
+		CacheReadTokens: res.Usage.CacheReadTokens,
+		StopReason:      "cancelled",
+	})
 	if s.store == nil || runID == "" {
 		return
 	}
@@ -3553,6 +3630,16 @@ func (s *Server) finishRunCancelled(_ context.Context, runID string, res loop.Ru
 // (the client disconnected); we use a fresh background context with a short
 // timeout so the FinishRun write isn't lost.
 func (s *Server) finishRun(_ context.Context, runID string, res loop.RunResult, runErr error, meta runStateMeta) {
+	// v0.10.0 OTEL: final attrs on the run span. Runs through this
+	// path on both completion + non-cancel failure. runErr maps to
+	// Error span status; the rest are scalar attribute writes.
+	lcotel.SetRunDone(meta.otelSpan, lcotel.RunDoneAttrs{
+		InputTokens:     res.Usage.InputTokens,
+		OutputTokens:    res.Usage.OutputTokens,
+		CacheReadTokens: res.Usage.CacheReadTokens,
+		StopReason:      res.StopReason,
+		Err:             runErr,
+	})
 	if s.store == nil || runID == "" {
 		return
 	}
