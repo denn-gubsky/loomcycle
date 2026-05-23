@@ -659,6 +659,17 @@ concurrency:
   max_queue_depth: 16          # short burst absorption
   queue_timeout_ms: 30000      # 30s — caller-side timeout should match
 
+  # v0.10.1 per-tenant fairness. Caps active+queued runs per non-empty
+  # user_id, inside the global cap above. Default 0 = unlimited per
+  # user (back-compat; existing deployments see no behavior change).
+  # When >0, a user at cap gets HTTP 429 + Retry-After: 5 +
+  # `code: "per_user_quota_exhausted"`. Anonymous calls (no user_id)
+  # bypass the check. Sub-agents share the parent's count.
+  # Env: LOOMCYCLE_MAX_CONCURRENT_RUNS_PER_USER overrides yaml.
+  # See `help fairness` for the JobEmber starvation case + retry
+  # strategies + queue-fairness limits.
+  # max_concurrent_runs_per_user: 4
+
 # ─── gRPC server (v0.5.5) ─────────────────────────────────────────────
 # Optional second wire surface alongside HTTP+SSE. Mirrors the
 # /v1/* surface 1:1 via proto/loomcycle.proto. Disabled by default;

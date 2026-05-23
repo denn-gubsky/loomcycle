@@ -8,6 +8,101 @@ For pre-v0.4 history (single-tool runtime, library milestone, security patch), s
 
 ---
 
+## What's in v0.10.1
+
+Per-tenant fairness on the run-admitting semaphore. Second slice of the v0.10.x production-grade-ops sweep. Closes the multi-tenant starvation case operators hit when one user submits a burst large enough to fill the global queue — without fairness, every other user's run waits behind the burst even when the noisy user is plainly hogging the substrate.
+
+The cap is **off by default** — existing deployments see zero behavior change on upgrade. Operators opt in by setting `LOOMCYCLE_MAX_CONCURRENT_RUNS_PER_USER=4` (or yaml `concurrency.max_concurrent_runs_per_user: 4`).
+
+### What's new
+
+**The cap measures active + queued, not just active.** Load-bearing semantic — without including the queued count, a noisy user could fill the queue with their own runs while at active-cap and starve everyone else for the queue's lifetime. With active+queued counted, the queue stays available for other users.
+
+**Check order at run admission:**
+
+1. Per-user cap. If the user is at cap, return 429 immediately (no queue, no wait).
+2. Global active. Take the slot if there's an open one.
+3. Global queue. Enqueue if there's room.
+4. Backpressure. Both queue full → 429 with `code: "backpressure"`.
+
+The two 429 flavors share status but distinguish via the JSON body's `code` field:
+
+| Code | When | Retry strategy |
+|---|---|---|
+| `per_user_quota_exhausted` | This specific user is at cap | Wait `Retry-After` seconds (server hint: 5), then retry. Deterministic — your in-flight runs complete on a schedule. |
+| `backpressure` | Whole substrate is overloaded | Exponential backoff with jitter. The wait depends on system-wide load. |
+
+**Anonymous calls bypass the check.** Requests without `user_id` (system-initiated, background ops, yaml callers that omit it) skip per-user accounting by design. The counter is keyed on non-empty user_id.
+
+**Sub-agents don't double-count.** Sub-runs spawned via the Agent tool share the parent's semaphore slot AND the parent's user_id count. A parent run by `user_a` that spawns 5 cv-adapter children consumes 1 slot + 1 per-user count.
+
+**New `Semaphore.WithPerUserCap(n)` fluent setter** — chained after the existing `concurrency.New(...)` call. Back-compat for the 58 existing `New(...)` callers (mostly tests).
+
+**New typed errors:**
+
+- `concurrency.ErrPerUserQuotaExhausted` (Go) — fields: `UserID`, `Cap`. Implements `Code() string = "per_user_quota_exhausted"`.
+- `runner.ErrPerUserQuotaExhausted` (Go, wire-agnostic sentinel) — for the connector boundary; mirrors `ErrBackpressure`.
+- `PerUserQuotaExhaustedError` (TS adapter) — `userId`, `cap`, `retryAfterMs` fields populated from the JSON body + `Retry-After` header.
+
+**New `GET /v1/_concurrency/stats` admin endpoint** — bearer-authed sister of the `/v1/_metrics/*` family. Returns:
+
+```json
+{
+  "active": 5,
+  "queued": 0,
+  "per_user": {"user_a": 4, "user_b": 1}
+}
+```
+
+`per_user` is omitempty — the field is absent when no per-user activity has happened. Operators check liveness with a single curl. When the semaphore isn't wired (test embeds), 503 + `code:"concurrency_not_wired"` so probes distinguish "not configured" from "broken."
+
+**New `loomcycle.queue_wait_ms` span attribute** on the top-level `loomcycle.run` span. Measured around each `AcquireForUser` call at the three run-creation sites. With OTEL traces from v0.10.0, operators graphing this attribute by `loomcycle.user_id` in Jaeger / Tempo / Honeycomb / DataDog validate that fairness is engaging — queue waits should distribute across users instead of all landing on whoever's behind a noisy tenant.
+
+**New bundled `Context.help` topic `fairness`** (~180 lines). Covers the JobEmber starvation case, active+queued semantics, retry-strategy guidance, validation via `/v1/_concurrency/stats` + OTEL, choosing a cap value, and the explicit non-goals.
+
+### gRPC mapping
+
+Both `ErrBackpressure` and `ErrPerUserQuotaExhausted` map to `codes.ResourceExhausted` on the gRPC wire. HTTP distinguishes the two via the JSON body's `code` field + `Retry-After` header; gRPC consumers branch on the error message string if they need to distinguish.
+
+### Adapter releases
+
+- **`@loomcycle/client` 0.10.0 → 0.10.1** (npm) — adds `PerUserQuotaExhaustedError` typed class. Two new tests confirm 429 + `code:"per_user_quota_exhausted"` body routes to the new class with populated `userId`/`cap`/`retryAfterMs`, and that the existing `code:"backpressure"` shape still routes to `BackpressureError`. 110 → 112 tests.
+- **`loomcycle` Python** held at 0.7.0.
+
+### Wire-surface counts
+
+| Surface | v0.10.0 | v0.10.1 |
+|---|---|---|
+| HTTP endpoints | n | n + 1 (`/v1/_concurrency/stats`) |
+| Typed errors (HTTP) | k | k + 1 (`per_user_quota_exhausted` JSON code) |
+| Typed errors (TS adapter) | m | m + 1 (`PerUserQuotaExhaustedError`) |
+| Span attributes | a | a + 1 (`loomcycle.queue_wait_ms`) |
+| Env vars | b | b + 1 (`LOOMCYCLE_MAX_CONCURRENT_RUNS_PER_USER`) |
+| Yaml fields | c | c + 1 (`concurrency.max_concurrent_runs_per_user`) |
+| MCP meta-tools | 33 | 33 (no change) |
+| gRPC RPCs | n | n (no change — gRPC maps to existing `ResourceExhausted`) |
+| TS adapter methods | 36 | 36 (no change — new error class is wire-side only) |
+
+### Migration notes
+
+- **No schema migrations required.** No new tables, no envelope sections. The fairness surface is purely additive.
+- **No yaml changes required for back-compat.** The new `concurrency.max_concurrent_runs_per_user` key defaults to 0 (= disabled). Existing yaml files work as-is.
+- **TS adapter consumers**: bump `@loomcycle/client` to 0.10.1 if you tag your loomcycle binary to v0.10.1 (release lockstep enforced by `publish-ts-adapter.yml`). Existing consumers catching `BackpressureError` for 429s keep working — the new typed error is for consumers wanting to branch retry strategies.
+- **gRPC consumers** see no change: both backpressure flavors share `codes.ResourceExhausted`. Branch on error message string when distinguishing is needed.
+- **Choosing a cap**: pragmatic starting point is `MaxConcurrentRunsPerUser ≈ MaxConcurrentRuns / 2`. See `help fairness` for the full guidance.
+
+### What this slice deliberately doesn't include (deferred)
+
+- **Queue-reorder fairness.** When the global queue is non-empty, FIFO order applies regardless of per-user counts. Hard cap solves the starvation case; reorder is a smaller follow-up win not worth bundling.
+- **Per-tier fairness.** The `user_tier` field on `RunIdentity` could drive a tier-aware quota (free=2, paid=10). Defer until a consumer asks.
+- **Dynamic cap updates without restart.** Cap is read at boot; `POST /v1/_concurrency/limits` would close this gap; defer.
+
+### Downloads
+
+Assets attached to this release: `loomcycle-{darwin,linux}-{amd64,arm64}.tar.gz` + `SHA256SUMS`.
+
+---
+
 ## What's in v0.10.0
 
 Production-grade observability lands. Loomcycle emits OpenTelemetry distributed traces for every agent run — operators see latency p99s, cost-per-provider attribution, and span-level error rates within seconds of opening Jaeger / Grafana Tempo / Honeycomb / DataDog APM. The v1.0 release gate moves from "implementation complete" to "instrumented + observable under load."
