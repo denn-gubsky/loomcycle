@@ -674,6 +674,14 @@ type Concurrency struct {
 	MaxConcurrentRuns int `yaml:"max_concurrent_runs"`
 	MaxQueueDepth     int `yaml:"max_queue_depth"`
 	QueueTimeoutMS    int `yaml:"queue_timeout_ms"`
+	// MaxConcurrentRunsPerUser caps the in-flight (active+queued)
+	// runs per non-empty user_id, inside the global MaxConcurrentRuns
+	// cap. Default 0 = unlimited per user (back-compat; existing
+	// deployments see no behavior change on upgrade). When >0, a 5th
+	// run by a user at cap=4 returns HTTP 429 with
+	// `code: "per_user_quota_exhausted"` + `Retry-After: 5`.
+	// Env: LOOMCYCLE_MAX_CONCURRENT_RUNS_PER_USER.
+	MaxConcurrentRunsPerUser int `yaml:"max_concurrent_runs_per_user"`
 }
 
 // QueueTimeout returns QueueTimeoutMS as a duration.
@@ -1486,6 +1494,20 @@ func Load(path string) (*Config, error) {
 				cfg.Env.OTELTracesSamplerRatio = 1
 			default:
 				cfg.Env.OTELTracesSamplerRatio = r
+			}
+		}
+	}
+
+	// v0.10.1 per-tenant fairness env var. Yaml is the canonical source
+	// (cfg.Concurrency.MaxConcurrentRunsPerUser); the env override lets
+	// containerized operators set it without editing the mounted yaml.
+	// Negative values clamp to 0 (= disabled, back-compat).
+	if v := strings.TrimSpace(os.Getenv("LOOMCYCLE_MAX_CONCURRENT_RUNS_PER_USER")); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			if n < 0 {
+				cfg.Concurrency.MaxConcurrentRunsPerUser = 0
+			} else {
+				cfg.Concurrency.MaxConcurrentRunsPerUser = n
 			}
 		}
 	}

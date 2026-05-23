@@ -75,9 +75,17 @@ var (
 	// to an active run.
 	// Wire: HTTP 409 / gRPC AlreadyExists.
 	ErrAgentIDInUse = errors.New("agent_id in use")
-	// ErrBackpressure — concurrency semaphore rejected the run.
-	// Wire: HTTP 429 / gRPC ResourceExhausted.
+	// ErrBackpressure — concurrency semaphore rejected the run (global
+	// queue full or timeout). Wire: HTTP 429 / gRPC ResourceExhausted.
 	ErrBackpressure = errors.New("backpressure")
+	// ErrPerUserQuotaExhausted — per-tenant fairness cap reached. The
+	// run is otherwise valid but the user has hit their personal
+	// active+queued ceiling. Distinct from ErrBackpressure because the
+	// appropriate retry strategy differs — backpressure is operator-
+	// wide load, per-user quota is "you specifically need to wait."
+	// Wire: HTTP 429 + Retry-After: 5 / gRPC ResourceExhausted.
+	// (v0.10.1)
+	ErrPerUserQuotaExhausted = errors.New("per_user_quota_exhausted")
 	// ErrInternal — unexpected error from store / loop / providers.
 	// Wire: HTTP 500 / gRPC Internal.
 	ErrInternal = errors.New("internal error")

@@ -3,6 +3,7 @@ package otel
 import (
 	"context"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"go.opentelemetry.io/otel/attribute"
@@ -49,6 +50,13 @@ const (
 	AttrCacheReadTokens = "loomcycle.cache_read_tokens"
 	AttrStopReason      = "loomcycle.stop_reason"
 	AttrToolIsError     = "loomcycle.tool_is_error"
+	// AttrQueueWaitMs is the time (milliseconds) a run waited inside the
+	// concurrency semaphore before its slot was granted. 0 = immediate
+	// acquire (no queue contention). Operators graphing this attribute
+	// per-user_id validate that per-tenant fairness is working — when
+	// the cap is set, queue waits should distribute fairly across users
+	// instead of all landing on whoever's behind a noisy tenant.
+	AttrQueueWaitMs = "loomcycle.queue_wait_ms"
 )
 
 // RunStartAttrs is the minimum attribute set every loomcycle.run span
@@ -187,6 +195,18 @@ func SetRunDone(span trace.Span, a RunDoneAttrs) {
 		span.RecordError(a.Err)
 		span.SetStatus(codes.Error, a.Err.Error())
 	}
+}
+
+// RecordQueueWait stamps the queue-wait duration on the run span.
+// Called at the run-creation sites right after AcquireForUser returns
+// successfully. No-op on a nil / non-recording span. The wait is
+// truncated to milliseconds since attribute storage is more compact
+// than a Duration string and operators graph in ms naturally.
+func RecordQueueWait(span trace.Span, wait time.Duration) {
+	if span == nil || !span.IsRecording() {
+		return
+	}
+	span.SetAttributes(attribute.Int64(AttrQueueWaitMs, wait.Milliseconds()))
 }
 
 // SetSpanError marks a span as failed with the given error. The message

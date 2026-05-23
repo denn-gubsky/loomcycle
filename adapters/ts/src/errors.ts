@@ -77,6 +77,66 @@ export class BackpressureError extends LoomcycleError {
   }
 }
 
+/**
+ * PerUserQuotaExhaustedError signals that the caller has hit their
+ * per-user cap on in-flight (active+queued) runs. Distinct from
+ * BackpressureError because the appropriate retry strategy differs:
+ * backpressure is operator-wide load (exponential backoff with jitter),
+ * per-user quota is "you specifically need to wait" (fixed window —
+ * server hint: `Retry-After: 5` seconds).
+ *
+ * v0.10.1+. Maps from HTTP 429 + JSON body
+ * `{"code":"per_user_quota_exhausted","user_id":"...","cap":N}`.
+ *
+ * The `userId` and `cap` fields are populated from the JSON body when
+ * the response is parseable; null when the server didn't include them
+ * (very old loomcycle binaries or non-JSON 429 responses).
+ *
+ * Typical handling:
+ *
+ *   try { await client.runStreaming(...); }
+ *   catch (e) {
+ *     if (e instanceof PerUserQuotaExhaustedError) {
+ *       // Wait the server-suggested window, then retry.
+ *       await sleep(e.retryAfterMs ?? 5000);
+ *       return client.runStreaming(...);
+ *     }
+ *     if (e instanceof BackpressureError) {
+ *       // Operator-wide load — jittered backoff.
+ *       await sleep(jittered(2000, 30000));
+ *       return client.runStreaming(...);
+ *     }
+ *     throw e;
+ *   }
+ */
+export class PerUserQuotaExhaustedError extends LoomcycleError {
+  /** Server-side user identifier the cap applies to. Null when the
+   *  server didn't include it in the JSON body. */
+  readonly userId: string | null;
+  /** Per-user cap value as configured on the server (active+queued).
+   *  Null when the server didn't include it. */
+  readonly cap: number | null;
+  /** Server-suggested retry window in milliseconds, from the
+   *  Retry-After header. Null when absent. */
+  readonly retryAfterMs: number | null;
+  constructor(
+    message: string,
+    opts?: {
+      status?: number;
+      bodyText?: string;
+      userId?: string;
+      cap?: number;
+      retryAfterMs?: number;
+    },
+  ) {
+    super(message, opts);
+    this.name = "PerUserQuotaExhaustedError";
+    this.userId = opts?.userId ?? null;
+    this.cap = opts?.cap ?? null;
+    this.retryAfterMs = opts?.retryAfterMs ?? null;
+  }
+}
+
 export class AuthError extends LoomcycleError {
   constructor(message: string, opts?: { status?: number; bodyText?: string }) {
     super(message, opts);

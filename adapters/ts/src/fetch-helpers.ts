@@ -23,6 +23,7 @@ import {
   NotFoundError,
   NotPausedError,
   PauseNotConfiguredError,
+  PerUserQuotaExhaustedError,
   SessionBusyError,
   SessionNotFoundError,
   SnapshotNotFoundError,
@@ -239,8 +240,38 @@ export async function raiseFromResponse(resp: Response): Promise<never> {
       }
       throw new SnapshotVersionError(msg, opts);
     }
-    case 429:
+    case 429: {
+      // v0.10.1: distinguish per-user quota exhaustion from
+      // operator-wide backpressure. The shapes share the 429 status
+      // but the JSON body's `code` field discriminates. Consumers
+      // branch retry strategies on the typed error.
+      try {
+        const parsed = JSON.parse(bodyText) as {
+          code?: string;
+          user_id?: string;
+          cap?: number;
+          error?: string;
+        };
+        if (parsed.code === "per_user_quota_exhausted") {
+          // Retry-After is `<seconds>` per RFC; convert to ms.
+          const retryAfterRaw = resp.headers.get("retry-after");
+          const retryAfterMs = retryAfterRaw
+            ? Number.parseInt(retryAfterRaw, 10) * 1000
+            : undefined;
+          throw new PerUserQuotaExhaustedError(parsed.error ?? msg, {
+            status,
+            bodyText,
+            userId: parsed.user_id,
+            cap: parsed.cap,
+            retryAfterMs: Number.isFinite(retryAfterMs) ? retryAfterMs : undefined,
+          });
+        }
+      } catch (e) {
+        // Re-throw the typed error; fall through on JSON-parse fail.
+        if (e instanceof PerUserQuotaExhaustedError) throw e;
+      }
       throw new BackpressureError(msg, opts);
+    }
     case 503:
       if (bodyLower.includes("pause") && bodyLower.includes("not configured"))
         throw new PauseNotConfiguredError(msg, opts);
