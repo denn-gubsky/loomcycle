@@ -96,7 +96,8 @@ func (s *Sampler) sampleOnce(ctx context.Context, now time.Time) error {
 	//    skip — no /proc read, no DB write.
 	active, queued := 0, 0
 	if s.sem != nil {
-		active, queued = s.sem.Stats()
+		st := s.sem.Stats()
+		active, queued = st.Active, st.Queued
 	}
 	if active == 0 && queued == 0 {
 		return nil
