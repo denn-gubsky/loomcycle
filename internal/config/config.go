@@ -1132,6 +1132,44 @@ type Env struct {
 	// streams complete while still killing genuinely stalled ones.
 	// Env: LOOMCYCLE_PROVIDER_IDLE_TIMEOUT_MS.
 	ProviderIdleTimeout time.Duration
+
+	// v0.10.0 OpenTelemetry tracing — default OFF. Setting
+	// OTELExporterEndpoint to a non-empty value installs an OTLP/HTTP
+	// exporter; loomcycle emits run/iteration/provider.call/tool.call
+	// spans for every agent run. When the endpoint is empty, the global
+	// tracer is a no-op and there is zero runtime cost. See
+	// `internal/help/topics/observability.md` for the Jaeger / Tempo /
+	// Honeycomb walkthroughs.
+
+	// OTELExporterEndpoint is the OTLP/HTTP endpoint (no path — the
+	// otlptracehttp exporter appends `/v1/traces`). Empty = OTEL
+	// disabled. Examples: `http://localhost:4318` (local Jaeger,
+	// `docker run jaegertracing/all-in-one:latest`),
+	// `https://api.honeycomb.io` (Honeycomb cloud — pair with the
+	// `x-honeycomb-team` header). Env: LOOMCYCLE_OTEL_EXPORTER_OTLP_ENDPOINT.
+	OTELExporterEndpoint string
+
+	// OTELExporterHeaders is the comma-separated key=value list
+	// appended to every OTLP/HTTP request. Used for collector auth
+	// (e.g. `x-honeycomb-team=$KEY` or
+	// `authorization=Bearer $TOKEN`). Empty = no headers. Whitespace
+	// around `=` and `,` is trimmed.
+	// Env: LOOMCYCLE_OTEL_EXPORTER_OTLP_HEADERS.
+	OTELExporterHeaders map[string]string
+
+	// OTELServiceName populates the `service.name` resource attribute
+	// every span carries. Default `"loomcycle"`. Override per replica
+	// when running multi-replica HA so Jaeger groups traces by
+	// instance.
+	// Env: LOOMCYCLE_OTEL_SERVICE_NAME.
+	OTELServiceName string
+
+	// OTELTracesSamplerRatio is the head-based sampling ratio applied
+	// before spans are exported. 1.0 = every span; 0.1 = ~10%. Always
+	// respects parent decisions (a sampled parent's children are
+	// always sampled). Default 1.0; reduce in production when storage
+	// matters. Env: LOOMCYCLE_OTEL_TRACES_SAMPLER_RATIO.
+	OTELTracesSamplerRatio float64
 }
 
 // Load reads a YAML file and the process env. Empty path returns defaults +
@@ -1422,6 +1460,32 @@ func Load(path string) (*Config, error) {
 				cfg.Env.MemoryEmbedTimeoutMs = 0
 			} else {
 				cfg.Env.MemoryEmbedTimeoutMs = n
+			}
+		}
+	}
+
+	// v0.10.0 OpenTelemetry env vars. All default to OFF (empty endpoint =
+	// no-op tracer; zero runtime cost). When the operator sets an endpoint,
+	// the bootstrap in cmd/loomcycle/main.go installs the OTLP exporter and
+	// loomcycle emits per-run + per-iteration + per-provider/tool spans.
+	cfg.Env.OTELExporterEndpoint = strings.TrimSpace(os.Getenv("LOOMCYCLE_OTEL_EXPORTER_OTLP_ENDPOINT"))
+	cfg.Env.OTELExporterHeaders = parseHeaderList(os.Getenv("LOOMCYCLE_OTEL_EXPORTER_OTLP_HEADERS"))
+	cfg.Env.OTELServiceName = strings.TrimSpace(os.Getenv("LOOMCYCLE_OTEL_SERVICE_NAME"))
+	if cfg.Env.OTELServiceName == "" {
+		cfg.Env.OTELServiceName = "loomcycle"
+	}
+	cfg.Env.OTELTracesSamplerRatio = 1.0
+	if v := strings.TrimSpace(os.Getenv("LOOMCYCLE_OTEL_TRACES_SAMPLER_RATIO")); v != "" {
+		if r, err := strconv.ParseFloat(v, 64); err == nil {
+			// Clamp to [0, 1] so an operator's "100" or "-0.5" doesn't
+			// silently produce a broken sampler.
+			switch {
+			case r < 0:
+				cfg.Env.OTELTracesSamplerRatio = 0
+			case r > 1:
+				cfg.Env.OTELTracesSamplerRatio = 1
+			default:
+				cfg.Env.OTELTracesSamplerRatio = r
 			}
 		}
 	}
@@ -1729,6 +1793,39 @@ func expandEnv(s string) string {
 		}
 		return os.Getenv(name)
 	})
+}
+
+// parseHeaderList parses a comma-separated `key=value,key2=value2` string
+// into a map. Whitespace around keys, values, and separators is trimmed.
+// Entries without `=` are skipped. Returns nil for an empty input so the
+// caller doesn't need to nil-check before iterating. Used by the v0.10.0
+// OTEL exporter for collector auth headers (e.g. `x-honeycomb-team=KEY`).
+func parseHeaderList(s string) map[string]string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return nil
+	}
+	out := map[string]string{}
+	for _, pair := range strings.Split(s, ",") {
+		pair = strings.TrimSpace(pair)
+		if pair == "" {
+			continue
+		}
+		eq := strings.IndexByte(pair, '=')
+		if eq <= 0 {
+			continue
+		}
+		k := strings.TrimSpace(pair[:eq])
+		v := strings.TrimSpace(pair[eq+1:])
+		if k == "" {
+			continue
+		}
+		out[k] = v
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // expandEnvAllowed reports whether the given env-var name may be expanded
