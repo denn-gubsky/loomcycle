@@ -39,13 +39,22 @@ import (
 // fixed-dim) to v0.10.3 when we have a sqlite-vec performance
 // benchmark to inform it.
 
-// SupportsVectors reports true — the sqlite-vec extension is loaded
-// at every connection-open via driver_vec.go's ConnectHook. The
-// underlying MemoryEmbed* operations are not yet wired (see file
-// docstring), but the capability flag is honest: the extension IS
-// available.
+// SupportsVectors reports false in v0.10.2 — the sqlite-vec extension
+// IS loaded at every connection-open via driver_vec.go's ConnectHook
+// (visible via the boot log line in driver_vec.go), but the
+// MemoryEmbed* methods themselves are still stubbed. Reporting false
+// here keeps the Memory tool's "vector_unsupported" gating consistent
+// with the actual capability — operators don't get false-positives in
+// /v1/_memory/embed_stats or the embedder selection logic that polls
+// SupportsVectors.
+//
+// Crucially this also makes the internal/store/storetest contract
+// suite skip the vector round-trip tests on -tags=sqlite_vec builds
+// (the contract gates on SupportsVectors()), keeping CI green
+// regardless of build tag. When v0.10.3 wires the real implementation,
+// flip this to return true and the contract tests run for real.
 func (s *Store) SupportsVectors() bool {
-	return true
+	return false
 }
 
 // errVecImplPending is the v0.10.2 stub error for sqlite_vec-tagged

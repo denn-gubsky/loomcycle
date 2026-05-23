@@ -57,17 +57,32 @@ type Embedder struct {
 const defaultEmbedderBaseURL = "https://api.voyageai.com"
 
 // voyageEmbeddingDims maps known Voyage AI models to their default
-// output dimensions. The full Voyage menu has more models with
-// different dimension defaults; this map covers the canonical set
-// Anthropic users typically reach for. Unknown models construct
-// successfully — Dimension() returns 0 + the Memory tool's
-// pre-flight check at search-time catches mismatches with stored
-// rows.
+// output dimensions. The voyage-4 family is current as of 2026-05;
+// voyage-3 family kept for back-compat with operators on older
+// configs. Unknown models construct successfully — Dimension()
+// returns 0 + the in-response sanity check at search-time gets
+// skipped (the `ok` branch of the map lookup), so the dimension
+// mismatch falls through to the store layer's check instead. Keep
+// this map current with Voyage's published menu so the embedder-
+// side first-line-of-defense catches misconfigurations early.
+//
+// voyage-4-large supports 256/512/1024/2048 via an output_dimension
+// request param; we don't pass it so the 1024 default applies. The
+// other -large variants are similar.
 var voyageEmbeddingDims = map[string]int{
+	// Current (voyage-4 family, 2026-05+).
+	"voyage-4":       1024,
+	"voyage-4-large": 1024,
+	"voyage-4-lite":  1024,
+	"voyage-4-nano":  1024,
+	// Code + domain-specific.
+	"voyage-code-3":    1024,
+	"voyage-finance-2": 1024,
+	"voyage-law-2":     1024,
+	// Back-compat (voyage-3 + voyage-multilingual-2 kept accessible by
+	// Voyage; operators on older configs shouldn't break on upgrade).
 	"voyage-3":             1024,
 	"voyage-3-large":       1024,
-	"voyage-code-3":        1024,
-	"voyage-finance-2":     1024,
 	"voyage-multilingual-2": 1024,
 }
 
@@ -156,20 +171,24 @@ func (e *Embedder) embedOnce(ctx context.Context, texts []string) ([][]float32, 
 		return nil, fmt.Errorf("marshal request: %w", err)
 	}
 
-	// Per-call timeout. ratelimit.Do's attempt func gets a derived ctx;
-	// we wrap once here so all retries share the same per-call window.
-	attemptCtx := ctx
-	if e.timeout > 0 {
-		var cancel context.CancelFunc
-		attemptCtx, cancel = context.WithTimeout(ctx, e.timeout)
-		defer cancel()
-	}
-
-	resp, err := ratelimit.Do(attemptCtx, ratelimit.Config{
+	// Per-attempt timeout. Wraps each attempt INSIDE the closure so
+	// retries get a fresh deadline — wrapping at the outer call would
+	// share a single ticking context across retries, and a Retry-After
+	// sleep longer than e.timeout would silently neuter the retry
+	// (the second attempt would fire against an already-expired ctx).
+	// The outer ctx still applies as the absolute ceiling for the
+	// whole batch.
+	resp, err := ratelimit.Do(ctx, ratelimit.Config{
 		Provider:    "anthropic-voyage",
 		ParseHeader: ratelimit.OpenAIRetryAfter,
 	}, func(c context.Context) (*http.Response, error) {
-		req, err := http.NewRequestWithContext(c, http.MethodPost, e.baseURL+"/v1/embeddings", bytes.NewReader(body))
+		attemptCtx := c
+		if e.timeout > 0 {
+			var cancel context.CancelFunc
+			attemptCtx, cancel = context.WithTimeout(c, e.timeout)
+			defer cancel()
+		}
+		req, err := http.NewRequestWithContext(attemptCtx, http.MethodPost, e.baseURL+"/v1/embeddings", bytes.NewReader(body))
 		if err != nil {
 			return nil, err
 		}

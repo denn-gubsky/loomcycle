@@ -5,6 +5,7 @@ package sqlite
 import (
 	"database/sql"
 	"fmt"
+	"log"
 	"os"
 	"sync"
 
@@ -45,6 +46,12 @@ func openDB(path string) (*sql.DB, error) {
 	}
 
 	registerVecDriverOnce(extPath)
+	// Operator-visible boot signal that the sqlite_vec build is
+	// active. SupportsVectors() still returns false in v0.10.2
+	// (MemoryEmbed* methods stubbed pending v0.10.3 schema design),
+	// so this log line is the only confirmation the operator's
+	// build choice took effect.
+	logVecLoadOnce(extPath)
 
 	// mattn DSN uses `_pragma_name=value` query params (different from
 	// modernc's `_pragma=name(value)` shape). WAL + foreign keys +
@@ -59,9 +66,8 @@ func openDB(path string) (*sql.DB, error) {
 }
 
 var (
-	vecDriverOnce    sync.Once
-	vecDriverRegErr  error
-	vecRegisteredExt string
+	vecDriverOnce sync.Once
+	vecLogOnce    sync.Once
 )
 
 // registerVecDriverOnce registers a mattn driver instance with a
@@ -69,12 +75,14 @@ var (
 // hook fires before any user-facing query, so virtual-table CREATEs
 // resolve `vec0` reliably.
 //
-// Re-registration with a DIFFERENT path would be a programmer error
-// (the process can only have one extension path); we ignore the
-// repeat call and log a notice if the path differs. In practice
-// nothing in loomcycle calls Open() with a different extension path
-// in the same process — but tests that reset os.Setenv between cases
-// can; the once-guard keeps them safe.
+// Once-guarded because sql.Register panics on duplicate-name
+// registration. The extPath is captured by value (function-parameter
+// closure) at the first Once.Do call; subsequent Opens reuse the same
+// driver regardless of any new path passed in. In practice nothing in
+// loomcycle calls Open() with a different extension path in the same
+// process — but test binaries that reset os.Setenv across cases get
+// the first-seen path. Documented here so a future bug-hunter doesn't
+// get confused.
 func registerVecDriverOnce(extPath string) {
 	vecDriverOnce.Do(func() {
 		sql.Register("sqlite3_loomcycle_vec", &sqlite3.SQLiteDriver{
@@ -85,12 +93,14 @@ func registerVecDriverOnce(extPath string) {
 				return nil
 			},
 		})
-		vecRegisteredExt = extPath
 	})
-	// Same once-registered driver instance is reused regardless of
-	// subsequent calls; the path inside the ConnectHook closure is
-	// captured at first call. If a future invocation passes a
-	// different path, that path is silently ignored. Document that
-	// here so a future bug-hunter doesn't get confused.
-	_ = vecDriverRegErr
+}
+
+// logVecLoadOnce emits the operator-visible "sqlite_vec build active"
+// confirmation. Once-guarded so test suites that Open() many times
+// don't spam the log.
+func logVecLoadOnce(extPath string) {
+	vecLogOnce.Do(func() {
+		log.Printf("sqlite: sqlite_vec build active — extension path=%s (MemoryEmbed* implementation lands in v0.10.3; SupportsVectors() still false until then)", extPath)
+	})
 }
