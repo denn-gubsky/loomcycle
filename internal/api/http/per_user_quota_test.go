@@ -55,8 +55,11 @@ func TestPerUserQuota_Refuses5thRunFromSameUser(t *testing.T) {
 		}()
 	}
 
-	// Give the two open runs time to register their semaphore slots.
-	time.Sleep(50 * time.Millisecond)
+	// Poll until both goroutines have acquired their semaphore slot —
+	// poll-until-condition replaces a fixed sleep so the test doesn't
+	// flake under `-race` (which adds 2-5x scheduling overhead).
+	// Same posture as the heartbeat-sweeper flake fix from PR #190.
+	waitForActive(t, sem, 2, 2*time.Second)
 
 	// Third run by user_a: expect 429 + per_user_quota_exhausted.
 	resp3, err := http.Post(ts.URL+"/v1/runs", "application/json", strings.NewReader(body("user_a")))
@@ -100,10 +103,11 @@ func TestPerUserQuota_Refuses5thRunFromSameUser(t *testing.T) {
 		_, _ = io.Copy(io.Discard, resp4.Body)
 		user_b_done <- resp4.StatusCode
 	}()
-	// Brief wait so user_b reaches the provider — confirms accept
-	// happened. (If 429'd, the post returns immediately and we'd see
-	// -1 / non-200 below.)
-	time.Sleep(50 * time.Millisecond)
+	// Wait for user_b to acquire its slot before releasing the
+	// providers — confirms the per-user cap on user_a didn't gate
+	// user_b. Without this, user_b's post might still be in flight
+	// when we close prov.release.
+	waitForActive(t, sem, 3, 2*time.Second)
 
 	// Release the held providers so all 3 in-flight runs can finish.
 	close(prov.release)
@@ -152,7 +156,29 @@ func TestPerUserQuota_Disabled_NoBehaviorChange(t *testing.T) {
 			_, _ = io.Copy(io.Discard, resp.Body)
 		}()
 	}
-	time.Sleep(50 * time.Millisecond)
+	// Wait for all 4 to acquire — poll-until rather than fixed sleep
+	// so -race doesn't flake.
+	waitForActive(t, sem, 4, 2*time.Second)
 	close(prov.release)
 	wg.Wait()
+}
+
+// waitForActive polls the semaphore until active reaches `want` or
+// the deadline elapses. Used in place of fixed `time.Sleep` for
+// inter-goroutine synchronization — fixed sleeps flake under -race
+// where scheduling overhead can stretch a 50ms wait past the
+// "everything should be settled by now" assumption. Same pattern as
+// the PR #190 heartbeat-sweeper flake fix.
+func waitForActive(t *testing.T, sem *concurrency.Semaphore, want int, deadline time.Duration) {
+	t.Helper()
+	end := time.Now().Add(deadline)
+	for time.Now().Before(end) {
+		if st := sem.Stats(); st.Active == want {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	st := sem.Stats()
+	t.Fatalf("waitForActive: timed out waiting for active=%d after %s; got active=%d queued=%d per_user=%v",
+		want, deadline, st.Active, st.Queued, st.PerUser)
 }

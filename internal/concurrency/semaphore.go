@@ -238,11 +238,24 @@ func (s *Semaphore) cancelWaiter(target chan struct{}, userID string) {
 	// active to give the slot back, otherwise it's accounted to a goroutine
 	// that returned with ctx.Err() and never released. perUser is
 	// decremented in the same arm so the accounting stays balanced.
+	//
+	// The `default:` arm is unreachable under the current invariants
+	// (target is a buffered-1 chan with releaseFn as its only sender,
+	// and releaseFn holds s.mu while sending — by the time we reach
+	// this select with s.mu held, releaseFn has already either
+	// (a) appeared in s.waiters and the loop above found it, or
+	// (b) removed target from waiters AND placed the token in the
+	// buffer, so the case <-target arm will fire). The panic is the
+	// CLAUDE.md "intentional panic('unreachable') site" pattern — a
+	// future refactor that changes the buffer size or introduces a
+	// second sender turns a silent active-counter leak into an
+	// immediate, debuggable crash.
 	select {
 	case <-target:
 		s.active--
 		s.decrementPerUser(userID)
 	default:
+		panic("concurrency: cancelWaiter stranded-token default arm fired — invariant violation (buffered-1 chan, single sender)")
 	}
 }
 
