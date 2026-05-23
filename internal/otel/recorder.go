@@ -3,6 +3,7 @@ package otel
 import (
 	"context"
 	"strings"
+	"unicode/utf8"
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
@@ -209,6 +210,36 @@ func SetSpanErrorMessage(span trace.Span, msg string) {
 	span.SetStatus(codes.Error, truncate(msg, 500))
 }
 
+// providerOverrideKey is a ctx key that a wrapping driver can set to
+// rename the provider attribute the inner driver stamps on its
+// per-attempt span. Today only DeepSeek uses it: DeepSeek wraps the
+// OpenAI driver, but Jaeger operators filter on
+// `loomcycle.provider="deepseek"` rather than "openai" to find
+// DeepSeek calls — the override carries the intent through without
+// duplicating the span (which would mismeasure streaming latency
+// because the outer wrapping returns before the channel is drained).
+type providerOverrideKey struct{}
+
+// WithProviderOverride returns ctx with a provider-name override set.
+// The inner driver's RecordProviderCall consults this via
+// ProviderOverride and uses the override instead of its hardcoded
+// driver name.
+func WithProviderOverride(ctx context.Context, provider string) context.Context {
+	if provider == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, providerOverrideKey{}, provider)
+}
+
+// ProviderOverride returns the provider override stored on ctx, if
+// any. Empty string means no override — use the driver's own name.
+func ProviderOverride(ctx context.Context) string {
+	if v, ok := ctx.Value(providerOverrideKey{}).(string); ok {
+		return v
+	}
+	return ""
+}
+
 // ParseMCPToolName splits dispatched MCP tool names of the form
 // `mcp__<server>__<tool>` into (server, tool). Returns ("","") when
 // the name doesn't match. Mirrors the canonical naming scheme in
@@ -226,9 +257,19 @@ func ParseMCPToolName(name string) (server, tool string) {
 	return rest[:sep], rest[sep+2:]
 }
 
+// truncate returns s truncated to at most `max` bytes, with `…`
+// appended. Backs the cut to the nearest preceding rune boundary so
+// the result is always valid UTF-8 — important because provider
+// error messages may contain non-ASCII text (DeepSeek's Chinese
+// status messages, Anthropic's Unicode JSON error bodies). Slicing a
+// string mid-rune produces malformed UTF-8 that breaks OTLP/protobuf
+// serialization or downstream Jaeger/Tempo rendering.
 func truncate(s string, max int) string {
 	if len(s) <= max {
 		return s
+	}
+	for max > 0 && !utf8.RuneStart(s[max]) {
+		max--
 	}
 	return s[:max] + "…"
 }

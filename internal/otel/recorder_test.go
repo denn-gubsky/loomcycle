@@ -3,7 +3,9 @@ package otel_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
+	"unicode/utf8"
 
 	lcotel "github.com/denn-gubsky/loomcycle/internal/otel"
 
@@ -274,6 +276,45 @@ func TestSetRunDone_NilSpanIsSafe(t *testing.T) {
 	// finishRun* paths call SetRunDone(meta.otelSpan, ...) — meta from
 	// tests / early-failure paths may have a nil span. Must not panic.
 	lcotel.SetRunDone(nil, lcotel.RunDoneAttrs{StopReason: "x"})
+}
+
+// TestSetSpanError_UTF8SafeTruncation pins the rune-boundary safety
+// of the internal truncate helper that SetSpanError + SetSpanErrorMessage
+// call. Provider error messages can contain non-ASCII text (DeepSeek's
+// Chinese status messages, Anthropic's Unicode JSON error bodies). A
+// naive byte slice at the 500-byte mark could split a multi-byte rune
+// and produce malformed UTF-8 that breaks OTLP serialization or
+// downstream Jaeger/Tempo rendering.
+func TestSetSpanError_UTF8SafeTruncation(t *testing.T) {
+	exp := withInMemoryExporter(t)
+
+	// Build a string > 500 bytes where the 500-byte mark falls
+	// mid-rune. The 中 character is 3 bytes. Pad with 498 ASCII bytes
+	// then 50 中 characters → byte 499 is mid-中.
+	var b strings.Builder
+	for i := 0; i < 498; i++ {
+		b.WriteByte('x')
+	}
+	for i := 0; i < 50; i++ {
+		b.WriteString("中")
+	}
+	longMsg := b.String()
+	if len(longMsg) <= 500 {
+		t.Fatalf("fixture too short to test truncation: %d bytes", len(longMsg))
+	}
+
+	_, span := lcotel.RecordRunStart(context.Background(), lcotel.RunStartAttrs{RunID: "r1"})
+	lcotel.SetSpanErrorMessage(span, longMsg)
+	span.End()
+
+	spans := exp.GetSpans()
+	if len(spans) != 1 {
+		t.Fatalf("got %d spans, want 1", len(spans))
+	}
+	desc := spans[0].Status.Description
+	if !utf8.ValidString(desc) {
+		t.Errorf("span status description is not valid UTF-8: % x", []byte(desc))
+	}
 }
 
 func TestParseMCPToolName_RoundTrip(t *testing.T) {

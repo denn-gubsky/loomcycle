@@ -91,8 +91,16 @@ func (d *Driver) Call(ctx context.Context, req providers.Request) (<-chan provid
 
 	attempt := func(attemptCtx context.Context) (*http.Response, error) {
 		// v0.10.0 OTEL: one loomcycle.provider.call span per attempt.
+		// The provider attribute defaults to "openai" but a wrapping
+		// driver (DeepSeek today) can set lcotel.WithProviderOverride
+		// on the ctx so Jaeger operators see the right provider label
+		// without a meaningless wrapping span.
+		provider := lcotel.ProviderOverride(attemptCtx)
+		if provider == "" {
+			provider = "openai"
+		}
 		spanCtx, span := lcotel.RecordProviderCall(attemptCtx, lcotel.ProviderCallAttrs{
-			Provider: "openai",
+			Provider: provider,
 			Model:    req.Model,
 			Effort:   req.Effort,
 		})

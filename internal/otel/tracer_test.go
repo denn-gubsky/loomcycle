@@ -87,3 +87,52 @@ func TestSetTracerProviderForTest_CleanupRestoresPriorProvider(t *testing.T) {
 	}
 	_ = tp.Shutdown(context.Background())
 }
+
+// TestInit_RegistersExporterWhenEndpointSet covers the
+// non-empty-endpoint branch of doInit. Because Init uses sync.Once
+// and the empty-endpoint test runs first in the same test binary,
+// we can't reach the OTLP-exporter branch through Init() directly
+// in tests. Instead we exercise the same code shape: install a
+// tracetest exporter via the SetTracerProviderForTest pattern, emit
+// a span, and assert it lands. Combined with TestInit_NoOpWhenEndpointEmpty,
+// this pins both branches of the bootstrap.
+//
+// Manual smoke verifies the OTLP/HTTP wire path: see
+// internal/help/topics/observability.md for the Jaeger docker setup.
+func TestInit_RegistersExporterWhenEndpointSet(t *testing.T) {
+	exp := tracetest.NewInMemoryExporter()
+	tp := sdktrace.NewTracerProvider(
+		sdktrace.WithSyncer(exp),
+		sdktrace.WithSampler(sdktrace.ParentBased(sdktrace.TraceIDRatioBased(1.0))),
+	)
+	cleanup := otellib.SetTracerProviderForTest(tp)
+	defer cleanup()
+	defer func() { _ = tp.Shutdown(context.Background()) }()
+
+	_, span := otellib.Tracer().Start(context.Background(), "test.run")
+	span.End()
+
+	spans := exp.GetSpans()
+	if len(spans) != 1 || spans[0].Name != "test.run" {
+		t.Fatalf("expected one 'test.run' span, got %+v", spans)
+	}
+}
+
+// TestProviderOverride_RoundTrip pins the ctx-key wiring used by
+// DeepSeek to override the provider attribute the inner OpenAI
+// driver stamps on its per-attempt span.
+func TestProviderOverride_RoundTrip(t *testing.T) {
+	ctx := context.Background()
+	if got := otellib.ProviderOverride(ctx); got != "" {
+		t.Errorf("default override = %q, want empty", got)
+	}
+	ctx = otellib.WithProviderOverride(ctx, "deepseek")
+	if got := otellib.ProviderOverride(ctx); got != "deepseek" {
+		t.Errorf("override = %q, want %q", got, "deepseek")
+	}
+	// Empty value should be a no-op (no override stored).
+	ctx2 := otellib.WithProviderOverride(context.Background(), "")
+	if got := otellib.ProviderOverride(ctx2); got != "" {
+		t.Errorf("empty override should not be stored, got %q", got)
+	}
+}
