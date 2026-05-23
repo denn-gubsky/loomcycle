@@ -451,6 +451,39 @@ func resolveErrorToStatus(err error) int {
 	}
 }
 
+// writeQuotaError maps a concurrency semaphore error to HTTP 429. Two
+// distinct shapes share the status code but distinguish via the JSON
+// body's `code` field so adapter consumers can branch retry strategies:
+//
+//   - `code: "per_user_quota_exhausted"` + `Retry-After: 5` header.
+//     The user has hit their personal cap; they specifically need to
+//     wait. Body carries `user_id` + `cap` so the adapter can surface
+//     it in error messages or rate-limit telemetry.
+//   - `code: "backpressure"`. The global queue is full (or timed out).
+//     Operator-wide load signal; back off with longer jitter.
+//
+// Anything else falls through to 500 with the raw error string —
+// shouldn't happen with the current AcquireForUser implementation but
+// the safe-default keeps a panic from surfacing as an opaque 200.
+func writeQuotaError(w http.ResponseWriter, err error) {
+	var pue *concurrency.ErrPerUserQuotaExhausted
+	if errors.As(err, &pue) {
+		w.Header().Set("Retry-After", "5")
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusTooManyRequests)
+		fmt.Fprintf(w, `{"code":"per_user_quota_exhausted","error":%q,"user_id":%q,"cap":%d}`,
+			pue.Error(), pue.UserID, pue.Cap)
+		return
+	}
+	if concurrency.IsBackpressure(err) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusTooManyRequests)
+		fmt.Fprintf(w, `{"code":"backpressure","error":%q}`, err.Error())
+		return
+	}
+	http.Error(w, err.Error(), http.StatusInternalServerError)
+}
+
 // resolveAgent returns (provider, model, effort) for the named agent.
 // Picks between two paths:
 //
@@ -1020,8 +1053,11 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	}
 
 	// ---- Concurrency slot ----
-	release, err := s.sem.Acquire(ctx)
+	release, err := s.sem.AcquireForUser(ctx, effectiveUserID)
 	if err != nil {
+		if concurrency.IsPerUserQuotaExhausted(err) {
+			return fmt.Errorf("%w: %v", runner.ErrPerUserQuotaExhausted, err)
+		}
 		if concurrency.IsBackpressure(err) {
 			return fmt.Errorf("%w: %v", runner.ErrBackpressure, err)
 		}
@@ -1810,14 +1846,9 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 
 	// Acquire concurrency slot first so backpressure is reported as 429
 	// before we open the SSE stream.
-	release, err := s.sem.Acquire(r.Context())
+	release, err := s.sem.AcquireForUser(r.Context(), req.UserID)
 	if err != nil {
-		if concurrency.IsBackpressure(err) {
-			w.WriteHeader(http.StatusTooManyRequests)
-			fmt.Fprintf(w, `{"code":"backpressure","error":%q}`, err.Error())
-			return
-		}
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeQuotaError(w, err)
 		return
 	}
 	defer release()
@@ -2182,15 +2213,11 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	priorMessages := replayTranscript(transcript)
 
 	// Acquire concurrency slot before opening the SSE stream so backpressure
-	// is reported as 429.
-	release, err := s.sem.Acquire(r.Context())
+	// is reported as 429. user_id comes from the session (set at original
+	// creation); continuations don't accept a new user_id.
+	release, err := s.sem.AcquireForUser(r.Context(), sess.UserID)
 	if err != nil {
-		if concurrency.IsBackpressure(err) {
-			w.WriteHeader(http.StatusTooManyRequests)
-			fmt.Fprintf(w, `{"code":"backpressure","error":%q}`, err.Error())
-			return
-		}
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeQuotaError(w, err)
 		return
 	}
 	defer release()
