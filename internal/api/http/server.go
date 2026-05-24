@@ -1404,6 +1404,15 @@ func (s *Server) Mux() http.Handler {
 	// stream:false (single-shot JSON) selected by the request body.
 	// See internal/api/http/llm_gateway.go for the dispatch shape.
 	mux.Handle("POST /v1/_llm/chat", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleLLMChat))))
+	// v0.11.3 OpenAI Chat Completions compatibility shim. Same
+	// bearer-authed admin scope as /v1/_llm/chat; translates the
+	// OpenAI wire shape onto loomcycle's native llmChatRequest and
+	// shares the prepareGatewayDispatch path (security policy,
+	// per-user quota, audit logging all in one place). The path lacks
+	// the underscore prefix because OpenAI SDKs hardcode
+	// /v1/chat/completions — the whole point is consumers change
+	// only the base URL.
+	mux.Handle("POST /v1/chat/completions", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleOpenAICompatChat))))
 	// v0.9.x Introspection — bearer-authed read-only enumeration of
 	// declared names per substrate. The companion to the op-dispatched
 	// substrate write endpoints; drives the Web UI's /ui/library tab.
