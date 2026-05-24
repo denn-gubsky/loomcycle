@@ -1285,6 +1285,11 @@ pre {
   background: var(--running);
   color: white;
   border-color: var(--running);
+  /* Hold the modal's existing 4px radius — the outer `button.primary`
+   * rule down in the v0.10.4 block uses a pill radius for page-level
+   * CTAs; locking it here keeps modal submit buttons rectangular. */
+  border-radius: 4px;
+  padding: 8px 16px;
 }
 
 .modal-buttons button:disabled {
@@ -1423,21 +1428,25 @@ pre {
   margin-left: auto;
 }
 .lineage-row-action {
-  background: none;
-  border: 1px solid var(--border, #444);
-  color: var(--fg-muted, #888);
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--fg-soft);
   font-size: 11px;
-  padding: 1px 8px;
-  border-radius: 3px;
+  padding: 3px 10px;
+  border-radius: 999px;
   cursor: pointer;
+  font-family: inherit;
+  transition: color 0.1s, border-color 0.1s, background-color 0.1s;
 }
 .lineage-row-action:hover {
-  color: var(--fg, inherit);
-  border-color: var(--accent, #66c);
+  color: var(--fg);
+  border-color: var(--accent);
+  background: rgba(91, 157, 255, 0.08);
 }
 .lineage-row-action-danger:hover {
-  color: var(--danger, #c33);
-  border-color: var(--danger, #c33);
+  color: var(--failed);
+  border-color: var(--failed);
+  background: rgba(255, 93, 104, 0.08);
 }
 .lineage-header-actions {
   display: flex;
@@ -1445,9 +1454,36 @@ pre {
   gap: 8px;
   margin-left: auto;
 }
+
+/* Top-level `.primary` — same convention as .user-picker button (accent
+ * background + white text + rounded corners). The class is also used
+ * inside .modal-buttons scope where it's overridden to use --running
+ * (matches the InterruptInbox submit-answer convention). Outside that
+ * scope, this rule provides the dark-theme primary CTA styling. */
+button.primary {
+  background: var(--accent);
+  color: white;
+  border: 1px solid var(--accent);
+  border-radius: 999px;
+  padding: 5px 14px;
+  font-size: 12px;
+  font-weight: 500;
+  font-family: inherit;
+  cursor: pointer;
+  transition: background-color 0.1s, border-color 0.1s;
+}
+button.primary:hover {
+  background: #4a8cee;
+  border-color: #4a8cee;
+}
+button.primary:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+/* The Library "+ New" CTA. Inherits the primary button styling above;
+ * `.lineage-create-cta` is just a marker for any future per-CTA tweaks. */
 .lineage-create-cta {
   font-size: 12px;
-  padding: 4px 10px;
 }
 
 /* v0.8.17 PauseControls — topbar runtime quiesce pill + actions. */
