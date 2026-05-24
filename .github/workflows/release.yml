@@ -17,6 +17,23 @@ name: Release (goreleaser)
 # That token is needed because the workflow's default GITHUB_TOKEN
 # is scoped to THIS repository (denn-gubsky/loomcycle) only; pushing
 # the formula bump to the tap repo requires cross-repo write access.
+#
+# v0.11.2 Docker publish (OPTIONAL — leave unset to skip Docker):
+#   3. Create a Docker Hub access token at
+#      https://hub.docker.com/settings/security scoped to
+#      docker.io/denngubsky/loomcycle with `Read, Write, Delete` perms.
+#   4. Add secrets DOCKER_USERNAME (= "denngubsky") + DOCKER_PASSWORD
+#      (= the access token) under Settings -> Secrets.
+#   5. Add a repository VARIABLE (not secret) named
+#      DOCKER_PUBLISH_ENABLED set to "true" under Settings ->
+#      Variables. The pipeline reads `vars.DOCKER_PUBLISH_ENABLED`
+#      to gate the docker login + publish steps; absent or any other
+#      value means "skip docker, ship tarballs + brew only".
+#
+# Why a var (not a secret) for the toggle: secrets are masked in
+# logs and conditionals can't easily distinguish "secret unset"
+# from "secret empty"; vars are visible and the gate is operator-
+# explicit. Docker credentials themselves remain secrets.
 on:
   push:
     tags:
@@ -52,6 +69,28 @@ jobs:
         # which `make build-ui` populates. Every cross-compiled
         # binary ships the same UI bundle.
         run: make build-ui
+
+      # v0.11.2 Docker image steps (stubbed until operator creates the
+      # Docker Hub access token). Setup-qemu enables linux/arm64 cross-
+      # build via buildx on the amd64 runner. Setup-buildx wires the
+      # multi-arch builder goreleaser's `dockers:` stage uses. The
+      # login step is gated on DOCKER_USERNAME being set — when the
+      # operator hasn't configured the secret yet, login is skipped
+      # AND goreleaser runs with `--skip docker` so the pipeline
+      # still builds tarballs + bumps the brew formula without
+      # failing on the missing registry credentials.
+      - name: Set up QEMU for multi-arch Docker builds
+        if: vars.DOCKER_PUBLISH_ENABLED == 'true'
+        uses: docker/setup-qemu-action@v3
+      - name: Set up Docker Buildx
+        if: vars.DOCKER_PUBLISH_ENABLED == 'true'
+        uses: docker/setup-buildx-action@v3
+      - name: Log in to Docker Hub
+        if: vars.DOCKER_PUBLISH_ENABLED == 'true'
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
 
       - name: Pre-create GitHub release with annotated tag body
         # Why this step exists: goreleaser's `release.mode: keep-existing`
@@ -99,10 +138,17 @@ jobs:
         # left us at the mercy of any breaking change in a future
         # goreleaser release; pinning gives reproducible behavior
         # across the v0.10.x release line.
+        #
+        # v0.11.2: GORELEASER_ARGS is computed from
+        # vars.DOCKER_PUBLISH_ENABLED so the run skips the docker
+        # publish stage when the operator hasn't configured Docker Hub
+        # credentials yet. Once DOCKER_PUBLISH_ENABLED is set to
+        # "true" in the repo's Actions vars, the same run pushes
+        # multi-arch images without further config changes.
         uses: goreleaser/goreleaser-action@v6
         with:
           version: "v2.15.4"
-          args: release --clean
+          args: ${{ vars.DOCKER_PUBLISH_ENABLED == 'true' && 'release --clean' || 'release --clean --skip=docker,docker_manifest' }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           HOMEBREW_TAP_GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}

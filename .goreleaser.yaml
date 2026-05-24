@@ -108,12 +108,83 @@ brews:
     # caveats prints on `brew install` — mirrors what we wrote
     # by hand for v0.8.20.
     caveats: |
-      loomcycle ships as a single Go binary that reads configuration from
-      a YAML file. Quick start:
+      Quick start (v0.11.1+):
 
-        mkdir -p ~/.config/loomcycle
-        # Drop your loomcycle.yaml into ~/.config/loomcycle/
-        # See https://github.com/denn-gubsky/loomcycle for examples.
-        loomcycle --config ~/.config/loomcycle/loomcycle.yaml
+        loomcycle init       # bootstrap ~/.config/loomcycle/loomcycle.yaml
+        # set $LOOMCYCLE_AUTH_TOKEN and at least one provider key
+        # (ANTHROPIC_API_KEY / OPENAI_API_KEY / DEEPSEEK_API_KEY)
+        loomcycle doctor     # verify your setup
+        loomcycle            # start the server on 127.0.0.1:8787
+
+      For background-service operation on macOS, see Homebrew's
+      `brew services`. For Docker-based deployment, pull from
+      docker.io/denngubsky/loomcycle (v0.11.2+).
     test: |
       assert_match "version=", shell_output("#{bin}/loomcycle --version")
+
+# Docker images — multi-arch (linux/amd64 + linux/arm64), published to
+# Docker Hub at docker.io/denngubsky/loomcycle. The release.yml
+# workflow logs into Docker Hub before invoking goreleaser; when the
+# DOCKER_USERNAME secret is absent (operator hasn't set up the access
+# token yet), the docker-login step in release.yml short-circuits and
+# the goreleaser run skips the dockers stage via `--skip docker`.
+# Once the secret is configured, the same pipeline pushes without
+# further config changes.
+#
+# Note on registry naming: Docker Hub strips hyphens from usernames.
+# `denn-gubsky` on GitHub becomes `denngubsky` on Docker Hub.
+#
+# Uses Dockerfile.release (the goreleaser-specific variant that copies
+# the already-built binary in instead of running the multi-stage build
+# from scratch — goreleaser pre-builds every arch in its `builds:`
+# stage and we'd waste minutes re-running go build inside Docker).
+dockers:
+  - id: loomcycle-amd64
+    ids:
+      - loomcycle
+    image_templates:
+      - "denngubsky/loomcycle:{{ .Version }}-amd64"
+      - "denngubsky/loomcycle:latest-amd64"
+    dockerfile: Dockerfile.release
+    use: buildx
+    build_flag_templates:
+      - "--platform=linux/amd64"
+      - "--label=org.opencontainers.image.title=loomcycle"
+      - "--label=org.opencontainers.image.description=Agentic runtime — one Go binary owning the LLM tool-use loop"
+      - "--label=org.opencontainers.image.url=https://github.com/denn-gubsky/loomcycle"
+      - "--label=org.opencontainers.image.source=https://github.com/denn-gubsky/loomcycle"
+      - "--label=org.opencontainers.image.version={{ .Version }}"
+      - "--label=org.opencontainers.image.revision={{ .FullCommit }}"
+      - "--label=org.opencontainers.image.licenses=Apache-2.0"
+    goarch: amd64
+  - id: loomcycle-arm64
+    ids:
+      - loomcycle
+    image_templates:
+      - "denngubsky/loomcycle:{{ .Version }}-arm64"
+      - "denngubsky/loomcycle:latest-arm64"
+    dockerfile: Dockerfile.release
+    use: buildx
+    build_flag_templates:
+      - "--platform=linux/arm64"
+      - "--label=org.opencontainers.image.title=loomcycle"
+      - "--label=org.opencontainers.image.description=Agentic runtime — one Go binary owning the LLM tool-use loop"
+      - "--label=org.opencontainers.image.url=https://github.com/denn-gubsky/loomcycle"
+      - "--label=org.opencontainers.image.source=https://github.com/denn-gubsky/loomcycle"
+      - "--label=org.opencontainers.image.version={{ .Version }}"
+      - "--label=org.opencontainers.image.revision={{ .FullCommit }}"
+      - "--label=org.opencontainers.image.licenses=Apache-2.0"
+    goarch: arm64
+
+# docker_manifests joins per-arch images into one multi-arch manifest
+# the operator pulls with `docker pull denngubsky/loomcycle:vX.Y.Z`
+# regardless of their host arch.
+docker_manifests:
+  - name_template: "denngubsky/loomcycle:{{ .Version }}"
+    image_templates:
+      - "denngubsky/loomcycle:{{ .Version }}-amd64"
+      - "denngubsky/loomcycle:{{ .Version }}-arm64"
+  - name_template: "denngubsky/loomcycle:latest"
+    image_templates:
+      - "denngubsky/loomcycle:latest-amd64"
+      - "denngubsky/loomcycle:latest-arm64"
