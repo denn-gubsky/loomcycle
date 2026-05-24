@@ -8,6 +8,135 @@ For pre-v0.4 history (single-tool runtime, library milestone, security patch), s
 
 ---
 
+## What's in v0.11.2
+
+Distribution-pipeline polish — closes the install-path loop opened by v0.11.1. Adds a multi-arch Docker image, refreshes the Homebrew formula caveats to point at the new init/doctor flow, and ships a docker-compose example. Zero Go code changes; pure release-pipeline + docs.
+
+### Docker image
+
+Published to `docker.io/denngubsky/loomcycle` on every release tag (multi-arch: `linux/amd64` + `linux/arm64`, single manifest). Built from `gcr.io/distroless/static:nonroot` — ~6 MB total image, no shell, no package manager, runs as uid 65532. Matches loomcycle's pure-Go static binary (CGO_ENABLED=0).
+
+Tags shipped per release:
+- `vX.Y.Z` — exact pin (recommended for production)
+- `latest` — most recent stable
+
+No `vX` or `vX.Y` floating tags during v0.11.x — too early for major-version stability promises.
+
+First-run flow:
+
+```sh
+mkdir -p ./config ./data
+docker run --rm -v $(pwd)/config:/home/nonroot/.config/loomcycle \
+  denngubsky/loomcycle:v0.11.2 init --no-interactive
+
+docker run -d --name loomcycle \
+  -p 127.0.0.1:8787:8787 \
+  -v $(pwd)/config:/home/nonroot/.config/loomcycle:ro \
+  -v $(pwd)/data:/home/nonroot/.local/share/loomcycle \
+  -e LOOMCYCLE_AUTH_TOKEN=$(openssl rand -hex 32) \
+  -e ANTHROPIC_API_KEY=$YOUR_KEY \
+  -e LOOMCYCLE_LISTEN_ADDR=0.0.0.0:8787 \
+  denngubsky/loomcycle:v0.11.2
+```
+
+For declarative setups, `docker-compose.example.yaml` at the repo root carries mount + env-var + port-mapping defaults plus a commented-out Postgres upgrade block.
+
+**Registry naming:** Docker Hub strips hyphens from usernames. The GitHub org `denn-gubsky` becomes `denngubsky` on Docker Hub. The first-time confusion is intentional context — pin against `denngubsky/loomcycle`, not `denn-gubsky/loomcycle`.
+
+**Image security posture:** distroless means no `/bin/sh`. `docker exec ... sh` won't work for debugging — use `docker logs` instead. The OCI labels carry the canonical source URL, version, commit SHA, and Apache-2.0 license so registry tooling (image scanners, SBOM generators, supply-chain inspectors) sees the right metadata.
+
+### CI stubbing
+
+The Docker steps in `release.yml` are gated behind a repo VARIABLE (not secret) named `DOCKER_PUBLISH_ENABLED`. When unset or any value other than `"true"`, the pipeline:
+- Skips `docker/setup-qemu-action`, `docker/setup-buildx-action`, and `docker/login-action`.
+- Runs goreleaser with `--skip=docker,docker_manifest` so the dockers stage doesn't try to push.
+- Still ships the four platform tarballs + brew formula bump.
+
+When the operator is ready to enable Docker publish:
+1. Create a Docker Hub access token at `hub.docker.com/settings/security` scoped to `docker.io/denngubsky/loomcycle` with `Read, Write, Delete` perms.
+2. Add secrets `DOCKER_USERNAME` (= `denngubsky`) + `DOCKER_PASSWORD` (= the token) under repo Settings → Secrets.
+3. Add a repo VARIABLE `DOCKER_PUBLISH_ENABLED` set to `"true"` under Settings → Variables.
+
+The same release tag that runs without the gate also runs with it — no workflow changes needed to flip the switch.
+
+Why a var (not a secret) for the toggle: secrets are masked in logs and conditionals can't easily distinguish "secret unset" from "secret empty"; vars are visible and the gate is operator-explicit. Docker credentials themselves remain secrets.
+
+### Homebrew formula caveats refresh
+
+The auto-generated `Formula/loomcycle.rb` (via goreleaser's `brews:` block) used to print this on `brew install`:
+
+```
+loomcycle ships as a single Go binary that reads configuration from
+a YAML file. Quick start:
+
+  mkdir -p ~/.config/loomcycle
+  # Drop your loomcycle.yaml into ~/.config/loomcycle/
+  loomcycle --config ~/.config/loomcycle/loomcycle.yaml
+```
+
+That instructional flow is exactly what `loomcycle init` automates as of v0.11.1. The caveats now read:
+
+```
+Quick start (v0.11.1+):
+
+  loomcycle init       # bootstrap ~/.config/loomcycle/loomcycle.yaml
+  # set $LOOMCYCLE_AUTH_TOKEN and at least one provider key
+  loomcycle doctor     # verify your setup
+  loomcycle            # start the server on 127.0.0.1:8787
+
+For Docker-based deployment, pull from
+docker.io/denngubsky/loomcycle (v0.11.2+).
+```
+
+The change applies automatically to the next `brew upgrade` run.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `Dockerfile` *(new)* | Multi-stage local build: node:20-alpine builds web/ → golang:1.26-alpine builds static binary → distroless/static:nonroot runtime. |
+| `Dockerfile.release` *(new)* | goreleaser-specific variant. Pre-built binary copied in; ~2 minutes faster per release vs running go build inside Docker. |
+| `.goreleaser.yaml` | Added `dockers:` (2 entries, one per arch) + `docker_manifests:` (2 manifests: version-pinned + latest). Updated `brews.caveats` to reference init/doctor. |
+| `.github/workflows/release.yml` | Added QEMU + buildx + Docker login steps (all gated on `vars.DOCKER_PUBLISH_ENABLED`). Updated goreleaser args to `--skip=docker,docker_manifest` when the var isn't `"true"`. Added documentation block for the 3-step Docker Hub setup. |
+| `docker-compose.example.yaml` *(new)* | Operator-friendly compose: loomcycle service + volume mount + env passthrough + port mapping + commented-out Postgres block. |
+| `internal/help/builtin/installation.md` *(new)* | Bundled help topic covering all four install paths + verification. |
+| `README.md` | New "Install" section above "Quick start" listing all four paths. New v0.11.2 entry. Quick-start section rewritten around init/doctor (was build-from-source). |
+| `adapters/ts/package.json` | Version 0.11.1 → 0.11.2 (lockstep; no method changes). |
+
+### Wire-surface delta vs v0.11.1
+
+| Surface | v0.11.1 | v0.11.2 |
+|---|---|---|
+| Go HTTP endpoints | n | n (unchanged) |
+| CLI subcommands | 15 | 15 (unchanged) |
+| Bundled `Context.help` topics | n | n + 1 (`installation`) |
+| Distribution channels | 2 (brew + tarball) | 3 (brew + tarball + docker) |
+| TS adapter methods | 41 | 41 (no change) |
+
+### Migration notes
+
+- **Purely additive.** Existing tarball + brew install paths are unchanged. Existing operators on `brew upgrade` see the updated caveats text on next install.
+- **No Go code changes.** No HTTP surface changes. No schema changes.
+- **TS adapter consumers** bump to 0.11.2 for lockstep parity; no code changes.
+- **Operator action required before Docker images appear**: configure the three repo settings (DOCKER_USERNAME / DOCKER_PASSWORD secrets + DOCKER_PUBLISH_ENABLED variable). Without these the release pipeline still ships tarballs + brew formula but skips Docker push.
+
+### Versioning
+
+v0.11.2 — small additive release. `@loomcycle/client` 0.11.1 → 0.11.2.
+
+### Deferred
+
+- **GHCR mirror** (`ghcr.io/denn-gubsky/loomcycle`) — one extra goreleaser `dockers:` entry; ship when an operator requests it.
+- **`homebrew_casks:` migration** — goreleaser deprecation warning notes brews is being phased out; cask migration is non-trivial (casks target GUI apps) and current brews still works.
+- **Helm chart** — Kubernetes deployment pattern is a tiny audience today.
+- **Image hardening pass** (rootless user variant, healthcheck, multi-distro variants).
+
+### Downloads
+
+Assets attached: `loomcycle-{darwin,linux}-{amd64,arm64}.tar.gz` + `SHA256SUMS`. Docker images at `docker.io/denngubsky/loomcycle:v0.11.2` + `:latest` (when DOCKER_PUBLISH_ENABLED is set).
+
+---
+
 ## What's in v0.11.1
 
 First-run UX overhaul. A bare `loomcycle` install via `brew` (or `go install` from a tagged tarball) used to fail with `failed to load config: open loomcycle.yaml: no such file or directory` and no obvious next step. v0.11.1 closes that gap with three pieces: a new `init` subcommand to bootstrap the config tree, a new `doctor` subcommand to verify the setup, and auto-discovery so the bare binary finds a generated config in `~/.config/loomcycle/`.
