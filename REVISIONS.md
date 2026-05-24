@@ -8,6 +8,141 @@ For pre-v0.4 history (single-tool runtime, library milestone, security patch), s
 
 ---
 
+## What's in v0.11.0
+
+First slice of the v0.11.x line — exposes loomcycle's resolver + provider auth + retry layer as a **direct LLM gateway wire surface** that bypasses the agent loop. Same binary, second product positioning: alongside the agent runtime, loomcycle is now a LiteLLM/Portkey-class gateway any LangChain-compatible consumer can hit.
+
+### Motivation
+
+`@loomcycle/n8n-nodes-loomcycle` needs a `LoomCycleChatModel` cluster sub-node that plugs into n8n's AI Agent **Chat Model slot** — so the AI Agent's reasoning turns are powered by loomcycle's resolver instead of n8n's per-provider nodes. Today the only way to do this is a "passthrough agent" hack (declare an agent with `system_prompt: ""` + `allowed_tools: []`, spawn `runStreaming` per turn). That works but costs ~50-200 ms per reasoning turn × 10-50 turns per workflow = 0.5-10 s of pure overhead. The gateway closes this gap.
+
+The broader product positioning competes with **LiteLLM / Portkey / Helicone** in the "one credential + one quota + one observability surface across providers" market — loomcycle already has the resolver + provider auth + retry + host allowlist + tier policy infrastructure; this release exposes it as a first-class wire surface.
+
+### New endpoint: `POST /v1/_llm/chat`
+
+Bearer-authed admin surface, same `LOOMCYCLE_AUTH_TOKEN` as every `/v1/_*` route. Both `stream: false` (single JSON response) and `stream: true` (SSE) selected by the request body.
+
+```jsonc
+// Request
+{
+  "messages": [
+    { "role": "system", "content": "You are helpful." },
+    { "role": "user", "content": "What is 2+2?" }
+  ],
+  "tools": [{"name":"calc", "description":"math", "input_schema":{...}}],
+  "max_tokens": 4096,
+  "stream": false,
+  "provider": "anthropic",  // optional — see routing precedence
+  "model": "claude-sonnet-4-6",
+  "tier": "default",
+  "user_id": "alice"        // per-user quota tracking
+}
+```
+
+```jsonc
+// Non-streaming response
+{
+  "id": "llm_abc",
+  "request_id": "req_xyz",
+  "provider": "anthropic",     // what the resolver actually picked
+  "model": "claude-sonnet-4-6",
+  "content": [
+    {"type":"text", "text":"5 * 7 = 35"}
+    // OR a tool call:
+    // {"type":"tool_use", "id":"call_x", "name":"calc", "input":{"expr":"5*7"}}
+  ],
+  "stop_reason": "end_turn",
+  "usage": {"input_tokens":1234, "output_tokens":56, "cache_read_input_tokens":0}
+}
+```
+
+Streaming SSE mirrors Anthropic's event names — `provider_chosen` (gateway-specific; emitted first), `content_block_start`, `content_block_delta`, `content_block_stop`, `message_delta`, `done`, `error`. Operator-familiar; consumers (the TS adapter's `llmStream` method, LangChain BaseChatModel implementations) map cleanly.
+
+### Routing precedence
+
+The resolver applies request hints in this order:
+
+1. **Both `provider` AND `model` set** — explicit pin; resolver short-circuits. Useful when the consumer knows the answer.
+2. **`provider` only** — resolver picks the best model within that provider for `tier` / `user_tier`.
+3. **`model` only** — resolver picks the provider hosting that model.
+4. **Neither** — full resolver pick using `tier` (defaults to "default") / `user_tier`.
+
+The chosen `provider` + `model` are echoed in the response + the `provider_chosen` SSE frame so consumers can log / display the decision.
+
+### Tool calling — zero new translation code
+
+The substrate's existing per-provider `buildRequestBody()` helpers (Anthropic pass-through, OpenAI `{type:"function", function:{parameters:input_schema}}` wrap, Gemini `sanitizeGeminiSchema` + `function_declarations[]` nesting) consume `providers.ToolSpec{Name, Description, InputSchema}` directly. The gateway forwards every wire-shape `tools[]` entry to the chosen driver as a `ToolSpec` — drivers translate to provider-native shapes inside the existing per-driver code. **No new shared translation package; no provider-interface changes.**
+
+For tool results — gateway accepts `role:"tool"` messages with `tool_call_id`; the translator maps these to `{type:"tool_result", tool_use_id, text}` ContentBlocks before handing to the driver.
+
+### Authentication + quotas
+
+Bearer-authed admin scope. When `user_id` is in the request, the existing `concurrency.Semaphore.AcquireForUser` per-user cap applies (see `help fairness` for the policy). Anonymous calls bypass the per-user cap but still count against the global semaphore.
+
+### Audit + observability (v0.11.0 posture)
+
+Each gateway call emits a structured log line on completion:
+
+```
+llm_gateway: request_id=req_abc provider=anthropic model=claude-sonnet-4-6 \
+  tier="default" user_id="alice" input_tokens=1234 output_tokens=56 \
+  stop_reason=end_turn latency_ms=842 status=ok err=""
+```
+
+Scrape via `journalctl` / log shippers. When OTEL is configured (see `help observability`), the `provider.Call` path already emits `loomcycle.provider.call` spans with the standard attributes — gateway calls show up there alongside agent runs.
+
+**Why no `/v1/_events` audit row in v0.11.0:** the events table has a NOT NULL FK to runs, and we don't want to fake phantom run rows per gateway call (would pollute the runs table; n8n workflows fire dozens of gateway calls per execution). v0.11.1 follow-up will add a dedicated `gateway_events` table with its own `GET /v1/_gateway_events` query surface.
+
+### Architectural decisions (locked)
+
+- **No `runs`-table row per gateway call** — gateway is too high-cardinality.
+- **No cross-provider mid-call fallback in v1** — single-shot per call; same-provider rate-limit retry inside the driver still applies. Cross-provider on a fresh-call retry can land in v0.11.1+ if demand emerges.
+- **No new shared `internal/llm/` package** — the gateway handler lives in `internal/api/http/` and calls existing providers + resolver directly. Adding a service-layer abstraction now would be speculative.
+
+### TS adapter
+
+`@loomcycle/client@0.11.0` adds two methods:
+
+```typescript
+async llmChat(opts: LLMChatOptions): Promise<LLMChatResponse>
+async *llmStream(opts: LLMChatOptions): AsyncIterable<LLMChatStreamItem>
+```
+
+Plus 8 new exported types (LLMChatMessage, LLMTool, LLMChatOptions, LLMChatResponse, LLMChatContent, LLMChatUsage, LLMChatStreamItem, LLMChatStreamDelta, LLMChatToolCall). 10 new vitest tests covering happy-path, tool-call round-trip, streaming, bearer auth, AuthError on 401, UnavailableError on 503, AbortSignal propagation, error frame, SSE keepalive ignore.
+
+### Wire-surface delta vs v0.10.4
+
+| Surface | v0.10.4 | v0.11.0 |
+|---|---|---|
+| Go HTTP endpoints | n | n + 1 (`POST /v1/_llm/chat`) |
+| Go tests | n | n + 8 |
+| TS adapter methods | 39 | 41 |
+| TS adapter exported types | n | n + 8 |
+| Bundled `Context.help` topics | n | n + 1 (`llm-gateway`) |
+
+### Migration notes
+
+- **Purely additive.** Existing `/v1/runs`, `/v1/_channels`, `/v1/_*def`, `/v1/_memory/*` surfaces unchanged.
+- **No schema migrations.** Gateway uses no persistent storage in v0.11.0.
+- **No yaml changes required.** The gateway uses the same resolver / providers / concurrency wiring the agent runtime already does.
+- **TS adapter consumers** bump to 0.11.0 to access `llmChat` / `llmStream`. Existing methods byte-identical; no breaking changes.
+
+### Deferred (per the RFC's out-of-scope list)
+
+- gRPC mirror RPC (v0.11.1+).
+- LoomCycle MCP server `llm_chat` meta-tool (v0.11.1+).
+- OpenAI-compat shim (`POST /v1/chat/completions` translating to gateway) (v0.11.1+).
+- `tool_choice` field — LangChain consumers default to `auto`.
+- Multi-modal content (image / audio inputs) — Anthropic + OpenAI + Gemini all have it; their shapes differ; defer to v0.11.x.
+- Embeddings endpoint — separate RFC.
+- Bearer-level rate limiting — operator bearer is operator-trust scope; per-user quotas cover the workflow-storm case.
+
+### Downloads
+
+Assets attached: `loomcycle-{darwin,linux}-{amd64,arm64}.tar.gz` + `SHA256SUMS`. Adapter via `npm install @loomcycle/client@0.11.0`.
+
+---
+
 ## What's in v0.10.4
 
 Web UI–only release. Adds **manual CRUD on the agent / skill / MCP-server library** to the `/ui/library` page. The HTTP mutation surface already existed since v0.8.22 (AgentDef + SkillDef substrate tools) and v0.9.x (MCPServerDef); this release wires it to the Web UI so operators don't have to curl bearer-authed endpoints to register or edit substrate entries.
