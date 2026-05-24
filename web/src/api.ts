@@ -889,6 +889,81 @@ export function listDefVersionsByName(
   });
 }
 
+// ---- v0.10.4 Substrate admin mutations (Library admin UI) ----
+//
+// Thin wrappers around the existing POST /v1/_{agentdef,skilldef,
+// mcpserverdef} endpoints (v0.8.22 + v0.9.x). All ops dispatch through
+// the same op-discriminated body shape. On refusal the substrate
+// returns HTTP 422 + `{"code":"tool_refused","error":"<text>","tool":"X"}`;
+// jsonFetch surfaces this as a thrown Error whose message contains
+// the JSON body — callers parse for the human-readable text.
+
+export type SubstrateKind = "agentdef" | "skilldef" | "mcpserverdef";
+
+export function createDef(
+  kind: SubstrateKind,
+  name: string,
+  overlay: Record<string, unknown>,
+  promote: boolean,
+): Promise<DefRow> {
+  return substrateDispatch<DefRow>(kind, {
+    op: "create",
+    name,
+    overlay,
+    promote,
+  });
+}
+
+export function forkDef(
+  kind: SubstrateKind,
+  name: string,
+  overlay: Record<string, unknown>,
+  promote: boolean,
+  parentDefID?: string,
+): Promise<DefRow> {
+  const body: Record<string, unknown> = {
+    op: "fork",
+    name,
+    overlay,
+    promote,
+  };
+  if (parentDefID) body.parent_def_id = parentDefID;
+  return substrateDispatch<DefRow>(kind, body);
+}
+
+export function promoteDef(kind: SubstrateKind, defID: string): Promise<unknown> {
+  return substrateDispatch<unknown>(kind, { op: "promote", def_id: defID });
+}
+
+export function retireDef(kind: SubstrateKind, defID: string): Promise<unknown> {
+  return substrateDispatch<unknown>(kind, {
+    op: "retire",
+    def_id: defID,
+    retired: true,
+  });
+}
+
+// rediscoverMcpServerDef is MCP-only. Re-runs the upstream MCP server's
+// tools/list handshake, refreshes the cached discovered_tools, and
+// forks+promotes a new version with the refreshed snapshot.
+export function rediscoverMcpServerDef(name: string): Promise<DefRow> {
+  return substrateDispatch<DefRow>("mcpserverdef", {
+    op: "rediscover",
+    name,
+  });
+}
+
+function substrateDispatch<T>(
+  kind: SubstrateKind,
+  body: Record<string, unknown>,
+): Promise<T> {
+  return jsonFetch<T>(`/v1/_${kind}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
 // ---- Channel fetchers ----
 
 export function listChannels(): Promise<ListChannelsResponse> {
