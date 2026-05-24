@@ -81,8 +81,8 @@ var voyageEmbeddingDims = map[string]int{
 	"voyage-law-2":     1024,
 	// Back-compat (voyage-3 + voyage-multilingual-2 kept accessible by
 	// Voyage; operators on older configs shouldn't break on upgrade).
-	"voyage-3":             1024,
-	"voyage-3-large":       1024,
+	"voyage-3":              1024,
+	"voyage-3-large":        1024,
 	"voyage-multilingual-2": 1024,
 }
 
