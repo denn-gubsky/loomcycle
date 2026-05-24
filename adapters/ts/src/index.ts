@@ -51,6 +51,10 @@
  *     listLibrarySkills(): Promise<LibraryListResponse<LibrarySkillDefinition>>
  *     listLibraryMcpServers(): Promise<LibraryListResponse<LibraryMcpServerDefinition>>
  *
+ *     // LLM Gateway (v0.11.0 — direct provider routing, no agent loop)
+ *     llmChat(opts: LLMChatOptions): Promise<LLMChatResponse>
+ *     llmStream(opts: LLMChatOptions): AsyncIterable<LLMChatStreamItem>
+ *
  *   Errors (typed subclasses of LoomcycleError; see README for the
  *   full HTTP-status → typed-error mapping table):
  *     LoomcycleError, AgentNotFoundError, SessionNotFoundError,
@@ -173,6 +177,16 @@ export type {
   LibraryListResponse,
   LibraryMcpServerDefinition,
   LibrarySkillDefinition,
+  // LLM Gateway (v0.11.0)
+  LLMChatContent,
+  LLMChatMessage,
+  LLMChatOptions,
+  LLMChatResponse,
+  LLMChatStreamDelta,
+  LLMChatStreamItem,
+  LLMChatToolCall,
+  LLMChatUsage,
+  LLMTool,
 } from "./types.js";
 
 export {
