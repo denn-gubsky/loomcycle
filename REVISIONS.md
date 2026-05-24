@@ -8,6 +8,88 @@ For pre-v0.4 history (single-tool runtime, library milestone, security patch), s
 
 ---
 
+## What's in v0.10.4
+
+Web UI–only release. Adds **manual CRUD on the agent / skill / MCP-server library** to the `/ui/library` page. The HTTP mutation surface already existed since v0.8.22 (AgentDef + SkillDef substrate tools) and v0.9.x (MCPServerDef); this release wires it to the Web UI so operators don't have to curl bearer-authed endpoints to register or edit substrate entries.
+
+### Motivation
+
+Two concrete use cases drove this:
+
+1. **n8n integration testing.** Test workflows need to set up specific agents / skills / MCP servers via the API as part of fixture prep — formerly that meant writing curl scripts or editing yaml + restarting. Now: open `/ui/library`, click "+ New Agent", fill the form.
+2. **Docker container deployments.** Running loomcycle as a container without a writable yaml mount left operators without any way to declare substrate entries except hitting the bearer-authed HTTP endpoints directly. The Web UI now covers the gap end-to-end.
+
+The substrate's existing op grammar (`create` / `fork` / `promote` / `retire` + MCP-only `rediscover`) covers every CRUD operation the UI needs — zero new substrate logic, zero new HTTP endpoints, zero new wire-protocol shape.
+
+### New UX
+
+**Per-row controls** (added to each entry's lineage tree row):
+- `Edit ✎` — opens the fork modal pre-filled with the active definition body. For static-only entries the button label is `Edit (forks from yaml)`; the substrate's existing v0.8.22 bootstrap-on-first-fork mechanism auto-creates a v1 lineage root from yaml before attaching the new fork as v2.
+- `Retire ⊘` — confirm prompt → `retire` op. The retired flag stays in lineage; agents stop seeing the version as active.
+- `Promote ▲` — per non-active version, sets the active pointer for the name to this row.
+
+**Page-level controls** (right-pane header per tab):
+- `+ New <Flavor>` — opens the create modal.
+- `Rediscover tools 🔄` (MCP servers only) — prompts for a server name, runs the `rediscover` op, refreshes the cached `discovered_tools` snapshot.
+
+**Hybrid form per substrate flavor** (the form-style fork the user picked):
+- **AgentDef** — structured: name, description, provider, model, tier, effort. JSON textarea (collapsible) for everything else with a "show schema" toggle that reveals the full field reference (system_prompt, allowed_tools, skills, providers, models, memory_*, max_*).
+- **SkillDef** — structured: name, description, allowed_tools (comma-separated). Plus a large markdown body textarea (the substrate refuses empty bodies; this is the required field).
+- **MCPServerDef** — structured: name, description, transport (radio: streamable-http / http; stdio refused at the substrate boundary), URL, headers (key-value row repeater). No JSON textarea — the structured fields exhaustively cover the substrate's accepted shape.
+
+**Promote-on-save checkbox:**
+- Default ON for create (operator created it, they want it active).
+- Default OFF for fork (review the new version before activating).
+- Matches the substrate tool defaults exactly.
+
+**Refusal mapping (`explainServerError`):** Substrate refusals come back as HTTP 422 + `{"code":"tool_refused","error":"<human text>","tool":"..."}`. The modal pattern-matches the inner text against the substrate's stable error phrases (e.g. `matches a static cfg.`, `not allowed for dynamic registration`) and surfaces a UI-friendly message. Falls back to the raw text when the pattern doesn't match — so new server-side error text doesn't break the UI silently.
+
+### Static-vs-dynamic posture
+
+- **Yaml-static entries stay immutable.** The UI doesn't edit yaml files. Static-only rows expose "Edit (forks from yaml)" which creates a substrate row mirroring the yaml + a child fork — the substrate is the canonical mutable surface; yaml remains operator-managed offline.
+- **Retire button only shows on non-static substrate rows.** Static synthetic rows (def_id starts with `static:`) can't be retired; the button is hidden.
+- **Promote button only shows on non-active non-static non-retired substrate rows.** No-op affordances stay hidden.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `web/src/api.ts` | 5 new mutation wrappers: `createDef` / `forkDef` / `promoteDef` / `retireDef` + `rediscoverMcpServerDef`. Each one-liner over `jsonFetch` (same pattern as the v0.9.3 `listDefVersionsByName` POST helper). Cookie auth via `credentials: "same-origin"` — no token plumbing. |
+| `web/src/components/LibraryEditModal.tsx` *(new)* | Generalized hybrid-form modal. Discriminated on `(kind, mode)`; per-flavor field clusters; `explainServerError` for refusal-text mapping; ESC-to-close; submit-time blocking. ~600 LOC. Visual structure mirrors `AnswerModal` in `InterruptInbox.tsx`. |
+| `web/src/components/LineageTree.tsx` | Three new optional props (`onEditRow` / `onRetireRow` / `onPromoteRow`); per-row buttons with `stopPropagation` so they don't toggle content / selection on click. |
+| `web/src/components/LineagePanel.tsx` | Five new optional props (`onCreateNew` / `onEditRow` / `onRetireRow` / `onPromoteRow` / `onRediscover`); `+ New <Flavor>` CTA in the right-pane header + MCP-only `Rediscover tools` button; threads row callbacks through to `LineageTree`. Empty-state also gets the create CTA so a fresh installation isn't a dead-end. |
+| `web/src/pages/LibraryView.tsx` | Modal state management; per-tab `tabKind` / `tabSubstrate` / `tabEntries` derivation; handlers for create / fork / promote / retire / rediscover; refresh-on-mutation via `refreshKey` bump; wires the callbacks down to each `LineagePanel`. |
+| `web/src/styles.css` | ~160 lines of CSS extending the existing `.modal-*` anchors with `.library-modal`, `.library-form-row`, `.library-json-textarea`, `.library-schema-hint`, `.library-radio-group`, `.library-headers-grid`, `.lineage-row-actions`, `.lineage-header-actions`. |
+| `adapters/ts/package.json` | Version 0.10.3 → 0.10.4 (lockstep with binary tag; no method additions). |
+
+### Wire-surface delta vs v0.10.3
+
+| Surface | v0.10.3 | v0.10.4 |
+|---|---|---|
+| Go HTTP endpoints | unchanged | unchanged |
+| Go tests | unchanged | unchanged |
+| TS adapter methods | 39 | 39 (no new public surface) |
+| Web UI pages with mutation | 4 (Memory, Snapshots, Interrupts, Hooks) | 5 (+ Library) |
+| Web UI bundle size | n KB | n + ~12 KB (~3% increase) |
+
+### Migration notes
+
+- **No yaml changes required.** Existing deployments see zero behavior change on upgrade.
+- **No wire-protocol changes.** The binary's HTTP surface is byte-identical to v0.10.2–v0.10.3 on the HTTP side; the only repo changes are under `web/` and the lockstep adapter version bump.
+- **No schema migrations.** Mutations route through the already-shipped POST endpoints + substrate tables.
+- **Operators with the v0.10.x web bundle already deployed** see the new buttons immediately on next page load (the embedded `internal/webui/dist/` is rebuilt with the new bundle on `make build-ui`).
+- **TS adapter consumers** bump to 0.10.4 for lockstep version parity; no new methods.
+
+### Why not yaml editing in the UI
+
+Yaml stays operator-managed offline — file-mounted, git-tracked, ground truth. The substrate is the mutable surface; the Web UI surfaces substrate mutations only. Static-only entries get explicit "Edit (forks from yaml)" labeling so operators know the new version is a substrate row, not a yaml change.
+
+### Downloads
+
+No new binary tarballs (binary HTTP surface unchanged from v0.10.2). The shipped `loomcycle` binary embeds the new Web UI bundle on `make build-ui`; consumers building from v0.10.4 source pick up the new UI for free. Adapter via `npm install @loomcycle/client@0.10.4`.
+
+---
+
 ## What's in v0.10.3
 
 Adapter-only release. Adds three typed enumeration methods to `@loomcycle/client` that wrap the v0.9.3 Library v2 HTTP endpoints — no Go code changes, no wire-protocol changes, no schema migrations.
