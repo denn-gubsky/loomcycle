@@ -1399,6 +1399,11 @@ func (s *Server) Mux() http.Handler {
 	// admin-only (no per-agent surface). Same dispatch shape as the
 	// other two substrate admin endpoints.
 	mux.Handle("POST /v1/_mcpserverdef", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleSubstrateMCPServerDef))))
+	// v0.11.0 LLM Gateway — direct provider routing without the agent
+	// loop. Bearer-authed admin scope. Both stream:true (SSE) and
+	// stream:false (single-shot JSON) selected by the request body.
+	// See internal/api/http/llm_gateway.go for the dispatch shape.
+	mux.Handle("POST /v1/_llm/chat", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleLLMChat))))
 	// v0.9.x Introspection — bearer-authed read-only enumeration of
 	// declared names per substrate. The companion to the op-dispatched
 	// substrate write endpoints; drives the Web UI's /ui/library tab.
