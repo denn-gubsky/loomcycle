@@ -1,6 +1,23 @@
-// Package sqlite implements store.Store backed by SQLite via modernc.org/sqlite
-// (pure Go, no cgo). Single-file database; WAL journal mode for concurrent
-// readers during a write.
+// Package sqlite implements store.Store backed by SQLite.
+//
+// Two build modes:
+//
+//   - Default (no build tag): modernc.org/sqlite — pure Go, no CGO.
+//     Single static binary. Vector Memory refuses with
+//     ErrVectorUnsupported (see internal/store/sqlite/memory_embeddings.go).
+//   - `-tags=sqlite_vec`: github.com/mattn/go-sqlite3 — CGO,
+//     loads the sqlite-vec extension at Open() time so Vector
+//     Memory works. Requires LOOMCYCLE_SQLITE_VEC_PATH pointing
+//     at the extension shared library (e.g. /usr/local/lib/vec0).
+//     Operator chooses the trade: portable static binary vs
+//     vector-capable CGO binary.
+//
+// Driver name + DSN are picked by driver_default.go (default tag)
+// vs driver_vec.go (`-tags=sqlite_vec`). The rest of this file is
+// driver-agnostic.
+//
+// Single-file database; WAL journal mode for concurrent readers
+// during a write.
 package sqlite
 
 import (
@@ -18,8 +35,6 @@ import (
 	"sync"
 	"time"
 
-	_ "modernc.org/sqlite"
-
 	"github.com/denn-gubsky/loomcycle/internal/store"
 )
 
@@ -33,15 +48,11 @@ type Store struct {
 
 // Open opens (or creates) a SQLite database at path and applies the schema.
 // path may be an OS path or ":memory:" for an ephemeral test DB.
+// The driver name + DSN format are picked by openDB() — see
+// driver_default.go (pure-Go modernc) or driver_vec.go (CGO mattn +
+// sqlite-vec extension loading), depending on build tag.
 func Open(path string) (*Store, error) {
-	// modernc accepts query params on the DSN; WAL mode + foreign keys.
-	dsn := path + "?_pragma=journal_mode(WAL)&_pragma=foreign_keys(ON)&_pragma=busy_timeout(5000)"
-	if path == ":memory:" {
-		// memdb shared cache so concurrent goroutines see the same DB
-		// (default :memory: is per-connection).
-		dsn = "file::memory:?cache=shared"
-	}
-	db, err := sql.Open("sqlite", dsn)
+	db, err := openDB(path)
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite: %w", err)
 	}

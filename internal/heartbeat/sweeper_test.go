@@ -145,23 +145,46 @@ func TestSweeperRun_LogsResults(t *testing.T) {
 	})
 	go sw.Run(ctx)
 
-	// Wait long enough for at least 2 sweep ticks.
-	time.Sleep(80 * time.Millisecond)
-	cancel()
-	time.Sleep(20 * time.Millisecond) // let the goroutine drain
+	// Poll until the expected log line appears, with a 2s deadline.
+	// Replaces a fixed 80ms sleep that flaked under -race on CI (PR
+	// #190's run hit it once). Under -race, the scheduler's 2-5x
+	// slowdown can push a 10ms-interval tick past a 80ms budget;
+	// poll-until-condition removes that dependency on wall-clock
+	// timing. Same poll-until-condition pattern as PR #195's
+	// waitForActive helper.
+	waitForLogContaining(t, &mu, &logs, "heartbeat: marked %d stale run(s) as failed", 2*time.Second)
 
+	cancel()
+	// Brief settle so the sweeper goroutine returns cleanly before
+	// the store is closed by t.Cleanup. Not load-bearing for the
+	// assertion above (already satisfied at this point); purely
+	// "don't leak a goroutine into the next test."
+	time.Sleep(20 * time.Millisecond)
+}
+
+// waitForLogContaining polls the captured-log slice under the mutex
+// until any entry equals the wanted format string OR the deadline
+// elapses. Fails the test with the full log buffer for diagnosis when
+// the deadline fires. The format string (not the formatted message)
+// is what gets captured by the test's Logger closure — sweeper.go's
+// log lines come through as the raw fmt template before any args are
+// substituted.
+func waitForLogContaining(t *testing.T, mu *sync.Mutex, logs *[]string, want string, deadline time.Duration) {
+	t.Helper()
+	end := time.Now().Add(deadline)
+	for time.Now().Before(end) {
+		mu.Lock()
+		for _, line := range *logs {
+			if line == want {
+				mu.Unlock()
+				return
+			}
+		}
+		mu.Unlock()
+		time.Sleep(5 * time.Millisecond)
+	}
 	mu.Lock()
 	defer mu.Unlock()
-
-	// At least one "marked N" line for the stale row.
-	foundMarked := false
-	for _, line := range logs {
-		if line == "heartbeat: marked %d stale run(s) as failed" {
-			foundMarked = true
-			break
-		}
-	}
-	if !foundMarked {
-		t.Errorf("expected 'marked N stale runs' log line; got: %v", logs)
-	}
+	t.Fatalf("waitForLogContaining: timed out after %s waiting for %q; captured: %v",
+		deadline, want, *logs)
 }

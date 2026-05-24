@@ -8,6 +8,105 @@ For pre-v0.4 history (single-tool runtime, library milestone, security patch), s
 
 ---
 
+## What's in v0.10.2
+
+Three independent items closing v0.9.x loose ends. Bundled as v0.10.2 to keep the v0.10.x roadmap clean before the larger remaining slices (multi-replica HA via Redis cancel pubsub, in-memory run-status cache).
+
+### What's new
+
+**Voyage AI embedder** — replaces the `provider: anthropic` stub that returned `embedder_not_implemented` in v0.9.0–v0.10.1. Anthropic has no native embedding API and explicitly recommends Voyage AI; the operator yaml stays `provider: anthropic` for ergonomics, but the underlying HTTP calls now go to Voyage's `/v1/embeddings` endpoint with `Authorization: Bearer $VOYAGE_API_KEY`. Same wire shape as OpenAI's embedder (Voyage's API is deliberately OpenAI-compatible).
+
+```yaml
+memory:
+  embedder:
+    provider: anthropic           # routes to Voyage AI under the hood
+    model: voyage-3               # see model menu below
+    batch_size: 128               # Voyage caps voyage-3 family at 128
+```
+
+```sh
+export VOYAGE_API_KEY=...         # NEW (separate from ANTHROPIC_API_KEY)
+```
+
+`voyageEmbeddingDims` covers the canonical model menu:
+
+| Model family | Models | Default dim |
+|---|---|---|
+| Current (voyage-4) | voyage-4, voyage-4-large, voyage-4-lite, voyage-4-nano | 1024 |
+| Domain-specific | voyage-code-3, voyage-finance-2, voyage-law-2 | 1024 |
+| Legacy (back-compat) | voyage-3, voyage-3-large, voyage-multilingual-2 | 1024 |
+
+Per-attempt timeout (not per-batch) — each retry attempt gets a fresh deadline so a `Retry-After: 30s` from a 429 doesn't silently neuter retries even when `timeout: 10s`. The outer ctx still applies as the absolute ceiling.
+
+7 new unit tests against a synthetic `httptest.Server`: happy path, auth header, batching across calls, index-based reorder, dimension mismatch detection, HTTP 5xx surface, missing model construction refusal, `providers.NewEmbedder("anthropic", ...)` registration round-trip.
+
+**sqlite-vec build mechanism** — architectural opt-in for SQLite Vector Memory. Default build is unchanged: pure-Go `modernc.org/sqlite`, no CGO, single static binary, vector ops refuse with `vector_unsupported`. Operators wanting vectors on SQLite build with:
+
+```sh
+brew install sqlite-vec                 # or apt install libsqlite3-mod-vec
+export LOOMCYCLE_SQLITE_VEC_PATH=$(brew --prefix sqlite-vec)/lib/vec0
+CGO_ENABLED=1 go install -tags=sqlite_vec github.com/denn-gubsky/loomcycle/cmd/loomcycle@v0.10.2
+```
+
+The tag swaps the driver to `github.com/mattn/go-sqlite3` (CGO) and registers a custom `sqlite3_loomcycle_vec` driver with a `ConnectHook` that calls `LoadExtension(LOOMCYCLE_SQLITE_VEC_PATH, "")` on every new connection. Boot log confirms the build-tag choice:
+
+```
+sqlite: sqlite_vec build active — extension path=/opt/homebrew/opt/sqlite-vec/lib/vec0 (MemoryEmbed* implementation lands in v0.10.3; SupportsVectors() still false until then)
+```
+
+**The actual `MemoryEmbed*` methods are still stubbed in v0.10.2** — `SupportsVectors()` returns `false` regardless of build tag. The build mechanism is the architectural commitment; the full vec0 virtual-table schema design (per-dimension partitioning vs single-table-with-aux-columns) lands in v0.10.3 after benchmarking against real workloads. Operators selecting `-tags=sqlite_vec` today get a CGO binary that LOADS the extension but doesn't USE it for vector ops yet.
+
+Release tarballs stay at 4 (default-only). Operators wanting sqlite-vec build locally — adding cross-platform CGO compilation to the goreleaser pipeline is a separate (substantial) infrastructure change.
+
+File factoring:
+
+- `internal/store/sqlite/sqlite.go` — driver-agnostic; `Open()` calls `openDB()`.
+- `internal/store/sqlite/driver_default.go` (`//go:build !sqlite_vec`) — modernc import + `sql.Open("sqlite", ...)`.
+- `internal/store/sqlite/driver_vec.go` (`//go:build sqlite_vec`) — mattn import + `sql.Register("sqlite3_loomcycle_vec", ...)` with the ConnectHook.
+- `internal/store/sqlite/memory_embeddings.go` (`//go:build !sqlite_vec`) — existing refusal stubs.
+- `internal/store/sqlite/memory_embeddings_vec.go` (`//go:build sqlite_vec`) — new file with `SupportsVectors()=false` + `errVecImplPending` returned from all MemoryEmbed* methods.
+
+**Heartbeat-sweeper test flake fix** — `TestSweeperRun_LogsResults` in `internal/heartbeat/sweeper_test.go` used an 80ms fixed sleep to wait for ≥2 sweeper ticks at a 10ms interval. Under `-race` (CI), the scheduler's 2-5x slowdown can push past the budget — flaked once on PR #190's CI run. New `waitForLogContaining` helper polls the captured-log slice under the existing mutex with a 2-second deadline. Same pattern as PR #195's `waitForActive` helper. 10 race iterations clean (`go test -race -count=10`).
+
+### Adapter releases
+
+- **`@loomcycle/client` 0.10.1 → 0.10.2** (npm) — version bump for binary-tag-to-adapter-version lockstep enforced by `publish-ts-adapter.yml`. No method changes.
+- **`loomcycle` Python** held at 0.7.0.
+
+### Wire-surface counts
+
+| Surface | v0.10.1 | v0.10.2 |
+|---|---|---|
+| Embedder drivers | 3 (openai, gemini, anthropic-stub) | 3 (openai, gemini, **anthropic→Voyage**) |
+| Env vars | b | b + 1 (`VOYAGE_API_KEY`) |
+| Build tags | platform-only | platform-only + **`sqlite_vec`** |
+| Bundled help topics | n | n + 2 (`voyage-embedder`, `sqlite-vec`) |
+| MCP meta-tools | 33 | 33 (no change) |
+| gRPC RPCs | n | n (no change) |
+| TS adapter methods | 36 | 36 (no change) |
+
+### Migration notes
+
+- **No schema migrations required.** Purely additive.
+- **No yaml changes required for back-compat.** The Anthropic embedder slot was non-functional in v0.10.1; operators who had `provider: anthropic` set but were getting refusals now get working Voyage embeddings as long as `VOYAGE_API_KEY` is set.
+- **Operators newly setting `provider: anthropic`** need to set `VOYAGE_API_KEY` separately from `ANTHROPIC_API_KEY` (the latter stays for chat completions).
+- **SQLite operators wanting vector ops** continue to get `vector_unsupported` on the default build. The `-tags=sqlite_vec` opt-in is the only path; full functionality lands in v0.10.3.
+- **TS adapter consumers**: bump `@loomcycle/client` to 0.10.2 if you tag the binary to v0.10.2 (lockstep). No code changes required.
+
+### Code review fixes
+
+A parallel code-reviewer agent run caught 4 findings, all fixed in commit `458238a` before merge:
+1. **Critical** — Voyage timeout wrapped the entire `ratelimit.Do` call rather than each attempt; long `Retry-After` would silently neuter retries. Fixed by moving timeout INSIDE the attempt closure.
+2. **Critical** — `memory_embeddings_vec.go` originally returned `SupportsVectors()=true` which routed the storetest contract suite into round-trip tests that would fail with `errVecImplPending` rather than the expected `ErrVectorUnsupported`. Fixed by returning false until v0.10.3 wires the real implementation; added a boot log line so operators still see the build-tag confirmation.
+3. **Important** — `voyageEmbeddingDims` only had legacy voyage-3 models; operators following Voyage's current recommendations and configuring `voyage-4` got `Dimension()=0` (silently skipping the in-response sanity check). Added voyage-4 family + domain models.
+4. **Important** — `vecDriverRegErr` dead var with linter-silencing `_ = vecDriverRegErr`. Removed.
+
+### Downloads
+
+Assets attached: `loomcycle-{darwin,linux}-{amd64,arm64}.tar.gz` + `SHA256SUMS`.
+
+---
+
 ## What's in v0.10.1
 
 Per-tenant fairness on the run-admitting semaphore. Second slice of the v0.10.x production-grade-ops sweep. Closes the multi-tenant starvation case operators hit when one user submits a burst large enough to fill the global queue — without fairness, every other user's run waits behind the burst even when the noisy user is plainly hogging the substrate.
