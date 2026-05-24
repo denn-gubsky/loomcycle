@@ -172,6 +172,8 @@ Full security model + the two-layer default-deny walkthrough: [`docs/TOOLS.md`](
 
 ## Documentation
 
+Repo-side docs (this directory):
+
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — request flow, provider abstraction, agent loop, sub-agents, skills, storage, concurrency, cancellation.
 - [`docs/TOOLS.md`](docs/TOOLS.md) — two-layer default-deny model, every built-in tool, MCP / LocalAPI integrations, per-request narrowing.
 - [`docs/MCP_INTEGRATION.md`](docs/MCP_INTEGRATION.md) — end-to-end MCP HTTP pipeline: request lifecycle, `${run.user_bearer}` substitution, model-visibility boundary, recipe for wrapping a REST API as an MCP server consumable by loomcycle.
@@ -182,6 +184,19 @@ Full security model + the two-layer default-deny walkthrough: [`docs/TOOLS.md`](
 - [`REVISIONS.md`](REVISIONS.md) — per-version release notes (v0.4.0 onward).
 - [`CONTRIBUTING.md`](CONTRIBUTING.md) — contribution policy (closed for external PRs until v1.x).
 - [`CLAUDE.md`](CLAUDE.md) — project guide for agents working in this repo (Claude Code).
+
+In-binary docs (bundled `Context.help` topics — agents read these directly; operators hit `GET /v1/_help/<topic>` against a running instance):
+
+- `installation` — all four install paths (Homebrew, Docker, `go install`, direct tarball) with verification + troubleshooting.
+- `getting-started` — first-run walkthrough (`init` → set env vars → `doctor` → run).
+- `llm-gateway` — direct LLM routing endpoint (v0.11.0; for n8n + LangChain consumers).
+- `fairness` — per-user concurrency quota policy.
+- `observability` — OTEL trace export setup.
+- `vector-memory`, `voyage-embedder`, `sqlite-vec` — Vector Memory backends.
+- `dynamic-mcp` — register MCP servers at runtime.
+- `bash-security` — Bash tool's restricted-not-isolated security posture.
+
+Full list via `GET /v1/_help` against a running instance.
 
 ## License
 
