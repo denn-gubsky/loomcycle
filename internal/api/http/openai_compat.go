@@ -263,6 +263,16 @@ func llmResponseToOpenAI(r *llmChatResponse) openaiChatResponse {
 	if textBuf.Len() > 0 {
 		raw, _ := json.Marshal(textBuf.String())
 		msg.Content = raw
+	} else {
+		// OpenAI spec requires `content` to be present on every
+		// assistant message — string or null, never absent. With
+		// the `omitempty` tag, a nil json.RawMessage drops the
+		// field entirely from the JSON output; the OpenAI Python
+		// + TypeScript SDKs key off `content: null` to recognise
+		// tool-call-only turns and the absence trips Zod / Pydantic
+		// strict-mode validators. Explicitly emit the literal
+		// `null` bytes so the field appears on the wire.
+		msg.Content = json.RawMessage("null")
 	}
 	return openaiChatResponse{
 		ID:      r.ID,
@@ -389,9 +399,29 @@ func (s *Server) serveOpenAICompatStream(
 				stopReason = ev.StopReason
 			}
 		case providers.EventError:
+			// SECURITY: provider error messages can contain
+			// operator-internal diagnostic text (rate-limit tier
+			// names, model identifiers, endpoint paths, fragments
+			// of request headers from auth-failure responses). The
+			// native /v1/_llm/chat path emits a structured
+			// `event: error` frame so this stays in a clearly-
+			// labelled side-channel; OpenAI's protocol has no
+			// equivalent typed-error frame, so we'd otherwise
+			// embed the diagnostic in user-visible delta.content.
+			// Emit a fixed placeholder instead — the full error
+			// surfaces server-side via logGatewayRequest(runErr).
 			fr := "stop"
-			emitChunk(openaiChunkDelta{Content: "[loomcycle: " + ev.Error + "]"}, &fr, nil)
+			emitChunk(openaiChunkDelta{Content: "[loomcycle: provider error]"}, &fr, nil)
 			runErr = fmt.Errorf("%s", ev.Error)
+			// Drain the rest of the channel without emitting
+			// further chunks — current drivers close the channel
+			// immediately after EventError, but unguarded the
+			// loop would emit content frames AFTER the terminal
+			// finish_reason chunk on any future driver that
+			// emits trailing events. SDK iterators on the client
+			// side have already committed to terminal state.
+			for range ch {
+			}
 		}
 	}
 

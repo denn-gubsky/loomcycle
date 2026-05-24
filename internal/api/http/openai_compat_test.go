@@ -129,6 +129,88 @@ func TestOpenAICompat_ToolCallResponse(t *testing.T) {
 	}
 }
 
+// TestOpenAICompat_NonStreaming_ToolCallOnly_ContentIsNull — regression
+// for the v0.11.3 review finding: tool-call-only responses must carry
+// `content: null` on the wire, not absent. OpenAI Python SDK
+// (Pydantic) + TypeScript SDK (Zod) both validate `content` field
+// presence; absent field trips strict-mode parsers.
+func TestOpenAICompat_NonStreaming_ToolCallOnly_ContentIsNull(t *testing.T) {
+	input := json.RawMessage(`{"x":1}`)
+	prov := &scriptedProvider{
+		scripts: [][]providers.Event{{
+			{Type: providers.EventToolCall, ToolUse: &providers.ToolUse{ID: "call_a", Name: "f", Input: input}},
+			{Type: providers.EventUsage, Usage: &providers.Usage{InputTokens: 1, OutputTokens: 1}, StopReason: "tool_use"},
+			{Type: providers.EventDone, StopReason: "tool_use"},
+		}},
+	}
+	srv, _ := makeServer(t, prov, makeBaseConfig())
+	ts := httptest.NewServer(srv.Mux())
+	defer ts.Close()
+
+	body := `{"model":"scripted-model","messages":[{"role":"user","content":"x"}],"loomcycle_provider":"scripted"}`
+	resp, err := http.Post(ts.URL+"/v1/chat/completions", "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(resp.Body)
+	// Assert the raw JSON contains `"content":null` (not absent and
+	// not empty string). encoding/json's omitempty would drop a nil
+	// json.RawMessage; this pins that the explicit literal lands.
+	if !bytes.Contains(raw, []byte(`"content":null`)) {
+		t.Errorf("tool-call-only response must carry \"content\":null on the wire (OpenAI SDK strict validation); got:\n%s", string(raw))
+	}
+}
+
+// TestOpenAICompat_NonStreaming_MixedTextAndToolCall — assistant
+// returns BOTH text content AND a tool_use block in the same response.
+// OpenAI spec allows both on the same message; the translator must
+// populate both `message.content` (text concatenated) and
+// `message.tool_calls`.
+func TestOpenAICompat_NonStreaming_MixedTextAndToolCall(t *testing.T) {
+	input := json.RawMessage(`{"q":"x"}`)
+	prov := &scriptedProvider{
+		scripts: [][]providers.Event{{
+			{Type: providers.EventText, Text: "Sure, let me check. "},
+			{Type: providers.EventToolCall, ToolUse: &providers.ToolUse{ID: "call_z", Name: "search", Input: input}},
+			{Type: providers.EventUsage, Usage: &providers.Usage{InputTokens: 5, OutputTokens: 10}, StopReason: "tool_use"},
+			{Type: providers.EventDone, StopReason: "tool_use"},
+		}},
+	}
+	srv, _ := makeServer(t, prov, makeBaseConfig())
+	ts := httptest.NewServer(srv.Mux())
+	defer ts.Close()
+
+	body := `{"model":"scripted-model","messages":[{"role":"user","content":"q"}],"loomcycle_provider":"scripted"}`
+	resp, err := http.Post(ts.URL+"/v1/chat/completions", "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var out openaiChatResponse
+	_ = json.NewDecoder(resp.Body).Decode(&out)
+
+	if len(out.Choices) != 1 {
+		t.Fatalf("choices=%+v", out.Choices)
+	}
+	var text string
+	if err := json.Unmarshal(out.Choices[0].Message.Content, &text); err != nil {
+		t.Fatalf("content must be a JSON string (got %s): %v", string(out.Choices[0].Message.Content), err)
+	}
+	if text != "Sure, let me check. " {
+		t.Errorf("content=%q; want text from the text block", text)
+	}
+	if len(out.Choices[0].Message.ToolCalls) != 1 {
+		t.Fatalf("tool_calls=%+v; want one entry", out.Choices[0].Message.ToolCalls)
+	}
+	if out.Choices[0].Message.ToolCalls[0].Function.Name != "search" {
+		t.Errorf("tool_call shape wrong: %+v", out.Choices[0].Message.ToolCalls[0])
+	}
+	if out.Choices[0].FinishReason != "tool_calls" {
+		t.Errorf("finish_reason=%q; want tool_calls (last stop_reason wins)", out.Choices[0].FinishReason)
+	}
+}
+
 // TestOpenAICompat_StreamingFramesAndDone — stream:true emits
 // chat.completion.chunk frames with bare `data:` lines (no event:
 // names) terminated by `data: [DONE]`.
