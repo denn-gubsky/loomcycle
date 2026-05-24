@@ -38,43 +38,63 @@ Same Go binary, same config schema. Operator flips a few env vars to pick the po
 
 The trust boundary is **operator/caller** — the operator config is the floor, callers can narrow per-request but never widen. The bearer token (`LOOMCYCLE_AUTH_TOKEN`) is the authority. Treat anyone with the token as fully trusted to drive the runtime. For true isolation in the sandbox posture, run loomcycle inside a container or VM — `Bash` is restricted (cwd, env scrub, output bounds, timeouts) but is **not** a kernel-level sandbox.
 
+## Install
+
+Pick the path that fits. All four ship the same single static binary
+plus the v0.11.1 `init` / `doctor` first-run flow. `Context.help
+installation` covers each in detail.
+
+```sh
+# Homebrew (macOS + Linux)
+brew install denn-gubsky/loomcycle/loomcycle
+
+# Docker (v0.11.2+; pull works on amd64 + arm64 including Apple Silicon)
+docker pull denngubsky/loomcycle:latest
+
+# go install from source (skips Web UI embedding — for dev only)
+go install github.com/denn-gubsky/loomcycle/cmd/loomcycle@latest
+
+# Direct tarball (one of darwin-arm64 / darwin-amd64 / linux-arm64 / linux-amd64)
+curl -L https://github.com/denn-gubsky/loomcycle/releases/latest/download/loomcycle-darwin-arm64.tar.gz | tar xz
+```
+
 ## Quick start
 
-```bash
-# 1. Build (UI + binary in one shot)
-make build-all
-# Or Go-only (skips embedding the UI; /ui returns 503):
-#   make build
+```sh
+loomcycle init       # bootstrap ~/.config/loomcycle/loomcycle.yaml + README.md
+# set $LOOMCYCLE_AUTH_TOKEN + at least one provider key in your shell rc
+loomcycle doctor     # verify env + provider keys + storage + listen
+loomcycle            # start the server on 127.0.0.1:8787
 
-# 2. Configure
-cp .env.example .env.local       # set ANTHROPIC_API_KEY / GEMINI_API_KEY / etc.
-cp loomcycle.example.yaml ~/.config/loomcycle/loomcycle.yaml
-
-# 3. Run
-./bin/loomcycle --config ~/.config/loomcycle/loomcycle.yaml
-
-# 4. Smoke
+# Smoke
 curl http://127.0.0.1:8787/healthz
 # {"ok":true}
 
-# 5. Real call (from another terminal)
+# Open the Web UI (one-time per browser session — sets HttpOnly cookie)
+open "http://127.0.0.1:8787/ui?token=$LOOMCYCLE_AUTH_TOKEN"
+```
+
+Real call (from another terminal):
+
+```sh
 curl -N http://127.0.0.1:8787/v1/runs \
   -H "Authorization: Bearer $LOOMCYCLE_AUTH_TOKEN" \
   -H "Content-Type: application/json" \
-  -d '{
-    "agent": "default",
-    "segments": [{"role":"user","content":[{"type":"trusted-text","text":"Hello"}]}]
-  }'
+  -d '{"agent":"default","segments":[{"role":"user","content":[{"type":"trusted-text","text":"Hello"}]}]}'
+```
 
-# 6. Open the Web UI (one-time per browser session)
-open "http://127.0.0.1:8787/ui?token=$LOOMCYCLE_AUTH_TOKEN"
-# Sets a HttpOnly session cookie + redirects to /ui.
+Build from a checkout (for development):
+
+```sh
+make build-all       # UI + binary in one shot; output → ./bin/loomcycle
+./bin/loomcycle --config loomcycle.example.yaml
 ```
 
 ## Current and planned
 
 **Shipped through v0.11.x:**
 
+- **v0.11.2 — Docker image + Homebrew formula polish.** Closes the install-path loop opened by v0.11.1. **Multi-arch Docker image** at `docker.io/denngubsky/loomcycle` (linux/amd64 + linux/arm64; ~6 MB total based on `gcr.io/distroless/static:nonroot`; no shell, no package manager, runs as uid 65532). New `Dockerfile` for local builds + `Dockerfile.release` for goreleaser's pre-built-binary path; both produce identical runtime images. New `docker-compose.example.yaml` at the repo root with mount + env-var + port-mapping defaults plus a commented-out Postgres upgrade block. **goreleaser `dockers:` + `docker_manifests:`** publish multi-arch manifests on every release tag — stubbed behind a `DOCKER_PUBLISH_ENABLED` repo variable so the pipeline ships tarballs + brew formula alone until the operator configures Docker Hub credentials (then flipping the var enables Docker push without further changes). **Brew formula caveats refreshed** to reference `loomcycle init` / `loomcycle doctor` (v0.11.1 commands) instead of the obsolete "drop your loomcycle.yaml" manual flow. New bundled `Context.help installation` topic walks all four install paths (Homebrew, Docker, direct tarball, `go install`) with verification + troubleshooting. README "Install" section promoted above "Quick start" so the four paths appear before the build-from-source flavor. Zero Go code changes — pure release-pipeline + docs work. `@loomcycle/client` 0.11.1 → 0.11.2 (lockstep version bump; no method changes).
 - **v0.11.1 — First-run UX: `loomcycle init` + `loomcycle doctor` + config auto-discovery.** Closes the "bare binary fails to start" gap that bit every new operator. **`loomcycle init`** writes `~/.config/loomcycle/loomcycle.yaml` + `~/.config/loomcycle/README.md` from bundled assets — auto-on minimal wizard (3 questions: provider / env-var / listen-addr) when stdin is a TTY, non-interactive otherwise. CLAUDE.md security rule §2 holds: the wizard prints env-var lines for the operator to paste into their shell rc; never writes secrets to disk. **`loomcycle doctor`** runs 6 checks (config found + parses, auth token, per-provider API-key env vars, storage backend writable, listen address bindable) and prints `[PASS]` / `[WARN]` / `[FAIL]` per check; exits 0 clean, 1 on any FAIL. **Config auto-discovery** — when `--config` is left at default AND `./loomcycle.yaml` is absent, the binary walks `$XDG_CONFIG_HOME/loomcycle/loomcycle.yaml` → `~/.config/loomcycle/loomcycle.yaml`. When nothing's found, a friendly first-run hint replaces the old confusing "open loomcycle.yaml: no such file" error. Explicit `--config /path` semantics unchanged. **Bundled documentation**: the example yaml moved to `cmd/loomcycle/embedded/` (symlinked back at repo root) and is `//go:embed`'d alongside a new per-machine quickstart `README.md` (distinct from the repo's existing `docs/CONFIGURATION.md` deep-dive — they're complementary). New bundled `Context.help getting-started` topic for the agent-facing surface. Purely additive — zero HTTP surface changes, zero schema changes. 7 new init tests + 10 new doctor tests pass. `@loomcycle/client` 0.11.0 → 0.11.1 (lockstep version bump; no method changes).
 - **v0.11.0 — LLM Gateway: direct provider routing without the agent loop.** New `POST /v1/_llm/chat` endpoint exposes the resolver + provider auth + retry layer as a direct LLM call surface. Bypasses the agent loop entirely — consumers who only need provider routing (no tools, no memory, no agent semantics) skip the ~50-200 ms per-turn overhead of a full `runStreaming` spawn. The immediate use case is **n8n's AI Agent Chat Model slot**: `@loomcycle/n8n-nodes-loomcycle` will ship a `LoomCycleChatModel` cluster sub-node consuming the gateway directly, replacing the v0.10.x "passthrough agent" workaround. The broader product positioning competes with LiteLLM / Portkey: one credential + one quota + one observability surface across all providers (Anthropic, OpenAI, DeepSeek, Gemini, Ollama, Ollama-cloud). **Wire shape:** LangChain-friendly request (flat `messages[]` with `tool_calls` / `tool_call_id` correlation) → Anthropic-style content-block response (`{type:"text"|"tool_use"}`). **Routing precedence:** `provider+model` (explicit pin) > `provider` alone > `model` alone > resolver default. **Tool calling works:** the existing per-provider schema translation (Anthropic input_schema vs OpenAI function.parameters vs Gemini function_declarations) is reused from each driver's `buildRequestBody()` — zero new translation code. **Streaming SSE** mirrors Anthropic's event names (`provider_chosen` → `content_block_start`/`delta`/`stop` → `message_delta` → `done`). **Per-user quotas** honored when `user_id` is set; anonymous calls bypass the per-user cap. **Audit:** lightweight structured log line per request + OTEL span when configured (v0.11.1 follow-up will add a dedicated `gateway_events` table). **No new server packages** — handler lives in `internal/api/http/llm_gateway.go` reusing `Provider.Call`, `Resolver.Resolve`, `Semaphore.AcquireForUser`, and the existing SSE writer. **No runs-table row per gateway call** — gateway calls are too high-cardinality (n8n workflows fire dozens per execution). `@loomcycle/client` 0.10.4 → 0.11.0 adds `llmChat()` + `llmStream()` typed methods (36 → 41 methods total). 8 new Go tests + 10 new TS tests. New bundled `Context.help llm-gateway` topic.
 
@@ -152,6 +172,8 @@ Full security model + the two-layer default-deny walkthrough: [`docs/TOOLS.md`](
 
 ## Documentation
 
+Repo-side docs (this directory):
+
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — request flow, provider abstraction, agent loop, sub-agents, skills, storage, concurrency, cancellation.
 - [`docs/TOOLS.md`](docs/TOOLS.md) — two-layer default-deny model, every built-in tool, MCP / LocalAPI integrations, per-request narrowing.
 - [`docs/MCP_INTEGRATION.md`](docs/MCP_INTEGRATION.md) — end-to-end MCP HTTP pipeline: request lifecycle, `${run.user_bearer}` substitution, model-visibility boundary, recipe for wrapping a REST API as an MCP server consumable by loomcycle.
@@ -162,6 +184,19 @@ Full security model + the two-layer default-deny walkthrough: [`docs/TOOLS.md`](
 - [`REVISIONS.md`](REVISIONS.md) — per-version release notes (v0.4.0 onward).
 - [`CONTRIBUTING.md`](CONTRIBUTING.md) — contribution policy (closed for external PRs until v1.x).
 - [`CLAUDE.md`](CLAUDE.md) — project guide for agents working in this repo (Claude Code).
+
+In-binary docs (bundled `Context.help` topics — agents read these directly; operators hit `GET /v1/_help/<topic>` against a running instance):
+
+- `installation` — all four install paths (Homebrew, Docker, `go install`, direct tarball) with verification + troubleshooting.
+- `getting-started` — first-run walkthrough (`init` → set env vars → `doctor` → run).
+- `llm-gateway` — direct LLM routing endpoint (v0.11.0; for n8n + LangChain consumers).
+- `fairness` — per-user concurrency quota policy.
+- `observability` — OTEL trace export setup.
+- `vector-memory`, `voyage-embedder`, `sqlite-vec` — Vector Memory backends.
+- `dynamic-mcp` — register MCP servers at runtime.
+- `bash-security` — Bash tool's restricted-not-isolated security posture.
+
+Full list via `GET /v1/_help` against a running instance.
 
 ## License
 

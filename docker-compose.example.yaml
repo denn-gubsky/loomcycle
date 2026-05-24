@@ -1,0 +1,77 @@
+# loomcycle — docker-compose example.
+#
+# Usage:
+#   cp docker-compose.example.yaml docker-compose.yaml
+#   docker compose up -d
+#
+# This template gives you a single loomcycle instance with a host-
+# mounted config directory + the default SQLite store. The Postgres
+# upgrade path is documented below — uncomment the postgres service
+# + storage env vars when you need multi-replica HA (lands in v0.12.x)
+# or just want a more robust storage backend.
+#
+# First-run flow (do this once before `up`):
+#   mkdir -p ./config
+#   docker run --rm -v $(pwd)/config:/home/nonroot/.config/loomcycle \
+#     denngubsky/loomcycle:latest init --no-interactive
+#   # then edit ./config/loomcycle.yaml as needed
+#
+# Set required env vars in a sibling .env file (docker compose reads
+# it automatically) — see ./config/README.md for the full list:
+#   LOOMCYCLE_AUTH_TOKEN=...   # generate with: openssl rand -hex 32
+#   ANTHROPIC_API_KEY=...      # at least one provider key
+
+services:
+  loomcycle:
+    image: denngubsky/loomcycle:latest
+    container_name: loomcycle
+    restart: unless-stopped
+    ports:
+      # HTTP+SSE API + Web UI (operator hits this from the host)
+      - "127.0.0.1:8787:8787"
+    volumes:
+      # Operator config — distroless runs as uid 65532 (nonroot);
+      # ensure the host dir is readable to that uid OR chmod 755.
+      - ./config:/home/nonroot/.config/loomcycle:ro
+      # SQLite store — writable to uid 65532 (nonroot). On Linux hosts:
+      #   mkdir -p ./data && sudo chown -R 65532:65532 ./data
+      # Without this, the container hits EACCES on the first sqlite
+      # open with no diagnostic about the uid mismatch. Docker Desktop
+      # on macOS hides this through its file-sharing layer; the issue
+      # only surfaces in production Linux deployments.
+      - ./data:/home/nonroot/.local/share/loomcycle
+    environment:
+      # Bearer for every /v1/* endpoint. Set in your .env file.
+      LOOMCYCLE_AUTH_TOKEN: ${LOOMCYCLE_AUTH_TOKEN:?LOOMCYCLE_AUTH_TOKEN required}
+      # Provider keys — set whichever you route to in your yaml.
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      # Bind to all interfaces inside the container so the port
+      # mapping above works; the host port binds to 127.0.0.1 only.
+      LOOMCYCLE_LISTEN_ADDR: "0.0.0.0:8787"
+
+  # --- Postgres backend (uncomment for v0.10.x+ Vector Memory / HA) ---
+  # postgres:
+  #   image: postgres:16
+  #   container_name: loomcycle-pg
+  #   restart: unless-stopped
+  #   environment:
+  #     POSTGRES_USER: loomcycle
+  #     POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD required}
+  #     POSTGRES_DB: loomcycle
+  #   volumes:
+  #     - ./pg-data:/var/lib/postgresql/data
+  #   healthcheck:
+  #     test: ["CMD-SHELL", "pg_isready -U loomcycle -d loomcycle"]
+  #     interval: 5s
+  #     retries: 12
+  #
+  # Then on the loomcycle service above, add to `environment:`:
+  #   LOOMCYCLE_STORAGE_BACKEND: postgres
+  #   LOOMCYCLE_PG_DSN: postgres://loomcycle:${POSTGRES_PASSWORD}@postgres:5432/loomcycle?sslmode=disable
+  #   LOOMCYCLE_PG_AUTOMIGRATE: "true"
+  # and to `depends_on:`:
+  #   postgres:
+  #     condition: service_healthy

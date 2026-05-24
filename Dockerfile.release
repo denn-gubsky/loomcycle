@@ -1,0 +1,19 @@
+# Dockerfile.release — goreleaser variant.
+#
+# goreleaser pre-builds every arch in its `builds:` stage (no Go
+# toolchain runs inside Docker). The `dockers:` stage just copies
+# the already-built binary into the runtime image. This file is
+# referenced by .goreleaser.yaml's `dockers[].dockerfile` field.
+#
+# For local Docker builds from a clean checkout, use the regular
+# Dockerfile at the repo root (which does run go build).
+#
+# Both paths produce identical runtime images: distroless/static
+# :nonroot + the binary at /usr/local/bin/loomcycle.
+
+FROM gcr.io/distroless/static:nonroot
+WORKDIR /
+COPY loomcycle /usr/local/bin/loomcycle
+USER nonroot
+EXPOSE 8787
+ENTRYPOINT ["/usr/local/bin/loomcycle"]

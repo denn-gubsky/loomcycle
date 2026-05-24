@@ -1,0 +1,69 @@
+# .dockerignore — keep the Docker build context lean + secret-safe.
+#
+# Without this file, `docker build .` would COPY the entire working
+# tree into the build context, including:
+#   - .env.local / .env* — operator-set API keys (CLAUDE.md security
+#     rule §2 forbids reading or writing this file)
+#   - bin/, dist/, node_modules/ — local build artifacts that bloat
+#     the context and slow the build
+#   - .git/ — version-control history (not needed at build time;
+#     goreleaser passes the build-version stamp via --build-arg)
+#
+# Everything listed here is excluded from the `docker build` context.
+# Multi-stage stages that need a subset still get what they need
+# (Stage 1 needs web/, Stage 2 needs the Go source tree); this file
+# just keeps secrets + bloat out.
+
+# Secrets — NEVER let .env.local enter a build context. The wizard
+# in v0.11.1's init prints env-var lines for the operator to paste;
+# they should never reach a container image layer.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Local build artifacts
+bin/
+dist/
+node_modules/
+web/node_modules/
+internal/webui/dist/assets/
+# Keep internal/webui/dist/.gitkeep so the go:embed directive finds at
+# least one matching file when Stage 1 hasn't run yet (e.g. someone
+# inspecting the build context).
+!internal/webui/dist/.gitkeep
+!internal/webui/dist/index.html
+!internal/webui/dist/favicon.svg
+
+# VCS metadata — not used at build time
+.git/
+.gitignore
+.github/
+
+# Editor / IDE state
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# Local data directories the operator may have created in cwd
+data/
+config/
+loomcycle.db
+loomcycle.db-*
+
+# Docker files themselves (no point re-copying)
+Dockerfile
+Dockerfile.release
+docker-compose*.yaml
+.dockerignore
+
+# Test caches
+.cover.out
+coverage.html
+
+# Adapter dist trees
+adapters/ts/dist/
+adapters/ts/node_modules/
+adapters/python/dist/
