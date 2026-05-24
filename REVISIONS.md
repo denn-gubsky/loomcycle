@@ -8,6 +8,64 @@ For pre-v0.4 history (single-tool runtime, library milestone, security patch), s
 
 ---
 
+## What's in v0.10.3
+
+Adapter-only release. Adds three typed enumeration methods to `@loomcycle/client` that wrap the v0.9.3 Library v2 HTTP endpoints — no Go code changes, no wire-protocol changes, no schema migrations.
+
+### Motivation
+
+While integrating loomcycle with n8n (the workflow editor), the operator needed to populate a dropdown of "which agent should this workflow node dispatch?" — covering both yaml-static agents AND dynamically-registered AgentDefs. The HTTP endpoint to enumerate this (`GET /v1/_library/agents`, shipped in v0.9.3 as part of Library v2) already merges both sources into one envelope. But the npm-published TypeScript adapter had no typed wrapper for it — external consumers would have to drop to raw `fetch` against a path string with no IntelliSense over the response shape. This release closes that gap.
+
+The same gap existed for skills + MCP servers (also enumerable via `/v1/_library/skills` and `/v1/_library/mcp-servers` since v0.9.3); ship all three together since the pattern is identical.
+
+### New methods
+
+```typescript
+async listLibraryAgents(opts?): Promise<LibraryListResponse<LibraryAgentDefinition>>
+async listLibrarySkills(opts?): Promise<LibraryListResponse<LibrarySkillDefinition>>
+async listLibraryMcpServers(opts?): Promise<LibraryListResponse<LibraryMcpServerDefinition>>
+```
+
+Each returns the canonical Library v2 envelope: a list of entries tagged with `source: "static-only" | "dynamic-only" | "both"`, `in_static` / `in_substrate` booleans, substrate-version metadata (`version_count`, `active_def_id`, `latest_version`, `last_updated`), and the typed `static_definition` body inlined when the entry has a yaml source. Deterministic alphabetical sort by name.
+
+### Typed `static_definition` per endpoint
+
+The Web UI's `LibraryEntry` shape (`web/src/api.ts:825`) types `static_definition` as `unknown` because one renderer component handles all three flavors. The adapter does the opposite: each method returns a typed `LibraryEntry<T>` where `T` is the per-endpoint definition shape, so external consumers get full IntelliSense.
+
+- `LibraryAgentDefinition` — provider, model, tier, effort, max_tokens, max_iterations, system_prompt[_base], allowed_tools, skills, providers, models (kept opaque as Record<string, unknown> for forward-compat), memory_scopes, memory_quota_bytes.
+- `LibrarySkillDefinition` — body, description, allowed_tools.
+- `LibraryMcpServerDefinition` — transport, url, headers, command, args, env, pool_size, allowed_tools, discovered_tools (cached PeekTools snapshot; omitted when the pool inspector returns nil).
+
+### Test coverage
+
+8 new tests in `adapters/ts/tests/library.test.ts` (mirrors `substrate.test.ts` pattern): GET shape + multi-source envelope, bearer-auth header forwarding, AuthError on 401, UnavailableError on 503, empty-entries (the n8n empty-dropdown case), AbortSignal propagation. Plus one happy-path each for skills + mcp-servers covering the per-flavor `static_definition` typing.
+
+### Wire-surface counts
+
+| Surface | v0.10.2 | v0.10.3 |
+|---|---|---|
+| TS adapter methods | 36 | 39 (+3 listLibrary*) |
+| TS adapter exported types | n | n + 5 (LibraryEntry, LibraryListResponse, LibraryAgentDefinition, LibrarySkillDefinition, LibraryMcpServerDefinition) |
+| Go HTTP endpoints | unchanged | unchanged |
+| Go test count | unchanged | unchanged |
+
+### Migration notes
+
+- **No yaml changes required.** Existing deployments see zero behavior change on upgrade.
+- **No wire-protocol changes.** v0.10.3 binary is byte-identical to v0.10.2 binary on the HTTP surface (the only repo changes are under `adapters/ts/`). Operators who don't use the TypeScript adapter can stay on v0.10.2 indefinitely.
+- **TS adapter consumers** bump `@loomcycle/client` to 0.10.3 to pick up the new methods. Existing methods are byte-identical; no breaking changes.
+- **n8n-nodes-loomcycle** bumps its `@loomcycle/client` pin to 0.10.3 + swaps any `loadRecentAgentNames` lookup to `client.listLibraryAgents()` whose response is source-tagged for richer dropdown rendering. The n8n-side change ships in a separate PR on the n8n-nodes-loomcycle repo.
+
+### Why not a new `GET /v1/_agents` endpoint
+
+The original proposal was a new slim Go endpoint. After exploring the codebase, the existing `/v1/_library/agents` (v0.9.3 Library v2) already returns exactly the proposed shape — name + source + static_definition + version metadata — for both yaml-static AND dynamic AgentDefs. Adding a second endpoint would create two surfaces that look almost identical, with source-of-truth ambiguity. The cleaner fix is the adapter-side wrapper that lets external consumers call the existing endpoint with typing.
+
+### Downloads
+
+No new binary tarballs (no Go changes). The `loomcycle` binary stays on v0.10.2. Pull this adapter via `npm install @loomcycle/client@0.10.3`.
+
+---
+
 ## What's in v0.10.2
 
 Three independent items closing v0.9.x loose ends. Bundled as v0.10.2 to keep the v0.10.x roadmap clean before the larger remaining slices (multi-replica HA via Redis cancel pubsub, in-memory run-status cache).
