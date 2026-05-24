@@ -45,10 +45,10 @@ type llmChatRequest struct {
 // requested calls. For "tool" turns, `ToolCallID` correlates back to
 // the assistant turn's `ToolCalls[].ID`.
 type llmChatMessage struct {
-	Role       string             `json:"role"` // "system" | "user" | "assistant" | "tool"
-	Content    string             `json:"content,omitempty"`
-	ToolCalls  []llmChatToolCall  `json:"tool_calls,omitempty"`
-	ToolCallID string             `json:"tool_call_id,omitempty"`
+	Role       string            `json:"role"` // "system" | "user" | "assistant" | "tool"
+	Content    string            `json:"content,omitempty"`
+	ToolCalls  []llmChatToolCall `json:"tool_calls,omitempty"`
+	ToolCallID string            `json:"tool_call_id,omitempty"`
 }
 
 // llmChatToolCall is one assistant-requested tool invocation.
@@ -67,13 +67,13 @@ type llmChatTool struct {
 
 // llmChatResponse is the non-streaming response shape.
 type llmChatResponse struct {
-	ID         string             `json:"id"`
-	RequestID  string             `json:"request_id"`
-	Provider   string             `json:"provider"`
-	Model      string             `json:"model"`
-	Content    []llmContentBlock  `json:"content"`
-	StopReason string             `json:"stop_reason"`
-	Usage      llmUsage           `json:"usage"`
+	ID         string            `json:"id"`
+	RequestID  string            `json:"request_id"`
+	Provider   string            `json:"provider"`
+	Model      string            `json:"model"`
+	Content    []llmContentBlock `json:"content"`
+	StopReason string            `json:"stop_reason"`
+	Usage      llmUsage          `json:"usage"`
 }
 
 // llmContentBlock is a single output content block. `Type` discriminates
@@ -119,8 +119,8 @@ type llmStreamProviderChosen struct {
 // carries the initial state (empty text for "text" blocks; tool
 // metadata for "tool_use" blocks).
 type llmStreamContentBlockStart struct {
-	Index int              `json:"index"`
-	Block llmContentBlock  `json:"block"`
+	Index int             `json:"index"`
+	Block llmContentBlock `json:"block"`
 }
 
 // llmStreamContentBlockDelta — incremental update to a content block.
@@ -128,8 +128,8 @@ type llmStreamContentBlockStart struct {
 // blocks, "input_json_delta" for "tool_use" blocks (partial JSON
 // fragment).
 type llmStreamContentBlockDelta struct {
-	Index int              `json:"index"`
-	Delta llmStreamDelta   `json:"delta"`
+	Index int            `json:"index"`
+	Delta llmStreamDelta `json:"delta"`
 }
 
 // llmStreamDelta is the per-delta payload.

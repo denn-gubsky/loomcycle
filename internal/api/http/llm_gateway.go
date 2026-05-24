@@ -43,7 +43,7 @@ import (
 // endpoint). Operator-trust callers only.
 
 const (
-	llmGatewayMaxRequestBytes = 1 << 20 // 1 MiB cap on request body
+	llmGatewayMaxRequestBytes  = 1 << 20 // 1 MiB cap on request body
 	llmGatewayDefaultMaxTokens = 4096
 )
 
@@ -265,12 +265,12 @@ func (s *Server) serveLLMChatStream(
 
 // resolveGatewayRequest applies the RFC §"Provider routing" precedence:
 //
-//   1. Explicit provider + model — both pinned; resolver still validates.
-//   2. Explicit provider only — resolver picks the best model in that
-//      provider given tier/user_tier.
-//   3. Explicit model only — resolver picks the provider hosting that
-//      model.
-//   4. Neither — full resolver pick by tier/user_tier.
+//  1. Explicit provider + model — both pinned; resolver still validates.
+//  2. Explicit provider only — resolver picks the best model in that
+//     provider given tier/user_tier.
+//  3. Explicit model only — resolver picks the provider hosting that
+//     model.
+//  4. Neither — full resolver pick by tier/user_tier.
 //
 // All paths honor the user_tier overlay when set.
 func (s *Server) resolveGatewayRequest(req *llmChatRequest) (providerID, modelID, effort string, err error) {
