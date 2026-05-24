@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/denn-gubsky/loomcycle/internal/providers"
+	"github.com/denn-gubsky/loomcycle/internal/resolve"
 )
 
 // TestLLMGateway_NonStreaming — happy path: POST /v1/_llm/chat with a
@@ -161,6 +162,71 @@ func TestLLMGateway_Streaming(t *testing.T) {
 		if !strings.Contains(got, want) {
 			t.Errorf("stream missing %q in:\n%s", want, got)
 		}
+	}
+}
+
+// TestLLMGateway_Streaming_ToolUseOnly — regression for the
+// pre-fix bug where a tool_use-only response (no preceding text)
+// landed at index 1 instead of 0, leaving index 0 empty and tripping
+// Anthropic-compatible adapter reassembly. Verifies the first tool_use
+// block lands at index 0.
+func TestLLMGateway_Streaming_ToolUseOnly(t *testing.T) {
+	input := json.RawMessage(`{"expr":"2+2"}`)
+	prov := &scriptedProvider{
+		scripts: [][]providers.Event{{
+			{Type: providers.EventToolCall, ToolUse: &providers.ToolUse{ID: "call_y", Name: "calc", Input: input}},
+			{Type: providers.EventUsage, Usage: &providers.Usage{InputTokens: 5, OutputTokens: 8}, StopReason: "tool_use"},
+			{Type: providers.EventDone, StopReason: "tool_use"},
+		}},
+	}
+	srv, _ := makeServer(t, prov, makeBaseConfig())
+	ts := httptest.NewServer(srv.Mux())
+	defer ts.Close()
+
+	body := `{"messages":[{"role":"user","content":"calc 2+2"}],"stream":true,"provider":"scripted","model":"scripted-model"}`
+	resp, err := http.Post(ts.URL+"/v1/_llm/chat", "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(resp.Body)
+	got := string(raw)
+	// The first content_block_start must carry index 0 — Anthropic
+	// adapters reconstruct from contiguous indices starting at 0.
+	wantStart := `event: content_block_start
+data: {"index":0,"block":{"type":"tool_use","id":"call_y","name":"calc","input":{"expr":"2+2"}}}`
+	if !strings.Contains(got, wantStart) {
+		t.Errorf("expected tool_use at index 0, got:\n%s", got)
+	}
+	if !strings.Contains(got, `event: content_block_stop
+data: {"index":0}`) {
+		t.Errorf("expected content_block_stop at index 0, got:\n%s", got)
+	}
+}
+
+// TestLLMGateway_TierUnavailable_Returns503 — regression for the
+// gatewayResolveStatus bug where ErrTierUnavailable returned 400
+// (non-retryable) instead of 503 (retryable). n8n's
+// LoomCycleChatModel branches retry on HTTP status code; surfacing
+// transient tier-exhaustion as 503 is load-bearing.
+func TestLLMGateway_TierUnavailable_Returns503(t *testing.T) {
+	srv, _ := makeServer(t, &scriptedProvider{}, makeBaseConfig())
+	// A resolver constructed with an empty tier map returns
+	// ErrTierUnavailable for any tier-driven request — exactly the
+	// behaviour the handler must surface as 503.
+	srv.SetResolver(resolve.NewResolver(nil, map[string][]resolve.Candidate{}))
+	ts := httptest.NewServer(srv.Mux())
+	defer ts.Close()
+
+	body := `{"messages":[{"role":"user","content":"hi"}],"tier":"middle"}`
+	resp, err := http.Post(ts.URL+"/v1/_llm/chat", "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		raw, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status=%d body=%s; want 503", resp.StatusCode, string(raw))
 	}
 }
 

@@ -19,21 +19,27 @@ import (
 // for "an LLM turn".
 
 // llmChatRequest is the POST /v1/_llm/chat body.
+//
+// Two RFC-mentioned fields are deliberately absent in v1:
+//   - `stop_sequences`: providers.Request has no equivalent field
+//     today; accepting the wire field would silently drop it. Lands
+//     when the providers package gains the matching surface.
+//   - `user_bearer`: this code path calls provider.Call() directly
+//     without any MCP transport, so `${run.user_bearer}` substitution
+//     has nowhere to apply. Lands when the gateway grows an MCP path.
 type llmChatRequest struct {
-	Messages      []llmChatMessage `json:"messages"`
-	Tools         []llmChatTool    `json:"tools,omitempty"`
-	MaxTokens     int              `json:"max_tokens,omitempty"`
-	Temperature   *float64         `json:"temperature,omitempty"`
-	StopSequences []string         `json:"stop_sequences,omitempty"`
-	Stream        bool             `json:"stream,omitempty"`
+	Messages    []llmChatMessage `json:"messages"`
+	Tools       []llmChatTool    `json:"tools,omitempty"`
+	MaxTokens   int              `json:"max_tokens,omitempty"`
+	Temperature *float64         `json:"temperature,omitempty"`
+	Stream      bool             `json:"stream,omitempty"`
 
 	Provider string `json:"provider,omitempty"`
 	Model    string `json:"model,omitempty"`
 	Tier     string `json:"tier,omitempty"`
 
-	UserID     string `json:"user_id,omitempty"`
-	UserTier   string `json:"user_tier,omitempty"`
-	UserBearer string `json:"user_bearer,omitempty"`
+	UserID   string `json:"user_id,omitempty"`
+	UserTier string `json:"user_tier,omitempty"`
 }
 
 // llmChatMessage is one turn in the conversation. Mirrors LangChain's

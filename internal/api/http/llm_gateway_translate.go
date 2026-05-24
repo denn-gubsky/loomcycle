@@ -109,74 +109,40 @@ func llmRequestToProviderRequest(req *llmChatRequest, model, effort string) (pro
 	}, nil
 }
 
-// providerEventToLLMStreamFrame translates one provider Event into a
-// gateway SSE frame name + payload. Returns ("", nil) for events the
-// gateway deliberately drops (EventStarted; EventChannelPublish; etc.
-// — events meaningful only inside the loop).
-//
-// Anthropic-style frame names are stable wire contract; consumers
-// (the TS adapter's llmStream method first) string-match against them.
-func providerEventToLLMStreamFrame(ev providers.Event, currentBlockIndex *int) (eventName string, payload any) {
-	switch ev.Type {
-	case providers.EventText:
-		// One text delta on the current content block. The first delta
-		// for a new "text" block needs a prior content_block_start —
-		// the caller tracks index transitions via currentBlockIndex.
-		// For simplicity v1 emits text deltas inline without
-		// start/stop pairs; consumers reading content_block_delta with
-		// type=text_delta know to concatenate.
-		return "content_block_delta", llmStreamContentBlockDelta{
-			Index: *currentBlockIndex,
-			Delta: llmStreamDelta{Type: "text_delta", Text: ev.Text},
-		}
-	case providers.EventToolCall:
-		if ev.ToolUse == nil {
-			return "", nil
-		}
-		// Bump to a new content block for the tool_use. v1 emits the
-		// full tool_use as a start-then-stop pair (no partial JSON
-		// streaming) since most providers (except Anthropic's
-		// extended-thinking-aware streaming) return the input as one
-		// complete delta. Adapters that want partial-JSON streaming
-		// can iterate v0.11.x.
-		*currentBlockIndex++
-		idx := *currentBlockIndex
-		return "content_block_start", llmStreamContentBlockStart{
-			Index: idx,
-			Block: llmContentBlock{
-				Type:  "tool_use",
-				ID:    ev.ToolUse.ID,
-				Name:  ev.ToolUse.Name,
-				Input: ev.ToolUse.Input,
-			},
-		}
-	case providers.EventUsage:
-		if ev.Usage == nil {
-			return "", nil
-		}
-		return "message_delta", llmStreamMessageDelta{
-			Delta: llmMessageDeltaPayload{StopReason: ev.StopReason},
-			Usage: llmUsage{
-				InputTokens:              ev.Usage.InputTokens,
-				OutputTokens:             ev.Usage.OutputTokens,
-				CacheCreationInputTokens: ev.Usage.CacheCreationTokens,
-				CacheReadInputTokens:     ev.Usage.CacheReadTokens,
-			},
-		}
-	case providers.EventError:
-		return "error", llmStreamError{
-			Type:    "provider_error",
-			Code:    "provider_call_failed",
-			Message: ev.Error,
-		}
-	default:
-		// EventStarted, EventDone, EventThinking, EventChannelPublish,
-		// EventToolResult, EventRetry, EventCacheInvalidated,
-		// EventProviderFallback, EventFallbackSuppressed,
-		// EventReasoningInvalidated, EventChannelDelivery — these are
-		// either loop-internal or surfaced via the dedicated done /
-		// message_delta paths the caller emits.
-		return "", nil
+// usageFrameFromEvent translates an EventUsage into the gateway's
+// message_delta frame shape. Returns nil for events that carry no
+// usage payload (the driver shouldn't emit such events but defend
+// anyway). Caller decides whether to send.
+func usageFrameFromEvent(ev providers.Event) *llmStreamMessageDelta {
+	if ev.Usage == nil {
+		return nil
+	}
+	return &llmStreamMessageDelta{
+		Delta: llmMessageDeltaPayload{StopReason: ev.StopReason},
+		Usage: llmUsage{
+			InputTokens:              ev.Usage.InputTokens,
+			OutputTokens:             ev.Usage.OutputTokens,
+			CacheCreationInputTokens: ev.Usage.CacheCreationTokens,
+			CacheReadInputTokens:     ev.Usage.CacheReadTokens,
+		},
+	}
+}
+
+// toolUseBlockFromEvent extracts the tool_use content block payload
+// from an EventToolCall. Returns nil for malformed events (ToolUse
+// pointer unset). The caller wraps it in a content_block_start with
+// the correct index — index management is exclusively the caller's
+// responsibility so block-0-for-tool-use-only responses don't end up
+// shifted to index 1.
+func toolUseBlockFromEvent(ev providers.Event) *llmContentBlock {
+	if ev.ToolUse == nil {
+		return nil
+	}
+	return &llmContentBlock{
+		Type:  "tool_use",
+		ID:    ev.ToolUse.ID,
+		Name:  ev.ToolUse.Name,
+		Input: ev.ToolUse.Input,
 	}
 }
 

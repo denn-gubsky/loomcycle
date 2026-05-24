@@ -61,6 +61,15 @@ Request (POST /v1/_llm/chat, bearer-authed):
 }
 ```
 
+Two RFC-mentioned fields are NOT accepted in v0.11.0:
+
+- `stop_sequences` — `providers.Request` has no equivalent field
+  today; accepting it would silently drop. Lands when the providers
+  package gains the matching surface (v0.11.x).
+- `user_bearer` — gateway calls `provider.Call()` directly with no
+  MCP transport, so `${run.user_bearer}` substitution has nowhere
+  to apply. Lands when the gateway grows an MCP path.
+
 Non-streaming response:
 
 ```json

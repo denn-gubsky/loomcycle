@@ -1092,13 +1092,20 @@ export interface LLMTool {
   input_schema: Record<string, unknown>;
 }
 
-/** Request body for llmChat / llmStream. */
+/** Request body for llmChat / llmStream.
+ *
+ *  Two RFC-mentioned fields are deliberately absent in v1:
+ *  - `stop_sequences`: providers.Request has no matching field today;
+ *    accepting it would silently drop it. Lands when the providers
+ *    package surface grows the equivalent.
+ *  - `user_bearer`: the gateway calls provider.Call() directly with
+ *    no MCP transport, so `${run.user_bearer}` substitution has
+ *    nowhere to apply. Lands when the gateway grows an MCP path. */
 export interface LLMChatOptions {
   messages: LLMChatMessage[];
   tools?: LLMTool[];
   max_tokens?: number;
   temperature?: number | null;
-  stop_sequences?: string[];
 
   /** Routing hint. When set with `model`, the resolver short-circuits
    *  to that explicit pin. When set alone, the resolver picks the
@@ -1115,9 +1122,6 @@ export interface LLMChatOptions {
   user_id?: string;
   /** Per-user tier overlay; takes precedence over `tier` when set. */
   user_tier?: string;
-  /** Per-request bearer for ${run.user_bearer} substitution in
-   *  provider headers. Rarely set. */
-  user_bearer?: string;
 
   /** Optional AbortSignal for caller-driven cancellation. */
   signal?: AbortSignal;

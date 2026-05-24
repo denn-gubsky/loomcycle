@@ -12,7 +12,6 @@ import (
 
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/resolve"
-	"github.com/denn-gubsky/loomcycle/internal/runner"
 )
 
 // llm_gateway.go — v0.11.0 LLM Gateway endpoint.
@@ -80,7 +79,11 @@ func (s *Server) handleLLMChat(w http.ResponseWriter, r *http.Request) {
 	// Resolve (provider, model, effort) honoring the request's hints.
 	providerID, modelID, effort, err := s.resolveGatewayRequest(&req)
 	if err != nil {
-		writeJSONError(w, gatewayResolveStatus(err), "resolve_failed", err.Error())
+		// Mirror the agent-run path: ErrTierUnavailable /
+		// ErrPinUnavailable map to 503 (retryable) so adapter
+		// consumers can apply retry-with-backoff. Everything else
+		// stays 400 (client config issue).
+		writeJSONError(w, resolveErrorToStatus(err), "resolve_failed", err.Error())
 		return
 	}
 	provider, err := s.providers.Get(providerID)
@@ -176,42 +179,56 @@ func (s *Server) serveLLMChatStream(
 		return
 	}
 
-	// v1 emits one content_block_start for the implicit text block up
-	// front, then text_delta deltas, then content_block_stop on the
-	// first non-text event (tool_use opens a new block). Keeps adapters
-	// happy without forcing them to infer block boundaries.
-	currentBlockIndex := 0
-	startedTextBlock := false
+	// Block-index lifecycle: the gateway owns the index exclusively
+	// here (translate helpers in llm_gateway_translate.go don't
+	// mutate it). nextBlockIndex is the index that WILL be assigned
+	// to the next content_block_start. openBlockIndex is the index
+	// of the currently-open block, or -1 when no block is open.
+	// Starting at 0 guarantees the first block — text or tool_use —
+	// lands at index 0, matching Anthropic's protocol contract that
+	// adapters key off.
+	nextBlockIndex := 0
+	openBlockIndex := -1
 	var (
 		usage      llmUsage
 		stopReason string
 		id         = newLLMID()
 		runErr     error
 	)
+	closeOpenBlock := func() {
+		if openBlockIndex >= 0 {
+			stream.sendRaw("content_block_stop", llmStreamContentBlockStop{Index: openBlockIndex})
+			openBlockIndex = -1
+		}
+	}
 	for ev := range ch {
 		switch ev.Type {
 		case providers.EventText:
-			if !startedTextBlock {
+			if openBlockIndex < 0 {
 				stream.sendRaw("content_block_start", llmStreamContentBlockStart{
-					Index: currentBlockIndex,
+					Index: nextBlockIndex,
 					Block: llmContentBlock{Type: "text", Text: ""},
 				})
-				startedTextBlock = true
+				openBlockIndex = nextBlockIndex
+				nextBlockIndex++
 			}
-			frameName, payload := providerEventToLLMStreamFrame(ev, &currentBlockIndex)
-			if payload != nil {
-				stream.sendRaw(frameName, payload)
-			}
+			stream.sendRaw("content_block_delta", llmStreamContentBlockDelta{
+				Index: openBlockIndex,
+				Delta: llmStreamDelta{Type: "text_delta", Text: ev.Text},
+			})
 		case providers.EventToolCall:
-			if startedTextBlock {
-				stream.sendRaw("content_block_stop", llmStreamContentBlockStop{Index: currentBlockIndex})
-				startedTextBlock = false
+			block := toolUseBlockFromEvent(ev)
+			if block == nil {
+				continue
 			}
-			frameName, payload := providerEventToLLMStreamFrame(ev, &currentBlockIndex)
-			if payload != nil {
-				stream.sendRaw(frameName, payload)
-				stream.sendRaw("content_block_stop", llmStreamContentBlockStop{Index: currentBlockIndex})
-			}
+			closeOpenBlock()
+			stream.sendRaw("content_block_start", llmStreamContentBlockStart{
+				Index: nextBlockIndex,
+				Block: *block,
+			})
+			openBlockIndex = nextBlockIndex
+			nextBlockIndex++
+			closeOpenBlock()
 		case providers.EventUsage:
 			if ev.Usage != nil {
 				usage = llmUsage{
@@ -224,19 +241,15 @@ func (s *Server) serveLLMChatStream(
 			if ev.StopReason != "" {
 				stopReason = ev.StopReason
 			}
-			frameName, payload := providerEventToLLMStreamFrame(ev, &currentBlockIndex)
-			if payload != nil {
-				stream.sendRaw(frameName, payload)
+			if frame := usageFrameFromEvent(ev); frame != nil {
+				stream.sendRaw("message_delta", *frame)
 			}
 		case providers.EventDone:
 			if ev.StopReason != "" {
 				stopReason = ev.StopReason
 			}
 		case providers.EventError:
-			if startedTextBlock {
-				stream.sendRaw("content_block_stop", llmStreamContentBlockStop{Index: currentBlockIndex})
-				startedTextBlock = false
-			}
+			closeOpenBlock()
 			stream.sendRaw("error", llmStreamError{
 				Type:    "provider_error",
 				Code:    "provider_call_failed",
@@ -245,9 +258,7 @@ func (s *Server) serveLLMChatStream(
 			runErr = errors.New(ev.Error)
 		}
 	}
-	if startedTextBlock {
-		stream.sendRaw("content_block_stop", llmStreamContentBlockStop{Index: currentBlockIndex})
-	}
+	closeOpenBlock()
 	if stopReason == "" && runErr == nil {
 		stopReason = "end_turn"
 	}
@@ -307,16 +318,6 @@ func (s *Server) resolveGatewayRequest(req *llmChatRequest) (providerID, modelID
 		return "", "", "", err
 	}
 	return dec.Provider, dec.Model, dec.Effort, nil
-}
-
-// gatewayResolveStatus maps resolver errors to HTTP status codes.
-// Mirrors resolveErrorToStatus's policy without dragging in the
-// agent-name-specific runner errors.
-func gatewayResolveStatus(err error) int {
-	if errors.Is(err, runner.ErrInvalidArgument) {
-		return http.StatusBadRequest
-	}
-	return http.StatusBadRequest
 }
 
 // logGatewayRequest emits the always-on structured audit line. The
