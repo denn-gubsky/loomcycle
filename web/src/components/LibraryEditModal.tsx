@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   createDef,
   forkDef,
@@ -145,14 +145,21 @@ export default function LibraryEditModal({
 
   // ESC closes the modal — small UX nicety matching standard dialog
   // behaviour. Submitting blocks the close path so a mid-flight save
-  // doesn't get cancelled mid-request.
+  // doesn't get cancelled mid-request. Holding onClose in a ref keeps
+  // the keydown listener registered exactly once instead of churning
+  // on every parent re-render that recreates the inline onClose arrow
+  // (LibraryView re-renders on every poll + every refreshKey bump).
+  const onCloseRef = useRef(onClose);
+  useEffect(() => {
+    onCloseRef.current = onClose;
+  });
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape" && !submitting) onClose();
+      if (e.key === "Escape" && !submitting) onCloseRef.current();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [submitting, onClose]);
+  }, [submitting]);
 
   const validateLocal = (): string | null => {
     if (!name.trim()) return "Name is required.";
@@ -244,15 +251,19 @@ export default function LibraryEditModal({
       } else {
         // Pass the active def_id as parent_def_id so the fork hangs
         // off the right ancestor even when the substrate state has
-        // raced ahead since the modal opened.
+        // raced ahead since the modal opened. Static-only forks omit
+        // parent_def_id so the substrate's bootstrap-on-first-fork
+        // mechanism (v0.8.22) auto-creates a v1 from yaml.
+        const parentDefID =
+          forkSource?.def_id && !forkSource.def_id.startsWith("static:")
+            ? forkSource.def_id
+            : undefined;
         row = await forkDef(
           substrateKind,
           name.trim(),
           overlay,
           promote,
-          forkSource?.def_id?.startsWith("static:")
-            ? undefined
-            : forkSource?.def_id,
+          parentDefID,
         );
       }
       onSaved(row);
@@ -700,8 +711,22 @@ function explainServerError(e: unknown): string {
   }
   // Substring patterns surfaced by the substrate tools (verified
   // against internal/tools/builtin/{agentdef,skilldef,mcpserverdef}.go).
-  if (innerText.includes("matches a static cfg.")) {
+  // The static-name refusal phrasing differs per substrate — agentdef
+  // says "matches a static cfg.Agents entry", mcpserverdef says
+  // "matches a static cfg.MCPServers entry", and skilldef says
+  // "matches a static SKILL.md entry". Cover all three.
+  if (
+    innerText.includes("matches a static cfg.") ||
+    innerText.includes("matches a static SKILL.md entry")
+  ) {
     return "An entry with this name is defined in yaml. Pick a different name.";
+  }
+  // Fork-with-no-parent surfaces internal env var names + path text
+  // ("LOOMCYCLE_SKILLS_ROOT unset", "static cfg.Agents entry") in the
+  // raw fallback. Catch it explicitly so operators see Create vs Edit
+  // guidance instead of a confusing config dump.
+  if (innerText.includes("has neither a DB version nor a static")) {
+    return "No existing version found for this name. Use Create instead of Edit.";
   }
   if (innerText.includes("not configured (no Store backend)")) {
     return "Substrate is not configured. Set up a store backend in loomcycle.yaml.";

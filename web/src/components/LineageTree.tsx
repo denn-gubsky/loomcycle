@@ -279,7 +279,7 @@ function LineageNodeRow({
                 Promote ▲
               </button>
             )}
-            {onRetireRow && isActive && !row.def_id.startsWith("static:") && !row.retired && (
+            {onRetireRow && !row.def_id.startsWith("static:") && !row.retired && (
               <button
                 type="button"
                 className="lineage-row-action lineage-row-action-danger"
@@ -287,7 +287,11 @@ function LineageNodeRow({
                   e.stopPropagation();
                   onRetireRow(row);
                 }}
-                title="Retire this version (stays in lineage; agents stop seeing it)"
+                title={
+                  isActive
+                    ? "Retire the active version (leaves the entry with no active version until you promote another)"
+                    : "Retire this inactive version (stays in lineage; agents stop seeing it)"
+                }
               >
                 Retire ⊘
               </button>

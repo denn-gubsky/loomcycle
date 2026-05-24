@@ -46,7 +46,9 @@ export interface LineagePanelProps {
   onPromoteRow?: (row: DefRow) => void;
   // v0.10.4 — MCP-only "Rediscover tools" button in the header.
   // Optional + only wired by LibraryView for the mcp-servers tab.
-  onRediscover?: () => void;
+  // The callback receives the currently-selected entry's name so the
+  // caller doesn't have to re-derive it.
+  onRediscover?: (name: string) => void;
 }
 
 export default function LineagePanel({
@@ -176,12 +178,12 @@ export default function LineagePanel({
           <h3>{selectedName}</h3>
           {versionsLoading && <span className="loading-indicator">loading…</span>}
           <div className="lineage-header-actions">
-            {onRediscover && (
+            {onRediscover && selectedName && (
               <button
                 type="button"
                 className="lineage-row-action"
-                onClick={onRediscover}
-                title="Re-run the MCP server's tools/list handshake and refresh cached tools"
+                onClick={() => onRediscover(selectedName)}
+                title={`Re-run ${selectedName}'s tools/list handshake and refresh cached tools`}
               >
                 Rediscover tools 🔄
               </button>

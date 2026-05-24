@@ -122,21 +122,10 @@ export default function LibraryView() {
       setErr(`Retire failed: ${e instanceof Error ? e.message : String(e)}`);
     }
   };
-  const handleRediscover = async () => {
-    // The current selected entry's name comes from LineagePanel internal
-    // state; we use the first MCP entry as a fallback for the case
-    // where rediscover is wired but the user hasn't picked a name. The
-    // operator-facing common path is: click the row, then hit the
-    // header button — which means the panel highlights the selected
-    // entry; the button below uses that entry's name.
-    // (LineagePanel doesn't lift the selected name back up, so we
-    // surface a name-picker confirm() prompt for now.)
-    const defaultName = mcps[0]?.name ?? "";
-    const name = window.prompt(
-      "Which MCP server name to rediscover?",
-      defaultName,
-    );
-    if (!name) return;
+  const handleRediscover = async (name: string) => {
+    if (!window.confirm(`Rediscover tools for ${name}? This forks a new version with the refreshed snapshot.`)) {
+      return;
+    }
     try {
       await rediscoverMcpServerDef(name);
       refreshNow();
