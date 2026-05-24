@@ -1,5 +1,7 @@
 // Package cli implements loomcycle's operator-facing subcommands:
 //
+//	loomcycle init [--path <dir>] [--interactive]   — create default config (v0.11.1)
+//	loomcycle doctor [--config <yaml>]              — health-check setup (v0.11.1)
 //	loomcycle validate <yaml>                       — sanity-check a config
 //	loomcycle agents list [--config <yaml>]         — describe registered agents
 //	loomcycle health [--target <url>]               — ping a running instance
@@ -38,6 +40,12 @@ func PrintHelp(w io.Writer) {
 	fmt.Fprintln(w, "  loomcycle [--config <yaml>]      start the HTTP+SSE server (default)")
 	fmt.Fprintln(w, "  loomcycle <subcommand> [args]    run a one-shot operator subcommand")
 	fmt.Fprintln(w, "  loomcycle --version              print build identifier")
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "FIRST-RUN (v0.11.1)")
+	fmt.Fprintln(w, "  init [--path <dir>]              write loomcycle.yaml + CONFIGURATION.md")
+	fmt.Fprintln(w, "       [--interactive]             (auto-on when TTY); to ~/.config/loomcycle/")
+	fmt.Fprintln(w, "       [--no-interactive] [--force]")
+	fmt.Fprintln(w, "  doctor [--config <yaml>]         health-check config, env, providers, storage")
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "SUBCOMMANDS")
 	fmt.Fprintln(w, "  validate <yaml>                  load + validate a config; report issues")

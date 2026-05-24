@@ -291,6 +291,10 @@ func main() {
 			// Strip "mcp" from os.Args so flag.Parse() below sees
 			// the remaining flags (--config etc.) at index 1+.
 			os.Args = append([]string{os.Args[0]}, os.Args[2:]...)
+		case "init":
+			os.Exit(cli.RunInit(os.Args[2:], os.Stdout, os.Stderr))
+		case "doctor":
+			os.Exit(cli.RunDoctor(os.Args[2:], os.Stdout, os.Stderr))
 		case "help", "-h", "--help":
 			cli.PrintHelp(os.Stdout)
 			return
@@ -334,10 +338,22 @@ func main() {
 	// && restart" without a rebuild step in between.
 	log.Printf("loomcycle build: version=%s commit=%s time=%s", buildVersion, buildCommit, buildTime)
 
-	cfg, err := config.Load(*cfgPath)
+	// v0.11.1 auto-discovery: when --config wasn't overridden AND
+	// the default file doesn't exist, walk the XDG paths. The
+	// search list is the same one `loomcycle doctor` uses, so the
+	// two stay in lockstep. Explicit --config /path is unchanged.
+	resolvedCfg, found := resolveConfigPath(*cfgPath)
+	if !found {
+		fmt.Fprintln(os.Stderr, "loomcycle: no config found at any of:")
+		for _, p := range configAutoDiscoveryPaths() {
+			fmt.Fprintf(os.Stderr, "    %s\n", p)
+		}
+		fmt.Fprintln(os.Stderr)
+		fmt.Fprintln(os.Stderr, "Run `loomcycle init` to create one, or pass --config <path> to use an existing file.")
+		os.Exit(1)
+	}
+	cfg, err := config.Load(resolvedCfg)
 	if err != nil {
-		// Allow running with no YAML at all if a default agent can be derived
-		// from defaults. Most callers will hit the same error path though.
 		log.Fatalf("config: %v", err)
 	}
 

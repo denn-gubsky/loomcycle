@@ -8,6 +8,124 @@ For pre-v0.4 history (single-tool runtime, library milestone, security patch), s
 
 ---
 
+## What's in v0.11.1
+
+First-run UX overhaul. A bare `loomcycle` install via `brew` (or `go install` from a tagged tarball) used to fail with `failed to load config: open loomcycle.yaml: no such file or directory` and no obvious next step. v0.11.1 closes that gap with three pieces: a new `init` subcommand to bootstrap the config tree, a new `doctor` subcommand to verify the setup, and auto-discovery so the bare binary finds a generated config in `~/.config/loomcycle/`.
+
+### `loomcycle init`
+
+Writes `~/.config/loomcycle/loomcycle.yaml` (the bundled heavily-commented example) + `~/.config/loomcycle/README.md` (a new per-machine quickstart covering file layout, env vars, yaml structure, troubleshooting). The repo's `docs/CONFIGURATION.md` remains the provider-routing deep-dive — they're complementary. Two modes:
+
+- **Non-interactive** (default in CI / Docker / scripted): drops the embedded example yaml verbatim. The operator edits it later.
+- **Interactive** (auto-on when stdin is a TTY; `--no-interactive` to force off): minimal 3-question wizard — which provider key do you have (anthropic / openai / deepseek / skip), what env var to read it from, what HTTP listen address. Everything else stays as the commented sections of the generated yaml.
+
+Flags: `--path <dir>` (override the default `~/.config/loomcycle/` destination), `--force` (overwrite existing files), `--interactive` / `--no-interactive` (force the mode).
+
+**Security:** the wizard never writes secrets to disk. It prints the env-var lines for the operator to paste into their shell rc themselves (CLAUDE.md security rule §2). Generated wizard output:
+
+```
+Wrote /Users/denn/.config/loomcycle/loomcycle.yaml
+Wrote /Users/denn/.config/loomcycle/README.md
+
+Add these to your shell rc (e.g. ~/.zshrc):
+    export LOOMCYCLE_AUTH_TOKEN=$(openssl rand -hex 32)
+    export ANTHROPIC_API_KEY=<your-key-here>
+
+Then read /Users/denn/.config/loomcycle/README.md and run `loomcycle doctor` to verify.
+```
+
+### `loomcycle doctor`
+
+Runs six checks in order, prints `[PASS]` / `[WARN]` / `[FAIL]` per check, exits 0 if no FAILs.
+
+1. **Config found** — auto-discovers in the same order the server uses (`./loomcycle.yaml` → `$XDG_CONFIG_HOME/loomcycle/loomcycle.yaml` → `~/.config/loomcycle/loomcycle.yaml`).
+2. **Config parses** — reuses `config.Load`.
+3. **`LOOMCYCLE_AUTH_TOKEN` set** — WARN when empty (server boots fine but every `/v1/*` request is allowed unauthenticated).
+4. **Per-configured provider** — checks the canonical API-key env var per `providers:` block (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `DEEPSEEK_API_KEY`, `GEMINI_API_KEY`, `OLLAMA_API_KEY`). Local providers (`ollama-local`) need no key — PASS unconditionally. WARN on missing, not FAIL — operators may run the binary intentionally without a given provider's key.
+5. **Storage backend** — SQLite: data dir creatable + writable. Postgres: DSN non-empty (full `Open()` connectivity check deferred to v0.11.2+ to keep doctor fast).
+6. **Listen address** — try-listen-then-close on the configured `ListenAddr`. FAIL when another process owns the port.
+
+Sample output:
+
+```
+loomcycle doctor — system health check
+
+[PASS]  Config found          : /Users/denn/.config/loomcycle/loomcycle.yaml
+[PASS]  Config parses
+[PASS]  LOOMCYCLE_AUTH_TOKEN set
+[PASS]  Provider anthropic    : ANTHROPIC_API_KEY set
+[WARN]  Provider openai       : OPENAI_API_KEY not set
+[PASS]  Storage backend       : sqlite at /Users/denn/.local/share/loomcycle (writable)
+[PASS]  Listen address        : 127.0.0.1:8787 (bindable)
+
+1 warning, 0 failures.
+```
+
+### Config auto-discovery
+
+When `loomcycle` is run without `--config`, the binary walks the same three paths doctor uses and picks the first one that exists. Explicit `--config /any/path.yaml` is unchanged — auto-discovery only kicks in when the flag is left at its default AND `./loomcycle.yaml` is absent.
+
+When no config is found anywhere, the binary prints a friendly first-run hint and exits with code 1 (instead of the old confusing "open loomcycle.yaml" error):
+
+```
+loomcycle: no config found at any of:
+    ./loomcycle.yaml
+    /Users/denn/.config/loomcycle/loomcycle.yaml
+
+Run `loomcycle init` to create one, or pass --config <path> to use an existing file.
+```
+
+### Bundled documentation
+
+`loomcycle.example.yaml` moved into `cmd/loomcycle/embedded/` and is now `//go:embed`'d alongside the new `cmd/loomcycle/embedded/README.md`. A symlink at the repo root keeps every existing reference working (config tests, GitHub raw-URL docs). The yaml is the same 737-line heavily-commented schema reference; the new per-machine `README.md` (~150 lines) covers file layout + the full env-var reference + troubleshooting. Both ship with the binary; both are written to `~/.config/loomcycle/` by `init`. (Distinct from the repo's existing `docs/CONFIGURATION.md` — that's the conceptual provider-routing deep-dive; `~/.config/loomcycle/README.md` is the per-machine quickstart.)
+
+The bundled `Context.help` registry also picks up the new `getting-started` topic (~80 lines). Agents asked "how do I set up loomcycle" can read it directly via `GET /v1/_help/getting-started` or `Context.help getting-started`.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `cmd/loomcycle/embedded/` *(new package)* | Houses the embedded `loomcycle.example.yaml` (moved from repo root, symlinked back) + the new `README.md`. The `embedded.go` package exposes `ExampleYAML()` / `LocalReadme()` byte accessors. |
+| `cmd/loomcycle/main.go` | Add `case "init"` / `case "doctor"` to subcommand switch. Replace the bare `config.Load(*cfgPath)` call with `resolveConfigPath(*cfgPath)` auto-discovery + first-run hint. |
+| `cmd/loomcycle/autodiscover.go` *(new)* | `resolveConfigPath` + `configAutoDiscoveryPaths` + `userOverrodeConfigFlag` helpers. |
+| `internal/cli/init.go` *(new, ~250 LOC)* | `RunInit` + minimal 3-question wizard. |
+| `internal/cli/doctor.go` *(new, ~280 LOC)* | `RunDoctor` + 6 checks. Narrow `configForDoctor` interface for testability. |
+| `internal/cli/doctor_adapters.go` *(new)* | `realConfig` adapter wrapping `config.Config` into the narrow interface. |
+| `internal/cli/init_test.go` *(new, 7 tests)* | Non-interactive write, --force, wizard with bytes.Buffer stdin, validator reprompt, mutually-exclusive flags. |
+| `internal/cli/doctor_test.go` *(new, 10 tests)* | All-pass, missing-config, parse-error, auth WARN, provider WARN, sqlite-unwritable FAIL, port-bound FAIL, ollama-local no-key, postgres-empty-DSN, postgres-with-DSN. |
+| `internal/cli/cli.go` | New FIRST-RUN section in PrintHelp + package-doc subcommand listing updated. |
+| `internal/help/builtin/getting-started.md` *(new, ~80 lines)* | Bundled help topic. |
+| `go.mod` | `golang.org/x/term` direct dep for `IsTerminal` (already transitively pulled). |
+| `loomcycle.example.yaml` | Now a symlink to `cmd/loomcycle/embedded/loomcycle.example.yaml` (canonical location). |
+| `adapters/ts/package.json` | Version 0.11.0 → 0.11.1 (lockstep; no method changes). |
+
+### Wire-surface delta vs v0.11.0
+
+| Surface | v0.11.0 | v0.11.1 |
+|---|---|---|
+| Go HTTP endpoints | n | n (unchanged) |
+| CLI subcommands | 13 | 15 (+`init`, +`doctor`) |
+| Bundled `Context.help` topics | n | n + 1 (`getting-started`) |
+| Embedded assets | 0 | 2 (example yaml + README.md) |
+| TS adapter methods | 41 | 41 (no change) |
+
+### Migration notes
+
+- **Purely additive.** Existing `--config /path/to/yaml` invocations keep their exact semantics; auto-discovery only kicks in when the operator omits the flag AND `./loomcycle.yaml` is absent.
+- **No yaml schema changes** — `init` always writes the latest example. Operators with hand-edited yaml see no difference until they run `init --force`.
+- **No new HTTP endpoints, no wire-protocol changes** — pure CLI + auto-discovery feature.
+- **TS adapter consumers** bump to 0.11.1 for lockstep parity; no code changes.
+
+### Versioning
+
+v0.11.1 — small additive feature; patch bump. `@loomcycle/client` 0.11.0 → 0.11.1.
+
+### Downloads
+
+Assets attached: `loomcycle-{darwin,linux}-{amd64,arm64}.tar.gz` + `SHA256SUMS`.
+
+---
+
 ## What's in v0.11.0
 
 First slice of the v0.11.x line — exposes loomcycle's resolver + provider auth + retry layer as a **direct LLM gateway wire surface** that bypasses the agent loop. Same binary, second product positioning: alongside the agent runtime, loomcycle is now a LiteLLM/Portkey-class gateway any LangChain-compatible consumer can hit.
