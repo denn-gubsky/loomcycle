@@ -60,16 +60,18 @@ func configAutoDiscoveryPaths() []string {
 }
 
 // userOverrodeConfigFlag reports whether --config was explicitly set
-// to a non-default value. flag.Lookup gives us the configured value;
-// comparing against DefValue is the standard idiom for "did the
-// user touch this flag?".
+// on the command line, regardless of value. We use flag.Visit (which
+// only walks set flags) rather than comparing f.Value against
+// f.DefValue — the value-comparison approach silently treats
+// `--config loomcycle.yaml` (the literal default) as "not set", which
+// breaks the operator's explicit choice when it happens to match the
+// default string.
 func userOverrodeConfigFlag() bool {
-	f := flag.Lookup("config")
-	if f == nil {
-		return false
-	}
-	// DefValue is the string the flag was registered with as default;
-	// f.Value.String() returns the current value. When the operator
-	// hasn't passed --config, they're identical.
-	return f.Value.String() != f.DefValue
+	var overrode bool
+	flag.Visit(func(f *flag.Flag) {
+		if f.Name == "config" {
+			overrode = true
+		}
+	})
+	return overrode
 }

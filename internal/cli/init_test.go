@@ -9,7 +9,7 @@ import (
 )
 
 // TestInit_NonInteractive_WritesBothFiles — the no-wizard path drops
-// the bundled example yaml + CONFIGURATION.md into the target dir.
+// the bundled example yaml + README.md into the target dir.
 func TestInit_NonInteractive_WritesBothFiles(t *testing.T) {
 	dir := t.TempDir()
 	var stdout, stderr bytes.Buffer
@@ -21,7 +21,7 @@ func TestInit_NonInteractive_WritesBothFiles(t *testing.T) {
 		t.Fatalf("exit=%d stderr=%s", code, stderr.String())
 	}
 	yamlPath := filepath.Join(dir, "loomcycle.yaml")
-	docPath := filepath.Join(dir, "CONFIGURATION.md")
+	docPath := filepath.Join(dir, "README.md")
 	if _, err := os.Stat(yamlPath); err != nil {
 		t.Fatalf("yaml not written: %v", err)
 	}
@@ -33,8 +33,8 @@ func TestInit_NonInteractive_WritesBothFiles(t *testing.T) {
 		t.Errorf("yaml doesn't look like the example (missing 'agents:' marker)")
 	}
 	docBytes, _ := os.ReadFile(docPath)
-	if !bytes.Contains(docBytes, []byte("loomcycle — operator configuration reference")) {
-		t.Errorf("doc doesn't look like the bundled CONFIGURATION.md")
+	if !bytes.Contains(docBytes, []byte("loomcycle — local config quickstart")) {
+		t.Errorf("doc doesn't look like the bundled README.md")
 	}
 	if !strings.Contains(stdout.String(), "Next steps:") {
 		t.Errorf("stdout missing the Next-steps block; got:\n%s", stdout.String())
@@ -79,8 +79,11 @@ func TestInit_ForceOverwrites(t *testing.T) {
 }
 
 // TestInit_Wizard_PicksProviderAndListenAddr — drive the wizard with
-// a canned-stdin buffer; assert the generated yaml carries the
-// operator's choices.
+// a canned-stdin buffer; assert the choices surface as next-steps
+// guidance (env-var suggestion + pasteable yaml block). The yaml
+// itself is written verbatim from the example — the wizard never
+// rewrites it (prior drafts did, but yaml.v3 last-wins on duplicate
+// top-level keys silently dropped every example agent).
 func TestInit_Wizard_PicksProviderAndListenAddr(t *testing.T) {
 	dir := t.TempDir()
 	// Three answers: provider=openai, env var=(blank → default), addr=0.0.0.0:9000
@@ -93,16 +96,28 @@ func TestInit_Wizard_PicksProviderAndListenAddr(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("wizard: exit=%d stderr=%s", code, stderr.String())
 	}
+
+	// Yaml is the verbatim example — no append, no rewrite.
 	yamlBytes, _ := os.ReadFile(filepath.Join(dir, "loomcycle.yaml"))
-	yaml := string(yamlBytes)
-	if !strings.Contains(yaml, "provider: openai") {
-		t.Errorf("yaml missing pinned openai provider; tail:\n%s", tail(yaml, 20))
+	if !bytes.Equal(yamlBytes, []byte("")) && !bytes.Contains(yamlBytes, []byte("agents:")) {
+		t.Errorf("yaml should be the verbatim example; got tail:\n%s", tail(string(yamlBytes), 10))
 	}
-	if !strings.Contains(yaml, `listen_addr: "0.0.0.0:9000"`) {
-		t.Errorf("yaml missing pinned listen addr; tail:\n%s", tail(yaml, 20))
+	// Two `agents:` occurrences would mean the wizard re-introduced
+	// the destructive append. Counting `\nagents:\n` (the top-level
+	// key form) gives a sharp regression signal.
+	if n := bytes.Count(yamlBytes, []byte("\nagents:\n")); n != 1 {
+		t.Errorf("yaml has %d top-level `agents:` keys; want exactly 1 (regression: wizard re-introduced destructive append)", n)
 	}
-	if !strings.Contains(stdout.String(), "export OPENAI_API_KEY=<your-key-here>") {
-		t.Errorf("stdout missing env-var suggestion for OpenAI; got:\n%s", stdout.String())
+
+	out := stdout.String()
+	if !strings.Contains(out, "export OPENAI_API_KEY=<your-key-here>") {
+		t.Errorf("stdout missing env-var suggestion for OpenAI; got:\n%s", out)
+	}
+	if !strings.Contains(out, "export LOOMCYCLE_LISTEN_ADDR=0.0.0.0:9000") {
+		t.Errorf("stdout missing LOOMCYCLE_LISTEN_ADDR suggestion for non-default addr; got:\n%s", out)
+	}
+	if !strings.Contains(out, "provider: openai") {
+		t.Errorf("stdout missing pasteable provider-pin block; got:\n%s", out)
 	}
 }
 

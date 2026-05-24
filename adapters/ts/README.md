@@ -6,18 +6,23 @@ TypeScript client for the [loomcycle](https://github.com/denn-gubsky/loomcycle) 
 
 ## Status
 
-**v0.11.0** — 31 methods covering run streaming, agent metadata, transcript, pause/resume/state, snapshot lifecycle, memory admin, interruption resolve, hook registration, **v0.8.22 substrate admin (agentDef + skillDef)**, **v0.9.x n8n Phase 0 (listChannels + streamUserRunStates)**, **v0.9.x content_sha256** (the bundle-vs-deployed comparison workflow for Docker-bundled operators), and health.
+**v0.11.1** — 41 methods covering run streaming, agent metadata, transcript, pause/resume/state, snapshot lifecycle, memory admin, interruption resolve, hook registration, **v0.8.22 substrate admin (agentDef + skillDef)**, **v0.9.x n8n Phase 0 (listChannels + streamUserRunStates)**, **v0.9.x content_sha256**, **v0.9.x dynamic MCP server registration (mcpServerDef)**, **v0.10.3 Library v2 enumeration (listLibraryAgents/Skills/McpServers)**, **v0.11.0 LLM Gateway (llmChat + llmStream)**, and health.
 
 > Migrating from raw `fetch` against `/v1/*`? See **[docs/MIGRATING-FROM-HTTP.md](./docs/MIGRATING-FROM-HTTP.md)** for a side-by-side walkthrough.
 
 ### What's new since v0.8.18
 
-- **`agentDef` / `skillDef`** (v0.8.22) — runtime fork / promote / retire / get / list / `verify` on the substrate. Lets a containerised app push agent + skill definitions to a remote loomcycle at startup without restarting it.
-- **`listChannels`** (v0.9.x) — list operator-declared channels with aggregate stats (message_count, oldest/newest visible_at). The substrate companion to the existing Channel tool; useful for credential pickers + dashboards.
-- **`streamUserRunStates`** (v0.9.x) — SSE stream of run state transitions scoped to one `user_id`. Yields `{ kind: "open" | "event", payload }` items until the connection closes (30-min server cap). The primary substrate hook for orchestration UIs that need to react when an agent run completes / fails / cancels.
-- **Content signatures** (v0.9.x) — every `agent_defs` / `skill_defs` row now carries a deterministic `content_sha256`. Combined with the `verify` op and the `loomcycle hash agent|skill` CLI subcommand, this gives Docker-bundled operators a one-call answer to *"is what I have in my image identical to what's deployed?"* — see [Content signatures](#content-signatures-v09x) below for the end-to-end workflow.
-- **Transcript first-cycle types** (v0.9.1) — `UserInputPayload` + `SystemPromptPayload` typed interfaces for the two new transcript events that surface "what the agent actually received" (the resolved system prompt + the caller's segments) as the first frames of every run.
-- **n8n polish — `debug` toggle + `parentAgentId` filter** (v0.13.0) — opt-in synthetic `stream_open` / `stream_close` frames on `runStreaming` / `continueSession` / `streamUserRunStates` plus a client-side `parentAgentId` filter on `listUserAgents` + `streamUserRunStates`. Default behaviour is unchanged for existing callers; both knobs are off until set. See [Patterns](#patterns) for when to reach for them.
+- **`llmChat` / `llmStream`** (v0.11.0) — direct LLM call surface that bypasses the agent loop. Provider routing + auth + retry without the ~50-200 ms per-turn overhead of a full `runStreaming` spawn. Drives n8n's `LoomCycleChatModel` AI Agent sub-node + any LangChain `BaseChatModel` consumer.
+- **`listLibraryAgents` / `listLibrarySkills` / `listLibraryMcpServers`** (v0.10.3) — typed wrappers around the v0.9.3 Library v2 endpoints. Each returns a `LibraryListResponse<T>` with source-tagged entries (`"static-only"` / `"dynamic-only"` / `"both"`) merging yaml + substrate views.
+- **`mcpServerDef`** (v0.9.x) — runtime registration of HTTP / Streamable-HTTP MCP servers without yaml edits. Same op grammar (create / fork / promote / retire / rediscover) as `agentDef` / `skillDef`.
+- **`agentDef` / `skillDef`** (v0.8.22) — runtime fork / promote / retire / get / list / `verify` on the substrate.
+- **`listChannels`** (v0.9.x) — list operator-declared channels with aggregate stats (message_count, oldest/newest visible_at).
+- **`streamUserRunStates`** (v0.9.x) — SSE stream of run state transitions scoped to one `user_id`. Yields `{ kind: "open" | "event", payload }` items until the connection closes (30-min server cap).
+- **Channel CRUD** (v0.9.x) — `publishChannel` / `subscribeChannel` / `peekChannel` / `ackChannel` with both admin scope (`scope: "global"`) and per-user scope (`scope: "user"` + `userId`).
+- **Content signatures** (v0.9.x) — every `agent_defs` / `skill_defs` row carries a deterministic `content_sha256`. Combined with the `verify` op gives operators a one-call answer to *"is what I have identical to what's deployed?"*.
+- **Transcript first-cycle types** (v0.9.1) — `UserInputPayload` + `SystemPromptPayload` typed interfaces for the two transcript events that surface "what the agent actually received" as the first frames of every run.
+- **Dual ESM + CJS distribution** (v0.10.1) — n8n's community-node loader (CommonJS) now works alongside ESM consumers.
+- **First-run UX on the binary** (v0.11.1) — paired CLI commands `loomcycle init` (bootstrap config) + `loomcycle doctor` (health check) + auto-discovery of `~/.config/loomcycle/loomcycle.yaml`. No adapter changes; lockstep version bump only.
 
 ## Install
 

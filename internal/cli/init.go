@@ -14,7 +14,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/cmd/loomcycle/embedded"
 )
 
-// RunInit creates a default loomcycle.yaml + CONFIGURATION.md in the
+// RunInit creates a default loomcycle.yaml + README.md in the
 // operator's config directory. Two modes:
 //
 //   - Non-interactive (default in CI / when stdin isn't a TTY): writes
@@ -49,7 +49,7 @@ func runInitWithStdin(args []string, stdin io.Reader, stdout, stderr io.Writer) 
 	fs.Usage = func() {
 		fmt.Fprintln(stderr, "Usage: loomcycle init [--path <dir>] [--interactive|--no-interactive] [--force]")
 		fmt.Fprintln(stderr)
-		fmt.Fprintln(stderr, "Writes loomcycle.yaml + CONFIGURATION.md to the operator's config directory.")
+		fmt.Fprintln(stderr, "Writes loomcycle.yaml + README.md to the operator's config directory.")
 		fmt.Fprintln(stderr, "Auto-on wizard when stdin is a TTY; never writes secrets to disk.")
 	}
 	if err := fs.Parse(args); err != nil {
@@ -76,7 +76,7 @@ func runInitWithStdin(args []string, stdin io.Reader, stdout, stderr io.Writer) 
 	}
 
 	yamlPath := filepath.Join(destDir, "loomcycle.yaml")
-	docPath := filepath.Join(destDir, "CONFIGURATION.md")
+	docPath := filepath.Join(destDir, "README.md")
 
 	if !*force {
 		if existing := firstExistingFile(yamlPath, docPath); existing != "" {
@@ -88,7 +88,14 @@ func runInitWithStdin(args []string, stdin io.Reader, stdout, stderr io.Writer) 
 		return fail(stderr, "init: create dir %s: %v", destDir, err)
 	}
 
-	yamlContent := embedded.ExampleYAML()
+	// The yaml is ALWAYS written verbatim from the bundled example.
+	// The wizard's job is to collect operator intent and print
+	// next-steps; it never rewrites the yaml. An earlier draft did
+	// append a second `agents:` / `env:` block at the bottom, but
+	// yaml.v3's last-wins behavior on duplicate top-level keys made
+	// that destructive: every example agent except the rewritten
+	// default was silently dropped at parse time. The non-mutating
+	// path keeps the wizard "informational" and the yaml intact.
 	provider, envVar, listenAddr := "anthropic", "ANTHROPIC_API_KEY", "127.0.0.1:8787"
 	if wizard {
 		var err error
@@ -96,13 +103,12 @@ func runInitWithStdin(args []string, stdin io.Reader, stdout, stderr io.Writer) 
 		if err != nil {
 			return fail(stderr, "init: wizard: %v", err)
 		}
-		yamlContent = applyWizardChoices(yamlContent, provider, listenAddr)
 	}
 
-	if err := os.WriteFile(yamlPath, yamlContent, 0o644); err != nil {
+	if err := os.WriteFile(yamlPath, embedded.ExampleYAML(), 0o644); err != nil {
 		return fail(stderr, "init: write %s: %v", yamlPath, err)
 	}
-	if err := os.WriteFile(docPath, embedded.ConfigurationDoc(), 0o644); err != nil {
+	if err := os.WriteFile(docPath, embedded.LocalReadme(), 0o644); err != nil {
 		return fail(stderr, "init: write %s: %v", docPath, err)
 	}
 
@@ -114,6 +120,17 @@ func runInitWithStdin(args []string, stdin io.Reader, stdout, stderr io.Writer) 
 		fmt.Fprintln(stdout, "    export LOOMCYCLE_AUTH_TOKEN=$(openssl rand -hex 32)")
 		if provider != "skip" {
 			fmt.Fprintf(stdout, "    export %s=<your-key-here>\n", envVar)
+		}
+		if listenAddr != "127.0.0.1:8787" {
+			fmt.Fprintf(stdout, "    export LOOMCYCLE_LISTEN_ADDR=%s\n", listenAddr)
+		}
+		if provider != "skip" {
+			fmt.Fprintln(stdout)
+			fmt.Fprintf(stdout, "To pin the default agent to %s, edit your loomcycle.yaml's `agents.default` block:\n", provider)
+			fmt.Fprintln(stdout, "    agents:")
+			fmt.Fprintln(stdout, "      default:")
+			fmt.Fprintf(stdout, "        provider: %s\n", provider)
+			fmt.Fprintln(stdout, "        # ... existing fields stay as-is")
 		}
 		fmt.Fprintln(stdout)
 		fmt.Fprintf(stdout, "Then read %s and run `loomcycle doctor` to verify.\n", docPath)
@@ -206,36 +223,6 @@ func defaultEnvVarFor(provider string) string {
 		return "ANTHROPIC_API_KEY"
 	}
 	return "ANTHROPIC_API_KEY"
-}
-
-// applyWizardChoices does a minimal text rewrite of the example yaml
-// to pin (a) the listen address and (b) the default agent's provider.
-// Everything else stays as the commented example sections. We pin via
-// substring replace because writing a full yaml AST rewrite is the
-// kind of speculation the v0.11.1 plan deliberately defers.
-func applyWizardChoices(yaml []byte, provider, listenAddr string) []byte {
-	out := string(yaml)
-	// Provider pinning: the example's `default` agent uses a `tier`,
-	// not an explicit provider. We append a small operator-pin block
-	// at the bottom of the file rather than rewriting the existing
-	// agents block — keeps the wizard non-destructive on the rest of
-	// the heavily-commented file.
-	if provider != "skip" {
-		out += "\n# v0.11.1 init --interactive: applied wizard choices below.\n"
-		out += "# Edit or remove this block freely.\n"
-		out += "env:\n"
-		out += fmt.Sprintf("  listen_addr: %q\n", listenAddr)
-		out += "agents:\n"
-		out += "  default:\n"
-		out += fmt.Sprintf("    provider: %s\n", provider)
-		out += "    model: smart\n"
-		out += "    system_prompt: \"You are a helpful assistant.\"\n"
-	} else {
-		out += "\n# v0.11.1 init --interactive: applied wizard choices below.\n"
-		out += "env:\n"
-		out += fmt.Sprintf("  listen_addr: %q\n", listenAddr)
-	}
-	return []byte(out)
 }
 
 func defaultConfigDir() (string, error) {

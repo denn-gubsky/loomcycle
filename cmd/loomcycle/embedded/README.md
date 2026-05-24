@@ -1,6 +1,8 @@
-# loomcycle — operator configuration reference
+# loomcycle — local config quickstart
 
-This file ships next to `loomcycle.yaml` whenever you run `loomcycle init`. It covers the conceptual model + environment variable reference; the yaml itself carries heavily-commented per-section documentation, so read both.
+This file ships next to `loomcycle.yaml` whenever you run `loomcycle init`. It's your **per-machine quickstart**: file layout, required env vars, troubleshooting. Read this first.
+
+The yaml itself carries heavily-commented per-section documentation. For the deeper conceptual story (provider routing matrix, tier overlays, the four-layer resolver), see the repo's [`docs/CONFIGURATION.md`](https://github.com/denn-gubsky/loomcycle/blob/main/docs/CONFIGURATION.md).
 
 ## Where loomcycle looks for config
 
@@ -19,7 +21,7 @@ The default install (after `loomcycle init`) lays out:
 ```
 ~/.config/loomcycle/
 ├── loomcycle.yaml          ← your config; edit this
-├── CONFIGURATION.md         ← this file
+├── README.md                ← this file (per-machine quickstart)
 └── (you may add)            extra files: agents/, skills/, hooks/
 ~/.local/share/loomcycle/
 └── loomcycle.db             ← default sqlite store (override with LOOMCYCLE_DATA_DIR)

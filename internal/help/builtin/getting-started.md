@@ -6,7 +6,7 @@ The shortest path from a fresh `loomcycle` install to a working server
 is three commands:
 
 ```sh
-loomcycle init       # writes ~/.config/loomcycle/loomcycle.yaml + CONFIGURATION.md
+loomcycle init       # writes ~/.config/loomcycle/loomcycle.yaml + README.md
 # then set required env vars in your shell rc (~/.zshrc / ~/.bashrc)
 loomcycle doctor     # verifies config + provider keys + storage + listen address
 loomcycle            # starts the server on 127.0.0.1:8787
@@ -52,7 +52,7 @@ Optional but commonly set:
 - `LOOMCYCLE_OTEL_EXPORTER_OTLP_ENDPOINT` — enables distributed
   traces (see `help observability`).
 
-See the full table in `~/.config/loomcycle/CONFIGURATION.md`.
+See the full table in `~/.config/loomcycle/README.md` (the per-machine quickstart). For provider routing + tier conceptual deep-dive, see the repo's `docs/CONFIGURATION.md`.
 
 ## doctor
 

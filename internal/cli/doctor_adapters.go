@@ -18,10 +18,30 @@ type realConfig struct {
 }
 
 func (r *realConfig) ProviderPriorityList() []string { return r.cfg.ProviderPriority }
-func (r *realConfig) StorageBackend() string         { return r.cfg.Storage.Backend }
-func (r *realConfig) StoragePgDSN() string           { return r.cfg.Storage.PgDSN }
-func (r *realConfig) StorageDataDir() string         { return r.cfg.Env.DataDir }
-func (r *realConfig) ListenAddrValue() string        { return r.cfg.Env.ListenAddr }
+
+func (r *realConfig) AgentProviderHints() []string {
+	out := []string{}
+	for _, def := range r.cfg.Agents {
+		if def.Provider != "" {
+			out = append(out, def.Provider)
+		}
+		out = append(out, def.Providers...)
+	}
+	return out
+}
+
+func (r *realConfig) UserTierProviderHints() []string {
+	out := []string{}
+	for _, ut := range r.cfg.UserTiers {
+		out = append(out, ut.ProviderPriority...)
+	}
+	return out
+}
+
+func (r *realConfig) StorageBackend() string  { return r.cfg.Storage.Backend }
+func (r *realConfig) StoragePgDSN() string    { return r.cfg.Storage.PgDSN }
+func (r *realConfig) StorageDataDir() string  { return r.cfg.Env.DataDir }
+func (r *realConfig) ListenAddrValue() string { return r.cfg.Env.ListenAddr }
 
 // loadConfigRealAdapter is the production seam for loadConfigForDoctor.
 // Tests override the package-level var to plug in a stub.

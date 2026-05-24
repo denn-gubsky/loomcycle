@@ -14,7 +14,7 @@ First-run UX overhaul. A bare `loomcycle` install via `brew` (or `go install` fr
 
 ### `loomcycle init`
 
-Writes `~/.config/loomcycle/loomcycle.yaml` (the bundled heavily-commented example) + `~/.config/loomcycle/CONFIGURATION.md` (a new operator reference covering file layout, env vars, yaml structure, troubleshooting). Two modes:
+Writes `~/.config/loomcycle/loomcycle.yaml` (the bundled heavily-commented example) + `~/.config/loomcycle/README.md` (a new per-machine quickstart covering file layout, env vars, yaml structure, troubleshooting). The repo's `docs/CONFIGURATION.md` remains the provider-routing deep-dive — they're complementary. Two modes:
 
 - **Non-interactive** (default in CI / Docker / scripted): drops the embedded example yaml verbatim. The operator edits it later.
 - **Interactive** (auto-on when stdin is a TTY; `--no-interactive` to force off): minimal 3-question wizard — which provider key do you have (anthropic / openai / deepseek / skip), what env var to read it from, what HTTP listen address. Everything else stays as the commented sections of the generated yaml.
@@ -25,13 +25,13 @@ Flags: `--path <dir>` (override the default `~/.config/loomcycle/` destination),
 
 ```
 Wrote /Users/denn/.config/loomcycle/loomcycle.yaml
-Wrote /Users/denn/.config/loomcycle/CONFIGURATION.md
+Wrote /Users/denn/.config/loomcycle/README.md
 
 Add these to your shell rc (e.g. ~/.zshrc):
     export LOOMCYCLE_AUTH_TOKEN=$(openssl rand -hex 32)
     export ANTHROPIC_API_KEY=<your-key-here>
 
-Then read /Users/denn/.config/loomcycle/CONFIGURATION.md and run `loomcycle doctor` to verify.
+Then read /Users/denn/.config/loomcycle/README.md and run `loomcycle doctor` to verify.
 ```
 
 ### `loomcycle doctor`
@@ -77,7 +77,7 @@ Run `loomcycle init` to create one, or pass --config <path> to use an existing f
 
 ### Bundled documentation
 
-`loomcycle.example.yaml` moved into `cmd/loomcycle/embedded/` and is now `//go:embed`'d alongside the new `cmd/loomcycle/embedded/CONFIGURATION.md`. A symlink at the repo root keeps every existing reference working (config tests, GitHub raw-URL docs). The yaml is the same 737-line heavily-commented schema reference; the new `CONFIGURATION.md` (~150 lines) covers conceptual topics + the full env-var reference. Both ship with the binary; both are written to `~/.config/loomcycle/` by `init`.
+`loomcycle.example.yaml` moved into `cmd/loomcycle/embedded/` and is now `//go:embed`'d alongside the new `cmd/loomcycle/embedded/README.md`. A symlink at the repo root keeps every existing reference working (config tests, GitHub raw-URL docs). The yaml is the same 737-line heavily-commented schema reference; the new per-machine `README.md` (~150 lines) covers file layout + the full env-var reference + troubleshooting. Both ship with the binary; both are written to `~/.config/loomcycle/` by `init`. (Distinct from the repo's existing `docs/CONFIGURATION.md` — that's the conceptual provider-routing deep-dive; `~/.config/loomcycle/README.md` is the per-machine quickstart.)
 
 The bundled `Context.help` registry also picks up the new `getting-started` topic (~80 lines). Agents asked "how do I set up loomcycle" can read it directly via `GET /v1/_help/getting-started` or `Context.help getting-started`.
 
@@ -85,7 +85,7 @@ The bundled `Context.help` registry also picks up the new `getting-started` topi
 
 | File | Change |
 |---|---|
-| `cmd/loomcycle/embedded/` *(new package)* | Houses the embedded `loomcycle.example.yaml` (moved from repo root, symlinked back) + the new `CONFIGURATION.md`. The `embedded.go` package exposes `ExampleYAML()` / `ConfigurationDoc()` byte accessors. |
+| `cmd/loomcycle/embedded/` *(new package)* | Houses the embedded `loomcycle.example.yaml` (moved from repo root, symlinked back) + the new `README.md`. The `embedded.go` package exposes `ExampleYAML()` / `LocalReadme()` byte accessors. |
 | `cmd/loomcycle/main.go` | Add `case "init"` / `case "doctor"` to subcommand switch. Replace the bare `config.Load(*cfgPath)` call with `resolveConfigPath(*cfgPath)` auto-discovery + first-run hint. |
 | `cmd/loomcycle/autodiscover.go` *(new)* | `resolveConfigPath` + `configAutoDiscoveryPaths` + `userOverrodeConfigFlag` helpers. |
 | `internal/cli/init.go` *(new, ~250 LOC)* | `RunInit` + minimal 3-question wizard. |
@@ -106,7 +106,7 @@ The bundled `Context.help` registry also picks up the new `getting-started` topi
 | Go HTTP endpoints | n | n (unchanged) |
 | CLI subcommands | 13 | 15 (+`init`, +`doctor`) |
 | Bundled `Context.help` topics | n | n + 1 (`getting-started`) |
-| Embedded assets | 0 | 2 (example yaml + CONFIGURATION.md) |
+| Embedded assets | 0 | 2 (example yaml + README.md) |
 | TS adapter methods | 41 | 41 (no change) |
 
 ### Migration notes

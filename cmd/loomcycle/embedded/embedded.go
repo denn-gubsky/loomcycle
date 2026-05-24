@@ -17,17 +17,20 @@ import _ "embed"
 //go:embed loomcycle.example.yaml
 var exampleYAML []byte
 
-// CONFIGURATION.md — operator reference covering file layout, env
-// vars, yaml structure, troubleshooting. Written alongside the yaml
-// so the operator has one local landing pad after init.
+// README.md — per-machine quickstart written next to the yaml so the
+// operator has one local landing pad after init. Covers file layout,
+// env vars, troubleshooting. Renamed from an earlier CONFIGURATION.md
+// draft so it doesn't collide with the repo's existing
+// docs/CONFIGURATION.md (the provider-routing deep-dive); operators
+// instinctively look for a README in their config directory.
 //
-//go:embed CONFIGURATION.md
-var configurationDoc []byte
+//go:embed README.md
+var readmeDoc []byte
 
 // ExampleYAML returns the bundled loomcycle.example.yaml bytes.
 // Used by `loomcycle init` to write the user's starter config.
 func ExampleYAML() []byte { return exampleYAML }
 
-// ConfigurationDoc returns the bundled CONFIGURATION.md bytes.
-// Used by `loomcycle init` to write the operator reference.
-func ConfigurationDoc() []byte { return configurationDoc }
+// LocalReadme returns the bundled per-machine README.md bytes.
+// Used by `loomcycle init` to write the per-machine quickstart.
+func LocalReadme() []byte { return readmeDoc }

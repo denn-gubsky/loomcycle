@@ -227,6 +227,16 @@ var loadConfigForDoctor = func(path string) (configForDoctor, error) {
 // tests stub a fake without dragging in the full Config type.
 type configForDoctor interface {
 	ProviderPriorityList() []string
+	// AgentProviderHints returns every provider name mentioned on any
+	// agent's per-agent `providers:` list OR `provider:` pin. Operators
+	// often leave `provider_priority` empty and pin per-agent; doctor
+	// needs to know about those to check the right env vars.
+	AgentProviderHints() []string
+	// UserTierProviderHints returns every provider name on any
+	// `user_tiers.*.provider_priority` overlay. Same reason as
+	// AgentProviderHints — overlays can introduce providers the
+	// top-level list doesn't carry.
+	UserTierProviderHints() []string
 	StorageBackend() string
 	StoragePgDSN() string
 	StorageDataDir() string
@@ -234,15 +244,22 @@ type configForDoctor interface {
 }
 
 // providerListFromConfig collects every provider name referenced
-// either by the top-level priority list or per-agent providers. Sorted
-// + de-duped for stable output.
+// anywhere in the config — top-level priority, per-agent
+// providers/pin, per-user-tier overlays. Sorted + de-duped for stable
+// output. An operator running entirely off per-agent pins (empty
+// top-level provider_priority) still gets per-provider key checks.
 func providerListFromConfig(cfg configForDoctor) []string {
 	seen := map[string]struct{}{}
-	for _, p := range cfg.ProviderPriorityList() {
-		if p != "" {
-			seen[p] = struct{}{}
+	add := func(ps []string) {
+		for _, p := range ps {
+			if p != "" {
+				seen[p] = struct{}{}
+			}
 		}
 	}
+	add(cfg.ProviderPriorityList())
+	add(cfg.AgentProviderHints())
+	add(cfg.UserTierProviderHints())
 	out := make([]string, 0, len(seen))
 	for p := range seen {
 		out = append(out, p)

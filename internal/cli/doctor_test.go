@@ -14,18 +14,22 @@ import (
 // stubConfig implements configForDoctor with whatever fields the test
 // wants. Lets us drive every check without a real yaml.
 type stubConfig struct {
-	providers []string
-	backend   string
-	pgDSN     string
-	dataDir   string
-	listen    string
+	providers      []string
+	agentProviders []string
+	tierProviders  []string
+	backend        string
+	pgDSN          string
+	dataDir        string
+	listen         string
 }
 
-func (s *stubConfig) ProviderPriorityList() []string { return s.providers }
-func (s *stubConfig) StorageBackend() string         { return s.backend }
-func (s *stubConfig) StoragePgDSN() string           { return s.pgDSN }
-func (s *stubConfig) StorageDataDir() string         { return s.dataDir }
-func (s *stubConfig) ListenAddrValue() string        { return s.listen }
+func (s *stubConfig) ProviderPriorityList() []string  { return s.providers }
+func (s *stubConfig) AgentProviderHints() []string    { return s.agentProviders }
+func (s *stubConfig) UserTierProviderHints() []string { return s.tierProviders }
+func (s *stubConfig) StorageBackend() string          { return s.backend }
+func (s *stubConfig) StoragePgDSN() string            { return s.pgDSN }
+func (s *stubConfig) StorageDataDir() string          { return s.dataDir }
+func (s *stubConfig) ListenAddrValue() string         { return s.listen }
 
 // withStubLoader swaps loadConfigForDoctor for the duration of one
 // test. Restored on cleanup so other tests see the real loader.
@@ -321,6 +325,47 @@ func TestDoctor_PostgresBackendEmptyDSN_FAILs(t *testing.T) {
 	}
 	if !strings.Contains(stdout.String(), "DSN empty") {
 		t.Errorf("expected DSN-empty hint:\n%s", stdout.String())
+	}
+}
+
+// TestDoctor_AggregatesPerAgentAndPerTierProviders — regression for
+// the v0.11.1 review finding: providers declared per-agent or via
+// user_tiers overlay must be visible to doctor, not just the
+// top-level provider_priority list. An operator running entirely off
+// per-agent pins (empty provider_priority) was previously invisible.
+func TestDoctor_AggregatesPerAgentAndPerTierProviders(t *testing.T) {
+	tmp := t.TempDir()
+	withTempHome(t)
+	withStubLoader(t, &stubConfig{
+		providers:      []string{},           // top-level empty
+		agentProviders: []string{"deepseek"}, // per-agent pin
+		tierProviders:  []string{"gemini"},   // per-user-tier overlay
+		backend:        "sqlite",
+		dataDir:        tmp,
+		listen:         freePort(t),
+	})
+	withEnv(t, "LOOMCYCLE_AUTH_TOKEN", "x")
+	withEnv(t, "DEEPSEEK_API_KEY", "")
+	withEnv(t, "GEMINI_API_KEY", "")
+	configDir := filepath.Join(os.Getenv("HOME"), ".config", "loomcycle")
+	_ = os.MkdirAll(configDir, 0o755)
+	_ = os.WriteFile(filepath.Join(configDir, "loomcycle.yaml"), []byte("p"), 0o644)
+
+	var stdout, stderr bytes.Buffer
+	_ = RunDoctor(nil, &stdout, &stderr)
+	out := stdout.String()
+	if !strings.Contains(out, "Provider deepseek") {
+		t.Errorf("expected per-agent provider deepseek in output:\n%s", out)
+	}
+	if !strings.Contains(out, "Provider gemini") {
+		t.Errorf("expected per-tier provider gemini in output:\n%s", out)
+	}
+	// Both should WARN (keys not set) not silently skipped.
+	if !strings.Contains(out, "[WARN]  Provider deepseek") {
+		t.Errorf("expected WARN for missing DEEPSEEK_API_KEY:\n%s", out)
+	}
+	if !strings.Contains(out, "[WARN]  Provider gemini") {
+		t.Errorf("expected WARN for missing GEMINI_API_KEY:\n%s", out)
 	}
 }
 
