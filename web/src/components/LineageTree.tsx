@@ -53,6 +53,15 @@ export interface LineageTreeProps {
   // expands the definition body inline under the row. Independent
   // of the parent/child collapse chevron at the row-start.
   renderDefinition?: (row: DefRow) => React.ReactNode;
+  // v0.10.4 — per-row mutation callbacks. When wired, each row
+  // renders Edit / Retire / Promote buttons in the row header.
+  // Edit forks the row's definition into a new version; Retire
+  // flips the retired flag on the row; Promote sets the active
+  // pointer for the name to this row. Buttons stopPropagation so
+  // they don't toggle content / selection on click.
+  onEditRow?: (row: DefRow) => void;
+  onRetireRow?: (row: DefRow) => void;
+  onPromoteRow?: (row: DefRow) => void;
 }
 
 export default function LineageTree({
@@ -61,6 +70,9 @@ export default function LineageTree({
   selectedDefID,
   onSelect,
   renderDefinition,
+  onEditRow,
+  onRetireRow,
+  onPromoteRow,
 }: LineageTreeProps) {
   const [expanded, setExpanded] = useState<Map<string, boolean>>(() => new Map());
   const [detailExpanded, setDetailExpanded] = useState<Map<string, boolean>>(
@@ -125,6 +137,9 @@ export default function LineageTree({
           selectedDefID={selectedDefID}
           onSelect={onSelect}
           renderDefinition={renderDefinition}
+          onEditRow={onEditRow}
+          onRetireRow={onRetireRow}
+          onPromoteRow={onPromoteRow}
         />
       ))}
     </ul>
@@ -142,6 +157,9 @@ function LineageNodeRow({
   selectedDefID,
   onSelect,
   renderDefinition,
+  onEditRow,
+  onRetireRow,
+  onPromoteRow,
 }: {
   node: LineageNode;
   depth: number;
@@ -153,6 +171,9 @@ function LineageNodeRow({
   selectedDefID?: string;
   onSelect?: (defID: string) => void;
   renderDefinition?: (row: DefRow) => React.ReactNode;
+  onEditRow?: (row: DefRow) => void;
+  onRetireRow?: (row: DefRow) => void;
+  onPromoteRow?: (row: DefRow) => void;
 }) {
   const isExpanded = expanded.get(node.row.def_id) !== false;
   const isDetailOpen = detailExpanded.get(node.row.def_id) === true;
@@ -226,6 +247,57 @@ function LineageNodeRow({
             {isDetailOpen ? "▾" : "▸"} content
           </span>
         )}
+        {(onEditRow || onRetireRow || onPromoteRow) && (
+          <span className="lineage-row-actions">
+            {onEditRow && (
+              <button
+                type="button"
+                className="lineage-row-action"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onEditRow(row);
+                }}
+                title={
+                  row.def_id.startsWith("static:")
+                    ? "First fork bootstraps a v1 from yaml, then attaches this fork as v2."
+                    : "Fork a new version from this row"
+                }
+              >
+                {row.def_id.startsWith("static:") ? "Edit (forks from yaml)" : "Edit ✎"}
+              </button>
+            )}
+            {onPromoteRow && !isActive && !row.def_id.startsWith("static:") && !row.retired && (
+              <button
+                type="button"
+                className="lineage-row-action"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onPromoteRow(row);
+                }}
+                title="Set this version as the active one"
+              >
+                Promote ▲
+              </button>
+            )}
+            {onRetireRow && !row.def_id.startsWith("static:") && !row.retired && (
+              <button
+                type="button"
+                className="lineage-row-action lineage-row-action-danger"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onRetireRow(row);
+                }}
+                title={
+                  isActive
+                    ? "Retire the active version (leaves the entry with no active version until you promote another)"
+                    : "Retire this inactive version (stays in lineage; agents stop seeing it)"
+                }
+              >
+                Retire ⊘
+              </button>
+            )}
+          </span>
+        )}
       </div>
       {isDetailOpen && renderDefinition && (
         <div
@@ -269,6 +341,9 @@ function LineageNodeRow({
               selectedDefID={selectedDefID}
               onSelect={onSelect}
               renderDefinition={renderDefinition}
+              onEditRow={onEditRow}
+              onRetireRow={onRetireRow}
+              onPromoteRow={onPromoteRow}
             />
           ))}
         </ul>

@@ -1285,11 +1285,205 @@ pre {
   background: var(--running);
   color: white;
   border-color: var(--running);
+  /* Hold the modal's existing 4px radius — the outer `button.primary`
+   * rule down in the v0.10.4 block uses a pill radius for page-level
+   * CTAs; locking it here keeps modal submit buttons rectangular. */
+  border-radius: 4px;
+  padding: 8px 16px;
 }
 
 .modal-buttons button:disabled {
   opacity: 0.6;
   cursor: not-allowed;
+}
+
+/* v0.10.4 Library admin UI — LibraryEditModal styles. Extends the base
+ * .modal-overlay + .modal anchors (used by AnswerModal) with a wider
+ * layout, structured form rows, and a JSON / body textarea. */
+.modal.library-modal {
+  max-width: 720px;
+  width: 92vw;
+}
+.library-modal-bootstrap-hint {
+  font-size: 12px;
+  color: var(--fg-muted, #888);
+  font-weight: normal;
+}
+.library-form-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 10px;
+}
+.library-form-row label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--fg-muted, #888);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.library-form-row input[type="text"] {
+  padding: 6px 8px;
+  font-size: 13px;
+  border: 1px solid var(--border, #444);
+  border-radius: 4px;
+  background: var(--bg-input, #1a1a1a);
+  color: var(--fg, inherit);
+}
+.library-form-row-quad {
+  display: grid;
+  grid-template-columns: max-content 1fr max-content 1fr;
+  align-items: center;
+  gap: 8px;
+}
+.library-form-row-quad label {
+  margin-bottom: 0;
+}
+.library-form-row-checkbox label {
+  font-weight: normal;
+  color: var(--fg, inherit);
+}
+.library-json-textarea {
+  width: 100%;
+  padding: 8px;
+  font-size: 12px;
+  border: 1px solid var(--border, #444);
+  border-radius: 4px;
+  background: var(--bg-input, #1a1a1a);
+  color: var(--fg, inherit);
+  resize: vertical;
+  min-height: 120px;
+}
+.library-schema-hint {
+  margin-top: 4px;
+  padding: 8px;
+  font-size: 11px;
+  background: var(--bg-muted, #181818);
+  border: 1px solid var(--border, #444);
+  border-radius: 4px;
+  white-space: pre-wrap;
+  color: var(--fg-muted, #888);
+}
+.library-schema-hint-toggle {
+  background: none;
+  border: 1px solid var(--border, #444);
+  color: var(--fg-muted, #888);
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 3px;
+  cursor: pointer;
+}
+.library-schema-hint-toggle:hover {
+  color: var(--fg, inherit);
+}
+.library-radio-group {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  font-weight: normal;
+}
+.library-radio-note {
+  font-size: 11px;
+  color: var(--fg-muted, #888);
+  font-style: italic;
+  font-weight: normal;
+}
+.library-headers-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.library-header-row {
+  display: grid;
+  grid-template-columns: 1fr 2fr max-content;
+  gap: 6px;
+}
+.library-header-row input {
+  padding: 4px 6px;
+  font-size: 12px;
+  border: 1px solid var(--border, #444);
+  border-radius: 3px;
+  background: var(--bg-input, #1a1a1a);
+  color: var(--fg, inherit);
+}
+.library-header-row button {
+  background: none;
+  border: 1px solid var(--border, #444);
+  color: var(--fg-muted, #888);
+  cursor: pointer;
+  padding: 0 8px;
+  border-radius: 3px;
+}
+.library-header-row button:hover {
+  color: var(--danger, #c33);
+  border-color: var(--danger, #c33);
+}
+
+/* v0.10.4 — per-row mutation buttons in LineageTree + the page-level
+ * "+ New" CTA in LineagePanel's right-pane header. */
+.lineage-row-actions {
+  display: flex;
+  gap: 6px;
+  margin-left: auto;
+}
+.lineage-row-action {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--fg-soft);
+  font-size: 11px;
+  padding: 3px 10px;
+  border-radius: 999px;
+  cursor: pointer;
+  font-family: inherit;
+  transition: color 0.1s, border-color 0.1s, background-color 0.1s;
+}
+.lineage-row-action:hover {
+  color: var(--fg);
+  border-color: var(--accent);
+  background: rgba(91, 157, 255, 0.08);
+}
+.lineage-row-action-danger:hover {
+  color: var(--failed);
+  border-color: var(--failed);
+  background: rgba(255, 93, 104, 0.08);
+}
+.lineage-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+}
+
+/* Top-level `.primary` — same convention as .user-picker button (accent
+ * background + white text + rounded corners). The class is also used
+ * inside .modal-buttons scope where it's overridden to use --running
+ * (matches the InterruptInbox submit-answer convention). Outside that
+ * scope, this rule provides the dark-theme primary CTA styling. */
+button.primary {
+  background: var(--accent);
+  color: white;
+  border: 1px solid var(--accent);
+  border-radius: 999px;
+  padding: 5px 14px;
+  font-size: 12px;
+  font-weight: 500;
+  font-family: inherit;
+  cursor: pointer;
+  transition: background-color 0.1s, border-color 0.1s;
+}
+button.primary:hover {
+  background: #4a8cee;
+  border-color: #4a8cee;
+}
+button.primary:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+/* The Library "+ New" CTA. Inherits the primary button styling above;
+ * `.lineage-create-cta` is just a marker for any future per-CTA tweaks. */
+.lineage-create-cta {
+  font-size: 12px;
 }
 
 /* v0.8.17 PauseControls — topbar runtime quiesce pill + actions. */
