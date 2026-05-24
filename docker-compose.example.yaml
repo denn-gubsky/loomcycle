@@ -33,8 +33,12 @@ services:
       # Operator config — distroless runs as uid 65532 (nonroot);
       # ensure the host dir is readable to that uid OR chmod 755.
       - ./config:/home/nonroot/.config/loomcycle:ro
-      # SQLite store — keep writable so the binary can create the .db
-      # file. Override with LOOMCYCLE_DATA_DIR if you mount elsewhere.
+      # SQLite store — writable to uid 65532 (nonroot). On Linux hosts:
+      #   mkdir -p ./data && sudo chown -R 65532:65532 ./data
+      # Without this, the container hits EACCES on the first sqlite
+      # open with no diagnostic about the uid mismatch. Docker Desktop
+      # on macOS hides this through its file-sharing layer; the issue
+      # only surfaces in production Linux deployments.
       - ./data:/home/nonroot/.local/share/loomcycle
     environment:
       # Bearer for every /v1/* endpoint. Set in your .env file.

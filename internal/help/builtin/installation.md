@@ -2,7 +2,7 @@
 name: installation
 description: "Install loomcycle via Homebrew, Docker, go install, or direct tarball download."
 ---
-Three supported install paths. Pick the one that matches your
+Four supported install paths. Pick the one that matches your
 deployment model; all four ship the same single static binary plus
 the v0.11.1 `init` / `doctor` first-run flow.
 
@@ -93,9 +93,14 @@ go install github.com/denn-gubsky/loomcycle/cmd/loomcycle@latest
 loomcycle init
 ```
 
-`go install` doesn't embed the Web UI by default (the `web/` subtree
-isn't built). For the full UI experience either build from a checkout
-(`make build-all`) or use Homebrew / Docker / tarball.
+`go install` ships a binary WITHOUT the Web UI. The `internal/webui/
+dist/` tree is `.gitignored` in the repo (only `.gitkeep` is
+tracked); `go install` pulls source from the module proxy, which
+sees just the `.gitkeep`, so the `//go:embed` directive embeds an
+empty bundle and `/ui` returns 404. The Homebrew + Docker + direct-
+tarball paths all bundle the pre-built UI (CI runs `make build-ui`
+before goreleaser). For the full UI experience, use one of those
+three paths or build from a checkout with `make build-all`.
 
 ## Auto-discovery
 

@@ -148,7 +148,15 @@ jobs:
         uses: goreleaser/goreleaser-action@v6
         with:
           version: "v2.15.4"
-          args: ${{ vars.DOCKER_PUBLISH_ENABLED == 'true' && 'release --clean' || 'release --clean --skip=docker,docker_manifest' }}
+          # `--skip=docker` skips BOTH the dockers stage AND the
+          # docker_manifests stage in goreleaser v2.15.4 (manifests
+          # have no per-arch images to aggregate, so they no-op
+          # cleanly). Earlier draft passed `docker,docker_manifest`
+          # which goreleaser rejected — `goreleaser release --help`
+          # lists only the publisher-level tokens (announce, archive,
+          # docker, homebrew, publish, validate, etc.); manifest is
+          # part of the docker publisher group.
+          args: ${{ vars.DOCKER_PUBLISH_ENABLED == 'true' && 'release --clean' || 'release --clean --skip=docker' }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           HOMEBREW_TAP_GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
