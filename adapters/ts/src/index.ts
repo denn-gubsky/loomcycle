@@ -46,6 +46,11 @@
  *     agentDef(input): Promise<SubstrateToolResponse>
  *     skillDef(input): Promise<SubstrateToolResponse>
  *
+ *     // Library v2 enumeration (v0.10.3 — yaml+substrate merged)
+ *     listLibraryAgents(): Promise<LibraryListResponse<LibraryAgentDefinition>>
+ *     listLibrarySkills(): Promise<LibraryListResponse<LibrarySkillDefinition>>
+ *     listLibraryMcpServers(): Promise<LibraryListResponse<LibraryMcpServerDefinition>>
+ *
  *   Errors (typed subclasses of LoomcycleError; see README for the
  *   full HTTP-status → typed-error mapping table):
  *     LoomcycleError, AgentNotFoundError, SessionNotFoundError,
@@ -162,6 +167,12 @@ export type {
   // Dynamic MCP server registration (v0.9.x)
   MCPServerDefRowResponse,
   MCPServerDefVerifyResult,
+  // Library v2 enumeration (v0.10.3)
+  LibraryAgentDefinition,
+  LibraryEntry,
+  LibraryListResponse,
+  LibraryMcpServerDefinition,
+  LibrarySkillDefinition,
 } from "./types.js";
 
 export {

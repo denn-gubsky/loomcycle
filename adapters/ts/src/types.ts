@@ -959,3 +959,92 @@ export interface MCPServerDefVerifyResult {
   /** True if an active row exists for this name. */
   deployed: boolean;
 }
+
+// ---- v0.10.3 Library v2 — unified yaml + substrate enumeration ----
+//
+// Wraps GET /v1/_library/{agents,skills,mcp-servers} (shipped in v0.9.3).
+// Each endpoint merges yaml-static entries with substrate-side dynamic
+// entries into one envelope per row, tagged with its source. Adapter
+// methods are listLibraryAgents / listLibrarySkills / listLibraryMcpServers
+// — typed wrappers around the existing endpoints so external consumers
+// (n8n, custom integrations) don't need to drop to raw fetch + path
+// strings.
+//
+// The TypeScript shape mirrors web/src/api.ts:825-844 (the Web UI's
+// canonical definitions) plus tightened static_definition typing per
+// endpoint flavor — Web UI uses `unknown` because it renders many
+// shapes through one component; external adapters get IntelliSense
+// over the per-flavor structural type.
+
+/** Static-side agent definition body. Snake_case keys mirror
+ *  internal/lookup.SubstrateAgentDef so substrate-side and static-side
+ *  definitions share one renderer. Forward-compatible: unknown fields
+ *  on newer binaries flow through transparently. */
+export interface LibraryAgentDefinition {
+  provider?: string;
+  model?: string;
+  tier?: string;
+  effort?: string;
+  max_tokens?: number;
+  max_iterations?: number;
+  system_prompt?: string;
+  system_prompt_base?: string;
+  allowed_tools?: string[];
+  skills?: string[];
+  providers?: string[];
+  /** Per-tier candidate list. Server-side opaque shape — kept as
+   *  Record<string, unknown> for forward-compat. */
+  models?: Record<string, unknown>;
+  memory_scopes?: string[];
+  memory_quota_bytes?: number;
+}
+
+/** Static-side skill definition body. */
+export interface LibrarySkillDefinition {
+  body?: string;
+  description?: string;
+  allowed_tools?: string[];
+}
+
+/** Static-side MCP server definition body. Mirrors
+ *  internal/api/http.marshalStaticMCPServer (transport + url + headers
+ *  for http/streamable-http; command/args/env/pool_size for stdio;
+ *  allowed_tools narrowing; discovered_tools cached from the pool
+ *  inspector when ready). */
+export interface LibraryMcpServerDefinition {
+  transport?: "http" | "streamable-http" | "stdio";
+  url?: string;
+  headers?: Record<string, string>;
+  command?: string;
+  args?: string[];
+  env?: Record<string, string>;
+  pool_size?: number;
+  allowed_tools?: string[];
+  /** Substrate-mirror shape of the pool's PeekTools snapshot.
+   *  Omitted when the pool inspector returns nil (init pending or
+   *  failed) — re-check after pool init completes. */
+  discovered_tools?: unknown;
+}
+
+/** One row of the library envelope. T is the per-endpoint definition
+ *  type — LibraryAgentDefinition for /v1/_library/agents, etc. */
+export interface LibraryEntry<T = unknown> {
+  name: string;
+  source: "static-only" | "dynamic-only" | "both";
+  in_static: boolean;
+  in_substrate: boolean;
+  version_count: number;
+  active_def_id?: string;
+  latest_version?: number;
+  last_updated?: string;
+  /** Static-side definition body. Omitted when in_static is false
+   *  (dynamic-only entries have no static body — query the substrate
+   *  via AgentDef/SkillDef/MCPServerDef tools to fetch the active
+   *  version's payload). */
+  static_definition?: T;
+}
+
+/** Envelope returned by all three GET /v1/_library/* endpoints. */
+export interface LibraryListResponse<T = unknown> {
+  entries: LibraryEntry<T>[];
+}

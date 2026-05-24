@@ -54,6 +54,10 @@ import type {
   PeekChannelOptions,
   PublishChannelOptions,
   SubscribeChannelOptions,
+  LibraryAgentDefinition,
+  LibraryListResponse,
+  LibraryMcpServerDefinition,
+  LibrarySkillDefinition,
   ListHooksResponse,
   ListUsersResponse,
   MemoryEntriesResponse,
@@ -620,6 +624,69 @@ export class LoomcycleClient {
     opts?: { signal?: AbortSignal },
   ): Promise<SubstrateToolResponse> {
     return postJSON<SubstrateToolResponse>(this.ctx, "/v1/_mcpserverdef", input, opts);
+  }
+
+  // ---- v0.10.3 Library v2 enumeration (read-only, merged yaml+substrate) ----
+
+  /** List every agent the runtime knows about — yaml-static + dynamic
+   *  AgentDefs merged into one envelope per name. Each entry carries
+   *  `source: "static-only" | "dynamic-only" | "both"` so callers can
+   *  badge / filter by origin. Static-source entries inline the
+   *  yaml-side definition body in `static_definition`; dynamic-only
+   *  entries omit it (fetch the active version's body via
+   *  `agentDef({op: "get", name})` when needed).
+   *
+   *  Wraps the v0.9.3 endpoint `GET /v1/_library/agents`. Bearer-authed.
+   *  Deterministic alphabetical sort by name.
+   *
+   *  Typical use: populate an integration's "which agent to dispatch?"
+   *  dropdown (n8n, Slack slash commands, custom workflow editors).
+   *
+   *  Raises {@link AuthError} on 401; {@link UnavailableError} on 503
+   *  (store unwired in test configurations). */
+  async listLibraryAgents(opts?: {
+    signal?: AbortSignal;
+  }): Promise<LibraryListResponse<LibraryAgentDefinition>> {
+    return jsonFetch<LibraryListResponse<LibraryAgentDefinition>>(
+      this.ctx,
+      "/v1/_library/agents",
+      opts,
+    );
+  }
+
+  /** List every skill the runtime knows about — bundled skills (Approach
+   *  A) + filesystem overlay + dynamic SkillDefs merged into one
+   *  envelope per name. See {@link LoomcycleClient.listLibraryAgents}
+   *  for the source-tagging contract; the only difference is the
+   *  `static_definition` shape ({@link LibrarySkillDefinition}).
+   *
+   *  Wraps `GET /v1/_library/skills` (v0.9.3). */
+  async listLibrarySkills(opts?: {
+    signal?: AbortSignal;
+  }): Promise<LibraryListResponse<LibrarySkillDefinition>> {
+    return jsonFetch<LibraryListResponse<LibrarySkillDefinition>>(
+      this.ctx,
+      "/v1/_library/skills",
+      opts,
+    );
+  }
+
+  /** List every MCP server the runtime knows about — yaml-declared
+   *  servers + dynamic MCPServerDef registrations merged into one
+   *  envelope per name. Static entries additionally inline the cached
+   *  `discovered_tools` snapshot when the pool inspector is wired
+   *  AND the pool has finished init for that server (omitted otherwise
+   *  — re-check after the pool finishes).
+   *
+   *  Wraps `GET /v1/_library/mcp-servers` (v0.9.3). */
+  async listLibraryMcpServers(opts?: {
+    signal?: AbortSignal;
+  }): Promise<LibraryListResponse<LibraryMcpServerDefinition>> {
+    return jsonFetch<LibraryListResponse<LibraryMcpServerDefinition>>(
+      this.ctx,
+      "/v1/_library/mcp-servers",
+      opts,
+    );
   }
 
   // ---- Internal helpers ----
