@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { NavLink, Outlet, useLocation } from "react-router-dom";
 import {
   DefRow,
@@ -6,8 +6,16 @@ import {
   listLibraryAgents,
   listLibraryMcpServers,
   listLibrarySkills,
+  promoteDef,
+  rediscoverMcpServerDef,
+  retireDef,
+  type SubstrateKind,
 } from "../api";
 import LineagePanel from "../components/LineagePanel";
+import LibraryEditModal, {
+  type ModalKind,
+  type ModalMode,
+} from "../components/LibraryEditModal";
 
 // LibraryView is the v0.9.x Introspection surface — three sub-tabs
 // over the AgentDef / SkillDef / MCPServerDef substrates. Each
@@ -29,6 +37,21 @@ export default function LibraryView() {
   const [skills, setSkills] = useState<LibraryEntry[]>([]);
   const [mcps, setMcps] = useState<LibraryEntry[]>([]);
   const [err, setErr] = useState<string | null>(null);
+  // Force-refresh-on-mutation: bump this counter from any mutation
+  // success handler to re-run the fetch immediately without waiting
+  // for the 10s poll.
+  const [refreshKey, setRefreshKey] = useState(0);
+  const refreshNow = useCallback(() => setRefreshKey((k) => k + 1), []);
+
+  // Modal state — null = closed; one modal across all tabs (only one
+  // can be open at a time anyway). The kind is derived from the
+  // active subtab; the mode + forkSource come from which button was
+  // pressed.
+  const [modal, setModal] = useState<{
+    kind: ModalKind;
+    mode: ModalMode;
+    forkSource?: DefRow;
+  } | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -54,7 +77,7 @@ export default function LibraryView() {
       cancelled = true;
       clearInterval(t);
     };
-  }, []);
+  }, [refreshKey]);
 
   const loc = useLocation();
   const path = loc.pathname;
@@ -63,6 +86,64 @@ export default function LibraryView() {
     if (path.startsWith("/library/mcp-servers")) return "mcp-servers";
     return "agents";
   })();
+
+  // Map the active subtab → modal kind so "+ New" / Edit / Retire
+  // handlers always target the right substrate.
+  const tabKind: ModalKind =
+    sub === "skills" ? "skill" : sub === "mcp-servers" ? "mcp-server" : "agent";
+  const tabSubstrate: SubstrateKind =
+    sub === "skills" ? "skilldef" : sub === "mcp-servers" ? "mcpserverdef" : "agentdef";
+  const tabEntries: LibraryEntry[] =
+    sub === "skills" ? skills : sub === "mcp-servers" ? mcps : agents;
+
+  const handleCreate = () => setModal({ kind: tabKind, mode: "create" });
+  const handleEdit = (row: DefRow) =>
+    setModal({ kind: tabKind, mode: "fork", forkSource: row });
+  const handlePromote = async (row: DefRow) => {
+    try {
+      await promoteDef(tabSubstrate, row.def_id);
+      refreshNow();
+    } catch (e) {
+      setErr(`Promote failed: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  };
+  const handleRetire = async (row: DefRow) => {
+    if (
+      !window.confirm(
+        `Retire ${row.name} v${row.version}? It stays in lineage but agents stop seeing it as active.`,
+      )
+    ) {
+      return;
+    }
+    try {
+      await retireDef(tabSubstrate, row.def_id);
+      refreshNow();
+    } catch (e) {
+      setErr(`Retire failed: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  };
+  const handleRediscover = async () => {
+    // The current selected entry's name comes from LineagePanel internal
+    // state; we use the first MCP entry as a fallback for the case
+    // where rediscover is wired but the user hasn't picked a name. The
+    // operator-facing common path is: click the row, then hit the
+    // header button — which means the panel highlights the selected
+    // entry; the button below uses that entry's name.
+    // (LineagePanel doesn't lift the selected name back up, so we
+    // surface a name-picker confirm() prompt for now.)
+    const defaultName = mcps[0]?.name ?? "";
+    const name = window.prompt(
+      "Which MCP server name to rediscover?",
+      defaultName,
+    );
+    if (!name) return;
+    try {
+      await rediscoverMcpServerDef(name);
+      refreshNow();
+    } catch (e) {
+      setErr(`Rediscover failed: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  };
 
   return (
     <div className="library-view">
@@ -86,6 +167,10 @@ export default function LibraryView() {
             entries={agents}
             splitterStorageKey="loomcycle.library.agents.split"
             renderDefinition={renderAgentDefinition}
+            onCreateNew={handleCreate}
+            onEditRow={handleEdit}
+            onRetireRow={handleRetire}
+            onPromoteRow={handlePromote}
           />
         )}
         {sub === "skills" && (
@@ -95,6 +180,10 @@ export default function LibraryView() {
             entries={skills}
             splitterStorageKey="loomcycle.library.skills.split"
             renderDefinition={renderSkillDefinition}
+            onCreateNew={handleCreate}
+            onEditRow={handleEdit}
+            onRetireRow={handleRetire}
+            onPromoteRow={handlePromote}
           />
         )}
         {sub === "mcp-servers" && (
@@ -104,9 +193,27 @@ export default function LibraryView() {
             entries={mcps}
             splitterStorageKey="loomcycle.library.mcp.split"
             renderDefinition={renderMcpDefinition}
+            onCreateNew={handleCreate}
+            onEditRow={handleEdit}
+            onRetireRow={handleRetire}
+            onPromoteRow={handlePromote}
+            onRediscover={handleRediscover}
           />
         )}
       </div>
+      {modal && (
+        <LibraryEditModal
+          kind={modal.kind}
+          mode={modal.mode}
+          forkSource={modal.forkSource}
+          existingNames={tabEntries}
+          onClose={() => setModal(null)}
+          onSaved={() => {
+            setModal(null);
+            refreshNow();
+          }}
+        />
+      )}
       <Outlet />
     </div>
   );

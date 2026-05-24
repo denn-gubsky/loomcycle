@@ -36,6 +36,17 @@ export interface LineagePanelProps {
   // Used by Agents (system_prompt + allowed_tools) / Skills (body) /
   // MCP Servers (url + headers + discovered_tools).
   renderDefinition: (row: DefRow) => React.ReactNode;
+  // v0.10.4 — admin mutation callbacks. When wired, the right pane
+  // gains a "+ New" CTA and rows gain Edit / Retire / Promote
+  // buttons. Optional — backward compat for any future callsite
+  // that wants the panel read-only.
+  onCreateNew?: () => void;
+  onEditRow?: (row: DefRow) => void;
+  onRetireRow?: (row: DefRow) => void;
+  onPromoteRow?: (row: DefRow) => void;
+  // v0.10.4 — MCP-only "Rediscover tools" button in the header.
+  // Optional + only wired by LibraryView for the mcp-servers tab.
+  onRediscover?: () => void;
 }
 
 export default function LineagePanel({
@@ -44,6 +55,11 @@ export default function LineagePanel({
   entries,
   splitterStorageKey,
   renderDefinition,
+  onCreateNew,
+  onEditRow,
+  onRetireRow,
+  onPromoteRow,
+  onRediscover,
 }: LineagePanelProps) {
   const [selectedName, setSelectedName] = useState<string>(() =>
     entries.length > 0 ? entries[0]!.name : "",
@@ -125,8 +141,20 @@ export default function LineagePanel({
   if (entries.length === 0) {
     return (
       <div className="empty-state">
-        No {kindLabel} declared yet. Use the substrate admin API
-        (POST /v1/_{kind}) or add one to loomcycle.yaml.
+        <p>
+          No {kindLabel} declared yet. Use the substrate admin API
+          (POST /v1/_{kind}) or add one to loomcycle.yaml.
+        </p>
+        {onCreateNew && (
+          <button
+            type="button"
+            className="primary"
+            onClick={onCreateNew}
+            style={{ marginTop: 12 }}
+          >
+            + New {newCtaLabel(kind)}
+          </button>
+        )}
       </div>
     );
   }
@@ -147,6 +175,27 @@ export default function LineagePanel({
         <div className="lineage-header">
           <h3>{selectedName}</h3>
           {versionsLoading && <span className="loading-indicator">loading…</span>}
+          <div className="lineage-header-actions">
+            {onRediscover && (
+              <button
+                type="button"
+                className="lineage-row-action"
+                onClick={onRediscover}
+                title="Re-run the MCP server's tools/list handshake and refresh cached tools"
+              >
+                Rediscover tools 🔄
+              </button>
+            )}
+            {onCreateNew && (
+              <button
+                type="button"
+                className="primary lineage-create-cta"
+                onClick={onCreateNew}
+              >
+                + New {newCtaLabel(kind)}
+              </button>
+            )}
+          </div>
         </div>
         {versionsErr && (
           <div className="error-banner">Failed to load: {versionsErr}</div>
@@ -157,10 +206,21 @@ export default function LineagePanel({
           selectedDefID={selectedDefID}
           onSelect={setSelectedDefID}
           renderDefinition={renderDefinition}
+          onEditRow={onEditRow}
+          onRetireRow={onRetireRow}
+          onPromoteRow={onPromoteRow}
         />
       </div>
     </Splitter>
   );
+}
+
+function newCtaLabel(kind: "agentdef" | "skilldef" | "mcpserverdef"): string {
+  switch (kind) {
+    case "agentdef": return "Agent";
+    case "skilldef": return "Skill";
+    case "mcpserverdef": return "MCP Server";
+  }
 }
 
 function EntryList({
