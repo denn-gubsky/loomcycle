@@ -1048,3 +1048,129 @@ export interface LibraryEntry<T = unknown> {
 export interface LibraryListResponse<T = unknown> {
   entries: LibraryEntry<T>[];
 }
+
+// ---- v0.11.0 LLM Gateway (`POST /v1/_llm/chat`) ----
+//
+// Direct LLM call surface that bypasses the agent loop. Consumers
+// (n8n's LoomCycleChatModel cluster sub-node first; any LangChain-
+// compatible adapter in principle) hit the gateway when they only
+// need provider routing + auth + retry — no tools, no memory, no
+// agent semantics. The on-the-wire shape is LangChain-friendly on
+// the request side (flat content strings + tool_call_id correlation)
+// and Anthropic-style on the response side (content-block arrays
+// with type-discriminated unions).
+
+/** One message in the gateway conversation. Mirrors LangChain's
+ *  BaseMessage shape so consumers map without re-shaping. */
+export interface LLMChatMessage {
+  role: "system" | "user" | "assistant" | "tool";
+  /** Flat string content. For "assistant" turns with tool_calls,
+   *  the content may be empty. For "tool" turns, this is the tool
+   *  result text. */
+  content?: string;
+  /** Set on "assistant" turns that requested tool invocations. */
+  tool_calls?: LLMChatToolCall[];
+  /** Set on "tool" turns; correlates back to the assistant's
+   *  tool_calls[].id. */
+  tool_call_id?: string;
+}
+
+/** One assistant-requested tool invocation. */
+export interface LLMChatToolCall {
+  id: string;
+  name: string;
+  input: Record<string, unknown>;
+}
+
+/** Tool the model may call. The substrate translates this into the
+ *  driver-native shape (Anthropic input_schema vs OpenAI function.
+ *  parameters vs Gemini function_declarations) — caller passes the
+ *  flat JSON schema and trusts the gateway's per-driver translation. */
+export interface LLMTool {
+  name: string;
+  description?: string;
+  input_schema: Record<string, unknown>;
+}
+
+/** Request body for llmChat / llmStream.
+ *
+ *  Two RFC-mentioned fields are deliberately absent in v1:
+ *  - `stop_sequences`: providers.Request has no matching field today;
+ *    accepting it would silently drop it. Lands when the providers
+ *    package surface grows the equivalent.
+ *  - `user_bearer`: the gateway calls provider.Call() directly with
+ *    no MCP transport, so `${run.user_bearer}` substitution has
+ *    nowhere to apply. Lands when the gateway grows an MCP path. */
+export interface LLMChatOptions {
+  messages: LLMChatMessage[];
+  tools?: LLMTool[];
+  max_tokens?: number;
+  temperature?: number | null;
+
+  /** Routing hint. When set with `model`, the resolver short-circuits
+   *  to that explicit pin. When set alone, the resolver picks the
+   *  best model in that provider given tier/user_tier. */
+  provider?: string;
+  /** Routing hint. When set with `provider`, explicit pin. When set
+   *  alone, the resolver picks the provider hosting that model. */
+  model?: string;
+  /** Tier for resolver dispatch. Defaults to "default" when neither
+   *  pin nor tier supplied. */
+  tier?: string;
+
+  /** Per-user quota tracking. Empty bypasses the per-user cap. */
+  user_id?: string;
+  /** Per-user tier overlay; takes precedence over `tier` when set. */
+  user_tier?: string;
+
+  /** Optional AbortSignal for caller-driven cancellation. */
+  signal?: AbortSignal;
+}
+
+/** Non-streaming response shape. */
+export interface LLMChatResponse {
+  /** Per-response id (llm_<hex>); useful in audit logs. */
+  id: string;
+  /** Per-request id (req_<hex>); cross-references the audit log. */
+  request_id: string;
+  /** Which provider the resolver picked. */
+  provider: string;
+  /** Specific model id picked. */
+  model: string;
+  /** Content blocks; one per text or tool_use output. */
+  content: LLMChatContent[];
+  stop_reason: "end_turn" | "max_tokens" | "tool_use" | "stop_sequence";
+  usage: LLMChatUsage;
+}
+
+/** One output content block. */
+export type LLMChatContent =
+  | { type: "text"; text: string }
+  | { type: "tool_use"; id: string; name: string; input: Record<string, unknown> };
+
+/** Token-accounting payload. Cache fields are populated only on
+ *  providers that surface them (Anthropic today). */
+export interface LLMChatUsage {
+  input_tokens: number;
+  output_tokens: number;
+  cache_creation_input_tokens?: number;
+  cache_read_input_tokens?: number;
+}
+
+/** One streaming-mode SSE frame. The `kind` field is the SSE event
+ *  name; the `payload` carries the per-frame shape. v1 mirrors
+ *  Anthropic's streaming event names. */
+export type LLMChatStreamItem =
+  | { kind: "provider_chosen"; payload: { provider: string; model: string; request_id: string } }
+  | { kind: "content_block_start"; payload: { index: number; block: LLMChatContent } }
+  | { kind: "content_block_delta"; payload: { index: number; delta: LLMChatStreamDelta } }
+  | { kind: "content_block_stop"; payload: { index: number } }
+  | { kind: "message_delta"; payload: { delta: { stop_reason?: string }; usage: LLMChatUsage } }
+  | { kind: "done"; payload: { id: string; stop_reason: string; usage: LLMChatUsage } }
+  | { kind: "error"; payload: { type: string; code: string; message: string } };
+
+export interface LLMChatStreamDelta {
+  type: "text_delta" | "input_json_delta";
+  text?: string;          // for text_delta
+  partial_json?: string;  // for input_json_delta
+}

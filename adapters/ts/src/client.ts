@@ -26,6 +26,7 @@
 
 import type { _FetchContext } from "./fetch-helpers.js";
 import {
+  authHeaders,
   deleteRequest,
   jsonFetch,
   postJSON,
@@ -60,6 +61,9 @@ import type {
   LibrarySkillDefinition,
   ListHooksResponse,
   ListUsersResponse,
+  LLMChatOptions,
+  LLMChatResponse,
+  LLMChatStreamItem,
   MemoryEntriesResponse,
   MemoryEntryResponse,
   MemoryScopeIDsResponse,
@@ -689,6 +693,67 @@ export class LoomcycleClient {
     );
   }
 
+  // ---- v0.11.0 LLM Gateway ----
+
+  /** Non-streaming LLM chat completion via the gateway endpoint.
+   *  Wraps `POST /v1/_llm/chat` with `stream: false`. The gateway
+   *  resolves a provider per the routing precedence
+   *  (explicit-pin > explicit-provider > explicit-model > resolver
+   *  default), invokes it directly (no agent loop), and returns the
+   *  aggregated response with usage counters + the chosen
+   *  provider/model echoed back.
+   *
+   *  Use this when you want loomcycle's routing benefits (one
+   *  credential, one quota, one observability surface across
+   *  providers) without paying for the agent runtime overhead.
+   *  Tool-calling works: pass `tools[]` and read `tool_use` content
+   *  blocks back; the per-provider schema translation is handled by
+   *  the substrate's existing driver layer.
+   *
+   *  Raises {@link AuthError} on 401; {@link UnavailableError} on 503
+   *  (resolver not configured, store unwired);
+   *  {@link InvalidArgumentError} on 400 (bad request shape). */
+  async llmChat(opts: LLMChatOptions): Promise<LLMChatResponse> {
+    const body = serializeLLMOptions(opts, false);
+    return postJSON<LLMChatResponse>(this.ctx, "/v1/_llm/chat", body, {
+      signal: opts.signal,
+    });
+  }
+
+  /** Streaming LLM chat completion. Wraps `POST /v1/_llm/chat` with
+   *  `stream: true`. Yields one {@link LLMChatStreamItem} per SSE
+   *  frame in Anthropic-style: provider_chosen first, then
+   *  content_block_start / content_block_delta / content_block_stop
+   *  pairs, then message_delta + done.
+   *
+   *  Iteration terminates when the gateway closes the stream. On a
+   *  terminal error the gateway emits an `error` frame; the iterator
+   *  yields it and the caller decides whether to throw.
+   *
+   *  Use this for live token streaming into LangChain BaseChatModel
+   *  `_stream` callbacks. */
+  async *llmStream(opts: LLMChatOptions): AsyncIterable<LLMChatStreamItem> {
+    const body = serializeLLMOptions(opts, true);
+    const resp = await this.ctx.fetchImpl(this.ctx.baseUrl + "/v1/_llm/chat", {
+      method: "POST",
+      headers: {
+        ...authHeaders(this.ctx),
+        "Content-Type": "application/json",
+        Accept: "text/event-stream",
+      },
+      body: JSON.stringify(body),
+      signal: opts.signal,
+    });
+    if (!resp.ok) {
+      await raiseFromResponse(resp);
+    }
+    if (!resp.body) {
+      throw new Error("llmStream: response has no body");
+    }
+    const reader = resp.body.getReader();
+    yield* parseLLMStreamFrames(reader);
+  }
+
   // ---- Internal helpers ----
 
   /** Shared SSE POST → stream-of-AgentEvent path. Used by
@@ -1052,4 +1117,75 @@ function channelOpPath(
     return `/v1/users/${encodeURIComponent(userId)}/channels/${enc}/${op}`;
   }
   return `/v1/_channels/${enc}/${op}`;
+}
+
+
+// ---- v0.11.0 LLM Gateway helpers ----
+
+/** serializeLLMOptions strips the AbortSignal (transport concern) and
+ *  forces the stream flag to match the call mode. */
+function serializeLLMOptions(opts: LLMChatOptions, stream: boolean): Record<string, unknown> {
+  const { signal: _signal, ...rest } = opts;
+  return { ...rest, stream };
+}
+
+/** parseLLMStreamFrames drains an SSE stream from /v1/_llm/chat and
+ *  yields one LLMChatStreamItem per frame. Unlike parseSSE in
+ *  stream.ts, the gateway's frames discriminate purely by the SSE
+ *  event name — there's no `type` field on the data payload. */
+async function* parseLLMStreamFrames(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+): AsyncIterable<LLMChatStreamItem> {
+  const decoder = new TextDecoder("utf-8");
+  let buf = "";
+  let event = "";
+  let data = "";
+
+  const flush = (): LLMChatStreamItem | null => {
+    if (!event || !data) {
+      event = "";
+      data = "";
+      return null;
+    }
+    try {
+      const payload = JSON.parse(data);
+      const item = { kind: event, payload } as LLMChatStreamItem;
+      event = "";
+      data = "";
+      return item;
+    } catch {
+      event = "";
+      data = "";
+      return null;
+    }
+  };
+
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buf += decoder.decode(value, { stream: true });
+
+    let idx;
+    while ((idx = buf.indexOf("\n")) !== -1) {
+      const line = buf.slice(0, idx).replace(/\r$/, "");
+      buf = buf.slice(idx + 1);
+
+      if (line === "") {
+        const item = flush();
+        if (item) yield item;
+        continue;
+      }
+      if (line.startsWith("event:")) event = line.slice("event:".length).trim();
+      else if (line.startsWith("data:")) data = line.slice("data:".length).trim();
+      // Keepalive comment lines (`:keepalive`) are silently dropped.
+    }
+  }
+  // Drain a final un-newlined frame on connection close.
+  if (buf.length > 0) {
+    const line = buf.replace(/\r$/, "");
+    if (line.startsWith("event:")) event = line.slice("event:".length).trim();
+    else if (line.startsWith("data:")) data = line.slice("data:".length).trim();
+  }
+  const item = flush();
+  if (item) yield item;
 }

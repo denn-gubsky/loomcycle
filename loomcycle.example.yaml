@@ -389,6 +389,11 @@ models:
 # .env.example for the full frontmatter contract. When AGENTS_ROOT is
 # unset (default), behaviour is unchanged: agents come purely from the
 # yaml block below.
+#
+# v0.11.0 — for lightweight LLM routing WITHOUT agent overhead (n8n
+# Chat Model integrations, LangChain consumers, anything that doesn't
+# need tools/memory/snapshots), see the LLM Gateway endpoint
+# POST /v1/_llm/chat. `loomcycle help llm-gateway` for the full topic.
 agents:
 
   # The minimum-viable agent: smart model, system prompt, no tools.
