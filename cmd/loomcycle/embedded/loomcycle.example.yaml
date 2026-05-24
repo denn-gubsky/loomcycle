@@ -1,0 +1,737 @@
+# loomcycle.example.yaml — comprehensive example with every tool exercised.
+#
+# Copy this to ~/.config/loomcycle/loomcycle.yaml (or wherever your
+# `loomcycle --config` flag points) and edit the agents to your needs.
+#
+# Two-layer policy model (see docs/TOOLS.md):
+#   1. Operator-side env: each built-in is registered but DISABLED until
+#      its env var is set. .env.example documents these.
+#   2. Per-agent allowed_tools below: anchored allowlist (default-deny).
+#      An agent with no allowed_tools sees ZERO tools at the dispatcher.
+#
+# YAML interpolation: ${VAR} is allowed but RESTRICTED — only LOOMCYCLE_*
+# names plus a small list of well-known third-party tokens (BRAVE_API_KEY,
+# GITHUB_TOKEN, SLACK_BOT_TOKEN, PG_DSN, REDIS_URL). Other ${VAR} tokens
+# are passed through verbatim. This blocks a malicious YAML in a shared-
+# config setup from exfiltrating, say, ANTHROPIC_API_KEY into an MCP
+# server URL.
+
+# ─── Tier-based model resolution (v0.7+, opt-in) ──────────────────────
+# Agents can declare `tier: low | middle | high` instead of pinning a
+# specific (provider, model). The resolver walks `provider_priority`
+# below and picks the first available candidate from `tiers.<level>`
+# for that provider. Cost-floor-first by default — try DeepSeek, fall
+# through to Ollama (local llama), then OpenAI, then Anthropic.
+#
+# Per-agent overrides: an agent may set its own `providers:` list
+# (full replacement of provider_priority) and/or `models:` map (full
+# replacement of tiers, per-tier). See the cv-generator agent below
+# for a sensitive-paths-only example.
+#
+# Live availability: PR 2 of the resolve-matrix series probes each
+# provider's /v1/models endpoint at startup and re-probes every
+# 15 minutes (configurable via LOOMCYCLE_RESOLVE_PROBE_INTERVAL).
+# Models that 404 or whose providers 5xx mid-run get marked stalled
+# and skipped; the next periodic probe revives them. PR 1 ships a
+# stub probe — providers are reachable iff their API key is set.
+provider_priority:
+  - ollama-local   # workstation GPU — absolute floor when present
+  - deepseek
+  - openai
+  - anthropic
+  - ollama         # hosted ollama.com — opt-in via OLLAMA_API_KEY
+
+tiers:
+  low:
+    - { provider: deepseek,     model: deepseek-v4-flash }
+    - { provider: ollama-local, model: gemma4:9b }
+    - { provider: openai,       model: gpt-5.4-mini }
+    - { provider: anthropic,    model: claude-haiku-4-5 }
+  middle:
+    - { provider: deepseek,     model: deepseek-v4-pro }
+    - { provider: ollama-local, model: qwen3.6:27b }
+    - { provider: openai,       model: gpt-5.4 }
+    - { provider: anthropic,    model: claude-sonnet-4-6 }
+  high:
+    # DeepSeek absent — V4 Pro doesn't compete with Opus 4.7 / GPT-5.5.
+    # ollama-local typically can't host 600B+ kimi-k2.6 either; the
+    # `ollama` (hosted) entry covers that case for operators with a
+    # paid quota.
+    - { provider: ollama,    model: kimi-k2.6 }
+    - { provider: openai,    model: gpt-5.5 }
+    - { provider: anthropic, model: claude-opus-4-7 }
+
+# ─── User tiers (v0.8.2+) ─────────────────────────────────────────────
+# Operator-defined per-user-tier overlay on the resolver matrix above.
+# Each named tier scopes WHICH providers are eligible for runs belonging
+# to that user-class, AND whether retryable errors (429/5xx/network/
+# stream-idle) trigger a runtime switch to the next candidate.
+#
+# How it connects to the wire:
+#   POST /v1/runs { "agent": "...", "user_tier": "free" | "low" | ... }
+# The named tier resolves at run-start (intersect agent's `providers:`
+# with this tier's `provider_priority`) and AGAIN per provider error
+# during the run (loop calls into the resolver to pick the next
+# candidate, capped at `max_fallback_attempts` cumulative switches).
+#
+# Empty intersection at run-start = `ErrTierAgentNotAvailable` returned
+# to the client (the agent's allowed providers don't include any in this
+# tier's priority) — useful for "free tier can't run premium-only
+# agents" UX gates.
+#
+# `default` is REQUIRED (used when a request omits `user_tier:`, or
+# names a tier not in this map). Anything matching the library defaults
+# above is fine as the `default` shape; back-compat v0.7.x clients see
+# unchanged behaviour because `default.fallback_on_error: true` mirrors
+# the v0.7.x retryable-error retry.
+#
+# `fallback_on_error: false` is the cost-cap shape: a 429 from the only
+# available provider returns the error to the client (no climb to paid
+# providers, no surprise bills). Paid tiers want `true`.
+user_tiers:
+
+  # REQUIRED — used when a run's `user_tier:` is unset or unknown.
+  # Same shape as the library defaults above so v0.7.x clients see no
+  # behaviour change.
+  default:
+    provider_priority: [ollama-local, deepseek, openai, anthropic, ollama]
+    # Tier-bodies (low/middle/high) omitted = inherit from library
+    # `tiers:` above. Override only when this user-tier needs a
+    # different candidate list than the library default.
+    fallback_on_error: true
+    max_fallback_attempts: 3
+
+  # Free tier: cost cap — only the no-paid-key providers, no climb on
+  # 429 (would defeat the point). ollama-local (workstation GPU, no
+  # auth) is the right shape here: no quota to exhaust, no surprise
+  # bills. `fallback_on_error: false` means an Ollama outage surfaces
+  # immediately to the client; the client can then offer an upgrade
+  # prompt.
+  free:
+    provider_priority: [ollama-local]
+    tiers:
+      low:    [{provider: ollama-local, model: gemma4:9b}]
+      middle: [{provider: ollama-local, model: qwen3.6:27b}]
+      high:   [{provider: ollama-local, model: qwen3.6:27b}]
+    fallback_on_error: false
+
+  # Low tier: cost-floor-first with one paid backstop. DeepSeek's free
+  # quota covers most runs; Anthropic catches the burst.
+  low:
+    provider_priority: [deepseek, anthropic]
+    # tier-bodies omitted = inherit library tiers (DeepSeek + Anthropic
+    # candidates from `low:` above survive the intersection).
+    fallback_on_error: true
+    max_fallback_attempts: 3
+
+  # Medium tier: paid providers preferred, DeepSeek as the cost
+  # backstop. Sequenced so a 429 on OpenAI climbs to Anthropic before
+  # falling back to DeepSeek.
+  medium:
+    provider_priority: [openai, anthropic, deepseek]
+    fallback_on_error: true
+    max_fallback_attempts: 3
+
+  # High tier: Anthropic-only. No fallback (the SLA is "best model or
+  # error"; falling back to a cheaper provider would silently degrade
+  # output quality for users paying for the top tier).
+  high:
+    provider_priority: [anthropic]
+    fallback_on_error: false
+
+# ─── Channels (v0.8.4) ────────────────────────────────────────────────
+# Operator-declared inter-agent message channels. Agents publish JSON
+# payloads to a named channel; other agents subscribe to drain new
+# messages with cursor-based at-least-once delivery.
+#
+# Channels MUST be declared here before any agent yaml may grant
+# publish/subscribe on them — there is no auto-creation. The
+# namespace is operator-owned. Per-agent ACLs (below in `agents:`)
+# name channels by exact match OR by trailing "/*" wildcard
+# (`findings/*` matches `findings/alpha` but NOT `findings` itself).
+#
+# Per-channel fields:
+#   scope         — cursor-isolation axis: agent | user | global
+#                   * agent  = one cursor per agent name (cross-run,
+#                              cross-user — researcher's queue is
+#                              shared across every researcher run)
+#                   * user   = one cursor per user_id
+#                   * global = one shared cursor for the whole channel
+#   default_ttl   — per-message TTL in seconds (0 = no default)
+#   max_messages  — bounded storage cap; OLDEST trimmed first on
+#                   overflow (publishers never block). 0 = unbounded.
+#   semantic      — informational: queue (work-distribution) or
+#                   broadcast (fan-out). Storage shape is identical;
+#                   the operator declares the intent.
+#
+# Empty / absent `channels:` block = Channel tool effectively
+# disabled (every publish/subscribe op refuses).
+#
+# v0.9.x — Channels declared here are reachable by EXTERNAL callers
+# (n8n nodes, dashboards, CLIs) via four bearer-authed CRUD routes per
+# scope:
+#   - Admin (scope=global): /v1/_channels/{name}/{publish|subscribe|peek|ack}
+#   - Per-user (scope=user): /v1/users/{user_id}/channels/{name}/{publish|...}
+# Same code path as the in-band Channel tool. The system-publish route
+# /v1/_channels/{name...} (for _system/* channels) stays unchanged.
+# See `help(topic="channel-admin")` for the operator workflow + the
+# n8n-nodes-loomcycle composition pattern.
+channels:
+
+  # Researcher-to-analyst work queue. Each researcher agent's
+  # findings drain to the analyst agent's queue.
+  findings:
+    scope: agent
+    default_ttl: 86400
+    max_messages: 10000
+    semantic: queue
+
+  # Cross-tenant alerts broadcast. Every subscriber sees every
+  # message. global scope = one shared cursor for the whole channel,
+  # so this is fan-out (every subscriber agent reads the same
+  # sequence from the same cursor). For per-subscriber broadcast
+  # use scope: agent + a queue-semantic channel + multiple cursors.
+  alerts:
+    scope: global
+    default_ttl: 3600
+    max_messages: 1000
+    semantic: broadcast
+
+  # ─── v0.8.6 System channels ────────────────────────────────────────
+  # `_system/*` prefix is reserved: only operator yaml may declare,
+  # only loomcycle's internal publisher + the admin endpoint may
+  # write (per the channel's `publisher` field). Agents may
+  # subscribe (with ACL) but never publish.
+  #
+  # Optional — uncomment the channels you want. Each one's purpose:
+  #   - heartbeat-* : cadence ticker, one message per period.
+  #                   Verifies liveness, drives dashboards.
+  #   - alarms/*    : agent or admin-endpoint publishes alert
+  #                   payloads. Severity by channel name.
+  #   - runtime-state: v0.8.9 pause/resume/restore state transitions
+  #                    (event-driven; no `period:` needed because the
+  #                    channel name is in eventDrivenSystemChannels).
+  #   - provider-events: provider fallback + cache-invalidated signals
+  #                      (v0.9.x observability sweep wires this).
+  #
+  # Cadence channels (publisher: system + period:):
+  # _system/heartbeat-1m:    { scope: global, semantic: broadcast, default_ttl: 60s,  publisher: system, period: 1m }
+  # _system/heartbeat-5m:    { scope: global, semantic: broadcast, default_ttl: 300s, publisher: system, period: 5m }
+  # _system/heartbeat-1h:    { scope: global, semantic: broadcast, default_ttl: 1h,   publisher: system, period: 1h }
+  #
+  # Alarm channels (agents publish; admin endpoint can also publish):
+  # _system/alarms/critical: { scope: global, semantic: broadcast, default_ttl: 24h, max_messages: 1000 }
+  # _system/alarms/warning:  { scope: global, semantic: broadcast, default_ttl: 6h,  max_messages: 5000 }
+  # _system/alarms/info:     { scope: global, semantic: queue,     default_ttl: 1h,  max_messages: 10000 }
+  #
+  # Event-driven channels (publisher: system without period):
+  # _system/runtime-state:   { scope: global, semantic: broadcast, default_ttl: 7d, publisher: system }
+  # _system/provider-events: { scope: global, semantic: broadcast, default_ttl: 24h, publisher: system }
+
+  # v0.8.16 Interruption tool — the signal flow that the
+  # Interruption tool publishes to. pending = "human needs to
+  # answer this"; resolved = "answer recorded, run resuming". Web UI
+  # subscribes to both; consumer-side notifiers (Slack bots etc.)
+  # can subscribe to pending to alert the human.
+  # _system/interrupts/pending:  { scope: user, semantic: broadcast, default_ttl: 3600,  publisher: system }
+  # _system/interrupts/resolved: { scope: user, semantic: broadcast, default_ttl: 86400, publisher: system }
+
+# ─── v0.9.0 Vector Memory ────────────────────────────────────────────
+# Adds semantic search to the Memory tool. Agents set rows with
+# `embed: true` and query via `op: search`. Off by default — agents
+# without the embedder block see vector ops refuse with
+# `embedder_not_configured`; k/v Memory is unaffected.
+#
+# Backend requirements:
+#   - Postgres + pgvector extension (`LOOMCYCLE_PGVECTOR_ENABLED=1`)
+#   - SQLite vector backend ships in v0.9.1 (sqlite-vec via build-tag
+#     swap to cgosqlite). v0.9.0 SQLite always refuses vector ops.
+#
+# Env vars that ride alongside:
+#   LOOMCYCLE_PGVECTOR_ENABLED=1                     # opt in on Postgres
+#   LOOMCYCLE_MEMORY_EMBED_BATCH_SIZE=100            # per-call batch cap
+#   LOOMCYCLE_MEMORY_EMBED_TIMEOUT_MS=30000          # per-call HTTP timeout
+#
+# Anthropic note (v0.10.2+): `provider: anthropic` is now a working
+# Voyage AI proxy — Anthropic has no native embedding API and
+# explicitly recommends Voyage. Set VOYAGE_API_KEY env var (separate
+# from ANTHROPIC_API_KEY which is for chat completions). See
+# `help voyage-embedder` for the model menu + pricing.
+#
+# SQLite + vectors: the default-build SQLite refuses vector ops
+# (`vector_unsupported`). Operators wanting vectors on SQLite build
+# with `CGO_ENABLED=1 go install -tags=sqlite_vec ...`; the build-tag
+# mechanism is shipped in v0.10.2, full MemoryEmbed* impl lands in
+# v0.10.3. See `help sqlite-vec` for the build flow.
+#
+# See docs/TOOLS.md → "Vector / semantic search (v0.9.0)" for the
+# wire shape, failure modes, and the admin reembed flow.
+# memory:
+#   embedder:
+#     provider: openai                       # openai | gemini | anthropic (Voyage AI)
+#     model: text-embedding-3-large          # voyage-3 / voyage-4 for anthropic
+#     timeout_ms: 30000                      # optional; overrides env
+#     batch_size: 100                        # optional; overrides env (Voyage caps voyage-3 at 128)
+
+# ─── v0.10.0 OpenTelemetry distributed traces ───────────────────────
+# Off by default — when LOOMCYCLE_OTEL_EXPORTER_OTLP_ENDPOINT is unset,
+# the tracer is a no-op and there is zero runtime cost. When set,
+# loomcycle emits a span tree per agent run:
+#
+#   loomcycle.run
+#   ├─ loomcycle.iteration (one per loop turn)
+#   │  ├─ loomcycle.provider.call (provider/model/effort attrs)
+#   │  └─ loomcycle.tool.call (tool name)
+#   │     └─ loomcycle.mcp.call (server + tool, when applicable)
+#   └─ done (input_tokens/output_tokens/stop_reason)
+#
+# Sub-agent runs nest as children of the parent's iteration span via
+# context propagation. Operators see the full cv-batch-adapter →
+# cv-adapter tree in one Jaeger view.
+#
+# Spans deliberately do NOT carry transcript bodies, tool I/O, system
+# prompts, user prompts, API keys, or any secrets. Only shape, cost,
+# latency, and identity (run_id/agent_id/user_id). The transcript view
+# at /ui/agents/<id> stays the authoritative record of agent content.
+#
+# Run `help observability` (Context tool) for the Jaeger / Tempo /
+# Honeycomb / DataDog walkthroughs + the full attribute reference.
+#
+# Env vars:
+#   LOOMCYCLE_OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
+#       # Empty disables. host:port OR http(s)://host:port — http://
+#       # opts into WithInsecure automatically. Use https:// for
+#       # Honeycomb / cloud collectors.
+#   LOOMCYCLE_OTEL_EXPORTER_OTLP_HEADERS=x-honeycomb-team=$KEY
+#       # Comma-separated key=value list for collector auth. Multiple
+#       # headers compose with `,`.
+#   LOOMCYCLE_OTEL_SERVICE_NAME=loomcycle
+#       # Populates service.name resource attribute. Override per
+#       # replica for multi-replica HA grouping.
+#   LOOMCYCLE_OTEL_TRACES_SAMPLER_RATIO=1.0
+#       # Head-based sampling ratio, clamped to [0,1]. parentbased so
+#       # a sampled parent always produces sampled children. Reduce
+#       # (0.1, 0.01) on high-volume deployments to fit SaaS APM
+#       # event caps (Honeycomb free tier: ~0.05 for 200 runs/hour).
+
+# ─── v0.8.16 Interruption tool ───────────────────────────────────────
+# Human-in-the-loop primitive. Operator picks the delivery surface;
+# per-agent yaml grants access. See docs/TOOLS.md "The Interruption
+# tool" for the full surface.
+interruption:
+  backend: webui                  # webui | mcp_server:<name> | cli
+  default_timeout_ms: 3600000     # 1h — when an `ask` doesn't pass timeout_ms
+  max_timeout_ms: 86400000        # 24h — hard ceiling on a single ask
+  max_pending_per_run: 10         # operator-global cap; per-agent yaml narrows
+  heartbeat_interval_ms: 30000    # during-block heartbeat cadence (sweeper-safe)
+
+# ─── Tool-use hooks (v0.7.x+; widening capability v0.8.17) ────────────
+# Hook registrations themselves are RUNTIME — apps register via
+# POST /v1/hooks. This block carries the few operator-side knobs that
+# CANNOT be set via the runtime API (so the registering app can't
+# escalate its own trust boundary).
+#
+# permit_host_widen.owners: the exact-string list of registered-hook
+# Owner UIDs whose Pre-hook `allow_hosts` response is HONOURED at
+# dispatch time. Without an entry here, any hook's allow_hosts is
+# silently dropped (with a WARN log + Dispatcher.HostWidenDenied
+# counter increment). The model and the runtime caller cannot enable
+# widening — only this yaml can. See docs/TOOLS.md "Per-call host
+# widening" for the wire shape, audit event, and known limitations.
+#
+# Env equivalent (APPENDS to whatever yaml has, not replaces):
+#   LOOMCYCLE_HOOKS_PERMIT_HOST_WIDEN_OWNERS=jobs-search-web,company-research
+#
+# SECURITY: the named app is trusted to make ad-hoc per-call URL
+# decisions. The hook receives the URL the model wants to fetch +
+# agent/user identity, and decides allow/deny. The hook MUST NOT
+# blindly echo the model's URL host as `allow_hosts` (that would let
+# the model widen its own allowlist — see confused-deputy notes in
+# docs/TOOLS.md). Audit the operator-yaml addition like you'd audit
+# any trust delegation.
+hooks:
+  permit_host_widen:
+    owners: []                    # e.g. ["jobs-search-web"] — empty default-denies for all owners
+
+# ─── Default routing for agents that don't specify their own ──────────
+# Used by agents that declare neither `tier:` nor an explicit
+# `provider:`+`model:` pin. v0.6.x back-compat path; tier-based agents
+# bypass these defaults entirely.
+defaults:
+  provider: anthropic
+  model: claude-sonnet-4-6
+
+# ─── Model aliases ────────────────────────────────────────────────────
+# Agents reference these names via `model: <alias>`. The alias resolves
+# to (provider, real_model_id). Cleaner than repeating model strings,
+# and makes "swap haiku→sonnet for cv-adapter" a one-line YAML change.
+models:
+  cheap:  { provider: anthropic, model: claude-haiku-4-5 }
+  smart:  { provider: anthropic, model: claude-sonnet-4-6 }
+  best:   { provider: anthropic, model: claude-opus-4-7 }
+  gpt:    { provider: openai,    model: gpt-4o-mini }
+  gpt-4:  { provider: openai,    model: gpt-4o }
+  local:  { provider: ollama-local, model: llama3.1:8b }  # tool-tuned model on workstation
+
+# ─── Agents ───────────────────────────────────────────────────────────
+# Each agent is addressed by name in POST /v1/runs's "agent" field.
+# allowed_tools is the ANCHORED allowlist — anything not on the list is
+# invisible to that agent's runs. Glob `mcp__server__*` exposes every
+# tool from one MCP server.
+#
+# Agent directory discovery (v0.8.1+): agents can ALSO be defined as
+# flat <name>.md files under a directory pointed at by the env var
+# LOOMCYCLE_AGENTS_ROOT. Each MD's YAML frontmatter is the base
+# AgentDef; the body becomes system_prompt. Yaml entries below act as
+# an OPTIONAL override layer — a yaml entry with the same name as a
+# discovered MD overrides per-field, so operators can keep one source
+# of truth in the MD and tweak per-environment via yaml. See
+# .env.example for the full frontmatter contract. When AGENTS_ROOT is
+# unset (default), behaviour is unchanged: agents come purely from the
+# yaml block below.
+#
+# v0.11.0 — for lightweight LLM routing WITHOUT agent overhead (n8n
+# Chat Model integrations, LangChain consumers, anything that doesn't
+# need tools/memory/snapshots), see the LLM Gateway endpoint
+# POST /v1/_llm/chat. `loomcycle help llm-gateway` for the full topic.
+agents:
+
+  # The minimum-viable agent: smart model, system prompt, no tools.
+  # Reaches no resources outside the model. Safe for prompts that only
+  # need text generation (Q&A bots, classifiers, summarisers).
+  default:
+    model: smart
+    system_prompt: "You are a helpful assistant."
+    allowed_tools: []
+
+  # ─── Tier-based agents (v0.7+) ──────────────────────────────────────
+  # These three illustrate the resolver's three shapes: bare tier,
+  # tier with provider override, tier with full per-agent matrix
+  # override. Pick whichever matches your routing intent.
+
+  # Bare tier: resolver walks library priority + library tier defs.
+  # Cost-floor-first (DeepSeek → Ollama → OpenAI → Anthropic). The
+  # canonical shape for high-volume public-data agents.
+  ats-filter:
+    tier: low
+    system_prompt: "You filter job postings against the user's resume. Output JSON."
+    allowed_tools: []
+
+  # Tier + provider override: this agent skips DeepSeek and Ollama
+  # entirely, preferring Anthropic and OpenAI in that order. Useful
+  # for agents where you want the cloud-frontier providers but still
+  # want fallthrough between them. `effort: high` requests max
+  # reasoning budget where supported (Anthropic thinking, OpenAI
+  # reasoning_effort); silently ignored on models without reasoning.
+  ranker:
+    tier: middle
+    effort: high
+    providers: [anthropic, openai]
+    system_prompt: "You rank candidates against a position rubric. Show your reasoning."
+    allowed_tools: []
+
+  # Tier + per-agent matrix override: full replacement of the tier's
+  # candidate list. This agent locks user-sensitive paths to
+  # Anthropic — even though library priority lists DeepSeek first,
+  # the per-agent `models:` block ensures only Anthropic is ever
+  # picked. The resolver still goes through the matrix so a stalled
+  # claude-opus-4-7 surfaces as 503 cleanly (no silent fall-through).
+  cv-generator:
+    tier: high
+    effort: medium
+    models:
+      high:
+        - { provider: anthropic, model: claude-opus-4-7 }
+    system_prompt: "You adapt the user's CV to a target job description."
+    allowed_tools: [Read, Write]
+
+  # Loads the system prompt from a file relative to this YAML's
+  # directory. Mutually exclusive with system_prompt. Useful when the
+  # prompt is long enough to be uncomfortable to inline.
+  # docs-from-file:
+  #   model: smart
+  #   system_prompt_file: prompts/docs-agent.md
+  #   allowed_tools: [WebFetch]
+
+  # Filesystem-only agent: can read/write/edit files but cannot reach
+  # the network. Good for code-review or doc-editing flows where the
+  # operator has staged inputs into LOOMCYCLE_WRITE_ROOT.
+  file-editor:
+    model: smart
+    system_prompt: "You edit files in the configured sandbox. Never speculate about files you haven't read."
+    allowed_tools: [Read, Write, Edit]
+
+  # Research agent: can search the web and fetch pages. Cannot touch
+  # the filesystem. Default WebSearch filter is "drop" — the model
+  # only sees URLs it can actually fetch via WebFetch (the per-request
+  # allowed_hosts narrows further if the caller supplies it).
+  #
+  # `channels:` (v0.8.4) — this agent PUBLISHES findings to the queue
+  # but does NOT subscribe (one-way producer). The analyst agent
+  # below mirrors this: subscribes but doesn't publish. Together they
+  # implement the "researcher-feeds-analyst" canonical pattern from
+  # the v0.8.4 Channel-tool RFC.
+  researcher:
+    model: smart
+    system_prompt: "You do focused web research. Cite every claim with a URL. Publish each finding as a single JSON object to the `findings` channel."
+    allowed_tools: [WebSearch, WebFetch, Channel]
+    channels:
+      publish: [findings]
+      subscribe: []
+
+  # Analyst agent: drains the researcher's findings queue, summarises
+  # batches into reports, and reads the alerts broadcast. Demonstrates
+  # the consumer side of the Channel tool.
+  analyst:
+    model: smart
+    system_prompt: "You drain the `findings` channel and produce summary reports. Subscribe to `alerts` for cross-tenant notifications."
+    allowed_tools: [Channel, Write]
+    channels:
+      publish: []
+      subscribe: [findings, alerts]
+
+  # Power agent: full tool surface. Should only be used when the
+  # operator has containerised loomcycle (Bash is NOT a true sandbox).
+  # Keep `Bash` off this list unless you really need it.
+  power-user:
+    model: best
+    system_prompt: "You have broad access. Do the minimum work needed."
+    allowed_tools: [Read, Write, Edit, WebSearch, WebFetch]
+    # Add Bash only if loomcycle runs inside a container/VM:
+    # allowed_tools: [Read, Write, Edit, WebSearch, WebFetch, Bash]
+
+  # MCP-backed agent: glob exposes every tool the brave-search MCP
+  # server registers, alongside built-in WebFetch for the deep-dive.
+  # The mcp_servers.brave-search block below declares the server.
+  brave-researcher:
+    model: smart
+    allowed_tools: ["mcp__brave-search__*", WebFetch]
+    system_prompt: "Search via Brave, fetch top results, synthesise."
+
+  # Cheap classifier: haiku model, no tools, system prompt does
+  # all the heavy lifting. Good for routing/triage where you'd
+  # otherwise pay sonnet rates per call.
+  classifier:
+    model: cheap
+    system_prompt: |
+      Classify each input into exactly one of: bug, feature, question, spam.
+      Output ONLY the label, no explanation.
+    allowed_tools: []
+
+# ─── MCP servers ──────────────────────────────────────────────────────
+# Declared servers spawn at startup (stdio) or are dialed per-call
+# (http). Their tools register as `mcp__{server}__{tool}` after
+# tools/list discovery. Operator-level allowed_tools narrows what the
+# server exposes BEFORE any agent's allowed_tools is consulted.
+#
+# v0.9.x — HTTP / Streamable-HTTP MCP servers can ALSO be registered
+# at runtime via the MCPServerDef substrate (no yaml edit, no restart).
+# Bearer-authed `POST /v1/_mcpserverdef` + the same op surface as
+# AgentDef/SkillDef (create/fork/get/list/promote/retire/rediscover/
+# verify). See `help(topic="dynamic-mcp")` for the n8n self-registration
+# pattern. Static yaml entries (this block) and dynamic rows coexist;
+# name collisions are refused (yaml is ground truth). Stdio is yaml-
+# only — dynamic registration is HTTP / Streamable-HTTP only by design.
+mcp_servers:
+
+  # ─ Stdio MCP server (subprocess) ────────────────────────────────────
+  brave-search:
+    transport: stdio
+    command: npx
+    args: ["-y", "@modelcontextprotocol/server-brave-search"]
+    env:
+      # ${BRAVE_API_KEY} expands from the parent process env (loomcycle.sh
+      # sources .env.local before exec). Falls through verbatim if the
+      # var is unset — the MCP server will then refuse to start, which
+      # surfaces as a startup log line and the server is skipped.
+      BRAVE_API_KEY: "${BRAVE_API_KEY}"
+    pool_size: 2
+    # Operator-level filter: only this subset of the server's tools is
+    # registered AT ALL. Useful when an MCP server advertises 20 tools
+    # but you only want the model to see 2.
+    allowed_tools: [brave_web_search]
+
+  # ─ HTTP MCP server (per-call dial) ──────────────────────────────────
+  # Use HTTP transport when the MCP server runs as a separate service
+  # (own process, own container, own host). loomcycle dials it per
+  # tool-call and 404s mark the server dead until next discovery.
+  #
+  # jobs-search-agent runs an MCP server at /api/mcp on its Next.js app.
+  # It exposes 8 typed tools (mcp__jobs__getAgentContext,
+  # mcp__jobs__patchApplication, mcp__jobs__postSearchIngest, etc.) for
+  # the agents to call back. The Authorization header carries a valid
+  # jobs-search-agent user API token; the MCP server validates it via
+  # the existing validateApiToken flow and forwards the same bearer to
+  # loopback fetches against its own routes.
+  #
+  # IMPORTANT — env-var name MUST be LOOMCYCLE_*-prefixed.
+  # Loomcycle's YAML env-expansion allowlist only expands variables
+  # whose name starts with LOOMCYCLE_ (or is on the explicit
+  # third-party allow-list — BRAVE_API_KEY, GITHUB_TOKEN, etc.). A
+  # name like ${JOBS_SEARCH_API_TOKEN} would pass through as the
+  # literal string and the MCP server would 401 on every call. Pick
+  # any LOOMCYCLE_-prefixed name; the example uses
+  # LOOMCYCLE_JOBS_SEARCH_API_TOKEN. Set it in .env.local with the
+  # value of a valid jobs-search-agent user API token.
+  jobs:
+    transport: http
+    url: http://localhost:3000/api/mcp
+    headers:
+      Authorization: "Bearer ${LOOMCYCLE_JOBS_SEARCH_API_TOKEN}"
+
+  # ─ n8n workflow as an MCP tool (Pattern 2 of the n8n integration) ────
+  # Optional. Documented so operators wiring loomcycle agents to call
+  # n8n workflows have a copy-pasteable starting point. See
+  # `help(topic="n8n-integration")` for the three patterns + when to
+  # pick which.
+  #
+  # The general shape: build a workflow in n8n that does the integration
+  # you want (Mailgun email, Slack DM, Notion DB write, GitHub issue
+  # create, …), front it with n8n's MCP Server Trigger node (which
+  # mints a bearer + a /mcp/<id> endpoint), then declare that endpoint
+  # here. Loomcycle agents then call it like any other MCP tool.
+  #
+  # Bearer naming: same constraint as the jobs block above — the env-var
+  # MUST be LOOMCYCLE_*-prefixed or on the documented third-party
+  # allowlist. ${run.user_bearer:-fallback} additionally substitutes
+  # the per-run bearer field from POST /v1/runs (v0.8.14+), letting
+  # each end-user authenticate to n8n as themselves rather than as a
+  # single service account; the :- fallback covers runs without a
+  # user_bearer (cron jobs, internal operators).
+  #
+  # n8n-mailgun:
+  #   transport: http
+  #   url: https://your-n8n.example.com/mcp/abc123
+  #   headers:
+  #     Authorization: "Bearer ${LOOMCYCLE_N8N_MCP_TOKEN}"
+  #
+  # n8n-per-user:
+  #   transport: http
+  #   url: https://your-n8n.example.com/mcp/scoped
+  #   headers:
+  #     Authorization: "Bearer ${run.user_bearer:-${LOOMCYCLE_N8N_FALLBACK_TOKEN}}"
+
+# ─── Local API MCP gateway (v0.4.0+) ─────────────────────────────────
+# Reads an OpenAPI 3.0 spec at boot and exposes one typed tool per
+# operation, named `<prefix>__<operationId>`. Forwards calls to
+# base_url with the agent's `bearer` field as Authorization.
+#
+# Replaces the curl-shaped HTTP-tool pattern: an agent that previously
+# called `HTTP({method:"PATCH", url:"$BASE_URL/api/applications/...",
+# headers:{Authorization:"Bearer ..."}, body:{...}})` instead calls
+# `local__patch_application({bearer:"...", id:"...", body:{...}})` —
+# typed, schema-validated, and rename-safe.
+#
+# Constraints:
+#   - Inline schemas only ($ref is NOT resolved). Bundle your spec
+#     before pointing loomcycle at it (swagger-cli bundle, redocly
+#     bundle, etc.).
+#   - JSON request/response bodies only.
+#   - Trust model: this gateway is pointed at YOUR application server;
+#     SSRF and private-IP defences from the HTTP tool do not apply.
+#     Don't point base_url at attacker-controlled hosts.
+# local_api:
+#   spec: openapi.yaml          # relative to this YAML's directory
+#   base_url: http://localhost:3000
+#   tool_name_prefix: local     # tools become mcp__-style: local__<opId>
+
+# ─── Storage backend ──────────────────────────────────────────────────
+# SQLite is the default — single-file persistence, zero external deps.
+# Right for compact installs, dev, examples, and the README quick-start.
+#
+# Postgres is the v0.5+ production path — needed when an operator runs
+# hundreds of concurrent agents (jobs-search-agent's start-up phase) and
+# SQLite's single-writer ceiling becomes the load-bearing constraint.
+# The agent-facing Store interface is identical between backends; both
+# adapters are validated against a shared contract suite in CI so the
+# storage choice is operator-visible only via this block.
+#
+# Env equivalents (env wins over YAML so prod can keep the DSN out of
+# version-controlled config):
+#   LOOMCYCLE_STORAGE_BACKEND=postgres
+#   LOOMCYCLE_PG_DSN=postgres://user:pass@host:5432/loomcycle?sslmode=require
+#   LOOMCYCLE_PG_AUTOMIGRATE=1   # off by default — operator runs
+#                                  `loomcycle migrate up` explicitly
+#   LOOMCYCLE_PG_MAX_OPEN_CONNS=64
+#   LOOMCYCLE_PG_MIN_IDLE_CONNS=8
+#
+# storage:
+#   backend: postgres
+#   pg_dsn: ${LOOMCYCLE_PG_DSN}
+#   pg_max_open_conns: 32
+#   pg_min_idle_conns: 8
+#   pg_automigrate: false        # production default; flip to true in dev
+
+# ─── Concurrency ──────────────────────────────────────────────────────
+# Caps total in-flight runs across all agents. Bursts above the cap
+# queue up to max_queue_depth for queue_timeout_ms before returning
+# HTTP 429 with code:"backpressure".
+concurrency:
+  max_concurrent_runs: 8       # ~1 GiB RSS per run on a typical Sonnet config
+  max_queue_depth: 16          # short burst absorption
+  queue_timeout_ms: 30000      # 30s — caller-side timeout should match
+
+  # v0.10.1 per-tenant fairness. Caps active+queued runs per non-empty
+  # user_id, inside the global cap above. Default 0 = unlimited per
+  # user (back-compat; existing deployments see no behavior change).
+  # When >0, a user at cap gets HTTP 429 + Retry-After: 5 +
+  # `code: "per_user_quota_exhausted"`. Anonymous calls (no user_id)
+  # bypass the check. Sub-agents share the parent's count.
+  # Env: LOOMCYCLE_MAX_CONCURRENT_RUNS_PER_USER overrides yaml.
+  # See `help fairness` for the JobEmber starvation case + retry
+  # strategies + queue-fairness limits.
+  # max_concurrent_runs_per_user: 4
+
+# ─── gRPC server (v0.5.5) ─────────────────────────────────────────────
+# Optional second wire surface alongside HTTP+SSE. Mirrors the
+# /v1/* surface 1:1 via proto/loomcycle.proto. Disabled by default;
+# operator opts in by setting LOOMCYCLE_GRPC_ADDR.
+#
+# v0.5.5 PR 1 implements the metadata RPCs (GetAgent, CancelAgent,
+# ListUserAgents, GetTranscript, Health) + the auth interceptor.
+# Run / Continue (server-streaming) land in PR 2 once the HTTP
+# handler's run-loop wiring is factored into a shared runner.
+#
+# Auth uses the same LOOMCYCLE_AUTH_TOKEN as HTTP, presented via the
+# `authorization: Bearer <token>` gRPC metadata header. Health is
+# unauthenticated for parity with HTTP /healthz.
+#
+# Cleartext HTTP/2 — TLS termination is a deployment concern (run
+# loomcycle behind a TLS-terminating proxy if you need it). The gRPC
+# listener binds inside the trusted sidecar boundary same as HTTP.
+#
+# Env knobs (no YAML block — runtime tuning only):
+#   LOOMCYCLE_GRPC_ADDR=:8788          (empty = disabled)
+
+# ─── Heartbeat sweeper + session-lock GC (v0.5.0) ─────────────────────
+# Two background goroutines that keep state from accumulating:
+#
+#   1. Heartbeat sweeper: periodically marks runs whose last_heartbeat_at
+#      is older than HeartbeatStaleAfter as failed (error="heartbeat
+#      timeout"). Without this, runs whose host process crashed mid-loop
+#      stay status=running forever and pollute the active-run lists.
+#   2. Session-lock map GC: prunes per-session continuation mutexes that
+#      have been idle (refcount=0) longer than SessionLockMaxIdle. The
+#      lock map otherwise grows monotonically — every distinct session
+#      ID seen by /v1/sessions/{id}/messages adds an entry.
+#
+# Both default-on with sensible thresholds. Operators in multi-replica
+# deployments can disable the sweeper (LOOMCYCLE_HEARTBEAT_SWEEPER=0) so
+# only one replica owns the cleanup duty.
+#
+# Env knobs (no YAML block — these are runtime tuning, not topology):
+#   LOOMCYCLE_HEARTBEAT_SWEEPER=1                  (default; 0 disables)
+#   LOOMCYCLE_HEARTBEAT_SWEEP_INTERVAL_MS=60000    (default 60s)
+#   LOOMCYCLE_HEARTBEAT_STALE_MS=600000            (default 10 min)
+#   LOOMCYCLE_SESSION_LOCK_GC_INTERVAL_MS=300000   (default 5 min)
+#   LOOMCYCLE_SESSION_LOCK_MAX_IDLE_MS=600000      (default 10 min)
+
+# ─── Cache ────────────────────────────────────────────────────────────
+# Two layers: the response_kv (loomcycle's own normalised-request KV)
+# and native (provider-side cache_control on Anthropic system blocks).
+cache:
+  response_kv:
+    backend: memory            # "memory" | "redis" (redis adapter v0.4)
+    ttl: 5m
+  native:
+    enabled: true              # honour Anthropic cache_control hints
