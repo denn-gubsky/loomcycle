@@ -1137,7 +1137,30 @@ func main() {
 		// reached when perUserActive evaluates true.
 		quotaStore := coord.NewUserQuotaStore(pgStore.Pool())
 		sem.WithUserQuotaStore(quotaStore)
-		log.Printf("coord: cluster mode active — replica_id=%s heartbeat=30s backplane=postgres-listen-notify user_quotas=db-backed", cfg.Env.ReplicaID)
+
+		// v0.12.2 Phase 3: cross-replica cancel coordinator. When a
+		// cancel hits a replica that doesn't own the run, the registry
+		// delegates to CancelCoordinator.CancelRemote which broadcasts
+		// on the backplane + awaits an ack from the owning replica.
+		// Two long-lived subscribers carry the wire side: one listens
+		// for incoming cancel requests (RunCancelSubscriber), the other
+		// receives acks (RunAckSubscriber).
+		ackTimeout := time.Duration(cfg.Env.CancelAckTimeoutMs) * time.Millisecond
+		cancelCoord, err := coord.NewCancelCoordinator(coord.CancelCoordinatorConfig{
+			Backplane:    bp,
+			ReplicaID:    cfg.Env.ReplicaID,
+			Store:        pgStore,
+			ReplicaStore: replicaStore,
+			AckTimeout:   ackTimeout,
+		})
+		if err != nil {
+			log.Fatalf("coord: cancel coordinator init: %v", err)
+		}
+		srv.CancelRegistry().SetClusterCanceller(cancelCoord)
+		go cancelCoord.RunCancelSubscriber(bgCtx, srv.CancelRegistry())
+		go cancelCoord.RunAckSubscriber(bgCtx)
+
+		log.Printf("coord: cluster mode active — replica_id=%s heartbeat=30s backplane=postgres-listen-notify user_quotas=db-backed cancel_ack_timeout=%s", cfg.Env.ReplicaID, ackTimeout)
 	}
 
 	// Memory tool TTL sweeper. Cheap periodic DELETE of expired rows.

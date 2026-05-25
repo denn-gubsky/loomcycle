@@ -1020,6 +1020,14 @@ type Env struct {
 	// admin. Env: LOOMCYCLE_REPLICA_ID.
 	ReplicaID string
 
+	// CancelAckTimeoutMs is the v0.12.2 cross-replica cancel ack wait.
+	// On a cluster-mode cancel that broadcasts to the owning replica,
+	// the originator waits this long for a "cancelled" ack on the
+	// backplane before returning {cancelled:false,
+	// reason:"owner_replica_unreachable"}. Default 5000.
+	// Env: LOOMCYCLE_CANCEL_ACK_TIMEOUT_MS.
+	CancelAckTimeoutMs int64
+
 	// PauseDefaultTimeoutMs is the wait-for-non-idempotent-tools cap
 	// applied when POST /v1/_pause omits timeout_ms. 0 ⇒ use the
 	// internal default (pause.DefaultPauseTimeout = 30s). Capped at
@@ -1676,6 +1684,12 @@ func Load(path string) (*Config, error) {
 	if cfg.Env.ReplicaID != "" {
 		if err := validateReplicaID(cfg.Env.ReplicaID); err != nil {
 			return nil, fmt.Errorf("LOOMCYCLE_REPLICA_ID: %w", err)
+		}
+	}
+	cfg.Env.CancelAckTimeoutMs = 5000
+	if v := os.Getenv("LOOMCYCLE_CANCEL_ACK_TIMEOUT_MS"); v != "" {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil && n > 0 {
+			cfg.Env.CancelAckTimeoutMs = n
 		}
 	}
 

@@ -8,6 +8,52 @@ For pre-v0.4 history (single-tool runtime, library milestone, security patch), s
 
 ---
 
+## What's in v0.12.2
+
+**Phase 3 of the v1.0 multi-replica HA capstone — cross-replica cancel + status.** Closes the most critical correctness gap from the audit: a cancel request that hits the wrong replica now reaches the run via the backplane. Single-replica deployments (`LOOMCYCLE_REPLICA_ID` unset) keep the v0.11.x behavior **byte-identical** — every new code path is gated behind cluster mode.
+
+### Problem
+
+Before v0.12.2, `Cancel.Registry.Cancel(agent_id)` walked an in-process map. A cancel request routed by the load balancer to replica B for a run executing on replica A returned `{cancelled: false}` (the registry didn't find the entry) and the actual run kept executing on A. The CLAUDE.md audit identified this as one of three critical correctness blockers for active-active deployment.
+
+### What ships
+
+1. **`runs.replica_id` is now written at run creation.** The column was added in Phase 1's migration 0023 as nullable; Phase 3 plumbs `s.replicaID` through `store.RunIdentity` at all 4 run-creation sites (`handleRuns`, `handleMessages` continuation, `RunOnce` direct, `runSubAgent`). Single-replica mode writes empty string → NULL via `nullableText`.
+
+2. **`coord.CancelCoordinator`** — implements `cancel.ClusterCanceller` (a new interface added to the cancel package). When a local Registry lookup misses on this replica, the registry delegates to `CancelRemote` which:
+   - Looks up the run's owning `replica_id` in the DB.
+   - Checks owner liveness via `ReplicaStore.IsReplicaAlive` (new method; 90s stale threshold = 3× heartbeat interval). If dead, marks the run failed in the DB and returns success without a broadcast — saves the 5s ack wait.
+   - Otherwise publishes a `loomcycle.cancel` event on the backplane carrying `{agent_id, reason, from_replica}`.
+   - Waits on a per-call ack channel keyed by `agent_id` for `LOOMCYCLE_CANCEL_ACK_TIMEOUT_MS` (default 5000ms). On ack: returns success with cascaded children. On timeout: re-checks the run row (it may have completed during the wait — returns the terminal status) and otherwise returns `{cancelled: false, reason: "owner_replica_unreachable"}`.
+
+3. **Two long-lived subscriber goroutines per replica** (started in main.go inside the existing cluster-mode block):
+   - `RunCancelSubscriber` listens on `loomcycle.cancel`, dispatches each event to the local `cancel.Registry`, and publishes a `loomcycle.cancel.ack` payload when the agent was found locally.
+   - `RunAckSubscriber` listens on `loomcycle.cancel.ack` and routes each ack to the matching in-flight `CancelRemote` waiter by agent_id.
+
+4. **Status queries** (`GET /v1/agents/{id}`, `GET /v1/users/{user_id}/agents`) continue to read from the DB — already authoritative since v0.11.x. No code change needed: the existing `s.store.GetRunByAgentID` + `ListActiveRunsByUser` flow returns correct status regardless of which replica owns the run.
+
+5. **Cascade cancel** — same backplane broadcast pattern. The owning replica's `Registry.Cancel` walks the child map locally; if a child is on a different replica, every replica's `RunCancelSubscriber` tries the agent_id and the owner finds and fires it. Originator's ack carries the cascaded-on-owner list; cross-replica child acks land at the originator's ack subscriber but find no waiter and are silently dropped (correct: the originator cares about the root agent's ack).
+
+6. **Cancel response shape**: `cancelResponse.Cancelled` now reflects `res.Cancelled` instead of being hardcoded `true` when `Registry.Cancel` returns `ok=true`. Old clients that only check `cancelled` continue to work; new clients can read `reason` for `owner_replica_unreachable` / `owner_dead_marked_failed`. `cancelResponse.Reason` was already in the struct since v0.10.x; this PR populates it consistently.
+
+### Wire shape preserved
+
+- `POST /v1/agents/{id}/cancel` request body unchanged (`{"reason": "..."}`).
+- Success response unchanged on the common path (`{"cancelled": true, "agent_id": "...", "cascaded": [...]}`).
+- New `reason` field on cluster-mode-specific paths is additive — old clients ignore unknown JSON fields.
+
+### Crash-safety gap (closes in Phase 5)
+
+A replica that crashes mid-run still has its row stamped with its `replica_id`. Cross-replica cancel handles this via the dead-owner check: when `IsReplicaAlive` returns false, the cancel handler marks the run failed in the DB directly. Phase 5's replicas TTL sweeper will close this loop proactively by reaping orphaned `runs` rows when a replica's heartbeat goes stale.
+
+### Test coverage
+
+- Postgres-gated `CancelCoordinator` tests covering all five paths: not-found, already-terminal idempotent, dead-owner marks failed, ack-timeout returns unreachable, config validation.
+- In-process `cancel.Registry` test confirms single-replica fallback: `ClusterCanceller == nil` → local miss returns `false` (byte-identical to v0.11.x).
+- All v0.11.x existing tests continue green.
+
+---
+
 ## What's in v0.12.1
 
 **Phase 2 of the v1.0 multi-replica HA capstone — cluster-wide per-user fairness.** Lifts the v0.10.1 in-process per-user concurrency counter (`Semaphore.perUser` map) to a cluster-wide DB-backed counter (`user_quotas` table). Activates only when `LOOMCYCLE_REPLICA_ID` is set; single-replica deployments keep the v0.10.1 in-memory path byte-identical.

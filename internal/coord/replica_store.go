@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -65,6 +66,32 @@ func (s *ReplicaStore) DeleteReplica(ctx context.Context, id string) error {
 		return fmt.Errorf("delete replica %s: %w", id, err)
 	}
 	return nil
+}
+
+// IsReplicaAlive returns true when the replica's last_heartbeat_at
+// is within staleThreshold of now. Returns false + nil error when
+// the row doesn't exist (never-seen replica is treated as dead).
+// Used by Phase 3's CancelCoordinator to short-circuit broadcast
+// when the owning replica is known dead — saves a 5s ack-timeout
+// wait by going straight to "mark run failed" instead.
+func (s *ReplicaStore) IsReplicaAlive(ctx context.Context, id string, staleThreshold time.Duration) (bool, error) {
+	if id == "" {
+		return false, nil
+	}
+	var lastHB time.Time
+	err := s.pool.QueryRow(ctx,
+		`SELECT last_heartbeat_at FROM replicas WHERE id = $1`, id,
+	).Scan(&lastHB)
+	if err != nil {
+		// pgx.ErrNoRows means the replica row never existed (e.g. it
+		// crashed before its first heartbeat upsert, or the table was
+		// manually cleaned). Treat as dead.
+		if errors.Is(err, pgx.ErrNoRows) {
+			return false, nil
+		}
+		return false, fmt.Errorf("IsReplicaAlive %s: %w", id, err)
+	}
+	return time.Since(lastHB) < staleThreshold, nil
 }
 
 // ListReplicas returns every row, ordered by started_at ascending.
