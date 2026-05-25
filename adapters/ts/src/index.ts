@@ -55,6 +55,9 @@
  *     llmChat(opts: LLMChatOptions): Promise<LLMChatResponse>
  *     llmStream(opts: LLMChatOptions): AsyncIterable<LLMChatStreamItem>
  *
+ *     // OpenAI Embeddings compatibility shim (v0.11.4)
+ *     embeddings(opts: LLMEmbeddingsOptions): Promise<LLMEmbeddingsResponse>
+ *
  *   Errors (typed subclasses of LoomcycleError; see README for the
  *   full HTTP-status → typed-error mapping table):
  *     LoomcycleError, AgentNotFoundError, SessionNotFoundError,
@@ -187,6 +190,11 @@ export type {
   LLMChatToolCall,
   LLMChatUsage,
   LLMTool,
+  // OpenAI Embeddings compatibility shim (v0.11.4)
+  LLMEmbeddingItem,
+  LLMEmbeddingsOptions,
+  LLMEmbeddingsResponse,
+  LLMEmbeddingsUsage,
 } from "./types.js";
 
 export {

@@ -64,6 +64,8 @@ import type {
   LLMChatOptions,
   LLMChatResponse,
   LLMChatStreamItem,
+  LLMEmbeddingsOptions,
+  LLMEmbeddingsResponse,
   MemoryEntriesResponse,
   MemoryEntryResponse,
   MemoryScopeIDsResponse,
@@ -752,6 +754,31 @@ export class LoomcycleClient {
     }
     const reader = resp.body.getReader();
     yield* parseLLMStreamFrames(reader);
+  }
+
+  // ---- v0.11.4 OpenAI Embeddings compatibility shim ----
+
+  /** Compute embedding vectors via the OpenAI-compatible
+   *  `/v1/embeddings` endpoint. Dispatches to the single configured
+   *  `providers.Embedder` (the same instance Memory tool uses for
+   *  `embed:true` internally). No resolver path, no tier overlay,
+   *  no streaming — embeddings are synchronous.
+   *
+   *  Accepts `input` as a string OR string array. Tokenized inputs
+   *  (number arrays) are refused at the server boundary — send text.
+   *  `encoding_format: "base64"` packs each float32 little-endian
+   *  then base64-encodes (saves ~25% wire bytes on 1536-dim
+   *  vectors); "float" (default) emits each vector as a JSON array.
+   *
+   *  Raises {@link AuthError} on 401; {@link UnavailableError} on
+   *  503 (no embedder configured — set memory.embedder.* in
+   *  loomcycle.yaml); {@link InvalidArgumentError} on 400 (bad
+   *  request shape). */
+  async embeddings(opts: LLMEmbeddingsOptions): Promise<LLMEmbeddingsResponse> {
+    const { signal: _signal, ...body } = opts;
+    return postJSON<LLMEmbeddingsResponse>(this.ctx, "/v1/embeddings", body, {
+      signal: opts.signal,
+    });
   }
 
   // ---- Internal helpers ----
