@@ -73,7 +73,12 @@ type CallbackServer struct {
 // surfaced via cs.Port() so the caller can embed it in the authorize
 // URL's redirect_uri.
 func StartCallbackServer(port int) (*CallbackServer, error) {
-	addr := net.JoinHostPort(CallbackHost, strconv.Itoa(port))
+	// Bind to CallbackBindIP (127.0.0.1) explicitly — net.Listen with
+	// "localhost" would rely on OS resolution and could end up
+	// IPv6-only on some systems. The URL the browser hits still uses
+	// CallbackHost ("localhost") to match Anthropic's registered
+	// redirect_uri.
+	addr := net.JoinHostPort(CallbackBindIP, strconv.Itoa(port))
 	listener, err := net.Listen("tcp", addr)
 	if err != nil {
 		return nil, fmt.Errorf("bind callback %s: %w", addr, err)
@@ -207,11 +212,19 @@ type ExchangeOptions struct {
 // ExchangeCodeForToken POSTs the authorization_code grant to the OAuth
 // token endpoint. Returns a Token with the 5-min slack applied to its
 // ExpiresAt.
-func ExchangeCodeForToken(ctx context.Context, code, codeVerifier string, callbackPort int, opts ExchangeOptions) (Token, error) {
+//
+// state MUST match the state value Anthropic returned to the callback
+// (which in turn matches the PKCE verifier we sent in the authorize
+// URL). Anthropic's token endpoint rejects "Invalid request format"
+// when state is omitted — non-standard for OAuth2 (state is usually
+// only used in the authorize→callback round trip), but the live
+// service requires it. Mirrors Pi's behaviour.
+func ExchangeCodeForToken(ctx context.Context, code, state, codeVerifier string, callbackPort int, opts ExchangeOptions) (Token, error) {
 	body := map[string]string{
 		"grant_type":    "authorization_code",
 		"client_id":     ClaudeCodeClientID,
 		"code":          code,
+		"state":         state,
 		"redirect_uri":  fmt.Sprintf("http://%s:%d%s", CallbackHost, callbackPort, CallbackPath),
 		"code_verifier": codeVerifier,
 	}
