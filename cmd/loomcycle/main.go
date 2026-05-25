@@ -1128,7 +1128,16 @@ func main() {
 		// backplane behind the interface but with no live publisher/
 		// subscriber — Phase 2+ adds those.
 		srv.SetCoord(bp, replicaStore, cfg.Env.ReplicaID)
-		log.Printf("coord: cluster mode active — replica_id=%s heartbeat=30s backplane=postgres-listen-notify", cfg.Env.ReplicaID)
+
+		// v0.12.1 Phase 2: cluster-wide per-user fairness. Replaces the
+		// in-process perUser counter inside Semaphore with a DB-backed
+		// user_quotas atomic counter. No-op when MaxConcurrentRunsPerUser
+		// is 0 (per-user check disabled); the wiring is unconditional
+		// because WithUserQuotaStore is cheap and the gate is only
+		// reached when perUserActive evaluates true.
+		quotaStore := coord.NewUserQuotaStore(pgStore.Pool())
+		sem.WithUserQuotaStore(quotaStore)
+		log.Printf("coord: cluster mode active — replica_id=%s heartbeat=30s backplane=postgres-listen-notify user_quotas=db-backed", cfg.Env.ReplicaID)
 	}
 
 	// Memory tool TTL sweeper. Cheap periodic DELETE of expired rows.

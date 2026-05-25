@@ -8,6 +8,43 @@ For pre-v0.4 history (single-tool runtime, library milestone, security patch), s
 
 ---
 
+## What's in v0.12.1
+
+**Phase 2 of the v1.0 multi-replica HA capstone — cluster-wide per-user fairness.** Lifts the v0.10.1 in-process per-user concurrency counter (`Semaphore.perUser` map) to a cluster-wide DB-backed counter (`user_quotas` table). Activates only when `LOOMCYCLE_REPLICA_ID` is set; single-replica deployments keep the v0.10.1 in-memory path byte-identical.
+
+### Problem
+
+v0.10.1's per-user concurrency cap is per-replica. On a 2-replica deployment with `MaxConcurrentRunsPerUser=4`, a single noisy user can burst 8 runs cluster-wide (4 per replica), defeating the fairness invariant. v0.12.1 makes the cap mean what its name says: 4 active+queued runs per user *across the cluster*, regardless of replica count.
+
+### What ships
+
+1. **`user_quotas` table + migration 0024.** `user_id` (PK), `active_count` (int, `CHECK >= 0`), `updated_at`. One row per user with at least one active run. The CHECK constraint prevents underflow; the cap is config-driven (`MaxConcurrentRunsPerUser`), not stored per-row.
+
+2. **`coord.UserQuotaStore`** — new struct in `internal/coord/` next to `ReplicaStore`. Three methods:
+   - `TryAcquire(ctx, userID, cap) (bool, error)` — single-statement `INSERT ... ON CONFLICT DO UPDATE WHERE active_count < cap`. `rows_affected = 1` → slot acquired; `rows_affected = 0` → at cap (false+nil). Atomic across replicas: two concurrent TryAcquires on the same user serialize at the DB level; only as many succeed as the cap allows.
+   - `Release(ctx, userID)` — atomic decrement, guarded by `WHERE active_count > 0` so a double-release or Phase 5 reap landing between acquire and release doesn't underflow.
+   - `Snapshot(ctx)` — `SELECT user_id, active_count WHERE active_count > 0`. Backs `GET /v1/_concurrency/stats`.
+
+3. **`concurrency.Semaphore` refactor with `userQuotaGate` interface.** The Semaphore gains an internal `userQuotaGate` interface and a `WithUserQuotaStore` setter; `*coord.UserQuotaStore` satisfies it implicitly. Crucially, `internal/concurrency` does NOT import `internal/coord` — the interface keeps the dependency direction one-way and lets tests stub the gate without standing up Postgres. When the gate is wired (cluster mode), `AcquireForUser` delegates the per-user cap check to the DB and bypasses the in-memory `perUser` map entirely; when unset (single-replica mode), the v0.10.1 in-memory path runs unchanged.
+
+4. **Compensate-release on global-queue rejection.** When `TryAcquire` succeeds on the DB but the global queue is full, the Semaphore fires a background `Release` so the cluster-wide count stays balanced. Same compensation on cancel/timeout in `cancelWaiter`. All DB calls happen *outside* the Semaphore's mutex via a 5-second-bounded background goroutine — handler `defer release()` chains stay non-blocking.
+
+5. **`Stats()` reads from the DB in cluster mode.** `GET /v1/_concurrency/stats` `per_user` field comes from `qs.Snapshot(ctx)` with a 1-second timeout when cluster-mode is active; on snapshot error the `per_user` map is omitted but the response still returns 200 with the local Active/Queued counters intact. Wire shape preserved exactly — admin dashboards keyed off the v0.10.1 JSON don't notice the mode switch.
+
+6. **Wire surface preserved exactly.** `*ErrPerUserQuotaExhausted` is still the typed error returned to handlers (HTTP 429 + `Retry-After: 5` + `{code:"per_user_quota_exhausted", user_id, cap}`). Sub-agents continue to share the parent's slot AND user count (no double-billing) because `runSubAgent` skips `AcquireForUser` entirely — unchanged from v0.10.1.
+
+### Crash-safety gap (documented; closes in Phase 5)
+
+If a replica crashes after `TryAcquire` but before `Release` fires, the user's `active_count` is permanently incremented until manual intervention. Phase 5's replicas TTL sweeper will reap orphaned slots by joining `user_quotas` against `runs WHERE replica_id = <dead> AND status IN ('active', 'queued')`. Until then, operators monitor `/v1/_concurrency/stats` for stuck non-zero counts after known runs have completed.
+
+### Test coverage
+
+- Postgres-gated contract tests for `UserQuotaStore`: acquire/release lifecycle, at-cap rejection, first-acquire creates row, release underflow no-op, snapshot excludes zero counts, two-replica concurrent atomicity (10 racy acquires against cap=3 → exactly 3 succeed).
+- In-process Semaphore tests with stub gate: dispatch delegation (DB path bypasses in-memory map), typed error on at-cap, compensate-release on queue-full, infrastructure-error wrapping, Stats() from snapshot.
+- All v0.10.1 existing tests continue to pass — the in-memory path is byte-identical when `quotaStore` is nil.
+
+---
+
 ## What's in v0.12.0
 
 **Phase 1 of the v1.0 multi-replica HA capstone — foundation only.** Activates only when the operator sets `LOOMCYCLE_REPLICA_ID`. Single-replica deployments (env var unset) see no behavior change — every code path added in this release is dormant.

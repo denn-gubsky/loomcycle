@@ -311,3 +311,275 @@ func TestAcquireForUser_CancelDecrementsPerUser(t *testing.T) {
 		t.Errorf("after cancel: user_a count = %d, want 1 (queued one was cleaned up)", c)
 	}
 }
+
+// ---- v0.12.1 cluster-mode (userQuotaGate) tests ----
+
+// stubQuotaGate is the in-process fake for the v0.12.1 DB-backed
+// per-user counter. Lets us test Semaphore's cluster-mode dispatch
+// without standing up Postgres.
+type stubQuotaGate struct {
+	mu       sync.Mutex
+	counts   map[string]int
+	failNext bool
+	atCapFor map[string]bool // when true, TryAcquire returns false+nil for this user
+	releases int
+}
+
+func newStubQuotaGate() *stubQuotaGate {
+	return &stubQuotaGate{counts: map[string]int{}, atCapFor: map[string]bool{}}
+}
+
+func (g *stubQuotaGate) TryAcquire(_ context.Context, userID string, _ int) (bool, error) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.failNext {
+		g.failNext = false
+		return false, errors.New("stub: simulated failure")
+	}
+	if g.atCapFor[userID] {
+		return false, nil
+	}
+	g.counts[userID]++
+	return true, nil
+}
+
+func (g *stubQuotaGate) Release(_ context.Context, userID string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.counts[userID] > 0 {
+		g.counts[userID]--
+	}
+	g.releases++
+}
+
+func (g *stubQuotaGate) Snapshot(_ context.Context) (map[string]int, error) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if len(g.counts) == 0 {
+		return nil, nil
+	}
+	out := make(map[string]int, len(g.counts))
+	for k, v := range g.counts {
+		if v > 0 {
+			out[k] = v
+		}
+	}
+	if len(out) == 0 {
+		return nil, nil
+	}
+	return out, nil
+}
+
+func (g *stubQuotaGate) count(userID string) int {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.counts[userID]
+}
+
+func (g *stubQuotaGate) releaseCount() int {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.releases
+}
+
+// TestSemaphore_ClusterMode_DelegatesToQuotaGate verifies that when
+// the quotaStore is wired, AcquireForUser calls the gate's
+// TryAcquire (not the in-memory perUser path) and the release func
+// triggers an asynchronous gate Release. The in-memory perUser map
+// must stay empty throughout — cluster mode is authoritative on the
+// DB side.
+func TestSemaphore_ClusterMode_DelegatesToQuotaGate(t *testing.T) {
+	gate := newStubQuotaGate()
+	s := New(10, 10, time.Second).WithPerUserCap(3).WithUserQuotaStore(gate)
+
+	r, err := s.AcquireForUser(context.Background(), "alice")
+	if err != nil {
+		t.Fatalf("acquire: %v", err)
+	}
+	if gate.count("alice") != 1 {
+		t.Errorf("gate count = %d, want 1", gate.count("alice"))
+	}
+	// In-memory map must NOT be touched in cluster mode.
+	s.mu.Lock()
+	got := s.perUser["alice"]
+	s.mu.Unlock()
+	if got != 0 {
+		t.Errorf("in-memory perUser[alice] = %d in cluster mode, want 0", got)
+	}
+
+	r()
+	// Release is async (background goroutine). Poll briefly.
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if gate.count("alice") == 0 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if gate.count("alice") != 0 {
+		t.Errorf("after release: gate count = %d, want 0", gate.count("alice"))
+	}
+}
+
+// TestSemaphore_ClusterMode_AtCapReturnsTypedError verifies that a
+// false+nil from the gate (user is at cap) becomes the canonical
+// *ErrPerUserQuotaExhausted that HTTP handlers map to 429.
+func TestSemaphore_ClusterMode_AtCapReturnsTypedError(t *testing.T) {
+	gate := newStubQuotaGate()
+	gate.atCapFor["alice"] = true
+	s := New(10, 10, time.Second).WithPerUserCap(3).WithUserQuotaStore(gate)
+
+	_, err := s.AcquireForUser(context.Background(), "alice")
+	if !IsPerUserQuotaExhausted(err) {
+		t.Errorf("got %v, want *ErrPerUserQuotaExhausted", err)
+	}
+	var pue *ErrPerUserQuotaExhausted
+	if errors.As(err, &pue) {
+		if pue.UserID != "alice" {
+			t.Errorf("UserID = %q, want alice", pue.UserID)
+		}
+		if pue.Cap != 3 {
+			t.Errorf("Cap = %d, want 3", pue.Cap)
+		}
+	}
+}
+
+// TestSemaphore_ClusterMode_QueueFullCompensateReleases verifies the
+// compensate-release path: when TryAcquire succeeds on the DB but
+// the global queue rejects (queue full), the Semaphore must Release
+// the DB slot so the cluster-wide count stays balanced.
+func TestSemaphore_ClusterMode_QueueFullCompensateReleases(t *testing.T) {
+	gate := newStubQuotaGate()
+	// max_concurrent=1, max_queue=0 → second acquire always hits "queue full".
+	s := New(1, 0, time.Second).WithPerUserCap(5).WithUserQuotaStore(gate)
+
+	// First acquire takes the global slot.
+	r, err := s.Acquire(context.Background())
+	if err != nil {
+		t.Fatalf("first acquire: %v", err)
+	}
+	defer r()
+
+	// Second acquire (with userID) calls gate.TryAcquire successfully
+	// but then hits queue-full backpressure.
+	_, err = s.AcquireForUser(context.Background(), "alice")
+	if !IsBackpressure(err) {
+		t.Fatalf("got %v, want *BackpressureError", err)
+	}
+
+	// Compensate-release runs in a goroutine; poll briefly.
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if gate.count("alice") == 0 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if gate.count("alice") != 0 {
+		t.Errorf("after queue-full reject: gate count = %d, want 0 (compensate-release failed)", gate.count("alice"))
+	}
+}
+
+// TestSemaphore_ClusterMode_GateFailureWrapsError verifies a real
+// infrastructure failure from the gate propagates as a wrapped error
+// (NOT as a quota-exhausted false signal). Distinguishes "user is at
+// cap" (false+nil → typed error) from "DB is down" (false+error →
+// wrapped 5xx-shaped error).
+func TestSemaphore_ClusterMode_GateFailureWrapsError(t *testing.T) {
+	gate := newStubQuotaGate()
+	gate.failNext = true
+	s := New(10, 10, time.Second).WithPerUserCap(3).WithUserQuotaStore(gate)
+
+	_, err := s.AcquireForUser(context.Background(), "alice")
+	if err == nil {
+		t.Fatal("expected error from gate failure")
+	}
+	if IsPerUserQuotaExhausted(err) {
+		t.Errorf("gate failure should NOT be classified as quota exhausted: %v", err)
+	}
+}
+
+// TestSemaphore_ClusterMode_StatsFromSnapshot verifies that Stats()
+// reads PerUser from the gate's Snapshot (not the in-memory map)
+// when in cluster mode. The Active/Queued counters remain
+// in-memory (per-replica accounting).
+func TestSemaphore_ClusterMode_StatsFromSnapshot(t *testing.T) {
+	gate := newStubQuotaGate()
+	s := New(10, 10, time.Second).WithPerUserCap(3).WithUserQuotaStore(gate)
+
+	r, _ := s.AcquireForUser(context.Background(), "alice")
+	defer r()
+
+	st := s.Stats()
+	if st.PerUser["alice"] != 1 {
+		t.Errorf("Stats.PerUser[alice] = %d, want 1 (from gate.Snapshot)", st.PerUser["alice"])
+	}
+	if st.Active != 1 {
+		t.Errorf("Stats.Active = %d, want 1 (per-replica counter)", st.Active)
+	}
+}
+
+// TestSemaphore_ClusterMode_QueuedWaiterWakesAndReleases pins the
+// cluster-mode hot path that no other test covers: a request queues
+// (TryAcquire fires at enqueue), then wakes when the global slot
+// frees, then completes and releases. Exactly one TryAcquire + one
+// Release for the user — a future regression that double-TryAcquires
+// on wakeup, or skips the eventual Release, fails here.
+// (Review-1 finding #2.)
+func TestSemaphore_ClusterMode_QueuedWaiterWakesAndReleases(t *testing.T) {
+	gate := newStubQuotaGate()
+	s := New(1, 4, time.Second).WithPerUserCap(3).WithUserQuotaStore(gate)
+
+	// Hold the single global slot with an anonymous Acquire — no
+	// per-user gate involvement, so the gate's only interaction is
+	// alice's enqueue + later release.
+	hold, err := s.Acquire(context.Background())
+	if err != nil {
+		t.Fatalf("hold acquire: %v", err)
+	}
+
+	done := make(chan func(), 1)
+	go func() {
+		r, err := s.AcquireForUser(context.Background(), "alice")
+		if err != nil {
+			t.Errorf("queued acquire: %v", err)
+			done <- nil
+			return
+		}
+		done <- r
+	}()
+
+	// Give alice's goroutine time to enqueue and call TryAcquire.
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if gate.count("alice") == 1 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if gate.count("alice") != 1 {
+		t.Fatalf("after enqueue: gate count = %d, want 1 (TryAcquire should fire at enqueue)", gate.count("alice"))
+	}
+
+	hold() // wake alice
+	r := <-done
+	if r == nil {
+		t.Fatal("alice's release func is nil — acquire failed")
+	}
+	r() // alice releases
+
+	// Background Release; poll briefly.
+	deadline = time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if gate.count("alice") == 0 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if gate.count("alice") != 0 {
+		t.Errorf("after release: gate count = %d, want 0", gate.count("alice"))
+	}
+	if r := gate.releaseCount(); r != 1 {
+		t.Errorf("gate.releaseCount = %d, want exactly 1 (no double-release on wakeup)", r)
+	}
+}
