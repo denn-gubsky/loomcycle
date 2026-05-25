@@ -243,6 +243,25 @@ type Connector interface {
 	SubscribeChannel(ctx context.Context, req ChannelSubscribeRequest) (ChannelSubscribeResult, error)
 	PeekChannel(ctx context.Context, req ChannelPeekRequest) (ChannelPeekResult, error)
 	AckChannel(ctx context.Context, req ChannelAckRequest) (ChannelAckResult, error)
+
+	// Channel admin CRUD (v0.11.5): the runtime-declared substrate.
+	// yaml-declared channels are static (immutable from the API);
+	// runtime channels persist in the substrate `channels` table and
+	// support Create / Update / Delete via the same Connector surface.
+	//
+	// Typed errors:
+	//   ErrChannelYamlImmutable — name matches a yaml-declared channel;
+	//                             the runtime CRUD layer refuses the
+	//                             mutation. Transports: Conflict (409).
+	//   ErrChannelAlreadyExists — Create called with a name that already
+	//                             exists in the runtime table.
+	//                             Transports: Conflict (409).
+	//   ErrChannelNotFound       — Update/Delete called on a name that is
+	//                             neither yaml-declared nor in the
+	//                             runtime table. Transports: NotFound.
+	CreateChannel(ctx context.Context, req ChannelCreateRequest) (ChannelDescriptor, error)
+	UpdateChannel(ctx context.Context, name string, req ChannelUpdateRequest) (ChannelDescriptor, error)
+	DeleteChannel(ctx context.Context, name string) error
 }
 
 // RunStateVisitor is the visitor callback for StreamUserRunStates.

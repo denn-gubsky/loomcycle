@@ -109,4 +109,21 @@ var (
 	// Unavailable / HTTP 503. Mirror of the existing
 	// ErrRunStateStreamUnavailable pattern.
 	ErrSystemPublisherUnwired = errors.New("connector: system publisher not configured on this server")
+
+	// ErrChannelYamlImmutable is returned by the channel CRUD admin
+	// methods when the requested channel name matches a yaml-declared
+	// channel. yaml is the floor: edit the loomcycle.yaml and restart
+	// rather than mutating from the runtime API. Transports map to
+	// Conflict / HTTP 409.
+	ErrChannelYamlImmutable = errors.New("connector: channel is declared in operator yaml; edit yaml + restart to change")
+
+	// ErrChannelAlreadyExists is returned by CreateChannel when a
+	// runtime-substrate channel with the same name already exists.
+	// Transports map to Conflict / HTTP 409.
+	ErrChannelAlreadyExists = errors.New("connector: channel already exists in runtime substrate")
+
+	// ErrChannelNotFound is returned by UpdateChannel / DeleteChannel
+	// when the requested name is neither yaml-declared nor in the
+	// runtime substrate. Transports map to NotFound / HTTP 404.
+	ErrChannelNotFound = errors.New("connector: channel not found")
 )

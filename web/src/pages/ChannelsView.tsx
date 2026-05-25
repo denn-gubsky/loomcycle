@@ -2,10 +2,12 @@ import { useEffect, useMemo, useState } from "react";
 import {
   ChannelDescriptor,
   ChannelMessageItem,
+  deleteChannel,
   listChannels,
   peekChannel,
 } from "../api";
 import Splitter from "../components/Splitter";
+import ChannelEditModal from "../components/ChannelEditModal";
 
 // ChannelsView is the v0.9.x Introspection surface for operator-
 // declared channels. Three things together:
@@ -25,6 +27,13 @@ export default function ChannelsView() {
   const [err, setErr] = useState<string | null>(null);
   const [filter, setFilter] = useState<FilterKind>("all");
   const [selectedName, setSelectedName] = useState<string>("");
+  const [modalState, setModalState] = useState<
+    | { kind: "create" }
+    | { kind: "edit"; channel: ChannelDescriptor }
+    | null
+  >(null);
+  const [deleteErr, setDeleteErr] = useState<string | null>(null);
+  const [refreshTick, setRefreshTick] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
@@ -44,7 +53,33 @@ export default function ChannelsView() {
       cancelled = true;
       clearInterval(t);
     };
-  }, []);
+  }, [refreshTick]);
+
+  const triggerRefresh = () => setRefreshTick((n) => n + 1);
+
+  const handleDelete = async (channel: ChannelDescriptor) => {
+    if (channel.source === "yaml") {
+      setDeleteErr(
+        `Cannot delete ${channel.name}: declared in operator yaml. Edit the yaml + restart instead.`,
+      );
+      return;
+    }
+    if (
+      !window.confirm(
+        `Delete channel "${channel.name}"? This also removes its persisted messages + cursors.`,
+      )
+    ) {
+      return;
+    }
+    setDeleteErr(null);
+    try {
+      await deleteChannel(channel.name);
+      triggerRefresh();
+      if (selectedName === channel.name) setSelectedName("");
+    } catch (e) {
+      setDeleteErr(e instanceof Error ? e.message : String(e));
+    }
+  };
 
   const visible = useMemo(() => filterChannels(channels, filter), [channels, filter]);
 
@@ -65,8 +100,16 @@ export default function ChannelsView() {
       <div className="channels-toolbar">
         <FilterChips current={filter} onChange={setFilter} />
         <span className="channels-count">{visible.length} channels</span>
+        <button
+          type="button"
+          className="primary channels-new-button"
+          onClick={() => setModalState({ kind: "create" })}
+        >
+          + New channel
+        </button>
       </div>
       {err && <div className="error-banner">Failed to load channels: {err}</div>}
+      {deleteErr && <div className="error-banner">{deleteErr}</div>}
       <Splitter
         storageKey="loomcycle.channels.split"
         defaultLeftWidth={420}
@@ -77,6 +120,8 @@ export default function ChannelsView() {
           channels={visible}
           selectedName={selectedName}
           onSelect={setSelectedName}
+          onEdit={(c) => setModalState({ kind: "edit", channel: c })}
+          onDelete={handleDelete}
         />
         {selected ? (
           <ChannelDetail channel={selected} />
@@ -84,6 +129,19 @@ export default function ChannelsView() {
           <div className="empty-state">Select a channel to inspect.</div>
         )}
       </Splitter>
+
+      {modalState && (
+        <ChannelEditModal
+          mode={modalState.kind === "create" ? "create" : "edit"}
+          existing={modalState.kind === "edit" ? modalState.channel : undefined}
+          onClose={() => setModalState(null)}
+          onSaved={(desc) => {
+            setModalState(null);
+            triggerRefresh();
+            setSelectedName(desc.name);
+          }}
+        />
+      )}
     </div>
   );
 }
@@ -132,10 +190,14 @@ function ChannelsList({
   channels,
   selectedName,
   onSelect,
+  onEdit,
+  onDelete,
 }: {
   channels: ChannelDescriptor[];
   selectedName: string;
   onSelect: (name: string) => void;
+  onEdit: (c: ChannelDescriptor) => void;
+  onDelete: (c: ChannelDescriptor) => void;
 }) {
   if (channels.length === 0) {
     return (
@@ -144,29 +206,63 @@ function ChannelsList({
   }
   return (
     <ul className="channels-list">
-      {channels.map((c) => (
-        <li
-          key={c.name}
-          className={
-            c.name === selectedName ? "channel-row channel-row-selected" : "channel-row"
-          }
-        >
-          <button
-            type="button"
-            className="channel-row-button"
-            onClick={() => onSelect(c.name)}
+      {channels.map((c) => {
+        const isRuntime = c.source === "runtime";
+        return (
+          <li
+            key={c.name}
+            className={
+              c.name === selectedName ? "channel-row channel-row-selected" : "channel-row"
+            }
           >
-            <span className="channel-name">{c.name}</span>
-            <span className="channel-meta">
-              {c.scope && <span className="channel-scope">{c.scope}</span>}
-              {c.semantic && <span className="channel-semantic">{c.semantic}</span>}
-              <span className="channel-count">
-                {c.message_count} msg{c.message_count === 1 ? "" : "s"}
+            <button
+              type="button"
+              className="channel-row-button"
+              onClick={() => onSelect(c.name)}
+            >
+              <span className="channel-name">{c.name}</span>
+              <span className="channel-meta">
+                {c.source && (
+                  <span className={`channel-source channel-source-${c.source}`}>
+                    {c.source}
+                  </span>
+                )}
+                {c.scope && <span className="channel-scope">{c.scope}</span>}
+                {c.semantic && <span className="channel-semantic">{c.semantic}</span>}
+                <span className="channel-count">
+                  {c.message_count} msg{c.message_count === 1 ? "" : "s"}
+                </span>
               </span>
-            </span>
-          </button>
-        </li>
-      ))}
+            </button>
+            {isRuntime && (
+              <span className="channel-row-actions">
+                <button
+                  type="button"
+                  className="channel-row-action"
+                  title="Edit channel"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onEdit(c);
+                  }}
+                >
+                  Edit
+                </button>
+                <button
+                  type="button"
+                  className="channel-row-action channel-row-action-danger"
+                  title="Delete channel"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onDelete(c);
+                  }}
+                >
+                  Delete
+                </button>
+              </span>
+            )}
+          </li>
+        );
+      })}
     </ul>
   );
 }
@@ -203,7 +299,15 @@ function ChannelDetail({ channel }: { channel: ChannelDescriptor }) {
     <div className="channel-detail">
       <div className="channel-detail-header">
         <h3>{channel.name}</h3>
+        {channel.description && (
+          <div className="channel-detail-description">{channel.description}</div>
+        )}
         <div className="channel-detail-meta">
+          {channel.source && (
+            <span className={`channel-source channel-source-${channel.source}`}>
+              {channel.source}
+            </span>
+          )}
           {channel.scope && <span>scope={channel.scope}</span>}
           {channel.semantic && <span>semantic={channel.semantic}</span>}
           {channel.publisher && <span>publisher={channel.publisher}</span>}

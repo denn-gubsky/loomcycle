@@ -842,6 +842,16 @@ func main() {
 	}
 	bfCancel()
 
+	// v0.11.5 yaml-static memory entries — pre-seed the substrate from
+	// the operator-yaml `memory.entries:` block. Idempotent: each
+	// (scope, scope_id, key) tuple is skipped if a row already exists
+	// (preserves runtime updates from operators / agents that may have
+	// rewritten the value between boots). Synchronous: a slow embedder
+	// will delay boot — logged below per-entry so the cost is visible.
+	if len(cfg.Memory.Entries) > 0 {
+		bootstrapMemoryEntries(context.Background(), cfg, storeIface, embedder)
+	}
+
 	// Memory tool depends on the Store; wire the live backend in now
 	// that the adapter is open. This keeps the per-agent registration
 	// at boot (allTools assembled once) and the tool's nil-Store
@@ -1800,4 +1810,108 @@ func spawnStdioMCP(name string, srv config.MCPServer) (mcp.Caller, error) {
 // lazy-retry path (mcp.LazyResolver) share one implementation.
 func applyAllowedToolsFilter(descs []mcp.ToolDescriptor, allowed []string) []mcp.ToolDescriptor {
 	return mcp.ApplyAllowedToolsFilter(descs, allowed)
+}
+
+// bootstrapMemoryEntries walks cfg.Memory.Entries and writes any
+// missing rows to the substrate. Idempotent: existing rows (matched
+// by the (scope, scopeID, key) tuple) are left alone so runtime
+// updates from the Memory tool / admin endpoints are preserved across
+// reboots — yaml is a starting state, not a re-baseline.
+//
+// When an entry sets embed: true and the operator wired
+// memory.embedder yaml, the embedding is computed synchronously and
+// upserted. Boot prints a per-entry log line so the operator sees the
+// time cost of embedding many entries.
+func bootstrapMemoryEntries(ctx context.Context, cfg *config.Config, st store.Store, embedder providers.Embedder) {
+	t0 := time.Now()
+	loaded, skipped, failed := 0, 0, 0
+	for i, e := range cfg.Memory.Entries {
+		scope := store.MemoryScope(strings.TrimSpace(e.Scope))
+		if scope == "" {
+			scope = store.MemoryScopeGlobal
+		}
+		switch scope {
+		case store.MemoryScopeGlobal, store.MemoryScopeAgent, store.MemoryScopeUser:
+		default:
+			log.Printf("memory.entries[%d]: skipping — invalid scope %q (must be global|agent|user)", i, e.Scope)
+			failed++
+			continue
+		}
+		key := strings.TrimSpace(e.Key)
+		if key == "" {
+			log.Printf("memory.entries[%d]: skipping — empty key", i)
+			failed++
+			continue
+		}
+		if _, err := st.MemoryGet(ctx, scope, e.ScopeID, key); err == nil {
+			// Row already present — yaml seeding is a one-time
+			// bootstrap, never an overwrite. This is the line that
+			// makes the loader safe to re-run on every boot.
+			//
+			// Non-nil err here covers BOTH "row missing"
+			// (ErrNotFound — the expected path on a fresh row) AND
+			// transient store errors (e.g. a dropped DB connection).
+			// We deliberately don't distinguish: the MemorySet
+			// attempt below will fail loudly on a broken store and
+			// the failure gets logged + counted in `failed`. The
+			// alternative — bailing out on every Get error — would
+			// mean a flaky DB at boot leaves the entries unseeded
+			// without retry. Fail-on-Set lets a recovered store on
+			// the next boot pick up where we left off.
+			skipped++
+			continue
+		}
+		valBytes, marshalErr := json.Marshal(e.Value)
+		if marshalErr != nil {
+			log.Printf("memory.entries[%d] (%s/%s/%s): skipping — value marshal failed: %v",
+				i, scope, e.ScopeID, key, marshalErr)
+			failed++
+			continue
+		}
+		if err := st.MemorySet(ctx, scope, e.ScopeID, key, valBytes, 0); err != nil {
+			log.Printf("memory.entries[%d] (%s/%s/%s): set failed: %v",
+				i, scope, e.ScopeID, key, err)
+			failed++
+			continue
+		}
+		loaded++
+		if !e.Embed {
+			continue
+		}
+		// embed:true is best-effort — the k/v row stays even if the
+		// embedding fails, matching the v0.9.0 Memory.set posture.
+		if embedder == nil {
+			log.Printf("memory.entries[%d] (%s/%s/%s): embed requested but memory.embedder is not configured — k/v written without embedding",
+				i, scope, e.ScopeID, key)
+			continue
+		}
+		if !st.SupportsVectors() {
+			log.Printf("memory.entries[%d] (%s/%s/%s): embed requested but store does not support vectors — k/v written without embedding",
+				i, scope, e.ScopeID, key)
+			continue
+		}
+		te0 := time.Now()
+		vecs, embedErr := embedder.Embed(ctx, []string{string(valBytes)})
+		if embedErr != nil || len(vecs) != 1 {
+			log.Printf("memory.entries[%d] (%s/%s/%s): embed failed: %v",
+				i, scope, e.ScopeID, key, embedErr)
+			continue
+		}
+		if err := st.MemoryEmbedSet(ctx, scope, e.ScopeID, key, store.MemoryEmbedding{
+			Provider:  embedder.Provider(),
+			Model:     embedder.Model(),
+			Dimension: embedder.Dimension(),
+			Vector:    vecs[0],
+			EmbedText: string(valBytes),
+			CreatedAt: time.Now().UTC(),
+		}); err != nil {
+			log.Printf("memory.entries[%d] (%s/%s/%s): embed write failed: %v",
+				i, scope, e.ScopeID, key, err)
+			continue
+		}
+		log.Printf("memory.entries[%d] (%s/%s/%s): seeded + embedded (%s)",
+			i, scope, e.ScopeID, key, time.Since(te0).Round(time.Millisecond))
+	}
+	log.Printf("memory.entries: bootstrap complete — loaded=%d skipped=%d failed=%d elapsed=%s",
+		loaded, skipped, failed, time.Since(t0).Round(time.Millisecond))
 }

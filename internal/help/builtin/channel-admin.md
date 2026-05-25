@@ -176,6 +176,62 @@ The same channel name CAN be declared once and used at both scopes
 mixing scopes on the same name is operator-confusing. Pattern: pick
 one scope per declared name.
 
+## v0.11.5 — runtime-substrate channels (CRUD)
+
+Channels declared in operator yaml are the **floor**: immutable from
+the runtime API, edited by changing the yaml + restarting. v0.11.5
+adds a parallel **runtime-substrate** channel registry that supports
+HTTP CRUD without restart. Use it for n8n integration test fixtures,
+operator-driven dynamic provisioning, or anywhere you'd otherwise
+have to edit yaml + bounce loomcycle.
+
+Three endpoints. All bearer-authed. yaml-declared channel names
+refuse mutations with HTTP 409 `channel_yaml_immutable` — operators
+who want to change a yaml channel edit the yaml.
+
+```sh
+# Create a runtime channel.
+curl -X POST http://127.0.0.1:8787/v1/_channels \
+  -H "Authorization: Bearer $LOOMCYCLE_AUTH_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "briefing-ready",
+    "description": "Researcher signals editor that a new briefing is ready",
+    "scope": "global",
+    "semantic": "queue",
+    "default_ttl": 3600,
+    "max_messages": 100
+  }'
+# → 201 + descriptor with source: "runtime"
+
+# Partial update (only fields you pass are changed).
+curl -X PATCH http://127.0.0.1:8787/v1/_channels/briefing-ready \
+  -H "Authorization: Bearer $LOOMCYCLE_AUTH_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"description": "updated docstring", "max_messages": 500}'
+
+# Delete (cascades to channel_messages + channel_cursors).
+curl -X DELETE http://127.0.0.1:8787/v1/_channels/briefing-ready \
+  -H "Authorization: Bearer $LOOMCYCLE_AUTH_TOKEN"
+# → 204 No Content
+```
+
+`GET /v1/_channels` returns both yaml and runtime channels with a
+`source: "yaml" | "runtime" | "orphan"` discriminator on every row.
+The Web UI's Channels view uses the discriminator to gate the
+Edit / Delete row buttons — yaml rows are read-only.
+
+The substrate uses the same `channel_messages` + `channel_cursors`
+tables as yaml channels, so publish / subscribe / peek / ack on a
+runtime channel work exactly like on a yaml channel. Delete cascades
+both message + cursor rows in one transaction.
+
+**TS adapter** (`@loomcycle/client` 0.11.5+): three methods —
+`createChannel(opts)`, `updateChannel(name, patch)`,
+`deleteChannel(name)`. The wire-code refusals surface as typed
+`LoomcycleError` instances the caller can catch by HTTP status (409
+for yaml-immutable + name-in-use, 404 for not-found).
+
 ## References
 
 - `help(topic="loomcycle")` — the runtime + tool model the Channel

@@ -111,6 +111,61 @@ export async function postJSON<T>(
   return (await resp.json()) as T;
 }
 
+/** putJSON sends a JSON-encoded body via PUT and unwraps the
+ *  response. Idempotent — REST-canonical verb for "create or
+ *  overwrite by full identifier." */
+export async function putJSON<T>(
+  ctx: _FetchContext,
+  path: string,
+  body?: unknown,
+  opts?: { signal?: AbortSignal },
+): Promise<T> {
+  const headers = authHeaders(ctx);
+  let bodyStr: string | undefined;
+  if (body !== undefined) {
+    headers["Content-Type"] = "application/json";
+    bodyStr = JSON.stringify(body);
+  }
+  const resp = await ctx.fetchImpl(ctx.baseUrl + path, {
+    method: "PUT",
+    headers,
+    body: bodyStr,
+    signal: opts?.signal,
+  });
+  if (!resp.ok) {
+    await raiseFromResponse(resp);
+  }
+  if (resp.status === 204) return null as T;
+  return (await resp.json()) as T;
+}
+
+/** patchJSON sends a JSON-encoded body via PATCH and unwraps the
+ *  response. For partial-update endpoints. */
+export async function patchJSON<T>(
+  ctx: _FetchContext,
+  path: string,
+  body?: unknown,
+  opts?: { signal?: AbortSignal },
+): Promise<T> {
+  const headers = authHeaders(ctx);
+  let bodyStr: string | undefined;
+  if (body !== undefined) {
+    headers["Content-Type"] = "application/json";
+    bodyStr = JSON.stringify(body);
+  }
+  const resp = await ctx.fetchImpl(ctx.baseUrl + path, {
+    method: "PATCH",
+    headers,
+    body: bodyStr,
+    signal: opts?.signal,
+  });
+  if (!resp.ok) {
+    await raiseFromResponse(resp);
+  }
+  if (resp.status === 204) return null as T;
+  return (await resp.json()) as T;
+}
+
 /** deleteRequest sends a DELETE and tolerates 204/200/404-with-
  *  idempotent-semantics per the loomcycle wire contract. */
 export async function deleteRequest(

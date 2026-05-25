@@ -1111,8 +1111,69 @@ type Store interface {
 	// idempotent under concurrent sweepers (single atomic UPDATE).
 	InterruptSweepExpired(ctx context.Context) (int, error)
 
+	// ---- v0.11.5 runtime channel CRUD ----
+	//
+	// Runtime-declared channels live in the `channels` table; yaml-
+	// declared channels stay in cfg.Channels (in-memory only). The
+	// HTTP admin layer merges both at read time with a `source`
+	// discriminator (mirrors v0.10.4's static-vs-dynamic posture
+	// for agents/skills/mcp-servers). Mutations on yaml-declared
+	// channel names are refused at the handler boundary BEFORE
+	// reaching the store — so these methods only ever see runtime
+	// names.
+
+	// ChannelsList returns every runtime-declared channel. yaml-
+	// declared channels are NOT returned; the merge with cfg.Channels
+	// happens in the HTTP handler.
+	ChannelsList(ctx context.Context) ([]ChannelRow, error)
+
+	// ChannelsCreate inserts a new runtime channel. Returns
+	// *ErrConflict{Kind:"channel"} when a runtime row with the
+	// same name already exists. yaml-name collisions are caught
+	// upstream at the handler boundary.
+	ChannelsCreate(ctx context.Context, row ChannelRow) error
+
+	// ChannelsUpdate patches mutable fields on a runtime channel
+	// (description, default_ttl, max_messages, semantic). Returns
+	// ErrNotFound when the name isn't in the runtime table.
+	ChannelsUpdate(ctx context.Context, name string, patch ChannelPatch) error
+
+	// ChannelsDelete removes a runtime channel + cascades deletion
+	// of its persisted messages + cursors. Returns ErrNotFound when
+	// the name isn't in the runtime table.
+	ChannelsDelete(ctx context.Context, name string) error
+
 	// Close releases backend resources. Idempotent.
 	Close() error
+}
+
+// ChannelRow is one runtime-declared channel persisted in the store.
+// Mirrors the in-memory config.Channel struct field-for-field plus a
+// CreatedAt timestamp for operator-visible audit. The `Source` field
+// is set by the handler layer to "runtime" before returning to the
+// caller; yaml-declared channels carry source="yaml" populated from
+// cfg.Channels at merge time.
+type ChannelRow struct {
+	Name        string
+	Description string
+	Scope       string
+	Semantic    string
+	DefaultTTL  int
+	MaxMessages int
+	Publisher   string
+	Period      string
+	CreatedAt   time.Time
+}
+
+// ChannelPatch carries the subset of fields ChannelsUpdate can
+// modify. Pointer fields so nil = "leave unchanged"; non-nil = set
+// to the dereferenced value (including the zero value, e.g. setting
+// MaxMessages back to 0).
+type ChannelPatch struct {
+	Description *string
+	DefaultTTL  *int
+	MaxMessages *int
+	Semantic    *string
 }
 
 // MemoryScope is the addressing axis for a Memory or Channel row.

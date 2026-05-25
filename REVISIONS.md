@@ -8,6 +8,64 @@ For pre-v0.4 history (single-tool runtime, library milestone, security patch), s
 
 ---
 
+## What's in v0.11.5
+
+yaml-static channels + memory + Web UI CRUD. The last v0.11.x slice before the multi-replica HA capstone. Closes two operator pain points: n8n integration tests can now programmatically create channels + pre-seeded memory entries as fixtures (no yaml + restart between tests), and static substrate deployments can declare the entire substrate — agents, channels, memory entries — purely in yaml at boot. The Web UI gains create / edit / delete actions over both channels and memory entries.
+
+### Motivation
+
+v0.10.4 shipped Library admin CRUD for agents / skills / MCP servers. Channels and memory entries were left out — channels because they're hot-path messaging primitives that historically only sat in operator yaml, memory entries because no yaml-static path ever existed. Two consumers hit the gap:
+
+1. **n8n integration tests** need fixture setup + teardown. Today they fight the in-band Memory + Channel tools (agent-only surface) or write yaml + restart between every test case.
+2. **Static substrate deployments** (init/doctor target audience) want declarative everything-in-yaml. Agents are supported. Channels needed a `description` field for operator docs. Memory had no pre-seed path at all.
+
+### What ships
+
+**yaml additions** —
+- `channels.<name>.description: "..."` — operator-facing documentation per channel, surfaced in the Web UI + `GET /v1/_channels` payload.
+- `memory.entries:` — list of `{scope, scope_id, key, value, embed?}` rows pre-seeded into the substrate on boot. Idempotent — existing rows are preserved (yaml is a seed, not a re-baseline). Optional `embed: true` triggers a synchronous embed via the operator-configured embedder.
+
+**Channel admin HTTP endpoints** —
+- `POST /v1/_channels` — create a runtime-substrate channel.
+- `PATCH /v1/_channels/{name}` — partial update of description / default_ttl / max_messages / semantic.
+- `DELETE /v1/_channels/{name}` — retire + cascade messages + cursors.
+
+yaml-declared channels refuse mutations with HTTP 409 `channel_yaml_immutable` (operators edit the yaml + restart; no shadowing). The read path (`GET /v1/_channels`) now tags each row with `source: "yaml" | "runtime" | "orphan"` so consumers can render which side a channel came from.
+
+**Memory entry admin HTTP endpoints** —
+- `PUT /v1/_memory/scopes/{scope}/{scope_id}/keys/{key}` — idempotent upsert with optional `?embed=true` query or `embed: true` body field.
+- `DELETE /v1/_memory/scopes/{scope}/{scope_id}/keys/{key}` — 204 even on missing rows (matches the in-band Memory tool's delete semantics).
+
+**Web UI** —
+- Channels view gains "+ New channel" CTA, per-row Edit / Delete buttons (runtime channels only), source chip on every row (`yaml` / `runtime` / `orphan`), and a description line on the detail pane.
+- Memory view gains "+ New entry" CTA and per-row Edit / Delete on each key. Editor supports value-as-JSON, optional embed toggle, optional TTL.
+
+**TS adapter** (`@loomcycle/client` 0.11.4 → 0.11.5) — 5 new methods: `createChannel`, `updateChannel`, `deleteChannel`, `setMemoryEntry`, `deleteMemoryEntry`. New typed exports: `CreateChannelOptions`, `UpdateChannelOptions`, `SetMemoryEntryOptions`, `SetMemoryEntryResponse`. 12 new vitest tests covering wire shape + typed error surface.
+
+**Storage layer** — new `channels` table on both backends (sqlite + postgres 0021 migration). New `Store` interface methods: `ChannelsList` / `ChannelsCreate` / `ChannelsUpdate` / `ChannelsDelete`. The cursor namespace (channel_messages, channel_cursors) stays untouched — runtime channels reuse the existing message storage; cascade delete is application-managed in one transaction.
+
+### Architectural decisions
+
+- **yaml is the floor.** Channels declared in yaml are immutable from the runtime CRUD surface. This matches the v0.10.4 posture for agents (yaml agents auto-bootstrap into the substrate on edit but the runtime row is what's mutable, not the yaml). For channels we kept it stricter — operators wanting CRUD semantics create runtime channels directly.
+- **PUT for memory set, not POST.** Idempotent semantics: re-PUTting the same identifier overwrites the value. Matches REST conventions for "create or update by full identifier."
+- **Synchronous embed-on-boot.** Operators with many embedded entries see a slow boot they can measure from the logs; async-on-boot is a future iteration. Simple first.
+- **Two small modals, not one big one.** The plan suggested extending v0.10.4's LibraryEditModal (which is tightly coupled to the substrate's lineage / fork model). Channels and memory entries have no lineage — bolting them in would have doubled the file with parallel branches. Two dedicated modals (~180 LOC each) are clearer.
+
+### What's deferred (not in v0.11.5)
+
+- **ChannelDef substrate** with versioning / fork / promote — user-confirmed simpler CRUD is the right call for channels. No lineage table.
+- **yaml memory entry TTL** — `entries` are persistent; TTL on yaml entries is a follow-up.
+- **Bulk memory operations** — single-entry endpoints cover the n8n fixture use case; bulk lands when a real consumer asks.
+- **Agent yaml schema changes** — already supported; nothing to do.
+
+### Wire-compatibility notes
+
+- `ChannelDescriptor` gains two optional fields (`description`, `source`). Existing consumers ignoring unknown fields keep working.
+- New endpoints are additive — no breaking changes to existing routes.
+- TS adapter 0.11.5 is forward-compatible with loomcycle 0.11.4 binaries (the new methods just 404 against an older runtime); upgrade the binary first, then bump the adapter.
+
+---
+
 ## What's in v0.11.4
 
 OpenAI Embeddings compatibility shim. Closes the OpenAI-ecosystem story v0.11.3 started. New `POST /v1/embeddings` endpoint translates OpenAI's wire shape onto loomcycle's single configured embedder — every RAG tool / vector DB integration / LangChain `OpenAIEmbeddings` consumer / "use OpenAI embeddings" tutorial works by changing only the base URL + auth token. Drop-in compatibility with the embeddings side of the OpenAI SDK.

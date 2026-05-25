@@ -40,12 +40,14 @@ func (s *Server) ListChannels(ctx context.Context) (connector.ListChannelsRespon
 	for name, ch := range s.cfg.Channels {
 		desc := connector.ChannelDescriptor{
 			Name:        name,
+			Description: ch.Description,
 			Scope:       ch.Scope,
 			Semantic:    ch.Semantic,
 			Publisher:   ch.Publisher,
 			Period:      ch.Period,
 			DefaultTTL:  ch.DefaultTTL,
 			MaxMessages: ch.MaxMessages,
+			Source:      "yaml",
 		}
 		if st, ok := statsByName[name]; ok {
 			desc.MessageCount = st.Count
@@ -58,13 +60,55 @@ func (s *Server) ListChannels(ctx context.Context) (connector.ListChannelsRespon
 		}
 		out = append(out, desc)
 	}
+	// Merge runtime-substrate channels (v0.11.5). yaml-declared names
+	// take precedence — a runtime row sharing a name with yaml is a
+	// no-op here because the CRUD layer refuses to create one in the
+	// first place; defensively skip on read anyway.
+	runtimeRows, runtimeErr := s.store.ChannelsList(ctx)
+	if runtimeErr != nil {
+		return connector.ListChannelsResponse{}, runtimeErr
+	}
+	for _, r := range runtimeRows {
+		if _, yaml := s.cfg.Channels[r.Name]; yaml {
+			continue
+		}
+		desc := connector.ChannelDescriptor{
+			Name:        r.Name,
+			Description: r.Description,
+			Scope:       r.Scope,
+			Semantic:    r.Semantic,
+			Publisher:   r.Publisher,
+			Period:      r.Period,
+			DefaultTTL:  r.DefaultTTL,
+			MaxMessages: r.MaxMessages,
+			Source:      "runtime",
+		}
+		if st, ok := statsByName[r.Name]; ok {
+			desc.MessageCount = st.Count
+			if !st.OldestVisibleAt.IsZero() {
+				desc.OldestVisibleAt = st.OldestVisibleAt.UTC().Format(time.RFC3339)
+			}
+			if !st.NewestVisibleAt.IsZero() {
+				desc.NewestVisibleAt = st.NewestVisibleAt.UTC().Format(time.RFC3339)
+			}
+		}
+		out = append(out, desc)
+	}
 	// Surface orphaned message rows for channels NOT in the
-	// declared yaml — same forensic shape as the HTTP handler.
+	// declared yaml OR runtime substrate — same forensic shape as the
+	// HTTP handler.
+	runtimeNames := map[string]bool{}
+	for _, r := range runtimeRows {
+		runtimeNames[r.Name] = true
+	}
 	for name, st := range statsByName {
 		if _, declared := s.cfg.Channels[name]; declared {
 			continue
 		}
-		desc := connector.ChannelDescriptor{Name: name, MessageCount: st.Count}
+		if runtimeNames[name] {
+			continue
+		}
+		desc := connector.ChannelDescriptor{Name: name, MessageCount: st.Count, Source: "orphan"}
 		if !st.OldestVisibleAt.IsZero() {
 			desc.OldestVisibleAt = st.OldestVisibleAt.UTC().Format(time.RFC3339)
 		}

@@ -80,9 +80,83 @@ func writeChannelError(w http.ResponseWriter, err error) {
 		writeJSONError(w, http.StatusConflict, "channel_cursor_regression", err.Error())
 	case errors.Is(err, connector.ErrSystemPublisherUnwired):
 		writeJSONError(w, http.StatusServiceUnavailable, "system_publisher_unwired", err.Error())
+	case errors.Is(err, connector.ErrChannelYamlImmutable):
+		writeJSONError(w, http.StatusConflict, "channel_yaml_immutable", err.Error())
+	case errors.Is(err, connector.ErrChannelAlreadyExists):
+		writeJSONError(w, http.StatusConflict, "channel_name_in_use", err.Error())
+	case errors.Is(err, connector.ErrChannelNotFound):
+		writeJSONError(w, http.StatusNotFound, "channel_not_found", err.Error())
 	default:
 		writeJSONError(w, http.StatusInternalServerError, "channel_op_failed", err.Error())
 	}
+}
+
+// ---- v0.11.5 channel admin CRUD handlers ------------------------
+
+// handleCreateChannel serves POST /v1/_channels.
+func (s *Server) handleCreateChannel(w http.ResponseWriter, r *http.Request) {
+	var req connector.ChannelCreateRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid_body", "invalid request body: "+err.Error())
+		return
+	}
+	desc, err := s.CreateChannel(r.Context(), req)
+	if err != nil {
+		// Preserve the channel-specific code mapping; fall back to
+		// generic 400 for the create-only validation strings (which
+		// don't wrap typed sentinels).
+		if errors.Is(err, connector.ErrChannelYamlImmutable) ||
+			errors.Is(err, connector.ErrChannelAlreadyExists) ||
+			errors.Is(err, connector.ErrChannelNotFound) {
+			writeChannelError(w, err)
+			return
+		}
+		writeJSONError(w, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
+	_ = json.NewEncoder(w).Encode(desc)
+}
+
+// handleUpdateChannel serves PATCH /v1/_channels/{name}.
+func (s *Server) handleUpdateChannel(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	var req connector.ChannelUpdateRequest
+	if r.ContentLength != 0 {
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeJSONError(w, http.StatusBadRequest, "invalid_body", "invalid request body: "+err.Error())
+			return
+		}
+	}
+	desc, err := s.UpdateChannel(r.Context(), name, req)
+	if err != nil {
+		if errors.Is(err, connector.ErrChannelYamlImmutable) ||
+			errors.Is(err, connector.ErrChannelAlreadyExists) ||
+			errors.Is(err, connector.ErrChannelNotFound) {
+			writeChannelError(w, err)
+			return
+		}
+		writeJSONError(w, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(desc)
+}
+
+// handleDeleteChannel serves DELETE /v1/_channels/{name}.
+func (s *Server) handleDeleteChannel(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	if err := s.DeleteChannel(r.Context(), name); err != nil {
+		if errors.Is(err, connector.ErrChannelYamlImmutable) ||
+			errors.Is(err, connector.ErrChannelNotFound) {
+			writeChannelError(w, err)
+			return
+		}
+		writeJSONError(w, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // ---- admin handlers (scope=global) ------------------------------

@@ -1374,6 +1374,14 @@ func (s *Server) Mux() http.Handler {
 	// credential-picker for the channel-name dropdown; also useful
 	// for operator dashboards. Bearer-authed.
 	mux.Handle("GET /v1/_channels", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleListChannels))))
+	// v0.11.5 channel CRUD on the runtime substrate. yaml-declared
+	// channels refuse mutations with 409 channel_yaml_immutable. POST
+	// /v1/_channels has no name path segment so it doesn't collide
+	// with the multi-segment system-publish route above; PATCH +
+	// DELETE differ by method from the existing POST /v1/_channels/{name...}.
+	mux.Handle("POST /v1/_channels", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleCreateChannel))))
+	mux.Handle("PATCH /v1/_channels/{name}", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleUpdateChannel))))
+	mux.Handle("DELETE /v1/_channels/{name}", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleDeleteChannel))))
 	// v0.8.x process-resource metrics sampler endpoints. All
 	// bearer-authed. Return 503 when metricsSampler is nil
 	// (LOOMCYCLE_METRICS_ENABLED=0 deployment).
@@ -1456,6 +1464,13 @@ func (s *Server) Mux() http.Handler {
 	// `/`-prefixed paths (e.g. `events/2026-05-09T10:00`) and a
 	// single-segment {key} would 404 on those.
 	mux.Handle("GET /v1/_memory/scopes/{scope}/{scope_id}/keys/{key...}", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleGetMemoryEntry))))
+	// v0.11.5: idempotent memory-entry upsert + delete. Mirrors the
+	// in-band Memory tool's set/delete ops at the wire boundary for
+	// n8n integration-test fixtures + Web UI CRUD. {key...} uses the
+	// multi-segment wildcard because key strings can contain slashes
+	// (e.g. "company/policy/v1") same as the GET path above.
+	mux.Handle("PUT /v1/_memory/scopes/{scope}/{scope_id}/keys/{key...}", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handlePutMemoryEntry))))
+	mux.Handle("DELETE /v1/_memory/scopes/{scope}/{scope_id}/keys/{key...}", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleDeleteMemoryEntry))))
 	// v0.9.0 Vector Memory admin — per-scope embedding stats +
 	// operator-driven re-embedding for model migrations. Bearer-
 	// authed; refuse with 503 when the backend has no vector

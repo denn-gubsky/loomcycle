@@ -182,6 +182,15 @@ func (m *mockConnector) PeekChannel(context.Context, connector.ChannelPeekReques
 func (m *mockConnector) AckChannel(context.Context, connector.ChannelAckRequest) (connector.ChannelAckResult, error) {
 	return connector.ChannelAckResult{}, nil
 }
+func (m *mockConnector) CreateChannel(context.Context, connector.ChannelCreateRequest) (connector.ChannelDescriptor, error) {
+	return connector.ChannelDescriptor{}, nil
+}
+func (m *mockConnector) UpdateChannel(context.Context, string, connector.ChannelUpdateRequest) (connector.ChannelDescriptor, error) {
+	return connector.ChannelDescriptor{}, nil
+}
+func (m *mockConnector) DeleteChannel(context.Context, string) error {
+	return nil
+}
 
 // driveServer runs the server against the given input lines and
 // returns the response frames (one per request). Notifications are

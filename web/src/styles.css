@@ -1344,6 +1344,113 @@ pre {
   font-weight: normal;
   color: var(--fg, inherit);
 }
+
+/* v0.11.5 — slimmer field layout used by ChannelEditModal +
+ * MemoryEntryEditModal (no JSON textarea — purely structured input). */
+.library-modal-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+.library-modal-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  flex: 1;
+}
+.library-modal-field > span {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--fg-muted, #888);
+}
+.library-modal-field input,
+.library-modal-field select,
+.library-modal-field textarea {
+  padding: 6px 8px;
+  font-size: 13px;
+  border: 1px solid var(--border, #444);
+  border-radius: 4px;
+  background: var(--bg-input, #1a1a1a);
+  color: var(--fg, inherit);
+}
+.library-modal-field input:disabled,
+.library-modal-field select:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+.library-modal-field-row {
+  display: flex;
+  gap: 12px;
+}
+.memory-modal-checkbox-field {
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+}
+.memory-modal-checkbox-field > span {
+  order: 2;
+}
+.memory-modal-checkbox-field > input {
+  flex: 0 0 auto;
+}
+
+/* v0.11.5 memory CRUD — header CTA + per-row edit/delete actions. */
+.memory-keys-header {
+  justify-content: space-between;
+}
+.memory-new-entry-btn {
+  font-size: 11px;
+  padding: 4px 10px;
+  border: 1px solid var(--accent);
+  color: var(--accent);
+  background: transparent;
+  border-radius: 4px;
+  cursor: pointer;
+  text-transform: none;
+  letter-spacing: 0;
+}
+.memory-new-entry-btn:hover {
+  background: var(--accent);
+  color: var(--bg);
+}
+.key-list li {
+  position: relative;
+}
+.memory-key-actions {
+  display: none;
+  margin-left: auto;
+  gap: 4px;
+}
+.key-list li:hover .memory-key-actions {
+  display: inline-flex;
+}
+.memory-key-action {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--fg-soft);
+  font-size: 10px;
+  padding: 2px 6px;
+  border-radius: 3px;
+  cursor: pointer;
+}
+.memory-key-action:hover {
+  background: var(--bg-soft);
+  color: var(--fg);
+}
+.memory-key-action-danger:hover {
+  border-color: var(--danger, #d33);
+  color: var(--danger, #d33);
+}
+.warning-banner {
+  padding: 8px 12px;
+  background: rgba(255, 196, 0, 0.1);
+  border: 1px solid rgba(255, 196, 0, 0.4);
+  color: #d4a017;
+  border-radius: 4px;
+  margin: 8px 0;
+  font-size: 12px;
+}
 .library-json-textarea {
   width: 100%;
   padding: 8px;
@@ -2668,6 +2775,64 @@ button.primary:disabled {
 .channel-semantic,
 .channel-count {
   font-family: var(--mono);
+}
+
+/* v0.11.5 — source chip + row-level edit/delete actions for runtime channels. */
+.channel-source {
+  font-family: var(--mono);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 1px 6px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+}
+.channel-source-yaml {
+  color: var(--fg-soft);
+  background: var(--bg-soft);
+}
+.channel-source-runtime {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+.channel-source-orphan {
+  color: var(--danger, #d33);
+  border-color: var(--danger, #d33);
+}
+.channel-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-right: 8px;
+}
+.channel-row-actions {
+  display: flex;
+  gap: 4px;
+}
+.channel-row-action {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--fg-soft);
+  font-size: 11px;
+  padding: 3px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+.channel-row-action:hover {
+  background: var(--bg-soft);
+  color: var(--fg);
+}
+.channel-row-action-danger:hover {
+  border-color: var(--danger, #d33);
+  color: var(--danger, #d33);
+}
+.channels-new-button {
+  margin-left: auto;
+}
+.channel-detail-description {
+  margin: 4px 0 12px 0;
+  font-size: 13px;
+  color: var(--fg-soft);
 }
 .channel-detail {
   padding: 16px;

@@ -173,6 +173,25 @@ func (s *Store) migrate(ctx context.Context) error {
 			updated_at INTEGER NOT NULL,
 			PRIMARY KEY (channel, scope, scope_id)
 		)`,
+		// v0.11.5 runtime-declared channels. yaml-declared channels
+		// stay in cfg.Channels (in-memory only); this table holds
+		// channels created via the POST /v1/_channels admin endpoint
+		// or the Web UI. The HTTP handler merges both at read time
+		// with a `source` discriminator. Cascade delete of messages +
+		// cursors handled in code (channel_messages doesn't FK to
+		// here — yaml channels never had a parent row, so the table
+		// can't have a FK to itself).
+		`CREATE TABLE IF NOT EXISTS channels (
+			name         TEXT    PRIMARY KEY,
+			description  TEXT    NOT NULL DEFAULT '',
+			scope        TEXT    NOT NULL,
+			semantic     TEXT    NOT NULL,
+			default_ttl  INTEGER NOT NULL DEFAULT 0,
+			max_messages INTEGER NOT NULL DEFAULT 0,
+			publisher    TEXT    NOT NULL DEFAULT '',
+			period       TEXT    NOT NULL DEFAULT '',
+			created_at   INTEGER NOT NULL
+		)`,
 		// v0.8.5 Self-Evolution Substrate — see
 		// internal/store/postgres/migrations/0006_agent_defs.up.sql for
 		// the full design rationale. SQLite mirrors the shape; INTEGER

@@ -135,6 +135,15 @@ func (m *httpMockConnector) PeekChannel(context.Context, connector.ChannelPeekRe
 func (m *httpMockConnector) AckChannel(context.Context, connector.ChannelAckRequest) (connector.ChannelAckResult, error) {
 	return connector.ChannelAckResult{}, errors.New("not implemented")
 }
+func (m *httpMockConnector) CreateChannel(context.Context, connector.ChannelCreateRequest) (connector.ChannelDescriptor, error) {
+	return connector.ChannelDescriptor{}, errors.New("not implemented")
+}
+func (m *httpMockConnector) UpdateChannel(context.Context, string, connector.ChannelUpdateRequest) (connector.ChannelDescriptor, error) {
+	return connector.ChannelDescriptor{}, errors.New("not implemented")
+}
+func (m *httpMockConnector) DeleteChannel(context.Context, string) error {
+	return errors.New("not implemented")
+}
 
 // httpTestServer wires an HTTPHandler against the mock connector and
 // returns an httptest.Server speaking the loomcycle MCP transport over

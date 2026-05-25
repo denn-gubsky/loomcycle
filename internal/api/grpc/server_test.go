@@ -829,6 +829,15 @@ func (m *mockConnector) PeekChannel(context.Context, connector.ChannelPeekReques
 func (m *mockConnector) AckChannel(context.Context, connector.ChannelAckRequest) (connector.ChannelAckResult, error) {
 	return connector.ChannelAckResult{}, nil
 }
+func (m *mockConnector) CreateChannel(context.Context, connector.ChannelCreateRequest) (connector.ChannelDescriptor, error) {
+	return connector.ChannelDescriptor{}, nil
+}
+func (m *mockConnector) UpdateChannel(context.Context, string, connector.ChannelUpdateRequest) (connector.ChannelDescriptor, error) {
+	return connector.ChannelDescriptor{}, nil
+}
+func (m *mockConnector) DeleteChannel(context.Context, string) error {
+	return nil
+}
 
 // TestGrpcServer_CancelAgent_DispatchesThroughConnector is the v0.8.15
 // regression guard: when the gRPC Server is wired with a Connector,

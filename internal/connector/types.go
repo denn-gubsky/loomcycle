@@ -300,6 +300,7 @@ type RestoreSnapshotResult struct {
 // holding orphaned messages also surface, for forensics.
 type ChannelDescriptor struct {
 	Name            string `json:"name"`
+	Description     string `json:"description,omitempty"`
 	Scope           string `json:"scope,omitempty"`
 	Semantic        string `json:"semantic,omitempty"`
 	Publisher       string `json:"publisher,omitempty"`
@@ -309,6 +310,11 @@ type ChannelDescriptor struct {
 	MessageCount    int64  `json:"message_count"`
 	OldestVisibleAt string `json:"oldest_visible_at,omitempty"` // RFC3339; empty when count=0
 	NewestVisibleAt string `json:"newest_visible_at,omitempty"`
+	// v0.11.5: discriminator between yaml-declared (static, immutable)
+	// and runtime-declared (substrate-persisted, CRUD-mutable) rows.
+	// "yaml" | "runtime" | "orphan" (no declaration, only orphan
+	// messages on the underlying tables).
+	Source string `json:"source,omitempty"`
 }
 
 // ListChannelsResponse is the response shape for Connector.ListChannels.
@@ -404,6 +410,33 @@ type ChannelAckRequest struct {
 // as Go errors (cursor regression, store error).
 type ChannelAckResult struct {
 	OK bool `json:"ok"`
+}
+
+// --- Channel admin CRUD (v0.11.5) ---
+
+// ChannelCreateRequest is the input to Connector.CreateChannel — the
+// substrate-persisted equivalent of the operator-yaml `channels:` block.
+// Name uniqueness is checked across both yaml and runtime sources (the
+// yaml side is the floor; a runtime create on a yaml name is refused).
+type ChannelCreateRequest struct {
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+	Scope       string `json:"scope,omitempty"`        // "global" | "agent" | "user"; default "global"
+	Semantic    string `json:"semantic,omitempty"`     // "queue" | "topic"; default "queue"
+	DefaultTTL  int    `json:"default_ttl,omitempty"`  // seconds; 0 = no TTL
+	MaxMessages int    `json:"max_messages,omitempty"` // bounded queue; 0 = unbounded
+	Publisher   string `json:"publisher,omitempty"`    // free-form attribution; not enforced
+	Period      string `json:"period,omitempty"`       // free-form retention hint; not enforced
+}
+
+// ChannelUpdateRequest is the input to Connector.UpdateChannel. Nil
+// pointers leave the corresponding field unchanged. Name is in the
+// path, not the body (channel name is the primary key — not editable).
+type ChannelUpdateRequest struct {
+	Description *string `json:"description,omitempty"`
+	DefaultTTL  *int    `json:"default_ttl,omitempty"`
+	MaxMessages *int    `json:"max_messages,omitempty"`
+	Semantic    *string `json:"semantic,omitempty"`
 }
 
 // StreamUserRunStatesRequest is the input to Connector.StreamUserRunStates.

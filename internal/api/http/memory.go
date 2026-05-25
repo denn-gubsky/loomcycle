@@ -1,11 +1,13 @@
 package http
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/store"
 )
@@ -197,3 +199,165 @@ func validAdminMemoryScope(s string) bool {
 	}
 	return false
 }
+
+// memoryEntryPutBody is the wire shape for PUT
+// /v1/_memory/scopes/{scope}/{scope_id}/keys/{key}. Value is opaque
+// JSON; the optional `embed` flag (also accepted as ?embed=true
+// query param) triggers a synchronous embed on the configured
+// embedder. ttl_seconds > 0 sets an expiry on the row; <=0 stores
+// without expiry.
+type memoryEntryPutBody struct {
+	Value      json.RawMessage `json:"value"`
+	Embed      bool            `json:"embed,omitempty"`
+	TTLSeconds int             `json:"ttl_seconds,omitempty"`
+}
+
+// memoryEntryPutResponse mirrors the in-band Memory tool's set ack
+// so HTTP callers see a stable shape. Echoes the embed result for
+// callers that opted in (or `null` when not requested).
+type memoryEntryPutResponse struct {
+	Scope        string `json:"scope"`
+	ScopeID      string `json:"scope_id"`
+	Key          string `json:"key"`
+	Embedded     bool   `json:"embedded"`
+	EmbedWarning string `json:"embed_warning,omitempty"`
+}
+
+// handlePutMemoryEntry serves
+// PUT /v1/_memory/scopes/{scope}/{scope_id}/keys/{key}. Idempotent
+// upsert by full (scope, scope_id, key) triple. Bearer-authed.
+func (s *Server) handlePutMemoryEntry(w http.ResponseWriter, r *http.Request) {
+	if s.store == nil {
+		writeJSONError(w, http.StatusServiceUnavailable, "store_unavailable",
+			"store not configured; Memory admin requires a persistent store")
+		return
+	}
+	scope := r.PathValue("scope")
+	scopeID := r.PathValue("scope_id")
+	key := r.PathValue("key")
+	if !validAdminMemoryScope(scope) {
+		writeJSONError(w, http.StatusBadRequest, "invalid_scope",
+			"scope must be one of: agent, user")
+		return
+	}
+	if strings.TrimSpace(scopeID) == "" || strings.TrimSpace(key) == "" {
+		writeJSONError(w, http.StatusBadRequest, "missing_path",
+			"scope_id and key are required")
+		return
+	}
+	var body memoryEntryPutBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid_body",
+			"invalid request body: "+err.Error())
+		return
+	}
+	if len(body.Value) == 0 {
+		writeJSONError(w, http.StatusBadRequest, "missing_value",
+			"value is required")
+		return
+	}
+	if !json.Valid(body.Value) {
+		writeJSONError(w, http.StatusBadRequest, "invalid_value",
+			"value must be valid JSON")
+		return
+	}
+	embed := body.Embed
+	if r.URL.Query().Get("embed") == "true" {
+		embed = true
+	}
+	ttl := time.Duration(0)
+	if body.TTLSeconds > 0 {
+		ttl = time.Duration(body.TTLSeconds) * time.Second
+	}
+	if err := s.store.MemorySet(r.Context(), store.MemoryScope(scope), scopeID, key, body.Value, ttl); err != nil {
+		if errors.Is(err, store.ErrMemoryQuotaExceeded) {
+			writeJSONError(w, http.StatusRequestEntityTooLarge, "memory_quota_exceeded", err.Error())
+			return
+		}
+		if errors.Is(err, store.ErrMemoryValueTooLarge) {
+			writeJSONError(w, http.StatusRequestEntityTooLarge, "memory_value_too_large", err.Error())
+			return
+		}
+		writeJSONError(w, http.StatusInternalServerError, "internal", err.Error())
+		return
+	}
+	resp := memoryEntryPutResponse{Scope: scope, ScopeID: scopeID, Key: key}
+	if embed {
+		// Best-effort: same surface as v0.9.0's Memory.set embed —
+		// transient failures surface as embedded:false + warning, the
+		// k/v row stays.
+		if err := s.embedMemoryEntry(r.Context(), store.MemoryScope(scope), scopeID, key, body.Value); err != nil {
+			resp.EmbedWarning = err.Error()
+		} else {
+			resp.Embedded = true
+		}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(resp)
+}
+
+// handleDeleteMemoryEntry serves
+// DELETE /v1/_memory/scopes/{scope}/{scope_id}/keys/{key}. 204 on
+// success regardless of whether the row existed (idempotent delete
+// matches the in-band Memory tool's semantics).
+func (s *Server) handleDeleteMemoryEntry(w http.ResponseWriter, r *http.Request) {
+	if s.store == nil {
+		writeJSONError(w, http.StatusServiceUnavailable, "store_unavailable",
+			"store not configured; Memory admin requires a persistent store")
+		return
+	}
+	scope := r.PathValue("scope")
+	scopeID := r.PathValue("scope_id")
+	key := r.PathValue("key")
+	if !validAdminMemoryScope(scope) {
+		writeJSONError(w, http.StatusBadRequest, "invalid_scope",
+			"scope must be one of: agent, user")
+		return
+	}
+	if strings.TrimSpace(scopeID) == "" || strings.TrimSpace(key) == "" {
+		writeJSONError(w, http.StatusBadRequest, "missing_path",
+			"scope_id and key are required")
+		return
+	}
+	if _, err := s.store.MemoryDelete(r.Context(), store.MemoryScope(scope), scopeID, key); err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "internal", err.Error())
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// embedMemoryEntry mirrors the in-band Memory.set embed path —
+// computes an embedding from the (already-stored) value and writes
+// it via MemoryEmbedUpsert. No-ops gracefully when the embedder is
+// not wired or the store doesn't support vectors.
+func (s *Server) embedMemoryEntry(ctx context.Context, scope store.MemoryScope, scopeID, key string, value json.RawMessage) error {
+	if s.embedder == nil {
+		return errEmbedderUnconfigured
+	}
+	if !s.store.SupportsVectors() {
+		return errStoreVectorsUnsupported
+	}
+	// Embed the JSON-as-string. Mirrors the same input shape the in-
+	// band tool uses for the default-no-embed_text path.
+	text := string(value)
+	vecs, err := s.embedder.Embed(ctx, []string{text})
+	if err != nil {
+		return err
+	}
+	if len(vecs) != 1 {
+		return errors.New("embedder returned unexpected vector count")
+	}
+	return s.store.MemoryEmbedSet(ctx, scope, scopeID, key, store.MemoryEmbedding{
+		Provider:  s.embedder.Provider(),
+		Model:     s.embedder.Model(),
+		Dimension: s.embedder.Dimension(),
+		Vector:    vecs[0],
+		EmbedText: text,
+		CreatedAt: time.Now().UTC(),
+	})
+}
+
+var (
+	errEmbedderUnconfigured    = errors.New("embedder not configured on this loomcycle instance")
+	errStoreVectorsUnsupported = errors.New("store does not support vectors (use pgvector or sqlite-vec build)")
+)
