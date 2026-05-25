@@ -1250,6 +1250,34 @@ func (s *Store) SnapshotDelete(ctx context.Context, id string) (bool, error) {
 	return n > 0, nil
 }
 
+// v0.12.5 Phase 6 hook-registry stubs. SQLite never runs in cluster
+// mode (the openStore guard refuses LOOMCYCLE_REPLICA_ID + sqlite at
+// boot), so these methods are unreachable in production. They satisfy
+// the Store interface so the SQLite path compiles. If called via a
+// test that bypasses the boot guard, the error message points at the
+// design intent.
+
+var errHooksSQLiteUnsupported = errors.New("hooks: SQLite backend is single-replica only; hook DB methods require Postgres (set LOOMCYCLE_REPLICA_ID to enter cluster mode)")
+
+func (s *Store) CreateHook(ctx context.Context, h store.HookRow) error {
+	return errHooksSQLiteUnsupported
+}
+
+func (s *Store) DeleteHook(ctx context.Context, hookID string) error {
+	return errHooksSQLiteUnsupported
+}
+
+func (s *Store) ListHooks(ctx context.Context) ([]store.HookRow, error) {
+	// Return empty slice (not error) so a single-replica boot that
+	// somehow probes the table doesn't fatal — matches the
+	// "hooks live in memory, not DB" v0.11.x semantics.
+	return nil, nil
+}
+
+func (s *Store) GetHookByID(ctx context.Context, hookID string) (store.HookRow, error) {
+	return store.HookRow{}, errHooksSQLiteUnsupported
+}
+
 // ---- v0.8.17 Snapshot capture — bulk readers (PR 2.3a) ----
 
 // SnapshotReadAgentDefs implements store.Store.

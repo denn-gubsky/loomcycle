@@ -17,6 +17,21 @@ var ErrInvalidRegistration = errors.New("invalid hook registration")
 // is registered. Callers map this to HTTP 404.
 var ErrNotFound = errors.New("hook not found")
 
+// RegistryInterface is the v0.12.5 Phase 6 interface extracted from
+// the concrete Registry. The Dispatcher holds RegistryInterface so
+// either the in-process Registry (single-replica) or the new
+// DBBackedRegistry (cluster mode) can sit behind it.
+//
+// All existing callers of *Registry compile unchanged — Registry
+// implicitly satisfies this interface.
+type RegistryInterface interface {
+	Register(h *Hook) (string, error)
+	Delete(id string) error
+	List() []*Hook
+	Match(agent, tool string, phase Phase) []*Hook
+	IsHostWidenPermitted(owner string) bool
+}
+
 // Registry holds the set of currently-registered hooks. In-memory
 // only — registrations do NOT survive a loomcycle restart, by
 // design: registering apps re-establish their hooks on their own

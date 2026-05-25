@@ -8,6 +8,31 @@ For pre-v0.4 history (single-tool runtime, library milestone, security patch), s
 
 ---
 
+## What's in v0.12.5
+
+**Phase 6 of the v1.0 multi-replica HA capstone — session-lock + hook-registry → DB-backed.** Single-replica mode (`LOOMCYCLE_REPLICA_ID` unset) keeps v0.11.x behavior **byte-identical**.
+
+### What ships
+
+1. **`runner.PgSessionLocker`** — `pg_try_advisory_lock(hashtextextended(session_id, 0))` on a pinned `*pgxpool.Conn`. Replaces `SessionLockMap` in cluster mode so concurrent continuations on the same session_id across replicas both get the 409 ErrSessionBusy. Session-scoped (NOT transaction-scoped) so the lock can be held for the full SSE lifetime without pinning an open transaction. Pool budget: `MaxConcurrentRuns` connections held by active continuations; operators size `pool.MaxConns` accordingly. Crash-safe: TCP close auto-releases.
+
+2. **`hooks.RegistryInterface`** extracted from `*Registry` so `Dispatcher` + `Server.hookRegistry` can hold either the in-process or cluster impl. `*Registry` satisfies it implicitly.
+
+3. **`hooks.DBBackedRegistry`** — wraps the in-process `*Registry` with DB persistence + `loomcycle.hook` backplane invalidation. Hot-path `Match` never hits the DB (cache). `Register` rolls back the in-process registration if the DB insert fails — keeps the cluster consistent. `IsHostWidenPermitted` reads from inner only (operator yaml = trust boundary, CLAUDE.md rule #8).
+
+4. **`hooks` table + migration 0026** + `Store.CreateHook` / `DeleteHook` / `ListHooks` / `GetHookByID`. Postgres full impl; SQLite stubs (cluster mode refuses SQLite at boot). (Migration renumbered from 0025 to 0026 during the rebase against Phase 4's `runtime_state`, which took 0025.)
+
+5. **`store.HookRow`** uses plain strings for Phase + FailMode so `internal/store` stays free of `internal/hooks` (no circular import).
+
+6. **main.go wiring** — inside the existing cluster-mode init block: build `PgSessionLocker` + `DBBackedRegistry`, call `LoadFromDB`, start `RunBackplaneConsumer`, hand to Server via `SetPgSessionLocker` + `SetHookRegistry`.
+
+### Test coverage
+
+- `internal/hooks/db_registry_test.go` — 6 cases: register persists + publishes, register rolls back on DB error, delete removes + publishes, LoadFromDB seeds cache, backplane created-event hydrates cache, backplane deleted-event evicts.
+- All existing tests continue green.
+
+---
+
 ## What's in v0.12.4
 
 **Phase 5 of the v1.0 multi-replica HA capstone — singleton sweepers via Postgres advisory locks + a new replicas TTL sweeper that closes Phase 2 + Phase 3 crash-safety gaps.** Single-replica mode (`LOOMCYCLE_REPLICA_ID` unset) keeps the v0.11.x behavior **byte-identical** — every sweeper runs unconditionally as before.

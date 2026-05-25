@@ -834,6 +834,94 @@ func (s *Store) SnapshotDelete(ctx context.Context, id string) (bool, error) {
 	return tag.RowsAffected() > 0, nil
 }
 
+// ---- v0.12.5 Phase 6 hook registry persistence ----
+
+// CreateHook inserts a hook row. ID conflict (the loomcycle-minted
+// hex ID collides — practically impossible with crypto/rand) silently
+// preserves the existing row via ON CONFLICT DO NOTHING; the in-process
+// cache update is the source of truth for Match either way.
+func (s *Store) CreateHook(ctx context.Context, h store.HookRow) error {
+	agents, _ := json.Marshal(h.Agents)
+	tools, _ := json.Marshal(h.Tools)
+	var replica any
+	if h.CreatedByReplica != "" {
+		replica = h.CreatedByReplica
+	}
+	if _, err := s.pool.Exec(ctx, `
+		INSERT INTO hooks (id, owner, name, phase, agents, tools, callback_url,
+		                   fail_mode, timeout_ms, created_at, created_by_replica)
+		VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb, $7, $8, $9, $10, $11)
+		ON CONFLICT (id) DO NOTHING
+	`, h.ID, h.Owner, h.Name, h.Phase, string(agents), string(tools),
+		h.CallbackURL, h.FailMode, h.TimeoutMs, h.CreatedAt, replica,
+	); err != nil {
+		return fmt.Errorf("hooks insert %s: %w", h.ID, err)
+	}
+	return nil
+}
+
+func (s *Store) DeleteHook(ctx context.Context, hookID string) error {
+	if hookID == "" {
+		return nil
+	}
+	if _, err := s.pool.Exec(ctx, `DELETE FROM hooks WHERE id = $1`, hookID); err != nil {
+		return fmt.Errorf("hooks delete %s: %w", hookID, err)
+	}
+	return nil
+}
+
+func (s *Store) ListHooks(ctx context.Context) ([]store.HookRow, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT id, owner, name, phase, agents, tools, callback_url,
+		       fail_mode, timeout_ms, created_at, COALESCE(created_by_replica, '')
+		  FROM hooks
+		 ORDER BY created_at ASC, id ASC
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("hooks list: %w", err)
+	}
+	defer rows.Close()
+	var out []store.HookRow
+	for rows.Next() {
+		var r store.HookRow
+		var agentsRaw, toolsRaw []byte
+		if err := rows.Scan(&r.ID, &r.Owner, &r.Name, &r.Phase,
+			&agentsRaw, &toolsRaw, &r.CallbackURL,
+			&r.FailMode, &r.TimeoutMs, &r.CreatedAt, &r.CreatedByReplica); err != nil {
+			return nil, fmt.Errorf("scan hook row: %w", err)
+		}
+		_ = json.Unmarshal(agentsRaw, &r.Agents)
+		_ = json.Unmarshal(toolsRaw, &r.Tools)
+		out = append(out, r)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate hooks: %w", err)
+	}
+	return out, nil
+}
+
+func (s *Store) GetHookByID(ctx context.Context, hookID string) (store.HookRow, error) {
+	var r store.HookRow
+	var agentsRaw, toolsRaw []byte
+	err := s.pool.QueryRow(ctx, `
+		SELECT id, owner, name, phase, agents, tools, callback_url,
+		       fail_mode, timeout_ms, created_at, COALESCE(created_by_replica, '')
+		  FROM hooks
+		 WHERE id = $1
+	`, hookID).Scan(&r.ID, &r.Owner, &r.Name, &r.Phase,
+		&agentsRaw, &toolsRaw, &r.CallbackURL,
+		&r.FailMode, &r.TimeoutMs, &r.CreatedAt, &r.CreatedByReplica)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return store.HookRow{}, &store.ErrNotFound{Kind: "hook", ID: hookID}
+		}
+		return store.HookRow{}, fmt.Errorf("hooks get %s: %w", hookID, err)
+	}
+	_ = json.Unmarshal(agentsRaw, &r.Agents)
+	_ = json.Unmarshal(toolsRaw, &r.Tools)
+	return r, nil
+}
+
 // ---- v0.8.17 Snapshot capture — bulk readers (PR 2.3a) ----
 
 // SnapshotReadAgentDefs implements store.Store.
