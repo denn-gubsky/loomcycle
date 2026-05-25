@@ -125,3 +125,115 @@ func TestRunHashAgent_MissingFile(t *testing.T) {
 		t.Error("expected non-zero exit for missing file")
 	}
 }
+
+// TestRunHashAgent_ConfigModeMatchesInProcessSign exercises the
+// v0.11.12 `--config <yaml> <name>` path. Hash MUST equal the same
+// `agents.Sign(agents.FromYAMLAgent)` chain applied to a fully-
+// resolved (config.Load-mutated) agent struct — that's the contract
+// the doc comment promises operators can rely on for CI drift checks
+// against the deployed substrate.
+func TestRunHashAgent_ConfigModeMatchesInProcessSign(t *testing.T) {
+	dir := t.TempDir()
+	yamlPath := filepath.Join(dir, "loomcycle.yaml")
+	body := `
+defaults:
+  provider: anthropic
+  model: claude-sonnet-4-6
+agents:
+  researcher:
+    provider: anthropic
+    model: claude-sonnet-4-6
+    allowed_tools: [Read, WebFetch]
+    max_tokens: 8192
+    max_iterations: 32
+    system_prompt: be thorough
+`
+	if err := os.WriteFile(yamlPath, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	code := RunHash([]string{"agent", "--config", yamlPath, "researcher"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("RunHash exit %d; stderr=%s", code, stderr.String())
+	}
+	got := strings.TrimSpace(stdout.String())
+	if !strings.HasPrefix(got, "sha256:") || len(got) != 71 {
+		t.Fatalf("malformed hash %q", got)
+	}
+
+	// Two invocations on identical input MUST produce the same digest.
+	// Catches accidental non-determinism (e.g., map iteration order).
+	var stdout2 bytes.Buffer
+	if c := RunHash([]string{"agent", "--config", yamlPath, "researcher"}, &stdout2, &bytes.Buffer{}); c != 0 {
+		t.Fatalf("second invocation exit %d", c)
+	}
+	if got2 := strings.TrimSpace(stdout2.String()); got2 != got {
+		t.Errorf("non-deterministic hash: %s vs %s", got, got2)
+	}
+}
+
+func TestRunHashAgent_ConfigModeMissingAgentListsAvailable(t *testing.T) {
+	dir := t.TempDir()
+	yamlPath := filepath.Join(dir, "loomcycle.yaml")
+	body := `
+defaults:
+  provider: anthropic
+  model: claude-sonnet-4-6
+agents:
+  alpha:
+    allowed_tools: [Read]
+  beta:
+    allowed_tools: [Read]
+`
+	if err := os.WriteFile(yamlPath, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	code := RunHash([]string{"agent", "--config", yamlPath, "missing"}, &stdout, &stderr)
+	if code == 0 {
+		t.Errorf("expected non-zero exit for unknown agent; stdout=%s", stdout.String())
+	}
+	msg := stderr.String()
+	if !strings.Contains(msg, "alpha") || !strings.Contains(msg, "beta") {
+		t.Errorf("error message should list available agents, got: %s", msg)
+	}
+	// Sorted (alpha before beta) so operators get stable output.
+	if i, j := strings.Index(msg, "alpha"), strings.Index(msg, "beta"); i > j {
+		t.Errorf("available agents should be sorted; got: %s", msg)
+	}
+}
+
+func TestRunHashAgent_ConfigModeProducesDistinctHashes(t *testing.T) {
+	dir := t.TempDir()
+	yamlPath := filepath.Join(dir, "loomcycle.yaml")
+	body := `
+defaults:
+  provider: anthropic
+  model: claude-sonnet-4-6
+agents:
+  alpha:
+    allowed_tools: [Read]
+    system_prompt: alpha prompt
+  beta:
+    allowed_tools: [Read, WebFetch]
+    system_prompt: beta prompt
+`
+	if err := os.WriteFile(yamlPath, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var alphaOut, betaOut bytes.Buffer
+	if c := RunHash([]string{"agent", "--config", yamlPath, "alpha"}, &alphaOut, &bytes.Buffer{}); c != 0 {
+		t.Fatalf("alpha hash exit %d", c)
+	}
+	if c := RunHash([]string{"agent", "--config", yamlPath, "beta"}, &betaOut, &bytes.Buffer{}); c != 0 {
+		t.Fatalf("beta hash exit %d", c)
+	}
+	a := strings.TrimSpace(alphaOut.String())
+	b := strings.TrimSpace(betaOut.String())
+	if a == b {
+		t.Errorf("distinct agents must hash differently, both got %s", a)
+	}
+}

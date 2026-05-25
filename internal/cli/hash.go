@@ -19,6 +19,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/denn-gubsky/loomcycle/internal/agents"
@@ -164,14 +165,28 @@ func runHashSkill(args []string, stdout, stderr io.Writer) int {
 // runHashAgentByName loads `loomcycle.yaml` from cfgPath, walks the
 // `agents:` block for the named agent, and prints its content_sha256.
 //
-// The hash is computed via the same `agents.Sign(agents.FromYAMLAgent)`
-// chain the runtime uses for static-yaml agents, so it matches what
-// `AgentDef.verify` returns on the deployed loomcycle for the same
-// content. Operators run this in their CI before a deploy:
+// The hash matches what the deployed loomcycle's `AgentDef.verify`
+// returns IFF the deployed agent was loaded from the same yaml file
+// at boot. config.Load applies two boot-time mutations the substrate
+// row also carries (resolveSkills bakes skill bodies into
+// SystemPrompt; addContextToolDefaults appends "Context" to
+// AllowedTools unless `disable_context: true`); we let those run here
+// so both paths produce identical AgentContent.
 //
-//     local=$(loomcycle hash agent researcher --config loomcycle.yaml)
-//     remote=$(curl /v1/agentdef -d '{"op":"verify","name":"researcher"}' | jq -r .current_sha256)
-//     [ "$local" = "$remote" ] || echo "drift detected"
+// Caveats:
+//   - Agents created via `AgentDef set/fork` (substrate-only) have no
+//     yaml row — the operator should hash the overlay via
+//     `AgentDef get` instead.
+//   - If any target agent lists `skills:`, the CLI needs
+//     LOOMCYCLE_SKILLS_ROOT pointing at the same skills root the
+//     deployed loomcycle uses. config.Load surfaces this as a hard
+//     error rather than producing a guaranteed-wrong hash.
+//
+// Operators run this in their CI before a deploy:
+//
+//	local=$(loomcycle hash agent --config loomcycle.yaml researcher)
+//	remote=$(curl /v1/agentdef -d '{"op":"verify","name":"researcher"}' | jq -r .current_sha256)
+//	[ "$local" = "$remote" ] || echo "drift detected"
 //
 // Conversion: config.AgentDef and agents.Agent carry the same field
 // set but live in different packages (agents → config would create a
@@ -221,12 +236,7 @@ func agentNames(m map[string]config.AgentDef) []string {
 	for k := range m {
 		out = append(out, k)
 	}
-	// Sort via the slices helper — keeps the import surface tight.
-	for i := 1; i < len(out); i++ {
-		for j := i; j > 0 && out[j-1] > out[j]; j-- {
-			out[j-1], out[j] = out[j], out[j-1]
-		}
-	}
+	sort.Strings(out)
 	return out
 }
 
