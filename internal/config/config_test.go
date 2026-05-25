@@ -1700,3 +1700,62 @@ memory:
 		t.Errorf("entry[2].value = %v; want 42 (int)", e2.Value)
 	}
 }
+
+// minimalYaml is a yaml config sufficient for Load() to succeed,
+// used by the v0.12.0 REPLICA_ID validation tests.
+const minimalYaml = `
+defaults: { provider: anthropic, model: claude-sonnet-4-6 }
+agents:
+  default: { model: claude-sonnet-4-6 }
+`
+
+func writeMinimal(t *testing.T) string {
+	t.Helper()
+	tmp := t.TempDir()
+	p := filepath.Join(tmp, "c.yaml")
+	if err := os.WriteFile(p, []byte(minimalYaml), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+func TestEnv_ReplicaIDUnsetLeavesClusterModeOff(t *testing.T) {
+	t.Setenv("LOOMCYCLE_REPLICA_ID", "")
+	cfg, err := Load(writeMinimal(t))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Env.ReplicaID != "" {
+		t.Errorf("ReplicaID = %q, want empty (cluster mode off)", cfg.Env.ReplicaID)
+	}
+}
+
+func TestEnv_ReplicaIDAcceptsValid(t *testing.T) {
+	for _, id := range []string{"a", "replica-a", "lc_1", "3f9b0a2e-1234-4abc-89ef-0123456789ab"} {
+		t.Run(id, func(t *testing.T) {
+			t.Setenv("LOOMCYCLE_REPLICA_ID", id)
+			cfg, err := Load(writeMinimal(t))
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			if cfg.Env.ReplicaID != id {
+				t.Errorf("ReplicaID = %q, want %q", cfg.Env.ReplicaID, id)
+			}
+		})
+	}
+}
+
+func TestEnv_ReplicaIDRejectsInvalid(t *testing.T) {
+	for _, id := range []string{"-leading-dash", "has space", "has/slash"} {
+		t.Run(id, func(t *testing.T) {
+			t.Setenv("LOOMCYCLE_REPLICA_ID", id)
+			_, err := Load(writeMinimal(t))
+			if err == nil {
+				t.Fatal("expected Load to fail; got nil error")
+			}
+			if !strings.Contains(err.Error(), "LOOMCYCLE_REPLICA_ID") {
+				t.Errorf("error %q does not mention LOOMCYCLE_REPLICA_ID", err.Error())
+			}
+		})
+	}
+}

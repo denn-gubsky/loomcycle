@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -16,6 +17,7 @@ import (
 
 	"github.com/denn-gubsky/loomcycle/internal/concurrency"
 	"github.com/denn-gubsky/loomcycle/internal/config"
+	"github.com/denn-gubsky/loomcycle/internal/coord"
 	"github.com/denn-gubsky/loomcycle/internal/lookup"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/store"
@@ -217,6 +219,111 @@ func TestHealthz(t *testing.T) {
 	}
 	if body.MetricsEnabled {
 		t.Errorf("metrics_enabled = %v, want false (sampler not wired in test)", body.MetricsEnabled)
+	}
+}
+
+// TestHealthz_ClusterViewOmittedWhenCoordUnset pins the back-compat
+// guarantee in the v0.12.0 RFC: single-replica deployments (SetCoord
+// never called) must see /healthz response shape unchanged from
+// v0.11.x. The check is strict — any unexpected new key in the JSON
+// object means we've broken a wire contract.
+func TestHealthz_ClusterViewOmittedWhenCoordUnset(t *testing.T) {
+	cfg := &config.Config{Concurrency: config.Concurrency{MaxConcurrentRuns: 1, MaxQueueDepth: 1, QueueTimeoutMS: 100}}
+	srv := New(cfg, &stubResolver{}, nil, concurrency.New(1, 1, time.Second), nil)
+	ts := httptest.NewServer(srv.Mux())
+	defer ts.Close()
+	resp, err := http.Get(ts.URL + "/healthz")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	var raw map[string]json.RawMessage
+	if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if _, found := raw["replica_id"]; found {
+		t.Errorf("replica_id present when coord is unset: %v", raw)
+	}
+	if _, found := raw["replicas"]; found {
+		t.Errorf("replicas present when coord is unset: %v", raw)
+	}
+}
+
+// fakeReplicaLister stubs the v0.12.0 cluster-view dependency for
+// healthz tests without standing up a Postgres fixture.
+type fakeReplicaLister struct {
+	rows []coord.Replica
+	err  error
+}
+
+func (f *fakeReplicaLister) ListReplicas(ctx context.Context) ([]coord.Replica, error) {
+	return f.rows, f.err
+}
+
+func TestHealthz_ClusterViewIncludedWhenCoordSet(t *testing.T) {
+	cfg := &config.Config{Concurrency: config.Concurrency{MaxConcurrentRuns: 1, MaxQueueDepth: 1, QueueTimeoutMS: 100}}
+	srv := New(cfg, &stubResolver{}, nil, concurrency.New(1, 1, time.Second), nil)
+	now := time.Now()
+	srv.SetCoord(nil, &fakeReplicaLister{rows: []coord.Replica{
+		{ID: "rep-a", Hostname: "host-a", StartedAt: now, LastHeartbeatAt: now, Version: "v0.12.0"},
+		{ID: "rep-b", Hostname: "host-b", StartedAt: now, LastHeartbeatAt: now, Version: "v0.12.0"},
+	}}, "rep-a")
+	ts := httptest.NewServer(srv.Mux())
+	defer ts.Close()
+	resp, err := http.Get(ts.URL + "/healthz")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	var body struct {
+		OK        bool            `json:"ok"`
+		ReplicaID string          `json:"replica_id"`
+		Replicas  []coord.Replica `json:"replicas"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body.ReplicaID != "rep-a" {
+		t.Errorf("replica_id = %q, want rep-a", body.ReplicaID)
+	}
+	if len(body.Replicas) != 2 {
+		t.Fatalf("got %d replicas, want 2: %+v", len(body.Replicas), body.Replicas)
+	}
+}
+
+// TestHealthz_ListErrorDoesNotFailLivenessProbe — a transient DB
+// hiccup must not knock /healthz off the air. The probe still returns
+// 200 + ok:true; replica_id remains populated (it's in-memory and
+// monitoring keyed off it must not see intermittent identity loss);
+// only the replicas[] list is omitted on error.
+func TestHealthz_ListErrorDoesNotFailLivenessProbe(t *testing.T) {
+	cfg := &config.Config{Concurrency: config.Concurrency{MaxConcurrentRuns: 1, MaxQueueDepth: 1, QueueTimeoutMS: 100}}
+	srv := New(cfg, &stubResolver{}, nil, concurrency.New(1, 1, time.Second), nil)
+	srv.SetCoord(nil, &fakeReplicaLister{err: errors.New("db unreachable")}, "rep-a")
+	ts := httptest.NewServer(srv.Mux())
+	defer ts.Close()
+	resp, err := http.Get(ts.URL + "/healthz")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if resp.StatusCode != 200 {
+		t.Errorf("status = %d", resp.StatusCode)
+	}
+	var body struct {
+		OK        bool            `json:"ok"`
+		ReplicaID string          `json:"replica_id"`
+		Replicas  []coord.Replica `json:"replicas"`
+	}
+	_ = json.NewDecoder(resp.Body).Decode(&body)
+	if !body.OK {
+		t.Errorf("ok = %v, want true even on list error", body.OK)
+	}
+	// replica_id MUST stay populated even when ListReplicas fails —
+	// review-1 fix #4. Monitoring keyed off this field must not see
+	// it disappear on transient DB hiccups.
+	if body.ReplicaID != "rep-a" {
+		t.Errorf("replica_id %q, want rep-a (must stay populated on list error)", body.ReplicaID)
+	}
+	if len(body.Replicas) != 0 {
+		t.Errorf("replicas should be empty on list error, got %d", len(body.Replicas))
 	}
 }
 

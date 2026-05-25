@@ -1008,6 +1008,18 @@ type Env struct {
 	// LOOMCYCLE_METRICS_SWEEP_INTERVAL_MS.
 	MetricsSweepInterval time.Duration
 
+	// ---- v0.12.0 multi-replica HA (opt-in) ----
+
+	// ReplicaID activates cluster mode. When unset, loomcycle runs
+	// in single-replica mode exactly like v0.11.x — no backplane, no
+	// replicas table writes, no /healthz cluster-view fields. When
+	// set, the operator must use the Postgres store (SQLite refuses
+	// to start). Validated against [A-Za-z0-9][A-Za-z0-9_-]{0,63} at
+	// config-load; UUID4 is the recommended default but short labels
+	// ("replica-a", "lc-1") are accepted for human-friendly cluster
+	// admin. Env: LOOMCYCLE_REPLICA_ID.
+	ReplicaID string
+
 	// PauseDefaultTimeoutMs is the wait-for-non-idempotent-tools cap
 	// applied when POST /v1/_pause omits timeout_ms. 0 ⇒ use the
 	// internal default (pause.DefaultPauseTimeout = 30s). Capped at
@@ -1655,6 +1667,18 @@ func Load(path string) (*Config, error) {
 		}
 	}
 	cfg.Env.MetricsCollectSystem = os.Getenv("LOOMCYCLE_METRICS_COLLECT_SYSTEM") == "1"
+
+	// v0.12.0 multi-replica HA: cluster mode activates when REPLICA_ID
+	// is set. Validation is by coord.ValidateReplicaID; we re-implement
+	// the regex here to avoid an import cycle (coord depends on config
+	// via Env propagation in main.go, not the other way around).
+	cfg.Env.ReplicaID = os.Getenv("LOOMCYCLE_REPLICA_ID")
+	if cfg.Env.ReplicaID != "" {
+		if err := validateReplicaID(cfg.Env.ReplicaID); err != nil {
+			return nil, fmt.Errorf("LOOMCYCLE_REPLICA_ID: %w", err)
+		}
+	}
+
 	cfg.Env.MetricsSweepInterval = 15 * time.Minute
 	if v := os.Getenv("LOOMCYCLE_METRICS_SWEEP_INTERVAL_MS"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
@@ -2712,6 +2736,29 @@ func validate(c *Config) error {
 		if c.Memory.Embedder.BatchSize < 0 {
 			return fmt.Errorf("memory.embedder.batch_size must be >= 0")
 		}
+	}
+	return nil
+}
+
+// replicaIDPattern duplicates internal/coord.replicaIDPattern. We
+// can't import coord here because main.go composes config.Load + the
+// coord backplane wiring — config has to validate independently. The
+// two patterns must stay in sync; TestReplicaIDPatternsAreInSync in
+// internal/coord/replica_store_test.go cross-checks them on a shared
+// input corpus so any drift fails CI.
+var replicaIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$`)
+
+// ValidateReplicaID is the exported config-side validator (mirrors
+// coord.ValidateReplicaID with the same accept/reject decisions but
+// different error text). Exported so the drift-checking test in the
+// coord package can call it without re-implementing the regex.
+func ValidateReplicaID(id string) error {
+	return validateReplicaID(id)
+}
+
+func validateReplicaID(id string) error {
+	if !replicaIDPattern.MatchString(id) {
+		return fmt.Errorf("must match [A-Za-z0-9][A-Za-z0-9_-]{0,63} (got %q)", id)
 	}
 	return nil
 }

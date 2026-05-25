@@ -22,6 +22,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/channels"
 	"github.com/denn-gubsky/loomcycle/internal/concurrency"
 	"github.com/denn-gubsky/loomcycle/internal/config"
+	"github.com/denn-gubsky/loomcycle/internal/coord"
 	"github.com/denn-gubsky/loomcycle/internal/hooks"
 	"github.com/denn-gubsky/loomcycle/internal/lookup"
 	"github.com/denn-gubsky/loomcycle/internal/loop"
@@ -172,6 +173,21 @@ type Server struct {
 	// "not configured" errors. Set via SetMCPServerDefTool.
 	mcpServerDefTool tools.Tool
 
+	// v0.12.0 multi-replica HA. backplane + replicaStore are nil in
+	// single-replica deployments (LOOMCYCLE_REPLICA_ID unset); /healthz
+	// then returns the same response shape as v0.11.x. When set,
+	// /healthz includes a cluster view (replica_id + replicas[]).
+	// Phase 1 wires these but the backplane has no live subscribers
+	// outside the package's own tests — Phase 2+ build the consumers.
+	//
+	// replicaStore is typed as the local replicaLister interface (not
+	// *coord.ReplicaStore) so the healthz test can stub the listing
+	// without standing up a Postgres fixture. *coord.ReplicaStore
+	// satisfies it structurally.
+	backplane    coord.Backplane
+	replicaStore replicaLister
+	replicaID    string
+
 	// mcpHTTPHandler is the v0.8.15.3 HTTP MCP transport (alternate
 	// front-end to the stdio MCP server). Typed as http.Handler — NOT
 	// *lcmcp.HTTPHandler — so this package does NOT import
@@ -313,6 +329,25 @@ func (s *Server) SetSkillSet(set *skills.Set) {
 // Same wiring shape as SetMetricsSampler.
 func (s *Server) SetPauseManager(m *pause.Manager) {
 	s.pauseMgr = m
+}
+
+// replicaLister is the minimum read surface of *coord.ReplicaStore
+// the healthz handler needs. Declared here (not in coord) so tests
+// can stub it without importing the live Postgres-backed type.
+type replicaLister interface {
+	ListReplicas(ctx context.Context) ([]coord.Replica, error)
+}
+
+// SetCoord installs the v0.12.0 multi-replica HA bus + replicas table
+// reader. When called with non-nil arguments, /healthz starts including
+// `replica_id` + `replicas[]` fields in its response. When unset (the
+// default), /healthz returns the same response shape as v0.11.x and no
+// cluster-mode code paths run. Phase 1 wires this; Phases 2-6 build
+// publishers/subscribers on top of the backplane.
+func (s *Server) SetCoord(bp coord.Backplane, rs replicaLister, replicaID string) {
+	s.backplane = bp
+	s.replicaStore = rs
+	s.replicaID = replicaID
 }
 
 // PauseManager returns the wired pause manager (or nil). Read-only
@@ -1575,6 +1610,12 @@ type healthzResponse struct {
 	Built          string `json:"built,omitempty"`
 	UptimeSeconds  int64  `json:"uptime_seconds,omitempty"`
 	MetricsEnabled bool   `json:"metrics_enabled"`
+	// v0.12.0 multi-replica cluster view. Populated only when
+	// LOOMCYCLE_REPLICA_ID is set (SetCoord wires the backing
+	// store). The omitempty rule keeps single-replica /healthz
+	// responses byte-identical to v0.11.x.
+	ReplicaID string          `json:"replica_id,omitempty"`
+	Replicas  []coord.Replica `json:"replicas,omitempty"`
 }
 
 func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
@@ -1593,6 +1634,24 @@ func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 		Built:          s.buildTime,
 		UptimeSeconds:  uptime,
 		MetricsEnabled: s.metricsSampler != nil,
+	}
+	// v0.12.0 cluster view. replica_id is the in-memory identity of
+	// THIS replica and is always populated when coord is wired —
+	// monitoring/LB systems that key off it must not see intermittent
+	// identity loss when Postgres hiccups (review finding #4). Only
+	// the replicas[] list depends on a successful ListReplicas; on
+	// error we log + omit it but still return ok:true. Liveness probe
+	// semantics trump cluster-view completeness.
+	if s.replicaStore != nil {
+		resp.ReplicaID = s.replicaID
+		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+		defer cancel()
+		replicas, err := s.replicaStore.ListReplicas(ctx)
+		if err != nil {
+			log.Printf("healthz: list replicas: %v", err)
+		} else {
+			resp.Replicas = replicas
+		}
 	}
 	_ = json.NewEncoder(w).Encode(resp)
 }
