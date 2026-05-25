@@ -1,6 +1,6 @@
 {
   "name": "loomcycle-ui",
-  "version": "0.7.6",
+  "version": "0.7.7",
   "private": true,
   "type": "module",
   "description": "Loomcycle web UI — read-only monitoring view: running agents tree, errors, per-agent transcript log.",

@@ -146,7 +146,22 @@ export default function ChannelsView() {
   );
 }
 
-type FilterKind = "all" | "system" | "global" | "user" | "agent";
+// v0.11.12 — extend the filter axis to include `runtime` and `orphan`
+// source-tag filters. v0.11.5 added the channels CRUD substrate with
+// every row carrying a `source: "yaml" | "runtime" | "orphan"` tag,
+// but the filter row only had scope-based chips. Operators wanting to
+// see "just the runtime-created channels" had to scan visually for
+// the source chip on each row. The new chips filter by c.source
+// directly.
+type FilterKind =
+  | "all"
+  | "system"
+  | "global"
+  | "user"
+  | "agent"
+  | "yaml"
+  | "runtime"
+  | "orphan";
 
 function FilterChips({
   current,
@@ -157,10 +172,15 @@ function FilterChips({
 }) {
   const opts: { kind: FilterKind; label: string }[] = [
     { kind: "all", label: "all" },
+    // scope filters (match c.scope)
     { kind: "system", label: "_system/*" },
     { kind: "global", label: "global" },
     { kind: "user", label: "user" },
     { kind: "agent", label: "agent" },
+    // source-tag filters (match c.source)
+    { kind: "yaml", label: "yaml" },
+    { kind: "runtime", label: "runtime" },
+    { kind: "orphan", label: "orphan" },
   ];
   return (
     <div className="filter-chips">
@@ -180,9 +200,19 @@ function FilterChips({
   );
 }
 
+// sourceFilters is the closed set of source-tag filter values; the
+// rest fall through to scope-based filtering. Keep in sync with the
+// FilterKind type + the chip set above.
+const sourceFilters: Record<string, boolean> = {
+  yaml: true,
+  runtime: true,
+  orphan: true,
+};
+
 function filterChannels(channels: ChannelDescriptor[], f: FilterKind): ChannelDescriptor[] {
   if (f === "all") return channels;
   if (f === "system") return channels.filter((c) => c.name.startsWith("_system/"));
+  if (sourceFilters[f]) return channels.filter((c) => c.source === f);
   return channels.filter((c) => c.scope === f);
 }
 
