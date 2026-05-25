@@ -1413,6 +1413,14 @@ func (s *Server) Mux() http.Handler {
 	// /v1/chat/completions — the whole point is consumers change
 	// only the base URL.
 	mux.Handle("POST /v1/chat/completions", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleOpenAICompatChat))))
+	// v0.11.4 OpenAI Embeddings compatibility shim. Same bearer-
+	// authed admin scope as /v1/chat/completions; thin translator
+	// over the single configured providers.Embedder (the same
+	// instance Memory tool uses internally for embed:true). No
+	// resolver path, no streaming — embeddings are synchronous and
+	// loomcycle has one configured embedder per instance per the
+	// v0.9.0 RFC. See internal/api/http/embeddings_compat.go.
+	mux.Handle("POST /v1/embeddings", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleEmbeddings))))
 	// v0.9.x Introspection — bearer-authed read-only enumeration of
 	// declared names per substrate. The companion to the op-dispatched
 	// substrate write endpoints; drives the Web UI's /ui/library tab.
