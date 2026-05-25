@@ -8,6 +8,138 @@ For pre-v0.4 history (single-tool runtime, library milestone, security patch), s
 
 ---
 
+## What's in v0.11.3
+
+OpenAI Chat Completions compatibility shim. New `POST /v1/chat/completions` endpoint that translates the OpenAI wire shape onto loomcycle's native LLM gateway. Every existing OpenAI-SDK consumer can route through loomcycle by changing only the base URL + auth token — zero per-consumer integration work.
+
+### Motivation
+
+v0.11.0's `/v1/_llm/chat` gives consumers loomcycle's routing benefits but requires writing loomcycle-specific client code. Every OpenAI-SDK tool out there (Aider, Goose, Continue, Cursor, Cody, custom Python/TypeScript, every "use OpenAI as your LLM" tutorial) hardcodes OpenAI's URL + request shape. v0.11.3 closes that gap: point any OpenAI client at loomcycle and it Just Works.
+
+The shim is the highest-leverage follow-up to the v0.11.x gateway-product line — it picks up the entire OpenAI ecosystem with one ~600 LOC translator.
+
+### What ships
+
+**Endpoint:** `POST /v1/chat/completions` (no underscore — OpenAI SDKs hardcode this path; the whole point is consumers change only the base URL).
+
+**Wire-format translation:**
+
+- **Request side (OpenAI → loomcycle):**
+  - `messages[].content` polymorphic field (string OR `[{type:"text", text:"..."}]` array OR null) → flat string. Multimodal image/audio parts silently skipped in v1.
+  - `messages[].tool_calls[].function.arguments` (JSON string per OpenAI) → parsed object for loomcycle's native shape.
+  - `tools[]` (OpenAI's `{type:"function", function:{name, description, parameters}}` envelope) → flat `{name, description, input_schema}`.
+  - `model`, `messages`, `tools`, `max_tokens`, `temperature`, `stream` — pass-through.
+
+- **Response side (loomcycle → OpenAI):**
+  - Native content blocks → `choices[0].message.content` (text concatenated) + `choices[0].message.tool_calls` (tool_use blocks re-wrapped in OpenAI's function envelope).
+  - `stop_reason` → `finish_reason`: `end_turn` / `stop_sequence` → `"stop"`; `max_tokens` → `"length"`; `tool_use` → `"tool_calls"`.
+  - `usage` → `{prompt_tokens, completion_tokens, total_tokens}` shape.
+  - Streaming: bare `data: <json>` SSE frames in the `chat.completion.chunk` shape, terminated by literal `data: [DONE]` — NO named SSE events (matches OpenAI's protocol; differs from native `/v1/_llm/chat` which uses `event: name\ndata: payload`).
+
+### Drop-in usage
+
+Python (OpenAI SDK):
+
+```python
+from openai import OpenAI
+
+client = OpenAI(
+    base_url="http://127.0.0.1:8787/v1",
+    api_key="<your-LOOMCYCLE_AUTH_TOKEN>",
+)
+resp = client.chat.completions.create(
+    model="claude-sonnet-4-6",
+    messages=[{"role": "user", "content": "What is 2+2?"}],
+)
+```
+
+TypeScript (OpenAI SDK, streaming):
+
+```typescript
+import OpenAI from "openai";
+const client = new OpenAI({
+  baseURL: "http://127.0.0.1:8787/v1",
+  apiKey: process.env.LOOMCYCLE_AUTH_TOKEN,
+});
+const stream = await client.chat.completions.create({
+  model: "claude-sonnet-4-6",
+  messages: [{ role: "user", content: "Count to 5." }],
+  stream: true,
+});
+for await (const chunk of stream) {
+  process.stdout.write(chunk.choices[0]?.delta?.content ?? "");
+}
+```
+
+### Routing extensions (namespaced)
+
+Four loomcycle-specific fields in the request body for resolver / tier / quota control:
+
+- `loomcycle_provider` — pin to a specific provider (overrides model-based resolution).
+- `loomcycle_tier` — tier for the resolver dispatch.
+- `loomcycle_user_id` — per-user quota tracking + audit log key.
+- `loomcycle_user_tier` — per-user tier overlay; takes precedence over `loomcycle_tier`.
+
+The OpenAI standard `user` field auto-maps to `loomcycle_user_id` when the explicit field isn't set — SDK callers passing `user: "alice"` get per-user quota tracking for free.
+
+### Accepted-but-ignored OpenAI fields
+
+`n`, `presence_penalty`, `frequency_penalty`, `top_p`, `seed`, `response_format`, `logit_bias`, `tool_choice`, `top_logprobs`, `stop`. Accepted so SDKs don't trip validation errors; ignored because loomcycle doesn't apply them today. When the providers package gains support for any of these, the shim's translator picks them up automatically.
+
+### Refactor: shared dispatch path
+
+`handleLLMChat` was refactored to extract `prepareGatewayDispatch` (~70 LOC moved): validation → resolver call → semaphore acquire → providers.Request build, all returning a `gatewayDispatch` handle. Both `handleLLMChat` and the new `handleOpenAICompatChat` call it; the shim handles wire-format translation only. Security policy (per-user quota, resolver pin precedence, audit logging) lives in one place. A bug in routing / quota / retry surfaces in both paths; a bug in the shim is a translation bug.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/api/http/openai_compat.go` *(new, ~310 LOC)* | `handleOpenAICompatChat` + request translator + non-streaming response translator + streaming response translator. |
+| `internal/api/http/openai_compat_types.go` *(new, ~150 LOC)* | OpenAI wire-shape structs (request / response / chunk / tool envelopes). |
+| `internal/api/http/openai_compat_test.go` *(new, ~310 LOC)* | 11 tests: happy path text + tool_call + streaming + array-content + ignored-fields + user-id mapping + finish-reason matrix + auth + validation. |
+| `internal/api/http/llm_gateway.go` | Extracted `prepareGatewayDispatch` + `gatewayDispatch` type; `handleLLMChat` shrunk to parse-then-delegate. Native semantics unchanged (verified via existing LLMGateway tests still pass). |
+| `internal/api/http/sse.go` | Added `sendOpenAIData` (bare `data:` frames) + `sendOpenAIDone` (`data: [DONE]` terminator). |
+| `internal/api/http/server.go` | Registered `POST /v1/chat/completions` next to the native gateway route. |
+| `internal/help/builtin/openai-compat.md` *(new, ~140 lines)* | Bundled `Context.help` topic with Python + TypeScript SDK examples. |
+| `adapters/ts/package.json` | Version 0.11.2 → 0.11.3 (lockstep; no method changes). |
+| `README.md` + `REVISIONS.md` | Release notes. |
+
+### Wire-surface delta vs v0.11.2
+
+| Surface | v0.11.2 | v0.11.3 |
+|---|---|---|
+| Go HTTP endpoints | n | n + 1 (`POST /v1/chat/completions`) |
+| Go tests | n | n + 11 |
+| Bundled `Context.help` topics | n | n + 1 (`openai-compat`) |
+| TS adapter methods | 41 | 41 (no change) |
+| Distribution channels | 3 | 3 (unchanged) |
+
+### Migration notes
+
+- **Purely additive.** Existing `/v1/_llm/chat` semantics unchanged; the refactor preserved every passing test in the gateway suite.
+- **No schema migrations.** Shim uses no persistent storage.
+- **No new substrate logic.** Zero changes to `internal/providers/`, `internal/resolve/`, `internal/loop/`.
+- **TS adapter consumers** bump to 0.11.3 for lockstep parity; consumers using `@loomcycle/client` should still prefer `llmChat()` / `llmStream()` over the OpenAI SDK shim because the native adapter has richer typing (per-frame discriminated unions, generic `LLMChatStreamItem`, etc.).
+- **Operators with OpenAI-SDK consumers** point the SDK's `base_url` at `http://localhost:8787/v1` + set `api_key` to the loomcycle bearer; everything else stays the same.
+
+### Versioning
+
+v0.11.3 — additive feature; patch bump. `@loomcycle/client` 0.11.2 → 0.11.3.
+
+### Deferred
+
+- `tool_choice` field handling — currently accepted-but-ignored. Lands when the providers package wires its semantics through.
+- Multi-modal `content` parts (image_url / input_audio) — currently silently dropped to text-only. Lands when native gateway grows multi-modal.
+- Embeddings (`/v1/embeddings`) compatibility — separate RFC.
+- `logprobs` / `top_logprobs` — currently silently ignored.
+- Stream usage on intermediate chunks (operator-controllable via `stream_options.include_usage`) — v1 always emits on the final chunk only.
+
+### Downloads
+
+Assets attached: `loomcycle-{darwin,linux}-{amd64,arm64}.tar.gz` + `SHA256SUMS`. Docker images at `docker.io/denngubsky/loomcycle:v0.11.3` + `:latest`. Adapter via `npm install @loomcycle/client@0.11.3`.
+
+---
+
 ## What's in v0.11.2
 
 Distribution-pipeline polish — closes the install-path loop opened by v0.11.1. Adds a multi-arch Docker image, refreshes the Homebrew formula caveats to point at the new init/doctor flow, and ships a docker-compose example. Zero Go code changes; pure release-pipeline + docs.

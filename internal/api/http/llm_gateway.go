@@ -65,9 +65,46 @@ func (s *Server) handleLLMChat(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusBadRequest, "bad_request", "invalid JSON: "+err.Error())
 		return
 	}
+
+	d, ok := s.prepareGatewayDispatch(w, r, &req)
+	if !ok {
+		return
+	}
+	defer d.release()
+
+	if req.Stream {
+		s.serveLLMChatStream(w, r, &req, d.requestID, d.providerID, d.modelID, d.provider, d.provReq, d.startedAt)
+		return
+	}
+	s.serveLLMChatJSON(w, r, &req, d.requestID, d.providerID, d.modelID, d.provider, d.provReq, d.startedAt)
+}
+
+// gatewayDispatch carries the validated + resolved state both the
+// native loomcycle handler and the v0.11.3 OpenAI-compat shim need to
+// proceed past the parse step. Centralising the validation +
+// resolve + semaphore-acquire flow here keeps security policy
+// (per-user quota, resolver pin precedence, log auditing) in one
+// place — the shim is a wire-format translator, not a separate
+// dispatch path.
+type gatewayDispatch struct {
+	requestID  string
+	providerID string
+	modelID    string
+	provider   providers.Provider
+	provReq    providers.Request
+	startedAt  time.Time
+	release    func()
+}
+
+// prepareGatewayDispatch runs the shared validation + resolution +
+// quota-acquire steps. Writes the error response and returns ok=false
+// when any step fails; otherwise returns a dispatch handle the caller
+// uses to serve the response in its native wire format. Caller MUST
+// defer dispatch.release() to release the semaphore slot.
+func (s *Server) prepareGatewayDispatch(w http.ResponseWriter, r *http.Request, req *llmChatRequest) (gatewayDispatch, bool) {
 	if len(req.Messages) == 0 {
 		writeJSONError(w, http.StatusBadRequest, "bad_request", "messages is required and must be non-empty")
-		return
+		return gatewayDispatch{}, false
 	}
 	if req.MaxTokens <= 0 {
 		req.MaxTokens = llmGatewayDefaultMaxTokens
@@ -76,20 +113,19 @@ func (s *Server) handleLLMChat(w http.ResponseWriter, r *http.Request) {
 	requestID := newRequestID()
 	startedAt := time.Now()
 
-	// Resolve (provider, model, effort) honoring the request's hints.
-	providerID, modelID, effort, err := s.resolveGatewayRequest(&req)
+	providerID, modelID, effort, err := s.resolveGatewayRequest(req)
 	if err != nil {
 		// Mirror the agent-run path: ErrTierUnavailable /
 		// ErrPinUnavailable map to 503 (retryable) so adapter
 		// consumers can apply retry-with-backoff. Everything else
 		// stays 400 (client config issue).
 		writeJSONError(w, resolveErrorToStatus(err), "resolve_failed", err.Error())
-		return
+		return gatewayDispatch{}, false
 	}
 	provider, err := s.providers.Get(providerID)
 	if err != nil {
 		writeJSONError(w, http.StatusBadRequest, "provider_unavailable", err.Error())
-		return
+		return gatewayDispatch{}, false
 	}
 
 	// Per-user quota acquisition. Empty user_id bypasses the per-user
@@ -98,25 +134,29 @@ func (s *Server) handleLLMChat(w http.ResponseWriter, r *http.Request) {
 	release, err := s.sem.AcquireForUser(r.Context(), req.UserID)
 	if err != nil {
 		writeQuotaError(w, err)
-		return
+		return gatewayDispatch{}, false
 	}
-	defer release()
 
-	provReq, err := llmRequestToProviderRequest(&req, modelID, effort)
+	provReq, err := llmRequestToProviderRequest(req, modelID, effort)
 	if err != nil {
+		release()
 		writeJSONError(w, http.StatusBadRequest, "bad_request", err.Error())
-		return
+		return gatewayDispatch{}, false
 	}
 	// Force-stream the provider call: every driver streams natively,
 	// and we re-aggregate for the non-streaming response path. Lets
 	// us emit content_block_delta frames live when stream:true.
 	provReq.Stream = true
 
-	if req.Stream {
-		s.serveLLMChatStream(w, r, &req, requestID, providerID, modelID, provider, provReq, startedAt)
-		return
-	}
-	s.serveLLMChatJSON(w, r, &req, requestID, providerID, modelID, provider, provReq, startedAt)
+	return gatewayDispatch{
+		requestID:  requestID,
+		providerID: providerID,
+		modelID:    modelID,
+		provider:   provider,
+		provReq:    provReq,
+		startedAt:  startedAt,
+		release:    release,
+	}, true
 }
 
 // serveLLMChatJSON drains the provider channel and writes a single

@@ -97,6 +97,31 @@ func (s *sse) sendRaw(eventName string, data any) {
 	s.flushLocked()
 }
 
+// sendOpenAIData emits one OpenAI-style SSE chunk: `data: <json>\n\n`
+// with NO `event:` line. The OpenAI Chat Completions stream protocol
+// uses bare `data:` frames (unlike loomcycle's native event-named
+// frames). Used by the v0.11.3 OpenAI-compat shim.
+func (s *sse) sendOpenAIData(data any) {
+	payload, err := json.Marshal(data)
+	if err != nil {
+		log.Printf("sse: sendOpenAIData marshal failed: %v", err)
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	fmt.Fprintf(s.w, "data: %s\n\n", payload)
+	s.flushLocked()
+}
+
+// sendOpenAIDone emits the literal `data: [DONE]\n\n` terminator
+// frame OpenAI SDKs key off to know the stream ended.
+func (s *sse) sendOpenAIDone() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	fmt.Fprint(s.w, "data: [DONE]\n\n")
+	s.flushLocked()
+}
+
 // startKeepalive starts a goroutine that emits SSE comment-only frames
 // (`:keepalive\n\n`) on the configured interval until ctx fires. SSE
 // comments are required-ignored by clients per WHATWG, so they don't
