@@ -118,6 +118,12 @@ func (d *Driver) Call(ctx context.Context, req providers.Request) (<-chan provid
 	maskedReq := req
 	maskedReq.Tools = MaskOutbound(req.Tools)
 	maskedReq.Messages = MaskMessages(req.Messages)
+	// v0.11.10 — OAuth mode requires the Claude Code identity as the
+	// first system block. Without it, Anthropic's subscription-billing
+	// validator returns a misleading "messages: Input should be a
+	// valid array" 400. Pi reference: providers/anthropic.ts §
+	// `if (isOAuthToken)` branch.
+	maskedReq.System = adaptSystemForOAuth(req.System)
 	innerCh, err := d.inner.Call(ctx, maskedReq)
 	if err != nil {
 		return nil, err
