@@ -54,9 +54,9 @@ func TestMaskOutbound_RenamesLoomcycleOnlyBuiltins(t *testing.T) {
 // exact casing Claude Code itself ships with.
 func TestMaskOutbound_CanonicalizesNonMaskedToolNames(t *testing.T) {
 	in := []providers.ToolSpec{
-		{Name: "read"},         // canonical: Read
-		{Name: "WRITE"},        // canonical: Write
-		{Name: "notebookedit"}, // canonical: NotebookEdit
+		{Name: "read"},                     // canonical: Read
+		{Name: "WRITE"},                    // canonical: Write
+		{Name: "notebookedit"},             // canonical: NotebookEdit
 		{Name: "mcp__github__list_issues"}, // not in overlap; passes through
 	}
 	out := MaskOutbound(in)
