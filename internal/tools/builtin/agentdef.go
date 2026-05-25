@@ -834,21 +834,22 @@ func signFromMergedDef(name string, def mergedDef) string {
 		}
 	}
 	return agents.Sign(agents.AgentContent{
-		Name:             name,
-		Description:      def.Description,
-		Provider:         def.Provider,
-		Model:            def.Model,
-		Tier:             def.Tier,
-		Effort:           def.Effort,
-		MaxTokens:        def.MaxTokens,
-		MaxIterations:    def.MaxIterations,
-		AllowedTools:     def.AllowedTools,
-		Skills:           def.Skills,
-		SystemPrompt:     def.SystemPrompt,
-		Providers:        def.Providers,
-		Models:           models,
-		MemoryScopes:     def.MemoryScopes,
-		MemoryQuotaBytes: def.MemoryQuotaBytes,
+		Name:                  name,
+		Description:           def.Description,
+		Provider:              def.Provider,
+		Model:                 def.Model,
+		Tier:                  def.Tier,
+		Effort:                def.Effort,
+		MaxTokens:             def.MaxTokens,
+		MaxIterations:         def.MaxIterations,
+		MaxConcurrentChildren: def.MaxConcurrentChildren,
+		AllowedTools:          def.AllowedTools,
+		Skills:                def.Skills,
+		SystemPrompt:          def.SystemPrompt,
+		Providers:             def.Providers,
+		Models:                models,
+		MemoryScopes:          def.MemoryScopes,
+		MemoryQuotaBytes:      def.MemoryQuotaBytes,
 	})
 }
 

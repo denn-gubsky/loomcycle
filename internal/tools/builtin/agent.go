@@ -361,18 +361,21 @@ func (a *AgentTool) executeParallelSpawn(ctx context.Context, in agentInput) (to
 	// single-entry call doesn't allocate a buffered chan of size 4
 	// for no reason.
 	callingAgent := tools.AgentName(ctx)
-	cap := DefaultMaxConcurrentChildren
+	// Avoid shadowing the built-in `cap` identifier — `concurrencyCap`
+	// reads better at the call site and future-proofs against an edit
+	// that wants `cap(slice)` here.
+	concurrencyCap := DefaultMaxConcurrentChildren
 	if a.CapLookup != nil && callingAgent != "" {
 		if override := a.CapLookup(ctx, callingAgent); override > 0 {
-			cap = override
+			concurrencyCap = override
 		}
 	}
-	if cap > len(in.Spawns) {
-		cap = len(in.Spawns)
+	if concurrencyCap > len(in.Spawns) {
+		concurrencyCap = len(in.Spawns)
 	}
 
 	results := make([]parallelSpawnResult, len(in.Spawns))
-	sem := make(chan struct{}, cap)
+	sem := make(chan struct{}, concurrencyCap)
 	var wg sync.WaitGroup
 	for i, sp := range in.Spawns {
 		i, sp := i, sp

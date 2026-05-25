@@ -69,15 +69,20 @@ type Agent struct {
 	// across many tool calls. Default 16 is too low for those; a
 	// 1.09M-input run was observed in production hitting the cap
 	// before reaching the final write (2026-05-21).
-	MaxIterations    int
-	AllowedTools     []string
-	Skills           []string
-	SystemPrompt     string
-	SystemPromptFile string
-	Providers        []string
-	Models           map[string][]TierCandidate
-	MemoryScopes     []string
-	MemoryQuotaBytes int
+	MaxIterations int
+	// MaxConcurrentChildren caps how many sub-agents this agent may
+	// spawn in parallel via Agent.parallel_spawn (v0.11.8+). 0 = use
+	// runtime default (builtin.DefaultMaxConcurrentChildren = 4).
+	// Sequential Agent.spawn calls are unaffected.
+	MaxConcurrentChildren int
+	AllowedTools          []string
+	Skills                []string
+	SystemPrompt          string
+	SystemPromptFile      string
+	Providers             []string
+	Models                map[string][]TierCandidate
+	MemoryScopes          []string
+	MemoryQuotaBytes      int
 	// Channels is the v0.8.4 Channel-tool ACL. Empty Publish /
 	// Subscribe = no access on that side.
 	Channels AgentChannelACL
@@ -233,9 +238,10 @@ type frontmatter struct {
 	Model            string                     `yaml:"model"`
 	Tier             string                     `yaml:"tier"`
 	Effort           string                     `yaml:"effort"`
-	MaxTokens        int                        `yaml:"max_tokens"`
-	MaxIterations    int                        `yaml:"max_iterations"`
-	Skills           []string                   `yaml:"skills"`
+	MaxTokens             int                        `yaml:"max_tokens"`
+	MaxIterations         int                        `yaml:"max_iterations"`
+	MaxConcurrentChildren int                        `yaml:"max_concurrent_children"`
+	Skills                []string                   `yaml:"skills"`
 	Providers        []string                   `yaml:"providers"`
 	Models           map[string][]TierCandidate `yaml:"models"`
 	MemoryScopes     []string                   `yaml:"memory_scopes"`
@@ -299,6 +305,7 @@ func parseAgent(raw []byte) (*Agent, error) {
 	a.Effort = fm.Effort
 	a.MaxTokens = fm.MaxTokens
 	a.MaxIterations = fm.MaxIterations
+	a.MaxConcurrentChildren = fm.MaxConcurrentChildren
 	a.Skills = fm.Skills
 	a.Providers = fm.Providers
 	a.Models = fm.Models

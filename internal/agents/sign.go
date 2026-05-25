@@ -72,21 +72,22 @@ import (
 // Tag order matters; do NOT reorder without bumping the hash-format
 // version on every existing row + re-running the backfill.
 type AgentContent struct {
-	AllowedTools     []string                   `json:"allowed_tools,omitempty"`
-	Description      string                     `json:"description,omitempty"`
-	Effort           string                     `json:"effort,omitempty"`
-	MaxIterations    int                        `json:"max_iterations,omitempty"`
-	MaxTokens        int                        `json:"max_tokens,omitempty"`
-	MemoryQuotaBytes int                        `json:"memory_quota_bytes,omitempty"`
-	MemoryScopes     []string                   `json:"memory_scopes,omitempty"`
-	Model            string                     `json:"model,omitempty"`
-	Models           map[string][]TierCandidate `json:"models,omitempty"`
-	Name             string                     `json:"name,omitempty"`
-	Provider         string                     `json:"provider,omitempty"`
-	Providers        []string                   `json:"providers,omitempty"`
-	Skills           []string                   `json:"skills,omitempty"`
-	SystemPrompt     string                     `json:"system_prompt,omitempty"`
-	Tier             string                     `json:"tier,omitempty"`
+	AllowedTools          []string                   `json:"allowed_tools,omitempty"`
+	Description           string                     `json:"description,omitempty"`
+	Effort                string                     `json:"effort,omitempty"`
+	MaxConcurrentChildren int                        `json:"max_concurrent_children,omitempty"`
+	MaxIterations         int                        `json:"max_iterations,omitempty"`
+	MaxTokens             int                        `json:"max_tokens,omitempty"`
+	MemoryQuotaBytes      int                        `json:"memory_quota_bytes,omitempty"`
+	MemoryScopes          []string                   `json:"memory_scopes,omitempty"`
+	Model                 string                     `json:"model,omitempty"`
+	Models                map[string][]TierCandidate `json:"models,omitempty"`
+	Name                  string                     `json:"name,omitempty"`
+	Provider              string                     `json:"provider,omitempty"`
+	Providers             []string                   `json:"providers,omitempty"`
+	Skills                []string                   `json:"skills,omitempty"`
+	SystemPrompt          string                     `json:"system_prompt,omitempty"`
+	Tier                  string                     `json:"tier,omitempty"`
 }
 
 // Sign returns "sha256:" + the lowercase-hex SHA-256 of the canonical
@@ -163,21 +164,22 @@ func FromYAMLAgent(a *Agent) AgentContent {
 		return AgentContent{}
 	}
 	return AgentContent{
-		Name:             a.Name,
-		Description:      a.Description,
-		Provider:         a.Provider,
-		Model:            a.Model,
-		Tier:             a.Tier,
-		Effort:           a.Effort,
-		MaxTokens:        a.MaxTokens,
-		MaxIterations:    a.MaxIterations,
-		AllowedTools:     a.AllowedTools,
-		Skills:           a.Skills,
-		SystemPrompt:     a.SystemPrompt,
-		Providers:        a.Providers,
-		Models:           a.Models,
-		MemoryScopes:     a.MemoryScopes,
-		MemoryQuotaBytes: a.MemoryQuotaBytes,
+		Name:                  a.Name,
+		Description:           a.Description,
+		Provider:              a.Provider,
+		Model:                 a.Model,
+		Tier:                  a.Tier,
+		Effort:                a.Effort,
+		MaxTokens:             a.MaxTokens,
+		MaxIterations:         a.MaxIterations,
+		MaxConcurrentChildren: a.MaxConcurrentChildren,
+		AllowedTools:          a.AllowedTools,
+		Skills:                a.Skills,
+		SystemPrompt:          a.SystemPrompt,
+		Providers:             a.Providers,
+		Models:                a.Models,
+		MemoryScopes:          a.MemoryScopes,
+		MemoryQuotaBytes:      a.MemoryQuotaBytes,
 	}
 }
 
