@@ -81,6 +81,13 @@ func runAnthropicLogin(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 
+	// Print the disclaimer BEFORE doing any auth work so the operator
+	// sees the risk acknowledgement framing every time they re-run
+	// login (token refresh, version bumps, etc.). The env-var gate
+	// already serves as the formal opt-in; this is a visible reminder
+	// of what that opt-in means.
+	printOAuthDevDisclaimer(stdout)
+
 	pkce, err := oauthdev.NewPKCEPair()
 	if err != nil {
 		fmt.Fprintf(stderr, "login: PKCE generation failed: %v\n", err)
@@ -260,4 +267,44 @@ func openBrowser(rawURL string) error {
 		cmd = exec.Command("xdg-open", rawURL)
 	}
 	return cmd.Start()
+}
+
+// printOAuthDevDisclaimer writes the OAuth-dev risk acknowledgement
+// to stdout before the login flow proceeds. The env-var gate
+// LOOMCYCLE_ANTHROPIC_OAUTH_DEV_ENABLED=1 is the formal opt-in; this
+// disclaimer is the visible reminder of what the opt-in covers. Every
+// re-login (token refresh, version bump, etc.) re-prints it — the
+// risk doesn't go away after the first login.
+//
+// The text mirrors docs/PROVIDERS.md's "NO GUARANTEES" lead. Keep
+// the two in sync when one is updated.
+func printOAuthDevDisclaimer(w io.Writer) {
+	fmt.Fprintln(w, "")
+	fmt.Fprintln(w, "================================================================")
+	fmt.Fprintln(w, "  ⚠  loomcycle anthropic-oauth-dev  —  NO GUARANTEES")
+	fmt.Fprintln(w, "================================================================")
+	fmt.Fprintln(w, "")
+	fmt.Fprintln(w, "The Anthropic OAuth flow this provider uses is NOT an official")
+	fmt.Fprintln(w, "integration. It is the product of reverse-engineering done by")
+	fmt.Fprintln(w, "the Pi agent team (github.com/earendil-works/pi) and replicated")
+	fmt.Fprintln(w, "here by the loomcycle team. We do our best to mimic Claude Code's")
+	fmt.Fprintln(w, "wire shape so calls pass through Anthropic's subscription-billing")
+	fmt.Fprintln(w, "detection, but we CANNOT GUARANTEE this will continue to work.")
+	fmt.Fprintln(w, "")
+	fmt.Fprintln(w, "You are running this against YOUR OWN Claude Pro/Max subscription.")
+	fmt.Fprintln(w, "Anthropic's subscription terms historically restrict programmatic")
+	fmt.Fprintln(w, "use outside the official Anthropic SDK. YOU — the operator — are")
+	fmt.Fprintln(w, "solely responsible for any consequences with Anthropic if they")
+	fmt.Fprintln(w, "ever object to this use, including account flagging, rate-limiting,")
+	fmt.Fprintln(w, "or subscription revocation. loomcycle and its maintainers carry no")
+	fmt.Fprintln(w, "warranty, no liability, and provide no support guarantees for")
+	fmt.Fprintln(w, "this path. If your account is affected, the resolution is between")
+	fmt.Fprintln(w, "you and Anthropic; we cannot intervene.")
+	fmt.Fprintln(w, "")
+	fmt.Fprintln(w, "If you cannot accept these terms, abort now (Ctrl+C) and use the")
+	fmt.Fprintln(w, "production `anthropic` provider (API key) instead.")
+	fmt.Fprintln(w, "")
+	fmt.Fprintln(w, "See docs/PROVIDERS.md → `anthropic-oauth-dev` for full details.")
+	fmt.Fprintln(w, "================================================================")
+	fmt.Fprintln(w, "")
 }
