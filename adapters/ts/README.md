@@ -6,7 +6,7 @@ TypeScript client for the [loomcycle](https://github.com/denn-gubsky/loomcycle) 
 
 ## Status
 
-**v0.11.3** — 41 methods covering run streaming, agent metadata, transcript, pause/resume/state, snapshot lifecycle, memory admin, interruption resolve, hook registration, **v0.8.22 substrate admin (agentDef + skillDef)**, **v0.9.x n8n Phase 0 (listChannels + streamUserRunStates)**, **v0.9.x content_sha256**, **v0.9.x dynamic MCP server registration (mcpServerDef)**, **v0.10.3 Library v2 enumeration (listLibraryAgents/Skills/McpServers)**, **v0.11.0 LLM Gateway (llmChat + llmStream)**, and health.
+**v0.11.4** — 42 methods covering run streaming, agent metadata, transcript, pause/resume/state, snapshot lifecycle, memory admin, interruption resolve, hook registration, **v0.8.22 substrate admin (agentDef + skillDef)**, **v0.9.x n8n Phase 0 (listChannels + streamUserRunStates)**, **v0.9.x content_sha256**, **v0.9.x dynamic MCP server registration (mcpServerDef)**, **v0.10.3 Library v2 enumeration (listLibraryAgents/Skills/McpServers)**, **v0.11.0 LLM Gateway (llmChat + llmStream)**, **v0.11.4 OpenAI Embeddings (embeddings)**, and health.
 
 > Migrating from raw `fetch` against `/v1/*`? See **[docs/MIGRATING-FROM-HTTP.md](./docs/MIGRATING-FROM-HTTP.md)** for a side-by-side walkthrough.
 
@@ -25,6 +25,7 @@ TypeScript client for the [loomcycle](https://github.com/denn-gubsky/loomcycle) 
 - **First-run UX on the binary** (v0.11.1) — paired CLI commands `loomcycle init` (bootstrap config) + `loomcycle doctor` (health check) + auto-discovery of `~/.config/loomcycle/loomcycle.yaml`. No adapter changes; lockstep version bump only.
 - **Docker image + brew formula polish** (v0.11.2) — multi-arch image at `docker.io/denngubsky/loomcycle`; brew formula caveats refreshed to reference `loomcycle init` / `loomcycle doctor`; new `installation` Context.help topic. No adapter changes; lockstep version bump only.
 - **OpenAI Chat Completions compatibility shim** (v0.11.3) — new `POST /v1/chat/completions` endpoint serves OpenAI's exact wire shape; consumers using the OpenAI SDK can point at loomcycle by changing only base URL + auth token. `@loomcycle/client` consumers should still prefer `llmChat()` / `llmStream()` over the shim for richer typing (per-frame discriminated unions vs OpenAI's flat chunks). No adapter changes; lockstep version bump only.
+- **OpenAI Embeddings compatibility shim** (v0.11.4) — new `POST /v1/embeddings` endpoint serves OpenAI's Embeddings API shape. New `embeddings()` adapter method + four typed exports (`LLMEmbeddingsOptions`, `LLMEmbeddingsResponse`, `LLMEmbeddingItem`, `LLMEmbeddingsUsage`). Dispatches to the single configured `providers.Embedder` (the same instance Memory tool uses); RAG tools / vector DBs / LangChain `OpenAIEmbeddings` consumers point at loomcycle by changing only the base URL.
 
 ## Install
 

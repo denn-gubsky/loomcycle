@@ -1174,3 +1174,68 @@ export interface LLMChatStreamDelta {
   text?: string;          // for text_delta
   partial_json?: string;  // for input_json_delta
 }
+
+// ---- v0.11.4 OpenAI Embeddings compatibility shim ----
+//
+// Wraps POST /v1/embeddings. Dispatches to the single configured
+// `providers.Embedder` (the same instance Memory tool uses for
+// embed:true). No resolver path, no tier overlay, no streaming.
+//
+// Consumers using @loomcycle/client get richer typing here than
+// pointing the raw OpenAI SDK at /v1/embeddings — the response
+// shape is properly typed per encoding_format.
+
+/** Request body for `embeddings()`. */
+export interface LLMEmbeddingsOptions {
+  /** Consumer's requested model id (echoed in the response).
+   *  Loomcycle uses the single configured embedder regardless;
+   *  the field is informational for drop-in compatibility. */
+  model: string;
+
+  /** Text(s) to embed. v1 accepts string or string[]; tokenized
+   *  inputs (number arrays) are refused — send text. */
+  input: string | string[];
+
+  /** "float" (default) emits each vector as a JSON array of
+   *  numbers; "base64" packs each float32 little-endian then
+   *  base64-encodes (saves ~25% wire bytes on 1536-dim vectors). */
+  encoding_format?: "float" | "base64";
+
+  /** OpenAI's post-hoc dimension reduction parameter. Accepted-
+   *  but-ignored in v0.11.4 (the providers.Embedder interface
+   *  doesn't take a dimension parameter today). */
+  dimensions?: number;
+
+  /** OpenAI-standard opaque end-user identifier. Maps to
+   *  loomcycle's per-user quota tracking + audit log. */
+  user?: string;
+
+  /** Optional AbortSignal for caller-driven cancellation. */
+  signal?: AbortSignal;
+}
+
+/** Per-embedding entry in the response data array. */
+export interface LLMEmbeddingItem {
+  object: "embedding";
+  /** float[] when the request used encoding_format:"float"
+   *  (default); base64 string when encoding_format:"base64". */
+  embedding: number[] | string;
+  index: number;
+}
+
+/** Token-accounting payload. v0.11.4 leaves both fields at 0 — the
+ *  substrate's Embedder interface doesn't return per-call token
+ *  counts today. When that lands, the shim's translator populates
+ *  these automatically. */
+export interface LLMEmbeddingsUsage {
+  prompt_tokens: number;
+  total_tokens: number;
+}
+
+/** Response shape mirrors OpenAI's /v1/embeddings exactly. */
+export interface LLMEmbeddingsResponse {
+  object: "list";
+  data: LLMEmbeddingItem[];
+  model: string;
+  usage: LLMEmbeddingsUsage;
+}
