@@ -1084,20 +1084,16 @@ func main() {
 		heartbeatRunner.Start(bgCtx)
 	}
 
-	if cfg.Env.HeartbeatSweeperEnabled && storeIface != nil {
-		sweeper := heartbeat.New(storeIface, heartbeat.Config{
-			Interval:   cfg.Env.HeartbeatSweepInterval,
-			StaleAfter: cfg.Env.HeartbeatStaleAfter,
-		})
-		go sweeper.Run(bgCtx)
-	} else {
-		log.Printf("heartbeat: sweeper disabled (LOOMCYCLE_HEARTBEAT_SWEEPER=0 or no Store)")
-	}
-
 	// v0.12.0 multi-replica HA foundation. Activates only when the
 	// operator sets LOOMCYCLE_REPLICA_ID. openStore already guards
 	// against SQLite + cluster mode, so reaching here with a non-
 	// empty ReplicaID guarantees a Postgres store.
+	//
+	// advisoryLock is declared outside the cluster block so the
+	// sweeper launch sites below can pass it as nil in single-replica
+	// mode (no locking) or the real *AdvisoryLock in cluster mode
+	// (only one replica sweeps per tick). v0.12.4 Phase 5.
+	var advisoryLock *coord.AdvisoryLock
 	if cfg.Env.ReplicaID != "" {
 		pgStore, ok := storeIface.(*storepostgres.Store)
 		if !ok {
@@ -1180,40 +1176,96 @@ func main() {
 			}
 		}
 
-		log.Printf("coord: cluster mode active — replica_id=%s heartbeat=30s backplane=postgres-listen-notify user_quotas=db-backed cancel_ack_timeout=%s bus_fanout=on", cfg.Env.ReplicaID, ackTimeout)
+		// v0.12.4 Phase 5: advisory-lock helper + replicas TTL sweeper.
+		// AdvisoryLock gates the other sweepers below; ReplicasSweeper
+		// reaps dead replicas + closes Phases 2 and 3 crash-safety gaps.
+		advisoryLock = coord.NewAdvisoryLock(pgStore.Pool())
+		replicasSweeper := coord.NewReplicasSweeper(pgStore.Pool(), coord.ReplicasSweeperConfig{
+			Lock: advisoryLock,
+		})
+		go replicasSweeper.Run(bgCtx)
+
+		log.Printf("coord: cluster mode active — replica_id=%s heartbeat=30s backplane=postgres-listen-notify user_quotas=db-backed cancel_ack_timeout=%s bus_fanout=on singleton_sweepers=on", cfg.Env.ReplicaID, ackTimeout)
+	}
+
+	// Heartbeat sweeper — must run AFTER the cluster block so it can
+	// pick up the advisoryLock (v0.12.4 Phase 5). In single-replica
+	// mode advisoryLock stays nil and the sweeper's lock-gating branch
+	// is bypassed — behavior identical to v0.11.x.
+	if cfg.Env.HeartbeatSweeperEnabled && storeIface != nil {
+		hbCfg := heartbeat.Config{
+			Interval:   cfg.Env.HeartbeatSweepInterval,
+			StaleAfter: cfg.Env.HeartbeatStaleAfter,
+		}
+		// Only assign the interface field when we have a non-nil
+		// pointer — assigning a typed-nil *coord.AdvisoryLock to the
+		// interface would yield a non-nil interface value whose
+		// underlying pointer is nil, causing the sweeper's nil-check
+		// to incorrectly think a lock was wired.
+		if advisoryLock != nil {
+			hbCfg.AdvisoryLock = advisoryLock
+			hbCfg.AdvisoryLockKey = coord.LockKeyHeartbeatSweeper
+		}
+		sweeper := heartbeat.New(storeIface, hbCfg)
+		go sweeper.Run(bgCtx)
+	} else {
+		log.Printf("heartbeat: sweeper disabled (LOOMCYCLE_HEARTBEAT_SWEEPER=0 or no Store)")
 	}
 
 	// Memory tool TTL sweeper. Cheap periodic DELETE of expired rows.
 	// The store also filters expired entries at read time, so this
 	// goroutine only matters for keeping the table small over the
-	// long haul.
+	// long haul. v0.12.4: gated behind advisoryLock so only one
+	// replica per cluster sweeps per tick.
 	if cfg.Env.MemorySweepInterval > 0 && storeIface != nil {
-		go runMemorySweeper(bgCtx, storeIface, cfg.Env.MemorySweepInterval)
+		go runAdvisoryGatedSweeper(bgCtx, cfg.Env.MemorySweepInterval, advisoryLock, coord.LockKeyMemorySweeper, "memory",
+			func(ctx context.Context) {
+				swept, err := storeIface.MemorySweep(ctx)
+				if err != nil {
+					log.Printf("memory sweep: %v", err)
+					return
+				}
+				if swept > 0 {
+					log.Printf("memory sweep: deleted %d expired row(s)", swept)
+				}
+			})
 		log.Printf("memory: sweeper interval=%s", cfg.Env.MemorySweepInterval)
 	} else {
 		log.Printf("memory: sweeper disabled (LOOMCYCLE_MEMORY_SWEEP_MS=0 or no Store)")
 	}
 
 	// Channel tool TTL sweeper (v0.8.4). Same shape as MemorySweeper.
-	// Reads filter expired rows regardless, so the sweeper is purely
-	// for keeping the channel_messages table bounded.
 	if cfg.Env.ChannelsSweepInterval > 0 && storeIface != nil {
-		go runChannelsSweeper(bgCtx, storeIface, cfg.Env.ChannelsSweepInterval)
+		go runAdvisoryGatedSweeper(bgCtx, cfg.Env.ChannelsSweepInterval, advisoryLock, coord.LockKeyChannelsSweeper, "channels",
+			func(ctx context.Context) {
+				swept, err := storeIface.ChannelSweepExpired(ctx)
+				if err != nil {
+					log.Printf("channels sweep: %v", err)
+					return
+				}
+				if swept > 0 {
+					log.Printf("channels sweep: deleted %d expired row(s)", swept)
+				}
+			})
 		log.Printf("channels: sweeper interval=%s", cfg.Env.ChannelsSweepInterval)
 	} else if storeIface != nil {
 		log.Printf("channels: sweeper disabled (LOOMCYCLE_CHANNELS_SWEEP_MS=0)")
 	}
 
 	// v0.8.16 Interruption tool TTL sweeper. Marks pending rows
-	// whose expires_at < now as timed_out. Distinct from the
-	// in-process timeout path (bus.Wait's own timer fires + the
-	// tool calls InterruptFinish itself) — this sweeper catches
-	// rows orphaned by a process crash mid-block, so the inbox
-	// view doesn't keep showing dead interrupts as pending forever.
-	// Cadence reuses the channels sweeper's interval — both are
-	// "keep the substrate tables bounded" jobs at the same priority.
+	// whose expires_at < now as timed_out.
 	if cfg.Env.ChannelsSweepInterval > 0 && storeIface != nil {
-		go runInterruptsSweeper(bgCtx, storeIface, cfg.Env.ChannelsSweepInterval)
+		go runAdvisoryGatedSweeper(bgCtx, cfg.Env.ChannelsSweepInterval, advisoryLock, coord.LockKeyInterruptsSweeper, "interrupts",
+			func(ctx context.Context) {
+				swept, err := storeIface.InterruptSweepExpired(ctx)
+				if err != nil {
+					log.Printf("interrupts sweep: %v", err)
+					return
+				}
+				if swept > 0 {
+					log.Printf("interrupts sweep: timed_out %d expired row(s)", swept)
+				}
+			})
 		log.Printf("interrupts: sweeper interval=%s", cfg.Env.ChannelsSweepInterval)
 	}
 
@@ -1282,8 +1334,19 @@ func main() {
 		log.Printf("metrics: sampler enabled (interval=%s, system=%v)",
 			cfg.Env.MetricsSampleInterval, cfg.Env.MetricsCollectSystem)
 		if cfg.Env.MetricsSweepInterval > 0 && cfg.Env.MetricsRetentionDays > 0 {
-			go runMetricsSweeper(bgCtx, storeIface,
-				cfg.Env.MetricsRetentionDays, cfg.Env.MetricsSweepInterval)
+			retentionDays := cfg.Env.MetricsRetentionDays
+			go runAdvisoryGatedSweeper(bgCtx, cfg.Env.MetricsSweepInterval, advisoryLock, coord.LockKeyMetricsSweeper, "metrics",
+				func(ctx context.Context) {
+					cutoff := time.Now().Add(-time.Duration(retentionDays) * 24 * time.Hour)
+					swept, err := storeIface.MetricsSweep(ctx, cutoff)
+					if err != nil {
+						log.Printf("metrics sweep: %v", err)
+						return
+					}
+					if swept > 0 {
+						log.Printf("metrics sweep: deleted %d expired row(s)", swept)
+					}
+				})
 			log.Printf("metrics: sweeper enabled (retention=%dd, interval=%s)",
 				cfg.Env.MetricsRetentionDays, cfg.Env.MetricsSweepInterval)
 		} else {
@@ -1331,7 +1394,17 @@ func main() {
 	// `register_agent` MCP tool simply have an empty table the sweeper
 	// passes over with zero rows deleted.
 	if cfg.Env.DynamicAgentSweepInterval > 0 {
-		lcmcp.RunDynamicAgentSweeper(bgCtx, storeIface, cfg.Env.DynamicAgentSweepInterval, log.Printf)
+		go runAdvisoryGatedSweeper(bgCtx, cfg.Env.DynamicAgentSweepInterval, advisoryLock, coord.LockKeyDynamicAgentSweeper, "dynamic_agents",
+			func(ctx context.Context) {
+				n, err := storeIface.DynamicAgentSweep(ctx)
+				if err != nil {
+					log.Printf("dynamic_agents sweep: %v", err)
+					return
+				}
+				if n > 0 {
+					log.Printf("dynamic_agents sweep: deleted %d expired row(s)", n)
+				}
+			})
 		log.Printf("dynamic_agents: sweeper enabled (interval=%s)", cfg.Env.DynamicAgentSweepInterval)
 	}
 	if mcpMode {
@@ -1871,11 +1944,25 @@ func convertTiers(in map[string][]config.TierCandidate) map[string][]resolve.Can
 	return out
 }
 
-// runMemorySweeper periodically deletes Memory rows whose TTL has
-// expired. Read paths in the store filter expired rows out anyway so
-// agents never see stale values; the sweeper just keeps the table
-// bounded over time.
-func runMemorySweeper(ctx context.Context, s store.Store, interval time.Duration) {
+// runAdvisoryGatedSweeper drives a per-tick fn behind an optional
+// Postgres advisory lock. v0.12.4 Phase 5 — every TTL sweeper goes
+// through this helper. When lock is nil (single-replica mode), tick
+// runs unconditionally. When lock is set (cluster mode), only the
+// replica that wins pg_try_advisory_lock for this tick actually runs
+// the body. Lost-race ticks are silent.
+//
+// Replaces the v0.8.x runMemorySweeper / runChannelsSweeper /
+// runInterruptsSweeper / runMetricsSweeper functions which all had
+// the same ticker boilerplate. Each per-tick body is now a closure
+// passed at call site.
+func runAdvisoryGatedSweeper(
+	ctx context.Context,
+	interval time.Duration,
+	lock *coord.AdvisoryLock,
+	lockKey int64,
+	name string,
+	tick func(ctx context.Context),
+) {
 	t := time.NewTicker(interval)
 	defer t.Stop()
 	for {
@@ -1883,89 +1970,19 @@ func runMemorySweeper(ctx context.Context, s store.Store, interval time.Duration
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			swept, err := s.MemorySweep(ctx)
-			if err != nil {
-				log.Printf("memory sweep: %v", err)
+			if lock == nil {
+				tick(ctx)
 				continue
 			}
-			if swept > 0 {
-				log.Printf("memory sweep: deleted %d expired row(s)", swept)
-			}
-		}
-	}
-}
-
-// runInterruptsSweeper is the v0.8.16 mirror of runChannelsSweeper
-// for the interrupts table. Transitions pending rows whose
-// expires_at < now to status=timed_out. Distinct from the in-process
-// timeout path (bus.Wait's own timer + the tool's InterruptFinish
-// call) — this catches rows orphaned by a process crash mid-block
-// so the user inbox doesn't show ghost-pending interrupts forever.
-func runInterruptsSweeper(ctx context.Context, s store.Store, interval time.Duration) {
-	t := time.NewTicker(interval)
-	defer t.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-t.C:
-			swept, err := s.InterruptSweepExpired(ctx)
+			acquired, err := lock.TryRun(ctx, lockKey, func(ctx context.Context) error {
+				tick(ctx)
+				return nil
+			})
 			if err != nil {
-				log.Printf("interrupts sweep: %v", err)
+				log.Printf("%s sweeper: advisory lock infra error: %v", name, err)
 				continue
 			}
-			if swept > 0 {
-				log.Printf("interrupts sweep: timed_out %d expired row(s)", swept)
-			}
-		}
-	}
-}
-
-// runChannelsSweeper is the v0.8.4 mirror of runMemorySweeper for
-// the channel_messages table. Same shape — read paths filter
-// expired rows regardless, so the sweeper is bounded-table cleanup.
-func runChannelsSweeper(ctx context.Context, s store.Store, interval time.Duration) {
-	t := time.NewTicker(interval)
-	defer t.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-t.C:
-			swept, err := s.ChannelSweepExpired(ctx)
-			if err != nil {
-				log.Printf("channels sweep: %v", err)
-				continue
-			}
-			if swept > 0 {
-				log.Printf("channels sweep: deleted %d expired row(s)", swept)
-			}
-		}
-	}
-}
-
-// runMetricsSweeper is the v0.8.x mirror of runChannelsSweeper for
-// the process_samples table. Deletes rows whose sampled_at <
-// (now - retentionDays). The retention guarantee is bounded-time,
-// not bounded-rows; operators on slow disks should set
-// MetricsRetentionDays to a smaller value if disk pressure shows up.
-func runMetricsSweeper(ctx context.Context, s store.Store, retentionDays int, interval time.Duration) {
-	t := time.NewTicker(interval)
-	defer t.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-t.C:
-			cutoff := time.Now().Add(-time.Duration(retentionDays) * 24 * time.Hour)
-			swept, err := s.MetricsSweep(ctx, cutoff)
-			if err != nil {
-				log.Printf("metrics sweep: %v", err)
-				continue
-			}
-			if swept > 0 {
-				log.Printf("metrics sweep: deleted %d expired row(s)", swept)
-			}
+			_ = acquired // silent lost race
 		}
 	}
 }

@@ -43,6 +43,29 @@ type Config struct {
 	// successful sweeps with zero rows are logged only periodically
 	// (the runtime is fine; chattering would just be noise).
 	Logger func(format string, args ...any)
+
+	// AdvisoryLock is the v0.12.4 Phase 5 singleton-sweeper gate.
+	// When set, each tick acquires the lock before calling
+	// sweepOnce — only one replica per cluster runs the sweep per
+	// tick. Nil = single-replica mode (every replica sweeps; SQL is
+	// idempotent so concurrent sweeps stay correct, just noisy).
+	//
+	// Interface-typed (not *coord.AdvisoryLock concretely) so this
+	// package stays free of an internal/coord import. The interface
+	// declares only the surface the sweeper needs.
+	AdvisoryLock AdvisoryLocker
+
+	// AdvisoryLockKey is the lock-key int64 (typically coord.LockKeyHeartbeatSweeper).
+	// Only consulted when AdvisoryLock is non-nil.
+	AdvisoryLockKey int64
+}
+
+// AdvisoryLocker is the minimum surface the sweeper needs from
+// internal/coord.AdvisoryLock. Defined here so internal/heartbeat
+// stays free of the internal/coord import. *coord.AdvisoryLock
+// satisfies it implicitly.
+type AdvisoryLocker interface {
+	TryRun(ctx context.Context, lockKey int64, fn func(ctx context.Context) error) (bool, error)
 }
 
 const (
@@ -57,6 +80,8 @@ type Sweeper struct {
 	interval   time.Duration
 	staleAfter time.Duration
 	logf       func(format string, args ...any)
+	lock       AdvisoryLocker
+	lockKey    int64
 }
 
 // New constructs a Sweeper with the supplied tuning. A nil store means
@@ -77,6 +102,8 @@ func New(st store.Store, cfg Config) *Sweeper {
 		interval:   cfg.Interval,
 		staleAfter: cfg.StaleAfter,
 		logf:       cfg.Logger,
+		lock:       cfg.AdvisoryLock,
+		lockKey:    cfg.AdvisoryLockKey,
 	}
 }
 
@@ -108,7 +135,35 @@ func (s *Sweeper) Run(ctx context.Context) {
 			s.logf("heartbeat: sweeper stopping (ctx done)")
 			return
 		case <-t.C:
-			n, err := s.sweepOnce(ctx)
+			// v0.12.4 Phase 5: when an AdvisoryLock is wired (cluster
+			// mode), gate the sweep behind the lock so only one
+			// replica per tick actually runs the UPDATE. Single-
+			// replica path (lock == nil) sweeps unconditionally.
+			var (
+				n   int
+				err error
+			)
+			if s.lock != nil {
+				acquired, lockErr := s.lock.TryRun(ctx, s.lockKey, func(ctx context.Context) error {
+					// Capture into outer n + err directly. We deliberately
+					// return nil from fn so TryRun's err signals ONLY
+					// infra failures (pool acquire, pg_try_advisory_lock
+					// failure), keeping the sweep-failed log line below
+					// distinct from the advisory-lock-failed log line.
+					n, err = s.sweepOnce(ctx)
+					return nil
+				})
+				if lockErr != nil {
+					s.logf("heartbeat: advisory lock infra error: %v", lockErr)
+					continue
+				}
+				if !acquired {
+					// Another replica is running this tick — silent.
+					continue
+				}
+			} else {
+				n, err = s.sweepOnce(ctx)
+			}
 			if err != nil {
 				s.logf("heartbeat: sweep failed: %v", err)
 				continue

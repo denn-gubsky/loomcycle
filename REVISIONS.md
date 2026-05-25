@@ -8,6 +8,40 @@ For pre-v0.4 history (single-tool runtime, library milestone, security patch), s
 
 ---
 
+## What's in v0.12.4
+
+**Phase 5 of the v1.0 multi-replica HA capstone — singleton sweepers via Postgres advisory locks + a new replicas TTL sweeper that closes Phase 2 + Phase 3 crash-safety gaps.** Single-replica mode (`LOOMCYCLE_REPLICA_ID` unset) keeps the v0.11.x behavior **byte-identical** — every sweeper runs unconditionally as before.
+
+### What ships
+
+1. **`coord.AdvisoryLock`** — `TryRun(ctx, key, fn) (acquired bool, err error)` wrapping `pg_try_advisory_lock`. Acquires one `*pgxpool.Conn` (NOT `pool.Exec`), holds it through `fn`, releases via `pg_advisory_unlock`. Crash-safe: process death closes the connection and Postgres auto-releases the lock.
+
+2. **FNV-1a 64-bit lock keys** (`LockKeyHeartbeatSweeper`, `LockKeyMemorySweeper`, `LockKeyChannelsSweeper`, `LockKeyInterruptsSweeper`, `LockKeyMetricsSweeper`, `LockKeyDynamicAgentSweeper`, `LockKeyReplicasSweeper`). Stable across builds, distinct per sweeper.
+
+3. **`coord.ReplicasSweeper`** — runs every 60s, reaps `replicas` rows with `last_heartbeat_at < now() - 90s`. For each dead replica: marks owned `runs` failed (closes Phase 3 gap), decrements `user_quotas` per leaked user with `GREATEST(0, …)` clamp (closes Phase 2 gap), deletes the replica row.
+
+4. **`heartbeat.Sweeper` cluster-mode extension** — new `AdvisoryLock` + `AdvisoryLockKey` fields on `Config`. Interface declared in `internal/heartbeat` so the package stays free of `internal/coord` import.
+
+5. **`runAdvisoryGatedSweeper` helper in main.go** — replaces the v0.8.x sweeper-launch boilerplate. Cluster mode: only the lock-holder sweeps per tick. Single-replica: lock nil, every tick runs.
+
+6. **`lcmcp.RunDynamicAgentSweeper` deleted** — replaced inline with `runAdvisoryGatedSweeper`.
+
+### Operator impact
+
+| Mode | Before v0.12.4 | After v0.12.4 |
+|---|---|---|
+| Single-replica | Each sweeper runs locally on its own cadence | Identical |
+| 2-replica cluster | Each replica's 6 sweepers run their own UPDATEs every tick → N× log noise | Only one replica sweeps per tick → clean logs + half the DB pressure |
+| Crash recovery | Dead replicas leaked DB resources | Replicas TTL sweeper reaps within ~90s |
+
+### Test coverage
+
+- `advisory_lock_test.go` — FNV key stability + uniqueness, single-acquire + release lifecycle, two-pool contention (only one acquires), fn-error propagation + lock-release on error, cancelled-context handling.
+- `replicas_sweeper_test.go` — stale replica reap (marks runs failed, decrements quota, deletes row), fresh replica skip, GREATEST(0,...) underflow clamp, ctx-cancel exit.
+- All existing sweeper tests continue green; `internal/heartbeat/sweeper_test.go` unchanged (nil AdvisoryLock → v0.11.x path).
+
+---
+
 ## What's in v0.12.3
 
 **Phase 4 of the v1.0 multi-replica HA capstone — cluster-wide pause/resume + bus fanout.** Single-replica mode (`LOOMCYCLE_REPLICA_ID` unset) keeps the v0.11.x behavior byte-identical: no DB-state reads, no backplane traffic.
