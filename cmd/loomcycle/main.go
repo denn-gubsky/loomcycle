@@ -47,6 +47,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/pause"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/providers/anthropic"
+	anthropic_oauth_dev "github.com/denn-gubsky/loomcycle/internal/providers/anthropic_oauth_dev"
 	"github.com/denn-gubsky/loomcycle/internal/providers/deepseek"
 	"github.com/denn-gubsky/loomcycle/internal/providers/gemini"
 	"github.com/denn-gubsky/loomcycle/internal/providers/ollama"
@@ -249,6 +250,12 @@ func main() {
 			os.Exit(cli.RunValidate(os.Args[2:], os.Stdout, os.Stderr))
 		case "agents":
 			os.Exit(cli.RunAgents(os.Args[2:], os.Stdout, os.Stderr))
+		case "anthropic":
+			// v0.11.9 — OAuth-dev subcommands (login / status / logout).
+			// Gated by LOOMCYCLE_ANTHROPIC_OAUTH_DEV_ENABLED=1 inside
+			// the subcommand handler; without the env var, the
+			// subcommand prints a clear error pointing at docs.
+			os.Exit(cli.RunAnthropic(os.Args[2:], os.Stdout, os.Stderr))
 		case "health":
 			os.Exit(cli.RunHealth(os.Args[2:], os.Stdout, os.Stderr))
 		case "migrate":
@@ -1339,6 +1346,15 @@ func main() {
 	if heartbeatRunner != nil {
 		heartbeatRunner.Stop()
 	}
+	// v0.11.9 — stop the OAuth-dev refresher's background goroutine
+	// before the process exits so an in-flight refresh HTTP call
+	// either completes + persists OR cleanly aborts. Without this,
+	// the OS hard-kills the goroutine and a partially-rotated token
+	// could be lost (the on-disk token is atomic write, but the
+	// fresh access token might never make it to the persist step).
+	if pr.anthropicOAuthRefresher != nil {
+		pr.anthropicOAuthRefresher.Stop()
+	}
 	if grpcSrv != nil {
 		grpcSrv.GracefulStop()
 	}
@@ -1415,6 +1431,12 @@ type providerResolver struct {
 	ollamaLocal providers.Provider
 	deepseek    providers.Provider
 	gemini      providers.Provider
+	// v0.11.9 OAuth-dev provider. Registered only when
+	// LOOMCYCLE_ANTHROPIC_OAUTH_DEV_ENABLED=1 AND a token file exists.
+	// nil otherwise — Get("anthropic-oauth-dev") returns a clear error
+	// pointing at `loomcycle anthropic login`.
+	anthropicOAuthDev       providers.Provider
+	anthropicOAuthRefresher *anthropic_oauth_dev.Refresher
 }
 
 // buildEmbedder turns cfg.Memory.Embedder into a constructed
@@ -1513,6 +1535,35 @@ func newProviderResolver(cfg *config.Config) *providerResolver {
 	if cfg.Env.GeminiAPIKey != "" {
 		pr.gemini = gemini.New(cfg.Env.GeminiAPIKey, cfg.Env.GeminiBaseURL, streamOpts, nil)
 	}
+
+	// v0.11.9 — anthropic-oauth-dev. Two gates: env var + tokens on
+	// disk. Without either, the provider is absent from the resolver
+	// matrix and any agent yaml that pins `provider: anthropic-oauth-dev`
+	// fails resolution at request time with a clear error.
+	if os.Getenv(anthropic_oauth_dev.EnvEnabled) == "1" {
+		storePath, pathErr := anthropic_oauth_dev.DefaultTokenStorePath()
+		switch {
+		case pathErr != nil:
+			log.Printf("anthropic-oauth-dev: not registered — cannot resolve config dir: %v", pathErr)
+		default:
+			store := anthropic_oauth_dev.NewTokenStore(storePath)
+			if _, loadErr := store.Load(); loadErr != nil {
+				log.Printf("anthropic-oauth-dev: env var set but no tokens at %s — run `loomcycle anthropic login` to authorize", storePath)
+			} else {
+				refresher := anthropic_oauth_dev.NewRefresher(store, anthropic_oauth_dev.ExchangeOptions{}, log.Printf)
+				refresher.Start(context.Background())
+				pr.anthropicOAuthRefresher = refresher
+				pr.anthropicOAuthDev = anthropic_oauth_dev.New(
+					refresher, streamOpts, anthropic_oauth_dev.ResolveClaudeCodeVersion(), nil,
+				)
+				log.Printf("anthropic-oauth-dev: registered (token expires %s; user-agent=claude-cli/%s)",
+					refresher.Token().ExpiresAt.Format(time.RFC3339),
+					anthropic_oauth_dev.ResolveClaudeCodeVersion())
+				log.Printf("anthropic-oauth-dev: WARNING — reverse-engineered OAuth; reverse-engineered subscription-billing path; risk of account flag/revocation; research/dev use only (see docs/PROVIDERS.md)")
+			}
+		}
+	}
+
 	return pr
 }
 
@@ -1548,6 +1599,11 @@ func (p *providerResolver) Get(id string) (providers.Provider, error) {
 			return nil, fmt.Errorf("gemini provider not configured (set GEMINI_API_KEY)")
 		}
 		return p.gemini, nil
+	case "anthropic-oauth-dev":
+		if p.anthropicOAuthDev == nil {
+			return nil, fmt.Errorf("anthropic-oauth-dev not registered (set LOOMCYCLE_ANTHROPIC_OAUTH_DEV_ENABLED=1 + run `loomcycle anthropic login`)")
+		}
+		return p.anthropicOAuthDev, nil
 	default:
 		return nil, fmt.Errorf("unknown provider %q", id)
 	}

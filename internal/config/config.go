@@ -2286,6 +2286,11 @@ var validProviderIDs = map[string]bool{
 	"ollama":       true, // hosted ollama.com (Bearer auth)
 	"ollama-local": true, // local-network Ollama (no auth)
 	"gemini":       true,
+	// v0.11.9 — opt-in OAuth-dev provider. config-load accepts the ID;
+	// the resolver returns a clear "not registered" error at request
+	// time if LOOMCYCLE_ANTHROPIC_OAUTH_DEV_ENABLED=1 isn't set or no
+	// token file exists. See docs/PROVIDERS.md.
+	"anthropic-oauth-dev": true,
 }
 
 // validTierNames is the closed set of tier names. Operators choose
