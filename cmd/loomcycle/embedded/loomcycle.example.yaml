@@ -777,3 +777,28 @@ cache:
 #       key: "voice"
 #       value: "professional, concise, no emojis"
 #       embed: true
+
+# ─── v0.11.9 — Anthropic OAuth-dev provider (research/dev only) ──────
+# Subscription-billed Anthropic provider via reverse-engineered OAuth.
+# OPT-IN: set LOOMCYCLE_ANTHROPIC_OAUTH_DEV_ENABLED=1 + run
+# `loomcycle anthropic login` to authorize. NOT for production
+# deployment. See docs/PROVIDERS.md for the full risk acknowledgement.
+#
+# Example research tier — uses subscription billing first, falls back
+# to API-key Anthropic when MAX quota is exhausted:
+#
+# user_tiers:
+#   research:
+#     provider_priority: [anthropic-oauth-dev, anthropic]
+#     tiers:
+#       low:    [{provider: anthropic-oauth-dev, model: claude-haiku-4-5-20251001}]
+#       middle: [{provider: anthropic-oauth-dev, model: claude-sonnet-4-6}]
+#       high:
+#         - {provider: anthropic-oauth-dev, model: claude-sonnet-4-6}
+#         - {provider: anthropic, model: claude-sonnet-4-6}  # API-key fallback
+#     fallback_on_error: true
+#
+# All loomcycle tools (Memory, Channel, Agent, etc.) are admissible
+# under anthropic-oauth-dev — they're exposed under the
+# mcp__loomcycle__* wire mask so Anthropic's subscription-billing
+# layer treats them as if they came from an MCP server.

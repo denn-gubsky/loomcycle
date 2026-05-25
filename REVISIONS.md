@@ -8,6 +8,76 @@ For pre-v0.4 history (single-tool runtime, library milestone, security patch), s
 
 ---
 
+## What's in v0.11.9
+
+Anthropic OAuth-dev provider — opt-in, research/dev-only path that authenticates against the operator's Claude Pro/Max subscription via reverse-engineered OAuth (Pi's `pi-ai` package is the reference; github.com/earendil-works/pi, 51K stars). Strategic shift: research workloads that burn through API credits faster than the operator's budget can absorb (self-evolution iteration cycles cost $750-$3,750 at API-key rates per 100 iterations) move to subscription billing without changing the production posture for paying customers. RFC at `doc-internal/rfcs/anthropic-oauth-dev.md` (locked 2026-05-19) documents the full design + risk acknowledgement.
+
+### What ships
+
+**New `anthropic-oauth-dev` provider** in `internal/providers/anthropic_oauth_dev/` — separate from the production `internal/providers/anthropic/`. Two layers wrap the existing Anthropic driver:
+
+1. **HTTP transport** (`oauthTransport` in `driver.go`): strips `x-api-key`, adds `Authorization: Bearer <current access token>` (sourced from the background refresher), appends `claude-code-20250219,oauth-2025-04-20` to `anthropic-beta`, sets `user-agent: claude-cli/<version>` (pinned at `2.1.75`; override via `LOOMCYCLE_CLAUDE_CODE_VERSION`).
+2. **loomcycle-mask** (`loomcycle_mask.go`): bidirectional name transformation. Outbound — loomcycle-only built-ins (Memory / Channel / Agent / AgentDef / SkillDef / MCPServerDef / Evaluation / Interruption / Context / HTTP) get renamed to `mcp__loomcycle__<name>` so Anthropic's subscription-billing layer sees them as MCP tools. Inbound — `tool_use` events get the names reversed before the loop dispatches, so in-process tool ACLs + ctx propagation work unchanged. The 10-tool Claude-Code canonical overlap (Read / Write / Edit / Bash / Grep / Glob / NotebookEdit / WebFetch / WebSearch / Skill) and real `mcp__*` MCP tools pass through untouched.
+
+**OAuth flow** (`oauth.go`): PKCE S256 challenge generation, localhost callback server on `127.0.0.1:53692` (configurable via `LOOMCYCLE_ANTHROPIC_OAUTH_CALLBACK_PORT`), token exchange + refresh against `platform.claude.com/v1/oauth/token`.
+
+**Token persistence** (`tokens.go`): atomic write-to-tempfile + rename + chmod 0600 enforcement on `~/.config/loomcycle/anthropic-oauth.json`. `VerifyPermissions()` helper warns when on-disk mode drifts wider than 0600.
+
+**Background refresh** (`refresh.go`): 30-second tick; rotates the access token 5 minutes before expiry; single-flight via mutex. RefreshNow() forces immediate refresh from the in-line 401-retry path in the HTTP transport.
+
+**CLI subcommands** in `internal/cli/anthropic.go`:
+- `loomcycle anthropic login` (optionally `--manual`) — opens browser, runs PKCE flow, persists tokens.
+- `loomcycle anthropic status` — prints token path, expires_at, scope, obtainedAt, permission-drift warnings.
+- `loomcycle anthropic logout` — deletes the token file (idempotent).
+
+All three gated on `LOOMCYCLE_ANTHROPIC_OAUTH_DEV_ENABLED=1` — without the env var, the subcommands refuse with a clear error pointing at docs.
+
+**Provider registration** in `cmd/loomcycle/main.go` is double-gated (env var AND token file exists). Boot logs a registration line with the access-token expiry + a prominent WARNING line about TOS gray zone / account-revocation risk.
+
+**Resolver dispatch** — `anthropic-oauth-dev` is added to `validProviderIDs`; per-agent yaml `provider: anthropic-oauth-dev` resolves through the standard resolver chain.
+
+**Documentation** — new `docs/PROVIDERS.md` (300+ lines) covers: when to use OAuth-dev vs API-key, prerequisites, login walkthrough, status/logout, agent config examples (single-tier + research-tier with fallback), full risk acknowledgement, drift-detection procedure, env-var override for self-patching, architectural overview, multi-replica-HA non-support.
+
+**Example yaml** — `loomcycle.example.yaml` gains a commented-out research-tier example showing subscription-first / API-key-fallback chain.
+
+### What's deferred to v0.11.10
+
+The RFC's PR 4 (stealth-mode parity) — open questions that need live data to resolve:
+- Pi-equivalent system-prompt adaptation (does Pi prepend a Claude-Code-shaped system prompt? What's the canonical shape?)
+- Cache-control breakpoint rules specific to OAuth mode
+- Required minimum tool list (does Anthropic require Read+Bash to always be present in every request?)
+- MCP-tool schema audit (verify the v0.8.10 Gemini sanitizer's MCP schema handling doesn't need OAuth-dev-specific adjustments)
+- Tool-name canonicalization wiring (the `CanonicalizeToolName` helper is in `canonical.go` but not yet wired into outbound request building)
+
+v0.11.10 will land these as a focused follow-up once the v0.11.9 OAuth shell has been operator-validated against a real MAX subscription.
+
+### Architectural decisions
+
+- **Separate package**, not a flag on the existing `anthropic` driver. Operator clarity wins over DRY — `anthropic-oauth-dev` in any yaml file unambiguously communicates dev/research mode.
+- **Wrap the production driver via a transport + mask layer**, don't fork it. ~400 LOC of new code instead of ~600 LOC of cloned-and-modified code. The OAuth-dev path inherits every Messages API improvement the production driver gets.
+- **Mask the loomcycle-only built-ins, don't refuse them.** The RFC's original posture (refuse Memory / Channel / Agent under OAuth) would have defeated the feature's reason for existing — self-evolution + agentic-team research are exactly the workloads that need those tools. Pi (51K stars) operates with full tool flexibility under OAuth; Claude Code itself ships unrestricted MCP support. The wire pattern that matters is "name looks like Claude Code would send it"; masking achieves that without restriction.
+- **Single-operator, single-machine.** No multi-replica token sync, no server-side mount support. Multi-tenant deployments must use API-key Anthropic. Enforced by the design (tokens in `~/.config/loomcycle/`), not by a runtime check.
+
+### Wire-compatibility notes
+
+- New provider ID is additive. Existing agent yaml configs are unaffected.
+- New CLI subcommand is additive. Existing subcommands unchanged.
+- `validProviderIDs` gains one entry; no existing entries change.
+- `@loomcycle/client` stays at 0.11.5 (no adapter changes — OAuth-dev is provider-internal).
+- Web UI version unchanged (no UI surface for OAuth-dev — RFC explicit non-goal).
+
+### Risk acknowledgement
+
+Operators enabling `LOOMCYCLE_ANTHROPIC_OAUTH_DEV_ENABLED=1` accept:
+- The reverse-engineered OAuth flow is not officially endorsed by Anthropic.
+- Anthropic's subscription terms historically restrict programmatic use outside their SDK.
+- Account flag/revocation risk if Anthropic's detection systems trigger.
+- Auth-surface drift exposure (Pi's `client_id` could be rotated or invalidated at any time).
+
+These warnings appear in the CLI subcommand output, the boot log line, `docs/PROVIDERS.md`, this REVISIONS entry, and the README — visibility is part of the opt-in surface.
+
+---
+
 ## What's in v0.11.8
 
 Multi-agent fan-out. Formalizes the `Agent.parallel_spawn` op + per-agent `max_concurrent_children` cap — the locked v0.9.x backlog item from `langchain-comparison.md` Tier A (also a `doc-internal/PLAN.md` line 81 entry). JobEmber's job-searcher agent has been doing sequential sub-agent spawns in production for months; v0.11.8 gives the model a first-class API to fan out concurrently without managing its own goroutine analogue via tool-use ordering.
