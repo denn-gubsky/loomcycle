@@ -1,6 +1,6 @@
 ---
 name: openai-compat
-description: "POST /v1/chat/completions — drop-in OpenAI Chat Completions wire shape over loomcycle's LLM gateway."
+description: "Drop-in OpenAI SDK compatibility: POST /v1/chat/completions (v0.11.3) and POST /v1/embeddings (v0.11.4) over loomcycle's gateway."
 ---
 Loomcycle v0.11.3 ships an OpenAI Chat Completions compatibility shim
 at `POST /v1/chat/completions`. Same wire shape as OpenAI's hosted
@@ -142,10 +142,89 @@ OTEL spans (when configured) carry the same attributes — operators
 graphing per-provider / per-user metrics see openai-compat calls
 alongside native gateway calls under one observability surface.
 
+## Embeddings (v0.11.4)
+
+`POST /v1/embeddings` ships the same drop-in compatibility for the
+OpenAI Embeddings API — every RAG tool, vector DB integration,
+LangChain `OpenAIEmbeddings` consumer, and "use OpenAI embeddings"
+tutorial works by changing only the base URL.
+
+Dispatches to the single configured `providers.Embedder` (the same
+instance Memory tool uses internally for `embed:true`). No resolver
+path — loomcycle has one embedder per instance per the v0.9.0 RFC.
+
+### Python (OpenAI SDK)
+
+```python
+from openai import OpenAI
+client = OpenAI(
+    base_url="http://127.0.0.1:8787/v1",
+    api_key="<your-LOOMCYCLE_AUTH_TOKEN>",
+)
+resp = client.embeddings.create(
+    model="text-embedding-3-small",
+    input=["hello", "world"],
+)
+print(resp.data[0].embedding)  # [0.1, 0.2, ...]
+```
+
+### TypeScript (OpenAI SDK)
+
+```typescript
+import OpenAI from "openai";
+const client = new OpenAI({ baseURL: "http://127.0.0.1:8787/v1", apiKey: token });
+const resp = await client.embeddings.create({
+  model: "text-embedding-3-small",
+  input: ["hello", "world"],
+  encoding_format: "base64",  // saves ~25% wire bytes
+});
+```
+
+### What's translated
+
+**Request:**
+- `input` polymorphic: string OR string[]. Tokenized inputs
+  (number arrays) refused — loomcycle's substrate embedders accept
+  text only.
+- `model` pass-through; echoed in the response for drop-in
+  compatibility. Loomcycle dispatches to the configured embedder
+  regardless of what `model` was requested. The audit log records
+  both requested + served so operators can spot drift.
+- `encoding_format`: `"float"` (default) emits each vector as a
+  JSON array of numbers; `"base64"` packs each float32 little-
+  endian then base64-encodes per OpenAI spec.
+- `dimensions`: accepted-but-ignored in v0.11.4 (the
+  `providers.Embedder` interface doesn't take a dimension
+  parameter today). Lands when the substrate grows it.
+- `user`: maps onto loomcycle's per-user quota tracking + audit.
+
+**Response:**
+- `usage.prompt_tokens` and `usage.total_tokens` are 0 in v0.11.4
+  — the substrate's Embedder interface doesn't return per-call
+  token counts. Operators wanting precise token accounting can
+  use the providers' native APIs.
+
+### When the operator hasn't configured an embedder
+
+`POST /v1/embeddings` returns HTTP 503 with:
+
+```
+{"code":"embedder_not_configured","error":"no embedder configured; set memory.embedder.{provider,model} in loomcycle.yaml"}
+```
+
+This matches the substrate's "single embedder per instance"
+posture — there's nothing to dispatch to until the yaml block is
+filled in. See `voyage-embedder`, `vector-memory` for embedder
+config + storage choices.
+
 ## Related topics
 
 - `llm-gateway` — native loomcycle gateway endpoint (richer wire
   shape: Anthropic-style content blocks + named SSE events).
+- `voyage-embedder` — Anthropic-blessed embedder via Voyage AI;
+  one of the three embedders the substrate supports today.
+- `vector-memory` — Vector Memory architecture; how embeddings
+  feed the Memory tool's `embed:true` + `search` flow.
 - `installation` — install paths to get loomcycle running.
 - `fairness` — per-user concurrency quota policy.
 - `observability` — OTEL setup.

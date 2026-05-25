@@ -8,6 +8,137 @@ For pre-v0.4 history (single-tool runtime, library milestone, security patch), s
 
 ---
 
+## What's in v0.11.4
+
+OpenAI Embeddings compatibility shim. Closes the OpenAI-ecosystem story v0.11.3 started. New `POST /v1/embeddings` endpoint translates OpenAI's wire shape onto loomcycle's single configured embedder — every RAG tool / vector DB integration / LangChain `OpenAIEmbeddings` consumer / "use OpenAI embeddings" tutorial works by changing only the base URL + auth token. Drop-in compatibility with the embeddings side of the OpenAI SDK.
+
+### Motivation
+
+v0.11.3 closed the chat-completions ecosystem unlock — but every OpenAI-SDK tool that does both chat AND embeddings (the typical RAG architecture: chat-completions for the LLM call, embeddings for retrieval) still had to write loomcycle-specific code for the embeddings half. v0.11.4 finishes the OpenAI ecosystem coverage with the same one-translator-per-format pattern.
+
+The substrate already has all the plumbing: `s.embedder providers.Embedder` is wired in `cmd/loomcycle/main.go` and consumed by the Memory tool's `embed:true` flow + the reembed admin endpoint. The shim just adds an HTTP handler that calls `s.embedder.Embed(ctx, texts)` and translates to OpenAI's shape.
+
+### What ships
+
+**Endpoint:** `POST /v1/embeddings` (no underscore — OpenAI SDKs hardcode this path; the whole point is consumers change only the base URL).
+
+**Wire translation:**
+
+- **Request side (OpenAI → loomcycle):**
+  - `input` polymorphic field — `"single string"` or `["string", "string", ...]` flatten into a `[]string` for the embedder. Tokenized inputs (`[42, 17, ...]` or `[[42, 17], [3, 9]]` — OpenAI-specific token-id arrays) refused with a clear error pointing at "send text strings"; the substrate's three embedders (OpenAI / Gemini / Voyage-via-Anthropic) all accept text only.
+  - `model` pass-through; the configured embedder always runs, but the value is echoed in the response for drop-in compatibility.
+  - `encoding_format` — `"float"` (default) emits each vector as a JSON array of numbers; `"base64"` packs each float32 little-endian then base64-encodes per OpenAI spec (~25% smaller wire bytes on 1536-dim vectors). The packing matches the v0.9.0 snapshot vector round-trip exactly.
+  - `dimensions` — accepted-but-ignored in v0.11.4. The `providers.Embedder` interface doesn't take a dimension parameter today; when it grows one, the translator picks it up automatically.
+  - `user` — OpenAI's opaque end-user identifier. Maps onto loomcycle's per-user quota tracking + audit log key.
+
+- **Response side (loomcycle → OpenAI):**
+  - `{object:"list", data:[{object:"embedding", embedding:..., index}], model, usage:{prompt_tokens, total_tokens}}` exactly per OpenAI's spec.
+  - `embedding` is a JSON array of numbers when `encoding_format:"float"`; a JSON string when `"base64"`.
+  - `model` echoes the consumer's requested model id (not the configured embedder's `Model()` — operators who want to track drift use the audit log's `served_model` field).
+  - `usage.prompt_tokens` and `usage.total_tokens` are 0 in v0.11.4 — the substrate's `Embedder` interface doesn't return per-call token counts. Operators wanting precise embedding accounting can use the providers' native APIs.
+
+### Drop-in usage
+
+Python (OpenAI SDK):
+```python
+from openai import OpenAI
+client = OpenAI(base_url="http://127.0.0.1:8787/v1", api_key=loomcycle_token)
+resp = client.embeddings.create(model="text-embedding-3-small", input=["hello", "world"])
+print(resp.data[0].embedding)  # [0.1, 0.2, ...]
+```
+
+TypeScript (OpenAI SDK + base64):
+```typescript
+import OpenAI from "openai";
+const client = new OpenAI({ baseURL: "http://127.0.0.1:8787/v1", apiKey: token });
+const resp = await client.embeddings.create({
+  model: "text-embedding-3-small",
+  input: ["hello", "world"],
+  encoding_format: "base64",
+});
+```
+
+### `@loomcycle/client` typed surface
+
+For consumers already on `@loomcycle/client`, the new `embeddings()` method gives richer typing than dropping the OpenAI SDK at the shim:
+
+```typescript
+import { LoomcycleClient } from "@loomcycle/client";
+const client = new LoomcycleClient({ baseUrl: "...", authToken: "..." });
+const resp = await client.embeddings({
+  model: "text-embedding-3-small",
+  input: ["hello", "world"],
+});
+// resp typed as LLMEmbeddingsResponse; resp.data[i].embedding typed as number[] | string
+```
+
+Four new exported types: `LLMEmbeddingsOptions`, `LLMEmbeddingsResponse`, `LLMEmbeddingItem`, `LLMEmbeddingsUsage`.
+
+### Single-embedder posture
+
+Loomcycle has one configured embedder per instance per the v0.9.0 RFC. The shim's request `model` field doesn't dispatch — it's informational. When `s.embedder` is nil (operator didn't configure `memory.embedder.*` in yaml), the endpoint returns HTTP 503 with a clear error pointing at the yaml config.
+
+When the consumer requests `text-embedding-3-small` but the operator configured `voyage-3`, the response echoes `text-embedding-3-small` (drop-in compatibility) and the audit log records both:
+
+```
+embeddings: model="text-embedding-3-small" served_model="voyage-3" user_id="alice" \
+  input_count=2 output_dim=1024 latency_ms=124 status=ok err=""
+```
+
+Operators graphing the served-vs-requested split spot drift without parsing per-request payloads.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/api/http/embeddings_compat.go` *(new, ~210 LOC)* | `handleEmbeddings` + input parser + base64 vector packer + audit log. |
+| `internal/api/http/embeddings_compat_types.go` *(new, ~90 LOC)* | OpenAI wire-shape structs. |
+| `internal/api/http/embeddings_compat_test.go` *(new, ~280 LOC)* | 10 tests: happy path (single + array) / base64 / no embedder configured / tokenized input refused / empty input / unknown encoding / auth / model echo / embed failure. |
+| `internal/api/http/server.go` | Registered `POST /v1/embeddings` next to `/v1/chat/completions`. |
+| `internal/help/builtin/openai-compat.md` | Extended with `## Embeddings (v0.11.4)` section + Python/TypeScript SDK examples + drift-detection guidance + single-embedder posture explanation. Frontmatter description updated to mention both endpoints. |
+| `adapters/ts/src/types.ts` | 4 new exported types. |
+| `adapters/ts/src/client.ts` | `embeddings()` method (thin postJSON wrapper). |
+| `adapters/ts/src/index.ts` | Re-export the 4 new types. |
+| `adapters/ts/tests/embeddings.test.ts` *(new)* | 6 tests. |
+| `adapters/ts/package.json` | Version 0.11.3 → 0.11.4 (41 → 42 methods). |
+| `README.md` + `REVISIONS.md` | Release notes + Documentation section updated to list the `openai-compat` help topic. |
+
+### Wire-surface delta vs v0.11.3
+
+| Surface | v0.11.3 | v0.11.4 |
+|---|---|---|
+| Go HTTP endpoints | n | n + 1 (`POST /v1/embeddings`) |
+| Go tests | n | n + 10 |
+| TS adapter methods | 41 | 42 (+ `embeddings()`) |
+| TS adapter exported types | n | n + 4 |
+| Bundled `Context.help` topics | n | n (same; `openai-compat` extended) |
+
+### Migration notes
+
+- **Purely additive.** Existing endpoints unchanged.
+- **No schema migrations.** Shim uses no persistent storage.
+- **No new substrate logic.** Zero changes to `internal/providers/`, `internal/resolve/`, the embedder interface itself.
+- **TS adapter consumers** bump to 0.11.4 to pick up `embeddings()` + the 4 new types.
+- **Operators using OpenAI-SDK embeddings consumers** point the SDK's `base_url` at `http://localhost:8787/v1` (same change as v0.11.3 chat); everything else stays the same.
+
+### Versioning
+
+v0.11.4 — additive patch. `@loomcycle/client` 0.11.3 → 0.11.4.
+
+### Deferred
+
+- **Multi-embedder routing** — current single-embedder-per-instance posture matches the v0.9.0 RFC; multi-embedder needs its own design.
+- **`dimensions` truncation** — requires `providers.Embedder` interface extension.
+- **Tokenized input** (number arrays per OpenAI) — substrate embedders don't support; refused with a clear error.
+- **Token-count accounting** in `usage` — substrate `Embedder` interface doesn't return them.
+- **Streaming embeddings** — OpenAI doesn't have a streaming embeddings endpoint either.
+
+### Downloads
+
+Assets attached: `loomcycle-{darwin,linux}-{amd64,arm64}.tar.gz` + `SHA256SUMS`. Docker images at `docker.io/denngubsky/loomcycle:v0.11.4` + `:latest`. Adapter via `npm install @loomcycle/client@0.11.4`.
+
+---
+
 ## What's in v0.11.3
 
 OpenAI Chat Completions compatibility shim. New `POST /v1/chat/completions` endpoint that translates the OpenAI wire shape onto loomcycle's native LLM gateway. Every existing OpenAI-SDK consumer can route through loomcycle by changing only the base URL + auth token — zero per-consumer integration work.
