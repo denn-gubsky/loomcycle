@@ -8,6 +8,46 @@ For pre-v0.4 history (single-tool runtime, library milestone, security patch), s
 
 ---
 
+## What's in v1.0 (v0.12.6 capstone)
+
+**Phase 7 of the v1.0 multi-replica HA capstone — hardening + docs.** This is the release that ties the v0.12.x sweep into a coherent v1.0 deliverable.
+
+### What ships
+
+1. **`docs/MULTI-REPLICA.md`** — comprehensive operator runbook covering: TL;DR, what's shared via Postgres vs per-replica, deployment checklist, cluster verification via `/healthz`, rolling-upgrade procedure with pause/snapshot/resume, crashed-replica auto-recovery, adding/removing replicas, single-replica → cluster migration, Postgres LISTEN/NOTIFY load, connection pool sizing, clock skew, split-brain semantics, all locked sharp edges, and the post-v1.0 roadmap.
+
+2. **Aggregate behavior of the v0.12.x release line, packaged as v1.0**:
+   - 2+ loomcycle replicas behind any HTTP load balancer share one Postgres DB
+   - Per-user concurrency fairness, cancel, pause/resume, run-state SSE, channel notifications all cluster-wide
+   - Singleton sweepers via `pg_try_advisory_lock` — no N-replicas-times-N-sweepers noise
+   - Replicas TTL sweeper closes Phase 2 + Phase 3 crash-safety gaps within 90s of replica death
+   - DB-backed session lock + hook registry close the final two single-replica assumptions from the audit
+   - Single-replica deployments (`LOOMCYCLE_REPLICA_ID` unset) keep v0.11.x behavior **byte-identical** across every phase
+
+### v1.0 commitments
+
+| Promise | Mechanism |
+|---|---|
+| Single-replica deployments work like v0.11.x | Every cluster-mode path gated by `LOOMCYCLE_REPLICA_ID != ""`; SQLite refuses cluster mode at boot |
+| 2+ Postgres-backed replicas can run any loomcycle workload | Phases 1-6 close every single-replica assumption |
+| Cancel routes to the owning replica | Phase 3 backplane broadcast + 5s ack timeout + dead-owner short-circuit |
+| Pause quiesces every replica within ~1s | Phase 4 DB-state + 1s cache + backplane invalidation |
+| Hooks fire for runs on any replica | Phase 6 DB-backed registry + backplane invalidation |
+| Crashed-replica resources reclaimed within 90s | Phase 5 replicas TTL sweeper |
+| Safe rolling upgrade | Pause → snapshot → upgrade → resume; documented in `docs/MULTI-REPLICA.md` |
+
+### Post-v1.0 (not committed in v1.0)
+
+- **Redis backplane** — when LISTEN/NOTIFY throughput becomes the bottleneck. `coord.Backplane` interface allows slot-in.
+- **Automatic rolling upgrade** — drain-one-at-a-time automation. Today's manual pause-all-resume-all flow is the supported path.
+- **Multi-region** — single Postgres + N replicas in one region for v1.0.
+
+### Tagging
+
+After this PR merges, the operator tags `v1.0.0` to mark the capstone. The "single-process today, single-binary HA tomorrow" language in the README can be retired.
+
+---
+
 ## What's in v0.12.5
 
 **Phase 6 of the v1.0 multi-replica HA capstone — session-lock + hook-registry → DB-backed.** Single-replica mode (`LOOMCYCLE_REPLICA_ID` unset) keeps v0.11.x behavior **byte-identical**.
