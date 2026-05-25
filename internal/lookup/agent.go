@@ -135,7 +135,12 @@ type SubstrateAgentDef struct {
 	Effort        string `json:"effort,omitempty"`
 	MaxTokens     int    `json:"max_tokens,omitempty"`
 	MaxIterations int    `json:"max_iterations,omitempty"`
-	SystemPrompt  string `json:"system_prompt,omitempty"`
+	// MaxConcurrentChildren caps how many sub-agents this agent may
+	// spawn in parallel via Agent.parallel_spawn. 0 = use runtime
+	// default (DefaultMaxConcurrentChildren = 4). Mirrors the
+	// config.AgentDef yaml field.
+	MaxConcurrentChildren int    `json:"max_concurrent_children,omitempty"`
+	SystemPrompt          string `json:"system_prompt,omitempty"`
 	// SystemPromptBase carries the pre-skill-bake snapshot when the
 	// substrate write path (commit 3 of this PR) persisted it.
 	// Read-side normalizers fall back to SystemPrompt when this is
@@ -154,20 +159,21 @@ type SubstrateAgentDef struct {
 // happens here (NormalizeAgentDef is called afterward by Agent).
 func (s SubstrateAgentDef) ToConfigDef() config.AgentDef {
 	return config.AgentDef{
-		Provider:         s.Provider,
-		Model:            s.Model,
-		Tier:             s.Tier,
-		Effort:           s.Effort,
-		MaxTokens:        s.MaxTokens,
-		MaxIterations:    s.MaxIterations,
-		SystemPrompt:     s.SystemPrompt,
-		SystemPromptBase: s.SystemPromptBase,
-		AllowedTools:     s.AllowedTools,
-		Skills:           s.Skills,
-		Providers:        s.Providers,
-		Models:           s.Models,
-		MemoryScopes:     s.MemoryScopes,
-		MemoryQuotaBytes: s.MemoryQuotaBytes,
+		Provider:              s.Provider,
+		Model:                 s.Model,
+		Tier:                  s.Tier,
+		Effort:                s.Effort,
+		MaxTokens:             s.MaxTokens,
+		MaxIterations:         s.MaxIterations,
+		MaxConcurrentChildren: s.MaxConcurrentChildren,
+		SystemPrompt:          s.SystemPrompt,
+		SystemPromptBase:      s.SystemPromptBase,
+		AllowedTools:          s.AllowedTools,
+		Skills:                s.Skills,
+		Providers:             s.Providers,
+		Models:                s.Models,
+		MemoryScopes:          s.MemoryScopes,
+		MemoryQuotaBytes:      s.MemoryQuotaBytes,
 	}
 }
 

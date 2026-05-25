@@ -125,6 +125,9 @@ export default function LibraryEditModal({
   const [memoryQuotaBytes, setMemoryQuotaBytes] = useState(
     pickNumberAsString(forkSource?.definition, "memory_quota_bytes"),
   );
+  const [maxConcurrentChildren, setMaxConcurrentChildren] = useState(
+    pickNumberAsString(forkSource?.definition, "max_concurrent_children"),
+  );
   const [memoryScopes, setMemoryScopes] = useState(() => {
     const arr = pickStringArray(forkSource?.definition, "memory_scopes");
     return { agent: arr.includes("agent"), user: arr.includes("user") };
@@ -215,6 +218,7 @@ export default function LibraryEditModal({
         ["max_tokens", maxTokens],
         ["max_iterations", maxIterations],
         ["memory_quota_bytes", memoryQuotaBytes],
+        ["max_concurrent_children", maxConcurrentChildren],
       ];
       for (const [label, raw] of numChecks) {
         if (raw.trim() === "") continue; // empty = unset = OK
@@ -287,6 +291,8 @@ export default function LibraryEditModal({
       if (mi !== null && mi > 0) ov.max_iterations = mi;
       const mqb = intOrSkip(memoryQuotaBytes);
       if (mqb !== null && mqb > 0) ov.memory_quota_bytes = mqb;
+      const mcc = intOrSkip(maxConcurrentChildren);
+      if (mcc !== null && mcc > 0) ov.max_concurrent_children = mcc;
       // memory_scopes: only emit when at least one box is ticked.
       // Empty array would default-deny on the substrate side which is
       // probably not what the operator wants if they didn't touch the
@@ -436,6 +442,8 @@ export default function LibraryEditModal({
             setMaxIterations={setMaxIterations}
             memoryQuotaBytes={memoryQuotaBytes}
             setMemoryQuotaBytes={setMemoryQuotaBytes}
+            maxConcurrentChildren={maxConcurrentChildren}
+            setMaxConcurrentChildren={setMaxConcurrentChildren}
             memoryScopes={memoryScopes}
             setMemoryScopes={setMemoryScopes}
             agentProviders={agentProviders}
@@ -528,6 +536,8 @@ interface AgentFieldsProps {
   setMaxIterations: (v: string) => void;
   memoryQuotaBytes: string;
   setMemoryQuotaBytes: (v: string) => void;
+  maxConcurrentChildren: string;
+  setMaxConcurrentChildren: (v: string) => void;
   memoryScopes: { agent: boolean; user: boolean };
   setMemoryScopes: (v: { agent: boolean; user: boolean }) => void;
   agentProviders: string;
@@ -738,6 +748,26 @@ function AgentFields(props: AgentFieldsProps) {
             user
           </label>
         </div>
+      </div>
+
+      <div className="library-form-row">
+        <label htmlFor="lib-max-concurrent-children">
+          max_concurrent_children
+          <span className="library-modal-field-hint">
+            {" "}— cap on Agent.parallel_spawn fan-out from this agent;
+            0 = use runtime default (4). Sequential Agent.spawn is
+            unaffected.
+          </span>
+        </label>
+        <input
+          id="lib-max-concurrent-children"
+          type="number"
+          min="0"
+          value={props.maxConcurrentChildren}
+          onChange={(e) => props.setMaxConcurrentChildren(e.target.value)}
+          disabled={props.submitting}
+          placeholder="0 = default"
+        />
       </div>
 
       <div className="library-form-row">

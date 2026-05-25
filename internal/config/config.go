@@ -451,6 +451,16 @@ type AgentDef struct {
 	// (2026-05-21).
 	MaxIterations int `yaml:"max_iterations"`
 
+	// MaxConcurrentChildren caps how many sub-agents this agent may
+	// spawn in parallel via Agent.parallel_spawn (v0.11.8+). Zero =
+	// use the runtime default (4 — see builtin.DefaultMaxConcurrentChildren).
+	// Sequential Agent.spawn calls are unaffected; the cap only
+	// applies to a single parallel_spawn op's `spawns` array. Set
+	// higher for orchestrator agents whose workflow legitimately
+	// fans out to many specialists at once; keep at default for
+	// linear-pipeline agents that don't need parallelism.
+	MaxConcurrentChildren int `yaml:"max_concurrent_children"`
+
 	// Tier is the model-tier the resolver should pick from when
 	// the agent doesn't declare an explicit Provider+Model pin.
 	// One of "low" / "middle" / "high". Empty = no tier-based

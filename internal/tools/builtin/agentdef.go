@@ -664,7 +664,13 @@ type mergedDef struct {
 	// whose workflow is intrinsically iterative — same knob the
 	// yaml frontmatter exposes via PR #168's `max_iterations` field.
 	MaxIterations int    `json:"max_iterations,omitempty"`
-	SystemPrompt  string `json:"system_prompt,omitempty"`
+	// MaxConcurrentChildren caps how many sub-agents this agent may
+	// spawn in parallel via Agent.parallel_spawn (v0.11.8+). Zero =
+	// use the runtime default (DefaultMaxConcurrentChildren = 4).
+	// Sequential Agent.spawn calls are unaffected; the cap only
+	// applies to a single parallel_spawn op's `spawns` array.
+	MaxConcurrentChildren int    `json:"max_concurrent_children,omitempty"`
+	SystemPrompt          string `json:"system_prompt,omitempty"`
 	// SystemPromptBase is the pre-skill-bake snapshot of SystemPrompt.
 	// Persisted alongside SystemPrompt so the v0.8.22 SkillDef per-run
 	// resolver (`resolveSkillBodiesForRun` in api/http/server.go) can
@@ -705,6 +711,9 @@ func (d *mergedDef) applyOverlay(ov mergedDef) {
 	}
 	if ov.MaxIterations != 0 {
 		d.MaxIterations = ov.MaxIterations
+	}
+	if ov.MaxConcurrentChildren != 0 {
+		d.MaxConcurrentChildren = ov.MaxConcurrentChildren
 	}
 	if ov.SystemPrompt != "" {
 		d.SystemPrompt = ov.SystemPrompt
@@ -758,20 +767,21 @@ func (d *mergedDef) normalize() {
 
 func staticToMergedDef(s config.AgentDef) mergedDef {
 	return mergedDef{
-		Provider:         s.Provider,
-		Model:            s.Model,
-		Tier:             s.Tier,
-		Effort:           s.Effort,
-		MaxTokens:        s.MaxTokens,
-		MaxIterations:    s.MaxIterations,
-		SystemPrompt:     s.SystemPrompt,
-		SystemPromptBase: s.SystemPromptBase,
-		AllowedTools:     s.AllowedTools,
-		Skills:           s.Skills,
-		Providers:        s.Providers,
-		Models:           s.Models,
-		MemoryScopes:     s.MemoryScopes,
-		MemoryQuotaBytes: s.MemoryQuotaBytes,
+		Provider:              s.Provider,
+		Model:                 s.Model,
+		Tier:                  s.Tier,
+		Effort:                s.Effort,
+		MaxTokens:             s.MaxTokens,
+		MaxIterations:         s.MaxIterations,
+		MaxConcurrentChildren: s.MaxConcurrentChildren,
+		SystemPrompt:          s.SystemPrompt,
+		SystemPromptBase:      s.SystemPromptBase,
+		AllowedTools:          s.AllowedTools,
+		Skills:                s.Skills,
+		Providers:             s.Providers,
+		Models:                s.Models,
+		MemoryScopes:          s.MemoryScopes,
+		MemoryQuotaBytes:      s.MemoryQuotaBytes,
 	}
 }
 
