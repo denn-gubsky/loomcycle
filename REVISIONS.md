@@ -8,6 +8,50 @@ For pre-v0.4 history (single-tool runtime, library milestone, security patch), s
 
 ---
 
+## What's in v0.11.6
+
+Library admin modal — fully structured form for agent + skill definitions. The v0.10.4 hybrid (structured inputs + JSON catch-all textarea) was failing operators in real use: raw newlines inside the agent's `system_prompt` produced invalid JSON, a single missing comma anywhere sunk the whole submit, and the JSON catch-all hid the schema behind a manual-typing surface. v0.11.6 promotes every editable agent overlay field out of the JSON textarea into its own structured input, and removes the JSON catch-all entirely.
+
+### What ships
+
+**Agent modal** — every overlay field is now a structured input:
+
+* `system_prompt` → dedicated markdown textarea. Raw Enter produces newlines; no escaping. Single biggest UX win — fixes the user-reported newline pain directly.
+* `allowed_tools` / `skills` / `providers` → comma-separated text inputs (same pattern as the existing skill modal's `allowed_tools`). Whitespace + trailing commas tolerated.
+* `max_tokens` / `max_iterations` / `memory_quota_bytes` → number inputs (min=0; empty = "use default" inherits from parent).
+* `memory_scopes` → checkbox group (agent / user). Empty selection omits the field from the overlay (preserves parent value); explicit ticks emit the array.
+* `models` (per-tier candidate map) → small dynamic table editor: three fixed tier slots (low / middle / high), each with an add-row / remove-row list of `{provider, model}` candidates. Reuses the MCP-headers grid pattern from v0.10.4. Tier names outside low/middle/high in the source are silently dropped — operators with custom tier names still edit them via yaml (the substrate accepts any keys).
+* `provider` / `model` / `tier` / `effort` / `description` — already structured in v0.10.4; unchanged.
+
+**Skill modal** — small polish pass:
+
+* Markdown body textarea renamed from `.library-json-textarea` to `.library-prompt-textarea` for intent clarity (the body has never been JSON; the class name was misleading). Behavior unchanged — body already accepted raw newlines.
+* Inline `.library-modal-field-hint` text added next to the `allowed_tools` label.
+
+**MCP-server modal** — unchanged. Already fully structured since v0.10.4.
+
+### Architectural calls
+
+* **Remove the JSON catch-all entirely.** Every editable field is structured. New schema fields will require a modal update — accepted cost, the modal becomes the authoritative schema view. Matches the v0.10.4 MCP-server kind's posture and the v0.11.5 channel + memory modals.
+* **Comma-separated text for string arrays.** Simpler than checkbox grids, no autocomplete wire calls. Operators already deal with comma-separated lists in yaml.
+* **Per-tier `models` as a structured table, not JSON.** Three fixed tier slots; dynamic candidate rows. Reuses the `.library-headers-grid` pattern.
+* **No backward-compatibility shim.** The wire shape (`POST /v1/_agentdef` body) is unchanged — the modal just builds the same overlay from structured inputs instead of from a textarea. Operators with an in-flight half-edited modal lose their JSON pre-fill on the first reload; acceptable for a UX upgrade.
+
+### What's deferred
+
+* Tool / provider / model name autocomplete on the comma-separated inputs (a future iteration; v1 relies on the placeholder + inline hints).
+* Markdown preview for `system_prompt` (skill body doesn't have one either; matches).
+* Drag-handle reordering of the `providers` priority list.
+* Custom tier names beyond low/middle/high in the modal — yaml still works.
+
+### Wire-compatibility notes
+
+* **Zero server-side changes.** No new endpoints, no new fields, no schema migration. The overlay JSON the modal produces is bit-for-bit equivalent to what v0.10.4 sent.
+* **Web UI internal version**: 0.7.3 → 0.7.4 (the bundled `internal/webui/dist/` artifacts).
+* **TS adapter unchanged** (`@loomcycle/client` stays at 0.11.5).
+
+---
+
 ## What's in v0.11.5
 
 yaml-static channels + memory + Web UI CRUD. The last v0.11.x slice before the multi-replica HA capstone. Closes two operator pain points: n8n integration tests can now programmatically create channels + pre-seeded memory entries as fixtures (no yaml + restart between tests), and static substrate deployments can declare the entire substrate — agents, channels, memory entries — purely in yaml at boot. The Web UI gains create / edit / delete actions over both channels and memory entries.
