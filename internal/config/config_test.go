@@ -1600,3 +1600,103 @@ memory:
 		t.Errorf("expected timeout_ms validation error, got %v", err)
 	}
 }
+
+// TestChannelDescription_LoadsFromYaml — v0.11.5 Channel.Description
+// field. Existing yaml without a description loads unchanged
+// (verified in the implicit-empty case); a yaml with description
+// populates the field.
+func TestChannelDescription_LoadsFromYaml(t *testing.T) {
+	tmp := t.TempDir()
+	yamlPath := filepath.Join(tmp, "c.yaml")
+	if err := os.WriteFile(yamlPath, []byte(`
+defaults: { provider: anthropic, model: claude-sonnet-4-6 }
+agents:
+  default: { model: claude-sonnet-4-6 }
+channels:
+  briefing-ready:
+    scope: global
+    semantic: queue
+    description: "Researcher signals editor that a new briefing is ready"
+  no-desc:
+    scope: global
+    semantic: queue
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(yamlPath)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Channels["briefing-ready"].Description != "Researcher signals editor that a new briefing is ready" {
+		t.Errorf("description = %q; want full string",
+			cfg.Channels["briefing-ready"].Description)
+	}
+	if cfg.Channels["no-desc"].Description != "" {
+		t.Errorf("description = %q; want empty for the implicit case",
+			cfg.Channels["no-desc"].Description)
+	}
+}
+
+// TestMemoryEntries_LoadFromYaml — v0.11.5 memory.entries pre-seeded
+// memory rows. Verifies the yaml block parses with mixed value types
+// (string / object / number) and the embed:true flag round-trips.
+func TestMemoryEntries_LoadFromYaml(t *testing.T) {
+	tmp := t.TempDir()
+	yamlPath := filepath.Join(tmp, "c.yaml")
+	if err := os.WriteFile(yamlPath, []byte(`
+defaults: { provider: anthropic, model: claude-sonnet-4-6 }
+agents:
+  default: { model: claude-sonnet-4-6 }
+memory:
+  embedder:
+    provider: openai
+    model: text-embedding-3-small
+  entries:
+    - scope: global
+      scope_id: ""
+      key: company-policy
+      value: "All agents must respect rate limits."
+    - scope: agent
+      scope_id: researcher
+      key: default-format
+      value:
+        format: json
+        version: 1
+      embed: true
+    - scope: user
+      scope_id: alice
+      key: tier
+      value: 42
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(yamlPath)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(cfg.Memory.Entries) != 3 {
+		t.Fatalf("entries len = %d; want 3", len(cfg.Memory.Entries))
+	}
+	e0 := cfg.Memory.Entries[0]
+	if e0.Scope != "global" || e0.ScopeID != "" || e0.Key != "company-policy" {
+		t.Errorf("entry[0] shape wrong: %+v", e0)
+	}
+	if s, _ := e0.Value.(string); s != "All agents must respect rate limits." {
+		t.Errorf("entry[0].value = %v; want string", e0.Value)
+	}
+	e1 := cfg.Memory.Entries[1]
+	if !e1.Embed {
+		t.Errorf("entry[1].embed should be true")
+	}
+	if _, ok := e1.Value.(map[string]interface{}); !ok {
+		// yaml.v3 may decode map keys as interface{}; accept either form.
+		if _, ok2 := e1.Value.(map[interface{}]interface{}); !ok2 {
+			t.Errorf("entry[1].value should be a map; got %T", e1.Value)
+		}
+	}
+	e2 := cfg.Memory.Entries[2]
+	// yaml decodes integers as int by default.
+	if n, _ := e2.Value.(int); n != 42 {
+		t.Errorf("entry[2].value = %v; want 42 (int)", e2.Value)
+	}
+}

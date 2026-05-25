@@ -180,7 +180,12 @@ channels:
 
   # Researcher-to-analyst work queue. Each researcher agent's
   # findings drain to the analyst agent's queue.
+  #
+  # v0.11.5 — `description:` is operator-facing documentation;
+  # surfaced in the Web UI's Channels detail pane + on every
+  # GET /v1/_channels response. Free-form, omitted = no docstring.
   findings:
+    description: "Researcher findings drain to the analyst agent's queue."
     scope: agent
     default_ttl: 86400
     max_messages: 10000
@@ -192,6 +197,7 @@ channels:
   # sequence from the same cursor). For per-subscriber broadcast
   # use scope: agent + a queue-semantic channel + multiple cursors.
   alerts:
+    description: "Cross-tenant alerts broadcast — every subscriber sees every message."
     scope: global
     default_ttl: 3600
     max_messages: 1000
@@ -735,3 +741,39 @@ cache:
     ttl: 5m
   native:
     enabled: true              # honour Anthropic cache_control hints
+
+# ─── Memory (v0.9.0 embedder + v0.11.5 yaml-seeded entries) ──────────
+# memory:
+#   # v0.9.0 — embedder for Vector Memory (Memory.embed: true + Memory.search).
+#   # Pick one provider; uncomment when you want vector ops. See
+#   # help(topic="vector-memory") for the full schema.
+#   embedder:
+#     provider: openai
+#     model: text-embedding-3-small
+#     # api_key inherits from OPENAI_API_KEY env var by default.
+#
+#   # v0.11.5 — pre-seed memory rows on boot. Idempotent: rows that
+#   # already exist in the substrate are skipped (preserves runtime
+#   # updates). Use this for company-wide policy bytes, default
+#   # agent preferences, or n8n test fixtures.
+#   #
+#   # Scope is one of "global" | "agent" | "user". For global, set
+#   # scope_id: "" (single shared keyspace).
+#   #
+#   # value is JSON-typed — strings, objects, arrays, numbers all work.
+#   # Optional `embed: true` triggers a synchronous embed via the
+#   # configured embedder (slow boot if you have many).
+#   entries:
+#     - scope: global
+#       scope_id: ""
+#       key: "company-policy"
+#       value: "All agents must respect rate limits, log every external call, and never store PII outside the user's scope."
+#     - scope: agent
+#       scope_id: "researcher"
+#       key: "default-output-format"
+#       value: { "format": "json", "max_findings": 10 }
+#     - scope: user
+#       scope_id: "alice"
+#       key: "voice"
+#       value: "professional, concise, no emojis"
+#       embed: true

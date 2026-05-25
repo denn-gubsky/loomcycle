@@ -245,6 +245,53 @@ type MemoryConfig struct {
 	// tool refuse with embedder_not_configured. K/V Memory is
 	// unaffected.
 	Embedder EmbedderConfig `yaml:"embedder"`
+
+	// Entries lets the operator pre-seed memory rows at boot from
+	// yaml. Added in v0.11.5 for n8n test fixtures + static-
+	// deployment use cases — operators declare lookup tables,
+	// company policies, default values, etc. in yaml instead of
+	// scripting Memory.set calls on every fresh boot.
+	//
+	// Boot loader semantics (cmd/loomcycle/main.go
+	// bootstrapMemoryEntries):
+	//   - Idempotent. For each entry, check whether (scope, scope_id,
+	//     key) already exists in the store; skip if present. Preserves
+	//     any runtime updates the operator made between boots.
+	//   - Synchronous embed when entry.Embed=true AND an embedder is
+	//     configured. Boot log warns about per-entry embed latency so
+	//     operators with many embedded entries aren't surprised by
+	//     slow starts.
+	//   - Failures are logged but don't fail boot — the operator gets
+	//     a degraded substrate they can repair without restart.
+	Entries []MemoryEntryDecl `yaml:"entries"`
+}
+
+// MemoryEntryDecl is one yaml-declared memory entry, loaded on boot
+// by cmd/loomcycle/main.go's bootstrapMemoryEntries helper.
+type MemoryEntryDecl struct {
+	// Scope is "agent" / "user" / "global". Validated at boot —
+	// unknown scopes log a warning + skip the entry.
+	Scope string `yaml:"scope"`
+
+	// ScopeID is the per-scope identifier:
+	//   - scope=agent  → agent name (e.g. "researcher")
+	//   - scope=user   → user id (e.g. "alice")
+	//   - scope=global → empty string (loomcycle convention)
+	ScopeID string `yaml:"scope_id"`
+
+	// Key is the memory key under (scope, scope_id).
+	Key string `yaml:"key"`
+
+	// Value is the entry's body. yaml-supported types (string,
+	// number, bool, list, map) round-trip through the substrate as
+	// JSON.
+	Value interface{} `yaml:"value"`
+
+	// Embed, when true, triggers a synchronous embed via the
+	// configured embedder during boot. Slow operations log a warning;
+	// boots with many embedded entries take proportionally longer.
+	// Default false — k/v-only entries are the common case.
+	Embed bool `yaml:"embed"`
 }
 
 // EmbedderConfig selects the v0.9.0 embedder. Validated at config
@@ -611,6 +658,14 @@ type Channel struct {
 	DefaultTTL  int    `yaml:"default_ttl"`
 	MaxMessages int    `yaml:"max_messages"`
 	Semantic    string `yaml:"semantic"`
+
+	// Description is an operator-visible documentation field. Not
+	// used by the substrate; pure metadata surfaced in /v1/_channels
+	// listings + the Web UI. Empty is fine — existing yaml without
+	// a description loads unchanged. Added in v0.11.5 alongside
+	// runtime channel CRUD; runtime-declared channels also carry
+	// this field.
+	Description string `yaml:"description"`
 
 	// v0.8.6 system channels:
 	//

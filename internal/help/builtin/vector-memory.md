@@ -154,6 +154,64 @@ yourself (bearer-authed, operator-scoped) but agents should know to
 reference them when surfacing "search is empty / stale" diagnostics
 to the human.
 
+## v0.11.5 — yaml-static entries + admin PUT/DELETE
+
+Two new ways to seed and manage memory rows from outside an agent:
+
+**yaml-static `memory.entries:`** — list of pre-seeded rows applied
+on every boot. Idempotent (rows already in the substrate are
+skipped, so the boot loader is safe to re-run and never clobbers
+runtime updates).
+
+```yaml
+memory:
+  embedder:
+    provider: openai
+    model: text-embedding-3-small
+  entries:
+    - scope: global
+      scope_id: ""
+      key: "company-policy"
+      value: "All agents must respect rate limits."
+    - scope: agent
+      scope_id: "researcher"
+      key: "default-format"
+      value: { "format": "json" }
+      embed: true
+```
+
+Optional `embed: true` synchronously embeds the value via the
+configured embedder on boot. Many entries with `embed: true` will
+slow boot proportional to the embedder's latency — the log line
+`memory.entries: bootstrap complete — loaded=N skipped=N elapsed=...`
+reports the cost so it's visible.
+
+**HTTP admin CRUD** — `PUT` is idempotent upsert, `DELETE` is
+idempotent removal:
+
+```sh
+# Set a row (overwrite if exists). Optional ?embed=true also
+# computes the embedding.
+curl -X PUT 'http://127.0.0.1:8787/v1/_memory/scopes/user/alice/keys/voice?embed=true' \
+  -H "Authorization: Bearer $LOOMCYCLE_AUTH_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"value": "professional, concise"}'
+
+# Delete a row.
+curl -X DELETE http://127.0.0.1:8787/v1/_memory/scopes/user/alice/keys/voice \
+  -H "Authorization: Bearer $LOOMCYCLE_AUTH_TOKEN"
+# → 204 (idempotent — missing rows also return 204)
+```
+
+The TS adapter ships `setMemoryEntry(scope, scopeID, key, opts)` +
+`deleteMemoryEntry(...)` for the same surface. The Web UI's Memory
+view gains "+ New entry" + per-row Edit / Delete buttons that drive
+the same endpoints.
+
+Admin scope set is `agent | user` (matches the existing GET surface).
+Global-scope entries are yaml-only (no URL pattern for empty
+scope_id).
+
 ## Cross-references
 
 - `help(topic="scopes")` — agent vs user scope (same allowlist

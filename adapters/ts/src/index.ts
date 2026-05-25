@@ -167,6 +167,12 @@ export type {
   PeekChannelOptions,
   PublishChannelOptions,
   SubscribeChannelOptions,
+  // Channel admin CRUD (v0.11.5)
+  CreateChannelOptions,
+  UpdateChannelOptions,
+  // Memory entry admin CRUD (v0.11.5)
+  SetMemoryEntryOptions,
+  SetMemoryEntryResponse,
   // Content signatures (v0.9.x)
   AgentDefRowResponse,
   AgentDefVerifyResult,

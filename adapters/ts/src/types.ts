@@ -680,6 +680,7 @@ export interface PostHookResult {
  *  {@link LoomcycleClient.listChannels}. */
 export interface ChannelDescriptor {
   name: string;
+  description?: string;
   scope?: string;
   semantic?: string;
   publisher?: string;
@@ -690,6 +691,10 @@ export interface ChannelDescriptor {
   /** RFC3339 — empty when count == 0. */
   oldest_visible_at?: string;
   newest_visible_at?: string;
+  /** v0.11.5: "yaml" (operator yaml — immutable from this surface),
+   *  "runtime" (substrate — CRUD-mutable), "orphan" (no declaration,
+   *  only orphan messages). */
+  source?: "yaml" | "runtime" | "orphan" | string;
 }
 
 /** Response shape for {@link LoomcycleClient.listChannels}. */
@@ -793,6 +798,71 @@ export interface AckChannelOptions {
 /** Response shape for {@link LoomcycleClient.ackChannel}. */
 export interface ChannelAckResult {
   ok: boolean;
+}
+
+// ---- v0.11.5 Channel admin CRUD types ----
+
+/** Options for {@link LoomcycleClient.createChannel}. Operator-yaml
+ *  channels are immutable from this surface; the server returns
+ *  HTTP 409 `channel_yaml_immutable` when `name` matches a yaml-
+ *  declared channel. */
+export interface CreateChannelOptions {
+  name: string;
+  description?: string;
+  /** "global" | "agent" | "user". Defaults to "global" if omitted. */
+  scope?: string;
+  /** "queue" | "topic". Defaults to "queue" if omitted. */
+  semantic?: string;
+  /** Seconds; 0 = no TTL. */
+  default_ttl?: number;
+  /** 0 = unbounded. */
+  max_messages?: number;
+  /** Free-form attribution; not enforced by the substrate. */
+  publisher?: string;
+  /** Free-form retention hint; not enforced by the substrate. */
+  period?: string;
+  signal?: AbortSignal;
+}
+
+/** Options for {@link LoomcycleClient.updateChannel}. Nil fields
+ *  leave the corresponding channel attribute unchanged. */
+export interface UpdateChannelOptions {
+  description?: string;
+  default_ttl?: number;
+  max_messages?: number;
+  /** "queue" | "topic" */
+  semantic?: string;
+  signal?: AbortSignal;
+}
+
+// ---- v0.11.5 Memory entry admin CRUD types ----
+
+/** Options for {@link LoomcycleClient.setMemoryEntry}. `value` is
+ *  opaque JSON. Setting `embed: true` triggers a synchronous embed
+ *  via the operator-configured embedder; the returned `embedded`
+ *  flag + optional `embed_warning` report whether the embedding
+ *  landed. */
+export interface SetMemoryEntryOptions {
+  value: unknown;
+  /** When true, also compute + store the embedding (requires
+   *  memory.embedder yaml + a vector-capable store backend). */
+  embed?: boolean;
+  /** Optional TTL in seconds; <= 0 means "no expiry". */
+  ttl_seconds?: number;
+  signal?: AbortSignal;
+}
+
+/** Response shape for {@link LoomcycleClient.setMemoryEntry}. */
+export interface SetMemoryEntryResponse {
+  scope: string;
+  scope_id: string;
+  key: string;
+  /** true when the embedding was computed AND stored. */
+  embedded: boolean;
+  /** Non-empty when embed was requested but failed (transient
+   *  error, embedder unconfigured, vector backend not available).
+   *  The k/v row still landed. */
+  embed_warning?: string;
 }
 
 /** One run state transition emitted by

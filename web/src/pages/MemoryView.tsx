@@ -5,6 +5,7 @@ import {
   MemoryReembedResponse,
   MemoryScopeIDSummary,
   MemoryScopeKind,
+  deleteMemoryEntry,
   listMemoryEmbedStats,
   listMemoryEntries,
   listMemoryScopeIDs,
@@ -12,6 +13,7 @@ import {
   reembedMemory,
 } from "../api";
 import Splitter from "../components/Splitter";
+import MemoryEntryEditModal from "../components/MemoryEntryEditModal";
 
 // MemoryView — operator browse-only view over the v0.8.0 Memory tool's
 // stored rows.
@@ -58,6 +60,32 @@ export default function MemoryView() {
   const [embedStats, setEmbedStats] = useState<MemoryEmbedModelStats[] | null>(null);
   const [reembedBanner, setReembedBanner] = useState<MemoryReembedResponse | null>(null);
   const [reembedBusy, setReembedBusy] = useState(false);
+
+  // v0.11.5 CRUD state.
+  const [modalState, setModalState] = useState<
+    | { kind: "create" }
+    | { kind: "edit"; entry: MemoryEntry }
+    | null
+  >(null);
+  const [mutationErr, setMutationErr] = useState<string | null>(null);
+  const [reloadTick, setReloadTick] = useState(0);
+
+  const triggerReload = () => setReloadTick((n) => n + 1);
+
+  const handleDelete = async (entry: MemoryEntry) => {
+    if (!scope || !scopeID) return;
+    if (!window.confirm(`Delete ${scope}/${scopeID}/${entry.key}? This also removes any embedding.`)) {
+      return;
+    }
+    setMutationErr(null);
+    try {
+      await deleteMemoryEntry(scope, scopeID, entry.key);
+      if (selectedKey === entry.key) setSelectedKey("");
+      triggerReload();
+    } catch (e) {
+      setMutationErr(e instanceof Error ? e.message : String(e));
+    }
+  };
 
   // Bootstrap: fetch the (constant) scope list once on mount.
   useEffect(() => {
@@ -163,7 +191,7 @@ export default function MemoryView() {
       cancelled = true;
       clearInterval(t);
     };
-  }, [scope, scopeID, prefix]);
+  }, [scope, scopeID, prefix, reloadTick]);
 
   const selectedEntry = useMemo(() => {
     if (!selectedKey) return null;
@@ -264,9 +292,18 @@ export default function MemoryView() {
         storageKey="loomcycle.split.memory.inner"
       >
       <div className="memory-pane keys-pane">
-        <div className="pane-header">
-          keys {scopeID && <code>{scope}/{scopeID}</code>}
+        <div className="pane-header memory-keys-header">
+          <span>keys {scopeID && <code>{scope}/{scopeID}</code>}</span>
+          <button
+            type="button"
+            className="memory-new-entry-btn"
+            onClick={() => setModalState({ kind: "create" })}
+            title="Set a new memory entry"
+          >
+            + New entry
+          </button>
         </div>
+        {mutationErr && <div className="err memory-err">{mutationErr}</div>}
         {/* v0.9.0 — embedding model badge + reembed action. Only
             renders when embed_stats reports rows for this scope. */}
         {scope && embedStats !== null && embedStats.length > 0 && (
@@ -336,6 +373,30 @@ export default function MemoryView() {
               )}
               <code>{e.key}</code>
               {e.expires_at && <span className="ttl-flag" title={`expires ${e.expires_at}`}>ttl</span>}
+              <span className="memory-key-actions">
+                <button
+                  type="button"
+                  className="memory-key-action"
+                  title="Edit entry"
+                  onClick={(ev) => {
+                    ev.stopPropagation();
+                    setModalState({ kind: "edit", entry: e });
+                  }}
+                >
+                  Edit
+                </button>
+                <button
+                  type="button"
+                  className="memory-key-action memory-key-action-danger"
+                  title="Delete entry"
+                  onClick={(ev) => {
+                    ev.stopPropagation();
+                    void handleDelete(e);
+                  }}
+                >
+                  Delete
+                </button>
+              </span>
             </li>
           ))}
           {truncated && (
@@ -362,6 +423,19 @@ export default function MemoryView() {
       </div>
       </Splitter>
     </Splitter>
+    {modalState && (
+      <MemoryEntryEditModal
+        mode={modalState.kind === "create" ? "create" : "edit"}
+        scope={scope}
+        scopeID={scopeID}
+        existing={modalState.kind === "edit" ? modalState.entry : undefined}
+        onClose={() => setModalState(null)}
+        onSaved={() => {
+          setModalState(null);
+          triggerReload();
+        }}
+      />
+    )}
     </div>
   );
 }

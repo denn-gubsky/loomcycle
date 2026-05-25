@@ -29,7 +29,9 @@ import {
   authHeaders,
   deleteRequest,
   jsonFetch,
+  patchJSON,
   postJSON,
+  putJSON,
   raiseFromResponse,
 } from "./fetch-helpers.js";
 import { parseSSE } from "./stream.js";
@@ -48,13 +50,18 @@ import type {
   ListAgentsResponse,
   AckChannelOptions,
   ChannelAckResult,
+  ChannelDescriptor,
   ChannelPeekResult,
   ChannelPublishResult,
   ChannelSubscribeResult,
+  CreateChannelOptions,
   ListChannelsResponse,
   PeekChannelOptions,
   PublishChannelOptions,
+  SetMemoryEntryOptions,
+  SetMemoryEntryResponse,
   SubscribeChannelOptions,
+  UpdateChannelOptions,
   LibraryAgentDefinition,
   LibraryListResponse,
   LibraryMcpServerDefinition,
@@ -973,6 +980,106 @@ export class LoomcycleClient {
       path,
       { cursor: opts.cursor },
       { signal: opts.signal },
+    );
+  }
+
+  // ---- v0.11.5 Channel admin CRUD ----
+  //
+  // Three bearer-authed ops that mutate the runtime-substrate
+  // channel registry. yaml-declared channels are immutable from
+  // this surface — the server refuses with HTTP 409 + wire `code`
+  // `channel_yaml_immutable`. The TS adapter surfaces that as a
+  // {@link LoomcycleError} with status 409.
+
+  /** Create a new runtime-substrate channel. Refuses with HTTP 409
+   *  when the name matches a yaml-declared channel (code
+   *  `channel_yaml_immutable`) or an existing runtime channel
+   *  (code `channel_name_in_use`). */
+  async createChannel(opts: CreateChannelOptions): Promise<ChannelDescriptor> {
+    const body: Record<string, unknown> = { name: opts.name };
+    if (opts.description !== undefined) body.description = opts.description;
+    if (opts.scope !== undefined) body.scope = opts.scope;
+    if (opts.semantic !== undefined) body.semantic = opts.semantic;
+    if (opts.default_ttl !== undefined) body.default_ttl = opts.default_ttl;
+    if (opts.max_messages !== undefined) body.max_messages = opts.max_messages;
+    if (opts.publisher !== undefined) body.publisher = opts.publisher;
+    if (opts.period !== undefined) body.period = opts.period;
+    return postJSON<ChannelDescriptor>(this.ctx, "/v1/_channels", body, {
+      signal: opts.signal,
+    });
+  }
+
+  /** Partially update a runtime-substrate channel. Nil-valued fields
+   *  in `opts` leave the corresponding attribute unchanged. Refuses
+   *  yaml-declared channels with HTTP 409. */
+  async updateChannel(
+    name: string,
+    opts: UpdateChannelOptions,
+  ): Promise<ChannelDescriptor> {
+    const body: Record<string, unknown> = {};
+    if (opts.description !== undefined) body.description = opts.description;
+    if (opts.default_ttl !== undefined) body.default_ttl = opts.default_ttl;
+    if (opts.max_messages !== undefined) body.max_messages = opts.max_messages;
+    if (opts.semantic !== undefined) body.semantic = opts.semantic;
+    return patchJSON<ChannelDescriptor>(
+      this.ctx,
+      `/v1/_channels/${encodeURIComponent(name)}`,
+      body,
+      { signal: opts.signal },
+    );
+  }
+
+  /** Delete a runtime-substrate channel + cascade its persisted
+   *  messages + cursors. yaml-declared channels refuse with HTTP 409.
+   *  Idempotent: deleting a non-existent runtime channel returns a
+   *  {@link NotFoundError} so the caller can distinguish that case. */
+  async deleteChannel(
+    name: string,
+    opts?: { signal?: AbortSignal },
+  ): Promise<void> {
+    return deleteRequest(
+      this.ctx,
+      `/v1/_channels/${encodeURIComponent(name)}`,
+      opts,
+    );
+  }
+
+  // ---- v0.11.5 Memory entry admin CRUD ----
+
+  /** Idempotently upsert one memory entry by full (scope, scope_id,
+   *  key) identifier. PUT semantics — re-writes overwrite the value.
+   *  Optional embed flag triggers a synchronous embed via the
+   *  operator-configured embedder. */
+  async setMemoryEntry(
+    scope: string,
+    scopeID: string,
+    key: string,
+    opts: SetMemoryEntryOptions,
+  ): Promise<SetMemoryEntryResponse> {
+    const body: Record<string, unknown> = { value: opts.value };
+    if (opts.embed !== undefined) body.embed = opts.embed;
+    if (opts.ttl_seconds !== undefined) body.ttl_seconds = opts.ttl_seconds;
+    return putJSON<SetMemoryEntryResponse>(
+      this.ctx,
+      `/v1/_memory/scopes/${encodeURIComponent(scope)}/${encodeURIComponent(scopeID)}/keys/${encodeURIComponent(key)}`,
+      body,
+      { signal: opts.signal },
+    );
+  }
+
+  /** Delete one memory entry by (scope, scope_id, key). Idempotent:
+   *  deleting a missing row is a non-error per the in-band Memory
+   *  tool's semantics — both surfaces return 204. */
+  async deleteMemoryEntry(
+    scope: string,
+    scopeID: string,
+    key: string,
+    opts?: { signal?: AbortSignal },
+  ): Promise<void> {
+    return deleteRequest(
+      this.ctx,
+      `/v1/_memory/scopes/${encodeURIComponent(scope)}/${encodeURIComponent(scopeID)}/keys/${encodeURIComponent(key)}`,
+      opts,
     );
   }
 

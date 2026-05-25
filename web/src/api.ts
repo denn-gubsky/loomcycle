@@ -778,6 +778,7 @@ export interface DefListByNameResponse {
 
 export interface ChannelDescriptor {
   name: string;
+  description?: string;
   scope?: string;
   semantic?: string;
   publisher?: string;
@@ -787,6 +788,10 @@ export interface ChannelDescriptor {
   message_count: number;
   oldest_visible_at?: string;
   newest_visible_at?: string;
+  // v0.11.5: "yaml" (operator yaml, immutable from UI),
+  // "runtime" (substrate, CRUD-mutable), "orphan" (no declaration —
+  // just persisted messages from a removed/renamed channel).
+  source?: "yaml" | "runtime" | "orphan" | string;
 }
 
 export interface ListChannelsResponse {
@@ -988,4 +993,106 @@ export function listAgentChannels(agentName: string): Promise<AgentChannelsRespo
   return jsonFetch<AgentChannelsResponse>(
     `/v1/agents/${encodeURIComponent(agentName)}/channels`,
   );
+}
+
+// ---- v0.11.5 channel admin CRUD ----
+
+export interface ChannelCreateRequest {
+  name: string;
+  description?: string;
+  scope?: string;
+  semantic?: string;
+  default_ttl?: number;
+  max_messages?: number;
+  publisher?: string;
+  period?: string;
+}
+
+export interface ChannelUpdateRequest {
+  description?: string;
+  default_ttl?: number;
+  max_messages?: number;
+  semantic?: string;
+}
+
+export function createChannel(body: ChannelCreateRequest): Promise<ChannelDescriptor> {
+  return jsonFetch<ChannelDescriptor>("/v1/_channels", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+export function updateChannel(
+  name: string,
+  patch: ChannelUpdateRequest,
+): Promise<ChannelDescriptor> {
+  return jsonFetch<ChannelDescriptor>(`/v1/_channels/${encodeURIComponent(name)}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(patch),
+  });
+}
+
+export async function deleteChannel(name: string): Promise<void> {
+  const resp = await fetch(`/v1/_channels/${encodeURIComponent(name)}`, {
+    method: "DELETE",
+    credentials: "same-origin",
+    headers: { Accept: "application/json" },
+  });
+  if (!resp.ok && resp.status !== 204) {
+    const body = await resp.text();
+    throw new Error(`${resp.status} ${resp.statusText}: ${body.slice(0, 200)}`);
+  }
+}
+
+// ---- v0.11.5 memory admin CRUD ----
+
+export interface MemoryEntrySetRequest {
+  value: unknown;
+  embed?: boolean;
+  ttl_seconds?: number;
+}
+
+export interface MemoryEntrySetResponse {
+  scope: string;
+  scope_id: string;
+  key: string;
+  embedded: boolean;
+  embed_warning?: string;
+}
+
+export function setMemoryEntry(
+  scope: string,
+  scopeID: string,
+  key: string,
+  body: MemoryEntrySetRequest,
+): Promise<MemoryEntrySetResponse> {
+  return jsonFetch<MemoryEntrySetResponse>(
+    `/v1/_memory/scopes/${encodeURIComponent(scope)}/${encodeURIComponent(scopeID)}/keys/${encodeURIComponent(key)}`,
+    {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    },
+  );
+}
+
+export async function deleteMemoryEntry(
+  scope: string,
+  scopeID: string,
+  key: string,
+): Promise<void> {
+  const resp = await fetch(
+    `/v1/_memory/scopes/${encodeURIComponent(scope)}/${encodeURIComponent(scopeID)}/keys/${encodeURIComponent(key)}`,
+    {
+      method: "DELETE",
+      credentials: "same-origin",
+      headers: { Accept: "application/json" },
+    },
+  );
+  if (!resp.ok && resp.status !== 204) {
+    const body = await resp.text();
+    throw new Error(`${resp.status} ${resp.statusText}: ${body.slice(0, 200)}`);
+  }
 }

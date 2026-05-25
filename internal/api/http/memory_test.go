@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/denn-gubsky/loomcycle/internal/cancel"
@@ -222,6 +223,107 @@ func TestHandleGetMemoryEntry_NotFound(t *testing.T) {
 	s.handleGetMemoryEntry(rec, req)
 	if rec.Code != http.StatusNotFound {
 		t.Errorf("status = %d, want 404", rec.Code)
+	}
+}
+
+// ---- v0.11.5 PUT / DELETE memory entry admin tests ---------------
+
+// TestHandlePutMemoryEntry_CreatesAndOverwrites checks the idempotent
+// upsert path — PUT a value, then PUT a new value at the same key
+// and verify the row was overwritten (not duplicated).
+func TestHandlePutMemoryEntry_CreatesAndOverwrites(t *testing.T) {
+	s := memoryAdminFixture(t)
+
+	body1 := `{"value": {"role": "manager"}}`
+	rec := httptest.NewRecorder()
+	s.Mux().ServeHTTP(rec, httptest.NewRequest(
+		"PUT", "/v1/_memory/scopes/user/charlie/keys/profile",
+		strings.NewReader(body1),
+	))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+
+	// Read back via the store directly (the admin GET is exercised
+	// in TestHandleGetMemoryEntry_*).
+	got, err := s.store.MemoryGet(t.Context(), store.MemoryScopeUser, "charlie", "profile")
+	if err != nil {
+		t.Fatalf("MemoryGet after PUT: %v", err)
+	}
+	if string(got.Value) != `{"role": "manager"}` {
+		t.Errorf("value = %s", got.Value)
+	}
+
+	// Overwrite.
+	body2 := `{"value": {"role": "director"}}`
+	rec2 := httptest.NewRecorder()
+	s.Mux().ServeHTTP(rec2, httptest.NewRequest(
+		"PUT", "/v1/_memory/scopes/user/charlie/keys/profile",
+		strings.NewReader(body2),
+	))
+	if rec2.Code != http.StatusOK {
+		t.Fatalf("overwrite status = %d, want 200", rec2.Code)
+	}
+	got2, _ := s.store.MemoryGet(t.Context(), store.MemoryScopeUser, "charlie", "profile")
+	if string(got2.Value) != `{"role": "director"}` {
+		t.Errorf("overwrite value = %s", got2.Value)
+	}
+}
+
+// TestHandlePutMemoryEntry_RejectsInvalidScope refuses scopes outside
+// the admin allow-set.
+func TestHandlePutMemoryEntry_RejectsInvalidScope(t *testing.T) {
+	s := memoryAdminFixture(t)
+	body := `{"value": "x"}`
+	rec := httptest.NewRecorder()
+	s.Mux().ServeHTTP(rec, httptest.NewRequest(
+		"PUT", "/v1/_memory/scopes/system/x/keys/y",
+		strings.NewReader(body),
+	))
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", rec.Code)
+	}
+}
+
+// TestHandlePutMemoryEntry_RejectsMissingValue refuses an empty body.
+func TestHandlePutMemoryEntry_RejectsMissingValue(t *testing.T) {
+	s := memoryAdminFixture(t)
+	rec := httptest.NewRecorder()
+	s.Mux().ServeHTTP(rec, httptest.NewRequest(
+		"PUT", "/v1/_memory/scopes/user/alice/keys/voice",
+		strings.NewReader(`{}`),
+	))
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400; body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestHandleDeleteMemoryEntry_RemovesRow deletes an existing row + 204s.
+func TestHandleDeleteMemoryEntry_RemovesRow(t *testing.T) {
+	s := memoryAdminFixture(t)
+	rec := httptest.NewRecorder()
+	s.Mux().ServeHTTP(rec, httptest.NewRequest(
+		"DELETE", "/v1/_memory/scopes/user/alice/keys/voice", nil,
+	))
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204; body=%s", rec.Code, rec.Body.String())
+	}
+	if _, err := s.store.MemoryGet(t.Context(), store.MemoryScopeUser, "alice", "voice"); err == nil {
+		t.Errorf("expected NotFound after DELETE, got nil error")
+	}
+}
+
+// TestHandleDeleteMemoryEntry_IdempotentMissingRow returns 204 even
+// when the row didn't exist (mirrors the store's MemoryDelete shape:
+// "row didn't exist" is not an error).
+func TestHandleDeleteMemoryEntry_IdempotentMissingRow(t *testing.T) {
+	s := memoryAdminFixture(t)
+	rec := httptest.NewRecorder()
+	s.Mux().ServeHTTP(rec, httptest.NewRequest(
+		"DELETE", "/v1/_memory/scopes/user/alice/keys/nonexistent", nil,
+	))
+	if rec.Code != http.StatusNoContent {
+		t.Errorf("status = %d, want 204 (idempotent delete)", rec.Code)
 	}
 }
 
