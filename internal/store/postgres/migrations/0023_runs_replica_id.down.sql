@@ -1,0 +1,2 @@
+DROP INDEX IF EXISTS runs_by_replica;
+ALTER TABLE runs DROP COLUMN IF EXISTS replica_id;

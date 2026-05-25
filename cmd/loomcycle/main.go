@@ -39,6 +39,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/cli"
 	"github.com/denn-gubsky/loomcycle/internal/concurrency"
 	"github.com/denn-gubsky/loomcycle/internal/config"
+	"github.com/denn-gubsky/loomcycle/internal/coord"
 	"github.com/denn-gubsky/loomcycle/internal/heartbeat"
 	"github.com/denn-gubsky/loomcycle/internal/help"
 	mcpsign "github.com/denn-gubsky/loomcycle/internal/mcp"
@@ -1093,6 +1094,43 @@ func main() {
 		log.Printf("heartbeat: sweeper disabled (LOOMCYCLE_HEARTBEAT_SWEEPER=0 or no Store)")
 	}
 
+	// v0.12.0 multi-replica HA foundation. Activates only when the
+	// operator sets LOOMCYCLE_REPLICA_ID. openStore already guards
+	// against SQLite + cluster mode, so reaching here with a non-
+	// empty ReplicaID guarantees a Postgres store.
+	if cfg.Env.ReplicaID != "" {
+		pgStore, ok := storeIface.(*storepostgres.Store)
+		if !ok {
+			log.Fatalf("coord: REPLICA_ID set but store is not *storepostgres.Store (openStore guard bypassed?)")
+		}
+		bp, err := coord.NewPostgresBackplane(coord.PostgresBackplaneConfig{
+			Pool:      pgStore.Pool(),
+			DSN:       cfg.Storage.PgDSN,
+			ReplicaID: cfg.Env.ReplicaID,
+		})
+		if err != nil {
+			log.Fatalf("coord: backplane init: %v", err)
+		}
+		defer func() {
+			if err := bp.Close(); err != nil {
+				log.Printf("coord: backplane close: %v", err)
+			}
+		}()
+		replicaStore := coord.NewReplicaStore(pgStore.Pool())
+		hostname, _ := os.Hostname()
+		hb := coord.NewHeartbeat(replicaStore, coord.HeartbeatConfig{
+			ReplicaID: cfg.Env.ReplicaID,
+			Hostname:  hostname,
+			Version:   buildVersion,
+		})
+		go hb.Run(bgCtx)
+		// Wire the cluster view onto /healthz. Phase 1 ships the
+		// backplane behind the interface but with no live publisher/
+		// subscriber — Phase 2+ adds those.
+		srv.SetCoord(bp, replicaStore, cfg.Env.ReplicaID)
+		log.Printf("coord: cluster mode active — replica_id=%s heartbeat=30s backplane=postgres-listen-notify", cfg.Env.ReplicaID)
+	}
+
 	// Memory tool TTL sweeper. Cheap periodic DELETE of expired rows.
 	// The store also filters expired entries at read time, so this
 	// goroutine only matters for keeping the table small over the
@@ -1384,6 +1422,13 @@ func main() {
 func openStore(cfg *config.Config) (store.Store, func(), error) {
 	switch cfg.Storage.Backend {
 	case "sqlite", "":
+		if cfg.Env.ReplicaID != "" {
+			return nil, nil, errors.New(
+				"LOOMCYCLE_REPLICA_ID is set but storage.backend is sqlite: " +
+					"multi-replica requires Postgres (LISTEN/NOTIFY backplane + " +
+					"shared replicas heartbeat table). Set storage.backend: postgres " +
+					"+ storage.pg_dsn, or unset LOOMCYCLE_REPLICA_ID for single-replica mode")
+		}
 		if err := os.MkdirAll(cfg.Env.DataDir, 0o755); err != nil {
 			return nil, nil, fmt.Errorf("data dir: %w", err)
 		}

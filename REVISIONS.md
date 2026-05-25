@@ -8,6 +8,42 @@ For pre-v0.4 history (single-tool runtime, library milestone, security patch), s
 
 ---
 
+## What's in v0.12.0
+
+**Phase 1 of the v1.0 multi-replica HA capstone — foundation only.** Activates only when the operator sets `LOOMCYCLE_REPLICA_ID`. Single-replica deployments (env var unset) see no behavior change — every code path added in this release is dormant.
+
+### Scope
+
+The v1.0 capstone is a 7-phase rollout that lifts loomcycle from single-process to cluster-mode (2+ replicas behind a load balancer sharing one Postgres DB). v0.12.0 ships Phase 1 — the substrate that later phases build on.
+
+### What ships
+
+1. **`LOOMCYCLE_REPLICA_ID` env var.** When unset, loomcycle runs in single-replica mode exactly like v0.11.x — no backplane, no replicas table writes, no `/healthz` cluster-view fields. When set, the operator must use the Postgres store; SQLite refuses to start with a clear error. Validates against `[A-Za-z0-9][A-Za-z0-9_-]{0,63}` — UUID4 is the recommended default but short labels like `replica-a` are accepted for human-friendly cluster admin.
+
+2. **New `internal/coord/` package.** Houses the `Backplane` interface + `PostgresBackplane` implementation (Postgres LISTEN/NOTIFY), plus the `ReplicaStore` heartbeat-table reader/writer. Backplane is behind an interface so a future Redis impl (post-v1.0) slots in without touching consumers; v1.0 ships Postgres LISTEN/NOTIFY only. Topic namespace: `loomcycle.*` prevents collision with any other LISTEN consumer sharing the database. Wire envelope is `{"r":"<replica_id>","p":"<base64 payload>"}` — self-messages filtered before delivery; reconnect-on-drop with exponential backoff (500ms → 30s, ±20% jitter); 7800-byte payload cap (margin under the Postgres 8000-byte NOTIFY ceiling).
+
+3. **`replicas` heartbeat table** (migration 0022). One row per running replica — `id`, `hostname`, `started_at`, `last_heartbeat_at`, `version`. Self-registered by a background goroutine on boot (30s interval), self-deleted on graceful shutdown via a fresh 5s context (the parent ctx is already cancelled by the time the DELETE runs). Phase 5 will add a TTL sweeper for replicas that died without graceful shutdown.
+
+4. **`runs.replica_id` column** (migration 0023, nullable). Landed in Phase 1 so Phase 3 (cross-replica cancel) is purely behavioral — Phase 3 adds one line to `CreateRun` and starts populating the column without a migration. Phase 1 itself never writes the column; existing rows stay NULL.
+
+5. **SQLite refuse-to-start guard.** `openStore` checks `cfg.Env.ReplicaID != "" && backend == "sqlite"` and returns a clear error pointing the operator at Postgres + `pg_dsn`, or at unsetting the env var for single-replica mode. The boot fails loud rather than silently degrading to a broken multi-replica deployment.
+
+6. **`GET /healthz` cluster view.** Single-replica deployments (REPLICA_ID unset) see the same response shape as v0.11.x — `omitempty` keeps the new fields invisible. Cluster deployments see two additional fields: `replica_id` (this replica's ID) and `replicas[]` (every alive replica with hostname / started_at / last_heartbeat_at / version). The `ListReplicas` call gets a 2-second timeout; if it fails, the liveness probe still returns 200 + ok:true with the cluster fields omitted — the probe's primary job is liveness, not cluster completeness.
+
+### Locked architecture
+
+- **Backplane = Postgres LISTEN/NOTIFY only in v1.0.** No Redis until v1.1+, and only if a deployment hits LISTEN/NOTIFY's throughput ceiling (~10K msg/s).
+- **SQLite is single-replica only.** Multi-replica requires Postgres.
+- **MCP stdio children stay per-replica.** N replicas × M servers in process tables. Resource-scaling concern, not correctness.
+- **Anthropic OAuth-dev tokens stay single-host.** Already documented in the OAuth-dev RFC.
+- **Global concurrency cap stays per-replica** — per-tenant fairness lifts to cluster-wide in Phase 2 via DB-backed counter; global cap stays per-replica with operator math documented.
+
+### What's coming in the rest of v0.12.x → v1.0
+
+Phase 2 (v0.12.1) — cluster-wide per-user fairness via `user_quotas` table replacing the in-process counter. Phase 3 (v0.12.2) — cross-replica cancel + status. Phase 4 (v0.12.3) — pause/resume + bus fanout. Phase 5 (v0.12.4) — singleton sweepers via `pg_try_advisory_lock`. Phase 6 (v0.12.5) — session-lock + hook-registry → DB-backed. Phase 7 (v0.12.6) — hardening + docs + **tag v1.0**.
+
+---
+
 ## What's in v0.11.12
 
 Two small DX items bundled. Same posture as v0.11.7's polish bundle — closes out the small-items queue before the v1.0 multi-replica HA capstone.
