@@ -8,6 +8,38 @@ For pre-v0.4 history (single-tool runtime, library milestone, security patch), s
 
 ---
 
+## What's in v0.11.12
+
+Two small DX items bundled. Same posture as v0.11.7's polish bundle — closes out the small-items queue before the v1.0 multi-replica HA capstone.
+
+### What ships
+
+1. **`loomcycle hash agent --config <yaml> <name>`** — extended the existing v0.9.x `hash agent <path-to-md>` subcommand with a name-lookup mode. When `--config` is set, the positional argument is interpreted as an agent name and looked up in the yaml `agents:` block, rather than as a path to a standalone `.md` file. Closes the pre-deploy verify gap for operators whose agents live in `loomcycle.yaml` (not Claude Code-style standalone MDs):
+
+   ```sh
+   local=$(loomcycle hash agent --config loomcycle.yaml researcher)
+   remote=$(curl /v1/agentdef -d '{"op":"verify","name":"researcher"}' | jq -r .current_sha256)
+   [ "$local" = "$remote" ] || echo "drift detected"
+   ```
+
+   Computes the hash via the same `agents.Sign(agents.FromYAMLAgent)` chain the runtime uses for static-yaml agents, so the local hash matches what `AgentDef.verify` returns on the deployed loomcycle for the same content. Path-mode (the v0.9.x behaviour) stays byte-identical when `--config` is absent. Missing-agent error lists the available agent names from the yaml's `agents:` block so operators spot typos immediately.
+
+2. **`runtime` / `yaml` / `orphan` filter chips on `/ui/channels`** — extended the Web UI filter chip row from the existing 5 chips (`all` / `_system/*` / `global` / `user` / `agent` — scope-based) with 3 new source-tag chips: `yaml` (operator-declared in `channels:` block), `runtime` (created via `POST /v1/_channels` runtime CRUD), `orphan` (no declaration, only persisted messages from a removed/renamed channel — forensics view). Closes the v0.11.5 UX gap where operators had to scan visually for the source chip on each row to filter by source.
+
+### Wire-compatibility
+
+- Hash CLI: additive flag. Existing CI scripts using path-mode work unchanged. `loomcycle hash skill` unchanged.
+- ChannelsView: additive chips. Existing `all` / scope-based chips work identically. Saved state in `FilterKind` type grows; existing localStorage filter state (if any) falls through to `all` defensively.
+- Zero server-side changes. `@loomcycle/client` stays at 0.11.5. Web UI internal version: 0.7.6 → 0.7.7.
+
+---
+
+## What's in v0.11.11
+
+Documentation + visible-warning patch on top of v0.11.10. Hardens the risk language around the Anthropic OAuth-dev provider so operators see the no-guarantee framing prominently before they opt in. Four operator-facing surfaces (`docs/PROVIDERS.md` ⚠ NO GUARANTEES callout, CLI login disclaimer block, boot-log warning, README v0.11.10 entry) now carry consistent explicit language: reverse-engineered OAuth flow not officially endorsed by Anthropic; operator runs against own subscription; Anthropic's terms historically restrict programmatic use outside the SDK; operator carries all risk including account flag/revocation; no warranty/SLA/liability from loomcycle. Zero behavior change; documentation + visible warnings only.
+
+---
+
 ## What's in v0.11.10
 
 Anthropic OAuth-dev stealth-mode parity. Closes the v0.11.9 deferrals by converging the live-data findings against the operator's real MAX subscription. The v0.11.9 OAuth scaffolding shipped working auth + token management + the mask layer but deferred 6 items that needed live Anthropic-side observation to resolve. v0.11.10 closes them.
