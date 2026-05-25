@@ -145,11 +145,14 @@ func parseEmbeddingsInput(raw json.RawMessage) ([]string, error) {
 	}
 	// Sniff for tokenized inputs to give a friendly error rather
 	// than the generic "cannot unmarshal number into string"
-	// goose chase.
+	// goose chase. JSON numbers can start with a digit (`42`) or
+	// a minus (`-5`); BPE tokenizers occasionally emit negative
+	// token IDs. The `[` catches nested batched-tokens
+	// (`[[42, 17], [3, 9]]`).
 	var maybeTokens []json.RawMessage
 	if err := json.Unmarshal(raw, &maybeTokens); err == nil && len(maybeTokens) > 0 {
 		first := string(maybeTokens[0])
-		if len(first) > 0 && (first[0] == '[' || (first[0] >= '0' && first[0] <= '9')) {
+		if len(first) > 0 && (first[0] == '[' || first[0] == '-' || (first[0] >= '0' && first[0] <= '9')) {
 			return nil, errors.New("tokenized input (number arrays) is not supported; send text strings instead")
 		}
 	}

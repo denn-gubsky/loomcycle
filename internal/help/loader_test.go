@@ -16,7 +16,34 @@ func TestLoadSet_BundledOnly(t *testing.T) {
 	if len(names) == 0 {
 		t.Fatal("no bundled topics")
 	}
-	want := []string{"experimentation", "interruption", "loomcycle", "scopes", "subagents", "system-channels", "vector-memory"}
+	// Sentinel list of every bundled topic that MUST load. Adding
+	// a new file under internal/help/builtin/ requires extending
+	// this list — that's load-bearing: an accidental rename or
+	// deletion of a shipped topic would otherwise pass CI. Kept
+	// in alphabetical order for diff readability.
+	want := []string{
+		"channel-admin",
+		"content-signatures",
+		"dynamic-mcp",
+		"experimentation",
+		"fairness",
+		"getting-started",
+		"installation",
+		"interruption",
+		"llm-gateway",
+		"loomcycle",
+		"n8n-integration",
+		"observability",
+		"openai-compat",
+		"pause-resume-snapshot",
+		"scopes",
+		"skills-evolution",
+		"sqlite-vec",
+		"subagents",
+		"system-channels",
+		"vector-memory",
+		"voyage-embedder",
+	}
 	for _, w := range want {
 		if _, ok := set.Get(w); !ok {
 			t.Errorf("bundled topic %q missing (got: %v)", w, names)

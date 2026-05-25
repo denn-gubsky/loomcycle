@@ -231,6 +231,30 @@ func TestEmbeddings_TokenizedInputRefused(t *testing.T) {
 	}
 }
 
+// TestEmbeddings_NegativeTokenizedInputRefused — regression for the
+// v0.11.4 review finding: the tokenized-input sniffer must also
+// catch negative integer token IDs (BPE tokenizers occasionally
+// emit them). Without the `-` check, the sniffer fell through to
+// the generic "string or array of strings" error instead of the
+// specific tokenized-input hint the comment promised.
+func TestEmbeddings_NegativeTokenizedInputRefused(t *testing.T) {
+	_, _, ts := makeEmbeddingsServer(t)
+
+	body := `{"model":"text-embedding-3-small","input":[-42, 17, 8]}`
+	resp, err := http.Post(ts.URL+"/v1/embeddings", "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("status=%d; want 400 (negative-int tokenized input)", resp.StatusCode)
+	}
+	raw, _ := io.ReadAll(resp.Body)
+	if !bytes.Contains(raw, []byte("tokenized")) {
+		t.Errorf("body should mention tokenized (sniffer must catch negative integers); got %s", string(raw))
+	}
+}
+
 // TestEmbeddings_EmptyInputRefused — empty string, empty array,
 // null all rejected as bad request.
 func TestEmbeddings_EmptyInputRefused(t *testing.T) {
