@@ -20,6 +20,13 @@
    * coherent if a future change overrides them. */
   --bg-muted: #181818;
   --danger: #c33;
+  /* v0.11.7 — same treatment for --fg-muted and --bg-input. Both have
+   * ~16 call sites across the library/memory/channel form clusters,
+   * always via inline fallback only. A future theme override would
+   * silently fail on those sites; declaring them here makes overrides
+   * authoritative. Values match the predominant inline fallback. */
+  --fg-muted: #888;
+  --bg-input: #1a1a1a;
 }
 
 * {
