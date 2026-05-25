@@ -234,7 +234,22 @@ func New(cfg *config.Config, pr ProviderResolver, builtinTools []tools.Tool, sem
 		hookDispatcher: hooks.NewDispatcher(hookReg, nil),
 		startedAt:      time.Now(),
 	}
-	s.tools = append(s.tools, &builtin.AgentTool{Run: s.runSubAgent})
+	s.tools = append(s.tools, &builtin.AgentTool{
+		Run: s.runSubAgent,
+		// v0.11.8 — per-agent max_concurrent_children cap for
+		// Agent.parallel_spawn. Walks the same resolver chain as
+		// sub-run dispatch (yaml > dynamic_agents > AgentDef
+		// substrate) so substrate-edited overrides apply on the
+		// next call without restart. Returns 0 = no override; the
+		// tool falls back to DefaultMaxConcurrentChildren.
+		CapLookup: func(ctx context.Context, callingAgent string) int {
+			def, ok := lookup.Agent(ctx, s.store, s.cfg, callingAgent)
+			if !ok {
+				return 0
+			}
+			return def.MaxConcurrentChildren
+		},
+	})
 	return s
 }
 

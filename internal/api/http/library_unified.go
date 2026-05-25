@@ -248,38 +248,40 @@ func deriveSource(inStatic, inSubstrate bool) string {
 // the same conceptual fix PR #184 applied for the substrate-read
 // path.
 type staticAgentDefJSON struct {
-	Provider         string                            `json:"provider,omitempty"`
-	Model            string                            `json:"model,omitempty"`
-	Tier             string                            `json:"tier,omitempty"`
-	Effort           string                            `json:"effort,omitempty"`
-	MaxTokens        int                               `json:"max_tokens,omitempty"`
-	MaxIterations    int                               `json:"max_iterations,omitempty"`
-	SystemPrompt     string                            `json:"system_prompt,omitempty"`
-	SystemPromptBase string                            `json:"system_prompt_base,omitempty"`
-	AllowedTools     []string                          `json:"allowed_tools,omitempty"`
-	Skills           []string                          `json:"skills,omitempty"`
-	Providers        []string                          `json:"providers,omitempty"`
-	Models           map[string][]config.TierCandidate `json:"models,omitempty"`
-	MemoryScopes     []string                          `json:"memory_scopes,omitempty"`
-	MemoryQuotaBytes int                               `json:"memory_quota_bytes,omitempty"`
+	Provider              string                            `json:"provider,omitempty"`
+	Model                 string                            `json:"model,omitempty"`
+	Tier                  string                            `json:"tier,omitempty"`
+	Effort                string                            `json:"effort,omitempty"`
+	MaxTokens             int                               `json:"max_tokens,omitempty"`
+	MaxIterations         int                               `json:"max_iterations,omitempty"`
+	MaxConcurrentChildren int                               `json:"max_concurrent_children,omitempty"`
+	SystemPrompt          string                            `json:"system_prompt,omitempty"`
+	SystemPromptBase      string                            `json:"system_prompt_base,omitempty"`
+	AllowedTools          []string                          `json:"allowed_tools,omitempty"`
+	Skills                []string                          `json:"skills,omitempty"`
+	Providers             []string                          `json:"providers,omitempty"`
+	Models                map[string][]config.TierCandidate `json:"models,omitempty"`
+	MemoryScopes          []string                          `json:"memory_scopes,omitempty"`
+	MemoryQuotaBytes      int                               `json:"memory_quota_bytes,omitempty"`
 }
 
 func marshalStaticAgentDef(def config.AgentDef) json.RawMessage {
 	b, err := json.Marshal(staticAgentDefJSON{
-		Provider:         def.Provider,
-		Model:            def.Model,
-		Tier:             def.Tier,
-		Effort:           def.Effort,
-		MaxTokens:        def.MaxTokens,
-		MaxIterations:    def.MaxIterations,
-		SystemPrompt:     def.SystemPrompt,
-		SystemPromptBase: def.SystemPromptBase,
-		AllowedTools:     def.AllowedTools,
-		Skills:           def.Skills,
-		Providers:        def.Providers,
-		Models:           def.Models,
-		MemoryScopes:     def.MemoryScopes,
-		MemoryQuotaBytes: def.MemoryQuotaBytes,
+		Provider:              def.Provider,
+		Model:                 def.Model,
+		Tier:                  def.Tier,
+		Effort:                def.Effort,
+		MaxTokens:             def.MaxTokens,
+		MaxIterations:         def.MaxIterations,
+		MaxConcurrentChildren: def.MaxConcurrentChildren,
+		SystemPrompt:          def.SystemPrompt,
+		SystemPromptBase:      def.SystemPromptBase,
+		AllowedTools:          def.AllowedTools,
+		Skills:                def.Skills,
+		Providers:             def.Providers,
+		Models:                def.Models,
+		MemoryScopes:          def.MemoryScopes,
+		MemoryQuotaBytes:      def.MemoryQuotaBytes,
 	})
 	if err != nil {
 		return nil

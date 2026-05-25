@@ -48,17 +48,18 @@ func TestAgent_EquivalenceYamlVsSubstrate(t *testing.T) {
 	// Seed agent — representative of a realistic content shape:
 	// non-trivial system_prompt, allowed_tools, skills, model+tier.
 	yamlAgent := config.AgentDef{
-		Provider:         "anthropic",
-		Model:            "claude-sonnet-4-6",
-		Tier:             "smart",
-		MaxTokens:        4096,
-		MaxIterations:    32,
-		SystemPrompt:     "You are a careful researcher. Ask questions before acting.",
-		SystemPromptBase: "You are a careful researcher. Ask questions before acting.",
-		AllowedTools:     []string{"Read", "Memory", "Channel"},
-		Skills:           []string{"voice-applier"},
-		MemoryScopes:     []string{"agent", "user"},
-		MemoryQuotaBytes: 65536,
+		Provider:              "anthropic",
+		Model:                 "claude-sonnet-4-6",
+		Tier:                  "smart",
+		MaxTokens:             4096,
+		MaxIterations:         32,
+		MaxConcurrentChildren: 8,
+		SystemPrompt:          "You are a careful researcher. Ask questions before acting.",
+		SystemPromptBase:      "You are a careful researcher. Ask questions before acting.",
+		AllowedTools:          []string{"Read", "Memory", "Channel"},
+		Skills:                []string{"voice-applier"},
+		MemoryScopes:          []string{"agent", "user"},
+		MemoryQuotaBytes:      65536,
 	}
 	// Simulate boot-time normalization on the yaml side: resolveSkills
 	// would set SystemPromptBase = SystemPrompt for an agent with
@@ -68,17 +69,18 @@ func TestAgent_EquivalenceYamlVsSubstrate(t *testing.T) {
 	// lookup.SubstrateAgentDef). This mirrors what AgentDef.create
 	// stores after the write-side normalize() of commit 3.
 	substrateShape := lookup.SubstrateAgentDef{
-		Provider:         yamlAgent.Provider,
-		Model:            yamlAgent.Model,
-		Tier:             yamlAgent.Tier,
-		MaxTokens:        yamlAgent.MaxTokens,
-		MaxIterations:    yamlAgent.MaxIterations,
-		SystemPrompt:     yamlAgent.SystemPrompt,
-		SystemPromptBase: yamlAgent.SystemPromptBase,
-		AllowedTools:     yamlAgent.AllowedTools,
-		Skills:           yamlAgent.Skills,
-		MemoryScopes:     yamlAgent.MemoryScopes,
-		MemoryQuotaBytes: yamlAgent.MemoryQuotaBytes,
+		Provider:              yamlAgent.Provider,
+		Model:                 yamlAgent.Model,
+		Tier:                  yamlAgent.Tier,
+		MaxTokens:             yamlAgent.MaxTokens,
+		MaxIterations:         yamlAgent.MaxIterations,
+		MaxConcurrentChildren: yamlAgent.MaxConcurrentChildren,
+		SystemPrompt:          yamlAgent.SystemPrompt,
+		SystemPromptBase:      yamlAgent.SystemPromptBase,
+		AllowedTools:          yamlAgent.AllowedTools,
+		Skills:                yamlAgent.Skills,
+		MemoryScopes:          yamlAgent.MemoryScopes,
+		MemoryQuotaBytes:      yamlAgent.MemoryQuotaBytes,
 	}
 	defJSON, err := json.Marshal(substrateShape)
 	if err != nil {
@@ -112,7 +114,8 @@ func TestAgent_EquivalenceYamlVsSubstrate(t *testing.T) {
 		resolved.Model != yamlAgent.Model ||
 		resolved.Tier != yamlAgent.Tier ||
 		resolved.MaxTokens != yamlAgent.MaxTokens ||
-		resolved.MaxIterations != yamlAgent.MaxIterations {
+		resolved.MaxIterations != yamlAgent.MaxIterations ||
+		resolved.MaxConcurrentChildren != yamlAgent.MaxConcurrentChildren {
 		t.Errorf("scalar mismatch:\n  yaml: %+v\n  resolved: %+v", yamlAgent, resolved)
 	}
 	if resolved.SystemPrompt != yamlAgent.SystemPrompt {
@@ -194,20 +197,21 @@ func TestAgent_DriftDetection(t *testing.T) {
 	// Adding a field to either WITHOUT adding it here is the bug
 	// this test is designed to catch.
 	want := map[string]bool{
-		"provider":           true,
-		"model":              true,
-		"tier":               true,
-		"effort":             true,
-		"max_tokens":         true,
-		"max_iterations":     true,
-		"system_prompt":      true,
-		"system_prompt_base": true,
-		"allowed_tools":      true,
-		"skills":             true,
-		"providers":          true,
-		"models":             true,
-		"memory_scopes":      true,
-		"memory_quota_bytes": true,
+		"provider":                true,
+		"model":                   true,
+		"tier":                    true,
+		"effort":                  true,
+		"max_tokens":              true,
+		"max_iterations":          true,
+		"max_concurrent_children": true,
+		"system_prompt":           true,
+		"system_prompt_base":      true,
+		"allowed_tools":           true,
+		"skills":                  true,
+		"providers":               true,
+		"models":                  true,
+		"memory_scopes":           true,
+		"memory_quota_bytes":      true,
 	}
 	have := jsonTagsOf(reflect.TypeOf(lookup.SubstrateAgentDef{}))
 	for tag := range want {

@@ -114,6 +114,20 @@ func TestSign_NonZeroIntContributes(t *testing.T) {
 	}
 }
 
+// TestSign_MaxConcurrentChildrenContributes pins the v0.11.8 hash
+// inclusion of max_concurrent_children. AgentDef.verify uses the
+// content_sha256 to detect drift between a deployed agent and an
+// updated definition; if max_concurrent_children doesn't feed the
+// hash, two definitions that differ only in the cap will falsely
+// report as matching.
+func TestSign_MaxConcurrentChildrenContributes(t *testing.T) {
+	a := Sign(AgentContent{Name: "x"})
+	b := Sign(AgentContent{Name: "x", MaxConcurrentChildren: 8})
+	if a == b {
+		t.Error("max_concurrent_children change ignored — AgentDef.verify would report wrong matches")
+	}
+}
+
 func TestFromYAMLAgent_RoundTrip(t *testing.T) {
 	agent := &Agent{
 		Name:         "researcher",

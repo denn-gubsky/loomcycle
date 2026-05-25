@@ -8,6 +8,48 @@ For pre-v0.4 history (single-tool runtime, library milestone, security patch), s
 
 ---
 
+## What's in v0.11.8
+
+Multi-agent fan-out. Formalizes the `Agent.parallel_spawn` op + per-agent `max_concurrent_children` cap — the locked v0.9.x backlog item from `langchain-comparison.md` Tier A (also a `doc-internal/PLAN.md` line 81 entry). JobEmber's job-searcher agent has been doing sequential sub-agent spawns in production for months; v0.11.8 gives the model a first-class API to fan out concurrently without managing its own goroutine analogue via tool-use ordering.
+
+### What ships
+
+**`Agent` tool — new `op` discriminator** matching the rest of the multi-op builtins (Memory / Channel / AgentDef / Skill / Evaluation / Context):
+- `op: "spawn"` (default, omittable) — the v0.4.0 single-child shape: `{name, prompt, def_id?}`. Wire-byte-identical to pre-v0.11.8; every existing agent prompt continues to work without changes.
+- `op: "parallel_spawn"` (new) — `{op, spawns: [{name, prompt, def_id?}, ...]}`. N children fan out concurrently; the tool returns when ALL complete (success or error).
+
+Result envelope for parallel_spawn is a JSON-encoded `{results: [{index, agent, ok, output?, error?}]}` in input order. Per-child errors are captured INSIDE the envelope, NOT escalated to a tool-level error — the parent's model reads the envelope and decides what to do.
+
+**Per-agent concurrency cap** — `max_concurrent_children: N` field on `config.AgentDef` (yaml) + `mergedDef` (substrate overlay) + `lookup.SubstrateAgentDef`. The cap throttles concurrent goroutines per `parallel_spawn` call only — sequential `spawn` is unaffected. Resolution walks the same chain as sub-run dispatch (yaml > dynamic_agents > AgentDef substrate), so an operator who edits the cap via the substrate UI sees the change on the next call without restart. Empty / 0 = runtime default (`DefaultMaxConcurrentChildren = 4`).
+
+**Hard ceiling** — `MaxParallelSpawns = 32` caps the per-call `spawns` array regardless of the per-agent override. A `spawns: [...]` longer than that refuses up-front so a runaway prompt asking for 100 specialists can't kite the substrate from a single tool call.
+
+**Depth guard** — fires once per call (parent's depth must be < `MaxAgentDepth=3`). Each child dispatches at depth+1, identical to single-spawn.
+
+**Context cancellation** — propagates to all in-flight children; pending children that haven't been admitted to the goroutine pool are marked `ok:false` + `error: "context canceled"` in the envelope.
+
+**`fan-out-patterns` Context.help topic** — new bundled topic (~200 lines) explaining when to use `parallel_spawn` vs sequential `spawn` vs `Channel.publish`. Operator-facing decision support with cost / fairness / join-semantics guidance.
+
+**Web UI Library modal** — gains a `max_concurrent_children` number input alongside the existing `max_tokens` / `max_iterations` / `memory_quota_bytes` cluster, preserving the v0.11.6 invariant that the modal is "the authoritative schema view."
+
+**Library API** — `staticAgentDefJSON` projection in `library_unified.go` now includes `max_concurrent_children` so the field round-trips through the read path (verified end-to-end against a real binary).
+
+### Architectural decisions
+
+- **`op` discriminator on the existing tool, not a separate `AgentParallel` tool.** Matches the project's multi-op pattern. Single tool name in the model's tool list = simpler discovery; per-op JSON schema branches via `oneOf` (Gemini sanitizer from v0.8.10 merges branches cleanly).
+- **Per-child errors stay inside the envelope.** Same posture as the v0.4.0 single-spawn shape that surfaces backend errors as `IsError` tool_results — parent runs are never torn down by a child's failure. The model decides the recovery strategy.
+- **Synchronous join semantics, no streaming.** v1 is "spawn N, wait for all, return." Partial-results streaming, early-cancel-on-first-error, retry-on-child-error are deferred. The boring API is the right shape until a real workflow needs more.
+- **Concurrency cap is per-call, not per-replica.** v0.10.1's per-tenant fairness still applies on top (the global semaphore caps every child as a regular run). `max_concurrent_children` is a SECOND layer — local to one parallel_spawn op — so a fan-out workflow doesn't burn down its tenant budget faster than a sequential one.
+
+### Wire-compatibility notes
+
+- The `Agent` tool's JSON schema gains a `oneOf` discriminator. Existing agent prompts that send `{name, prompt}` (no `op`) hit the default `spawn` path — back-compat preserved.
+- `config.AgentDef` and the substrate's `mergedDef` both gain `max_concurrent_children` (omitempty). Existing yaml files / persisted rows omit the field → behaves identically to v0.11.7.
+- TS adapter is unchanged. `@loomcycle/client` stays at 0.11.5.
+- Web UI internal version: 0.7.5 → 0.7.6.
+
+---
+
 ## What's in v0.11.7
 
 Post-v0.11.6 polish: three small unrelated improvements bundled to avoid releasing three separate patches. None individually justified a release; together they're worth one.

@@ -69,15 +69,20 @@ type Agent struct {
 	// across many tool calls. Default 16 is too low for those; a
 	// 1.09M-input run was observed in production hitting the cap
 	// before reaching the final write (2026-05-21).
-	MaxIterations    int
-	AllowedTools     []string
-	Skills           []string
-	SystemPrompt     string
-	SystemPromptFile string
-	Providers        []string
-	Models           map[string][]TierCandidate
-	MemoryScopes     []string
-	MemoryQuotaBytes int
+	MaxIterations int
+	// MaxConcurrentChildren caps how many sub-agents this agent may
+	// spawn in parallel via Agent.parallel_spawn (v0.11.8+). 0 = use
+	// runtime default (builtin.DefaultMaxConcurrentChildren = 4).
+	// Sequential Agent.spawn calls are unaffected.
+	MaxConcurrentChildren int
+	AllowedTools          []string
+	Skills                []string
+	SystemPrompt          string
+	SystemPromptFile      string
+	Providers             []string
+	Models                map[string][]TierCandidate
+	MemoryScopes          []string
+	MemoryQuotaBytes      int
 	// Channels is the v0.8.4 Channel-tool ACL. Empty Publish /
 	// Subscribe = no access on that side.
 	Channels AgentChannelACL
@@ -225,26 +230,27 @@ func LoadSet(root string) (*Set, error) {
 // shape is the precise one, comma-string is the legacy/Claude Code
 // shape we tolerate so MDs stay portable.
 type frontmatter struct {
-	Name             string                     `yaml:"name"`
-	Description      string                     `yaml:"description"`
-	Tools            any                        `yaml:"tools"`         // Claude Code shape — string OR []string
-	AllowedTools     []string                   `yaml:"allowed_tools"` // loomcycle's preferred shape
-	Provider         string                     `yaml:"provider"`
-	Model            string                     `yaml:"model"`
-	Tier             string                     `yaml:"tier"`
-	Effort           string                     `yaml:"effort"`
-	MaxTokens        int                        `yaml:"max_tokens"`
-	MaxIterations    int                        `yaml:"max_iterations"`
-	Skills           []string                   `yaml:"skills"`
-	Providers        []string                   `yaml:"providers"`
-	Models           map[string][]TierCandidate `yaml:"models"`
-	MemoryScopes     []string                   `yaml:"memory_scopes"`
-	MemoryQuotaBytes int                        `yaml:"memory_quota_bytes"`
-	Channels         AgentChannelACL            `yaml:"channels"`
-	AgentDefScopes   []string                   `yaml:"agent_def_scopes"`
-	SkillDefScopes   []string                   `yaml:"skill_def_scopes"`
-	EvaluationScopes []string                   `yaml:"evaluation_scopes"`
-	SystemPromptFile string                     `yaml:"system_prompt_file"`
+	Name                  string                     `yaml:"name"`
+	Description           string                     `yaml:"description"`
+	Tools                 any                        `yaml:"tools"`         // Claude Code shape — string OR []string
+	AllowedTools          []string                   `yaml:"allowed_tools"` // loomcycle's preferred shape
+	Provider              string                     `yaml:"provider"`
+	Model                 string                     `yaml:"model"`
+	Tier                  string                     `yaml:"tier"`
+	Effort                string                     `yaml:"effort"`
+	MaxTokens             int                        `yaml:"max_tokens"`
+	MaxIterations         int                        `yaml:"max_iterations"`
+	MaxConcurrentChildren int                        `yaml:"max_concurrent_children"`
+	Skills                []string                   `yaml:"skills"`
+	Providers             []string                   `yaml:"providers"`
+	Models                map[string][]TierCandidate `yaml:"models"`
+	MemoryScopes          []string                   `yaml:"memory_scopes"`
+	MemoryQuotaBytes      int                        `yaml:"memory_quota_bytes"`
+	Channels              AgentChannelACL            `yaml:"channels"`
+	AgentDefScopes        []string                   `yaml:"agent_def_scopes"`
+	SkillDefScopes        []string                   `yaml:"skill_def_scopes"`
+	EvaluationScopes      []string                   `yaml:"evaluation_scopes"`
+	SystemPromptFile      string                     `yaml:"system_prompt_file"`
 	// SystemPrompt as an inline frontmatter field is intentionally
 	// NOT supported. The body of the MD is the prompt; if you want a
 	// pointer to a different file, use system_prompt_file.
@@ -299,6 +305,7 @@ func parseAgent(raw []byte) (*Agent, error) {
 	a.Effort = fm.Effort
 	a.MaxTokens = fm.MaxTokens
 	a.MaxIterations = fm.MaxIterations
+	a.MaxConcurrentChildren = fm.MaxConcurrentChildren
 	a.Skills = fm.Skills
 	a.Providers = fm.Providers
 	a.Models = fm.Models
