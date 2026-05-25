@@ -1,6 +1,7 @@
 package anthropic_oauth_dev
 
 import (
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -147,6 +148,34 @@ func TestOAuthTransport_ApplyAuthIsIdempotent(t *testing.T) {
 	}
 	if strings.Count(second, "claude-code-20250219") > 1 {
 		t.Errorf("anthropic-beta duplicated after second apply: %q", second)
+	}
+}
+
+// TestSubscriptionQuotaErr_PreservesErrorTextForClassifyError pins
+// the v0.11.10 A2 review-pass fix: the wrapper's .Error() MUST return
+// the inner error's text verbatim. internal/providers/errclass.go's
+// statusRe regex pattern-matches the leading "<provider> <status>:"
+// prefix to classify retryable vs not; a sentinel prefix on the wrap
+// would break that match and suppress the tier-fallback that
+// ClassifyError otherwise triggers for 429s.
+func TestSubscriptionQuotaErr_PreservesErrorTextForClassifyError(t *testing.T) {
+	orig := errors.New(`anthropic 429: {"type":"error","error":{"message":"subscription limit reached"}}`)
+	wrapped := &subscriptionQuotaErr{inner: orig}
+	if wrapped.Error() != orig.Error() {
+		t.Errorf("wrapper changed Error() text:\n  want: %q\n  got:  %q", orig.Error(), wrapped.Error())
+	}
+}
+
+// TestSubscriptionQuotaErr_ErrorsIs verifies errors.Is matches the
+// exported sentinel + unwraps to the original error.
+func TestSubscriptionQuotaErr_ErrorsIs(t *testing.T) {
+	orig := errors.New("anthropic 429: subscription exhausted")
+	wrapped := &subscriptionQuotaErr{inner: orig}
+	if !errors.Is(wrapped, ErrSubscriptionQuotaExhausted) {
+		t.Errorf("errors.Is should match ErrSubscriptionQuotaExhausted")
+	}
+	if !errors.Is(wrapped, orig) {
+		t.Errorf("errors.Is should also match the inner error (via Unwrap)")
 	}
 }
 

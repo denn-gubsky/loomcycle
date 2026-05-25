@@ -127,6 +127,19 @@ func (d *Driver) Call(ctx context.Context, req providers.Request) (<-chan provid
 	maskedReq.System = adaptSystemForOAuth(req.System)
 	innerCh, err := d.inner.Call(ctx, maskedReq)
 	if err != nil {
+		// v0.11.10 A2: subscription-quota detection on the SYNCHRONOUS
+		// error path. Anthropic's 429 from the Messages API is
+		// consumed by the inner driver's ratelimit.Do retry loop and
+		// then returned here as `err`, formatted as "anthropic 429:
+		// {body}". We sniff the body for "subscription" to wrap with
+		// the typed sentinel for tier-policy fallback consumers.
+		//
+		// Detection on the EVENT channel (initial v0.11.10 commit)
+		// was wrong: 429s never reach the event channel — they exit
+		// here. Caught in code review.
+		if isSubscriptionQuotaError(err.Error()) {
+			return nil, &subscriptionQuotaErr{inner: err}
+		}
 		return nil, err
 	}
 	// Wrap the inner channel: copy events through, reversing the mask
@@ -144,17 +157,6 @@ func (d *Driver) Call(ctx context.Context, req providers.Request) (<-chan provid
 				tu := *ev.ToolUse
 				tu.Name = UnmaskInbound(ev.ToolUse.Name)
 				ev.ToolUse = &tu
-			}
-			// v0.11.10 A2: subscription-quota-exhausted detection.
-			// When the inner driver surfaces a 429 whose body mentions
-			// "subscription" (case-insensitive), wrap the error so
-			// callers' errors.Is(err, ErrSubscriptionQuotaExhausted)
-			// matches. Tier-policy fallback_on_error: true can then
-			// branch on this specific case to fall back to API-key
-			// Anthropic instead of treating it as a generic
-			// retryable 429.
-			if ev.Type == providers.EventError && isSubscriptionQuotaError(ev.Error) {
-				ev.Error = fmt.Sprintf("%s: %s", ErrSubscriptionQuotaExhausted.Error(), ev.Error)
 			}
 			select {
 			case outCh <- ev:
@@ -285,24 +287,39 @@ func (t *oauthTransport) applyAuth(req *http.Request) {
 	req.Header.Set("User-Agent", "claude-cli/"+t.version)
 }
 
-// ErrSubscriptionQuotaExhausted is returned when Anthropic's
-// subscription billing reports quota exhaustion. Non-retryable on
-// the OAuth-dev provider itself; tier-policy fallback configured
-// via `user_tiers.<tier>.fallback_on_error: true` lets downstream
+// ErrSubscriptionQuotaExhausted is returned (wrapped via the
+// internal subscriptionQuotaErr type) when Anthropic's subscription
+// billing reports quota exhaustion. Non-retryable on the OAuth-dev
+// provider itself; tier-policy fallback configured via
+// `user_tiers.<tier>.fallback_on_error: true` lets downstream
 // API-key providers handle the request instead.
 //
-// Detection (v0.11.10 A2): in the Call() event-channel wrapper, an
-// error event whose text contains both "429" and "subscription"
-// (case-insensitive) gets prefixed with this sentinel so
-// errors.Is(err, ErrSubscriptionQuotaExhausted) matches. The error
-// text formatting is `<sentinel>: <original anthropic 429 body>` —
-// the original body stays visible for operator debugging.
+// Detection (v0.11.10 A2): on the SYNCHRONOUS error return from
+// Driver.Call(), if the inner anthropic driver's error text contains
+// both "429" and "subscription" (case-insensitive), we wrap with a
+// subscriptionQuotaErr whose .Error() preserves the original "anthropic
+// 429: {body}" string verbatim (so internal/providers/errclass.go's
+// statusRe regex still matches → ClassifyError still returns
+// ErrorClassRetryable → existing tier-fallback path still fires).
+// The wrap adds an Is() method so `errors.Is(err,
+// ErrSubscriptionQuotaExhausted)` matches for callers that want to
+// distinguish quota exhaustion from generic rate-limiting.
 //
 // Generic 429s (rate-limited but quota intact) are NOT wrapped — the
 // inner driver's ratelimit.Do path retries them transparently per
-// the standard rate-limit handling. Only quota exhaustion (which is
-// non-retryable on this provider) gets the typed wrap.
+// the standard rate-limit handling.
 var ErrSubscriptionQuotaExhausted = errors.New("anthropic-oauth-dev: subscription quota exhausted")
+
+// subscriptionQuotaErr is the wrapper that lets errors.Is match
+// ErrSubscriptionQuotaExhausted while preserving the original error
+// text verbatim (so downstream ClassifyError regex still works).
+type subscriptionQuotaErr struct{ inner error }
+
+func (e *subscriptionQuotaErr) Error() string { return e.inner.Error() }
+func (e *subscriptionQuotaErr) Unwrap() error { return e.inner }
+func (e *subscriptionQuotaErr) Is(target error) bool {
+	return target == ErrSubscriptionQuotaExhausted
+}
 
 // ResolveClaudeCodeVersion reads the env-var override (if set) or
 // returns PinnedClaudeCodeVersion. Exposed so callers in
