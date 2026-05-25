@@ -1559,7 +1559,7 @@ func newProviderResolver(cfg *config.Config) *providerResolver {
 				log.Printf("anthropic-oauth-dev: registered (token expires %s; user-agent=claude-cli/%s)",
 					refresher.Token().ExpiresAt.Format(time.RFC3339),
 					anthropic_oauth_dev.ResolveClaudeCodeVersion())
-				log.Printf("anthropic-oauth-dev: WARNING — reverse-engineered OAuth; reverse-engineered subscription-billing path; risk of account flag/revocation; research/dev use only (see docs/PROVIDERS.md)")
+				log.Printf("anthropic-oauth-dev: WARNING — reverse-engineered OAuth flow (Pi reference + loomcycle replication); NOT officially endorsed by Anthropic; subscription terms historically restrict programmatic use; operator carries all risk including account flag/revocation; no warranty/SLA/liability from loomcycle; see docs/PROVIDERS.md")
 			}
 		}
 	}

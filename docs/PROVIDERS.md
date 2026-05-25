@@ -18,7 +18,21 @@ This page covers operator-facing setup for each provider. The substrate, resolve
 
 ## `anthropic-oauth-dev` — Anthropic subscription billing (research/dev only)
 
-> **Read the risk section before enabling.** This provider authenticates against the operator's Claude Pro/Max subscription via a reverse-engineered OAuth flow (Pi's `pi-ai` package, github.com/earendil-works/pi, 51K stars, is the reference). It is **not officially endorsed by Anthropic**, operates in a vendor-policy gray zone, and carries account-revocation risk.
+> ### ⚠ NO GUARANTEES — READ BEFORE ENABLING
+>
+> The Anthropic OAuth flow used by this provider is **not an official integration**. It is the product of reverse-engineering done by the Pi agent team (github.com/earendil-works/pi, 51K stars, open-source) and replicated here by the loomcycle team. We do our best to mimic Claude Code's wire shape — tool names, system prompt format, headers, beta markers — so loomcycle's LLM calls pass through Anthropic's subscription-billing detection. **We cannot guarantee this will continue to work.** Anthropic can change the auth flow, the wire shape, the version pinning, or the detection heuristics at any time and the integration will break until a hotfix lands.
+>
+> **You are running this against your own Claude Pro/Max subscription. Anthropic's subscription terms historically restrict programmatic use outside the official Anthropic SDK. You — the operator — are solely responsible for any consequences with Anthropic if they ever object to this use, including account flagging, rate-limiting, or subscription revocation.** loomcycle (the project) and its maintainers carry no warranty, no liability, and provide no support guarantees for the OAuth-dev path. If your account is affected, the resolution path is between you and Anthropic; we cannot intervene.
+>
+> By setting `LOOMCYCLE_ANTHROPIC_OAUTH_DEV_ENABLED=1` and running `loomcycle anthropic login`, you acknowledge that:
+>
+> 1. The OAuth flow is reverse-engineered, not officially endorsed by Anthropic.
+> 2. Anthropic may flag, limit, or revoke your subscription if they object to non-Claude-Code clients using OAuth tokens.
+> 3. The integration may stop working at any time as Anthropic updates their auth surface; loomcycle will ship hotfixes when feasible but offers no SLA.
+> 4. All risk and any consequences with Anthropic are yours to manage. loomcycle disclaims responsibility for account, billing, or terms-of-service outcomes.
+> 5. If you cannot accept these terms, **do not enable this provider** — use the production `anthropic` provider (API key) instead.
+>
+> This feature exists because it is genuinely useful for research workloads where API-key billing would be prohibitively expensive. It is not a free lunch.
 
 ### When to use it
 
@@ -109,15 +123,15 @@ user_tiers:
 
 With `fallback_on_error: true`, subscription-quota-exhausted errors trigger a fallback to API-key Anthropic for the affected request. Research workloads can run primarily on subscription billing and bleed over to API credits only when the MAX quota hits its ceiling.
 
-### Risk acknowledgement
+### Risk details
 
-By enabling `LOOMCYCLE_ANTHROPIC_OAUTH_DEV_ENABLED=1`, you acknowledge:
+The headline disclaimer above is the contract. This section is the operational detail.
 
-1. **Reverse-engineered flow.** loomcycle's OAuth-dev provider uses Claude Code's OAuth `client_id` (publicly visible in Pi's open-source code at 51K stars; the constant is in `internal/providers/anthropic_oauth_dev/client_id.go`). Anthropic has not officially endorsed third-party use of this flow.
-2. **Subscription-terms gray zone.** Anthropic's MAX/Pro subscription terms historically restrict programmatic use outside their official SDK. Pi has been operating publicly since 2025-08 without takedown, suggesting Anthropic tolerates this in practice — but tolerance is not endorsement.
-3. **Account revocation risk.** Anthropic can flag accounts using non-Claude-Code clients at any time. Operators using OAuth-dev accept the risk that their MAX subscription may be limited or revoked if Anthropic's detection systems flag the pattern.
-4. **Drift exposure.** Anthropic can change the OAuth flow, the beta marker, or the required User-Agent at any time. When that happens, OAuth-dev breaks until a hotfix lands. Operators with `LOOMCYCLE_CLAUDE_CODE_VERSION=<override>` can self-patch the User-Agent string for the duration.
-5. **Single-machine deployment.** Tokens live in `~/.config/loomcycle/anthropic-oauth.json`. There is no support for shared token stores, multi-replica synchronization, or server-side token mounting. Multi-tenant or server-hosted deployments must use API-key Anthropic.
+* **Reverse-engineered flow.** The Claude Code OAuth `client_id` constant in `internal/providers/anthropic_oauth_dev/client_id.go` is the same one Pi publishes; loomcycle did not negotiate this access path with Anthropic. The wire shape — beta markers, User-Agent string, system-prompt prepend, tool-name canonicalization, MCP-name masking — exists to look like Claude Code so Anthropic's subscription billing accepts the request. None of this is guaranteed to keep working.
+* **Subscription-terms posture.** Anthropic's MAX/Pro subscription terms historically restrict programmatic use outside their official SDK. Pi has been operating publicly since 2025-08 without takedown, suggesting Anthropic tolerates this in practice — but tolerance is not endorsement, and tolerance can be withdrawn at any time without notice.
+* **No SLA, no warranty, no liability.** loomcycle is Apache-2.0 software. The OAuth-dev path is opt-in and explicitly described as "research/dev only" precisely so this expectation is clear. If you need contractually-guaranteed access to Claude, you must use the official API-key path (`provider: anthropic`) — that's between you and Anthropic and they support it.
+* **Single-machine deployment, by design.** Tokens live at `~/.config/loomcycle/anthropic-oauth.json` (chmod 0600). There is no support for shared token stores, multi-replica synchronization, or server-side token mounting. Multi-tenant or server-hosted deployments must use API-key Anthropic. This is enforced by design — to limit the blast radius if Anthropic's detection trips.
+* **Drift exposure.** Anthropic can change the OAuth flow, the beta marker, the required User-Agent string, or the validation of any wire-shape element at any time. When that happens, OAuth-dev breaks until a hotfix lands. Operators with `LOOMCYCLE_CLAUDE_CODE_VERSION=<override>` can self-patch the User-Agent string for the duration; other drift may require a code update.
 
 If any of these are unacceptable for your workload, use the `anthropic` provider (API key) instead.
 
