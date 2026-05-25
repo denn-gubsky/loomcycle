@@ -226,29 +226,43 @@ func (t *oauthTransport) applyAuth(req *http.Request) {
 	req.Header.Del("x-api-key")
 	tok := t.refresher.Token()
 	req.Header.Set("Authorization", "Bearer "+tok.AccessToken)
-	// Append OAuth betas to whatever the inner driver set. If the
-	// inner driver set no `anthropic-beta`, this becomes the only
-	// value — the Pinned* string already covers the required pair.
-	existing := req.Header.Get("anthropic-beta")
-	if existing == "" {
-		req.Header.Set("anthropic-beta", PinnedAnthropicBetas)
-	} else {
-		req.Header.Set("anthropic-beta", PinnedAnthropicBetas+","+existing)
-	}
+	// Always SET (not append) the pinned betas. The 401-retry path
+	// calls applyAuth on the SAME *http.Request twice — an append
+	// strategy would silently duplicate the betas to
+	// `claude-code-...,oauth-...,claude-code-...,oauth-...` on the
+	// retry, which Anthropic either rejects with 400 INVALID_BETA or
+	// silently fails closed.
+	//
+	// The inner anthropic driver doesn't set anthropic-beta itself
+	// today, so a straight SET is correct. If a future caller needs
+	// to layer additional betas, that's an additive change to the
+	// PinnedAnthropicBetas constant (or a per-Request beta-list
+	// accessor on the inner driver) — never a header-append at this
+	// layer.
+	req.Header.Set("anthropic-beta", PinnedAnthropicBetas)
 	req.Header.Set("User-Agent", "claude-cli/"+t.version)
 }
 
-// ErrSubscriptionQuotaExhausted is returned when Anthropic's
-// subscription billing reports quota exhaustion. The error class is
-// non-retryable on the OAuth-dev provider itself; tier-policy
-// fallback (configured via user_tiers.<tier>.fallback_on_error: true)
-// kicks in and downstream API-key providers handle the request.
+// ErrSubscriptionQuotaExhausted is the v0.11.10 placeholder for the
+// dedicated subscription-quota-exhausted error class. v0.11.9 does
+// NOT produce this error — Anthropic's 429 responses currently flow
+// through the inner anthropic driver's ratelimit.Do retry + then
+// surface as the generic 429 path. v0.11.10's stealth-mode parity
+// work will add an inbound response-body inspection to upgrade 429s
+// carrying a `subscription`-keyed body into this typed error so
+// tier-policy `fallback_on_error: true` can branch on it
+// specifically (per-user-quota vs per-tier-cost differs in retry
+// strategy).
 //
-// Detection: 429 status code with `subscription` (case-insensitive)
-// in the response body. Defensive — Anthropic's exact wording may
-// drift; falls back to the generic 429 retryable classification
-// otherwise.
-var ErrSubscriptionQuotaExhausted = errors.New("anthropic-oauth-dev: subscription quota exhausted")
+// Exposed today as a STUB so callers can write `errors.Is(err, ErrSubscriptionQuotaExhausted)`
+// today without breaking when v0.11.10 starts producing it. Until
+// then, the check always returns false — operators relying on it
+// should pair with a generic 429 catch as well.
+//
+// TODO(v0.11.10): wire response-body inspection in oauthTransport
+// (or the inner driver's error path) to return this for matching
+// 429s.
+var ErrSubscriptionQuotaExhausted = errors.New("anthropic-oauth-dev: subscription quota exhausted (stub — v0.11.10 will start producing this; v0.11.9 never returns it)")
 
 // ResolveClaudeCodeVersion reads the env-var override (if set) or
 // returns PinnedClaudeCodeVersion. Exposed so callers in

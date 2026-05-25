@@ -63,9 +63,12 @@ walkthrough + risk acknowledgement.
 // server, opens the operator's browser at the authorize URL, waits
 // for the callback, exchanges the code for tokens, persists them.
 //
-// Operator can pass --manual to skip the browser open (useful in
-// headless environments or when the operator wants to inspect the URL
-// before opening it).
+// Operator can pass --manual to skip the auto-open (useful when
+// xdg-open / open / cmd start isn't wired up correctly OR when the
+// operator wants to inspect the URL before opening it). The browser
+// MUST be on the same machine as loomcycle — the callback server
+// binds to 127.0.0.1, so a browser on a different machine can't
+// reach it. Cross-machine login is not supported in v0.11.9.
 func runAnthropicLogin(args []string, stdout, stderr io.Writer) int {
 	manual := false
 	for _, a := range args {
@@ -99,6 +102,9 @@ func runAnthropicLogin(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stdout, "Open this URL in your browser to authorize loomcycle:")
 		fmt.Fprintln(stdout, "")
 		fmt.Fprintln(stdout, "  "+authURL)
+		fmt.Fprintln(stdout, "")
+		fmt.Fprintln(stdout, "NOTE: the browser must be on THIS machine — the callback server")
+		fmt.Fprintln(stdout, "binds to 127.0.0.1, so a browser on a different host cannot reach it.")
 		fmt.Fprintln(stdout, "")
 		fmt.Fprintf(stdout, "Listening for callback on http://127.0.0.1:%d/callback (will timeout in 5 min)...\n", cs.Port())
 	} else {

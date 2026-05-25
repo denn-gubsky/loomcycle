@@ -17,7 +17,7 @@ func TestMaskOutbound_RenamesLoomcycleOnlyBuiltins(t *testing.T) {
 		{Name: "Memory", Description: "memory tool", InputSchema: json.RawMessage(`{}`)},
 		{Name: "Channel", Description: "channel tool"},
 		{Name: "Agent", Description: "spawn"},
-		{Name: "Read", Description: "file read"},          // Claude Code overlap; untouched
+		{Name: "Read", Description: "file read"},                  // Claude Code overlap; untouched
 		{Name: "mcp__github__list_issues", Description: "github"}, // real MCP; untouched
 	}
 	out := MaskOutbound(in)

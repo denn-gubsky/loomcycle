@@ -1346,6 +1346,15 @@ func main() {
 	if heartbeatRunner != nil {
 		heartbeatRunner.Stop()
 	}
+	// v0.11.9 — stop the OAuth-dev refresher's background goroutine
+	// before the process exits so an in-flight refresh HTTP call
+	// either completes + persists OR cleanly aborts. Without this,
+	// the OS hard-kills the goroutine and a partially-rotated token
+	// could be lost (the on-disk token is atomic write, but the
+	// fresh access token might never make it to the persist step).
+	if pr.anthropicOAuthRefresher != nil {
+		pr.anthropicOAuthRefresher.Stop()
+	}
 	if grpcSrv != nil {
 		grpcSrv.GracefulStop()
 	}
@@ -1426,7 +1435,7 @@ type providerResolver struct {
 	// LOOMCYCLE_ANTHROPIC_OAUTH_DEV_ENABLED=1 AND a token file exists.
 	// nil otherwise — Get("anthropic-oauth-dev") returns a clear error
 	// pointing at `loomcycle anthropic login`.
-	anthropicOAuthDev providers.Provider
+	anthropicOAuthDev       providers.Provider
 	anthropicOAuthRefresher *anthropic_oauth_dev.Refresher
 }
 

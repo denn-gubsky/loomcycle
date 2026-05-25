@@ -34,7 +34,7 @@ Research workloads at scale: self-evolution experiments, agentic-team load testi
 
 1. **Active Claude Pro or Max subscription** (`claude.ai/settings/billing`). The OAuth scope set requests `user:inference` — only subscriptions with inference quota work.
 2. **`LOOMCYCLE_ANTHROPIC_OAUTH_DEV_ENABLED=1`** in your environment. Without this, the provider is absent from the resolver matrix and the `loomcycle anthropic` CLI subcommands refuse to run.
-3. **A browser on the same machine** as loomcycle, OR `--manual` mode (operator pastes the authorize URL into a browser on a different machine, then pastes the callback URL back into the terminal).
+3. **A browser on the same machine as loomcycle.** Cross-machine login is not supported in v0.11.9 — the callback server binds to `127.0.0.1` on the loomcycle host, so the browser must redirect to that same loopback. Headless environments (CI, server-without-display) can use `--manual`: loomcycle prints the authorize URL instead of auto-opening a browser, and the operator opens that URL in a browser **on the same machine** (e.g. via SSH X-forwarding, a VNC session, or a graphical session that doesn't expose a default-browser hook to `xdg-open`).
 
 ### One-time login
 

@@ -52,9 +52,15 @@ func NewRefresher(store *TokenStore, opts ExchangeOptions, logf func(string, ...
 	return r
 }
 
-// Start launches the background refresh goroutine. Idempotent — calling
-// Start twice is a no-op (the second call's goroutine exits
-// immediately). Stop the Refresher with Stop().
+// Start launches the background refresh goroutine. Must be called
+// EXACTLY ONCE per Refresher lifetime; subsequent Start() calls panic
+// on the deferred close(doneCh) once the first goroutine exits. Stop()
+// must also be called exactly once, AFTER Start().
+//
+// Used by the v0.11.9 provider registration in cmd/loomcycle/main.go
+// (one Start at boot, one Stop at shutdown). Callers needing
+// hot-reload semantics should construct a fresh Refresher rather than
+// re-starting an existing one.
 func (r *Refresher) Start(ctx context.Context) {
 	go r.loop(ctx)
 }
