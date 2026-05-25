@@ -8,6 +8,27 @@ For pre-v0.4 history (single-tool runtime, library milestone, security patch), s
 
 ---
 
+## What's in v0.11.7
+
+Post-v0.11.6 polish: three small unrelated improvements bundled to avoid releasing three separate patches. None individually justified a release; together they're worth one.
+
+### What ships
+
+**CSS theming consistency** — promoted `--fg-muted` (default `#888`) and `--bg-input` (default `#1a1a1a`) into the `:root` block. Both had ~16 call sites across the library / memory / channel form clusters but were referenced only via inline fallbacks; a future theme override at the `:root` level would have silently failed on those sites. Continues the v0.11.6 treatment of `--bg-muted` + `--danger`.
+
+**Library modal — custom-tier warning hoisted to top of AgentFields.** v0.11.6 placed the warning inside the per-tier models grid at the bottom of the agent form. An operator opening the fork modal just to tweak `system_prompt` or `tier` could click Save without scrolling down + miss the warning entirely — the exact failure mode the banner was meant to prevent. v0.11.7 moves the warning to the top of `AgentFields` so it's visible the moment the modal opens. Banner copy refined to explicitly explain the "any standard-tier candidate triggers full replacement" mechanic.
+
+**`publish-ts-adapter` workflow: skip-clean on Web-UI-only releases.** Before v0.11.7, every git tag fired the npm publish workflow, which then hard-failed if `adapters/ts/package.json` didn't match the tag. v0.11.6 was a Web-UI-only release with no adapter changes, so the publish workflow failed loudly with a red badge for the operator to investigate — pure noise. v0.11.7 converts the version-mismatch path from hard-fail to skip-clean: the verify step logs a `::notice::` and sets a `should_publish=false` output; all downstream steps (`Install`, `Build`, `Test`, `Publish`) are now gated on that output. Release tags for binary-only or Web-UI-only changes will succeed-and-skip the adapter publish instead of failing CI.
+
+### Wire-compatibility notes
+
+- Zero server-side changes.
+- Zero changes to the existing modal's overlay shape; the v0.11.6 banner just moves location.
+- `@loomcycle/client` stays at 0.11.5 (no adapter changes; the workflow change will succeed-and-skip rather than fail).
+- Web UI internal version: 0.7.4 → 0.7.5.
+
+---
+
 ## What's in v0.11.6
 
 Library admin modal — fully structured form for agent + skill definitions. The v0.10.4 hybrid (structured inputs + JSON catch-all textarea) was failing operators in real use: raw newlines inside the agent's `system_prompt` produced invalid JSON, a single missing comma anywhere sunk the whole submit, and the JSON catch-all hid the schema behind a manual-typing surface. v0.11.6 promotes every editable agent overlay field out of the JSON textarea into its own structured input, and removes the JSON catch-all entirely.

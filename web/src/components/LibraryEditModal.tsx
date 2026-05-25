@@ -563,6 +563,22 @@ function AgentFields(props: AgentFieldsProps) {
 
   return (
     <>
+      {props.droppedCustomTiers.length > 0 && (
+        // v0.11.7 — hoisted to the top of AgentFields so it's visible
+        // before the operator scrolls. Burying it inside the models
+        // grid (v0.11.6) meant an operator forking just to tweak
+        // system_prompt would Save without ever seeing the warning.
+        <div className="library-models-warning">
+          ⚠ This definition has custom tier name
+          {props.droppedCustomTiers.length === 1 ? "" : "s"}{" "}
+          <code>{props.droppedCustomTiers.join(", ")}</code> that this
+          modal does not render. The substrate's overlay merge does a
+          full replacement of <code>models</code>, so if any standard
+          tier (low / middle / high) below has a candidate, those
+          custom tiers will be dropped from the fork. Edit via yaml to
+          preserve them.
+        </div>
+      )}
       <div className="library-form-row library-form-row-quad">
         <label htmlFor="lib-provider">provider</label>
         <input
@@ -750,16 +766,6 @@ function AgentFields(props: AgentFieldsProps) {
             from the library Tiers map
           </span>
         </label>
-        {props.droppedCustomTiers.length > 0 && (
-          <div className="library-models-warning">
-            ⚠ This definition has custom tier name
-            {props.droppedCustomTiers.length === 1 ? "" : "s"}{" "}
-            <code>{props.droppedCustomTiers.join(", ")}</code> that this
-            modal does not render. Submitting any change to the models
-            grid below will replace the entire models map and drop those
-            custom tiers from the fork. Edit via yaml to preserve them.
-          </div>
-        )}
         <div className="library-models-grid">
           {AGENT_TIER_SLOTS.map((slot) => (
             <div key={slot} className="library-models-tier-row">

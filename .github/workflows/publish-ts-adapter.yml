@@ -55,10 +55,20 @@ jobs:
         run: npm install -g npm@latest
 
       - name: Verify package version matches tag
+        id: verify
         working-directory: adapters/ts
-        # Refuse to publish when package.json hasn't been bumped to
-        # match the release tag. Strip leading `v` because npm tags
-        # don't carry it; git tags do.
+        # v0.11.7 — convert hard-fail to skip-clean when the adapter
+        # version doesn't match the tag. Reason: loomcycle ships
+        # Web-UI-only or binary-only releases (v0.11.6 was Web UI;
+        # no adapter changes) where the adapter intentionally stays
+        # at the previous version. Hard-failing the publish workflow
+        # on those releases turned every quiet Web-UI bump into a
+        # noisy red CI badge with no actionable remediation. The
+        # job now succeeds-and-skips when versions don't match, and
+        # publishes only when they do.
+        #
+        # Strip leading `v` because npm tags don't carry it; git
+        # tags do.
         env:
           TAG_REF: ${{ github.ref_name }}
         run: |
@@ -66,25 +76,30 @@ jobs:
           PKG_VER=$(node -p "require('./package.json').version")
           TAG_VER="${TAG_REF#v}"
           if [ "$PKG_VER" != "$TAG_VER" ]; then
-            echo "::error::package.json version ($PKG_VER) does not match tag ($TAG_VER)"
-            echo "Bump adapters/ts/package.json to $TAG_VER and re-tag, or fix the tag."
-            exit 1
+            echo "::notice::Skipping publish — adapters/ts/package.json version ($PKG_VER) does not match tag ($TAG_VER). This is expected for Web-UI-only or binary-only releases. Bump adapters/ts/package.json to match the tag if you want to publish the adapter."
+            echo "should_publish=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::Publishing @loomcycle/client@$PKG_VER (tag $TAG_REF)"
+            echo "should_publish=true" >> "$GITHUB_OUTPUT"
           fi
-          echo "::notice::Publishing @loomcycle/client@$PKG_VER (tag $TAG_REF)"
 
       - name: Install
+        if: steps.verify.outputs.should_publish == 'true'
         working-directory: adapters/ts
         run: npm ci
 
       - name: Build
+        if: steps.verify.outputs.should_publish == 'true'
         working-directory: adapters/ts
         run: npm run build
 
       - name: Test
+        if: steps.verify.outputs.should_publish == 'true'
         working-directory: adapters/ts
         run: npm test
 
       - name: Publish
+        if: steps.verify.outputs.should_publish == 'true'
         working-directory: adapters/ts
         # --access public is required for scoped packages.
         # --provenance is free with OIDC trusted publishing: npm
