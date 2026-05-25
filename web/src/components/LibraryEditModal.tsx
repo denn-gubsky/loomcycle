@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   createDef,
   forkDef,
@@ -134,6 +134,16 @@ export default function LibraryEditModal({
   );
   const [modelsByTier, setModelsByTier] = useState<Record<TierSlot, ModelCandidate[]>>(
     () => pickModelsByTier(forkSource?.definition),
+  );
+  // Custom tier names in the source's `models` map that aren't in the
+  // three fixed slots the modal renders. Surfaced as a warning so
+  // operators don't silently lose them on fork (the substrate's
+  // overlay merge does a FULL replacement of `models`, so emitting
+  // any tier from this modal would otherwise drop the custom tiers
+  // from the forked def).
+  const droppedCustomTiers = useMemo(
+    () => pickCustomTierNames(forkSource?.definition),
+    [forkSource],
   );
 
   // --- Skill-flavor specific
@@ -432,6 +442,7 @@ export default function LibraryEditModal({
             setAgentProviders={setAgentProviders}
             modelsByTier={modelsByTier}
             setModelsByTier={setModelsByTier}
+            droppedCustomTiers={droppedCustomTiers}
             submitting={submitting}
           />
         )}
@@ -523,6 +534,7 @@ interface AgentFieldsProps {
   setAgentProviders: (v: string) => void;
   modelsByTier: Record<TierSlot, ModelCandidate[]>;
   setModelsByTier: (v: Record<TierSlot, ModelCandidate[]>) => void;
+  droppedCustomTiers: string[];
   submitting: boolean;
 }
 
@@ -738,6 +750,16 @@ function AgentFields(props: AgentFieldsProps) {
             from the library Tiers map
           </span>
         </label>
+        {props.droppedCustomTiers.length > 0 && (
+          <div className="library-models-warning">
+            ⚠ This definition has custom tier name
+            {props.droppedCustomTiers.length === 1 ? "" : "s"}{" "}
+            <code>{props.droppedCustomTiers.join(", ")}</code> that this
+            modal does not render. Submitting any change to the models
+            grid below will replace the entire models map and drop those
+            custom tiers from the fork. Edit via yaml to preserve them.
+          </div>
+        )}
         <div className="library-models-grid">
           {AGENT_TIER_SLOTS.map((slot) => (
             <div key={slot} className="library-models-tier-row">
@@ -1022,6 +1044,23 @@ function pickModelsByTier(def: unknown): Record<TierSlot, ModelCandidate[]> {
       }
     }
     out[slot] = cands;
+  }
+  return out;
+}
+
+// pickCustomTierNames returns tier names present in the source's
+// `models` map that AREN'T in the three fixed slots the modal renders.
+// Used to surface a warning before the operator submits a fork that
+// would otherwise silently drop those tiers (the substrate's overlay
+// merge does a full replacement of `models`).
+function pickCustomTierNames(def: unknown): string[] {
+  if (!def || typeof def !== "object") return [];
+  const v = (def as Record<string, unknown>)["models"];
+  if (!v || typeof v !== "object" || Array.isArray(v)) return [];
+  const out: string[] = [];
+  const fixed = new Set<string>(AGENT_TIER_SLOTS);
+  for (const key of Object.keys(v as Record<string, unknown>)) {
+    if (!fixed.has(key)) out.push(key);
   }
   return out;
 }

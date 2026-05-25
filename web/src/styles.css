@@ -14,6 +14,12 @@
   --cancelled: #b08bd0;
   --border: #2a2e3a;
   --mono: ui-monospace, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  /* v0.11.6 — promoted from inline fallback values (--bg-muted, #181818)
+   * + (--danger, #c33) used in .library-headers-grid + the new
+   * .library-models-* classes. Codifying them here so theming stays
+   * coherent if a future change overrides them. */
+  --bg-muted: #181818;
+  --danger: #c33;
 }
 
 * {
@@ -1563,6 +1569,20 @@ pre {
   border: 1px solid var(--border, #444);
   border-radius: 4px;
   background: var(--bg-muted, #181818);
+}
+.library-models-warning {
+  padding: 8px;
+  margin-bottom: 6px;
+  font-size: 11px;
+  background: rgba(240, 160, 64, 0.08);
+  border: 1px solid var(--running);
+  border-radius: 4px;
+  color: var(--fg);
+}
+.library-models-warning code {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--running);
 }
 .library-models-tier-row {
   display: flex;
