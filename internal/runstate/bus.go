@@ -23,9 +23,14 @@
 package runstate
 
 import (
+	"context"
+	"encoding/json"
+	"log"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/denn-gubsky/loomcycle/internal/coord"
 )
 
 // RunStateEvent is the payload published on every run state transition.
@@ -56,11 +61,20 @@ func (s *subscription) DroppedEvents() int64 {
 	return atomic.LoadInt64(&s.dropped)
 }
 
-// Bus is the in-process run-state pub/sub.
+// Bus is the in-process run-state pub/sub. v0.12.3 Phase 4 adds an
+// optional backplane fanout: when SetBackplane is called, every local
+// Publish ALSO publishes on `loomcycle.runstate` so remote replicas'
+// SubscribeBackplane goroutine wakes their local subscribers. The
+// PostgresBackplane self-filter prevents the originating replica from
+// receiving its own NOTIFY.
 type Bus struct {
 	mu         sync.Mutex
 	byUser     map[string][]*subscription
 	bufferSize int
+
+	// bp is the cluster-mode backplane. Nil = single-replica mode
+	// (v0.11.x behavior unchanged — local-only publish).
+	bp coord.Backplane
 }
 
 // NewBus returns a fresh, empty bus. Single instance per loomcycle
@@ -134,13 +148,34 @@ func (b *Bus) Subscribe(userID string) *Subscription {
 // Idempotent + safe to call from any goroutine, including the request
 // handler goroutine.
 func (b *Bus) Publish(evt RunStateEvent) {
+	b.publishLocal(evt)
+	// v0.12.3 Phase 4: cluster-mode fanout. Non-blocking — backplane
+	// errors are logged but never fail Publish (a local subscriber on
+	// THIS replica already received the event; cross-replica delivery
+	// is best-effort).
+	b.mu.Lock()
+	bp := b.bp
+	b.mu.Unlock()
+	if bp != nil {
+		if payload, err := json.Marshal(evt); err == nil {
+			if pubErr := bp.Publish(context.Background(), "loomcycle.runstate", payload); pubErr != nil {
+				log.Printf("runstate: backplane publish failed: %v", pubErr)
+			}
+		}
+	}
+}
+
+// publishLocal is the v0.12.3 fan-out-to-local-subscribers half of
+// Publish. Extracted so SubscribeBackplane can call it on remote
+// events WITHOUT triggering another backplane publish (which would
+// loop). The PostgresBackplane self-filter already prevents the
+// originating replica from looping, but the dedicated entry point
+// keeps the no-re-publish invariant explicit.
+func (b *Bus) publishLocal(evt RunStateEvent) {
 	if evt.TS.IsZero() {
 		evt.TS = time.Now().UTC()
 	}
 	b.mu.Lock()
-	// Build a snapshot of matching subscriptions while holding the
-	// lock; do the actual sends outside the lock so a slow channel
-	// doesn't serialize publishers.
 	matches := make([]*subscription, 0, len(b.byUser[evt.UserID])+len(b.byUser[""]))
 	matches = append(matches, b.byUser[evt.UserID]...)
 	if evt.UserID != "" {
@@ -155,6 +190,37 @@ func (b *Bus) Publish(evt RunStateEvent) {
 			atomic.AddInt64(&sub.dropped, 1)
 		}
 	}
+}
+
+// SetBackplane installs the v0.12.3 Phase 4 cluster-mode fanout.
+// When set, every Publish ALSO publishes on `loomcycle.runstate`.
+// Nil-safe: calling with nil disables fanout (e.g. for tests).
+func (b *Bus) SetBackplane(bp coord.Backplane) {
+	b.mu.Lock()
+	b.bp = bp
+	b.mu.Unlock()
+}
+
+// SubscribeBackplane starts a goroutine that listens for remote
+// run-state events on `loomcycle.runstate` and fans them out to
+// local subscribers via publishLocal (which does NOT re-publish on
+// the backplane). Exits on ctx.Done.
+func (b *Bus) SubscribeBackplane(ctx context.Context, bp coord.Backplane) error {
+	ch, err := bp.Subscribe(ctx, "loomcycle.runstate")
+	if err != nil {
+		return err
+	}
+	go func() {
+		for evt := range ch {
+			var rs RunStateEvent
+			if err := json.Unmarshal(evt.Payload, &rs); err != nil {
+				log.Printf("runstate: malformed backplane event: %v", err)
+				continue
+			}
+			b.publishLocal(rs)
+		}
+	}()
+	return nil
 }
 
 // unsubscribe is called by Subscription.Close. Removes the

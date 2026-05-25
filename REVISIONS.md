@@ -8,6 +8,33 @@ For pre-v0.4 history (single-tool runtime, library milestone, security patch), s
 
 ---
 
+## What's in v0.12.3
+
+**Phase 4 of the v1.0 multi-replica HA capstone — cluster-wide pause/resume + bus fanout.** Single-replica mode (`LOOMCYCLE_REPLICA_ID` unset) keeps the v0.11.x behavior byte-identical: no DB-state reads, no backplane traffic.
+
+### What ships
+
+1. **`runtime_state` table + migration 0025.** Single row (id='singleton') with `state`, `state_changed_at`, `paused_at`, `paused_runs_count`. Seeded via `INSERT ... ON CONFLICT DO NOTHING`.
+2. **`coord.RuntimeStateStore`** — Get/Set on the singleton row.
+3. **`pause.Manager` cluster-mode extension** — optional `RuntimeStateStore` + 1s in-memory cache + `SubscribeBackplane` goroutine listening on `loomcycle.pause`. `Pause`/`Resume` write to DB + publish on backplane after the local transition. `applyRemotePause`/`applyRemoteResume` carry remote events; `applyRemotePause` skips `StatePausing` because the originator already drained tools. Single-replica path: lock-free atomic load, no DB.
+4. **`runstate.Bus` + `channels.Bus` backplane fanout** — `Publish`/`Notify` fan locally THEN publish on backplane (`loomcycle.runstate` / `loomcycle.channel`). `SubscribeBackplane` goroutine fans incoming events to local subscribers via the no-re-publish paths (`publishLocal` / `notifyLocal`) to prevent loops.
+5. **`LOOMCYCLE_PAUSE_CACHE_TTL_MS`** env var (default 1000ms).
+6. **main.go wiring** — `RuntimeStateStore` constructed and wired into the pause manager inside the existing storeIface block; bus backplanes wired inside the cluster init block.
+
+### Code review (parallel agent) — 3 findings, all fixed pre-commit
+
+1. **CRITICAL — data race on `m.rss`**: `State()` read the pointer field with no lock while `SetRuntimeStateStore` wrote it under `m.mu`. Fixed by converting `m.rss` to `atomic.Pointer[coord.RuntimeStateStore]` + `m.stateCacheTTL` to `atomic.Int64` (nanos). `go test -race` confirms clean.
+2. **CRITICAL — `m.mu` held across a DB call**: `Pause()` and `Resume()` called `m.State()` while holding `m.mu`, which in cluster mode does a 2s DB read with the mutex locked — serialising the entire backplane event pipeline. Fixed by replacing `m.State()` with `loadState(&m.state)` (the in-process atomic is the authority on local pause initiation).
+3. **IMPORTANT — test coverage gap on `StatePausing` interleave**: `applyRemotePause`'s guard is `!= StateRunning` which correctly bails when local `Pause()` is mid-flight, but no test pinned this. Added `TestManager_ApplyRemotePause_NoOpDuringLocalPausing`.
+
+### Test coverage
+
+- `manager_cluster_test.go` — 9 cases covering applyRemotePause / applyRemoteResume / SubscribeBackplane / single-replica path / parseRuntimeState defaults.
+- `bus_cluster_test.go` (runstate + channels) — 4 cases each, including the **no-re-publish-on-remote-event** loop-prevention invariant.
+- All v0.11.x tests continue green. `go test -race ./... -count=1 -timeout 300s` clean.
+
+---
+
 ## What's in v0.12.2
 
 **Phase 3 of the v1.0 multi-replica HA capstone — cross-replica cancel + status.** Closes the most critical correctness gap from the audit: a cancel request that hits the wrong replica now reaches the run via the backplane. Single-replica deployments (`LOOMCYCLE_REPLICA_ID` unset) keep the v0.11.x behavior **byte-identical** — every new code path is gated behind cluster mode.
