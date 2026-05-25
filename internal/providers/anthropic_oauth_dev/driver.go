@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/providers"
@@ -129,7 +130,8 @@ func (d *Driver) Call(ctx context.Context, req providers.Request) (<-chan provid
 		return nil, err
 	}
 	// Wrap the inner channel: copy events through, reversing the mask
-	// on any tool_use event. The wrap goroutine exits when innerCh
+	// on any tool_use event AND sniffing for subscription-quota-
+	// exhausted error events. The wrap goroutine exits when innerCh
 	// closes (clean stream end or error), at which point it closes the
 	// outer channel.
 	outCh := make(chan providers.Event, cap(innerCh)+1)
@@ -143,6 +145,17 @@ func (d *Driver) Call(ctx context.Context, req providers.Request) (<-chan provid
 				tu.Name = UnmaskInbound(ev.ToolUse.Name)
 				ev.ToolUse = &tu
 			}
+			// v0.11.10 A2: subscription-quota-exhausted detection.
+			// When the inner driver surfaces a 429 whose body mentions
+			// "subscription" (case-insensitive), wrap the error so
+			// callers' errors.Is(err, ErrSubscriptionQuotaExhausted)
+			// matches. Tier-policy fallback_on_error: true can then
+			// branch on this specific case to fall back to API-key
+			// Anthropic instead of treating it as a generic
+			// retryable 429.
+			if ev.Type == providers.EventError && isSubscriptionQuotaError(ev.Error) {
+				ev.Error = fmt.Sprintf("%s: %s", ErrSubscriptionQuotaExhausted.Error(), ev.Error)
+			}
 			select {
 			case outCh <- ev:
 			case <-ctx.Done():
@@ -151,6 +164,29 @@ func (d *Driver) Call(ctx context.Context, req providers.Request) (<-chan provid
 		}
 	}()
 	return outCh, nil
+}
+
+// isSubscriptionQuotaError pattern-matches an error string for the
+// "429 + subscription" combo that signals subscription billing
+// exhaustion under OAuth. Detection is intentionally generous: the
+// inner anthropic driver formats 429s as "anthropic 429: {json}"
+// which embeds Anthropic's error body verbatim. We sniff the body
+// text for "subscription" (case-insensitive); a status-code-only
+// check would false-positive on the more-common "429 rate-limited"
+// case which should still be retryable.
+//
+// False-positive risk: if Anthropic ever ships an unrelated 429 with
+// "subscription" elsewhere in the body, we'd wrap it as a quota
+// error. Acceptable trade-off — the wrapping is additive (original
+// error text preserved); tier-fallback consumers that match on
+// ErrSubscriptionQuotaExhausted get a slightly broader catch than
+// strict-string-equality would give.
+func isSubscriptionQuotaError(errText string) bool {
+	if errText == "" {
+		return false
+	}
+	lower := strings.ToLower(errText)
+	return strings.Contains(lower, "429") && strings.Contains(lower, "subscription")
 }
 
 // Probe delegates to the inner driver but with our transport — the
@@ -249,26 +285,24 @@ func (t *oauthTransport) applyAuth(req *http.Request) {
 	req.Header.Set("User-Agent", "claude-cli/"+t.version)
 }
 
-// ErrSubscriptionQuotaExhausted is the v0.11.10 placeholder for the
-// dedicated subscription-quota-exhausted error class. v0.11.9 does
-// NOT produce this error — Anthropic's 429 responses currently flow
-// through the inner anthropic driver's ratelimit.Do retry + then
-// surface as the generic 429 path. v0.11.10's stealth-mode parity
-// work will add an inbound response-body inspection to upgrade 429s
-// carrying a `subscription`-keyed body into this typed error so
-// tier-policy `fallback_on_error: true` can branch on it
-// specifically (per-user-quota vs per-tier-cost differs in retry
-// strategy).
+// ErrSubscriptionQuotaExhausted is returned when Anthropic's
+// subscription billing reports quota exhaustion. Non-retryable on
+// the OAuth-dev provider itself; tier-policy fallback configured
+// via `user_tiers.<tier>.fallback_on_error: true` lets downstream
+// API-key providers handle the request instead.
 //
-// Exposed today as a STUB so callers can write `errors.Is(err, ErrSubscriptionQuotaExhausted)`
-// today without breaking when v0.11.10 starts producing it. Until
-// then, the check always returns false — operators relying on it
-// should pair with a generic 429 catch as well.
+// Detection (v0.11.10 A2): in the Call() event-channel wrapper, an
+// error event whose text contains both "429" and "subscription"
+// (case-insensitive) gets prefixed with this sentinel so
+// errors.Is(err, ErrSubscriptionQuotaExhausted) matches. The error
+// text formatting is `<sentinel>: <original anthropic 429 body>` —
+// the original body stays visible for operator debugging.
 //
-// TODO(v0.11.10): wire response-body inspection in oauthTransport
-// (or the inner driver's error path) to return this for matching
-// 429s.
-var ErrSubscriptionQuotaExhausted = errors.New("anthropic-oauth-dev: subscription quota exhausted (stub — v0.11.10 will start producing this; v0.11.9 never returns it)")
+// Generic 429s (rate-limited but quota intact) are NOT wrapped — the
+// inner driver's ratelimit.Do path retries them transparently per
+// the standard rate-limit handling. Only quota exhaustion (which is
+// non-retryable on this provider) gets the typed wrap.
+var ErrSubscriptionQuotaExhausted = errors.New("anthropic-oauth-dev: subscription quota exhausted")
 
 // ResolveClaudeCodeVersion reads the env-var override (if set) or
 // returns PinnedClaudeCodeVersion. Exposed so callers in

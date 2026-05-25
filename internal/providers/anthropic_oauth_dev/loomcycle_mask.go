@@ -65,7 +65,14 @@ func MaskOutbound(in []providers.ToolSpec) []providers.ToolSpec {
 			out[i] = masked
 			continue
 		}
-		out[i] = t
+		// v0.11.10 A1: canonicalize the casing of Claude-Code overlap
+		// names. Operators who declare `allowed_tools: [read, write]`
+		// in lowercase get the same outbound wire shape as those who
+		// declare `[Read, Write]`. Defensive against case drift in
+		// yaml authoring; Pi applies the same canonicalization.
+		canon := t
+		canon.Name = CanonicalizeToolName(t.Name)
+		out[i] = canon
 	}
 	return out
 }

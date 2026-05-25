@@ -149,3 +149,28 @@ func TestOAuthTransport_ApplyAuthIsIdempotent(t *testing.T) {
 		t.Errorf("anthropic-beta duplicated after second apply: %q", second)
 	}
 }
+
+// TestIsSubscriptionQuotaError pins the v0.11.10 A2 detection logic:
+// 429 + "subscription" (case-insensitive in either token) matches;
+// anything else passes through unwrapped.
+func TestIsSubscriptionQuotaError(t *testing.T) {
+	cases := []struct {
+		name    string
+		errText string
+		want    bool
+	}{
+		{"happy path", `anthropic 429: {"type":"error","error":{"message":"subscription limit reached"}}`, true},
+		{"case-insensitive Subscription", `anthropic 429: SUBSCRIPTION quota exhausted`, true},
+		{"generic 429 rate-limit", `anthropic 429: {"error":{"message":"rate-limited"}}`, false},
+		{"500", `anthropic 500: server error`, false},
+		{"empty", ``, false},
+		{"subscription word only without 429", `subscription update available`, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := isSubscriptionQuotaError(c.errText); got != c.want {
+				t.Errorf("isSubscriptionQuotaError(%q) = %v, want %v", c.errText, got, c.want)
+			}
+		})
+	}
+}
