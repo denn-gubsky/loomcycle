@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   createDef,
   forkDef,
@@ -7,17 +7,28 @@ import {
   type SubstrateKind,
 } from "../api";
 
-// LibraryEditModal — v0.10.4 Library admin UI.
+// LibraryEditModal — v0.11.6 Library admin UI.
 //
-// Hybrid form for create / fork on the three substrate flavors. Common
-// required fields render as structured inputs; the rest goes into a JSON
-// textarea (agents) / markdown body textarea (skills) / structured fields
-// only (mcp-servers — substrate body is exhaustively covered by them).
+// Hybrid form for create / fork on the three substrate flavors. All
+// editable fields render as structured inputs — the v0.10.4 JSON
+// catch-all for agent overlays was removed in v0.11.6 because
+// operators were hitting two real pain points:
+//
+//   1. Raw newlines inside the agent's `system_prompt` produced
+//      invalid JSON and surfaced as a confusing "JSON parse error"
+//      on submit.
+//   2. A single missing comma anywhere in the JSON body sunk the
+//      whole submit, with no per-field validation.
+//
+// The trade-off: when the AgentDef schema grows a new field, the
+// modal must be updated to expose it. That's the same posture the
+// MCP-server kind has had since v0.10.4 (fully structured, no JSON)
+// and the v0.11.5 channel + memory modals follow.
 //
 // On submit, calls createDef() or forkDef() depending on `mode`. On
 // refusal (substrate returns 422), the thrown jsonFetch error contains
 // the `{code:"tool_refused", error:"<human text>", tool:"..."}` envelope
-// — explainRefusal() pattern-matches the text and renders a friendlier
+// — explainServerError() pattern-matches the text and renders a friendlier
 // message above the action buttons.
 //
 // Visual structure mirrors AnswerModal in InterruptInbox.tsx — same
@@ -44,6 +55,23 @@ export interface LibraryEditModalProps {
   onSaved: (row: DefRow) => void;
 }
 
+// Per-tier candidate row inside the agent's `models` override map.
+// `models` is `Record<TierName, ModelCandidate[]>`. Operators rarely
+// touch this — the empty per-tier list is the default and means "use
+// the library Tiers map".
+interface ModelCandidate {
+  provider: string;
+  model: string;
+}
+
+// Three fixed tier slots in the modal. The substrate doesn't enforce
+// these specific names but they match the bundled examples + every
+// existing operator yaml; rendering exactly three keeps the form
+// scannable. Operators with custom tier names can still edit them via
+// yaml (the substrate's overlay merge accepts any tier-name keys).
+const AGENT_TIER_SLOTS = ["low", "middle", "high"] as const;
+type TierSlot = (typeof AGENT_TIER_SLOTS)[number];
+
 export default function LibraryEditModal({
   kind,
   mode,
@@ -65,48 +93,48 @@ export default function LibraryEditModal({
   // Matches substrate tool defaults.
   const [promote, setPromote] = useState(mode === "create");
 
-  // --- Agent-flavor specific
-  const [provider, setProvider] = useState<string>(
+  // --- Agent-flavor structured fields (v0.11.6 — every editable
+  // overlay field has its own input; no JSON catch-all).
+  const [provider, setProvider] = useState(
     pickString(forkSource?.definition, "provider"),
   );
-  const [model, setModel] = useState<string>(
+  const [model, setModel] = useState(
     pickString(forkSource?.definition, "model"),
   );
-  const [tier, setTier] = useState<string>(
+  const [tier, setTier] = useState(
     pickString(forkSource?.definition, "tier"),
   );
-  const [effort, setEffort] = useState<string>(
+  const [effort, setEffort] = useState(
     pickString(forkSource?.definition, "effort"),
   );
-  // Pre-fill the JSON-extras textarea with everything NOT in the
-  // structured fields above. On submit we deep-merge structured +
-  // parsed JSON.
-  const initialExtrasJSON = useMemo(() => {
-    if (!forkSource?.definition) return "{}";
-    const def = forkSource.definition as Record<string, unknown>;
-    const extras = { ...def };
-    delete extras.description;
-    delete extras.provider;
-    delete extras.model;
-    delete extras.tier;
-    delete extras.effort;
-    // Server-set fields — never echo in the overlay.
-    delete extras.def_id;
-    delete extras.name;
-    delete extras.version;
-    delete extras.parent_def_id;
-    delete extras.created_at;
-    delete extras.created_by_agent_id;
-    delete extras.created_by_run_id;
-    delete extras.content_sha256;
-    delete extras.retired;
-    delete extras.bootstrapped_from_static;
-    return Object.keys(extras).length === 0
-      ? "{}"
-      : JSON.stringify(extras, null, 2);
-  }, [forkSource]);
-  const [agentExtrasJSON, setAgentExtrasJSON] = useState(initialExtrasJSON);
-  const [showAgentSchemaHint, setShowAgentSchemaHint] = useState(false);
+  const [systemPrompt, setSystemPrompt] = useState(
+    pickString(forkSource?.definition, "system_prompt"),
+  );
+  const [allowedTools, setAllowedTools] = useState(
+    pickStringArray(forkSource?.definition, "allowed_tools").join(", "),
+  );
+  const [agentSkills, setAgentSkills] = useState(
+    pickStringArray(forkSource?.definition, "skills").join(", "),
+  );
+  const [maxTokens, setMaxTokens] = useState(
+    pickNumberAsString(forkSource?.definition, "max_tokens"),
+  );
+  const [maxIterations, setMaxIterations] = useState(
+    pickNumberAsString(forkSource?.definition, "max_iterations"),
+  );
+  const [memoryQuotaBytes, setMemoryQuotaBytes] = useState(
+    pickNumberAsString(forkSource?.definition, "memory_quota_bytes"),
+  );
+  const [memoryScopes, setMemoryScopes] = useState(() => {
+    const arr = pickStringArray(forkSource?.definition, "memory_scopes");
+    return { agent: arr.includes("agent"), user: arr.includes("user") };
+  });
+  const [agentProviders, setAgentProviders] = useState(
+    pickStringArray(forkSource?.definition, "providers").join(", "),
+  );
+  const [modelsByTier, setModelsByTier] = useState<Record<TierSlot, ModelCandidate[]>>(
+    () => pickModelsByTier(forkSource?.definition),
+  );
 
   // --- Skill-flavor specific
   const [skillBody, setSkillBody] = useState<string>(
@@ -170,15 +198,32 @@ export default function LibraryEditModal({
       }
     }
     if (kind === "agent") {
-      // Only validate JSON syntax — the substrate owns the schema
-      // refusal. Empty body → {} → no extras, that's valid.
-      try {
-        const parsed = JSON.parse(agentExtrasJSON || "{}");
-        if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
-          return "Advanced fields JSON must be an object (key/value).";
+      // Number inputs already refuse non-numeric via type="number";
+      // explicit re-check here catches the "Number(undefined) is NaN"
+      // edge + the operator who manually typed a negative.
+      const numChecks: Array<[string, string]> = [
+        ["max_tokens", maxTokens],
+        ["max_iterations", maxIterations],
+        ["memory_quota_bytes", memoryQuotaBytes],
+      ];
+      for (const [label, raw] of numChecks) {
+        if (raw.trim() === "") continue; // empty = unset = OK
+        const n = Number(raw);
+        if (!Number.isFinite(n) || n < 0 || !Number.isInteger(n)) {
+          return `${label} must be a non-negative integer (got "${raw}").`;
         }
-      } catch (e) {
-        return `Advanced fields JSON parse error: ${(e as Error).message}`;
+      }
+      // Per-tier model rows: trim + drop empty pairs at submit time;
+      // here just refuse partial rows (provider without model or
+      // vice versa) so the operator sees the issue locally.
+      for (const slot of AGENT_TIER_SLOTS) {
+        for (const cand of modelsByTier[slot]) {
+          const p = cand.provider.trim();
+          const m = cand.model.trim();
+          if ((p && !m) || (!p && m)) {
+            return `tier "${slot}": every model row needs both provider AND model (or leave both blank).`;
+          }
+        }
       }
     }
     if (kind === "skill") {
@@ -200,22 +245,64 @@ export default function LibraryEditModal({
 
   const buildOverlay = (): Record<string, unknown> => {
     if (kind === "agent") {
-      const extras = JSON.parse(agentExtrasJSON || "{}") as Record<string, unknown>;
-      const ov: Record<string, unknown> = { ...extras };
+      const ov: Record<string, unknown> = {};
       if (description.trim()) ov.description = description.trim();
       if (provider.trim()) ov.provider = provider.trim();
       if (model.trim()) ov.model = model.trim();
       if (tier.trim()) ov.tier = tier.trim();
       if (effort.trim()) ov.effort = effort.trim();
+      // system_prompt is a freetext string — raw newlines preserved.
+      // Omit when empty so the substrate keeps the parent / yaml value
+      // instead of overwriting with "".
+      if (systemPrompt.trim()) ov.system_prompt = systemPrompt;
+      const tools = parseCommaList(allowedTools);
+      if (tools.length > 0) ov.allowed_tools = tools;
+      const sk = parseCommaList(agentSkills);
+      if (sk.length > 0) ov.skills = sk;
+      const provs = parseCommaList(agentProviders);
+      if (provs.length > 0) ov.providers = provs;
+      // Number fields: empty / "0" reads as "use default" — omit from
+      // overlay so the substrate keeps the parent value (the
+      // substrate's merge treats "missing" as "inherit" and "0" as
+      // "explicit zero / inherit default").
+      const intOrSkip = (s: string): number | null => {
+        const t = s.trim();
+        if (t === "") return null;
+        const n = Number(t);
+        return Number.isFinite(n) ? n : null;
+      };
+      const mt = intOrSkip(maxTokens);
+      if (mt !== null && mt > 0) ov.max_tokens = mt;
+      const mi = intOrSkip(maxIterations);
+      if (mi !== null && mi > 0) ov.max_iterations = mi;
+      const mqb = intOrSkip(memoryQuotaBytes);
+      if (mqb !== null && mqb > 0) ov.memory_quota_bytes = mqb;
+      // memory_scopes: only emit when at least one box is ticked.
+      // Empty array would default-deny on the substrate side which is
+      // probably not what the operator wants if they didn't touch the
+      // checkboxes — omit instead so the parent value is preserved.
+      const scopes: string[] = [];
+      if (memoryScopes.agent) scopes.push("agent");
+      if (memoryScopes.user) scopes.push("user");
+      if (scopes.length > 0) ov.memory_scopes = scopes;
+      // models: emit only the per-tier slots that have at least one
+      // complete (provider+model) candidate. Empty per-tier lists are
+      // dropped so the substrate keeps the library default for that
+      // tier; partial rows were rejected by validateLocal already.
+      const models: Record<string, ModelCandidate[]> = {};
+      for (const slot of AGENT_TIER_SLOTS) {
+        const cands = modelsByTier[slot]
+          .map((c) => ({ provider: c.provider.trim(), model: c.model.trim() }))
+          .filter((c) => c.provider && c.model);
+        if (cands.length > 0) models[slot] = cands;
+      }
+      if (Object.keys(models).length > 0) ov.models = models;
       return ov;
     }
     if (kind === "skill") {
       const ov: Record<string, unknown> = { body: skillBody };
       if (description.trim()) ov.description = description.trim();
-      const tools = skillAllowedTools
-        .split(",")
-        .map((t) => t.trim())
-        .filter((t) => t.length > 0);
+      const tools = parseCommaList(skillAllowedTools);
       if (tools.length > 0) ov.allowed_tools = tools;
       return ov;
     }
@@ -327,10 +414,24 @@ export default function LibraryEditModal({
             setTier={setTier}
             effort={effort}
             setEffort={setEffort}
-            extrasJSON={agentExtrasJSON}
-            setExtrasJSON={setAgentExtrasJSON}
-            showSchema={showAgentSchemaHint}
-            setShowSchema={setShowAgentSchemaHint}
+            systemPrompt={systemPrompt}
+            setSystemPrompt={setSystemPrompt}
+            allowedTools={allowedTools}
+            setAllowedTools={setAllowedTools}
+            agentSkills={agentSkills}
+            setAgentSkills={setAgentSkills}
+            maxTokens={maxTokens}
+            setMaxTokens={setMaxTokens}
+            maxIterations={maxIterations}
+            setMaxIterations={setMaxIterations}
+            memoryQuotaBytes={memoryQuotaBytes}
+            setMemoryQuotaBytes={setMemoryQuotaBytes}
+            memoryScopes={memoryScopes}
+            setMemoryScopes={setMemoryScopes}
+            agentProviders={agentProviders}
+            setAgentProviders={setAgentProviders}
+            modelsByTier={modelsByTier}
+            setModelsByTier={setModelsByTier}
             submitting={submitting}
           />
         )}
@@ -395,7 +496,7 @@ export default function LibraryEditModal({
 
 // --- Per-flavor field clusters
 
-function AgentFields(props: {
+interface AgentFieldsProps {
   provider: string;
   setProvider: (v: string) => void;
   model: string;
@@ -404,12 +505,50 @@ function AgentFields(props: {
   setTier: (v: string) => void;
   effort: string;
   setEffort: (v: string) => void;
-  extrasJSON: string;
-  setExtrasJSON: (v: string) => void;
-  showSchema: boolean;
-  setShowSchema: (v: boolean) => void;
+  systemPrompt: string;
+  setSystemPrompt: (v: string) => void;
+  allowedTools: string;
+  setAllowedTools: (v: string) => void;
+  agentSkills: string;
+  setAgentSkills: (v: string) => void;
+  maxTokens: string;
+  setMaxTokens: (v: string) => void;
+  maxIterations: string;
+  setMaxIterations: (v: string) => void;
+  memoryQuotaBytes: string;
+  setMemoryQuotaBytes: (v: string) => void;
+  memoryScopes: { agent: boolean; user: boolean };
+  setMemoryScopes: (v: { agent: boolean; user: boolean }) => void;
+  agentProviders: string;
+  setAgentProviders: (v: string) => void;
+  modelsByTier: Record<TierSlot, ModelCandidate[]>;
+  setModelsByTier: (v: Record<TierSlot, ModelCandidate[]>) => void;
   submitting: boolean;
-}) {
+}
+
+function AgentFields(props: AgentFieldsProps) {
+  const addCandidate = (slot: TierSlot) => {
+    props.setModelsByTier({
+      ...props.modelsByTier,
+      [slot]: [...props.modelsByTier[slot], { provider: "", model: "" }],
+    });
+  };
+  const updateCandidate = (
+    slot: TierSlot,
+    i: number,
+    patch: Partial<ModelCandidate>,
+  ) => {
+    const next = [...props.modelsByTier[slot]];
+    next[i] = { ...next[i]!, ...patch };
+    props.setModelsByTier({ ...props.modelsByTier, [slot]: next });
+  };
+  const removeCandidate = (slot: TierSlot, i: number) => {
+    props.setModelsByTier({
+      ...props.modelsByTier,
+      [slot]: props.modelsByTier[slot].filter((_, idx) => idx !== i),
+    });
+  };
+
   return (
     <>
       <div className="library-form-row library-form-row-quad">
@@ -452,47 +591,209 @@ function AgentFields(props: {
           placeholder="medium"
         />
       </div>
+
       <div className="library-form-row">
-        <label htmlFor="lib-extras">
-          advanced (JSON)
-          <button
-            type="button"
-            className="library-schema-hint-toggle"
-            onClick={() => props.setShowSchema(!props.showSchema)}
-          >
-            {props.showSchema ? "hide" : "show"} schema
-          </button>
+        <label htmlFor="lib-system-prompt">
+          system prompt
+          <span className="library-modal-field-hint">
+            {" "}— freetext markdown; raw newlines preserved
+          </span>
         </label>
         <textarea
-          id="lib-extras"
-          className="library-json-textarea mono"
-          value={props.extrasJSON}
-          onChange={(e) => props.setExtrasJSON(e.target.value)}
+          id="lib-system-prompt"
+          className="library-prompt-textarea mono"
+          value={props.systemPrompt}
+          onChange={(e) => props.setSystemPrompt(e.target.value)}
           disabled={props.submitting}
           rows={10}
           spellCheck={false}
+          placeholder="You are a researcher. Follow these rules…"
         />
       </div>
-      {props.showSchema && (
-        <pre className="library-schema-hint mono">{AGENT_SCHEMA_HINT}</pre>
-      )}
+
+      <div className="library-form-row">
+        <label htmlFor="lib-allowed-tools">
+          allowed_tools
+          <span className="library-modal-field-hint">
+            {" "}— comma-separated tool names (Read, WebFetch, Memory…)
+          </span>
+        </label>
+        <input
+          id="lib-allowed-tools"
+          type="text"
+          value={props.allowedTools}
+          onChange={(e) => props.setAllowedTools(e.target.value)}
+          disabled={props.submitting}
+          placeholder="Read, WebFetch, Memory, Channel"
+        />
+      </div>
+
+      <div className="library-form-row">
+        <label htmlFor="lib-skills">
+          skills
+          <span className="library-modal-field-hint">
+            {" "}— comma-separated skill names to bake into system_prompt
+          </span>
+        </label>
+        <input
+          id="lib-skills"
+          type="text"
+          value={props.agentSkills}
+          onChange={(e) => props.setAgentSkills(e.target.value)}
+          disabled={props.submitting}
+          placeholder="briefing-format, citation-style"
+        />
+      </div>
+
+      <div className="library-form-row library-form-row-quad">
+        <label htmlFor="lib-max-tokens">max_tokens</label>
+        <input
+          id="lib-max-tokens"
+          type="number"
+          min="0"
+          value={props.maxTokens}
+          onChange={(e) => props.setMaxTokens(e.target.value)}
+          disabled={props.submitting}
+          placeholder="0 = default"
+        />
+        <label htmlFor="lib-max-iterations">max_iterations</label>
+        <input
+          id="lib-max-iterations"
+          type="number"
+          min="0"
+          value={props.maxIterations}
+          onChange={(e) => props.setMaxIterations(e.target.value)}
+          disabled={props.submitting}
+          placeholder="0 = default"
+        />
+      </div>
+
+      <div className="library-form-row library-form-row-quad">
+        <label htmlFor="lib-memory-quota">memory_quota_bytes</label>
+        <input
+          id="lib-memory-quota"
+          type="number"
+          min="0"
+          value={props.memoryQuotaBytes}
+          onChange={(e) => props.setMemoryQuotaBytes(e.target.value)}
+          disabled={props.submitting}
+          placeholder="0 = use global default"
+        />
+        <label>memory_scopes</label>
+        <div className="library-checkbox-group">
+          <label>
+            <input
+              type="checkbox"
+              checked={props.memoryScopes.agent}
+              onChange={(e) =>
+                props.setMemoryScopes({
+                  ...props.memoryScopes,
+                  agent: e.target.checked,
+                })
+              }
+              disabled={props.submitting}
+            />{" "}
+            agent
+          </label>
+          <label>
+            <input
+              type="checkbox"
+              checked={props.memoryScopes.user}
+              onChange={(e) =>
+                props.setMemoryScopes({
+                  ...props.memoryScopes,
+                  user: e.target.checked,
+                })
+              }
+              disabled={props.submitting}
+            />{" "}
+            user
+          </label>
+        </div>
+      </div>
+
+      <div className="library-form-row">
+        <label htmlFor="lib-providers">
+          providers
+          <span className="library-modal-field-hint">
+            {" "}— comma-separated priority list; overrides library
+            ProviderPriority when set
+          </span>
+        </label>
+        <input
+          id="lib-providers"
+          type="text"
+          value={props.agentProviders}
+          onChange={(e) => props.setAgentProviders(e.target.value)}
+          disabled={props.submitting}
+          placeholder="anthropic, openai, deepseek"
+        />
+      </div>
+
+      <div className="library-form-row">
+        <label>
+          models (per-tier)
+          <span className="library-modal-field-hint">
+            {" "}— per-tier candidate list; leave a tier empty to inherit
+            from the library Tiers map
+          </span>
+        </label>
+        <div className="library-models-grid">
+          {AGENT_TIER_SLOTS.map((slot) => (
+            <div key={slot} className="library-models-tier-row">
+              <div className="library-models-tier-header">
+                <span className="library-models-tier-name">{slot}</span>
+                <button
+                  type="button"
+                  className="library-schema-hint-toggle"
+                  onClick={() => addCandidate(slot)}
+                  disabled={props.submitting}
+                >
+                  + add candidate
+                </button>
+              </div>
+              {props.modelsByTier[slot].length === 0 && (
+                <span className="library-modal-field-hint">
+                  (inherits library default)
+                </span>
+              )}
+              {props.modelsByTier[slot].map((c, i) => (
+                <div key={i} className="library-models-candidate-row">
+                  <input
+                    type="text"
+                    placeholder="provider"
+                    value={c.provider}
+                    onChange={(e) =>
+                      updateCandidate(slot, i, { provider: e.target.value })
+                    }
+                    disabled={props.submitting}
+                  />
+                  <input
+                    type="text"
+                    placeholder="model"
+                    value={c.model}
+                    onChange={(e) =>
+                      updateCandidate(slot, i, { model: e.target.value })
+                    }
+                    disabled={props.submitting}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => removeCandidate(slot, i)}
+                    disabled={props.submitting}
+                    title="remove"
+                  >
+                    ×
+                  </button>
+                </div>
+              ))}
+            </div>
+          ))}
+        </div>
+      </div>
     </>
   );
 }
-
-const AGENT_SCHEMA_HINT = `// AgentDef overlay fields (all optional; structured ones above):
-{
-  "system_prompt": "string — main system prompt",
-  "system_prompt_base": "string — base system prompt, normalised from system_prompt when empty",
-  "allowed_tools": ["Read","Write","WebSearch","..."],
-  "skills": ["literature-review","..."],
-  "providers": ["anthropic","openai"],
-  "models": {"tier-name": [{"provider":"x","model":"y"}]},
-  "memory_scopes": ["agent","user"],
-  "memory_quota_bytes": 1048576,
-  "max_tokens": 4096,
-  "max_iterations": 20
-}`;
 
 function SkillFields(props: {
   allowedTools: string;
@@ -505,7 +806,10 @@ function SkillFields(props: {
     <>
       <div className="library-form-row">
         <label htmlFor="lib-skill-tools">
-          allowed_tools (comma-separated, optional)
+          allowed_tools
+          <span className="library-modal-field-hint">
+            {" "}— comma-separated; must be a subset of the calling agent's tools
+          </span>
         </label>
         <input
           id="lib-skill-tools"
@@ -520,13 +824,13 @@ function SkillFields(props: {
         <label htmlFor="lib-skill-body">body (markdown — required)</label>
         <textarea
           id="lib-skill-body"
-          className="library-json-textarea mono"
+          className="library-prompt-textarea mono"
           value={props.body}
           onChange={(e) => props.setBody(e.target.value)}
           disabled={props.submitting}
           rows={12}
           spellCheck={false}
-          placeholder="# Skill instructions in markdown..."
+          placeholder="# Skill instructions in markdown…"
         />
       </div>
     </>
@@ -680,6 +984,56 @@ function pickStringMap(def: unknown, key: string): Record<string, string> {
     if (typeof val === "string") out[k] = val;
   }
   return out;
+}
+
+// pickNumberAsString reads a numeric field for pre-fill. Returns "" for
+// unset / non-numeric so the <input type="number"> stays empty (which
+// the operator reads as "use default" — matches the placeholder text).
+function pickNumberAsString(def: unknown, key: string): string {
+  if (!def || typeof def !== "object") return "";
+  const v = (def as Record<string, unknown>)[key];
+  if (typeof v === "number" && Number.isFinite(v)) return String(v);
+  return "";
+}
+
+// pickModelsByTier reads the agent's `models` map and projects it onto
+// the three fixed tier slots the modal renders. Tier names outside
+// "low"/"middle"/"high" in the source are silently dropped — the
+// operator who needs custom tier names can still edit them via yaml.
+function pickModelsByTier(def: unknown): Record<TierSlot, ModelCandidate[]> {
+  const out: Record<TierSlot, ModelCandidate[]> = {
+    low: [],
+    middle: [],
+    high: [],
+  };
+  if (!def || typeof def !== "object") return out;
+  const v = (def as Record<string, unknown>)["models"];
+  if (!v || typeof v !== "object" || Array.isArray(v)) return out;
+  for (const slot of AGENT_TIER_SLOTS) {
+    const arr = (v as Record<string, unknown>)[slot];
+    if (!Array.isArray(arr)) continue;
+    const cands: ModelCandidate[] = [];
+    for (const item of arr) {
+      if (!item || typeof item !== "object") continue;
+      const p = (item as Record<string, unknown>)["provider"];
+      const m = (item as Record<string, unknown>)["model"];
+      if (typeof p === "string" && typeof m === "string") {
+        cands.push({ provider: p, model: m });
+      }
+    }
+    out[slot] = cands;
+  }
+  return out;
+}
+
+// parseCommaList splits a comma-separated string into trimmed,
+// non-empty entries. Handles whitespace + trailing commas + duplicate
+// spaces. Used for allowed_tools, skills, and providers.
+function parseCommaList(s: string): string[] {
+  return s
+    .split(",")
+    .map((t) => t.trim())
+    .filter((t) => t.length > 0);
 }
 
 // explainServerError unwraps the jsonFetch thrown-Error message —

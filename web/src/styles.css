@@ -1527,6 +1527,86 @@ pre {
   border-color: var(--danger, #c33);
 }
 
+/* v0.11.6 — Library admin modal structured form. Inline help text
+ * next to a label, a textarea that's a sibling of .library-json-textarea
+ * but named for intent (skill body + agent system prompt are markdown,
+ * not JSON), checkbox cluster for memory_scopes, and per-tier model
+ * editor for the agent's models map. */
+.library-modal-field-hint {
+  font-weight: normal;
+  font-size: 11px;
+  color: var(--fg-muted, #888);
+  font-style: italic;
+}
+.library-prompt-textarea {
+  width: 100%;
+  padding: 8px;
+  font-size: 12px;
+  border: 1px solid var(--border, #444);
+  border-radius: 4px;
+  background: var(--bg-input, #1a1a1a);
+  color: var(--fg, inherit);
+  resize: vertical;
+  min-height: 120px;
+}
+.library-checkbox-group {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  font-weight: normal;
+}
+.library-models-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 8px;
+  border: 1px solid var(--border, #444);
+  border-radius: 4px;
+  background: var(--bg-muted, #181818);
+}
+.library-models-tier-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.library-models-tier-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.library-models-tier-name {
+  font-family: var(--mono);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--accent);
+  min-width: 60px;
+}
+.library-models-candidate-row {
+  display: grid;
+  grid-template-columns: 1fr 2fr max-content;
+  gap: 6px;
+}
+.library-models-candidate-row input {
+  padding: 4px 6px;
+  font-size: 12px;
+  border: 1px solid var(--border, #444);
+  border-radius: 3px;
+  background: var(--bg-input, #1a1a1a);
+  color: var(--fg, inherit);
+}
+.library-models-candidate-row button {
+  background: none;
+  border: 1px solid var(--border, #444);
+  color: var(--fg-muted, #888);
+  cursor: pointer;
+  padding: 0 8px;
+  border-radius: 3px;
+}
+.library-models-candidate-row button:hover {
+  color: var(--danger, #c33);
+  border-color: var(--danger, #c33);
+}
+
 /* v0.10.4 — per-row mutation buttons in LineageTree + the page-level
  * "+ New" CTA in LineagePanel's right-pane header. */
 .lineage-row-actions {
