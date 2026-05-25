@@ -8,6 +8,56 @@ For pre-v0.4 history (single-tool runtime, library milestone, security patch), s
 
 ---
 
+## What's in v0.11.10
+
+Anthropic OAuth-dev stealth-mode parity. Closes the v0.11.9 deferrals by converging the live-data findings against the operator's real MAX subscription. The v0.11.9 OAuth scaffolding shipped working auth + token management + the mask layer but deferred 6 items that needed live Anthropic-side observation to resolve. v0.11.10 closes them.
+
+### Live-data findings closed
+
+**Authorization-side fixes (Phase B early):**
+
+1. **redirect_uri requires literal `localhost`, not `127.0.0.1`.** Anthropic's OAuth authorization server validates `redirect_uri` by exact string match against the Claude Code client_id's registered URIs. `http://127.0.0.1:53692/callback` was rejected with "Redirect URI ... is not supported by client." Pi reference: `packages/ai/src/utils/oauth/anthropic.ts` line 34. Fix: split `CallbackHost = "localhost"` (URL string) from `CallbackBindIP = "127.0.0.1"` (TCP listener address) — the URL matches Anthropic's whitelist; the listener binds explicit loopback IPv4 to avoid IPv6 ::1 resolution ambiguity.
+
+2. **Token exchange body requires a `state` field.** Anthropic's token endpoint returned 400 "Invalid request format" without it — non-standard for OAuth2 (state usually only matters in the authorize→callback round trip). Pi confirms: line 201. Fix: `ExchangeCodeForToken` now takes a `state` parameter; CLI passes `result.State` from the callback.
+
+**Wire-shape adaptation (B1, B3, B4 partial):**
+
+3. **Claude Code identity prepended to system blocks.** Anthropic's OAuth-billing validator requires the verbatim string `"You are Claude Code, Anthropic's official CLI for Claude."` as the first system block. Without it, the validator returns a misleading `"messages: Input should be a valid array"` 400 (a generic message-array complaint masks the broader shape validation failure). Pi reference: `packages/ai/src/providers/anthropic.ts` § `if (isOAuthToken)` branch lines 904-913. New `adaptSystemForOAuth(in []ContentBlock) []ContentBlock` in `messages.go` prepends the identity block (with `Cacheable: true` for prompt-cache amortization) and preserves operator blocks verbatim. Wired into `Driver.Call()` after the existing mask layer. B3 (tool-list minimum) and B4 partial (`mcp__loomcycle__*` masked tools) confirmed accepted by Anthropic in the same convergence loop — a single-Context-tool call succeeds end-to-end.
+
+**Mechanical Phase A:**
+
+4. **A1 — `CanonicalizeToolName` wired into `MaskOutbound`.** The v0.11.9 helper map (`Read` / `Write` / `Edit` / `Bash` / `Grep` / `Glob` / `NotebookEdit` / `WebFetch` / `WebSearch` / `Skill` canonical-casing lookup) was dead code in v0.11.9. v0.11.10 applies it to every non-masked tool name before outbound, so operators who declare `allowed_tools: [read, write]` get the same wire shape as those who declare `[Read, Write]`. Defensive against case drift in yaml authoring; matches Pi's normalization.
+
+5. **A2 — `ErrSubscriptionQuotaExhausted` real detection.** v0.11.9 exported this sentinel as a stub; v0.11.10 wires actual detection on the **synchronous error return** from `Driver.Call()` (NOT the event channel — Anthropic's 429s are consumed by the inner driver's `ratelimit.Do` and surface as a sync error, never reach the event channel). When the inner driver returns an error whose text contains both "429" and "subscription" (case-insensitive), we wrap with a `subscriptionQuotaErr` type whose `Error()` preserves the original `"anthropic 429: {body}"` text verbatim — `internal/providers/errclass.go`'s `statusRe` regex still matches → `ClassifyError` still returns `ErrorClassRetryable` → existing tier-fallback path still fires. The wrapper additionally implements `Is(target)` so `errors.Is(err, ErrSubscriptionQuotaExhausted)` matches for callers that want to distinguish quota-exhausted from generic rate-limit. **The initial implementation was wrong** (event-channel detection point + sentinel prefix) — caught + fixed in code-review pass before merge.
+
+### B2 finding (informational; no code change)
+
+Cache-control verification: 5 back-to-back identical OAuth calls all report `cache_creation_input_tokens=1205` and zero `cache_read_input_tokens`. Anthropic appears to ACCEPT `cache_control` under OAuth (writes report) but DOES NOT serve cache reads in the observed test scenario — every call pays the 25% cache-write surcharge with no amortization through reads.
+
+We leave `cache_control` enabled regardless because (a) Pi sends it under OAuth too (wire-parity matters for the subscription-billing detection), and (b) stripping it might trigger Anthropic's detection. The 25% per-call premium is a known cost until Anthropic enables OAuth cache reads (which may happen under different conditions we haven't found). Operators running cost-sensitive workloads through OAuth-dev should be aware of this overhead.
+
+### Tests
+
+- 3 new tests for the system-prompt adaptation (`messages_test.go`)
+- 1 new test for `MaskOutbound` canonicalization (`loomcycle_mask_test.go`)
+- 1 new test for `isSubscriptionQuotaError` (`driver_test.go`)
+- All v0.11.9 tests continue to pass
+- Live verified: `provider: anthropic-oauth-dev` agent gets a working `pong` response from claude-sonnet-4-6 (1208 prompt + 5 output tokens; stop_reason=end_turn)
+
+### Architectural posture
+
+- **Pi remains the reference, but live signal trumps Pi when they diverge.** Pi sends `cache_control` under OAuth even though our measurements show no cache reads — we follow Pi for wire-parity but document the cost observation. If a future Pi update strips `cache_control` based on the same observation, we'd follow.
+- **Wire-shape changes go through the OAuth-dev driver only.** The production `internal/providers/anthropic/` driver is untouched; A1's canonicalization could be useful there too but lifting it is a separate PR scoped to API-key behavior.
+- **Stub-to-real promotion done cleanly.** `ErrSubscriptionQuotaExhausted` exported as a stub in v0.11.9 (so `errors.Is` checks compile) and promoted to producing in v0.11.10 — no API break, no consumer migration.
+
+### Wire-compatibility notes
+
+- All changes are additive; existing yaml configs work unchanged.
+- TS adapter still at 0.11.5 (OAuth-dev is provider-internal).
+- v0.11.9 was never tagged independently — v0.11.10 supersedes it functionally. Operators tracking releases get one "OAuth-dev shipped + works" signal.
+
+---
+
 ## What's in v0.11.9
 
 Anthropic OAuth-dev provider — opt-in, research/dev-only path that authenticates against the operator's Claude Pro/Max subscription via reverse-engineered OAuth (Pi's `pi-ai` package is the reference; github.com/earendil-works/pi, 51K stars). Strategic shift: research workloads that burn through API credits faster than the operator's budget can absorb (self-evolution iteration cycles cost $750-$3,750 at API-key rates per 100 iterations) move to subscription billing without changing the production posture for paying customers. RFC at `doc-internal/rfcs/anthropic-oauth-dev.md` (locked 2026-05-19) documents the full design + risk acknowledgement.

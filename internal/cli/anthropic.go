@@ -131,7 +131,7 @@ func runAnthropicLogin(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "login: state/verifier mismatch — possible CSRF; refuse to continue")
 		return 1
 	}
-	tok, err := oauthdev.ExchangeCodeForToken(ctx, result.Code, pkce.Verifier, cs.Port(), oauthdev.ExchangeOptions{})
+	tok, err := oauthdev.ExchangeCodeForToken(ctx, result.Code, result.State, pkce.Verifier, cs.Port(), oauthdev.ExchangeOptions{})
 	if err != nil {
 		fmt.Fprintf(stderr, "login: token exchange failed: %v\n", err)
 		return 1

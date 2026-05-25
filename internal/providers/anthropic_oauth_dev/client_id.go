@@ -62,11 +62,27 @@ const PinnedClaudeCodeVersion = "2.1.75"
 // `prompt-caching-2024-07-31`) to this base list.
 const PinnedAnthropicBetas = "claude-code-20250219,oauth-2025-04-20"
 
-// CallbackHost is the loopback address the browser redirects to after
-// the operator authorizes loomcycle's OAuth client. Loopback-only — the
-// auth code never crosses the network beyond the operator's own
-// machine.
-const CallbackHost = "127.0.0.1"
+// CallbackHost is the loopback hostname embedded in the redirect_uri
+// query param. MUST be the literal string "localhost" — Anthropic's
+// OAuth authorization server matches the registered redirect_uri by
+// exact string equality, and the Claude Code client_id is registered
+// with `http://localhost:53692/callback` (not `http://127.0.0.1:...`).
+// Pi confirms: pi-ai's `packages/ai/src/utils/oauth/anthropic.ts`
+// builds `REDIRECT_URI = http://localhost:${CALLBACK_PORT}/callback`.
+// Using "127.0.0.1" produces a 400 from claude.ai's authorize page:
+// "Redirect URI ... is not supported by client."
+const CallbackHost = "localhost"
+
+// CallbackBindIP is the address the local listener actually binds to.
+// Pi uses 127.0.0.1 explicitly (not "localhost") — `net.Listen("tcp",
+// "localhost:port")` would rely on OS resolution which may return
+// IPv6 ::1 on some systems, leaving the listener IPv6-only while
+// browsers default to IPv4. Binding 127.0.0.1 explicitly is the
+// most-compatible loopback bind. The mismatch with CallbackHost (URL
+// says "localhost", listener binds "127.0.0.1") is intentional — the
+// URL string must match Anthropic's whitelist; the TCP bind uses the
+// most-reliable loopback IP.
+const CallbackBindIP = "127.0.0.1"
 
 // CallbackPath is the path component of the redirect URI. The PKCE
 // callback server only handles this single path; anything else 404s.

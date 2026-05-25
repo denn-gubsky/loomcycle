@@ -1,6 +1,7 @@
 package anthropic_oauth_dev
 
 import (
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -147,5 +148,58 @@ func TestOAuthTransport_ApplyAuthIsIdempotent(t *testing.T) {
 	}
 	if strings.Count(second, "claude-code-20250219") > 1 {
 		t.Errorf("anthropic-beta duplicated after second apply: %q", second)
+	}
+}
+
+// TestSubscriptionQuotaErr_PreservesErrorTextForClassifyError pins
+// the v0.11.10 A2 review-pass fix: the wrapper's .Error() MUST return
+// the inner error's text verbatim. internal/providers/errclass.go's
+// statusRe regex pattern-matches the leading "<provider> <status>:"
+// prefix to classify retryable vs not; a sentinel prefix on the wrap
+// would break that match and suppress the tier-fallback that
+// ClassifyError otherwise triggers for 429s.
+func TestSubscriptionQuotaErr_PreservesErrorTextForClassifyError(t *testing.T) {
+	orig := errors.New(`anthropic 429: {"type":"error","error":{"message":"subscription limit reached"}}`)
+	wrapped := &subscriptionQuotaErr{inner: orig}
+	if wrapped.Error() != orig.Error() {
+		t.Errorf("wrapper changed Error() text:\n  want: %q\n  got:  %q", orig.Error(), wrapped.Error())
+	}
+}
+
+// TestSubscriptionQuotaErr_ErrorsIs verifies errors.Is matches the
+// exported sentinel + unwraps to the original error.
+func TestSubscriptionQuotaErr_ErrorsIs(t *testing.T) {
+	orig := errors.New("anthropic 429: subscription exhausted")
+	wrapped := &subscriptionQuotaErr{inner: orig}
+	if !errors.Is(wrapped, ErrSubscriptionQuotaExhausted) {
+		t.Errorf("errors.Is should match ErrSubscriptionQuotaExhausted")
+	}
+	if !errors.Is(wrapped, orig) {
+		t.Errorf("errors.Is should also match the inner error (via Unwrap)")
+	}
+}
+
+// TestIsSubscriptionQuotaError pins the v0.11.10 A2 detection logic:
+// 429 + "subscription" (case-insensitive in either token) matches;
+// anything else passes through unwrapped.
+func TestIsSubscriptionQuotaError(t *testing.T) {
+	cases := []struct {
+		name    string
+		errText string
+		want    bool
+	}{
+		{"happy path", `anthropic 429: {"type":"error","error":{"message":"subscription limit reached"}}`, true},
+		{"case-insensitive Subscription", `anthropic 429: SUBSCRIPTION quota exhausted`, true},
+		{"generic 429 rate-limit", `anthropic 429: {"error":{"message":"rate-limited"}}`, false},
+		{"500", `anthropic 500: server error`, false},
+		{"empty", ``, false},
+		{"subscription word only without 429", `subscription update available`, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := isSubscriptionQuotaError(c.errText); got != c.want {
+				t.Errorf("isSubscriptionQuotaError(%q) = %v, want %v", c.errText, got, c.want)
+			}
+		})
 	}
 }

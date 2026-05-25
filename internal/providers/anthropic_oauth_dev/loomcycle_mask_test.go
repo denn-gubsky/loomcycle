@@ -47,6 +47,33 @@ func TestMaskOutbound_RenamesLoomcycleOnlyBuiltins(t *testing.T) {
 	}
 }
 
+// TestMaskOutbound_CanonicalizesNonMaskedToolNames (v0.11.10 A1):
+// Claude-Code overlap names sent in non-canonical casing (operator
+// yaml typo or legacy lowercase convention) get canonicalized on the
+// outbound wire so Anthropic's subscription-billing layer sees the
+// exact casing Claude Code itself ships with.
+func TestMaskOutbound_CanonicalizesNonMaskedToolNames(t *testing.T) {
+	in := []providers.ToolSpec{
+		{Name: "read"},                     // canonical: Read
+		{Name: "WRITE"},                    // canonical: Write
+		{Name: "notebookedit"},             // canonical: NotebookEdit
+		{Name: "mcp__github__list_issues"}, // not in overlap; passes through
+	}
+	out := MaskOutbound(in)
+	if out[0].Name != "Read" {
+		t.Errorf("read should canonicalize to Read; got %q", out[0].Name)
+	}
+	if out[1].Name != "Write" {
+		t.Errorf("WRITE should canonicalize to Write; got %q", out[1].Name)
+	}
+	if out[2].Name != "NotebookEdit" {
+		t.Errorf("notebookedit should canonicalize to NotebookEdit; got %q", out[2].Name)
+	}
+	if out[3].Name != "mcp__github__list_issues" {
+		t.Errorf("MCP tool should pass through unchanged; got %q", out[3].Name)
+	}
+}
+
 // TestMaskOutbound_DoesNotMutateInput is a non-trivial concern — the
 // loop layer may pass the same Tools slice to multiple providers in
 // one iteration (e.g., tier fallback). Mutating it would corrupt the

@@ -72,7 +72,7 @@ func TestBuildAuthorizeURL(t *testing.T) {
 		"client_id=" + ClaudeCodeClientID,
 		"code_challenge=" + pkce.Challenge,
 		"code_challenge_method=S256",
-		"redirect_uri=http%3A%2F%2F127.0.0.1%3A53692%2Fcallback",
+		"redirect_uri=http%3A%2F%2Flocalhost%3A53692%2Fcallback",
 	} {
 		if !strings.Contains(u, want) {
 			t.Errorf("authorize URL missing %q\n  got: %s", want, u)
@@ -108,7 +108,7 @@ func TestExchangeCodeForToken_HappyPath(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	got, err := ExchangeCodeForToken(t.Context(), "auth-code-xyz", "verifier-pqr", 53692,
+	got, err := ExchangeCodeForToken(t.Context(), "auth-code-xyz", "state-abc", "verifier-pqr", 53692,
 		ExchangeOptions{Endpoint: srv.URL})
 	if err != nil {
 		t.Fatalf("ExchangeCodeForToken: %v", err)
@@ -129,7 +129,8 @@ func TestExchangeCodeForToken_HappyPath(t *testing.T) {
 		"grant_type":    "authorization_code",
 		"client_id":     ClaudeCodeClientID,
 		"code":          "auth-code-xyz",
-		"redirect_uri":  "http://127.0.0.1:53692/callback",
+		"state":         "state-abc",
+		"redirect_uri":  "http://localhost:53692/callback",
 		"code_verifier": "verifier-pqr",
 	} {
 		if gotBody[k] != v {
@@ -147,7 +148,7 @@ func TestExchangeCodeForToken_4xx(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	_, err := ExchangeCodeForToken(t.Context(), "bad", "v", 53692,
+	_, err := ExchangeCodeForToken(t.Context(), "bad", "state", "v", 53692,
 		ExchangeOptions{Endpoint: srv.URL})
 	if err == nil {
 		t.Fatal("expected error on 401")
