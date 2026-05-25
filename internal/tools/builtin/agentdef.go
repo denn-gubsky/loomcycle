@@ -663,7 +663,7 @@ type mergedDef struct {
 	// loop default (16). Set higher for discovery-style forks
 	// whose workflow is intrinsically iterative — same knob the
 	// yaml frontmatter exposes via PR #168's `max_iterations` field.
-	MaxIterations int    `json:"max_iterations,omitempty"`
+	MaxIterations int `json:"max_iterations,omitempty"`
 	// MaxConcurrentChildren caps how many sub-agents this agent may
 	// spawn in parallel via Agent.parallel_spawn (v0.11.8+). Zero =
 	// use the runtime default (DefaultMaxConcurrentChildren = 4).

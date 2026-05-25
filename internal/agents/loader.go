@@ -230,27 +230,27 @@ func LoadSet(root string) (*Set, error) {
 // shape is the precise one, comma-string is the legacy/Claude Code
 // shape we tolerate so MDs stay portable.
 type frontmatter struct {
-	Name             string                     `yaml:"name"`
-	Description      string                     `yaml:"description"`
-	Tools            any                        `yaml:"tools"`         // Claude Code shape — string OR []string
-	AllowedTools     []string                   `yaml:"allowed_tools"` // loomcycle's preferred shape
-	Provider         string                     `yaml:"provider"`
-	Model            string                     `yaml:"model"`
-	Tier             string                     `yaml:"tier"`
-	Effort           string                     `yaml:"effort"`
+	Name                  string                     `yaml:"name"`
+	Description           string                     `yaml:"description"`
+	Tools                 any                        `yaml:"tools"`         // Claude Code shape — string OR []string
+	AllowedTools          []string                   `yaml:"allowed_tools"` // loomcycle's preferred shape
+	Provider              string                     `yaml:"provider"`
+	Model                 string                     `yaml:"model"`
+	Tier                  string                     `yaml:"tier"`
+	Effort                string                     `yaml:"effort"`
 	MaxTokens             int                        `yaml:"max_tokens"`
 	MaxIterations         int                        `yaml:"max_iterations"`
 	MaxConcurrentChildren int                        `yaml:"max_concurrent_children"`
 	Skills                []string                   `yaml:"skills"`
-	Providers        []string                   `yaml:"providers"`
-	Models           map[string][]TierCandidate `yaml:"models"`
-	MemoryScopes     []string                   `yaml:"memory_scopes"`
-	MemoryQuotaBytes int                        `yaml:"memory_quota_bytes"`
-	Channels         AgentChannelACL            `yaml:"channels"`
-	AgentDefScopes   []string                   `yaml:"agent_def_scopes"`
-	SkillDefScopes   []string                   `yaml:"skill_def_scopes"`
-	EvaluationScopes []string                   `yaml:"evaluation_scopes"`
-	SystemPromptFile string                     `yaml:"system_prompt_file"`
+	Providers             []string                   `yaml:"providers"`
+	Models                map[string][]TierCandidate `yaml:"models"`
+	MemoryScopes          []string                   `yaml:"memory_scopes"`
+	MemoryQuotaBytes      int                        `yaml:"memory_quota_bytes"`
+	Channels              AgentChannelACL            `yaml:"channels"`
+	AgentDefScopes        []string                   `yaml:"agent_def_scopes"`
+	SkillDefScopes        []string                   `yaml:"skill_def_scopes"`
+	EvaluationScopes      []string                   `yaml:"evaluation_scopes"`
+	SystemPromptFile      string                     `yaml:"system_prompt_file"`
 	// SystemPrompt as an inline frontmatter field is intentionally
 	// NOT supported. The body of the MD is the prompt; if you want a
 	// pointer to a different file, use system_prompt_file.

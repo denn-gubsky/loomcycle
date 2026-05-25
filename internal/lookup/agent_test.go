@@ -197,21 +197,21 @@ func TestAgent_DriftDetection(t *testing.T) {
 	// Adding a field to either WITHOUT adding it here is the bug
 	// this test is designed to catch.
 	want := map[string]bool{
-		"provider":           true,
-		"model":              true,
-		"tier":               true,
-		"effort":             true,
+		"provider":                true,
+		"model":                   true,
+		"tier":                    true,
+		"effort":                  true,
 		"max_tokens":              true,
 		"max_iterations":          true,
 		"max_concurrent_children": true,
 		"system_prompt":           true,
-		"system_prompt_base": true,
-		"allowed_tools":      true,
-		"skills":             true,
-		"providers":          true,
-		"models":             true,
-		"memory_scopes":      true,
-		"memory_quota_bytes": true,
+		"system_prompt_base":      true,
+		"allowed_tools":           true,
+		"skills":                  true,
+		"providers":               true,
+		"models":                  true,
+		"memory_scopes":           true,
+		"memory_quota_bytes":      true,
 	}
 	have := jsonTagsOf(reflect.TypeOf(lookup.SubstrateAgentDef{}))
 	for tag := range want {

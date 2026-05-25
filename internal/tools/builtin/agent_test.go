@@ -249,7 +249,6 @@ func TestAgentTool_DefIDOmittedDefaultsEmpty(t *testing.T) {
 	}
 }
 
-
 // ---- v0.11.8 parallel_spawn op tests ----
 
 // TestAgentTool_ParallelSpawn_HappyPath: 3 children spawn concurrently,
