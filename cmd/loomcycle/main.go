@@ -1847,6 +1847,17 @@ func bootstrapMemoryEntries(ctx context.Context, cfg *config.Config, st store.St
 			// Row already present — yaml seeding is a one-time
 			// bootstrap, never an overwrite. This is the line that
 			// makes the loader safe to re-run on every boot.
+			//
+			// Non-nil err here covers BOTH "row missing"
+			// (ErrNotFound — the expected path on a fresh row) AND
+			// transient store errors (e.g. a dropped DB connection).
+			// We deliberately don't distinguish: the MemorySet
+			// attempt below will fail loudly on a broken store and
+			// the failure gets logged + counted in `failed`. The
+			// alternative — bailing out on every Get error — would
+			// mean a flaky DB at boot leaves the entries unseeded
+			// without retry. Fail-on-Set lets a recovered store on
+			// the next boot pick up where we left off.
 			skipped++
 			continue
 		}

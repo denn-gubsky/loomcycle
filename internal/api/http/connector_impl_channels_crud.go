@@ -37,10 +37,11 @@ func validChannelName(name string) bool {
 	return true
 }
 
-// rowToDescriptor renders a substrate row in the same shape the read
-// path uses, joining live channel_messages stats when present.
-func (s *Server) rowToDescriptor(ctx context.Context, row store.ChannelRow) connector.ChannelDescriptor {
-	desc := connector.ChannelDescriptor{
+// rowToBareDescriptor renders a substrate row WITHOUT joining stats.
+// Callers that need stats either know they're zero (fresh inserts) or
+// supply them explicitly via attachStats below.
+func rowToBareDescriptor(row store.ChannelRow) connector.ChannelDescriptor {
+	return connector.ChannelDescriptor{
 		Name:        row.Name,
 		Description: row.Description,
 		Scope:       row.Scope,
@@ -51,24 +52,18 @@ func (s *Server) rowToDescriptor(ctx context.Context, row store.ChannelRow) conn
 		MaxMessages: row.MaxMessages,
 		Source:      "runtime",
 	}
-	stats, err := s.store.ChannelStats(ctx)
-	if err != nil {
-		return desc
+}
+
+// attachStats folds one ChannelStat into a descriptor in place. Cheap;
+// avoids the N+1 aggregation query the v0.11.5 first cut had.
+func attachStats(desc *connector.ChannelDescriptor, st store.ChannelStats) {
+	desc.MessageCount = st.MessageCount
+	if !st.OldestVisibleAt.IsZero() {
+		desc.OldestVisibleAt = st.OldestVisibleAt.UTC().Format(time.RFC3339)
 	}
-	for _, st := range stats {
-		if st.Channel != row.Name {
-			continue
-		}
-		desc.MessageCount = st.MessageCount
-		if !st.OldestVisibleAt.IsZero() {
-			desc.OldestVisibleAt = st.OldestVisibleAt.UTC().Format(time.RFC3339)
-		}
-		if !st.NewestVisibleAt.IsZero() {
-			desc.NewestVisibleAt = st.NewestVisibleAt.UTC().Format(time.RFC3339)
-		}
-		break
+	if !st.NewestVisibleAt.IsZero() {
+		desc.NewestVisibleAt = st.NewestVisibleAt.UTC().Format(time.RFC3339)
 	}
-	return desc
 }
 
 // CreateChannel inserts a new runtime-substrate channel. Refuses with
@@ -130,7 +125,9 @@ func (s *Server) CreateChannel(ctx context.Context, req connector.ChannelCreateR
 		}
 		return connector.ChannelDescriptor{}, fmt.Errorf("create channel: %w", err)
 	}
-	return s.rowToDescriptor(ctx, row), nil
+	// A freshly-inserted channel has zero messages by definition —
+	// skip the ChannelStats round-trip.
+	return rowToBareDescriptor(row), nil
 }
 
 // UpdateChannel patches mutable fields on a runtime channel. yaml-
@@ -171,19 +168,35 @@ func (s *Server) UpdateChannel(ctx context.Context, name string, req connector.C
 		return connector.ChannelDescriptor{}, fmt.Errorf("update channel: %w", err)
 	}
 
-	// Re-read so the descriptor reflects the post-patch state.
+	// Re-read so the descriptor reflects the post-patch state. We
+	// also fetch ChannelStats ONCE here so the response carries live
+	// message_count + visible_at bounds without an additional query.
 	rows, err := s.store.ChannelsList(ctx)
 	if err != nil {
 		return connector.ChannelDescriptor{}, fmt.Errorf("update channel re-read: %w", err)
 	}
-	for _, r := range rows {
-		if r.Name == name {
-			return s.rowToDescriptor(ctx, r), nil
+	var match *store.ChannelRow
+	for i := range rows {
+		if rows[i].Name == name {
+			match = &rows[i]
+			break
 		}
 	}
-	// Shouldn't happen — successful update implies a row exists. Keep
-	// a defensive error path so future contract drift surfaces loudly.
-	return connector.ChannelDescriptor{}, fmt.Errorf("%w: %q", connector.ErrChannelNotFound, name)
+	if match == nil {
+		// Shouldn't happen — successful update implies a row exists.
+		// Keep a defensive error path so future contract drift surfaces loudly.
+		return connector.ChannelDescriptor{}, fmt.Errorf("%w: %q", connector.ErrChannelNotFound, name)
+	}
+	desc := rowToBareDescriptor(*match)
+	if stats, err := s.store.ChannelStats(ctx); err == nil {
+		for _, st := range stats {
+			if st.Channel == name {
+				attachStats(&desc, st)
+				break
+			}
+		}
+	}
+	return desc, nil
 }
 
 // DeleteChannel removes a runtime channel + cascades persisted

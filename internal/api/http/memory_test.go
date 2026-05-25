@@ -327,6 +327,65 @@ func TestHandleDeleteMemoryEntry_IdempotentMissingRow(t *testing.T) {
 	}
 }
 
+// memoryAdminAuthedFixture mirrors memoryAdminFixture but configures
+// a bearer token + the seed rows. Used for the auth-gate tests below
+// (the default fixture leaves AuthToken empty, which puts the mux in
+// open mode — useless for verifying the auth middleware).
+func memoryAdminAuthedFixture(t *testing.T) *Server {
+	t.Helper()
+	st, err := sqlite.Open(":memory:")
+	if err != nil {
+		t.Fatalf("sqlite.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+
+	if err := st.MemorySet(t.Context(), store.MemoryScopeUser, "alice", "voice",
+		[]byte(`"alice-voice"`), 0); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := &config.Config{Env: config.Env{AuthToken: "test-token"}}
+	hookReg := hooks.NewRegistry()
+	return &Server{
+		cfg:            cfg,
+		store:          st,
+		cancelReg:      cancel.NewRegistry(),
+		sessionLocks:   runner.NewSessionLockMap(),
+		hookRegistry:   hookReg,
+		hookDispatcher: hooks.NewDispatcher(hookReg, nil),
+		sem:            concurrency.New(8, 16, 30000),
+	}
+}
+
+// TestHandlePutMemoryEntry_RequiresBearer confirms the auth middleware
+// gates the new mutation route — without it, anyone could overwrite
+// any memory row.
+func TestHandlePutMemoryEntry_RequiresBearer(t *testing.T) {
+	s := memoryAdminAuthedFixture(t)
+	req := httptest.NewRequest("PUT", "/v1/_memory/scopes/user/alice/keys/voice",
+		strings.NewReader(`{"value":"x"}`))
+	req.Header.Set("Content-Type", "application/json")
+	// no Authorization header
+	rec := httptest.NewRecorder()
+	s.Mux().ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Errorf("status = %d, want 401", rec.Code)
+	}
+}
+
+// TestHandleDeleteMemoryEntry_RequiresBearer mirrors the PUT test for
+// the DELETE route.
+func TestHandleDeleteMemoryEntry_RequiresBearer(t *testing.T) {
+	s := memoryAdminAuthedFixture(t)
+	req := httptest.NewRequest("DELETE", "/v1/_memory/scopes/user/alice/keys/voice", nil)
+	// no Authorization header
+	rec := httptest.NewRecorder()
+	s.Mux().ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Errorf("status = %d, want 401", rec.Code)
+	}
+}
+
 func TestHandleListMemoryEntries_StoreUnavailable(t *testing.T) {
 	cfg := &config.Config{}
 	hookReg := hooks.NewRegistry()
