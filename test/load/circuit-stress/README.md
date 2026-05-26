@@ -16,7 +16,8 @@ Circuits are grouped `--circuits-per-user 10-20` so the Web UI's per-user agents
 
 ```sh
 # 1. Prereqs (one-time)
-loomcycle anthropic login                              # populate OAuth token
+loomcycle anthropic login                              # populate Anthropic OAuth token (primary provider)
+export OLLAMA_API_KEY=...                              # Ollama Cloud key (fallback when OAuth-dev hits rate limit)
 export LOOMCYCLE_AUTH_TOKEN=$(openssl rand -hex 32)    # bearer for both server + driver
 
 # 2. Smoke test (x1, ~1 min)
