@@ -1,0 +1,204 @@
+# test/load/circuit-stress — loomcycle config for the multi-agent
+# circuit load test. See README.md for what this test exercises.
+#
+# Three agents, one provider (anthropic-oauth-dev only), Postgres
+# storage, channels declared with prefix-wildcard ACLs so the driver
+# can pre-create per-circuit channels without yaml edits per scale.
+#
+# Concurrency bumped to 200 active / 500 queued — defaults of 8/16
+# would dominate the latency picture at x100+.
+
+provider_priority:
+  - anthropic-oauth-dev
+
+# Library-default tier — used by every agent here unless overridden.
+# Pinned to haiku because the goal is exercising the substrate, not
+# generating reasoning tokens; cheaper + faster keeps the OAuth-dev
+# MAX subscription budget alive for higher scales.
+tiers:
+  middle:
+    - { provider: anthropic-oauth-dev, model: claude-haiku-4-5-20251001 }
+
+# Default user_tier — every run inherits unless POST /v1/runs sets
+# its own. We don't bother declaring named tiers since this test is
+# single-tier.
+user_tiers:
+  default:
+    provider_priority: [anthropic-oauth-dev]
+    tiers:
+      middle:
+        - { provider: anthropic-oauth-dev, model: claude-haiku-4-5-20251001 }
+    # No fallback: we WANT this run to fail loudly when the OAuth
+    # MAX subscription quota is exhausted so the driver can detect
+    # and halt the ramp. Falling back to API-key Anthropic would
+    # complete the run but defeat the "how far does OAuth dev go"
+    # measurement that's the whole point of this test.
+    fallback_on_error: false
+
+# Concurrency — defaults of 8/16 would queue heavily at x100+.
+# 200/500 gives headroom for 3 concurrent runs per circuit × ~70
+# in-flight circuits. Per-user cap stays 0 (off) since circuits are
+# grouped by user_id with 10-20 each; an artificial cap here would
+# block legitimate parallelism.
+concurrency:
+  max_concurrent_runs: 200
+  max_queue_depth: 500
+  queue_timeout_ms: 60000
+  max_concurrent_runs_per_user: 0
+
+# Storage — Postgres only. SQLite would serialise writes at this
+# scale and dominate the latency picture before the substrate
+# itself is meaningfully under load.
+storage:
+  backend: postgres
+  pg_dsn: ${LOOMCYCLE_PG_DSN}
+  pg_max_open_conns: 64
+  pg_max_idle_conns: 8
+
+# ─── Channels ──────────────────────────────────────────────────────
+# Channels are GENERATED into this file by run.sh before each test:
+# `--scale N` produces N pairs of `research-done/cK` + `editing-done/cK`
+# entries inserted below this marker.
+#
+# Why yaml-time generation instead of POST /v1/_channels CRUD at
+# runtime? The runtime Channel CRUD validator rejects names with `/`
+# (regex `[A-Za-z0-9_-]{1,128}`), but the yaml validator accepts them.
+# We need slashes because the agent-channel ACL wildcard syntax is
+# `prefix/*` — without slashes there's no compact way to grant access
+# to "all N per-circuit channels" without enumerating each one in
+# every agent's ACL. So we let yaml own the channel declarations and
+# use the `*` wildcard in agents.
+#
+# The generator block below (between BEGIN and END markers) is
+# managed by run.sh — do not edit by hand; edit run.sh's generator
+# if the channel shape needs to change.
+
+channels:
+  # ── BEGIN generated channels ── (managed by run.sh)
+  # ── END generated channels ──
+
+# ─── Agents ────────────────────────────────────────────────────────
+# Three brevity-tuned agents. Prompts are TIGHT — the goal is to
+# exercise the substrate, not generate useful content. Each agent
+# does exactly its three tool calls and stops. No chain-of-thought
+# narration, no markdown headers, no preamble.
+#
+# Note on prompt wiring: each agent gets its `user_id` from the run
+# identity via Context.self if it needs it (Memory.set with
+# scope=user picks user_id up automatically; Channel names are
+# constructed by the driver and passed in segments).
+
+agents:
+
+  researcher:
+    tier: middle
+    max_tokens: 1500
+    system_prompt: |
+      You are a researcher in a load-test pipeline. The user input
+      tells you (a) a circuit_id like "c42", and (b) a tiny factual
+      question. Do this exactly:
+
+        1. Answer the question in 1-2 short sentences from your own
+           knowledge. No preamble, no markdown, no citations.
+        2. Call Memory.set with: scope="user", key="c{N}-research",
+           value=<your answer> (substitute the circuit_id you were
+           given, e.g. c42-research).
+        3. Call Channel.publish with: channel="research-done/c{N}",
+           message={"circuit_id":"c{N}"} (same circuit_id).
+        4. Stop. Do not narrate. Do not summarise what you did.
+    allowed_tools: [Memory, Channel, Context]
+    memory_scopes: [user]
+    channels:
+      publish: ["research-done/*"]
+      subscribe: []
+
+  editor:
+    tier: middle
+    max_tokens: 1500
+    system_prompt: |
+      You are an editor in a load-test pipeline. The user input
+      tells you a circuit_id like "c42".
+
+      ⚠ STRICT SERIALIZATION: emit EXACTLY ONE tool call per turn,
+      then STOP your output and wait for the tool_result. Do NOT
+      emit step N+1 in the same turn as step N — this pipeline
+      depends on each step's result before the next can start.
+
+      Steps (each in a SEPARATE turn):
+
+        1. Call Channel.subscribe with channel="research-done/c{N}",
+           wait_ms=120000, max_messages=1, auto_ack=true.
+           Then STOP — wait for the channel message.
+
+        2. After the channel message arrives, call Memory.get with
+           scope="user", key="c{N}-research".
+           Then STOP — wait for the memory value.
+
+        3. Tighten the research to at most 25 words (cut filler,
+           sharper verbs, stay faithful). Then call Memory.set with
+           scope="user", key="c{N}-research-edited", value=<tightened>.
+           Then STOP — wait for the ack.
+
+        4. Call Channel.publish with channel="editing-done/c{N}",
+           message={"circuit_id":"c{N}","editor_run_id":<your run_id
+           from Context.self>}. Use Context.self in this turn if you
+           don't already have your run_id (then publish in the next
+           turn). Then STOP.
+
+      Do not narrate. Do not summarize what you did.
+    allowed_tools: [Memory, Channel, Context]
+    memory_scopes: [user]
+    channels:
+      publish: ["editing-done/*"]
+      subscribe: ["research-done/*"]
+
+  evaluator:
+    tier: middle
+    max_tokens: 1500
+    system_prompt: |
+      You are an evaluator in a load-test pipeline. The user input
+      tells you a circuit_id like "c42".
+
+      ⚠ STRICT SERIALIZATION: emit EXACTLY ONE tool call per turn,
+      then STOP your output and wait for the tool_result. Do NOT
+      emit step N+1 in the same turn as step N. This pipeline
+      depends on the editor finishing BEFORE you read memory —
+      reading the memory keys before the channel signal arrives
+      will return null because the editor hasn't written them yet.
+
+      Steps (each in a SEPARATE turn):
+
+        1. Call Channel.subscribe with channel="editing-done/c{N}",
+           wait_ms=120000, max_messages=1, auto_ack=true.
+           Then STOP — wait for the channel message. The message
+           body contains "editor_run_id"; remember it for step 5.
+
+        2. Call Memory.get with scope="user", key="c{N}-research".
+           Then STOP — wait for the value.
+
+        3. Call Memory.get with scope="user", key="c{N}-research-edited".
+           Then STOP — wait for the value.
+
+        4. Score the edit 0.0-1.0 on (a) tightness (≤25 words?) and
+           (b) faithfulness (same meaning?). Call Memory.set with
+           scope="user", key="c{N}-research-scored",
+           value={"score":<float>,"rationale":<one short sentence>}.
+           Then STOP — wait for the ack.
+
+        5. Call Evaluation.submit with run_id=<editor_run_id from
+           step 1's message>, score=<float>,
+           rationale=<your sentence>. Then STOP.
+
+      Do not narrate. Do not summarize what you did.
+    allowed_tools: [Memory, Channel, Evaluation, Context]
+    memory_scopes: [user]
+    # submit_any is needed because the evaluator is a SIBLING of the
+    # editor (different agent, no parent/child relationship). The
+    # checkSubmitScope code path collapses sibling → "unrelated" today
+    # (see evaluation.go:319 — submit_siblings is reserved but inert
+    # until v0.9.x plumbs ParentAgentID through RunIdentity); only
+    # submit_any permits the "unrelated" emitter role.
+    evaluation_scopes: [submit_any]
+    channels:
+      publish: []
+      subscribe: ["editing-done/*"]

@@ -1898,6 +1898,14 @@ func runResolveProbeOnce(ctx context.Context, r *resolve.Resolver, pr *providerR
 			exclReason: "OLLAMA_API_KEY not set"},
 		{id: "ollama-local", excluded: cfg.Env.OllamaBaseURL == "" || cfg.Env.OllamaBaseURL == "disabled",
 			exclReason: "OLLAMA_BASE_URL not configured"},
+		// v0.11.10 anthropic-oauth-dev. The provider self-registers
+		// only when LOOMCYCLE_ANTHROPIC_OAUTH_DEV_ENABLED=1 AND a
+		// token file is present (cf. lines ~1775-1810). Gate the
+		// probe on the resolver actually having the provider —
+		// pr.Get below catches both the env-var-off case (returns
+		// the canonical "not registered" error) and the
+		// resolver-misconfigured case.
+		{id: "anthropic-oauth-dev"},
 	}
 	for i := range jobs {
 		if jobs[i].excluded {

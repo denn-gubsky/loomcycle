@@ -54,6 +54,7 @@ func contextFixture(t *testing.T) (*Context, context.Context) {
 		UserTier:   "medium",
 		AgentDefID: "def_abc",
 	})
+	ctx = tools.WithRunID(ctx, "r_test123")
 	ctx = tools.WithAgentTools(ctx, []string{"Read", "Memory", "Context", "mcp__jobs__patchApp"})
 	return tool, ctx
 }
@@ -82,6 +83,12 @@ func TestContextTool_SelfReturnsIdentity(t *testing.T) {
 	// v0.8.7 PR 1 review fix: agent_def_id surfaced from RunIdentity.
 	if out["agent_def_id"] != "def_abc" {
 		t.Errorf("agent_def_id = %v, want def_abc", out["agent_def_id"])
+	}
+	// v0.12.x — run_id surfaced so an agent can pass its own run_id
+	// through Channel messages, enabling cross-agent Evaluation.submit
+	// (which requires run_id, not agent_id) without a separate lookup.
+	if out["run_id"] != "r_test123" {
+		t.Errorf("run_id = %v, want r_test123", out["run_id"])
 	}
 }
 

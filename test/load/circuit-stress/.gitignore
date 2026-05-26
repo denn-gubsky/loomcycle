@@ -1,0 +1,8 @@
+# Driver binary (built by run.sh)
+circuit-stress
+
+# Test results (timestamped per-run; never commit)
+results/
+
+# Generated yaml (regenerated each run.sh invocation)
+loomcycle.gen.yaml

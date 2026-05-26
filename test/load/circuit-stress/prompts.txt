@@ -1,0 +1,36 @@
+# Tiny factual questions for the circuit-stress load test.
+# One per line; lines starting with '#' or empty lines are skipped.
+# The driver rotates through these so different circuits don't all
+# answer the same question (avoids provider-side cache effects).
+# Each should be answerable in 1-2 short sentences without WebSearch.
+
+What does TCP stand for?
+Who wrote 'Hamlet'?
+What is the boiling point of water in Celsius at sea level?
+What protocol does HTTP/2 use for transport?
+What was the first commercially available CPU?
+Which planet is closest to the Sun?
+What language was Unix originally written in?
+Who invented the World Wide Web?
+What does HTML stand for?
+What is the smallest prime number?
+Which gas do plants absorb during photosynthesis?
+What year did the Berlin Wall fall?
+What is the speed of light in vacuum, approximately?
+Who painted the Mona Lisa?
+What does API stand for?
+What is the chemical symbol for gold?
+What does DNA stand for?
+What is the largest ocean on Earth?
+Who developed the theory of general relativity?
+What programming paradigm is Haskell?
+What does SQL stand for?
+What is the capital of Australia?
+What does GPU stand for?
+Which element has atomic number 1?
+What does REST stand for in REST APIs?
+What's the difference between RAM and storage in one sentence?
+Which sorting algorithm is used by Go's slices.Sort?
+What does ACID stand for in database transactions?
+Who wrote the Communist Manifesto?
+What is Avogadro's number, approximately?
