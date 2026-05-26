@@ -31,8 +31,11 @@ if [ ! -f "$ENV_FILE" ]; then
     echo "✗ Missing $ENV_FILE — copy .env.example and fill it in first."
     exit 1
 fi
+# Source the env file with set -u temporarily off — operator env files
+# may legitimately reference other shell vars (e.g., LOOMCYCLE_*_DIR
+# pointing at sibling checkouts) that aren't set in this verify shell.
 # shellcheck disable=SC1090
-set -a; source "$ENV_FILE"; set +a
+set -a +u; source "$ENV_FILE"; set +a -u
 
 REPLICA_A_URL="${REPLICA_A_URL:-http://localhost:18787}"
 REPLICA_B_URL="${REPLICA_B_URL:-http://localhost:18788}"
@@ -145,9 +148,13 @@ if [ "$HAS_API_KEY" -eq 0 ]; then
     skip "Cross-replica cancel (same reason)"
 else
     AGENT_ID="cluster-verify-$(date +%s)-$RANDOM"
+    # Wire shape per internal/loop/loop.go PromptSegment + README example:
+    # {agent, agent_id, segments: [{role, content: [{type:"trusted-text", text}]}]}
+    # NOT {user_input:[{role,content:"..."}]} — that 400s with
+    # "messages: Input should be a valid array" at the provider layer.
     create_resp=$(curl -fsS "${auth[@]}" -X POST "$REPLICA_A_URL/v1/runs" \
         -H "Content-Type: application/json" \
-        -d "{\"agent\":\"default\",\"agent_id\":\"$AGENT_ID\",\"user_input\":[{\"role\":\"user\",\"content\":\"Say hi in one word.\"}]}" \
+        -d "{\"agent\":\"default\",\"agent_id\":\"$AGENT_ID\",\"segments\":[{\"role\":\"user\",\"content\":[{\"type\":\"trusted-text\",\"text\":\"Say hi in one word.\"}]}]}" \
         --max-time 10 \
         --no-buffer 2>/dev/null | head -c 4096 || true)
     if [ -z "$create_resp" ]; then
@@ -169,21 +176,36 @@ else
         fi
 
         # ─── Check 4: cross-replica cancel ────────────────────────────
+        # Needs a SEPARATE run with a long-enough prompt — a 1-word
+        # completion finishes before the cancel round-trip lands. The
+        # request stays open (curl streams SSE in the background) so the
+        # run is genuinely in-flight when we issue the cancel on B.
         hdr "4. Cross-replica cancel — cancel issued to B routes to A via backplane"
 
-        cancel_resp=$(curl -fsS "${auth[@]}" -X POST "$REPLICA_B_URL/v1/agents/$AGENT_ID/cancel" \
+        CANCEL_AGENT_ID="cluster-verify-cancel-$(date +%s)-$RANDOM"
+        curl -fsS "${auth[@]}" -X POST "$REPLICA_A_URL/v1/runs" \
+            -H "Content-Type: application/json" \
+            -d "{\"agent\":\"default\",\"agent_id\":\"$CANCEL_AGENT_ID\",\"segments\":[{\"role\":\"user\",\"content\":[{\"type\":\"trusted-text\",\"text\":\"Write a 1500-word essay on the history of distributed systems, decade by decade since the 1960s. Be thorough and verbose.\"}]}]}" \
+            --no-buffer >/dev/null 2>&1 &
+        CREATE_PID=$!
+        sleep 1.5
+        cancel_resp=$(curl -fsS "${auth[@]}" -X POST "$REPLICA_B_URL/v1/agents/$CANCEL_AGENT_ID/cancel" \
             -H "Content-Type: application/json" \
             -d '{"reason":"verify.sh cross-replica cancel test"}' \
             --max-time 10 2>/dev/null || true)
+        wait "$CREATE_PID" 2>/dev/null || true
         if [ -z "$cancel_resp" ]; then
-            ko "POST /v1/agents/$AGENT_ID/cancel on replica-b returned empty"
+            ko "POST /v1/agents/$CANCEL_AGENT_ID/cancel on replica-b returned empty"
         else
             cancelled=$(printf '%s' "$cancel_resp" | jq -r '.cancelled // false')
             reason=$(printf '%s' "$cancel_resp" | jq -r '.reason // ""')
-            if [ "$cancelled" = "true" ] || [ -n "$reason" ]; then
-                ok "cancel propagated (cancelled=$cancelled reason=\"$reason\") — backplane round-trip works"
+            cstatus=$(printf '%s' "$cancel_resp" | jq -r '.status // ""')
+            if [ "$cancelled" = "true" ]; then
+                ok "cancel propagated (cancelled=true reason=\"$reason\") — backplane round-trip works"
+            elif [ "$cstatus" = "cancelled" ]; then
+                ok "cancel propagated (status=cancelled) — backplane round-trip works"
             else
-                ko "cancel response malformed or both fields empty: $(printf '%s' "$cancel_resp" | head -c 200)"
+                ko "cancel did not propagate: $(printf '%s' "$cancel_resp" | head -c 200)"
             fi
         fi
     fi

@@ -41,10 +41,13 @@ services:
   # whole service definition (image, volumes, depends_on, command)
   # plus a delta on environment + ports. Keeps the file < 80 lines.
   loomcycle-a: &loomcycle
-    # Pin to the latest cluster-mode-capable image. `:latest` on
-    # Docker Hub still points at v0.11.12 today; rebumping to :latest
-    # is safe once the v0.12.x release pipeline catches up.
-    image: ${LOOMCYCLE_IMAGE:-denngubsky/loomcycle:0.12.0}
+    # Pin to the v0.12.x release that exercises every Phase 1-7
+    # capability the verify script checks (Phase 3 cross-replica
+    # cancel needs replica_id on runs, which was added in v0.12.2).
+    # Override with LOOMCYCLE_IMAGE=denngubsky/loomcycle:<tag> for
+    # smoke-testing newer/older builds (e.g., a locally `docker build`
+    # ed image while iterating on cluster code).
+    image: ${LOOMCYCLE_IMAGE:-denngubsky/loomcycle:0.12.6}
     container_name: loomcycle-cluster-a
     restart: unless-stopped
     depends_on:
