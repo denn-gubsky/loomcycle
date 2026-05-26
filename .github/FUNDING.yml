@@ -1,0 +1,8 @@
+# GitHub Sponsors is the primary funding surface for loomcycle.
+# https://github.com/sponsors/denn-gubsky
+#
+# Funds support continued development of the agentic runtime — primarily
+# multi-replica HA (v0.12 → v1.0) and the operator surface (Helm chart,
+# settings UI, cookbook). loomcycle stays Apache-2.0 either way.
+
+github: [denn-gubsky]

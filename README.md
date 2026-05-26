@@ -209,6 +209,12 @@ In-binary docs (bundled `Context.help` topics — agents read these directly; op
 
 Full list via `GET /v1/_help` against a running instance.
 
+## Sponsor
+
+If loomcycle is useful to you or your team, [GitHub Sponsors](https://github.com/sponsors/denn-gubsky) helps fund continued development. Individual supporters and corporate sponsors both welcome.
+
+The runtime stays Apache-2.0 either way. Sponsorships directly fund the v0.12 → v1.0 runway: multi-replica HA, Helm chart, operator cookbook, settings UI, and the per-tier sustained engineering needed to keep the binary small and the substrate stable.
+
 ## License
 
 Apache-2.0. See [LICENSE](LICENSE).
