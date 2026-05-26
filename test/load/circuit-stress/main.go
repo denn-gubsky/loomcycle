@@ -494,10 +494,54 @@ func runOneCircuit(c *lcClient, circuitID int, userID, question string, timeout 
 	if allOK {
 		res.Status = "completed"
 		fetchScore(c, &res, cid, userID)
+		// Strict output validation. The x10 run found a class of
+		// "silent regression" — all three agents reach `completed`
+		// status, but the evaluator never produced its scored
+		// verdict (because it raced the channel signal and read
+		// memory before the editor wrote, then gave up). The
+		// agent-status check above can't catch that — the loops
+		// terminated cleanly. The only way to detect is to verify
+		// the expected output rows actually landed.
+		//
+		// If anything is missing, demote to `failed` with a clear
+		// reason so post-test analysis sees the real picture.
+		if missing := validateCircuitOutputs(c, cid, userID, res.Score); missing != "" {
+			res.Status = "failed"
+			res.Error = "silent regression: " + missing
+		}
 	} else if res.Status == "" {
 		res.Status = "failed"
 	}
 	return res
+}
+
+// validateCircuitOutputs returns a non-empty reason string when one
+// of the four expected outputs is missing despite all agents
+// reaching `completed`. Returns "" when everything is in order.
+// Three memory keys + one parsed score = full pipeline output.
+func validateCircuitOutputs(c *lcClient, cid, userID string, score *float64) string {
+	missing := []string{}
+	for _, key := range []string{cid + "-research", cid + "-research-edited", cid + "-research-scored"} {
+		path := fmt.Sprintf("/v1/_memory/scopes/user/%s/keys/%s", userID, key)
+		var resp memoryGetResponse
+		status, err := c.do("GET", path, nil, &resp)
+		if err != nil || status != 200 {
+			missing = append(missing, "memory:"+key)
+			continue
+		}
+		// A row exists but value is JSON null means the agent set the
+		// key with a null payload — treat as missing for our purposes.
+		if len(resp.Entry.Value) == 0 || string(resp.Entry.Value) == "null" {
+			missing = append(missing, "memory:"+key+"(null)")
+		}
+	}
+	if score == nil {
+		missing = append(missing, "score:unparseable")
+	}
+	if len(missing) == 0 {
+		return ""
+	}
+	return "missing outputs " + strings.Join(missing, ",")
 }
 
 func fetchScore(c *lcClient, res *circuitResult, cid, userID string) {
@@ -641,13 +685,13 @@ func writeResults(dir string, results []circuitResult) {
 
 func printSummary(results []circuitResult, dir string) {
 	var (
-		completed, failed, timedOut, skipped int
-		durations                            []int64
-		totalIn, totalOut                    int
-		quotaSeen                            bool
-		quotaCircuit                         int
-		scoreSum                             float64
-		scoreN                               int
+		completed, failed, silentRegression, timedOut, skipped int
+		durations                                              []int64
+		totalIn, totalOut                                      int
+		quotaSeen                                              bool
+		quotaCircuit                                           int
+		scoreSum                                               float64
+		scoreN                                                 int
 	)
 	for _, r := range results {
 		switch r.Status {
@@ -662,6 +706,12 @@ func printSummary(results []circuitResult, dir string) {
 			}
 		case "failed":
 			failed++
+			// Distinguish the "all-agents-completed-but-outputs-missing"
+			// case from real agent failures — the strict-validation
+			// finding is the main quality signal at scale.
+			if strings.HasPrefix(r.Error, "silent regression:") {
+				silentRegression++
+			}
 		case "timeout":
 			timedOut++
 		case "skipped":
@@ -685,6 +735,10 @@ func printSummary(results []circuitResult, dir string) {
 	fmt.Println("─── Summary ────────────────────────────────────────────────")
 	fmt.Printf("  Circuits: %d total / %d completed / %d failed / %d timeout / %d skipped\n",
 		len(results), completed, failed, timedOut, skipped)
+	if silentRegression > 0 {
+		fmt.Printf("  ⚠ %d of the %d failed were silent regressions (all agents reached `completed` but pipeline outputs were missing — see `silent regression:` errors in circuits.jsonl)\n",
+			silentRegression, failed)
+	}
 	if len(durations) > 0 {
 		fmt.Printf("  Duration: p50=%dms  p95=%dms  p99=%dms  max=%dms\n",
 			p(0.50), p(0.95), p(0.99), durations[len(durations)-1])

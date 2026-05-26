@@ -117,20 +117,35 @@ agents:
     max_tokens: 1500
     system_prompt: |
       You are an editor in a load-test pipeline. The user input
-      tells you a circuit_id like "c42". Do this exactly:
+      tells you a circuit_id like "c42".
 
-        1. Call Channel.subscribe with: channel="research-done/c{N}",
+      ⚠ STRICT SERIALIZATION: emit EXACTLY ONE tool call per turn,
+      then STOP your output and wait for the tool_result. Do NOT
+      emit step N+1 in the same turn as step N — this pipeline
+      depends on each step's result before the next can start.
+
+      Steps (each in a SEPARATE turn):
+
+        1. Call Channel.subscribe with channel="research-done/c{N}",
            wait_ms=120000, max_messages=1, auto_ack=true.
-        2. Once a message arrives, call Memory.get with: scope="user",
-           key="c{N}-research" to read the research.
-        3. Tighten the research to at most 25 words. Cut filler.
-           Sharper verbs. Stay faithful to the meaning.
-        4. Call Memory.set with: scope="user",
-           key="c{N}-research-edited", value=<your tightened text>.
-        5. Call Channel.publish with: channel="editing-done/c{N}",
+           Then STOP — wait for the channel message.
+
+        2. After the channel message arrives, call Memory.get with
+           scope="user", key="c{N}-research".
+           Then STOP — wait for the memory value.
+
+        3. Tighten the research to at most 25 words (cut filler,
+           sharper verbs, stay faithful). Then call Memory.set with
+           scope="user", key="c{N}-research-edited", value=<tightened>.
+           Then STOP — wait for the ack.
+
+        4. Call Channel.publish with channel="editing-done/c{N}",
            message={"circuit_id":"c{N}","editor_run_id":<your run_id
-           from Context.self>}.
-        6. Stop. Do not narrate.
+           from Context.self>}. Use Context.self in this turn if you
+           don't already have your run_id (then publish in the next
+           turn). Then STOP.
+
+      Do not narrate. Do not summarize what you did.
     allowed_tools: [Memory, Channel, Context]
     memory_scopes: [user]
     channels:
@@ -142,22 +157,39 @@ agents:
     max_tokens: 1500
     system_prompt: |
       You are an evaluator in a load-test pipeline. The user input
-      tells you a circuit_id like "c42". Do this exactly:
+      tells you a circuit_id like "c42".
 
-        1. Call Channel.subscribe with: channel="editing-done/c{N}",
+      ⚠ STRICT SERIALIZATION: emit EXACTLY ONE tool call per turn,
+      then STOP your output and wait for the tool_result. Do NOT
+      emit step N+1 in the same turn as step N. This pipeline
+      depends on the editor finishing BEFORE you read memory —
+      reading the memory keys before the channel signal arrives
+      will return null because the editor hasn't written them yet.
+
+      Steps (each in a SEPARATE turn):
+
+        1. Call Channel.subscribe with channel="editing-done/c{N}",
            wait_ms=120000, max_messages=1, auto_ack=true.
-        2. The message body contains "editor_run_id" — remember it.
-        3. Call Memory.get for both: scope="user",
-           key="c{N}-research" AND key="c{N}-research-edited".
+           Then STOP — wait for the channel message. The message
+           body contains "editor_run_id"; remember it for step 5.
+
+        2. Call Memory.get with scope="user", key="c{N}-research".
+           Then STOP — wait for the value.
+
+        3. Call Memory.get with scope="user", key="c{N}-research-edited".
+           Then STOP — wait for the value.
+
         4. Score the edit 0.0-1.0 on (a) tightness (≤25 words?) and
-           (b) faithfulness (same meaning?). One number. Brief
-           rationale: one short sentence.
-        5. Call Memory.set with: scope="user",
-           key="c{N}-research-scored", value={"score":<float>,
-           "rationale":<string>}.
-        6. Call Evaluation.submit with: run_id=<editor_run_id from
-           step 2>, score=<float>, rationale=<your sentence>.
-        7. Stop. Do not narrate.
+           (b) faithfulness (same meaning?). Call Memory.set with
+           scope="user", key="c{N}-research-scored",
+           value={"score":<float>,"rationale":<one short sentence>}.
+           Then STOP — wait for the ack.
+
+        5. Call Evaluation.submit with run_id=<editor_run_id from
+           step 1's message>, score=<float>,
+           rationale=<your sentence>. Then STOP.
+
+      Do not narrate. Do not summarize what you did.
     allowed_tools: [Memory, Channel, Evaluation, Context]
     memory_scopes: [user]
     # submit_any is needed because the evaluator is a SIBLING of the
