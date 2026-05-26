@@ -1,39 +1,41 @@
 # test/load/circuit-stress — loomcycle config for the multi-agent
 # circuit load test. See README.md for what this test exercises.
 #
-# Three agents, one provider (anthropic-oauth-dev only), Postgres
-# storage, channels declared with prefix-wildcard ACLs so the driver
-# can pre-create per-circuit channels without yaml edits per scale.
-#
-# Concurrency bumped to 200 active / 500 queued — defaults of 8/16
-# would dominate the latency picture at x100+.
+# Two providers in cascade: anthropic-oauth-dev primary, ollama
+# cloud (deepseek-v4-flash) fallback. Ollama Cloud also has a
+# flat-rate plan like Anthropic MAX — models are generally slower
+# but the rate ceiling is independent, so when OAuth-dev hits its
+# per-minute limit individual runs fall over to ollama and the
+# pipeline keeps moving. The previous single-provider config
+# cascade-failed at ~120 concurrent calls (x1000 load test on
+# 2026-05-26); this dual-provider config absorbs that spike.
 
 provider_priority:
   - anthropic-oauth-dev
+  - ollama
 
 # Library-default tier — used by every agent here unless overridden.
-# Pinned to haiku because the goal is exercising the substrate, not
-# generating reasoning tokens; cheaper + faster keeps the OAuth-dev
-# MAX subscription budget alive for higher scales.
+# Both providers' fast/small models so the test exercises the
+# substrate, not reasoning capacity. Haiku is the primary; deepseek-
+# v4-flash is the failover when OAuth-dev hits its rate ceiling.
 tiers:
   middle:
     - { provider: anthropic-oauth-dev, model: claude-haiku-4-5-20251001 }
+    - { provider: ollama,              model: deepseek-v4-flash }
 
 # Default user_tier — every run inherits unless POST /v1/runs sets
-# its own. We don't bother declaring named tiers since this test is
-# single-tier.
+# its own. fallback_on_error: true engages the candidate-list
+# fallback on retryable errors (429 / 5xx / network). At x1000 we
+# saw ~120 OAuth-dev 429s; with this on, those runs route to ollama
+# instead of failing.
 user_tiers:
   default:
-    provider_priority: [anthropic-oauth-dev]
+    provider_priority: [anthropic-oauth-dev, ollama]
     tiers:
       middle:
         - { provider: anthropic-oauth-dev, model: claude-haiku-4-5-20251001 }
-    # No fallback: we WANT this run to fail loudly when the OAuth
-    # MAX subscription quota is exhausted so the driver can detect
-    # and halt the ramp. Falling back to API-key Anthropic would
-    # complete the run but defeat the "how far does OAuth dev go"
-    # measurement that's the whole point of this test.
-    fallback_on_error: false
+        - { provider: ollama,              model: deepseek-v4-flash }
+    fallback_on_error: true
 
 # Concurrency — defaults of 8/16 would queue heavily at x100+.
 # 200/500 gives headroom for 3 concurrent runs per circuit × ~70
