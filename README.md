@@ -3,29 +3,50 @@
 </p>
 
 <p align="center">
-  <strong>Where agents live, talk, and learn.</strong><br/>
-  <em>The runtime substrate for agentic systems.</em>
+  <strong>The Agentic OS, in a sidecar.</strong><br/>
+  <em>One Go binary alongside your application — hardened agent loop, MCP on both sides, multi-replica HA. Apache-2.0.</em>
 </p>
 
 <p align="center">
   <a href="https://github.com/denn-gubsky/loomcycle/releases"><img alt="release" src="https://img.shields.io/github/v/tag/denn-gubsky/loomcycle?label=release"></a>
   <a href="LICENSE"><img alt="license" src="https://img.shields.io/badge/license-Apache--2.0-blue"></a>
   <img alt="go" src="https://img.shields.io/badge/go-1.22%2B-00ADD8">
+  <a href="https://github.com/sponsors/denn-gubsky"><img alt="sponsor" src="https://img.shields.io/badge/sponsor-%E2%99%A5-ec4899"></a>
 </p>
 
 ---
 
-> 🌱 **Apache-2.0 open source — external contributions open at v1.x.** Loomcycle is in active v0.8 → v0.9 → v1.0 development. We're stabilizing the core primitives before opening the floodgates; today we welcome bug reports, security disclosures, downstream consumers, and forks. See [`CONTRIBUTING.md`](CONTRIBUTING.md) for the details.
+> 🌳 **v1.0 shipped — multi-replica HA in production, external contributions open.** The core primitives stabilised through v0.8 → v0.12 → v1.0. We welcome bug reports, security disclosures, feature contributions, downstream consumers, and forks. See [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
 ---
 
 ## What it is
 
-LoomCycle is the runtime substrate for production agents — one Go binary that hosts the LLM tool-use loop, governs six providers behind one interface, is configurable as a true managed sandbox or a full agentic dev environment, and is shaped like the kernel of an agentic OS.
+**A sidecar for the agentic loop.** loomcycle is one ~30 MB Go binary that runs *alongside* your application — not inside it. Your app calls loomcycle over HTTP, gRPC, MCP, or via the TypeScript adapter; the agent loop, multi-provider routing, memory and channel primitives, MCP server identity, OpenTelemetry traces, and multi-replica coordination all live in the binary. Your application stays in whatever language you wrote it in.
 
-A single ~30 MB binary owns the entire `model → tool_use → tool_result → model` cycle, free of vendor SDKs. **Six HTTP-only provider drivers** — Anthropic, OpenAI, DeepSeek, Gemini, Ollama cloud, Ollama local — behind one `Provider` interface. **Nineteen built-in tools** — Read, Write, Edit, **Grep**, **Glob**, **NotebookEdit** (v0.8.24, Claude Code parity built-ins), HTTP, WebFetch, WebSearch, Bash, Agent, Skill, **Memory** (v0.9.0: + semantic search via `op: search` + `embed: true`), Channel, AgentDef, SkillDef (v0.8.22, runtime-mutable skill substrate), Evaluation, Interruption (v0.8.16, human-in-the-loop), Context (the v0.8.7 introspection primitive, with the v0.8.8 `help` op for narrative cross-cutting guidance). **AgentDef + SkillDef + Evaluation** (v0.8.5 / v0.8.22) — agents can fork themselves AND their skill bodies, then rate the results. **System channels + deferred publish** (v0.8.6) — operator-declared `_system/*` namespace with heartbeats, alarms, and runtime-state signals; any channel's publish can be deferred via `deliver_at`. **Built-in observability** (v0.8.11) — periodic process-resource sampler with bearer-authed `/v1/_metrics/*` API for per-run RSS / CPU% / goroutine correlation. **LoomCycle MCP server** (v0.8.15) — loomcycle exposes itself as a stdio MCP server with 21 meta-tools so external orchestrators (Claude Code, custom dashboards) drive it through standard MCP. **Pause / Resume / Snapshot** (v0.8.17) — runtime-wide quiesce + cross-version-portable JSON snapshot, the precondition for v0.9.x multi-replica HA. MCP-native both ways (consuming AND self-exposing). UNIX-style operator/caller trust separation: the operator config picks the posture, agents can't escape it. Embedded React monitoring UI at `/ui`. Runs on a cheap VPS; scales to multi-replica HA via Postgres + Redis.
+**The shape that's different.** The agentic-systems market today gives you three choices — embed a Python or TypeScript library inside your process, rent a managed cloud service tied to one vendor's IAM, or proxy your model calls through a gateway that doesn't actually run agents. loomcycle is the fourth shape: a lightweight self-hostable runtime that owns the loop *and* speaks every wire format your stack already uses.
 
-Built today for production agentic workloads — built tomorrow for self-evolving multi-agent ecosystems where agents author other agents, talk through channels, and learn from evaluation feedback.
+## What's shipped
+
+| Capability | Released in |
+|---|---|
+| **Six providers, native HTTP, no vendor SDK** — Anthropic, OpenAI, DeepSeek, Gemini, Ollama cloud, Ollama local — behind one `Provider` interface with resolver-based routing per tier and effort | v0.4 → v0.8.x |
+| **Nineteen built-in tools** including Claude Code parity (Read, Write, Edit, Grep, Glob, NotebookEdit), HTTP, WebFetch, WebSearch, Bash, Agent, Skill, Memory, Channel, AgentDef, SkillDef, Evaluation, Interruption, Context | v0.4 → v0.8.24 |
+| **AgentDef + SkillDef + MCPServerDef substrate** — content-addressed by SHA-256, runtime-mutable, push-at-boot from your container image; verify-or-fork across deployments | v0.8.5 / v0.8.22 / v0.9.x |
+| **Vector Memory** with semantic search — `embed: true` on writes, `op: search` on reads. sqlite-vec or pgvector; Voyage / OpenAI / Gemini / nomic-embed on the embedding side | v0.9.0 |
+| **MCP on both sides** — loomcycle is both an MCP client (mounts external MCP servers as tools) and an MCP server (Claude Code and external orchestrators drive it via 21 meta-tools) | v0.8.15 |
+| **OpenTelemetry** across loop + providers + tools + MCP — no transcripts in spans | v0.10.0 |
+| **Per-tenant fairness** on the run-admitting semaphore (single-replica), cluster-wide (multi-replica) | v0.10.1 / v0.12.1 |
+| **LLM Gateway + OpenAI-compatible shims** — `POST /v1/_llm/chat`, `POST /v1/chat/completions`, `POST /v1/embeddings`. Drop loomcycle in front of any LangChain / LlamaIndex / n8n / RAG pipeline that speaks OpenAI's wire format | v0.11.0 → v0.11.4 |
+| **n8n community package** — `@loomcycle/n8n-nodes-loomcycle`. Five cluster sub-nodes, action nodes, two trigger nodes, six example workflows | v1.x (community) |
+| **Anthropic MAX subscription OAuth for dev workflow** — reverse-engineered, dev-only, opt-in; see [`docs/PROVIDERS.md`](docs/PROVIDERS.md) | v0.11.10 |
+| **Pause / Resume / Snapshot** — runtime-wide quiesce + cross-version-portable JSON snapshot. In-place upgrades, snapshot-based replica handoff | v0.8.17 → v0.8.18 |
+| **Multi-replica HA** — Redis cancel pubsub, cross-replica run status, cluster-wide pause/resume + bus fanout, singleton sweepers, DB-backed session locks. Single binary scales from a cheap VPS to a multi-replica fleet | v0.12.0 → v0.12.5 |
+| **UNIX-style trust model** — operator config is the floor; callers narrow per-request but never widen. Bearer auth at the HTTP frontier; sandbox (Posture A) vs operator-trusted (Posture B) selected via env | v0.4 → ongoing |
+| **Embedded React Web UI** at `/ui` — Library admin (agents / skills / MCP servers), Activity Monitor, Channels view, audit log | v0.8.21 → v0.11.6 |
+| **v1.0 capstone** — docs + hardening pass | v1.0 |
+
+Full per-version log: [`REVISIONS.md`](REVISIONS.md).
 
 ## Two postures, one binary
 
