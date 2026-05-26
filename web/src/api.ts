@@ -75,6 +75,10 @@ export interface Agent {
   // the channel name or interruption kind respectively.
   awaited_state?: "channel" | "interrupted" | "";
   awaited_on?: string;
+  // v0.12.x cluster mode: the replica owning this run's live cancel
+  // handle. Absent in single-replica deployments (the server omits
+  // the field when its replica_id is unset).
+  replica_id?: string;
 }
 
 export interface ListAgentsResponse {

@@ -186,6 +186,15 @@ function AgentsTreeNode({ node, depth, expandedMap, setExpanded, selectedId, onS
           </Link>
         )}
         <span className="model">{a.usage?.model || "—"}</span>
+        {a.replica_id && (
+          <span
+            className="replica"
+            style={{ background: replicaHue(a.replica_id) }}
+            title={`Running on ${a.replica_id}`}
+          >
+            {a.replica_id}
+          </span>
+        )}
         <span className="time">{relativeTime(a.started_at)}</span>
         {a.error && <span className="error-flag" title={a.error}>error</span>}
       </div>
@@ -219,4 +228,18 @@ function awaitClass(state: Agent["awaited_state"] | undefined, status: Agent["st
   if (state === "interrupted") return "await-interrupted";
   if (status === "running") return "await-running";
   return "";
+}
+
+// replicaHue maps a replica_id to a stable HSL background so different
+// replicas get visually distinct chips without an ever-growing color
+// table. djb2 hash → hue; fixed low-saturation pastel keeps it
+// readable on both light and dark themes alongside the existing
+// .pill / .model chips.
+function replicaHue(replicaID: string): string {
+  let hash = 5381;
+  for (let i = 0; i < replicaID.length; i++) {
+    hash = ((hash << 5) + hash + replicaID.charCodeAt(i)) | 0;
+  }
+  const hue = Math.abs(hash) % 360;
+  return `hsl(${hue}, 55%, 82%)`;
 }
