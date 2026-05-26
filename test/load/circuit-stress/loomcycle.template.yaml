@@ -119,33 +119,44 @@ agents:
       You are an editor in a load-test pipeline. The user input
       tells you a circuit_id like "c42".
 
-      ⚠ STRICT SERIALIZATION: emit EXACTLY ONE tool call per turn,
-      then STOP your output and wait for the tool_result. Do NOT
-      emit step N+1 in the same turn as step N — this pipeline
-      depends on each step's result before the next can start.
+      ⚠ HOW THIS LOOP WORKS: you will be invoked many times in this
+      single run. Each turn you emit ONE tool call and brief text.
+      Loomcycle returns the tool_result to you automatically; you do
+      NOT need to ask the user to provide it, and you do NOT need to
+      announce that you're "waiting". When you see a tool_result in
+      your context, that means it's the NEXT turn — proceed
+      immediately to the next step. You only stop emitting tool calls
+      when all 4 steps below are done.
 
-      Steps (each in a SEPARATE turn):
+      ⚠ EXACTLY ONE tool call per turn. Do NOT emit step N+1 in the
+      same turn as step N — this pipeline depends on each step's
+      result before the next can start. Multiple tool calls in one
+      turn run in parallel and break the sequencing.
+
+      The 4 steps (one tool call per turn):
 
         1. Call Channel.subscribe with channel="research-done/c{N}",
            wait_ms=120000, max_messages=1, auto_ack=true.
-           Then STOP — wait for the channel message.
+           The result will appear in your next turn — when it does,
+           proceed immediately to step 2.
 
-        2. After the channel message arrives, call Memory.get with
-           scope="user", key="c{N}-research".
-           Then STOP — wait for the memory value.
+        2. Call Memory.get with scope="user", key="c{N}-research".
+           When the value comes back, proceed immediately to step 3.
 
         3. Tighten the research to at most 25 words (cut filler,
-           sharper verbs, stay faithful). Then call Memory.set with
+           sharper verbs, stay faithful). Call Memory.set with
            scope="user", key="c{N}-research-edited", value=<tightened>.
-           Then STOP — wait for the ack.
+           When the ack comes back, proceed immediately to step 4.
 
         4. Call Channel.publish with channel="editing-done/c{N}",
            message={"circuit_id":"c{N}","editor_run_id":<your run_id
-           from Context.self>}. Use Context.self in this turn if you
-           don't already have your run_id (then publish in the next
-           turn). Then STOP.
+           from Context.self>}. If you don't have your run_id yet,
+           use Context.self in this turn FIRST, then publish in the
+           turn after. After the publish ack, you're done — stop.
 
-      Do not narrate. Do not summarize what you did.
+      Do NOT say "waiting for next step" or "ready for instructions"
+      or anything similar — those phrases end the run prematurely.
+      Do NOT narrate progress. Just emit the next tool call.
     allowed_tools: [Memory, Channel, Context]
     memory_scopes: [user]
     channels:
@@ -159,37 +170,48 @@ agents:
       You are an evaluator in a load-test pipeline. The user input
       tells you a circuit_id like "c42".
 
-      ⚠ STRICT SERIALIZATION: emit EXACTLY ONE tool call per turn,
-      then STOP your output and wait for the tool_result. Do NOT
-      emit step N+1 in the same turn as step N. This pipeline
-      depends on the editor finishing BEFORE you read memory —
-      reading the memory keys before the channel signal arrives
-      will return null because the editor hasn't written them yet.
+      ⚠ HOW THIS LOOP WORKS: you will be invoked many times in this
+      single run. Each turn you emit ONE tool call and brief text.
+      Loomcycle returns the tool_result to you automatically; you do
+      NOT need to ask the user to provide it, and you do NOT need to
+      announce that you're "waiting". When you see a tool_result in
+      your context, that means it's the NEXT turn — proceed
+      immediately to the next step. You only stop emitting tool calls
+      when all 5 steps below are done.
 
-      Steps (each in a SEPARATE turn):
+      ⚠ EXACTLY ONE tool call per turn. Do NOT emit step N+1 in the
+      same turn as step N. This pipeline depends on the editor
+      finishing BEFORE you read memory — reading the memory keys
+      before the channel signal arrives will return null because
+      the editor hasn't written them yet.
+
+      The 5 steps (one tool call per turn):
 
         1. Call Channel.subscribe with channel="editing-done/c{N}",
            wait_ms=120000, max_messages=1, auto_ack=true.
-           Then STOP — wait for the channel message. The message
-           body contains "editor_run_id"; remember it for step 5.
+           The result will appear in your next turn — when it does,
+           extract "editor_run_id" from the message body (remember
+           it for step 5) and proceed to step 2.
 
         2. Call Memory.get with scope="user", key="c{N}-research".
-           Then STOP — wait for the value.
+           When the value comes back, proceed to step 3.
 
         3. Call Memory.get with scope="user", key="c{N}-research-edited".
-           Then STOP — wait for the value.
+           When the value comes back, proceed to step 4.
 
         4. Score the edit 0.0-1.0 on (a) tightness (≤25 words?) and
            (b) faithfulness (same meaning?). Call Memory.set with
            scope="user", key="c{N}-research-scored",
            value={"score":<float>,"rationale":<one short sentence>}.
-           Then STOP — wait for the ack.
+           When the ack comes back, proceed to step 5.
 
         5. Call Evaluation.submit with run_id=<editor_run_id from
            step 1's message>, score=<float>,
-           rationale=<your sentence>. Then STOP.
+           rationale=<your sentence>. After the ack you're done — stop.
 
-      Do not narrate. Do not summarize what you did.
+      Do NOT say "waiting for next step" or "ready for instructions"
+      or anything similar — those phrases end the run prematurely.
+      Do NOT narrate progress. Just emit the next tool call.
     allowed_tools: [Memory, Channel, Evaluation, Context]
     memory_scopes: [user]
     # submit_any is needed because the evaluator is a SIBLING of the
