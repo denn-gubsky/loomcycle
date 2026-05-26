@@ -81,6 +81,37 @@ func TestClassifyError_StreamIdleHasPriorityOverDeadlineExceeded(t *testing.T) {
 	}
 }
 
+// TestIsRateLimit pins the 429-specific helper used by the loop to
+// skip resolver-matrix stall feedback on rate-limit errors (without
+// affecting the 5xx case). Loop test in internal/loop/loop_test.go
+// covers the runtime side; this test pins the wire detection.
+func TestIsRateLimit(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"nil error", nil, false},
+		{"anthropic 429", errors.New("anthropic 429: rate limit exceeded"), true},
+		{"openai 429", errors.New("openai 429: too many requests"), true},
+		{"deepseek 429", errors.New("deepseek 429: rate limited"), true},
+		{"anthropic 500 (NOT rate-limit)", errors.New("anthropic 500: internal"), false},
+		{"anthropic 503 (NOT rate-limit)", errors.New("anthropic 503: backend unavailable"), false},
+		{"anthropic 400 (NOT rate-limit)", errors.New("anthropic 400: bad request"), false},
+		{"plain wrapped error", errors.New("connection refused"), false},
+		{"context canceled", context.Canceled, false},
+		{"context deadline exceeded", context.DeadlineExceeded, false},
+		{"429 in body but not prefix", errors.New("got body: error 429"), false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := IsRateLimit(tc.err); got != tc.want {
+				t.Errorf("IsRateLimit(%v) = %v, want %v", tc.err, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestErrorClass_StringIsHumanReadable(t *testing.T) {
 	cases := map[ErrorClass]string{
 		ErrorClassUnknown:          "unknown",

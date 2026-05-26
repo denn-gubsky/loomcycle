@@ -363,6 +363,39 @@ func TestLoop_MarkStalledOnDriverError(t *testing.T) {
 	}
 }
 
+// TestLoop_NoMarkStalledOnRateLimit pins the v0.12.x fix for the
+// x1000 cascade incident: a 429 surfacing from the driver must NOT
+// trigger MarkStalled. Rate limits are transient ("slow down for a
+// moment") and the matrix has no fast recovery mechanism (next probe
+// runs 15 min later), so MarkStalled-on-429 would knock the
+// (provider, model) pair out for the entire probe interval and
+// cascade every subsequent run-admit into a 503. The runtime
+// fallback path (just below the MarkStalled call site) still
+// engages, so the run gets routed correctly without poisoning the
+// matrix for other in-flight runs.
+//
+// Same shape as TestLoop_MarkStalledOnDriverError above — only the
+// error string differs (429 instead of 500). The opposite-assertion
+// shows the targeted fix: 500 still stalls; 429 does not.
+func TestLoop_NoMarkStalledOnRateLimit(t *testing.T) {
+	prov := &erroringProvider{err: fmt.Errorf("anthropic 429: rate limit exceeded")}
+	var stallCount int
+	_, err := Run(context.Background(), RunOptions{
+		Provider: prov,
+		Model:    "claude-haiku-4-5",
+		Segments: []PromptSegment{
+			{Role: "user", Content: []PromptContentBlock{{Type: "trusted-text", Text: "x"}}},
+		},
+		MarkStalled: func(_, _, _ string) { stallCount++ },
+	})
+	if err == nil {
+		t.Fatal("Run should still propagate the 429 to the caller (the run itself fails)")
+	}
+	if stallCount != 0 {
+		t.Errorf("MarkStalled called %d times on 429, want 0 (rate limits are transient — must not poison the matrix)", stallCount)
+	}
+}
+
 func TestLoop_NoMarkStalledOnContextCancel(t *testing.T) {
 	// User-side cancellation is NOT a provider fault — must not
 	// pollute the matrix with false stalls. Verifies the ctx.Err()
