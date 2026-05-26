@@ -356,23 +356,51 @@ func (c *Channel) execSubscribe(ctx context.Context, policy tools.ChannelPolicyV
 	read := func() ([]store.ChannelMessage, string, error) {
 		return c.Store.ChannelSubscribe(ctx, in.Channel, scope, scopeID, from, limit)
 	}
+
+	// Long-poll pattern: when long-poll is enabled, register the
+	// waker BEFORE the initial read so a publish that commits between
+	// our check and our wait isn't lost. See Bus.Register doc for
+	// the race-free invariant.
+	//
+	// Without this pre-registration, a concurrent publish in the
+	// window between read() returning empty and Bus.Wait() registering
+	// its waker fires Notify against an empty waiter slice — the
+	// notification vanishes, the subscriber waits the full wait_ms,
+	// and the just-published row is silently missed. At x10 circuit
+	// scale this races at ~50% (cf. PR #231 analysis); at x1 it's
+	// invisible because there's no concurrent publisher.
+	longPollEnabled := c.Bus != nil && in.WaitMS > 0 && c.LongPollCapMS > 0
+	var waker chan struct{}
+	if longPollEnabled {
+		waker = c.Bus.Register(in.Channel)
+		defer c.Bus.Unregister(in.Channel, waker)
+	}
+
 	msgs, next, err := read()
 	if err != nil {
 		return errResult(fmt.Sprintf("subscribe: %s", err)), nil
 	}
 
 	// Long-poll if empty AND caller requested it AND operator allows.
-	if len(msgs) == 0 && c.Bus != nil && in.WaitMS > 0 && c.LongPollCapMS > 0 {
+	if len(msgs) == 0 && longPollEnabled {
 		wait := in.WaitMS
 		if wait > c.LongPollCapMS {
 			wait = c.LongPollCapMS
 		}
-		if c.Bus.Wait(ctx, in.Channel, time.Duration(wait)*time.Millisecond) {
-			// New publish landed — re-query (the row is committed).
+		t := time.NewTimer(time.Duration(wait) * time.Millisecond)
+		defer t.Stop()
+		select {
+		case <-waker:
+			// New publish landed — re-query (the row is committed
+			// because Notify is called AFTER ChannelPublish commits).
 			msgs, next, err = read()
 			if err != nil {
 				return errResult(fmt.Sprintf("subscribe (after wait): %s", err)), nil
 			}
+		case <-t.C:
+			// Timeout — caller gets empty messages and decides.
+		case <-ctx.Done():
+			// Cancelled — same as timeout from the wire shape.
 		}
 	}
 
