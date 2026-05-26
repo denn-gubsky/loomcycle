@@ -171,6 +171,11 @@ func (c *Context) execSelf(ctx context.Context) (tools.Result, error) {
 		"user_id":      ident.UserID,
 		"user_tier":    ident.UserTier,
 		"agent_def_id": ident.AgentDefID,
+		// run_id is the store row id (r_<hex>). Surfacing it lets
+		// agents pass their own run_id through to siblings via
+		// Channel messages — the canonical way an Evaluator agent
+		// gets the Editor's run_id for `Evaluation.submit run_id=…`.
+		"run_id": tools.RunID(ctx),
 	}
 	return okJSON(out)
 }

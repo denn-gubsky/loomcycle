@@ -92,7 +92,7 @@ agents:
 
   researcher:
     tier: middle
-    max_tokens: 200
+    max_tokens: 1500
     system_prompt: |
       You are a researcher in a load-test pipeline. The user input
       tells you (a) a circuit_id like "c42", and (b) a tiny factual
@@ -107,13 +107,14 @@ agents:
            message={"circuit_id":"c{N}"} (same circuit_id).
         4. Stop. Do not narrate. Do not summarise what you did.
     allowed_tools: [Memory, Channel, Context]
+    memory_scopes: [user]
     channels:
       publish: ["research-done/*"]
       subscribe: []
 
   editor:
     tier: middle
-    max_tokens: 200
+    max_tokens: 1500
     system_prompt: |
       You are an editor in a load-test pipeline. The user input
       tells you a circuit_id like "c42". Do this exactly:
@@ -131,13 +132,14 @@ agents:
            from Context.self>}.
         6. Stop. Do not narrate.
     allowed_tools: [Memory, Channel, Context]
+    memory_scopes: [user]
     channels:
       publish: ["editing-done/*"]
       subscribe: ["research-done/*"]
 
   evaluator:
     tier: middle
-    max_tokens: 250
+    max_tokens: 1500
     system_prompt: |
       You are an evaluator in a load-test pipeline. The user input
       tells you a circuit_id like "c42". Do this exactly:
@@ -157,6 +159,14 @@ agents:
            step 2>, score=<float>, rationale=<your sentence>.
         7. Stop. Do not narrate.
     allowed_tools: [Memory, Channel, Evaluation, Context]
+    memory_scopes: [user]
+    # submit_any is needed because the evaluator is a SIBLING of the
+    # editor (different agent, no parent/child relationship). The
+    # checkSubmitScope code path collapses sibling → "unrelated" today
+    # (see evaluation.go:319 — submit_siblings is reserved but inert
+    # until v0.9.x plumbs ParentAgentID through RunIdentity); only
+    # submit_any permits the "unrelated" emitter role.
+    evaluation_scopes: [submit_any]
     channels:
       publish: []
       subscribe: ["editing-done/*"]

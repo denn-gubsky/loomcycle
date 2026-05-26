@@ -76,23 +76,30 @@ func parseFlags() flags {
 // ─── HTTP client (shared, tuned for high concurrency) ───────────────
 
 type lcClient struct {
-	base   string
-	token  string
-	http   *http.Client
-	dryRun bool
+	base    string
+	token   string
+	http    *http.Client // short-lived JSON requests (30s timeout)
+	httpSSE *http.Client // SSE streams — no timeout, kept alive for the run's lifetime
+	dryRun  bool
 }
 
 func newClient(base, token string) *lcClient {
+	transport := &http.Transport{
+		MaxIdleConns:        500,
+		MaxIdleConnsPerHost: 500,
+		IdleConnTimeout:     90 * time.Second,
+	}
 	return &lcClient{
 		base:  strings.TrimRight(base, "/"),
 		token: token,
 		http: &http.Client{
-			Timeout: 30 * time.Second,
-			Transport: &http.Transport{
-				MaxIdleConns:        500,
-				MaxIdleConnsPerHost: 500,
-				IdleConnTimeout:     90 * time.Second,
-			},
+			Timeout:   30 * time.Second,
+			Transport: transport,
+		},
+		// SSE client: no Timeout (would kill long-running runs).
+		// The server tears the connection down when the run ends.
+		httpSSE: &http.Client{
+			Transport: transport,
 		},
 	}
 }
@@ -130,6 +137,45 @@ func (c *lcClient) do(method, path string, body any, out any) (int, error) {
 	return resp.StatusCode, nil
 }
 
+// spawnRun POSTs /v1/runs and returns once the server has accepted
+// the run (HTTP headers + first SSE event read). The response body
+// is then drained in a background goroutine — we don't care about
+// the stream contents (polling /v1/agents/{id} is authoritative for
+// terminal state), but we MUST keep the connection open until the
+// server closes it. Closing early triggers a client-disconnect
+// cancel server-side.
+func (c *lcClient) spawnRun(req runRequest) error {
+	b, err := json.Marshal(req)
+	if err != nil {
+		return err
+	}
+	httpReq, err := http.NewRequest("POST", c.base+"/v1/runs", bytes.NewReader(b))
+	if err != nil {
+		return err
+	}
+	httpReq.Header.Set("Authorization", "Bearer "+c.token)
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Accept", "text/event-stream")
+
+	resp, err := c.httpSSE.Do(httpReq)
+	if err != nil {
+		return err
+	}
+	if resp.StatusCode >= 400 {
+		buf, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		return fmt.Errorf("POST /v1/runs: %d: %s", resp.StatusCode, string(buf))
+	}
+	// Drain the SSE stream in the background — keeps the server's
+	// run alive (no client-disconnect cancel) and frees the
+	// connection back to the pool when the run ends.
+	go func() {
+		defer resp.Body.Close()
+		_, _ = io.Copy(io.Discard, resp.Body)
+	}()
+	return nil
+}
+
 // ─── Wire shapes ────────────────────────────────────────────────────
 
 type promptSegment struct {
@@ -152,22 +198,27 @@ type runRequest struct {
 }
 
 type agentResp struct {
-	AgentID    string    `json:"agent_id"`
-	RunID      string    `json:"run_id"`
-	Status     string    `json:"status"`
-	StartedAt  time.Time `json:"started_at"`
+	AgentID     string     `json:"agent_id"`
+	RunID       string     `json:"run_id"`
+	Status      string     `json:"status"`
+	StartedAt   time.Time  `json:"started_at"`
 	CompletedAt *time.Time `json:"completed_at,omitempty"`
-	StopReason string    `json:"stop_reason,omitempty"`
-	Error      string    `json:"error,omitempty"`
-	Usage      struct {
+	StopReason  string     `json:"stop_reason,omitempty"`
+	Error       string     `json:"error,omitempty"`
+	Usage       struct {
 		InputTokens  int    `json:"input_tokens"`
 		OutputTokens int    `json:"output_tokens"`
 		Model        string `json:"model"`
 	} `json:"usage"`
 }
 
-type memoryEntry struct {
-	Value json.RawMessage `json:"value"`
+// memoryGetResponse mirrors the wire shape of
+// GET /v1/_memory/scopes/{scope}/{scope_id}/keys/{key} — the value
+// is nested under `entry`, not at the top level.
+type memoryGetResponse struct {
+	Entry struct {
+		Value json.RawMessage `json:"value"`
+	} `json:"entry"`
 }
 
 // ─── Driver state ───────────────────────────────────────────────────
@@ -269,11 +320,11 @@ func userIDFor(circuitID, perUser int) string {
 
 func runCircuits(c *lcClient, f flags, prompts []string) []circuitResult {
 	var (
-		wg              sync.WaitGroup
-		results         = make([]circuitResult, f.scale)
-		quotaExhausted  atomic.Bool
-		startedCount    atomic.Int32
-		completedCount  atomic.Int32
+		wg             sync.WaitGroup
+		results        = make([]circuitResult, f.scale)
+		quotaExhausted atomic.Bool
+		startedCount   atomic.Int32
+		completedCount atomic.Int32
 		// Throttle initial spawn so we don't slam the runs-admit
 		// semaphore with all N at once — 50 concurrent launches is
 		// plenty for x1000.
@@ -336,6 +387,13 @@ func runOneCircuit(c *lcClient, circuitID int, userID, question string, timeout 
 		agentIDs[role] = fmt.Sprintf("%s-c%d", role, circuitID)
 	}
 
+	// POST /v1/runs is an SSE stream — the server treats a client
+	// disconnect as a cancel signal. We don't care about the stream
+	// body (polling /v1/agents/{id} is the source of truth for
+	// terminal state), but we MUST keep the connection open until
+	// the run finishes server-side. So: fire each POST in a
+	// goroutine that drains the body to EOF, and return immediately
+	// to the polling loop.
 	for _, role := range roles {
 		req := runRequest{
 			Agent:   role,
@@ -346,9 +404,9 @@ func runOneCircuit(c *lcClient, circuitID int, userID, question string, timeout 
 				Content: []promptContentBlock{{Type: "trusted-text", Text: prompt}},
 			}},
 		}
-		if status, err := c.do("POST", "/v1/runs", req, nil); err != nil {
+		if err := c.spawnRun(req); err != nil {
 			res.Status = "failed"
-			res.Error = fmt.Sprintf("POST /v1/runs (%s): %v (status=%d)", role, err, status)
+			res.Error = fmt.Sprintf("POST /v1/runs (%s): %v", role, err)
 			res.EndedAt = time.Now()
 			res.DurationMS = res.EndedAt.Sub(res.StartedAt).Milliseconds()
 			return res
@@ -416,8 +474,8 @@ func runOneCircuit(c *lcClient, circuitID int, userID, question string, timeout 
 
 func fetchScore(c *lcClient, res *circuitResult, cid, userID string) {
 	path := fmt.Sprintf("/v1/_memory/scopes/user/%s/keys/%s-research-scored", userID, cid)
-	var entry memoryEntry
-	if status, err := c.do("GET", path, nil, &entry); err != nil || status != 200 {
+	var resp memoryGetResponse
+	if status, err := c.do("GET", path, nil, &resp); err != nil || status != 200 {
 		return
 	}
 	// value may be a JSON object {score, rationale} OR a JSON string
@@ -426,13 +484,13 @@ func fetchScore(c *lcClient, res *circuitResult, cid, userID string) {
 		Score     float64 `json:"score"`
 		Rationale string  `json:"rationale"`
 	}
-	if err := json.Unmarshal(entry.Value, &obj); err == nil && obj.Score > 0 {
+	if err := json.Unmarshal(resp.Entry.Value, &obj); err == nil && obj.Score > 0 {
 		res.Score = &obj.Score
 		res.Rationale = obj.Rationale
 		return
 	}
 	var s string
-	if err := json.Unmarshal(entry.Value, &s); err == nil {
+	if err := json.Unmarshal(resp.Entry.Value, &s); err == nil {
 		// fall through — rationale captured as the raw string
 		res.Rationale = s
 	}
