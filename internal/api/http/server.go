@@ -409,6 +409,27 @@ func (s *Server) SetRunStateBus(b *runstate.Bus) {
 	s.runStateBus = b
 }
 
+// RunStateBus exposes the wired run-state bus for v0.12.3 Phase 4
+// main.go wiring of the cluster-mode backplane fanout. Returns nil
+// when the bus hasn't been set.
+func (s *Server) RunStateBus() *runstate.Bus {
+	return s.runStateBus
+}
+
+// Backplane exposes the wired v0.12.0 coord.Backplane for Phase 4's
+// pause manager wiring (which runs AFTER SetCoord so it can't see
+// the bp variable scoped to the cluster init block). Returns nil
+// when coord wasn't wired (single-replica mode).
+func (s *Server) Backplane() coord.Backplane {
+	return s.backplane
+}
+
+// ChannelBus exposes the wired channel bus for the same Phase 4
+// reason as RunStateBus. Returns nil when unwired.
+func (s *Server) ChannelBus() *channels.Bus {
+	return s.channelBus
+}
+
 // SetMCPServerDefTool wires the v0.9.x MCPServerDef substrate tool.
 // Without this call, Connector.MCPServerDef + POST /v1/_mcpserverdef
 // + the LoomCycle MCP meta-tool all refuse with "not configured".

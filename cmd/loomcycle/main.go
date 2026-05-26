@@ -1160,7 +1160,27 @@ func main() {
 		go cancelCoord.RunCancelSubscriber(bgCtx, srv.CancelRegistry())
 		go cancelCoord.RunAckSubscriber(bgCtx)
 
-		log.Printf("coord: cluster mode active — replica_id=%s heartbeat=30s backplane=postgres-listen-notify user_quotas=db-backed cancel_ack_timeout=%s", cfg.Env.ReplicaID, ackTimeout)
+		// v0.12.3 Phase 4: runstate + channel bus backplane fanout.
+		// Both buses were constructed earlier (lines ~1003/1012) and
+		// wired into the server via SetRunStateBus / SetChannelBus.
+		// Here we add the cluster-mode fanout: every local Publish/
+		// Notify also goes onto the backplane so remote replicas wake
+		// their local subscribers (PostgresBackplane self-filter
+		// prevents the originator from looping).
+		if rsb := srv.RunStateBus(); rsb != nil {
+			rsb.SetBackplane(bp)
+			if err := rsb.SubscribeBackplane(bgCtx, bp); err != nil {
+				log.Fatalf("coord: runstate bus subscribe: %v", err)
+			}
+		}
+		if cb := srv.ChannelBus(); cb != nil {
+			cb.SetBackplane(bp)
+			if err := cb.SubscribeBackplane(bgCtx, bp); err != nil {
+				log.Fatalf("coord: channel bus subscribe: %v", err)
+			}
+		}
+
+		log.Printf("coord: cluster mode active — replica_id=%s heartbeat=30s backplane=postgres-listen-notify user_quotas=db-backed cancel_ack_timeout=%s bus_fanout=on", cfg.Env.ReplicaID, ackTimeout)
 	}
 
 	// Memory tool TTL sweeper. Cheap periodic DELETE of expired rows.
@@ -1215,6 +1235,40 @@ func main() {
 			log.Printf("pause: manager wired (default timeout=%s)", pauseDefault)
 		} else {
 			log.Printf("pause: manager wired (default timeout=%s)", pause.DefaultPauseTimeout)
+		}
+
+		// v0.12.3 Phase 4: cluster-wide pause/resume. The pause
+		// manager's cluster paths read/write a singleton runtime_state
+		// row + publish on `loomcycle.pause`. Only active in cluster
+		// mode; single-replica mode keeps the v0.11.x in-process path
+		// byte-identical.
+		if cfg.Env.ReplicaID != "" {
+			pgStoreForPause, ok := storeIface.(*storepostgres.Store)
+			if !ok {
+				log.Fatalf("coord: pause cluster wiring requires Postgres store (REPLICA_ID set + non-Postgres store — should have been caught by openStore)")
+			}
+			rss := coord.NewRuntimeStateStore(pgStoreForPause.Pool())
+			cacheTTL := time.Duration(cfg.Env.PauseCacheTTLMs) * time.Millisecond
+			pauseMgr.SetRuntimeStateStore(rss, cacheTTL)
+			// Reuse the same Backplane the cluster block constructed.
+			// We can't directly reference `bp` here because it's
+			// scoped to the cluster block above; instead read it via
+			// srv's existing wiring (SetCoord stashed it).
+			// Backplane is interface-typed; type-assert through the
+			// known-only path via a separate fetch.
+			//
+			// Simpler approach: rather than re-fetch, do the pause
+			// cluster wiring INSIDE the cluster block where `bp` is
+			// in scope. We can't because pauseMgr isn't constructed
+			// yet at that point. Solution: declare a package-private
+			// hook on Server to retrieve the backplane.
+			if bp := srv.Backplane(); bp != nil {
+				pauseMgr.SetBackplane(bp)
+				if err := pauseMgr.SubscribeBackplane(bgCtx, bp); err != nil {
+					log.Fatalf("coord: pause backplane subscribe: %v", err)
+				}
+				log.Printf("coord: cluster pause/resume wired (cache_ttl=%s)", cacheTTL)
+			}
 		}
 	}
 

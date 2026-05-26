@@ -10,6 +10,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/coord"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 )
 
@@ -104,6 +105,33 @@ type Manager struct {
 	// Per-pause-call value overrides this if the operator supplies
 	// timeout_ms; this is the default used when omitted.
 	defaultTimeout time.Duration
+
+	// v0.12.3 Phase 4 — cluster-mode wiring. All nil in single-replica
+	// mode (LOOMCYCLE_REPLICA_ID unset); the manager runs exactly as
+	// v0.11.x with no DB-state reads, no backplane publishes.
+
+	// rss is the cluster-wide pause-state singleton store. State()
+	// reads it on the hot path (lock-free); SetRuntimeStateStore
+	// writes it. atomic.Pointer makes the read/write race-free —
+	// review-1 finding #1 caught the original plain-pointer race.
+	rss atomic.Pointer[coord.RuntimeStateStore]
+
+	// bp is the backplane for cross-replica pause/resume signals.
+	// Read inside Pause/Resume under m.mu (no race); SetBackplane
+	// writes under m.mu. State() never reads bp, so it stays a
+	// plain field (no atomic needed).
+	bp coord.Backplane
+
+	// stateCache is the 1s in-memory cache over rss.Get() so the
+	// hot-path State() call doesn't hit the DB on every loop
+	// iteration. Invalidated on backplane pause/resume receipt + on
+	// every local Pause/Resume.
+	stateCacheMu    sync.Mutex
+	stateCacheValue RuntimeState
+	stateCacheAt    time.Time
+	// stateCacheTTL is read by State() (lock-free) + written by
+	// SetRuntimeStateStore. atomic.Int64 (nanos) for race-free read.
+	stateCacheTTL atomic.Int64
 }
 
 // toolEntry holds the per-tool-call cancellation handle. Manager-
@@ -135,13 +163,140 @@ func NewManager(s store.Store, timeout time.Duration) *Manager {
 	return m
 }
 
-// State returns the current RuntimeState. Lock-free atomic read; safe
-// to call from any goroutine including the loop's hot path.
+// State returns the current RuntimeState. Lock-free atomic read in
+// single-replica mode; 1s-cached DB read in cluster mode so any
+// replica converges on the cluster-wide state within the cache TTL.
+// Safe to call from any goroutine including the loop's hot path.
 func (m *Manager) State() RuntimeState {
 	if m == nil {
 		return StateRunning
 	}
-	return loadState(&m.state)
+	rss := m.rss.Load() // atomic.Pointer load — race-free
+	if rss == nil {
+		// Single-replica mode: v0.11.x in-process atomic.
+		return loadState(&m.state)
+	}
+	ttl := time.Duration(m.stateCacheTTL.Load())
+	// Cluster mode: serve from cache (TTL nanos), refresh on miss.
+	m.stateCacheMu.Lock()
+	if !m.stateCacheAt.IsZero() && time.Since(m.stateCacheAt) < ttl {
+		v := m.stateCacheValue
+		m.stateCacheMu.Unlock()
+		return v
+	}
+	m.stateCacheMu.Unlock()
+	// Refresh outside the cache lock so a slow DB doesn't serialise
+	// every State() caller. 2s timeout — a longer DB hiccup should
+	// surface as a fallback to the in-process atomic, not block the
+	// caller indefinitely.
+	rctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	stateStr, _, err := rss.Get(rctx)
+	if err != nil {
+		log.Printf("pause: RuntimeStateStore.Get failed (serving in-process state): %v", err)
+		return loadState(&m.state)
+	}
+	parsed := parseRuntimeState(stateStr)
+	m.state.Store(int32(parsed))
+	m.stateCacheMu.Lock()
+	m.stateCacheValue = parsed
+	m.stateCacheAt = time.Now()
+	m.stateCacheMu.Unlock()
+	return parsed
+}
+
+// SetRuntimeStateStore installs the v0.12.3 cluster-wide pause-state
+// store + the 1s cache TTL. Called once from main.go inside the
+// cluster-mode init block. Single-replica deployments never call this
+// and the manager behaves identically to v0.11.x.
+func (m *Manager) SetRuntimeStateStore(rss *coord.RuntimeStateStore, cacheTTL time.Duration) {
+	if cacheTTL <= 0 {
+		cacheTTL = 1 * time.Second
+	}
+	// Atomic writes — State() reads both fields lock-free.
+	m.stateCacheTTL.Store(int64(cacheTTL))
+	m.rss.Store(rss)
+}
+
+// SetBackplane installs the cluster-mode signal bus. When set,
+// Pause/Resume publish on `loomcycle.pause` so remote replicas can
+// apply the transition. Called once from main.go.
+func (m *Manager) SetBackplane(bp coord.Backplane) {
+	m.mu.Lock()
+	m.bp = bp
+	m.mu.Unlock()
+}
+
+// SubscribeBackplane starts the goroutine that listens for remote
+// pause/resume events on `loomcycle.pause` and applies them locally
+// via applyRemotePause / applyRemoteResume. The goroutine exits on
+// ctx.Done. Backplane's reconnect-on-drop logic carries the wire-
+// reliability concern; this goroutine only handles event dispatch.
+func (m *Manager) SubscribeBackplane(ctx context.Context, bp coord.Backplane) error {
+	ch, err := bp.Subscribe(ctx, "loomcycle.pause")
+	if err != nil {
+		return fmt.Errorf("pause: subscribe to loomcycle.pause: %w", err)
+	}
+	go func() {
+		for evt := range ch {
+			var p pauseBackplaneEvent
+			if err := json.Unmarshal(evt.Payload, &p); err != nil {
+				log.Printf("pause: malformed backplane event: %v", err)
+				continue
+			}
+			switch p.Op {
+			case "pause":
+				m.applyRemotePause()
+			case "resume":
+				m.applyRemoteResume()
+			default:
+				log.Printf("pause: unknown backplane op %q", p.Op)
+			}
+		}
+	}()
+	return nil
+}
+
+// applyRemotePause is called by the SubscribeBackplane goroutine when
+// another replica publishes a pause event. Transitions THIS replica's
+// in-process state to StatePaused (skipping pausing — the originating
+// replica already did the tool drain), closes the local pauseCh so
+// the loop's iteration-boundary check sees the pause, and invalidates
+// the state cache.
+//
+// Idempotent: a replica already at StatePaused ignores the event.
+func (m *Manager) applyRemotePause() {
+	m.mu.Lock()
+	if loadState(&m.state) != StateRunning {
+		m.mu.Unlock()
+		return
+	}
+	m.state.Store(int32(StatePaused))
+	close(m.pauseCh)
+	m.mu.Unlock()
+
+	m.stateCacheMu.Lock()
+	m.stateCacheAt = time.Time{}
+	m.stateCacheMu.Unlock()
+	log.Printf("pause: cluster pause signal received — local state → paused")
+}
+
+// applyRemoteResume mirrors applyRemotePause for the resume direction.
+// Allocates a fresh pauseCh so the next pause has a clean signal.
+func (m *Manager) applyRemoteResume() {
+	m.mu.Lock()
+	if loadState(&m.state) == StateRunning {
+		m.mu.Unlock()
+		return
+	}
+	m.pauseCh = make(chan struct{})
+	m.state.Store(int32(StateRunning))
+	m.mu.Unlock()
+
+	m.stateCacheMu.Lock()
+	m.stateCacheAt = time.Time{}
+	m.stateCacheMu.Unlock()
+	log.Printf("pause: cluster resume signal received — local state → running")
 }
 
 // PauseCh returns the channel the loop's iteration-boundary check
@@ -268,15 +423,44 @@ func (m *Manager) Pause(ctx context.Context, timeout time.Duration) (PauseResult
 	}
 
 	m.mu.Lock()
-	if m.State() != StateRunning {
+	// Use loadState (in-process atomic) instead of m.State() — Pause
+	// is the authority on whether a LOCAL pause is already in flight,
+	// not the cluster-wide DB state. m.State() in cluster mode would
+	// do a DB read while holding m.mu, serialising the entire
+	// SubscribeBackplane pipeline for the duration. Review-1 #2.
+	if loadState(&m.state) != StateRunning {
+		state := loadState(&m.state)
 		m.mu.Unlock()
-		return PauseResult{State: m.State().String()}, ErrAlreadyPausing
+		return PauseResult{State: state.String()}, ErrAlreadyPausing
 	}
 	m.state.Store(int32(StatePausing))
 	// Close the broadcast channel under the lock so concurrent
 	// PauseCh() callers observe a consistent (state, channel) pair.
 	close(m.pauseCh)
+	bp := m.bp
 	m.mu.Unlock()
+	rss := m.rss.Load()
+
+	// v0.12.3 Phase 4: cluster mode — write DB state + publish on
+	// backplane so remote replicas transition into pausing/paused
+	// within the cache-TTL window. Errors are logged but not fatal:
+	// the local pause still proceeds + the local tool drain still
+	// runs. A remote replica that misses the publish will eventually
+	// converge via the next cache refresh (≤ TTL).
+	if rss != nil {
+		rctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		if err := rss.Set(rctx, "pausing", 0); err != nil {
+			log.Printf("pause: rss.Set(pausing) failed: %v (continuing in-process only)", err)
+		}
+		cancel()
+	}
+	if bp != nil {
+		payload, _ := json.Marshal(pauseBackplaneEvent{Op: "pause"})
+		if err := bp.Publish(context.Background(), "loomcycle.pause", payload); err != nil {
+			log.Printf("pause: backplane publish(pause) failed: %v", err)
+		}
+	}
+	m.invalidateStateCache()
 
 	// Apply per-tool cancel policy. Idempotent → cancel immediately;
 	// non-idempotent / external → leave running, deadline applied
@@ -351,11 +535,21 @@ func (m *Manager) forceCancelRemaining(mu *sync.Mutex, counter *int) {
 	})
 }
 
+// invalidateStateCache forces the next State() call in cluster mode
+// to re-read from the DB. Called after every local state change so
+// concurrent State() callers don't see a stale cached value.
+func (m *Manager) invalidateStateCache() {
+	m.stateCacheMu.Lock()
+	m.stateCacheAt = time.Time{}
+	m.stateCacheMu.Unlock()
+}
+
 // finalizePause transitions to StatePaused, queries the count of
 // runs that committed pause_state='paused' to the DB, and assembles
 // the PauseResult payload.
 func (m *Manager) finalizePause(start time.Time, forceCancel, idempotentCount int, warnings []string) PauseResult {
 	m.state.Store(int32(StatePaused))
+	m.invalidateStateCache()
 
 	paused, err := m.store.ListPausedRuns(context.Background())
 	pausedCount := 0
@@ -364,6 +558,18 @@ func (m *Manager) finalizePause(start time.Time, forceCancel, idempotentCount in
 		warnings = append(warnings, "could not enumerate paused runs (state still transitioned to paused)")
 	} else {
 		pausedCount = len(paused)
+	}
+
+	// v0.12.3 cluster-mode: write final state + cluster-wide paused
+	// count to the singleton row so remote /v1/_state reads see the
+	// authoritative cluster value (not just this replica's view).
+	if rss := m.rss.Load(); rss != nil {
+		rctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		if err := rss.Set(rctx, "paused", pausedCount); err != nil {
+			log.Printf("pause: rss.Set(paused) failed: %v", err)
+			warnings = append(warnings, fmt.Sprintf("rss.Set(paused) failed: %v", err))
+		}
+		cancel()
 	}
 
 	if idempotentCount > 0 {
@@ -396,8 +602,10 @@ func (m *Manager) Resume(ctx context.Context) (ResumeResult, error) {
 		return ResumeResult{}, errors.New("resume: nil Manager")
 	}
 	m.mu.Lock()
-	if m.State() != StatePaused {
-		st := m.State().String()
+	// loadState — see the Pause() comment about avoiding m.State()
+	// under m.mu in cluster mode (review-1 #2).
+	if loadState(&m.state) != StatePaused {
+		st := loadState(&m.state).String()
 		m.mu.Unlock()
 		return ResumeResult{State: st}, ErrNotPaused
 	}
@@ -406,7 +614,27 @@ func (m *Manager) Resume(ctx context.Context) (ResumeResult, error) {
 	// through their select-default branch on the next iteration.
 	m.pauseCh = make(chan struct{})
 	m.state.Store(int32(StateRunning))
+	bp := m.bp
 	m.mu.Unlock()
+	rss := m.rss.Load()
+	m.invalidateStateCache()
+
+	// v0.12.3 Phase 4: cluster mode — write DB state back to running
+	// and publish on backplane so remote replicas re-allow new runs
+	// + new tool dispatches.
+	if rss != nil {
+		rctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		if err := rss.Set(rctx, "running", 0); err != nil {
+			log.Printf("resume: rss.Set(running) failed: %v", err)
+		}
+		cancel()
+	}
+	if bp != nil {
+		payload, _ := json.Marshal(pauseBackplaneEvent{Op: "resume"})
+		if err := bp.Publish(context.Background(), "loomcycle.pause", payload); err != nil {
+			log.Printf("resume: backplane publish(resume) failed: %v", err)
+		}
+	}
 
 	paused, err := m.store.ListPausedRuns(ctx)
 	if err != nil {

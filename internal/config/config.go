@@ -1037,6 +1037,15 @@ type Env struct {
 	// LOOMCYCLE_PAUSE_DEFAULT_TIMEOUT_MS.
 	PauseDefaultTimeoutMs int64
 
+	// PauseCacheTTLMs is the v0.12.3 Phase 4 TTL for the cluster-
+	// mode DB-backed pause-state cache in pause.Manager.State().
+	// Default 1000 (1s). Lower values reduce the maximum latency
+	// between a pause event and a remote replica seeing the state
+	// change; higher values reduce DB load. Only effective when
+	// LOOMCYCLE_REPLICA_ID is set. Env:
+	// LOOMCYCLE_PAUSE_CACHE_TTL_MS.
+	PauseCacheTTLMs int64
+
 	// MCPAllowPrivilegedTools — v0.8.15. When true, dynamically-
 	// registered agents may include Bash/Write/Edit in their
 	// allowed_tools. Default false: those three are stripped from
@@ -1701,6 +1710,16 @@ func Load(path string) (*Config, error) {
 			} else {
 				cfg.Env.MetricsSweepInterval = time.Duration(n) * time.Millisecond
 			}
+		}
+	}
+
+	// v0.12.3 Phase 4 pause-state cache TTL. Effective only when
+	// LOOMCYCLE_REPLICA_ID is set (cluster mode); single-replica
+	// pause.Manager skips the DB cache entirely.
+	cfg.Env.PauseCacheTTLMs = 1000 // default 1s
+	if v := os.Getenv("LOOMCYCLE_PAUSE_CACHE_TTL_MS"); v != "" {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil && n > 0 {
+			cfg.Env.PauseCacheTTLMs = n
 		}
 	}
 

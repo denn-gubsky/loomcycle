@@ -18,14 +18,33 @@ package channels
 
 import (
 	"context"
+	"encoding/json"
+	"log"
 	"sync"
 	"time"
+
+	"github.com/denn-gubsky/loomcycle/internal/coord"
 )
 
-// Bus is the in-process notification bus.
+// Bus is the in-process notification bus. v0.12.3 Phase 4 adds an
+// optional backplane fanout: when SetBackplane is called, every local
+// Notify ALSO publishes on `loomcycle.channel` so remote replicas'
+// SubscribeBackplane goroutine wakes their local Wait callers. The
+// PostgresBackplane self-filter prevents the originating replica
+// from looping.
 type Bus struct {
 	mu      sync.Mutex
 	waiters map[string][]chan struct{}
+
+	// bp is the cluster-mode backplane. Nil = single-replica mode.
+	bp coord.Backplane
+}
+
+// channelBackplaneEvent is the wire payload on `loomcycle.channel`.
+// Tiny — just the channel name; the receiving Bus re-queries its
+// store, same as the local Notify path.
+type channelBackplaneEvent struct {
+	Channel string `json:"channel"`
 }
 
 // NewBus returns a fresh, empty bus. Single instance per loomcycle
@@ -41,6 +60,24 @@ func NewBus() *Bus {
 // The publish path calls this AFTER the storage write commits, so
 // any waiter that wakes is guaranteed to find at least one new row.
 func (b *Bus) Notify(channel string) {
+	b.notifyLocal(channel)
+	// v0.12.3 Phase 4: cluster-mode fanout. Non-blocking — backplane
+	// errors are logged but never fail Notify.
+	b.mu.Lock()
+	bp := b.bp
+	b.mu.Unlock()
+	if bp != nil {
+		payload, _ := json.Marshal(channelBackplaneEvent{Channel: channel})
+		if err := bp.Publish(context.Background(), "loomcycle.channel", payload); err != nil {
+			log.Printf("channels: backplane publish failed for %s: %v", channel, err)
+		}
+	}
+}
+
+// notifyLocal is the v0.12.3 fan-out-to-local-waiters half of Notify.
+// Extracted so SubscribeBackplane can call it on remote events
+// WITHOUT triggering another backplane publish.
+func (b *Bus) notifyLocal(channel string) {
 	b.mu.Lock()
 	waiters := b.waiters[channel]
 	if len(waiters) == 0 {
@@ -59,6 +96,35 @@ func (b *Bus) Notify(channel string) {
 		default:
 		}
 	}
+}
+
+// SetBackplane installs the v0.12.3 Phase 4 cluster-mode fanout.
+// Nil-safe: calling with nil disables fanout.
+func (b *Bus) SetBackplane(bp coord.Backplane) {
+	b.mu.Lock()
+	b.bp = bp
+	b.mu.Unlock()
+}
+
+// SubscribeBackplane starts a goroutine that listens for remote
+// channel-notify events on `loomcycle.channel` and wakes local Wait
+// callers via notifyLocal. Exits on ctx.Done.
+func (b *Bus) SubscribeBackplane(ctx context.Context, bp coord.Backplane) error {
+	ch, err := bp.Subscribe(ctx, "loomcycle.channel")
+	if err != nil {
+		return err
+	}
+	go func() {
+		for evt := range ch {
+			var p channelBackplaneEvent
+			if err := json.Unmarshal(evt.Payload, &p); err != nil {
+				log.Printf("channels: malformed backplane event: %v", err)
+				continue
+			}
+			b.notifyLocal(p.Channel)
+		}
+	}()
+	return nil
 }
 
 // Wait blocks the caller until either:
