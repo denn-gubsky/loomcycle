@@ -153,15 +153,31 @@ make build-all       # UI + binary in one shot; output → ./bin/loomcycle
 Full per-version release notes: [`REVISIONS.md`](REVISIONS.md).
 Public roadmap with v0.8.x → v1.0 design details: [`docs/PLAN.md`](docs/PLAN.md).
 
-## Architecture (one diagram)
+## Architecture
+
+Three diagrams cover different views of the same runtime:
 
 <p align="center">
-  <img src="docs/assets/architecture.png" alt="loomcycle architecture — app servers / CLIs / TS-Python SDKs / Claude Code at the top, the single Go binary in the middle (wire surfaces incl. MCP server stdio v0.8.15 → middleware → connector.Connector interface → agent loop → tool dispatcher with 14 builtins → store with dynamic_agents), six LLM providers and external MCP servers at the bottom" width="780" />
+  <img src="docs/assets/architecture.png" alt="loomcycle architecture — clients at the top (app servers, CLIs, TS/Python SDKs, Claude Code & MCP orchestrators, LangChain/n8n via OpenAI-compat shim), the single Go binary in the middle (1..N replicas; five wire surfaces incl. HTTP+SSE / gRPC / Web UI / MCP server with 33 meta-tools / LLM Gateway → bearer auth + concurrency semaphore + per-user fairness → 36-method connector.Connector → agent loop → tool dispatcher with 19 built-in tools + MCP client transport + sub-agent runner → SQLite/Postgres store covering sessions, runs, events, memory, channels, substrate tables, replicas+user_quotas+runtime_state+hooks), OpenTelemetry sidecar emitting spans, and external services at the bottom (seven LLM providers including anthropic-oauth-dev, three embedders, external MCP servers cloud)" width="780" />
 </p>
 
 Diagram source: [`docs/architecture.d2`](docs/architecture.d2) (regenerate with `d2 docs/architecture.d2 docs/assets/architecture.png`).
 
-The v0.8.15 `Connector` abstraction layer (the pink block in the middle of the diagram) is the architectural anchor every wire transport dispatches through. For the dedicated detail diagram showing the Connector interface + its implementers, consumers, and mirroring adapters, see [`docs/assets/architecture-connector.png`](docs/assets/architecture-connector.png) (source: [`docs/architecture-connector.d2`](docs/architecture-connector.d2)).
+**Connector detail** — the v0.8.15 `Connector` abstraction layer (the pink block in the middle of the main diagram) is the architectural anchor every wire transport dispatches through. The detail diagram enumerates all 36 methods + shows which transports IMPLEMENT, CONSUME, and MIRROR the interface:
+
+<p align="center">
+  <img src="docs/assets/architecture-connector.png" alt="connector.Connector interface with 36 methods grouped by domain (run lifecycle, agent registry, substrate tools, channel CRUD, pause/snapshot, hook registry) — HTTP server IMPLEMENTS as the canonical business logic, MCP and gRPC servers CONSUME via direct Go method dispatch, TypeScript and Python adapters MIRROR over the HTTP wire" width="780" />
+</p>
+
+Source: [`docs/architecture-connector.d2`](docs/architecture-connector.d2).
+
+**Multi-replica cluster mode (v0.12.x)** — when `LOOMCYCLE_REPLICA_ID` is set per process and the Postgres backend is used, loomcycle runs as a cluster behind any HTTP load balancer. The shared Postgres doubles as the LISTEN/NOTIFY backplane for cross-replica cancel, pause/resume, run-state fanout, and quota notifications. SQLite refuses cluster mode at boot.
+
+<p align="center">
+  <img src="docs/assets/architecture-cluster.png" alt="multi-replica cluster deployment — clients hit an HTTP load balancer (nginx/Caddy/Traefik/HAProxy/ELB, SSE-friendly), which round-robins across N replicas each with a distinct LOOMCYCLE_REPLICA_ID + 30s heartbeat, all sharing a Postgres database that holds both the substrate tables (replicas, user_quotas, runs.replica_id, runtime_state, hooks added in v0.12.x) and the LISTEN/NOTIFY backplane carrying cancel/pause/runstate/channel/quota/hook topics, with singleton sweepers gated via pg_try_advisory_lock" width="780" />
+</p>
+
+Source: [`docs/architecture-cluster.d2`](docs/architecture-cluster.d2). Operator runbook: [`docs/MULTI-REPLICA.md`](docs/MULTI-REPLICA.md). Demo: [`examples/cluster/README.md`](examples/cluster/README.md).
 
 Full request flow, abstractions, and concurrency model: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 

@@ -1,0 +1,138 @@
+# LoomCycle multi-replica cluster mode diagram (v0.12.0 → v0.12.6)
+# Render: d2 docs/architecture-cluster.d2 docs/assets/architecture-cluster.png
+#
+# Companion to architecture.d2 (single-binary substrate). This diagram
+# shows the deployment shape when loomcycle runs as a cluster: an HTTP
+# load balancer in front of N replicas, all sharing a Postgres database
+# that doubles as the LISTEN/NOTIFY backplane between replicas.
+#
+# Single-replica is still the default (no LOOMCYCLE_REPLICA_ID set).
+# Cluster mode is opt-in by setting LOOMCYCLE_REPLICA_ID to a distinct
+# value per process AND using the Postgres storage backend. SQLite
+# refuses cluster mode at boot.
+#
+# Phase numbers (1-7) cross-reference v0.12.0 → v0.12.6 release notes
+# and docs/MULTI-REPLICA.md.
+
+vars: {
+  d2-config: {
+    layout-engine: dagre
+    pad: 32
+  }
+}
+
+direction: down
+
+# ---- Clients (top) ----
+
+clients: "App servers · CLIs · TS / Python SDKs\nClaude Code · LangChain · n8n\n(no sticky sessions required)" {
+  shape: rectangle
+  style: {
+    fill: "#eef2f7"
+    stroke: "#475569"
+    font-size: 13
+  }
+}
+
+# ---- Load balancer ----
+
+lb: "HTTP Load Balancer (round-robin, SSE-friendly)\nnginx · Caddy · Traefik · HAProxy · ELB\nproxy_buffering off · long read timeout for SSE" {
+  shape: rectangle
+  style: {
+    fill: "#dbeafe"
+    stroke: "#1d4ed8"
+    stroke-width: 2
+    border-radius: 8
+    font-size: 12
+    bold: true
+  }
+}
+
+# ---- Replica fleet (three side-by-side replicas) ----
+
+rep_a: "replica-a\nLOOMCYCLE_REPLICA_ID=a\n30s heartbeat → replicas table" {
+  shape: rectangle
+  style: {fill: "#e0e7ff"; stroke: "#4f46e5"; stroke-width: 2; border-radius: 8; bold: true; font-size: 12}
+}
+rep_b: "replica-b\nLOOMCYCLE_REPLICA_ID=b\n30s heartbeat → replicas table" {
+  shape: rectangle
+  style: {fill: "#e0e7ff"; stroke: "#4f46e5"; stroke-width: 2; border-radius: 8; bold: true; font-size: 12}
+}
+rep_n: "replica-n …\nLOOMCYCLE_REPLICA_ID=n\n30s heartbeat → replicas table" {
+  shape: rectangle
+  style: {fill: "#e0e7ff"; stroke: "#4f46e5"; stroke-width: 2; border-radius: 8; italic: true; font-size: 12; stroke-dash: 4}
+}
+
+replica_note: "Each replica: identical Go binary + same config; distinct LOOMCYCLE_REPLICA_ID; shared LOOMCYCLE_AUTH_TOKEN.\nAdmits runs locally up to its semaphore cap (per-replica). User fairness cap is cluster-wide via user_quotas (Phase 2)." {
+  shape: rectangle
+  style: {fill: "#f8fafc"; stroke: "#64748b"; italic: true; font-size: 10}
+}
+
+# ---- Shared Postgres ----
+
+postgres: "Postgres (shared) — required for cluster mode (SQLite refuses)" {
+  style: {
+    fill: "#fed7aa"
+    stroke: "#ea580c"
+    stroke-width: 2
+    border-radius: 12
+    font-size: 13
+    bold: true
+  }
+
+  direction: down
+
+  tables_new: "Tables added in v0.12.x" {
+    shape: rectangle
+    style: {fill: "#fde68a"; stroke: "#a16207"; bold: true; font-size: 11}
+    grid-columns: 5
+
+    t_replicas: "replicas\n(Phase 1)" {style: {fill: "#fef3c7"; font-size: 10}}
+    t_quotas:   "user_quotas\n(Phase 2)" {style: {fill: "#fef3c7"; font-size: 10}}
+    t_runs_rid: "runs.replica_id\n(Phase 3)" {style: {fill: "#fef3c7"; font-size: 10}}
+    t_runtime:  "runtime_state\n(Phase 4)" {style: {fill: "#fef3c7"; font-size: 10}}
+    t_hooks:    "hooks\n(Phase 6)" {style: {fill: "#fef3c7"; font-size: 10}}
+  }
+
+  tables_existing: "Existing tables (unchanged in cluster mode)\nsessions · runs · events · memory · channels · agent_defs · skill_defs · mcp_server_defs ·\nevaluations · interrupts · snapshots · dynamic_agents · memory_embeddings · process_samples" {
+    shape: rectangle
+    style: {fill: "#fef9c3"; font-size: 10}
+  }
+
+  backplane: "LISTEN/NOTIFY backplane (Phase 1)\n— loomcycle.cancel   (Phase 3: cross-replica cancel)\n— loomcycle.pause    (Phase 4: cluster-wide quiesce)\n— loomcycle.runstate (Phase 4: bus fanout)\n— loomcycle.channel  (Phase 4: Channel bus fanout)\n— loomcycle.quota    (Phase 2: fairness notifications)\n— loomcycle.hook     (Phase 6: hook registry sync)" {
+    shape: rectangle
+    style: {fill: "#fce7f3"; stroke: "#be185d"; stroke-width: 2; bold: true; font-size: 11}
+  }
+
+  cancel_coord: "Cancel coordinator (Phase 3)\nLocal miss → broadcast on backplane → owner cancels →\nack via loomcycle.cancel.ack (default ack timeout: 5s)" {
+    shape: rectangle
+    style: {fill: "#fef3c7"; stroke: "#a16207"; italic: true; font-size: 10}
+  }
+
+  singletons: "Singleton sweepers (Phase 5)\npg_try_advisory_lock — only one replica per tick runs:\nreplicas_sweeper · heartbeat_sweeper · memory_sweeper ·\nchannels_sweeper · interrupts_sweeper · session_lock GC ·\ndynamic_agents_sweeper" {
+    shape: rectangle
+    style: {fill: "#dcfce7"; stroke: "#15803d"; italic: true; font-size: 10}
+  }
+}
+
+# ---- Edges ----
+
+clients -> lb: "HTTP · gRPC · SSE" {style.stroke: "#475569"}
+lb -> rep_a: {style.stroke: "#1d4ed8"}
+lb -> rep_b: {style.stroke: "#1d4ed8"}
+lb -> rep_n: {style: {stroke: "#1d4ed8"; stroke-dash: 4}}
+
+rep_a -> postgres: "SQL + LISTEN" {style.stroke: "#ea580c"; style.stroke-width: 2}
+rep_b -> postgres: "SQL + LISTEN" {style.stroke: "#ea580c"; style.stroke-width: 2}
+rep_n -> postgres: {style: {stroke: "#ea580c"; stroke-dash: 4}}
+
+replica_note -> rep_a: {style: {stroke: "#64748b"; stroke-dash: 2}}
+
+# ---- Footnote ----
+
+footnote: "Phases 1-7 land across v0.12.0 → v0.12.6 (see docs/MULTI-REPLICA.md).\nWeb UI surfaces replica_id on each running-agent row (v0.12.7+)." {
+  shape: rectangle
+  style: {fill: "#f8fafc"; stroke: "#64748b"; italic: true; font-size: 11}
+}
+
+postgres -> footnote: {style: {stroke: "#64748b"; stroke-dash: 2}}
