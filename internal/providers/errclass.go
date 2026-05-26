@@ -186,6 +186,31 @@ func statusFromError(err error) int {
 	return code
 }
 
+// IsRateLimit reports whether the error is a 429 rate-limit response
+// from a provider's driver. Used by the loop to decide whether a
+// failed Call() should poison the resolver matrix.
+//
+// Why this distinction matters: both 429 and 5xx classify as
+// ErrorClassRetryable, but the right runtime response is different.
+// A 429 is "slow down for a few seconds — the model itself is fine";
+// a 5xx is "the provider is having trouble, give up on this model
+// for the probe interval". MarkStalled is appropriate for 5xx (stops
+// future calls from wasting time on the same broken model); it's
+// destructive for 429 because at the next periodic probe (15 min by
+// default) the model would have recovered ages ago.
+//
+// The v0.12.x x1000 load test (2026-05-26) crystallised the problem:
+// ~120 concurrent OAuth-dev calls hit Anthropic's rate limit, the
+// loop marked the (provider, model) stalled, and the next ~800 run-
+// admit attempts ALL failed with 503 `no provider available` because
+// the matrix wouldn't re-check until the probe ran.
+func IsRateLimit(err error) bool {
+	if err == nil {
+		return false
+	}
+	return statusFromError(err) == 429
+}
+
 // looksLikeDeprecatedModel returns true when the error body carries a
 // "this model is no longer available / has been retired" pattern. The
 // matchers are intentionally permissive — false negatives (treated as

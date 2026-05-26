@@ -543,13 +543,28 @@ outerLoop:
 		}
 		ch, err := opts.Provider.Call(iterCtx, req)
 		if err != nil {
-			// Resolver stall feedback: any non-context error from
-			// Call() is a driver giving up after its own retries.
-			// Mark the (provider, model) stalled so the resolver
-			// stops returning it until the next periodic probe
-			// re-validates. ctx errors are user-side cancellation,
-			// not provider faults — don't pollute the matrix.
-			if opts.MarkStalled != nil && ctx.Err() == nil {
+			// Resolver stall feedback: a non-context error from Call()
+			// is the driver giving up after its own retries. Mark the
+			// (provider, model) stalled so the resolver stops returning
+			// it until the next periodic probe re-validates.
+			//
+			// EXCEPTION: rate-limit errors (HTTP 429). Originally these
+			// also triggered MarkStalled, but the v0.12.x x1000 load
+			// test (2026-05-26) showed it's too aggressive: ~120
+			// concurrent OAuth-dev calls into Anthropic's rate limit
+			// poisoned the matrix, and the resolver's 15-min probe
+			// interval meant the next ~800 run-admit attempts ALL
+			// failed with 503 `no provider available`. A 429 is "slow
+			// down for a moment", not "the model is broken"; the
+			// fallback path (just below) handles the per-call response
+			// correctly, and the next call has its own ratelimit.Do
+			// retry budget. Sustained 5xx still triggers stall — that
+			// case IS "model broken for a while, stop wasting calls."
+			//
+			// ctx errors are user-side cancellation, not provider
+			// faults — also don't pollute the matrix.
+			if opts.MarkStalled != nil && ctx.Err() == nil &&
+				!providers.IsRateLimit(err) {
 				opts.MarkStalled(opts.Provider.ID(), opts.Model, err.Error())
 			}
 			// v0.8.2: when the run carries a fallback policy and the
@@ -618,8 +633,12 @@ outerLoop:
 				// but then surfaced a provider-side error (5xx
 				// mid-stream, model 404 on dispatch, etc.). Mark
 				// stalled. Same ctx-guard as above — user cancel
-				// shouldn't pollute the matrix.
-				if opts.MarkStalled != nil && ctx.Err() == nil {
+				// shouldn't pollute the matrix. Same 429 exception
+				// as above — rate limits are transient and shouldn't
+				// poison the matrix for 15 min.
+				streamErr := errors.New(ev.Error)
+				if opts.MarkStalled != nil && ctx.Err() == nil &&
+					!providers.IsRateLimit(streamErr) {
 					opts.MarkStalled(opts.Provider.ID(), opts.Model, ev.Error)
 				}
 				// v0.8.2: classify the RAW provider error string
