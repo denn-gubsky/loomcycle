@@ -1,0 +1,43 @@
+# loomcycle cluster demo — minimal config.
+#
+# Trimmed-to-the-bone version of cmd/loomcycle/embedded/loomcycle.example.yaml.
+# Just enough to demonstrate cluster mode end-to-end: one agent, one
+# tier, no MCP servers, no skills, no channels. Once you've confirmed
+# the cluster boots and verify.sh passes, swap in your real
+# loomcycle.yaml.
+#
+# Storage is driven entirely from env vars set in docker-compose.cluster.yaml
+# (LOOMCYCLE_STORAGE_BACKEND=postgres + LOOMCYCLE_PG_DSN). Env wins over
+# yaml — no `storage:` block needed here.
+
+# Per-tier model resolution. The cluster demo agent uses `tier: middle`;
+# the resolver picks the first reachable candidate by provider_priority
+# below. With only one API key set in .env, only that provider's
+# candidate resolves.
+provider_priority:
+  - anthropic
+  - openai
+  - deepseek
+
+tiers:
+  middle:
+    - { provider: anthropic, model: claude-sonnet-4-6 }
+    - { provider: openai,    model: gpt-5.4 }
+    - { provider: deepseek,  model: deepseek-v4-pro }
+
+# Global concurrency cap, applied per-replica. With 2 replicas, the
+# cluster-wide total is 16 (operator math documented in
+# docs/MULTI-REPLICA.md). Per-user fairness IS cluster-wide via the
+# user_quotas table.
+concurrency:
+  max_concurrent_runs: 8
+  max_queue_depth: 16
+  queue_timeout_ms: 30000
+
+agents:
+  default:
+    tier: middle
+    max_tokens: 4096
+    system_prompt: |
+      You are a helpful assistant running on a loomcycle cluster.
+      Keep responses short — this is a smoke-test deployment.
