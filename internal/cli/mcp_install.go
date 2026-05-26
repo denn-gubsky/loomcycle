@@ -128,11 +128,16 @@ func detectTransport() string {
 // buildMCPServerConfig assembles the per-server JSON shape for a
 // transport. Returns the config plus any human-readable notes the
 // caller should print under it (env-var caveats, install hints).
+//
+// The cfg/notes values are built into local vars before the return
+// so gofmt's multi-value-return indentation rule doesn't mangle the
+// composite literals — see the rejected pre-format version on PR #230
+// for context.
 func buildMCPServerConfig(transport, configPath, dockerImg string) (mcpServerConfig, []string, error) {
 	switch transport {
 	case "docker":
 		mountDir := filepath.Dir(configPath)
-		return mcpServerConfig{
+		cfg := mcpServerConfig{
 			Command: "docker",
 			Args: []string{
 				"run", "--rm", "-i",
@@ -148,12 +153,14 @@ func buildMCPServerConfig(transport, configPath, dockerImg string) (mcpServerCon
 				dockerImg,
 				"mcp", "--config", "/etc/loomcycle/loomcycle.yaml",
 			},
-		}, []string{
+		}
+		notes := []string{
 			"Docker passes API keys from your parent shell via -e flags.",
 			"Make sure ANTHROPIC_API_KEY (or another provider key) is exported",
 			"in the shell that launches Claude Code/Desktop. Add more -e KEY",
 			"entries to args[] for any other env vars your loomcycle.yaml uses.",
-		}, nil
+		}
+		return cfg, notes, nil
 
 	case "brew", "binary":
 		binPath, err := exec.LookPath("loomcycle")
@@ -162,17 +169,19 @@ func buildMCPServerConfig(transport, configPath, dockerImg string) (mcpServerCon
 				"loomcycle binary not on PATH — install via Homebrew (`brew install denn-gubsky/loomcycle/loomcycle`) or download a release, then re-run; use --transport docker to skip this check",
 			)
 		}
-		return mcpServerConfig{
+		cfg := mcpServerConfig{
 			Command: binPath,
 			Args:    []string{"mcp", "--config", configPath},
-		}, []string{
+		}
+		notes := []string{
 			"Claude spawns MCP servers with a sparse environment. If your",
 			"loomcycle.yaml uses ${ANTHROPIC_API_KEY} or similar ${...}",
 			"placeholders, populate the \"env\" object below with concrete",
 			"values, OR wrap the command with a shell script that sources",
 			"your .env file before exec'ing the binary (see loomcycle-mcp.sh",
 			"in the repo for a reference wrapper).",
-		}, nil
+		}
+		return cfg, notes, nil
 
 	default:
 		return mcpServerConfig{}, nil, fmt.Errorf(
