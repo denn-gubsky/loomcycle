@@ -64,6 +64,7 @@ The driver also prints a summary table to stdout:
 | `--results-dir <path>` | auto-timestamped | Where to write artifacts |
 | `--circuit-timeout` | `5m` | Per-circuit deadline before marking failed |
 | `--no-cleanup` | `false` | Skip post-test sweep of channels + memory |
+| `--cleanup-only` | `false` | Skip the test entirely; just sweep leftover circuit-stress memory entries via the admin API and exit. Useful after reviewing rows from a previous `--no-cleanup` run. |
 
 ## Ramp protocol
 
@@ -94,6 +95,14 @@ psql "$PG_DSN" -c "SELECT run_id, score, emitter_role FROM evaluations LIMIT 5"
 ```
 
 The next `run.sh` invocation (without `--no-cleanup`) will sweep automatically before running, so leftovers from inspection don't pollute the next test.
+
+To sweep WITHOUT running a new test (e.g. after reviewing rows in psql):
+
+```sh
+./test/load/circuit-stress/run.sh --cleanup-only
+```
+
+Discovers all `user-NNN` scope_ids under `scope=user` and deletes their `c*-*` memory keys via the admin API. Idempotent; safe to run repeatedly. Loomcycle still boots briefly to serve the admin requests, then shuts down cleanly.
 
 ## How the agents stay coordinated
 
