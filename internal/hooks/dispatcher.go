@@ -20,7 +20,7 @@ import (
 // dispatch time. Lets operators graph widening volume without
 // scraping the audit-event stream. Surfaced via Stats().
 type Dispatcher struct {
-	registry *Registry
+	registry RegistryInterface
 	client   *webhookClient
 
 	hostWidenPermitted atomic.Int64
@@ -47,7 +47,7 @@ func (d *Dispatcher) Stats() DispatcherStats {
 // NewDispatcher returns a Dispatcher backed by the given registry.
 // httpClient may be nil (uses a default http.Client without a
 // per-client timeout — per-hook timeouts apply via ctx).
-func NewDispatcher(reg *Registry, httpClient *http.Client) *Dispatcher {
+func NewDispatcher(reg RegistryInterface, httpClient *http.Client) *Dispatcher {
 	return &Dispatcher{
 		registry: reg,
 		client:   newWebhookClient(httpClient),

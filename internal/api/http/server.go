@@ -91,8 +91,20 @@ type Server struct {
 	// tools. Both are non-nil after New() — no consumer needs to nil-
 	// check. An empty registry produces zero hook invocations on the
 	// hot path (Match returns nil, dispatchOneTool fast-paths).
-	hookRegistry   *hooks.Registry
+	//
+	// Type is now hooks.RegistryInterface (v0.12.5 Phase 6) so cluster
+	// mode can swap in *hooks.DBBackedRegistry. *hooks.Registry
+	// implicitly satisfies the interface; existing tests need no
+	// changes.
+	hookRegistry   hooks.RegistryInterface
 	hookDispatcher *hooks.Dispatcher
+
+	// sessionLockPG is the v0.12.5 Phase 6 cluster-mode session lock.
+	// When set, trySessionLock dispatches to it instead of sessionLocks
+	// — providing cluster-wide per-session_id 409 ErrSessionBusy.
+	// Single-replica deployments leave this nil and the in-process
+	// SessionLockMap above stays the source of truth.
+	sessionLockPG *runner.PgSessionLocker
 
 	// mcpFallback is the optional Dispatcher fallback for lazy MCP
 	// server registration. When set, an agent's call to a tool name
@@ -1349,7 +1361,32 @@ func (s *Server) trySessionLock(id string) (release func(), ok bool) {
 	if id == "" {
 		panic("trySessionLock: empty session id")
 	}
+	// v0.12.5 Phase 6: cluster-mode dispatch. When sessionLockPG is
+	// wired (cluster mode), use the Postgres advisory lock so
+	// concurrent continuations on the same session_id ACROSS REPLICAS
+	// get the same 409 ErrSessionBusy semantics. Single-replica mode:
+	// sessionLockPG is nil, the in-process SessionLockMap path runs.
+	if s.sessionLockPG != nil {
+		return s.sessionLockPG.TryLock(context.Background(), id)
+	}
 	return s.sessionLocks.TryLock(id)
+}
+
+// SetHookRegistry installs the v0.12.5 Phase 6 DB-backed hook
+// registry. Called from main.go inside the cluster-mode init block.
+// Replaces both the in-process hooks.Registry AND the Dispatcher's
+// reference to it so the loop sees the new registry on the next
+// tool dispatch.
+func (s *Server) SetHookRegistry(r hooks.RegistryInterface) {
+	s.hookRegistry = r
+	s.hookDispatcher = hooks.NewDispatcher(r, nil)
+}
+
+// SetPgSessionLocker installs the v0.12.5 Phase 6 cluster-wide
+// session lock. When non-nil, trySessionLock dispatches to it
+// instead of the in-process SessionLockMap.
+func (s *Server) SetPgSessionLocker(l *runner.PgSessionLocker) {
+	s.sessionLockPG = l
 }
 
 // lockedSessionCount returns the number of entries in sessionLocks.
