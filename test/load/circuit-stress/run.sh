@@ -69,11 +69,15 @@ fi
 export LOOMCYCLE_PG_DSN="postgres://postgres:$PG_PASSWORD@127.0.0.1:$PG_PORT/postgres?sslmode=disable"
 
 # ─── loomcycle binary ───────────────────────────────────────────────
+# Always rebuild — Go's incremental compile is sub-second when source
+# is unchanged, but skipping the rebuild on a stale `bin/loomcycle`
+# silently runs an old binary. The dual-provider load tests on
+# 2026-05-26 chased this trap four times: `make build-all` populates
+# Go's build cache but doesn't write `bin/loomcycle`, so an old
+# artifact from days prior keeps getting executed.
 LC_BIN="${LC_BIN:-$REPO_ROOT/bin/loomcycle}"
-if [ ! -x "$LC_BIN" ]; then
-    echo "→ building loomcycle binary…"
-    go build -o "$LC_BIN" ./cmd/loomcycle/
-fi
+echo "→ rebuilding loomcycle binary from current HEAD…"
+go build -o "$LC_BIN" ./cmd/loomcycle/
 
 # Env that the test yaml + OAuth-dev driver depend on.
 export LOOMCYCLE_ANTHROPIC_OAUTH_DEV_ENABLED=1
@@ -150,11 +154,11 @@ curl -fsS -H "Authorization: Bearer $LOOMCYCLE_AUTH_TOKEN" \
     >"$RESULTS_DIR/metrics-summary-pre.json" 2>/dev/null || true
 
 # ─── Run the driver ─────────────────────────────────────────────────
+# Always rebuild — same rationale as the loomcycle binary above.
+# Sub-second when source is unchanged; prevents the stale-binary trap.
 DRIVER_BIN="${DRIVER_BIN:-$SCRIPT_DIR/circuit-stress}"
-if [ ! -x "$DRIVER_BIN" ]; then
-    echo "→ building driver…"
-    (cd "$SCRIPT_DIR" && go build -o circuit-stress .)
-fi
+echo "→ rebuilding driver from current source…"
+(cd "$SCRIPT_DIR" && go build -o circuit-stress .)
 
 echo "→ running driver: $DRIVER_BIN $* --results-dir $RESULTS_DIR --base-url http://127.0.0.1:$LC_PORT"
 echo
