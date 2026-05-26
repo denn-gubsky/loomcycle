@@ -391,9 +391,26 @@ func (c *Channel) execSubscribe(ctx context.Context, policy tools.ChannelPolicyV
 		defer t.Stop()
 		select {
 		case <-waker:
-			// New publish landed — re-query (the row is committed
-			// because Notify is called AFTER ChannelPublish commits).
-			msgs, next, err = read()
+			// New publish landed. The publish's Bus.Notify is called
+			// AFTER ChannelPublish commits, so by Postgres MVCC the
+			// row IS visible to any new transaction. In theory one
+			// re-read suffices.
+			//
+			// In practice, the v0.12.x circuit-stress x50 load test
+			// surfaced a small residual rate (~2%) where the re-read
+			// immediately after waker fires returns empty despite a
+			// confirmed publish committed ~15-20ms earlier. The exact
+			// mechanism is unclear — most likely pgxpool / connection-
+			// level timing under high concurrency (50+ parallel
+			// queries against the same channel_messages partition).
+			//
+			// Defensive fix: bounded retry. If the re-read sees the
+			// row, return immediately (no extra cost). If empty,
+			// brief backoff and retry — up to 3 attempts adds at
+			// most 30ms in the worst case. The retry pattern also
+			// covers any future visibility window we haven't yet
+			// characterised at higher scale.
+			msgs, next, err = readWithRetry(read, in.Channel)
 			if err != nil {
 				return errResult(fmt.Sprintf("subscribe (after wait): %s", err)), nil
 			}
@@ -473,6 +490,56 @@ func (c *Channel) execSubscribe(ctx context.Context, policy tools.ChannelPolicyV
 		"messages":    out,
 		"next_cursor": next,
 	})
+}
+
+// readWithRetry is the bounded retry wrapper used by execSubscribe
+// after Bus.Wait returns via the waker (notify). The publish path
+// is commit-then-notify, so MVCC says the row IS visible to any
+// subsequent transaction; one read should suffice.
+//
+// Under heavy concurrency on Postgres (observed at x50 load test in
+// 2026-05-26's circuit-stress), an immediate re-read after a confirmed
+// publish has occasionally returned empty. The exact mechanism is
+// unclear (suspected: pgxpool connection-level state or a Postgres
+// snapshot edge case under contention). Until we can characterise it,
+// this retry covers it pragmatically: max 3 attempts, 10ms backoff,
+// so worst-case 30ms latency added when the retry fires.
+//
+// When the retry actually saves a circuit it logs a structured line
+// so we can quantify the issue at scale. When even the 3rd attempt
+// returns empty, we accept the empty result and let the caller decide
+// (current behaviour) — but we log a stronger warning so the operator
+// notices.
+func readWithRetry(read func() ([]store.ChannelMessage, string, error), channel string) ([]store.ChannelMessage, string, error) {
+	const maxAttempts = 3
+	const backoff = 10 * time.Millisecond
+
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		msgs, next, err := read()
+		if err != nil {
+			return nil, "", err
+		}
+		if len(msgs) > 0 {
+			if attempt > 1 {
+				// The retry saved this subscriber from a silent miss.
+				// Surface at scale so we can measure the residual rate.
+				log.Printf("channel %q: subscribe re-read empty on attempt %d, retry found %d msg(s) — likely commit-visibility window",
+					channel, attempt-1, len(msgs))
+			}
+			return msgs, next, nil
+		}
+		if attempt < maxAttempts {
+			time.Sleep(backoff)
+		}
+	}
+	// All retries exhausted. The publish-then-notify ordering says the
+	// row SHOULD have been visible by now. Either the notify was for
+	// a publish we shouldn't have seen (cursor-past it), or there's
+	// a more pathological timing window we haven't yet diagnosed.
+	// Return empty and let the caller decide.
+	log.Printf("channel %q: subscribe re-read returned empty across %d attempts after notify — silent miss; investigate",
+		channel, maxAttempts)
+	return nil, "", nil
 }
 
 func (c *Channel) execAck(ctx context.Context, policy tools.ChannelPolicyValue, in channelInput) (tools.Result, error) {
