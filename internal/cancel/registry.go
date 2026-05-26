@@ -101,18 +101,44 @@ type CancelResult struct {
 	Cascaded  []string
 }
 
+// ClusterCanceller is the v0.12.2 Phase 3 fallback for cross-replica
+// cancel. When set on a Registry, a Cancel that misses the local
+// in-process map delegates to CancelRemote — which broadcasts on the
+// backplane, awaits an ack from the owning replica, and returns the
+// CancelResult shape the local fast-path would have returned. Nil =
+// single-replica mode; local miss returns false directly (v0.11.x
+// behaviour, byte-identical).
+//
+// The interface lives here (not in internal/coord) so the cancel
+// package stays free of the coord dependency. internal/coord
+// implements this interface on a CancelCoordinator type that wraps
+// the backplane.
+type ClusterCanceller interface {
+	CancelRemote(ctx context.Context, agentID, reason string) (CancelResult, bool, error)
+}
+
 // Registry maps agent_id → live cancel handle. Safe for concurrent
 // use by the HTTP handler goroutines AND the run goroutines that
 // deregister on completion.
 type Registry struct {
-	mu      sync.RWMutex
-	entries map[string]Entry
+	mu               sync.RWMutex
+	entries          map[string]Entry
+	clusterCanceller ClusterCanceller // nil in single-replica mode
 }
 
 // NewRegistry returns an empty registry. The HTTP server constructs
 // one at boot and threads it through every handler that creates a run.
 func NewRegistry() *Registry {
 	return &Registry{entries: make(map[string]Entry)}
+}
+
+// SetClusterCanceller installs the v0.12.2 cross-replica fallback.
+// Called from main.go in cluster mode after the backplane is wired.
+// Safe to call once during boot; not designed for mid-flight swaps.
+func (r *Registry) SetClusterCanceller(c ClusterCanceller) {
+	r.mu.Lock()
+	r.clusterCanceller = c
+	r.mu.Unlock()
 }
 
 // Register adds an agent_id → entry mapping. Returns ErrInUse if the
@@ -160,6 +186,55 @@ func (r *Registry) Get(agentID string) (Entry, bool) {
 	return e, ok
 }
 
+// CancelLocal is identical to Cancel except it NEVER delegates to the
+// cluster canceller on local miss. v0.12.2 RunCancelSubscriber uses
+// this to dispatch incoming backplane events to the local registry —
+// using Cancel would re-broadcast on local miss (the registry's
+// ClusterCanceller is set), producing a O(replicas × timeout)
+// broadcast storm of cancel events that nobody can honor.
+//
+// Returns (CancelResult, true) on local hit (with cascade), or
+// (CancelResult{}, false) on local miss. The caller treats false as
+// "not on this replica" and silently skips — the owning replica's
+// subscriber will handle it.
+func (r *Registry) CancelLocal(agentID, reason string) (CancelResult, bool) {
+	cause := ErrCancelledByAPI
+	if reason != "" {
+		cause = &cancelWithReason{reason: reason}
+	}
+	r.mu.Lock()
+	root, ok := r.entries[agentID]
+	if !ok {
+		r.mu.Unlock()
+		return CancelResult{}, false
+	}
+	delete(r.entries, agentID)
+	r.mu.Unlock()
+	root.cancelFn(cause)
+
+	cascaded := []string{}
+	queue := []string{agentID}
+	for len(queue) > 0 {
+		parent := queue[0]
+		queue = queue[1:]
+		r.mu.Lock()
+		var children []Entry
+		for id, e := range r.entries {
+			if e.ParentAgentID == parent {
+				children = append(children, e)
+				delete(r.entries, id)
+			}
+		}
+		r.mu.Unlock()
+		for _, c := range children {
+			c.cancelFn(cause)
+			cascaded = append(cascaded, c.AgentID)
+			queue = append(queue, c.AgentID)
+		}
+	}
+	return CancelResult{Cancelled: true, Reason: reason, Cascaded: cascaded}, true
+}
+
 // Cancel invokes the cancelFn for agentID and recursively cancels
 // every direct child (an entry whose ParentAgentID equals one of the
 // already-cancelled ids). The reason is attached as the cancel-cause
@@ -188,8 +263,27 @@ func (r *Registry) Cancel(agentID, reason string) (CancelResult, bool) {
 	r.mu.Lock()
 	root, ok := r.entries[agentID]
 	if !ok {
+		// Local miss. v0.12.2: in cluster mode delegate to the
+		// CancelCoordinator which broadcasts on the backplane and
+		// awaits the owning replica's ack. In single-replica mode
+		// (clusterCanceller == nil), return (false) unchanged so the
+		// HTTP handler falls through to the store for idempotent
+		// terminal-status response (v0.11.x behaviour).
+		cc := r.clusterCanceller
 		r.mu.Unlock()
-		return CancelResult{}, false
+		if cc == nil {
+			return CancelResult{}, false
+		}
+		// Use Background context with the coordinator's own timeout
+		// inside CancelRemote — the HTTP request context may be
+		// shorter than the ack window if the client disconnects.
+		res, ok, err := cc.CancelRemote(context.Background(), agentID, reason)
+		if err != nil {
+			// Treat as miss so the handler falls through to the
+			// store's terminal-status lookup.
+			return CancelResult{}, false
+		}
+		return res, ok
 	}
 	delete(r.entries, agentID)
 	r.mu.Unlock()

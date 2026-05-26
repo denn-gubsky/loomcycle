@@ -217,6 +217,12 @@ type Run struct {
 	// distinguish runs that need to re-enter from runs that finished
 	// during pause (status terminal already).
 	PauseState string `json:"pause_state,omitempty"`
+
+	// ReplicaID is the replica that created this run and owns its
+	// live cancel handle (v0.12.2 Phase 3). NULL/empty on rows
+	// created before v0.12.2 or in single-replica mode. Cross-replica
+	// cancel routes via this column.
+	ReplicaID string `json:"replica_id,omitempty"`
 }
 
 // PauseState constants — the wire string values stored in runs.pause_state.
@@ -302,6 +308,12 @@ type RunIdentity struct {
 	// recorded by the loop, which may differ if cross-provider
 	// fallback fired mid-run.
 	Model string
+	// ReplicaID stamps this run with the replica that owns its live
+	// cancel handle (v0.12.2 Phase 3). Empty in single-replica mode
+	// (LOOMCYCLE_REPLICA_ID unset); the column stays NULL. In cluster
+	// mode it routes cross-replica cancel requests to the owning
+	// replica via backplane broadcast. Postgres-only; SQLite ignores.
+	ReplicaID string
 }
 
 // UserSummary is one row of ListUsers' output: distinct user_id with

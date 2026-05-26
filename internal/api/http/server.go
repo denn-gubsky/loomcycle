@@ -1156,7 +1156,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	}
 
 	// ---- Session+run creation ----
-	identity := store.RunIdentity{AgentID: agentID, UserID: effectiveUserID, UserTier: in.UserTier, Model: model}
+	identity := store.RunIdentity{AgentID: agentID, UserID: effectiveUserID, UserTier: in.UserTier, Model: model, ReplicaID: s.replicaID}
 	sessionID, runID, sessErr := s.openOrCreateSessionAndRun(ctx, in.SessionID, effectiveAgentName, effectiveTenantID, effectiveUserID, identity)
 	if sessErr != nil {
 		var nf *store.ErrNotFound
@@ -2031,7 +2031,7 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 	// emitted event through the store before forwarding to SSE. With
 	// s.store == nil the recording becomes a no-op so v0.2 callers see no
 	// behaviour change.
-	identity := store.RunIdentity{AgentID: agentID, UserID: req.UserID, UserTier: req.UserTier, Model: model}
+	identity := store.RunIdentity{AgentID: agentID, UserID: req.UserID, UserTier: req.UserTier, Model: model, ReplicaID: s.replicaID}
 	sessionID, runID, sessErr := s.openOrCreateSessionAndRun(r.Context(), req.SessionID, req.Agent, req.TenantID, req.UserID, identity)
 	if sessErr != nil {
 		var nf *store.ErrNotFound
@@ -2397,10 +2397,11 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	// is per-request (v0.8.2) — a user upgrading mid-session sees
 	// the new tier applied immediately on this continuation.
 	run, err := s.store.CreateRun(r.Context(), id, store.RunIdentity{
-		AgentID:  agentID,
-		UserID:   sess.UserID,
-		UserTier: body.UserTier,
-		Model:    model,
+		AgentID:   agentID,
+		UserID:    sess.UserID,
+		UserTier:  body.UserTier,
+		Model:     model,
+		ReplicaID: s.replicaID,
 	})
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -2928,6 +2929,7 @@ func (s *Server) runSubAgent(ctx context.Context, name string, prompt string, de
 	subIdentity := store.RunIdentity{
 		AgentID:       subAgentID,
 		ParentAgentID: parentIdentity.AgentID,
+		ReplicaID:     s.replicaID,
 		// ParentRunID is left empty here — we don't have the parent's
 		// run.ID handy without an extra registry lookup. Cascade
 		// works via parent_agent_id alone; ParentRunID is informational
@@ -3327,8 +3329,13 @@ func (s *Server) handleCancelAgent(w http.ResponseWriter, r *http.Request) {
 
 	res, ok := s.cancelReg.Cancel(agentID, body.Reason)
 	if ok {
+		// v0.12.2: Cancel may now return ok=true with res.Cancelled=false
+		// when the cluster canceller found the run but couldn't cancel
+		// it (owner_replica_unreachable, owner_dead_marked_failed,
+		// already-terminal). Surface res.Cancelled directly instead of
+		// hardcoding true.
 		writeJSON(w, http.StatusOK, cancelResponse{
-			Cancelled: true,
+			Cancelled: res.Cancelled,
 			AgentID:   agentID,
 			Cascaded:  res.Cascaded,
 			Reason:    res.Reason,

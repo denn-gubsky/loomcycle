@@ -262,8 +262,8 @@ func (s *Store) CreateRun(ctx context.Context, sessionID string, identity store.
 	if _, err := s.pool.Exec(ctx,
 		`INSERT INTO runs (
 			id, session_id, status, started_at,
-			agent_id, parent_agent_id, parent_run_id, user_id, user_tier, agent_def_id, model
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+			agent_id, parent_agent_id, parent_run_id, user_id, user_tier, agent_def_id, model, replica_id
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
 		id, sessionID, string(store.RunRunning), now,
 		nullableText(identity.AgentID),
 		nullableText(identity.ParentAgentID),
@@ -272,6 +272,7 @@ func (s *Store) CreateRun(ctx context.Context, sessionID string, identity store.
 		nullableText(identity.UserTier),
 		nullableText(identity.AgentDefID),
 		nullableText(identity.Model),
+		nullableText(identity.ReplicaID),
 	); err != nil {
 		return store.Run{}, fmt.Errorf("create run: %w", err)
 	}
@@ -287,6 +288,7 @@ func (s *Store) CreateRun(ctx context.Context, sessionID string, identity store.
 		UserTier:      identity.UserTier,
 		AgentDefID:    identity.AgentDefID,
 		Model:         identity.Model,
+		ReplicaID:     identity.ReplicaID,
 	}, nil
 }
 
@@ -483,7 +485,7 @@ func (s *Store) GetRunByAgentID(ctx context.Context, agentID string) (store.Run,
 		        r.input_tokens, r.output_tokens, r.cache_creation_tokens, r.cache_read_tokens,
 		        r.model, r.error,
 		        r.agent_id, r.parent_agent_id, r.parent_run_id, r.user_id, r.last_heartbeat_at, r.user_tier,
-		        r.agent_def_id, r.pause_state,
+		        r.agent_def_id, r.pause_state, r.replica_id,
 		        s.agent
 		 FROM runs r LEFT JOIN sessions s ON r.session_id = s.id
 		 WHERE r.agent_id = $1 ORDER BY r.started_at DESC LIMIT 1`, agentID,
@@ -508,7 +510,7 @@ func (s *Store) GetRun(ctx context.Context, runID string) (store.Run, error) {
 		        r.input_tokens, r.output_tokens, r.cache_creation_tokens, r.cache_read_tokens,
 		        r.model, r.error,
 		        r.agent_id, r.parent_agent_id, r.parent_run_id, r.user_id, r.last_heartbeat_at, r.user_tier,
-		        r.agent_def_id, r.pause_state,
+		        r.agent_def_id, r.pause_state, r.replica_id,
 		        s.agent
 		 FROM runs r LEFT JOIN sessions s ON r.session_id = s.id
 		 WHERE r.id = $1`, runID,
@@ -571,7 +573,7 @@ func (s *Store) ListActiveRunsByUser(ctx context.Context, userID string, status 
 			        r.input_tokens, r.output_tokens, r.cache_creation_tokens, r.cache_read_tokens,
 			        r.model, r.error,
 			        r.agent_id, r.parent_agent_id, r.parent_run_id, r.user_id, r.last_heartbeat_at, r.user_tier,
-			        r.agent_def_id, r.pause_state,
+			        r.agent_def_id, r.pause_state, r.replica_id,
 			        s.agent
 			 FROM runs r LEFT JOIN sessions s ON r.session_id = s.id
 			 WHERE r.user_id = $1
@@ -582,7 +584,7 @@ func (s *Store) ListActiveRunsByUser(ctx context.Context, userID string, status 
 			        r.input_tokens, r.output_tokens, r.cache_creation_tokens, r.cache_read_tokens,
 			        r.model, r.error,
 			        r.agent_id, r.parent_agent_id, r.parent_run_id, r.user_id, r.last_heartbeat_at, r.user_tier,
-			        r.agent_def_id, r.pause_state,
+			        r.agent_def_id, r.pause_state, r.replica_id,
 			        s.agent
 			 FROM runs r LEFT JOIN sessions s ON r.session_id = s.id
 			 WHERE r.user_id = $1 AND r.status = $2
@@ -607,7 +609,7 @@ func (s *Store) ListRunsByParentAgentID(ctx context.Context, parentAgentID strin
 		        r.input_tokens, r.output_tokens, r.cache_creation_tokens, r.cache_read_tokens,
 		        r.model, r.error,
 		        r.agent_id, r.parent_agent_id, r.parent_run_id, r.user_id, r.last_heartbeat_at, r.user_tier,
-		        r.agent_def_id, r.pause_state,
+		        r.agent_def_id, r.pause_state, r.replica_id,
 		        s.agent
 		 FROM runs r LEFT JOIN sessions s ON r.session_id = s.id
 		 WHERE r.parent_agent_id = $1
@@ -702,7 +704,7 @@ func (s *Store) ListPausedRuns(ctx context.Context) ([]store.Run, error) {
 		        r.input_tokens, r.output_tokens, r.cache_creation_tokens, r.cache_read_tokens,
 		        r.model, r.error,
 		        r.agent_id, r.parent_agent_id, r.parent_run_id, r.user_id, r.last_heartbeat_at, r.user_tier,
-		        r.agent_def_id, r.pause_state,
+		        r.agent_def_id, r.pause_state, r.replica_id,
 		        s.agent
 		 FROM runs r LEFT JOIN sessions s ON r.session_id = s.id
 		 WHERE r.pause_state = $1
@@ -3951,6 +3953,7 @@ func scanRun(r rowScanner) (store.Run, error) {
 		agentID, parentAgentID, parentRunID, userID, userTier *string
 		agentDefID                                            *string
 		pauseState                                            *string
+		replicaID                                             *string
 		lastHeartbeatAt                                       *time.Time
 		sessAgent                                             *string
 
@@ -3962,7 +3965,7 @@ func scanRun(r rowScanner) (store.Run, error) {
 		&model, &errMsg,
 		&agentID, &parentAgentID, &parentRunID, &userID, &lastHeartbeatAt,
 		&userTier,
-		&agentDefID, &pauseState,
+		&agentDefID, &pauseState, &replicaID,
 		&sessAgent,
 	); err != nil {
 		return store.Run{}, err
@@ -4004,6 +4007,9 @@ func scanRun(r rowScanner) (store.Run, error) {
 	}
 	if pauseState != nil {
 		out.PauseState = *pauseState
+	}
+	if replicaID != nil {
+		out.ReplicaID = *replicaID
 	}
 	if sessAgent != nil {
 		out.Agent = *sessAgent
