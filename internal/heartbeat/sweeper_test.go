@@ -36,14 +36,21 @@ func TestSweeperOnce_MarksStale(t *testing.T) {
 	stale, _ := st.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: "a_stale"})
 	_ = st.UpdateHeartbeat(ctx, stale.ID)
 
-	time.Sleep(20 * time.Millisecond)
+	// Sleep + StaleAfter gap was 20ms vs 10ms — flaked under -race
+	// where scheduling slowdown could push the time between fresh
+	// heartbeat write and the sweepOnce cutoff calculation past 10ms,
+	// causing the fresh row to also count as stale (test expects
+	// exactly 1 marked stale). Widened to 100ms sleep + 50ms cutoff
+	// for a 5× margin — still fast (~100ms total test runtime) but
+	// resilient to -race slowdown.
+	time.Sleep(100 * time.Millisecond)
 
 	fresh, _ := st.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: "a_fresh"})
 	_ = st.UpdateHeartbeat(ctx, fresh.ID)
 
 	sw := New(st, Config{
 		Interval:   1 * time.Hour, // unused — we drive sweepOnce directly
-		StaleAfter: 10 * time.Millisecond,
+		StaleAfter: 50 * time.Millisecond,
 		Logger:     func(format string, args ...any) {}, // silence
 	})
 	n, err := sw.sweepOnce(ctx)
@@ -128,15 +135,19 @@ func TestSweeperRun_LogsResults(t *testing.T) {
 	sess, _ := st.CreateSession(ctx, "t", "a", "u")
 	stale, _ := st.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: "a_stale_log"})
 	_ = st.UpdateHeartbeat(ctx, stale.ID)
-	time.Sleep(15 * time.Millisecond)
+	// Wider sleep/StaleAfter margin than the v0.4 original (15ms/5ms)
+	// for the same -race-slowdown reason as TestSweeperOnce_MarksStale
+	// above. The test still completes within the 2s waitForLogContaining
+	// budget — the polling loop tolerates extra latency.
+	time.Sleep(100 * time.Millisecond)
 
 	var (
 		mu   sync.Mutex
 		logs []string
 	)
 	sw := New(st, Config{
-		Interval:   10 * time.Millisecond,
-		StaleAfter: 5 * time.Millisecond,
+		Interval:   20 * time.Millisecond,
+		StaleAfter: 50 * time.Millisecond,
 		Logger: func(format string, args ...any) {
 			mu.Lock()
 			logs = append(logs, format)
