@@ -297,6 +297,13 @@ func main() {
 		case "hash":
 			os.Exit(cli.RunHash(os.Args[2:], os.Stdout, os.Stderr))
 		case "mcp":
+			// v0.12.x: `loomcycle mcp install` prints copy-paste config
+			// snippets for Claude Code / Claude Desktop. Must be checked
+			// BEFORE the mcpMode strip below — otherwise "install" leaks
+			// into the server's flag set and is mis-parsed as a positional.
+			if len(os.Args) >= 3 && os.Args[2] == "install" {
+				os.Exit(cli.RunMCPInstall(os.Args[3:], os.Stdout, os.Stderr))
+			}
 			mcpMode = true
 			// Strip "mcp" from os.Args so flag.Parse() below sees
 			// the remaining flags (--config etc.) at index 1+.
