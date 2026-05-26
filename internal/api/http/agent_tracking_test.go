@@ -15,6 +15,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/concurrency"
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
+	"github.com/denn-gubsky/loomcycle/internal/store"
 	storesqlite "github.com/denn-gubsky/loomcycle/internal/store/sqlite"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
@@ -772,4 +773,30 @@ func waitForRegistry(t *testing.T, srv *Server, agentID string, within time.Dura
 		time.Sleep(5 * time.Millisecond)
 	}
 	t.Fatalf("agent_id %q did not register within %s", agentID, within)
+}
+
+// TestRunToAgentResponse_ReplicaIDRoundTrip pins the wire contract for
+// the v0.12.x cluster-mode replica_id field: when the underlying run
+// row carries a ReplicaID it surfaces on the response (so the Web UI
+// can show which replica owns the run); when empty it's omitted from
+// JSON via `omitempty` (so single-replica deployments stay
+// uncluttered).
+func TestRunToAgentResponse_ReplicaIDRoundTrip(t *testing.T) {
+	t.Run("populated", func(t *testing.T) {
+		resp := runToAgentResponse(store.Run{ID: "r1", AgentID: "a1", ReplicaID: "replica-a"}, false)
+		if resp.ReplicaID != "replica-a" {
+			t.Errorf("ReplicaID = %q, want %q", resp.ReplicaID, "replica-a")
+		}
+		b, _ := json.Marshal(resp)
+		if !strings.Contains(string(b), `"replica_id":"replica-a"`) {
+			t.Errorf("JSON missing replica_id: %s", b)
+		}
+	})
+	t.Run("empty omitted from JSON", func(t *testing.T) {
+		resp := runToAgentResponse(store.Run{ID: "r2", AgentID: "a2"}, false)
+		b, _ := json.Marshal(resp)
+		if strings.Contains(string(b), "replica_id") {
+			t.Errorf("JSON should omit replica_id when empty: %s", b)
+		}
+	})
 }

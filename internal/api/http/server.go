@@ -3252,6 +3252,10 @@ type agentResponse struct {
 	//                  interruption kind (when state=interrupted)
 	AwaitedState string `json:"awaited_state,omitempty"`
 	AwaitedOn    string `json:"awaited_on,omitempty"`
+	// v0.12.x cluster-mode surface — which replica owns the run's live
+	// cancel handle. Empty (and omitted from JSON) in single-replica
+	// deployments so the UI stays uncluttered for the common case.
+	ReplicaID string `json:"replica_id,omitempty"`
 }
 
 type agentResponseUsage struct {
@@ -3287,7 +3291,8 @@ func runToAgentResponse(r store.Run, live bool) agentResponse {
 			CacheReadTokens:     r.CacheReadTokens,
 			Model:               r.Model,
 		},
-		Live: live,
+		Live:      live,
+		ReplicaID: r.ReplicaID,
 	}
 	if !r.CompletedAt.IsZero() {
 		t := r.CompletedAt
@@ -3329,6 +3334,10 @@ func (s *Server) handleGetAgent(w http.ResponseWriter, r *http.Request) {
 			Status:    store.RunRunning,
 			StartedAt: entry.StartedAt,
 			Live:      true,
+			// The registry only holds local entries, so a hit here is
+			// always owned by the responding replica. Empty in
+			// single-replica mode (omitted from JSON via omitempty).
+			ReplicaID: s.replicaID,
 		})
 		return
 	}

@@ -452,6 +452,15 @@ pre {
   color: var(--fg-soft);
   font-size: 12px;
 }
+.replica {
+  display: inline-block;
+  padding: 1px 7px;
+  border-radius: 999px;
+  font-size: 10px;
+  color: #222;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  letter-spacing: 0.02em;
+}
 .time {
   color: var(--fg-soft);
   font-size: 12px;
