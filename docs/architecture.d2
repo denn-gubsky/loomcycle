@@ -12,7 +12,7 @@ direction: down
 
 # ---- External callers (left) ----
 
-clients: "App servers · CLIs · TS / Python SDKs\nClaude Code & other MCP orchestrators (v0.8.15+)" {
+clients: "App servers · CLIs · TS / Python SDKs\nClaude Code & other MCP orchestrators (v0.8.15+)\nLangChain / LlamaIndex / n8n via OpenAI-compat shim (v0.11.3+)" {
   shape: rectangle
   style: {
     fill: "#eef2f7"
@@ -23,7 +23,7 @@ clients: "App servers · CLIs · TS / Python SDKs\nClaude Code & other MCP orche
 
 # ---- The loomcycle binary (center) ----
 
-loomcycle: "loomcycle — single Go binary (~30 MB)" {
+loomcycle: "loomcycle — single Go binary (~30 MB)\n1..N replicas (see cluster diagram, v0.12.x)" {
   style: {
     fill: "#fbfcfe"
     stroke: "#3b5998"
@@ -36,18 +36,21 @@ loomcycle: "loomcycle — single Go binary (~30 MB)" {
   direction: down
 
   surfaces: "Wire surfaces" {
-    grid-columns: 4
+    grid-columns: 5
     style.fill: "#f1f5f9"
 
     http_sse: "HTTP + SSE\n/v1/* endpoints" {style.fill: "#dbeafe"}
     grpc: "gRPC\n(metadata + streaming RPCs)" {style.fill: "#dbeafe"}
     webui: "React Web UI (/ui)" {style.fill: "#dbeafe"}
-    mcp_stdio: "MCP server (stdio + HTTP)\nv0.8.15+ · 26 tools" {
+    mcp_stdio: "MCP server (stdio + HTTP)\nv0.8.15+ · 33 meta-tools" {
+      style: {fill: "#c7d2fe"; bold: true}
+    }
+    gateway: "LLM Gateway (v0.11.0+)\n/v1/_llm/chat\n/v1/chat/completions (OpenAI-compat)\n/v1/embeddings" {
       style: {fill: "#c7d2fe"; bold: true}
     }
   }
 
-  middleware: "Auth (bearer, constant-time) · Concurrency semaphore · Cancel registry" {
+  middleware: "Auth (bearer, constant-time) · Concurrency semaphore · Cancel registry · Per-user fairness (v0.10.1)" {
     style: {
       fill: "#f8fafc"
       italic: true
@@ -55,7 +58,7 @@ loomcycle: "loomcycle — single Go binary (~30 MB)" {
     }
   }
 
-  connector: "connector.Connector — 26-method Go interface (v0.8.15+)\nHTTP server IMPLEMENTS · MCP / gRPC / future CLI CONSUME\nTS / Python adapters MIRROR (over HTTP wire)" {
+  connector: "connector.Connector — 36-method Go interface (v0.8.15+ → v0.12.x)\nHTTP server IMPLEMENTS · MCP / gRPC / future CLI CONSUME\nTS / Python adapters MIRROR (over HTTP wire)" {
     style: {
       fill: "#fce7f3"
       stroke: "#be185d"
@@ -85,12 +88,12 @@ loomcycle: "loomcycle — single Go binary (~30 MB)" {
     mcp_layer: "MCP client transport\nstdio pool +\nStreamable HTTP\n(consumes external MCP servers)" {
       style: {fill: "#fde68a"; font-size: 12}
     }
-    subagents: "Sub-agent runner\n(Agent tool)\nctx-inherited policy" {
+    subagents: "Sub-agent runner\n(Agent tool · parallel_spawn v0.11.8)\nctx-inherited policy" {
       style: {fill: "#fde68a"; font-size: 12}
     }
   }
 
-  store: "Store — SQLite (default) · Postgres (HA, + pgvector)\nsessions · runs · events · memory · channels\nagent_defs · skill_defs · evaluations · interrupts\nsnapshots · process_samples · dynamic_agents\nmemory_embeddings (v0.9.0)" {
+  store: "Store — SQLite (default) · Postgres (HA, + pgvector)\nsessions · runs(.replica_id v0.12.x) · events · memory · channels\nagent_defs · skill_defs · mcp_server_defs · *_active\nevaluations · interrupts · snapshots · process_samples\ndynamic_agents · memory_embeddings\nreplicas · user_quotas · runtime_state · hooks (v0.12.x)" {
     shape: cylinder
     style: {
       fill: "#fed7aa"
@@ -111,6 +114,19 @@ loomcycle: "loomcycle — single Go binary (~30 MB)" {
   }
 }
 
+# ---- Observability (v0.10.0, default OFF) ----
+
+otel: "OpenTelemetry (v0.10.0)\nspans: loomcycle.run · iteration ·\nprovider.call · tool.call · mcp.call\nOTLP/HTTP · default OFF" {
+  shape: rectangle
+  style: {
+    fill: "#fef3c7"
+    stroke: "#a16207"
+    border-radius: 8
+    font-size: 12
+    italic: true
+  }
+}
+
 # ---- External services (right) ----
 
 externals: "External" {
@@ -121,7 +137,7 @@ externals: "External" {
   }
   direction: down
 
-  providers: "LLM providers (6, pure HTTP — no SDKs)" {
+  providers: "LLM providers (pure HTTP — no SDKs)" {
     grid-columns: 2
     style.fill: "#fef9c3"
 
@@ -131,6 +147,18 @@ externals: "External" {
     gemini: "Gemini" {style.fill: "#fde68a"}
     ollama_cloud: "Ollama (cloud)" {style.fill: "#fde68a"}
     ollama_local: "Ollama (local)" {style.fill: "#fde68a"}
+    anthropic_oauth_dev: "Anthropic OAuth\n(dev only · v0.11.10)" {
+      style: {fill: "#fef9c3"; italic: true; stroke-dash: 4}
+    }
+  }
+
+  embedders: "Embedders (v0.9.0+)" {
+    grid-columns: 3
+    style.fill: "#fef9c3"
+
+    openai_e: "OpenAI" {style.fill: "#fde68a"}
+    gemini_e: "Gemini" {style.fill: "#fde68a"}
+    voyage_e: "Voyage AI\n(via anthropic id, v0.10.2)" {style.fill: "#fde68a"}
   }
 
   mcp_servers: "External MCP servers\n(consumer-side typed tools)" {
@@ -144,13 +172,22 @@ externals: "External" {
 
 # ---- Cross-layer edges ----
 
-clients -> loomcycle.surfaces: "HTTP · gRPC" {style.stroke: "#475569"}
+clients -> loomcycle.surfaces: "HTTP · gRPC · MCP" {style.stroke: "#475569"}
 loomcycle.loop -> externals.providers: "stream + tool_use" {
   style: {
     stroke: "#d97706"
     bold: true
   }
 }
+loomcycle.dispatcher.builtins -> externals.embedders: "Memory.search · vector" {
+  style.stroke: "#d97706"
+}
 loomcycle.dispatcher.mcp_layer -> externals.mcp_servers: "JSON-RPC" {
   style.stroke: "#7c3aed"
+}
+loomcycle.loop -> otel: "spans (default OFF)" {
+  style: {
+    stroke: "#a16207"
+    stroke-dash: 4
+  }
 }
