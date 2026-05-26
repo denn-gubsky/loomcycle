@@ -37,15 +37,22 @@ user_tiers:
         - { provider: ollama,              model: deepseek-v4-flash }
     fallback_on_error: true
 
-# Concurrency — defaults of 8/16 would queue heavily at x100+.
-# 200/500 gives headroom for 3 concurrent runs per circuit × ~70
-# in-flight circuits. Per-user cap stays 0 (off) since circuits are
-# grouped by user_id with 10-20 each; an artificial cap here would
-# block legitimate parallelism.
+# Concurrency — capped at 120 active to stay below Ollama Cloud's
+# per-deployment concurrent-request limit. The x1000 run on
+# 2026-05-26 saw `ollama 429: too many concurrent requests` once
+# in-flight reached ~120 — Ollama's flat-rate plan has tighter
+# concurrency than Anthropic MAX. 120 is the empirical safe floor
+# for BOTH providers; if you swap to a higher-concurrency Ollama
+# deployment (or a different fallback provider), bump this up.
+#
+# Queue depth bumped to 1500 (12× active) so x1000 can fully queue
+# without the 501th circuit refusing at the admission boundary.
+# Timeout bumped to 5 min — at 120 active and ~25s per circuit,
+# the 1000th circuit waits ~3.5 min in queue.
 concurrency:
-  max_concurrent_runs: 200
-  max_queue_depth: 500
-  queue_timeout_ms: 60000
+  max_concurrent_runs: 120
+  max_queue_depth: 1500
+  queue_timeout_ms: 300000
   max_concurrent_runs_per_user: 0
 
 # Storage — Postgres only. SQLite would serialise writes at this
