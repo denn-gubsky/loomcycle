@@ -140,17 +140,20 @@ func (b *Bus) SubscribeBackplane(ctx context.Context, bp coord.Backplane) error 
 // sends on the waker is Notify. Callers should still re-query the
 // store after Wait returns true, because Notify only signals
 // presence-of-new-data, not which specific rows are new.
+//
+// **Race warning**: Wait registers its waker AFTER you call it. If
+// you have a "check store → if empty, wait" pattern, there's a race
+// window between the check returning empty and Wait registering the
+// waker. A concurrent publish in that window fires Notify against an
+// empty waiter slice — the notification is lost and the caller waits
+// the full timeout. Use Register + Unregister instead for the
+// race-free check-then-wait pattern (see Register's doc).
 func (b *Bus) Wait(ctx context.Context, channel string, timeout time.Duration) bool {
 	if timeout <= 0 {
 		return false
 	}
-	waker := make(chan struct{}, 1)
-
-	b.mu.Lock()
-	b.waiters[channel] = append(b.waiters[channel], waker)
-	b.mu.Unlock()
-
-	defer b.removeWaiter(channel, waker)
+	waker := b.Register(channel)
+	defer b.Unregister(channel, waker)
 
 	t := time.NewTimer(timeout)
 	defer t.Stop()
@@ -163,6 +166,55 @@ func (b *Bus) Wait(ctx context.Context, channel string, timeout time.Duration) b
 	case <-ctx.Done():
 		return false
 	}
+}
+
+// Register adds a waker for `channel` and returns it. The caller MUST
+// call Unregister(channel, waker) when done — typically via defer —
+// to prevent waker-slice leaks.
+//
+// Use this instead of Wait when you need to register the waker
+// BEFORE doing an initial state check. The pattern closes the
+// check-then-wait race that bare Wait has:
+//
+//	waker := bus.Register(channel)
+//	defer bus.Unregister(channel, waker)
+//	rows, _ := store.Read(...)
+//	if len(rows) > 0 {
+//	    return rows                    // synchronous fast path
+//	}
+//	select {
+//	case <-waker:
+//	    return store.Read(...)         // notify fired during wait
+//	case <-time.After(timeout):
+//	    return nil                     // timeout
+//	case <-ctx.Done():
+//	    return nil                     // cancelled
+//	}
+//
+// Why this is race-free: by the time `store.Read` runs, the waker
+// is already in the waiters slice. ANY publish that commits-and-
+// notifies from this point on will either:
+//
+//  1. Race the read and win — Read returns the row (no wait needed)
+//  2. Race the read and lose — Notify fires the waker, which is
+//     already queued; the select wakes, Read returns the row
+//
+// The lost-notification case ("publish notified before subscriber
+// registered") is structurally eliminated.
+func (b *Bus) Register(channel string) chan struct{} {
+	waker := make(chan struct{}, 1)
+	b.mu.Lock()
+	b.waiters[channel] = append(b.waiters[channel], waker)
+	b.mu.Unlock()
+	return waker
+}
+
+// Unregister removes the waker from the channel's waiter slice.
+// Idempotent — safe to defer even if the waker already fired
+// (Notify drained the slice; this finds nothing to remove and
+// returns silently).
+func (b *Bus) Unregister(channel string, waker chan struct{}) {
+	b.removeWaiter(channel, waker)
 }
 
 // removeWaiter is the defer cleanup. Removes the waker from the

@@ -134,3 +134,144 @@ func TestBus_RaceDetectorCleanUnderConcurrentNotifyWait(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+// TestBus_RegisterBuffersNotifyBeforeSelect is the key correctness
+// invariant for the v0.12.x check-then-wait race fix. After calling
+// Register, ANY subsequent Notify fires the waker — even one that
+// arrives before the caller has started `select`-ing on it. The
+// waker's channel buffer (cap 1) captures the signal.
+//
+// This property is what makes the "register-before-read" pattern
+// race-free in Channel.execSubscribe: by the time the SQL read
+// runs, the waker is already registered, so a Notify that fires
+// concurrent with the read is queued in the buffer and the
+// post-read `select` consumes it immediately.
+//
+// Without this property, a Notify between Register and select
+// would be lost — defeating the purpose of pre-registration.
+func TestBus_RegisterBuffersNotifyBeforeSelect(t *testing.T) {
+	t.Parallel()
+	b := NewBus()
+
+	waker := b.Register("ch")
+	defer b.Unregister("ch", waker)
+
+	// Fire Notify BEFORE we start selecting. The waker's buffer
+	// (cap 1) must capture it so the next read finds the signal.
+	b.Notify("ch")
+
+	select {
+	case <-waker:
+		// ok — pre-fired notify was captured by the buffered waker
+	default:
+		t.Fatal("waker did not capture Notify that fired before select; the check-then-wait race fix relies on this")
+	}
+}
+
+// TestBus_RegisterRaceFreePattern simulates the exact
+// Channel.execSubscribe pattern under concurrent publish.
+// Demonstrates that the race-free pattern captures every notify,
+// regardless of whether the publish lands during the "read" or
+// during the wait. The 1000-iteration loop with tight timing
+// surfaces any regression in the buffered-waker semantics.
+func TestBus_RegisterRaceFreePattern(t *testing.T) {
+	t.Parallel()
+	b := NewBus()
+
+	const iterations = 1000
+	var (
+		received atomic.Int32
+		missed   atomic.Int32
+	)
+	for i := 0; i < iterations; i++ {
+		// Each iteration: fresh "publish state" via per-iter counter.
+		var published atomic.Bool
+		check := func() bool { return published.Load() }
+
+		var wg sync.WaitGroup
+		wg.Add(2)
+
+		// Race-free subscriber: Register → check → select-on-waker.
+		go func() {
+			defer wg.Done()
+			waker := b.Register("ch")
+			defer b.Unregister("ch", waker)
+
+			if check() {
+				received.Add(1)
+				return
+			}
+			select {
+			case <-waker:
+				if check() {
+					received.Add(1)
+					return
+				}
+				// Notify fired but check still empty: this can only
+				// happen if the iteration's Notify was for a different
+				// "publish" event, which can't happen in this test
+				// because publisher only fires once per iteration.
+				missed.Add(1)
+			case <-time.After(200 * time.Millisecond):
+				// Timeout: would mean Notify was lost — the bug.
+				missed.Add(1)
+			}
+		}()
+
+		// Publisher.
+		go func() {
+			defer wg.Done()
+			// Tiny random delay so we land in different windows
+			// relative to subscriber across iterations: some
+			// publishes happen before Register, some after, some
+			// concurrent with check.
+			time.Sleep(time.Duration(i%23) * time.Microsecond)
+			published.Store(true)
+			b.Notify("ch")
+		}()
+
+		wg.Wait()
+	}
+
+	// Hard assertion: zero misses across 1000 iterations.
+	if missed.Load() > 0 {
+		t.Errorf("race-free pattern: %d/%d notifies lost (want 0); received=%d",
+			missed.Load(), iterations, received.Load())
+	}
+}
+
+// TestBus_UnregisterIdempotent — Unregister must be safe to call
+// even after Notify already drained the waker. Defer pattern relies
+// on this.
+func TestBus_UnregisterIdempotent(t *testing.T) {
+	t.Parallel()
+	b := NewBus()
+	waker := b.Register("ch")
+	b.Notify("ch") // drains the waker slice
+	<-waker        // confirm waker fired
+	// Now Unregister: must be a no-op (waker already gone).
+	b.Unregister("ch", waker)
+	// And calling Unregister twice is safe.
+	b.Unregister("ch", waker)
+}
+
+// TestBus_RegisterFiresOnNotify — minimal happy path: Register then
+// receive on the returned channel after Notify.
+func TestBus_RegisterFiresOnNotify(t *testing.T) {
+	t.Parallel()
+	b := NewBus()
+	waker := b.Register("ch")
+	defer b.Unregister("ch", waker)
+
+	go func() {
+		time.Sleep(10 * time.Millisecond)
+		b.Notify("ch")
+	}()
+
+	select {
+	case <-waker:
+		// ok
+	case <-time.After(time.Second):
+		t.Fatal("waker never fired after Notify")
+	}
+}
