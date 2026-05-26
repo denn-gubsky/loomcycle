@@ -568,3 +568,109 @@ func TestChannelTool_AgentRefusedOnSystemPrefix(t *testing.T) {
 		t.Errorf("error should mention _system/ prefix; got %q", res.Text)
 	}
 }
+
+// TestReadWithRetry covers the residual-race defensive retry that
+// runs after Bus.Wait fires the waker. Three scenarios:
+//
+//  1. read succeeds on the first attempt — no retry cost.
+//  2. read returns empty initially, then non-empty on attempt 2 —
+//     retry saves the subscriber from a silent miss.
+//  3. read returns empty on all 3 attempts — the function returns
+//     empty (current behaviour); the caller decides.
+//
+// This is the safety net for the unexplained ~2% subscribe miss
+// observed in x50 load testing: a publish committed, Bus.Notify
+// fired, the waker woke, but an immediate re-read returned empty.
+// The retry covers any commit/visibility window without making
+// strong claims about the root mechanism.
+func TestReadWithRetry(t *testing.T) {
+	makeMsg := func(id string) store.ChannelMessage {
+		return store.ChannelMessage{ID: id}
+	}
+
+	t.Run("succeeds_on_first_attempt", func(t *testing.T) {
+		calls := 0
+		read := func() ([]store.ChannelMessage, string, error) {
+			calls++
+			return []store.ChannelMessage{makeMsg("m1")}, "cur_x", nil
+		}
+		msgs, next, err := readWithRetry(read, "test")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(msgs) != 1 || msgs[0].ID != "m1" {
+			t.Errorf("msgs = %v, want [{m1}]", msgs)
+		}
+		if next != "cur_x" {
+			t.Errorf("next = %q, want cur_x", next)
+		}
+		if calls != 1 {
+			t.Errorf("calls = %d, want 1 (no retries needed)", calls)
+		}
+	})
+
+	t.Run("retry_finds_message_on_second_attempt", func(t *testing.T) {
+		calls := 0
+		read := func() ([]store.ChannelMessage, string, error) {
+			calls++
+			if calls == 1 {
+				return nil, "", nil // initial empty (the race)
+			}
+			return []store.ChannelMessage{makeMsg("m2")}, "cur_y", nil
+		}
+		msgs, _, err := readWithRetry(read, "test")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(msgs) != 1 || msgs[0].ID != "m2" {
+			t.Errorf("retry should have returned the message; got %v", msgs)
+		}
+		if calls != 2 {
+			t.Errorf("calls = %d, want 2", calls)
+		}
+	})
+
+	t.Run("all_three_attempts_empty_returns_empty", func(t *testing.T) {
+		calls := 0
+		read := func() ([]store.ChannelMessage, string, error) {
+			calls++
+			return nil, "", nil // always empty
+		}
+		msgs, next, err := readWithRetry(read, "test")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(msgs) != 0 {
+			t.Errorf("msgs should be empty, got %v", msgs)
+		}
+		if next != "" {
+			t.Errorf("next should be empty, got %q", next)
+		}
+		if calls != 3 {
+			t.Errorf("calls = %d, want 3 (full retry budget exhausted)", calls)
+		}
+	})
+
+	t.Run("error_propagates_without_retry", func(t *testing.T) {
+		calls := 0
+		read := func() ([]store.ChannelMessage, string, error) {
+			calls++
+			return nil, "", errSentinel
+		}
+		_, _, err := readWithRetry(read, "test")
+		if err != errSentinel {
+			t.Errorf("err = %v, want %v", err, errSentinel)
+		}
+		if calls != 1 {
+			t.Errorf("calls = %d, want 1 (errors don't retry)", calls)
+		}
+	})
+}
+
+// errSentinel — fixed sentinel error for the propagate-without-retry
+// subtest above. Identity comparison only.
+var errSentinel = sentinelErr{}
+
+type sentinelErr struct{}
+
+func (sentinelErr) Error() string { return "sentinel" }
