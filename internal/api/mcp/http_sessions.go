@@ -160,8 +160,7 @@ func newSessionID() string {
 }
 
 // RunHTTPSessionSweeper starts a periodic goroutine that calls
-// store.Sweep() at the given interval. Matches the pattern used by
-// RunDynamicAgentSweeper in this package. Returns immediately; the
+// store.Sweep() at the given interval. Returns immediately; the
 // goroutine exits when ctx is done.
 //
 // interval=0 disables the sweeper — expired sessions linger in the
