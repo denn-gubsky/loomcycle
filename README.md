@@ -90,6 +90,8 @@ make build-all       # UI + binary in one shot; output → ./bin/loomcycle
 ./bin/loomcycle --config loomcycle.example.yaml
 ```
 
+**Multi-replica cluster demo (v0.12.x):** for a one-command `docker compose up` cluster (2 loomcycle replicas + Postgres + nginx LB) with a verify script, see [`examples/cluster/README.md`](examples/cluster/README.md). Full operator runbook in [`docs/MULTI-REPLICA.md`](docs/MULTI-REPLICA.md).
+
 ## Current and planned
 
 **Shipped through v0.11.x:**

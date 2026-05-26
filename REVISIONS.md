@@ -8,6 +8,45 @@ For pre-v0.4 history (single-tool runtime, library milestone, security patch), s
 
 ---
 
+## What's in v0.12.7
+
+**Multi-replica cluster demo + verify script.** Docs/example artifact that closes the loop on the v0.12.x HA round: `docs/MULTI-REPLICA.md` (Phase 7) explained the deployment shape in prose; v0.12.7 makes it executable with `docker compose up`. No Go code changed.
+
+### What ships
+
+1. **`docker-compose.cluster.yaml`** at repo root — 2 loomcycle replicas + 1 Postgres + 1 nginx LB. Uses YAML anchors so the second replica is a delta on the first. Pinned to `denngubsky/loomcycle:0.12.0` (the current latest cluster-mode-capable image on Docker Hub) with a `LOOMCYCLE_IMAGE` env override for operators who want to track a specific tag.
+2. **`examples/cluster/`** directory with the supporting assets:
+   - **`README.md`** — 1-page quickstart with a "what's running" diagram, 4-step bring-up, common operations (scale to 3 replicas, tear down), and a troubleshooting table.
+   - **`loomcycle.yaml`** — minimal cluster config (one tier, one `default` agent). Storage is env-driven; no `storage:` block needed.
+   - **`nginx.conf`** — SSE-friendly reverse proxy (`proxy_buffering off`, 1h read timeout) round-robining between the two replicas.
+   - **`.env.example`** — env template; the real `.env` is gitignored.
+   - **`verify.sh`** — bash + curl + jq script. Exercises four cluster-mode invariants: cluster membership (both `/healthz` see both replicas), LB round-robin (replica_id flips across requests), cross-replica run visibility, cross-replica cancel (Phase 3 backplane). Last two gracefully skip when no provider API key is configured. Includes a preflight that waits up to 30s for both replicas to converge before running the checks (each replica's first heartbeat lands a beat after boot).
+3. **High ports (18080 / 18787 / 18788)** so the demo doesn't clash with a local `loomcycle` dev binary on :8787 or any other common service.
+4. **`docs/CLUSTER-QUICKSTART.md`** — tiny pointer at the example, discoverable alongside `MULTI-REPLICA.md`.
+5. **`README.md` link** added to the "Quick start" section so operators see the cluster demo right after the single-binary install path.
+
+### What this does NOT do
+
+- Does not build a new Docker image — uses the existing published `denngubsky/loomcycle` (multi-arch live since v0.11.2).
+- Does not bundle Ollama or any LLM backend — operator brings their own API key (Anthropic / OpenAI / DeepSeek) for the full cross-replica cancel check.
+- Does not include observability (Jaeger / Prometheus / Grafana) — operator wires OTEL per `docs/MULTI-REPLICA.md` if wanted.
+- Does not auto-trigger the release workflow for v0.12.7 — pure docs/examples PR; the `denngubsky/loomcycle:0.12.7` image will publish only when the release pipeline runs against this tag.
+
+### Smoke test (run end-to-end before merge)
+
+```bash
+cp examples/cluster/.env.example examples/cluster/.env
+# Edit .env: set LOOMCYCLE_AUTH_TOKEN to anything
+docker compose -f docker-compose.cluster.yaml --env-file examples/cluster/.env up -d
+./examples/cluster/verify.sh
+# Expects: preflight + checks 1, 2 pass; checks 3, 4 skipped without API key.
+docker compose -f docker-compose.cluster.yaml --env-file examples/cluster/.env down -v
+```
+
+Smoke-passed against `denngubsky/loomcycle:0.12.0` on 2026-05-26 — all non-API-key checks green.
+
+---
+
 ## What's in v1.0 (v0.12.6 capstone)
 
 **Phase 7 of the v1.0 multi-replica HA capstone — hardening + docs.** This is the release that ties the v0.12.x sweep into a coherent v1.0 deliverable.
