@@ -1,10 +1,16 @@
 <p align="center">
-  <img src="docs/assets/logo.png" alt="loomcycle" width="640" />
+  <a href="https://loomcycle.dev"><img src="docs/assets/logo.png" alt="loomcycle" width="640" /></a>
 </p>
 
 <p align="center">
   <strong>The Agentic OS, in a sidecar.</strong><br/>
   <em>One Go binary alongside your application — hardened agent loop, MCP on both sides, multi-replica HA. Apache-2.0.</em>
+</p>
+
+<p align="center">
+  🌐 <a href="https://loomcycle.dev"><strong>loomcycle.dev</strong></a> &nbsp;·&nbsp;
+  📝 <a href="https://loomcycle.dev/blog/">Engineering blog</a> &nbsp;·&nbsp;
+  📐 <a href="https://github.com/denn-gubsky/loomcycle/blob/main/docs/ARCHITECTURE.md">Architecture</a>
 </p>
 
 <p align="center">
