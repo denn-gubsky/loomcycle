@@ -692,11 +692,15 @@ func testSweepStaleRuns(t *testing.T, s store.Store) {
 	_, _ = s.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: "a_no_hb"})
 
 	// Sleep enough that "now" is after both rows' (last_heartbeat_at
-	// or started_at). 60ms gives enough headroom to survive
-	// heavily-loaded CI runners doing dozens of parallel Postgres
-	// tests against a containerised fixture; tighter values
-	// (we ran 30ms briefly) flaked under load.
-	time.Sleep(60 * time.Millisecond)
+	// or started_at). We previously ran with 60ms sleep + 30ms cutoff
+	// (= 30ms margin), but PR #232's CI race-detector run flaked: the
+	// fresh row's heartbeat write landed before the cutoff because
+	// `-race`'s 2-5× scheduling slowdown collapsed the 30ms margin.
+	// Bumped to 200ms sleep + 100ms cutoff offset = 100ms margin in
+	// either direction. Test runtime up by 140ms but no longer
+	// timing-sensitive to scheduler load. Same shape as the
+	// heartbeat-sweeper fix in PR #224.
+	time.Sleep(200 * time.Millisecond)
 
 	// 3) A fresh run that heartbeated AFTER the cutoff — must NOT be
 	//    swept.
@@ -708,10 +712,11 @@ func testSweepStaleRuns(t *testing.T, s store.Store) {
 	_ = s.FinishRun(ctx, terminalRun.ID, store.RunCompleted, "end_turn", store.Usage{}, "")
 
 	// Cutoff: between the stale row's last activity and the fresh
-	// row's. 30ms-back keeps the stale + noHB rows past the cutoff
-	// while the fresh row stays after it. Doubling from the previous
-	// 15ms gives ~30ms of margin in either direction.
-	cutoff := time.Now().Add(-30 * time.Millisecond)
+	// row's. 100ms-back keeps the stale + noHB rows clearly past the
+	// cutoff (200ms ago) while the fresh row (just heartbeated)
+	// stays clearly after it. 100ms margin survives -race scheduling
+	// slowdown.
+	cutoff := time.Now().Add(-100 * time.Millisecond)
 
 	swept, err := s.SweepStaleRuns(ctx, cutoff)
 	if err != nil {
