@@ -32,18 +32,23 @@ user_tiers:
         - { provider: anthropic-oauth-dev, model: claude-haiku-4-5-20251001 }
     fallback_on_error: false
 
-# Concurrency — 100 active. The previous 120 cap was tuned for the
-# Ollama-deployed fallback ceiling; with single-provider Anthropic
-# we have more headroom but stay conservative at 100 so the
-# OAuth-dev rate limit (~120 concurrent Haiku calls per the x1000
-# investigation) has buffer.
+# Concurrency — 20 active. Empirical: a day of heavy load testing
+# on 2026-05-26 burned through Anthropic OAuth-dev MAX's per-minute
+# request budget; at 100 concurrent the account stays in a backoff
+# window and every request 429s. 20 leaves clear headroom under
+# the per-minute rate limit on a tired account.
 #
-# Queue depth 1500 (15× active) so x1000 can fully queue without
+# This is intentionally conservative for sustainable iteration —
+# tests can run back-to-back without exhausting the rate limiter.
+# If a fresh account has more headroom, bump this back up to 100.
+#
+# Queue depth 1500 (75× active) so x1000 can fully queue without
 # the 1500th circuit refusing at the admission boundary.
-# Timeout 5 min — at 100 active and ~25s per circuit, the 1000th
-# circuit waits ~4 min in queue.
+# Timeout 5 min — at 20 active and ~25s per circuit, the 1000th
+# circuit waits ~20 min in queue; bump queue_timeout_ms to 1800000
+# (30 min) for full-x1000 runs at this concurrency.
 concurrency:
-  max_concurrent_runs: 100
+  max_concurrent_runs: 20
   max_queue_depth: 1500
   queue_timeout_ms: 300000
   max_concurrent_runs_per_user: 0
