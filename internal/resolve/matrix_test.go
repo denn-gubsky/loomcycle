@@ -3,7 +3,9 @@ package resolve
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
+	"time"
 )
 
 // fixtureLibrary returns the May-2026 default matrix — same shape the
@@ -833,5 +835,265 @@ func TestForceProbe_ReplacingCallbackUsesLatest(t *testing.T) {
 	}
 	if new != 1 {
 		t.Errorf("new callback called %d times; expected 1", new)
+	}
+}
+
+// ---- MarkRateLimited tests (v0.12.7+) ----
+
+// TestMarkRateLimited_BlocksResolveWithinCooldown — model marked
+// rate-limited with a long cooldown is excluded from Resolve;
+// the candidate after it in the priority list gets picked.
+func TestMarkRateLimited_BlocksResolveWithinCooldown(t *testing.T) {
+	priority, tiers := fixtureLibrary()
+	r := NewResolver(priority, tiers)
+	seedAll(t, r, tiers)
+
+	// 5s cooldown — well in the future for this test.
+	r.MarkRateLimited("deepseek", "deepseek-v4-flash", 5*time.Second)
+
+	d, err := r.Resolve(AgentRequest{Name: "agent-x", Tier: "low"})
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	// deepseek-v4-flash was first in tier `low`; with it rate-limited
+	// the next candidate should win — that's ollama-local/gemma4:9b.
+	if d.Provider == "deepseek" {
+		t.Errorf("rate-limited candidate was picked: provider=%s model=%s", d.Provider, d.Model)
+	}
+}
+
+// TestMarkRateLimited_SelfRecoversAfterCooldown — once the cooldown
+// expires (RateLimitedUntil <= now) the model is available again
+// WITHOUT any probe running. The expiry check is read-only in
+// isAvailableLocked; no rewrite needed.
+func TestMarkRateLimited_SelfRecoversAfterCooldown(t *testing.T) {
+	priority, tiers := fixtureLibrary()
+	r := NewResolver(priority, tiers)
+	seedAll(t, r, tiers)
+
+	// 1ns cooldown — instantly expires.
+	r.MarkRateLimited("deepseek", "deepseek-v4-flash", 1*time.Nanosecond)
+	// Sleep a touch to ensure now > RateLimitedUntil.
+	time.Sleep(2 * time.Millisecond)
+
+	d, err := r.Resolve(AgentRequest{Name: "agent-x", Tier: "low"})
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if d.Provider != "deepseek" || d.Model != "deepseek-v4-flash" {
+		t.Errorf("expected self-recovery to deepseek-v4-flash; got %s/%s", d.Provider, d.Model)
+	}
+	// Snapshot the model — the RateLimited flag stays true in the
+	// stored record (we don't rewrite on expiry); the check is
+	// transparent based on time. Documenting the invariant.
+	snap := r.Snapshot()["deepseek"].Models["deepseek-v4-flash"]
+	if !snap.RateLimited {
+		t.Error("RateLimited flag should still be set in the stored record (read-only expiry)")
+	}
+}
+
+// TestMarkRateLimited_IndependentOfStalled — Stalled and RateLimited
+// are independent flags. A model with both set is unavailable;
+// clearing one leaves the other in effect.
+func TestMarkRateLimited_IndependentOfStalled(t *testing.T) {
+	priority, tiers := fixtureLibrary()
+	r := NewResolver(priority, tiers)
+	seedAll(t, r, tiers)
+
+	r.MarkStalled("deepseek", "deepseek-v4-flash", "test 5xx")
+	r.MarkRateLimited("deepseek", "deepseek-v4-flash", 1*time.Hour)
+
+	// Both flags set → unavailable.
+	d, _ := r.Resolve(AgentRequest{Name: "agent-x", Tier: "low"})
+	if d.Provider == "deepseek" && d.Model == "deepseek-v4-flash" {
+		t.Error("model with both Stalled+RateLimited should be unavailable")
+	}
+
+	// Clear stall only — rate-limit still in effect → still unavailable.
+	r.ClearStall("deepseek", "deepseek-v4-flash")
+	d, _ = r.Resolve(AgentRequest{Name: "agent-x", Tier: "low"})
+	if d.Provider == "deepseek" && d.Model == "deepseek-v4-flash" {
+		t.Error("ClearStall on a still-rate-limited model should not restore availability")
+	}
+
+	// Verify the matrix state directly: Stalled cleared, RateLimited
+	// still set.
+	snap := r.Snapshot()["deepseek"].Models["deepseek-v4-flash"]
+	if snap.Stalled {
+		t.Error("Stalled should be cleared after ClearStall")
+	}
+	if !snap.RateLimited {
+		t.Error("RateLimited should remain set after ClearStall")
+	}
+}
+
+// TestMarkRateLimited_SetReachableClearsStallButPreservesActiveCooldown —
+// the periodic probe represents "we just talked to this provider's
+// /v1/models endpoint successfully." Stalled clears (the model came
+// back from the wire, so runtime feedback was transient) but an
+// active RateLimited cooldown DOES NOT clear: the listing endpoint
+// and the inference endpoint have separate quotas at most providers,
+// so a list success doesn't imply inference quota recovery.
+//
+// This pins the v0.12.7+ behavior; pre-fix, SetReachable wiped both
+// flags, which created a real production hazard — under a 429 storm
+// the probe could clear the cooldown mid-window and the next run
+// would immediately 429 again.
+func TestMarkRateLimited_SetReachableClearsStallButPreservesActiveCooldown(t *testing.T) {
+	priority, tiers := fixtureLibrary()
+	r := NewResolver(priority, tiers)
+	seedAll(t, r, tiers)
+
+	r.MarkStalled("deepseek", "deepseek-v4-flash", "test 5xx")
+	r.MarkRateLimited("deepseek", "deepseek-v4-flash", 1*time.Hour)
+
+	// Probe-style re-set with the model listed.
+	r.SetReachable("deepseek", true, []string{"deepseek-v4-flash", "deepseek-v4-pro"}, "")
+
+	// Stalled IS cleared. RateLimited (still 1h in the future) is NOT.
+	snap := r.Snapshot()["deepseek"].Models["deepseek-v4-flash"]
+	if snap.Stalled {
+		t.Error("Stalled should be cleared by SetReachable (model re-listed)")
+	}
+	if !snap.RateLimited {
+		t.Error("RateLimited should NOT be cleared by SetReachable (cooldown still active)")
+	}
+
+	// Resolve should fall through to the next candidate, not pick the
+	// still-rate-limited deepseek.
+	d, _ := r.Resolve(AgentRequest{Name: "agent-x", Tier: "low"})
+	if d.Provider == "deepseek" {
+		t.Errorf("expected fallthrough past still-cooldown model; got %s/%s", d.Provider, d.Model)
+	}
+}
+
+// TestMarkRateLimited_SetReachableClearsExpiredCooldown — companion
+// to the above. When the cooldown has already expired by the time
+// the probe runs, the new ModelStatus literal naturally has no
+// RateLimited carry-forward (the condition `prev.RateLimitedUntil >
+// now` is false). The model returns to the pool cleanly.
+func TestMarkRateLimited_SetReachableClearsExpiredCooldown(t *testing.T) {
+	priority, tiers := fixtureLibrary()
+	r := NewResolver(priority, tiers)
+	seedAll(t, r, tiers)
+
+	// Cooldown that expires immediately.
+	r.MarkRateLimited("deepseek", "deepseek-v4-flash", 1*time.Nanosecond)
+	time.Sleep(2 * time.Millisecond)
+
+	r.SetReachable("deepseek", true, []string{"deepseek-v4-flash"}, "")
+
+	snap := r.Snapshot()["deepseek"].Models["deepseek-v4-flash"]
+	if snap.RateLimited {
+		t.Error("expired RateLimited cooldown should clear on re-probe")
+	}
+}
+
+// TestMarkRateLimited_PinUnavailableWhenRateLimited — explicit pin
+// path consults isAvailableLocked just like the tier path. A
+// pinned-but-rate-limited model surfaces as ErrPinUnavailable.
+func TestMarkRateLimited_PinUnavailableWhenRateLimited(t *testing.T) {
+	priority, tiers := fixtureLibrary()
+	r := NewResolver(priority, tiers)
+	seedAll(t, r, tiers)
+
+	r.MarkRateLimited("anthropic", "claude-opus-4-7", 5*time.Second)
+
+	_, err := r.Resolve(AgentRequest{
+		Name:        "agent-x",
+		PinProvider: "anthropic",
+		PinModel:    "claude-opus-4-7",
+	})
+	if !errors.Is(err, ErrPinUnavailable) {
+		t.Errorf("expected ErrPinUnavailable on rate-limited pin; got %v", err)
+	}
+}
+
+// TestMarkRateLimited_DefaultCooldownUsedWhenZeroPassed — passing 0
+// for retryAfter uses defaultRateLimitCooldown (30s).
+func TestMarkRateLimited_DefaultCooldownUsedWhenZeroPassed(t *testing.T) {
+	priority, tiers := fixtureLibrary()
+	r := NewResolver(priority, tiers)
+	seedAll(t, r, tiers)
+
+	before := time.Now()
+	r.MarkRateLimited("deepseek", "deepseek-v4-flash", 0)
+	after := time.Now()
+
+	snap := r.Snapshot()["deepseek"].Models["deepseek-v4-flash"]
+	if !snap.RateLimited {
+		t.Fatal("RateLimited not set")
+	}
+	// RateLimitedUntil should be in [before+30s, after+30s].
+	wantLower := before.Add(30 * time.Second)
+	wantUpper := after.Add(30 * time.Second).Add(100 * time.Millisecond)
+	if snap.RateLimitedUntil.Before(wantLower) || snap.RateLimitedUntil.After(wantUpper) {
+		t.Errorf("RateLimitedUntil = %v, want approximately %v (default 30s)",
+			snap.RateLimitedUntil, wantLower)
+	}
+}
+
+// TestMarkRateLimited_NoOpOnUnknownProvider — calling on a provider
+// not in the matrix creates the entry but doesn't break subsequent
+// Resolve calls on configured providers. Same shape as
+// MarkStalled's defensive behavior.
+func TestMarkRateLimited_NoOpOnUnknownProvider(t *testing.T) {
+	priority, tiers := fixtureLibrary()
+	r := NewResolver(priority, tiers)
+	seedAll(t, r, tiers)
+
+	// Should not panic, should not affect deepseek's availability.
+	r.MarkRateLimited("never-heard-of-it", "ghost-model", 1*time.Hour)
+
+	d, err := r.Resolve(AgentRequest{Name: "agent-x", Tier: "low"})
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if d.Provider != "deepseek" || d.Model != "deepseek-v4-flash" {
+		t.Errorf("unrelated MarkRateLimited disrupted Resolve: got %s/%s", d.Provider, d.Model)
+	}
+}
+
+// TestMarkRateLimited_ConcurrentWritesSafe pins the concurrency
+// contract: many goroutines calling MarkRateLimited on the same
+// model simultaneously do not panic and produce a consistent
+// final state. The implementation holds r.mu.Lock() across the
+// read-modify-write so last-writer-wins by mutex ordering.
+//
+// At x1000 load this is the actual access pattern — N parallel
+// failing runs all hit MarkRateLimited on the same (provider, model)
+// at roughly the same moment.
+//
+// Pinning current behavior: the LAST cooldown written wins (not the
+// max). If a future call passes a 1s cooldown after a 30s call landed,
+// the model becomes available 29 seconds early. Acceptable for now —
+// production callers all pass 0 (use default 30s) so they're identical.
+// If we ever thread real Retry-After values through, consider switching
+// to max() semantics here.
+func TestMarkRateLimited_ConcurrentWritesSafe(t *testing.T) {
+	priority, tiers := fixtureLibrary()
+	r := NewResolver(priority, tiers)
+	seedAll(t, r, tiers)
+
+	const goroutines = 50
+	var wg sync.WaitGroup
+	for i := 0; i < goroutines; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			r.MarkRateLimited("deepseek", "deepseek-v4-flash", 30*time.Second)
+		}()
+	}
+	wg.Wait()
+
+	// All N writes complete without panic; the final state has
+	// RateLimited=true and a future RateLimitedUntil.
+	snap := r.Snapshot()["deepseek"].Models["deepseek-v4-flash"]
+	if !snap.RateLimited {
+		t.Error("RateLimited should be set after concurrent writes")
+	}
+	if !snap.RateLimitedUntil.After(time.Now()) {
+		t.Errorf("RateLimitedUntil = %v should be in the future after concurrent writes",
+			snap.RateLimitedUntil)
 	}
 }

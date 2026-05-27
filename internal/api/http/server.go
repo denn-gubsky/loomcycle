@@ -474,43 +474,67 @@ func (s *Server) SessionLocks() *runner.SessionLockMap { return s.sessionLocks }
 func (s *Server) SetResolver(r *resolve.Resolver) { s.resolver = r }
 
 // markStalledFn returns a closure suitable for loop.RunOptions.MarkStalled.
-// The closure captures the resolver-scoped (provider, model) for the
-// current iteration; the loop calls it on driver errors that suggest
-// the model itself is broken (5xx after retry, mid-stream errors).
+// The loop invokes the closure with the LIVE (provider, model) for the
+// current iteration — which is meaningful when v0.8.2 fallback switched
+// providers mid-run. The unused `provider`/`model` args are kept on the
+// constructor signature for the wiring symmetry with markRateLimitedFn /
+// clearStallFn at call sites; their values seed the initial resolution
+// but the resolver receives the loop-supplied live pair.
 //
 // Returns nil when no resolver is wired (back-compat path) — RunOptions
 // treats nil as "stall feedback disabled".
-func (s *Server) markStalledFn(provider, model string) func(p, m, reason string) {
+//
+// PRE-2026-05-27 BUG: the closure used to ignore the loop's args and
+// pin to the construction-time (provider, model). When fallback ran
+// mid-run, MarkStalled poisoned the WRONG matrix entry — the original
+// provider got blamed for the post-switch provider's failure. Fixed
+// alongside the markRateLimitedFn addition (PR for #235 follow-up).
+func (s *Server) markStalledFn(_, _ string) func(p, m, reason string) {
 	if s.resolver == nil {
 		return nil
 	}
-	// Closure captures only what the loop needs. Loop passes
-	// (provider, model, reason); we ignore the loop's args and use
-	// the resolved pair from the call site, since they're the
-	// authoritative inputs to the resolver — the loop wouldn't know
-	// to discriminate between OpenAI vs DeepSeek without us telling
-	// it via opts.Provider.ID() (which is what it'll pass anyway,
-	// but pinning here keeps the contract explicit).
-	return func(_, _, reason string) {
-		s.resolver.MarkStalled(provider, model, reason)
+	return func(p, m, reason string) {
+		s.resolver.MarkStalled(p, m, reason)
+	}
+}
+
+// markRateLimitedFn returns a closure suitable for
+// loop.RunOptions.MarkRateLimited. Sibling to markStalledFn but for
+// the transient-429 case: the loop calls this — instead of
+// markStalledFn — when the surfaced error is a rate-limit response
+// that exhausted the driver's internal retry budget.
+//
+// Uses the LIVE (provider, model) from the loop's call. Critical for
+// the fallback case: the post-fallback provider is the one that
+// actually rate-limited, and that's the entry that should get the
+// cooldown — NOT the pre-fallback original provider.
+//
+// retryAfter flows through unchanged (the loop currently passes 0 =
+// use default; future work can thread the real Retry-After header up
+// from the driver).
+//
+// Returns nil when no resolver is wired — RunOptions treats nil as
+// "rate-limit feedback disabled".
+func (s *Server) markRateLimitedFn(_, _ string) func(p, m string, retryAfter time.Duration) {
+	if s.resolver == nil {
+		return nil
+	}
+	return func(p, m string, retryAfter time.Duration) {
+		s.resolver.MarkRateLimited(p, m, retryAfter)
 	}
 }
 
 // clearStallFn returns a closure suitable for loop.RunOptions.ClearStall.
 // Companion to markStalledFn: the loop calls it on a SUCCESSFUL
-// iteration, which is direct evidence the (provider, model) is
-// healthy now and any prior stall flag is stale. Idempotent at the
-// resolver layer.
-//
-// Pinning the provider+model here (same shape as markStalledFn) keeps
-// the resolver-feedback contract symmetric — both sides receive an
-// authoritative (provider, model) regardless of what the loop passes.
-func (s *Server) clearStallFn(provider, model string) func(p, m string) {
+// iteration with the live (provider, model). After fallback the
+// healthy provider is the one we want to credit — same fix as
+// markStalledFn for the same reason.
+func (s *Server) clearStallFn(_, _ string) func(p, m string) {
 	if s.resolver == nil {
 		return nil
 	}
-	return func(_, _ string) {
-		s.resolver.ClearStall(provider, model)
+	return func(p, m string) {
+		s.resolver.ClearStall(p, m)
 	}
 }
 
@@ -1321,6 +1345,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		MaxIterations:   agentDef.MaxIterations, // 0 → loop default (16)
 		Effort:          effort,
 		MarkStalled:     s.markStalledFn(providerID, model),
+		MarkRateLimited: s.markRateLimitedFn(providerID, model),
 		ClearStall:      s.clearStallFn(providerID, model),
 		ToolParallelism: s.cfg.Env.ToolParallelism,
 		AgentName:       effectiveAgentName,
@@ -2259,6 +2284,7 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		MaxIterations:   agentDef.MaxIterations, // 0 → loop default (16)
 		Effort:          effort,
 		MarkStalled:     s.markStalledFn(providerID, model),
+		MarkRateLimited: s.markRateLimitedFn(providerID, model),
 		ClearStall:      s.clearStallFn(providerID, model),
 		ToolParallelism: s.cfg.Env.ToolParallelism,
 		AgentName:       req.Agent,
@@ -2587,6 +2613,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		MaxIterations:   agentDef.MaxIterations, // 0 → loop default (16)
 		Effort:          effort,
 		MarkStalled:     s.markStalledFn(providerID, model),
+		MarkRateLimited: s.markRateLimitedFn(providerID, model),
 		ClearStall:      s.clearStallFn(providerID, model),
 		ToolParallelism: s.cfg.Env.ToolParallelism,
 		AgentName:       sess.Agent,
@@ -3186,6 +3213,7 @@ func (s *Server) runSubAgent(ctx context.Context, name string, prompt string, de
 		MaxIterations:   def.MaxIterations, // 0 → loop default (16)
 		Effort:          effort,
 		MarkStalled:     s.markStalledFn(providerID, model),
+		MarkRateLimited: s.markRateLimitedFn(providerID, model),
 		ClearStall:      s.clearStallFn(providerID, model),
 		ToolParallelism: s.cfg.Env.ToolParallelism,
 		AgentName:       name,

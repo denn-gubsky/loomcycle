@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
@@ -393,6 +394,120 @@ func TestLoop_NoMarkStalledOnRateLimit(t *testing.T) {
 	}
 	if stallCount != 0 {
 		t.Errorf("MarkStalled called %d times on 429, want 0 (rate limits are transient — must not poison the matrix)", stallCount)
+	}
+}
+
+// TestRun_MarkRateLimitedCalledOn429 pins the v0.12.x+ structural
+// fix: a 429 surfacing from the driver routes to MarkRateLimited
+// (NOT MarkStalled). Companion to TestLoop_NoMarkStalledOnRateLimit
+// above — this one asserts the positive side (MarkRateLimited fires).
+func TestRun_MarkRateLimitedCalledOn429(t *testing.T) {
+	prov := &erroringProvider{err: fmt.Errorf("anthropic 429: rate limit exceeded")}
+	type rateLimitCall struct {
+		provider, model string
+		retryAfter      time.Duration
+	}
+	var (
+		rateLimits []rateLimitCall
+		stalls     int
+	)
+	_, err := Run(context.Background(), RunOptions{
+		Provider: prov,
+		Model:    "claude-haiku-4-5",
+		Segments: []PromptSegment{
+			{Role: "user", Content: []PromptContentBlock{{Type: "trusted-text", Text: "x"}}},
+		},
+		MarkStalled: func(_, _, _ string) { stalls++ },
+		MarkRateLimited: func(p, m string, retryAfter time.Duration) {
+			rateLimits = append(rateLimits, rateLimitCall{p, m, retryAfter})
+		},
+	})
+	if err == nil {
+		t.Fatal("Run should propagate the 429 to the caller")
+	}
+	if len(rateLimits) != 1 {
+		t.Fatalf("MarkRateLimited calls = %d, want 1", len(rateLimits))
+	}
+	got := rateLimits[0]
+	if got.provider != "erroring" || got.model != "claude-haiku-4-5" {
+		t.Errorf("MarkRateLimited = %+v, want erroring/claude-haiku-4-5", got)
+	}
+	// Loop passes retryAfter=0 (default-cooldown). The matrix
+	// interprets 0 as "use defaultRateLimitCooldown". Pin the
+	// contract: the loop doesn't compute its own duration.
+	if got.retryAfter != 0 {
+		t.Errorf("retryAfter = %v, want 0 (loop should defer to matrix default)", got.retryAfter)
+	}
+	if stalls != 0 {
+		t.Errorf("MarkStalled called %d times on 429, want 0", stalls)
+	}
+}
+
+// TestRun_MarkStalledCalledOn5xx pins the regression guard for the
+// 429/5xx split: a 5xx error must still trigger MarkStalled (and not
+// MarkRateLimited). The fix in v0.12.x routes by error class — this
+// test confirms 5xx stays on the stall path.
+func TestRun_MarkStalledCalledOn5xx(t *testing.T) {
+	prov := &erroringProvider{err: fmt.Errorf("anthropic 500: upstream timeout")}
+	var (
+		stalls     int
+		rateLimits int
+	)
+	_, err := Run(context.Background(), RunOptions{
+		Provider: prov,
+		Model:    "claude-opus-4-7",
+		Segments: []PromptSegment{
+			{Role: "user", Content: []PromptContentBlock{{Type: "trusted-text", Text: "x"}}},
+		},
+		MarkStalled:     func(_, _, _ string) { stalls++ },
+		MarkRateLimited: func(_, _ string, _ time.Duration) { rateLimits++ },
+	})
+	if err == nil {
+		t.Fatal("Run should propagate the 500 to the caller")
+	}
+	if stalls != 1 {
+		t.Errorf("MarkStalled calls = %d, want 1 (5xx still stalls)", stalls)
+	}
+	if rateLimits != 0 {
+		t.Errorf("MarkRateLimited calls = %d, want 0 (5xx is not a rate-limit error)", rateLimits)
+	}
+}
+
+// TestRun_StreamEventError429CallsMarkRateLimited covers the second
+// MarkStalled/MarkRateLimited call site in the loop: in-stream
+// EventError. Same 429/5xx routing as the Call() error path.
+func TestRun_StreamEventError429CallsMarkRateLimited(t *testing.T) {
+	// Provider opens a stream then emits an EventError carrying a
+	// 429-shaped error. fakeProvider supports this directly via the
+	// responses [][]providers.Event scripting field.
+	prov := &fakeProvider{
+		responses: [][]providers.Event{
+			{
+				{Type: providers.EventError, Error: "anthropic 429: rate limit exceeded mid-stream"},
+				{Type: providers.EventDone, StopReason: "error"},
+			},
+		},
+	}
+
+	var (
+		rateLimits int
+		stalls     int
+	)
+	_, _ = Run(context.Background(), RunOptions{
+		Provider: prov,
+		Model:    "claude-haiku-4-5",
+		Segments: []PromptSegment{
+			{Role: "user", Content: []PromptContentBlock{{Type: "trusted-text", Text: "x"}}},
+		},
+		MarkStalled:     func(_, _, _ string) { stalls++ },
+		MarkRateLimited: func(_, _ string, _ time.Duration) { rateLimits++ },
+	})
+
+	if rateLimits != 1 {
+		t.Errorf("MarkRateLimited calls = %d, want 1 (in-stream 429 should hit the rate-limit path)", rateLimits)
+	}
+	if stalls != 0 {
+		t.Errorf("MarkStalled calls = %d, want 0 (in-stream 429 should NOT trigger stall)", stalls)
 	}
 }
 
