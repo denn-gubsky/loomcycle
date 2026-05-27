@@ -3802,12 +3802,36 @@ func (s *Server) publishRunState(m runStateMeta, status, stopReason, errMsg stri
 //
 // nil store or runID makes this a no-op so v0.2 callers stay
 // hands-off.
+//
+// The per-call timeout is sized for pool-saturation tolerance, not for
+// heartbeat freshness. At the launch crest of the v0.12.9 x5000 load
+// test (15 K agent runs, ~140 concurrent), 10 heartbeat UPDATEs timed
+// out within a 1-second window because the pgxpool was briefly burst-
+// saturated by concurrent Memory.set / Channel.publish / AppendEvent
+// calls. The pool acquire blocked past the prior 1-second deadline,
+// the inherited ctx fired, and the heartbeat logged "context deadline
+// exceeded". The runs themselves were unaffected (heartbeats are
+// advisory; the sweeper is the authority on stale-run detection), but
+// the operator-visible noise + the theoretical risk of the sweeper
+// misfiring on a slightly older last_heartbeat_at warranted a fix.
+//
+// 5 seconds is chosen because:
+//   - Heartbeats fire once per loop iteration (~100-200ms cadence
+//     with a mock provider; ~1-3s with a real provider). A 5s budget
+//     means at most 1-2 missed beats under sustained pool saturation
+//     before the next iteration arrives — and "1-2 missed beats" is
+//     well within the sweeper's stale-detection window (60s+ by
+//     default per `heartbeat.SweeperConfig`).
+//   - The substrate-level retryOnTransientConn helper added in PR
+//     #246 doesn't apply here because the error is ctx.DeadlineExceeded,
+//     not SQLSTATE 53300. The fix is to give the heartbeat enough
+//     budget to ride out the pool's natural acquire jitter.
 func (s *Server) makeHeartbeat(runID string) func() {
 	if s.store == nil || runID == "" {
 		return nil
 	}
 	return func() {
-		bg, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+		bg, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		if err := s.store.UpdateHeartbeat(bg, runID); err != nil {
 			// Log only — never fail the run on a heartbeat hiccup.
