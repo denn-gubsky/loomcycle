@@ -12,11 +12,22 @@
 package http
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"strings"
 	"time"
 )
+
+// listModelsTimeout caps the live upstream round-trip. Mirrors the
+// 5 s used by the periodic resolver probe in cmd/loomcycle/main.go,
+// but generous (10 s) since this is an operator-interactive call —
+// an operator clicking "refresh" can wait longer than a background
+// sweep. Without this cap, a stalled provider (TCP half-open, slow
+// response headers) would pin the goroutine + response writer
+// until the operator's HTTP client times out — effectively a DoS
+// on that worker.
+const listModelsTimeout = 10 * time.Second
 
 // providerModelsResponse is the wire shape returned by
 // GET /v1/_providers/{id}/models.
@@ -87,9 +98,16 @@ func (s *Server) handleProviderModels(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	ctx, cancel := context.WithTimeout(r.Context(), listModelsTimeout)
+	defer cancel()
+
 	start := time.Now()
-	models, listErr := p.ListModels(r.Context())
-	duration := time.Since(start)
+	models, listErr := p.ListModels(ctx)
+	// Capture end time immediately so FetchedAt + DurationMs stay
+	// coherent (a slow JSON-encode would otherwise drift FetchedAt
+	// ahead of start+duration). Also avoids a second time.Now() syscall.
+	end := time.Now()
+	duration := end.Sub(start)
 
 	if listErr != nil {
 		writeJSONError(w, http.StatusBadGateway, "provider_list_failed", listErr.Error())
@@ -105,7 +123,7 @@ func (s *Server) handleProviderModels(w http.ResponseWriter, r *http.Request) {
 
 	resp := providerModelsResponse{
 		Provider:   id,
-		FetchedAt:  time.Now().UTC(),
+		FetchedAt:  end.UTC(),
 		DurationMs: duration.Milliseconds(),
 		Models:     models,
 	}

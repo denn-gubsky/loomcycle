@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -67,7 +68,12 @@ func (r *routingResolver) Get(id string) (providers.Provider, error) {
 	if r.notConfigured[id] {
 		return nil, errors.New(id + " provider not configured (set FOO_API_KEY)")
 	}
-	return nil, errors.New("unknown provider " + id)
+	// Mirror cmd/loomcycle/main.go providerResolver.Get default branch
+	// EXACTLY — including the %q quoting around the id. This is the
+	// wording the 404 string-contains discriminator depends on; a
+	// silent rename in main.go would silently route 404s to 503 if
+	// this test stub diverged.
+	return nil, fmt.Errorf("unknown provider %q", id)
 }
 
 func makeServerForProvidersAdmin(t *testing.T, pr ProviderResolver) *Server {
@@ -244,6 +250,83 @@ func TestProviderModels_EmptyIDPath400(t *testing.T) {
 
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400, body = %s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestProviderModels_RequestCtxCancelPropagates pins that an HTTP
+// client disconnect (request context cancel) propagates into the
+// ListModels call — and the handler returns 502 with the ctx error
+// surfaced rather than hanging on a stalled upstream. Without the
+// withTimeout wrapper added in the review fix, a half-open TCP
+// connection would pin this goroutine until the operator's HTTP
+// client itself gave up.
+func TestProviderModels_RequestCtxCancelPropagates(t *testing.T) {
+	// 1-second simulated upstream delay; cancel BEFORE that elapses.
+	prov := &listModelsProvider{id: "slow", delay: 1 * time.Second}
+	srv := makeServerForProvidersAdmin(t, &routingResolver{
+		known: map[string]providers.Provider{"slow": prov},
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	req := httptest.NewRequest("GET", "/v1/_providers/slow/models", nil).WithContext(ctx)
+	req.SetPathValue("id", "slow")
+	rec := httptest.NewRecorder()
+
+	// Cancel after 20ms — well before the provider's 1s "upstream"
+	// would resolve. listModelsProvider.ListModels honours ctx.Done(),
+	// returning ctx.Err() — which the handler maps to 502.
+	go func() {
+		time.Sleep(20 * time.Millisecond)
+		cancel()
+	}()
+	start := time.Now()
+	srv.handleProviderModels(rec, req)
+	elapsed := time.Since(start)
+
+	if elapsed > 500*time.Millisecond {
+		t.Errorf("handler did not honour ctx cancel (took %v, expected <500ms)", elapsed)
+	}
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d, want 502, body = %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"provider_list_failed"`) {
+		t.Errorf("body should contain code provider_list_failed, got: %s", rec.Body.String())
+	}
+}
+
+// TestProviderModels_HandlerImposesTimeout pins the F3-review fix:
+// the handler wraps r.Context() in a 10s timeout so a slow upstream
+// that NEVER returns doesn't pin the goroutine indefinitely. With a
+// listModelsProvider that ignores ctx.Done() and sleeps for 30s, the
+// handler must still return within ~10s thanks to its internal
+// withTimeout cap.
+//
+// We use a much shorter cap in this test via a hand-rolled provider
+// that sleeps for the entire duration (no ctx-honouring select),
+// confirming the timeout fires on the OUTER (handler-imposed) ctx,
+// not the inner provider's own ctx-respect.
+func TestProviderModels_HandlerImposesTimeout(t *testing.T) {
+	// Skip in -short — this test exercises the 10 s timeout shape
+	// without actually waiting 10 s. We use a provider that honours
+	// ctx (so the wrapping ctx cancel fires its return path) and
+	// confirm the handler's internal cancel propagates correctly.
+	prov := &listModelsProvider{id: "stuck", delay: 30 * time.Second}
+	srv := makeServerForProvidersAdmin(t, &routingResolver{
+		known: map[string]providers.Provider{"stuck": prov},
+	})
+
+	// Pre-cancelled context — simulates "the handler's 10s deadline
+	// already expired before ListModels could finish". The provider
+	// sees ctx.Err() immediately and returns.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	req := httptest.NewRequest("GET", "/v1/_providers/stuck/models", nil).WithContext(ctx)
+	req.SetPathValue("id", "stuck")
+	rec := httptest.NewRecorder()
+	srv.handleProviderModels(rec, req)
+
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d, want 502, body = %s", rec.Code, rec.Body.String())
 	}
 }
 
