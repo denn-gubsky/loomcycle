@@ -66,6 +66,18 @@ type Channel struct {
 	// 0 disables long-poll entirely (subscribe always returns
 	// immediately). Sourced from LOOMCYCLE_CHANNELS_LONGPOLL_CAP_MS.
 	LongPollCapMS int
+
+	// PoolStatsFn, when non-nil, returns the current pgxpool
+	// connection stats (total, acquired, idle). Captured by
+	// readWithRetry just before the post-notify re-read so the
+	// subscribe-empty race diagnostic log can correlate retry fires
+	// with pool exhaustion or connection-reuse anomalies.
+	//
+	// Wired by main.go when the configured store is a Postgres store
+	// (via type assertion on store.Store). SQLite + test builds leave
+	// it nil; the diagnostic log path then reports zeros for the pool
+	// fields and the retry behavior is unchanged.
+	PoolStatsFn func() (total, acquired, idle int32)
 }
 
 const channelDescription = `Persistent inter-agent message bus. ` +
@@ -410,7 +422,21 @@ func (c *Channel) execSubscribe(ctx context.Context, policy tools.ChannelPolicyV
 			// most 30ms in the worst case. The retry pattern also
 			// covers any future visibility window we haven't yet
 			// characterised at higher scale.
-			msgs, next, err = readWithRetry(read, in.Channel)
+			//
+			// Diagnostic capture: stamp the waker-receipt time, the
+			// cursor used for the read, and the pool stats. Fed into
+			// readWithRetry so the structured log when retry fires
+			// carries the data needed to characterise the race (see
+			// doc-internal/channel-race-investigation.md for the
+			// hypothesis table).
+			diag := retryDiagnostics{
+				notifyAt:   time.Now(),
+				fromCursor: from,
+			}
+			if c.PoolStatsFn != nil {
+				diag.poolTotal, diag.poolAcquired, diag.poolIdle = c.PoolStatsFn()
+			}
+			msgs, next, err = readWithRetry(read, in.Channel, diag)
 			if err != nil {
 				return errResult(fmt.Sprintf("subscribe (after wait): %s", err)), nil
 			}
@@ -492,6 +518,37 @@ func (c *Channel) execSubscribe(ctx context.Context, policy tools.ChannelPolicyV
 	})
 }
 
+// retryDiagnostics carries the per-call telemetry consumed by
+// readWithRetry's structured log lines. Populated by execSubscribe at
+// the case <-waker: arm so we can correlate retry fires with the
+// publish that woke us:
+//
+//   - notifyAt: when Bus.Wait returned via the waker. retry_lag_ms in
+//     the log = time.Since(notifyAt) at the attempt that found rows.
+//     Tests Hypothesis 5 (notify before commit propagates).
+//
+//   - fromCursor: the cursor used for the initial read. Tests
+//     Hypothesis 4 (cursor advanced past the new message) — if the
+//     just-published msg_id is at or below this cursor, the empty
+//     read is correct, not a race.
+//
+//   - poolTotal/poolAcquired/poolIdle: pgxpool.Stat() snapshot just
+//     before the first re-read attempt. Tests Hypothesis 2 (different
+//     pool connection sees an older snapshot) — if AcquiredConns ≈
+//     TotalConns and retries are spiking, connection reuse is the
+//     likely vector.
+//
+// Zero-valued fields are safe: nil PoolStatsFn leaves them at 0 and
+// the diagnostic log reports them as such. The retry behavior itself
+// is unchanged when no PoolStatsFn is wired.
+type retryDiagnostics struct {
+	notifyAt     time.Time
+	fromCursor   string
+	poolTotal    int32
+	poolAcquired int32
+	poolIdle     int32
+}
+
 // readWithRetry is the bounded retry wrapper used by execSubscribe
 // after Bus.Wait returns via the waker (notify). The publish path
 // is commit-then-notify, so MVCC says the row IS visible to any
@@ -506,14 +563,25 @@ func (c *Channel) execSubscribe(ctx context.Context, policy tools.ChannelPolicyV
 // so worst-case 30ms latency added when the retry fires.
 //
 // When the retry actually saves a circuit it logs a structured line
-// so we can quantify the issue at scale. When even the 3rd attempt
-// returns empty, we accept the empty result and let the caller decide
-// (current behaviour) — but we log a stronger warning so the operator
-// notices.
-func readWithRetry(read func() ([]store.ChannelMessage, string, error), channel string) ([]store.ChannelMessage, string, error) {
+// carrying the retryDiagnostics fields so operators can correlate the
+// signal with publish-side timing in `~/work/loomcycle-internal/
+// doc-internal/channel-race-investigation.md`. When even the 3rd
+// attempt returns empty, we accept the empty result and let the
+// caller decide (current behaviour) — but we log a stronger warning
+// with the same fields so the operator notices.
+func readWithRetry(read func() ([]store.ChannelMessage, string, error), channel string, diag retryDiagnostics) ([]store.ChannelMessage, string, error) {
 	const maxAttempts = 3
 	const backoff = 10 * time.Millisecond
 
+	// firstEmptyAt records when attempt 1 returned no rows. Used to
+	// compute first_read_lag_us — the time from waker-receipt to the
+	// race-affected empty read — which is the diagnostic field that
+	// distinguishes H5 (notify before commit propagates) from H2
+	// (different pool connection sees older snapshot). H5 produces
+	// first_read_lag_us < 1000 (commit window still open at first
+	// read); H2 produces first_read_lag_us > 100 (snapshot acquired
+	// well after commit but pool reused a stale-snapshot connection).
+	var firstEmptyAt time.Time
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
 		msgs, next, err := read()
 		if err != nil {
@@ -523,10 +591,19 @@ func readWithRetry(read func() ([]store.ChannelMessage, string, error), channel 
 			if attempt > 1 {
 				// The retry saved this subscriber from a silent miss.
 				// Surface at scale so we can measure the residual rate.
-				log.Printf("channel %q: subscribe re-read empty on attempt %d, retry found %d msg(s) — likely commit-visibility window",
-					channel, attempt-1, len(msgs))
+				// recovery_lag_ms = waker → eventually-non-empty read.
+				// first_read_lag_us = waker → the empty first read.
+				log.Printf("channel %q: subscribe-race-recovered attempt=%d msgs=%d recovery_lag_ms=%d first_read_lag_us=%d from_cursor=%q pool_total=%d pool_acquired=%d pool_idle=%d",
+					channel, attempt, len(msgs),
+					time.Since(diag.notifyAt).Milliseconds(),
+					firstEmptyAt.Sub(diag.notifyAt).Microseconds(),
+					diag.fromCursor,
+					diag.poolTotal, diag.poolAcquired, diag.poolIdle)
 			}
 			return msgs, next, nil
+		}
+		if attempt == 1 {
+			firstEmptyAt = time.Now()
 		}
 		if attempt < maxAttempts {
 			time.Sleep(backoff)
@@ -537,8 +614,12 @@ func readWithRetry(read func() ([]store.ChannelMessage, string, error), channel 
 	// a publish we shouldn't have seen (cursor-past it), or there's
 	// a more pathological timing window we haven't yet diagnosed.
 	// Return empty and let the caller decide.
-	log.Printf("channel %q: subscribe re-read returned empty across %d attempts after notify — silent miss; investigate",
-		channel, maxAttempts)
+	log.Printf("channel %q: subscribe-race-exhausted attempts=%d recovery_lag_ms=%d first_read_lag_us=%d from_cursor=%q pool_total=%d pool_acquired=%d pool_idle=%d — silent miss; investigate",
+		channel, maxAttempts,
+		time.Since(diag.notifyAt).Milliseconds(),
+		firstEmptyAt.Sub(diag.notifyAt).Microseconds(),
+		diag.fromCursor,
+		diag.poolTotal, diag.poolAcquired, diag.poolIdle)
 	return nil, "", nil
 }
 

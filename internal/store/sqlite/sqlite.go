@@ -42,6 +42,13 @@ import (
 type Store struct {
 	db *sql.DB
 
+	// channelDebug gates the v0.12.7 channel publish diagnostic log.
+	// Set via SetChannelDebug after Open() — the SQLite store predates
+	// a Config struct, so we wire the operator's LOOMCYCLE_CHANNEL_DEBUG
+	// preference in via a setter rather than adding a parallel Open
+	// variant. Defaults to off so noise stays out of production logs.
+	channelDebug bool
+
 	// closeOnce guards the Close() idempotency contract.
 	closeOnce sync.Once
 }
@@ -68,6 +75,15 @@ func Open(path string) (*Store, error) {
 		return nil, err
 	}
 	return s, nil
+}
+
+// SetChannelDebug opts the store into the v0.12.7 channel publish
+// diagnostic log. See ChannelPublish for what gets logged. Idempotent;
+// safe to call from main.go before serving begins. After serving starts
+// the flag is read-only on the hot path (no atomic; calling this
+// concurrently with a publish would race).
+func (s *Store) SetChannelDebug(enabled bool) {
+	s.channelDebug = enabled
 }
 
 // migrate creates the schema if needed. Idempotent. v0.3 schema is fixed; if
@@ -2498,8 +2514,19 @@ func (s *Store) ChannelPublish(ctx context.Context, msg store.ChannelMessage, ma
 			dropped = int(n)
 		}
 	}
+	commitStart := time.Now()
 	if err := tx.Commit(); err != nil {
 		return "", 0, err
+	}
+	if s.channelDebug {
+		// Parity with the postgres backend's diagnostic — see
+		// internal/store/postgres/postgres.go for the hypothesis
+		// background. SQLite is single-writer (WAL) so the
+		// commit-visibility race shouldn't apply, but logging here
+		// lets us A/B the same load against both backends and
+		// confirm the race is Postgres-specific.
+		log.Printf("channel %q publish: id=%s commit_us=%d",
+			msg.Channel, msg.ID, time.Since(commitStart).Microseconds())
 	}
 	return msg.ID, dropped, nil
 }
