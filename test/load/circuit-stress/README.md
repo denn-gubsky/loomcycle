@@ -134,10 +134,67 @@ Performance:
 - **OAuth-dev provider only.** API-key Anthropic is reachable via the same provider family but would obscure the OAuth quota measurement.
 - **No tier fallback.** `loomcycle.yaml` sets `fallback_on_error: false` deliberately. When quota dies, runs fail and the driver halts — that's the signal we're after.
 
+## Mock mode (v0.12.8) — cost-free substrate stress
+
+The `loomcycle.template.yaml` + `run.sh` path above burns real Anthropic OAuth-dev MAX quota on every call. That's the right tool for "does the substrate plus a real provider stay in sync end-to-end," but a poor tool for the actual stress-test question: **where does the loomcycle binary itself bottleneck at 10K+ concurrent agents?**
+
+Mock mode answers that. It swaps the provider out for a synthetic driver (`internal/providers/mock/driver.go`) that talks the same `providers.Provider` wire shape but:
+
+- Costs zero (no external HTTP, no quota).
+- Synthesises plausibly-shaped tool-call sequences keyed off `req.Model` — `mock-researcher` emits Memory.set → Channel.publish; `mock-editor` and `mock-evaluator` drive their own FSMs.
+- Has env-var-controlled failure injection so the resolver matrix (PR #241 MarkRateLimited) and runtime-fallback (PR #242 provider telemetry) paths get exercised under sustained load.
+
+```bash
+# Smoke — single circuit, default mock behaviour.
+export LOOMCYCLE_AUTH_TOKEN=$(openssl rand -hex 32)
+./test/load/circuit-stress/run-mock.sh --scale 1
+
+# The real target — 10K concurrent agents, single binary, no LLM cost.
+./test/load/circuit-stress/run-mock.sh --scale 10000 --circuits-per-user 20
+
+# Rate-limit cascade. Confirms MarkRateLimited (PR #241) cools the
+# matrix entry correctly under sustained 5% 429 noise.
+LOOMCYCLE_MOCK_429_RATE=0.05 \
+  ./test/load/circuit-stress/run-mock.sh --scale 1000
+
+# 5xx fallback. Confirms tryProviderFallback (v0.8.2) re-routes
+# without losing tool-state continuity.
+LOOMCYCLE_MOCK_500_RATE=0.01 \
+  ./test/load/circuit-stress/run-mock.sh --scale 1000
+
+# Latency-induced queue backup. At what scale does max_queue_depth
+# saturate? Does queue_timeout_ms drain cleanly?
+LOOMCYCLE_MOCK_LATENCY_MS=200 LOOMCYCLE_MOCK_LATENCY_JITTER_MS=100 \
+  ./test/load/circuit-stress/run-mock.sh --scale 5000
+
+# Channel-race amplification. Pairs with PR #243's diagnostic
+# (LOOMCYCLE_CHANNEL_DEBUG=1) — at high scale the
+# subscribe-race-recovered log lines feed the channel-race
+# investigation doc's hypothesis table.
+LOOMCYCLE_MOCK_LATENCY_MS=10 LOOMCYCLE_CHANNEL_DEBUG=1 \
+  ./test/load/circuit-stress/run-mock.sh --scale 10000
+```
+
+Knobs (all optional env vars, read once at driver init):
+
+| Var | Default | Range | Purpose |
+|---|---|---|---|
+| `LOOMCYCLE_MOCK_LATENCY_MS` | 50 | ≥0 | Base sleep per Call (ms). Plus a body component proportional to request size. |
+| `LOOMCYCLE_MOCK_LATENCY_JITTER_MS` | 25 | ≥0 | Uniform [0, jitter] random add. |
+| `LOOMCYCLE_MOCK_429_RATE` | 0 | [0.0, 1.0] | Fraction of Call()s that return a 429 error. `IsRateLimit`-classifiable so `MarkRateLimited` engages. |
+| `LOOMCYCLE_MOCK_500_RATE` | 0 | [0.0, 1.0] | Fraction returning a 5xx. Drives the runtime-fallback path. |
+
+What the mock does NOT cover:
+- **Provider-specific transcript quirks.** The mock emits clean tool_use blocks; there's no Anthropic cache_control, no DeepSeek reasoning_content, no Gemini schema sanitisation in play. Use `loomcycle.template.yaml` against a real provider to exercise those.
+- **Content quality.** The driver ignores the agent prompts; payloads are canned. The test verifies substrate plumbing (channels, memory, sweeper, queue), not model output.
+- **Multi-replica cluster shape.** Single-binary first; cluster mock is a follow-up.
+
 ## Files in this directory
 
-- `main.go` — the driver
-- `loomcycle.yaml` — minimal test config (Postgres, OAuth-dev, 3 agents, channel ACLs)
-- `prompts.txt` — 30 tiny factual questions (driver round-robins through them)
-- `run.sh` — convenience wrapper
+- `main.go` — the driver (provider-agnostic; same code drives real-LLM and mock modes)
+- `loomcycle.template.yaml` — real-LLM config (Postgres, OAuth-dev, 3 agents, channel ACLs)
+- `loomcycle.mock.yaml` — mock-mode config (Postgres, `provider: mock`, same 3 agents pinned to mock-researcher / mock-editor / mock-evaluator)
+- `prompts.txt` — 30 tiny factual questions (driver round-robins through them; ignored by the mock)
+- `run.sh` — real-LLM convenience wrapper (requires `loomcycle anthropic login`)
+- `run-mock.sh` — mock-mode wrapper (no provider credentials needed)
 - `README.md` — you're reading it
