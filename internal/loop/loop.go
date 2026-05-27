@@ -216,6 +216,36 @@ type RunOptions struct {
 	// with a skip-on-429 guard at the MarkStalled call site;
 	// MarkRateLimited is the proper structural fix.
 	MarkRateLimited func(provider, model string, retryAfter time.Duration)
+
+	// MaxSameProviderRetries caps retryable-error retries against the
+	// CURRENT (provider, model) before MarkRateLimited cools the
+	// matrix entry and ReResolve escalates to a different provider.
+	// Real providers' 429s often clear within seconds (much shorter
+	// than the 30s MarkRateLimited cooldown), so retrying the same
+	// pair 1-3 times with exponential backoff often recovers the
+	// run cheaper than escalating — AND it's the only resilience
+	// path for single-provider configurations where ReResolve has
+	// no fallback target.
+	//
+	// 0 (default, v0.12.x behaviour) — the FIRST retryable error
+	// fires MarkRateLimited and propagates / falls back immediately.
+	// 1-3 — retry the same pair with 100ms / 300ms / 900ms backoff
+	// before MarkRateLimited / ReResolve. Capped internally at 5 to
+	// avoid pathological retry storms.
+	//
+	// Applies to BOTH paths:
+	//   - Call() returns error before the stream opens (driver
+	//     refused the request, network issue, etc.)
+	//   - EventError frame in-stream (driver opened the stream then
+	//     surfaced a retryable error)
+	//
+	// Non-retryable errors (400 / 401 / 403 / 422 / context.Canceled)
+	// are NOT retried regardless of this setting — they're surfaced
+	// immediately so the caller can see the real cause.
+	//
+	// Sourced from cfg.UserTiers[req.user_tier].RetryAttempts on the
+	// HTTP layer. The HTTP layer caps at 5 before passing to the loop.
+	MaxSameProviderRetries int
 }
 
 // FallbackPolicy controls the v0.8.2 runtime fallback path. The HTTP
@@ -280,6 +310,33 @@ type FallbackPolicy struct {
 // from a single-provider outage without consuming dozens of attempts
 // against a deeper backbone-wide issue.
 const defaultMaxFallbackAttempts = 3
+
+// maxSameProviderRetriesCap is the hard ceiling on
+// RunOptions.MaxSameProviderRetries. Operators can set higher in
+// yaml but the loop clamps to this — pathological retry counts
+// would cause a single retryable error to absorb minutes of
+// backoff before propagating. Five attempts × the 100/300/900/2700/
+// 8100ms backoff schedule = ~12s total worst case, the longest
+// stretch we're willing to delay a single iteration's error reply.
+const maxSameProviderRetriesCap = 5
+
+// sameProviderRetryBackoff returns the duration to sleep before the
+// nth retry of the same (provider, model). Exponential: 100ms,
+// 300ms, 900ms, 2.7s, 8.1s — 3× per attempt. Most provider 429s
+// resolve in seconds; 100ms / 300ms catches the fast-clearing
+// transients, 900ms catches a typical Anthropic burst-window
+// release.
+func sameProviderRetryBackoff(attempt int) time.Duration {
+	if attempt < 1 {
+		attempt = 1
+	}
+	// 100 * 3^(attempt-1) ms, in time.Duration
+	d := 100 * time.Millisecond
+	for i := 1; i < attempt; i++ {
+		d *= 3
+	}
+	return d
+}
 
 // fallbackOutcome enumerates what tryProviderFallback decided after
 // classifying the error and consulting policy + budget.
@@ -541,6 +598,22 @@ func Run(ctx context.Context, opts RunOptions) (RunResult, error) {
 	// different provider risks cross-family translation bugs.
 	var firstTurnSucceeded bool
 
+	// sameProviderRetries counts CONSECUTIVE retryable failures
+	// against the current (provider, model). Reset to 0 on any
+	// successful Call() that yields events (whether the iteration
+	// ultimately failed in-stream or not — we measure conn-level
+	// recovery, not iteration-level success). Also reset by
+	// tryProviderFallback when it switches the provider, since the
+	// retry budget is per-provider. Capped at opts.MaxSameProviderRetries
+	// (clamped to maxSameProviderRetriesCap=5).
+	var sameProviderRetries int
+
+	// Clamp the operator-supplied retry count to the safety cap so
+	// a misconfigured yaml can't induce minute-scale delays per error.
+	if opts.MaxSameProviderRetries > maxSameProviderRetriesCap {
+		opts.MaxSameProviderRetries = maxSameProviderRetriesCap
+	}
+
 outerLoop:
 	for iter := 0; iter < opts.MaxIterations; iter++ {
 		// v0.10.0 OTEL: one loomcycle.iteration span per turn. Nested
@@ -575,6 +648,40 @@ outerLoop:
 		}
 		ch, err := opts.Provider.Call(iterCtx, req)
 		if err != nil {
+			// v0.12.9 same-provider retry: when the operator opted
+			// into MaxSameProviderRetries > 0, retryable errors
+			// (429, 5xx, network) sleep with exponential backoff and
+			// re-attempt the SAME (provider, model) before
+			// MarkRateLimited cools the matrix entry and
+			// tryProviderFallback escalates. Captures the common
+			// case of a brief provider-side burst: real-world 429s
+			// often clear within 1-3 seconds, well under the 30s
+			// MarkRateLimited cooldown.
+			if ctx.Err() == nil &&
+				sameProviderRetries < opts.MaxSameProviderRetries &&
+				providers.ClassifyError(err) == providers.ErrorClassRetryable {
+				sameProviderRetries++
+				backoff := sameProviderRetryBackoff(sameProviderRetries)
+				emit(providers.Event{
+					Type: providers.EventRetry,
+					Retry: &providers.RetryInfo{
+						Provider: opts.Provider.ID(),
+						Attempt:  sameProviderRetries,
+						WaitMs:   backoff.Milliseconds(),
+						Reason:   providers.RetryReasonSchedule,
+					},
+				})
+				select {
+				case <-ctx.Done():
+					lcotel.SetSpanError(iterSpan, ctx.Err())
+					iterSpan.End()
+					return RunResult{Iterations: iter}, ctx.Err()
+				case <-time.After(backoff):
+				}
+				lcotel.SetSpanErrorMessage(iterSpan, "provider call failed; same-provider retry scheduled")
+				iterSpan.End()
+				continue outerLoop
+			}
 			// Resolver feedback: a non-context error from Call() is
 			// the driver giving up after its own retries. Route the
 			// feedback by error class:
@@ -611,8 +718,11 @@ outerLoop:
 			// switching away from anthropic) and mutates opts in
 			// place. Outcome==Switched → continue the outer loop
 			// without surfacing the error. Other outcomes fall
-			// through to the original error path.
+			// through to the original error path. The fallback path
+			// switches (provider, model), so the per-pair retry
+			// budget resets — the new pair starts fresh.
 			if tryProviderFallback(ctx, &opts, &fallbackAttempts, err, emit, messages, firstTurnSucceeded) == fallbackOutcomeSwitched {
+				sameProviderRetries = 0
 				lcotel.SetSpanErrorMessage(iterSpan, "provider call failed; fallback engaged")
 				iterSpan.End()
 				continue outerLoop
@@ -622,6 +732,12 @@ outerLoop:
 			iterSpan.End()
 			return RunResult{Iterations: iter}, err
 		}
+		// Call() succeeded — the connection / driver was healthy
+		// enough to open the response stream. Reset the same-provider
+		// retry counter so the next retryable error (if any) starts
+		// from a fresh budget. In-stream errors below have their own
+		// retry path.
+		sameProviderRetries = 0
 
 		// Collect this iteration: assistant text, any tool_use blocks, usage.
 		var assistantBlocks []providers.ContentBlock
@@ -665,6 +781,46 @@ outerLoop:
 				iterUsage = ev.Usage
 				iterReasoning = ev.Reasoning
 			case providers.EventError:
+				// v0.8.2 classification: build the RAW error string so
+				// the status-prefix regex sees the bare "<name>
+				// <code>:" shape. The streamErr wrap below would
+				// obscure that; reserved for the FINAL return value.
+				rawErr := errors.New(ev.Error)
+
+				// v0.12.9 same-provider retry on in-stream retryable
+				// errors. Drain the rest of the channel (drivers may
+				// emit a trailing EventDone after EventError; we must
+				// consume it or the goroutine sending events leaks) and
+				// re-attempt the same (provider, model). Same budget
+				// as the Call() error path.
+				if ctx.Err() == nil &&
+					sameProviderRetries < opts.MaxSameProviderRetries &&
+					providers.ClassifyError(rawErr) == providers.ErrorClassRetryable {
+					for range ch {
+					}
+					sameProviderRetries++
+					backoff := sameProviderRetryBackoff(sameProviderRetries)
+					emit(providers.Event{
+						Type: providers.EventRetry,
+						Retry: &providers.RetryInfo{
+							Provider: opts.Provider.ID(),
+							Attempt:  sameProviderRetries,
+							WaitMs:   backoff.Milliseconds(),
+							Reason:   providers.RetryReasonSchedule,
+						},
+					})
+					select {
+					case <-ctx.Done():
+						lcotel.SetSpanError(iterSpan, ctx.Err())
+						iterSpan.End()
+						return RunResult{Iterations: iter}, ctx.Err()
+					case <-time.After(backoff):
+					}
+					lcotel.SetSpanErrorMessage(iterSpan, "in-stream provider error; same-provider retry scheduled")
+					iterSpan.End()
+					continue outerLoop
+				}
+
 				// Resolver feedback for in-stream errors: same
 				// 429-vs-5xx routing as the Call() error path
 				// above. Driver opened the SSE/NDJSON stream
@@ -681,17 +837,10 @@ outerLoop:
 						opts.MarkStalled(opts.Provider.ID(), opts.Model, ev.Error)
 					}
 				}
-				// v0.8.2: classify the RAW provider error string
-				// (e.g. "anthropic 503: backend unavailable") for
-				// the fallback decision. The classifier's status-
-				// prefix regex needs the bare "<name> <code>:"
-				// shape, which the streamErr wrap below would
-				// obscure. The wrap is reserved for the FINAL
-				// return value when fallback isn't eligible.
-				rawErr := errors.New(ev.Error)
 				if tryProviderFallback(ctx, &opts, &fallbackAttempts, rawErr, emit, messages, firstTurnSucceeded) == fallbackOutcomeSwitched {
 					for range ch {
 					}
+					sameProviderRetries = 0
 					lcotel.SetSpanErrorMessage(iterSpan, "in-stream provider error; fallback engaged")
 					iterSpan.End()
 					continue outerLoop

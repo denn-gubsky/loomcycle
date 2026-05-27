@@ -447,3 +447,45 @@ func TestExtractCircuitID(t *testing.T) {
 		})
 	}
 }
+
+// TestMockStable_NeverInjectsErrors — NewStable() produces a driver
+// whose 429/500 injection rates are zero, AND 200 consecutive calls
+// confirm no error path fires. The fallback experiment depends on
+// the stable variant being reliably error-free regardless of any
+// LOOMCYCLE_MOCK_*_RATE env var that may have been set at process
+// boot.
+func TestMockStable_NeverInjectsErrors(t *testing.T) {
+	// Pre-set hostile env-var rates to prove NewStable() zeroes them
+	// REGARDLESS of what the operator (or a prior test) configured.
+	// New() reads these via parseRate; NewStable() must override.
+	t.Setenv("LOOMCYCLE_MOCK_429_RATE", "1.0")
+	t.Setenv("LOOMCYCLE_MOCK_500_RATE", "1.0")
+
+	d := NewStable()
+	if d.rate429 != 0 {
+		t.Errorf("NewStable: rate429 = %v, want 0 even with env=1.0", d.rate429)
+	}
+	if d.rate500 != 0 {
+		t.Errorf("NewStable: rate500 = %v, want 0 even with env=1.0", d.rate500)
+	}
+	for i := 0; i < 200; i++ {
+		_, err := d.Call(context.Background(), providers.Request{
+			Model:    "mock-generic",
+			Messages: []providers.Message{userTextMessage("c1 q?")},
+		})
+		if err != nil {
+			t.Fatalf("call %d: unexpected error from stable variant: %v", i, err)
+		}
+	}
+}
+
+// TestStableDriverID_OverridesParent — the wrapper's ID() must
+// return "mock-stable" so the resolver dispatches to it as a
+// distinct provider id, even though it embeds *Driver (which
+// returns "mock").
+func TestStableDriverID_OverridesParent(t *testing.T) {
+	sd := &stableDriver{Driver: NewStable()}
+	if got := sd.ID(); got != "mock-stable" {
+		t.Errorf("ID() = %q, want mock-stable", got)
+	}
+}

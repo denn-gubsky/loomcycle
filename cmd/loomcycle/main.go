@@ -1708,6 +1708,14 @@ type providerResolver struct {
 	// + runtime-fallback paths under load. See
 	// internal/providers/mock/driver.go.
 	mock providers.Provider
+
+	// v0.12.9 — companion `mock-stable` provider. Same driver
+	// shape, failure rates pinned at zero regardless of env. Lets
+	// operators configure `[mock, mock-stable]` as a tier candidate
+	// list with `fallback_on_error: true`, so a 429 on the primary
+	// escalates to the stable variant under tryProviderFallback —
+	// exercising the recovery path against a known-good target.
+	mockStable providers.Provider
 }
 
 // buildEmbedder turns cfg.Memory.Embedder into a constructed
@@ -1816,11 +1824,13 @@ func newProviderResolver(cfg *config.Config) *providerResolver {
 	// scenario obvious.
 	if os.Getenv("LOOMCYCLE_MOCK_ENABLED") == "1" {
 		pr.mock = mockprov.New()
+		pr.mockStable = mockprov.NewStableProvider()
 		log.Printf("mock provider: enabled (LATENCY_MS=%q LATENCY_JITTER_MS=%q 429_RATE=%q 500_RATE=%q)",
 			os.Getenv("LOOMCYCLE_MOCK_LATENCY_MS"),
 			os.Getenv("LOOMCYCLE_MOCK_LATENCY_JITTER_MS"),
 			os.Getenv("LOOMCYCLE_MOCK_429_RATE"),
 			os.Getenv("LOOMCYCLE_MOCK_500_RATE"))
+		log.Printf("mock-stable provider: enabled (failure injection always off; fallback target for [mock, mock-stable] tier policies)")
 	}
 
 	// v0.11.9 — anthropic-oauth-dev. Two gates: env var + tokens on
@@ -1896,6 +1906,11 @@ func (p *providerResolver) Get(id string) (providers.Provider, error) {
 			return nil, fmt.Errorf("mock provider not configured (set LOOMCYCLE_MOCK_ENABLED=1)")
 		}
 		return p.mock, nil
+	case "mock-stable":
+		if p.mockStable == nil {
+			return nil, fmt.Errorf("mock-stable provider not configured (set LOOMCYCLE_MOCK_ENABLED=1)")
+		}
+		return p.mockStable, nil
 	default:
 		return nil, fmt.Errorf("unknown provider %q", id)
 	}
@@ -1967,6 +1982,10 @@ func runResolveProbeOnce(ctx context.Context, r *resolve.Resolver, pr *providerR
 		// itself is trivial (ListModels returns a fixed slice) so
 		// the matrix populates instantly when enabled.
 		{id: "mock", excluded: os.Getenv("LOOMCYCLE_MOCK_ENABLED") != "1",
+			exclReason: "LOOMCYCLE_MOCK_ENABLED not set"},
+		// v0.12.9 — companion stable variant for fallback testing.
+		// Same gate as `mock` — when one is enabled, both are.
+		{id: "mock-stable", excluded: os.Getenv("LOOMCYCLE_MOCK_ENABLED") != "1",
 			exclReason: "LOOMCYCLE_MOCK_ENABLED not set"},
 	}
 	for i := range jobs {

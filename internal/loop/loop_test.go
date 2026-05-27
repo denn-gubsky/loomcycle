@@ -609,3 +609,286 @@ func TestLoopUntrustedBlockWrapping(t *testing.T) {
 		t.Errorf("untrusted block not wrapped: %q", body[1].Text)
 	}
 }
+
+// retryableFakeProvider is a fakeProvider variant that returns an
+// error on the first N Call()s before falling through to scripted
+// responses. Drives the v0.12.9 MaxSameProviderRetries tests
+// where Call() refuses the stream for transient reasons.
+type retryableFakeProvider struct {
+	mu        sync.Mutex
+	errs      []error             // one error per failed call; len = number of failures before success
+	responses [][]providers.Event // scripted events for subsequent calls
+	calls     []providers.Request
+}
+
+func (r *retryableFakeProvider) ID() string                    { return "fake" }
+func (r *retryableFakeProvider) Probe(_ context.Context) error { return nil }
+func (r *retryableFakeProvider) ListModels(_ context.Context) ([]string, error) {
+	return []string{"fake-model"}, nil
+}
+func (r *retryableFakeProvider) Capabilities() providers.Capabilities {
+	return providers.Capabilities{Streaming: true}
+}
+func (r *retryableFakeProvider) Call(ctx context.Context, req providers.Request) (<-chan providers.Event, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.calls = append(r.calls, req)
+	idx := len(r.calls) - 1
+	if idx < len(r.errs) {
+		return nil, r.errs[idx]
+	}
+	respIdx := idx - len(r.errs)
+	if respIdx >= len(r.responses) {
+		return nil, &runtimeErr{msg: "no scripted response"}
+	}
+	ch := make(chan providers.Event, len(r.responses[respIdx]))
+	for _, ev := range r.responses[respIdx] {
+		ch <- ev
+	}
+	close(ch)
+	return ch, nil
+}
+
+// TestLoopSameProviderRetry_RecoversOnRetry — Call() refuses with a
+// 429 once, then succeeds. With MaxSameProviderRetries=2 the loop
+// retries and the run completes.
+func TestLoopSameProviderRetry_RecoversOnRetry(t *testing.T) {
+	provider := &retryableFakeProvider{
+		errs: []error{fmt.Errorf("fake 429: rate_limited")},
+		responses: [][]providers.Event{
+			{
+				{Type: providers.EventText, Text: "ok"},
+				{Type: providers.EventDone, StopReason: "end_turn",
+					Usage: &providers.Usage{InputTokens: 10, OutputTokens: 1}},
+			},
+		},
+	}
+
+	var rateLimitedCalls int
+	res, err := Run(context.Background(), RunOptions{
+		Provider:               provider,
+		Model:                  "fake-model",
+		MaxSameProviderRetries: 2,
+		MarkRateLimited: func(_, _ string, _ time.Duration) {
+			rateLimitedCalls++
+		},
+		Segments: []PromptSegment{
+			{Role: "user", Content: []PromptContentBlock{{Type: "trusted-text", Text: "hi"}}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Run failed: %v", err)
+	}
+	if len(provider.calls) != 2 {
+		t.Errorf("Call() count = %d, want 2 (1 failed + 1 retry succeeded)", len(provider.calls))
+	}
+	if rateLimitedCalls != 0 {
+		t.Errorf("MarkRateLimited fired %d times, want 0 (retry absorbed the 429)", rateLimitedCalls)
+	}
+	if res.StopReason != "end_turn" {
+		t.Errorf("stop_reason = %q, want end_turn", res.StopReason)
+	}
+}
+
+// TestLoopSameProviderRetry_ExhaustedThenMarkRateLimited — all
+// attempts fail 429. After MaxSameProviderRetries the loop falls
+// through to MarkRateLimited + error propagation (no fallback
+// configured in this test).
+func TestLoopSameProviderRetry_ExhaustedThenMarkRateLimited(t *testing.T) {
+	provider := &retryableFakeProvider{
+		errs: []error{
+			fmt.Errorf("fake 429: rate_limited"),
+			fmt.Errorf("fake 429: rate_limited"),
+			fmt.Errorf("fake 429: rate_limited"),
+		},
+	}
+
+	var rateLimitedCalls int
+	_, err := Run(context.Background(), RunOptions{
+		Provider:               provider,
+		Model:                  "fake-model",
+		MaxSameProviderRetries: 2,
+		MarkRateLimited: func(_, _ string, _ time.Duration) {
+			rateLimitedCalls++
+		},
+		Segments: []PromptSegment{
+			{Role: "user", Content: []PromptContentBlock{{Type: "trusted-text", Text: "hi"}}},
+		},
+	})
+	if err == nil {
+		t.Fatal("expected error after retries exhausted")
+	}
+	if !strings.Contains(err.Error(), "429") {
+		t.Errorf("err = %v, want 429 propagation", err)
+	}
+	// 1 initial + 2 retries = 3 calls
+	if len(provider.calls) != 3 {
+		t.Errorf("Call() count = %d, want 3 (initial + 2 retries)", len(provider.calls))
+	}
+	if rateLimitedCalls != 1 {
+		t.Errorf("MarkRateLimited fired %d times, want 1 (after retries exhausted)", rateLimitedCalls)
+	}
+}
+
+// TestLoopSameProviderRetry_DefaultZeroBehavesAsBefore — without
+// MaxSameProviderRetries set, the first 429 immediately propagates
+// through MarkRateLimited. v0.12.x behaviour preserved.
+func TestLoopSameProviderRetry_DefaultZeroBehavesAsBefore(t *testing.T) {
+	provider := &retryableFakeProvider{
+		errs: []error{fmt.Errorf("fake 429: rate_limited")},
+	}
+
+	var rateLimitedCalls int
+	_, err := Run(context.Background(), RunOptions{
+		Provider: provider,
+		Model:    "fake-model",
+		// MaxSameProviderRetries left at 0 — default behaviour.
+		MarkRateLimited: func(_, _ string, _ time.Duration) {
+			rateLimitedCalls++
+		},
+		Segments: []PromptSegment{
+			{Role: "user", Content: []PromptContentBlock{{Type: "trusted-text", Text: "hi"}}},
+		},
+	})
+	if err == nil {
+		t.Fatal("expected error on first 429 with no retry budget")
+	}
+	if len(provider.calls) != 1 {
+		t.Errorf("Call() count = %d, want 1 (no retries with default config)", len(provider.calls))
+	}
+	if rateLimitedCalls != 1 {
+		t.Errorf("MarkRateLimited fired %d times, want 1", rateLimitedCalls)
+	}
+}
+
+// TestLoopSameProviderRetry_PermanentErrorNotRetried — a 400-class
+// error is non-retryable; MaxSameProviderRetries doesn't apply.
+// The loop surfaces it immediately so the caller sees the real
+// cause.
+func TestLoopSameProviderRetry_PermanentErrorNotRetried(t *testing.T) {
+	provider := &retryableFakeProvider{
+		errs: []error{fmt.Errorf("fake 422: bad payload")},
+	}
+
+	_, err := Run(context.Background(), RunOptions{
+		Provider:               provider,
+		Model:                  "fake-model",
+		MaxSameProviderRetries: 3, // generous budget — must NOT be consumed
+		Segments: []PromptSegment{
+			{Role: "user", Content: []PromptContentBlock{{Type: "trusted-text", Text: "hi"}}},
+		},
+	})
+	if err == nil {
+		t.Fatal("expected permanent error to propagate")
+	}
+	if len(provider.calls) != 1 {
+		t.Errorf("Call() count = %d, want 1 (permanent errors must not retry)", len(provider.calls))
+	}
+}
+
+// TestLoopSameProviderRetry_ClampsAtSafetyCap — operator yaml
+// asking for 100 retries is clamped to the safety ceiling (5)
+// to avoid pathological 8+ second delays per error.
+//
+// Sleeps through the full 5-attempt backoff schedule (100ms +
+// 300ms + 900ms + 2.7s + 8.1s ≈ 12s) to actually exercise the
+// cap. Skipped under `go test -short` to keep the fast-path
+// suite under a second; CI's full sweep still covers it.
+func TestLoopSameProviderRetry_ClampsAtSafetyCap(t *testing.T) {
+	if testing.Short() {
+		t.Skip("sleeps ~12s through the full 5-attempt backoff to validate the safety cap; run without -short")
+	}
+	provider := &retryableFakeProvider{
+		errs: []error{
+			fmt.Errorf("fake 429: x"),
+			fmt.Errorf("fake 429: x"),
+			fmt.Errorf("fake 429: x"),
+			fmt.Errorf("fake 429: x"),
+			fmt.Errorf("fake 429: x"),
+			fmt.Errorf("fake 429: x"),
+			fmt.Errorf("fake 429: x"),
+		},
+	}
+	_, err := Run(context.Background(), RunOptions{
+		Provider:               provider,
+		Model:                  "fake-model",
+		MaxSameProviderRetries: 100, // way past the cap
+		Segments: []PromptSegment{
+			{Role: "user", Content: []PromptContentBlock{{Type: "trusted-text", Text: "hi"}}},
+		},
+	})
+	if err == nil {
+		t.Fatal("expected propagation after retries exhausted")
+	}
+	// 1 initial + 5 retries (capped) = 6 calls
+	if len(provider.calls) != 6 {
+		t.Errorf("Call() count = %d, want 6 (1 initial + 5 retries at safety cap)", len(provider.calls))
+	}
+}
+
+// TestLoopSameProviderRetry_EmitsRetryEvent — the retry path emits
+// EventRetry frames so SSE consumers see "waiting on retry" live.
+func TestLoopSameProviderRetry_EmitsRetryEvent(t *testing.T) {
+	provider := &retryableFakeProvider{
+		errs: []error{fmt.Errorf("fake 429: x")},
+		responses: [][]providers.Event{
+			{
+				{Type: providers.EventText, Text: "ok"},
+				{Type: providers.EventDone, StopReason: "end_turn",
+					Usage: &providers.Usage{InputTokens: 10, OutputTokens: 1}},
+			},
+		},
+	}
+	var retries []*providers.RetryInfo
+	_, err := Run(context.Background(), RunOptions{
+		Provider:               provider,
+		Model:                  "fake-model",
+		MaxSameProviderRetries: 1,
+		OnEvent: func(ev providers.Event) {
+			if ev.Type == providers.EventRetry {
+				retries = append(retries, ev.Retry)
+			}
+		},
+		Segments: []PromptSegment{
+			{Role: "user", Content: []PromptContentBlock{{Type: "trusted-text", Text: "hi"}}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(retries) != 1 {
+		t.Fatalf("EventRetry count = %d, want 1", len(retries))
+	}
+	if retries[0].Attempt != 1 {
+		t.Errorf("retry attempt = %d, want 1", retries[0].Attempt)
+	}
+	if retries[0].Provider != "fake" {
+		t.Errorf("retry provider = %q, want fake", retries[0].Provider)
+	}
+	if retries[0].WaitMs != 100 {
+		t.Errorf("retry wait_ms = %d, want 100", retries[0].WaitMs)
+	}
+}
+
+// TestSameProviderRetryBackoff_Exponential — sanity that the
+// 100ms / 300ms / 900ms / 2.7s / 8.1s shape is preserved.
+func TestSameProviderRetryBackoff_Exponential(t *testing.T) {
+	cases := []struct {
+		attempt int
+		want    time.Duration
+	}{
+		{0, 100 * time.Millisecond}, // floor at attempt=1
+		{1, 100 * time.Millisecond},
+		{2, 300 * time.Millisecond},
+		{3, 900 * time.Millisecond},
+		{4, 2700 * time.Millisecond},
+		{5, 8100 * time.Millisecond},
+	}
+	for _, tc := range cases {
+		t.Run(fmt.Sprintf("attempt_%d", tc.attempt), func(t *testing.T) {
+			if got := sameProviderRetryBackoff(tc.attempt); got != tc.want {
+				t.Errorf("got %v, want %v", got, tc.want)
+			}
+		})
+	}
+}

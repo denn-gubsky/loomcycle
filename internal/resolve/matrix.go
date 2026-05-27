@@ -146,6 +146,11 @@ type UserTierOverlay struct {
 	// for callers downstream.
 	FallbackOnError     bool
 	MaxFallbackAttempts int
+
+	// RetryAttempts (v0.12.9) is the same-provider retry budget for
+	// retryable errors. Like FallbackOnError, the resolver doesn't
+	// act on it directly — it's read by the loop via RunOptions.
+	RetryAttempts int
 }
 
 // Candidate is one (provider, model) pair in a tier's candidate list.

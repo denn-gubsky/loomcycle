@@ -95,6 +95,37 @@ func NewWithRNG(rng *rand.Rand) *Driver {
 	return d
 }
 
+// NewStable returns a mock driver with all failure-injection rates
+// zeroed regardless of env vars. Registered as provider id
+// "mock-stable" so operators can put it as the fallback target in a
+// tier policy: `[{provider: mock, ...}, {provider: mock-stable, ...}]`
+// with `fallback_on_error: true`. When the primary `mock` 429s under
+// `LOOMCYCLE_MOCK_429_RATE`, tryProviderFallback escalates to
+// `mock-stable` which always succeeds — exercising the fallback
+// recovery path without a real LLM. Latency knobs still apply so
+// the stable variant doesn't unrealistically zero-out delay.
+func NewStable() *Driver {
+	d := New()
+	d.rate429 = 0
+	d.rate500 = 0
+	return d
+}
+
+// stableDriver wraps a Driver to override ID() to "mock-stable" so
+// the resolver dispatch table treats it as a distinct provider.
+type stableDriver struct {
+	*Driver
+}
+
+func (s *stableDriver) ID() string { return "mock-stable" }
+
+// NewStableProvider returns a providers.Provider whose ID() is
+// "mock-stable" — for main.go's provider registry. Wraps NewStable
+// to override the embedded Driver.ID().
+func NewStableProvider() providers.Provider {
+	return &stableDriver{Driver: NewStable()}
+}
+
 func (d *Driver) ID() string { return "mock" }
 
 func (d *Driver) Capabilities() providers.Capabilities {

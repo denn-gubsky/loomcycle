@@ -1,10 +1,22 @@
 #!/usr/bin/env bash
-# run-mock.sh — cost-free twin of run.sh.
+# run-mock-fallback.sh — fallback-recovery experiment wrapper.
 #
-# Uses loomcycle.mock.yaml + the synthetic mock provider (see
-# internal/providers/mock/driver.go) so the same circuit-stress
-# harness exercises the substrate at 10K+ concurrent agents without
-# burning real Anthropic / OpenAI quota.
+# Twin of run-mock.sh that uses loomcycle.mock-fallback.yaml — a
+# two-provider tier policy ([mock, mock-stable]) with v0.12.9
+# retry_attempts:2 + fallback_on_error:true. Exercises:
+#
+#   1. Same-provider retry — first 429 retries against mock with
+#      100ms backoff, second 429 retries with 300ms backoff.
+#   2. Cross-provider fallback — if retries exhaust, the loop's
+#      tryProviderFallback escalates to mock-stable, which never
+#      injects errors.
+#
+# Compared to run-mock.sh's single-provider config under
+# LOOMCYCLE_MOCK_429_RATE=0.10 (which dropped to 18.5% completion),
+# this yaml + driver combo should approach 99%+ completion.
+#
+# See internal/providers/mock/driver.go for the driver, and
+# loomcycle.mock-fallback.yaml for the policy commentary.
 #
 # Failure-injection knobs (env vars, all optional):
 #   LOOMCYCLE_MOCK_LATENCY_MS         base sleep per provider Call (default 50)
@@ -18,12 +30,12 @@
 # NO Anthropic credentials required — that's the whole point.
 #
 # Usage (from repo root):
-#   ./test/load/circuit-stress/run-mock.sh                                # x1 smoke
-#   ./test/load/circuit-stress/run-mock.sh --scale 1000 --circuits-per-user 20
+#   ./test/load/circuit-stress/run-mock-fallback.sh                                # x1 smoke
+#   ./test/load/circuit-stress/run-mock-fallback.sh --scale 1000 --circuits-per-user 20
 #   LOOMCYCLE_MOCK_429_RATE=0.05 \
-#     ./test/load/circuit-stress/run-mock.sh --scale 1000
+#     ./test/load/circuit-stress/run-mock-fallback.sh --scale 1000
 #   LOOMCYCLE_MOCK_LATENCY_MS=200 LOOMCYCLE_MOCK_LATENCY_JITTER_MS=100 \
-#     ./test/load/circuit-stress/run-mock.sh --scale 5000
+#     ./test/load/circuit-stress/run-mock-fallback.sh --scale 5000
 
 set -euo pipefail
 
@@ -72,16 +84,6 @@ elif [ "$(docker inspect -f '{{.State.Running}}' "$PG_CONTAINER")" != "true" ]; 
     until docker exec "$PG_CONTAINER" pg_isready -U postgres >/dev/null 2>&1; do
         sleep 1
     done
-    # Verify max_connections on the restarted container. A container
-    # created before this script bumped the limit (or by a prior
-    # invocation of run.sh which uses the postgres:16 default) will
-    # silently restart at max_connections=100 — the exact failure
-    # mode this script exists to work around. Warn loudly.
-    existing_max=$(docker exec "$PG_CONTAINER" psql -U postgres -tAc "SHOW max_connections" 2>/dev/null || echo "?")
-    if [ "$existing_max" != "200" ]; then
-        echo "→ WARNING: restarted container has max_connections=$existing_max (want 200)"
-        echo "  Remove + recreate with: docker rm -f $PG_CONTAINER ; rerun this script"
-    fi
 else
     # Verify max_connections on a pre-existing container; warn if it
     # was created before this script bumped the limit, so operators
@@ -152,7 +154,7 @@ awk -v scale="$SCALE" '
     }
     /END generated channels/ { in_block = 0 }
     !in_block { print }
-' "$SCRIPT_DIR/loomcycle.mock.yaml" > "$GEN_YAML"
+' "$SCRIPT_DIR/loomcycle.mock-fallback.yaml" > "$GEN_YAML"
 
 echo "→ starting loomcycle on :$LC_PORT (logs: $RESULTS_DIR/loomcycle.log)…"
 echo "  scenario: latency_ms=$LOOMCYCLE_MOCK_LATENCY_MS jitter_ms=$LOOMCYCLE_MOCK_LATENCY_JITTER_MS 429_rate=$LOOMCYCLE_MOCK_429_RATE 500_rate=$LOOMCYCLE_MOCK_500_RATE"
