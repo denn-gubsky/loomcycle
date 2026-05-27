@@ -220,6 +220,13 @@ type agentResp struct {
 		InputTokens  int    `json:"input_tokens"`
 		OutputTokens int    `json:"output_tokens"`
 		Model        string `json:"model"`
+		// Provider is the v0.12.7+ wire field — the provider id that
+		// actually served the run's final iteration. Distinct from
+		// Model so post-run analysis can tell primary-provider runs
+		// from runtime-fallback routed runs (the v0.8.2
+		// tryProviderFallback path mutates opts.Provider in place when
+		// a 429 / 5xx triggers a switch). Empty on pre-migration rows.
+		Provider string `json:"provider"`
 	} `json:"usage"`
 }
 
@@ -244,11 +251,18 @@ type circuitResult struct {
 	Status          string            `json:"status"` // "completed" | "failed" | "timeout"
 	AgentStatus     map[string]string `json:"agent_status"`
 	AgentDurationMS map[string]int64  `json:"agent_duration_ms"`
-	InputTokens     int               `json:"input_tokens"`
-	OutputTokens    int               `json:"output_tokens"`
-	Score           *float64          `json:"score,omitempty"`
-	Rationale       string            `json:"rationale,omitempty"`
-	Error           string            `json:"error,omitempty"`
+	// AgentModel + AgentProvider record what actually served each
+	// role's final successful iteration. v0.12.7 telemetry — captured
+	// at terminal poll. Distinct keys per role so post-test analysis
+	// can pivot by role (e.g. did the editor get routed to fallback
+	// more often than the researcher?).
+	AgentModel    map[string]string `json:"agent_model,omitempty"`
+	AgentProvider map[string]string `json:"agent_provider,omitempty"`
+	InputTokens   int               `json:"input_tokens"`
+	OutputTokens  int               `json:"output_tokens"`
+	Score         *float64          `json:"score,omitempty"`
+	Rationale     string            `json:"rationale,omitempty"`
+	Error         string            `json:"error,omitempty"`
 }
 
 func main() {
@@ -299,7 +313,9 @@ func main() {
 	log.Printf("spawning %d circuits (%d per user, ~%d users)…",
 		f.scale, f.circuitsPerUser, (f.scale+f.circuitsPerUser-1)/f.circuitsPerUser)
 
+	testStart := time.Now()
 	results := runCircuits(c, f, prompts)
+	testEnd := time.Now()
 
 	log.Printf("test complete; writing results to %s/", f.resultsDir)
 	writeResults(f.resultsDir, results)
@@ -312,7 +328,11 @@ func main() {
 		log.Printf("--no-cleanup set; skipping sanity sweep")
 	}
 
-	printSummary(results, f.resultsDir)
+	// Pad both ends by a second so events that landed just before the
+	// first POST or just after the last run terminal-flip still match
+	// the ts >= from / ts <= to window in /v1/_events.
+	fallbackCount := fetchFallbackCount(c, testStart.Add(-time.Second), testEnd.Add(time.Second))
+	printSummary(results, f.resultsDir, fallbackCount)
 }
 
 // ─── Prompts ────────────────────────────────────────────────────────
@@ -405,6 +425,8 @@ func runOneCircuit(c *lcClient, circuitID int, userID, question string, timeout 
 		StartedAt:       time.Now(),
 		AgentStatus:     make(map[string]string),
 		AgentDurationMS: make(map[string]int64),
+		AgentModel:      make(map[string]string),
+		AgentProvider:   make(map[string]string),
 	}
 	cid := fmt.Sprintf("c%d", circuitID)
 	prompt := fmt.Sprintf("Your circuit_id is %s. Question: %s", cid, question)
@@ -470,6 +492,20 @@ func runOneCircuit(c *lcClient, circuitID int, userID, question string, timeout 
 				}
 				res.InputTokens += ar.Usage.InputTokens
 				res.OutputTokens += ar.Usage.OutputTokens
+				// Pre-v0.12.7 servers omit Model/Provider for runs
+				// that failed before the first provider call. Record
+				// "unknown" so the summary's distribution view sees
+				// the row without skewing the legitimate breakdown.
+				if ar.Usage.Model != "" {
+					res.AgentModel[role] = ar.Usage.Model
+				} else {
+					res.AgentModel[role] = "unknown"
+				}
+				if ar.Usage.Provider != "" {
+					res.AgentProvider[role] = ar.Usage.Provider
+				} else {
+					res.AgentProvider[role] = "unknown"
+				}
 				if ar.Status != "completed" && res.Error == "" {
 					res.Error = fmt.Sprintf("%s: %s (%s)", role, ar.Status, ar.Error)
 				}
@@ -683,7 +719,50 @@ func writeResults(dir string, results []circuitResult) {
 	}
 }
 
-func printSummary(results []circuitResult, dir string) {
+// fetchFallbackCount queries the v0.8.21 audit endpoint
+// /v1/_events?type=provider_fallback&from=…&to=… and returns the total
+// count of provider_fallback events that fired during the test window.
+// Each event represents one mid-run cross-provider switch (the v0.8.2
+// tryProviderFallback path, NOT same-provider retries — those don't
+// emit this event type).
+//
+// Returns -1 on failure so the summary can render "unavailable" rather
+// than a misleading 0. The Total field on the wire response is the
+// unbounded match count for the filter, so we don't need to page —
+// limit=1 keeps the response small.
+func fetchFallbackCount(c *lcClient, from, to time.Time) int {
+	path := fmt.Sprintf("/v1/_events?type=provider_fallback&from=%s&to=%s&limit=1",
+		from.UTC().Format(time.RFC3339), to.UTC().Format(time.RFC3339))
+	var resp struct {
+		Total int64 `json:"total"`
+	}
+	if status, err := c.do("GET", path, nil, &resp); err != nil || status != 200 {
+		log.Printf("fetchFallbackCount: %s -> status=%d err=%v (continuing without fallback total)", path, status, err)
+		return -1
+	}
+	return int(resp.Total)
+}
+
+// providerDistribution counts how many agent runs across all circuits
+// were served by each provider. Pivots res.AgentProvider — three rows
+// per completed circuit, one per role. Keys are the provider ids
+// surfaced by /v1/agents/{id}.usage.provider; the special key
+// "unknown" covers pre-v0.12.7 servers or runs that failed before the
+// first provider call.
+func providerDistribution(results []circuitResult) map[string]int {
+	out := map[string]int{}
+	for _, r := range results {
+		for _, p := range r.AgentProvider {
+			if p == "" {
+				continue
+			}
+			out[p]++
+		}
+	}
+	return out
+}
+
+func printSummary(results []circuitResult, dir string, fallbackCount int) {
 	var (
 		completed, failed, silentRegression, timedOut, skipped int
 		durations                                              []int64
@@ -753,6 +832,39 @@ func printSummary(results []circuitResult, dir string) {
 	if quotaSeen {
 		fmt.Printf("  ⚠ Anthropic OAuth-dev quota exhausted at circuit %d\n", quotaCircuit)
 	}
+
+	// Provider telemetry — v0.12.7+ surface. The provider distribution
+	// + fallback count answers "how many runs were actually served by
+	// the configured primary, and how many got rerouted mid-flight?"
+	// without needing to grep loomcycle.log.
+	dist := providerDistribution(results)
+	if len(dist) > 0 {
+		providers := make([]string, 0, len(dist))
+		for p := range dist {
+			providers = append(providers, p)
+		}
+		sort.Strings(providers)
+		parts := make([]string, 0, len(providers))
+		for _, p := range providers {
+			parts = append(parts, fmt.Sprintf("%s=%d", p, dist[p]))
+		}
+		fmt.Printf("  Providers: %s\n", strings.Join(parts, " "))
+	}
+	switch {
+	case fallbackCount < 0:
+		fmt.Printf("  Fallbacks: unavailable (events API unreachable)\n")
+	case fallbackCount > 0:
+		// System-wide, not test-scoped: /v1/_events filters by time
+		// window only, so a parallel load test or production traffic
+		// against the same loomcycle instance would inflate the
+		// count. Acceptable for v0.12.7 (operator runs one test at a
+		// time against a dedicated process); the label has to spell
+		// this out so the number isn't read as test-only.
+		fmt.Printf("  Fallbacks: %d system-wide cross-provider switches in the test window (may include non-test traffic; see GET /v1/_events?type=provider_fallback)\n", fallbackCount)
+	default:
+		fmt.Printf("  Fallbacks: 0 (no cross-provider switches in the test window)\n")
+	}
+
 	fmt.Printf("  Results:  %s/circuits.jsonl\n", dir)
 	fmt.Println()
 	fmt.Println("Post-test resource snapshot:")

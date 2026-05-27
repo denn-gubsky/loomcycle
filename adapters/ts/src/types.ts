@@ -238,6 +238,12 @@ export interface AgentUsage {
   cache_creation_tokens?: number;
   cache_read_tokens?: number;
   model?: string;
+  // provider is the provider id that actually served the final
+  // successful iteration (e.g. "anthropic", "deepseek"). Distinct
+  // from model so consumers can tell primary-provider runs from
+  // runtime-fallback routed runs. Added in v0.12.7 — pre-migration
+  // server rows + pre-call failures omit this field.
+  provider?: string;
 }
 
 export interface Agent {

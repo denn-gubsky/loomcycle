@@ -333,12 +333,13 @@ func (s *Store) FinishRun(ctx context.Context, runID string, status store.RunSta
 			cache_creation_tokens = $7,
 			cache_read_tokens = $8,
 			model = $9,
-			error = $10
-		 WHERE id = $1 AND status = $11`,
+			provider = $10,
+			error = $11
+		 WHERE id = $1 AND status = $12`,
 		runID, string(status), completed, nullableText(stopReason),
 		usage.InputTokens, usage.OutputTokens,
 		usage.CacheCreationTokens, usage.CacheReadTokens,
-		nullableText(usage.Model), nullableText(errMsg),
+		nullableText(usage.Model), nullableText(usage.Provider), nullableText(errMsg),
 		string(store.RunRunning),
 	)
 	if err != nil {
@@ -483,7 +484,7 @@ func (s *Store) GetRunByAgentID(ctx context.Context, agentID string) (store.Run,
 	row := s.pool.QueryRow(ctx,
 		`SELECT r.id, r.session_id, r.status, r.started_at, r.completed_at, r.stop_reason,
 		        r.input_tokens, r.output_tokens, r.cache_creation_tokens, r.cache_read_tokens,
-		        r.model, r.error,
+		        r.model, r.provider, r.error,
 		        r.agent_id, r.parent_agent_id, r.parent_run_id, r.user_id, r.last_heartbeat_at, r.user_tier,
 		        r.agent_def_id, r.pause_state, r.replica_id,
 		        s.agent
@@ -508,7 +509,7 @@ func (s *Store) GetRun(ctx context.Context, runID string) (store.Run, error) {
 	row := s.pool.QueryRow(ctx,
 		`SELECT r.id, r.session_id, r.status, r.started_at, r.completed_at, r.stop_reason,
 		        r.input_tokens, r.output_tokens, r.cache_creation_tokens, r.cache_read_tokens,
-		        r.model, r.error,
+		        r.model, r.provider, r.error,
 		        r.agent_id, r.parent_agent_id, r.parent_run_id, r.user_id, r.last_heartbeat_at, r.user_tier,
 		        r.agent_def_id, r.pause_state, r.replica_id,
 		        s.agent
@@ -571,7 +572,7 @@ func (s *Store) ListActiveRunsByUser(ctx context.Context, userID string, status 
 		rows, err = s.pool.Query(ctx,
 			`SELECT r.id, r.session_id, r.status, r.started_at, r.completed_at, r.stop_reason,
 			        r.input_tokens, r.output_tokens, r.cache_creation_tokens, r.cache_read_tokens,
-			        r.model, r.error,
+			        r.model, r.provider, r.error,
 			        r.agent_id, r.parent_agent_id, r.parent_run_id, r.user_id, r.last_heartbeat_at, r.user_tier,
 			        r.agent_def_id, r.pause_state, r.replica_id,
 			        s.agent
@@ -582,7 +583,7 @@ func (s *Store) ListActiveRunsByUser(ctx context.Context, userID string, status 
 		rows, err = s.pool.Query(ctx,
 			`SELECT r.id, r.session_id, r.status, r.started_at, r.completed_at, r.stop_reason,
 			        r.input_tokens, r.output_tokens, r.cache_creation_tokens, r.cache_read_tokens,
-			        r.model, r.error,
+			        r.model, r.provider, r.error,
 			        r.agent_id, r.parent_agent_id, r.parent_run_id, r.user_id, r.last_heartbeat_at, r.user_tier,
 			        r.agent_def_id, r.pause_state, r.replica_id,
 			        s.agent
@@ -607,7 +608,7 @@ func (s *Store) ListRunsByParentAgentID(ctx context.Context, parentAgentID strin
 	rows, err := s.pool.Query(ctx,
 		`SELECT r.id, r.session_id, r.status, r.started_at, r.completed_at, r.stop_reason,
 		        r.input_tokens, r.output_tokens, r.cache_creation_tokens, r.cache_read_tokens,
-		        r.model, r.error,
+		        r.model, r.provider, r.error,
 		        r.agent_id, r.parent_agent_id, r.parent_run_id, r.user_id, r.last_heartbeat_at, r.user_tier,
 		        r.agent_def_id, r.pause_state, r.replica_id,
 		        s.agent
@@ -702,7 +703,7 @@ func (s *Store) ListPausedRuns(ctx context.Context) ([]store.Run, error) {
 	rows, err := s.pool.Query(ctx,
 		`SELECT r.id, r.session_id, r.status, r.started_at, r.completed_at, r.stop_reason,
 		        r.input_tokens, r.output_tokens, r.cache_creation_tokens, r.cache_read_tokens,
-		        r.model, r.error,
+		        r.model, r.provider, r.error,
 		        r.agent_id, r.parent_agent_id, r.parent_run_id, r.user_id, r.last_heartbeat_at, r.user_tier,
 		        r.agent_def_id, r.pause_state, r.replica_id,
 		        s.agent
@@ -1370,14 +1371,14 @@ func (s *Store) SnapshotRestoreRun(ctx context.Context, r store.Run) (bool, erro
 		`INSERT INTO runs(
 			id, session_id, status, started_at, completed_at, stop_reason,
 			input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens,
-			model, error,
+			model, provider, error,
 			agent_id, parent_agent_id, parent_run_id, user_id, last_heartbeat_at,
 			user_tier, agent_def_id, pause_state
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)
 		 ON CONFLICT (id) DO NOTHING`,
 		r.ID, r.SessionID, status, startedAt, completedAt, nullIfEmpty(r.StopReason),
 		r.InputTokens, r.OutputTokens, r.CacheCreationTokens, r.CacheReadTokens,
-		nullIfEmpty(r.Model), nullIfEmpty(r.ErrorMsg),
+		nullIfEmpty(r.Model), nullIfEmpty(r.Provider), nullIfEmpty(r.ErrorMsg),
 		nullIfEmpty(r.AgentID), nullIfEmpty(r.ParentAgentID), nullIfEmpty(r.ParentRunID),
 		nullIfEmpty(r.UserID), lastHbAt,
 		nullIfEmpty(r.UserTier), nullIfEmpty(r.AgentDefID), pauseState,
@@ -4036,6 +4037,7 @@ func scanRun(r rowScanner) (store.Run, error) {
 		completed  *time.Time
 		stopReason *string
 		model      *string
+		provider   *string
 		errMsg     *string
 
 		agentID, parentAgentID, parentRunID, userID, userTier *string
@@ -4050,7 +4052,7 @@ func scanRun(r rowScanner) (store.Run, error) {
 	if err := r.Scan(
 		&out.ID, &out.SessionID, &statusStr, &started, &completed, &stopReason,
 		&out.InputTokens, &out.OutputTokens, &out.CacheCreationTokens, &out.CacheReadTokens,
-		&model, &errMsg,
+		&model, &provider, &errMsg,
 		&agentID, &parentAgentID, &parentRunID, &userID, &lastHeartbeatAt,
 		&userTier,
 		&agentDefID, &pauseState, &replicaID,
@@ -4068,6 +4070,9 @@ func scanRun(r rowScanner) (store.Run, error) {
 	}
 	if model != nil {
 		out.Model = *model
+	}
+	if provider != nil {
+		out.Provider = *provider
 	}
 	if errMsg != nil {
 		out.ErrorMsg = *errMsg

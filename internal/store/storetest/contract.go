@@ -202,6 +202,11 @@ func Run(t *testing.T, factory Factory) {
 		// v0.8.21 awaited-state derivation needs last-event-per-run.
 		{"GetLastEventForRunEmpty", testGetLastEventForRunEmpty},
 		{"GetLastEventForRunReturnsHighestSeq", testGetLastEventForRunReturnsHighestSeq},
+		// v0.12.7 provider telemetry — FinishRun must persist the
+		// final-iteration provider so post-run analysis can count
+		// fallback-routed runs.
+		{"FinishRunPersistsProvider", testFinishRunPersistsProvider},
+		{"FinishRunPersistsProviderEmpty", testFinishRunPersistsProviderEmpty},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -315,6 +320,60 @@ func testCreateRunOnUnknownSession(t *testing.T, s store.Store) {
 	var nf *store.ErrNotFound
 	if !errors.As(err, &nf) {
 		t.Errorf("got %v (%T), want *store.ErrNotFound", err, err)
+	}
+}
+
+// testFinishRunPersistsProvider verifies that FinishRun writes the
+// Usage.Provider field to storage and GetRun reads it back. Distinct
+// from Model — the v0.8.2 runtime fallback path lands a row whose
+// Model is the original config target but whose Provider is whatever
+// driver actually served the final iteration. The x1000 load test
+// needs both to be queryable to characterize fallback frequency.
+func testFinishRunPersistsProvider(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	sess, _ := s.CreateSession(ctx, "t", "default", "")
+	run, _ := s.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: "a_provider_roundtrip"})
+
+	usage := store.Usage{
+		InputTokens:  100,
+		OutputTokens: 50,
+		Model:        "claude-haiku-4-5-20251001",
+		Provider:     "anthropic-oauth-dev",
+	}
+	if err := s.FinishRun(ctx, run.ID, store.RunCompleted, "end_turn", usage, ""); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.GetRunByAgentID(ctx, "a_provider_roundtrip")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Model != "claude-haiku-4-5-20251001" {
+		t.Errorf("Model = %q, want claude-haiku-4-5-20251001", got.Model)
+	}
+	if got.Provider != "anthropic-oauth-dev" {
+		t.Errorf("Provider = %q, want anthropic-oauth-dev", got.Provider)
+	}
+}
+
+// testFinishRunPersistsProviderEmpty confirms an empty Usage.Provider
+// round-trips as empty string (NULL in the underlying column). Pre-
+// migration rows + pre-call failures hit this path; consumers must
+// not see "" surface as some sentinel like "unknown".
+func testFinishRunPersistsProviderEmpty(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	sess, _ := s.CreateSession(ctx, "t", "default", "")
+	run, _ := s.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: "a_provider_empty"})
+
+	if err := s.FinishRun(ctx, run.ID, store.RunCompleted, "end_turn",
+		store.Usage{Model: "m", Provider: ""}, ""); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.GetRunByAgentID(ctx, "a_provider_empty")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Provider != "" {
+		t.Errorf("Provider = %q, want empty string", got.Provider)
 	}
 }
 

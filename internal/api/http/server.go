@@ -3264,6 +3264,14 @@ type agentResponseUsage struct {
 	CacheCreationTokens int    `json:"cache_creation_tokens,omitempty"`
 	CacheReadTokens     int    `json:"cache_read_tokens,omitempty"`
 	Model               string `json:"model,omitempty"`
+	// Provider is the provider id that actually served the final
+	// successful iteration of the run (e.g. "anthropic", "deepseek").
+	// Distinct from Model so post-run analysis can tell
+	// primary-provider runs from runtime-fallback routed runs (the
+	// v0.8.2 tryProviderFallback path mutates opts.Provider in place
+	// when a 429 / 5xx triggers a switch). Empty for pre-migration
+	// rows and for runs that never reached a provider call.
+	Provider string `json:"provider,omitempty"`
 }
 
 // runToAgentResponse converts a store.Run into the API response shape.
@@ -3290,6 +3298,7 @@ func runToAgentResponse(r store.Run, live bool) agentResponse {
 			CacheCreationTokens: r.CacheCreationTokens,
 			CacheReadTokens:     r.CacheReadTokens,
 			Model:               r.Model,
+			Provider:            r.Provider,
 		},
 		Live:      live,
 		ReplicaID: r.ReplicaID,
