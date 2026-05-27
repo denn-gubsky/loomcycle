@@ -100,6 +100,17 @@ var (
 // corresponding info wasn't available (binary built without VCS — e.g.
 // `go test` by default does not embed VCS info, but `go build` and
 // `go install` do).
+// channelDebugEnabled reports whether the operator opted into the
+// v0.12.7 channel publish/subscribe diagnostic log via the
+// LOOMCYCLE_CHANNEL_DEBUG=1 env var. Read here (not at store package
+// init time) so the env-var coupling stays in main.go where all the
+// other env-var → Config bridging lives. See
+// internal/tools/builtin/channel.go and
+// internal/store/postgres/postgres.go for what gets logged.
+func channelDebugEnabled() bool {
+	return os.Getenv("LOOMCYCLE_CHANNEL_DEBUG") == "1"
+}
+
 // backfillAgentDefSignFn computes the v0.9.x content_sha256 for an
 // existing agent_defs row whose hash column is NULL/empty. The
 // Definition JSONB is the mergedDef shape; agents.FromOverlay
@@ -875,6 +886,19 @@ func main() {
 	// fallback for operators running without a configured store.
 	memoryTool.Store = storeIface
 	channelTool.Store = storeIface
+	// Wire the pool-stats accessor when the backend is Postgres so
+	// the Channel tool's subscribe-race diagnostic log can correlate
+	// retry fires with pool exhaustion. SQLite stores and test builds
+	// leave it nil; the diagnostic log path then reports zeros for
+	// the pool fields and the retry behavior is unchanged. The
+	// PoolStatsFn capture lives inside execSubscribe at the case
+	// <-waker: arm — see internal/tools/builtin/channel.go.
+	if pg, ok := storeIface.(*storepostgres.Store); ok && pg != nil {
+		channelTool.PoolStatsFn = func() (total, acquired, idle int32) {
+			st := pg.Pool().Stat()
+			return st.TotalConns(), st.AcquiredConns(), st.IdleConns()
+		}
+	}
 	agentDefTool.Store = storeIface
 	skillDefTool.Store = storeIface
 	skillTool.Store = storeIface
@@ -1628,6 +1652,7 @@ func openStore(cfg *config.Config) (store.Store, func(), error) {
 		if err != nil {
 			return nil, nil, fmt.Errorf("sqlite open: %w", err)
 		}
+		st.SetChannelDebug(channelDebugEnabled())
 		log.Printf("store: sqlite at %s", dbPath)
 		return st, func() { _ = st.Close() }, nil
 
@@ -1641,6 +1666,7 @@ func openStore(cfg *config.Config) (store.Store, func(), error) {
 			MinIdleConns:    cfg.Storage.PgMinIdleConns,
 			AutoMigrate:     cfg.Storage.PgAutoMigrate,
 			PgvectorEnabled: cfg.Env.PgvectorEnabled,
+			ChannelDebug:    channelDebugEnabled(),
 		})
 		if err != nil {
 			return nil, nil, fmt.Errorf("postgres open: %w", err)

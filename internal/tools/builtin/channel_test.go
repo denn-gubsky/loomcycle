@@ -594,7 +594,7 @@ func TestReadWithRetry(t *testing.T) {
 			calls++
 			return []store.ChannelMessage{makeMsg("m1")}, "cur_x", nil
 		}
-		msgs, next, err := readWithRetry(read, "test")
+		msgs, next, err := readWithRetry(read, "test", retryDiagnostics{})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -618,7 +618,7 @@ func TestReadWithRetry(t *testing.T) {
 			}
 			return []store.ChannelMessage{makeMsg("m2")}, "cur_y", nil
 		}
-		msgs, _, err := readWithRetry(read, "test")
+		msgs, _, err := readWithRetry(read, "test", retryDiagnostics{})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -636,7 +636,7 @@ func TestReadWithRetry(t *testing.T) {
 			calls++
 			return nil, "", nil // always empty
 		}
-		msgs, next, err := readWithRetry(read, "test")
+		msgs, next, err := readWithRetry(read, "test", retryDiagnostics{})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -657,7 +657,7 @@ func TestReadWithRetry(t *testing.T) {
 			calls++
 			return nil, "", errSentinel
 		}
-		_, _, err := readWithRetry(read, "test")
+		_, _, err := readWithRetry(read, "test", retryDiagnostics{})
 		if err != errSentinel {
 			t.Errorf("err = %v, want %v", err, errSentinel)
 		}

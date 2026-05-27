@@ -68,6 +68,15 @@ type Config struct {
 	// EXISTS vector` either way — only LOAD failures during search
 	// would surface, and search refuses upfront in that case.
 	PgvectorEnabled bool
+
+	// ChannelDebug, when true, enables structured logging on the
+	// channel publish/subscribe paths used to characterise the
+	// post-PR-#234 residual subscribe-empty race. Operators flip this
+	// via LOOMCYCLE_CHANNEL_DEBUG=1; main.go reads the env var and
+	// passes the result here. Read once at Open() and stored on the
+	// Store struct so the hot path is a single bool load. Defaults
+	// to off so noise stays out of production logs.
+	ChannelDebug bool
 }
 
 // Store is the Postgres implementation of store.Store.
@@ -78,6 +87,10 @@ type Store struct {
 	// AND the post-migration `SELECT FROM pg_extension WHERE
 	// extname='vector'` probe. SupportsVectors() returns this.
 	pgvectorEnabled bool
+
+	// channelDebug is captured from Config.ChannelDebug at Open()
+	// time. See ChannelPublish for what the debug log contains.
+	channelDebug bool
 
 	// closeOnce guards the Close() idempotency contract.
 	closeOnce sync.Once
@@ -146,7 +159,7 @@ func Open(ctx context.Context, cfg Config) (*Store, error) {
 		}
 	}
 
-	s := &Store{pool: pool}
+	s := &Store{pool: pool, channelDebug: cfg.ChannelDebug}
 
 	// v0.9.0 Vector Memory: when operator opted in via
 	// LOOMCYCLE_PGVECTOR_ENABLED=1, verify the extension actually
@@ -2624,8 +2637,23 @@ func (s *Store) ChannelPublish(ctx context.Context, msg store.ChannelMessage, ma
 		}
 		dropped = int(tag.RowsAffected())
 	}
+	commitStart := time.Now()
 	if err := tx.Commit(ctx); err != nil {
 		return "", 0, fmt.Errorf("channel publish commit: %w", err)
+	}
+	if s.channelDebug {
+		// Bracket the commit so we can correlate publish-side commit
+		// duration with subscriber-side notify_lag_ms (logged from
+		// channel.go readWithRetry). If commit_us is large and
+		// notify_lag_ms small, the race window is not "notify before
+		// commit" — the subscriber genuinely raced a fresh snapshot
+		// against an MVCC-visible row. Microseconds, not milliseconds,
+		// because most commits land in the 200-800µs band at our
+		// concurrency level.
+		st := s.pool.Stat()
+		log.Printf("channel %q publish: id=%s commit_us=%d pool_total=%d pool_acquired=%d pool_idle=%d",
+			msg.Channel, msg.ID, time.Since(commitStart).Microseconds(),
+			st.TotalConns(), st.AcquiredConns(), st.IdleConns())
 	}
 	return msg.ID, dropped, nil
 }

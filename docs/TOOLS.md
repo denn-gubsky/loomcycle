@@ -535,6 +535,16 @@ Cursor monotonicity is enforced: `ack` with a cursor older than the currently co
 
 `subscribe` accepts an optional `wait_ms`. If the storage read returns empty, the tool blocks on the in-process notification bus for that channel until either a new publish lands or the timeout fires. Cap is operator-controlled (`LOOMCYCLE_CHANNELS_LONGPOLL_CAP_MS`, default 30 s). Same-process subscribers wake within microseconds of a publish; cross-process subscribers (multi-replica deployments) fall back to polling — that's deferred to v0.9.x.
 
+### Diagnostic logging (v0.12.7)
+
+`LOOMCYCLE_CHANNEL_DEBUG=1` enables structured per-publish + per-retry log lines used to characterise the residual subscribe-empty race the v0.8.x bounded-retry workaround mitigates. Default off — these lines are noisy on a busy install. Operators flip the flag during a load test, capture a window of logs (~20 retry-saved lines), then flip it back. The two log shapes are:
+
+- `channel "X" publish: id=... commit_us=N pool_total=A pool_acquired=B pool_idle=C` — fires on every successful publish. `commit_us` measures the postgres `tx.Commit` duration in microseconds; the pool fields capture pgxpool state at commit time.
+
+- `channel "X" subscribe-race-recovered attempt=N msgs=K recovery_lag_ms=Y first_read_lag_us=Z from_cursor="..." pool_total=A pool_acquired=B pool_idle=C` — fires when the bounded retry rescued a subscribe after Bus.Wait returned via the waker but the immediate re-read found no rows. `first_read_lag_us` is the diagnostic field that distinguishes the race window (waker → empty read), separate from `recovery_lag_ms` (waker → eventually-non-empty read).
+
+A complementary `subscribe-race-exhausted` log fires when all 3 retry attempts return empty. SQLite's parity logging (commit_us only — single-writer, no pool) lets operators A/B the same workload against both backends. See `~/work/loomcycle-internal/doc-internal/channel-race-investigation.md` for the hypothesis table.
+
 ### Quotas and overflow
 
 - Per-write payload cap: `LOOMCYCLE_CHANNELS_MAX_VALUE_BYTES` (default 64 KB). 0 disables.
