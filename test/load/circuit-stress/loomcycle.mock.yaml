@@ -49,10 +49,20 @@ concurrency:
 # SQLite serialises writes; under 10K concurrent agents that
 # serialisation dominates the latency picture before the substrate
 # itself is meaningfully loaded.
+#
+# pg_max_open_conns CAP: the test container's postgres:16 default
+# max_connections is 100. The baseline x1000 (2026-05-27) opened
+# pg_max_open_conns=128 on its own + held its existing connections,
+# so the pool tried to grow past 100 during the launch storm and
+# Postgres rejected with SQLSTATE 53300 ("sorry, too many clients
+# already"). Capping the pool at 80 leaves headroom for psql /
+# sweeper / cluster_locks holding their own connections concurrently.
+# run-mock.sh also bumps the container's max_connections=200 so
+# operators bumping this back up still have headroom.
 storage:
   backend: postgres
   pg_dsn: ${LOOMCYCLE_PG_DSN}
-  pg_max_open_conns: 128
+  pg_max_open_conns: 80
   pg_max_idle_conns: 16
 
 # ─── Channels ──────────────────────────────────────────────────────
