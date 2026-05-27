@@ -1498,7 +1498,8 @@ func MintSampleID(t time.Time) string {
 // they're only populated when LOOMCYCLE_METRICS_COLLECT_SYSTEM=1
 // AND the platform is Linux.
 type ProcessSample struct {
-	SampleID             string    `json:"sample_id"` // "smp_<16hex><8hex>"
+	SampleID             string    `json:"sample_id"`  // "smp_<16hex><8hex>"
+	ReplicaID            string    `json:"replica_id"` // "" in single-replica mode; set from LOOMCYCLE_REPLICA_ID so a shared process_samples table can be split per replica
 	SampledAt            time.Time `json:"sampled_at"`
 	ActiveRuns           int       `json:"active_runs"`
 	QueuedRuns           int       `json:"queued_runs"`

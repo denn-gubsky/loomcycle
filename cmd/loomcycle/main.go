@@ -1385,6 +1385,7 @@ func main() {
 		metricsSampler := metrics.New(storeIface, sem, metrics.Config{
 			Interval:      cfg.Env.MetricsSampleInterval,
 			CollectSystem: cfg.Env.MetricsCollectSystem,
+			ReplicaID:     cfg.Env.ReplicaID,
 		})
 		go metricsSampler.Run(bgCtx)
 		srv.SetMetricsSampler(metricsSampler)
