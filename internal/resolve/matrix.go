@@ -151,6 +151,15 @@ type UserTierOverlay struct {
 	// retryable errors. Like FallbackOnError, the resolver doesn't
 	// act on it directly — it's read by the loop via RunOptions.
 	RetryAttempts int
+
+	// RateLimitCooldownMs (v0.12.x) overrides the resolver's
+	// 30-second default for MarkRateLimited. The HTTP layer reads
+	// this off the overlay and seeds the MarkRateLimited closure
+	// the loop calls; the resolver itself sees the explicit
+	// duration in retryAfter and uses it verbatim. 0 = preserve
+	// 30-second default. Bounded at config-load to [1_000, 600_000]
+	// before reaching this overlay.
+	RateLimitCooldownMs int
 }
 
 // Candidate is one (provider, model) pair in a tier's candidate list.
