@@ -212,14 +212,22 @@ func Open(ctx context.Context, cfg Config) (*Store, error) {
 // CreateSession inserts a new session with a generated ID. userID may be
 // empty; the column accepts NULL via the pointer cast below so empty
 // stores as NULL (matters for the partial index on user_id IS NOT NULL).
+//
+// Wrapped in retryOnTransientConn because this is the very first
+// store call POST /v1/runs makes — it's the most exposed to the
+// launch-storm window where the pool tries to open connections
+// faster than Postgres allows.
 func (s *Store) CreateSession(ctx context.Context, tenantID, agent, userID string) (store.Session, error) {
 	id := newID("s_")
 	now := time.Now().UTC()
-	if _, err := s.pool.Exec(ctx,
-		`INSERT INTO sessions (id, tenant_id, agent, user_id, created_at)
-		 VALUES ($1, $2, $3, $4, $5)`,
-		id, tenantID, agent, nullableText(userID), now,
-	); err != nil {
+	if err := retryOnTransientConn(ctx, func() error {
+		_, err := s.pool.Exec(ctx,
+			`INSERT INTO sessions (id, tenant_id, agent, user_id, created_at)
+			 VALUES ($1, $2, $3, $4, $5)`,
+			id, tenantID, agent, nullableText(userID), now,
+		)
+		return err
+	}); err != nil {
 		return store.Session{}, fmt.Errorf("create session: %w", err)
 	}
 	return store.Session{
@@ -261,9 +269,14 @@ func (s *Store) GetSession(ctx context.Context, sessionID string) (store.Session
 func (s *Store) CreateRun(ctx context.Context, sessionID string, identity store.RunIdentity) (store.Run, error) {
 	// Pre-check: surfacing FK violation as ErrNotFound is a contract
 	// requirement (the SQLite adapter does the same, and the storetest
-	// suite asserts the wrapped error type).
+	// suite asserts the wrapped error type). Wrapped in
+	// retryOnTransientConn because POST /v1/runs hits this twice in
+	// rapid succession (the session existence check + the INSERT),
+	// both exposed to the launch-storm SQLSTATE 53300 window.
 	var exists bool
-	if err := s.pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM sessions WHERE id = $1)`, sessionID).Scan(&exists); err != nil {
+	if err := retryOnTransientConn(ctx, func() error {
+		return s.pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM sessions WHERE id = $1)`, sessionID).Scan(&exists)
+	}); err != nil {
 		return store.Run{}, fmt.Errorf("check session: %w", err)
 	}
 	if !exists {
@@ -272,21 +285,24 @@ func (s *Store) CreateRun(ctx context.Context, sessionID string, identity store.
 
 	id := newID("r_")
 	now := time.Now().UTC()
-	if _, err := s.pool.Exec(ctx,
-		`INSERT INTO runs (
-			id, session_id, status, started_at,
-			agent_id, parent_agent_id, parent_run_id, user_id, user_tier, agent_def_id, model, replica_id
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
-		id, sessionID, string(store.RunRunning), now,
-		nullableText(identity.AgentID),
-		nullableText(identity.ParentAgentID),
-		nullableText(identity.ParentRunID),
-		nullableText(identity.UserID),
-		nullableText(identity.UserTier),
-		nullableText(identity.AgentDefID),
-		nullableText(identity.Model),
-		nullableText(identity.ReplicaID),
-	); err != nil {
+	if err := retryOnTransientConn(ctx, func() error {
+		_, err := s.pool.Exec(ctx,
+			`INSERT INTO runs (
+				id, session_id, status, started_at,
+				agent_id, parent_agent_id, parent_run_id, user_id, user_tier, agent_def_id, model, replica_id
+			) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+			id, sessionID, string(store.RunRunning), now,
+			nullableText(identity.AgentID),
+			nullableText(identity.ParentAgentID),
+			nullableText(identity.ParentRunID),
+			nullableText(identity.UserID),
+			nullableText(identity.UserTier),
+			nullableText(identity.AgentDefID),
+			nullableText(identity.Model),
+			nullableText(identity.ReplicaID),
+		)
+		return err
+	}); err != nil {
 		return store.Run{}, fmt.Errorf("create run: %w", err)
 	}
 	return store.Run{
@@ -313,18 +329,31 @@ func (s *Store) CreateRun(ctx context.Context, sessionID string, identity store.
 // transcript-replay cost. We look it up once on first append per run via
 // the run row.
 func (s *Store) AppendEvent(ctx context.Context, runID string, eventType string, payload []byte) error {
+	// Highest-volume call during the launch storm — every emit() in
+	// the loop goes through here. The recording-emit path in
+	// internal/api/http/server.go logs failures and continues, which
+	// historically produced silent regressions when the pool
+	// exhausted (audit-log gaps + downstream agents reading null
+	// state). retryOnTransientConn absorbs the SQLSTATE 53300
+	// transients so AppendEvent succeeds on the second or third
+	// attempt without surfacing the gap upstream.
 	var sessionID string
-	if err := s.pool.QueryRow(ctx, `SELECT session_id FROM runs WHERE id = $1`, runID).Scan(&sessionID); err != nil {
+	if err := retryOnTransientConn(ctx, func() error {
+		return s.pool.QueryRow(ctx, `SELECT session_id FROM runs WHERE id = $1`, runID).Scan(&sessionID)
+	}); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return &store.ErrNotFound{Kind: "run", ID: runID}
 		}
 		return fmt.Errorf("lookup run: %w", err)
 	}
-	if _, err := s.pool.Exec(ctx,
-		`INSERT INTO events (session_id, run_id, ts, type, payload)
-		 VALUES ($1, $2, $3, $4, $5)`,
-		sessionID, runID, time.Now().UTC(), eventType, payload,
-	); err != nil {
+	if err := retryOnTransientConn(ctx, func() error {
+		_, err := s.pool.Exec(ctx,
+			`INSERT INTO events (session_id, run_id, ts, type, payload)
+			 VALUES ($1, $2, $3, $4, $5)`,
+			sessionID, runID, time.Now().UTC(), eventType, payload,
+		)
+		return err
+	}); err != nil {
 		return fmt.Errorf("append event: %w", err)
 	}
 	return nil
@@ -2287,16 +2316,26 @@ func (s *Store) MemorySet(ctx context.Context, scope store.MemoryScope, scopeID,
 	if ttl > 0 {
 		expiresAt = now.Add(ttl)
 	}
-	_, err := s.pool.Exec(ctx,
-		`INSERT INTO memory (scope, scope_id, key, value, expires_at, created_at, updated_at)
-		 VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7)
-		 ON CONFLICT (scope, scope_id, key) DO UPDATE SET
-		    value = EXCLUDED.value,
-		    expires_at = EXCLUDED.expires_at,
-		    updated_at = EXCLUDED.updated_at`,
-		string(scope), scopeID, key, string(value), expiresAt, now, now,
-	)
-	if err != nil {
+	// Wrapped in retryOnTransientConn because this is the call that
+	// produced the silent regressions on the v0.12.8 baseline x1000
+	// (2026-05-27): when the researcher's Memory.set fired during
+	// the launch storm and Postgres rejected with SQLSTATE 53300,
+	// the tool returned is_error → the mock counted the result and
+	// moved on → the downstream editor + evaluator read null →
+	// strict-output validation caught the gap. Retry absorbs the
+	// transient so the row actually lands.
+	if err := retryOnTransientConn(ctx, func() error {
+		_, err := s.pool.Exec(ctx,
+			`INSERT INTO memory (scope, scope_id, key, value, expires_at, created_at, updated_at)
+			 VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7)
+			 ON CONFLICT (scope, scope_id, key) DO UPDATE SET
+			    value = EXCLUDED.value,
+			    expires_at = EXCLUDED.expires_at,
+			    updated_at = EXCLUDED.updated_at`,
+			string(scope), scopeID, key, string(value), expiresAt, now, now,
+		)
+		return err
+	}); err != nil {
 		return fmt.Errorf("memory set: %w", err)
 	}
 	return nil
@@ -2582,8 +2621,17 @@ func (s *Store) ChannelPublish(ctx context.Context, msg store.ChannelMessage, ma
 		publishedByUserID = msg.PublishedByUserID
 	}
 
-	tx, err := s.pool.Begin(ctx)
-	if err != nil {
+	// Retry only the Begin call — once the tx is open the
+	// connection is pinned and subsequent ops on it cannot fail
+	// with SQLSTATE 53300 (the conn already exists). Mid-tx errors
+	// (broken pipe, EOF) are NOT retryable here because INSERT may
+	// have committed before the wire dropped.
+	var tx pgx.Tx
+	if err := retryOnTransientConn(ctx, func() error {
+		var beginErr error
+		tx, beginErr = s.pool.Begin(ctx)
+		return beginErr
+	}); err != nil {
 		return "", 0, fmt.Errorf("channel publish begin: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
@@ -2853,33 +2901,39 @@ func (s *Store) channelRead(ctx context.Context, channel string, scope store.Mem
 		return nil, "", err
 	}
 
+	// Retry Query on transient connection-acquire errors so a
+	// launch-storm subscriber doesn't read empty + wake the
+	// readWithRetry bounded-retry path unnecessarily. Once Query
+	// returns rows, the connection is pinned for the iteration.
 	var rows pgx.Rows
-	var qErr error
-	if fromOldest {
-		rows, qErr = s.pool.Query(ctx,
-			`SELECT id, payload::text, published_at, expires_at, visible_at, published_by_user_id
-			 FROM channel_messages
-			 WHERE channel = $1 AND scope = $2 AND scope_id = $3
-			   AND visible_at <= NOW()
-			   AND (expires_at IS NULL OR expires_at > NOW())
-			 ORDER BY visible_at ASC, id ASC
-			 LIMIT $4`,
-			channel, string(scope), scopeID, limit)
-	} else {
-		rows, qErr = s.pool.Query(ctx,
-			`SELECT id, payload::text, published_at, expires_at, visible_at, published_by_user_id
-			 FROM channel_messages
-			 WHERE channel = $1 AND scope = $2 AND scope_id = $3
-			   AND visible_at <= NOW()
-			   AND (expires_at IS NULL OR expires_at > NOW())
-			   AND (visible_at > $4 OR (visible_at = $4 AND id > $5))
-			 ORDER BY visible_at ASC, id ASC
-			 LIMIT $6`,
-			channel, string(scope), scopeID,
-			cursorVisibleAt.UTC(), cursorMsgID, limit)
-	}
-	if qErr != nil {
-		return nil, "", fmt.Errorf("channel read: %w", qErr)
+	if err := retryOnTransientConn(ctx, func() error {
+		var qErr error
+		if fromOldest {
+			rows, qErr = s.pool.Query(ctx,
+				`SELECT id, payload::text, published_at, expires_at, visible_at, published_by_user_id
+				 FROM channel_messages
+				 WHERE channel = $1 AND scope = $2 AND scope_id = $3
+				   AND visible_at <= NOW()
+				   AND (expires_at IS NULL OR expires_at > NOW())
+				 ORDER BY visible_at ASC, id ASC
+				 LIMIT $4`,
+				channel, string(scope), scopeID, limit)
+		} else {
+			rows, qErr = s.pool.Query(ctx,
+				`SELECT id, payload::text, published_at, expires_at, visible_at, published_by_user_id
+				 FROM channel_messages
+				 WHERE channel = $1 AND scope = $2 AND scope_id = $3
+				   AND visible_at <= NOW()
+				   AND (expires_at IS NULL OR expires_at > NOW())
+				   AND (visible_at > $4 OR (visible_at = $4 AND id > $5))
+				 ORDER BY visible_at ASC, id ASC
+				 LIMIT $6`,
+				channel, string(scope), scopeID,
+				cursorVisibleAt.UTC(), cursorMsgID, limit)
+		}
+		return qErr
+	}); err != nil {
+		return nil, "", fmt.Errorf("channel read: %w", err)
 	}
 	defer rows.Close()
 
@@ -4043,6 +4097,71 @@ func escapeLikePrefix(prefix string) string {
 }
 
 // ---- helpers ----
+
+// retryOnTransientConn retries fn when it returns a transient
+// connection-establishment error (SQLSTATE 53300 "too many clients
+// already" + plain "connection refused"). These errors fire BEFORE
+// the query runs, so retry is safe — no risk of double-write.
+//
+// Three attempts with 50ms / 150ms / 450ms exponential backoff =
+// 650ms total worst case. Empirically this absorbs the launch-storm
+// transients seen in the v0.12.8 baseline x1000 (2026-05-27) where
+// 1000 circuits POST'd within ~5 seconds against postgres:16 with
+// max_connections=100 + pool=128. Three attempts give the pool
+// enough time to free a connection after the first wave's
+// AppendEvents complete.
+//
+// Mid-query errors (EOF, broken pipe) are NOT retried — those can
+// fire after the server has committed and a retry would
+// double-write. The classifier is intentionally narrow.
+//
+// ctx-aware: a cancelled ctx short-circuits the backoff and returns
+// ctx.Err() rather than the underlying transient error.
+func retryOnTransientConn(ctx context.Context, fn func() error) error {
+	const maxAttempts = 3
+	backoff := 50 * time.Millisecond
+	var err error
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		err = fn()
+		if err == nil {
+			return nil
+		}
+		if !isTransientConnErr(err) || attempt == maxAttempts-1 {
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(backoff):
+		}
+		backoff *= 3
+	}
+	return err
+}
+
+// isTransientConnErr matches the two cleanly-retryable
+// connection-establishment shapes seen in v0.12.8 load testing.
+// Intentionally narrow: anything mid-query is NOT classified
+// transient — those errors might fire after a partial write.
+func isTransientConnErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	// SQLSTATE 53300 — postgres max_connections exhausted at the
+	// server side. The connection attempt was rejected without any
+	// state change on the server. Safe to retry.
+	if strings.Contains(msg, "SQLSTATE 53300") ||
+		strings.Contains(msg, "too many clients already") {
+		return true
+	}
+	// Connection refused — typically during pool warm-up or when
+	// the server is restarting. Same shape: no state change yet.
+	if strings.Contains(msg, "connection refused") {
+		return true
+	}
+	return false
+}
 
 // rowScanner is the subset of pgx.Row + pgx.Rows we need for the shared
 // scanRun() — both single-row QueryRow and multi-row Rows.Scan return a

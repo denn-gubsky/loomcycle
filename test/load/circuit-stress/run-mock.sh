@@ -52,12 +52,17 @@ mkdir -p "$RESULTS_DIR"
 echo "→ results dir: $RESULTS_DIR"
 
 # ─── Postgres ───────────────────────────────────────────────────────
+# max_connections=200 leaves headroom for the mock yaml's
+# pg_max_open_conns: 80 + psql sessions + sweeper holds + cluster
+# locks. The postgres:16 default of 100 was the wall the baseline
+# x1000 hit on 2026-05-27 (SQLSTATE 53300 during the launch storm).
 if ! docker inspect "$PG_CONTAINER" >/dev/null 2>&1; then
     echo "→ starting Postgres container ($PG_CONTAINER on :$PG_PORT)…"
     docker run -d --name "$PG_CONTAINER" \
         -p "127.0.0.1:$PG_PORT:5432" \
         -e POSTGRES_PASSWORD="$PG_PASSWORD" \
-        postgres:16 >/dev/null
+        postgres:16 \
+        -c max_connections=200 >/dev/null
     until docker exec "$PG_CONTAINER" pg_isready -U postgres >/dev/null 2>&1; do
         sleep 1
     done
@@ -68,7 +73,16 @@ elif [ "$(docker inspect -f '{{.State.Running}}' "$PG_CONTAINER")" != "true" ]; 
         sleep 1
     done
 else
-    echo "→ Postgres container $PG_CONTAINER already running"
+    # Verify max_connections on a pre-existing container; warn if it
+    # was created before this script bumped the limit, so operators
+    # see the cause if the launch storm still trips.
+    existing_max=$(docker exec "$PG_CONTAINER" psql -U postgres -tAc "SHOW max_connections" 2>/dev/null || echo "?")
+    if [ "$existing_max" != "200" ]; then
+        echo "→ Postgres container $PG_CONTAINER already running, but max_connections=$existing_max (want 200)"
+        echo "  Remove + recreate with: docker rm -f $PG_CONTAINER ; rerun this script"
+    else
+        echo "→ Postgres container $PG_CONTAINER already running (max_connections=200)"
+    fi
 fi
 
 export LOOMCYCLE_PG_DSN="postgres://postgres:$PG_PASSWORD@127.0.0.1:$PG_PORT/postgres?sslmode=disable"
