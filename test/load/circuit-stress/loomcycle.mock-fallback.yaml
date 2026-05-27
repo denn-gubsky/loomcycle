@@ -1,0 +1,131 @@
+# test/load/circuit-stress — mock-mode fallback experiment yaml.
+#
+# Companion to loomcycle.mock.yaml. Same harness, same 3 agents,
+# but pins each agent to a TWO-PROVIDER tier with the mock primary
+# (subject to LOOMCYCLE_MOCK_429_RATE) and the stable variant as
+# the fallback target (never injects errors regardless of env).
+#
+# Combined with the v0.12.9 `retry_attempts` knob, this yaml lets
+# operators measure two recovery axes at once:
+#
+#   - Same-provider retry — `retry_attempts: 2` means a single
+#     transient 429 retries up to 2 times against the SAME mock
+#     model before fallback engages. Most real-provider 429s
+#     clear in 1-3 seconds, well under the MarkRateLimited 30s
+#     cooldown, so retries cheaply recover the common case.
+#
+#   - Cross-provider fallback — `fallback_on_error: true` plus
+#     [mock, mock-stable] candidate list. When retries are
+#     exhausted, the loop's tryProviderFallback escalates to
+#     mock-stable which always succeeds.
+#
+# Expected behaviour at LOOMCYCLE_MOCK_429_RATE=0.10:
+#   - First 429 on mock: retry against mock (100ms backoff)
+#   - Second 429 on mock: retry against mock (300ms backoff)
+#   - Third 429: tryProviderFallback → mock-stable → success
+#   - Success rate target: ≥99% (versus 18.5% for single-provider
+#     baseline x1000-429-rate-0.10)
+
+provider_priority:
+  - mock
+  - mock-stable
+
+# Library-default tier — mock first, mock-stable as fallback target.
+tiers:
+  middle:
+    - { provider: mock, model: mock-generic }
+    - { provider: mock-stable, model: mock-generic }
+
+# Default user_tier — same shape, but with the v0.12.9
+# retry_attempts knob set to 2 and fallback enabled.
+user_tiers:
+  default:
+    provider_priority: [mock, mock-stable]
+    tiers:
+      middle:
+        - { provider: mock, model: mock-generic }
+        - { provider: mock-stable, model: mock-generic }
+    fallback_on_error: true
+    max_fallback_attempts: 3
+    # v0.12.9 — same-provider retry before fallback. 2 retries =
+    # 100ms + 300ms backoff = ~400ms worst case before fallback
+    # engages. Captures the fast-clearing 429 case without holding
+    # the run hostage to a sustained outage.
+    retry_attempts: 2
+
+concurrency:
+  max_concurrent_runs: 2000
+  max_queue_depth: 30000
+  queue_timeout_ms: 600000
+  max_concurrent_runs_per_user: 0
+
+storage:
+  backend: postgres
+  pg_dsn: ${LOOMCYCLE_PG_DSN}
+  pg_max_open_conns: 80
+  pg_max_idle_conns: 16
+
+channels:
+  # ── BEGIN generated channels ── (managed by run-mock-fallback.sh)
+  # ── END generated channels ──
+
+# Agents — each carries its own per-tier candidate LIST via
+# `models.middle: [primary, fallback]`. The agent-level
+# `provider:/model:` PIN would be a single candidate with no
+# alternatives, so when fallback fires the resolver has nothing
+# to switch to. Using `models:` instead gives the resolver a
+# proper second candidate (mock-stable) to escalate to.
+agents:
+
+  researcher:
+    tier: middle
+    models:
+      middle:
+        - { provider: mock, model: mock-researcher }
+        - { provider: mock-stable, model: mock-researcher }
+    max_tokens: 1500
+    system_prompt: |
+      Mock researcher agent (fallback-experiment yaml). The
+      primary `mock` provider may inject 429s; the loop's
+      retry_attempts:2 + fallback_on_error:true policy reroutes
+      to mock-stable when retries exhaust.
+    allowed_tools: [Memory, Channel, Context]
+    memory_scopes: [user]
+    channels:
+      publish: ["research-done/*"]
+      subscribe: []
+
+  editor:
+    tier: middle
+    models:
+      middle:
+        - { provider: mock, model: mock-editor }
+        - { provider: mock-stable, model: mock-editor }
+    max_tokens: 1500
+    system_prompt: |
+      Mock editor agent (fallback-experiment yaml). Same retry +
+      fallback semantics as the researcher.
+    allowed_tools: [Memory, Channel, Context]
+    memory_scopes: [user]
+    channels:
+      publish: ["editing-done/*"]
+      subscribe: ["research-done/*"]
+
+  evaluator:
+    tier: middle
+    models:
+      middle:
+        - { provider: mock, model: mock-evaluator }
+        - { provider: mock-stable, model: mock-evaluator }
+    max_tokens: 1500
+    system_prompt: |
+      Mock evaluator agent (fallback-experiment yaml). Same retry +
+      fallback semantics. The deterministic score is unaffected by
+      provider routing — same editor_run_id → same score whether
+      the call landed on mock or mock-stable.
+    allowed_tools: [Memory, Channel, Evaluation, Context]
+    memory_scopes: [user]
+    evaluation_scopes: [submit_any]
+    channels:
+      publish: []
+      subscribe: ["editing-done/*"]

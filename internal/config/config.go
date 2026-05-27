@@ -393,6 +393,27 @@ type UserTier struct {
 	// 3. PR 2 consumes this; PR 1 just plumbs it through. Zero falls
 	// back to the default.
 	MaxFallbackAttempts int `yaml:"max_fallback_attempts"`
+
+	// RetryAttempts caps same-provider retries on retryable errors
+	// (v0.12.9) before MarkRateLimited cools the matrix entry and
+	// tryProviderFallback escalates to the next provider. Real
+	// providers' 429s often clear within seconds (much shorter than
+	// the 30s MarkRateLimited cooldown), so retrying the same
+	// (provider, model) 1-3 times with exponential backoff often
+	// recovers the run cheaper than escalating.
+	//
+	// 0 (default) preserves v0.12.x behaviour — the FIRST retryable
+	// error invokes MarkRateLimited + fallback immediately. 1-3 is
+	// the recommended range; backoff is 100ms / 300ms / 900ms so
+	// even three attempts add at most 1.3s before fallback engages.
+	// Capped internally at 5 to avoid pathological retry storms.
+	//
+	// Applies to BOTH the Call() error path (driver refused the
+	// stream) and the in-stream EventError path (driver opened the
+	// stream then surfaced an error mid-flight). Distinct from
+	// MaxFallbackAttempts: retries stay on the same (provider,
+	// model); fallbacks switch.
+	RetryAttempts int `yaml:"retry_attempts"`
 }
 
 // AgentDef is one agent the API can address by name.
@@ -2353,6 +2374,11 @@ var validProviderIDs = map[string]bool{
 	// configured" error at request time if LOOMCYCLE_MOCK_ENABLED=1
 	// isn't set. See internal/providers/mock/driver.go.
 	"mock": true,
+	// v0.12.9 — companion stable variant; same gate as `mock`.
+	// Lets operators configure tier candidate lists like
+	// `[{provider: mock, ...}, {provider: mock-stable, ...}]` for
+	// fallback-recovery testing without a real second provider.
+	"mock-stable": true,
 }
 
 // validTierNames is the closed set of tier names. Operators choose

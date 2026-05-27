@@ -721,7 +721,20 @@ func (s *Server) userTierOverlay(name string) *resolve.UserTierOverlay {
 		Tiers:               convertConfigCandidates(ut.Tiers),
 		FallbackOnError:     ut.FallbackOnError,
 		MaxFallbackAttempts: ut.MaxFallbackAttempts,
+		RetryAttempts:       ut.RetryAttempts,
 	}
+}
+
+// retryAttemptsForTier returns the same-provider retry budget the
+// loop should use for runs carrying this user_tier. Sourced from
+// the user_tier yaml (UserTier.RetryAttempts); falls through to 0
+// when no overlay exists or the field was omitted.
+func (s *Server) retryAttemptsForTier(name string) int {
+	overlay := s.userTierOverlay(name)
+	if overlay == nil {
+		return 0
+	}
+	return overlay.RetryAttempts
 }
 
 // substratePoliciesForAgent returns the v0.8.5 AgentDef +
@@ -1333,26 +1346,27 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 
 	fbPolicy, fbReResolve := s.fallbackForRun(effectiveAgentName, in.UserTier)
 	res, runErr := loop.Run(loopCtx, loop.RunOptions{
-		Provider:        provider,
-		Model:           model,
-		Tools:           allowedTools,
-		Dispatcher:      dispatcher,
-		Segments:        segments,
-		PriorMessages:   priorMessages,
-		OnEvent:         emit,
-		OnHeartbeat:     heartbeat,
-		MaxTokens:       agentDef.MaxTokens,
-		MaxIterations:   agentDef.MaxIterations, // 0 → loop default (16)
-		Effort:          effort,
-		MarkStalled:     s.markStalledFn(providerID, model),
-		MarkRateLimited: s.markRateLimitedFn(providerID, model),
-		ClearStall:      s.clearStallFn(providerID, model),
-		ToolParallelism: s.cfg.Env.ToolParallelism,
-		AgentName:       effectiveAgentName,
-		UserTier:        in.UserTier,
-		FallbackPolicy:  fbPolicy,
-		ReResolve:       fbReResolve,
-		Hooks:           s.hookDispatcher,
+		Provider:               provider,
+		Model:                  model,
+		Tools:                  allowedTools,
+		Dispatcher:             dispatcher,
+		Segments:               segments,
+		PriorMessages:          priorMessages,
+		OnEvent:                emit,
+		OnHeartbeat:            heartbeat,
+		MaxTokens:              agentDef.MaxTokens,
+		MaxIterations:          agentDef.MaxIterations, // 0 → loop default (16)
+		Effort:                 effort,
+		MarkStalled:            s.markStalledFn(providerID, model),
+		MarkRateLimited:        s.markRateLimitedFn(providerID, model),
+		ClearStall:             s.clearStallFn(providerID, model),
+		ToolParallelism:        s.cfg.Env.ToolParallelism,
+		AgentName:              effectiveAgentName,
+		UserTier:               in.UserTier,
+		FallbackPolicy:         fbPolicy,
+		ReResolve:              fbReResolve,
+		Hooks:                  s.hookDispatcher,
+		MaxSameProviderRetries: s.retryAttemptsForTier(in.UserTier),
 	})
 	s.finishRunWithCancel(ctx, runCtx, runID, res, runErr, meta)
 	return nil
@@ -2273,25 +2287,26 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 
 	fbPolicy, fbReResolve := s.fallbackForRun(req.Agent, req.UserTier)
 	loopRes, runErr := loop.Run(loopCtx, loop.RunOptions{
-		Provider:        provider,
-		Model:           model,
-		Tools:           allowedTools,
-		Dispatcher:      dispatcher,
-		Segments:        req.Segments,
-		OnEvent:         emit,
-		OnHeartbeat:     heartbeat,
-		MaxTokens:       agentDef.MaxTokens,     // 0 → driver default
-		MaxIterations:   agentDef.MaxIterations, // 0 → loop default (16)
-		Effort:          effort,
-		MarkStalled:     s.markStalledFn(providerID, model),
-		MarkRateLimited: s.markRateLimitedFn(providerID, model),
-		ClearStall:      s.clearStallFn(providerID, model),
-		ToolParallelism: s.cfg.Env.ToolParallelism,
-		AgentName:       req.Agent,
-		UserTier:        req.UserTier,
-		FallbackPolicy:  fbPolicy,
-		ReResolve:       fbReResolve,
-		Hooks:           s.hookDispatcher,
+		Provider:               provider,
+		Model:                  model,
+		Tools:                  allowedTools,
+		Dispatcher:             dispatcher,
+		Segments:               req.Segments,
+		OnEvent:                emit,
+		OnHeartbeat:            heartbeat,
+		MaxTokens:              agentDef.MaxTokens,     // 0 → driver default
+		MaxIterations:          agentDef.MaxIterations, // 0 → loop default (16)
+		Effort:                 effort,
+		MarkStalled:            s.markStalledFn(providerID, model),
+		MarkRateLimited:        s.markRateLimitedFn(providerID, model),
+		ClearStall:             s.clearStallFn(providerID, model),
+		ToolParallelism:        s.cfg.Env.ToolParallelism,
+		AgentName:              req.Agent,
+		UserTier:               req.UserTier,
+		FallbackPolicy:         fbPolicy,
+		ReResolve:              fbReResolve,
+		Hooks:                  s.hookDispatcher,
+		MaxSameProviderRetries: s.retryAttemptsForTier(req.UserTier),
 	})
 	if runErr != nil {
 		stream.send(providers.Event{Type: providers.EventError, Error: runErr.Error()})
@@ -2601,26 +2616,27 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	loopCtx = tools.WithDispatcher(loopCtx, dispatcher)
 	fbPolicy, fbReResolve := s.fallbackForRun(sess.Agent, body.UserTier)
 	loopRes, runErr := loop.Run(loopCtx, loop.RunOptions{
-		Provider:        provider,
-		Model:           model,
-		Tools:           allowedTools,
-		Dispatcher:      dispatcher,
-		Segments:        segments,
-		PriorMessages:   priorMessages,
-		OnEvent:         emit,
-		OnHeartbeat:     heartbeat,
-		MaxTokens:       agentDef.MaxTokens,     // 0 → driver default
-		MaxIterations:   agentDef.MaxIterations, // 0 → loop default (16)
-		Effort:          effort,
-		MarkStalled:     s.markStalledFn(providerID, model),
-		MarkRateLimited: s.markRateLimitedFn(providerID, model),
-		ClearStall:      s.clearStallFn(providerID, model),
-		ToolParallelism: s.cfg.Env.ToolParallelism,
-		AgentName:       sess.Agent,
-		UserTier:        body.UserTier,
-		FallbackPolicy:  fbPolicy,
-		ReResolve:       fbReResolve,
-		Hooks:           s.hookDispatcher,
+		Provider:               provider,
+		Model:                  model,
+		Tools:                  allowedTools,
+		Dispatcher:             dispatcher,
+		Segments:               segments,
+		PriorMessages:          priorMessages,
+		OnEvent:                emit,
+		OnHeartbeat:            heartbeat,
+		MaxTokens:              agentDef.MaxTokens,     // 0 → driver default
+		MaxIterations:          agentDef.MaxIterations, // 0 → loop default (16)
+		Effort:                 effort,
+		MarkStalled:            s.markStalledFn(providerID, model),
+		MarkRateLimited:        s.markRateLimitedFn(providerID, model),
+		ClearStall:             s.clearStallFn(providerID, model),
+		ToolParallelism:        s.cfg.Env.ToolParallelism,
+		AgentName:              sess.Agent,
+		UserTier:               body.UserTier,
+		FallbackPolicy:         fbPolicy,
+		ReResolve:              fbReResolve,
+		Hooks:                  s.hookDispatcher,
+		MaxSameProviderRetries: s.retryAttemptsForTier(body.UserTier),
 	})
 	if runErr != nil {
 		stream.send(providers.Event{Type: providers.EventError, Error: runErr.Error()})
@@ -3202,25 +3218,26 @@ func (s *Server) runSubAgent(ctx context.Context, name string, prompt string, de
 
 	fbPolicy, fbReResolve := s.fallbackForRun(name, parentTier)
 	res, runErr := loop.Run(subCtx, loop.RunOptions{
-		Provider:        provider,
-		Model:           model,
-		Tools:           subTools,
-		Dispatcher:      subDispatcher,
-		Segments:        segs,
-		OnEvent:         subEmit,
-		OnHeartbeat:     subHeartbeat,
-		MaxTokens:       def.MaxTokens,     // 0 → driver default
-		MaxIterations:   def.MaxIterations, // 0 → loop default (16)
-		Effort:          effort,
-		MarkStalled:     s.markStalledFn(providerID, model),
-		MarkRateLimited: s.markRateLimitedFn(providerID, model),
-		ClearStall:      s.clearStallFn(providerID, model),
-		ToolParallelism: s.cfg.Env.ToolParallelism,
-		AgentName:       name,
-		UserTier:        parentTier,
-		FallbackPolicy:  fbPolicy,
-		ReResolve:       fbReResolve,
-		Hooks:           s.hookDispatcher,
+		Provider:               provider,
+		Model:                  model,
+		Tools:                  subTools,
+		Dispatcher:             subDispatcher,
+		Segments:               segs,
+		OnEvent:                subEmit,
+		OnHeartbeat:            subHeartbeat,
+		MaxTokens:              def.MaxTokens,     // 0 → driver default
+		MaxIterations:          def.MaxIterations, // 0 → loop default (16)
+		Effort:                 effort,
+		MarkStalled:            s.markStalledFn(providerID, model),
+		MarkRateLimited:        s.markRateLimitedFn(providerID, model),
+		ClearStall:             s.clearStallFn(providerID, model),
+		ToolParallelism:        s.cfg.Env.ToolParallelism,
+		AgentName:              name,
+		UserTier:               parentTier,
+		FallbackPolicy:         fbPolicy,
+		ReResolve:              fbReResolve,
+		Hooks:                  s.hookDispatcher,
+		MaxSameProviderRetries: s.retryAttemptsForTier(parentTier),
 	})
 	s.finishRunWithCancel(ctx, subRunCtx, subRunID, res, runErr, subMeta)
 

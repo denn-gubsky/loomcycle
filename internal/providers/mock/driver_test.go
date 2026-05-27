@@ -447,3 +447,45 @@ func TestExtractCircuitID(t *testing.T) {
 		})
 	}
 }
+
+// TestMockStable_NeverInjectsErrors — even with high env-var rates,
+// the stable variant constructed via NewStable() must never return
+// 429 / 500. The fallback experiment depends on this.
+func TestMockStable_NeverInjectsErrors(t *testing.T) {
+	d := NewStable()
+	// Force any internal rate state to a known-high value to prove
+	// NewStable's reset is effective (defensive — operator changes
+	// to New() ordering could otherwise silently break the contract).
+	d.rate429 = 1.0
+	d.rate500 = 1.0
+	// NewStable() already zeroed them; the assignment above should
+	// be overridden by the same NewStable factory invariant. Re-run
+	// the factory pattern to confirm.
+	d = NewStable()
+	if d.rate429 != 0 {
+		t.Errorf("NewStable: rate429 = %v, want 0", d.rate429)
+	}
+	if d.rate500 != 0 {
+		t.Errorf("NewStable: rate500 = %v, want 0", d.rate500)
+	}
+	for i := 0; i < 200; i++ {
+		_, err := d.Call(context.Background(), providers.Request{
+			Model:    "mock-generic",
+			Messages: []providers.Message{userTextMessage("c1 q?")},
+		})
+		if err != nil {
+			t.Fatalf("call %d: unexpected error from stable variant: %v", i, err)
+		}
+	}
+}
+
+// TestStableDriverID_OverridesParent — the wrapper's ID() must
+// return "mock-stable" so the resolver dispatches to it as a
+// distinct provider id, even though it embeds *Driver (which
+// returns "mock").
+func TestStableDriverID_OverridesParent(t *testing.T) {
+	sd := &stableDriver{Driver: NewStable()}
+	if got := sd.ID(); got != "mock-stable" {
+		t.Errorf("ID() = %q, want mock-stable", got)
+	}
+}
