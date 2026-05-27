@@ -659,6 +659,29 @@ type AgentDef struct {
 	// agent_def_scopes, evaluation_scopes) — operator-yaml is the
 	// floor; the model can never enlarge its own access.
 	Interruption AgentInterruptionACL `yaml:"interruption"`
+
+	// RetryAttempts overrides the user_tier's same-provider retry
+	// budget (UserTier.RetryAttempts) for this agent. Nullable so
+	// "unset" (use tier default) is distinguishable from "0"
+	// (explicitly NO retries — high-stakes agents force this even
+	// under generous tiers).
+	//
+	// Why per-agent: a tier sets fleet-wide policy (free tier = 0
+	// retries, paid tier = 2 retries), but specific high-stakes
+	// agents (cv-adapter, evaluator, anything with side effects)
+	// may want to refuse retries regardless of the tier. Adding
+	// retries to side-effectful flows is a foot-gun; this gives
+	// operators a per-agent escape hatch.
+	//
+	// Resolution order (in s.retryAttemptsForAgent):
+	//   1. agent.RetryAttempts (if non-nil) wins
+	//   2. user_tier.RetryAttempts otherwise
+	//   3. 0 if neither is set
+	//
+	// A pointer keeps the yaml-omitted case ("unset") distinct from
+	// the yaml-zero case ("explicitly disable retries"). When set,
+	// must be >= 0; validator refuses negatives at config-load.
+	RetryAttempts *int `yaml:"retry_attempts,omitempty"`
 }
 
 // AgentInterruptionACL is the per-agent v0.8.16 Interruption tool
@@ -2693,6 +2716,9 @@ func validate(c *Config) error {
 		}
 		if agent.MemoryQuotaBytes < 0 {
 			return fmt.Errorf("agent %q: memory_quota_bytes must be >= 0", name)
+		}
+		if agent.RetryAttempts != nil && *agent.RetryAttempts < 0 {
+			return fmt.Errorf("agent %q: retry_attempts must be >= 0 (0 = explicitly disable retries; omit to use user_tier default)", name)
 		}
 		// Channel tool (v0.8.4): every entry in publish/subscribe must
 		// reference a declared channel (exact match) OR be a "<prefix>/*"

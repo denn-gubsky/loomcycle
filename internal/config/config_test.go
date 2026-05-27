@@ -1759,3 +1759,100 @@ func TestEnv_ReplicaIDRejectsInvalid(t *testing.T) {
 		})
 	}
 }
+
+// v0.12.x per-agent retry_attempts override.
+
+// TestAgentRetryAttempts_AcceptsZeroAndPositive pins that the
+// per-agent retry_attempts field accepts the operator-meaningful
+// values: 0 (explicitly disable retries, the high-stakes case) and
+// positive integers. Omitting the field entirely (yaml not present)
+// is exercised by every other passing test that doesn't set it.
+func TestAgentRetryAttempts_AcceptsZeroAndPositive(t *testing.T) {
+	tmp := t.TempDir()
+	yamlPath := filepath.Join(tmp, "c.yaml")
+	if err := os.WriteFile(yamlPath, []byte(`
+defaults: { provider: anthropic, model: claude-sonnet-4-6 }
+agents:
+  cautious:
+    provider: anthropic
+    model: claude-sonnet-4-6
+    retry_attempts: 0
+  generous:
+    provider: anthropic
+    model: claude-sonnet-4-6
+    retry_attempts: 5
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(yamlPath)
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+
+	cautious := cfg.Agents["cautious"]
+	if cautious.RetryAttempts == nil {
+		t.Fatal("cautious.RetryAttempts is nil; want explicit 0")
+	}
+	if *cautious.RetryAttempts != 0 {
+		t.Errorf("cautious.RetryAttempts = %d, want 0", *cautious.RetryAttempts)
+	}
+
+	generous := cfg.Agents["generous"]
+	if generous.RetryAttempts == nil {
+		t.Fatal("generous.RetryAttempts is nil; want explicit 5")
+	}
+	if *generous.RetryAttempts != 5 {
+		t.Errorf("generous.RetryAttempts = %d, want 5", *generous.RetryAttempts)
+	}
+}
+
+// TestAgentRetryAttempts_RefusesNegative pins the validator rule:
+// negative values are nonsensical and refused at config-load. The
+// error message names retry_attempts so the operator can find the
+// offending agent quickly.
+func TestAgentRetryAttempts_RefusesNegative(t *testing.T) {
+	tmp := t.TempDir()
+	yamlPath := filepath.Join(tmp, "c.yaml")
+	if err := os.WriteFile(yamlPath, []byte(`
+defaults: { provider: anthropic, model: claude-sonnet-4-6 }
+agents:
+  broken:
+    provider: anthropic
+    model: claude-sonnet-4-6
+    retry_attempts: -1
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Load(yamlPath)
+	if err == nil {
+		t.Fatal("expected validation error for negative retry_attempts")
+	}
+	if !strings.Contains(err.Error(), "retry_attempts") {
+		t.Errorf("error %q does not mention retry_attempts", err.Error())
+	}
+}
+
+// TestAgentRetryAttempts_OmittedStaysNil pins that the *int pointer
+// distinguishes "operator omitted the field" (nil = use tier
+// default) from "operator wrote 0" (explicitly disable). Without
+// the pointer these would collapse.
+func TestAgentRetryAttempts_OmittedStaysNil(t *testing.T) {
+	tmp := t.TempDir()
+	yamlPath := filepath.Join(tmp, "c.yaml")
+	if err := os.WriteFile(yamlPath, []byte(`
+defaults: { provider: anthropic, model: claude-sonnet-4-6 }
+agents:
+  defaulted:
+    provider: anthropic
+    model: claude-sonnet-4-6
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(yamlPath)
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	if cfg.Agents["defaulted"].RetryAttempts != nil {
+		t.Errorf("omitted retry_attempts should stay nil, got %v", cfg.Agents["defaulted"].RetryAttempts)
+	}
+}
