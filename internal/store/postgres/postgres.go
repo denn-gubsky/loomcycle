@@ -4103,13 +4103,15 @@ func escapeLikePrefix(prefix string) string {
 // already" + plain "connection refused"). These errors fire BEFORE
 // the query runs, so retry is safe — no risk of double-write.
 //
-// Three attempts with 50ms / 150ms / 450ms exponential backoff =
-// 650ms total worst case. Empirically this absorbs the launch-storm
-// transients seen in the v0.12.8 baseline x1000 (2026-05-27) where
-// 1000 circuits POST'd within ~5 seconds against postgres:16 with
-// max_connections=100 + pool=128. Three attempts give the pool
-// enough time to free a connection after the first wave's
-// AppendEvents complete.
+// Three attempts with 50ms then 150ms backoff between them (the
+// third attempt fires without an additional sleep — the
+// attempt==maxAttempts-1 guard returns immediately on exhaustion)
+// = 200ms total worst-case backoff. Empirically this absorbs the
+// launch-storm transients seen in the v0.12.8 baseline x1000
+// (2026-05-27) where 1000 circuits POST'd within ~5 seconds against
+// postgres:16 with max_connections=100 + pool=128. Three attempts
+// give the pool enough time to free a connection after the first
+// wave's AppendEvents complete.
 //
 // Mid-query errors (EOF, broken pipe) are NOT retried — those can
 // fire after the server has committed and a retry would

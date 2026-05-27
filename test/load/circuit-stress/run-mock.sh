@@ -72,6 +72,16 @@ elif [ "$(docker inspect -f '{{.State.Running}}' "$PG_CONTAINER")" != "true" ]; 
     until docker exec "$PG_CONTAINER" pg_isready -U postgres >/dev/null 2>&1; do
         sleep 1
     done
+    # Verify max_connections on the restarted container. A container
+    # created before this script bumped the limit (or by a prior
+    # invocation of run.sh which uses the postgres:16 default) will
+    # silently restart at max_connections=100 — the exact failure
+    # mode this script exists to work around. Warn loudly.
+    existing_max=$(docker exec "$PG_CONTAINER" psql -U postgres -tAc "SHOW max_connections" 2>/dev/null || echo "?")
+    if [ "$existing_max" != "200" ]; then
+        echo "→ WARNING: restarted container has max_connections=$existing_max (want 200)"
+        echo "  Remove + recreate with: docker rm -f $PG_CONTAINER ; rerun this script"
+    fi
 else
     # Verify max_connections on a pre-existing container; warn if it
     # was created before this script bumped the limit, so operators
