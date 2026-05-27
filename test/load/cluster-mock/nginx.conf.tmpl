@@ -1,0 +1,38 @@
+# test/load/cluster-mock — nginx LB template.
+#
+# run-cluster-mock.sh fills the upstream block below with one
+# `server replica-N:8787;` line per replica (via the marker on its own
+# line inside upstream{}), then mounts the result read-only into the LB
+# container. SSE knobs match examples/cluster/nginx.conf — buffering off
+# + long read timeout so streamed run events flush immediately and a
+# multi-minute run doesn't hit a proxy disconnect.
+# NOTE: the substitution marker must appear exactly once in this file
+# (inside upstream{}); do not repeat its literal text in comments.
+
+events {
+    worker_connections 8192;
+}
+
+http {
+    upstream loomcycle_cluster {
+__UPSTREAM_SERVERS__
+    }
+
+    proxy_buffering    off;
+    proxy_cache        off;
+    proxy_read_timeout 3600s;
+    proxy_send_timeout 3600s;
+
+    server {
+        listen 80;
+        location / {
+            proxy_pass         http://loomcycle_cluster;
+            proxy_http_version 1.1;
+            proxy_set_header   Host              $host;
+            proxy_set_header   X-Real-IP         $remote_addr;
+            proxy_set_header   X-Forwarded-For   $proxy_add_x_forwarded_for;
+            proxy_set_header   X-Forwarded-Proto $scheme;
+            proxy_set_header   Connection        "";
+        }
+    }
+}
