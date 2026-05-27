@@ -31,9 +31,9 @@ type listModelsProvider struct {
 	delay time.Duration
 }
 
-func (p *listModelsProvider) ID() string                         { return p.id }
+func (p *listModelsProvider) ID() string                           { return p.id }
 func (p *listModelsProvider) Capabilities() providers.Capabilities { return providers.Capabilities{} }
-func (p *listModelsProvider) Probe(_ context.Context) error      { return nil }
+func (p *listModelsProvider) Probe(_ context.Context) error        { return nil }
 func (p *listModelsProvider) Call(_ context.Context, _ providers.Request) (<-chan providers.Event, error) {
 	return nil, errors.New("not used in this test")
 }
@@ -329,4 +329,3 @@ func TestProviderModels_HandlerImposesTimeout(t *testing.T) {
 		t.Fatalf("status = %d, want 502, body = %s", rec.Code, rec.Body.String())
 	}
 }
-
