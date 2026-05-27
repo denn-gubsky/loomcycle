@@ -1005,6 +1005,11 @@ func applyAgentDefOverlay(base config.AgentDef, definition json.RawMessage) conf
 		Models           map[string][]config.TierCandidate `json:"models,omitempty"`
 		MemoryScopes     []string                          `json:"memory_scopes,omitempty"`
 		MemoryQuotaBytes int                               `json:"memory_quota_bytes,omitempty"`
+		// *int because 0 is a meaningful explicit value ("force no
+		// retries"); non-pointer would collapse "not in overlay" and
+		// "explicitly disable" into the same case and silently strip
+		// the static yaml's high-stakes intent on a substrate sub-run.
+		RetryAttempts *int `json:"retry_attempts,omitempty"`
 	}
 	if err := json.Unmarshal(definition, &ov); err != nil {
 		log.Printf("agent_def overlay: malformed definition JSON, falling back to static: %v", err)
@@ -1062,6 +1067,13 @@ func applyAgentDefOverlay(base config.AgentDef, definition json.RawMessage) conf
 	}
 	if ov.MemoryQuotaBytes != 0 {
 		out.MemoryQuotaBytes = ov.MemoryQuotaBytes
+	}
+	if ov.RetryAttempts != nil {
+		// Pointer-set means the substrate row carries an explicit
+		// override (including 0). Nil leaves the static yaml's
+		// RetryAttempts in place — including the static yaml's own
+		// "force 0" for high-stakes agents.
+		out.RetryAttempts = ov.RetryAttempts
 	}
 	return out
 }

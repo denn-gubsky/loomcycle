@@ -691,6 +691,13 @@ type mergedDef struct {
 	MemoryScopes     []string                          `json:"memory_scopes,omitempty"`
 	MemoryQuotaBytes int                               `json:"memory_quota_bytes,omitempty"`
 	Description      string                            `json:"description,omitempty"`
+	// RetryAttempts mirrors config.AgentDef.RetryAttempts — same-
+	// provider retry budget override. *int so the substrate-write
+	// path can persist an explicit 0 ("force no retries") as
+	// distinct from "field not set" (use the tier default).
+	// Without the pointer, AgentDef.create/fork on a high-stakes
+	// agent would silently strip the static yaml's "force 0".
+	RetryAttempts *int `json:"retry_attempts,omitempty"`
 }
 
 func (d *mergedDef) applyOverlay(ov mergedDef) {
@@ -742,6 +749,9 @@ func (d *mergedDef) applyOverlay(ov mergedDef) {
 	if ov.Description != "" {
 		d.Description = ov.Description
 	}
+	if ov.RetryAttempts != nil {
+		d.RetryAttempts = ov.RetryAttempts
+	}
 }
 
 // normalize fills derived fields that the static config-load path
@@ -782,6 +792,7 @@ func staticToMergedDef(s config.AgentDef) mergedDef {
 		Models:                s.Models,
 		MemoryScopes:          s.MemoryScopes,
 		MemoryQuotaBytes:      s.MemoryQuotaBytes,
+		RetryAttempts:         s.RetryAttempts,
 	}
 }
 

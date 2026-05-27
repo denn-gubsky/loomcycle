@@ -204,3 +204,67 @@ func TestApplyAgentDefOverlay_ZeroMaxIterationsFallsThrough(t *testing.T) {
 		t.Errorf("MaxTokens = %d, want 8192", got.MaxTokens)
 	}
 }
+
+// v0.12.x per-agent retry_attempts substrate overlay tests.
+
+// TestApplyAgentDefOverlay_RetryAttemptsThreadsThrough pins that
+// an overlay carrying an explicit retry_attempts wins over the
+// static yaml's value — including the operator-meaningful 0
+// ("explicitly disable retries even under a generous tier").
+func TestApplyAgentDefOverlay_RetryAttemptsThreadsThrough(t *testing.T) {
+	five := 5
+	base := config.AgentDef{
+		Provider:      "anthropic",
+		Model:         "claude-haiku-4-5",
+		RetryAttempts: &five, // pretend static yaml had retry_attempts: 5
+	}
+	def := json.RawMessage(`{"retry_attempts": 0}`)
+	got := applyAgentDefOverlay(base, def)
+	if got.RetryAttempts == nil {
+		t.Fatal("RetryAttempts is nil; overlay's explicit 0 should produce a non-nil pointer")
+	}
+	if *got.RetryAttempts != 0 {
+		t.Errorf("*RetryAttempts = %d, want 0 (overlay wins)", *got.RetryAttempts)
+	}
+}
+
+// TestApplyAgentDefOverlay_OmittedRetryAttemptsPreservesStatic pins
+// the high-stakes case the F2 review surfaced: when the overlay
+// omits retry_attempts (a fork that doesn't touch the field), the
+// static yaml's value — including a "force 0" for a side-effectful
+// agent — must pass through unchanged. Without *int + nil-check,
+// the overlay would silently strip the static intent.
+func TestApplyAgentDefOverlay_OmittedRetryAttemptsPreservesStatic(t *testing.T) {
+	zero := 0
+	base := config.AgentDef{
+		Provider:      "anthropic",
+		Model:         "claude-haiku-4-5",
+		RetryAttempts: &zero, // static yaml: cv-adapter / evaluator force 0
+	}
+	// Overlay carries max_tokens; explicitly does NOT touch retry_attempts.
+	def := json.RawMessage(`{"max_tokens": 8192}`)
+	got := applyAgentDefOverlay(base, def)
+	if got.RetryAttempts == nil {
+		t.Fatal("static RetryAttempts was lost; expected pointer-to-0 to pass through")
+	}
+	if *got.RetryAttempts != 0 {
+		t.Errorf("static *RetryAttempts (0) was clobbered to %d", *got.RetryAttempts)
+	}
+}
+
+// TestApplyAgentDefOverlay_RetryAttemptsNilStaticStaysNil pins that
+// when both base and overlay leave retry_attempts unset, the
+// resolved AgentDef carries a nil pointer (falls through to tier
+// default at run time).
+func TestApplyAgentDefOverlay_RetryAttemptsNilStaticStaysNil(t *testing.T) {
+	base := config.AgentDef{
+		Provider: "anthropic",
+		Model:    "claude-haiku-4-5",
+		// RetryAttempts intentionally unset.
+	}
+	def := json.RawMessage(`{"max_tokens": 8192}`)
+	got := applyAgentDefOverlay(base, def)
+	if got.RetryAttempts != nil {
+		t.Errorf("RetryAttempts should stay nil; got %v", got.RetryAttempts)
+	}
+}

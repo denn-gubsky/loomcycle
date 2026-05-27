@@ -212,6 +212,7 @@ func TestAgent_DriftDetection(t *testing.T) {
 		"models":                  true,
 		"memory_scopes":           true,
 		"memory_quota_bytes":      true,
+		"retry_attempts":          true,
 	}
 	have := jsonTagsOf(reflect.TypeOf(lookup.SubstrateAgentDef{}))
 	for tag := range want {

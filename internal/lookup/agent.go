@@ -152,6 +152,11 @@ type SubstrateAgentDef struct {
 	Models           map[string][]config.TierCandidate `json:"models,omitempty"`
 	MemoryScopes     []string                          `json:"memory_scopes,omitempty"`
 	MemoryQuotaBytes int                               `json:"memory_quota_bytes,omitempty"`
+	// RetryAttempts mirrors config.AgentDef.RetryAttempts — per-agent
+	// same-provider retry budget override. *int so substrate JSON can
+	// persist the operator-meaningful "force 0" intent as distinct
+	// from "field not set" (use the tier default).
+	RetryAttempts *int `json:"retry_attempts,omitempty"`
 }
 
 // ToConfigDef projects the substrate JSON shape onto config.AgentDef
@@ -174,6 +179,7 @@ func (s SubstrateAgentDef) ToConfigDef() config.AgentDef {
 		Models:                s.Models,
 		MemoryScopes:          s.MemoryScopes,
 		MemoryQuotaBytes:      s.MemoryQuotaBytes,
+		RetryAttempts:         s.RetryAttempts,
 	}
 }
 
