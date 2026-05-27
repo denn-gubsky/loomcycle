@@ -109,6 +109,14 @@ func Run(t *testing.T, factory Factory) {
 		{"MemoryScopeIsolation", testMemoryScopeIsolation},
 		{"MemoryListScopeIDs", testMemoryListScopeIDs},
 		{"MemoryIncrementIsAtomicUnderConcurrency", testMemoryIncrementIsAtomicUnderConcurrency},
+		// v0.12.x — MemoryAtomicUpdate primitive backing the new
+		// reducer ops (Memory.merge / append_dedupe / bounded_list).
+		{"MemoryAtomicUpdateOnNewKey", testMemoryAtomicUpdateOnNewKey},
+		{"MemoryAtomicUpdateOnExistingKey", testMemoryAtomicUpdateOnExistingKey},
+		{"MemoryAtomicUpdateOnExpiredKey", testMemoryAtomicUpdateOnExpiredKey},
+		{"MemoryAtomicUpdateReducerErrorRollsBack", testMemoryAtomicUpdateReducerErrorRollsBack},
+		{"MemoryAtomicUpdateInvalidJSONRejected", testMemoryAtomicUpdateInvalidJSONRejected},
+		{"MemoryAtomicUpdateIsAtomicUnderConcurrency", testMemoryAtomicUpdateIsAtomicUnderConcurrency},
 		// v0.9.0 Vector Memory (commit 1 of PR 1).
 		// Each test forks at the top on SupportsVectors() and asserts
 		// either the refusal path (SQLite, or Postgres without
@@ -1861,6 +1869,184 @@ func mustParseInt(s string) int {
 		return 0
 	}
 	return n
+}
+
+// ---- v0.12.x MemoryAtomicUpdate contract ----
+
+func testMemoryAtomicUpdateOnNewKey(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	got, err := s.MemoryAtomicUpdate(ctx, store.MemoryScopeAgent, "qa", "k1", 0,
+		func(existing json.RawMessage) (json.RawMessage, error) {
+			if len(existing) != 0 {
+				t.Errorf("reducer existing should be empty on new key, got %q", existing)
+			}
+			return json.RawMessage(`{"v":1}`), nil
+		})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The store may normalise JSON whitespace (Postgres JSONB adds
+	// a space after the colon; SQLite preserves byte-for-byte).
+	// Compare semantically.
+	if v := jsonField(got, "v"); v != float64(1) {
+		t.Errorf("returned value's v = %v, want 1 (raw=%q)", v, got)
+	}
+	entry, err := s.MemoryGet(ctx, store.MemoryScopeAgent, "qa", "k1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v := jsonField(entry.Value, "v"); v != float64(1) {
+		t.Errorf("stored value's v = %v, want 1 (raw=%q)", v, entry.Value)
+	}
+}
+
+// jsonField returns the top-level field's value from a JSON object,
+// or nil when absent/malformed. Used by MemoryAtomicUpdate contract
+// tests to compare semantically across the SQLite/Postgres JSON
+// representation difference.
+func jsonField(raw json.RawMessage, field string) any {
+	var m map[string]any
+	if err := json.Unmarshal(raw, &m); err != nil {
+		return nil
+	}
+	return m[field]
+}
+
+func testMemoryAtomicUpdateOnExistingKey(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	// Seed an existing row via MemorySet, then read-modify-write.
+	if err := s.MemorySet(ctx, store.MemoryScopeAgent, "qa", "k2",
+		json.RawMessage(`{"x":1}`), 0); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.MemoryAtomicUpdate(ctx, store.MemoryScopeAgent, "qa", "k2", 0,
+		func(existing json.RawMessage) (json.RawMessage, error) {
+			if string(existing) != `{"x": 1}` && string(existing) != `{"x":1}` {
+				// Postgres JSONB round-trip adds a space; SQLite preserves
+				// the original bytes. Accept either.
+				t.Errorf("reducer existing = %q, want {x:1}-shape", existing)
+			}
+			return json.RawMessage(`{"x":1,"y":2}`), nil
+		})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Postgres normalises JSONB on write; check via MemoryGet which
+	// goes through the same path the production caller would.
+	entry, err := s.MemoryGet(ctx, store.MemoryScopeAgent, "qa", "k2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// JSONB may reorder/space-pad on Postgres; parse and compare
+	// semantically.
+	var parsed map[string]any
+	if err := json.Unmarshal(entry.Value, &parsed); err != nil {
+		t.Fatal(err)
+	}
+	if parsed["x"] != float64(1) || parsed["y"] != float64(2) {
+		t.Errorf("stored value parsed = %v; returned bytes = %q", parsed, got)
+	}
+}
+
+func testMemoryAtomicUpdateOnExpiredKey(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	// Seed with a short-TTL row that expires before the update runs.
+	if err := s.MemorySet(ctx, store.MemoryScopeAgent, "qa", "k3",
+		json.RawMessage(`{"old":true}`), 10*time.Millisecond); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(60 * time.Millisecond)
+	_, err := s.MemoryAtomicUpdate(ctx, store.MemoryScopeAgent, "qa", "k3", 0,
+		func(existing json.RawMessage) (json.RawMessage, error) {
+			// Expired row → reducer sees empty (treated as missing).
+			if len(existing) != 0 {
+				t.Errorf("expired row should surface as empty to reducer, got %q", existing)
+			}
+			return json.RawMessage(`{"fresh":true}`), nil
+		})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func testMemoryAtomicUpdateReducerErrorRollsBack(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	// Seed a row so we can verify it's unchanged after a failed update.
+	if err := s.MemorySet(ctx, store.MemoryScopeAgent, "qa", "k4",
+		json.RawMessage(`{"untouched":true}`), 0); err != nil {
+		t.Fatal(err)
+	}
+	sentinel := errors.New("reducer-said-no")
+	_, err := s.MemoryAtomicUpdate(ctx, store.MemoryScopeAgent, "qa", "k4", 0,
+		func(existing json.RawMessage) (json.RawMessage, error) {
+			return nil, sentinel
+		})
+	if !errors.Is(err, sentinel) {
+		t.Errorf("err = %v, want sentinel propagation", err)
+	}
+	entry, err := s.MemoryGet(ctx, store.MemoryScopeAgent, "qa", "k4")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var parsed map[string]any
+	_ = json.Unmarshal(entry.Value, &parsed)
+	if parsed["untouched"] != true {
+		t.Errorf("row was modified despite reducer error: %v", parsed)
+	}
+}
+
+func testMemoryAtomicUpdateInvalidJSONRejected(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	_, err := s.MemoryAtomicUpdate(ctx, store.MemoryScopeAgent, "qa", "k5", 0,
+		func(existing json.RawMessage) (json.RawMessage, error) {
+			return json.RawMessage(`not json {{{`), nil
+		})
+	if err == nil {
+		t.Fatal("expected error for invalid JSON, got nil")
+	}
+	if !strings.Contains(err.Error(), "invalid JSON") {
+		t.Errorf("err = %v, want 'invalid JSON' mention", err)
+	}
+}
+
+// testMemoryAtomicUpdateIsAtomicUnderConcurrency — N goroutines each
+// append a unique element to a JSON array under the same key. With
+// proper atomicity all N elements land; without it, lost-updates
+// produce a final array smaller than N.
+func testMemoryAtomicUpdateIsAtomicUnderConcurrency(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	const N = 100
+	var wg sync.WaitGroup
+	wg.Add(N)
+	for i := 0; i < N; i++ {
+		i := i
+		go func() {
+			defer wg.Done()
+			_, _ = s.MemoryAtomicUpdate(ctx, store.MemoryScopeAgent, "qa", "list", 0,
+				func(existing json.RawMessage) (json.RawMessage, error) {
+					var arr []int
+					if len(existing) > 0 {
+						_ = json.Unmarshal(existing, &arr)
+					}
+					arr = append(arr, i)
+					return json.Marshal(arr)
+				})
+		}()
+	}
+	wg.Wait()
+
+	entry, err := s.MemoryGet(ctx, store.MemoryScopeAgent, "qa", "list")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var arr []int
+	if err := json.Unmarshal(entry.Value, &arr); err != nil {
+		t.Fatal(err)
+	}
+	if len(arr) != N {
+		t.Errorf("concurrent atomic appends: array len = %d, want %d (%d lost updates)",
+			len(arr), N, N-len(arr))
+	}
 }
 
 // intToKey is a tiny helper for testMemoryListTruncation — keeps the

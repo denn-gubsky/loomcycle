@@ -282,3 +282,268 @@ func mustMarshal(t *testing.T, v any) json.RawMessage {
 	}
 	return b
 }
+
+// ---- v0.12.x reducer ops: merge / append_dedupe / bounded_list ----
+
+func TestMemoryTool_Merge_OnEmpty(t *testing.T) {
+	tool, ctx, cleanup := memoryFixture(t)
+	defer cleanup()
+
+	res, err := tool.Execute(ctx, json.RawMessage(
+		`{"op":"merge","scope":"user","key":"profile","value":{"name":"Alice"}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.IsError {
+		t.Fatalf("merge is_error: %s", res.Text)
+	}
+	// Verify via Get.
+	res, _ = tool.Execute(ctx, json.RawMessage(`{"op":"get","scope":"user","key":"profile"}`))
+	if !strings.Contains(res.Text, `"name":"Alice"`) {
+		t.Errorf("merged value not stored: %s", res.Text)
+	}
+}
+
+// Two sequential merges must combine: the second merge's fields overlay
+// the first's. Validates the deep-merge semantics at the tool layer.
+func TestMemoryTool_Merge_OverlaysFields(t *testing.T) {
+	tool, ctx, cleanup := memoryFixture(t)
+	defer cleanup()
+
+	// First merge sets name + likes:[rock]
+	_, _ = tool.Execute(ctx, json.RawMessage(
+		`{"op":"merge","scope":"user","key":"profile","value":{"name":"Alice","likes":["rock"]}}`))
+	// Second merge replaces likes (arrays don't concat, they replace).
+	res, _ := tool.Execute(ctx, json.RawMessage(
+		`{"op":"merge","scope":"user","key":"profile","value":{"likes":["jazz"],"age":30}}`))
+	if res.IsError {
+		t.Fatalf("second merge is_error: %s", res.Text)
+	}
+	res, _ = tool.Execute(ctx, json.RawMessage(`{"op":"get","scope":"user","key":"profile"}`))
+	// Expect name still Alice, likes is the new array, age 30.
+	if !strings.Contains(res.Text, `"name":"Alice"`) {
+		t.Errorf("merge lost name field: %s", res.Text)
+	}
+	if !strings.Contains(res.Text, `"likes":["jazz"]`) {
+		t.Errorf("merge should replace arrays, not concat: %s", res.Text)
+	}
+	if !strings.Contains(res.Text, `"age":30`) {
+		t.Errorf("merge dropped age: %s", res.Text)
+	}
+}
+
+// Nested-object merge: a merge into {a:{x:1}} with {a:{y:2}} should
+// produce {a:{x:1,y:2}}, not replace `a` entirely.
+func TestMemoryTool_Merge_NestedObjects(t *testing.T) {
+	tool, ctx, cleanup := memoryFixture(t)
+	defer cleanup()
+
+	_, _ = tool.Execute(ctx, json.RawMessage(
+		`{"op":"merge","scope":"user","key":"cfg","value":{"a":{"x":1}}}`))
+	_, _ = tool.Execute(ctx, json.RawMessage(
+		`{"op":"merge","scope":"user","key":"cfg","value":{"a":{"y":2}}}`))
+	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"get","scope":"user","key":"cfg"}`))
+	if !strings.Contains(res.Text, `"x":1`) || !strings.Contains(res.Text, `"y":2`) {
+		t.Errorf("nested merge lost a key: %s", res.Text)
+	}
+}
+
+// Merge into a non-object existing value must refuse (silent
+// replacement would surprise the agent).
+func TestMemoryTool_Merge_RefusesNonObjectExisting(t *testing.T) {
+	tool, ctx, cleanup := memoryFixture(t)
+	defer cleanup()
+
+	_, _ = tool.Execute(ctx, json.RawMessage(
+		`{"op":"set","scope":"user","key":"k","value":42}`))
+	res, _ := tool.Execute(ctx, json.RawMessage(
+		`{"op":"merge","scope":"user","key":"k","value":{"x":1}}`))
+	if !res.IsError {
+		t.Fatalf("expected is_error on merge into number, got: %s", res.Text)
+	}
+	if !strings.Contains(res.Text, "not a JSON object") {
+		t.Errorf("expected 'not a JSON object' message: %s", res.Text)
+	}
+}
+
+func TestMemoryTool_Merge_RefusesNonObjectIncoming(t *testing.T) {
+	tool, ctx, cleanup := memoryFixture(t)
+	defer cleanup()
+
+	res, _ := tool.Execute(ctx, json.RawMessage(
+		`{"op":"merge","scope":"user","key":"k","value":[1,2,3]}`))
+	if !res.IsError {
+		t.Fatalf("expected is_error on merge with array value, got: %s", res.Text)
+	}
+}
+
+// ---- append_dedupe ----
+
+func TestMemoryTool_AppendDedupe_FirstAppend(t *testing.T) {
+	tool, ctx, cleanup := memoryFixture(t)
+	defer cleanup()
+
+	res, _ := tool.Execute(ctx, json.RawMessage(
+		`{"op":"append_dedupe","scope":"user","key":"seen","value":"article-42"}`))
+	if res.IsError {
+		t.Fatalf("append is_error: %s", res.Text)
+	}
+	if !strings.Contains(res.Text, `"appended":true`) {
+		t.Errorf("first append should report appended:true: %s", res.Text)
+	}
+	if !strings.Contains(res.Text, `"article-42"`) {
+		t.Errorf("appended item missing from value: %s", res.Text)
+	}
+}
+
+// Idempotency — the same item twice produces appended:false on the
+// second call and the array contains exactly one entry.
+func TestMemoryTool_AppendDedupe_Idempotent(t *testing.T) {
+	tool, ctx, cleanup := memoryFixture(t)
+	defer cleanup()
+
+	_, _ = tool.Execute(ctx, json.RawMessage(
+		`{"op":"append_dedupe","scope":"user","key":"seen","value":"article-42"}`))
+	res, _ := tool.Execute(ctx, json.RawMessage(
+		`{"op":"append_dedupe","scope":"user","key":"seen","value":"article-42"}`))
+	if res.IsError {
+		t.Fatalf("second append is_error: %s", res.Text)
+	}
+	if !strings.Contains(res.Text, `"appended":false`) {
+		t.Errorf("second append should report appended:false: %s", res.Text)
+	}
+	res, _ = tool.Execute(ctx, json.RawMessage(`{"op":"get","scope":"user","key":"seen"}`))
+	// Should still contain article-42 exactly once.
+	if got := strings.Count(res.Text, `"article-42"`); got != 1 {
+		t.Errorf("article-42 appears %d times, want 1: %s", got, res.Text)
+	}
+}
+
+// JSON-equality dedupe: two objects with the same fields in different
+// orders count as equal.
+func TestMemoryTool_AppendDedupe_ObjectFieldOrderEquality(t *testing.T) {
+	tool, ctx, cleanup := memoryFixture(t)
+	defer cleanup()
+
+	_, _ = tool.Execute(ctx, json.RawMessage(
+		`{"op":"append_dedupe","scope":"user","key":"items","value":{"a":1,"b":2}}`))
+	res, _ := tool.Execute(ctx, json.RawMessage(
+		`{"op":"append_dedupe","scope":"user","key":"items","value":{"b":2,"a":1}}`))
+	if !strings.Contains(res.Text, `"appended":false`) {
+		t.Errorf("field-order-swapped object should dedupe: %s", res.Text)
+	}
+}
+
+func TestMemoryTool_AppendDedupe_RefusesNonArrayExisting(t *testing.T) {
+	tool, ctx, cleanup := memoryFixture(t)
+	defer cleanup()
+
+	_, _ = tool.Execute(ctx, json.RawMessage(
+		`{"op":"set","scope":"user","key":"k","value":{"not":"array"}}`))
+	res, _ := tool.Execute(ctx, json.RawMessage(
+		`{"op":"append_dedupe","scope":"user","key":"k","value":"x"}`))
+	if !res.IsError {
+		t.Fatalf("expected is_error on append to object, got: %s", res.Text)
+	}
+}
+
+// ---- bounded_list ----
+
+func TestMemoryTool_BoundedList_AppendUnderLimit(t *testing.T) {
+	tool, ctx, cleanup := memoryFixture(t)
+	defer cleanup()
+
+	for i, item := range []string{`"a"`, `"b"`, `"c"`} {
+		body := `{"op":"bounded_list","scope":"agent","key":"events","value":` + item + `,"limit":10}`
+		res, _ := tool.Execute(ctx, json.RawMessage(body))
+		if res.IsError {
+			t.Fatalf("bounded_list #%d is_error: %s", i, res.Text)
+		}
+		if !strings.Contains(res.Text, `"dropped":0`) {
+			t.Errorf("call %d should drop 0: %s", i, res.Text)
+		}
+	}
+	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"get","scope":"agent","key":"events"}`))
+	if !strings.Contains(res.Text, `"a","b","c"`) {
+		t.Errorf("insertion order broken: %s", res.Text)
+	}
+}
+
+// At-limit + over-limit behavior: append #4 with limit=3 drops the
+// oldest entry. Subsequent appends keep the trailing 3.
+func TestMemoryTool_BoundedList_DropsOldest(t *testing.T) {
+	tool, ctx, cleanup := memoryFixture(t)
+	defer cleanup()
+
+	for _, item := range []string{`"a"`, `"b"`, `"c"`} {
+		_, _ = tool.Execute(ctx, json.RawMessage(
+			`{"op":"bounded_list","scope":"agent","key":"events","value":`+item+`,"limit":3}`))
+	}
+	res, _ := tool.Execute(ctx, json.RawMessage(
+		`{"op":"bounded_list","scope":"agent","key":"events","value":"d","limit":3}`))
+	if !strings.Contains(res.Text, `"dropped":1`) {
+		t.Errorf("over-cap append should report dropped:1: %s", res.Text)
+	}
+	if !strings.Contains(res.Text, `"b","c","d"`) {
+		t.Errorf("expected b,c,d after dropping oldest a: %s", res.Text)
+	}
+}
+
+func TestMemoryTool_BoundedList_RejectsZeroLimit(t *testing.T) {
+	tool, ctx, cleanup := memoryFixture(t)
+	defer cleanup()
+
+	res, _ := tool.Execute(ctx, json.RawMessage(
+		`{"op":"bounded_list","scope":"agent","key":"events","value":"x","limit":0}`))
+	if !res.IsError {
+		t.Fatalf("expected is_error on limit=0, got: %s", res.Text)
+	}
+}
+
+func TestMemoryTool_BoundedList_RejectsExcessiveLimit(t *testing.T) {
+	tool, ctx, cleanup := memoryFixture(t)
+	defer cleanup()
+
+	res, _ := tool.Execute(ctx, json.RawMessage(
+		`{"op":"bounded_list","scope":"agent","key":"events","value":"x","limit":20000}`))
+	if !res.IsError {
+		t.Fatalf("expected is_error on limit > 10000, got: %s", res.Text)
+	}
+}
+
+// ---- shared concerns ----
+
+func TestMemoryTool_Reducers_MissingValueFieldRefused(t *testing.T) {
+	tool, ctx, cleanup := memoryFixture(t)
+	defer cleanup()
+
+	for _, op := range []string{"merge", "append_dedupe", "bounded_list"} {
+		body := `{"op":"` + op + `","scope":"user","key":"k","limit":5}`
+		res, _ := tool.Execute(ctx, json.RawMessage(body))
+		if !res.IsError {
+			t.Errorf("%s with missing value should refuse, got: %s", op, res.Text)
+		}
+	}
+}
+
+func TestMemoryTool_Reducers_RefuseScopeNotInPolicy(t *testing.T) {
+	tool, _, cleanup := memoryFixture(t)
+	defer cleanup()
+	ctx := tools.WithAgentName(context.Background(), "qa-agent")
+	ctx = tools.WithRunIdentity(ctx, tools.RunIdentityValue{UserID: "alice", AgentID: "a_test"})
+	// Policy only allows agent scope; user-scope reducer calls must refuse.
+	ctx = tools.WithMemoryPolicy(ctx, tools.MemoryPolicyValue{
+		AllowedScopes: []string{"agent"},
+	})
+
+	for _, op := range []string{"merge", "append_dedupe", "bounded_list"} {
+		body := `{"op":"` + op + `","scope":"user","key":"k","value":{"x":1},"limit":5}`
+		res, _ := tool.Execute(ctx, json.RawMessage(body))
+		if !res.IsError {
+			t.Errorf("%s with disallowed scope should refuse, got: %s", op, res.Text)
+		}
+		if !strings.Contains(res.Text, "memory_scopes") {
+			t.Errorf("%s refusal should mention memory_scopes: %s", op, res.Text)
+		}
+	}
+}

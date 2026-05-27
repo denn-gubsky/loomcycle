@@ -695,6 +695,30 @@ type Store interface {
 	// expiry untouched (or no expiry on a fresh row).
 	MemoryIncrement(ctx context.Context, scope MemoryScope, scopeID, key string, delta int64, ttl time.Duration) (int64, error)
 
+	// MemoryAtomicUpdate runs `reducer` as an atomic read-modify-write
+	// against (scope, scopeID, key). The reducer receives the current
+	// value (empty json.RawMessage when the row doesn't exist) and
+	// returns the new value. The store wraps the call in a per-row
+	// lock + transaction so concurrent updates serialize cleanly.
+	//
+	// Used by the Memory tool's reducer ops (merge / append_dedupe /
+	// bounded_list) in v0.12.x — each op constructs a different
+	// reducer closure but reuses this single atomic primitive.
+	//
+	// ttl > 0 sets (or resets) the expiry; ttl <= 0 keeps the
+	// existing expiry on update / no expiry on a fresh row.
+	//
+	// Returns the value written. When the reducer returns an error,
+	// the transaction rolls back and that error propagates verbatim
+	// — the tool layer wraps it for the agent-visible message.
+	MemoryAtomicUpdate(
+		ctx context.Context,
+		scope MemoryScope,
+		scopeID, key string,
+		ttl time.Duration,
+		reducer func(existing json.RawMessage) (next json.RawMessage, err error),
+	) (json.RawMessage, error)
+
 	// MemorySweep deletes every Memory row whose expires_at has passed.
 	// Returns the row count deleted. Safe to run from a periodic
 	// goroutine; idempotent under concurrent sweepers (single atomic
