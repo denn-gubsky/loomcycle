@@ -414,6 +414,29 @@ type UserTier struct {
 	// MaxFallbackAttempts: retries stay on the same (provider,
 	// model); fallbacks switch.
 	RetryAttempts int `yaml:"retry_attempts"`
+
+	// RateLimitCooldownMs overrides the resolver's hardcoded
+	// 30-second MarkRateLimited cooldown per user_tier. The
+	// resolver flips a (provider, model) entry to "unavailable"
+	// for this many milliseconds after a 429 — Resolve() refuses
+	// to pick the pair during the window, letting tryProviderFallback
+	// engage cleanly without waiting on the periodic probe.
+	//
+	// Why per-tier: real providers' Retry-After windows vary widely.
+	// Anthropic burst limits clear in 1-10s; Voyage AI per-minute
+	// caps may take 30-60s; some self-hosted providers recover
+	// instantly. A single hardcoded value (30s) is conservative for
+	// some providers and wasteful for others. Operators tune per
+	// the tier's actual fleet.
+	//
+	// 0 (default) keeps the v0.12.x behaviour — 30s default applied
+	// inside the resolver. Values in [1_000, 600_000] (1 s to 10
+	// min) accepted; out-of-range values silently clamp to that
+	// window at config-load. Sub-second cooldowns would defeat the
+	// purpose (the cascade would re-fire on the next call); >10 min
+	// becomes meaningless because the periodic probe (default 15
+	// min) clears the matrix before the cooldown expires anyway.
+	RateLimitCooldownMs int `yaml:"rate_limit_cooldown_ms"`
 }
 
 // AgentDef is one agent the API can address by name.
@@ -2611,6 +2634,9 @@ func validate(c *Config) error {
 			}
 			if ut.MaxFallbackAttempts < 0 {
 				return fmt.Errorf("user_tiers.%s.max_fallback_attempts: must be >= 0 (0 = use default of 3)", tierName)
+			}
+			if ut.RateLimitCooldownMs < 0 {
+				return fmt.Errorf("user_tiers.%s.rate_limit_cooldown_ms: must be >= 0 (0 = use resolver default of 30000ms)", tierName)
 			}
 		}
 	}

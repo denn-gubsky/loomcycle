@@ -4,6 +4,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/resolve"
 )
 
@@ -40,12 +41,20 @@ func TestStallFeedbackClosures_UseLoopProvidedArgsNotConstructionPin(t *testing.
 	r.SeedModel("deepseek", "deepseek-v4-flash")
 	r.SetProviderReachable("anthropic", true)
 	r.SetProviderReachable("deepseek", true)
-	srv := &Server{resolver: r}
+	srv := &Server{
+		resolver: r,
+		// Empty cfg so markRateLimitedFn(tier) finds no overlay
+		// and uses the resolver's hardcoded 30s default. The
+		// per-tier substitution path is covered by
+		// TestMarkRateLimitedFn_SubstitutesTierCooldown below.
+		cfg: &config.Config{},
+	}
 
 	t.Run("markRateLimitedFn uses loop args", func(t *testing.T) {
-		// Factory called with "original" pair — that's what existed
-		// at run start, before fallback.
-		fn := srv.markRateLimitedFn("anthropic", "claude-sonnet-4-6")
+		// Factory called with default tier — the closure has no
+		// per-tier cooldown to substitute; the loop's retryAfter
+		// flows through unchanged.
+		fn := srv.markRateLimitedFn("default")
 		if fn == nil {
 			t.Fatal("factory returned nil despite resolver set")
 		}
@@ -116,10 +125,125 @@ func TestStallFeedbackClosures_NilResolverReturnsNil(t *testing.T) {
 	if fn := srv.markStalledFn("a", "b"); fn != nil {
 		t.Error("markStalledFn should return nil when resolver is unset")
 	}
-	if fn := srv.markRateLimitedFn("a", "b"); fn != nil {
+	if fn := srv.markRateLimitedFn("default"); fn != nil {
 		t.Error("markRateLimitedFn should return nil when resolver is unset")
 	}
 	if fn := srv.clearStallFn("a", "b"); fn != nil {
 		t.Error("clearStallFn should return nil when resolver is unset")
+	}
+}
+
+// TestMarkRateLimitedFn_SubstitutesTierCooldown pins the v0.12.x
+// operator-tunable behaviour: when the loop passes retryAfter=0
+// (the common "use default" case), the closure substitutes the
+// per-tier rate_limit_cooldown_ms from the operator's yaml. A
+// non-zero retryAfter from the loop still takes precedence
+// (future-Retry-After-header threading is operator-trust-supreme).
+func TestMarkRateLimitedFn_SubstitutesTierCooldown(t *testing.T) {
+	r := resolve.NewResolver(
+		[]string{"anthropic"},
+		map[string][]resolve.Candidate{
+			"middle": {{Provider: "anthropic", Model: "haiku"}},
+		},
+	)
+	r.SeedModel("anthropic", "haiku")
+	r.SetProviderReachable("anthropic", true)
+	srv := &Server{
+		resolver: r,
+		cfg: &config.Config{
+			UserTiers: map[string]config.UserTier{
+				// 5 s cooldown — under the resolver's 30 s default
+				// so a re-Resolve right after the closure call still
+				// returns the model after a 5 s wait.
+				"fast": {
+					RateLimitCooldownMs: 5_000,
+				},
+				// 0 = use the resolver's hardcoded default.
+				"unset": {},
+			},
+		},
+	}
+
+	t.Run("operator cooldown substitutes when loop passes zero", func(t *testing.T) {
+		fn := srv.markRateLimitedFn("fast")
+		if fn == nil {
+			t.Fatal("factory returned nil")
+		}
+		// Loop passes 0 — closure must substitute 5 s.
+		fn("anthropic", "haiku", 0)
+
+		snap := r.Snapshot()
+		until := snap["anthropic"].Models["haiku"].RateLimitedUntil
+		now := time.Now()
+		// Cooldown should be ~5 s, not the resolver's 30 s default.
+		elapsed := until.Sub(now)
+		if elapsed < 4*time.Second || elapsed > 6*time.Second {
+			t.Errorf("cooldown deadline = %v from now, want ~5s (operator-supplied), got something else", elapsed)
+		}
+	})
+
+	t.Run("loop-supplied non-zero takes precedence", func(t *testing.T) {
+		r.SetReachable("anthropic", true, []string{"haiku"}, "")
+		fn := srv.markRateLimitedFn("fast")
+		// Loop passes explicit 1 hour — must NOT be overridden by the
+		// 5 s tier value.
+		fn("anthropic", "haiku", 1*time.Hour)
+
+		snap := r.Snapshot()
+		until := snap["anthropic"].Models["haiku"].RateLimitedUntil
+		elapsed := until.Sub(time.Now())
+		if elapsed < 50*time.Minute {
+			t.Errorf("cooldown deadline = %v from now, want ~1h (loop precedence)", elapsed)
+		}
+	})
+
+	t.Run("unset tier uses resolver default", func(t *testing.T) {
+		r.SetReachable("anthropic", true, []string{"haiku"}, "")
+		fn := srv.markRateLimitedFn("unset")
+		fn("anthropic", "haiku", 0)
+
+		snap := r.Snapshot()
+		until := snap["anthropic"].Models["haiku"].RateLimitedUntil
+		elapsed := until.Sub(time.Now())
+		// Resolver default is 30 s.
+		if elapsed < 28*time.Second || elapsed > 32*time.Second {
+			t.Errorf("cooldown deadline = %v from now, want ~30s (resolver default)", elapsed)
+		}
+	})
+
+	t.Run("unknown tier (no overlay) uses resolver default", func(t *testing.T) {
+		r.SetReachable("anthropic", true, []string{"haiku"}, "")
+		fn := srv.markRateLimitedFn("does-not-exist")
+		fn("anthropic", "haiku", 0)
+
+		snap := r.Snapshot()
+		until := snap["anthropic"].Models["haiku"].RateLimitedUntil
+		elapsed := until.Sub(time.Now())
+		if elapsed < 28*time.Second || elapsed > 32*time.Second {
+			t.Errorf("cooldown deadline = %v from now, want ~30s (resolver default for unknown tier)", elapsed)
+		}
+	})
+}
+
+// TestClampRateLimitCooldownMs pins the operator-doc-promised bounds
+// on the per-tier cooldown.
+func TestClampRateLimitCooldownMs(t *testing.T) {
+	cases := []struct {
+		in, want int
+	}{
+		{0, 0},         // unset passes through
+		{-100, 0},      // negative -> unset (validator already refused)
+		{1, 1_000},     // below 1s floor
+		{500, 1_000},   // below 1s floor
+		{1_000, 1_000}, // at floor
+		{30_000, 30_000},
+		{600_000, 600_000},   // at ceiling
+		{900_000, 600_000},   // above ceiling
+		{3_600_000, 600_000}, // way above ceiling
+	}
+	for _, tc := range cases {
+		if got := clampRateLimitCooldownMs(tc.in); got != tc.want {
+			t.Errorf("clamp(%d) = %d, want %d", tc.in, got, tc.want)
+		}
 	}
 }

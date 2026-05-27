@@ -509,17 +509,25 @@ func (s *Server) markStalledFn(_, _ string) func(p, m, reason string) {
 // actually rate-limited, and that's the entry that should get the
 // cooldown — NOT the pre-fallback original provider.
 //
-// retryAfter flows through unchanged (the loop currently passes 0 =
-// use default; future work can thread the real Retry-After header up
-// from the driver).
+// tier is the run's user_tier name. When the operator yaml sets
+// `user_tiers.<tier>.rate_limit_cooldown_ms` > 0, the closure
+// substitutes that value for the loop's `retryAfter` ONLY when the
+// loop passed 0 (the common "use default" case). A non-zero
+// retryAfter from the loop (future work threading the real
+// Retry-After header up from the driver) takes precedence — operators
+// trust provider-supplied hints over their own static knob.
 //
 // Returns nil when no resolver is wired — RunOptions treats nil as
 // "rate-limit feedback disabled".
-func (s *Server) markRateLimitedFn(_, _ string) func(p, m string, retryAfter time.Duration) {
+func (s *Server) markRateLimitedFn(tier string) func(p, m string, retryAfter time.Duration) {
 	if s.resolver == nil {
 		return nil
 	}
+	operatorCooldown := s.rateLimitCooldownForTier(tier)
 	return func(p, m string, retryAfter time.Duration) {
+		if retryAfter <= 0 && operatorCooldown > 0 {
+			retryAfter = operatorCooldown
+		}
 		s.resolver.MarkRateLimited(p, m, retryAfter)
 	}
 }
@@ -722,7 +730,31 @@ func (s *Server) userTierOverlay(name string) *resolve.UserTierOverlay {
 		FallbackOnError:     ut.FallbackOnError,
 		MaxFallbackAttempts: ut.MaxFallbackAttempts,
 		RetryAttempts:       ut.RetryAttempts,
+		RateLimitCooldownMs: clampRateLimitCooldownMs(ut.RateLimitCooldownMs),
 	}
+}
+
+// clampRateLimitCooldownMs enforces the operator-doc-promised
+// [1_000, 600_000] bounds on the per-tier cooldown. 0 (unset)
+// passes through so the resolver picks its default. The clamp
+// happens here rather than at config-load so the bounds are a
+// single source of truth (the docstring on UserTier.RateLimitCooldownMs
+// names the same range).
+func clampRateLimitCooldownMs(ms int) int {
+	if ms <= 0 {
+		return 0
+	}
+	const (
+		minMs = 1_000   // 1 s — anything lower defeats the cooldown's purpose
+		maxMs = 600_000 // 10 min — beyond this the periodic probe clears the matrix first
+	)
+	if ms < minMs {
+		return minMs
+	}
+	if ms > maxMs {
+		return maxMs
+	}
+	return ms
 }
 
 // retryAttemptsForTier returns the same-provider retry budget the
@@ -735,6 +767,32 @@ func (s *Server) retryAttemptsForTier(name string) int {
 		return 0
 	}
 	return overlay.RetryAttempts
+}
+
+// rateLimitCooldownForTier returns the operator-tunable cooldown
+// duration the resolver should apply on MarkRateLimited for runs
+// carrying this user_tier. Zero (the default) means "use the
+// resolver's hardcoded default" — the closure passes 0 through to
+// resolver.MarkRateLimited, which substitutes its own default
+// (30 s) when retryAfter <= 0.
+//
+// Reads s.cfg directly (not via userTierOverlay) — this is called
+// once per RunOptions construction and we only need a single int
+// field; rebuilding the full overlay (with candidate conversion)
+// would be wasted work per run.
+func (s *Server) rateLimitCooldownForTier(name string) time.Duration {
+	if s.cfg == nil || name == "" {
+		return 0
+	}
+	ut, ok := s.cfg.UserTiers[name]
+	if !ok {
+		return 0
+	}
+	ms := clampRateLimitCooldownMs(ut.RateLimitCooldownMs)
+	if ms <= 0 {
+		return 0
+	}
+	return time.Duration(ms) * time.Millisecond
 }
 
 // substratePoliciesForAgent returns the v0.8.5 AgentDef +
@@ -1358,7 +1416,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		MaxIterations:          agentDef.MaxIterations, // 0 → loop default (16)
 		Effort:                 effort,
 		MarkStalled:            s.markStalledFn(providerID, model),
-		MarkRateLimited:        s.markRateLimitedFn(providerID, model),
+		MarkRateLimited:        s.markRateLimitedFn(in.UserTier),
 		ClearStall:             s.clearStallFn(providerID, model),
 		ToolParallelism:        s.cfg.Env.ToolParallelism,
 		AgentName:              effectiveAgentName,
@@ -2298,7 +2356,7 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		MaxIterations:          agentDef.MaxIterations, // 0 → loop default (16)
 		Effort:                 effort,
 		MarkStalled:            s.markStalledFn(providerID, model),
-		MarkRateLimited:        s.markRateLimitedFn(providerID, model),
+		MarkRateLimited:        s.markRateLimitedFn(req.UserTier),
 		ClearStall:             s.clearStallFn(providerID, model),
 		ToolParallelism:        s.cfg.Env.ToolParallelism,
 		AgentName:              req.Agent,
@@ -2628,7 +2686,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		MaxIterations:          agentDef.MaxIterations, // 0 → loop default (16)
 		Effort:                 effort,
 		MarkStalled:            s.markStalledFn(providerID, model),
-		MarkRateLimited:        s.markRateLimitedFn(providerID, model),
+		MarkRateLimited:        s.markRateLimitedFn(body.UserTier),
 		ClearStall:             s.clearStallFn(providerID, model),
 		ToolParallelism:        s.cfg.Env.ToolParallelism,
 		AgentName:              sess.Agent,
@@ -3229,7 +3287,7 @@ func (s *Server) runSubAgent(ctx context.Context, name string, prompt string, de
 		MaxIterations:          def.MaxIterations, // 0 → loop default (16)
 		Effort:                 effort,
 		MarkStalled:            s.markStalledFn(providerID, model),
-		MarkRateLimited:        s.markRateLimitedFn(providerID, model),
+		MarkRateLimited:        s.markRateLimitedFn(parentTier),
 		ClearStall:             s.clearStallFn(providerID, model),
 		ToolParallelism:        s.cfg.Env.ToolParallelism,
 		AgentName:              name,
