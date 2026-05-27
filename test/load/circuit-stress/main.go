@@ -374,9 +374,15 @@ func runCircuits(c *lcClient, f flags, prompts []string) []circuitResult {
 		startedCount   atomic.Int32
 		completedCount atomic.Int32
 		// Throttle initial spawn so we don't slam the runs-admit
-		// semaphore with all N at once — 50 concurrent launches is
-		// plenty for x1000.
-		launchSem = make(chan struct{}, 50)
+		// semaphore with all N at once. Bumped 50 → 500 in v0.12.9
+		// after the 2026-05-27 x5000 research found that 50 was the
+		// actual rate-limiter across every scenario this session —
+		// peak active_runs in loomcycle stayed at ~140 under all
+		// loads from x1000 through x5000, well below the substrate's
+		// max_concurrent_runs: 2000 ceiling. Lifting to 500 lets the
+		// harness actually exercise loomcycle's admission + queue
+		// path at scale.
+		launchSem = make(chan struct{}, 500)
 	)
 
 	startWall := time.Now()
