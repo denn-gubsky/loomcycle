@@ -214,10 +214,15 @@ scope_id).
 
 ## Cross-references
 
+- `help(topic="memory-reducers")` — v0.12.x atomic ops on top of
+  the same Memory tool (`merge` / `append_dedupe` / `bounded_list`)
+  for the multi-caller-touches-same-key case. Orthogonal to
+  semantic search; you can `embed: true` on a `set` and reduce
+  with `merge` on later updates of the same key.
 - `help(topic="scopes")` — agent vs user scope (same allowlist
   applies to `search`; you can't read another scope's vectors).
 - `help(topic="loomcycle")` — the full Memory wire surface
-  (`get`/`set`/`delete`/`list`/`incr`/`search`).
+  (`get`/`set`/`delete`/`list`/`incr`/`search`/`merge`/`append_dedupe`/`bounded_list`).
 - `help(topic="pause-resume-snapshot")` — snapshot round-trip
   carries the embedding payload per memory row; restores to a
   vector-supporting backend land them, restores to a non-vector

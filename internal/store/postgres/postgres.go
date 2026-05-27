@@ -2541,6 +2541,95 @@ func (s *Store) MemoryIncrement(ctx context.Context, scope store.MemoryScope, sc
 	return next, nil
 }
 
+// MemoryAtomicUpdate is the generic read-modify-write primitive that
+// the v0.12.x reducer ops (Memory.merge / append_dedupe / bounded_list)
+// build on top of. Mirrors MemoryIncrement's lock-tx-write pattern but
+// hands the value-derivation step to the caller's reducer closure.
+//
+// Per-row advisory lock (hash of "scope:scope_id:key") so two
+// concurrent callers on the same key serialize cleanly; callers on
+// different keys run in parallel.
+func (s *Store) MemoryAtomicUpdate(
+	ctx context.Context,
+	scope store.MemoryScope,
+	scopeID, key string,
+	ttl time.Duration,
+	reducer func(existing json.RawMessage) (json.RawMessage, error),
+) (json.RawMessage, error) {
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("memory atomic update begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	if _, err := tx.Exec(ctx,
+		`SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`,
+		string(scope)+":"+scopeID+":"+key,
+	); err != nil {
+		return nil, fmt.Errorf("memory atomic update lock: %w", err)
+	}
+
+	var (
+		valueText []byte
+		expiresAt *time.Time
+	)
+	err = tx.QueryRow(ctx,
+		`SELECT value::text, expires_at FROM memory
+		 WHERE scope = $1 AND scope_id = $2 AND key = $3`,
+		string(scope), scopeID, key,
+	).Scan(&valueText, &expiresAt)
+
+	now := time.Now().UTC()
+	rowExists := !errors.Is(err, pgx.ErrNoRows)
+	if rowExists && err != nil {
+		return nil, fmt.Errorf("memory atomic update select: %w", err)
+	}
+	if rowExists && expiresAt != nil && now.After(*expiresAt) {
+		// Treat expired as missing — pass empty bytes to the reducer
+		// rather than the stale value.
+		rowExists = false
+	}
+
+	var existing json.RawMessage
+	if rowExists {
+		existing = json.RawMessage(valueText)
+	}
+	next, err := reducer(existing)
+	if err != nil {
+		// Surface the reducer's error verbatim — the tool layer
+		// wraps for the agent-visible message. The tx rollback
+		// happens via the defer above.
+		return nil, err
+	}
+	if !json.Valid(next) {
+		return nil, fmt.Errorf("memory atomic update: reducer returned invalid JSON")
+	}
+
+	var newExpires any
+	switch {
+	case ttl > 0:
+		newExpires = now.Add(ttl)
+	case rowExists && expiresAt != nil:
+		newExpires = *expiresAt
+	}
+
+	if _, err := tx.Exec(ctx,
+		`INSERT INTO memory (scope, scope_id, key, value, expires_at, created_at, updated_at)
+		 VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7)
+		 ON CONFLICT (scope, scope_id, key) DO UPDATE SET
+		    value = EXCLUDED.value,
+		    expires_at = EXCLUDED.expires_at,
+		    updated_at = EXCLUDED.updated_at`,
+		string(scope), scopeID, key, string(next), newExpires, now, now,
+	); err != nil {
+		return nil, fmt.Errorf("memory atomic update write: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("memory atomic update commit: %w", err)
+	}
+	return next, nil
+}
+
 // MemoryListScopeIDs returns distinct scope_ids under scope with
 // summary stats. octet_length(value::text) is used for the bytes
 // estimate — JSONB has no LENGTH() in the SQLite sense; the textual

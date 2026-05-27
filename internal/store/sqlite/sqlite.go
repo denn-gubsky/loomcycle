@@ -2360,6 +2360,100 @@ func (s *Store) MemoryIncrement(ctx context.Context, scope store.MemoryScope, sc
 	return next, nil
 }
 
+// MemoryAtomicUpdate is the generic read-modify-write primitive the
+// v0.12.x reducer ops (Memory.merge / append_dedupe / bounded_list)
+// build on. Mirrors MemoryIncrement's BEGIN IMMEDIATE locking, but
+// hands the value-derivation step to the caller's reducer closure.
+//
+// SQLite serialises writes anyway (single-writer / WAL), so BEGIN
+// IMMEDIATE is the cleanest correctness fence: any concurrent
+// MemoryAtomicUpdate on the same DB will queue at the transaction
+// boundary regardless of which key it targets. Coarser than
+// Postgres's per-key advisory lock, but appropriate for SQLite's
+// concurrency model.
+func (s *Store) MemoryAtomicUpdate(
+	ctx context.Context,
+	scope store.MemoryScope,
+	scopeID, key string,
+	ttl time.Duration,
+	reducer func(existing json.RawMessage) (json.RawMessage, error),
+) (json.RawMessage, error) {
+	conn, err := s.db.Conn(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer conn.Close()
+
+	if _, err := conn.ExecContext(ctx, "BEGIN IMMEDIATE"); err != nil {
+		return nil, err
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_, _ = conn.ExecContext(context.Background(), "ROLLBACK")
+		}
+	}()
+
+	var (
+		valueText sql.NullString
+		expiresAt sql.NullInt64
+	)
+	err = conn.QueryRowContext(ctx,
+		`SELECT value, expires_at FROM memory WHERE scope = ? AND scope_id = ? AND key = ?`,
+		string(scope), scopeID, key,
+	).Scan(&valueText, &expiresAt)
+	now := time.Now()
+	nowNs := now.UnixNano()
+
+	rowExists := !errors.Is(err, sql.ErrNoRows)
+	if rowExists && err != nil {
+		return nil, err
+	}
+	if rowExists && expiresAt.Valid && nowNs > expiresAt.Int64 {
+		// Treat expired rows as missing — reducer sees empty input.
+		rowExists = false
+	}
+
+	var existing json.RawMessage
+	if rowExists {
+		existing = json.RawMessage(valueText.String)
+	}
+	next, err := reducer(existing)
+	if err != nil {
+		// Tool layer wraps for the agent-visible message.
+		return nil, err
+	}
+	if !json.Valid(next) {
+		return nil, fmt.Errorf("memory atomic update: reducer returned invalid JSON")
+	}
+
+	var newExpires any
+	switch {
+	case ttl > 0:
+		newExpires = now.Add(ttl).UnixNano()
+	case rowExists && expiresAt.Valid:
+		newExpires = expiresAt.Int64
+	}
+
+	_, err = conn.ExecContext(ctx,
+		`INSERT INTO memory(scope, scope_id, key, value, expires_at, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?)
+		 ON CONFLICT(scope, scope_id, key) DO UPDATE SET
+		    value = excluded.value,
+		    expires_at = excluded.expires_at,
+		    updated_at = excluded.updated_at`,
+		string(scope), scopeID, key, string(next), newExpires, nowNs, nowNs,
+	)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := conn.ExecContext(ctx, "COMMIT"); err != nil {
+		return nil, err
+	}
+	committed = true
+	return next, nil
+}
+
 // MemoryListScopeIDs returns distinct scope_ids under scope with
 // summary stats. Excludes expired rows so operators see live state
 // only. Capped at 200 rows ordered by updated_at DESC.

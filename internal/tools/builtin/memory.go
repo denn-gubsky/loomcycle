@@ -70,22 +70,23 @@ type Memory struct {
 const memoryDescription = `Persistent key/value storage scoped to this agent or end-user. ` +
 	`Survives across runs and sessions. Use for: counters, summaries, voice/preferences, ` +
 	`learned facts, notes for your future self. ` +
-	`Operations: get, set, delete, list, incr, search. ` +
+	`Operations: get, set, delete, list, incr, search, merge, append_dedupe, bounded_list. ` +
 	`Scope is "agent" (this agent's keyspace, shared across users) or "user" (this end-user's keyspace, shared across agents). ` +
 	`Values are JSON. Optional TTL is in seconds. ` +
-	`v0.9.0: pass embed=true with embed_text on set to enable semantic search; use op=search with query to find rows by similarity.`
+	`v0.9.0: pass embed=true with embed_text on set to enable semantic search; use op=search with query to find rows by similarity. ` +
+	`v0.12.x: merge / append_dedupe / bounded_list are atomic reducers — use them instead of get-modify-set when concurrent updates are possible.`
 
 const memoryInputSchema = `{
   "type": "object",
   "properties": {
-    "op":         {"type": "string", "enum": ["get","set","delete","list","incr","search"], "description": "Which operation to perform."},
+    "op":         {"type": "string", "enum": ["get","set","delete","list","incr","search","merge","append_dedupe","bounded_list"], "description": "Which operation to perform."},
     "scope":      {"type": "string", "enum": ["agent","user"], "description": "Which keyspace: this agent's (cross-run, cross-user) or this user's (cross-agent)."},
-    "key":        {"type": "string", "description": "The entry's key. Required for get / set / delete / incr."},
-    "value":      {"description": "The JSON value to store. Required for set."},
+    "key":        {"type": "string", "description": "The entry's key. Required for get / set / delete / incr / merge / append_dedupe / bounded_list."},
+    "value":      {"description": "The JSON value. Required for set / merge / append_dedupe / bounded_list. For merge: a JSON object whose fields overlay the existing object. For append_dedupe / bounded_list: the item to append."},
     "delta":      {"type": "integer", "description": "Increment delta for incr (default 1, may be negative)."},
-    "ttl":        {"type": "integer", "description": "Optional time-to-live in seconds. Applies to set and incr; 0 means no expiry."},
+    "ttl":        {"type": "integer", "description": "Optional time-to-live in seconds. Applies to write ops; 0 means no expiry (or keep existing on update)."},
     "prefix":     {"type": "string", "description": "Optional key prefix filter for list / search."},
-    "limit":      {"type": "integer", "description": "Maximum entries to return for list (default 100)."},
+    "limit":      {"type": "integer", "description": "list: max entries returned (default 100). bounded_list: keep the N most recent items (required, >= 1)."},
     "embed":      {"type": "boolean", "description": "v0.9.0 set-only: when true, also generates and stores an embedding so this row is reachable via op=search."},
     "embed_text": {"type": "string", "description": "v0.9.0 set-only: the text to embed when embed=true. Defaults to the JSON-stringified value when omitted."},
     "query":      {"type": "string", "description": "v0.9.0 search-only: the text to embed and use as the similarity query."},
@@ -148,10 +149,16 @@ func (m *Memory) Execute(ctx context.Context, raw json.RawMessage) (tools.Result
 		return m.execIncr(ctx, scope, scopeID, in)
 	case "search":
 		return m.execSearch(ctx, scope, scopeID, in)
+	case "merge":
+		return m.execMerge(ctx, scope, scopeID, in)
+	case "append_dedupe":
+		return m.execAppendDedupe(ctx, scope, scopeID, in)
+	case "bounded_list":
+		return m.execBoundedList(ctx, scope, scopeID, in)
 	case "":
 		return errResult("missing required field: op"), nil
 	default:
-		return errResult(fmt.Sprintf("unknown op %q (must be one of: get, set, delete, list, incr, search)", in.Op)), nil
+		return errResult(fmt.Sprintf("unknown op %q (must be one of: get, set, delete, list, incr, search, merge, append_dedupe, bounded_list)", in.Op)), nil
 	}
 }
 
@@ -457,6 +464,242 @@ func (m *Memory) execIncr(ctx context.Context, scope store.MemoryScope, scopeID 
 		return errResult(fmt.Sprintf("incr: %s", err)), nil
 	}
 	return okJSON(map[string]any{"value": next})
+}
+
+// execMerge deep-merges a JSON OBJECT into the existing value. The
+// existing value must be a JSON object (or absent — treated as
+// empty object). Incoming value must also be a JSON object. Fields
+// in the incoming object overlay the existing fields; nested objects
+// recurse; non-object values (arrays, scalars, null) at any level
+// replace the existing value at that path.
+//
+// Atomic via MemoryAtomicUpdate — concurrent merges on the same key
+// serialise cleanly. The pattern that justifies this op vs a
+// get/modify/set sequence at the tool layer: two agents merging
+// different fields into the same profile object would otherwise lose
+// one update.
+func (m *Memory) execMerge(ctx context.Context, scope store.MemoryScope, scopeID string, in memoryInput) (tools.Result, error) {
+	if in.Key == "" {
+		return errResult("merge: missing required field: key"), nil
+	}
+	if len(in.Value) == 0 {
+		return errResult("merge: missing required field: value"), nil
+	}
+	if !json.Valid(in.Value) {
+		return errResult("merge: value is not valid JSON"), nil
+	}
+	// Validate the incoming value is an object up-front so we refuse
+	// before taking the row lock.
+	var incoming map[string]any
+	if err := json.Unmarshal(in.Value, &incoming); err != nil {
+		return errResult("merge: value must be a JSON object"), nil
+	}
+	if m.MaxValueBytes > 0 && len(in.Value) > m.MaxValueBytes {
+		return errResult(fmt.Sprintf("merge: value (%d bytes) exceeds max %d bytes", len(in.Value), m.MaxValueBytes)), nil
+	}
+
+	ttl := time.Duration(in.TTL) * time.Second
+	final, err := m.Store.MemoryAtomicUpdate(ctx, scope, scopeID, in.Key, ttl,
+		func(existing json.RawMessage) (json.RawMessage, error) {
+			base := map[string]any{}
+			if len(existing) > 0 {
+				if err := json.Unmarshal(existing, &base); err != nil {
+					// Existing row is not a JSON object — refuse;
+					// merge into a non-object would silently replace.
+					return nil, fmt.Errorf("existing value is not a JSON object (use set to overwrite)")
+				}
+			}
+			out := deepMerge(base, incoming)
+			b, err := json.Marshal(out)
+			if err != nil {
+				return nil, fmt.Errorf("encode merged value: %w", err)
+			}
+			if m.MaxValueBytes > 0 && len(b) > m.MaxValueBytes {
+				return nil, fmt.Errorf("merged value (%d bytes) exceeds max %d bytes", len(b), m.MaxValueBytes)
+			}
+			return b, nil
+		})
+	if err != nil {
+		return errResult(fmt.Sprintf("merge: %s", err)), nil
+	}
+	// Quota check AFTER the merge — the post-merge size is what we
+	// charge against. checkQuota's existing-row subtraction means a
+	// merge that grows the row by N bytes costs N additional bytes.
+	if err := m.checkQuota(ctx, scope, scopeID, in.Key, len(final)); err != nil {
+		// Roll back by rewriting the old value? We can't from here
+		// — the atomic update already committed. Documentation says
+		// quota is approximate; surface the error so the agent sees
+		// the over-cap state and can delete.
+		return errResult(err.Error()), nil
+	}
+	return okJSON(map[string]any{"value": final})
+}
+
+// execAppendDedupe appends an item to a JSON ARRAY at the key. If the
+// item is already in the array (by JSON-equality), the call is a
+// no-op and `appended: false` is returned. Atomic so two agents
+// appending the same value concurrently produce exactly one entry.
+//
+// The existing value must be a JSON array (or absent — treated as
+// empty array). Items can be any JSON value.
+func (m *Memory) execAppendDedupe(ctx context.Context, scope store.MemoryScope, scopeID string, in memoryInput) (tools.Result, error) {
+	if in.Key == "" {
+		return errResult("append_dedupe: missing required field: key"), nil
+	}
+	if len(in.Value) == 0 {
+		return errResult("append_dedupe: missing required field: value"), nil
+	}
+	if !json.Valid(in.Value) {
+		return errResult("append_dedupe: value is not valid JSON"), nil
+	}
+
+	ttl := time.Duration(in.TTL) * time.Second
+	appended := false
+	final, err := m.Store.MemoryAtomicUpdate(ctx, scope, scopeID, in.Key, ttl,
+		func(existing json.RawMessage) (json.RawMessage, error) {
+			var arr []json.RawMessage
+			if len(existing) > 0 {
+				if err := json.Unmarshal(existing, &arr); err != nil {
+					return nil, fmt.Errorf("existing value is not a JSON array (use set to overwrite)")
+				}
+			}
+			// JSON-equality dedupe — compare canonicalised forms so
+			// {a:1,b:2} equals {b:2,a:1}.
+			incomingCanon, err := canonicaliseJSON(in.Value)
+			if err != nil {
+				return nil, fmt.Errorf("canonicalise incoming: %w", err)
+			}
+			for _, existingItem := range arr {
+				cc, err := canonicaliseJSON(existingItem)
+				if err == nil && bytesEqual(cc, incomingCanon) {
+					// Already present — return existing unchanged.
+					return existing, nil
+				}
+			}
+			appended = true
+			arr = append(arr, json.RawMessage(in.Value))
+			b, err := json.Marshal(arr)
+			if err != nil {
+				return nil, fmt.Errorf("encode appended array: %w", err)
+			}
+			if m.MaxValueBytes > 0 && len(b) > m.MaxValueBytes {
+				return nil, fmt.Errorf("array (%d bytes) exceeds max %d bytes", len(b), m.MaxValueBytes)
+			}
+			return b, nil
+		})
+	if err != nil {
+		return errResult(fmt.Sprintf("append_dedupe: %s", err)), nil
+	}
+	// Quota check on the final size; same caveat as execMerge — the
+	// store has already committed by here.
+	if err := m.checkQuota(ctx, scope, scopeID, in.Key, len(final)); err != nil {
+		return errResult(err.Error()), nil
+	}
+	return okJSON(map[string]any{"appended": appended, "value": final})
+}
+
+// execBoundedList appends an item to a JSON ARRAY at the key and
+// trims to the most recent `limit` entries. Older entries (front of
+// the array) are dropped. Useful for event logs / recent-activity
+// buffers / sliding-window features.
+//
+// Unlike append_dedupe, this op does NOT dedupe — every call appends.
+// The order is insertion order; the trim drops from the head.
+func (m *Memory) execBoundedList(ctx context.Context, scope store.MemoryScope, scopeID string, in memoryInput) (tools.Result, error) {
+	if in.Key == "" {
+		return errResult("bounded_list: missing required field: key"), nil
+	}
+	if len(in.Value) == 0 {
+		return errResult("bounded_list: missing required field: value"), nil
+	}
+	if !json.Valid(in.Value) {
+		return errResult("bounded_list: value is not valid JSON"), nil
+	}
+	if in.Limit < 1 {
+		return errResult("bounded_list: limit must be >= 1"), nil
+	}
+	// Hard cap to keep one row from blowing past the model context.
+	if in.Limit > 10000 {
+		return errResult("bounded_list: limit must be <= 10000"), nil
+	}
+
+	ttl := time.Duration(in.TTL) * time.Second
+	var droppedCount int
+	final, err := m.Store.MemoryAtomicUpdate(ctx, scope, scopeID, in.Key, ttl,
+		func(existing json.RawMessage) (json.RawMessage, error) {
+			var arr []json.RawMessage
+			if len(existing) > 0 {
+				if err := json.Unmarshal(existing, &arr); err != nil {
+					return nil, fmt.Errorf("existing value is not a JSON array (use set to overwrite)")
+				}
+			}
+			arr = append(arr, json.RawMessage(in.Value))
+			if len(arr) > in.Limit {
+				droppedCount = len(arr) - in.Limit
+				arr = arr[droppedCount:]
+			}
+			b, err := json.Marshal(arr)
+			if err != nil {
+				return nil, fmt.Errorf("encode bounded list: %w", err)
+			}
+			if m.MaxValueBytes > 0 && len(b) > m.MaxValueBytes {
+				return nil, fmt.Errorf("array (%d bytes) exceeds max %d bytes", len(b), m.MaxValueBytes)
+			}
+			return b, nil
+		})
+	if err != nil {
+		return errResult(fmt.Sprintf("bounded_list: %s", err)), nil
+	}
+	if err := m.checkQuota(ctx, scope, scopeID, in.Key, len(final)); err != nil {
+		return errResult(err.Error()), nil
+	}
+	return okJSON(map[string]any{"dropped": droppedCount, "value": final})
+}
+
+// deepMerge overlays `overlay` onto `base`, recursing into nested
+// maps. Non-map values at any level replace the base value (no
+// concat for arrays — replace; no add for numbers — replace). Used
+// by execMerge.
+func deepMerge(base, overlay map[string]any) map[string]any {
+	out := make(map[string]any, len(base)+len(overlay))
+	for k, v := range base {
+		out[k] = v
+	}
+	for k, v := range overlay {
+		// If both sides are objects, recurse. Otherwise overlay wins.
+		if baseSub, baseOk := out[k].(map[string]any); baseOk {
+			if overlaySub, overlayOk := v.(map[string]any); overlayOk {
+				out[k] = deepMerge(baseSub, overlaySub)
+				continue
+			}
+		}
+		out[k] = v
+	}
+	return out
+}
+
+// canonicaliseJSON produces a deterministic encoding of `raw` so that
+// semantically-equal JSON values compare byte-equal. Object keys are
+// sorted; whitespace is removed. Used by execAppendDedupe for the
+// "already in the array" check.
+func canonicaliseJSON(raw json.RawMessage) ([]byte, error) {
+	var v any
+	if err := json.Unmarshal(raw, &v); err != nil {
+		return nil, err
+	}
+	return json.Marshal(v) // Go's encoder sorts map keys by default.
+}
+
+func bytesEqual(a, b []byte) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // checkQuota verifies that adding `addBytes` to the (scope, scopeID)
