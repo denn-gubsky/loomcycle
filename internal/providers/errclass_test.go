@@ -102,6 +102,19 @@ func TestIsRateLimit(t *testing.T) {
 		{"context canceled", context.Canceled, false},
 		{"context deadline exceeded", context.DeadlineExceeded, false},
 		{"429 in body but not prefix", errors.New("got body: error 429"), false},
+		// Wrapped-driver cases: DeepSeek delegates to the OpenAI
+		// inner driver, so its 429 surfaces with an "openai 429:"
+		// prefix even though the matrix entry is "deepseek". Same
+		// for anthropic-oauth-dev wrapping anthropic. IsRateLimit
+		// looks at the status code only, so detection works either
+		// way; the resolver-side matrix entry is keyed by what the
+		// loop passes via opts.Provider.ID().
+		{"openai 429 (also deepseek wrap)", errors.New("openai 429: rate limited"), true},
+		{"anthropic 429 (also oauth-dev wrap)", errors.New("anthropic 429: limit exceeded"), true},
+		// Ollama uses hyphenated provider IDs ("ollama" or
+		// "ollama-local"). The regex accepts hyphens — verify both.
+		{"ollama 429", errors.New("ollama 429: too many concurrent requests"), true},
+		{"ollama-local 429", errors.New("ollama-local 429: too many requests"), true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

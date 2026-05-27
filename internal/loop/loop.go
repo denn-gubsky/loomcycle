@@ -14,6 +14,7 @@ import (
 	"log"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/hooks"
 	lcotel "github.com/denn-gubsky/loomcycle/internal/otel"
@@ -184,6 +185,37 @@ type RunOptions struct {
 	// tiers, a stall surviving past a successful call on the
 	// same pair was collapsing the cascade between probes.
 	ClearStall func(provider, model string)
+
+	// MarkRateLimited is the resolver-feedback hook for 429
+	// rate-limit responses that exhausted the driver's internal
+	// retry budget. Distinct from MarkStalled: rate-limit is
+	// transient ("slow down for a moment"), not "the model is
+	// broken for the probe interval".
+	//
+	// The loop calls this — instead of MarkStalled — when the
+	// surfaced error is a 429. The matrix records a time-bound
+	// cooldown that self-recovers without waiting for the next
+	// probe; subsequent Resolve calls during the cooldown either
+	// fall through to the next tier candidate (when fallback is
+	// configured) or surface a clean tier-unavailable error.
+	//
+	// retryAfter is the duration to mark the model unavailable.
+	// Pass 0 to use the resolver's default (30s). When/if a future
+	// version threads provider Retry-After headers up from the
+	// driver, pass the parsed duration here.
+	//
+	// Optional: nil disables rate-limit feedback (the model gets
+	// retried on every subsequent run until the rate window
+	// resets organically — worse for the next caller's latency
+	// but no worse than pre-v0.12.7).
+	//
+	// Background: the v0.12.7 x1000 load test (2026-05-26)
+	// discovered that treating 429 like 5xx in MarkStalled
+	// poisoned the matrix for the full 15-min probe interval
+	// after a single rate-limit storm. PR #235 patched this
+	// with a skip-on-429 guard at the MarkStalled call site;
+	// MarkRateLimited is the proper structural fix.
+	MarkRateLimited func(provider, model string, retryAfter time.Duration)
 }
 
 // FallbackPolicy controls the v0.8.2 runtime fallback path. The HTTP
@@ -543,29 +575,34 @@ outerLoop:
 		}
 		ch, err := opts.Provider.Call(iterCtx, req)
 		if err != nil {
-			// Resolver stall feedback: a non-context error from Call()
-			// is the driver giving up after its own retries. Mark the
-			// (provider, model) stalled so the resolver stops returning
-			// it until the next periodic probe re-validates.
+			// Resolver feedback: a non-context error from Call() is
+			// the driver giving up after its own retries. Route the
+			// feedback by error class:
 			//
-			// EXCEPTION: rate-limit errors (HTTP 429). Originally these
-			// also triggered MarkStalled, but the v0.12.x x1000 load
-			// test (2026-05-26) showed it's too aggressive: ~120
-			// concurrent OAuth-dev calls into Anthropic's rate limit
-			// poisoned the matrix, and the resolver's 15-min probe
-			// interval meant the next ~800 run-admit attempts ALL
-			// failed with 503 `no provider available`. A 429 is "slow
-			// down for a moment", not "the model is broken"; the
-			// fallback path (just below) handles the per-call response
-			// correctly, and the next call has its own ratelimit.Do
-			// retry budget. Sustained 5xx still triggers stall — that
-			// case IS "model broken for a while, stop wasting calls."
+			//   429 (rate limit) → MarkRateLimited (self-recovering
+			//     30s cooldown; transient, not "model broken")
+			//   5xx / model 404 / network → MarkStalled (15-min
+			//     probe-gated recovery; "model is broken for a
+			//     while, stop wasting calls")
+			//
+			// The split matters: pre-v0.12.7 MarkStalled treated 429
+			// the same as 5xx, which under the x1000 load test
+			// (2026-05-26) cascaded ~120 rate-limited runs into 800+
+			// "no provider available" 503s for the rest of the probe
+			// interval. PR #235 patched this with a skip-on-429
+			// guard; this site is the structural fix — positive call
+			// to the right method.
 			//
 			// ctx errors are user-side cancellation, not provider
-			// faults — also don't pollute the matrix.
-			if opts.MarkStalled != nil && ctx.Err() == nil &&
-				!providers.IsRateLimit(err) {
-				opts.MarkStalled(opts.Provider.ID(), opts.Model, err.Error())
+			// faults — don't pollute the matrix on either path.
+			if ctx.Err() == nil {
+				if providers.IsRateLimit(err) {
+					if opts.MarkRateLimited != nil {
+						opts.MarkRateLimited(opts.Provider.ID(), opts.Model, 0)
+					}
+				} else if opts.MarkStalled != nil {
+					opts.MarkStalled(opts.Provider.ID(), opts.Model, err.Error())
+				}
 			}
 			// v0.8.2: when the run carries a fallback policy and the
 			// error class is retryable, swap to the next provider
@@ -628,18 +665,21 @@ outerLoop:
 				iterUsage = ev.Usage
 				iterReasoning = ev.Reasoning
 			case providers.EventError:
-				// Resolver stall feedback for in-stream errors:
-				// driver opened the SSE/NDJSON stream successfully
-				// but then surfaced a provider-side error (5xx
-				// mid-stream, model 404 on dispatch, etc.). Mark
-				// stalled. Same ctx-guard as above — user cancel
-				// shouldn't pollute the matrix. Same 429 exception
-				// as above — rate limits are transient and shouldn't
-				// poison the matrix for 15 min.
+				// Resolver feedback for in-stream errors: same
+				// 429-vs-5xx routing as the Call() error path
+				// above. Driver opened the SSE/NDJSON stream
+				// successfully but then surfaced a provider-side
+				// error mid-stream — route to MarkRateLimited or
+				// MarkStalled based on whether it's a 429.
 				streamErr := errors.New(ev.Error)
-				if opts.MarkStalled != nil && ctx.Err() == nil &&
-					!providers.IsRateLimit(streamErr) {
-					opts.MarkStalled(opts.Provider.ID(), opts.Model, ev.Error)
+				if ctx.Err() == nil {
+					if providers.IsRateLimit(streamErr) {
+						if opts.MarkRateLimited != nil {
+							opts.MarkRateLimited(opts.Provider.ID(), opts.Model, 0)
+						}
+					} else if opts.MarkStalled != nil {
+						opts.MarkStalled(opts.Provider.ID(), opts.Model, ev.Error)
+					}
 				}
 				// v0.8.2: classify the RAW provider error string
 				// (e.g. "anthropic 503: backend unavailable") for

@@ -228,7 +228,10 @@ type Availability struct {
 }
 
 // ModelStatus is one model's status under a provider. A model is
-// usable iff (provider.Reachable && model.Listed && !model.Stalled).
+// usable iff:
+//
+//	provider.Reachable && model.Listed && !model.Stalled &&
+//	  (!model.RateLimited || now >= model.RateLimitedUntil)
 type ModelStatus struct {
 	// Listed means the provider's models endpoint surfaced this
 	// model on the most recent probe. PR 1's stub probe pre-seeds
@@ -240,8 +243,29 @@ type ModelStatus struct {
 	// Stalled is set by MarkStalled when a runtime call failed in a
 	// way that suggests the model itself is broken (404 on the model
 	// name, 5xx after the rate-limit retry budget). Cleared by the
-	// next successful probe of this provider.
+	// next successful probe of this provider. Stall recovery is
+	// gated by the periodic probe interval (~15 min default).
 	Stalled bool
+
+	// RateLimited is set by MarkRateLimited when a runtime call
+	// returned a 429 AFTER the driver's internal retry budget was
+	// exhausted. Unlike Stalled, this flag is SELF-RECOVERING:
+	// isAvailableLocked treats the model as available again once
+	// time.Now() >= RateLimitedUntil, without waiting for the
+	// next periodic probe.
+	//
+	// 429 is "slow down for a moment" not "the model is broken";
+	// matrix-poisoning that model for the full 15-min probe interval
+	// is too aggressive. The v0.12.7 x1000 load test (2026-05-26)
+	// showed why: a single rate-limit storm took down the entire
+	// pipeline for the rest of the test until the resolver re-probed.
+	//
+	// Independent of Stalled — a model can have both flags set
+	// simultaneously (e.g., transient 5xx stall, then a 429 on the
+	// re-attempt before the probe clears the stall). isAvailableLocked
+	// returns false if EITHER flag is active.
+	RateLimited      bool
+	RateLimitedUntil time.Time
 
 	// LastError is the last failure for this specific model.
 	// Independent of the provider-level LastError so an operator can
@@ -477,6 +501,11 @@ func (r *Resolver) priorityFor(req AgentRequest) (order []string, refused bool) 
 
 // isAvailableLocked checks whether a (provider, model) is currently
 // usable. Caller holds r.mu (read or write).
+//
+// The RateLimited check is read-only: when now >= RateLimitedUntil
+// the flag is treated as expired without rewriting the matrix. The
+// next MarkRateLimited or successful probe clears the stored field.
+// This keeps isAvailableLocked free of lock upgrades on the hot path.
 func (r *Resolver) isAvailableLocked(provider, model string) bool {
 	avail, ok := r.matrix[provider]
 	if !ok || avail.Excluded || !avail.Reachable {
@@ -486,7 +515,13 @@ func (r *Resolver) isAvailableLocked(provider, model string) bool {
 	if !ok {
 		return false
 	}
-	return status.Listed && !status.Stalled
+	if !status.Listed || status.Stalled {
+		return false
+	}
+	if status.RateLimited && time.Now().Before(status.RateLimitedUntil) {
+		return false
+	}
+	return true
 }
 
 // SetReachable updates the matrix for a probe outcome. PR 1 calls
@@ -536,8 +571,24 @@ func (r *Resolver) SetReachable(provider string, reachable bool, listedModels []
 	for _, m := range listedModels {
 		listed[m] = true
 	}
+	// Re-probe success clears Stalled (the model came back from the
+	// wire, so the runtime feedback that set it was transient). But
+	// it does NOT clear an unexpired RateLimited cooldown: the
+	// /v1/models endpoint and the inference endpoint have separate
+	// quotas at most providers, so a list success doesn't imply
+	// inference quota recovery. Carry forward live cooldowns so a
+	// rate-limit storm isn't masked by a probe-window coincidence.
+	// Expired cooldowns naturally lapse to zero — `time.Time{}.Before`
+	// of "now" is always true, so isAvailableLocked treats them as
+	// available regardless.
+	now := time.Now()
 	for m := range listed {
-		newModels[m] = ModelStatus{Listed: true} // Stalled cleared on re-probe
+		st := ModelStatus{Listed: true}
+		if prev, ok := avail.Models[m]; ok && prev.RateLimited && now.Before(prev.RateLimitedUntil) {
+			st.RateLimited = true
+			st.RateLimitedUntil = prev.RateLimitedUntil
+		}
+		newModels[m] = st
 	}
 	avail.Models = newModels
 }
@@ -614,6 +665,10 @@ func (r *Resolver) SetExcluded(provider, reason string) {
 // Stall is per-model, not per-provider, so a single bad model on
 // DeepSeek doesn't take down the whole driver — the resolver just
 // skips that candidate and moves to the next.
+//
+// Stall recovery is gated by the periodic probe interval (15 min
+// default). For TRANSIENT failures (429 rate limit) use
+// MarkRateLimited instead — it self-recovers on a short timer.
 func (r *Resolver) MarkStalled(provider, model, reason string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -632,6 +687,78 @@ func (r *Resolver) MarkStalled(provider, model, reason string) {
 	st := avail.Models[model]
 	st.Stalled = true
 	st.LastError = reason
+	avail.Models[model] = st
+	avail.LastCheck = time.Now()
+}
+
+// defaultRateLimitCooldown is how long MarkRateLimited blocks a model
+// when the caller doesn't supply a Retry-After-derived duration. 30s
+// chosen as a balance between two competing concerns:
+//
+//   - Anthropic's rate windows are typically 60s; waiting the full
+//     window means leaving capacity on the table.
+//   - Anthropic's `Retry-After` headers (when set) are usually
+//     1-30s, so the floor 30s is the conservative end of observed
+//     real-world wait times.
+//
+// 30s gives the rate window time to partially recover and lets
+// subsequent runs reattempt before the full window closes. The
+// fallback path runs in parallel — runs that need a model RIGHT NOW
+// route to the next tier candidate.
+const defaultRateLimitCooldown = 30 * time.Second
+
+// MarkRateLimited records a 429-exhausted state for a (provider, model)
+// pair. The loop calls this when Provider.Call() — or an EventError in
+// the stream — surfaces a rate-limit response AFTER the driver's
+// internal retry budget is spent.
+//
+// Distinct from MarkStalled in two ways:
+//
+//   - Self-recovering: isAvailableLocked treats the model as available
+//     again once time.Now() >= RateLimitedUntil. No probe required.
+//   - Per-call: the current run already failed with the 429. This
+//     method only affects FUTURE Resolve calls during the cooldown
+//     window. The flag tells the resolver "skip this candidate; it'll
+//     just 429 again", which lets fallback engage cleanly. With no
+//     fallback configured, the next Resolve within the cooldown
+//     returns ErrTierUnavailable — the operator's responsibility,
+//     same as today.
+//
+// retryAfter is added to time.Now() to compute the cooldown deadline.
+// Pass 0 to use defaultRateLimitCooldown (30s). When/if a future
+// version threads Retry-After up from the driver, pass the parsed
+// duration here.
+//
+// Independent of MarkStalled — a model can be both rate-limited AND
+// stalled simultaneously (e.g., 5xx stall, then 429 on re-attempt
+// before the probe clears the stall). isAvailableLocked returns false
+// if either flag is active.
+//
+// Background: the v0.12.7 x1000 load test (2026-05-26) discovered
+// that treating 429 like 5xx took down the entire pipeline for the
+// rest of the probe interval (~15 min). PR #235 patched this with a
+// skip-on-429 in the loop; this method is the proper structural fix
+// (the loop calls MarkRateLimited instead of skipping matrix feedback
+// entirely). The skip is replaced with a positive method call.
+func (r *Resolver) MarkRateLimited(provider, model string, retryAfter time.Duration) {
+	if retryAfter <= 0 {
+		retryAfter = defaultRateLimitCooldown
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	avail, ok := r.matrix[provider]
+	if !ok {
+		// Same defensive shape as MarkStalled — create the entry so
+		// the next Resolve can see the rate-limit flag.
+		avail = &Availability{Models: map[string]ModelStatus{}}
+		r.matrix[provider] = avail
+	}
+	if avail.Models == nil {
+		avail.Models = map[string]ModelStatus{}
+	}
+	st := avail.Models[model]
+	st.RateLimited = true
+	st.RateLimitedUntil = time.Now().Add(retryAfter)
 	avail.Models[model] = st
 	avail.LastCheck = time.Now()
 }
