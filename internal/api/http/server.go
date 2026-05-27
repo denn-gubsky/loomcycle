@@ -713,7 +713,7 @@ func (s *Server) resolveAgentDef(def config.AgentDef, agentName, userTier string
 // through to "default" — preserves v0.7.x clients that don't yet send
 // user_tier in the request body.
 func (s *Server) userTierOverlay(name string) *resolve.UserTierOverlay {
-	if len(s.cfg.UserTiers) == 0 {
+	if s.cfg == nil || len(s.cfg.UserTiers) == 0 {
 		return nil
 	}
 	if name == "" {
@@ -793,6 +793,21 @@ func (s *Server) rateLimitCooldownForTier(name string) time.Duration {
 		return 0
 	}
 	return time.Duration(ms) * time.Millisecond
+}
+
+// retryAttemptsForAgent resolves the same-provider retry budget for
+// a specific (agent, user_tier) pair. Per-agent override (when set)
+// wins; otherwise falls through to the user_tier value; 0 if neither.
+//
+// The agent override uses *int so "unset" (use tier) is
+// distinguishable from "0" (explicitly disable retries even under a
+// generous tier — high-stakes side-effectful agents force this
+// regardless of operator tier policy).
+func (s *Server) retryAttemptsForAgent(agentDef config.AgentDef, tier string) int {
+	if agentDef.RetryAttempts != nil {
+		return *agentDef.RetryAttempts
+	}
+	return s.retryAttemptsForTier(tier)
 }
 
 // substratePoliciesForAgent returns the v0.8.5 AgentDef +
@@ -990,6 +1005,11 @@ func applyAgentDefOverlay(base config.AgentDef, definition json.RawMessage) conf
 		Models           map[string][]config.TierCandidate `json:"models,omitempty"`
 		MemoryScopes     []string                          `json:"memory_scopes,omitempty"`
 		MemoryQuotaBytes int                               `json:"memory_quota_bytes,omitempty"`
+		// *int because 0 is a meaningful explicit value ("force no
+		// retries"); non-pointer would collapse "not in overlay" and
+		// "explicitly disable" into the same case and silently strip
+		// the static yaml's high-stakes intent on a substrate sub-run.
+		RetryAttempts *int `json:"retry_attempts,omitempty"`
 	}
 	if err := json.Unmarshal(definition, &ov); err != nil {
 		log.Printf("agent_def overlay: malformed definition JSON, falling back to static: %v", err)
@@ -1047,6 +1067,13 @@ func applyAgentDefOverlay(base config.AgentDef, definition json.RawMessage) conf
 	}
 	if ov.MemoryQuotaBytes != 0 {
 		out.MemoryQuotaBytes = ov.MemoryQuotaBytes
+	}
+	if ov.RetryAttempts != nil {
+		// Pointer-set means the substrate row carries an explicit
+		// override (including 0). Nil leaves the static yaml's
+		// RetryAttempts in place — including the static yaml's own
+		// "force 0" for high-stakes agents.
+		out.RetryAttempts = ov.RetryAttempts
 	}
 	return out
 }
@@ -1424,7 +1451,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		FallbackPolicy:         fbPolicy,
 		ReResolve:              fbReResolve,
 		Hooks:                  s.hookDispatcher,
-		MaxSameProviderRetries: s.retryAttemptsForTier(in.UserTier),
+		MaxSameProviderRetries: s.retryAttemptsForAgent(agentDef, in.UserTier),
 	})
 	s.finishRunWithCancel(ctx, runCtx, runID, res, runErr, meta)
 	return nil
@@ -2369,7 +2396,7 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		FallbackPolicy:         fbPolicy,
 		ReResolve:              fbReResolve,
 		Hooks:                  s.hookDispatcher,
-		MaxSameProviderRetries: s.retryAttemptsForTier(req.UserTier),
+		MaxSameProviderRetries: s.retryAttemptsForAgent(agentDef, req.UserTier),
 	})
 	if runErr != nil {
 		stream.send(providers.Event{Type: providers.EventError, Error: runErr.Error()})
@@ -2699,7 +2726,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		FallbackPolicy:         fbPolicy,
 		ReResolve:              fbReResolve,
 		Hooks:                  s.hookDispatcher,
-		MaxSameProviderRetries: s.retryAttemptsForTier(body.UserTier),
+		MaxSameProviderRetries: s.retryAttemptsForAgent(agentDef, body.UserTier),
 	})
 	if runErr != nil {
 		stream.send(providers.Event{Type: providers.EventError, Error: runErr.Error()})
@@ -3300,7 +3327,7 @@ func (s *Server) runSubAgent(ctx context.Context, name string, prompt string, de
 		FallbackPolicy:         fbPolicy,
 		ReResolve:              fbReResolve,
 		Hooks:                  s.hookDispatcher,
-		MaxSameProviderRetries: s.retryAttemptsForTier(parentTier),
+		MaxSameProviderRetries: s.retryAttemptsForAgent(def, parentTier),
 	})
 	s.finishRunWithCancel(ctx, subRunCtx, subRunID, res, runErr, subMeta)
 

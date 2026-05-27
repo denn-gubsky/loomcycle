@@ -67,9 +67,9 @@ type providerModelsResponse struct {
 // Error mapping:
 //   - 404 provider_unknown:    no driver registered for the URL id
 //   - 503 provider_unavailable: known driver but not configured (no
-//                               API key, OLLAMA_BASE_URL=disabled, etc.)
+//     API key, OLLAMA_BASE_URL=disabled, etc.)
 //   - 502 provider_list_failed: ListModels round-trip failed
-//                               (network, auth rejection, 5xx upstream)
+//     (network, auth rejection, 5xx upstream)
 //
 // We distinguish 404 vs 503 by string-matching the resolver's error
 // message — the only signal the existing ProviderResolver interface
