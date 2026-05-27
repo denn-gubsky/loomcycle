@@ -1544,6 +1544,11 @@ func (s *Server) Mux() http.Handler {
 	mux.Handle("DELETE /v1/hooks/{id}", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleDeleteHook))))
 	// v0.7.x resolver introspection — operator-only debug surface.
 	mux.Handle("GET /v1/_resolver", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleResolverSnapshot))))
+	// v0.12.x live provider introspection. Complements /v1/_resolver
+	// (cached matrix) by doing a fresh ListModels round-trip — useful
+	// after adding a model to the upstream console without waiting
+	// 15 min for the next periodic probe.
+	mux.Handle("GET /v1/_providers/{id}/models", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleProviderModels))))
 	// v0.7.3+ user picker — admin-style endpoint surfacing distinct
 	// user_ids that have runs in the store. Bearer-authed; drives
 	// the Web UI's run-list user dropdown.
