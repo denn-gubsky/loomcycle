@@ -448,25 +448,25 @@ func TestExtractCircuitID(t *testing.T) {
 	}
 }
 
-// TestMockStable_NeverInjectsErrors — even with high env-var rates,
-// the stable variant constructed via NewStable() must never return
-// 429 / 500. The fallback experiment depends on this.
+// TestMockStable_NeverInjectsErrors — NewStable() produces a driver
+// whose 429/500 injection rates are zero, AND 200 consecutive calls
+// confirm no error path fires. The fallback experiment depends on
+// the stable variant being reliably error-free regardless of any
+// LOOMCYCLE_MOCK_*_RATE env var that may have been set at process
+// boot.
 func TestMockStable_NeverInjectsErrors(t *testing.T) {
+	// Pre-set hostile env-var rates to prove NewStable() zeroes them
+	// REGARDLESS of what the operator (or a prior test) configured.
+	// New() reads these via parseRate; NewStable() must override.
+	t.Setenv("LOOMCYCLE_MOCK_429_RATE", "1.0")
+	t.Setenv("LOOMCYCLE_MOCK_500_RATE", "1.0")
+
 	d := NewStable()
-	// Force any internal rate state to a known-high value to prove
-	// NewStable's reset is effective (defensive — operator changes
-	// to New() ordering could otherwise silently break the contract).
-	d.rate429 = 1.0
-	d.rate500 = 1.0
-	// NewStable() already zeroed them; the assignment above should
-	// be overridden by the same NewStable factory invariant. Re-run
-	// the factory pattern to confirm.
-	d = NewStable()
 	if d.rate429 != 0 {
-		t.Errorf("NewStable: rate429 = %v, want 0", d.rate429)
+		t.Errorf("NewStable: rate429 = %v, want 0 even with env=1.0", d.rate429)
 	}
 	if d.rate500 != 0 {
-		t.Errorf("NewStable: rate500 = %v, want 0", d.rate500)
+		t.Errorf("NewStable: rate500 = %v, want 0 even with env=1.0", d.rate500)
 	}
 	for i := 0; i < 200; i++ {
 		_, err := d.Call(context.Background(), providers.Request{

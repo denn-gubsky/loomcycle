@@ -789,7 +789,15 @@ func TestLoopSameProviderRetry_PermanentErrorNotRetried(t *testing.T) {
 // TestLoopSameProviderRetry_ClampsAtSafetyCap — operator yaml
 // asking for 100 retries is clamped to the safety ceiling (5)
 // to avoid pathological 8+ second delays per error.
+//
+// Sleeps through the full 5-attempt backoff schedule (100ms +
+// 300ms + 900ms + 2.7s + 8.1s ≈ 12s) to actually exercise the
+// cap. Skipped under `go test -short` to keep the fast-path
+// suite under a second; CI's full sweep still covers it.
 func TestLoopSameProviderRetry_ClampsAtSafetyCap(t *testing.T) {
+	if testing.Short() {
+		t.Skip("sleeps ~12s through the full 5-attempt backoff to validate the safety cap; run without -short")
+	}
 	provider := &retryableFakeProvider{
 		errs: []error{
 			fmt.Errorf("fake 429: x"),
