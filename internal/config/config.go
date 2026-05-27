@@ -2348,6 +2348,11 @@ var validProviderIDs = map[string]bool{
 	// time if LOOMCYCLE_ANTHROPIC_OAUTH_DEV_ENABLED=1 isn't set or no
 	// token file exists. See docs/PROVIDERS.md.
 	"anthropic-oauth-dev": true,
+	// v0.12.8 — synthetic mock provider for cost-free stress testing.
+	// config-load accepts the ID; the resolver returns a clear "not
+	// configured" error at request time if LOOMCYCLE_MOCK_ENABLED=1
+	// isn't set. See internal/providers/mock/driver.go.
+	"mock": true,
 }
 
 // validTierNames is the closed set of tier names. Operators choose

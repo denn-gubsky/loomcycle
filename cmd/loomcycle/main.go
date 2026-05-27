@@ -52,6 +52,7 @@ import (
 	anthropic_oauth_dev "github.com/denn-gubsky/loomcycle/internal/providers/anthropic_oauth_dev"
 	"github.com/denn-gubsky/loomcycle/internal/providers/deepseek"
 	"github.com/denn-gubsky/loomcycle/internal/providers/gemini"
+	mockprov "github.com/denn-gubsky/loomcycle/internal/providers/mock"
 	"github.com/denn-gubsky/loomcycle/internal/providers/ollama"
 	"github.com/denn-gubsky/loomcycle/internal/providers/openai"
 	"github.com/denn-gubsky/loomcycle/internal/providers/streamhttp"
@@ -1699,6 +1700,14 @@ type providerResolver struct {
 	// pointing at `loomcycle anthropic login`.
 	anthropicOAuthDev       providers.Provider
 	anthropicOAuthRefresher *anthropic_oauth_dev.Refresher
+	// v0.12.8 — synthetic mock provider for cost-free stress testing.
+	// Registered only when LOOMCYCLE_MOCK_ENABLED=1. Drives the
+	// canonical 3-agent circuit-stress pipeline with no real-LLM
+	// cost; injection knobs (LOOMCYCLE_MOCK_429_RATE, 500_RATE,
+	// LATENCY_MS, LATENCY_JITTER_MS) exercise the resolver matrix
+	// + runtime-fallback paths under load. See
+	// internal/providers/mock/driver.go.
+	mock providers.Provider
 }
 
 // buildEmbedder turns cfg.Memory.Embedder into a constructed
@@ -1798,6 +1807,22 @@ func newProviderResolver(cfg *config.Config) *providerResolver {
 		pr.gemini = gemini.New(cfg.Env.GeminiAPIKey, cfg.Env.GeminiBaseURL, streamOpts, nil)
 	}
 
+	// v0.12.8 — synthetic mock provider. Single gate: LOOMCYCLE_MOCK_ENABLED=1.
+	// Registers as provider id "mock" with four model variants
+	// (mock-researcher / mock-editor / mock-evaluator / mock-generic)
+	// for the canonical circuit-stress 3-agent pipeline. Failure
+	// injection knobs (LOOMCYCLE_MOCK_429_RATE etc.) are read by the
+	// driver itself; logged here so the boot output makes the active
+	// scenario obvious.
+	if os.Getenv("LOOMCYCLE_MOCK_ENABLED") == "1" {
+		pr.mock = mockprov.New()
+		log.Printf("mock provider: enabled (LATENCY_MS=%q LATENCY_JITTER_MS=%q 429_RATE=%q 500_RATE=%q)",
+			os.Getenv("LOOMCYCLE_MOCK_LATENCY_MS"),
+			os.Getenv("LOOMCYCLE_MOCK_LATENCY_JITTER_MS"),
+			os.Getenv("LOOMCYCLE_MOCK_429_RATE"),
+			os.Getenv("LOOMCYCLE_MOCK_500_RATE"))
+	}
+
 	// v0.11.9 — anthropic-oauth-dev. Two gates: env var + tokens on
 	// disk. Without either, the provider is absent from the resolver
 	// matrix and any agent yaml that pins `provider: anthropic-oauth-dev`
@@ -1866,6 +1891,11 @@ func (p *providerResolver) Get(id string) (providers.Provider, error) {
 			return nil, fmt.Errorf("anthropic-oauth-dev not registered (set LOOMCYCLE_ANTHROPIC_OAUTH_DEV_ENABLED=1 + run `loomcycle anthropic login`)")
 		}
 		return p.anthropicOAuthDev, nil
+	case "mock":
+		if p.mock == nil {
+			return nil, fmt.Errorf("mock provider not configured (set LOOMCYCLE_MOCK_ENABLED=1)")
+		}
+		return p.mock, nil
 	default:
 		return nil, fmt.Errorf("unknown provider %q", id)
 	}
@@ -1932,6 +1962,12 @@ func runResolveProbeOnce(ctx context.Context, r *resolve.Resolver, pr *providerR
 		// the canonical "not registered" error) and the
 		// resolver-misconfigured case.
 		{id: "anthropic-oauth-dev"},
+		// v0.12.8 — synthetic mock provider. Excluded unless the
+		// operator opted in via LOOMCYCLE_MOCK_ENABLED=1. The probe
+		// itself is trivial (ListModels returns a fixed slice) so
+		// the matrix populates instantly when enabled.
+		{id: "mock", excluded: os.Getenv("LOOMCYCLE_MOCK_ENABLED") != "1",
+			exclReason: "LOOMCYCLE_MOCK_ENABLED not set"},
 	}
 	for i := range jobs {
 		if jobs[i].excluded {

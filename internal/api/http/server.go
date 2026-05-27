@@ -3883,6 +3883,7 @@ func (s *Server) finishRunCancelled(_ context.Context, runID string, res loop.Ru
 		CacheCreationTokens: res.Usage.CacheCreationTokens,
 		CacheReadTokens:     res.Usage.CacheReadTokens,
 		Model:               res.Usage.Model,
+		Provider:            res.Usage.Provider,
 	}
 	if err := s.store.FinishRun(bg, runID, store.RunCancelled, reason, usage, ""); err != nil {
 		log.Printf("store: FinishRun(cancelled) failed (run=%s): %v", runID, err)
@@ -3922,6 +3923,7 @@ func (s *Server) finishRun(_ context.Context, runID string, res loop.RunResult, 
 		CacheCreationTokens: res.Usage.CacheCreationTokens,
 		CacheReadTokens:     res.Usage.CacheReadTokens,
 		Model:               res.Usage.Model,
+		Provider:            res.Usage.Provider,
 	}
 	if err := s.store.FinishRun(bg, runID, status, res.StopReason, usage, errMsg); err != nil {
 		log.Printf("store: FinishRun failed (run=%s): %v", runID, err)

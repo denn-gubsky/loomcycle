@@ -1,0 +1,130 @@
+# test/load/circuit-stress — mock-mode loomcycle config.
+#
+# This file is the cost-free twin of loomcycle.template.yaml. It pins
+# every agent to the synthetic `mock` provider (see
+# internal/providers/mock/driver.go) so the same harness exercises the
+# substrate without burning real Anthropic / OpenAI quota.
+#
+# When to use this:
+#   - Pure-substrate throughput characterisation (10K-100K concurrent).
+#   - Failure-injection scenarios driven via LOOMCYCLE_MOCK_429_RATE etc.
+#   - Iterating on contention bugs (channel race, sweeper interference,
+#     queue back-pressure) without provider-side latency variance.
+#
+# When NOT to use this:
+#   - End-to-end "did the substrate + a real provider stay in sync"
+#     smoke. For that, run loomcycle.template.yaml against
+#     anthropic-oauth-dev.
+
+provider_priority:
+  - mock
+
+# Library-default tier. mock-generic is the catch-all model variant —
+# it should never actually fire here because every agent below pins
+# its own model, but the resolver wants something to fall back on.
+tiers:
+  middle:
+    - { provider: mock, model: mock-generic }
+
+# Default user_tier. No fallback_on_error — the mock IS the only
+# provider; failure injection is observed at the loop level.
+user_tiers:
+  default:
+    provider_priority: [mock]
+    tiers:
+      middle:
+        - { provider: mock, model: mock-generic }
+    fallback_on_error: false
+
+# Concurrency — sized for the 10K-scale target. The mock has zero
+# real cost so we can crank the active worker count and queue depth
+# significantly higher than the real-provider yaml's 20/1500.
+concurrency:
+  max_concurrent_runs: 2000
+  max_queue_depth: 30000
+  queue_timeout_ms: 600000
+  max_concurrent_runs_per_user: 0
+
+# Storage — Postgres for the same reason as the real-provider yaml.
+# SQLite serialises writes; under 10K concurrent agents that
+# serialisation dominates the latency picture before the substrate
+# itself is meaningfully loaded.
+storage:
+  backend: postgres
+  pg_dsn: ${LOOMCYCLE_PG_DSN}
+  pg_max_open_conns: 128
+  pg_max_idle_conns: 16
+
+# ─── Channels ──────────────────────────────────────────────────────
+# Same generator markers as loomcycle.template.yaml. run-mock.sh
+# uses the SAME awk block to inject N pairs of research-done/cK +
+# editing-done/cK entries; the two yamls are kept structurally
+# parallel so the generator script doesn't need a per-yaml fork.
+
+channels:
+  # ── BEGIN generated channels ── (managed by run-mock.sh)
+  # ── END generated channels ──
+
+# ─── Agents ────────────────────────────────────────────────────────
+# Three agents, each pinned to a distinct mock-* model so the
+# driver dispatches off req.Model. System prompts are still present
+# (for parity with the real-provider yaml — the agent definitions are
+# otherwise identical) but the mock IGNORES them: the FSM is in the
+# driver code, not the prompt.
+
+agents:
+
+  researcher:
+    provider: mock
+    model: mock-researcher
+    max_tokens: 1500
+    system_prompt: |
+      Mock researcher agent. The driver pins this agent to the
+      mock-researcher model; the mock driver synthesises a 2-step
+      sequence (Memory.set, Channel.publish) without reading this
+      prompt. See internal/providers/mock/driver.go scriptResearcher.
+    allowed_tools: [Memory, Channel, Context]
+    memory_scopes: [user]
+    channels:
+      publish: ["research-done/*"]
+      subscribe: []
+
+  editor:
+    provider: mock
+    model: mock-editor
+    max_tokens: 1500
+    system_prompt: |
+      Mock editor agent. The driver pins this agent to the
+      mock-editor model; the mock driver synthesises a 5-step FSM
+      (Channel.subscribe → Memory.get → Memory.set → Context.self →
+      Channel.publish). See internal/providers/mock/driver.go
+      scriptEditor for the per-step shapes.
+    allowed_tools: [Memory, Channel, Context]
+    memory_scopes: [user]
+    channels:
+      publish: ["editing-done/*"]
+      subscribe: ["research-done/*"]
+
+  evaluator:
+    provider: mock
+    model: mock-evaluator
+    max_tokens: 1500
+    system_prompt: |
+      Mock evaluator agent. The driver pins this agent to the
+      mock-evaluator model; the mock driver synthesises a 5-step
+      FSM (Channel.subscribe → Memory.get(×2) → Memory.set →
+      Evaluation.submit). The score is a deterministic-but-
+      pseudorandom hash of the editor's run_id, so distinct test
+      runs produce a varied distribution but a given run is
+      reproducible. See internal/providers/mock/driver.go
+      scriptEvaluator for the FSM and deriveScore for the score
+      function.
+    allowed_tools: [Memory, Channel, Evaluation, Context]
+    memory_scopes: [user]
+    # Same submit_any as the real-provider yaml — the evaluator is
+    # a SIBLING (not a parent/child) of the editor, which the
+    # checkSubmitScope code collapses to "unrelated" today.
+    evaluation_scopes: [submit_any]
+    channels:
+      publish: []
+      subscribe: ["editing-done/*"]
