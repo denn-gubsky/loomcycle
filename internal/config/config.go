@@ -434,7 +434,7 @@ type UserTier struct {
 	// min) accepted; out-of-range values silently clamp to that
 	// window at config-load. Sub-second cooldowns would defeat the
 	// purpose (the cascade would re-fire on the next call); >10 min
-	// becomes meaningless because the periodic probe (default 5
+	// becomes meaningless because the periodic probe (default 15
 	// min) clears the matrix before the cooldown expires anyway.
 	RateLimitCooldownMs int `yaml:"rate_limit_cooldown_ms"`
 }

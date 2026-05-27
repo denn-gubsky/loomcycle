@@ -775,12 +775,24 @@ func (s *Server) retryAttemptsForTier(name string) int {
 // resolver's hardcoded default" — the closure passes 0 through to
 // resolver.MarkRateLimited, which substitutes its own default
 // (30 s) when retryAfter <= 0.
+//
+// Reads s.cfg directly (not via userTierOverlay) — this is called
+// once per RunOptions construction and we only need a single int
+// field; rebuilding the full overlay (with candidate conversion)
+// would be wasted work per run.
 func (s *Server) rateLimitCooldownForTier(name string) time.Duration {
-	overlay := s.userTierOverlay(name)
-	if overlay == nil || overlay.RateLimitCooldownMs <= 0 {
+	if s.cfg == nil || name == "" {
 		return 0
 	}
-	return time.Duration(overlay.RateLimitCooldownMs) * time.Millisecond
+	ut, ok := s.cfg.UserTiers[name]
+	if !ok {
+		return 0
+	}
+	ms := clampRateLimitCooldownMs(ut.RateLimitCooldownMs)
+	if ms <= 0 {
+		return 0
+	}
+	return time.Duration(ms) * time.Millisecond
 }
 
 // substratePoliciesForAgent returns the v0.8.5 AgentDef +
