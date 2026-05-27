@@ -575,4 +575,17 @@ type Usage struct {
 	CacheCreationTokens int    `json:"cache_creation_input_tokens,omitempty"`
 	CacheReadTokens     int    `json:"cache_read_input_tokens,omitempty"`
 	Model               string `json:"model,omitempty"`
+
+	// Provider is the provider ID that ACTUALLY served the call.
+	// May differ from the agent's yaml-configured provider when the
+	// v0.8.2 runtime-fallback path switched mid-run (e.g.,
+	// anthropic-oauth-dev → ollama after a 429). Surfaced so post-
+	// run analysis can quantify how often fallback routed runs to
+	// the secondary provider.
+	//
+	// Populated by the loop at iteration success time from
+	// opts.Provider.ID() — which tryProviderFallback mutates in
+	// place when fallback engages, so this naturally captures the
+	// post-fallback identity.
+	Provider string `json:"provider,omitempty"`
 }

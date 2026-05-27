@@ -161,7 +161,14 @@ type Run struct {
 	CacheCreationTokens int       `json:"cache_creation_input_tokens,omitempty"`
 	CacheReadTokens     int       `json:"cache_read_input_tokens,omitempty"`
 	Model               string    `json:"model,omitempty"`
-	ErrorMsg            string    `json:"error,omitempty"`
+	// Provider is the provider ID that ACTUALLY served the final
+	// successful iteration of this run. Distinct from the
+	// yaml-configured provider when v0.8.2 runtime fallback engaged
+	// mid-run (e.g., anthropic-oauth-dev → ollama after a 429).
+	// Empty for pre-v0.12.7-telemetry runs and for runs that never
+	// completed an iteration.
+	Provider string `json:"provider,omitempty"`
+	ErrorMsg string `json:"error,omitempty"`
 
 	// v0.4 tracking + cancel fields. All optional/nullable for
 	// back-compat with rows created before the columns landed.
@@ -267,6 +274,12 @@ type Usage struct {
 	CacheCreationTokens int
 	CacheReadTokens     int
 	Model               string
+	// Provider is the resolver-active provider ID at the final
+	// successful iteration. Carried alongside Model so downstream
+	// consumers see "actually served by" rather than guess from
+	// model-name conventions. Differs from agent yaml when v0.8.2
+	// fallback engaged.
+	Provider string
 }
 
 // RunIdentity carries the v0.4 tracking fields a CreateRun caller can

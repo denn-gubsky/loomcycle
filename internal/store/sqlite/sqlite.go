@@ -99,6 +99,10 @@ func (s *Store) migrate(ctx context.Context) error {
 			cache_creation_tokens    INTEGER NOT NULL DEFAULT 0,
 			cache_read_tokens        INTEGER NOT NULL DEFAULT 0,
 			model                    TEXT,
+			-- v0.12.7+ — actual provider that served the final
+			-- successful iteration. Distinct from model so post-run
+			-- analysis can tell primary from fallback routing.
+			provider                 TEXT,
 			error                    TEXT
 		)`,
 		`CREATE INDEX IF NOT EXISTS runs_by_session ON runs(session_id)`,
@@ -438,6 +442,10 @@ func (s *Store) migrate(ctx context.Context) error {
 		// until the boot-time backfill walks pre-migration rows.
 		`ALTER TABLE agent_defs ADD COLUMN content_sha256 TEXT`,
 		`ALTER TABLE skill_defs ADD COLUMN content_sha256 TEXT`,
+		// v0.12.7+ provider — actual provider that served the final
+		// successful iteration. Idempotent on fresh deploys (the
+		// CREATE TABLE above already declares it).
+		`ALTER TABLE runs ADD COLUMN provider TEXT`,
 	}
 	for _, q := range addColumns {
 		if _, err := s.db.ExecContext(ctx, q); err != nil {
@@ -643,12 +651,13 @@ func (s *Store) FinishRun(ctx context.Context, runID string, status store.RunSta
 			cache_creation_tokens = ?,
 			cache_read_tokens     = ?,
 			model                 = ?,
+			provider              = ?,
 			error                 = ?
 		WHERE id = ? AND status = ?`,
 		string(status), now, stopReason,
 		usage.InputTokens, usage.OutputTokens,
 		usage.CacheCreationTokens, usage.CacheReadTokens,
-		usage.Model, errMsg,
+		usage.Model, nilIfEmpty(usage.Provider), errMsg,
 		runID, string(store.RunRunning),
 	)
 	return err
@@ -788,7 +797,7 @@ func scanRun(scanner interface{ Scan(...any) error }) (store.Run, error) {
 	var r store.Run
 	var startedNs, completedNs sql.NullInt64
 	var lastHbNs sql.NullInt64
-	var stopReason, model, errMsg sql.NullString
+	var stopReason, model, provider, errMsg sql.NullString
 	var agentID, parentAgentID, parentRunID, userID, userTier sql.NullString
 	var agentDefID sql.NullString
 	var pauseState sql.NullString
@@ -798,7 +807,7 @@ func scanRun(scanner interface{ Scan(...any) error }) (store.Run, error) {
 		&r.ID, &r.SessionID, &status, &startedNs, &completedNs,
 		&stopReason,
 		&r.InputTokens, &r.OutputTokens, &r.CacheCreationTokens, &r.CacheReadTokens,
-		&model, &errMsg,
+		&model, &provider, &errMsg,
 		&agentID, &parentAgentID, &parentRunID, &userID, &lastHbNs,
 		&userTier,
 		&agentDefID, &pauseState,
@@ -821,6 +830,9 @@ func scanRun(scanner interface{ Scan(...any) error }) (store.Run, error) {
 	}
 	if model.Valid {
 		r.Model = model.String
+	}
+	if provider.Valid {
+		r.Provider = provider.String
 	}
 	if errMsg.Valid {
 		r.ErrorMsg = errMsg.String
@@ -863,7 +875,7 @@ func scanRun(scanner interface{ Scan(...any) error }) (store.Run, error) {
 const runColumns = `r.id, r.session_id, r.status, r.started_at, r.completed_at,
 		r.stop_reason,
 		r.input_tokens, r.output_tokens, r.cache_creation_tokens, r.cache_read_tokens,
-		r.model, r.error,
+		r.model, r.provider, r.error,
 		r.agent_id, r.parent_agent_id, r.parent_run_id, r.user_id, r.last_heartbeat_at,
 		r.user_tier,
 		r.agent_def_id, r.pause_state,
@@ -1766,13 +1778,13 @@ func (s *Store) SnapshotRestoreRun(ctx context.Context, r store.Run) (bool, erro
 		`INSERT OR IGNORE INTO runs(
 			id, session_id, status, started_at, completed_at, stop_reason,
 			input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens,
-			model, error,
+			model, provider, error,
 			agent_id, parent_agent_id, parent_run_id, user_id, last_heartbeat_at,
 			user_tier, agent_def_id, pause_state
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		r.ID, r.SessionID, status, startedNs, completedNs, nilIfEmpty(r.StopReason),
 		r.InputTokens, r.OutputTokens, r.CacheCreationTokens, r.CacheReadTokens,
-		nilIfEmpty(r.Model), nilIfEmpty(r.ErrorMsg),
+		nilIfEmpty(r.Model), nilIfEmpty(r.Provider), nilIfEmpty(r.ErrorMsg),
 		nilIfEmpty(r.AgentID), nilIfEmpty(r.ParentAgentID), nilIfEmpty(r.ParentRunID),
 		nilIfEmpty(r.UserID), lastHbNs,
 		nilIfEmpty(r.UserTier), nilIfEmpty(r.AgentDefID), pauseState,

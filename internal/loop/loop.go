@@ -738,6 +738,12 @@ outerLoop:
 			totalUsage.CacheCreationTokens += iterUsage.CacheCreationTokens
 			totalUsage.CacheReadTokens += iterUsage.CacheReadTokens
 			totalUsage.Model = iterUsage.Model
+			// Capture the ACTUAL provider that served this iteration.
+			// opts.Provider is mutated in place by tryProviderFallback
+			// when a runtime fallback engages, so reading ID() here
+			// reflects the post-fallback identity. Used by downstream
+			// analysis to quantify primary-vs-fallback routing.
+			totalUsage.Provider = opts.Provider.ID()
 			emit(providers.Event{Type: providers.EventUsage, Usage: iterUsage})
 		}
 

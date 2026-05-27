@@ -1,0 +1,12 @@
+-- v0.12.7+ — record the ACTUAL provider that served the final
+-- successful iteration of each run. Distinct from model so post-run
+-- analysis can tell primary-provider runs from runtime-fallback
+-- routed runs (the v0.8.2 tryProviderFallback path mutates
+-- opts.Provider in place when a 429 / 5xx triggers a switch).
+--
+-- Background: the v0.12.7 x1000 load test (2026-05-26) had no
+-- post-run visibility into how many runs routed to fallback. This
+-- column closes the gap.
+--
+-- NULLable to preserve back-compat with pre-migration rows.
+ALTER TABLE runs ADD COLUMN provider TEXT;
