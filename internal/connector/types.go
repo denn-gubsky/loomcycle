@@ -71,6 +71,13 @@ type SpawnRunRequest struct {
 	// UserBearer is the v0.8.14 per-run MCP bearer token. Substituted
 	// into MCP HTTP header values containing ${run.user_bearer}.
 	UserBearer string `json:"user_bearer,omitempty"`
+
+	// UserCredentials is the v1.x RFC F named-credentials map.
+	// Per-tool/per-MCP-server bearers keyed by operator-chosen
+	// name. Substituted into MCP HTTP header values containing
+	// ${run.credentials.<name>}. Sub-agents inherit the whole map.
+	// See rfcs/per-run-credentials.md for the locked design.
+	UserCredentials map[string]string `json:"user_credentials,omitempty"`
 }
 
 // SpawnRunResult is the final outcome of a SpawnRun call (returned

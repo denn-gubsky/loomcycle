@@ -35,6 +35,7 @@ func toolDescriptors() []loommcp.ToolDescriptor {
 					"agent_id":         {"type": "string", "description": "Optional caller-supplied tracking handle."},
 					"user_tier":        {"type": "string"},
 					"user_bearer":      {"type": "string", "description": "Per-run MCP bearer (substituted into ${run.user_bearer} in mcp_servers.*.headers)."},
+					"user_credentials": {"type": "object", "additionalProperties": {"type": "string"}, "description": "v1.x RFC F per-tool named credentials map. Keys [a-zA-Z0-9_-]{1,64}; values arbitrary strings. Substituted into ${run.credentials.<name>} in mcp_servers.*.headers. Coexists with user_bearer (legacy promotes to user_credentials.default for back-compat)."},
 					"allowed_tools":    {"type": "array", "items": {"type": "string"}},
 					"allowed_hosts":    {"type": "array", "items": {"type": "string"}, "description": "OMIT for no narrowing (operator's static allowlist applies). Pass empty array [] to DENY ALL outbound HTTP. Pass non-empty array to intersect with operator's list."},
 					"web_search_filter": {"type": "string", "enum": ["drop", "keep"]}

@@ -106,3 +106,153 @@ func TestTokenPrefix(t *testing.T) {
 		}
 	}
 }
+
+// ---- RFC F per-tool credentials substitution ----------------------
+
+func TestSubstituteCredentialRefs_KeyPresent(t *testing.T) {
+	got, drop, missing := substituteCredentialRefs(
+		"Bearer ${run.credentials.jobs}",
+		map[string]string{"jobs": "xoxb-jobs-tok"},
+	)
+	if got != "Bearer xoxb-jobs-tok" {
+		t.Errorf("got = %q, want %q", got, "Bearer xoxb-jobs-tok")
+	}
+	if drop {
+		t.Errorf("drop = true, want false")
+	}
+	if len(missing) > 0 {
+		t.Errorf("missing = %v, want empty", missing)
+	}
+}
+
+func TestSubstituteCredentialRefs_FallbackUsed(t *testing.T) {
+	got, drop, missing := substituteCredentialRefs(
+		"Bearer ${run.credentials.jobs:-static-fallback}",
+		map[string]string{}, // jobs absent
+	)
+	if got != "Bearer static-fallback" {
+		t.Errorf("got = %q, want %q", got, "Bearer static-fallback")
+	}
+	if drop {
+		t.Errorf("drop = true, want false")
+	}
+	if len(missing) > 0 {
+		t.Errorf("missing = %v, want empty", missing)
+	}
+}
+
+func TestSubstituteCredentialRefs_ValueWinsOverFallback(t *testing.T) {
+	got, drop, _ := substituteCredentialRefs(
+		"Bearer ${run.credentials.jobs:-static-fallback}",
+		map[string]string{"jobs": "real-jobs-tok"},
+	)
+	if got != "Bearer real-jobs-tok" {
+		t.Errorf("got = %q, want %q", got, "Bearer real-jobs-tok")
+	}
+	if drop {
+		t.Errorf("drop = true, want false")
+	}
+}
+
+func TestSubstituteCredentialRefs_MissingKeyDrops(t *testing.T) {
+	got, drop, missing := substituteCredentialRefs(
+		"Bearer ${run.credentials.jobs}",
+		map[string]string{}, // jobs absent
+	)
+	if !drop {
+		t.Errorf("drop = false, want true")
+	}
+	if strings.Contains(got, "${run.") {
+		t.Errorf("got = %q, must not contain unresolved placeholder", got)
+	}
+	if len(missing) != 1 || missing[0] != "jobs" {
+		t.Errorf("missing = %v, want [jobs]", missing)
+	}
+}
+
+func TestSubstituteCredentialRefs_EmptyValueTreatedAsMissing(t *testing.T) {
+	// Empty string credential value matches the "absent" behaviour —
+	// otherwise an operator who accidentally rotated to "" would silently
+	// ship empty Authorization headers downstream. Loud failure is better.
+	got, drop, missing := substituteCredentialRefs(
+		"Bearer ${run.credentials.jobs}",
+		map[string]string{"jobs": ""},
+	)
+	if !drop {
+		t.Errorf("drop = false, want true (empty value treated as missing)")
+	}
+	if strings.Contains(got, "${run.") {
+		t.Errorf("got = %q, must not contain unresolved placeholder", got)
+	}
+	if len(missing) != 1 {
+		t.Errorf("missing = %v, want [jobs]", missing)
+	}
+}
+
+func TestSubstituteCredentialRefs_MultipleKeys(t *testing.T) {
+	// Single header value with two different credential references —
+	// the substrate substitutes each from the same map. Exercises the
+	// realistic case where one mcp_servers.foo.headers maps multiple
+	// fields to multiple credentials (e.g. App-Token + Channel-Token).
+	got, drop, _ := substituteCredentialRefs(
+		"App ${run.credentials.app}; Channel ${run.credentials.chan}",
+		map[string]string{"app": "A1", "chan": "C1"},
+	)
+	if got != "App A1; Channel C1" {
+		t.Errorf("got = %q, want %q", got, "App A1; Channel C1")
+	}
+	if drop {
+		t.Errorf("drop = true, want false")
+	}
+}
+
+func TestSubstituteCredentialRefs_MixedPresentAndMissing(t *testing.T) {
+	// When ANY bare ref in the value is missing, drop=true wins for the
+	// whole header — half-credentialed requests are never desirable
+	// (they'd fail at the upstream auth layer with a confusing 401).
+	_, drop, missing := substituteCredentialRefs(
+		"App ${run.credentials.app}; Channel ${run.credentials.chan}",
+		map[string]string{"app": "A1"}, // chan absent
+	)
+	if !drop {
+		t.Errorf("drop = false, want true")
+	}
+	if len(missing) != 1 || missing[0] != "chan" {
+		t.Errorf("missing = %v, want [chan]", missing)
+	}
+}
+
+func TestSubstituteCredentialRefs_NoRefIsNoOp(t *testing.T) {
+	// Header without any ${run.credentials.*} ref passes through
+	// unchanged. The map is irrelevant in this case.
+	got, drop, missing := substituteCredentialRefs(
+		"Authorization: Bearer literal-token",
+		map[string]string{"unused": "x"},
+	)
+	if got != "Authorization: Bearer literal-token" {
+		t.Errorf("got = %q, want unchanged", got)
+	}
+	if drop || len(missing) > 0 {
+		t.Errorf("drop=%v missing=%v, want false/empty for ref-less input", drop, missing)
+	}
+}
+
+func TestSubstituteCredentialRefs_InvalidKeyCharIgnored(t *testing.T) {
+	// The regex requires [a-zA-Z0-9_-]{1,64}; an invalid expression
+	// like ${run.credentials.foo bar} fails to match and survives as
+	// a literal in the header. Wire-layer validation prevents this
+	// shape from reaching the substrate; this test pins the regex's
+	// strict charset so an operator typo never silently runs.
+	got, drop, _ := substituteCredentialRefs(
+		"Bearer ${run.credentials.foo bar}",
+		map[string]string{"foo bar": "shouldnt-match"},
+	)
+	// Literal survives — regex didn't engage.
+	if !strings.Contains(got, "${run.credentials.foo bar}") {
+		t.Errorf("got = %q, expected literal to pass through", got)
+	}
+	// drop stays false because the regex didn't engage.
+	if drop {
+		t.Errorf("drop = true, want false for non-matching expression")
+	}
+}

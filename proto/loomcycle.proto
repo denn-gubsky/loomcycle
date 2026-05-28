@@ -289,6 +289,16 @@ message RunRequest {
   // at request-build time. Charset [A-Za-z0-9._\-+/=]{16,512}. Never
   // persisted, never logged in full. Sub-agents inherit identically.
   string user_bearer = 11;
+
+  // user_credentials (v1.x RFC F) is the named-credentials map —
+  // per-tool/per-MCP-server bearers keyed by operator-chosen name
+  // (convention: the `mcp_servers.<name>` yaml key). Substituted into
+  // outbound MCP HTTP header values containing
+  // `${run.credentials.<name>}` at request-build time. Sub-agents
+  // inherit the whole map. Keys match [a-zA-Z0-9_-]{1,64}; values
+  // arbitrary strings; empty map valid. Never persisted, never logged.
+  // See `docs/PLAN.md` → RFC F and `Context.help per-run-credentials`.
+  map<string, string> user_credentials = 12;
 }
 
 message ContinueRequest {
@@ -305,6 +315,10 @@ message ContinueRequest {
   // accepted on Continue — the server inherits it from the session.
   string user_tier = 7;
   string user_bearer = 8;
+
+  // v1.x RFC F per-tool credentials map. Same shape + semantics as
+  // RunRequest.user_credentials; supplied per-continuation.
+  map<string, string> user_credentials = 9;
 }
 
 // HostAllowlist wraps a repeated string so the absence-of-list state

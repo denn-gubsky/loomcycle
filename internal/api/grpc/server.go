@@ -451,6 +451,9 @@ func (s *Server) Run(req *loomcyclepb.RunRequest, stream loomcyclepb.Loomcycle_R
 	if s.runner == nil {
 		return status.Error(codes.Unimplemented, "Run streaming requires a runner; this Server was constructed without one")
 	}
+	if errMsg, ok := connector.ValidateUserCredentialsMap(req.GetUserCredentials()); !ok {
+		return status.Error(codes.InvalidArgument, errMsg)
+	}
 	in := runInputFromProto(runInputProtoArgs{
 		Agent:           req.GetAgent(),
 		SessionID:       req.GetSessionId(),
@@ -463,6 +466,7 @@ func (s *Server) Run(req *loomcyclepb.RunRequest, stream loomcyclepb.Loomcycle_R
 		TenantID:        req.GetTenantId(),
 		UserTier:        req.GetUserTier(),
 		UserBearer:      req.GetUserBearer(),
+		UserCredentials: req.GetUserCredentials(), // v1.x RFC F
 	})
 	return s.driveStream(stream.Context(), stream, in)
 }
@@ -478,6 +482,9 @@ func (s *Server) Continue(req *loomcyclepb.ContinueRequest, stream loomcyclepb.L
 	if req.GetSessionId() == "" {
 		return status.Error(codes.InvalidArgument, "session_id is required for Continue")
 	}
+	if errMsg, ok := connector.ValidateUserCredentialsMap(req.GetUserCredentials()); !ok {
+		return status.Error(codes.InvalidArgument, errMsg)
+	}
 	in := runInputFromProto(runInputProtoArgs{
 		// Agent + TenantID + UserID omitted — server inherits from the
 		// existing session per the HTTP wire's messagesRequest contract.
@@ -489,6 +496,7 @@ func (s *Server) Continue(req *loomcyclepb.ContinueRequest, stream loomcyclepb.L
 		AgentID:         req.GetAgentId(),
 		UserTier:        req.GetUserTier(),
 		UserBearer:      req.GetUserBearer(),
+		UserCredentials: req.GetUserCredentials(), // v1.x RFC F
 	})
 	return s.driveStream(stream.Context(), stream, in)
 }
@@ -585,6 +593,7 @@ type runInputProtoArgs struct {
 	TenantID        string
 	UserTier        string
 	UserBearer      string
+	UserCredentials map[string]string // v1.x RFC F per-tool named credentials
 }
 
 // runInputFromProto maps the proto request fields into the
@@ -601,6 +610,7 @@ func runInputFromProto(a runInputProtoArgs) runner.RunInput {
 		TenantID:        a.TenantID,
 		UserTier:        a.UserTier,
 		UserBearer:      a.UserBearer,
+		UserCredentials: a.UserCredentials, // v1.x RFC F per-tool named credentials
 	}
 	if a.AllowedHosts != nil {
 		// Proto3 message-type field present → caller did supply a

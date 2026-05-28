@@ -162,3 +162,122 @@ func TestExtraAllowedHosts_NoLeakAcrossSiblingDerivations(t *testing.T) {
 		t.Errorf("sibling ctx (not derived from widened): extras = %v, want nil", got)
 	}
 }
+
+// ---- RFC F per-run credentials sugar in WithRunIdentity -----------
+
+// TestWithRunIdentity_PromotesUserBearerToDefaultCred pins the v0.8.x
+// back-compat sugar: callers that set UserBearer get an automatic
+// UserCredentials["default"] entry pointing at the same value so the
+// new ${run.credentials.default} substitution resolves identically
+// to the legacy ${run.user_bearer} substitution.
+func TestWithRunIdentity_PromotesUserBearerToDefaultCred(t *testing.T) {
+	ctx := WithRunIdentity(context.Background(), RunIdentityValue{
+		UserID:     "alice",
+		UserBearer: "tok-xyz",
+	})
+	got := RunIdentity(ctx)
+	if got.UserBearer != "tok-xyz" {
+		t.Errorf("UserBearer = %q, want %q", got.UserBearer, "tok-xyz")
+	}
+	if v, ok := got.UserCredentials["default"]; !ok || v != "tok-xyz" {
+		t.Errorf("UserCredentials[default] = %q (ok=%v), want %q", v, ok, "tok-xyz")
+	}
+}
+
+// TestWithRunIdentity_DoesNotOverrideExplicitDefault pins the sugar's
+// safety: if the caller explicitly populated UserCredentials["default"]
+// (different from UserBearer, or with UserBearer empty), the sugar
+// MUST NOT clobber it. Otherwise a v1.x caller migrating to the map
+// shape would silently have their explicit default overwritten by a
+// stale legacy bearer.
+func TestWithRunIdentity_DoesNotOverrideExplicitDefault(t *testing.T) {
+	ctx := WithRunIdentity(context.Background(), RunIdentityValue{
+		UserID:          "alice",
+		UserBearer:      "legacy-bearer",
+		UserCredentials: map[string]string{"default": "explicit-default"},
+	})
+	got := RunIdentity(ctx)
+	if got.UserCredentials["default"] != "explicit-default" {
+		t.Errorf("UserCredentials[default] = %q, want %q (sugar must not clobber)",
+			got.UserCredentials["default"], "explicit-default")
+	}
+}
+
+// TestWithRunIdentity_PromotesOverEmptyDefault pins the
+// empty-value-equals-missing case: when the caller's
+// UserCredentials map carries `{default: ""}` (e.g., a sloppy
+// orchestrator initialising the map with empty placeholders),
+// the sugar STILL promotes UserBearer into the default slot.
+// Otherwise ${run.user_bearer} would resolve to UserBearer while
+// ${run.credentials.default} would silently drop the header
+// (substitution treats empty-value as missing per RFC F Decision 4).
+func TestWithRunIdentity_PromotesOverEmptyDefault(t *testing.T) {
+	ctx := WithRunIdentity(context.Background(), RunIdentityValue{
+		UserID:          "alice",
+		UserBearer:      "tok-xyz",
+		UserCredentials: map[string]string{"default": ""},
+	})
+	got := RunIdentity(ctx)
+	if got.UserCredentials["default"] != "tok-xyz" {
+		t.Errorf("UserCredentials[default] = %q, want %q (empty value should be promoted over)",
+			got.UserCredentials["default"], "tok-xyz")
+	}
+}
+
+// TestWithRunIdentity_EmptyBearerNoSugar pins that the sugar fires
+// only when UserBearer is non-empty. A zero-RunIdentityValue with
+// no fields set produces a nil/empty UserCredentials map — no
+// surprise {default:""} entry that downstream code would have to
+// special-case.
+func TestWithRunIdentity_EmptyBearerNoSugar(t *testing.T) {
+	ctx := WithRunIdentity(context.Background(), RunIdentityValue{UserID: "alice"})
+	got := RunIdentity(ctx)
+	if _, ok := got.UserCredentials["default"]; ok {
+		t.Errorf("UserCredentials[default] should be absent when UserBearer is empty, got map = %v", got.UserCredentials)
+	}
+}
+
+// TestWithRunIdentity_DoesNotMutateCallerMap pins the non-mutation
+// invariant: the sugar must clone the credentials map before adding
+// the default entry. Concurrent callers of WithRunIdentity must not
+// see each other's writes through a shared map reference.
+func TestWithRunIdentity_DoesNotMutateCallerMap(t *testing.T) {
+	callerMap := map[string]string{"jobs": "jobs-tok"}
+	_ = WithRunIdentity(context.Background(), RunIdentityValue{
+		UserID:          "alice",
+		UserBearer:      "tok-xyz",
+		UserCredentials: callerMap,
+	})
+	if _, ok := callerMap["default"]; ok {
+		t.Errorf("WithRunIdentity mutated caller's UserCredentials map; got %v", callerMap)
+	}
+	if len(callerMap) != 1 {
+		t.Errorf("caller's map length changed; got %d entries: %v", len(callerMap), callerMap)
+	}
+}
+
+// TestWithRunIdentity_PreservesOtherCreds pins that the sugar's
+// promotion path preserves other credentials in the map (jobs,
+// slack, etc.) when it adds the back-compat default entry.
+func TestWithRunIdentity_PreservesOtherCreds(t *testing.T) {
+	ctx := WithRunIdentity(context.Background(), RunIdentityValue{
+		UserID:          "alice",
+		UserBearer:      "legacy-tok",
+		UserCredentials: map[string]string{"jobs": "jobs-tok", "slack": "slack-tok"},
+	})
+	got := RunIdentity(ctx)
+	want := map[string]string{
+		"jobs":    "jobs-tok",
+		"slack":   "slack-tok",
+		"default": "legacy-tok",
+	}
+	if len(got.UserCredentials) != len(want) {
+		t.Fatalf("len(UserCredentials) = %d, want %d (got %v)",
+			len(got.UserCredentials), len(want), got.UserCredentials)
+	}
+	for k, v := range want {
+		if got.UserCredentials[k] != v {
+			t.Errorf("UserCredentials[%q] = %q, want %q", k, got.UserCredentials[k], v)
+		}
+	}
+}

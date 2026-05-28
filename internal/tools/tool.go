@@ -222,6 +222,31 @@ type RunIdentityValue struct {
 	// inherit it identically (NOT narrowed — they act on behalf of
 	// the same end-user). Never persisted; never logged in full.
 	UserBearer string
+
+	// UserCredentials is the v1.x named-credentials map (RFC F) —
+	// per-tool/per-MCP-server bearers keyed by operator-chosen name
+	// (convention: the mcp_servers.<name> yaml key). The HTTP MCP
+	// transport substitutes values into header expressions of the
+	// form ${run.credentials.<name>} at outbound request-build time.
+	// Sub-agents inherit the whole map identically (same trust
+	// posture as UserBearer).
+	//
+	// Back-compat with v0.8.x: at WithRunIdentity time, if the
+	// caller set UserBearer but did not set UserCredentials["default"],
+	// the substrate populates UserCredentials["default"] = UserBearer
+	// so the legacy ${run.user_bearer} substitution path and the
+	// new ${run.credentials.default} both resolve to the same value.
+	//
+	// Validation: keys match [a-zA-Z0-9_-]{1,64}; values arbitrary
+	// strings (no length cap — operators occasionally pass JWTs).
+	// Empty map is valid (no per-tool auth needed). Validation lives
+	// at wire entry points, not on this struct (keep this struct
+	// dumb-data; the API layer enforces shape).
+	//
+	// Never persisted to run transcripts, snapshots, or OTEL spans
+	// (see Decision 5 in rfcs/per-run-credentials.md and the
+	// existing OTEL secret-exclusion posture).
+	UserCredentials map[string]string
 }
 
 // WithRunIdentity attaches the current run's identity to ctx. The
@@ -229,7 +254,36 @@ type RunIdentityValue struct {
 // AgentTool's SubAgentRunner can read it back via RunIdentity and
 // thread userID/parentAgentID through to the new sub-agent's session
 // + run records.
+//
+// RFC F back-compat sugar (v1.x): if the caller set UserBearer but
+// did not populate UserCredentials["default"], promote UserBearer
+// into the map at attach time so `${run.user_bearer}` and
+// `${run.credentials.default}` both resolve to the same value for
+// the lifetime of this ctx. This keeps v0.8.x single-bearer flows
+// working unchanged while letting new code consume the map.
+//
+// The promotion clones the map before mutating — never mutate the
+// caller's map; the substitute layer reads identity per request and
+// concurrent writes would race.
 func WithRunIdentity(ctx context.Context, ident RunIdentityValue) context.Context {
+	if ident.UserBearer != "" {
+		// Promote when "default" is absent OR present-but-empty.
+		// The latter matches the runtime substitution semantics
+		// (empty value treated as missing per RFC F Decision 4) —
+		// without it, a caller passing `UserCredentials: {default: ""}`
+		// alongside a non-empty UserBearer would silently drop
+		// ${run.credentials.default} headers while ${run.user_bearer}
+		// kept working. Two paths to the same value should resolve
+		// identically.
+		if existing := ident.UserCredentials["default"]; existing == "" {
+			creds := make(map[string]string, len(ident.UserCredentials)+1)
+			for k, v := range ident.UserCredentials {
+				creds[k] = v
+			}
+			creds["default"] = ident.UserBearer
+			ident.UserCredentials = creds
+		}
+	}
 	return context.WithValue(ctx, ctxKeyRunIdentity{}, ident)
 }
 

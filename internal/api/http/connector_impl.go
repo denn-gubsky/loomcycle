@@ -56,6 +56,7 @@ func (s *Server) SpawnRun(ctx context.Context, req connector.SpawnRunRequest) (c
 		AgentID:         req.AgentID,
 		UserTier:        req.UserTier,
 		UserBearer:      req.UserBearer,
+		UserCredentials: req.UserCredentials, // v1.x RFC F: per-tool named credentials
 	}
 
 	// Capture: the OnRegistered callback gives us the resolved IDs;

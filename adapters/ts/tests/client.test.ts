@@ -113,6 +113,43 @@ describe("runStreaming", () => {
     });
   });
 
+  // v1.x RFC F per-tool credentials map.
+  it("forwards user_credentials when set", async () => {
+    const { client, fetchMock } = makeClient([
+      sseResponse(['event: done\ndata: {"type":"done"}\n\n']),
+    ]);
+    for await (const _ of client.runStreaming({
+      agent: "qa",
+      segments: [],
+      userCredentials: {
+        jobs: "jobs-bearer",
+        slack: "xoxb-slack",
+        telegram: "tg-token",
+      },
+    })) {}
+    const body = JSON.parse(fetchMock.mock.calls[0]![1]!.body as string);
+    expect(body.user_credentials).toEqual({
+      jobs: "jobs-bearer",
+      slack: "xoxb-slack",
+      telegram: "tg-token",
+    });
+  });
+
+  // omitted-when-undefined contract: existing callers see no wire shape change.
+  it("omits user_credentials when undefined (no shape change for v0.8.x callers)", async () => {
+    const { client, fetchMock } = makeClient([
+      sseResponse(['event: done\ndata: {"type":"done"}\n\n']),
+    ]);
+    for await (const _ of client.runStreaming({
+      agent: "qa",
+      segments: [],
+      userBearer: "legacy-bearer",
+    })) {}
+    const body = JSON.parse(fetchMock.mock.calls[0]![1]!.body as string);
+    expect("user_credentials" in body).toBe(false);
+    expect(body.user_bearer).toBe("legacy-bearer");
+  });
+
   it("omits allowed_hosts when null (pass-through semantics)", async () => {
     const { client, fetchMock } = makeClient([
       sseResponse(['event: done\ndata: {"type":"done"}\n\n']),
@@ -226,6 +263,28 @@ describe("continueSession", () => {
       agent_id: "a2",
       user_tier: "free",
       user_bearer: "cont-token",
+    });
+  });
+
+  // v1.x RFC F per-tool credentials map on continuations — mirrors
+  // the runStreaming test above; ensures no future refactor accidentally
+  // drops the field from one path while keeping the other.
+  it("forwards user_credentials on continueSession when set", async () => {
+    const { client, fetchMock } = makeClient([
+      sseResponse(['event: done\ndata: {"type":"done"}\n\n']),
+    ]);
+    for await (const _ of client.continueSession({
+      sessionId: "s1",
+      segments: [],
+      userCredentials: {
+        jobs: "jobs-bearer",
+        slack: "xoxb-slack",
+      },
+    })) {}
+    const body = JSON.parse(fetchMock.mock.calls[0]![1]!.body as string);
+    expect(body.user_credentials).toEqual({
+      jobs: "jobs-bearer",
+      slack: "xoxb-slack",
     });
   });
 });

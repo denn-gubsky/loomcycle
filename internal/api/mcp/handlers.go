@@ -125,6 +125,9 @@ func handleSpawnRun(ctx context.Context, env *handlerEnv, args json.RawMessage) 
 	if req.Agent == "" && req.SessionID == "" {
 		return toolErr("spawn_run: either agent or session_id must be supplied"), nil
 	}
+	if errMsg, ok := connector.ValidateUserCredentialsMap(req.UserCredentials); !ok {
+		return toolErr("spawn_run: " + errMsg), nil
+	}
 
 	useStreaming := env.session != nil && env.session.RunEventsEnabled() && env.runner != nil
 	var result connector.SpawnRunResult
@@ -158,6 +161,7 @@ func spawnRunStreaming(ctx context.Context, env *handlerEnv, req connector.Spawn
 		AgentID:         req.AgentID,
 		UserTier:        req.UserTier,
 		UserBearer:      req.UserBearer,
+		UserCredentials: req.UserCredentials, // v1.x RFC F per-tool named credentials
 	}
 
 	var (
