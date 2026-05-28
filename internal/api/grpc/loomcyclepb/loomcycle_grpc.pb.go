@@ -60,6 +60,7 @@ const (
 	Loomcycle_AgentDef_FullMethodName            = "/loomcycle.v1.Loomcycle/AgentDef"
 	Loomcycle_SkillDef_FullMethodName            = "/loomcycle.v1.Loomcycle/SkillDef"
 	Loomcycle_MCPServerDef_FullMethodName        = "/loomcycle.v1.Loomcycle/MCPServerDef"
+	Loomcycle_ScheduleDef_FullMethodName         = "/loomcycle.v1.Loomcycle/ScheduleDef"
 	Loomcycle_ListChannels_FullMethodName        = "/loomcycle.v1.Loomcycle/ListChannels"
 	Loomcycle_StreamUserRunStates_FullMethodName = "/loomcycle.v1.Loomcycle/StreamUserRunStates"
 	Loomcycle_PublishChannel_FullMethodName      = "/loomcycle.v1.Loomcycle/PublishChannel"
@@ -197,6 +198,12 @@ type LoomcycleClient interface {
 	// AgentDef + SkillDef (op-discriminated input_json + is_error
 	// tool refusals in the response).
 	MCPServerDef(ctx context.Context, in *SubstrateRequest, opts ...grpc.CallOption) (*SubstrateResponse, error)
+	// ScheduleDef dispatches to the v1.x RFC E scheduled-runs
+	// substrate. Mirrors POST /v1/_scheduledef. Operator-admin-only.
+	// Same SubstrateRequest body shape — op-discriminated input_json
+	// (create / fork / get / list / retire) + is_error tool refusals
+	// in the response.
+	ScheduleDef(ctx context.Context, in *SubstrateRequest, opts ...grpc.CallOption) (*SubstrateResponse, error)
 	// ----- v0.9.x n8n RFC Phase 0 -----
 	//
 	// ListChannels mirrors GET /v1/_channels — operator-declared
@@ -472,6 +479,16 @@ func (c *loomcycleClient) MCPServerDef(ctx context.Context, in *SubstrateRequest
 	return out, nil
 }
 
+func (c *loomcycleClient) ScheduleDef(ctx context.Context, in *SubstrateRequest, opts ...grpc.CallOption) (*SubstrateResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SubstrateResponse)
+	err := c.cc.Invoke(ctx, Loomcycle_ScheduleDef_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *loomcycleClient) ListChannels(ctx context.Context, in *ListChannelsRequest, opts ...grpc.CallOption) (*ListChannelsResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(ListChannelsResponse)
@@ -670,6 +687,12 @@ type LoomcycleServer interface {
 	// AgentDef + SkillDef (op-discriminated input_json + is_error
 	// tool refusals in the response).
 	MCPServerDef(context.Context, *SubstrateRequest) (*SubstrateResponse, error)
+	// ScheduleDef dispatches to the v1.x RFC E scheduled-runs
+	// substrate. Mirrors POST /v1/_scheduledef. Operator-admin-only.
+	// Same SubstrateRequest body shape — op-discriminated input_json
+	// (create / fork / get / list / retire) + is_error tool refusals
+	// in the response.
+	ScheduleDef(context.Context, *SubstrateRequest) (*SubstrateResponse, error)
 	// ----- v0.9.x n8n RFC Phase 0 -----
 	//
 	// ListChannels mirrors GET /v1/_channels — operator-declared
@@ -772,6 +795,9 @@ func (UnimplementedLoomcycleServer) SkillDef(context.Context, *SubstrateRequest)
 }
 func (UnimplementedLoomcycleServer) MCPServerDef(context.Context, *SubstrateRequest) (*SubstrateResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method MCPServerDef not implemented")
+}
+func (UnimplementedLoomcycleServer) ScheduleDef(context.Context, *SubstrateRequest) (*SubstrateResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ScheduleDef not implemented")
 }
 func (UnimplementedLoomcycleServer) ListChannels(context.Context, *ListChannelsRequest) (*ListChannelsResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ListChannels not implemented")
@@ -1194,6 +1220,24 @@ func _Loomcycle_MCPServerDef_Handler(srv interface{}, ctx context.Context, dec f
 	return interceptor(ctx, in, info, handler)
 }
 
+func _Loomcycle_ScheduleDef_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SubstrateRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(LoomcycleServer).ScheduleDef(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Loomcycle_ScheduleDef_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(LoomcycleServer).ScheduleDef(ctx, req.(*SubstrateRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _Loomcycle_ListChannels_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(ListChannelsRequest)
 	if err := dec(in); err != nil {
@@ -1381,6 +1425,10 @@ var Loomcycle_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "MCPServerDef",
 			Handler:    _Loomcycle_MCPServerDef_Handler,
+		},
+		{
+			MethodName: "ScheduleDef",
+			Handler:    _Loomcycle_ScheduleDef_Handler,
 		},
 		{
 			MethodName: "ListChannels",

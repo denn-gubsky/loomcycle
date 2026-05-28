@@ -278,15 +278,15 @@ func TestServer_ToolsList_Returns33Tools(t *testing.T) {
 	if err := json.Unmarshal(resps[0].Result, &result); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if len(result.Tools) != 33 {
-		t.Errorf("got %d tools, want 33 (v0.9.x adds list_channels + stream_user_run_states + mcpserverdef + publish_channel + subscribe_channel + peek_channel + ack_channel)", len(result.Tools))
+	if len(result.Tools) != 34 {
+		t.Errorf("got %d tools, want 34 (v1.x adds scheduledef on top of v0.9.x's list_channels + stream_user_run_states + mcpserverdef + publish_channel + subscribe_channel + peek_channel + ack_channel)", len(result.Tools))
 	}
 	names := map[string]bool{}
 	for _, td := range result.Tools {
 		names[td.Name] = true
 	}
-	// Spot-check across categories — through the v0.9.x additions.
-	for _, want := range []string{"spawn_run", "register_agent", "memory", "agentdef", "skilldef", "mcpserverdef", "pause_runtime", "create_snapshot", "get_snapshot", "interruption_resolve", "register_hook", "list_hooks", "delete_hook", "list_channels", "stream_user_run_states", "publish_channel", "subscribe_channel", "peek_channel", "ack_channel"} {
+	// Spot-check across categories — through the v1.x additions.
+	for _, want := range []string{"spawn_run", "register_agent", "memory", "agentdef", "skilldef", "mcpserverdef", "scheduledef", "pause_runtime", "create_snapshot", "get_snapshot", "interruption_resolve", "register_hook", "list_hooks", "delete_hook", "list_channels", "stream_user_run_states", "publish_channel", "subscribe_channel", "peek_channel", "ack_channel"} {
 		if !names[want] {
 			t.Errorf("missing tool %q in tools/list", want)
 		}

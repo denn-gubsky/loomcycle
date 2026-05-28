@@ -42,9 +42,11 @@
  *     listRunInterrupts(runId, opts?): Promise<InterruptListResponse>
  *     resolveInterrupt(runId, interruptId, opts): Promise<unknown>
  *
- *     // Substrate admin (v0.8.22)
+ *     // Substrate admin (v0.8.22; mcpServerDef v0.9.x; scheduleDef v1.x)
  *     agentDef(input): Promise<SubstrateToolResponse>
  *     skillDef(input): Promise<SubstrateToolResponse>
+ *     mcpServerDef(input): Promise<SubstrateToolResponse>
+ *     scheduleDef(input): Promise<SubstrateToolResponse>
  *
  *     // Library v2 enumeration (v0.10.3 — yaml+substrate merged)
  *     listLibraryAgents(): Promise<LibraryListResponse<LibraryAgentDefinition>>
