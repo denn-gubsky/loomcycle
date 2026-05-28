@@ -9,6 +9,7 @@ import (
 
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/lookup"
+	"github.com/denn-gubsky/loomcycle/internal/scheduler"
 	"github.com/denn-gubsky/loomcycle/internal/store/sqlite"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
@@ -133,6 +134,78 @@ func TestScheduleDefTool_ForkBootstrapsTemplate(t *testing.T) {
 	}
 	if out["promoted"].(bool) != true {
 		t.Errorf("fork default promote = false; want true (schedules auto-promote per RFC E)")
+	}
+}
+
+// TestScheduleDefTool_CreateSeedsRunState regresses v1.x review
+// finding #1: after `ScheduleDef.create`, the substrate had the def
+// + active pointer but no schedule_run_state row, so the sweeper's
+// JOIN query returned no rows and the schedule never fired. Fix: the
+// tool calls ScheduleRunStateSeed after each ScheduleDefSetActive.
+func TestScheduleDefTool_CreateSeedsRunState(t *testing.T) {
+	tool, ctx, cleanup := scheduleDefFixture(t)
+	defer cleanup()
+
+	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"create","name":"seed-check","overlay":{"agent":"job-search-batch","schedule":"0 9 * * 1","user_id":"alice"}}`))
+	if res.IsError {
+		t.Fatalf("create: %s", res.Text)
+	}
+	out := decodeResult(t, res.Text)
+	defID := out["def_id"].(string)
+
+	state, err := tool.Store.ScheduleRunStateGet(ctx, defID)
+	if err != nil {
+		t.Fatalf("ScheduleRunStateGet: %v — create-then-seed regression broken", err)
+	}
+	// next_run_at should be in the future (cron "0 9 * * 1" = next Monday 09:00).
+	if !state.NextRunAt.After(state.NextRunAt.Add(-1)) || state.NextRunAt.IsZero() {
+		t.Errorf("next_run_at = %v, expected real future time after cron resolution", state.NextRunAt)
+	}
+}
+
+// TestScheduleDefTool_ForkSeedsRunState same regression for the fork
+// path. The bootstrap-from-yaml fork is the JobEmber-primary path so
+// this case matters most.
+func TestScheduleDefTool_ForkSeedsRunState(t *testing.T) {
+	tool, ctx, cleanup := scheduleDefFixture(t)
+	defer cleanup()
+
+	// Bootstrap + fork from yaml template; tier-pick high.
+	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"fork","name":"job-search-template","overlay":{"user_id":"alice","user_tier":"high","user_credentials":{"jobs":"j","slack":"s"}}}`))
+	if res.IsError {
+		t.Fatalf("fork: %s", res.Text)
+	}
+	out := decodeResult(t, res.Text)
+	defID := out["def_id"].(string)
+
+	state, err := tool.Store.ScheduleRunStateGet(ctx, defID)
+	if err != nil {
+		t.Fatalf("ScheduleRunStateGet on forked def_id: %v — fork-then-seed regression broken", err)
+	}
+	if state.NextRunAt.IsZero() {
+		t.Errorf("next_run_at zero — cron should have resolved from tier=high (0 6 * * *)")
+	}
+}
+
+// TestScheduleDefTool_ForkPersistsUserTier regresses v1.x review
+// finding #2: the substrate-write shape had no UserTier field, so
+// forks against user_tier_schedules templates lost the tier pick
+// silently and parked at the sweeper.
+func TestScheduleDefTool_ForkPersistsUserTier(t *testing.T) {
+	tool, ctx, cleanup := scheduleDefFixture(t)
+	defer cleanup()
+
+	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"fork","name":"job-search-template","overlay":{"user_id":"alice","user_tier":"high","user_credentials":{"jobs":"x","slack":"y"}}}`))
+	if res.IsError {
+		t.Fatalf("fork: %s", res.Text)
+	}
+	out := decodeResult(t, res.Text)
+	def, ok := out["definition"].(map[string]any)
+	if !ok {
+		t.Fatalf("definition not a JSON object")
+	}
+	if tier, _ := def["user_tier"].(string); tier != "high" {
+		t.Errorf("user_tier in stored definition = %q, want high — fork didn't persist the tier pick", tier)
 	}
 }
 
@@ -355,6 +428,48 @@ func TestMergedScheduleDef_DriftDetection_VsLookupSubstrateScheduleDef(t *testin
 	for tag := range substrateTags {
 		if !mergedTags[tag] {
 			t.Errorf("lookup.SubstrateScheduleDef has json tag %q but mergedScheduleDef does not — substrate-write is the source-of-truth shape; remove from SubstrateScheduleDef OR add the field to mergedScheduleDef in this package",
+				tag)
+		}
+	}
+}
+
+// TestMergedScheduleDef_DriftDetection_VsSchedulerScheduleDef pins
+// the THIRD mirror: builtin.mergedScheduleDef (substrate-write) ↔
+// scheduler.scheduleDef (sweeper-read). The existing test above
+// covers the write↔canonical pairing; this one covers write↔read.
+//
+// Both pairings exist independently because the read path
+// (lookup.SubstrateScheduleDef) is the canonical wire shape consumed
+// by config-level callers, while the sweeper path (scheduler.scheduleDef)
+// is the wire shape decoded directly from store.ScheduleDueRow at
+// fire time. The two read paths share most fields but the sweeper
+// has scheduler-only metadata (`user_credentials`, `user_tier`) that
+// doesn't belong in the canonical lookup adapter.
+//
+// This test was added in the v1.x review-fix PR after the original
+// release shipped without UserTier on the write side. The drift
+// would have been caught immediately if this test existed.
+func TestMergedScheduleDef_DriftDetection_VsSchedulerScheduleDef(t *testing.T) {
+	exempt := map[string]bool{
+		// Both sides carry these — they're scheduler-side concerns,
+		// not lookup-canonical fields, but they ARE shared between
+		// write + sweeper-read. So no exemption needed here; listed
+		// for symmetry with the empty-exempt-set rationale.
+	}
+	_ = exempt
+
+	mergedTags := scheduleJsonTagsOf(reflect.TypeOf(mergedScheduleDef{}))
+	schedulerTags := scheduler.ScheduleDefJSONTagsForDrift()
+
+	for tag := range mergedTags {
+		if !schedulerTags[tag] {
+			t.Errorf("mergedScheduleDef has json tag %q but scheduler.scheduleDef does not — the sweeper-read shape needs this field to decode the persisted JSON, otherwise the sweeper silently drops the value",
+				tag)
+		}
+	}
+	for tag := range schedulerTags {
+		if !mergedTags[tag] {
+			t.Errorf("scheduler.scheduleDef has json tag %q but mergedScheduleDef does not — the substrate-write shape is the source of truth; without the field there, forks have no way to PERSIST what the sweeper expects to READ (e.g. v1.x release shipped without user_tier, which broke tier-based forks)",
 				tag)
 		}
 	}

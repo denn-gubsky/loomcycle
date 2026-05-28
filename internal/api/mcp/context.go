@@ -91,6 +91,15 @@ func operatorCtx(ctx context.Context) context.Context {
 		Scopes: []string{"any"},
 	})
 
+	// ScheduleDef (v1.x RFC E): "any" scope so the MCP `scheduledef`
+	// meta-tool's calls reach the in-process tool instead of being
+	// default-denied at the scope gate. SelfName matches the agent
+	// name we already stamped above so `self` checks work too.
+	ctx = tools.WithScheduleDefPolicy(ctx, tools.ScheduleDefPolicyValue{
+		Scopes:   []string{"any"},
+		SelfName: operatorAgentName,
+	})
+
 	// Evaluation: all 4 valid scope values. submit_any + read_any
 	// are the load-bearing ones; submit_self + submit_descendants
 	// are included for completeness in case an operator wants the

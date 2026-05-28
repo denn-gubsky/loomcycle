@@ -188,8 +188,18 @@ func (s *Scheduler) fireOne(ctx context.Context, row store.ScheduleDueRow, now t
 			status = "skipped"
 		}
 		if errors.Is(runErr, context.DeadlineExceeded) {
-			status = "failed"
-			errStr = "fire timeout exceeded"
+			// Disambiguate fireCtx (per-fire timeout) from parent ctx
+			// (scheduler shutting down). Both surface as
+			// context.DeadlineExceeded via errors.Is. Checking
+			// fireCtx.Err() lets us emit a more accurate status.
+			if fireCtx.Err() != nil && ctx.Err() == nil {
+				status = "failed"
+				errStr = "fire timeout exceeded"
+			} else {
+				// Parent ctx deadline (or both — treat as shutdown).
+				status = "failed"
+				errStr = "scheduler context deadline exceeded"
+			}
 		}
 	}
 
@@ -202,7 +212,18 @@ func (s *Scheduler) fireOne(ctx context.Context, row store.ScheduleDueRow, now t
 		s.logf("scheduler: schedule %q cron-resolve failed: %v — parking 1h", row.Name, nextErr)
 		next = now.Add(1 * time.Hour)
 	}
-	if err := s.store.ScheduleRunStateRecordResult(ctx, store.ScheduleRunResult{
+	// Use a survival ctx for RecordResult when the parent is already
+	// cancelled (e.g. mid-shutdown). Without this, the store write
+	// fails silently, next_run_at stays in the past, and the schedule
+	// re-fires immediately on the next startup. Bounded 5s timeout
+	// prevents the survival path from hanging shutdown indefinitely.
+	recordCtx := ctx
+	if ctx.Err() != nil {
+		var cancel context.CancelFunc
+		recordCtx, cancel = context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+	}
+	if err := s.store.ScheduleRunStateRecordResult(recordCtx, store.ScheduleRunResult{
 		DefID:      row.DefID,
 		LastRunID:  registeredRunID,
 		LastStatus: status,

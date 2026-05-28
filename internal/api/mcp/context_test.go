@@ -88,6 +88,25 @@ func TestOperatorCtx_AttachesAllRequiredPolicies(t *testing.T) {
 	if len(hp.Scopes) == 0 {
 		t.Errorf("HistoryPolicy.Scopes empty; Context.history would refuse")
 	}
+
+	// SkillDefPolicy: empty Scopes ⇒ MCP `skilldef` meta-tool refuses
+	// every op.
+	skp := tools.SkillDefPolicy(ctx)
+	if len(skp.Scopes) == 0 {
+		t.Errorf("SkillDefPolicy.Scopes empty; all SkillDef ops via MCP would fail")
+	}
+
+	// ScheduleDefPolicy: empty Scopes ⇒ MCP `scheduledef` meta-tool
+	// refuses every op with default-deny. v1.x RFC E regression: this
+	// was missing from operatorCtx for one release and made every MCP
+	// scheduledef call return tool_refused silently.
+	sdp := tools.ScheduleDefPolicy(ctx)
+	if len(sdp.Scopes) == 0 {
+		t.Errorf("ScheduleDefPolicy.Scopes empty; all ScheduleDef ops via MCP would fail")
+	}
+	if sdp.SelfName == "" {
+		t.Errorf("ScheduleDefPolicy.SelfName empty; `self` scope check would always fail")
+	}
 }
 
 // TestOperatorCtx_PreservesParentValues ensures operatorCtx layers on

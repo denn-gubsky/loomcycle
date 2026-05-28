@@ -56,12 +56,13 @@ func TestSchedule_EquivalenceYamlVsSubstrate(t *testing.T) {
 
 	// Persist via the substrate shape (snake_case json tags via
 	// lookup.SubstrateScheduleDef).
+	enabled := yamlSchedule.Enabled
 	substrateShape := lookup.SubstrateScheduleDef{
 		Agent:               yamlSchedule.Agent,
 		UserTierSchedules:   yamlSchedule.UserTierSchedules,
 		RequiredCredentials: yamlSchedule.RequiredCredentials,
 		Timezone:            yamlSchedule.Timezone,
-		Enabled:             yamlSchedule.Enabled,
+		Enabled:             &enabled,
 		CatchUpMax:          yamlSchedule.CatchUpMax,
 	}
 	substrateShape.Prompt = make([]lookup.SubstratePromptSegment, len(yamlSchedule.Prompt))
@@ -189,6 +190,7 @@ func TestSchedule_DriftDetection(t *testing.T) {
 		"enabled":                   true,
 		"catch_up_max":              true,
 		"user_id":                   true,
+		"user_tier":                 true,
 		"user_credentials_from_env": true,
 		"on_complete":               true,
 	}
