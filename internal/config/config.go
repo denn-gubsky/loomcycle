@@ -1493,6 +1493,33 @@ type Env struct {
 	// always sampled). Default 1.0; reduce in production when storage
 	// matters. Env: LOOMCYCLE_OTEL_TRACES_SAMPLER_RATIO.
 	OTELTracesSamplerRatio float64
+
+	// SchedulerEnabled enables the v1.x RFC E scheduler runtime
+	// (sweeper goroutine + due-row firing). Default OFF — operator
+	// opts in via LOOMCYCLE_SCHEDULER_ENABLED=1. When false, the
+	// sweeper goroutine is not started and substrate-stored
+	// schedules sit idle (the ScheduleDef tool still works for
+	// authoring + listing, just nothing fires).
+	SchedulerEnabled bool
+
+	// SchedulerTickSeconds is the sweeper poll cadence. Default 30.
+	// Lower values trade DB load for tighter punctuality. Env:
+	// LOOMCYCLE_SCHEDULER_TICK_SECONDS.
+	SchedulerTickSeconds int
+
+	// SchedulerFireTimeoutSeconds is the per-fire run timeout cap.
+	// Default 600 (10 minutes). The runner's ctx-cancellation
+	// cascades into provider + tool calls so timeout cleanly
+	// aborts. Env: LOOMCYCLE_SCHEDULER_FIRE_TIMEOUT_SECONDS.
+	SchedulerFireTimeoutSeconds int
+
+	// SchedulerEnvAllowlist is the comma-separated env-var name
+	// allowlist for `user_credentials_from_env` resolution. Empty
+	// (default) disables env-credential lookup entirely — a
+	// safe-by-default posture. Operators opt in by setting
+	// LOOMCYCLE_SCHEDULER_ENV_ALLOWLIST="VAR1,VAR2" — only those
+	// var names will be readable by scheduled runs.
+	SchedulerEnvAllowlist []string
 }
 
 // Load reads a YAML file and the process env. Empty path returns defaults +
@@ -1905,6 +1932,32 @@ func Load(path string) (*Config, error) {
 		}
 	}
 	cfg.Env.MetricsCollectSystem = os.Getenv("LOOMCYCLE_METRICS_COLLECT_SYSTEM") == "1"
+
+	// v1.x RFC E scheduler runtime. Default OFF; operator opts in via
+	// LOOMCYCLE_SCHEDULER_ENABLED=1. When false the sweeper goroutine
+	// is not started — ScheduleDef tool still works for authoring +
+	// listing, but nothing fires.
+	cfg.Env.SchedulerEnabled = os.Getenv("LOOMCYCLE_SCHEDULER_ENABLED") == "1"
+	cfg.Env.SchedulerTickSeconds = 30
+	if v := os.Getenv("LOOMCYCLE_SCHEDULER_TICK_SECONDS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			cfg.Env.SchedulerTickSeconds = n
+		}
+	}
+	cfg.Env.SchedulerFireTimeoutSeconds = 600
+	if v := os.Getenv("LOOMCYCLE_SCHEDULER_FIRE_TIMEOUT_SECONDS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			cfg.Env.SchedulerFireTimeoutSeconds = n
+		}
+	}
+	if v := os.Getenv("LOOMCYCLE_SCHEDULER_ENV_ALLOWLIST"); v != "" {
+		for _, name := range strings.Split(v, ",") {
+			name = strings.TrimSpace(name)
+			if name != "" {
+				cfg.Env.SchedulerEnvAllowlist = append(cfg.Env.SchedulerEnvAllowlist, name)
+			}
+		}
+	}
 
 	// v0.12.0 multi-replica HA: cluster mode activates when REPLICA_ID
 	// is set. Validation is by coord.ValidateReplicaID; we re-implement

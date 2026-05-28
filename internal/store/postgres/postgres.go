@@ -4141,6 +4141,127 @@ func (s *Store) scanScheduleDefRows(rows pgx.Rows) ([]store.ScheduleDefRow, erro
 	return out, rows.Err()
 }
 
+// ---- v1.x RFC E ScheduleDef runtime (sweeper-side) ----
+
+func (s *Store) ScheduleRunStateSeed(ctx context.Context, defID string, nextRunAt time.Time) error {
+	_, err := s.pool.Exec(ctx,
+		`INSERT INTO schedule_run_state (def_id, next_run_at) VALUES ($1, $2)
+		 ON CONFLICT (def_id) DO UPDATE SET next_run_at = EXCLUDED.next_run_at`,
+		defID, nextRunAt,
+	)
+	if err != nil {
+		return fmt.Errorf("schedule_run_state seed: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) ScheduleRunStateGet(ctx context.Context, defID string) (store.ScheduleRunStateRow, error) {
+	var (
+		out         store.ScheduleRunStateRow
+		lastRunAt   *time.Time
+		lastRunID   *string
+		lastStatus  *string
+		lastError   *string
+		pausedUntil *time.Time
+	)
+	err := s.pool.QueryRow(ctx,
+		`SELECT def_id, last_run_at, last_run_id, last_status, last_error, next_run_at, paused_until
+		 FROM schedule_run_state WHERE def_id = $1`, defID,
+	).Scan(&out.DefID, &lastRunAt, &lastRunID, &lastStatus, &lastError, &out.NextRunAt, &pausedUntil)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return store.ScheduleRunStateRow{}, &store.ErrNotFound{Kind: "schedule_run_state", ID: defID}
+	}
+	if err != nil {
+		return store.ScheduleRunStateRow{}, err
+	}
+	if lastRunAt != nil {
+		out.LastRunAt = *lastRunAt
+	}
+	if lastRunID != nil {
+		out.LastRunID = *lastRunID
+	}
+	if lastStatus != nil {
+		out.LastStatus = *lastStatus
+	}
+	if lastError != nil {
+		out.LastError = *lastError
+	}
+	if pausedUntil != nil {
+		out.PausedUntil = *pausedUntil
+	}
+	return out, nil
+}
+
+func (s *Store) ScheduleRunStateListDue(ctx context.Context, now time.Time) ([]store.ScheduleDueRow, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT srs.def_id, sd.name, sd.definition::text, srs.next_run_at
+		 FROM schedule_run_state srs
+		 JOIN schedule_def_active sda ON sda.def_id = srs.def_id
+		 JOIN schedule_defs sd ON sd.def_id = srs.def_id
+		 WHERE srs.next_run_at <= $1
+		   AND sd.retired = FALSE
+		   AND (srs.paused_until IS NULL OR srs.paused_until <= $1)
+		 ORDER BY srs.next_run_at ASC`,
+		now,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("schedule_run_state list due: %w", err)
+	}
+	defer rows.Close()
+	var out []store.ScheduleDueRow
+	for rows.Next() {
+		var (
+			r          store.ScheduleDueRow
+			definition string
+		)
+		if err := rows.Scan(&r.DefID, &r.Name, &definition, &r.NextRunAt); err != nil {
+			return nil, err
+		}
+		r.Definition = json.RawMessage(definition)
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) ScheduleRunStateRecordResult(ctx context.Context, in store.ScheduleRunResult) error {
+	tag, err := s.pool.Exec(ctx,
+		`UPDATE schedule_run_state SET
+			last_run_at = $1,
+			last_run_id = $2,
+			last_status = $3,
+			last_error = $4,
+			next_run_at = $5
+		 WHERE def_id = $6`,
+		in.LastRunAt, in.LastRunID, in.LastStatus, in.LastError,
+		in.NextRunAt, in.DefID,
+	)
+	if err != nil {
+		return fmt.Errorf("schedule_run_state record result: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return &store.ErrNotFound{Kind: "schedule_run_state", ID: in.DefID}
+	}
+	return nil
+}
+
+func (s *Store) ScheduleRunStatePause(ctx context.Context, defID string, until time.Time) error {
+	var arg any = nil
+	if !until.IsZero() {
+		arg = until
+	}
+	tag, err := s.pool.Exec(ctx,
+		`UPDATE schedule_run_state SET paused_until = $1 WHERE def_id = $2`,
+		arg, defID,
+	)
+	if err != nil {
+		return fmt.Errorf("schedule_run_state pause: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return &store.ErrNotFound{Kind: "schedule_run_state", ID: defID}
+	}
+	return nil
+}
+
 // ---- Evaluation ----
 
 func (s *Store) EvaluationSubmit(ctx context.Context, row store.EvaluationRow) (store.EvaluationRow, error) {
