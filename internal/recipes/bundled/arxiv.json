@@ -1,0 +1,15 @@
+{
+  "command": "npx",
+  "args": ["-y", "arxiv-mcp-server"],
+  "env": {},
+
+  "_loomcycle": {
+    "description": "ArXiv paper search — query, abstract fetch, PDF download metadata. No auth required.",
+    "transport": "stdio",
+    "pool_size": 2,
+    "env_vars_required": [],
+    "credentials": [],
+    "schedule_compatible": false,
+    "agent_prompt_hint": "Use this for academic literature search. Returns paper metadata + abstracts; not full text. ArXiv rate limits anonymous queries — keep pool small."
+  }
+}

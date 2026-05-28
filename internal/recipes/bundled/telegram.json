@@ -1,0 +1,17 @@
+{
+  "command": "npx",
+  "args": ["-y", "@chigwell/telegram-mcp"],
+  "env": {
+    "TELEGRAM_BOT_TOKEN": "${LOOMCYCLE_TELEGRAM_BOT_TOKEN}"
+  },
+
+  "_loomcycle": {
+    "description": "Telegram bot API — chat + channel + group messaging. Schedule-compatible delivery target.",
+    "transport": "stdio",
+    "pool_size": 2,
+    "env_vars_required": ["LOOMCYCLE_TELEGRAM_BOT_TOKEN"],
+    "credentials": [],
+    "schedule_compatible": true,
+    "agent_prompt_hint": "Use this to post messages to Telegram chats. The chat_id is required in call args. For scheduled-run delivery: on_complete.mcp.call.server = 'telegram', tool = 'send_message'."
+  }
+}

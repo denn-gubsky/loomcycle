@@ -1,0 +1,16 @@
+{
+  "url": "${LOOMCYCLE_JOBS_MCP_URL}",
+  "headers": {
+    "Authorization": "Bearer ${run.credentials.jobs}"
+  },
+
+  "_loomcycle": {
+    "description": "Generic per-user-authorized HTTP MCP server template (JobEmber-shaped). Demonstrates ${run.credentials.<name>} substitution for per-fork bearer auth.",
+    "transport": "http",
+    "pool_size": 4,
+    "env_vars_required": ["LOOMCYCLE_JOBS_MCP_URL"],
+    "credentials": ["jobs"],
+    "schedule_compatible": true,
+    "agent_prompt_hint": "This is a template recipe — operator forks it to point at their actual jobs MCP server. The Authorization header uses ${run.credentials.jobs} so each scheduled-run fork or per-user spawn can carry its own bearer. Compose with RFC E schedules for per-user nightly ingestion + RFC F per-run credentials for on-demand requests."
+  }
+}

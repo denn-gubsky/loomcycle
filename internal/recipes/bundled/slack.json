@@ -1,0 +1,18 @@
+{
+  "command": "npx",
+  "args": ["-y", "@modelcontextprotocol/server-slack"],
+  "env": {
+    "SLACK_BOT_TOKEN": "${LOOMCYCLE_SLACK_BOT_TOKEN}",
+    "SLACK_TEAM_ID": "${LOOMCYCLE_SLACK_TEAM_ID}"
+  },
+
+  "_loomcycle": {
+    "description": "Slack — channel + DM messaging, history reads. Schedule-compatible delivery target.",
+    "transport": "stdio",
+    "pool_size": 2,
+    "env_vars_required": ["LOOMCYCLE_SLACK_BOT_TOKEN", "LOOMCYCLE_SLACK_TEAM_ID"],
+    "credentials": [],
+    "schedule_compatible": true,
+    "agent_prompt_hint": "Use this to post messages to Slack channels or DMs. Cite the channel-id in the call args (looks like C01234ABCD). For scheduled-run delivery hooks, set the on_complete.mcp.call.server to 'slack' and tool to 'send_message'."
+  }
+}

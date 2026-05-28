@@ -1,0 +1,21 @@
+{
+  "command": "npx",
+  "args": ["-y", "@smithery-ai/mcp-server-email"],
+  "env": {
+    "SMTP_HOST": "${LOOMCYCLE_SMTP_HOST}",
+    "SMTP_PORT": "${LOOMCYCLE_SMTP_PORT}",
+    "SMTP_USER": "${LOOMCYCLE_SMTP_USER}",
+    "SMTP_PASSWORD": "${LOOMCYCLE_SMTP_PASSWORD}",
+    "SMTP_FROM": "${LOOMCYCLE_SMTP_FROM}"
+  },
+
+  "_loomcycle": {
+    "description": "Email delivery via SMTP. Generic recipe for Resend / SendGrid / Mailgun / etc. via their SMTP relay endpoints.",
+    "transport": "stdio",
+    "pool_size": 2,
+    "env_vars_required": ["LOOMCYCLE_SMTP_HOST", "LOOMCYCLE_SMTP_USER", "LOOMCYCLE_SMTP_PASSWORD", "LOOMCYCLE_SMTP_FROM"],
+    "credentials": [],
+    "schedule_compatible": true,
+    "agent_prompt_hint": "Use this to send transactional email. Pass to + subject + body in call args. For scheduled-run digest emails: on_complete.mcp.call.server = 'email', tool = 'send_email'."
+  }
+}
