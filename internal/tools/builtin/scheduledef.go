@@ -70,14 +70,14 @@ type ScheduleDef struct {
 const scheduleDefDescription = `Author, fork, retire, and inspect schedule definitions at runtime. ` +
 	`Static scheduled_runs.<name>: yaml entries remain the operator's immutable ground truth; this tool ` +
 	`produces the DERIVED layer of orchestrator-authored per-user forks. ` +
-	`Operations: create, fork, get, list, retire.`
+	`Operations: create, fork, get, list, retire, add_hook, remove_hook.`
 
 const scheduleDefInputSchema = `{
   "type": "object",
   "properties": {
-    "op":            {"type": "string", "enum": ["create","fork","get","list","retire"], "description": "Operation to perform."},
+    "op":            {"type": "string", "enum": ["create","fork","get","list","retire","add_hook","remove_hook"], "description": "Operation to perform."},
     "name":          {"type": "string", "description": "Schedule name (required for create/fork/list)."},
-    "def_id":        {"type": "string", "description": "Existing def_id (required for get/retire)."},
+    "def_id":        {"type": "string", "description": "Existing def_id (required for get/retire; required for add_hook/remove_hook to identify the parent version to fork from)."},
     "parent_def_id": {"type": "string", "description": "Fork parent (optional for fork — when absent, forks the active def of the name, or bootstraps from a yaml template)."},
     "overlay": {
       "type": "object",
@@ -86,7 +86,13 @@ const scheduleDefInputSchema = `{
     },
     "description":   {"type": "string", "description": "Free-text rationale for create/fork."},
     "promote":       {"type": "boolean", "description": "create + fork both default true (schedules' fork-versioning model expects new versions to replace old). Pass false to leave the existing active pointer in place."},
-    "retired":       {"type": "boolean", "description": "Required for retire — set true to retire, false to un-retire."}
+    "retired":       {"type": "boolean", "description": "Required for retire — set true to retire, false to un-retire."},
+    "hook": {
+      "type": "object",
+      "description": "Required for add_hook — the hook body. {kind: 'channel.publish'|'mcp.call'|'memory.set', + kind-specific fields (channel|server+tool|scope+key) + payload/args}.",
+      "additionalProperties": true
+    },
+    "hook_index":    {"type": "integer", "description": "Required for remove_hook — 0-indexed position in the parent's on_complete list."}
   },
   "required": ["op"]
 }`
@@ -100,6 +106,9 @@ type scheduleDefInput struct {
 	Description string          `json:"description,omitempty"`
 	Promote     *bool           `json:"promote,omitempty"`
 	Retired     *bool           `json:"retired,omitempty"`
+	// add_hook / remove_hook fields (v1.x).
+	Hook      *mergedScheduleHook `json:"hook,omitempty"`
+	HookIndex *int                `json:"hook_index,omitempty"`
 }
 
 // Name implements tools.Tool.
@@ -136,10 +145,14 @@ func (s *ScheduleDef) Execute(ctx context.Context, raw json.RawMessage) (tools.R
 		return s.execList(ctx, policy, in)
 	case "retire":
 		return s.execRetire(ctx, policy, in)
+	case "add_hook":
+		return s.execAddHook(ctx, policy, in)
+	case "remove_hook":
+		return s.execRemoveHook(ctx, policy, in)
 	case "":
 		return errResult("missing required field: op"), nil
 	default:
-		return errResult(fmt.Sprintf("unknown op %q (must be one of: create, fork, get, list, retire)", in.Op)), nil
+		return errResult(fmt.Sprintf("unknown op %q (must be one of: create, fork, get, list, retire, add_hook, remove_hook)", in.Op)), nil
 	}
 }
 
@@ -384,6 +397,130 @@ func (s *ScheduleDef) execRetire(ctx context.Context, policy tools.ScheduleDefPo
 		return errResult(fmt.Sprintf("retire: %s", err)), nil
 	}
 	return okJSON(map[string]any{"def_id": in.DefID, "retired": *in.Retired})
+}
+
+// ---- add_hook / remove_hook ----
+//
+// Both ops are syntactic sugar over fork: fetch the parent definition,
+// mutate its on_complete list, persist as a NEW VERSION with full
+// lineage + auto-promote. Operators could already do this manually via
+// `op: fork` with a full on_complete overlay, but that requires fetch
+// → JSON-merge → fork dance from the caller. These ops collapse the
+// pattern into one round-trip and use a per-hook input shape so the
+// model doesn't have to reconstruct the entire list every time.
+//
+// Validation invariants preserved (same as fork):
+//   - validateScheduleDef on the merged def
+//   - required_credentials manifest still enforced
+//   - MaxDefinitionBytes still enforced
+//   - default-deny scope still enforced (checkScopeForName)
+//
+// Versioning: each add/remove creates a new fork version (parent_def_id
+// linked to the existing active def). The substrate's monotonic
+// version counter advances. Lineage is preserved across hook edits.
+
+func (s *ScheduleDef) execAddHook(ctx context.Context, policy tools.ScheduleDefPolicyValue, in scheduleDefInput) (tools.Result, error) {
+	if in.DefID == "" {
+		return errResult("add_hook: missing required field: def_id (target parent version)"), nil
+	}
+	if in.Hook == nil {
+		return errResult("add_hook: missing required field: hook"), nil
+	}
+	parent, mergedDef, err := s.loadParentForHookOp(ctx, policy, "add_hook", in.DefID)
+	if err != nil {
+		return errResult(err.Error()), nil
+	}
+	// Append the new hook then re-validate. Validation refuses unknown
+	// kinds + missing kind-specific fields (channel|server+tool|scope+key)
+	// — the existing validateScheduleDef walks every hook in the slice,
+	// so the appended one gets checked along with any pre-existing ones.
+	mergedDef.OnComplete = append(mergedDef.OnComplete, *in.Hook)
+	return s.persistForkFromHookEdit(ctx, parent, mergedDef, "add_hook")
+}
+
+func (s *ScheduleDef) execRemoveHook(ctx context.Context, policy tools.ScheduleDefPolicyValue, in scheduleDefInput) (tools.Result, error) {
+	if in.DefID == "" {
+		return errResult("remove_hook: missing required field: def_id (target parent version)"), nil
+	}
+	if in.HookIndex == nil {
+		return errResult("remove_hook: missing required field: hook_index"), nil
+	}
+	idx := *in.HookIndex
+	parent, mergedDef, err := s.loadParentForHookOp(ctx, policy, "remove_hook", in.DefID)
+	if err != nil {
+		return errResult(err.Error()), nil
+	}
+	if idx < 0 || idx >= len(mergedDef.OnComplete) {
+		return errResult(fmt.Sprintf("remove_hook: hook_index %d out of range [0..%d)", idx, len(mergedDef.OnComplete))), nil
+	}
+	// Slice out the indexed hook. Preserves order of the survivors —
+	// callers may rely on index stability for subsequent removes.
+	mergedDef.OnComplete = append(mergedDef.OnComplete[:idx], mergedDef.OnComplete[idx+1:]...)
+	return s.persistForkFromHookEdit(ctx, parent, mergedDef, "remove_hook")
+}
+
+// loadParentForHookOp resolves the parent def + decodes its definition
+// into mergedScheduleDef. Returns a typed error string for the caller
+// to wrap. Checks scope on the parent's name (so an agent with
+// `named:weekly-digest` can't edit hooks on `daily-digest`).
+func (s *ScheduleDef) loadParentForHookOp(ctx context.Context, policy tools.ScheduleDefPolicyValue, opLabel, defID string) (store.ScheduleDefRow, mergedScheduleDef, error) {
+	parent, err := s.Store.ScheduleDefGet(ctx, defID)
+	if err != nil {
+		var nf *store.ErrNotFound
+		if errors.As(err, &nf) {
+			return store.ScheduleDefRow{}, mergedScheduleDef{}, fmt.Errorf("%s: def_id %q not found", opLabel, defID)
+		}
+		return store.ScheduleDefRow{}, mergedScheduleDef{}, fmt.Errorf("%s: %s", opLabel, err)
+	}
+	if err := s.checkScopeForName(policy, parent.Name); err != nil {
+		return store.ScheduleDefRow{}, mergedScheduleDef{}, err
+	}
+	var def mergedScheduleDef
+	if err := json.Unmarshal(parent.Definition, &def); err != nil {
+		return store.ScheduleDefRow{}, mergedScheduleDef{}, fmt.Errorf("%s: decode parent definition: %s", opLabel, err)
+	}
+	return parent, def, nil
+}
+
+// persistForkFromHookEdit serialises the mutated def, runs the same
+// validation chain fork uses, persists as a new version, and
+// auto-promotes. Returns the row response with promoted=true.
+func (s *ScheduleDef) persistForkFromHookEdit(ctx context.Context, parent store.ScheduleDefRow, def mergedScheduleDef, opLabel string) (tools.Result, error) {
+	if err := validateScheduleDef(def); err != nil {
+		return errResult(fmt.Sprintf("%s: %s", opLabel, err)), nil
+	}
+	if err := assertRequiredCredentials(def); err != nil {
+		return errResult(fmt.Sprintf("%s: %s", opLabel, err)), nil
+	}
+	defJSON, err := json.Marshal(def)
+	if err != nil {
+		return errResult(fmt.Sprintf("%s: marshal: %s", opLabel, err)), nil
+	}
+	if s.MaxDefinitionBytes > 0 && len(defJSON) > s.MaxDefinitionBytes {
+		return errResult(fmt.Sprintf("%s: definition (%d bytes) exceeds max %d", opLabel, len(defJSON), s.MaxDefinitionBytes)), nil
+	}
+	ident := tools.RunIdentity(ctx)
+	row := store.ScheduleDefRow{
+		DefID:            mintDefID(),
+		Name:             parent.Name,
+		ParentDefID:      parent.DefID,
+		Definition:       defJSON,
+		Description:      fmt.Sprintf("%s edit (parent v%d)", opLabel, parent.Version),
+		CreatedByAgentID: ident.AgentID,
+	}
+	created, err := s.Store.ScheduleDefCreate(ctx, row)
+	if err != nil {
+		return errResult(fmt.Sprintf("%s: %s", opLabel, err)), nil
+	}
+	// Hook edits always auto-promote — there's no "stage and review"
+	// use case for a hook addition the way there might be for a major
+	// definition rewrite. Operators wanting the staged pattern can
+	// use the regular `fork` op with explicit promote:false.
+	if err := s.Store.ScheduleDefSetActive(ctx, parent.Name, created.DefID, ident.AgentID); err != nil {
+		return errResult(fmt.Sprintf("%s: promote: %s", opLabel, err)), nil
+	}
+	_ = s.Store.ScheduleRunStateSeed(ctx, created.DefID, computeInitialNextRunAt(def, time.Now()))
+	return okJSON(scheduleRowResponse(created, true))
 }
 
 // ---- helpers ----

@@ -365,6 +365,135 @@ func TestScheduleDefTool_RetireRoundTrip(t *testing.T) {
 	}
 }
 
+// TestScheduleDefTool_AddHook adds a channel.publish hook to a forked
+// def. Verifies: new version created, parent_def_id chains, hooks list
+// now contains the appended hook, auto-promote landed.
+func TestScheduleDefTool_AddHook(t *testing.T) {
+	tool, ctx, cleanup := scheduleDefFixture(t)
+	defer cleanup()
+
+	// Create a freestanding schedule with no hooks initially.
+	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"create","name":"hook-target","overlay":{"agent":"job-search-batch","schedule":"0 9 * * 1","user_id":"alice"}}`))
+	if res.IsError {
+		t.Fatalf("create: %s", res.Text)
+	}
+	parentDefID := decodeResult(t, res.Text)["def_id"].(string)
+
+	// Add a channel.publish hook.
+	res, _ = tool.Execute(ctx, json.RawMessage(`{"op":"add_hook","def_id":"`+parentDefID+`","hook":{"kind":"channel.publish","channel":"results-alice","payload":{"top":3}}}`))
+	if res.IsError {
+		t.Fatalf("add_hook: %s", res.Text)
+	}
+	out := decodeResult(t, res.Text)
+	if out["parent_def_id"].(string) != parentDefID {
+		t.Errorf("parent_def_id = %q, want %q", out["parent_def_id"], parentDefID)
+	}
+	if out["promoted"].(bool) != true {
+		t.Errorf("add_hook should auto-promote")
+	}
+	def := out["definition"].(map[string]any)
+	hooks, ok := def["on_complete"].([]any)
+	if !ok || len(hooks) != 1 {
+		t.Fatalf("on_complete = %v, want 1-element slice", def["on_complete"])
+	}
+	h := hooks[0].(map[string]any)
+	if h["kind"] != "channel.publish" || h["channel"] != "results-alice" {
+		t.Errorf("hook = %v, want {kind:channel.publish, channel:results-alice}", h)
+	}
+}
+
+// TestScheduleDefTool_AddHookRefusesUnknownKind covers the validation
+// chain — appending an invalid hook should refuse loudly, not silently
+// land a broken def in the substrate.
+func TestScheduleDefTool_AddHookRefusesUnknownKind(t *testing.T) {
+	tool, ctx, cleanup := scheduleDefFixture(t)
+	defer cleanup()
+
+	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"create","name":"hook-bad","overlay":{"agent":"job-search-batch","schedule":"0 9 * * 1","user_id":"alice"}}`))
+	parentDefID := decodeResult(t, res.Text)["def_id"].(string)
+
+	res, _ = tool.Execute(ctx, json.RawMessage(`{"op":"add_hook","def_id":"`+parentDefID+`","hook":{"kind":"slack.post","channel":"x"}}`))
+	if !res.IsError {
+		t.Fatalf("unknown hook kind should refuse")
+	}
+	if !strings.Contains(res.Text, "unknown kind") {
+		t.Errorf("refusal should name the bad kind; got %s", res.Text)
+	}
+}
+
+// TestScheduleDefTool_RemoveHook removes a hook by index. Verifies the
+// remaining hooks survive + index stability.
+func TestScheduleDefTool_RemoveHook(t *testing.T) {
+	tool, ctx, cleanup := scheduleDefFixture(t)
+	defer cleanup()
+
+	// Create with 3 hooks via the create-with-overlay path.
+	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"create","name":"hook-rm","overlay":{"agent":"job-search-batch","schedule":"0 9 * * 1","user_id":"alice","on_complete":[
+		{"kind":"channel.publish","channel":"c1"},
+		{"kind":"channel.publish","channel":"c2"},
+		{"kind":"channel.publish","channel":"c3"}
+	]}}`))
+	if res.IsError {
+		t.Fatalf("create: %s", res.Text)
+	}
+	parentDefID := decodeResult(t, res.Text)["def_id"].(string)
+
+	// Remove the middle hook (index 1).
+	res, _ = tool.Execute(ctx, json.RawMessage(`{"op":"remove_hook","def_id":"`+parentDefID+`","hook_index":1}`))
+	if res.IsError {
+		t.Fatalf("remove_hook: %s", res.Text)
+	}
+	out := decodeResult(t, res.Text)
+	def := out["definition"].(map[string]any)
+	hooks := def["on_complete"].([]any)
+	if len(hooks) != 2 {
+		t.Fatalf("after remove, hook count = %d, want 2", len(hooks))
+	}
+	if hooks[0].(map[string]any)["channel"] != "c1" {
+		t.Errorf("survivors[0].channel = %v, want c1", hooks[0].(map[string]any)["channel"])
+	}
+	if hooks[1].(map[string]any)["channel"] != "c3" {
+		t.Errorf("survivors[1].channel = %v, want c3 (c2 was removed)", hooks[1].(map[string]any)["channel"])
+	}
+}
+
+func TestScheduleDefTool_RemoveHookOutOfRange(t *testing.T) {
+	tool, ctx, cleanup := scheduleDefFixture(t)
+	defer cleanup()
+
+	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"create","name":"hook-oor","overlay":{"agent":"job-search-batch","schedule":"0 9 * * 1","user_id":"alice","on_complete":[{"kind":"channel.publish","channel":"c1"}]}}`))
+	parentDefID := decodeResult(t, res.Text)["def_id"].(string)
+
+	res, _ = tool.Execute(ctx, json.RawMessage(`{"op":"remove_hook","def_id":"`+parentDefID+`","hook_index":5}`))
+	if !res.IsError {
+		t.Fatalf("out-of-range index should refuse")
+	}
+	if !strings.Contains(res.Text, "out of range") {
+		t.Errorf("refusal should mention range; got %s", res.Text)
+	}
+}
+
+// TestScheduleDefTool_AddHookScopeEnforcement ensures the
+// per-name scope gate fires on hook edits too. Named-scope agents
+// shouldn't be able to mutate hooks on schedules they can't author.
+func TestScheduleDefTool_AddHookScopeEnforcement(t *testing.T) {
+	tool, ctx, cleanup := scheduleDefFixture(t)
+	defer cleanup()
+
+	// Create with the broad fixture policy (any scope).
+	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"create","name":"private-sched","overlay":{"agent":"job-search-batch","schedule":"0 9 * * 1","user_id":"alice"}}`))
+	parentDefID := decodeResult(t, res.Text)["def_id"].(string)
+
+	// Now restrict the policy to a different name and attempt add_hook.
+	restrictedCtx := tools.WithScheduleDefPolicy(ctx, tools.ScheduleDefPolicyValue{
+		Scopes: []string{"named:other-sched"},
+	})
+	res, _ = tool.Execute(restrictedCtx, json.RawMessage(`{"op":"add_hook","def_id":"`+parentDefID+`","hook":{"kind":"channel.publish","channel":"x"}}`))
+	if !res.IsError {
+		t.Fatalf("named-scope should refuse hook edit on non-matching schedule")
+	}
+}
+
 func TestScheduleDefTool_ListReturnsVersions(t *testing.T) {
 	tool, ctx, cleanup := scheduleDefFixture(t)
 	defer cleanup()

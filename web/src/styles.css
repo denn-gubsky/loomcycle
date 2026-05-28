@@ -3481,6 +3481,117 @@ button.primary:disabled {
   font-style: italic;
 }
 
+.schedule-hooks-empty {
+  color: var(--fg-soft);
+  font-style: italic;
+  font-size: 12px;
+  padding: 4px 0;
+}
+
+.schedule-hook-index {
+  font-family: monospace;
+  font-size: 11px;
+  color: var(--fg-soft);
+  min-width: 20px;
+}
+
+.schedule-hook-fields {
+  flex: 1;
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.schedule-hook-fields code {
+  font-family: monospace;
+  background: var(--bg);
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-size: 11px;
+}
+
+.schedule-hook-remove {
+  padding: 2px 10px;
+  background: var(--bg-soft);
+  color: var(--failed);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 11px;
+}
+
+.schedule-hook-remove:hover:not(:disabled) {
+  border-color: var(--failed);
+}
+
+.schedule-hook-remove:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.schedule-hook-form {
+  margin-top: 12px;
+  padding: 12px;
+  background: var(--bg-soft);
+  border-radius: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.schedule-hook-form-row {
+  display: flex;
+}
+
+.schedule-hook-form-row label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--fg-soft);
+  font-family: monospace;
+  flex: 1;
+}
+
+.schedule-hook-form-row input,
+.schedule-hook-form-row select,
+.schedule-hook-form-textarea {
+  padding: 4px 8px;
+  font-family: inherit;
+  font-size: 12px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--fg);
+}
+
+.schedule-hook-form-textarea {
+  font-family: monospace;
+  resize: vertical;
+}
+
+.schedule-hook-form-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.schedule-hook-form-actions button {
+  padding: 4px 14px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--fg);
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.schedule-hook-form-actions button[type="submit"] {
+  background: var(--running);
+  color: white;
+  border-color: var(--running);
+}
+
 .schedule-lineage {
   list-style: none;
   margin: 0;
