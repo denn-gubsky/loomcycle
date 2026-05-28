@@ -315,11 +315,19 @@ set +e
     --token "$LOOMCYCLE_AUTH_TOKEN"
 RC=$?
 set -e
-# Cancel injector loops; tell it to stop. Crash injector is bounded and
-# exits on its own — wait either way.
 if [ -n "$INJECTOR_PID" ]; then
-    kill -TERM "$INJECTOR_PID" 2>/dev/null || true
-    wait "$INJECTOR_PID" 2>/dev/null || true
+    if [ "$SCENARIO" = "cancel" ]; then
+        # Cancel injector loops; tell it to stop.
+        kill -TERM "$INJECTOR_PID" 2>/dev/null || true
+        wait "$INJECTOR_PID" 2>/dev/null || true
+    else
+        # Crash injector is bounded (WAIT_TOTAL_S after kill) AND needs
+        # its post-kill polling window to finish so the forensic dump
+        # captures the full clear-path trajectory. Don't SIGTERM —
+        # just wait it out.
+        echo "→ waiting for crash injector forensic window…"
+        wait "$INJECTOR_PID" 2>/dev/null || true
+    fi
 fi
 
 # ─── Metrics snapshot (post) + per-replica rollups ──────────────────

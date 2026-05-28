@@ -67,11 +67,17 @@ q "SELECT split_part(agent_id,'-',2) AS circuit, string_agg(DISTINCT replica_id,
 echo
 
 echo "── crash-recovery markers ──"
-echo "(owner_replica_dead / heartbeat_stale = the dead-replica reaper fired;"
-echo " empty = no crash this run. Normal completions use end_turn and are"
+echo "(One of three substrate clear-paths fired:"
+echo "   replica_died        = coord/replicas_sweeper.go (the explicit"
+echo "                         dead-replica reaper — expected path)"
+echo "   heartbeat_timeout   = internal/heartbeat/sweeper.go (per-run"
+echo "                         heartbeat sweeper — slower, default 10 min)"
+echo "   owner_replica_dead  = coord/cancel_coordinator.go (a cancel POST"
+echo "                         arrived for a run on a dead replica)"
+echo " Empty = no crash this run. Normal completions use end_turn and are"
 echo " excluded here.)"
 q "SELECT stop_reason, count(*) FROM runs
-   WHERE stop_reason IN ('owner_replica_dead','heartbeat_stale')
+   WHERE stop_reason IN ('replica_died','heartbeat_timeout','owner_replica_dead')
    GROUP BY stop_reason ORDER BY 2 DESC;"
 echo
 
