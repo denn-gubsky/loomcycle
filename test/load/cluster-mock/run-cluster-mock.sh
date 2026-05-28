@@ -211,6 +211,15 @@ cat <<YAML
     depends_on:
 $(for i in $(seq 1 "$REPLICAS"); do echo "      - replica-${i}"; done)
     ports: ["127.0.0.1:$LB_PORT:80"]
+    ulimits:
+      # Default container nofile (1024) is too low for the
+      # circuit-stress launch storm (15K concurrent connections at
+      # scale=5000). Without this the LB silently returns 500s with
+      # `accept4() failed: No file descriptors available` in its log
+      # and the matrix attributes the loss to loomcycle instead.
+      nofile:
+        soft: 65536
+        hard: 65536
     volumes:
       - $NGINX_CONF:/etc/nginx/nginx.conf:ro
 YAML

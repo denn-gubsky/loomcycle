@@ -9,8 +9,14 @@
 # NOTE: the substitution marker must appear exactly once in this file
 # (inside upstream{}); do not repeat its literal text in comments.
 
+worker_processes auto;
+# Match the lb container's nofile ulimit (set in the generated compose).
+# Without this, nginx's worker still defaults to ~1024 and chokes on the
+# circuit-stress launch storm with `accept4() failed: No file descriptors`.
+worker_rlimit_nofile 65536;
+
 events {
-    worker_connections 8192;
+    worker_connections 16384;
 }
 
 http {
