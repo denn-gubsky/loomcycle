@@ -563,3 +563,63 @@ func TestScheduler_PanicInFireOneIsRecovered(t *testing.T) {
 		t.Errorf("calls = %d, want 3 (panic-recovery should allow the other fires to complete)", got)
 	}
 }
+
+// TestScheduler_InFlightSuppressesDoubleFire regresses the x30000
+// compound-test ceiling: when a fire takes longer than the tick
+// interval, the previous fire's RecordResult hasn't yet advanced
+// next_run_at, so the same row appears in the NEXT tick's due list
+// and fires AGAIN. Before the in-flight tracker fix, this produced
+// 2× MCP call counts at compound test scale=30000.
+//
+// Test shape: one schedule due in the past + a fake runner that
+// blocks for 300ms + back-to-back tick() calls 50ms apart. Without
+// the in-flight tracker, every tick during the in-flight window
+// re-fires the same schedule. With the tracker, only the FIRST
+// tick fires; subsequent ticks see the def in s.inFlight and skip.
+func TestScheduler_InFlightSuppressesDoubleFire(t *testing.T) {
+	enabled := true
+	def := scheduleDef{Agent: "researcher", Schedule: "0 * * * *", Enabled: &enabled}
+
+	st, err := sqlite.Open(":memory:")
+	if err != nil {
+		t.Fatalf("sqlite.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	ctx := context.Background()
+	defJSON, _ := json.Marshal(def)
+	const defID = "sd-double-fire"
+	if _, err := st.ScheduleDefCreate(ctx, store.ScheduleDefRow{
+		DefID:      defID,
+		Name:       "sched-double-fire",
+		Definition: defJSON,
+	}); err != nil {
+		t.Fatalf("def create: %v", err)
+	}
+	_ = st.ScheduleDefSetActive(ctx, "sched-double-fire", defID, "test")
+	_ = st.ScheduleRunStateSeed(ctx, defID, time.Now().Add(-time.Minute))
+
+	const perFireDelay = 300 * time.Millisecond
+	var calls atomic.Int32
+	fr := &fakeRunner{onRun: func(_ runner.RunInput) {
+		calls.Add(1)
+		time.Sleep(perFireDelay)
+	}}
+	sched := New(Config{TickInterval: time.Hour, MaxConcurrentFires: 8}, st, fr, nil, nil, t.Logf)
+
+	// First tick fires the schedule asynchronously (via the goroutine
+	// pool). The fire takes 300ms; meanwhile we issue more ticks at
+	// 50ms intervals. WITHOUT the in-flight tracker, each of these
+	// ticks would re-fire the same schedule (the listDue query still
+	// returns it because next_run_at hasn't advanced yet).
+	go sched.tick(ctx)
+	for i := 0; i < 4; i++ {
+		time.Sleep(50 * time.Millisecond)
+		sched.tick(ctx)
+	}
+	// Wait for the in-flight fire to finish.
+	time.Sleep(perFireDelay + 100*time.Millisecond)
+
+	if got := calls.Load(); got != 1 {
+		t.Errorf("calls = %d, want 1 (in-flight tracker should have suppressed re-fires while the first fire was running)", got)
+	}
+}

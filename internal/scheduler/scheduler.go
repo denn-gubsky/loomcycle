@@ -72,6 +72,30 @@ type Scheduler struct {
 	wg     sync.WaitGroup
 	stopCh chan struct{}
 	once   sync.Once
+
+	// inFlight tracks def_ids whose fire goroutine is currently
+	// running (between slot-acquire and RecordResult). Used to
+	// suppress double-fire when a fire takes longer than the tick
+	// interval and the next tick still sees the same row as due
+	// (because RecordResult hasn't advanced next_run_at yet).
+	//
+	// Surfaced by the compound test at scale=30000 where every
+	// schedule fired twice — every fire's RecordResult write was
+	// slower than the 100ms tick under heavy concurrent load, so
+	// each row stayed "due" for the next tick. The in-memory
+	// tracker is single-replica-only; cluster-mode advisory locks
+	// (v0.12+) would cover the cross-replica case symmetrically.
+	//
+	// Entry lifecycle:
+	//   tick():
+	//     LoadOrStore(def_id, _) before slot-acquire — skip if loaded
+	//   fire goroutine (deferred):
+	//     Delete(def_id) after fireOne returns or panics
+	//
+	// A goroutine that hangs leaks the entry until the fireCtx
+	// timeout cancels the RunOnce call (default 10m), which is the
+	// existing budget. No separate TTL needed.
+	inFlight sync.Map
 }
 
 // New constructs a Scheduler. All four runtime dependencies are
@@ -166,10 +190,23 @@ func (s *Scheduler) tick(ctx context.Context) {
 	sem := make(chan struct{}, s.cfg.MaxConcurrentFires)
 	var wg sync.WaitGroup
 	for _, row := range due {
+		// In-flight suppression: skip rows whose fire goroutine from
+		// a previous tick is still running (RecordResult hasn't yet
+		// advanced next_run_at, so the row would otherwise re-fire).
+		// LoadOrStore is atomic so the racy "check then store" hole
+		// is closed. See the inFlight field's commentary for the
+		// lifecycle + why it solves the x30000 over-fire finding.
+		if _, alreadyFiring := s.inFlight.LoadOrStore(row.DefID, time.Now()); alreadyFiring {
+			continue
+		}
 		// Slot-acquire is ctx-aware so cancellation during a slow
 		// tick doesn't block waiting for slots indefinitely.
 		select {
 		case <-ctx.Done():
+			// We reserved the inFlight slot above but won't fire;
+			// release it so the next tick can pick up this def
+			// freely.
+			s.inFlight.Delete(row.DefID)
 			// Skip remaining rows; in-flight fires continue (their
 			// own fireCtx still has a timeout). Wait below drains.
 			wg.Wait()
@@ -180,6 +217,11 @@ func (s *Scheduler) tick(ctx context.Context) {
 		go func(row store.ScheduleDueRow) {
 			defer wg.Done()
 			defer func() { <-sem }()
+			// Always release the in-flight reservation, even on
+			// panic. defer order is LIFO so this runs AFTER the
+			// recover() below; that ordering means a panicking fire
+			// still clears its in-flight slot before the next tick.
+			defer s.inFlight.Delete(row.DefID)
 			// Recover panics so one bad fire doesn't bring down
 			// the sweeper goroutine. Log + advance with a parked
 			// next_run_at so the def doesn't re-present every tick.
