@@ -737,6 +737,7 @@ After v0.8.16 (PR #116), the model is also persisted at run start, so `GET /v1/u
 - [`docs/TOOLS.md`](TOOLS.md) — tool policy and built-in tool reference (the `allowed_tools` / `tools` axis).
 - [`docs/POSTGRES.md`](POSTGRES.md) — storage backend configuration.
 - [`docs/PLAN.md`](PLAN.md) — historical design rationale, including the v0.8.2 `user_tiers` RFC and the precedence design decisions.
+- [`examples/observability/`](../examples/observability/) — three drop-in observability profiles (Grafana+Tempo self-hosted / Honeycomb / Datadog) for sending loomcycle's OTEL traces + Prometheus metrics to your existing stack. Five-minute quickstart per profile.
 - MCP spec: https://modelcontextprotocol.io (only relevant if you're also wiring MCP servers — see `MCP_INTEGRATION.md` first).
 
 ## 11. Code path index
