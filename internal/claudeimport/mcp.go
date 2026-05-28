@@ -204,23 +204,25 @@ func emitMCPServer(name string, raw json.RawMessage, sourcePath string,
 
 	// Yaml emission: use the matched recipe under the operator's name
 	// (preserves the operator's server-name vocabulary) OR build a
-	// literal-port recipe from the parsed fields.
+	// literal-port recipe from the parsed fields. The recipe is also
+	// threaded into entry.recipe so WriteMCPToConfig can pass it to
+	// recipes.AppendToConfig without re-deriving from the JSON.
+	var srcRecipe *recipes.Recipe
+	if matchedRecipe != nil {
+		// Clone the recipe with the operator's chosen name.
+		r := *matchedRecipe
+		r.Name = name
+		srcRecipe = &r
+		report.Warnings = append(report.Warnings,
+			fmt.Sprintf("mcp %s: REWRITE mcp_servers.%s → C1 recipe %q (%s)",
+				sourcePath, name, matchedRecipe.Name, matchedRecipe.Source))
+	} else {
+		srcRecipe = buildLiteralRecipe(name, transport,
+			srv.Command, rewrittenArgs, rewrittenEnv,
+			srv.URL, rewrittenHeaders)
+	}
+	entry.recipe = srcRecipe
 	if !opts.NoYAML {
-		var srcRecipe *recipes.Recipe
-		if matchedRecipe != nil {
-			// Clone the recipe with the operator's chosen name.
-			r := *matchedRecipe
-			r.Name = name
-			srcRecipe = &r
-			report.Warnings = append(report.Warnings,
-				fmt.Sprintf("mcp %s: REWRITE mcp_servers.%s → C1 recipe %q (%s)",
-					sourcePath, name, matchedRecipe.Name, matchedRecipe.Source))
-		} else {
-			srcRecipe = buildLiteralRecipe(name, transport,
-				srv.Command, rewrittenArgs, rewrittenEnv,
-				srv.URL, rewrittenHeaders)
-		}
-		// Render as yaml fragment for the dry-run report.
 		entry.YAMLFragment = renderRecipeAsYAMLFragment(srcRecipe)
 	}
 

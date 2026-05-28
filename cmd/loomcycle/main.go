@@ -333,6 +333,13 @@ func main() {
 			// overlay; emits yaml into the operator's loomcycle.yaml
 			// via append-to-config.
 			os.Exit(cli.RunMCPRegistry(os.Args[2:], os.Stdout, os.Stderr))
+		case "import":
+			// v1.x RFC C2: Claude Code repo ingestion. Currently the
+			// only subverb is `claude-code`; future subverbs cover
+			// other source shapes (plain .mcp.json directories, etc.).
+			// Reads a .claude/ tree and emits agents:/mcp_servers:/skill
+			// fragments into the operator's loomcycle.yaml.
+			os.Exit(cli.RunImport(os.Args[2:], os.Stdout, os.Stderr))
 		case "help", "-h", "--help":
 			cli.PrintHelp(os.Stdout)
 			return

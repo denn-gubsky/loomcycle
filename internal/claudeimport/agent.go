@@ -42,13 +42,13 @@ var knownClaudeAgentFields = map[string]struct{}{
 // (per the RFC's "lossy import is loud" sharp edge). Unknown keys
 // get a generic hint pointing to validate.
 var unmappedFieldHints = map[string]string{
-	"hooks":         "Claude Code-side hooks — loomcycle has no equivalent today.",
-	"output_style":  "Claude Code-side UX (e.g. /learning). Not part of loomcycle's agent runtime.",
-	"output-style":  "Claude Code-side UX (e.g. /learning). Not part of loomcycle's agent runtime.",
-	"temperature":   "Provider-side sampling; loomcycle exposes via tier policy, not per-agent.",
-	"top_p":         "Provider-side sampling; loomcycle exposes via tier policy, not per-agent.",
-	"subagents":     "Claude Code subagent declarations are not loomcycle's Agent-tool spawn pattern. See rfcs/implemented/agent-tool-fan-out.md.",
-	"color":         "Claude Code IDE-side UX. Not part of loomcycle's agent runtime.",
+	"hooks":        "Claude Code-side hooks — loomcycle has no equivalent today.",
+	"output_style": "Claude Code-side UX (e.g. /learning). Not part of loomcycle's agent runtime.",
+	"output-style": "Claude Code-side UX (e.g. /learning). Not part of loomcycle's agent runtime.",
+	"temperature":  "Provider-side sampling; loomcycle exposes via tier policy, not per-agent.",
+	"top_p":        "Provider-side sampling; loomcycle exposes via tier policy, not per-agent.",
+	"subagents":    "Claude Code subagent declarations are not loomcycle's Agent-tool spawn pattern. See rfcs/implemented/agent-tool-fan-out.md.",
+	"color":        "Claude Code IDE-side UX. Not part of loomcycle's agent runtime.",
 }
 
 // walkAgents enumerates .claude/agents/<name>.md, parses each, and

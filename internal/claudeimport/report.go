@@ -72,10 +72,10 @@ type AgentEntry struct {
 
 // SkillEntry is one .claude/skills/<name>/SKILL.md mapping result.
 type SkillEntry struct {
-	Name             string `json:"name"`
-	SourcePath       string `json:"source_path"`
-	DestinationPath  string `json:"destination_path"`
-	MultiFile        bool   `json:"multi_file,omitempty"`
+	Name             string   `json:"name"`
+	SourcePath       string   `json:"source_path"`
+	DestinationPath  string   `json:"destination_path"`
+	MultiFile        bool     `json:"multi_file,omitempty"`
 	SupplementaryAny []string `json:"supplementary_files,omitempty"`
 }
 
@@ -83,10 +83,10 @@ type SkillEntry struct {
 // <root>/.mcp.json. RecipeMatch is set when the package matched an
 // entry in the C1 recipe library.
 type MCPEntry struct {
-	Name        string `json:"name"`
-	SourcePath  string `json:"source_path"`
-	Transport   string `json:"transport"`
-	RecipeMatch string `json:"recipe_match,omitempty"`
+	Name         string `json:"name"`
+	SourcePath   string `json:"source_path"`
+	Transport    string `json:"transport"`
+	RecipeMatch  string `json:"recipe_match,omitempty"`
 	RecipeSource string `json:"recipe_source,omitempty"` // "bundled" / "overlay"
 
 	// YAMLFragment is the yaml shape the importer would emit for this
@@ -103,6 +103,14 @@ type MCPEntry struct {
 	// EnvVarRewrites lists the per-env-var rewrites the walker did
 	// (e.g. GITHUB_TOKEN → LOOMCYCLE_GITHUB_TOKEN).
 	EnvVarRewrites []string `json:"env_var_rewrites,omitempty"`
+
+	// recipe is the typed *recipes.Recipe the walker built (literal-
+	// port OR matched-recipe-with-operator-name). Unexported so json
+	// marshal drops it; consumed by WriteMCPToConfig under --write.
+	// Stored as `any` so the report.go file doesn't need to import
+	// the recipes package (which would create a tighter coupling than
+	// necessary — mcp.go is the only consumer that needs the type).
+	recipe any `json:"-"`
 }
 
 // SkippedFile is one deliberately-skipped path.
