@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/store"
@@ -193,6 +194,12 @@ func (s *ScheduleDef) execCreate(ctx context.Context, policy tools.ScheduleDefPo
 		if err := s.Store.ScheduleDefSetActive(ctx, in.Name, created.DefID, ident.AgentID); err != nil {
 			return errResult(fmt.Sprintf("create: promote: %s", err)), nil
 		}
+		// Seed schedule_run_state so the sweeper's due-query JOIN
+		// returns this def. Without this, ScheduleRunStateListDue
+		// returns nothing for the def and the sweeper never fires
+		// it — the def_id exists, the active pointer exists, but
+		// the state row is missing.
+		_ = s.Store.ScheduleRunStateSeed(ctx, created.DefID, computeInitialNextRunAt(def, time.Now()))
 	}
 	return okJSON(scheduleRowResponse(created, promote))
 }
@@ -309,6 +316,8 @@ func (s *ScheduleDef) execFork(ctx context.Context, policy tools.ScheduleDefPoli
 		if err := s.Store.ScheduleDefSetActive(ctx, in.Name, created.DefID, ident.AgentID); err != nil {
 			return errResult(fmt.Sprintf("fork: promote: %s", err)), nil
 		}
+		// Seed schedule_run_state — see commentary in execCreate.
+		_ = s.Store.ScheduleRunStateSeed(ctx, created.DefID, computeInitialNextRunAt(def, time.Now()))
 	}
 	return okJSON(scheduleRowResponse(created, promote))
 }
@@ -455,10 +464,50 @@ func (s *ScheduleDef) bootstrapStatic(ctx context.Context, name string, static c
 		// retry. (Same posture as AgentDef.)
 		return created, fmt.Errorf("promote bootstrap: %w", err)
 	}
+	// Seed schedule_run_state — see commentary in execCreate.
+	_ = s.Store.ScheduleRunStateSeed(ctx, created.DefID, computeInitialNextRunAt(def, time.Now()))
 	return created, nil
 }
 
 // validateScheduleDef performs the substrate-side cron + on_complete
+// computeInitialNextRunAt picks the cron from the def + computes the
+// first fire moment strictly after `now`. Returns now+1h on resolve
+// failure (matching the sweeper's same fallback in scheduler.fireOne)
+// so a malformed def that somehow passes validation still parks
+// instead of either crashing or re-firing every tick.
+//
+// This MUST be called after every ScheduleDefSetActive in the tool's
+// create / fork / bootstrap paths — without seeding schedule_run_state,
+// the sweeper's three-way JOIN query returns no rows for the def and
+// nothing fires, regardless of `enabled` or cron syntax.
+func computeInitialNextRunAt(def mergedScheduleDef, now time.Time) time.Time {
+	fallback := now.Add(1 * time.Hour)
+	expr := def.Schedule
+	if expr == "" {
+		// user_tier_schedules path: pick by def.UserTier if set; if
+		// no tier supplied (which is itself a fork-time bug), park.
+		if def.UserTier == "" || len(def.UserTierSchedules) == 0 {
+			return fallback
+		}
+		var ok bool
+		expr, ok = def.UserTierSchedules[def.UserTier]
+		if !ok {
+			return fallback
+		}
+	}
+	parsed, err := cron.ParseStandard(expr)
+	if err != nil {
+		return fallback
+	}
+	loc := time.UTC
+	if def.Timezone != "" {
+		if l, err := time.LoadLocation(def.Timezone); err == nil {
+			loc = l
+		}
+	}
+	return parsed.Next(now.In(loc))
+}
+
 // validation that complements the boot-time config validator. Catches
 // runtime-supplied overlays that would otherwise produce broken
 // schedule rows the sweeper can't fire.
@@ -570,9 +619,18 @@ type mergedScheduleDef struct {
 	// silently clobbered the parent's enabled:true on any partial
 	// overlay — fix landed alongside TestScheduleDefTool_Fork
 	// PreservesEnabledWhenOverlayOmits.
-	Enabled                *bool                `json:"enabled,omitempty"`
-	CatchUpMax             int                  `json:"catch_up_max,omitempty"`
-	UserID                 string               `json:"user_id,omitempty"`
+	Enabled    *bool  `json:"enabled,omitempty"`
+	CatchUpMax int    `json:"catch_up_max,omitempty"`
+	UserID     string `json:"user_id,omitempty"`
+	// UserTier is the fork-time tier pick for templates with
+	// user_tier_schedules. The scheduler's ResolveCron uses it to
+	// select which cron expression to fire from the per-tier map.
+	// Empty when the def has an explicit `schedule:` (no tier-pick
+	// needed). The primary RFC E use case (JobEmber per-user fork
+	// at high/middle/low tier) requires this field to round-trip
+	// through the substrate — without it the sweeper can't resolve
+	// which cron to use and parks the def with "tier missing" errors.
+	UserTier               string               `json:"user_tier,omitempty"`
 	UserCredentials        map[string]string    `json:"user_credentials,omitempty"`
 	UserCredentialsFromEnv map[string]string    `json:"user_credentials_from_env,omitempty"`
 	OnComplete             []mergedScheduleHook `json:"on_complete,omitempty"`
@@ -632,6 +690,9 @@ func (d *mergedScheduleDef) applyOverlay(ov mergedScheduleDef) {
 	}
 	if ov.UserID != "" {
 		d.UserID = ov.UserID
+	}
+	if ov.UserTier != "" {
+		d.UserTier = ov.UserTier
 	}
 	// Credentials maps: partial-merge so fork-with-{slack: "<new>"}
 	// preserves the parent's {jobs, telegram}. Matches RFC E's

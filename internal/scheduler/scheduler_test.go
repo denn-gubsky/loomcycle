@@ -364,6 +364,48 @@ func TestScheduler_ConcurrentTickIsSerial(t *testing.T) {
 	}
 }
 
+// TestScheduler_RecordResultSurvivesParentCancellation regresses
+// v1.x review finding #5: if the parent ctx is cancelled mid-fire
+// (after listDue but before RecordResult), the original code called
+// ScheduleRunStateRecordResult with the cancelled ctx and the store
+// write failed silently — leaving next_run_at unadvanced, causing
+// immediate re-fire on restart. Fix: when ctx.Err() != nil at
+// RecordResult time, use a 5s background ctx for the store write.
+//
+// The shutdown race is: listDue succeeds (ctx still alive) → tick
+// enters fireOne → starts RunOnce → ctx cancellation arrives (e.g.
+// OS shutdown) → RunOnce returns Canceled → fireOne reaches the
+// RecordResult call with ctx already done. Test uses the
+// fakeRunner's onRun hook to cancel the parent ctx mid-fire,
+// exactly replicating this sequence.
+func TestScheduler_RecordResultSurvivesParentCancellation(t *testing.T) {
+	enabled := true
+	def := scheduleDef{Agent: "researcher", Schedule: "0 * * * *", Enabled: &enabled}
+	sched, fr, _, defID, st := schedulerFixture(t, def, time.Now().Add(-1*time.Minute))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	// Cancel the parent ctx INSIDE RunOnce — listDue already ran
+	// with a live ctx, so the row was fetched. Then RecordResult
+	// must use the survival ctx to land the next_run_at advance.
+	fr.onRun = func(_ runner.RunInput) {
+		cancel()
+	}
+
+	sched.tick(ctx)
+
+	// next_run_at must be in the future even though parent ctx is
+	// dead. If the fix is missing, the row's next_run_at stays in
+	// the past (the seeded "1 minute ago" value) and the schedule
+	// re-fires immediately on restart.
+	got, err := st.ScheduleRunStateGet(context.Background(), defID)
+	if err != nil {
+		t.Fatalf("get state: %v", err)
+	}
+	if !got.NextRunAt.After(time.Now()) {
+		t.Errorf("next_run_at = %v, expected future — RecordResult didn't survive ctx cancellation, schedule would re-fire immediately on restart", got.NextRunAt)
+	}
+}
+
 // TestScheduler_DecodeFailureRecordedAsFailed plants a malformed JSON
 // body in a schedule_run_state row + checks the sweeper records it as
 // failed without crashing.

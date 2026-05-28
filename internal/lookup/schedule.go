@@ -68,17 +68,29 @@ func Schedule(ctx context.Context, s ScheduleStore, cfg *config.Config, name str
 // in the builtin package pins the field set so a future field added
 // to either side without the matching addition here fails CI.
 type SubstrateScheduleDef struct {
-	Agent                  string                   `json:"agent,omitempty"`
-	Prompt                 []SubstratePromptSegment `json:"prompt,omitempty"`
-	Schedule               string                   `json:"schedule,omitempty"`
-	UserTierSchedules      map[string]string        `json:"user_tier_schedules,omitempty"`
-	RequiredCredentials    []string                 `json:"required_credentials,omitempty"`
-	Timezone               string                   `json:"timezone,omitempty"`
-	Enabled                bool                     `json:"enabled"`
-	CatchUpMax             int                      `json:"catch_up_max,omitempty"`
-	UserID                 string                   `json:"user_id,omitempty"`
-	UserCredentialsFromEnv map[string]string        `json:"user_credentials_from_env,omitempty"`
-	OnComplete             []SubstrateScheduleHook  `json:"on_complete,omitempty"`
+	Agent               string                   `json:"agent,omitempty"`
+	Prompt              []SubstratePromptSegment `json:"prompt,omitempty"`
+	Schedule            string                   `json:"schedule,omitempty"`
+	UserTierSchedules   map[string]string        `json:"user_tier_schedules,omitempty"`
+	RequiredCredentials []string                 `json:"required_credentials,omitempty"`
+	Timezone            string                   `json:"timezone,omitempty"`
+	// Enabled is *bool with omitempty (matching the write-side
+	// mergedScheduleDef shape so the JSON round-trip is lossless).
+	// A nil pointer means "the substrate row didn't explicitly set
+	// enabled" — callers default to true in that case (a fork created
+	// without explicit enabled should run, unless the operator
+	// disables it). v1.x review-fix: previously this was `bool` with
+	// no omitempty, which silently coerced missing-fields to false on
+	// the lookup path even when the write side intended true.
+	Enabled    *bool  `json:"enabled,omitempty"`
+	CatchUpMax int    `json:"catch_up_max,omitempty"`
+	UserID     string `json:"user_id,omitempty"`
+	// UserTier is the fork-time tier pick — see the matching field
+	// commentary on builtin.mergedScheduleDef. Required for sweeper-
+	// side cron resolution on templates with user_tier_schedules.
+	UserTier               string                  `json:"user_tier,omitempty"`
+	UserCredentialsFromEnv map[string]string       `json:"user_credentials_from_env,omitempty"`
+	OnComplete             []SubstrateScheduleHook `json:"on_complete,omitempty"`
 }
 
 // SubstratePromptSegment mirrors config.ScheduledRunSegment with
@@ -110,13 +122,23 @@ type SubstrateScheduleHook struct {
 // for the runtime to consume. Pure data shuffling; no normalization
 // happens here (NormalizeScheduleDef is called afterward by Schedule).
 func (s SubstrateScheduleDef) ToConfigDef() config.ScheduledRun {
+	// Enabled is *bool on the substrate side; default to true when
+	// absent so a freshly-created fork without an explicit enabled
+	// setting runs. The yaml-side default is the operator's choice;
+	// the substrate-side default (when the field is missing) is
+	// run-by-default since that matches the v1.x semantics where
+	// every successful fork is expected to fire on its cron.
+	enabled := true
+	if s.Enabled != nil {
+		enabled = *s.Enabled
+	}
 	out := config.ScheduledRun{
 		Agent:                  s.Agent,
 		Schedule:               s.Schedule,
 		UserTierSchedules:      s.UserTierSchedules,
 		RequiredCredentials:    s.RequiredCredentials,
 		Timezone:               s.Timezone,
-		Enabled:                s.Enabled,
+		Enabled:                enabled,
 		CatchUpMax:             s.CatchUpMax,
 		UserID:                 s.UserID,
 		UserCredentialsFromEnv: s.UserCredentialsFromEnv,
