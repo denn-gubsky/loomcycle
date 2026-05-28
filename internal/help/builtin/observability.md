@@ -261,6 +261,32 @@ different loomcycle instance).
   v0.10.x slice. Until then, sub-agent runs that span replicas show
   as separate disconnected traces.
 
+## Bundled profiles (v1.x)
+
+Three drop-in profile directories live under `examples/observability/`
+in the loomcycle repo. Pick the one matching your existing stack;
+each ships its own README with a five-minute quickstart.
+
+- **`examples/observability/grafana-tempo/`** — self-hosted Grafana
+  + Tempo + Prometheus + Loki + OTEL Collector stack via docker-
+  compose. Pre-built 10-panel dashboard auto-provisioned on Grafana
+  startup. The OTEL Collector's `spanmetrics` connector aggregates
+  loomcycle spans into Prometheus histograms downstream — no
+  in-process span processor; the substrate stays clean.
+- **`examples/observability/honeycomb/`** — wiring + 8 canonical
+  Honeycomb queries + 3 derived-column definitions + 10-minute
+  board-authoring walkthrough.
+- **`examples/observability/datadog/`** — wiring (via the
+  operator's existing Datadog agent OTLP receiver) + 8 canonical
+  Datadog APM queries + per-tag-tracking setup + 15-minute
+  dashboard-authoring walkthrough.
+
+Plus a `/metrics` Prometheus text-format endpoint on loomcycle
+itself (added v1.x, slice A.0) exposing substrate counters (process
+RSS, heap, goroutines, concurrency state, build_info) — scraped by
+Profile A's Prometheus and reusable by any operator-existing
+Prometheus deployment regardless of which profile they pick.
+
 ## Related topics
 
 - `pause-resume-snapshot` — runtime quiesce + snapshot lifecycle.
