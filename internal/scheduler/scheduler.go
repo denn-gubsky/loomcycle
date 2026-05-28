@@ -3,6 +3,7 @@ package scheduler
 import (
 	"context"
 	"errors"
+	"runtime"
 	"sync"
 	"time"
 
@@ -28,6 +29,16 @@ type Config struct {
 	// disables env-credential resolution entirely — a safe-by-default
 	// posture. Operators opt in via LOOMCYCLE_SCHEDULER_ENV_ALLOWLIST.
 	EnvAllowlist map[string]bool
+
+	// MaxConcurrentFires bounds the number of schedules a single tick
+	// fires in parallel. 0 → default runtime.NumCPU()*4. Each fire is
+	// a goroutine that calls runner.RunOnce synchronously; the tick
+	// itself waits for the whole batch to drain before returning so
+	// the "one tick at a time" invariant holds. Larger values trade
+	// memory + concurrency-store pressure for tighter cascading at
+	// burst-fire moments (e.g. cron crossings where 100s of forks
+	// become due in the same second).
+	MaxConcurrentFires int
 }
 
 // defaults applies the documented defaults to a zero-value Config.
@@ -37,6 +48,9 @@ func (c Config) defaults() Config {
 	}
 	if c.FireTimeout == 0 {
 		c.FireTimeout = 10 * time.Minute
+	}
+	if c.MaxConcurrentFires == 0 {
+		c.MaxConcurrentFires = runtime.NumCPU() * 4
 	}
 	return c
 }
@@ -120,6 +134,15 @@ func (s *Scheduler) run(ctx context.Context) {
 // tick processes one sweeper iteration. Skips when pause manager
 // reports runtime != StateRunning (matches the v0.8.17 pause/resume
 // composition rule from RFC E).
+//
+// Due rows fire in parallel up to cfg.MaxConcurrentFires goroutines.
+// The tick waits for the whole batch to drain before returning so
+// the "next tick won't start until this one finishes" invariant
+// holds — important because each fire's RecordResult advances
+// next_run_at; without the wait, the next tick could re-fire a row
+// whose status update is still in flight. The bounded semaphore
+// keeps memory + per-user-fairness pressure predictable when 100s
+// of forks become due in one cron crossing.
 func (s *Scheduler) tick(ctx context.Context) {
 	if s.pause != nil && s.pause.State() != pause.StateRunning {
 		// Paused / pausing — the runtime is quiesced for snapshot.
@@ -132,12 +155,52 @@ func (s *Scheduler) tick(ctx context.Context) {
 		s.logf("scheduler: list due: %v", err)
 		return
 	}
-	for _, row := range due {
-		if ctxDone(ctx) {
-			return
-		}
-		s.fireOne(ctx, row, now)
+	if len(due) == 0 {
+		return
 	}
+
+	// Buffered semaphore caps concurrent fires. Each goroutine
+	// acquires a slot before calling fireOne and releases on exit.
+	// A nil semaphore (size <= 0) would mean unbounded parallelism;
+	// the Config.defaults() floor ensures size is always positive.
+	sem := make(chan struct{}, s.cfg.MaxConcurrentFires)
+	var wg sync.WaitGroup
+	for _, row := range due {
+		// Slot-acquire is ctx-aware so cancellation during a slow
+		// tick doesn't block waiting for slots indefinitely.
+		select {
+		case <-ctx.Done():
+			// Skip remaining rows; in-flight fires continue (their
+			// own fireCtx still has a timeout). Wait below drains.
+			wg.Wait()
+			return
+		case sem <- struct{}{}:
+		}
+		wg.Add(1)
+		go func(row store.ScheduleDueRow) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			// Recover panics so one bad fire doesn't bring down
+			// the sweeper goroutine. Log + advance with a parked
+			// next_run_at so the def doesn't re-present every tick.
+			defer func() {
+				if r := recover(); r != nil {
+					s.logf("scheduler: PANIC in fireOne(def_id=%s): %v", row.DefID, r)
+					// Best-effort park — re-use the same 1h fallback
+					// the cron-resolve failure path uses.
+					_ = s.store.ScheduleRunStateRecordResult(context.Background(), store.ScheduleRunResult{
+						DefID:      row.DefID,
+						LastStatus: "failed",
+						LastError:  "panic in fireOne",
+						LastRunAt:  time.Now(),
+						NextRunAt:  time.Now().Add(1 * time.Hour),
+					})
+				}
+			}()
+			s.fireOne(ctx, row, now)
+		}(row)
+	}
+	wg.Wait()
 }
 
 // fireOne handles one due schedule end-to-end: unmarshal the def,
