@@ -54,6 +54,10 @@ func substrateGRPCCtx(ctx context.Context) context.Context {
 	ctx = tools.WithSkillDefPolicy(ctx, tools.SkillDefPolicyValue{
 		Scopes: []string{"any"},
 	})
+	ctx = tools.WithScheduleDefPolicy(ctx, tools.ScheduleDefPolicyValue{
+		Scopes:   []string{"any"},
+		SelfName: grpcSubstrateAdminAgentName,
+	})
 	ctx = tools.WithEvaluationPolicy(ctx, tools.EvaluationPolicyValue{
 		Scopes: []string{"submit_self", "submit_descendants", "submit_any", "read_any"},
 	})
@@ -105,6 +109,20 @@ func (s *Server) SkillDef(ctx context.Context, req *loomcyclepb.SubstrateRequest
 func (s *Server) MCPServerDef(ctx context.Context, req *loomcyclepb.SubstrateRequest) (*loomcyclepb.SubstrateResponse, error) {
 	return s.dispatchSubstrateRPC(ctx, "MCPServerDef", req, func(ctx context.Context, in json.RawMessage) (json.RawMessage, bool, error) {
 		res, err := s.connector.MCPServerDef(ctx, in)
+		if err != nil {
+			return nil, false, err
+		}
+		return json.RawMessage(res.Text), res.IsError, nil
+	})
+}
+
+// ScheduleDef serves the v1.x RFC E ScheduleDef gRPC RPC —
+// scheduled-runs substrate. Same shape as the other three substrate
+// RPCs; op-discriminated input_json (create / fork / get / list /
+// retire) routes via the Connector to the in-process tool.
+func (s *Server) ScheduleDef(ctx context.Context, req *loomcyclepb.SubstrateRequest) (*loomcyclepb.SubstrateResponse, error) {
+	return s.dispatchSubstrateRPC(ctx, "ScheduleDef", req, func(ctx context.Context, in json.RawMessage) (json.RawMessage, bool, error) {
+		res, err := s.connector.ScheduleDef(ctx, in)
 		if err != nil {
 			return nil, false, err
 		}

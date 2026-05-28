@@ -9,6 +9,7 @@ import (
 	"google.golang.org/grpc/status"
 
 	"github.com/denn-gubsky/loomcycle/internal/api/grpc/loomcyclepb"
+	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/connector"
 	storesqlite "github.com/denn-gubsky/loomcycle/internal/store/sqlite"
 	"github.com/denn-gubsky/loomcycle/internal/tools/builtin"
@@ -21,14 +22,17 @@ import (
 type substrateMock struct {
 	mockConnector
 
-	gotAgentDefInput json.RawMessage
-	gotSkillDefInput json.RawMessage
+	gotAgentDefInput    json.RawMessage
+	gotSkillDefInput    json.RawMessage
+	gotScheduleDefInput json.RawMessage
 
-	agentDefResult connector.ToolResult
-	skillDefResult connector.ToolResult
+	agentDefResult    connector.ToolResult
+	skillDefResult    connector.ToolResult
+	scheduleDefResult connector.ToolResult
 
-	agentDefErr error
-	skillDefErr error
+	agentDefErr    error
+	skillDefErr    error
+	scheduleDefErr error
 }
 
 func (m *substrateMock) AgentDef(_ context.Context, in json.RawMessage) (connector.ToolResult, error) {
@@ -39,6 +43,11 @@ func (m *substrateMock) AgentDef(_ context.Context, in json.RawMessage) (connect
 func (m *substrateMock) SkillDef(_ context.Context, in json.RawMessage) (connector.ToolResult, error) {
 	m.gotSkillDefInput = in
 	return m.skillDefResult, m.skillDefErr
+}
+
+func (m *substrateMock) ScheduleDef(_ context.Context, in json.RawMessage) (connector.ToolResult, error) {
+	m.gotScheduleDefInput = in
+	return m.scheduleDefResult, m.scheduleDefErr
 }
 
 func TestGrpcAgentDef_HappyPath(t *testing.T) {
@@ -88,6 +97,33 @@ func TestGrpcSkillDef_HappyPath(t *testing.T) {
 		t.Errorf("is_error = true, want false")
 	}
 	if string(resp.GetOutputJson()) != `{"def_id":"sdf_abc","name":"voice-applier","version":1}` {
+		t.Errorf("output_json = %s", resp.GetOutputJson())
+	}
+}
+
+func TestGrpcScheduleDef_HappyPath(t *testing.T) {
+	mc := &substrateMock{
+		scheduleDefResult: connector.ToolResult{
+			Text:    `{"def_id":"sd_abc","name":"job-search-alice","version":1,"promoted":true}`,
+			IsError: false,
+		},
+	}
+	client, cleanup := startTestServerWithConnector(t, mc)
+	defer cleanup()
+
+	resp, err := client.ScheduleDef(context.Background(), &loomcyclepb.SubstrateRequest{
+		InputJson: []byte(`{"op":"create","name":"job-search-alice","overlay":{"agent":"researcher","schedule":"0 6 * * *","user_id":"alice"}}`),
+	})
+	if err != nil {
+		t.Fatalf("ScheduleDef: %v", err)
+	}
+	if resp.GetIsError() {
+		t.Errorf("is_error = true, want false")
+	}
+	if string(mc.gotScheduleDefInput) == "" {
+		t.Errorf("connector wasn't called with the input")
+	}
+	if string(resp.GetOutputJson()) != `{"def_id":"sd_abc","name":"job-search-alice","version":1,"promoted":true}` {
 		t.Errorf("output_json = %s", resp.GetOutputJson())
 	}
 }
@@ -155,11 +191,17 @@ func TestGrpcSubstrate_RejectsMalformedJSON(t *testing.T) {
 type realToolConnector struct {
 	mockConnector
 
-	skillTool *builtin.SkillDef
+	skillTool    *builtin.SkillDef
+	scheduleTool *builtin.ScheduleDef
 }
 
 func (c *realToolConnector) SkillDef(ctx context.Context, in json.RawMessage) (connector.ToolResult, error) {
 	res, err := c.skillTool.Execute(ctx, in)
+	return connector.ToolResult{Text: res.Text, IsError: res.IsError}, err
+}
+
+func (c *realToolConnector) ScheduleDef(ctx context.Context, in json.RawMessage) (connector.ToolResult, error) {
+	res, err := c.scheduleTool.Execute(ctx, in)
 	return connector.ToolResult{Text: res.Text, IsError: res.IsError}, err
 }
 
@@ -195,5 +237,36 @@ func TestGrpcSubstrate_OperatorCtxLetsRealToolThrough(t *testing.T) {
 	}
 	if resp.GetIsError() {
 		t.Errorf("is_error = true with output_json = %s — gRPC ctx synthesis didn't grant scope=[any]", resp.GetOutputJson())
+	}
+}
+
+// TestGrpcSubstrate_ScheduleDefCtxSynthesis is the same regression
+// for ScheduleDef as the SkillDef test above. If the gRPC handler
+// forgets to stamp WithScheduleDefPolicy (added in this PR), the
+// in-process tool's default-deny scope gate refuses the call and
+// returns is_error=true.
+func TestGrpcSubstrate_ScheduleDefCtxSynthesis(t *testing.T) {
+	st, err := storesqlite.Open(":memory:")
+	if err != nil {
+		t.Fatalf("sqlite.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	scheduleTool := &builtin.ScheduleDef{
+		Store: st,
+		Cfg:   &config.Config{},
+	}
+	mc := &realToolConnector{scheduleTool: scheduleTool}
+
+	client, cleanup := startTestServerWithConnector(t, mc)
+	defer cleanup()
+
+	resp, err := client.ScheduleDef(context.Background(), &loomcyclepb.SubstrateRequest{
+		InputJson: []byte(`{"op":"list","name":"unknown-schedule"}`),
+	})
+	if err != nil {
+		t.Fatalf("ScheduleDef: %v", err)
+	}
+	if resp.GetIsError() {
+		t.Errorf("is_error = true with output_json = %s — gRPC ctx synthesis didn't grant ScheduleDef scope=[any]", resp.GetOutputJson())
 	}
 }

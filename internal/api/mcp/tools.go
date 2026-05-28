@@ -153,6 +153,11 @@ func toolDescriptors() []loommcp.ToolDescriptor {
 			InputSchema: rawJSON(`{"type": "object"}`),
 		},
 		{
+			Name:        "scheduledef",
+			Description: "ScheduleDef tool ops (create/fork/get/list/retire). v1.x RFC E scheduled-runs substrate. Operator-admin-only — author + fork per-user schedules at runtime. Forks auto-promote by default (schedule versioning model differs from agent/skill where promote is a separate step). Pass-through.",
+			InputSchema: rawJSON(`{"type": "object"}`),
+		},
+		{
 			Name:        "evaluation",
 			Description: "Evaluation tool ops (submit/get/list_for_run/list_for_def/aggregate). Pass-through.",
 			InputSchema: rawJSON(`{"type": "object"}`),

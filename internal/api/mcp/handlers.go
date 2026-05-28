@@ -50,6 +50,13 @@ var handlersByName = map[string]toolHandler{
 	"mcpserverdef": wrapBuiltin("mcpserverdef", func(c connector.Connector, ctx context.Context, in json.RawMessage) (connector.ToolResult, error) {
 		return c.MCPServerDef(ctx, in)
 	}),
+	// v1.x RFC E scheduled-runs substrate. Same operator-admin-only
+	// posture; lets external orchestrators (e.g. JobEmber's user-
+	// signup pipeline) author per-user forks of yaml templates over
+	// MCP without going through the HTTP admin endpoint.
+	"scheduledef": wrapBuiltin("scheduledef", func(c connector.Connector, ctx context.Context, in json.RawMessage) (connector.ToolResult, error) {
+		return c.ScheduleDef(ctx, in)
+	}),
 	"evaluation": wrapBuiltin("evaluation", func(c connector.Connector, ctx context.Context, in json.RawMessage) (connector.ToolResult, error) {
 		return c.Evaluation(ctx, in)
 	}),

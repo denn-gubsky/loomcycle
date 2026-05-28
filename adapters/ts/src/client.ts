@@ -641,6 +641,42 @@ export class LoomcycleClient {
     return postJSON<SubstrateToolResponse>(this.ctx, "/v1/_mcpserverdef", input, opts);
   }
 
+  /** Invoke the v1.x RFC E ScheduleDef substrate tool over HTTP.
+   *  Author + fork + retire scheduled-run definitions at runtime.
+   *  Mirror of {@link LoomcycleClient.agentDef} for schedules — the
+   *  primary use case is JobEmber-style "fork a yaml template
+   *  per-user with their bearer + tier cron" workflows.
+   *
+   *  Operator-admin-only: this endpoint requires the bearer token.
+   *
+   *  Op-discriminated input: `{op: "create" | "fork" | "get" |
+   *  "list" | "retire", ...}`. Note that ScheduleDef has 5 ops
+   *  (no separate `promote` — forks auto-promote by default per
+   *  RFC E's worked example; no `verify` — no content_sha256 in
+   *  v1.x).
+   *
+   *  Sharp edges (substrate refuses these):
+   *  - Name colliding with a static cfg.ScheduledRuns entry is
+   *    refused on `create` (yaml is ground truth; use `fork` to
+   *    derive a new version).
+   *  - Fork against a template with `required_credentials` must
+   *    supply all keys in `user_credentials` — loud-fail at fork
+   *    time rather than silent ingestion-time failure when the
+   *    sweeper fires.
+   *  - Cron syntax is validated server-side; invalid expressions
+   *    refuse with a parse error.
+   *
+   *  Raises {@link SubstrateToolRefusedError} on tool-level refusals
+   *  (static-name collision, missing required credential, invalid
+   *  cron, etc.); {@link InvalidArgumentError} on 400 (malformed
+   *  JSON); {@link AuthError} on 401. */
+  async scheduleDef(
+    input: SubstrateToolInput,
+    opts?: { signal?: AbortSignal },
+  ): Promise<SubstrateToolResponse> {
+    return postJSON<SubstrateToolResponse>(this.ctx, "/v1/_scheduledef", input, opts);
+  }
+
   // ---- v0.10.3 Library v2 enumeration (read-only, merged yaml+substrate) ----
 
   /** List every agent the runtime knows about — yaml-static + dynamic

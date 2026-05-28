@@ -142,3 +142,81 @@ describe("skillDef", () => {
     ).rejects.toBeInstanceOf(UnavailableError);
   });
 });
+
+// v1.x RFC E ScheduleDef — mirror of agentDef + skillDef. Fork
+// auto-promotes by default per RFC E's worked example, so the
+// happy-path response shape includes `promoted: true`.
+describe("scheduleDef", () => {
+  it("posts JSON to /v1/_scheduledef and returns the row envelope", async () => {
+    const { client, fetchMock } = makeClient([
+      jsonResponse({
+        def_id: "sd_abc",
+        name: "job-search-alice",
+        version: 1,
+        promoted: true,
+      }),
+    ]);
+
+    const result = (await client.scheduleDef({
+      op: "create",
+      name: "job-search-alice",
+      overlay: {
+        agent: "researcher",
+        schedule: "0 6 * * *",
+        user_id: "alice",
+      },
+    })) as Record<string, unknown>;
+
+    expect(result.def_id).toBe("sd_abc");
+    expect(result.name).toBe("job-search-alice");
+    expect(result.version).toBe(1);
+    expect(result.promoted).toBe(true);
+
+    const call = fetchMock.mock.calls[0]!;
+    expect(call[0]).toBe("http://test-loomcycle:8787/v1/_scheduledef");
+    expect((call[1] as RequestInit).method).toBe("POST");
+    const body = JSON.parse((call[1] as RequestInit).body as string);
+    expect(body.op).toBe("create");
+    expect(body.overlay.schedule).toBe("0 6 * * *");
+  });
+
+  it("raises SubstrateToolRefusedError when fork hits required_credentials gate", async () => {
+    const refusalBody = JSON.stringify({
+      code: "tool_refused",
+      tool: "ScheduleDef",
+      error:
+        'fork: required credential "slack" missing from user_credentials (template required: [jobs slack])',
+    });
+    const { client } = makeClient([
+      () =>
+        new Response(refusalBody, {
+          status: 422,
+          headers: { "Content-Type": "application/json" },
+        }),
+    ]);
+
+    let caught: unknown;
+    try {
+      await client.scheduleDef({
+        op: "fork",
+        name: "job-search-template",
+        overlay: { user_id: "alice", user_credentials: { jobs: "x" } },
+      });
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeInstanceOf(SubstrateToolRefusedError);
+    const err = caught as SubstrateToolRefusedError;
+    expect(err.tool).toBe("ScheduleDef");
+    expect(err.message).toContain("required credential");
+    expect(err.message).toContain("slack");
+  });
+
+  it("forwards bearer auth in the Authorization header", async () => {
+    const { client, fetchMock } = makeClient([jsonResponse({ ok: true })]);
+    await client.scheduleDef({ op: "list", name: "job-search-template" });
+    const headers = (fetchMock.mock.calls[0]![1] as RequestInit)
+      .headers as Record<string, string>;
+    expect(headers.Authorization).toBe("Bearer test-bearer");
+  });
+});
