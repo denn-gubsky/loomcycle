@@ -49,8 +49,12 @@
 | **Pause / Resume / Snapshot** — runtime-wide quiesce + cross-version-portable JSON snapshot. In-place upgrades, snapshot-based replica handoff | v0.8.17 → v0.8.18 |
 | **Multi-replica HA** — Redis cancel pubsub, cross-replica run status, cluster-wide pause/resume + bus fanout, singleton sweepers, DB-backed session locks. Single binary scales from a cheap VPS to a multi-replica fleet | v0.12.0 → v0.12.5 |
 | **UNIX-style trust model** — operator config is the floor; callers narrow per-request but never widen. Bearer auth at the HTTP frontier; sandbox (Posture A) vs operator-trusted (Posture B) selected via env | v0.4 → ongoing |
-| **Embedded React Web UI** at `/ui` — Library admin (agents / skills / MCP servers), Activity Monitor, Channels view, audit log | v0.8.21 → v0.11.6 |
+| **Embedded React Web UI** at `/ui` — Library admin (agents / skills / MCP servers), Activity Monitor, Channels view, audit log, **Schedules admin** | v0.8.21 → v0.12.7 |
 | **v1.0 capstone** — docs + hardening pass | v1.0 |
+| **ScheduleDef substrate** — operator-yaml `scheduled_runs:` templates + dynamic per-user forks with versioning + lineage. Sweeper fires due rows in parallel; 5-op tool (`create`/`fork`/`get`/`list`/`retire`) + 2 hook ops (`add_hook`/`remove_hook`); `on_complete` delivery via `channel.publish` / `memory.set` / `mcp.call`. Full 4-transport CRUD + `/ui/schedules` admin tab | v0.12.7 |
+| **Per-run named credentials** — `user_credentials: map<string,string>` on `POST /v1/runs` / gRPC / MCP / TS. `${run.credentials.<name>}` substitution in `mcp_servers.*.headers`. Back-compat: legacy `user_bearer` auto-promotes to `credentials.default` | v0.12.7 |
+| **Bundled observability profiles** — three `docker compose up` stacks: Grafana+Tempo+Prom+Loki (open-source), Honeycomb (SaaS), Datadog APM. `GET /metrics` Prometheus endpoint | v0.12.7 |
+| **Mock LLM provider** — cost-free 10K-agent stress harness. Variable latency + jitter + 429 / 5xx injection. Five model variants including `mock-mcp-caller` that exercises real MCP-tool dispatch end-to-end | v0.12.7 |
 
 Full per-version log: [`REVISIONS.md`](REVISIONS.md).
 

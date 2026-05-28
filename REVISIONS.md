@@ -10,40 +10,60 @@ For pre-v0.4 history (single-tool runtime, library milestone, security patch), s
 
 ## What's in v0.12.7
 
-**Multi-replica cluster demo + verify script.** Docs/example artifact that closes the loop on the v0.12.x HA round: `docs/MULTI-REPLICA.md` (Phase 7) explained the deployment shape in prose; v0.12.7 makes it executable with `docker compose up`. No Go code changed.
+**Cumulative release covering all work since v0.12.6.** Bundles four substantial threads that landed across May 2026: the multi-replica cluster demo (originally planned as v0.12.7), bundled observability profiles, RFC F per-run credentials, the RFC E ScheduleDef substrate (six PRs across substrate / runtime / four transports / Web UI / hook editor), and the compound test that gated the release plus the in-flight tracker that closed the ceiling it surfaced.
 
-### What ships
+### Headline: RFC E ScheduleDef substrate (the v1.x substrate primitive)
 
-1. **`docker-compose.cluster.yaml`** at repo root — 2 loomcycle replicas + 1 Postgres + 1 nginx LB. Uses YAML anchors so the second replica is a delta on the first. Pinned to `denngubsky/loomcycle:0.12.0` (the current latest cluster-mode-capable image on Docker Hub) with a `LOOMCYCLE_IMAGE` env override for operators who want to track a specific tag.
-2. **`examples/cluster/`** directory with the supporting assets:
-   - **`README.md`** — 1-page quickstart with a "what's running" diagram, 4-step bring-up, common operations (scale to 3 replicas, tear down), and a troubleshooting table.
-   - **`loomcycle.yaml`** — minimal cluster config (one tier, one `default` agent). Storage is env-driven; no `storage:` block needed.
-   - **`nginx.conf`** — SSE-friendly reverse proxy (`proxy_buffering off`, 1h read timeout) round-robining between the two replicas.
-   - **`.env.example`** — env template; the real `.env` is gitignored.
-   - **`verify.sh`** — bash + curl + jq script. Exercises four cluster-mode invariants: cluster membership (both `/healthz` see both replicas), LB round-robin (replica_id flips across requests), cross-replica run visibility, cross-replica cancel (Phase 3 backplane). Last two gracefully skip when no provider API key is configured. Includes a preflight that waits up to 30s for both replicas to converge before running the checks (each replica's first heartbeat lands a beat after boot).
-3. **High ports (18080 / 18787 / 18788)** so the demo doesn't clash with a local `loomcycle` dev binary on :8787 or any other common service.
-4. **`docs/CLUSTER-QUICKSTART.md`** — tiny pointer at the example, discoverable alongside `MULTI-REPLICA.md`.
-5. **`README.md` link** added to the "Quick start" section so operators see the cluster demo right after the single-binary install path.
+The fourth substrate primitive after AgentDef / SkillDef / MCPServerDef. Operator-yaml `scheduled_runs:` templates + dynamic per-user forks with versioning and lineage, full 4-transport CRUD (HTTP `/v1/_scheduledef` + gRPC `ScheduleDef` RPC + MCP `scheduledef` meta-tool + TS adapter `client.scheduleDef()`), capability-scoped tool (`schedule_def_scopes`), and a `/ui/schedules` admin tab with view + edit affordances (including an `on_complete` hook editor with `add_hook` / `remove_hook` ops).
+
+Motivating use case: JobEmber-style "per-user nightly job search at the user's tier cron" — yaml template + JobEmber admin forks per user with `user_id` + `user_credentials` map + tier choice; sweeper fires at the tier's cron; run carries credentials into MCP HTTP headers via `${run.credentials.<name>}` substitution; `on_complete.mcp.call` delivers findings via Telegram / Slack / email.
+
+Six PRs: #263 (data layer), #264 (tool + HTTP admin), #266 (scheduler runtime — sweeper + cron + on_complete dispatch), #267 (gRPC + MCP + TS transports), #268 (review fixes — 5 bugs + 3-way drift test), #269 (Web UI admin tab), #270 (hook editor add_hook / remove_hook ops + UI).
+
+### Architectural pair: RFC F per-run credentials map
+
+The wire-shape extension RFC E builds on. Adds `user_credentials: map<string, string>` to `POST /v1/runs` body + gRPC `SpawnRunRequest` + MCP `spawn_run` schema + TS adapter `runAgent` option. New `${run.credentials.<name>}` substitution in `mcp_servers.*.headers` + `env` extends v0.8.14's `${run.user_bearer}` mechanism with per-server indirection. Back-compat: legacy `user_bearer` field stays valid + auto-promotes to `user_credentials.default` at `RunIdentityValue` construction time. PR #262.
+
+### Bundled observability profiles (RFC A)
+
+Three opinionated stacks operators can `docker compose up` without designing a topology from scratch:
+
+- **Profile A** (PR #257) — Grafana + Tempo + Prometheus + Loki + OTEL Collector. Open-source self-hosted.
+- **Profile B** (PR #258) — Honeycomb. SaaS-managed traces + events.
+- **Profile C** (PR #259) — Datadog APM. SaaS-managed traces + metrics + logs.
+
+Each profile lives under `examples/observability/<profile>/` with its own compose file, OTEL collector config, dashboard exports, and a query reference. Top-level `examples/observability/README.md` (PR #260) + cross-links from `Context.help observability-profiles`. Built on the v0.10.0 OTEL substrate; profiles are operator-side wiring only.
+
+Required substrate work landed alongside: `GET /metrics` Prometheus text-format endpoint (PR #256).
+
+### Multi-replica cluster demo + verify script
+
+The originally-planned v0.12.7 content, now bundled into the cumulative release. `docker-compose.cluster.yaml` at repo root (2 loomcycle replicas + Postgres + nginx LB), `examples/cluster/` with quickstart README + minimal config + nginx round-robin + `verify.sh` exercising cluster membership + LB round-robin + cross-replica run visibility + cross-replica cancel. `docs/CLUSTER-QUICKSTART.md` is the operator-facing pointer.
+
+### Scheduler ceiling work — compound test + in-flight tracker
+
+Two PRs that gate v0.12.7 release confidence:
+
+- **PR #271** — `TestSchedulerBearerCompound` exercises RFC E sweeper → real `runner.RunOnce` → mock provider → real MCP HTTP request with bearer substitution end-to-end. 310 schedules across 3 phases (10 / 100 / 200 at T+0 / T+1s / T+2s); asserts all complete with status=completed + every MCP bearer matches its fork's user_id + per-user isolation under parallel-fire. `-scale=N` flag tunes for stress. Bundles the **scheduler tick parallel-fire change** (`Config.MaxConcurrentFires` knob + bounded goroutine pool) that took 310 schedules from a projected ~2.5 min serial cascade to a measured ~3 s parallel cascade.
+- **PR #272** — `inFlight sync.Map` tracker that suppresses re-fire when a previous fire's `RecordResult` write is slower than the tick interval. The compound test at scale=30000 surfaced the race (every schedule firing twice → 60000 MCP calls instead of 30000); the fix landed with a dedicated regression test. Single-replica only; cluster mode (v0.12+) gets symmetric suppression via per-def advisory locks.
+
+Full characterisation (scale curve x100 → x100000 on Apple M1, pre/post-fix numbers, deadline ceiling) in `loomcycle-internal/doc-internal/research/scheduler-compound-test-2026-05-28/`.
+
+### Smaller features bundled in
+
+- **`rate_limit_cooldown_ms` per `user_tier`** (PR #252) — operators tune the cooldown duration on tier-specific 429 cascades; previously a global default.
+- **Per-agent `retry_attempts` override** (PR #253) — agent-frontmatter knob for the same-provider retry count; fixes the substrate-overlay path for def_id-pinned runs.
+- **`GET /v1/_providers/{id}/models` admin endpoint** (PR #254) — bearer-authed introspection for "which models does this configured provider expose."
+- **Memory tool atomic reducer ops** (PR #251) — `merge`, `append_dedupe`, `bounded_list`. Closes the value-replacement gap operators hit when scaling memory writes across concurrent agents.
+- **Mock LLM provider** (PR #244) — cost-free 10K-agent stress harness; the substrate for all subsequent load-test research and the compound test's release gate.
+- **Load test infrastructure hardening** (PRs #246, #247, #250) — launch-storm pool cap + store-layer retry, same-provider retry on retryable errors, driver launch-semaphore bump 50 → 500.
 
 ### What this does NOT do
 
-- Does not build a new Docker image — uses the existing published `denngubsky/loomcycle` (multi-arch live since v0.11.2).
-- Does not bundle Ollama or any LLM backend — operator brings their own API key (Anthropic / OpenAI / DeepSeek) for the full cross-replica cancel check.
-- Does not include observability (Jaeger / Prometheus / Grafana) — operator wires OTEL per `docs/MULTI-REPLICA.md` if wanted.
-- Does not auto-trigger the release workflow for v0.12.7 — pure docs/examples PR; the `denngubsky/loomcycle:0.12.7` image will publish only when the release pipeline runs against this tag.
-
-### Smoke test (run end-to-end before merge)
-
-```bash
-cp examples/cluster/.env.example examples/cluster/.env
-# Edit .env: set LOOMCYCLE_AUTH_TOKEN to anything
-docker compose -f docker-compose.cluster.yaml --env-file examples/cluster/.env up -d
-./examples/cluster/verify.sh
-# Expects: preflight + checks 1, 2 pass; checks 3, 4 skipped without API key.
-docker compose -f docker-compose.cluster.yaml --env-file examples/cluster/.env down -v
-```
-
-Smoke-passed against `denngubsky/loomcycle:0.12.0` on 2026-05-26 — all non-API-key checks green.
+- Does not bundle Postgres-vector / sqlite-vec backend changes (v0.9.x semantic memory plumbing is unchanged).
+- Does not include cluster-mode advisory-lock suppression for the scheduler (single-replica only; cross-replica scheduler coordination is the v0.12+ multi-replica HA scope).
+- Does not include the on_complete hook editor's mcp.call dispatch wiring (display + add/remove + channel.publish + memory.set work; mcp.call hooks accept the substrate-write but the runtime callsite passes `nil` MCPCaller pending the small follow-up that hands the existing `mcp.Pool` to the scheduler — `internal/scheduler/scheduler.go` accepts the interface today).
+- Does not include the deferred catch-up retroactive firing on schedules (`catch_up_max` field is in the schema; runtime skips missed windows).
 
 ---
 
