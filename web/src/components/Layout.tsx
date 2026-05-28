@@ -83,6 +83,7 @@ export default function Layout() {
           <NavLink to="/agents">runs</NavLink>
           <NavLink to="/library/agents">library</NavLink>
           <NavLink to="/channels">channels</NavLink>
+          <NavLink to="/schedules">schedules</NavLink>
           <NavLink to="/interrupts">interrupts</NavLink>
           <NavLink to="/memory">memory</NavLink>
           <NavLink to="/snapshots">snapshots</NavLink>

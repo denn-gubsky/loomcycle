@@ -1709,6 +1709,16 @@ func (s *Server) Mux() http.Handler {
 	mux.Handle("GET /v1/_library/agents", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleListLibraryAgents))))
 	mux.Handle("GET /v1/_library/skills", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleListLibrarySkills))))
 	mux.Handle("GET /v1/_library/mcp-servers", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleListLibraryMcpServers))))
+	// v1.x RFC E /ui/schedules — list (merged static + substrate),
+	// per-def runtime state view, + admin mutations (run-now / pause
+	// / resume). The ScheduleDef CRUD itself lives on the existing
+	// POST /v1/_scheduledef endpoint; this surface just exposes the
+	// list + state queries the UI needs.
+	mux.Handle("GET /v1/_schedules/list-all", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleListSchedules))))
+	mux.Handle("GET /v1/_schedules/{def_id}/state", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleGetScheduleState))))
+	mux.Handle("POST /v1/_schedules/{def_id}/run-now", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleScheduleRunNow))))
+	mux.Handle("POST /v1/_schedules/{def_id}/pause", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleSchedulePause))))
+	mux.Handle("POST /v1/_schedules/{def_id}/resume", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleScheduleResume))))
 	// v0.9.x Introspection — channels an agent has cursored on
 	// (scope=agent, scope_id={agent_name}). Drives the Web UI's
 	// per-agent "channels this agent is subscribed to" sub-tab.

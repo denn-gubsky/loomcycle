@@ -10,6 +10,7 @@ import AuditView from "./pages/AuditView";
 import ActivityMonitor from "./pages/ActivityMonitor";
 import LibraryView from "./pages/LibraryView";
 import ChannelsView from "./pages/ChannelsView";
+import SchedulesView from "./pages/SchedulesView";
 import Layout from "./components/Layout";
 import AgentIdRedirect from "./components/AgentIdRedirect";
 
@@ -35,6 +36,7 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
           <Route path="library/skills" element={<LibraryView />} />
           <Route path="library/mcp-servers" element={<LibraryView />} />
           <Route path="channels" element={<ChannelsView />} />
+          <Route path="schedules" element={<SchedulesView />} />
           <Route path="memory" element={<MemoryView />} />
           <Route path="interrupts" element={<InterruptInbox />} />
           <Route path="snapshots" element={<SnapshotsView />} />

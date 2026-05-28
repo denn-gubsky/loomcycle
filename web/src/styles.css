@@ -3141,3 +3141,491 @@ button.primary:disabled {
   font-size: 11px;
   color: var(--fg-soft);
 }
+
+/* ---------- /ui/schedules — RFC E v1.x ---------- */
+
+.schedules-view {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  padding: 12px 16px;
+  gap: 8px;
+}
+
+.schedules-header {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.schedules-header h2 {
+  margin: 0;
+  font-size: 18px;
+}
+
+.schedules-filter-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.schedules-chip-row {
+  display: flex;
+  gap: 6px;
+}
+
+.schedules-chip {
+  background: var(--bg-soft);
+  color: var(--fg-soft);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 4px 12px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.schedules-chip-active {
+  background: var(--running);
+  color: white;
+  border-color: var(--running);
+}
+
+.schedules-chip-count {
+  background: rgba(255, 255, 255, 0.2);
+  border-radius: 8px;
+  padding: 1px 6px;
+  margin-left: 4px;
+  font-size: 11px;
+}
+
+.schedules-chip:not(.schedules-chip-active) .schedules-chip-count {
+  background: var(--bg);
+  color: var(--fg-soft);
+}
+
+.schedules-filter-text {
+  flex: 1;
+  max-width: 300px;
+  padding: 4px 10px;
+  font-size: 13px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--fg);
+}
+
+.schedules-refresh-btn {
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  background: var(--bg-soft);
+  color: var(--fg);
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.schedules-err {
+  color: var(--failed);
+  font-size: 13px;
+  padding: 4px 0;
+}
+
+.schedules-list-pane {
+  height: 100%;
+  overflow-y: auto;
+  border-right: 1px solid var(--border);
+}
+
+.schedules-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.schedules-list-row {
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+  cursor: pointer;
+}
+
+.schedules-list-row:hover {
+  background: var(--bg-soft);
+}
+
+.schedules-list-row-selected {
+  background: var(--bg-soft);
+  border-left: 3px solid var(--running);
+}
+
+/* Keyboard-focus outline — distinct from :hover/:selected so Tab
+   users see where focus is even when the row isn't yet selected. */
+.schedules-list-row:focus-visible {
+  outline: 2px solid var(--running);
+  outline-offset: -2px;
+}
+
+.schedules-list-row-name {
+  font-weight: 500;
+  font-size: 13px;
+}
+
+.schedules-list-row-meta {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-top: 4px;
+}
+
+.schedules-version-chip {
+  background: var(--bg-soft);
+  color: var(--fg-soft);
+  font-size: 11px;
+  padding: 1px 6px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+}
+
+/* Source chips reused from /ui/library shape. */
+.source-chip {
+  font-size: 11px;
+  padding: 1px 6px;
+  border-radius: 8px;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  font-weight: 500;
+}
+
+.source-chip-static-only {
+  background: #2d5a2d;
+  color: #b8e6b8;
+}
+
+.source-chip-dynamic-only {
+  background: #5a4a2d;
+  color: #e6d4b8;
+}
+
+.source-chip-both {
+  background: #2d4a5a;
+  color: #b8d4e6;
+}
+
+.schedules-empty {
+  padding: 24px;
+  color: var(--fg-soft);
+  font-style: italic;
+  font-size: 13px;
+  text-align: center;
+}
+
+.schedules-detail-pane {
+  height: 100%;
+  overflow-y: auto;
+  padding: 0 16px;
+}
+
+.schedule-detail-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 16px;
+}
+
+.schedule-detail-header h3 {
+  margin: 0;
+  font-size: 15px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.schedule-detail-action {
+  padding: 6px 14px;
+  background: var(--running);
+  color: white;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.schedule-detail-action:hover {
+  filter: brightness(1.1);
+}
+
+.schedule-detail-err {
+  background: rgba(220, 80, 80, 0.1);
+  border: 1px solid var(--failed);
+  color: var(--failed);
+  padding: 8px 12px;
+  border-radius: 4px;
+  font-size: 13px;
+  margin-bottom: 12px;
+}
+
+.schedule-detail-block {
+  margin-bottom: 20px;
+  padding-bottom: 16px;
+  border-bottom: 1px solid var(--border);
+}
+
+.schedule-detail-block h4 {
+  margin: 0 0 10px 0;
+  font-size: 13px;
+  color: var(--fg-soft);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.schedule-detail-field {
+  display: flex;
+  gap: 12px;
+  padding: 4px 0;
+  font-size: 13px;
+  align-items: baseline;
+}
+
+.schedule-detail-label {
+  min-width: 130px;
+  color: var(--fg-soft);
+  font-family: monospace;
+  font-size: 12px;
+}
+
+.schedule-detail-value {
+  flex: 1;
+  word-break: break-all;
+}
+
+.schedule-detail-value code {
+  font-family: monospace;
+  background: var(--bg-soft);
+  padding: 1px 6px;
+  border-radius: 3px;
+}
+
+.schedule-detail-paused {
+  margin-top: 8px;
+  padding: 6px 10px;
+  background: rgba(200, 150, 50, 0.1);
+  color: #c89632;
+  border-radius: 4px;
+  font-size: 13px;
+}
+
+.schedule-detail-actions {
+  display: flex;
+  gap: 8px;
+  padding: 12px 0;
+  flex-wrap: wrap;
+}
+
+.schedule-detail-actions button {
+  padding: 6px 14px;
+  background: var(--bg-soft);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.schedule-detail-actions button:hover:not(:disabled) {
+  border-color: var(--running);
+}
+
+.schedule-detail-actions button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.schedule-detail-danger {
+  color: var(--failed) !important;
+}
+
+.schedule-hooks {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.schedule-hook {
+  display: flex;
+  gap: 12px;
+  padding: 6px 0;
+  font-size: 12px;
+  align-items: center;
+  flex-wrap: wrap;
+  border-bottom: 1px dashed var(--border);
+}
+
+.schedule-hook:last-child {
+  border-bottom: none;
+}
+
+.schedule-hook-kind {
+  background: var(--bg-soft);
+  padding: 1px 8px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  font-family: monospace;
+  font-size: 11px;
+}
+
+.schedule-hooks-note {
+  margin-top: 10px;
+  color: var(--fg-soft);
+  font-size: 11px;
+  font-style: italic;
+}
+
+.schedule-lineage {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.schedule-lineage-row {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  padding: 4px 0;
+  font-size: 12px;
+}
+
+.schedule-lineage-active {
+  font-weight: 600;
+}
+
+.schedule-lineage-version {
+  font-family: monospace;
+  min-width: 40px;
+  color: var(--fg-soft);
+}
+
+.schedule-lineage-defid {
+  font-family: monospace;
+  font-size: 11px;
+  background: var(--bg-soft);
+  padding: 1px 6px;
+  border-radius: 3px;
+}
+
+.schedule-lineage-tag {
+  background: var(--bg-soft);
+  color: var(--fg-soft);
+  padding: 0 6px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  font-size: 10px;
+  text-transform: uppercase;
+}
+
+.status-chip {
+  display: inline-block;
+  padding: 1px 8px;
+  border-radius: 8px;
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.status-completed {
+  background: #2d5a2d;
+  color: #b8e6b8;
+}
+
+.status-failed {
+  background: #5a2d2d;
+  color: #e6b8b8;
+}
+
+.status-skipped, .status-skipped_disabled, .status-decode_def {
+  background: #4a4a4a;
+  color: #c8c8c8;
+}
+
+/* Fork form modal — extends the existing .modal-overlay/.modal. */
+.modal-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 16px;
+}
+
+.modal-close {
+  background: none;
+  border: none;
+  color: var(--fg-soft);
+  font-size: 24px;
+  cursor: pointer;
+  padding: 0;
+  width: 24px;
+  height: 24px;
+}
+
+.modal-body {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.modal-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.modal-field > span {
+  font-size: 12px;
+  color: var(--fg-soft);
+  font-family: monospace;
+}
+
+.modal-field input,
+.modal-credentials-textarea {
+  padding: 6px 10px;
+  font-family: inherit;
+  font-size: 13px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--fg);
+}
+
+.modal-credentials-textarea {
+  font-family: monospace;
+  resize: vertical;
+}
+
+.modal-help {
+  background: var(--bg-soft);
+  padding: 8px 12px;
+  border-radius: 4px;
+  font-size: 11px;
+  color: var(--fg-soft);
+  line-height: 1.5;
+}
+
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.modal-actions button {
+  padding: 6px 16px;
+  border: 1px solid var(--border);
+  background: var(--bg-soft);
+  color: var(--fg);
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.modal-actions button[type="submit"] {
+  background: var(--running);
+  color: white;
+  border-color: var(--running);
+}
