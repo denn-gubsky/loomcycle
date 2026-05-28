@@ -3987,6 +3987,10 @@ func testMetricsWriteAndQuery(t *testing.T, s store.Store) {
 		metricsMakeSample(t, base.Add(-2*time.Second), 2, 1, 110<<20),
 		metricsMakeSample(t, base.Add(-1*time.Second), 3, 0, 95<<20),
 	}
+	// Cluster mode stamps replica_id; single-replica leaves it empty.
+	// Mix both shapes to assert the column round-trips and that an
+	// empty value comes back empty (not a spurious NULL→"" mismatch).
+	samples[1].ReplicaID = "replica-b"
 	for _, sa := range samples {
 		if err := s.MetricsWriteSample(ctx, sa); err != nil {
 			t.Fatalf("MetricsWriteSample: %v", err)
@@ -4011,6 +4015,13 @@ func testMetricsWriteAndQuery(t *testing.T, s store.Store) {
 	// Field round-trip on the first sample.
 	if got[0].ActiveRuns != 1 || got[0].QueuedRuns != 0 || got[0].LoomcycleRSSBytes != 100<<20 {
 		t.Errorf("sample[0] round-trip failed: %+v", got[0])
+	}
+	// replica_id round-trip: middle sample carries one, the others don't.
+	if got[0].ReplicaID != "" {
+		t.Errorf("sample[0] replica_id = %q, want empty", got[0].ReplicaID)
+	}
+	if got[1].ReplicaID != "replica-b" {
+		t.Errorf("sample[1] replica_id = %q, want %q", got[1].ReplicaID, "replica-b")
 	}
 }
 

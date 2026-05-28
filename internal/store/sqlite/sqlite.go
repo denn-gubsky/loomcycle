@@ -340,6 +340,7 @@ func (s *Store) migrate(ctx context.Context) error {
 		// the API endpoints under /v1/_metrics/* for read paths.
 		`CREATE TABLE IF NOT EXISTS process_samples (
 			sample_id                  TEXT    PRIMARY KEY,
+			replica_id                 TEXT,
 			sampled_at                 INTEGER NOT NULL,
 			active_runs                INTEGER NOT NULL,
 			queued_runs                INTEGER NOT NULL,
@@ -462,6 +463,12 @@ func (s *Store) migrate(ctx context.Context) error {
 		// successful iteration. Idempotent on fresh deploys (the
 		// CREATE TABLE above already declares it).
 		`ALTER TABLE runs ADD COLUMN provider TEXT`,
+		// v0.12.x replica_id on process_samples — lets a shared
+		// (cluster-mode, Postgres) table split per replica. SQLite never
+		// runs in cluster mode (boot refuses REPLICA_ID + sqlite), so this
+		// stays NULL here; added for schema/struct parity. Idempotent on
+		// fresh deploys (the CREATE TABLE above already declares it).
+		`ALTER TABLE process_samples ADD COLUMN replica_id TEXT`,
 	}
 	for _, q := range addColumns {
 		if _, err := s.db.ExecContext(ctx, q); err != nil {
@@ -4162,13 +4169,17 @@ func (s *Store) MetricsWriteSample(ctx context.Context, sample store.ProcessSamp
 	if sample.SystemMemAvailableMB != nil {
 		sysMemAvail = sql.NullInt64{Valid: true, Int64: int64(*sample.SystemMemAvailableMB)}
 	}
+	var replicaID sql.NullString
+	if sample.ReplicaID != "" {
+		replicaID = sql.NullString{Valid: true, String: sample.ReplicaID}
+	}
 	_, err := s.db.ExecContext(ctx, `INSERT INTO process_samples(
-		sample_id, sampled_at, active_runs, queued_runs,
+		sample_id, replica_id, sampled_at, active_runs, queued_runs,
 		loomcycle_rss_bytes, loomcycle_heap_alloc_bytes, loomcycle_heap_inuse_bytes,
 		loomcycle_num_goroutines, loomcycle_cpu_pct_x100,
 		system_cpu_pct_x100, system_mem_used_mb, system_mem_available_mb
-	) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
-		sample.SampleID, sample.SampledAt.UnixNano(), sample.ActiveRuns, sample.QueuedRuns,
+	) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		sample.SampleID, replicaID, sample.SampledAt.UnixNano(), sample.ActiveRuns, sample.QueuedRuns,
 		sample.LoomcycleRSSBytes, sample.LoomcycleHeapAlloc, sample.LoomcycleHeapInuse,
 		sample.LoomcycleGoroutines, sample.LoomcycleCPUPctX100,
 		sysCPU, sysMemUsed, sysMemAvail,
@@ -4195,7 +4206,7 @@ func (s *Store) MetricsSampleWindow(ctx context.Context, since, until time.Time,
 	// MintSampleID encodes sampled_at in its prefix — strictly
 	// monotonic per ns.
 	args := []any{since.UnixNano(), until.UnixNano()}
-	q := `SELECT sample_id, sampled_at, active_runs, queued_runs,
+	q := `SELECT sample_id, replica_id, sampled_at, active_runs, queued_runs,
 	             loomcycle_rss_bytes, loomcycle_heap_alloc_bytes, loomcycle_heap_inuse_bytes,
 	             loomcycle_num_goroutines, loomcycle_cpu_pct_x100,
 	             system_cpu_pct_x100, system_mem_used_mb, system_mem_available_mb
@@ -4216,16 +4227,20 @@ func (s *Store) MetricsSampleWindow(ctx context.Context, since, until time.Time,
 	for rows.Next() {
 		var (
 			rec                          store.ProcessSample
+			replicaID                    sql.NullString
 			sampledAtNs                  int64
 			sysCPU, sysMemU, sysMemAvail sql.NullInt64
 		)
 		if err := rows.Scan(
-			&rec.SampleID, &sampledAtNs, &rec.ActiveRuns, &rec.QueuedRuns,
+			&rec.SampleID, &replicaID, &sampledAtNs, &rec.ActiveRuns, &rec.QueuedRuns,
 			&rec.LoomcycleRSSBytes, &rec.LoomcycleHeapAlloc, &rec.LoomcycleHeapInuse,
 			&rec.LoomcycleGoroutines, &rec.LoomcycleCPUPctX100,
 			&sysCPU, &sysMemU, &sysMemAvail,
 		); err != nil {
 			return nil, "", fmt.Errorf("metrics: scan sample: %w", err)
+		}
+		if replicaID.Valid {
+			rec.ReplicaID = replicaID.String
 		}
 		rec.SampledAt = time.Unix(0, sampledAtNs).UTC()
 		if sysCPU.Valid {

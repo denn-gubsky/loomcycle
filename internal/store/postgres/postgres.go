@@ -1755,12 +1755,12 @@ func (s *Store) MetricsWriteSample(ctx context.Context, sample store.ProcessSamp
 		sysMemAvail = *sample.SystemMemAvailableMB
 	}
 	_, err := s.pool.Exec(ctx, `INSERT INTO process_samples(
-		sample_id, sampled_at, active_runs, queued_runs,
+		sample_id, replica_id, sampled_at, active_runs, queued_runs,
 		loomcycle_rss_bytes, loomcycle_heap_alloc_bytes, loomcycle_heap_inuse_bytes,
 		loomcycle_num_goroutines, loomcycle_cpu_pct_x100,
 		system_cpu_pct_x100, system_mem_used_mb, system_mem_available_mb
-	) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
-		sample.SampleID, sample.SampledAt, sample.ActiveRuns, sample.QueuedRuns,
+	) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
+		sample.SampleID, nullIfEmpty(sample.ReplicaID), sample.SampledAt, sample.ActiveRuns, sample.QueuedRuns,
 		sample.LoomcycleRSSBytes, sample.LoomcycleHeapAlloc, sample.LoomcycleHeapInuse,
 		sample.LoomcycleGoroutines, sample.LoomcycleCPUPctX100,
 		sysCPU, sysMemUsed, sysMemAvail,
@@ -1781,7 +1781,7 @@ func (s *Store) MetricsSampleWindow(ctx context.Context, since, until time.Time,
 	if limit > 1000 {
 		limit = 1000
 	}
-	q := `SELECT sample_id, sampled_at, active_runs, queued_runs,
+	q := `SELECT sample_id, replica_id, sampled_at, active_runs, queued_runs,
 	             loomcycle_rss_bytes, loomcycle_heap_alloc_bytes, loomcycle_heap_inuse_bytes,
 	             loomcycle_num_goroutines, loomcycle_cpu_pct_x100,
 	             system_cpu_pct_x100, system_mem_used_mb, system_mem_available_mb
@@ -1803,15 +1803,19 @@ func (s *Store) MetricsSampleWindow(ctx context.Context, since, until time.Time,
 	for rows.Next() {
 		var (
 			rec                          store.ProcessSample
+			replicaID                    *string
 			sysCPU, sysMemU, sysMemAvail *int
 		)
 		if err := rows.Scan(
-			&rec.SampleID, &rec.SampledAt, &rec.ActiveRuns, &rec.QueuedRuns,
+			&rec.SampleID, &replicaID, &rec.SampledAt, &rec.ActiveRuns, &rec.QueuedRuns,
 			&rec.LoomcycleRSSBytes, &rec.LoomcycleHeapAlloc, &rec.LoomcycleHeapInuse,
 			&rec.LoomcycleGoroutines, &rec.LoomcycleCPUPctX100,
 			&sysCPU, &sysMemU, &sysMemAvail,
 		); err != nil {
 			return nil, "", fmt.Errorf("metrics: scan sample: %w", err)
+		}
+		if replicaID != nil {
+			rec.ReplicaID = *replicaID
 		}
 		rec.SystemCPUPctX100 = sysCPU
 		rec.SystemMemUsedMB = sysMemU

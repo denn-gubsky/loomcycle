@@ -31,6 +31,10 @@ type Config struct {
 	// CollectSystem enables /proc/stat + /proc/meminfo reads
 	// (Linux only; ignored silently on other platforms).
 	CollectSystem bool
+	// ReplicaID stamps each sample so a shared (cluster-mode)
+	// process_samples table can be split per replica. Empty in
+	// single-replica mode. Sourced from LOOMCYCLE_REPLICA_ID.
+	ReplicaID string
 	// Logf is the log sink. nil → log.Printf.
 	Logf func(string, ...any)
 }
@@ -108,6 +112,7 @@ func (s *Sampler) sampleOnce(ctx context.Context, now time.Time) error {
 	runtime.ReadMemStats(&rt)
 	sample := store.ProcessSample{
 		SampleID:            store.MintSampleID(now),
+		ReplicaID:           s.cfg.ReplicaID,
 		SampledAt:           now.UTC(),
 		ActiveRuns:          active,
 		QueuedRuns:          queued,

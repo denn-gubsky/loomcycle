@@ -1,0 +1,6 @@
+# Generated per-run artifacts — never commit.
+results/
+docker-compose.gen.yaml
+nginx.gen.conf
+loomcycle.gen.yaml
+# Driver binary (built into circuit-stress/ by the sibling harness)

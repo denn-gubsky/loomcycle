@@ -101,6 +101,34 @@ func TestSampler_WritesWhenActive(t *testing.T) {
 	if got.LoomcycleHeapAlloc <= 0 {
 		t.Errorf("heap_alloc = %d, want > 0", got.LoomcycleHeapAlloc)
 	}
+	// Default config has no ReplicaID → single-replica mode stamps "".
+	if got.ReplicaID != "" {
+		t.Errorf("replica_id = %q, want empty (single-replica)", got.ReplicaID)
+	}
+}
+
+// TestSampler_StampsReplicaID: in cluster mode the sampler stamps
+// Config.ReplicaID on every sample so a shared process_samples table
+// can be split per replica.
+func TestSampler_StampsReplicaID(t *testing.T) {
+	fs := &fakeStore{}
+	sem := concurrency.New(8, 16, time.Second)
+	ctx := context.Background()
+	rel, err := sem.Acquire(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rel()
+	s := New(fs, sem, Config{Interval: time.Second, ReplicaID: "replica-3"})
+	if err := s.sampleOnce(ctx, time.Now()); err != nil {
+		t.Fatalf("sampleOnce: %v", err)
+	}
+	if len(fs.writes) != 1 {
+		t.Fatalf("got %d writes, want 1", len(fs.writes))
+	}
+	if got := fs.writes[0].ReplicaID; got != "replica-3" {
+		t.Errorf("replica_id = %q, want %q", got, "replica-3")
+	}
 }
 
 // TestSampler_GracefulStoreError: store returns error → sampler

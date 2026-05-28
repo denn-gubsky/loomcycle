@@ -1,0 +1,109 @@
+# test/load/cluster-mock — multi-replica mock-mode config.
+#
+# Cluster variant of test/load/circuit-stress/loomcycle.mock-fallback.yaml.
+# Same 3-agent pipeline, same [mock, mock-stable] retry+fallback tier, but
+# storage is driven ENTIRELY from env (LOOMCYCLE_STORAGE_BACKEND=postgres +
+# LOOMCYCLE_PG_DSN + LOOMCYCLE_PG_MAX_OPEN_CONNS) so every replica reads the
+# same yaml and differs only by LOOMCYCLE_REPLICA_ID. run-cluster-mock.sh
+# generates the per-circuit channels into the marked block, exactly like
+# run-mock-fallback.sh does for the single-replica config.
+#
+# Cluster-mode gate: LOOMCYCLE_REPLICA_ID (set per replica by the generated
+# compose) flips on the Postgres LISTEN/NOTIFY backplane — cross-replica
+# cancel, channel fan-out, singleton sweepers, db-backed quotas. See
+# docs/MULTI-REPLICA.md.
+#
+# NO storage: block here — env wins, and sharing one Postgres across N
+# replicas means the per-replica pool is sized by the run script from N to
+# stay under the container's max_connections (N × pool ≤ ~160).
+
+provider_priority:
+  - mock
+  - mock-stable
+
+tiers:
+  middle:
+    - { provider: mock, model: mock-generic }
+    - { provider: mock-stable, model: mock-generic }
+
+user_tiers:
+  default:
+    provider_priority: [mock, mock-stable]
+    tiers:
+      middle:
+        - { provider: mock, model: mock-generic }
+        - { provider: mock-stable, model: mock-generic }
+    fallback_on_error: true
+    max_fallback_attempts: 3
+    retry_attempts: 2
+
+# max_concurrent_runs is PER-REPLICA; cluster-wide = N × this. Kept high so
+# the per-replica pgxpool (sized from N by the run script) is the binding
+# admission constraint, mirroring the single-replica Scenario F finding that
+# the pool — not the semaphore — gates active runs.
+concurrency:
+  max_concurrent_runs: 2000
+  max_queue_depth: 30000
+  queue_timeout_ms: 600000
+  max_concurrent_runs_per_user: 0
+
+channels:
+  # ── BEGIN generated channels ── (managed by run-cluster-mock.sh)
+  # ── END generated channels ──
+
+agents:
+
+  researcher:
+    tier: middle
+    models:
+      middle:
+        - { provider: mock, model: mock-researcher }
+        - { provider: mock-stable, model: mock-researcher }
+    max_tokens: 1500
+    system_prompt: |
+      Mock researcher agent (cluster fallback-experiment yaml). Identical
+      to the single-replica mock-fallback config; the only difference is
+      this loomcycle runs as one of N cluster replicas behind a load
+      balancer sharing one Postgres.
+    allowed_tools: [Memory, Channel, Context]
+    memory_scopes: [user]
+    channels:
+      publish: ["research-done/*"]
+      subscribe: []
+
+  editor:
+    tier: middle
+    models:
+      middle:
+        - { provider: mock, model: mock-editor }
+        - { provider: mock-stable, model: mock-editor }
+    max_tokens: 1500
+    system_prompt: |
+      Mock editor agent. Subscribes to research-done/* — under the LB the
+      researcher and editor of one circuit often land on DIFFERENT
+      replicas, so this subscribe must traverse the loomcycle.channel
+      LISTEN/NOTIFY backplane to wake. That cross-replica delivery is
+      exactly what the channel-fan-out scenario exercises.
+    allowed_tools: [Memory, Channel, Context]
+    memory_scopes: [user]
+    channels:
+      publish: ["editing-done/*"]
+      subscribe: ["research-done/*"]
+
+  evaluator:
+    tier: middle
+    models:
+      middle:
+        - { provider: mock, model: mock-evaluator }
+        - { provider: mock-stable, model: mock-evaluator }
+    max_tokens: 1500
+    system_prompt: |
+      Mock evaluator agent. Same cross-replica subscribe semantics on
+      editing-done/*. The deterministic score is unaffected by which
+      replica or provider served any iteration.
+    allowed_tools: [Memory, Channel, Evaluation, Context]
+    memory_scopes: [user]
+    evaluation_scopes: [submit_any]
+    channels:
+      publish: []
+      subscribe: ["editing-done/*"]

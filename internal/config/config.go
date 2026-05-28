@@ -999,6 +999,19 @@ type Env struct {
 	// expected per-iteration time so live runs in long tool calls
 	// aren't sweeped. Env: LOOMCYCLE_HEARTBEAT_STALE_MS.
 	HeartbeatStaleAfter time.Duration
+	// ReplicasSweepInterval is the dead-replica reaper's tick rate.
+	// Default 60s. Tunable mostly for tests / crash-recovery load
+	// experiments — leave at default in production.
+	// Env: LOOMCYCLE_REPLICAS_SWEEP_INTERVAL_MS.
+	ReplicasSweepInterval time.Duration
+	// ReplicasStaleAfter is the cutoff for marking a replica's heartbeat
+	// stale and reaping its in-flight runs (status='failed',
+	// stop_reason='owner_replica_dead') + reclaiming its quota.
+	// Default 90s — should be > the replica heartbeat interval (30s) by
+	// enough margin to absorb a missed beat. Crash-recovery load tests
+	// drive it down to ~15s so the reap fires in-window.
+	// Env: LOOMCYCLE_REPLICAS_STALE_AFTER_MS.
+	ReplicasStaleAfter time.Duration
 	// SessionLockGCInterval is how often the v0.5.0 session-lock map
 	// GC runs. Default 5 minutes. Env:
 	// LOOMCYCLE_SESSION_LOCK_GC_INTERVAL_MS.
@@ -1493,6 +1506,16 @@ func Load(path string) (*Config, error) {
 	if v := os.Getenv("LOOMCYCLE_HEARTBEAT_STALE_MS"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
 			cfg.Env.HeartbeatStaleAfter = time.Duration(n) * time.Millisecond
+		}
+	}
+	if v := os.Getenv("LOOMCYCLE_REPLICAS_SWEEP_INTERVAL_MS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			cfg.Env.ReplicasSweepInterval = time.Duration(n) * time.Millisecond
+		}
+	}
+	if v := os.Getenv("LOOMCYCLE_REPLICAS_STALE_AFTER_MS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			cfg.Env.ReplicasStaleAfter = time.Duration(n) * time.Millisecond
 		}
 	}
 	if v := os.Getenv("LOOMCYCLE_SESSION_LOCK_GC_INTERVAL_MS"); v != "" {

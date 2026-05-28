@@ -1215,7 +1215,9 @@ func main() {
 		// reaps dead replicas + closes Phases 2 and 3 crash-safety gaps.
 		advisoryLock = coord.NewAdvisoryLock(pgStore.Pool())
 		replicasSweeper := coord.NewReplicasSweeper(pgStore.Pool(), coord.ReplicasSweeperConfig{
-			Lock: advisoryLock,
+			Lock:       advisoryLock,
+			Interval:   cfg.Env.ReplicasSweepInterval,
+			StaleAfter: cfg.Env.ReplicasStaleAfter,
 		})
 		go replicasSweeper.Run(bgCtx)
 
@@ -1385,6 +1387,7 @@ func main() {
 		metricsSampler := metrics.New(storeIface, sem, metrics.Config{
 			Interval:      cfg.Env.MetricsSampleInterval,
 			CollectSystem: cfg.Env.MetricsCollectSystem,
+			ReplicaID:     cfg.Env.ReplicaID,
 		})
 		go metricsSampler.Run(bgCtx)
 		srv.SetMetricsSampler(metricsSampler)
