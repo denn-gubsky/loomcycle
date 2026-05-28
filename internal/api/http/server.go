@@ -1625,6 +1625,11 @@ func (s *Server) Mux() http.Handler {
 	mux.Handle("GET /v1/_metrics/samples", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleMetricsSamples))))
 	mux.Handle("GET /v1/_metrics/runs/{run_id}", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleMetricsRunSummary))))
 	mux.Handle("GET /v1/_metrics/summary", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleMetricsSummary))))
+	// v1.x Prometheus text-format scrape endpoint. Live-read of runtime
+	// + concurrency state — no DB hop, no instrumentation surface.
+	// Bearer-authed identically to /v1/_metrics/*. See
+	// rfcs/observability-profiles.md Decisions 1 + 3.
+	mux.Handle("GET /metrics", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleMetricsProm))))
 	// v0.10.1 — per-tenant fairness inspection. Bearer-authed snapshot
 	// of the global semaphore + per-user counts. Sister of the
 	// /v1/_metrics/* family; same auth posture.
