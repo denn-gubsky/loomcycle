@@ -121,6 +121,15 @@ type Connector interface {
 	// through this single Connector method.
 	MCPServerDef(ctx context.Context, input json.RawMessage) (ToolResult, error)
 
+	// ScheduleDef — v1.x dynamic scheduled-runs registration substrate.
+	// Op-discriminated (create / fork / get / list / retire). Operator-
+	// admin-only: NOT auto-attached to every agent's per-run dispatcher.
+	// Reachable via POST /v1/_scheduledef admin endpoint, the LoomCycle
+	// MCP meta-tool `scheduledef`, the gRPC ScheduleDef RPC, and the TS
+	// adapter's client.scheduleDef() method — all four dispatch through
+	// this single Connector method.
+	ScheduleDef(ctx context.Context, input json.RawMessage) (ToolResult, error)
+
 	// --- Pause/Resume/Snapshot (real in v0.8.18) ---
 	//
 	// Wire shapes finalised v0.8.15. Real implementations landed in

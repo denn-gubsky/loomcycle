@@ -575,6 +575,29 @@ func AgentDefPolicy(ctx context.Context) AgentDefPolicyValue {
 	return v
 }
 
+type ctxKeyScheduleDefPolicy struct{}
+
+// ScheduleDefPolicyValue is the per-agent ScheduleDef-tool access
+// policy (v1.x RFC E). Same shape as AgentDefPolicyValue + same
+// "self / descendants / named:<n> / any" closed scope set.
+// Default-deny when Scopes is empty.
+type ScheduleDefPolicyValue struct {
+	Scopes   []string
+	SelfName string
+}
+
+// WithScheduleDefPolicy attaches the policy to ctx.
+func WithScheduleDefPolicy(ctx context.Context, p ScheduleDefPolicyValue) context.Context {
+	return context.WithValue(ctx, ctxKeyScheduleDefPolicy{}, p)
+}
+
+// ScheduleDefPolicy returns the policy from ctx. Zero value =
+// default-deny.
+func ScheduleDefPolicy(ctx context.Context) ScheduleDefPolicyValue {
+	v, _ := ctx.Value(ctxKeyScheduleDefPolicy{}).(ScheduleDefPolicyValue)
+	return v
+}
+
 // ctxKeySkillDefPolicy carries the v0.8.22 SkillDef-tool capability
 // gate. Mirrors AgentDefPolicy shape, sans the SelfName field —
 // skills have no agent identity so a "self" scope is meaningless.

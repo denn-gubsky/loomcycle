@@ -973,6 +973,17 @@ func main() {
 	// (operator-admin-only); reached via Connector.MCPServerDef + the
 	// admin endpoint + the LoomCycle MCP meta-tool.
 	srv.SetMCPServerDefTool(mcpServerDefTool)
+	// v1.x — wire the ScheduleDef substrate tool. Same operator-admin-
+	// only posture; reached via Connector.ScheduleDef + the admin
+	// endpoint + the future LoomCycle MCP meta-tool. Tool needs only
+	// the store + cfg (no MCP-pool dependency) so this could move
+	// earlier — kept next to MCPServerDef for substrate-wiring locality.
+	srv.SetScheduleDefTool(&builtin.ScheduleDef{
+		Store:               storeIface,
+		Cfg:                 cfg,
+		MaxDefinitionBytes:  cfg.Env.AgentDefMaxDefinitionBytes,
+		MaxDescriptionBytes: cfg.Env.AgentDefMaxDescriptionBytes,
+	})
 	// Surface the resolved build identifiers via /healthz so the Web UI
 	// can render the running binary's real version instead of a stale
 	// hard-coded string. Mirrors what gRPC's Health RPC has reported
