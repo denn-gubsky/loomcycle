@@ -358,7 +358,7 @@ func TestMockDriver_UsageReflectsRequestSize(t *testing.T) {
 	}
 }
 
-// TestMockDriver_ListModelsReturnsKnownSet — sanity that the four
+// TestMockDriver_ListModelsReturnsKnownSet — sanity that the five
 // model ids are reported. The resolver pre-populates the matrix
 // from this list, so a typo here cascades into agent 503s.
 func TestMockDriver_ListModelsReturnsKnownSet(t *testing.T) {
@@ -372,6 +372,7 @@ func TestMockDriver_ListModelsReturnsKnownSet(t *testing.T) {
 		"mock-editor":     false,
 		"mock-evaluator":  false,
 		"mock-generic":    false,
+		"mock-mcp-caller": false,
 	}
 	for _, m := range models {
 		if _, ok := want[m]; !ok {

@@ -150,6 +150,7 @@ func (d *Driver) ListModels(_ context.Context) ([]string, error) {
 		"mock-editor",
 		"mock-evaluator",
 		"mock-generic",
+		"mock-mcp-caller",
 	}, nil
 }
 
@@ -184,6 +185,11 @@ func (d *Driver) Call(ctx context.Context, req providers.Request) (<-chan provid
 		events = scriptEditor(step, circuitID, req.Messages)
 	case "mock-evaluator":
 		events = scriptEvaluator(step, circuitID, req.Messages)
+	case "mock-mcp-caller":
+		// v0.12.7 compound-test variant — inspects req.Tools for
+		// mcp__-prefixed names and emits tool_use calls against
+		// them with user_id extracted from the prompt.
+		events = scriptMCPCaller(step, extractMCPTools(req), extractUserID(req))
 	default:
 		// mock-generic + anything unpinned. Single text turn, done.
 		// Usage is attached to EventDone below by finalizeUsage —

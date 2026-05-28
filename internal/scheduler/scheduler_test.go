@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -438,3 +439,127 @@ func TestScheduler_DecodeFailureRecordedAsFailed(t *testing.T) {
 
 // ensure no goroutine leaks across tests.
 var _ = atomic.Int32{}
+
+// TestScheduler_TickFiresInParallel verifies the v0.12.7 concurrency
+// change: when N due rows are present at tick time, they fire in
+// parallel up to MaxConcurrentFires goroutines. The test stages N rows
+// with a fake runner that blocks for ~100ms each; if firing were
+// serial, the wall would be ~N*100ms. With concurrent fire and 8 slots
+// the wall should be roughly N/8 * 100ms — the test asserts that
+// observed wall < (serial-wall * 0.5) as a robust bound that doesn't
+// flake under loaded CI.
+func TestScheduler_TickFiresInParallel(t *testing.T) {
+	const N = 24
+	enabled := true
+	def := scheduleDef{Agent: "researcher", Schedule: "0 * * * *", Enabled: &enabled}
+
+	st, err := sqlite.Open(":memory:")
+	if err != nil {
+		t.Fatalf("sqlite.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	ctx := context.Background()
+	defJSON, _ := json.Marshal(def)
+	for i := 0; i < N; i++ {
+		defID := fmt.Sprintf("sd-par-%03d", i)
+		name := fmt.Sprintf("sched-par-%03d", i)
+		if _, err := st.ScheduleDefCreate(ctx, store.ScheduleDefRow{DefID: defID, Name: name, Definition: defJSON}); err != nil {
+			t.Fatalf("def create %d: %v", i, err)
+		}
+		_ = st.ScheduleDefSetActive(ctx, name, defID, "test")
+		_ = st.ScheduleRunStateSeed(ctx, defID, time.Now().Add(-time.Minute))
+	}
+	const perFireDelay = 100 * time.Millisecond
+	fr := &fakeRunner{onRun: func(_ runner.RunInput) { time.Sleep(perFireDelay) }}
+	sched := New(Config{TickInterval: time.Hour, MaxConcurrentFires: 8}, st, fr, nil, nil, t.Logf)
+
+	start := time.Now()
+	sched.tick(ctx)
+	wall := time.Since(start)
+	serialWall := time.Duration(N) * perFireDelay
+	if wall > serialWall/2 {
+		t.Errorf("tick wall = %v, want < %v (serial would be %v); parallel-fire change appears to have regressed",
+			wall, serialWall/2, serialWall)
+	}
+	if got := len(fr.Calls()); got != N {
+		t.Errorf("got %d fires, want %d (some due rows were not fired)", got, N)
+	}
+}
+
+// TestScheduler_TickRespectsMaxConcurrentFires verifies the slot
+// semaphore actually bounds in-flight fires. Sets MaxConcurrentFires=4
+// against 12 due rows + per-fire 80ms delay, then asserts wall is at
+// least 3 * delay (i.e., 3 batches required to drain).
+func TestScheduler_TickRespectsMaxConcurrentFires(t *testing.T) {
+	const N = 12
+	const cap = 4
+	const perFireDelay = 80 * time.Millisecond
+	enabled := true
+	def := scheduleDef{Agent: "researcher", Schedule: "0 * * * *", Enabled: &enabled}
+
+	st, err := sqlite.Open(":memory:")
+	if err != nil {
+		t.Fatalf("sqlite.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	ctx := context.Background()
+	defJSON, _ := json.Marshal(def)
+	for i := 0; i < N; i++ {
+		defID := fmt.Sprintf("sd-cap-%03d", i)
+		name := fmt.Sprintf("sched-cap-%03d", i)
+		_, _ = st.ScheduleDefCreate(ctx, store.ScheduleDefRow{DefID: defID, Name: name, Definition: defJSON})
+		_ = st.ScheduleDefSetActive(ctx, name, defID, "test")
+		_ = st.ScheduleRunStateSeed(ctx, defID, time.Now().Add(-time.Minute))
+	}
+	fr := &fakeRunner{onRun: func(_ runner.RunInput) { time.Sleep(perFireDelay) }}
+	sched := New(Config{TickInterval: time.Hour, MaxConcurrentFires: cap}, st, fr, nil, nil, t.Logf)
+
+	start := time.Now()
+	sched.tick(ctx)
+	wall := time.Since(start)
+	// 12 fires / 4 cap = 3 batches minimum. Allow some slack on the
+	// lower bound (single batch should NOT drain everything).
+	minWall := 3*perFireDelay - 20*time.Millisecond
+	if wall < minWall {
+		t.Errorf("tick wall = %v, want >= %v (cap=%d should serialise into 3 batches)",
+			wall, minWall, cap)
+	}
+}
+
+// TestScheduler_PanicInFireOneIsRecovered ensures a panic inside one
+// fire doesn't propagate up to kill the sweeper. The fake runner
+// panics on the first call; subsequent due rows still fire normally.
+func TestScheduler_PanicInFireOneIsRecovered(t *testing.T) {
+	enabled := true
+	def := scheduleDef{Agent: "researcher", Schedule: "0 * * * *", Enabled: &enabled}
+
+	st, err := sqlite.Open(":memory:")
+	if err != nil {
+		t.Fatalf("sqlite.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	ctx := context.Background()
+	defJSON, _ := json.Marshal(def)
+	for i := 0; i < 3; i++ {
+		defID := fmt.Sprintf("sd-panic-%d", i)
+		name := fmt.Sprintf("sched-panic-%d", i)
+		_, _ = st.ScheduleDefCreate(ctx, store.ScheduleDefRow{DefID: defID, Name: name, Definition: defJSON})
+		_ = st.ScheduleDefSetActive(ctx, name, defID, "test")
+		_ = st.ScheduleRunStateSeed(ctx, defID, time.Now().Add(-time.Minute))
+	}
+	var calls atomic.Int32
+	fr := &fakeRunner{onRun: func(_ runner.RunInput) {
+		n := calls.Add(1)
+		if n == 1 {
+			panic("test panic — should be recovered")
+		}
+	}}
+	sched := New(Config{TickInterval: time.Hour, MaxConcurrentFires: 8}, st, fr, nil, nil, t.Logf)
+
+	// The tick should return without panicking even though one
+	// goroutine panicked. Survivors must still record results.
+	sched.tick(ctx)
+	if got := calls.Load(); got != 3 {
+		t.Errorf("calls = %d, want 3 (panic-recovery should allow the other fires to complete)", got)
+	}
+}
