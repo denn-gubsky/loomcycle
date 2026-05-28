@@ -1023,6 +1023,31 @@ type Store interface {
 	// the injected signFn. Idempotent; boot-time-only.
 	BackfillMCPServerDefContentSHA256(ctx context.Context, signFn func(name string, def []byte) (string, error)) (int, error)
 
+	// ---- v1.x RFC E ScheduleDef substrate ----
+	//
+	// Fourth substrate primitive after AgentDef + SkillDef + MCPServerDef.
+	// Same shape (per-name lock, monotonic versioning, append-only
+	// definition, active-pointer overlay, retire flag). The Definition
+	// payload carries the schedule body (agent, cron, user_id,
+	// user_credentials, on_complete, etc.) — see
+	// internal/tools/builtin/scheduledef.go for the schema.
+	//
+	// Coexists with the static yaml `scheduled_runs:` block: yaml
+	// entries stay boot-loaded as templates; per-user forks live in
+	// the substrate with versioning + lineage. Name collisions with
+	// yaml entries are refused at the tool layer (create), allowed
+	// at the tool layer (fork against a yaml-defined template name).
+
+	ScheduleDefCreate(ctx context.Context, row ScheduleDefRow) (ScheduleDefRow, error)
+	ScheduleDefGet(ctx context.Context, defID string) (ScheduleDefRow, error)
+	ScheduleDefGetByNameVersion(ctx context.Context, name string, version int) (ScheduleDefRow, error)
+	ScheduleDefListByName(ctx context.Context, name string) ([]ScheduleDefRow, error)
+	ScheduleDefListChildren(ctx context.Context, parentDefID string) ([]ScheduleDefRow, error)
+	ScheduleDefListNames(ctx context.Context) ([]ScheduleDefNameSummary, error)
+	ScheduleDefSetActive(ctx context.Context, name, defID, promotedByAgentID string) error
+	ScheduleDefGetActive(ctx context.Context, name string) (ScheduleDefRow, error)
+	ScheduleDefSetRetired(ctx context.Context, defID string, retired bool) error
+
 	// ---- Evaluation ----
 	//
 	// `Evaluation` is the score-attached-to-(run, def) primitive.
@@ -1682,6 +1707,42 @@ type MCPServerDefActiveEntry struct {
 	PromotedByAgentID string    `json:"promoted_by_agent_id,omitempty"`
 }
 
+// ScheduleDefRow mirrors AgentDefRow / SkillDefRow / MCPServerDefRow
+// — same identity + lineage + retire flag shape. The Definition
+// payload carries the JSON-encoded schedule body (cron expression,
+// agent name, user_id, user_credentials map, on_complete hooks).
+// v1.x RFC E.
+type ScheduleDefRow struct {
+	DefID                  string          `json:"def_id"`
+	Name                   string          `json:"name"`
+	Version                int             `json:"version"`
+	ParentDefID            string          `json:"parent_def_id,omitempty"`
+	Definition             json.RawMessage `json:"definition"`
+	Description            string          `json:"description,omitempty"`
+	CreatedAt              time.Time       `json:"created_at"`
+	CreatedByAgentID       string          `json:"created_by_agent_id,omitempty"`
+	CreatedByRunID         string          `json:"created_by_run_id,omitempty"`
+	Retired                bool            `json:"retired"`
+	BootstrappedFromStatic bool            `json:"bootstrapped_from_static"`
+}
+
+// ScheduleDefNameSummary mirrors the AgentDef equivalent.
+type ScheduleDefNameSummary struct {
+	Name          string    `json:"name"`
+	VersionCount  int       `json:"version_count"`
+	ActiveDefID   string    `json:"active_def_id,omitempty"`
+	LatestVersion int       `json:"latest_version"`
+	LastUpdated   time.Time `json:"last_updated"`
+}
+
+// ScheduleDefActiveEntry mirrors the AgentDef equivalent.
+type ScheduleDefActiveEntry struct {
+	Name              string    `json:"name"`
+	DefID             string    `json:"def_id"`
+	PromotedAt        time.Time `json:"promoted_at"`
+	PromotedByAgentID string    `json:"promoted_by_agent_id,omitempty"`
+}
+
 // EvaluationRow is one row in the evaluations table.
 //
 // DefID is denormalised from runs.agent_def_id at submit time —
@@ -1762,6 +1823,10 @@ var ErrSkillDefParentNotFound = &SubstrateError{Code: "parent_not_found", Msg: "
 // ErrMCPServerDefParentNotFound mirrors the AgentDef + SkillDef
 // pattern for the v0.9.x MCPServerDef substrate.
 var ErrMCPServerDefParentNotFound = &SubstrateError{Code: "parent_not_found", Msg: "mcp_server_def: parent_def_id does not exist"}
+
+// ErrScheduleDefParentNotFound mirrors the AgentDef + SkillDef +
+// MCPServerDef pattern for the v1.x RFC E ScheduleDef substrate.
+var ErrScheduleDefParentNotFound = &SubstrateError{Code: "parent_not_found", Msg: "schedule_def: parent_def_id does not exist"}
 
 // ErrAgentDefImmutable is returned by store-layer assertions if
 // someone tries to UPDATE an agent_defs row's definition column.

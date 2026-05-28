@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/robfig/cron/v3"
 	"gopkg.in/yaml.v3"
 
 	"github.com/denn-gubsky/loomcycle/internal/agents"
@@ -91,6 +92,22 @@ type Config struct {
 	// Re-uses the existing Memory scope vocabulary (agent / user)
 	// plus a new "global" scope for cross-tenant fan-out streams.
 	Channels map[string]Channel `yaml:"channels"`
+
+	// ScheduledRuns is the v1.x RFC E scheduled-runs registry. Each
+	// entry declares either a TEMPLATE (no user_id; orchestrators
+	// fork per-user via the ScheduleDef tool) or a STANDALONE
+	// schedule (operator-owned periodic cron with explicit user_id +
+	// user_credentials_from_env).
+	//
+	// Empty / nil = the scheduled-runs subsystem is effectively
+	// disabled (no yaml templates; substrate forks still work via
+	// ScheduleDef tool ops). When set, yaml entries get bootstrapped
+	// into v1 substrate rows on first fork — same posture as
+	// cfg.Agents + agent_defs.
+	//
+	// See `Context.help scheduled-runs` for the operator reference
+	// and rfcs/scheduled-agent-runs.md for the locked design.
+	ScheduledRuns map[string]ScheduledRun `yaml:"scheduled_runs"`
 
 	// Interruption is the v0.8.16 top-level config block for the
 	// Interruption tool. Operator picks the delivery backend
@@ -783,6 +800,113 @@ func (c Channel) PeriodDuration() (time.Duration, error) {
 type AgentChannelACL struct {
 	Publish   []string `yaml:"publish"`
 	Subscribe []string `yaml:"subscribe"`
+}
+
+// ScheduledRun is one entry in the v1.x RFC E `scheduled_runs:` yaml
+// block. Two entry styles share this shape; the validator picks the
+// path by inspecting `UserID`:
+//
+//   - TEMPLATE (UserID empty): orchestrators fork per user via the
+//     ScheduleDef tool; the template supplies the agent + prompt +
+//     per-tier cron defaults + required_credentials manifest.
+//   - STANDALONE (UserID set): operator-owned periodic cron with
+//     explicit identity. `UserCredentialsFromEnv` resolves
+//     per-credential bearers from the env allowlist at boot.
+//
+// See rfcs/scheduled-agent-runs.md and `Context.help scheduled-runs`.
+type ScheduledRun struct {
+	// Agent is the agent name to invoke. Must resolve via lookup.Agent
+	// (static cfg.Agents or substrate). Required.
+	Agent string `yaml:"agent"`
+
+	// Prompt is the input segments. Operators typically use
+	// `trusted-text` here. Required.
+	Prompt []ScheduledRunSegment `yaml:"prompt"`
+
+	// Schedule is the cron expression (standard 5-field form per
+	// `robfig/cron/v3`'s ParseStandard). For STANDALONE entries this
+	// is required; for TEMPLATE entries it's optional (replaced by
+	// UserTierSchedules per-tier defaults).
+	Schedule string `yaml:"schedule"`
+
+	// UserTierSchedules is the per-tier cron map for TEMPLATE entries.
+	// Keys are operator-named tiers ("low" / "middle" / "high" /
+	// operator-defined); values are cron expressions. Forks pick a
+	// tier via the ScheduleDef fork op's `tier` overlay field, OR
+	// supply an explicit `schedule` override.
+	//
+	// Mutually exclusive with `Schedule:` — a template can't fix one
+	// cron AND offer per-tier defaults.
+	UserTierSchedules map[string]string `yaml:"user_tier_schedules"`
+
+	// RequiredCredentials lists the credential KEYS that forks must
+	// populate in `user_credentials`. The fork op refuses with a
+	// loud `ErrCredentialsIncomplete` if any required key is missing.
+	// Names map to mcp_servers.<name> by convention; see
+	// `Context.help per-run-credentials` (RFC F).
+	RequiredCredentials []string `yaml:"required_credentials"`
+
+	// Timezone is the cron-interpretation tz (IANA name, e.g.
+	// "Europe/Berlin"). Empty defaults to UTC. Per RFC E sharp edge.
+	Timezone string `yaml:"timezone"`
+
+	// Enabled is the operator-yaml kill-switch. False = the sweeper
+	// skips this schedule entirely without removing the entry. Useful
+	// for staged rollouts + emergency disable.
+	Enabled bool `yaml:"enabled"`
+
+	// CatchUpMax bounds retroactive runs after a pause/outage. 0
+	// (default) = no catch-up (sweeper runs at most ONCE on resume);
+	// N > 0 = up to N retroactive fires. Per RFC E sharp edge.
+	CatchUpMax int `yaml:"catch_up_max"`
+
+	// UserID is the run's identity anchor for STANDALONE entries.
+	// Empty = TEMPLATE entry (orchestrators fork with their per-user
+	// identity supplied via the ScheduleDef tool overlay).
+	UserID string `yaml:"user_id"`
+
+	// UserCredentialsFromEnv maps credential KEYS to env-var names
+	// for STANDALONE entries. The env var must be in the LOOMCYCLE_*
+	// allowlist (validated at config-load). Templates set their
+	// credentials via fork-time overlay; STANDALONE schedules use
+	// this env-indirection escape valve.
+	UserCredentialsFromEnv map[string]string `yaml:"user_credentials_from_env"`
+
+	// OnComplete is the closed-set delivery hooks fired after a
+	// successful run. Kinds: channel.publish, mcp.call, memory.set.
+	// Operator-yaml authoring. Runtime hooks added via the admin HTTP
+	// surface live in the substrate state, not here.
+	OnComplete []ScheduledRunHook `yaml:"on_complete"`
+}
+
+// ScheduledRunSegment mirrors the loop.PromptSegment wire shape but
+// stays in the config layer to avoid a circular import. The runtime
+// converts at sweeper-fire time.
+type ScheduledRunSegment struct {
+	Role    string                          `yaml:"role"`
+	Content []ScheduledRunSegmentContent    `yaml:"content"`
+}
+
+// ScheduledRunSegmentContent mirrors the loop.PromptSegmentContent wire shape.
+type ScheduledRunSegmentContent struct {
+	Type string `yaml:"type"`
+	Text string `yaml:"text"`
+}
+
+// ScheduledRunHook is one entry in OnComplete. Kind is enum-restricted
+// at validation time (`channel.publish` / `mcp.call` / `memory.set`).
+// The remaining fields are kind-specific; the dispatcher consults Kind
+// to know which fields to read. JSON-as-yaml shape (operators can use
+// inline yaml shortcuts).
+type ScheduledRunHook struct {
+	Kind    string                 `yaml:"kind"`
+	Channel string                 `yaml:"channel"`      // for kind=channel.publish
+	Server  string                 `yaml:"server"`       // for kind=mcp.call
+	Tool    string                 `yaml:"tool"`         // for kind=mcp.call
+	Scope   string                 `yaml:"scope"`        // for kind=memory.set
+	Key     string                 `yaml:"key"`          // for kind=memory.set
+	Args    map[string]interface{} `yaml:"args"`         // for kind=mcp.call
+	Payload map[string]interface{} `yaml:"payload"`      // for kind=channel.publish + memory.set value
 }
 
 // MCPServer declares one MCP server. Transport "stdio" or "http".
@@ -2845,6 +2969,61 @@ func validate(c *Config) error {
 			}
 		default:
 			return fmt.Errorf("mcp_servers.%s: unknown transport %q", name, srv.Transport)
+		}
+	}
+	// v1.x RFC E scheduled_runs validation. Cron syntax parses,
+	// agent name resolves (statically — substrate-active checks are
+	// deferred to runtime because the substrate isn't loaded at
+	// config-load time), on_complete kinds in closed set, env-allowlist
+	// for from_env references.
+	for name, sr := range c.ScheduledRuns {
+		if name == "" {
+			return fmt.Errorf("scheduled_runs: empty schedule name")
+		}
+		if sr.Agent == "" {
+			return fmt.Errorf("scheduled_runs.%s: agent is required", name)
+		}
+		if _, ok := c.Agents[sr.Agent]; !ok {
+			return fmt.Errorf("scheduled_runs.%s: agent %q not declared in cfg.Agents (substrate-only agents are resolved at runtime; declare a yaml stub if you want compile-time validation)", name, sr.Agent)
+		}
+		// Mutual exclusion: standalone-schedule vs template-with-tier-defaults.
+		if sr.Schedule != "" && len(sr.UserTierSchedules) > 0 {
+			return fmt.Errorf("scheduled_runs.%s: cannot set both schedule: and user_tier_schedules: (pick one — schedule for standalone, user_tier_schedules for template)", name)
+		}
+		// Validate cron expressions where present. robfig/cron/v3
+		// ParseStandard is the canonical 5-field parser the sweeper
+		// uses; we validate against the same.
+		if sr.Schedule != "" {
+			if _, err := cron.ParseStandard(sr.Schedule); err != nil {
+				return fmt.Errorf("scheduled_runs.%s: invalid cron expression %q: %w", name, sr.Schedule, err)
+			}
+		}
+		for tier, cronExpr := range sr.UserTierSchedules {
+			if _, err := cron.ParseStandard(cronExpr); err != nil {
+				return fmt.Errorf("scheduled_runs.%s: user_tier_schedules.%s: invalid cron expression %q: %w", name, tier, cronExpr, err)
+			}
+		}
+		if sr.CatchUpMax < 0 {
+			return fmt.Errorf("scheduled_runs.%s: catch_up_max must be >= 0", name)
+		}
+		// Validate on_complete kinds.
+		for i, hook := range sr.OnComplete {
+			switch hook.Kind {
+			case "channel.publish":
+				if hook.Channel == "" {
+					return fmt.Errorf("scheduled_runs.%s.on_complete[%d]: channel required for channel.publish", name, i)
+				}
+			case "mcp.call":
+				if hook.Server == "" || hook.Tool == "" {
+					return fmt.Errorf("scheduled_runs.%s.on_complete[%d]: server + tool required for mcp.call", name, i)
+				}
+			case "memory.set":
+				if hook.Scope == "" || hook.Key == "" {
+					return fmt.Errorf("scheduled_runs.%s.on_complete[%d]: scope + key required for memory.set", name, i)
+				}
+			default:
+				return fmt.Errorf("scheduled_runs.%s.on_complete[%d]: unknown kind %q (want: channel.publish | mcp.call | memory.set)", name, i, hook.Kind)
+			}
 		}
 	}
 	// v0.9.0 Vector Memory: validate the memory.embedder block when
