@@ -1,0 +1,8 @@
+{
+  "_comment": "Datadog dashboard placeholder. The Profile C story is wiring + query reference, not a tenant-bound dashboard JSON — Datadog dashboards reference your org's specific tag values, service names, and metric retention setup that this repo cannot author without a Datadog account. Operators with an account follow the README walkthrough to build the dashboard against their own org, then optionally contribute the export back to this repo. See README.md > 'Authoring the dashboard'.",
+  "_walkthrough": "https://github.com/denn-gubsky/loomcycle/blob/main/examples/observability/datadog/README.md#authoring-the-dashboard",
+  "title": "Loomcycle overview (placeholder)",
+  "description": "Placeholder — replace with operator-authored export from /api/v1/dashboard/<id>",
+  "widgets": [],
+  "layout_type": "ordered"
+}
