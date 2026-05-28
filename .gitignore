@@ -73,3 +73,8 @@ internal/webui/dist/*
 # run; large + dated. The case YAMLs + agent prompts under bench/ ARE
 # committed.
 bench/results/
+
+# Playwright MCP session logs (per-snapshot YAML + per-page console
+# logs). Created when an agent drives a headless browser via the
+# playwright MCP tool; transient, large, and never useful in git.
+.playwright-mcp/
