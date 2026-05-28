@@ -182,6 +182,14 @@ func Run(t *testing.T, factory Factory) {
 		{"MCPServerDefRetireReversible", testMCPServerDefRetireReversible},
 		{"MCPServerDefContentSHA256RoundTrip", testMCPServerDefContentSHA256RoundTrip},
 		{"BackfillMCPServerDefContentSHA256", testBackfillMCPServerDefContentSHA256},
+		// v1.x RFC E ScheduleDef substrate — same shape minus content_sha256.
+		{"ScheduleDefCreateAndGet", testScheduleDefCreateAndGet},
+		{"ScheduleDefVersionMonotonic", testScheduleDefVersionMonotonic},
+		{"ScheduleDefActivePointerIdempotent", testScheduleDefActivePointerIdempotent},
+		{"ScheduleDefRetireReversible", testScheduleDefRetireReversible},
+		{"ScheduleDefParentNotFound", testScheduleDefParentNotFound},
+		{"ScheduleDefListByName", testScheduleDefListByName},
+		{"ScheduleDefListChildren", testScheduleDefListChildren},
 		{"EvaluationSubmitAndAggregate", testEvaluationSubmitAndAggregate},
 		{"EvaluationAggregateWithLineage", testEvaluationAggregateWithLineage},
 		// v0.8.x Process-resource metrics sampler
@@ -3859,6 +3867,150 @@ func testBackfillMCPServerDefContentSHA256(t *testing.T, s store.Store) {
 	got, _ := s.MCPServerDefGet(ctx, "md-bf-0")
 	if got.ContentSHA256 != "sha256:mcp-bf-a-hash" {
 		t.Errorf("backfill hash = %q", got.ContentSHA256)
+	}
+}
+
+// ---- v1.x RFC E ScheduleDef substrate ----
+//
+// Mirror of the AgentDef / SkillDef / MCPServerDef contract tests.
+// Pins versioning + active-pointer + retire semantics + parent-not-
+// found error sentinel. Bootstraps + content-sha256 are out of
+// scope for v1.x ScheduleDef (no signing surface yet).
+
+func mkScheduleDef(id, name string, parent string) store.ScheduleDefRow {
+	return store.ScheduleDefRow{
+		DefID:       id,
+		Name:        name,
+		ParentDefID: parent,
+		Definition:  json.RawMessage(`{"agent":"demo","schedule":"0 6 * * *","user_id":"alice"}`),
+		Description: "test row",
+	}
+}
+
+func testScheduleDefCreateAndGet(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	row, err := s.ScheduleDefCreate(ctx, mkScheduleDef("sd-1", "sched-alpha", ""))
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if row.Version != 1 {
+		t.Errorf("first version = %d, want 1", row.Version)
+	}
+	got, err := s.ScheduleDefGet(ctx, "sd-1")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.Name != "sched-alpha" || got.Version != 1 {
+		t.Errorf("got %+v", got)
+	}
+}
+
+func testScheduleDefVersionMonotonic(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	for i := 0; i < 5; i++ {
+		row := mkScheduleDef(fmt.Sprintf("sd-mono-%d", i), "sched-mono", "")
+		written, err := s.ScheduleDefCreate(ctx, row)
+		if err != nil {
+			t.Fatalf("create #%d: %v", i, err)
+		}
+		if want := i + 1; written.Version != want {
+			t.Errorf("create #%d: version = %d, want %d", i, written.Version, want)
+		}
+	}
+}
+
+func testScheduleDefActivePointerIdempotent(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	r1, _ := s.ScheduleDefCreate(ctx, mkScheduleDef("sd-active-1", "sched-active", ""))
+	r2, _ := s.ScheduleDefCreate(ctx, mkScheduleDef("sd-active-2", "sched-active", ""))
+
+	if err := s.ScheduleDefSetActive(ctx, "sched-active", r1.DefID, "test"); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := s.ScheduleDefGetActive(ctx, "sched-active")
+	if got.DefID != r1.DefID {
+		t.Errorf("active = %s, want %s", got.DefID, r1.DefID)
+	}
+	if err := s.ScheduleDefSetActive(ctx, "sched-active", r2.DefID, "test"); err != nil {
+		t.Fatal(err)
+	}
+	got, _ = s.ScheduleDefGetActive(ctx, "sched-active")
+	if got.DefID != r2.DefID {
+		t.Errorf("after re-promote: active = %s, want %s", got.DefID, r2.DefID)
+	}
+}
+
+func testScheduleDefRetireReversible(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	row, _ := s.ScheduleDefCreate(ctx, mkScheduleDef("sd-retire", "sched-retire", ""))
+	if row.Retired {
+		t.Error("freshly created row should not be retired")
+	}
+	if err := s.ScheduleDefSetRetired(ctx, row.DefID, true); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := s.ScheduleDefGet(ctx, row.DefID)
+	if !got.Retired {
+		t.Error("after retire(true): row should be retired")
+	}
+	if err := s.ScheduleDefSetRetired(ctx, row.DefID, false); err != nil {
+		t.Fatal(err)
+	}
+	got, _ = s.ScheduleDefGet(ctx, row.DefID)
+	if got.Retired {
+		t.Error("after retire(false): row should NOT be retired")
+	}
+}
+
+func testScheduleDefParentNotFound(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	row := mkScheduleDef("sd-orphan", "sched-orphan", "sd-nonexistent")
+	_, err := s.ScheduleDefCreate(ctx, row)
+	if err == nil {
+		t.Fatal("expected ErrScheduleDefParentNotFound, got nil")
+	}
+	if !errors.Is(err, store.ErrScheduleDefParentNotFound) {
+		t.Errorf("got %v, want ErrScheduleDefParentNotFound", err)
+	}
+}
+
+func testScheduleDefListByName(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	for i := 0; i < 3; i++ {
+		_, err := s.ScheduleDefCreate(ctx, mkScheduleDef(fmt.Sprintf("sd-list-%d", i), "sched-list", ""))
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	rows, err := s.ScheduleDefListByName(ctx, "sched-list")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 3 {
+		t.Errorf("len = %d, want 3", len(rows))
+	}
+	// version DESC ordering
+	if rows[0].Version != 3 || rows[1].Version != 2 || rows[2].Version != 1 {
+		t.Errorf("ordering wrong; versions = %d/%d/%d, want 3/2/1",
+			rows[0].Version, rows[1].Version, rows[2].Version)
+	}
+}
+
+func testScheduleDefListChildren(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	parent, _ := s.ScheduleDefCreate(ctx, mkScheduleDef("sd-parent", "sched-tree", ""))
+	for i := 0; i < 2; i++ {
+		_, err := s.ScheduleDefCreate(ctx, mkScheduleDef(fmt.Sprintf("sd-child-%d", i), fmt.Sprintf("sched-child-%d", i), parent.DefID))
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	children, err := s.ScheduleDefListChildren(ctx, parent.DefID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(children) != 2 {
+		t.Errorf("children len = %d, want 2", len(children))
 	}
 }
 

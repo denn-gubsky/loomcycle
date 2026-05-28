@@ -305,6 +305,49 @@ func (s *Store) migrate(ctx context.Context) error {
 			promoted_at           INTEGER NOT NULL,
 			promoted_by_agent_id  TEXT
 		)`,
+		// v1.x RFC E Scheduled Agent Runs substrate — mirror of
+		// agent_defs/skill_defs/mcp_server_defs with the same identity
+		// + lineage + promotion semantics. The `definition` column
+		// carries the JSON-encoded schedule body (agent, cron,
+		// user_id, user_credentials, on_complete, etc.). See
+		// internal/store/postgres/migrations/0029_schedule_defs.up.sql
+		// for the full design rationale.
+		`CREATE TABLE IF NOT EXISTS schedule_defs (
+			def_id                    TEXT    PRIMARY KEY,
+			name                      TEXT    NOT NULL,
+			version                   INTEGER NOT NULL,
+			parent_def_id             TEXT    REFERENCES schedule_defs(def_id),
+			definition                TEXT    NOT NULL,
+			description               TEXT,
+			created_at                INTEGER NOT NULL,
+			created_by_agent_id       TEXT,
+			created_by_run_id         TEXT,
+			retired                   INTEGER NOT NULL DEFAULT 0,
+			bootstrapped_from_static  INTEGER NOT NULL DEFAULT 0,
+			UNIQUE(name, version)
+		)`,
+		`CREATE INDEX IF NOT EXISTS schedule_defs_by_name   ON schedule_defs(name, version DESC)`,
+		`CREATE INDEX IF NOT EXISTS schedule_defs_by_parent ON schedule_defs(parent_def_id) WHERE parent_def_id IS NOT NULL`,
+		`CREATE INDEX IF NOT EXISTS schedule_defs_by_run    ON schedule_defs(created_by_run_id) WHERE created_by_run_id IS NOT NULL`,
+		`CREATE TABLE IF NOT EXISTS schedule_def_active (
+			name                  TEXT    PRIMARY KEY,
+			def_id                TEXT    NOT NULL REFERENCES schedule_defs(def_id),
+			promoted_at           INTEGER NOT NULL,
+			promoted_by_agent_id  TEXT
+		)`,
+		// schedule_run_state — sweeper's runtime view of last/next
+		// per def. One row per active schedule; FK + ON DELETE CASCADE
+		// so retiring via DELETE auto-cleans state.
+		`CREATE TABLE IF NOT EXISTS schedule_run_state (
+			def_id          TEXT    PRIMARY KEY REFERENCES schedule_defs(def_id) ON DELETE CASCADE,
+			last_run_at     INTEGER,
+			last_run_id     TEXT,
+			last_status     TEXT,
+			last_error      TEXT,
+			next_run_at     INTEGER NOT NULL,
+			paused_until    INTEGER
+		)`,
+		`CREATE INDEX IF NOT EXISTS schedule_run_state_due ON schedule_run_state(next_run_at)`,
 		// v0.8.5 evaluations table. emitter_role is server-derived in
 		// the tool layer; the store stores the string verbatim. Score
 		// is REAL (Go float64). Dimensions + Judgement are JSON-as-TEXT
@@ -3829,6 +3872,257 @@ func (s *Store) scanMCPServerDefRows(rows *sql.Rows) ([]store.MCPServerDefRow, e
 			&r.CreatedByAgentID, &r.CreatedByRunID,
 			&retired, &bootstrap,
 			&r.ContentSHA256,
+		); err != nil {
+			return nil, err
+		}
+		r.Definition = json.RawMessage(definition)
+		r.CreatedAt = time.Unix(0, createdAt)
+		r.Retired = retired != 0
+		r.BootstrappedFromStatic = bootstrap != 0
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// ---- v1.x RFC E ScheduleDef substrate ----
+//
+// Mirror of MCPServerDef* without content_sha256.
+
+func (s *Store) ScheduleDefCreate(ctx context.Context, row store.ScheduleDefRow) (store.ScheduleDefRow, error) {
+	if row.DefID == "" || row.Name == "" {
+		return store.ScheduleDefRow{}, fmt.Errorf("schedule_def: def_id + name required")
+	}
+	conn, err := s.db.Conn(ctx)
+	if err != nil {
+		return store.ScheduleDefRow{}, err
+	}
+	defer conn.Close()
+
+	if _, err := conn.ExecContext(ctx, "BEGIN IMMEDIATE"); err != nil {
+		return store.ScheduleDefRow{}, err
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_, _ = conn.ExecContext(context.Background(), "ROLLBACK")
+		}
+	}()
+
+	if row.ParentDefID != "" {
+		var n int
+		if err := conn.QueryRowContext(ctx, `SELECT COUNT(*) FROM schedule_defs WHERE def_id = ?`, row.ParentDefID).Scan(&n); err != nil {
+			return store.ScheduleDefRow{}, err
+		}
+		if n == 0 {
+			return store.ScheduleDefRow{}, store.ErrScheduleDefParentNotFound
+		}
+	}
+
+	var maxVer sql.NullInt64
+	if err := conn.QueryRowContext(ctx,
+		`SELECT MAX(version) FROM schedule_defs WHERE name = ?`, row.Name,
+	).Scan(&maxVer); err != nil {
+		return store.ScheduleDefRow{}, err
+	}
+	row.Version = 1
+	if maxVer.Valid {
+		row.Version = int(maxVer.Int64) + 1
+	}
+	row.CreatedAt = time.Now()
+
+	if _, err := conn.ExecContext(ctx,
+		`INSERT INTO schedule_defs (
+			def_id, name, version, parent_def_id, definition, description,
+			created_at, created_by_agent_id, created_by_run_id,
+			retired, bootstrapped_from_static
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		row.DefID, row.Name, row.Version, nilIfEmpty(row.ParentDefID),
+		string(row.Definition), nilIfEmpty(row.Description),
+		row.CreatedAt.UnixNano(),
+		nilIfEmpty(row.CreatedByAgentID), nilIfEmpty(row.CreatedByRunID),
+		boolToInt(row.Retired), boolToInt(row.BootstrappedFromStatic),
+	); err != nil {
+		return store.ScheduleDefRow{}, err
+	}
+	if _, err := conn.ExecContext(ctx, "COMMIT"); err != nil {
+		return store.ScheduleDefRow{}, err
+	}
+	committed = true
+	return row, nil
+}
+
+func (s *Store) ScheduleDefGet(ctx context.Context, defID string) (store.ScheduleDefRow, error) {
+	row, err := s.scanScheduleDef(s.db.QueryRowContext(ctx, scheduleDefSelect+` WHERE def_id = ?`, defID))
+	if err == sql.ErrNoRows {
+		return store.ScheduleDefRow{}, &store.ErrNotFound{Kind: "schedule_def", ID: defID}
+	}
+	return row, err
+}
+
+func (s *Store) ScheduleDefGetByNameVersion(ctx context.Context, name string, version int) (store.ScheduleDefRow, error) {
+	row, err := s.scanScheduleDef(s.db.QueryRowContext(ctx, scheduleDefSelect+` WHERE name = ? AND version = ?`, name, version))
+	if err == sql.ErrNoRows {
+		return store.ScheduleDefRow{}, &store.ErrNotFound{Kind: "schedule_def", ID: fmt.Sprintf("%s@v%d", name, version)}
+	}
+	return row, err
+}
+
+func (s *Store) ScheduleDefListByName(ctx context.Context, name string) ([]store.ScheduleDefRow, error) {
+	rows, err := s.db.QueryContext(ctx, scheduleDefSelect+` WHERE name = ? ORDER BY version DESC`, name)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return s.scanScheduleDefRows(rows)
+}
+
+func (s *Store) ScheduleDefListChildren(ctx context.Context, parentDefID string) ([]store.ScheduleDefRow, error) {
+	rows, err := s.db.QueryContext(ctx, scheduleDefSelect+` WHERE parent_def_id = ? ORDER BY version DESC`, parentDefID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return s.scanScheduleDefRows(rows)
+}
+
+func (s *Store) ScheduleDefListNames(ctx context.Context) ([]store.ScheduleDefNameSummary, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT
+			d.name,
+			COUNT(*)                  AS version_count,
+			MAX(d.version)            AS latest_version,
+			MAX(d.created_at)         AS last_updated,
+			COALESCE(a.def_id, '')    AS active_def_id
+		FROM schedule_defs d
+		LEFT JOIN schedule_def_active a ON a.name = d.name
+		GROUP BY d.name, a.def_id
+		ORDER BY d.name`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []store.ScheduleDefNameSummary
+	for rows.Next() {
+		var ns store.ScheduleDefNameSummary
+		var updatedAt int64
+		if err := rows.Scan(&ns.Name, &ns.VersionCount, &ns.LatestVersion, &updatedAt, &ns.ActiveDefID); err != nil {
+			return nil, err
+		}
+		ns.LastUpdated = time.Unix(0, updatedAt)
+		out = append(out, ns)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) ScheduleDefSetActive(ctx context.Context, name, defID, promotedByAgentID string) error {
+	var rowName string
+	err := s.db.QueryRowContext(ctx, `SELECT name FROM schedule_defs WHERE def_id = ?`, defID).Scan(&rowName)
+	if err == sql.ErrNoRows {
+		return &store.ErrNotFound{Kind: "schedule_def", ID: defID}
+	}
+	if err != nil {
+		return err
+	}
+	if rowName != name {
+		return fmt.Errorf("schedule_def_active: def_id %q has name %q, refusing to promote under name %q", defID, rowName, name)
+	}
+	_, err = s.db.ExecContext(ctx, `
+		INSERT INTO schedule_def_active (name, def_id, promoted_at, promoted_by_agent_id)
+		VALUES (?, ?, ?, ?)
+		ON CONFLICT(name) DO UPDATE SET
+		    def_id               = excluded.def_id,
+		    promoted_at          = excluded.promoted_at,
+		    promoted_by_agent_id = excluded.promoted_by_agent_id`,
+		name, defID, time.Now().UnixNano(), nilIfEmpty(promotedByAgentID),
+	)
+	return err
+}
+
+func (s *Store) ScheduleDefGetActive(ctx context.Context, name string) (store.ScheduleDefRow, error) {
+	var defID string
+	err := s.db.QueryRowContext(ctx, `SELECT def_id FROM schedule_def_active WHERE name = ?`, name).Scan(&defID)
+	if err == sql.ErrNoRows {
+		return store.ScheduleDefRow{}, &store.ErrNotFound{Kind: "schedule_def_active", ID: name}
+	}
+	if err != nil {
+		return store.ScheduleDefRow{}, err
+	}
+	return s.ScheduleDefGet(ctx, defID)
+}
+
+func (s *Store) ScheduleDefSetRetired(ctx context.Context, defID string, retired bool) error {
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE schedule_defs SET retired = ? WHERE def_id = ?`,
+		boolToInt(retired), defID,
+	)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return &store.ErrNotFound{Kind: "schedule_def", ID: defID}
+	}
+	return nil
+}
+
+const scheduleDefSelect = `SELECT
+	def_id, name, version,
+	COALESCE(parent_def_id, ''),
+	definition,
+	COALESCE(description, ''),
+	created_at,
+	COALESCE(created_by_agent_id, ''),
+	COALESCE(created_by_run_id, ''),
+	retired,
+	bootstrapped_from_static
+FROM schedule_defs`
+
+func (s *Store) scanScheduleDef(row *sql.Row) (store.ScheduleDefRow, error) {
+	var (
+		out        store.ScheduleDefRow
+		definition string
+		createdAt  int64
+		retired    int
+		bootstrap  int
+	)
+	err := row.Scan(
+		&out.DefID, &out.Name, &out.Version,
+		&out.ParentDefID,
+		&definition,
+		&out.Description,
+		&createdAt,
+		&out.CreatedByAgentID, &out.CreatedByRunID,
+		&retired, &bootstrap,
+	)
+	if err != nil {
+		return store.ScheduleDefRow{}, err
+	}
+	out.Definition = json.RawMessage(definition)
+	out.CreatedAt = time.Unix(0, createdAt)
+	out.Retired = retired != 0
+	out.BootstrappedFromStatic = bootstrap != 0
+	return out, nil
+}
+
+func (s *Store) scanScheduleDefRows(rows *sql.Rows) ([]store.ScheduleDefRow, error) {
+	var out []store.ScheduleDefRow
+	for rows.Next() {
+		var (
+			r          store.ScheduleDefRow
+			definition string
+			createdAt  int64
+			retired    int
+			bootstrap  int
+		)
+		if err := rows.Scan(
+			&r.DefID, &r.Name, &r.Version,
+			&r.ParentDefID,
+			&definition,
+			&r.Description,
+			&createdAt,
+			&r.CreatedByAgentID, &r.CreatedByRunID,
+			&retired, &bootstrap,
 		); err != nil {
 			return nil, err
 		}

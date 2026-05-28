@@ -1856,3 +1856,203 @@ agents:
 		t.Errorf("omitted retry_attempts should stay nil, got %v", cfg.Agents["defaulted"].RetryAttempts)
 	}
 }
+
+// ---- v1.x RFC E scheduled_runs validation ----
+
+// TestScheduledRuns_AcceptsValidTemplate pins the happy path for a
+// template entry (no user_id; per-tier cron defaults).
+func TestScheduledRuns_AcceptsValidTemplate(t *testing.T) {
+	tmp := t.TempDir()
+	yamlPath := filepath.Join(tmp, "c.yaml")
+	if err := os.WriteFile(yamlPath, []byte(`
+defaults: { provider: anthropic, model: x }
+agents:
+  job-search-batch:
+    provider: anthropic
+    model: x
+scheduled_runs:
+  job-search-template:
+    agent: job-search-batch
+    prompt:
+      - role: user
+        content:
+          - {type: trusted-text, text: "go"}
+    user_tier_schedules:
+      low:  "0 6 1,11,21 * *"
+      high: "0 6 * * *"
+    required_credentials: [jobs, slack]
+    enabled: true
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(yamlPath)
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	if got := cfg.ScheduledRuns["job-search-template"].Agent; got != "job-search-batch" {
+		t.Errorf("Agent = %q, want job-search-batch", got)
+	}
+	if len(cfg.ScheduledRuns["job-search-template"].UserTierSchedules) != 2 {
+		t.Errorf("UserTierSchedules len = %d, want 2", len(cfg.ScheduledRuns["job-search-template"].UserTierSchedules))
+	}
+}
+
+// TestScheduledRuns_RefusesUnknownAgent pins that the config-load
+// validator catches a typo'd agent name.
+func TestScheduledRuns_RefusesUnknownAgent(t *testing.T) {
+	tmp := t.TempDir()
+	yamlPath := filepath.Join(tmp, "c.yaml")
+	if err := os.WriteFile(yamlPath, []byte(`
+defaults: { provider: anthropic, model: x }
+agents: {}
+scheduled_runs:
+  daily:
+    agent: nonexistent-agent
+    schedule: "0 6 * * *"
+    prompt: [{role: user, content: [{type: trusted-text, text: "go"}]}]
+    user_id: alice
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Load(yamlPath)
+	if err == nil {
+		t.Fatal("expected validation error for unknown agent")
+	}
+	if !strings.Contains(err.Error(), "nonexistent-agent") {
+		t.Errorf("error should name the missing agent, got: %v", err)
+	}
+}
+
+// TestScheduledRuns_RefusesInvalidCron pins the cron-syntax validator.
+func TestScheduledRuns_RefusesInvalidCron(t *testing.T) {
+	tmp := t.TempDir()
+	yamlPath := filepath.Join(tmp, "c.yaml")
+	if err := os.WriteFile(yamlPath, []byte(`
+defaults: { provider: anthropic, model: x }
+agents: {demo: {provider: anthropic, model: x}}
+scheduled_runs:
+  bad:
+    agent: demo
+    schedule: "not a cron"
+    prompt: [{role: user, content: [{type: trusted-text, text: "go"}]}]
+    user_id: alice
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Load(yamlPath)
+	if err == nil {
+		t.Fatal("expected validation error for invalid cron")
+	}
+	if !strings.Contains(err.Error(), "invalid cron expression") {
+		t.Errorf("error should name the cron failure, got: %v", err)
+	}
+}
+
+// TestScheduledRuns_RefusesScheduleAndTierSchedulesBoth pins the
+// mutual-exclusion rule. A template can either fix one cron OR offer
+// per-tier defaults; not both.
+func TestScheduledRuns_RefusesScheduleAndTierSchedulesBoth(t *testing.T) {
+	tmp := t.TempDir()
+	yamlPath := filepath.Join(tmp, "c.yaml")
+	if err := os.WriteFile(yamlPath, []byte(`
+defaults: { provider: anthropic, model: x }
+agents: {demo: {provider: anthropic, model: x}}
+scheduled_runs:
+  ambiguous:
+    agent: demo
+    schedule: "0 6 * * *"
+    user_tier_schedules: {low: "0 6 * * *"}
+    prompt: [{role: user, content: [{type: trusted-text, text: "go"}]}]
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Load(yamlPath)
+	if err == nil {
+		t.Fatal("expected validation error for both schedule + user_tier_schedules")
+	}
+	if !strings.Contains(err.Error(), "cannot set both") {
+		t.Errorf("error should explain mutual-exclusion, got: %v", err)
+	}
+}
+
+// TestScheduledRuns_OnCompleteKindClosedSet pins that only the three
+// documented kinds (channel.publish, mcp.call, memory.set) are accepted.
+func TestScheduledRuns_OnCompleteKindClosedSet(t *testing.T) {
+	tmp := t.TempDir()
+	yamlPath := filepath.Join(tmp, "c.yaml")
+	if err := os.WriteFile(yamlPath, []byte(`
+defaults: { provider: anthropic, model: x }
+agents: {demo: {provider: anthropic, model: x}}
+scheduled_runs:
+  bad:
+    agent: demo
+    schedule: "0 6 * * *"
+    user_id: alice
+    prompt: [{role: user, content: [{type: trusted-text, text: "go"}]}]
+    on_complete:
+      - kind: http.post
+        channel: nope
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Load(yamlPath)
+	if err == nil {
+		t.Fatal("expected validation error for unknown on_complete kind")
+	}
+	if !strings.Contains(err.Error(), "unknown kind") {
+		t.Errorf("error should explain the closed-set restriction, got: %v", err)
+	}
+}
+
+// TestScheduledRuns_OnCompleteRequiresKindFields pins per-kind
+// required-field validation: channel.publish needs channel; mcp.call
+// needs server + tool; memory.set needs scope + key.
+func TestScheduledRuns_OnCompleteRequiresKindFields(t *testing.T) {
+	cases := []struct {
+		name string
+		yaml string
+		want string
+	}{
+		{
+			name: "channel.publish missing channel",
+			yaml: `on_complete: [{kind: channel.publish}]`,
+			want: "channel required for channel.publish",
+		},
+		{
+			name: "mcp.call missing tool",
+			yaml: `on_complete: [{kind: mcp.call, server: slack}]`,
+			want: "server + tool required for mcp.call",
+		},
+		{
+			name: "memory.set missing key",
+			yaml: `on_complete: [{kind: memory.set, scope: agent}]`,
+			want: "scope + key required for memory.set",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			tmp := t.TempDir()
+			yamlPath := filepath.Join(tmp, "c.yaml")
+			body := `
+defaults: { provider: anthropic, model: x }
+agents: {demo: {provider: anthropic, model: x}}
+scheduled_runs:
+  bad:
+    agent: demo
+    schedule: "0 6 * * *"
+    user_id: alice
+    prompt: [{role: user, content: [{type: trusted-text, text: "go"}]}]
+    ` + tc.yaml + "\n"
+			if err := os.WriteFile(yamlPath, []byte(body), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			_, err := Load(yamlPath)
+			if err == nil {
+				t.Fatal("expected validation error")
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("error %q does not contain %q", err.Error(), tc.want)
+			}
+		})
+	}
+}
