@@ -1,0 +1,97 @@
+# OTEL Collector — receives OTLP traces from loomcycle, forwards
+# to Tempo for storage, AND aggregates spans into Prometheus
+# histograms via the `spanmetrics` connector (RFC observability-
+# profiles.md Decision 2 — spans aggregated downstream, not in-process).
+#
+# Demo config. Production deployments swap the receiver/exporter
+# defaults per the README "Production deployment" section (TLS,
+# auth, remote-write, sampling, etc.).
+
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: 0.0.0.0:4318
+      grpc:
+        endpoint: 0.0.0.0:4317
+
+processors:
+  batch:
+    timeout: 5s
+    send_batch_size: 1024
+
+connectors:
+  # spanmetrics — the architectural keystone for Decision 2.
+  # Aggregates incoming spans into Prometheus calls_total counters +
+  # duration_seconds histograms. Label dimensions are operator-tunable;
+  # the locked set below balances usefulness (operators can graph by
+  # provider/model/tool/agent) against cardinality (each new dimension
+  # multiplies series count — keep this list short).
+  spanmetrics:
+    namespace: loomcycle
+    histogram:
+      explicit:
+        buckets:
+          # Latency buckets tuned for loomcycle workloads. Sub-second
+          # for fast tool calls, multi-second buckets for provider
+          # calls + agent runs.
+          - 10ms
+          - 50ms
+          - 100ms
+          - 250ms
+          - 500ms
+          - 1s
+          - 2s
+          - 5s
+          - 10s
+          - 30s
+          - 60s
+          - 120s
+    dimensions:
+      # Loomcycle-specific attributes promoted to Prometheus labels.
+      # Each entry adds cardinality; the locked set below is the
+      # operator-useful minimum. Drop or extend per your tenant size.
+      - name: loomcycle.provider
+      - name: loomcycle.model
+      - name: loomcycle.tier
+      - name: loomcycle.tool
+      - name: loomcycle.mcp_server
+      - name: loomcycle.agent_name
+      - name: loomcycle.stop_reason
+    # Generate metrics every 15s — aligns with Prometheus scrape interval.
+    metrics_flush_interval: 15s
+    # Drop status code dimension to avoid duplicating with stop_reason.
+    exclude_dimensions:
+      - status.code
+
+exporters:
+  # Spans → Tempo.
+  otlp/tempo:
+    endpoint: tempo:4317
+    tls:
+      insecure: true
+
+  # spanmetrics output → Prometheus exposition endpoint at :8889.
+  # Prometheus scrapes this in addition to loomcycle:8787/metrics.
+  prometheus:
+    endpoint: 0.0.0.0:8889
+    # Inject the service name + replica id labels for parity with
+    # loomcycle's own /metrics output.
+    resource_to_telemetry_conversion:
+      enabled: true
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [otlp/tempo, spanmetrics]
+    metrics:
+      # spanmetrics connector is both a consumer (above) AND a
+      # producer (here) — its output flows into this pipeline.
+      receivers: [spanmetrics]
+      processors: [batch]
+      exporters: [prometheus]
+  telemetry:
+    logs:
+      level: info

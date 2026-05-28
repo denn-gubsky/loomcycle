@@ -1,0 +1,130 @@
+{
+  "annotations": {
+    "list": []
+  },
+  "editable": false,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "liveNow": false,
+  "panels": [
+    {
+      "title": "Process — RSS / Heap",
+      "type": "timeseries",
+      "datasource": {"type": "prometheus", "uid": "Prometheus"},
+      "gridPos": {"h": 7, "w": 8, "x": 0, "y": 0},
+      "fieldConfig": {"defaults": {"unit": "bytes"}, "overrides": []},
+      "targets": [
+        {"expr": "loomcycle_process_rss_bytes", "legendFormat": "RSS {{instance}}", "refId": "A"},
+        {"expr": "loomcycle_process_heap_alloc_bytes", "legendFormat": "Heap {{instance}}", "refId": "B"}
+      ],
+      "options": {"legend": {"displayMode": "list", "placement": "bottom"}}
+    },
+    {
+      "title": "Goroutines",
+      "type": "timeseries",
+      "datasource": {"type": "prometheus", "uid": "Prometheus"},
+      "gridPos": {"h": 7, "w": 8, "x": 8, "y": 0},
+      "targets": [
+        {"expr": "loomcycle_process_goroutines", "legendFormat": "{{instance}}", "refId": "A"}
+      ]
+    },
+    {
+      "title": "Concurrency — active + queued",
+      "type": "timeseries",
+      "datasource": {"type": "prometheus", "uid": "Prometheus"},
+      "gridPos": {"h": 7, "w": 8, "x": 16, "y": 0},
+      "targets": [
+        {"expr": "loomcycle_concurrency_active", "legendFormat": "active", "refId": "A"},
+        {"expr": "loomcycle_concurrency_queued", "legendFormat": "queued", "refId": "B"}
+      ]
+    },
+    {
+      "title": "Run rate (calls/sec) — by agent_name",
+      "type": "timeseries",
+      "datasource": {"type": "prometheus", "uid": "Prometheus"},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 7},
+      "description": "loomcycle.run span counts aggregated by OTEL Collector spanmetrics connector.",
+      "targets": [
+        {"expr": "sum by (loomcycle_agent_name) (rate(loomcycle_calls_total{span_name=\"loomcycle.run\"}[1m]))", "legendFormat": "{{loomcycle_agent_name}}", "refId": "A"}
+      ]
+    },
+    {
+      "title": "Run latency p50 / p95 / p99",
+      "type": "timeseries",
+      "datasource": {"type": "prometheus", "uid": "Prometheus"},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 7},
+      "fieldConfig": {"defaults": {"unit": "s"}, "overrides": []},
+      "description": "loomcycle.run duration percentiles. Source: spanmetrics duration_seconds histogram.",
+      "targets": [
+        {"expr": "histogram_quantile(0.50, sum by (le) (rate(loomcycle_duration_seconds_bucket{span_name=\"loomcycle.run\"}[5m])))", "legendFormat": "p50", "refId": "A"},
+        {"expr": "histogram_quantile(0.95, sum by (le) (rate(loomcycle_duration_seconds_bucket{span_name=\"loomcycle.run\"}[5m])))", "legendFormat": "p95", "refId": "B"},
+        {"expr": "histogram_quantile(0.99, sum by (le) (rate(loomcycle_duration_seconds_bucket{span_name=\"loomcycle.run\"}[5m])))", "legendFormat": "p99", "refId": "C"}
+      ]
+    },
+    {
+      "title": "Provider RTT p95 — by provider",
+      "type": "timeseries",
+      "datasource": {"type": "prometheus", "uid": "Prometheus"},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 15},
+      "fieldConfig": {"defaults": {"unit": "s"}, "overrides": []},
+      "description": "Per-provider HTTP RTT, p95. Validates provider-fallback behaviour under load.",
+      "targets": [
+        {"expr": "histogram_quantile(0.95, sum by (le, loomcycle_provider) (rate(loomcycle_duration_seconds_bucket{span_name=\"loomcycle.provider.call\"}[5m])))", "legendFormat": "{{loomcycle_provider}}", "refId": "A"}
+      ]
+    },
+    {
+      "title": "Tool call rate — by tool",
+      "type": "timeseries",
+      "datasource": {"type": "prometheus", "uid": "Prometheus"},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 15},
+      "description": "Per-tool calls/sec. High Memory/Channel rates indicate a chatty agent; high MCP rates indicate external tool dependency.",
+      "targets": [
+        {"expr": "sum by (loomcycle_tool) (rate(loomcycle_calls_total{span_name=\"loomcycle.tool.call\"}[1m]))", "legendFormat": "{{loomcycle_tool}}", "refId": "A"}
+      ]
+    },
+    {
+      "title": "MCP call latency p95 — by mcp_server",
+      "type": "timeseries",
+      "datasource": {"type": "prometheus", "uid": "Prometheus"},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 23},
+      "fieldConfig": {"defaults": {"unit": "s"}, "overrides": []},
+      "targets": [
+        {"expr": "histogram_quantile(0.95, sum by (le, loomcycle_mcp_server) (rate(loomcycle_duration_seconds_bucket{span_name=\"loomcycle.mcp.call\"}[5m])))", "legendFormat": "{{loomcycle_mcp_server}}", "refId": "A"}
+      ]
+    },
+    {
+      "title": "Error rate — by provider × tool",
+      "type": "timeseries",
+      "datasource": {"type": "prometheus", "uid": "Prometheus"},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 23},
+      "fieldConfig": {"defaults": {"unit": "percentunit"}, "overrides": []},
+      "description": "Fraction of calls whose span carried an error.type attribute. Substrate-fallback should keep this low.",
+      "targets": [
+        {"expr": "sum by (loomcycle_provider) (rate(loomcycle_calls_total{status_code=\"STATUS_CODE_ERROR\"}[5m])) / sum by (loomcycle_provider) (rate(loomcycle_calls_total[5m]))", "legendFormat": "{{loomcycle_provider}}", "refId": "A"}
+      ]
+    },
+    {
+      "title": "Recent traces (Tempo) — slowest 20",
+      "type": "traces",
+      "datasource": {"type": "tempo", "uid": "tempo"},
+      "gridPos": {"h": 10, "w": 24, "x": 0, "y": 31},
+      "description": "Top 20 slowest loomcycle.run traces in the past 15min. Click any row to inspect the full span tree.",
+      "targets": [
+        {"query": "{ span.name = \"loomcycle.run\" } | by(loomcycle.agent_name)", "queryType": "traceql", "refId": "A"}
+      ]
+    }
+  ],
+  "refresh": "30s",
+  "schemaVersion": 39,
+  "tags": ["loomcycle", "substrate"],
+  "templating": {"list": []},
+  "time": {"from": "now-15m", "to": "now"},
+  "timepicker": {},
+  "timezone": "browser",
+  "title": "Loomcycle overview",
+  "uid": "loomcycle-overview",
+  "version": 1,
+  "weekStart": ""
+}
