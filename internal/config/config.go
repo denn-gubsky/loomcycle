@@ -883,8 +883,8 @@ type ScheduledRun struct {
 // stays in the config layer to avoid a circular import. The runtime
 // converts at sweeper-fire time.
 type ScheduledRunSegment struct {
-	Role    string                          `yaml:"role"`
-	Content []ScheduledRunSegmentContent    `yaml:"content"`
+	Role    string                       `yaml:"role"`
+	Content []ScheduledRunSegmentContent `yaml:"content"`
 }
 
 // ScheduledRunSegmentContent mirrors the loop.PromptSegmentContent wire shape.
@@ -900,13 +900,13 @@ type ScheduledRunSegmentContent struct {
 // inline yaml shortcuts).
 type ScheduledRunHook struct {
 	Kind    string                 `yaml:"kind"`
-	Channel string                 `yaml:"channel"`      // for kind=channel.publish
-	Server  string                 `yaml:"server"`       // for kind=mcp.call
-	Tool    string                 `yaml:"tool"`         // for kind=mcp.call
-	Scope   string                 `yaml:"scope"`        // for kind=memory.set
-	Key     string                 `yaml:"key"`          // for kind=memory.set
-	Args    map[string]interface{} `yaml:"args"`         // for kind=mcp.call
-	Payload map[string]interface{} `yaml:"payload"`      // for kind=channel.publish + memory.set value
+	Channel string                 `yaml:"channel"` // for kind=channel.publish
+	Server  string                 `yaml:"server"`  // for kind=mcp.call
+	Tool    string                 `yaml:"tool"`    // for kind=mcp.call
+	Scope   string                 `yaml:"scope"`   // for kind=memory.set
+	Key     string                 `yaml:"key"`     // for kind=memory.set
+	Args    map[string]interface{} `yaml:"args"`    // for kind=mcp.call
+	Payload map[string]interface{} `yaml:"payload"` // for kind=channel.publish + memory.set value
 }
 
 // MCPServer declares one MCP server. Transport "stdio" or "http".

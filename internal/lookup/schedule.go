@@ -68,17 +68,17 @@ func Schedule(ctx context.Context, s ScheduleStore, cfg *config.Config, name str
 // in the builtin package pins the field set so a future field added
 // to either side without the matching addition here fails CI.
 type SubstrateScheduleDef struct {
-	Agent                  string                        `json:"agent,omitempty"`
-	Prompt                 []SubstratePromptSegment      `json:"prompt,omitempty"`
-	Schedule               string                        `json:"schedule,omitempty"`
-	UserTierSchedules      map[string]string             `json:"user_tier_schedules,omitempty"`
-	RequiredCredentials    []string                      `json:"required_credentials,omitempty"`
-	Timezone               string                        `json:"timezone,omitempty"`
-	Enabled                bool                          `json:"enabled"`
-	CatchUpMax             int                           `json:"catch_up_max,omitempty"`
-	UserID                 string                        `json:"user_id,omitempty"`
-	UserCredentialsFromEnv map[string]string             `json:"user_credentials_from_env,omitempty"`
-	OnComplete             []SubstrateScheduleHook       `json:"on_complete,omitempty"`
+	Agent                  string                   `json:"agent,omitempty"`
+	Prompt                 []SubstratePromptSegment `json:"prompt,omitempty"`
+	Schedule               string                   `json:"schedule,omitempty"`
+	UserTierSchedules      map[string]string        `json:"user_tier_schedules,omitempty"`
+	RequiredCredentials    []string                 `json:"required_credentials,omitempty"`
+	Timezone               string                   `json:"timezone,omitempty"`
+	Enabled                bool                     `json:"enabled"`
+	CatchUpMax             int                      `json:"catch_up_max,omitempty"`
+	UserID                 string                   `json:"user_id,omitempty"`
+	UserCredentialsFromEnv map[string]string        `json:"user_credentials_from_env,omitempty"`
+	OnComplete             []SubstrateScheduleHook  `json:"on_complete,omitempty"`
 }
 
 // SubstratePromptSegment mirrors config.ScheduledRunSegment with
