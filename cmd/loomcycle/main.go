@@ -325,6 +325,14 @@ func main() {
 			os.Exit(cli.RunInit(os.Args[2:], os.Stdout, os.Stderr))
 		case "doctor":
 			os.Exit(cli.RunDoctor(os.Args[2:], os.Stdout, os.Stderr))
+		case "mcp-registry":
+			// v1.x RFC C1: curated MCP server recipe library.
+			// Seven verbs (list / show / append-to-config / add /
+			// remove / enable / disable) dispatched inside the Run
+			// helper. Reads bundled recipes + LOOMCYCLE_MCP_RECIPES_ROOT
+			// overlay; emits yaml into the operator's loomcycle.yaml
+			// via append-to-config.
+			os.Exit(cli.RunMCPRegistry(os.Args[2:], os.Stdout, os.Stderr))
 		case "help", "-h", "--help":
 			cli.PrintHelp(os.Stdout)
 			return

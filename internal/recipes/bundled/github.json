@@ -1,0 +1,17 @@
+{
+  "command": "npx",
+  "args": ["-y", "@modelcontextprotocol/server-github"],
+  "env": {
+    "GITHUB_PERSONAL_ACCESS_TOKEN": "${LOOMCYCLE_GITHUB_TOKEN}"
+  },
+
+  "_loomcycle": {
+    "description": "GitHub API — repository / issue / PR / search operations.",
+    "transport": "stdio",
+    "pool_size": 4,
+    "env_vars_required": ["LOOMCYCLE_GITHUB_TOKEN"],
+    "credentials": [],
+    "schedule_compatible": true,
+    "agent_prompt_hint": "Use this for any GitHub interaction: read code from public repos, fetch issue / PR / commit detail, create issues or comments. For per-user GitHub auth in multi-tenant deployments, fork this recipe and set Authorization to use ${run.credentials.github}."
+  }
+}

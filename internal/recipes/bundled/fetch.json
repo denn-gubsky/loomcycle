@@ -1,0 +1,15 @@
+{
+  "command": "npx",
+  "args": ["-y", "@modelcontextprotocol/server-fetch"],
+  "env": {},
+
+  "_loomcycle": {
+    "description": "HTTP fetcher — fetch + parse a URL into markdown/text. No auth.",
+    "transport": "stdio",
+    "pool_size": 4,
+    "env_vars_required": [],
+    "credentials": [],
+    "schedule_compatible": false,
+    "agent_prompt_hint": "Use this to read individual URLs. Note: loomcycle has a built-in WebFetch tool — prefer that for caller-narrowed host allowlists. Use this recipe when you want raw MCP-shape fetch with HTML→markdown extraction."
+  }
+}

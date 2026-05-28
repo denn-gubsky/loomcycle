@@ -1,0 +1,17 @@
+{
+  "command": "npx",
+  "args": ["-y", "@v-3/discordmcp"],
+  "env": {
+    "DISCORD_TOKEN": "${LOOMCYCLE_DISCORD_TOKEN}"
+  },
+
+  "_loomcycle": {
+    "description": "Discord — channel messaging, thread creation. Schedule-compatible delivery target.",
+    "transport": "stdio",
+    "pool_size": 2,
+    "env_vars_required": ["LOOMCYCLE_DISCORD_TOKEN"],
+    "credentials": [],
+    "schedule_compatible": true,
+    "agent_prompt_hint": "Use this to post messages to Discord channels. Bot must be a member of the target server."
+  }
+}

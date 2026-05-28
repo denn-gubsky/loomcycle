@@ -1,0 +1,18 @@
+{
+  "command": "npx",
+  "args": ["-y", "@modelcontextprotocol/server-gitlab"],
+  "env": {
+    "GITLAB_PERSONAL_ACCESS_TOKEN": "${LOOMCYCLE_GITLAB_TOKEN}",
+    "GITLAB_API_URL": "${LOOMCYCLE_GITLAB_API_URL}"
+  },
+
+  "_loomcycle": {
+    "description": "GitLab API — repository / issue / merge-request operations. Defaults to gitlab.com via GITLAB_API_URL.",
+    "transport": "stdio",
+    "pool_size": 4,
+    "env_vars_required": ["LOOMCYCLE_GITLAB_TOKEN", "LOOMCYCLE_GITLAB_API_URL"],
+    "credentials": [],
+    "schedule_compatible": true,
+    "agent_prompt_hint": "Use this for any GitLab interaction. Set LOOMCYCLE_GITLAB_API_URL to your self-hosted instance URL, or leave empty for gitlab.com."
+  }
+}

@@ -1,0 +1,17 @@
+{
+  "command": "npx",
+  "args": ["-y", "@modelcontextprotocol/server-brave-search"],
+  "env": {
+    "BRAVE_API_KEY": "${LOOMCYCLE_BRAVE_API_KEY}"
+  },
+
+  "_loomcycle": {
+    "description": "Brave Search — privacy-respecting web search API.",
+    "transport": "stdio",
+    "pool_size": 2,
+    "env_vars_required": ["LOOMCYCLE_BRAVE_API_KEY"],
+    "credentials": [],
+    "schedule_compatible": false,
+    "agent_prompt_hint": "Use this for general web search when you want broad results without Tavily's LLM-shaping. Returns raw result list."
+  }
+}

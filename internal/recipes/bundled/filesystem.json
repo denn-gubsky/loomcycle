@@ -1,0 +1,15 @@
+{
+  "command": "npx",
+  "args": ["-y", "@modelcontextprotocol/server-filesystem", "${LOOMCYCLE_FILESYSTEM_ROOT}"],
+  "env": {},
+
+  "_loomcycle": {
+    "description": "Local filesystem — read-only access to LOOMCYCLE_FILESYSTEM_ROOT. SECURITY: this opens the agent to whatever paths the operator allows.",
+    "transport": "stdio",
+    "pool_size": 2,
+    "env_vars_required": ["LOOMCYCLE_FILESYSTEM_ROOT"],
+    "credentials": [],
+    "schedule_compatible": false,
+    "agent_prompt_hint": "Use this to read project files under the operator-allowed root. Loomcycle's built-in Read tool is usually preferable — it respects caller-supplied narrowing. Use this MCP recipe when you specifically need MCP-shape filesystem access (e.g. from Claude Code via the LoomCycle MCP server)."
+  }
+}
