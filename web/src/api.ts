@@ -865,6 +865,136 @@ export function listLibraryMcpServers(): Promise<LibraryListResponse> {
   return jsonFetch<LibraryListResponse>("/v1/_library/mcp-servers");
 }
 
+// ---- Schedules (v1.x RFC E) ----
+
+// ScheduleListEntry mirrors the server-side wire shape. Same merged
+// pattern as LibraryEntry: yaml-defined entries carry static_definition
+// inline; substrate-defined entries carry active_def_id + version
+// counters; entries present in both have source="both" and both sets
+// of fields populated.
+export interface ScheduleListEntry {
+  name: string;
+  source: "static-only" | "dynamic-only" | "both";
+  in_static: boolean;
+  in_substrate: boolean;
+  version_count?: number;
+  active_def_id?: string;
+  latest_version?: number;
+  last_updated?: string;
+  static_definition?: unknown;
+}
+
+export interface ScheduleListResponse {
+  entries: ScheduleListEntry[];
+}
+
+export function listSchedules(): Promise<ScheduleListResponse> {
+  return jsonFetch<ScheduleListResponse>("/v1/_schedules/list-all");
+}
+
+// ScheduleStateView is the runtime telemetry row — last/next + status.
+// Sensitive substrate-stored fields (user_credentials) NEVER appear
+// here; they live only behind POST /v1/_scheduledef {op:"get"}.
+export interface ScheduleStateView {
+  def_id: string;
+  last_run_at?: string;
+  last_run_id?: string;
+  last_status?: string;
+  last_error?: string;
+  next_run_at: string;
+  paused_until?: string;
+}
+
+export function getScheduleState(defID: string): Promise<ScheduleStateView> {
+  return jsonFetch<ScheduleStateView>(`/v1/_schedules/${encodeURIComponent(defID)}/state`);
+}
+
+// ---- Schedule admin mutations (run-now / pause / resume) ----
+
+export function scheduleRunNow(defID: string): Promise<{ def_id: string; scheduled: string }> {
+  return jsonFetch(`/v1/_schedules/${encodeURIComponent(defID)}/run-now`, { method: "POST" });
+}
+
+export function schedulePause(defID: string): Promise<{ def_id: string; paused: boolean }> {
+  return jsonFetch(`/v1/_schedules/${encodeURIComponent(defID)}/pause`, { method: "POST" });
+}
+
+export function scheduleResume(defID: string): Promise<{ def_id: string; paused: boolean }> {
+  return jsonFetch(`/v1/_schedules/${encodeURIComponent(defID)}/resume`, { method: "POST" });
+}
+
+// ---- Schedule substrate ops (uses the existing POST /v1/_scheduledef) ----
+
+// ScheduleDefRow mirrors the row envelope returned by the ScheduleDef
+// tool's create / fork / get ops. Field shape matches store.ScheduleDefRow
+// on the wire.
+export interface ScheduleDefRow {
+  def_id: string;
+  name: string;
+  version: number;
+  parent_def_id?: string;
+  description?: string;
+  created_at: string;
+  created_by_agent_id?: string;
+  retired: boolean;
+  bootstrapped_from_static: boolean;
+  promoted?: boolean;
+  definition?: Record<string, unknown>;
+}
+
+export interface ScheduleDefListResponse {
+  name: string;
+  versions: ScheduleDefRow[];
+}
+
+// scheduleDefGet fetches one def by def_id. Used by the UI's detail
+// pane to render the substrate-side definition (including user_id,
+// cron, on_complete, user_credentials — all of which the list endpoint
+// deliberately omits).
+export function scheduleDefGet(defID: string): Promise<ScheduleDefRow> {
+  return jsonFetch<ScheduleDefRow>("/v1/_scheduledef", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ op: "get", def_id: defID }),
+  });
+}
+
+// scheduleDefList fetches all versions of a name — drives the lineage
+// tree on the detail pane.
+export function scheduleDefList(name: string): Promise<ScheduleDefListResponse> {
+  return jsonFetch<ScheduleDefListResponse>("/v1/_scheduledef", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ op: "list", name }),
+  });
+}
+
+// scheduleDefFork creates a new version from an existing parent. The
+// overlay carries the user-supplied fields (user_id, user_tier,
+// user_credentials, optional cron override). Returns the new fork row.
+export function scheduleDefFork(input: {
+  name: string;
+  parent_def_id?: string;
+  overlay: Record<string, unknown>;
+  description?: string;
+}): Promise<ScheduleDefRow> {
+  return jsonFetch<ScheduleDefRow>("/v1/_scheduledef", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ op: "fork", ...input }),
+  });
+}
+
+// scheduleDefRetire flips the retired flag (true to retire, false to
+// un-retire). Returns {def_id, retired}.
+export function scheduleDefRetire(defID: string, retired: boolean): Promise<{ def_id: string; retired: boolean }> {
+  return jsonFetch("/v1/_scheduledef", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ op: "retire", def_id: defID, retired }),
+  });
+}
+
 // ---- Legacy /names fetchers (substrate-only) ----
 //
 // Kept for the existing Library UI v1 surface + any external adapter
