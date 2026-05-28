@@ -4135,6 +4135,133 @@ func (s *Store) scanScheduleDefRows(rows *sql.Rows) ([]store.ScheduleDefRow, err
 	return out, rows.Err()
 }
 
+// ---- v1.x RFC E ScheduleDef runtime (sweeper-side) ----
+
+func (s *Store) ScheduleRunStateSeed(ctx context.Context, defID string, nextRunAt time.Time) error {
+	// INSERT OR IGNORE keeps existing last_* fields when the row is
+	// already present (re-promote of the same def doesn't reset its
+	// completion history). Caller updates next_run_at separately if
+	// needed via Pause/Resume + RecordResult.
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO schedule_run_state (def_id, next_run_at) VALUES (?, ?)
+		 ON CONFLICT(def_id) DO UPDATE SET next_run_at = excluded.next_run_at`,
+		defID, nextRunAt.UnixNano(),
+	)
+	return err
+}
+
+func (s *Store) ScheduleRunStateGet(ctx context.Context, defID string) (store.ScheduleRunStateRow, error) {
+	var (
+		out         store.ScheduleRunStateRow
+		lastRunAt   sql.NullInt64
+		lastRunID   sql.NullString
+		lastStatus  sql.NullString
+		lastError   sql.NullString
+		nextRunAt   int64
+		pausedUntil sql.NullInt64
+	)
+	err := s.db.QueryRowContext(ctx,
+		`SELECT def_id, last_run_at, last_run_id, last_status, last_error, next_run_at, paused_until
+		 FROM schedule_run_state WHERE def_id = ?`, defID,
+	).Scan(&out.DefID, &lastRunAt, &lastRunID, &lastStatus, &lastError, &nextRunAt, &pausedUntil)
+	if err == sql.ErrNoRows {
+		return store.ScheduleRunStateRow{}, &store.ErrNotFound{Kind: "schedule_run_state", ID: defID}
+	}
+	if err != nil {
+		return store.ScheduleRunStateRow{}, err
+	}
+	if lastRunAt.Valid {
+		out.LastRunAt = time.Unix(0, lastRunAt.Int64)
+	}
+	out.LastRunID = lastRunID.String
+	out.LastStatus = lastStatus.String
+	out.LastError = lastError.String
+	out.NextRunAt = time.Unix(0, nextRunAt)
+	if pausedUntil.Valid {
+		out.PausedUntil = time.Unix(0, pausedUntil.Int64)
+	}
+	return out, nil
+}
+
+func (s *Store) ScheduleRunStateListDue(ctx context.Context, now time.Time) ([]store.ScheduleDueRow, error) {
+	// JOIN: state ⨝ active ⨝ defs. The active-pointer JOIN drops any
+	// state row whose def is no longer the active version (the sweeper
+	// shouldn't fire stale forks). The retired = 0 filter drops
+	// retired-via-flag rows; CASCADE on DELETE handles delete-retired.
+	// The paused_until filter drops paused-until-future rows.
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT srs.def_id, sd.name, sd.definition, srs.next_run_at
+		 FROM schedule_run_state srs
+		 JOIN schedule_def_active sda ON sda.def_id = srs.def_id
+		 JOIN schedule_defs sd ON sd.def_id = srs.def_id
+		 WHERE srs.next_run_at <= ?
+		   AND sd.retired = 0
+		   AND (srs.paused_until IS NULL OR srs.paused_until <= ?)
+		 ORDER BY srs.next_run_at ASC`,
+		now.UnixNano(), now.UnixNano(),
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []store.ScheduleDueRow
+	for rows.Next() {
+		var (
+			r          store.ScheduleDueRow
+			definition string
+			nextRunAt  int64
+		)
+		if err := rows.Scan(&r.DefID, &r.Name, &definition, &nextRunAt); err != nil {
+			return nil, err
+		}
+		r.Definition = json.RawMessage(definition)
+		r.NextRunAt = time.Unix(0, nextRunAt)
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) ScheduleRunStateRecordResult(ctx context.Context, in store.ScheduleRunResult) error {
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE schedule_run_state SET
+			last_run_at = ?,
+			last_run_id = ?,
+			last_status = ?,
+			last_error = ?,
+			next_run_at = ?
+		 WHERE def_id = ?`,
+		in.LastRunAt.UnixNano(), in.LastRunID, in.LastStatus, in.LastError,
+		in.NextRunAt.UnixNano(), in.DefID,
+	)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return &store.ErrNotFound{Kind: "schedule_run_state", ID: in.DefID}
+	}
+	return nil
+}
+
+func (s *Store) ScheduleRunStatePause(ctx context.Context, defID string, until time.Time) error {
+	var arg any = nil
+	if !until.IsZero() {
+		arg = until.UnixNano()
+	}
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE schedule_run_state SET paused_until = ? WHERE def_id = ?`,
+		arg, defID,
+	)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return &store.ErrNotFound{Kind: "schedule_run_state", ID: defID}
+	}
+	return nil
+}
+
 // ---- Evaluation (pure-insert, no concurrency lock) ----
 
 // EvaluationSubmit inserts one evaluation row. CreatedAt set by store.

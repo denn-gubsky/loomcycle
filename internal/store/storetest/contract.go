@@ -190,6 +190,11 @@ func Run(t *testing.T, factory Factory) {
 		{"ScheduleDefParentNotFound", testScheduleDefParentNotFound},
 		{"ScheduleDefListByName", testScheduleDefListByName},
 		{"ScheduleDefListChildren", testScheduleDefListChildren},
+		// v1.x RFC E ScheduleDef runtime — sweeper-side state.
+		{"ScheduleRunStateSeedAndGet", testScheduleRunStateSeedAndGet},
+		{"ScheduleRunStateListDueRespectsRetiredAndPaused", testScheduleRunStateListDueRespectsRetiredAndPaused},
+		{"ScheduleRunStateRecordResult", testScheduleRunStateRecordResult},
+		{"ScheduleRunStatePauseResume", testScheduleRunStatePauseResume},
 		{"EvaluationSubmitAndAggregate", testEvaluationSubmitAndAggregate},
 		{"EvaluationAggregateWithLineage", testEvaluationAggregateWithLineage},
 		// v0.8.x Process-resource metrics sampler
@@ -4011,6 +4016,164 @@ func testScheduleDefListChildren(t *testing.T, s store.Store) {
 	}
 	if len(children) != 2 {
 		t.Errorf("children len = %d, want 2", len(children))
+	}
+}
+
+// ---- v1.x RFC E ScheduleDef runtime — sweeper-side state ----
+
+// scheduleRuntimeFixture seeds one active schedule and returns its
+// def_id. Used by every runtime test to avoid repeating boilerplate.
+func scheduleRuntimeFixture(t *testing.T, s store.Store, name string) string {
+	t.Helper()
+	ctx := context.Background()
+	defID := "sd-" + name
+	if _, err := s.ScheduleDefCreate(ctx, mkScheduleDef(defID, name, "")); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if err := s.ScheduleDefSetActive(ctx, name, defID, "test"); err != nil {
+		t.Fatalf("set active: %v", err)
+	}
+	return defID
+}
+
+func testScheduleRunStateSeedAndGet(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	defID := scheduleRuntimeFixture(t, s, "rt-seed")
+	next := time.Now().Add(1 * time.Hour).Truncate(time.Microsecond)
+
+	if err := s.ScheduleRunStateSeed(ctx, defID, next); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	got, err := s.ScheduleRunStateGet(ctx, defID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if !got.NextRunAt.Equal(next) {
+		t.Errorf("next_run_at = %v, want %v", got.NextRunAt, next)
+	}
+	if got.LastRunID != "" || got.LastStatus != "" {
+		t.Errorf("seed should leave last_* empty: %+v", got)
+	}
+
+	// Re-seed with a different next: should update without resetting last_*.
+	// (last_* are empty in this case anyway, but the idempotence is the
+	// contract — re-promoting an active def shouldn't wipe its history.)
+	updated := next.Add(2 * time.Hour)
+	if err := s.ScheduleRunStateSeed(ctx, defID, updated); err != nil {
+		t.Fatalf("re-seed: %v", err)
+	}
+	got2, _ := s.ScheduleRunStateGet(ctx, defID)
+	if !got2.NextRunAt.Equal(updated) {
+		t.Errorf("re-seed next_run_at = %v, want %v", got2.NextRunAt, updated)
+	}
+}
+
+func testScheduleRunStateListDueRespectsRetiredAndPaused(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	now := time.Now().Truncate(time.Microsecond)
+
+	// Three schedules: due-and-fireable, due-but-retired, due-but-paused.
+	dueID := scheduleRuntimeFixture(t, s, "rt-due-go")
+	retiredID := scheduleRuntimeFixture(t, s, "rt-due-retired")
+	pausedID := scheduleRuntimeFixture(t, s, "rt-due-paused")
+
+	past := now.Add(-1 * time.Minute)
+	for _, id := range []string{dueID, retiredID, pausedID} {
+		if err := s.ScheduleRunStateSeed(ctx, id, past); err != nil {
+			t.Fatalf("seed %s: %v", id, err)
+		}
+	}
+	if err := s.ScheduleDefSetRetired(ctx, retiredID, true); err != nil {
+		t.Fatalf("retire: %v", err)
+	}
+	if err := s.ScheduleRunStatePause(ctx, pausedID, now.Add(1*time.Hour)); err != nil {
+		t.Fatalf("pause: %v", err)
+	}
+
+	due, err := s.ScheduleRunStateListDue(ctx, now)
+	if err != nil {
+		t.Fatalf("list due: %v", err)
+	}
+	names := make(map[string]bool)
+	for _, d := range due {
+		names[d.DefID] = true
+	}
+	if !names[dueID] {
+		t.Errorf("due-and-fireable schedule missing from due list")
+	}
+	if names[retiredID] {
+		t.Errorf("retired schedule should not appear in due list")
+	}
+	if names[pausedID] {
+		t.Errorf("paused schedule should not appear in due list")
+	}
+}
+
+func testScheduleRunStateRecordResult(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	defID := scheduleRuntimeFixture(t, s, "rt-result")
+	start := time.Now().Truncate(time.Microsecond)
+	if err := s.ScheduleRunStateSeed(ctx, defID, start); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	next := start.Add(24 * time.Hour)
+	if err := s.ScheduleRunStateRecordResult(ctx, store.ScheduleRunResult{
+		DefID:      defID,
+		LastRunID:  "r_abc",
+		LastStatus: "completed",
+		LastRunAt:  start,
+		NextRunAt:  next,
+	}); err != nil {
+		t.Fatalf("record result: %v", err)
+	}
+	got, _ := s.ScheduleRunStateGet(ctx, defID)
+	if got.LastRunID != "r_abc" || got.LastStatus != "completed" {
+		t.Errorf("got %+v", got)
+	}
+	if !got.NextRunAt.Equal(next) {
+		t.Errorf("next_run_at not advanced: %v, want %v", got.NextRunAt, next)
+	}
+	if !got.LastRunAt.Equal(start) {
+		t.Errorf("last_run_at = %v, want %v", got.LastRunAt, start)
+	}
+
+	// Record on unknown def_id returns ErrNotFound.
+	err := s.ScheduleRunStateRecordResult(ctx, store.ScheduleRunResult{
+		DefID:     "unknown",
+		LastRunID: "r_nope",
+		NextRunAt: next,
+	})
+	var nf *store.ErrNotFound
+	if !errors.As(err, &nf) {
+		t.Errorf("record result on unknown def_id should return ErrNotFound; got %v", err)
+	}
+}
+
+func testScheduleRunStatePauseResume(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	defID := scheduleRuntimeFixture(t, s, "rt-pause")
+	now := time.Now().Truncate(time.Microsecond)
+	if err := s.ScheduleRunStateSeed(ctx, defID, now); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	until := now.Add(2 * time.Hour)
+	if err := s.ScheduleRunStatePause(ctx, defID, until); err != nil {
+		t.Fatalf("pause: %v", err)
+	}
+	got, _ := s.ScheduleRunStateGet(ctx, defID)
+	if !got.PausedUntil.Equal(until) {
+		t.Errorf("paused_until = %v, want %v", got.PausedUntil, until)
+	}
+
+	// Resume = pause with zero time clears the field.
+	if err := s.ScheduleRunStatePause(ctx, defID, time.Time{}); err != nil {
+		t.Fatalf("resume: %v", err)
+	}
+	got2, _ := s.ScheduleRunStateGet(ctx, defID)
+	if !got2.PausedUntil.IsZero() {
+		t.Errorf("resume should clear paused_until; got %v", got2.PausedUntil)
 	}
 }
 

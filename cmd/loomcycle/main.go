@@ -59,6 +59,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/resolve"
 	"github.com/denn-gubsky/loomcycle/internal/runner"
 	"github.com/denn-gubsky/loomcycle/internal/runstate"
+	"github.com/denn-gubsky/loomcycle/internal/scheduler"
 	"github.com/denn-gubsky/loomcycle/internal/skills"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	storepostgres "github.com/denn-gubsky/loomcycle/internal/store/postgres"
@@ -1349,9 +1350,13 @@ func main() {
 	// always constructed (cheap; one atomic + one channel) so the
 	// endpoints respond rather than 503. Operator's default timeout
 	// comes from cfg.Env.PauseDefaultTimeoutMs; 0 ⇒ pause.DefaultPauseTimeout.
+	// pauseMgrRef stays nil unless storeIface is non-nil; the scheduler
+	// branch below uses it to gate its tick on runtime state.
+	var pauseMgrRef *pause.Manager
 	if storeIface != nil {
 		pauseDefault := time.Duration(cfg.Env.PauseDefaultTimeoutMs) * time.Millisecond
 		pauseMgr := pause.NewManager(storeIface, pauseDefault)
+		pauseMgrRef = pauseMgr
 		srv.SetPauseManager(pauseMgr)
 		if pauseDefault > 0 {
 			log.Printf("pause: manager wired (default timeout=%s)", pauseDefault)
@@ -1427,6 +1432,36 @@ func main() {
 		log.Printf("metrics: sampler disabled (no Store backend)")
 	} else {
 		log.Printf("metrics: sampler disabled (LOOMCYCLE_METRICS_ENABLED=0)")
+	}
+
+	// v1.x RFC E scheduler runtime. Default OFF; operator opts in via
+	// LOOMCYCLE_SCHEDULER_ENABLED=1. Sweeper goroutine fires due
+	// schedules from the substrate (schedule_run_state table). NIL
+	// MCPCaller is passed because mcp.call hook dispatch is wired in
+	// a follow-up PR — channel.publish + memory.set hooks work today.
+	if cfg.Env.SchedulerEnabled && storeIface != nil && srv != nil {
+		envAllowlist := make(map[string]bool, len(cfg.Env.SchedulerEnvAllowlist))
+		for _, name := range cfg.Env.SchedulerEnvAllowlist {
+			envAllowlist[name] = true
+		}
+		schedCfg := scheduler.Config{
+			TickInterval: time.Duration(cfg.Env.SchedulerTickSeconds) * time.Second,
+			FireTimeout:  time.Duration(cfg.Env.SchedulerFireTimeoutSeconds) * time.Second,
+			EnvAllowlist: envAllowlist,
+		}
+		// srv satisfies runner.Runner via its RunOnce method (the same
+		// seam HTTP + gRPC drive interactive runs through). pauseMgr is
+		// guaranteed non-nil in this branch (storeIface != nil ⇒ pause
+		// manager constructed earlier in this function).
+		sched := scheduler.New(schedCfg, storeIface, srv, pauseMgrRef, nil, log.Printf)
+		sched.Start(bgCtx)
+		log.Printf("scheduler: enabled (tick=%ds, fire_timeout=%ds, env_allowlist=%d names)",
+			cfg.Env.SchedulerTickSeconds, cfg.Env.SchedulerFireTimeoutSeconds,
+			len(cfg.Env.SchedulerEnvAllowlist))
+	} else if cfg.Env.SchedulerEnabled {
+		log.Printf("scheduler: disabled (no Store backend or no HTTP server)")
+	} else {
+		log.Printf("scheduler: disabled (LOOMCYCLE_SCHEDULER_ENABLED=0)")
 	}
 	// Boot summary of operator-declared channels. Mirrors the
 	// "user_tiers: configured N — ..." line shape so operators see

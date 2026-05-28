@@ -1048,6 +1048,42 @@ type Store interface {
 	ScheduleDefGetActive(ctx context.Context, name string) (ScheduleDefRow, error)
 	ScheduleDefSetRetired(ctx context.Context, defID string, retired bool) error
 
+	// ---- v1.x RFC E ScheduleDef runtime (sweeper-side) ----
+	//
+	// schedule_run_state tracks per-def runtime state (last_run_id,
+	// last_status, next_run_at, pause-until). One row per active def;
+	// the scheduler seeds it when a def first becomes active and
+	// updates it after each fire. ON DELETE CASCADE on the FK to
+	// schedule_defs means retiring a def via DELETE auto-cleans state;
+	// retired-via-flag rows keep their state but are filtered out by
+	// ScheduleRunStateListDue's JOIN against the active pointer.
+
+	// ScheduleRunStateSeed creates the state row for a def_id with the
+	// provided next_run_at. Idempotent: if the row already exists,
+	// updates next_run_at only (preserves last_*). Used when a new
+	// def is promoted to active.
+	ScheduleRunStateSeed(ctx context.Context, defID string, nextRunAt time.Time) error
+
+	// ScheduleRunStateGet fetches one row. Returns ErrNotFound if no
+	// state has been seeded for the def_id.
+	ScheduleRunStateGet(ctx context.Context, defID string) (ScheduleRunStateRow, error)
+
+	// ScheduleRunStateListDue returns the def_id + ScheduleDefRow of
+	// every schedule whose next_run_at <= now AND def_id is the
+	// active pointer for its name AND not retired AND not paused. The
+	// JOIN happens store-side so the sweeper sees a single coherent
+	// snapshot of "what should fire now." Empty slice = nothing due.
+	ScheduleRunStateListDue(ctx context.Context, now time.Time) ([]ScheduleDueRow, error)
+
+	// ScheduleRunStateRecordResult writes the outcome of a single
+	// firing: last_run_id, last_status, last_error, last_run_at=now,
+	// next_run_at advanced to the supplied value. Atomic.
+	ScheduleRunStateRecordResult(ctx context.Context, in ScheduleRunResult) error
+
+	// ScheduleRunStatePause sets paused_until = until (or NULL if
+	// until.IsZero()). Resume = call with zero time.
+	ScheduleRunStatePause(ctx context.Context, defID string, until time.Time) error
+
 	// ---- Evaluation ----
 	//
 	// `Evaluation` is the score-attached-to-(run, def) primitive.
@@ -1741,6 +1777,43 @@ type ScheduleDefActiveEntry struct {
 	DefID             string    `json:"def_id"`
 	PromotedAt        time.Time `json:"promoted_at"`
 	PromotedByAgentID string    `json:"promoted_by_agent_id,omitempty"`
+}
+
+// ScheduleRunStateRow is one row in schedule_run_state — the
+// sweeper's runtime view of a def. Seeded when a def becomes
+// active; updated after each fire.
+type ScheduleRunStateRow struct {
+	DefID       string    `json:"def_id"`
+	LastRunAt   time.Time `json:"last_run_at,omitempty"`
+	LastRunID   string    `json:"last_run_id,omitempty"`
+	LastStatus  string    `json:"last_status,omitempty"`
+	LastError   string    `json:"last_error,omitempty"`
+	NextRunAt   time.Time `json:"next_run_at"`
+	PausedUntil time.Time `json:"paused_until,omitempty"`
+}
+
+// ScheduleDueRow is the JOIN result returned by ScheduleRunStateListDue.
+// The sweeper iterates these to fire each due schedule. Definition is
+// the raw JSON body — the scheduler unmarshals it into its own
+// merged-def shape (avoiding a cross-package dep on internal/tools/
+// builtin's mergedScheduleDef).
+type ScheduleDueRow struct {
+	DefID      string          `json:"def_id"`
+	Name       string          `json:"name"`
+	Definition json.RawMessage `json:"definition"`
+	NextRunAt  time.Time       `json:"next_run_at"`
+}
+
+// ScheduleRunResult is the input to ScheduleRunStateRecordResult.
+// Bundled into a struct so the contract stays stable as we add
+// fields (e.g. duration_ms in v1.1).
+type ScheduleRunResult struct {
+	DefID      string
+	LastRunID  string
+	LastStatus string // "completed" | "failed" | "cancelled" | "skipped"
+	LastError  string
+	LastRunAt  time.Time
+	NextRunAt  time.Time
 }
 
 // EvaluationRow is one row in the evaluations table.
