@@ -1,0 +1,51 @@
+# Minimal loomcycle config for the Profile A observability demo.
+# Everything else (storage, auth, OTEL endpoint, metrics) is driven
+# by environment variables in compose.yaml so this file stays
+# operator-readable.
+
+defaults:
+  provider: anthropic
+  model: claude-haiku-4-5
+
+provider_priority:
+  - anthropic
+  - openai
+  - deepseek
+
+user_tiers:
+  default:
+    provider_priority:
+      - anthropic
+      - openai
+      - deepseek
+    tiers:
+      low:
+        - {provider: anthropic, model: claude-haiku-4-5}
+        - {provider: openai, model: gpt-5.4-mini}
+      middle:
+        - {provider: anthropic, model: claude-sonnet-4-6}
+        - {provider: deepseek, model: deepseek-v4-flash}
+      high:
+        - {provider: anthropic, model: claude-opus-4-7}
+    fallback_on_error: true
+    max_fallback_attempts: 3
+    retry_attempts: 1
+
+# Single demo agent. Use it as the seed.sh target — exercises the
+# resolver + provider + tool path so traces flow end-to-end.
+agents:
+  demo:
+    tier: low
+    allowed_tools: [Read, Memory]
+    memory_scopes: [agent, user]
+    system_prompt: |
+      You are a friendly demo agent. Respond briefly to the user's
+      prompt. When asked to remember something, use the Memory tool.
+
+# Storage — Postgres for richer observability (snapshots, replicas
+# table, etc.). compose.yaml supplies the DSN via env.
+
+concurrency:
+  max_concurrent_runs: 16
+  max_queue_depth: 64
+  queue_timeout_ms: 30000

@@ -1,0 +1,16 @@
+# Dashboard auto-provisioning. Loads any *.json file under
+# /etc/grafana/provisioning/dashboards as a dashboard.
+
+apiVersion: 1
+
+providers:
+  - name: loomcycle
+    orgId: 1
+    folder: Loomcycle
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 30
+    allowUiUpdates: false
+    options:
+      path: /etc/grafana/provisioning/dashboards
+      foldersFromFilesStructure: false

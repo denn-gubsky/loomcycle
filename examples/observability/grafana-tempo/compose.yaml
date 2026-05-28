@@ -1,0 +1,131 @@
+# Profile A — loomcycle + full self-hosted observability stack.
+#
+# Brings up loomcycle (with OTEL traces enabled) + Postgres + OTEL
+# Collector + Tempo (traces) + Prometheus (metrics) + Loki (logs) +
+# Grafana (UI). Single `docker compose up` produces a working
+# end-to-end stack — see README.md for the five-minute quickstart.
+#
+# Scoped at RFC observability-profiles.md (locked 2026-05-27). All
+# image versions pinned; rotate via the "Production deployment"
+# section in the README.
+
+services:
+  # ---- loomcycle + storage ----------------------------------------
+
+  loomcycle:
+    image: denngubsky/loomcycle:latest
+    ports:
+      - "8787:8787"
+    environment:
+      # Bearer token for the demo. ROTATE before production — see
+      # README "Production deployment" section.
+      LOOMCYCLE_AUTH_TOKEN: ${LOOMCYCLE_AUTH_TOKEN:-demo-token-change-me}
+
+      # OTEL — send spans to the local collector.
+      LOOMCYCLE_OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+      LOOMCYCLE_OTEL_SERVICE_NAME: loomcycle
+      LOOMCYCLE_OTEL_SAMPLER_RATIO: "1.0"
+
+      # Process-resource sampler (the DB-backed metrics) — enabled so
+      # the /v1/_metrics/* JSON endpoints work alongside /metrics.
+      LOOMCYCLE_METRICS_ENABLED: "1"
+
+      # Storage.
+      LOOMCYCLE_DB_DSN: postgres://loomcycle:loomcycle@postgres:5432/loomcycle?sslmode=disable
+
+      # Provider keys — operator supplies via .env or environment.
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+    volumes:
+      - ./loomcycle.yaml:/etc/loomcycle/loomcycle.yaml:ro
+    command: ["serve", "--config", "/etc/loomcycle/loomcycle.yaml"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      otel-collector:
+        condition: service_started
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: loomcycle
+      POSTGRES_PASSWORD: loomcycle
+      POSTGRES_DB: loomcycle
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U loomcycle"]
+      interval: 5s
+      retries: 10
+
+  # ---- telemetry pipeline -----------------------------------------
+
+  # OTEL Collector receives OTLP traces from loomcycle and fans them
+  # out to Tempo (storage) AND a `spanmetrics` connector which
+  # synthesizes Prometheus histograms (calls_total, duration_seconds)
+  # by promoting span attributes to labels. See otel-collector/config.yaml.
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.95.0
+    command: ["--config=/etc/otelcol/config.yaml"]
+    volumes:
+      - ./otel-collector/config.yaml:/etc/otelcol/config.yaml:ro
+    ports:
+      - "4318:4318"   # OTLP HTTP (loomcycle sends here)
+      - "8889:8889"   # spanmetrics-derived Prometheus endpoint (Prometheus scrapes here)
+
+  tempo:
+    image: grafana/tempo:2.4.1
+    command: ["-config.file=/etc/tempo/tempo.yaml"]
+    volumes:
+      - ./tempo/tempo.yaml:/etc/tempo/tempo.yaml:ro
+      - tempo-data:/var/tempo
+    ports:
+      - "3200:3200"   # Tempo HTTP (Grafana datasource hits this)
+
+  prometheus:
+    image: prom/prometheus:v2.52.0
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=15d
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    ports:
+      - "9090:9090"
+
+  loki:
+    image: grafana/loki:2.9.5
+    command: ["-config.file=/etc/loki/loki-config.yaml"]
+    volumes:
+      - ./loki/loki-config.yaml:/etc/loki/loki-config.yaml:ro
+      - loki-data:/loki
+    ports:
+      - "3100:3100"
+
+  # ---- UI ---------------------------------------------------------
+
+  grafana:
+    image: grafana/grafana:10.4.0
+    environment:
+      # Demo defaults — change for production.
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_FEATURE_TOGGLES_ENABLE: traceqlEditor
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - grafana-data:/var/lib/grafana
+    ports:
+      - "3001:3000"   # mapped to 3001 to avoid common-app collisions
+    depends_on:
+      - prometheus
+      - tempo
+      - loki
+
+volumes:
+  postgres-data:
+  tempo-data:
+  prometheus-data:
+  loki-data:
+  grafana-data:

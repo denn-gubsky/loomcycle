@@ -1,0 +1,56 @@
+# Grafana datasource auto-provisioning. Loaded on Grafana startup;
+# operator never clicks through the UI to wire any of these.
+
+apiVersion: 1
+
+datasources:
+  # Substrate metrics + spanmetrics-derived histograms.
+  - name: Prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    editable: false
+    jsonData:
+      # Link from Prometheus exemplars to Tempo traces. Hover any
+      # data point in a panel → "View trace" jumps to the matching
+      # Tempo trace.
+      exemplarTraceIdDestinations:
+        - name: trace_id
+          datasourceUid: tempo
+
+  # OTEL traces.
+  - name: Tempo
+    uid: tempo
+    type: tempo
+    access: proxy
+    url: http://tempo:3200
+    editable: false
+    jsonData:
+      tracesToLogsV2:
+        datasourceUid: loki
+        # Click any span → query Loki for logs in a ±1m window around
+        # the span. Operators wanting the full trace-to-logs flow get
+        # it without any per-tenant wiring.
+        spanStartTimeShift: -1m
+        spanEndTimeShift: 1m
+        tags:
+          - { key: service.name, value: service }
+        filterByTraceID: true
+      tracesToMetrics:
+        datasourceUid: prometheus
+        spanStartTimeShift: -1m
+        spanEndTimeShift: 1m
+        tags:
+          - { key: loomcycle.provider }
+          - { key: loomcycle.tool }
+      serviceMap:
+        datasourceUid: prometheus
+
+  # Logs.
+  - name: Loki
+    uid: loki
+    type: loki
+    access: proxy
+    url: http://loki:3100
+    editable: false

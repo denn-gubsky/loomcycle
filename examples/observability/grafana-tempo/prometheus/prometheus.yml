@@ -1,0 +1,28 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    cluster: loomcycle-demo
+
+scrape_configs:
+  # loomcycle's own /metrics endpoint — substrate counters
+  # (process resources + concurrency state).
+  - job_name: loomcycle
+    static_configs:
+      - targets: ["loomcycle:8787"]
+    metrics_path: /metrics
+    scheme: http
+    authorization:
+      type: Bearer
+      # Same value as the loomcycle service's LOOMCYCLE_AUTH_TOKEN
+      # in compose.yaml. ROTATE before production.
+      credentials: demo-token-change-me
+
+  # OTEL Collector's spanmetrics-derived endpoint — per-run
+  # histograms aggregated from loomcycle's OTEL spans. See
+  # otel-collector/config.yaml (Decision 2 lock).
+  - job_name: loomcycle-spanmetrics
+    static_configs:
+      - targets: ["otel-collector:8889"]
+    metrics_path: /metrics
+    scheme: http
