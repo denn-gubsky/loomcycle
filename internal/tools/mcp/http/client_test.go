@@ -726,3 +726,138 @@ func TestMcpHttpClient_MissingBearerDropsHeader(t *testing.T) {
 		t.Errorf("WARN log should report bearer=(empty), got: %q", logLine)
 	}
 }
+
+// TestMcpHttpClient_PerRunCredentialSubstitution covers the RFC F
+// happy path: header value `Bearer ${run.credentials.jobs}` + ctx
+// with a non-empty UserCredentials["jobs"] → outbound Authorization
+// header has the substituted token. Mirrors
+// TestMcpHttpClient_PerRunBearerSubstitution for the credential map.
+func TestMcpHttpClient_PerRunCredentialSubstitution(t *testing.T) {
+	rec := &recordingHeaderServer{}
+	srv := httptest.NewServer(http.HandlerFunc(rec.handler))
+	defer srv.Close()
+
+	c, _ := New(Config{
+		URL:     srv.URL,
+		Headers: map[string]string{"Authorization": "Bearer ${run.credentials.jobs}"},
+	})
+
+	ctx := tools.WithRunIdentity(context.Background(), tools.RunIdentityValue{
+		AgentID:         "a_test",
+		UserCredentials: map[string]string{"jobs": "jobs-tok-xyz"},
+	})
+	if _, err := mcp.CallTool(ctx, c, "search", json.RawMessage(`{}`)); err != nil {
+		t.Fatalf("CallTool: %v", err)
+	}
+
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	if len(rec.requests) != 1 {
+		t.Fatalf("got %d requests, want 1", len(rec.requests))
+	}
+	if got := rec.requests[0].Get("Authorization"); got != "Bearer jobs-tok-xyz" {
+		t.Errorf("Authorization = %q, want %q", got, "Bearer jobs-tok-xyz")
+	}
+}
+
+// TestMcpHttpClient_MultipleCredentialsInOneClient covers the
+// JobEmber-style fan-out: same Client, two different credential-keyed
+// headers (e.g. Authorization + X-Tenant) substituting from the same
+// run's credentials map. Both substitutions happen against one map
+// per request; neither leaks across clients or requests.
+func TestMcpHttpClient_MultipleCredentialsInOneClient(t *testing.T) {
+	rec := &recordingHeaderServer{}
+	srv := httptest.NewServer(http.HandlerFunc(rec.handler))
+	defer srv.Close()
+
+	c, _ := New(Config{
+		URL: srv.URL,
+		Headers: map[string]string{
+			"Authorization": "Bearer ${run.credentials.app}",
+			"X-Channel":     "${run.credentials.chan}",
+		},
+	})
+
+	ctx := tools.WithRunIdentity(context.Background(), tools.RunIdentityValue{
+		AgentID: "a_test",
+		UserCredentials: map[string]string{
+			"app":  "app-token-AAA",
+			"chan": "channel-token-BBB",
+		},
+	})
+	if _, err := mcp.CallTool(ctx, c, "search", json.RawMessage(`{}`)); err != nil {
+		t.Fatalf("CallTool: %v", err)
+	}
+
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	if got := rec.requests[0].Get("Authorization"); got != "Bearer app-token-AAA" {
+		t.Errorf("Authorization = %q, want %q", got, "Bearer app-token-AAA")
+	}
+	if got := rec.requests[0].Get("X-Channel"); got != "channel-token-BBB" {
+		t.Errorf("X-Channel = %q, want %q", got, "channel-token-BBB")
+	}
+}
+
+// TestMcpHttpClient_MissingCredentialDropsHeader covers the loud-
+// failure path: header value `Bearer ${run.credentials.missing}` +
+// ctx with UserCredentials lacking the key → outbound request omits
+// the entire Authorization header. The MCP server's auth layer then
+// returns its own 401 (more debuggable than a substrate-side error).
+func TestMcpHttpClient_MissingCredentialDropsHeader(t *testing.T) {
+	rec := &recordingHeaderServer{}
+	srv := httptest.NewServer(http.HandlerFunc(rec.handler))
+	defer srv.Close()
+
+	c, _ := New(Config{
+		URL:     srv.URL,
+		Headers: map[string]string{"Authorization": "Bearer ${run.credentials.missing_key}"},
+	})
+
+	ctx := tools.WithRunIdentity(context.Background(), tools.RunIdentityValue{
+		AgentID:         "a_test",
+		UserCredentials: map[string]string{"other_key": "ignored"},
+	})
+	if _, err := mcp.CallTool(ctx, c, "search", json.RawMessage(`{}`)); err != nil {
+		t.Fatalf("CallTool: %v", err)
+	}
+
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	if got := rec.requests[0].Get("Authorization"); got != "" {
+		t.Errorf("Authorization = %q, want empty (header dropped)", got)
+	}
+}
+
+// TestMcpHttpClient_BackCompatSugarPath covers the RFC F back-compat
+// sugar end-to-end: a caller supplying only the legacy UserBearer
+// gets ${run.credentials.default} resolving identically. This is the
+// integration-level proof that v0.8.x callers can migrate their
+// mcp_servers.*.headers from ${run.user_bearer} to
+// ${run.credentials.default} without touching the wire.
+func TestMcpHttpClient_BackCompatSugarPath(t *testing.T) {
+	rec := &recordingHeaderServer{}
+	srv := httptest.NewServer(http.HandlerFunc(rec.handler))
+	defer srv.Close()
+
+	c, _ := New(Config{
+		URL:     srv.URL,
+		Headers: map[string]string{"Authorization": "Bearer ${run.credentials.default}"},
+	})
+
+	ctx := tools.WithRunIdentity(context.Background(), tools.RunIdentityValue{
+		AgentID:    "a_test",
+		UserBearer: "legacy-bearer-xyz",
+		// UserCredentials intentionally nil — sugar auto-populates default.
+	})
+	if _, err := mcp.CallTool(ctx, c, "search", json.RawMessage(`{}`)); err != nil {
+		t.Fatalf("CallTool: %v", err)
+	}
+
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	if got := rec.requests[0].Get("Authorization"); got != "Bearer legacy-bearer-xyz" {
+		t.Errorf("Authorization = %q, want %q (sugar should populate default from UserBearer)",
+			got, "Bearer legacy-bearer-xyz")
+	}
+}

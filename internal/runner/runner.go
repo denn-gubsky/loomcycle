@@ -158,6 +158,24 @@ type RunInput struct {
 	// ${run.user_bearer:-X} use fallback X; headers with bare
 	// ${run.user_bearer} drop the header and emit a WARN.
 	UserBearer string
+
+	// UserCredentials is the v1.x RFC F named-credentials map —
+	// per-tool/per-MCP-server bearers keyed by operator-chosen name.
+	// Substituted into MCP HTTP header values containing
+	// ${run.credentials.<name>} at outbound request-build time.
+	// Sub-agents inherit identically via ctx.
+	//
+	// Back-compat: when UserBearer is non-empty but
+	// UserCredentials["default"] is empty, WithRunIdentity promotes
+	// UserBearer into the map as the "default" key, so the legacy
+	// ${run.user_bearer} substitution and ${run.credentials.default}
+	// both resolve to the same value. v0.8.x callers see no change.
+	//
+	// Validation: keys [a-zA-Z0-9_-]{1,64}; values arbitrary strings.
+	// Enforced at wire entry points (HTTP, gRPC, MCP); this struct
+	// trusts its caller. Empty map is valid (= run uses no per-tool
+	// auth). Never persisted; never logged; not emitted in OTEL spans.
+	UserCredentials map[string]string
 }
 
 // RunCallbacks is how the wire surfaces observe the run.

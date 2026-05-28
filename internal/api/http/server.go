@@ -22,6 +22,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/channels"
 	"github.com/denn-gubsky/loomcycle/internal/concurrency"
 	"github.com/denn-gubsky/loomcycle/internal/config"
+	"github.com/denn-gubsky/loomcycle/internal/connector"
 	"github.com/denn-gubsky/loomcycle/internal/coord"
 	"github.com/denn-gubsky/loomcycle/internal/hooks"
 	"github.com/denn-gubsky/loomcycle/internal/lookup"
@@ -1400,10 +1401,11 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 
 	loopCtx := tools.WithAgentTools(runCtx, toolNames(allowedTools))
 	loopCtx = tools.WithRunIdentity(loopCtx, tools.RunIdentityValue{
-		UserID:     effectiveUserID,
-		AgentID:    agentID,
-		UserTier:   in.UserTier,
-		UserBearer: in.UserBearer, // v0.8.x: per-run MCP bearer
+		UserID:          effectiveUserID,
+		AgentID:         agentID,
+		UserTier:        in.UserTier,
+		UserBearer:      in.UserBearer,      // v0.8.x: per-run MCP bearer
+		UserCredentials: in.UserCredentials, // v1.x RFC F: per-tool named credentials
 	})
 	loopCtx = tools.WithHostPolicy(loopCtx, hostPolicy)
 	// Memory tool policy: agent name + per-agent scope allowlist +
@@ -2055,6 +2057,18 @@ type runRequest struct {
 	// agents inherit identically. Never persisted; never logged in
 	// full.
 	UserBearer string `json:"user_bearer,omitempty"`
+	// UserCredentials is the v1.x RFC F named-credentials map —
+	// per-tool/per-MCP-server bearers keyed by operator-chosen name.
+	// Substituted into MCP HTTP header values containing
+	// ${run.credentials.<name>} at outbound request-build time.
+	// Keys validated as [a-zA-Z0-9_-]{1,64}; values arbitrary
+	// strings; empty map is valid (no per-tool auth needed).
+	// Empty + UserBearer set → at WithRunIdentity time the default
+	// key is auto-populated from UserBearer for back-compat with
+	// v0.8.x single-bearer flows. Never persisted; never logged.
+	// See `Context.help per-run-credentials` for the operator-facing
+	// reference; rfcs/per-run-credentials.md for the design lock.
+	UserCredentials map[string]string `json:"user_credentials,omitempty"`
 }
 
 func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
@@ -2111,6 +2125,10 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 
 	if req.UserBearer != "" && !validUserBearer(req.UserBearer) {
 		http.Error(w, `user_bearer must match [A-Za-z0-9._\-+/=]{16,512}`, http.StatusBadRequest)
+		return
+	}
+	if errMsg, ok := connector.ValidateUserCredentialsMap(req.UserCredentials); !ok {
+		http.Error(w, errMsg, http.StatusBadRequest)
 		return
 	}
 
@@ -2350,10 +2368,11 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 	// SubAgentRunner can inherit user_id and set parent_agent_id on
 	// any sub-runs it spawns.
 	loopCtx = tools.WithRunIdentity(loopCtx, tools.RunIdentityValue{
-		UserID:     req.UserID,
-		AgentID:    agentID,
-		UserTier:   req.UserTier,
-		UserBearer: req.UserBearer, // v0.8.x: per-run MCP bearer
+		UserID:          req.UserID,
+		AgentID:         agentID,
+		UserTier:        req.UserTier,
+		UserBearer:      req.UserBearer,      // v0.8.x: per-run MCP bearer
+		UserCredentials: req.UserCredentials, // v1.x RFC F: per-tool named credentials
 	})
 	// Stash the caller's host policy so any sub-agents spawned by the
 	// Agent tool inherit the same allowed_hosts / WebSearchFilter
@@ -2440,6 +2459,10 @@ type messagesRequest struct {
 	// may carry different end-user tokens — natural for a future
 	// flow where each continuation gets a fresh short-lived bearer.
 	UserBearer string `json:"user_bearer,omitempty"`
+	// UserCredentials follows runRequest semantics — same wire shape,
+	// same validation, same back-compat sugar (legacy UserBearer
+	// promoted to UserCredentials["default"] at WithRunIdentity time).
+	UserCredentials map[string]string `json:"user_credentials,omitempty"`
 }
 
 func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
@@ -2509,6 +2532,10 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	}
 	if body.UserBearer != "" && !validUserBearer(body.UserBearer) {
 		http.Error(w, `user_bearer must match [A-Za-z0-9._\-+/=]{16,512}`, http.StatusBadRequest)
+		return
+	}
+	if errMsg, ok := connector.ValidateUserCredentialsMap(body.UserCredentials); !ok {
+		http.Error(w, errMsg, http.StatusBadRequest)
 		return
 	}
 	providerID, model, effort, err := s.resolveAgent(sess.Agent, body.UserTier)
@@ -2682,10 +2709,11 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 
 	loopCtx := tools.WithAgentTools(runCtx, toolNames(allowedTools))
 	loopCtx = tools.WithRunIdentity(loopCtx, tools.RunIdentityValue{
-		UserID:     sess.UserID,
-		AgentID:    agentID,
-		UserTier:   body.UserTier,
-		UserBearer: body.UserBearer, // v0.8.x: per-run MCP bearer
+		UserID:          sess.UserID,
+		AgentID:         agentID,
+		UserTier:        body.UserTier,
+		UserBearer:      body.UserBearer,      // v0.8.x: per-run MCP bearer
+		UserCredentials: body.UserCredentials, // v1.x RFC F: per-tool named credentials
 	})
 	// Sub-agents spawned by this continuation must inherit the
 	// caller-authoritative host narrowing, same as runRequest +
@@ -3268,11 +3296,12 @@ func (s *Server) runSubAgent(ctx context.Context, name string, prompt string, de
 	// parent_agent_id (= subAgentID).
 	subCtx := tools.WithAgentTools(subRunCtx, toolNames(subTools))
 	subCtx = tools.WithRunIdentity(subCtx, tools.RunIdentityValue{
-		UserID:     parentIdentity.UserID,
-		AgentID:    subAgentID,
-		UserTier:   parentIdentity.UserTier,   // v0.8.2: sub-agents inherit parent's user_tier
-		AgentDefID: defID,                     // v0.8.7: surface pinned def_id via Context.self
-		UserBearer: parentIdentity.UserBearer, // v0.8.x: bearer inherited identically (same end-user)
+		UserID:          parentIdentity.UserID,
+		AgentID:         subAgentID,
+		UserTier:        parentIdentity.UserTier,        // v0.8.2: sub-agents inherit parent's user_tier
+		AgentDefID:      defID,                          // v0.8.7: surface pinned def_id via Context.self
+		UserBearer:      parentIdentity.UserBearer,      // v0.8.x: bearer inherited identically (same end-user)
+		UserCredentials: parentIdentity.UserCredentials, // v1.x RFC F: credentials map inherited identically
 	})
 	subCtx = tools.WithAgentName(subCtx, name)
 	// Sub-agents get THEIR OWN Memory policy from yaml — the parent's

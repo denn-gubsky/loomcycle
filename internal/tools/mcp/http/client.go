@@ -226,10 +226,21 @@ func (c *Client) do(ctx context.Context, body []byte) (*http.Response, error) {
 	// a loomcycle-side dispatch failure.
 	runIdent := tools.RunIdentity(ctx)
 	for k, v := range c.headers {
+		// Two-pass substitution: legacy ${run.user_bearer} first
+		// (v0.8.x single-bearer form), then RFC F ${run.credentials.<n>}.
+		// Both are no-ops when their token isn't present; ordering
+		// preserves v0.8.x behaviour bit-for-bit when only the legacy
+		// form is in play.
 		subV, drop := substituteRunVars(v, runIdent.UserBearer)
 		if drop {
 			log.Printf("mcp http: ${run.user_bearer} unresolved for header %q on %q (agent_id=%s, bearer=%s); dropping header",
 				k, c.url, runIdent.AgentID, tokenPrefix(runIdent.UserBearer))
+			continue
+		}
+		subV, credDrop, missingCreds := substituteCredentialRefs(subV, runIdent.UserCredentials)
+		if credDrop {
+			log.Printf("mcp http: ${run.credentials.<name>} unresolved for header %q on %q (agent_id=%s, missing=%v); dropping header",
+				k, c.url, runIdent.AgentID, missingCreds)
 			continue
 		}
 		req.Header.Set(k, subV)

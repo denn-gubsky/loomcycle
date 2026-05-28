@@ -168,6 +168,15 @@ export interface RunOptions {
    *  (static-bearer setups unaffected). Sub-agents inherit identically.
    *  Never persisted; never logged in full. */
   userBearer?: string;
+  /** Per-tool named credentials map (v1.x RFC F). Per-MCP-server bearers
+   *  keyed by operator-chosen name (convention: the `mcp_servers.<name>`
+   *  yaml key). Substituted into MCP HTTP header values containing
+   *  `${run.credentials.<name>}` at outbound request-build time. Keys
+   *  match `[a-zA-Z0-9_-]{1,64}`; values arbitrary strings. Sub-agents
+   *  inherit the whole map. Coexists with `userBearer` — the legacy
+   *  field auto-promotes to `userCredentials.default` for back-compat
+   *  with v0.8.x flows. Never persisted; never logged. */
+  userCredentials?: Record<string, string>;
   /** Opt-in observability: when true, the iterator emits client-
    *  synthesized `{ type: "_meta", meta_subtype: "stream_open" | "stream_close" }`
    *  events around the real event stream. `meta_reason` carries the
@@ -205,6 +214,10 @@ export interface ContinueOptions {
    *  so different continuations in the same session may carry
    *  different end-user tokens. */
   userBearer?: string;
+  /** Per-tool named credentials map (v1.x RFC F). See
+   *  {@link RunOptions.userCredentials} for the full shape — same
+   *  semantics, supplied per-continuation rather than per-fresh-run. */
+  userCredentials?: Record<string, string>;
   /** Opt-in observability: see {@link RunOptions.debug}. Same shape. */
   debug?: boolean;
   signal?: AbortSignal;
