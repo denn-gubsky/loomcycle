@@ -601,6 +601,13 @@ type AgentDef struct {
 	// access via a templated string.
 	AgentDefScopes []string `yaml:"agent_def_scopes"`
 
+	// ScheduleDefScopes is the v1.x RFC E ScheduleDef tool capability
+	// gate. Default-deny when empty. Same closed set as
+	// AgentDefScopes: "self" / "descendants" / "named:<name>" / "any".
+	// Lets operator-blessed orchestrators author + fork schedules at
+	// runtime; arbitrary agents have no access.
+	ScheduleDefScopes []string `yaml:"schedule_def_scopes"`
+
 	// SkillDefScopes is the v0.8.22 SkillDef tool capability gate.
 	// Default-deny when empty. Mirrors AgentDefScopes minus the
 	// "self" scope (skills have no agent identity, so "self" is

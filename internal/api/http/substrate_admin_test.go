@@ -44,6 +44,11 @@ func substrateAdminFixture(t *testing.T) *httptest.Server {
 	skillDefTool := &builtin.SkillDef{Set: emptySkillSet, Store: st}
 
 	srv := New(cfg, &stubResolver{}, []tools.Tool{agentDefTool, skillDefTool}, concurrency.New(1, 1, time.Second), st)
+	// ScheduleDef is operator-admin-only — not in the per-agent
+	// dispatcher slice; wired via the dedicated setter that the
+	// HTTP handler + Connector method look up. Without this call,
+	// POST /v1/_scheduledef returns "ScheduleDef: not configured".
+	srv.SetScheduleDefTool(&builtin.ScheduleDef{Store: st, Cfg: cfg})
 	return httptest.NewServer(srv.Mux())
 }
 
@@ -242,6 +247,106 @@ func TestSubstrateAdmin_ToolRefusal_Returns422(t *testing.T) {
 	}
 	if env["tool"] != "SkillDef" {
 		t.Errorf("tool = %v, want SkillDef", env["tool"])
+	}
+}
+
+// TestSubstrateAdmin_ScheduleDef_HappyPath exercises the v1.x
+// scheduled-runs substrate end-to-end over HTTP: bearer-authed
+// POST /v1/_scheduledef with a `create` op, response body decoded
+// via the same wire shape AgentDef + SkillDef use.
+func TestSubstrateAdmin_ScheduleDef_HappyPath(t *testing.T) {
+	ts := substrateAdminFixture(t)
+	defer ts.Close()
+
+	// The fixture's cfg has no Agents map entries, so any agent
+	// reference here would fail validation. Use a static agent on
+	// the cfg by passing the agent name through the overlay — the
+	// scheduledef tool only validates that agent != "" at create
+	// time (full resolution happens at sweeper-fire time).
+	body := `{"op":"create","name":"adhoc-sched","overlay":{"agent":"researcher","schedule":"0 6 * * *","user_id":"alice"}}`
+	resp := postAdmin(t, ts, "/v1/_scheduledef", body)
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		raw, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d, want 200; body=%s", resp.StatusCode, raw)
+	}
+	var out map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if out["name"] != "adhoc-sched" {
+		t.Errorf("name = %v, want adhoc-sched", out["name"])
+	}
+	if out["version"].(float64) != 1 {
+		t.Errorf("version = %v, want 1", out["version"])
+	}
+	if out["promoted"].(bool) != true {
+		t.Errorf("create default promote = false; want true (RFC E auto-promote)")
+	}
+}
+
+// TestSubstrateAdmin_ScheduleDef_ListNames covers the read-only
+// GET /v1/_scheduledef/names endpoint (introspection complement
+// to the op-dispatched POST endpoint).
+func TestSubstrateAdmin_ScheduleDef_ListNames(t *testing.T) {
+	ts := substrateAdminFixture(t)
+	defer ts.Close()
+
+	// Seed one row.
+	_ = postAdmin(t, ts, "/v1/_scheduledef",
+		`{"op":"create","name":"weekly-digest","overlay":{"agent":"researcher","schedule":"0 9 * * 1","user_id":"alice"}}`)
+
+	req, _ := http.NewRequest("GET", ts.URL+"/v1/_scheduledef/names", nil)
+	req.Header.Set("Authorization", "Bearer test-token")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		raw, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d, want 200; body=%s", resp.StatusCode, raw)
+	}
+	var env struct {
+		Names []map[string]any `json:"names"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&env); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	found := false
+	for _, n := range env.Names {
+		if n["name"] == "weekly-digest" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("weekly-digest not in names list: %v", env.Names)
+	}
+}
+
+// TestSubstrateAdmin_ScheduleDef_NotConfigured covers the
+// graceful-degradation path: when the operator hasn't called
+// SetScheduleDefTool, the Connector method returns a Go error,
+// which dispatchSubstrate maps to 500 with code=internal.
+func TestSubstrateAdmin_ScheduleDef_NotConfigured(t *testing.T) {
+	// Bare server WITHOUT the SetScheduleDefTool wiring.
+	st, err := sqlite.Open(":memory:")
+	if err != nil {
+		t.Fatalf("sqlite.Open: %v", err)
+	}
+	defer st.Close()
+	cfg := &config.Config{Concurrency: config.Concurrency{MaxConcurrentRuns: 1, MaxQueueDepth: 1, QueueTimeoutMS: 100}}
+	cfg.Env.AuthToken = "test-token"
+	srv := New(cfg, &stubResolver{}, nil, concurrency.New(1, 1, time.Second), st)
+	ts := httptest.NewServer(srv.Mux())
+	defer ts.Close()
+
+	resp := postAdmin(t, ts, "/v1/_scheduledef", `{"op":"create","name":"x","overlay":{"agent":"a","schedule":"0 0 * * *","user_id":"u"}}`)
+	defer resp.Body.Close()
+	if resp.StatusCode != 500 {
+		raw, _ := io.ReadAll(resp.Body)
+		t.Errorf("status = %d, want 500; body=%s", resp.StatusCode, raw)
 	}
 }
 

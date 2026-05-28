@@ -186,6 +186,13 @@ type Server struct {
 	// "not configured" errors. Set via SetMCPServerDefTool.
 	mcpServerDefTool tools.Tool
 
+	// scheduleDefTool is the v1.x ScheduleDef substrate tool. Same
+	// operator-admin-only posture as mcpServerDefTool — NOT in
+	// s.tools, reached via Connector.ScheduleDef + the admin endpoint
+	// + future LoomCycle MCP meta-tool. Nil = the surface returns
+	// "not configured" errors. Set via SetScheduleDefTool.
+	scheduleDefTool tools.Tool
+
 	// v0.12.0 multi-replica HA. backplane + replicaStore are nil in
 	// single-replica deployments (LOOMCYCLE_REPLICA_ID unset); /healthz
 	// then returns the same response shape as v0.11.x. When set,
@@ -449,6 +456,16 @@ func (s *Server) ChannelBus() *channels.Bus {
 // Set from main.go once the tool + dynamic registry + pool are built.
 func (s *Server) SetMCPServerDefTool(t tools.Tool) {
 	s.mcpServerDefTool = t
+}
+
+// SetScheduleDefTool wires the v1.x ScheduleDef substrate tool.
+// Without this call, Connector.ScheduleDef + POST /v1/_scheduledef
+// + the future LoomCycle MCP meta-tool all refuse with "not
+// configured". Set from main.go once the tool is built. The tool
+// only needs the store + cfg, so it can be constructed earlier
+// than the MCP-dependent MCPServerDef tool.
+func (s *Server) SetScheduleDefTool(t tools.Tool) {
+	s.scheduleDefTool = t
 }
 
 // newDispatcher centralises Dispatcher construction so the three call
@@ -1651,6 +1668,10 @@ func (s *Server) Mux() http.Handler {
 	// admin-only (no per-agent surface). Same dispatch shape as the
 	// other two substrate admin endpoints.
 	mux.Handle("POST /v1/_mcpserverdef", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleSubstrateMCPServerDef))))
+	// v1.x scheduled-runs substrate. Same operator-admin-only dispatch
+	// shape; the tool is reachable only via this endpoint + the MCP
+	// meta-tool + the future gRPC RPC (no per-agent dispatcher slot).
+	mux.Handle("POST /v1/_scheduledef", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleSubstrateScheduleDef))))
 	// v0.11.0 LLM Gateway — direct provider routing without the agent
 	// loop. Bearer-authed admin scope. Both stream:true (SSE) and
 	// stream:false (single-shot JSON) selected by the request body.
@@ -1679,6 +1700,7 @@ func (s *Server) Mux() http.Handler {
 	mux.Handle("GET /v1/_agentdef/names", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleListAgentDefNames))))
 	mux.Handle("GET /v1/_skilldef/names", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleListSkillDefNames))))
 	mux.Handle("GET /v1/_mcpserverdef/names", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleListMCPServerDefNames))))
+	mux.Handle("GET /v1/_scheduledef/names", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleListScheduleDefNames))))
 	// v0.9.x Library v2 — unified enumeration that merges static cfg
 	// + substrate views into one envelope per entry. The names/* sister
 	// endpoints above stay as-is for backwards compat with external

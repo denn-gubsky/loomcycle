@@ -397,6 +397,20 @@ func (s *Server) MCPServerDef(ctx context.Context, input json.RawMessage) (conne
 	return connector.ToolResult{Text: res.Text, IsError: res.IsError}, nil
 }
 
+// ScheduleDef dispatches to the v1.x dynamic scheduled-runs substrate
+// tool. Same operator-admin-only posture as MCPServerDef. See
+// SetScheduleDefTool for wiring.
+func (s *Server) ScheduleDef(ctx context.Context, input json.RawMessage) (connector.ToolResult, error) {
+	if s.scheduleDefTool == nil {
+		return connector.ToolResult{}, fmt.Errorf("ScheduleDef: not configured (no tool wired via SetScheduleDefTool)")
+	}
+	res, err := s.scheduleDefTool.Execute(ctx, input)
+	if err != nil {
+		return connector.ToolResult{}, err
+	}
+	return connector.ToolResult{Text: res.Text, IsError: res.IsError}, nil
+}
+
 // dispatchBuiltin is the shared lookup-and-execute path for the five
 // builtin wrappers. tools.Result {Text, IsError} maps directly onto
 // connector.ToolResult; the transport adapter (MCP) then wraps both

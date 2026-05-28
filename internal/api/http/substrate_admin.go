@@ -55,6 +55,13 @@ func (s *Server) handleSubstrateMCPServerDef(w http.ResponseWriter, r *http.Requ
 	s.dispatchSubstrate(w, r, "MCPServerDef", s.MCPServerDef)
 }
 
+// handleSubstrateScheduleDef serves POST /v1/_scheduledef.
+// v1.x scheduled-runs substrate. Bearer-authed; same dispatch
+// shape as the AgentDef + SkillDef + MCPServerDef endpoints.
+func (s *Server) handleSubstrateScheduleDef(w http.ResponseWriter, r *http.Request) {
+	s.dispatchSubstrate(w, r, "ScheduleDef", s.ScheduleDef)
+}
+
 // dispatchSubstrate is the shared body of the two handlers.
 // connectorFn is the Connector method (already a method value
 // bound to the Server). toolName is the label used in error
@@ -160,6 +167,13 @@ func substrateAdminCtx(ctx context.Context) context.Context {
 	})
 	ctx = tools.WithSkillDefPolicy(ctx, tools.SkillDefPolicyValue{
 		Scopes: []string{"any"},
+	})
+	// ScheduleDef: same operator-trust posture; "any" scope lets the
+	// HTTP-admin call create/fork/retire any schedule name regardless
+	// of the orchestrator-agent naming used by in-loop callers.
+	ctx = tools.WithScheduleDefPolicy(ctx, tools.ScheduleDefPolicyValue{
+		Scopes:   []string{"any"},
+		SelfName: substrateAdminAgentName,
 	})
 	// Evaluation: all 4 valid scope values.
 	ctx = tools.WithEvaluationPolicy(ctx, tools.EvaluationPolicyValue{

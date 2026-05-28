@@ -63,6 +63,19 @@ func (s *Server) handleListMCPServerDefNames(w http.ResponseWriter, r *http.Requ
 	writeJSONOK(w, map[string]any{"names": rows})
 }
 
+// handleListScheduleDefNames serves GET /v1/_scheduledef/names.
+func (s *Server) handleListScheduleDefNames(w http.ResponseWriter, r *http.Request) {
+	rows, err := s.store.ScheduleDefListNames(r.Context())
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "store_error", err.Error())
+		return
+	}
+	if rows == nil {
+		rows = []store.ScheduleDefNameSummary{}
+	}
+	writeJSONOK(w, map[string]any{"names": rows})
+}
+
 // handleAgentChannels serves GET /v1/agents/{agent_name}/channels.
 // Returns every channel_cursors row for (scope=agent, scope_id={agent_name}),
 // ordered by channel ASC. Drives the v0.9.x Web UI's per-agent
