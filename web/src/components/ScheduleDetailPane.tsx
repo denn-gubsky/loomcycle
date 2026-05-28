@@ -12,6 +12,7 @@ import {
   ScheduleStateView,
 } from "../api";
 import { SourceChip } from "../pages/SchedulesView";
+import ScheduleHookList from "./ScheduleHookList";
 
 interface Props {
   entry: ScheduleListEntry;
@@ -242,34 +243,13 @@ export default function ScheduleDetailPane({ entry, onMutated, onForkTemplate }:
         </section>
       )}
 
-      {/* on_complete hooks (display-only in v1). */}
-      {Array.isArray(def?.on_complete) && def.on_complete.length > 0 && (
-        <section className="schedule-detail-block">
-          <h4>on_complete hooks</h4>
-          <ul className="schedule-hooks">
-            {(def.on_complete as Array<Record<string, unknown>>).map((h, i) => (
-              <li key={i} className="schedule-hook">
-                <span className="schedule-hook-kind">{h.kind as string}</span>
-                {h.channel ? <span>channel={String(h.channel)}</span> : null}
-                {h.server ? (
-                  <span>
-                    server={String(h.server)}, tool={String(h.tool ?? "")}
-                  </span>
-                ) : null}
-                {h.scope ? (
-                  <span>
-                    scope={String(h.scope)}, key={String(h.key ?? "")}
-                  </span>
-                ) : null}
-              </li>
-            ))}
-          </ul>
-          <div className="schedule-hooks-note">
-            Hook editing lives on the substrate side (POST /v1/_scheduledef) — edit
-            the yaml template or fork the definition to change hooks.
-          </div>
-        </section>
-      )}
+      {/* on_complete hooks — editable when the schedule has a
+          substrate-side def_id; display-only otherwise. */}
+      <ScheduleHookList
+        hooks={(Array.isArray(def?.on_complete) ? def.on_complete : []) as Array<Record<string, unknown>>}
+        activeDefID={entry.in_substrate ? entry.active_def_id : undefined}
+        onMutated={onMutated}
+      />
 
       {/* Lineage tree — show all versions of this name. */}
       {substrateVersions.length > 1 && (

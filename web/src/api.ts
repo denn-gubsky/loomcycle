@@ -995,6 +995,49 @@ export function scheduleDefRetire(defID: string, retired: boolean): Promise<{ de
   });
 }
 
+// ScheduleHook mirrors mergedScheduleHook on the substrate side. Three
+// closed-set kinds: channel.publish, mcp.call, memory.set. Kind-
+// specific fields are required by the server-side validator; the type
+// here keeps everything optional because the actual presence depends
+// on `kind`.
+export interface ScheduleHook {
+  kind: "channel.publish" | "mcp.call" | "memory.set";
+  // channel.publish:
+  channel?: string;
+  payload?: Record<string, unknown>;
+  // mcp.call:
+  server?: string;
+  tool?: string;
+  args?: Record<string, unknown>;
+  // memory.set:
+  scope?: "agent" | "user" | "global";
+  key?: string;
+}
+
+// scheduleDefAddHook appends a hook to a def's on_complete list,
+// persisting as a new fork version with auto-promote. The substrate
+// validates the hook (kind enum + kind-specific required fields)
+// server-side; malformed hooks refuse with SubstrateToolRefusedError.
+export function scheduleDefAddHook(defID: string, hook: ScheduleHook): Promise<ScheduleDefRow> {
+  return jsonFetch<ScheduleDefRow>("/v1/_scheduledef", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ op: "add_hook", def_id: defID, hook }),
+  });
+}
+
+// scheduleDefRemoveHook removes the hook at hook_index from a def's
+// on_complete list, persisting as a new fork version with auto-promote.
+// hook_index is 0-based and refers to the index in the PARENT
+// version's list; out-of-range refuses.
+export function scheduleDefRemoveHook(defID: string, hookIndex: number): Promise<ScheduleDefRow> {
+  return jsonFetch<ScheduleDefRow>("/v1/_scheduledef", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ op: "remove_hook", def_id: defID, hook_index: hookIndex }),
+  });
+}
+
 // ---- Legacy /names fetchers (substrate-only) ----
 //
 // Kept for the existing Library UI v1 surface + any external adapter
