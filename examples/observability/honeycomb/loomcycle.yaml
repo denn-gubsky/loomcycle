@@ -1,0 +1,47 @@
+# Minimal loomcycle config for the Profile B (Honeycomb) observability
+# demo. OTEL endpoint + sampler ratio are driven by environment
+# variables (.env.example); this file stays focused on agent + provider
+# wiring.
+#
+# Use this as a starting point — adapt to your existing loomcycle.yaml
+# rather than running it standalone (Honeycomb is SaaS; no docker
+# stack to bring up).
+
+defaults:
+  provider: anthropic
+  model: claude-haiku-4-5
+
+provider_priority:
+  - anthropic
+  - openai
+  - deepseek
+
+user_tiers:
+  default:
+    provider_priority:
+      - anthropic
+      - openai
+      - deepseek
+    tiers:
+      low:
+        - {provider: anthropic, model: claude-haiku-4-5}
+        - {provider: openai, model: gpt-5.4-mini}
+      middle:
+        - {provider: anthropic, model: claude-sonnet-4-6}
+        - {provider: deepseek, model: deepseek-v4-flash}
+    fallback_on_error: true
+    max_fallback_attempts: 3
+
+agents:
+  demo:
+    tier: low
+    allowed_tools: [Read, Memory]
+    memory_scopes: [agent, user]
+    system_prompt: |
+      You are a friendly demo agent. Respond briefly. Use the Memory
+      tool when asked to remember something.
+
+concurrency:
+  max_concurrent_runs: 16
+  max_queue_depth: 64
+  queue_timeout_ms: 30000

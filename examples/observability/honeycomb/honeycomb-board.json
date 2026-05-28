@@ -1,0 +1,8 @@
+{
+  "_comment": "Honeycomb board placeholder. The Profile B story is wiring + query reference, not a tenant-bound board export — boards are tied to a specific dataset + environment + per-team derived columns that this repo cannot author without a Honeycomb account. Operators with an account follow the README walkthrough to build the board against their own tenant, then optionally contribute the export back to this repo. See README.md > 'Authoring the board' for the step-by-step.",
+  "_walkthrough": "https://github.com/denn-gubsky/loomcycle/blob/main/examples/observability/honeycomb/README.md#authoring-the-board",
+  "name": "Loomcycle overview (placeholder)",
+  "description": "Placeholder — replace with operator-authored export. See README.",
+  "queries": [],
+  "column_layout": "multi"
+}
