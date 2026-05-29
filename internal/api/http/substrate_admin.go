@@ -62,6 +62,20 @@ func (s *Server) handleSubstrateScheduleDef(w http.ResponseWriter, r *http.Reque
 	s.dispatchSubstrate(w, r, "ScheduleDef", s.ScheduleDef)
 }
 
+// handleSubstrateA2AServerCardDef serves POST /v1/_a2aservercarddef.
+// v1.x RFC G A2A-server-card substrate. Bearer-authed; same dispatch
+// shape as the other substrate endpoints.
+func (s *Server) handleSubstrateA2AServerCardDef(w http.ResponseWriter, r *http.Request) {
+	s.dispatchSubstrate(w, r, "A2AServerCardDef", s.A2AServerCardDef)
+}
+
+// handleSubstrateA2AAgentDef serves POST /v1/_a2aagentdef.
+// v1.x RFC G A2A-agent substrate. Bearer-authed; same dispatch shape
+// as the other substrate endpoints.
+func (s *Server) handleSubstrateA2AAgentDef(w http.ResponseWriter, r *http.Request) {
+	s.dispatchSubstrate(w, r, "A2AAgentDef", s.A2AAgentDef)
+}
+
 // dispatchSubstrate is the shared body of the two handlers.
 // connectorFn is the Connector method (already a method value
 // bound to the Server). toolName is the label used in error
@@ -172,6 +186,16 @@ func substrateAdminCtx(ctx context.Context) context.Context {
 	// HTTP-admin call create/fork/retire any schedule name regardless
 	// of the orchestrator-agent naming used by in-loop callers.
 	ctx = tools.WithScheduleDefPolicy(ctx, tools.ScheduleDefPolicyValue{
+		Scopes:   []string{"any"},
+		SelfName: substrateAdminAgentName,
+	})
+	// A2AServerCardDef + A2AAgentDef: same operator-trust posture; "any"
+	// scope lets the HTTP-admin call create/fork/retire any def name.
+	ctx = tools.WithA2AServerCardDefPolicy(ctx, tools.A2AServerCardDefPolicyValue{
+		Scopes:   []string{"any"},
+		SelfName: substrateAdminAgentName,
+	})
+	ctx = tools.WithA2AAgentDefPolicy(ctx, tools.A2AAgentDefPolicyValue{
 		Scopes:   []string{"any"},
 		SelfName: substrateAdminAgentName,
 	})

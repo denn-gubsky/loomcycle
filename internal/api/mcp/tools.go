@@ -159,6 +159,16 @@ func toolDescriptors() []loommcp.ToolDescriptor {
 			InputSchema: rawJSON(`{"type": "object"}`),
 		},
 		{
+			Name:        "a2aservercarddef",
+			Description: "A2AServerCardDef tool ops (create/fork/get/list/retire). v1.x RFC G A2A-server-card substrate. Operator-admin-only — author + fork A2A server cards at runtime. Pass-through.",
+			InputSchema: rawJSON(`{"type": "object"}`),
+		},
+		{
+			Name:        "a2aagentdef",
+			Description: "A2AAgentDef tool ops (create/fork/get/list/retire). v1.x RFC G A2A-agent substrate. Operator-admin-only — author + fork A2A agents at runtime. Pass-through.",
+			InputSchema: rawJSON(`{"type": "object"}`),
+		},
+		{
 			Name:        "evaluation",
 			Description: "Evaluation tool ops (submit/get/list_for_run/list_for_def/aggregate). Pass-through.",
 			InputSchema: rawJSON(`{"type": "object"}`),

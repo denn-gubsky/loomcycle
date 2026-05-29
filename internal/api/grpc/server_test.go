@@ -821,6 +821,15 @@ func (m *mockConnector) ScheduleDef(context.Context, json.RawMessage) (connector
 	return connector.ToolResult{}, nil
 }
 
+// v1.x RFC G A2A substrate stubs.
+func (m *mockConnector) A2AServerCardDef(context.Context, json.RawMessage) (connector.ToolResult, error) {
+	return connector.ToolResult{}, nil
+}
+
+func (m *mockConnector) A2AAgentDef(context.Context, json.RawMessage) (connector.ToolResult, error) {
+	return connector.ToolResult{}, nil
+}
+
 // v0.9.x Channel CRUD stubs.
 func (m *mockConnector) PublishChannel(context.Context, connector.ChannelPublishRequest) (connector.ChannelPublishResult, error) {
 	return connector.ChannelPublishResult{}, nil

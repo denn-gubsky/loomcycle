@@ -193,6 +193,15 @@ type Server struct {
 	// "not configured" errors. Set via SetScheduleDefTool.
 	scheduleDefTool tools.Tool
 
+	// a2aServerCardDefTool + a2aAgentDefTool are the v1.x RFC G A2A
+	// substrate tools. Same operator-admin-only posture as
+	// scheduleDefTool — NOT in s.tools, reached via Connector +
+	// the admin endpoints + LoomCycle MCP meta-tools. Nil = the
+	// surface returns "not configured" errors. Set via
+	// SetA2AServerCardDefTool / SetA2AAgentDefTool.
+	a2aServerCardDefTool tools.Tool
+	a2aAgentDefTool      tools.Tool
+
 	// v0.12.0 multi-replica HA. backplane + replicaStore are nil in
 	// single-replica deployments (LOOMCYCLE_REPLICA_ID unset); /healthz
 	// then returns the same response shape as v0.11.x. When set,
@@ -466,6 +475,22 @@ func (s *Server) SetMCPServerDefTool(t tools.Tool) {
 // than the MCP-dependent MCPServerDef tool.
 func (s *Server) SetScheduleDefTool(t tools.Tool) {
 	s.scheduleDefTool = t
+}
+
+// SetA2AServerCardDefTool wires the v1.x RFC G A2AServerCardDef substrate
+// tool. Without this call, Connector.A2AServerCardDef +
+// POST /v1/_a2aservercarddef + the LoomCycle MCP meta-tool all refuse with
+// "not configured". The tool only needs the store + cfg, so it can be
+// constructed alongside ScheduleDef in main.go.
+func (s *Server) SetA2AServerCardDefTool(t tools.Tool) {
+	s.a2aServerCardDefTool = t
+}
+
+// SetA2AAgentDefTool wires the v1.x RFC G A2AAgentDef substrate tool.
+// Without this call, Connector.A2AAgentDef + POST /v1/_a2aagentdef + the
+// LoomCycle MCP meta-tool all refuse with "not configured".
+func (s *Server) SetA2AAgentDefTool(t tools.Tool) {
+	s.a2aAgentDefTool = t
 }
 
 // newDispatcher centralises Dispatcher construction so the three call
@@ -1674,6 +1699,12 @@ func (s *Server) Mux() http.Handler {
 	// shape; the tool is reachable only via this endpoint + the MCP
 	// meta-tool + the future gRPC RPC (no per-agent dispatcher slot).
 	mux.Handle("POST /v1/_scheduledef", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleSubstrateScheduleDef))))
+	// v1.x RFC G A2A substrate. Same operator-admin-only dispatch shape
+	// as the other substrate admin endpoints; the tools are reachable
+	// only via these endpoints + the MCP meta-tools + the gRPC RPCs (no
+	// per-agent dispatcher slot).
+	mux.Handle("POST /v1/_a2aservercarddef", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleSubstrateA2AServerCardDef))))
+	mux.Handle("POST /v1/_a2aagentdef", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleSubstrateA2AAgentDef))))
 	// v0.11.0 LLM Gateway — direct provider routing without the agent
 	// loop. Bearer-authed admin scope. Both stream:true (SSE) and
 	// stream:false (single-shot JSON) selected by the request body.
@@ -1703,6 +1734,8 @@ func (s *Server) Mux() http.Handler {
 	mux.Handle("GET /v1/_skilldef/names", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleListSkillDefNames))))
 	mux.Handle("GET /v1/_mcpserverdef/names", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleListMCPServerDefNames))))
 	mux.Handle("GET /v1/_scheduledef/names", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleListScheduleDefNames))))
+	mux.Handle("GET /v1/_a2aservercarddef/names", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleListA2AServerCardDefNames))))
+	mux.Handle("GET /v1/_a2aagentdef/names", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleListA2AAgentDefNames))))
 	// v0.9.x Library v2 — unified enumeration that merges static cfg
 	// + substrate views into one envelope per entry. The names/* sister
 	// endpoints above stay as-is for backwards compat with external

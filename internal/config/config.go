@@ -625,6 +625,16 @@ type AgentDef struct {
 	// runtime; arbitrary agents have no access.
 	ScheduleDefScopes []string `yaml:"schedule_def_scopes"`
 
+	// A2AServerCardDefScopes is the v1.x RFC G A2AServerCardDef tool
+	// capability gate. Default-deny when empty. Same closed set as
+	// ScheduleDefScopes: "self" / "descendants" / "named:<name>" / "any".
+	A2AServerCardDefScopes []string `yaml:"a2a_server_card_def_scopes"`
+
+	// A2AAgentDefScopes is the v1.x RFC G A2AAgentDef tool capability
+	// gate. Default-deny when empty. Same closed set as
+	// ScheduleDefScopes: "self" / "descendants" / "named:<name>" / "any".
+	A2AAgentDefScopes []string `yaml:"a2a_agent_def_scopes"`
+
 	// SkillDefScopes is the v0.8.22 SkillDef tool capability gate.
 	// Default-deny when empty. Mirrors AgentDefScopes minus the
 	// "self" scope (skills have no agent identity, so "self" is

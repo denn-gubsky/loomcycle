@@ -210,6 +210,20 @@ service Loomcycle {
   // in the response.
   rpc ScheduleDef(SubstrateRequest) returns (SubstrateResponse);
 
+  // A2AServerCardDef dispatches to the v1.x RFC G A2A-server-card
+  // substrate. Mirrors POST /v1/_a2aservercarddef. Operator-admin-only.
+  // Same SubstrateRequest body shape — op-discriminated input_json
+  // (create / fork / get / list / retire) + is_error tool refusals
+  // in the response.
+  rpc A2AServerCardDef(SubstrateRequest) returns (SubstrateResponse);
+
+  // A2AAgentDef dispatches to the v1.x RFC G A2A-agent substrate.
+  // Mirrors POST /v1/_a2aagentdef. Operator-admin-only. Same
+  // SubstrateRequest body shape — op-discriminated input_json
+  // (create / fork / get / list / retire) + is_error tool refusals
+  // in the response.
+  rpc A2AAgentDef(SubstrateRequest) returns (SubstrateResponse);
+
   // ----- v0.9.x n8n RFC Phase 0 -----
   //
   // ListChannels mirrors GET /v1/_channels — operator-declared
