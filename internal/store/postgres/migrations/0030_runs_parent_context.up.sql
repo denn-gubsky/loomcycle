@@ -1,0 +1,11 @@
+-- v0.12.x — opaque caller-tracking lineage (root_agent_run_id /
+-- function_key / tier_at_run), set on the root run and copied verbatim
+-- onto every sub-agent the Agent tool spawns. Stored as JSON; the
+-- runtime never interprets it — it persists + echoes it so a consumer
+-- can attribute a child sub-agent's usage to the user-initiated request
+-- that spawned the whole tree.
+--
+-- Not a secret (safe to persist, unlike user_bearer/user_credentials,
+-- which are never persisted). NULLable to preserve back-compat with
+-- pre-migration rows + runs with no context.
+ALTER TABLE runs ADD COLUMN parent_context TEXT;

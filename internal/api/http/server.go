@@ -1329,7 +1329,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	}
 
 	// ---- Session+run creation ----
-	identity := store.RunIdentity{AgentID: agentID, UserID: effectiveUserID, UserTier: in.UserTier, Model: model, ReplicaID: s.replicaID}
+	identity := store.RunIdentity{AgentID: agentID, UserID: effectiveUserID, UserTier: in.UserTier, Model: model, ReplicaID: s.replicaID, ParentContext: in.ParentContext}
 	sessionID, runID, sessErr := s.openOrCreateSessionAndRun(ctx, in.SessionID, effectiveAgentName, effectiveTenantID, effectiveUserID, identity)
 	if sessErr != nil {
 		var nf *store.ErrNotFound
@@ -1423,6 +1423,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		UserTier:        in.UserTier,
 		UserBearer:      in.UserBearer,      // v0.8.x: per-run MCP bearer
 		UserCredentials: in.UserCredentials, // v1.x RFC F: per-tool named credentials
+		ParentContext:   in.ParentContext,   // v0.12.x: opaque tracking lineage, inherited by sub-agents
 	})
 	loopCtx = tools.WithHostPolicy(loopCtx, hostPolicy)
 	// Memory tool policy: agent name + per-agent scope allowlist +
@@ -2293,7 +2294,7 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 	// emitted event through the store before forwarding to SSE. With
 	// s.store == nil the recording becomes a no-op so v0.2 callers see no
 	// behaviour change.
-	identity := store.RunIdentity{AgentID: agentID, UserID: req.UserID, UserTier: req.UserTier, Model: model, ReplicaID: s.replicaID}
+	identity := store.RunIdentity{AgentID: agentID, UserID: req.UserID, UserTier: req.UserTier, Model: model, ReplicaID: s.replicaID, ParentContext: req.ParentContext}
 	sessionID, runID, sessErr := s.openOrCreateSessionAndRun(r.Context(), req.SessionID, req.Agent, req.TenantID, req.UserID, identity)
 	if sessErr != nil {
 		var nf *store.ErrNotFound
@@ -2425,6 +2426,7 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		UserTier:        req.UserTier,
 		UserBearer:      req.UserBearer,      // v0.8.x: per-run MCP bearer
 		UserCredentials: req.UserCredentials, // v1.x RFC F: per-tool named credentials
+		ParentContext:   req.ParentContext,   // v0.12.x: opaque tracking lineage, inherited by sub-agents
 	})
 	// Stash the caller's host policy so any sub-agents spawned by the
 	// Agent tool inherit the same allowed_hosts / WebSearchFilter
@@ -2515,6 +2517,10 @@ type messagesRequest struct {
 	// same validation, same back-compat sugar (legacy UserBearer
 	// promoted to UserCredentials["default"] at WithRunIdentity time).
 	UserCredentials map[string]string `json:"user_credentials,omitempty"`
+	// ParentContext follows runRequest semantics — a continuation can
+	// (re)set the opaque tracking lineage for the new run it creates.
+	// Sub-agents spawned from this continuation inherit it identically.
+	ParentContext *store.ParentContext `json:"parent_context,omitempty"`
 }
 
 func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
@@ -2589,6 +2595,13 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	if errMsg, ok := connector.ValidateUserCredentialsMap(body.UserCredentials); !ok {
 		http.Error(w, errMsg, http.StatusBadRequest)
 		return
+	}
+	if errMsg, ok := validateParentContext(body.ParentContext); !ok {
+		http.Error(w, errMsg, http.StatusBadRequest)
+		return
+	}
+	if body.ParentContext.IsZero() {
+		body.ParentContext = nil
 	}
 	providerID, model, effort, err := s.resolveAgent(sess.Agent, body.UserTier)
 	if err != nil {
@@ -2670,11 +2683,12 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	// is per-request (v0.8.2) — a user upgrading mid-session sees
 	// the new tier applied immediately on this continuation.
 	run, err := s.store.CreateRun(r.Context(), id, store.RunIdentity{
-		AgentID:   agentID,
-		UserID:    sess.UserID,
-		UserTier:  body.UserTier,
-		Model:     model,
-		ReplicaID: s.replicaID,
+		AgentID:       agentID,
+		UserID:        sess.UserID,
+		UserTier:      body.UserTier,
+		Model:         model,
+		ReplicaID:     s.replicaID,
+		ParentContext: body.ParentContext, // v0.12.x: tracking lineage for this continuation + its sub-agents
 	})
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -2766,6 +2780,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		UserTier:        body.UserTier,
 		UserBearer:      body.UserBearer,      // v0.8.x: per-run MCP bearer
 		UserCredentials: body.UserCredentials, // v1.x RFC F: per-tool named credentials
+		ParentContext:   body.ParentContext,   // v0.12.x: opaque tracking lineage, inherited by sub-agents
 	})
 	// Sub-agents spawned by this continuation must inherit the
 	// caller-authoritative host narrowing, same as runRequest +
@@ -3215,6 +3230,11 @@ func (s *Server) runSubAgent(ctx context.Context, name string, prompt string, de
 		UserTier:   parentIdentity.UserTier, // v0.8.2: same user_tier across the sub-run tree
 		AgentDefID: defID,                   // v0.8.5: pin defID on the sub-run for evaluation denormalisation
 		Model:      model,                   // resolved model — written at create so the UI sees it during the run
+		// v0.12.x: the root's opaque tracking lineage flows UNCHANGED to
+		// every descendant (Clone so child + parent don't alias). This is
+		// the propagation seam — remove it and child run rows lose their
+		// link back to the user-initiated request.
+		ParentContext: parentIdentity.ParentContext.Clone(),
 	}
 	subSessionID, subRunID, err := s.openOrCreateSessionAndRun(ctx, "", name, "", parentIdentity.UserID, subIdentity)
 	if err != nil {
@@ -3350,10 +3370,11 @@ func (s *Server) runSubAgent(ctx context.Context, name string, prompt string, de
 	subCtx = tools.WithRunIdentity(subCtx, tools.RunIdentityValue{
 		UserID:          parentIdentity.UserID,
 		AgentID:         subAgentID,
-		UserTier:        parentIdentity.UserTier,        // v0.8.2: sub-agents inherit parent's user_tier
-		AgentDefID:      defID,                          // v0.8.7: surface pinned def_id via Context.self
-		UserBearer:      parentIdentity.UserBearer,      // v0.8.x: bearer inherited identically (same end-user)
-		UserCredentials: parentIdentity.UserCredentials, // v1.x RFC F: credentials map inherited identically
+		UserTier:        parentIdentity.UserTier,              // v0.8.2: sub-agents inherit parent's user_tier
+		AgentDefID:      defID,                                // v0.8.7: surface pinned def_id via Context.self
+		UserBearer:      parentIdentity.UserBearer,            // v0.8.x: bearer inherited identically (same end-user)
+		UserCredentials: parentIdentity.UserCredentials,       // v1.x RFC F: credentials map inherited identically
+		ParentContext:   parentIdentity.ParentContext.Clone(), // v0.12.x: tracking lineage flows to grandchildren too
 	})
 	subCtx = tools.WithAgentName(subCtx, name)
 	// Sub-agents get THEIR OWN Memory policy from yaml — the parent's

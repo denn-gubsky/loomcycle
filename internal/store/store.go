@@ -388,6 +388,34 @@ func (p *ParentContext) Clone() *ParentContext {
 	return &cp
 }
 
+// EncodeParentContext returns the JSON to persist in the runs.parent_context
+// column. ok=false means there's nothing to store (nil or all-empty) — the
+// backend writes SQL NULL in that case. Backends share this so the SQLite
+// and Postgres column formats can't drift.
+func EncodeParentContext(p *ParentContext) (encoded string, ok bool, err error) {
+	if p.IsZero() {
+		return "", false, nil
+	}
+	b, mErr := json.Marshal(p)
+	if mErr != nil {
+		return "", false, mErr
+	}
+	return string(b), true, nil
+}
+
+// DecodeParentContext parses a stored runs.parent_context value. An empty
+// string (NULL column / old row) decodes to nil.
+func DecodeParentContext(s string) (*ParentContext, error) {
+	if s == "" {
+		return nil, nil
+	}
+	var p ParentContext
+	if err := json.Unmarshal([]byte(s), &p); err != nil {
+		return nil, err
+	}
+	return &p, nil
+}
+
 // UserSummary is one row of ListUsers' output: distinct user_id with
 // summary stats. Drives the Web UI's user picker so operators can see
 // who has active runs and pick from a list rather than typing a UUID.

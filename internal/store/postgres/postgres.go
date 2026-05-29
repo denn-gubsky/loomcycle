@@ -285,12 +285,20 @@ func (s *Store) CreateRun(ctx context.Context, sessionID string, identity store.
 
 	id := newID("r_")
 	now := time.Now().UTC()
+	pcJSON, pcOK, pcErr := store.EncodeParentContext(identity.ParentContext)
+	if pcErr != nil {
+		return store.Run{}, fmt.Errorf("create run: encode parent_context: %w", pcErr)
+	}
+	var pcVal any
+	if pcOK {
+		pcVal = pcJSON
+	}
 	if err := retryOnTransientConn(ctx, func() error {
 		_, err := s.pool.Exec(ctx,
 			`INSERT INTO runs (
 				id, session_id, status, started_at,
-				agent_id, parent_agent_id, parent_run_id, user_id, user_tier, agent_def_id, model, replica_id
-			) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+				agent_id, parent_agent_id, parent_run_id, user_id, user_tier, agent_def_id, model, replica_id, parent_context
+			) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
 			id, sessionID, string(store.RunRunning), now,
 			nullableText(identity.AgentID),
 			nullableText(identity.ParentAgentID),
@@ -300,6 +308,7 @@ func (s *Store) CreateRun(ctx context.Context, sessionID string, identity store.
 			nullableText(identity.AgentDefID),
 			nullableText(identity.Model),
 			nullableText(identity.ReplicaID),
+			pcVal,
 		)
 		return err
 	}); err != nil {
@@ -318,6 +327,7 @@ func (s *Store) CreateRun(ctx context.Context, sessionID string, identity store.
 		AgentDefID:    identity.AgentDefID,
 		Model:         identity.Model,
 		ReplicaID:     identity.ReplicaID,
+		ParentContext: identity.ParentContext.Clone(),
 	}, nil
 }
 
@@ -528,7 +538,7 @@ func (s *Store) GetRunByAgentID(ctx context.Context, agentID string) (store.Run,
 		        r.input_tokens, r.output_tokens, r.cache_creation_tokens, r.cache_read_tokens,
 		        r.model, r.provider, r.error,
 		        r.agent_id, r.parent_agent_id, r.parent_run_id, r.user_id, r.last_heartbeat_at, r.user_tier,
-		        r.agent_def_id, r.pause_state, r.replica_id,
+		        r.agent_def_id, r.pause_state, r.replica_id, r.parent_context,
 		        s.agent
 		 FROM runs r LEFT JOIN sessions s ON r.session_id = s.id
 		 WHERE r.agent_id = $1 ORDER BY r.started_at DESC LIMIT 1`, agentID,
@@ -553,7 +563,7 @@ func (s *Store) GetRun(ctx context.Context, runID string) (store.Run, error) {
 		        r.input_tokens, r.output_tokens, r.cache_creation_tokens, r.cache_read_tokens,
 		        r.model, r.provider, r.error,
 		        r.agent_id, r.parent_agent_id, r.parent_run_id, r.user_id, r.last_heartbeat_at, r.user_tier,
-		        r.agent_def_id, r.pause_state, r.replica_id,
+		        r.agent_def_id, r.pause_state, r.replica_id, r.parent_context,
 		        s.agent
 		 FROM runs r LEFT JOIN sessions s ON r.session_id = s.id
 		 WHERE r.id = $1`, runID,
@@ -616,7 +626,7 @@ func (s *Store) ListActiveRunsByUser(ctx context.Context, userID string, status 
 			        r.input_tokens, r.output_tokens, r.cache_creation_tokens, r.cache_read_tokens,
 			        r.model, r.provider, r.error,
 			        r.agent_id, r.parent_agent_id, r.parent_run_id, r.user_id, r.last_heartbeat_at, r.user_tier,
-			        r.agent_def_id, r.pause_state, r.replica_id,
+			        r.agent_def_id, r.pause_state, r.replica_id, r.parent_context,
 			        s.agent
 			 FROM runs r LEFT JOIN sessions s ON r.session_id = s.id
 			 WHERE r.user_id = $1
@@ -627,7 +637,7 @@ func (s *Store) ListActiveRunsByUser(ctx context.Context, userID string, status 
 			        r.input_tokens, r.output_tokens, r.cache_creation_tokens, r.cache_read_tokens,
 			        r.model, r.provider, r.error,
 			        r.agent_id, r.parent_agent_id, r.parent_run_id, r.user_id, r.last_heartbeat_at, r.user_tier,
-			        r.agent_def_id, r.pause_state, r.replica_id,
+			        r.agent_def_id, r.pause_state, r.replica_id, r.parent_context,
 			        s.agent
 			 FROM runs r LEFT JOIN sessions s ON r.session_id = s.id
 			 WHERE r.user_id = $1 AND r.status = $2
@@ -652,7 +662,7 @@ func (s *Store) ListRunsByParentAgentID(ctx context.Context, parentAgentID strin
 		        r.input_tokens, r.output_tokens, r.cache_creation_tokens, r.cache_read_tokens,
 		        r.model, r.provider, r.error,
 		        r.agent_id, r.parent_agent_id, r.parent_run_id, r.user_id, r.last_heartbeat_at, r.user_tier,
-		        r.agent_def_id, r.pause_state, r.replica_id,
+		        r.agent_def_id, r.pause_state, r.replica_id, r.parent_context,
 		        s.agent
 		 FROM runs r LEFT JOIN sessions s ON r.session_id = s.id
 		 WHERE r.parent_agent_id = $1
@@ -747,7 +757,7 @@ func (s *Store) ListPausedRuns(ctx context.Context) ([]store.Run, error) {
 		        r.input_tokens, r.output_tokens, r.cache_creation_tokens, r.cache_read_tokens,
 		        r.model, r.provider, r.error,
 		        r.agent_id, r.parent_agent_id, r.parent_run_id, r.user_id, r.last_heartbeat_at, r.user_tier,
-		        r.agent_def_id, r.pause_state, r.replica_id,
+		        r.agent_def_id, r.pause_state, r.replica_id, r.parent_context,
 		        s.agent
 		 FROM runs r LEFT JOIN sessions s ON r.session_id = s.id
 		 WHERE r.pause_state = $1
@@ -1409,21 +1419,29 @@ func (s *Store) SnapshotRestoreRun(ctx context.Context, r store.Run) (bool, erro
 	if pauseState == "" {
 		pauseState = store.PauseStateRunning
 	}
+	pcJSON, pcOK, pcErr := store.EncodeParentContext(r.ParentContext)
+	if pcErr != nil {
+		return false, fmt.Errorf("snapshot restore run: encode parent_context: %w", pcErr)
+	}
+	var pcVal any
+	if pcOK {
+		pcVal = pcJSON
+	}
 	tag, err := s.pool.Exec(ctx,
 		`INSERT INTO runs(
 			id, session_id, status, started_at, completed_at, stop_reason,
 			input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens,
 			model, provider, error,
 			agent_id, parent_agent_id, parent_run_id, user_id, last_heartbeat_at,
-			user_tier, agent_def_id, pause_state
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)
+			user_tier, agent_def_id, pause_state, parent_context
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22)
 		 ON CONFLICT (id) DO NOTHING`,
 		r.ID, r.SessionID, status, startedAt, completedAt, nullIfEmpty(r.StopReason),
 		r.InputTokens, r.OutputTokens, r.CacheCreationTokens, r.CacheReadTokens,
 		nullIfEmpty(r.Model), nullIfEmpty(r.Provider), nullIfEmpty(r.ErrorMsg),
 		nullIfEmpty(r.AgentID), nullIfEmpty(r.ParentAgentID), nullIfEmpty(r.ParentRunID),
 		nullIfEmpty(r.UserID), lastHbAt,
-		nullIfEmpty(r.UserTier), nullIfEmpty(r.AgentDefID), pauseState,
+		nullIfEmpty(r.UserTier), nullIfEmpty(r.AgentDefID), pauseState, pcVal,
 	)
 	if err != nil {
 		return false, fmt.Errorf("snapshot restore run: %w", err)
@@ -4640,6 +4658,7 @@ func scanRun(r rowScanner) (store.Run, error) {
 		agentDefID                                            *string
 		pauseState                                            *string
 		replicaID                                             *string
+		parentContext                                         *string
 		lastHeartbeatAt                                       *time.Time
 		sessAgent                                             *string
 
@@ -4651,7 +4670,7 @@ func scanRun(r rowScanner) (store.Run, error) {
 		&model, &provider, &errMsg,
 		&agentID, &parentAgentID, &parentRunID, &userID, &lastHeartbeatAt,
 		&userTier,
-		&agentDefID, &pauseState, &replicaID,
+		&agentDefID, &pauseState, &replicaID, &parentContext,
 		&sessAgent,
 	); err != nil {
 		return store.Run{}, err
@@ -4699,6 +4718,13 @@ func scanRun(r rowScanner) (store.Run, error) {
 	}
 	if replicaID != nil {
 		out.ReplicaID = *replicaID
+	}
+	if parentContext != nil {
+		pc, err := store.DecodeParentContext(*parentContext)
+		if err != nil {
+			return store.Run{}, fmt.Errorf("decode parent_context: %w", err)
+		}
+		out.ParentContext = pc
 	}
 	if sessAgent != nil {
 		out.Agent = *sessAgent
