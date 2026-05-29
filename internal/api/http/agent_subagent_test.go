@@ -680,3 +680,94 @@ func TestSubAgent_InheritsParentUserBearer(t *testing.T) {
 		}
 	}
 }
+
+// TestSubAgent_InheritsParentContext is the load-bearing test for the
+// cv-batch child-tagging feature: a parent run started with a
+// parent_context must have that SAME context copied onto every
+// sub-agent's persisted run row. Without the copy in runSubAgent, the
+// child rows carry no link back to the user-initiated request and the
+// consumer's cost aggregation can't roll up the batch.
+//
+// Regression: delete the `parentIdentity.ParentContext.Clone()` line in
+// server.go runSubAgent and this test fails (child ParentContext == nil).
+func TestSubAgent_InheritsParentContext(t *testing.T) {
+	cfg := makeBaseConfig()
+	cfg.Agents = map[string]config.AgentDef{
+		"parent": {Model: "stub-model", AllowedTools: []string{"Agent"}, SystemPrompt: "you are the parent"},
+		"child":  {Model: "stub-model", AllowedTools: []string{}, SystemPrompt: "you are the child"},
+	}
+
+	prov := &scriptedProvider{
+		scripts: [][]providers.Event{
+			{ // parent: spawn the child
+				{Type: providers.EventToolCall, ToolUse: &providers.ToolUse{
+					ID: "tu1", Name: "Agent", Input: json.RawMessage(`{"name":"child","prompt":"go"}`),
+				}},
+				{Type: providers.EventDone, StopReason: "tool_use", Usage: &providers.Usage{InputTokens: 10, OutputTokens: 2}},
+			},
+			{ // child
+				{Type: providers.EventText, Text: "child done"},
+				{Type: providers.EventDone, StopReason: "end_turn", Usage: &providers.Usage{InputTokens: 3, OutputTokens: 2}},
+			},
+			{ // parent: final
+				{Type: providers.EventText, Text: "parent done"},
+				{Type: providers.EventDone, StopReason: "end_turn", Usage: &providers.Usage{InputTokens: 12, OutputTokens: 3}},
+			},
+		},
+	}
+
+	st, err := storesqlite.Open(filepath.Join(t.TempDir(), "subagent_pc.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	srv := New(cfg, &stubResolver{p: prov}, []tools.Tool{}, concurrency.New(4, 4, time.Second), st)
+	ts := httptest.NewServer(srv.Mux())
+	defer ts.Close()
+
+	// Explicit agent_id so we can look up the parent + its children
+	// deterministically. parent_context is the opaque tracking lineage.
+	body := `{"agent":"parent","agent_id":"parent-1",` +
+		`"parent_context":{"root_agent_run_id":"run_root","function_key":"cv-batch","tier_at_run":"pro"},` +
+		`"segments":[{"role":"user","content":[{"type":"trusted-text","text":"start"}]}]}`
+	resp, err := http.Post(ts.URL+"/v1/runs", "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		slurp, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d body=%s", resp.StatusCode, slurp)
+	}
+	_, _ = io.ReadAll(resp.Body) // drain so the run + sub-run finish
+
+	want := &store.ParentContext{RootAgentRunID: "run_root", FunctionKey: "cv-batch", TierAtRun: "pro"}
+
+	// Parent run carries the context it was started with.
+	parentRun, err := st.GetRunByAgentID(context.Background(), "parent-1")
+	if err != nil {
+		t.Fatalf("GetRunByAgentID(parent-1): %v", err)
+	}
+	if parentRun.ParentContext == nil || *parentRun.ParentContext != *want {
+		t.Errorf("parent ParentContext = %+v, want %+v", parentRun.ParentContext, want)
+	}
+
+	// Every child sub-agent must carry the SAME context (the propagation
+	// seam). This is the assertion that fails if the copy is removed.
+	childRuns, err := st.ListRunsByParentAgentID(context.Background(), "parent-1")
+	if err != nil {
+		t.Fatalf("ListRunsByParentAgentID: %v", err)
+	}
+	if len(childRuns) == 0 {
+		t.Fatal("expected at least one child run; none found (did the spawn happen?)")
+	}
+	for _, cr := range childRuns {
+		if cr.ParentContext == nil {
+			t.Errorf("child run %s ParentContext = nil; the parent's lineage did not propagate", cr.ID)
+			continue
+		}
+		if *cr.ParentContext != *want {
+			t.Errorf("child run %s ParentContext = %+v, want %+v", cr.ID, cr.ParentContext, want)
+		}
+	}
+}
