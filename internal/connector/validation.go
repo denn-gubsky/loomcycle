@@ -1,6 +1,36 @@
 package connector
 
-import "fmt"
+import (
+	"fmt"
+
+	"github.com/denn-gubsky/loomcycle/internal/store"
+)
+
+// parentContextMaxFieldLen bounds each parent_context field so a
+// consumer can't push unbounded strings into the run table / event
+// stream. The fields are opaque consumer ids/keys; 256 is generous.
+const parentContextMaxFieldLen = 256
+
+// ValidateParentContext bounds the opaque caller-tracking fields
+// (v0.12.x). Lives here so all transports (HTTP, gRPC, MCP) validate
+// identically. A nil or all-empty struct is valid (treated as "no
+// context" by the caller). Returns errMsg suitable for a 400 / MCP
+// tool-error naming the offending field.
+func ValidateParentContext(pc *store.ParentContext) (errMsg string, ok bool) {
+	if pc == nil {
+		return "", true
+	}
+	for field, v := range map[string]string{
+		"root_agent_run_id": pc.RootAgentRunID,
+		"function_key":      pc.FunctionKey,
+		"tier_at_run":       pc.TierAtRun,
+	} {
+		if len(v) > parentContextMaxFieldLen {
+			return fmt.Sprintf("parent_context.%s exceeds %d bytes", field, parentContextMaxFieldLen), false
+		}
+	}
+	return "", true
+}
 
 // ValidateUserCredentialsMap validates each key in the v1.x RFC F
 // per-run credentials map against the wire-locked charset. Lives in

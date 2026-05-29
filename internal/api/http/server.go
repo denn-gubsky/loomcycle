@@ -1369,10 +1369,11 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	// publishes. Constructed once; passed to every finishRun* below
 	// AND used right now for the "running" transition.
 	meta := runStateMeta{
-		RunID:   runID,
-		AgentID: agentID,
-		Agent:   effectiveAgentName,
-		UserID:  effectiveUserID,
+		RunID:         runID,
+		AgentID:       agentID,
+		Agent:         effectiveAgentName,
+		UserID:        effectiveUserID,
+		ParentContext: in.ParentContext,
 	}
 	// Stash the run span on the meta so finishRun* can close it with
 	// final attrs (usage totals + stop_reason + error status).
@@ -2332,11 +2333,12 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 	// v0.9.x: identity bundle threaded into finishRun* + the
 	// "running" transition publish below.
 	meta := runStateMeta{
-		RunID:    runID,
-		AgentID:  agentID,
-		Agent:    req.Agent,
-		UserID:   req.UserID,
-		otelSpan: runSpan,
+		RunID:         runID,
+		AgentID:       agentID,
+		Agent:         req.Agent,
+		UserID:        req.UserID,
+		otelSpan:      runSpan,
+		ParentContext: req.ParentContext,
 	}
 	if errors.Is(regErr, cancel.ErrInUse) {
 		// We've already created the session+run row in the store
@@ -2408,6 +2410,7 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		"run_id":          runID,
 		"session_id":      sessionID,
 		"parent_agent_id": nil,
+		"parent_context":  req.ParentContext, // v0.12.x: opaque tracking lineage (nil when absent)
 	})
 
 	emit := s.makeRecordingEmit(r.Context(), runID, stream.send)
@@ -2719,11 +2722,12 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	}, cancelFn)
 	// v0.9.x: per-run meta for runstate.Bus.
 	meta := runStateMeta{
-		RunID:    run.ID,
-		AgentID:  agentID,
-		Agent:    sess.Agent,
-		UserID:   sess.UserID,
-		otelSpan: runSpan,
+		RunID:         run.ID,
+		AgentID:       agentID,
+		Agent:         sess.Agent,
+		UserID:        sess.UserID,
+		otelSpan:      runSpan,
+		ParentContext: body.ParentContext,
 	}
 	if errors.Is(regErr, cancel.ErrInUse) {
 		// Same orphan-row mitigation as handleRuns — the run was
@@ -2768,6 +2772,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		"run_id":          run.ID,
 		"session_id":      id,
 		"parent_agent_id": nil,
+		"parent_context":  body.ParentContext, // v0.12.x: opaque tracking lineage (nil when absent)
 	})
 
 	emit := s.makeRecordingEmit(r.Context(), run.ID, stream.send)
@@ -3288,6 +3293,7 @@ func (s *Server) runSubAgent(ctx context.Context, name string, prompt string, de
 		UserID:        parentIdentity.UserID,
 		ParentAgentID: parentIdentity.AgentID,
 		otelSpan:      subRunSpan,
+		ParentContext: parentIdentity.ParentContext, // v0.12.x: sub-agent's run-state events carry the root's lineage
 	}
 	s.publishRunState(subMeta, "running", "", "")
 
@@ -3498,6 +3504,12 @@ type agentResponse struct {
 	// cancel handle. Empty (and omitted from JSON) in single-replica
 	// deployments so the UI stays uncluttered for the common case.
 	ReplicaID string `json:"replica_id,omitempty"`
+	// v0.12.x parent_context — the opaque caller-tracking lineage this
+	// run carries (inherited from its root for sub-agents). Echoed here
+	// alongside Usage so a consumer can attribute a child sub-agent's
+	// cost to the user-initiated request in a single fetch. Omitted when
+	// the run carried no context.
+	ParentContext *store.ParentContext `json:"parent_context,omitempty"`
 }
 
 type agentResponseUsage struct {
@@ -3542,8 +3554,9 @@ func runToAgentResponse(r store.Run, live bool) agentResponse {
 			Model:               r.Model,
 			Provider:            r.Provider,
 		},
-		Live:      live,
-		ReplicaID: r.ReplicaID,
+		Live:          live,
+		ReplicaID:     r.ReplicaID,
+		ParentContext: r.ParentContext, // v0.12.x: echo tracking lineage alongside usage
 	}
 	if !r.CompletedAt.IsZero() {
 		t := r.CompletedAt
@@ -3965,6 +3978,9 @@ type runStateMeta struct {
 	Agent         string
 	UserID        string
 	ParentAgentID string
+	// ParentContext is the run's opaque tracking lineage, echoed on the
+	// published RunStateEvent (v0.12.x).
+	ParentContext *store.ParentContext
 	// otelSpan is the top-level loomcycle.run span the four run-creation
 	// sites open before kicking off the loop. finishRun* attaches final
 	// attributes (usage totals, stop_reason, error status) to it via
@@ -3989,6 +4005,7 @@ func (s *Server) publishRunState(m runStateMeta, status, stopReason, errMsg stri
 		Status:        status,
 		StopReason:    stopReason,
 		Error:         errMsg,
+		ParentContext: m.ParentContext,
 	})
 }
 
@@ -4239,28 +4256,11 @@ func validIdent(s string) bool {
 	return true
 }
 
-// parentContextMaxFieldLen bounds each parent_context string so a
-// consumer can't push unbounded values into the run table / event
-// stream. The fields are opaque consumer ids/keys; 256 is generous.
-const parentContextMaxFieldLen = 256
-
-// validateParentContext bounds the opaque caller-tracking fields. A nil
-// or all-empty struct is valid (treated as "no context" by the caller).
-// Returns (errMsg, ok); ok=false means reject with 400.
+// validateParentContext delegates to connector.ValidateParentContext so
+// every wire surface (HTTP, MCP, gRPC) bounds the opaque tracking fields
+// identically — one source of truth, mirroring ValidateUserCredentialsMap.
 func validateParentContext(pc *store.ParentContext) (string, bool) {
-	if pc == nil {
-		return "", true
-	}
-	for field, v := range map[string]string{
-		"root_agent_run_id": pc.RootAgentRunID,
-		"function_key":      pc.FunctionKey,
-		"tier_at_run":       pc.TierAtRun,
-	} {
-		if len(v) > parentContextMaxFieldLen {
-			return fmt.Sprintf("parent_context.%s exceeds %d bytes", field, parentContextMaxFieldLen), false
-		}
-	}
-	return "", true
+	return connector.ValidateParentContext(pc)
 }
 
 // validUserBearer reports whether s is a valid per-run MCP bearer

@@ -480,4 +480,7 @@ type RunStateEvent struct {
 	StopReason    string `json:"stop_reason,omitempty"`
 	Error         string `json:"error,omitempty"`
 	TS            string `json:"ts"` // RFC3339
+	// ParentContext echoes the run's opaque tracking lineage (v0.12.x).
+	// Nil when the run carried no context.
+	ParentContext *store.ParentContext `json:"parent_context,omitempty"`
 }

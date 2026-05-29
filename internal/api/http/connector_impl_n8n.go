@@ -196,5 +196,6 @@ func runStateEventToConnector(e runstate.RunStateEvent) connector.RunStateEvent 
 		StopReason:    e.StopReason,
 		Error:         e.Error,
 		TS:            ts,
+		ParentContext: e.ParentContext,
 	}
 }

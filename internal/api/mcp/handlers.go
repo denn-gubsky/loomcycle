@@ -135,6 +135,9 @@ func handleSpawnRun(ctx context.Context, env *handlerEnv, args json.RawMessage) 
 	if errMsg, ok := connector.ValidateUserCredentialsMap(req.UserCredentials); !ok {
 		return toolErr("spawn_run: " + errMsg), nil
 	}
+	if errMsg, ok := connector.ValidateParentContext(req.ParentContext); !ok {
+		return toolErr("spawn_run: " + errMsg), nil
+	}
 
 	useStreaming := env.session != nil && env.session.RunEventsEnabled() && env.runner != nil
 	var result connector.SpawnRunResult
@@ -169,6 +172,7 @@ func spawnRunStreaming(ctx context.Context, env *handlerEnv, req connector.Spawn
 		UserTier:        req.UserTier,
 		UserBearer:      req.UserBearer,
 		UserCredentials: req.UserCredentials, // v1.x RFC F per-tool named credentials
+		ParentContext:   req.ParentContext,   // v0.12.x opaque tracking lineage
 	}
 
 	var (
