@@ -8,6 +8,28 @@ For pre-v0.4 history (single-tool runtime, library milestone, security patch), s
 
 ---
 
+## What's in v0.12.8
+
+**Cumulative release covering all work since v0.12.7.** Closes the v1.x "Claude Code interop" batch (RFC C1 + C2 + the plugin) and lands the cv-batch child-tagging fix (parent-context propagation). No breaking wire changes; all additions are back-compatible.
+
+### Headline: Claude Code interop — recipe library + repo import + plugin
+
+Three threads that make loomcycle a first-class Claude Code citizen in both directions:
+
+- **Curated MCP server recipe library (RFC C1, PR #274)** — a bundled, `//go:embed`'d set of JSON recipes for the common MCP servers (GitHub, GitLab, Slack, Telegram, Discord, Notion, Tavily, Brave, arXiv, fetch, filesystem, email, jobs) in Claude Code's `.mcp.json` per-server shape plus a `_loomcycle:` metadata block. A filesystem overlay at `$LOOMCYCLE_MCP_RECIPES_ROOT` supplements / overrides bundled entries (complete-replace semantics). New 7-verb `loomcycle mcp-registry` CLI: `list` / `show` / `append-to-config` / `add` / `remove` / `enable` / `disable`. The library is a TEMPLATE source, never a runtime registration source — it's Tier 1 of the 3-tier MCP-source model (library → `mcp_servers:` yaml → MCPServerDef substrate).
+
+- **Claude Code repo import (RFC C2, PR #275)** — `loomcycle import claude-code --from=<path>` walks a `.claude/` directory and emits loomcycle yaml: `.claude/agents/<name>.md` → `agents:` (with v0.12.7 substrate-field heuristics — `# credentials:` comments for `mcp__*` tools, `schedule_def_scopes` / `agent_def_scopes` stubs by name pattern), `.claude/skills/<name>/SKILL.md` → filesystem copy, `.claude/mcp.json` → `mcp_servers:` (preferring a C1 recipe over a literal port when the package matches). Six output modes (dry-run / report-only / diff / write / write-force / json) + `--emit-recipes` overlay round-trip. Lossy import is loud — every unmapped field + skipped file surfaces. `Context.help claude-code-import` topic.
+
+- **Claude Code plugin** — `denn-gubsky/claude-code-plugin-loomcycle` (separate repo, git/marketplace-distributed) wraps `loomcycle mcp` with 6 slash commands (`/loomcycle:run|runs|cancel|snapshot|eval|connect`), 4 skills, and 2 opt-in hooks. Loomcycle-side: `docs/CLAUDE-CODE.md` operator setup page (PR #277).
+
+### Parent-context propagation (cv-batch child tagging, PR #280)
+
+An opaque, typed `parent_context` `{root_agent_run_id, function_key, tier_at_run}` on the run request that loomcycle carries verbatim, inherits UNCHANGED onto every sub-agent the Agent tool spawns (transitively), persists on each run row (new `runs.parent_context` JSON column; Postgres migration 0030 + SQLite ALTER), and echoes on the per-agent report surfaces (`agentResponse`, `RunStateEvent`, the SSE `event: agent` frame) + the snapshot round-trip. Lets a consumer attribute a child sub-agent's usage back to the user-initiated request that spawned the whole tree — closing the gap where batch-orchestrator children landed with no link to their parent. Rides the existing `UserBearer` / `UserCredentials` identity-inheritance seam; not a secret (safe to persist / log / emit). `@loomcycle/client` bumped to 0.12.8 with `ParentContext` types + serialization.
+
+### Self-review followups (PR #280)
+
+A code-review pass on the parent-context change caught and fixed three of its own gaps before merge: the `parent_context` snapshot round-trip was incomplete (the `PausedRunEntry` envelope dropped the field, making the store-level restore write dead — now wired with a regression test), `SpawnRunResult.ParentContext` was documented-but-unpopulated, and the MCP `spawn_run` path didn't normalise an empty context to nil like the HTTP handlers.
+
 ## What's in v0.12.7
 
 **Cumulative release covering all work since v0.12.6.** Bundles four substantial threads that landed across May 2026: the multi-replica cluster demo (originally planned as v0.12.7), bundled observability profiles, RFC F per-run credentials, the RFC E ScheduleDef substrate (six PRs across substrate / runtime / four transports / Web UI / hook editor), and the compound test that gated the release plus the in-flight tracker that closed the ceiling it surfaced.

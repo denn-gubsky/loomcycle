@@ -55,6 +55,9 @@
 | **Per-run named credentials** — `user_credentials: map<string,string>` on `POST /v1/runs` / gRPC / MCP / TS. `${run.credentials.<name>}` substitution in `mcp_servers.*.headers`. Back-compat: legacy `user_bearer` auto-promotes to `credentials.default` | v0.12.7 |
 | **Bundled observability profiles** — three `docker compose up` stacks: Grafana+Tempo+Prom+Loki (open-source), Honeycomb (SaaS), Datadog APM. `GET /metrics` Prometheus endpoint | v0.12.7 |
 | **Mock LLM provider** — cost-free 10K-agent stress harness. Variable latency + jitter + 429 / 5xx injection. Five model variants including `mock-mcp-caller` that exercises real MCP-tool dispatch end-to-end | v0.12.7 |
+| **Curated MCP server recipe library** — bundled JSON templates (GitHub, Slack, Tavily, …) + `$LOOMCYCLE_MCP_RECIPES_ROOT` filesystem overlay + a 7-verb `loomcycle mcp-registry` CLI that copy-pastes a recipe into your `mcp_servers:` yaml | v0.12.8 |
+| **Claude Code repo import** — `loomcycle import claude-code --from=./.claude/` walks agents / skills / mcp.json into loomcycle yaml (dry-run → review → `--write`); recipe-library rewrite, lossy-is-loud reporting. Paired with the `claude-code-plugin-loomcycle` Claude Code plugin (slash commands + skills + hooks over `loomcycle mcp`) | v0.12.8 |
+| **Parent-context propagation** — opaque `parent_context` {root_agent_run_id, function_key, tier_at_run} on a run is inherited by every Agent-tool sub-agent, persisted, and echoed on the agent-status / run-state / SSE surfaces — so a consumer can attribute a child sub-agent's usage to the user-initiated request | v0.12.8 |
 
 Full per-version log: [`REVISIONS.md`](REVISIONS.md).
 
