@@ -87,6 +87,7 @@ export type {
   ContinueOptions,
   EventType,
   HostWidening,
+  ParentContext,
   PromptContent,
   PromptSegment,
   RetryInfo,

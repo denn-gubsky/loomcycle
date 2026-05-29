@@ -135,6 +135,36 @@ describe("runStreaming", () => {
     });
   });
 
+  it("forwards parent_context when set (v0.12.x tracking lineage)", async () => {
+    const { client, fetchMock } = makeClient([
+      sseResponse(['event: done\ndata: {"type":"done"}\n\n']),
+    ]);
+    for await (const _ of client.runStreaming({
+      agent: "cv-batch-adapter",
+      segments: [],
+      parentContext: {
+        root_agent_run_id: "run_abc",
+        function_key: "cv-batch",
+        tier_at_run: "pro",
+      },
+    })) {}
+    const body = JSON.parse(fetchMock.mock.calls[0]![1]!.body as string);
+    expect(body.parent_context).toEqual({
+      root_agent_run_id: "run_abc",
+      function_key: "cv-batch",
+      tier_at_run: "pro",
+    });
+  });
+
+  it("omits parent_context when undefined (back-compat)", async () => {
+    const { client, fetchMock } = makeClient([
+      sseResponse(['event: done\ndata: {"type":"done"}\n\n']),
+    ]);
+    for await (const _ of client.runStreaming({ agent: "qa", segments: [] })) {}
+    const body = JSON.parse(fetchMock.mock.calls[0]![1]!.body as string);
+    expect("parent_context" in body).toBe(false);
+  });
+
   // omitted-when-undefined contract: existing callers see no wire shape change.
   it("omits user_credentials when undefined (no shape change for v0.8.x callers)", async () => {
     const { client, fetchMock } = makeClient([
