@@ -1625,6 +1625,34 @@ type Env struct {
 	// LOOMCYCLE_SCHEDULER_ENV_ALLOWLIST="VAR1,VAR2" — only those
 	// var names will be readable by scheduled runs.
 	SchedulerEnvAllowlist []string
+
+	// A2AServerEnabled enables the v1.x RFC G A2A server HTTP surface
+	// (the well-known AgentCard URI + the three protocol-binding mounts
+	// on the existing mux). Default OFF — operator opts in via
+	// LOOMCYCLE_A2A_ENABLED=1. When false, the A2AServerCardDef tool
+	// still works for authoring; nothing is mounted and no card is
+	// served.
+	A2AServerEnabled bool
+
+	// A2AServerCardName names the active A2AServerCardDef whose card the
+	// server serves and whose exposed_agents drive skill→agent routing.
+	// Env: LOOMCYCLE_A2A_SERVER_CARD. Required when A2AServerEnabled.
+	A2AServerCardName string
+
+	// A2ATenancyRouting selects how the inbound tenant is derived for
+	// the A2A surface: "" / "none" (single-tenant, served at host root),
+	// "host" (tenant-{id}.<host> subdomain), or "path"
+	// (/{tenant}/.well-known/... + /{tenant}/a2a/*). The tenant is a
+	// TRUST BOUNDARY: it comes ONLY from the routed host/path, never
+	// from a request body field. Env: LOOMCYCLE_A2A_TENANCY_ROUTING.
+	A2ATenancyRouting string
+
+	// A2APublicBaseURL is the externally-reachable base URL advertised
+	// in the AgentCard's interface URLs (e.g. https://agents.example.com).
+	// Empty falls back to a relative path, which is valid for same-origin
+	// clients but not for cross-host discovery. Env:
+	// LOOMCYCLE_A2A_PUBLIC_BASE_URL.
+	A2APublicBaseURL string
 }
 
 // Load reads a YAML file and the process env. Empty path returns defaults +
@@ -2061,6 +2089,25 @@ func Load(path string) (*Config, error) {
 			if name != "" {
 				cfg.Env.SchedulerEnvAllowlist = append(cfg.Env.SchedulerEnvAllowlist, name)
 			}
+		}
+	}
+
+	// v1.x RFC G A2A server surface. Default OFF; operator opts in via
+	// LOOMCYCLE_A2A_ENABLED=1 + names the active card to serve. Tenancy
+	// routing is host/path-authoritative (trust boundary), never from a
+	// request body.
+	cfg.Env.A2AServerEnabled = os.Getenv("LOOMCYCLE_A2A_ENABLED") == "1"
+	cfg.Env.A2AServerCardName = strings.TrimSpace(os.Getenv("LOOMCYCLE_A2A_SERVER_CARD"))
+	cfg.Env.A2ATenancyRouting = strings.TrimSpace(os.Getenv("LOOMCYCLE_A2A_TENANCY_ROUTING"))
+	cfg.Env.A2APublicBaseURL = strings.TrimRight(strings.TrimSpace(os.Getenv("LOOMCYCLE_A2A_PUBLIC_BASE_URL")), "/")
+	if cfg.Env.A2AServerEnabled {
+		switch cfg.Env.A2ATenancyRouting {
+		case "", "none", "host", "path":
+		default:
+			return nil, fmt.Errorf("LOOMCYCLE_A2A_TENANCY_ROUTING: must be one of none|host|path, got %q", cfg.Env.A2ATenancyRouting)
+		}
+		if cfg.Env.A2AServerCardName == "" {
+			return nil, fmt.Errorf("LOOMCYCLE_A2A_ENABLED=1 requires LOOMCYCLE_A2A_SERVER_CARD to name the active server card")
 		}
 	}
 

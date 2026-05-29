@@ -32,17 +32,49 @@ type principal struct {
 	Authenticated bool
 }
 
+// routedTenantKeyType keys the tenant the A2A-5 mounting layer resolved
+// from the request host/path. It is the TRUST-BOUNDARY tenant: when
+// present it OVERRIDES any tenant the peer supplied in the message body
+// or SDK CallContext, so a peer cannot mislabel its run's tenant by
+// stuffing a body field. The mounting layer attaches it via
+// WithRoutedTenant before the SDK handler runs.
+type routedTenantKeyType struct{}
+
+// WithRoutedTenant stamps the host/path-derived tenant onto ctx. The
+// A2A server mux calls this so principalFromContext can treat it as
+// authoritative. Empty tenant is a no-op (single-tenant deployments).
+func WithRoutedTenant(ctx context.Context, tenant string) context.Context {
+	if tenant == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, routedTenantKeyType{}, tenant)
+}
+
+// RoutedTenantFrom returns the host/path-derived tenant if the mounting
+// layer attached one. Exported so the A2A-5 server surface can read back
+// the tenant it stamped (e.g. to anchor per-tenant AgentCard URLs).
+func RoutedTenantFrom(ctx context.Context) (string, bool) {
+	t, ok := ctx.Value(routedTenantKeyType{}).(string)
+	return t, ok
+}
+
 // principalFromContext extracts the authenticated principal from the
 // SDK CallContext on ctx, combined with the request tenant. The tenant
-// is passed explicitly because the SDK carries it on the request
-// (SendMessageRequest.Tenant / ExecutorContext.Tenant), not only on the
-// CallContext — passing it in keeps this helper a pure projection with
-// no hidden context lookups beyond the CallContext it documents.
+// argument is the SDK-carried value (SendMessageRequest.Tenant /
+// ExecutorContext.Tenant); it is used ONLY when no routed tenant is
+// present on ctx. The routed tenant (host/path-derived, see
+// WithRoutedTenant) is a trust boundary and always wins when set, so a
+// body field cannot override the operator-configured routing.
 //
 // Returns a zero principal (Authenticated=false) when no CallContext is
 // present — the unauthenticated default. Never panics on a nil User.
 func principalFromContext(ctx context.Context, tenant string) principal {
 	p := principal{TenantID: tenant}
+	// Routed tenant is authoritative: an operator-configured host/path
+	// shape outranks anything the peer could put in the body.
+	if rt, ok := RoutedTenantFrom(ctx); ok {
+		p.TenantID = rt
+	}
 	callCtx, ok := a2asrv.CallContextFrom(ctx)
 	if !ok || callCtx.User == nil {
 		return p
@@ -51,10 +83,8 @@ func principalFromContext(ctx context.Context, tenant string) principal {
 	if callCtx.User.Authenticated {
 		p.UserID = callCtx.User.Name
 	}
-	// CallContext.Tenant() is the authoritative tenant when the
-	// transport set it; prefer it over the request-carried value only
-	// when the request didn't supply one, so an explicit per-message
-	// tenant still wins.
+	// CallContext.Tenant() is the SDK-carried fallback when neither a
+	// routed tenant nor an explicit per-message tenant was supplied.
 	if p.TenantID == "" {
 		p.TenantID = callCtx.Tenant()
 	}

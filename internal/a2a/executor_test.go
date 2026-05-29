@@ -247,3 +247,96 @@ func TestExecutor_CancelSurfacesConnectorError(t *testing.T) {
 		t.Fatalf("got %d errors, want 1", len(errs))
 	}
 }
+
+// TestExecutor_ResolverDispatchesKnownSkillToItsAgent asserts that with
+// a skill→agent resolver installed, an inbound message carrying a known
+// skillId routes to the mapped loomcycle agent (multi-agent server).
+func TestExecutor_ResolverDispatchesKnownSkillToItsAgent(t *testing.T) {
+	fr := &fakeRunner{script: []providers.Event{{Type: providers.EventDone, StopReason: "end_turn"}}}
+	runs := &fakeRuns{byAgentID: map[string]store.Run{
+		"task-r": {ID: "run-r", AgentID: "task-r", Status: store.RunCompleted, StopReason: "end_turn"},
+	}}
+	skillToAgent := map[string]string{"research": "researcher", "write": "writer"}
+	ex := NewExecutor(fr, &fakeConnector{}, runs, "fallback").
+		WithAgentResolver(func(skillID string) (string, bool) {
+			a, ok := skillToAgent[skillID]
+			return a, ok
+		})
+
+	msg := a2asdk.NewMessage(a2asdk.MessageRoleUser, a2asdk.NewTextPart("write a poem"))
+	msg.Metadata = map[string]any{"skillId": "write"}
+	execCtx := &a2asrv.ExecutorContext{TaskID: "task-r", Message: msg}
+
+	_, errs := collect(ex.Execute(context.Background(), execCtx))
+	if len(errs) != 0 {
+		t.Fatalf("unexpected errors: %v", errs)
+	}
+	if fr.gotIn.Agent != "writer" {
+		t.Errorf("dispatched agent = %q, want writer (skillId=write)", fr.gotIn.Agent)
+	}
+}
+
+// TestExecutor_ResolverRejectsUnknownSkill asserts an unexposed skill is
+// rejected (FAILED status) rather than silently falling back to the
+// default agent — a peer must not reach an unexposed agent.
+func TestExecutor_ResolverRejectsUnknownSkill(t *testing.T) {
+	fr := &fakeRunner{}
+	ex := NewExecutor(fr, &fakeConnector{}, &fakeRuns{byAgentID: map[string]store.Run{}}, "fallback").
+		WithAgentResolver(func(string) (string, bool) { return "", false })
+
+	msg := a2asdk.NewMessage(a2asdk.MessageRoleUser, a2asdk.NewTextPart("hi"))
+	msg.Metadata = map[string]any{"skillId": "nope"}
+	execCtx := &a2asrv.ExecutorContext{TaskID: "task-bad", Message: msg}
+
+	events, _ := collect(ex.Execute(context.Background(), execCtx))
+	if fr.gotIn.Agent != "" {
+		t.Errorf("runner must not be driven for an unknown skill; got agent %q", fr.gotIn.Agent)
+	}
+	if len(events) == 0 {
+		t.Fatal("expected a FAILED status event for the rejected skill")
+	}
+	last := events[len(events)-1]
+	su, ok := last.(*a2asdk.TaskStatusUpdateEvent)
+	if !ok || su.Status.State != a2asdk.TaskStateFailed {
+		t.Errorf("final event = %#v, want FAILED status", last)
+	}
+}
+
+// TestExecutor_ResolverRejectsMissingSkillId asserts a multi-agent
+// server rejects a request that omits the skillId entirely.
+func TestExecutor_ResolverRejectsMissingSkillId(t *testing.T) {
+	fr := &fakeRunner{}
+	ex := NewExecutor(fr, &fakeConnector{}, &fakeRuns{byAgentID: map[string]store.Run{}}, "fallback").
+		WithAgentResolver(func(string) (string, bool) { return "writer", true })
+
+	execCtx := &a2asrv.ExecutorContext{
+		TaskID:  "task-nometa",
+		Message: a2asdk.NewMessage(a2asdk.MessageRoleUser, a2asdk.NewTextPart("hi")),
+	}
+	_, _ = collect(ex.Execute(context.Background(), execCtx))
+	if fr.gotIn.Agent != "" {
+		t.Errorf("runner must not be driven when skillId is absent; got agent %q", fr.gotIn.Agent)
+	}
+}
+
+// TestExecutor_NoResolverUsesFixedAgent confirms back-compat: without a
+// resolver, every request routes to the fixed agentName regardless of
+// any skillId metadata.
+func TestExecutor_NoResolverUsesFixedAgent(t *testing.T) {
+	fr := &fakeRunner{script: []providers.Event{{Type: providers.EventDone, StopReason: "end_turn"}}}
+	runs := &fakeRuns{byAgentID: map[string]store.Run{
+		"task-f": {ID: "run-f", AgentID: "task-f", Status: store.RunCompleted, StopReason: "end_turn"},
+	}}
+	ex := NewExecutor(fr, &fakeConnector{}, runs, "only-agent")
+
+	msg := a2asdk.NewMessage(a2asdk.MessageRoleUser, a2asdk.NewTextPart("hi"))
+	msg.Metadata = map[string]any{"skillId": "ignored"}
+	execCtx := &a2asrv.ExecutorContext{TaskID: "task-f", Message: msg}
+	_, errs := collect(ex.Execute(context.Background(), execCtx))
+	if len(errs) != 0 {
+		t.Fatalf("unexpected errors: %v", errs)
+	}
+	if fr.gotIn.Agent != "only-agent" {
+		t.Errorf("agent = %q, want only-agent (no resolver ⇒ fixed)", fr.gotIn.Agent)
+	}
+}

@@ -50,3 +50,28 @@ func TestPrincipalFromContext_UnauthenticatedUserDropsName(t *testing.T) {
 		t.Errorf("user = %q, want empty (unauthenticated)", p.UserID)
 	}
 }
+
+// TestPrincipalFromContext_RoutedTenantOverridesRequestTenant is the
+// trust-boundary test: the host/path-derived routed tenant must win
+// over a tenant the peer supplied in the message body, so a body field
+// cannot mislabel the run's tenant.
+func TestPrincipalFromContext_RoutedTenantOverridesRequestTenant(t *testing.T) {
+	ctx := WithRoutedTenant(context.Background(), "tenant-routed")
+	p := principalFromContext(ctx, "tenant-from-body")
+	if p.TenantID != "tenant-routed" {
+		t.Errorf("tenant = %q, want tenant-routed (routed wins over body)", p.TenantID)
+	}
+}
+
+// TestWithRoutedTenant_EmptyIsNoop confirms single-tenant deployments
+// (no routed tenant) fall back to the request-carried tenant.
+func TestWithRoutedTenant_EmptyIsNoop(t *testing.T) {
+	ctx := WithRoutedTenant(context.Background(), "")
+	if _, ok := RoutedTenantFrom(ctx); ok {
+		t.Error("empty routed tenant should not be attached")
+	}
+	p := principalFromContext(ctx, "tenant-from-body")
+	if p.TenantID != "tenant-from-body" {
+		t.Errorf("tenant = %q, want tenant-from-body fallback", p.TenantID)
+	}
+}

@@ -37,17 +37,36 @@ type Executor struct {
 	// for the terminal-status lookup after RunOnce returns.
 	runs RunReader
 
-	// agentName is the loomcycle agent this executor fronts. A2A skills
-	// route to a server card; the card binds to one loomcycle agent.
-	// The slice spec allows taking it from the request, but at the
-	// bridge layer one Executor instance fronts one agent — multi-agent
-	// routing is the A2A-5 mounting layer's job.
+	// agentName is the fallback loomcycle agent this executor fronts
+	// when no skill-based resolution applies (single-agent server, or a
+	// request that carried no skill id). A2A skills route to a server
+	// card; the card may bind multiple loomcycle agents (one per
+	// exposed skill) — see resolveAgent.
 	agentName string
+
+	// resolveAgent maps an inbound A2A skill id to a loomcycle agent
+	// name. The A2A-5 mounting layer injects it from the active
+	// A2AServerCardDef's exposed_agents so ONE mounted server can
+	// dispatch to the right agent per request. Returns ("", false) for
+	// an unknown/unexposed skill, which the executor rejects.
+	//
+	// Nil ⇒ single-agent mode: every request routes to agentName
+	// regardless of skill id (back-compat with the A2A-4 bridge tests).
+	resolveAgent func(skillID string) (string, bool)
 }
 
-// NewExecutor builds an Executor for one loomcycle agent.
+// NewExecutor builds an Executor for one loomcycle agent. Skill-based
+// multi-agent routing is opt-in via WithAgentResolver.
 func NewExecutor(r runner.Runner, conn connector.Connector, runs RunReader, agentName string) *Executor {
 	return &Executor{runner: r, conn: conn, runs: runs, agentName: agentName}
+}
+
+// WithAgentResolver installs a skill-id → agent-name resolver so one
+// Executor fronts the multiple loomcycle agents an A2AServerCardDef
+// exposes. The A2A-5 server builds this from the card's exposed_agents.
+func (e *Executor) WithAgentResolver(resolve func(skillID string) (string, bool)) *Executor {
+	e.resolveAgent = resolve
+	return e
 }
 
 var _ a2asrv.AgentExecutor = (*Executor)(nil)
@@ -157,6 +176,10 @@ func (e *Executor) Cancel(ctx context.Context, execCtx *a2asrv.ExecutorContext) 
 // arrive from an authenticated A2A peer, so they enter as trusted
 // input, matching how the HTTP /v1/runs body is treated).
 func (e *Executor) buildRunInput(ctx context.Context, execCtx *a2asrv.ExecutorContext) (runner.RunInput, error) {
+	agent, err := e.agentFor(execCtx)
+	if err != nil {
+		return runner.RunInput{}, err
+	}
 	blocks, err := partsToContentBlocks(execCtx.Message.Parts)
 	if err != nil {
 		return runner.RunInput{}, err
@@ -166,12 +189,46 @@ func (e *Executor) buildRunInput(ctx context.Context, execCtx *a2asrv.ExecutorCo
 	}
 	p := principalFromContext(ctx, execCtx.Tenant)
 	return runner.RunInput{
-		Agent:    e.agentName,
+		Agent:    agent,
 		AgentID:  string(execCtx.TaskID),
 		TenantID: p.TenantID,
 		UserID:   p.UserID,
 		Segments: []loop.PromptSegment{{Role: "user", Content: blocks}},
 	}, nil
+}
+
+// agentFor resolves which loomcycle agent handles this request. With no
+// resolver installed (single-agent mode) it is always e.agentName. With
+// a resolver, the inbound A2A skill id (Message.Metadata["skillId"], the
+// spec's skill-selection carrier) is mapped to an exposed agent; an
+// unknown or absent skill is REJECTED rather than silently falling back,
+// so a peer cannot reach an unexposed agent by omitting the skill id.
+func (e *Executor) agentFor(execCtx *a2asrv.ExecutorContext) (string, error) {
+	if e.resolveAgent == nil {
+		return e.agentName, nil
+	}
+	skillID := skillIDFromMessage(execCtx.Message)
+	if skillID == "" {
+		return "", fmt.Errorf("a2a executor: request carried no skill id; this server exposes multiple agents and requires one")
+	}
+	agent, ok := e.resolveAgent(skillID)
+	if !ok {
+		return "", fmt.Errorf("a2a executor: unknown or unexposed skill %q", skillID)
+	}
+	return agent, nil
+}
+
+// skillIDFromMessage extracts the A2A skill id from a message's
+// metadata. The A2A spec carries skill selection in Message.Metadata
+// under the "skillId" key. Returns "" when absent or not a string.
+func skillIDFromMessage(msg *a2asdk.Message) string {
+	if msg == nil || msg.Metadata == nil {
+		return ""
+	}
+	if v, ok := msg.Metadata["skillId"].(string); ok {
+		return v
+	}
+	return ""
 }
 
 // finalOutcome resolves the run's terminal outcome from the run table

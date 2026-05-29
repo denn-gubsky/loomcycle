@@ -129,6 +129,11 @@ type Server struct {
 	// constructed.
 	metricsSampler *metrics.Sampler
 
+	// extraMux is the optional v1.x RFC G hook for registering
+	// additional routes (the A2A binding mounts) on the shared mux.
+	// Set via SetExtraMux; nil when the A2A surface is disabled.
+	extraMux func(mux *http.ServeMux, adminAuth func(http.Handler) http.Handler)
+
 	// mcpPoolInspector returns the cached tools/list result for a
 	// named MCP server as already-marshaled JSON. The "already JSON"
 	// wire keeps this package free of internal/tools/mcp imports.
@@ -1825,7 +1830,26 @@ func (s *Server) Mux() http.Handler {
 	uiHandler := webui.Handler("/ui", false)
 	mux.Handle("GET /ui", recoveryMiddleware(uiHandler))
 	mux.Handle("GET /ui/", recoveryMiddleware(uiHandler))
+	// v1.x RFC G A2A — additive routes (well-known AgentCard + REST /
+	// JSON-RPC binding mounts) registered by an external hook so the
+	// A2A package stays decoupled from this one. The hook also receives
+	// the recovery+auth middleware chain so it can gate its admin-only
+	// surfaces (e.g. the extended card) with the same posture as /v1/_*.
+	// Nil when the A2A surface is disabled (the default).
+	if s.extraMux != nil {
+		s.extraMux(mux, func(next http.Handler) http.Handler {
+			return recoveryMiddleware(s.authMiddleware(next))
+		})
+	}
 	return mux
+}
+
+// SetExtraMux installs a hook called at the end of Mux() to register
+// additional routes on the shared mux. The hook receives the mux and an
+// admin-auth middleware wrapper (recovery + bearer authMiddleware) for
+// gating admin-only routes. Used by the A2A server surface; nil-safe.
+func (s *Server) SetExtraMux(fn func(mux *http.ServeMux, adminAuth func(http.Handler) http.Handler)) {
+	s.extraMux = fn
 }
 
 // recoveryMiddleware turns a panicking handler into a 500. If headers have

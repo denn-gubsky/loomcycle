@@ -1,0 +1,315 @@
+package a2a
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"strings"
+
+	a2asdk "github.com/a2aproject/a2a-go/v2/a2a"
+	a2agrpc "github.com/a2aproject/a2a-go/v2/a2agrpc/v1"
+	"github.com/a2aproject/a2a-go/v2/a2asrv"
+	"google.golang.org/grpc"
+
+	bridge "github.com/denn-gubsky/loomcycle/internal/a2a"
+	"github.com/denn-gubsky/loomcycle/internal/config"
+	"github.com/denn-gubsky/loomcycle/internal/connector"
+	"github.com/denn-gubsky/loomcycle/internal/lookup"
+	"github.com/denn-gubsky/loomcycle/internal/runner"
+)
+
+// Authenticator authenticates an inbound A2A request from its headers
+// and returns the principal name to attach to the SDK CallContext. It
+// returns ("", false) for an unauthenticated request — the default-deny
+// posture is the caller's (the bridge treats an unauthenticated User as
+// anonymous run ownership; it does NOT widen any allowlist).
+//
+// This is the bearer-header check at the A2A frontier, reusing the same
+// constant-time comparison loomcycle's HTTP authMiddleware uses. It is
+// injected so tests can supply a deterministic fake.
+type Authenticator func(h http.Header) (name string, ok bool)
+
+// CardAndRunStore is the narrow store surface the A2A server needs: the
+// active-server-card resolver path (lookup) plus the run-table reader
+// the TaskStore is backed by. store.Store satisfies it; tests inject a
+// small fake. Declared as an interface so this package doesn't drag in
+// the full store.Store dependency for unit tests.
+type CardAndRunStore interface {
+	lookup.A2AServerCardStore
+	bridge.RunReader
+}
+
+// Deps are the injected dependencies for the A2A server surface. All are
+// constructor-required; the server does not reach into globals.
+type Deps struct {
+	Cfg   *config.Config
+	Store CardAndRunStore     // resolves the active A2AServerCardDef + backs the TaskStore
+	Conn  connector.Connector // cancel path for the executor
+	Run   runner.Runner       // drives agent runs
+	Auth  Authenticator       // frontier auth → principal (nil ⇒ all requests anonymous)
+}
+
+// Server is the mounted A2A surface. It owns the resolved card + the SDK
+// RequestHandler; Mount adds its routes to an existing mux and
+// GRPCHandler exposes the gRPC binding for registration on loomcycle's
+// shared grpc.Server.
+type Server struct {
+	deps     Deps
+	tenancy  string // "", "none", "host", or "path"
+	baseURL  string
+	cardName string
+
+	// handler is the SDK RequestHandler that all three bindings share.
+	handler a2asrv.RequestHandler
+	grpc    *a2agrpc.Handler
+}
+
+// New builds the A2A server from the active A2AServerCardDef named in
+// config. It returns (nil, nil) when the surface is disabled so callers
+// can unconditionally call New and skip mounting on a nil result.
+//
+// Resolution happens once at construction: the card's exposed_agents
+// drive the skill→agent resolver baked into the executor, and the card
+// metadata is captured for the served AgentCard. A config change
+// requires a restart (same lifecycle as the static yaml card).
+func New(ctx context.Context, deps Deps) (*Server, error) {
+	if deps.Cfg == nil || !deps.Cfg.Env.A2AServerEnabled {
+		return nil, nil
+	}
+	cardName := deps.Cfg.Env.A2AServerCardName
+	card, ok := lookup.A2AServerCard(ctx, deps.Store, deps.Cfg, cardName)
+	if !ok {
+		return nil, fmt.Errorf("a2a server: active server card %q not found (yaml a2a_server_cards or A2AServerCardDef substrate)", cardName)
+	}
+
+	// Skill→agent resolver from exposed_agents. Built once; the map is
+	// read-only after construction so it is safe to share across the
+	// concurrent requests the SDK handler fans out.
+	skillToAgent := make(map[string]string, len(card.ExposedAgents))
+	var firstAgent string
+	for _, e := range card.ExposedAgents {
+		if e.SkillID == "" || e.AgentName == "" {
+			continue
+		}
+		skillToAgent[e.SkillID] = e.AgentName
+		if firstAgent == "" {
+			firstAgent = e.AgentName
+		}
+	}
+	if len(skillToAgent) == 0 {
+		return nil, fmt.Errorf("a2a server: card %q exposes no usable agents (each exposed_agents entry needs skill_id + agent_name)", cardName)
+	}
+
+	taskStore := bridge.NewTaskStore(deps.Store)
+	exec := bridge.NewExecutor(deps.Run, deps.Conn, deps.Store, firstAgent).
+		WithAgentResolver(func(skillID string) (string, bool) {
+			agent, ok := skillToAgent[skillID]
+			return agent, ok
+		})
+
+	// The principal interceptor runs the frontier Authenticator and
+	// stamps the SDK CallContext.User, which the bridge reads in
+	// principalFromContext. This is how A2A binding requests get
+	// authenticated without loomcycle's bearer authMiddleware (the
+	// binding endpoints are NOT wrapped by it — see Mount).
+	opts := []a2asrv.RequestHandlerOption{
+		a2asrv.WithTaskStore(taskStore),
+		a2asrv.WithCapabilityChecks(&a2asdk.AgentCapabilities{
+			Streaming:         card.Capabilities.Streaming,
+			PushNotifications: false,
+		}),
+		a2asrv.WithCallInterceptors(&principalInterceptor{auth: deps.Auth}),
+	}
+	handler := a2asrv.NewHandler(exec, opts...)
+
+	return &Server{
+		deps:     deps,
+		tenancy:  deps.Cfg.Env.A2ATenancyRouting,
+		baseURL:  deps.Cfg.Env.A2APublicBaseURL,
+		cardName: cardName,
+		handler:  handler,
+		grpc:     a2agrpc.NewHandler(handler),
+	}, nil
+}
+
+// GRPCHandler returns the gRPC binding so main.go can register it on the
+// shared grpc.Server (gRPC is not a path-mounted http.Handler; it needs
+// the HTTP/2 server). Nil-safe on a nil Server.
+func (s *Server) RegisterGRPC(g *grpc.Server) {
+	if s == nil || s.grpc == nil {
+		return
+	}
+	s.grpc.RegisterWith(g)
+}
+
+// Mount adds the well-known AgentCard route and the REST + JSON-RPC
+// binding routes to mux. These are ADDITIVE — they do not touch /v1/*,
+// MCP, or the gRPC service. The binding endpoints are intentionally NOT
+// wrapped in loomcycle's bearer authMiddleware: A2A auth happens inside
+// the SDK handler via the principalInterceptor, mapping the peer's own
+// credential to a run principal. The ?extended=true card variant IS
+// gated behind the supplied admin-auth middleware.
+//
+// authMiddleware wraps only the extended-card surface; pass the same
+// recoveryMiddleware(authMiddleware(...)) chain the rest of /v1/_* uses.
+func (s *Server) Mount(mux *http.ServeMux, adminAuth func(http.Handler) http.Handler) {
+	if s == nil {
+		return
+	}
+	rest := a2asrv.NewRESTHandler(s.handler)
+	jsonrpc := a2asrv.NewJSONRPCHandler(s.handler)
+	card := http.HandlerFunc(s.handleAgentCard)
+
+	// All three logical routes are registered at their CONCRETE paths
+	// (no "/{tenant}" wildcard). An open first-segment wildcard would
+	// collide with every subtree route the HTTP server already owns
+	// (e.g. "GET /ui/"), which Go's ServeMux rejects as ambiguous.
+	//
+	// Tenant derivation differs by mode but never changes these mounts:
+	//   - host/none: hostTenantWrap reads the Host header (or nothing).
+	//   - path: the tenant segment is stripped by PathTenantWrapper at
+	//     the http.Server.Handler level BEFORE the request reaches this
+	//     mux, so the concrete paths still match. See PathTenantWrapper.
+	mux.Handle("GET "+pathWellKnown, s.hostTenantWrap(card))
+	mux.Handle(pathREST+"/", s.hostTenantWrap(rest))
+	mux.Handle(pathJSONRPC, s.hostTenantWrap(jsonrpc))
+
+	if adminAuth != nil {
+		mux.Handle("GET "+pathWellKnown+"/extended", adminAuth(http.HandlerFunc(s.handleExtendedCard)))
+	}
+}
+
+// PathTenantWrapper wraps the fully-built server handler so path-mode
+// tenancy can strip a leading "/{tenant}" segment when (and only when)
+// the remaining path is an A2A route, attach the tenant as the routed
+// (trust-boundary) tenant, and rewrite the URL so the inner mux's
+// concrete A2A routes match. Non-A2A paths and non-path tenancy modes
+// pass through untouched, so this is a no-op outside path mode.
+//
+// This sits OUTSIDE the mux because an open first-segment wildcard
+// cannot coexist on the shared mux with the HTTP server's subtree
+// routes. main.go wraps http.Server.Handler with this in path mode.
+func (s *Server) PathTenantWrapper(inner http.Handler) http.Handler {
+	if s == nil || s.tenancy != "path" {
+		return inner
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		tenant, rest, ok := splitTenantPrefix(r.URL.Path)
+		if !ok {
+			// Not a tenant-prefixed A2A path (includes the bare-root
+			// single-tenant fallback like /.well-known/...). Pass through.
+			inner.ServeHTTP(w, r)
+			return
+		}
+		r2 := r.Clone(bridge.WithRoutedTenant(r.Context(), tenant))
+		r2.URL.Path = rest
+		r2.URL.RawPath = ""
+		inner.ServeHTTP(w, r2)
+	})
+}
+
+// splitTenantPrefix recognises a "/{tenant}<a2a-route>" path and returns
+// (tenant, "<a2a-route>", true). It matches only when the segment after
+// the tenant is one of the known A2A routes, so non-A2A first segments
+// (e.g. /ui, /v1) are never mistaken for a tenant. Returns ok=false
+// otherwise.
+func splitTenantPrefix(p string) (tenant, rest string, ok bool) {
+	if len(p) < 2 || p[0] != '/' {
+		return "", "", false
+	}
+	seg, tail, found := strings.Cut(p[1:], "/")
+	if !found || seg == "" {
+		return "", "", false
+	}
+	rest = "/" + tail
+	switch {
+	case rest == pathWellKnown,
+		rest == pathJSONRPC,
+		rest == pathREST,
+		strings.HasPrefix(rest, pathREST+"/"):
+		return seg, rest, true
+	default:
+		return "", "", false
+	}
+}
+
+// handleAgentCard serves the base (unauthenticated) AgentCard. The
+// ?extended=true query is honoured here too for clients that prefer the
+// query form over the /extended path, but only when the request carries
+// valid admin auth — otherwise it silently serves the base card so an
+// unauth'd ?extended=true never leaks the extended surface.
+func (s *Server) handleAgentCard(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	tenant := s.tenantFromRequest(r)
+	extended := r.URL.Query().Get("extended") == "true" && s.adminAuthed(r)
+	s.writeCard(w, tenant, extended)
+}
+
+// handleExtendedCard serves the full card; the caller (Mount) has
+// already wrapped it in admin auth, so reaching here means authorized.
+func (s *Server) handleExtendedCard(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	s.writeCard(w, s.tenantFromRequest(r), true)
+}
+
+// writeCard resolves the active card fresh per request (so a substrate
+// edit is reflected without restart on the served metadata) and writes
+// the generated AgentCard JSON. Cache-Control: max-age=300 per the
+// slice spec. Signing is a no-op stub this slice (A2A-6).
+func (s *Server) writeCard(w http.ResponseWriter, tenant string, extended bool) {
+	card, ok := lookup.A2AServerCard(context.Background(), s.deps.Store, s.deps.Cfg, s.cardName)
+	if !ok {
+		http.Error(w, "a2a server card unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	base, prefix := s.cardURLAnchors(tenant)
+	generated := buildAgentCard(card, base, prefix, extended)
+
+	// Marshal before writing any header so a (very unlikely) encode
+	// failure surfaces as a clean 500 rather than a truncated 200 body.
+	body, err := json.Marshal(generated)
+	if err != nil {
+		http.Error(w, "a2a card encode failed", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "max-age=300")
+	if _, werr := w.Write(body); werr != nil {
+		// Client hung up mid-write; nothing actionable here. The write
+		// error is returned only for observability and recovery
+		// middleware already covers panics.
+		return
+	}
+}
+
+// cardURLAnchors returns the (baseURL, pathPrefix) the AgentCard
+// interface URLs are built from. Host-mode reflects the tenant in the
+// host (the configured base URL already encodes it, or the operator
+// fronts per-tenant subdomains), so the path prefix stays empty;
+// path-mode prepends /{tenant}.
+func (s *Server) cardURLAnchors(tenant string) (base, prefix string) {
+	if s.tenancy == "path" && tenant != "" {
+		return s.baseURL, "/" + tenant
+	}
+	return s.baseURL, ""
+}
+
+// adminAuthed reports whether the request carries valid admin bearer
+// auth, reusing the frontier Authenticator. Used to gate the
+// ?extended=true query form (the /extended path is gated by middleware).
+func (s *Server) adminAuthed(r *http.Request) bool {
+	if s.deps.Auth == nil {
+		// No authenticator configured ⇒ open mode (dev). Treat as
+		// authorized, matching authMiddleware's open-mode behaviour.
+		return true
+	}
+	_, ok := s.deps.Auth(r.Header)
+	return ok
+}
