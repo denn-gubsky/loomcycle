@@ -1329,7 +1329,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	}
 
 	// ---- Session+run creation ----
-	identity := store.RunIdentity{AgentID: agentID, UserID: effectiveUserID, UserTier: in.UserTier, Model: model, ReplicaID: s.replicaID}
+	identity := store.RunIdentity{AgentID: agentID, UserID: effectiveUserID, UserTier: in.UserTier, Model: model, ReplicaID: s.replicaID, ParentContext: in.ParentContext}
 	sessionID, runID, sessErr := s.openOrCreateSessionAndRun(ctx, in.SessionID, effectiveAgentName, effectiveTenantID, effectiveUserID, identity)
 	if sessErr != nil {
 		var nf *store.ErrNotFound
@@ -1369,10 +1369,11 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	// publishes. Constructed once; passed to every finishRun* below
 	// AND used right now for the "running" transition.
 	meta := runStateMeta{
-		RunID:   runID,
-		AgentID: agentID,
-		Agent:   effectiveAgentName,
-		UserID:  effectiveUserID,
+		RunID:         runID,
+		AgentID:       agentID,
+		Agent:         effectiveAgentName,
+		UserID:        effectiveUserID,
+		ParentContext: in.ParentContext,
 	}
 	// Stash the run span on the meta so finishRun* can close it with
 	// final attrs (usage totals + stop_reason + error status).
@@ -1423,6 +1424,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		UserTier:        in.UserTier,
 		UserBearer:      in.UserBearer,      // v0.8.x: per-run MCP bearer
 		UserCredentials: in.UserCredentials, // v1.x RFC F: per-tool named credentials
+		ParentContext:   in.ParentContext,   // v0.12.x: opaque tracking lineage, inherited by sub-agents
 	})
 	loopCtx = tools.WithHostPolicy(loopCtx, hostPolicy)
 	// Memory tool policy: agent name + per-agent scope allowlist +
@@ -2101,6 +2103,16 @@ type runRequest struct {
 	// See `Context.help per-run-credentials` for the operator-facing
 	// reference; rfcs/per-run-credentials.md for the design lock.
 	UserCredentials map[string]string `json:"user_credentials,omitempty"`
+	// ParentContext is opaque caller-tracking lineage (v0.12.x). The
+	// runtime carries it verbatim, inherits it onto every sub-agent the
+	// Agent tool spawns, persists it on each run row, and echoes it on
+	// the per-agent report surfaces (agents stream, agent status, SSE
+	// "agent" frame) — so an external consumer can attribute a child
+	// sub-agent's usage back to the user-initiated request. Field
+	// lengths bounded at wire entry; an all-empty struct is treated as
+	// absent. Not a secret (safe to persist/log/emit). Omitted = no
+	// tracking context (back-compat).
+	ParentContext *store.ParentContext `json:"parent_context,omitempty"`
 }
 
 func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
@@ -2162,6 +2174,16 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 	if errMsg, ok := connector.ValidateUserCredentialsMap(req.UserCredentials); !ok {
 		http.Error(w, errMsg, http.StatusBadRequest)
 		return
+	}
+	// Bound the opaque tracking fields so a consumer can't push unbounded
+	// strings into the run table / event stream. An all-empty struct is
+	// normalised to nil so back-compat decode paths see "no context".
+	if errMsg, ok := validateParentContext(req.ParentContext); !ok {
+		http.Error(w, errMsg, http.StatusBadRequest)
+		return
+	}
+	if req.ParentContext.IsZero() {
+		req.ParentContext = nil
 	}
 
 	providerID, model, effort, err := s.resolveAgent(req.Agent, req.UserTier)
@@ -2273,7 +2295,7 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 	// emitted event through the store before forwarding to SSE. With
 	// s.store == nil the recording becomes a no-op so v0.2 callers see no
 	// behaviour change.
-	identity := store.RunIdentity{AgentID: agentID, UserID: req.UserID, UserTier: req.UserTier, Model: model, ReplicaID: s.replicaID}
+	identity := store.RunIdentity{AgentID: agentID, UserID: req.UserID, UserTier: req.UserTier, Model: model, ReplicaID: s.replicaID, ParentContext: req.ParentContext}
 	sessionID, runID, sessErr := s.openOrCreateSessionAndRun(r.Context(), req.SessionID, req.Agent, req.TenantID, req.UserID, identity)
 	if sessErr != nil {
 		var nf *store.ErrNotFound
@@ -2311,11 +2333,12 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 	// v0.9.x: identity bundle threaded into finishRun* + the
 	// "running" transition publish below.
 	meta := runStateMeta{
-		RunID:    runID,
-		AgentID:  agentID,
-		Agent:    req.Agent,
-		UserID:   req.UserID,
-		otelSpan: runSpan,
+		RunID:         runID,
+		AgentID:       agentID,
+		Agent:         req.Agent,
+		UserID:        req.UserID,
+		otelSpan:      runSpan,
+		ParentContext: req.ParentContext,
 	}
 	if errors.Is(regErr, cancel.ErrInUse) {
 		// We've already created the session+run row in the store
@@ -2387,6 +2410,7 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		"run_id":          runID,
 		"session_id":      sessionID,
 		"parent_agent_id": nil,
+		"parent_context":  req.ParentContext, // v0.12.x: opaque tracking lineage (nil when absent)
 	})
 
 	emit := s.makeRecordingEmit(r.Context(), runID, stream.send)
@@ -2405,6 +2429,7 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		UserTier:        req.UserTier,
 		UserBearer:      req.UserBearer,      // v0.8.x: per-run MCP bearer
 		UserCredentials: req.UserCredentials, // v1.x RFC F: per-tool named credentials
+		ParentContext:   req.ParentContext,   // v0.12.x: opaque tracking lineage, inherited by sub-agents
 	})
 	// Stash the caller's host policy so any sub-agents spawned by the
 	// Agent tool inherit the same allowed_hosts / WebSearchFilter
@@ -2495,6 +2520,10 @@ type messagesRequest struct {
 	// same validation, same back-compat sugar (legacy UserBearer
 	// promoted to UserCredentials["default"] at WithRunIdentity time).
 	UserCredentials map[string]string `json:"user_credentials,omitempty"`
+	// ParentContext follows runRequest semantics — a continuation can
+	// (re)set the opaque tracking lineage for the new run it creates.
+	// Sub-agents spawned from this continuation inherit it identically.
+	ParentContext *store.ParentContext `json:"parent_context,omitempty"`
 }
 
 func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
@@ -2569,6 +2598,13 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	if errMsg, ok := connector.ValidateUserCredentialsMap(body.UserCredentials); !ok {
 		http.Error(w, errMsg, http.StatusBadRequest)
 		return
+	}
+	if errMsg, ok := validateParentContext(body.ParentContext); !ok {
+		http.Error(w, errMsg, http.StatusBadRequest)
+		return
+	}
+	if body.ParentContext.IsZero() {
+		body.ParentContext = nil
 	}
 	providerID, model, effort, err := s.resolveAgent(sess.Agent, body.UserTier)
 	if err != nil {
@@ -2650,11 +2686,12 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	// is per-request (v0.8.2) — a user upgrading mid-session sees
 	// the new tier applied immediately on this continuation.
 	run, err := s.store.CreateRun(r.Context(), id, store.RunIdentity{
-		AgentID:   agentID,
-		UserID:    sess.UserID,
-		UserTier:  body.UserTier,
-		Model:     model,
-		ReplicaID: s.replicaID,
+		AgentID:       agentID,
+		UserID:        sess.UserID,
+		UserTier:      body.UserTier,
+		Model:         model,
+		ReplicaID:     s.replicaID,
+		ParentContext: body.ParentContext, // v0.12.x: tracking lineage for this continuation + its sub-agents
 	})
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -2685,11 +2722,12 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	}, cancelFn)
 	// v0.9.x: per-run meta for runstate.Bus.
 	meta := runStateMeta{
-		RunID:    run.ID,
-		AgentID:  agentID,
-		Agent:    sess.Agent,
-		UserID:   sess.UserID,
-		otelSpan: runSpan,
+		RunID:         run.ID,
+		AgentID:       agentID,
+		Agent:         sess.Agent,
+		UserID:        sess.UserID,
+		otelSpan:      runSpan,
+		ParentContext: body.ParentContext,
 	}
 	if errors.Is(regErr, cancel.ErrInUse) {
 		// Same orphan-row mitigation as handleRuns — the run was
@@ -2734,6 +2772,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		"run_id":          run.ID,
 		"session_id":      id,
 		"parent_agent_id": nil,
+		"parent_context":  body.ParentContext, // v0.12.x: opaque tracking lineage (nil when absent)
 	})
 
 	emit := s.makeRecordingEmit(r.Context(), run.ID, stream.send)
@@ -2746,6 +2785,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		UserTier:        body.UserTier,
 		UserBearer:      body.UserBearer,      // v0.8.x: per-run MCP bearer
 		UserCredentials: body.UserCredentials, // v1.x RFC F: per-tool named credentials
+		ParentContext:   body.ParentContext,   // v0.12.x: opaque tracking lineage, inherited by sub-agents
 	})
 	// Sub-agents spawned by this continuation must inherit the
 	// caller-authoritative host narrowing, same as runRequest +
@@ -3195,6 +3235,11 @@ func (s *Server) runSubAgent(ctx context.Context, name string, prompt string, de
 		UserTier:   parentIdentity.UserTier, // v0.8.2: same user_tier across the sub-run tree
 		AgentDefID: defID,                   // v0.8.5: pin defID on the sub-run for evaluation denormalisation
 		Model:      model,                   // resolved model — written at create so the UI sees it during the run
+		// v0.12.x: the root's opaque tracking lineage flows UNCHANGED to
+		// every descendant (Clone so child + parent don't alias). This is
+		// the propagation seam — remove it and child run rows lose their
+		// link back to the user-initiated request.
+		ParentContext: parentIdentity.ParentContext.Clone(),
 	}
 	subSessionID, subRunID, err := s.openOrCreateSessionAndRun(ctx, "", name, "", parentIdentity.UserID, subIdentity)
 	if err != nil {
@@ -3248,6 +3293,7 @@ func (s *Server) runSubAgent(ctx context.Context, name string, prompt string, de
 		UserID:        parentIdentity.UserID,
 		ParentAgentID: parentIdentity.AgentID,
 		otelSpan:      subRunSpan,
+		ParentContext: parentIdentity.ParentContext, // v0.12.x: sub-agent's run-state events carry the root's lineage
 	}
 	s.publishRunState(subMeta, "running", "", "")
 
@@ -3330,10 +3376,11 @@ func (s *Server) runSubAgent(ctx context.Context, name string, prompt string, de
 	subCtx = tools.WithRunIdentity(subCtx, tools.RunIdentityValue{
 		UserID:          parentIdentity.UserID,
 		AgentID:         subAgentID,
-		UserTier:        parentIdentity.UserTier,        // v0.8.2: sub-agents inherit parent's user_tier
-		AgentDefID:      defID,                          // v0.8.7: surface pinned def_id via Context.self
-		UserBearer:      parentIdentity.UserBearer,      // v0.8.x: bearer inherited identically (same end-user)
-		UserCredentials: parentIdentity.UserCredentials, // v1.x RFC F: credentials map inherited identically
+		UserTier:        parentIdentity.UserTier,              // v0.8.2: sub-agents inherit parent's user_tier
+		AgentDefID:      defID,                                // v0.8.7: surface pinned def_id via Context.self
+		UserBearer:      parentIdentity.UserBearer,            // v0.8.x: bearer inherited identically (same end-user)
+		UserCredentials: parentIdentity.UserCredentials,       // v1.x RFC F: credentials map inherited identically
+		ParentContext:   parentIdentity.ParentContext.Clone(), // v0.12.x: tracking lineage flows to grandchildren too
 	})
 	subCtx = tools.WithAgentName(subCtx, name)
 	// Sub-agents get THEIR OWN Memory policy from yaml — the parent's
@@ -3457,6 +3504,12 @@ type agentResponse struct {
 	// cancel handle. Empty (and omitted from JSON) in single-replica
 	// deployments so the UI stays uncluttered for the common case.
 	ReplicaID string `json:"replica_id,omitempty"`
+	// v0.12.x parent_context — the opaque caller-tracking lineage this
+	// run carries (inherited from its root for sub-agents). Echoed here
+	// alongside Usage so a consumer can attribute a child sub-agent's
+	// cost to the user-initiated request in a single fetch. Omitted when
+	// the run carried no context.
+	ParentContext *store.ParentContext `json:"parent_context,omitempty"`
 }
 
 type agentResponseUsage struct {
@@ -3501,8 +3554,9 @@ func runToAgentResponse(r store.Run, live bool) agentResponse {
 			Model:               r.Model,
 			Provider:            r.Provider,
 		},
-		Live:      live,
-		ReplicaID: r.ReplicaID,
+		Live:          live,
+		ReplicaID:     r.ReplicaID,
+		ParentContext: r.ParentContext, // v0.12.x: echo tracking lineage alongside usage
 	}
 	if !r.CompletedAt.IsZero() {
 		t := r.CompletedAt
@@ -3924,6 +3978,9 @@ type runStateMeta struct {
 	Agent         string
 	UserID        string
 	ParentAgentID string
+	// ParentContext is the run's opaque tracking lineage, echoed on the
+	// published RunStateEvent (v0.12.x).
+	ParentContext *store.ParentContext
 	// otelSpan is the top-level loomcycle.run span the four run-creation
 	// sites open before kicking off the loop. finishRun* attaches final
 	// attributes (usage totals, stop_reason, error status) to it via
@@ -3948,6 +4005,7 @@ func (s *Server) publishRunState(m runStateMeta, status, stopReason, errMsg stri
 		Status:        status,
 		StopReason:    stopReason,
 		Error:         errMsg,
+		ParentContext: m.ParentContext,
 	})
 }
 
@@ -4196,6 +4254,13 @@ func validIdent(s string) bool {
 		}
 	}
 	return true
+}
+
+// validateParentContext delegates to connector.ValidateParentContext so
+// every wire surface (HTTP, MCP, gRPC) bounds the opaque tracking fields
+// identically — one source of truth, mirroring ValidateUserCredentialsMap.
+func validateParentContext(pc *store.ParentContext) (string, bool) {
+	return connector.ValidateParentContext(pc)
 }
 
 // validUserBearer reports whether s is a valid per-run MCP bearer

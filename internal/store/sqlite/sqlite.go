@@ -512,6 +512,11 @@ func (s *Store) migrate(ctx context.Context) error {
 		// stays NULL here; added for schema/struct parity. Idempotent on
 		// fresh deploys (the CREATE TABLE above already declares it).
 		`ALTER TABLE process_samples ADD COLUMN replica_id TEXT`,
+		// v0.12.x parent_context — opaque caller-tracking lineage (JSON),
+		// set on the root run and copied onto every sub-agent. NULL on
+		// legacy rows + runs with no context. Not a secret (safe to
+		// persist). Read back via DecodeParentContext.
+		`ALTER TABLE runs ADD COLUMN parent_context TEXT`,
 	}
 	for _, q := range addColumns {
 		if _, err := s.db.ExecContext(ctx, q); err != nil {
@@ -654,9 +659,17 @@ func (s *Store) CreateRun(ctx context.Context, sessionID string, identity store.
 	}
 	id := newID("r_")
 	now := time.Now()
+	pcJSON, pcOK, pcErr := store.EncodeParentContext(identity.ParentContext)
+	if pcErr != nil {
+		return store.Run{}, fmt.Errorf("encode parent_context: %w", pcErr)
+	}
+	var pcVal any
+	if pcOK {
+		pcVal = pcJSON
+	}
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO runs(id, session_id, status, started_at, agent_id, parent_agent_id, parent_run_id, user_id, user_tier, agent_def_id, model)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO runs(id, session_id, status, started_at, agent_id, parent_agent_id, parent_run_id, user_id, user_tier, agent_def_id, model, parent_context)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		id, sessionID, store.RunRunning, now.UnixNano(),
 		nilIfEmpty(identity.AgentID),
 		nilIfEmpty(identity.ParentAgentID),
@@ -665,6 +678,7 @@ func (s *Store) CreateRun(ctx context.Context, sessionID string, identity store.
 		nilIfEmpty(identity.UserTier),
 		nilIfEmpty(identity.AgentDefID),
 		nilIfEmpty(identity.Model),
+		pcVal,
 	)
 	if err != nil {
 		return store.Run{}, err
@@ -681,6 +695,7 @@ func (s *Store) CreateRun(ctx context.Context, sessionID string, identity store.
 		UserTier:      identity.UserTier,
 		AgentDefID:    identity.AgentDefID,
 		Model:         identity.Model,
+		ParentContext: identity.ParentContext.Clone(),
 	}, nil
 }
 
@@ -867,6 +882,7 @@ func scanRun(scanner interface{ Scan(...any) error }) (store.Run, error) {
 	var agentID, parentAgentID, parentRunID, userID, userTier sql.NullString
 	var agentDefID sql.NullString
 	var pauseState sql.NullString
+	var parentContext sql.NullString
 	var sessAgent sql.NullString
 	var status string
 	if err := scanner.Scan(
@@ -876,7 +892,7 @@ func scanRun(scanner interface{ Scan(...any) error }) (store.Run, error) {
 		&model, &provider, &errMsg,
 		&agentID, &parentAgentID, &parentRunID, &userID, &lastHbNs,
 		&userTier,
-		&agentDefID, &pauseState,
+		&agentDefID, &pauseState, &parentContext,
 		&sessAgent,
 	); err != nil {
 		return store.Run{}, err
@@ -924,6 +940,13 @@ func scanRun(scanner interface{ Scan(...any) error }) (store.Run, error) {
 	if pauseState.Valid {
 		r.PauseState = pauseState.String
 	}
+	if parentContext.Valid {
+		pc, err := store.DecodeParentContext(parentContext.String)
+		if err != nil {
+			return store.Run{}, fmt.Errorf("decode parent_context: %w", err)
+		}
+		r.ParentContext = pc
+	}
 	if sessAgent.Valid {
 		r.Agent = sessAgent.String
 	}
@@ -944,7 +967,7 @@ const runColumns = `r.id, r.session_id, r.status, r.started_at, r.completed_at,
 		r.model, r.provider, r.error,
 		r.agent_id, r.parent_agent_id, r.parent_run_id, r.user_id, r.last_heartbeat_at,
 		r.user_tier,
-		r.agent_def_id, r.pause_state,
+		r.agent_def_id, r.pause_state, r.parent_context,
 		s.agent`
 
 // runFromTable is the canonical FROM clause paired with runColumns.
@@ -1840,20 +1863,28 @@ func (s *Store) SnapshotRestoreRun(ctx context.Context, r store.Run) (bool, erro
 	if pauseState == "" {
 		pauseState = store.PauseStateRunning
 	}
+	pcJSON, pcOK, pcErr := store.EncodeParentContext(r.ParentContext)
+	if pcErr != nil {
+		return false, fmt.Errorf("snapshot restore run: encode parent_context: %w", pcErr)
+	}
+	var pcVal any
+	if pcOK {
+		pcVal = pcJSON
+	}
 	res, err := s.db.ExecContext(ctx,
 		`INSERT OR IGNORE INTO runs(
 			id, session_id, status, started_at, completed_at, stop_reason,
 			input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens,
 			model, provider, error,
 			agent_id, parent_agent_id, parent_run_id, user_id, last_heartbeat_at,
-			user_tier, agent_def_id, pause_state
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			user_tier, agent_def_id, pause_state, parent_context
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		r.ID, r.SessionID, status, startedNs, completedNs, nilIfEmpty(r.StopReason),
 		r.InputTokens, r.OutputTokens, r.CacheCreationTokens, r.CacheReadTokens,
 		nilIfEmpty(r.Model), nilIfEmpty(r.Provider), nilIfEmpty(r.ErrorMsg),
 		nilIfEmpty(r.AgentID), nilIfEmpty(r.ParentAgentID), nilIfEmpty(r.ParentRunID),
 		nilIfEmpty(r.UserID), lastHbNs,
-		nilIfEmpty(r.UserTier), nilIfEmpty(r.AgentDefID), pauseState,
+		nilIfEmpty(r.UserTier), nilIfEmpty(r.AgentDefID), pauseState, pcVal,
 	)
 	if err != nil {
 		return false, fmt.Errorf("snapshot restore run: %w", err)

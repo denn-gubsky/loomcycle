@@ -9,6 +9,7 @@ import (
 
 	lcotel "github.com/denn-gubsky/loomcycle/internal/otel"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
+	"github.com/denn-gubsky/loomcycle/internal/store"
 )
 
 // Tool is one tool the agent can invoke. The Name is what the model sees and
@@ -247,6 +248,20 @@ type RunIdentityValue struct {
 	// (see Decision 5 in rfcs/per-run-credentials.md and the
 	// existing OTEL secret-exclusion posture).
 	UserCredentials map[string]string
+
+	// ParentContext is the v0.12.x opaque caller-tracking lineage. Set
+	// once on the root run; the Agent tool's SubAgentRunner copies it
+	// UNCHANGED onto every sub-agent (same inheritance discipline as
+	// UserCredentials), so a deep spawn tree all carries the root's
+	// context. The runtime never interprets it — it persists it on each
+	// run row and echoes it on the per-agent report surfaces so a
+	// consumer can attribute a child sub-agent's usage to the root
+	// request. Unlike UserBearer/UserCredentials it is NOT a secret:
+	// safe to persist, log, and emit. Nil = no context. The canonical
+	// type lives in the store package (importing no internal package)
+	// to keep this struct cycle-free — same reason RunIdentityValue and
+	// store.RunIdentity are separate structs.
+	ParentContext *store.ParentContext
 }
 
 // WithRunIdentity attaches the current run's identity to ctx. The

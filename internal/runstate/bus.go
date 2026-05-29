@@ -31,6 +31,7 @@ import (
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/coord"
+	"github.com/denn-gubsky/loomcycle/internal/store"
 )
 
 // RunStateEvent is the payload published on every run state transition.
@@ -45,6 +46,11 @@ type RunStateEvent struct {
 	StopReason    string    `json:"stop_reason,omitempty"`
 	Error         string    `json:"error,omitempty"`
 	TS            time.Time `json:"ts"`
+	// ParentContext echoes the run's opaque tracking lineage (v0.12.x)
+	// on each state transition, so a subscriber to the user agents
+	// stream learns which root request a finishing sub-agent belongs to
+	// without a follow-up fetch. Nil when the run carried no context.
+	ParentContext *store.ParentContext `json:"parent_context,omitempty"`
 }
 
 // subscription is one active subscriber's state.

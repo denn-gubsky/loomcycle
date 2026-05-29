@@ -103,6 +103,9 @@ export interface AgentEvent {
   run_id?: string;
   session_id?: string;
   parent_agent_id?: string | null;
+  // v0.12.x — opaque caller-tracking lineage on the `event: agent` frame
+  // (and inherited by sub-agents). Present only when the run carried it.
+  parent_context?: ParentContext;
   // v0.9.x — client-synthesized observability fields, populated only on
   // events of `type: "_meta"`. `meta_subtype` is always set on a
   // _meta event (distinguishes open from close). `meta_reason` is set
@@ -177,6 +180,14 @@ export interface RunOptions {
    *  field auto-promotes to `userCredentials.default` for back-compat
    *  with v0.8.x flows. Never persisted; never logged. */
   userCredentials?: Record<string, string>;
+  /** Opaque caller-tracking lineage (v0.12.x). Carried verbatim by the
+   *  runtime, inherited UNCHANGED by every sub-agent the Agent tool
+   *  spawns, persisted on each run row, and echoed back on the per-agent
+   *  report surfaces (agent status, run-state stream, the `event: agent`
+   *  frame) — so you can attribute a child sub-agent's usage to the
+   *  user-initiated request that spawned the whole tree. Not a secret.
+   *  Omitted = no tracking context. */
+  parentContext?: ParentContext;
   /** Opt-in observability: when true, the iterator emits client-
    *  synthesized `{ type: "_meta", meta_subtype: "stream_open" | "stream_close" }`
    *  events around the real event stream. `meta_reason` carries the
@@ -186,6 +197,21 @@ export interface RunOptions {
    *  closed" log entries without inferring from event timing. */
   debug?: boolean;
   signal?: AbortSignal;
+}
+
+/** Opaque caller-tracking lineage (v0.12.x) attached to a run and
+ *  propagated to all its sub-agents. The runtime stores and echoes
+ *  these fields verbatim and never interprets them. All fields
+ *  optional; an all-empty object is treated as absent. */
+export interface ParentContext {
+  /** The consumer's identifier for the user-initiated run at the root of
+   *  the spawn tree — echoed on every descendant. */
+  root_agent_run_id?: string;
+  /** The consumer's logical-operation key for the root request. */
+  function_key?: string;
+  /** The consumer's tier marker captured at root-run time (distinct from
+   *  `userTier`, which is loomcycle's resolver policy). */
+  tier_at_run?: string;
 }
 
 export interface ContinueOptions {
@@ -218,6 +244,10 @@ export interface ContinueOptions {
    *  {@link RunOptions.userCredentials} for the full shape — same
    *  semantics, supplied per-continuation rather than per-fresh-run. */
   userCredentials?: Record<string, string>;
+  /** Opaque caller-tracking lineage (v0.12.x). See
+   *  {@link RunOptions.parentContext} — same shape; a continuation may
+   *  (re)set the lineage for the new run it creates. */
+  parentContext?: ParentContext;
   /** Opt-in observability: see {@link RunOptions.debug}. Same shape. */
   debug?: boolean;
   signal?: AbortSignal;
@@ -274,6 +304,11 @@ export interface Agent {
   usage: AgentUsage;
   last_heartbeat_at: string | null;
   live: boolean;
+  /** Opaque caller-tracking lineage this run carries (inherited from its
+   *  root for sub-agents), v0.12.x. Echoed here alongside `usage` so you
+   *  can attribute a child sub-agent's cost to the user-initiated request
+   *  in a single fetch. Omitted when the run carried no context. */
+  parent_context?: ParentContext;
 }
 
 export interface ListAgentsResponse {
@@ -896,6 +931,10 @@ export interface RunStateEvent {
   stop_reason?: string;
   error?: string;
   ts: string;
+  /** Opaque caller-tracking lineage echoed on the transition (v0.12.x),
+   *  so a subscriber learns which root request a finishing sub-agent
+   *  belongs to. Omitted when the run carried no context. */
+  parent_context?: ParentContext;
 }
 
 /** Initial stream_open frame emitted before the first run_state. */

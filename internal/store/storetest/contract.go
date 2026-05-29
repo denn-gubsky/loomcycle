@@ -59,6 +59,7 @@ func Run(t *testing.T, factory Factory) {
 		{"GetTranscriptEmpty", testGetTranscriptEmpty},
 		{"CreateSessionUserIDRoundTrip", testCreateSessionUserIDRoundTrip},
 		{"CreateRunIdentityRoundTrip", testCreateRunIdentityRoundTrip},
+		{"CreateRunParentContextRoundTrip", testCreateRunParentContextRoundTrip},
 		{"CreateRunModelVisibleMidFlight", testCreateRunModelVisibleMidFlight},
 		{"CreateRunModelEmptyStaysEmpty", testCreateRunModelEmptyStaysEmpty},
 		{"GetRunByAgentIDNotFound", testGetRunByAgentIDNotFound},
@@ -489,6 +490,44 @@ func testCreateRunIdentityRoundTrip(t *testing.T, s store.Store) {
 	}
 	if got.AgentID != "a_top" || got.UserID != "user-1" {
 		t.Errorf("identity not preserved through GetRunByAgentID: %+v", got)
+	}
+}
+
+// testCreateRunParentContextRoundTrip pins the v0.12.x contract: the
+// opaque parent_context (JSON column) round-trips through CreateRun →
+// GetRun for both backends, and a run created without it reads back nil
+// (back-compat with pre-migration rows + runs with no tracking context).
+func testCreateRunParentContextRoundTrip(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	sess, _ := s.CreateSession(ctx, "t", "agent-x", "user-1")
+
+	pc := &store.ParentContext{RootAgentRunID: "run_root", FunctionKey: "cv-batch", TierAtRun: "pro"}
+	run, err := s.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: "a_pc", UserID: "user-1", ParentContext: pc})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.ParentContext == nil || *run.ParentContext != *pc {
+		t.Errorf("CreateRun did not return ParentContext: %+v", run.ParentContext)
+	}
+	got, err := s.GetRun(ctx, run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ParentContext == nil || *got.ParentContext != *pc {
+		t.Errorf("ParentContext not preserved through GetRun: got %+v want %+v", got.ParentContext, pc)
+	}
+
+	// No context → nil round-trip (back-compat).
+	bare, err := s.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: "a_nopc", UserID: "user-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	gotBare, err := s.GetRun(ctx, bare.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotBare.ParentContext != nil {
+		t.Errorf("run without context should read back nil ParentContext, got %+v", gotBare.ParentContext)
 	}
 }
 

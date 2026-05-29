@@ -135,6 +135,14 @@ func handleSpawnRun(ctx context.Context, env *handlerEnv, args json.RawMessage) 
 	if errMsg, ok := connector.ValidateUserCredentialsMap(req.UserCredentials); !ok {
 		return toolErr("spawn_run: " + errMsg), nil
 	}
+	if errMsg, ok := connector.ValidateParentContext(req.ParentContext); !ok {
+		return toolErr("spawn_run: " + errMsg), nil
+	}
+	// Normalise an all-empty struct to nil so the echo surfaces omit it,
+	// matching the HTTP handlers (handleRuns / handleMessages).
+	if req.ParentContext.IsZero() {
+		req.ParentContext = nil
+	}
 
 	useStreaming := env.session != nil && env.session.RunEventsEnabled() && env.runner != nil
 	var result connector.SpawnRunResult
@@ -169,6 +177,7 @@ func spawnRunStreaming(ctx context.Context, env *handlerEnv, req connector.Spawn
 		UserTier:        req.UserTier,
 		UserBearer:      req.UserBearer,
 		UserCredentials: req.UserCredentials, // v1.x RFC F per-tool named credentials
+		ParentContext:   req.ParentContext,   // v0.12.x opaque tracking lineage
 	}
 
 	var (
@@ -210,13 +219,14 @@ func spawnRunStreaming(ctx context.Context, env *handlerEnv, req connector.Spawn
 	runErr := env.runner.RunOnce(ctx, in, cb)
 
 	result := connector.SpawnRunResult{
-		AgentID:    regAgentID,
-		RunID:      regRunID,
-		SessionID:  regSessionID,
-		Status:     "completed",
-		StopReason: finalStopReason,
-		FinalText:  finalText,
-		Usage:      finalUsage,
+		AgentID:       regAgentID,
+		RunID:         regRunID,
+		SessionID:     regSessionID,
+		Status:        "completed",
+		StopReason:    finalStopReason,
+		FinalText:     finalText,
+		Usage:         finalUsage,
+		ParentContext: req.ParentContext, // v0.12.x: echo the lineage back to the caller
 	}
 	switch {
 	case runErr != nil && errors.Is(runErr, context.Canceled):

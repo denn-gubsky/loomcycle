@@ -38,7 +38,8 @@ func toolDescriptors() []loommcp.ToolDescriptor {
 					"user_credentials": {"type": "object", "additionalProperties": {"type": "string"}, "description": "v1.x RFC F per-tool named credentials map. Keys [a-zA-Z0-9_-]{1,64}; values arbitrary strings. Substituted into ${run.credentials.<name>} in mcp_servers.*.headers. Coexists with user_bearer (legacy promotes to user_credentials.default for back-compat)."},
 					"allowed_tools":    {"type": "array", "items": {"type": "string"}},
 					"allowed_hosts":    {"type": "array", "items": {"type": "string"}, "description": "OMIT for no narrowing (operator's static allowlist applies). Pass empty array [] to DENY ALL outbound HTTP. Pass non-empty array to intersect with operator's list."},
-					"web_search_filter": {"type": "string", "enum": ["drop", "keep"]}
+					"web_search_filter": {"type": "string", "enum": ["drop", "keep"]},
+					"parent_context":   {"type": "object", "description": "v0.12.x opaque caller-tracking lineage carried verbatim, inherited by every sub-agent, and echoed on the per-agent report surfaces so a consumer can attribute a child sub-agent's usage to the user-initiated request.", "properties": {"root_agent_run_id": {"type": "string"}, "function_key": {"type": "string"}, "tier_at_run": {"type": "string"}}}
 				},
 				"anyOf": [
 					{"required": ["agent"]},

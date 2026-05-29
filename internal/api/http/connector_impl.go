@@ -57,6 +57,7 @@ func (s *Server) SpawnRun(ctx context.Context, req connector.SpawnRunRequest) (c
 		UserTier:        req.UserTier,
 		UserBearer:      req.UserBearer,
 		UserCredentials: req.UserCredentials, // v1.x RFC F: per-tool named credentials
+		ParentContext:   req.ParentContext,   // v0.12.x: opaque tracking lineage
 	}
 
 	// Capture: the OnRegistered callback gives us the resolved IDs;
@@ -98,13 +99,14 @@ func (s *Server) SpawnRun(ctx context.Context, req connector.SpawnRunRequest) (c
 	runErr := s.RunOnce(ctx, in, cb)
 
 	result := connector.SpawnRunResult{
-		AgentID:    regAgentID,
-		RunID:      regRunID,
-		SessionID:  regSessionID,
-		Status:     string(store.RunCompleted),
-		StopReason: finalStopReason,
-		FinalText:  finalText,
-		Usage:      finalUsage,
+		AgentID:       regAgentID,
+		RunID:         regRunID,
+		SessionID:     regSessionID,
+		Status:        string(store.RunCompleted),
+		StopReason:    finalStopReason,
+		FinalText:     finalText,
+		Usage:         finalUsage,
+		ParentContext: req.ParentContext, // v0.12.x: echo the lineage back to the caller
 	}
 	switch {
 	case runErr != nil && errors.Is(runErr, context.Canceled):

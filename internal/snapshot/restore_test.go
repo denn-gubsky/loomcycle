@@ -318,6 +318,40 @@ func TestRestore_SynthesizesSessionForPausedRun(t *testing.T) {
 	}
 }
 
+// TestRoundTrip_PreservesParentContext pins the v0.12.x contract that a
+// paused run's opaque tracking lineage survives pause→snapshot→restore.
+// Regression: the PausedRunEntry carried no ParentContext field, so the
+// SnapshotRestoreRun parent_context write was dead and the lineage was
+// lost on restore — exactly the long-running runs the feature targets.
+func TestRoundTrip_PreservesParentContext(t *testing.T) {
+	src, srcClose := newTestStore(t)
+	defer srcClose()
+	dst, dstClose := newTestStore(t)
+	defer dstClose()
+	ctx := context.Background()
+
+	pc := &store.ParentContext{RootAgentRunID: "run_root", FunctionKey: "cv-batch", TierAtRun: "pro"}
+	sess, _ := src.CreateSession(ctx, "t", "qa", "user1")
+	run, _ := src.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: "a1", UserID: "user1", ParentContext: pc})
+	_ = src.SetRunPauseState(ctx, run.ID, store.PauseStatePaused)
+
+	_, raw, err := Capture(ctx, src, CaptureOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Restore(ctx, dst, raw, RestoreOptions{}); err != nil {
+		t.Fatalf("Restore: %v", err)
+	}
+
+	got, err := dst.GetRun(ctx, run.ID)
+	if err != nil {
+		t.Fatalf("GetRun on dst: %v", err)
+	}
+	if got.ParentContext == nil || *got.ParentContext != *pc {
+		t.Errorf("restored ParentContext = %+v, want %+v", got.ParentContext, pc)
+	}
+}
+
 // TestRestore_DropsEmbeddingFieldOnPhase1 — restoring a hand-crafted
 // envelope where memory.entries[].embedding is populated (simulating
 // a Phase-2-captured snapshot) on a Phase-1 reader silently drops

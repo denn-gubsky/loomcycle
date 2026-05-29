@@ -6,6 +6,7 @@ import (
 
 	"github.com/denn-gubsky/loomcycle/internal/loop"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
+	"github.com/denn-gubsky/loomcycle/internal/store"
 )
 
 // ToolResult is the output of a builtin-tool invocation through the
@@ -78,6 +79,12 @@ type SpawnRunRequest struct {
 	// ${run.credentials.<name>}. Sub-agents inherit the whole map.
 	// See rfcs/per-run-credentials.md for the locked design.
 	UserCredentials map[string]string `json:"user_credentials,omitempty"`
+
+	// ParentContext is opaque caller-tracking lineage (v0.12.x) carried
+	// verbatim, inherited by every sub-agent the Agent tool spawns,
+	// persisted on each run row, and echoed on the per-agent report
+	// surfaces. Not a secret. Nil = no context (back-compat).
+	ParentContext *store.ParentContext `json:"parent_context,omitempty"`
 }
 
 // SpawnRunResult is the final outcome of a SpawnRun call (returned
@@ -92,6 +99,10 @@ type SpawnRunResult struct {
 	FinalText  string           `json:"final_text,omitempty"`
 	Usage      *providers.Usage `json:"usage,omitempty"`
 	Error      string           `json:"error,omitempty"`
+	// ParentContext echoes the run's tracking lineage back to the
+	// caller (v0.12.x) so a sub-agent's usage can be attributed to the
+	// root request. Nil when the run carried no context.
+	ParentContext *store.ParentContext `json:"parent_context,omitempty"`
 }
 
 // CancelRunResult reports the outcome of CancelRun.
@@ -469,4 +480,7 @@ type RunStateEvent struct {
 	StopReason    string `json:"stop_reason,omitempty"`
 	Error         string `json:"error,omitempty"`
 	TS            string `json:"ts"` // RFC3339
+	// ParentContext echoes the run's opaque tracking lineage (v0.12.x).
+	// Nil when the run carried no context.
+	ParentContext *store.ParentContext `json:"parent_context,omitempty"`
 }
