@@ -109,6 +109,23 @@ type Config struct {
 	// and rfcs/scheduled-agent-runs.md for the locked design.
 	ScheduledRuns map[string]ScheduledRun `yaml:"scheduled_runs"`
 
+	// A2AServerCards is the v1.x RFC G registry of A2A server-card
+	// declarations — which loomcycle agents are exposed over the A2A
+	// protocol + the AgentCard metadata served at the well-known URI.
+	// Yaml entries are the operator-blessed root; the A2AServerCardDef
+	// tool produces the DERIVED layer of orchestrator-authored forks.
+	// Empty / nil = no statically-declared cards (substrate forks still
+	// work via the tool).
+	A2AServerCards map[string]A2AServerCard `yaml:"a2a_server_cards"`
+
+	// A2AAgents is the v1.x RFC G registry of REMOTE A2A peer
+	// declarations — how to reach another A2A-speaking agent (its
+	// well-known card URL or a direct endpoint+binding) plus the auth
+	// + expected-skills manifest. Yaml entries are the operator-blessed
+	// root; the A2AAgentDef tool produces the derived fork layer.
+	// Empty / nil = no statically-declared peers.
+	A2AAgents map[string]A2AAgent `yaml:"a2a_agents"`
+
 	// Interruption is the v0.8.16 top-level config block for the
 	// Interruption tool. Operator picks the delivery backend
 	// (webui / mcp_server:<name> / cli) and the env-cap defaults.
@@ -914,6 +931,84 @@ type ScheduledRunHook struct {
 	Key     string                 `yaml:"key"`     // for kind=memory.set
 	Args    map[string]interface{} `yaml:"args"`    // for kind=mcp.call
 	Payload map[string]interface{} `yaml:"payload"` // for kind=channel.publish + memory.set value
+}
+
+// A2AServerCard is one entry in the v1.x RFC G `a2a_server_cards:`
+// yaml block. It declares which loomcycle agents are exposed over the
+// A2A protocol + the AgentCard metadata served at the peer-facing
+// well-known URI. Field set + yaml tags MUST mirror the tool-layer
+// mergedA2AServerCardDef + lookup.SubstrateA2AServerCardDef shapes; a
+// 3-way drift test pins parity.
+type A2AServerCard struct {
+	Name            string                `yaml:"name"`
+	Description     string                `yaml:"description"`
+	Provider        A2AServerCardProvider `yaml:"provider"`
+	Capabilities    A2AServerCardCaps     `yaml:"capabilities"`
+	ExposedAgents   []A2AExposedAgent     `yaml:"exposed_agents"`
+	SecuritySchemes []A2ASecurityScheme   `yaml:"security_schemes"`
+	// SignWithKeyEnv names the env var holding the per-tenant signing
+	// key used to sign the served AgentCard. The env-allowlist check
+	// is enforced at card-serving time (a later slice), NOT here.
+	SignWithKeyEnv string `yaml:"sign_with_key_env"`
+}
+
+// A2AServerCardProvider mirrors the AgentCard `provider` block.
+type A2AServerCardProvider struct {
+	Organization string `yaml:"organization"`
+	URL          string `yaml:"url"`
+}
+
+// A2AServerCardCaps mirrors the AgentCard `capabilities` block.
+type A2AServerCardCaps struct {
+	Streaming         bool `yaml:"streaming"`
+	PushNotifications bool `yaml:"push_notifications"`
+	ExtendedAgentCard bool `yaml:"extended_agent_card"`
+}
+
+// A2AExposedAgent declares one loomcycle agent exposed as an A2A skill.
+type A2AExposedAgent struct {
+	AgentName   string   `yaml:"agent_name"`
+	SkillID     string   `yaml:"skill_id"`
+	SkillName   string   `yaml:"skill_name"`
+	Description string   `yaml:"description"`
+	Tags        []string `yaml:"tags"`
+	InputModes  []string `yaml:"input_modes"`
+	OutputModes []string `yaml:"output_modes"`
+}
+
+// A2ASecurityScheme mirrors one AgentCard security scheme entry. Kind
+// is enum-restricted at validation time ("http"/"apiKey"/"oauth2"/"mtls").
+type A2ASecurityScheme struct {
+	Kind   string `yaml:"kind"`
+	Scheme string `yaml:"scheme"`
+}
+
+// A2AAgent is one entry in the v1.x RFC G `a2a_agents:` yaml block. It
+// declares a REMOTE A2A peer: either its well-known card URL, OR a
+// direct endpoint+binding, plus the auth + expected-skills manifest.
+// Field set + yaml tags MUST mirror the tool-layer mergedA2AAgentDef +
+// lookup.SubstrateA2AAgentDef shapes; a 3-way drift test pins parity.
+type A2AAgent struct {
+	AgentCardURL     string             `yaml:"agent_card_url"`
+	Endpoint         string             `yaml:"endpoint"`
+	Binding          string             `yaml:"binding"`
+	Auth             A2AAgentAuth       `yaml:"auth"`
+	ExpectedSkills   []A2AExpectedSkill `yaml:"expected_skills"`
+	VerifySignedCard bool               `yaml:"verify_signed_card"`
+}
+
+// A2AAgentAuth mirrors the remote-peer auth block. Scheme is
+// enum-restricted ("http"/"apiKey"/"oauth2"/"mtls"). BearerCredentialRef
+// names a key in the run's UserCredentials map.
+type A2AAgentAuth struct {
+	Scheme              string `yaml:"scheme"`
+	BearerCredentialRef string `yaml:"bearer_credential_ref"`
+}
+
+// A2AExpectedSkill is one skill the remote peer is expected to expose.
+type A2AExpectedSkill struct {
+	ID       string `yaml:"id"`
+	Required bool   `yaml:"required"`
 }
 
 // MCPServer declares one MCP server. Transport "stdio" or "http".

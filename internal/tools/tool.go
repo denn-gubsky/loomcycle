@@ -613,6 +613,52 @@ func ScheduleDefPolicy(ctx context.Context) ScheduleDefPolicyValue {
 	return v
 }
 
+type ctxKeyA2AServerCardDefPolicy struct{}
+
+// A2AServerCardDefPolicyValue is the per-agent A2AServerCardDef-tool
+// access policy (v1.x RFC G). Same shape as ScheduleDefPolicyValue +
+// same "self / descendants / named:<n> / any" closed scope set.
+// Default-deny when Scopes is empty.
+type A2AServerCardDefPolicyValue struct {
+	Scopes   []string
+	SelfName string
+}
+
+// WithA2AServerCardDefPolicy attaches the policy to ctx.
+func WithA2AServerCardDefPolicy(ctx context.Context, p A2AServerCardDefPolicyValue) context.Context {
+	return context.WithValue(ctx, ctxKeyA2AServerCardDefPolicy{}, p)
+}
+
+// A2AServerCardDefPolicy returns the policy from ctx. Zero value =
+// default-deny.
+func A2AServerCardDefPolicy(ctx context.Context) A2AServerCardDefPolicyValue {
+	v, _ := ctx.Value(ctxKeyA2AServerCardDefPolicy{}).(A2AServerCardDefPolicyValue)
+	return v
+}
+
+type ctxKeyA2AAgentDefPolicy struct{}
+
+// A2AAgentDefPolicyValue is the per-agent A2AAgentDef-tool access
+// policy (v1.x RFC G). Same shape as ScheduleDefPolicyValue + same
+// "self / descendants / named:<n> / any" closed scope set.
+// Default-deny when Scopes is empty.
+type A2AAgentDefPolicyValue struct {
+	Scopes   []string
+	SelfName string
+}
+
+// WithA2AAgentDefPolicy attaches the policy to ctx.
+func WithA2AAgentDefPolicy(ctx context.Context, p A2AAgentDefPolicyValue) context.Context {
+	return context.WithValue(ctx, ctxKeyA2AAgentDefPolicy{}, p)
+}
+
+// A2AAgentDefPolicy returns the policy from ctx. Zero value =
+// default-deny.
+func A2AAgentDefPolicy(ctx context.Context) A2AAgentDefPolicyValue {
+	v, _ := ctx.Value(ctxKeyA2AAgentDefPolicy{}).(A2AAgentDefPolicyValue)
+	return v
+}
+
 // ctxKeySkillDefPolicy carries the v0.8.22 SkillDef-tool capability
 // gate. Mirrors AgentDefPolicy shape, sans the SelfName field —
 // skills have no agent identity so a "self" scope is meaningless.
