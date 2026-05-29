@@ -99,13 +99,14 @@ func (s *Server) SpawnRun(ctx context.Context, req connector.SpawnRunRequest) (c
 	runErr := s.RunOnce(ctx, in, cb)
 
 	result := connector.SpawnRunResult{
-		AgentID:    regAgentID,
-		RunID:      regRunID,
-		SessionID:  regSessionID,
-		Status:     string(store.RunCompleted),
-		StopReason: finalStopReason,
-		FinalText:  finalText,
-		Usage:      finalUsage,
+		AgentID:       regAgentID,
+		RunID:         regRunID,
+		SessionID:     regSessionID,
+		Status:        string(store.RunCompleted),
+		StopReason:    finalStopReason,
+		FinalText:     finalText,
+		Usage:         finalUsage,
+		ParentContext: req.ParentContext, // v0.12.x: echo the lineage back to the caller
 	}
 	switch {
 	case runErr != nil && errors.Is(runErr, context.Canceled):

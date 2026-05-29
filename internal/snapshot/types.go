@@ -16,6 +16,8 @@ package snapshot
 import (
 	"encoding/json"
 	"time"
+
+	"github.com/denn-gubsky/loomcycle/internal/store"
 )
 
 // SchemaVersion is the outer envelope version. Bumped only when a
@@ -293,18 +295,22 @@ type PausedRunsSection struct {
 }
 
 type PausedRunEntry struct {
-	RunID            string            `json:"run_id"`
-	AgentID          string            `json:"agent_id,omitempty"`
-	ParentAgentID    string            `json:"parent_agent_id,omitempty"`
-	UserID           string            `json:"user_id,omitempty"`
-	UserTier         string            `json:"user_tier,omitempty"`
-	Agent            string            `json:"agent"`
-	AgentDefID       string            `json:"agent_def_id,omitempty"`
-	SessionID        string            `json:"session_id"`
-	StartedAt        time.Time         `json:"started_at"`
-	Model            string            `json:"model,omitempty"`
-	PauseState       string            `json:"pause_state"`
-	TranscriptEvents []TranscriptEvent `json:"transcript_events"`
+	RunID         string    `json:"run_id"`
+	AgentID       string    `json:"agent_id,omitempty"`
+	ParentAgentID string    `json:"parent_agent_id,omitempty"`
+	UserID        string    `json:"user_id,omitempty"`
+	UserTier      string    `json:"user_tier,omitempty"`
+	Agent         string    `json:"agent"`
+	AgentDefID    string    `json:"agent_def_id,omitempty"`
+	SessionID     string    `json:"session_id"`
+	StartedAt     time.Time `json:"started_at"`
+	Model         string    `json:"model,omitempty"`
+	PauseState    string    `json:"pause_state"`
+	// ParentContext is the run's opaque caller-tracking lineage (v0.12.x),
+	// carried through the snapshot so a paused run's parent_context
+	// survives pause→snapshot→restore. Omitted when the run had none.
+	ParentContext    *store.ParentContext `json:"parent_context,omitempty"`
+	TranscriptEvents []TranscriptEvent    `json:"transcript_events"`
 	// TranscriptError records a per-run transcript-read failure. Set
 	// when GetTranscript returned an error during capture; the entry
 	// is otherwise included in the snapshot (RunID, AgentID etc.
