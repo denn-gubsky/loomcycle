@@ -191,6 +191,21 @@ func Run(t *testing.T, factory Factory) {
 		{"ScheduleDefParentNotFound", testScheduleDefParentNotFound},
 		{"ScheduleDefListByName", testScheduleDefListByName},
 		{"ScheduleDefListChildren", testScheduleDefListChildren},
+		// v1.x RFC G A2A substrate — same shape as ScheduleDef, two Defs.
+		{"A2AServerCardDefCreateAndGet", testA2AServerCardDefCreateAndGet},
+		{"A2AServerCardDefVersionMonotonic", testA2AServerCardDefVersionMonotonic},
+		{"A2AServerCardDefActivePointerIdempotent", testA2AServerCardDefActivePointerIdempotent},
+		{"A2AServerCardDefRetireReversible", testA2AServerCardDefRetireReversible},
+		{"A2AServerCardDefParentNotFound", testA2AServerCardDefParentNotFound},
+		{"A2AServerCardDefListByName", testA2AServerCardDefListByName},
+		{"A2AServerCardDefListChildren", testA2AServerCardDefListChildren},
+		{"A2AAgentDefCreateAndGet", testA2AAgentDefCreateAndGet},
+		{"A2AAgentDefVersionMonotonic", testA2AAgentDefVersionMonotonic},
+		{"A2AAgentDefActivePointerIdempotent", testA2AAgentDefActivePointerIdempotent},
+		{"A2AAgentDefRetireReversible", testA2AAgentDefRetireReversible},
+		{"A2AAgentDefParentNotFound", testA2AAgentDefParentNotFound},
+		{"A2AAgentDefListByName", testA2AAgentDefListByName},
+		{"A2AAgentDefListChildren", testA2AAgentDefListChildren},
 		// v1.x RFC E ScheduleDef runtime — sweeper-side state.
 		{"ScheduleRunStateSeedAndGet", testScheduleRunStateSeedAndGet},
 		{"ScheduleRunStateListDueRespectsRetiredAndPaused", testScheduleRunStateListDueRespectsRetiredAndPaused},
@@ -4050,6 +4065,286 @@ func testScheduleDefListChildren(t *testing.T, s store.Store) {
 		}
 	}
 	children, err := s.ScheduleDefListChildren(ctx, parent.DefID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(children) != 2 {
+		t.Errorf("children len = %d, want 2", len(children))
+	}
+}
+
+// ---- v1.x RFC G A2A substrate ----
+//
+// Mirror of the ScheduleDef contract tests for both A2A Defs. Pins
+// versioning + active-pointer + retire semantics + parent-not-found
+// error sentinel. No runtime/sweeper state (A2A Defs have none).
+
+func mkA2AServerCardDef(id, name string, parent string) store.A2AServerCardDefRow {
+	return store.A2AServerCardDefRow{
+		DefID:       id,
+		Name:        name,
+		ParentDefID: parent,
+		Definition:  json.RawMessage(`{"exposed_agents":["demo"],"agent_card":{"name":"demo"}}`),
+		Description: "test row",
+	}
+}
+
+func testA2AServerCardDefCreateAndGet(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	row, err := s.A2AServerCardDefCreate(ctx, mkA2AServerCardDef("ascd-1", "card-alpha", ""))
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if row.Version != 1 {
+		t.Errorf("first version = %d, want 1", row.Version)
+	}
+	got, err := s.A2AServerCardDefGet(ctx, "ascd-1")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.Name != "card-alpha" || got.Version != 1 {
+		t.Errorf("got %+v", got)
+	}
+}
+
+func testA2AServerCardDefVersionMonotonic(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	for i := 0; i < 5; i++ {
+		row := mkA2AServerCardDef(fmt.Sprintf("ascd-mono-%d", i), "card-mono", "")
+		written, err := s.A2AServerCardDefCreate(ctx, row)
+		if err != nil {
+			t.Fatalf("create #%d: %v", i, err)
+		}
+		if want := i + 1; written.Version != want {
+			t.Errorf("create #%d: version = %d, want %d", i, written.Version, want)
+		}
+	}
+}
+
+func testA2AServerCardDefActivePointerIdempotent(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	r1, _ := s.A2AServerCardDefCreate(ctx, mkA2AServerCardDef("ascd-active-1", "card-active", ""))
+	r2, _ := s.A2AServerCardDefCreate(ctx, mkA2AServerCardDef("ascd-active-2", "card-active", ""))
+
+	if err := s.A2AServerCardDefSetActive(ctx, "card-active", r1.DefID, "test"); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := s.A2AServerCardDefGetActive(ctx, "card-active")
+	if got.DefID != r1.DefID {
+		t.Errorf("active = %s, want %s", got.DefID, r1.DefID)
+	}
+	if err := s.A2AServerCardDefSetActive(ctx, "card-active", r2.DefID, "test"); err != nil {
+		t.Fatal(err)
+	}
+	got, _ = s.A2AServerCardDefGetActive(ctx, "card-active")
+	if got.DefID != r2.DefID {
+		t.Errorf("after re-promote: active = %s, want %s", got.DefID, r2.DefID)
+	}
+}
+
+func testA2AServerCardDefRetireReversible(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	row, _ := s.A2AServerCardDefCreate(ctx, mkA2AServerCardDef("ascd-retire", "card-retire", ""))
+	if row.Retired {
+		t.Error("freshly created row should not be retired")
+	}
+	if err := s.A2AServerCardDefSetRetired(ctx, row.DefID, true); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := s.A2AServerCardDefGet(ctx, row.DefID)
+	if !got.Retired {
+		t.Error("after retire(true): row should be retired")
+	}
+	if err := s.A2AServerCardDefSetRetired(ctx, row.DefID, false); err != nil {
+		t.Fatal(err)
+	}
+	got, _ = s.A2AServerCardDefGet(ctx, row.DefID)
+	if got.Retired {
+		t.Error("after retire(false): row should NOT be retired")
+	}
+}
+
+func testA2AServerCardDefParentNotFound(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	row := mkA2AServerCardDef("ascd-orphan", "card-orphan", "ascd-nonexistent")
+	_, err := s.A2AServerCardDefCreate(ctx, row)
+	if err == nil {
+		t.Fatal("expected ErrA2AServerCardDefParentNotFound, got nil")
+	}
+	if !errors.Is(err, store.ErrA2AServerCardDefParentNotFound) {
+		t.Errorf("got %v, want ErrA2AServerCardDefParentNotFound", err)
+	}
+}
+
+func testA2AServerCardDefListByName(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	for i := 0; i < 3; i++ {
+		_, err := s.A2AServerCardDefCreate(ctx, mkA2AServerCardDef(fmt.Sprintf("ascd-list-%d", i), "card-list", ""))
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	rows, err := s.A2AServerCardDefListByName(ctx, "card-list")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 3 {
+		t.Errorf("len = %d, want 3", len(rows))
+	}
+	// version DESC ordering
+	if rows[0].Version != 3 || rows[1].Version != 2 || rows[2].Version != 1 {
+		t.Errorf("ordering wrong; versions = %d/%d/%d, want 3/2/1",
+			rows[0].Version, rows[1].Version, rows[2].Version)
+	}
+}
+
+func testA2AServerCardDefListChildren(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	parent, _ := s.A2AServerCardDefCreate(ctx, mkA2AServerCardDef("ascd-parent", "card-tree", ""))
+	for i := 0; i < 2; i++ {
+		_, err := s.A2AServerCardDefCreate(ctx, mkA2AServerCardDef(fmt.Sprintf("ascd-child-%d", i), fmt.Sprintf("card-child-%d", i), parent.DefID))
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	children, err := s.A2AServerCardDefListChildren(ctx, parent.DefID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(children) != 2 {
+		t.Errorf("children len = %d, want 2", len(children))
+	}
+}
+
+func mkA2AAgentDef(id, name string, parent string) store.A2AAgentDefRow {
+	return store.A2AAgentDefRow{
+		DefID:       id,
+		Name:        name,
+		ParentDefID: parent,
+		Definition:  json.RawMessage(`{"agent_card_url":"https://peer.example/.well-known/agent-card.json","auth":{"scheme":"bearer","credential_ref":"acme"}}`),
+		Description: "test row",
+	}
+}
+
+func testA2AAgentDefCreateAndGet(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	row, err := s.A2AAgentDefCreate(ctx, mkA2AAgentDef("aad-1", "peer-alpha", ""))
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if row.Version != 1 {
+		t.Errorf("first version = %d, want 1", row.Version)
+	}
+	got, err := s.A2AAgentDefGet(ctx, "aad-1")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.Name != "peer-alpha" || got.Version != 1 {
+		t.Errorf("got %+v", got)
+	}
+}
+
+func testA2AAgentDefVersionMonotonic(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	for i := 0; i < 5; i++ {
+		row := mkA2AAgentDef(fmt.Sprintf("aad-mono-%d", i), "peer-mono", "")
+		written, err := s.A2AAgentDefCreate(ctx, row)
+		if err != nil {
+			t.Fatalf("create #%d: %v", i, err)
+		}
+		if want := i + 1; written.Version != want {
+			t.Errorf("create #%d: version = %d, want %d", i, written.Version, want)
+		}
+	}
+}
+
+func testA2AAgentDefActivePointerIdempotent(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	r1, _ := s.A2AAgentDefCreate(ctx, mkA2AAgentDef("aad-active-1", "peer-active", ""))
+	r2, _ := s.A2AAgentDefCreate(ctx, mkA2AAgentDef("aad-active-2", "peer-active", ""))
+
+	if err := s.A2AAgentDefSetActive(ctx, "peer-active", r1.DefID, "test"); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := s.A2AAgentDefGetActive(ctx, "peer-active")
+	if got.DefID != r1.DefID {
+		t.Errorf("active = %s, want %s", got.DefID, r1.DefID)
+	}
+	if err := s.A2AAgentDefSetActive(ctx, "peer-active", r2.DefID, "test"); err != nil {
+		t.Fatal(err)
+	}
+	got, _ = s.A2AAgentDefGetActive(ctx, "peer-active")
+	if got.DefID != r2.DefID {
+		t.Errorf("after re-promote: active = %s, want %s", got.DefID, r2.DefID)
+	}
+}
+
+func testA2AAgentDefRetireReversible(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	row, _ := s.A2AAgentDefCreate(ctx, mkA2AAgentDef("aad-retire", "peer-retire", ""))
+	if row.Retired {
+		t.Error("freshly created row should not be retired")
+	}
+	if err := s.A2AAgentDefSetRetired(ctx, row.DefID, true); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := s.A2AAgentDefGet(ctx, row.DefID)
+	if !got.Retired {
+		t.Error("after retire(true): row should be retired")
+	}
+	if err := s.A2AAgentDefSetRetired(ctx, row.DefID, false); err != nil {
+		t.Fatal(err)
+	}
+	got, _ = s.A2AAgentDefGet(ctx, row.DefID)
+	if got.Retired {
+		t.Error("after retire(false): row should NOT be retired")
+	}
+}
+
+func testA2AAgentDefParentNotFound(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	row := mkA2AAgentDef("aad-orphan", "peer-orphan", "aad-nonexistent")
+	_, err := s.A2AAgentDefCreate(ctx, row)
+	if err == nil {
+		t.Fatal("expected ErrA2AAgentDefParentNotFound, got nil")
+	}
+	if !errors.Is(err, store.ErrA2AAgentDefParentNotFound) {
+		t.Errorf("got %v, want ErrA2AAgentDefParentNotFound", err)
+	}
+}
+
+func testA2AAgentDefListByName(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	for i := 0; i < 3; i++ {
+		_, err := s.A2AAgentDefCreate(ctx, mkA2AAgentDef(fmt.Sprintf("aad-list-%d", i), "peer-list", ""))
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	rows, err := s.A2AAgentDefListByName(ctx, "peer-list")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 3 {
+		t.Errorf("len = %d, want 3", len(rows))
+	}
+	// version DESC ordering
+	if rows[0].Version != 3 || rows[1].Version != 2 || rows[2].Version != 1 {
+		t.Errorf("ordering wrong; versions = %d/%d/%d, want 3/2/1",
+			rows[0].Version, rows[1].Version, rows[2].Version)
+	}
+}
+
+func testA2AAgentDefListChildren(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	parent, _ := s.A2AAgentDefCreate(ctx, mkA2AAgentDef("aad-parent", "peer-tree", ""))
+	for i := 0; i < 2; i++ {
+		_, err := s.A2AAgentDefCreate(ctx, mkA2AAgentDef(fmt.Sprintf("aad-child-%d", i), fmt.Sprintf("peer-child-%d", i), parent.DefID))
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	children, err := s.A2AAgentDefListChildren(ctx, parent.DefID)
 	if err != nil {
 		t.Fatal(err)
 	}

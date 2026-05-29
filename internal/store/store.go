@@ -1167,6 +1167,40 @@ type Store interface {
 	// next_run_at advanced to the supplied value. Atomic.
 	ScheduleRunStateRecordResult(ctx context.Context, in ScheduleRunResult) error
 
+	// ---- v1.x RFC G A2A substrate (server + client sides) ----
+	//
+	// Two content-addressed Defs added for A2A protocol integration.
+	// Both mirror ScheduleDef's store shape EXACTLY (per-name lock,
+	// monotonic versioning, append-only definition, active-pointer
+	// overlay, retire flag) — minus the sweeper-specific run_state
+	// table, which is scheduler-only. The Definition payload schema is
+	// owned by the tool layer (internal/tools/builtin); the store
+	// treats it as opaque json.RawMessage.
+	//
+	// A2AServerCardDef declares which loomcycle agents are exposed via
+	// A2A + the AgentCard metadata. A2AAgentDef declares a remote A2A
+	// peer that loomcycle agents can call as a tool.
+
+	A2AServerCardDefCreate(ctx context.Context, row A2AServerCardDefRow) (A2AServerCardDefRow, error)
+	A2AServerCardDefGet(ctx context.Context, defID string) (A2AServerCardDefRow, error)
+	A2AServerCardDefGetByNameVersion(ctx context.Context, name string, version int) (A2AServerCardDefRow, error)
+	A2AServerCardDefListByName(ctx context.Context, name string) ([]A2AServerCardDefRow, error)
+	A2AServerCardDefListChildren(ctx context.Context, parentDefID string) ([]A2AServerCardDefRow, error)
+	A2AServerCardDefListNames(ctx context.Context) ([]A2AServerCardDefNameSummary, error)
+	A2AServerCardDefSetActive(ctx context.Context, name, defID, promotedByAgentID string) error
+	A2AServerCardDefGetActive(ctx context.Context, name string) (A2AServerCardDefRow, error)
+	A2AServerCardDefSetRetired(ctx context.Context, defID string, retired bool) error
+
+	A2AAgentDefCreate(ctx context.Context, row A2AAgentDefRow) (A2AAgentDefRow, error)
+	A2AAgentDefGet(ctx context.Context, defID string) (A2AAgentDefRow, error)
+	A2AAgentDefGetByNameVersion(ctx context.Context, name string, version int) (A2AAgentDefRow, error)
+	A2AAgentDefListByName(ctx context.Context, name string) ([]A2AAgentDefRow, error)
+	A2AAgentDefListChildren(ctx context.Context, parentDefID string) ([]A2AAgentDefRow, error)
+	A2AAgentDefListNames(ctx context.Context) ([]A2AAgentDefNameSummary, error)
+	A2AAgentDefSetActive(ctx context.Context, name, defID, promotedByAgentID string) error
+	A2AAgentDefGetActive(ctx context.Context, name string) (A2AAgentDefRow, error)
+	A2AAgentDefSetRetired(ctx context.Context, defID string, retired bool) error
+
 	// ScheduleRunStatePause sets paused_until = until (or NULL if
 	// until.IsZero()). Resume = call with zero time.
 	ScheduleRunStatePause(ctx context.Context, defID string, until time.Time) error
@@ -1866,6 +1900,77 @@ type ScheduleDefActiveEntry struct {
 	PromotedByAgentID string    `json:"promoted_by_agent_id,omitempty"`
 }
 
+// A2AServerCardDefRow mirrors ScheduleDefRow — same identity +
+// lineage + retire flag shape. The Definition payload carries the
+// JSON-encoded server-card body (exposed agents, AgentCard metadata,
+// security schemes); the schema is owned by the tool layer. v1.x RFC G.
+type A2AServerCardDefRow struct {
+	DefID                  string          `json:"def_id"`
+	Name                   string          `json:"name"`
+	Version                int             `json:"version"`
+	ParentDefID            string          `json:"parent_def_id,omitempty"`
+	Definition             json.RawMessage `json:"definition"`
+	Description            string          `json:"description,omitempty"`
+	CreatedAt              time.Time       `json:"created_at"`
+	CreatedByAgentID       string          `json:"created_by_agent_id,omitempty"`
+	CreatedByRunID         string          `json:"created_by_run_id,omitempty"`
+	Retired                bool            `json:"retired"`
+	BootstrappedFromStatic bool            `json:"bootstrapped_from_static"`
+}
+
+// A2AServerCardDefNameSummary mirrors ScheduleDefNameSummary.
+type A2AServerCardDefNameSummary struct {
+	Name          string    `json:"name"`
+	VersionCount  int       `json:"version_count"`
+	ActiveDefID   string    `json:"active_def_id,omitempty"`
+	LatestVersion int       `json:"latest_version"`
+	LastUpdated   time.Time `json:"last_updated"`
+}
+
+// A2AServerCardDefActiveEntry mirrors ScheduleDefActiveEntry.
+type A2AServerCardDefActiveEntry struct {
+	Name              string    `json:"name"`
+	DefID             string    `json:"def_id"`
+	PromotedAt        time.Time `json:"promoted_at"`
+	PromotedByAgentID string    `json:"promoted_by_agent_id,omitempty"`
+}
+
+// A2AAgentDefRow mirrors ScheduleDefRow — same identity + lineage +
+// retire flag shape. The Definition payload carries the JSON-encoded
+// remote-peer body (agent_card_url or endpoint+binding, auth scheme +
+// credential_ref, expected_skills manifest); the schema is owned by
+// the tool layer. v1.x RFC G.
+type A2AAgentDefRow struct {
+	DefID                  string          `json:"def_id"`
+	Name                   string          `json:"name"`
+	Version                int             `json:"version"`
+	ParentDefID            string          `json:"parent_def_id,omitempty"`
+	Definition             json.RawMessage `json:"definition"`
+	Description            string          `json:"description,omitempty"`
+	CreatedAt              time.Time       `json:"created_at"`
+	CreatedByAgentID       string          `json:"created_by_agent_id,omitempty"`
+	CreatedByRunID         string          `json:"created_by_run_id,omitempty"`
+	Retired                bool            `json:"retired"`
+	BootstrappedFromStatic bool            `json:"bootstrapped_from_static"`
+}
+
+// A2AAgentDefNameSummary mirrors ScheduleDefNameSummary.
+type A2AAgentDefNameSummary struct {
+	Name          string    `json:"name"`
+	VersionCount  int       `json:"version_count"`
+	ActiveDefID   string    `json:"active_def_id,omitempty"`
+	LatestVersion int       `json:"latest_version"`
+	LastUpdated   time.Time `json:"last_updated"`
+}
+
+// A2AAgentDefActiveEntry mirrors ScheduleDefActiveEntry.
+type A2AAgentDefActiveEntry struct {
+	Name              string    `json:"name"`
+	DefID             string    `json:"def_id"`
+	PromotedAt        time.Time `json:"promoted_at"`
+	PromotedByAgentID string    `json:"promoted_by_agent_id,omitempty"`
+}
+
 // ScheduleRunStateRow is one row in schedule_run_state — the
 // sweeper's runtime view of a def. Seeded when a def becomes
 // active; updated after each fire.
@@ -1987,6 +2092,14 @@ var ErrMCPServerDefParentNotFound = &SubstrateError{Code: "parent_not_found", Ms
 // ErrScheduleDefParentNotFound mirrors the AgentDef + SkillDef +
 // MCPServerDef pattern for the v1.x RFC E ScheduleDef substrate.
 var ErrScheduleDefParentNotFound = &SubstrateError{Code: "parent_not_found", Msg: "schedule_def: parent_def_id does not exist"}
+
+// ErrA2AServerCardDefParentNotFound mirrors the ScheduleDef pattern
+// for the v1.x RFC G A2AServerCardDef substrate.
+var ErrA2AServerCardDefParentNotFound = &SubstrateError{Code: "parent_not_found", Msg: "a2a_server_card_def: parent_def_id does not exist"}
+
+// ErrA2AAgentDefParentNotFound mirrors the ScheduleDef pattern for
+// the v1.x RFC G A2AAgentDef substrate.
+var ErrA2AAgentDefParentNotFound = &SubstrateError{Code: "parent_not_found", Msg: "a2a_agent_def: parent_def_id does not exist"}
 
 // ErrAgentDefImmutable is returned by store-layer assertions if
 // someone tries to UPDATE an agent_defs row's definition column.
