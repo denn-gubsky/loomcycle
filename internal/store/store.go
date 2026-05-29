@@ -230,6 +230,14 @@ type Run struct {
 	// created before v0.12.2 or in single-replica mode. Cross-replica
 	// cancel routes via this column.
 	ReplicaID string `json:"replica_id,omitempty"`
+
+	// ParentContext is the opaque caller-tracking lineage (v0.12.x),
+	// set on the root run and copied onto every sub-agent. Persisted as
+	// the runs.parent_context JSON column; nil for rows created before
+	// the column landed or for runs with no context. Echoed on the
+	// per-agent report surfaces so a consumer can attribute a child
+	// sub-agent's usage to the user-initiated request.
+	ParentContext *ParentContext `json:"parent_context,omitempty"`
 }
 
 // PauseState constants — the wire string values stored in runs.pause_state.
@@ -327,6 +335,57 @@ type RunIdentity struct {
 	// mode it routes cross-replica cancel requests to the owning
 	// replica via backplane broadcast. Postgres-only; SQLite ignores.
 	ReplicaID string
+	// ParentContext is opaque caller-tracking lineage (v0.12.x). Set on
+	// the root run and copied verbatim onto every sub-agent the Agent
+	// tool spawns; persisted as runs.parent_context (JSON). nil = no
+	// context (back-compat; old rows decode to nil). See ParentContext.
+	ParentContext *ParentContext
+}
+
+// ParentContext is the typed caller-tracking lineage attached to a run
+// and propagated to all its sub-agents. The runtime stores and echoes
+// these fields verbatim and never branches on their values — they are
+// consumer-domain concepts (a deliberate, operator-requested exception
+// to loomcycle's usual domain-agnostic posture).
+//
+// It lives in the store package — the lowest layer, importing no other
+// internal package — so runner, tools, connector, and the wire surfaces
+// can all reference one type without an import cycle (the same reason
+// store.RunIdentity and tools.RunIdentityValue are kept separate: loop
+// imports tools, so tools cannot import runner).
+//
+// Unlike UserBearer/UserCredentials this is NOT a secret: safe to
+// persist, log, and emit in events. All fields optional; an all-empty
+// struct is treated as absent (nil) at wire entry.
+type ParentContext struct {
+	// RootAgentRunID is the consumer's identifier for the user-
+	// initiated run at the root of the spawn tree. Echoed on every
+	// descendant so the consumer can attribute child costs to it.
+	RootAgentRunID string `json:"root_agent_run_id,omitempty"`
+	// FunctionKey is the consumer's logical-operation key for the root
+	// request (e.g. its cost-aggregation bucket).
+	FunctionKey string `json:"function_key,omitempty"`
+	// TierAtRun is the consumer's tier marker captured at root-run time.
+	// Distinct from UserTier (loomcycle's resolver policy) — this is the
+	// consumer's own snapshot, carried verbatim.
+	TierAtRun string `json:"tier_at_run,omitempty"`
+}
+
+// IsZero reports whether every field is empty (no meaningful tracking
+// context). Wire entry points normalise a zero struct to nil so
+// back-compat decode paths stay clean.
+func (p *ParentContext) IsZero() bool {
+	return p == nil || (p.RootAgentRunID == "" && p.FunctionKey == "" && p.TierAtRun == "")
+}
+
+// Clone returns a deep copy (nil-safe) so a parent's ParentContext can
+// be handed to a child run without aliasing.
+func (p *ParentContext) Clone() *ParentContext {
+	if p == nil {
+		return nil
+	}
+	cp := *p
+	return &cp
 }
 
 // UserSummary is one row of ListUsers' output: distinct user_id with

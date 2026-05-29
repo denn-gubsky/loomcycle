@@ -2101,6 +2101,16 @@ type runRequest struct {
 	// See `Context.help per-run-credentials` for the operator-facing
 	// reference; rfcs/per-run-credentials.md for the design lock.
 	UserCredentials map[string]string `json:"user_credentials,omitempty"`
+	// ParentContext is opaque caller-tracking lineage (v0.12.x). The
+	// runtime carries it verbatim, inherits it onto every sub-agent the
+	// Agent tool spawns, persists it on each run row, and echoes it on
+	// the per-agent report surfaces (agents stream, agent status, SSE
+	// "agent" frame) — so an external consumer can attribute a child
+	// sub-agent's usage back to the user-initiated request. Field
+	// lengths bounded at wire entry; an all-empty struct is treated as
+	// absent. Not a secret (safe to persist/log/emit). Omitted = no
+	// tracking context (back-compat).
+	ParentContext *store.ParentContext `json:"parent_context,omitempty"`
 }
 
 func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
@@ -2162,6 +2172,16 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 	if errMsg, ok := connector.ValidateUserCredentialsMap(req.UserCredentials); !ok {
 		http.Error(w, errMsg, http.StatusBadRequest)
 		return
+	}
+	// Bound the opaque tracking fields so a consumer can't push unbounded
+	// strings into the run table / event stream. An all-empty struct is
+	// normalised to nil so back-compat decode paths see "no context".
+	if errMsg, ok := validateParentContext(req.ParentContext); !ok {
+		http.Error(w, errMsg, http.StatusBadRequest)
+		return
+	}
+	if req.ParentContext.IsZero() {
+		req.ParentContext = nil
 	}
 
 	providerID, model, effort, err := s.resolveAgent(req.Agent, req.UserTier)
@@ -4196,6 +4216,30 @@ func validIdent(s string) bool {
 		}
 	}
 	return true
+}
+
+// parentContextMaxFieldLen bounds each parent_context string so a
+// consumer can't push unbounded values into the run table / event
+// stream. The fields are opaque consumer ids/keys; 256 is generous.
+const parentContextMaxFieldLen = 256
+
+// validateParentContext bounds the opaque caller-tracking fields. A nil
+// or all-empty struct is valid (treated as "no context" by the caller).
+// Returns (errMsg, ok); ok=false means reject with 400.
+func validateParentContext(pc *store.ParentContext) (string, bool) {
+	if pc == nil {
+		return "", true
+	}
+	for field, v := range map[string]string{
+		"root_agent_run_id": pc.RootAgentRunID,
+		"function_key":      pc.FunctionKey,
+		"tier_at_run":       pc.TierAtRun,
+	} {
+		if len(v) > parentContextMaxFieldLen {
+			return fmt.Sprintf("parent_context.%s exceeds %d bytes", field, parentContextMaxFieldLen), false
+		}
+	}
+	return "", true
 }
 
 // validUserBearer reports whether s is a valid per-run MCP bearer

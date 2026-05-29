@@ -31,6 +31,7 @@ import (
 
 	"github.com/denn-gubsky/loomcycle/internal/loop"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
+	"github.com/denn-gubsky/loomcycle/internal/store"
 )
 
 // Runner is the contract both wire surfaces depend on. internal/api/http
@@ -176,6 +177,23 @@ type RunInput struct {
 	// trusts its caller. Empty map is valid (= run uses no per-tool
 	// auth). Never persisted; never logged; not emitted in OTEL spans.
 	UserCredentials map[string]string
+
+	// ParentContext is opaque caller-tracking lineage the runtime
+	// carries but never interprets: it is set once on the root run,
+	// inherited UNCHANGED by every descendant sub-agent (the Agent
+	// tool copies it parent→child, same as UserCredentials), persisted
+	// on each run row, and echoed back on the per-agent report surfaces
+	// (RunStateEvent, the agent status object, the SSE "agent" frame).
+	// It lets an external consumer link a child sub-agent's usage back
+	// to the user-initiated request that spawned the whole tree.
+	//
+	// Unlike UserBearer/UserCredentials it is NOT a secret — it is safe
+	// to persist, log, and emit. Nil = no tracking context (today's
+	// behavior; full back-compat). The canonical type lives in the
+	// store package (next to RunIdentity) so every layer — runner,
+	// tools, connector, store — can reference it without an import
+	// cycle (store imports no internal packages).
+	ParentContext *store.ParentContext
 }
 
 // RunCallbacks is how the wire surfaces observe the run.
