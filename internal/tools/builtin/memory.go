@@ -312,7 +312,8 @@ const memoryInputSchema = `{
     "embed_text": {"type": "string", "description": "v0.9.0 set-only: the text to embed when embed=true. Defaults to the JSON-stringified value when omitted."},
     "query":      {"type": "string", "description": "v0.9.0 search-only: the text to embed and use as the similarity query."},
     "top_k":      {"type": "integer", "description": "v0.9.0 search-only: max results (default 10, max 50)."},
-    "rank":       {"type": "object", "description": "search-only hybrid ranking weights. Omit for pure semantic (default). Properties: semantic_weight, recency_weight, recency_half_life_hours, source_weight, frequency_weight (source/frequency reserved — contribute 0 today).", "properties": {"semantic_weight": {"type": "number"}, "recency_weight": {"type": "number"}, "recency_half_life_hours": {"type": "number"}, "source_weight": {"type": "number"}, "frequency_weight": {"type": "number"}}}
+    "rank":       {"type": "object", "description": "search-only hybrid ranking weights. Omit for pure semantic (default). Properties: semantic_weight, recency_weight, recency_half_life_hours, source_weight, frequency_weight (source/frequency reserved — contribute 0 today).", "properties": {"semantic_weight": {"type": "number"}, "recency_weight": {"type": "number"}, "recency_half_life_hours": {"type": "number"}, "source_weight": {"type": "number"}, "frequency_weight": {"type": "number"}}},
+    "dedup":      {"type": "object", "description": "search-only near-duplicate collapse. Omit (or enabled=false) for no dedup (default). Drops a result whose embedding cosine similarity to a higher-ranked kept result is >= threshold. Properties: enabled (bool), threshold (number, cosine-similarity floor, default 0.92), mode (\"drop\" default | \"merge\" | \"keep\").", "properties": {"enabled": {"type": "boolean"}, "threshold": {"type": "number"}, "mode": {"type": "string", "enum": ["drop","merge","keep"]}}}
   },
   "required": ["op","scope"],
   "additionalProperties": false
@@ -334,6 +335,10 @@ type memoryInput struct {
 	// Rank is the RFC I hybrid-ranking weight block for `search`. Nil =
 	// pure semantic (today's behavior). See memrank.RankConfig.
 	Rank *memrank.RankConfig `json:"rank,omitempty"`
+	// Dedup is the RFC I (MR-5) search-time dedup block for `search`. Nil =
+	// dedup disabled (today's behavior, zero regression). See
+	// memrank.DedupConfig.
+	Dedup *memrank.DedupConfig `json:"dedup,omitempty"`
 }
 
 // Name implements tools.Tool.
@@ -533,15 +538,22 @@ func (m *Memory) execSearch(ctx context.Context, scope store.MemoryScope, scopeI
 		rankCfg = *in.Rank
 	}
 
+	// RFC I (MR-5) search-time dedup. Nil dedup block = disabled = today's
+	// behavior (zero regression). A model can opt in per search.
+	var dedupCfg memrank.DedupConfig
+	if in.Dedup != nil {
+		dedupCfg = *in.Dedup
+	}
+
 	// The data path (embed query → over-fetch cosine pool → re-rank →
-	// trim → score) lives in the Backend now (RFC I MR-2). The upfront
-	// validation above stays on the tool so the refusal ordering /
+	// dedup → trim → score) lives in the Backend now (RFC I MR-2/MR-5). The
+	// upfront validation above stays on the tool so the refusal ordering /
 	// messages are byte-identical to pre-MR-2.
 	res, err := m.backend(ctx).Search(ctx, scope, scopeID, memrank.SearchQuery{
 		QueryText: in.Query,
 		Prefix:    in.Prefix,
 		TopK:      topK,
-	}, rankCfg)
+	}, rankCfg, dedupCfg)
 	if err != nil {
 		// ErrDimensionMismatch is the user-actionable one — operators
 		// swap embedder models and forget to re-embed. Surface it as a
@@ -572,6 +584,25 @@ func (m *Memory) execSearch(ctx context.Context, scope store.MemoryScope, scopeI
 		"entries":             entries,
 		"query_embedding_dim": res.QueryEmbeddingDim,
 		"truncated":           res.Truncated,
+	}
+	// Surface dedup_dropped ONLY when the caller opted into dedup. A search
+	// with no `dedup` block keeps the pre-MR-5 response shape byte-for-byte
+	// (zero regression): the key is absent rather than always-zero. When
+	// dedup is on, the count is always present (including 0) so the agent
+	// can tell "dedup ran, found nothing" from "dedup wasn't requested."
+	if in.Dedup != nil && in.Dedup.Enabled {
+		out["dedup_dropped"] = res.DedupDropped
+		// Observability: the RFC's memory.dedup.dropped_count (Decision 12)
+		// is an OTEL span attribute. loomcycle's only OTEL substrate today
+		// lives in the mem9 backend (which sets that attribute on its span);
+		// the in-process path has no span here yet (broader OTEL is planned
+		// for v0.9.x — see CLAUDE.md). Until that lands, mirror the repo's
+		// current observability idiom (log.Printf) so operators can still
+		// see dedup activity on the in-process path.
+		if res.DedupDropped > 0 {
+			log.Printf("memory.search: dedup dropped %d near-duplicate entries (scope=%s, mode=%s)",
+				res.DedupDropped, scope, dedupModeOrDefault(in.Dedup.Mode))
+		}
 	}
 	// Don't silently ignore a non-zero source/frequency weight — those
 	// terms are reserved (contribute 0 today). Surface a note instead.
@@ -967,6 +998,15 @@ func expiresAtRFC3339(t time.Time) any {
 		return nil
 	}
 	return t.UTC().Format(time.RFC3339Nano)
+}
+
+// dedupModeOrDefault renders the dedup mode for the log line, defaulting
+// to "drop" so an empty mode (the common case) logs informatively.
+func dedupModeOrDefault(mode string) string {
+	if mode == "" {
+		return "drop"
+	}
+	return mode
 }
 
 func contains(haystack []string, needle string) bool {

@@ -1553,6 +1553,16 @@ type MemoryEmbedding struct {
 //
 // Score is cosine similarity in [0, 1] (higher = closer). Backends
 // convert from their native distance function before returning.
+//
+// Vector is the entry's stored embedding, populated by MemoryEmbedSearch
+// for client-side search-time dedup (RFC I MR-5 / Decision 2). It is
+// json:"-" — never serialized to the agent, exactly like
+// MemoryEmbedding.Vector; it exists only so the dedup pass can compute
+// pairwise cosine distances without a second round-trip. It is EMPTY when
+// the backend can't supply it (e.g. the Mem9 REST backend, which embeds +
+// scores server-side and returns no vectors); dedup then degrades to a
+// no-op for that entry (an empty-Vector entry is never treated as a
+// duplicate, so it is kept).
 type MemorySearchEntry struct {
 	MemoryEntry
 	Score        float64 `json:"score"`
@@ -1560,6 +1570,7 @@ type MemorySearchEntry struct {
 		Provider string `json:"provider"`
 		Model    string `json:"model"`
 	} `json:"embedded_with"`
+	Vector []float32 `json:"-"`
 }
 
 // MemoryEmbedStats summarises the embedded rows under one scope.

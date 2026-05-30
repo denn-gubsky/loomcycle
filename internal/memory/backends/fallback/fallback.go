@@ -107,11 +107,11 @@ func (b *Backend) List(ctx context.Context, scope store.MemoryScope, scopeID, pr
 }
 
 // Search tries primary then fallback.
-func (b *Backend) Search(ctx context.Context, scope store.MemoryScope, scopeID string, q memory.SearchQuery, rank memory.RankConfig) (memory.SearchResult, error) {
-	res, err := b.primary.Search(ctx, scope, scopeID, q, rank)
+func (b *Backend) Search(ctx context.Context, scope store.MemoryScope, scopeID string, q memory.SearchQuery, rank memory.RankConfig, dedup memory.DedupConfig) (memory.SearchResult, error) {
+	res, err := b.primary.Search(ctx, scope, scopeID, q, rank, dedup)
 	if err != nil {
 		b.degrade("search", err)
-		return b.fallback.Search(ctx, scope, scopeID, q, rank)
+		return b.fallback.Search(ctx, scope, scopeID, q, rank, dedup)
 	}
 	return res, nil
 }

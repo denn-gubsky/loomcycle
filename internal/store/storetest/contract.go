@@ -131,6 +131,7 @@ func Run(t *testing.T, factory Factory) {
 		{"MemoryEmbedSearchScopeIsolation", testMemoryEmbedSearchScopeIsolation},
 		{"MemoryEmbedSearchDimensionMismatch", testMemoryEmbedSearchDimensionMismatch},
 		{"MemoryEmbedSearchEmptyScope", testMemoryEmbedSearchEmptyScope},
+		{"MemoryEmbedSearchReturnsVectors", testMemoryEmbedSearchReturnsVectors},
 		{"MemoryDeleteCascadesEmbedding", testMemoryDeleteCascadesEmbedding},
 		{"MemoryEmbedListByModelFiltersCurrent", testMemoryEmbedListByModelFiltersCurrent},
 		{"MemoryEmbedStatsReportsPerModelCount", testMemoryEmbedStatsReportsPerModelCount},
@@ -2444,6 +2445,53 @@ func testMemoryEmbedSearchEmptyScope(t *testing.T, s store.Store) {
 	}
 	if len(results) != 0 {
 		t.Errorf("empty scope: got %d results, want 0", len(results))
+	}
+}
+
+// testMemoryEmbedSearchReturnsVectors pins the RFC I MR-5 / Decision 2
+// store change: MemoryEmbedSearch must populate MemorySearchEntry.Vector
+// with each row's stored embedding so the in-process backend's search-time
+// dedup pass has per-entry vectors to compare. The vector is internal-only
+// (json:"-") and never reaches the agent, but the store MUST hand it back.
+//
+// Gated like every other vector test on SupportsVectors(): runs against a
+// live Postgres+pgvector store, skips (after asserting the refusal shape)
+// on SQLite, which has no real vector search in any build.
+func testMemoryEmbedSearchReturnsVectors(t *testing.T, s store.Store) {
+	if !vectorRefusalCheck(t, s) {
+		return
+	}
+	ctx := context.Background()
+	want := map[string][]float32{
+		"east":  floats32(1, 0, 0, 0),
+		"north": floats32(0, 1, 0, 0),
+	}
+	for key, vec := range want {
+		if err := s.MemorySet(ctx, store.MemoryScopeAgent, "vecret", key, json.RawMessage(`"x"`), 0); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.MemoryEmbedSet(ctx, store.MemoryScopeAgent, "vecret", key, store.MemoryEmbedding{
+			Provider: "openai", Model: "text-embedding-3-small", Dimension: 4,
+			Vector: vec, EmbedText: key, CreatedAt: time.Now(),
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	results, err := s.MemoryEmbedSearch(ctx, store.MemoryScopeAgent, "vecret", "", floats32(1, 0, 0, 0), 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 2 {
+		t.Fatalf("got %d results, want 2", len(results))
+	}
+	for _, r := range results {
+		w, ok := want[r.Key]
+		if !ok {
+			t.Fatalf("unexpected key %q", r.Key)
+		}
+		if !reflect.DeepEqual(r.Vector, w) {
+			t.Errorf("key %q: Vector = %v, want %v (search must return the stored vector for dedup)", r.Key, r.Vector, w)
+		}
 	}
 }
 

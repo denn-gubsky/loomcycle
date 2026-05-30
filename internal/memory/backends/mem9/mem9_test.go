@@ -255,7 +255,7 @@ func TestMem9_SharedKeyPrefixIsolatesTenant(t *testing.T) {
 
 	// Search prefix is tenant-scoped too.
 	s.searchHits = []stubResult{{key: "tenant-b::user/bob/r1", value: `{"r":1}`, score: 0.9}}
-	if _, err := b.Search(ctx, store.MemoryScopeUser, "bob", memory.SearchQuery{QueryText: "q", TopK: 5}, memory.DefaultRankConfig()); err != nil {
+	if _, err := b.Search(ctx, store.MemoryScopeUser, "bob", memory.SearchQuery{QueryText: "q", TopK: 5}, memory.DefaultRankConfig(), memory.DedupConfig{}); err != nil {
 		t.Fatalf("Search: %v", err)
 	}
 	if !strings.HasPrefix(s.lastSearchPx, "tenant-b::") {
@@ -280,7 +280,7 @@ func TestMem9_SearchReRanksClientSide(t *testing.T) {
 		{key: "user/bob/c2", value: `{"n":2}`, score: 0.7},
 	}
 	res, err := b.Search(context.Background(), store.MemoryScopeUser, "bob",
-		memory.SearchQuery{QueryText: "q", TopK: 2}, memory.DefaultRankConfig())
+		memory.SearchQuery{QueryText: "q", TopK: 2}, memory.DefaultRankConfig(), memory.DedupConfig{})
 	if err != nil {
 		t.Fatalf("Search: %v", err)
 	}

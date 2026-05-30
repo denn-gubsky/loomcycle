@@ -346,6 +346,11 @@ func main() {
 			// Reads a .claude/ tree and emits agents:/mcp_servers:/skill
 			// fragments into the operator's loomcycle.yaml.
 			os.Exit(cli.RunImport(os.Args[2:], os.Stdout, os.Stderr))
+		case "memory-eval":
+			// v1.x RFC I (MR-5): scores the memory ranker/dedup against a
+			// dataset of (query, expected_recall) tuples — precision@k,
+			// recall@k, duplication_rate. The gating tool for ranker PRs.
+			os.Exit(cli.RunMemoryEval(os.Args[2:], os.Stdout, os.Stderr))
 		case "help", "-h", "--help":
 			cli.PrintHelp(os.Stdout)
 			return

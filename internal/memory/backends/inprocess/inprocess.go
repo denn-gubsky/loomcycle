@@ -133,7 +133,7 @@ func (b *Backend) persistEmbedding(ctx context.Context, scope store.MemoryScope,
 // trims to TopK, and computes the index-aligned rank scores. This is
 // execSearch's data path moved verbatim; the tool keeps validation,
 // top_k clamping, and rendering.
-func (b *Backend) Search(ctx context.Context, scope store.MemoryScope, scopeID string, q memory.SearchQuery, rank memory.RankConfig) (memory.SearchResult, error) {
+func (b *Backend) Search(ctx context.Context, scope store.MemoryScope, scopeID string, q memory.SearchQuery, rank memory.RankConfig, dedup memory.DedupConfig) (memory.SearchResult, error) {
 	if !b.store.SupportsVectors() {
 		return memory.SearchResult{}, store.ErrVectorUnsupported
 	}
@@ -185,22 +185,28 @@ func (b *Backend) Search(ctx context.Context, scope store.MemoryScope, scopeID s
 	// top_k), computed before the re-rank trims the pool.
 	truncated := len(results) > topK
 
-	// Hybrid re-rank, then trim to top_k. Default config is a no-op reorder
-	// (cosine order preserved), so pure-semantic output is byte-identical to
-	// before. rank_scores are computed with the SAME `now` as the ranking so
-	// the rendered score matches the ordering.
+	// Hybrid re-rank, then dedup, then trim to top_k. Default config is a
+	// no-op reorder (cosine order preserved) and dedup-disabled, so
+	// pure-semantic output is byte-identical to before. Dedup runs on the
+	// full ranked pool BEFORE the trim (RFC I Decision 2) so collapsing a
+	// duplicate cluster can promote a distinct entry into the top_k that the
+	// duplicate would otherwise have crowded out. rank_scores are computed
+	// with the SAME `now` as the ranking so the rendered score matches the
+	// ordering.
 	now := time.Now()
 	ranked := memory.RankCandidates(results, rank, now)
-	if len(ranked) > topK {
-		ranked = ranked[:topK]
+	deduped, dropped := memory.DedupResults(ranked, dedup)
+	if len(deduped) > topK {
+		deduped = deduped[:topK]
 	}
-	rankScores := memory.ScoreAll(ranked, rank, now)
+	rankScores := memory.ScoreAll(deduped, rank, now)
 
 	out := memory.SearchResult{
-		Entries:           ranked,
+		Entries:           deduped,
 		RankScores:        rankScores,
 		QueryEmbeddingDim: len(queryVec),
 		Truncated:         truncated,
+		DedupDropped:      dropped,
 	}
 	if rank.SourceFrequencyReserved() {
 		out.RankNote = "source_weight and frequency_weight are reserved and contribute 0 until source/access_count tracking ships"

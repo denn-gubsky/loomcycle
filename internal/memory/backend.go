@@ -60,11 +60,15 @@ type Backend interface {
 
 	// Search embeds q.QueryText, runs the Top-K cosine search (with the
 	// over-fetch pool a hybrid rank needs), applies the MR-1 RankConfig,
-	// trims to q.TopK, and returns the ranked entries. The backend owns
-	// the embed step. Refuses with a typed *store.MemoryError when vectors
-	// are unsupported, no embedder is configured, or a dimension mismatch
-	// is detected — the tool renders these unchanged.
-	Search(ctx context.Context, scope store.MemoryScope, scopeID string, q SearchQuery, rank RankConfig) (SearchResult, error)
+	// runs the MR-5 search-time dedup, trims to q.TopK, and returns the
+	// ranked entries. The backend owns the embed step. Dedup runs AFTER
+	// ranking and BEFORE the trim so the highest-ranked member of a
+	// duplicate cluster survives (RFC I Decision 2); a zero-value
+	// DedupConfig (Enabled=false) is the zero-regression no-op. Refuses
+	// with a typed *store.MemoryError when vectors are unsupported, no
+	// embedder is configured, or a dimension mismatch is detected — the
+	// tool renders these unchanged.
+	Search(ctx context.Context, scope store.MemoryScope, scopeID string, q SearchQuery, rank RankConfig, dedup DedupConfig) (SearchResult, error)
 
 	// Stats returns per-(provider, model) embedding row counts for the
 	// scope. Backs the admin embed-stats view in later slices.
@@ -111,10 +115,14 @@ type SearchQuery struct {
 // Truncated reports that the cosine pool had more matches than TopK.
 // RankNote is non-empty when a reserved (source/frequency) weight was set
 // — carries MR-1's surfaced note so the tool renders it unchanged.
+// DedupDropped is the number of near-duplicate entries the MR-5 dedup pass
+// dropped (mode=drop/merge) or flagged (mode=keep) out of the post-rank,
+// pre-trim candidate set. It is 0 when dedup is disabled.
 type SearchResult struct {
 	Entries           []store.MemorySearchEntry
 	RankScores        []float64
 	QueryEmbeddingDim int
 	Truncated         bool
 	RankNote          string
+	DedupDropped      int
 }

@@ -158,6 +158,10 @@ func (v *vectorStore) MemoryEmbedSearch(ctx context.Context, scope store.MemoryS
 		se := store.MemorySearchEntry{MemoryEntry: entry, Score: r.s}
 		se.EmbeddedWith.Provider = r.emb.Provider
 		se.EmbeddedWith.Model = r.emb.Model
+		// Hand back the stored vector so the in-process backend's MR-5 dedup
+		// pass has per-entry vectors to compare — mirrors the real
+		// sqlite/pgvector stores after the MR-5 store change.
+		se.Vector = r.emb.Vector
 		out = append(out, se)
 	}
 	return out, nil
@@ -258,7 +262,7 @@ func TestInProcess_SetEmbedThenSearchRanks(t *testing.T) {
 		t.Fatalf("rec1 embedding not stored")
 	}
 
-	res, err := b.Search(ctx, scope, id, memory.SearchQuery{QueryText: "go rust", TopK: 5}, memory.DefaultRankConfig())
+	res, err := b.Search(ctx, scope, id, memory.SearchQuery{QueryText: "go rust", TopK: 5}, memory.DefaultRankConfig(), memory.DedupConfig{})
 	if err != nil {
 		t.Fatalf("search: %v", err)
 	}
@@ -276,6 +280,65 @@ func TestInProcess_SetEmbedThenSearchRanks(t *testing.T) {
 	}
 }
 
+// TestInProcess_SearchDedupCollapsesNearDuplicates pins the MR-5 wiring:
+// the in-process backend runs dedup AFTER rank and BEFORE the top_k trim,
+// using the vectors the store now returns. Three rows embed identical text
+// ("alice") — their one-hot vectors are identical, so dedup must collapse
+// them to one; a distinct row ("bob") survives.
+func TestInProcess_SearchDedupCollapsesNearDuplicates(t *testing.T) {
+	b, _, _, cleanup := vectorFixture(t)
+	defer cleanup()
+	ctx := context.Background()
+	scope, id := store.MemoryScopeAgent, "a1"
+
+	for _, k := range []string{"d1", "d2", "d3"} {
+		if _, err := b.Set(ctx, scope, id, k, json.RawMessage(`1`), memory.SetOptions{Embed: true, EmbedText: "alice"}); err != nil {
+			t.Fatalf("set %s: %v", k, err)
+		}
+	}
+	// NOTE: this key must NOT start with "d" — countKeyPrefix(…, "d") below
+	// counts the alice cluster (d1/d2/d3), and a "distinct"-style key would
+	// collide with that prefix and inflate the count.
+	if _, err := b.Set(ctx, scope, id, "other", json.RawMessage(`1`), memory.SetOptions{Embed: true, EmbedText: "bob"}); err != nil {
+		t.Fatalf("set other: %v", err)
+	}
+
+	// With dedup OFF the alice cluster is NOT collapsed (zero-regression).
+	off, err := b.Search(ctx, scope, id, memory.SearchQuery{QueryText: "alice", TopK: 10}, memory.DefaultRankConfig(), memory.DedupConfig{})
+	if err != nil {
+		t.Fatalf("search (dedup off): %v", err)
+	}
+	if off.DedupDropped != 0 {
+		t.Errorf("dedup off: DedupDropped = %d, want 0", off.DedupDropped)
+	}
+	// The three identical-vector rows all match the "alice" query.
+	if countKeyPrefix(off.Entries, "d") != 3 {
+		t.Fatalf("dedup off: expected all 3 alice rows, got %d", countKeyPrefix(off.Entries, "d"))
+	}
+
+	// With dedup ON the alice cluster collapses to one survivor.
+	on, err := b.Search(ctx, scope, id, memory.SearchQuery{QueryText: "alice", TopK: 10}, memory.DefaultRankConfig(), memory.DedupConfig{Enabled: true})
+	if err != nil {
+		t.Fatalf("search (dedup on): %v", err)
+	}
+	if on.DedupDropped != 2 {
+		t.Errorf("dedup on: DedupDropped = %d, want 2", on.DedupDropped)
+	}
+	if got := countKeyPrefix(on.Entries, "d"); got != 1 {
+		t.Errorf("dedup on: alice cluster collapsed to %d, want 1", got)
+	}
+}
+
+func countKeyPrefix(entries []store.MemorySearchEntry, prefix string) int {
+	n := 0
+	for _, e := range entries {
+		if strings.HasPrefix(e.Key, prefix) {
+			n++
+		}
+	}
+	return n
+}
+
 func TestInProcess_SearchTruncatedAndTopK(t *testing.T) {
 	b, _, _, cleanup := vectorFixture(t)
 	defer cleanup()
@@ -286,7 +349,7 @@ func TestInProcess_SearchTruncatedAndTopK(t *testing.T) {
 			t.Fatalf("set %s: %v", k, err)
 		}
 	}
-	res, err := b.Search(ctx, scope, id, memory.SearchQuery{QueryText: "alice", TopK: 2}, memory.DefaultRankConfig())
+	res, err := b.Search(ctx, scope, id, memory.SearchQuery{QueryText: "alice", TopK: 2}, memory.DefaultRankConfig(), memory.DedupConfig{})
 	if err != nil {
 		t.Fatalf("search: %v", err)
 	}
@@ -309,7 +372,7 @@ func TestInProcess_SearchRankNoteOnReservedWeight(t *testing.T) {
 	}
 	cfg := memory.DefaultRankConfig()
 	cfg.SourceWeight = 0.5
-	res, err := b.Search(ctx, scope, id, memory.SearchQuery{QueryText: "alice", TopK: 5}, cfg)
+	res, err := b.Search(ctx, scope, id, memory.SearchQuery{QueryText: "alice", TopK: 5}, cfg, memory.DedupConfig{})
 	if err != nil {
 		t.Fatalf("search: %v", err)
 	}
@@ -370,7 +433,7 @@ func TestInProcess_SearchRefusesWithoutEmbedder(t *testing.T) {
 	defer cleanup()
 	vs := newVectorStore(s)
 	b := inprocess.New(vs, nil)
-	_, err := b.Search(context.Background(), store.MemoryScopeAgent, "a1", memory.SearchQuery{QueryText: "x", TopK: 5}, memory.DefaultRankConfig())
+	_, err := b.Search(context.Background(), store.MemoryScopeAgent, "a1", memory.SearchQuery{QueryText: "x", TopK: 5}, memory.DefaultRankConfig(), memory.DedupConfig{})
 	if !errors.Is(err, store.ErrEmbedderNotConfigured) {
 		t.Fatalf("want ErrEmbedderNotConfigured, got %v", err)
 	}

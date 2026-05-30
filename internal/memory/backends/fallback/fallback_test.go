@@ -47,7 +47,7 @@ func (f *fakeBackend) List(_ context.Context, _ store.MemoryScope, _, _ string, 
 	}
 	return []store.MemoryEntry{{Key: "from-" + f.name}}, false, nil
 }
-func (f *fakeBackend) Search(_ context.Context, _ store.MemoryScope, _ string, _ memory.SearchQuery, _ memory.RankConfig) (memory.SearchResult, error) {
+func (f *fakeBackend) Search(_ context.Context, _ store.MemoryScope, _ string, _ memory.SearchQuery, _ memory.RankConfig, _ memory.DedupConfig) (memory.SearchResult, error) {
 	if f.failErr != nil {
 		return memory.SearchResult{}, f.failErr
 	}

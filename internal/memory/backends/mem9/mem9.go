@@ -476,7 +476,7 @@ func (b *Backend) List(ctx context.Context, scope store.MemoryScope, scopeID, pr
 // client-side"). Mem9 honors top_k but not loomcycle's hybrid formula,
 // so the Backend contract — "Search returns ranked top_k" — holds
 // uniformly across backends.
-func (b *Backend) Search(ctx context.Context, scope store.MemoryScope, scopeID string, q memory.SearchQuery, rank memory.RankConfig) (memory.SearchResult, error) {
+func (b *Backend) Search(ctx context.Context, scope store.MemoryScope, scopeID string, q memory.SearchQuery, rank memory.RankConfig, dedup memory.DedupConfig) (memory.SearchResult, error) {
 	// OTEL (Decision 12, light): one span per recall with backend +
 	// latency. No secrets, no query text, no transcript on the span.
 	ctx, span := lcotel.Tracer().Start(ctx, "loomcycle.memory.search")
@@ -524,23 +524,35 @@ func (b *Backend) Search(ctx context.Context, scope store.MemoryScope, scopeID s
 
 	// Client-side re-rank with the SAME `now` used for the rank scores so
 	// the rendered score matches the ordering (same discipline as the
-	// in-process backend).
+	// in-process backend). Dedup also runs client-side for uniform
+	// semantics (Decision 11), AFTER rank and BEFORE trim. The Mem9 REST
+	// envelope returns no per-row vectors (the server owns the embed +
+	// cosine), so every entry has an empty Vector and DedupResults degrades
+	// to a no-op here — distinct rows are kept and dropped stays 0. The
+	// plumbing exists so dedup behaves identically the day Mem9 starts
+	// returning vectors; until then a vector-less backend simply can't
+	// dedup, which is the documented degradation, not a silent divergence.
 	now := time.Now()
 	ranked := memory.RankCandidates(candidates, rank, now)
-	if len(ranked) > q.TopK {
-		ranked = ranked[:q.TopK]
+	deduped, dropped := memory.DedupResults(ranked, dedup)
+	if len(deduped) > q.TopK {
+		deduped = deduped[:q.TopK]
 	}
-	rankScores := memory.ScoreAll(ranked, rank, now)
+	rankScores := memory.ScoreAll(deduped, rank, now)
 
 	span.SetAttributes(attribute.Float64("memory.recall_latency_ms", float64(time.Since(start).Microseconds())/1000.0))
+	if dedup.Enabled {
+		span.SetAttributes(attribute.Int("memory.dedup.dropped_count", dropped))
+	}
 
 	out := memory.SearchResult{
-		Entries:    ranked,
+		Entries:    deduped,
 		RankScores: rankScores,
 		// Mem9 embeds server-side; we don't see the query vector dimension.
 		// 0 is a truthful "unknown from this backend" rather than a guess.
 		QueryEmbeddingDim: 0,
 		Truncated:         truncated,
+		DedupDropped:      dropped,
 	}
 	if rank.SourceFrequencyReserved() {
 		out.RankNote = "source_weight and frequency_weight are reserved and contribute 0 until source/access_count tracking ships"
