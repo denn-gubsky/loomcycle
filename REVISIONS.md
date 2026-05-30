@@ -8,6 +8,25 @@ For pre-v0.4 history (single-tool runtime, library milestone, security patch), s
 
 ---
 
+## What's in v0.14.1
+
+**First tagged build of the v0.14 line.** v0.14.0 (Input Webhooks, below) was
+merged but never tagged; v0.14.1 is the cut point that publishes the whole
+v0.14 line — the webhooks work **plus** a documentation correction — as one
+release.
+
+- **README pre-v1.0 status correction.** Dropped the inaccurate "v1.0
+  shipped — multi-replica HA in production" banner and the "v1.0 capstone …
+  | v1.0" shipped-row. loomcycle is in **active development toward v1.0** —
+  no v1.0 tag exists; the primitives stabilised through v0.8 → v0.14, with a
+  final feature + hardening pass remaining. Forward-looking roadmap
+  references are unchanged.
+- **`@loomcycle/client` → 0.14.1** publishes the `webhookDef()` substrate
+  method that shipped with Input Webhooks (the adapter version had stayed at
+  0.13.0 through the webhooks merge).
+
+No code behavior change beyond the v0.14.0 feature set below.
+
 ## What's in v0.14.0
 
 **Headline: Input Webhooks (RFC H) — the `WebhookDef` substrate.** External
