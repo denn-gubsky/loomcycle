@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	memrank "github.com/denn-gubsky/loomcycle/internal/memory"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
@@ -90,7 +91,8 @@ const memoryInputSchema = `{
     "embed":      {"type": "boolean", "description": "v0.9.0 set-only: when true, also generates and stores an embedding so this row is reachable via op=search."},
     "embed_text": {"type": "string", "description": "v0.9.0 set-only: the text to embed when embed=true. Defaults to the JSON-stringified value when omitted."},
     "query":      {"type": "string", "description": "v0.9.0 search-only: the text to embed and use as the similarity query."},
-    "top_k":      {"type": "integer", "description": "v0.9.0 search-only: max results (default 10, max 50)."}
+    "top_k":      {"type": "integer", "description": "v0.9.0 search-only: max results (default 10, max 50)."},
+    "rank":       {"type": "object", "description": "search-only hybrid ranking weights. Omit for pure semantic (default). Properties: semantic_weight, recency_weight, recency_half_life_hours, source_weight, frequency_weight (source/frequency reserved — contribute 0 today).", "properties": {"semantic_weight": {"type": "number"}, "recency_weight": {"type": "number"}, "recency_half_life_hours": {"type": "number"}, "source_weight": {"type": "number"}, "frequency_weight": {"type": "number"}}}
   },
   "required": ["op","scope"],
   "additionalProperties": false
@@ -109,6 +111,9 @@ type memoryInput struct {
 	EmbedText string          `json:"embed_text,omitempty"` // v0.9.0
 	Query     string          `json:"query,omitempty"`      // v0.9.0
 	TopK      int             `json:"top_k,omitempty"`      // v0.9.0
+	// Rank is the RFC I hybrid-ranking weight block for `search`. Nil =
+	// pure semantic (today's behavior). See memrank.RankConfig.
+	Rank *memrank.RankConfig `json:"rank,omitempty"`
 }
 
 // Name implements tools.Tool.
@@ -342,6 +347,24 @@ func (m *Memory) execSearch(ctx context.Context, scope store.MemoryScope, scopeI
 		topK = 50
 	}
 
+	// RFC I hybrid ranking. Nil rank block = pure semantic = today's
+	// behavior (zero regression). For a hybrid config we over-fetch a
+	// candidate pool by cosine, then re-rank by the full score so recency
+	// (etc.) can promote an entry the pure-cosine top-K would have missed.
+	// The pool is bounded by the store's defensive cap (≤51).
+	rankCfg := memrank.DefaultRankConfig()
+	if in.Rank != nil {
+		rankCfg = *in.Rank
+	}
+	pool := topK
+	if !rankCfg.IsPureSemantic() {
+		pool = topK * 4
+	}
+	fetch := pool + 1 // +1 truncation probe
+	if fetch > 51 {
+		fetch = 51
+	}
+
 	// Embed the query text. Failures here are the embedder's
 	// problem — surface them directly so operators see exactly
 	// what went wrong.
@@ -354,14 +377,12 @@ func (m *Memory) execSearch(ctx context.Context, scope store.MemoryScope, scopeI
 	}
 	queryVec := vecs[0]
 
-	// Request topK+1 from the store so we can distinguish "result set
-	// exactly fills the limit" (truncated=false) from "result set
-	// overflowed the limit by ≥1" (truncated=true). Without the +1
-	// probe, len(results)==topK is ambiguous and agents using
-	// "paginate until truncated=false" make spurious extra calls.
-	// The store's defensive cap accepts up to 51 — see
-	// MemoryEmbedSearch's contract comment.
-	results, err := m.Store.MemoryEmbedSearch(ctx, scope, scopeID, in.Prefix, queryVec, topK+1)
+	// Fetch the candidate pool (cosine-ordered) with a +1 truncation
+	// probe: len(results) > topK distinguishes "more matched than we
+	// return" from "result set fits". For a hybrid rank the pool is wider
+	// than topK so the re-rank has entries to promote; for pure semantic,
+	// fetch == topK+1 (identical to pre-RFC-I). Store caps at 51.
+	results, err := m.Store.MemoryEmbedSearch(ctx, scope, scopeID, in.Prefix, queryVec, fetch)
 	if err != nil {
 		// ErrDimensionMismatch is the user-actionable one — operators
 		// swap embedder models and forget to re-embed. Surface it as a
@@ -374,18 +395,27 @@ func (m *Memory) execSearch(ctx context.Context, scope store.MemoryScope, scopeI
 		return errResult(fmt.Sprintf("search: %s", err)), nil
 	}
 
-	// The +1 probe row (if present) signals truncation; trim before
-	// rendering so the agent never sees more than topK entries.
+	// truncated reflects the cosine pool (more matched than the caller's
+	// top_k), computed before the re-rank trims the pool.
 	truncated := len(results) > topK
-	if truncated {
-		results = results[:topK]
+
+	// Hybrid re-rank, then trim to top_k. Default config is a no-op
+	// reorder (cosine order preserved), so pure-semantic output is byte-
+	// identical to before.
+	now := time.Now()
+	ranked := memrank.RankCandidates(results, rankCfg, now)
+	if len(ranked) > topK {
+		ranked = ranked[:topK]
 	}
-	entries := make([]map[string]any, 0, len(results))
-	for _, r := range results {
+	rankScores := memrank.ScoreAll(ranked, rankCfg, now)
+
+	entries := make([]map[string]any, 0, len(ranked))
+	for i, r := range ranked {
 		entries = append(entries, map[string]any{
-			"key":   r.Key,
-			"value": r.Value,
-			"score": r.Score,
+			"key":        r.Key,
+			"value":      r.Value,
+			"score":      r.Score,      // cosine similarity (unchanged field)
+			"rank_score": rankScores[i], // hybrid score this result was ordered by
 			"embedded_with": map[string]any{
 				"provider": r.EmbeddedWith.Provider,
 				"model":    r.EmbeddedWith.Model,
@@ -393,11 +423,17 @@ func (m *Memory) execSearch(ctx context.Context, scope store.MemoryScope, scopeI
 			"expires_at": expiresAtRFC3339(r.ExpiresAt),
 		})
 	}
-	return okJSON(map[string]any{
+	out := map[string]any{
 		"entries":             entries,
 		"query_embedding_dim": len(queryVec),
 		"truncated":           truncated,
-	})
+	}
+	// Don't silently ignore a non-zero source/frequency weight — those
+	// terms are reserved (contribute 0 today). Surface a note instead.
+	if rankCfg.SourceFrequencyReserved() {
+		out["rank_note"] = "source_weight and frequency_weight are reserved and contribute 0 until source/access_count tracking ships"
+	}
+	return okJSON(out)
 }
 
 func (m *Memory) execDelete(ctx context.Context, scope store.MemoryScope, scopeID string, in memoryInput) (tools.Result, error) {
