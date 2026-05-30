@@ -53,12 +53,35 @@ type Executor struct {
 	// Nil ⇒ single-agent mode: every request routes to agentName
 	// regardless of skill id (back-compat with the A2A-4 bridge tests).
 	resolveAgent func(skillID string) (string, bool)
+
+	// resolver wakes a run parked on an Interruption.ask when a
+	// same-task follow-up message/send arrives. Nil ⇒ the INPUT_REQUIRED
+	// bridge is disabled: a parked run is treated like any other (it
+	// still parks, but a follow-up starts a fresh run rather than
+	// resuming). Installed via WithInterruptionBridge.
+	resolver InterruptResolver
+
+	// parks tracks runs blocked on an interruption so a resume can
+	// re-attach to the same run's event stream. Always non-nil.
+	parks *parkRegistry
 }
 
 // NewExecutor builds an Executor for one loomcycle agent. Skill-based
-// multi-agent routing is opt-in via WithAgentResolver.
+// multi-agent routing is opt-in via WithAgentResolver; the
+// INPUT_REQUIRED ↔ Interruption bridge is opt-in via
+// WithInterruptionBridge.
 func NewExecutor(r runner.Runner, conn connector.Connector, runs RunReader, agentName string) *Executor {
-	return &Executor{runner: r, conn: conn, runs: runs, agentName: agentName}
+	return &Executor{runner: r, conn: conn, runs: runs, agentName: agentName, parks: newParkRegistry()}
+}
+
+// WithInterruptionBridge installs the resolver that wakes runs parked on
+// an Interruption.ask. With it set, a same-task follow-up message/send
+// RESOLVES the pending interruption (rather than starting a new run) and
+// resumes the parked run to terminal. Without it, parking still surfaces
+// INPUT_REQUIRED but a follow-up starts a fresh run.
+func (e *Executor) WithInterruptionBridge(r InterruptResolver) *Executor {
+	e.resolver = r
+	return e
 }
 
 // WithAgentResolver installs a skill-id → agent-name resolver so one
@@ -88,9 +111,15 @@ func (e *Executor) Execute(ctx context.Context, execCtx *a2asrv.ExecutorContext)
 			return
 		}
 
-		// SUBMITTED beat only for a brand-new task (no stored task).
-		if execCtx.StoredTask == nil {
-			if !yield(a2asdk.NewSubmittedTask(execCtx, execCtx.Message), nil) {
+		// RESUME path: a follow-up message carrying a known task whose
+		// run is parked on an interruption is an answer, not a new run.
+		// Detect it and route to resolve+resume instead of starting a
+		// fresh run. An UNKNOWN task (no parked run for it) falls through
+		// to the fresh-start path below — exactly the "unknown-taskId
+		// follow-up starts a new run" contract.
+		if execCtx.StoredTask != nil {
+			if parked, ok := e.parks.take(execCtx.TaskID); ok {
+				e.resumeParkedRun(ctx, execCtx, parked, yield)
 				return
 			}
 		}
@@ -102,56 +131,186 @@ func (e *Executor) Execute(ctx context.Context, execCtx *a2asrv.ExecutorContext)
 			return
 		}
 
-		// Buffered enough to absorb a burst without blocking the loop
-		// between yields; the loop still blocks once the buffer fills,
-		// which is the desired back-pressure.
-		events := make(chan providers.Event, 16)
-		var runErr error
-		done := make(chan struct{})
-
-		go func() {
-			defer close(done)
-			defer close(events)
-			runErr = e.runner.RunOnce(ctx, in, runner.RunCallbacks{
-				OnEvent: func(ev providers.Event) {
-					select {
-					case events <- ev:
-					case <-ctx.Done():
-					}
-				},
-			})
-		}()
-
-		for ev := range events {
-			for _, out := range translateEvent(ev, execCtx) {
-				if !yield(out, nil) {
-					// Consumer abandoned the stream; let the run
-					// finish in the background (RunOnce honours ctx
-					// cancellation from the transport).
-					return
-				}
+		// SUBMITTED beat only for a brand-new task (no stored task).
+		if execCtx.StoredTask == nil {
+			if !yield(a2asdk.NewSubmittedTask(execCtx, execCtx.Message), nil) {
+				return
 			}
 		}
-		<-done
 
-		if runErr != nil {
-			// A setup/internal RunOnce error before a terminal run row
-			// is the A2A FAILED case carrying the cause.
-			yield(a2asdk.NewStatusUpdateEvent(execCtx, a2asdk.TaskStateFailed,
-				agentMessage(runErr.Error())), nil)
+		stream := e.startRun(ctx, in)
+		e.streamToClient(ctx, execCtx, in.AgentID, stream, yield)
+	}
+}
+
+// runStream is the live output of a backgrounded run: forwarded events,
+// a done signal, and a pointer to the run error (valid after done).
+type runStream struct {
+	out     <-chan providers.Event
+	done    <-chan struct{}
+	runErr  *error
+	agentID string
+}
+
+// startRun launches RunOnce in a goroutine and forwards its OnEvent
+// callbacks onto a buffered channel. The goroutine owns the channel and
+// outlives any single Execute call, so a run that parks on an
+// interruption keeps draining in the background — the resume Execute
+// re-attaches to the SAME `out` channel via the park registry. This is
+// the key difference from a simple per-call goroutine: events emitted
+// after the park (once the bus wakes the run) are not lost.
+func (e *Executor) startRun(ctx context.Context, in runner.RunInput) *runStream {
+	// Buffered to absorb bursts; the run still blocks once full, which
+	// is the desired back-pressure when no consumer is attached.
+	events := make(chan providers.Event, 16)
+	done := make(chan struct{})
+	var runErr error
+	go func() {
+		defer close(done)
+		defer close(events)
+		runErr = e.runner.RunOnce(ctx, in, runner.RunCallbacks{
+			OnEvent: func(ev providers.Event) {
+				select {
+				case events <- ev:
+				case <-ctx.Done():
+				}
+			},
+		})
+	}()
+	return &runStream{out: events, done: done, runErr: &runErr, agentID: in.AgentID}
+}
+
+// streamToClient drains a run stream, yielding translated A2A events to
+// the client. It implements the INPUT_REQUIRED bridge: when the run
+// emits EventInterruptionPending it has parked on the bus inside the
+// Interruption tool, so the executor emits TASK_STATE_INPUT_REQUIRED
+// (carrying the question), registers the still-live stream in the park
+// registry keyed by the task, and RETURNS — pausing yielding exactly as
+// A2A-4 found the SDK expects on input-required. The background run
+// goroutine stays blocked on the bus; a follow-up message resolves it.
+//
+// On normal stream end it yields the run's terminal status. Setup errors
+// surface as FAILED.
+func (e *Executor) streamToClient(ctx context.Context, execCtx *a2asrv.ExecutorContext, agentID string, stream *runStream, yield func(a2asdk.Event, error) bool) {
+	for ev := range stream.out {
+		if ev.Type == providers.EventInterruptionPending {
+			// The run is now parked on intr:<id>. Surface the question
+			// as INPUT_REQUIRED and stop consuming; the run lives on in
+			// the background so a resume can continue it.
+			if e.resolver != nil {
+				e.parks.put(execCtx.TaskID, &parkedRun{
+					out:       stream.out,
+					done:      stream.done,
+					runErrPtr: stream.runErr,
+					agentID:   agentID,
+				})
+			}
+			yield(inputRequiredStatus(execCtx, ev.Interruption), nil)
 			return
 		}
-
-		outcome, ok := e.finalOutcome(ctx, in.AgentID)
-		if !ok {
-			yield(a2asdk.NewStatusUpdateEvent(execCtx, a2asdk.TaskStateFailed,
-				agentMessage("a2a executor: run finished without a resolvable terminal status")), nil)
-			return
-		}
-		if term, ok := terminalStatusForRun(execCtx, outcome); ok {
-			yield(term, nil)
+		for _, out := range translateEvent(ev, execCtx) {
+			if !yield(out, nil) {
+				// Consumer abandoned the stream; let the run finish in
+				// the background (RunOnce honours ctx cancellation).
+				return
+			}
 		}
 	}
+	<-stream.done
+	e.yieldTerminal(ctx, execCtx, agentID, *stream.runErr, yield)
+}
+
+// resumeParkedRun answers the run's pending interruption and re-attaches
+// to its already-running event stream, yielding the rest of the run to
+// terminal. The follow-up message's text is the human's answer. If the
+// run parks AGAIN on a second interruption, the bridge re-registers it
+// (streamToClient handles that) so multi-turn input flows compose.
+func (e *Executor) resumeParkedRun(ctx context.Context, execCtx *a2asrv.ExecutorContext, parked *parkedRun, yield func(a2asdk.Event, error) bool) {
+	run, err := e.runs.GetRunByAgentID(ctx, parked.agentID)
+	if err != nil {
+		yield(a2asdk.NewStatusUpdateEvent(execCtx, a2asdk.TaskStateFailed,
+			agentMessage("a2a executor: resume could not locate the parked run: "+err.Error())), nil)
+		return
+	}
+	intrID, ok := e.resolver.PendingForRun(ctx, run.ID)
+	if !ok {
+		// No pending interrupt despite a registered park — the run was
+		// resolved out-of-band (timeout, HTTP resolve) between park and
+		// this follow-up. Re-attach and stream to terminal anyway.
+		e.streamFromParked(ctx, execCtx, parked, yield)
+		return
+	}
+	answer := answerFromMessage(execCtx.Message)
+	if err := e.resolver.Resolve(ctx, intrID, answer); err != nil {
+		yield(a2asdk.NewStatusUpdateEvent(execCtx, a2asdk.TaskStateFailed,
+			agentMessage("a2a executor: resolve interruption failed: "+err.Error())), nil)
+		return
+	}
+	e.streamFromParked(ctx, execCtx, parked, yield)
+}
+
+// streamFromParked re-attaches to a parked run's stream and drives it to
+// terminal (or to a second park). Same body as the tail of
+// streamToClient but starting from an existing stream.
+func (e *Executor) streamFromParked(ctx context.Context, execCtx *a2asrv.ExecutorContext, parked *parkedRun, yield func(a2asdk.Event, error) bool) {
+	stream := &runStream{out: parked.out, done: parked.done, runErr: parked.runErrPtr, agentID: parked.agentID}
+	e.streamToClient(ctx, execCtx, parked.agentID, stream, yield)
+}
+
+// yieldTerminal emits the closing status event for a finished run.
+func (e *Executor) yieldTerminal(ctx context.Context, execCtx *a2asrv.ExecutorContext, agentID string, runErr error, yield func(a2asdk.Event, error) bool) {
+	if runErr != nil {
+		// A setup/internal RunOnce error before a terminal run row is
+		// the A2A FAILED case carrying the cause.
+		yield(a2asdk.NewStatusUpdateEvent(execCtx, a2asdk.TaskStateFailed,
+			agentMessage(runErr.Error())), nil)
+		return
+	}
+	outcome, ok := e.finalOutcome(ctx, agentID)
+	if !ok {
+		yield(a2asdk.NewStatusUpdateEvent(execCtx, a2asdk.TaskStateFailed,
+			agentMessage("a2a executor: run finished without a resolvable terminal status")), nil)
+		return
+	}
+	if term, ok := terminalStatusForRun(execCtx, outcome); ok {
+		yield(term, nil)
+	}
+}
+
+// inputRequiredStatus builds the TASK_STATE_INPUT_REQUIRED event from a
+// pending interruption, carrying the question text as the status message
+// so the A2A client can render the prompt. Verbatim from the interrupt
+// row (loop-originated, never unauthenticated model-policy text).
+func inputRequiredStatus(info a2asdk.TaskInfoProvider, intr *providers.InterruptionEventInfo) a2asdk.Event {
+	var msg *a2asdk.Message
+	if intr != nil && intr.Question != "" {
+		msg = a2asdk.NewMessage(a2asdk.MessageRoleAgent, a2asdk.NewTextPart(intr.Question))
+	}
+	return a2asdk.NewStatusUpdateEvent(info, a2asdk.TaskStateInputRequired, msg)
+}
+
+// answerFromMessage extracts the human's answer text from a resume
+// message's parts (text parts concatenated). The answer is recorded
+// against the interruption + fed back into the parked loop.
+func answerFromMessage(msg *a2asdk.Message) string {
+	if msg == nil {
+		return ""
+	}
+	blocks, err := partsToContentBlocks(msg.Parts)
+	if err != nil {
+		return ""
+	}
+	var out string
+	for _, b := range blocks {
+		if b.Text == "" {
+			continue
+		}
+		if out != "" {
+			out += "\n"
+		}
+		out += b.Text
+	}
+	return out
 }
 
 // Cancel requests the loop stop working on the task. It routes through

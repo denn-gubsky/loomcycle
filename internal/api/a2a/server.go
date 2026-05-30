@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"strings"
 
@@ -31,23 +32,34 @@ import (
 type Authenticator func(h http.Header) (name string, ok bool)
 
 // CardAndRunStore is the narrow store surface the A2A server needs: the
-// active-server-card resolver path (lookup) plus the run-table reader
-// the TaskStore is backed by. store.Store satisfies it; tests inject a
-// small fake. Declared as an interface so this package doesn't drag in
-// the full store.Store dependency for unit tests.
+// active-server-card resolver path (lookup), the run-table reader the
+// TaskStore is backed by, and the interrupt-row surface the
+// INPUT_REQUIRED resume bridge resolves against. store.Store satisfies
+// it; tests inject a small fake. Declared as an interface so this
+// package doesn't drag in the full store.Store dependency for unit tests.
 type CardAndRunStore interface {
 	lookup.A2AServerCardStore
 	bridge.RunReader
+	bridge.InterruptStore
 }
 
 // Deps are the injected dependencies for the A2A server surface. All are
-// constructor-required; the server does not reach into globals.
+// constructor-required except ChannelNotify; the server does not reach
+// into globals.
 type Deps struct {
 	Cfg   *config.Config
 	Store CardAndRunStore     // resolves the active A2AServerCardDef + backs the TaskStore
 	Conn  connector.Connector // cancel path for the executor
 	Run   runner.Runner       // drives agent runs
 	Auth  Authenticator       // frontier auth → principal (nil ⇒ all requests anonymous)
+
+	// ChannelNotify wakes a run parked on an Interruption.ask, keyed by
+	// "intr:<id>". It MUST be the SAME notification bus the Interruption
+	// tool's blockWithHeartbeat waits on (main.go's channelBus.Notify) —
+	// otherwise a resumed A2A run never unblocks. Nil ⇒ the INPUT_REQUIRED
+	// resume bridge is disabled: a parked run still surfaces INPUT_REQUIRED
+	// but a follow-up message starts a fresh run instead of resuming.
+	ChannelNotify func(busKey string)
 }
 
 // Server is the mounted A2A surface. It owns the resolved card + the SDK
@@ -59,6 +71,11 @@ type Server struct {
 	tenancy  string // "", "none", "host", or "path"
 	baseURL  string
 	cardName string
+
+	// signEnvAllowlist gates which env var the active card's
+	// sign_with_key_env may read, mirroring the scheduler / RFC F env
+	// allowlist. Empty ⇒ no env var is readable ⇒ cards serve unsigned.
+	signEnvAllowlist map[string]bool
 
 	// handler is the SDK RequestHandler that all three bindings share.
 	handler a2asrv.RequestHandler
@@ -108,6 +125,18 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 			return agent, ok
 		})
 
+	// INPUT_REQUIRED ↔ Interruption resume bridge. With a notify hook
+	// wired (the SAME bus the Interruption tool waits on), a same-task
+	// follow-up message RESOLVES the run's pending interruption and
+	// resumes it; without it, a parked run still surfaces INPUT_REQUIRED
+	// but a follow-up starts a fresh run. The resolver reuses the run
+	// store's InterruptResolve + the channel bus's Notify — converging A2A
+	// resume and HTTP resume on one mechanism (see internal/a2a
+	// NewInterruptResolver).
+	if deps.ChannelNotify != nil {
+		exec = exec.WithInterruptionBridge(bridge.NewInterruptResolver(deps.Store, deps.ChannelNotify))
+	}
+
 	// The principal interceptor runs the frontier Authenticator and
 	// stamps the SDK CallContext.User, which the bridge reads in
 	// principalFromContext. This is how A2A binding requests get
@@ -123,13 +152,19 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 	}
 	handler := a2asrv.NewHandler(exec, opts...)
 
+	allow := make(map[string]bool, len(deps.Cfg.Env.SchedulerEnvAllowlist))
+	for _, n := range deps.Cfg.Env.SchedulerEnvAllowlist {
+		allow[n] = true
+	}
+
 	return &Server{
-		deps:     deps,
-		tenancy:  deps.Cfg.Env.A2ATenancyRouting,
-		baseURL:  deps.Cfg.Env.A2APublicBaseURL,
-		cardName: cardName,
-		handler:  handler,
-		grpc:     a2agrpc.NewHandler(handler),
+		deps:             deps,
+		tenancy:          deps.Cfg.Env.A2ATenancyRouting,
+		baseURL:          deps.Cfg.Env.A2APublicBaseURL,
+		cardName:         cardName,
+		signEnvAllowlist: allow,
+		handler:          handler,
+		grpc:             a2agrpc.NewHandler(handler),
 	}, nil
 }
 
@@ -262,7 +297,10 @@ func (s *Server) handleExtendedCard(w http.ResponseWriter, r *http.Request) {
 // writeCard resolves the active card fresh per request (so a substrate
 // edit is reflected without restart on the served metadata) and writes
 // the generated AgentCard JSON. Cache-Control: max-age=300 per the
-// slice spec. Signing is a no-op stub this slice (A2A-6).
+// slice spec. When the card declares sign_with_key_env and that var is
+// allowlisted + holds a usable key, the served card is JWS-signed
+// (A2A-6); otherwise it is served unsigned with a tracing line — card
+// serving never fails on a signing problem.
 func (s *Server) writeCard(w http.ResponseWriter, tenant string, extended bool) {
 	card, ok := lookup.A2AServerCard(context.Background(), s.deps.Store, s.deps.Cfg, s.cardName)
 	if !ok {
@@ -271,6 +309,7 @@ func (s *Server) writeCard(w http.ResponseWriter, tenant string, extended bool) 
 	}
 	base, prefix := s.cardURLAnchors(tenant)
 	generated := buildAgentCard(card, base, prefix, extended)
+	signCardIfConfigured(generated, card, s.signEnvAllowlist, log.Printf)
 
 	// Marshal before writing any header so a (very unlikely) encode
 	// failure surfaces as a clean 500 rather than a truncated 200 body.

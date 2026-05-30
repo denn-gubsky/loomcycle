@@ -9,6 +9,7 @@ import (
 
 	a2asdk "github.com/a2aproject/a2a-go/v2/a2a"
 
+	"github.com/denn-gubsky/loomcycle/internal/a2a/sign"
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/connector"
 	"github.com/denn-gubsky/loomcycle/internal/runner"
@@ -28,6 +29,12 @@ func (fakeStore) GetRun(ctx context.Context, runID string) (store.Run, error) {
 }
 func (fakeStore) GetRunByAgentID(ctx context.Context, agentID string) (store.Run, error) {
 	return store.Run{}, &store.ErrNotFound{Kind: "run", ID: agentID}
+}
+func (fakeStore) InterruptListByRun(ctx context.Context, runID, statusFilter string) ([]store.InterruptRow, error) {
+	return nil, nil
+}
+func (fakeStore) InterruptResolve(ctx context.Context, interruptID, answer, resolvedBy string, answerMeta json.RawMessage) error {
+	return nil
 }
 
 // noopRunner satisfies runner.Runner without doing anything; the routing
@@ -137,6 +144,72 @@ func TestWellKnownCard_ServedWithCacheControl(t *testing.T) {
 	}
 	if card.Name != "loomcycle-fleet" || len(card.Skills) != 2 {
 		t.Errorf("served card = %+v", card)
+	}
+}
+
+// TestWellKnownCard_ServedSignedWhenKeyAllowlisted asserts the full
+// served-card path signs the card end-to-end when sign_with_key_env names
+// an allowlisted var holding a usable key — the signature is present on
+// the fetched card and verifies via the self-contained path.
+func TestWellKnownCard_ServedSignedWhenKeyAllowlisted(t *testing.T) {
+	const envName = "LOOMCYCLE_A2A_SIGNING_KEY"
+	_, pemStr := ecKeyPEM(t)
+	t.Setenv(envName, pemStr)
+
+	cardCfg := fixtureCard()
+	cardCfg.SignWithKeyEnv = envName
+	cfg := &config.Config{
+		A2AServerCards: map[string]config.A2AServerCard{"loomcycle-fleet": cardCfg},
+	}
+	cfg.Env.A2AServerEnabled = true
+	cfg.Env.A2AServerCardName = "loomcycle-fleet"
+	cfg.Env.A2APublicBaseURL = "https://agents.example"
+	cfg.Env.SchedulerEnvAllowlist = []string{envName}
+
+	srv, err := New(context.Background(), Deps{Cfg: cfg, Store: fakeStore{}, Conn: noopConnector{}, Run: noopRunner{}})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	rec, card := fetchCard(t, mountedHandler(srv), "/.well-known/agent-card.json", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if len(card.Signatures) != 1 {
+		t.Fatalf("served card has %d signatures, want 1 (signed)", len(card.Signatures))
+	}
+	if err := sign.VerifyCardSelfContained(card); err != nil {
+		t.Fatalf("served signature does not verify: %v", err)
+	}
+}
+
+// TestWellKnownCard_ServedUnsignedWhenKeyNotAllowlisted asserts a card
+// whose sign_with_key_env is NOT on the allowlist is served unsigned —
+// serving never fails on the signing gate.
+func TestWellKnownCard_ServedUnsignedWhenKeyNotAllowlisted(t *testing.T) {
+	const envName = "LOOMCYCLE_A2A_SIGNING_KEY"
+	_, pemStr := ecKeyPEM(t)
+	t.Setenv(envName, pemStr)
+
+	cardCfg := fixtureCard()
+	cardCfg.SignWithKeyEnv = envName
+	cfg := &config.Config{
+		A2AServerCards: map[string]config.A2AServerCard{"loomcycle-fleet": cardCfg},
+	}
+	cfg.Env.A2AServerEnabled = true
+	cfg.Env.A2AServerCardName = "loomcycle-fleet"
+	cfg.Env.A2APublicBaseURL = "https://agents.example"
+	// SchedulerEnvAllowlist intentionally omits envName.
+
+	srv, err := New(context.Background(), Deps{Cfg: cfg, Store: fakeStore{}, Conn: noopConnector{}, Run: noopRunner{}})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	_, card := fetchCard(t, mountedHandler(srv), "/.well-known/agent-card.json", "")
+	if card == nil {
+		t.Fatal("card not served")
+	}
+	if len(card.Signatures) != 0 {
+		t.Fatalf("served card was signed despite key not being allowlisted")
 	}
 }
 

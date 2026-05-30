@@ -45,6 +45,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/heartbeat"
 	"github.com/denn-gubsky/loomcycle/internal/help"
 	"github.com/denn-gubsky/loomcycle/internal/hooks"
+	"github.com/denn-gubsky/loomcycle/internal/lookup"
 	mcpsign "github.com/denn-gubsky/loomcycle/internal/mcp"
 	"github.com/denn-gubsky/loomcycle/internal/metrics"
 	lcotel "github.com/denn-gubsky/loomcycle/internal/otel"
@@ -73,6 +74,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/api/grpc/loomcyclepb"
 	lcmcp "github.com/denn-gubsky/loomcycle/internal/api/mcp"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
+	toolsa2a "github.com/denn-gubsky/loomcycle/internal/tools/a2a"
 	"github.com/denn-gubsky/loomcycle/internal/tools/builtin"
 	"github.com/denn-gubsky/loomcycle/internal/tools/localapi"
 	"github.com/denn-gubsky/loomcycle/internal/tools/mcp"
@@ -980,6 +982,26 @@ func main() {
 		log.Printf("mcp_server_defs: list active failed at boot: %v (dynamic MCP servers will be empty until first registration)", err)
 	}
 
+	// v1.x RFC G — outbound A2A: register one synthetic
+	// `a2a__<peer>__<skill>` tool per (operator-registered peer,
+	// expected_skill) pair, mirroring the static MCP registration above.
+	// They land in allTools and are filtered per-agent by `allowed_tools`
+	// exactly like `mcp__<server>__<tool>` tools. Gated behind the same
+	// LOOMCYCLE_A2A_ENABLED master switch as the server surface: with A2A
+	// disabled, no outbound tools are registered. The per-call resolver is
+	// lookup.A2AAgent (yaml > active substrate def) so a substrate fork of
+	// a registered peer is picked up without a restart.
+	if cfg.Env.A2AServerEnabled {
+		a2aResolve := func(ctx context.Context, name string) (config.A2AAgent, bool) {
+			return lookup.A2AAgent(ctx, storeIface, cfg, name)
+		}
+		a2aTools := toolsa2a.RegisterTools(context.Background(), cfg, storeIface, a2aResolve, nil, log.Printf)
+		if len(a2aTools) > 0 {
+			allTools = append(allTools, a2aTools...)
+			log.Printf("a2a: registered %d outbound peer tool(s)", len(a2aTools))
+		}
+	}
+
 	// Back-fill Context tool's catalog with the FINAL allTools slice
 	// (including MCP-served tools registered above) so doc/tools ops
 	// reflect the complete runtime catalog. Must happen AFTER every
@@ -1169,6 +1191,11 @@ func main() {
 			Conn:  srv,
 			Run:   srv,
 			Auth:  a2aAuth,
+			// Same bus the Interruption tool waits on + the HTTP resolve
+			// handler notifies (SetInterruptionBus(channelBus) above), so an
+			// A2A INPUT_REQUIRED follow-up wakes the parked run on the same
+			// "intr:<id>" key.
+			ChannelNotify: channelBus.Notify,
 		})
 		if err != nil {
 			log.Fatalf("a2a server: %v", err)
