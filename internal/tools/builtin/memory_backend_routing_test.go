@@ -30,7 +30,28 @@ func routingFixture(t *testing.T) (*Memory, context.Context, func()) {
 		Cfg: &config.Config{
 			MemoryBackends: map[string]config.MemoryBackend{
 				"local-store": {Name: "local-store", Kind: "inprocess"},
-				"team-mem9":   {Name: "team-mem9", Kind: "mem9"},
+				// team-mem9 points at an unreachable base_url and opts into
+				// fallback_on_error=inprocess: ops fail at the primary and
+				// degrade to local memory. (No env-allowlisted key is set, so
+				// even resolution would fail — either way the fallback serves.)
+				"team-mem9": {
+					Name:            "team-mem9",
+					Kind:            "mem9",
+					Config:          config.MemoryBackendConfig{BaseURL: "http://127.0.0.1:1/unreachable", APIKeyEnv: "LOOMCYCLE_MEM9_TEST_KEY"},
+					FallbackOnError: "inprocess",
+				},
+				// mem9-shared-no-tenant uses shared_key_with_prefix needing
+				// {tenant_id}; a run without a user_id can't resolve it →
+				// construction fails → operator-default fallback.
+				"mem9-shared-no-tenant": {
+					Name:   "mem9-shared-no-tenant",
+					Kind:   "mem9",
+					Config: config.MemoryBackendConfig{BaseURL: "http://127.0.0.1:1/unreachable", APIKeyEnv: "LOOMCYCLE_MEM9_TEST_KEY"},
+					TenancyStrategy: config.MemoryBackendTenancy{
+						Kind:          "shared_key_with_prefix",
+						PrefixPattern: "tenant-{tenant_id}::",
+					},
+				},
 			},
 		},
 	}
@@ -78,7 +99,13 @@ func TestMemoryBackend_NamedInprocessDefRoutesAndWorks(t *testing.T) {
 	roundTrip(t, tool, withBackend(ctx, "local-store"))
 }
 
-func TestMemoryBackend_Mem9DefFallsBackToInprocess(t *testing.T) {
+// TestMemoryBackend_Mem9WithFallbackBuildsWrappedBackend pins that a
+// mem9-kind Def with fallback_on_error=inprocess builds a working backend
+// (wrapped in the fallback) and that an op against an UNREACHABLE Mem9
+// degrades to the in-process backend rather than failing the agent. The
+// fixture's team-mem9 points at a non-routable base_url, so the primary
+// fails and the fallback serves — the wired-but-degrading MR-4 path.
+func TestMemoryBackend_Mem9WithFallbackBuildsWrappedBackend(t *testing.T) {
 	tool, ctx, cleanup := routingFixture(t)
 	defer cleanup()
 
@@ -87,12 +114,36 @@ func TestMemoryBackend_Mem9DefFallsBackToInprocess(t *testing.T) {
 	log.SetOutput(&buf)
 	defer log.SetOutput(old)
 
-	// mem9 is not wired yet (MR-4) — the op must still succeed via the
-	// in-process fallback, and the fallback must be logged.
+	// team-mem9 has fallback_on_error=inprocess + an unreachable base_url
+	// (see routingFixture). The set/get must still succeed via the
+	// in-process fallback, and the degradation must be logged.
 	roundTrip(t, tool, withBackend(ctx, "team-mem9"))
 
-	if !strings.Contains(buf.String(), "kind=mem9 not yet wired") {
-		t.Errorf("expected mem9 fallback log, got: %q", buf.String())
+	if !strings.Contains(buf.String(), "falling back to in-process") {
+		t.Errorf("expected mem9 degradation log, got: %q", buf.String())
+	}
+}
+
+// TestMemoryBackend_Mem9BuildErrorFallsBack pins that a CONSTRUCTION
+// failure (here: shared_key_with_prefix tenancy on a run with no tenant)
+// degrades to the operator-default backend with a log — a build error
+// never fails the agent.
+func TestMemoryBackend_Mem9BuildErrorFallsBack(t *testing.T) {
+	tool, _, cleanup := routingFixture(t)
+	defer cleanup()
+	// A run with NO user_id → no {tenant_id} for shared_key_with_prefix.
+	ctx := tools.WithAgentName(context.Background(), "qa-agent")
+	ctx = tools.WithRunIdentity(ctx, tools.RunIdentityValue{AgentID: "a_test"})
+
+	var buf bytes.Buffer
+	old := log.Writer()
+	log.SetOutput(&buf)
+	defer log.SetOutput(old)
+
+	roundTrip(t, tool, withBackend(ctx, "mem9-shared-no-tenant"))
+
+	if !strings.Contains(buf.String(), "tenancy unresolved") {
+		t.Errorf("expected tenancy-unresolved fallback log, got: %q", buf.String())
 	}
 }
 

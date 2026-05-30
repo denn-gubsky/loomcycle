@@ -6,13 +6,16 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"os"
 	"strings"
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/lookup"
 	memrank "github.com/denn-gubsky/loomcycle/internal/memory"
+	"github.com/denn-gubsky/loomcycle/internal/memory/backends/fallback"
 	"github.com/denn-gubsky/loomcycle/internal/memory/backends/inprocess"
+	"github.com/denn-gubsky/loomcycle/internal/memory/backends/mem9"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
@@ -90,6 +93,16 @@ type Memory struct {
 	// per-agent routing path can't resolve named backends and every agent
 	// falls back to the operator-default backend — the pre-MR-3b behavior.
 	Cfg *config.Config
+
+	// EnvAllowlist gates which env vars the mem9 backend may read for its
+	// X-API-Key (RFC I MR-4 / Decision 10). Set in main.go from
+	// cfg.Env.SchedulerEnvAllowlist — the same allowlist the scheduler +
+	// webhooks use, so there's no new credential surface. An empty / nil
+	// allowlist means NO env var is readable: a mem9 backend whose key
+	// comes from env then refuses to construct and the agent falls back to
+	// in-process (a non-allowlisted key must never produce a silent
+	// unauthenticated call).
+	EnvAllowlist map[string]bool
 }
 
 // backend resolves the memrank.Backend the data ops route through,
@@ -131,11 +144,135 @@ func (m *Memory) backend(ctx context.Context) memrank.Backend {
 	case "", "inprocess":
 		return inprocess.New(m.Store, m.Embedder)
 	case "mem9":
-		log.Printf("memory: memory_backend %q kind=mem9 not yet wired (MR-4) — using in-process fallback", name)
-		return m.defaultBackend()
+		return m.buildMem9(ctx, name, def)
 	default:
 		log.Printf("memory: memory_backend %q has unknown kind %q — using in-process fallback", name, def.Kind)
 		return m.defaultBackend()
+	}
+}
+
+// buildMem9 constructs the RFC I MR-4 Mem9 REST backend for a resolved
+// kind=mem9 Def, wraps it in the fallback backend when the Def opts into
+// fallback_on_error=inprocess, and degrades to the operator-default
+// backend on any CONSTRUCTION error (e.g. an unresolvable / non-allowlisted
+// key, or a missing tenant). A construction failure must never fail the
+// agent — it logs and falls back, the same posture as an unresolved name.
+//
+// Credentials are resolved PER OP by the injected CredentialResolver, not
+// here; this only validates that the Def is structurally constructible.
+func (m *Memory) buildMem9(ctx context.Context, name string, def config.MemoryBackend) memrank.Backend {
+	tenancy, prefix, err := resolveTenancy(ctx, def.TenancyStrategy)
+	if err != nil {
+		log.Printf("memory: memory_backend %q (mem9) tenancy unresolved: %v — using in-process fallback", name, err)
+		return m.defaultBackend()
+	}
+
+	resolver := m.mem9CredentialResolver(def, def.TenancyStrategy, prefix)
+
+	b := mem9.New(mem9.Config{
+		BaseURL:            def.Config.BaseURL,
+		APIVersion:         def.Config.APIVersion,
+		Tenancy:            tenancy,
+		CredentialResolver: resolver,
+		BackendName:        name,
+	})
+
+	// fallback_on_error=inprocess wraps the remote backend so a Mem9
+	// outage degrades to local memory instead of failing the run.
+	if def.FallbackOnError == "inprocess" {
+		return fallback.New(b, m.defaultBackend(), log.Printf)
+	}
+	return b
+}
+
+// resolveTenancy maps a MemoryBackendDef tenancy_strategy onto the mem9
+// package's resolved Tenancy + the tenant_id used for env-pattern
+// resolution. {tenant_id} is substituted from the run's tenant.
+//
+// TENANT SOURCE (assumption, surfaced loudly): loomcycle's
+// RunIdentityValue carries no dedicated tenant field, so we use
+// tools.RunIdentity(ctx).UserID as {tenant_id}. The UserID is
+// operator/caller-authoritative (the API layer stamps it; it is NEVER
+// model input — same trust posture as the Memory scope_id), so using it
+// as the tenant partition key does not open a model-controlled
+// cross-tenant path. The RFC's worked example uses per-tenant user
+// identities (alice@tenant-a, bob@tenant-b); single-tenant deployments
+// have one stable UserID and one resolved key. If a first-class tenant
+// field lands on RunIdentityValue later, change ONLY this function.
+func resolveTenancy(ctx context.Context, ts config.MemoryBackendTenancy) (mem9.Tenancy, string, error) {
+	tenantID := tools.RunIdentity(ctx).UserID
+
+	switch ts.Kind {
+	case "", "key_per_tenant":
+		// No key-prefixing — tenant isolation comes from the per-tenant
+		// API key the resolver returns. No prefix in the keyspace.
+		return mem9.Tenancy{}, tenantID, nil
+	case "shared_key_with_prefix":
+		// One shared key; tenant isolation comes from prefixing every key.
+		// A missing tenant here is a hard error: an empty prefix would
+		// collapse all tenants into one keyspace (cross-tenant leak).
+		prefix := ts.PrefixPattern
+		if strings.Contains(prefix, "{tenant_id}") {
+			if tenantID == "" {
+				return mem9.Tenancy{}, "", fmt.Errorf("shared_key_with_prefix needs {tenant_id} but the run carries no tenant (user_id)")
+			}
+			prefix = strings.ReplaceAll(prefix, "{tenant_id}", tenantID)
+		}
+		return mem9.Tenancy{KeyPrefix: prefix}, tenantID, nil
+	default:
+		return mem9.Tenancy{}, "", fmt.Errorf("unknown tenancy_strategy.kind %q", ts.Kind)
+	}
+}
+
+// mem9CredentialResolver builds the per-op X-API-Key resolver for a mem9
+// Def (RFC I MR-4 / Decision 10). Resolution order, evaluated per op:
+//
+//  1. RFC-F per-run credential: tools.RunIdentity(ctx).UserCredentials[<key>]
+//     where <key> is the Def's config.api_key_env name (the documented
+//     convention — the operator's env-var name doubles as the credential
+//     key, so a caller passing {"<API_KEY_ENV>": "..."} on the run
+//     overrides the env value without a second naming scheme).
+//  2. Env fallback: os.Getenv(envName), where envName is the api_key_env
+//     (key_per_tenant) or the tenancy env_pattern with {tenant_id}
+//     substituted. The env var MUST be on the EnvAllowlist; a
+//     non-allowlisted or unset key returns an error so the op fails loud
+//     (or the fallback wrapper engages). NEVER a silent unauthenticated
+//     call.
+//
+// The resolver closes over the tool layer's tools.RunIdentity so the
+// mem9 package needs no dependency on internal/tools. The returned error
+// NEVER contains the key value.
+func (m *Memory) mem9CredentialResolver(def config.MemoryBackend, ts config.MemoryBackendTenancy, _ string) mem9.CredentialResolver {
+	return func(ctx context.Context) (string, error) {
+		// Determine the env-var name to read. key_per_tenant may use the
+		// tenancy env_pattern (per-tenant key); otherwise the static
+		// api_key_env. Re-resolve the tenant per call so a long-lived
+		// resolver always reflects the current run's identity.
+		tenantID := tools.RunIdentity(ctx).UserID
+		envName := def.Config.APIKeyEnv
+		if ts.Kind == "key_per_tenant" && ts.EnvPattern != "" {
+			envName = strings.ReplaceAll(ts.EnvPattern, "{tenant_id}", tenantID)
+		}
+
+		// 1. RFC-F per-run credential keyed by the api_key_env name.
+		if cred, ok := tools.RunIdentity(ctx).UserCredentials[def.Config.APIKeyEnv]; ok && cred != "" {
+			return cred, nil
+		}
+
+		// 2. Env fallback, allowlist-gated.
+		if envName == "" {
+			return "", fmt.Errorf("mem9: no api_key_env configured and no per-run credential supplied")
+		}
+		if !m.EnvAllowlist[envName] {
+			// Reference the env-var NAME only — never the value. The name
+			// is not a secret; the value would be.
+			return "", fmt.Errorf("mem9: env var %q not in allowlist (add it to LOOMCYCLE_SCHEDULER_ENV_ALLOWLIST)", envName)
+		}
+		v := os.Getenv(envName)
+		if v == "" {
+			return "", fmt.Errorf("mem9: env var %q is unset or empty", envName)
+		}
+		return v, nil
 	}
 }
 

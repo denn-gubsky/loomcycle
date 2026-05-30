@@ -553,6 +553,13 @@ func main() {
 		log.Printf("embedder: %s/%s (dim=%d)", embedder.Provider(), embedder.Model(), embedder.Dimension())
 	}
 
+	// RFC I MR-4: the env-allowlist gate for the mem9 backend's X-API-Key.
+	// Same allowlist the scheduler + webhooks use (cfg.Env.SchedulerEnvAllowlist).
+	memoryEnvAllowlist := make(map[string]bool, len(cfg.Env.SchedulerEnvAllowlist))
+	for _, name := range cfg.Env.SchedulerEnvAllowlist {
+		memoryEnvAllowlist[name] = true
+	}
+
 	memoryTool := &builtin.Memory{
 		MaxValueBytes:     cfg.Env.MemoryMaxValueBytes,
 		DefaultQuotaBytes: cfg.Env.MemoryMaxScopeBytes,
@@ -560,6 +567,10 @@ func main() {
 		// RFC I MR-3b: resolves a per-agent memory_backend NAME to its
 		// MemoryBackendDef (static yaml or dynamic substrate Def).
 		Cfg: cfg,
+		// RFC I MR-4: gates which env vars the mem9 backend may read for
+		// its X-API-Key. Reuses the scheduler/webhook env allowlist — no
+		// new credential surface (Decision 10).
+		EnvAllowlist: memoryEnvAllowlist,
 	}
 	allTools = append(allTools, memoryTool)
 
