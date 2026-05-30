@@ -22,7 +22,7 @@
 
 ---
 
-> 🌳 **v1.0 shipped — multi-replica HA in production, external contributions open.** The core primitives stabilised through v0.8 → v0.12 → v1.0. We welcome bug reports, security disclosures, feature contributions, downstream consumers, and forks. See [`CONTRIBUTING.md`](CONTRIBUTING.md).
+> 🌳 **Active development toward v1.0.** The core primitives stabilised through v0.8 → v0.14 — multi-replica HA, the substrate Defs (Agent/Skill/MCPServer/Schedule/Webhook), A2A interoperability, inbound webhooks — with a final feature plus a hardening pass remaining before the v1.0 tag. We welcome bug reports, security disclosures, feature contributions, downstream consumers, and forks. See [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
 ---
 
@@ -50,7 +50,7 @@
 | **Multi-replica HA** — Redis cancel pubsub, cross-replica run status, cluster-wide pause/resume + bus fanout, singleton sweepers, DB-backed session locks. Single binary scales from a cheap VPS to a multi-replica fleet | v0.12.0 → v0.12.5 |
 | **UNIX-style trust model** — operator config is the floor; callers narrow per-request but never widen. Bearer auth at the HTTP frontier; sandbox (Posture A) vs operator-trusted (Posture B) selected via env | v0.4 → ongoing |
 | **Embedded React Web UI** at `/ui` — Library admin (agents / skills / MCP servers), Activity Monitor, Channels view, audit log, **Schedules admin** | v0.8.21 → v0.12.7 |
-| **v1.0 capstone** — docs + hardening pass | v1.0 |
+| **Multi-replica HA capstone** — singleton sweepers, DB-backed session locks + hook registry, docs + hardening pass | v0.12.6 |
 | **ScheduleDef substrate** — operator-yaml `scheduled_runs:` templates + dynamic per-user forks with versioning + lineage. Sweeper fires due rows in parallel; 5-op tool (`create`/`fork`/`get`/`list`/`retire`) + 2 hook ops (`add_hook`/`remove_hook`); `on_complete` delivery via `channel.publish` / `memory.set` / `mcp.call`. Full 4-transport CRUD + `/ui/schedules` admin tab | v0.12.7 |
 | **Per-run named credentials** — `user_credentials: map<string,string>` on `POST /v1/runs` / gRPC / MCP / TS. `${run.credentials.<name>}` substitution in `mcp_servers.*.headers`. Back-compat: legacy `user_bearer` auto-promotes to `credentials.default` | v0.12.7 |
 | **Bundled observability profiles** — three `docker compose up` stacks: Grafana+Tempo+Prom+Loki (open-source), Honeycomb (SaaS), Datadog APM. `GET /metrics` Prometheus endpoint | v0.12.7 |
