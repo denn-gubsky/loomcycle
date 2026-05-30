@@ -207,6 +207,13 @@ type Server struct {
 	a2aServerCardDefTool tools.Tool
 	a2aAgentDefTool      tools.Tool
 
+	// webhookDefTool is the v1.x RFC H WebhookDef substrate tool. Same
+	// operator-admin-only posture as a2aAgentDefTool — NOT in s.tools,
+	// reached via Connector.WebhookDef + the admin endpoint + the
+	// LoomCycle MCP meta-tool. Nil = the surface returns "not
+	// configured" errors. Set via SetWebhookDefTool.
+	webhookDefTool tools.Tool
+
 	// v0.12.0 multi-replica HA. backplane + replicaStore are nil in
 	// single-replica deployments (LOOMCYCLE_REPLICA_ID unset); /healthz
 	// then returns the same response shape as v0.11.x. When set,
@@ -496,6 +503,15 @@ func (s *Server) SetA2AServerCardDefTool(t tools.Tool) {
 // LoomCycle MCP meta-tool all refuse with "not configured".
 func (s *Server) SetA2AAgentDefTool(t tools.Tool) {
 	s.a2aAgentDefTool = t
+}
+
+// SetWebhookDefTool wires the v1.x RFC H WebhookDef substrate tool.
+// Without this call, Connector.WebhookDef + POST /v1/_webhookdef + the
+// LoomCycle MCP meta-tool all refuse with "not configured". The tool
+// only needs the store + cfg, so it can be constructed alongside the
+// A2A substrate tools in main.go.
+func (s *Server) SetWebhookDefTool(t tools.Tool) {
+	s.webhookDefTool = t
 }
 
 // newDispatcher centralises Dispatcher construction so the three call
@@ -1710,6 +1726,9 @@ func (s *Server) Mux() http.Handler {
 	// per-agent dispatcher slot).
 	mux.Handle("POST /v1/_a2aservercarddef", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleSubstrateA2AServerCardDef))))
 	mux.Handle("POST /v1/_a2aagentdef", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleSubstrateA2AAgentDef))))
+	// v1.x RFC H Input Webhooks substrate. Same operator-admin-only
+	// dispatch shape as the other substrate admin endpoints.
+	mux.Handle("POST /v1/_webhookdef", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleSubstrateWebhookDef))))
 	// v0.11.0 LLM Gateway — direct provider routing without the agent
 	// loop. Bearer-authed admin scope. Both stream:true (SSE) and
 	// stream:false (single-shot JSON) selected by the request body.
@@ -1741,6 +1760,7 @@ func (s *Server) Mux() http.Handler {
 	mux.Handle("GET /v1/_scheduledef/names", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleListScheduleDefNames))))
 	mux.Handle("GET /v1/_a2aservercarddef/names", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleListA2AServerCardDefNames))))
 	mux.Handle("GET /v1/_a2aagentdef/names", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleListA2AAgentDefNames))))
+	mux.Handle("GET /v1/_webhookdef/names", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleListWebhookDefNames))))
 	// v0.9.x Library v2 — unified enumeration that merges static cfg
 	// + substrate views into one envelope per entry. The names/* sister
 	// endpoints above stay as-is for backwards compat with external

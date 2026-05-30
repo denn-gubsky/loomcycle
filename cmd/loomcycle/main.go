@@ -1040,6 +1040,16 @@ func main() {
 		MaxDefinitionBytes:  cfg.Env.AgentDefMaxDefinitionBytes,
 		MaxDescriptionBytes: cfg.Env.AgentDefMaxDescriptionBytes,
 	})
+	// v1.x RFC H — wire the WebhookDef substrate tool. Same operator-
+	// admin-only posture as the A2A substrate tools; reached via
+	// Connector.WebhookDef + the admin endpoint + the LoomCycle MCP
+	// meta-tool. Identical Store + Cfg + byte-cap construction.
+	srv.SetWebhookDefTool(&builtin.WebhookDef{
+		Store:               storeIface,
+		Cfg:                 cfg,
+		MaxDefinitionBytes:  cfg.Env.AgentDefMaxDefinitionBytes,
+		MaxDescriptionBytes: cfg.Env.AgentDefMaxDescriptionBytes,
+	})
 	// Surface the resolved build identifiers via /healthz so the Web UI
 	// can render the running binary's real version instead of a stale
 	// hard-coded string. Mirrors what gRPC's Health RPC has reported

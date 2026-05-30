@@ -53,10 +53,11 @@ func Webhook(ctx context.Context, s WebhookStore, cfg *config.Config, name strin
 // The runtime consumer (`config.Webhook`) carries yaml tags for the
 // operator-yaml path; this adapter is the substrate-read seam.
 //
-// Kept in sync with `mergedWebhookDef`; a drift test in the builtin
-// package pins parity. WH-2: the tool-layer `mergedWebhookDef` does not
-// exist yet (later slice), so the parity assertion here is against an
-// explicit expected field-set in webhook_test.go.
+// Kept in sync with `mergedWebhookDef`; the builtin-package drift test
+// TestMergedWebhookDef_DriftDetection_VsLookupSubstrate pins
+// merged↔substrate parity. The complementary assertion here
+// (webhook_test.go TestWebhook_DriftDetection) pins this shape against
+// an explicit expected field-set, mirroring the A2AAgentDef resolver.
 type SubstrateWebhookDef struct {
 	Enabled                bool                      `json:"enabled,omitempty"`
 	Delivery               string                    `json:"delivery,omitempty"`

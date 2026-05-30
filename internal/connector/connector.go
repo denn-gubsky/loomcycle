@@ -148,6 +148,15 @@ type Connector interface {
 	// Connector method.
 	A2AAgentDef(ctx context.Context, input json.RawMessage) (ToolResult, error)
 
+	// WebhookDef — v1.x RFC H inbound-webhook registration substrate.
+	// Op-discriminated (create / fork / get / list / retire). Same
+	// operator-admin-only posture as A2AAgentDef. Reachable via
+	// POST /v1/_webhookdef admin endpoint, the LoomCycle MCP meta-tool
+	// `webhookdef`, the gRPC WebhookDef RPC, and the TS adapter's
+	// client.webhookDef() method — all four dispatch through this single
+	// Connector method.
+	WebhookDef(ctx context.Context, input json.RawMessage) (ToolResult, error)
+
 	// --- Pause/Resume/Snapshot (real in v0.8.18) ---
 	//
 	// Wire shapes finalised v0.8.15. Real implementations landed in

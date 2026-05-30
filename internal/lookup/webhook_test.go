@@ -114,10 +114,11 @@ func TestWebhook_StaticBeforeSubstrate(t *testing.T) {
 // against an explicit `want` enumeration. A field added to or removed
 // from SubstrateWebhookDef without updating this map fails CI.
 //
-// WH-2: the complementary direction (mergedWebhookDef ↔
-// SubstrateWebhookDef) lives in the builtin package and does not exist
-// yet — the tool layer is a later slice. Until then this `want` map is
-// the canonical field-set the merged shape must match.
+// The complementary direction (mergedWebhookDef ↔ SubstrateWebhookDef)
+// lives in the builtin package (WH-2:
+// TestMergedWebhookDef_DriftDetection_VsLookupSubstrate). This `want`
+// map is the canonical field-set both the substrate-read shape here and
+// the substrate-write `mergedWebhookDef` must match.
 func TestWebhook_DriftDetection(t *testing.T) {
 	want := map[string]bool{
 		"enabled":                   true,

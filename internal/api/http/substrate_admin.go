@@ -76,6 +76,13 @@ func (s *Server) handleSubstrateA2AAgentDef(w http.ResponseWriter, r *http.Reque
 	s.dispatchSubstrate(w, r, "A2AAgentDef", s.A2AAgentDef)
 }
 
+// handleSubstrateWebhookDef serves POST /v1/_webhookdef.
+// v1.x RFC H Input Webhooks substrate. Bearer-authed; same dispatch
+// shape as the other substrate endpoints.
+func (s *Server) handleSubstrateWebhookDef(w http.ResponseWriter, r *http.Request) {
+	s.dispatchSubstrate(w, r, "WebhookDef", s.WebhookDef)
+}
+
 // dispatchSubstrate is the shared body of the two handlers.
 // connectorFn is the Connector method (already a method value
 // bound to the Server). toolName is the label used in error
@@ -196,6 +203,12 @@ func substrateAdminCtx(ctx context.Context) context.Context {
 		SelfName: substrateAdminAgentName,
 	})
 	ctx = tools.WithA2AAgentDefPolicy(ctx, tools.A2AAgentDefPolicyValue{
+		Scopes:   []string{"any"},
+		SelfName: substrateAdminAgentName,
+	})
+	// WebhookDef: same operator-trust posture; "any" scope lets the
+	// HTTP-admin call create/fork/retire any webhook name (RFC H WH-2).
+	ctx = tools.WithWebhookDefPolicy(ctx, tools.WebhookDefPolicyValue{
 		Scopes:   []string{"any"},
 		SelfName: substrateAdminAgentName,
 	})

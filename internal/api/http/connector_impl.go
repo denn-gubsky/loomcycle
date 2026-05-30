@@ -441,6 +441,20 @@ func (s *Server) A2AAgentDef(ctx context.Context, input json.RawMessage) (connec
 	return connector.ToolResult{Text: res.Text, IsError: res.IsError}, nil
 }
 
+// WebhookDef dispatches to the v1.x RFC H inbound-webhook substrate tool.
+// Same operator-admin-only posture as A2AAgentDef. See SetWebhookDefTool
+// for wiring.
+func (s *Server) WebhookDef(ctx context.Context, input json.RawMessage) (connector.ToolResult, error) {
+	if s.webhookDefTool == nil {
+		return connector.ToolResult{}, fmt.Errorf("WebhookDef: not configured (no tool wired via SetWebhookDefTool)")
+	}
+	res, err := s.webhookDefTool.Execute(ctx, input)
+	if err != nil {
+		return connector.ToolResult{}, err
+	}
+	return connector.ToolResult{Text: res.Text, IsError: res.IsError}, nil
+}
+
 // dispatchBuiltin is the shared lookup-and-execute path for the five
 // builtin wrappers. tools.Result {Text, IsError} maps directly onto
 // connector.ToolResult; the transport adapter (MCP) then wraps both
