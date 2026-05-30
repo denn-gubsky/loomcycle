@@ -1688,7 +1688,21 @@ type Env struct {
 	// safe-by-default posture. Operators opt in by setting
 	// LOOMCYCLE_SCHEDULER_ENV_ALLOWLIST="VAR1,VAR2" — only those
 	// var names will be readable by scheduled runs.
+	//
+	// This same allowlist gates the v1.x RFC H webhook receiver's
+	// signing-secret + bearer-token + user_credentials_from_env reads
+	// (RFC F shared trigger-credential gate). The webhook receiver
+	// reuses it rather than a parallel list so an operator declares
+	// the env-var floor once for all autonomous-run triggers.
 	SchedulerEnvAllowlist []string
+
+	// WebhooksEnabled enables the v1.x RFC H inbound-webhook receiver
+	// (the POST /v1/_webhooks/{name} mount). Default OFF — operator
+	// opts in via LOOMCYCLE_WEBHOOKS_ENABLED=1. When false, no route
+	// is mounted and webhook_defs sit idle (the WebhookDef tool still
+	// works for authoring + listing, just nothing receives). Mirrors
+	// SchedulerEnabled exactly.
+	WebhooksEnabled bool
 
 	// A2AServerEnabled enables the v1.x RFC G A2A server HTTP surface
 	// (the well-known AgentCard URI + the three protocol-binding mounts
@@ -2155,6 +2169,12 @@ func Load(path string) (*Config, error) {
 			}
 		}
 	}
+
+	// v1.x RFC H inbound-webhook receiver. Default OFF; operator opts in
+	// via LOOMCYCLE_WEBHOOKS_ENABLED=1. Mirrors SchedulerEnabled — when
+	// false the receiver route is not mounted; the WebhookDef tool still
+	// works for authoring + listing.
+	cfg.Env.WebhooksEnabled = os.Getenv("LOOMCYCLE_WEBHOOKS_ENABLED") == "1"
 
 	// v1.x RFC G A2A server surface. Default OFF; operator opts in via
 	// LOOMCYCLE_A2A_ENABLED=1 + names the active card to serve. Tenancy

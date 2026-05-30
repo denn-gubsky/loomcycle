@@ -134,6 +134,18 @@ type Server struct {
 	// Set via SetExtraMux; nil when the A2A surface is disabled.
 	extraMux func(mux *http.ServeMux, adminAuth func(http.Handler) http.Handler)
 
+	// webhookMux is the optional v1.x RFC H hook for registering the
+	// inbound-webhook receiver route. Set via SetWebhookMux; nil when
+	// LOOMCYCLE_WEBHOOKS_ENABLED is unset. Unlike extraMux it is NOT
+	// handed the admin-auth wrapper: the receiver authenticates each
+	// request against the resolved WebhookDef's own secret (HMAC /
+	// bearer), so wrapping it in the global LOOMCYCLE_AUTH_TOKEN bearer
+	// would defeat the per-webhook secret model. The hook receives a
+	// MuxRegistrar (an adapter that applies recovery middleware) rather
+	// than the bare mux, so a panicking webhook handler still becomes a
+	// 500 instead of crashing the process.
+	webhookMux func(reg MuxRegistrar)
+
 	// mcpPoolInspector returns the cached tools/list result for a
 	// named MCP server as already-marshaled JSON. The "already JSON"
 	// wire keeps this package free of internal/tools/mcp imports.
@@ -1861,7 +1873,38 @@ func (s *Server) Mux() http.Handler {
 			return recoveryMiddleware(s.authMiddleware(next))
 		})
 	}
+	// v1.x RFC H inbound-webhook receiver. Mounted WITHOUT the bearer
+	// authMiddleware — the receiver does its own per-WebhookDef auth.
+	// Wrapped in recoveryMiddleware only, so a panic in a handler still
+	// becomes a 500 rather than tearing down the process. Nil when the
+	// receiver is disabled (the default).
+	if s.webhookMux != nil {
+		s.webhookMux(&webhookMuxAdapter{mux: mux})
+	}
 	return mux
+}
+
+// MuxRegistrar is the minimal mux surface the webhook receiver's Mount
+// needs. Declared here (not as a concrete *http.ServeMux) so the recovery
+// wrapper can be interposed transparently.
+type MuxRegistrar interface {
+	Handle(pattern string, handler http.Handler)
+}
+
+// webhookMuxAdapter wraps each webhook handler in recoveryMiddleware
+// (recovery only — no auth; the receiver authenticates per-WebhookDef).
+type webhookMuxAdapter struct{ mux *http.ServeMux }
+
+func (a *webhookMuxAdapter) Handle(pattern string, h http.Handler) {
+	a.mux.Handle(pattern, recoveryMiddleware(h))
+}
+
+// SetWebhookMux installs the v1.x RFC H webhook-receiver mount hook,
+// called at the end of Mux(). Nil-safe. The hook receives a MuxRegistrar
+// that applies recovery middleware; it does NOT receive the bearer-auth
+// wrapper, by design (per-WebhookDef auth).
+func (s *Server) SetWebhookMux(fn func(reg MuxRegistrar)) {
+	s.webhookMux = fn
 }
 
 // SetExtraMux installs a hook called at the end of Mux() to register
