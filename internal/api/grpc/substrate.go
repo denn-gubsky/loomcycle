@@ -66,6 +66,13 @@ func substrateGRPCCtx(ctx context.Context) context.Context {
 		Scopes:   []string{"any"},
 		SelfName: grpcSubstrateAdminAgentName,
 	})
+	// WebhookDef: same operator-trust posture; "any" scope lets the
+	// gRPC-admin call create/fork/retire any webhook name
+	// (RFC H WH-3 / mirrors A2AAgentDef).
+	ctx = tools.WithWebhookDefPolicy(ctx, tools.WebhookDefPolicyValue{
+		Scopes:   []string{"any"},
+		SelfName: grpcSubstrateAdminAgentName,
+	})
 	ctx = tools.WithEvaluationPolicy(ctx, tools.EvaluationPolicyValue{
 		Scopes: []string{"submit_self", "submit_descendants", "submit_any", "read_any"},
 	})
@@ -157,6 +164,19 @@ func (s *Server) A2AServerCardDef(ctx context.Context, req *loomcyclepb.Substrat
 func (s *Server) A2AAgentDef(ctx context.Context, req *loomcyclepb.SubstrateRequest) (*loomcyclepb.SubstrateResponse, error) {
 	return s.dispatchSubstrateRPC(ctx, "A2AAgentDef", req, func(ctx context.Context, in json.RawMessage) (json.RawMessage, bool, error) {
 		res, err := s.connector.A2AAgentDef(ctx, in)
+		if err != nil {
+			return nil, false, err
+		}
+		return json.RawMessage(res.Text), res.IsError, nil
+	})
+}
+
+// WebhookDef serves the v1.x RFC H WebhookDef gRPC RPC — inbound-webhook
+// substrate. Same shape as the other substrate RPCs.
+// (RFC H WH-3 / mirrors A2AAgentDef.)
+func (s *Server) WebhookDef(ctx context.Context, req *loomcyclepb.SubstrateRequest) (*loomcyclepb.SubstrateResponse, error) {
+	return s.dispatchSubstrateRPC(ctx, "WebhookDef", req, func(ctx context.Context, in json.RawMessage) (json.RawMessage, bool, error) {
+		res, err := s.connector.WebhookDef(ctx, in)
 		if err != nil {
 			return nil, false, err
 		}

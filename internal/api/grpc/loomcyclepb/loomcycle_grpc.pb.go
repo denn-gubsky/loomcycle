@@ -63,6 +63,7 @@ const (
 	Loomcycle_ScheduleDef_FullMethodName         = "/loomcycle.v1.Loomcycle/ScheduleDef"
 	Loomcycle_A2AServerCardDef_FullMethodName    = "/loomcycle.v1.Loomcycle/A2AServerCardDef"
 	Loomcycle_A2AAgentDef_FullMethodName         = "/loomcycle.v1.Loomcycle/A2AAgentDef"
+	Loomcycle_WebhookDef_FullMethodName          = "/loomcycle.v1.Loomcycle/WebhookDef"
 	Loomcycle_ListChannels_FullMethodName        = "/loomcycle.v1.Loomcycle/ListChannels"
 	Loomcycle_StreamUserRunStates_FullMethodName = "/loomcycle.v1.Loomcycle/StreamUserRunStates"
 	Loomcycle_PublishChannel_FullMethodName      = "/loomcycle.v1.Loomcycle/PublishChannel"
@@ -218,6 +219,12 @@ type LoomcycleClient interface {
 	// (create / fork / get / list / retire) + is_error tool refusals
 	// in the response.
 	A2AAgentDef(ctx context.Context, in *SubstrateRequest, opts ...grpc.CallOption) (*SubstrateResponse, error)
+	// WebhookDef dispatches to the v1.x RFC H inbound-webhook substrate.
+	// Mirrors POST /v1/_webhookdef. Operator-admin-only. Same
+	// SubstrateRequest body shape — op-discriminated input_json
+	// (create / fork / get / list / retire) + is_error tool refusals
+	// in the response. (RFC H WH-3 / mirrors A2AAgentDef.)
+	WebhookDef(ctx context.Context, in *SubstrateRequest, opts ...grpc.CallOption) (*SubstrateResponse, error)
 	// ----- v0.9.x n8n RFC Phase 0 -----
 	//
 	// ListChannels mirrors GET /v1/_channels — operator-declared
@@ -523,6 +530,16 @@ func (c *loomcycleClient) A2AAgentDef(ctx context.Context, in *SubstrateRequest,
 	return out, nil
 }
 
+func (c *loomcycleClient) WebhookDef(ctx context.Context, in *SubstrateRequest, opts ...grpc.CallOption) (*SubstrateResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SubstrateResponse)
+	err := c.cc.Invoke(ctx, Loomcycle_WebhookDef_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *loomcycleClient) ListChannels(ctx context.Context, in *ListChannelsRequest, opts ...grpc.CallOption) (*ListChannelsResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(ListChannelsResponse)
@@ -739,6 +756,12 @@ type LoomcycleServer interface {
 	// (create / fork / get / list / retire) + is_error tool refusals
 	// in the response.
 	A2AAgentDef(context.Context, *SubstrateRequest) (*SubstrateResponse, error)
+	// WebhookDef dispatches to the v1.x RFC H inbound-webhook substrate.
+	// Mirrors POST /v1/_webhookdef. Operator-admin-only. Same
+	// SubstrateRequest body shape — op-discriminated input_json
+	// (create / fork / get / list / retire) + is_error tool refusals
+	// in the response. (RFC H WH-3 / mirrors A2AAgentDef.)
+	WebhookDef(context.Context, *SubstrateRequest) (*SubstrateResponse, error)
 	// ----- v0.9.x n8n RFC Phase 0 -----
 	//
 	// ListChannels mirrors GET /v1/_channels — operator-declared
@@ -850,6 +873,9 @@ func (UnimplementedLoomcycleServer) A2AServerCardDef(context.Context, *Substrate
 }
 func (UnimplementedLoomcycleServer) A2AAgentDef(context.Context, *SubstrateRequest) (*SubstrateResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method A2AAgentDef not implemented")
+}
+func (UnimplementedLoomcycleServer) WebhookDef(context.Context, *SubstrateRequest) (*SubstrateResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method WebhookDef not implemented")
 }
 func (UnimplementedLoomcycleServer) ListChannels(context.Context, *ListChannelsRequest) (*ListChannelsResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ListChannels not implemented")
@@ -1326,6 +1352,24 @@ func _Loomcycle_A2AAgentDef_Handler(srv interface{}, ctx context.Context, dec fu
 	return interceptor(ctx, in, info, handler)
 }
 
+func _Loomcycle_WebhookDef_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SubstrateRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(LoomcycleServer).WebhookDef(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Loomcycle_WebhookDef_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(LoomcycleServer).WebhookDef(ctx, req.(*SubstrateRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _Loomcycle_ListChannels_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(ListChannelsRequest)
 	if err := dec(in); err != nil {
@@ -1525,6 +1569,10 @@ var Loomcycle_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "A2AAgentDef",
 			Handler:    _Loomcycle_A2AAgentDef_Handler,
+		},
+		{
+			MethodName: "WebhookDef",
+			Handler:    _Loomcycle_WebhookDef_Handler,
 		},
 		{
 			MethodName: "ListChannels",

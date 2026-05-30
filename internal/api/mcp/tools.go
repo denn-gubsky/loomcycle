@@ -169,6 +169,11 @@ func toolDescriptors() []loommcp.ToolDescriptor {
 			InputSchema: rawJSON(`{"type": "object"}`),
 		},
 		{
+			Name:        "webhookdef",
+			Description: "WebhookDef tool ops (create/fork/get/list/retire). v1.x RFC H inbound-webhook substrate. Operator-admin-only — author + fork inbound webhook definitions at runtime. Static webhooks.<name>: yaml entries stay immutable ground truth; this produces the derived layer. Pass-through.",
+			InputSchema: rawJSON(`{"type": "object"}`),
+		},
+		{
 			Name:        "evaluation",
 			Description: "Evaluation tool ops (submit/get/list_for_run/list_for_def/aggregate). Pass-through.",
 			InputSchema: rawJSON(`{"type": "object"}`),
