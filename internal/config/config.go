@@ -134,6 +134,15 @@ type Config struct {
 	// derived fork layer. Empty / nil = no statically-declared webhooks.
 	Webhooks map[string]Webhook `yaml:"webhooks"`
 
+	// MemoryBackends is the RFC I MR-3a registry of named memory
+	// backend declarations — which backend (inprocess or mem9), its
+	// connection config, tenancy strategy, and fallback. Yaml entries
+	// are the operator-blessed root; the MemoryBackendDef tool produces
+	// the derived fork layer. Empty / nil = no statically-declared
+	// backends. Nothing consumes these yet — the per-agent routing +
+	// factory land in MR-3b.
+	MemoryBackends map[string]MemoryBackend `yaml:"memory_backends"`
+
 	// Interruption is the v0.8.16 top-level config block for the
 	// Interruption tool. Operator picks the delivery backend
 	// (webui / mcp_server:<name> / cli) and the env-cap defaults.
@@ -648,6 +657,11 @@ type AgentDef struct {
 	// A2AAgentDefScopes: "self" / "descendants" / "named:<name>" / "any".
 	WebhookDefScopes []string `yaml:"webhook_def_scopes"`
 
+	// MemoryBackendDefScopes is the RFC I MR-3a MemoryBackendDef tool
+	// capability gate. Default-deny when empty. Same closed set as
+	// WebhookDefScopes: "self" / "descendants" / "named:<name>" / "any".
+	MemoryBackendDefScopes []string `yaml:"memory_backend_def_scopes"`
+
 	// SkillDefScopes is the v0.8.22 SkillDef tool capability gate.
 	// Default-deny when empty. Mirrors AgentDefScopes minus the
 	// "self" scope (skills have no agent identity, so "self" is
@@ -1083,6 +1097,49 @@ type WebhookRateLimit struct {
 type WebhookSyncResponse struct {
 	Enabled   bool `json:"enabled,omitempty" yaml:"enabled"`
 	TimeoutMs int  `json:"timeout_ms,omitempty" yaml:"timeout_ms"`
+}
+
+// MemoryBackend is one entry in the RFC I MR-3a `memory_backends:` yaml
+// block. It declares a named memory backend: the kind (inprocess or
+// mem9), connection config, tenancy strategy, and fallback behaviour.
+//
+// Like Webhook (and unlike the A2A yaml-only structs), MemoryBackend
+// carries BOTH json and yaml tags: the SAME field set backs the
+// tool-layer merged shape, which persists snake_case JSON into
+// memory_backend_defs.definition. A 3-way drift test (yaml ↔
+// lookup.SubstrateMemoryBackendDef ↔ json) pins parity. RFC I MR-3a /
+// mirrors Webhook. Nothing consumes this yet — the per-agent routing +
+// factory land in MR-3b.
+type MemoryBackend struct {
+	// Name is stamped from the registry key by the MemoryBackendDef tool
+	// (like A2AServerCardDef) so the persisted def is self-describing —
+	// a MemoryBackendDef is addressed by name. On the yaml side the key
+	// is the name, so this is normally left empty in operator config.
+	Name                       string               `json:"name,omitempty" yaml:"name"`
+	Kind                       string               `json:"kind,omitempty" yaml:"kind"`
+	Config                     MemoryBackendConfig  `json:"config,omitempty" yaml:"config"`
+	TenancyStrategy            MemoryBackendTenancy `json:"tenancy_strategy,omitempty" yaml:"tenancy_strategy"`
+	FallbackOnError            string               `json:"fallback_on_error,omitempty" yaml:"fallback_on_error"`
+	HealthCheckIntervalSeconds int                  `json:"health_check_interval_seconds,omitempty" yaml:"health_check_interval_seconds"`
+}
+
+// MemoryBackendConfig holds the connection config for a remote memory
+// backend (kind=mem9). api_key_env is an env-var NAME — the value is
+// resolved (allowlist-gated) at use time in MR-4, never at config load.
+type MemoryBackendConfig struct {
+	BaseURL    string `json:"base_url,omitempty" yaml:"base_url"`
+	APIVersion string `json:"api_version,omitempty" yaml:"api_version"`
+	APIKeyEnv  string `json:"api_key_env,omitempty" yaml:"api_key_env"`
+}
+
+// MemoryBackendTenancy declares how a shared backend is partitioned per
+// tenant. key_per_tenant resolves a distinct API key per tenant via
+// EnvPattern; shared_key_with_prefix namespaces a single key's keyspace
+// via PrefixPattern. Both patterns interpolate {tenant_id}.
+type MemoryBackendTenancy struct {
+	Kind          string `json:"kind,omitempty" yaml:"kind"`
+	EnvPattern    string `json:"env_pattern,omitempty" yaml:"env_pattern"`
+	PrefixPattern string `json:"prefix_pattern,omitempty" yaml:"prefix_pattern"`
 }
 
 // MCPServer declares one MCP server. Transport "stdio" or "http".

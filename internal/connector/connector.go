@@ -157,6 +157,15 @@ type Connector interface {
 	// Connector method.
 	WebhookDef(ctx context.Context, input json.RawMessage) (ToolResult, error)
 
+	// MemoryBackendDef — RFC I MR-3a memory-backend registration
+	// substrate. Op-discriminated (create / fork / get / list / retire).
+	// Same operator-admin-only posture as WebhookDef. Reachable via
+	// POST /v1/_memorybackenddef admin endpoint, the LoomCycle MCP
+	// meta-tool `memorybackenddef`, the gRPC MemoryBackendDef RPC, and
+	// the TS adapter's client.memoryBackendDef() method — all four
+	// dispatch through this single Connector method.
+	MemoryBackendDef(ctx context.Context, input json.RawMessage) (ToolResult, error)
+
 	// --- Pause/Resume/Snapshot (real in v0.8.18) ---
 	//
 	// Wire shapes finalised v0.8.15. Real implementations landed in

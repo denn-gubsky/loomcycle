@@ -369,3 +369,46 @@ describe("webhookDef", () => {
     expect(headers.Authorization).toBe("Bearer test-bearer");
   });
 });
+
+describe("memoryBackendDef", () => {
+  it("posts JSON to /v1/_memorybackenddef and returns the row envelope", async () => {
+    const { client, fetchMock } = makeClient([
+      jsonResponse({
+        def_id: "mbd_abc",
+        name: "primary",
+        version: 1,
+        promoted: true,
+      }),
+    ]);
+
+    const result = (await client.memoryBackendDef({
+      op: "create",
+      name: "primary",
+      overlay: { kind: "mem9", config: { base_url: "https://m.example.com", api_key_env: "LOOMCYCLE_M_KEY" } },
+    })) as Record<string, unknown>;
+
+    expect(result.def_id).toBe("mbd_abc");
+    expect(result.name).toBe("primary");
+
+    const call = fetchMock.mock.calls[0]!;
+    expect(call[0]).toBe("http://test-loomcycle:8787/v1/_memorybackenddef");
+    expect((call[1] as RequestInit).method).toBe("POST");
+    const body = JSON.parse((call[1] as RequestInit).body as string);
+    expect(body.op).toBe("create");
+  });
+
+  it("raises AuthError on 401", async () => {
+    const { client } = makeClient([errorResponse(401, "invalid token")]);
+    await expect(
+      client.memoryBackendDef({ op: "create", name: "x", overlay: {} }),
+    ).rejects.toBeInstanceOf(AuthError);
+  });
+
+  it("forwards bearer auth in the Authorization header", async () => {
+    const { client, fetchMock } = makeClient([jsonResponse({ ok: true })]);
+    await client.memoryBackendDef({ op: "list", name: "primary" });
+    const headers = (fetchMock.mock.calls[0]![1] as RequestInit)
+      .headers as Record<string, string>;
+    expect(headers.Authorization).toBe("Bearer test-bearer");
+  });
+});

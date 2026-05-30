@@ -736,6 +736,25 @@ export class LoomcycleClient {
     return postJSON<SubstrateToolResponse>(this.ctx, "/v1/_webhookdef", input, opts);
   }
 
+  /** Invoke the RFC I MR-3a MemoryBackendDef substrate tool over HTTP.
+   *  Author + fork + retire named memory backend definitions at runtime.
+   *  Mirror of {@link LoomcycleClient.webhookDef} for memory backends.
+   *
+   *  Operator-admin-only: this endpoint requires the bearer token.
+   *
+   *  Op-discriminated input: `{op: "create" | "fork" | "get" |
+   *  "list" | "retire", ...}`.
+   *
+   *  Raises {@link SubstrateToolRefusedError} on tool-level refusals;
+   *  {@link InvalidArgumentError} on 400 (malformed JSON);
+   *  {@link AuthError} on 401. */
+  async memoryBackendDef(
+    input: SubstrateToolInput,
+    opts?: { signal?: AbortSignal },
+  ): Promise<SubstrateToolResponse> {
+    return postJSON<SubstrateToolResponse>(this.ctx, "/v1/_memorybackenddef", input, opts);
+  }
+
   // ---- v0.10.3 Library v2 enumeration (read-only, merged yaml+substrate) ----
 
   /** List every agent the runtime knows about — yaml-static + dynamic

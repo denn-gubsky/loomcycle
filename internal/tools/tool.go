@@ -682,6 +682,29 @@ func WebhookDefPolicy(ctx context.Context) WebhookDefPolicyValue {
 	return v
 }
 
+type ctxKeyMemoryBackendDefPolicy struct{}
+
+// MemoryBackendDefPolicyValue is the per-agent MemoryBackendDef-tool
+// access policy (RFC I MR-3a). Same shape as WebhookDefPolicyValue +
+// same "self / descendants / named:<n> / any" closed scope set.
+// Default-deny when Scopes is empty.
+type MemoryBackendDefPolicyValue struct {
+	Scopes   []string
+	SelfName string
+}
+
+// WithMemoryBackendDefPolicy attaches the policy to ctx.
+func WithMemoryBackendDefPolicy(ctx context.Context, p MemoryBackendDefPolicyValue) context.Context {
+	return context.WithValue(ctx, ctxKeyMemoryBackendDefPolicy{}, p)
+}
+
+// MemoryBackendDefPolicy returns the policy from ctx. Zero value =
+// default-deny.
+func MemoryBackendDefPolicy(ctx context.Context) MemoryBackendDefPolicyValue {
+	v, _ := ctx.Value(ctxKeyMemoryBackendDefPolicy{}).(MemoryBackendDefPolicyValue)
+	return v
+}
+
 // ctxKeySkillDefPolicy carries the v0.8.22 SkillDef-tool capability
 // gate. Mirrors AgentDefPolicy shape, sans the SelfName field —
 // skills have no agent identity so a "self" scope is meaningless.

@@ -73,6 +73,13 @@ var handlersByName = map[string]toolHandler{
 	"webhookdef": wrapBuiltin("webhookdef", func(c connector.Connector, ctx context.Context, in json.RawMessage) (connector.ToolResult, error) {
 		return c.WebhookDef(ctx, in)
 	}),
+	// memorybackenddef: same operator-admin-only posture as webhookdef;
+	// lets external orchestrators author + fork memory backend
+	// definitions over MCP without the HTTP admin endpoint.
+	// (RFC I MR-3a / mirrors webhookdef.)
+	"memorybackenddef": wrapBuiltin("memorybackenddef", func(c connector.Connector, ctx context.Context, in json.RawMessage) (connector.ToolResult, error) {
+		return c.MemoryBackendDef(ctx, in)
+	}),
 	"evaluation": wrapBuiltin("evaluation", func(c connector.Connector, ctx context.Context, in json.RawMessage) (connector.ToolResult, error) {
 		return c.Evaluation(ctx, in)
 	}),

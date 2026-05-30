@@ -115,6 +115,20 @@ func (s *Server) handleListWebhookDefNames(w http.ResponseWriter, r *http.Reques
 	writeJSONOK(w, map[string]any{"names": rows})
 }
 
+// handleListMemoryBackendDefNames serves GET /v1/_memorybackenddef/names.
+// RFC I MR-3a / mirrors handleListWebhookDefNames.
+func (s *Server) handleListMemoryBackendDefNames(w http.ResponseWriter, r *http.Request) {
+	rows, err := s.store.MemoryBackendDefListNames(r.Context())
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "store_error", err.Error())
+		return
+	}
+	if rows == nil {
+		rows = []store.MemoryBackendDefNameSummary{}
+	}
+	writeJSONOK(w, map[string]any{"names": rows})
+}
+
 // handleAgentChannels serves GET /v1/agents/{agent_name}/channels.
 // Returns every channel_cursors row for (scope=agent, scope_id={agent_name}),
 // ordered by channel ASC. Drives the v0.9.x Web UI's per-agent

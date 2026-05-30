@@ -1059,6 +1059,18 @@ func main() {
 		MaxDefinitionBytes:  cfg.Env.AgentDefMaxDefinitionBytes,
 		MaxDescriptionBytes: cfg.Env.AgentDefMaxDescriptionBytes,
 	})
+	// RFC I MR-3a — wire the MemoryBackendDef substrate tool. Same
+	// operator-admin-only posture as WebhookDef; reached via
+	// Connector.MemoryBackendDef + the admin endpoint + the LoomCycle
+	// MCP meta-tool. Identical Store + Cfg + byte-cap construction.
+	// Nothing consumes the Def yet — the per-agent routing + factory
+	// land in MR-3b.
+	srv.SetMemoryBackendDefTool(&builtin.MemoryBackendDef{
+		Store:               storeIface,
+		Cfg:                 cfg,
+		MaxDefinitionBytes:  cfg.Env.AgentDefMaxDefinitionBytes,
+		MaxDescriptionBytes: cfg.Env.AgentDefMaxDescriptionBytes,
+	})
 	// Surface the resolved build identifiers via /healthz so the Web UI
 	// can render the running binary's real version instead of a stale
 	// hard-coded string. Mirrors what gRPC's Health RPC has reported
