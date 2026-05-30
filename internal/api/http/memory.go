@@ -53,6 +53,22 @@ type memoryEntriesResponse struct {
 	ScopeID   string              `json:"scope_id"`
 	Entries   []store.MemoryEntry `json:"entries"`
 	Truncated bool                `json:"truncated"`
+	// EmbeddingMetadata is populated only when the request sets
+	// ?include_embedding_metadata=true (RFC I MR-6 / Decision 4). It is a
+	// per-key map (key → {provider, model, dimension}) so the /ui/memory
+	// introspection view can show which rows are embedded + under which
+	// model, without a second round-trip per row. Absent keys simply have
+	// no entry (the row has no embedding).
+	EmbeddingMetadata map[string]memoryEmbedMeta `json:"embedding_metadata,omitempty"`
+}
+
+// memoryEmbedMeta is the per-key embedding metadata surfaced to the
+// introspection UI. It deliberately EXCLUDES the vector itself — operators
+// triage shape (model/dimension), not raw float arrays.
+type memoryEmbedMeta struct {
+	Provider  string `json:"provider"`
+	Model     string `json:"model"`
+	Dimension int    `json:"dimension"`
 }
 
 type memoryEntryResponse struct {
@@ -139,13 +155,34 @@ func (s *Server) handleListMemoryEntries(w http.ResponseWriter, r *http.Request)
 	if entries == nil {
 		entries = []store.MemoryEntry{}
 	}
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(memoryEntriesResponse{
+	resp := memoryEntriesResponse{
 		Scope:     scope,
 		ScopeID:   scopeID,
 		Entries:   entries,
 		Truncated: truncated,
-	})
+	}
+	// RFC I MR-6: optional per-key embedding metadata for the /ui/memory
+	// introspection view. Best-effort + non-fatal — a backend without
+	// vectors (SupportsVectors()==false) or a per-key lookup error simply
+	// omits that key's metadata rather than failing the list. The vector
+	// itself is never included (MemoryEmbedGet's Vector is dropped here).
+	if r.URL.Query().Get("include_embedding_metadata") == "true" && s.store.SupportsVectors() {
+		meta := make(map[string]memoryEmbedMeta)
+		for _, e := range entries {
+			emb, err := s.store.MemoryEmbedGet(r.Context(), store.MemoryScope(scope), scopeID, e.Key)
+			if err != nil || emb.Dimension == 0 {
+				continue // no embedding for this key (or a transient error) → omit
+			}
+			meta[e.Key] = memoryEmbedMeta{
+				Provider:  emb.Provider,
+				Model:     emb.Model,
+				Dimension: emb.Dimension,
+			}
+		}
+		resp.EmbeddingMetadata = meta
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(resp)
 }
 
 // handleGetMemoryEntry serves
