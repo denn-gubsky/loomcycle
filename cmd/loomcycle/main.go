@@ -74,6 +74,7 @@ import (
 	loomgrpc "github.com/denn-gubsky/loomcycle/internal/api/grpc"
 	"github.com/denn-gubsky/loomcycle/internal/api/grpc/loomcyclepb"
 	lcmcp "github.com/denn-gubsky/loomcycle/internal/api/mcp"
+	"github.com/denn-gubsky/loomcycle/internal/memory/backends/inprocess"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 	toolsa2a "github.com/denn-gubsky/loomcycle/internal/tools/a2a"
 	"github.com/denn-gubsky/loomcycle/internal/tools/builtin"
@@ -907,6 +908,13 @@ func main() {
 	// at boot (allTools assembled once) and the tool's nil-Store
 	// fallback for operators running without a configured store.
 	memoryTool.Store = storeIface
+	// RFC I MR-2: route the Memory tool's data ops through the in-process
+	// backend (the default + unconditional fallback). Constructed here,
+	// post-store, so both deps are concrete — the embedder was built above
+	// (nil when unconfigured, which the backend handles by refusing vector
+	// ops exactly as before). MR-3's MemoryBackendDef / MR-4's Mem9 swap
+	// this assignment for a different backend.
+	memoryTool.Backend = inprocess.New(storeIface, embedder)
 	channelTool.Store = storeIface
 	// Wire the pool-stats accessor when the backend is Postgres so
 	// the Channel tool's subscribe-race diagnostic log can correlate
