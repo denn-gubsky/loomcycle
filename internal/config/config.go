@@ -126,6 +126,14 @@ type Config struct {
 	// Empty / nil = no statically-declared peers.
 	A2AAgents map[string]A2AAgent `yaml:"a2a_agents"`
 
+	// Webhooks is the v1.x RFC H registry of inbound HTTP webhook
+	// declarations — how an external system reaches loomcycle to
+	// trigger an agent run (or publish to a channel), plus the auth,
+	// rate limit, payload mapping, and on_complete hooks. Yaml entries
+	// are the operator-blessed root; the WebhookDef tool produces the
+	// derived fork layer. Empty / nil = no statically-declared webhooks.
+	Webhooks map[string]Webhook `yaml:"webhooks"`
+
 	// Interruption is the v0.8.16 top-level config block for the
 	// Interruption tool. Operator picks the delivery backend
 	// (webui / mcp_server:<name> / cli) and the env-cap defaults.
@@ -635,6 +643,11 @@ type AgentDef struct {
 	// ScheduleDefScopes: "self" / "descendants" / "named:<name>" / "any".
 	A2AAgentDefScopes []string `yaml:"a2a_agent_def_scopes"`
 
+	// WebhookDefScopes is the v1.x RFC H WebhookDef tool capability
+	// gate. Default-deny when empty. Same closed set as
+	// A2AAgentDefScopes: "self" / "descendants" / "named:<name>" / "any".
+	WebhookDefScopes []string `yaml:"webhook_def_scopes"`
+
 	// SkillDefScopes is the v0.8.22 SkillDef tool capability gate.
 	// Default-deny when empty. Mirrors AgentDefScopes minus the
 	// "self" scope (skills have no agent identity, so "self" is
@@ -1019,6 +1032,57 @@ type A2AAgentAuth struct {
 type A2AExpectedSkill struct {
 	ID       string `yaml:"id"`
 	Required bool   `yaml:"required"`
+}
+
+// Webhook is one entry in the v1.x RFC H `webhooks:` yaml block. It
+// declares an INBOUND HTTP webhook: how an external system reaches
+// loomcycle to trigger an agent run (delivery=spawn) or publish to a
+// channel (delivery=channel), plus the auth, rate limit, payload
+// mapping, and on_complete hooks.
+//
+// Unlike the A2A config structs (yaml-only), Webhook carries BOTH json
+// and yaml tags: the SAME field set backs the tool-layer merged shape
+// (WH-2), which persists snake_case JSON into webhook_defs.definition.
+// A 3-way drift test (yaml ↔ lookup.SubstrateWebhookDef ↔ json) pins
+// parity. on_complete reuses ScheduledRunHook — the same hook shape
+// ScheduleDef uses — rather than a parallel type.
+type Webhook struct {
+	Enabled                bool                `json:"enabled,omitempty" yaml:"enabled"`
+	Delivery               string              `json:"delivery,omitempty" yaml:"delivery"`
+	Agent                  string              `json:"agent,omitempty" yaml:"agent"`
+	Channel                string              `json:"channel,omitempty" yaml:"channel"`
+	Auth                   WebhookAuth         `json:"auth,omitempty" yaml:"auth"`
+	RateLimit              WebhookRateLimit    `json:"rate_limit,omitempty" yaml:"rate_limit"`
+	BodySizeLimitBytes     int                 `json:"body_size_limit_bytes,omitempty" yaml:"body_size_limit_bytes"`
+	UserCredentialsFromEnv map[string]string   `json:"user_credentials_from_env,omitempty" yaml:"user_credentials_from_env"`
+	PayloadMapping         map[string]string   `json:"payload_mapping,omitempty" yaml:"payload_mapping"`
+	SyncResponse           WebhookSyncResponse `json:"sync_response,omitempty" yaml:"sync_response"`
+	OnComplete             []ScheduledRunHook  `json:"on_complete,omitempty" yaml:"on_complete"`
+}
+
+// WebhookAuth declares how inbound webhook requests are authenticated.
+// Kind is "hmac" (default) or "bearer". For hmac, the signature header
+// carries an HMAC of the body keyed by the secret in SigningSecretEnv.
+type WebhookAuth struct {
+	Kind             string `json:"kind,omitempty" yaml:"kind"`
+	Algorithm        string `json:"algorithm,omitempty" yaml:"algorithm"`
+	Header           string `json:"header,omitempty" yaml:"header"`
+	SigningSecretEnv string `json:"signing_secret_env,omitempty" yaml:"signing_secret_env"`
+	DeliveryIDHeader string `json:"delivery_id_header,omitempty" yaml:"delivery_id_header"`
+	BearerTokenEnv   string `json:"bearer_token_env,omitempty" yaml:"bearer_token_env"`
+}
+
+// WebhookRateLimit bounds inbound request volume per webhook.
+type WebhookRateLimit struct {
+	RequestsPerMinute int `json:"requests_per_minute,omitempty" yaml:"requests_per_minute"`
+	Burst             int `json:"burst,omitempty" yaml:"burst"`
+}
+
+// WebhookSyncResponse, when enabled, holds the inbound HTTP request
+// open until the triggered run completes (or TimeoutMs elapses).
+type WebhookSyncResponse struct {
+	Enabled   bool `json:"enabled,omitempty" yaml:"enabled"`
+	TimeoutMs int  `json:"timeout_ms,omitempty" yaml:"timeout_ms"`
 }
 
 // MCPServer declares one MCP server. Transport "stdio" or "http".

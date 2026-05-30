@@ -4621,6 +4621,236 @@ func (s *Store) scanA2AAgentDefRows(rows pgx.Rows) ([]store.A2AAgentDefRow, erro
 	return out, rows.Err()
 }
 
+// ---- v1.x RFC H WebhookDef substrate ----
+//
+// Mirror of A2AAgentDef* without the sweeper run_state table.
+
+func (s *Store) WebhookDefCreate(ctx context.Context, row store.WebhookDefRow) (store.WebhookDefRow, error) {
+	if row.DefID == "" || row.Name == "" {
+		return store.WebhookDefRow{}, fmt.Errorf("webhook_def: def_id + name required")
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return store.WebhookDefRow{}, fmt.Errorf("webhook_def create begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	if _, err := tx.Exec(ctx,
+		`SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`,
+		"webhook_def:"+row.Name,
+	); err != nil {
+		return store.WebhookDefRow{}, fmt.Errorf("webhook_def create lock: %w", err)
+	}
+
+	if row.ParentDefID != "" {
+		var n int
+		if err := tx.QueryRow(ctx, `SELECT COUNT(*) FROM webhook_defs WHERE def_id = $1`, row.ParentDefID).Scan(&n); err != nil {
+			return store.WebhookDefRow{}, fmt.Errorf("webhook_def create parent check: %w", err)
+		}
+		if n == 0 {
+			return store.WebhookDefRow{}, store.ErrWebhookDefParentNotFound
+		}
+	}
+
+	var maxVer sql.NullInt64
+	if err := tx.QueryRow(ctx, `SELECT MAX(version) FROM webhook_defs WHERE name = $1`, row.Name).Scan(&maxVer); err != nil {
+		return store.WebhookDefRow{}, fmt.Errorf("webhook_def create max version: %w", err)
+	}
+	row.Version = 1
+	if maxVer.Valid {
+		row.Version = int(maxVer.Int64) + 1
+	}
+	row.CreatedAt = time.Now().UTC()
+
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO webhook_defs (
+			def_id, name, version, parent_def_id, definition, description,
+			created_at, created_by_agent_id, created_by_run_id,
+			retired, bootstrapped_from_static
+		) VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10, $11)`,
+		row.DefID, row.Name, row.Version, nullableString(row.ParentDefID),
+		string(row.Definition), nullableString(row.Description),
+		row.CreatedAt,
+		nullableString(row.CreatedByAgentID), nullableString(row.CreatedByRunID),
+		row.Retired, row.BootstrappedFromStatic,
+	); err != nil {
+		return store.WebhookDefRow{}, fmt.Errorf("webhook_def insert: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return store.WebhookDefRow{}, fmt.Errorf("webhook_def commit: %w", err)
+	}
+	return row, nil
+}
+
+func (s *Store) WebhookDefGet(ctx context.Context, defID string) (store.WebhookDefRow, error) {
+	row, err := s.scanWebhookDef(s.pool.QueryRow(ctx, webhookDefSelect+` WHERE def_id = $1`, defID))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return store.WebhookDefRow{}, &store.ErrNotFound{Kind: "webhook_def", ID: defID}
+	}
+	return row, err
+}
+
+func (s *Store) WebhookDefGetByNameVersion(ctx context.Context, name string, version int) (store.WebhookDefRow, error) {
+	row, err := s.scanWebhookDef(s.pool.QueryRow(ctx, webhookDefSelect+` WHERE name = $1 AND version = $2`, name, version))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return store.WebhookDefRow{}, &store.ErrNotFound{Kind: "webhook_def", ID: fmt.Sprintf("%s@v%d", name, version)}
+	}
+	return row, err
+}
+
+func (s *Store) WebhookDefListByName(ctx context.Context, name string) ([]store.WebhookDefRow, error) {
+	rows, err := s.pool.Query(ctx, webhookDefSelect+` WHERE name = $1 ORDER BY version DESC`, name)
+	if err != nil {
+		return nil, fmt.Errorf("webhook_def list by name: %w", err)
+	}
+	defer rows.Close()
+	return s.scanWebhookDefRows(rows)
+}
+
+func (s *Store) WebhookDefListChildren(ctx context.Context, parentDefID string) ([]store.WebhookDefRow, error) {
+	rows, err := s.pool.Query(ctx, webhookDefSelect+` WHERE parent_def_id = $1 ORDER BY version DESC`, parentDefID)
+	if err != nil {
+		return nil, fmt.Errorf("webhook_def list children: %w", err)
+	}
+	defer rows.Close()
+	return s.scanWebhookDefRows(rows)
+}
+
+func (s *Store) WebhookDefListNames(ctx context.Context) ([]store.WebhookDefNameSummary, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT
+			d.name,
+			COUNT(*)                  AS version_count,
+			MAX(d.version)            AS latest_version,
+			MAX(d.created_at)         AS last_updated,
+			COALESCE(a.def_id, '')    AS active_def_id
+		FROM webhook_defs d
+		LEFT JOIN webhook_def_active a ON a.name = d.name
+		GROUP BY d.name, a.def_id
+		ORDER BY d.name`)
+	if err != nil {
+		return nil, fmt.Errorf("webhook_def list names: %w", err)
+	}
+	defer rows.Close()
+
+	var out []store.WebhookDefNameSummary
+	for rows.Next() {
+		var ns store.WebhookDefNameSummary
+		if err := rows.Scan(&ns.Name, &ns.VersionCount, &ns.LatestVersion, &ns.LastUpdated, &ns.ActiveDefID); err != nil {
+			return nil, err
+		}
+		out = append(out, ns)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) WebhookDefSetActive(ctx context.Context, name, defID, promotedByAgentID string) error {
+	var rowName string
+	err := s.pool.QueryRow(ctx, `SELECT name FROM webhook_defs WHERE def_id = $1`, defID).Scan(&rowName)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return &store.ErrNotFound{Kind: "webhook_def", ID: defID}
+	}
+	if err != nil {
+		return fmt.Errorf("webhook_def_active check: %w", err)
+	}
+	if rowName != name {
+		return fmt.Errorf("webhook_def_active: def_id %q has name %q, refusing to promote under name %q", defID, rowName, name)
+	}
+	_, err = s.pool.Exec(ctx, `
+		INSERT INTO webhook_def_active (name, def_id, promoted_at, promoted_by_agent_id)
+		VALUES ($1, $2, $3, $4)
+		ON CONFLICT (name) DO UPDATE SET
+		    def_id               = EXCLUDED.def_id,
+		    promoted_at          = EXCLUDED.promoted_at,
+		    promoted_by_agent_id = EXCLUDED.promoted_by_agent_id`,
+		name, defID, time.Now().UTC(), nullableString(promotedByAgentID),
+	)
+	if err != nil {
+		return fmt.Errorf("webhook_def_active upsert: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) WebhookDefGetActive(ctx context.Context, name string) (store.WebhookDefRow, error) {
+	var defID string
+	err := s.pool.QueryRow(ctx, `SELECT def_id FROM webhook_def_active WHERE name = $1`, name).Scan(&defID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return store.WebhookDefRow{}, &store.ErrNotFound{Kind: "webhook_def_active", ID: name}
+	}
+	if err != nil {
+		return store.WebhookDefRow{}, fmt.Errorf("webhook_def_active lookup: %w", err)
+	}
+	return s.WebhookDefGet(ctx, defID)
+}
+
+func (s *Store) WebhookDefSetRetired(ctx context.Context, defID string, retired bool) error {
+	tag, err := s.pool.Exec(ctx, `UPDATE webhook_defs SET retired = $1 WHERE def_id = $2`, retired, defID)
+	if err != nil {
+		return fmt.Errorf("webhook_def set retired: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return &store.ErrNotFound{Kind: "webhook_def", ID: defID}
+	}
+	return nil
+}
+
+const webhookDefSelect = `SELECT
+	def_id, name, version,
+	COALESCE(parent_def_id, ''),
+	definition::text,
+	COALESCE(description, ''),
+	created_at,
+	COALESCE(created_by_agent_id, ''),
+	COALESCE(created_by_run_id, ''),
+	retired,
+	bootstrapped_from_static
+FROM webhook_defs`
+
+func (s *Store) scanWebhookDef(row pgx.Row) (store.WebhookDefRow, error) {
+	var (
+		out        store.WebhookDefRow
+		definition string
+	)
+	err := row.Scan(
+		&out.DefID, &out.Name, &out.Version,
+		&out.ParentDefID,
+		&definition,
+		&out.Description,
+		&out.CreatedAt,
+		&out.CreatedByAgentID, &out.CreatedByRunID,
+		&out.Retired, &out.BootstrappedFromStatic,
+	)
+	if err != nil {
+		return store.WebhookDefRow{}, err
+	}
+	out.Definition = json.RawMessage(definition)
+	return out, nil
+}
+
+func (s *Store) scanWebhookDefRows(rows pgx.Rows) ([]store.WebhookDefRow, error) {
+	var out []store.WebhookDefRow
+	for rows.Next() {
+		var (
+			r          store.WebhookDefRow
+			definition string
+		)
+		if err := rows.Scan(
+			&r.DefID, &r.Name, &r.Version,
+			&r.ParentDefID,
+			&definition,
+			&r.Description,
+			&r.CreatedAt,
+			&r.CreatedByAgentID, &r.CreatedByRunID,
+			&r.Retired, &r.BootstrappedFromStatic,
+		); err != nil {
+			return nil, err
+		}
+		r.Definition = json.RawMessage(definition)
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
 // ---- v1.x RFC E ScheduleDef runtime (sweeper-side) ----
 
 func (s *Store) ScheduleRunStateSeed(ctx context.Context, defID string, nextRunAt time.Time) error {

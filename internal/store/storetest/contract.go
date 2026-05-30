@@ -206,6 +206,13 @@ func Run(t *testing.T, factory Factory) {
 		{"A2AAgentDefParentNotFound", testA2AAgentDefParentNotFound},
 		{"A2AAgentDefListByName", testA2AAgentDefListByName},
 		{"A2AAgentDefListChildren", testA2AAgentDefListChildren},
+		{"WebhookDefCreateAndGet", testWebhookDefCreateAndGet},
+		{"WebhookDefVersionMonotonic", testWebhookDefVersionMonotonic},
+		{"WebhookDefActivePointerIdempotent", testWebhookDefActivePointerIdempotent},
+		{"WebhookDefRetireReversible", testWebhookDefRetireReversible},
+		{"WebhookDefParentNotFound", testWebhookDefParentNotFound},
+		{"WebhookDefListByName", testWebhookDefListByName},
+		{"WebhookDefListChildren", testWebhookDefListChildren},
 		// v1.x RFC E ScheduleDef runtime — sweeper-side state.
 		{"ScheduleRunStateSeedAndGet", testScheduleRunStateSeedAndGet},
 		{"ScheduleRunStateListDueRespectsRetiredAndPaused", testScheduleRunStateListDueRespectsRetiredAndPaused},
@@ -4345,6 +4352,147 @@ func testA2AAgentDefListChildren(t *testing.T, s store.Store) {
 		}
 	}
 	children, err := s.A2AAgentDefListChildren(ctx, parent.DefID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(children) != 2 {
+		t.Errorf("children len = %d, want 2", len(children))
+	}
+}
+
+// ---- v1.x RFC H WebhookDef substrate ----
+//
+// Mirror of the A2AAgentDef round-trip contract tests.
+
+func mkWebhookDef(id, name string, parent string) store.WebhookDefRow {
+	return store.WebhookDefRow{
+		DefID:       id,
+		Name:        name,
+		ParentDefID: parent,
+		Definition:  json.RawMessage(`{"delivery":"spawn","agent":"intake","auth":{"kind":"hmac","algorithm":"sha256","header":"X-Hub-Signature-256","signing_secret_env":"LOOMCYCLE_WH_SECRET"}}`),
+		Description: "test row",
+	}
+}
+
+func testWebhookDefCreateAndGet(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	row, err := s.WebhookDefCreate(ctx, mkWebhookDef("wh-1", "hook-alpha", ""))
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if row.Version != 1 {
+		t.Errorf("first version = %d, want 1", row.Version)
+	}
+	got, err := s.WebhookDefGet(ctx, "wh-1")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.Name != "hook-alpha" || got.Version != 1 {
+		t.Errorf("got %+v", got)
+	}
+}
+
+func testWebhookDefVersionMonotonic(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	for i := 0; i < 5; i++ {
+		row := mkWebhookDef(fmt.Sprintf("wh-mono-%d", i), "hook-mono", "")
+		written, err := s.WebhookDefCreate(ctx, row)
+		if err != nil {
+			t.Fatalf("create #%d: %v", i, err)
+		}
+		if want := i + 1; written.Version != want {
+			t.Errorf("create #%d: version = %d, want %d", i, written.Version, want)
+		}
+	}
+}
+
+func testWebhookDefActivePointerIdempotent(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	r1, _ := s.WebhookDefCreate(ctx, mkWebhookDef("wh-active-1", "hook-active", ""))
+	r2, _ := s.WebhookDefCreate(ctx, mkWebhookDef("wh-active-2", "hook-active", ""))
+
+	if err := s.WebhookDefSetActive(ctx, "hook-active", r1.DefID, "test"); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := s.WebhookDefGetActive(ctx, "hook-active")
+	if got.DefID != r1.DefID {
+		t.Errorf("active = %s, want %s", got.DefID, r1.DefID)
+	}
+	if err := s.WebhookDefSetActive(ctx, "hook-active", r2.DefID, "test"); err != nil {
+		t.Fatal(err)
+	}
+	got, _ = s.WebhookDefGetActive(ctx, "hook-active")
+	if got.DefID != r2.DefID {
+		t.Errorf("after re-promote: active = %s, want %s", got.DefID, r2.DefID)
+	}
+}
+
+func testWebhookDefRetireReversible(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	row, _ := s.WebhookDefCreate(ctx, mkWebhookDef("wh-retire", "hook-retire", ""))
+	if row.Retired {
+		t.Error("freshly created row should not be retired")
+	}
+	if err := s.WebhookDefSetRetired(ctx, row.DefID, true); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := s.WebhookDefGet(ctx, row.DefID)
+	if !got.Retired {
+		t.Error("after retire(true): row should be retired")
+	}
+	if err := s.WebhookDefSetRetired(ctx, row.DefID, false); err != nil {
+		t.Fatal(err)
+	}
+	got, _ = s.WebhookDefGet(ctx, row.DefID)
+	if got.Retired {
+		t.Error("after retire(false): row should NOT be retired")
+	}
+}
+
+func testWebhookDefParentNotFound(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	row := mkWebhookDef("wh-orphan", "hook-orphan", "wh-nonexistent")
+	_, err := s.WebhookDefCreate(ctx, row)
+	if err == nil {
+		t.Fatal("expected ErrWebhookDefParentNotFound, got nil")
+	}
+	if !errors.Is(err, store.ErrWebhookDefParentNotFound) {
+		t.Errorf("got %v, want ErrWebhookDefParentNotFound", err)
+	}
+}
+
+func testWebhookDefListByName(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	for i := 0; i < 3; i++ {
+		_, err := s.WebhookDefCreate(ctx, mkWebhookDef(fmt.Sprintf("wh-list-%d", i), "hook-list", ""))
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	rows, err := s.WebhookDefListByName(ctx, "hook-list")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 3 {
+		t.Errorf("len = %d, want 3", len(rows))
+	}
+	// version DESC ordering
+	if rows[0].Version != 3 || rows[1].Version != 2 || rows[2].Version != 1 {
+		t.Errorf("ordering wrong; versions = %d/%d/%d, want 3/2/1",
+			rows[0].Version, rows[1].Version, rows[2].Version)
+	}
+}
+
+func testWebhookDefListChildren(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	parent, _ := s.WebhookDefCreate(ctx, mkWebhookDef("wh-parent", "hook-tree", ""))
+	for i := 0; i < 2; i++ {
+		_, err := s.WebhookDefCreate(ctx, mkWebhookDef(fmt.Sprintf("wh-child-%d", i), fmt.Sprintf("hook-child-%d", i), parent.DefID))
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	children, err := s.WebhookDefListChildren(ctx, parent.DefID)
 	if err != nil {
 		t.Fatal(err)
 	}
