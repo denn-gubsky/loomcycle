@@ -122,14 +122,22 @@ func verifySignature(a config.WebhookAuth, body []byte, headerGet func(string) s
 		if err != nil {
 			return err
 		}
-		got := headerGet("Authorization")
-		if got == "" {
-			return errSignatureMismatch
-		}
+		// Two shapes. Default (no auth.header): the standard
+		// `Authorization: Bearer <token>`. When auth.header is set, the
+		// shared secret is carried RAW in that header instead — e.g.
+		// GitLab's `X-Gitlab-Token: <token>` — so compare the raw value.
 		// CompareBearer hashes both sides to a fixed length before the
-		// constant-time compare, so neither the presence/absence of the
-		// "Bearer " prefix nor the token length leaks via timing.
-		if !auth.CompareBearer(got, "Bearer "+want) {
+		// constant-time compare, so neither the "Bearer " prefix nor the
+		// token length leaks via timing.
+		if a.Header != "" {
+			got := strings.TrimSpace(headerGet(a.Header))
+			if got == "" || !auth.CompareBearer(got, want) {
+				return errSignatureMismatch
+			}
+			return nil
+		}
+		got := headerGet("Authorization")
+		if got == "" || !auth.CompareBearer(got, "Bearer "+want) {
 			return errSignatureMismatch
 		}
 		return nil
@@ -149,11 +157,11 @@ func verifySignature(a config.WebhookAuth, body []byte, headerGet func(string) s
 	}
 }
 
-// verifyHMAC handles the two HMAC envelope shapes. The header name comes
+// verifyHMAC handles the three HMAC envelope shapes. The header name comes
 // from a.Header (operator-addressable); when empty we default to the
-// Stripe header. The envelope shape (Stripe `t=,v1=` vs GitHub `sha256=`)
-// is detected from the header VALUE, not just its name, so an operator who
-// points a.Header at a custom name still gets correct parsing.
+// Stripe header. The envelope shape (Stripe `t=,v1=` vs GitHub `sha256=`
+// vs bare hex) is detected from the header VALUE, not just its name, so an
+// operator who points a.Header at a custom name still gets correct parsing.
 func verifyHMAC(a config.WebhookAuth, secret string, body []byte, headerGet func(string) string, now func() time.Time) error {
 	headerName := a.Header
 	if headerName == "" {
@@ -176,6 +184,15 @@ func verifyHMAC(a config.WebhookAuth, secret string, body []byte, headerGet func
 	if strings.HasPrefix(raw, "sha256=") {
 		wantHex := strings.TrimPrefix(raw, "sha256=")
 		return compareHMAC(secret, body, wantHex)
+	}
+
+	// Bare-hex envelope (Linear `Linear-Signature`, and many custom HMAC
+	// sources): the entire header value is the hex HMAC-SHA256 of the raw
+	// body — no prefix, no timestamp. A Stripe envelope always contains ','
+	// and '=' so it is never all-hex; this branch is therefore unambiguous
+	// and must be checked BEFORE the Stripe parse.
+	if isHexString(raw) {
+		return compareHMAC(secret, body, raw)
 	}
 
 	// Stripe envelope: `t=<unix>, v1=<hexmac>` over `<t>.<rawbody>`.
@@ -208,6 +225,23 @@ func verifyHMAC(a config.WebhookAuth, secret string, body []byte, headerGet func
 	}
 	signedPayload := append([]byte(tsStr+"."), body...)
 	return compareHMAC(secret, signedPayload, macHex)
+}
+
+// isHexString reports whether s is a non-empty run of only hex digits — the
+// bare-hex signature envelope (e.g. Linear's `Linear-Signature`). Used to
+// disambiguate a raw hex MAC from a Stripe `t=,v1=` envelope (which always
+// contains non-hex bytes).
+func isHexString(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')) {
+			return false
+		}
+	}
+	return true
 }
 
 // compareHMAC computes HMAC-SHA256(secret, payload) and compares it to the

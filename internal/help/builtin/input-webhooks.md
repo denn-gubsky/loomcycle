@@ -87,10 +87,14 @@ A shared front-half runs for every request, then forks on `delivery`:
    from the body). Unknown or disabled → opaque `404`.
 2. **Read** the raw body under `body_size_limit_bytes` (default 1 MiB).
 3. **Verify the signature over the raw bytes, before any parsing.**
-   HMAC-SHA256 with a constant-time compare. Two envelopes auto-detected:
-   Stripe (`X-Loomcycle-Signature: t=<unix>,v1=<hex>`, signs `<t>.<body>`,
-   ±5-minute window) and GitHub (`X-Hub-Signature-256: sha256=<hex>`, signs
-   the body). Bearer fallback for systems that can't sign.
+   HMAC-SHA256 with a constant-time compare. Three envelopes auto-detected
+   from the header *value* (so a custom header name still parses):
+   - **Stripe** — `t=<unix>,v1=<hex>`, signs `<t>.<body>`, ±5-minute window
+     (default header `X-Loomcycle-Signature`).
+   - **GitHub** — `sha256=<hex>`, signs the body.
+   - **bare hex** — the whole value is the hex MAC over the body, no prefix
+     (Linear and many custom sources).
+   Plus a **bearer** fallback (`kind: bearer`) for systems that can't sign.
 4. **Replay/dedup** (Layer 1, in-memory, per `delivery_id`) + **idempotency**
    (Layer 2, durable `runs.idempotency_key`) so a re-delivered event lands
    on the same run instead of spawning twice.
@@ -104,17 +108,61 @@ A shared front-half runs for every request, then forks on `delivery`:
    external, attacker-influenceable input) and run it; channel → publish +
    notify.
 
-## Auth, secrets, credentials
+## The signing secret
 
-- `signing_secret_env` / `bearer_token_env` name an env var that must be on
-  the allowlist; a missing/unresolvable secret **fails loud** (`503
-  secret_unresolvable`, naming the env var — never its value).
-- **spawn** credentials: `user_credentials_from_env` (env-allowlisted,
-  operator-owned) merged with `payload_mapping` targets under
-  `user_credentials.<name>` (per-event tokens; the payload value wins). They
-  land on the run's `${run.credentials.<name>}` substitution seam (RFC F).
-- **channel** mode carries **no** credentials (a publish has no run identity)
-  — declaring them on a channel Def is refused at create time.
+`signing_secret_env` (HMAC) / `bearer_token_env` (bearer) name an env var
+that must be on the operator's env allowlist (the **same**
+`LOOMCYCLE_SCHEDULER_ENV_ALLOWLIST` the scheduler uses — it is the shared
+trigger-credential gate). A missing or unresolvable secret **fails loud**:
+`503 secret_unresolvable`, naming the env var — never its value. Rotate by
+changing the env var and reloading; no plaintext secret ever lives in a Def.
+
+## MCP-tool bearer tokens for the spawned run (same as schedulers)
+
+A webhook-triggered **spawn** run is autonomous run creation from a
+non-interactive source — exactly like a scheduled run — so it wires
+MCP-tool bearers through the **same first-class field and the same resolver
+as `ScheduleDef`**: `user_credentials_from_env`. There are two sources, and
+both land on the run's `UserCredentials` map, which the MCP HTTP transport
+substitutes into `${run.credentials.<name>}` in your `mcp_servers.*.headers`
+(the RFC F seam) — so a webhook-spawned agent calls your authorized MCP
+servers with per-user/service bearers, just as scheduled and interactive
+runs do.
+
+1. **`user_credentials_from_env`** — operator-owned, static, env-allowlist-
+   gated. The value of each entry is an env-var NAME (validated
+   `[A-Z][A-Z0-9_]*`), never a literal secret. This is the **identical
+   field, identical semantics** as `ScheduleDef.user_credentials_from_env`.
+   ```yaml
+   user_credentials_from_env:
+     github: "LOOMCYCLE_GITHUB_PR_REVIEW_TOKEN"   # → ${run.credentials.github}
+     slack:  "LOOMCYCLE_SLACK_BOT_TOKEN"          # → ${run.credentials.slack}
+   ```
+2. **`payload_mapping` → `user_credentials.<name>`** — the webhook-specific
+   addition: a *per-event* token projected from the inbound (verified) body,
+   e.g. a GitHub App installation token. The payload value **overlays** (and
+   wins over) the env-resolved one for the same key; an absent path does not
+   clobber the env fallback.
+   ```yaml
+   payload_mapping:
+     user_credentials.github: "$.installation.access_token.value"
+   ```
+
+Then reference them in the MCP server config exactly as any other run does:
+```yaml
+mcp_servers:
+  github:
+    transport: http
+    url: "https://api.githubcopilot.com/mcp/"
+    headers:
+      Authorization: "Bearer ${run.credentials.github}"
+```
+
+**Channel-delivery** webhooks carry **no** credentials — a channel publish
+has no run identity to attach per-user bearers to, and accepting them would
+leak a secret onto the message bus. `user_credentials_from_env` (and any
+`payload_mapping` `user_credentials.*` target) is **refused at create time**
+for `delivery: channel` (RFC H Decision 11).
 
 ## Response policy
 
@@ -151,6 +199,156 @@ Two bearer-authed endpoints help debug a webhook that's silently failing
 - `POST /v1/_webhooks/{name}/test` — dry-run: POST a sample body + signature
   and get back `{would_accept, verdict, run_input_preview}` (credential
   **key names** only, never values). No run is created.
+
+## Provider recipes
+
+Copy-paste starting points for well-known sources. Each shows the
+`WebhookDef` (the `op: create` body is the same object under `"op":"create",
+"name":"…"`), the env vars to set, and where the provider's secret comes
+from. All are verified against the receiver's signature handling.
+
+### GitHub — PR opened → review it (spawn)
+
+GitHub signs the raw body HMAC-SHA256 as `X-Hub-Signature-256: sha256=…`,
+with a unique `X-GitHub-Delivery` id. Carry the org's GitHub MCP bearer from
+the operator env, and (optionally) overlay the per-event App installation
+token from the payload.
+
+```yaml
+webhooks:
+  github-pr-review:
+    enabled: true
+    delivery: spawn
+    agent: pr-review-agent
+    auth:
+      kind: hmac
+      header: "X-Hub-Signature-256"
+      signing_secret_env: "LOOMCYCLE_GITHUB_WEBHOOK_SECRET"
+      delivery_id_header: "X-GitHub-Delivery"
+    user_credentials_from_env:
+      github: "LOOMCYCLE_GITHUB_TOKEN"            # → ${run.credentials.github}
+    payload_mapping:
+      goal:    "$.pull_request.title"
+      user_id: "$.sender.login"
+      user_credentials.github: "$.installation.access_token.value"  # per-event token wins
+```
+GitHub repo settings → Webhooks → Secret = `LOOMCYCLE_GITHUB_WEBHOOK_SECRET`;
+content type `application/json`.
+
+### Stripe — payment event (spawn or channel)
+
+Stripe's `Stripe-Signature: t=…,v1=…` signs `<t>.<body>` (the receiver's
+default envelope). Stripe sends no delivery-id header, so omit
+`delivery_id_header` — the body-hash fallback dedups identical events (each
+event's unique `id` is in the body).
+
+```yaml
+webhooks:
+  stripe-payment:
+    enabled: true
+    delivery: spawn
+    agent: billing-agent
+    auth:
+      kind: hmac
+      header: "Stripe-Signature"
+      signing_secret_env: "LOOMCYCLE_STRIPE_WEBHOOK_SECRET"   # whsec_…
+    payload_mapping:
+      goal: "$.type"                  # e.g. "invoice.payment_failed"
+      run_metadata.event_id: "$.id"
+```
+
+### Linear — issue created (spawn)
+
+Linear sends a bare hex HMAC-SHA256 of the body in `Linear-Signature` (no
+prefix, no timestamp — the bare-hex envelope).
+
+```yaml
+webhooks:
+  linear-issue:
+    enabled: true
+    delivery: spawn
+    agent: triage-agent
+    auth:
+      kind: hmac
+      header: "Linear-Signature"
+      signing_secret_env: "LOOMCYCLE_LINEAR_WEBHOOK_SECRET"
+    payload_mapping:
+      goal:    "$.data.title"
+      user_id: "$.data.creator.email"
+```
+
+### GitLab — merge request (spawn, shared-secret token)
+
+GitLab does not sign; it sends a raw shared secret in `X-Gitlab-Token`. Use
+`kind: bearer` with `header:` set so the receiver compares that header's raw
+value constant-time.
+
+```yaml
+webhooks:
+  gitlab-mr:
+    enabled: true
+    delivery: spawn
+    agent: mr-review-agent
+    auth:
+      kind: bearer
+      header: "X-Gitlab-Token"
+      bearer_token_env: "LOOMCYCLE_GITLAB_WEBHOOK_TOKEN"
+    payload_mapping:
+      goal:    "$.object_attributes.title"
+      user_id: "$.user.username"
+```
+
+### Generic / internal service or n8n (bearer, Authorization)
+
+Any source that can send `Authorization: Bearer <token>` (n8n, Zapier, an
+internal service). Omit `header:` for the standard Authorization shape.
+
+```yaml
+webhooks:
+  internal-event:
+    enabled: true
+    delivery: spawn
+    agent: ops-agent
+    auth:
+      kind: bearer
+      bearer_token_env: "LOOMCYCLE_INTERNAL_WEBHOOK_TOKEN"
+    payload_mapping:
+      goal: "$.message"
+```
+
+### CI build done → wake a waiting agent (channel)
+
+An agent parked on `Channel.subscribe("_system/webhook.ci-build-done")` is
+woken when the build callback arrives. No run, no credentials.
+
+```yaml
+webhooks:
+  ci-build-done:
+    enabled: true
+    delivery: channel
+    channel: "_system/webhook.ci-build-done"
+    auth:
+      kind: hmac
+      signing_secret_env: "LOOMCYCLE_CI_WEBHOOK_SECRET"   # default X-Loomcycle-Signature envelope
+      delivery_id_header: "X-Delivery-Id"
+    payload_mapping:
+      build_id: "$.build.id"
+      status:   "$.build.status"
+```
+
+### Signature schemes — supported vs not yet
+
+Supported today: HMAC-SHA256 over the raw body as **`sha256=<hex>`**
+(GitHub), **`t=,v1=<hex>`** over `<t>.<body>` (Stripe), **bare `<hex>`**
+(Linear and custom sources), and a **shared-secret bearer** (in
+`Authorization` or a custom header — GitLab/n8n/Zapier/internal).
+
+Not yet supported (the secret resolves but verification would fail —
+prefer the bearer fallback or an upstream verifier for these until added):
+**base64-encoded** HMAC digests (e.g. Shopify's `X-Shopify-Hmac-Sha256`),
+and custom signed-payload constructions that sign more than the raw body or
+`<t>.<body>` (e.g. Slack's `v0:<ts>:<body>` with the timestamp in a separate
+header).
 
 ## Caveats
 

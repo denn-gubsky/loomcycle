@@ -55,6 +55,52 @@ func TestVerifySignature_GitHubStyleValid_Accepts(t *testing.T) {
 	}
 }
 
+// Linear (and many custom HMAC sources) send the bare hex HMAC-SHA256 of
+// the raw body with no prefix or timestamp — the bare-hex envelope.
+func TestVerifySignature_BareHexStyleValid_Accepts(t *testing.T) {
+	secret := "shhh"
+	body := []byte(`{"action":"create","type":"Issue"}`)
+	allow := map[string]bool{"WH_SECRET": true}
+	env := mapGetenv(map[string]string{"WH_SECRET": secret})
+
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write(body)
+	bareHex := hex.EncodeToString(mac.Sum(nil)) // no "sha256=" prefix, no t=/v1=
+
+	h := http.Header{}
+	h.Set("Linear-Signature", bareHex)
+
+	a := config.WebhookAuth{Kind: "hmac", Header: "Linear-Signature", SigningSecretEnv: "WH_SECRET"}
+	if err := verifySignature(a, body, headerGetter(h), allow, env, time.Now); err != nil {
+		t.Fatalf("want accept for bare-hex envelope, got %v", err)
+	}
+	// A tampered body under the same envelope must still be rejected.
+	if err := verifySignature(a, []byte(`{"action":"remove"}`), headerGetter(h), allow, env, time.Now); !errors.Is(err, errSignatureMismatch) {
+		t.Fatalf("tampered bare-hex: want errSignatureMismatch, got %v", err)
+	}
+}
+
+// GitLab (and custom shared-secret sources) carry the token RAW in a
+// configured header (X-Gitlab-Token), not as Authorization: Bearer.
+func TestVerifySignature_BearerCustomHeaderRawToken_Accepts(t *testing.T) {
+	allow := map[string]bool{"GL_TOKEN": true}
+	env := mapGetenv(map[string]string{"GL_TOKEN": "s3cr3t-shared"})
+	a := config.WebhookAuth{Kind: "bearer", Header: "X-Gitlab-Token", BearerTokenEnv: "GL_TOKEN"}
+	body := []byte(`{"object_kind":"merge_request"}`)
+
+	ok := http.Header{}
+	ok.Set("X-Gitlab-Token", "s3cr3t-shared")
+	if err := verifySignature(a, body, headerGetter(ok), allow, env, time.Now); err != nil {
+		t.Fatalf("raw-token custom header: want accept, got %v", err)
+	}
+
+	bad := http.Header{}
+	bad.Set("X-Gitlab-Token", "wrong")
+	if err := verifySignature(a, body, headerGetter(bad), allow, env, time.Now); !errors.Is(err, errSignatureMismatch) {
+		t.Fatalf("wrong raw token: want errSignatureMismatch, got %v", err)
+	}
+}
+
 func TestVerifySignature_TamperedBody_Rejects(t *testing.T) {
 	secret := "shhh"
 	signed := []byte(`{"action":"opened"}`)
