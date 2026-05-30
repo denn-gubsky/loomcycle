@@ -60,6 +60,7 @@
 | **Parent-context propagation** — opaque `parent_context` {root_agent_run_id, function_key, tier_at_run} on a run is inherited by every Agent-tool sub-agent, persisted, and echoed on the agent-status / run-state / SSE surfaces — so a consumer can attribute a child sub-agent's usage to the user-initiated request | v0.12.8 |
 | **Tool-use hooks** — register HTTP webhooks against `(agent, tool, phase)` selectors via `POST /v1/hooks`. `pre` hooks rewrite a tool's input, deny it with a synthetic result, or (operator opt-in) widen hosts for one call; `post` hooks rewrite the result. Fail-open or fail-closed; narrows policy by default; DB-backed in cluster mode | v0.8.x → v0.12.5 |
 | **A2A (Agent2Agent) interoperability** — loomcycle as an A2A **server** (well-known AgentCard + REST/JSON-RPC/gRPC bindings) and **client** (call remote peers as `a2a__<peer>__<skill>` tools). Two substrate Defs, signed cards (JWS/JCS), multi-tenant routing, `INPUT_REQUIRED` ↔ Interruption resume. Off by default | v0.13.0 |
+| **Input webhooks** — `WebhookDef` substrate: external systems (GitHub/Stripe/Linear/CI/n8n) trigger agent runs or wake parked agents via signed `POST /v1/_webhooks/{name}`. HMAC-over-raw-body (verify-before-parse), strict JSONPath mapping, two-layer idempotency, per-Def rate limit, per-run credentials, `on_complete` hooks, admin triage. Off by default | v0.14.0 |
 
 Full per-version log: [`REVISIONS.md`](REVISIONS.md).
 

@@ -194,6 +194,15 @@ type RunInput struct {
 	// tools, connector, store — can reference it without an import
 	// cycle (store imports no internal packages).
 	ParentContext *store.ParentContext
+
+	// IdempotencyKey is the optional RFC H Decision 10 "Layer 2"
+	// durable dedup key. Empty (the default) for interactive runs. Set
+	// by the webhook spawn path to the delivery id; threaded into
+	// RunIdentity so CreateRun persists it to runs.idempotency_key. When
+	// a second run carries a key already claimed, CreateRun returns
+	// store.ErrDuplicateIdempotencyKey and RunOnce aborts BEFORE the
+	// agent loop, so the run never double-executes.
+	IdempotencyKey string
 }
 
 // RunCallbacks is how the wire surfaces observe the run.

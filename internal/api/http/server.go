@@ -134,6 +134,21 @@ type Server struct {
 	// Set via SetExtraMux; nil when the A2A surface is disabled.
 	extraMux func(mux *http.ServeMux, adminAuth func(http.Handler) http.Handler)
 
+	// webhookMux is the optional v1.x RFC H hook for registering the
+	// inbound-webhook receiver route. Set via SetWebhookMux; nil when
+	// LOOMCYCLE_WEBHOOKS_ENABLED is unset. Unlike extraMux it is NOT
+	// handed the admin-auth wrapper: the receiver authenticates each
+	// request against the resolved WebhookDef's own secret (HMAC /
+	// bearer), so wrapping it in the global LOOMCYCLE_AUTH_TOKEN bearer
+	// would defeat the per-webhook secret model. The hook receives a
+	// MuxRegistrar (an adapter that applies recovery middleware) rather
+	// than the bare mux, so a panicking webhook handler still becomes a
+	// 500 instead of crashing the process. It ALSO receives the admin-auth
+	// wrapper (recovery + bearer) so the WH-5b triage endpoints
+	// (recent-deliveries / test) can sit behind LOOMCYCLE_AUTH_TOKEN while
+	// the receiver POST stays unauthed.
+	webhookMux func(reg MuxRegistrar, adminAuth func(http.Handler) http.Handler)
+
 	// mcpPoolInspector returns the cached tools/list result for a
 	// named MCP server as already-marshaled JSON. The "already JSON"
 	// wire keeps this package free of internal/tools/mcp imports.
@@ -206,6 +221,13 @@ type Server struct {
 	// SetA2AServerCardDefTool / SetA2AAgentDefTool.
 	a2aServerCardDefTool tools.Tool
 	a2aAgentDefTool      tools.Tool
+
+	// webhookDefTool is the v1.x RFC H WebhookDef substrate tool. Same
+	// operator-admin-only posture as a2aAgentDefTool — NOT in s.tools,
+	// reached via Connector.WebhookDef + the admin endpoint + the
+	// LoomCycle MCP meta-tool. Nil = the surface returns "not
+	// configured" errors. Set via SetWebhookDefTool.
+	webhookDefTool tools.Tool
 
 	// v0.12.0 multi-replica HA. backplane + replicaStore are nil in
 	// single-replica deployments (LOOMCYCLE_REPLICA_ID unset); /healthz
@@ -496,6 +518,15 @@ func (s *Server) SetA2AServerCardDefTool(t tools.Tool) {
 // LoomCycle MCP meta-tool all refuse with "not configured".
 func (s *Server) SetA2AAgentDefTool(t tools.Tool) {
 	s.a2aAgentDefTool = t
+}
+
+// SetWebhookDefTool wires the v1.x RFC H WebhookDef substrate tool.
+// Without this call, Connector.WebhookDef + POST /v1/_webhookdef + the
+// LoomCycle MCP meta-tool all refuse with "not configured". The tool
+// only needs the store + cfg, so it can be constructed alongside the
+// A2A substrate tools in main.go.
+func (s *Server) SetWebhookDefTool(t tools.Tool) {
+	s.webhookDefTool = t
 }
 
 // newDispatcher centralises Dispatcher construction so the three call
@@ -1359,12 +1390,23 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	}
 
 	// ---- Session+run creation ----
-	identity := store.RunIdentity{AgentID: agentID, UserID: effectiveUserID, UserTier: in.UserTier, Model: model, ReplicaID: s.replicaID, ParentContext: in.ParentContext}
+	identity := store.RunIdentity{AgentID: agentID, UserID: effectiveUserID, UserTier: in.UserTier, Model: model, ReplicaID: s.replicaID, ParentContext: in.ParentContext, IdempotencyKey: in.IdempotencyKey}
 	sessionID, runID, sessErr := s.openOrCreateSessionAndRun(ctx, in.SessionID, effectiveAgentName, effectiveTenantID, effectiveUserID, identity)
 	if sessErr != nil {
 		var nf *store.ErrNotFound
 		if errors.As(sessErr, &nf) {
 			return fmt.Errorf("%w: %v", runner.ErrSessionNotFound, sessErr)
+		}
+		// RFC H Decision 10: a duplicate idempotency_key means an earlier
+		// run already claimed this key. CRITICAL: return BEFORE the cancel
+		// registry + agent loop so the run never double-executes. Wrap the
+		// sentinel verbatim (no ErrInternal masking) so the webhook
+		// receiver can errors.Is-detect it and resolve to the existing
+		// run. (CreateSession ran before the failed CreateRun, leaving an
+		// orphan session with no run — acceptable: it carries no events
+		// and is never returned to a caller.)
+		if errors.Is(sessErr, store.ErrDuplicateIdempotencyKey) {
+			return sessErr
 		}
 		return fmt.Errorf("%w: %v", runner.ErrInternal, sessErr)
 	}
@@ -1710,6 +1752,9 @@ func (s *Server) Mux() http.Handler {
 	// per-agent dispatcher slot).
 	mux.Handle("POST /v1/_a2aservercarddef", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleSubstrateA2AServerCardDef))))
 	mux.Handle("POST /v1/_a2aagentdef", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleSubstrateA2AAgentDef))))
+	// v1.x RFC H Input Webhooks substrate. Same operator-admin-only
+	// dispatch shape as the other substrate admin endpoints.
+	mux.Handle("POST /v1/_webhookdef", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleSubstrateWebhookDef))))
 	// v0.11.0 LLM Gateway — direct provider routing without the agent
 	// loop. Bearer-authed admin scope. Both stream:true (SSE) and
 	// stream:false (single-shot JSON) selected by the request body.
@@ -1741,6 +1786,7 @@ func (s *Server) Mux() http.Handler {
 	mux.Handle("GET /v1/_scheduledef/names", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleListScheduleDefNames))))
 	mux.Handle("GET /v1/_a2aservercarddef/names", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleListA2AServerCardDefNames))))
 	mux.Handle("GET /v1/_a2aagentdef/names", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleListA2AAgentDefNames))))
+	mux.Handle("GET /v1/_webhookdef/names", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleListWebhookDefNames))))
 	// v0.9.x Library v2 — unified enumeration that merges static cfg
 	// + substrate views into one envelope per entry. The names/* sister
 	// endpoints above stay as-is for backwards compat with external
@@ -1841,7 +1887,41 @@ func (s *Server) Mux() http.Handler {
 			return recoveryMiddleware(s.authMiddleware(next))
 		})
 	}
+	// v1.x RFC H inbound-webhook receiver. Mounted WITHOUT the bearer
+	// authMiddleware — the receiver does its own per-WebhookDef auth.
+	// Wrapped in recoveryMiddleware only, so a panic in a handler still
+	// becomes a 500 rather than tearing down the process. Nil when the
+	// receiver is disabled (the default).
+	if s.webhookMux != nil {
+		s.webhookMux(&webhookMuxAdapter{mux: mux}, func(next http.Handler) http.Handler {
+			return recoveryMiddleware(s.authMiddleware(next))
+		})
+	}
 	return mux
+}
+
+// MuxRegistrar is the minimal mux surface the webhook receiver's Mount
+// needs. Declared here (not as a concrete *http.ServeMux) so the recovery
+// wrapper can be interposed transparently.
+type MuxRegistrar interface {
+	Handle(pattern string, handler http.Handler)
+}
+
+// webhookMuxAdapter wraps each webhook handler in recoveryMiddleware
+// (recovery only — no auth; the receiver authenticates per-WebhookDef).
+type webhookMuxAdapter struct{ mux *http.ServeMux }
+
+func (a *webhookMuxAdapter) Handle(pattern string, h http.Handler) {
+	a.mux.Handle(pattern, recoveryMiddleware(h))
+}
+
+// SetWebhookMux installs the v1.x RFC H webhook-receiver mount hook,
+// called at the end of Mux(). Nil-safe. The hook receives a MuxRegistrar
+// that applies recovery middleware (for the unauthed receiver POST, which
+// does its own per-WebhookDef auth) AND an admin-auth wrapper (recovery +
+// bearer) for the WH-5b triage endpoints, which ARE operator-only.
+func (s *Server) SetWebhookMux(fn func(reg MuxRegistrar, adminAuth func(http.Handler) http.Handler)) {
+	s.webhookMux = fn
 }
 
 // SetExtraMux installs a hook called at the end of Mux() to register

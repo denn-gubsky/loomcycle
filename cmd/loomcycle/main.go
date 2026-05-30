@@ -36,6 +36,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/agents"
 	a2aapi "github.com/denn-gubsky/loomcycle/internal/api/a2a"
 	lchttp "github.com/denn-gubsky/loomcycle/internal/api/http"
+	webhookapi "github.com/denn-gubsky/loomcycle/internal/api/webhook"
 	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/channels"
 	"github.com/denn-gubsky/loomcycle/internal/cli"
@@ -1040,6 +1041,16 @@ func main() {
 		MaxDefinitionBytes:  cfg.Env.AgentDefMaxDefinitionBytes,
 		MaxDescriptionBytes: cfg.Env.AgentDefMaxDescriptionBytes,
 	})
+	// v1.x RFC H — wire the WebhookDef substrate tool. Same operator-
+	// admin-only posture as the A2A substrate tools; reached via
+	// Connector.WebhookDef + the admin endpoint + the LoomCycle MCP
+	// meta-tool. Identical Store + Cfg + byte-cap construction.
+	srv.SetWebhookDefTool(&builtin.WebhookDef{
+		Store:               storeIface,
+		Cfg:                 cfg,
+		MaxDefinitionBytes:  cfg.Env.AgentDefMaxDefinitionBytes,
+		MaxDescriptionBytes: cfg.Env.AgentDefMaxDescriptionBytes,
+	})
 	// Surface the resolved build identifiers via /healthz so the Web UI
 	// can render the running binary's real version instead of a stale
 	// hard-coded string. Mirrors what gRPC's Health RPC has reported
@@ -1204,6 +1215,44 @@ func main() {
 			srv.SetExtraMux(a2aServer.Mount)
 			log.Printf("a2a: server surface enabled (card=%q tenancy=%q)", cfg.Env.A2AServerCardName, cfg.Env.A2ATenancyRouting)
 		}
+	}
+
+	// v1.x RFC H inbound-webhook receiver. Default OFF; operator opts in
+	// via LOOMCYCLE_WEBHOOKS_ENABLED=1. The receiver is the trust boundary:
+	// it authenticates each external POST against the resolved WebhookDef's
+	// own HMAC/bearer secret (gated by the SAME env allowlist the scheduler
+	// uses — the shared RFC F trigger-credential gate), then spawns a run
+	// (srv as runner) or publishes to a channel (sysPublisher). ?sync runs
+	// block on runStateBus. The route mounts WITHOUT the global bearer auth.
+	//
+	// Registered BEFORE srv.Mux() below — the SetWebhookMux hook fires
+	// inside Mux(), same ordering constraint as SetExtraMux for A2A.
+	if cfg.Env.WebhooksEnabled && storeIface != nil && srv != nil {
+		webhookAllowlist := make(map[string]bool, len(cfg.Env.SchedulerEnvAllowlist))
+		for _, name := range cfg.Env.SchedulerEnvAllowlist {
+			webhookAllowlist[name] = true
+		}
+		rec := webhookapi.New(webhookapi.Deps{
+			Store:        storeIface,
+			Cfg:          cfg,
+			Runner:       srv,
+			Publisher:    sysPublisher,
+			RunStateBus:  runStateBus,
+			EnvAllowlist: webhookAllowlist,
+			Logf:         log.Printf,
+		})
+		srv.SetWebhookMux(func(reg lchttp.MuxRegistrar, adminAuth func(http.Handler) http.Handler) {
+			// Receiver POST: unauthed (per-WebhookDef secret). Triage
+			// endpoints (recent-deliveries / test): admin-bearer gated.
+			rec.Mount(reg)
+			rec.MountAdmin(reg, adminAuth)
+		})
+		log.Printf("webhooks: enabled (receiver mounted at POST /v1/_webhooks/{name}, env_allowlist=%d names)",
+			len(cfg.Env.SchedulerEnvAllowlist))
+	} else if cfg.Env.WebhooksEnabled {
+		log.Printf("webhooks: disabled (no Store backend or no HTTP server)")
+	} else {
+		log.Printf("webhooks: disabled (LOOMCYCLE_WEBHOOKS_ENABLED=0)")
 	}
 
 	// In path-mode A2A tenancy, the leading /{tenant} segment is stripped
@@ -1574,6 +1623,7 @@ func main() {
 	} else {
 		log.Printf("scheduler: disabled (LOOMCYCLE_SCHEDULER_ENABLED=0)")
 	}
+
 	// Boot summary of operator-declared channels. Mirrors the
 	// "user_tiers: configured N — ..." line shape so operators see
 	// the framework-primitive state at startup.

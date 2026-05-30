@@ -66,6 +66,13 @@ var handlersByName = map[string]toolHandler{
 	"a2aagentdef": wrapBuiltin("a2aagentdef", func(c connector.Connector, ctx context.Context, in json.RawMessage) (connector.ToolResult, error) {
 		return c.A2AAgentDef(ctx, in)
 	}),
+	// v1.x RFC H inbound-webhook substrate. Same operator-admin-only
+	// posture as a2aagentdef; lets external orchestrators author + fork
+	// inbound webhook definitions over MCP without the HTTP admin
+	// endpoint. (RFC H WH-3 / mirrors a2aagentdef.)
+	"webhookdef": wrapBuiltin("webhookdef", func(c connector.Connector, ctx context.Context, in json.RawMessage) (connector.ToolResult, error) {
+		return c.WebhookDef(ctx, in)
+	}),
 	"evaluation": wrapBuiltin("evaluation", func(c connector.Connector, ctx context.Context, in json.RawMessage) (connector.ToolResult, error) {
 		return c.Evaluation(ctx, in)
 	}),

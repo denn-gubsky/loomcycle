@@ -297,8 +297,8 @@ func (s *Store) CreateRun(ctx context.Context, sessionID string, identity store.
 		_, err := s.pool.Exec(ctx,
 			`INSERT INTO runs (
 				id, session_id, status, started_at,
-				agent_id, parent_agent_id, parent_run_id, user_id, user_tier, agent_def_id, model, replica_id, parent_context
-			) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
+				agent_id, parent_agent_id, parent_run_id, user_id, user_tier, agent_def_id, model, replica_id, parent_context, idempotency_key
+			) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
 			id, sessionID, string(store.RunRunning), now,
 			nullableText(identity.AgentID),
 			nullableText(identity.ParentAgentID),
@@ -309,25 +309,39 @@ func (s *Store) CreateRun(ctx context.Context, sessionID string, identity store.
 			nullableText(identity.Model),
 			nullableText(identity.ReplicaID),
 			pcVal,
+			nullableText(identity.IdempotencyKey),
 		)
 		return err
 	}); err != nil {
+		// RFC H Decision 10: a 23505 unique_violation on the
+		// runs_idempotency_key partial index means an earlier run
+		// already claimed this key — surface the typed sentinel so the
+		// caller dedups. Scope to the idempotency case (key != "" AND
+		// the violation names that constraint) so a future unique
+		// constraint elsewhere on runs is never misreported.
+		var pgErr *pgconn.PgError
+		if identity.IdempotencyKey != "" &&
+			errors.As(err, &pgErr) && pgErr.Code == "23505" &&
+			pgErr.ConstraintName == "runs_idempotency_key" {
+			return store.Run{}, store.ErrDuplicateIdempotencyKey
+		}
 		return store.Run{}, fmt.Errorf("create run: %w", err)
 	}
 	return store.Run{
-		ID:            id,
-		SessionID:     sessionID,
-		Status:        store.RunRunning,
-		StartedAt:     now,
-		AgentID:       identity.AgentID,
-		ParentAgentID: identity.ParentAgentID,
-		ParentRunID:   identity.ParentRunID,
-		UserID:        identity.UserID,
-		UserTier:      identity.UserTier,
-		AgentDefID:    identity.AgentDefID,
-		Model:         identity.Model,
-		ReplicaID:     identity.ReplicaID,
-		ParentContext: identity.ParentContext.Clone(),
+		ID:             id,
+		SessionID:      sessionID,
+		Status:         store.RunRunning,
+		StartedAt:      now,
+		AgentID:        identity.AgentID,
+		ParentAgentID:  identity.ParentAgentID,
+		ParentRunID:    identity.ParentRunID,
+		UserID:         identity.UserID,
+		UserTier:       identity.UserTier,
+		AgentDefID:     identity.AgentDefID,
+		Model:          identity.Model,
+		ReplicaID:      identity.ReplicaID,
+		ParentContext:  identity.ParentContext.Clone(),
+		IdempotencyKey: identity.IdempotencyKey,
 	}, nil
 }
 
@@ -538,7 +552,7 @@ func (s *Store) GetRunByAgentID(ctx context.Context, agentID string) (store.Run,
 		        r.input_tokens, r.output_tokens, r.cache_creation_tokens, r.cache_read_tokens,
 		        r.model, r.provider, r.error,
 		        r.agent_id, r.parent_agent_id, r.parent_run_id, r.user_id, r.last_heartbeat_at, r.user_tier,
-		        r.agent_def_id, r.pause_state, r.replica_id, r.parent_context,
+		        r.agent_def_id, r.pause_state, r.replica_id, r.parent_context, r.idempotency_key,
 		        s.agent
 		 FROM runs r LEFT JOIN sessions s ON r.session_id = s.id
 		 WHERE r.agent_id = $1 ORDER BY r.started_at DESC LIMIT 1`, agentID,
@@ -553,6 +567,35 @@ func (s *Store) GetRunByAgentID(ctx context.Context, agentID string) (store.Run,
 	return r, nil
 }
 
+// RunByIdempotencyKey returns the run created with the given RFC H
+// Decision 10 idempotency key. An empty key short-circuits to
+// (Run{}, false, nil); a key with no matching row returns the same. The
+// runs_idempotency_key partial unique index guarantees at most one
+// match.
+func (s *Store) RunByIdempotencyKey(ctx context.Context, key string) (store.Run, bool, error) {
+	if key == "" {
+		return store.Run{}, false, nil
+	}
+	row := s.pool.QueryRow(ctx,
+		`SELECT r.id, r.session_id, r.status, r.started_at, r.completed_at, r.stop_reason,
+		        r.input_tokens, r.output_tokens, r.cache_creation_tokens, r.cache_read_tokens,
+		        r.model, r.provider, r.error,
+		        r.agent_id, r.parent_agent_id, r.parent_run_id, r.user_id, r.last_heartbeat_at, r.user_tier,
+		        r.agent_def_id, r.pause_state, r.replica_id, r.parent_context, r.idempotency_key,
+		        s.agent
+		 FROM runs r LEFT JOIN sessions s ON r.session_id = s.id
+		 WHERE r.idempotency_key = $1 LIMIT 1`, key,
+	)
+	r, err := scanRun(row)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return store.Run{}, false, nil
+		}
+		return store.Run{}, false, fmt.Errorf("run by idempotency_key: %w", err)
+	}
+	return r, true, nil
+}
+
 // GetRun returns one row by run_id (the primary key on runs).
 func (s *Store) GetRun(ctx context.Context, runID string) (store.Run, error) {
 	if runID == "" {
@@ -563,7 +606,7 @@ func (s *Store) GetRun(ctx context.Context, runID string) (store.Run, error) {
 		        r.input_tokens, r.output_tokens, r.cache_creation_tokens, r.cache_read_tokens,
 		        r.model, r.provider, r.error,
 		        r.agent_id, r.parent_agent_id, r.parent_run_id, r.user_id, r.last_heartbeat_at, r.user_tier,
-		        r.agent_def_id, r.pause_state, r.replica_id, r.parent_context,
+		        r.agent_def_id, r.pause_state, r.replica_id, r.parent_context, r.idempotency_key,
 		        s.agent
 		 FROM runs r LEFT JOIN sessions s ON r.session_id = s.id
 		 WHERE r.id = $1`, runID,
@@ -626,7 +669,7 @@ func (s *Store) ListActiveRunsByUser(ctx context.Context, userID string, status 
 			        r.input_tokens, r.output_tokens, r.cache_creation_tokens, r.cache_read_tokens,
 			        r.model, r.provider, r.error,
 			        r.agent_id, r.parent_agent_id, r.parent_run_id, r.user_id, r.last_heartbeat_at, r.user_tier,
-			        r.agent_def_id, r.pause_state, r.replica_id, r.parent_context,
+			        r.agent_def_id, r.pause_state, r.replica_id, r.parent_context, r.idempotency_key,
 			        s.agent
 			 FROM runs r LEFT JOIN sessions s ON r.session_id = s.id
 			 WHERE r.user_id = $1
@@ -637,7 +680,7 @@ func (s *Store) ListActiveRunsByUser(ctx context.Context, userID string, status 
 			        r.input_tokens, r.output_tokens, r.cache_creation_tokens, r.cache_read_tokens,
 			        r.model, r.provider, r.error,
 			        r.agent_id, r.parent_agent_id, r.parent_run_id, r.user_id, r.last_heartbeat_at, r.user_tier,
-			        r.agent_def_id, r.pause_state, r.replica_id, r.parent_context,
+			        r.agent_def_id, r.pause_state, r.replica_id, r.parent_context, r.idempotency_key,
 			        s.agent
 			 FROM runs r LEFT JOIN sessions s ON r.session_id = s.id
 			 WHERE r.user_id = $1 AND r.status = $2
@@ -662,7 +705,7 @@ func (s *Store) ListRunsByParentAgentID(ctx context.Context, parentAgentID strin
 		        r.input_tokens, r.output_tokens, r.cache_creation_tokens, r.cache_read_tokens,
 		        r.model, r.provider, r.error,
 		        r.agent_id, r.parent_agent_id, r.parent_run_id, r.user_id, r.last_heartbeat_at, r.user_tier,
-		        r.agent_def_id, r.pause_state, r.replica_id, r.parent_context,
+		        r.agent_def_id, r.pause_state, r.replica_id, r.parent_context, r.idempotency_key,
 		        s.agent
 		 FROM runs r LEFT JOIN sessions s ON r.session_id = s.id
 		 WHERE r.parent_agent_id = $1
@@ -757,7 +800,7 @@ func (s *Store) ListPausedRuns(ctx context.Context) ([]store.Run, error) {
 		        r.input_tokens, r.output_tokens, r.cache_creation_tokens, r.cache_read_tokens,
 		        r.model, r.provider, r.error,
 		        r.agent_id, r.parent_agent_id, r.parent_run_id, r.user_id, r.last_heartbeat_at, r.user_tier,
-		        r.agent_def_id, r.pause_state, r.replica_id, r.parent_context,
+		        r.agent_def_id, r.pause_state, r.replica_id, r.parent_context, r.idempotency_key,
 		        s.agent
 		 FROM runs r LEFT JOIN sessions s ON r.session_id = s.id
 		 WHERE r.pause_state = $1
@@ -4621,6 +4664,236 @@ func (s *Store) scanA2AAgentDefRows(rows pgx.Rows) ([]store.A2AAgentDefRow, erro
 	return out, rows.Err()
 }
 
+// ---- v1.x RFC H WebhookDef substrate ----
+//
+// Mirror of A2AAgentDef* without the sweeper run_state table.
+
+func (s *Store) WebhookDefCreate(ctx context.Context, row store.WebhookDefRow) (store.WebhookDefRow, error) {
+	if row.DefID == "" || row.Name == "" {
+		return store.WebhookDefRow{}, fmt.Errorf("webhook_def: def_id + name required")
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return store.WebhookDefRow{}, fmt.Errorf("webhook_def create begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	if _, err := tx.Exec(ctx,
+		`SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`,
+		"webhook_def:"+row.Name,
+	); err != nil {
+		return store.WebhookDefRow{}, fmt.Errorf("webhook_def create lock: %w", err)
+	}
+
+	if row.ParentDefID != "" {
+		var n int
+		if err := tx.QueryRow(ctx, `SELECT COUNT(*) FROM webhook_defs WHERE def_id = $1`, row.ParentDefID).Scan(&n); err != nil {
+			return store.WebhookDefRow{}, fmt.Errorf("webhook_def create parent check: %w", err)
+		}
+		if n == 0 {
+			return store.WebhookDefRow{}, store.ErrWebhookDefParentNotFound
+		}
+	}
+
+	var maxVer sql.NullInt64
+	if err := tx.QueryRow(ctx, `SELECT MAX(version) FROM webhook_defs WHERE name = $1`, row.Name).Scan(&maxVer); err != nil {
+		return store.WebhookDefRow{}, fmt.Errorf("webhook_def create max version: %w", err)
+	}
+	row.Version = 1
+	if maxVer.Valid {
+		row.Version = int(maxVer.Int64) + 1
+	}
+	row.CreatedAt = time.Now().UTC()
+
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO webhook_defs (
+			def_id, name, version, parent_def_id, definition, description,
+			created_at, created_by_agent_id, created_by_run_id,
+			retired, bootstrapped_from_static
+		) VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10, $11)`,
+		row.DefID, row.Name, row.Version, nullableString(row.ParentDefID),
+		string(row.Definition), nullableString(row.Description),
+		row.CreatedAt,
+		nullableString(row.CreatedByAgentID), nullableString(row.CreatedByRunID),
+		row.Retired, row.BootstrappedFromStatic,
+	); err != nil {
+		return store.WebhookDefRow{}, fmt.Errorf("webhook_def insert: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return store.WebhookDefRow{}, fmt.Errorf("webhook_def commit: %w", err)
+	}
+	return row, nil
+}
+
+func (s *Store) WebhookDefGet(ctx context.Context, defID string) (store.WebhookDefRow, error) {
+	row, err := s.scanWebhookDef(s.pool.QueryRow(ctx, webhookDefSelect+` WHERE def_id = $1`, defID))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return store.WebhookDefRow{}, &store.ErrNotFound{Kind: "webhook_def", ID: defID}
+	}
+	return row, err
+}
+
+func (s *Store) WebhookDefGetByNameVersion(ctx context.Context, name string, version int) (store.WebhookDefRow, error) {
+	row, err := s.scanWebhookDef(s.pool.QueryRow(ctx, webhookDefSelect+` WHERE name = $1 AND version = $2`, name, version))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return store.WebhookDefRow{}, &store.ErrNotFound{Kind: "webhook_def", ID: fmt.Sprintf("%s@v%d", name, version)}
+	}
+	return row, err
+}
+
+func (s *Store) WebhookDefListByName(ctx context.Context, name string) ([]store.WebhookDefRow, error) {
+	rows, err := s.pool.Query(ctx, webhookDefSelect+` WHERE name = $1 ORDER BY version DESC`, name)
+	if err != nil {
+		return nil, fmt.Errorf("webhook_def list by name: %w", err)
+	}
+	defer rows.Close()
+	return s.scanWebhookDefRows(rows)
+}
+
+func (s *Store) WebhookDefListChildren(ctx context.Context, parentDefID string) ([]store.WebhookDefRow, error) {
+	rows, err := s.pool.Query(ctx, webhookDefSelect+` WHERE parent_def_id = $1 ORDER BY version DESC`, parentDefID)
+	if err != nil {
+		return nil, fmt.Errorf("webhook_def list children: %w", err)
+	}
+	defer rows.Close()
+	return s.scanWebhookDefRows(rows)
+}
+
+func (s *Store) WebhookDefListNames(ctx context.Context) ([]store.WebhookDefNameSummary, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT
+			d.name,
+			COUNT(*)                  AS version_count,
+			MAX(d.version)            AS latest_version,
+			MAX(d.created_at)         AS last_updated,
+			COALESCE(a.def_id, '')    AS active_def_id
+		FROM webhook_defs d
+		LEFT JOIN webhook_def_active a ON a.name = d.name
+		GROUP BY d.name, a.def_id
+		ORDER BY d.name`)
+	if err != nil {
+		return nil, fmt.Errorf("webhook_def list names: %w", err)
+	}
+	defer rows.Close()
+
+	var out []store.WebhookDefNameSummary
+	for rows.Next() {
+		var ns store.WebhookDefNameSummary
+		if err := rows.Scan(&ns.Name, &ns.VersionCount, &ns.LatestVersion, &ns.LastUpdated, &ns.ActiveDefID); err != nil {
+			return nil, err
+		}
+		out = append(out, ns)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) WebhookDefSetActive(ctx context.Context, name, defID, promotedByAgentID string) error {
+	var rowName string
+	err := s.pool.QueryRow(ctx, `SELECT name FROM webhook_defs WHERE def_id = $1`, defID).Scan(&rowName)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return &store.ErrNotFound{Kind: "webhook_def", ID: defID}
+	}
+	if err != nil {
+		return fmt.Errorf("webhook_def_active check: %w", err)
+	}
+	if rowName != name {
+		return fmt.Errorf("webhook_def_active: def_id %q has name %q, refusing to promote under name %q", defID, rowName, name)
+	}
+	_, err = s.pool.Exec(ctx, `
+		INSERT INTO webhook_def_active (name, def_id, promoted_at, promoted_by_agent_id)
+		VALUES ($1, $2, $3, $4)
+		ON CONFLICT (name) DO UPDATE SET
+		    def_id               = EXCLUDED.def_id,
+		    promoted_at          = EXCLUDED.promoted_at,
+		    promoted_by_agent_id = EXCLUDED.promoted_by_agent_id`,
+		name, defID, time.Now().UTC(), nullableString(promotedByAgentID),
+	)
+	if err != nil {
+		return fmt.Errorf("webhook_def_active upsert: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) WebhookDefGetActive(ctx context.Context, name string) (store.WebhookDefRow, error) {
+	var defID string
+	err := s.pool.QueryRow(ctx, `SELECT def_id FROM webhook_def_active WHERE name = $1`, name).Scan(&defID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return store.WebhookDefRow{}, &store.ErrNotFound{Kind: "webhook_def_active", ID: name}
+	}
+	if err != nil {
+		return store.WebhookDefRow{}, fmt.Errorf("webhook_def_active lookup: %w", err)
+	}
+	return s.WebhookDefGet(ctx, defID)
+}
+
+func (s *Store) WebhookDefSetRetired(ctx context.Context, defID string, retired bool) error {
+	tag, err := s.pool.Exec(ctx, `UPDATE webhook_defs SET retired = $1 WHERE def_id = $2`, retired, defID)
+	if err != nil {
+		return fmt.Errorf("webhook_def set retired: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return &store.ErrNotFound{Kind: "webhook_def", ID: defID}
+	}
+	return nil
+}
+
+const webhookDefSelect = `SELECT
+	def_id, name, version,
+	COALESCE(parent_def_id, ''),
+	definition::text,
+	COALESCE(description, ''),
+	created_at,
+	COALESCE(created_by_agent_id, ''),
+	COALESCE(created_by_run_id, ''),
+	retired,
+	bootstrapped_from_static
+FROM webhook_defs`
+
+func (s *Store) scanWebhookDef(row pgx.Row) (store.WebhookDefRow, error) {
+	var (
+		out        store.WebhookDefRow
+		definition string
+	)
+	err := row.Scan(
+		&out.DefID, &out.Name, &out.Version,
+		&out.ParentDefID,
+		&definition,
+		&out.Description,
+		&out.CreatedAt,
+		&out.CreatedByAgentID, &out.CreatedByRunID,
+		&out.Retired, &out.BootstrappedFromStatic,
+	)
+	if err != nil {
+		return store.WebhookDefRow{}, err
+	}
+	out.Definition = json.RawMessage(definition)
+	return out, nil
+}
+
+func (s *Store) scanWebhookDefRows(rows pgx.Rows) ([]store.WebhookDefRow, error) {
+	var out []store.WebhookDefRow
+	for rows.Next() {
+		var (
+			r          store.WebhookDefRow
+			definition string
+		)
+		if err := rows.Scan(
+			&r.DefID, &r.Name, &r.Version,
+			&r.ParentDefID,
+			&definition,
+			&r.Description,
+			&r.CreatedAt,
+			&r.CreatedByAgentID, &r.CreatedByRunID,
+			&r.Retired, &r.BootstrappedFromStatic,
+		); err != nil {
+			return nil, err
+		}
+		r.Definition = json.RawMessage(definition)
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
 // ---- v1.x RFC E ScheduleDef runtime (sweeper-side) ----
 
 func (s *Store) ScheduleRunStateSeed(ctx context.Context, defID string, nextRunAt time.Time) error {
@@ -5121,6 +5394,7 @@ func scanRun(r rowScanner) (store.Run, error) {
 		pauseState                                            *string
 		replicaID                                             *string
 		parentContext                                         *string
+		idempotencyKey                                        *string
 		lastHeartbeatAt                                       *time.Time
 		sessAgent                                             *string
 
@@ -5132,7 +5406,7 @@ func scanRun(r rowScanner) (store.Run, error) {
 		&model, &provider, &errMsg,
 		&agentID, &parentAgentID, &parentRunID, &userID, &lastHeartbeatAt,
 		&userTier,
-		&agentDefID, &pauseState, &replicaID, &parentContext,
+		&agentDefID, &pauseState, &replicaID, &parentContext, &idempotencyKey,
 		&sessAgent,
 	); err != nil {
 		return store.Run{}, err
@@ -5187,6 +5461,9 @@ func scanRun(r rowScanner) (store.Run, error) {
 			return store.Run{}, fmt.Errorf("decode parent_context: %w", err)
 		}
 		out.ParentContext = pc
+	}
+	if idempotencyKey != nil {
+		out.IdempotencyKey = *idempotencyKey
 	}
 	if sessAgent != nil {
 		out.Agent = *sessAgent

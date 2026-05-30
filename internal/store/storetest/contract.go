@@ -60,6 +60,9 @@ func Run(t *testing.T, factory Factory) {
 		{"CreateSessionUserIDRoundTrip", testCreateSessionUserIDRoundTrip},
 		{"CreateRunIdentityRoundTrip", testCreateRunIdentityRoundTrip},
 		{"CreateRunParentContextRoundTrip", testCreateRunParentContextRoundTrip},
+		{"CreateRunIdempotencyKeyRoundTrip", testCreateRunIdempotencyKeyRoundTrip},
+		{"CreateRunDuplicateIdempotencyKeyRefused", testCreateRunDuplicateIdempotencyKeyRefused},
+		{"RunByIdempotencyKeyHitAndMiss", testRunByIdempotencyKeyHitAndMiss},
 		{"CreateRunModelVisibleMidFlight", testCreateRunModelVisibleMidFlight},
 		{"CreateRunModelEmptyStaysEmpty", testCreateRunModelEmptyStaysEmpty},
 		{"GetRunByAgentIDNotFound", testGetRunByAgentIDNotFound},
@@ -206,6 +209,13 @@ func Run(t *testing.T, factory Factory) {
 		{"A2AAgentDefParentNotFound", testA2AAgentDefParentNotFound},
 		{"A2AAgentDefListByName", testA2AAgentDefListByName},
 		{"A2AAgentDefListChildren", testA2AAgentDefListChildren},
+		{"WebhookDefCreateAndGet", testWebhookDefCreateAndGet},
+		{"WebhookDefVersionMonotonic", testWebhookDefVersionMonotonic},
+		{"WebhookDefActivePointerIdempotent", testWebhookDefActivePointerIdempotent},
+		{"WebhookDefRetireReversible", testWebhookDefRetireReversible},
+		{"WebhookDefParentNotFound", testWebhookDefParentNotFound},
+		{"WebhookDefListByName", testWebhookDefListByName},
+		{"WebhookDefListChildren", testWebhookDefListChildren},
 		// v1.x RFC E ScheduleDef runtime — sweeper-side state.
 		{"ScheduleRunStateSeedAndGet", testScheduleRunStateSeedAndGet},
 		{"ScheduleRunStateListDueRespectsRetiredAndPaused", testScheduleRunStateListDueRespectsRetiredAndPaused},
@@ -543,6 +553,123 @@ func testCreateRunParentContextRoundTrip(t *testing.T, s store.Store) {
 	}
 	if gotBare.ParentContext != nil {
 		t.Errorf("run without context should read back nil ParentContext, got %+v", gotBare.ParentContext)
+	}
+}
+
+// testCreateRunIdempotencyKeyRoundTrip pins the RFC H Decision 10 "Layer
+// 2" contract: a run created with an idempotency_key persists it and
+// reads it back through CreateRun → GetRun. A run created without one
+// reads back empty (back-compat with pre-migration rows + the common
+// keyless case).
+func testCreateRunIdempotencyKeyRoundTrip(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	sess, _ := s.CreateSession(ctx, "t", "agent-x", "user-1")
+
+	run, err := s.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: "a_idem", UserID: "user-1", IdempotencyKey: "delivery-123"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.IdempotencyKey != "delivery-123" {
+		t.Errorf("CreateRun did not return IdempotencyKey: got %q", run.IdempotencyKey)
+	}
+	got, err := s.GetRun(ctx, run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.IdempotencyKey != "delivery-123" {
+		t.Errorf("IdempotencyKey not preserved through GetRun: got %q want %q", got.IdempotencyKey, "delivery-123")
+	}
+
+	// No key → empty round-trip (back-compat).
+	bare, err := s.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: "a_noidem", UserID: "user-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	gotBare, err := s.GetRun(ctx, bare.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotBare.IdempotencyKey != "" {
+		t.Errorf("run without key should read back empty IdempotencyKey, got %q", gotBare.IdempotencyKey)
+	}
+}
+
+// testCreateRunDuplicateIdempotencyKeyRefused pins the RFC H Decision 10
+// durable-dedup invariant: a second CreateRun carrying a key already
+// claimed returns store.ErrDuplicateIdempotencyKey (not a generic error)
+// and does NOT insert a second row. Two DIFFERENT keys, and a keyless run
+// alongside a keyed one, are both unaffected — the constraint is scoped
+// to the key, never the keyless majority.
+func testCreateRunDuplicateIdempotencyKeyRefused(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	sess, _ := s.CreateSession(ctx, "t", "agent-x", "user-1")
+
+	first, err := s.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: "a1", UserID: "user-1", IdempotencyKey: "dup-key"})
+	if err != nil {
+		t.Fatalf("first CreateRun: %v", err)
+	}
+
+	_, err = s.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: "a2", UserID: "user-1", IdempotencyKey: "dup-key"})
+	if !errors.Is(err, store.ErrDuplicateIdempotencyKey) {
+		t.Fatalf("second CreateRun with same key: got err %v, want ErrDuplicateIdempotencyKey", err)
+	}
+
+	// The existing run is still the only one carrying the key.
+	got, ok, err := s.RunByIdempotencyKey(ctx, "dup-key")
+	if err != nil || !ok {
+		t.Fatalf("RunByIdempotencyKey after dup: ok=%v err=%v", ok, err)
+	}
+	if got.ID != first.ID {
+		t.Errorf("dup key resolved to wrong run: got %s want %s", got.ID, first.ID)
+	}
+
+	// A DIFFERENT key is unaffected.
+	if _, err := s.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: "a3", UserID: "user-1", IdempotencyKey: "other-key"}); err != nil {
+		t.Errorf("CreateRun with a distinct key should succeed, got %v", err)
+	}
+
+	// Two keyless runs coexist — the partial unique index never fires on
+	// NULL. (This is the regression guard against accidentally
+	// constraining the keyless majority.)
+	if _, err := s.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: "a4", UserID: "user-1"}); err != nil {
+		t.Errorf("first keyless CreateRun: %v", err)
+	}
+	if _, err := s.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: "a5", UserID: "user-1"}); err != nil {
+		t.Errorf("second keyless CreateRun should not collide on NULL key: %v", err)
+	}
+}
+
+// testRunByIdempotencyKeyHitAndMiss pins the lookup contract: a known key
+// returns (run, true, nil); an unknown key and an empty key both return
+// (zero, false, nil) — no error on miss.
+func testRunByIdempotencyKeyHitAndMiss(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	sess, _ := s.CreateSession(ctx, "t", "agent-x", "user-1")
+
+	want, err := s.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: "a_hit", UserID: "user-1", IdempotencyKey: "key-hit"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got, ok, err := s.RunByIdempotencyKey(ctx, "key-hit")
+	if err != nil {
+		t.Fatalf("RunByIdempotencyKey hit: %v", err)
+	}
+	if !ok || got.ID != want.ID {
+		t.Errorf("hit: got (ok=%v id=%s), want (ok=true id=%s)", ok, got.ID, want.ID)
+	}
+	if got.AgentID != "a_hit" {
+		t.Errorf("hit: identity not preserved: %+v", got)
+	}
+
+	_, ok, err = s.RunByIdempotencyKey(ctx, "key-absent")
+	if err != nil || ok {
+		t.Errorf("miss: got (ok=%v err=%v), want (false, nil)", ok, err)
+	}
+
+	_, ok, err = s.RunByIdempotencyKey(ctx, "")
+	if err != nil || ok {
+		t.Errorf("empty key: got (ok=%v err=%v), want (false, nil)", ok, err)
 	}
 }
 
@@ -4345,6 +4472,147 @@ func testA2AAgentDefListChildren(t *testing.T, s store.Store) {
 		}
 	}
 	children, err := s.A2AAgentDefListChildren(ctx, parent.DefID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(children) != 2 {
+		t.Errorf("children len = %d, want 2", len(children))
+	}
+}
+
+// ---- v1.x RFC H WebhookDef substrate ----
+//
+// Mirror of the A2AAgentDef round-trip contract tests.
+
+func mkWebhookDef(id, name string, parent string) store.WebhookDefRow {
+	return store.WebhookDefRow{
+		DefID:       id,
+		Name:        name,
+		ParentDefID: parent,
+		Definition:  json.RawMessage(`{"delivery":"spawn","agent":"intake","auth":{"kind":"hmac","algorithm":"sha256","header":"X-Hub-Signature-256","signing_secret_env":"LOOMCYCLE_WH_SECRET"}}`),
+		Description: "test row",
+	}
+}
+
+func testWebhookDefCreateAndGet(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	row, err := s.WebhookDefCreate(ctx, mkWebhookDef("wh-1", "hook-alpha", ""))
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if row.Version != 1 {
+		t.Errorf("first version = %d, want 1", row.Version)
+	}
+	got, err := s.WebhookDefGet(ctx, "wh-1")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.Name != "hook-alpha" || got.Version != 1 {
+		t.Errorf("got %+v", got)
+	}
+}
+
+func testWebhookDefVersionMonotonic(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	for i := 0; i < 5; i++ {
+		row := mkWebhookDef(fmt.Sprintf("wh-mono-%d", i), "hook-mono", "")
+		written, err := s.WebhookDefCreate(ctx, row)
+		if err != nil {
+			t.Fatalf("create #%d: %v", i, err)
+		}
+		if want := i + 1; written.Version != want {
+			t.Errorf("create #%d: version = %d, want %d", i, written.Version, want)
+		}
+	}
+}
+
+func testWebhookDefActivePointerIdempotent(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	r1, _ := s.WebhookDefCreate(ctx, mkWebhookDef("wh-active-1", "hook-active", ""))
+	r2, _ := s.WebhookDefCreate(ctx, mkWebhookDef("wh-active-2", "hook-active", ""))
+
+	if err := s.WebhookDefSetActive(ctx, "hook-active", r1.DefID, "test"); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := s.WebhookDefGetActive(ctx, "hook-active")
+	if got.DefID != r1.DefID {
+		t.Errorf("active = %s, want %s", got.DefID, r1.DefID)
+	}
+	if err := s.WebhookDefSetActive(ctx, "hook-active", r2.DefID, "test"); err != nil {
+		t.Fatal(err)
+	}
+	got, _ = s.WebhookDefGetActive(ctx, "hook-active")
+	if got.DefID != r2.DefID {
+		t.Errorf("after re-promote: active = %s, want %s", got.DefID, r2.DefID)
+	}
+}
+
+func testWebhookDefRetireReversible(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	row, _ := s.WebhookDefCreate(ctx, mkWebhookDef("wh-retire", "hook-retire", ""))
+	if row.Retired {
+		t.Error("freshly created row should not be retired")
+	}
+	if err := s.WebhookDefSetRetired(ctx, row.DefID, true); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := s.WebhookDefGet(ctx, row.DefID)
+	if !got.Retired {
+		t.Error("after retire(true): row should be retired")
+	}
+	if err := s.WebhookDefSetRetired(ctx, row.DefID, false); err != nil {
+		t.Fatal(err)
+	}
+	got, _ = s.WebhookDefGet(ctx, row.DefID)
+	if got.Retired {
+		t.Error("after retire(false): row should NOT be retired")
+	}
+}
+
+func testWebhookDefParentNotFound(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	row := mkWebhookDef("wh-orphan", "hook-orphan", "wh-nonexistent")
+	_, err := s.WebhookDefCreate(ctx, row)
+	if err == nil {
+		t.Fatal("expected ErrWebhookDefParentNotFound, got nil")
+	}
+	if !errors.Is(err, store.ErrWebhookDefParentNotFound) {
+		t.Errorf("got %v, want ErrWebhookDefParentNotFound", err)
+	}
+}
+
+func testWebhookDefListByName(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	for i := 0; i < 3; i++ {
+		_, err := s.WebhookDefCreate(ctx, mkWebhookDef(fmt.Sprintf("wh-list-%d", i), "hook-list", ""))
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	rows, err := s.WebhookDefListByName(ctx, "hook-list")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 3 {
+		t.Errorf("len = %d, want 3", len(rows))
+	}
+	// version DESC ordering
+	if rows[0].Version != 3 || rows[1].Version != 2 || rows[2].Version != 1 {
+		t.Errorf("ordering wrong; versions = %d/%d/%d, want 3/2/1",
+			rows[0].Version, rows[1].Version, rows[2].Version)
+	}
+}
+
+func testWebhookDefListChildren(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	parent, _ := s.WebhookDefCreate(ctx, mkWebhookDef("wh-parent", "hook-tree", ""))
+	for i := 0; i < 2; i++ {
+		_, err := s.WebhookDefCreate(ctx, mkWebhookDef(fmt.Sprintf("wh-child-%d", i), fmt.Sprintf("hook-child-%d", i), parent.DefID))
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	children, err := s.WebhookDefListChildren(ctx, parent.DefID)
 	if err != nil {
 		t.Fatal(err)
 	}

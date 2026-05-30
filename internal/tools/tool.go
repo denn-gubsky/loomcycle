@@ -659,6 +659,29 @@ func A2AAgentDefPolicy(ctx context.Context) A2AAgentDefPolicyValue {
 	return v
 }
 
+type ctxKeyWebhookDefPolicy struct{}
+
+// WebhookDefPolicyValue is the per-agent WebhookDef-tool access policy
+// (v1.x RFC H). Same shape as A2AAgentDefPolicyValue + same
+// "self / descendants / named:<n> / any" closed scope set.
+// Default-deny when Scopes is empty.
+type WebhookDefPolicyValue struct {
+	Scopes   []string
+	SelfName string
+}
+
+// WithWebhookDefPolicy attaches the policy to ctx.
+func WithWebhookDefPolicy(ctx context.Context, p WebhookDefPolicyValue) context.Context {
+	return context.WithValue(ctx, ctxKeyWebhookDefPolicy{}, p)
+}
+
+// WebhookDefPolicy returns the policy from ctx. Zero value =
+// default-deny.
+func WebhookDefPolicy(ctx context.Context) WebhookDefPolicyValue {
+	v, _ := ctx.Value(ctxKeyWebhookDefPolicy{}).(WebhookDefPolicyValue)
+	return v
+}
+
 // ctxKeySkillDefPolicy carries the v0.8.22 SkillDef-tool capability
 // gate. Mirrors AgentDefPolicy shape, sans the SelfName field —
 // skills have no agent identity so a "self" scope is meaningless.

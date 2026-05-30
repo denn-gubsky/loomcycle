@@ -112,6 +112,14 @@ func operatorCtx(ctx context.Context) context.Context {
 		SelfName: operatorAgentName,
 	})
 
+	// WebhookDef (v1.x RFC H): "any" scope so the MCP `webhookdef`
+	// meta-tool reaches the in-process tool instead of being
+	// default-denied at the scope gate. (RFC H WH-3 / mirrors A2AAgentDef.)
+	ctx = tools.WithWebhookDefPolicy(ctx, tools.WebhookDefPolicyValue{
+		Scopes:   []string{"any"},
+		SelfName: operatorAgentName,
+	})
+
 	// Evaluation: all 4 valid scope values. submit_any + read_any
 	// are the load-bearing ones; submit_self + submit_descendants
 	// are included for completeness in case an operator wants the

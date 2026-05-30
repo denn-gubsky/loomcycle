@@ -238,6 +238,13 @@ type Run struct {
 	// per-agent report surfaces so a consumer can attribute a child
 	// sub-agent's usage to the user-initiated request.
 	ParentContext *ParentContext `json:"parent_context,omitempty"`
+
+	// IdempotencyKey is the RFC H Decision 10 "Layer 2" durable dedup
+	// key the run was created with (runs.idempotency_key). Empty on rows
+	// created without one (the common case) and on pre-migration rows.
+	// Round-trips on read so a deduped caller can look up the winning run
+	// and confirm the key. Not a secret.
+	IdempotencyKey string `json:"idempotency_key,omitempty"`
 }
 
 // PauseState constants — the wire string values stored in runs.pause_state.
@@ -340,6 +347,17 @@ type RunIdentity struct {
 	// tool spawns; persisted as runs.parent_context (JSON). nil = no
 	// context (back-compat; old rows decode to nil). See ParentContext.
 	ParentContext *ParentContext
+
+	// IdempotencyKey is the optional RFC H Decision 10 "Layer 2"
+	// durable dedup key. Empty (the default) = no dedup; the run is
+	// created unconditionally. Non-empty = persisted to
+	// runs.idempotency_key (a partial unique index); a second CreateRun
+	// with the same key returns ErrDuplicateIdempotencyKey instead of
+	// inserting a duplicate row. The webhook spawn path sets this to the
+	// delivery id so a redelivery that survives past the in-memory
+	// Layer-1 TTL — or lands on a different replica — still dedups.
+	// Not a secret (safe to persist + echo).
+	IdempotencyKey string
 }
 
 // ParentContext is the typed caller-tracking lineage attached to a run
@@ -488,6 +506,13 @@ type Store interface {
 	// Used by the GET /v1/agents/{agent_id} and cancel endpoints to
 	// resolve the API-facing handle to a Run.
 	GetRunByAgentID(ctx context.Context, agentID string) (Run, error)
+
+	// RunByIdempotencyKey returns the run created with the given RFC H
+	// Decision 10 idempotency key. ok=false (with a nil error) when no
+	// run carries the key. An empty key short-circuits to (Run{}, false,
+	// nil) — callers don't have to pre-check. Used by the webhook
+	// receiver to resolve a deduped delivery to its already-spawned run.
+	RunByIdempotencyKey(ctx context.Context, key string) (Run, bool, error)
 
 	// GetRun returns one row by run_id (the primary key on runs).
 	// Distinct from GetRunByAgentID which queries by the caller-
@@ -1200,6 +1225,22 @@ type Store interface {
 	A2AAgentDefSetActive(ctx context.Context, name, defID, promotedByAgentID string) error
 	A2AAgentDefGetActive(ctx context.Context, name string) (A2AAgentDefRow, error)
 	A2AAgentDefSetRetired(ctx context.Context, defID string, retired bool) error
+
+	// WebhookDef is the v1.x RFC H Input Webhooks substrate — same
+	// content-addressed identity + lineage + promotion shape as
+	// A2AAgentDef, minus the sweeper run_state table. A WebhookDef
+	// declares an inbound HTTP webhook endpoint (auth, rate limit,
+	// delivery target, payload mapping, on_complete hooks); the
+	// Definition payload schema is owned by the tool layer.
+	WebhookDefCreate(ctx context.Context, row WebhookDefRow) (WebhookDefRow, error)
+	WebhookDefGet(ctx context.Context, defID string) (WebhookDefRow, error)
+	WebhookDefGetByNameVersion(ctx context.Context, name string, version int) (WebhookDefRow, error)
+	WebhookDefListByName(ctx context.Context, name string) ([]WebhookDefRow, error)
+	WebhookDefListChildren(ctx context.Context, parentDefID string) ([]WebhookDefRow, error)
+	WebhookDefListNames(ctx context.Context) ([]WebhookDefNameSummary, error)
+	WebhookDefSetActive(ctx context.Context, name, defID, promotedByAgentID string) error
+	WebhookDefGetActive(ctx context.Context, name string) (WebhookDefRow, error)
+	WebhookDefSetRetired(ctx context.Context, defID string, retired bool) error
 
 	// ScheduleRunStatePause sets paused_until = until (or NULL if
 	// until.IsZero()). Resume = call with zero time.
@@ -1971,6 +2012,42 @@ type A2AAgentDefActiveEntry struct {
 	PromotedByAgentID string    `json:"promoted_by_agent_id,omitempty"`
 }
 
+// WebhookDefRow mirrors A2AAgentDefRow — same identity + lineage +
+// retire flag shape. The Definition payload carries the JSON-encoded
+// inbound-webhook body (delivery target, auth scheme + signing-secret
+// ref, rate limit, payload mapping, on_complete hooks); the schema is
+// owned by the tool layer. v1.x RFC H.
+type WebhookDefRow struct {
+	DefID                  string          `json:"def_id"`
+	Name                   string          `json:"name"`
+	Version                int             `json:"version"`
+	ParentDefID            string          `json:"parent_def_id,omitempty"`
+	Definition             json.RawMessage `json:"definition"`
+	Description            string          `json:"description,omitempty"`
+	CreatedAt              time.Time       `json:"created_at"`
+	CreatedByAgentID       string          `json:"created_by_agent_id,omitempty"`
+	CreatedByRunID         string          `json:"created_by_run_id,omitempty"`
+	Retired                bool            `json:"retired"`
+	BootstrappedFromStatic bool            `json:"bootstrapped_from_static"`
+}
+
+// WebhookDefNameSummary mirrors A2AAgentDefNameSummary.
+type WebhookDefNameSummary struct {
+	Name          string    `json:"name"`
+	VersionCount  int       `json:"version_count"`
+	ActiveDefID   string    `json:"active_def_id,omitempty"`
+	LatestVersion int       `json:"latest_version"`
+	LastUpdated   time.Time `json:"last_updated"`
+}
+
+// WebhookDefActiveEntry mirrors A2AAgentDefActiveEntry.
+type WebhookDefActiveEntry struct {
+	Name              string    `json:"name"`
+	DefID             string    `json:"def_id"`
+	PromotedAt        time.Time `json:"promoted_at"`
+	PromotedByAgentID string    `json:"promoted_by_agent_id,omitempty"`
+}
+
 // ScheduleRunStateRow is one row in schedule_run_state — the
 // sweeper's runtime view of a def. Seeded when a def becomes
 // active; updated after each fire.
@@ -2101,6 +2178,10 @@ var ErrA2AServerCardDefParentNotFound = &SubstrateError{Code: "parent_not_found"
 // the v1.x RFC G A2AAgentDef substrate.
 var ErrA2AAgentDefParentNotFound = &SubstrateError{Code: "parent_not_found", Msg: "a2a_agent_def: parent_def_id does not exist"}
 
+// ErrWebhookDefParentNotFound mirrors the A2AAgentDef pattern for the
+// v1.x RFC H WebhookDef substrate.
+var ErrWebhookDefParentNotFound = &SubstrateError{Code: "parent_not_found", Msg: "webhook_def: parent_def_id does not exist"}
+
 // ErrAgentDefImmutable is returned by store-layer assertions if
 // someone tries to UPDATE an agent_defs row's definition column.
 // Append-only invariant. The adapter's contract test pins this.
@@ -2214,6 +2295,14 @@ type ErrConflict struct {
 }
 
 func (e *ErrConflict) Error() string { return e.Kind + " already exists: " + e.ID }
+
+// ErrDuplicateIdempotencyKey is returned by CreateRun when the supplied
+// RunIdentity.IdempotencyKey collides with an existing run's key (RFC H
+// Decision 10 "Layer 2" durable dedup). The caller is expected to look
+// the existing run up via RunByIdempotencyKey and return it rather than
+// treating this as a failure. It is a sentinel (errors.Is-comparable),
+// distinct from *ErrConflict whose Kind/ID vary per call.
+var ErrDuplicateIdempotencyKey = errors.New("duplicate idempotency_key")
 
 // SnapshotRow is the persisted shape of one snapshots row, used by
 // SnapshotCreate/Get. The JSONContent is the full envelope per the

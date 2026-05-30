@@ -8,6 +8,76 @@ For pre-v0.4 history (single-tool runtime, library milestone, security patch), s
 
 ---
 
+## What's in v0.14.0
+
+**Headline: Input Webhooks (RFC H) — the `WebhookDef` substrate.** External
+systems (GitHub, Stripe, Linear, CI servers, n8n cloud) can now trigger
+loomcycle agent runs — or wake agents parked on a callback — via signed HTTP
+POST, without operators gluing a bespoke receiver in front of `/v1/runs`.
+`WebhookDef` is the fifth substrate primitive alongside AgentDef / SkillDef /
+MCPServerDef / ScheduleDef. Additive and **off by default**
+(`LOOMCYCLE_WEBHOOKS_ENABLED`).
+
+### The receiver — `POST /v1/_webhooks/{name}`
+
+A shared front-half runs for every request, then forks on delivery mode:
+**resolve** the active Def by URL name (unknown/disabled → opaque 404) →
+**read** the raw body under `body_size_limit_bytes` (1 MiB default) →
+**verify the HMAC signature over the raw bytes, before any parsing**
+(constant-time `hmac.Equal`; Stripe `t=,v1=` + GitHub `sha256=` envelopes
+auto-detected, ±5-min window; bearer fallback) → **replay/idempotency
+guard** → **JSONPath payload projection** (strict subset: `$.a.b`, `$.a[N]`;
+no wildcards/filters/eval) → **rate limit** (per-Def token bucket, 429 +
+Retry-After) → **deliver**.
+
+- **spawn** → builds a RunInput and drives `runner.RunOnce` (the scheduler's
+  path, same admission semaphore). The mapped `goal` enters as an
+  **untrusted-block** (fenced in `<untrusted>` tags) — a webhook payload is
+  external, attacker-influenceable input. Async `202 {run_id, …}`, or
+  `?sync=true` blocks on the run-state bus to terminal (200 / 504).
+- **channel** → `SystemPublisher.PublishNow` + bus notify, waking agents
+  parked on `Channel.subscribe`. No run, no credentials.
+
+### Two idempotency layers
+
+- **Layer 1** — in-memory per-replica replay cache keyed `(name,
+  delivery_id)`, 10-min TTL; the cheap fast path for near-instant retries.
+- **Layer 2** — a new durable `runs.idempotency_key` column (migration 0033)
+  + unique partial index. Spawn sets `idempotency_key = delivery_id`; a
+  re-delivered event lands on the same run instead of double-spawning, across
+  replicas and past the Layer-1 TTL. (Also unblocks A2A push + a general
+  `POST /v1/runs` dedup.) A delivery rejected downstream — rate-limited,
+  mapping error, transient setup 503 — never burns its id, so the sender's
+  retry is processed, not dropped (Decision 9: never silently degrade).
+
+### Substrate + transports + auth
+
+- 5-op `WebhookDef` tool + scope policy + full 4-transport CRUD (HTTP
+  `/v1/_webhookdef`, gRPC, MCP meta-tool — count 36→37, TS `webhookDef()`) +
+  3-way drift test. `webhooks:` static yaml + content-addressed dynamic
+  forks. Migration 0032.
+- Signing secrets + per-run credentials resolve through the env-allowlist
+  gate (shared with the scheduler). `user_credentials_from_env` (operator-
+  owned) merged with `payload_mapping` `user_credentials.<name>` (per-event,
+  payload wins) onto the RFC F `${run.credentials.<name>}` seam. Channel mode
+  forbids credentials (no run identity).
+- **on_complete** hooks fire after a spawned run (`channel.publish` +
+  `memory.set` wired; `mcp.call` reserved).
+- **Triage** (admin-bearer-gated, distinct from the open receiver):
+  `GET …/recent-deliveries` (last 50 verdicts) and `POST …/test` (dry-run:
+  would-accept + RunInput preview with credential KEY NAMES only).
+
+### Notes
+
+- Single-replica v1: Layer-1 dedup + rate-limit buckets are per-replica;
+  Layer-2 `idempotency_key` is the cross-replica backstop.
+- `Context.help input-webhooks` topic; comprehensive unit + handler-level
+  tests (signature envelopes, tampered/replay/out-of-window, rate limit,
+  unresolvable secret, payload mapping, sync mode, both idempotency layers,
+  on_complete, triage). `@loomcycle/client` gains `webhookDef()`.
+- Wire-protocol additions are back-compatible (new endpoints / RPC / MCP
+  meta-tool / TS method only).
+
 ## What's in v0.13.0
 
 **Headline: comprehensive Agent2Agent (A2A) protocol support (RFC G).** loomcycle now speaks the Linux Foundation A2A protocol on **both** sides — reachable *as* an A2A server from the Microsoft / Google enterprise agent stacks, and able to call remote A2A peers *as* synthetic tools. Built on the official Go SDK (`github.com/a2aproject/a2a-go/v2@v2.3.1`, which shares loomcycle's existing grpc/protobuf stack → ~zero net-new heavy deps). Additive and **off by default**; `/v1/runs`, MCP, gRPC, and the TS adapter are untouched. PR #286.

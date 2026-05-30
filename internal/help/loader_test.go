@@ -31,6 +31,7 @@ func TestLoadSet_BundledOnly(t *testing.T) {
 		"fan-out-patterns",
 		"getting-started",
 		"hooks",
+		"input-webhooks",
 		"installation",
 		"interruption",
 		"llm-gateway",

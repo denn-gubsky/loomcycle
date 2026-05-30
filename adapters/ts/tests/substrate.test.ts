@@ -325,3 +325,47 @@ describe("a2aAgentDef", () => {
     expect(headers.Authorization).toBe("Bearer test-bearer");
   });
 });
+
+// RFC H WH-3 / mirrors the a2aAgentDef suite above.
+describe("webhookDef", () => {
+  it("posts JSON to /v1/_webhookdef and returns the row envelope", async () => {
+    const { client, fetchMock } = makeClient([
+      jsonResponse({
+        def_id: "whd_abc",
+        name: "gh-push",
+        version: 1,
+        promoted: true,
+      }),
+    ]);
+
+    const result = (await client.webhookDef({
+      op: "create",
+      name: "gh-push",
+      overlay: { delivery: "spawn", agent: "ingest" },
+    })) as Record<string, unknown>;
+
+    expect(result.def_id).toBe("whd_abc");
+    expect(result.name).toBe("gh-push");
+
+    const call = fetchMock.mock.calls[0]!;
+    expect(call[0]).toBe("http://test-loomcycle:8787/v1/_webhookdef");
+    expect((call[1] as RequestInit).method).toBe("POST");
+    const body = JSON.parse((call[1] as RequestInit).body as string);
+    expect(body.op).toBe("create");
+  });
+
+  it("raises AuthError on 401", async () => {
+    const { client } = makeClient([errorResponse(401, "invalid token")]);
+    await expect(
+      client.webhookDef({ op: "create", name: "x", overlay: {} }),
+    ).rejects.toBeInstanceOf(AuthError);
+  });
+
+  it("forwards bearer auth in the Authorization header", async () => {
+    const { client, fetchMock } = makeClient([jsonResponse({ ok: true })]);
+    await client.webhookDef({ op: "list", name: "gh-push" });
+    const headers = (fetchMock.mock.calls[0]![1] as RequestInit)
+      .headers as Record<string, string>;
+    expect(headers.Authorization).toBe("Bearer test-bearer");
+  });
+});
