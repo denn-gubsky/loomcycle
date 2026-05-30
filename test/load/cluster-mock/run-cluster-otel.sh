@@ -251,6 +251,13 @@ for i in $(seq 1 "$REPLICAS"); do
 cat <<YAML
   replica-${i}:
     image: $IMAGE
+    # Auto-restart past the docker DNS-propagation race against fresh
+    # volumes: on rare clean-cluster boots, pg_isready returns ready
+    # but the replica's first pg ping resolves "postgres" before the
+    # container's network is fully routable. The substrate exits
+    # fatally on first-ping failure; on_failure restart bridges the
+    # ~2-5s window cleanly. Bounded retries so a real bug still surfaces.
+    restart: on-failure:5
     depends_on:
       postgres:
         condition: service_healthy
