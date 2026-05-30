@@ -385,9 +385,22 @@ func TestReceiver_SpawnSetupError_503(t *testing.T) {
 // the yaml cfg path resolves the Def); RunByIdempotencyKey returns a
 // preconfigured run for a matching key.
 type fakeWebhookStore struct {
+	mu        sync.Mutex
 	existing  map[string]store.Run // key -> run returned by RunByIdempotencyKey
 	lookupErr error
 	calls     int
+
+	// on_complete hook recordings (WH-5b). channelPublishes + memorySets
+	// capture the dispatched hooks so tests can assert they fired.
+	channelPublishes []store.ChannelMessage
+	memorySets       []memorySetCall
+}
+
+type memorySetCall struct {
+	scope   store.MemoryScope
+	scopeID string
+	key     string
+	value   json.RawMessage
 }
 
 func (f *fakeWebhookStore) WebhookDefGetActive(_ context.Context, name string) (store.WebhookDefRow, error) {
@@ -395,12 +408,38 @@ func (f *fakeWebhookStore) WebhookDefGetActive(_ context.Context, name string) (
 }
 
 func (f *fakeWebhookStore) RunByIdempotencyKey(_ context.Context, key string) (store.Run, bool, error) {
+	f.mu.Lock()
 	f.calls++
+	f.mu.Unlock()
 	if f.lookupErr != nil {
 		return store.Run{}, false, f.lookupErr
 	}
 	r, ok := f.existing[key]
 	return r, ok, nil
+}
+
+func (f *fakeWebhookStore) ChannelPublish(_ context.Context, msg store.ChannelMessage, _ int) (string, int, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.channelPublishes = append(f.channelPublishes, msg)
+	return "msg-1", 0, nil
+}
+
+func (f *fakeWebhookStore) MemorySet(_ context.Context, scope store.MemoryScope, scopeID, key string, value json.RawMessage, _ time.Duration) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.memorySets = append(f.memorySets, memorySetCall{scope: scope, scopeID: scopeID, key: key, value: value})
+	return nil
+}
+
+// snapshotHooks returns copies of the recorded hook calls under the lock, so
+// a test reads a consistent view while the dispatch goroutine may still run.
+func (f *fakeWebhookStore) snapshotHooks() ([]store.ChannelMessage, []memorySetCall) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	cp := append([]store.ChannelMessage(nil), f.channelPublishes...)
+	ms := append([]memorySetCall(nil), f.memorySets...)
+	return cp, ms
 }
 
 // newTestReceiverWithStore mirrors newTestReceiver but wires a store so
@@ -555,4 +594,14 @@ func (s *raceStore) RunByIdempotencyKey(_ context.Context, key string) (store.Ru
 		return s.winner, true, nil // re-lookup after the dup error
 	}
 	return store.Run{}, false, nil
+}
+
+// ChannelPublish + MemorySet satisfy lookup.WebhookStore (WH-5b). The race
+// tests never declare on_complete hooks, so no-ops suffice.
+func (s *raceStore) ChannelPublish(_ context.Context, _ store.ChannelMessage, _ int) (string, int, error) {
+	return "", 0, nil
+}
+
+func (s *raceStore) MemorySet(_ context.Context, _ store.MemoryScope, _, _ string, _ json.RawMessage, _ time.Duration) error {
+	return nil
 }

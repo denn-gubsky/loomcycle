@@ -1241,7 +1241,12 @@ func main() {
 			EnvAllowlist: webhookAllowlist,
 			Logf:         log.Printf,
 		})
-		srv.SetWebhookMux(func(reg lchttp.MuxRegistrar) { rec.Mount(reg) })
+		srv.SetWebhookMux(func(reg lchttp.MuxRegistrar, adminAuth func(http.Handler) http.Handler) {
+			// Receiver POST: unauthed (per-WebhookDef secret). Triage
+			// endpoints (recent-deliveries / test): admin-bearer gated.
+			rec.Mount(reg)
+			rec.MountAdmin(reg, adminAuth)
+		})
 		log.Printf("webhooks: enabled (receiver mounted at POST /v1/_webhooks/{name}, env_allowlist=%d names)",
 			len(cfg.Env.SchedulerEnvAllowlist))
 	} else if cfg.Env.WebhooksEnabled {

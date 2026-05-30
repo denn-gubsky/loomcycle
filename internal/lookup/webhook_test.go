@@ -35,6 +35,17 @@ func (s *stubWebhookStore) RunByIdempotencyKey(_ context.Context, _ string) (sto
 	return store.Run{}, false, nil
 }
 
+// ChannelPublish + MemorySet satisfy lookup.WebhookStore (WH-5b
+// on_complete hooks). The resolver tests never fire hooks, so no-ops
+// suffice.
+func (s *stubWebhookStore) ChannelPublish(_ context.Context, _ store.ChannelMessage, _ int) (string, int, error) {
+	return "", 0, nil
+}
+
+func (s *stubWebhookStore) MemorySet(_ context.Context, _ store.MemoryScope, _, _ string, _ json.RawMessage, _ time.Duration) error {
+	return nil
+}
+
 func TestWebhook_EquivalenceYamlVsSubstrate(t *testing.T) {
 	yamlHook := config.Webhook{
 		Enabled:  true,

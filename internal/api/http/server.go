@@ -143,8 +143,11 @@ type Server struct {
 	// would defeat the per-webhook secret model. The hook receives a
 	// MuxRegistrar (an adapter that applies recovery middleware) rather
 	// than the bare mux, so a panicking webhook handler still becomes a
-	// 500 instead of crashing the process.
-	webhookMux func(reg MuxRegistrar)
+	// 500 instead of crashing the process. It ALSO receives the admin-auth
+	// wrapper (recovery + bearer) so the WH-5b triage endpoints
+	// (recent-deliveries / test) can sit behind LOOMCYCLE_AUTH_TOKEN while
+	// the receiver POST stays unauthed.
+	webhookMux func(reg MuxRegistrar, adminAuth func(http.Handler) http.Handler)
 
 	// mcpPoolInspector returns the cached tools/list result for a
 	// named MCP server as already-marshaled JSON. The "already JSON"
@@ -1890,7 +1893,9 @@ func (s *Server) Mux() http.Handler {
 	// becomes a 500 rather than tearing down the process. Nil when the
 	// receiver is disabled (the default).
 	if s.webhookMux != nil {
-		s.webhookMux(&webhookMuxAdapter{mux: mux})
+		s.webhookMux(&webhookMuxAdapter{mux: mux}, func(next http.Handler) http.Handler {
+			return recoveryMiddleware(s.authMiddleware(next))
+		})
 	}
 	return mux
 }
@@ -1912,9 +1917,10 @@ func (a *webhookMuxAdapter) Handle(pattern string, h http.Handler) {
 
 // SetWebhookMux installs the v1.x RFC H webhook-receiver mount hook,
 // called at the end of Mux(). Nil-safe. The hook receives a MuxRegistrar
-// that applies recovery middleware; it does NOT receive the bearer-auth
-// wrapper, by design (per-WebhookDef auth).
-func (s *Server) SetWebhookMux(fn func(reg MuxRegistrar)) {
+// that applies recovery middleware (for the unauthed receiver POST, which
+// does its own per-WebhookDef auth) AND an admin-auth wrapper (recovery +
+// bearer) for the WH-5b triage endpoints, which ARE operator-only.
+func (s *Server) SetWebhookMux(fn func(reg MuxRegistrar, adminAuth func(http.Handler) http.Handler)) {
 	s.webhookMux = fn
 }
 

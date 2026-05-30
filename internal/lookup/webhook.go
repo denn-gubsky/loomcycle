@@ -3,6 +3,7 @@ package lookup
 import (
 	"context"
 	"encoding/json"
+	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/store"
@@ -20,6 +21,14 @@ type WebhookStore interface {
 	// already exists for this delivery id (the idempotency key). ok=false
 	// means no prior run — proceed with the spawn.
 	RunByIdempotencyKey(ctx context.Context, key string) (store.Run, bool, error)
+
+	// ChannelPublish + MemorySet back the WH-5b on_complete hooks (the
+	// receiver MIRRORS the scheduler's dispatch rather than importing it).
+	// Signatures match store.Store exactly so store.Store satisfies this
+	// interface unchanged; the webhook receiver only needs these two of
+	// the channel/memory surface.
+	ChannelPublish(ctx context.Context, msg store.ChannelMessage, maxMessages int) (id string, dropped int, err error)
+	MemorySet(ctx context.Context, scope store.MemoryScope, scopeID, key string, value json.RawMessage, ttl time.Duration) error
 }
 
 // Webhook resolves a webhook NAME to its effective config.Webhook by
