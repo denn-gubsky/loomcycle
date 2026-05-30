@@ -60,6 +60,9 @@ func Run(t *testing.T, factory Factory) {
 		{"CreateSessionUserIDRoundTrip", testCreateSessionUserIDRoundTrip},
 		{"CreateRunIdentityRoundTrip", testCreateRunIdentityRoundTrip},
 		{"CreateRunParentContextRoundTrip", testCreateRunParentContextRoundTrip},
+		{"CreateRunIdempotencyKeyRoundTrip", testCreateRunIdempotencyKeyRoundTrip},
+		{"CreateRunDuplicateIdempotencyKeyRefused", testCreateRunDuplicateIdempotencyKeyRefused},
+		{"RunByIdempotencyKeyHitAndMiss", testRunByIdempotencyKeyHitAndMiss},
 		{"CreateRunModelVisibleMidFlight", testCreateRunModelVisibleMidFlight},
 		{"CreateRunModelEmptyStaysEmpty", testCreateRunModelEmptyStaysEmpty},
 		{"GetRunByAgentIDNotFound", testGetRunByAgentIDNotFound},
@@ -550,6 +553,123 @@ func testCreateRunParentContextRoundTrip(t *testing.T, s store.Store) {
 	}
 	if gotBare.ParentContext != nil {
 		t.Errorf("run without context should read back nil ParentContext, got %+v", gotBare.ParentContext)
+	}
+}
+
+// testCreateRunIdempotencyKeyRoundTrip pins the RFC H Decision 10 "Layer
+// 2" contract: a run created with an idempotency_key persists it and
+// reads it back through CreateRun → GetRun. A run created without one
+// reads back empty (back-compat with pre-migration rows + the common
+// keyless case).
+func testCreateRunIdempotencyKeyRoundTrip(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	sess, _ := s.CreateSession(ctx, "t", "agent-x", "user-1")
+
+	run, err := s.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: "a_idem", UserID: "user-1", IdempotencyKey: "delivery-123"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.IdempotencyKey != "delivery-123" {
+		t.Errorf("CreateRun did not return IdempotencyKey: got %q", run.IdempotencyKey)
+	}
+	got, err := s.GetRun(ctx, run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.IdempotencyKey != "delivery-123" {
+		t.Errorf("IdempotencyKey not preserved through GetRun: got %q want %q", got.IdempotencyKey, "delivery-123")
+	}
+
+	// No key → empty round-trip (back-compat).
+	bare, err := s.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: "a_noidem", UserID: "user-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	gotBare, err := s.GetRun(ctx, bare.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotBare.IdempotencyKey != "" {
+		t.Errorf("run without key should read back empty IdempotencyKey, got %q", gotBare.IdempotencyKey)
+	}
+}
+
+// testCreateRunDuplicateIdempotencyKeyRefused pins the RFC H Decision 10
+// durable-dedup invariant: a second CreateRun carrying a key already
+// claimed returns store.ErrDuplicateIdempotencyKey (not a generic error)
+// and does NOT insert a second row. Two DIFFERENT keys, and a keyless run
+// alongside a keyed one, are both unaffected — the constraint is scoped
+// to the key, never the keyless majority.
+func testCreateRunDuplicateIdempotencyKeyRefused(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	sess, _ := s.CreateSession(ctx, "t", "agent-x", "user-1")
+
+	first, err := s.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: "a1", UserID: "user-1", IdempotencyKey: "dup-key"})
+	if err != nil {
+		t.Fatalf("first CreateRun: %v", err)
+	}
+
+	_, err = s.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: "a2", UserID: "user-1", IdempotencyKey: "dup-key"})
+	if !errors.Is(err, store.ErrDuplicateIdempotencyKey) {
+		t.Fatalf("second CreateRun with same key: got err %v, want ErrDuplicateIdempotencyKey", err)
+	}
+
+	// The existing run is still the only one carrying the key.
+	got, ok, err := s.RunByIdempotencyKey(ctx, "dup-key")
+	if err != nil || !ok {
+		t.Fatalf("RunByIdempotencyKey after dup: ok=%v err=%v", ok, err)
+	}
+	if got.ID != first.ID {
+		t.Errorf("dup key resolved to wrong run: got %s want %s", got.ID, first.ID)
+	}
+
+	// A DIFFERENT key is unaffected.
+	if _, err := s.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: "a3", UserID: "user-1", IdempotencyKey: "other-key"}); err != nil {
+		t.Errorf("CreateRun with a distinct key should succeed, got %v", err)
+	}
+
+	// Two keyless runs coexist — the partial unique index never fires on
+	// NULL. (This is the regression guard against accidentally
+	// constraining the keyless majority.)
+	if _, err := s.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: "a4", UserID: "user-1"}); err != nil {
+		t.Errorf("first keyless CreateRun: %v", err)
+	}
+	if _, err := s.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: "a5", UserID: "user-1"}); err != nil {
+		t.Errorf("second keyless CreateRun should not collide on NULL key: %v", err)
+	}
+}
+
+// testRunByIdempotencyKeyHitAndMiss pins the lookup contract: a known key
+// returns (run, true, nil); an unknown key and an empty key both return
+// (zero, false, nil) — no error on miss.
+func testRunByIdempotencyKeyHitAndMiss(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	sess, _ := s.CreateSession(ctx, "t", "agent-x", "user-1")
+
+	want, err := s.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: "a_hit", UserID: "user-1", IdempotencyKey: "key-hit"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got, ok, err := s.RunByIdempotencyKey(ctx, "key-hit")
+	if err != nil {
+		t.Fatalf("RunByIdempotencyKey hit: %v", err)
+	}
+	if !ok || got.ID != want.ID {
+		t.Errorf("hit: got (ok=%v id=%s), want (ok=true id=%s)", ok, got.ID, want.ID)
+	}
+	if got.AgentID != "a_hit" {
+		t.Errorf("hit: identity not preserved: %+v", got)
+	}
+
+	_, ok, err = s.RunByIdempotencyKey(ctx, "key-absent")
+	if err != nil || ok {
+		t.Errorf("miss: got (ok=%v err=%v), want (false, nil)", ok, err)
+	}
+
+	_, ok, err = s.RunByIdempotencyKey(ctx, "")
+	if err != nil || ok {
+		t.Errorf("empty key: got (ok=%v err=%v), want (false, nil)", ok, err)
 	}
 }
 

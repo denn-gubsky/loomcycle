@@ -86,8 +86,8 @@ func buildRunInput(w config.Webhook, proj projectResult, envAllowlist map[string
 		UserID:          proj.Fields["user_id"],
 		UserTier:        proj.Fields["user_tier"],
 		UserCredentials: creds,
-		// WH-5: idempotency_key (Layer 2) — the durable cross-replica replay
-		// key (runs.idempotency_key) is set here from the delivery id once
-		// the column lands in WH-5.
+		// IdempotencyKey is set by the caller (deliverSpawn) to the
+		// delivery id, keeping this builder's signature focused on the
+		// Def + projected payload. See RFC H Decision 10 "Layer 2".
 	}
 }

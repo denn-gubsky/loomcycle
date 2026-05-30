@@ -379,3 +379,180 @@ func TestReceiver_SpawnSetupError_503(t *testing.T) {
 		t.Fatalf("status = %d, want 400 (unknown agent setup error)", w.Code)
 	}
 }
+
+// fakeWebhookStore satisfies lookup.WebhookStore for the RFC H Decision
+// 10 "Layer 2" durable-dedup tests. WebhookDefGetActive always misses (so
+// the yaml cfg path resolves the Def); RunByIdempotencyKey returns a
+// preconfigured run for a matching key.
+type fakeWebhookStore struct {
+	existing  map[string]store.Run // key -> run returned by RunByIdempotencyKey
+	lookupErr error
+	calls     int
+}
+
+func (f *fakeWebhookStore) WebhookDefGetActive(_ context.Context, name string) (store.WebhookDefRow, error) {
+	return store.WebhookDefRow{}, &store.ErrNotFound{Kind: "webhook_def", ID: name}
+}
+
+func (f *fakeWebhookStore) RunByIdempotencyKey(_ context.Context, key string) (store.Run, bool, error) {
+	f.calls++
+	if f.lookupErr != nil {
+		return store.Run{}, false, f.lookupErr
+	}
+	r, ok := f.existing[key]
+	return r, ok, nil
+}
+
+// newTestReceiverWithStore mirrors newTestReceiver but wires a store so
+// the Layer-2 dedup path is exercised. A fixed DeliveryIDHeader lets the
+// test control the delivery id (= idempotency key) deterministically.
+func newTestReceiverWithStore(t *testing.T, webhooks map[string]config.Webhook, fr runner.Runner, st *fakeWebhookStore, env map[string]string, allow []string, now time.Time) *Receiver {
+	t.Helper()
+	cfg := &config.Config{Webhooks: webhooks}
+	al := make(map[string]bool, len(allow))
+	for _, n := range allow {
+		al[n] = true
+	}
+	return New(Deps{
+		Cfg:          cfg,
+		Store:        st,
+		Runner:       fr,
+		EnvAllowlist: al,
+		Now:          fixedClock(now),
+		Getenv:       mapGetenv(env),
+	})
+}
+
+// TestReceiver_Layer2Dedup_ExistingRunReturnedWithoutSpawn pins the RFC H
+// Decision 10 BEFORE-spawn check: a delivery whose id already has a run
+// (e.g. a redelivery past the in-memory Layer-1 TTL) returns the existing
+// run id as 202 WITHOUT invoking the runner.
+func TestReceiver_Layer2Dedup_ExistingRunReturnedWithoutSpawn(t *testing.T) {
+	secret := "shhh"
+	now := time.Unix(1_700_000_000, 0)
+	body := []byte(`{"goal":"do it"}`)
+	const did = "delivery-abc"
+
+	wh := config.Webhook{
+		Enabled:  true,
+		Delivery: "spawn",
+		Agent:    "researcher",
+		Auth: config.WebhookAuth{
+			Kind: "hmac", Header: "X-Hub-Signature-256",
+			SigningSecretEnv: "WH_SECRET", DeliveryIDHeader: "X-Delivery-Id",
+		},
+		PayloadMapping: map[string]string{"goal": "$.goal"},
+	}
+	fr := &fakeRunner{runID: "run-fresh", agentID: "agent-fresh"}
+	st := &fakeWebhookStore{existing: map[string]store.Run{did: {ID: "run-existing", AgentID: "agent-existing"}}}
+	rec := newTestReceiverWithStore(t, map[string]config.Webhook{"gh": wh}, fr, st, map[string]string{"WH_SECRET": secret}, []string{"WH_SECRET"}, now)
+
+	h := http.Header{}
+	h.Set("X-Hub-Signature-256", githubSig(secret, body))
+	h.Set("X-Delivery-Id", did)
+	w := doPost(rec, "gh", body, h)
+
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202; body=%s", w.Code, w.Body.String())
+	}
+	if fr.called {
+		t.Error("runner WAS invoked; Layer-2 dedup should have short-circuited the spawn")
+	}
+	var got map[string]string
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got["run_id"] != "run-existing" {
+		t.Errorf("run_id = %q, want run-existing (the deduped run)", got["run_id"])
+	}
+	if got["deduped"] != "true" {
+		t.Errorf("deduped = %q, want true", got["deduped"])
+	}
+}
+
+// TestReceiver_Layer2Dedup_ConcurrentRaceResolvesToWinner pins the
+// concurrent-race path: the BEFORE-spawn check misses (no run yet), but a
+// racing request won the CreateRun insert, so this request's RunOnce
+// returns ErrDuplicateIdempotencyKey. The receiver re-looks-up the winner
+// and returns it as 202 — NOT a 503.
+func TestReceiver_Layer2Dedup_ConcurrentRaceResolvesToWinner(t *testing.T) {
+	secret := "shhh"
+	now := time.Unix(1_700_000_000, 0)
+	body := []byte(`{"goal":"do it"}`)
+	const did = "delivery-race"
+
+	wh := config.Webhook{
+		Enabled:  true,
+		Delivery: "spawn",
+		Agent:    "researcher",
+		Auth: config.WebhookAuth{
+			Kind: "hmac", Header: "X-Hub-Signature-256",
+			SigningSecretEnv: "WH_SECRET", DeliveryIDHeader: "X-Delivery-Id",
+		},
+		PayloadMapping: map[string]string{"goal": "$.goal"},
+	}
+	// fakeRunner returns the dup sentinel BEFORE OnRegistered (setup-time),
+	// modelling the loser of the insert race.
+	fr := &fakeRunner{runErr: store.ErrDuplicateIdempotencyKey}
+	// The store's BEFORE-spawn lookup misses first, then HITS on the
+	// re-lookup after the dup error. Pre-seed the winner so the re-lookup
+	// resolves it. (The BEFORE-check and the re-lookup both call the same
+	// fake; pre-seeding means the BEFORE-check would also hit — so instead
+	// we leave existing empty and flip it via a tiny indirection.)
+	st := &raceStore{winner: store.Run{ID: "run-winner", AgentID: "agent-winner"}, key: did}
+	rec := New(Deps{
+		Cfg:          &config.Config{Webhooks: map[string]config.Webhook{"gh": wh}},
+		Store:        st,
+		Runner:       fr,
+		EnvAllowlist: map[string]bool{"WH_SECRET": true},
+		Now:          fixedClock(now),
+		Getenv:       mapGetenv(map[string]string{"WH_SECRET": secret}),
+	})
+
+	h := http.Header{}
+	h.Set("X-Hub-Signature-256", githubSig(secret, body))
+	h.Set("X-Delivery-Id", did)
+	w := doPost(rec, "gh", body, h)
+
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202 (race resolved to winner); body=%s", w.Code, w.Body.String())
+	}
+	if !fr.called {
+		t.Error("runner should have been invoked (this is the insert-race loser path)")
+	}
+	var got map[string]string
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got["run_id"] != "run-winner" {
+		t.Errorf("run_id = %q, want run-winner (re-lookup after dup)", got["run_id"])
+	}
+	if got["deduped"] != "true" {
+		t.Errorf("deduped = %q, want true", got["deduped"])
+	}
+}
+
+// raceStore models the insert-race timeline: the FIRST RunByIdempotencyKey
+// (the BEFORE-spawn check) misses; subsequent calls (the post-dup
+// re-lookup) hit the winner. This reproduces the window where two requests
+// both pass the BEFORE-check and only one wins the unique-index insert.
+type raceStore struct {
+	winner store.Run
+	key    string
+	calls  int
+}
+
+func (s *raceStore) WebhookDefGetActive(_ context.Context, name string) (store.WebhookDefRow, error) {
+	return store.WebhookDefRow{}, &store.ErrNotFound{Kind: "webhook_def", ID: name}
+}
+
+func (s *raceStore) RunByIdempotencyKey(_ context.Context, key string) (store.Run, bool, error) {
+	s.calls++
+	if s.calls == 1 {
+		return store.Run{}, false, nil // BEFORE-spawn check: no run yet
+	}
+	if key == s.key {
+		return s.winner, true, nil // re-lookup after the dup error
+	}
+	return store.Run{}, false, nil
+}

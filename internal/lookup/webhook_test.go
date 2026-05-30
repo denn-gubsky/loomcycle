@@ -29,6 +29,12 @@ func (s *stubWebhookStore) WebhookDefGetActive(_ context.Context, name string) (
 	return store.WebhookDefRow{}, &store.ErrNotFound{Kind: "webhook_def_active", ID: name}
 }
 
+// RunByIdempotencyKey satisfies lookup.WebhookStore (RFC H Decision 10).
+// The resolver tests never exercise dedup, so a constant miss suffices.
+func (s *stubWebhookStore) RunByIdempotencyKey(_ context.Context, _ string) (store.Run, bool, error) {
+	return store.Run{}, false, nil
+}
+
 func TestWebhook_EquivalenceYamlVsSubstrate(t *testing.T) {
 	yamlHook := config.Webhook{
 		Enabled:  true,

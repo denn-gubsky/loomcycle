@@ -264,8 +264,29 @@ func (rec *Receiver) deliverSpawn(ctx context.Context, w http.ResponseWriter, sp
 		return
 	}
 	in := buildRunInput(wd, proj, rec.envAllowlist, rec.getenv, rec.logf)
-	// WH-5: idempotency_key (Layer 2) — set in.IdempotencyKey = did here once
-	// the runs.idempotency_key column lands, for durable cross-replica dedup.
+	// RFC H Decision 10 "Layer 2" durable dedup: stamp the run with the
+	// delivery id so CreateRun persists it to runs.idempotency_key.
+	in.IdempotencyKey = did
+
+	// Layer-2 BEFORE-spawn check: if a run already carries this delivery
+	// id (a redelivery that survived past the in-memory Layer-1 TTL, or
+	// landed on a different replica), return the existing run as accepted
+	// without spawning a duplicate. The store is nil for yaml-only
+	// deployments; treat a lookup error as "not found" (fail open to the
+	// spawn path — the unique index is the real backstop).
+	if rec.store != nil && did != "" {
+		if existing, ok, lerr := rec.store.RunByIdempotencyKey(ctx, did); lerr == nil && ok {
+			rec.dedup.record(name, did)
+			rec.finish(span, verdictAccepted)
+			writeJSON(w, http.StatusAccepted, map[string]string{
+				"webhook_name": name,
+				"delivery_id":  did,
+				"run_id":       existing.ID,
+				"deduped":      "true",
+			})
+			return
+		}
+	}
 
 	wantSync := r.URL.Query().Get("sync") == "true" && wd.SyncResponse.Enabled
 
@@ -333,6 +354,39 @@ func (rec *Receiver) spawnAsync(w http.ResponseWriter, span trace.Span, name, di
 			writeJSON(w, http.StatusAccepted, map[string]string{
 				"webhook_name": name,
 				"delivery_id":  did,
+			})
+			return
+		}
+		// RFC H Decision 10 concurrent-race: two deliveries with the same
+		// id both passed the BEFORE-spawn Layer-2 check, and the unique
+		// index let only one CreateRun win. The loser's RunOnce returns
+		// ErrDuplicateIdempotencyKey (BEFORE its agent loop ran — no
+		// double-execution). Re-look-up the winner and return it as
+		// accepted (202), NOT a 503 — the delivery WAS processed, just by
+		// the racing request.
+		if errors.Is(err, store.ErrDuplicateIdempotencyKey) {
+			if rec.store != nil && did != "" {
+				if existing, ok, lerr := rec.store.RunByIdempotencyKey(context.Background(), did); lerr == nil && ok {
+					rec.dedup.record(name, did)
+					rec.finish(span, verdictAccepted)
+					writeJSON(w, http.StatusAccepted, map[string]string{
+						"webhook_name": name,
+						"delivery_id":  did,
+						"run_id":       existing.ID,
+						"deduped":      "true",
+					})
+					return
+				}
+			}
+			// Winner's row not visible yet (replication lag / nil store):
+			// still accepted — the delivery was handled by the racing
+			// request. Record so a retry doesn't re-spawn.
+			rec.dedup.record(name, did)
+			rec.finish(span, verdictAccepted)
+			writeJSON(w, http.StatusAccepted, map[string]string{
+				"webhook_name": name,
+				"delivery_id":  did,
+				"deduped":      "true",
 			})
 			return
 		}

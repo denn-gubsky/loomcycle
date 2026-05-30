@@ -14,6 +14,12 @@ import (
 // WebhookDef substrate.
 type WebhookStore interface {
 	WebhookDefGetActive(ctx context.Context, name string) (store.WebhookDefRow, error)
+
+	// RunByIdempotencyKey backs RFC H Decision 10 "Layer 2" durable
+	// dedup in the receiver: before spawning, it looks up whether a run
+	// already exists for this delivery id (the idempotency key). ok=false
+	// means no prior run — proceed with the spawn.
+	RunByIdempotencyKey(ctx context.Context, key string) (store.Run, bool, error)
 }
 
 // Webhook resolves a webhook NAME to its effective config.Webhook by

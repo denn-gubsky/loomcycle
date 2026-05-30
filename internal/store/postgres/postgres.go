@@ -297,8 +297,8 @@ func (s *Store) CreateRun(ctx context.Context, sessionID string, identity store.
 		_, err := s.pool.Exec(ctx,
 			`INSERT INTO runs (
 				id, session_id, status, started_at,
-				agent_id, parent_agent_id, parent_run_id, user_id, user_tier, agent_def_id, model, replica_id, parent_context
-			) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
+				agent_id, parent_agent_id, parent_run_id, user_id, user_tier, agent_def_id, model, replica_id, parent_context, idempotency_key
+			) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
 			id, sessionID, string(store.RunRunning), now,
 			nullableText(identity.AgentID),
 			nullableText(identity.ParentAgentID),
@@ -309,25 +309,39 @@ func (s *Store) CreateRun(ctx context.Context, sessionID string, identity store.
 			nullableText(identity.Model),
 			nullableText(identity.ReplicaID),
 			pcVal,
+			nullableText(identity.IdempotencyKey),
 		)
 		return err
 	}); err != nil {
+		// RFC H Decision 10: a 23505 unique_violation on the
+		// runs_idempotency_key partial index means an earlier run
+		// already claimed this key — surface the typed sentinel so the
+		// caller dedups. Scope to the idempotency case (key != "" AND
+		// the violation names that constraint) so a future unique
+		// constraint elsewhere on runs is never misreported.
+		var pgErr *pgconn.PgError
+		if identity.IdempotencyKey != "" &&
+			errors.As(err, &pgErr) && pgErr.Code == "23505" &&
+			pgErr.ConstraintName == "runs_idempotency_key" {
+			return store.Run{}, store.ErrDuplicateIdempotencyKey
+		}
 		return store.Run{}, fmt.Errorf("create run: %w", err)
 	}
 	return store.Run{
-		ID:            id,
-		SessionID:     sessionID,
-		Status:        store.RunRunning,
-		StartedAt:     now,
-		AgentID:       identity.AgentID,
-		ParentAgentID: identity.ParentAgentID,
-		ParentRunID:   identity.ParentRunID,
-		UserID:        identity.UserID,
-		UserTier:      identity.UserTier,
-		AgentDefID:    identity.AgentDefID,
-		Model:         identity.Model,
-		ReplicaID:     identity.ReplicaID,
-		ParentContext: identity.ParentContext.Clone(),
+		ID:             id,
+		SessionID:      sessionID,
+		Status:         store.RunRunning,
+		StartedAt:      now,
+		AgentID:        identity.AgentID,
+		ParentAgentID:  identity.ParentAgentID,
+		ParentRunID:    identity.ParentRunID,
+		UserID:         identity.UserID,
+		UserTier:       identity.UserTier,
+		AgentDefID:     identity.AgentDefID,
+		Model:          identity.Model,
+		ReplicaID:      identity.ReplicaID,
+		ParentContext:  identity.ParentContext.Clone(),
+		IdempotencyKey: identity.IdempotencyKey,
 	}, nil
 }
 
@@ -538,7 +552,7 @@ func (s *Store) GetRunByAgentID(ctx context.Context, agentID string) (store.Run,
 		        r.input_tokens, r.output_tokens, r.cache_creation_tokens, r.cache_read_tokens,
 		        r.model, r.provider, r.error,
 		        r.agent_id, r.parent_agent_id, r.parent_run_id, r.user_id, r.last_heartbeat_at, r.user_tier,
-		        r.agent_def_id, r.pause_state, r.replica_id, r.parent_context,
+		        r.agent_def_id, r.pause_state, r.replica_id, r.parent_context, r.idempotency_key,
 		        s.agent
 		 FROM runs r LEFT JOIN sessions s ON r.session_id = s.id
 		 WHERE r.agent_id = $1 ORDER BY r.started_at DESC LIMIT 1`, agentID,
@@ -553,6 +567,35 @@ func (s *Store) GetRunByAgentID(ctx context.Context, agentID string) (store.Run,
 	return r, nil
 }
 
+// RunByIdempotencyKey returns the run created with the given RFC H
+// Decision 10 idempotency key. An empty key short-circuits to
+// (Run{}, false, nil); a key with no matching row returns the same. The
+// runs_idempotency_key partial unique index guarantees at most one
+// match.
+func (s *Store) RunByIdempotencyKey(ctx context.Context, key string) (store.Run, bool, error) {
+	if key == "" {
+		return store.Run{}, false, nil
+	}
+	row := s.pool.QueryRow(ctx,
+		`SELECT r.id, r.session_id, r.status, r.started_at, r.completed_at, r.stop_reason,
+		        r.input_tokens, r.output_tokens, r.cache_creation_tokens, r.cache_read_tokens,
+		        r.model, r.provider, r.error,
+		        r.agent_id, r.parent_agent_id, r.parent_run_id, r.user_id, r.last_heartbeat_at, r.user_tier,
+		        r.agent_def_id, r.pause_state, r.replica_id, r.parent_context, r.idempotency_key,
+		        s.agent
+		 FROM runs r LEFT JOIN sessions s ON r.session_id = s.id
+		 WHERE r.idempotency_key = $1 LIMIT 1`, key,
+	)
+	r, err := scanRun(row)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return store.Run{}, false, nil
+		}
+		return store.Run{}, false, fmt.Errorf("run by idempotency_key: %w", err)
+	}
+	return r, true, nil
+}
+
 // GetRun returns one row by run_id (the primary key on runs).
 func (s *Store) GetRun(ctx context.Context, runID string) (store.Run, error) {
 	if runID == "" {
@@ -563,7 +606,7 @@ func (s *Store) GetRun(ctx context.Context, runID string) (store.Run, error) {
 		        r.input_tokens, r.output_tokens, r.cache_creation_tokens, r.cache_read_tokens,
 		        r.model, r.provider, r.error,
 		        r.agent_id, r.parent_agent_id, r.parent_run_id, r.user_id, r.last_heartbeat_at, r.user_tier,
-		        r.agent_def_id, r.pause_state, r.replica_id, r.parent_context,
+		        r.agent_def_id, r.pause_state, r.replica_id, r.parent_context, r.idempotency_key,
 		        s.agent
 		 FROM runs r LEFT JOIN sessions s ON r.session_id = s.id
 		 WHERE r.id = $1`, runID,
@@ -626,7 +669,7 @@ func (s *Store) ListActiveRunsByUser(ctx context.Context, userID string, status 
 			        r.input_tokens, r.output_tokens, r.cache_creation_tokens, r.cache_read_tokens,
 			        r.model, r.provider, r.error,
 			        r.agent_id, r.parent_agent_id, r.parent_run_id, r.user_id, r.last_heartbeat_at, r.user_tier,
-			        r.agent_def_id, r.pause_state, r.replica_id, r.parent_context,
+			        r.agent_def_id, r.pause_state, r.replica_id, r.parent_context, r.idempotency_key,
 			        s.agent
 			 FROM runs r LEFT JOIN sessions s ON r.session_id = s.id
 			 WHERE r.user_id = $1
@@ -637,7 +680,7 @@ func (s *Store) ListActiveRunsByUser(ctx context.Context, userID string, status 
 			        r.input_tokens, r.output_tokens, r.cache_creation_tokens, r.cache_read_tokens,
 			        r.model, r.provider, r.error,
 			        r.agent_id, r.parent_agent_id, r.parent_run_id, r.user_id, r.last_heartbeat_at, r.user_tier,
-			        r.agent_def_id, r.pause_state, r.replica_id, r.parent_context,
+			        r.agent_def_id, r.pause_state, r.replica_id, r.parent_context, r.idempotency_key,
 			        s.agent
 			 FROM runs r LEFT JOIN sessions s ON r.session_id = s.id
 			 WHERE r.user_id = $1 AND r.status = $2
@@ -662,7 +705,7 @@ func (s *Store) ListRunsByParentAgentID(ctx context.Context, parentAgentID strin
 		        r.input_tokens, r.output_tokens, r.cache_creation_tokens, r.cache_read_tokens,
 		        r.model, r.provider, r.error,
 		        r.agent_id, r.parent_agent_id, r.parent_run_id, r.user_id, r.last_heartbeat_at, r.user_tier,
-		        r.agent_def_id, r.pause_state, r.replica_id, r.parent_context,
+		        r.agent_def_id, r.pause_state, r.replica_id, r.parent_context, r.idempotency_key,
 		        s.agent
 		 FROM runs r LEFT JOIN sessions s ON r.session_id = s.id
 		 WHERE r.parent_agent_id = $1
@@ -757,7 +800,7 @@ func (s *Store) ListPausedRuns(ctx context.Context) ([]store.Run, error) {
 		        r.input_tokens, r.output_tokens, r.cache_creation_tokens, r.cache_read_tokens,
 		        r.model, r.provider, r.error,
 		        r.agent_id, r.parent_agent_id, r.parent_run_id, r.user_id, r.last_heartbeat_at, r.user_tier,
-		        r.agent_def_id, r.pause_state, r.replica_id, r.parent_context,
+		        r.agent_def_id, r.pause_state, r.replica_id, r.parent_context, r.idempotency_key,
 		        s.agent
 		 FROM runs r LEFT JOIN sessions s ON r.session_id = s.id
 		 WHERE r.pause_state = $1
@@ -5351,6 +5394,7 @@ func scanRun(r rowScanner) (store.Run, error) {
 		pauseState                                            *string
 		replicaID                                             *string
 		parentContext                                         *string
+		idempotencyKey                                        *string
 		lastHeartbeatAt                                       *time.Time
 		sessAgent                                             *string
 
@@ -5362,7 +5406,7 @@ func scanRun(r rowScanner) (store.Run, error) {
 		&model, &provider, &errMsg,
 		&agentID, &parentAgentID, &parentRunID, &userID, &lastHeartbeatAt,
 		&userTier,
-		&agentDefID, &pauseState, &replicaID, &parentContext,
+		&agentDefID, &pauseState, &replicaID, &parentContext, &idempotencyKey,
 		&sessAgent,
 	); err != nil {
 		return store.Run{}, err
@@ -5417,6 +5461,9 @@ func scanRun(r rowScanner) (store.Run, error) {
 			return store.Run{}, fmt.Errorf("decode parent_context: %w", err)
 		}
 		out.ParentContext = pc
+	}
+	if idempotencyKey != nil {
+		out.IdempotencyKey = *idempotencyKey
 	}
 	if sessAgent != nil {
 		out.Agent = *sessAgent

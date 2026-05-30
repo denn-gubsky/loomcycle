@@ -1387,12 +1387,23 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	}
 
 	// ---- Session+run creation ----
-	identity := store.RunIdentity{AgentID: agentID, UserID: effectiveUserID, UserTier: in.UserTier, Model: model, ReplicaID: s.replicaID, ParentContext: in.ParentContext}
+	identity := store.RunIdentity{AgentID: agentID, UserID: effectiveUserID, UserTier: in.UserTier, Model: model, ReplicaID: s.replicaID, ParentContext: in.ParentContext, IdempotencyKey: in.IdempotencyKey}
 	sessionID, runID, sessErr := s.openOrCreateSessionAndRun(ctx, in.SessionID, effectiveAgentName, effectiveTenantID, effectiveUserID, identity)
 	if sessErr != nil {
 		var nf *store.ErrNotFound
 		if errors.As(sessErr, &nf) {
 			return fmt.Errorf("%w: %v", runner.ErrSessionNotFound, sessErr)
+		}
+		// RFC H Decision 10: a duplicate idempotency_key means an earlier
+		// run already claimed this key. CRITICAL: return BEFORE the cancel
+		// registry + agent loop so the run never double-executes. Wrap the
+		// sentinel verbatim (no ErrInternal masking) so the webhook
+		// receiver can errors.Is-detect it and resolve to the existing
+		// run. (CreateSession ran before the failed CreateRun, leaving an
+		// orphan session with no run — acceptable: it carries no events
+		// and is never returned to a caller.)
+		if errors.Is(sessErr, store.ErrDuplicateIdempotencyKey) {
+			return sessErr
 		}
 		return fmt.Errorf("%w: %v", runner.ErrInternal, sessErr)
 	}

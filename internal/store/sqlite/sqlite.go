@@ -600,6 +600,13 @@ func (s *Store) migrate(ctx context.Context) error {
 		// legacy rows + runs with no context. Not a secret (safe to
 		// persist). Read back via DecodeParentContext.
 		`ALTER TABLE runs ADD COLUMN parent_context TEXT`,
+		// RFC H Decision 10 "Layer 2" durable dedup — optional
+		// idempotency_key. NULL on legacy rows + runs with no key. The
+		// partial unique index is created below in addIndexes (so the
+		// column added here is guaranteed present first). The webhook
+		// spawn path sets this = delivery_id for cross-replica /
+		// past-Layer-1-TTL dedup.
+		`ALTER TABLE runs ADD COLUMN idempotency_key TEXT`,
 	}
 	for _, q := range addColumns {
 		if _, err := s.db.ExecContext(ctx, q); err != nil {
@@ -661,6 +668,14 @@ func (s *Store) migrate(ctx context.Context) error {
 		`CREATE INDEX IF NOT EXISTS interrupts_by_run_status  ON interrupts(run_id, status)`,
 		`CREATE INDEX IF NOT EXISTS interrupts_by_user_status ON interrupts(user_id, status) WHERE user_id IS NOT NULL`,
 		`CREATE INDEX IF NOT EXISTS interrupts_by_expires     ON interrupts(expires_at) WHERE expires_at IS NOT NULL AND status = 'pending'`,
+		// RFC H Decision 10 "Layer 2" durable dedup — partial unique
+		// index on idempotency_key. Lives in addIndexes (not the CREATE
+		// TABLE block) so the column added by addColumns above is
+		// guaranteed present on the v0.12.x → idempotency-key upgrade
+		// path. Partial (WHERE ... IS NOT NULL) so keyless runs are
+		// unconstrained and the index stays small. Mirrors the postgres
+		// 0033 migration.
+		`CREATE UNIQUE INDEX IF NOT EXISTS runs_idempotency_key ON runs(idempotency_key) WHERE idempotency_key IS NOT NULL`,
 	}
 	for _, q := range addIndexes {
 		// Note the asymmetry vs addColumns above: indexes use
@@ -751,8 +766,8 @@ func (s *Store) CreateRun(ctx context.Context, sessionID string, identity store.
 		pcVal = pcJSON
 	}
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO runs(id, session_id, status, started_at, agent_id, parent_agent_id, parent_run_id, user_id, user_tier, agent_def_id, model, parent_context)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO runs(id, session_id, status, started_at, agent_id, parent_agent_id, parent_run_id, user_id, user_tier, agent_def_id, model, parent_context, idempotency_key)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		id, sessionID, store.RunRunning, now.UnixNano(),
 		nilIfEmpty(identity.AgentID),
 		nilIfEmpty(identity.ParentAgentID),
@@ -762,23 +777,36 @@ func (s *Store) CreateRun(ctx context.Context, sessionID string, identity store.
 		nilIfEmpty(identity.AgentDefID),
 		nilIfEmpty(identity.Model),
 		pcVal,
+		nilIfEmpty(identity.IdempotencyKey),
 	)
 	if err != nil {
+		// RFC H Decision 10: a collision on the runs_idempotency_key
+		// partial unique index means an earlier run already claimed this
+		// key — surface the typed sentinel so the caller dedups instead
+		// of failing. Scope the classification to the idempotency case
+		// (key != "" AND the violation names that index) so a future
+		// UNIQUE constraint elsewhere on runs is never misreported.
+		if identity.IdempotencyKey != "" &&
+			strings.Contains(err.Error(), "UNIQUE constraint failed") &&
+			strings.Contains(err.Error(), "runs.idempotency_key") {
+			return store.Run{}, store.ErrDuplicateIdempotencyKey
+		}
 		return store.Run{}, err
 	}
 	return store.Run{
-		ID:            id,
-		SessionID:     sessionID,
-		Status:        store.RunRunning,
-		StartedAt:     now,
-		AgentID:       identity.AgentID,
-		ParentAgentID: identity.ParentAgentID,
-		ParentRunID:   identity.ParentRunID,
-		UserID:        identity.UserID,
-		UserTier:      identity.UserTier,
-		AgentDefID:    identity.AgentDefID,
-		Model:         identity.Model,
-		ParentContext: identity.ParentContext.Clone(),
+		ID:             id,
+		SessionID:      sessionID,
+		Status:         store.RunRunning,
+		StartedAt:      now,
+		AgentID:        identity.AgentID,
+		ParentAgentID:  identity.ParentAgentID,
+		ParentRunID:    identity.ParentRunID,
+		UserID:         identity.UserID,
+		UserTier:       identity.UserTier,
+		AgentDefID:     identity.AgentDefID,
+		Model:          identity.Model,
+		ParentContext:  identity.ParentContext.Clone(),
+		IdempotencyKey: identity.IdempotencyKey,
 	}, nil
 }
 
@@ -966,6 +994,7 @@ func scanRun(scanner interface{ Scan(...any) error }) (store.Run, error) {
 	var agentDefID sql.NullString
 	var pauseState sql.NullString
 	var parentContext sql.NullString
+	var idempotencyKey sql.NullString
 	var sessAgent sql.NullString
 	var status string
 	if err := scanner.Scan(
@@ -975,7 +1004,7 @@ func scanRun(scanner interface{ Scan(...any) error }) (store.Run, error) {
 		&model, &provider, &errMsg,
 		&agentID, &parentAgentID, &parentRunID, &userID, &lastHbNs,
 		&userTier,
-		&agentDefID, &pauseState, &parentContext,
+		&agentDefID, &pauseState, &parentContext, &idempotencyKey,
 		&sessAgent,
 	); err != nil {
 		return store.Run{}, err
@@ -1030,6 +1059,9 @@ func scanRun(scanner interface{ Scan(...any) error }) (store.Run, error) {
 		}
 		r.ParentContext = pc
 	}
+	if idempotencyKey.Valid {
+		r.IdempotencyKey = idempotencyKey.String
+	}
 	if sessAgent.Valid {
 		r.Agent = sessAgent.String
 	}
@@ -1050,7 +1082,7 @@ const runColumns = `r.id, r.session_id, r.status, r.started_at, r.completed_at,
 		r.model, r.provider, r.error,
 		r.agent_id, r.parent_agent_id, r.parent_run_id, r.user_id, r.last_heartbeat_at,
 		r.user_tier,
-		r.agent_def_id, r.pause_state, r.parent_context,
+		r.agent_def_id, r.pause_state, r.parent_context, r.idempotency_key,
 		s.agent`
 
 // runFromTable is the canonical FROM clause paired with runColumns.
@@ -1075,6 +1107,29 @@ func (s *Store) GetRunByAgentID(ctx context.Context, agentID string) (store.Run,
 		return store.Run{}, &store.ErrNotFound{Kind: "run", ID: agentID}
 	}
 	return r, err
+}
+
+// RunByIdempotencyKey returns the run created with the given RFC H
+// Decision 10 idempotency key. An empty key short-circuits to
+// (Run{}, false, nil); a key with no matching row returns the same.
+// The runs_idempotency_key partial unique index guarantees at most one
+// match.
+func (s *Store) RunByIdempotencyKey(ctx context.Context, key string) (store.Run, bool, error) {
+	if key == "" {
+		return store.Run{}, false, nil
+	}
+	row := s.db.QueryRowContext(ctx,
+		`SELECT `+runColumns+` FROM `+runFromTable+` WHERE r.idempotency_key = ? LIMIT 1`,
+		key,
+	)
+	r, err := scanRun(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return store.Run{}, false, nil
+	}
+	if err != nil {
+		return store.Run{}, false, fmt.Errorf("run by idempotency_key: %w", err)
+	}
+	return r, true, nil
 }
 
 // GetRun returns one row by run_id (the primary key on runs).
