@@ -22,6 +22,7 @@ func TestLoadSet_BundledOnly(t *testing.T) {
 	// deletion of a shipped topic would otherwise pass CI. Kept
 	// in alphabetical order for diff readability.
 	want := []string{
+		"a2a-integration",
 		"channel-admin",
 		"content-signatures",
 		"dynamic-mcp",

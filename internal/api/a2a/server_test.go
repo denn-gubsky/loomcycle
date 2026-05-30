@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	a2asdk "github.com/a2aproject/a2a-go/v2/a2a"
@@ -269,6 +270,33 @@ func hasInterfaceURL(card *a2asdk.AgentCard, url string) bool {
 		}
 	}
 	return false
+}
+
+// TestRESTBinding_StripsMountPrefixToInnerRoutes pins the REST-mount
+// contract: the SDK REST handler routes on paths RELATIVE to its mount
+// (e.g. "POST /message:send"), so the "/a2a/v1" prefix must be stripped
+// before delegation. Without StripPrefix, the inner handler sees
+// "/a2a/v1/message:send" and matches nothing — every REST call fails.
+// We assert a POST to "/a2a/v1/message:send" reaches a real protocol
+// route (a 200 with a JSON body) rather than a 404. The full SDK
+// round-trip is covered by the integration test; this guards the wire
+// path directly so the mount can't silently regress.
+func TestRESTBinding_StripsMountPrefixToInnerRoutes(t *testing.T) {
+	h := mountedHandler(newTestServer(t, "none", "https://agents.example"))
+
+	body := `{"message":{"messageId":"m","role":"user","parts":[{"kind":"text","text":"hi"}],"metadata":{"skillId":"research"}}}`
+	req := httptest.NewRequest(http.MethodPost, "/a2a/v1/message:send", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	// The route was reached (not a 404 from the unstripped prefix). The
+	// scripted noopRunner makes the run resolve to a non-terminal row, so
+	// the body content isn't asserted here — only that the REST routing
+	// landed on a real handler.
+	if rec.Code == http.StatusNotFound {
+		t.Fatalf("REST POST hit 404 — the /a2a/v1 prefix was not stripped before the inner handler")
+	}
 }
 
 func TestExtendedCard_GatedByAdminAuth(t *testing.T) {

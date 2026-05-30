@@ -126,6 +126,19 @@ func (e *Executor) Execute(ctx context.Context, execCtx *a2asrv.ExecutorContext)
 
 		in, err := e.buildRunInput(ctx, execCtx)
 		if err != nil {
+			// A rejected brand-new message (unknown skill, unsupported
+			// part, bad input) still needs a Task to fail against: the SDK
+			// aggregation rejects a bare status update as the first event
+			// ("first event must be a Task or a message"). Emit the
+			// SUBMITTED task first, then the FAILED status — so the
+			// rejection surfaces as a terminal FAILED task rather than an
+			// "invalid agent response" transport error. A stored task is
+			// already present, so the beat is skipped on a resume.
+			if execCtx.StoredTask == nil {
+				if !yield(a2asdk.NewSubmittedTask(execCtx, execCtx.Message), nil) {
+					return
+				}
+			}
 			yield(a2asdk.NewStatusUpdateEvent(execCtx, taskStateForRejected(),
 				agentMessage(err.Error())), nil)
 			return

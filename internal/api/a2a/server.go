@@ -207,7 +207,14 @@ func (s *Server) Mount(mux *http.ServeMux, adminAuth func(http.Handler) http.Han
 	//     the http.Server.Handler level BEFORE the request reaches this
 	//     mux, so the concrete paths still match. See PathTenantWrapper.
 	mux.Handle("GET "+pathWellKnown, s.hostTenantWrap(card))
-	mux.Handle(pathREST+"/", s.hostTenantWrap(rest))
+	// The SDK REST handler routes on paths RELATIVE to its mount point
+	// (e.g. "POST /message:send", "GET /tasks/{id}"), so the "/a2a/v1"
+	// prefix must be stripped before delegation — otherwise every REST
+	// call lands as an unmatched path inside the handler and fails. The
+	// JSON-RPC handler needs no stripping (it is a single endpoint with
+	// no sub-routing). StripPrefix runs INSIDE hostTenantWrap so the
+	// host-derived tenant is still attached.
+	mux.Handle(pathREST+"/", s.hostTenantWrap(http.StripPrefix(pathREST, rest)))
 	mux.Handle(pathJSONRPC, s.hostTenantWrap(jsonrpc))
 
 	if adminAuth != nil {

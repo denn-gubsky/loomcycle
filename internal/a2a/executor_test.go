@@ -211,6 +211,36 @@ func TestExecutor_ExecuteRejectsNonTextParts(t *testing.T) {
 	}
 }
 
+// TestExecutor_RejectedBrandNewMessageYieldsTaskBeforeFailed asserts a
+// rejection on a brand-new message (no stored task) emits a SUBMITTED
+// *Task* BEFORE the FAILED status. The SDK's event aggregation rejects a
+// bare status update as the first event ("first event must be a Task or
+// a message"), so a rejection that skipped the Task beat surfaced as an
+// opaque transport error instead of a terminal FAILED task. Regression
+// guard for that — the end-to-end SDK test exercises the full path; this
+// pins the invariant cheaply.
+func TestExecutor_RejectedBrandNewMessageYieldsTaskBeforeFailed(t *testing.T) {
+	fr := &fakeRunner{}
+	ex := NewExecutor(fr, &fakeConnector{}, &fakeRuns{byAgentID: map[string]store.Run{}}, "fallback").
+		WithAgentResolver(func(string) (string, bool) { return "", false })
+
+	msg := a2asdk.NewMessage(a2asdk.MessageRoleUser, a2asdk.NewTextPart("hi"))
+	msg.Metadata = map[string]any{"skillId": "nope"}
+	execCtx := &a2asrv.ExecutorContext{TaskID: "task-rej", Message: msg}
+
+	events, _ := collect(ex.Execute(context.Background(), execCtx))
+	if len(events) < 2 {
+		t.Fatalf("got %d events, want >=2 (Task then FAILED)", len(events))
+	}
+	if _, ok := events[0].(*a2asdk.Task); !ok {
+		t.Fatalf("event[0] = %T, want *Task (SUBMITTED) so the SDK has a task to fail", events[0])
+	}
+	last := events[len(events)-1].(*a2asdk.TaskStatusUpdateEvent)
+	if last.Status.State != a2asdk.TaskStateFailed {
+		t.Errorf("final state = %q, want FAILED", last.Status.State)
+	}
+}
+
 // TestExecutor_CancelRoutesThroughConnectorAndYieldsCanceled asserts
 // Cancel calls Connector.CancelRun keyed by the task id (== agent_id)
 // and emits CANCELED.
