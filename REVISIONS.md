@@ -8,6 +8,39 @@ For pre-v0.4 history (single-tool runtime, library milestone, security patch), s
 
 ---
 
+## What's in v0.13.0
+
+**Headline: comprehensive Agent2Agent (A2A) protocol support (RFC G).** loomcycle now speaks the Linux Foundation A2A protocol on **both** sides — reachable *as* an A2A server from the Microsoft / Google enterprise agent stacks, and able to call remote A2A peers *as* synthetic tools. Built on the official Go SDK (`github.com/a2aproject/a2a-go/v2@v2.3.1`, which shares loomcycle's existing grpc/protobuf stack → ~zero net-new heavy deps). Additive and **off by default**; `/v1/runs`, MCP, gRPC, and the TS adapter are untouched. PR #286.
+
+### A2A server + client (RFC G)
+
+- **Server surface** (`internal/api/a2a/`) — a `GET /.well-known/agent-card.json` AgentCard (admin-gated `?extended=true`) plus the three protocol-binding mounts (REST `/a2a/v1`, JSON-RPC `/a2a/jsonrpc`, gRPC) over the SDK's transport-agnostic handler. Gated by `LOOMCYCLE_A2A_ENABLED=1` + a configured server card.
+- **Client surface** — an `A2AAgentDef` makes a remote peer callable: a loomcycle agent referencing it gets a synthetic `a2a__<peer>__<skill>` tool (mirrors the `mcp__<server>__<tool>` pattern) that proxies to the SDK client. Peer auth (bearer) resolves from the run's `user_credentials` via the existing `${run.credentials.<name>}` seam; the model never knows it's a remote peer.
+- **Two substrate Defs** mirroring the ScheduleDef pattern end-to-end: `A2AServerCardDef` (which agents are exposed + AgentCard metadata + `sign_with_key_env`) and `A2AAgentDef` (remote peer: card URL or endpoint+binding, auth, expected skills, `verify_signed_card`). Each ships store methods + content-addressed versioning + migration `0031`, a 5-op tool + scope policy, full 4-transport CRUD (HTTP `/v1/_a2aservercarddef` + `/v1/_a2aagentdef` + gRPC + MCP meta-tool + TS adapter), a Connector method, and a 3-way drift test.
+- **SDK bridge** (`internal/a2a/`) — an `AgentExecutor` that drives the canonical `runner.RunOnce` seam, translates `providers.Event` → A2A Task events, backs the SDK `TaskStore` on the run table, and maps `RunStatus` → `TaskState` (incl. `rejected → FAILED`).
+- **Multi-tenant routing** — A2A introduces loomcycle's first per-route tenancy (`LOOMCYCLE_A2A_TENANCY_ROUTING=host|path`); the tenant is **host- or path-authoritative** and never read from the request body. Single-tenant deployments serve at the host root.
+- **Signed AgentCards** — outbound cards are JWS ES256-signed over RFC 8785 JCS canonicalisation when `sign_with_key_env` names an allowlisted env var holding a P-256 key (best-effort; serving never fails on a signing problem). Inbound verification is tolerant by default, strict per `verify_signed_card: true`.
+- **`INPUT_REQUIRED` ↔ Interruption** — a run that parks on the `Interruption` tool surfaces `TASK_STATE_INPUT_REQUIRED`; a same-task follow-up message resolves the interruption (reusing `Store.InterruptResolve` + the channel bus) and resumes the run to terminal. `AUTH_REQUIRED` stays deferred; A2A push notifications remain deferred pending RFC H's outbound poster.
+- `Context.help a2a-integration` topic + an end-to-end integration test exercising the real SDK client across the bindings.
+
+### A2A whole-feature review fixes (same PR)
+
+A review against the **real** SDK (not just the unit fakes) caught and fixed several defects before merge — each with a regression test:
+
+1. **Parked-run lifetime** — the SDK cancels the per-request context the instant the first `Execute` response completes; the background run shared it, so `INPUT_REQUIRED` resume died with `context.Canceled` under the real SDK (unit tests missed it by passing an uncancelled context). The run's lifetime is now detached via `context.WithoutCancel`; cancellation flows only through the explicit `Cancel` (Connector cascade) and client-abandon paths.
+2. **Unauthenticated inbound runs** — the principal interceptor flagged a bad/missing bearer but the executor ignored it, so a configured `LOOMCYCLE_AUTH_TOKEN` didn't protect the binding endpoints. Now rejected at the interceptor frontier (a non-nil `Before` error short-circuits the SDK call), covering all three bindings and the new/resume/cancel paths uniformly.
+3. **Cross-tenant attribution** — host/path modes fell back to the peer-supplied body tenant when no routed tenant resolved (a non-tenant host; an un-prefixed binding route). A routing mode is now authoritative even when it resolves an empty tenant; the body tenant is consulted only in single-tenant mode. Host labels are case-folded.
+4. Terminal-status fail-closed (a lagged terminal write no longer strands the task in `WORKING`); park-leak cleanup; server-card name-divergence (the advertised name is stamped from the registry key); security-scheme map key keyed by kind. Documented (with rationale): self-contained card signatures prove integrity not identity (TLS provides identity); the JCS number formatter is integer-only-faithful (latent — cards carry no floats); `oauth2`/`mtls` peer auth is accepted in config but not yet wired.
+
+### Documentation: tool-use hooks (backfill)
+
+The **tool-use hooks** subsystem (`internal/hooks/`) has shipped since v0.8.x but was under-documented — present only as a feature-matrix line. This release surfaces it properly with a new **`Context.help hooks`** topic and a README "What's shipped" row, with no code change to the feature. For reference, what it is: external apps register HTTP webhooks against `(agent, tool, phase)` selectors via the bearer-authed `POST /v1/hooks` (idempotent per `(owner, name)`); a `pre` hook can rewrite a tool's input, deny it with a synthetic model-visible result, or — only for an owner the operator opts into `hooks.permit_host_widen` — widen the host allowlist for that one call; a `post` hook can rewrite the result. `fail_mode` is `open` (default, telemetry) or `closed` (security). Hooks run *after* the policy floor and can only narrow it (the audited per-call host-widen is the lone exception); payloads carry correlation IDs but never the prompt/history. In multi-replica mode the registry is DB-backed (the `hooks` table) with backplane cache-invalidation; the hot-path match stays in-memory.
+
+### Notes
+
+- **Wire-protocol additions are back-compatible** (new endpoints / RPCs / MCP meta-tools / TS methods only). `@loomcycle/client` gains `a2aServerCardDef()` / `a2aAgentDef()`.
+- A2A push notifications and `AUTH_REQUIRED` interactive resume remain out of scope (deferred per RFC G); `oauth2`/`mtls` outbound peer auth is reserved.
+
 ## What's in v0.12.8
 
 **Cumulative release covering all work since v0.12.7.** Closes the v1.x "Claude Code interop" batch (RFC C1 + C2 + the plugin) and lands the cv-batch child-tagging fix (parent-context propagation). No breaking wire changes; all additions are back-compatible.

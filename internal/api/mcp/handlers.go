@@ -57,6 +57,15 @@ var handlersByName = map[string]toolHandler{
 	"scheduledef": wrapBuiltin("scheduledef", func(c connector.Connector, ctx context.Context, in json.RawMessage) (connector.ToolResult, error) {
 		return c.ScheduleDef(ctx, in)
 	}),
+	// v1.x RFC G A2A substrate. Same operator-admin-only posture as
+	// scheduledef; lets external orchestrators author A2A server cards
+	// and agents over MCP without the HTTP admin endpoint.
+	"a2aservercarddef": wrapBuiltin("a2aservercarddef", func(c connector.Connector, ctx context.Context, in json.RawMessage) (connector.ToolResult, error) {
+		return c.A2AServerCardDef(ctx, in)
+	}),
+	"a2aagentdef": wrapBuiltin("a2aagentdef", func(c connector.Connector, ctx context.Context, in json.RawMessage) (connector.ToolResult, error) {
+		return c.A2AAgentDef(ctx, in)
+	}),
 	"evaluation": wrapBuiltin("evaluation", func(c connector.Connector, ctx context.Context, in json.RawMessage) (connector.ToolResult, error) {
 		return c.Evaluation(ctx, in)
 	}),

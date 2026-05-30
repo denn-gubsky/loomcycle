@@ -76,6 +76,32 @@ func (s *Server) handleListScheduleDefNames(w http.ResponseWriter, r *http.Reque
 	writeJSONOK(w, map[string]any{"names": rows})
 }
 
+// handleListA2AServerCardDefNames serves GET /v1/_a2aservercarddef/names.
+func (s *Server) handleListA2AServerCardDefNames(w http.ResponseWriter, r *http.Request) {
+	rows, err := s.store.A2AServerCardDefListNames(r.Context())
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "store_error", err.Error())
+		return
+	}
+	if rows == nil {
+		rows = []store.A2AServerCardDefNameSummary{}
+	}
+	writeJSONOK(w, map[string]any{"names": rows})
+}
+
+// handleListA2AAgentDefNames serves GET /v1/_a2aagentdef/names.
+func (s *Server) handleListA2AAgentDefNames(w http.ResponseWriter, r *http.Request) {
+	rows, err := s.store.A2AAgentDefListNames(r.Context())
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "store_error", err.Error())
+		return
+	}
+	if rows == nil {
+		rows = []store.A2AAgentDefNameSummary{}
+	}
+	writeJSONOK(w, map[string]any{"names": rows})
+}
+
 // handleAgentChannels serves GET /v1/agents/{agent_name}/channels.
 // Returns every channel_cursors row for (scope=agent, scope_id={agent_name}),
 // ordered by channel ASC. Drives the v0.9.x Web UI's per-agent

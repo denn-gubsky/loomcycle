@@ -58,6 +58,14 @@ func substrateGRPCCtx(ctx context.Context) context.Context {
 		Scopes:   []string{"any"},
 		SelfName: grpcSubstrateAdminAgentName,
 	})
+	ctx = tools.WithA2AServerCardDefPolicy(ctx, tools.A2AServerCardDefPolicyValue{
+		Scopes:   []string{"any"},
+		SelfName: grpcSubstrateAdminAgentName,
+	})
+	ctx = tools.WithA2AAgentDefPolicy(ctx, tools.A2AAgentDefPolicyValue{
+		Scopes:   []string{"any"},
+		SelfName: grpcSubstrateAdminAgentName,
+	})
 	ctx = tools.WithEvaluationPolicy(ctx, tools.EvaluationPolicyValue{
 		Scopes: []string{"submit_self", "submit_descendants", "submit_any", "read_any"},
 	})
@@ -123,6 +131,32 @@ func (s *Server) MCPServerDef(ctx context.Context, req *loomcyclepb.SubstrateReq
 func (s *Server) ScheduleDef(ctx context.Context, req *loomcyclepb.SubstrateRequest) (*loomcyclepb.SubstrateResponse, error) {
 	return s.dispatchSubstrateRPC(ctx, "ScheduleDef", req, func(ctx context.Context, in json.RawMessage) (json.RawMessage, bool, error) {
 		res, err := s.connector.ScheduleDef(ctx, in)
+		if err != nil {
+			return nil, false, err
+		}
+		return json.RawMessage(res.Text), res.IsError, nil
+	})
+}
+
+// A2AServerCardDef serves the v1.x RFC G A2AServerCardDef gRPC RPC —
+// A2A-server-card substrate. Same shape as the other substrate RPCs;
+// op-discriminated input_json routes via the Connector to the in-process
+// tool.
+func (s *Server) A2AServerCardDef(ctx context.Context, req *loomcyclepb.SubstrateRequest) (*loomcyclepb.SubstrateResponse, error) {
+	return s.dispatchSubstrateRPC(ctx, "A2AServerCardDef", req, func(ctx context.Context, in json.RawMessage) (json.RawMessage, bool, error) {
+		res, err := s.connector.A2AServerCardDef(ctx, in)
+		if err != nil {
+			return nil, false, err
+		}
+		return json.RawMessage(res.Text), res.IsError, nil
+	})
+}
+
+// A2AAgentDef serves the v1.x RFC G A2AAgentDef gRPC RPC — A2A-agent
+// substrate. Same shape as the other substrate RPCs.
+func (s *Server) A2AAgentDef(ctx context.Context, req *loomcyclepb.SubstrateRequest) (*loomcyclepb.SubstrateResponse, error) {
+	return s.dispatchSubstrateRPC(ctx, "A2AAgentDef", req, func(ctx context.Context, in json.RawMessage) (json.RawMessage, bool, error) {
+		res, err := s.connector.A2AAgentDef(ctx, in)
 		if err != nil {
 			return nil, false, err
 		}

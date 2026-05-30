@@ -4159,6 +4159,468 @@ func (s *Store) scanScheduleDefRows(rows pgx.Rows) ([]store.ScheduleDefRow, erro
 	return out, rows.Err()
 }
 
+// ---- v1.x RFC G A2AServerCardDef substrate ----
+//
+// Mirror of ScheduleDef* without the sweeper run_state table. Same
+// per-name advisory lock + monotonic versioning + append-only +
+// active-pointer overlay shape.
+
+func (s *Store) A2AServerCardDefCreate(ctx context.Context, row store.A2AServerCardDefRow) (store.A2AServerCardDefRow, error) {
+	if row.DefID == "" || row.Name == "" {
+		return store.A2AServerCardDefRow{}, fmt.Errorf("a2a_server_card_def: def_id + name required")
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return store.A2AServerCardDefRow{}, fmt.Errorf("a2a_server_card_def create begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	if _, err := tx.Exec(ctx,
+		`SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`,
+		"a2a_server_card_def:"+row.Name,
+	); err != nil {
+		return store.A2AServerCardDefRow{}, fmt.Errorf("a2a_server_card_def create lock: %w", err)
+	}
+
+	if row.ParentDefID != "" {
+		var n int
+		if err := tx.QueryRow(ctx, `SELECT COUNT(*) FROM a2a_server_card_defs WHERE def_id = $1`, row.ParentDefID).Scan(&n); err != nil {
+			return store.A2AServerCardDefRow{}, fmt.Errorf("a2a_server_card_def create parent check: %w", err)
+		}
+		if n == 0 {
+			return store.A2AServerCardDefRow{}, store.ErrA2AServerCardDefParentNotFound
+		}
+	}
+
+	var maxVer sql.NullInt64
+	if err := tx.QueryRow(ctx, `SELECT MAX(version) FROM a2a_server_card_defs WHERE name = $1`, row.Name).Scan(&maxVer); err != nil {
+		return store.A2AServerCardDefRow{}, fmt.Errorf("a2a_server_card_def create max version: %w", err)
+	}
+	row.Version = 1
+	if maxVer.Valid {
+		row.Version = int(maxVer.Int64) + 1
+	}
+	row.CreatedAt = time.Now().UTC()
+
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO a2a_server_card_defs (
+			def_id, name, version, parent_def_id, definition, description,
+			created_at, created_by_agent_id, created_by_run_id,
+			retired, bootstrapped_from_static
+		) VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10, $11)`,
+		row.DefID, row.Name, row.Version, nullableString(row.ParentDefID),
+		string(row.Definition), nullableString(row.Description),
+		row.CreatedAt,
+		nullableString(row.CreatedByAgentID), nullableString(row.CreatedByRunID),
+		row.Retired, row.BootstrappedFromStatic,
+	); err != nil {
+		return store.A2AServerCardDefRow{}, fmt.Errorf("a2a_server_card_def insert: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return store.A2AServerCardDefRow{}, fmt.Errorf("a2a_server_card_def commit: %w", err)
+	}
+	return row, nil
+}
+
+func (s *Store) A2AServerCardDefGet(ctx context.Context, defID string) (store.A2AServerCardDefRow, error) {
+	row, err := s.scanA2AServerCardDef(s.pool.QueryRow(ctx, a2aServerCardDefSelect+` WHERE def_id = $1`, defID))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return store.A2AServerCardDefRow{}, &store.ErrNotFound{Kind: "a2a_server_card_def", ID: defID}
+	}
+	return row, err
+}
+
+func (s *Store) A2AServerCardDefGetByNameVersion(ctx context.Context, name string, version int) (store.A2AServerCardDefRow, error) {
+	row, err := s.scanA2AServerCardDef(s.pool.QueryRow(ctx, a2aServerCardDefSelect+` WHERE name = $1 AND version = $2`, name, version))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return store.A2AServerCardDefRow{}, &store.ErrNotFound{Kind: "a2a_server_card_def", ID: fmt.Sprintf("%s@v%d", name, version)}
+	}
+	return row, err
+}
+
+func (s *Store) A2AServerCardDefListByName(ctx context.Context, name string) ([]store.A2AServerCardDefRow, error) {
+	rows, err := s.pool.Query(ctx, a2aServerCardDefSelect+` WHERE name = $1 ORDER BY version DESC`, name)
+	if err != nil {
+		return nil, fmt.Errorf("a2a_server_card_def list by name: %w", err)
+	}
+	defer rows.Close()
+	return s.scanA2AServerCardDefRows(rows)
+}
+
+func (s *Store) A2AServerCardDefListChildren(ctx context.Context, parentDefID string) ([]store.A2AServerCardDefRow, error) {
+	rows, err := s.pool.Query(ctx, a2aServerCardDefSelect+` WHERE parent_def_id = $1 ORDER BY version DESC`, parentDefID)
+	if err != nil {
+		return nil, fmt.Errorf("a2a_server_card_def list children: %w", err)
+	}
+	defer rows.Close()
+	return s.scanA2AServerCardDefRows(rows)
+}
+
+func (s *Store) A2AServerCardDefListNames(ctx context.Context) ([]store.A2AServerCardDefNameSummary, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT
+			d.name,
+			COUNT(*)                  AS version_count,
+			MAX(d.version)            AS latest_version,
+			MAX(d.created_at)         AS last_updated,
+			COALESCE(a.def_id, '')    AS active_def_id
+		FROM a2a_server_card_defs d
+		LEFT JOIN a2a_server_card_def_active a ON a.name = d.name
+		GROUP BY d.name, a.def_id
+		ORDER BY d.name`)
+	if err != nil {
+		return nil, fmt.Errorf("a2a_server_card_def list names: %w", err)
+	}
+	defer rows.Close()
+
+	var out []store.A2AServerCardDefNameSummary
+	for rows.Next() {
+		var ns store.A2AServerCardDefNameSummary
+		if err := rows.Scan(&ns.Name, &ns.VersionCount, &ns.LatestVersion, &ns.LastUpdated, &ns.ActiveDefID); err != nil {
+			return nil, err
+		}
+		out = append(out, ns)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) A2AServerCardDefSetActive(ctx context.Context, name, defID, promotedByAgentID string) error {
+	var rowName string
+	err := s.pool.QueryRow(ctx, `SELECT name FROM a2a_server_card_defs WHERE def_id = $1`, defID).Scan(&rowName)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return &store.ErrNotFound{Kind: "a2a_server_card_def", ID: defID}
+	}
+	if err != nil {
+		return fmt.Errorf("a2a_server_card_def_active check: %w", err)
+	}
+	if rowName != name {
+		return fmt.Errorf("a2a_server_card_def_active: def_id %q has name %q, refusing to promote under name %q", defID, rowName, name)
+	}
+	_, err = s.pool.Exec(ctx, `
+		INSERT INTO a2a_server_card_def_active (name, def_id, promoted_at, promoted_by_agent_id)
+		VALUES ($1, $2, $3, $4)
+		ON CONFLICT (name) DO UPDATE SET
+		    def_id               = EXCLUDED.def_id,
+		    promoted_at          = EXCLUDED.promoted_at,
+		    promoted_by_agent_id = EXCLUDED.promoted_by_agent_id`,
+		name, defID, time.Now().UTC(), nullableString(promotedByAgentID),
+	)
+	if err != nil {
+		return fmt.Errorf("a2a_server_card_def_active upsert: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) A2AServerCardDefGetActive(ctx context.Context, name string) (store.A2AServerCardDefRow, error) {
+	var defID string
+	err := s.pool.QueryRow(ctx, `SELECT def_id FROM a2a_server_card_def_active WHERE name = $1`, name).Scan(&defID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return store.A2AServerCardDefRow{}, &store.ErrNotFound{Kind: "a2a_server_card_def_active", ID: name}
+	}
+	if err != nil {
+		return store.A2AServerCardDefRow{}, fmt.Errorf("a2a_server_card_def_active lookup: %w", err)
+	}
+	return s.A2AServerCardDefGet(ctx, defID)
+}
+
+func (s *Store) A2AServerCardDefSetRetired(ctx context.Context, defID string, retired bool) error {
+	tag, err := s.pool.Exec(ctx, `UPDATE a2a_server_card_defs SET retired = $1 WHERE def_id = $2`, retired, defID)
+	if err != nil {
+		return fmt.Errorf("a2a_server_card_def set retired: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return &store.ErrNotFound{Kind: "a2a_server_card_def", ID: defID}
+	}
+	return nil
+}
+
+const a2aServerCardDefSelect = `SELECT
+	def_id, name, version,
+	COALESCE(parent_def_id, ''),
+	definition::text,
+	COALESCE(description, ''),
+	created_at,
+	COALESCE(created_by_agent_id, ''),
+	COALESCE(created_by_run_id, ''),
+	retired,
+	bootstrapped_from_static
+FROM a2a_server_card_defs`
+
+func (s *Store) scanA2AServerCardDef(row pgx.Row) (store.A2AServerCardDefRow, error) {
+	var (
+		out        store.A2AServerCardDefRow
+		definition string
+	)
+	err := row.Scan(
+		&out.DefID, &out.Name, &out.Version,
+		&out.ParentDefID,
+		&definition,
+		&out.Description,
+		&out.CreatedAt,
+		&out.CreatedByAgentID, &out.CreatedByRunID,
+		&out.Retired, &out.BootstrappedFromStatic,
+	)
+	if err != nil {
+		return store.A2AServerCardDefRow{}, err
+	}
+	out.Definition = json.RawMessage(definition)
+	return out, nil
+}
+
+func (s *Store) scanA2AServerCardDefRows(rows pgx.Rows) ([]store.A2AServerCardDefRow, error) {
+	var out []store.A2AServerCardDefRow
+	for rows.Next() {
+		var (
+			r          store.A2AServerCardDefRow
+			definition string
+		)
+		if err := rows.Scan(
+			&r.DefID, &r.Name, &r.Version,
+			&r.ParentDefID,
+			&definition,
+			&r.Description,
+			&r.CreatedAt,
+			&r.CreatedByAgentID, &r.CreatedByRunID,
+			&r.Retired, &r.BootstrappedFromStatic,
+		); err != nil {
+			return nil, err
+		}
+		r.Definition = json.RawMessage(definition)
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// ---- v1.x RFC G A2AAgentDef substrate ----
+//
+// Mirror of ScheduleDef* without the sweeper run_state table.
+
+func (s *Store) A2AAgentDefCreate(ctx context.Context, row store.A2AAgentDefRow) (store.A2AAgentDefRow, error) {
+	if row.DefID == "" || row.Name == "" {
+		return store.A2AAgentDefRow{}, fmt.Errorf("a2a_agent_def: def_id + name required")
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return store.A2AAgentDefRow{}, fmt.Errorf("a2a_agent_def create begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	if _, err := tx.Exec(ctx,
+		`SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`,
+		"a2a_agent_def:"+row.Name,
+	); err != nil {
+		return store.A2AAgentDefRow{}, fmt.Errorf("a2a_agent_def create lock: %w", err)
+	}
+
+	if row.ParentDefID != "" {
+		var n int
+		if err := tx.QueryRow(ctx, `SELECT COUNT(*) FROM a2a_agent_defs WHERE def_id = $1`, row.ParentDefID).Scan(&n); err != nil {
+			return store.A2AAgentDefRow{}, fmt.Errorf("a2a_agent_def create parent check: %w", err)
+		}
+		if n == 0 {
+			return store.A2AAgentDefRow{}, store.ErrA2AAgentDefParentNotFound
+		}
+	}
+
+	var maxVer sql.NullInt64
+	if err := tx.QueryRow(ctx, `SELECT MAX(version) FROM a2a_agent_defs WHERE name = $1`, row.Name).Scan(&maxVer); err != nil {
+		return store.A2AAgentDefRow{}, fmt.Errorf("a2a_agent_def create max version: %w", err)
+	}
+	row.Version = 1
+	if maxVer.Valid {
+		row.Version = int(maxVer.Int64) + 1
+	}
+	row.CreatedAt = time.Now().UTC()
+
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO a2a_agent_defs (
+			def_id, name, version, parent_def_id, definition, description,
+			created_at, created_by_agent_id, created_by_run_id,
+			retired, bootstrapped_from_static
+		) VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10, $11)`,
+		row.DefID, row.Name, row.Version, nullableString(row.ParentDefID),
+		string(row.Definition), nullableString(row.Description),
+		row.CreatedAt,
+		nullableString(row.CreatedByAgentID), nullableString(row.CreatedByRunID),
+		row.Retired, row.BootstrappedFromStatic,
+	); err != nil {
+		return store.A2AAgentDefRow{}, fmt.Errorf("a2a_agent_def insert: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return store.A2AAgentDefRow{}, fmt.Errorf("a2a_agent_def commit: %w", err)
+	}
+	return row, nil
+}
+
+func (s *Store) A2AAgentDefGet(ctx context.Context, defID string) (store.A2AAgentDefRow, error) {
+	row, err := s.scanA2AAgentDef(s.pool.QueryRow(ctx, a2aAgentDefSelect+` WHERE def_id = $1`, defID))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return store.A2AAgentDefRow{}, &store.ErrNotFound{Kind: "a2a_agent_def", ID: defID}
+	}
+	return row, err
+}
+
+func (s *Store) A2AAgentDefGetByNameVersion(ctx context.Context, name string, version int) (store.A2AAgentDefRow, error) {
+	row, err := s.scanA2AAgentDef(s.pool.QueryRow(ctx, a2aAgentDefSelect+` WHERE name = $1 AND version = $2`, name, version))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return store.A2AAgentDefRow{}, &store.ErrNotFound{Kind: "a2a_agent_def", ID: fmt.Sprintf("%s@v%d", name, version)}
+	}
+	return row, err
+}
+
+func (s *Store) A2AAgentDefListByName(ctx context.Context, name string) ([]store.A2AAgentDefRow, error) {
+	rows, err := s.pool.Query(ctx, a2aAgentDefSelect+` WHERE name = $1 ORDER BY version DESC`, name)
+	if err != nil {
+		return nil, fmt.Errorf("a2a_agent_def list by name: %w", err)
+	}
+	defer rows.Close()
+	return s.scanA2AAgentDefRows(rows)
+}
+
+func (s *Store) A2AAgentDefListChildren(ctx context.Context, parentDefID string) ([]store.A2AAgentDefRow, error) {
+	rows, err := s.pool.Query(ctx, a2aAgentDefSelect+` WHERE parent_def_id = $1 ORDER BY version DESC`, parentDefID)
+	if err != nil {
+		return nil, fmt.Errorf("a2a_agent_def list children: %w", err)
+	}
+	defer rows.Close()
+	return s.scanA2AAgentDefRows(rows)
+}
+
+func (s *Store) A2AAgentDefListNames(ctx context.Context) ([]store.A2AAgentDefNameSummary, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT
+			d.name,
+			COUNT(*)                  AS version_count,
+			MAX(d.version)            AS latest_version,
+			MAX(d.created_at)         AS last_updated,
+			COALESCE(a.def_id, '')    AS active_def_id
+		FROM a2a_agent_defs d
+		LEFT JOIN a2a_agent_def_active a ON a.name = d.name
+		GROUP BY d.name, a.def_id
+		ORDER BY d.name`)
+	if err != nil {
+		return nil, fmt.Errorf("a2a_agent_def list names: %w", err)
+	}
+	defer rows.Close()
+
+	var out []store.A2AAgentDefNameSummary
+	for rows.Next() {
+		var ns store.A2AAgentDefNameSummary
+		if err := rows.Scan(&ns.Name, &ns.VersionCount, &ns.LatestVersion, &ns.LastUpdated, &ns.ActiveDefID); err != nil {
+			return nil, err
+		}
+		out = append(out, ns)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) A2AAgentDefSetActive(ctx context.Context, name, defID, promotedByAgentID string) error {
+	var rowName string
+	err := s.pool.QueryRow(ctx, `SELECT name FROM a2a_agent_defs WHERE def_id = $1`, defID).Scan(&rowName)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return &store.ErrNotFound{Kind: "a2a_agent_def", ID: defID}
+	}
+	if err != nil {
+		return fmt.Errorf("a2a_agent_def_active check: %w", err)
+	}
+	if rowName != name {
+		return fmt.Errorf("a2a_agent_def_active: def_id %q has name %q, refusing to promote under name %q", defID, rowName, name)
+	}
+	_, err = s.pool.Exec(ctx, `
+		INSERT INTO a2a_agent_def_active (name, def_id, promoted_at, promoted_by_agent_id)
+		VALUES ($1, $2, $3, $4)
+		ON CONFLICT (name) DO UPDATE SET
+		    def_id               = EXCLUDED.def_id,
+		    promoted_at          = EXCLUDED.promoted_at,
+		    promoted_by_agent_id = EXCLUDED.promoted_by_agent_id`,
+		name, defID, time.Now().UTC(), nullableString(promotedByAgentID),
+	)
+	if err != nil {
+		return fmt.Errorf("a2a_agent_def_active upsert: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) A2AAgentDefGetActive(ctx context.Context, name string) (store.A2AAgentDefRow, error) {
+	var defID string
+	err := s.pool.QueryRow(ctx, `SELECT def_id FROM a2a_agent_def_active WHERE name = $1`, name).Scan(&defID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return store.A2AAgentDefRow{}, &store.ErrNotFound{Kind: "a2a_agent_def_active", ID: name}
+	}
+	if err != nil {
+		return store.A2AAgentDefRow{}, fmt.Errorf("a2a_agent_def_active lookup: %w", err)
+	}
+	return s.A2AAgentDefGet(ctx, defID)
+}
+
+func (s *Store) A2AAgentDefSetRetired(ctx context.Context, defID string, retired bool) error {
+	tag, err := s.pool.Exec(ctx, `UPDATE a2a_agent_defs SET retired = $1 WHERE def_id = $2`, retired, defID)
+	if err != nil {
+		return fmt.Errorf("a2a_agent_def set retired: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return &store.ErrNotFound{Kind: "a2a_agent_def", ID: defID}
+	}
+	return nil
+}
+
+const a2aAgentDefSelect = `SELECT
+	def_id, name, version,
+	COALESCE(parent_def_id, ''),
+	definition::text,
+	COALESCE(description, ''),
+	created_at,
+	COALESCE(created_by_agent_id, ''),
+	COALESCE(created_by_run_id, ''),
+	retired,
+	bootstrapped_from_static
+FROM a2a_agent_defs`
+
+func (s *Store) scanA2AAgentDef(row pgx.Row) (store.A2AAgentDefRow, error) {
+	var (
+		out        store.A2AAgentDefRow
+		definition string
+	)
+	err := row.Scan(
+		&out.DefID, &out.Name, &out.Version,
+		&out.ParentDefID,
+		&definition,
+		&out.Description,
+		&out.CreatedAt,
+		&out.CreatedByAgentID, &out.CreatedByRunID,
+		&out.Retired, &out.BootstrappedFromStatic,
+	)
+	if err != nil {
+		return store.A2AAgentDefRow{}, err
+	}
+	out.Definition = json.RawMessage(definition)
+	return out, nil
+}
+
+func (s *Store) scanA2AAgentDefRows(rows pgx.Rows) ([]store.A2AAgentDefRow, error) {
+	var out []store.A2AAgentDefRow
+	for rows.Next() {
+		var (
+			r          store.A2AAgentDefRow
+			definition string
+		)
+		if err := rows.Scan(
+			&r.DefID, &r.Name, &r.Version,
+			&r.ParentDefID,
+			&definition,
+			&r.Description,
+			&r.CreatedAt,
+			&r.CreatedByAgentID, &r.CreatedByRunID,
+			&r.Retired, &r.BootstrappedFromStatic,
+		); err != nil {
+			return nil, err
+		}
+		r.Definition = json.RawMessage(definition)
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
 // ---- v1.x RFC E ScheduleDef runtime (sweeper-side) ----
 
 func (s *Store) ScheduleRunStateSeed(ctx context.Context, defID string, nextRunAt time.Time) error {

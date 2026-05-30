@@ -100,6 +100,18 @@ func operatorCtx(ctx context.Context) context.Context {
 		SelfName: operatorAgentName,
 	})
 
+	// A2AServerCardDef + A2AAgentDef (v1.x RFC G): "any" scope so the
+	// MCP `a2aservercarddef` / `a2aagentdef` meta-tools reach the
+	// in-process tools instead of being default-denied at the scope gate.
+	ctx = tools.WithA2AServerCardDefPolicy(ctx, tools.A2AServerCardDefPolicyValue{
+		Scopes:   []string{"any"},
+		SelfName: operatorAgentName,
+	})
+	ctx = tools.WithA2AAgentDefPolicy(ctx, tools.A2AAgentDefPolicyValue{
+		Scopes:   []string{"any"},
+		SelfName: operatorAgentName,
+	})
+
 	// Evaluation: all 4 valid scope values. submit_any + read_any
 	// are the load-bearing ones; submit_self + submit_descendants
 	// are included for completeness in case an operator wants the

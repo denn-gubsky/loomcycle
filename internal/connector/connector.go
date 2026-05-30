@@ -130,6 +130,24 @@ type Connector interface {
 	// this single Connector method.
 	ScheduleDef(ctx context.Context, input json.RawMessage) (ToolResult, error)
 
+	// A2AServerCardDef — v1.x RFC G dynamic A2A-server-card registration
+	// substrate. Op-discriminated (create / fork / get / list / retire).
+	// Operator-admin-only: NOT auto-attached to every agent's per-run
+	// dispatcher. Reachable via POST /v1/_a2aservercarddef admin endpoint,
+	// the LoomCycle MCP meta-tool `a2aservercarddef`, the gRPC
+	// A2AServerCardDef RPC, and the TS adapter's client.a2aServerCardDef()
+	// method — all four dispatch through this single Connector method.
+	A2AServerCardDef(ctx context.Context, input json.RawMessage) (ToolResult, error)
+
+	// A2AAgentDef — v1.x RFC G dynamic A2A-agent registration substrate.
+	// Op-discriminated (create / fork / get / list / retire). Same
+	// operator-admin-only posture as A2AServerCardDef. Reachable via
+	// POST /v1/_a2aagentdef admin endpoint, the LoomCycle MCP meta-tool
+	// `a2aagentdef`, the gRPC A2AAgentDef RPC, and the TS adapter's
+	// client.a2aAgentDef() method — all four dispatch through this single
+	// Connector method.
+	A2AAgentDef(ctx context.Context, input json.RawMessage) (ToolResult, error)
+
 	// --- Pause/Resume/Snapshot (real in v0.8.18) ---
 	//
 	// Wire shapes finalised v0.8.15. Real implementations landed in

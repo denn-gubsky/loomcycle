@@ -220,3 +220,108 @@ describe("scheduleDef", () => {
     expect(headers.Authorization).toBe("Bearer test-bearer");
   });
 });
+
+// v1.x RFC G A2AServerCardDef — mirror of scheduleDef.
+describe("a2aServerCardDef", () => {
+  it("posts JSON to /v1/_a2aservercarddef and returns the row envelope", async () => {
+    const { client, fetchMock } = makeClient([
+      jsonResponse({
+        def_id: "ascd_abc",
+        name: "billing-card",
+        version: 1,
+        promoted: true,
+      }),
+    ]);
+
+    const result = (await client.a2aServerCardDef({
+      op: "create",
+      name: "billing-card",
+      overlay: { description: "billing peer" },
+    })) as Record<string, unknown>;
+
+    expect(result.def_id).toBe("ascd_abc");
+    expect(result.name).toBe("billing-card");
+
+    const call = fetchMock.mock.calls[0]!;
+    expect(call[0]).toBe("http://test-loomcycle:8787/v1/_a2aservercarddef");
+    expect((call[1] as RequestInit).method).toBe("POST");
+    const body = JSON.parse((call[1] as RequestInit).body as string);
+    expect(body.op).toBe("create");
+  });
+
+  it("raises SubstrateToolRefusedError on 422 with code=tool_refused", async () => {
+    const refusalBody = JSON.stringify({
+      code: "tool_refused",
+      tool: "A2AServerCardDef",
+      error: "create: name collides with a static a2a_server_cards entry",
+    });
+    const { client } = makeClient([
+      () =>
+        new Response(refusalBody, {
+          status: 422,
+          headers: { "Content-Type": "application/json" },
+        }),
+    ]);
+
+    let caught: unknown;
+    try {
+      await client.a2aServerCardDef({ op: "create", name: "x", overlay: {} });
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeInstanceOf(SubstrateToolRefusedError);
+    expect((caught as SubstrateToolRefusedError).tool).toBe("A2AServerCardDef");
+  });
+
+  it("forwards bearer auth in the Authorization header", async () => {
+    const { client, fetchMock } = makeClient([jsonResponse({ ok: true })]);
+    await client.a2aServerCardDef({ op: "list", name: "billing-card" });
+    const headers = (fetchMock.mock.calls[0]![1] as RequestInit)
+      .headers as Record<string, string>;
+    expect(headers.Authorization).toBe("Bearer test-bearer");
+  });
+});
+
+// v1.x RFC G A2AAgentDef — mirror of scheduleDef.
+describe("a2aAgentDef", () => {
+  it("posts JSON to /v1/_a2aagentdef and returns the row envelope", async () => {
+    const { client, fetchMock } = makeClient([
+      jsonResponse({
+        def_id: "aad_abc",
+        name: "remote-billing",
+        version: 1,
+        promoted: true,
+      }),
+    ]);
+
+    const result = (await client.a2aAgentDef({
+      op: "create",
+      name: "remote-billing",
+      overlay: { url: "https://peer.example/a2a" },
+    })) as Record<string, unknown>;
+
+    expect(result.def_id).toBe("aad_abc");
+    expect(result.name).toBe("remote-billing");
+
+    const call = fetchMock.mock.calls[0]!;
+    expect(call[0]).toBe("http://test-loomcycle:8787/v1/_a2aagentdef");
+    expect((call[1] as RequestInit).method).toBe("POST");
+    const body = JSON.parse((call[1] as RequestInit).body as string);
+    expect(body.op).toBe("create");
+  });
+
+  it("raises AuthError on 401", async () => {
+    const { client } = makeClient([errorResponse(401, "invalid token")]);
+    await expect(
+      client.a2aAgentDef({ op: "create", name: "x", overlay: {} }),
+    ).rejects.toBeInstanceOf(AuthError);
+  });
+
+  it("forwards bearer auth in the Authorization header", async () => {
+    const { client, fetchMock } = makeClient([jsonResponse({ ok: true })]);
+    await client.a2aAgentDef({ op: "list", name: "remote-billing" });
+    const headers = (fetchMock.mock.calls[0]![1] as RequestInit)
+      .headers as Record<string, string>;
+    expect(headers.Authorization).toBe("Bearer test-bearer");
+  });
+});

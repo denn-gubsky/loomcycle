@@ -109,6 +109,23 @@ type Config struct {
 	// and rfcs/scheduled-agent-runs.md for the locked design.
 	ScheduledRuns map[string]ScheduledRun `yaml:"scheduled_runs"`
 
+	// A2AServerCards is the v1.x RFC G registry of A2A server-card
+	// declarations — which loomcycle agents are exposed over the A2A
+	// protocol + the AgentCard metadata served at the well-known URI.
+	// Yaml entries are the operator-blessed root; the A2AServerCardDef
+	// tool produces the DERIVED layer of orchestrator-authored forks.
+	// Empty / nil = no statically-declared cards (substrate forks still
+	// work via the tool).
+	A2AServerCards map[string]A2AServerCard `yaml:"a2a_server_cards"`
+
+	// A2AAgents is the v1.x RFC G registry of REMOTE A2A peer
+	// declarations — how to reach another A2A-speaking agent (its
+	// well-known card URL or a direct endpoint+binding) plus the auth
+	// + expected-skills manifest. Yaml entries are the operator-blessed
+	// root; the A2AAgentDef tool produces the derived fork layer.
+	// Empty / nil = no statically-declared peers.
+	A2AAgents map[string]A2AAgent `yaml:"a2a_agents"`
+
 	// Interruption is the v0.8.16 top-level config block for the
 	// Interruption tool. Operator picks the delivery backend
 	// (webui / mcp_server:<name> / cli) and the env-cap defaults.
@@ -608,6 +625,16 @@ type AgentDef struct {
 	// runtime; arbitrary agents have no access.
 	ScheduleDefScopes []string `yaml:"schedule_def_scopes"`
 
+	// A2AServerCardDefScopes is the v1.x RFC G A2AServerCardDef tool
+	// capability gate. Default-deny when empty. Same closed set as
+	// ScheduleDefScopes: "self" / "descendants" / "named:<name>" / "any".
+	A2AServerCardDefScopes []string `yaml:"a2a_server_card_def_scopes"`
+
+	// A2AAgentDefScopes is the v1.x RFC G A2AAgentDef tool capability
+	// gate. Default-deny when empty. Same closed set as
+	// ScheduleDefScopes: "self" / "descendants" / "named:<name>" / "any".
+	A2AAgentDefScopes []string `yaml:"a2a_agent_def_scopes"`
+
 	// SkillDefScopes is the v0.8.22 SkillDef tool capability gate.
 	// Default-deny when empty. Mirrors AgentDefScopes minus the
 	// "self" scope (skills have no agent identity, so "self" is
@@ -914,6 +941,84 @@ type ScheduledRunHook struct {
 	Key     string                 `yaml:"key"`     // for kind=memory.set
 	Args    map[string]interface{} `yaml:"args"`    // for kind=mcp.call
 	Payload map[string]interface{} `yaml:"payload"` // for kind=channel.publish + memory.set value
+}
+
+// A2AServerCard is one entry in the v1.x RFC G `a2a_server_cards:`
+// yaml block. It declares which loomcycle agents are exposed over the
+// A2A protocol + the AgentCard metadata served at the peer-facing
+// well-known URI. Field set + yaml tags MUST mirror the tool-layer
+// mergedA2AServerCardDef + lookup.SubstrateA2AServerCardDef shapes; a
+// 3-way drift test pins parity.
+type A2AServerCard struct {
+	Name            string                `yaml:"name"`
+	Description     string                `yaml:"description"`
+	Provider        A2AServerCardProvider `yaml:"provider"`
+	Capabilities    A2AServerCardCaps     `yaml:"capabilities"`
+	ExposedAgents   []A2AExposedAgent     `yaml:"exposed_agents"`
+	SecuritySchemes []A2ASecurityScheme   `yaml:"security_schemes"`
+	// SignWithKeyEnv names the env var holding the per-tenant signing
+	// key used to sign the served AgentCard. The env-allowlist check
+	// is enforced at card-serving time (a later slice), NOT here.
+	SignWithKeyEnv string `yaml:"sign_with_key_env"`
+}
+
+// A2AServerCardProvider mirrors the AgentCard `provider` block.
+type A2AServerCardProvider struct {
+	Organization string `yaml:"organization"`
+	URL          string `yaml:"url"`
+}
+
+// A2AServerCardCaps mirrors the AgentCard `capabilities` block.
+type A2AServerCardCaps struct {
+	Streaming         bool `yaml:"streaming"`
+	PushNotifications bool `yaml:"push_notifications"`
+	ExtendedAgentCard bool `yaml:"extended_agent_card"`
+}
+
+// A2AExposedAgent declares one loomcycle agent exposed as an A2A skill.
+type A2AExposedAgent struct {
+	AgentName   string   `yaml:"agent_name"`
+	SkillID     string   `yaml:"skill_id"`
+	SkillName   string   `yaml:"skill_name"`
+	Description string   `yaml:"description"`
+	Tags        []string `yaml:"tags"`
+	InputModes  []string `yaml:"input_modes"`
+	OutputModes []string `yaml:"output_modes"`
+}
+
+// A2ASecurityScheme mirrors one AgentCard security scheme entry. Kind
+// is enum-restricted at validation time ("http"/"apiKey"/"oauth2"/"mtls").
+type A2ASecurityScheme struct {
+	Kind   string `yaml:"kind"`
+	Scheme string `yaml:"scheme"`
+}
+
+// A2AAgent is one entry in the v1.x RFC G `a2a_agents:` yaml block. It
+// declares a REMOTE A2A peer: either its well-known card URL, OR a
+// direct endpoint+binding, plus the auth + expected-skills manifest.
+// Field set + yaml tags MUST mirror the tool-layer mergedA2AAgentDef +
+// lookup.SubstrateA2AAgentDef shapes; a 3-way drift test pins parity.
+type A2AAgent struct {
+	AgentCardURL     string             `yaml:"agent_card_url"`
+	Endpoint         string             `yaml:"endpoint"`
+	Binding          string             `yaml:"binding"`
+	Auth             A2AAgentAuth       `yaml:"auth"`
+	ExpectedSkills   []A2AExpectedSkill `yaml:"expected_skills"`
+	VerifySignedCard bool               `yaml:"verify_signed_card"`
+}
+
+// A2AAgentAuth mirrors the remote-peer auth block. Scheme is
+// enum-restricted ("http"/"apiKey"/"oauth2"/"mtls"). BearerCredentialRef
+// names a key in the run's UserCredentials map.
+type A2AAgentAuth struct {
+	Scheme              string `yaml:"scheme"`
+	BearerCredentialRef string `yaml:"bearer_credential_ref"`
+}
+
+// A2AExpectedSkill is one skill the remote peer is expected to expose.
+type A2AExpectedSkill struct {
+	ID       string `yaml:"id"`
+	Required bool   `yaml:"required"`
 }
 
 // MCPServer declares one MCP server. Transport "stdio" or "http".
@@ -1520,6 +1625,34 @@ type Env struct {
 	// LOOMCYCLE_SCHEDULER_ENV_ALLOWLIST="VAR1,VAR2" — only those
 	// var names will be readable by scheduled runs.
 	SchedulerEnvAllowlist []string
+
+	// A2AServerEnabled enables the v1.x RFC G A2A server HTTP surface
+	// (the well-known AgentCard URI + the three protocol-binding mounts
+	// on the existing mux). Default OFF — operator opts in via
+	// LOOMCYCLE_A2A_ENABLED=1. When false, the A2AServerCardDef tool
+	// still works for authoring; nothing is mounted and no card is
+	// served.
+	A2AServerEnabled bool
+
+	// A2AServerCardName names the active A2AServerCardDef whose card the
+	// server serves and whose exposed_agents drive skill→agent routing.
+	// Env: LOOMCYCLE_A2A_SERVER_CARD. Required when A2AServerEnabled.
+	A2AServerCardName string
+
+	// A2ATenancyRouting selects how the inbound tenant is derived for
+	// the A2A surface: "" / "none" (single-tenant, served at host root),
+	// "host" (tenant-{id}.<host> subdomain), or "path"
+	// (/{tenant}/.well-known/... + /{tenant}/a2a/*). The tenant is a
+	// TRUST BOUNDARY: it comes ONLY from the routed host/path, never
+	// from a request body field. Env: LOOMCYCLE_A2A_TENANCY_ROUTING.
+	A2ATenancyRouting string
+
+	// A2APublicBaseURL is the externally-reachable base URL advertised
+	// in the AgentCard's interface URLs (e.g. https://agents.example.com).
+	// Empty falls back to a relative path, which is valid for same-origin
+	// clients but not for cross-host discovery. Env:
+	// LOOMCYCLE_A2A_PUBLIC_BASE_URL.
+	A2APublicBaseURL string
 }
 
 // Load reads a YAML file and the process env. Empty path returns defaults +
@@ -1956,6 +2089,25 @@ func Load(path string) (*Config, error) {
 			if name != "" {
 				cfg.Env.SchedulerEnvAllowlist = append(cfg.Env.SchedulerEnvAllowlist, name)
 			}
+		}
+	}
+
+	// v1.x RFC G A2A server surface. Default OFF; operator opts in via
+	// LOOMCYCLE_A2A_ENABLED=1 + names the active card to serve. Tenancy
+	// routing is host/path-authoritative (trust boundary), never from a
+	// request body.
+	cfg.Env.A2AServerEnabled = os.Getenv("LOOMCYCLE_A2A_ENABLED") == "1"
+	cfg.Env.A2AServerCardName = strings.TrimSpace(os.Getenv("LOOMCYCLE_A2A_SERVER_CARD"))
+	cfg.Env.A2ATenancyRouting = strings.TrimSpace(os.Getenv("LOOMCYCLE_A2A_TENANCY_ROUTING"))
+	cfg.Env.A2APublicBaseURL = strings.TrimRight(strings.TrimSpace(os.Getenv("LOOMCYCLE_A2A_PUBLIC_BASE_URL")), "/")
+	if cfg.Env.A2AServerEnabled {
+		switch cfg.Env.A2ATenancyRouting {
+		case "", "none", "host", "path":
+		default:
+			return nil, fmt.Errorf("LOOMCYCLE_A2A_TENANCY_ROUTING: must be one of none|host|path, got %q", cfg.Env.A2ATenancyRouting)
+		}
+		if cfg.Env.A2AServerCardName == "" {
+			return nil, fmt.Errorf("LOOMCYCLE_A2A_ENABLED=1 requires LOOMCYCLE_A2A_SERVER_CARD to name the active server card")
 		}
 	}
 

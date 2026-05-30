@@ -36,7 +36,14 @@ jobs:
         run: go build -o bin/loomcycle ./cmd/loomcycle
 
       - name: Test (race detector)
-        run: go test -race -timeout 120s ./...
+        # 120s is per-package. As the codebase grew (A2A added four more
+        # race-instrumented test packages), `go test -race ./...` runs more
+        # package binaries concurrently, and on a CPU-constrained CI runner
+        # that contention pushed the slow internal/api/http suite (~68s on a
+        # fast local box) past the 120s deadline despite no change to that
+        # package. 300s gives headroom under load while still catching a
+        # genuine deadlock.
+        run: go test -race -timeout 300s ./...
 
       - name: gofmt check
         run: |

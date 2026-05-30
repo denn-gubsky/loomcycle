@@ -679,6 +679,44 @@ export class LoomcycleClient {
     return postJSON<SubstrateToolResponse>(this.ctx, "/v1/_scheduledef", input, opts);
   }
 
+  /** Invoke the v1.x RFC G A2AServerCardDef substrate tool over HTTP.
+   *  Author + fork + retire A2A server-card definitions at runtime.
+   *  Mirror of {@link LoomcycleClient.scheduleDef} for A2A server cards.
+   *
+   *  Operator-admin-only: this endpoint requires the bearer token.
+   *
+   *  Op-discriminated input: `{op: "create" | "fork" | "get" |
+   *  "list" | "retire", ...}`.
+   *
+   *  Raises {@link SubstrateToolRefusedError} on tool-level refusals;
+   *  {@link InvalidArgumentError} on 400 (malformed JSON);
+   *  {@link AuthError} on 401. */
+  async a2aServerCardDef(
+    input: SubstrateToolInput,
+    opts?: { signal?: AbortSignal },
+  ): Promise<SubstrateToolResponse> {
+    return postJSON<SubstrateToolResponse>(this.ctx, "/v1/_a2aservercarddef", input, opts);
+  }
+
+  /** Invoke the v1.x RFC G A2AAgentDef substrate tool over HTTP.
+   *  Author + fork + retire A2A agent definitions at runtime.
+   *  Mirror of {@link LoomcycleClient.scheduleDef} for A2A agents.
+   *
+   *  Operator-admin-only: this endpoint requires the bearer token.
+   *
+   *  Op-discriminated input: `{op: "create" | "fork" | "get" |
+   *  "list" | "retire", ...}`.
+   *
+   *  Raises {@link SubstrateToolRefusedError} on tool-level refusals;
+   *  {@link InvalidArgumentError} on 400 (malformed JSON);
+   *  {@link AuthError} on 401. */
+  async a2aAgentDef(
+    input: SubstrateToolInput,
+    opts?: { signal?: AbortSignal },
+  ): Promise<SubstrateToolResponse> {
+    return postJSON<SubstrateToolResponse>(this.ctx, "/v1/_a2aagentdef", input, opts);
+  }
+
   // ---- v0.10.3 Library v2 enumeration (read-only, merged yaml+substrate) ----
 
   /** List every agent the runtime knows about — yaml-static + dynamic

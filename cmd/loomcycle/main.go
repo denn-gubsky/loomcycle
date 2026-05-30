@@ -34,7 +34,9 @@ import (
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/agents"
+	a2aapi "github.com/denn-gubsky/loomcycle/internal/api/a2a"
 	lchttp "github.com/denn-gubsky/loomcycle/internal/api/http"
+	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/channels"
 	"github.com/denn-gubsky/loomcycle/internal/cli"
 	"github.com/denn-gubsky/loomcycle/internal/concurrency"
@@ -43,6 +45,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/heartbeat"
 	"github.com/denn-gubsky/loomcycle/internal/help"
 	"github.com/denn-gubsky/loomcycle/internal/hooks"
+	"github.com/denn-gubsky/loomcycle/internal/lookup"
 	mcpsign "github.com/denn-gubsky/loomcycle/internal/mcp"
 	"github.com/denn-gubsky/loomcycle/internal/metrics"
 	lcotel "github.com/denn-gubsky/loomcycle/internal/otel"
@@ -71,6 +74,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/api/grpc/loomcyclepb"
 	lcmcp "github.com/denn-gubsky/loomcycle/internal/api/mcp"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
+	toolsa2a "github.com/denn-gubsky/loomcycle/internal/tools/a2a"
 	"github.com/denn-gubsky/loomcycle/internal/tools/builtin"
 	"github.com/denn-gubsky/loomcycle/internal/tools/localapi"
 	"github.com/denn-gubsky/loomcycle/internal/tools/mcp"
@@ -978,6 +982,26 @@ func main() {
 		log.Printf("mcp_server_defs: list active failed at boot: %v (dynamic MCP servers will be empty until first registration)", err)
 	}
 
+	// v1.x RFC G — outbound A2A: register one synthetic
+	// `a2a__<peer>__<skill>` tool per (operator-registered peer,
+	// expected_skill) pair, mirroring the static MCP registration above.
+	// They land in allTools and are filtered per-agent by `allowed_tools`
+	// exactly like `mcp__<server>__<tool>` tools. Gated behind the same
+	// LOOMCYCLE_A2A_ENABLED master switch as the server surface: with A2A
+	// disabled, no outbound tools are registered. The per-call resolver is
+	// lookup.A2AAgent (yaml > active substrate def) so a substrate fork of
+	// a registered peer is picked up without a restart.
+	if cfg.Env.A2AServerEnabled {
+		a2aResolve := func(ctx context.Context, name string) (config.A2AAgent, bool) {
+			return lookup.A2AAgent(ctx, storeIface, cfg, name)
+		}
+		a2aTools := toolsa2a.RegisterTools(context.Background(), cfg, storeIface, a2aResolve, nil, log.Printf)
+		if len(a2aTools) > 0 {
+			allTools = append(allTools, a2aTools...)
+			log.Printf("a2a: registered %d outbound peer tool(s)", len(a2aTools))
+		}
+	}
+
 	// Back-fill Context tool's catalog with the FINAL allTools slice
 	// (including MCP-served tools registered above) so doc/tools ops
 	// reflect the complete runtime catalog. Must happen AFTER every
@@ -995,6 +1019,22 @@ func main() {
 	// the store + cfg (no MCP-pool dependency) so this could move
 	// earlier — kept next to MCPServerDef for substrate-wiring locality.
 	srv.SetScheduleDefTool(&builtin.ScheduleDef{
+		Store:               storeIface,
+		Cfg:                 cfg,
+		MaxDefinitionBytes:  cfg.Env.AgentDefMaxDefinitionBytes,
+		MaxDescriptionBytes: cfg.Env.AgentDefMaxDescriptionBytes,
+	})
+	// v1.x RFC G — wire the two A2A substrate tools. Same operator-admin-
+	// only posture as ScheduleDef; reached via Connector + the admin
+	// endpoints + the LoomCycle MCP meta-tools. Identical Store + Cfg +
+	// byte-cap construction.
+	srv.SetA2AServerCardDefTool(&builtin.A2AServerCardDef{
+		Store:               storeIface,
+		Cfg:                 cfg,
+		MaxDefinitionBytes:  cfg.Env.AgentDefMaxDefinitionBytes,
+		MaxDescriptionBytes: cfg.Env.AgentDefMaxDescriptionBytes,
+	})
+	srv.SetA2AAgentDefTool(&builtin.A2AAgentDef{
 		Store:               storeIface,
 		Cfg:                 cfg,
 		MaxDefinitionBytes:  cfg.Env.AgentDefMaxDefinitionBytes,
@@ -1119,9 +1159,65 @@ func main() {
 	resolver := buildResolver(cfg, pr)
 	srv.SetResolver(resolver)
 
+	// v1.x RFC G — A2A server surface (well-known AgentCard + REST /
+	// JSON-RPC / gRPC binding mounts + multi-tenant routing). Default
+	// OFF; New returns (nil, nil) when LOOMCYCLE_A2A_ENABLED != 1. The
+	// *http.Server (srv) is BOTH the runner.Runner and the
+	// connector.Connector the bridge needs, plus the run-table reader.
+	// Mount must be registered BEFORE srv.Mux() is called below; gRPC
+	// registration happens on the shared grpc.Server further down.
+	var a2aServer *a2aapi.Server
+	if cfg.Env.A2AServerEnabled {
+		authToken := cfg.Env.AuthToken
+		var a2aAuth a2aapi.Authenticator
+		if authToken != "" {
+			// Reuse the same constant-time bearer check as the HTTP
+			// authMiddleware. The peer's bearer authenticates it as the
+			// principal; the name is opaque here (run attribution only).
+			a2aAuth = func(h http.Header) (string, bool) {
+				got := h.Get("Authorization")
+				if got == "" {
+					return "", false
+				}
+				if auth.CompareBearer(got, "Bearer "+authToken) {
+					return "a2a-peer", true
+				}
+				return "", false
+			}
+		}
+		a2aServer, err = a2aapi.New(context.Background(), a2aapi.Deps{
+			Cfg:   cfg,
+			Store: storeIface,
+			Conn:  srv,
+			Run:   srv,
+			Auth:  a2aAuth,
+			// Same bus the Interruption tool waits on + the HTTP resolve
+			// handler notifies (SetInterruptionBus(channelBus) above), so an
+			// A2A INPUT_REQUIRED follow-up wakes the parked run on the same
+			// "intr:<id>" key.
+			ChannelNotify: channelBus.Notify,
+		})
+		if err != nil {
+			log.Fatalf("a2a server: %v", err)
+		}
+		if a2aServer != nil {
+			srv.SetExtraMux(a2aServer.Mount)
+			log.Printf("a2a: server surface enabled (card=%q tenancy=%q)", cfg.Env.A2AServerCardName, cfg.Env.A2ATenancyRouting)
+		}
+	}
+
+	// In path-mode A2A tenancy, the leading /{tenant} segment is stripped
+	// before the mux sees the request (an open first-segment wildcard
+	// cannot coexist with the HTTP server's subtree routes). The wrapper
+	// is a no-op outside path mode and when A2A is disabled.
+	var rootHandler http.Handler = srv.Mux()
+	if a2aServer != nil {
+		rootHandler = a2aServer.PathTenantWrapper(rootHandler)
+	}
+
 	httpServer := &http.Server{
 		Addr:              cfg.Env.ListenAddr,
-		Handler:           srv.Mux(),
+		Handler:           rootHandler,
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
@@ -1639,6 +1735,12 @@ func main() {
 			googlegrpc.StreamInterceptor(grpcAdapter.StreamAuthInterceptor()),
 		)
 		loomcyclepb.RegisterLoomcycleServer(grpcSrv, grpcAdapter)
+		// v1.x RFC G — register the A2A gRPC binding on the same server.
+		// gRPC is not a path-mounted http.Handler (it needs the HTTP/2
+		// server), so the /a2a/grpc binding rides loomcycle's existing
+		// grpc.Server; the AgentCard advertises the gRPC port. Nil-safe
+		// when the A2A surface is disabled.
+		a2aServer.RegisterGRPC(grpcSrv)
 		grpcLis, err := net.Listen("tcp", cfg.Env.GrpcAddr)
 		if err != nil {
 			log.Fatalf("grpc listen %s: %v", cfg.Env.GrpcAddr, err)

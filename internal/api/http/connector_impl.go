@@ -413,6 +413,34 @@ func (s *Server) ScheduleDef(ctx context.Context, input json.RawMessage) (connec
 	return connector.ToolResult{Text: res.Text, IsError: res.IsError}, nil
 }
 
+// A2AServerCardDef dispatches to the v1.x RFC G A2A-server-card substrate
+// tool. Same operator-admin-only posture as ScheduleDef. See
+// SetA2AServerCardDefTool for wiring.
+func (s *Server) A2AServerCardDef(ctx context.Context, input json.RawMessage) (connector.ToolResult, error) {
+	if s.a2aServerCardDefTool == nil {
+		return connector.ToolResult{}, fmt.Errorf("A2AServerCardDef: not configured (no tool wired via SetA2AServerCardDefTool)")
+	}
+	res, err := s.a2aServerCardDefTool.Execute(ctx, input)
+	if err != nil {
+		return connector.ToolResult{}, err
+	}
+	return connector.ToolResult{Text: res.Text, IsError: res.IsError}, nil
+}
+
+// A2AAgentDef dispatches to the v1.x RFC G A2A-agent substrate tool. Same
+// operator-admin-only posture as ScheduleDef. See SetA2AAgentDefTool for
+// wiring.
+func (s *Server) A2AAgentDef(ctx context.Context, input json.RawMessage) (connector.ToolResult, error) {
+	if s.a2aAgentDefTool == nil {
+		return connector.ToolResult{}, fmt.Errorf("A2AAgentDef: not configured (no tool wired via SetA2AAgentDefTool)")
+	}
+	res, err := s.a2aAgentDefTool.Execute(ctx, input)
+	if err != nil {
+		return connector.ToolResult{}, err
+	}
+	return connector.ToolResult{Text: res.Text, IsError: res.IsError}, nil
+}
+
 // dispatchBuiltin is the shared lookup-and-execute path for the five
 // builtin wrappers. tools.Result {Text, IsError} maps directly onto
 // connector.ToolResult; the transport adapter (MCP) then wraps both
