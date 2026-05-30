@@ -63,15 +63,26 @@ func TestPrincipalFromContext_RoutedTenantOverridesRequestTenant(t *testing.T) {
 	}
 }
 
-// TestWithRoutedTenant_EmptyIsNoop confirms single-tenant deployments
-// (no routed tenant) fall back to the request-carried tenant.
-func TestWithRoutedTenant_EmptyIsNoop(t *testing.T) {
+// An active routing mode that resolves an EMPTY tenant is still
+// authoritative: it must suppress the peer-supplied body tenant so a peer
+// cannot mislabel its run by stuffing a body field on a non-tenant host /
+// un-prefixed route. Only the absence of any routing decision
+// (single-tenant mode, context never stamped) permits the body fallback.
+func TestWithRoutedTenant_EmptyIsAuthoritative(t *testing.T) {
 	ctx := WithRoutedTenant(context.Background(), "")
-	if _, ok := RoutedTenantFrom(ctx); ok {
-		t.Error("empty routed tenant should not be attached")
+	if got, ok := RoutedTenantFrom(ctx); !ok || got != "" {
+		t.Errorf("RoutedTenantFrom = (%q, %v), want (\"\", true) — empty must be authoritative", got, ok)
 	}
-	p := principalFromContext(ctx, "tenant-from-body")
+	if p := principalFromContext(ctx, "tenant-from-body"); p.TenantID != "" {
+		t.Errorf("tenant = %q, want \"\" (body tenant suppressed in a routing mode)", p.TenantID)
+	}
+}
+
+// With NO routing decision on the context (single-tenant / none mode),
+// the body-supplied tenant is the only signal and is used for attribution.
+func TestPrincipalFromContext_BodyTenantOnlyWhenNoRoutingDecision(t *testing.T) {
+	p := principalFromContext(context.Background(), "tenant-from-body")
 	if p.TenantID != "tenant-from-body" {
-		t.Errorf("tenant = %q, want tenant-from-body fallback", p.TenantID)
+		t.Errorf("tenant = %q, want tenant-from-body fallback in single-tenant mode", p.TenantID)
 	}
 }

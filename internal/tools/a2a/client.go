@@ -34,6 +34,16 @@ import (
 // The default (verify_signed_card=false) is tolerant: this function is
 // not called at all, so an unsigned peer card is accepted — see
 // newSDKPeerClient.
+//
+// TRUST MODEL (important): the signature is self-contained — it verifies
+// against the public key embedded in the card's own JWS protected header,
+// with no external trust anchor. So verify_signed_card proves the card's
+// INTEGRITY and self-consistency (it was not altered after signing), NOT
+// the peer's IDENTITY. Peer identity rests on TLS: the card is fetched
+// over HTTPS from the peer's own well-known URI, so the transport already
+// authenticates the origin. Do not treat this flag as a substitute for
+// pinning a peer's key out-of-band — that (key pinning / a registry of
+// trusted issuers) is a future enhancement, not what this verifies today.
 func verifyCardSignature(card *a2asdk.AgentCard) error {
 	return sign.VerifyCardSelfContained(card)
 }

@@ -402,6 +402,13 @@ func (s *A2AServerCardDef) buildDefinition(name, parentJSON string, overlay json
 		}
 		base.applyOverlay(ov)
 	}
+	// The definition's name is the registry key (the `name` arg), not an
+	// overlay-controlled field: the served AgentCard advertises this name,
+	// so it MUST equal the key callers select the card by. Stamping it
+	// here (after the overlay) both removes the need to duplicate `name`
+	// into every create overlay and prevents an overlay from advertising a
+	// name that diverges from the row it is stored under.
+	base.Name = name
 	return base, nil
 }
 

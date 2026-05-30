@@ -89,15 +89,47 @@ func TestA2AServerCardDefTool_CreateRefusesMissingName(t *testing.T) {
 	tool, ctx, cleanup := a2aServerCardDefFixture(t)
 	defer cleanup()
 
-	// name field on the envelope is required, AND the definition's name
-	// must be non-empty per validateA2AServerCardDef. Here the envelope
-	// name is set but the overlay omits the definition name + exposed.
-	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"create","name":"no-def-name","overlay":{"exposed_agents":[{"agent_name":"a"}]}}`))
+	// The envelope name is the registry key and is required: an empty one
+	// is refused before any definition is built. (The definition's own
+	// name is no longer a caller-supplied field — it is stamped from the
+	// envelope key, see TestA2AServerCardDefTool_CreateStampsCanonicalName.)
+	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"create","overlay":{"exposed_agents":[{"agent_name":"a","skill_id":"s"}]}}`))
 	if !res.IsError {
-		t.Fatalf("create without definition name should refuse")
+		t.Fatalf("create without an envelope name should refuse")
 	}
-	if !strings.Contains(res.Text, "name: required") {
-		t.Errorf("refusal should mention name required; got %s", res.Text)
+}
+
+// Regression for the name-divergence bug: the definition's name is the
+// registry key, stamped from the envelope, NOT taken from the overlay.
+// A create that omits the overlay name must succeed (no need to repeat
+// it), and an overlay that sets a DIVERGENT name must not win — the
+// served card cannot advertise a name other than the key it is selected by.
+func TestA2AServerCardDefTool_CreateStampsCanonicalName(t *testing.T) {
+	tool, ctx, cleanup := a2aServerCardDefFixture(t)
+	defer cleanup()
+
+	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"create","name":"orders-card","overlay":{"name":"WRONG","exposed_agents":[{"agent_name":"a","skill_id":"s","skill_name":"S"}]}}`))
+	if res.IsError {
+		t.Fatalf("create with an envelope name should succeed without repeating name in overlay; got %s", res.Text)
+	}
+	var resp struct {
+		Name       string          `json:"name"`
+		Definition json.RawMessage `json:"definition"`
+	}
+	if err := json.Unmarshal([]byte(res.Text), &resp); err != nil {
+		t.Fatalf("unmarshal create response: %v", err)
+	}
+	if resp.Name != "orders-card" {
+		t.Errorf("row name = %q, want orders-card", resp.Name)
+	}
+	var def struct {
+		Name string `json:"name"`
+	}
+	if err := json.Unmarshal(resp.Definition, &def); err != nil {
+		t.Fatalf("unmarshal definition: %v", err)
+	}
+	if def.Name != "orders-card" {
+		t.Errorf("definition name = %q, want orders-card (envelope key wins over overlay %q)", def.Name, "WRONG")
 	}
 }
 

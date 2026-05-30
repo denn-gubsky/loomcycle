@@ -164,6 +164,21 @@ sets `verify_signed_card: false`, loomcycle accepts an unsigned or
 unverifiable card. Set `verify_signed_card: true` to *require* a valid
 signature on the fetched peer card before any call is made.
 
+**What `verify_signed_card` does and does not prove.** The JWS is
+self-contained: the signature verifies against a public key embedded in
+the card's own protected header, with no external trust anchor. So
+`verify_signed_card: true` proves the card's **integrity** — it was not
+altered after signing — but **not** the peer's **identity**. Peer
+identity rests on TLS: the card is fetched over HTTPS from the peer's own
+well-known URI, so the transport authenticates the origin. Treat the flag
+as tamper-evidence on top of TLS, not as a replacement for it; pinning a
+peer's key out-of-band is a future enhancement.
+
+**Auth-scheme support.** Outbound peer auth currently wires the
+bearer-style schemes (`http`, `apiKey`) via a `bearer_credential_ref`
+resolved from the run's credentials. `oauth2` and `mtls` are accepted in
+config but not yet wired — a peer declaring them is not callable yet.
+
 ## Multi-tenant routing
 
 `LOOMCYCLE_A2A_TENANCY_ROUTING` selects how the inbound tenant is

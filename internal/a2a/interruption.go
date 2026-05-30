@@ -96,6 +96,12 @@ type parkedRun struct {
 	runErrPtr *error
 	agentID   string
 	runID     string
+	// cancel stops the detached background run. The run's lifetime is
+	// deliberately decoupled from the per-request ctx (see startRun), so
+	// this is the ONLY way to tear a parked run down before it completes —
+	// used when a park can never be resumed (no bridge) or the client
+	// abandons the stream at the park.
+	cancel context.CancelFunc
 }
 
 // parkRegistry tracks runs parked on an interruption, keyed by A2A

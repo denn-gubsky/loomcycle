@@ -106,15 +106,22 @@ func securitySchemesFor(in []config.A2ASecurityScheme) a2asdk.NamedSecuritySchem
 	}
 	out := make(a2asdk.NamedSecuritySchemes, len(in))
 	for _, s := range in {
+		// Key the advertised scheme by its KIND, not by s.Scheme. s.Scheme
+		// is the HTTP auth token ("Bearer"/"Basic") and is empty for a bare
+		// http scheme — keying by it would emit a security scheme named ""
+		// (which peers reject) and collide two schemes that share a token.
+		// The config has no dedicated name field; the kind is the stable,
+		// non-empty identifier (one scheme per kind is the norm).
+		name := a2asdk.SecuritySchemeName(s.Kind)
 		switch s.Kind {
 		case "http":
 			scheme := s.Scheme
 			if scheme == "" {
 				scheme = "Bearer"
 			}
-			out[a2asdk.SecuritySchemeName(s.Scheme)] = a2asdk.HTTPAuthSecurityScheme{Scheme: scheme}
+			out[name] = a2asdk.HTTPAuthSecurityScheme{Scheme: scheme}
 		case "apiKey":
-			out[a2asdk.SecuritySchemeName(s.Scheme)] = a2asdk.APIKeySecurityScheme{
+			out[name] = a2asdk.APIKeySecurityScheme{
 				Location: a2asdk.APIKeySecuritySchemeLocation("header"),
 				Name:     "Authorization",
 			}

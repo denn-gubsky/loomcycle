@@ -163,6 +163,10 @@ type runStream struct {
 	done    <-chan struct{}
 	runErr  *error
 	agentID string
+	// cancel stops the detached run. RunOnce's lifetime is decoupled from
+	// the per-request ctx (see startRun), so callers must cancel
+	// explicitly when the run is abandoned or can never be resumed.
+	cancel context.CancelFunc
 }
 
 // startRun launches RunOnce in a goroutine and forwards its OnEvent
@@ -178,19 +182,33 @@ func (e *Executor) startRun(ctx context.Context, in runner.RunInput) *runStream 
 	events := make(chan providers.Event, 16)
 	done := make(chan struct{})
 	var runErr error
+	// Detach the run's lifetime from the per-request ctx. The SDK cancels
+	// the request ctx the instant the FIRST Execute response completes
+	// (a2asrv jsonrpc.go/rest.go: `requestCtx, cancel := WithCancel(ctx);
+	// defer cancel()`). A run that PARKS on an Interruption must outlive
+	// that first response so a follow-up message can resume it — and the
+	// Interruption tool's wait honours ctx.Done(), so a request-scoped ctx
+	// would abort the parked run with context.Canceled before any answer
+	// arrives, breaking INPUT_REQUIRED entirely. Cancellation now flows
+	// only through explicit paths: Executor.Cancel (Connector cascade) and
+	// stream.cancel (client abandon / unresumable park).
+	runCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
 	go func() {
 		defer close(done)
 		defer close(events)
-		runErr = e.runner.RunOnce(ctx, in, runner.RunCallbacks{
+		// Release the detached context when the run returns so a
+		// completed run never leaks its cancel.
+		defer cancel()
+		runErr = e.runner.RunOnce(runCtx, in, runner.RunCallbacks{
 			OnEvent: func(ev providers.Event) {
 				select {
 				case events <- ev:
-				case <-ctx.Done():
+				case <-runCtx.Done():
 				}
 			},
 		})
 	}()
-	return &runStream{out: events, done: done, runErr: &runErr, agentID: in.AgentID}
+	return &runStream{out: events, done: done, runErr: &runErr, agentID: in.AgentID, cancel: cancel}
 }
 
 // streamToClient drains a run stream, yielding translated A2A events to
@@ -210,21 +228,41 @@ func (e *Executor) streamToClient(ctx context.Context, execCtx *a2asrv.ExecutorC
 			// The run is now parked on intr:<id>. Surface the question
 			// as INPUT_REQUIRED and stop consuming; the run lives on in
 			// the background so a resume can continue it.
-			if e.resolver != nil {
-				e.parks.put(execCtx.TaskID, &parkedRun{
-					out:       stream.out,
-					done:      stream.done,
-					runErrPtr: stream.runErr,
-					agentID:   agentID,
-				})
+			if e.resolver == nil {
+				// No resume bridge wired: the parked run can never be
+				// woken and a follow-up message starts a fresh run, so
+				// cancel it rather than leak a goroutine blocked on the
+				// bus forever.
+				stream.cancel()
+				yield(inputRequiredStatus(execCtx, ev.Interruption), nil)
+				return
 			}
-			yield(inputRequiredStatus(execCtx, ev.Interruption), nil)
+			e.parks.put(execCtx.TaskID, &parkedRun{
+				out:       stream.out,
+				done:      stream.done,
+				runErrPtr: stream.runErr,
+				agentID:   agentID,
+				cancel:    stream.cancel,
+			})
+			if !yield(inputRequiredStatus(execCtx, ev.Interruption), nil) {
+				// Client abandoned the stream exactly at the park: no
+				// resume will arrive on this connection. Reclaim the
+				// registry entry (a concurrent resume may have taken it
+				// first — then it owns the run) and cancel the otherwise-
+				// unreachable run so it does not block on the bus forever.
+				if p, ok := e.parks.take(execCtx.TaskID); ok {
+					p.cancel()
+				}
+			}
 			return
 		}
 		for _, out := range translateEvent(ev, execCtx) {
 			if !yield(out, nil) {
-				// Consumer abandoned the stream; let the run finish in
-				// the background (RunOnce honours ctx cancellation).
+				// Consumer abandoned the stream. The run is detached from
+				// the request ctx (see startRun), so cancel it explicitly
+				// rather than relying on a ctx teardown that no longer
+				// reaches it.
+				stream.cancel()
 				return
 			}
 		}
@@ -266,7 +304,7 @@ func (e *Executor) resumeParkedRun(ctx context.Context, execCtx *a2asrv.Executor
 // terminal (or to a second park). Same body as the tail of
 // streamToClient but starting from an existing stream.
 func (e *Executor) streamFromParked(ctx context.Context, execCtx *a2asrv.ExecutorContext, parked *parkedRun, yield func(a2asdk.Event, error) bool) {
-	stream := &runStream{out: parked.out, done: parked.done, runErr: parked.runErrPtr, agentID: parked.agentID}
+	stream := &runStream{out: parked.out, done: parked.done, runErr: parked.runErrPtr, agentID: parked.agentID, cancel: parked.cancel}
 	e.streamToClient(ctx, execCtx, parked.agentID, stream, yield)
 }
 
@@ -279,15 +317,20 @@ func (e *Executor) yieldTerminal(ctx context.Context, execCtx *a2asrv.ExecutorCo
 			agentMessage(runErr.Error())), nil)
 		return
 	}
-	outcome, ok := e.finalOutcome(ctx, agentID)
-	if !ok {
-		yield(a2asdk.NewStatusUpdateEvent(execCtx, a2asdk.TaskStateFailed,
-			agentMessage("a2a executor: run finished without a resolvable terminal status")), nil)
-		return
+	if outcome, ok := e.finalOutcome(ctx, agentID); ok {
+		if term, ok := terminalStatusForRun(execCtx, outcome); ok {
+			yield(term, nil)
+			return
+		}
 	}
-	if term, ok := terminalStatusForRun(execCtx, outcome); ok {
-		yield(term, nil)
-	}
+	// No resolvable terminal status — the run row is missing, or it is
+	// still non-terminal because the terminal write lagged or failed
+	// (finalOutcome accepts a RunRunning row, which maps to the
+	// non-terminal WORKING state). The SDK contract requires the closing
+	// event to be terminal, so fail closed rather than ending the stream
+	// in WORKING (which would strand the A2A client's task forever).
+	yield(a2asdk.NewStatusUpdateEvent(execCtx, a2asdk.TaskStateFailed,
+		agentMessage("a2a executor: run finished without a resolvable terminal status")), nil)
 }
 
 // inputRequiredStatus builds the TASK_STATE_INPUT_REQUIRED event from a

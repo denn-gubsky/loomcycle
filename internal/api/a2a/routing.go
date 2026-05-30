@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strings"
 
+	a2asdk "github.com/a2aproject/a2a-go/v2/a2a"
 	"github.com/a2aproject/a2a-go/v2/a2asrv"
 
 	bridge "github.com/denn-gubsky/loomcycle/internal/a2a"
@@ -36,11 +37,21 @@ func (p *principalInterceptor) Before(ctx context.Context, callCtx *a2asrv.CallC
 		return ctx, nil, nil
 	}
 	name, ok := p.auth(serviceParamsToHeader(callCtx.ServiceParams()))
-	if ok {
-		callCtx.User = a2asrv.NewAuthenticatedUser(name, nil)
-	} else {
+	if !ok {
+		// Auth is configured but the request carried no valid credential.
+		// REJECT at the frontier: returning a non-nil error from a
+		// CallInterceptor.Before short-circuits the call before the
+		// executor ever runs (a2asrv intercepted_handler), so this single
+		// gate covers message/send, streaming, resume, and cancel across
+		// all three bindings uniformly. Without it a wrong/absent bearer
+		// would still spawn a run with an anonymous principal, i.e. the
+		// A2A surface would ignore LOOMCYCLE_AUTH_TOKEN entirely (the
+		// binding endpoints are deliberately not wrapped by the HTTP
+		// bearer authMiddleware — see Server.Mount).
 		callCtx.User = &a2asrv.User{Authenticated: false}
+		return ctx, nil, a2asdk.ErrUnauthenticated
 	}
+	callCtx.User = a2asrv.NewAuthenticatedUser(name, nil)
 	return ctx, nil, nil
 }
 
@@ -92,7 +103,11 @@ func tenantFromHost(host string) string {
 	if i := strings.IndexByte(host, ':'); i >= 0 {
 		host = host[:i]
 	}
-	label, _, ok := strings.Cut(host, ".")
+	// DNS is case-insensitive, so normalise the label before extracting
+	// the tenant id — otherwise "tenant-Acme.host" and "tenant-acme.host"
+	// would resolve to two distinct tenant partitions for the same
+	// authority.
+	label, _, ok := strings.Cut(strings.ToLower(host), ".")
 	if !ok {
 		return ""
 	}
@@ -103,18 +118,33 @@ func tenantFromHost(host string) string {
 	return strings.TrimPrefix(label, prefix)
 }
 
-// hostTenantWrap attaches the host-derived routed tenant (host/none
-// mode) to the request context before delegating to the SDK handler, so
-// the bridge's principalFromContext treats it as authoritative. In path
-// mode the routed tenant is already on the context (PathTenantWrapper
-// stamped it), so this only adds the host tenant when in host mode.
+// hostTenantWrap makes the tenancy routing decision authoritative on
+// every A2A route it wraps, so the bridge's principalFromContext never
+// falls back to the peer-supplied body tenant in a multi-tenant
+// deployment:
+//
+//   - host mode: stamp the host-derived tenant (possibly "" for a
+//     non-tenant host) — empty is stamped on purpose so a bare host is
+//     authoritatively single-tenant rather than body-controlled.
+//   - path mode: PathTenantWrapper has already stamped the tenant when
+//     the request carried a "/{tenant}" prefix. A binding route reached
+//     WITHOUT a prefix has no stamp yet; mark it authoritative-empty here
+//     so a direct un-prefixed hit cannot smuggle a body tenant.
+//   - none/single-tenant mode: leave the context unstamped so the body
+//     tenant is permitted (it is attribution-only, never an allowlist).
 func (s *Server) hostTenantWrap(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if s.tenancy != "host" {
+		switch s.tenancy {
+		case "host":
+			next.ServeHTTP(w, r.WithContext(bridge.WithRoutedTenant(r.Context(), tenantFromHost(r.Host))))
+		case "path":
+			if _, ok := bridge.RoutedTenantFrom(r.Context()); ok {
+				next.ServeHTTP(w, r) // PathTenantWrapper already stamped it
+				return
+			}
+			next.ServeHTTP(w, r.WithContext(bridge.WithRoutedTenant(r.Context(), "")))
+		default:
 			next.ServeHTTP(w, r)
-			return
 		}
-		tenant := tenantFromHost(r.Host)
-		next.ServeHTTP(w, r.WithContext(bridge.WithRoutedTenant(r.Context(), tenant)))
 	})
 }

@@ -125,7 +125,13 @@ func TestSecuritySchemesFor_SkipsUnenforceableKinds(t *testing.T) {
 	if len(out) != 1 {
 		t.Fatalf("schemes = %d, want 1 (only http kept); got %+v", len(out), out)
 	}
-	if _, ok := out["bearer"]; !ok {
-		t.Errorf("expected http scheme keyed by its scheme name; got %+v", out)
+	// Keyed by KIND ("http"), not by the (possibly empty / colliding) HTTP
+	// auth token. The token is carried in the scheme value.
+	scheme, ok := out["http"]
+	if !ok {
+		t.Fatalf("expected http scheme keyed by kind %q; got %+v", "http", out)
+	}
+	if hs, isHTTP := scheme.(a2asdk.HTTPAuthSecurityScheme); !isHTTP || hs.Scheme != "bearer" {
+		t.Errorf("http scheme value = %+v, want HTTPAuthSecurityScheme{Scheme: bearer}", scheme)
 	}
 }

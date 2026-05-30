@@ -41,18 +41,25 @@ type principal struct {
 type routedTenantKeyType struct{}
 
 // WithRoutedTenant stamps the host/path-derived tenant onto ctx. The
-// A2A server mux calls this so principalFromContext can treat it as
-// authoritative. Empty tenant is a no-op (single-tenant deployments).
+// A2A server mux calls this whenever a tenancy routing mode is active so
+// principalFromContext treats the routing decision as authoritative.
+//
+// The empty tenant is stamped too (not a no-op): an active routing mode
+// that resolves NO tenant — a bare/non-tenant host, or a binding route
+// reached without a tenant prefix — must still be authoritative, so the
+// peer-supplied body tenant is never consulted in a multi-tenant
+// deployment. Presence of the value (even "") is the "routing decided"
+// signal; only "none"/single-tenant mode, which never calls this, leaves
+// it absent and permits the body-tenant fallback.
 func WithRoutedTenant(ctx context.Context, tenant string) context.Context {
-	if tenant == "" {
-		return ctx
-	}
 	return context.WithValue(ctx, routedTenantKeyType{}, tenant)
 }
 
-// RoutedTenantFrom returns the host/path-derived tenant if the mounting
-// layer attached one. Exported so the A2A-5 server surface can read back
-// the tenant it stamped (e.g. to anchor per-tenant AgentCard URLs).
+// RoutedTenantFrom returns the host/path-derived tenant (possibly "")
+// when a routing mode stamped one, and ok=false when no routing decision
+// was made (single-tenant / none mode). Exported so the A2A-5 server
+// surface can read back the tenant it stamped (e.g. to anchor per-tenant
+// AgentCard URLs).
 func RoutedTenantFrom(ctx context.Context) (string, bool) {
 	t, ok := ctx.Value(routedTenantKeyType{}).(string)
 	return t, ok
@@ -69,11 +76,18 @@ func RoutedTenantFrom(ctx context.Context) (string, bool) {
 // Returns a zero principal (Authenticated=false) when no CallContext is
 // present — the unauthenticated default. Never panics on a nil User.
 func principalFromContext(ctx context.Context, tenant string) principal {
-	p := principal{TenantID: tenant}
-	// Routed tenant is authoritative: an operator-configured host/path
-	// shape outranks anything the peer could put in the body.
-	if rt, ok := RoutedTenantFrom(ctx); ok {
-		p.TenantID = rt
+	// A routing mode (host/path) is authoritative even when it resolves an
+	// EMPTY tenant: in that mode the peer-supplied body tenant must never
+	// govern attribution, otherwise a peer reaching a non-tenant host (host
+	// mode) or an un-prefixed binding route (path mode) could mislabel its
+	// run's tenant by stuffing a body field. The body/CallContext tenant is
+	// consulted ONLY in single-tenant / none mode (no routing decision).
+	routed, authoritative := RoutedTenantFrom(ctx)
+	var p principal
+	if authoritative {
+		p.TenantID = routed
+	} else {
+		p.TenantID = tenant
 	}
 	callCtx, ok := a2asrv.CallContextFrom(ctx)
 	if !ok || callCtx.User == nil {
@@ -83,9 +97,10 @@ func principalFromContext(ctx context.Context, tenant string) principal {
 	if callCtx.User.Authenticated {
 		p.UserID = callCtx.User.Name
 	}
-	// CallContext.Tenant() is the SDK-carried fallback when neither a
-	// routed tenant nor an explicit per-message tenant was supplied.
-	if p.TenantID == "" {
+	// CallContext.Tenant() is the SDK-carried fallback — but only in
+	// single-tenant mode. In a routing mode it stays suppressed (the
+	// routed decision, empty or not, already won above).
+	if !authoritative && p.TenantID == "" {
 		p.TenantID = callCtx.Tenant()
 	}
 	return p

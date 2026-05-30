@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	a2asdk "github.com/a2aproject/a2a-go/v2/a2a"
 	"github.com/a2aproject/a2a-go/v2/a2asrv"
@@ -87,6 +88,62 @@ func collect(seq func(yield func(a2asdk.Event, error) bool)) ([]a2asdk.Event, []
 		return true
 	})
 	return events, errs
+}
+
+// blockingRunner reports the ctx RunOnce received on gotCtx, then blocks
+// until release is closed. Lets a test observe the run's context lifetime
+// independently of the Execute call returning.
+type blockingRunner struct {
+	gotCtx  chan context.Context
+	release chan struct{}
+}
+
+func (b *blockingRunner) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunCallbacks) error {
+	b.gotCtx <- ctx
+	<-b.release
+	return nil
+}
+
+// TestExecutor_RunContextDetachedFromRequestContext pins the parked-run
+// lifetime fix. The SDK cancels the per-request ctx the instant the first
+// Execute response completes (a2asrv jsonrpc/rest `defer cancel()`); a run
+// that parks on an Interruption must outlive that, and the Interruption
+// tool's wait honours ctx.Done(). So the ctx RunOnce receives MUST NOT be
+// cancelled when the ctx passed to Execute is cancelled.
+//
+// Before the fix the run shared the request ctx and would be torn down
+// mid-park with context.Canceled, breaking INPUT_REQUIRED resume.
+func TestExecutor_RunContextDetachedFromRequestContext(t *testing.T) {
+	br := &blockingRunner{gotCtx: make(chan context.Context, 1), release: make(chan struct{})}
+	defer close(br.release)
+	runs := &fakeRuns{byAgentID: map[string]store.Run{}}
+	ex := NewExecutor(br, &fakeConnector{}, runs, "agent-x")
+
+	reqCtx, cancelReq := context.WithCancel(context.Background())
+	execCtx := &a2asrv.ExecutorContext{
+		TaskID:  "task-detach",
+		Message: a2asdk.NewMessage(a2asdk.MessageRoleUser, a2asdk.NewTextPart("hi")),
+	}
+	// Drain the iterator in the background; it blocks on the running run.
+	go collect(ex.Execute(reqCtx, execCtx))
+
+	var runCtx context.Context
+	select {
+	case runCtx = <-br.gotCtx:
+	case <-time.After(2 * time.Second):
+		t.Fatal("runner never started")
+	}
+
+	// Simulate the SDK tearing down the request ctx after the first
+	// response completes.
+	cancelReq()
+
+	select {
+	case <-runCtx.Done():
+		t.Fatal("run ctx cancelled when the request ctx was cancelled — a parked run would die before resume")
+	case <-time.After(50 * time.Millisecond):
+		// Still alive — the run is correctly detached from the request ctx.
+	}
 }
 
 // TestExecutor_ExecuteHappyPathYieldsSubmittedWorkingArtifactCompleted

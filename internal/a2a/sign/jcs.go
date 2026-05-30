@@ -116,6 +116,16 @@ func writeCanonicalNumber(buf *bytes.Buffer, n json.Number) error {
 	// strconv 'g' with -1 precision yields the shortest round-trippable
 	// representation, which matches JCS's ECMAScript number form for the
 	// value range AgentCards use.
+	//
+	// LIMITATION: 'g' is NOT a faithful implementation of the full RFC 8785
+	// (ECMAScript Number.toString) algorithm. It diverges for fractional or
+	// large-magnitude numbers — e.g. 1e-7 → "1e-07" (Go zero-pads the
+	// exponent) vs JS "1e-7"; 1e20 → "1e+20" vs "100000000000000000000".
+	// This is latent and harmless today because AgentCards carry only small
+	// integers (handled by the exact-integer fast path above), so no card
+	// reaches this branch. If a future card field can hold a non-integer
+	// number, replace this with a spec-faithful ECMAScript number formatter
+	// before relying on cross-implementation signature interop.
 	buf.WriteString(strconv.FormatFloat(f, 'g', -1, 64))
 	return nil
 }
