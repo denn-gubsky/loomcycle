@@ -557,6 +557,9 @@ func main() {
 		MaxValueBytes:     cfg.Env.MemoryMaxValueBytes,
 		DefaultQuotaBytes: cfg.Env.MemoryMaxScopeBytes,
 		Embedder:          embedder,
+		// RFC I MR-3b: resolves a per-agent memory_backend NAME to its
+		// MemoryBackendDef (static yaml or dynamic substrate Def).
+		Cfg: cfg,
 	}
 	allTools = append(allTools, memoryTool)
 
@@ -908,12 +911,14 @@ func main() {
 	// at boot (allTools assembled once) and the tool's nil-Store
 	// fallback for operators running without a configured store.
 	memoryTool.Store = storeIface
-	// RFC I MR-2: route the Memory tool's data ops through the in-process
-	// backend (the default + unconditional fallback). Constructed here,
-	// post-store, so both deps are concrete — the embedder was built above
-	// (nil when unconfigured, which the backend handles by refusing vector
-	// ops exactly as before). MR-3's MemoryBackendDef / MR-4's Mem9 swap
-	// this assignment for a different backend.
+	// RFC I MR-2: this sets the operator-DEFAULT backend (the path taken
+	// when an agent has no memory_backend, plus the unconditional fallback
+	// for unresolved / not-yet-wired backends). Constructed here, post-store,
+	// so both deps are concrete — the embedder was built above (nil when
+	// unconfigured, which the backend handles by refusing vector ops exactly
+	// as before). MR-3b routes PER-AGENT named backends per-call from
+	// memory.go backend(ctx) via memoryTool.Cfg; MR-4's Mem9 plugs into that
+	// switch. This default assignment stays.
 	memoryTool.Backend = inprocess.New(storeIface, embedder)
 	channelTool.Store = storeIface
 	// Wire the pool-stats accessor when the backend is Postgres so

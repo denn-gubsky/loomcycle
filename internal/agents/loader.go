@@ -83,6 +83,7 @@ type Agent struct {
 	Models                map[string][]TierCandidate
 	MemoryScopes          []string
 	MemoryQuotaBytes      int
+	MemoryBackend         string
 	// Channels is the v0.8.4 Channel-tool ACL. Empty Publish /
 	// Subscribe = no access on that side.
 	Channels AgentChannelACL
@@ -246,6 +247,7 @@ type frontmatter struct {
 	Models                map[string][]TierCandidate `yaml:"models"`
 	MemoryScopes          []string                   `yaml:"memory_scopes"`
 	MemoryQuotaBytes      int                        `yaml:"memory_quota_bytes"`
+	MemoryBackend         string                     `yaml:"memory_backend"`
 	Channels              AgentChannelACL            `yaml:"channels"`
 	AgentDefScopes        []string                   `yaml:"agent_def_scopes"`
 	SkillDefScopes        []string                   `yaml:"skill_def_scopes"`
@@ -311,6 +313,7 @@ func parseAgent(raw []byte) (*Agent, error) {
 	a.Models = fm.Models
 	a.MemoryScopes = fm.MemoryScopes
 	a.MemoryQuotaBytes = fm.MemoryQuotaBytes
+	a.MemoryBackend = fm.MemoryBackend
 	a.Channels = fm.Channels
 	a.AgentDefScopes = fm.AgentDefScopes
 	a.SkillDefScopes = fm.SkillDefScopes

@@ -152,6 +152,9 @@ type SubstrateAgentDef struct {
 	Models           map[string][]config.TierCandidate `json:"models,omitempty"`
 	MemoryScopes     []string                          `json:"memory_scopes,omitempty"`
 	MemoryQuotaBytes int                               `json:"memory_quota_bytes,omitempty"`
+	// MemoryBackend mirrors config.AgentDef.MemoryBackend — the named
+	// memory backend this agent routes through. RFC I MR-3b.
+	MemoryBackend string `json:"memory_backend,omitempty"`
 	// RetryAttempts mirrors config.AgentDef.RetryAttempts — per-agent
 	// same-provider retry budget override. *int so substrate JSON can
 	// persist the operator-meaningful "force 0" intent as distinct
@@ -179,6 +182,7 @@ func (s SubstrateAgentDef) ToConfigDef() config.AgentDef {
 		Models:                s.Models,
 		MemoryScopes:          s.MemoryScopes,
 		MemoryQuotaBytes:      s.MemoryQuotaBytes,
+		MemoryBackend:         s.MemoryBackend,
 		RetryAttempts:         s.RetryAttempts,
 	}
 }

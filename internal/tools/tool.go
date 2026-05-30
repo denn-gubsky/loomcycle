@@ -348,9 +348,14 @@ type ctxKeyMemoryPolicy struct{}
 //     grant Memory:read-only on `user` while withholding `agent`).
 //   - QuotaBytes is the yaml `memory_quota_bytes` override; 0 falls
 //     back to the global LOOMCYCLE_MEMORY_MAX_SCOPE_BYTES default.
+//   - Backend is the resolved per-agent `memory_backend` NAME (RFC I
+//     MR-3b); "" routes to the operator-default backend. The name is
+//     operator-resolved from agent config — never model-supplied, same
+//     trust posture as AllowedScopes.
 type MemoryPolicyValue struct {
 	AllowedScopes []string
 	QuotaBytes    int
+	Backend       string
 }
 
 // WithMemoryPolicy attaches the agent's resolved Memory policy to ctx.

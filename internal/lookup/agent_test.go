@@ -60,6 +60,7 @@ func TestAgent_EquivalenceYamlVsSubstrate(t *testing.T) {
 		Skills:                []string{"voice-applier"},
 		MemoryScopes:          []string{"agent", "user"},
 		MemoryQuotaBytes:      65536,
+		MemoryBackend:         "team-mem9",
 	}
 	// Simulate boot-time normalization on the yaml side: resolveSkills
 	// would set SystemPromptBase = SystemPrompt for an agent with
@@ -81,6 +82,7 @@ func TestAgent_EquivalenceYamlVsSubstrate(t *testing.T) {
 		Skills:                yamlAgent.Skills,
 		MemoryScopes:          yamlAgent.MemoryScopes,
 		MemoryQuotaBytes:      yamlAgent.MemoryQuotaBytes,
+		MemoryBackend:         yamlAgent.MemoryBackend,
 	}
 	defJSON, err := json.Marshal(substrateShape)
 	if err != nil {
@@ -135,6 +137,9 @@ func TestAgent_EquivalenceYamlVsSubstrate(t *testing.T) {
 	}
 	if resolved.MemoryQuotaBytes != yamlAgent.MemoryQuotaBytes {
 		t.Errorf("MemoryQuotaBytes mismatch:\n  yaml: %d\n  resolved: %d", yamlAgent.MemoryQuotaBytes, resolved.MemoryQuotaBytes)
+	}
+	if resolved.MemoryBackend != yamlAgent.MemoryBackend {
+		t.Errorf("MemoryBackend mismatch:\n  yaml: %q\n  resolved: %q", yamlAgent.MemoryBackend, resolved.MemoryBackend)
 	}
 }
 
@@ -212,6 +217,7 @@ func TestAgent_DriftDetection(t *testing.T) {
 		"models":                  true,
 		"memory_scopes":           true,
 		"memory_quota_bytes":      true,
+		"memory_backend":          true,
 		"retry_attempts":          true,
 	}
 	have := jsonTagsOf(reflect.TypeOf(lookup.SubstrateAgentDef{}))

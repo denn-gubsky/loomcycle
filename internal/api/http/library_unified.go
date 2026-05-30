@@ -263,6 +263,7 @@ type staticAgentDefJSON struct {
 	Models                map[string][]config.TierCandidate `json:"models,omitempty"`
 	MemoryScopes          []string                          `json:"memory_scopes,omitempty"`
 	MemoryQuotaBytes      int                               `json:"memory_quota_bytes,omitempty"`
+	MemoryBackend         string                            `json:"memory_backend,omitempty"`
 }
 
 func marshalStaticAgentDef(def config.AgentDef) json.RawMessage {
@@ -282,6 +283,7 @@ func marshalStaticAgentDef(def config.AgentDef) json.RawMessage {
 		Models:                def.Models,
 		MemoryScopes:          def.MemoryScopes,
 		MemoryQuotaBytes:      def.MemoryQuotaBytes,
+		MemoryBackend:         def.MemoryBackend,
 	})
 	if err != nil {
 		return nil

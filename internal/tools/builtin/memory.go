@@ -9,6 +9,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/config"
+	"github.com/denn-gubsky/loomcycle/internal/lookup"
 	memrank "github.com/denn-gubsky/loomcycle/internal/memory"
 	"github.com/denn-gubsky/loomcycle/internal/memory/backends/inprocess"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
@@ -81,15 +83,68 @@ type Memory struct {
 	// bounded_list) stay on Store directly — they are not part of the
 	// six-op Backend surface (see internal/memory/backend.go).
 	Backend memrank.Backend
+
+	// Cfg is the operator config, used to resolve a per-agent
+	// memory_backend NAME to its MemoryBackendDef via lookup.MemoryBackend
+	// (RFC I MR-3b). Set in main.go (memoryTool.Cfg = cfg). When nil, the
+	// per-agent routing path can't resolve named backends and every agent
+	// falls back to the operator-default backend — the pre-MR-3b behavior.
+	Cfg *config.Config
 }
 
-// backend returns the configured Backend, or a lazily-constructed
-// in-process backend wrapping the tool's Store + Embedder. The lazy path
-// keeps pre-MR-2 callers (and the test fixtures) — which set only Store +
-// Embedder — working unchanged. Constructed per-call so a late-bound
-// Embedder is always reflected; the in-process backend is a thin
-// stateless wrapper so this is cheap.
-func (m *Memory) backend() memrank.Backend {
+// backend resolves the memrank.Backend the data ops route through,
+// honoring the agent's per-run memory_backend NAME (RFC I MR-3b).
+//
+// The backend name comes from tools.MemoryPolicy(ctx).Backend — which is
+// stamped from the operator-resolved agent config — and is NEVER
+// model/tool input. Same trust posture as MemoryScopes: the model picks
+// the scope, the operator picks the backend.
+//
+// Resolution:
+//   - "" (no per-agent backend) → the operator-default backend. This is
+//     the pre-MR-3b path and stays byte-identical: m.Backend if set, else
+//     a lazily-constructed in-process backend wrapping Store + Embedder.
+//   - a named backend → resolved via lookup.MemoryBackend (static
+//     memory_backends yaml OR a dynamic MemoryBackendDef). A name that
+//     resolves to nothing degrades to the operator-default backend with a
+//     log: dynamic Defs may not exist at config-load time, so a missing
+//     name must NOT fail — it falls back.
+//
+// kind dispatch on a resolved Def:
+//   - "" / "inprocess" → fresh in-process backend (cheap, stateless).
+//   - "mem9" → NOT yet wired (lands in MR-4). Logs and falls back to
+//     in-process. The Def's fallback_on_error field is honored in MR-4
+//     once mem9 can actually fail at runtime; until then fallback is the
+//     unconditional default.
+//   - anything else → unknown kind; logs and falls back to in-process.
+func (m *Memory) backend(ctx context.Context) memrank.Backend {
+	name := tools.MemoryPolicy(ctx).Backend
+	if name == "" {
+		return m.defaultBackend()
+	}
+	def, ok := lookup.MemoryBackend(ctx, m.Store, m.Cfg, name)
+	if !ok {
+		log.Printf("memory: memory_backend %q not found — using operator-default backend", name)
+		return m.defaultBackend()
+	}
+	switch def.Kind {
+	case "", "inprocess":
+		return inprocess.New(m.Store, m.Embedder)
+	case "mem9":
+		log.Printf("memory: memory_backend %q kind=mem9 not yet wired (MR-4) — using in-process fallback", name)
+		return m.defaultBackend()
+	default:
+		log.Printf("memory: memory_backend %q has unknown kind %q — using in-process fallback", name, def.Kind)
+		return m.defaultBackend()
+	}
+}
+
+// defaultBackend returns the operator-default backend: the explicitly-set
+// m.Backend if present, else a lazily-constructed in-process backend
+// wrapping Store + Embedder. Constructed per-call so a late-bound Embedder
+// is always reflected; the in-process backend is a thin stateless wrapper
+// so this is cheap. This is the pre-MR-3b behavior, preserved verbatim.
+func (m *Memory) defaultBackend() memrank.Backend {
 	if m.Backend != nil {
 		return m.Backend
 	}
@@ -233,7 +288,7 @@ func (m *Memory) execGet(ctx context.Context, scope store.MemoryScope, scopeID s
 	if in.Key == "" {
 		return errResult("get: missing required field: key"), nil
 	}
-	entry, err := m.backend().Get(ctx, scope, scopeID, in.Key)
+	entry, err := m.backend(ctx).Get(ctx, scope, scopeID, in.Key)
 	if err != nil {
 		var nf *store.ErrNotFound
 		if errors.As(err, &nf) {
@@ -274,7 +329,7 @@ func (m *Memory) execSet(ctx context.Context, scope store.MemoryScope, scopeID s
 	// matching the pre-MR-2 upfront-refusal message. Any other error is a
 	// genuine k/v write failure — render it with the "set:" prefix.
 	ttl := time.Duration(in.TTL) * time.Second
-	res, err := m.backend().Set(ctx, scope, scopeID, in.Key, in.Value, memrank.SetOptions{
+	res, err := m.backend(ctx).Set(ctx, scope, scopeID, in.Key, in.Value, memrank.SetOptions{
 		TTL:       ttl,
 		Embed:     in.Embed,
 		EmbedText: in.EmbedText,
@@ -345,7 +400,7 @@ func (m *Memory) execSearch(ctx context.Context, scope store.MemoryScope, scopeI
 	// trim → score) lives in the Backend now (RFC I MR-2). The upfront
 	// validation above stays on the tool so the refusal ordering /
 	// messages are byte-identical to pre-MR-2.
-	res, err := m.backend().Search(ctx, scope, scopeID, memrank.SearchQuery{
+	res, err := m.backend(ctx).Search(ctx, scope, scopeID, memrank.SearchQuery{
 		QueryText: in.Query,
 		Prefix:    in.Prefix,
 		TopK:      topK,
@@ -393,7 +448,7 @@ func (m *Memory) execDelete(ctx context.Context, scope store.MemoryScope, scopeI
 	if in.Key == "" {
 		return errResult("delete: missing required field: key"), nil
 	}
-	deleted, err := m.backend().Delete(ctx, scope, scopeID, in.Key)
+	deleted, err := m.backend(ctx).Delete(ctx, scope, scopeID, in.Key)
 	if err != nil {
 		return errResult(fmt.Sprintf("delete: %s", err)), nil
 	}
@@ -411,7 +466,7 @@ func (m *Memory) execList(ctx context.Context, scope store.MemoryScope, scopeID 
 		// should paginate via the prefix.
 		limit = 1000
 	}
-	entries, truncated, err := m.backend().List(ctx, scope, scopeID, in.Prefix, limit)
+	entries, truncated, err := m.backend(ctx).List(ctx, scope, scopeID, in.Prefix, limit)
 	if err != nil {
 		return errResult(fmt.Sprintf("list: %s", err)), nil
 	}

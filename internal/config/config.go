@@ -606,6 +606,13 @@ type AgentDef struct {
 	// noisy agents you want to keep on a tight leash.
 	MemoryQuotaBytes int `yaml:"memory_quota_bytes"`
 
+	// MemoryBackend names a memory_backends entry / MemoryBackendDef
+	// this agent routes its Memory ops through. Empty = the
+	// operator-default backend (in-process). RFC I MR-3b. The name is
+	// operator-resolved (static yaml or substrate Def); it is NEVER
+	// model-supplied — same trust posture as MemoryScopes.
+	MemoryBackend string `yaml:"memory_backend"`
+
 	// Channels is the v0.8.4 Channel tool ACL for this agent —
 	// per-side (publish / subscribe) allowlists naming channels the
 	// agent may post to or read from. Entries may use a trailing
@@ -2644,6 +2651,7 @@ func agentFromDiscovered(d *agents.Agent) AgentDef {
 		Providers:        d.Providers,
 		MemoryScopes:     d.MemoryScopes,
 		MemoryQuotaBytes: d.MemoryQuotaBytes,
+		MemoryBackend:    d.MemoryBackend,
 		Channels: AgentChannelACL{
 			Publish:   d.Channels.Publish,
 			Subscribe: d.Channels.Subscribe,
@@ -2735,6 +2743,9 @@ func mergeAgentDef(base, override AgentDef) AgentDef {
 	}
 	if override.MemoryQuotaBytes != 0 {
 		out.MemoryQuotaBytes = override.MemoryQuotaBytes
+	}
+	if override.MemoryBackend != "" {
+		out.MemoryBackend = override.MemoryBackend
 	}
 	if override.Channels.Publish != nil {
 		out.Channels.Publish = override.Channels.Publish
@@ -3216,6 +3227,28 @@ func validate(c *Config) error {
 		}
 		if agent.MemoryQuotaBytes < 0 {
 			return fmt.Errorf("agent %q: memory_quota_bytes must be >= 0", name)
+		}
+		// Memory backend routing (RFC I MR-3b): a static agent that names
+		// a memory_backend must reference a declared memory_backends key
+		// OR the built-in "inprocess"/"default" literals. We only validate
+		// static-yaml→static-yaml references: an agent may legitimately
+		// name a backend that exists only as a dynamic MemoryBackendDef
+		// (created at runtime, absent at config load), so an unresolved
+		// name is NOT a load error — the Memory tool degrades to the
+		// operator-default backend at runtime (see memory.go backend()).
+		if agent.MemoryBackend != "" &&
+			agent.MemoryBackend != "inprocess" &&
+			agent.MemoryBackend != "default" {
+			if _, ok := c.MemoryBackends[agent.MemoryBackend]; !ok {
+				// Lenient: only fail when the static map is non-empty and
+				// the name is clearly a typo against it. When the operator
+				// declares no static backends at all, assume the name
+				// targets a dynamic Def and let the runtime fallback cover
+				// a miss.
+				if len(c.MemoryBackends) > 0 {
+					return fmt.Errorf("agent %q: memory_backend %q is not a declared memory_backends entry (or \"inprocess\"/\"default\")", name, agent.MemoryBackend)
+				}
+			}
 		}
 		if agent.RetryAttempts != nil && *agent.RetryAttempts < 0 {
 			return fmt.Errorf("agent %q: retry_attempts must be >= 0 (0 = explicitly disable retries; omit to use user_tier default)", name)

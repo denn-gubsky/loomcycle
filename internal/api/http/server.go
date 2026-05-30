@@ -1524,6 +1524,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	loopCtx = tools.WithMemoryPolicy(loopCtx, tools.MemoryPolicyValue{
 		AllowedScopes: agentDef.MemoryScopes,
 		QuotaBytes:    agentDef.MemoryQuotaBytes,
+		Backend:       agentDef.MemoryBackend,
 	})
 	loopCtx = tools.WithChannelPolicy(loopCtx, s.channelPolicyForAgent(agentDef))
 	loopCtx = tools.WithEventEmitter(loopCtx, emit)
@@ -2596,6 +2597,7 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 	loopCtx = tools.WithMemoryPolicy(loopCtx, tools.MemoryPolicyValue{
 		AllowedScopes: agentDef.MemoryScopes,
 		QuotaBytes:    agentDef.MemoryQuotaBytes,
+		Backend:       agentDef.MemoryBackend,
 	})
 	loopCtx = tools.WithChannelPolicy(loopCtx, s.channelPolicyForAgent(agentDef))
 	loopCtx = tools.WithEventEmitter(loopCtx, emit)
@@ -2955,6 +2957,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	loopCtx = tools.WithMemoryPolicy(loopCtx, tools.MemoryPolicyValue{
 		AllowedScopes: agentDef.MemoryScopes,
 		QuotaBytes:    agentDef.MemoryQuotaBytes,
+		Backend:       agentDef.MemoryBackend,
 	})
 	loopCtx = tools.WithChannelPolicy(loopCtx, s.channelPolicyForAgent(agentDef))
 	loopCtx = tools.WithEventEmitter(loopCtx, emit)
@@ -3550,6 +3553,7 @@ func (s *Server) runSubAgent(ctx context.Context, name string, prompt string, de
 	subCtx = tools.WithMemoryPolicy(subCtx, tools.MemoryPolicyValue{
 		AllowedScopes: def.MemoryScopes,
 		QuotaBytes:    def.MemoryQuotaBytes,
+		Backend:       def.MemoryBackend,
 	})
 	// Sub-agent's Channel policy follows the same per-yaml shape as
 	// MemoryPolicy above. The Channels map (operator-declared

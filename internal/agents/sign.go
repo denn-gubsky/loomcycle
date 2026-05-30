@@ -78,6 +78,7 @@ type AgentContent struct {
 	MaxConcurrentChildren int                        `json:"max_concurrent_children,omitempty"`
 	MaxIterations         int                        `json:"max_iterations,omitempty"`
 	MaxTokens             int                        `json:"max_tokens,omitempty"`
+	MemoryBackend         string                     `json:"memory_backend,omitempty"`
 	MemoryQuotaBytes      int                        `json:"memory_quota_bytes,omitempty"`
 	MemoryScopes          []string                   `json:"memory_scopes,omitempty"`
 	Model                 string                     `json:"model,omitempty"`
@@ -180,6 +181,7 @@ func FromYAMLAgent(a *Agent) AgentContent {
 		Models:                a.Models,
 		MemoryScopes:          a.MemoryScopes,
 		MemoryQuotaBytes:      a.MemoryQuotaBytes,
+		MemoryBackend:         a.MemoryBackend,
 	}
 }
 
