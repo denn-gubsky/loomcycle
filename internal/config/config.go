@@ -3174,6 +3174,19 @@ func validate(c *Config) error {
 			}
 		}
 	}
+	// Static memory_backends entries skip the MemoryBackendDef tool's
+	// validateWebhookDef-equivalent, so structurally validate them at load.
+	// Most important: a shared_key_with_prefix backend MUST carry a
+	// {tenant_id} token in its prefix_pattern — an empty/token-less prefix
+	// resolves to an empty key prefix and collapses every tenant into one
+	// keyspace (cross-tenant read+write leak). resolveTenancy is the runtime
+	// backstop, but failing loudly at boot is the better operator signal.
+	for bname, mb := range c.MemoryBackends {
+		if mb.TenancyStrategy.Kind == "shared_key_with_prefix" &&
+			!strings.Contains(mb.TenancyStrategy.PrefixPattern, "{tenant_id}") {
+			return fmt.Errorf("memory_backends.%s: tenancy_strategy.prefix_pattern %q must contain {tenant_id} for shared_key_with_prefix (an empty or token-less prefix collapses all tenants into one keyspace)", bname, mb.TenancyStrategy.PrefixPattern)
+		}
+	}
 	for name, agent := range c.Agents {
 		// Tier-based resolution and explicit pin are mutually
 		// exclusive — pinning a model and asking for a tier is

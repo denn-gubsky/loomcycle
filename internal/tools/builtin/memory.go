@@ -208,16 +208,26 @@ func resolveTenancy(ctx context.Context, ts config.MemoryBackendTenancy) (mem9.T
 		// API key the resolver returns. No prefix in the keyspace.
 		return mem9.Tenancy{}, tenantID, nil
 	case "shared_key_with_prefix":
-		// One shared key; tenant isolation comes from prefixing every key.
-		// A missing tenant here is a hard error: an empty prefix would
-		// collapse all tenants into one keyspace (cross-tenant leak).
+		// One shared key; tenant isolation comes ENTIRELY from prefixing
+		// every key with the per-tenant prefix, so the {tenant_id} token is
+		// mandatory. An empty or token-less prefix_pattern resolves to
+		// KeyPrefix="" (a no-op in scopedKey/scopedPrefix), collapsing every
+		// tenant into one flat keyspace — a cross-tenant read+write leak.
+		// This is the RUNTIME BACKSTOP: the Def validator and the static-
+		// config check reject it earlier, but resolveTenancy refuses
+		// unconditionally so NO configuration path (substrate fork OR
+		// hand-written yaml, which skips Def validation) can ever reach the
+		// leaky no-prefix state. (Contrast key_per_tenant, which legitimately
+		// carries no prefix because isolation rests on a distinct per-tenant
+		// API key.)
 		prefix := ts.PrefixPattern
-		if strings.Contains(prefix, "{tenant_id}") {
-			if tenantID == "" {
-				return mem9.Tenancy{}, "", fmt.Errorf("shared_key_with_prefix needs {tenant_id} but the run carries no tenant (user_id)")
-			}
-			prefix = strings.ReplaceAll(prefix, "{tenant_id}", tenantID)
+		if !strings.Contains(prefix, "{tenant_id}") {
+			return mem9.Tenancy{}, "", fmt.Errorf("shared_key_with_prefix requires prefix_pattern to contain {tenant_id} (got %q); an empty or token-less prefix would collapse all tenants into one keyspace", prefix)
 		}
+		if tenantID == "" {
+			return mem9.Tenancy{}, "", fmt.Errorf("shared_key_with_prefix needs {tenant_id} but the run carries no tenant (user_id)")
+		}
+		prefix = strings.ReplaceAll(prefix, "{tenant_id}", tenantID)
 		return mem9.Tenancy{KeyPrefix: prefix}, tenantID, nil
 	default:
 		return mem9.Tenancy{}, "", fmt.Errorf("unknown tenancy_strategy.kind %q", ts.Kind)
@@ -951,7 +961,13 @@ func (m *Memory) checkQuota(ctx context.Context, scope store.MemoryScope, scopeI
 	// cap silently. An agent that hits this limit should `delete`
 	// rows before writing more, or operators should bump the quota.
 	const listCap = 1000
-	entries, truncated, err := m.Store.MemoryList(ctx, scope, scopeID, "", listCap)
+	// List through the RESOLVED backend, not the in-process store: an agent
+	// routed to a remote backend (mem9) stores its rows there, so summing the
+	// local store would measure ~0 used bytes and let the per-scope
+	// memory_quota_bytes cap silently never apply. backend(ctx) is the
+	// in-process default (which wraps m.Store) when no remote backend is
+	// configured, so this is equivalent for the common case.
+	entries, truncated, err := m.backend(ctx).List(ctx, scope, scopeID, "", listCap)
 	if err != nil {
 		return fmt.Errorf("quota check: %w", err)
 	}
