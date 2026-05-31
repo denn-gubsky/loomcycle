@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"regexp"
 	"strings"
 
@@ -461,11 +462,47 @@ func validateA2AAgentDef(def mergedA2AAgentDef) error {
 	if def.Binding != "" && !a2aBindings[def.Binding] {
 		return fmt.Errorf("unknown binding %q (must be one of: jsonrpc, grpc, rest)", def.Binding)
 	}
+	// Reachability targets can be model-authored (a fork overlay carries
+	// agent_card_url / endpoint), so reject non-HTTP schemes and hostless
+	// URLs upfront. This is defense-in-depth: the HTTP fetch + jsonrpc/rest
+	// transports also dial through the SSRF-blocking client in
+	// internal/tools/a2a, which refuses private/loopback/metadata targets
+	// at connect time. (The gRPC binding dials via grpc-go, outside that
+	// client — so a grpc endpoint is validated for shape here but its
+	// dial is NOT private-IP-blocked; gRPC peers are operator-configured in
+	// practice and a callable fork must already be in allowed_tools.)
+	if hasCardURL {
+		if err := requireHTTPURL("agent_card_url", def.AgentCardURL); err != nil {
+			return err
+		}
+	}
+	if def.Endpoint != "" && (def.Binding == "rest" || def.Binding == "jsonrpc") {
+		if err := requireHTTPURL("endpoint", def.Endpoint); err != nil {
+			return err
+		}
+	}
 	if def.Auth.Scheme != "" && !a2aSecuritySchemeKinds[def.Auth.Scheme] {
 		return fmt.Errorf("auth.scheme %q invalid (must be one of: http, apiKey, oauth2, mtls)", def.Auth.Scheme)
 	}
 	if def.Auth.BearerCredentialRef != "" && !a2aCredentialRefRe.MatchString(def.Auth.BearerCredentialRef) {
 		return fmt.Errorf("auth.bearer_credential_ref %q invalid (must match [a-zA-Z0-9_-]{1,64})", def.Auth.BearerCredentialRef)
+	}
+	return nil
+}
+
+// requireHTTPURL rejects a peer reachability URL that is not an absolute
+// http(s) URL with a host — closing junk and non-HTTP schemes (file://,
+// gopher://, …) a model-authored Def might carry before they reach the SDK.
+func requireHTTPURL(field, raw string) error {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return fmt.Errorf("%s %q is not a valid URL: %v", field, raw, err)
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return fmt.Errorf("%s must be an http or https URL (got scheme %q)", field, u.Scheme)
+	}
+	if u.Host == "" {
+		return fmt.Errorf("%s %q has no host", field, raw)
 	}
 	return nil
 }
