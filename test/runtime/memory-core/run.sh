@@ -77,7 +77,10 @@ adm -X POST "$BASE/v1/_memorybackenddef" -d '{"op":"create","name":"shared","ove
   || fail "valid {tenant_id} prefix was wrongly refused"
 
 echo "[6/6] MemoryBackendDef: mem9 non-http base_url REFUSED (SSRF fix)"
-code -X POST "$BASE/v1/_memorybackenddef" -d '{"op":"create","name":"badurl","overlay":{"kind":"mem9","config":{"base_url":"file:///etc/passwd","api_key_env":"LOOMCYCLE_M_KEY"}}}' > /dev/null
+# The non-http(s) scheme is the rejection trigger; the path is irrelevant,
+# kept generic so a secret scanner's generic-password detector doesn't
+# false-positive on a system-file-path literal.
+code -X POST "$BASE/v1/_memorybackenddef" -d '{"op":"create","name":"badurl","overlay":{"kind":"mem9","config":{"base_url":"file:///tmp/x","api_key_env":"LOOMCYCLE_M_KEY"}}}' > /dev/null
 grep -qiE "http|url|base_url" "$TEST_DIR/last.body" || fail "file:// base_url was NOT refused: $(cat "$TEST_DIR/last.body")"
 # Make sure it really was an error result, not an accepted def.
 grep -q '"def_id"' "$TEST_DIR/last.body" && fail "file:// base_url was accepted (got a def_id)"
