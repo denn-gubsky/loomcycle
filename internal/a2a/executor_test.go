@@ -37,9 +37,13 @@ func (f *fakeRunner) RunOnce(ctx context.Context, in runner.RunInput, cb runner.
 	return f.runErr
 }
 
-// fakeRuns is an in-memory RunReader keyed by agent_id.
+// fakeRuns is an in-memory RunReader keyed by agent_id. bySession is the
+// optional session→Session map the tenant-scoping path (GetSession) reads;
+// nil/absent means GetSession returns ErrNotFound (fine for the
+// single-tenant tests that never stamp a routed tenant).
 type fakeRuns struct {
 	byAgentID map[string]store.Run
+	bySession map[string]store.Session
 }
 
 func (f *fakeRuns) GetRun(ctx context.Context, runID string) (store.Run, error) {
@@ -56,6 +60,13 @@ func (f *fakeRuns) GetRunByAgentID(ctx context.Context, agentID string) (store.R
 		return r, nil
 	}
 	return store.Run{}, &store.ErrNotFound{Kind: "run", ID: agentID}
+}
+
+func (f *fakeRuns) GetSession(ctx context.Context, sessionID string) (store.Session, error) {
+	if s, ok := f.bySession[sessionID]; ok {
+		return s, nil
+	}
+	return store.Session{}, &store.ErrNotFound{Kind: "session", ID: sessionID}
 }
 
 // fakeConnector embeds the interface (so we only implement what the

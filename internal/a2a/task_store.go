@@ -13,12 +13,18 @@ import (
 )
 
 // RunReader is the read-only slice of store.Store the task store needs.
-// Narrowed to two methods so tests inject a fake without the full Store
-// surface, and so the bridge cannot accidentally mutate the run table
-// (run rows are owned by the loop; A2A never writes them).
+// Narrowed so tests inject a fake without the full Store surface, and so
+// the bridge cannot accidentally mutate the run table (run rows are owned
+// by the loop; A2A never writes them).
 type RunReader interface {
 	GetRun(ctx context.Context, runID string) (store.Run, error)
 	GetRunByAgentID(ctx context.Context, agentID string) (store.Run, error)
+	// GetSession resolves a run's owning session. Its TenantID is the
+	// authoritative tenant for A2A cross-tenant scoping on the get/cancel
+	// paths: the runs table carries NO tenant column — tenant lives on the
+	// session (store.Session.TenantID) — so resolving the run's tenant
+	// means a run→session hop. store.Store satisfies this.
+	GetSession(ctx context.Context, sessionID string) (store.Session, error)
 }
 
 // TaskStore implements the SDK's taskstore.Store over loomcycle's run
@@ -99,6 +105,17 @@ func (s *TaskStore) Update(ctx context.Context, req *taskstore.UpdateRequest) (t
 // falls through to the run table, treating the A2A Task.id as a
 // loomcycle agent_id. Returns a2a.ErrTaskNotFound when neither has it.
 func (s *TaskStore) Get(ctx context.Context, taskID a2asdk.TaskID) (*taskstore.StoredTask, error) {
+	// Tenant gate FIRST, before either the in-memory hit or the run-table
+	// fallback can return a task. The A2A Task.id IS a caller-supplied
+	// loomcycle agent_id (a non-secret addressable handle), and the
+	// in-memory map is process-global across every tenant a host/path-
+	// routed server fronts — so without this a peer authenticated on
+	// tenant-A's routed host could read tenant-B's task (status + the raw
+	// ErrorMsg taskFromRun packs in). A no-op in single-tenant/none mode.
+	if err := authorizeTaskTenant(ctx, s.runs, string(taskID)); err != nil {
+		return nil, err
+	}
+
 	s.mu.RLock()
 	stored, ok := s.tasks[taskID]
 	s.mu.RUnlock()
@@ -129,11 +146,14 @@ func (s *TaskStore) Get(ctx context.Context, taskID a2asdk.TaskID) (*taskstore.S
 // List enumerates in-memory tasks. The run-table fallback is not
 // listable (no efficient by-status scan keyed to A2A semantics this
 // slice); callers that need run enumeration use the loomcycle ListRuns
-// surface. Honours req.ContextID and req.Status filters when set.
+// surface. Honours req.ContextID and req.Status filters when set, and the
+// authoritative routed tenant when a routing mode is active.
 func (s *TaskStore) List(ctx context.Context, req *a2asdk.ListTasksRequest) (*a2asdk.ListTasksResponse, error) {
+	// Snapshot the context/status-filtered candidates under the lock, then
+	// resolve tenant ownership OUTSIDE it: the tenant check does store
+	// round-trips (run→session) and must not hold the map lock during I/O.
 	s.mu.RLock()
-	defer s.mu.RUnlock()
-	out := make([]*a2asdk.Task, 0, len(s.tasks))
+	candidates := make([]*a2asdk.Task, 0, len(s.tasks))
 	for _, st := range s.tasks {
 		if req != nil {
 			if req.ContextID != "" && st.Task.ContextID != req.ContextID {
@@ -143,7 +163,27 @@ func (s *TaskStore) List(ctx context.Context, req *a2asdk.ListTasksRequest) (*a2
 				continue
 			}
 		}
-		out = append(out, st.Task)
+		candidates = append(candidates, st.Task)
+	}
+	s.mu.RUnlock()
+
+	// The in-memory map is process-global across every tenant a host/path-
+	// routed server fronts, and the caller-supplied ContextID is the
+	// loomcycle SessionID (run-derived, NOT a tenant boundary), so without
+	// this a peer on tenant-A's routed host could enumerate tenant-B's
+	// task ids / context ids / states / status messages. In a routing mode
+	// (RoutedTenantFrom ok==true) keep only tasks whose backing run belongs
+	// to the routed tenant: authorizeTaskTenant returns nil on a match, and
+	// any non-nil (cross-tenant OR an unresolved run) excludes the task —
+	// fail-closed, never leak. Single-tenant/none mode lists all, as before.
+	out := candidates
+	if _, ok := RoutedTenantFrom(ctx); ok {
+		out = make([]*a2asdk.Task, 0, len(candidates))
+		for _, t := range candidates {
+			if authorizeTaskTenant(ctx, s.runs, string(t.ID)) == nil {
+				out = append(out, t)
+			}
+		}
 	}
 	return &a2asdk.ListTasksResponse{
 		Tasks:     out,

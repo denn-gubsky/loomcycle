@@ -38,13 +38,14 @@ type scriptedBackend struct {
 	scriptFor func(agent string) ([]providers.Event, store.RunStatus, string)
 
 	mu         sync.Mutex
-	runs       map[string]store.Run // keyed by agent_id (== A2A task id)
-	ranAgents  []string             // ordered record of which agents ran
-	ranTenants []string             // ordered record of the tenant each run was attributed to
+	runs       map[string]store.Run     // keyed by agent_id (== A2A task id)
+	sessions   map[string]store.Session // keyed by session_id; carries the run's tenant
+	ranAgents  []string                 // ordered record of which agents ran
+	ranTenants []string                 // ordered record of the tenant each run was attributed to
 }
 
 func newScriptedBackend(scriptFor func(agent string) ([]providers.Event, store.RunStatus, string)) *scriptedBackend {
-	return &scriptedBackend{scriptFor: scriptFor, runs: map[string]store.Run{}}
+	return &scriptedBackend{scriptFor: scriptFor, runs: map[string]store.Run{}, sessions: map[string]store.Session{}}
 }
 
 // RunOnce drives the scripted event stream for the routed agent, then
@@ -73,6 +74,11 @@ func (b *scriptedBackend) RunOnce(ctx context.Context, in runner.RunInput, cb ru
 		row.ErrorMsg = detail
 	}
 	b.runs[in.AgentID] = row
+	// Record the run's owning session with the tenant it was attributed to,
+	// so the tenant-scoping path (GetSession) sees the same tenant the run
+	// was created under — mirroring the real store where tenant lives on
+	// the session row, not the run.
+	b.sessions["sess-"+in.AgentID] = store.Session{ID: "sess-" + in.AgentID, TenantID: in.TenantID}
 	b.mu.Unlock()
 	return nil
 }
@@ -95,6 +101,15 @@ func (b *scriptedBackend) GetRunByAgentID(ctx context.Context, agentID string) (
 		return r, nil
 	}
 	return store.Run{}, &store.ErrNotFound{Kind: "run", ID: agentID}
+}
+
+func (b *scriptedBackend) GetSession(ctx context.Context, sessionID string) (store.Session, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if s, ok := b.sessions[sessionID]; ok {
+		return s, nil
+	}
+	return store.Session{}, &store.ErrNotFound{Kind: "session", ID: sessionID}
 }
 
 // The card-resolution + interrupt surfaces are unused by these tests

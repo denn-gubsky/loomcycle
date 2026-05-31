@@ -2,8 +2,12 @@ package a2a
 
 import (
 	"context"
+	"errors"
 
+	a2asdk "github.com/a2aproject/a2a-go/v2/a2a"
 	"github.com/a2aproject/a2a-go/v2/a2asrv"
+
+	"github.com/denn-gubsky/loomcycle/internal/store"
 )
 
 // principal is the authenticated identity the bridge threads into a
@@ -104,4 +108,62 @@ func principalFromContext(ctx context.Context, tenant string) principal {
 		p.TenantID = callCtx.Tenant()
 	}
 	return p
+}
+
+// authorizeTaskTenant enforces the host/path-authoritative tenant on the
+// A2A read/cancel paths, where the caller-supplied A2A Task.id IS the
+// loomcycle agent_id — a non-secret, addressable handle. Without it a peer
+// authenticated on one tenant's routed host could resolve a run owned by
+// another tenant (cross-tenant cancel is destructive; cross-tenant get
+// leaks run status + the raw ErrorMsg). The create path already honours
+// the routed tenant via principalFromContext; this closes the read/cancel
+// side, which previously resolved purely by agent_id.
+//
+// It resolves the run behind agentID and the tenant of its owning session
+// (the runs table has no tenant column — tenant lives on the session, see
+// store.Session.TenantID) and compares that to the authoritative routed
+// tenant stamped by the mounting layer (WithRoutedTenant).
+//
+// Returns:
+//   - nil in single-tenant / none mode (RoutedTenantFrom ok==false): there
+//     is no cross-tenant surface, so this is a no-op and behaviour is
+//     unchanged — no store round-trips are made.
+//   - nil when the run's session tenant equals the routed tenant.
+//   - a2asdk.ErrTaskNotFound on a cross-tenant mismatch, OR when the run /
+//     session is not found. ErrTaskNotFound (not a distinct "forbidden")
+//     is deliberate: a distinct error is an oracle that confirms the task
+//     exists under another tenant. Failing closed on a not-found run also
+//     covers the brief window between SDK task Create and run-row
+//     persistence — a just-created task is hidden from a cross-tenant
+//     probe rather than leaked.
+//   - the underlying store error for any non-not-found failure, so a real
+//     storage fault is not masked as "task not found".
+func authorizeTaskTenant(ctx context.Context, runs RunReader, agentID string) error {
+	routed, ok := RoutedTenantFrom(ctx)
+	if !ok {
+		return nil
+	}
+	run, err := runs.GetRunByAgentID(ctx, agentID)
+	if err != nil {
+		return notFoundAsTaskNotFound(err)
+	}
+	sess, err := runs.GetSession(ctx, run.SessionID)
+	if err != nil {
+		return notFoundAsTaskNotFound(err)
+	}
+	if sess.TenantID != routed {
+		return a2asdk.ErrTaskNotFound
+	}
+	return nil
+}
+
+// notFoundAsTaskNotFound maps a loomcycle store-not-found to the SDK's
+// a2asdk.ErrTaskNotFound sentinel (so the A2A frontier returns a proper
+// task-not-found), while passing any other error through unchanged.
+func notFoundAsTaskNotFound(err error) error {
+	var nf *store.ErrNotFound
+	if errors.As(err, &nf) {
+		return a2asdk.ErrTaskNotFound
+	}
+	return err
 }
