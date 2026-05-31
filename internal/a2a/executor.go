@@ -291,7 +291,21 @@ func (e *Executor) resumeParkedRun(ctx context.Context, execCtx *a2asrv.Executor
 		e.streamFromParked(ctx, execCtx, parked, yield)
 		return
 	}
-	answer := answerFromMessage(execCtx.Message)
+	answer, aerr := answerFromMessage(execCtx.Message)
+	if aerr != nil {
+		// The follow-up carried a non-text part (file/data). It cannot be an
+		// interruption answer; fail loudly rather than resolve with "" and
+		// wake the parked run as if the human answered nothing — mirroring
+		// buildRunInput's rejection on the brand-new-message path.
+		yield(a2asdk.NewStatusUpdateEvent(execCtx, a2asdk.TaskStateFailed,
+			agentMessage("a2a executor: resume message content unusable (only text parts are accepted): "+aerr.Error())), nil)
+		return
+	}
+	if answer == "" {
+		yield(a2asdk.NewStatusUpdateEvent(execCtx, a2asdk.TaskStateFailed,
+			agentMessage("a2a executor: resume message carried no usable text answer")), nil)
+		return
+	}
 	if err := e.resolver.Resolve(ctx, intrID, answer); err != nil {
 		yield(a2asdk.NewStatusUpdateEvent(execCtx, a2asdk.TaskStateFailed,
 			agentMessage("a2a executor: resolve interruption failed: "+err.Error())), nil)
@@ -347,14 +361,17 @@ func inputRequiredStatus(info a2asdk.TaskInfoProvider, intr *providers.Interrupt
 
 // answerFromMessage extracts the human's answer text from a resume
 // message's parts (text parts concatenated). The answer is recorded
-// against the interruption + fed back into the parked loop.
-func answerFromMessage(msg *a2asdk.Message) string {
+// against the interruption + fed back into the parked loop. It returns an
+// error when the message carries a non-text part (file/data) so the caller
+// can reject the resume rather than silently resolving with "" — the same
+// loud rejection partsToContentBlocks gives the brand-new-message path.
+func answerFromMessage(msg *a2asdk.Message) (string, error) {
 	if msg == nil {
-		return ""
+		return "", nil
 	}
 	blocks, err := partsToContentBlocks(msg.Parts)
 	if err != nil {
-		return ""
+		return "", err
 	}
 	var out string
 	for _, b := range blocks {
@@ -366,7 +383,7 @@ func answerFromMessage(msg *a2asdk.Message) string {
 		}
 		out += b.Text
 	}
-	return out
+	return out, nil
 }
 
 // Cancel requests the loop stop working on the task. It routes through

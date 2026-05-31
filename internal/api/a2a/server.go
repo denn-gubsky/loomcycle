@@ -334,7 +334,7 @@ func (s *Server) handleAgentCard(w http.ResponseWriter, r *http.Request) {
 	}
 	tenant := s.tenantFromRequest(r)
 	extended := r.URL.Query().Get("extended") == "true" && s.adminAuthed(r)
-	s.writeCard(w, tenant, extended)
+	s.writeCard(w, r, tenant, extended)
 }
 
 // handleExtendedCard serves the full card; the caller (Mount) has
@@ -344,7 +344,7 @@ func (s *Server) handleExtendedCard(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}
-	s.writeCard(w, s.tenantFromRequest(r), true)
+	s.writeCard(w, r, s.tenantFromRequest(r), true)
 }
 
 // writeCard resolves the active card fresh per request (so a substrate
@@ -354,8 +354,11 @@ func (s *Server) handleExtendedCard(w http.ResponseWriter, r *http.Request) {
 // allowlisted + holds a usable key, the served card is JWS-signed
 // (A2A-6); otherwise it is served unsigned with a tracing line — card
 // serving never fails on a signing problem.
-func (s *Server) writeCard(w http.ResponseWriter, tenant string, extended bool) {
-	card, ok := lookup.A2AServerCard(context.Background(), s.deps.Store, s.deps.Cfg, s.cardName)
+func (s *Server) writeCard(w http.ResponseWriter, r *http.Request, tenant string, extended bool) {
+	// Use the request context so a client disconnect / deadline cancels the
+	// substrate card lookup (a DB query on the substrate path) instead of
+	// running it to completion on a detached background context.
+	card, ok := lookup.A2AServerCard(r.Context(), s.deps.Store, s.deps.Cfg, s.cardName)
 	if !ok {
 		http.Error(w, "a2a server card unavailable", http.StatusServiceUnavailable)
 		return
