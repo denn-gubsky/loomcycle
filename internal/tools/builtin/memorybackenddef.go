@@ -460,6 +460,14 @@ func validateMemoryBackendDef(def mergedMemoryBackendDef) error {
 		if def.Config.BaseURL == "" {
 			return fmt.Errorf("kind=mem9 requires config.base_url (non-empty)")
 		}
+		// base_url can be model-authored via a fork overlay (gated by
+		// memory_backend_def scopes), and the Mem9 client sends the
+		// allowlisted X-API-Key to whatever host it names — so reject a
+		// non-http(s)/hostless URL upfront (defense-in-depth against a
+		// blind-SSRF redirect of the egress). Reuses the A2A peer-URL guard.
+		if err := requireHTTPURL("config.base_url", def.Config.BaseURL); err != nil {
+			return err
+		}
 		if def.Config.APIKeyEnv == "" {
 			return fmt.Errorf("kind=mem9 requires config.api_key_env (non-empty)")
 		}
@@ -480,8 +488,13 @@ func validateMemoryBackendDef(def mergedMemoryBackendDef) error {
 			return fmt.Errorf("tenancy_strategy.env_pattern %q must contain {tenant_id}", def.TenancyStrategy.EnvPattern)
 		}
 	case "shared_key_with_prefix":
-		if def.TenancyStrategy.PrefixPattern != "" && !strings.Contains(def.TenancyStrategy.PrefixPattern, "{tenant_id}") {
-			return fmt.Errorf("tenancy_strategy.prefix_pattern %q must contain {tenant_id}", def.TenancyStrategy.PrefixPattern)
+		// The {tenant_id} token is MANDATORY here (no `!= ""` escape): for
+		// shared_key_with_prefix the prefix IS the only tenant-isolation
+		// mechanism, so an empty or token-less pattern would resolve to an
+		// empty key prefix and collapse all tenants into one keyspace. Reject
+		// it at authoring time; resolveTenancy is the runtime backstop.
+		if !strings.Contains(def.TenancyStrategy.PrefixPattern, "{tenant_id}") {
+			return fmt.Errorf("tenancy_strategy.prefix_pattern %q must contain {tenant_id} for shared_key_with_prefix (an empty or token-less prefix collapses all tenants into one keyspace)", def.TenancyStrategy.PrefixPattern)
 		}
 	default:
 		return fmt.Errorf("unknown tenancy_strategy.kind %q (must be one of: key_per_tenant, shared_key_with_prefix)", def.TenancyStrategy.Kind)

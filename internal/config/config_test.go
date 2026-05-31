@@ -646,6 +646,32 @@ agents:
 	}
 }
 
+// TestMemoryBackend_RejectsSharedPrefixWithoutTenantToken pins the static-
+// config half of the cross-tenant-leak fix: a hand-written memory_backends
+// entry with shared_key_with_prefix and a prefix_pattern lacking {tenant_id}
+// (here: omitted entirely) must fail to load. Without this a static backend
+// bypasses the MemoryBackendDef tool validator and would resolve to an empty
+// key prefix, collapsing every tenant into one Mem9 keyspace.
+func TestMemoryBackend_RejectsSharedPrefixWithoutTenantToken(t *testing.T) {
+	tmp := t.TempDir()
+	yamlPath := filepath.Join(tmp, "c.yaml")
+	os.WriteFile(yamlPath, []byte(`
+defaults: { provider: anthropic, model: claude-sonnet-4-6 }
+memory_backends:
+  shared:
+    kind: mem9
+    config: { base_url: "https://m.example.com", api_key_env: LOOMCYCLE_M_KEY }
+    tenancy_strategy: { kind: shared_key_with_prefix }
+`), 0o600)
+	_, err := Load(yamlPath)
+	if err == nil {
+		t.Fatal("expected error: shared_key_with_prefix without {tenant_id} collapses all tenants into one keyspace")
+	}
+	if !strings.Contains(err.Error(), "{tenant_id}") {
+		t.Errorf("error should mention {tenant_id}: %v", err)
+	}
+}
+
 // TestMemoryBackend_LenientWhenNoStaticMap confirms an agent may name a
 // backend that exists only as a future dynamic MemoryBackendDef: when the
 // static memory_backends map is empty, an unresolved name is NOT a load
