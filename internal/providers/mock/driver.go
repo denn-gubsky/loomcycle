@@ -190,6 +190,12 @@ func (d *Driver) Call(ctx context.Context, req providers.Request) (<-chan provid
 		// mcp__-prefixed names and emits tool_use calls against
 		// them with user_id extracted from the prompt.
 		events = scriptMCPCaller(step, extractMCPTools(req), extractUserID(req))
+	case "mock-mem-search":
+		// Runtime memory-vector suite variant — issues one Memory.search
+		// over the user scope with search-time dedup enabled (drop mode),
+		// so the runtime test can assert near-duplicate collapse against a
+		// real pgvector + the deterministic stub embedder.
+		events = scriptMemSearch(step)
 	default:
 		// mock-generic + anything unpinned. Single text turn, done.
 		// Usage is attached to EventDone below by finalizeUsage —
@@ -290,6 +296,35 @@ func scriptResearcher(step int, circuitID string) []providers.Event {
 				"op":      "publish",
 				"channel": channel,
 				"value":   map[string]any{"circuit_id": circuitID},
+			}),
+			{Type: providers.EventDone, StopReason: "tool_use"},
+		}
+	default:
+		return []providers.Event{
+			textEvent("done"),
+			{Type: providers.EventDone, StopReason: "end_turn"},
+		}
+	}
+}
+
+// scriptMemSearch emits a single Memory.search over the user scope with
+// search-time dedup enabled (drop mode). It backs the memory-vector runtime
+// suite: seed near-duplicate + distinct rows via the admin PUT ?embed path,
+// then run this model and assert from the tool_result that the near-
+// duplicates collapsed (dedup_dropped >= 1) against a real pgvector store +
+// the deterministic stub embedder. The query shares tokens with the seeded
+// cluster so those rows rank highest.
+func scriptMemSearch(step int) []providers.Event {
+	switch step {
+	case 0:
+		return []providers.Event{
+			textEvent("searching memory"),
+			toolEvent("Memory", map[string]any{
+				"op":    "search",
+				"scope": "user",
+				"query": "loomcycle high-load agentic runtime in go",
+				"top_k": 10,
+				"dedup": map[string]any{"enabled": true, "mode": "drop", "threshold": 0.9},
 			}),
 			{Type: providers.EventDone, StopReason: "tool_use"},
 		}
