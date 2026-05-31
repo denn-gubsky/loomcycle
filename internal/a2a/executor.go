@@ -376,6 +376,15 @@ func answerFromMessage(msg *a2asdk.Message) string {
 func (e *Executor) Cancel(ctx context.Context, execCtx *a2asrv.ExecutorContext) iter.Seq2[a2asdk.Event, error] {
 	return func(yield func(a2asdk.Event, error) bool) {
 		agentID := string(execCtx.TaskID)
+		// Tenant gate before the destructive cancel. agentID is the
+		// caller-supplied A2A Task.id; CancelRun resolves it purely by
+		// agent_id (no tenant predicate), so without this a peer on
+		// tenant-A's routed host could cancel tenant-B's in-flight run
+		// (cascading to its sub-agents). No-op in single-tenant/none mode.
+		if err := authorizeTaskTenant(ctx, e.runs, agentID); err != nil {
+			yield(nil, err)
+			return
+		}
 		if _, err := e.conn.CancelRun(ctx, agentID, "a2a cancel"); err != nil {
 			yield(nil, fmt.Errorf("a2a executor: cancel run %q: %w", agentID, err))
 			return

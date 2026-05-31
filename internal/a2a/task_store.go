@@ -13,12 +13,18 @@ import (
 )
 
 // RunReader is the read-only slice of store.Store the task store needs.
-// Narrowed to two methods so tests inject a fake without the full Store
-// surface, and so the bridge cannot accidentally mutate the run table
-// (run rows are owned by the loop; A2A never writes them).
+// Narrowed so tests inject a fake without the full Store surface, and so
+// the bridge cannot accidentally mutate the run table (run rows are owned
+// by the loop; A2A never writes them).
 type RunReader interface {
 	GetRun(ctx context.Context, runID string) (store.Run, error)
 	GetRunByAgentID(ctx context.Context, agentID string) (store.Run, error)
+	// GetSession resolves a run's owning session. Its TenantID is the
+	// authoritative tenant for A2A cross-tenant scoping on the get/cancel
+	// paths: the runs table carries NO tenant column — tenant lives on the
+	// session (store.Session.TenantID) — so resolving the run's tenant
+	// means a run→session hop. store.Store satisfies this.
+	GetSession(ctx context.Context, sessionID string) (store.Session, error)
 }
 
 // TaskStore implements the SDK's taskstore.Store over loomcycle's run
@@ -99,6 +105,17 @@ func (s *TaskStore) Update(ctx context.Context, req *taskstore.UpdateRequest) (t
 // falls through to the run table, treating the A2A Task.id as a
 // loomcycle agent_id. Returns a2a.ErrTaskNotFound when neither has it.
 func (s *TaskStore) Get(ctx context.Context, taskID a2asdk.TaskID) (*taskstore.StoredTask, error) {
+	// Tenant gate FIRST, before either the in-memory hit or the run-table
+	// fallback can return a task. The A2A Task.id IS a caller-supplied
+	// loomcycle agent_id (a non-secret addressable handle), and the
+	// in-memory map is process-global across every tenant a host/path-
+	// routed server fronts — so without this a peer authenticated on
+	// tenant-A's routed host could read tenant-B's task (status + the raw
+	// ErrorMsg taskFromRun packs in). A no-op in single-tenant/none mode.
+	if err := authorizeTaskTenant(ctx, s.runs, string(taskID)); err != nil {
+		return nil, err
+	}
+
 	s.mu.RLock()
 	stored, ok := s.tasks[taskID]
 	s.mu.RUnlock()
