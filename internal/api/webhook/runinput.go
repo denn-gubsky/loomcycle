@@ -81,8 +81,16 @@ func buildRunInput(w config.Webhook, proj projectResult, envAllowlist map[string
 	}
 
 	return runner.RunInput{
-		Agent:           w.Agent,
-		Segments:        []loop.PromptSegment{seg},
+		Agent:    w.Agent,
+		Segments: []loop.PromptSegment{seg},
+		// UserID + UserTier are projected from the EXTERNAL, attacker-
+		// influenceable payload when the operator maps them. UserTier
+		// selects the provider/model policy and UserID keys on_complete
+		// scope / quota — so a payload value steers routing/scope. The
+		// caller (deliverSpawn) rejects an unknown UserTier (parity with the
+		// HTTP path); constraining WHICH valid tier a payload may select, or
+		// pinning these from the Def, is an operator-config decision (the
+		// values are only as trustworthy as the per-Def signing secret).
 		UserID:          proj.Fields["user_id"],
 		UserTier:        proj.Fields["user_tier"],
 		UserCredentials: creds,

@@ -481,6 +481,15 @@ func validateWebhookDef(def mergedWebhookDef) error {
 		if !envVarNameRe.MatchString(def.Auth.SigningSecretEnv) {
 			return fmt.Errorf("auth.signing_secret_env %q is not a valid env-var name (must match [A-Z][A-Z0-9_]*)", def.Auth.SigningSecretEnv)
 		}
+		// SHA-256 is the only digest the receiver implements (verifyHMAC
+		// hardcodes sha256.New). The Algorithm field is carried through
+		// every Def site, so an unsupported value would be silently dropped
+		// and the sender's valid signatures rejected with an opaque 401 —
+		// the never-silently-degrade contract (RFC H Decision 9) demands a
+		// loud refusal here instead. "" defaults to sha256.
+		if a := strings.ToLower(strings.TrimSpace(def.Auth.Algorithm)); a != "" && a != "sha256" {
+			return fmt.Errorf("auth.algorithm %q unsupported (only sha256 is implemented)", def.Auth.Algorithm)
+		}
 	case "bearer":
 		if def.Auth.BearerTokenEnv == "" {
 			return fmt.Errorf("auth.kind=bearer requires auth.bearer_token_env")
