@@ -102,22 +102,20 @@ BIG="{\"goal\":\"$(head -c 600 < /dev/zero | tr '\0' 'A')\"}"
 CODE=$(deliver "$BIG" -H "X-Hub-Signature-256: sha256=$(sign "$BIG")" -H "X-Delivery-Id: d-big")
 [[ "$CODE" = "400" ]] || fail "oversized code=$CODE (want 400)"
 
-echo "[7/8] replay same delivery id (VALID signature) → deduped, no 2nd run"
-# Re-send d-ok-1's exact body+signature. Because the signature is VALID
-# (identical to the accepted [4] delivery), a non-2xx here can ONLY be the
-# replay guard firing — not a signature failure — so this genuinely proves
-# dedup, not an accidental rejection.
-# NOTE (discovered by this suite): the replay guard returns 401
-# "unauthorized" (server.go:195 — deliberately "opaque, same as a sig
-# failure"). That is arguably misleading for a valid-but-duplicate delivery
-# (a 200/409 idempotent ack is the usual webhook contract, and the replay
-# path is only reachable AFTER signature verification, so no unauthorized
-# attacker is being protected). Flagged for the maintainer; this suite
-# asserts the SHIPPED behaviour so a future change to it is a conscious one.
+echo "[7/8] replay same delivery id (VALID signature) → 200 idempotent ack, no 2nd run"
+# Re-send d-ok-1's exact body+signature. The signature is VALID (identical to
+# the accepted [4] delivery), so this exercises the replay/dedup guard, not a
+# signature failure. A replayed valid delivery is an idempotent re-send (the
+# path is only reachable AFTER signature verification), so the receiver acks
+# it 200 with deduped=true and the original run_id — the GitHub/Stripe
+# redelivery contract — and must NOT spawn a second run. (Earlier this guard
+# returned an opaque 401; changed to a 200 idempotent ack so a legitimate
+# sender isn't misled into rotating its secret on a dedup.)
 RUNS_BEFORE=$(sqlite3 "$DB" "SELECT count(*) FROM runs;")
 CODE=$(deliver "$BODY" -H "X-Hub-Signature-256: sha256=$(sign "$BODY")" -H "X-Delivery-Id: d-ok-1")
 echo "  replay code=$CODE body=$(cat "$TEST_DIR/deliver.body")"
-[[ "$CODE" = "401" ]] || fail "replay (valid sig) code=$CODE; expected the replay guard to reject (currently 401)"
+[[ "$CODE" = "200" ]] || fail "replay (valid sig) code=$CODE; expected 200 idempotent ack"
+grep -q '"deduped":"true"' "$TEST_DIR/deliver.body" || fail "replay ack missing deduped:true (body=$(cat "$TEST_DIR/deliver.body"))"
 sleep 1
 RUNS_AFTER=$(sqlite3 "$DB" "SELECT count(*) FROM runs;")
 [[ "$RUNS_BEFORE" = "$RUNS_AFTER" ]] || fail "replay spawned a duplicate run ($RUNS_BEFORE→$RUNS_AFTER)"

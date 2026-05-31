@@ -173,12 +173,21 @@ status, or `504` on `sync_timeout_ms`. Channel mode returns `202`.
 
 ## Never silently degrade
 
-Every failure mode is loud and distinct: `404` unknown/disabled (opaque, no
-enumeration), `401` any auth/replay failure (no body detail — no oracle),
+Every outcome is loud and distinct: `404` unknown/disabled (opaque, no
+enumeration), `401` signature/auth failure (no body detail — no oracle),
 `503 secret_unresolvable`, `400` malformed body/mapping, `429` rate limit,
 `503` runtime unavailable. A rate-limited or rejected delivery does **not**
 burn its `delivery_id`, so the sender's retry is processed rather than
 dropped as a replay.
+
+A **replayed valid delivery** (a re-send of an already-accepted
+`delivery_id`, within the dedup window) is **not** an error — it is only
+reachable after the signature has already verified, so it is an idempotent
+re-delivery, not an attacker. The receiver acks it **`200`** with
+`{deduped: true}` and the original `run_id` (when the spawn path recorded
+one), matching the GitHub/Stripe redelivery contract, and does **not** spawn
+a second run. (A sender that retries on non-2xx therefore stops, rather than
+rotating its secret on a misread `401`.)
 
 ## on_complete
 
@@ -194,7 +203,7 @@ Two bearer-authed endpoints help debug a webhook that's silently failing
 
 - `GET /v1/_webhooks/{name}/recent-deliveries?limit=50` — the last N
   invocations with `delivery_id`, `verdict`
-  (`accepted`/`rejected_sig`/`rejected_replay`/`rejected_rate`/
+  (`accepted`/`accepted_replay`/`rejected_sig`/`rejected_rate`/
   `unresolvable_secret`/…), `received_at`, `run_id`.
 - `POST /v1/_webhooks/{name}/test` — dry-run: POST a sample body + signature
   and get back `{would_accept, verdict, run_input_preview}` (credential

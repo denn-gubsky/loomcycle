@@ -54,9 +54,14 @@ func (e *authError) Error() string { return e.msg }
 // and maps to status codes; they are never echoed verbatim to the client
 // for the signature-failure cases.
 const (
-	verdictAccepted    = "accepted"
-	verdictRejectedSig = "rejected_sig"
-	verdictUnresolved  = "unresolvable_secret"
+	verdictAccepted = "accepted"
+	// verdictAcceptedReplay is an idempotent re-delivery of an
+	// already-accepted (already-signature-verified) request — a 200 ack, NOT
+	// an error. Distinct from verdictAccepted so triage can tell a fresh
+	// acceptance from a deduped re-send.
+	verdictAcceptedReplay = "accepted_replay"
+	verdictRejectedSig    = "rejected_sig"
+	verdictUnresolved     = "unresolvable_secret"
 )
 
 // errSignatureMismatch is the catch-all for every "the request did not

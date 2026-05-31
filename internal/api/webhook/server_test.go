@@ -48,6 +48,21 @@ func (f *fakeRunner) input() runner.RunInput {
 	return f.lastIn
 }
 
+// reset clears the "was called" flag so a later spawn is independently
+// observable (used to prove a replay does NOT spawn a second run).
+func (f *fakeRunner) reset() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.called = false
+}
+
+// wasCalled reads the flag under the lock (race-clean alongside RunOnce).
+func (f *fakeRunner) wasCalled() bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.called
+}
+
 // fakePublisher records channel publishes.
 type fakePublisher struct {
 	mu      sync.Mutex
@@ -190,7 +205,11 @@ func TestReceiver_TamperedBody_401(t *testing.T) {
 	}
 }
 
-func TestReceiver_ReplayWithinTTL_401(t *testing.T) {
+// A replayed valid delivery (same delivery id, within the dedup TTL) is an
+// idempotent re-send, NOT an auth failure — it is only reachable after the
+// signature already verified. It must respond 200 + deduped:true (the
+// GitHub/Stripe redelivery contract), and must NOT spawn a second run.
+func TestReceiver_ReplayWithinTTL_IdempotentAck(t *testing.T) {
 	secret := "shhh"
 	now := time.Unix(1_700_000_000, 0)
 	body := []byte(`{"goal":"a"}`)
@@ -206,8 +225,21 @@ func TestReceiver_ReplayWithinTTL_401(t *testing.T) {
 	if w := doPost(rec, "gh", body, h); w.Code != http.StatusAccepted {
 		t.Fatalf("first delivery status = %d, want 202", w.Code)
 	}
-	if w := doPost(rec, "gh", body, h); w.Code != http.StatusUnauthorized {
-		t.Fatalf("replay status = %d, want 401", w.Code)
+	fr.reset() // forget the first run so a second spawn would be observable
+
+	w := doPost(rec, "gh", body, h)
+	if w.Code != http.StatusOK {
+		t.Fatalf("replay status = %d, want 200 (idempotent ack)", w.Code)
+	}
+	var got map[string]string
+	if err := json.NewDecoder(w.Body).Decode(&got); err != nil {
+		t.Fatal(err)
+	}
+	if got["deduped"] != "true" {
+		t.Errorf("replay deduped = %q, want true", got["deduped"])
+	}
+	if fr.wasCalled() {
+		t.Error("replay spawned a second run — dedup did not suppress it")
 	}
 }
 
