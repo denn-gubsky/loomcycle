@@ -1,0 +1,15 @@
+# test/runtime/schedules — mock-mode config for the Scheduler (RFC E)
+# runtime suite. The mock provider makes every fired run deterministic +
+# free, so the test exercises the SCHEDULER (def lifecycle + cron fire +
+# run creation), not LLM output.
+provider_priority: [mock]
+tiers:
+  middle:
+    - { provider: mock, model: mock-generic }
+user_tiers:
+  default:
+    provider_priority: [mock]
+    tiers:
+      middle:
+        - { provider: mock, model: mock-generic }
+    fallback_on_error: false
