@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import {
   MemoryEmbedModelStats,
+  MemoryEmbeddingMeta,
   MemoryEntry,
   MemoryReembedResponse,
   MemoryScopeIDSummary,
@@ -48,6 +49,11 @@ export default function MemoryView() {
   const [scopeIDs, setScopeIDs] = useState<MemoryScopeIDSummary[]>([]);
   const [scopeID, setScopeID] = useState<string>("");
   const [entries, setEntries] = useState<MemoryEntry[]>([]);
+  // RFC I MR-6: per-key embedding metadata (provider/model/dimension).
+  // Keyed by entry key; keys without an embedding are simply absent.
+  // Empty map = older server / non-vector store responded without the
+  // field, so no per-row indicator ever shows (zero regression).
+  const [embeddingMeta, setEmbeddingMeta] = useState<Record<string, MemoryEmbeddingMeta>>({});
   const [truncated, setTruncated] = useState(false);
   const [selectedKey, setSelectedKey] = useState<string>("");
   const [prefix, setPrefix] = useState("");
@@ -170,15 +176,17 @@ export default function MemoryView() {
   useEffect(() => {
     if (!scope || !scopeID) {
       setEntries([]);
+      setEmbeddingMeta({});
       setTruncated(false);
       return;
     }
     let cancelled = false;
     const fetchOnce = async () => {
       try {
-        const resp = await listMemoryEntries(scope, scopeID, prefix || undefined, 200);
+        const resp = await listMemoryEntries(scope, scopeID, prefix || undefined, 200, true);
         if (cancelled) return;
         setEntries(resp.entries ?? []);
+        setEmbeddingMeta(resp.embedding_metadata ?? {});
         setTruncated(resp.truncated);
         setErr(null);
       } catch (e) {
@@ -372,6 +380,18 @@ export default function MemoryView() {
                 <span className="embed-dot" title="scope has embeddings (use Memory.search from an agent)" />
               )}
               <code>{e.key}</code>
+              {/* RFC I MR-6 — per-key embedding indicator. Renders only
+                  when the server returned embedding_metadata for THIS
+                  key; absent for plain k/v rows and for older servers
+                  that omit the field entirely. */}
+              {embeddingMeta[e.key] && (
+                <span
+                  className="embed-key-badge"
+                  title={`embedded with ${embeddingMeta[e.key].provider}/${embeddingMeta[e.key].model}, dim=${embeddingMeta[e.key].dimension}`}
+                >
+                  embedded · {embeddingMeta[e.key].model} · {embeddingMeta[e.key].dimension}d
+                </span>
+              )}
               {e.expires_at && <span className="ttl-flag" title={`expires ${e.expires_at}`}>ttl</span>}
               <span className="memory-key-actions">
                 <button

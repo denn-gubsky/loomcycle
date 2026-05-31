@@ -140,6 +140,10 @@ func (m *httpMockConnector) WebhookDef(context.Context, json.RawMessage) (connec
 	return connector.ToolResult{}, errors.New("not implemented")
 }
 
+func (m *httpMockConnector) MemoryBackendDef(context.Context, json.RawMessage) (connector.ToolResult, error) {
+	return connector.ToolResult{}, errors.New("not implemented")
+}
+
 // v0.9.x Channel CRUD stubs.
 func (m *httpMockConnector) PublishChannel(context.Context, connector.ChannelPublishRequest) (connector.ChannelPublishResult, error) {
 	return connector.ChannelPublishResult{}, errors.New("not implemented")

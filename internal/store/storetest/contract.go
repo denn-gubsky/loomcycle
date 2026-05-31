@@ -131,6 +131,7 @@ func Run(t *testing.T, factory Factory) {
 		{"MemoryEmbedSearchScopeIsolation", testMemoryEmbedSearchScopeIsolation},
 		{"MemoryEmbedSearchDimensionMismatch", testMemoryEmbedSearchDimensionMismatch},
 		{"MemoryEmbedSearchEmptyScope", testMemoryEmbedSearchEmptyScope},
+		{"MemoryEmbedSearchReturnsVectors", testMemoryEmbedSearchReturnsVectors},
 		{"MemoryDeleteCascadesEmbedding", testMemoryDeleteCascadesEmbedding},
 		{"MemoryEmbedListByModelFiltersCurrent", testMemoryEmbedListByModelFiltersCurrent},
 		{"MemoryEmbedStatsReportsPerModelCount", testMemoryEmbedStatsReportsPerModelCount},
@@ -216,6 +217,13 @@ func Run(t *testing.T, factory Factory) {
 		{"WebhookDefParentNotFound", testWebhookDefParentNotFound},
 		{"WebhookDefListByName", testWebhookDefListByName},
 		{"WebhookDefListChildren", testWebhookDefListChildren},
+		{"MemoryBackendDefCreateAndGet", testMemoryBackendDefCreateAndGet},
+		{"MemoryBackendDefVersionMonotonic", testMemoryBackendDefVersionMonotonic},
+		{"MemoryBackendDefActivePointerIdempotent", testMemoryBackendDefActivePointerIdempotent},
+		{"MemoryBackendDefRetireReversible", testMemoryBackendDefRetireReversible},
+		{"MemoryBackendDefParentNotFound", testMemoryBackendDefParentNotFound},
+		{"MemoryBackendDefListByName", testMemoryBackendDefListByName},
+		{"MemoryBackendDefListChildren", testMemoryBackendDefListChildren},
 		// v1.x RFC E ScheduleDef runtime — sweeper-side state.
 		{"ScheduleRunStateSeedAndGet", testScheduleRunStateSeedAndGet},
 		{"ScheduleRunStateListDueRespectsRetiredAndPaused", testScheduleRunStateListDueRespectsRetiredAndPaused},
@@ -2440,6 +2448,53 @@ func testMemoryEmbedSearchEmptyScope(t *testing.T, s store.Store) {
 	}
 }
 
+// testMemoryEmbedSearchReturnsVectors pins the RFC I MR-5 / Decision 2
+// store change: MemoryEmbedSearch must populate MemorySearchEntry.Vector
+// with each row's stored embedding so the in-process backend's search-time
+// dedup pass has per-entry vectors to compare. The vector is internal-only
+// (json:"-") and never reaches the agent, but the store MUST hand it back.
+//
+// Gated like every other vector test on SupportsVectors(): runs against a
+// live Postgres+pgvector store, skips (after asserting the refusal shape)
+// on SQLite, which has no real vector search in any build.
+func testMemoryEmbedSearchReturnsVectors(t *testing.T, s store.Store) {
+	if !vectorRefusalCheck(t, s) {
+		return
+	}
+	ctx := context.Background()
+	want := map[string][]float32{
+		"east":  floats32(1, 0, 0, 0),
+		"north": floats32(0, 1, 0, 0),
+	}
+	for key, vec := range want {
+		if err := s.MemorySet(ctx, store.MemoryScopeAgent, "vecret", key, json.RawMessage(`"x"`), 0); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.MemoryEmbedSet(ctx, store.MemoryScopeAgent, "vecret", key, store.MemoryEmbedding{
+			Provider: "openai", Model: "text-embedding-3-small", Dimension: 4,
+			Vector: vec, EmbedText: key, CreatedAt: time.Now(),
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	results, err := s.MemoryEmbedSearch(ctx, store.MemoryScopeAgent, "vecret", "", floats32(1, 0, 0, 0), 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 2 {
+		t.Fatalf("got %d results, want 2", len(results))
+	}
+	for _, r := range results {
+		w, ok := want[r.Key]
+		if !ok {
+			t.Fatalf("unexpected key %q", r.Key)
+		}
+		if !reflect.DeepEqual(r.Vector, w) {
+			t.Errorf("key %q: Vector = %v, want %v (search must return the stored vector for dedup)", r.Key, r.Vector, w)
+		}
+	}
+}
+
 func testMemoryDeleteCascadesEmbedding(t *testing.T, s store.Store) {
 	if !vectorRefusalCheck(t, s) {
 		return
@@ -4613,6 +4668,147 @@ func testWebhookDefListChildren(t *testing.T, s store.Store) {
 		}
 	}
 	children, err := s.WebhookDefListChildren(ctx, parent.DefID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(children) != 2 {
+		t.Errorf("children len = %d, want 2", len(children))
+	}
+}
+
+// ---- RFC I MR-3a MemoryBackendDef substrate ----
+//
+// Faithful mirror of the WebhookDef round-trip contract tests.
+
+func mkMemoryBackendDef(id, name string, parent string) store.MemoryBackendDefRow {
+	return store.MemoryBackendDefRow{
+		DefID:       id,
+		Name:        name,
+		ParentDefID: parent,
+		Definition:  json.RawMessage(`{"kind":"mem9","config":{"base_url":"https://mem9.example.com","api_version":"v1","api_key_env":"LOOMCYCLE_MEM9_KEY"},"tenancy_strategy":{"kind":"shared_key_with_prefix","prefix_pattern":"tenant/{tenant_id}/"},"fallback_on_error":"inprocess"}`),
+		Description: "test row",
+	}
+}
+
+func testMemoryBackendDefCreateAndGet(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	row, err := s.MemoryBackendDefCreate(ctx, mkMemoryBackendDef("mb-1", "backend-alpha", ""))
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if row.Version != 1 {
+		t.Errorf("first version = %d, want 1", row.Version)
+	}
+	got, err := s.MemoryBackendDefGet(ctx, "mb-1")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.Name != "backend-alpha" || got.Version != 1 {
+		t.Errorf("got %+v", got)
+	}
+}
+
+func testMemoryBackendDefVersionMonotonic(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	for i := 0; i < 5; i++ {
+		row := mkMemoryBackendDef(fmt.Sprintf("mb-mono-%d", i), "backend-mono", "")
+		written, err := s.MemoryBackendDefCreate(ctx, row)
+		if err != nil {
+			t.Fatalf("create #%d: %v", i, err)
+		}
+		if want := i + 1; written.Version != want {
+			t.Errorf("create #%d: version = %d, want %d", i, written.Version, want)
+		}
+	}
+}
+
+func testMemoryBackendDefActivePointerIdempotent(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	r1, _ := s.MemoryBackendDefCreate(ctx, mkMemoryBackendDef("mb-active-1", "backend-active", ""))
+	r2, _ := s.MemoryBackendDefCreate(ctx, mkMemoryBackendDef("mb-active-2", "backend-active", ""))
+
+	if err := s.MemoryBackendDefSetActive(ctx, "backend-active", r1.DefID, "test"); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := s.MemoryBackendDefGetActive(ctx, "backend-active")
+	if got.DefID != r1.DefID {
+		t.Errorf("active = %s, want %s", got.DefID, r1.DefID)
+	}
+	if err := s.MemoryBackendDefSetActive(ctx, "backend-active", r2.DefID, "test"); err != nil {
+		t.Fatal(err)
+	}
+	got, _ = s.MemoryBackendDefGetActive(ctx, "backend-active")
+	if got.DefID != r2.DefID {
+		t.Errorf("after re-promote: active = %s, want %s", got.DefID, r2.DefID)
+	}
+}
+
+func testMemoryBackendDefRetireReversible(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	row, _ := s.MemoryBackendDefCreate(ctx, mkMemoryBackendDef("mb-retire", "backend-retire", ""))
+	if row.Retired {
+		t.Error("freshly created row should not be retired")
+	}
+	if err := s.MemoryBackendDefSetRetired(ctx, row.DefID, true); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := s.MemoryBackendDefGet(ctx, row.DefID)
+	if !got.Retired {
+		t.Error("after retire(true): row should be retired")
+	}
+	if err := s.MemoryBackendDefSetRetired(ctx, row.DefID, false); err != nil {
+		t.Fatal(err)
+	}
+	got, _ = s.MemoryBackendDefGet(ctx, row.DefID)
+	if got.Retired {
+		t.Error("after retire(false): row should NOT be retired")
+	}
+}
+
+func testMemoryBackendDefParentNotFound(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	row := mkMemoryBackendDef("mb-orphan", "backend-orphan", "mb-nonexistent")
+	_, err := s.MemoryBackendDefCreate(ctx, row)
+	if err == nil {
+		t.Fatal("expected ErrMemoryBackendDefParentNotFound, got nil")
+	}
+	if !errors.Is(err, store.ErrMemoryBackendDefParentNotFound) {
+		t.Errorf("got %v, want ErrMemoryBackendDefParentNotFound", err)
+	}
+}
+
+func testMemoryBackendDefListByName(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	for i := 0; i < 3; i++ {
+		_, err := s.MemoryBackendDefCreate(ctx, mkMemoryBackendDef(fmt.Sprintf("mb-list-%d", i), "backend-list", ""))
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	rows, err := s.MemoryBackendDefListByName(ctx, "backend-list")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 3 {
+		t.Errorf("len = %d, want 3", len(rows))
+	}
+	// version DESC ordering
+	if rows[0].Version != 3 || rows[1].Version != 2 || rows[2].Version != 1 {
+		t.Errorf("ordering wrong; versions = %d/%d/%d, want 3/2/1",
+			rows[0].Version, rows[1].Version, rows[2].Version)
+	}
+}
+
+func testMemoryBackendDefListChildren(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	parent, _ := s.MemoryBackendDefCreate(ctx, mkMemoryBackendDef("mb-parent", "backend-tree", ""))
+	for i := 0; i < 2; i++ {
+		_, err := s.MemoryBackendDefCreate(ctx, mkMemoryBackendDef(fmt.Sprintf("mb-child-%d", i), fmt.Sprintf("backend-child-%d", i), parent.DefID))
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	children, err := s.MemoryBackendDefListChildren(ctx, parent.DefID)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -269,11 +269,24 @@ export interface MemoryEntry {
   updated_at: string;
 }
 
+// MemoryEmbeddingMeta is the per-key embedding descriptor returned when
+// the keys listing is requested with include_embedding_metadata=true
+// (RFC I MR-6). Keys without an embedding are simply absent from the
+// embedding_metadata map.
+export interface MemoryEmbeddingMeta {
+  provider: string;
+  model: string;
+  dimension: number;
+}
+
 export interface MemoryEntriesResponse {
   scope: string;
   scope_id: string;
   entries: MemoryEntry[];
   truncated: boolean;
+  // Present only when the caller asked for include_embedding_metadata.
+  // Older servers / non-vector stores omit it entirely.
+  embedding_metadata?: Record<string, MemoryEmbeddingMeta>;
 }
 
 export interface MemoryEntryResponse {
@@ -295,10 +308,12 @@ export function listMemoryEntries(
   scopeID: string,
   prefix?: string,
   limit?: number,
+  includeEmbeddingMetadata?: boolean,
 ): Promise<MemoryEntriesResponse> {
   const params = new URLSearchParams();
   if (prefix) params.set("prefix", prefix);
   if (limit) params.set("limit", String(limit));
+  if (includeEmbeddingMetadata) params.set("include_embedding_metadata", "true");
   const qs = params.toString();
   return jsonFetch<MemoryEntriesResponse>(
     `/v1/_memory/scopes/${encodeURIComponent(scope)}/${encodeURIComponent(scopeID)}/keys${qs ? "?" + qs : ""}`,

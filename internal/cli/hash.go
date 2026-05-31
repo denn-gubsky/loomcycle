@@ -224,6 +224,7 @@ func runHashAgentByName(name, cfgPath string, stdout, stderr io.Writer) int {
 		Models:                convertConfigModels(def.Models),
 		MemoryScopes:          def.MemoryScopes,
 		MemoryQuotaBytes:      def.MemoryQuotaBytes,
+		MemoryBackend:         def.MemoryBackend,
 	}
 	fmt.Fprintln(stdout, agents.Sign(agents.FromYAMLAgent(a)))
 	return 0

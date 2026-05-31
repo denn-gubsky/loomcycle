@@ -174,7 +174,7 @@ func (s *Store) MemoryEmbedSearch(ctx context.Context, scope store.MemoryScope, 
 	}
 	sql := `SELECT me.key, m.value, m.expires_at, m.created_at, m.updated_at,
 	               1.0 - (me.embedding <=> $3::vector) AS score,
-	               me.provider, me.model
+	               me.provider, me.model, me.embedding::text AS embedding_text
 	         FROM memory_embeddings me
 	         JOIN memory m
 	            ON me.scope    = m.scope
@@ -201,8 +201,9 @@ func (s *Store) MemoryEmbedSearch(ctx context.Context, scope store.MemoryScope, 
 			updatedAt          time.Time
 			score              float64
 			provider, modelStr string
+			embeddingText      string
 		)
-		if err := rows.Scan(&key, &valueBytes, &expiresAt, &createdAt, &updatedAt, &score, &provider, &modelStr); err != nil {
+		if err := rows.Scan(&key, &valueBytes, &expiresAt, &createdAt, &updatedAt, &score, &provider, &modelStr, &embeddingText); err != nil {
 			return nil, fmt.Errorf("MemoryEmbedSearch scan: %w", err)
 		}
 		entry := store.MemorySearchEntry{
@@ -219,6 +220,14 @@ func (s *Store) MemoryEmbedSearch(ctx context.Context, scope store.MemoryScope, 
 		}
 		entry.EmbeddedWith.Provider = provider
 		entry.EmbeddedWith.Model = modelStr
+		// Retain the stored vector for client-side search-time dedup (RFC I
+		// MR-5 / Decision 2). Reuse the same text codec MemoryEmbedGet uses.
+		// A decode failure is non-fatal for dedup (an empty Vector means the
+		// row is simply never deduped), so we drop the vector and continue
+		// rather than failing the whole search.
+		if vec, derr := decodePgvector(embeddingText); derr == nil {
+			entry.Vector = vec
+		}
 		out = append(out, entry)
 	}
 	if err := rows.Err(); err != nil {

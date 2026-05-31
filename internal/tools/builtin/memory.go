@@ -6,9 +6,16 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"os"
 	"strings"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/config"
+	"github.com/denn-gubsky/loomcycle/internal/lookup"
+	memrank "github.com/denn-gubsky/loomcycle/internal/memory"
+	"github.com/denn-gubsky/loomcycle/internal/memory/backends/fallback"
+	"github.com/denn-gubsky/loomcycle/internal/memory/backends/inprocess"
+	"github.com/denn-gubsky/loomcycle/internal/memory/backends/mem9"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
@@ -65,6 +72,220 @@ type Memory struct {
 	// memory.embedder unset — we don't want a nil dereference in
 	// boot ordering).
 	Embedder providers.Embedder
+
+	// Backend is the RFC I (MR-2) pluggability seam. The data ops
+	// (get/set/delete/list/search) route through it instead of calling
+	// Store directly, so MR-3's MemoryBackendDef + MR-4's Mem9 backend
+	// can plug in here. When nil, Execute lazily defaults it to the
+	// in-process backend wrapping Store + Embedder — so a tool
+	// constructed with only Store + Embedder set (as the tests and any
+	// pre-MR-2 caller do) behaves identically. main.go sets this
+	// explicitly post-store.
+	//
+	// Incr, quota math, and the reducer ops (merge/append_dedupe/
+	// bounded_list) stay on Store directly — they are not part of the
+	// six-op Backend surface (see internal/memory/backend.go).
+	Backend memrank.Backend
+
+	// Cfg is the operator config, used to resolve a per-agent
+	// memory_backend NAME to its MemoryBackendDef via lookup.MemoryBackend
+	// (RFC I MR-3b). Set in main.go (memoryTool.Cfg = cfg). When nil, the
+	// per-agent routing path can't resolve named backends and every agent
+	// falls back to the operator-default backend — the pre-MR-3b behavior.
+	Cfg *config.Config
+
+	// EnvAllowlist gates which env vars the mem9 backend may read for its
+	// X-API-Key (RFC I MR-4 / Decision 10). Set in main.go from
+	// cfg.Env.SchedulerEnvAllowlist — the same allowlist the scheduler +
+	// webhooks use, so there's no new credential surface. An empty / nil
+	// allowlist means NO env var is readable: a mem9 backend whose key
+	// comes from env then refuses to construct and the agent falls back to
+	// in-process (a non-allowlisted key must never produce a silent
+	// unauthenticated call).
+	EnvAllowlist map[string]bool
+}
+
+// backend resolves the memrank.Backend the data ops route through,
+// honoring the agent's per-run memory_backend NAME (RFC I MR-3b).
+//
+// The backend name comes from tools.MemoryPolicy(ctx).Backend — which is
+// stamped from the operator-resolved agent config — and is NEVER
+// model/tool input. Same trust posture as MemoryScopes: the model picks
+// the scope, the operator picks the backend.
+//
+// Resolution:
+//   - "" (no per-agent backend) → the operator-default backend. This is
+//     the pre-MR-3b path and stays byte-identical: m.Backend if set, else
+//     a lazily-constructed in-process backend wrapping Store + Embedder.
+//   - a named backend → resolved via lookup.MemoryBackend (static
+//     memory_backends yaml OR a dynamic MemoryBackendDef). A name that
+//     resolves to nothing degrades to the operator-default backend with a
+//     log: dynamic Defs may not exist at config-load time, so a missing
+//     name must NOT fail — it falls back.
+//
+// kind dispatch on a resolved Def:
+//   - "" / "inprocess" → fresh in-process backend (cheap, stateless).
+//   - "mem9" → NOT yet wired (lands in MR-4). Logs and falls back to
+//     in-process. The Def's fallback_on_error field is honored in MR-4
+//     once mem9 can actually fail at runtime; until then fallback is the
+//     unconditional default.
+//   - anything else → unknown kind; logs and falls back to in-process.
+func (m *Memory) backend(ctx context.Context) memrank.Backend {
+	name := tools.MemoryPolicy(ctx).Backend
+	if name == "" {
+		return m.defaultBackend()
+	}
+	def, ok := lookup.MemoryBackend(ctx, m.Store, m.Cfg, name)
+	if !ok {
+		log.Printf("memory: memory_backend %q not found — using operator-default backend", name)
+		return m.defaultBackend()
+	}
+	switch def.Kind {
+	case "", "inprocess":
+		return inprocess.New(m.Store, m.Embedder)
+	case "mem9":
+		return m.buildMem9(ctx, name, def)
+	default:
+		log.Printf("memory: memory_backend %q has unknown kind %q — using in-process fallback", name, def.Kind)
+		return m.defaultBackend()
+	}
+}
+
+// buildMem9 constructs the RFC I MR-4 Mem9 REST backend for a resolved
+// kind=mem9 Def, wraps it in the fallback backend when the Def opts into
+// fallback_on_error=inprocess, and degrades to the operator-default
+// backend on any CONSTRUCTION error (e.g. an unresolvable / non-allowlisted
+// key, or a missing tenant). A construction failure must never fail the
+// agent — it logs and falls back, the same posture as an unresolved name.
+//
+// Credentials are resolved PER OP by the injected CredentialResolver, not
+// here; this only validates that the Def is structurally constructible.
+func (m *Memory) buildMem9(ctx context.Context, name string, def config.MemoryBackend) memrank.Backend {
+	tenancy, prefix, err := resolveTenancy(ctx, def.TenancyStrategy)
+	if err != nil {
+		log.Printf("memory: memory_backend %q (mem9) tenancy unresolved: %v — using in-process fallback", name, err)
+		return m.defaultBackend()
+	}
+
+	resolver := m.mem9CredentialResolver(def, def.TenancyStrategy, prefix)
+
+	b := mem9.New(mem9.Config{
+		BaseURL:            def.Config.BaseURL,
+		APIVersion:         def.Config.APIVersion,
+		Tenancy:            tenancy,
+		CredentialResolver: resolver,
+		BackendName:        name,
+	})
+
+	// fallback_on_error=inprocess wraps the remote backend so a Mem9
+	// outage degrades to local memory instead of failing the run.
+	if def.FallbackOnError == "inprocess" {
+		return fallback.New(b, m.defaultBackend(), log.Printf)
+	}
+	return b
+}
+
+// resolveTenancy maps a MemoryBackendDef tenancy_strategy onto the mem9
+// package's resolved Tenancy + the tenant_id used for env-pattern
+// resolution. {tenant_id} is substituted from the run's tenant.
+//
+// TENANT SOURCE (assumption, surfaced loudly): loomcycle's
+// RunIdentityValue carries no dedicated tenant field, so we use
+// tools.RunIdentity(ctx).UserID as {tenant_id}. The UserID is
+// operator/caller-authoritative (the API layer stamps it; it is NEVER
+// model input — same trust posture as the Memory scope_id), so using it
+// as the tenant partition key does not open a model-controlled
+// cross-tenant path. The RFC's worked example uses per-tenant user
+// identities (alice@tenant-a, bob@tenant-b); single-tenant deployments
+// have one stable UserID and one resolved key. If a first-class tenant
+// field lands on RunIdentityValue later, change ONLY this function.
+func resolveTenancy(ctx context.Context, ts config.MemoryBackendTenancy) (mem9.Tenancy, string, error) {
+	tenantID := tools.RunIdentity(ctx).UserID
+
+	switch ts.Kind {
+	case "", "key_per_tenant":
+		// No key-prefixing — tenant isolation comes from the per-tenant
+		// API key the resolver returns. No prefix in the keyspace.
+		return mem9.Tenancy{}, tenantID, nil
+	case "shared_key_with_prefix":
+		// One shared key; tenant isolation comes from prefixing every key.
+		// A missing tenant here is a hard error: an empty prefix would
+		// collapse all tenants into one keyspace (cross-tenant leak).
+		prefix := ts.PrefixPattern
+		if strings.Contains(prefix, "{tenant_id}") {
+			if tenantID == "" {
+				return mem9.Tenancy{}, "", fmt.Errorf("shared_key_with_prefix needs {tenant_id} but the run carries no tenant (user_id)")
+			}
+			prefix = strings.ReplaceAll(prefix, "{tenant_id}", tenantID)
+		}
+		return mem9.Tenancy{KeyPrefix: prefix}, tenantID, nil
+	default:
+		return mem9.Tenancy{}, "", fmt.Errorf("unknown tenancy_strategy.kind %q", ts.Kind)
+	}
+}
+
+// mem9CredentialResolver builds the per-op X-API-Key resolver for a mem9
+// Def (RFC I MR-4 / Decision 10). Resolution order, evaluated per op:
+//
+//  1. RFC-F per-run credential: tools.RunIdentity(ctx).UserCredentials[<key>]
+//     where <key> is the Def's config.api_key_env name (the documented
+//     convention — the operator's env-var name doubles as the credential
+//     key, so a caller passing {"<API_KEY_ENV>": "..."} on the run
+//     overrides the env value without a second naming scheme).
+//  2. Env fallback: os.Getenv(envName), where envName is the api_key_env
+//     (key_per_tenant) or the tenancy env_pattern with {tenant_id}
+//     substituted. The env var MUST be on the EnvAllowlist; a
+//     non-allowlisted or unset key returns an error so the op fails loud
+//     (or the fallback wrapper engages). NEVER a silent unauthenticated
+//     call.
+//
+// The resolver closes over the tool layer's tools.RunIdentity so the
+// mem9 package needs no dependency on internal/tools. The returned error
+// NEVER contains the key value.
+func (m *Memory) mem9CredentialResolver(def config.MemoryBackend, ts config.MemoryBackendTenancy, _ string) mem9.CredentialResolver {
+	return func(ctx context.Context) (string, error) {
+		// Determine the env-var name to read. key_per_tenant may use the
+		// tenancy env_pattern (per-tenant key); otherwise the static
+		// api_key_env. Re-resolve the tenant per call so a long-lived
+		// resolver always reflects the current run's identity.
+		tenantID := tools.RunIdentity(ctx).UserID
+		envName := def.Config.APIKeyEnv
+		if ts.Kind == "key_per_tenant" && ts.EnvPattern != "" {
+			envName = strings.ReplaceAll(ts.EnvPattern, "{tenant_id}", tenantID)
+		}
+
+		// 1. RFC-F per-run credential keyed by the api_key_env name.
+		if cred, ok := tools.RunIdentity(ctx).UserCredentials[def.Config.APIKeyEnv]; ok && cred != "" {
+			return cred, nil
+		}
+
+		// 2. Env fallback, allowlist-gated.
+		if envName == "" {
+			return "", fmt.Errorf("mem9: no api_key_env configured and no per-run credential supplied")
+		}
+		if !m.EnvAllowlist[envName] {
+			// Reference the env-var NAME only — never the value. The name
+			// is not a secret; the value would be.
+			return "", fmt.Errorf("mem9: env var %q not in allowlist (add it to LOOMCYCLE_SCHEDULER_ENV_ALLOWLIST)", envName)
+		}
+		v := os.Getenv(envName)
+		if v == "" {
+			return "", fmt.Errorf("mem9: env var %q is unset or empty", envName)
+		}
+		return v, nil
+	}
+}
+
+// defaultBackend returns the operator-default backend: the explicitly-set
+// m.Backend if present, else a lazily-constructed in-process backend
+// wrapping Store + Embedder. Constructed per-call so a late-bound Embedder
+// is always reflected; the in-process backend is a thin stateless wrapper
+// so this is cheap. This is the pre-MR-3b behavior, preserved verbatim.
+func (m *Memory) defaultBackend() memrank.Backend {
+	if m.Backend != nil {
+		return m.Backend
+	}
+	return inprocess.New(m.Store, m.Embedder)
 }
 
 const memoryDescription = `Persistent key/value storage scoped to this agent or end-user. ` +
@@ -90,7 +311,9 @@ const memoryInputSchema = `{
     "embed":      {"type": "boolean", "description": "v0.9.0 set-only: when true, also generates and stores an embedding so this row is reachable via op=search."},
     "embed_text": {"type": "string", "description": "v0.9.0 set-only: the text to embed when embed=true. Defaults to the JSON-stringified value when omitted."},
     "query":      {"type": "string", "description": "v0.9.0 search-only: the text to embed and use as the similarity query."},
-    "top_k":      {"type": "integer", "description": "v0.9.0 search-only: max results (default 10, max 50)."}
+    "top_k":      {"type": "integer", "description": "v0.9.0 search-only: max results (default 10, max 50)."},
+    "rank":       {"type": "object", "description": "search-only hybrid ranking weights. Omit for pure semantic (default). Properties: semantic_weight, recency_weight, recency_half_life_hours, source_weight, frequency_weight (source/frequency reserved — contribute 0 today).", "properties": {"semantic_weight": {"type": "number"}, "recency_weight": {"type": "number"}, "recency_half_life_hours": {"type": "number"}, "source_weight": {"type": "number"}, "frequency_weight": {"type": "number"}}},
+    "dedup":      {"type": "object", "description": "search-only near-duplicate collapse. Omit (or enabled=false) for no dedup (default). Drops a result whose embedding cosine similarity to a higher-ranked kept result is >= threshold. Properties: enabled (bool), threshold (number, cosine-similarity floor, default 0.92), mode (\"drop\" default | \"merge\" | \"keep\").", "properties": {"enabled": {"type": "boolean"}, "threshold": {"type": "number"}, "mode": {"type": "string", "enum": ["drop","merge","keep"]}}}
   },
   "required": ["op","scope"],
   "additionalProperties": false
@@ -109,6 +332,13 @@ type memoryInput struct {
 	EmbedText string          `json:"embed_text,omitempty"` // v0.9.0
 	Query     string          `json:"query,omitempty"`      // v0.9.0
 	TopK      int             `json:"top_k,omitempty"`      // v0.9.0
+	// Rank is the RFC I hybrid-ranking weight block for `search`. Nil =
+	// pure semantic (today's behavior). See memrank.RankConfig.
+	Rank *memrank.RankConfig `json:"rank,omitempty"`
+	// Dedup is the RFC I (MR-5) search-time dedup block for `search`. Nil =
+	// dedup disabled (today's behavior, zero regression). See
+	// memrank.DedupConfig.
+	Dedup *memrank.DedupConfig `json:"dedup,omitempty"`
 }
 
 // Name implements tools.Tool.
@@ -200,7 +430,7 @@ func (m *Memory) execGet(ctx context.Context, scope store.MemoryScope, scopeID s
 	if in.Key == "" {
 		return errResult("get: missing required field: key"), nil
 	}
-	entry, err := m.Store.MemoryGet(ctx, scope, scopeID, in.Key)
+	entry, err := m.backend(ctx).Get(ctx, scope, scopeID, in.Key)
 	if err != nil {
 		var nf *store.ErrNotFound
 		if errors.As(err, &nf) {
@@ -234,80 +464,39 @@ func (m *Memory) execSet(ctx context.Context, scope store.MemoryScope, scopeID s
 		return errResult(err.Error()), nil
 	}
 
-	// v0.9.0 Vector Memory pre-flight: when embed=true, refuse
-	// upfront BEFORE writing the k/v row if the configuration is
-	// permanently broken (no embedder configured, or backend has no
-	// vector support). Without this check, an agent diligently
-	// calling embed=true against a misconfigured loomcycle would
-	// silently build up an unembedded corpus that never participates
-	// in search — a quality regression that's hard to diagnose.
-	// Transient embedder failures (network, 5xx, ctx deadline) AFTER
-	// the k/v lands stay in partial-write mode: the row persists
-	// with an embed_warning so the agent sees the outcome and can
-	// re-embed via the admin endpoint.
-	if in.Embed {
-		if m.Embedder == nil {
-			return errResult(store.ErrEmbedderNotConfigured.Msg), nil
-		}
-		if !m.Store.SupportsVectors() {
-			return errResult(store.ErrVectorUnsupported.Msg), nil
-		}
-	}
-
+	// The embed orchestration (pre-flight config refusal, k/v write,
+	// best-effort embedding with a non-fatal warning) lives in the
+	// Backend now (RFC I MR-2). A permanent misconfiguration is returned
+	// as a typed *store.MemoryError BEFORE any k/v write — render it bare,
+	// matching the pre-MR-2 upfront-refusal message. Any other error is a
+	// genuine k/v write failure — render it with the "set:" prefix.
 	ttl := time.Duration(in.TTL) * time.Second
-	if err := m.Store.MemorySet(ctx, scope, scopeID, in.Key, in.Value, ttl); err != nil {
+	res, err := m.backend(ctx).Set(ctx, scope, scopeID, in.Key, in.Value, memrank.SetOptions{
+		TTL:       ttl,
+		Embed:     in.Embed,
+		EmbedText: in.EmbedText,
+	})
+	if err != nil {
+		if errors.Is(err, store.ErrEmbedderNotConfigured) || errors.Is(err, store.ErrVectorUnsupported) {
+			return errResult(err.Error()), nil
+		}
 		return errResult(fmt.Sprintf("set: %s", err)), nil
 	}
 
-	// embed=true with a configured stack: try to write the
-	// embedding alongside the k/v row. Transient failures here DO
-	// NOT roll back; we surface a warning so the agent sees the
-	// partial-write outcome and can decide whether to retry / re-
-	// embed via the admin endpoint.
 	resp := map[string]any{"ok": true}
 	if in.Embed {
-		if err := m.persistEmbedding(ctx, scope, scopeID, in); err != nil {
-			log.Printf("memory.set: embed failed for (scope=%s, key=%s): %v", scope, in.Key, err)
-			resp["embedded"] = false
-			resp["embed_warning"] = err.Error()
-		} else {
+		if res.Embedded {
 			resp["embedded"] = true
+		} else {
+			// Transient embedder failure after the k/v row landed; the
+			// row stands, the agent sees the partial-write outcome and can
+			// re-embed via the admin endpoint.
+			log.Printf("memory.set: embed failed for (scope=%s, key=%s): %s", scope, in.Key, res.EmbedWarning)
+			resp["embedded"] = false
+			resp["embed_warning"] = res.EmbedWarning
 		}
 	}
 	return okJSON(resp)
-}
-
-// persistEmbedding embeds the supplied text (or the JSON-stringified
-// value when embed_text is empty) and writes the embedding row.
-// Returns nil on success; the caller surfaces failures as a
-// non-fatal warning. Pre-flight configuration checks (Embedder ==
-// nil, !SupportsVectors) are handled upfront in execSet — this
-// function assumes both are valid.
-func (m *Memory) persistEmbedding(ctx context.Context, scope store.MemoryScope, scopeID string, in memoryInput) error {
-	text := in.EmbedText
-	if text == "" {
-		// Fall back to the JSON-stringified value. Useful for
-		// agents that store small text snippets directly — they
-		// don't have to repeat the text in both `value` and
-		// `embed_text`.
-		text = string(in.Value)
-	}
-	vecs, err := m.Embedder.Embed(ctx, []string{text})
-	if err != nil {
-		return fmt.Errorf("embed: %w", err)
-	}
-	if len(vecs) != 1 {
-		return fmt.Errorf("embed: got %d vectors, want 1", len(vecs))
-	}
-	emb := store.MemoryEmbedding{
-		Provider:  m.Embedder.Provider(),
-		Model:     m.Embedder.Model(),
-		Dimension: len(vecs[0]),
-		Vector:    vecs[0],
-		EmbedText: text,
-		CreatedAt: time.Now().UTC(),
-	}
-	return m.Store.MemoryEmbedSet(ctx, scope, scopeID, in.Key, emb)
 }
 
 // execSearch implements the v0.9.0 Memory.search op. Refuses with
@@ -325,15 +514,15 @@ func (m *Memory) persistEmbedding(ctx context.Context, scope store.MemoryScope, 
 //	  "query_embedding_dim": 1536,
 //	  "truncated": false }
 func (m *Memory) execSearch(ctx context.Context, scope store.MemoryScope, scopeID string, in memoryInput) (tools.Result, error) {
-	if !m.Store.SupportsVectors() {
-		return errResult(store.ErrVectorUnsupported.Msg), nil
-	}
-	if m.Embedder == nil {
-		return errResult(store.ErrEmbedderNotConfigured.Msg), nil
-	}
 	if in.Query == "" {
 		return errResult("search: missing required field: query"), nil
 	}
+	// NOTE: the vector-support / embedder pre-flight is NOT done here on the
+	// tool's in-process Store/Embedder — a named memory_backend (e.g. mem9)
+	// can serve search remotely with no local vector support or embedder.
+	// The resolved backend returns the typed refusal (ErrVectorUnsupported /
+	// ErrEmbedderNotConfigured), which the error handler below renders with
+	// the same message. (execSet delegates its pre-flight the same way.)
 	topK := in.TopK
 	if topK <= 0 {
 		topK = 10
@@ -342,50 +531,50 @@ func (m *Memory) execSearch(ctx context.Context, scope store.MemoryScope, scopeI
 		topK = 50
 	}
 
-	// Embed the query text. Failures here are the embedder's
-	// problem — surface them directly so operators see exactly
-	// what went wrong.
-	vecs, err := m.Embedder.Embed(ctx, []string{in.Query})
-	if err != nil {
-		return errResult(fmt.Sprintf("search: embed query: %s", err)), nil
+	// RFC I hybrid ranking. Nil rank block = pure semantic = today's
+	// behavior (zero regression).
+	rankCfg := memrank.DefaultRankConfig()
+	if in.Rank != nil {
+		rankCfg = *in.Rank
 	}
-	if len(vecs) != 1 {
-		return errResult(fmt.Sprintf("search: embed query: got %d vectors, want 1", len(vecs))), nil
-	}
-	queryVec := vecs[0]
 
-	// Request topK+1 from the store so we can distinguish "result set
-	// exactly fills the limit" (truncated=false) from "result set
-	// overflowed the limit by ≥1" (truncated=true). Without the +1
-	// probe, len(results)==topK is ambiguous and agents using
-	// "paginate until truncated=false" make spurious extra calls.
-	// The store's defensive cap accepts up to 51 — see
-	// MemoryEmbedSearch's contract comment.
-	results, err := m.Store.MemoryEmbedSearch(ctx, scope, scopeID, in.Prefix, queryVec, topK+1)
+	// RFC I (MR-5) search-time dedup. Nil dedup block = disabled = today's
+	// behavior (zero regression). A model can opt in per search.
+	var dedupCfg memrank.DedupConfig
+	if in.Dedup != nil {
+		dedupCfg = *in.Dedup
+	}
+
+	// The data path (embed query → over-fetch cosine pool → re-rank →
+	// dedup → trim → score) lives in the Backend now (RFC I MR-2/MR-5). The
+	// upfront validation above stays on the tool so the refusal ordering /
+	// messages are byte-identical to pre-MR-2.
+	res, err := m.backend(ctx).Search(ctx, scope, scopeID, memrank.SearchQuery{
+		QueryText: in.Query,
+		Prefix:    in.Prefix,
+		TopK:      topK,
+	}, rankCfg, dedupCfg)
 	if err != nil {
 		// ErrDimensionMismatch is the user-actionable one — operators
 		// swap embedder models and forget to re-embed. Surface it as a
 		// clear refusal with the admin-endpoint migration hint.
 		// errors.Is works on backend-constructed *MemoryError values
 		// thanks to MemoryError.Is(target) comparing by Code.
-		if errors.Is(err, store.ErrDimensionMismatch) || errors.Is(err, store.ErrVectorUnsupported) {
+		if errors.Is(err, store.ErrDimensionMismatch) ||
+			errors.Is(err, store.ErrVectorUnsupported) ||
+			errors.Is(err, store.ErrEmbedderNotConfigured) {
 			return errResult(err.Error()), nil
 		}
 		return errResult(fmt.Sprintf("search: %s", err)), nil
 	}
 
-	// The +1 probe row (if present) signals truncation; trim before
-	// rendering so the agent never sees more than topK entries.
-	truncated := len(results) > topK
-	if truncated {
-		results = results[:topK]
-	}
-	entries := make([]map[string]any, 0, len(results))
-	for _, r := range results {
+	entries := make([]map[string]any, 0, len(res.Entries))
+	for i, r := range res.Entries {
 		entries = append(entries, map[string]any{
-			"key":   r.Key,
-			"value": r.Value,
-			"score": r.Score,
+			"key":        r.Key,
+			"value":      r.Value,
+			"score":      r.Score,           // cosine similarity (unchanged field)
+			"rank_score": res.RankScores[i], // hybrid score this result was ordered by
 			"embedded_with": map[string]any{
 				"provider": r.EmbeddedWith.Provider,
 				"model":    r.EmbeddedWith.Model,
@@ -393,18 +582,43 @@ func (m *Memory) execSearch(ctx context.Context, scope store.MemoryScope, scopeI
 			"expires_at": expiresAtRFC3339(r.ExpiresAt),
 		})
 	}
-	return okJSON(map[string]any{
+	out := map[string]any{
 		"entries":             entries,
-		"query_embedding_dim": len(queryVec),
-		"truncated":           truncated,
-	})
+		"query_embedding_dim": res.QueryEmbeddingDim,
+		"truncated":           res.Truncated,
+	}
+	// Surface dedup_dropped ONLY when the caller opted into dedup. A search
+	// with no `dedup` block keeps the pre-MR-5 response shape byte-for-byte
+	// (zero regression): the key is absent rather than always-zero. When
+	// dedup is on, the count is always present (including 0) so the agent
+	// can tell "dedup ran, found nothing" from "dedup wasn't requested."
+	if in.Dedup != nil && in.Dedup.Enabled {
+		out["dedup_dropped"] = res.DedupDropped
+		// Observability: the RFC's memory.dedup.dropped_count (Decision 12)
+		// is an OTEL span attribute. loomcycle's only OTEL substrate today
+		// lives in the mem9 backend (which sets that attribute on its span);
+		// the in-process path has no span here yet (broader OTEL is planned
+		// for v0.9.x — see CLAUDE.md). Until that lands, mirror the repo's
+		// current observability idiom (log.Printf) so operators can still
+		// see dedup activity on the in-process path.
+		if res.DedupDropped > 0 {
+			log.Printf("memory.search: dedup dropped %d near-duplicate entries (scope=%s, mode=%s)",
+				res.DedupDropped, scope, dedupModeOrDefault(in.Dedup.Mode))
+		}
+	}
+	// Don't silently ignore a non-zero source/frequency weight — those
+	// terms are reserved (contribute 0 today). Surface a note instead.
+	if res.RankNote != "" {
+		out["rank_note"] = res.RankNote
+	}
+	return okJSON(out)
 }
 
 func (m *Memory) execDelete(ctx context.Context, scope store.MemoryScope, scopeID string, in memoryInput) (tools.Result, error) {
 	if in.Key == "" {
 		return errResult("delete: missing required field: key"), nil
 	}
-	deleted, err := m.Store.MemoryDelete(ctx, scope, scopeID, in.Key)
+	deleted, err := m.backend(ctx).Delete(ctx, scope, scopeID, in.Key)
 	if err != nil {
 		return errResult(fmt.Sprintf("delete: %s", err)), nil
 	}
@@ -422,7 +636,7 @@ func (m *Memory) execList(ctx context.Context, scope store.MemoryScope, scopeID 
 		// should paginate via the prefix.
 		limit = 1000
 	}
-	entries, truncated, err := m.Store.MemoryList(ctx, scope, scopeID, in.Prefix, limit)
+	entries, truncated, err := m.backend(ctx).List(ctx, scope, scopeID, in.Prefix, limit)
 	if err != nil {
 		return errResult(fmt.Sprintf("list: %s", err)), nil
 	}
@@ -786,6 +1000,15 @@ func expiresAtRFC3339(t time.Time) any {
 		return nil
 	}
 	return t.UTC().Format(time.RFC3339Nano)
+}
+
+// dedupModeOrDefault renders the dedup mode for the log line, defaulting
+// to "drop" so an empty mode (the common case) logs informatively.
+func dedupModeOrDefault(mode string) string {
+	if mode == "" {
+		return "drop"
+	}
+	return mode
 }
 
 func contains(haystack []string, needle string) bool {

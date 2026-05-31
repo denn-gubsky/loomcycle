@@ -1242,6 +1242,23 @@ type Store interface {
 	WebhookDefGetActive(ctx context.Context, name string) (WebhookDefRow, error)
 	WebhookDefSetRetired(ctx context.Context, defID string, retired bool) error
 
+	// MemoryBackendDef is the v1.x RFC I MR-3a substrate — a faithful
+	// mirror of WebhookDef (same content-addressed identity + lineage +
+	// promotion shape, no sweeper run_state table). A MemoryBackendDef
+	// declares a named memory backend (kind inprocess|mem9, connection
+	// config, tenancy strategy, fallback); the Definition payload schema
+	// is owned by the tool layer. Nothing consumes the Def yet — the
+	// per-agent routing + factory land in MR-3b.
+	MemoryBackendDefCreate(ctx context.Context, row MemoryBackendDefRow) (MemoryBackendDefRow, error)
+	MemoryBackendDefGet(ctx context.Context, defID string) (MemoryBackendDefRow, error)
+	MemoryBackendDefGetByNameVersion(ctx context.Context, name string, version int) (MemoryBackendDefRow, error)
+	MemoryBackendDefListByName(ctx context.Context, name string) ([]MemoryBackendDefRow, error)
+	MemoryBackendDefListChildren(ctx context.Context, parentDefID string) ([]MemoryBackendDefRow, error)
+	MemoryBackendDefListNames(ctx context.Context) ([]MemoryBackendDefNameSummary, error)
+	MemoryBackendDefSetActive(ctx context.Context, name, defID, promotedByAgentID string) error
+	MemoryBackendDefGetActive(ctx context.Context, name string) (MemoryBackendDefRow, error)
+	MemoryBackendDefSetRetired(ctx context.Context, defID string, retired bool) error
+
 	// ScheduleRunStatePause sets paused_until = until (or NULL if
 	// until.IsZero()). Resume = call with zero time.
 	ScheduleRunStatePause(ctx context.Context, defID string, until time.Time) error
@@ -1536,6 +1553,16 @@ type MemoryEmbedding struct {
 //
 // Score is cosine similarity in [0, 1] (higher = closer). Backends
 // convert from their native distance function before returning.
+//
+// Vector is the entry's stored embedding, populated by MemoryEmbedSearch
+// for client-side search-time dedup (RFC I MR-5 / Decision 2). It is
+// json:"-" — never serialized to the agent, exactly like
+// MemoryEmbedding.Vector; it exists only so the dedup pass can compute
+// pairwise cosine distances without a second round-trip. It is EMPTY when
+// the backend can't supply it (e.g. the Mem9 REST backend, which embeds +
+// scores server-side and returns no vectors); dedup then degrades to a
+// no-op for that entry (an empty-Vector entry is never treated as a
+// duplicate, so it is kept).
 type MemorySearchEntry struct {
 	MemoryEntry
 	Score        float64 `json:"score"`
@@ -1543,6 +1570,7 @@ type MemorySearchEntry struct {
 		Provider string `json:"provider"`
 		Model    string `json:"model"`
 	} `json:"embedded_with"`
+	Vector []float32 `json:"-"`
 }
 
 // MemoryEmbedStats summarises the embedded rows under one scope.
@@ -2048,6 +2076,42 @@ type WebhookDefActiveEntry struct {
 	PromotedByAgentID string    `json:"promoted_by_agent_id,omitempty"`
 }
 
+// MemoryBackendDefRow mirrors WebhookDefRow — same identity + lineage +
+// retire flag shape. The Definition payload carries the JSON-encoded
+// memory-backend body (kind, connection config, tenancy strategy,
+// fallback); the schema is owned by the tool layer. RFC I MR-3a /
+// mirrors WebhookDef.
+type MemoryBackendDefRow struct {
+	DefID                  string          `json:"def_id"`
+	Name                   string          `json:"name"`
+	Version                int             `json:"version"`
+	ParentDefID            string          `json:"parent_def_id,omitempty"`
+	Definition             json.RawMessage `json:"definition"`
+	Description            string          `json:"description,omitempty"`
+	CreatedAt              time.Time       `json:"created_at"`
+	CreatedByAgentID       string          `json:"created_by_agent_id,omitempty"`
+	CreatedByRunID         string          `json:"created_by_run_id,omitempty"`
+	Retired                bool            `json:"retired"`
+	BootstrappedFromStatic bool            `json:"bootstrapped_from_static"`
+}
+
+// MemoryBackendDefNameSummary mirrors WebhookDefNameSummary.
+type MemoryBackendDefNameSummary struct {
+	Name          string    `json:"name"`
+	VersionCount  int       `json:"version_count"`
+	ActiveDefID   string    `json:"active_def_id,omitempty"`
+	LatestVersion int       `json:"latest_version"`
+	LastUpdated   time.Time `json:"last_updated"`
+}
+
+// MemoryBackendDefActiveEntry mirrors WebhookDefActiveEntry.
+type MemoryBackendDefActiveEntry struct {
+	Name              string    `json:"name"`
+	DefID             string    `json:"def_id"`
+	PromotedAt        time.Time `json:"promoted_at"`
+	PromotedByAgentID string    `json:"promoted_by_agent_id,omitempty"`
+}
+
 // ScheduleRunStateRow is one row in schedule_run_state — the
 // sweeper's runtime view of a def. Seeded when a def becomes
 // active; updated after each fire.
@@ -2181,6 +2245,10 @@ var ErrA2AAgentDefParentNotFound = &SubstrateError{Code: "parent_not_found", Msg
 // ErrWebhookDefParentNotFound mirrors the A2AAgentDef pattern for the
 // v1.x RFC H WebhookDef substrate.
 var ErrWebhookDefParentNotFound = &SubstrateError{Code: "parent_not_found", Msg: "webhook_def: parent_def_id does not exist"}
+
+// ErrMemoryBackendDefParentNotFound mirrors the WebhookDef pattern for
+// the v1.x RFC I MR-3a MemoryBackendDef substrate.
+var ErrMemoryBackendDefParentNotFound = &SubstrateError{Code: "parent_not_found", Msg: "memory_backend_def: parent_def_id does not exist"}
 
 // ErrAgentDefImmutable is returned by store-layer assertions if
 // someone tries to UPDATE an agent_defs row's definition column.

@@ -8,6 +8,80 @@ For pre-v0.4 history (single-tool runtime, library milestone, security patch), s
 
 ---
 
+## What's in v0.15.0
+
+**Headline: Memory ranking, dedup & pluggable backends (RFC I).** The
+v0.9.0 Vector Memory grows three retrieval-tuning capabilities and a
+sixth substrate primitive — all opt-in and zero-regression (an agent that
+sends no new fields sees exactly today's pure-cosine behavior).
+
+### Hybrid ranker (MR-1)
+
+`Memory.search` accepts an optional `rank` block:
+`score = semantic_weight·cos_sim + recency_weight·exp(-age·ln2/half_life) +
+source_weight·source_score + frequency_weight·log(1+access_count)`. The
+default (`semantic_weight=1`, rest 0) reproduces pure-cosine ordering
+exactly. A hybrid config over-fetches a candidate pool and re-ranks, so
+recency can promote a fresh entry the pure-cosine top-k would miss; each
+result carries a `rank_score`. `source_weight`/`frequency_weight` are
+reserved (contribute 0 today; a non-zero value surfaces a `rank_note`
+rather than being silently ignored).
+
+### Search-time dedup (MR-5 / D2)
+
+An optional `dedup` block collapses near-duplicate results after ranking,
+before the top-k trim, by cosine similarity of stored vectors
+(`threshold` default 0.92, a similarity floor). Modes: `drop` (default),
+`merge` (provenance-preserving envelope), `keep` (flag-but-retain for
+measuring the duplication rate). Degrades to a no-op when an entry has no
+vector. (Resolved an RFC wording inconsistency — "distance < 0.92" is
+self-contradictory; implemented as the only coherent reading, a similarity
+floor.)
+
+### MemoryBackend interface + MemoryBackendDef substrate + Mem9 (MR-2/3/4)
+
+- `MemoryBackend` interface (Get/Set/Delete/List/Search/Stats); the
+  existing sqlite-vec/Postgres path refactored behind it as the in-process
+  default + unconditional fallback. Zero behavior change.
+- **`MemoryBackendDef`** — the sixth substrate primitive (after AgentDef /
+  SkillDef / MCPServerDef / ScheduleDef / WebhookDef): content-addressed,
+  5-op tool, full 4-transport CRUD (HTTP `/v1/_memorybackenddef` + gRPC +
+  MCP meta-tool, count 37→38, + TS `memoryBackendDef()`), migration 0034.
+  `AgentDef.memory_backend` routes a specific agent's memory ops to a named
+  backend (absent = operator default); the name is operator-resolved, never
+  from model input.
+- **Mem9 REST backend** — the first non-default backend. Tenancy strategies
+  (`key_per_tenant` / `shared_key_with_prefix`), RFC-F credentials (API key
+  is an env-allowlist-gated env-var NAME, never plaintext in the Def, never
+  logged), client-side re-rank, and a `fallback_on_error: inprocess`
+  wrapper so a Mem9 outage degrades to local memory instead of failing the
+  run. ⚠ Mem9's wire mapping is stub-tested against the documented v1alpha2
+  shape, not verified against a live server — flagged in code + docs.
+
+### memory-eval harness (MR-5 / D4)
+
+`loomcycle memory-eval` scores retrieval against a `{query,
+expected_recall}` dataset — precision@k / recall@k / duplication_rate /
+recall-latency percentiles. Seeds a corpus into the real in-process backend
+(ranker + dedup), with a deterministic stub embedder for reproducible CI
+runs (NOT a semantic benchmark — pass `--dataset <file.jsonl>` +
+`--rank-config` for real numbers). The gating tool for ranker/dedup PRs.
+
+### UI + docs (MR-6 / D3)
+
+The `/ui/memory` tab shows per-key embedding metadata (model + dimension)
+via `?include_embedding_metadata=true`. `Context.help memory-ranking` topic
++ `docs/MEMORY-BACKENDS.md` operator guide.
+
+### Notes / deferred
+
+- The "show recalls for run X" UI overlay (RFC D3) is **deferred** — it
+  needs a memory-access-log + OTEL-trace-join subsystem that is its own
+  future RFC. Write-time dedup is also deferred (search-time covers the
+  pain without an LLM judge on the hot write path).
+- Wire-protocol additions are back-compatible (new tool fields / endpoint /
+  RPC / MCP meta-tool / TS method only).
+
 ## What's in v0.14.1
 
 **First tagged build of the v0.14 line.** v0.14.0 (Input Webhooks, below) was

@@ -431,6 +431,36 @@ func (s *Store) migrate(ctx context.Context) error {
 			promoted_at           INTEGER NOT NULL,
 			promoted_by_agent_id  TEXT
 		)`,
+		// RFC I MR-3a MemoryBackendDef substrate — a faithful mirror of
+		// webhook_defs (identity + lineage + promotion), minus the
+		// sweeper-only run_state table. memory_backend_defs declares a
+		// named memory backend (kind, connection config, tenancy
+		// strategy, fallback). See
+		// internal/store/postgres/migrations/0034_memory_backend_defs.up.sql
+		// for the full design rationale.
+		`CREATE TABLE IF NOT EXISTS memory_backend_defs (
+			def_id                    TEXT    PRIMARY KEY,
+			name                      TEXT    NOT NULL,
+			version                   INTEGER NOT NULL,
+			parent_def_id             TEXT    REFERENCES memory_backend_defs(def_id),
+			definition                TEXT    NOT NULL,
+			description               TEXT,
+			created_at                INTEGER NOT NULL,
+			created_by_agent_id       TEXT,
+			created_by_run_id         TEXT,
+			retired                   INTEGER NOT NULL DEFAULT 0,
+			bootstrapped_from_static  INTEGER NOT NULL DEFAULT 0,
+			UNIQUE(name, version)
+		)`,
+		`CREATE INDEX IF NOT EXISTS memory_backend_defs_by_name   ON memory_backend_defs(name, version DESC)`,
+		`CREATE INDEX IF NOT EXISTS memory_backend_defs_by_parent ON memory_backend_defs(parent_def_id) WHERE parent_def_id IS NOT NULL`,
+		`CREATE INDEX IF NOT EXISTS memory_backend_defs_by_run    ON memory_backend_defs(created_by_run_id) WHERE created_by_run_id IS NOT NULL`,
+		`CREATE TABLE IF NOT EXISTS memory_backend_def_active (
+			name                  TEXT    PRIMARY KEY,
+			def_id                TEXT    NOT NULL REFERENCES memory_backend_defs(def_id),
+			promoted_at           INTEGER NOT NULL,
+			promoted_by_agent_id  TEXT
+		)`,
 		// v0.8.5 evaluations table. emitter_role is server-derived in
 		// the tool layer; the store stores the string verbatim. Score
 		// is REAL (Go float64). Dimensions + Judgement are JSON-as-TEXT
@@ -5032,6 +5062,258 @@ func (s *Store) scanWebhookDefRows(rows *sql.Rows) ([]store.WebhookDefRow, error
 	for rows.Next() {
 		var (
 			r          store.WebhookDefRow
+			definition string
+			createdAt  int64
+			retired    int
+			bootstrap  int
+		)
+		if err := rows.Scan(
+			&r.DefID, &r.Name, &r.Version,
+			&r.ParentDefID,
+			&definition,
+			&r.Description,
+			&createdAt,
+			&r.CreatedByAgentID, &r.CreatedByRunID,
+			&retired, &bootstrap,
+		); err != nil {
+			return nil, err
+		}
+		r.Definition = json.RawMessage(definition)
+		r.CreatedAt = time.Unix(0, createdAt)
+		r.Retired = retired != 0
+		r.BootstrappedFromStatic = bootstrap != 0
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// ---- RFC I MR-3a MemoryBackendDef substrate ----
+//
+// Faithful mirror of WebhookDef* (which itself mirrors A2AAgentDef*
+// without the sweeper run_state table).
+
+func (s *Store) MemoryBackendDefCreate(ctx context.Context, row store.MemoryBackendDefRow) (store.MemoryBackendDefRow, error) {
+	if row.DefID == "" || row.Name == "" {
+		return store.MemoryBackendDefRow{}, fmt.Errorf("memory_backend_def: def_id + name required")
+	}
+	conn, err := s.db.Conn(ctx)
+	if err != nil {
+		return store.MemoryBackendDefRow{}, err
+	}
+	defer conn.Close()
+
+	if _, err := conn.ExecContext(ctx, "BEGIN IMMEDIATE"); err != nil {
+		return store.MemoryBackendDefRow{}, err
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_, _ = conn.ExecContext(context.Background(), "ROLLBACK")
+		}
+	}()
+
+	if row.ParentDefID != "" {
+		var n int
+		if err := conn.QueryRowContext(ctx, `SELECT COUNT(*) FROM memory_backend_defs WHERE def_id = ?`, row.ParentDefID).Scan(&n); err != nil {
+			return store.MemoryBackendDefRow{}, err
+		}
+		if n == 0 {
+			return store.MemoryBackendDefRow{}, store.ErrMemoryBackendDefParentNotFound
+		}
+	}
+
+	var maxVer sql.NullInt64
+	if err := conn.QueryRowContext(ctx,
+		`SELECT MAX(version) FROM memory_backend_defs WHERE name = ?`, row.Name,
+	).Scan(&maxVer); err != nil {
+		return store.MemoryBackendDefRow{}, err
+	}
+	row.Version = 1
+	if maxVer.Valid {
+		row.Version = int(maxVer.Int64) + 1
+	}
+	row.CreatedAt = time.Now()
+
+	if _, err := conn.ExecContext(ctx,
+		`INSERT INTO memory_backend_defs (
+			def_id, name, version, parent_def_id, definition, description,
+			created_at, created_by_agent_id, created_by_run_id,
+			retired, bootstrapped_from_static
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		row.DefID, row.Name, row.Version, nilIfEmpty(row.ParentDefID),
+		string(row.Definition), nilIfEmpty(row.Description),
+		row.CreatedAt.UnixNano(),
+		nilIfEmpty(row.CreatedByAgentID), nilIfEmpty(row.CreatedByRunID),
+		boolToInt(row.Retired), boolToInt(row.BootstrappedFromStatic),
+	); err != nil {
+		return store.MemoryBackendDefRow{}, err
+	}
+	if _, err := conn.ExecContext(ctx, "COMMIT"); err != nil {
+		return store.MemoryBackendDefRow{}, err
+	}
+	committed = true
+	return row, nil
+}
+
+func (s *Store) MemoryBackendDefGet(ctx context.Context, defID string) (store.MemoryBackendDefRow, error) {
+	row, err := s.scanMemoryBackendDef(s.db.QueryRowContext(ctx, memoryBackendDefSelect+` WHERE def_id = ?`, defID))
+	if err == sql.ErrNoRows {
+		return store.MemoryBackendDefRow{}, &store.ErrNotFound{Kind: "memory_backend_def", ID: defID}
+	}
+	return row, err
+}
+
+func (s *Store) MemoryBackendDefGetByNameVersion(ctx context.Context, name string, version int) (store.MemoryBackendDefRow, error) {
+	row, err := s.scanMemoryBackendDef(s.db.QueryRowContext(ctx, memoryBackendDefSelect+` WHERE name = ? AND version = ?`, name, version))
+	if err == sql.ErrNoRows {
+		return store.MemoryBackendDefRow{}, &store.ErrNotFound{Kind: "memory_backend_def", ID: fmt.Sprintf("%s@v%d", name, version)}
+	}
+	return row, err
+}
+
+func (s *Store) MemoryBackendDefListByName(ctx context.Context, name string) ([]store.MemoryBackendDefRow, error) {
+	rows, err := s.db.QueryContext(ctx, memoryBackendDefSelect+` WHERE name = ? ORDER BY version DESC`, name)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return s.scanMemoryBackendDefRows(rows)
+}
+
+func (s *Store) MemoryBackendDefListChildren(ctx context.Context, parentDefID string) ([]store.MemoryBackendDefRow, error) {
+	rows, err := s.db.QueryContext(ctx, memoryBackendDefSelect+` WHERE parent_def_id = ? ORDER BY version DESC`, parentDefID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return s.scanMemoryBackendDefRows(rows)
+}
+
+func (s *Store) MemoryBackendDefListNames(ctx context.Context) ([]store.MemoryBackendDefNameSummary, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT
+			d.name,
+			COUNT(*)                  AS version_count,
+			MAX(d.version)            AS latest_version,
+			MAX(d.created_at)         AS last_updated,
+			COALESCE(a.def_id, '')    AS active_def_id
+		FROM memory_backend_defs d
+		LEFT JOIN memory_backend_def_active a ON a.name = d.name
+		GROUP BY d.name, a.def_id
+		ORDER BY d.name`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []store.MemoryBackendDefNameSummary
+	for rows.Next() {
+		var ns store.MemoryBackendDefNameSummary
+		var updatedAt int64
+		if err := rows.Scan(&ns.Name, &ns.VersionCount, &ns.LatestVersion, &updatedAt, &ns.ActiveDefID); err != nil {
+			return nil, err
+		}
+		ns.LastUpdated = time.Unix(0, updatedAt)
+		out = append(out, ns)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) MemoryBackendDefSetActive(ctx context.Context, name, defID, promotedByAgentID string) error {
+	var rowName string
+	err := s.db.QueryRowContext(ctx, `SELECT name FROM memory_backend_defs WHERE def_id = ?`, defID).Scan(&rowName)
+	if err == sql.ErrNoRows {
+		return &store.ErrNotFound{Kind: "memory_backend_def", ID: defID}
+	}
+	if err != nil {
+		return err
+	}
+	if rowName != name {
+		return fmt.Errorf("memory_backend_def_active: def_id %q has name %q, refusing to promote under name %q", defID, rowName, name)
+	}
+	_, err = s.db.ExecContext(ctx, `
+		INSERT INTO memory_backend_def_active (name, def_id, promoted_at, promoted_by_agent_id)
+		VALUES (?, ?, ?, ?)
+		ON CONFLICT(name) DO UPDATE SET
+		    def_id               = excluded.def_id,
+		    promoted_at          = excluded.promoted_at,
+		    promoted_by_agent_id = excluded.promoted_by_agent_id`,
+		name, defID, time.Now().UnixNano(), nilIfEmpty(promotedByAgentID),
+	)
+	return err
+}
+
+func (s *Store) MemoryBackendDefGetActive(ctx context.Context, name string) (store.MemoryBackendDefRow, error) {
+	var defID string
+	err := s.db.QueryRowContext(ctx, `SELECT def_id FROM memory_backend_def_active WHERE name = ?`, name).Scan(&defID)
+	if err == sql.ErrNoRows {
+		return store.MemoryBackendDefRow{}, &store.ErrNotFound{Kind: "memory_backend_def_active", ID: name}
+	}
+	if err != nil {
+		return store.MemoryBackendDefRow{}, err
+	}
+	return s.MemoryBackendDefGet(ctx, defID)
+}
+
+func (s *Store) MemoryBackendDefSetRetired(ctx context.Context, defID string, retired bool) error {
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE memory_backend_defs SET retired = ? WHERE def_id = ?`,
+		boolToInt(retired), defID,
+	)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return &store.ErrNotFound{Kind: "memory_backend_def", ID: defID}
+	}
+	return nil
+}
+
+const memoryBackendDefSelect = `SELECT
+	def_id, name, version,
+	COALESCE(parent_def_id, ''),
+	definition,
+	COALESCE(description, ''),
+	created_at,
+	COALESCE(created_by_agent_id, ''),
+	COALESCE(created_by_run_id, ''),
+	retired,
+	bootstrapped_from_static
+FROM memory_backend_defs`
+
+func (s *Store) scanMemoryBackendDef(row *sql.Row) (store.MemoryBackendDefRow, error) {
+	var (
+		out        store.MemoryBackendDefRow
+		definition string
+		createdAt  int64
+		retired    int
+		bootstrap  int
+	)
+	err := row.Scan(
+		&out.DefID, &out.Name, &out.Version,
+		&out.ParentDefID,
+		&definition,
+		&out.Description,
+		&createdAt,
+		&out.CreatedByAgentID, &out.CreatedByRunID,
+		&retired, &bootstrap,
+	)
+	if err != nil {
+		return store.MemoryBackendDefRow{}, err
+	}
+	out.Definition = json.RawMessage(definition)
+	out.CreatedAt = time.Unix(0, createdAt)
+	out.Retired = retired != 0
+	out.BootstrappedFromStatic = bootstrap != 0
+	return out, nil
+}
+
+func (s *Store) scanMemoryBackendDefRows(rows *sql.Rows) ([]store.MemoryBackendDefRow, error) {
+	var out []store.MemoryBackendDefRow
+	for rows.Next() {
+		var (
+			r          store.MemoryBackendDefRow
 			definition string
 			createdAt  int64
 			retired    int

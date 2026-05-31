@@ -73,6 +73,13 @@ func substrateGRPCCtx(ctx context.Context) context.Context {
 		Scopes:   []string{"any"},
 		SelfName: grpcSubstrateAdminAgentName,
 	})
+	// MemoryBackendDef: same operator-trust posture; "any" scope lets the
+	// gRPC-admin call create/fork/retire any backend name
+	// (RFC I MR-3a / mirrors WebhookDef).
+	ctx = tools.WithMemoryBackendDefPolicy(ctx, tools.MemoryBackendDefPolicyValue{
+		Scopes:   []string{"any"},
+		SelfName: grpcSubstrateAdminAgentName,
+	})
 	ctx = tools.WithEvaluationPolicy(ctx, tools.EvaluationPolicyValue{
 		Scopes: []string{"submit_self", "submit_descendants", "submit_any", "read_any"},
 	})
@@ -177,6 +184,19 @@ func (s *Server) A2AAgentDef(ctx context.Context, req *loomcyclepb.SubstrateRequ
 func (s *Server) WebhookDef(ctx context.Context, req *loomcyclepb.SubstrateRequest) (*loomcyclepb.SubstrateResponse, error) {
 	return s.dispatchSubstrateRPC(ctx, "WebhookDef", req, func(ctx context.Context, in json.RawMessage) (json.RawMessage, bool, error) {
 		res, err := s.connector.WebhookDef(ctx, in)
+		if err != nil {
+			return nil, false, err
+		}
+		return json.RawMessage(res.Text), res.IsError, nil
+	})
+}
+
+// MemoryBackendDef serves the RFC I MR-3a MemoryBackendDef gRPC RPC —
+// memory-backend substrate. Same shape as the other substrate RPCs.
+// (RFC I MR-3a / mirrors WebhookDef.)
+func (s *Server) MemoryBackendDef(ctx context.Context, req *loomcyclepb.SubstrateRequest) (*loomcyclepb.SubstrateResponse, error) {
+	return s.dispatchSubstrateRPC(ctx, "MemoryBackendDef", req, func(ctx context.Context, in json.RawMessage) (json.RawMessage, bool, error) {
+		res, err := s.connector.MemoryBackendDef(ctx, in)
 		if err != nil {
 			return nil, false, err
 		}

@@ -31,6 +31,37 @@ func TestApplyAgentDefOverlay_Empty(t *testing.T) {
 	}
 }
 
+// Regression: a substrate AgentDef row that sets memory_backend must carry
+// it through the overlay merge. This is the def_id-pinned sub-agent path
+// (runSubAgent → applyAgentDefOverlay → WithMemoryPolicy{Backend}); a
+// dropped field silently routes the sub-agent to the operator-default
+// backend instead of the one the dynamic def pinned — the exact drift the
+// field exists to prevent. Mirrors memory_quota_bytes, which was already
+// carried.
+func TestApplyAgentDefOverlay_MemoryBackendAndQuota(t *testing.T) {
+	base := config.AgentDef{
+		Provider:      "anthropic",
+		Model:         "claude-haiku-4-5",
+		MemoryBackend: "default",
+	}
+	def := json.RawMessage(`{
+		"memory_backend": "mem9-team",
+		"memory_quota_bytes": 4096
+	}`)
+	got := applyAgentDefOverlay(base, def)
+	if got.MemoryBackend != "mem9-team" {
+		t.Errorf("memory_backend = %q, want mem9-team (overlay dropped the field)", got.MemoryBackend)
+	}
+	if got.MemoryQuotaBytes != 4096 {
+		t.Errorf("memory_quota_bytes = %d, want 4096", got.MemoryQuotaBytes)
+	}
+	// An overlay that omits memory_backend must NOT clobber the base value.
+	got2 := applyAgentDefOverlay(base, json.RawMessage(`{"model":"claude-sonnet-4-6"}`))
+	if got2.MemoryBackend != "default" {
+		t.Errorf("omitted memory_backend clobbered base: got %q, want default", got2.MemoryBackend)
+	}
+}
+
 func TestApplyAgentDefOverlay_SystemPromptAndAllowedTools(t *testing.T) {
 	base := config.AgentDef{
 		Provider:     "anthropic",

@@ -74,6 +74,7 @@ import (
 	loomgrpc "github.com/denn-gubsky/loomcycle/internal/api/grpc"
 	"github.com/denn-gubsky/loomcycle/internal/api/grpc/loomcyclepb"
 	lcmcp "github.com/denn-gubsky/loomcycle/internal/api/mcp"
+	"github.com/denn-gubsky/loomcycle/internal/memory/backends/inprocess"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 	toolsa2a "github.com/denn-gubsky/loomcycle/internal/tools/a2a"
 	"github.com/denn-gubsky/loomcycle/internal/tools/builtin"
@@ -345,6 +346,11 @@ func main() {
 			// Reads a .claude/ tree and emits agents:/mcp_servers:/skill
 			// fragments into the operator's loomcycle.yaml.
 			os.Exit(cli.RunImport(os.Args[2:], os.Stdout, os.Stderr))
+		case "memory-eval":
+			// v1.x RFC I (MR-5): scores the memory ranker/dedup against a
+			// dataset of (query, expected_recall) tuples — precision@k,
+			// recall@k, duplication_rate. The gating tool for ranker PRs.
+			os.Exit(cli.RunMemoryEval(os.Args[2:], os.Stdout, os.Stderr))
 		case "help", "-h", "--help":
 			cli.PrintHelp(os.Stdout)
 			return
@@ -552,10 +558,24 @@ func main() {
 		log.Printf("embedder: %s/%s (dim=%d)", embedder.Provider(), embedder.Model(), embedder.Dimension())
 	}
 
+	// RFC I MR-4: the env-allowlist gate for the mem9 backend's X-API-Key.
+	// Same allowlist the scheduler + webhooks use (cfg.Env.SchedulerEnvAllowlist).
+	memoryEnvAllowlist := make(map[string]bool, len(cfg.Env.SchedulerEnvAllowlist))
+	for _, name := range cfg.Env.SchedulerEnvAllowlist {
+		memoryEnvAllowlist[name] = true
+	}
+
 	memoryTool := &builtin.Memory{
 		MaxValueBytes:     cfg.Env.MemoryMaxValueBytes,
 		DefaultQuotaBytes: cfg.Env.MemoryMaxScopeBytes,
 		Embedder:          embedder,
+		// RFC I MR-3b: resolves a per-agent memory_backend NAME to its
+		// MemoryBackendDef (static yaml or dynamic substrate Def).
+		Cfg: cfg,
+		// RFC I MR-4: gates which env vars the mem9 backend may read for
+		// its X-API-Key. Reuses the scheduler/webhook env allowlist — no
+		// new credential surface (Decision 10).
+		EnvAllowlist: memoryEnvAllowlist,
 	}
 	allTools = append(allTools, memoryTool)
 
@@ -907,6 +927,15 @@ func main() {
 	// at boot (allTools assembled once) and the tool's nil-Store
 	// fallback for operators running without a configured store.
 	memoryTool.Store = storeIface
+	// RFC I MR-2: this sets the operator-DEFAULT backend (the path taken
+	// when an agent has no memory_backend, plus the unconditional fallback
+	// for unresolved / not-yet-wired backends). Constructed here, post-store,
+	// so both deps are concrete — the embedder was built above (nil when
+	// unconfigured, which the backend handles by refusing vector ops exactly
+	// as before). MR-3b routes PER-AGENT named backends per-call from
+	// memory.go backend(ctx) via memoryTool.Cfg; MR-4's Mem9 plugs into that
+	// switch. This default assignment stays.
+	memoryTool.Backend = inprocess.New(storeIface, embedder)
 	channelTool.Store = storeIface
 	// Wire the pool-stats accessor when the backend is Postgres so
 	// the Channel tool's subscribe-race diagnostic log can correlate
@@ -1046,6 +1075,18 @@ func main() {
 	// Connector.WebhookDef + the admin endpoint + the LoomCycle MCP
 	// meta-tool. Identical Store + Cfg + byte-cap construction.
 	srv.SetWebhookDefTool(&builtin.WebhookDef{
+		Store:               storeIface,
+		Cfg:                 cfg,
+		MaxDefinitionBytes:  cfg.Env.AgentDefMaxDefinitionBytes,
+		MaxDescriptionBytes: cfg.Env.AgentDefMaxDescriptionBytes,
+	})
+	// RFC I MR-3a — wire the MemoryBackendDef substrate tool. Same
+	// operator-admin-only posture as WebhookDef; reached via
+	// Connector.MemoryBackendDef + the admin endpoint + the LoomCycle
+	// MCP meta-tool. Identical Store + Cfg + byte-cap construction.
+	// Nothing consumes the Def yet — the per-agent routing + factory
+	// land in MR-3b.
+	srv.SetMemoryBackendDefTool(&builtin.MemoryBackendDef{
 		Store:               storeIface,
 		Cfg:                 cfg,
 		MaxDefinitionBytes:  cfg.Env.AgentDefMaxDefinitionBytes,

@@ -593,6 +593,103 @@ agents:
 	}
 }
 
+// TestMemoryBackend_RoundTripsAndResolvesAgainstStaticMap confirms a
+// static agent's memory_backend round-trips through Load AND validates
+// against a declared memory_backends entry (RFC I MR-3b).
+func TestMemoryBackend_RoundTripsAndResolvesAgainstStaticMap(t *testing.T) {
+	tmp := t.TempDir()
+	yamlPath := filepath.Join(tmp, "c.yaml")
+	os.WriteFile(yamlPath, []byte(`
+defaults: { provider: anthropic, model: claude-sonnet-4-6 }
+memory_backends:
+  team-store:
+    kind: inprocess
+agents:
+  ok:
+    model: claude-sonnet-4-6
+    allowed_tools: [Memory]
+    memory_scopes: [agent]
+    memory_backend: team-store
+`), 0o600)
+	cfg, err := Load(yamlPath)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Agents["ok"].MemoryBackend != "team-store" {
+		t.Errorf("MemoryBackend round-trip: %q", cfg.Agents["ok"].MemoryBackend)
+	}
+}
+
+// TestMemoryBackend_RejectsUnknownNameAgainstNonEmptyMap confirms a typo
+// against a declared memory_backends map is caught at config load.
+func TestMemoryBackend_RejectsUnknownNameAgainstNonEmptyMap(t *testing.T) {
+	tmp := t.TempDir()
+	yamlPath := filepath.Join(tmp, "c.yaml")
+	os.WriteFile(yamlPath, []byte(`
+defaults: { provider: anthropic, model: claude-sonnet-4-6 }
+memory_backends:
+  team-store:
+    kind: inprocess
+agents:
+  oops:
+    model: claude-sonnet-4-6
+    allowed_tools: [Memory]
+    memory_scopes: [agent]
+    memory_backend: tema-store
+`), 0o600)
+	_, err := Load(yamlPath)
+	if err == nil {
+		t.Fatal("expected error for unknown memory_backend name")
+	}
+	if !strings.Contains(err.Error(), "tema-store") {
+		t.Errorf("error should name the offending backend: %v", err)
+	}
+}
+
+// TestMemoryBackend_LenientWhenNoStaticMap confirms an agent may name a
+// backend that exists only as a future dynamic MemoryBackendDef: when the
+// static memory_backends map is empty, an unresolved name is NOT a load
+// error (the runtime fallback in memory.go is the safety net). RFC I MR-3b.
+func TestMemoryBackend_LenientWhenNoStaticMap(t *testing.T) {
+	tmp := t.TempDir()
+	yamlPath := filepath.Join(tmp, "c.yaml")
+	os.WriteFile(yamlPath, []byte(`
+defaults: { provider: anthropic, model: claude-sonnet-4-6 }
+agents:
+  dynamic-ref:
+    model: claude-sonnet-4-6
+    allowed_tools: [Memory]
+    memory_scopes: [agent]
+    memory_backend: created-at-runtime
+`), 0o600)
+	if _, err := Load(yamlPath); err != nil {
+		t.Fatalf("expected lenient pass when no static memory_backends map, got: %v", err)
+	}
+}
+
+// TestMemoryBackend_LiteralInprocessAlwaysAccepted confirms the built-in
+// "inprocess"/"default" literals pass validation even against a non-empty
+// memory_backends map that doesn't declare them. RFC I MR-3b.
+func TestMemoryBackend_LiteralInprocessAlwaysAccepted(t *testing.T) {
+	tmp := t.TempDir()
+	yamlPath := filepath.Join(tmp, "c.yaml")
+	os.WriteFile(yamlPath, []byte(`
+defaults: { provider: anthropic, model: claude-sonnet-4-6 }
+memory_backends:
+  team-store:
+    kind: inprocess
+agents:
+  literal:
+    model: claude-sonnet-4-6
+    allowed_tools: [Memory]
+    memory_scopes: [agent]
+    memory_backend: inprocess
+`), 0o600)
+	if _, err := Load(yamlPath); err != nil {
+		t.Fatalf("literal inprocess should always validate: %v", err)
+	}
+}
+
 func TestMemoryEnvDefaults(t *testing.T) {
 	tmp := t.TempDir()
 	yamlPath := filepath.Join(tmp, "c.yaml")

@@ -455,6 +455,20 @@ func (s *Server) WebhookDef(ctx context.Context, input json.RawMessage) (connect
 	return connector.ToolResult{Text: res.Text, IsError: res.IsError}, nil
 }
 
+// MemoryBackendDef dispatches to the RFC I MR-3a memory-backend
+// substrate tool. Same operator-admin-only posture as WebhookDef. See
+// SetMemoryBackendDefTool for wiring.
+func (s *Server) MemoryBackendDef(ctx context.Context, input json.RawMessage) (connector.ToolResult, error) {
+	if s.memoryBackendDefTool == nil {
+		return connector.ToolResult{}, fmt.Errorf("MemoryBackendDef: not configured (no tool wired via SetMemoryBackendDefTool)")
+	}
+	res, err := s.memoryBackendDefTool.Execute(ctx, input)
+	if err != nil {
+		return connector.ToolResult{}, err
+	}
+	return connector.ToolResult{Text: res.Text, IsError: res.IsError}, nil
+}
+
 // dispatchBuiltin is the shared lookup-and-execute path for the five
 // builtin wrappers. tools.Result {Text, IsError} maps directly onto
 // connector.ToolResult; the transport adapter (MCP) then wraps both

@@ -174,6 +174,11 @@ func toolDescriptors() []loommcp.ToolDescriptor {
 			InputSchema: rawJSON(`{"type": "object"}`),
 		},
 		{
+			Name:        "memorybackenddef",
+			Description: "MemoryBackendDef tool ops (create/fork/get/list/retire). RFC I MR-3a memory-backend substrate. Operator-admin-only — author + fork named memory backend definitions at runtime. Static memory_backends.<name>: yaml entries stay immutable ground truth; this produces the derived layer. Pass-through.",
+			InputSchema: rawJSON(`{"type": "object"}`),
+		},
+		{
 			Name:        "evaluation",
 			Description: "Evaluation tool ops (submit/get/list_for_run/list_for_def/aggregate). Pass-through.",
 			InputSchema: rawJSON(`{"type": "object"}`),

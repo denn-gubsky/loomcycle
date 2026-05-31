@@ -1013,6 +1013,21 @@ pre {
   vertical-align: middle;
 }
 
+/* RFC I MR-6 — per-key embedding indicator. Same pill language as
+   .embed-badge, scaled down for an inline table affordance. */
+.embed-key-badge {
+  margin-left: 8px;
+  background: var(--bg-soft, #1f2937);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 0 6px;
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--fg-soft);
+  vertical-align: middle;
+  white-space: nowrap;
+}
+
 .reembed-banner {
   margin: 6px 12px;
   padding: 10px 12px;

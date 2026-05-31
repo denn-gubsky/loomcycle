@@ -348,9 +348,14 @@ type ctxKeyMemoryPolicy struct{}
 //     grant Memory:read-only on `user` while withholding `agent`).
 //   - QuotaBytes is the yaml `memory_quota_bytes` override; 0 falls
 //     back to the global LOOMCYCLE_MEMORY_MAX_SCOPE_BYTES default.
+//   - Backend is the resolved per-agent `memory_backend` NAME (RFC I
+//     MR-3b); "" routes to the operator-default backend. The name is
+//     operator-resolved from agent config — never model-supplied, same
+//     trust posture as AllowedScopes.
 type MemoryPolicyValue struct {
 	AllowedScopes []string
 	QuotaBytes    int
+	Backend       string
 }
 
 // WithMemoryPolicy attaches the agent's resolved Memory policy to ctx.
@@ -679,6 +684,29 @@ func WithWebhookDefPolicy(ctx context.Context, p WebhookDefPolicyValue) context.
 // default-deny.
 func WebhookDefPolicy(ctx context.Context) WebhookDefPolicyValue {
 	v, _ := ctx.Value(ctxKeyWebhookDefPolicy{}).(WebhookDefPolicyValue)
+	return v
+}
+
+type ctxKeyMemoryBackendDefPolicy struct{}
+
+// MemoryBackendDefPolicyValue is the per-agent MemoryBackendDef-tool
+// access policy (RFC I MR-3a). Same shape as WebhookDefPolicyValue +
+// same "self / descendants / named:<n> / any" closed scope set.
+// Default-deny when Scopes is empty.
+type MemoryBackendDefPolicyValue struct {
+	Scopes   []string
+	SelfName string
+}
+
+// WithMemoryBackendDefPolicy attaches the policy to ctx.
+func WithMemoryBackendDefPolicy(ctx context.Context, p MemoryBackendDefPolicyValue) context.Context {
+	return context.WithValue(ctx, ctxKeyMemoryBackendDefPolicy{}, p)
+}
+
+// MemoryBackendDefPolicy returns the policy from ctx. Zero value =
+// default-deny.
+func MemoryBackendDefPolicy(ctx context.Context) MemoryBackendDefPolicyValue {
+	v, _ := ctx.Value(ctxKeyMemoryBackendDefPolicy{}).(MemoryBackendDefPolicyValue)
 	return v
 }
 

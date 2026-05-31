@@ -120,6 +120,14 @@ func operatorCtx(ctx context.Context) context.Context {
 		SelfName: operatorAgentName,
 	})
 
+	// MemoryBackendDef (RFC I MR-3a): "any" scope so the MCP
+	// `memorybackenddef` meta-tool reaches the in-process tool instead
+	// of being default-denied at the scope gate. (Mirrors WebhookDef.)
+	ctx = tools.WithMemoryBackendDefPolicy(ctx, tools.MemoryBackendDefPolicyValue{
+		Scopes:   []string{"any"},
+		SelfName: operatorAgentName,
+	})
+
 	// Evaluation: all 4 valid scope values. submit_any + read_any
 	// are the load-bearing ones; submit_self + submit_descendants
 	// are included for completeness in case an operator wants the

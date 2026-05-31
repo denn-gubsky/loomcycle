@@ -147,6 +147,50 @@ func TestHandleListMemoryEntries_ReturnsKeysAndValues(t *testing.T) {
 	}
 }
 
+// RFC I MR-6: include_embedding_metadata is opt-in and best-effort. On a
+// store without vector support (the in-memory sqlite fixture), the param is
+// honoured by OMITTING the metadata map rather than erroring — the entries
+// list is unaffected. (The populated-map path needs a vector-enabled build
+// and is exercised by the inprocess backend's vector tests.)
+func TestHandleListMemoryEntries_EmbeddingMetadataOptInGracefulWithoutVectors(t *testing.T) {
+	s := memoryAdminFixture(t)
+
+	// Default: no metadata requested, no metadata returned.
+	req := httptest.NewRequest("GET", "/v1/_memory/scopes/user/alice/keys", nil)
+	req.SetPathValue("scope", "user")
+	req.SetPathValue("scope_id", "alice")
+	rec := httptest.NewRecorder()
+	s.handleListMemoryEntries(rec, req)
+	var base memoryEntriesResponse
+	if err := json.NewDecoder(rec.Body).Decode(&base); err != nil {
+		t.Fatal(err)
+	}
+	if base.EmbeddingMetadata != nil {
+		t.Errorf("metadata returned without opt-in: %v", base.EmbeddingMetadata)
+	}
+
+	// Opt-in on a non-vector store: still 200, entries intact, metadata
+	// omitted (SupportsVectors()==false short-circuits the enrichment).
+	req2 := httptest.NewRequest("GET", "/v1/_memory/scopes/user/alice/keys?include_embedding_metadata=true", nil)
+	req2.SetPathValue("scope", "user")
+	req2.SetPathValue("scope_id", "alice")
+	rec2 := httptest.NewRecorder()
+	s.handleListMemoryEntries(rec2, req2)
+	if rec2.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec2.Code, rec2.Body.String())
+	}
+	var opt memoryEntriesResponse
+	if err := json.NewDecoder(rec2.Body).Decode(&opt); err != nil {
+		t.Fatal(err)
+	}
+	if len(opt.Entries) != 2 {
+		t.Errorf("opt-in changed the entries list: got %d, want 2", len(opt.Entries))
+	}
+	if len(opt.EmbeddingMetadata) != 0 {
+		t.Errorf("non-vector store returned metadata: %v", opt.EmbeddingMetadata)
+	}
+}
+
 func TestHandleListMemoryEntries_PrefixFilter(t *testing.T) {
 	s := memoryAdminFixture(t)
 	req := httptest.NewRequest("GET", "/v1/_memory/scopes/user/alice/keys?prefix=voi", nil)

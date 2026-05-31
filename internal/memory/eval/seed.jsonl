@@ -1,0 +1,26 @@
+# memory-eval bundled seed dataset (RFC I MR-5 / Decision 5).
+# JSONL: the first non-comment line is the CORPUS header (one JSON object
+# carrying name/top_k/dedup/rank + the full corpus array — ALL ON ONE
+# LINE, per the JSONL contract); every later line is one query tuple.
+# Designed for the DETERMINISTIC bag-of-tokens embedder: expected keys
+# share tokens with their query. NOT a semantic benchmark — extend via
+# --dataset <file.jsonl> and run against a real embedder for true numbers.
+# Dedup is enabled so duplication_rate is exercised by the near-duplicate
+# cluster (pref_color_1/2/3 all embed the same favourite-colour text).
+{"name":"bundled-seed","top_k":5,"dedup":{"enabled":true,"threshold":0.92},"corpus":[{"key":"pref_color_1","value":"\"blue\"","embed_text":"user favourite colour is blue"},{"key":"pref_color_2","value":"\"blue\"","embed_text":"user favourite colour is blue"},{"key":"pref_color_3","value":"\"blue\"","embed_text":"user favourite colour is blue"},{"key":"pref_food","value":"\"sushi\"","embed_text":"user favourite food is sushi"},{"key":"pref_lang","value":"\"go\"","embed_text":"user favourite programming language is go"},{"key":"fact_capital_france","value":"\"Paris\"","embed_text":"the capital of France is Paris"},{"key":"fact_capital_japan","value":"\"Tokyo\"","embed_text":"the capital of Japan is Tokyo"},{"key":"fact_speed_light","value":"\"299792458 m/s\"","embed_text":"the speed of light is 299792458 metres per second"},{"key":"session1_goal","value":"\"ship the ranker\"","embed_text":"in our first session we agreed to ship the memory ranker"},{"key":"session2_blocker","value":"\"dedup threshold\"","embed_text":"in the second session the blocker was the dedup threshold decision"},{"key":"session3_decision","value":"\"use cosine similarity\"","embed_text":"in the third session we decided to use cosine similarity for dedup"},{"key":"proj_deadline","value":"\"friday\"","embed_text":"the project deadline for the eval harness is friday"},{"key":"proj_owner","value":"\"dennis\"","embed_text":"the project owner for the memory work is dennis"},{"key":"note_meeting","value":"\"standup at 9\"","embed_text":"daily standup meeting is at nine in the morning"},{"key":"note_review","value":"\"pr review thursday\"","embed_text":"pull request review happens on thursday afternoon"},{"key":"cfg_provider","value":"\"anthropic\"","embed_text":"the configured sensitive provider is anthropic"},{"key":"cfg_public","value":"\"deepseek\"","embed_text":"the configured public provider is deepseek"},{"key":"misc_pet","value":"\"cat named loom\"","embed_text":"the user has a cat named loom"}]}
+{"query":"user favourite colour","expected":["pref_color_1"]}
+{"query":"user favourite food sushi","expected":["pref_food"]}
+{"query":"favourite programming language","expected":["pref_lang"]}
+{"query":"capital of France Paris","expected":["fact_capital_france"]}
+{"query":"capital of Japan Tokyo","expected":["fact_capital_japan"]}
+{"query":"speed of light metres per second","expected":["fact_speed_light"]}
+{"query":"first session ship the ranker","expected":["session1_goal"]}
+{"query":"second session blocker dedup threshold","expected":["session2_blocker"]}
+{"query":"third session cosine similarity dedup","expected":["session3_decision"]}
+{"query":"project deadline eval harness friday","expected":["proj_deadline"]}
+{"query":"project owner memory work","expected":["proj_owner"]}
+{"query":"standup meeting nine morning","expected":["note_meeting"]}
+{"query":"pull request review thursday","expected":["note_review"]}
+{"query":"sensitive provider anthropic","expected":["cfg_provider"]}
+{"query":"public provider deepseek","expected":["cfg_public"]}
+{"query":"user has a cat named loom","expected":["misc_pet"]}

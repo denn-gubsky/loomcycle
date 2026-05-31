@@ -83,6 +83,13 @@ func (s *Server) handleSubstrateWebhookDef(w http.ResponseWriter, r *http.Reques
 	s.dispatchSubstrate(w, r, "WebhookDef", s.WebhookDef)
 }
 
+// handleSubstrateMemoryBackendDef serves POST /v1/_memorybackenddef.
+// RFC I MR-3a MemoryBackendDef substrate. Bearer-authed; same dispatch
+// shape as the other substrate endpoints.
+func (s *Server) handleSubstrateMemoryBackendDef(w http.ResponseWriter, r *http.Request) {
+	s.dispatchSubstrate(w, r, "MemoryBackendDef", s.MemoryBackendDef)
+}
+
 // dispatchSubstrate is the shared body of the two handlers.
 // connectorFn is the Connector method (already a method value
 // bound to the Server). toolName is the label used in error
@@ -209,6 +216,12 @@ func substrateAdminCtx(ctx context.Context) context.Context {
 	// WebhookDef: same operator-trust posture; "any" scope lets the
 	// HTTP-admin call create/fork/retire any webhook name (RFC H WH-2).
 	ctx = tools.WithWebhookDefPolicy(ctx, tools.WebhookDefPolicyValue{
+		Scopes:   []string{"any"},
+		SelfName: substrateAdminAgentName,
+	})
+	// MemoryBackendDef: same operator-trust posture; "any" scope lets the
+	// HTTP-admin call create/fork/retire any backend name (RFC I MR-3a).
+	ctx = tools.WithMemoryBackendDefPolicy(ctx, tools.MemoryBackendDefPolicyValue{
 		Scopes:   []string{"any"},
 		SelfName: substrateAdminAgentName,
 	})

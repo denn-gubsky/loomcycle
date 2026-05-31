@@ -690,7 +690,11 @@ type mergedDef struct {
 	Models           map[string][]config.TierCandidate `json:"models,omitempty"`
 	MemoryScopes     []string                          `json:"memory_scopes,omitempty"`
 	MemoryQuotaBytes int                               `json:"memory_quota_bytes,omitempty"`
-	Description      string                            `json:"description,omitempty"`
+	// MemoryBackend mirrors config.AgentDef.MemoryBackend — the named
+	// memory backend this agent routes through. "" = operator default.
+	// RFC I MR-3b.
+	MemoryBackend string `json:"memory_backend,omitempty"`
+	Description   string `json:"description,omitempty"`
 	// RetryAttempts mirrors config.AgentDef.RetryAttempts — same-
 	// provider retry budget override. *int so the substrate-write
 	// path can persist an explicit 0 ("force no retries") as
@@ -746,6 +750,9 @@ func (d *mergedDef) applyOverlay(ov mergedDef) {
 	if ov.MemoryQuotaBytes != 0 {
 		d.MemoryQuotaBytes = ov.MemoryQuotaBytes
 	}
+	if ov.MemoryBackend != "" {
+		d.MemoryBackend = ov.MemoryBackend
+	}
 	if ov.Description != "" {
 		d.Description = ov.Description
 	}
@@ -792,6 +799,7 @@ func staticToMergedDef(s config.AgentDef) mergedDef {
 		Models:                s.Models,
 		MemoryScopes:          s.MemoryScopes,
 		MemoryQuotaBytes:      s.MemoryQuotaBytes,
+		MemoryBackend:         s.MemoryBackend,
 		RetryAttempts:         s.RetryAttempts,
 	}
 }
@@ -861,6 +869,7 @@ func signFromMergedDef(name string, def mergedDef) string {
 		Models:                models,
 		MemoryScopes:          def.MemoryScopes,
 		MemoryQuotaBytes:      def.MemoryQuotaBytes,
+		MemoryBackend:         def.MemoryBackend,
 	})
 }
 

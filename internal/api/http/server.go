@@ -229,6 +229,13 @@ type Server struct {
 	// configured" errors. Set via SetWebhookDefTool.
 	webhookDefTool tools.Tool
 
+	// memoryBackendDefTool is the RFC I MR-3a MemoryBackendDef substrate
+	// tool. Same operator-admin-only posture as webhookDefTool — NOT in
+	// s.tools, reached via Connector.MemoryBackendDef + the admin
+	// endpoint + the LoomCycle MCP meta-tool. Nil = the surface returns
+	// "not configured" errors. Set via SetMemoryBackendDefTool.
+	memoryBackendDefTool tools.Tool
+
 	// v0.12.0 multi-replica HA. backplane + replicaStore are nil in
 	// single-replica deployments (LOOMCYCLE_REPLICA_ID unset); /healthz
 	// then returns the same response shape as v0.11.x. When set,
@@ -527,6 +534,15 @@ func (s *Server) SetA2AAgentDefTool(t tools.Tool) {
 // A2A substrate tools in main.go.
 func (s *Server) SetWebhookDefTool(t tools.Tool) {
 	s.webhookDefTool = t
+}
+
+// SetMemoryBackendDefTool wires the RFC I MR-3a MemoryBackendDef
+// substrate tool. Without this call, Connector.MemoryBackendDef + POST
+// /v1/_memorybackenddef + the LoomCycle MCP meta-tool all refuse with
+// "not configured". The tool only needs the store + cfg, so it can be
+// constructed alongside the other substrate tools in main.go.
+func (s *Server) SetMemoryBackendDefTool(t tools.Tool) {
+	s.memoryBackendDefTool = t
 }
 
 // newDispatcher centralises Dispatcher construction so the three call
@@ -1084,6 +1100,7 @@ func applyAgentDefOverlay(base config.AgentDef, definition json.RawMessage) conf
 		Models           map[string][]config.TierCandidate `json:"models,omitempty"`
 		MemoryScopes     []string                          `json:"memory_scopes,omitempty"`
 		MemoryQuotaBytes int                               `json:"memory_quota_bytes,omitempty"`
+		MemoryBackend    string                            `json:"memory_backend,omitempty"`
 		// *int because 0 is a meaningful explicit value ("force no
 		// retries"); non-pointer would collapse "not in overlay" and
 		// "explicitly disable" into the same case and silently strip
@@ -1146,6 +1163,9 @@ func applyAgentDefOverlay(base config.AgentDef, definition json.RawMessage) conf
 	}
 	if ov.MemoryQuotaBytes != 0 {
 		out.MemoryQuotaBytes = ov.MemoryQuotaBytes
+	}
+	if ov.MemoryBackend != "" {
+		out.MemoryBackend = ov.MemoryBackend
 	}
 	if ov.RetryAttempts != nil {
 		// Pointer-set means the substrate row carries an explicit
@@ -1508,6 +1528,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	loopCtx = tools.WithMemoryPolicy(loopCtx, tools.MemoryPolicyValue{
 		AllowedScopes: agentDef.MemoryScopes,
 		QuotaBytes:    agentDef.MemoryQuotaBytes,
+		Backend:       agentDef.MemoryBackend,
 	})
 	loopCtx = tools.WithChannelPolicy(loopCtx, s.channelPolicyForAgent(agentDef))
 	loopCtx = tools.WithEventEmitter(loopCtx, emit)
@@ -1755,6 +1776,9 @@ func (s *Server) Mux() http.Handler {
 	// v1.x RFC H Input Webhooks substrate. Same operator-admin-only
 	// dispatch shape as the other substrate admin endpoints.
 	mux.Handle("POST /v1/_webhookdef", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleSubstrateWebhookDef))))
+	// RFC I MR-3a MemoryBackendDef substrate. Same operator-admin-only
+	// dispatch shape as the other substrate admin endpoints.
+	mux.Handle("POST /v1/_memorybackenddef", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleSubstrateMemoryBackendDef))))
 	// v0.11.0 LLM Gateway — direct provider routing without the agent
 	// loop. Bearer-authed admin scope. Both stream:true (SSE) and
 	// stream:false (single-shot JSON) selected by the request body.
@@ -1787,6 +1811,7 @@ func (s *Server) Mux() http.Handler {
 	mux.Handle("GET /v1/_a2aservercarddef/names", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleListA2AServerCardDefNames))))
 	mux.Handle("GET /v1/_a2aagentdef/names", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleListA2AAgentDefNames))))
 	mux.Handle("GET /v1/_webhookdef/names", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleListWebhookDefNames))))
+	mux.Handle("GET /v1/_memorybackenddef/names", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleListMemoryBackendDefNames))))
 	// v0.9.x Library v2 — unified enumeration that merges static cfg
 	// + substrate views into one envelope per entry. The names/* sister
 	// endpoints above stay as-is for backwards compat with external
@@ -2576,6 +2601,7 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 	loopCtx = tools.WithMemoryPolicy(loopCtx, tools.MemoryPolicyValue{
 		AllowedScopes: agentDef.MemoryScopes,
 		QuotaBytes:    agentDef.MemoryQuotaBytes,
+		Backend:       agentDef.MemoryBackend,
 	})
 	loopCtx = tools.WithChannelPolicy(loopCtx, s.channelPolicyForAgent(agentDef))
 	loopCtx = tools.WithEventEmitter(loopCtx, emit)
@@ -2935,6 +2961,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	loopCtx = tools.WithMemoryPolicy(loopCtx, tools.MemoryPolicyValue{
 		AllowedScopes: agentDef.MemoryScopes,
 		QuotaBytes:    agentDef.MemoryQuotaBytes,
+		Backend:       agentDef.MemoryBackend,
 	})
 	loopCtx = tools.WithChannelPolicy(loopCtx, s.channelPolicyForAgent(agentDef))
 	loopCtx = tools.WithEventEmitter(loopCtx, emit)
@@ -3530,6 +3557,7 @@ func (s *Server) runSubAgent(ctx context.Context, name string, prompt string, de
 	subCtx = tools.WithMemoryPolicy(subCtx, tools.MemoryPolicyValue{
 		AllowedScopes: def.MemoryScopes,
 		QuotaBytes:    def.MemoryQuotaBytes,
+		Backend:       def.MemoryBackend,
 	})
 	// Sub-agent's Channel policy follows the same per-yaml shape as
 	// MemoryPolicy above. The Channels map (operator-declared

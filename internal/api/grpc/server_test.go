@@ -835,6 +835,10 @@ func (m *mockConnector) WebhookDef(context.Context, json.RawMessage) (connector.
 	return connector.ToolResult{}, nil
 }
 
+func (m *mockConnector) MemoryBackendDef(context.Context, json.RawMessage) (connector.ToolResult, error) {
+	return connector.ToolResult{}, nil
+}
+
 // v0.9.x Channel CRUD stubs.
 func (m *mockConnector) PublishChannel(context.Context, connector.ChannelPublishRequest) (connector.ChannelPublishResult, error) {
 	return connector.ChannelPublishResult{}, nil
