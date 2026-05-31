@@ -90,6 +90,44 @@ func TestTaskStore_GetSingleTenantModeUnchanged(t *testing.T) {
 	}
 }
 
+// TestTaskStore_ListIsolatesByRoutedTenant pins the cross-tenant
+// tasks/list enumeration: the in-memory map is process-global across every
+// tenant a routed server fronts, so a List routed to tenant-a must return
+// only tenant-a's tasks, never tenant-b's.
+//
+// Regression-grade: on the unfixed List (no tenant filter) both tasks come
+// back.
+func TestTaskStore_ListIsolatesByRoutedTenant(t *testing.T) {
+	runs := &fakeRuns{
+		byAgentID: map[string]store.Run{
+			"task-a": {ID: "run-a", AgentID: "task-a", SessionID: "sess-a", Status: store.RunRunning},
+			"task-b": {ID: "run-b", AgentID: "task-b", SessionID: "sess-b", Status: store.RunRunning},
+		},
+		bySession: map[string]store.Session{
+			"sess-a": {ID: "sess-a", TenantID: "tenant-a"},
+			"sess-b": {ID: "sess-b", TenantID: "tenant-b"},
+		},
+	}
+	ts := NewTaskStore(runs)
+	// Seed one task per tenant into the shared in-memory map.
+	for _, id := range []a2asdk.TaskID{"task-a", "task-b"} {
+		if _, err := ts.Create(context.Background(), &a2asdk.Task{
+			ID: id, Status: a2asdk.TaskStatus{State: a2asdk.TaskStateWorking},
+		}); err != nil {
+			t.Fatalf("seed create %s: %v", id, err)
+		}
+	}
+
+	ctx := WithRoutedTenant(context.Background(), "tenant-a")
+	resp, err := ts.List(ctx, &a2asdk.ListTasksRequest{})
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(resp.Tasks) != 1 || resp.Tasks[0].ID != "task-a" {
+		t.Fatalf("tenant-a list = %#v, want exactly [task-a] (tenant-b's task must not leak)", resp.Tasks)
+	}
+}
+
 // TestExecutor_CancelRejectsCrossTenantTaskID pins the HIGH cross-tenant
 // cancel: a peer routed to tenant-a sends tasks/cancel with tenant-b's
 // agent_id and must be refused with ErrTaskNotFound BEFORE the destructive
