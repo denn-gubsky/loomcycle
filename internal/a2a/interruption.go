@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"sync"
+	"time"
 
 	a2asdk "github.com/a2aproject/a2a-go/v2/a2a"
 
@@ -102,26 +103,58 @@ type parkedRun struct {
 	// used when a park can never be resumed (no bridge) or the client
 	// abandons the stream at the park.
 	cancel context.CancelFunc
+	// parkedAt stamps when the run was registered, so the registry can reap
+	// parks that are never resumed (a peer that received INPUT_REQUIRED and
+	// then vanished). Set by put.
+	parkedAt time.Time
 }
 
 // parkRegistry tracks runs parked on an interruption, keyed by A2A
-// TaskID. Process-local: cross-replica resume is a later-slice concern
-// (it would ride the shared run table + backplane bus), same boundary as
-// TaskStore's in-memory map.
+// TaskID. Process-local: cross-replica resume is a later concern (it would
+// ride the shared run table + backplane bus), same boundary as TaskStore's
+// in-memory map.
 type parkRegistry struct {
 	mu     sync.Mutex
 	parked map[a2asdk.TaskID]*parkedRun
+	ttl    time.Duration
 }
+
+// defaultParkTTL bounds how long an un-resumed park (and its still-live
+// background run goroutine) is retained. A park awaits a human-in-the-loop
+// answer, so the window is generous; past it the run is assumed abandoned
+// (the peer received INPUT_REQUIRED and never returned) and is reaped.
+const defaultParkTTL = 1 * time.Hour
 
 func newParkRegistry() *parkRegistry {
-	return &parkRegistry{parked: make(map[a2asdk.TaskID]*parkedRun)}
+	return &parkRegistry{parked: make(map[a2asdk.TaskID]*parkedRun), ttl: defaultParkTTL}
 }
 
+// put registers a parked run and opportunistically reaps any park older
+// than the TTL. Reaping here (rather than in a background goroutine) keeps
+// the registry free of a lifecycle to manage: an abandoned park — one whose
+// peer got INPUT_REQUIRED and never sent a follow-up — would otherwise
+// retain its entry AND keep its detached background run goroutine blocked
+// on the bus forever (no Delete, no resume). Without this the registry and
+// its goroutines grow unbounded under park-then-abandon load. cancel() on a
+// reaped entry tears down that leaked background run.
 func (r *parkRegistry) put(id a2asdk.TaskID, p *parkedRun) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	now := nowFunc()
+	p.parkedAt = now
+	for k, old := range r.parked {
+		if r.ttl > 0 && now.Sub(old.parkedAt) > r.ttl {
+			if old.cancel != nil {
+				old.cancel()
+			}
+			delete(r.parked, k)
+		}
+	}
 	r.parked[id] = p
 }
+
+// nowFunc is time.Now indirected so tests can drive the reap clock.
+var nowFunc = time.Now
 
 // take removes and returns the parked run for id, if any. Removing on
 // take ensures a resume consumes the entry exactly once; if the resumed

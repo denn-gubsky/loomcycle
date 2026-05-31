@@ -13,7 +13,6 @@ package a2a
 import (
 	"context"
 	"fmt"
-	"net/http"
 	"strings"
 	"time"
 
@@ -135,8 +134,16 @@ func (c *sdkPeerClient) Close() error { return c.cl.Destroy() }
 //
 // The bearer is wired via bearerInterceptor so it rides every call.
 func newSDKPeerClient(ctx context.Context, def config.A2AAgent, bearer string) (peerClient, error) {
+	// Inject loomcycle's hardened http.Client into the JSON-RPC + REST
+	// transports so peer responses are body-capped (no OOM from a hostile
+	// peer's giant SendMessage response) and SSRF-blocked at the dial layer.
+	// gRPC carries its own default 4 MiB recv cap, so only the two HTTP
+	// transports need the override.
+	hc := hardenedPeerClient(peerCallTimeout)
 	opts := []a2aclient.FactoryOption{
 		a2aclient.WithCallInterceptors(&bearerInterceptor{bearer: bearer}),
+		a2aclient.WithJSONRPCTransport(hc),
+		a2aclient.WithRESTTransport(hc),
 	}
 
 	if def.AgentCardURL != "" {
@@ -174,6 +181,11 @@ func newSDKPeerClient(ctx context.Context, def config.A2AAgent, bearer string) (
 // discovery hop specifically.
 const peerCardFetchTimeout = 15 * time.Second
 
+// peerCallTimeout bounds a single SendMessage exchange with a peer. The
+// agent run ctx still applies on top; this caps the per-call wall-clock so
+// a wedged peer cannot pin a goroutine indefinitely.
+const peerCallTimeout = 5 * time.Minute
+
 // fetchPeerCard resolves a peer AgentCard from its well-known URL using
 // the SDK's resolver. agentCardURL may point at either the well-known
 // path directly or the origin; the resolver appends the default
@@ -181,7 +193,10 @@ const peerCardFetchTimeout = 15 * time.Second
 // base and strip a trailing well-known suffix the operator may have
 // included to avoid double-appending.
 func fetchPeerCard(ctx context.Context, agentCardURL string) (*a2asdk.AgentCard, error) {
-	hc := &http.Client{Timeout: peerCardFetchTimeout}
+	// Hardened client: caps the card body (the SDK resolver does an
+	// unbounded io.ReadAll) and SSRF-blocks the dial, since agent_card_url
+	// can be model-authored via a def-scope fork overlay.
+	hc := hardenedPeerClient(peerCardFetchTimeout)
 	resolver := agentcard.NewResolver(hc)
 
 	const wellKnown = "/.well-known/agent-card.json"

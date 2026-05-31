@@ -41,8 +41,20 @@ const (
 // separately by signCardIfConfigured after the card is built — keeping
 // buildAgentCard a pure function of its inputs (so card_test can assert
 // card shape without touching the env or crypto).
-func buildAgentCard(card config.A2AServerCard, baseURL, tenantPrefix string, extended bool) *a2asdk.AgentCard {
+func buildAgentCard(card config.A2AServerCard, baseURL, tenantPrefix string, extended, includeGRPC bool) *a2asdk.AgentCard {
 	root := baseURL + tenantPrefix
+
+	// Advertise only the bindings actually served. gRPC is dropped under
+	// host/path tenancy (includeGRPC=false) so the card never points peers
+	// at a binding whose tenancy boundary loomcycle cannot enforce — see
+	// Server.grpcEnabled. REST + JSON-RPC are always served.
+	interfaces := []*a2asdk.AgentInterface{
+		a2asdk.NewAgentInterface(root+pathREST, a2asdk.TransportProtocolHTTPJSON),
+		a2asdk.NewAgentInterface(root+pathJSONRPC, a2asdk.TransportProtocolJSONRPC),
+	}
+	if includeGRPC {
+		interfaces = append(interfaces, a2asdk.NewAgentInterface(root+pathGRPC, a2asdk.TransportProtocolGRPC))
+	}
 
 	out := &a2asdk.AgentCard{
 		Name:        card.Name,
@@ -57,15 +69,11 @@ func buildAgentCard(card config.A2AServerCard, baseURL, tenantPrefix string, ext
 		},
 		// loomcycle agents accept and emit text; richer modes are a
 		// later concern (the bridge rejects non-text parts today).
-		DefaultInputModes:  []string{"text/plain"},
-		DefaultOutputModes: []string{"text/plain"},
-		SupportedInterfaces: []*a2asdk.AgentInterface{
-			a2asdk.NewAgentInterface(root+pathREST, a2asdk.TransportProtocolHTTPJSON),
-			a2asdk.NewAgentInterface(root+pathJSONRPC, a2asdk.TransportProtocolJSONRPC),
-			a2asdk.NewAgentInterface(root+pathGRPC, a2asdk.TransportProtocolGRPC),
-		},
-		Skills:          skillsFromExposedAgents(card.ExposedAgents),
-		SecuritySchemes: securitySchemesFor(card.SecuritySchemes),
+		DefaultInputModes:   []string{"text/plain"},
+		DefaultOutputModes:  []string{"text/plain"},
+		SupportedInterfaces: interfaces,
+		Skills:              skillsFromExposedAgents(card.ExposedAgents),
+		SecuritySchemes:     securitySchemesFor(card.SecuritySchemes),
 	}
 	if card.Provider.Organization != "" || card.Provider.URL != "" {
 		out.Provider = &a2asdk.AgentProvider{

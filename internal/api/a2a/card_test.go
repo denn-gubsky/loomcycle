@@ -42,7 +42,7 @@ func fixtureCard() config.A2AServerCard {
 }
 
 func TestBuildAgentCard_SkillsFromExposedAgents(t *testing.T) {
-	card := buildAgentCard(fixtureCard(), "https://agents.example", "", false)
+	card := buildAgentCard(fixtureCard(), "https://agents.example", "", false, true)
 
 	if card.Name != "loomcycle-fleet" {
 		t.Errorf("name = %q, want loomcycle-fleet", card.Name)
@@ -75,7 +75,7 @@ func TestBuildAgentCard_PushNotificationsAlwaysFalse(t *testing.T) {
 	// (the server cannot honour push configs yet).
 	c := fixtureCard()
 	c.Capabilities.PushNotifications = true
-	card := buildAgentCard(c, "", "", false)
+	card := buildAgentCard(c, "", "", false, true)
 	if card.Capabilities.PushNotifications {
 		t.Error("pushNotifications must be false (deferred), got true")
 	}
@@ -85,7 +85,7 @@ func TestBuildAgentCard_PushNotificationsAlwaysFalse(t *testing.T) {
 }
 
 func TestBuildAgentCard_BindingInterfaceURLs(t *testing.T) {
-	card := buildAgentCard(fixtureCard(), "https://agents.example", "", false)
+	card := buildAgentCard(fixtureCard(), "https://agents.example", "", false, true)
 	want := map[a2asdk.TransportProtocol]string{
 		a2asdk.TransportProtocolHTTPJSON: "https://agents.example/a2a/v1",
 		a2asdk.TransportProtocolJSONRPC:  "https://agents.example/a2a/jsonrpc",
@@ -105,7 +105,7 @@ func TestBuildAgentCard_PathModePrefixesInterfaceURLs(t *testing.T) {
 	// Path-mode tenancy prepends /{tenant} to the interface URLs so a
 	// peer that fetched the per-tenant card POSTs back to the same
 	// tenant-prefixed binding.
-	card := buildAgentCard(fixtureCard(), "https://agents.example", "/acme", false)
+	card := buildAgentCard(fixtureCard(), "https://agents.example", "/acme", false, true)
 	for _, iface := range card.SupportedInterfaces {
 		if iface.ProtocolBinding == a2asdk.TransportProtocolHTTPJSON {
 			if iface.URL != "https://agents.example/acme/a2a/v1" {

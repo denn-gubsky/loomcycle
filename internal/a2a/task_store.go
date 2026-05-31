@@ -45,10 +45,18 @@ type RunReader interface {
 //     Task.id IS a loomcycle agent_id.
 //
 // The in-memory map is process-local and not durable; cross-replica
-// task addressing is a later-slice concern (it rides on the run table,
-// which IS shared). Lossy eviction is not implemented this slice — the
-// map grows with active tasks and is expected to be bounded by the
-// run concurrency semaphore upstream.
+// task addressing is a later concern (it rides on the run table, which IS
+// shared).
+//
+// Bounding: the SDK taskstore.Store interface has no Delete, so the map
+// would otherwise grow with every distinct A2A task id the process ever
+// served — the run-concurrency semaphore bounds CONCURRENT runs, NOT the
+// cumulative count of completed tasks, so it is not the bound an earlier
+// comment claimed. Create evicts TERMINAL entries once the map exceeds
+// maxInMemoryTasks: a terminal task evicted from memory is still resolvable
+// via the run-table fallback in Get, so eviction is lossless for reads. The
+// floor (tasks that cannot be evicted) is the set of in-flight, non-
+// terminal tasks, which the semaphore genuinely does bound.
 type TaskStore struct {
 	runs RunReader
 
@@ -56,6 +64,12 @@ type TaskStore struct {
 	tasks    map[a2asdk.TaskID]*taskstore.StoredTask
 	versions map[a2asdk.TaskID]taskstore.TaskVersion
 }
+
+// maxInMemoryTasks is the soft cap on the in-memory task map. Past it,
+// Create evicts terminal entries (still readable via the run-table
+// fallback). Generous: it only needs to cover in-flight + recently-
+// completed tasks, not history.
+const maxInMemoryTasks = 4096
 
 var _ taskstore.Store = (*TaskStore)(nil)
 
@@ -76,10 +90,29 @@ func (s *TaskStore) Create(ctx context.Context, task *a2asdk.Task) (taskstore.Ta
 	if _, exists := s.tasks[task.ID]; exists {
 		return taskstore.TaskVersionMissing, taskstore.ErrTaskAlreadyExists
 	}
+	if len(s.tasks) >= maxInMemoryTasks {
+		s.evictTerminalLocked()
+	}
 	const firstVersion taskstore.TaskVersion = 1
 	s.tasks[task.ID] = &taskstore.StoredTask{Task: task, Version: firstVersion}
 	s.versions[task.ID] = firstVersion
 	return firstVersion, nil
+}
+
+// evictTerminalLocked drops terminal (completed/failed/canceled/rejected)
+// tasks from the in-memory maps to bound their growth. A terminal task
+// dropped here is still resolvable through Get's run-table fallback, so the
+// eviction does not lose readable state. In-flight (non-terminal) tasks are
+// never evicted — dropping one would break the SDK's OCC for a live run —
+// so the post-eviction floor is the count of concurrent in-flight tasks,
+// which the run-concurrency semaphore bounds. Caller holds s.mu.
+func (s *TaskStore) evictTerminalLocked() {
+	for id, st := range s.tasks {
+		if st.Task != nil && st.Task.Status.State.Terminal() {
+			delete(s.tasks, id)
+			delete(s.versions, id)
+		}
+	}
 }
 
 // Update applies an OCC-guarded update. Returns
