@@ -144,12 +144,14 @@ func (b *Backend) Search(ctx context.Context, scope store.MemoryScope, scopeID s
 	topK := q.TopK
 
 	// RFC I hybrid ranking. Pure-semantic config = today's behavior (zero
-	// regression). For a hybrid config we over-fetch a candidate pool by
-	// cosine, then re-rank by the full score so recency (etc.) can promote
-	// an entry the pure-cosine top-K would have missed. The pool is bounded
-	// by the store's defensive cap (<=51).
+	// regression). We over-fetch a candidate pool by cosine when EITHER a
+	// hybrid rank needs to re-score deeper rows (recency promoting an entry
+	// the pure-cosine top-K would miss) OR dedup is enabled (collapsing a
+	// near-duplicate cluster must back-fill from rows below top_k, else the
+	// agent silently gets fewer than top_k results). The pool is bounded by
+	// the store's defensive cap (<=51).
 	pool := topK
-	if !rank.IsPureSemantic() {
+	if !rank.IsPureSemantic() || dedup.Enabled {
 		pool = topK * 4
 	}
 	fetch := pool + 1 // +1 truncation probe

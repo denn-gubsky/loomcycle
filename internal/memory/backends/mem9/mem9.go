@@ -336,6 +336,12 @@ func (b *Backend) scopedPrefix(prefix string) string {
 //
 // The key is set on the header and then dropped — it is never logged and
 // never placed into any error returned from here.
+
+// maxResponseBytes caps how much of a Mem9 response we buffer. Mem9 is a
+// remote trust boundary; an unbounded read would let a hostile/buggy server
+// OOM the process. 16 MiB is far above any realistic memory payload.
+const maxResponseBytes = 16 << 20
+
 func (b *Backend) do(ctx context.Context, method, urlStr string, body any) ([]byte, error) {
 	apiKey, err := b.resolveKey(ctx)
 	if err != nil {
@@ -371,7 +377,14 @@ func (b *Backend) do(ctx context.Context, method, urlStr string, body any) ([]by
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	respBody, _ := io.ReadAll(resp.Body)
+	// Bound the response read: Mem9 is a remote trust boundary, and an
+	// unbounded io.ReadAll would let a malicious or buggy server OOM the
+	// process with a giant body. maxResponseBytes is generous for any
+	// realistic memory payload (a search result set or a single value) but
+	// caps the blast radius. A body at the cap decodes normally if it's
+	// valid JSON within the limit; a truly oversized one is truncated and
+	// fails JSON decode in the caller (a clean error, not an OOM).
+	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		// Surface the status + a bounded body snippet. Mem9 must not echo
 		// the API key in error bodies; we still cap the snippet so a
@@ -492,15 +505,22 @@ func (b *Backend) Search(ctx context.Context, scope store.MemoryScope, scopeID s
 
 	// Over-fetch a candidate pool when the rank is hybrid so recency (etc.)
 	// can promote an entry the pure-cosine top-K would miss — mirrors the
-	// in-process backend's pool sizing for cross-backend parity.
+	// in-process backend's pool sizing for cross-backend parity. (Dedup
+	// degrades to a no-op here because the REST envelope returns no per-row
+	// vectors, so it doesn't widen the pool — unlike in-process.)
 	pool := q.TopK
 	if !rank.IsPureSemantic() {
 		pool = q.TopK * 4
 	}
 
+	// Request pool+1 so `truncated` can be detected the same way as the
+	// in-process backend: a returned row beyond what the caller's top_k will
+	// keep means Mem9 had more matches. Without this probe a pure-semantic
+	// request (pool == top_k) could never report truncated=true even when
+	// the scope held more matches — a cross-backend parity bug.
 	reqBody := wireSearchRequest{
 		Query:  q.QueryText,
-		TopK:   pool,
+		TopK:   pool + 1,
 		Prefix: b.scopedPrefix(scopeKey(scope, scopeID, q.Prefix)),
 	}
 	respBody, err := b.do(ctx, http.MethodPost, b.searchPath(), reqBody)

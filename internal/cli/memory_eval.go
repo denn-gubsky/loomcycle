@@ -42,19 +42,22 @@ func RunMemoryEval(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 
+	// A bad --dataset (missing file, malformed JSONL) is a user/invocation
+	// error → exit 2 via fail(), matching cli.go's documented convention
+	// (and consistent with the flag-parse failure above, which also exits
+	// 2). The eval RUN below is operational → exit 1 via failOp().
 	ds, err := loadEvalDataset(*dataset)
 	if err != nil {
-		fmt.Fprintf(stderr, "loomcycle memory-eval: %v\n", err)
-		return 1
+		return fail(stderr, "memory-eval: %v", err)
 	}
 
 	// --rank-config overrides whatever the dataset declared. This is how an
 	// operator A/B-tests a ranker weight change without editing the dataset.
+	// A bad config path/contents is also a user error → exit 2.
 	if *rankConfig != "" {
 		rc, err := loadRankConfig(*rankConfig)
 		if err != nil {
-			fmt.Fprintf(stderr, "loomcycle memory-eval: rank-config: %v\n", err)
-			return 1
+			return fail(stderr, "memory-eval: rank-config: %v", err)
 		}
 		ds.Rank = &rc
 	}
@@ -62,15 +65,13 @@ func RunMemoryEval(args []string, stdout, stderr io.Writer) int {
 	emb := eval.NewDeterministicEmbedder(*embedDim)
 	rep, err := eval.Run(context.Background(), ds, emb)
 	if err != nil {
-		fmt.Fprintf(stderr, "loomcycle memory-eval: %v\n", err)
-		return 1
+		return failOp(stderr, "memory-eval: %v", err)
 	}
 
 	if *output != "" {
 		b, _ := json.MarshalIndent(rep, "", "  ")
 		if err := os.WriteFile(*output, append(b, '\n'), 0o644); err != nil {
-			fmt.Fprintf(stderr, "loomcycle memory-eval: write report: %v\n", err)
-			return 1
+			return failOp(stderr, "memory-eval: write report: %v", err)
 		}
 		fmt.Fprintf(stdout, "wrote report to %s\n", *output)
 		return 0

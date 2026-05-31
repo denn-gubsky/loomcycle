@@ -44,11 +44,18 @@ func DefaultRankConfig() RankConfig {
 	return RankConfig{SemanticWeight: 1.0}
 }
 
-// IsPureSemantic reports whether only the semantic term is active. When
-// true the hybrid re-rank is a no-op reorder (cosine order is final), so
-// the caller can skip candidate-pool over-fetch.
+// IsPureSemantic reports whether the config is equivalent to "order by
+// cosine, descending" — the store's native order — so the caller can skip
+// the candidate-pool over-fetch and the re-rank entirely.
+//
+// This requires a STRICTLY POSITIVE semantic weight with all other terms
+// zero: only then does sorting by score reproduce cosine-descending. A zero
+// or negative semantic weight does NOT (zero collapses every score to 0;
+// negative inverts the order), so those must take the real re-rank path —
+// otherwise RankCandidates would return cosine order while ScoreAll renders
+// a contradicting (flat or inverted) rank_score.
 func (c RankConfig) IsPureSemantic() bool {
-	return c.RecencyWeight == 0 && c.SourceWeight == 0 && c.FrequencyWeight == 0
+	return c.SemanticWeight > 0 && c.RecencyWeight == 0 && c.SourceWeight == 0 && c.FrequencyWeight == 0
 }
 
 // SourceFrequencyReserved reports whether the caller set a non-zero

@@ -84,36 +84,52 @@ func DedupResults(ranked []store.MemorySearchEntry, cfg DedupConfig) (kept []sto
 	}
 
 	kept = make([]store.MemorySearchEntry, 0, len(ranked))
+	// anchors are the NON-duplicate survivors — the cluster representatives a
+	// later candidate is tested against. This is tracked separately from
+	// `kept` (the output) so that keep-mode, which retains flagged duplicates
+	// in the output, does NOT let those flagged rows become anchors. If a
+	// flagged duplicate could anchor, keep-mode would cascade-flag rows that
+	// drop-mode keeps, and its `dropped` count would over-report what
+	// drop-mode actually collapses — defeating the documented purpose of
+	// keep-mode (measure the duplication rate without losing data). Indices
+	// into anchors point at the merge target in `kept` for merge-mode.
+	type anchorRef struct {
+		entry   store.MemorySearchEntry
+		keptIdx int // index in `kept` of this anchor (for merge provenance)
+	}
+	var anchors []anchorRef
 	for i := range ranked {
 		cand := ranked[i]
 		dupOf := -1
 		if len(cand.Vector) > 0 {
-			// Compare against entries we've already RETAINED with a usable
-			// vector. The first match wins (highest-ranked anchor).
-			for j := range kept {
-				anchor := kept[j]
-				if len(anchor.Vector) == 0 {
+			// Compare only against retained cluster representatives (anchors),
+			// highest-ranked first. The first match wins.
+			for j := range anchors {
+				if len(anchors[j].entry.Vector) == 0 {
 					continue
 				}
-				if cosineSimilarity(cand.Vector, anchor.Vector) >= threshold {
+				if cosineSimilarity(cand.Vector, anchors[j].entry.Vector) >= threshold {
 					dupOf = j
 					break
 				}
 			}
 		}
 		if dupOf == -1 {
+			// A fresh cluster representative: it's both kept AND an anchor.
 			kept = append(kept, cand)
+			anchors = append(anchors, anchorRef{entry: cand, keptIdx: len(kept) - 1})
 			continue
 		}
-		// cand is a duplicate of kept[dupOf].
+		// cand is a duplicate of the anchor at anchors[dupOf]. It is NEVER
+		// added to anchors, so it can't seed further flags.
 		dropped++
 		switch mode {
 		case dedupModeKeep:
-			// Flagged but retained: count it, keep the row. "keep" is for
-			// measuring the duplication rate without losing data.
+			// Flagged but retained in the output (count it, keep the row).
 			kept = append(kept, cand)
 		case dedupModeMerge:
-			kept[dupOf].Value = mergeProvenance(kept[dupOf].Value, cand)
+			ki := anchors[dupOf].keptIdx
+			kept[ki].Value = mergeProvenance(kept[ki].Value, cand)
 		default: // dedupModeDrop
 			// skip cand entirely.
 		}

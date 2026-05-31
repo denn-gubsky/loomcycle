@@ -1100,6 +1100,7 @@ func applyAgentDefOverlay(base config.AgentDef, definition json.RawMessage) conf
 		Models           map[string][]config.TierCandidate `json:"models,omitempty"`
 		MemoryScopes     []string                          `json:"memory_scopes,omitempty"`
 		MemoryQuotaBytes int                               `json:"memory_quota_bytes,omitempty"`
+		MemoryBackend    string                            `json:"memory_backend,omitempty"`
 		// *int because 0 is a meaningful explicit value ("force no
 		// retries"); non-pointer would collapse "not in overlay" and
 		// "explicitly disable" into the same case and silently strip
@@ -1162,6 +1163,9 @@ func applyAgentDefOverlay(base config.AgentDef, definition json.RawMessage) conf
 	}
 	if ov.MemoryQuotaBytes != 0 {
 		out.MemoryQuotaBytes = ov.MemoryQuotaBytes
+	}
+	if ov.MemoryBackend != "" {
+		out.MemoryBackend = ov.MemoryBackend
 	}
 	if ov.RetryAttempts != nil {
 		// Pointer-set means the substrate row carries an explicit

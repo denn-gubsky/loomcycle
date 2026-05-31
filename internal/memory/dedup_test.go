@@ -99,6 +99,41 @@ func TestDedupResults_KeepModeFlagsButRetains(t *testing.T) {
 	}
 }
 
+// Regression: keep-mode must report the SAME dropped count as drop-mode for
+// the same input. A flagged duplicate must NOT become a comparison anchor —
+// otherwise a chain where A~B and B~C but A≁C would cascade-flag C in
+// keep-mode (C compared against the retained-but-flagged B) while drop-mode
+// keeps C (C compared only against the surviving anchor A). keep-mode is
+// documented as a way to MEASURE the drop rate without losing data, so the
+// two counts must agree.
+func TestDedupResults_KeepModeCountMatchesDropMode_NoAnchorCascade(t *testing.T) {
+	// Unit vectors at angles chosen so cos(A,B)=cos(B,C)≈0.93 ≥ 0.92 but
+	// cos(A,C)≈0.74 < 0.92. B is a dup of A; C is a dup of B's-direction but
+	// NOT of A — so only B should ever be flagged.
+	const d2r = math.Pi / 180
+	at := func(deg float64) []float32 {
+		return []float32{float32(math.Cos(deg * d2r)), float32(math.Sin(deg * d2r))}
+	}
+	a := vecEntry("a", at(0))  // 0°
+	b := vecEntry("b", at(21)) // 21° from A: cos≈0.934 ≥ 0.92 → dup of A
+	c := vecEntry("c", at(42)) // 42° from A: cos≈0.743 < 0.92 → NOT a dup of A
+
+	in := []store.MemorySearchEntry{a, b, c}
+
+	_, dropDropped := DedupResults(in, DedupConfig{Enabled: true, Mode: dedupModeDrop})
+	keptKeep, keepDropped := DedupResults(in, DedupConfig{Enabled: true, Mode: dedupModeKeep})
+
+	if dropDropped != 1 {
+		t.Fatalf("drop-mode dropped = %d, want 1 (only b collapses into a; c is distinct from a)", dropDropped)
+	}
+	if keepDropped != dropDropped {
+		t.Fatalf("keep-mode dropped = %d, drop-mode dropped = %d — counts must match (flagged b must not anchor c)", keepDropped, dropDropped)
+	}
+	if len(keptKeep) != 3 {
+		t.Fatalf("keep-mode retains all rows: kept=%d, want 3", len(keptKeep))
+	}
+}
+
 func TestDedupResults_MergeModeRecordsProvenance(t *testing.T) {
 	a := vecEntry("a", []float32{1, 0, 0})
 	aDup := vecEntry("a2", []float32{1, 0, 0})

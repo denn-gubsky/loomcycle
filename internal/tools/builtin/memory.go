@@ -514,15 +514,15 @@ func (m *Memory) execSet(ctx context.Context, scope store.MemoryScope, scopeID s
 //	  "query_embedding_dim": 1536,
 //	  "truncated": false }
 func (m *Memory) execSearch(ctx context.Context, scope store.MemoryScope, scopeID string, in memoryInput) (tools.Result, error) {
-	if !m.Store.SupportsVectors() {
-		return errResult(store.ErrVectorUnsupported.Msg), nil
-	}
-	if m.Embedder == nil {
-		return errResult(store.ErrEmbedderNotConfigured.Msg), nil
-	}
 	if in.Query == "" {
 		return errResult("search: missing required field: query"), nil
 	}
+	// NOTE: the vector-support / embedder pre-flight is NOT done here on the
+	// tool's in-process Store/Embedder — a named memory_backend (e.g. mem9)
+	// can serve search remotely with no local vector support or embedder.
+	// The resolved backend returns the typed refusal (ErrVectorUnsupported /
+	// ErrEmbedderNotConfigured), which the error handler below renders with
+	// the same message. (execSet delegates its pre-flight the same way.)
 	topK := in.TopK
 	if topK <= 0 {
 		topK = 10
@@ -560,7 +560,9 @@ func (m *Memory) execSearch(ctx context.Context, scope store.MemoryScope, scopeI
 		// clear refusal with the admin-endpoint migration hint.
 		// errors.Is works on backend-constructed *MemoryError values
 		// thanks to MemoryError.Is(target) comparing by Code.
-		if errors.Is(err, store.ErrDimensionMismatch) || errors.Is(err, store.ErrVectorUnsupported) {
+		if errors.Is(err, store.ErrDimensionMismatch) ||
+			errors.Is(err, store.ErrVectorUnsupported) ||
+			errors.Is(err, store.ErrEmbedderNotConfigured) {
 			return errResult(err.Error()), nil
 		}
 		return errResult(fmt.Sprintf("search: %s", err)), nil

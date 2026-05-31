@@ -74,7 +74,21 @@ func (v *vectorStore) MemoryEmbedSearch(ctx context.Context, scope store.MemoryS
 		}
 		rows = append(rows, scored{key: key, s: cosine(query, e.Vector), emb: e})
 	}
-	sort.Slice(rows, func(i, j int) bool { return rows[i].s > rows[j].s })
+	// Sort by score descending, breaking ties by key. The tie-break is
+	// load-bearing for the eval harness's reproducibility claim: rows are
+	// gathered by ranging a map (randomized order), and the bundled dataset
+	// deliberately includes identical-vector rows (pref_color_1/2/3) with
+	// equal scores. Without a deterministic secondary key, those tie rows
+	// — and thus which one a dedup pass keeps — would vary run-to-run,
+	// making recall@k / duplication_rate flap and defeating the gating-tool
+	// purpose. (Real pgvector/sqlite-vec search has its own stable order;
+	// this in-memory eval store must supply one explicitly.)
+	sort.Slice(rows, func(i, j int) bool {
+		if rows[i].s != rows[j].s {
+			return rows[i].s > rows[j].s
+		}
+		return rows[i].key < rows[j].key
+	})
 	if len(rows) > topK {
 		rows = rows[:topK]
 	}
