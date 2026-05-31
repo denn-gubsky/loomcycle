@@ -28,8 +28,8 @@ recall.
 
 ## The backend model
 
-Every `Memory` op (get/set/delete/list/search) routes through a
-`memory.Backend`. An agent's `memory_backend: <name>` field selects a
+Every key/value `Memory` op (get/set/delete/list/search) routes through
+a `memory.Backend`. An agent's `memory_backend: <name>` field selects a
 named backend; absent, the agent uses the operator-default (in-process).
 The backend NAME is operator-resolved and stamped onto the run — it is
 **never** model/tool input (same trust posture as the memory scope).
@@ -173,6 +173,40 @@ stale local copy.
 
 Without `fallback_on_error`, a backend error surfaces to the agent as a
 tool error.
+
+> ⚠ **`fallback_on_error` is mutually exclusive with the memory-layer
+> `add` / `recall` ops** (see below). The in-process fallback is a
+> key/value store and cannot honor a semantic add/recall, so a
+> fallback-wrapped memory-layer backend reports `capability_unsupported`
+> for those two ops — fail-closed, never a silent degrade that would
+> drop facts. Use fallback for the six key/value ops, or a memory layer
+> for `add`/`recall`, but not both on one backend.
+
+## Memory layer: add / recall
+
+A `mem9` backend is more than a remote key/value store — it is an
+**LLM-extract memory layer**. Beyond the six key/value ops it serves the
+`add` / `recall` paradigm: you hand it conversation messages and it
+distils durable facts, then answers natural-language recall queries over
+them. There are no caller keys; identity is server-assigned. This is a
+distinct capability the in-process backend does **not** have.
+
+```jsonc
+// ingest a conversation — infer defaults to true (LLM fact extraction)
+{"op": "add", "scope": "user",
+ "messages": [{"role": "user", "content": "I prefer dark mode"}]}
+// → {"status": "pending"}   (often async — no read-after-write guarantee)
+
+// recall distilled facts by meaning
+{"op": "recall", "scope": "user", "query": "ui preferences", "top_k": 5}
+// → {"facts": [{"id": "uuid-1", "memory": "user prefers dark mode", "score": 0.91}]}
+```
+
+Against a non-memory-layer backend (the default in-process store)
+`add` / `recall` return `capability_unsupported` rather than faking it.
+`add` / `recall` honor the agent's `memory_scopes` and the backend's
+tenancy prefix exactly like the key/value ops. See the `memory-layer`
+`Context.help` topic for the full op reference.
 
 ## Observability
 
