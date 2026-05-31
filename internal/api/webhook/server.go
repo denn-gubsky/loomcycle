@@ -271,6 +271,22 @@ func (rec *Receiver) deliverSpawn(ctx context.Context, w http.ResponseWriter, sp
 		return
 	}
 	in := buildRunInput(wd, proj, rec.envAllowlist, rec.getenv, rec.logf)
+
+	// user_tier may be projected from the (attacker-influenceable) payload
+	// when the operator maps it; it selects the provider/model policy. The
+	// webhook spawn path bypasses the HTTP handler's user_tier validation,
+	// so an unknown tier would otherwise be silently dropped to the agent
+	// default — surface it loudly instead, mirroring the HTTP 400 and the
+	// never-silently-degrade contract. (Restricting WHICH valid tier the
+	// payload may select is an operator-config concern noted in the docs.)
+	if in.UserTier != "" && len(rec.cfg.UserTiers) > 0 {
+		if _, ok := rec.cfg.UserTiers[in.UserTier]; !ok {
+			rec.finish(span, name, did, "rejected_unknown_user_tier", "")
+			writeError(w, http.StatusBadRequest, "unknown_user_tier", "")
+			return
+		}
+	}
+
 	// RFC H Decision 10 "Layer 2" durable dedup: stamp the run with the
 	// delivery id so CreateRun persists it to runs.idempotency_key.
 	in.IdempotencyKey = did
