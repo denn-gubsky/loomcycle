@@ -1,0 +1,21 @@
+# test/runtime/memory-vector — Memory vector/dedup runtime suite config.
+# Postgres + pgvector backend, the deterministic stub embedder. Mock
+# provider drives the search agent. PG-gated: the run.sh SKIPs when no
+# LOOMCYCLE_TEST_PG_DSN is provided.
+provider_priority: [mock]
+tiers:
+  middle:
+    - { provider: mock, model: mock-generic }
+user_tiers:
+  default:
+    provider_priority: [mock]
+    tiers:
+      middle:
+        - { provider: mock, model: mock-generic }
+    fallback_on_error: false
+storage:
+  backend: postgres
+memory:
+  embedder:
+    provider: stub
+    model: stub-deterministic-v1

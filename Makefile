@@ -64,6 +64,27 @@ test-pg:
 	@echo "Running tests with LOOMCYCLE_TEST_PG_DSN=$(PG_DSN)"
 	LOOMCYCLE_TEST_PG_DSN="$(PG_DSN)" go test ./...
 
+# runtime-mock: the fast, deterministic runtime suites (live binary, mock
+# provider — no real provider, no API key, no Postgres). Each prints
+# PASS/FAIL and exits non-zero on failure. NOT part of `test` / CI: these
+# boot the binary and one waits ~60s for a real cron fire. memory-vector is
+# excluded here (needs Postgres + pgvector); run it via runtime-vector.
+runtime-mock:
+	@set -e; for s in schedules webhooks memory-core; do \
+		echo "=== runtime/$$s ==="; ./test/runtime/$$s/run.sh; \
+	done; echo "=== all runtime-mock suites PASSED ==="
+
+# runtime-vector: the Memory vector + dedup suite against Postgres+pgvector
+# with the deterministic stub embedder. Provide LOOMCYCLE_TEST_PG_DSN
+# pointing at a Postgres that has the `vector` extension (it SKIPs without).
+runtime-vector:
+	./test/runtime/memory-vector/run.sh
+
+# runtime-soak: the 30-minute stability test (override duration with
+# LOOMCYCLE_SOAK_SECONDS). On-demand only.
+runtime-soak:
+	./test/runtime/stability/run.sh
+
 # pg-up: bring up an ephemeral Postgres container for the test suite.
 # The data volume lives inside the container (no host-bind) so a
 # `docker rm` after pg-down leaves no state behind. The exposed port

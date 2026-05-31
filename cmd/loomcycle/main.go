@@ -60,6 +60,10 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/providers/ollama"
 	"github.com/denn-gubsky/loomcycle/internal/providers/openai"
 	"github.com/denn-gubsky/loomcycle/internal/providers/streamhttp"
+	// Deterministic stub embedder for runtime tests; its init() registers the
+	// "stub" provider ONLY when LOOMCYCLE_EMBEDDER_STUB=1, so it is invisible
+	// to a production binary that never sets the flag.
+	_ "github.com/denn-gubsky/loomcycle/internal/providers/stubembedder"
 	"github.com/denn-gubsky/loomcycle/internal/resolve"
 	"github.com/denn-gubsky/loomcycle/internal/runner"
 	"github.com/denn-gubsky/loomcycle/internal/runstate"
