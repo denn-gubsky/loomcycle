@@ -382,17 +382,23 @@ func (rec *Receiver) spawnAsync(w http.ResponseWriter, span trace.Span, name, di
 			"run_id":       runID,
 		})
 	case err := <-setupErr:
-		// RunOnce returned before OnRegistered → setup rejected. (If it
-		// returned nil here the run completed faster than we observed
-		// OnRegistered, which OnRegistered's pre-loop ordering makes
-		// effectively impossible; treat a nil as accepted with no id.)
+		// RunOnce returned with no error. The run WAS admitted whenever
+		// OnRegistered fired (spawnedRunID set) — but that does NOT mean the
+		// `registered` arm of this select won the race: a fast-completing run
+		// makes both `registered` and `setupErr` ready at once, and Go's
+		// select chooses at random, so we can land here even though a run id
+		// exists. Recover it from spawnedRunID (set before RunOnce returned,
+		// so the setupErr channel receive makes it visible here) rather than
+		// reporting an empty run_id. Only a genuine setup rejection (err
+		// returned BEFORE OnRegistered) leaves spawnedRunID empty.
 		if err == nil {
 			rec.dedup.record(name, did)
-			rec.finish(span, name, did, verdictAccepted, "")
-			writeJSON(w, http.StatusAccepted, map[string]string{
-				"webhook_name": name,
-				"delivery_id":  did,
-			})
+			rec.finish(span, name, did, verdictAccepted, spawnedRunID)
+			resp := map[string]string{"webhook_name": name, "delivery_id": did}
+			if spawnedRunID != "" {
+				resp["run_id"] = spawnedRunID
+			}
+			writeJSON(w, http.StatusAccepted, resp)
 			return
 		}
 		// RFC H Decision 10 concurrent-race: two deliveries with the same
