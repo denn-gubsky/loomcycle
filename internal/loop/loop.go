@@ -548,6 +548,18 @@ func Run(ctx context.Context, opts RunOptions) (RunResult, error) {
 		return RunResult{}, fmt.Errorf("loop: provider is nil")
 	}
 
+	// Stamp the run's agent identity onto ctx for providers that need it
+	// outside the LLM-shaped Request. Only the synthetic code-js provider
+	// (RFC J) reads it — to resolve agent_code/<name>/index.js (Request
+	// carries no agent name) and to populate the JS run({metadata}) arg.
+	// The canonical LLM drivers ignore it. Stamped here, the single choke
+	// point that calls Provider.Call, so every run-creation site (HTTP /
+	// gRPC / MCP / scheduler) inherits it without per-site wiring.
+	ctx = providers.WithRunMeta(ctx, providers.RunMeta{
+		AgentName: opts.AgentName,
+		UserID:    tools.RunIdentity(ctx).UserID,
+	})
+
 	// Log once per Run if the agent declared an effort hint but the
 	// resolved provider is SupportsEffort=false. Operators see a
 	// clear "effort dropped on ollama/qwen3:14b" line rather than
