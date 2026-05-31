@@ -183,16 +183,29 @@ func (rec *Receiver) handle(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 4. Replay guard (Layer-1, per-replica). delivery id from the Def's
-	//    header or a body hash. A hit inside the TTL → 401 (same opaque
-	//    posture as a sig failure — a replayed-but-valid request is still
-	//    "not accepted").
+	//    header or a body hash. A hit inside the TTL is a re-delivery of an
+	//    ALREADY-ACCEPTED, already-signature-verified request (this path is
+	//    only reachable AFTER verifySignature passes), so it is NOT an auth
+	//    failure — it is an idempotent re-send. Respond 200 with the original
+	//    run_id when recoverable, matching the GitHub/Stripe redelivery
+	//    contract. (Earlier revisions returned an opaque 401 here "same as a
+	//    sig failure", which shielded no attacker — the signature already
+	//    verified — and misled legitimate senders into rotating their secret
+	//    on a dedup. Changed to an idempotent ack.)
 	did := deliveryID(wd.Auth, body, r.Header.Get)
 	if rec.dedup.seen(name, did) {
-		// Replay of an already-ACCEPTED delivery (recorded on acceptance
-		// below). Same opaque 401 posture as a sig failure.
-		rec.finish(span, name, did, "rejected_replay", "")
-		rec.logf("webhook %q: replay rejected (delivery_id seen within TTL)", name)
-		writeError(w, http.StatusUnauthorized, "unauthorized", "")
+		rec.finish(span, name, did, verdictAcceptedReplay, "")
+		rec.logf("webhook %q: replayed delivery (delivery_id seen within TTL) — idempotent ack", name)
+		resp := map[string]string{"webhook_name": name, "delivery_id": did, "deduped": "true"}
+		// Best-effort: surface the original run for the spawn path, which set
+		// idempotency_key = delivery_id (RFC H Decision 10). Channel-delivery
+		// has no run row, so run_id is simply omitted.
+		if rec.store != nil {
+			if existing, ok, lerr := rec.store.RunByIdempotencyKey(ctx, did); lerr == nil && ok {
+				resp["run_id"] = existing.ID
+			}
+		}
+		writeJSON(w, http.StatusOK, resp)
 		return
 	}
 
@@ -577,7 +590,9 @@ func isTerminal(status string) bool {
 // terminal point (including rejects) cannot grow memory without limit.
 func (rec *Receiver) finish(s trace.Span, name, did, verdict, runID string) {
 	s.SetAttributes(attribute.String("webhook.verdict", verdict))
-	if verdict == verdictAccepted {
+	// Both a fresh acceptance and an idempotent replay-ack are Ok outcomes —
+	// a replay is a successful re-delivery, not an error.
+	if verdict == verdictAccepted || verdict == verdictAcceptedReplay {
 		s.SetStatus(codes.Ok, "")
 	} else {
 		s.SetStatus(codes.Error, verdict)
