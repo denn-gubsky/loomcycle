@@ -36,7 +36,7 @@ func TestSignCardIfConfigured_AllowlistedKeySignsAndVerifies(t *testing.T) {
 	const envName = "LOOMCYCLE_A2A_SIGNING_KEY"
 	t.Setenv(envName, pemStr)
 
-	generated := buildAgentCard(fixtureCard(), "https://agents.example", "", false)
+	generated := buildAgentCard(fixtureCard(), "https://agents.example", "", false, true)
 	cardCfg := fixtureCard()
 	cardCfg.SignWithKeyEnv = envName
 	allowlist := map[string]bool{envName: true}
@@ -72,7 +72,7 @@ func TestSignCardIfConfigured_UnallowlistedKeyServesUnsignedWithTrace(t *testing
 	const envName = "SOME_OTHER_KEY"
 	t.Setenv(envName, pemStr)
 
-	generated := buildAgentCard(fixtureCard(), "https://agents.example", "", false)
+	generated := buildAgentCard(fixtureCard(), "https://agents.example", "", false, true)
 	cardCfg := fixtureCard()
 	cardCfg.SignWithKeyEnv = envName
 	allowlist := map[string]bool{} // envName NOT allowlisted
@@ -97,7 +97,7 @@ func TestSignCardIfConfigured_UnsetEnvServesUnsignedWithTrace(t *testing.T) {
 	const envName = "LOOMCYCLE_A2A_SIGNING_KEY"
 	t.Setenv(envName, "") // allowlisted but empty
 
-	generated := buildAgentCard(fixtureCard(), "https://agents.example", "", false)
+	generated := buildAgentCard(fixtureCard(), "https://agents.example", "", false, true)
 	cardCfg := fixtureCard()
 	cardCfg.SignWithKeyEnv = envName
 	allowlist := map[string]bool{envName: true}
@@ -119,7 +119,7 @@ func TestSignCardIfConfigured_UnsetEnvServesUnsignedWithTrace(t *testing.T) {
 // card with no sign_with_key_env is served unsigned with NO trace line
 // (unsigned by design is not a warnable condition).
 func TestSignCardIfConfigured_NoKeyConfiguredServesUnsignedSilently(t *testing.T) {
-	generated := buildAgentCard(fixtureCard(), "https://agents.example", "", false)
+	generated := buildAgentCard(fixtureCard(), "https://agents.example", "", false, true)
 	cardCfg := fixtureCard() // SignWithKeyEnv == ""
 
 	var traced []string
@@ -142,7 +142,7 @@ func TestSignCardIfConfigured_MalformedKeyServesUnsignedWithTrace(t *testing.T) 
 	const envName = "LOOMCYCLE_A2A_SIGNING_KEY"
 	t.Setenv(envName, "-----BEGIN PRIVATE KEY-----\nnot a key\n-----END PRIVATE KEY-----")
 
-	generated := buildAgentCard(fixtureCard(), "https://agents.example", "", false)
+	generated := buildAgentCard(fixtureCard(), "https://agents.example", "", false, true)
 	cardCfg := fixtureCard()
 	cardCfg.SignWithKeyEnv = envName
 

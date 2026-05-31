@@ -80,6 +80,17 @@ type Server struct {
 	// handler is the SDK RequestHandler that all three bindings share.
 	handler a2asrv.RequestHandler
 	grpc    *a2agrpc.Handler
+
+	// grpcEnabled is false when the gRPC binding must NOT be served — i.e.
+	// under host/path tenancy, where the routed tenant is attached by the
+	// HTTP-layer wrappers (hostTenantWrap / PathTenantWrapper) that the
+	// gRPC transport bypasses entirely. Serving gRPC there would let a peer
+	// spoof its tenant via the request body (the bridge falls back to the
+	// body tenant when no routed tenant is stamped). We FAIL CLOSED: skip
+	// the gRPC registration AND drop the gRPC interface from the advertised
+	// card, rather than serve a body-spoofable tenancy boundary. (A proper
+	// gRPC tenant interceptor is future work.)
+	grpcEnabled bool
 }
 
 // New builds the A2A server from the active A2AServerCardDef named in
@@ -157,14 +168,28 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 		allow[n] = true
 	}
 
+	// gRPC is served only when the routed tenant can be made authoritative
+	// for it. Under host/path tenancy it cannot (the tenant is stamped by
+	// the HTTP wrappers gRPC bypasses), so fail closed: no gRPC handler is
+	// built, and writeCard drops the gRPC interface from the served card.
+	tenancy := deps.Cfg.Env.A2ATenancyRouting
+	grpcEnabled := tenancy != "host" && tenancy != "path"
+	var grpcHandler *a2agrpc.Handler
+	if grpcEnabled {
+		grpcHandler = a2agrpc.NewHandler(handler)
+	} else {
+		log.Printf("a2a server: tenancy=%q — gRPC binding disabled (tenant cannot be derived from the gRPC transport); REST + JSON-RPC remain available", tenancy)
+	}
+
 	return &Server{
 		deps:             deps,
-		tenancy:          deps.Cfg.Env.A2ATenancyRouting,
+		tenancy:          tenancy,
 		baseURL:          deps.Cfg.Env.A2APublicBaseURL,
 		cardName:         cardName,
 		signEnvAllowlist: allow,
 		handler:          handler,
-		grpc:             a2agrpc.NewHandler(handler),
+		grpc:             grpcHandler,
+		grpcEnabled:      grpcEnabled,
 	}, nil
 }
 
@@ -207,6 +232,12 @@ func (s *Server) Mount(mux *http.ServeMux, adminAuth func(http.Handler) http.Han
 	//     the http.Server.Handler level BEFORE the request reaches this
 	//     mux, so the concrete paths still match. See PathTenantWrapper.
 	mux.Handle("GET "+pathWellKnown, s.hostTenantWrap(card))
+	// capBody bounds the binding request bodies. These endpoints are NOT
+	// wrapped by the bearer authMiddleware (auth is an SDK CallInterceptor
+	// that runs AFTER the transport decodes the body), and the SDK decodes
+	// with an unbounded json.NewDecoder — so without this an UNAUTHENTICATED
+	// client could stream a huge body that is fully buffered before the
+	// interceptor rejects it. Mirrors the 1 MiB cap on every /v1/* route.
 	// The SDK REST handler routes on paths RELATIVE to its mount point
 	// (e.g. "POST /message:send", "GET /tasks/{id}"), so the "/a2a/v1"
 	// prefix must be stripped before delegation — otherwise every REST
@@ -214,12 +245,27 @@ func (s *Server) Mount(mux *http.ServeMux, adminAuth func(http.Handler) http.Han
 	// JSON-RPC handler needs no stripping (it is a single endpoint with
 	// no sub-routing). StripPrefix runs INSIDE hostTenantWrap so the
 	// host-derived tenant is still attached.
-	mux.Handle(pathREST+"/", s.hostTenantWrap(http.StripPrefix(pathREST, rest)))
-	mux.Handle(pathJSONRPC, s.hostTenantWrap(jsonrpc))
+	mux.Handle(pathREST+"/", s.hostTenantWrap(capBody(http.StripPrefix(pathREST, rest))))
+	mux.Handle(pathJSONRPC, s.hostTenantWrap(capBody(jsonrpc)))
 
 	if adminAuth != nil {
 		mux.Handle("GET "+pathWellKnown+"/extended", adminAuth(http.HandlerFunc(s.handleExtendedCard)))
 	}
+}
+
+// maxA2ABodyBytes bounds an inbound A2A binding request body, matching the
+// 1 MiB cap loomcycle applies on every /v1/* route.
+const maxA2ABodyBytes = 1 << 20
+
+// capBody wraps a binding handler so the request body is bounded BEFORE the
+// SDK's unbounded json.NewDecoder reads it — the binding endpoints are
+// unauthenticated at the transport layer (auth is an SDK interceptor that
+// runs after decode), so this bounds memory for an unauthenticated caller.
+func capBody(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		r.Body = http.MaxBytesReader(w, r.Body, maxA2ABodyBytes)
+		next.ServeHTTP(w, r)
+	})
 }
 
 // PathTenantWrapper wraps the fully-built server handler so path-mode
@@ -315,7 +361,7 @@ func (s *Server) writeCard(w http.ResponseWriter, tenant string, extended bool) 
 		return
 	}
 	base, prefix := s.cardURLAnchors(tenant)
-	generated := buildAgentCard(card, base, prefix, extended)
+	generated := buildAgentCard(card, base, prefix, extended, s.grpcEnabled)
 	signCardIfConfigured(generated, card, s.signEnvAllowlist, log.Printf)
 
 	// Marshal before writing any header so a (very unlikely) encode
