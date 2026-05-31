@@ -1,0 +1,13 @@
+# test/runtime/webhooks — mock-mode config for the Input Webhooks (RFC H)
+# runtime suite. Deterministic: the spawned run uses the mock provider.
+provider_priority: [mock]
+tiers:
+  middle:
+    - { provider: mock, model: mock-generic }
+user_tiers:
+  default:
+    provider_priority: [mock]
+    tiers:
+      middle:
+        - { provider: mock, model: mock-generic }
+    fallback_on_error: false
