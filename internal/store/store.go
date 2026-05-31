@@ -1631,6 +1631,15 @@ var ErrDimensionMismatch = &MemoryError{Code: "dimension_mismatch", Msg: "memory
 // MemoryError set so callers can switch on a single error family.
 var ErrEmbedderNotConfigured = &MemoryError{Code: "embedder_not_configured", Msg: "memory: no embedder configured — set memory.embedder in operator yaml"}
 
+// ErrCapabilityUnsupported is returned by the Memory tool's `add` / `recall`
+// ops (RFC K) when the agent's resolved memory backend does not implement
+// the MemoryLayer capability — e.g. the default in-process KV+vector backend,
+// which is not an LLM-extract memory layer. Mirrors the vector_unsupported
+// fail-closed posture: the agent sees a clear "this backend isn't a memory
+// layer" message rather than a silent no-op. The Store doesn't raise this —
+// the tool layer does, after probing the backend's Capabilities.
+var ErrCapabilityUnsupported = &MemoryError{Code: "capability_unsupported", Msg: "memory: add/recall require a memory-layer backend (memory_backend with a MemoryLayer-capable kind, e.g. mem9); the default in-process backend is a key/value+vector store, not a memory layer"}
+
 // ErrEmbedderNotImplemented is returned by an embedder driver that
 // is registered but not functionally implemented. v0.9.0–v0.10.1
 // shipped this for the Anthropic stub; v0.10.2 made the Anthropic
