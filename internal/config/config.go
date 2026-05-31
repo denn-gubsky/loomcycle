@@ -1421,6 +1421,30 @@ type Env struct {
 	// LOOMCYCLE_FALLBACK_PIN_AFTER_SUCCESS.
 	FallbackPinAfterSuccess bool
 
+	// ---- RFC J synthetic code-js provider (opt-in) ----
+
+	// CodeAgentsEnabled gates registration of the synthetic code-js
+	// provider (RFC J). Default OFF (operator opts in via
+	// LOOMCYCLE_CODE_AGENTS_ENABLED=1). When false the provider is not
+	// registered at all, so an AgentDef with `provider: code-js` fails
+	// loud at startup with a clear "code agents are disabled" error
+	// rather than silently. Operator-provided JS runs in the operator's
+	// own trust posture (same as the Bash tool) — hence opt-in.
+	CodeAgentsEnabled bool
+	// CodeAgentsRoot is the filesystem root holding
+	// agent_code/<name>/index.js. Default ./agent_code. Env:
+	// LOOMCYCLE_CODE_AGENTS_ROOT.
+	CodeAgentsRoot string
+	// CodeAgentsDeterministic seeds Date.now()/Math.random() for
+	// reproducible runs (Decision 13). Default OFF. Env:
+	// LOOMCYCLE_CODE_AGENTS_DETERMINISTIC=1.
+	CodeAgentsDeterministic bool
+	// CodeAgentsRunTimeout bounds a code-agent's wall-clock as a ctx
+	// deadline (the universal cancel path — Appendix A; Interrupt cannot
+	// break a parked tool call). Default 120s. Env:
+	// LOOMCYCLE_CODE_AGENTS_RUN_TIMEOUT_SECONDS.
+	CodeAgentsRunTimeout time.Duration
+
 	// ---- v0.8.x process-resource metrics sampler (opt-in) ----
 
 	// MetricsEnabled enables the periodic process_samples
@@ -2185,6 +2209,26 @@ func Load(path string) (*Config, error) {
 	}
 
 	// v0.8.x process-resource metrics sampler. Default OFF; operator
+	// RFC J code-js provider. Default OFF; the provider is registered in
+	// main.go only when enabled. Root defaults to ./agent_code (mirrors
+	// the skills bundling convention). Timeout floored at 1s.
+	cfg.Env.CodeAgentsEnabled = os.Getenv("LOOMCYCLE_CODE_AGENTS_ENABLED") == "1"
+	cfg.Env.CodeAgentsRoot = "./agent_code"
+	if v := os.Getenv("LOOMCYCLE_CODE_AGENTS_ROOT"); v != "" {
+		cfg.Env.CodeAgentsRoot = v
+	}
+	cfg.Env.CodeAgentsDeterministic = os.Getenv("LOOMCYCLE_CODE_AGENTS_DETERMINISTIC") == "1"
+	cfg.Env.CodeAgentsRunTimeout = 120 * time.Second
+	if v := os.Getenv("LOOMCYCLE_CODE_AGENTS_RUN_TIMEOUT_SECONDS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			d := time.Duration(n) * time.Second
+			if d < time.Second {
+				d = time.Second
+			}
+			cfg.Env.CodeAgentsRunTimeout = d
+		}
+	}
+
 	// opts in via LOOMCYCLE_METRICS_ENABLED=1.
 	cfg.Env.MetricsEnabled = os.Getenv("LOOMCYCLE_METRICS_ENABLED") == "1"
 	cfg.Env.MetricsSampleInterval = 5 * time.Second
@@ -2475,6 +2519,16 @@ func (c *Config) ResolveAgentModel(agent string) (provider string, model string,
 func (c *Config) ResolveAgentDefModel(agent string, def AgentDef) (provider string, model string, err error) {
 	model = def.Model
 	provider = def.Provider
+
+	// code-js agents (RFC J) have no LLM model: the synthetic provider
+	// resolves code by agent name (agent_code/<name>/index.js), not by
+	// model. A model value is therefore cosmetic here — default it to the
+	// agent name when unset so resolution succeeds and run records carry a
+	// meaningful identifier. Usage/OTEL report loomcycle/code-js regardless
+	// (see internal/providers/codejs). An explicit model still wins.
+	if provider == "code-js" && model == "" {
+		return provider, agent, nil
+	}
 
 	// If model is an alias in models:, expand it.
 	if ref, ok := c.Models[model]; ok {

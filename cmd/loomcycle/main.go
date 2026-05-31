@@ -54,6 +54,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/providers/anthropic"
 	anthropic_oauth_dev "github.com/denn-gubsky/loomcycle/internal/providers/anthropic_oauth_dev"
+	"github.com/denn-gubsky/loomcycle/internal/providers/codejs"
 	"github.com/denn-gubsky/loomcycle/internal/providers/deepseek"
 	"github.com/denn-gubsky/loomcycle/internal/providers/gemini"
 	mockprov "github.com/denn-gubsky/loomcycle/internal/providers/mock"
@@ -440,6 +441,7 @@ func main() {
 	}
 
 	pr := newProviderResolver(cfg)
+	validateCodeAgents(cfg, pr)
 	sem := concurrency.New(
 		cfg.Concurrency.MaxConcurrentRuns,
 		cfg.Concurrency.MaxQueueDepth,
@@ -1977,6 +1979,11 @@ type providerResolver struct {
 	// escalates to the stable variant under tryProviderFallback —
 	// exercising the recovery path against a known-good target.
 	mockStable providers.Provider
+
+	// RFC J — synthetic code-js provider (operator-authored JS via goja).
+	// Registered only when LOOMCYCLE_CODE_AGENTS_ENABLED=1; nil otherwise,
+	// so Get("code-js") returns a clear "code agents are disabled" error.
+	codeJS providers.Provider
 }
 
 // buildEmbedder turns cfg.Memory.Embedder into a constructed
@@ -2122,7 +2129,63 @@ func newProviderResolver(cfg *config.Config) *providerResolver {
 		}
 	}
 
+	// RFC J — synthetic code-js provider. Single gate:
+	// LOOMCYCLE_CODE_AGENTS_ENABLED=1. Runs operator-authored JS via goja
+	// instead of an LLM. Registered as provider id "code-js"; resolves each
+	// agent's code from agent_code/<name>/index.js under the configured root.
+	if cfg.Env.CodeAgentsEnabled {
+		pr.codeJS = codejs.New(codejs.Config{
+			CodeRoot:      cfg.Env.CodeAgentsRoot,
+			Deterministic: cfg.Env.CodeAgentsDeterministic,
+			RunTimeout:    cfg.Env.CodeAgentsRunTimeout,
+			Logf:          log.Printf,
+		})
+		log.Printf("code-js provider: enabled (root=%q deterministic=%v run_timeout=%s abi=%s)",
+			cfg.Env.CodeAgentsRoot, cfg.Env.CodeAgentsDeterministic, cfg.Env.CodeAgentsRunTimeout, codejs.ABIVersion)
+	}
+
 	return pr
+}
+
+// validateCodeAgents fails loud at startup for any statically-configured
+// `provider: code-js` agent whose JS is missing or won't parse (RFC J
+// Deliverable 3) — so a broken code-agent fails the boot, NOT the first
+// scheduled fire. Two failure modes:
+//   - code-js used but disabled → log.Fatalf pointing at the enable flag.
+//   - code-js enabled but JS broken/missing → log.Fatalf naming the agent + path.
+//
+// Dynamic AgentDefs (created at runtime via the AgentDef tool) are not seen
+// here; their JS validates on first Call and surfaces as an EventError.
+func validateCodeAgents(cfg *config.Config, pr *providerResolver) {
+	cp, _ := pr.codeJS.(*codejs.Provider)
+	var broken []string
+	for name, def := range cfg.Agents {
+		if def.Provider != "code-js" {
+			continue
+		}
+		if cp == nil {
+			log.Fatalf("agent %q uses `provider: code-js` but code agents are disabled — set LOOMCYCLE_CODE_AGENTS_ENABLED=1", name)
+		}
+		if _, err := cp.Compile(name); err != nil {
+			broken = append(broken, err.Error())
+		}
+	}
+	if len(broken) > 0 {
+		log.Fatalf("code-js agents failed to load:\n  - %s", strings.Join(broken, "\n  - "))
+	}
+	if cp != nil {
+		log.Printf("code-js: validated %d static code-agent(s)", countCodeAgents(cfg))
+	}
+}
+
+func countCodeAgents(cfg *config.Config) int {
+	n := 0
+	for _, def := range cfg.Agents {
+		if def.Provider == "code-js" {
+			n++
+		}
+	}
+	return n
 }
 
 func (p *providerResolver) Get(id string) (providers.Provider, error) {
@@ -2172,6 +2235,11 @@ func (p *providerResolver) Get(id string) (providers.Provider, error) {
 			return nil, fmt.Errorf("mock-stable provider not configured (set LOOMCYCLE_MOCK_ENABLED=1)")
 		}
 		return p.mockStable, nil
+	case "code-js":
+		if p.codeJS == nil {
+			return nil, fmt.Errorf("code-js provider not configured: code agents are disabled (set LOOMCYCLE_CODE_AGENTS_ENABLED=1)")
+		}
+		return p.codeJS, nil
 	default:
 		return nil, fmt.Errorf("unknown provider %q", id)
 	}
