@@ -355,7 +355,7 @@ func (s *MemoryBackendDef) execRetire(ctx context.Context, policy tools.MemoryBa
 
 func (s *MemoryBackendDef) checkScopeForName(policy tools.MemoryBackendDefPolicyValue, name string) error {
 	if len(policy.Scopes) == 0 {
-		return fmt.Errorf("MemoryBackendDef tool: agent has no memory_backend_def_scopes (default-deny); add `memory_backend_def_scopes: [...]` to the agent yaml")
+		return fmt.Errorf("MemoryBackendDef tool: no def-scope granted in this caller's context (default-deny)")
 	}
 	for _, sc := range policy.Scopes {
 		switch sc {
@@ -378,7 +378,7 @@ func (s *MemoryBackendDef) checkScopeForName(policy tools.MemoryBackendDefPolicy
 			}
 		}
 	}
-	return fmt.Errorf("MemoryBackendDef tool: name %q not in this agent's memory_backend_def_scopes (%v)", name, policy.Scopes)
+	return fmt.Errorf("MemoryBackendDef tool: name %q not in the caller's granted def-scope (%v)", name, policy.Scopes)
 }
 
 func (s *MemoryBackendDef) buildDefinition(name, parentJSON string, overlay json.RawMessage) (mergedMemoryBackendDef, error) {
