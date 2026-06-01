@@ -689,10 +689,23 @@ func (m *Memory) execAdd(ctx context.Context, scope store.MemoryScope, scopeID s
 	if len(in.Messages) == 0 {
 		return errResult("add: missing required field: messages (a non-empty array of {role, content})"), nil
 	}
+	totalContentBytes := 0
 	for i, msg := range in.Messages {
 		if msg.Content == "" {
 			return errResult(fmt.Sprintf("add: messages[%d] has empty content", i)), nil
 		}
+		totalContentBytes += len(msg.Content)
+	}
+	// Bound the ingest the same way execSet bounds a value. The layer.Add path
+	// POSTs the full messages array to the (possibly remote) memory backend
+	// with no request-body cap, and the async-extracted facts are never charged
+	// to the per-scope quota (RFC §8 excludes embedding bytes) — so without
+	// this an agent could push an unbounded conversation payload through `add`
+	// as a free, unaccounted egress / amplification channel. We cap the raw
+	// ingest bytes; the byte cap on the input is the proportionate guard since
+	// the server assigns extracted-fact storage asynchronously and out of band.
+	if m.MaxValueBytes > 0 && totalContentBytes > m.MaxValueBytes {
+		return errResult(fmt.Sprintf("add: messages content (%d bytes) exceeds max %d bytes", totalContentBytes, m.MaxValueBytes)), nil
 	}
 	// infer defaults to true — the memory-layer paradigm is LLM fact
 	// extraction; an operator opts into verbatim storage with infer:false.

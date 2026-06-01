@@ -86,6 +86,34 @@ func TestMemoryTool_AddRecall_RefuseOnNonLayerBackend(t *testing.T) {
 	}
 }
 
+// add must bound its ingest by MaxValueBytes, exactly as set does for a value.
+// Without the cap an agent could POST an arbitrarily large messages array to
+// the (possibly remote) layer backend — unbounded egress, and the bytes are
+// never charged to the per-scope quota (async-extracted facts, RFC §8). The
+// oversized add must refuse BEFORE the backend is called.
+func TestMemoryTool_Add_RefusesOversizedIngest(t *testing.T) {
+	tool, ctx, cleanup := memoryFixture(t) // MaxValueBytes = 65536
+	defer cleanup()
+	fake := &fakeLayerBackend{}
+	tool.Backend = fake
+
+	big := strings.Repeat("x", tool.MaxValueBytes+1)
+	in := `{"op":"add","scope":"user","messages":[{"role":"user","content":"` + big + `"}]}`
+	res, err := tool.Execute(ctx, json.RawMessage(in))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.IsError {
+		t.Fatalf("oversized add should be refused; got non-error result %s", res.Text)
+	}
+	if !strings.Contains(res.Text, "exceeds max") {
+		t.Errorf("refusal should name the byte cap; got %s", res.Text)
+	}
+	if len(fake.addCalls) != 0 {
+		t.Errorf("backend.Add must NOT be called for an oversized ingest; got %d calls", len(fake.addCalls))
+	}
+}
+
 // With a MemoryLayer-capable backend wired, add routes through to it: the
 // messages + infer-default (true) reach the backend and the async pending
 // status + event id surface in the tool result.
