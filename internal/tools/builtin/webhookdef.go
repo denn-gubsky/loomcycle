@@ -353,7 +353,7 @@ func (s *WebhookDef) execRetire(ctx context.Context, policy tools.WebhookDefPoli
 
 func (s *WebhookDef) checkScopeForName(policy tools.WebhookDefPolicyValue, name string) error {
 	if len(policy.Scopes) == 0 {
-		return fmt.Errorf("WebhookDef tool: agent has no webhook_def_scopes (default-deny); add `webhook_def_scopes: [...]` to the agent yaml")
+		return fmt.Errorf("WebhookDef tool: caller has no WebhookDef scope (default-deny) — WebhookDef is operator-admin-only; reach it via the bearer-authed admin endpoint, the LoomCycle MCP meta-tool, or the gRPC substrate path")
 	}
 	for _, sc := range policy.Scopes {
 		switch sc {
@@ -376,7 +376,7 @@ func (s *WebhookDef) checkScopeForName(policy tools.WebhookDefPolicyValue, name 
 			}
 		}
 	}
-	return fmt.Errorf("WebhookDef tool: name %q not in this agent's webhook_def_scopes (%v)", name, policy.Scopes)
+	return fmt.Errorf("WebhookDef tool: name %q not in the caller's WebhookDef scopes (%v)", name, policy.Scopes)
 }
 
 func (s *WebhookDef) buildDefinition(name, parentJSON string, overlay json.RawMessage) (mergedWebhookDef, error) {

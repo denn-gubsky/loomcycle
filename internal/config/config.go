@@ -659,10 +659,12 @@ type AgentDef struct {
 	// ScheduleDefScopes: "self" / "descendants" / "named:<name>" / "any".
 	A2AAgentDefScopes []string `yaml:"a2a_agent_def_scopes"`
 
-	// WebhookDefScopes is the v1.x RFC H WebhookDef tool capability
-	// gate. Default-deny when empty. Same closed set as
-	// A2AAgentDefScopes: "self" / "descendants" / "named:<name>" / "any".
-	WebhookDefScopes []string `yaml:"webhook_def_scopes"`
+	// (WebhookDefScopes removed in the v0.16.0 QA pass — dead config, the
+	// identical defect class #316 removed for MemoryBackendDefScopes: the
+	// WebhookDef tool is operator-admin-only, kept out of the agent registry,
+	// and its callers build the policy with a hardcoded Scopes:["any"], so a
+	// per-agent webhook_def_scopes yaml field was parsed but never read. Per
+	// CLAUDE.md "no backward-compat shims for unused code", deleted.)
 
 	// SkillDefScopes is the v0.8.22 SkillDef tool capability gate.
 	// Default-deny when empty. Mirrors AgentDefScopes minus the
