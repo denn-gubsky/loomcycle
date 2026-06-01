@@ -551,13 +551,19 @@ func Run(ctx context.Context, opts RunOptions) (RunResult, error) {
 	// Stamp the run's agent identity onto ctx for providers that need it
 	// outside the LLM-shaped Request. Only the synthetic code-js provider
 	// (RFC J) reads it — to resolve agent_code/<name>/index.js (Request
-	// carries no agent name) and to populate the JS run({metadata}) arg.
-	// The canonical LLM drivers ignore it. Stamped here, the single choke
-	// point that calls Provider.Call, so every run-creation site (HTTP /
-	// gRPC / MCP / scheduler) inherits it without per-site wiring.
+	// carries no agent name), to populate the JS run({metadata}) arg, and to
+	// derive its per-run deterministic-replay seed (RunID) + clock anchor
+	// (StartedAt). The canonical LLM drivers ignore it. Stamped here, the
+	// single choke point that calls Provider.Call, so every run-creation site
+	// (HTTP / gRPC / MCP / scheduler) inherits it without per-site wiring.
+	// StartedAt is stamped once per Run() and stays stable across the run's
+	// turns, so code-js's anchored Date.now() is consistent across replays.
+	runIdent := tools.RunIdentity(ctx)
 	ctx = providers.WithRunMeta(ctx, providers.RunMeta{
 		AgentName: opts.AgentName,
-		UserID:    tools.RunIdentity(ctx).UserID,
+		UserID:    runIdent.UserID,
+		RunID:     runIdent.AgentID,
+		StartedAt: time.Now(),
 	})
 
 	// Log once per Run if the agent declared an effort hint but the

@@ -6,73 +6,87 @@ import (
 	"github.com/dop251/goja"
 )
 
-// hardenSandbox enforces the RFC J Decision 2 capability boundary on a fresh
-// runtime, BEFORE any operator code runs. goja's default global surface is
-// already narrow — there is no fetch/XHR, no require, no filesystem, no
-// setTimeout/setInterval (those only exist via goja_nodejs, which we do NOT
-// wire). So the active step is removing the dynamic-code-evaluation globals:
+// hardenSandbox enforces the RFC J Decision 2 capability boundary AND installs
+// the ambient-determinism hooks (Appendix B) on a fresh runtime, BEFORE any
+// operator code runs.
 //
-//   - eval        — deleted → eval("…") throws ReferenceError.
-//   - Function    — deleted → Function("…")() throws ReferenceError.
+// Capability boundary. goja's default global surface is already narrow — no
+// fetch/XHR, no require, no filesystem, no setTimeout/setInterval (those only
+// exist via goja_nodejs, which we do NOT wire). The active step is removing
+// the dynamic-code-evaluation globals: eval and the Function constructor are
+// deleted, so eval("…") / Function("…") throw ReferenceError. (Known limit,
+// documented in the help topic: the Function constructor is still reachable
+// via (function(){}).constructor; the delete stops the naive paths. The real
+// boundary is that reconstructed code still cannot reach any capability we
+// did not bind — no fetch, no fs, no process to escape TO.)
 //
-// KNOWN LIMITATION (documented in the help topic): the Function constructor
-// is still reachable via the prototype chain ((function(){}).constructor),
-// which goja does not let us sever without forking it. The delete stops the
-// naive `Function(...)` / `eval(...)` paths; it is defense-in-depth, not a
-// hard guarantee. The real boundary is that even reconstructed code cannot
-// reach any capability we did not bind — there is no fetch, no fs, no process
-// to escape TO. Operator-provided code runs in the operator's own trust
-// posture (same as the Bash tool); the sandbox protects loomcycle from the
-// runtime handing the JS more than allowed_tools granted, not the operator
-// from their own logic.
-func hardenSandbox(rt *goja.Runtime, deterministic bool, token string) {
+// Ambient determinism (always on). The replay execution model (Appendix B)
+// re-executes the pure-JS portion of run() every turn. For replay to be
+// correct, every ambient value the JS reads must reproduce identically. Tool
+// results already do (they are replayed from the transcript). The remaining
+// sources are the clock and the RNG, so we hook them:
+//
+//   - Math.random() → a PRNG seeded from the per-run seed; the same run
+//     regenerates the identical sequence on every replay.
+//   - Date.now() → the per-run anchor (real wall-clock at run start) plus a
+//     monotonic per-call offset, so time advances within a run yet every
+//     replay reproduces it.
+//   - new Date() (no args) → routed through the hooked Date.now() via a
+//     thin Date wrapper that leaves new Date(ms)/Date.parse/Date.UTC intact.
+//
+// This makes the no-I/O sandbox fully deterministic given (transcript, seed,
+// anchor) — replay cannot diverge. Operators who need a true per-call
+// wall-clock value read it from a tool (recorded), the durable-execution
+// discipline. seed/anchor are per-run by default and fixed across runs only
+// under LOOMCYCLE_CODE_AGENTS_DETERMINISTIC=1 (cross-run reproducibility).
+func hardenSandbox(rt *goja.Runtime, seed uint32, anchorMs int64) {
 	g := rt.GlobalObject()
 	_ = g.Delete("eval")
 	_ = g.Delete("Function")
-
-	if deterministic {
-		seedDeterminism(rt, token)
-	}
+	installAmbientHooks(rt, seed, anchorMs)
 }
 
-// seedDeterminism replaces the two ambient non-determinism sources with
-// seeded stand-ins (RFC J Decision 13, opt-in via
-// LOOMCYCLE_CODE_AGENTS_DETERMINISTIC=1) so a code-agent's pure-JS control
-// flow is reproducible for testing/replay. It does NOT make MCP tool calls
-// deterministic — upstream is upstream (Decision 13 caveat).
-//
-//   - Date.now() returns a fixed epoch.
-//   - Math.random() is a seeded LCG, so a run yields the same sequence each
-//     time. The seed folds in the run token so distinct runs differ while a
-//     single run replays identically.
-func seedDeterminism(rt *goja.Runtime, token string) {
-	// A fixed wall-clock anchor (2023-11-14T22:13:20Z). Stable across runs so
-	// snapshot/replay comparisons don't drift on time.
-	const fixedEpochMs = 1700000000000
-
-	var seed uint32 = 0x9e3779b9
-	for _, r := range token {
-		seed = seed*31 + uint32(r)
+// ambientPrelude is the JS installed on every runtime to make the clock + RNG
+// deterministic. %d slots: seed (uint32), anchorMs (int64). The LCG constants
+// are the classic glibc values — quality is irrelevant, only reproducibility.
+// The Date wrapper forwards every shape except no-arg construction to the real
+// Date, and shares its prototype so `instanceof Date` holds.
+const ambientPrelude = `
+(function () {
+	var __seed = %d >>> 0;
+	Math.random = function () {
+		__seed = (__seed * 1103515245 + 12345) >>> 0;
+		return (__seed & 0x7fffffff) / 0x7fffffff;
+	};
+	var __t = %d;
+	var RealDate = Date;
+	function now() { return __t++; }
+	function FakeDate(a, b, c, d, e, f, g) {
+		if (!(this instanceof FakeDate)) { return new RealDate(now()).toString(); }
+		switch (arguments.length) {
+			case 0: return new RealDate(now());
+			case 1: return new RealDate(a);
+			case 2: return new RealDate(a, b);
+			case 3: return new RealDate(a, b, c);
+			case 4: return new RealDate(a, b, c, d);
+			case 5: return new RealDate(a, b, c, d, e);
+			case 6: return new RealDate(a, b, c, d, e, f);
+			default: return new RealDate(a, b, c, d, e, f, g);
+		}
 	}
+	FakeDate.prototype = RealDate.prototype;
+	FakeDate.now = now;
+	FakeDate.parse = RealDate.parse;
+	FakeDate.UTC = RealDate.UTC;
+	Date = FakeDate;
+})();
+`
 
-	// Inject via JS so Date.now / Math.random are replaced in-place on the
-	// existing built-ins (operator code sees the standard names). The LCG
-	// constants are the classic glibc values; quality is irrelevant — only
-	// reproducibility matters here.
-	prelude := fmt.Sprintf(`
-		Date.now = function () { return %d; };
-		Math.random = (function () {
-			var s = %d >>> 0;
-			return function () {
-				s = (s * 1103515245 + 12345) >>> 0;
-				return (s & 0x7fffffff) / 0x7fffffff;
-			};
-		})();
-	`, fixedEpochMs, seed)
+func installAmbientHooks(rt *goja.Runtime, seed uint32, anchorMs int64) {
 	// A failure here is a host bug (the prelude is a constant), not operator
 	// input — panic so it surfaces in tests rather than silently leaving real
-	// time/randomness in a run the operator asked to be deterministic.
-	if _, err := rt.RunString(prelude); err != nil {
-		panic(fmt.Sprintf("codejs: deterministic prelude failed: %v", err))
+	// time/randomness in a run we promised to replay deterministically.
+	if _, err := rt.RunString(fmt.Sprintf(ambientPrelude, seed, anchorMs)); err != nil {
+		panic(fmt.Sprintf("codejs: ambient-determinism prelude failed: %v", err))
 	}
 }

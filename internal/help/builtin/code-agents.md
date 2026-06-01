@@ -42,9 +42,14 @@ fails **at startup**, not at the first scheduled fire.
 agents:
   nightly-scrape:
     provider: code-js
-    allowed_tools: [memory, channel, mcp__http_fetch__get]
+    allowed_tools: [WebFetch, Memory, mcp__jobs__ingestJobs]  # canonical tool names
+    memory_scopes: [user]                                     # required to use Memory.*
+    allowed_hosts: ["*.example"]                              # WebFetch host policy
     description: "Deterministic ATS scrape — no LLM."
 ```
+
+`allowed_tools` uses **canonical** tool names (capitalized, same as LLM
+agents); the JS surface naming is in **The JS-side tool API** below.
 
 ## Writing a code-agent
 
@@ -54,34 +59,57 @@ no `await`, no callbacks:
 
 ```javascript
 function run(input) {
-  var seen = memory.get({ scope: "user", key: "seen_ids" }) || {};
-  var html = mcp__http_fetch__get({ url: "https://example/api/jobs" });
-  var jobs = parse(html).filter(function (j) { return !seen[j.id]; });
+  var seen = Memory.get({ scope: "user", key: "seen_ids" }) || {};
+  var body = WebFetch({ url: "https://example/api/jobs" });   // built-in tool
+  var jobs = parse(body).filter(function (j) { return !seen[j.id]; });
   jobs.forEach(function (j) { seen[j.id] = Date.now(); });
-  memory.set({ scope: "user", key: "seen_ids", value: seen });
-  channel.publish({ name: "fresh-jobs", payload: { jobs: jobs } });
+  Memory.set({ scope: "user", key: "seen_ids", value: seen });
+  mcp__jobs__ingestJobs({ user_id: input.metadata.user_id, jobs: jobs });  // MCP tool
   return { final_text: "found " + jobs.length + " fresh jobs" };
 }
 ```
 
-Under the hood each tool call transparently suspends the JS while the
-agent **loop** dispatches it — with the loop's hooks, OTEL spans, and
-`${run.credentials.<name>}` substitution — then resumes with the result.
-The mechanics are identical to an LLM agent's tool-use turns; you just
-write straight-line code.
+You write straight-line code; each tool call returns its result inline. Under
+the hood a tool call is one turn of the agent **loop**: the loop dispatches it
+(with the loop's hooks, OTEL spans, and `${run.credentials.<name>}`
+substitution) exactly as it does an LLM agent's tool_use, and on the next turn
+`run()` re-executes, replaying the results already gathered and stopping at the
+next call. You never see the replay — calls just look synchronous.
 
 ## The JS-side tool API
 
-Only the tools in the agent's `allowed_tools` are bound. A tool you
-didn't allow is not a "permission denied" — it simply **does not exist**
-in scope (`ReferenceError`). Default-deny by construction.
+Only the tools in the agent's `allowed_tools` are bound — **any** allowed
+tool, built-in or MCP, is callable. A tool you didn't allow is not a
+"permission denied"; it simply **does not exist** in scope
+(`ReferenceError`). Default-deny by construction.
 
 | JS | Tool | Notes |
 |---|---|---|
-| `memory.get/set/delete/search(obj)` | Memory | obj is the tool input minus `op` |
-| `channel.publish/subscribe(obj)` | Channel | subscribe is a non-blocking peek |
-| `agent.spawn(obj)` | Agent | spawn an LLM (or code) sub-agent; returns its result |
-| `mcp__<server>__<tool>(obj)` | that MCP tool | one binding per allowed MCP tool |
+| `Memory.get/set/delete/search(obj)` | Memory | multi-op meta-tool; obj is the input minus `op` |
+| `Channel.publish/subscribe(obj)` | Channel | multi-op meta-tool; subscribe is a non-blocking peek |
+| `Agent.spawn(obj)` | Agent | spawn an LLM (or code) sub-agent; returns its result |
+| `WebFetch(obj)` / `Read(obj)` / `HTTP(obj)` / `WebSearch(obj)` / … | the built-in of that name | every other allowed **built-in**, flat by canonical name |
+| `mcp__<server>__<tool>(obj)` | that MCP tool | every allowed MCP tool, flat by name |
+
+> **Naming.** You reference a tool in JS by its **exact canonical name** —
+> the same string you put in `allowed_tools` and that every other agent uses
+> (CamelCase: `Memory`, `WebFetch`, `Read`, …). There is no casing
+> translation. The only distinction is shape: the three multi-op meta-tools
+> (`Memory`, `Channel`, `Agent`) are **objects** with a method per op
+> (`Memory.get(...)`); every other tool is a **flat function**
+> (`WebFetch({url})`, `mcp__jobs__ingestJobs({…})`). A name not in
+> `allowed_tools` simply isn't defined → `ReferenceError`. `Memory.*`
+> additionally needs `memory_scopes` declared (`[agent]` / `[user]`), and
+> `WebFetch`/`HTTP` obey the agent's `allowed_hosts` — exactly as for LLM
+> agents.
+
+**Return types.** `Memory` / `Channel` / `Agent` and `mcp__*` tools return
+**parsed values** — their results are structured JSON, so
+`Memory.get(...).value` and `mcp__jobs__getContext(...).foo` just work. The
+plain built-ins (`WebFetch`, `Read`, `HTTP`, `Grep`, …) return their **raw
+string** result; `JSON.parse(WebFetch(...))` yourself if it's a JSON API.
+(Return type follows the tool, never the content — so the same code works
+whether a fetched page is JSON or HTML.)
 
 A tool the loop returns as an error surfaces as a **catchable** JS
 `throw` (`try { … } catch (e) { … }`); an uncaught throw fails the run
@@ -89,44 +117,62 @@ A tool the loop returns as an error surfaces as a **catchable** JS
 
 ## The sandbox boundary
 
-goja's capability surface IS the boundary. There is **no** `fetch` / XHR,
-no filesystem, no `require`, no `setTimeout` / `setInterval`. `eval` and
-the `Function` constructor are deleted from the runtime before your code
-runs. Outbound HTTP goes through an MCP server (as today); filesystem
-through the `Read` tool with operator-configured roots; time-based
-scheduling through ScheduleDef.
+goja's capability surface IS the boundary. There is **no** ambient `fetch`
+/ XHR, no direct filesystem, no `require`, no `setTimeout` / `setInterval`.
+`eval` and the `Function` constructor are deleted from the runtime before
+your code runs. Capabilities reach the JS **only** as `allowed_tools`
+bindings dispatched by the loop: outbound HTTP via the `WebFetch` / `HTTP`
+built-ins (or an MCP server) under the agent's `allowed_hosts`; filesystem
+via the `Read` tool with operator-configured roots; time-based scheduling
+via ScheduleDef. A capability not in `allowed_tools` is simply absent.
 
 > The sandbox protects loomcycle from the *runtime* handing the JS more
 > capability than `allowed_tools` granted. It does **not** protect you
 > from your own code's logic — that is the operator's trust posture, the
 > same as the Bash tool.
 
-## Honest determinism
+## Determinism
 
-The promise is **"no LLM-induced non-determinism"**, not "perfectly
-reproducible." Your JS can still call `Date.now()`, `Math.random()`, and
-MCP tools whose upstream responses vary. The win is real anyway: zero
-tokens, no model latency, no hallucination. For replay/testing,
-`LOOMCYCLE_CODE_AGENTS_DETERMINISTIC=1` seeds `Date.now()` (fixed epoch)
-and `Math.random()` (seeded PRNG) — but MCP responses stay whatever the
-upstream returns.
+The promise is **"no LLM-induced non-determinism"**: zero tokens, no model
+latency, no hallucination. Within a run, code-js is deterministic **by
+construction** — a code-agent runs as a *replay* over its recorded tool
+results, so the ambient clock and RNG are hooked: `Math.random()` is seeded
+per run, and `Date.now()` / `new Date()` are anchored to the run's start plus
+a per-call offset. Every re-execution of a run therefore reproduces the same
+values — which is exactly what makes a run **resumable** (below). Different
+runs still see real-anchored time and fresh entropy, so production behaviour
+is unsurprising.
+
+This is reproducible *replay*, not "the world stopped": tool / MCP results are
+recorded and replayed identically, but the upstream service that produced them
+is still whatever it is. `LOOMCYCLE_CODE_AGENTS_DETERMINISTIC=1` additionally
+freezes the clock + seed across **all** runs — cross-run reproducibility for
+tests and snapshot equality. If you need a true per-call wall-clock value, read
+it from a tool (it is recorded), not from `Date.now()`.
 
 ## Sharp edges
 
 - **Glue-logic fast, not data-processing fast.** goja is interpreted (no
   JIT). CPU-bound work over megabytes belongs in an MCP server. The
   design center is the ~100ms-budget glue step.
-- **One tool call at a time.** Parallel tool calls within one code-agent
-  are out of v1 (the suspend point is one-at-a-time). Fan out with
-  `agent.spawn(...)`, which is already concurrent at the loomcycle layer.
-- **Not resumable across a restart.** A code-agent's run state is live
-  in-process JS; it cannot be resumed from a persisted transcript or in a
-  different replica. A run cut off mid-flight fails loud
-  (`code_agent_continuation_lost`) rather than silently re-running.
-- **Run timeout is the universal cancel.** A parked tool call is cut by
-  the ctx deadline, not by interrupting the interpreter; a CPU-bound loop
-  is cut by both. Set `LOOMCYCLE_CODE_AGENTS_RUN_TIMEOUT_SECONDS` to bound
-  wall time. The heap limit is best-effort (goja exposes no hard cap).
+- **One tool call at a time.** Parallel tool calls within one code-agent are
+  out of v1 (each loop turn advances the replay by one call). Fan out with
+  `Agent.spawn(...)`, which is already concurrent at the loomcycle layer.
+- **Resumable across restart / replica.** A code-agent holds no in-process
+  state between tool calls: each turn re-runs `run()` from the top and
+  *replays* the tool results recorded in the run transcript, dispatching only
+  the next, not-yet-recorded call. So a run interrupted mid-flight (process
+  restart, replica handoff) resumes correctly from the transcript — there is
+  no parked continuation to lose. The cost is that the pure-JS portion
+  re-executes each turn (≈O(N²) for N sequential tool calls), which is fine
+  for the glue-logic design center; heavy compute belongs in an MCP server.
+  (This is why determinism is always-on above — replay must reproduce the
+  same call sequence; a non-deterministic divergence fails loud as
+  `code_agent_replay_divergence`.)
+- **Run timeout bounds wall time.** A CPU-bound JS loop is cut by goja
+  `Interrupt` at the per-turn timeout; the overall run deadline rides the
+  loop's ctx. Set `LOOMCYCLE_CODE_AGENTS_RUN_TIMEOUT_SECONDS`. The heap limit
+  is best-effort (goja exposes no hard cap).
 - **ABI versioning.** The JS-side API is versioned on its own semver
   (currently 1.0.0), separate from loomcycle's release vector. Breaking a
   signature is a major bump with a deprecation window.
