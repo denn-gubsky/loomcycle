@@ -224,6 +224,11 @@ func Run(t *testing.T, factory Factory) {
 		{"MemoryBackendDefParentNotFound", testMemoryBackendDefParentNotFound},
 		{"MemoryBackendDefListByName", testMemoryBackendDefListByName},
 		{"MemoryBackendDefListChildren", testMemoryBackendDefListChildren},
+		// RFC L OSS multi-tenant authorization — OperatorTokenDef.
+		{"OperatorTokenDefCreateAndLookup", testOperatorTokenDefCreateAndLookup},
+		{"OperatorTokenDefCurrentByName", testOperatorTokenDefCurrentByName},
+		{"OperatorTokenDefRetireAndCountAdmin", testOperatorTokenDefRetireAndCountAdmin},
+		{"OperatorTokenDefListNames", testOperatorTokenDefListNames},
 		// v1.x RFC E ScheduleDef runtime — sweeper-side state.
 		{"ScheduleRunStateSeedAndGet", testScheduleRunStateSeedAndGet},
 		{"ScheduleRunStateListDueRespectsRetiredAndPaused", testScheduleRunStateListDueRespectsRetiredAndPaused},
@@ -5837,5 +5842,112 @@ func testListEventsPaginationAndTotal(t *testing.T, s store.Store) {
 			t.Errorf("seq %d appeared in two pages", ev.Seq)
 		}
 		seen[ev.Seq] = true
+	}
+}
+
+// ---- RFC L OperatorTokenDef contract tests ----
+
+func mkOperatorTokenDef(defID, name, tenant, subject, hash string, scopes []string) store.OperatorTokenDefRow {
+	return store.OperatorTokenDefRow{
+		DefID:         defID,
+		Name:          name,
+		TenantID:      tenant,
+		Subject:       subject,
+		TokenHash:     hash,
+		AllowedScopes: scopes,
+	}
+}
+
+func testOperatorTokenDefCreateAndLookup(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	_, err := s.OperatorTokenDefCreate(ctx, mkOperatorTokenDef("ot-1", "alice", "acme", "alice", "hash-aaa", []string{"runs:create", "runs:read"}))
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	// Hot-path lookup by hash.
+	got, err := s.OperatorTokenDefGetByTokenHash(ctx, "hash-aaa")
+	if err != nil {
+		t.Fatalf("get-by-hash: %v", err)
+	}
+	if got.DefID != "ot-1" || got.TenantID != "acme" || got.Subject != "alice" {
+		t.Errorf("got %+v", got)
+	}
+	if len(got.AllowedScopes) != 2 || got.AllowedScopes[0] != "runs:create" {
+		t.Errorf("scopes round-trip wrong: %v", got.AllowedScopes)
+	}
+	// Lookup by def_id.
+	if _, err := s.OperatorTokenDefGet(ctx, "ot-1"); err != nil {
+		t.Errorf("get by def_id: %v", err)
+	}
+	// Miss → ErrNotFound.
+	_, err = s.OperatorTokenDefGetByTokenHash(ctx, "no-such-hash")
+	var nf *store.ErrNotFound
+	if !errors.As(err, &nf) {
+		t.Errorf("missing hash should be ErrNotFound, got %v", err)
+	}
+}
+
+func testOperatorTokenDefCurrentByName(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	if _, err := s.OperatorTokenDefCreate(ctx, mkOperatorTokenDef("ot-cur-1", "svc", "acme", "svc", "hash-cur-1", []string{"runs:create"})); err != nil {
+		t.Fatalf("create 1: %v", err)
+	}
+	cur, err := s.OperatorTokenDefGetCurrentByName(ctx, "svc")
+	if err != nil || cur.DefID != "ot-cur-1" {
+		t.Fatalf("current should be ot-cur-1 (err=%v)", err)
+	}
+	// Retire it (immediate, past) → no current.
+	if err := s.OperatorTokenDefSetRetiredAt(ctx, "ot-cur-1", time.Now().Add(-time.Minute)); err != nil {
+		t.Fatalf("retire: %v", err)
+	}
+	_, err = s.OperatorTokenDefGetCurrentByName(ctx, "svc")
+	var nf *store.ErrNotFound
+	if !errors.As(err, &nf) {
+		t.Errorf("after retire, current-by-name should be ErrNotFound, got %v", err)
+	}
+}
+
+func testOperatorTokenDefRetireAndCountAdmin(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	_, _ = s.OperatorTokenDefCreate(ctx, mkOperatorTokenDef("ot-adm", "root", "acme", "ops", "hash-adm", []string{"substrate:admin"}))
+	_, _ = s.OperatorTokenDefCreate(ctx, mkOperatorTokenDef("ot-narrow", "app", "acme", "app", "hash-narrow", []string{"runs:create"}))
+	n, err := s.OperatorTokenDefCountActiveAdmin(ctx)
+	if err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("active admin count = %d, want 1 (only the substrate:admin token)", n)
+	}
+	// A FUTURE retired_at (rotation grace) must still count as active.
+	if err := s.OperatorTokenDefSetRetiredAt(ctx, "ot-adm", time.Now().Add(time.Hour)); err != nil {
+		t.Fatalf("grace retire: %v", err)
+	}
+	if n, _ := s.OperatorTokenDefCountActiveAdmin(ctx); n != 1 {
+		t.Errorf("admin token in grace window must still count active; got %d", n)
+	}
+	// A PAST retired_at must drop it.
+	if err := s.OperatorTokenDefSetRetiredAt(ctx, "ot-adm", time.Now().Add(-time.Hour)); err != nil {
+		t.Fatalf("past retire: %v", err)
+	}
+	if n, _ := s.OperatorTokenDefCountActiveAdmin(ctx); n != 0 {
+		t.Errorf("retired admin token must not count; got %d", n)
+	}
+}
+
+func testOperatorTokenDefListNames(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	_, _ = s.OperatorTokenDefCreate(ctx, mkOperatorTokenDef("ot-n1", "alice", "acme", "alice", "h-n1", []string{"runs:read"}))
+	_, _ = s.OperatorTokenDefCreate(ctx, mkOperatorTokenDef("ot-n2", "bob", "acme", "bob", "h-n2", []string{"runs:read"}))
+	names, err := s.OperatorTokenDefListNames(ctx)
+	if err != nil {
+		t.Fatalf("list names: %v", err)
+	}
+	if len(names) != 2 {
+		t.Fatalf("got %d names, want 2", len(names))
+	}
+	for _, n := range names {
+		if n.TenantID != "acme" || n.Subject == "" || !n.HasCurrent || n.TokenCount != 1 {
+			t.Errorf("summary wrong: %+v", n)
+		}
 	}
 }

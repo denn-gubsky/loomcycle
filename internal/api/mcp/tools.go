@@ -179,6 +179,11 @@ func toolDescriptors() []loommcp.ToolDescriptor {
 			InputSchema: rawJSON(`{"type": "object"}`),
 		},
 		{
+			Name:        "operatortokendef",
+			Description: "OperatorTokenDef tool ops (create/rotate/retire/get/list). RFC L OSS multi-tenant authorization. Operator-admin-only — mint, rotate, and retire bearer tokens each bound to an authoritative principal {tenant_id, subject, allowed_scopes}. The token plaintext is shown ONCE on create/rotate. Pass-through.",
+			InputSchema: rawJSON(`{"type": "object"}`),
+		},
+		{
 			Name:        "evaluation",
 			Description: "Evaluation tool ops (submit/get/list_for_run/list_for_def/aggregate). Pass-through.",
 			InputSchema: rawJSON(`{"type": "object"}`),

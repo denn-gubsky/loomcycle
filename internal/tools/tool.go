@@ -710,6 +710,30 @@ func MemoryBackendDefPolicy(ctx context.Context) MemoryBackendDefPolicyValue {
 	return v
 }
 
+type ctxKeyOperatorTokenDefPolicy struct{}
+
+// OperatorTokenDefPolicyValue is the per-caller OperatorTokenDef-tool
+// access gate (RFC L). Unlike the other Def policies there is no
+// "self"/"named" granularity — minting auth tokens is an operator-admin
+// capability, full stop. Admin == true grants all ops; the zero value is
+// default-deny. The HTTP/gRPC/MCP admin paths set Admin=true after the
+// caller has cleared the substrate:admin scope check.
+type OperatorTokenDefPolicyValue struct {
+	Admin bool
+}
+
+// WithOperatorTokenDefPolicy attaches the policy to ctx.
+func WithOperatorTokenDefPolicy(ctx context.Context, p OperatorTokenDefPolicyValue) context.Context {
+	return context.WithValue(ctx, ctxKeyOperatorTokenDefPolicy{}, p)
+}
+
+// OperatorTokenDefPolicy returns the policy from ctx. Zero value =
+// default-deny.
+func OperatorTokenDefPolicy(ctx context.Context) OperatorTokenDefPolicyValue {
+	v, _ := ctx.Value(ctxKeyOperatorTokenDefPolicy{}).(OperatorTokenDefPolicyValue)
+	return v
+}
+
 // ctxKeySkillDefPolicy carries the v0.8.22 SkillDef-tool capability
 // gate. Mirrors AgentDefPolicy shape, sans the SelfName field —
 // skills have no agent identity so a "self" scope is meaningless.

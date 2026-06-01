@@ -128,6 +128,11 @@ func operatorCtx(ctx context.Context) context.Context {
 		SelfName: operatorAgentName,
 	})
 
+	// OperatorTokenDef: the MCP server is single-operator by
+	// construction (stdio = the operator running it), so grant admin
+	// (RFC L).
+	ctx = tools.WithOperatorTokenDefPolicy(ctx, tools.OperatorTokenDefPolicyValue{Admin: true})
+
 	// Evaluation: all 4 valid scope values. submit_any + read_any
 	// are the load-bearing ones; submit_self + submit_descendants
 	// are included for completeness in case an operator wants the

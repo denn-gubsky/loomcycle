@@ -233,5 +233,16 @@ func substrateAdminCtx(ctx context.Context) context.Context {
 	ctx = tools.WithHistoryPolicy(ctx, tools.HistoryPolicyValue{
 		Scopes: []string{"any"},
 	})
+	// OperatorTokenDef: operator-admin (RFC L). The /v1/_* endpoints are
+	// bearer-authed against the operator; minting auth tokens is the
+	// operator's prerogative. PR2's middleware additionally gates this
+	// route behind the substrate:admin scope.
+	ctx = tools.WithOperatorTokenDefPolicy(ctx, tools.OperatorTokenDefPolicyValue{Admin: true})
 	return ctx
+}
+
+// handleSubstrateOperatorTokenDef serves POST /v1/_operatortokendef.
+// RFC L OSS multi-tenant authorization. Bearer-authed operator admin.
+func (s *Server) handleSubstrateOperatorTokenDef(w http.ResponseWriter, r *http.Request) {
+	s.dispatchSubstrate(w, r, "OperatorTokenDef", s.OperatorTokenDef)
 }

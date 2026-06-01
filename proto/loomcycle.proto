@@ -246,6 +246,13 @@ service Loomcycle {
   // in the response. (RFC I MR-3a / mirrors WebhookDef.)
   rpc MemoryBackendDef(SubstrateRequest) returns (SubstrateResponse);
 
+  // OperatorTokenDef dispatches to the RFC L OSS multi-tenant
+  // authorization substrate (auth-token minting/rotation/retirement).
+  // Mirrors POST /v1/_operatortokendef. Operator-admin-only. Same
+  // SubstrateRequest body shape — op-discriminated input_json
+  // (create / rotate / retire / get / list).
+  rpc OperatorTokenDef(SubstrateRequest) returns (SubstrateResponse);
+
   // ----- v0.9.x n8n RFC Phase 0 -----
   //
   // ListChannels mirrors GET /v1/_channels — operator-declared

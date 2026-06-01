@@ -28,6 +28,7 @@ import (
 	"runtime"
 	"runtime/debug"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -37,6 +38,7 @@ import (
 	a2aapi "github.com/denn-gubsky/loomcycle/internal/api/a2a"
 	lchttp "github.com/denn-gubsky/loomcycle/internal/api/http"
 	webhookapi "github.com/denn-gubsky/loomcycle/internal/api/webhook"
+	"github.com/denn-gubsky/loomcycle/internal/audit"
 	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/channels"
 	"github.com/denn-gubsky/loomcycle/internal/cli"
@@ -287,6 +289,10 @@ func main() {
 			os.Exit(cli.RunHealth(os.Args[2:], os.Stdout, os.Stderr))
 		case "migrate":
 			os.Exit(cli.RunMigrate(os.Args[2:], os.Stdout, os.Stderr))
+		case "operator-token":
+			// RFC L — mint / rotate / retire / show / list auth tokens
+			// against the running instance's admin endpoint.
+			os.Exit(cli.RunOperatorToken(os.Args[2:], os.Stdout, os.Stderr))
 		// v0.8.17 runtime admin subcommands. Each is a thin HTTP
 		// client to the corresponding /v1/_pause / _resume / _state /
 		// _snapshots endpoint on the running instance addressed by
@@ -1097,6 +1103,33 @@ func main() {
 		Cfg:                 cfg,
 		MaxDefinitionBytes:  cfg.Env.AgentDefMaxDefinitionBytes,
 		MaxDescriptionBytes: cfg.Env.AgentDefMaxDescriptionBytes,
+	})
+	// RFC L OSS multi-tenant authorization — wire the OperatorTokenDef
+	// substrate tool (auth-token minting/rotation/retirement). Audit sink
+	// is a file when LOOMCYCLE_AUDIT_LOG_PATH is set, else a NopSink. The
+	// rotation grace defaults to 24h (override via
+	// LOOMCYCLE_OPERATOR_TOKEN_ROTATION_GRACE_SECONDS). Nothing consumes
+	// the tokens yet — the auth-middleware switch lands in the next PR.
+	var tokenAudit audit.Sink = audit.NopSink{}
+	if cfg.Env.AuditLogPath != "" {
+		fs, aerr := audit.NewFileSink(cfg.Env.AuditLogPath)
+		if aerr != nil {
+			log.Fatalf("audit: %v", aerr)
+		}
+		tokenAudit = fs
+		log.Printf("audit: OperatorTokenDef mutations → %s", cfg.Env.AuditLogPath)
+	}
+	graceSecs := 0
+	if v := os.Getenv("LOOMCYCLE_OPERATOR_TOKEN_ROTATION_GRACE_SECONDS"); v != "" {
+		if n, perr := strconv.Atoi(v); perr == nil && n >= 0 {
+			graceSecs = n
+		}
+	}
+	srv.SetOperatorTokenDefTool(&builtin.OperatorTokenDef{
+		Store:                storeIface,
+		Pepper:               cfg.Env.OperatorTokenPepper,
+		Audit:                tokenAudit,
+		RotationGraceSeconds: graceSecs,
 	})
 	// Surface the resolved build identifiers via /healthz so the Web UI
 	// can render the running binary's real version instead of a stale

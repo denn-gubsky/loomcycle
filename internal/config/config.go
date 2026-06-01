@@ -1268,7 +1268,14 @@ type Env struct {
 	GeminiBaseURL string
 	ListenAddr    string
 	AuthToken     string
-	DataDir       string
+	// OperatorTokenPepper is prepended to a bearer before SHA-256 when
+	// hashing OperatorTokenDef tokens (RFC L). A stolen DB dump without
+	// the pepper yields no usable token lookup. Secret — never logged.
+	OperatorTokenPepper string
+	// AuditLogPath is the JSONL sink for OperatorTokenDef mutations
+	// (RFC L). Empty = no file audit (a NopSink is wired).
+	AuditLogPath string
+	DataDir      string
 	// ReadRoot is the sandbox root for the built-in Read tool. Empty by
 	// default — the tool is registered but rejects every call until set.
 	ReadRoot string
@@ -1888,6 +1895,8 @@ func Load(path string) (*Config, error) {
 		GeminiBaseURL:            os.Getenv("GEMINI_BASE_URL"),
 		ListenAddr:               getenvDefault("LOOMCYCLE_LISTEN_ADDR", "127.0.0.1:8787"),
 		AuthToken:                os.Getenv("LOOMCYCLE_AUTH_TOKEN"),
+		OperatorTokenPepper:      os.Getenv("LOOMCYCLE_OPERATOR_TOKEN_PEPPER"),
+		AuditLogPath:             os.Getenv("LOOMCYCLE_AUDIT_LOG_PATH"),
 		DataDir:                  getenvDefault("LOOMCYCLE_DATA_DIR", "./data"),
 		ReadRoot:                 os.Getenv("LOOMCYCLE_READ_ROOT"),
 		WriteRoot:                os.Getenv("LOOMCYCLE_WRITE_ROOT"),
