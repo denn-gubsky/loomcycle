@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 
 	"github.com/denn-gubsky/loomcycle/internal/agents"
@@ -14,6 +15,14 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
+
+// agentDefNameRe is the AgentDef substrate name floor — the same charset as
+// the HTTP validIdent / RegisterAgent / library_admin checks, so every
+// agent-name entry point is consistent. It matters doubly for code-js: an
+// agent name is also a path segment (agent_code/<name>/index.js), so
+// rejecting "/", "\\", "..", etc. here (plus the compiler.load floor) keeps a
+// substrate-authored name from escaping CodeRoot.
+var agentDefNameRe = regexp.MustCompile(`^[A-Za-z0-9_-]{1,128}$`)
 
 // AgentDef is the v0.8.5 built-in tool that lets agents author, fork,
 // promote, retire, and inspect agent definitions at runtime. Static
@@ -154,6 +163,9 @@ func (a *AgentDef) execCreate(ctx context.Context, policy tools.AgentDefPolicyVa
 	if in.Name == "" {
 		return errResult("create: missing required field: name"), nil
 	}
+	if !agentDefNameRe.MatchString(in.Name) {
+		return errResult(fmt.Sprintf("create: name %q invalid (must match [A-Za-z0-9_-]{1,128})", in.Name)), nil
+	}
 	if err := a.checkScopeForName(policy, in.Name, ""); err != nil {
 		return errResult(err.Error()), nil
 	}
@@ -230,6 +242,9 @@ func (a *AgentDef) execCreate(ctx context.Context, policy tools.AgentDefPolicyVa
 func (a *AgentDef) execFork(ctx context.Context, policy tools.AgentDefPolicyValue, in agentDefInput) (tools.Result, error) {
 	if in.Name == "" {
 		return errResult("fork: missing required field: name"), nil
+	}
+	if !agentDefNameRe.MatchString(in.Name) {
+		return errResult(fmt.Sprintf("fork: name %q invalid (must match [A-Za-z0-9_-]{1,128})", in.Name)), nil
 	}
 
 	// Resolve the parent. Three paths:
