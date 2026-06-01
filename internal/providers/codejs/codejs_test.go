@@ -205,6 +205,40 @@ func TestCodeJS_UncaughtThrow_BecomesEventError(t *testing.T) {
 	}
 }
 
+// Any allowed tool is callable, not just the memory/channel/agent meta-tools:
+// a built-in like WebFetch binds as a flat callable by its canonical name and
+// dispatches through the loop like any other tool. (Regression for the bug
+// where only memory/channel/agent + mcp__* were bound, so the ATS example's
+// WebFetch was unreachable and a fictional mcp__http_fetch__get was invented.)
+func TestCodeJS_BuiltinTool_FlatCallable(t *testing.T) {
+	// The JS JSON.parse()s the WebFetch result. This only works if a flat tool
+	// returns its RAW STRING — auto-parsing a JSON-looking body (the old bug)
+	// would hand the JS an object and the JSON.parse would throw.
+	root := writeAgent(t, "fetcher",
+		`function run(){ var d = JSON.parse(WebFetch({ url: "https://x.example/api" })); return { final_text: "n=" + d.jobs.length }; }`)
+	p := newTestProvider(root)
+	var sawURL bool
+	res := drive(t, context.Background(), p, "fetcher", "go", []providers.ToolSpec{{Name: "WebFetch"}},
+		func(name string, input json.RawMessage) (string, bool) {
+			if name != "WebFetch" {
+				t.Errorf("dispatched tool name = %q, want WebFetch", name)
+			}
+			if strings.Contains(string(input), "x.example") {
+				sawURL = true
+			}
+			return `{"jobs":[{"id":"1"},{"id":"2"}]}`, false // a JSON body, as a string
+		})
+	if res.errText != "" {
+		t.Fatalf("run errored (flat tool result not a raw string?): %s", res.errText)
+	}
+	if !sawURL {
+		t.Error("WebFetch input (url) did not reach the dispatcher")
+	}
+	if !strings.Contains(res.finalText, "n=2") {
+		t.Errorf("WebFetch raw-string body did not reach JS for JSON.parse: %q", res.finalText)
+	}
+}
+
 // Default-deny: a tool absent from allowed_tools (req.Tools) gets NO binding,
 // so referencing it is a ReferenceError — not a permission error.
 func TestCodeJS_AllowedTools_DisallowedIsReferenceError(t *testing.T) {

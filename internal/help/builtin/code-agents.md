@@ -42,19 +42,14 @@ fails **at startup**, not at the first scheduled fire.
 agents:
   nightly-scrape:
     provider: code-js
-    allowed_tools: [Memory, Channel, mcp__http_fetch__get]  # canonical tool names
-    memory_scopes: [user]                                   # required to use memory.*
+    allowed_tools: [WebFetch, Memory, mcp__jobs__ingestJobs]  # canonical tool names
+    memory_scopes: [user]                                     # required to use memory.*
+    allowed_hosts: ["*.example"]                              # WebFetch host policy
     description: "Deterministic ATS scrape — no LLM."
 ```
 
-> **Naming:** `allowed_tools` uses loomcycle's **canonical** tool names —
-> `Memory`, `Channel`, `Agent` (capitalized), same as LLM agents — while the
-> JS objects are **lowercase** (`memory`, `channel`, `agent`). The capitalized
-> name in `allowed_tools` admits the tool to the run; the lowercase object is
-> what your code calls. Using `memory` in `allowed_tools` silently omits the
-> tool, and your JS then sees `ReferenceError: memory is not defined`. Memory
-> additionally needs `memory_scopes` declared (`[agent]` / `[user]`), exactly
-> as for LLM agents.
+`allowed_tools` uses **canonical** tool names (capitalized, same as LLM
+agents); the JS surface naming is in **The JS-side tool API** below.
 
 ## Writing a code-agent
 
@@ -65,11 +60,11 @@ no `await`, no callbacks:
 ```javascript
 function run(input) {
   var seen = memory.get({ scope: "user", key: "seen_ids" }) || {};
-  var html = mcp__http_fetch__get({ url: "https://example/api/jobs" });
-  var jobs = parse(html).filter(function (j) { return !seen[j.id]; });
+  var body = WebFetch({ url: "https://example/api/jobs" });   // built-in tool
+  var jobs = parse(body).filter(function (j) { return !seen[j.id]; });
   jobs.forEach(function (j) { seen[j.id] = Date.now(); });
   memory.set({ scope: "user", key: "seen_ids", value: seen });
-  channel.publish({ name: "fresh-jobs", payload: { jobs: jobs } });
+  mcp__jobs__ingestJobs({ user_id: input.metadata.user_id, jobs: jobs });  // MCP tool
   return { final_text: "found " + jobs.length + " fresh jobs" };
 }
 ```
@@ -82,16 +77,36 @@ write straight-line code.
 
 ## The JS-side tool API
 
-Only the tools in the agent's `allowed_tools` are bound. A tool you
-didn't allow is not a "permission denied" — it simply **does not exist**
-in scope (`ReferenceError`). Default-deny by construction.
+Only the tools in the agent's `allowed_tools` are bound — **any** allowed
+tool, built-in or MCP, is callable. A tool you didn't allow is not a
+"permission denied"; it simply **does not exist** in scope
+(`ReferenceError`). Default-deny by construction.
 
 | JS | Tool | Notes |
 |---|---|---|
-| `memory.get/set/delete/search(obj)` | Memory | obj is the tool input minus `op` |
-| `channel.publish/subscribe(obj)` | Channel | subscribe is a non-blocking peek |
+| `memory.get/set/delete/search(obj)` | Memory | multi-op meta-tool; obj is the input minus `op` |
+| `channel.publish/subscribe(obj)` | Channel | multi-op meta-tool; subscribe is a non-blocking peek |
 | `agent.spawn(obj)` | Agent | spawn an LLM (or code) sub-agent; returns its result |
-| `mcp__<server>__<tool>(obj)` | that MCP tool | one binding per allowed MCP tool |
+| `WebFetch(obj)` / `Read(obj)` / `HTTP(obj)` / `WebSearch(obj)` / … | the built-in of that name | every other allowed **built-in**, flat by canonical name |
+| `mcp__<server>__<tool>(obj)` | that MCP tool | every allowed MCP tool, flat by name |
+
+> **Naming:** `allowed_tools` uses loomcycle's **canonical** tool names
+> (capitalized: `WebFetch`, `Memory`, `Read`, …), the same as LLM agents.
+> The three multi-op meta-tools are exposed in JS as **lowercase objects**
+> (`memory`, `channel`, `agent`); every other tool is a **flat function by
+> its exact canonical name** (`WebFetch({url})`, `mcp__jobs__ingestJobs({…})`).
+> Putting `memory` (lowercase) in `allowed_tools` silently omits the tool —
+> your JS then sees `ReferenceError`. `memory.*` additionally needs
+> `memory_scopes` declared (`[agent]` / `[user]`), and `WebFetch`/`HTTP`
+> obey the agent's `allowed_hosts`, exactly as for LLM agents.
+
+**Return types.** `memory` / `channel` / `agent` and `mcp__*` tools return
+**parsed values** — their results are structured JSON, so
+`memory.get(...).value` and `mcp__jobs__getContext(...).foo` just work. The
+plain built-ins (`WebFetch`, `Read`, `HTTP`, `Grep`, …) return their **raw
+string** result; `JSON.parse(WebFetch(...))` yourself if it's a JSON API.
+(Return type follows the tool, never the content — so the same code works
+whether a fetched page is JSON or HTML.)
 
 A tool the loop returns as an error surfaces as a **catchable** JS
 `throw` (`try { … } catch (e) { … }`); an uncaught throw fails the run
@@ -99,12 +114,14 @@ A tool the loop returns as an error surfaces as a **catchable** JS
 
 ## The sandbox boundary
 
-goja's capability surface IS the boundary. There is **no** `fetch` / XHR,
-no filesystem, no `require`, no `setTimeout` / `setInterval`. `eval` and
-the `Function` constructor are deleted from the runtime before your code
-runs. Outbound HTTP goes through an MCP server (as today); filesystem
-through the `Read` tool with operator-configured roots; time-based
-scheduling through ScheduleDef.
+goja's capability surface IS the boundary. There is **no** ambient `fetch`
+/ XHR, no direct filesystem, no `require`, no `setTimeout` / `setInterval`.
+`eval` and the `Function` constructor are deleted from the runtime before
+your code runs. Capabilities reach the JS **only** as `allowed_tools`
+bindings dispatched by the loop: outbound HTTP via the `WebFetch` / `HTTP`
+built-ins (or an MCP server) under the agent's `allowed_hosts`; filesystem
+via the `Read` tool with operator-configured roots; time-based scheduling
+via ScheduleDef. A capability not in `allowed_tools` is simply absent.
 
 > The sandbox protects loomcycle from the *runtime* handing the JS more
 > capability than `allowed_tools` granted. It does **not** protect you

@@ -10,8 +10,9 @@ API, the default-deny sandbox, and the honest-determinism scope.
 
 ## `ats-scraper/` — nightly ATS scrape, zero LLM
 
-The RFC J worked example: fetch listings across four job boards, dedupe
-against per-user `memory`, publish fresh jobs to a channel. No tokens, no
+The RFC J worked example: fetch listings across four job boards with the
+built-in `WebFetch` tool, dedupe against per-user `memory`, and hand fresh
+jobs to the consumer's own `mcp__jobs__ingestJobs` MCP tool. No tokens, no
 hallucination, ~network-bound wall time.
 
 ```yaml
@@ -19,15 +20,18 @@ hallucination, ~network-bound wall time.
 agents:
   ats-scraper:
     provider: code-js
-    allowed_tools: [Memory, Channel, mcp__http_fetch__get]  # canonical names
-    memory_scopes: [user]                                   # required for memory.*
+    # Canonical tool names. WebFetch is a loomcycle built-in;
+    # mcp__jobs__ingestJobs is exposed by the jobs MCP server below.
+    allowed_tools: [WebFetch, Memory, mcp__jobs__ingestJobs]
+    memory_scopes: [user]            # required for memory.*
+    allowed_hosts: ["*.example"]     # WebFetch host policy (operator floor)
     description: "Nightly ATS scrape across four job boards (deterministic, no LLM)."
 
 mcp_servers:
-  http_fetch:
-    url: https://internal.example/mcp-http-fetch
+  jobs:
+    url: https://jobs-search-agent.internal/api/mcp
     headers:
-      Authorization: "Bearer ${run.credentials.http_fetch}"
+      Authorization: "Bearer ${run.credentials.jobs}"
 
 scheduled_runs:
   nightly-ats:
@@ -37,15 +41,18 @@ scheduled_runs:
     timezone: "Europe/Berlin"
     enabled: true
     user_credentials_from_env:
-      http_fetch: "LOOMCYCLE_HTTP_FETCH_TOKEN"
+      jobs: "LOOMCYCLE_JOBS_MCP_TOKEN"
 ```
 
-The scheduler fires it like any LLM agent; an A2A peer reaching it via the
-well-known card sees one more skill; an LLM agent can `agent.spawn` it for
-deterministic results without paying for tokens to "think about scraping."
+`WebFetch` and `mcp__jobs__ingestJobs` are both dispatched by the loop, so
+WebFetch's host allowlist and the MCP server's `${run.credentials.jobs}`
+bearer apply exactly as they would for an LLM agent — the JS never sees the
+token. The scheduler fires the agent like any LLM agent; an A2A peer reaching
+it via the well-known card sees one more skill; an LLM agent can
+`agent.spawn` it for deterministic results without paying for tokens.
 
 ## Deferred examples
 
 The RFC also sketches `sql-query/`, `format-converter/`, and `router/`
 examples. They are follow-up work — the `ats-scraper` here covers the
-memory + channel + MCP-tool + metadata surface end-to-end.
+built-in-tool + memory + MCP-tool + metadata surface end-to-end.
