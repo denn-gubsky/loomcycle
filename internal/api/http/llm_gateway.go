@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/resolve"
 )
@@ -128,10 +129,12 @@ func (s *Server) prepareGatewayDispatch(w http.ResponseWriter, r *http.Request, 
 		return gatewayDispatch{}, false
 	}
 
-	// Per-user quota acquisition. Empty user_id bypasses the per-user
-	// cap (operator-scoped "anonymous" gateway calls go to the global
-	// semaphore only).
-	release, err := s.sem.AcquireForUser(r.Context(), req.UserID)
+	// Per-subject quota acquisition. RFC L: when an authenticated
+	// principal is present its Subject is the authoritative fairness key
+	// (a caller can't forge a different user_id to dodge their cap); the
+	// wire user_id is only the fallback for open / un-authed mode. Empty
+	// key bypasses the per-user cap (global semaphore only).
+	release, err := s.sem.AcquireForUser(r.Context(), auth.SubjectForFairness(r.Context(), req.UserID))
 	if err != nil {
 		writeQuotaError(w, err)
 		return gatewayDispatch{}, false

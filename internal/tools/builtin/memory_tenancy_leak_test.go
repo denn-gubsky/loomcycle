@@ -18,7 +18,8 @@ import (
 // Regression-grade: pre-fix the empty/token-less branch fell through and
 // returned mem9.Tenancy{KeyPrefix: ""} with no error.
 func TestResolveTenancy_SharedPrefixEmptyOrTokenlessRejected(t *testing.T) {
-	ctx := tools.WithRunIdentity(context.Background(), tools.RunIdentityValue{UserID: "alice"})
+	// RFC L: tenancy keys on the authoritative TenantID (not UserID).
+	ctx := tools.WithRunIdentity(context.Background(), tools.RunIdentityValue{TenantID: "alice"})
 	for _, pat := range []string{"", "static-no-token::", "tenant-::"} {
 		ts := config.MemoryBackendTenancy{Kind: "shared_key_with_prefix", PrefixPattern: pat}
 		tenancy, _, err := resolveTenancy(ctx, ts)

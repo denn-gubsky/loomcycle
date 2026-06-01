@@ -11,6 +11,8 @@ import (
 	"math"
 	"net/http"
 	"time"
+
+	"github.com/denn-gubsky/loomcycle/internal/auth"
 )
 
 // embeddings_compat.go — v0.11.4 OpenAI Embeddings compatibility
@@ -83,11 +85,12 @@ func (s *Server) handleEmbeddings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Per-user quota acquisition. Empty user_id bypasses the
-	// per-user cap (operator-scoped "anonymous" embeddings calls
-	// go to the global semaphore only). Mirrors the chat-
-	// completions gateway exactly.
-	release, err := s.sem.AcquireForUser(r.Context(), req.User)
+	// Per-subject quota acquisition. RFC L: the authenticated
+	// principal's Subject is the authoritative fairness key when
+	// present; the wire user is the open/un-authed fallback. Empty
+	// key bypasses the per-user cap. Mirrors the chat-completions
+	// gateway exactly.
+	release, err := s.sem.AcquireForUser(r.Context(), auth.SubjectForFairness(r.Context(), req.User))
 	if err != nil {
 		writeQuotaError(w, err)
 		return

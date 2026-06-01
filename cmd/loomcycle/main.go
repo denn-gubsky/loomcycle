@@ -1852,13 +1852,19 @@ func main() {
 	var grpcSrv *googlegrpc.Server
 	if cfg.Env.GrpcAddr != "" {
 		grpcAdapter := loomgrpc.New(loomgrpc.Config{
-			Store:       storeIface,
-			CancelReg:   srv.CancelRegistry(),
-			Connector:   srv, // v0.8.15: *http.Server satisfies connector.Connector
-			Runner:      srv, // *http.Server satisfies runner.Runner (streaming)
-			AuthToken:   cfg.Env.AuthToken,
-			BuildCommit: buildCommit,
-			BuildTime:   buildTime,
+			Store:     storeIface,
+			CancelReg: srv.CancelRegistry(),
+			Connector: srv, // v0.8.15: *http.Server satisfies connector.Connector
+			Runner:    srv, // *http.Server satisfies runner.Runner (streaming)
+			AuthToken: cfg.Env.AuthToken,
+			// RFC L: reuse the HTTP server's token resolution so gRPC
+			// stamps the same authoritative principal (gRPC runs flow
+			// authoritatively through RunOnce) and shares the open-mode
+			// decision.
+			PrincipalResolver: srv.ResolvePrincipal,
+			AuthConfigured:    srv.AuthConfigured,
+			BuildCommit:       buildCommit,
+			BuildTime:         buildTime,
 		})
 		grpcSrv = googlegrpc.NewServer(
 			googlegrpc.UnaryInterceptor(grpcAdapter.UnaryAuthInterceptor()),

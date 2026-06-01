@@ -219,18 +219,18 @@ func (m *Memory) buildMem9(ctx context.Context, name string, def config.MemoryBa
 // package's resolved Tenancy + the tenant_id used for env-pattern
 // resolution. {tenant_id} is substituted from the run's tenant.
 //
-// TENANT SOURCE (assumption, surfaced loudly): loomcycle's
-// RunIdentityValue carries no dedicated tenant field, so we use
-// tools.RunIdentity(ctx).UserID as {tenant_id}. The UserID is
-// operator/caller-authoritative (the API layer stamps it; it is NEVER
-// model input — same trust posture as the Memory scope_id), so using it
-// as the tenant partition key does not open a model-controlled
-// cross-tenant path. The RFC's worked example uses per-tenant user
-// identities (alice@tenant-a, bob@tenant-b); single-tenant deployments
-// have one stable UserID and one resolved key. If a first-class tenant
-// field lands on RunIdentityValue later, change ONLY this function.
+// TENANT SOURCE: the authoritative tools.RunIdentity(ctx).TenantID
+// (RFC L). On authenticated routes this is set from the resolved
+// auth.Principal's tenant — which OVERRIDES the wire tenant_id, so it is
+// a real isolation boundary, not a forgeable label. Distinct subjects
+// under one tenant SHARE this memory partition (they collaborate within
+// the tenant); isolation is per-tenant, NOT per-user (that was the
+// pre-RFC-L shape, which keyed on UserID). For legacy single-token
+// deployments the principal tenant is "default"; in dev open-mode the
+// tenant may be empty, in which case key_per_tenant resolves the "" key
+// and shared_key_with_prefix refuses (the backstop below).
 func resolveTenancy(ctx context.Context, ts config.MemoryBackendTenancy) (mem9.Tenancy, string, error) {
-	tenantID := tools.RunIdentity(ctx).UserID
+	tenantID := tools.RunIdentity(ctx).TenantID
 
 	switch ts.Kind {
 	case "", "key_per_tenant":
@@ -288,7 +288,7 @@ func (m *Memory) mem9CredentialResolver(def config.MemoryBackend, ts config.Memo
 		// tenancy env_pattern (per-tenant key); otherwise the static
 		// api_key_env. Re-resolve the tenant per call so a long-lived
 		// resolver always reflects the current run's identity.
-		tenantID := tools.RunIdentity(ctx).UserID
+		tenantID := tools.RunIdentity(ctx).TenantID
 		envName := def.Config.APIKeyEnv
 		if ts.Kind == "key_per_tenant" && ts.EnvPattern != "" {
 			envName = strings.ReplaceAll(ts.EnvPattern, "{tenant_id}", tenantID)
