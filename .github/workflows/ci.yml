@@ -65,16 +65,19 @@ jobs:
           go-version: "1.26.x"
           cache: true
 
-      # The code-js runtime suites are deterministic (synthetic provider, no
-      # LLM / key / Postgres) and assert storage state via the sqlite3 CLI +
-      # parse SSE with python3. Both are preinstalled on ubuntu-latest; this
-      # makes the dependency explicit and fails fast if the image changes.
+      # The FUNCTIONAL code-js runtime suite is deterministic (synthetic
+      # provider, no LLM / key / Postgres) and asserts storage state via the
+      # sqlite3 CLI + parses SSE with python3. Both are preinstalled on
+      # ubuntu-latest; this makes the dependency explicit and fails fast if the
+      # image changes. NOTE: the STRESS suite (`make runtime-stress`) and the
+      # soak/load suites are intentionally NOT run here — load, stress, and
+      # sustainability tests run on the operator's machine, not in CI.
       - name: Ensure sqlite3 + python3
         run: |
           command -v python3 >/dev/null || { echo "python3 missing"; exit 1; }
           command -v sqlite3  >/dev/null || sudo apt-get update && sudo apt-get install -y sqlite3
 
-      - name: Runtime code-js suites
+      - name: Runtime code-js suite (functional only)
         run: make runtime-codejs
 
   ts-adapter:
