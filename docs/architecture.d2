@@ -36,21 +36,27 @@ loomcycle: "loomcycle — single Go binary (~30 MB)\n1..N replicas (see cluster 
   direction: down
 
   surfaces: "Wire surfaces" {
-    grid-columns: 5
+    grid-columns: 4
     style.fill: "#f1f5f9"
 
     http_sse: "HTTP + SSE\n/v1/* endpoints" {style.fill: "#dbeafe"}
     grpc: "gRPC\n(metadata + streaming RPCs)" {style.fill: "#dbeafe"}
     webui: "React Web UI (/ui)" {style.fill: "#dbeafe"}
-    mcp_stdio: "MCP server (stdio + HTTP)\nv0.8.15+ · 33 meta-tools" {
+    mcp_stdio: "MCP server (stdio + HTTP)\nv0.8.15+ meta-tools" {
       style: {fill: "#c7d2fe"; bold: true}
     }
     gateway: "LLM Gateway (v0.11.0+)\n/v1/_llm/chat\n/v1/chat/completions (OpenAI-compat)\n/v1/embeddings" {
       style: {fill: "#c7d2fe"; bold: true}
     }
+    a2a: "A2A server (v0.13.0, opt-in)\n/.well-known/agent-card.json\nREST · JSON-RPC · gRPC bindings" {
+      style: {fill: "#c7d2fe"; bold: true}
+    }
+    webhooks: "Input webhooks (v0.14.0, opt-in)\nPOST /v1/_webhooks/{name}\nHMAC verify-before-parse" {
+      style: {fill: "#c7d2fe"; bold: true}
+    }
   }
 
-  middleware: "Auth (bearer, constant-time) · Concurrency semaphore · Cancel registry · Per-user fairness (v0.10.1)" {
+  middleware: "Auth (bearer, constant-time) · Concurrency semaphore · Cancel registry · Per-tenant fairness (v0.10.1 · cluster v0.12.1)" {
     style: {
       fill: "#f8fafc"
       italic: true
@@ -58,7 +64,7 @@ loomcycle: "loomcycle — single Go binary (~30 MB)\n1..N replicas (see cluster 
     }
   }
 
-  connector: "connector.Connector — 36-method Go interface (v0.8.15+ → v0.12.x)\nHTTP server IMPLEMENTS · MCP / gRPC / future CLI CONSUME\nTS / Python adapters MIRROR (over HTTP wire)" {
+  connector: "connector.Connector — 39-method Go interface (v0.8.15 → v0.16.x)\nHTTP server IMPLEMENTS · MCP / gRPC / future CLI CONSUME\nTS / Python adapters MIRROR (over HTTP wire)" {
     style: {
       fill: "#fce7f3"
       stroke: "#be185d"
@@ -79,13 +85,16 @@ loomcycle: "loomcycle — single Go binary (~30 MB)\n1..N replicas (see cluster 
   }
 
   dispatcher: "Tool dispatcher" {
-    grid-columns: 3
+    grid-columns: 2
     style.fill: "#fef3c7"
 
-    builtins: "19 built-in tools\nRead · Write · Edit · Grep · Glob\nNotebookEdit · HTTP · WebFetch\nWebSearch · Bash · Agent · Skill\nMemory (+ vector search) · Channel\nAgentDef · SkillDef · Evaluation\nInterruption · Context" {
+    builtins: "19 agent-facing built-in tools\nRead · Write · Edit · Grep · Glob\nNotebookEdit · HTTP · WebFetch\nWebSearch · Bash · Agent · Skill\nMemory (pluggable backend; +vector\nsearch; +add/recall layer v0.16.0)\nChannel · AgentDef · SkillDef\nEvaluation · Interruption · Context\n+ admin substrate Defs: MCPServerDef\nScheduleDef · WebhookDef · MemoryBackendDef\nA2AServerCardDef · A2AAgentDef" {
+      style: {fill: "#fde68a"; font-size: 11}
+    }
+    mcp_layer: "MCP client transport\nstdio pool + Streamable HTTP\n(consumes external MCP servers)" {
       style: {fill: "#fde68a"; font-size: 12}
     }
-    mcp_layer: "MCP client transport\nstdio pool +\nStreamable HTTP\n(consumes external MCP servers)" {
+    a2a_layer: "A2A client (v0.13.0)\nremote peers as\na2a__<peer>__<skill> tools" {
       style: {fill: "#fde68a"; font-size: 12}
     }
     subagents: "Sub-agent runner\n(Agent tool · parallel_spawn v0.11.8)\nctx-inherited policy" {
@@ -93,7 +102,11 @@ loomcycle: "loomcycle — single Go binary (~30 MB)\n1..N replicas (see cluster 
     }
   }
 
-  store: "Store — SQLite (default) · Postgres (HA, + pgvector)\nsessions · runs(.replica_id v0.12.x) · events · memory · channels\nagent_defs · skill_defs · mcp_server_defs · *_active\nevaluations · interrupts · snapshots · process_samples\ndynamic_agents · memory_embeddings\nreplicas · user_quotas · runtime_state · hooks (v0.12.x)" {
+  triggers: "Run triggers (besides /v1/runs)\nScheduler — ScheduleDef sweeper (v0.12.7)\nWebhook receiver (v0.14.0) · A2A inbound (v0.13.0)" {
+    style: {fill: "#ede9fe"; stroke: "#7c3aed"; font-size: 12; italic: true}
+  }
+
+  store: "Store — SQLite (default) · Postgres (HA, + pgvector)\nsessions · runs(.replica_id v0.12.x) · events · memory · channels\nagent_defs · skill_defs · mcp_server_defs · schedule_defs (v0.12.7)\nwebhook_defs (v0.14.0) · memory_backend_defs (v0.15.0) · *_active\nevaluations · interrupts · snapshots · process_samples\ndynamic_agents · memory_embeddings\nreplicas · user_quotas · runtime_state · hooks (v0.12.x)" {
     shape: cylinder
     style: {
       fill: "#fed7aa"
@@ -108,6 +121,7 @@ loomcycle: "loomcycle — single Go binary (~30 MB)\n1..N replicas (see cluster 
   connector -> loop: "dispatch" {style.stroke: "#be185d"; style.stroke-width: 2}
   loop -> dispatcher: "tool calls" {style.stroke: "#4f46e5"}
   loop -> store: "transcripts · events" {style.stroke: "#ea580c"}
+  triggers -> loop: "fire run" {style.stroke: "#7c3aed"; style.stroke-dash: 4}
   dispatcher.subagents -> loop: "spawn child" {
     style.stroke: "#4f46e5"
     style.stroke-dash: 4
@@ -137,7 +151,7 @@ externals: "External" {
   }
   direction: down
 
-  providers: "LLM providers (pure HTTP — no SDKs)" {
+  providers: "Providers (pure HTTP — no SDKs; + 1 synthetic)" {
     grid-columns: 2
     style.fill: "#fef9c3"
 
@@ -149,6 +163,9 @@ externals: "External" {
     ollama_local: "Ollama (local)" {style.fill: "#fde68a"}
     anthropic_oauth_dev: "Anthropic OAuth\n(dev only · v0.11.10)" {
       style: {fill: "#fef9c3"; italic: true; stroke-dash: 4}
+    }
+    codejs: "code-js (v0.16.0) — SYNTHETIC\nin-process operator JS (goja)\nNO external call" {
+      style: {fill: "#e0e7ff"; stroke: "#4f46e5"; italic: true; stroke-dash: 4}
     }
   }
 
@@ -163,10 +180,17 @@ externals: "External" {
 
   mcp_servers: "External MCP servers\n(consumer-side typed tools)" {
     shape: cloud
-    style: {
-      fill: "#ede9fe"
-      stroke: "#7c3aed"
-    }
+    style: {fill: "#ede9fe"; stroke: "#7c3aed"}
+  }
+
+  mem9: "Memory backend — Mem9 REST (v0.15.0)\npluggable per-agent; +memory layer\nadd/recall (v0.16.0)" {
+    shape: cylinder
+    style: {fill: "#fed7aa"; stroke: "#ea580c"; font-size: 12}
+  }
+
+  a2a_peers: "Remote A2A peers (v0.13.0)\nin: call our skills · out: a2a__ tools" {
+    shape: cloud
+    style: {fill: "#ede9fe"; stroke: "#7c3aed"}
   }
 }
 
@@ -184,6 +208,15 @@ loomcycle.dispatcher.builtins -> externals.embedders: "Memory.search · vector" 
 }
 loomcycle.dispatcher.mcp_layer -> externals.mcp_servers: "JSON-RPC" {
   style.stroke: "#7c3aed"
+}
+loomcycle.dispatcher.builtins -> externals.mem9: "Memory ops (routed backend)" {
+  style.stroke: "#ea580c"
+}
+loomcycle.dispatcher.a2a_layer -> externals.a2a_peers: "A2A client" {
+  style.stroke: "#7c3aed"
+}
+externals.a2a_peers -> loomcycle.surfaces.a2a: "A2A inbound" {
+  style: {stroke: "#7c3aed"; stroke-dash: 4}
 }
 loomcycle.loop -> otel: "spans (default OFF)" {
   style: {
