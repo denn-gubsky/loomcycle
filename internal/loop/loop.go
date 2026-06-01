@@ -956,6 +956,15 @@ outerLoop:
 	// surface a different error to the user.
 	if stopReason == "tool_use" {
 		stopReason = "max_iterations"
+		// For a code-js agent, MaxIterations is a HARD ceiling on the number
+		// of SEQUENTIAL tool calls run() may make (each loop turn advances the
+		// replay by exactly one frontier call), not a soft cap on model
+		// chatter. Hitting it means run() did not return — it wanted call
+		// #(MaxIterations+1). The opaque "max_iterations" reason hides that, so
+		// name it in the operator log with the actionable lever.
+		if opts.Provider != nil && opts.Provider.ID() == "code-js" {
+			log.Printf("code-js agent %q hit MaxIterations=%d: run() requested more sequential tool calls than the cap (each turn = one call). Raise the run's MaxIterations or restructure the agent to fan out via Agent.spawn.", opts.AgentName, opts.MaxIterations)
+		}
 	}
 
 	emit(providers.Event{Type: providers.EventDone, StopReason: stopReason, Usage: &totalUsage})

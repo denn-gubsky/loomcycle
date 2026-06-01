@@ -185,6 +185,13 @@ tests and snapshot equality.
   (This is why determinism is always-on above — replay must reproduce the
   same call sequence; a non-deterministic divergence fails loud as
   `code_agent_replay_divergence`.)
+- **MaxIterations is a hard sequential-tool-call ceiling.** Each loop turn
+  advances a code-agent's replay by exactly one tool call, so the run's
+  `MaxIterations` caps how many sequential tool calls `run()` may make — it is
+  not a soft "model chatter" cap as it is for an LLM agent. A code-agent that
+  needs more sequential calls than the cap ends with `stop_reason:
+  max_iterations` (and an operator log line naming the agent + cap). Raise
+  `MaxIterations` for that run, or fan out concurrent work via `Agent.spawn`.
 - **Run timeout bounds wall time.** A CPU-bound JS loop is cut by goja
   `Interrupt` at the per-turn timeout; the overall run deadline rides the
   loop's ctx. Set `LOOMCYCLE_CODE_AGENTS_RUN_TIMEOUT_SECONDS`. The heap limit
