@@ -92,6 +92,9 @@ var handlersByName = map[string]toolHandler{
 	"resume_runtime":    handleResumeRuntime,
 	"get_runtime_state": handleGetRuntimeState,
 
+	// Resolver re-probe (issue #88)
+	"resolve_probe": handleResolveProbe,
+
 	// Snapshot (v0.8.17 primitives; exposed via Connector in v0.8.18)
 	"create_snapshot":  handleCreateSnapshot,
 	"list_snapshots":   handleListSnapshots,
@@ -405,6 +408,14 @@ func handleGetRuntimeState(ctx context.Context, env *handlerEnv, _ json.RawMessa
 	res, err := env.connector.GetRuntimeState(ctx)
 	if err != nil {
 		return toolErr("get_runtime_state: " + err.Error()), nil
+	}
+	return toolResultJSON(res), nil
+}
+
+func handleResolveProbe(ctx context.Context, env *handlerEnv, _ json.RawMessage) (*loommcp.CallToolResult, error) {
+	res, err := env.connector.ResolveProbe(ctx)
+	if err != nil {
+		return toolErr("resolve_probe: " + err.Error()), nil
 	}
 	return toolResultJSON(res), nil
 }

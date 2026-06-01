@@ -22,6 +22,7 @@
  *     pauseRuntime(opts?): Promise<PauseResult>
  *     resumeRuntime(): Promise<ResumeResult>
  *     getRuntimeState(): Promise<RuntimeStateResponse>
+ *     resolveProbe(opts?): Promise<ResolverMatrix>
  *
  *     // Snapshot lifecycle (v0.8.17/8.18)
  *     createSnapshot(opts?): Promise<SnapshotCreateResponse>
@@ -112,6 +113,10 @@ export type {
   ResumeResult,
   RuntimeStateResponse,
   RuntimeStateStatus,
+  // Resolver re-probe (issue #88)
+  ResolverMatrix,
+  ResolverModelStatus,
+  ResolverProviderAvailability,
   // Snapshot
   CreateSnapshotOptions,
   SnapshotCreateResponse,

@@ -122,6 +122,7 @@ All methods are async / return `Promise<T>` unless noted; streaming methods retu
 | `pauseRuntime(opts?: { timeoutMs? })` | `Promise<PauseResult>` | Quiesce the runtime. Raises `AlreadyPausingError` on 409, `PauseNotConfiguredError` on 503. |
 | `resumeRuntime()` | `Promise<ResumeResult>` | Release the quiesce. Raises `NotPausedError` on 409. |
 | `getRuntimeState()` | `Promise<RuntimeStateResponse>` | Current state + paused-runs count. |
+| `resolveProbe()` | `Promise<ResolverMatrix>` | Force an immediate provider re-probe; returns the refreshed availability matrix. Raises `UnavailableError` on 503 (no resolver / no probe loop). |
 
 ### Snapshot lifecycle (v0.8.17 / v0.8.18)
 

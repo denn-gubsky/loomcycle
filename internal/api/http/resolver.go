@@ -1,11 +1,14 @@
 package http
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"sort"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/connector"
 	"github.com/denn-gubsky/loomcycle/internal/resolve"
 )
 
@@ -83,34 +86,73 @@ func (s *Server) handleResolverSnapshot(w http.ResponseWriter, _ *http.Request) 
 // handler only fails when it cannot run a probe at all (no resolver, or
 // no probe loop wired — see ForceProbeWired).
 func (s *Server) handleResolveProbe(w http.ResponseWriter, r *http.Request) {
-	if s.resolver == nil {
-		writeJSONError(w, http.StatusServiceUnavailable, "resolver_unavailable",
-			"resolver not configured; the server is in degraded startup mode")
+	// Delegate to the canonical Connector method so HTTP, gRPC, and MCP
+	// all run the identical probe-and-snapshot logic; this handler only
+	// maps the typed errors to HTTP status codes.
+	matrix, err := s.ResolveProbe(r.Context())
+	if err != nil {
+		switch {
+		case errors.Is(err, connector.ErrResolverUnavailable):
+			writeJSONError(w, http.StatusServiceUnavailable, "resolver_unavailable",
+				"resolver not configured; the server is in degraded startup mode")
+		case errors.Is(err, connector.ErrResolveProbeUnavailable):
+			writeJSONError(w, http.StatusServiceUnavailable, "probe_unavailable",
+				"no probe loop wired; the runtime cannot trigger an immediate re-probe")
+		default:
+			writeJSONError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		}
 		return
 	}
-	if !s.resolver.ForceProbeWired() {
-		writeJSONError(w, http.StatusServiceUnavailable, "probe_unavailable",
-			"no probe loop wired; the runtime cannot trigger an immediate re-probe")
-		return
-	}
-	// Blocking: returns once the probe completes. main.go's probe loop
-	// applies per-provider timeouts, so a slow/unreachable upstream
-	// bounds this to a few seconds rather than hanging the request.
-	s.resolver.ForceProbe(r.Context())
-
-	snap := s.resolver.Snapshot()
-	resp := resolverSnapshotResponse{
-		GeneratedAt: time.Now().UTC(),
-		Providers:   make(map[string]wireProviderAvailability, len(snap)),
-	}
-	for provider, avail := range snap {
-		resp.Providers[provider] = toWireAvailability(avail)
-	}
+	// connector.ResolverMatrix carries JSON tags identical to the GET
+	// /v1/_resolver wire shape, so it serialises to the same fields.
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
-	_ = enc.Encode(resp)
+	_ = enc.Encode(matrix)
+}
+
+// ResolveProbe is the canonical Connector implementation behind POST
+// /v1/_resolve/probe (and its gRPC + MCP mirrors). It forces an
+// immediate re-probe and returns the refreshed matrix. Per-provider
+// failures are reflected in the matrix (reachable:false + last_error),
+// not surfaced as an error — the method only errors when it cannot
+// probe at all.
+func (s *Server) ResolveProbe(ctx context.Context) (connector.ResolverMatrix, error) {
+	if s.resolver == nil {
+		return connector.ResolverMatrix{}, connector.ErrResolverUnavailable
+	}
+	if !s.resolver.ForceProbeWired() {
+		return connector.ResolverMatrix{}, connector.ErrResolveProbeUnavailable
+	}
+	// Blocking: returns once the probe completes. main.go's probe loop
+	// applies per-provider timeouts, so a slow/unreachable upstream
+	// bounds this to a few seconds rather than hanging the caller.
+	s.resolver.ForceProbe(ctx)
+
+	snap := s.resolver.Snapshot()
+	out := connector.ResolverMatrix{
+		GeneratedAt: time.Now().UTC(),
+		Providers:   make(map[string]connector.ResolverProviderAvailability, len(snap)),
+	}
+	for provider, avail := range snap {
+		out.Providers[provider] = toConnectorAvailability(avail)
+	}
+	return out, nil
+}
+
+func toConnectorAvailability(a resolve.Availability) connector.ResolverProviderAvailability {
+	models := make(map[string]connector.ResolverModelStatus, len(a.Models))
+	for name, st := range a.Models {
+		models[name] = connector.ResolverModelStatus{Listed: st.Listed, Stalled: st.Stalled}
+	}
+	return connector.ResolverProviderAvailability{
+		Excluded:  a.Excluded,
+		Reachable: a.Reachable,
+		Models:    models,
+		LastCheck: a.LastCheck,
+		LastError: a.LastError,
+	}
 }
 
 func toWireAvailability(a resolve.Availability) wireProviderAvailability {

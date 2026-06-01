@@ -426,6 +426,30 @@ export interface RuntimeStateResponse {
   paused_runs_count: number;
 }
 
+// ---- Resolver re-probe (issue #88) ----
+
+export interface ResolverModelStatus {
+  listed: boolean;
+  stalled: boolean;
+}
+
+export interface ResolverProviderAvailability {
+  excluded: boolean;
+  reachable: boolean;
+  models: Record<string, ResolverModelStatus>;
+  /** RFC3339 timestamp of the last probe for this provider. */
+  last_check: string;
+  last_error?: string;
+}
+
+/** The resolver availability matrix, captured right after a forced
+ *  re-probe. Same shape as GET /v1/_resolver. */
+export interface ResolverMatrix {
+  /** RFC3339 timestamp when this matrix snapshot was assembled. */
+  generated_at: string;
+  providers: Record<string, ResolverProviderAvailability>;
+}
+
 // ---- Snapshot ----
 
 export interface SnapshotDescriptor {

@@ -794,6 +794,9 @@ func (m *mockConnector) RestoreSnapshot(context.Context, connector.RestoreSnapsh
 	return connector.RestoreSnapshotResult{}, nil
 }
 func (m *mockConnector) DeleteSnapshot(context.Context, string) error { return nil }
+func (m *mockConnector) ResolveProbe(context.Context) (connector.ResolverMatrix, error) {
+	return connector.ResolverMatrix{}, nil
+}
 func (m *mockConnector) InterruptionResolve(context.Context, connector.InterruptionResolveRequest) (connector.InterruptionResolveResult, error) {
 	return connector.InterruptionResolveResult{}, nil
 }
@@ -1070,5 +1073,61 @@ func drain(t *testing.T, stream loomcyclepb.Loomcycle_RunClient) []*loomcyclepb.
 			t.Fatalf("Recv: %v", err)
 		}
 		out = append(out, ev)
+	}
+}
+
+// ---- Resolver re-probe RPC ----
+
+// resolveProbeConnector embeds mockConnector and overrides ResolveProbe
+// so the gRPC handler's dispatch + proto mapping can be exercised
+// without a real *http.Server.
+type resolveProbeConnector struct {
+	mockConnector
+	matrix connector.ResolverMatrix
+	err    error
+	calls  atomic.Int32
+}
+
+func (m *resolveProbeConnector) ResolveProbe(_ context.Context) (connector.ResolverMatrix, error) {
+	m.calls.Add(1)
+	return m.matrix, m.err
+}
+
+func TestGrpc_ResolveProbe_DelegatesAndMapsMatrix(t *testing.T) {
+	rc := &resolveProbeConnector{matrix: connector.ResolverMatrix{
+		Providers: map[string]connector.ResolverProviderAvailability{
+			"mock": {
+				Reachable: true,
+				Models:    map[string]connector.ResolverModelStatus{"mock-generic": {Listed: true}},
+			},
+			"openai": {Excluded: true, LastError: "OPENAI_API_KEY not set"},
+		},
+	}}
+	adapter := New(Config{Connector: rc, CancelReg: cancel.NewRegistry()})
+
+	resp, err := adapter.ResolveProbe(context.Background(), &loomcyclepb.ResolveProbeRequest{})
+	if err != nil {
+		t.Fatalf("ResolveProbe: %v", err)
+	}
+	if rc.calls.Load() != 1 {
+		t.Errorf("Connector.ResolveProbe called %d times, want 1", rc.calls.Load())
+	}
+	mock := resp.GetProviders()["mock"]
+	if mock == nil || !mock.GetReachable() || !mock.GetModels()["mock-generic"].GetListed() {
+		t.Errorf("mock provider not mapped through correctly: %+v", mock)
+	}
+	oa := resp.GetProviders()["openai"]
+	if oa == nil || !oa.GetExcluded() || oa.GetLastError() != "OPENAI_API_KEY not set" {
+		t.Errorf("openai exclusion not mapped through: %+v", oa)
+	}
+}
+
+func TestGrpc_ResolveProbe_UnavailableMapsToUnavailable(t *testing.T) {
+	rc := &resolveProbeConnector{err: connector.ErrResolveProbeUnavailable}
+	adapter := New(Config{Connector: rc, CancelReg: cancel.NewRegistry()})
+
+	_, err := adapter.ResolveProbe(context.Background(), &loomcyclepb.ResolveProbeRequest{})
+	if status.Code(err) != codes.Unavailable {
+		t.Errorf("status code = %v, want Unavailable", status.Code(err))
 	}
 }

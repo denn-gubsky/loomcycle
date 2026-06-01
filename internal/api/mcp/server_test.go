@@ -98,6 +98,13 @@ func (m *mockConnector) ResumeRuntime(_ context.Context) (connector.ResumeResult
 func (m *mockConnector) GetRuntimeState(_ context.Context) (connector.RuntimeState, error) {
 	return connector.RuntimeState{}, nil
 }
+func (m *mockConnector) ResolveProbe(_ context.Context) (connector.ResolverMatrix, error) {
+	return connector.ResolverMatrix{
+		Providers: map[string]connector.ResolverProviderAvailability{
+			"mock": {Reachable: true, Models: map[string]connector.ResolverModelStatus{"mock-generic": {Listed: true}}},
+		},
+	}, nil
+}
 func (m *mockConnector) CreateSnapshot(_ context.Context, _ connector.CreateSnapshotRequest) (connector.SnapshotDescriptor, error) {
 	return connector.SnapshotDescriptor{}, nil
 }
@@ -296,15 +303,15 @@ func TestServer_ToolsList_Returns33Tools(t *testing.T) {
 	if err := json.Unmarshal(resps[0].Result, &result); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if len(result.Tools) != 38 {
-		t.Errorf("got %d tools, want 38 (RFC I MR-3a adds memorybackenddef on top of the RFC H webhookdef list)", len(result.Tools))
+	if len(result.Tools) != 39 {
+		t.Errorf("got %d tools, want 39 (issue #88 adds resolve_probe on top of the RFC I memorybackenddef list)", len(result.Tools))
 	}
 	names := map[string]bool{}
 	for _, td := range result.Tools {
 		names[td.Name] = true
 	}
 	// Spot-check across categories — through the v1.x additions.
-	for _, want := range []string{"spawn_run", "register_agent", "memory", "agentdef", "skilldef", "mcpserverdef", "scheduledef", "a2aservercarddef", "a2aagentdef", "webhookdef", "memorybackenddef", "pause_runtime", "create_snapshot", "get_snapshot", "interruption_resolve", "register_hook", "list_hooks", "delete_hook", "list_channels", "stream_user_run_states", "publish_channel", "subscribe_channel", "peek_channel", "ack_channel"} {
+	for _, want := range []string{"spawn_run", "register_agent", "memory", "agentdef", "skilldef", "mcpserverdef", "scheduledef", "a2aservercarddef", "a2aagentdef", "webhookdef", "memorybackenddef", "pause_runtime", "create_snapshot", "get_snapshot", "resolve_probe", "interruption_resolve", "register_hook", "list_hooks", "delete_hook", "list_channels", "stream_user_run_states", "publish_channel", "subscribe_channel", "peek_channel", "ack_channel"} {
 		if !names[want] {
 			t.Errorf("missing tool %q in tools/list", want)
 		}
@@ -355,6 +362,36 @@ func TestServer_SpawnRun_BlockingPath(t *testing.T) {
 	}
 	if inner.AgentID != "a_x" || inner.FinalText != "hello world" {
 		t.Errorf("inner = %+v, want AgentID=a_x FinalText=\"hello world\"", inner)
+	}
+}
+
+// TestServer_ResolveProbe_DispatchesThroughConnector verifies the
+// resolve_probe meta-tool dispatches to Connector.ResolveProbe and
+// returns the matrix as the tool result payload (issue #88).
+func TestServer_ResolveProbe_DispatchesThroughConnector(t *testing.T) {
+	srv := New(Config{Connector: &mockConnector{}, Logf: func(string, ...any) {}})
+	in := strings.Join([]string{
+		`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"t","version":"1"}}}`,
+		`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"resolve_probe","arguments":{}}}`,
+	}, "\n") + "\n"
+	resps, _ := driveServer(t, srv, in)
+	if len(resps) != 2 {
+		t.Fatalf("got %d responses, want 2 (init + resolve_probe)", len(resps))
+	}
+	var callRes loommcp.CallToolResult
+	if err := json.Unmarshal(resps[1].Result, &callRes); err != nil {
+		t.Fatalf("unmarshal call result: %v", err)
+	}
+	if callRes.IsError {
+		t.Fatalf("expected non-error resolve_probe result, got isError=true: %v", callRes.Content)
+	}
+	var matrix connector.ResolverMatrix
+	if err := json.Unmarshal([]byte(callRes.Content[0].Text), &matrix); err != nil {
+		t.Fatalf("unmarshal matrix: %v", err)
+	}
+	mock, ok := matrix.Providers["mock"]
+	if !ok || !mock.Reachable || !mock.Models["mock-generic"].Listed {
+		t.Errorf("matrix did not carry the mock provider through: %+v", matrix.Providers)
 	}
 }
 

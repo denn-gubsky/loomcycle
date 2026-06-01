@@ -129,6 +129,14 @@ service Loomcycle {
   // Mirrors GET /v1/_state.
   rpc GetRuntimeState(GetRuntimeStateRequest) returns (RuntimeStateResponse);
 
+  // ResolveProbe triggers an immediate, synchronous re-probe of every
+  // configured provider and returns the refreshed availability matrix
+  // — the operator escape hatch when a transient outage stalls every
+  // provider. Unavailable when no resolver / no probe loop is wired.
+  //
+  // Mirrors POST /v1/_resolve/probe.
+  rpc ResolveProbe(ResolveProbeRequest) returns (ResolverMatrixResponse);
+
   // CreateSnapshot captures running-state into a per-section-semver
   // JSON envelope (agent_defs, agent_def_active, memory, channels,
   // evaluations, paused_runs, optional interaction_history). Returns
@@ -656,6 +664,28 @@ message RuntimeStateResponse {
   google.protobuf.Timestamp paused_at = 2;
   int32 paused_run_count = 3;
   int32 snapshots_count = 4;
+}
+
+message ResolveProbeRequest {}
+
+// ResolverMatrixResponse mirrors the GET /v1/_resolver wire shape —
+// the availability matrix captured right after a forced re-probe.
+message ResolverMatrixResponse {
+  google.protobuf.Timestamp generated_at = 1;
+  map<string, ResolverProviderAvailability> providers = 2;
+}
+
+message ResolverProviderAvailability {
+  bool excluded = 1;
+  bool reachable = 2;
+  map<string, ResolverModelStatus> models = 3;
+  google.protobuf.Timestamp last_check = 4;
+  string last_error = 5;
+}
+
+message ResolverModelStatus {
+  bool listed = 1;
+  bool stalled = 2;
 }
 
 // ========================

@@ -213,6 +213,30 @@ type RuntimeState struct {
 	FeatureStatus  string     `json:"feature_status,omitempty"`
 }
 
+// ResolverMatrix is the response shape for ResolveProbe — the resolver
+// availability matrix captured immediately after a forced re-probe.
+// JSON tags match the HTTP GET /v1/_resolver wire shape so dashboards
+// reading either endpoint see identical fields.
+type ResolverMatrix struct {
+	GeneratedAt time.Time                               `json:"generated_at"`
+	Providers   map[string]ResolverProviderAvailability `json:"providers"`
+}
+
+// ResolverProviderAvailability is one provider's row in the matrix.
+type ResolverProviderAvailability struct {
+	Excluded  bool                           `json:"excluded"`
+	Reachable bool                           `json:"reachable"`
+	Models    map[string]ResolverModelStatus `json:"models"`
+	LastCheck time.Time                      `json:"last_check"`
+	LastError string                         `json:"last_error,omitempty"`
+}
+
+// ResolverModelStatus is one model's status within a provider row.
+type ResolverModelStatus struct {
+	Listed  bool `json:"listed"`
+	Stalled bool `json:"stalled"`
+}
+
 // CreateSnapshotRequest is the input to CreateSnapshot.
 type CreateSnapshotRequest struct {
 	IncludeHistory bool       `json:"include_history,omitempty"`
