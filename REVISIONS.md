@@ -8,6 +8,61 @@ For pre-v0.4 history (single-tool runtime, library milestone, security patch), s
 
 ---
 
+## What's in v0.16.1
+
+**Pre-v1.0 QA hardening pass on the v0.16.0 surfaces.** No new primitives —
+fixes, hardening, and one behaviour correction for code-agents, from the
+adversarial review + runtime QA of the memory layer and the synthetic code
+provider. An existing deployment upgrades transparently.
+
+### Security fixes (2 HIGH)
+
+- **Path-traversal agent names refused (#310).** A code-agent name is now
+  contained to `CodeRoot` — a crafted `../`-style name can no longer resolve
+  an `index.js` outside the configured `agent_code/` root.
+- **Replay input-divergence detected on resume (#311).** The code-js replay
+  engine's divergence guard was name-only; a tool input derived from a
+  clock/RNG value that shifted on a cross-process resume could silently
+  fast-forward a *stale* recorded result into the JS. The guard now checks the
+  canonicalised tool input too and fails loud (`code_agent_replay_divergence`)
+  rather than feeding a mismatched result.
+
+### code-js correctness + behaviour
+
+- **All Memory/Channel/Agent meta-tool ops are bound, not a hardcoded subset
+  (#313).** A code-agent can call every op its `allowed_tools` grant permits.
+- **`add` ingest bounded by `MaxValueBytes` (#315).** The MemoryLayer `add`
+  op now enforces the same value-size cap as the key/value ops.
+- **`provider.code_hash` OTEL span (#314).** A code-agent run emits a
+  `loomcycle.provider.call` span carrying `provider.kind=synthetic-code` +
+  `provider.code_hash`, so a run is auditable to its exact `index.js` version.
+- **code-agents exempt from `MaxIterations`; the run timeout is the bound
+  (#312, #319).** Each loop turn is one internal tool-dispatch step of a single
+  `run()`, so the 16-iteration soft-cap was unusable (it truncated `run()`
+  after 16 sequential tool calls). Code-agents are now exempt; the run is
+  bounded by `LOOMCYCLE_CODE_AGENTS_RUN_TIMEOUT_SECONDS`, enforced as a
+  whole-run wall-clock deadline (a runaway tool-call loop is cut by the
+  timeout, never left to spin). LLM agents are unchanged.
+
+### Other hardening
+
+- **A2A direct-IP SSRF blocked on model-authored gRPC endpoints (#317).** The
+  gRPC binding now refuses loopback / link-local / RFC1918 / metadata IPs, like
+  the JSON-RPC/REST transports. (A hostname-rebinding residual is tracked for a
+  later A2A-hardening pass with a TLS-preserving dialer.)
+- **Dead config removed (#316, #319).** The parsed-but-never-read
+  `memory_backend_def_scopes` and `webhook_def_scopes` agent-yaml fields are
+  deleted (admin-only tools whose policy is hardcoded), and the misleading
+  error strings reworded.
+- **Runtime test suites for code-js (#318, #319).** New deterministic
+  `test/runtime/code-js` (functional, CI-run) + `test/runtime/code-js-stress`
+  (concurrency, the iteration-cap exemption, a runaway-timeout check). Load,
+  stress, and soak/sustainability suites run on the operator's machine via
+  `make runtime-stress` / `runtime-soak` — CI runs only the fast functional
+  suites.
+
+---
+
 ## What's in v0.16.0
 
 **Headline: Memory layer (RFC K) + synthetic code provider (RFC J).** The two
