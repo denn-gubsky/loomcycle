@@ -70,9 +70,20 @@ test-pg:
 # boot the binary and one waits ~60s for a real cron fire. memory-vector is
 # excluded here (needs Postgres + pgvector); run it via runtime-vector.
 runtime-mock:
-	@set -e; for s in schedules webhooks memory-core; do \
+	@set -e; for s in schedules webhooks memory-core code-js code-js-stress; do \
 		echo "=== runtime/$$s ==="; ./test/runtime/$$s/run.sh; \
 	done; echo "=== all runtime-mock suites PASSED ==="
+
+# runtime-codejs: the synthetic code-js provider (RFC J) suites. Unlike the
+# other runtime suites these are CI-friendly — fully deterministic (no LLM,
+# the provider runs operator JS via goja), no API key, no Postgres, and no
+# long cron waits — so the CI workflow runs this target. Validates the
+# code-js loop+replay end-to-end, the Memory meta-tool op surface, the
+# MaxIterations ceiling + diagnostic, and concurrent-run isolation.
+runtime-codejs:
+	@set -e; for s in code-js code-js-stress; do \
+		echo "=== runtime/$$s ==="; ./test/runtime/$$s/run.sh; \
+	done; echo "=== all runtime-codejs suites PASSED ==="
 
 # runtime-vector: the Memory vector + dedup suite against Postgres+pgvector
 # with the deterministic stub embedder. Provide LOOMCYCLE_TEST_PG_DSN

@@ -1,0 +1,31 @@
+# test/runtime/code-js-stress — stress + edge behaviours of the synthetic
+# code-js provider (RFC J). Deterministic (no LLM). Exercises:
+#   - many sequential tool calls in one code-agent → the replay engine
+#     re-runs run() each turn (O(N^2)) and must stay divergence-free
+#   - MaxIterations as the HARD ceiling on a code-agent's sequential tool
+#     calls (each loop turn = one call) → stop_reason=max_iterations
+#   - concurrent runs of the same code-agent → per-run goja isolation +
+#     atomic Memory.incr → no lost updates on a shared agent-scope counter
+provider_priority: [mock]
+tiers:
+  middle:
+    - { provider: mock, model: mock-generic }
+
+agents:
+  # counter makes 8 sequential incrs on a SHARED agent-scope key. 8 < the
+  # 16 MaxIterations default, so it completes end_turn — proving 8-turn
+  # replay is divergence-free. Fired concurrently it tests atomic incr +
+  # per-run runtime isolation.
+  counter:
+    provider: code-js
+    description: "8 sequential atomic incrs on a shared agent-scope counter."
+    memory_scopes: [agent]
+    allowed_tools: [Memory]
+
+  # overrun makes 25 sequential incrs — past the 16-call ceiling — so the
+  # run terminates with stop_reason=max_iterations rather than completing.
+  overrun:
+    provider: code-js
+    description: "25 sequential incrs — deliberately exceeds MaxIterations."
+    memory_scopes: [agent]
+    allowed_tools: [Memory]
