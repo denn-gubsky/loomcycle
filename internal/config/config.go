@@ -664,11 +664,6 @@ type AgentDef struct {
 	// A2AAgentDefScopes: "self" / "descendants" / "named:<name>" / "any".
 	WebhookDefScopes []string `yaml:"webhook_def_scopes"`
 
-	// MemoryBackendDefScopes is the RFC I MR-3a MemoryBackendDef tool
-	// capability gate. Default-deny when empty. Same closed set as
-	// WebhookDefScopes: "self" / "descendants" / "named:<name>" / "any".
-	MemoryBackendDefScopes []string `yaml:"memory_backend_def_scopes"`
-
 	// SkillDefScopes is the v0.8.22 SkillDef tool capability gate.
 	// Default-deny when empty. Mirrors AgentDefScopes minus the
 	// "self" scope (skills have no agent identity, so "self" is
