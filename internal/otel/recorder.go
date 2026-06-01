@@ -32,13 +32,13 @@ const (
 
 // Attribute keys (stable; operators write Jaeger filters against them).
 const (
-	AttrRunID           = "loomcycle.run_id"
-	AttrAgentID         = "loomcycle.agent_id"
-	AttrAgentName       = "loomcycle.agent_name"
-	AttrUserID          = "loomcycle.user_id"
-	AttrParentAgentID   = "loomcycle.parent_agent_id"
-	AttrIteration       = "loomcycle.iteration"
-	AttrProvider        = "loomcycle.provider"
+	AttrRunID         = "loomcycle.run_id"
+	AttrAgentID       = "loomcycle.agent_id"
+	AttrAgentName     = "loomcycle.agent_name"
+	AttrUserID        = "loomcycle.user_id"
+	AttrParentAgentID = "loomcycle.parent_agent_id"
+	AttrIteration     = "loomcycle.iteration"
+	AttrProvider      = "loomcycle.provider"
 	// AttrProviderKind distinguishes a synthetic provider (no model HTTP
 	// request) from a real LLM driver — set to "synthetic-code" for the
 	// code-js provider so operators can filter/aggregate code-agent runs.
@@ -48,16 +48,16 @@ const (
 	// without versioning the JS files separately. Empty for real providers.
 	AttrProviderCodeHash = "loomcycle.provider.code_hash"
 	AttrModel            = "loomcycle.model"
-	AttrTier            = "loomcycle.tier"
-	AttrEffort          = "loomcycle.effort"
-	AttrTool            = "loomcycle.tool"
-	AttrMCPServer       = "loomcycle.mcp_server"
-	AttrMCPTool         = "loomcycle.mcp_tool"
-	AttrInputTokens     = "loomcycle.input_tokens"
-	AttrOutputTokens    = "loomcycle.output_tokens"
-	AttrCacheReadTokens = "loomcycle.cache_read_tokens"
-	AttrStopReason      = "loomcycle.stop_reason"
-	AttrToolIsError     = "loomcycle.tool_is_error"
+	AttrTier             = "loomcycle.tier"
+	AttrEffort           = "loomcycle.effort"
+	AttrTool             = "loomcycle.tool"
+	AttrMCPServer        = "loomcycle.mcp_server"
+	AttrMCPTool          = "loomcycle.mcp_tool"
+	AttrInputTokens      = "loomcycle.input_tokens"
+	AttrOutputTokens     = "loomcycle.output_tokens"
+	AttrCacheReadTokens  = "loomcycle.cache_read_tokens"
+	AttrStopReason       = "loomcycle.stop_reason"
+	AttrToolIsError      = "loomcycle.tool_is_error"
 	// AttrQueueWaitMs is the time (milliseconds) a run waited inside the
 	// concurrency semaphore before its slot was granted. 0 = immediate
 	// acquire (no queue contention). Operators graphing this attribute
