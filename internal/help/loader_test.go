@@ -24,6 +24,7 @@ func TestLoadSet_BundledOnly(t *testing.T) {
 	want := []string{
 		"a2a-integration",
 		"channel-admin",
+		"code-agents",
 		"content-signatures",
 		"dynamic-mcp",
 		"experimentation",
