@@ -208,6 +208,11 @@ func toolDescriptors() []loommcp.ToolDescriptor {
 			Description: "Return the current runtime quiesce state. Returns {status: 'running'|'pausing'|'paused', paused_run_count, snapshots_count}.",
 			InputSchema: rawJSON(`{"type": "object"}`),
 		},
+		{
+			Name:        "resolve_probe",
+			Description: "Trigger an immediate re-probe of every configured provider and return the refreshed availability matrix {generated_at, providers: {<id>: {excluded, reachable, models, last_check, last_error}}}. The operator escape hatch when a transient outage stalls every provider. Mirrors POST /v1/_resolve/probe.",
+			InputSchema: rawJSON(`{"type": "object"}`),
+		},
 
 		// --- Snapshot (v0.8.17 primitives, exposed via Connector in v0.8.18) ---
 		{

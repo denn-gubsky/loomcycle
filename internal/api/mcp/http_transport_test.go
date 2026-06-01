@@ -77,6 +77,9 @@ func (m *httpMockConnector) ResumeRuntime(context.Context) (connector.ResumeResu
 func (m *httpMockConnector) GetRuntimeState(context.Context) (connector.RuntimeState, error) {
 	return connector.RuntimeState{}, nil
 }
+func (m *httpMockConnector) ResolveProbe(context.Context) (connector.ResolverMatrix, error) {
+	return connector.ResolverMatrix{}, nil
+}
 func (m *httpMockConnector) CreateSnapshot(context.Context, connector.CreateSnapshotRequest) (connector.SnapshotDescriptor, error) {
 	return connector.SnapshotDescriptor{}, nil
 }

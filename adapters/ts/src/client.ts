@@ -82,6 +82,7 @@ import type {
   RegisterHookResponse,
   ResolveInterruptOptions,
   ResumeResult,
+  ResolverMatrix,
   RunOptions,
   RunStateStreamItem,
   RuntimeStateResponse,
@@ -301,6 +302,22 @@ export class LoomcycleClient {
     signal?: AbortSignal;
   }): Promise<RuntimeStateResponse> {
     return jsonFetch<RuntimeStateResponse>(this.ctx, "/v1/_state", opts);
+  }
+
+  /** Trigger an immediate re-probe of every configured provider and
+   *  return the refreshed availability matrix. Operator-only escape
+   *  hatch when a transient outage stalls every provider and the
+   *  runtime would otherwise 503 until the next periodic probe.
+   *  Mirrors POST /v1/_resolve/probe. */
+  async resolveProbe(opts?: {
+    signal?: AbortSignal;
+  }): Promise<ResolverMatrix> {
+    return postJSON<ResolverMatrix>(
+      this.ctx,
+      "/v1/_resolve/probe",
+      undefined,
+      opts,
+    );
   }
 
   // ---- Snapshot lifecycle ----

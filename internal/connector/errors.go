@@ -80,6 +80,19 @@ var (
 	// Unavailable / HTTP 503.
 	ErrRunStateStreamUnavailable = errors.New("connector: run-state stream not configured on this server")
 
+	// ErrResolverUnavailable is returned by ResolveProbe when the
+	// Server has no resolver wired (degraded startup, or the v0.6.x
+	// explicit-pin path that doesn't populate a matrix). Transports
+	// map to Unavailable / HTTP 503 (code "resolver_unavailable").
+	ErrResolverUnavailable = errors.New("connector: resolver not configured on this server")
+
+	// ErrResolveProbeUnavailable is returned by ResolveProbe when a
+	// resolver exists but no probe loop is wired (e.g. --no-http, or a
+	// degraded config). ForceProbe would be a silent no-op, so the
+	// method fails rather than return a matrix it never refreshed.
+	// Transports map to Unavailable / HTTP 503 (code "probe_unavailable").
+	ErrResolveProbeUnavailable = errors.New("connector: no probe loop wired; cannot trigger an immediate re-probe")
+
 	// ErrStopStreaming is the visitor-side sentinel a RunStateVisitor
 	// returns to end the stream cleanly. StreamUserRunStates returns
 	// nil (not this sentinel) when the visitor returns it; the

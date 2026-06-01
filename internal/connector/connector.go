@@ -199,6 +199,19 @@ type Connector interface {
 	RestoreSnapshot(ctx context.Context, req RestoreSnapshotRequest) (RestoreSnapshotResult, error)
 	DeleteSnapshot(ctx context.Context, snapshotID string) error
 
+	// --- Resolver (operator re-probe; issue #88) ---
+	//
+	// ResolveProbe triggers an immediate, synchronous re-probe of every
+	// configured provider and returns the refreshed availability matrix
+	// — the operator escape hatch when a transient outage stalls every
+	// provider and the runtime would otherwise 503 until the next
+	// periodic probe. Transports map to POST /v1/_resolve/probe.
+	//
+	// Error semantics:
+	//   ErrResolverUnavailable     — 503 / Unavailable (no resolver wired)
+	//   ErrResolveProbeUnavailable — 503 / Unavailable (no probe loop wired)
+	ResolveProbe(ctx context.Context) (ResolverMatrix, error)
+
 	// --- Interruption (v0.8.16) ---
 
 	// InterruptionResolve writes a resolution to a pending interrupt

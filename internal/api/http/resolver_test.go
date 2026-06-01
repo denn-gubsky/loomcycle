@@ -1,6 +1,7 @@
 package http
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -145,5 +146,92 @@ func TestResolverSnapshot_JSONShape(t *testing.T) {
 		if !strings.Contains(body, f) {
 			t.Errorf("missing wire field %s in response: %s", f, body)
 		}
+	}
+}
+
+// TestHandleResolveProbe_TriggersForceProbeAndReturnsRefreshedMatrix is
+// the core behaviour of issue #88: POST /v1/_resolve/probe runs the
+// force-probe callback synchronously and returns the *post*-probe
+// matrix. The callback here flips deepseek from excluded → reachable,
+// simulating an operator unsticking a provider that a transient outage
+// had stalled. The response must reflect the flip, and the callback
+// must have run exactly once.
+func TestHandleResolveProbe_TriggersForceProbeAndReturnsRefreshedMatrix(t *testing.T) {
+	r := resolve.NewResolver(
+		[]string{"deepseek"},
+		map[string][]resolve.Candidate{
+			"low": {{Provider: "deepseek", Model: "deepseek-v4-flash"}},
+		},
+	)
+	// Pre-probe state: deepseek excluded (e.g. a probe during a blip
+	// failed to reach it).
+	r.SetExcluded("deepseek", "transient outage")
+
+	calls := 0
+	r.SetForceProbeCallback(func(ctx context.Context) {
+		calls++
+		// A successful re-probe: deepseek is reachable again.
+		r.SetReachable("deepseek", true, []string{"deepseek-v4-flash"}, "")
+	})
+
+	s := minimalServerWithResolver(t, r)
+	rec := httptest.NewRecorder()
+	s.handleResolveProbe(rec, httptest.NewRequest("POST", "/v1/_resolve/probe", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if calls != 1 {
+		t.Fatalf("force-probe callback ran %d times, want exactly 1", calls)
+	}
+
+	var resp resolverSnapshotResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v (body: %s)", err, rec.Body.String())
+	}
+	ds, ok := resp.Providers["deepseek"]
+	if !ok {
+		t.Fatal("missing deepseek in probe response")
+	}
+	if ds.Excluded || !ds.Reachable {
+		t.Errorf("deepseek post-probe = excluded:%v reachable:%v, want excluded:false reachable:true (the probe should have refreshed the matrix)", ds.Excluded, ds.Reachable)
+	}
+	if !ds.Models["deepseek-v4-flash"].Listed {
+		t.Error("deepseek-v4-flash not listed post-probe; the refreshed matrix was not returned")
+	}
+}
+
+// TestHandleResolveProbe_503WhenNoResolver covers the degraded-startup
+// branch — same posture as the GET handler: 503 with a clear code
+// rather than a misleading empty 200.
+func TestHandleResolveProbe_503WhenNoResolver(t *testing.T) {
+	s := minimalServerWithResolver(t, nil)
+	rec := httptest.NewRecorder()
+	s.handleResolveProbe(rec, httptest.NewRequest("POST", "/v1/_resolve/probe", nil))
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Errorf("status = %d, want 503", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "resolver_unavailable") {
+		t.Errorf("body = %s, want resolver_unavailable code", rec.Body.String())
+	}
+}
+
+// TestHandleResolveProbe_503WhenProbeNotWired guards the honesty
+// invariant: a resolver with no force-probe callback installed (no
+// probe loop, as in --no-http or a degraded config) must 503 rather
+// than 200 — ForceProbe is a silent no-op when unwired, and returning
+// 200 with a stale matrix would be misleading for a "re-probe now"
+// endpoint.
+func TestHandleResolveProbe_503WhenProbeNotWired(t *testing.T) {
+	r := resolve.NewResolver(nil, nil)
+	r.SetReachable("anthropic", true, []string{"x"}, "")
+	// Deliberately do NOT call SetForceProbeCallback.
+	s := minimalServerWithResolver(t, r)
+	rec := httptest.NewRecorder()
+	s.handleResolveProbe(rec, httptest.NewRequest("POST", "/v1/_resolve/probe", nil))
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503 (probe not wired)", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "probe_unavailable") {
+		t.Errorf("body = %s, want probe_unavailable code", rec.Body.String())
 	}
 }

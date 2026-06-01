@@ -485,6 +485,47 @@ describe("pauseRuntime / resumeRuntime / getRuntimeState", () => {
   });
 });
 
+describe("resolveProbe", () => {
+  it("POSTs /v1/_resolve/probe with no body and returns the matrix", async () => {
+    const { client, fetchMock } = makeClient([
+      jsonResponse({
+        generated_at: "2026-06-01T00:00:00Z",
+        providers: {
+          mock: {
+            excluded: false,
+            reachable: true,
+            models: { "mock-generic": { listed: true, stalled: false } },
+            last_check: "2026-06-01T00:00:00Z",
+          },
+          openai: {
+            excluded: true,
+            reachable: false,
+            models: {},
+            last_check: "2026-06-01T00:00:00Z",
+            last_error: "OPENAI_API_KEY not set",
+          },
+        },
+      }),
+    ]);
+    const m = await client.resolveProbe();
+    expect(fetchMock.mock.calls[0]![0]).toContain("/v1/_resolve/probe");
+    expect(fetchMock.mock.calls[0]![1]!.method).toBe("POST");
+    expect(fetchMock.mock.calls[0]![1]!.body).toBeUndefined();
+    expect(m.providers.mock!.reachable).toBe(true);
+    expect(m.providers.mock!.models["mock-generic"]!.listed).toBe(true);
+    expect(m.providers.openai!.excluded).toBe(true);
+    expect(m.providers.openai!.last_error).toContain("OPENAI_API_KEY");
+  });
+
+  it("throws UnavailableError on 503 (no probe loop wired)", async () => {
+    const { UnavailableError } = await import("../src/errors.js");
+    const { client } = makeClient([
+      errorResponse(503, "no probe loop wired; cannot trigger an immediate re-probe"),
+    ]);
+    await expect(client.resolveProbe()).rejects.toBeInstanceOf(UnavailableError);
+  });
+});
+
 describe("snapshot lifecycle", () => {
   it("createSnapshot POSTs label + flags", async () => {
     const { client, fetchMock } = makeClient([

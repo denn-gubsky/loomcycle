@@ -51,6 +51,7 @@ const (
 	Loomcycle_PauseRuntime_FullMethodName        = "/loomcycle.v1.Loomcycle/PauseRuntime"
 	Loomcycle_ResumeRuntime_FullMethodName       = "/loomcycle.v1.Loomcycle/ResumeRuntime"
 	Loomcycle_GetRuntimeState_FullMethodName     = "/loomcycle.v1.Loomcycle/GetRuntimeState"
+	Loomcycle_ResolveProbe_FullMethodName        = "/loomcycle.v1.Loomcycle/ResolveProbe"
 	Loomcycle_CreateSnapshot_FullMethodName      = "/loomcycle.v1.Loomcycle/CreateSnapshot"
 	Loomcycle_ListSnapshots_FullMethodName       = "/loomcycle.v1.Loomcycle/ListSnapshots"
 	Loomcycle_GetSnapshot_FullMethodName         = "/loomcycle.v1.Loomcycle/GetSnapshot"
@@ -151,6 +152,13 @@ type LoomcycleClient interface {
 	//
 	// Mirrors GET /v1/_state.
 	GetRuntimeState(ctx context.Context, in *GetRuntimeStateRequest, opts ...grpc.CallOption) (*RuntimeStateResponse, error)
+	// ResolveProbe triggers an immediate, synchronous re-probe of every
+	// configured provider and returns the refreshed availability matrix
+	// — the operator escape hatch when a transient outage stalls every
+	// provider. Unavailable when no resolver / no probe loop is wired.
+	//
+	// Mirrors POST /v1/_resolve/probe.
+	ResolveProbe(ctx context.Context, in *ResolveProbeRequest, opts ...grpc.CallOption) (*ResolverMatrixResponse, error)
 	// CreateSnapshot captures running-state into a per-section-semver
 	// JSON envelope (agent_defs, agent_def_active, memory, channels,
 	// evaluations, paused_runs, optional interaction_history). Returns
@@ -411,6 +419,16 @@ func (c *loomcycleClient) GetRuntimeState(ctx context.Context, in *GetRuntimeSta
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(RuntimeStateResponse)
 	err := c.cc.Invoke(ctx, Loomcycle_GetRuntimeState_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *loomcycleClient) ResolveProbe(ctx context.Context, in *ResolveProbeRequest, opts ...grpc.CallOption) (*ResolverMatrixResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ResolverMatrixResponse)
+	err := c.cc.Invoke(ctx, Loomcycle_ResolveProbe_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -704,6 +722,13 @@ type LoomcycleServer interface {
 	//
 	// Mirrors GET /v1/_state.
 	GetRuntimeState(context.Context, *GetRuntimeStateRequest) (*RuntimeStateResponse, error)
+	// ResolveProbe triggers an immediate, synchronous re-probe of every
+	// configured provider and returns the refreshed availability matrix
+	// — the operator escape hatch when a transient outage stalls every
+	// provider. Unavailable when no resolver / no probe loop is wired.
+	//
+	// Mirrors POST /v1/_resolve/probe.
+	ResolveProbe(context.Context, *ResolveProbeRequest) (*ResolverMatrixResponse, error)
 	// CreateSnapshot captures running-state into a per-section-semver
 	// JSON envelope (agent_defs, agent_def_active, memory, channels,
 	// evaluations, paused_runs, optional interaction_history). Returns
@@ -860,6 +885,9 @@ func (UnimplementedLoomcycleServer) ResumeRuntime(context.Context, *ResumeRuntim
 }
 func (UnimplementedLoomcycleServer) GetRuntimeState(context.Context, *GetRuntimeStateRequest) (*RuntimeStateResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetRuntimeState not implemented")
+}
+func (UnimplementedLoomcycleServer) ResolveProbe(context.Context, *ResolveProbeRequest) (*ResolverMatrixResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ResolveProbe not implemented")
 }
 func (UnimplementedLoomcycleServer) CreateSnapshot(context.Context, *CreateSnapshotRequest) (*SnapshotDescriptor, error) {
 	return nil, status.Error(codes.Unimplemented, "method CreateSnapshot not implemented")
@@ -1158,6 +1186,24 @@ func _Loomcycle_GetRuntimeState_Handler(srv interface{}, ctx context.Context, de
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(LoomcycleServer).GetRuntimeState(ctx, req.(*GetRuntimeStateRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Loomcycle_ResolveProbe_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ResolveProbeRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(LoomcycleServer).ResolveProbe(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Loomcycle_ResolveProbe_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(LoomcycleServer).ResolveProbe(ctx, req.(*ResolveProbeRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -1565,6 +1611,10 @@ var Loomcycle_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "GetRuntimeState",
 			Handler:    _Loomcycle_GetRuntimeState_Handler,
+		},
+		{
+			MethodName: "ResolveProbe",
+			Handler:    _Loomcycle_ResolveProbe_Handler,
 		},
 		{
 			MethodName: "CreateSnapshot",
