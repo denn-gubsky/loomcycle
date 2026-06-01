@@ -39,7 +39,15 @@ const (
 	AttrParentAgentID   = "loomcycle.parent_agent_id"
 	AttrIteration       = "loomcycle.iteration"
 	AttrProvider        = "loomcycle.provider"
-	AttrModel           = "loomcycle.model"
+	// AttrProviderKind distinguishes a synthetic provider (no model HTTP
+	// request) from a real LLM driver — set to "synthetic-code" for the
+	// code-js provider so operators can filter/aggregate code-agent runs.
+	AttrProviderKind = "loomcycle.provider.kind"
+	// AttrProviderCodeHash is the sha256 of a code-agent's index.js source
+	// (RFC J Decision 9). It answers "which code version produced this run"
+	// without versioning the JS files separately. Empty for real providers.
+	AttrProviderCodeHash = "loomcycle.provider.code_hash"
+	AttrModel            = "loomcycle.model"
 	AttrTier            = "loomcycle.tier"
 	AttrEffort          = "loomcycle.effort"
 	AttrTool            = "loomcycle.tool"
@@ -107,10 +115,12 @@ func RecordIteration(ctx context.Context, iter int) (context.Context, trace.Span
 
 // ProviderCallAttrs identifies a provider HTTP request.
 type ProviderCallAttrs struct {
-	Provider string // "anthropic" | "openai" | "deepseek" | "gemini" | "ollama" | "ollama-local"
+	Provider string // "anthropic" | "openai" | "deepseek" | "gemini" | "ollama" | "ollama-local" | "code-js"
 	Model    string
 	Tier     string // optional — set when the agent's resolution went through a tier
 	Effort   string // optional — set when the agent declared an effort hint
+	Kind     string // optional — "synthetic-code" for code-js; empty for real LLM drivers
+	CodeHash string // optional — sha256 of the code-agent's index.js (code-js only)
 }
 
 // RecordProviderCall opens loomcycle.provider.call for a single HTTP
@@ -129,6 +139,12 @@ func RecordProviderCall(ctx context.Context, attrs ProviderCallAttrs) (context.C
 	}
 	if attrs.Effort != "" {
 		kvs = append(kvs, attribute.String(AttrEffort, attrs.Effort))
+	}
+	if attrs.Kind != "" {
+		kvs = append(kvs, attribute.String(AttrProviderKind, attrs.Kind))
+	}
+	if attrs.CodeHash != "" {
+		kvs = append(kvs, attribute.String(AttrProviderCodeHash, attrs.CodeHash))
 	}
 	return Tracer().Start(ctx, SpanProviderCall, trace.WithAttributes(kvs...))
 }
