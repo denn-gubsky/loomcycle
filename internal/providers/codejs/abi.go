@@ -34,8 +34,8 @@
 // Appendix A (Mechanism 1).
 package codejs
 
-// ABIVersion is the semver of the JS-side API contract (memory.* / channel.*
-// / agent.* / mcp__*__* signatures, error shapes, returned types) — versioned
+// ABIVersion is the semver of the JS-side API contract (Memory.* / Channel.*
+// / Agent.* / mcp__*__* signatures, error shapes, returned types) — versioned
 // SEPARATELY from loomcycle's release vector (RFC J Decision 14) so the
 // implementation can evolve without binding to release cadence. Breaking a
 // signature → major bump + deprecation window; additive methods → minor bump.

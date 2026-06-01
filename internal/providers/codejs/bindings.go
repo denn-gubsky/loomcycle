@@ -28,15 +28,16 @@ type toolEmitter func(name string, input json.RawMessage) (text string, isError 
 // permission error. `allowed_tools` is the floor: ANY allowed tool — built-in
 // or MCP — is callable, never just a hardcoded subset.
 //
-// Two binding shapes:
-//   - The three multi-op META-tools are lowercase objects whose methods are
-//     the ops, mirroring the loomcycle MCP meta-tool API (Decision 6):
-//     memory.get/set/delete/search(obj) → "Memory" with {op, ...obj}
-//     channel.publish/subscribe(obj)    → "Channel" with {op, ...obj}
-//     agent.spawn(obj)                  → "Agent" with obj
+// Tools are referenced in JS by their EXACT canonical name — the same string
+// as in `allowed_tools` and as every other agent uses (CamelCase: Memory,
+// WebFetch, …). No casing translation. Two binding shapes:
+//   - The three multi-op META-tools are objects whose methods are the ops:
+//     Memory.get/set/delete/search(obj) → "Memory" with {op, ...obj}
+//     Channel.publish/subscribe(obj)    → "Channel" with {op, ...obj}
+//     Agent.spawn(obj)                  → "Agent" with obj
 //   - EVERY OTHER allowed tool — built-ins (WebFetch, Read, HTTP, WebSearch,
 //     Grep, Glob, …) and mcp__<server>__<tool> — binds as a FLAT callable by
-//     its exact canonical name (all valid JS identifiers), args verbatim:
+//     its name (all valid JS identifiers), args verbatim:
 //     WebFetch({url}),  mcp__jobs__ingestJobs({...}).
 //
 // Each call becomes an EventToolCall the LOOP dispatches (schema validation,
@@ -53,20 +54,20 @@ func buildBindFunc(toolNames []string) bindFunc {
 				for _, op := range []string{"get", "set", "delete", "search"} {
 					_ = mem.Set(op, opCallable(rt, emit, "Memory", op))
 				}
-				_ = rt.Set("memory", mem)
+				_ = rt.Set(name, mem) // JS: Memory.get(...) etc.
 			case "Channel":
 				ch := rt.NewObject()
 				for _, op := range []string{"publish", "subscribe"} {
 					_ = ch.Set(op, opCallable(rt, emit, "Channel", op))
 				}
-				_ = rt.Set("channel", ch)
+				_ = rt.Set(name, ch) // JS: Channel.publish(...) etc.
 			case "Agent":
 				ag := rt.NewObject()
-				// agent.spawn maps to the Agent tool's default invocation; the
+				// Agent.spawn maps to the Agent tool's default invocation; the
 				// Agent tool's own schema validates name/prompt at dispatch. Its
 				// result is the sub-agent's output → parse if JSON.
 				_ = ag.Set("spawn", rawCallable(rt, emit, "Agent", true))
-				_ = rt.Set("agent", ag)
+				_ = rt.Set(name, ag) // JS: Agent.spawn(...)
 			default:
 				// Built-in (WebFetch/Read/HTTP/…) or mcp__server__tool — a flat
 				// callable by canonical name; the tool's own schema is the
@@ -80,25 +81,25 @@ func buildBindFunc(toolNames []string) bindFunc {
 }
 
 // opCallable builds a JS function that injects {"op": op} into its object
-// argument and dispatches it to toolName. Used for the built-in multi-op
-// tools (Memory, Channel) whose JS methods are the op names.
+// argument and dispatches it to toolName. Used for the multi-op meta-tools
+// (Memory, Channel) whose JS methods are the op names.
 func opCallable(rt *goja.Runtime, emit toolEmitter, toolName, op string) func(goja.FunctionCall) goja.Value {
 	return func(call goja.FunctionCall) goja.Value {
 		input, err := opInput(rt, call, op)
 		if err != nil {
-			panic(rt.NewTypeError(fmt.Sprintf("%s.%s: %s", strings.ToLower(toolName), op, err)))
+			panic(rt.NewTypeError(fmt.Sprintf("%s.%s: %s", toolName, op, err)))
 		}
-		// Meta-tools (memory/channel/agent) have a known loomcycle-JSON result
-		// contract → return a parsed object so `memory.get(...).value` works.
+		// Meta-tools have a known loomcycle-JSON result contract → return a
+		// parsed object so `Memory.get(...).value` works.
 		return invoke(rt, emit, toolName, input, true)
 	}
 }
 
 // rawCallable builds a JS function that dispatches its object argument
-// verbatim to toolName (no op injection). Used for agent.spawn, every flat
+// verbatim to toolName (no op injection). Used for Agent.spawn, every flat
 // built-in (WebFetch/Read/HTTP/…), and mcp__server__tool callables.
 //
-// parseJSON picks the return mapping. true (MCP tools, agent.spawn): parse a
+// parseJSON picks the return mapping. true (MCP tools, Agent.spawn): parse a
 // JSON result to an object (string fallback). false (plain built-ins like
 // WebFetch/Read/HTTP): return the RAW string — their contract is "returns
 // text", and auto-parsing a JSON-looking body would make the return type

@@ -43,7 +43,7 @@ agents:
   nightly-scrape:
     provider: code-js
     allowed_tools: [WebFetch, Memory, mcp__jobs__ingestJobs]  # canonical tool names
-    memory_scopes: [user]                                     # required to use memory.*
+    memory_scopes: [user]                                     # required to use Memory.*
     allowed_hosts: ["*.example"]                              # WebFetch host policy
     description: "Deterministic ATS scrape — no LLM."
 ```
@@ -59,11 +59,11 @@ no `await`, no callbacks:
 
 ```javascript
 function run(input) {
-  var seen = memory.get({ scope: "user", key: "seen_ids" }) || {};
+  var seen = Memory.get({ scope: "user", key: "seen_ids" }) || {};
   var body = WebFetch({ url: "https://example/api/jobs" });   // built-in tool
   var jobs = parse(body).filter(function (j) { return !seen[j.id]; });
   jobs.forEach(function (j) { seen[j.id] = Date.now(); });
-  memory.set({ scope: "user", key: "seen_ids", value: seen });
+  Memory.set({ scope: "user", key: "seen_ids", value: seen });
   mcp__jobs__ingestJobs({ user_id: input.metadata.user_id, jobs: jobs });  // MCP tool
   return { final_text: "found " + jobs.length + " fresh jobs" };
 }
@@ -85,25 +85,27 @@ tool, built-in or MCP, is callable. A tool you didn't allow is not a
 
 | JS | Tool | Notes |
 |---|---|---|
-| `memory.get/set/delete/search(obj)` | Memory | multi-op meta-tool; obj is the input minus `op` |
-| `channel.publish/subscribe(obj)` | Channel | multi-op meta-tool; subscribe is a non-blocking peek |
-| `agent.spawn(obj)` | Agent | spawn an LLM (or code) sub-agent; returns its result |
+| `Memory.get/set/delete/search(obj)` | Memory | multi-op meta-tool; obj is the input minus `op` |
+| `Channel.publish/subscribe(obj)` | Channel | multi-op meta-tool; subscribe is a non-blocking peek |
+| `Agent.spawn(obj)` | Agent | spawn an LLM (or code) sub-agent; returns its result |
 | `WebFetch(obj)` / `Read(obj)` / `HTTP(obj)` / `WebSearch(obj)` / … | the built-in of that name | every other allowed **built-in**, flat by canonical name |
 | `mcp__<server>__<tool>(obj)` | that MCP tool | every allowed MCP tool, flat by name |
 
-> **Naming:** `allowed_tools` uses loomcycle's **canonical** tool names
-> (capitalized: `WebFetch`, `Memory`, `Read`, …), the same as LLM agents.
-> The three multi-op meta-tools are exposed in JS as **lowercase objects**
-> (`memory`, `channel`, `agent`); every other tool is a **flat function by
-> its exact canonical name** (`WebFetch({url})`, `mcp__jobs__ingestJobs({…})`).
-> Putting `memory` (lowercase) in `allowed_tools` silently omits the tool —
-> your JS then sees `ReferenceError`. `memory.*` additionally needs
-> `memory_scopes` declared (`[agent]` / `[user]`), and `WebFetch`/`HTTP`
-> obey the agent's `allowed_hosts`, exactly as for LLM agents.
+> **Naming.** You reference a tool in JS by its **exact canonical name** —
+> the same string you put in `allowed_tools` and that every other agent uses
+> (CamelCase: `Memory`, `WebFetch`, `Read`, …). There is no casing
+> translation. The only distinction is shape: the three multi-op meta-tools
+> (`Memory`, `Channel`, `Agent`) are **objects** with a method per op
+> (`Memory.get(...)`); every other tool is a **flat function**
+> (`WebFetch({url})`, `mcp__jobs__ingestJobs({…})`). A name not in
+> `allowed_tools` simply isn't defined → `ReferenceError`. `Memory.*`
+> additionally needs `memory_scopes` declared (`[agent]` / `[user]`), and
+> `WebFetch`/`HTTP` obey the agent's `allowed_hosts` — exactly as for LLM
+> agents.
 
-**Return types.** `memory` / `channel` / `agent` and `mcp__*` tools return
+**Return types.** `Memory` / `Channel` / `Agent` and `mcp__*` tools return
 **parsed values** — their results are structured JSON, so
-`memory.get(...).value` and `mcp__jobs__getContext(...).foo` just work. The
+`Memory.get(...).value` and `mcp__jobs__getContext(...).foo` just work. The
 plain built-ins (`WebFetch`, `Read`, `HTTP`, `Grep`, …) return their **raw
 string** result; `JSON.parse(WebFetch(...))` yourself if it's a JSON API.
 (Return type follows the tool, never the content — so the same code works
@@ -155,7 +157,7 @@ it from a tool (it is recorded), not from `Date.now()`.
   design center is the ~100ms-budget glue step.
 - **One tool call at a time.** Parallel tool calls within one code-agent are
   out of v1 (each loop turn advances the replay by one call). Fan out with
-  `agent.spawn(...)`, which is already concurrent at the loomcycle layer.
+  `Agent.spawn(...)`, which is already concurrent at the loomcycle layer.
 - **Resumable across restart / replica.** A code-agent holds no in-process
   state between tool calls: each turn re-runs `run()` from the top and
   *replays* the tool results recorded in the run transcript, dispatching only

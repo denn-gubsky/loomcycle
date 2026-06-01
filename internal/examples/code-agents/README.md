@@ -23,7 +23,7 @@ agents:
     # Canonical tool names. WebFetch is a loomcycle built-in;
     # mcp__jobs__ingestJobs is exposed by the jobs MCP server below.
     allowed_tools: [WebFetch, Memory, mcp__jobs__ingestJobs]
-    memory_scopes: [user]            # required for memory.*
+    memory_scopes: [user]            # required for Memory.*
     allowed_hosts: ["*.example"]     # WebFetch host policy (operator floor)
     description: "Nightly ATS scrape across four job boards (deterministic, no LLM)."
 
@@ -49,7 +49,7 @@ WebFetch's host allowlist and the MCP server's `${run.credentials.jobs}`
 bearer apply exactly as they would for an LLM agent — the JS never sees the
 token. The scheduler fires the agent like any LLM agent; an A2A peer reaching
 it via the well-known card sees one more skill; an LLM agent can
-`agent.spawn` it for deterministic results without paying for tokens.
+`Agent.spawn` it for deterministic results without paying for tokens.
 
 ## Deferred examples
 

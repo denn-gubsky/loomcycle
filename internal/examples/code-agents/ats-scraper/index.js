@@ -16,7 +16,7 @@
 
 function run(input) {
   var boards = ["greenhouse", "lever", "workable", "ashby"];
-  var seen = memory.get({ scope: "user", key: "ats_seen_ids" }) || {};
+  var seen = Memory.get({ scope: "user", key: "ats_seen_ids" }) || {};
   var fresh = [];
 
   for (var i = 0; i < boards.length; i++) {
@@ -34,7 +34,7 @@ function run(input) {
     }
   }
 
-  memory.set({ scope: "user", key: "ats_seen_ids", value: seen });
+  Memory.set({ scope: "user", key: "ats_seen_ids", value: seen });
 
   if (fresh.length > 0) {
     // jobs-search-agent's MCP tool ingests the fresh jobs for this user. The

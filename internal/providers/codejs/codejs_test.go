@@ -96,8 +96,8 @@ func newTestProvider(root string) *Provider {
 	return New(Config{CodeRoot: root, RunTimeout: 5 * time.Second})
 }
 
-// The multi-turn replay handshake: a code-agent that calls memory.get then
-// memory.set then returns must produce, across the loop's turns,
+// The multi-turn replay handshake: a code-agent that calls Memory.get then
+// Memory.set then returns must produce, across the loop's turns,
 // EventToolCall(Memory,get) → [dispatch] → EventToolCall(Memory,set) →
 // [dispatch] → final text. On each resume the run() re-executes from the top,
 // fast-forwarding the recorded results so the get value (41) flows into the
@@ -105,9 +105,9 @@ func newTestProvider(root string) *Provider {
 func TestCodeJS_MultiTurnReplay_TwoToolCalls(t *testing.T) {
 	js := `
 function run(input) {
-  var got = memory.get({ scope: "user", key: "counter" });
+  var got = Memory.get({ scope: "user", key: "counter" });
   var n = got && got.value ? got.value : 0;
-  memory.set({ scope: "user", key: "counter", value: n + 1 });
+  Memory.set({ scope: "user", key: "counter", value: n + 1 });
   return { final_text: "counter was " + n + " for " + input.metadata.user_id };
 }`
 	root := writeAgent(t, "counter", js)
@@ -171,7 +171,7 @@ func TestCodeJS_IsError_IsCatchableThrow(t *testing.T) {
 	js := `
 function run(input) {
   try {
-    memory.get({ scope: "user", key: "x" });
+    Memory.get({ scope: "user", key: "x" });
     return { final_text: "no throw" };
   } catch (e) {
     return { final_text: "caught: " + e.message };
@@ -242,12 +242,12 @@ func TestCodeJS_BuiltinTool_FlatCallable(t *testing.T) {
 // Default-deny: a tool absent from allowed_tools (req.Tools) gets NO binding,
 // so referencing it is a ReferenceError — not a permission error.
 func TestCodeJS_AllowedTools_DisallowedIsReferenceError(t *testing.T) {
-	root := writeAgent(t, "sneaky", `function run(){ channel.publish({name:"x"}); return {final_text:"ok"}; }`)
+	root := writeAgent(t, "sneaky", `function run(){ Channel.publish({name:"x"}); return {final_text:"ok"}; }`)
 	p := newTestProvider(root)
 	// Only Memory is allowed; channel must not exist.
 	res := drive(t, context.Background(), p, "sneaky", "go", []providers.ToolSpec{{Name: "Memory"}}, nil)
-	if res.errText == "" || !strings.Contains(res.errText, "channel is not defined") {
-		t.Errorf("want ReferenceError 'channel is not defined', got %q", res.errText)
+	if res.errText == "" || !strings.Contains(res.errText, "Channel is not defined") {
+		t.Errorf("want ReferenceError 'Channel is not defined', got %q", res.errText)
 	}
 }
 
@@ -341,7 +341,7 @@ func TestCodeJS_AmbientDeterminism_StableAcrossReplays(t *testing.T) {
 // into the JS. Forced here with a transcript whose first recorded call is
 // "Channel" while the JS calls "Memory" first.
 func TestCodeJS_ReplayDivergence_FailsLoud(t *testing.T) {
-	root := writeAgent(t, "div", `function run(){ memory.get({key:"a", scope:"user"}); return {final_text:"x"}; }`)
+	root := writeAgent(t, "div", `function run(){ Memory.get({key:"a", scope:"user"}); return {final_text:"x"}; }`)
 	p := newTestProvider(root)
 	ctx := providers.WithRunMeta(context.Background(), providers.RunMeta{AgentName: "div"})
 	req := providers.Request{
@@ -372,8 +372,8 @@ func TestCodeJS_ReplayDivergence_FailsLoud(t *testing.T) {
 func TestCodeJS_ConcurrentRuns_Isolated(t *testing.T) {
 	js := `
 function run(input) {
-  var n = memory.get({ scope: "user", key: "k" });
-  memory.set({ scope: "user", key: "k", value: (n || 0) + 1 });
+  var n = Memory.get({ scope: "user", key: "k" });
+  Memory.set({ scope: "user", key: "k", value: (n || 0) + 1 });
   return { final_text: "p=" + input.prompt };
 }`
 	root := writeAgent(t, "conc", js)
