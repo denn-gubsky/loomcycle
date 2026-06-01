@@ -69,11 +69,12 @@ function run(input) {
 }
 ```
 
-Under the hood each tool call transparently suspends the JS while the
-agent **loop** dispatches it — with the loop's hooks, OTEL spans, and
-`${run.credentials.<name>}` substitution — then resumes with the result.
-The mechanics are identical to an LLM agent's tool-use turns; you just
-write straight-line code.
+You write straight-line code; each tool call returns its result inline. Under
+the hood a tool call is one turn of the agent **loop**: the loop dispatches it
+(with the loop's hooks, OTEL spans, and `${run.credentials.<name>}`
+substitution) exactly as it does an LLM agent's tool_use, and on the next turn
+`run()` re-executes, replaying the results already gathered and stopping at the
+next call. You never see the replay — calls just look synchronous.
 
 ## The JS-side tool API
 
@@ -128,32 +129,48 @@ via ScheduleDef. A capability not in `allowed_tools` is simply absent.
 > from your own code's logic — that is the operator's trust posture, the
 > same as the Bash tool.
 
-## Honest determinism
+## Determinism
 
-The promise is **"no LLM-induced non-determinism"**, not "perfectly
-reproducible." Your JS can still call `Date.now()`, `Math.random()`, and
-MCP tools whose upstream responses vary. The win is real anyway: zero
-tokens, no model latency, no hallucination. For replay/testing,
-`LOOMCYCLE_CODE_AGENTS_DETERMINISTIC=1` seeds `Date.now()` (fixed epoch)
-and `Math.random()` (seeded PRNG) — but MCP responses stay whatever the
-upstream returns.
+The promise is **"no LLM-induced non-determinism"**: zero tokens, no model
+latency, no hallucination. Within a run, code-js is deterministic **by
+construction** — a code-agent runs as a *replay* over its recorded tool
+results, so the ambient clock and RNG are hooked: `Math.random()` is seeded
+per run, and `Date.now()` / `new Date()` are anchored to the run's start plus
+a per-call offset. Every re-execution of a run therefore reproduces the same
+values — which is exactly what makes a run **resumable** (below). Different
+runs still see real-anchored time and fresh entropy, so production behaviour
+is unsurprising.
+
+This is reproducible *replay*, not "the world stopped": tool / MCP results are
+recorded and replayed identically, but the upstream service that produced them
+is still whatever it is. `LOOMCYCLE_CODE_AGENTS_DETERMINISTIC=1` additionally
+freezes the clock + seed across **all** runs — cross-run reproducibility for
+tests and snapshot equality. If you need a true per-call wall-clock value, read
+it from a tool (it is recorded), not from `Date.now()`.
 
 ## Sharp edges
 
 - **Glue-logic fast, not data-processing fast.** goja is interpreted (no
   JIT). CPU-bound work over megabytes belongs in an MCP server. The
   design center is the ~100ms-budget glue step.
-- **One tool call at a time.** Parallel tool calls within one code-agent
-  are out of v1 (the suspend point is one-at-a-time). Fan out with
+- **One tool call at a time.** Parallel tool calls within one code-agent are
+  out of v1 (each loop turn advances the replay by one call). Fan out with
   `agent.spawn(...)`, which is already concurrent at the loomcycle layer.
-- **Not resumable across a restart.** A code-agent's run state is live
-  in-process JS; it cannot be resumed from a persisted transcript or in a
-  different replica. A run cut off mid-flight fails loud
-  (`code_agent_continuation_lost`) rather than silently re-running.
-- **Run timeout is the universal cancel.** A parked tool call is cut by
-  the ctx deadline, not by interrupting the interpreter; a CPU-bound loop
-  is cut by both. Set `LOOMCYCLE_CODE_AGENTS_RUN_TIMEOUT_SECONDS` to bound
-  wall time. The heap limit is best-effort (goja exposes no hard cap).
+- **Resumable across restart / replica.** A code-agent holds no in-process
+  state between tool calls: each turn re-runs `run()` from the top and
+  *replays* the tool results recorded in the run transcript, dispatching only
+  the next, not-yet-recorded call. So a run interrupted mid-flight (process
+  restart, replica handoff) resumes correctly from the transcript — there is
+  no parked continuation to lose. The cost is that the pure-JS portion
+  re-executes each turn (≈O(N²) for N sequential tool calls), which is fine
+  for the glue-logic design center; heavy compute belongs in an MCP server.
+  (This is why determinism is always-on above — replay must reproduce the
+  same call sequence; a non-deterministic divergence fails loud as
+  `code_agent_replay_divergence`.)
+- **Run timeout bounds wall time.** A CPU-bound JS loop is cut by goja
+  `Interrupt` at the per-turn timeout; the overall run deadline rides the
+  loop's ctx. Set `LOOMCYCLE_CODE_AGENTS_RUN_TIMEOUT_SECONDS`. The heap limit
+  is best-effort (goja exposes no hard cap).
 - **ABI versioning.** The JS-side API is versioned on its own semver
   (currently 1.0.0), separate from loomcycle's release vector. Breaking a
   signature is a major bump with a deprecation window.
