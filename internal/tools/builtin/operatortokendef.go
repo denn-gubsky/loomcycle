@@ -72,7 +72,8 @@ const operatorTokenDefInputSchema = `{
     "tenant_id":  {"type": "string", "description": "Authoritative tenant (required for create)."},
     "subject":    {"type": "string", "description": "Authoritative subject (optional for create; defaults to tok-<name>)."},
     "scopes":     {"type": "array", "items": {"type": "string"}, "description": "Allowed scopes from the closed catalog (create; default [substrate:admin])."},
-    "grace_seconds": {"type": "integer", "description": "Rotation grace window override (rotate)."}
+    "grace_seconds": {"type": "integer", "description": "Rotation grace window override (rotate)."},
+    "import_token": {"type": "string", "description": "Migration only (create): bind an existing secret (the legacy LOOMCYCLE_AUTH_TOKEN) instead of minting. Hashed, never echoed."}
   },
   "required": ["op"]
 }`
@@ -85,6 +86,10 @@ type operatorTokenDefInput struct {
 	Subject      string   `json:"subject,omitempty"`
 	Scopes       []string `json:"scopes,omitempty"`
 	GraceSeconds *int     `json:"grace_seconds,omitempty"`
+	// ImportToken (Decision 10 migration) binds an existing secret —
+	// the legacy LOOMCYCLE_AUTH_TOKEN via `--copy-from-env` — instead of
+	// minting. Admin-only; the plaintext is hashed, never echoed.
+	ImportToken string `json:"import_token,omitempty"`
 }
 
 // Name implements tools.Tool.
@@ -190,9 +195,28 @@ func (s *OperatorTokenDef) execCreate(ctx context.Context, in operatorTokenDefIn
 		}
 	}
 
-	plaintext, suffix, err := auth.MintToken()
-	if err != nil {
-		return errResult(fmt.Sprintf("create: %s", err)), nil
+	// Token source. Default: mint a fresh CSPRNG token. Migration
+	// exception (Decision 10): `import_token` binds an EXISTING secret —
+	// the legacy LOOMCYCLE_AUTH_TOKEN, via `--copy-from-env` — to a real
+	// principal so the env token keeps working as an admin token after
+	// the legacy fallback disables (zero-disruption upgrade). This is the
+	// only sanctioned operator-supplied-token path; it imports a hash,
+	// never echoes the plaintext back.
+	var plaintext, suffix string
+	imported := in.ImportToken != ""
+	if imported {
+		if len(in.ImportToken) < 8 {
+			return errResult("create: import_token too short (min 8 chars)"), nil
+		}
+	} else {
+		var err error
+		if plaintext, suffix, err = auth.MintToken(); err != nil {
+			return errResult(fmt.Sprintf("create: %s", err)), nil
+		}
+	}
+	hashInput := plaintext
+	if imported {
+		hashInput = in.ImportToken
 	}
 	ident := tools.RunIdentity(ctx)
 	row := store.OperatorTokenDefRow{
@@ -200,7 +224,7 @@ func (s *OperatorTokenDef) execCreate(ctx context.Context, in operatorTokenDefIn
 		Name:             in.Name,
 		TenantID:         in.TenantID,
 		Subject:          subject,
-		TokenHash:        auth.HashToken(s.Pepper, plaintext),
+		TokenHash:        auth.HashToken(s.Pepper, hashInput),
 		AllowedScopes:    scopes,
 		CreatedByAgentID: ident.AgentID,
 	}
@@ -212,6 +236,12 @@ func (s *OperatorTokenDef) execCreate(ctx context.Context, in operatorTokenDefIn
 		Action: "create", TargetDefID: created.DefID, TargetName: created.Name,
 		TargetTenant: created.TenantID, TargetSubject: created.Subject, ScopesAfter: scopes,
 	})
+	if imported {
+		// No plaintext to show — the operator already holds the env token.
+		m := operatorTokenRowResponse(created)
+		m["imported"] = true
+		return okJSON(m)
+	}
 	return okJSON(operatorTokenCreateResponse(created, plaintext, suffix))
 }
 

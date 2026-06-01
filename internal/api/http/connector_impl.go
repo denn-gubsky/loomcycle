@@ -479,7 +479,32 @@ func (s *Server) OperatorTokenDef(ctx context.Context, input json.RawMessage) (c
 	if err != nil {
 		return connector.ToolResult{}, err
 	}
+	// RFC L Decision 11: a successful mutation flushes the auth cache
+	// (locally + cross-replica) so a created/rotated token authenticates
+	// and a retired one stops within one backplane round-trip. Reads
+	// (get/list) don't invalidate.
+	if !res.IsError && isMutatingTokenOp(input) {
+		s.invalidateTokenCache(ctx)
+	}
 	return connector.ToolResult{Text: res.Text, IsError: res.IsError}, nil
+}
+
+// isMutatingTokenOp reports whether an OperatorTokenDef input is a
+// create/rotate/retire (vs a read get/list) — used to decide whether to
+// flush the auth cache.
+func isMutatingTokenOp(input json.RawMessage) bool {
+	var p struct {
+		Op string `json:"op"`
+	}
+	if err := json.Unmarshal(input, &p); err != nil {
+		return true // unknown shape → invalidate defensively
+	}
+	switch p.Op {
+	case "create", "rotate", "retire":
+		return true
+	default:
+		return false
+	}
 }
 
 // dispatchBuiltin is the shared lookup-and-execute path for the five

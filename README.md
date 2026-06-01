@@ -22,7 +22,7 @@
 
 ---
 
-> 🌳 **Active development toward v1.0.** The core primitives stabilised through v0.8 → v0.16 — multi-replica HA, the substrate Defs (Agent/Skill/MCPServer/Schedule/Webhook/MemoryBackend), A2A interoperability, inbound webhooks, pluggable memory + a memory layer, and a synthetic code provider. The feature set is complete; a hardening + QA pass remains before the v1.0 tag. **OSS multi-tenant authorization** (per-principal bearer tokens) is the headline of **v1.1.0** — see "Planned" below. We welcome bug reports, security disclosures, feature contributions, downstream consumers, and forks. See [`CONTRIBUTING.md`](CONTRIBUTING.md).
+> 🌳 **Active development toward v1.0.** The core primitives stabilised through v0.8 → v0.16 — multi-replica HA, the substrate Defs (Agent/Skill/MCPServer/Schedule/Webhook/MemoryBackend), A2A interoperability, inbound webhooks, pluggable memory + a memory layer, and a synthetic code provider. **OSS multi-tenant authorization** (per-principal bearer tokens) is landing as the **v1.0 capstone** alongside the hardening + QA pass — see "Planned" below. We welcome bug reports, security disclosures, feature contributions, downstream consumers, and forks. See [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
 ---
 
@@ -152,10 +152,10 @@ make build-all       # UI + binary in one shot; output → ./bin/loomcycle
 
 Per-version detail for all of the above is in [`REVISIONS.md`](REVISIONS.md).
 
-**Planned — v1.0 → v1.1.0:**
+**Planned — v1.0:**
 
-- **v1.0 — hardening + QA.** No new primitives: a security + robustness + runtime-QA pass across the v0.13–v0.16 surfaces (A2A, webhooks, pluggable memory + the memory layer, the code-js provider), then the **v1.0** tag. Ships with the existing single shared-token auth (`LOOMCYCLE_AUTH_TOKEN`) — right for single-operator and single-trusted-team deployments.
-- **v1.1.0 (headline) — OSS multi-tenant authorization.** Replaces the single shared token with per-principal bearer tokens (token-per-developer/app, scopes, rotation, file audit), each bound to an **authoritative `(tenant, subject)`** resolved *from the token* — so per-subject fairness and per-tenant memory isolation become real (today they key on caller-asserted fields). Zero-disruption: `LOOMCYCLE_AUTH_TOKEN` keeps working; multi-tenancy is available, never required. Enterprise-grade auth (SSO / RBAC / SCIM / signed audit) is a separate edition.
+- **v1.0 — hardening + QA + the multi-tenant-auth capstone.** A security + robustness + runtime-QA pass across the v0.13–v0.16 surfaces (A2A, webhooks, pluggable memory + the memory layer, the code-js provider), landing alongside the **OSS multi-tenant authorization** capstone (below), then the **v1.0** tag.
+- **OSS multi-tenant authorization (the v1.0 capstone).** Replaces the single shared token with per-principal bearer tokens (`OperatorTokenDef` — token-per-developer/app, a closed scope catalog, rotation-with-grace, file audit), each bound to an **authoritative `(tenant, subject, scopes)`** resolved *from the token* and overriding the wire fields — so per-subject fairness and per-tenant memory isolation become real boundaries (they previously keyed on caller-asserted fields). **Zero-disruption**: `LOOMCYCLE_AUTH_TOKEN` keeps working (and migrates in place via `operator-token create --copy-from-env`); multi-tenancy is available, never required. See `Context.help operator-tokens`. Enterprise-grade auth (SSO / RBAC / SCIM / signed audit) is a separate edition.
 - **Beyond** (polish): a settings UI, an operator cookbook of postures, broader distribution (Helm).
 
 Full per-version release notes: [`REVISIONS.md`](REVISIONS.md).
