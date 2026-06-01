@@ -49,18 +49,18 @@ func buildBindFunc(toolNames []string) bindFunc {
 	return func(rt *goja.Runtime, emit toolEmitter) {
 		for _, name := range toolNames {
 			switch name {
-			case "Memory":
-				mem := rt.NewObject()
-				for _, op := range []string{"get", "set", "delete", "search"} {
-					_ = mem.Set(op, opCallable(rt, emit, "Memory", op))
-				}
-				_ = rt.Set(name, mem) // JS: Memory.get(...) etc.
-			case "Channel":
-				ch := rt.NewObject()
-				for _, op := range []string{"publish", "subscribe"} {
-					_ = ch.Set(op, opCallable(rt, emit, "Channel", op))
-				}
-				_ = rt.Set(name, ch) // JS: Channel.publish(...) etc.
+			case "Memory", "Channel":
+				// Multi-op meta-tools bind as a DynamicObject: ANY method access
+				// (Memory.recall, Channel.ack, …) forwards as {op:"<method>",
+				// ...obj}. Generic passthrough — NOT a hardcoded op subset — so
+				// the JS surface never lags the tool's real op set (an op added
+				// to the Memory/Channel tool is reachable from code-js with no
+				// binding change). The tool's own dispatch remains the single
+				// validator: an unknown op returns its "unknown op" error, which
+				// surfaces as a catchable JS throw. (An earlier hardcoded subset
+				// silently hid Memory.incr/list/merge/append_dedupe/bounded_list/
+				// add/recall and Channel.peek/list_channels from code-agents.)
+				_ = rt.Set(name, rt.NewDynamicObject(&metaTool{rt: rt, emit: emit, toolName: name}))
 			case "Agent":
 				ag := rt.NewObject()
 				// Agent.spawn maps to the Agent tool's default invocation; the
@@ -79,6 +79,39 @@ func buildBindFunc(toolNames []string) bindFunc {
 		}
 	}
 }
+
+// metaReservedProps are the property names a meta-tool DynamicObject must NOT
+// shadow with an op callable. Returning a function for these would hijack the
+// JS engine's ordinary semantics — String(Memory) calling toString, thenable
+// probing reading .then, prototype walks reading constructor — and turn them
+// into bogus tool dispatches (op:"toString", …). For these keys Get returns
+// nil so goja falls through to Object.prototype (symbols never reach Get).
+var metaReservedProps = map[string]bool{
+	"constructor": true, "hasOwnProperty": true, "isPrototypeOf": true,
+	"propertyIsEnumerable": true, "toLocaleString": true, "toString": true,
+	"valueOf": true, "then": true, "catch": true, "finally": true,
+}
+
+// metaTool is the goja DynamicObject backing a multi-op meta-tool (Memory,
+// Channel). Property access for any non-reserved key returns an opCallable for
+// that op name — so Memory.<anyOp>(obj) dispatches {op:"<anyOp>", ...obj}
+// without the binding enumerating the op set (the tool's dispatch validates).
+type metaTool struct {
+	rt       *goja.Runtime
+	emit     toolEmitter
+	toolName string
+}
+
+func (m *metaTool) Get(key string) goja.Value {
+	if key == "" || metaReservedProps[key] {
+		return nil // undefined → goja falls through to Object.prototype
+	}
+	return m.rt.ToValue(opCallable(m.rt, m.emit, m.toolName, key))
+}
+func (m *metaTool) Set(string, goja.Value) bool { return false } // read-only surface
+func (m *metaTool) Has(key string) bool         { return key != "" && !metaReservedProps[key] }
+func (m *metaTool) Delete(string) bool          { return false }
+func (m *metaTool) Keys() []string              { return nil } // ops are open-ended; no enumeration
 
 // opCallable builds a JS function that injects {"op": op} into its object
 // argument and dispatches it to toolName. Used for the multi-op meta-tools
