@@ -52,7 +52,7 @@ func runOperatorTokenCreate(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("operator-token create", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	target := fs.String("target", defaultBaseURL(), "loomcycle base URL")
-	token := fs.String("token", defaultAuthToken(), "bearer token (an existing admin token / LOOMCYCLE_AUTH_TOKEN)")
+	token := fs.String("token", defaultAuthToken(), "bearer token (an existing admin token; defaults to $LOOMCYCLE_AUTH_TOKEN)")
 	name := fs.String("name", "", "token name (required)")
 	tenant := fs.String("tenant", "", "authoritative tenant_id (required)")
 	subject := fs.String("subject", "", "authoritative subject (default tok:<name>)")
