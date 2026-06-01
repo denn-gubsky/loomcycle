@@ -89,6 +89,32 @@ func TestA2AAgentDefTool_CreateWithEndpointBinding(t *testing.T) {
 	}
 }
 
+// A model-authored grpc endpoint pointing at a literal private/link-local IP
+// (the cloud metadata service) must be refused at create — the gRPC binding
+// dials outside the SSRF-blocking peerDialContext, so registration-time is
+// the defense. A public-host grpc endpoint is still accepted (the dial-time
+// hostname/rebinding case for gRPC is the documented deferred residual).
+func TestA2AAgentDefTool_CreateRefusesPrivateGRPCEndpoint(t *testing.T) {
+	tool, ctx, cleanup := a2aAgentDefFixture(t)
+	defer cleanup()
+
+	for _, ep := range []string{"169.254.169.254:50051", "127.0.0.1:50051", "10.0.0.5:443", "grpc://192.168.1.10:50051", "dns:///[::1]:50051"} {
+		in := `{"op":"create","name":"badgrpc","overlay":{"endpoint":"` + ep + `","binding":"grpc"}}`
+		res, _ := tool.Execute(ctx, json.RawMessage(in))
+		if !res.IsError {
+			t.Errorf("grpc endpoint %q (private/loopback/link-local) should be refused; got %s", ep, res.Text)
+		} else if !strings.Contains(res.Text, "private/loopback/link-local") {
+			t.Errorf("grpc endpoint %q refusal should name the SSRF reason; got %s", ep, res.Text)
+		}
+	}
+
+	// A public-host grpc endpoint passes the literal-IP gate.
+	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"create","name":"okgrpc","overlay":{"endpoint":"peer.example:50051","binding":"grpc"}}`))
+	if res.IsError {
+		t.Errorf("public-host grpc endpoint should be accepted; got %s", res.Text)
+	}
+}
+
 func TestA2AAgentDefTool_CreateRefusesBothReachabilityModes(t *testing.T) {
 	tool, ctx, cleanup := a2aAgentDefFixture(t)
 	defer cleanup()

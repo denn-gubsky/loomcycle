@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/url"
 	"regexp"
 	"strings"
@@ -467,10 +468,7 @@ func validateA2AAgentDef(def mergedA2AAgentDef) error {
 	// URLs upfront. This is defense-in-depth: the HTTP fetch + jsonrpc/rest
 	// transports also dial through the SSRF-blocking client in
 	// internal/tools/a2a, which refuses private/loopback/metadata targets
-	// at connect time. (The gRPC binding dials via grpc-go, outside that
-	// client — so a grpc endpoint is validated for shape here but its
-	// dial is NOT private-IP-blocked; gRPC peers are operator-configured in
-	// practice and a callable fork must already be in allowed_tools.)
+	// at connect time.
 	if hasCardURL {
 		if err := requireHTTPURL("agent_card_url", def.AgentCardURL); err != nil {
 			return err
@@ -478,6 +476,19 @@ func validateA2AAgentDef(def mergedA2AAgentDef) error {
 	}
 	if def.Endpoint != "" && (def.Binding == "rest" || def.Binding == "jsonrpc") {
 		if err := requireHTTPURL("endpoint", def.Endpoint); err != nil {
+			return err
+		}
+	}
+	// The gRPC binding dials via grpc-go, OUTSIDE the SSRF-blocking
+	// peerDialContext that guards the jsonrpc/rest transports. Block the
+	// common direct-IP SSRF (e.g. grpc://169.254.169.254 → cloud metadata) at
+	// registration/fork time. This does NOT cover a hostname that resolves to
+	// a private address, nor DNS-rebinding at dial time — closing those needs
+	// the gRPC dial routed through peerDialContext, which is deferred because
+	// the SDK's WithGRPCTransport replaces the whole transport and would
+	// require replicating its default credentials (TLS-downgrade risk).
+	if def.Endpoint != "" && def.Binding == "grpc" {
+		if err := requireSafeGRPCEndpoint("endpoint", def.Endpoint); err != nil {
 			return err
 		}
 	}
@@ -503,6 +514,32 @@ func requireHTTPURL(field, raw string) error {
 	}
 	if u.Host == "" {
 		return fmt.Errorf("%s %q has no host", field, raw)
+	}
+	return nil
+}
+
+// requireSafeGRPCEndpoint rejects a gRPC endpoint whose host is a LITERAL
+// private / loopback / link-local IP (notably the cloud metadata service at
+// 169.254.169.254). The gRPC binding dials via grpc-go, outside the
+// SSRF-blocking peerDialContext in internal/tools/a2a, so this is the
+// registration-time defense-in-depth against the common direct-IP SSRF when
+// the endpoint is model-authored via a fork overlay. It deliberately does NOT
+// resolve hostnames (no DNS at registration time, and a resolved answer can
+// change before dial — that TOCTOU is the dialer's job, deferred for gRPC).
+func requireSafeGRPCEndpoint(field, raw string) error {
+	host := raw
+	// gRPC targets may carry a scheme/authority ("dns:///h:p",
+	// "passthrough:///h:p", "grpc://h:p"); take the segment after the last
+	// '/', then strip an optional :port and IPv6 brackets.
+	if i := strings.LastIndex(host, "/"); i >= 0 {
+		host = host[i+1:]
+	}
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		host = h
+	}
+	host = strings.Trim(host, "[]")
+	if ip := net.ParseIP(host); ip != nil && isPrivateIP(ip) {
+		return fmt.Errorf("%s %q is a private/loopback/link-local address — refusing (the gRPC binding dials outside the SSRF guard)", field, raw)
 	}
 	return nil
 }
