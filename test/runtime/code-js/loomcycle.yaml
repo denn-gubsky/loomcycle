@@ -1,0 +1,20 @@
+# test/runtime/code-js — runtime config for the synthetic code-js provider
+# (RFC J). The code-js provider is SYNTHETIC: it runs operator JavaScript via
+# goja with no LLM, so this suite is deterministic by construction and needs
+# no provider key. The mock provider is declared only so boot succeeds with a
+# valid default provider; the code-js agent below never calls it.
+provider_priority: [mock]
+tiers:
+  middle:
+    - { provider: mock, model: mock-generic }
+
+agents:
+  # kvflow exercises the multi-op Memory meta-tool from JS over the real loop
+  # + replay engine: set (user), incr (agent counter), get (read-back), list.
+  # incr/list were UNREACHABLE from code-js before the meta-tool op
+  # passthrough fix — this suite is their end-to-end regression on the wire.
+  kvflow:
+    provider: code-js
+    description: "Deterministic Memory round-trip via code-js (set/incr/get/list)."
+    memory_scopes: [user, agent]
+    allowed_tools: [Memory]

@@ -54,6 +54,29 @@ jobs:
             exit 1
           fi
 
+  runtime-codejs:
+    name: Runtime suites (code-js)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.x"
+          cache: true
+
+      # The code-js runtime suites are deterministic (synthetic provider, no
+      # LLM / key / Postgres) and assert storage state via the sqlite3 CLI +
+      # parse SSE with python3. Both are preinstalled on ubuntu-latest; this
+      # makes the dependency explicit and fails fast if the image changes.
+      - name: Ensure sqlite3 + python3
+        run: |
+          command -v python3 >/dev/null || { echo "python3 missing"; exit 1; }
+          command -v sqlite3  >/dev/null || sudo apt-get update && sudo apt-get install -y sqlite3
+
+      - name: Runtime code-js suites
+        run: make runtime-codejs
+
   ts-adapter:
     name: TypeScript adapter
     runs-on: ubuntu-latest
