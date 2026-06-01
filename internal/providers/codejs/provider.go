@@ -82,7 +82,11 @@ func (p *Provider) ID() string { return providerID }
 // Capabilities: code-js streams events but has no LLM-shaped knobs — no native
 // cache, no parallel tool calls (one frontier at a time), no thinking/effort.
 func (p *Provider) Capabilities() providers.Capabilities {
-	return providers.Capabilities{Streaming: true}
+	// UnboundedIterations: a code-agent's run() makes an arbitrary number of
+	// SEQUENTIAL tool calls, each a loop turn; the MaxIterations soft-cap is
+	// unusable here. The run is bounded by the run-level wall-clock deadline
+	// (see Call/interruptWatch), not by an iteration count.
+	return providers.Capabilities{Streaming: true, UnboundedIterations: true}
 }
 
 // Probe always succeeds — code-js is in-process, always reachable.
@@ -128,6 +132,17 @@ func (p *Provider) Call(ctx context.Context, req providers.Request) (<-chan prov
 		return out, nil
 	}
 	seed, anchorMs := p.determinism(meta)
+	// budget bounds THIS turn's wall-clock — but it is the WHOLE RUN's remaining
+	// budget, not a fresh per-turn timeout: derived from the stable run start
+	// (RunMeta.StartedAt) so the sum across all replay turns can never exceed
+	// RunTimeout. This is what lets the loop exempt code-js from the
+	// MaxIterations cap (Capabilities().UnboundedIterations) and rely on the
+	// timeout as the sole bound. Falls back to a flat per-turn RunTimeout when
+	// StartedAt is unstamped (direct, non-loop callers / tests).
+	budget := p.runTimeout
+	if !meta.StartedAt.IsZero() {
+		budget = time.Until(meta.StartedAt.Add(p.runTimeout))
+	}
 	// Emit a loomcycle.provider.call span for parity with the real LLM drivers
 	// (which each open one). The synthetic provider makes no HTTP request, so
 	// this is the canonical place to attach provider.code_hash (RFC J Decision
@@ -139,7 +154,7 @@ func (p *Provider) Call(ctx context.Context, req providers.Request) (<-chan prov
 		Kind:     "synthetic-code",
 		CodeHash: prog.hash,
 	})
-	go p.runTurn(spanCtx, out, span, prog.prog, buildInput(req, meta), extractRecorded(req), toolNames(req), seed, anchorMs)
+	go p.runTurn(spanCtx, out, span, prog.prog, buildInput(req, meta), extractRecorded(req), toolNames(req), seed, anchorMs, budget)
 	return out, nil
 }
 
@@ -147,7 +162,7 @@ func (p *Provider) Call(ctx context.Context, req providers.Request) (<-chan prov
 // runtime → harden + hook → bind → run() → emit the turn's outcome → close.
 // The goroutine lives only for the JS execution (µs–ms), never across a
 // dispatch gap.
-func (p *Provider) runTurn(ctx context.Context, out chan providers.Event, span trace.Span, prog *goja.Program, input map[string]any, recorded []toolRecord, allowed []string, seed uint32, anchorMs int64) {
+func (p *Provider) runTurn(ctx context.Context, out chan providers.Event, span trace.Span, prog *goja.Program, input map[string]any, recorded []toolRecord, allowed []string, seed uint32, anchorMs int64, budget time.Duration) {
 	defer close(out)
 	defer span.End()
 
@@ -163,7 +178,7 @@ func (p *Provider) runTurn(ctx context.Context, out chan providers.Event, span t
 	// is interruptible. Stopped as soon as the turn finishes.
 	stop := make(chan struct{})
 	defer close(stop)
-	go p.interruptWatch(ctx, rt, stop)
+	go p.interruptWatch(ctx, rt, stop, budget)
 
 	if _, err := rt.RunProgram(prog); err != nil {
 		out <- errorEvent(p.classifyRunErr(state, ctx, err, "evaluating index.js"))
@@ -209,9 +224,16 @@ func (p *Provider) classifyRunErr(state *replayState, ctx context.Context, err e
 }
 
 // interruptWatch Interrupts the runtime if the turn's ctx is cancelled or the
-// per-turn timeout elapses, then exits when the turn finishes (stop closed).
-func (p *Provider) interruptWatch(ctx context.Context, rt *goja.Runtime, stop <-chan struct{}) {
-	timer := time.NewTimer(p.runTimeout)
+// remaining run budget elapses, then exits when the turn finishes (stop
+// closed). budget is the WHOLE RUN's remaining wall-clock (see Call), so the
+// last turn to cross the run deadline is interrupted — the run total can't
+// exceed RunTimeout even with the loop's iteration cap disabled.
+func (p *Provider) interruptWatch(ctx context.Context, rt *goja.Runtime, stop <-chan struct{}, budget time.Duration) {
+	if budget <= 0 {
+		// Run already over its total budget — interrupt this turn at once.
+		budget = time.Millisecond
+	}
+	timer := time.NewTimer(budget)
 	defer timer.Stop()
 	select {
 	case <-ctx.Done():

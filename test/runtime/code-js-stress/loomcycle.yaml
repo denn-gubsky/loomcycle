@@ -2,8 +2,11 @@
 # code-js provider (RFC J). Deterministic (no LLM). Exercises:
 #   - many sequential tool calls in one code-agent → the replay engine
 #     re-runs run() each turn (O(N^2)) and must stay divergence-free
-#   - MaxIterations as the HARD ceiling on a code-agent's sequential tool
-#     calls (each loop turn = one call) → stop_reason=max_iterations
+#   - code-agents are EXEMPT from the MaxIterations cap (a code-agent's loop
+#     turns are internal tool-dispatch steps, not model turns) → a 25-call
+#     run completes end_turn; the run is bounded by the run TIMEOUT instead
+#   - a runaway (infinite tool-call) code-agent is cut by the run-level
+#     wall-clock timeout, not left hanging
 #   - concurrent runs of the same code-agent → per-run goja isolation +
 #     atomic Memory.incr → no lost updates on a shared agent-scope counter
 provider_priority: [mock]
@@ -22,10 +25,20 @@ agents:
     memory_scopes: [agent]
     allowed_tools: [Memory]
 
-  # overrun makes 25 sequential incrs — past the 16-call ceiling — so the
-  # run terminates with stop_reason=max_iterations rather than completing.
+  # overrun makes 25 sequential incrs — past the old 16-call default. A
+  # code-agent is exempt from the cap, so the run COMPLETES (end_turn) with
+  # all 25 incrs, proving the iteration cap no longer applies here.
   overrun:
     provider: code-js
-    description: "25 sequential incrs — deliberately exceeds MaxIterations."
+    description: "25 sequential incrs — exceeds the old cap, now completes."
+    memory_scopes: [agent]
+    allowed_tools: [Memory]
+
+  # runaway loops tool calls forever — only the run-level timeout stops it.
+  # The suite sets a short LOOMCYCLE_CODE_AGENTS_RUN_TIMEOUT_SECONDS and
+  # asserts the run terminates (not end_turn) shortly after.
+  runaway:
+    provider: code-js
+    description: "infinite tool-call loop — bounded only by the run timeout."
     memory_scopes: [agent]
     allowed_tools: [Memory]

@@ -185,17 +185,20 @@ tests and snapshot equality.
   (This is why determinism is always-on above — replay must reproduce the
   same call sequence; a non-deterministic divergence fails loud as
   `code_agent_replay_divergence`.)
-- **MaxIterations is a hard sequential-tool-call ceiling.** Each loop turn
-  advances a code-agent's replay by exactly one tool call, so the run's
-  `MaxIterations` caps how many sequential tool calls `run()` may make — it is
-  not a soft "model chatter" cap as it is for an LLM agent. A code-agent that
-  needs more sequential calls than the cap ends with `stop_reason:
-  max_iterations` (and an operator log line naming the agent + cap). Raise
-  `MaxIterations` for that run, or fan out concurrent work via `Agent.spawn`.
-- **Run timeout bounds wall time.** A CPU-bound JS loop is cut by goja
-  `Interrupt` at the per-turn timeout; the overall run deadline rides the
-  loop's ctx. Set `LOOMCYCLE_CODE_AGENTS_RUN_TIMEOUT_SECONDS`. The heap limit
-  is best-effort (goja exposes no hard cap).
+- **No iteration cap — the run timeout is the bound.** Each loop turn advances
+  a code-agent's replay by exactly one tool call, so the LLM agents'
+  `MaxIterations` soft-cap (default 16) would be unusable here — it would stop
+  `run()` after 16 sequential calls. Code-agents are therefore **exempt** from
+  `MaxIterations`; `run()` may make as many sequential tool calls as it needs.
+  The bound is `LOOMCYCLE_CODE_AGENTS_RUN_TIMEOUT_SECONDS`, enforced as a
+  **whole-run** wall-clock deadline (the per-turn budget is the run's remaining
+  time, not a fresh timeout each turn), so the total run cannot exceed it. (A
+  very high hard ceiling on turns remains as a pure runaway backstop; reaching
+  it means a non-terminating tool-call loop, not a too-small cap.)
+- **Run timeout bounds total wall time.** A CPU-bound JS loop is cut by goja
+  `Interrupt`; a too-slow multi-call run is cut by the same deadline on whatever
+  turn crosses it. Set `LOOMCYCLE_CODE_AGENTS_RUN_TIMEOUT_SECONDS`. The heap
+  limit is best-effort (goja exposes no hard cap).
 - **ABI versioning.** The JS-side API is versioned on its own semver
   (currently 1.0.0), separate from loomcycle's release vector. Breaking a
   signature is a major bump with a deprecation window.

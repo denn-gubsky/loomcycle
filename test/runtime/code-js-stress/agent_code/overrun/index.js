@@ -1,12 +1,11 @@
 // overrun — 25 sequential incrs. Each tool call is one loop turn, so this
-// asks for 25 sequential calls against the 16-iteration default ceiling. The
-// run must terminate with stop_reason=max_iterations BEFORE the loop finishes
-// (run() never returns its final_text). For a code-agent MaxIterations is a
-// HARD ceiling on sequential tool calls, not a soft model-chatter cap — this
-// suite asserts that behaviour and the operator diagnostic that names it.
+// asks for 25 sequential calls — well past the old 16-iteration default. A
+// code-agent is EXEMPT from the MaxIterations soft-cap (it is bounded by the
+// run timeout, not an iteration count), so run() reaches its final_text: this
+// suite asserts the run COMPLETES (end_turn) with all 25 incrs executed.
 function run(input) {
   for (var i = 0; i < 25; i++) {
     Memory.incr({ scope: "agent", key: "ovr", delta: 1 });
   }
-  return { final_text: "UNREACHABLE: completed 25 calls under the cap" };
+  return { final_text: "completed 25 sequential calls (no iteration cap)" };
 }
