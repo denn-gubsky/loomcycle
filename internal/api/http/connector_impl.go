@@ -469,6 +469,19 @@ func (s *Server) MemoryBackendDef(ctx context.Context, input json.RawMessage) (c
 	return connector.ToolResult{Text: res.Text, IsError: res.IsError}, nil
 }
 
+// OperatorTokenDef dispatches to the RFC L OperatorTokenDef substrate
+// tool. Operator-admin-only. See SetOperatorTokenDefTool for wiring.
+func (s *Server) OperatorTokenDef(ctx context.Context, input json.RawMessage) (connector.ToolResult, error) {
+	if s.operatorTokenDefTool == nil {
+		return connector.ToolResult{}, fmt.Errorf("OperatorTokenDef: not configured (no tool wired via SetOperatorTokenDefTool)")
+	}
+	res, err := s.operatorTokenDefTool.Execute(ctx, input)
+	if err != nil {
+		return connector.ToolResult{}, err
+	}
+	return connector.ToolResult{Text: res.Text, IsError: res.IsError}, nil
+}
+
 // dispatchBuiltin is the shared lookup-and-execute path for the five
 // builtin wrappers. tools.Result {Text, IsError} maps directly onto
 // connector.ToolResult; the transport adapter (MCP) then wraps both

@@ -166,6 +166,16 @@ type Connector interface {
 	// dispatch through this single Connector method.
 	MemoryBackendDef(ctx context.Context, input json.RawMessage) (ToolResult, error)
 
+	// OperatorTokenDef — RFC L OSS multi-tenant authorization. Mints,
+	// rotates, retires, and inspects the bearer tokens that replace the
+	// single LOOMCYCLE_AUTH_TOKEN shared secret, each bound to an
+	// authoritative principal (tenant + subject + scopes). Op-discriminated
+	// (create / rotate / retire / get / list). OPERATOR-ADMIN only.
+	// Reachable via POST /v1/_operatortokendef, the gRPC OperatorTokenDef
+	// RPC, the LoomCycle MCP meta-tool `operatortokendef`, and the TS
+	// adapter's client.operatorTokenDef() — all dispatch through here.
+	OperatorTokenDef(ctx context.Context, input json.RawMessage) (ToolResult, error)
+
 	// --- Pause/Resume/Snapshot (real in v0.8.18) ---
 	//
 	// Wire shapes finalised v0.8.15. Real implementations landed in

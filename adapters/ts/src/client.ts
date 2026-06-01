@@ -772,6 +772,17 @@ export class LoomcycleClient {
     return postJSON<SubstrateToolResponse>(this.ctx, "/v1/_memorybackenddef", input, opts);
   }
 
+  /** OperatorTokenDef substrate ops (create/rotate/retire/get/list) —
+   *  RFC L OSS multi-tenant authorization. Operator-admin only. The
+   *  token plaintext is returned ONCE in the create/rotate response.
+   *  Mirrors POST /v1/_operatortokendef. */
+  async operatorTokenDef(
+    input: SubstrateToolInput,
+    opts?: { signal?: AbortSignal },
+  ): Promise<SubstrateToolResponse> {
+    return postJSON<SubstrateToolResponse>(this.ctx, "/v1/_operatortokendef", input, opts);
+  }
+
   // ---- v0.10.3 Library v2 enumeration (read-only, merged yaml+substrate) ----
 
   /** List every agent the runtime knows about — yaml-static + dynamic

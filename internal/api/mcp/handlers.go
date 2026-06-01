@@ -80,6 +80,12 @@ var handlersByName = map[string]toolHandler{
 	"memorybackenddef": wrapBuiltin("memorybackenddef", func(c connector.Connector, ctx context.Context, in json.RawMessage) (connector.ToolResult, error) {
 		return c.MemoryBackendDef(ctx, in)
 	}),
+	// operatortokendef: RFC L OSS multi-tenant authorization. Mint /
+	// rotate / retire / inspect operator auth tokens. MCP stdio is
+	// single-operator by construction, so operatorCtx grants admin.
+	"operatortokendef": wrapBuiltin("operatortokendef", func(c connector.Connector, ctx context.Context, in json.RawMessage) (connector.ToolResult, error) {
+		return c.OperatorTokenDef(ctx, in)
+	}),
 	"evaluation": wrapBuiltin("evaluation", func(c connector.Connector, ctx context.Context, in json.RawMessage) (connector.ToolResult, error) {
 		return c.Evaluation(ctx, in)
 	}),

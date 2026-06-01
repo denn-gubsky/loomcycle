@@ -198,6 +198,9 @@ func (m *mockConnector) WebhookDef(context.Context, json.RawMessage) (connector.
 func (m *mockConnector) MemoryBackendDef(context.Context, json.RawMessage) (connector.ToolResult, error) {
 	return connector.ToolResult{}, nil
 }
+func (m *mockConnector) OperatorTokenDef(context.Context, json.RawMessage) (connector.ToolResult, error) {
+	return connector.ToolResult{}, nil
+}
 
 // v0.9.x Channel CRUD stubs.
 func (m *mockConnector) PublishChannel(context.Context, connector.ChannelPublishRequest) (connector.ChannelPublishResult, error) {
@@ -303,15 +306,15 @@ func TestServer_ToolsList_Returns33Tools(t *testing.T) {
 	if err := json.Unmarshal(resps[0].Result, &result); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if len(result.Tools) != 39 {
-		t.Errorf("got %d tools, want 39 (issue #88 adds resolve_probe on top of the RFC I memorybackenddef list)", len(result.Tools))
+	if len(result.Tools) != 40 {
+		t.Errorf("got %d tools, want 40 (RFC L adds operatortokendef on top of the resolve_probe list)", len(result.Tools))
 	}
 	names := map[string]bool{}
 	for _, td := range result.Tools {
 		names[td.Name] = true
 	}
 	// Spot-check across categories — through the v1.x additions.
-	for _, want := range []string{"spawn_run", "register_agent", "memory", "agentdef", "skilldef", "mcpserverdef", "scheduledef", "a2aservercarddef", "a2aagentdef", "webhookdef", "memorybackenddef", "pause_runtime", "create_snapshot", "get_snapshot", "resolve_probe", "interruption_resolve", "register_hook", "list_hooks", "delete_hook", "list_channels", "stream_user_run_states", "publish_channel", "subscribe_channel", "peek_channel", "ack_channel"} {
+	for _, want := range []string{"spawn_run", "register_agent", "memory", "agentdef", "skilldef", "mcpserverdef", "scheduledef", "a2aservercarddef", "a2aagentdef", "webhookdef", "memorybackenddef", "operatortokendef", "pause_runtime", "create_snapshot", "get_snapshot", "resolve_probe", "interruption_resolve", "register_hook", "list_hooks", "delete_hook", "list_channels", "stream_user_run_states", "publish_channel", "subscribe_channel", "peek_channel", "ack_channel"} {
 		if !names[want] {
 			t.Errorf("missing tool %q in tools/list", want)
 		}

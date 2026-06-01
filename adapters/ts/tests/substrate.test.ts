@@ -412,3 +412,42 @@ describe("memoryBackendDef", () => {
     expect(headers.Authorization).toBe("Bearer test-bearer");
   });
 });
+
+describe("operatorTokenDef", () => {
+  it("posts JSON to /v1/_operatortokendef and returns the row envelope", async () => {
+    const { client, fetchMock } = makeClient([
+      jsonResponse({
+        def_id: "otd_abc",
+        name: "alice",
+        tenant_id: "acme",
+        subject: "alice",
+        token: "lct_zN7kExample",
+        token_suffix: "zN7kEx",
+      }),
+    ]);
+
+    const result = (await client.operatorTokenDef({
+      op: "create",
+      name: "alice",
+      tenant_id: "acme",
+      scopes: ["runs:create", "runs:read"],
+    } as Record<string, unknown>)) as Record<string, unknown>;
+
+    expect(result.def_id).toBe("otd_abc");
+    expect(result.token).toBe("lct_zN7kExample");
+
+    const call = fetchMock.mock.calls[0]!;
+    expect(call[0]).toBe("http://test-loomcycle:8787/v1/_operatortokendef");
+    expect((call[1] as RequestInit).method).toBe("POST");
+    const body = JSON.parse((call[1] as RequestInit).body as string);
+    expect(body.op).toBe("create");
+    expect(body.tenant_id).toBe("acme");
+  });
+
+  it("raises AuthError on 401", async () => {
+    const { client } = makeClient([errorResponse(401, "invalid token")]);
+    await expect(
+      client.operatorTokenDef({ op: "list", name: "alice" } as Record<string, unknown>),
+    ).rejects.toBeInstanceOf(AuthError);
+  });
+});

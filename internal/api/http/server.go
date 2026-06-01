@@ -236,6 +236,13 @@ type Server struct {
 	// "not configured" errors. Set via SetMemoryBackendDefTool.
 	memoryBackendDefTool tools.Tool
 
+	// operatorTokenDefTool is the RFC L OperatorTokenDef substrate tool
+	// (auth-token minting/rotation/retirement). Operator-admin-only — NOT
+	// in s.tools; reached via Connector.OperatorTokenDef + the admin
+	// endpoint + the gRPC RPC + the MCP meta-tool. Nil = the surface
+	// returns "not configured". Set via SetOperatorTokenDefTool.
+	operatorTokenDefTool tools.Tool
+
 	// v0.12.0 multi-replica HA. backplane + replicaStore are nil in
 	// single-replica deployments (LOOMCYCLE_REPLICA_ID unset); /healthz
 	// then returns the same response shape as v0.11.x. When set,
@@ -543,6 +550,14 @@ func (s *Server) SetWebhookDefTool(t tools.Tool) {
 // constructed alongside the other substrate tools in main.go.
 func (s *Server) SetMemoryBackendDefTool(t tools.Tool) {
 	s.memoryBackendDefTool = t
+}
+
+// SetOperatorTokenDefTool wires the RFC L OperatorTokenDef substrate
+// tool. Without this call, Connector.OperatorTokenDef + POST
+// /v1/_operatortokendef + the gRPC RPC + the MCP meta-tool all refuse
+// with "not configured".
+func (s *Server) SetOperatorTokenDefTool(t tools.Tool) {
+	s.operatorTokenDefTool = t
 }
 
 // newDispatcher centralises Dispatcher construction so the three call
@@ -1783,6 +1798,8 @@ func (s *Server) Mux() http.Handler {
 	// RFC I MR-3a MemoryBackendDef substrate. Same operator-admin-only
 	// dispatch shape as the other substrate admin endpoints.
 	mux.Handle("POST /v1/_memorybackenddef", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleSubstrateMemoryBackendDef))))
+	// RFC L OSS multi-tenant authorization — OperatorTokenDef admin.
+	mux.Handle("POST /v1/_operatortokendef", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleSubstrateOperatorTokenDef))))
 	// v0.11.0 LLM Gateway — direct provider routing without the agent
 	// loop. Bearer-authed admin scope. Both stream:true (SSE) and
 	// stream:false (single-shot JSON) selected by the request body.
@@ -1816,6 +1833,7 @@ func (s *Server) Mux() http.Handler {
 	mux.Handle("GET /v1/_a2aagentdef/names", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleListA2AAgentDefNames))))
 	mux.Handle("GET /v1/_webhookdef/names", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleListWebhookDefNames))))
 	mux.Handle("GET /v1/_memorybackenddef/names", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleListMemoryBackendDefNames))))
+	mux.Handle("GET /v1/_operatortokendef/names", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleListOperatorTokenDefNames))))
 	// v0.9.x Library v2 — unified enumeration that merges static cfg
 	// + substrate views into one envelope per entry. The names/* sister
 	// endpoints above stay as-is for backwards compat with external

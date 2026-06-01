@@ -1259,6 +1259,32 @@ type Store interface {
 	MemoryBackendDefGetActive(ctx context.Context, name string) (MemoryBackendDefRow, error)
 	MemoryBackendDefSetRetired(ctx context.Context, defID string, retired bool) error
 
+	// ---- OperatorTokenDef (RFC L OSS multi-tenant authorization) ----
+	//
+	// Bearer tokens bound to an authoritative principal (tenant_id +
+	// subject + allowed_scopes). NOT a versioned/forkable substrate Def:
+	// no version, no active pointer, no parent — rotation is recorded via
+	// rotated_from and validity via retired_at. The token plaintext is
+	// never stored; only token_hash = SHA-256(pepper‖token).
+	OperatorTokenDefCreate(ctx context.Context, row OperatorTokenDefRow) (OperatorTokenDefRow, error)
+	OperatorTokenDefGet(ctx context.Context, defID string) (OperatorTokenDefRow, error)
+	// OperatorTokenDefGetByTokenHash is the auth hot path: a single
+	// indexed lookup. Returns ErrNotFound when no row matches. Validity
+	// (retired_at vs now) is decided by the caller (the auth layer),
+	// keeping the rotation-grace logic testable in one place.
+	OperatorTokenDefGetByTokenHash(ctx context.Context, tokenHash string) (OperatorTokenDefRow, error)
+	// OperatorTokenDefGetCurrentByName returns the name's current
+	// (retired_at IS NULL) token, or ErrNotFound. There is at most one.
+	OperatorTokenDefGetCurrentByName(ctx context.Context, name string) (OperatorTokenDefRow, error)
+	OperatorTokenDefListByName(ctx context.Context, name string) ([]OperatorTokenDefRow, error)
+	OperatorTokenDefListNames(ctx context.Context) ([]OperatorTokenDefNameSummary, error)
+	// OperatorTokenDefSetRetiredAt sets retired_at. Used by both retire
+	// (now → immediate) and rotate (now+grace on the prior row).
+	OperatorTokenDefSetRetiredAt(ctx context.Context, defID string, retiredAt time.Time) error
+	// OperatorTokenDefCountActiveAdmin counts non-retired tokens whose
+	// allowed_scopes include "substrate:admin" (the no-lockout guard).
+	OperatorTokenDefCountActiveAdmin(ctx context.Context) (int, error)
+
 	// ScheduleRunStatePause sets paused_until = until (or NULL if
 	// until.IsZero()). Resume = call with zero time.
 	ScheduleRunStatePause(ctx context.Context, defID string, until time.Time) error
@@ -2111,6 +2137,36 @@ type MemoryBackendDefNameSummary struct {
 	ActiveDefID   string    `json:"active_def_id,omitempty"`
 	LatestVersion int       `json:"latest_version"`
 	LastUpdated   time.Time `json:"last_updated"`
+}
+
+// OperatorTokenDefRow is one auth-token row (RFC L). The token plaintext
+// is NEVER stored — only TokenHash = SHA-256(pepper‖token). AllowedScopes
+// is persisted as a JSON array. RotatedFrom links a rotated token to its
+// predecessor; RetiredAt (zero = never) gates validity (valid iff zero or
+// now < RetiredAt).
+type OperatorTokenDefRow struct {
+	DefID            string    `json:"def_id"`
+	Name             string    `json:"name"`
+	TenantID         string    `json:"tenant_id"`
+	Subject          string    `json:"subject"`
+	TokenHash        string    `json:"-"` // never serialised to wire/log
+	AllowedScopes    []string  `json:"allowed_scopes"`
+	CreatedAt        time.Time `json:"created_at"`
+	CreatedByAgentID string    `json:"created_by_agent_id,omitempty"`
+	CreatedByRunID   string    `json:"created_by_run_id,omitempty"`
+	RotatedFrom      string    `json:"rotated_from,omitempty"`
+	RetiredAt        time.Time `json:"retired_at,omitempty"`
+}
+
+// OperatorTokenDefNameSummary is one row of the names listing — no
+// secret material, suitable for GET /v1/_operatortokendef/names.
+type OperatorTokenDefNameSummary struct {
+	Name        string    `json:"name"`
+	TenantID    string    `json:"tenant_id"`
+	Subject     string    `json:"subject"`
+	TokenCount  int       `json:"token_count"`  // including rotated/retired history
+	HasCurrent  bool      `json:"has_current"`  // a non-retired token exists
+	LastUpdated time.Time `json:"last_updated"` // newest created_at for the name
 }
 
 // MemoryBackendDefActiveEntry mirrors WebhookDefActiveEntry.

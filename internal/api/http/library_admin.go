@@ -129,6 +129,20 @@ func (s *Server) handleListMemoryBackendDefNames(w http.ResponseWriter, r *http.
 	writeJSONOK(w, map[string]any{"names": rows})
 }
 
+// handleListOperatorTokenDefNames serves GET /v1/_operatortokendef/names.
+// RFC L. Returns one summary per token name — NO secret material.
+func (s *Server) handleListOperatorTokenDefNames(w http.ResponseWriter, r *http.Request) {
+	rows, err := s.store.OperatorTokenDefListNames(r.Context())
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "store_error", err.Error())
+		return
+	}
+	if rows == nil {
+		rows = []store.OperatorTokenDefNameSummary{}
+	}
+	writeJSONOK(w, map[string]any{"names": rows})
+}
+
 // handleAgentChannels serves GET /v1/agents/{agent_name}/channels.
 // Returns every channel_cursors row for (scope=agent, scope_id={agent_name}),
 // ordered by channel ASC. Drives the v0.9.x Web UI's per-agent

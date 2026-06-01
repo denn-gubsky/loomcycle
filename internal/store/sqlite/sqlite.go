@@ -461,6 +461,29 @@ func (s *Store) migrate(ctx context.Context) error {
 			promoted_at           INTEGER NOT NULL,
 			promoted_by_agent_id  TEXT
 		)`,
+		// RFC L OSS multi-tenant authorization — bearer tokens bound to
+		// an authoritative principal (tenant_id + subject + allowed_scopes).
+		// NOT versioned/forkable: no version, no active pointer, no parent.
+		// Rotation via rotated_from; validity via retired_at (NULL or
+		// future = valid). token_hash = SHA-256(pepper‖token); plaintext
+		// never stored. See internal/store/postgres/migrations/
+		// 0035_operator_token_defs.up.sql for the full rationale.
+		`CREATE TABLE IF NOT EXISTS operator_token_defs (
+			def_id               TEXT    PRIMARY KEY,
+			name                 TEXT    NOT NULL,
+			tenant_id            TEXT    NOT NULL,
+			subject              TEXT    NOT NULL,
+			token_hash           TEXT    NOT NULL,
+			allowed_scopes       TEXT    NOT NULL,
+			created_at           INTEGER NOT NULL,
+			created_by_agent_id  TEXT,
+			created_by_run_id    TEXT,
+			rotated_from         TEXT    REFERENCES operator_token_defs(def_id),
+			retired_at           INTEGER,
+			UNIQUE(token_hash)
+		)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_operator_token_hash ON operator_token_defs(token_hash)`,
+		`CREATE INDEX IF NOT EXISTS operator_token_defs_by_name ON operator_token_defs(name, created_at DESC)`,
 		// v0.8.5 evaluations table. emitter_role is server-derived in
 		// the tool layer; the store stores the string verbatim. Score
 		// is REAL (Go float64). Dimensions + Judgement are JSON-as-TEXT

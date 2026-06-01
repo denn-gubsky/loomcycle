@@ -80,6 +80,9 @@ func substrateGRPCCtx(ctx context.Context) context.Context {
 		Scopes:   []string{"any"},
 		SelfName: grpcSubstrateAdminAgentName,
 	})
+	// OperatorTokenDef: gRPC substrate admin is operator-trust → grant
+	// admin (RFC L).
+	ctx = tools.WithOperatorTokenDefPolicy(ctx, tools.OperatorTokenDefPolicyValue{Admin: true})
 	ctx = tools.WithEvaluationPolicy(ctx, tools.EvaluationPolicyValue{
 		Scopes: []string{"submit_self", "submit_descendants", "submit_any", "read_any"},
 	})
@@ -197,6 +200,19 @@ func (s *Server) WebhookDef(ctx context.Context, req *loomcyclepb.SubstrateReque
 func (s *Server) MemoryBackendDef(ctx context.Context, req *loomcyclepb.SubstrateRequest) (*loomcyclepb.SubstrateResponse, error) {
 	return s.dispatchSubstrateRPC(ctx, "MemoryBackendDef", req, func(ctx context.Context, in json.RawMessage) (json.RawMessage, bool, error) {
 		res, err := s.connector.MemoryBackendDef(ctx, in)
+		if err != nil {
+			return nil, false, err
+		}
+		return json.RawMessage(res.Text), res.IsError, nil
+	})
+}
+
+// OperatorTokenDef serves the RFC L OperatorTokenDef gRPC RPC — auth
+// token minting/rotation/retirement. Same shape as the other substrate
+// RPCs; operator-admin-only.
+func (s *Server) OperatorTokenDef(ctx context.Context, req *loomcyclepb.SubstrateRequest) (*loomcyclepb.SubstrateResponse, error) {
+	return s.dispatchSubstrateRPC(ctx, "OperatorTokenDef", req, func(ctx context.Context, in json.RawMessage) (json.RawMessage, bool, error) {
+		res, err := s.connector.OperatorTokenDef(ctx, in)
 		if err != nil {
 			return nil, false, err
 		}
