@@ -201,6 +201,14 @@ type ctxKeyRunIdentity struct{}
 type RunIdentityValue struct {
 	UserID  string
 	AgentID string
+	// TenantID is the RFC L authoritative data-isolation boundary. On
+	// authenticated routes it is set from the resolved auth.Principal's
+	// TenantID (which overrides the wire tenant_id); for legacy /
+	// single-tenant deployments it is "default" (or empty, in which case
+	// memory's resolveTenancy backstop applies). It is the key memory
+	// tenancy partitions on (NOT UserID) — distinct from the per-actor
+	// Subject (which lands in UserID). Sub-agents inherit it unchanged.
+	TenantID string
 	// UserTier is the v0.8.2 user-facing-tier policy name applied to
 	// this run (e.g. "free" / "low" / "medium" / "high"). Sub-agents
 	// inherit it via ctx so the resolver applies the same tier

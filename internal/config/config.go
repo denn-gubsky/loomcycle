@@ -1275,7 +1275,11 @@ type Env struct {
 	// AuditLogPath is the JSONL sink for OperatorTokenDef mutations
 	// (RFC L). Empty = no file audit (a NopSink is wired).
 	AuditLogPath string
-	DataDir      string
+	// AuthVerbose (LOOMCYCLE_AUTH_VERBOSE=1) logs a server-side reason
+	// when a bearer is rejected. Off by default; the wire 401 stays
+	// opaque regardless (no oracle) — this only affects local logs.
+	AuthVerbose bool
+	DataDir     string
 	// ReadRoot is the sandbox root for the built-in Read tool. Empty by
 	// default — the tool is registered but rejects every call until set.
 	ReadRoot string
@@ -1897,6 +1901,7 @@ func Load(path string) (*Config, error) {
 		AuthToken:                os.Getenv("LOOMCYCLE_AUTH_TOKEN"),
 		OperatorTokenPepper:      os.Getenv("LOOMCYCLE_OPERATOR_TOKEN_PEPPER"),
 		AuditLogPath:             os.Getenv("LOOMCYCLE_AUDIT_LOG_PATH"),
+		AuthVerbose:              os.Getenv("LOOMCYCLE_AUTH_VERBOSE") == "1",
 		DataDir:                  getenvDefault("LOOMCYCLE_DATA_DIR", "./data"),
 		ReadRoot:                 os.Getenv("LOOMCYCLE_READ_ROOT"),
 		WriteRoot:                os.Getenv("LOOMCYCLE_WRITE_ROOT"),

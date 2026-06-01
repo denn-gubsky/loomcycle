@@ -93,7 +93,7 @@ func TestMem9Cred_PerTenantEnvPattern(t *testing.T) {
 	}
 	resolver := m.mem9CredentialResolver(def, def.TenancyStrategy, "")
 
-	ctx := tools.WithRunIdentity(context.Background(), tools.RunIdentityValue{UserID: "alice"})
+	ctx := tools.WithRunIdentity(context.Background(), tools.RunIdentityValue{TenantID: "alice"})
 	got, err := resolver(ctx)
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
@@ -107,7 +107,7 @@ func TestMem9Cred_PerTenantEnvPattern(t *testing.T) {
 // shared_key_with_prefix substitutes {tenant_id} into the key prefix.
 func TestMem9Tenancy_SharedPrefixSubstitutesTenant(t *testing.T) {
 	ts := config.MemoryBackendTenancy{Kind: "shared_key_with_prefix", PrefixPattern: "tenant-{tenant_id}::"}
-	ctx := tools.WithRunIdentity(context.Background(), tools.RunIdentityValue{UserID: "bob"})
+	ctx := tools.WithRunIdentity(context.Background(), tools.RunIdentityValue{TenantID: "bob"})
 
 	tenancy, tenant, err := resolveTenancy(ctx, ts)
 	if err != nil {

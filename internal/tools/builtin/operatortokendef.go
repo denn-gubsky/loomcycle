@@ -51,7 +51,12 @@ type OperatorTokenDef struct {
 	MaxScopes int
 }
 
-var operatorTokenNameRe = regexp.MustCompile(`^[a-zA-Z0-9_.-]{1,64}$`)
+// operatorTokenNameRe constrains name / tenant_id / subject. RFC L:
+// the subject becomes the authoritative user_id (it overrides the wire
+// user_id at run creation), and user_id must satisfy validIdent
+// ([A-Za-z0-9_-]) so it is safe as a URL path segment + fairness key —
+// hence no '.' or ':' here. Tenants/names share the charset for symmetry.
+var operatorTokenNameRe = regexp.MustCompile(`^[a-zA-Z0-9_-]{1,64}$`)
 
 const operatorTokenDefDescription = `Mint, rotate, retire, and inspect operator auth tokens (RFC L). ` +
 	`Each token binds a principal {tenant_id, subject, allowed_scopes}. ` +
@@ -65,7 +70,7 @@ const operatorTokenDefInputSchema = `{
     "name":       {"type": "string", "description": "Token name (required for create/list; create/rotate/retire accept name or def_id)."},
     "def_id":     {"type": "string", "description": "Existing def_id (for get; alternative target for rotate/retire)."},
     "tenant_id":  {"type": "string", "description": "Authoritative tenant (required for create)."},
-    "subject":    {"type": "string", "description": "Authoritative subject (optional for create; defaults to tok:<name>)."},
+    "subject":    {"type": "string", "description": "Authoritative subject (optional for create; defaults to tok-<name>)."},
     "scopes":     {"type": "array", "items": {"type": "string"}, "description": "Allowed scopes from the closed catalog (create; default [substrate:admin])."},
     "grace_seconds": {"type": "integer", "description": "Rotation grace window override (rotate)."}
   },
@@ -145,22 +150,23 @@ func (s *OperatorTokenDef) execCreate(ctx context.Context, in operatorTokenDefIn
 		return errResult("create: missing required field: name"), nil
 	}
 	if !operatorTokenNameRe.MatchString(in.Name) {
-		return errResult(fmt.Sprintf("create: name %q invalid (must match [a-zA-Z0-9_.-]{1,64})", in.Name)), nil
+		return errResult(fmt.Sprintf("create: name %q invalid (must match [a-zA-Z0-9_-]{1,64})", in.Name)), nil
 	}
 	if in.TenantID == "" {
 		return errResult("create: missing required field: tenant_id"), nil
 	}
 	if !operatorTokenNameRe.MatchString(in.TenantID) {
-		return errResult(fmt.Sprintf("create: tenant_id %q invalid (must match [a-zA-Z0-9_.-]{1,64})", in.TenantID)), nil
+		return errResult(fmt.Sprintf("create: tenant_id %q invalid (must match [a-zA-Z0-9_-]{1,64})", in.TenantID)), nil
 	}
 	subject := in.Subject
 	if subject == "" {
 		// Decision 4: default to a stable per-token id so attribution /
 		// fairness / audit are still distinct even without an explicit
-		// subject.
-		subject = "tok:" + in.Name
+		// subject. Hyphen (not colon) so the derived user_id stays
+		// validIdent-safe — it overrides the wire user_id (RFC L).
+		subject = "tok-" + in.Name
 	} else if !operatorTokenNameRe.MatchString(subject) {
-		return errResult(fmt.Sprintf("create: subject %q invalid (must match [a-zA-Z0-9_.-]{1,64})", subject)), nil
+		return errResult(fmt.Sprintf("create: subject %q invalid (must match [a-zA-Z0-9_-]{1,64})", subject)), nil
 	}
 	scopes := in.Scopes
 	if len(scopes) == 0 {

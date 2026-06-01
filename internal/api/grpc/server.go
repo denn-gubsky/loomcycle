@@ -20,6 +20,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log"
+	"strings"
 	"time"
 
 	googlegrpc "google.golang.org/grpc"
@@ -73,6 +74,12 @@ type Server struct {
 	// behaviour). Compared in constant time.
 	authToken string
 
+	// principalResolver (RFC L) resolves a bearer → auth.Principal. Nil
+	// = legacy-token-only auth with no principal stamping.
+	principalResolver func(context.Context, string) (auth.Principal, bool)
+	// authConfigured reports whether auth is active (open-mode decision).
+	authConfigured func(context.Context) bool
+
 	// Build identifiers (set at link time in main.go). Surfaced via
 	// Health(). Empty fallbacks are fine — adapters don't depend on
 	// these being populated.
@@ -97,24 +104,39 @@ type Config struct {
 	// *internal/api/http.Server also satisfies it. May be nil — Run +
 	// Continue then return codes.Unimplemented (useful for tests that
 	// don't need streaming).
-	Runner      runner.Runner
-	AuthToken   string
-	BuildCommit string
-	BuildTime   string
+	Runner    runner.Runner
+	AuthToken string
+	// PrincipalResolver resolves a raw bearer to an auth.Principal (RFC
+	// L). Wired in main.go to the HTTP server's resolver so gRPC reuses
+	// the identical token-substrate + legacy-fallback logic. When set,
+	// the auth interceptors resolve the bearer and stamp the principal
+	// into ctx (so gRPC-driven runs flow authoritatively through
+	// RunOnce); when nil, they fall back to the legacy constant-time
+	// AuthToken compare with no principal.
+	PrincipalResolver func(context.Context, string) (auth.Principal, bool)
+	// AuthConfigured reports whether auth is active (legacy secret set OR
+	// an admin token exists). Wired alongside PrincipalResolver so gRPC
+	// shares HTTP's open-mode decision: when it returns false the
+	// interceptors pass through (dev). Nil → fall back to AuthToken != "".
+	AuthConfigured func(context.Context) bool
+	BuildCommit    string
+	BuildTime      string
 }
 
 // New constructs a Server. Caller registers it with a *grpc.Server
 // (in cmd/loomcycle/main.go) and starts the listener.
 func New(cfg Config) *Server {
 	return &Server{
-		store:       cfg.Store,
-		cancelReg:   cfg.CancelReg,
-		connector:   cfg.Connector,
-		runner:      cfg.Runner,
-		authToken:   cfg.AuthToken,
-		buildCommit: cfg.BuildCommit,
-		buildTime:   cfg.BuildTime,
-		startedAt:   time.Now(),
+		store:             cfg.Store,
+		cancelReg:         cfg.CancelReg,
+		connector:         cfg.Connector,
+		runner:            cfg.Runner,
+		authToken:         cfg.AuthToken,
+		principalResolver: cfg.PrincipalResolver,
+		authConfigured:    cfg.AuthConfigured,
+		buildCommit:       cfg.BuildCommit,
+		buildTime:         cfg.BuildTime,
+		startedAt:         time.Now(),
 	}
 }
 
@@ -369,13 +391,11 @@ func (s *Server) UnaryAuthInterceptor() googlegrpc.UnaryServerInterceptor {
 		if info.FullMethod == healthFullMethod {
 			return handler(ctx, req)
 		}
-		if s.authToken == "" {
-			return handler(ctx, req)
-		}
-		if err := checkBearer(ctx, s.authToken); err != nil {
+		authedCtx, err := s.authenticate(ctx)
+		if err != nil {
 			return nil, err
 		}
-		return handler(ctx, req)
+		return handler(authedCtx, req)
 	}
 }
 
@@ -389,43 +409,80 @@ func (s *Server) StreamAuthInterceptor() googlegrpc.StreamServerInterceptor {
 		if info.FullMethod == healthFullMethod {
 			return handler(srv, ss)
 		}
-		if s.authToken == "" {
-			return handler(srv, ss)
-		}
-		if err := checkBearer(ss.Context(), s.authToken); err != nil {
+		authedCtx, err := s.authenticate(ss.Context())
+		if err != nil {
 			return err
 		}
-		return handler(srv, ss)
+		// Carry the principal-bearing ctx into the stream handler.
+		return handler(srv, &principalStream{ServerStream: ss, ctx: authedCtx})
 	}
 }
+
+// authenticate is the shared auth path for both interceptors (RFC L).
+// Open mode → pass through. Otherwise resolve the bearer to a principal
+// (stamped into the returned ctx so gRPC runs flow authoritatively
+// through RunOnce), falling back to the legacy constant-time AuthToken
+// compare when no resolver is wired.
+func (s *Server) authenticate(ctx context.Context) (context.Context, error) {
+	// Open-mode decision, mirroring the HTTP middleware.
+	if s.authConfigured != nil {
+		if !s.authConfigured(ctx) {
+			return ctx, nil
+		}
+	} else if s.authToken == "" {
+		return ctx, nil
+	}
+	bearer, ok := bearerFromMetadata(ctx)
+	if !ok {
+		return nil, status.Error(codes.Unauthenticated, "missing authorization header")
+	}
+	if s.principalResolver != nil {
+		p, ok := s.principalResolver(ctx, bearer)
+		if !ok {
+			return nil, status.Error(codes.Unauthenticated, "invalid bearer token")
+		}
+		return auth.WithPrincipal(ctx, p), nil
+	}
+	// Legacy-only fallback (no resolver wired — e.g. test harnesses).
+	if !auth.CompareBearer(bearer, s.authToken) {
+		return nil, status.Error(codes.Unauthenticated, "invalid bearer token")
+	}
+	return ctx, nil
+}
+
+// bearerFromMetadata extracts the raw token (sans "Bearer ") from the
+// gRPC `authorization` metadata header.
+func bearerFromMetadata(ctx context.Context) (string, bool) {
+	md, ok := metadata.FromIncomingContext(ctx)
+	if !ok {
+		return "", false
+	}
+	values := md.Get("authorization")
+	if len(values) == 0 {
+		return "", false
+	}
+	h := values[0]
+	const pfx = "Bearer "
+	if len(h) > len(pfx) && strings.EqualFold(h[:len(pfx)], pfx) {
+		return h[len(pfx):], true
+	}
+	return "", false
+}
+
+// principalStream wraps a ServerStream to override Context() with the
+// principal-bearing ctx produced by authenticate.
+type principalStream struct {
+	googlegrpc.ServerStream
+	ctx context.Context
+}
+
+func (w *principalStream) Context() context.Context { return w.ctx }
 
 // healthFullMethod is the gRPC method string for Loomcycle.Health.
 // Hardcoded vs derived from the proto descriptor because it's a tiny
 // well-known constant and the descriptor lookup at every interceptor
 // call would be wasted work.
 const healthFullMethod = "/loomcycle.v1.Loomcycle/Health"
-
-// checkBearer validates the `authorization: Bearer <token>` metadata
-// header in constant time. Uses auth.CompareBearer (sha256 + CTC)
-// rather than subtle.ConstantTimeCompare directly so the compare is
-// constant-time regardless of input length — raw CTC returns early
-// on length mismatch and leaks the expected token's length.
-func checkBearer(ctx context.Context, want string) error {
-	md, ok := metadata.FromIncomingContext(ctx)
-	if !ok {
-		return status.Error(codes.Unauthenticated, "missing metadata")
-	}
-	values := md.Get("authorization")
-	if len(values) == 0 {
-		return status.Error(codes.Unauthenticated, "missing authorization header")
-	}
-	got := values[0]
-	expected := "Bearer " + want
-	if !auth.CompareBearer(got, expected) {
-		return status.Error(codes.Unauthenticated, "invalid bearer token")
-	}
-	return nil
-}
 
 // MustLogStartupBanner prints a one-line startup notice when the
 // gRPC server starts listening. Symmetric with the HTTP banner in

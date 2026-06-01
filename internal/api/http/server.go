@@ -17,7 +17,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/cancel"
 	"github.com/denn-gubsky/loomcycle/internal/channels"
 	"github.com/denn-gubsky/loomcycle/internal/concurrency"
@@ -1317,6 +1316,15 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	effectiveAgentName := in.Agent
 	effectiveTenantID := in.TenantID
 	effectiveUserID := in.UserID
+	// RFC L: on an authenticated entry (gRPC interceptor stamps the
+	// principal), the principal is authoritative over the wire fields
+	// (Decision 5). Fresh runs only — a continuation inherits the
+	// session's identity, set authoritatively when the session was
+	// created. Un-authed programmatic callers (scheduler / webhook /
+	// A2A) carry no principal and keep their Def-supplied identity.
+	if !isContinuation {
+		effectiveTenantID, effectiveUserID = s.applyPrincipal(ctx, in.TenantID, in.UserID)
+	}
 	var priorMessages []providers.Message
 
 	if isContinuation {
@@ -1527,6 +1535,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	loopCtx := tools.WithAgentTools(runCtx, toolNames(allowedTools))
 	loopCtx = tools.WithRunIdentity(loopCtx, tools.RunIdentityValue{
 		UserID:          effectiveUserID,
+		TenantID:        effectiveTenantID, // RFC L: authoritative tenant (memory tenancy key)
 		AgentID:         agentID,
 		UserTier:        in.UserTier,
 		UserBearer:      in.UserBearer,      // v0.8.x: per-run MCP bearer
@@ -2370,6 +2379,14 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		req.ParentContext = nil
 	}
 
+	// RFC L: on authenticated routes the resolved principal is
+	// authoritative over the caller-asserted wire tenant_id/user_id
+	// (Decision 5). Overriding them here makes the fairness key (the
+	// AcquireForUser call below), the session's tenant, the run-row
+	// attribution, and the threaded RunIdentity all authority-derived in
+	// one place. Open/un-authed paths leave the wire values unchanged.
+	req.TenantID, req.UserID = s.applyPrincipal(r.Context(), req.TenantID, req.UserID)
+
 	providerID, model, effort, err := s.resolveAgent(req.Agent, req.UserTier)
 	if err != nil {
 		http.Error(w, err.Error(), resolveErrorToStatus(err))
@@ -2609,6 +2626,7 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 	// any sub-runs it spawns.
 	loopCtx = tools.WithRunIdentity(loopCtx, tools.RunIdentityValue{
 		UserID:          req.UserID,
+		TenantID:        req.TenantID, // RFC L: authoritative tenant (memory tenancy key)
 		AgentID:         agentID,
 		UserTier:        req.UserTier,
 		UserBearer:      req.UserBearer,      // v0.8.x: per-run MCP bearer
@@ -2966,6 +2984,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	loopCtx := tools.WithAgentTools(runCtx, toolNames(allowedTools))
 	loopCtx = tools.WithRunIdentity(loopCtx, tools.RunIdentityValue{
 		UserID:          sess.UserID,
+		TenantID:        sess.TenantID, // RFC L: tenant from the session (authoritative at creation)
 		AgentID:         agentID,
 		UserTier:        body.UserTier,
 		UserBearer:      body.UserBearer,      // v0.8.x: per-run MCP bearer
@@ -3561,6 +3580,7 @@ func (s *Server) runSubAgent(ctx context.Context, name string, prompt string, de
 	subCtx := tools.WithAgentTools(subRunCtx, toolNames(subTools))
 	subCtx = tools.WithRunIdentity(subCtx, tools.RunIdentityValue{
 		UserID:          parentIdentity.UserID,
+		TenantID:        parentIdentity.TenantID, // RFC L: sub-agents inherit the parent's authoritative tenant (same isolation boundary)
 		AgentID:         subAgentID,
 		UserTier:        parentIdentity.UserTier,              // v0.8.2: sub-agents inherit parent's user_tier
 		AgentDefID:      defID,                                // v0.8.7: surface pinned def_id via Context.self
@@ -4377,48 +4397,11 @@ func (s *Server) finishRun(_ context.Context, runID string, res loop.RunResult, 
 	s.publishRunState(meta, publishStatus, res.StopReason, errMsg)
 }
 
-// authMiddleware enforces LOOMCYCLE_AUTH_TOKEN bearer auth, except for /healthz which
-// is mounted bare (this middleware is only wrapped around /v1/* routes).
-//
-// Comparison uses auth.CompareBearer, which hashes both sides to a
-// fixed-length digest before subtle.ConstantTimeCompare so the
-// compare is constant-time regardless of input length (raw
-// ConstantTimeCompare returns early on length mismatch and leaks
-// the expected token's length).
-func (s *Server) authMiddleware(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if s.cfg.Env.AuthToken == "" {
-			// No token configured = open mode (dev only). Startup logged a
-			// warning so the operator knows.
-			next.ServeHTTP(w, r)
-			return
-		}
-		want := "Bearer " + s.cfg.Env.AuthToken
-		// Standard bearer-header path (every adapter / curl / API client).
-		if got := r.Header.Get("Authorization"); got != "" {
-			if auth.CompareBearer(got, want) {
-				next.ServeHTTP(w, r)
-				return
-			}
-			http.Error(w, "unauthorized", http.StatusUnauthorized)
-			return
-		}
-		// Cookie fallback for the embedded Web UI (v0.7.3). The /ui
-		// landing handler converts a `?token=...` query into a
-		// loomcycle_session HttpOnly cookie; subsequent /v1 calls
-		// from the SPA carry the cookie automatically (same-origin
-		// fetch). Operators using bearer headers via curl / SDKs are
-		// unaffected.
-		if cookie, err := r.Cookie(webui.SessionCookie); err == nil && cookie.Value != "" {
-			cookieBearer := "Bearer " + cookie.Value
-			if auth.CompareBearer(cookieBearer, want) {
-				next.ServeHTTP(w, r)
-				return
-			}
-		}
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
-	})
-}
+// authMiddleware moved to auth_principal.go (RFC L): it now resolves the
+// bearer to an auth.Principal (tenant + subject + scopes), stamps it into
+// ctx, and enforces the route's required scope. The legacy
+// LOOMCYCLE_AUTH_TOKEN keeps working via the principal-resolution
+// fallback until an admin-scoped OperatorTokenDef exists.
 
 // validIdent reports whether s is a valid user_id or agent_id. Charset
 // matches the spec: [A-Za-z0-9_-] with length 1..128. Used to refuse
