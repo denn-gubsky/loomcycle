@@ -1685,6 +1685,10 @@ func (s *Server) Mux() http.Handler {
 	mux.Handle("DELETE /v1/hooks/{id}", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleDeleteHook))))
 	// v0.7.x resolver introspection — operator-only debug surface.
 	mux.Handle("GET /v1/_resolver", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleResolverSnapshot))))
+	// Operator-triggered immediate re-probe (issue #88) — unsticks the
+	// availability matrix after a transient outage without a restart,
+	// instead of waiting up to a full probe interval for the next tick.
+	mux.Handle("POST /v1/_resolve/probe", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleResolveProbe))))
 	// v0.12.x live provider introspection. Complements /v1/_resolver
 	// (cached matrix) by doing a fresh ListModels round-trip — useful
 	// after adding a model to the upstream console without waiting

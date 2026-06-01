@@ -846,6 +846,18 @@ func (r *Resolver) SetForceProbeCallback(fn func(ctx context.Context)) {
 	r.forceProbe = fn
 }
 
+// ForceProbeWired reports whether a force-probe callback has been
+// installed. The POST /v1/_resolve/probe handler checks this so it can
+// 503 honestly ("probe trigger not wired") instead of returning 200
+// with a matrix it never actually refreshed — ForceProbe is a silent
+// no-op when unwired, which would be misleading for an endpoint whose
+// entire purpose is "re-probe now".
+func (r *Resolver) ForceProbeWired() bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.forceProbe != nil
+}
+
 // ForceProbe triggers an immediate refresh of the resolver matrix.
 // Called by the snapshot restore handler so the resolver's view of
 // provider availability is populated before the operator calls

@@ -712,6 +712,17 @@ curl -s -H "Authorization: Bearer $LOOMCYCLE_AUTH_TOKEN" \
 
 Shows: which providers are reachable, which models each lists, which models are stalled, the last probe time. Useful for confirming "is ollama-local actually probing successfully?"
 
+### At runtime — force an immediate re-probe
+
+The resolver re-probes every provider on a fixed interval (`LOOMCYCLE_RESOLVE_PROBE_INTERVAL_MS`, default 15 min). If a transient outage (DNS hiccup, brief upstream blip, the VM losing egress for a few seconds) stalls every provider mid-probe, runs can 503 for up to a full interval until the next tick. `POST /v1/_resolve/probe` triggers an immediate, synchronous re-probe so an operator can unstick the matrix without a restart (a restart drops in-flight runs):
+
+```sh
+curl -s -X POST -H "Authorization: Bearer $LOOMCYCLE_AUTH_TOKEN" \
+  http://localhost:8787/v1/_resolve/probe | jq .
+```
+
+Returns the **post-probe** matrix in the same shape as `GET /v1/_resolver`. A provider still unreachable after the probe comes back as `reachable: false` with its `last_error` set — that's data, not an error (200). The endpoint only 503s when it can't probe at all: `resolver_unavailable` (degraded startup, no resolver) or `probe_unavailable` (no probe loop wired, e.g. `--no-http`). Also handy for post-deploy / post-config validation before serving traffic.
+
 ### At runtime — confirm the resolved (provider, model)
 
 Every run's SSE stream includes an early event carrying the resolved pair. Smoke run:
