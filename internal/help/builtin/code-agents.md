@@ -85,8 +85,8 @@ tool, built-in or MCP, is callable. A tool you didn't allow is not a
 
 | JS | Tool | Notes |
 |---|---|---|
-| `Memory.get/set/delete/search(obj)` | Memory | multi-op meta-tool; obj is the input minus `op` |
-| `Channel.publish/subscribe(obj)` | Channel | multi-op meta-tool; subscribe is a non-blocking peek |
+| `Memory.<op>(obj)` | Memory | multi-op meta-tool; `<op>` is any Memory op (get/set/delete/list/incr/search/merge/append_dedupe/bounded_list/add/recall); obj is the input minus `op` |
+| `Channel.<op>(obj)` | Channel | multi-op meta-tool; `<op>` is any Channel op (publish/subscribe/ack/peek/list_channels); subscribe is a non-blocking peek |
 | `Agent.spawn(obj)` | Agent | spawn an LLM (or code) sub-agent; returns its result |
 | `WebFetch(obj)` / `Read(obj)` / `HTTP(obj)` / `WebSearch(obj)` / … | the built-in of that name | every other allowed **built-in**, flat by canonical name |
 | `mcp__<server>__<tool>(obj)` | that MCP tool | every allowed MCP tool, flat by name |

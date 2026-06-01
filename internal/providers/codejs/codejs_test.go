@@ -367,6 +367,99 @@ func TestCodeJS_ReplayDivergence_FailsLoud(t *testing.T) {
 	}
 }
 
+// memoryOpsMirror / channelOpsMirror MUST mirror the op switch in
+// internal/tools/builtin/{memory,channel}.go. If you add an op to either tool,
+// add it here — the drift test below then proves it is reachable from code-js
+// (generic passthrough makes it reachable automatically; this list is the
+// canary that catches a regression to a hardcoded subset OR an op whose name
+// collides with a reserved JS property).
+var memoryOpsMirror = []string{"get", "set", "delete", "list", "incr", "search", "merge", "append_dedupe", "bounded_list", "add", "recall"}
+var channelOpsMirror = []string{"publish", "subscribe", "ack", "peek", "list_channels"}
+
+// Meta-tool op drift: every op the Memory/Channel tools accept must be
+// reachable from code-js as Memory.<op>(...) / Channel.<op>(...), and none may
+// collide with a reserved JS property name (which the generic binding skips).
+// A hardcoded op subset (the pre-fix bug) silently hid incr/list/merge/
+// append_dedupe/bounded_list/add/recall and peek/list_channels — this test
+// fails on that regression. The agent calls Memory[op]({}) so one program
+// exercises every op by varying the prompt.
+func TestCodeJS_MetaToolOpPassthrough_NoDrift(t *testing.T) {
+	cases := []struct {
+		tool string
+		ops  []string
+	}{{"Memory", memoryOpsMirror}, {"Channel", channelOpsMirror}}
+	for _, c := range cases {
+		// Guard: a real op must not share a name with a reserved JS prop, else
+		// the generic binding would route it to Object.prototype, not the tool.
+		for _, op := range c.ops {
+			if metaReservedProps[op] {
+				t.Errorf("%s op %q collides with a reserved JS property — unreachable from code-js; rename the op or special-case it", c.tool, op)
+			}
+		}
+		js := `function run(input){ var r = ` + c.tool + `[input.prompt]({}); return {final_text: JSON.stringify(r)}; }`
+		root := writeAgent(t, "drift", js)
+		p := newTestProvider(root)
+		for _, op := range c.ops {
+			var gotOp string
+			res := drive(t, context.Background(), p, "drift", op, []providers.ToolSpec{{Name: c.tool}},
+				func(name string, input json.RawMessage) (string, bool) {
+					var m map[string]interface{}
+					_ = json.Unmarshal(input, &m)
+					if s, ok := m["op"].(string); ok {
+						gotOp = s
+					}
+					return `{"ok":true}`, false
+				})
+			if res.errText != "" {
+				t.Errorf("%s.%s errored (unreachable?): %s", c.tool, op, res.errText)
+				continue
+			}
+			if gotOp != op {
+				t.Errorf("%s.%s dispatched op=%q, want %q (binding dropped or rewrote the op)", c.tool, op, gotOp, op)
+			}
+		}
+	}
+}
+
+// Generic, not enumerated: an op name the binding has never heard of still
+// forwards (the tool's dispatch is the validator, not the binding). This locks
+// the no-hardcoded-subset property so a future edit can't silently re-cage it.
+func TestCodeJS_MetaToolOpPassthrough_IsGeneric(t *testing.T) {
+	root := writeAgent(t, "gen", `function run(){ Memory.totally_new_op_xyz({k:1}); return {final_text:"ok"}; }`)
+	p := newTestProvider(root)
+	var gotOp string
+	res := drive(t, context.Background(), p, "gen", "go", []providers.ToolSpec{{Name: "Memory"}},
+		func(name string, input json.RawMessage) (string, bool) {
+			var m map[string]interface{}
+			_ = json.Unmarshal(input, &m)
+			gotOp, _ = m["op"].(string)
+			return `{}`, false
+		})
+	if res.errText != "" {
+		t.Fatalf("generic op should forward, got error: %s", res.errText)
+	}
+	if gotOp != "totally_new_op_xyz" {
+		t.Errorf("arbitrary op did not forward generically: got op=%q", gotOp)
+	}
+}
+
+// Reserved JS property names must NOT be hijacked into tool dispatches:
+// String(Memory) (which reads .toString) must use Object.prototype, not emit a
+// bogus op:"toString" call. Guards the metaReservedProps fall-through.
+func TestCodeJS_MetaTool_ReservedPropsNotDispatched(t *testing.T) {
+	root := writeAgent(t, "rsv", `function run(){ return {final_text: (typeof Memory.toString) + "|" + String(Memory).slice(0,8)}; }`)
+	p := newTestProvider(root)
+	called := false
+	res := drive(t, context.Background(), p, "rsv", "go", []providers.ToolSpec{{Name: "Memory"}},
+		func(string, json.RawMessage) (string, bool) { called = true; return `{}`, false })
+	if called {
+		t.Error("reading Memory.toString dispatched a tool call — reserved prop leaked into emit")
+	}
+	if res.errText != "" || !strings.HasPrefix(res.finalText, "function|") {
+		t.Errorf("Memory.toString should be the prototype function; got final=%q err=%q", res.finalText, res.errText)
+	}
+}
+
 // Concurrent runs each build their own goja Runtime per Call — no shared
 // Runtime/Value. The race detector guards the no-shared-state invariant.
 func TestCodeJS_ConcurrentRuns_Isolated(t *testing.T) {
