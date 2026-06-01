@@ -1,4 +1,4 @@
-# LoomCycle Connector abstraction diagram (v0.8.15+ → v0.12.x)
+# LoomCycle Connector abstraction diagram (v0.8.15 → v0.16.x)
 # Render: d2 docs/architecture-connector.d2 docs/assets/architecture-connector.png
 #
 # Shows the Connector interface as the single architectural contract
@@ -28,7 +28,7 @@ connector: "connector.Connector\n(internal/connector/connector.go)" {
     font-size: 16
   }
 
-  methods: "36 methods (v0.12.x)" {
+  methods: "39 methods (v0.16.x)" {
     grid-columns: 4
     style: {
       fill: "#fdf2f8"
@@ -55,6 +55,14 @@ connector: "connector.Connector\n(internal/connector/connector.go)" {
 
     ctx:     "Context" {style.fill: "#fbcfe8"}
     intres:  "InterruptionResolve\n(v0.8.16)" {style.fill: "#fbcfe8"}
+
+    # Substrate Def tools (one op-discriminated method each)
+    mcpdef:  "MCPServerDef\n(v0.9.x)" {style.fill: "#fbcfe8"}
+    schdef:  "ScheduleDef\n(v0.12.7)" {style.fill: "#fbcfe8"}
+    whdef:   "WebhookDef\n(v0.14.0)" {style.fill: "#fbcfe8"}
+    mbdef:   "MemoryBackendDef\n(v0.15.0)" {style.fill: "#fbcfe8"}
+    a2asc:   "A2AServerCardDef\n(v0.13.0)" {style.fill: "#fbcfe8"}
+    a2aad:   "A2AAgentDef\n(v0.13.0)" {style.fill: "#fbcfe8"}
 
     # Channel substrate (v0.9.x channel CRUD)
     ch:      "Channel\n(in-band tool)" {style.fill: "#fbcfe8"}
