@@ -65,14 +65,26 @@ func (s *replayState) emit(name string, input json.RawMessage) (string, bool, er
 	if idx < len(s.recorded) {
 		rec := s.recorded[idx]
 		// Divergence guard: ambient determinism (sandbox.go) keeps the
-		// replayed call sequence identical to the recorded one. A name
-		// mismatch means control flow changed (an unhooked non-determinism
-		// source, or allowed_tools changed mid-run) — abort rather than feed
-		// the wrong result into the JS. (Input-level divergence detection is a
-		// possible hardening; name match is the high-value check and avoids
-		// JSON-canonicalization false positives.)
+		// replayed call sequence identical to the recorded one. A mismatch
+		// means control flow changed (an unhooked non-determinism source, an
+		// anchor/seed shift on a cross-process resume, or allowed_tools
+		// changed mid-run) — abort rather than feed the wrong result into the
+		// JS. We check BOTH the tool name AND the input: a same-name call with
+		// different ARGS (e.g. a key derived from the clock/RNG that shifted on
+		// resume) would otherwise pass a name-only guard and silently consume
+		// a stale result. Inputs are compared canonically (key-order-
+		// independent) to avoid false positives from JSON re-encoding.
 		if rec.name != name {
 			s.diverged = &replayDivergence{idx: idx, expected: rec.name, got: name}
+			s.rt.Interrupt(s.diverged)
+			return "", false, nil
+		}
+		if !sameCanonicalJSON(rec.input, input) {
+			s.diverged = &replayDivergence{
+				idx:      idx,
+				expected: rec.name + " " + truncForErr(canonicalJSON(rec.input)),
+				got:      name + " " + truncForErr(canonicalJSON(input)),
+			}
 			s.rt.Interrupt(s.diverged)
 			return "", false, nil
 		}
@@ -84,6 +96,40 @@ func (s *replayState) emit(name string, input json.RawMessage) (string, bool, er
 	s.frontier = &frontierStop{idx: idx, name: name, input: append(json.RawMessage(nil), input...)}
 	s.rt.Interrupt(s.frontier)
 	return "", false, nil
+}
+
+// canonicalJSON renders raw key-order-independently (unmarshal then
+// re-marshal — encoding/json sorts object keys), falling back to the raw
+// string when it does not parse (so two byte-identical-but-unparseable inputs
+// still compare equal). Used by the divergence guard to compare a replayed
+// tool input against the recorded one without false positives from key
+// reordering or whitespace.
+func canonicalJSON(raw json.RawMessage) string {
+	var v interface{}
+	if err := json.Unmarshal(raw, &v); err != nil {
+		return string(raw)
+	}
+	b, err := json.Marshal(v)
+	if err != nil {
+		return string(raw)
+	}
+	return string(b)
+}
+
+// sameCanonicalJSON reports whether two tool inputs are equal ignoring object
+// key order / whitespace.
+func sameCanonicalJSON(a, b json.RawMessage) bool {
+	return canonicalJSON(a) == canonicalJSON(b)
+}
+
+// truncForErr bounds a canonical-input snippet embedded in a divergence error
+// so a large argument cannot blow up the message.
+func truncForErr(s string) string {
+	const max = 120
+	if len(s) > max {
+		return s[:max] + "…"
+	}
+	return s
 }
 
 // extractRecorded recovers, in order, the tool calls already dispatched in
