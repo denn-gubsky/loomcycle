@@ -151,6 +151,25 @@ func (m *Memory) backend(ctx context.Context) memrank.Backend {
 	}
 }
 
+// memoryLayer resolves the MemoryLayer capability for the agent's configured
+// backend (RFC K). It returns (layer, true) when the resolved backend
+// implements the add/recall memory-layer paradigm, or (nil, false) when it
+// does not — e.g. the default in-process KV+vector backend, which is not a
+// memory layer. The caller (execAdd/execRecall) turns false into the typed
+// capability_unsupported refusal.
+//
+// It reuses backend(ctx) so backend selection (the per-agent memory_backend
+// Def, the fallback wrapper, the unknown-name degradation) stays in one
+// place — the memory-layer view is just a capability probe over the same
+// resolved backend. A fallback-wrapped backend is treated as a layer only if
+// the wrapper itself surfaces the capability; today the in-process fallback
+// is not a layer, so a mem9 layer wrapped for fallback degrades to "no layer"
+// rather than silently routing add/recall to in-process KV (which can't
+// honor them) — fail-closed.
+func (m *Memory) memoryLayer(ctx context.Context) (memrank.MemoryLayer, bool) {
+	return memrank.AsMemoryLayer(m.backend(ctx))
+}
+
 // buildMem9 constructs the RFC I MR-4 Mem9 REST backend for a resolved
 // kind=mem9 Def, wraps it in the fallback backend when the Def opts into
 // fallback_on_error=inprocess, and degrades to the operator-default
@@ -179,6 +198,17 @@ func (m *Memory) buildMem9(ctx context.Context, name string, def config.MemoryBa
 
 	// fallback_on_error=inprocess wraps the remote backend so a Mem9
 	// outage degrades to local memory instead of failing the run.
+	//
+	// SCOPE OF FALLBACK (RFC K caveat): fallback applies ONLY to the six KV
+	// ops. The fallback.Backend wrapper does NOT implement MemoryLayer (it
+	// would have to fake add/recall against KV — the lobotomization RFC K
+	// rejects), so a mem9 backend wrapped here will FAIL the
+	// AsMemoryLayer assertion in memoryLayer(): add/recall then return
+	// capability_unsupported even though the underlying mem9 IS a layer.
+	// That is fail-closed-correct — the in-process KV fallback cannot honor
+	// a semantic add/recall, so degrading to it would be wrong. The
+	// trade-off: fallback_on_error and memory-layer add/recall are mutually
+	// exclusive for the same backend.
 	if def.FallbackOnError == "inprocess" {
 		return fallback.New(b, m.defaultBackend(), log.Printf)
 	}
@@ -305,12 +335,13 @@ const memoryDescription = `Persistent key/value storage scoped to this agent or 
 	`Scope is "agent" (this agent's keyspace, shared across users) or "user" (this end-user's keyspace, shared across agents). ` +
 	`Values are JSON. Optional TTL is in seconds. ` +
 	`v0.9.0: pass embed=true with embed_text on set to enable semantic search; use op=search with query to find rows by similarity. ` +
-	`v0.12.x: merge / append_dedupe / bounded_list are atomic reducers — use them instead of get-modify-set when concurrent updates are possible.`
+	`v0.12.x: merge / append_dedupe / bounded_list are atomic reducers — use them instead of get-modify-set when concurrent updates are possible. ` +
+	`add / recall (memory-layer backends only): add ingests conversation messages (the backend may LLM-extract durable facts); recall is a natural-language semantic search over those facts. These require a memory-layer backend (memory_backend kind=mem9); against the default key/value store they return capability_unsupported. Unlike set/get, add does not store value-at-key and is often async — do not assume read-after-write.`
 
 const memoryInputSchema = `{
   "type": "object",
   "properties": {
-    "op":         {"type": "string", "enum": ["get","set","delete","list","incr","search","merge","append_dedupe","bounded_list"], "description": "Which operation to perform."},
+    "op":         {"type": "string", "enum": ["get","set","delete","list","incr","search","merge","append_dedupe","bounded_list","add","recall"], "description": "Which operation to perform."},
     "scope":      {"type": "string", "enum": ["agent","user"], "description": "Which keyspace: this agent's (cross-run, cross-user) or this user's (cross-agent)."},
     "key":        {"type": "string", "description": "The entry's key. Required for get / set / delete / incr / merge / append_dedupe / bounded_list."},
     "value":      {"description": "The JSON value. Required for set / merge / append_dedupe / bounded_list. For merge: a JSON object whose fields overlay the existing object. For append_dedupe / bounded_list: the item to append."},
@@ -323,7 +354,11 @@ const memoryInputSchema = `{
     "query":      {"type": "string", "description": "v0.9.0 search-only: the text to embed and use as the similarity query."},
     "top_k":      {"type": "integer", "description": "v0.9.0 search-only: max results (default 10, max 50)."},
     "rank":       {"type": "object", "description": "search-only hybrid ranking weights. Omit for pure semantic (default). Properties: semantic_weight, recency_weight, recency_half_life_hours, source_weight, frequency_weight (source/frequency reserved — contribute 0 today).", "properties": {"semantic_weight": {"type": "number"}, "recency_weight": {"type": "number"}, "recency_half_life_hours": {"type": "number"}, "source_weight": {"type": "number"}, "frequency_weight": {"type": "number"}}},
-    "dedup":      {"type": "object", "description": "search-only near-duplicate collapse. Omit (or enabled=false) for no dedup (default). Drops a result whose embedding cosine similarity to a higher-ranked kept result is >= threshold. Properties: enabled (bool), threshold (number, cosine-similarity floor, default 0.92), mode (\"drop\" default | \"merge\" | \"keep\").", "properties": {"enabled": {"type": "boolean"}, "threshold": {"type": "number"}, "mode": {"type": "string", "enum": ["drop","merge","keep"]}}}
+    "dedup":      {"type": "object", "description": "search-only near-duplicate collapse. Omit (or enabled=false) for no dedup (default). Drops a result whose embedding cosine similarity to a higher-ranked kept result is >= threshold. Properties: enabled (bool), threshold (number, cosine-similarity floor, default 0.92), mode (\"drop\" default | \"merge\" | \"keep\").", "properties": {"enabled": {"type": "boolean"}, "threshold": {"type": "number"}, "mode": {"type": "string", "enum": ["drop","merge","keep"]}}},
+    "messages":   {"type": "array", "description": "add-only (memory-layer backends): conversation turns to ingest. Each item is {role, content}.", "items": {"type": "object", "properties": {"role": {"type": "string", "enum": ["user","assistant","system"]}, "content": {"type": "string"}}, "required": ["role","content"]}},
+    "infer":      {"type": "boolean", "description": "add-only: when true (default) the memory-layer backend LLM-extracts durable facts from the messages; false stores them verbatim."},
+    "metadata":   {"type": "object", "description": "add-only: opaque key/value context attached to the ingestion.", "additionalProperties": {"type": "string"}},
+    "threshold":  {"type": "number", "description": "recall-only: 0..1 relevance floor for returned facts (0 = backend default)."}
   },
   "required": ["op","scope"],
   "additionalProperties": false
@@ -349,6 +384,19 @@ type memoryInput struct {
 	// dedup disabled (today's behavior, zero regression). See
 	// memrank.DedupConfig.
 	Dedup *memrank.DedupConfig `json:"dedup,omitempty"`
+
+	// Messages is the RFC K `add` payload — conversation turns the
+	// memory-layer backend ingests (and optionally LLM-extracts into facts).
+	Messages []memrank.LayerMessage `json:"messages,omitempty"`
+	// Infer controls server-side fact extraction on `add` (RFC K). Pointer
+	// so an omitted value defaults to true (the memory-layer paradigm) while
+	// `false` opts into verbatim storage. Nil = default-true.
+	Infer *bool `json:"infer,omitempty"`
+	// Metadata is opaque context attached to an `add` ingestion (RFC K).
+	Metadata map[string]string `json:"metadata,omitempty"`
+	// Threshold is the 0..1 relevance floor for `recall` (RFC K). 0 = the
+	// backend's default.
+	Threshold float64 `json:"threshold,omitempty"`
 }
 
 // Name implements tools.Tool.
@@ -395,10 +443,14 @@ func (m *Memory) Execute(ctx context.Context, raw json.RawMessage) (tools.Result
 		return m.execAppendDedupe(ctx, scope, scopeID, in)
 	case "bounded_list":
 		return m.execBoundedList(ctx, scope, scopeID, in)
+	case "add":
+		return m.execAdd(ctx, scope, scopeID, in)
+	case "recall":
+		return m.execRecall(ctx, scope, scopeID, in)
 	case "":
 		return errResult("missing required field: op"), nil
 	default:
-		return errResult(fmt.Sprintf("unknown op %q (must be one of: get, set, delete, list, incr, search, merge, append_dedupe, bounded_list)", in.Op)), nil
+		return errResult(fmt.Sprintf("unknown op %q (must be one of: get, set, delete, list, incr, search, merge, append_dedupe, bounded_list, add, recall)", in.Op)), nil
 	}
 }
 
@@ -622,6 +674,90 @@ func (m *Memory) execSearch(ctx context.Context, scope store.MemoryScope, scopeI
 		out["rank_note"] = res.RankNote
 	}
 	return okJSON(out)
+}
+
+// execAdd implements the RFC K `add` op: ingest conversation messages into a
+// memory-layer backend (which may LLM-extract durable facts). Refuses with
+// capability_unsupported when the resolved backend is not a memory layer
+// (e.g. the default in-process KV+vector backend) — the same fail-closed
+// posture as the search op's vector_unsupported refusal.
+func (m *Memory) execAdd(ctx context.Context, scope store.MemoryScope, scopeID string, in memoryInput) (tools.Result, error) {
+	layer, ok := m.memoryLayer(ctx)
+	if !ok {
+		return errResult(store.ErrCapabilityUnsupported.Msg), nil
+	}
+	if len(in.Messages) == 0 {
+		return errResult("add: missing required field: messages (a non-empty array of {role, content})"), nil
+	}
+	for i, msg := range in.Messages {
+		if msg.Content == "" {
+			return errResult(fmt.Sprintf("add: messages[%d] has empty content", i)), nil
+		}
+	}
+	// infer defaults to true — the memory-layer paradigm is LLM fact
+	// extraction; an operator opts into verbatim storage with infer:false.
+	infer := true
+	if in.Infer != nil {
+		infer = *in.Infer
+	}
+	res, err := layer.Add(ctx, scope, scopeID, in.Messages, memrank.AddOptions{
+		Infer:    infer,
+		Metadata: in.Metadata,
+	})
+	if err != nil {
+		return errResult(fmt.Sprintf("add: %s", err)), nil
+	}
+	out := map[string]any{
+		// status is "pending" (async ingest still extracting) or "done".
+		// A memory-layer add is frequently async, so the agent should NOT
+		// assume read-after-write — recall may not see the facts yet.
+		"status": res.Status.String(),
+	}
+	if res.EventID != "" {
+		out["event_id"] = res.EventID
+	}
+	return okJSON(out)
+}
+
+// execRecall implements the RFC K `recall` op: natural-language semantic
+// search over a memory-layer backend's extracted facts. Refuses with
+// capability_unsupported when the resolved backend is not a memory layer.
+func (m *Memory) execRecall(ctx context.Context, scope store.MemoryScope, scopeID string, in memoryInput) (tools.Result, error) {
+	layer, ok := m.memoryLayer(ctx)
+	if !ok {
+		return errResult(store.ErrCapabilityUnsupported.Msg), nil
+	}
+	if in.Query == "" {
+		return errResult("recall: missing required field: query"), nil
+	}
+	topK := in.TopK
+	if topK <= 0 {
+		topK = 10
+	}
+	if topK > 50 {
+		topK = 50
+	}
+	res, err := layer.Recall(ctx, scope, scopeID, memrank.RecallQuery{
+		Query:     in.Query,
+		TopK:      topK,
+		Threshold: in.Threshold,
+	})
+	if err != nil {
+		return errResult(fmt.Sprintf("recall: %s", err)), nil
+	}
+	facts := make([]map[string]any, 0, len(res.Facts))
+	for _, f := range res.Facts {
+		fact := map[string]any{
+			"id":     f.ID, // server-assigned; opaque to loomcycle, NOT a caller key
+			"memory": f.Memory,
+			"score":  f.Score,
+		}
+		if len(f.Metadata) > 0 {
+			fact["metadata"] = f.Metadata
+		}
+		facts = append(facts, fact)
+	}
+	return okJSON(map[string]any{"facts": facts})
 }
 
 func (m *Memory) execDelete(ctx context.Context, scope store.MemoryScope, scopeID string, in memoryInput) (tools.Result, error) {
