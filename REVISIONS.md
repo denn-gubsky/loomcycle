@@ -8,6 +8,78 @@ For pre-v0.4 history (single-tool runtime, library milestone, security patch), s
 
 ---
 
+## What's in v0.16.0
+
+**Headline: Memory layer (RFC K) + synthetic code provider (RFC J).** The two
+capabilities that complete the substrate ahead of the v1.0 hardening pass.
+Both are opt-in and additive — an existing deployment sees no change.
+
+### MemoryLayer — `Memory.add` / `Memory.recall` (RFC K)
+
+The `Memory` tool grows an optional second paradigm for LLM-extract memory
+products (mem9 smart-mode, mem0-style). `add` ingests conversation messages
+(`{role, content}[]`); the backend may run its own LLM to extract / reconcile
+durable facts (`infer: true`, the default) or store them verbatim. `recall`
+is a natural-language semantic search over those facts, returning
+server-assigned ids + 0..1 relevance scores. It is modelled as an **optional
+capability** probed alongside the FROZEN flat key/value `Backend` (new
+`MemoryLayer` interface + `Capabilities`/`Capable` probe), so every existing
+backend is untouched and zero-config. The default in-process store is a
+key/value + vector store, not a memory layer, so `add`/`recall` against it
+refuse with `*store.MemoryError{Code:"capability_unsupported"}` — the same
+fail-closed posture as `vector_unsupported` / `embedder_not_configured`,
+never a silent no-op. Mem9's `*Backend` implements the capability (smart-mode
+write + `q=` recall), reusing the verified `do()` + `scopedPrefix`/`scopeKey`
+tenancy plumbing, so `add`/`recall` honor the agent's `memory_scopes` and the
+tenant prefix exactly like the key/value ops. `fallback_on_error: inprocess`
+and the memory layer are mutually exclusive for one backend (the in-process
+fallback can't honor a semantic add/recall — fail-closed by design).
+
+### Synthetic `code-js` provider (RFC J)
+
+An AgentDef with `provider: code-js` runs operator-authored JavaScript (via
+goja) instead of calling an LLM. From everywhere else in loomcycle a
+code-agent **is an agent** — same loop, OTEL spans, scheduler / webhook / A2A
+reachability, sub-agent composition, evaluation surface — at zero token cost,
+for the deterministic glue steps that don't benefit from a model (ATS
+scrapes, known-shape SQL, format conversion, routing).
+
+- **Loop-driven dispatch.** The provider streams `EventToolCall` +
+  `StopReason:"tool_use"` exactly like an LLM driver; the agent loop
+  dispatches the tool (its ctx, hooks, OTEL, `${run.credentials}`
+  substitution, WebFetch/HTTP host allowlist) and re-invokes the provider. It
+  never imports `internal/tools` — the one-way provider→loop→tools layering
+  holds, so the symmetry is real by construction.
+- **Stateless replay execution.** Each `Call` builds a fresh runtime,
+  fast-forwards the tool results already recorded in the transcript (the
+  durable memoization log), and stops at the first un-recorded call (the
+  "frontier") via `Interrupt`. No parked goroutine, no registry: a run is
+  **resumable across restart / replica** for free, cancel is just the Call's
+  ctx, and the provider honors the "stateless across calls" contract.
+  Ambient non-determinism is hooked so replay is deterministic by
+  construction — `Math.random()` seeded per run, `Date.now()`/`new Date()`
+  anchored to the run start; `LOOMCYCLE_CODE_AGENTS_DETERMINISTIC=1` freezes
+  the clock+seed across runs for snapshot equality.
+- **Tool surface.** Every allowed tool is callable by its exact canonical
+  name (same as `allowed_tools` and other agents): the three multi-op
+  meta-tools `Memory` / `Channel` / `Agent` are objects with a method per op
+  (`Memory.get(...)`), every other built-in (`WebFetch`, `Read`, `HTTP`, …)
+  and `mcp__<server>__<tool>` is a flat function. Default-deny — a tool not
+  in `allowed_tools` isn't defined (`ReferenceError`). Meta-tool / MCP
+  results parse to objects; plain built-ins return their raw string.
+- **Sandbox + ops.** `eval`/`Function` deleted; no ambient fetch/fs/setTimeout.
+  Off by default behind `LOOMCYCLE_CODE_AGENTS_ENABLED=1` (operator-provided
+  code runs in the operator's trust posture, like Bash). Filesystem root via
+  `LOOMCYCLE_CODE_AGENTS_ROOT` (`agent_code/<name>/index.js`); a missing or
+  unparsable file fails loud **at startup**, not first fire. `Context.help
+  code-agents` topic + a bundled ats-scraper example ship with the binary.
+
+The locked design and the rejected parked-goroutine alternative are in
+`doc-internal/rfcs/synthetic-code-provider.md` (Appendix A = parked
+goroutine; Appendix B = the replay model adopted here).
+
+---
+
 ## What's in v0.15.0
 
 **Headline: Memory ranking, dedup & pluggable backends (RFC I).** The
