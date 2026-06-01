@@ -11,7 +11,11 @@ import (
 	"testing"
 	"time"
 
+	lcotel "github.com/denn-gubsky/loomcycle/internal/otel"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
+
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 )
 
 // writeAgent writes agent_code/<name>/index.js under a temp root and returns
@@ -162,6 +166,59 @@ func TestCodeJS_NoToolCalls(t *testing.T) {
 	}
 	if len(res.toolCalls) != 0 {
 		t.Errorf("expected zero tool calls, got %d", len(res.toolCalls))
+	}
+}
+
+// Each Call emits a loomcycle.provider.call span (parity with the real LLM
+// drivers, which each open one) carrying provider.code_hash — the sha256 of
+// the agent's index.js (RFC J Decision 9) — and provider.kind=synthetic-code.
+// This is the only place the hash surfaces on a trace, since the synthetic
+// provider makes no HTTP request. Asserts the hash matches the compiled hash.
+func TestCodeJS_ProviderCallSpan_CarriesCodeHash(t *testing.T) {
+	exp := tracetest.NewInMemoryExporter()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exp))
+	cleanup := lcotel.SetTracerProviderForTest(tp)
+	t.Cleanup(func() { cleanup(); _ = tp.Shutdown(context.Background()) })
+
+	root := writeAgent(t, "hashy", `function run(){ return {final_text:"ok"}; }`)
+	p := newTestProvider(root)
+	wantHash, err := p.Compile("hashy")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res := drive(t, context.Background(), p, "hashy", "go", nil, nil); res.errText != "" {
+		t.Fatalf("run errored: %s", res.errText)
+	}
+
+	var found bool
+	for _, s := range exp.GetSpans() {
+		if s.Name != lcotel.SpanProviderCall {
+			continue
+		}
+		found = true
+		var gotHash, gotKind, gotProvider string
+		for _, a := range s.Attributes {
+			switch string(a.Key) {
+			case lcotel.AttrProviderCodeHash:
+				gotHash = a.Value.AsString()
+			case lcotel.AttrProviderKind:
+				gotKind = a.Value.AsString()
+			case lcotel.AttrProvider:
+				gotProvider = a.Value.AsString()
+			}
+		}
+		if gotHash != wantHash {
+			t.Errorf("provider.call span code_hash=%q, want compiled hash %q", gotHash, wantHash)
+		}
+		if gotKind != "synthetic-code" {
+			t.Errorf("provider.call span kind=%q, want synthetic-code", gotKind)
+		}
+		if gotProvider != "code-js" {
+			t.Errorf("provider.call span provider=%q, want code-js", gotProvider)
+		}
+	}
+	if !found {
+		t.Fatal("no loomcycle.provider.call span emitted by the code-js provider")
 	}
 }
 

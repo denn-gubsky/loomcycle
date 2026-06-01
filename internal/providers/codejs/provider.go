@@ -9,7 +9,9 @@ import (
 	"time"
 
 	"github.com/dop251/goja"
+	"go.opentelemetry.io/otel/trace"
 
+	lcotel "github.com/denn-gubsky/loomcycle/internal/otel"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 )
 
@@ -126,7 +128,18 @@ func (p *Provider) Call(ctx context.Context, req providers.Request) (<-chan prov
 		return out, nil
 	}
 	seed, anchorMs := p.determinism(meta)
-	go p.runTurn(ctx, out, prog.prog, buildInput(req, meta), extractRecorded(req), toolNames(req), seed, anchorMs)
+	// Emit a loomcycle.provider.call span for parity with the real LLM drivers
+	// (which each open one). The synthetic provider makes no HTTP request, so
+	// this is the canonical place to attach provider.code_hash (RFC J Decision
+	// 9) — operators can answer "which index.js version produced this run" and
+	// filter synthetic-code runs via provider.kind. Span is ended in runTurn.
+	spanCtx, span := lcotel.RecordProviderCall(ctx, lcotel.ProviderCallAttrs{
+		Provider: providerID,
+		Model:    syntheticModel,
+		Kind:     "synthetic-code",
+		CodeHash: prog.hash,
+	})
+	go p.runTurn(spanCtx, out, span, prog.prog, buildInput(req, meta), extractRecorded(req), toolNames(req), seed, anchorMs)
 	return out, nil
 }
 
@@ -134,8 +147,9 @@ func (p *Provider) Call(ctx context.Context, req providers.Request) (<-chan prov
 // runtime → harden + hook → bind → run() → emit the turn's outcome → close.
 // The goroutine lives only for the JS execution (µs–ms), never across a
 // dispatch gap.
-func (p *Provider) runTurn(ctx context.Context, out chan providers.Event, prog *goja.Program, input map[string]any, recorded []toolRecord, allowed []string, seed uint32, anchorMs int64) {
+func (p *Provider) runTurn(ctx context.Context, out chan providers.Event, span trace.Span, prog *goja.Program, input map[string]any, recorded []toolRecord, allowed []string, seed uint32, anchorMs int64) {
 	defer close(out)
+	defer span.End()
 
 	rt := goja.New()
 	rt.SetFieldNameMapper(goja.TagFieldNameMapper("json", true))
