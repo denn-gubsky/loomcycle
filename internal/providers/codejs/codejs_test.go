@@ -457,6 +457,44 @@ func TestCodeJS_MetaTool_ReservedPropsNotDispatched(t *testing.T) {
 	}
 	if res.errText != "" || !strings.HasPrefix(res.finalText, "function|") {
 		t.Errorf("Memory.toString should be the prototype function; got final=%q err=%q", res.finalText, res.errText)
+// Input-level divergence: the recorded call has the SAME tool name at the same
+// index but a DIFFERENT input than the replayed call produces (e.g. a key
+// derived from a clock/RNG value that shifted on a cross-process resume). A
+// name-only guard would silently fast-forward the stale recorded result into
+// the JS; the canonical-input check makes it fail loud instead. The JS here
+// deterministically calls Memory.get({key:"a",...}); the transcript records a
+// Memory call with key:"b" — names match, inputs differ.
+func TestCodeJS_ReplayInputDivergence_FailsLoud(t *testing.T) {
+	root := writeAgent(t, "idiv", `function run(){ var v = Memory.get({key:"a", scope:"user"}); return {final_text: String(v)}; }`)
+	p := newTestProvider(root)
+	ctx := providers.WithRunMeta(context.Background(), providers.RunMeta{AgentName: "idiv"})
+	req := providers.Request{
+		Tools: []providers.ToolSpec{{Name: "Memory"}},
+		Messages: []providers.Message{
+			{Role: "user", Content: []providers.ContentBlock{{Type: "text", Text: "go"}}},
+			// Recorded Memory call with a DIFFERENT key than the JS produces.
+			{Role: "assistant", Content: []providers.ContentBlock{{Type: "tool_use", ToolUseID: "cj-1-0", ToolName: "Memory", ToolInput: json.RawMessage(`{"op":"get","scope":"user","key":"b"}`)}}},
+			{Role: "user", Content: []providers.ContentBlock{{Type: "tool_result", ToolUseID: "cj-1-0", Text: "stale-value"}}},
+		},
+	}
+	ch, err := p.Call(ctx, req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var gotErr, finalText string
+	for ev := range ch {
+		switch ev.Type {
+		case providers.EventError:
+			gotErr = ev.Error
+		case providers.EventText:
+			finalText += ev.Text
+		}
+	}
+	if !strings.Contains(gotErr, "code_agent_replay_divergence") {
+		t.Errorf("want code_agent_replay_divergence on input mismatch, got err=%q finalText=%q", gotErr, finalText)
+	}
+	if strings.Contains(finalText, "stale-value") {
+		t.Errorf("stale recorded result leaked into the JS: finalText=%q", finalText)
 	}
 }
 

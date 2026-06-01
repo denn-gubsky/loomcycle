@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 
 	"github.com/dop251/goja"
@@ -65,6 +66,16 @@ func (c *compiler) load(name string) (*compiled, error) {
 
 	if name == "" {
 		return nil, fmt.Errorf("code-agent: empty agent name (no RunMeta on ctx?)")
+	}
+	// Host-side containment floor (correct depth — rejects regardless of how
+	// the name reached us). The agent name becomes a path segment under
+	// CodeRoot; without this a name like "../../etc/cron.d/x" would
+	// filepath.Join-collapse out of CodeRoot and read/compile an arbitrary
+	// index.js anywhere on disk. The static .md loader applies the same check
+	// (internal/agents/loader.go:199); the AgentDef substrate create/fork path
+	// also validates the name, but this floor holds even if a caller forgets.
+	if strings.ContainsAny(name, `/\`) || name == "." || name == ".." {
+		return nil, fmt.Errorf("code-agent %q: invalid agent name (must not contain a path separator or be \".\"/\"..\")", name)
 	}
 	path := c.agentFile(name)
 	src, err := os.ReadFile(path)

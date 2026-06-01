@@ -2,7 +2,29 @@
 
 This is the public roadmap. For decision history, regret notes, and per-version commit-by-commit details, see `~/work/loomcycle-internal/doc-internal/PLAN.md` (operator-side separate repo; migrated out of this tree as part of v0.8.15).
 
-## v0.8.23 — current
+## Where we are
+
+loomcycle has shipped through **v0.16.0** (the memory layer + the synthetic `code-js` provider). Per-version shipped detail now lives in [`REVISIONS.md`](../REVISIONS.md); the historical design-roadmap entries from the v0.8.x series are retained below for context. This section tracks the path forward.
+
+## Planned — v1.0 (hardening) → v1.1.0 (multi-tenant authorization)
+
+**v1.0 — hardening + QA.** No new primitives. A security + robustness + runtime-QA pass across the v0.13–v0.16 surfaces (A2A interoperability, input webhooks, pluggable memory + the memory layer, the synthetic code provider), then the v1.0 tag. v1.0 authenticates with the existing single shared `LOOMCYCLE_AUTH_TOKEN` — correct and sufficient for single-operator and single-trusted-team deployments.
+
+**v1.1.0 — OSS multi-tenant authorization (headline).** Replaces the single shared token with a substrate-resident map of bearer tokens, each bound to an **authoritative principal** — a `(tenant, subject, scopes)` resolved *from the token*, not trusted from the request body. What it unlocks:
+
+- **Token-per-principal.** A team or small-VPS service issues a distinct token per developer / app, each minted by loomcycle (CSPRNG, shown once) — callers stop sharing one omnipotent secret.
+- **Authority-derived isolation.** The principal's tenant + subject drive boundaries that already exist — per-subject resource fairness and per-tenant memory isolation become *real* (today they key on caller-asserted fields). The wire `tenant_id` / `user_id` become advisory, overridden by the token.
+- **Scopes.** Narrow tokens (e.g. `runs:create` for an app key) vs admin tokens; default-deny from a documented catalog.
+- **Rotation + audit.** Two-token grace-window rotation; a file-based JSONL audit log of every token create / rotate / retire.
+- **Zero-disruption upgrade.** `LOOMCYCLE_AUTH_TOKEN` keeps working; single-operator deployments need no migration. Multi-tenancy is *available*, never *required*.
+
+Enterprise-grade authorization — SSO (SAML/OIDC), RBAC roles, SCIM provisioning, signed / queryable audit logs, automated rotation policies, compliance evidence — is intentionally **out of scope for OSS** and lives in a separate enterprise edition built on the same token substrate. The OSS edition does enough for a 200-developer team; the enterprise edition does what passes a procurement security review.
+
+**Beyond v1.1.0** (polish, unscheduled): a settings UI, an operator cookbook of deployment postures, broader distribution (Helm).
+
+---
+
+## v0.8.23 — earlier
 
 **Status: shipped (2026-05-20).** **`SkillDef` + `AgentDef` on every wire surface.** PR #163 lifts the v0.8.22 SkillDef substrate (and the previously MCP-only AgentDef substrate) onto HTTP admin endpoints + gRPC RPCs + TS + Python adapter methods. Symmetric exposure across all five transports; same connector dispatch path under each wire.
 

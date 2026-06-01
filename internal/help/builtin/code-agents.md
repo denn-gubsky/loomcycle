@@ -138,17 +138,30 @@ latency, no hallucination. Within a run, code-js is deterministic **by
 construction** — a code-agent runs as a *replay* over its recorded tool
 results, so the ambient clock and RNG are hooked: `Math.random()` is seeded
 per run, and `Date.now()` / `new Date()` are anchored to the run's start plus
-a per-call offset. Every re-execution of a run therefore reproduces the same
-values — which is exactly what makes a run **resumable** (below). Different
-runs still see real-anchored time and fresh entropy, so production behaviour
-is unsurprising.
+a per-call offset. Re-executing a run **in the same process** therefore
+reproduces the same values — which is what makes a run **resumable** (below).
+Different runs still see real-anchored time and fresh entropy, so production
+behaviour is unsurprising.
+
+**Cross-process resume caveat.** The default per-run seed is derived from the
+run's identity and the anchor from its start time. A resume in a *different*
+process (restart, replica handoff) re-derives both from the continuation's own
+identity/start, so a code-agent that feeds `Math.random()` / `Date.now()` into
+a **tool input** (e.g. a key or idempotency token) would compute a different
+input on resume. That no longer corrupts silently: the replay divergence guard
+compares each replayed call's input against the recorded one and fails loud
+with `code_agent_replay_divergence` rather than feeding a stale result into the
+JS. For code-agents that must resume deterministically across processes, set
+`LOOMCYCLE_CODE_AGENTS_DETERMINISTIC=1` (it pins the seed + anchor to fixed
+constants for **all** runs, so the continuation re-derives identical values),
+or keep clock/RNG values out of tool inputs (read a real per-call value from a
+tool — it is recorded — rather than from `Date.now()`).
 
 This is reproducible *replay*, not "the world stopped": tool / MCP results are
 recorded and replayed identically, but the upstream service that produced them
 is still whatever it is. `LOOMCYCLE_CODE_AGENTS_DETERMINISTIC=1` additionally
 freezes the clock + seed across **all** runs — cross-run reproducibility for
-tests and snapshot equality. If you need a true per-call wall-clock value, read
-it from a tool (it is recorded), not from `Date.now()`.
+tests and snapshot equality.
 
 ## Sharp edges
 
@@ -163,12 +176,22 @@ it from a tool (it is recorded), not from `Date.now()`.
   *replays* the tool results recorded in the run transcript, dispatching only
   the next, not-yet-recorded call. So a run interrupted mid-flight (process
   restart, replica handoff) resumes correctly from the transcript — there is
-  no parked continuation to lose. The cost is that the pure-JS portion
+  no parked continuation to lose. (One caveat for cross-*process* resume: a
+  code-agent that derives a tool input from `Math.random()`/`Date.now()` needs
+  `LOOMCYCLE_CODE_AGENTS_DETERMINISTIC=1` to re-derive identical inputs — see
+  **Determinism** above.) The cost is that the pure-JS portion
   re-executes each turn (≈O(N²) for N sequential tool calls), which is fine
   for the glue-logic design center; heavy compute belongs in an MCP server.
   (This is why determinism is always-on above — replay must reproduce the
   same call sequence; a non-deterministic divergence fails loud as
   `code_agent_replay_divergence`.)
+- **MaxIterations is a hard sequential-tool-call ceiling.** Each loop turn
+  advances a code-agent's replay by exactly one tool call, so the run's
+  `MaxIterations` caps how many sequential tool calls `run()` may make — it is
+  not a soft "model chatter" cap as it is for an LLM agent. A code-agent that
+  needs more sequential calls than the cap ends with `stop_reason:
+  max_iterations` (and an operator log line naming the agent + cap). Raise
+  `MaxIterations` for that run, or fan out concurrent work via `Agent.spawn`.
 - **Run timeout bounds wall time.** A CPU-bound JS loop is cut by goja
   `Interrupt` at the per-turn timeout; the overall run deadline rides the
   loop's ctx. Set `LOOMCYCLE_CODE_AGENTS_RUN_TIMEOUT_SECONDS`. The heap limit
