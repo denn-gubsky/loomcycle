@@ -73,6 +73,19 @@ type Capabilities struct {
 	// provider, so the operator sees "effort dropped" rather than
 	// silently believing the agent thought hard.
 	SupportsEffort bool
+
+	// UnboundedIterations signals that this provider's loop turns are the
+	// internal tool-dispatch steps of ONE logical run (not model reasoning
+	// turns), so the loop's MaxIterations soft-cap does not apply — the run is
+	// bounded by the provider's own wall-clock timeout instead. Set only by
+	// the synthetic code-js provider (RFC J): a code-agent's run() may make an
+	// arbitrary number of SEQUENTIAL tool calls, each one a loop turn, and
+	// capping that at 16 is unusable. The provider enforces a run-level
+	// deadline (LOOMCYCLE_CODE_AGENTS_RUN_TIMEOUT_SECONDS) so disabling the
+	// iteration cap cannot produce an unbounded run. The loop keeps a high
+	// hard ceiling as a pure runaway backstop. False for every LLM driver,
+	// where MaxIterations remains the runaway-tool-use guard.
+	UnboundedIterations bool
 }
 
 // Request is one round-trip to the provider. The loop builds a fresh Request

@@ -514,6 +514,9 @@ func TestCodeJS_MetaTool_ReservedPropsNotDispatched(t *testing.T) {
 	}
 	if res.errText != "" || !strings.HasPrefix(res.finalText, "function|") {
 		t.Errorf("Memory.toString should be the prototype function; got final=%q err=%q", res.finalText, res.errText)
+	}
+}
+
 // Input-level divergence: the recorded call has the SAME tool name at the same
 // index but a DIFFERENT input than the replayed call produces (e.g. a key
 // derived from a clock/RNG value that shifted on a cross-process resume). A

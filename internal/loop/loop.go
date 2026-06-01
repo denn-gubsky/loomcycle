@@ -320,6 +320,13 @@ const defaultMaxFallbackAttempts = 3
 // stretch we're willing to delay a single iteration's error reply.
 const maxSameProviderRetriesCap = 5
 
+// maxIterationsHardCeiling bounds the loop turns of an UnboundedIterations
+// provider (code-js), which is otherwise exempt from MaxIterations. It is NOT
+// the real bound — the provider's run-level wall-clock timeout terminates the
+// run first — only a defense-in-depth backstop against a provider that never
+// settles or errors. Sized far above any realistic sequential-tool-call count.
+const maxIterationsHardCeiling = 1 << 20
+
 // sameProviderRetryBackoff returns the duration to sleep before the
 // nth retry of the same (provider, model). Exponential: 100ms,
 // 300ms, 900ms, 2.7s, 8.1s — 3× per attempt. Most provider 429s
@@ -548,6 +555,19 @@ func Run(ctx context.Context, opts RunOptions) (RunResult, error) {
 		return RunResult{}, fmt.Errorf("loop: provider is nil")
 	}
 
+	// A synthetic provider whose loop turns are internal tool-dispatch steps of
+	// one run (code-js — Capabilities().UnboundedIterations) is exempt from the
+	// MaxIterations soft-cap: capping a code-agent's sequential tool calls at 16
+	// is unusable, and the provider bounds the whole run by its own wall-clock
+	// timeout (LOOMCYCLE_CODE_AGENTS_RUN_TIMEOUT_SECONDS, enforced as a run-level
+	// deadline). A high hard ceiling stays as a pure runaway backstop. For every
+	// LLM driver MaxIterations is unchanged (the runaway-tool-use guard).
+	unboundedIters := opts.Provider.Capabilities().UnboundedIterations
+	iterCap := opts.MaxIterations
+	if unboundedIters {
+		iterCap = maxIterationsHardCeiling
+	}
+
 	// Stamp the run's agent identity onto ctx for providers that need it
 	// outside the LLM-shaped Request. Only the synthetic code-js provider
 	// (RFC J) reads it — to resolve agent_code/<name>/index.js (Request
@@ -633,7 +653,7 @@ func Run(ctx context.Context, opts RunOptions) (RunResult, error) {
 	}
 
 outerLoop:
-	for iter := 0; iter < opts.MaxIterations; iter++ {
+	for iter := 0; iter < iterCap; iter++ {
 		// v0.10.0 OTEL: one loomcycle.iteration span per turn. Nested
 		// under the caller-opened loomcycle.run span (api/http opens
 		// the run span at each of the 4 run-creation sites). The
@@ -956,14 +976,14 @@ outerLoop:
 	// surface a different error to the user.
 	if stopReason == "tool_use" {
 		stopReason = "max_iterations"
-		// For a code-js agent, MaxIterations is a HARD ceiling on the number
-		// of SEQUENTIAL tool calls run() may make (each loop turn advances the
-		// replay by exactly one frontier call), not a soft cap on model
-		// chatter. Hitting it means run() did not return — it wanted call
-		// #(MaxIterations+1). The opaque "max_iterations" reason hides that, so
-		// name it in the operator log with the actionable lever.
-		if opts.Provider != nil && opts.Provider.ID() == "code-js" {
-			log.Printf("code-js agent %q hit MaxIterations=%d: run() requested more sequential tool calls than the cap (each turn = one call). Raise the run's MaxIterations or restructure the agent to fan out via Agent.spawn.", opts.AgentName, opts.MaxIterations)
+		// An unbounded-iterations provider (code-js) is exempt from the
+		// MaxIterations cap and bounded by its run-level timeout instead, so
+		// reaching iterCap here means the runaway hard ceiling — run() kept
+		// requesting tool calls without returning AND the timeout never fired.
+		// That's a non-terminating tool-call loop (a code-agent bug), not a too-
+		// small cap; name it accordingly. (Capability-driven, not ID-coupled.)
+		if unboundedIters {
+			log.Printf("code agent %q hit the %d-call runaway ceiling without returning — a code-agent is bounded by its run timeout (LOOMCYCLE_CODE_AGENTS_RUN_TIMEOUT_SECONDS), not by iteration count; this indicates a tool-call loop that never terminates.", opts.AgentName, iterCap)
 		}
 	}
 
