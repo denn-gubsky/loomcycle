@@ -210,9 +210,13 @@ func buildRequestBody(req providers.Request) ([]byte, error) {
 	}
 
 	w := wireRequest{
-		Model:       req.Model,
-		MaxTokens:   maxTokens,
-		Tools:       req.Tools,
+		Model:     req.Model,
+		MaxTokens: maxTokens,
+		// Flatten any top-level oneOf/anyOf/allOf in a tool's input_schema
+		// — Anthropic rejects those (e.g. a Zod discriminatedUnion at the
+		// root of an MCP tool). No-op for schemas without a top-level
+		// combinator. See schema.go.
+		Tools:       sanitizeAnthropicTools(req.Tools),
 		Temperature: req.Temperature,
 		Stream:      true, // we always stream
 	}
