@@ -43,6 +43,8 @@ import type {
   ClientOptions,
   ContinueOptions,
   CreateSnapshotOptions,
+  EnsureMcpServerOptions,
+  EnsureMcpServerResult,
   HealthResponse,
   Hook,
   InterruptListResponse,
@@ -73,6 +75,8 @@ import type {
   LLMChatStreamItem,
   LLMEmbeddingsOptions,
   LLMEmbeddingsResponse,
+  MCPServerDefRowResponse,
+  MCPServerDefVerifyResult,
   MemoryEntriesResponse,
   MemoryEntryResponse,
   MemoryScopeIDsResponse,
@@ -666,8 +670,10 @@ export class LoomcycleClient {
    *  Hard constraints (substrate refuses these):
    *  - Transport must be `http` or `streamable-http` (stdio stays
    *    yaml-only — dynamic registration doesn't allow process spawn).
-   *  - URL hostname must be in LOOMCYCLE_HTTP_HOST_ALLOWLIST (SSRF
-   *    defence at the registration boundary).
+   *  - URL hostname must be in LOOMCYCLE_HTTP_HOST_ALLOWLIST or (since
+   *    v0.17.x) LOOMCYCLE_HTTP_PRIVATE_HOST_ALLOWLIST — the latter is where
+   *    a self-hosted loopback callback like `http://localhost:3000/api/mcp`
+   *    belongs (SSRF defence at the registration boundary).
    *  - Name colliding with a static cfg.MCPServers entry is refused
    *    (yaml is ground truth; use a different name).
    *
@@ -679,6 +685,71 @@ export class LoomcycleClient {
     opts?: { signal?: AbortSignal },
   ): Promise<SubstrateToolResponse> {
     return postJSON<SubstrateToolResponse>(this.ctx, "/v1/_mcpserverdef", input, opts);
+  }
+
+  /** Typed `MCPServerDef verify` — "is `contentSha256` the active version's
+   *  hash for `name`?" `matches: true` is the no-op signal (the analog of
+   *  the agent/skill verify-before-create dedup). Thin typed wrapper over
+   *  {@link mcpServerDef}. */
+  async mcpServerDefVerify(
+    name: string,
+    contentSha256: string,
+    opts?: { signal?: AbortSignal },
+  ): Promise<MCPServerDefVerifyResult> {
+    return (await this.mcpServerDef(
+      { op: "verify", name, content_sha256: contentSha256 },
+      opts,
+    )) as MCPServerDefVerifyResult;
+  }
+
+  /** Register (or refresh) a dynamic MCP server idempotently — the typed
+   *  "register-if-changed" convenience for a consumer that re-registers its
+   *  own callback server on every startup.
+   *
+   *  Runs `create` (which is content-addressed-idempotent in loomcycle
+   *  ≥ v0.18.0 — a byte-identical re-registration is a no-op, not a new
+   *  version) and, when {@link EnsureMcpServerOptions.rediscover} is set, a
+   *  `tools/list` rediscover (also idempotent on unchanged tools). The
+   *  returned {@link EnsureMcpServerResult.changed} is false when loomcycle
+   *  deduped both — so a stable-content re-register on every boot is a clean
+   *  no-op. Keep `${run.*}` / `${LOOMCYCLE_*}` header placeholders LITERAL
+   *  (don't resolve a per-restart token) or the content varies each boot and
+   *  dedup can't engage. */
+  async ensureMcpServer(
+    opts: EnsureMcpServerOptions,
+    callOpts?: { signal?: AbortSignal },
+  ): Promise<EnsureMcpServerResult> {
+    const overlay: Record<string, unknown> = {
+      transport: opts.transport ?? "http",
+      url: opts.url,
+    };
+    if (opts.headers) overlay.headers = opts.headers;
+    const createInput: SubstrateToolInput = { op: "create", name: opts.name, overlay };
+    if (opts.description) createInput.description = opts.description;
+
+    const created = (await this.mcpServerDef(createInput, callOpts)) as MCPServerDefRowResponse;
+    let row = created;
+    let changed = created.deduplicated !== true;
+    let discoveredToolCount: number | undefined;
+
+    if (opts.rediscover) {
+      const red = (await this.mcpServerDef(
+        { op: "rediscover", name: opts.name },
+        callOpts,
+      )) as MCPServerDefRowResponse;
+      row = red;
+      if (red.deduplicated !== true) changed = true;
+      discoveredToolCount = red.discovered;
+    }
+
+    const result: EnsureMcpServerResult = {
+      name: opts.name,
+      defId: row.def_id,
+      version: row.version,
+      changed,
+    };
+    if (discoveredToolCount !== undefined) result.discoveredToolCount = discoveredToolCount;
+    return result;
   }
 
   /** Invoke the v1.x RFC E ScheduleDef substrate tool over HTTP.

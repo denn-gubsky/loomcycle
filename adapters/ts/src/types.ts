@@ -743,7 +743,7 @@ export interface PostHookCall {
  *  the adapter doesn't re-validate. Use the optional `extra` index
  *  signature for forward-compat fields. */
 export type SubstrateToolInput = {
-  op: "create" | "fork" | "get" | "list" | "promote" | "retire";
+  op: "create" | "fork" | "get" | "list" | "promote" | "retire" | "rediscover" | "verify";
   name?: string;
   def_id?: string;
   parent_def_id?: string;
@@ -1109,6 +1109,45 @@ export interface MCPServerDefRowResponse {
   content_sha256?: string;
   /** Only populated on `set` / `fork` responses (auto-promoted?). */
   promoted?: boolean;
+  /** True when create/rediscover was a content-addressed no-op
+   *  (loomcycle ≥ v0.18.0): the active def already carried identical
+   *  content (create) or identical discovered_tools (rediscover), so no
+   *  new version was minted. Absent (undefined) on a real mint. */
+  deduplicated?: boolean;
+  /** Only on `rediscover` responses — the number of tools discovered. */
+  discovered?: number;
+}
+
+/** Options for {@link LoomcycleClient.ensureMcpServer}. */
+export interface EnsureMcpServerOptions {
+  /** Substrate name (not a static cfg.MCPServers name). */
+  name: string;
+  /** Absolute MCP endpoint, e.g. `http://localhost:3000/api/mcp`. */
+  url: string;
+  /** Default `"http"`. */
+  transport?: "http" | "streamable-http";
+  /** Per-request headers, stored verbatim. Keep `${run.*}` / `${LOOMCYCLE_*}`
+   *  substitution placeholders LITERAL (don't resolve a token yourself) so
+   *  the registration content is stable across restarts — that's what lets
+   *  loomcycle's idempotent create dedup the re-registration. */
+  headers?: Record<string, string>;
+  description?: string;
+  /** Run a `tools/list` rediscover after registering. Default false. */
+  rediscover?: boolean;
+}
+
+/** Result of {@link LoomcycleClient.ensureMcpServer}. */
+export interface EnsureMcpServerResult {
+  name: string;
+  defId: string;
+  version: number;
+  /** True when this call minted a new version (create and/or rediscover);
+   *  false when loomcycle deduped it (active def already current). A
+   *  consumer re-registering on every boot expects `changed: false` once
+   *  the registration content is stable. */
+  changed: boolean;
+  /** Populated when `rediscover` ran: the number of tools discovered. */
+  discoveredToolCount?: number;
 }
 
 /** Response shape for `MCPServerDef verify`. Same semantics as

@@ -48,6 +48,8 @@
  *     agentDef(input): Promise<SubstrateToolResponse>
  *     skillDef(input): Promise<SubstrateToolResponse>
  *     mcpServerDef(input): Promise<SubstrateToolResponse>
+ *     mcpServerDefVerify(name, sha): Promise<MCPServerDefVerifyResult>   // v0.18.0
+ *     ensureMcpServer(opts): Promise<EnsureMcpServerResult>              // v0.18.0 — idempotent register-if-changed
  *     scheduleDef(input): Promise<SubstrateToolResponse>
  *
  *     // Library v2 enumeration (v0.10.3 — yaml+substrate merged)
@@ -189,6 +191,8 @@ export type {
   AgentDefVerifyResult,
   SkillDefVerifyResult,
   // Dynamic MCP server registration (v0.9.x)
+  EnsureMcpServerOptions,
+  EnsureMcpServerResult,
   MCPServerDefRowResponse,
   MCPServerDefVerifyResult,
   // Library v2 enumeration (v0.10.3)
