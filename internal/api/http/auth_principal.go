@@ -280,25 +280,28 @@ func (s *Server) applyPrincipal(ctx context.Context, wireTenant, wireUser string
 }
 
 // sessionOwnershipOK reports whether the ctx principal may continue or read
-// sess (RFC L cross-principal boundary). A continuation or transcript read
-// runs under / exposes the SESSION'S stored (tenant, subject) — so it must
-// belong to the same authoritative principal that created it. Session ids are
-// NOT secrets (they are returned to the caller, logged, shown in the UI, and
-// embedded in events/transcripts), so without this check principal-A could
-// POST to principal-B's session id and have the run execute under B's tenant
-// + subject: cross-tenant memory read/write, replay of B's transcript back to
-// A, fairness-cap evasion, and attribution as B.
+// sess. A continuation runs under / a transcript read exposes the SESSION'S
+// history, so the gate keeps a caller from acting on a session OUTSIDE ITS
+// TENANT — session ids are NOT secrets (returned to callers, logged, shown in
+// the UI, embedded in transcripts), so without this a token from tenant-B
+// could POST to a tenant-A session id and get cross-tenant memory read/write,
+// transcript replay, fairness-cap evasion, and attribution in A.
 //
-// Exempt (return true): no principal (open dev mode), and the single-operator
-// legacy principal (Legacy=true) — under the legacy shared secret there is
-// exactly one principal, so there is no cross-principal boundary to cross, and
-// pre-RFC-L sessions carry default/empty identity that would otherwise 404.
+// WHOLE-TENANT model (the chosen Web-UI authz granularity): the boundary is
+// the TENANT, not the subject — subjects within one tenant share the tenant's
+// workspace (they collaborate), so any acme subject may read/continue any acme
+// session. The cross-TENANT boundary (the actual security property) stays
+// hard. A super-admin (substrate:admin) crosses tenants by design.
+//
+// Exempt (return true): no principal (open dev mode); the single-operator
+// legacy principal (Legacy=true) — one principal, no boundary, and pre-RFC-L
+// sessions carry default/empty identity; and any substrate:admin principal.
 func sessionOwnershipOK(ctx context.Context, sess store.Session) bool {
 	p, ok := auth.PrincipalFromContext(ctx)
-	if !ok || p.Legacy {
+	if !ok || p.Legacy || auth.HasScope(p.Scopes, auth.ScopeAdmin) {
 		return true
 	}
-	return sess.TenantID == p.TenantID && sess.UserID == p.Subject
+	return sess.TenantID == p.TenantID
 }
 
 // handleWhoami serves GET /v1/_me — the Web UI's role source (multi-tenant
