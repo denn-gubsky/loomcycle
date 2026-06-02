@@ -108,7 +108,7 @@ func newBuildPlan() *buildPlan {
 // Write, etc.) would block on a useless pool.Get.
 func TestLazyResolver_NotMCPName(t *testing.T) {
 	pool := NewPool(newBuildPlan().build, nil)
-	r := NewLazyResolver(pool, map[string]ServerCfg{"jobs": {}}, nil, 0)
+	r := NewLazyResolver(pool, map[string]ServerCfg{"jobs": {}}, nil, nil, 0)
 
 	for _, name := range []string{"Read", "Write", "WebSearch", "mcp__", "mcp__jobs", "mcp__jobs__"} {
 		_, handled := r.Resolve(context.Background(), name, json.RawMessage(`{}`))
@@ -125,7 +125,7 @@ func TestLazyResolver_NotMCPName(t *testing.T) {
 // the right surface.
 func TestLazyResolver_ServerNotConfigured(t *testing.T) {
 	pool := NewPool(newBuildPlan().build, nil)
-	r := NewLazyResolver(pool, map[string]ServerCfg{"jobs": {}}, nil, 0)
+	r := NewLazyResolver(pool, map[string]ServerCfg{"jobs": {}}, nil, nil, 0)
 
 	_, handled := r.Resolve(context.Background(), "mcp__unknown__doSomething", json.RawMessage(`{}`))
 	if handled {
@@ -144,7 +144,7 @@ func TestLazyResolver_FirstCallTriggersHandshakeAndDispatches(t *testing.T) {
 		{Name: "getAgentContext", Description: "load context", InputSchema: json.RawMessage(`{"type":"object"}`)},
 	}
 	pool := NewPool(plan.build, nil)
-	r := NewLazyResolver(pool, map[string]ServerCfg{"jobs": {}}, nil, 0)
+	r := NewLazyResolver(pool, map[string]ServerCfg{"jobs": {}}, nil, nil, 0)
 
 	res, handled := r.Resolve(context.Background(), "mcp__jobs__getAgentContext", json.RawMessage(`{}`))
 	if !handled {
@@ -172,7 +172,7 @@ func TestLazyResolver_SecondCallHitsCache(t *testing.T) {
 		{Name: "patchApplication", InputSchema: json.RawMessage(`{"type":"object"}`)},
 	}
 	pool := NewPool(plan.build, nil)
-	r := NewLazyResolver(pool, map[string]ServerCfg{"jobs": {}}, nil, 0)
+	r := NewLazyResolver(pool, map[string]ServerCfg{"jobs": {}}, nil, nil, 0)
 
 	for i := 0; i < 5; i++ {
 		_, handled := r.Resolve(context.Background(), "mcp__jobs__getAgentContext", json.RawMessage(`{}`))
@@ -200,7 +200,7 @@ func TestLazyResolver_HandshakeFails(t *testing.T) {
 	plan := newBuildPlan()
 	plan.alwaysFail["jobs"] = true
 	pool := NewPool(plan.build, nil)
-	r := NewLazyResolver(pool, map[string]ServerCfg{"jobs": {}}, nil, 0)
+	r := NewLazyResolver(pool, map[string]ServerCfg{"jobs": {}}, nil, nil, 0)
 
 	res, handled := r.Resolve(context.Background(), "mcp__jobs__getAgentContext", json.RawMessage(`{}`))
 	if !handled {
@@ -231,7 +231,7 @@ func TestLazyResolver_OperatorAllowedToolsFilter(t *testing.T) {
 	pool := NewPool(plan.build, nil)
 	r := NewLazyResolver(pool, map[string]ServerCfg{
 		"jobs": {AllowedTools: []string{"safe_tool"}},
-	}, nil, 0)
+	}, nil, nil, 0)
 
 	// safe_tool resolves
 	_, handled := r.Resolve(context.Background(), "mcp__jobs__safe_tool", json.RawMessage(`{}`))
@@ -269,7 +269,7 @@ func TestLazyResolver_OnResolveCallback(t *testing.T) {
 			count  int
 		}
 	)
-	r := NewLazyResolver(pool, map[string]ServerCfg{"jobs": {}}, func(server string, count int) {
+	r := NewLazyResolver(pool, map[string]ServerCfg{"jobs": {}}, nil, func(server string, count int) {
 		mu.Lock()
 		defer mu.Unlock()
 		callbacks = append(callbacks, struct {
@@ -304,7 +304,7 @@ func TestLazyResolver_ConcurrentCallsCoalesceHandshake(t *testing.T) {
 		{Name: "getAgentContext", InputSchema: json.RawMessage(`{"type":"object"}`)},
 	}
 	pool := NewPool(plan.build, nil)
-	r := NewLazyResolver(pool, map[string]ServerCfg{"jobs": {}}, nil, 0)
+	r := NewLazyResolver(pool, map[string]ServerCfg{"jobs": {}}, nil, nil, 0)
 
 	const N = 50
 	var wg sync.WaitGroup
@@ -321,5 +321,42 @@ func TestLazyResolver_ConcurrentCallsCoalesceHandshake(t *testing.T) {
 	wg.Wait()
 	if got := plan.calls("jobs"); got != 1 {
 		t.Errorf("build called %d times under %d-way concurrent first-touch, want 1", got, N)
+	}
+}
+
+// TestLazyResolver_DynamicRegistryServerResolves pins the fix for
+// dynamically-registered (MCPServerDef) servers: a server absent from the
+// static serverConfig but present in the shared DynamicRegistry must still
+// resolve its tools. Before the fix the membership gate consulted only
+// serverConfig, so a runtime-registered `jobs` server fell through to the
+// dispatcher's bare "tool not found" even though the pool could reach it —
+// the exact `tool not found: mcp__jobs__postResearchIngest` symptom.
+func TestLazyResolver_DynamicRegistryServerResolves(t *testing.T) {
+	plan := newBuildPlan()
+	plan.tools["jobs"] = []ToolDescriptor{
+		{Name: "postResearchIngest", InputSchema: json.RawMessage(`{"type":"object"}`)},
+	}
+	pool := NewPool(plan.build, nil)
+	// serverConfig deliberately omits "jobs" — it lives ONLY in the dynamic
+	// registry, as if registered at runtime via `mcpserverdef create`.
+	dyn := NewDynamicRegistry()
+	dyn.Set(DynamicMCPServerSpec{Name: "jobs", Transport: "http", URL: "http://localhost:3000/api/mcp"})
+	r := NewLazyResolver(pool, map[string]ServerCfg{}, dyn, nil, 0)
+
+	res, handled := r.Resolve(context.Background(), "mcp__jobs__postResearchIngest", json.RawMessage(`{}`))
+	if !handled {
+		t.Fatal("dynamically-registered server should be handled (pre-fix: fell through → 'tool not found')")
+	}
+	if res.IsError {
+		t.Fatalf("expected success Result, got IsError: %q", res.Text)
+	}
+	if !strings.Contains(res.Text, "fake-call-result") {
+		t.Errorf("expected dispatch to the underlying tool; got %q", res.Text)
+	}
+
+	// Control: a server in NEITHER serverConfig NOR the registry still falls
+	// through to the dispatcher's generic "tool not found".
+	if _, handled2 := r.Resolve(context.Background(), "mcp__ghost__doThing", json.RawMessage(`{}`)); handled2 {
+		t.Error("unknown server (not static, not dynamic) must fall through (handled=false)")
 	}
 }

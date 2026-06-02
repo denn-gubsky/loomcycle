@@ -880,8 +880,8 @@ func main() {
 	for name, srv := range cfg.MCPServers {
 		mcpServerCfgs[name] = mcp.ServerCfg{AllowedTools: srv.AllowedTools}
 	}
-	mcpLazyResolver := mcp.NewLazyResolver(mcpPool, mcpServerCfgs, func(server string, count int) {
-		log.Printf("mcp[%s]: lazy-registered %d tool(s) on first agent call (was skipped at boot)", server, count)
+	mcpLazyResolver := mcp.NewLazyResolver(mcpPool, mcpServerCfgs, dynamicMCPRegistry, func(server string, count int) {
+		log.Printf("mcp[%s]: lazy-registered %d tool(s) on first agent call", server, count)
 	}, 0)
 
 	// Storage: SQLite (default, compact installs) or Postgres

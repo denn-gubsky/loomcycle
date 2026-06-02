@@ -61,6 +61,16 @@ type LazyResolver struct {
 	pool         *Pool
 	serverConfig map[string]ServerCfg
 
+	// dynamicReg holds runtime-registered (MCPServerDef) servers — the
+	// same shared registry the pool's build callback consults. May be nil
+	// (tests / deployments without the substrate). Without it, a server
+	// registered at runtime via `mcpserverdef create` is absent from
+	// serverConfig (which is static-yaml only), so its tools fail the
+	// membership gate below and the agent sees a bare "tool not found"
+	// even though the pool could reach the server. Consulting it here is
+	// what makes dynamic loopback/remote MCP registration actually usable.
+	dynamicReg *DynamicRegistry
+
 	// onResolve, if non-nil, is called once per server when its tools
 	// are first registered via the lazy path. Used for operator-visible
 	// "mcp[%s]: lazy-registered N tools after agent call (was skipped at
@@ -93,15 +103,18 @@ type ServerCfg struct {
 // configs; the resolver simply won't be reached for it (its tools are
 // in the dispatcher's static map).
 //
-// onResolve is optional; pass log.Printf for production. handshakeTimeout
-// of 0 falls back to a sane default.
-func NewLazyResolver(pool *Pool, configs map[string]ServerCfg, onResolve func(string, int), handshakeTimeout time.Duration) *LazyResolver {
+// dynamicReg is the shared runtime-registration registry (the same one
+// the pool's build callback uses); pass nil to disable dynamic-server
+// resolution. onResolve is optional; pass log.Printf for production.
+// handshakeTimeout of 0 falls back to a sane default.
+func NewLazyResolver(pool *Pool, configs map[string]ServerCfg, dynamicReg *DynamicRegistry, onResolve func(string, int), handshakeTimeout time.Duration) *LazyResolver {
 	if handshakeTimeout <= 0 {
 		handshakeTimeout = 10 * time.Second
 	}
 	return &LazyResolver{
 		pool:             pool,
 		serverConfig:     configs,
+		dynamicReg:       dynamicReg,
 		onResolve:        onResolve,
 		handshakeTimeout: handshakeTimeout,
 		registered:       make(map[string]map[string]tools.Tool),
@@ -116,6 +129,17 @@ func (r *LazyResolver) Resolve(ctx context.Context, name string, input json.RawM
 		return tools.Result{}, false
 	}
 	cfg, configured := r.serverConfig[server]
+	if !configured && r.dynamicReg != nil {
+		if _, ok := r.dynamicReg.Get(server); ok {
+			// Dynamically-registered (MCPServerDef) server: present in the
+			// shared registry the pool's build callback uses, but absent
+			// from the static-yaml serverConfig. Resolve its tools too. No
+			// operator allowed_tools filter — the dynamic spec carries none,
+			// and empty = allow-all discovered (the agent's own allowed_tools
+			// still gates which it may call).
+			cfg, configured = ServerCfg{}, true
+		}
+	}
 	if !configured {
 		return tools.Result{}, false
 	}
