@@ -30,15 +30,26 @@ type tokenCacheEntry struct {
 	expiresAt time.Time
 }
 
+// tokenCacheMaxEntries bounds the map. resolvePrincipal caches a negative for
+// every distinct bearer hash, and it runs BEFORE the scope check, so an
+// attacker spraying distinct random bearers at any authed route would
+// otherwise grow the map without bound for the TTL (a memory-amplification
+// DoS — each 256-bit bearer is a fresh key). At the cap, put() sweeps expired
+// entries and, if still full, skips caching (correctness preserved: the next
+// request does the direct lookup). 16384 entries ≈ a few MB — ample for the
+// real working set of live tokens, a hard ceiling for negative spray.
+const tokenCacheMaxEntries = 16384
+
 type tokenCache struct {
-	mu  sync.RWMutex
-	m   map[string]tokenCacheEntry
-	ttl time.Duration
-	now func() time.Time // injectable for tests
+	mu      sync.RWMutex
+	m       map[string]tokenCacheEntry
+	ttl     time.Duration
+	maxSize int
+	now     func() time.Time // injectable for tests
 }
 
 func newTokenCache(ttl time.Duration) *tokenCache {
-	return &tokenCache{m: make(map[string]tokenCacheEntry), ttl: ttl, now: time.Now}
+	return &tokenCache{m: make(map[string]tokenCacheEntry), ttl: ttl, maxSize: tokenCacheMaxEntries, now: time.Now}
 }
 
 // get returns the cached resolution for a hash. ok=false on a miss or an
@@ -56,14 +67,28 @@ func (c *tokenCache) get(hash string) (auth.Principal, bool /*found*/, bool /*ok
 	return e.principal, e.found, true
 }
 
-// put records a resolution. No-op when the cache is disabled.
+// put records a resolution. No-op when the cache is disabled. Bounded by
+// maxSize: at the cap it first evicts expired entries, then — if still full —
+// skips caching this entry (the next request does a direct lookup). This caps
+// the negative-cache memory an invalid-bearer spray can consume.
 func (c *tokenCache) put(hash string, p auth.Principal, found bool) {
 	if c == nil || c.ttl <= 0 {
 		return
 	}
 	c.mu.Lock()
+	defer c.mu.Unlock()
+	if _, exists := c.m[hash]; !exists && c.maxSize > 0 && len(c.m) >= c.maxSize {
+		now := c.now()
+		for k, e := range c.m {
+			if now.After(e.expiresAt) {
+				delete(c.m, k)
+			}
+		}
+		if len(c.m) >= c.maxSize {
+			return // still full of live entries — skip caching, stay bounded
+		}
+	}
 	c.m[hash] = tokenCacheEntry{principal: p, found: found, expiresAt: c.now().Add(c.ttl)}
-	c.mu.Unlock()
 }
 
 // flush drops all entries. Called on a local token mutation and on
