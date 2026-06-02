@@ -49,6 +49,14 @@ type OperatorTokenDef struct {
 	// MaxScopes caps the allowed_scopes list length (defense-in-depth).
 	// 0 → 64.
 	MaxScopes int
+
+	// LegacyTokenSet reports whether LOOMCYCLE_AUTH_TOKEN is configured
+	// (wired from main.go). When false, retiring the LAST admin-scoped token
+	// would flip authConfigured to false → unauthenticated open mode, so the
+	// no-fail-open guard in execRetire refuses it. When a legacy fallback
+	// exists, retiring the last admin merely re-enables it (recoverable), so
+	// the guard does not fire.
+	LegacyTokenSet bool
 }
 
 // operatorTokenNameRe constrains name / tenant_id / subject. RFC L:
@@ -296,6 +304,23 @@ func (s *OperatorTokenDef) execRetire(ctx context.Context, in operatorTokenDefIn
 	target, err := s.resolveTarget(ctx, "retire", in)
 	if err != nil {
 		return errResult(err.Error()), nil
+	}
+	// No-fail-open guard (RFC L Decision 12). Retiring the last active
+	// admin-scoped token drops the active-admin count to zero; with no legacy
+	// LOOMCYCLE_AUTH_TOKEN fallback, authConfigured then flips to false and the
+	// server falls into UNAUTHENTICATED open mode — a silent fail-open worse
+	// than a lockout. Refuse it; the operator must create/rotate another admin
+	// token first (or keep the legacy fallback). Rotate is exempt by
+	// construction: it mints a replacement admin token for the same principal
+	// before retiring the prior, so the count never reaches zero.
+	if !s.LegacyTokenSet && auth.HasScope(target.AllowedScopes, auth.ScopeAdmin) {
+		n, cErr := s.Store.OperatorTokenDefCountActiveAdmin(ctx)
+		if cErr != nil {
+			return errResult(fmt.Sprintf("retire: admin-count check: %s", cErr)), nil
+		}
+		if n <= 1 {
+			return errResult("retire: refusing to retire the last admin-scoped token — with no LOOMCYCLE_AUTH_TOKEN fallback this would drop the server into unauthenticated open mode; create or rotate another substrate:admin token first"), nil
+		}
 	}
 	now := time.Now().UTC()
 	if err := s.Store.OperatorTokenDefSetRetiredAt(ctx, target.DefID, now); err != nil {
