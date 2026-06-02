@@ -2,11 +2,68 @@ package http
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"testing"
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/auth"
+	"github.com/denn-gubsky/loomcycle/internal/store"
 )
+
+// hashFailStore wraps a store and injects a non-ErrNotFound outage on the
+// auth hot-path lookup, to exercise the fail-closed / don't-cache-outage path.
+type hashFailStore struct {
+	store.Store
+	fail bool
+}
+
+func (f *hashFailStore) OperatorTokenDefGetByTokenHash(ctx context.Context, hash string) (store.OperatorTokenDefRow, error) {
+	if f.fail {
+		return store.OperatorTokenDefRow{}, errors.New("connection refused") // outage, not ErrNotFound
+	}
+	return f.Store.OperatorTokenDefGetByTokenHash(ctx, hash)
+}
+
+// A transient store outage must NOT be cached as a negative — otherwise a
+// valid token is locked out for the full TTL after the DB recovers.
+func TestResolvePrincipal_OutageNotCached(t *testing.T) {
+	s, st := tokenAuthServer(t, "") // no legacy fallback → clean outage path
+	seedToken(t, st, "lct_v", "acme", "v", []string{auth.ScopeRunsCreate}, time.Time{})
+	fs := &hashFailStore{Store: st, fail: true}
+	s.store = fs
+	s.EnableTokenCache(30 * time.Second)
+
+	// During the outage the valid token fails closed...
+	if _, ok := s.resolvePrincipal(context.Background(), "lct_v"); ok {
+		t.Fatal("during a store outage resolution must fail closed")
+	}
+	// ...but the failure must NOT be memoised.
+	if _, _, ok := s.tokenCache.get(auth.HashToken(testTokenPepper, "lct_v")); ok {
+		t.Fatal("a store-outage negative must not be cached (would be a sticky lockout)")
+	}
+	// After recovery the valid token resolves immediately — not served a
+	// stale cached negative.
+	fs.fail = false
+	if _, ok := s.resolvePrincipal(context.Background(), "lct_v"); !ok {
+		t.Fatal("after recovery the valid token must resolve (a cached outage-negative was served)")
+	}
+}
+
+// The cache is bounded: an invalid-bearer spray (distinct hashes) cannot grow
+// the map without limit (each negative is cached before the scope check).
+func TestTokenCache_BoundedBySize(t *testing.T) {
+	c := newTokenCache(30 * time.Second)
+	c.maxSize = 4
+	now := time.Unix(1000, 0)
+	c.now = func() time.Time { return now }
+	for i := 0; i < 1000; i++ {
+		c.put(fmt.Sprintf("h%d", i), auth.Principal{}, false) // distinct negative entries
+	}
+	if len(c.m) > c.maxSize {
+		t.Fatalf("cache grew to %d entries, want <= %d (negative-spray DoS bound)", len(c.m), c.maxSize)
+	}
+}
 
 func TestTokenCache_HitMissExpiryFlush(t *testing.T) {
 	now := time.Unix(1000, 0)

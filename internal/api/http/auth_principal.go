@@ -185,8 +185,15 @@ func (s *Server) resolvePrincipal(ctx context.Context, bearer string) (auth.Prin
 	if p, found, ok := s.tokenCache.get(hash); ok {
 		return p, found
 	}
-	p, found := s.resolvePrincipalUncached(ctx, bearer, hash)
-	s.tokenCache.put(hash, p, found)
+	p, found, cacheable := s.resolvePrincipalUncached(ctx, bearer, hash)
+	// Only memoise DEFINITIVE outcomes (token hit, legacy fallback, genuine
+	// not-found/expired). A transient store OUTAGE resolves to (_, false) but
+	// is NOT cacheable: caching it would lock a VALID token out for the whole
+	// TTL after the DB recovered — a blip amplified into a ≤30s sticky
+	// lockout. On an outage we fail closed for THIS request only and re-probe.
+	if cacheable {
+		s.tokenCache.put(hash, p, found)
+	}
 	return p, found
 }
 
@@ -196,7 +203,11 @@ func (s *Server) resolvePrincipal(ctx context.Context, bearer string) (auth.Prin
 // an admin-scoped token exists — the no-lockout migration gate). Returns
 // (_, false) for unknown/expired/invalid — the caller maps that to an
 // opaque 401. NEVER fails open to the legacy token on a substrate error.
-func (s *Server) resolvePrincipalUncached(ctx context.Context, bearer, hash string) (auth.Principal, bool) {
+//
+// The third return is `cacheable`: true for a DEFINITIVE outcome (hit, legacy,
+// genuine not-found/expired) that resolvePrincipal may memoise; FALSE for a
+// transient store outage so a blip is not cached into a sticky lockout.
+func (s *Server) resolvePrincipalUncached(ctx context.Context, bearer, hash string) (auth.Principal, bool, bool) {
 	if s.store != nil {
 		row, err := s.store.OperatorTokenDefGetByTokenHash(ctx, hash)
 		if err == nil {
@@ -207,33 +218,33 @@ func (s *Server) resolvePrincipalUncached(ctx context.Context, bearer, hash stri
 					Subject:    row.Subject,
 					Scopes:     row.AllowedScopes,
 					TokenDefID: row.DefID,
-				}, true
+				}, true, true
 			}
-			return auth.Principal{}, false // expired → opaque 401, no legacy fall-open
+			return auth.Principal{}, false, true // expired → opaque 401, cacheable
 		}
 		// Not found (ErrNotFound) → fall through to legacy. Any OTHER
-		// store error is a genuine outage: fail closed below (we do not
-		// reach the legacy branch with a usable substrate state).
+		// store error is a genuine outage: fail closed AND not cacheable (we
+		// do not reach the legacy branch with a usable substrate state).
 		if !isNotFound(err) {
 			if s.authVerbose() {
 				log.Printf("auth: token-substrate lookup error (failing closed): %v", err)
 			}
-			return auth.Principal{}, false
+			return auth.Principal{}, false, false
 		}
 	}
 	// Legacy shared-secret fallback.
 	if s.cfg.Env.AuthToken != "" && auth.CompareBearer(bearer, s.cfg.Env.AuthToken) {
 		if s.legacyFallbackDisabled(ctx) {
-			return auth.Principal{}, false
+			return auth.Principal{}, false, true
 		}
 		return auth.Principal{
 			TenantID: "default",
 			Subject:  "default",
 			Scopes:   []string{auth.ScopeAdmin},
 			Legacy:   true,
-		}, true
+		}, true, true
 	}
-	return auth.Principal{}, false
+	return auth.Principal{}, false, true // genuine unknown → cacheable negative
 }
 
 // legacyFallbackDisabled reports whether the LOOMCYCLE_AUTH_TOKEN path is
