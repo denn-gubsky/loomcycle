@@ -2589,6 +2589,17 @@ func expandEnv(s string) string {
 	})
 }
 
+// ExpandEnv is the exported entry point for substrate paths that register
+// servers OUTSIDE yaml-load and must mirror its ${LOOMCYCLE_*} expansion.
+// A yaml-configured MCP server gets expansion for free in Load() (the whole
+// document passes through expandEnv at line ~1852); a server registered at
+// runtime via MCPServerDef never passes through Load, so it calls this on its
+// operator-authored string fields to get the identical, same-allowlist
+// behaviour. Without it the inner ${LOOMCYCLE_TOKEN} in a header like
+// `Bearer ${run.credentials.x:-${LOOMCYCLE_TOKEN}}` survives verbatim and the
+// request-time substituter truncates on the nested brace.
+func ExpandEnv(s string) string { return expandEnv(s) }
+
 // parseHeaderList parses a comma-separated `key=value,key2=value2` string
 // into a map. Whitespace around keys, values, and separators is trimmed.
 // Entries without `=` are skipped. Returns nil for an empty input so the

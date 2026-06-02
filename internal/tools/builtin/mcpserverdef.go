@@ -662,6 +662,32 @@ func (m *MCPServerDef) buildDefinition(parentJSON string, overlay json.RawMessag
 		}
 		base.applyOverlay(ov)
 	}
+	// Mirror yaml-load's ${LOOMCYCLE_*} expansion on the operator-authored
+	// connection fields. A yaml MCP server is expanded at config.Load; a
+	// dynamically-registered one never passes through Load, so without this
+	// the inner ${LOOMCYCLE_TOKEN} in a header template like
+	//   Bearer ${run.credentials.jobs:-${LOOMCYCLE_JOBS_SEARCH_API_TOKEN}}
+	// is stored verbatim. The request-time substituter's lazy `.*?` fallback
+	// then truncates on the inner `}` (see internal/tools/mcp/http/
+	// substitute.go:14, whose safety comment depends on this prior expansion)
+	// and sends `Bearer ${LOOMCYCLE_…}` as a literal → 401 upstream.
+	// Expanding here keeps the stored value flat (no nested brace), so
+	// request-time substitution behaves identically for yaml- and substrate-
+	// registered servers. The outer ${run.*} token carries a "." in its name,
+	// which envVarRe ([A-Za-z_][A-Za-z0-9_]*) cannot match, so it survives to
+	// request time untouched. Re-expanding an already-stored (forked) value is
+	// a no-op: bearer tokens cannot contain `${…}` per the HTTP-boundary
+	// charset. Caveat: this bakes the resolved token into the stored def
+	// content (and thus content_sha256) — consistent with yaml semantics, and
+	// dedup stays stable as long as the env value is stable.
+	base.URL = config.ExpandEnv(base.URL)
+	if len(base.Headers) > 0 {
+		expanded := make(map[string]string, len(base.Headers))
+		for k, v := range base.Headers {
+			expanded[k] = config.ExpandEnv(v)
+		}
+		base.Headers = expanded
+	}
 	return base, nil
 }
 
