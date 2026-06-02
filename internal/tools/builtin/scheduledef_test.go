@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/lookup"
@@ -623,4 +624,107 @@ func scheduleJsonTagsOf(t reflect.Type) map[string]bool {
 		out[tag] = true
 	}
 	return out
+}
+
+// TestScheduleDefTool_BootstrapStaticSchedules — the autonomous-firing fix:
+// a yaml-declared schedule with no active substrate version is materialized
+// (create v1 + promote + seed run_state) so the sweeper's substrate-only
+// due-query finds it. Symmetric with dynamically-created schedules.
+func TestScheduleDefTool_BootstrapStaticSchedules(t *testing.T) {
+	tool, _, cleanup := scheduleDefFixture(t)
+	defer cleanup()
+	// A simple-cron static schedule alongside the fixture's tier template.
+	tool.Cfg.ScheduledRuns["nightly"] = config.ScheduledRun{
+		Agent:    "job-search-batch",
+		Schedule: "0 3 * * *",
+		Prompt: []config.ScheduledRunSegment{{Role: "user", Content: []config.ScheduledRunSegmentContent{
+			{Type: "trusted-text", Text: "go"},
+		}}},
+		Enabled: true,
+	}
+	bg := context.Background()
+
+	// Pre-state: neither static name has an active substrate version.
+	for _, n := range []string{"nightly", "job-search-template"} {
+		if _, err := tool.Store.ScheduleDefGetActive(bg, n); err == nil {
+			t.Fatalf("%s unexpectedly has an active version before bootstrap", n)
+		}
+	}
+
+	n, err := tool.BootstrapStaticSchedules(bg)
+	if err != nil {
+		t.Fatalf("bootstrap: %v", err)
+	}
+	if n != 2 {
+		t.Errorf("bootstrapped %d, want 2", n)
+	}
+
+	// Both now have an active, bootstrapped-from-static version.
+	for _, name := range []string{"nightly", "job-search-template"} {
+		row, gerr := tool.Store.ScheduleDefGetActive(bg, name)
+		if gerr != nil {
+			t.Errorf("%s: no active version after bootstrap: %v", name, gerr)
+			continue
+		}
+		if !row.BootstrappedFromStatic {
+			t.Errorf("%s: expected BootstrappedFromStatic=true", name)
+		}
+	}
+
+	// The cron schedule is now fireable — appears in the substrate due-set
+	// within a window past its next fire (proves run_state was seeded).
+	due, err := tool.Store.ScheduleRunStateListDue(bg, time.Now().Add(48*time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, d := range due {
+		if d.Name == "nightly" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("nightly not in the due-set within 48h — run_state was not seeded (won't fire autonomously)")
+	}
+
+	// Idempotent: a second boot bootstraps nothing.
+	n2, err := tool.BootstrapStaticSchedules(bg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n2 != 0 {
+		t.Errorf("second bootstrap seeded %d, want 0 (idempotent)", n2)
+	}
+}
+
+// TestScheduleDefTool_BootstrapStaticSchedules_DoesNotClobberFork — a static
+// name that already has an active FORK is left untouched (yaml never clobbers
+// a deliberate operator override).
+func TestScheduleDefTool_BootstrapStaticSchedules_DoesNotClobberFork(t *testing.T) {
+	tool, ctx, cleanup := scheduleDefFixture(t)
+	defer cleanup()
+
+	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"fork","name":"job-search-template","overlay":{"user_id":"alice","user_tier":"high","user_credentials":{"jobs":"j","slack":"s"}}}`))
+	if res.IsError {
+		t.Fatalf("fork: %s", res.Text)
+	}
+	before, err := tool.Store.ScheduleDefGetActive(context.Background(), "job-search-template")
+	if err != nil {
+		t.Fatalf("get active after fork: %v", err)
+	}
+
+	n, err := tool.BootstrapStaticSchedules(context.Background())
+	if err != nil {
+		t.Fatalf("bootstrap: %v", err)
+	}
+	if n != 0 {
+		t.Errorf("bootstrap seeded %d, want 0 — an active fork must be preserved", n)
+	}
+	after, _ := tool.Store.ScheduleDefGetActive(context.Background(), "job-search-template")
+	if before.DefID != after.DefID {
+		t.Errorf("bootstrap clobbered the active fork: %s → %s", before.DefID, after.DefID)
+	}
+	if after.BootstrappedFromStatic {
+		t.Error("active version is now bootstrapped-from-static — the fork was overwritten")
+	}
 }

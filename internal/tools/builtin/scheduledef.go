@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -604,6 +605,57 @@ func (s *ScheduleDef) bootstrapStatic(ctx context.Context, name string, static c
 	// Seed schedule_run_state — see commentary in execCreate.
 	_ = s.Store.ScheduleRunStateSeed(ctx, created.DefID, computeInitialNextRunAt(def, time.Now()))
 	return created, nil
+}
+
+// BootstrapStaticSchedules materializes every static cfg.ScheduledRuns entry
+// that lacks an active substrate version into the substrate (create v1 +
+// promote + seed schedule_run_state). This is what lets a yaml-declared
+// `scheduled_runs:` entry fire AUTONOMOUSLY — symmetric with a dynamically-
+// created ScheduleDef, which already seeds run_state on promoted create. The
+// sweeper's due-query is substrate-only (the schedule_run_state ⨝ active ⨝
+// defs JOIN), so without this a yaml-only schedule has no run_state row and
+// silently never fires until something forks/run-now's it.
+//
+// Idempotent + fork-respecting: a name that already has an active version is
+// left untouched — whether that version is a prior bootstrap (so restarts
+// don't re-seed / reset next_run_at) or an operator fork (so yaml never
+// clobbers a deliberate override). A name's active pointer + run_state row
+// persist across restarts, so only newly-added yaml schedules are seeded on a
+// subsequent boot.
+//
+// Intended to run ONCE at boot, before the sweeper starts. Returns the count
+// bootstrapped this call. nil Store/Cfg → no-op.
+//
+// NOTE (intentional scope): editing a yaml schedule's cron after it has been
+// materialized does NOT auto-apply on restart (the active version wins);
+// re-fork via the substrate tool to change it. Removing a yaml entry does not
+// retire its substrate row. Those reconciliation refinements are deferred —
+// this method closes the "static schedules never fire" gap only.
+func (s *ScheduleDef) BootstrapStaticSchedules(ctx context.Context) (int, error) {
+	if s.Store == nil || s.Cfg == nil {
+		return 0, nil
+	}
+	names := make([]string, 0, len(s.Cfg.ScheduledRuns))
+	for name := range s.Cfg.ScheduledRuns {
+		names = append(names, name)
+	}
+	sort.Strings(names) // deterministic order for logs + tests
+	seeded := 0
+	for _, name := range names {
+		_, err := s.Store.ScheduleDefGetActive(ctx, name)
+		if err == nil {
+			continue // already has an active version (prior bootstrap or fork) — leave it
+		}
+		var nf *store.ErrNotFound
+		if !errors.As(err, &nf) {
+			return seeded, fmt.Errorf("bootstrap %q: get active: %w", name, err)
+		}
+		if _, berr := s.bootstrapStatic(ctx, name, s.Cfg.ScheduledRuns[name]); berr != nil {
+			return seeded, fmt.Errorf("bootstrap %q: %w", name, berr)
+		}
+		seeded++
+	}
+	return seeded, nil
 }
 
 // validateScheduleDef performs the substrate-side cron + on_complete

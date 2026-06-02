@@ -1714,6 +1714,21 @@ func main() {
 			FireTimeout:  time.Duration(cfg.Env.SchedulerFireTimeoutSeconds) * time.Second,
 			EnvAllowlist: envAllowlist,
 		}
+		// Materialize static yaml `scheduled_runs:` into the substrate so
+		// they fire autonomously — symmetric with dynamically-created
+		// schedules (which seed run_state on promoted create). The sweeper's
+		// due-query is substrate-only, so without this a yaml-only schedule
+		// never fires. Idempotent + fork-respecting; runs before the sweeper
+		// so the first tick already sees the seeded rows. A minimal tool
+		// instance suffices (bootstrap needs only Store + Cfg).
+		bootSched := &builtin.ScheduleDef{Store: storeIface, Cfg: cfg}
+		bootCtx := tools.WithRunIdentity(bgCtx, tools.RunIdentityValue{AgentID: "scheduler-bootstrap"})
+		if n, err := bootSched.BootstrapStaticSchedules(bootCtx); err != nil {
+			log.Printf("scheduler: static-schedule bootstrap: %v (continuing)", err)
+		} else if n > 0 {
+			log.Printf("scheduler: materialized %d static schedule(s) into the substrate", n)
+		}
+
 		// srv satisfies runner.Runner via its RunOnce method (the same
 		// seam HTTP + gRPC drive interactive runs through). pauseMgr is
 		// guaranteed non-nil in this branch (storeIface != nil ⇒ pause
