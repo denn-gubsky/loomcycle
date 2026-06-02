@@ -80,6 +80,39 @@ func TestMCPServerDefTool_CreateRefusedOnHostNotInAllowlist(t *testing.T) {
 	}
 }
 
+// TestMCPServerDefTool_CreateAllowsPrivateAllowlistHost pins the fix for the
+// dynamic-loopback-registration gap. A runtime `create` whose URL host is an
+// operator-blessed loopback (HTTPPrivateHostAllowlist) must succeed even when
+// that host is NOT in the general HTTPHostAllowlist — a self-hosted
+// `http://localhost:3000/api/mcp` callback shouldn't force the operator to
+// widen the general SSRF floor. This is the create-time/dial-time alignment:
+// the HTTP tool already exempts private-allowlisted hosts at dial time.
+//
+// Fails on the pre-fix code, where hostAllowed consulted only
+// HTTPHostAllowlist, so a loopback host blessed only via the private
+// allowlist was refused at create (fail-soft → no mcp__jobs__* tools).
+func TestMCPServerDefTool_CreateAllowsPrivateAllowlistHost(t *testing.T) {
+	tool, ctx, cleanup := mcpServerDefFixture(t)
+	defer cleanup()
+	// Loopback host blessed ONLY in the private allowlist — deliberately
+	// absent from the general floor.
+	tool.Cfg.Env.HTTPHostAllowlist = []string{"n8n.example.com"}
+	tool.Cfg.Env.HTTPPrivateHostAllowlist = []string{"localhost", "127.0.0.1"}
+
+	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"create","name":"jobs","overlay":{"transport":"http","url":"http://localhost:3000/api/mcp"}}`))
+	if res.IsError {
+		t.Fatalf("loopback host blessed via HTTPPrivateHostAllowlist should be allowed at create; got: %s", res.Text)
+	}
+
+	// Negative control: a private host in NEITHER allowlist is still refused
+	// — the SSRF floor is preserved, only the operator-declared private
+	// exemption is honoured.
+	res2, _ := tool.Execute(ctx, json.RawMessage(`{"op":"create","name":"sneaky","overlay":{"transport":"http","url":"http://10.0.0.5:9000/mcp"}}`))
+	if !res2.IsError {
+		t.Errorf("private host in neither allowlist must still be refused; got: %s", res2.Text)
+	}
+}
+
 // TestMCPServerDefTool_HostAllowlistMatchesCanonical pins the contract
 // that this tool's allowlist semantics MATCH the canonical hostAllowed
 // helper used by HTTP + WebFetch. Specifically: a bare allowlist entry

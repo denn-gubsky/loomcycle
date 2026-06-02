@@ -587,7 +587,7 @@ func (m *MCPServerDef) validateOverlay(ov mcpServerOverlay) error {
 		return fmt.Errorf("url missing hostname")
 	}
 	if !m.hostAllowed(host) {
-		return fmt.Errorf("host %q not in LOOMCYCLE_HTTP_HOST_ALLOWLIST (operator-blessed allowlist is the floor for outbound HTTP)", host)
+		return fmt.Errorf("host %q not in LOOMCYCLE_HTTP_HOST_ALLOWLIST or LOOMCYCLE_HTTP_PRIVATE_HOST_ALLOWLIST (operator-blessed allowlists are the floor for outbound HTTP; loopback / RFC1918 callback hosts like a self-hosted localhost MCP server belong in the private allowlist)", host)
 	}
 	return nil
 }
@@ -598,8 +598,22 @@ func (m *MCPServerDef) validateOverlay(ov mcpServerOverlay) error {
 // the load-bearing operator contract: the same yaml allowlist must
 // produce the same allow/deny decision regardless of which tool the
 // call goes through.
+//
+// A runtime-registered MCP server's host may be either a general outbound
+// target (HTTPHostAllowlist) OR an operator-blessed loopback / RFC1918
+// callback (HTTPPrivateHostAllowlist — the SAME exemption the HTTP/WebFetch
+// *dial-time* SSRF guard already honours, see httptool.go). Consulting only
+// the general floor here was an asymmetry the static `mcp_servers:` block
+// hid: an operator-declared loopback callback (e.g. a self-hosted
+// `http://localhost:3000/api/mcp`) would be refused at create even though
+// the operator explicitly blessed it for outbound HTTP via the private
+// allowlist — forcing them to widen the GENERAL SSRF floor just to register
+// their own callback server. Both lists are operator-declared, so honouring
+// either never widens beyond operator intent; it aligns create-time with
+// dial-time.
 func (m *MCPServerDef) hostAllowed(host string) bool {
-	return hostAllowed(host, m.Cfg.Env.HTTPHostAllowlist)
+	return hostAllowed(host, m.Cfg.Env.HTTPHostAllowlist) ||
+		hostAllowed(host, m.Cfg.Env.HTTPPrivateHostAllowlist)
 }
 
 // buildDefinition merges parent JSON (or empty for create) with the
