@@ -182,3 +182,92 @@ func tail(s string, lines int) string {
 	}
 	return strings.Join(parts[len(parts)-lines:], "\n")
 }
+
+// TestInit_WithToken_MintsAuthEnv — --with-token persists a 0600 auth.env
+// carrying a 64-hex LOOMCYCLE_AUTH_TOKEN and prints the one-time UI URL.
+func TestInit_WithToken_MintsAuthEnv(t *testing.T) {
+	dir := t.TempDir()
+	var stdout, stderr bytes.Buffer
+	code := runInitWithStdin(
+		[]string{"--path", dir, "--no-interactive", "--with-token"},
+		&bytes.Buffer{}, &stdout, &stderr,
+	)
+	if code != 0 {
+		t.Fatalf("init --with-token exit=%d stderr=%s", code, stderr.String())
+	}
+
+	authEnv := filepath.Join(dir, "auth.env")
+	info, err := os.Stat(authEnv)
+	if err != nil {
+		t.Fatalf("auth.env not written: %v", err)
+	}
+	if perm := info.Mode().Perm(); perm != 0o600 {
+		t.Errorf("auth.env mode = %o, want 600 (it holds a secret)", perm)
+	}
+
+	body, _ := os.ReadFile(authEnv)
+	var token string
+	for _, line := range strings.Split(string(body), "\n") {
+		if strings.HasPrefix(line, "LOOMCYCLE_AUTH_TOKEN=") {
+			token = strings.TrimPrefix(line, "LOOMCYCLE_AUTH_TOKEN=")
+		}
+	}
+	if len(token) != 64 {
+		t.Errorf("minted token len = %d, want 64 hex chars", len(token))
+	}
+	for _, c := range token {
+		if !strings.ContainsRune("0123456789abcdef", c) {
+			t.Fatalf("token has non-hex char %q", c)
+		}
+	}
+	// The UI URL must embed the freshly minted token so the operator can
+	// click straight through to an authenticated UI.
+	if !strings.Contains(stdout.String(), "/ui?token="+token) {
+		t.Errorf("stdout missing the ready-to-open UI URL with the minted token; got:\n%s", stdout.String())
+	}
+}
+
+// TestInit_WithToken_NoClobber — a non-force re-run must never clobber a live
+// token. init refuses on the pre-existing yaml before reaching the token
+// block, so the secret is preserved; --force is the explicit "regenerate
+// everything" signal.
+func TestInit_WithToken_NoClobber(t *testing.T) {
+	dir := t.TempDir()
+	var o1, e1 bytes.Buffer
+	if code := runInitWithStdin([]string{"--path", dir, "--no-interactive", "--with-token"},
+		&bytes.Buffer{}, &o1, &e1); code != 0 {
+		t.Fatalf("first init exit=%d stderr=%s", code, e1.String())
+	}
+	before, _ := os.ReadFile(filepath.Join(dir, "auth.env"))
+
+	var o2, e2 bytes.Buffer
+	code := runInitWithStdin([]string{"--path", dir, "--no-interactive", "--with-token"},
+		&bytes.Buffer{}, &o2, &e2)
+	if code == 0 {
+		t.Errorf("non-force re-run should refuse (yaml already exists); got exit 0")
+	}
+	if !strings.Contains(e2.String(), "already exists") {
+		t.Errorf("expected an 'already exists' refusal; got stderr:\n%s", e2.String())
+	}
+	after, _ := os.ReadFile(filepath.Join(dir, "auth.env"))
+	if string(before) != string(after) {
+		t.Error("auth.env changed on a non-force re-run — a live token must never be clobbered")
+	}
+}
+
+func TestMintAuthToken_UniqueAndHex(t *testing.T) {
+	a, err := mintAuthToken()
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := mintAuthToken()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(a) != 64 || len(b) != 64 {
+		t.Fatalf("token lengths = %d,%d, want 64", len(a), len(b))
+	}
+	if a == b {
+		t.Error("two mints returned the same token — not random")
+	}
+}

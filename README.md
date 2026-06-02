@@ -99,20 +99,65 @@ go install github.com/denn-gubsky/loomcycle/cmd/loomcycle@latest
 curl -L https://github.com/denn-gubsky/loomcycle/releases/latest/download/loomcycle-darwin-arm64.tar.gz | tar xz
 ```
 
-## Quick start
+## Quick start (seconds, authenticated)
 
 ```sh
-loomcycle init       # bootstrap ~/.config/loomcycle/loomcycle.yaml + README.md
-# set $LOOMCYCLE_AUTH_TOKEN + at least one provider key in your shell rc
-loomcycle doctor     # verify env + provider keys + storage + listen
-loomcycle            # start the server on 127.0.0.1:8787
+loomcycle init --with-token   # writes config + mints a token to ~/.config/loomcycle/auth.env (0600)
+export ANTHROPIC_API_KEY=sk-...   # (or OPENAI_API_KEY / DEEPSEEK_API_KEY) — at least one provider key
+loomcycle doctor              # verify env + keys + storage + the just-minted token
+loomcycle                     # starts on 127.0.0.1:8787 (auto-loads auth.env — no shell-rc edit)
+```
 
-# Smoke
+`init --with-token` prints a one-time Web UI link (`http://127.0.0.1:8787/ui?token=…`) — open it once to set the session cookie. That's it: an authenticated runtime, no secret to copy-paste. `loomcycle` and `loomcycle doctor` both auto-load `auth.env` from the config dir; a real `export LOOMCYCLE_AUTH_TOKEN=…` always overrides it.
+
+## Bootstrap tiers
+
+Pick the tier that fits — each is a superset of the one above. **Auth is enforced only once something is configured**, so Tier 1 needs no token at all.
+
+### Tier 1 — zero-config dev (open mode, localhost)
+
+No token, no flags. Fastest way to kick the tires on `127.0.0.1`.
+
+```sh
+loomcycle init               # config only — no secret written
+export ANTHROPIC_API_KEY=sk-...
+loomcycle                    # open mode: /v1/* + /ui pass through unauthenticated (logs a warning)
+open http://127.0.0.1:8787/ui
+```
+
+With no `LOOMCYCLE_AUTH_TOKEN` and no minted tokens, the runtime runs **open** on localhost — every request is allowed, whoami returns a synthetic admin. Great for a 10-second smoke test; **never** expose this off localhost.
+
+### Tier 2 — single shared token (the recommended default)
+
+One bearer gates everything. `init --with-token` is the easy button (above). Equivalent manual setup:
+
+```sh
+loomcycle init
+export LOOMCYCLE_AUTH_TOKEN=$(openssl rand -hex 32)   # or: loomcycle init --with-token
+export ANTHROPIC_API_KEY=sk-...
+loomcycle
+open "http://127.0.0.1:8787/ui?token=$LOOMCYCLE_AUTH_TOKEN"   # sets the cookie once
+```
+
+Treat anyone holding the token as fully trusted to drive the runtime.
+
+### Tier 3 — multi-tenant, per-principal tokens (RFC L, v0.17.0)
+
+Mint a distinct bearer per developer/app, each bound to an authoritative `(tenant, subject, scopes)`. Migrate a Tier-2 deployment in place — no downtime:
+
+```sh
+# promote your existing shared token into the substrate, then mint scoped tokens
+loomcycle operator-token create --copy-from-env --name ops --tenant ops --scopes substrate:admin
+loomcycle operator-token create --name acme-app --tenant acme --subject alice --scopes runs:create
+```
+
+The first admin `OperatorTokenDef` disables the legacy shared-token fallback. Per-route HTTP + per-RPC gRPC scopes; the Web UI becomes role-aware (super-admin vs tenant). See `Context.help operator-tokens` and the v0.17.0 notes in [`REVISIONS.md`](REVISIONS.md).
+
+**Smoke any tier:**
+
+```sh
 curl http://127.0.0.1:8787/healthz
 # {"ok":true}
-
-# Open the Web UI (one-time per browser session — sets HttpOnly cookie)
-open "http://127.0.0.1:8787/ui?token=$LOOMCYCLE_AUTH_TOKEN"
 ```
 
 Real call (from another terminal):
