@@ -30,6 +30,13 @@ export default function Layout() {
   const [principalErr, setPrincipalErr] = useState<string | null>(null);
   const isAdmin = principal?.is_admin === true;
 
+  // Super-admin tenant-focus (?tenant=): "" = all tenants (admin's default
+  // global view). A tenant principal can't set this — the backend forces
+  // its own tenant regardless — so it stays "" for non-admins and the
+  // switcher is admin-only. Threaded into the user picker + the runs view.
+  const [focusTenant, setFocusTenant] = useState<string>("");
+  const [draftTenant, setDraftTenant] = useState<string>("");
+
   useEffect(() => {
     localStorage.setItem(USER_ID_KEY, userId);
   }, [userId]);
@@ -69,12 +76,12 @@ export default function Layout() {
     };
   }, []);
 
-  // Poll /v1/_users for the picker — ADMIN ONLY. /v1/_users is operator-
-  // admin-gated, so a tenant token would just 403; skip it (a tenant uses
-  // its own subject + the manual-entry box for other same-tenant users,
-  // which the per-user reads tenant-filter server-side).
+  // Poll /v1/_users for the picker. Since v0.16.x /v1/_users is tenant-
+  // scoped (any authenticated principal): a tenant sees only its own
+  // tenant's users; an admin sees all, or one tenant via ?tenant= when
+  // focused. Wait for the principal to resolve before the first fetch.
   useEffect(() => {
-    if (!isAdmin) {
+    if (!principal) {
       setUsers([]);
       setUsersErr(null);
       return;
@@ -82,7 +89,9 @@ export default function Layout() {
     let cancelled = false;
     const fetchOnce = async () => {
       try {
-        const resp = await listUsers();
+        // focusTenant only takes effect for admins (ignored server-side
+        // for tenants); "" → the caller's own scope (all for admin).
+        const resp = await listUsers(focusTenant || undefined);
         if (!cancelled) {
           setUsers(resp.users ?? []);
           setUsersErr(null);
@@ -97,7 +106,7 @@ export default function Layout() {
       cancelled = true;
       clearInterval(t);
     };
-  }, [isAdmin]);
+  }, [principal, focusTenant]);
 
   // Identity gate: hold the shell until we know the role (a 401 has
   // already redirected to /login by here). A non-auth failure shows a
@@ -153,13 +162,51 @@ export default function Layout() {
             {isAdmin ? "super-admin" : `tenant: ${principal.tenant_id}`}
           </span>
         )}
+        {/* Super-admin tenant-focus switcher: narrows the workspace to one
+            tenant (or all when blank). Changing focus resets the picked
+            user since user_ids don't carry across tenants. Admin-only —
+            tenants are locked to their own tenant by the backend. */}
+        {isAdmin && (
+          <form
+            className="tenant-switcher"
+            onSubmit={(e) => {
+              e.preventDefault();
+              setFocusTenant(draftTenant.trim());
+              setUserId("");
+            }}
+          >
+            <label htmlFor="tenant_focus">tenant</label>
+            <input
+              id="tenant_focus"
+              type="text"
+              value={draftTenant}
+              onChange={(e) => setDraftTenant(e.target.value)}
+              placeholder="all tenants"
+              title="Focus one tenant's workspace; blank = all"
+            />
+            {focusTenant && (
+              <button
+                type="button"
+                className="manual-btn"
+                title="Clear tenant focus (show all)"
+                onClick={() => {
+                  setFocusTenant("");
+                  setDraftTenant("");
+                  setUserId("");
+                }}
+              >
+                ✕
+              </button>
+            )}
+          </form>
+        )}
         <div className="user-picker">
           {usersErr && (
             <span className="picker-err" title={usersErr}>
               users unavailable
             </span>
           )}
-          {!showManual && isAdmin && (
+          {!showManual && (
             <>
               <label htmlFor="user_select">user</label>
               <select
@@ -213,22 +260,33 @@ export default function Layout() {
         </div>
       </header>
       <main className="content">
-        <Outlet context={{ userId, principal: principal ?? null }} />
+        <Outlet context={{ userId, principal: principal ?? null, focusTenant }} />
       </main>
     </div>
   );
 }
 
+interface LayoutContext {
+  userId: string;
+  principal: Principal | null;
+  focusTenant: string;
+}
+
 // Child routes read userId via this helper.
 export function useUserId(): string {
-  const ctx = useOutletContext<{ userId: string; principal: Principal | null }>();
-  return ctx.userId;
+  return useOutletContext<LayoutContext>().userId;
 }
 
 // usePrincipal exposes the resolved identity to child views (role-aware
 // rendering). Null only in the brief pre-resolution window or a non-auth
 // error (the Layout gates rendering on it, so views generally see it set).
 export function usePrincipal(): Principal | null {
-  const ctx = useOutletContext<{ userId: string; principal: Principal | null }>();
-  return ctx.principal;
+  return useOutletContext<LayoutContext>().principal;
+}
+
+// useFocusTenant is the super-admin tenant-focus (?tenant=); "" = all
+// tenants / the caller's own scope. Views thread it into tenant-scoped
+// reads (e.g. listAgents) so the admin's switcher narrows the workspace.
+export function useFocusTenant(): string {
+  return useOutletContext<LayoutContext>().focusTenant;
 }

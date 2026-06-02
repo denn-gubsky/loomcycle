@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { Agent, listAgents } from "../api";
-import { useUserId } from "../components/Layout";
+import { useFocusTenant, useUserId } from "../components/Layout";
 import AgentsTreePanel, { type StatusFilter } from "../components/AgentsTreePanel";
 import AgentDetailPane from "../components/AgentDetailPane";
 import type { BreadcrumbAncestor } from "../components/Breadcrumbs";
@@ -26,6 +26,9 @@ const REFRESH_MS = 3_000;
 
 export default function AgentsView() {
   const userId = useUserId();
+  // Super-admin tenant-focus; "" = the caller's own scope. Threaded into
+  // the run listing so an admin's tenant switcher narrows the runs view.
+  const focusTenant = useFocusTenant();
   const [agents, setAgents] = useState<Agent[]>([]);
   const [filter, setFilter] = useState<StatusFilter>("running");
   const [err, setErr] = useState<string | null>(null);
@@ -48,7 +51,7 @@ export default function AgentsView() {
       try {
         setLoading(true);
         const status = filter === "all" ? undefined : filter;
-        const resp = await listAgents(userId, status);
+        const resp = await listAgents(userId, status, focusTenant || undefined);
         if (!cancelled) {
           setAgents(resp.agents ?? []);
           setErr(null);
@@ -65,7 +68,7 @@ export default function AgentsView() {
       cancelled = true;
       clearInterval(t);
     };
-  }, [userId, filter]);
+  }, [userId, filter, focusTenant]);
 
   const tree = useMemo(() => buildTree(agents), [agents]);
 

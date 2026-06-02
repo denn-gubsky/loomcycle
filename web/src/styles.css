@@ -3866,3 +3866,38 @@ button.primary:disabled {
   color: var(--accent);
   border: 1px solid rgba(80, 140, 220, 0.35);
 }
+
+/* Super-admin tenant-focus switcher (Layout topbar). Mirrors the
+   user-picker so the two controls read as a pair. */
+.tenant-switcher {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+.tenant-switcher label {
+  color: var(--fg-soft);
+  font-size: 12px;
+}
+.tenant-switcher input {
+  background: var(--bg);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 4px 8px;
+  font-family: var(--mono);
+  font-size: 13px;
+  min-width: 140px;
+}
+.tenant-switcher button.manual-btn {
+  background: transparent;
+  color: var(--fg-soft);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 4px 8px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.tenant-switcher button.manual-btn:hover {
+  color: var(--fg);
+  border-color: var(--accent);
+}
