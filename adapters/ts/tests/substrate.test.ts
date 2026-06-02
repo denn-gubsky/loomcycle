@@ -451,3 +451,101 @@ describe("operatorTokenDef", () => {
     ).rejects.toBeInstanceOf(AuthError);
   });
 });
+
+describe("ensureMcpServer / mcpServerDefVerify (v0.18.0)", () => {
+  it("create path: posts op:create with the overlay and returns changed=true on a fresh mint", async () => {
+    const { client, fetchMock } = makeClient([
+      jsonResponse({
+        def_id: "mdf_1",
+        name: "jobs",
+        version: 1,
+        retired: false,
+        bootstrapped_from_static: false,
+        created_at: "2026-06-02T00:00:00Z",
+        promoted: true,
+      }),
+    ]);
+    const r = await client.ensureMcpServer({
+      name: "jobs",
+      url: "http://localhost:3000/api/mcp",
+      headers: {
+        Authorization: "Bearer ${run.credentials.jobs:-${LOOMCYCLE_JOBS_SEARCH_API_TOKEN}}",
+      },
+    });
+    expect(r).toEqual({ name: "jobs", defId: "mdf_1", version: 1, changed: true });
+
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(url).toContain("/v1/_mcpserverdef");
+    const body = JSON.parse((init as RequestInit).body as string);
+    expect(body.op).toBe("create");
+    expect(body.name).toBe("jobs");
+    expect(body.overlay.transport).toBe("http");
+    expect(body.overlay.url).toBe("http://localhost:3000/api/mcp");
+    // header placeholder must be forwarded LITERAL (not resolved)
+    expect(body.overlay.headers.Authorization).toContain("${run.credentials.jobs");
+  });
+
+  it("dedup path: changed=false when create reports deduplicated", async () => {
+    const { client } = makeClient([
+      jsonResponse({
+        def_id: "mdf_1",
+        name: "jobs",
+        version: 1,
+        retired: false,
+        bootstrapped_from_static: false,
+        created_at: "2026-06-02T00:00:00Z",
+        deduplicated: true,
+      }),
+    ]);
+    const r = await client.ensureMcpServer({ name: "jobs", url: "http://localhost:3000/api/mcp" });
+    expect(r.changed).toBe(false);
+    expect(r.defId).toBe("mdf_1");
+  });
+
+  it("rediscover path: runs create then rediscover and surfaces discoveredToolCount", async () => {
+    const { client, fetchMock } = makeClient([
+      jsonResponse({
+        def_id: "mdf_1",
+        name: "jobs",
+        version: 1,
+        retired: false,
+        bootstrapped_from_static: false,
+        created_at: "2026-06-02T00:00:00Z",
+        deduplicated: true,
+      }),
+      jsonResponse({ def_id: "mdf_2", name: "jobs", version: 2, discovered: 19 }),
+    ]);
+    const r = await client.ensureMcpServer({
+      name: "jobs",
+      url: "http://localhost:3000/api/mcp",
+      rediscover: true,
+    });
+    expect(fetchMock.mock.calls.length).toBe(2);
+    expect(JSON.parse((fetchMock.mock.calls[1]![1] as RequestInit).body as string).op).toBe(
+      "rediscover",
+    );
+    // create deduped but rediscover minted a new version → changed
+    expect(r.changed).toBe(true);
+    expect(r.version).toBe(2);
+    expect(r.discoveredToolCount).toBe(19);
+  });
+
+  it("mcpServerDefVerify posts op:verify and returns the typed result", async () => {
+    const { client, fetchMock } = makeClient([
+      jsonResponse({
+        matches: true,
+        current_sha256: "sha256:abc",
+        current_def_id: "mdf_1",
+        version: 3,
+        name: "jobs",
+        deployed: true,
+      }),
+    ]);
+    const r = await client.mcpServerDefVerify("jobs", "sha256:abc");
+    expect(r.matches).toBe(true);
+    expect(r.current_def_id).toBe("mdf_1");
+    const body = JSON.parse((fetchMock.mock.calls[0]![1] as RequestInit).body as string);
+    expect(body.op).toBe("verify");
+    expect(body.content_sha256).toBe("sha256:abc");
+  });
+});
