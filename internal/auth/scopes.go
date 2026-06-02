@@ -14,19 +14,26 @@ const (
 
 	ScopeRunsCreate     = "runs:create"
 	ScopeRunsRead       = "runs:read"
-	ScopeMemoryRead     = "memory:read"
-	ScopeMemoryWrite    = "memory:write"
 	ScopeChannelPublish = "channel:publish"
 	ScopeChannelRead    = "channel:read"
+
+	// NOTE: memory:read / memory:write are intentionally NOT in the
+	// catalog. They were inert — grantable but enforced by no route: the
+	// HTTP memory surface (/v1/_memory/*) is operator-admin, and
+	// per-tenant memory read/write is the agent-facing Memory tool gated
+	// by the run's memory policy, not an HTTP scope. A scope the runtime
+	// never checks is a false limitation, so it's removed (same
+	// dead-config posture as the retired WebhookDefScopes /
+	// MemoryBackendDefScopes). Reintroduce only alongside a route that
+	// actually enforces them.
 )
 
-// scopeCatalog is the closed set. A map for O(1) validation.
+// scopeCatalog is the closed set — every entry is enforced by at least
+// one route in requiredScopeFor. A map for O(1) validation.
 var scopeCatalog = map[string]struct{}{
 	ScopeAdmin:          {},
 	ScopeRunsCreate:     {},
 	ScopeRunsRead:       {},
-	ScopeMemoryRead:     {},
-	ScopeMemoryWrite:    {},
 	ScopeChannelPublish: {},
 	ScopeChannelRead:    {},
 }

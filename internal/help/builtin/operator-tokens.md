@@ -35,19 +35,21 @@ user/tenant by editing the request body.
 ## Scope catalog (closed)
 
 `substrate:admin` (superuser — satisfies every scope), `runs:create`,
-`runs:read`, `memory:read`, `memory:write`, `channel:publish`,
-`channel:read`. Operators can't invent scope names (the runtime wouldn't
-enforce them). The default at create is `["substrate:admin"]`, so a
-first token keeps "single token, full power". Narrow app tokens
-(`["runs:create"]`) are the upgrade path; a route that needs a scope the
-token lacks returns **403** with `WWW-Authenticate: Bearer scope="…"`.
+`runs:read`, `channel:publish`, `channel:read`. Every catalog scope is
+enforced by at least one route — operators can't invent scope names, and
+the catalog intentionally excludes scopes no route checks (a scope that
+enforces nothing is a false limitation). The default at create is
+`["substrate:admin"]`, so a first token keeps "single token, full
+power". Narrow app tokens (`["runs:create"]`) are the upgrade path; a
+route that needs a scope the token lacks returns **403** with
+`WWW-Authenticate: Bearer scope="…"`.
 
 ## Managing tokens
 
 ```sh
 # Mint a per-developer token (shown ONCE — store it now).
 loomcycle operator-token create --tenant acme --subject alice \
-  --scopes runs:create,runs:read,memory:read,memory:write
+  --scopes runs:create,runs:read
 
 # A narrow production token.
 loomcycle operator-token create --tenant acme-prod --subject app --scopes runs:create
