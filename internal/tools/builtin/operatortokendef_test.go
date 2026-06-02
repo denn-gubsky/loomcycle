@@ -96,6 +96,30 @@ func TestOperatorTokenDef_RequiresAdmin(t *testing.T) {
 	}
 }
 
+func TestOperatorTokenDef_CopyFromEnvImportsExistingSecret(t *testing.T) {
+	tool, ctx, s, cleanup := operatorTokenDefFixture(t)
+	defer cleanup()
+	// Migration: bind the existing LOOMCYCLE_AUTH_TOKEN ("legacy-secret")
+	// as an admin token instead of minting.
+	out := mustOp(t, tool, ctx, `{"op":"create","name":"ops","tenant_id":"default","subject":"ops","import_token":"legacy-secret"}`)
+	if out["imported"] != true {
+		t.Errorf("response should mark imported=true; got %v", out["imported"])
+	}
+	if _, ok := out["token"]; ok {
+		t.Error("import must NOT echo a plaintext token")
+	}
+	// The stored hash must be the hash of the imported secret, so the env
+	// token now resolves to this principal.
+	defID := out["def_id"].(string)
+	row, err := s.OperatorTokenDefGet(ctx, defID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if row.TokenHash != auth.HashToken(testPepper, "legacy-secret") {
+		t.Error("imported token_hash must equal SHA-256(pepper‖legacy-secret)")
+	}
+}
+
 func TestOperatorTokenDef_DefaultScopeIsAdmin(t *testing.T) {
 	tool, ctx, _, cleanup := operatorTokenDefFixture(t)
 	defer cleanup()

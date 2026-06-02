@@ -257,6 +257,11 @@ type Server struct {
 	replicaStore replicaLister
 	replicaID    string
 
+	// tokenCache is the RFC L per-replica auth-token resolution cache.
+	// Nil = disabled (direct lookup per request). Wired via
+	// EnableTokenCache from main.go with LOOMCYCLE_AUTH_CACHE_TTL_SECONDS.
+	tokenCache *tokenCache
+
 	// mcpHTTPHandler is the v0.8.15.3 HTTP MCP transport (alternate
 	// front-end to the stdio MCP server). Typed as http.Handler — NOT
 	// *lcmcp.HTTPHandler — so this package does NOT import

@@ -1131,6 +1131,17 @@ func main() {
 		Audit:                tokenAudit,
 		RotationGraceSeconds: graceSecs,
 	})
+	// RFC L Decision 11: per-replica auth-token resolution cache. Default
+	// 30s TTL; LOOMCYCLE_AUTH_CACHE_TTL_SECONDS=0 disables it (direct
+	// lookup per request — immediate revocation). A token mutation
+	// flushes it locally + (in cluster mode) broadcasts a flush.
+	authCacheTTL := 30
+	if v := os.Getenv("LOOMCYCLE_AUTH_CACHE_TTL_SECONDS"); v != "" {
+		if n, perr := strconv.Atoi(v); perr == nil && n >= 0 {
+			authCacheTTL = n
+		}
+	}
+	srv.EnableTokenCache(time.Duration(authCacheTTL) * time.Second)
 	// Surface the resolved build identifiers via /healthz so the Web UI
 	// can render the running binary's real version instead of a stale
 	// hard-coded string. Mirrors what gRPC's Health RPC has reported
@@ -1460,6 +1471,11 @@ func main() {
 			if err := cb.SubscribeBackplane(bgCtx, bp); err != nil {
 				log.Fatalf("coord: channel bus subscribe: %v", err)
 			}
+		}
+		// RFC L Decision 11: flush the local auth-token cache when a peer
+		// replica creates/rotates/retires a token.
+		if err := srv.SubscribeTokenInvalidations(bgCtx, bp); err != nil {
+			log.Fatalf("coord: token-cache invalidation subscribe: %v", err)
 		}
 
 		// v0.12.4 Phase 5: advisory-lock helper + replicas TTL sweeper.

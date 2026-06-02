@@ -55,8 +55,9 @@ func runOperatorTokenCreate(args []string, stdout, stderr io.Writer) int {
 	token := fs.String("token", defaultAuthToken(), "bearer token (an existing admin token; defaults to $LOOMCYCLE_AUTH_TOKEN)")
 	name := fs.String("name", "", "token name (required)")
 	tenant := fs.String("tenant", "", "authoritative tenant_id (required)")
-	subject := fs.String("subject", "", "authoritative subject (default tok:<name>)")
+	subject := fs.String("subject", "", "authoritative subject (default tok-<name>)")
 	scopes := fs.String("scopes", "", "comma-separated scopes (default substrate:admin)")
+	copyFromEnv := fs.Bool("copy-from-env", false, "migration: bind the existing $LOOMCYCLE_AUTH_TOKEN instead of minting (zero-disruption upgrade)")
 	httpTimeout := fs.Duration("http-timeout", 15*time.Second, "client-side HTTP request timeout")
 	if err := fs.Parse(args); err != nil {
 		return 2
@@ -71,6 +72,14 @@ func runOperatorTokenCreate(args []string, stdout, stderr io.Writer) int {
 	}
 	if *scopes != "" {
 		payload["scopes"] = splitCSV(*scopes)
+	}
+	if *copyFromEnv {
+		env := getenvDefault("LOOMCYCLE_AUTH_TOKEN", "")
+		if env == "" {
+			fmt.Fprintln(stderr, "loomcycle: error: --copy-from-env set but $LOOMCYCLE_AUTH_TOKEN is empty")
+			return 2
+		}
+		payload["import_token"] = env
 	}
 	return postOperatorToken(*target, *token, payload, *httpTimeout, stdout, stderr)
 }

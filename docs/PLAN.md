@@ -6,11 +6,11 @@ This is the public roadmap. For decision history, regret notes, and per-version 
 
 loomcycle has shipped through **v0.16.0** (the memory layer + the synthetic `code-js` provider). Per-version shipped detail now lives in [`REVISIONS.md`](../REVISIONS.md); the historical design-roadmap entries from the v0.8.x series are retained below for context. This section tracks the path forward.
 
-## Planned — v1.0 (hardening) → v1.1.0 (multi-tenant authorization)
+## Planned — v1.0 (hardening + the multi-tenant-auth capstone)
 
-**v1.0 — hardening + QA.** No new primitives. A security + robustness + runtime-QA pass across the v0.13–v0.16 surfaces (A2A interoperability, input webhooks, pluggable memory + the memory layer, the synthetic code provider), then the v1.0 tag. v1.0 authenticates with the existing single shared `LOOMCYCLE_AUTH_TOKEN` — correct and sufficient for single-operator and single-trusted-team deployments.
+**v1.0 — hardening + QA + multi-tenant authorization.** A security + robustness + runtime-QA pass across the v0.13–v0.16 surfaces (A2A interoperability, input webhooks, pluggable memory + the memory layer, the synthetic code provider), landing together with the OSS multi-tenant-authorization capstone (below), then the v1.0 tag. Single-operator deployments keep authenticating with `LOOMCYCLE_AUTH_TOKEN` unchanged — multi-tenancy is available, never required.
 
-**v1.1.0 — OSS multi-tenant authorization (headline).** Replaces the single shared token with a substrate-resident map of bearer tokens, each bound to an **authoritative principal** — a `(tenant, subject, scopes)` resolved *from the token*, not trusted from the request body. What it unlocks:
+**OSS multi-tenant authorization — the v1.0 capstone (RFC L).** Replaces the single shared token with a substrate of bearer tokens (`OperatorTokenDef`), each bound to an **authoritative principal** — a `(tenant, subject, scopes)` resolved *from the token*, not trusted from the request body. Lands as a three-PR series (token substrate + store + CLI/audit → auth middleware + principal + identity threading + scope enforcement → cache/invalidation + docs). What it unlocks:
 
 - **Token-per-principal.** A team or small-VPS service issues a distinct token per developer / app, each minted by loomcycle (CSPRNG, shown once) — callers stop sharing one omnipotent secret.
 - **Authority-derived isolation.** The principal's tenant + subject drive boundaries that already exist — per-subject resource fairness and per-tenant memory isolation become *real* (today they key on caller-asserted fields). The wire `tenant_id` / `user_id` become advisory, overridden by the token.
@@ -20,7 +20,7 @@ loomcycle has shipped through **v0.16.0** (the memory layer + the synthetic `cod
 
 Enterprise-grade authorization — SSO (SAML/OIDC), RBAC roles, SCIM provisioning, signed / queryable audit logs, automated rotation policies, compliance evidence — is intentionally **out of scope for OSS** and lives in a separate enterprise edition built on the same token substrate. The OSS edition does enough for a 200-developer team; the enterprise edition does what passes a procurement security review.
 
-**Beyond v1.1.0** (polish, unscheduled): a settings UI, an operator cookbook of deployment postures, broader distribution (Helm).
+**Beyond v1.0** (polish, unscheduled): a settings UI, an operator cookbook of deployment postures, broader distribution (Helm).
 
 ---
 

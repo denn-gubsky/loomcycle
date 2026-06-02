@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/auth"
+	"github.com/denn-gubsky/loomcycle/internal/coord"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/webui"
 )
@@ -70,6 +71,54 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 	})
 }
 
+// tokenInvalidateTopic is the backplane channel for cross-replica auth
+// cache invalidation (RFC L Decision 11).
+const tokenInvalidateTopic = "loomcycle.operator_token_changed"
+
+// EnableTokenCache wires the per-replica auth-token resolution cache
+// with the given TTL (RFC L Decision 11). ttl <= 0 leaves the cache
+// disabled (direct lookup per request — immediate revocation).
+func (s *Server) EnableTokenCache(ttl time.Duration) {
+	if ttl <= 0 {
+		return
+	}
+	s.tokenCache = newTokenCache(ttl)
+}
+
+// invalidateTokenCache flushes the local cache and, in cluster mode,
+// broadcasts a flush to peer replicas. Called after a successful token
+// mutation (create/rotate/retire). The local flush is essential: the
+// backplane self-filters the publisher's own message, so the mutating
+// replica would not otherwise see its own invalidation.
+func (s *Server) invalidateTokenCache(ctx context.Context) {
+	s.tokenCache.flush()
+	if s.backplane != nil {
+		// Payload is a sentinel — subscribers flush their whole cache
+		// (a mutation can change any resolution, incl. the legacy gate).
+		if err := s.backplane.Publish(ctx, tokenInvalidateTopic, []byte("flush")); err != nil {
+			log.Printf("auth: token-cache invalidation publish failed: %v", err)
+		}
+	}
+}
+
+// SubscribeTokenInvalidations starts the goroutine that flushes the
+// local auth cache when a peer replica reports a token mutation. Wired
+// from main.go in cluster mode (mirrors the runstate/channel bus
+// SubscribeBackplane pattern). Returns once subscribed; the goroutine
+// exits on ctx.Done.
+func (s *Server) SubscribeTokenInvalidations(ctx context.Context, bp coord.Backplane) error {
+	ch, err := bp.Subscribe(ctx, tokenInvalidateTopic)
+	if err != nil {
+		return err
+	}
+	go func() {
+		for range ch {
+			s.tokenCache.flush()
+		}
+	}()
+	return nil
+}
+
 // ResolvePrincipal is the exported wrapper main.go wires into the gRPC
 // adapter's Config.PrincipalResolver so both transports share identical
 // token resolution (RFC L). Returns (_, false) for unknown/expired/invalid.
@@ -123,18 +172,32 @@ func (s *Server) authVerbose() bool {
 	return s.cfg.Env.AuthVerbose
 }
 
-// resolvePrincipal maps a raw bearer to a principal. Token substrate
+// resolvePrincipal maps a raw bearer to a principal, with a short-TTL
+// per-replica cache in front of the DB lookup (RFC L Decision 11).
+// The cache key is the token's SHA-256 hash (never a secret); a
+// mutation flushes it locally + cross-replica. ttl<=0 (or no cache
+// wired) → direct lookup every time.
+func (s *Server) resolvePrincipal(ctx context.Context, bearer string) (auth.Principal, bool) {
+	if bearer == "" {
+		return auth.Principal{}, false
+	}
+	hash := auth.HashToken(s.cfg.Env.OperatorTokenPepper, bearer)
+	if p, found, ok := s.tokenCache.get(hash); ok {
+		return p, found
+	}
+	p, found := s.resolvePrincipalUncached(ctx, bearer, hash)
+	s.tokenCache.put(hash, p, found)
+	return p, found
+}
+
+// resolvePrincipalUncached is the resolution itself: token substrate
 // first (indexed peppered-hash lookup, honoring the rotation grace
 // window), then the legacy LOOMCYCLE_AUTH_TOKEN fallback (disabled once
 // an admin-scoped token exists — the no-lockout migration gate). Returns
 // (_, false) for unknown/expired/invalid — the caller maps that to an
 // opaque 401. NEVER fails open to the legacy token on a substrate error.
-func (s *Server) resolvePrincipal(ctx context.Context, bearer string) (auth.Principal, bool) {
-	if bearer == "" {
-		return auth.Principal{}, false
-	}
+func (s *Server) resolvePrincipalUncached(ctx context.Context, bearer, hash string) (auth.Principal, bool) {
 	if s.store != nil {
-		hash := auth.HashToken(s.cfg.Env.OperatorTokenPepper, bearer)
 		row, err := s.store.OperatorTokenDefGetByTokenHash(ctx, hash)
 		if err == nil {
 			// Valid iff never retired, or still inside the grace window.

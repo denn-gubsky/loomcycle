@@ -742,6 +742,38 @@ After v0.8.16 (PR #116), the model is also persisted at run start, so `GET /v1/u
 
 ---
 
+## 9b. Multi-tenant authentication (RFC L)
+
+By default every authenticated caller presents the single shared `LOOMCYCLE_AUTH_TOKEN` — correct for one operator or a single trusted team. For a team or small-VPS service fronting users who don't trust each other's claims, **OperatorTokenDef** issues per-principal bearer tokens, each bound to an **authoritative `(tenant, subject, scopes)`** that the middleware resolves *from the token* and stamps over the wire `tenant_id`/`user_id`. The token's `subject` becomes the run's `user_id` (the fairness key); its `tenant_id` is the memory-isolation boundary.
+
+```sh
+# Mint a per-developer token (shown once). Needs an existing admin bearer.
+loomcycle operator-token create --tenant acme --subject alice \
+  --scopes runs:create,runs:read,memory:read,memory:write
+loomcycle operator-token rotate --name alice   # zero-downtime roll (grace window)
+loomcycle operator-token retire --name alice   # immediate revoke
+```
+
+Migrate the existing shared secret in place — it keeps working as an admin token after the legacy fallback disables:
+
+```sh
+loomcycle operator-token create --tenant default --subject ops --copy-from-env
+```
+
+Config knobs (full reference: `loomcycle context help operator-tokens` or the `Context.help operator-tokens` tool topic):
+
+| Env var | Purpose |
+|---|---|
+| `LOOMCYCLE_OPERATOR_TOKEN_PEPPER` | Mixed into the token hash; a stolen DB dump without it yields no usable lookup. Set it for multi-tenant deployments. |
+| `LOOMCYCLE_AUTH_CACHE_TTL_SECONDS` | Per-replica resolution-cache TTL (default 30; `0` = direct lookup, immediate revocation). Worst-case revocation lag if a cross-replica invalidation is dropped. |
+| `LOOMCYCLE_OPERATOR_TOKEN_ROTATION_GRACE_SECONDS` | Default rotation grace window (default 24h). |
+| `LOOMCYCLE_AUDIT_LOG_PATH` | JSONL audit of every create/rotate/retire (never a token or hash). |
+| `LOOMCYCLE_AUTH_VERBOSE` | `1` logs a server-side reason on a rejected bearer (the wire 401 stays opaque). |
+
+Routes enforce a scope from a closed catalog (`substrate:admin` is superuser); an under-scoped token gets `403` + `WWW-Authenticate: Bearer scope="…"`. The legacy `LOOMCYCLE_AUTH_TOKEN` is disabled only once an admin-scoped token exists (the no-lockout gate).
+
+---
+
 ## 10. Cross-references
 
 - [`loomcycle.example.yaml`](../loomcycle.example.yaml) — the repo-root reference yaml. All six user_tiers wired, inline comments on every section. Copy-paste and edit.
