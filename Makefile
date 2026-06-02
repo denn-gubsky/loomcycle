@@ -24,9 +24,9 @@ PG_DSN := postgres://$(PG_USER):$(PG_PASSWORD)@127.0.0.1:$(PG_PORT)/$(PG_DATABAS
 
 help:
 	@echo "loomcycle dev targets:"
-	@echo "  build       — go build ./..."
+	@echo "  build       — go build -o bin/loomcycle ./cmd/loomcycle (the runnable binary)"
 	@echo "  build-ui    — npm ci + npm build for web/ (output → internal/webui/dist/)"
-	@echo "  build-all   — build-ui + build (produces a binary with the latest UI embedded)"
+	@echo "  build-all   — build-ui + build → ./bin/loomcycle with the latest UI embedded (use this to deploy)"
 	@echo "  test        — go test ./... (Postgres tests skip without LOOMCYCLE_TEST_PG_DSN)"
 	@echo "  test-pg     — go test ./... with LOOMCYCLE_TEST_PG_DSN set against the local fixture"
 	@echo "  pg-up       — start an ephemeral Postgres container for the test fixture"
@@ -37,8 +37,14 @@ help:
 	@echo ""
 	@echo "Local DSN: $(PG_DSN)"
 
+# Produce the runnable binary at ./bin/loomcycle. This MUST be the
+# `-o bin/loomcycle ./cmd/loomcycle` form: `go build ./...` is only a
+# compile check and writes NO executable (Go discards binaries when
+# building multiple packages), so the old target silently left a stale
+# ./bin/loomcycle in place — deploys shipped old code. The all-packages
+# compile check lives in `go vet ./...` (run in CI alongside this).
 build:
-	go build ./...
+	go build -o bin/loomcycle ./cmd/loomcycle
 
 build-ui:
 	# Build the React SPA into internal/webui/dist/. The dist/ tree is
