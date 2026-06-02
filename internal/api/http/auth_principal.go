@@ -268,6 +268,28 @@ func (s *Server) applyPrincipal(ctx context.Context, wireTenant, wireUser string
 	return p.TenantID, p.Subject
 }
 
+// sessionOwnershipOK reports whether the ctx principal may continue or read
+// sess (RFC L cross-principal boundary). A continuation or transcript read
+// runs under / exposes the SESSION'S stored (tenant, subject) — so it must
+// belong to the same authoritative principal that created it. Session ids are
+// NOT secrets (they are returned to the caller, logged, shown in the UI, and
+// embedded in events/transcripts), so without this check principal-A could
+// POST to principal-B's session id and have the run execute under B's tenant
+// + subject: cross-tenant memory read/write, replay of B's transcript back to
+// A, fairness-cap evasion, and attribution as B.
+//
+// Exempt (return true): no principal (open dev mode), and the single-operator
+// legacy principal (Legacy=true) — under the legacy shared secret there is
+// exactly one principal, so there is no cross-principal boundary to cross, and
+// pre-RFC-L sessions carry default/empty identity that would otherwise 404.
+func sessionOwnershipOK(ctx context.Context, sess store.Session) bool {
+	p, ok := auth.PrincipalFromContext(ctx)
+	if !ok || p.Legacy {
+		return true
+	}
+	return sess.TenantID == p.TenantID && sess.UserID == p.Subject
+}
+
 // requiredScopeFor maps an HTTP (method, path) to the scope a caller
 // must hold. Empty string = any authenticated principal (no specific
 // scope). substrate:admin satisfies everything (see auth.HasScope), so

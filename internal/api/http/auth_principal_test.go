@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -58,6 +59,62 @@ func seedToken(t *testing.T, st store.Store, plaintext, tenant, subject string, 
 	})
 	if err != nil {
 		t.Fatalf("seed token: %v", err)
+	}
+}
+
+func TestSessionOwnershipOK_Matrix(t *testing.T) {
+	sess := store.Session{TenantID: "acme", UserID: "alice"}
+	cases := []struct {
+		name string
+		ctx  context.Context
+		want bool
+	}{
+		{"no principal (open mode)", context.Background(), true},
+		{"legacy principal exempt", auth.WithPrincipal(context.Background(), auth.Principal{TenantID: "default", Subject: "default", Legacy: true}), true},
+		{"owner matches", auth.WithPrincipal(context.Background(), auth.Principal{TenantID: "acme", Subject: "alice"}), true},
+		{"wrong tenant", auth.WithPrincipal(context.Background(), auth.Principal{TenantID: "evil", Subject: "alice"}), false},
+		{"wrong subject", auth.WithPrincipal(context.Background(), auth.Principal{TenantID: "acme", Subject: "mallory"}), false},
+	}
+	for _, c := range cases {
+		if got := sessionOwnershipOK(c.ctx, sess); got != c.want {
+			t.Errorf("%s: sessionOwnershipOK = %v, want %v", c.name, got, c.want)
+		}
+	}
+}
+
+// A continuation runs under the SESSION'S stored tenant+subject. Without an
+// ownership check, principal-A could POST to principal-B's session id and
+// execute under B's identity (cross-tenant memory, B's transcript replayed to
+// A, fairness evasion). Session ids are not secrets. The guard returns an
+// opaque 404 to a non-owner.
+func TestHandleMessages_RejectsCrossPrincipalSession(t *testing.T) {
+	s, st := tokenAuthServer(t, "")
+	sess, err := st.CreateSession(context.Background(), "acme", "agentx", "alice")
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	body := `{"segments":[{"role":"user","content":[{"type":"trusted-text","text":"hi"}]}]}`
+
+	mkReq := func(tenant, subject string) *httptest.ResponseRecorder {
+		r := httptest.NewRequest(http.MethodPost, "/v1/sessions/"+sess.ID+"/messages", strings.NewReader(body))
+		r.SetPathValue("id", sess.ID)
+		r.Header.Set("Content-Type", "application/json")
+		r = r.WithContext(auth.WithPrincipal(r.Context(), auth.Principal{
+			TenantID: tenant, Subject: subject, Scopes: []string{auth.ScopeRunsCreate},
+		}))
+		rr := httptest.NewRecorder()
+		s.handleMessages(rr, r)
+		return rr
+	}
+
+	// Different principal → opaque 404 (the security property).
+	if rr := mkReq("evil", "mallory"); rr.Code != http.StatusNotFound {
+		t.Fatalf("cross-principal continuation: status=%d, want 404 (ownership not enforced?)", rr.Code)
+	}
+	// The owner passes the ownership gate (must NOT be the ownership 404; it
+	// proceeds past the check — any later status is fine, just not 404).
+	if rr := mkReq("acme", "alice"); rr.Code == http.StatusNotFound {
+		t.Fatalf("owner continuation got 404 — the ownership guard rejected the legitimate owner")
 	}
 }
 
