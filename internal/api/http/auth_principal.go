@@ -301,6 +301,61 @@ func sessionOwnershipOK(ctx context.Context, sess store.Session) bool {
 	return sess.TenantID == p.TenantID && sess.UserID == p.Subject
 }
 
+// handleWhoami serves GET /v1/_me — the Web UI's role source (multi-tenant
+// UI authz). Returns the resolved principal so the SPA renders the
+// super-admin (all-tenants) vs tenant (own-workspace) experience. Any
+// authenticated principal may call it (required scope ""). In open mode
+// (no auth configured) there's no principal → return a synthetic
+// admin-equivalent so the dev UI stays fully functional.
+func (s *Server) handleWhoami(w http.ResponseWriter, r *http.Request) {
+	p, ok := auth.PrincipalFromContext(r.Context())
+	if !ok {
+		writeJSONOK(w, map[string]any{
+			"tenant_id": "default", "subject": "default",
+			"scopes": []string{auth.ScopeAdmin}, "is_admin": true,
+			"legacy": false, "open_mode": true,
+		})
+		return
+	}
+	writeJSONOK(w, map[string]any{
+		"tenant_id": p.TenantID,
+		"subject":   p.Subject,
+		"scopes":    p.Scopes,
+		"is_admin":  auth.HasScope(p.Scopes, auth.ScopeAdmin),
+		"legacy":    p.Legacy,
+	})
+}
+
+// principalTenantScope resolves the tenant a list read should be scoped
+// to, mirroring applyPrincipal's posture (multi-tenant UI authz):
+//   - super-admin (substrate:admin) → (wireTenant, all = wireTenant=="") so the
+//     UI's tenant switcher can focus one tenant via ?tenant=, or see all;
+//   - non-admin (tenant) → (principal.TenantID, all=false); wire/?tenant IGNORED
+//     (a tenant can't widen its scope); a disagreement is logged;
+//   - open mode (no principal) → (wireTenant, all=wireTenant=="").
+func (s *Server) principalTenantScope(ctx context.Context, wireTenant string) (tenantID string, all bool) {
+	p, ok := auth.PrincipalFromContext(ctx)
+	if !ok || auth.HasScope(p.Scopes, auth.ScopeAdmin) {
+		return wireTenant, wireTenant == ""
+	}
+	if wireTenant != "" && wireTenant != p.TenantID {
+		log.Printf("auth: tenant_scope_overridden wire=%q principal=%q token_def=%q", wireTenant, p.TenantID, p.TokenDefID)
+	}
+	return p.TenantID, false
+}
+
+// tenantVisible reports whether the caller may read a row belonging to
+// rowTenant. Super-admin (or open mode) sees all; a tenant principal sees
+// only its own tenant. Single-row read handlers use this to 404 a
+// cross-tenant probe (opaque — no existence oracle).
+func (s *Server) tenantVisible(ctx context.Context, rowTenant string) bool {
+	p, ok := auth.PrincipalFromContext(ctx)
+	if !ok || auth.HasScope(p.Scopes, auth.ScopeAdmin) {
+		return true
+	}
+	return rowTenant == p.TenantID
+}
+
 // requiredScopeFor maps an HTTP (method, path) to the scope a caller
 // must hold. Empty string = any authenticated principal (no specific
 // scope). substrate:admin satisfies everything (see auth.HasScope), so
@@ -312,6 +367,10 @@ func requiredScopeFor(method, path string) string {
 	// Consumer LLM gateway / OpenAI-compat shims — NOT an admin surface;
 	// any authenticated principal may drive inference.
 	case path == "/v1/_llm/chat" || path == "/v1/chat/completions" || path == "/v1/embeddings":
+		return ""
+	// Whoami — any authenticated principal must be able to learn its own
+	// identity (the Web UI's role source); a tenant token needs it too.
+	case path == "/v1/_me":
 		return ""
 	// Everything else under /v1/_* is operator-admin: the substrate Def
 	// endpoints, runtime admin (pause/resume/state/snapshots/metrics),
