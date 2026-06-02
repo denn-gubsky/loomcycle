@@ -184,7 +184,9 @@ func tail(s string, lines int) string {
 }
 
 // TestInit_WithToken_MintsAuthEnv — --with-token persists a 0600 auth.env
-// carrying a 64-hex LOOMCYCLE_AUTH_TOKEN and prints the one-time UI URL.
+// carrying a 64-hex LOOMCYCLE_AUTH_TOKEN, prints the bare UI URL, and (the
+// security-load-bearing part) NEVER echoes the token to stdout nor embeds it
+// in a URL.
 func TestInit_WithToken_MintsAuthEnv(t *testing.T) {
 	dir := t.TempDir()
 	var stdout, stderr bytes.Buffer
@@ -220,10 +222,22 @@ func TestInit_WithToken_MintsAuthEnv(t *testing.T) {
 			t.Fatalf("token has non-hex char %q", c)
 		}
 	}
-	// The UI URL must embed the freshly minted token so the operator can
-	// click straight through to an authenticated UI.
-	if !strings.Contains(stdout.String(), "/ui?token="+token) {
-		t.Errorf("stdout missing the ready-to-open UI URL with the minted token; got:\n%s", stdout.String())
+	out := stdout.String()
+	// The token must NEVER appear in stdout — not raw, not in a URL. It lives
+	// only in the 0600 file. (Guards against a regression that re-embeds it
+	// in a `/ui?token=…` link, which leaks into history / proxy logs.)
+	if strings.Contains(out, token) {
+		t.Error("stdout contains the raw token — it must stay in the 0600 file, never echoed")
+	}
+	if strings.Contains(out, "?token=") {
+		t.Errorf("stdout embeds a ?token= URL; the token must not travel in a URL. got:\n%s", out)
+	}
+	// The bare UI URL + a pointer to the auth.env file must be present.
+	if !strings.Contains(out, "/ui\n") && !strings.Contains(out, "/ui ") {
+		t.Errorf("stdout missing the bare /ui URL; got:\n%s", out)
+	}
+	if !strings.Contains(out, authEnv) {
+		t.Errorf("stdout missing the auth.env path to paste from; got:\n%s", out)
 	}
 }
 

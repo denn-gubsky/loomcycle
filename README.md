@@ -108,7 +108,7 @@ loomcycle doctor              # verify env + keys + storage + the just-minted to
 loomcycle                     # starts on 127.0.0.1:8787 (auto-loads auth.env — no shell-rc edit)
 ```
 
-`init --with-token` prints a one-time Web UI link (`http://127.0.0.1:8787/ui?token=…`) — open it once to set the session cookie. That's it: an authenticated runtime, no secret to copy-paste. `loomcycle` and `loomcycle doctor` both auto-load `auth.env` from the config dir; a real `export LOOMCYCLE_AUTH_TOKEN=…` always overrides it.
+`init --with-token` prints the Web UI URL (`http://127.0.0.1:8787/ui`); open it, then paste the token from `~/.config/loomcycle/auth.env` at the login prompt. (The token is kept in the `0600` file and never embedded in a URL — a `?token=` link would leak the bearer into browser history and any fronting proxy's logs.) `loomcycle` and `loomcycle doctor` both auto-load `auth.env` from the config dir; a real `export LOOMCYCLE_AUTH_TOKEN=…` always overrides it.
 
 ## Bootstrap tiers
 

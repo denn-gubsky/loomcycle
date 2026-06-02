@@ -120,15 +120,17 @@ func runInitWithStdin(args []string, stdin io.Reader, stdout, stderr io.Writer) 
 	fmt.Fprintf(stdout, "Wrote %s\n", docPath)
 
 	// --with-token: mint + persist a LOOMCYCLE_AUTH_TOKEN so the operator
-	// gets an authenticated runtime without a shell-rc edit. mintedToken is
-	// non-empty only when we actually wrote a fresh token THIS run — when an
-	// auth.env already exists we keep it (never clobber a live token) and
-	// never read its value back (no secret echo).
-	var mintedToken string
+	// gets an authenticated runtime without a shell-rc edit. authEnvPersisted
+	// is the path to the 0600 file holding the token (set when we minted one
+	// THIS run, or when we kept an existing one). The raw token is written ONLY
+	// to that 0600 file — never echoed to stdout and never embedded in a URL
+	// (a token in a URL leaks into browser history / a fronting proxy's logs).
+	var authEnvPersisted string
 	if *withToken {
 		authEnvPath := filepath.Join(destDir, "auth.env")
 		if !*force && firstExistingFile(authEnvPath) != "" {
 			fmt.Fprintf(stdout, "Kept existing %s (pass --force to mint a fresh token).\n", authEnvPath)
+			authEnvPersisted = authEnvPath
 		} else {
 			tok, err := mintAuthToken()
 			if err != nil {
@@ -141,14 +143,14 @@ func runInitWithStdin(args []string, stdin io.Reader, stdout, stderr io.Writer) 
 			if err := os.WriteFile(authEnvPath, []byte(body), 0o600); err != nil {
 				return fail(stderr, "init: write %s: %v", authEnvPath, err)
 			}
-			mintedToken = tok
+			authEnvPersisted = authEnvPath
 			fmt.Fprintf(stdout, "Wrote %s (mode 0600 — minted LOOMCYCLE_AUTH_TOKEN)\n", authEnvPath)
 		}
 	}
 
 	fmt.Fprintln(stdout)
 	if wizard {
-		if mintedToken == "" {
+		if authEnvPersisted == "" {
 			fmt.Fprintln(stdout, "Add these to your shell rc (e.g. ~/.zshrc):")
 			fmt.Fprintln(stdout, "    export LOOMCYCLE_AUTH_TOKEN=$(openssl rand -hex 32)")
 		} else {
@@ -170,11 +172,11 @@ func runInitWithStdin(args []string, stdin io.Reader, stdout, stderr io.Writer) 
 		}
 		fmt.Fprintln(stdout)
 		fmt.Fprintf(stdout, "Then read %s and run `loomcycle doctor` to verify.\n", docPath)
-		printUIURL(stdout, listenAddr, mintedToken)
+		printUIURL(stdout, listenAddr, authEnvPersisted)
 	} else {
 		fmt.Fprintln(stdout, "Next steps:")
 		fmt.Fprintf(stdout, "  1. Read %s for the env-var reference.\n", docPath)
-		if mintedToken == "" {
+		if authEnvPersisted == "" {
 			fmt.Fprintln(stdout, "  2. Set the required environment variables in your shell rc:")
 			fmt.Fprintln(stdout, "       export LOOMCYCLE_AUTH_TOKEN=$(openssl rand -hex 32)")
 			fmt.Fprintln(stdout, "       export ANTHROPIC_API_KEY=<your-key>   # or OPENAI_API_KEY, DEEPSEEK_API_KEY")
@@ -184,7 +186,7 @@ func runInitWithStdin(args []string, stdin io.Reader, stdout, stderr io.Writer) 
 		}
 		fmt.Fprintln(stdout, "  3. Run `loomcycle doctor` to verify your setup.")
 		fmt.Fprintln(stdout, "  4. Run `loomcycle` to start the server.")
-		printUIURL(stdout, listenAddr, mintedToken)
+		printUIURL(stdout, listenAddr, authEnvPersisted)
 	}
 	return 0
 }
@@ -200,19 +202,21 @@ func mintAuthToken() (string, error) {
 	return hex.EncodeToString(b), nil
 }
 
-// printUIURL prints the one-shot Web UI URL. With a freshly minted token it
-// embeds `?token=…` (the cookie-set bootstrap); otherwise it prints the bare
-// /ui URL — we never read an existing auth.env back to recover its secret.
-func printUIURL(stdout io.Writer, listenAddr, mintedToken string) {
+// printUIURL prints the Web UI URL. The token is deliberately NOT embedded
+// in the URL: a `?token=…` link leaks the bearer into browser history and any
+// fronting proxy's access log. We print the bare /ui URL (which lands on the
+// login prompt) and point at the 0600 file the operator pastes from — the
+// secret never travels in a URL we emit, nor through stdout.
+func printUIURL(stdout io.Writer, listenAddr, authEnvPersisted string) {
 	if listenAddr == "" {
 		listenAddr = "127.0.0.1:8787"
 	}
 	fmt.Fprintln(stdout)
-	if mintedToken != "" {
-		fmt.Fprintln(stdout, "Open the Web UI (one-time link — sets the session cookie):")
-		fmt.Fprintf(stdout, "    http://%s/ui?token=%s\n", listenAddr, mintedToken)
+	fmt.Fprintf(stdout, "Open the Web UI: http://%s/ui\n", listenAddr)
+	if authEnvPersisted != "" {
+		fmt.Fprintf(stdout, "    → at the login prompt, paste the token from %s\n", authEnvPersisted)
 	} else {
-		fmt.Fprintf(stdout, "Web UI: http://%s/ui  (append ?token=$LOOMCYCLE_AUTH_TOKEN once to set the cookie)\n", listenAddr)
+		fmt.Fprintln(stdout, "    → at the login prompt, paste your LOOMCYCLE_AUTH_TOKEN (open mode needs no token)")
 	}
 }
 
