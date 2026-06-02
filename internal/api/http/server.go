@@ -117,6 +117,15 @@ type Server struct {
 	// that don't exercise MCP at all. See internal/tools/mcp/lazy.go.
 	mcpFallback tools.FallbackFunc
 
+	// dynamicTools, when set, returns the substrate-registered tools
+	// (dynamic MCP servers' discovered tools + A2A peer skills) that were
+	// NOT in the boot-time s.tools set. Folded into the per-run candidate
+	// set BEFORE the allowed_tools filter, so a tool registered post-boot
+	// is both ADVERTISED in the run's catalog and dispatchable — symmetric
+	// with boot-registered tools, no restart needed. nil-safe (tests +
+	// deployments without the substrate); wired in main.go.
+	dynamicTools func(context.Context) []tools.Tool
+
 	// systemPublisher backs the v0.8.6 POST /v1/_channels/_system/...
 	// admin endpoint. Nil = endpoint refuses every request with a
 	// "system publisher not wired" 503. Set via SetSystemPublisher.
@@ -364,6 +373,35 @@ func (s *Server) SetBuildInfo(version, commit, builtAt string) {
 // cmd/loomcycle/main.go after the MCP pool is built.
 func (s *Server) SetMCPFallback(fn tools.FallbackFunc) {
 	s.mcpFallback = fn
+}
+
+// SetDynamicToolEnumerator installs the optional post-boot tool advertiser.
+// fn returns the substrate-registered tools (dynamic MCP + A2A) currently
+// available; the run-creation path folds them into the candidate set before
+// the allowed_tools filter, so post-boot registrations are advertised to the
+// model without a restart. Nil-safe; wired in main.go after the registries +
+// pool are built.
+func (s *Server) SetDynamicToolEnumerator(fn func(context.Context) []tools.Tool) {
+	s.dynamicTools = fn
+}
+
+// candidateTools returns the boot-time tool set plus any post-boot
+// substrate-registered tools, so the per-run allowed_tools filter (and thus
+// the advertised catalog) sees dynamically-registered tools. The boot set is
+// the floor; a dynamic tool that duplicates a boot-set name collapses in
+// filterTools's by-name map (last writer wins; both wrap the same upstream).
+func (s *Server) candidateTools(ctx context.Context) []tools.Tool {
+	if s.dynamicTools == nil {
+		return s.tools
+	}
+	dyn := s.dynamicTools(ctx)
+	if len(dyn) == 0 {
+		return s.tools
+	}
+	out := make([]tools.Tool, 0, len(s.tools)+len(dyn))
+	out = append(out, s.tools...)
+	out = append(out, dyn...)
+	return out
 }
 
 // MCPPoolInspector returns the cached tools/list result for an MCP
@@ -1405,7 +1443,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	defer release()
 
 	// ---- Tool filtering + host narrowing ----
-	allowedTools := filterTools(s.tools, agentDef.AllowedTools, in.AllowedTools)
+	allowedTools := filterTools(s.candidateTools(ctx), agentDef.AllowedTools, in.AllowedTools)
 	var hostPolicy tools.HostPolicyValue
 	if in.AllowedHosts != nil || s.cfg.Env.HTTPCallerAuthoritative {
 		var caller []string
@@ -2454,7 +2492,7 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 	defer release()
 
 	// Filter tools by agent allowlist + caller request.
-	allowedTools := filterTools(s.tools, agentDef.AllowedTools, req.AllowedTools)
+	allowedTools := filterTools(s.candidateTools(r.Context()), agentDef.AllowedTools, req.AllowedTools)
 	// Per-run host narrowing for HTTP/WebFetch/WebSearch. Behaviour
 	// depends on LOOMCYCLE_HTTP_CALLER_AUTHORITATIVE — see NarrowHosts
 	// doc comment. In caller-authoritative mode we ALWAYS call so the
@@ -2859,7 +2897,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	}
 	defer release()
 
-	allowedTools := filterTools(s.tools, agentDef.AllowedTools, body.AllowedTools)
+	allowedTools := filterTools(s.candidateTools(r.Context()), agentDef.AllowedTools, body.AllowedTools)
 	var hostPolicy tools.HostPolicyValue
 	if body.AllowedHosts != nil || s.cfg.Env.HTTPCallerAuthoritative {
 		var caller []string
@@ -3564,7 +3602,7 @@ func (s *Server) runSubAgent(ctx context.Context, name string, prompt string, de
 		}},
 	})
 
-	subTools := filterTools(s.tools, def.AllowedTools, nil)
+	subTools := filterTools(s.candidateTools(ctx), def.AllowedTools, nil)
 	// Inherit the parent's caller-authoritative host policy. Without
 	// this, sub-agents fall back to the operator's static
 	// HTTPHostAllowlist — which typically doesn't include localhost
