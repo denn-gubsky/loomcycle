@@ -660,6 +660,11 @@ func (s *Store) migrate(ctx context.Context) error {
 		// spawn path sets this = delivery_id for cross-replica /
 		// past-Layer-1-TTL dedup.
 		`ALTER TABLE runs ADD COLUMN idempotency_key TEXT`,
+		// RFC L / Web-UI multi-tenant authz — tenant_id denormalised onto
+		// the run row so the per-tenant workspace lists filter without a
+		// sessions JOIN. NULL on legacy rows until the backfill below
+		// copies it from the parent session. New rows set it at CreateRun.
+		`ALTER TABLE runs ADD COLUMN tenant_id TEXT`,
 	}
 	for _, q := range addColumns {
 		if _, err := s.db.ExecContext(ctx, q); err != nil {
@@ -675,6 +680,17 @@ func (s *Store) migrate(ctx context.Context) error {
 		}
 	}
 
+	// One-time backfill of runs.tenant_id from the parent session for
+	// rows created before the column existed. Idempotent: only touches
+	// NULL/empty rows, so it's a cheap no-op on every boot after the
+	// first. (RFC L / Web-UI multi-tenant authz.)
+	if _, err := s.db.ExecContext(ctx, `
+		UPDATE runs SET tenant_id = (
+			SELECT s.tenant_id FROM sessions s WHERE s.id = runs.session_id
+		) WHERE tenant_id IS NULL OR tenant_id = ''`); err != nil {
+		return fmt.Errorf("migrate backfill runs.tenant_id: %w", err)
+	}
+
 	addIndexes := []string{
 		// Drives the hot lookup paths for the cancel/get endpoints.
 		// Partial indexes (WHERE ... IS NOT NULL) keep the index small —
@@ -682,6 +698,8 @@ func (s *Store) migrate(ctx context.Context) error {
 		`CREATE INDEX IF NOT EXISTS runs_by_agent_id        ON runs(agent_id)        WHERE agent_id IS NOT NULL`,
 		`CREATE INDEX IF NOT EXISTS runs_by_parent_agent_id ON runs(parent_agent_id) WHERE parent_agent_id IS NOT NULL`,
 		`CREATE INDEX IF NOT EXISTS runs_by_user_active     ON runs(user_id, status) WHERE user_id IS NOT NULL`,
+		// RFC L / Web-UI multi-tenant authz — tenant-scoped workspace lists.
+		`CREATE INDEX IF NOT EXISTS runs_by_tenant_active   ON runs(tenant_id, status) WHERE tenant_id IS NOT NULL`,
 		`CREATE INDEX IF NOT EXISTS sessions_by_user        ON sessions(user_id)     WHERE user_id IS NOT NULL`,
 		// v0.8.5: facets cost retros + experiment audits by which
 		// agent_def_id the run actually ran against. Partial index
@@ -819,13 +837,14 @@ func (s *Store) CreateRun(ctx context.Context, sessionID string, identity store.
 		pcVal = pcJSON
 	}
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO runs(id, session_id, status, started_at, agent_id, parent_agent_id, parent_run_id, user_id, user_tier, agent_def_id, model, parent_context, idempotency_key)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO runs(id, session_id, status, started_at, agent_id, parent_agent_id, parent_run_id, user_id, tenant_id, user_tier, agent_def_id, model, parent_context, idempotency_key)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		id, sessionID, store.RunRunning, now.UnixNano(),
 		nilIfEmpty(identity.AgentID),
 		nilIfEmpty(identity.ParentAgentID),
 		nilIfEmpty(identity.ParentRunID),
 		nilIfEmpty(identity.UserID),
+		nilIfEmpty(identity.TenantID),
 		nilIfEmpty(identity.UserTier),
 		nilIfEmpty(identity.AgentDefID),
 		nilIfEmpty(identity.Model),
@@ -855,6 +874,7 @@ func (s *Store) CreateRun(ctx context.Context, sessionID string, identity store.
 		ParentAgentID:  identity.ParentAgentID,
 		ParentRunID:    identity.ParentRunID,
 		UserID:         identity.UserID,
+		TenantID:       identity.TenantID,
 		UserTier:       identity.UserTier,
 		AgentDefID:     identity.AgentDefID,
 		Model:          identity.Model,
@@ -1048,6 +1068,7 @@ func scanRun(scanner interface{ Scan(...any) error }) (store.Run, error) {
 	var pauseState sql.NullString
 	var parentContext sql.NullString
 	var idempotencyKey sql.NullString
+	var tenantID sql.NullString
 	var sessAgent sql.NullString
 	var status string
 	if err := scanner.Scan(
@@ -1057,7 +1078,7 @@ func scanRun(scanner interface{ Scan(...any) error }) (store.Run, error) {
 		&model, &provider, &errMsg,
 		&agentID, &parentAgentID, &parentRunID, &userID, &lastHbNs,
 		&userTier,
-		&agentDefID, &pauseState, &parentContext, &idempotencyKey,
+		&agentDefID, &pauseState, &parentContext, &idempotencyKey, &tenantID,
 		&sessAgent,
 	); err != nil {
 		return store.Run{}, err
@@ -1115,6 +1136,9 @@ func scanRun(scanner interface{ Scan(...any) error }) (store.Run, error) {
 	if idempotencyKey.Valid {
 		r.IdempotencyKey = idempotencyKey.String
 	}
+	if tenantID.Valid {
+		r.TenantID = tenantID.String
+	}
 	if sessAgent.Valid {
 		r.Agent = sessAgent.String
 	}
@@ -1135,7 +1159,7 @@ const runColumns = `r.id, r.session_id, r.status, r.started_at, r.completed_at,
 		r.model, r.provider, r.error,
 		r.agent_id, r.parent_agent_id, r.parent_run_id, r.user_id, r.last_heartbeat_at,
 		r.user_tier,
-		r.agent_def_id, r.pause_state, r.parent_context, r.idempotency_key,
+		r.agent_def_id, r.pause_state, r.parent_context, r.idempotency_key, r.tenant_id,
 		s.agent`
 
 // runFromTable is the canonical FROM clause paired with runColumns.

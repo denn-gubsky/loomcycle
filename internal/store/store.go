@@ -188,6 +188,10 @@ type Run struct {
 	// lookups without a session join. Set at run creation; never
 	// mutated.
 	UserID string `json:"user_id,omitempty"`
+	// TenantID is the authoritative tenant (RFC L), denormalised at run
+	// creation so tenant-scoped reads filter without a sessions JOIN.
+	// Empty/"default" on legacy single-tenant rows.
+	TenantID string `json:"tenant_id,omitempty"`
 	// LastHeartbeatAt is updated by the loop at each iteration so
 	// a future sweeper can detect crashed runs (no heartbeat for
 	// > N minutes → presumed dead). Zero-time means no heartbeat
@@ -318,6 +322,12 @@ type RunIdentity struct {
 	// consistency (cheaper to trust the caller than to JOIN on
 	// every CreateRun).
 	UserID string
+	// TenantID is the authoritative tenant (RFC L), denormalised onto
+	// the run row so tenant-scoped list/read queries (the Web UI's
+	// per-tenant workspace) filter without a sessions JOIN. Set from the
+	// run's effective tenant at creation; "" / "default" on legacy
+	// single-tenant rows. The tenant-authz boundary keys on this.
+	TenantID string
 	// UserTier is the v0.8.2 user-tier marker captured at run
 	// creation. Empty when the request didn't carry user_tier (back-
 	// compat) or the operator's yaml has no user_tiers block.

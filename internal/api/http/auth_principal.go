@@ -280,25 +280,83 @@ func (s *Server) applyPrincipal(ctx context.Context, wireTenant, wireUser string
 }
 
 // sessionOwnershipOK reports whether the ctx principal may continue or read
-// sess (RFC L cross-principal boundary). A continuation or transcript read
-// runs under / exposes the SESSION'S stored (tenant, subject) — so it must
-// belong to the same authoritative principal that created it. Session ids are
-// NOT secrets (they are returned to the caller, logged, shown in the UI, and
-// embedded in events/transcripts), so without this check principal-A could
-// POST to principal-B's session id and have the run execute under B's tenant
-// + subject: cross-tenant memory read/write, replay of B's transcript back to
-// A, fairness-cap evasion, and attribution as B.
+// sess. A continuation runs under / a transcript read exposes the SESSION'S
+// history, so the gate keeps a caller from acting on a session OUTSIDE ITS
+// TENANT — session ids are NOT secrets (returned to callers, logged, shown in
+// the UI, embedded in transcripts), so without this a token from tenant-B
+// could POST to a tenant-A session id and get cross-tenant memory read/write,
+// transcript replay, fairness-cap evasion, and attribution in A.
 //
-// Exempt (return true): no principal (open dev mode), and the single-operator
-// legacy principal (Legacy=true) — under the legacy shared secret there is
-// exactly one principal, so there is no cross-principal boundary to cross, and
-// pre-RFC-L sessions carry default/empty identity that would otherwise 404.
+// WHOLE-TENANT model (the chosen Web-UI authz granularity): the boundary is
+// the TENANT, not the subject — subjects within one tenant share the tenant's
+// workspace (they collaborate), so any acme subject may read/continue any acme
+// session. The cross-TENANT boundary (the actual security property) stays
+// hard. A super-admin (substrate:admin) crosses tenants by design.
+//
+// Exempt (return true): no principal (open dev mode); the single-operator
+// legacy principal (Legacy=true) — one principal, no boundary, and pre-RFC-L
+// sessions carry default/empty identity; and any substrate:admin principal.
 func sessionOwnershipOK(ctx context.Context, sess store.Session) bool {
 	p, ok := auth.PrincipalFromContext(ctx)
-	if !ok || p.Legacy {
+	if !ok || p.Legacy || auth.HasScope(p.Scopes, auth.ScopeAdmin) {
 		return true
 	}
-	return sess.TenantID == p.TenantID && sess.UserID == p.Subject
+	return sess.TenantID == p.TenantID
+}
+
+// handleWhoami serves GET /v1/_me — the Web UI's role source (multi-tenant
+// UI authz). Returns the resolved principal so the SPA renders the
+// super-admin (all-tenants) vs tenant (own-workspace) experience. Any
+// authenticated principal may call it (required scope ""). In open mode
+// (no auth configured) there's no principal → return a synthetic
+// admin-equivalent so the dev UI stays fully functional.
+func (s *Server) handleWhoami(w http.ResponseWriter, r *http.Request) {
+	p, ok := auth.PrincipalFromContext(r.Context())
+	if !ok {
+		writeJSONOK(w, map[string]any{
+			"tenant_id": "default", "subject": "default",
+			"scopes": []string{auth.ScopeAdmin}, "is_admin": true,
+			"legacy": false, "open_mode": true,
+		})
+		return
+	}
+	writeJSONOK(w, map[string]any{
+		"tenant_id": p.TenantID,
+		"subject":   p.Subject,
+		"scopes":    p.Scopes,
+		"is_admin":  auth.HasScope(p.Scopes, auth.ScopeAdmin),
+		"legacy":    p.Legacy,
+	})
+}
+
+// principalTenantScope resolves the tenant a list read should be scoped
+// to, mirroring applyPrincipal's posture (multi-tenant UI authz):
+//   - super-admin (substrate:admin) → (wireTenant, all = wireTenant=="") so the
+//     UI's tenant switcher can focus one tenant via ?tenant=, or see all;
+//   - non-admin (tenant) → (principal.TenantID, all=false); wire/?tenant IGNORED
+//     (a tenant can't widen its scope); a disagreement is logged;
+//   - open mode (no principal) → (wireTenant, all=wireTenant=="").
+func (s *Server) principalTenantScope(ctx context.Context, wireTenant string) (tenantID string, all bool) {
+	p, ok := auth.PrincipalFromContext(ctx)
+	if !ok || auth.HasScope(p.Scopes, auth.ScopeAdmin) {
+		return wireTenant, wireTenant == ""
+	}
+	if wireTenant != "" && wireTenant != p.TenantID {
+		log.Printf("auth: tenant_scope_overridden wire=%q principal=%q token_def=%q", wireTenant, p.TenantID, p.TokenDefID)
+	}
+	return p.TenantID, false
+}
+
+// tenantVisible reports whether the caller may read a row belonging to
+// rowTenant. Super-admin (or open mode) sees all; a tenant principal sees
+// only its own tenant. Single-row read handlers use this to 404 a
+// cross-tenant probe (opaque — no existence oracle).
+func (s *Server) tenantVisible(ctx context.Context, rowTenant string) bool {
+	p, ok := auth.PrincipalFromContext(ctx)
+	if !ok || auth.HasScope(p.Scopes, auth.ScopeAdmin) {
+		return true
+	}
+	return rowTenant == p.TenantID
 }
 
 // requiredScopeFor maps an HTTP (method, path) to the scope a caller
@@ -312,6 +370,10 @@ func requiredScopeFor(method, path string) string {
 	// Consumer LLM gateway / OpenAI-compat shims — NOT an admin surface;
 	// any authenticated principal may drive inference.
 	case path == "/v1/_llm/chat" || path == "/v1/chat/completions" || path == "/v1/embeddings":
+		return ""
+	// Whoami — any authenticated principal must be able to learn its own
+	// identity (the Web UI's role source); a tenant token needs it too.
+	case path == "/v1/_me":
 		return ""
 	// Everything else under /v1/_* is operator-admin: the substrate Def
 	// endpoints, runtime admin (pause/resume/state/snapshots/metrics),

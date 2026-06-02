@@ -72,8 +72,13 @@ func TestSessionOwnershipOK_Matrix(t *testing.T) {
 		{"no principal (open mode)", context.Background(), true},
 		{"legacy principal exempt", auth.WithPrincipal(context.Background(), auth.Principal{TenantID: "default", Subject: "default", Legacy: true}), true},
 		{"owner matches", auth.WithPrincipal(context.Background(), auth.Principal{TenantID: "acme", Subject: "alice"}), true},
-		{"wrong tenant", auth.WithPrincipal(context.Background(), auth.Principal{TenantID: "evil", Subject: "alice"}), false},
-		{"wrong subject", auth.WithPrincipal(context.Background(), auth.Principal{TenantID: "acme", Subject: "mallory"}), false},
+		// Whole-tenant model: a same-tenant DIFFERENT subject is allowed
+		// (subjects collaborate within their tenant's workspace).
+		{"same tenant, different subject (whole-tenant)", auth.WithPrincipal(context.Background(), auth.Principal{TenantID: "acme", Subject: "mallory"}), true},
+		// The cross-TENANT boundary stays hard (the security property).
+		{"wrong tenant blocked", auth.WithPrincipal(context.Background(), auth.Principal{TenantID: "evil", Subject: "alice"}), false},
+		// Super-admin crosses tenants by design.
+		{"super-admin sees all", auth.WithPrincipal(context.Background(), auth.Principal{TenantID: "x", Scopes: []string{auth.ScopeAdmin}}), true},
 	}
 	for _, c := range cases {
 		if got := sessionOwnershipOK(c.ctx, sess); got != c.want {
@@ -82,12 +87,12 @@ func TestSessionOwnershipOK_Matrix(t *testing.T) {
 	}
 }
 
-// A continuation runs under the SESSION'S stored tenant+subject. Without an
-// ownership check, principal-A could POST to principal-B's session id and
-// execute under B's identity (cross-tenant memory, B's transcript replayed to
-// A, fairness evasion). Session ids are not secrets. The guard returns an
-// opaque 404 to a non-owner.
-func TestHandleMessages_RejectsCrossPrincipalSession(t *testing.T) {
+// A continuation runs under the SESSION'S tenant. Without the tenant gate, a
+// token from another TENANT could POST to this session id and execute against
+// it (cross-tenant memory, transcript replay, fairness evasion). Session ids
+// are not secrets. Whole-tenant model: a cross-TENANT continuation gets an
+// opaque 404; a same-tenant DIFFERENT subject is allowed (collaboration).
+func TestHandleMessages_RejectsCrossTenantSession(t *testing.T) {
 	s, st := tokenAuthServer(t, "")
 	sess, err := st.CreateSession(context.Background(), "acme", "agentx", "alice")
 	if err != nil {
@@ -107,14 +112,18 @@ func TestHandleMessages_RejectsCrossPrincipalSession(t *testing.T) {
 		return rr
 	}
 
-	// Different principal → opaque 404 (the security property).
+	// Cross-TENANT → opaque 404 (the security property stays hard).
 	if rr := mkReq("evil", "mallory"); rr.Code != http.StatusNotFound {
-		t.Fatalf("cross-principal continuation: status=%d, want 404 (ownership not enforced?)", rr.Code)
+		t.Fatalf("cross-tenant continuation: status=%d, want 404 (tenant gate not enforced?)", rr.Code)
 	}
-	// The owner passes the ownership gate (must NOT be the ownership 404; it
-	// proceeds past the check — any later status is fine, just not 404).
+	// The session's own subject passes the gate (not the ownership 404).
 	if rr := mkReq("acme", "alice"); rr.Code == http.StatusNotFound {
-		t.Fatalf("owner continuation got 404 — the ownership guard rejected the legitimate owner")
+		t.Fatalf("owner continuation got 404 — the tenant gate rejected a legitimate caller")
+	}
+	// Whole-tenant: a DIFFERENT subject in the SAME tenant also passes (this
+	// is the loosening from the per-subject QA fix — same-tenant collaboration).
+	if rr := mkReq("acme", "bob"); rr.Code == http.StatusNotFound {
+		t.Fatalf("same-tenant different-subject continuation got 404 — whole-tenant sharing not enabled")
 	}
 }
 

@@ -1443,7 +1443,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	}
 
 	// ---- Session+run creation ----
-	identity := store.RunIdentity{AgentID: agentID, UserID: effectiveUserID, UserTier: in.UserTier, Model: model, ReplicaID: s.replicaID, ParentContext: in.ParentContext, IdempotencyKey: in.IdempotencyKey}
+	identity := store.RunIdentity{AgentID: agentID, UserID: effectiveUserID, TenantID: effectiveTenantID, UserTier: in.UserTier, Model: model, ReplicaID: s.replicaID, ParentContext: in.ParentContext, IdempotencyKey: in.IdempotencyKey}
 	sessionID, runID, sessErr := s.openOrCreateSessionAndRun(ctx, in.SessionID, effectiveAgentName, effectiveTenantID, effectiveUserID, identity)
 	if sessErr != nil {
 		var nf *store.ErrNotFound
@@ -1819,6 +1819,8 @@ func (s *Server) Mux() http.Handler {
 	mux.Handle("POST /v1/_memorybackenddef", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleSubstrateMemoryBackendDef))))
 	// RFC L OSS multi-tenant authorization — OperatorTokenDef admin.
 	mux.Handle("POST /v1/_operatortokendef", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleSubstrateOperatorTokenDef))))
+	// Whoami — the Web UI's role source (any authenticated principal).
+	mux.Handle("GET /v1/_me", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleWhoami))))
 	// v0.11.0 LLM Gateway — direct provider routing without the agent
 	// loop. Bearer-authed admin scope. Both stream:true (SSE) and
 	// stream:false (single-shot JSON) selected by the request body.
@@ -2506,7 +2508,7 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 	// emitted event through the store before forwarding to SSE. With
 	// s.store == nil the recording becomes a no-op so v0.2 callers see no
 	// behaviour change.
-	identity := store.RunIdentity{AgentID: agentID, UserID: req.UserID, UserTier: req.UserTier, Model: model, ReplicaID: s.replicaID, ParentContext: req.ParentContext}
+	identity := store.RunIdentity{AgentID: agentID, UserID: req.UserID, TenantID: req.TenantID, UserTier: req.UserTier, Model: model, ReplicaID: s.replicaID, ParentContext: req.ParentContext}
 	sessionID, runID, sessErr := s.openOrCreateSessionAndRun(r.Context(), req.SessionID, req.Agent, req.TenantID, req.UserID, identity)
 	if sessErr != nil {
 		var nf *store.ErrNotFound
@@ -2908,6 +2910,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	run, err := s.store.CreateRun(r.Context(), id, store.RunIdentity{
 		AgentID:       agentID,
 		UserID:        sess.UserID,
+		TenantID:      sess.TenantID, // RFC L: continuation inherits the session's authoritative tenant
 		UserTier:      body.UserTier,
 		Model:         model,
 		ReplicaID:     s.replicaID,
@@ -3466,6 +3469,7 @@ func (s *Server) runSubAgent(ctx context.Context, name string, prompt string, de
 		// for transcript stitching and can be filled in by a future
 		// refactor that threads parent run.ID through ctx.
 		UserID:     parentIdentity.UserID,
+		TenantID:   parentIdentity.TenantID, // RFC L: sub-runs inherit the parent's authoritative tenant
 		UserTier:   parentIdentity.UserTier, // v0.8.2: same user_tier across the sub-run tree
 		AgentDefID: defID,                   // v0.8.5: pin defID on the sub-run for evaluation denormalisation
 		Model:      model,                   // resolved model — written at create so the UI sees it during the run
@@ -3853,6 +3857,15 @@ func (s *Server) handleGetAgent(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	// Multi-tenant authz: a tenant principal may only read runs in its
+	// own tenant. A cross-tenant probe gets the same 404 as a missing
+	// agent (opaque — no existence oracle). Super-admin / open mode see all.
+	if !s.tenantVisible(r.Context(), run.TenantID) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		fmt.Fprintf(w, `{"code":"unknown_agent_id","error":"no run found for agent_id %q"}`, agentID)
+		return
+	}
 	_, live := s.cancelReg.Get(agentID)
 	resp := runToAgentResponse(run, live)
 	if resp.Status == store.RunRunning {
@@ -3968,6 +3981,12 @@ func (s *Server) handleListUserAgents(w http.ResponseWriter, r *http.Request) {
 	}
 	out := make([]agentResponse, 0, len(runs))
 	for _, run := range runs {
+		// Multi-tenant authz: a tenant principal sees only runs in its
+		// own tenant (so requesting another tenant's user_id yields an
+		// empty list). Super-admin / open mode see all.
+		if !s.tenantVisible(r.Context(), run.TenantID) {
+			continue
+		}
 		_, live := s.cancelReg.Get(run.AgentID)
 		out = append(out, runToAgentResponse(run, live))
 	}
