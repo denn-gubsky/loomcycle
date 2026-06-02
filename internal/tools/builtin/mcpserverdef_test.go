@@ -340,3 +340,63 @@ func TestCanonicalTools_OrderAndWhitespaceInsensitive(t *testing.T) {
 		t.Error("genuinely different tool sets must not compare equal")
 	}
 }
+
+// TestMCPServerDefTool_CreateExpandsInnerLoomcycleEnv pins the dynamic-vs-yaml
+// env-expansion symmetry. A yaml MCP server's header is expanded at
+// config.Load (the whole document passes through expandEnv); a dynamically-
+// registered one never passes through Load. Without expansion at create, the
+// inner ${LOOMCYCLE_*} in a header like
+//
+//	Bearer ${run.credentials.jobs:-${LOOMCYCLE_JOBS_SEARCH_API_TOKEN}}
+//
+// is stored verbatim, and the request-time substituter's lazy `.*?` fallback
+// (internal/tools/mcp/http/substitute.go) then truncates on the inner `}` and
+// sends `Bearer ${LOOMCYCLE_…}` as a literal → 401 upstream.
+//
+// Fails on the pre-fix code, which stored the nested-brace template verbatim:
+// the want-strings below would not match.
+func TestMCPServerDefTool_CreateExpandsInnerLoomcycleEnv(t *testing.T) {
+	t.Setenv("LOOMCYCLE_JOBS_SEARCH_API_TOKEN", "tok-abc123")
+	t.Setenv("LOOMCYCLE_JOBS_MCP_HOST", "internal.example") // in the fixture allowlist
+
+	tool, ctx, cleanup := mcpServerDefFixture(t)
+	defer cleanup()
+
+	body := `{"op":"create","name":"jobs","overlay":{` +
+		`"transport":"http",` +
+		`"url":"https://${LOOMCYCLE_JOBS_MCP_HOST}/mcp",` +
+		`"headers":{"Authorization":"Bearer ${run.credentials.jobs:-${LOOMCYCLE_JOBS_SEARCH_API_TOKEN}}"}}}`
+	res, _ := tool.Execute(ctx, json.RawMessage(body))
+	if res.IsError {
+		t.Fatalf("create: %s", res.Text)
+	}
+
+	// Read the stored definition back and assert the inner LOOMCYCLE var was
+	// resolved while the outer ${run.credentials.*} token survived for
+	// request-time substitution — i.e. the stored header is now FLAT (no
+	// nested brace), which is exactly what substitute.go's lazy regex needs.
+	active, err := tool.Store.MCPServerDefGetActive(ctx, "jobs")
+	if err != nil {
+		t.Fatalf("GetActive: %v", err)
+	}
+	var ov mcpServerOverlay
+	if err := json.Unmarshal(active.Definition, &ov); err != nil {
+		t.Fatalf("unmarshal definition: %v", err)
+	}
+
+	if want := "https://internal.example/mcp"; ov.URL != want {
+		t.Errorf("URL not expanded: got %q, want %q", ov.URL, want)
+	}
+	gotHdr := ov.Headers["Authorization"]
+	if want := "Bearer ${run.credentials.jobs:-tok-abc123}"; gotHdr != want {
+		t.Fatalf("Authorization header:\n got: %q\nwant: %q", gotHdr, want)
+	}
+	// Belt-and-suspenders: no nested brace remains, and the secret is not a
+	// literal placeholder anymore.
+	if strings.Contains(gotHdr, "${LOOMCYCLE_") {
+		t.Errorf("inner LOOMCYCLE var left unresolved in stored header: %q", gotHdr)
+	}
+	if !strings.Contains(gotHdr, "${run.credentials.jobs:-") {
+		t.Errorf("outer run-credentials token did not survive expansion: %q", gotHdr)
+	}
+}
