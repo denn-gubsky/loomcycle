@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"sort"
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/config"
@@ -234,6 +235,22 @@ func (m *MCPServerDef) execCreate(ctx context.Context, in mcpServerDefInput) (to
 		return errResult(fmt.Sprintf("create: description (%d bytes) exceeds max %d", len(in.Description), m.MaxDescriptionBytes)), nil
 	}
 
+	contentSHA := signFromMCPServerOverlay(in.Name, def)
+	// Idempotent create: if the active def already carries this exact
+	// content, return it as a no-op instead of minting a byte-identical new
+	// version. A consumer that blindly re-registers on every restart no
+	// longer spams the lineage; this is the server-side complement to
+	// verify-before-create. content_sha256 covers {name, description,
+	// transport, url, headers} — NOT discovered_tools, which the rediscover
+	// path dedups separately. Re-creating content that matches a NON-active
+	// version still mints + promotes (re-activation is a real state change),
+	// so we compare only against the active row.
+	if active, gerr := m.Store.MCPServerDefGetActive(ctx, in.Name); gerr == nil && active.ContentSHA256 == contentSHA {
+		resp := mcpServerDefRowResponse(active, true)
+		resp["deduplicated"] = true
+		return okJSON(resp)
+	}
+
 	ident := tools.RunIdentity(ctx)
 	row := store.MCPServerDefRow{
 		DefID:            mintMCPServerDefID(),
@@ -241,7 +258,7 @@ func (m *MCPServerDef) execCreate(ctx context.Context, in mcpServerDefInput) (to
 		Definition:       defJSON,
 		Description:      in.Description,
 		CreatedByAgentID: ident.AgentID,
-		ContentSHA256:    signFromMCPServerOverlay(in.Name, def),
+		ContentSHA256:    contentSHA,
 	}
 	created, err := m.Store.MCPServerDefCreate(ctx, row)
 	if err != nil {
@@ -490,14 +507,27 @@ func (m *MCPServerDef) execRediscover(ctx context.Context, in mcpServerDefInput)
 		if err := json.Unmarshal(active.Definition, &ov); err != nil {
 			return errResult(fmt.Sprintf("rediscover: definition unmarshal: %s", err)), nil
 		}
-		ov.DiscoveredTools = nil
+		oldTools := ov.DiscoveredTools
+		newTools := make([]toolDescriptor, 0, len(descs))
 		for _, d := range descs {
-			ov.DiscoveredTools = append(ov.DiscoveredTools, toolDescriptor{
+			newTools = append(newTools, toolDescriptor{
 				Name:        d.Name,
 				Description: d.Description,
 				InputSchema: d.InputSchema,
 			})
 		}
+		// Idempotent rediscover: if the freshly-discovered tools match the
+		// active def's, don't mint a new version — otherwise re-discovery on
+		// every boot version-spams even when the peer's tool surface is
+		// unchanged. content_sha256 excludes discovered_tools, so this is a
+		// direct (order- and JSON-whitespace-insensitive) comparison.
+		if canonicalTools(oldTools) == canonicalTools(newTools) {
+			resp := mcpServerDefRowResponse(active, true)
+			resp["deduplicated"] = true
+			resp["discovered"] = len(descs)
+			return okJSON(resp)
+		}
+		ov.DiscoveredTools = newTools
 		defJSON, _ := json.Marshal(ov)
 		ident := tools.RunIdentity(ctx)
 		row := store.MCPServerDefRow{
@@ -637,6 +667,30 @@ func (m *MCPServerDef) buildDefinition(parentJSON string, overlay json.RawMessag
 
 // signFromMCPServerOverlay computes the content_sha256 for a row's
 // content. Mirror of signFromMergedDef in agentdef.go.
+// canonicalTools returns a stable string representation of a discovered-
+// tools list for equality comparison: tools sorted by name, and each
+// input_schema re-marshalled through any (sorting object keys + stripping
+// insignificant whitespace). Two lists that differ only in tool order or
+// JSON formatting compare equal — so rediscover treats an unchanged peer
+// surface as a no-op regardless of how the peer happened to serialize it.
+func canonicalTools(tds []toolDescriptor) string {
+	cp := make([]toolDescriptor, len(tds))
+	for i, t := range tds {
+		cp[i] = t
+		if len(t.InputSchema) > 0 {
+			var v any
+			if json.Unmarshal(t.InputSchema, &v) == nil {
+				if b, err := json.Marshal(v); err == nil {
+					cp[i].InputSchema = b
+				}
+			}
+		}
+	}
+	sort.Slice(cp, func(i, j int) bool { return cp[i].Name < cp[j].Name })
+	b, _ := json.Marshal(cp)
+	return string(b)
+}
+
 func signFromMCPServerOverlay(name string, ov mcpServerOverlay) string {
 	return mcp.Sign(mcp.MCPServerContent{
 		Name:        name,
