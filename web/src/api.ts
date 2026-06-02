@@ -14,8 +14,12 @@ export interface ListUsersResponse {
   users: UserSummary[];
 }
 
-export function listUsers(): Promise<ListUsersResponse> {
-  return jsonFetch<ListUsersResponse>("/v1/_users");
+// tenant is the super-admin tenant-focus (?tenant=); a tenant principal's
+// own tenant is enforced server-side regardless, so this is admin-only in
+// practice and harmless when set by a tenant (ignored by the backend).
+export function listUsers(tenant?: string): Promise<ListUsersResponse> {
+  const q = tenant ? `?tenant=${encodeURIComponent(tenant)}` : "";
+  return jsonFetch<ListUsersResponse>(`/v1/_users${q}`);
 }
 
 // HealthResponse mirrors handleHealthz on the server. v0.8.21 added
@@ -262,8 +266,12 @@ async function jsonFetchAllowing<T>(
   throw new Error(`${resp.status} ${resp.statusText}: ${text.slice(0, 200)}`);
 }
 
-export function listAgents(userId: string, status?: string): Promise<ListAgentsResponse> {
-  const q = status ? `?status=${encodeURIComponent(status)}` : "";
+export function listAgents(userId: string, status?: string, tenant?: string): Promise<ListAgentsResponse> {
+  const params = new URLSearchParams();
+  if (status) params.set("status", status);
+  // Super-admin tenant-focus; ignored server-side for tenant principals.
+  if (tenant) params.set("tenant", tenant);
+  const q = params.toString() ? `?${params.toString()}` : "";
   return jsonFetch<ListAgentsResponse>(`/v1/users/${encodeURIComponent(userId)}/agents${q}`);
 }
 

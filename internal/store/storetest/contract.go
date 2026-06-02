@@ -818,21 +818,29 @@ func testListUsers(t *testing.T, s store.Store) {
 	sessAlice, _ := s.CreateSession(ctx, "t", "a", "alice")
 	sessBob, _ := s.CreateSession(ctx, "t", "a", "bob")
 
-	// alice: 2 runs, 1 still running.
-	rA1, _ := s.CreateRun(ctx, sessAlice.ID, store.RunIdentity{AgentID: "a_alice1", UserID: "alice"})
-	_, _ = s.CreateRun(ctx, sessAlice.ID, store.RunIdentity{AgentID: "a_alice2", UserID: "alice"})
+	// alice: 2 runs, 1 still running. Tenant "t" on every run so the
+	// tenant-scoped ListUsers filter has something to match.
+	rA1, _ := s.CreateRun(ctx, sessAlice.ID, store.RunIdentity{AgentID: "a_alice1", UserID: "alice", TenantID: "t"})
+	_, _ = s.CreateRun(ctx, sessAlice.ID, store.RunIdentity{AgentID: "a_alice2", UserID: "alice", TenantID: "t"})
 	_ = s.FinishRun(ctx, rA1.ID, store.RunCompleted, "end_turn", store.Usage{}, "")
 
 	// bob: 1 run, completed.
-	rB1, _ := s.CreateRun(ctx, sessBob.ID, store.RunIdentity{AgentID: "a_bob1", UserID: "bob"})
+	rB1, _ := s.CreateRun(ctx, sessBob.ID, store.RunIdentity{AgentID: "a_bob1", UserID: "bob", TenantID: "t"})
 	_ = s.FinishRun(ctx, rB1.ID, store.RunCompleted, "end_turn", store.Usage{}, "")
+
+	// carol lives in a different tenant — must be invisible when the
+	// listing is scoped to tenant "t".
+	sessCarol, _ := s.CreateSession(ctx, "other", "a", "carol")
+	_, _ = s.CreateRun(ctx, sessCarol.ID, store.RunIdentity{AgentID: "a_carol1", UserID: "carol", TenantID: "other"})
 
 	// Empty-userID run should NOT show up in the listing — filtered
 	// by the WHERE user_id != '' clause.
 	sessAnon, _ := s.CreateSession(ctx, "t", "a", "")
-	_, _ = s.CreateRun(ctx, sessAnon.ID, store.RunIdentity{AgentID: "a_anon", UserID: ""})
+	_, _ = s.CreateRun(ctx, sessAnon.ID, store.RunIdentity{AgentID: "a_anon", UserID: "", TenantID: "t"})
 
-	users, err := s.ListUsers(ctx)
+	// Tenant-scoped listing: only tenant "t"'s users (alice + bob), carol
+	// excluded.
+	users, err := s.ListUsers(ctx, "t")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -869,6 +877,30 @@ func testListUsers(t *testing.T, s store.Store) {
 		if u.LastStartedAt.IsZero() {
 			t.Errorf("%s.last_started_at is zero; should reflect a real timestamp", u.UserID)
 		}
+	}
+
+	// All-tenants listing (tenantID "") includes carol from "other".
+	all, err := s.ListUsers(ctx, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	allIDs := map[string]bool{}
+	for _, u := range all {
+		allIDs[u.UserID] = true
+	}
+	for _, want := range []string{"alice", "bob", "carol"} {
+		if !allIDs[want] {
+			t.Errorf("all-tenants ListUsers missing %q (got %v)", want, allIDs)
+		}
+	}
+
+	// Focusing a tenant with no users returns an empty list, not an error.
+	none, err := s.ListUsers(ctx, "nonexistent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(none) != 0 {
+		t.Errorf("ListUsers(nonexistent) = %d users, want 0", len(none))
 	}
 }
 

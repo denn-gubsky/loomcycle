@@ -551,7 +551,11 @@ type Store interface {
 	// Capped at 200 users ordered by last_started_at DESC. A bigger
 	// list would be a UX problem anyway — the UI then needs filtering
 	// rather than dropdown.
-	ListUsers(ctx context.Context) ([]UserSummary, error)
+	//
+	// tenantID scopes the result to one tenant (the Web UI's per-tenant
+	// workspace + the super-admin tenant-focus), filtering on the
+	// denormalised runs.tenant_id; "" returns all tenants.
+	ListUsers(ctx context.Context, tenantID string) ([]UserSummary, error)
 
 	// UpdateHeartbeat sets last_heartbeat_at on a run to the current
 	// time. Called by the loop at each iteration. No-op if the run
