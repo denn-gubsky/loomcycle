@@ -3755,3 +3755,114 @@ button.primary:disabled {
   color: white;
   border-color: var(--running);
 }
+
+/* ---- Multi-tenant auth (RFC L UI): login page, identity gate, role badge ---- */
+
+.auth-splash {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.75rem;
+  min-height: 60vh;
+  color: var(--fg);
+  opacity: 0.8;
+  font-size: 0.95rem;
+}
+.auth-splash.auth-error {
+  opacity: 1;
+  color: var(--failed);
+}
+.auth-splash a {
+  color: var(--accent);
+}
+
+.login-page {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 100vh;
+  background: var(--bg);
+  padding: 1rem;
+}
+.login-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+  width: 100%;
+  max-width: 420px;
+  padding: 2rem;
+  border: 1px solid var(--border, #2a2f3a);
+  border-radius: 12px;
+  background: var(--panel, #161a22);
+}
+.login-brand {
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: var(--accent);
+}
+.login-title {
+  margin: 0;
+  font-size: 1.4rem;
+  color: var(--fg);
+}
+.login-sub {
+  margin: 0;
+  font-size: 0.85rem;
+  line-height: 1.5;
+  color: var(--fg);
+  opacity: 0.7;
+}
+.login-sub code,
+.login-hint code {
+  background: var(--bg);
+  padding: 0 0.3em;
+  border-radius: 4px;
+  font-size: 0.85em;
+}
+.login-input {
+  padding: 0.6rem 0.7rem;
+  border: 1px solid var(--border, #2a2f3a);
+  border-radius: 8px;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: ui-monospace, monospace;
+  font-size: 0.9rem;
+}
+.login-btn {
+  padding: 0.6rem;
+  border: none;
+  border-radius: 8px;
+  background: var(--accent);
+  color: #fff;
+  font-weight: 600;
+  cursor: pointer;
+}
+.login-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.login-hint {
+  margin: 0;
+  font-size: 0.75rem;
+  color: var(--fg);
+  opacity: 0.55;
+}
+
+.role-badge {
+  font-size: 0.72rem;
+  font-weight: 600;
+  padding: 0.18rem 0.5rem;
+  border-radius: 999px;
+  white-space: nowrap;
+}
+.role-badge.role-admin {
+  background: rgba(220, 160, 40, 0.18);
+  color: #e0a030;
+  border: 1px solid rgba(220, 160, 40, 0.4);
+}
+.role-badge.role-tenant {
+  background: rgba(80, 140, 220, 0.15);
+  color: var(--accent);
+  border: 1px solid rgba(80, 140, 220, 0.35);
+}
