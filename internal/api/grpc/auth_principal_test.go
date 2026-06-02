@@ -16,6 +16,54 @@ func mdCtx(bearer string) context.Context {
 		metadata.Pairs("authorization", "Bearer "+bearer))
 }
 
+// The gRPC interceptor authenticated but never enforced per-RPC scope (RFC L
+// PR2 gap): a narrow token could call any admin RPC — incl. OperatorTokenDef
+// mint — over gRPC, escalating to substrate:admin. enforceScope closes it.
+func TestGrpcEnforceScope_AdminRPCDeniedForNarrowToken(t *testing.T) {
+	const otdMethod = grpcMethodPrefix + "OperatorTokenDef"
+
+	// runs:read token → must be DENIED on the admin OperatorTokenDef RPC.
+	narrow := auth.WithPrincipal(context.Background(),
+		auth.Principal{TenantID: "acme", Subject: "alice", Scopes: []string{auth.ScopeRunsRead}})
+	if err := enforceScope(narrow, otdMethod); status.Code(err) != codes.PermissionDenied {
+		t.Errorf("narrow token on OperatorTokenDef: code = %v, want PermissionDenied", status.Code(err))
+	}
+
+	// substrate:admin → allowed on the same admin RPC.
+	admin := auth.WithPrincipal(context.Background(),
+		auth.Principal{TenantID: "acme", Subject: "ops", Scopes: []string{auth.ScopeAdmin}})
+	if err := enforceScope(admin, otdMethod); err != nil {
+		t.Errorf("admin token on OperatorTokenDef: %v, want nil", err)
+	}
+
+	// A consumer RPC (Run) is reachable with runs:create, not admin.
+	runner := auth.WithPrincipal(context.Background(),
+		auth.Principal{Scopes: []string{auth.ScopeRunsCreate}})
+	if err := enforceScope(runner, grpcMethodPrefix+"Run"); err != nil {
+		t.Errorf("runs:create on Run: %v, want nil", err)
+	}
+	// ...but that same runs:create token is DENIED an admin RPC.
+	if err := enforceScope(runner, grpcMethodPrefix+"PauseRuntime"); status.Code(err) != codes.PermissionDenied {
+		t.Errorf("runs:create on PauseRuntime: code = %v, want PermissionDenied", status.Code(err))
+	}
+
+	// Open mode / no principal stamped → skip the gate (parity with HTTP).
+	if err := enforceScope(context.Background(), otdMethod); err != nil {
+		t.Errorf("no principal should skip scope gate, got %v", err)
+	}
+}
+
+// Deny-by-default: an unmapped/unknown method requires admin, so a future
+// admin RPC is protected even if nobody maps it.
+func TestGrpcRequiredScopeForRPC_DefaultsToAdmin(t *testing.T) {
+	if got := requiredScopeForRPC(grpcMethodPrefix + "SomeFutureAdminRPC"); got != auth.ScopeAdmin {
+		t.Errorf("unmapped RPC scope = %q, want %q", got, auth.ScopeAdmin)
+	}
+	if got := requiredScopeForRPC(grpcMethodPrefix + "GetAgent"); got != auth.ScopeRunsRead {
+		t.Errorf("GetAgent scope = %q, want runs:read", got)
+	}
+}
+
 func TestGrpcAuthenticate_OpenMode(t *testing.T) {
 	// authConfigured returns false → pass through even without a bearer.
 	s := &Server{authConfigured: func(context.Context) bool { return false }}

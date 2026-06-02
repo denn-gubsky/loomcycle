@@ -395,6 +395,9 @@ func (s *Server) UnaryAuthInterceptor() googlegrpc.UnaryServerInterceptor {
 		if err != nil {
 			return nil, err
 		}
+		if err := enforceScope(authedCtx, info.FullMethod); err != nil {
+			return nil, err
+		}
 		return handler(authedCtx, req)
 	}
 }
@@ -411,6 +414,9 @@ func (s *Server) StreamAuthInterceptor() googlegrpc.StreamServerInterceptor {
 		}
 		authedCtx, err := s.authenticate(ss.Context())
 		if err != nil {
+			return err
+		}
+		if err := enforceScope(authedCtx, info.FullMethod); err != nil {
 			return err
 		}
 		// Carry the principal-bearing ctx into the stream handler.
@@ -448,6 +454,63 @@ func (s *Server) authenticate(ctx context.Context) (context.Context, error) {
 		return nil, status.Error(codes.Unauthenticated, "invalid bearer token")
 	}
 	return ctx, nil
+}
+
+// grpcMethodPrefix is the fully-qualified gRPC service path; every
+// FullMethod is grpcMethodPrefix + "/" + RPC name.
+const grpcMethodPrefix = "/loomcycle.v1.Loomcycle/"
+
+// grpcConsumerScopes maps the NON-admin RPCs to their required scope.
+// Everything not listed here defaults to substrate:admin (deny-by-default
+// for a security gate — a newly-added admin/substrate RPC is protected even
+// if someone forgets to map it; the cost is that a new CONSUMER RPC must be
+// added here or it over-requires admin). Mirrors the HTTP requiredScopeFor
+// intent: run create/cancel/continue need runs:create; reads need runs:read;
+// the channel surface uses the channel scopes. Health is handled before this
+// check (it bypasses auth entirely).
+var grpcConsumerScopes = map[string]string{
+	"Run":                 auth.ScopeRunsCreate,
+	"Continue":            auth.ScopeRunsCreate,
+	"CancelAgent":         auth.ScopeRunsCreate,
+	"GetTranscript":       auth.ScopeRunsRead,
+	"GetAgent":            auth.ScopeRunsRead,
+	"ListUserAgents":      auth.ScopeRunsRead,
+	"StreamUserRunStates": auth.ScopeRunsRead,
+	"PublishChannel":      auth.ScopeChannelPublish,
+	"AckChannel":          auth.ScopeChannelPublish,
+	"SubscribeChannel":    auth.ScopeChannelRead,
+	"PeekChannel":         auth.ScopeChannelRead,
+	"ListChannels":        auth.ScopeChannelRead,
+}
+
+// requiredScopeForRPC returns the scope a caller must hold for fullMethod.
+// Unknown / unmapped methods → substrate:admin (deny-by-default). This is
+// the gRPC analogue of the HTTP requiredScopeFor: PR2 stamped the principal
+// over gRPC but never enforced per-RPC scope, so any valid token could reach
+// every admin RPC (incl. OperatorTokenDef mint) — closed here.
+func requiredScopeForRPC(fullMethod string) string {
+	name := strings.TrimPrefix(fullMethod, grpcMethodPrefix)
+	if sc, ok := grpcConsumerScopes[name]; ok {
+		return sc
+	}
+	return auth.ScopeAdmin
+}
+
+// enforceScope rejects the call when a principal is stamped and lacks the
+// RPC's required scope. No principal (open mode / legacy-only test harness)
+// → skip, matching the HTTP middleware. PermissionDenied (not Unauthenticated)
+// so the caller can tell "authenticated but unauthorized" — scope names are
+// public, token state is not (mirrors the HTTP 403 + WWW-Authenticate).
+func enforceScope(ctx context.Context, fullMethod string) error {
+	p, ok := auth.PrincipalFromContext(ctx)
+	if !ok {
+		return nil
+	}
+	required := requiredScopeForRPC(fullMethod)
+	if required != "" && !auth.HasScope(p.Scopes, required) {
+		return status.Errorf(codes.PermissionDenied, "insufficient scope: %s required", required)
+	}
+	return nil
 }
 
 // bearerFromMetadata extracts the raw token (sans "Bearer ") from the
