@@ -42,6 +42,54 @@ func mustOp(t *testing.T, tool *OperatorTokenDef, ctx context.Context, in string
 	return out
 }
 
+// Retiring the LAST admin-scoped token with no legacy fallback would flip the
+// server into unauthenticated open mode (authConfigured → false) — a silent
+// fail-open. The guard refuses it. With another admin token, or with a legacy
+// fallback configured, the retire is allowed.
+func TestOperatorTokenDef_RetireLastAdmin_RefusedWhenNoLegacyFallback(t *testing.T) {
+	tool, ctx, _, cleanup := operatorTokenDefFixture(t) // LegacyTokenSet=false
+	defer cleanup()
+
+	mustOp(t, tool, ctx, `{"op":"create","name":"ops","tenant_id":"acme","subject":"ops","scopes":["substrate:admin"]}`)
+
+	// Retiring the only admin token → refused (would open the server).
+	res, err := tool.Execute(ctx, json.RawMessage(`{"op":"retire","name":"ops"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.IsError || !strings.Contains(res.Text, "last admin-scoped token") {
+		t.Fatalf("retiring the last admin token should be refused; got is_error=%v text=%q", res.IsError, res.Text)
+	}
+
+	// A second admin token exists → retiring the first is now allowed.
+	mustOp(t, tool, ctx, `{"op":"create","name":"ops2","tenant_id":"acme","subject":"ops2","scopes":["substrate:admin"]}`)
+	if res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"retire","name":"ops"}`)); res.IsError {
+		t.Fatalf("retiring one of two admin tokens should be allowed; got %s", res.Text)
+	}
+}
+
+// A non-admin token is never the fail-open concern, so it can always be
+// retired even as the only token; and with a legacy fallback the last-admin
+// retire is permitted (it merely re-enables the legacy secret).
+func TestOperatorTokenDef_RetireLastAdmin_AllowedWithLegacyOrNonAdmin(t *testing.T) {
+	// Non-admin, no legacy: retire allowed.
+	tool, ctx, _, cleanup := operatorTokenDefFixture(t)
+	defer cleanup()
+	mustOp(t, tool, ctx, `{"op":"create","name":"narrow","tenant_id":"acme","subject":"narrow","scopes":["runs:create"]}`)
+	if res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"retire","name":"narrow"}`)); res.IsError {
+		t.Fatalf("retiring a non-admin token must always be allowed; got %s", res.Text)
+	}
+
+	// Last admin WITH a legacy fallback: allowed.
+	tool2, ctx2, _, cleanup2 := operatorTokenDefFixture(t)
+	defer cleanup2()
+	tool2.LegacyTokenSet = true
+	mustOp(t, tool2, ctx2, `{"op":"create","name":"ops","tenant_id":"acme","subject":"ops","scopes":["substrate:admin"]}`)
+	if res, _ := tool2.Execute(ctx2, json.RawMessage(`{"op":"retire","name":"ops"}`)); res.IsError {
+		t.Fatalf("with a legacy fallback, retiring the last admin should be allowed; got %s", res.Text)
+	}
+}
+
 func TestOperatorTokenDef_CreateMintsTokenOnceAndStoresPepperedHash(t *testing.T) {
 	tool, ctx, s, cleanup := operatorTokenDefFixture(t)
 	defer cleanup()
@@ -190,7 +238,10 @@ func TestOperatorTokenDef_RotateMintsNewTokenAndGracesPrior(t *testing.T) {
 func TestOperatorTokenDef_RetireImmediate(t *testing.T) {
 	tool, ctx, s, cleanup := operatorTokenDefFixture(t)
 	defer cleanup()
-	c := mustOp(t, tool, ctx, `{"op":"create","name":"temp","tenant_id":"t"}`)
+	// Non-admin scope so the no-fail-open guard (which protects the LAST
+	// admin token under no legacy fallback) doesn't apply — this test is
+	// about retire taking effect immediately, not the admin-count guard.
+	c := mustOp(t, tool, ctx, `{"op":"create","name":"temp","tenant_id":"t","scopes":["runs:create"]}`)
 	defID := c["def_id"].(string)
 	mustOp(t, tool, ctx, `{"op":"retire","name":"temp"}`)
 	if _, err := s.OperatorTokenDefGetCurrentByName(ctx, "temp"); err == nil {
