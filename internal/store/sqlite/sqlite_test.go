@@ -40,6 +40,44 @@ func TestStoreContract(t *testing.T) {
 // Anything that's true of every Store adapter belongs in
 // storetest/contract.go instead.
 
+// TestOpen_ConnectionPragmas is the regression guard for the CI-only
+// double-fire flake in internal/api/http TestSchedulerBearerCompound. The
+// :memory: DSN branch used to drop busy_timeout + foreign_keys (only the
+// on-disk path carried them). With SetMaxOpenConns(8) + cache=shared,
+// concurrent writers on the shared cache then got SQLITE_BUSY *immediately*
+// (default busy_timeout 0) instead of waiting — under CI load the BUSY'd
+// scheduler RecordResult writes failed to advance next_run_at and the
+// still-due rows re-fired. Both the in-memory and on-disk DSNs must carry
+// busy_timeout=5000 (writers wait) and foreign_keys=1 (parity with prod).
+//
+// Fails on the pre-fix code: in-memory busy_timeout would read back 0.
+func TestOpen_ConnectionPragmas(t *testing.T) {
+	for _, path := range []string{":memory:", filepath.Join(t.TempDir(), "pragmas.db")} {
+		path := path
+		s, err := Open(path)
+		if err != nil {
+			t.Fatalf("Open(%q): %v", path, err)
+		}
+		t.Cleanup(func() { _ = s.Close() })
+
+		var busy int
+		if err := s.db.QueryRowContext(context.Background(), "PRAGMA busy_timeout").Scan(&busy); err != nil {
+			t.Fatalf("path=%q PRAGMA busy_timeout: %v", path, err)
+		}
+		if busy != 5000 {
+			t.Errorf("path=%q busy_timeout = %d, want 5000 (concurrent writers must wait, not SQLITE_BUSY)", path, busy)
+		}
+
+		var fk int
+		if err := s.db.QueryRowContext(context.Background(), "PRAGMA foreign_keys").Scan(&fk); err != nil {
+			t.Fatalf("path=%q PRAGMA foreign_keys: %v", path, err)
+		}
+		if fk != 1 {
+			t.Errorf("path=%q foreign_keys = %d, want 1 (FK enforcement parity with prod)", path, fk)
+		}
+	}
+}
+
 // Idempotent migration: opening the same DB twice MUST NOT error. The
 // "duplicate column name" tolerance in migrate() is the only thing that
 // makes this safe.
