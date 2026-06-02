@@ -16,7 +16,8 @@
  *     listUserAgents(userId, opts?): Promise<Agent[]>
  *     getTranscript(sessionId): Promise<TranscriptResponse>
  *     health(): Promise<HealthResponse>
- *     listUsers(): Promise<ListUsersResponse>
+ *     listUsers(opts?): Promise<ListUsersResponse>   // tenant-scoped (RFC L)
+ *     whoami(): Promise<WhoamiResponse>               // RFC L principal (v0.17.0)
  *
  *     // Pause / Resume / State (v0.8.17/8.18)
  *     pauseRuntime(opts?): Promise<PauseResult>
@@ -108,6 +109,8 @@ export type {
   HealthResponse,
   ListUsersResponse,
   UserSummary,
+  // Whoami / principal (RFC L, v0.17.0)
+  WhoamiResponse,
   // Pause / Resume / State
   PauseResult,
   ResumeResult,
