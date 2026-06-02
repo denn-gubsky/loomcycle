@@ -238,7 +238,10 @@ func TestOperatorTokenDef_RotateMintsNewTokenAndGracesPrior(t *testing.T) {
 func TestOperatorTokenDef_RetireImmediate(t *testing.T) {
 	tool, ctx, s, cleanup := operatorTokenDefFixture(t)
 	defer cleanup()
-	c := mustOp(t, tool, ctx, `{"op":"create","name":"temp","tenant_id":"t"}`)
+	// Non-admin scope so the no-fail-open guard (which protects the LAST
+	// admin token under no legacy fallback) doesn't apply — this test is
+	// about retire taking effect immediately, not the admin-count guard.
+	c := mustOp(t, tool, ctx, `{"op":"create","name":"temp","tenant_id":"t","scopes":["runs:create"]}`)
 	defID := c["def_id"].(string)
 	mustOp(t, tool, ctx, `{"op":"retire","name":"temp"}`)
 	if _, err := s.OperatorTokenDefGetCurrentByName(ctx, "temp"); err == nil {
