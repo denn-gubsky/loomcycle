@@ -59,8 +59,11 @@ func openDB(path string) (*sql.DB, error) {
 	dsn := path + "?_journal_mode=WAL&_foreign_keys=on&_busy_timeout=5000"
 	if path == ":memory:" {
 		// mattn supports shared in-memory dbs the same way: cache=shared
-		// with the file::memory: URI form.
-		dsn = "file::memory:?cache=shared&_journal_mode=WAL"
+		// with the file::memory: URI form. foreign_keys + busy_timeout
+		// MUST carry over (see driver_default.go) — without busy_timeout,
+		// concurrent writers on the shared cache get SQLITE_BUSY instead
+		// of waiting, which double-fired the scheduler compound test.
+		dsn = "file::memory:?cache=shared&_journal_mode=WAL&_foreign_keys=on&_busy_timeout=5000"
 	}
 	return sql.Open("sqlite3_loomcycle_vec", dsn)
 }
