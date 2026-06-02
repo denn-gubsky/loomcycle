@@ -67,4 +67,11 @@ func TestScopeCatalog(t *testing.T) {
 	if HasScope([]string{ScopeRunsRead}, ScopeRunsCreate) {
 		t.Error("runs:read must NOT satisfy runs:create")
 	}
+	// memory:read / memory:write were removed as inert dead config — a
+	// scope no route enforces must not be grantable (it would be a false
+	// limitation). Guards against silent re-introduction without a
+	// route that enforces it.
+	if ValidScope("memory:read") || ValidScope("memory:write") {
+		t.Error("memory:read/write must not be in the catalog (inert — no route enforces them)")
+	}
 }

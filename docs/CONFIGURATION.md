@@ -749,7 +749,7 @@ By default every authenticated caller presents the single shared `LOOMCYCLE_AUTH
 ```sh
 # Mint a per-developer token (shown once). Needs an existing admin bearer.
 loomcycle operator-token create --tenant acme --subject alice \
-  --scopes runs:create,runs:read,memory:read,memory:write
+  --scopes runs:create,runs:read
 loomcycle operator-token rotate --name alice   # zero-downtime roll (grace window)
 loomcycle operator-token retire --name alice   # immediate revoke
 ```
