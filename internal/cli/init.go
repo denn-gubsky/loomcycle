@@ -2,6 +2,8 @@ package cli
 
 import (
 	"bufio"
+	"crypto/rand"
+	"encoding/hex"
 	"flag"
 	"fmt"
 	"io"
@@ -46,11 +48,13 @@ func runInitWithStdin(args []string, stdin io.Reader, stdout, stderr io.Writer) 
 	interactive := fs.Bool("interactive", false, "force interactive wizard (default: auto-on when stdin is a TTY)")
 	noInteractive := fs.Bool("no-interactive", false, "force non-interactive mode (writes the example yaml verbatim)")
 	force := fs.Bool("force", false, "overwrite existing files (default: refuse with a clear error)")
+	withToken := fs.Bool("with-token", false, "mint a LOOMCYCLE_AUTH_TOKEN, persist it to <configdir>/auth.env (mode 0600, auto-loaded by `loomcycle`), and print the ready-to-open UI URL")
 	fs.Usage = func() {
-		fmt.Fprintln(stderr, "Usage: loomcycle init [--path <dir>] [--interactive|--no-interactive] [--force]")
+		fmt.Fprintln(stderr, "Usage: loomcycle init [--path <dir>] [--interactive|--no-interactive] [--force] [--with-token]")
 		fmt.Fprintln(stderr)
 		fmt.Fprintln(stderr, "Writes loomcycle.yaml + README.md to the operator's config directory.")
-		fmt.Fprintln(stderr, "Auto-on wizard when stdin is a TTY; never writes secrets to disk.")
+		fmt.Fprintln(stderr, "Auto-on wizard when stdin is a TTY. By default writes no secrets;")
+		fmt.Fprintln(stderr, "--with-token is the explicit opt-in that mints + persists an auth token.")
 	}
 	if err := fs.Parse(args); err != nil {
 		return 2
@@ -114,10 +118,44 @@ func runInitWithStdin(args []string, stdin io.Reader, stdout, stderr io.Writer) 
 
 	fmt.Fprintf(stdout, "Wrote %s\n", yamlPath)
 	fmt.Fprintf(stdout, "Wrote %s\n", docPath)
+
+	// --with-token: mint + persist a LOOMCYCLE_AUTH_TOKEN so the operator
+	// gets an authenticated runtime without a shell-rc edit. authEnvPersisted
+	// is the path to the 0600 file holding the token (set when we minted one
+	// THIS run, or when we kept an existing one). The raw token is written ONLY
+	// to that 0600 file — never echoed to stdout and never embedded in a URL
+	// (a token in a URL leaks into browser history / a fronting proxy's logs).
+	var authEnvPersisted string
+	if *withToken {
+		authEnvPath := filepath.Join(destDir, "auth.env")
+		if !*force && firstExistingFile(authEnvPath) != "" {
+			fmt.Fprintf(stdout, "Kept existing %s (pass --force to mint a fresh token).\n", authEnvPath)
+			authEnvPersisted = authEnvPath
+		} else {
+			tok, err := mintAuthToken()
+			if err != nil {
+				return fail(stderr, "init: mint auth token: %v", err)
+			}
+			body := "# loomcycle auth — auto-loaded by `loomcycle` from this directory.\n" +
+				"# A real shell `export LOOMCYCLE_AUTH_TOKEN=…` overrides this file.\n" +
+				"# Secret: keep mode 0600; do not commit.\n" +
+				"LOOMCYCLE_AUTH_TOKEN=" + tok + "\n"
+			if err := os.WriteFile(authEnvPath, []byte(body), 0o600); err != nil {
+				return fail(stderr, "init: write %s: %v", authEnvPath, err)
+			}
+			authEnvPersisted = authEnvPath
+			fmt.Fprintf(stdout, "Wrote %s (mode 0600 — minted LOOMCYCLE_AUTH_TOKEN)\n", authEnvPath)
+		}
+	}
+
 	fmt.Fprintln(stdout)
 	if wizard {
-		fmt.Fprintln(stdout, "Add these to your shell rc (e.g. ~/.zshrc):")
-		fmt.Fprintln(stdout, "    export LOOMCYCLE_AUTH_TOKEN=$(openssl rand -hex 32)")
+		if authEnvPersisted == "" {
+			fmt.Fprintln(stdout, "Add these to your shell rc (e.g. ~/.zshrc):")
+			fmt.Fprintln(stdout, "    export LOOMCYCLE_AUTH_TOKEN=$(openssl rand -hex 32)")
+		} else {
+			fmt.Fprintln(stdout, "Auth token persisted (auto-loaded by `loomcycle`). Add your provider key to your shell rc:")
+		}
 		if provider != "skip" {
 			fmt.Fprintf(stdout, "    export %s=<your-key-here>\n", envVar)
 		}
@@ -134,16 +172,52 @@ func runInitWithStdin(args []string, stdin io.Reader, stdout, stderr io.Writer) 
 		}
 		fmt.Fprintln(stdout)
 		fmt.Fprintf(stdout, "Then read %s and run `loomcycle doctor` to verify.\n", docPath)
+		printUIURL(stdout, listenAddr, authEnvPersisted)
 	} else {
 		fmt.Fprintln(stdout, "Next steps:")
 		fmt.Fprintf(stdout, "  1. Read %s for the env-var reference.\n", docPath)
-		fmt.Fprintln(stdout, "  2. Set the required environment variables in your shell rc:")
-		fmt.Fprintln(stdout, "       export LOOMCYCLE_AUTH_TOKEN=$(openssl rand -hex 32)")
-		fmt.Fprintln(stdout, "       export ANTHROPIC_API_KEY=<your-key>   # or OPENAI_API_KEY, DEEPSEEK_API_KEY")
+		if authEnvPersisted == "" {
+			fmt.Fprintln(stdout, "  2. Set the required environment variables in your shell rc:")
+			fmt.Fprintln(stdout, "       export LOOMCYCLE_AUTH_TOKEN=$(openssl rand -hex 32)")
+			fmt.Fprintln(stdout, "       export ANTHROPIC_API_KEY=<your-key>   # or OPENAI_API_KEY, DEEPSEEK_API_KEY")
+		} else {
+			fmt.Fprintln(stdout, "  2. Auth token persisted + auto-loaded; just set a provider key in your shell rc:")
+			fmt.Fprintln(stdout, "       export ANTHROPIC_API_KEY=<your-key>   # or OPENAI_API_KEY, DEEPSEEK_API_KEY")
+		}
 		fmt.Fprintln(stdout, "  3. Run `loomcycle doctor` to verify your setup.")
 		fmt.Fprintln(stdout, "  4. Run `loomcycle` to start the server.")
+		printUIURL(stdout, listenAddr, authEnvPersisted)
 	}
 	return 0
+}
+
+// mintAuthToken returns a 256-bit CSPRNG token, hex-encoded — the same
+// shape as the `openssl rand -hex 32` line init has always suggested, so a
+// minted token is indistinguishable from a hand-rolled one.
+func mintAuthToken() (string, error) {
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(b), nil
+}
+
+// printUIURL prints the Web UI URL. The token is deliberately NOT embedded
+// in the URL: a `?token=…` link leaks the bearer into browser history and any
+// fronting proxy's access log. We print the bare /ui URL (which lands on the
+// login prompt) and point at the 0600 file the operator pastes from — the
+// secret never travels in a URL we emit, nor through stdout.
+func printUIURL(stdout io.Writer, listenAddr, authEnvPersisted string) {
+	if listenAddr == "" {
+		listenAddr = "127.0.0.1:8787"
+	}
+	fmt.Fprintln(stdout)
+	fmt.Fprintf(stdout, "Open the Web UI: http://%s/ui\n", listenAddr)
+	if authEnvPersisted != "" {
+		fmt.Fprintf(stdout, "    → at the login prompt, paste the token from %s\n", authEnvPersisted)
+	} else {
+		fmt.Fprintln(stdout, "    → at the login prompt, paste your LOOMCYCLE_AUTH_TOKEN (open mode needs no token)")
+	}
 }
 
 // runWizard asks the minimal 3-question set. Returns the operator's

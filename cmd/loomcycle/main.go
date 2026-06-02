@@ -419,6 +419,15 @@ func main() {
 		fmt.Fprintln(os.Stderr, "Run `loomcycle init` to create one, or pass --config <path> to use an existing file.")
 		os.Exit(1)
 	}
+	// Auto-load <configdir>/auth.env (companion to `loomcycle init
+	// --with-token`) BEFORE config.Load reads os.Getenv, so a persisted
+	// LOOMCYCLE_AUTH_TOKEN is in scope without a shell-rc edit. Set-if-unset
+	// (real env wins), so an explicit shell export still overrides it.
+	if authEnvPath, n, err := cli.LoadAuthEnv(resolvedCfg); err != nil {
+		log.Printf("auth.env: %v (continuing without it)", err)
+	} else if n > 0 {
+		log.Printf("auth.env: loaded %d var(s) from %s (a shell export overrides them)", n, authEnvPath)
+	}
 	cfg, err := config.Load(resolvedCfg)
 	if err != nil {
 		log.Fatalf("config: %v", err)

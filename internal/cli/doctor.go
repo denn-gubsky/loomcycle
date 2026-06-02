@@ -71,8 +71,20 @@ func RunDoctor(args []string, stdout, stderr io.Writer) int {
 	}
 	r.pass("Config parses", "")
 
+	// Mirror the server: auto-load <configdir>/auth.env (set-if-unset)
+	// BEFORE the token check, so doctor's verdict matches what `loomcycle`
+	// will actually see. Without this, `init --with-token` followed by
+	// `doctor` would falsely warn "unauthenticated" while the server runs
+	// authed off the persisted token.
+	tokenFromFile := false
+	if _, n, lerr := LoadAuthEnv(resolvedPath); lerr == nil && n > 0 && os.Getenv("LOOMCYCLE_AUTH_TOKEN") != "" {
+		tokenFromFile = true
+	}
+
 	if os.Getenv("LOOMCYCLE_AUTH_TOKEN") == "" {
 		r.warn("LOOMCYCLE_AUTH_TOKEN set", "empty; every /v1/* request will be allowed unauthenticated")
+	} else if tokenFromFile {
+		r.pass("LOOMCYCLE_AUTH_TOKEN set", "loaded from auth.env (init --with-token)")
 	} else {
 		r.pass("LOOMCYCLE_AUTH_TOKEN set", "")
 	}
