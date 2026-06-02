@@ -875,12 +875,11 @@ func main() {
 	// notice the "skipped" log line and restart loomcycle by hand.
 	// In a server environment where peers (jobs-search-web, other MCP
 	// services) restart independently, that's recurring operational
-	// pain. See internal/tools/mcp/lazy.go for the state machine.
-	mcpServerCfgs := make(map[string]mcp.ServerCfg, len(cfg.MCPServers))
-	for name, srv := range cfg.MCPServers {
-		mcpServerCfgs[name] = mcp.ServerCfg{AllowedTools: srv.AllowedTools}
-	}
-	mcpLazyResolver := mcp.NewLazyResolver(mcpPool, mcpServerCfgs, dynamicMCPRegistry, func(server string, count int) {
+	// pain. See internal/tools/mcp/lazy.go for the state machine. Membership +
+	// per-server allowed_tools resolve through the shared lookup.MCPServer
+	// (static cfg.MCPServers → dynamic registry), so cfg + the registry are
+	// passed straight through.
+	mcpLazyResolver := mcp.NewLazyResolver(mcpPool, cfg, dynamicMCPRegistry, func(server string, count int) {
 		log.Printf("mcp[%s]: lazy-registered %d tool(s) on first agent call", server, count)
 	}, 0)
 

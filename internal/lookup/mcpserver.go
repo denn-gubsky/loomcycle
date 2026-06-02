@@ -25,6 +25,12 @@ type MCPServerSpec struct {
 	Transport string
 	URL       string
 	Headers   map[string]string
+	// AllowedTools is the operator's per-server tools/list narrowing (yaml
+	// `allowed_tools`); empty = allow all discovered tools. Only the STATIC
+	// source carries it — a dynamically-registered (substrate) server has
+	// none, so all its discovered tools are allowed and the agent's own
+	// allowed_tools is the gate. Consumed by the MCP lazy tool resolver.
+	AllowedTools []string
 	// Source — "static" or "dynamic". Useful for log lines + the
 	// /ui/library/mcp-servers page's badge.
 	Source string
@@ -52,18 +58,26 @@ type MCPServerSpec struct {
 // no path by which a dynamic row could carry those fields. As a
 // consequence, this function cannot replace the inline pool build
 // callback in cmd/loomcycle/main.go for the stdio case; that callback
-// reads cfg.MCPServer directly to get the stdio fields. Use this
-// resolver from HTTP-only call sites: the /ui/library/mcp-servers
-// page's bearer-authed GET endpoint + any future tool that needs to
-// resolve a name → spec for an http-transport server.
+// reads cfg.MCPServer directly to get the stdio fields.
+//
+// Callers that need the full spec (transport/url/headers) should use it
+// only for http-transport servers (the /ui/library/mcp-servers GET
+// endpoint). Callers that need ONLY membership + AllowedTools are
+// transport-agnostic and safe for any server — notably the MCP lazy tool
+// resolver (internal/tools/mcp/lazy.go), which delegates client
+// construction to the pool and consults this resolver purely to decide
+// "is this name known (static OR dynamic)?" + which tools the operator
+// allowed. Routing the resolver through here is what keeps MCP membership
+// from drifting static-only again (the bug fixed in #341).
 func MCPServer(cfg *config.Config, dyn MCPDynamicRegistry, name string) (MCPServerSpec, bool) {
 	if cfg != nil {
 		if srv, ok := cfg.MCPServers[name]; ok {
 			return MCPServerSpec{
-				Transport: srv.Transport,
-				URL:       srv.URL,
-				Headers:   srv.Headers,
-				Source:    "static",
+				Transport:    srv.Transport,
+				URL:          srv.URL,
+				Headers:      srv.Headers,
+				AllowedTools: srv.AllowedTools,
+				Source:       "static",
 			}, true
 		}
 	}

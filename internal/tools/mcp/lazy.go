@@ -8,6 +8,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/config"
+	"github.com/denn-gubsky/loomcycle/internal/lookup"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
 
@@ -58,17 +60,17 @@ import (
 //     stack on top — it would call Resolve preemptively for known
 //     server names.
 type LazyResolver struct {
-	pool         *Pool
-	serverConfig map[string]ServerCfg
+	pool *Pool
 
-	// dynamicReg holds runtime-registered (MCPServerDef) servers — the
-	// same shared registry the pool's build callback consults. May be nil
-	// (tests / deployments without the substrate). Without it, a server
-	// registered at runtime via `mcpserverdef create` is absent from
-	// serverConfig (which is static-yaml only), so its tools fail the
-	// membership gate below and the agent sees a bare "tool not found"
-	// even though the pool could reach the server. Consulting it here is
-	// what makes dynamic loopback/remote MCP registration actually usable.
+	// cfg + dynamicReg are the two membership sources, consulted via the
+	// SHARED lookup.MCPServer resolver (NOT a private map): cfg.MCPServers
+	// is the static-yaml source, dynamicReg the runtime substrate the pool's
+	// build callback also uses. Routing membership + the per-server
+	// allowed_tools filter through lookup.MCPServer is what stops MCP from
+	// drifting static-only again (the bug fixed in #341) — every other
+	// substrate primitive already resolves through internal/lookup. May both
+	// be nil in tests; lookup.MCPServer is nil-safe.
+	cfg        *config.Config
 	dynamicReg *DynamicRegistry
 
 	// onResolve, if non-nil, is called once per server when its tools
@@ -87,33 +89,38 @@ type LazyResolver struct {
 	registered map[string]map[string]tools.Tool // server → tool name → Tool
 }
 
-// ServerCfg is the subset of an MCP server's yaml config that the
-// resolver needs to reproduce boot-time tool registration faithfully.
-// Only AllowedTools today; if the boot path grows more per-server
-// knobs (e.g. per-server pool size already lives on Pool), they
-// should join here.
-type ServerCfg struct {
-	AllowedTools []string
+// lookupDynView adapts *DynamicRegistry to lookup.MCPDynamicRegistry —
+// lookup returns a uniform lookup.MCPServerSpec, while the registry stores
+// the mcp-package DynamicMCPServerSpec. A dynamic spec carries no
+// allowed_tools (the substrate doesn't record an operator narrowing), so
+// the projected spec leaves AllowedTools nil = allow-all, matching the
+// historical resolver behaviour.
+type lookupDynView struct{ reg *DynamicRegistry }
+
+func (v lookupDynView) Get(name string) (lookup.MCPServerSpec, bool) {
+	if v.reg == nil {
+		return lookup.MCPServerSpec{}, false
+	}
+	s, ok := v.reg.Get(name)
+	if !ok {
+		return lookup.MCPServerSpec{}, false
+	}
+	return lookup.MCPServerSpec{Transport: s.Transport, URL: s.URL, Headers: s.Headers}, true
 }
 
-// NewLazyResolver builds a resolver. configs MUST cover every server
-// the operator yaml declares — Resolve uses configs as the membership
-// check for "is this name plausibly an MCP tool we should try?". A
-// server that successfully registered at boot can still appear in
-// configs; the resolver simply won't be reached for it (its tools are
-// in the dispatcher's static map).
-//
-// dynamicReg is the shared runtime-registration registry (the same one
-// the pool's build callback uses); pass nil to disable dynamic-server
-// resolution. onResolve is optional; pass log.Printf for production.
-// handshakeTimeout of 0 falls back to a sane default.
-func NewLazyResolver(pool *Pool, configs map[string]ServerCfg, dynamicReg *DynamicRegistry, onResolve func(string, int), handshakeTimeout time.Duration) *LazyResolver {
+// NewLazyResolver builds a resolver. cfg + dynamicReg are the static-yaml
+// and dynamic-substrate membership sources; Resolve consults them through
+// the shared lookup.MCPServer resolver (so MCP uses the same static→dynamic
+// chain as every other primitive). Either may be nil (tests). onResolve is
+// optional; pass log.Printf for production. handshakeTimeout of 0 falls back
+// to a sane default.
+func NewLazyResolver(pool *Pool, cfg *config.Config, dynamicReg *DynamicRegistry, onResolve func(string, int), handshakeTimeout time.Duration) *LazyResolver {
 	if handshakeTimeout <= 0 {
 		handshakeTimeout = 10 * time.Second
 	}
 	return &LazyResolver{
 		pool:             pool,
-		serverConfig:     configs,
+		cfg:              cfg,
 		dynamicReg:       dynamicReg,
 		onResolve:        onResolve,
 		handshakeTimeout: handshakeTimeout,
@@ -128,18 +135,12 @@ func (r *LazyResolver) Resolve(ctx context.Context, name string, input json.RawM
 	if !ok {
 		return tools.Result{}, false
 	}
-	cfg, configured := r.serverConfig[server]
-	if !configured && r.dynamicReg != nil {
-		if _, ok := r.dynamicReg.Get(server); ok {
-			// Dynamically-registered (MCPServerDef) server: present in the
-			// shared registry the pool's build callback uses, but absent
-			// from the static-yaml serverConfig. Resolve its tools too. No
-			// operator allowed_tools filter — the dynamic spec carries none,
-			// and empty = allow-all discovered (the agent's own allowed_tools
-			// still gates which it may call).
-			cfg, configured = ServerCfg{}, true
-		}
-	}
+	// Membership + the operator's per-server allowed_tools filter both come
+	// from the shared lookup.MCPServer resolver, which walks static-yaml then
+	// the dynamic substrate (same chain every other primitive uses). A name
+	// in neither source falls through to the dispatcher's standard
+	// "tool not found".
+	spec, configured := lookup.MCPServer(r.cfg, lookupDynView{r.dynamicReg}, server)
 	if !configured {
 		return tools.Result{}, false
 	}
@@ -176,7 +177,7 @@ func (r *LazyResolver) Resolve(ctx context.Context, name string, input json.RawM
 	}
 
 	// Apply the operator's per-server filter; build the tool map.
-	filtered := ApplyAllowedToolsFilter(descs, cfg.AllowedTools)
+	filtered := ApplyAllowedToolsFilter(descs, spec.AllowedTools)
 	toolMap := make(map[string]tools.Tool, len(filtered))
 	for _, d := range filtered {
 		t := NewTool(r.pool, server, d)

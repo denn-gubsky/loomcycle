@@ -8,6 +8,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+
+	"github.com/denn-gubsky/loomcycle/internal/config"
 )
 
 // fakeCaller is a Caller that responds to initialize, tools/list, and
@@ -108,7 +110,7 @@ func newBuildPlan() *buildPlan {
 // Write, etc.) would block on a useless pool.Get.
 func TestLazyResolver_NotMCPName(t *testing.T) {
 	pool := NewPool(newBuildPlan().build, nil)
-	r := NewLazyResolver(pool, map[string]ServerCfg{"jobs": {}}, nil, nil, 0)
+	r := NewLazyResolver(pool, &config.Config{MCPServers: map[string]config.MCPServer{"jobs": {}}}, nil, nil, 0)
 
 	for _, name := range []string{"Read", "Write", "WebSearch", "mcp__", "mcp__jobs", "mcp__jobs__"} {
 		_, handled := r.Resolve(context.Background(), name, json.RawMessage(`{}`))
@@ -125,7 +127,7 @@ func TestLazyResolver_NotMCPName(t *testing.T) {
 // the right surface.
 func TestLazyResolver_ServerNotConfigured(t *testing.T) {
 	pool := NewPool(newBuildPlan().build, nil)
-	r := NewLazyResolver(pool, map[string]ServerCfg{"jobs": {}}, nil, nil, 0)
+	r := NewLazyResolver(pool, &config.Config{MCPServers: map[string]config.MCPServer{"jobs": {}}}, nil, nil, 0)
 
 	_, handled := r.Resolve(context.Background(), "mcp__unknown__doSomething", json.RawMessage(`{}`))
 	if handled {
@@ -144,7 +146,7 @@ func TestLazyResolver_FirstCallTriggersHandshakeAndDispatches(t *testing.T) {
 		{Name: "getAgentContext", Description: "load context", InputSchema: json.RawMessage(`{"type":"object"}`)},
 	}
 	pool := NewPool(plan.build, nil)
-	r := NewLazyResolver(pool, map[string]ServerCfg{"jobs": {}}, nil, nil, 0)
+	r := NewLazyResolver(pool, &config.Config{MCPServers: map[string]config.MCPServer{"jobs": {}}}, nil, nil, 0)
 
 	res, handled := r.Resolve(context.Background(), "mcp__jobs__getAgentContext", json.RawMessage(`{}`))
 	if !handled {
@@ -172,7 +174,7 @@ func TestLazyResolver_SecondCallHitsCache(t *testing.T) {
 		{Name: "patchApplication", InputSchema: json.RawMessage(`{"type":"object"}`)},
 	}
 	pool := NewPool(plan.build, nil)
-	r := NewLazyResolver(pool, map[string]ServerCfg{"jobs": {}}, nil, nil, 0)
+	r := NewLazyResolver(pool, &config.Config{MCPServers: map[string]config.MCPServer{"jobs": {}}}, nil, nil, 0)
 
 	for i := 0; i < 5; i++ {
 		_, handled := r.Resolve(context.Background(), "mcp__jobs__getAgentContext", json.RawMessage(`{}`))
@@ -200,7 +202,7 @@ func TestLazyResolver_HandshakeFails(t *testing.T) {
 	plan := newBuildPlan()
 	plan.alwaysFail["jobs"] = true
 	pool := NewPool(plan.build, nil)
-	r := NewLazyResolver(pool, map[string]ServerCfg{"jobs": {}}, nil, nil, 0)
+	r := NewLazyResolver(pool, &config.Config{MCPServers: map[string]config.MCPServer{"jobs": {}}}, nil, nil, 0)
 
 	res, handled := r.Resolve(context.Background(), "mcp__jobs__getAgentContext", json.RawMessage(`{}`))
 	if !handled {
@@ -229,8 +231,8 @@ func TestLazyResolver_OperatorAllowedToolsFilter(t *testing.T) {
 		{Name: "expensive_tool", InputSchema: json.RawMessage(`{"type":"object"}`)},
 	}
 	pool := NewPool(plan.build, nil)
-	r := NewLazyResolver(pool, map[string]ServerCfg{
-		"jobs": {AllowedTools: []string{"safe_tool"}},
+	r := NewLazyResolver(pool, &config.Config{
+		MCPServers: map[string]config.MCPServer{"jobs": {AllowedTools: []string{"safe_tool"}}},
 	}, nil, nil, 0)
 
 	// safe_tool resolves
@@ -269,7 +271,7 @@ func TestLazyResolver_OnResolveCallback(t *testing.T) {
 			count  int
 		}
 	)
-	r := NewLazyResolver(pool, map[string]ServerCfg{"jobs": {}}, nil, func(server string, count int) {
+	r := NewLazyResolver(pool, &config.Config{MCPServers: map[string]config.MCPServer{"jobs": {}}}, nil, func(server string, count int) {
 		mu.Lock()
 		defer mu.Unlock()
 		callbacks = append(callbacks, struct {
@@ -304,7 +306,7 @@ func TestLazyResolver_ConcurrentCallsCoalesceHandshake(t *testing.T) {
 		{Name: "getAgentContext", InputSchema: json.RawMessage(`{"type":"object"}`)},
 	}
 	pool := NewPool(plan.build, nil)
-	r := NewLazyResolver(pool, map[string]ServerCfg{"jobs": {}}, nil, nil, 0)
+	r := NewLazyResolver(pool, &config.Config{MCPServers: map[string]config.MCPServer{"jobs": {}}}, nil, nil, 0)
 
 	const N = 50
 	var wg sync.WaitGroup
@@ -341,7 +343,7 @@ func TestLazyResolver_DynamicRegistryServerResolves(t *testing.T) {
 	// registry, as if registered at runtime via `mcpserverdef create`.
 	dyn := NewDynamicRegistry()
 	dyn.Set(DynamicMCPServerSpec{Name: "jobs", Transport: "http", URL: "http://localhost:3000/api/mcp"})
-	r := NewLazyResolver(pool, map[string]ServerCfg{}, dyn, nil, 0)
+	r := NewLazyResolver(pool, &config.Config{}, dyn, nil, 0)
 
 	res, handled := r.Resolve(context.Background(), "mcp__jobs__postResearchIngest", json.RawMessage(`{}`))
 	if !handled {
