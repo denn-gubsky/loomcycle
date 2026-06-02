@@ -310,15 +310,34 @@ func requiredScopeFor(method, path string) string {
 	// Operator hook management.
 	case strings.HasPrefix(path, "/v1/hooks"):
 		return auth.ScopeAdmin
+	// Prometheus scrape — operator surface, same posture as /v1/_metrics/*.
+	case path == "/metrics":
+		return auth.ScopeAdmin
+	// Per-user channel surface (/v1/users/{id}/channels/...) — graduate the
+	// channel scopes. MUST precede the generic "/v1/users/" reads case below
+	// so peek resolves to channel:read, not runs:read, and the writes
+	// (publish/subscribe/ack) are not left at the any-authenticated default.
+	case strings.HasPrefix(path, "/v1/users/") && strings.Contains(path, "/channels/"):
+		if method == http.MethodGet {
+			return auth.ScopeChannelRead
+		}
+		return auth.ScopeChannelPublish
 	// Run creation (fresh run + session continuation message).
 	case method == http.MethodPost && path == "/v1/runs":
 		return auth.ScopeRunsCreate
 	case method == http.MethodPost && strings.HasPrefix(path, "/v1/sessions/") && strings.HasSuffix(path, "/messages"):
 		return auth.ScopeRunsCreate
-	// Cancel a run — a write on run state.
-	case method == http.MethodDelete && strings.HasPrefix(path, "/v1/agents/"):
+	// Cancel a run — a write on run state. (The real route is POST
+	// /v1/agents/{id}/cancel; the prior DELETE /v1/agents/ case matched no
+	// registered route, so cancel fell through to any-authenticated.)
+	case method == http.MethodPost && strings.HasPrefix(path, "/v1/agents/") && strings.HasSuffix(path, "/cancel"):
 		return auth.ScopeRunsCreate
-	// Run / agent / session reads.
+	// Human-in-the-loop interrupt: resolve is a run-state write, list a read.
+	case method == http.MethodPost && strings.HasPrefix(path, "/v1/runs/") && strings.HasSuffix(path, "/resolve"):
+		return auth.ScopeRunsCreate
+	case method == http.MethodGet && strings.HasPrefix(path, "/v1/runs/"):
+		return auth.ScopeRunsRead
+	// Run / agent / session / user reads.
 	case method == http.MethodGet && (strings.HasPrefix(path, "/v1/agents/") ||
 		strings.HasPrefix(path, "/v1/users/") ||
 		strings.HasPrefix(path, "/v1/sessions/")):
