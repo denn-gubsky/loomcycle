@@ -13,6 +13,7 @@ import ChannelsView from "./pages/ChannelsView";
 import SchedulesView from "./pages/SchedulesView";
 import Layout from "./components/Layout";
 import AgentIdRedirect from "./components/AgentIdRedirect";
+import LoginView from "./pages/LoginView";
 
 // Mounted at /ui/ in production; the BrowserRouter basename matches
 // so links / navigation generate correct paths.
@@ -25,6 +26,9 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
     <BrowserRouter basename="/ui">
       <Routes>
+        {/* Login is outside the Layout shell (no nav, no whoami gate) —
+            it's where a 401 bounces and where the token-entry form lives. */}
+        <Route path="login" element={<LoginView />} />
         <Route path="/" element={<Layout />}>
           <Route index element={<Navigate to="/agents" replace />} />
           <Route path="agents" element={<AgentsView />} />

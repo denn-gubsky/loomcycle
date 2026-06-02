@@ -167,6 +167,23 @@ export interface TranscriptResponse {
 
 const baseURL = ""; // same-origin
 
+// LOGIN_PATH is the SPA login route (router basename is /ui). An
+// unauthenticated /v1/* call (401 — missing/expired/invalid bearer
+// cookie) bounces here. A 403 (authenticated but insufficient scope) does
+// NOT redirect — you're logged in, just not permitted; callers surface it.
+const LOGIN_PATH = "/ui/login";
+
+// redirectToLoginOn401 sends the browser to the login page on a 401,
+// unless already there (no redirect loop). Returns true when it
+// triggered a navigation so callers can stop processing.
+function redirectToLoginOn401(status: number): boolean {
+  if (status === 401 && window.location.pathname !== LOGIN_PATH) {
+    window.location.href = LOGIN_PATH;
+    return true;
+  }
+  return false;
+}
+
 async function jsonFetch<T>(path: string, init?: RequestInit): Promise<T> {
   const resp = await fetch(baseURL + path, {
     credentials: "same-origin",
@@ -177,10 +194,34 @@ async function jsonFetch<T>(path: string, init?: RequestInit): Promise<T> {
     },
   });
   if (!resp.ok) {
+    if (redirectToLoginOn401(resp.status)) {
+      // Navigation underway — return a never-settling promise so the
+      // caller doesn't flash an error mid-redirect.
+      return new Promise<T>(() => {});
+    }
     const body = await resp.text();
     throw new Error(`${resp.status} ${resp.statusText}: ${body.slice(0, 200)}`);
   }
   return resp.json() as Promise<T>;
+}
+
+// Principal is the authenticated identity behind the session cookie,
+// resolved by GET /v1/_me. Drives the UI's role: super-admin (is_admin)
+// sees all tenants' workspaces; a tenant sees only its own.
+export interface Principal {
+  tenant_id: string;
+  subject: string;
+  scopes: string[];
+  is_admin: boolean;
+  legacy: boolean;
+  open_mode?: boolean;
+}
+
+// getWhoami resolves the current principal. A 401 redirects to /login via
+// jsonFetch (the returned promise never settles), so callers only ever
+// see a resolved Principal or a non-auth error.
+export function getWhoami(): Promise<Principal> {
+  return jsonFetch<Principal>("/v1/_me");
 }
 
 // jsonFetchAllowing is a sibling of jsonFetch that does NOT throw on
