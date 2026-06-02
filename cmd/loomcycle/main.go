@@ -1179,6 +1179,40 @@ func main() {
 		b, _ := json.Marshal(out)
 		return b
 	})
+	// Post-boot tool advertising: enumerate the substrate-registered tools
+	// (dynamic MCP servers' discovered tools + A2A peer skills) so a run's
+	// catalog includes them WITHOUT a restart — symmetric with boot-time
+	// tools. Run-creation folds this into the candidate set before the
+	// allowed_tools filter. MCP: each dynamic-registry server's persisted
+	// discovered_tools (set by rediscover). A2A: re-enumerate static +
+	// substrate (the static dups collapse in the by-name filter).
+	srv.SetDynamicToolEnumerator(func(ctx context.Context) []tools.Tool {
+		var out []tools.Tool
+		for _, name := range dynamicMCPRegistry.Names() {
+			row, gerr := storeIface.MCPServerDefGetActive(ctx, name)
+			if gerr != nil {
+				continue
+			}
+			var def lookup.SubstrateMCPServer
+			if json.Unmarshal(row.Definition, &def) != nil {
+				continue
+			}
+			for _, dt := range def.DiscoveredTools {
+				out = append(out, mcp.NewTool(mcpPool, name, mcp.ToolDescriptor{
+					Name:        dt.Name,
+					Description: dt.Description,
+					InputSchema: dt.InputSchema,
+				}))
+			}
+		}
+		if cfg.Env.A2AServerEnabled {
+			resolve := func(ctx context.Context, name string) (config.A2AAgent, bool) {
+				return lookup.A2AAgent(ctx, storeIface, cfg, name)
+			}
+			out = append(out, toolsa2a.RegisterTools(ctx, cfg, storeIface, resolve, nil, log.Printf)...)
+		}
+		return out
+	})
 	// v0.8.22: hand the static skills.Set to the server so the
 	// per-run SkillDef resolver can fall back to static bodies when
 	// no DB-active row exists for a skill name.
