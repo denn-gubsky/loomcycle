@@ -403,6 +403,21 @@ export interface ListUsersResponse {
   users: UserSummary[];
 }
 
+// ---- Whoami / principal (RFC L, v0.17.0) ----
+
+/** GET /v1/_me — the authenticated principal resolved from the bearer.
+ *  `open_mode` is true when the server runs without the OperatorTokenDef
+ *  substrate (single shared LOOMCYCLE_AUTH_TOKEN); `legacy` is true for a
+ *  shared-token principal when the substrate IS enabled. */
+export interface WhoamiResponse {
+  tenant_id: string;
+  subject: string;
+  scopes: string[];
+  is_admin: boolean;
+  legacy: boolean;
+  open_mode?: boolean;
+}
+
 // ---- Pause / Resume / State (v0.8.17 wire shape, v0.8.18 real impls) ----
 
 export type RuntimeStateStatus = "running" | "pausing" | "paused";

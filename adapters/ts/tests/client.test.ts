@@ -378,6 +378,14 @@ describe("getAgent / cancelAgent / listUserAgents", () => {
       "http://test-loomcycle:8787/v1/users/u1/agents?status=running",
     );
   });
+
+  it("listUserAgents threads the tenant focus into ?tenant= (RFC L)", async () => {
+    const { client, fetchMock } = makeClient([jsonResponse({ agents: [] })]);
+    await client.listUserAgents("u1", { status: "running", tenant: "acme" });
+    expect(fetchMock.mock.calls[0]![0]).toBe(
+      "http://test-loomcycle:8787/v1/users/u1/agents?status=running&tenant=acme",
+    );
+  });
 });
 
 describe("getTranscript / health / listUsers", () => {
@@ -413,6 +421,30 @@ describe("getTranscript / health / listUsers", () => {
     const r = await client.listUsers();
     expect(r.users.length).toBe(1);
     expect(r.users[0]!.user_id).toBe("u1");
+  });
+
+  it("listUsers threads the tenant focus into ?tenant= (RFC L)", async () => {
+    const { client, fetchMock } = makeClient([jsonResponse({ users: [] })]);
+    await client.listUsers({ tenant: "acme" });
+    expect(fetchMock.mock.calls[0]![0]).toBe(
+      "http://test-loomcycle:8787/v1/_users?tenant=acme",
+    );
+  });
+
+  it("whoami GETs /v1/_me and returns the principal (RFC L)", async () => {
+    const { client, fetchMock } = makeClient([
+      jsonResponse({
+        tenant_id: "acme",
+        subject: "alice",
+        scopes: ["runs:create"],
+        is_admin: false,
+        legacy: false,
+      }),
+    ]);
+    const me = await client.whoami();
+    expect(fetchMock.mock.calls[0]![0]).toBe("http://test-loomcycle:8787/v1/_me");
+    expect(me.tenant_id).toBe("acme");
+    expect(me.is_admin).toBe(false);
   });
 });
 

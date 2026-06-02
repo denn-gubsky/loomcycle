@@ -6,11 +6,13 @@ TypeScript client for the [loomcycle](https://github.com/denn-gubsky/loomcycle) 
 
 ## Status
 
-**v0.11.4** — 42 methods covering run streaming, agent metadata, transcript, pause/resume/state, snapshot lifecycle, memory admin, interruption resolve, hook registration, **v0.8.22 substrate admin (agentDef + skillDef)**, **v0.9.x n8n Phase 0 (listChannels + streamUserRunStates)**, **v0.9.x content_sha256**, **v0.9.x dynamic MCP server registration (mcpServerDef)**, **v0.10.3 Library v2 enumeration (listLibraryAgents/Skills/McpServers)**, **v0.11.0 LLM Gateway (llmChat + llmStream)**, **v0.11.4 OpenAI Embeddings (embeddings)**, and health.
+**v0.17.0** — 49 methods covering run streaming, agent metadata, transcript, pause/resume/state, snapshot lifecycle, memory admin, interruption resolve, hook registration, **v0.8.22 substrate admin (agentDef + skillDef)**, **v0.9.x n8n Phase 0 (listChannels + streamUserRunStates)**, **v0.9.x content_sha256**, **v0.9.x dynamic MCP server registration (mcpServerDef)**, **v0.10.3 Library v2 enumeration (listLibraryAgents/Skills/McpServers)**, **v0.11.0 LLM Gateway (llmChat + llmStream)**, **v0.11.4 OpenAI Embeddings (embeddings)**, **v0.17.0 OSS multi-tenant auth (operatorTokenDef + whoami + tenant-scoped listUsers / listUserAgents — RFC L)**, and health.
 
 > Migrating from raw `fetch` against `/v1/*`? See **[docs/MIGRATING-FROM-HTTP.md](./docs/MIGRATING-FROM-HTTP.md)** for a side-by-side walkthrough.
 
 ### What's new since v0.8.18
+
+- **`operatorTokenDef` / `whoami` + tenant-scoped reads** (v0.17.0, RFC L) — the OSS multi-tenant authorization surface. `operatorTokenDef` is the op-discriminated admin tool over the `OperatorTokenDef` substrate (create / rotate / retire per-principal bearer tokens); `whoami()` returns the authoritative `(tenant, subject, scopes, is_admin)` resolved from the calling bearer; `listUsers({ tenant })` / `listUserAgents(userId, { tenant })` accept a super-admin tenant-focus (ignored server-side for a tenant principal — its own tenant is forced).
 
 - **`llmChat` / `llmStream`** (v0.11.0) — direct LLM call surface that bypasses the agent loop. Provider routing + auth + retry without the ~50-200 ms per-turn overhead of a full `runStreaming` spawn. Drives n8n's `LoomCycleChatModel` AI Agent sub-node + any LangChain `BaseChatModel` consumer.
 - **`listLibraryAgents` / `listLibrarySkills` / `listLibraryMcpServers`** (v0.10.3) — typed wrappers around the v0.9.3 Library v2 endpoints. Each returns a `LibraryListResponse<T>` with source-tagged entries (`"static-only"` / `"dynamic-only"` / `"both"`) merging yaml + substrate views.

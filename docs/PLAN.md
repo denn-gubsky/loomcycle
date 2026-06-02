@@ -4,21 +4,27 @@ This is the public roadmap. For decision history, regret notes, and per-version 
 
 ## Where we are
 
-loomcycle has shipped through **v0.16.0** (the memory layer + the synthetic `code-js` provider). Per-version shipped detail now lives in [`REVISIONS.md`](../REVISIONS.md); the historical design-roadmap entries from the v0.8.x series are retained below for context. This section tracks the path forward.
+loomcycle has shipped through **v0.17.0** (OSS multi-tenant authorization — RFC L). Per-version shipped detail now lives in [`REVISIONS.md`](../REVISIONS.md); the historical design-roadmap entries from the v0.8.x series are retained below for context. This section tracks the path forward.
 
-## Planned — v1.0 (hardening + the multi-tenant-auth capstone)
+## Shipped — v0.17.0 (OSS multi-tenant authorization, RFC L)
 
-**v1.0 — hardening + QA + multi-tenant authorization.** A security + robustness + runtime-QA pass across the v0.13–v0.16 surfaces (A2A interoperability, input webhooks, pluggable memory + the memory layer, the synthetic code provider), landing together with the OSS multi-tenant-authorization capstone (below), then the v1.0 tag. Single-operator deployments keep authenticating with `LOOMCYCLE_AUTH_TOKEN` unchanged — multi-tenancy is available, never required.
-
-**OSS multi-tenant authorization — the v1.0 capstone (RFC L).** Replaces the single shared token with a substrate of bearer tokens (`OperatorTokenDef`), each bound to an **authoritative principal** — a `(tenant, subject, scopes)` resolved *from the token*, not trusted from the request body. Lands as a three-PR series (token substrate + store + CLI/audit → auth middleware + principal + identity threading + scope enforcement → cache/invalidation + docs). What it unlocks:
+Originally scoped as the v1.0 capstone; it shipped as its own minor release so the v1.0 tag stays a pure hardening + distribution milestone. The single shared token is no longer the only way to authenticate: a substrate of bearer tokens (`OperatorTokenDef`), each bound to an **authoritative principal** — a `(tenant, subject, scopes)` resolved *from the token*, not trusted from the request body. Landed as a three-PR series (token substrate + store + CLI/audit → auth middleware + principal + identity threading + scope enforcement → cache/invalidation + docs), an adversarial-QA hardening pass (1 CRITICAL gRPC scope bypass + 4 HIGH), and a role-aware Web UI (token login + tenant workspace + super-admin tenant-focus). What it unlocked:
 
 - **Token-per-principal.** A team or small-VPS service issues a distinct token per developer / app, each minted by loomcycle (CSPRNG, shown once) — callers stop sharing one omnipotent secret.
-- **Authority-derived isolation.** The principal's tenant + subject drive boundaries that already exist — per-subject resource fairness and per-tenant memory isolation become *real* (today they key on caller-asserted fields). The wire `tenant_id` / `user_id` become advisory, overridden by the token.
-- **Scopes.** Narrow tokens (e.g. `runs:create` for an app key) vs admin tokens; default-deny from a documented catalog.
+- **Authority-derived isolation.** The principal's tenant + subject drive boundaries that already existed — per-subject resource fairness and per-tenant memory / run isolation became *real* (they previously keyed on caller-asserted fields). The wire `tenant_id` / `user_id` are advisory, overridden by the token.
+- **Scopes.** Narrow tokens (e.g. `runs:create` for an app key) vs admin tokens; default-deny from a documented catalog, enforced per HTTP route **and** per gRPC RPC.
 - **Rotation + audit.** Two-token grace-window rotation; a file-based JSONL audit log of every token create / rotate / retire.
-- **Zero-disruption upgrade.** `LOOMCYCLE_AUTH_TOKEN` keeps working; single-operator deployments need no migration. Multi-tenancy is *available*, never *required*.
+- **Zero-disruption upgrade.** `LOOMCYCLE_AUTH_TOKEN` keeps working (migrates in place via `operator-token create --copy-from-env`); single-operator deployments need no migration. Multi-tenancy is *available*, never *required*.
 
 Enterprise-grade authorization — SSO (SAML/OIDC), RBAC roles, SCIM provisioning, signed / queryable audit logs, automated rotation policies, compliance evidence — is intentionally **out of scope for OSS** and lives in a separate enterprise edition built on the same token substrate. The OSS edition does enough for a 200-developer team; the enterprise edition does what passes a procurement security review.
+
+## Planned — v1.0 (hardening + distribution)
+
+With the multi-tenant-auth capstone shipped, v1.0 is a pure hardening + distribution milestone — no new primitives.
+
+- **Distribution + bootstrapping.** A hardened first-run install story: multi-arch **Homebrew** formula + **Docker** images wired to the `init` / `doctor` flow and a sane default config, so `brew install` / `docker run` reaches a working sidecar without reading the docs first.
+- **Claude Code plugin hardening.** The `claude-code-plugin-loomcycle` plugin (slash commands + skills + hooks over `loomcycle mcp`) gets a robustness pass — error surfaces, version-skew handling, clean bootstrap from the published binary.
+- **Security + robustness + runtime-QA pass** across the v0.13–v0.17 surfaces (A2A interoperability, input webhooks, pluggable memory + the memory layer, the synthetic code provider, the multi-tenant-auth substrate), then the v1.0 tag.
 
 **Beyond v1.0** (polish, unscheduled): a settings UI, an operator cookbook of deployment postures, broader distribution (Helm).
 

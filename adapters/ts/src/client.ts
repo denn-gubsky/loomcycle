@@ -95,6 +95,7 @@ import type {
   SubstrateToolInput,
   SubstrateToolResponse,
   TranscriptResponse,
+  WhoamiResponse,
 } from "./types.js";
 
 export class LoomcycleClient {
@@ -233,10 +234,16 @@ export class LoomcycleClient {
     opts?: {
       status?: AgentStatus;
       parentAgentId?: string;
+      /** Super-admin tenant-focus (?tenant=, RFC L v0.17.0). Ignored
+       *  server-side for a tenant principal — its own tenant is forced. */
+      tenant?: string;
       signal?: AbortSignal;
     },
   ): Promise<Agent[]> {
-    const q = opts?.status ? `?status=${encodeURIComponent(opts.status)}` : "";
+    const params = new URLSearchParams();
+    if (opts?.status) params.set("status", opts.status);
+    if (opts?.tenant) params.set("tenant", opts.tenant);
+    const q = params.toString() ? `?${params.toString()}` : "";
     const resp = await jsonFetch<ListAgentsResponse>(
       this.ctx,
       `/v1/users/${encodeURIComponent(userId)}/agents${q}`,
@@ -268,10 +275,24 @@ export class LoomcycleClient {
     return jsonFetch<HealthResponse>(this.ctx, "/healthz", opts);
   }
 
-  /** Admin: list known users with running-count summary. Drives the
-   *  Web UI's user picker; operators with bearer auth can call too. */
-  async listUsers(opts?: { signal?: AbortSignal }): Promise<ListUsersResponse> {
-    return jsonFetch<ListUsersResponse>(this.ctx, "/v1/_users", opts);
+  /** List known users with running-count summary. Drives the Web UI's
+   *  user picker. Tenant-scoped server-side since v0.17.0 (RFC L): a
+   *  tenant principal sees only its own tenant's users; an admin sees all,
+   *  or focuses one tenant via `tenant` (?tenant=). */
+  async listUsers(opts?: {
+    tenant?: string;
+    signal?: AbortSignal;
+  }): Promise<ListUsersResponse> {
+    const q = opts?.tenant ? `?tenant=${encodeURIComponent(opts.tenant)}` : "";
+    return jsonFetch<ListUsersResponse>(this.ctx, `/v1/_users${q}`, opts);
+  }
+
+  /** Whoami — the authenticated principal (RFC L v0.17.0). Any
+   *  authenticated bearer; returns its authoritative tenant / subject /
+   *  scopes + `is_admin`. `open_mode: true` when the server runs without
+   *  the token substrate (single shared LOOMCYCLE_AUTH_TOKEN). */
+  async whoami(opts?: { signal?: AbortSignal }): Promise<WhoamiResponse> {
+    return jsonFetch<WhoamiResponse>(this.ctx, "/v1/_me", opts);
   }
 
   // ---- v0.8.17/8.18 Pause / Resume / State ----

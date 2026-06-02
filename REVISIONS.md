@@ -8,6 +8,100 @@ For pre-v0.4 history (single-tool runtime, library milestone, security patch), s
 
 ---
 
+## What's in v0.17.0
+
+**Headline: OSS multi-tenant authorization (RFC L) — backend + Web UI.** The
+single shared `LOOMCYCLE_AUTH_TOKEN` is no longer the only way to authenticate.
+A new `OperatorTokenDef` substrate mints per-principal bearer tokens, each bound
+to an **authoritative `(tenant, subject, scopes)`** resolved *from the token* —
+not trusted from the request body. Per-subject fairness and per-tenant memory /
+run isolation, which previously keyed on caller-asserted fields, become **real**
+boundaries. **Zero-disruption:** `LOOMCYCLE_AUTH_TOKEN` keeps working unchanged
+(and migrates in place via `operator-token create --copy-from-env`);
+multi-tenancy is *available*, never *required*. Single-operator deployments
+upgrade transparently.
+
+This was originally scoped as the v1.0 capstone; it shipped as its own minor
+release so the v1.0 tag stays a pure hardening + distribution milestone.
+
+### Multi-tenant authorization — RFC L (backend, 3-PR series)
+
+- **`OperatorTokenDef` substrate + store + CLI + audit (#323).** Bearer tokens
+  with the `lct_` prefix, stored as peppered SHA-256 (never plaintext). A closed
+  scope catalog (default-deny), two-token rotation-with-grace, and a file-based
+  JSONL audit log of every token create / rotate / retire. `operator-token`
+  CLI verbs for the full lifecycle.
+- **Authoritative principal + identity threading (#324).** The auth middleware
+  resolves a bearer to an `auth.Principal{TenantID, Subject, Scopes, TokenDefID,
+  Legacy}` and threads it through the run / session / tool surfaces. `applyPrincipal`
+  makes the principal **wire-overriding**: a caller cannot widen its `tenant_id`
+  or `user_id` by editing the request body — the token is the authority.
+- **Token cache + invalidation, `--copy-from-env`, docs (#325).** A bounded,
+  invalidation-aware verification cache (constant-time compare preserved);
+  `operator-token create --copy-from-env` promotes an existing
+  `LOOMCYCLE_AUTH_TOKEN` deployment into the substrate without downtime;
+  `Context.help operator-tokens`.
+
+### RFC L adversarial-QA hardening (1 CRITICAL + 4 HIGH)
+
+The capstone shipped with an adversarial auth/authz review. Every finding has a
+fail-before regression test:
+
+- **gRPC per-RPC scope enforcement (#327) [CRITICAL].** The gRPC interceptor
+  authenticated the bearer but did not enforce the per-RPC scope — a narrow
+  token could reach admin RPCs (incl. minting an admin token). Now every RPC
+  checks its required scope, matching the HTTP `requiredScopeFor` gate.
+- **Cross-principal session ownership (#328) [HIGH].** A principal could resume
+  another principal's session. Ownership is now enforced on the tenant boundary
+  (whole-tenant model) with an admin bypass.
+- **Refuse retiring the last admin token (#329) [HIGH].** Retiring the final
+  admin token would have silently fallen the runtime open into single-shared-token
+  mode. The retire path now refuses to leave zero admin tokens.
+- **Per-route scope-map gaps closed (#330) [HIGH].** Several `/v1/*` routes were
+  missing from the scope map and defaulted to under-protected; the map is now
+  exhaustive.
+- **Token-cache outage handling (#331).** Negative lookups during a store outage
+  are no longer cached (fail-closed without poisoning the cache once the store
+  recovers); the cache is bounded against a DoS.
+- **Inert scopes removed (#333).** The parsed-but-unenforced `memory:read` /
+  `memory:write` scopes were deleted from the catalog rather than left as a
+  misleading no-op.
+
+### Web UI multi-tenant authorization (3 PRs)
+
+- **Tenant-scoped read boundary + `/v1/_me` (#334).** Read endpoints now filter
+  by the principal's tenant (`runs.tenant_id` denormalised for JOIN-free reads,
+  migration 0036 with backfill). New `GET /v1/_me` whoami returns
+  `{tenant_id, subject, scopes, is_admin, legacy, open_mode?}` — the UI's role
+  source.
+- **Login page + role-aware workspace (#335).** A token-entry login (the
+  resolved principal's scopes pick the role — no password store), 401 → `/login`
+  redirect, an identity context, and a role-aware shell: a super-admin sees every
+  tenant's workspace + all admin tabs; a tenant sees only its own tenant's
+  workspace.
+- **Tenant user-picker + super-admin tenant-focus switcher (#336).** `/v1/_users`
+  is tenant-scoped (any authenticated principal; the handler does the scoping,
+  not the route gate) so a tenant's picker auto-populates with same-tenant users;
+  a super-admin gets a tenant-focus switcher that threads `?tenant=` into the
+  picker and the runs view. A tenant still can't widen via the wire.
+
+### Other
+
+- **Anthropic tool `input_schema` top-level combinator flatten (#326).** The
+  Anthropic driver now flattens a top-level `oneOf` / `anyOf` / `allOf` in a tool
+  input schema (mirrors the v0.8.10 Gemini sanitizer) so Zod-discriminated-union
+  MCP tool schemas don't 400.
+- **Operator-triggered re-probe (#322).** `POST /v1/_resolve/probe` forces an
+  immediate resolver-matrix refresh (operator escape hatch, issue #88).
+
+### TypeScript client (`@loomcycle/client@0.17.0`)
+
+The adapter exposes the RFC L admin surface (`operatorTokenDef`) plus the new
+whoami endpoint (`whoami()`) and the tenant-focus parameter on `listUsers()` /
+`listAgents()`. Dual ESM + CJS distribution unchanged.
+
+---
+
 ## What's in v0.16.1
 
 **Pre-v1.0 QA hardening pass on the v0.16.0 surfaces.** No new primitives —

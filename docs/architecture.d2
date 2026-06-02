@@ -56,7 +56,7 @@ loomcycle: "loomcycle — single Go binary (~30 MB)\n1..N replicas (see cluster 
     }
   }
 
-  middleware: "Auth (bearer, constant-time) · Concurrency semaphore · Cancel registry · Per-tenant fairness (v0.10.1 · cluster v0.12.1)" {
+  middleware: "Auth — bearer (constant-time) → RFC L principal: tenant · subject · scopes (v0.17.0)\nper-route HTTP + per-RPC gRPC scope gate · Concurrency semaphore · Cancel registry\nPer-tenant fairness (v0.10.1 · cluster v0.12.1)" {
     style: {
       fill: "#f8fafc"
       italic: true
@@ -64,7 +64,7 @@ loomcycle: "loomcycle — single Go binary (~30 MB)\n1..N replicas (see cluster 
     }
   }
 
-  connector: "connector.Connector — 39-method Go interface (v0.8.15 → v0.16.x)\nHTTP server IMPLEMENTS · MCP / gRPC / future CLI CONSUME\nTS / Python adapters MIRROR (over HTTP wire)" {
+  connector: "connector.Connector — 39-method Go interface (v0.8.15 → v0.17.x)\nHTTP server IMPLEMENTS · MCP / gRPC / future CLI CONSUME\nTS / Python adapters MIRROR (over HTTP wire)" {
     style: {
       fill: "#fce7f3"
       stroke: "#be185d"
@@ -106,7 +106,7 @@ loomcycle: "loomcycle — single Go binary (~30 MB)\n1..N replicas (see cluster 
     style: {fill: "#ede9fe"; stroke: "#7c3aed"; font-size: 12; italic: true}
   }
 
-  store: "Store — SQLite (default) · Postgres (HA, + pgvector)\nsessions · runs(.replica_id v0.12.x) · events · memory · channels\nagent_defs · skill_defs · mcp_server_defs · schedule_defs (v0.12.7)\nwebhook_defs (v0.14.0) · memory_backend_defs (v0.15.0) · *_active\nevaluations · interrupts · snapshots · process_samples\ndynamic_agents · memory_embeddings\nreplicas · user_quotas · runtime_state · hooks (v0.12.x)" {
+  store: "Store — SQLite (default) · Postgres (HA, + pgvector)\nsessions · runs(.replica_id v0.12.x · .tenant_id v0.17.0) · events · memory · channels\nagent_defs · skill_defs · mcp_server_defs · schedule_defs (v0.12.7)\nwebhook_defs (v0.14.0) · memory_backend_defs (v0.15.0) · operator_token_defs (v0.17.0) · *_active\nevaluations · interrupts · snapshots · process_samples\ndynamic_agents · memory_embeddings\nreplicas · user_quotas · runtime_state · hooks (v0.12.x)" {
     shape: cylinder
     style: {
       fill: "#fed7aa"
