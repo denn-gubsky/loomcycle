@@ -126,13 +126,24 @@ func TestRequiredScopeFor(t *testing.T) {
 	}{
 		{"POST", "/v1/runs", auth.ScopeRunsCreate},
 		{"POST", "/v1/sessions/s_1/messages", auth.ScopeRunsCreate},
-		{"DELETE", "/v1/agents/a_1", auth.ScopeRunsCreate},
+		// Cancel is POST /v1/agents/{id}/cancel — must be runs:create (was a
+		// dead DELETE case → any-authenticated).
+		{"POST", "/v1/agents/a_1/cancel", auth.ScopeRunsCreate},
+		// Interrupt resolve = write, list = read (were any-authenticated).
+		{"POST", "/v1/runs/r_1/interrupts/i_1/resolve", auth.ScopeRunsCreate},
+		{"GET", "/v1/runs/r_1/interrupts", auth.ScopeRunsRead},
 		{"GET", "/v1/agents/a_1", auth.ScopeRunsRead},
 		{"GET", "/v1/users/alice/agents", auth.ScopeRunsRead},
+		// Per-user channel surface uses the channel scopes (were
+		// any-authenticated / wrongly runs:read for peek).
+		{"POST", "/v1/users/alice/channels/work/publish", auth.ScopeChannelPublish},
+		{"POST", "/v1/users/alice/channels/work/ack", auth.ScopeChannelPublish},
+		{"GET", "/v1/users/alice/channels/work/peek", auth.ScopeChannelRead},
 		{"POST", "/v1/_operatortokendef", auth.ScopeAdmin},
 		{"GET", "/v1/_resolver", auth.ScopeAdmin},
 		{"POST", "/v1/_pause", auth.ScopeAdmin},
 		{"DELETE", "/v1/hooks/h_1", auth.ScopeAdmin},
+		{"GET", "/metrics", auth.ScopeAdmin},
 		// Consumer gateway endpoints are NOT admin.
 		{"POST", "/v1/_llm/chat", ""},
 		{"POST", "/v1/chat/completions", ""},
