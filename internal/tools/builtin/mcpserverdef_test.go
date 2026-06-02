@@ -10,6 +10,8 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/store/sqlite"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 	loommcp "github.com/denn-gubsky/loomcycle/internal/tools/mcp"
+	mcphttp "github.com/denn-gubsky/loomcycle/internal/tools/mcp/http"
+	"github.com/denn-gubsky/loomcycle/internal/tools/mcp/mcptest"
 )
 
 // mcpServerDefFixture builds an MCPServerDef tool over in-memory
@@ -254,5 +256,87 @@ func TestMCPServerDefTool_GetSurfacesContentSHA256(t *testing.T) {
 	}
 	if h, _ := decodeResult(t, res.Text)["content_sha256"].(string); !strings.HasPrefix(h, "sha256:") {
 		t.Errorf("get missing content_sha256")
+	}
+}
+
+// TestMCPServerDefTool_CreateIdempotentOnSameContent — re-creating identical
+// content (a consumer blindly re-registering on every restart) is a no-op:
+// it returns the active def with deduplicated=true and mints NO new version.
+func TestMCPServerDefTool_CreateIdempotentOnSameContent(t *testing.T) {
+	tool, ctx, cleanup := mcpServerDefFixture(t)
+	defer cleanup()
+
+	body := `{"op":"create","name":"jobs","overlay":{"transport":"http","url":"http://internal.example/mcp","headers":{"Authorization":"Bearer ${run.credentials.jobs:-${LOOMCYCLE_X}}"}}}`
+	if r, _ := tool.Execute(ctx, json.RawMessage(body)); r.IsError {
+		t.Fatalf("first create: %s", r.Text)
+	}
+	r2, _ := tool.Execute(ctx, json.RawMessage(body))
+	if r2.IsError {
+		t.Fatalf("second create: %s", r2.Text)
+	}
+	if decodeResult(t, r2.Text)["deduplicated"] != true {
+		t.Errorf("identical re-create should be a dedup no-op; got %s", r2.Text)
+	}
+	lr, _ := tool.Execute(ctx, json.RawMessage(`{"op":"list","name":"jobs"}`))
+	vs, _ := decodeResult(t, lr.Text)["versions"].([]any)
+	if len(vs) != 1 {
+		t.Errorf("identical re-create must not mint a new version; got %d", len(vs))
+	}
+}
+
+// TestMCPServerDefTool_RediscoverNoopOnUnchangedTools — rediscover mints a new
+// version only when the peer's tool surface actually changes. The first
+// rediscover (none → check_user) mints; a second with the same tools is a
+// no-op (deduplicated=true), so re-discovery on every boot doesn't spam.
+func TestMCPServerDefTool_RediscoverNoopOnUnchangedTools(t *testing.T) {
+	tool, ctx, cleanup := mcpServerDefFixture(t)
+	defer cleanup()
+
+	srv := mcptest.NewServer(t, mcptest.WithToolName("check_user"))
+	tool.Cfg.Env.HTTPHostAllowlist = append(tool.Cfg.Env.HTTPHostAllowlist, "127.0.0.1")
+	tool.Pool = loommcp.NewPool(
+		func(name string) (loommcp.Caller, error) { return mcphttp.New(mcphttp.Config{URL: srv.URL}) },
+		func(c loommcp.Caller) {},
+	)
+	t.Cleanup(tool.Pool.Close)
+
+	if r, _ := tool.Execute(ctx, json.RawMessage(`{"op":"create","name":"jobs","overlay":{"transport":"http","url":"`+srv.URL+`"}}`)); r.IsError {
+		t.Fatalf("create: %s", r.Text)
+	}
+	if r, _ := tool.Execute(ctx, json.RawMessage(`{"op":"rediscover","name":"jobs"}`)); r.IsError {
+		t.Fatalf("rediscover#1: %s", r.Text)
+	}
+	r2, _ := tool.Execute(ctx, json.RawMessage(`{"op":"rediscover","name":"jobs"}`))
+	if r2.IsError {
+		t.Fatalf("rediscover#2: %s", r2.Text)
+	}
+	if decodeResult(t, r2.Text)["deduplicated"] != true {
+		t.Errorf("rediscover with unchanged tools should be a no-op; got %s", r2.Text)
+	}
+	lr, _ := tool.Execute(ctx, json.RawMessage(`{"op":"list","name":"jobs"}`))
+	vs, _ := decodeResult(t, lr.Text)["versions"].([]any)
+	if len(vs) != 2 { // v1 create + v2 first-rediscover; second rediscover adds nothing
+		t.Errorf("unchanged rediscover must not mint a version; got %d (want 2)", len(vs))
+	}
+}
+
+// TestCanonicalTools_OrderAndWhitespaceInsensitive pins the rediscover-dedup
+// comparison: tool order and input_schema JSON formatting/key-order must not
+// register as a change, but a genuinely different schema must.
+func TestCanonicalTools_OrderAndWhitespaceInsensitive(t *testing.T) {
+	a := []toolDescriptor{
+		{Name: "b", InputSchema: json.RawMessage(`{"type":"object","x":1}`)},
+		{Name: "a", InputSchema: json.RawMessage(`{ "type" : "object" }`)},
+	}
+	b := []toolDescriptor{
+		{Name: "a", InputSchema: json.RawMessage(`{"type":"object"}`)},
+		{Name: "b", InputSchema: json.RawMessage(`{"x":1,"type":"object"}`)},
+	}
+	if canonicalTools(a) != canonicalTools(b) {
+		t.Errorf("reordered + reformatted identical tools should be canonically equal:\n a=%s\n b=%s", canonicalTools(a), canonicalTools(b))
+	}
+	c := []toolDescriptor{{Name: "a", InputSchema: json.RawMessage(`{"type":"string"}`)}}
+	if canonicalTools(a) == canonicalTools(c) {
+		t.Error("genuinely different tool sets must not compare equal")
 	}
 }
