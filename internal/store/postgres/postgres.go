@@ -626,18 +626,27 @@ func (s *Store) GetRun(ctx context.Context, runID string) (store.Run, error) {
 // ListUsers returns one row per distinct user_id with summary stats.
 // Drives the v0.7.3 Web UI user picker. Mirrors the SQLite shape so
 // behaviour is identical across backends.
-func (s *Store) ListUsers(ctx context.Context) ([]store.UserSummary, error) {
-	rows, err := s.pool.Query(ctx, `
+func (s *Store) ListUsers(ctx context.Context, tenantID string) ([]store.UserSummary, error) {
+	// tenantID "" = all tenants; otherwise scope to the denormalised
+	// runs.tenant_id (RFC L per-tenant workspace + super-admin focus).
+	q := `
 		SELECT
 			user_id,
 			COUNT(*) FILTER (WHERE status = 'running') AS running_count,
 			COUNT(*) AS total_count,
 			MAX(started_at) AS last_started_at
 		FROM runs
-		WHERE user_id IS NOT NULL AND user_id != ''
+		WHERE user_id IS NOT NULL AND user_id != ''`
+	args := []any{}
+	if tenantID != "" {
+		q += ` AND tenant_id = $1`
+		args = append(args, tenantID)
+	}
+	q += `
 		GROUP BY user_id
 		ORDER BY last_started_at DESC
-		LIMIT 200`)
+		LIMIT 200`
+	rows, err := s.pool.Query(ctx, q, args...)
 	if err != nil {
 		return nil, err
 	}

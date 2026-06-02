@@ -91,8 +91,8 @@ func TestHandleListUserAgents_TenantFiltersCrossTenant(t *testing.T) {
 		}
 	}
 
-	call := func(p auth.Principal) []map[string]any {
-		req := principalReq("GET", "/v1/users/alice/agents?status=all", p)
+	call := func(p auth.Principal, target string) []map[string]any {
+		req := principalReq("GET", target, p)
 		req.SetPathValue("user_id", "alice")
 		rec := httptest.NewRecorder()
 		s.handleListUserAgents(rec, req)
@@ -106,13 +106,92 @@ func TestHandleListUserAgents_TenantFiltersCrossTenant(t *testing.T) {
 		return resp.Agents
 	}
 
+	base := "/v1/users/alice/agents?status=all"
 	// Tenant=acme principal sees ONLY the acme run.
-	tenantAgents := call(auth.Principal{TenantID: "acme", Subject: "alice", Scopes: []string{auth.ScopeRunsRead}})
+	tenantAgents := call(auth.Principal{TenantID: "acme", Subject: "alice", Scopes: []string{auth.ScopeRunsRead}}, base)
 	if len(tenantAgents) != 1 || tenantAgents[0]["agent_id"] != "a_acme" {
 		t.Errorf("tenant saw %d agents (want 1 = a_acme): %v", len(tenantAgents), tenantAgents)
 	}
 	// Admin sees both.
-	if adminAgents := call(auth.Principal{TenantID: "x", Scopes: []string{auth.ScopeAdmin}}); len(adminAgents) != 2 {
+	if adminAgents := call(auth.Principal{TenantID: "x", Scopes: []string{auth.ScopeAdmin}}, base); len(adminAgents) != 2 {
 		t.Errorf("admin saw %d agents, want 2", len(adminAgents))
+	}
+	// Admin focusing ?tenant=other sees ONLY the other run (the UI's
+	// tenant-focus switcher).
+	if focused := call(auth.Principal{TenantID: "x", Scopes: []string{auth.ScopeAdmin}}, base+"&tenant=other"); len(focused) != 1 || focused[0]["agent_id"] != "a_other" {
+		t.Errorf("admin ?tenant=other saw %d agents (want 1 = a_other): %v", len(focused), focused)
+	}
+	// A tenant principal cannot widen via ?tenant= — still only its own.
+	if escaped := call(auth.Principal{TenantID: "acme", Subject: "alice", Scopes: []string{auth.ScopeRunsRead}}, base+"&tenant=other"); len(escaped) != 1 || escaped[0]["agent_id"] != "a_acme" {
+		t.Errorf("tenant ?tenant=other leaked %d agents (want 1 = a_acme): %v", len(escaped), escaped)
+	}
+}
+
+// /v1/_users is reachable by any authenticated principal and tenant-scoped:
+// a tenant sees only its own tenant's users; admin sees all and can focus
+// one via ?tenant=. Drives the Web UI's per-tenant user picker.
+func TestHandleListUsers_TenantScope(t *testing.T) {
+	s, st := tokenAuthServer(t, "legacy")
+	ctx := context.Background()
+	for _, tt := range []struct{ tenant, user, agentID string }{
+		{"acme", "alice", "a_alice"},
+		{"acme", "bob", "a_bob"},
+		{"other", "carol", "a_carol"},
+	} {
+		sess, err := st.CreateSession(ctx, tt.tenant, "echo", tt.user)
+		if err != nil {
+			t.Fatalf("create session: %v", err)
+		}
+		if _, err := st.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: tt.agentID, UserID: tt.user, TenantID: tt.tenant}); err != nil {
+			t.Fatalf("create run: %v", err)
+		}
+	}
+
+	call := func(p auth.Principal, target string) map[string]bool {
+		rec := httptest.NewRecorder()
+		s.handleListUsers(rec, principalReq("GET", target, p))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status %d: %s", rec.Code, rec.Body.String())
+		}
+		var resp struct {
+			Users []struct {
+				UserID string `json:"user_id"`
+			} `json:"users"`
+		}
+		json.Unmarshal(rec.Body.Bytes(), &resp)
+		ids := map[string]bool{}
+		for _, u := range resp.Users {
+			ids[u.UserID] = true
+		}
+		return ids
+	}
+
+	// Tenant=acme sees alice + bob, never carol.
+	tenant := call(auth.Principal{TenantID: "acme", Subject: "alice", Scopes: []string{auth.ScopeRunsRead}}, "/v1/_users")
+	if !tenant["alice"] || !tenant["bob"] || tenant["carol"] {
+		t.Errorf("tenant acme saw %v, want {alice,bob} without carol", tenant)
+	}
+	// Admin (no focus) sees all three.
+	admin := call(auth.Principal{TenantID: "x", Scopes: []string{auth.ScopeAdmin}}, "/v1/_users")
+	if !admin["alice"] || !admin["bob"] || !admin["carol"] {
+		t.Errorf("admin saw %v, want all three", admin)
+	}
+	// Admin focusing ?tenant=other sees only carol.
+	focused := call(auth.Principal{TenantID: "x", Scopes: []string{auth.ScopeAdmin}}, "/v1/_users?tenant=other")
+	if focused["alice"] || focused["bob"] || !focused["carol"] {
+		t.Errorf("admin ?tenant=other saw %v, want only carol", focused)
+	}
+	// Tenant can't widen via ?tenant= — still only acme users.
+	escaped := call(auth.Principal{TenantID: "acme", Subject: "alice", Scopes: []string{auth.ScopeRunsRead}}, "/v1/_users?tenant=other")
+	if escaped["carol"] || !escaped["alice"] {
+		t.Errorf("tenant ?tenant=other leaked %v, want only acme users", escaped)
+	}
+}
+
+// /v1/_users must be exempt from the admin scope gate so a tenant token
+// can reach it (the handler does the tenant scoping, not the route).
+func TestRequiredScopeFor_UsersExempt(t *testing.T) {
+	if got := requiredScopeFor("GET", "/v1/_users"); got != "" {
+		t.Errorf("requiredScopeFor(/v1/_users) = %q, want \"\" (any authenticated)", got)
 	}
 }

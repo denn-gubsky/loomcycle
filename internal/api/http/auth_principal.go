@@ -375,6 +375,11 @@ func requiredScopeFor(method, path string) string {
 	// identity (the Web UI's role source); a tenant token needs it too.
 	case path == "/v1/_me":
 		return ""
+	// User listing — any authenticated principal; the handler tenant-scopes
+	// the result (a tenant sees only its tenant's users; admin sees all /
+	// can focus via ?tenant=). The UI's per-tenant workspace picker needs it.
+	case path == "/v1/_users":
+		return ""
 	// Everything else under /v1/_* is operator-admin: the substrate Def
 	// endpoints, runtime admin (pause/resume/state/snapshots/metrics),
 	// resolver, users, memory admin, channels admin.

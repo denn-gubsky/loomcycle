@@ -1237,18 +1237,27 @@ func (s *Store) GetRun(ctx context.Context, runID string) (store.Run, error) {
 //
 // SQLite COUNT(CASE WHEN ...) is the conventional shape for grouped
 // counts by category; both backends produce identical row sets.
-func (s *Store) ListUsers(ctx context.Context) ([]store.UserSummary, error) {
-	rows, err := s.db.QueryContext(ctx, `
+func (s *Store) ListUsers(ctx context.Context, tenantID string) ([]store.UserSummary, error) {
+	// tenantID "" = all tenants; otherwise scope to the denormalised
+	// runs.tenant_id (RFC L per-tenant workspace + super-admin focus).
+	q := `
 		SELECT
 			user_id,
 			COUNT(CASE WHEN status = 'running' THEN 1 END) AS running_count,
 			COUNT(*) AS total_count,
 			MAX(started_at) AS last_started_at
 		FROM runs
-		WHERE user_id IS NOT NULL AND user_id != ''
+		WHERE user_id IS NOT NULL AND user_id != ''`
+	args := []any{}
+	if tenantID != "" {
+		q += ` AND tenant_id = ?`
+		args = append(args, tenantID)
+	}
+	q += `
 		GROUP BY user_id
 		ORDER BY last_started_at DESC
-		LIMIT 200`)
+		LIMIT 200`
+	rows, err := s.db.QueryContext(ctx, q, args...)
 	if err != nil {
 		return nil, err
 	}

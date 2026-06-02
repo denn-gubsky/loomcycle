@@ -3979,12 +3979,14 @@ func (s *Server) handleListUserAgents(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	// Multi-tenant authz: a tenant principal sees only runs in its own
+	// tenant (requesting another tenant's user_id yields an empty list);
+	// super-admin sees all, or focuses one tenant via ?tenant= (the UI's
+	// tenant switcher). allTenants=true → no tenant filter.
+	scopeTenant, allTenants := s.principalTenantScope(r.Context(), r.URL.Query().Get("tenant"))
 	out := make([]agentResponse, 0, len(runs))
 	for _, run := range runs {
-		// Multi-tenant authz: a tenant principal sees only runs in its
-		// own tenant (so requesting another tenant's user_id yields an
-		// empty list). Super-admin / open mode see all.
-		if !s.tenantVisible(r.Context(), run.TenantID) {
+		if !allTenants && run.TenantID != scopeTenant {
 			continue
 		}
 		_, live := s.cancelReg.Get(run.AgentID)

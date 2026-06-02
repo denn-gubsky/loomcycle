@@ -34,7 +34,14 @@ func (s *Server) handleListUsers(w http.ResponseWriter, r *http.Request) {
 			"store not configured; user listing requires a persistent store")
 		return
 	}
-	users, err := s.store.ListUsers(r.Context())
+	// Tenant scope: a tenant principal sees only its own tenant's users;
+	// super-admin sees all, or focuses one via ?tenant= (the UI's tenant
+	// switcher). all=true → "" filter (every tenant).
+	tenantID, all := s.principalTenantScope(r.Context(), r.URL.Query().Get("tenant"))
+	if all {
+		tenantID = ""
+	}
+	users, err := s.store.ListUsers(r.Context(), tenantID)
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "internal", err.Error())
 		return
