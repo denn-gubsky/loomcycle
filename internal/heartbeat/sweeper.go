@@ -58,6 +58,12 @@ type Config struct {
 	// AdvisoryLockKey is the lock-key int64 (typically coord.LockKeyHeartbeatSweeper).
 	// Only consulted when AdvisoryLock is non-nil.
 	AdvisoryLockKey int64
+
+	// Now is the clock sweepOnce reads to compute the staleness cutoff
+	// (cutoff = Now() - StaleAfter). Nil defaults to time.Now. Injectable
+	// so tests can pin the cutoff deterministically instead of racing real
+	// wall-clock elapsed time against StaleAfter.
+	Now func() time.Time
 }
 
 // AdvisoryLocker is the minimum surface the sweeper needs from
@@ -82,6 +88,7 @@ type Sweeper struct {
 	logf       func(format string, args ...any)
 	lock       AdvisoryLocker
 	lockKey    int64
+	now        func() time.Time
 }
 
 // New constructs a Sweeper with the supplied tuning. A nil store means
@@ -97,6 +104,9 @@ func New(st store.Store, cfg Config) *Sweeper {
 	if cfg.Logger == nil {
 		cfg.Logger = log.Printf
 	}
+	if cfg.Now == nil {
+		cfg.Now = time.Now
+	}
 	return &Sweeper{
 		store:      st,
 		interval:   cfg.Interval,
@@ -104,6 +114,7 @@ func New(st store.Store, cfg Config) *Sweeper {
 		logf:       cfg.Logger,
 		lock:       cfg.AdvisoryLock,
 		lockKey:    cfg.AdvisoryLockKey,
+		now:        cfg.Now,
 	}
 }
 
@@ -188,6 +199,6 @@ func (s *Sweeper) Run(ctx context.Context) {
 func (s *Sweeper) sweepOnce(parent context.Context) (int, error) {
 	ctx, cancel := context.WithTimeout(parent, 30*time.Second)
 	defer cancel()
-	cutoff := time.Now().Add(-s.staleAfter)
+	cutoff := s.now().Add(-s.staleAfter)
 	return s.store.SweepStaleRuns(ctx, cutoff)
 }

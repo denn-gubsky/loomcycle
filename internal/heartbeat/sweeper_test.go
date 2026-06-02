@@ -36,22 +36,26 @@ func TestSweeperOnce_MarksStale(t *testing.T) {
 	stale, _ := st.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: "a_stale"})
 	_ = st.UpdateHeartbeat(ctx, stale.ID)
 
-	// Sleep + StaleAfter gap was 20ms vs 10ms — flaked under -race
-	// where scheduling slowdown could push the time between fresh
-	// heartbeat write and the sweepOnce cutoff calculation past 10ms,
-	// causing the fresh row to also count as stale (test expects
-	// exactly 1 marked stale). Widened to 100ms sleep + 50ms cutoff
-	// for a 5× margin — still fast (~100ms total test runtime) but
-	// resilient to -race slowdown.
-	time.Sleep(100 * time.Millisecond)
+	// `mid` is captured AFTER the stale row's heartbeat write returns and
+	// BEFORE the fresh row's — so by program order (and nanosecond UnixNano
+	// heartbeats) stale_hb < mid < fresh_hb, strictly. We pin the sweeper's
+	// clock so its cutoff lands exactly at `mid`: the stale row is older
+	// (marked), the fresh row newer (spared). Deterministic, with NO
+	// dependence on wall-clock elapsed time. The previous version slept then
+	// used real time.Now() in sweepOnce, which flaked under -race when the
+	// fresh heartbeat aged past the cutoff in the gap between its write and
+	// the sweep's clock read (CI: "sweepOnce returned 2, want 1").
+	mid := time.Now()
 
 	fresh, _ := st.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: "a_fresh"})
 	_ = st.UpdateHeartbeat(ctx, fresh.ID)
 
+	const staleWindow = time.Minute
 	sw := New(st, Config{
 		Interval:   1 * time.Hour, // unused — we drive sweepOnce directly
-		StaleAfter: 50 * time.Millisecond,
-		Logger:     func(format string, args ...any) {}, // silence
+		StaleAfter: staleWindow,
+		Logger:     func(format string, args ...any) {},              // silence
+		Now:        func() time.Time { return mid.Add(staleWindow) }, // cutoff == mid
 	})
 	n, err := sw.sweepOnce(ctx)
 	if err != nil {
