@@ -1,6 +1,6 @@
 # Architecture
 
-This document describes the runtime end-to-end through v0.16.1. The MCP-integration story originally shipped in v0.4.0 (Streamable HTTP transport, SSE response decoding, startup-retry, sub-agent host-policy inheritance) was inverted in v0.8.15: loomcycle now ALSO exposes itself as an MCP server alongside being an MCP consumer. The `connector.Connector` Go interface unifies HTTP, gRPC, MCP, and future CLI wire transports around a single contract — HTTP server IMPLEMENTS, others CONSUME via direct method dispatch. v0.8.16 added the Interruption tool (human-in-the-loop primitive); v0.8.17 added Pause / Resume / Snapshot — runtime-wide quiesce + cross-version-portable JSON snapshot, the precondition for the multi-replica HA that later landed in v0.12.x. v0.8.18 promoted the v0.8.15 PREVIEW Connector methods to real impls (MCP tools become real for free; added `GetSnapshot`) and added the gRPC + Python adapter surfaces. v0.8.22 introduced the SkillDef substrate (versioned skills with active-pointer overlay parallel to AgentDef). v0.8.24 added the parity built-ins (`Grep`, `Glob`, `NotebookEdit`) so loomcycle agents have the same filesystem surface as Claude Code. v0.9.0 shipped Vector Memory (pgvector-backed semantic search on the existing `Memory` tool, gated by `LOOMCYCLE_PGVECTOR_ENABLED=1`) and per-agent `max_iterations` (yaml + AgentDef overlay). v0.9.1 made the resolved system prompt and the caller's initial user input the first two cards of every run transcript, so operators can audit "what the agent actually received" directly from the Web UI. Since v0.9.1 the runtime grew along eight more axes (each its own section below): the **LLM Gateway** + OpenAI-compatible chat/embeddings shims (v0.11.x), **OpenTelemetry** + per-tenant fairness (v0.10.x), **tool-use hooks**, **per-run named credentials**, **scheduled runs (ScheduleDef)**, and **multi-replica HA** (v0.12.x), **A2A interoperability** (v0.13.0), **input webhooks (WebhookDef)** (v0.14.x), **pluggable memory backends + a memory layer** (v0.15.0 / v0.16.0), and the **synthetic `code-js` provider** that runs operator JavaScript as a first-class agent (v0.16.0). The Connector interface is now 39 methods. For a higher-level pitch and quick-start, see the README. For the public roadmap, see `docs/PLAN.md`.
+This document describes the runtime end-to-end through v0.17.0. The MCP-integration story originally shipped in v0.4.0 (Streamable HTTP transport, SSE response decoding, startup-retry, sub-agent host-policy inheritance) was inverted in v0.8.15: loomcycle now ALSO exposes itself as an MCP server alongside being an MCP consumer. The `connector.Connector` Go interface unifies HTTP, gRPC, MCP, and future CLI wire transports around a single contract — HTTP server IMPLEMENTS, others CONSUME via direct method dispatch. v0.8.16 added the Interruption tool (human-in-the-loop primitive); v0.8.17 added Pause / Resume / Snapshot — runtime-wide quiesce + cross-version-portable JSON snapshot, the precondition for the multi-replica HA that later landed in v0.12.x. v0.8.18 promoted the v0.8.15 PREVIEW Connector methods to real impls (MCP tools become real for free; added `GetSnapshot`) and added the gRPC + Python adapter surfaces. v0.8.22 introduced the SkillDef substrate (versioned skills with active-pointer overlay parallel to AgentDef). v0.8.24 added the parity built-ins (`Grep`, `Glob`, `NotebookEdit`) so loomcycle agents have the same filesystem surface as Claude Code. v0.9.0 shipped Vector Memory (pgvector-backed semantic search on the existing `Memory` tool, gated by `LOOMCYCLE_PGVECTOR_ENABLED=1`) and per-agent `max_iterations` (yaml + AgentDef overlay). v0.9.1 made the resolved system prompt and the caller's initial user input the first two cards of every run transcript, so operators can audit "what the agent actually received" directly from the Web UI. Since v0.9.1 the runtime grew along eight more axes (each its own section below): the **LLM Gateway** + OpenAI-compatible chat/embeddings shims (v0.11.x), **OpenTelemetry** + per-tenant fairness (v0.10.x), **tool-use hooks**, **per-run named credentials**, **scheduled runs (ScheduleDef)**, and **multi-replica HA** (v0.12.x), **A2A interoperability** (v0.13.0), **input webhooks (WebhookDef)** (v0.14.x), **pluggable memory backends + a memory layer** (v0.15.0 / v0.16.0), and the **synthetic `code-js` provider** that runs operator JavaScript as a first-class agent (v0.16.0). v0.17.0 added **OSS multi-tenant authorization** (RFC L): the `OperatorTokenDef` substrate mints per-principal bearer tokens, each resolving to an **authoritative `(tenant, subject, scopes)`** that overrides the wire — so the previously caller-asserted `tenant_id` / `user_id` become real isolation boundaries, gated per HTTP route and per gRPC RPC, with a role-aware Web UI on top. The Connector interface is now 39 methods. For a higher-level pitch and quick-start, see the README. For the public roadmap, see `docs/PLAN.md`.
 
 <p align="center">
   <img src="assets/architecture.png" alt="loomcycle architecture — app servers / CLIs / TS-Python SDKs / Claude Code / OpenAI-compat clients at the top; the single Go binary in the middle (wire surfaces incl. HTTP+SSE, gRPC, Web UI, MCP server, LLM Gateway, A2A server v0.13.0, input-webhook receiver v0.14.0 → middleware with per-tenant fairness → connector.Connector 39-method interface → agent loop → tool dispatcher with 19 agent-facing builtins + admin substrate Defs + MCP client + A2A client + sub-agent runner; run triggers from the ScheduleDef sweeper / webhooks / A2A; store with sessions/runs/events plus the substrate Def tables) → providers (six LLM endpoints + the synthetic in-process code-js provider) plus embedders, external MCP servers, a Mem9 memory backend, and remote A2A peers at the bottom" width="780" />
@@ -21,9 +21,9 @@ Diagram source: [`docs/architecture.d2`](architecture.d2) (regenerate with `d2 d
 7. Persists sessions, runs, events (including the v0.9.1 `system_prompt` + `user_input` first-cycle events), agent_defs, skill_defs, evaluations, memory rows (with optional pgvector embeddings since v0.9.0), channel messages, process samples, dynamic_agents, interrupts, and snapshots to a pluggable `Store` (SQLite default; Postgres for HA, with pgvector when `LOOMCYCLE_PGVECTOR_ENABLED=1`). Runs carry a `pause_state` column (`running` / `pausing` / `paused`) so the resume sweep finds quiesced runs efficiently; runs also carry an optional `max_iterations` overlay (v0.9.0) sourced from yaml or the pinned AgentDef.
 8. Caps concurrency with a **semaphore + bounded FIFO queue** to keep memory predictable on a small VPS.
 
-Single-tenant out of the box; multi-tenant-shaped (every run carries `user_id` + optional `user_tier` + per-run named credentials; tracking + cancel APIs scope by user; per-tenant fairness on the concurrency layer shipped in v0.10.1 / cluster-wide v0.12.1; per-run credential substitution lets each agent authenticate to downstream MCP servers as the actual end-user). Today `user_id`/`tenant_id` are **caller-asserted** (attribution + fairness keys, not an authorization boundary) and one shared `LOOMCYCLE_AUTH_TOKEN` gates the HTTP frontier — correct for a single operator or a single trusted team. **Authority-derived multi-tenant authorization** (per-principal bearer tokens bound to a `(tenant, subject, scopes)` resolved from the token) is the v1.1.0 headline, RFC L.
+Single-tenant out of the box; multi-tenant-capable (every run carries `user_id` + optional `user_tier` + per-run named credentials; tracking + cancel APIs scope by user; per-tenant fairness on the concurrency layer shipped in v0.10.1 / cluster-wide v0.12.1; per-run credential substitution lets each agent authenticate to downstream MCP servers as the actual end-user). Since **v0.17.0** (RFC L) the `user_id` / `tenant_id` are no longer merely caller-asserted: a per-principal bearer token (`OperatorTokenDef`) resolves to an **authoritative `(tenant, subject, scopes)`** that overrides the wire fields, turning attribution + fairness keys into a real authorization boundary (per-tenant memory / run isolation, per-route + per-RPC scopes). The single shared `LOOMCYCLE_AUTH_TOKEN` still works unchanged for a single operator or trusted team — multi-tenancy is available, never required. See [Multi-tenant authorization](#multi-tenant-authorization-v0170-rfc-l) below.
 
-## Repository layout (current — v0.16.1)
+## Repository layout (current — v0.17.0)
 
 ```
 loomcycle/
@@ -38,7 +38,7 @@ loomcycle/
 │   │   ├── webhook/                   input-webhook receiver — HMAC verify-before-parse (v0.14.0)
 │   │   └── mcp/                       *lcmcp.Server — stdio + HTTP MCP server, meta-tools
 │   ├── a2a/                           A2A executor + card signing + INPUT_REQUIRED↔Interruption (v0.13.0)
-│   ├── auth/                          bearer-token middleware (constant-time compare)
+│   ├── auth/                          bearer middleware (constant-time compare) + RFC L principal/scopes/token resolution (v0.17.0)
 │   ├── cancel/                        in-memory registry (agent_id → cancelFn) + cascade
 │   ├── channels/                      persistent channel storage + notification bus (v0.8.4)
 │   ├── cli/                           subcommands (pause/resume/snapshot/agent/run/operator-token)
@@ -84,7 +84,7 @@ loomcycle/
 │   │   └── tool.go                    Tool interface, Dispatcher, ctx-stash helpers
 │   └── webui/                         embedded React Web UI served at /ui (assets bundled)
 ├── adapters/
-│   ├── ts/                            @loomcycle/client (npm — v0.15.0)
+│   ├── ts/                            @loomcycle/client (npm — v0.17.0)
 │   └── python/                        loomcycle-py (v0.7.0; lags TS by a few releases)
 └── docs/                              public docs (this file, TOOLS.md, PLAN.md, MCP_INTEGRATION.md, ...)
 ```
@@ -97,7 +97,8 @@ Internal planning notes (RFCs, decision history, ground-truth PLAN.md) live OUT 
 HTTP POST /v1/runs
   │
   ▼
-authMiddleware                        → 401 on bad bearer (constant-time compare)
+authMiddleware                        → 401 on bad bearer (constant-time compare); resolves the
+                                        RFC L principal (tenant/subject/scopes) + per-route scope → 403 (v0.17.0)
   │
   ▼
 recoverMiddleware                     → panic → 500 JSON
@@ -627,13 +628,27 @@ References: `internal/memory/backend.go`, `internal/memory/layer.go`, `internal/
 
 References: `internal/providers/codejs/{provider,replay,bindings,sandbox,compiler,abi}.go`, `internal/providers/runmeta.go`, `internal/loop/loop.go` (RunMeta stamp + `UnboundedIterations`), `cmd/loomcycle/main.go` (`validateCodeAgents`).
 
-## What's next (v1.0 → v1.1.0)
+## Multi-tenant authorization (v0.17.0, RFC L)
 
-The v0.4.0-era deferred list is retired — OTEL, multi-replica HA, per-tenant fairness, the LLM gateway, A2A, webhooks, pluggable memory, and the synthetic code provider all shipped (above). What remains:
+Before v0.17.0 the HTTP frontier was gated by one shared `LOOMCYCLE_AUTH_TOKEN`, and `user_id` / `tenant_id` were caller-asserted — attribution + fairness keys, not an authorization boundary. RFC L turns them into a real boundary without breaking the single-operator path.
 
-- **v1.0 — hardening + QA.** No new primitives: a security + robustness + runtime-QA pass across the v0.13–v0.16 surfaces, then the v1.0 tag. Authenticates with the single shared `LOOMCYCLE_AUTH_TOKEN` (correct for single-operator / single-trusted-team).
-- **v1.1.0 — OSS multi-tenant authorization (RFC L, headline).** Per-principal bearer tokens (`OperatorTokenDef`), each bound to an authoritative `(tenant, subject, scopes)` resolved *from the token* — so per-subject fairness and per-tenant memory isolation become real (today they key on the caller-asserted `user_id`; the `resolveTenancy` choke-point above is where the authoritative tenant lands). Zero-disruption; enterprise-grade auth (SSO/RBAC/SCIM/signed audit) is a separate edition.
-- **Beyond:** a settings UI, an operator cookbook of postures, broader distribution (Helm), Python adapter version parity (lags TS).
+- **`OperatorTokenDef` substrate.** Per-principal bearer tokens with the `lct_` prefix, stored as **peppered SHA-256** (never plaintext). A token binds a `(tenant, subject, scopes)`. CRUD lives behind the `operator-token` CLI (`internal/cli/operator_token.go`) + admin endpoints; every create / rotate / retire appends to a file-based **JSONL audit log**. Two-token **rotation-with-grace** lets a caller swap a key with zero downtime. `operator-token create --copy-from-env` promotes an existing `LOOMCYCLE_AUTH_TOKEN` deployment into the substrate in place.
+- **Authoritative principal.** `authMiddleware` resolves a bearer to `auth.Principal{TenantID, Subject, Scopes, TokenDefID, Legacy}` (`internal/auth/principal.go`, `token.go`, `scopes.go`). `applyPrincipal` makes it **wire-overriding**: a caller cannot widen its `tenant_id` / `user_id` by editing the request body — the token is the authority. A bounded, invalidation-aware **verification cache** keeps the constant-time compare off the hot path; it fail-closes on a store outage without caching the negative.
+- **Scope enforcement, two transports.** A closed, default-deny scope catalog. `requiredScopeFor(method, path)` gates every `/v1/*` route (HTTP); a matching per-RPC gate runs in the **gRPC interceptor** — the v0.17.0 adversarial-QA pass closed a CRITICAL where the gRPC side authenticated but didn't enforce scope (a narrow token could mint an admin token). A handful of any-authenticated routes are exempt by design (`/v1/_me`, `/v1/_users`, the LLM-gateway shims) and tenant-scope their own results.
+- **Tenant-scoped reads + the Web UI.** Read endpoints filter by the principal's tenant (`runs.tenant_id` denormalised for JOIN-free reads, migration `0036` with backfill). `GET /v1/_me` returns the principal for the UI's role source. The embedded Web UI gained a token-entry login (the resolved scopes pick the role), a 401 → `/login` redirect, a **role-aware shell** (a super-admin sees every tenant's workspace + all admin tabs and gets a tenant-focus switcher; a tenant sees only its own tenant), and a tenant-scoped user picker. Enforcement is server-side — the UI is a faithful renderer, never the boundary.
+
+The single shared `LOOMCYCLE_AUTH_TOKEN` still authenticates unchanged (resolved as a `Legacy` principal) — multi-tenancy is available, never required.
+
+References: `internal/auth/{bearer,principal,scopes,token}.go`, `internal/api/http/auth_principal.go` (`applyPrincipal`, `requiredScopeFor`, `principalTenantScope`, `handleWhoami`), `internal/cli/operator_token.go`, `internal/store/store.go` (`OperatorTokenDef` + `runs.tenant_id`).
+
+## What's next (v1.0)
+
+The v0.4.0-era deferred list is retired — OTEL, multi-replica HA, per-tenant fairness, the LLM gateway, A2A, webhooks, pluggable memory, the synthetic code provider, and (v0.17.0) OSS multi-tenant authorization all shipped (above). What remains for v1.0 is hardening + distribution, no new primitives:
+
+- **Distribution + bootstrapping.** A hardened first-run install story: multi-arch Homebrew formula + Docker images wired to the `init` / `doctor` flow and a sane default config, so `brew install` / `docker run` reaches a working sidecar without reading the docs first.
+- **Claude Code plugin hardening.** The `claude-code-plugin-loomcycle` plugin (slash commands + skills + hooks over `loomcycle mcp`) gets a robustness pass — error surfaces, version-skew handling, clean bootstrap from the published binary.
+- **Security + robustness + runtime-QA pass** across the v0.13–v0.17 surfaces, then the v1.0 tag.
+- **Beyond:** a settings UI, an operator cookbook of postures, broader distribution (Helm), Python adapter version parity (lags TS). Enterprise-grade auth (SSO/RBAC/SCIM/signed audit) is a separate edition built on the same `OperatorTokenDef` substrate.
 
 See `docs/PLAN.md` for the public roadmap.
 

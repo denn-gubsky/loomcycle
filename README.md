@@ -22,7 +22,7 @@
 
 ---
 
-> 🌳 **Active development toward v1.0.** The core primitives stabilised through v0.8 → v0.16 — multi-replica HA, the substrate Defs (Agent/Skill/MCPServer/Schedule/Webhook/MemoryBackend), A2A interoperability, inbound webhooks, pluggable memory + a memory layer, and a synthetic code provider. **OSS multi-tenant authorization** (per-principal bearer tokens) is landing as the **v1.0 capstone** alongside the hardening + QA pass — see "Planned" below. We welcome bug reports, security disclosures, feature contributions, downstream consumers, and forks. See [`CONTRIBUTING.md`](CONTRIBUTING.md).
+> 🌳 **Active development toward v1.0.** The core primitives stabilised through v0.8 → v0.16 — multi-replica HA, the substrate Defs (Agent/Skill/MCPServer/Schedule/Webhook/MemoryBackend), A2A interoperability, inbound webhooks, pluggable memory + a memory layer, and a synthetic code provider. **v0.17.0** shipped **OSS multi-tenant authorization** (per-principal bearer tokens + a role-aware Web UI) — see "Planned" below; v1.0 is now a pure hardening + distribution (Homebrew / Docker / Claude Code plugin) milestone. We welcome bug reports, security disclosures, feature contributions, downstream consumers, and forks. See [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
 ---
 
@@ -64,6 +64,7 @@
 | **Memory ranking + pluggable backends** — `Memory.search` hybrid ranker (semantic + recency weights) + search-time dedup; `MemoryBackend` interface with in-process default + `MemoryBackendDef` substrate + Mem9 REST backend (per-agent `memory_backend` routing, tenancy + RFC-F creds + graceful fallback); `loomcycle memory-eval` scoring harness. Opt-in, zero-regression default | v0.15.0 |
 | **Memory layer (add / recall)** — the `Memory` tool's optional LLM-extract paradigm: hand a backend conversation messages, it distils durable facts and answers natural-language recall (mem9 smart-mode). An optional capability alongside the frozen key/value `Backend`; the default in-process store fail-closes with `capability_unsupported` | v0.16.0 |
 | **Synthetic `code-js` provider** — `provider: code-js` runs operator JavaScript (goja) as a first-class agent for deterministic glue at zero token cost; stateless **replay** execution (resumable across restart/replica, deterministic by construction); default-deny tools, off by default | v0.16.0 |
+| **OSS multi-tenant authorization (RFC L)** — `OperatorTokenDef` mints per-principal bearer tokens (peppered SHA-256, closed scope catalog, rotation-with-grace, JSONL audit), each bound to an **authoritative `(tenant, subject, scopes)`** resolved from the token and overriding the wire — so per-subject fairness + per-tenant isolation become real. Per-route + per-gRPC-RPC scope gates. Role-aware Web UI (token login, tenant workspace, super-admin tenant-focus). `LOOMCYCLE_AUTH_TOKEN` keeps working; multi-tenancy is available, never required | v0.17.0 |
 
 Full per-version log: [`REVISIONS.md`](REVISIONS.md).
 
@@ -134,6 +135,8 @@ make build-all       # UI + binary in one shot; output → ./bin/loomcycle
 
 ## Current and planned
 
+**v0.17.0 — OSS multi-tenant authorization (RFC L).** The single shared `LOOMCYCLE_AUTH_TOKEN` is no longer the only way in. A new **`OperatorTokenDef`** substrate mints per-principal bearer tokens (`lct_` prefix, peppered SHA-256, a closed scope catalog with default-deny, two-token rotation-with-grace, a JSONL audit log), each bound to an **authoritative `(tenant, subject, scopes)`** resolved *from the token* and overriding the wire `tenant_id` / `user_id` — so per-subject fairness and per-tenant memory / run isolation, which previously keyed on caller-asserted fields, become real boundaries. Per-route HTTP scopes + per-RPC gRPC scopes (closed in an adversarial-QA pass: 1 CRITICAL gRPC scope bypass + 4 HIGH — cross-principal session hijack, retire-fail-open, scope-map gaps, token-cache outage/DoS — each with a fail-before test). A role-aware **Web UI**: token-entry login (scopes pick the role), a super-admin who sees every tenant's workspace + a tenant-focus switcher, and a tenant who sees only its own. **Zero-disruption** — `LOOMCYCLE_AUTH_TOKEN` keeps working and migrates in place via `operator-token create --copy-from-env`; multi-tenancy is *available*, never *required*. See `Context.help operator-tokens`. Originally scoped as the v1.0 capstone; shipped as its own minor so the v1.0 tag stays a pure hardening + distribution milestone.
+
 **v0.16.0 — Memory layer + synthetic code provider.** The two capabilities that complete the substrate before the v1.0 hardening pass.
 
 - **MemoryLayer (RFC K).** The `Memory` tool gains `add` / `recall` ops for LLM-extract memory products (mem9 smart-mode, mem0-style): you hand the backend conversation messages, it distils durable facts, and recall is a natural-language semantic search over them. It's an *optional* capability probed alongside the frozen flat key/value `Backend` (so every existing backend is untouched); the default in-process store is a key/value + vector store, **not** a memory layer, so it fail-closes `add`/`recall` with `capability_unsupported` rather than faking it. `add`/`recall` honor the agent's `memory_scopes` and the backend's tenancy prefix exactly like the key/value ops.
@@ -152,10 +155,14 @@ make build-all       # UI + binary in one shot; output → ./bin/loomcycle
 
 Per-version detail for all of the above is in [`REVISIONS.md`](REVISIONS.md).
 
-**Planned — v1.0:**
+**Planned — v1.0 (hardening + distribution):**
 
-- **v1.0 — hardening + QA + the multi-tenant-auth capstone.** A security + robustness + runtime-QA pass across the v0.13–v0.16 surfaces (A2A, webhooks, pluggable memory + the memory layer, the code-js provider), landing alongside the **OSS multi-tenant authorization** capstone (below), then the **v1.0** tag.
-- **OSS multi-tenant authorization (the v1.0 capstone).** Replaces the single shared token with per-principal bearer tokens (`OperatorTokenDef` — token-per-developer/app, a closed scope catalog, rotation-with-grace, file audit), each bound to an **authoritative `(tenant, subject, scopes)`** resolved *from the token* and overriding the wire fields — so per-subject fairness and per-tenant memory isolation become real boundaries (they previously keyed on caller-asserted fields). **Zero-disruption**: `LOOMCYCLE_AUTH_TOKEN` keeps working (and migrates in place via `operator-token create --copy-from-env`); multi-tenancy is available, never required. See `Context.help operator-tokens`. Enterprise-grade auth (SSO / RBAC / SCIM / signed audit) is a separate edition.
+With the multi-tenant-auth capstone shipped in v0.17.0, v1.0 is now a pure hardening + distribution milestone — no new primitives.
+
+- **Distribution + bootstrapping.** A first-run install story that survives contact with a fresh machine: hardened **Homebrew** formula and **Docker** images (multi-arch, the `init` / `doctor` flow, a sane default config), so `brew install` / `docker run` gets an operator to a working sidecar without reading the docs first.
+- **Claude Code plugin hardening.** The `claude-code-plugin-loomcycle` plugin (slash commands + skills + hooks over `loomcycle mcp`) gets a robustness pass — error surfaces, version-skew handling, and a clean bootstrap from the published binary.
+- **Security + robustness + runtime-QA pass** across the v0.13–v0.17 surfaces (A2A, webhooks, pluggable memory + the memory layer, the code-js provider, the multi-tenant-auth substrate), then the **v1.0** tag.
+- **Enterprise auth** (SSO / RBAC / SCIM / signed, queryable audit) stays out of scope for OSS — it's a separate edition built on the same `OperatorTokenDef` substrate.
 - **Beyond** (polish): a settings UI, an operator cookbook of postures, broader distribution (Helm).
 
 Full per-version release notes: [`REVISIONS.md`](REVISIONS.md).
