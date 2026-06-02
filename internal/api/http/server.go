@@ -1344,6 +1344,11 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 			}
 			return fmt.Errorf("%w: %v", runner.ErrInternal, err)
 		}
+		// RFC L: cross-principal session-ownership guard (see
+		// sessionOwnershipOK). Opaque not-found on mismatch, no oracle.
+		if !sessionOwnershipOK(ctx, sess) {
+			return fmt.Errorf("%w: %s", runner.ErrSessionNotFound, in.SessionID)
+		}
 		effectiveAgentName = sess.Agent
 		effectiveTenantID = sess.TenantID
 		effectiveUserID = sess.UserID
@@ -2770,6 +2775,13 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	// RFC L: a continuation runs under the session's stored tenant+subject, so
+	// the caller principal must OWN the session. 404 (not 403) on mismatch so
+	// a non-owner can't probe which session ids exist (no-oracle).
+	if !sessionOwnershipOK(r.Context(), sess) {
+		http.Error(w, (&store.ErrNotFound{Kind: "session", ID: id}).Error(), http.StatusNotFound)
+		return
+	}
 
 	// Per-session continuation lock: take the lock before transcript
 	// replay so two concurrent POSTs to the same session can't read
@@ -3231,6 +3243,12 @@ func (s *Server) handleTranscript(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	// RFC L: the transcript exposes the session's full history — gate it on
+	// the same cross-principal ownership as continuation (opaque 404).
+	if !sessionOwnershipOK(r.Context(), sess) {
+		http.Error(w, (&store.ErrNotFound{Kind: "session", ID: id}).Error(), http.StatusNotFound)
+		return
+	}
 	transcript, err := s.store.GetTranscript(r.Context(), id)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -3290,6 +3308,12 @@ func (s *Server) openOrCreateSessionAndRun(ctx context.Context, requestedSession
 		sess, err = s.store.GetSession(ctx, requestedSessionID)
 		if err != nil {
 			return "", "", err
+		}
+		// RFC L: continuing an existing session via POST /v1/runs runs under
+		// that session's stored identity — enforce cross-principal ownership
+		// (opaque not-found on mismatch).
+		if !sessionOwnershipOK(ctx, sess) {
+			return "", "", &store.ErrNotFound{Kind: "session", ID: requestedSessionID}
 		}
 	} else {
 		sess, err = s.store.CreateSession(ctx, tenantID, agent, userID)
