@@ -82,6 +82,8 @@ type SubstrateWebhookDef struct {
 	RateLimit              SubstrateWebhookRateLimit `json:"rate_limit,omitempty"`
 	BodySizeLimitBytes     int                       `json:"body_size_limit_bytes,omitempty"`
 	UserCredentialsFromEnv map[string]string         `json:"user_credentials_from_env,omitempty"`
+	UserCredentials        map[string]string         `json:"user_credentials,omitempty"`
+	Metadata               map[string]any            `json:"metadata,omitempty"`
 	PayloadMapping         map[string]string         `json:"payload_mapping,omitempty"`
 	SyncResponse           SubstrateWebhookSyncResp  `json:"sync_response,omitempty"`
 	OnComplete             []config.ScheduledRunHook `json:"on_complete,omitempty"`
@@ -135,6 +137,8 @@ func (s SubstrateWebhookDef) ToConfigDef() config.Webhook {
 		},
 		BodySizeLimitBytes:     s.BodySizeLimitBytes,
 		UserCredentialsFromEnv: s.UserCredentialsFromEnv,
+		UserCredentials:        s.UserCredentials,
+		Metadata:               s.Metadata,
 		PayloadMapping:         s.PayloadMapping,
 		SyncResponse: config.WebhookSyncResponse{
 			Enabled:   s.SyncResponse.Enabled,

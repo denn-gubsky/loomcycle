@@ -91,6 +91,7 @@ type SubstrateScheduleDef struct {
 	UserTier               string                  `json:"user_tier,omitempty"`
 	UserCredentialsFromEnv map[string]string       `json:"user_credentials_from_env,omitempty"`
 	OnComplete             []SubstrateScheduleHook `json:"on_complete,omitempty"`
+	Metadata               map[string]any          `json:"metadata,omitempty"`
 }
 
 // SubstratePromptSegment mirrors config.ScheduledRunSegment with
@@ -142,6 +143,7 @@ func (s SubstrateScheduleDef) ToConfigDef() config.ScheduledRun {
 		CatchUpMax:             s.CatchUpMax,
 		UserID:                 s.UserID,
 		UserCredentialsFromEnv: s.UserCredentialsFromEnv,
+		Metadata:               s.Metadata,
 	}
 	if len(s.Prompt) > 0 {
 		out.Prompt = make([]config.ScheduledRunSegment, len(s.Prompt))
