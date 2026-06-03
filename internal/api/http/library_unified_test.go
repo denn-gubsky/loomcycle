@@ -105,6 +105,37 @@ func TestUnifiedLibrary_Agents_StaticOnly(t *testing.T) {
 	}
 }
 
+// TestUnifiedLibrary_Agents_StaticCodeBody pins that a static yaml code-js
+// agent surfaces its inline code_body in static_definition, so the Web UI can
+// display + fork it. Fails on the pre-fix staticAgentDefJSON, which omitted
+// the field → the UI would show a code agent with no body.
+func TestUnifiedLibrary_Agents_StaticCodeBody(t *testing.T) {
+	srv, _, cleanup := libraryUnifiedFixture(t, map[string]config.AgentDef{
+		"batch": {
+			Provider: "code-js",
+			Code:     `function run(input){ return {final_text:"ok"}; }`,
+		},
+	}, nil)
+	defer cleanup()
+
+	rec := httptest.NewRecorder()
+	srv.Mux().ServeHTTP(rec, authedRequest("GET", "/v1/_library/agents", nil))
+	entries := decodeLibraryEntries(t, rec)
+	if len(entries) != 1 {
+		t.Fatalf("entries = %+v, want 1", entries)
+	}
+	var def struct {
+		Provider string `json:"provider"`
+		CodeBody string `json:"code_body"`
+	}
+	if err := json.Unmarshal(entries[0].StaticDefinition, &def); err != nil {
+		t.Fatal(err)
+	}
+	if def.Provider != "code-js" || def.CodeBody != `function run(input){ return {final_text:"ok"}; }` {
+		t.Errorf("static code agent definition missing code_body: %+v", def)
+	}
+}
+
 // TestUnifiedLibrary_Agents_DynamicOnly — substrate row with no yaml twin.
 // Expect source=dynamic-only, in_substrate=true, no static_definition.
 func TestUnifiedLibrary_Agents_DynamicOnly(t *testing.T) {

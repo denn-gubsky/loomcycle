@@ -215,6 +215,7 @@ const subtabClass = ({ isActive }: { isActive: boolean }) =>
 
 interface AgentDefBody {
   system_prompt?: string;
+  code_body?: string;
   allowed_tools?: string[];
   description?: string;
   tier?: string;
@@ -240,6 +241,12 @@ function renderAgentDefinition(row: DefRow) {
         <div className="def-field def-field-prompt">
           <span className="def-field-label">system_prompt</span>
           <pre className="def-prompt mono">{body.system_prompt}</pre>
+        </div>
+      )}
+      {body.code_body && (
+        <div className="def-field def-field-prompt">
+          <span className="def-field-label">code_body</span>
+          <pre className="def-prompt mono">{body.code_body}</pre>
         </div>
       )}
       {body.allowed_tools && body.allowed_tools.length > 0 && (
@@ -420,10 +427,14 @@ function renderMcpDefinition(row: DefRow) {
           </div>
         ) : (
           <div className="def-tool-empty">
-            no tools cached — MCP handshake pending, the server is
-            unreachable, or <code>rediscover</code> hasn't been called
-            for a substrate entry. Check the loomcycle log for{" "}
-            <code>mcp[{"<name>"}]: handshake failed</code> lines.
+            no tools cached yet — this is normal, not an error. Tools are
+            discovered on the first agent call that needs this server
+            (lazy registration), or eagerly when you run{" "}
+            <code>rediscover</code>. An empty list here does{" "}
+            <strong>not</strong> mean the server is down: a server that was
+            unreachable at boot self-heals on first use. If calls actually
+            fail, check the loomcycle log for{" "}
+            <code>mcp[{"<name>"}]: handshake failed</code>.
           </div>
         )}
       </div>

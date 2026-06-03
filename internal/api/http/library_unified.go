@@ -250,6 +250,7 @@ func deriveSource(inStatic, inSubstrate bool) string {
 type staticAgentDefJSON struct {
 	Provider              string                            `json:"provider,omitempty"`
 	Model                 string                            `json:"model,omitempty"`
+	Code                  string                            `json:"code_body,omitempty"` // RFC J inline code-js body
 	Tier                  string                            `json:"tier,omitempty"`
 	Effort                string                            `json:"effort,omitempty"`
 	MaxTokens             int                               `json:"max_tokens,omitempty"`
@@ -270,6 +271,7 @@ func marshalStaticAgentDef(def config.AgentDef) json.RawMessage {
 	b, err := json.Marshal(staticAgentDefJSON{
 		Provider:              def.Provider,
 		Model:                 def.Model,
+		Code:                  def.Code,
 		Tier:                  def.Tier,
 		Effort:                def.Effort,
 		MaxTokens:             def.MaxTokens,
