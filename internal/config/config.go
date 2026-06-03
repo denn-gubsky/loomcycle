@@ -2741,6 +2741,7 @@ func agentFromDiscovered(d *agents.Agent) AgentDef {
 	def := AgentDef{
 		Provider:         d.Provider,
 		Model:            d.Model,
+		Code:             d.Code,
 		SystemPrompt:     d.SystemPrompt,
 		SystemPromptFile: d.SystemPromptFile,
 		AllowedTools:     d.AllowedTools,
@@ -2797,6 +2798,9 @@ func mergeAgentDef(base, override AgentDef) AgentDef {
 	}
 	if override.Model != "" {
 		out.Model = override.Model
+	}
+	if override.Code != "" {
+		out.Code = override.Code
 	}
 	// Either prompt-source override clears the OTHER source on the
 	// merged struct. Without this, a discovered MD that sets
