@@ -494,6 +494,13 @@ type UserTier struct {
 type AgentDef struct {
 	Provider string `yaml:"provider"` // optional override of Defaults
 	Model    string `yaml:"model"`    // alias or full model ID
+	// Code is the inline code-js orchestrator source (RFC J). When set
+	// and Provider is "code-js", the provider executes this body instead
+	// of reading agent_code/<name>/index.js — the symmetry that lets a
+	// code agent be ingested via AgentDef / yaml with no host filesystem
+	// bind (containers, pure-cloud). Empty = fall back to the filesystem.
+	// Gated by LOOMCYCLE_CODE_AGENTS_ENABLED at create/fork + execution.
+	Code string `yaml:"code"`
 	// SystemPrompt is the agent's system prompt as an inline YAML
 	// string. Mutually exclusive with SystemPromptFile.
 	SystemPrompt string `yaml:"system_prompt"`
@@ -1672,6 +1679,14 @@ type Env struct {
 	// Env: LOOMCYCLE_AGENT_DEF_MAX_DESCRIPTION_BYTES.
 	AgentDefMaxDescriptionBytes int
 
+	// AgentDefMaxCodeBytes caps an inline code-js `code_body` overlay on
+	// AgentDef.create / fork (RFC J). A dedicated cap (vs the whole-
+	// definition AgentDefMaxDefinitionBytes) gives a clearer error and a
+	// tighter default for executable source. Default 262144 (256 KB).
+	// 0 disables.
+	// Env: LOOMCYCLE_AGENT_DEF_MAX_CODE_BYTES.
+	AgentDefMaxCodeBytes int
+
 	// SkillDefMaxBodyBytes caps the overlay.body field on
 	// SkillDef.create / fork (v0.8.22). Default 131072 (128 KB).
 	// 0 disables.
@@ -2399,6 +2414,16 @@ func Load(path string) (*Config, error) {
 				cfg.Env.AgentDefMaxDescriptionBytes = 0
 			} else {
 				cfg.Env.AgentDefMaxDescriptionBytes = n
+			}
+		}
+	}
+	cfg.Env.AgentDefMaxCodeBytes = 262144
+	if v := os.Getenv("LOOMCYCLE_AGENT_DEF_MAX_CODE_BYTES"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			if n <= 0 {
+				cfg.Env.AgentDefMaxCodeBytes = 0
+			} else {
+				cfg.Env.AgentDefMaxCodeBytes = n
 			}
 		}
 	}

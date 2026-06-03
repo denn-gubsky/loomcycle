@@ -12,6 +12,7 @@ import (
 
 	"github.com/denn-gubsky/loomcycle/internal/agents"
 	"github.com/denn-gubsky/loomcycle/internal/config"
+	"github.com/denn-gubsky/loomcycle/internal/providers/codejs"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
@@ -69,6 +70,12 @@ type AgentDef struct {
 	// MaxDescriptionBytes caps the description field
 	// (LOOMCYCLE_AGENT_DEF_MAX_DESCRIPTION_BYTES). 0 = no cap.
 	MaxDescriptionBytes int
+
+	// MaxCodeBytes caps an inline code-js `code_body` overlay (RFC J).
+	// A dedicated cap (vs the whole-definition MaxDefinitionBytes) gives
+	// a clearer error and a tighter default for executable source.
+	// 0 = no cap.
+	MaxCodeBytes int
 }
 
 const agentDefDescription = `Author, fork, promote, retire, and inspect agent definitions at runtime. ` +
@@ -198,6 +205,9 @@ func (a *AgentDef) execCreate(ctx context.Context, policy tools.AgentDefPolicyVa
 			return errResult(fmt.Sprintf("create: %s", err)), nil
 		}
 	}
+	if err := a.validateInlineCode("create", def); err != nil {
+		return errResult(err.Error()), nil
+	}
 	def.normalize()
 	defJSON, err := json.Marshal(def)
 	if err != nil {
@@ -210,6 +220,20 @@ func (a *AgentDef) execCreate(ctx context.Context, policy tools.AgentDefPolicyVa
 		return errResult(fmt.Sprintf("create: description (%d bytes) exceeds max %d", len(in.Description), a.MaxDescriptionBytes)), nil
 	}
 
+	contentSHA := signFromMergedDef(in.Name, def)
+	// Idempotent create: if the active def already carries this exact content,
+	// return it as a no-op instead of minting a byte-identical new version. A
+	// consumer that blindly re-registers on every restart (the TS client's
+	// ensureCodeAgent flow) no longer spams the lineage. Mirror of
+	// MCPServerDef.execCreate; compared only against the ACTIVE row, so
+	// re-creating content that matches a non-active version still mints +
+	// promotes (re-activation is a real state change).
+	if active, gerr := a.Store.AgentDefGetActive(ctx, in.Name); gerr == nil && active.ContentSHA256 == contentSHA {
+		resp := rowResponse(active, true)
+		resp["deduplicated"] = true
+		return okJSON(resp)
+	}
+
 	ident := tools.RunIdentity(ctx)
 	row := store.AgentDefRow{
 		DefID:            mintDefID(),
@@ -217,7 +241,7 @@ func (a *AgentDef) execCreate(ctx context.Context, policy tools.AgentDefPolicyVa
 		Definition:       defJSON,
 		Description:      in.Description,
 		CreatedByAgentID: ident.AgentID,
-		ContentSHA256:    signFromMergedDef(in.Name, def),
+		ContentSHA256:    contentSHA,
 		// CreatedByRunID stays empty here — there's no run_id on
 		// RunIdentityValue today; carried via the run ctx separately.
 	}
@@ -320,6 +344,9 @@ func (a *AgentDef) execFork(ctx context.Context, policy tools.AgentDefPolicyValu
 	}
 	if err := assertAllowedToolsSubset(def.AllowedTools, root); err != nil {
 		return errResult(fmt.Sprintf("fork: %s", err)), nil
+	}
+	if err := a.validateInlineCode("fork", def); err != nil {
+		return errResult(err.Error()), nil
 	}
 
 	def.normalize()
@@ -668,8 +695,14 @@ func (a *AgentDef) bootstrapStatic(ctx context.Context, name string, static conf
 // mirrors the mutable subset of config.AgentDef — keeps the DB
 // layer config-agnostic.
 type mergedDef struct {
-	Provider  string `json:"provider,omitempty"`
-	Model     string `json:"model,omitempty"`
+	Provider string `json:"provider,omitempty"`
+	Model    string `json:"model,omitempty"`
+	// Code is the inline code-js orchestrator source (RFC J). Mirrors
+	// config.AgentDef.Code; persisted in agent_defs.definition so a code
+	// agent ingests through the substrate with no host filesystem bind.
+	// "" = the provider falls back to agent_code/<name>/index.js. Gated
+	// by LOOMCYCLE_CODE_AGENTS_ENABLED at create/fork (see execCreate).
+	Code      string `json:"code_body,omitempty"`
 	Tier      string `json:"tier,omitempty"`
 	Effort    string `json:"effort,omitempty"`
 	MaxTokens int    `json:"max_tokens,omitempty"`
@@ -725,6 +758,9 @@ func (d *mergedDef) applyOverlay(ov mergedDef) {
 	}
 	if ov.Model != "" {
 		d.Model = ov.Model
+	}
+	if ov.Code != "" {
+		d.Code = ov.Code
 	}
 	if ov.Tier != "" {
 		d.Tier = ov.Tier
@@ -801,6 +837,7 @@ func staticToMergedDef(s config.AgentDef) mergedDef {
 	return mergedDef{
 		Provider:              s.Provider,
 		Model:                 s.Model,
+		Code:                  s.Code,
 		Tier:                  s.Tier,
 		Effort:                s.Effort,
 		MaxTokens:             s.MaxTokens,
@@ -872,6 +909,7 @@ func signFromMergedDef(name string, def mergedDef) string {
 		Description:           def.Description,
 		Provider:              def.Provider,
 		Model:                 def.Model,
+		CodeBody:              def.Code,
 		Tier:                  def.Tier,
 		Effort:                def.Effort,
 		MaxTokens:             def.MaxTokens,
@@ -886,6 +924,33 @@ func signFromMergedDef(name string, def mergedDef) string {
 		MemoryQuotaBytes:      def.MemoryQuotaBytes,
 		MemoryBackend:         def.MemoryBackend,
 	})
+}
+
+// validateInlineCode gates + validates an inline code-js body (RFC J)
+// on create/fork. No-op when the def carries no Code. When it does:
+//
+//   - GATE: refuse unless LOOMCYCLE_CODE_AGENTS_ENABLED — the single
+//     switch that also registers the provider. Persisting a body the
+//     runtime can't execute would be a silent footgun; refuse loudly.
+//   - SIZE: enforce MaxCodeBytes (a tighter, clearer cap than the
+//     whole-definition MaxDefinitionBytes).
+//   - PARSE: compile via the shared codejs.Validate so a syntax error
+//     is rejected at authorship — mirrors boot validateCodeAgents,
+//     using the provider's exact compile flags (single source of truth).
+func (a *AgentDef) validateInlineCode(op string, def mergedDef) error {
+	if def.Code == "" {
+		return nil
+	}
+	if a.Cfg == nil || !a.Cfg.Env.CodeAgentsEnabled {
+		return fmt.Errorf("%s: inline code_body refused — code agents are disabled (set LOOMCYCLE_CODE_AGENTS_ENABLED=1)", op)
+	}
+	if a.MaxCodeBytes > 0 && len(def.Code) > a.MaxCodeBytes {
+		return fmt.Errorf("%s: code_body (%d bytes) exceeds max %d", op, len(def.Code), a.MaxCodeBytes)
+	}
+	if _, err := codejs.Validate(def.Code); err != nil {
+		return fmt.Errorf("%s: code_body does not compile: %s", op, err)
+	}
+	return nil
 }
 
 // mintDefID returns a fresh opaque ID for a new row. 16 hex chars

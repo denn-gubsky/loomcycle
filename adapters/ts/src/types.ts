@@ -1052,6 +1052,10 @@ export interface AgentDefRowResponse {
   /** Only populated on `set` / `fork` responses (was the new row
    *  auto-promoted to active?). Absent on get/list. */
   promoted?: boolean;
+  /** True when create was a content-addressed no-op: the active def already
+   *  carried identical content, so no new version was minted. Absent on a
+   *  real mint. Drives {@link LoomcycleClient.ensureCodeAgent}'s `changed`. */
+  deduplicated?: boolean;
 }
 
 /** Response shape for `AgentDef verify`. Answers "is the supplied
@@ -1148,6 +1152,68 @@ export interface EnsureMcpServerResult {
   changed: boolean;
   /** Populated when `rediscover` ran: the number of tools discovered. */
   discoveredToolCount?: number;
+}
+
+/** Typed `overlay` for an {@link LoomcycleClient.agentDef} create/fork —
+ *  the mutable subset of an agent definition. All fields optional (a fork
+ *  overlays only what changes). The `[extra]` tail keeps it forward-compatible
+ *  with fields the in-process tool may accept that the adapter doesn't model
+ *  yet — the tool owns the authoritative schema; the adapter doesn't re-validate.
+ *
+ *  `code_body` is the inline code-js orchestrator source (RFC J): set it (with
+ *  `provider: "code-js"`) to ingest a code agent through the substrate with NO
+ *  host filesystem bind — the symmetry that makes code agents work in
+ *  containers / pure-cloud. Requires `LOOMCYCLE_CODE_AGENTS_ENABLED=1` on the
+ *  sidecar; create/fork refuses a non-empty `code_body` otherwise. */
+export interface AgentDefOverlay {
+  provider?: string;
+  model?: string;
+  /** Inline code-js source. Empty/absent ⇒ the provider falls back to
+   *  `agent_code/<name>/index.js`. Stored verbatim (whitespace is hash-
+   *  significant); participates in content_sha256. */
+  code_body?: string;
+  tier?: string;
+  effort?: string;
+  max_tokens?: number;
+  max_iterations?: number;
+  max_concurrent_children?: number;
+  system_prompt?: string;
+  allowed_tools?: string[];
+  skills?: string[];
+  memory_scopes?: string[];
+  memory_quota_bytes?: number;
+  memory_backend?: string;
+  retry_attempts?: number;
+  [extra: string]: unknown;
+}
+
+/** Options for {@link LoomcycleClient.ensureCodeAgent}. */
+export interface EnsureCodeAgentOptions {
+  /** Agent name (substrate; must not collide with a static cfg.Agents name —
+   *  use a fork for those). */
+  name: string;
+  /** The inline code-js orchestrator source (the `function run(input){…}` body).
+   *  Keep any `${run.*}` / `${LOOMCYCLE_*}` placeholders LITERAL so the content
+   *  is stable across restarts — that's what lets loomcycle dedup the
+   *  re-registration. */
+  code: string;
+  /** The agent's allowed_tools ceiling (must be a subset of the caller's). */
+  allowedTools?: string[];
+  /** Per-user tier policy name (mutually exclusive with `model` in practice). */
+  tier?: string;
+  /** Pin a concrete model id (overrides tier resolution). */
+  model?: string;
+  description?: string;
+}
+
+/** Result of {@link LoomcycleClient.ensureCodeAgent}. */
+export interface EnsureCodeAgentResult {
+  name: string;
+  defId: string;
+  version: number;
+  /** True when this call minted a new version; false when loomcycle deduped
+   *  it (identical body + config already active). */
+  changed: boolean;
 }
 
 /** Response shape for `MCPServerDef verify`. Same semantics as

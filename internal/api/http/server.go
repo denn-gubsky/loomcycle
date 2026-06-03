@@ -1633,6 +1633,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		ClearStall:             s.clearStallFn(providerID, model),
 		ToolParallelism:        s.cfg.Env.ToolParallelism,
 		AgentName:              effectiveAgentName,
+		CodeBody:               agentDef.Code, // inline code-js body (RFC J); "" → FS fallback
 		UserTier:               in.UserTier,
 		FallbackPolicy:         fbPolicy,
 		ReResolve:              fbReResolve,
@@ -2726,6 +2727,7 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		ClearStall:             s.clearStallFn(providerID, model),
 		ToolParallelism:        s.cfg.Env.ToolParallelism,
 		AgentName:              req.Agent,
+		CodeBody:               agentDef.Code, // inline code-js body (RFC J); "" → FS fallback
 		UserTier:               req.UserTier,
 		FallbackPolicy:         fbPolicy,
 		ReResolve:              fbReResolve,
@@ -3090,6 +3092,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		ClearStall:             s.clearStallFn(providerID, model),
 		ToolParallelism:        s.cfg.Env.ToolParallelism,
 		AgentName:              sess.Agent,
+		CodeBody:               agentDef.Code, // inline code-js body (RFC J); "" → FS fallback
 		UserTier:               body.UserTier,
 		FallbackPolicy:         fbPolicy,
 		ReResolve:              fbReResolve,
@@ -3714,6 +3717,7 @@ func (s *Server) runSubAgent(ctx context.Context, name string, prompt string, de
 		ClearStall:             s.clearStallFn(providerID, model),
 		ToolParallelism:        s.cfg.Env.ToolParallelism,
 		AgentName:              name,
+		CodeBody:               def.Code, // inline code-js body (RFC J); "" → FS fallback
 		UserTier:               parentTier,
 		FallbackPolicy:         fbPolicy,
 		ReResolve:              fbReResolve,

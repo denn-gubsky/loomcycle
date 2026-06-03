@@ -549,3 +549,56 @@ describe("ensureMcpServer / mcpServerDefVerify (v0.18.0)", () => {
     expect(body.content_sha256).toBe("sha256:abc");
   });
 });
+
+describe("ensureCodeAgent (v0.19.0, RFC J)", () => {
+  it("posts op:create with a code-js overlay carrying the inline code_body", async () => {
+    const { client, fetchMock } = makeClient([
+      jsonResponse({
+        def_id: "adf_1",
+        name: "research-batch",
+        version: 1,
+        retired: false,
+        bootstrapped_from_static: false,
+        created_at: "2026-06-03T00:00:00Z",
+        promoted: true,
+      }),
+    ]);
+    const r = await client.ensureCodeAgent({
+      name: "research-batch",
+      code: "function run(input){ return {final_text: '{}'}; }",
+      allowedTools: ["Agent"],
+      description: "deterministic batch orchestrator",
+    });
+    expect(r).toEqual({ name: "research-batch", defId: "adf_1", version: 1, changed: true });
+
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(url).toContain("/v1/_agentdef");
+    const body = JSON.parse((init as RequestInit).body as string);
+    expect(body.op).toBe("create");
+    expect(body.name).toBe("research-batch");
+    expect(body.overlay.provider).toBe("code-js");
+    expect(body.overlay.code_body).toContain("function run(input)");
+    expect(body.overlay.allowed_tools).toEqual(["Agent"]);
+    expect(body.description).toBe("deterministic batch orchestrator");
+  });
+
+  it("changed=false when create reports deduplicated", async () => {
+    const { client } = makeClient([
+      jsonResponse({
+        def_id: "adf_1",
+        name: "research-batch",
+        version: 1,
+        retired: false,
+        bootstrapped_from_static: false,
+        created_at: "2026-06-03T00:00:00Z",
+        deduplicated: true,
+      }),
+    ]);
+    const r = await client.ensureCodeAgent({
+      name: "research-batch",
+      code: "function run(input){ return {final_text: '{}'}; }",
+    });
+    expect(r.changed).toBe(false);
+    expect(r.defId).toBe("adf_1");
+  });
+});

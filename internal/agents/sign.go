@@ -72,7 +72,16 @@ import (
 // Tag order matters; do NOT reorder without bumping the hash-format
 // version on every existing row + re-running the backfill.
 type AgentContent struct {
-	AllowedTools          []string                   `json:"allowed_tools,omitempty"`
+	AllowedTools []string `json:"allowed_tools,omitempty"`
+	// CodeBody is the inline code-js orchestrator source (RFC J). Empty
+	// for every LLM agent and for filesystem-backed static code agents
+	// (whose body lives on disk, not in the definition) — so with
+	// omitempty it serialises away and every pre-existing row hashes
+	// byte-for-byte as before. NOT run through normalizeText: JS
+	// whitespace/CRLF is semantically load-bearing and must match the
+	// operator's `loomcycle hash agent` CI. Tag "code_body" sorts between
+	// allowed_tools and description, preserving the alphabetical order.
+	CodeBody              string                     `json:"code_body,omitempty"`
 	Description           string                     `json:"description,omitempty"`
 	Effort                string                     `json:"effort,omitempty"`
 	MaxConcurrentChildren int                        `json:"max_concurrent_children,omitempty"`

@@ -126,7 +126,16 @@ func (p *Provider) Call(ctx context.Context, req providers.Request) (<-chan prov
 	out := make(chan providers.Event)
 
 	meta, _ := providers.RunMetaFromContext(ctx)
-	prog, err := p.compiler.load(meta.AgentName)
+	// Inline body (substrate code_body, RFC J) wins over the filesystem
+	// fallback — the symmetry that lets a code agent run with no host FS
+	// bind. Empty body ⇒ agent_code/<name>/index.js as before.
+	var prog *compiled
+	var err error
+	if meta.CodeBody != "" {
+		prog, err = p.compiler.loadSource(meta.AgentName, meta.CodeBody)
+	} else {
+		prog, err = p.compiler.load(meta.AgentName)
+	}
 	if err != nil {
 		go emitErr(out, "code_agent_load: "+err.Error())
 		return out, nil
