@@ -2280,7 +2280,21 @@ func validateCodeAgents(cfg *config.Config, pr *providerResolver) {
 		if cp == nil {
 			log.Fatalf("agent %q uses `provider: code-js` but code agents are disabled — set LOOMCYCLE_CODE_AGENTS_ENABLED=1", name)
 		}
-		if _, err := cp.Compile(name); err != nil {
+		// An inline `code:` body has no filesystem file — validate the body
+		// itself (mirrors the run-time provider, which prefers the inline body
+		// over agent_code/<name>/index.js). Only fall back to the filesystem
+		// compile when no inline body is declared. Without this, a yaml code
+		// agent shipped with an inline body and no host index.js — the whole
+		// point of inline ingestion (no FS bind) — would fail the boot.
+		var err error
+		if def.Code != "" {
+			if _, verr := codejs.Validate(def.Code); verr != nil {
+				err = fmt.Errorf("code-agent %q: inline code_body: %w", name, verr)
+			}
+		} else {
+			_, err = cp.Compile(name)
+		}
+		if err != nil {
 			broken = append(broken, err.Error())
 		}
 	}

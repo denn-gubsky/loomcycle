@@ -194,6 +194,39 @@ func TestAgentDefTool_InlineCodeCreateAndForkInherits(t *testing.T) {
 	}
 }
 
+// TestAgentDefTool_CreateIdempotentOnSameContent pins the content-addressed
+// create dedup (mirror of MCPServerDef): re-creating identical content returns
+// the active def with deduplicated=true and mints NO new version — the
+// server-side guarantee the TS ensureCodeAgent `changed` flag depends on.
+// Fails on the pre-fix code, which minted a fresh version on every create.
+func TestAgentDefTool_CreateIdempotentOnSameContent(t *testing.T) {
+	tool, ctx, cleanup := agentDefFixture(t)
+	defer cleanup()
+
+	body := `{"op":"create","name":"reviewer","overlay":{"provider":"openai","system_prompt":"same"}}`
+	r1, _ := tool.Execute(ctx, json.RawMessage(body))
+	if r1.IsError {
+		t.Fatalf("first create: %s", r1.Text)
+	}
+	if decodeResult(t, r1.Text)["deduplicated"] == true {
+		t.Error("first create should not be a dedup")
+	}
+
+	r2, _ := tool.Execute(ctx, json.RawMessage(body))
+	if r2.IsError {
+		t.Fatalf("second create: %s", r2.Text)
+	}
+	if decodeResult(t, r2.Text)["deduplicated"] != true {
+		t.Errorf("identical re-create should dedup; got %s", r2.Text)
+	}
+
+	lr, _ := tool.Execute(ctx, json.RawMessage(`{"op":"list","name":"reviewer"}`))
+	versions := decodeResult(t, lr.Text)["versions"].([]any)
+	if len(versions) != 1 {
+		t.Errorf("identical re-create must not mint a new version; got %d", len(versions))
+	}
+}
+
 func TestAgentDefTool_ForkAllowedToolsCannotWiden(t *testing.T) {
 	tool, ctx, cleanup := agentDefFixture(t)
 	defer cleanup()

@@ -220,6 +220,20 @@ func (a *AgentDef) execCreate(ctx context.Context, policy tools.AgentDefPolicyVa
 		return errResult(fmt.Sprintf("create: description (%d bytes) exceeds max %d", len(in.Description), a.MaxDescriptionBytes)), nil
 	}
 
+	contentSHA := signFromMergedDef(in.Name, def)
+	// Idempotent create: if the active def already carries this exact content,
+	// return it as a no-op instead of minting a byte-identical new version. A
+	// consumer that blindly re-registers on every restart (the TS client's
+	// ensureCodeAgent flow) no longer spams the lineage. Mirror of
+	// MCPServerDef.execCreate; compared only against the ACTIVE row, so
+	// re-creating content that matches a non-active version still mints +
+	// promotes (re-activation is a real state change).
+	if active, gerr := a.Store.AgentDefGetActive(ctx, in.Name); gerr == nil && active.ContentSHA256 == contentSHA {
+		resp := rowResponse(active, true)
+		resp["deduplicated"] = true
+		return okJSON(resp)
+	}
+
 	ident := tools.RunIdentity(ctx)
 	row := store.AgentDefRow{
 		DefID:            mintDefID(),
@@ -227,7 +241,7 @@ func (a *AgentDef) execCreate(ctx context.Context, policy tools.AgentDefPolicyVa
 		Definition:       defJSON,
 		Description:      in.Description,
 		CreatedByAgentID: ident.AgentID,
-		ContentSHA256:    signFromMergedDef(in.Name, def),
+		ContentSHA256:    contentSHA,
 		// CreatedByRunID stays empty here — there's no run_id on
 		// RunIdentityValue today; carried via the run ctx separately.
 	}

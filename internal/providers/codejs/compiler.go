@@ -36,12 +36,26 @@ type compiled struct {
 type compiler struct {
 	root string
 
-	mu    sync.RWMutex
-	cache map[string]*compiled // keyed by sha256 hex of the source bytes
+	mu sync.RWMutex
+	// cache is the inline path's program cache, keyed by sha256 hex of the
+	// source bytes — version-correct (a new code_body under the same name is
+	// a new key, never serving the prior program).
+	cache map[string]*compiled
+	// fsCache is the filesystem path's program cache, keyed by AGENT NAME.
+	// A code-agent run is a SEQUENCE of Provider.Call turns (replay model);
+	// keying the FS path by name lets turns 2..N skip both the os.ReadFile
+	// and the re-hash that an unconditional content-hash lookup would repeat
+	// every turn. Bounded by the agent roster (not by authorship churn).
+	// Editing index.js needs a process restart — the documented sharp edge.
+	fsCache map[string]*compiled
 }
 
 func newCompiler(root string) *compiler {
-	return &compiler{root: root, cache: make(map[string]*compiled)}
+	return &compiler{
+		root:    root,
+		cache:   make(map[string]*compiled),
+		fsCache: make(map[string]*compiled),
+	}
 }
 
 // agentFile is the resolved path of an agent's entrypoint. Exposed (not just
@@ -58,6 +72,17 @@ func (c *compiler) agentFile(name string) string {
 // Both are surfaced at AgentDef load time (so a broken code-agent fails the
 // load, not the first fire) AND defended again here for the direct-Call path.
 func (c *compiler) load(name string) (*compiled, error) {
+	// By-name cache check FIRST so replay turns 2..N skip the disk read +
+	// hash entirely (the per-turn regression a content-hash-only lookup
+	// would introduce). Only valid names are ever stored, so an invalid
+	// name simply misses and falls through to the checks below.
+	c.mu.RLock()
+	if got, ok := c.fsCache[name]; ok {
+		c.mu.RUnlock()
+		return got, nil
+	}
+	c.mu.RUnlock()
+
 	if name == "" {
 		return nil, fmt.Errorf("code-agent: empty agent name (no RunMeta on ctx?)")
 	}
@@ -82,14 +107,31 @@ func (c *compiler) load(name string) (*compiled, error) {
 		}
 		return nil, fmt.Errorf("code-agent %q: reading %s: %w", name, path, err)
 	}
-	return c.compileCached(name, string(src))
+	got, err := c.compileCached(name, string(src))
+	if err != nil {
+		return nil, err
+	}
+	// Memoize by name so subsequent turns skip the read+hash above.
+	c.mu.Lock()
+	if existing, ok := c.fsCache[name]; ok {
+		c.mu.Unlock()
+		return existing, nil
+	}
+	c.fsCache[name] = got
+	c.mu.Unlock()
+	return got, nil
 }
 
 // loadSource compiles an inline code-js body (substrate code_body), caching
-// by its content hash exactly like the filesystem path. name is used only for
-// error messages — the cache key is the hash, so two agents with byte-
-// identical bodies share one compiled program and a re-registered identical
-// body is a no-op.
+// by its content hash. name is used only for error messages — the cache key
+// is the hash, so two agents with byte-identical bodies share one compiled
+// program and a re-registered identical body is a no-op.
+//
+// Unlike the filesystem path this re-hashes the body on every turn rather than
+// caching by name: a code_body is versioned (a new AgentDef version ships new
+// bytes under the same name), so a by-name cache would serve a stale program.
+// The per-turn sha256 of a small body is cheap CPU (no I/O); a per-run resolve
+// that hashes once is the deferred optimization (see the review's altitude note).
 func (c *compiler) loadSource(name, src string) (*compiled, error) {
 	if src == "" {
 		return nil, fmt.Errorf("code-agent %q: empty inline code_body", name)

@@ -2,6 +2,8 @@ package codejs
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/denn-gubsky/loomcycle/internal/providers"
@@ -124,5 +126,32 @@ func TestValidate_AcceptsAndHashes(t *testing.T) {
 func TestValidate_RejectsSyntaxError(t *testing.T) {
 	if _, err := Validate(`function run(input){ return {final_text: }`); err == nil {
 		t.Fatal("a syntactically broken body must be rejected")
+	}
+}
+
+// TestCompiler_FilesystemPathCachedByName pins the per-turn-read fix: after the
+// first load, the compiled program is memoized by agent name, so a subsequent
+// load does NOT touch the filesystem. We prove "no re-read" by deleting the
+// file after the first load — a cached program is still returned. Fails on the
+// regression where load() did an unconditional os.ReadFile every call (the
+// second load would hit os.IsNotExist and error).
+func TestCompiler_FilesystemPathCachedByName(t *testing.T) {
+	root := writeAgent(t, "fscached", `function run(){ return {final_text:"x"}; }`)
+	c := newCompiler(root)
+
+	first, err := c.load("fscached")
+	if err != nil {
+		t.Fatalf("first load: %v", err)
+	}
+	// Remove the file: a correct by-name cache must not need it again.
+	if err := os.Remove(filepath.Join(root, "fscached", "index.js")); err != nil {
+		t.Fatalf("remove: %v", err)
+	}
+	second, err := c.load("fscached")
+	if err != nil {
+		t.Fatalf("second load re-read the filesystem (per-turn regression): %v", err)
+	}
+	if first != second {
+		t.Fatal("by-name cache should return the identical compiled program")
 	}
 }
