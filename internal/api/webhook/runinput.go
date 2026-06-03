@@ -20,6 +20,31 @@ const credentialsPrefix = "user_credentials."
 // input.payload_metadata). Distinct from the static, TRUSTED w.Metadata.
 const metadataPrefix = "run_metadata."
 
+// collectPrefixed returns the projected fields whose target begins with prefix,
+// re-keyed by the name after the prefix. Empty names and empty VALUES are
+// skipped: projectPayload records an absent optional path as "" (and in
+// MissingKeys), and a missing optional field must not surface as a real
+// {name:""} entry — neither a blanked credential nor a phantom metadata key.
+// Shared by the user_credentials.* and run_metadata.* projection passes so the
+// two namespaces can't drift in scan/skip semantics. Returns nil when empty.
+func collectPrefixed(fields map[string]string, prefix string) map[string]string {
+	var out map[string]string
+	for target, val := range fields {
+		if !strings.HasPrefix(target, prefix) {
+			continue
+		}
+		name := strings.TrimPrefix(target, prefix)
+		if name == "" || val == "" {
+			continue
+		}
+		if out == nil {
+			out = make(map[string]string)
+		}
+		out[name] = val
+	}
+	return out
+}
+
 // buildRunInput converts a resolved webhook Def + projected payload into the
 // RunInput the runner consumes. It MIRRORS the scheduler's buildRunInput
 // credential pattern (env-allowlist gate over user_credentials_from_env)
@@ -63,41 +88,28 @@ func buildRunInput(w config.Webhook, proj projectResult, envAllowlist map[string
 		creds[k] = v
 	}
 
-	// 2. Payload overlay: user_credentials.<name> mapping targets win over
-	//    the env-resolved value for the same key. An empty projected value
-	//    (absent path) does NOT clobber an env-resolved credential — a
-	//    missing optional field shouldn't blank out the static fallback.
-	for target, val := range proj.Fields {
-		if !strings.HasPrefix(target, credentialsPrefix) {
-			continue
-		}
-		name := strings.TrimPrefix(target, credentialsPrefix)
-		if name == "" || val == "" {
-			continue
-		}
-		if _, hadEnv := creds[name]; hadEnv && logf != nil {
-			logf("webhook: credential key %q has both env + payload source — payload value wins", name)
+	// 2. Payload overlay: user_credentials.<name> mapping targets win over the
+	//    env-resolved + fork-time value for the same key. collectPrefixed skips
+	//    empty projected values, so an absent optional path does NOT clobber a
+	//    prior source (a missing optional field shouldn't blank the fallback).
+	for name, val := range collectPrefixed(proj.Fields, credentialsPrefix) {
+		if _, had := creds[name]; had && logf != nil {
+			logf("webhook: credential key %q has both a non-payload source + payload source — payload value wins", name)
 		}
 		creds[name] = val
 	}
 
 	// Non-secret payload metadata: payload_mapping targets under
 	// `run_metadata.<name>` are projected from the (signed) inbound body —
-	// attacker-influenceable, so UNTRUSTED. Collected here from the
-	// otherwise-discarded projection targets and fenced downstream.
+	// attacker-influenceable, so UNTRUSTED. Collected from the otherwise-
+	// discarded projection targets (empties skipped, like credentials) and
+	// fenced downstream.
 	var payloadMeta map[string]any
-	for target, val := range proj.Fields {
-		if !strings.HasPrefix(target, metadataPrefix) {
-			continue
+	if m := collectPrefixed(proj.Fields, metadataPrefix); len(m) > 0 {
+		payloadMeta = make(map[string]any, len(m))
+		for name, val := range m {
+			payloadMeta[name] = val
 		}
-		name := strings.TrimPrefix(target, metadataPrefix)
-		if name == "" {
-			continue
-		}
-		if payloadMeta == nil {
-			payloadMeta = make(map[string]any)
-		}
-		payloadMeta[name] = val
 	}
 
 	goal := proj.Fields["goal"]

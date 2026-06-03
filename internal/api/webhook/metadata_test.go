@@ -31,6 +31,36 @@ func TestBuildRunInput_MetadataTrustedAndPayloadUntrusted(t *testing.T) {
 	}
 }
 
+// TestBuildRunInput_EmptyProjectedValuesSkipped pins that an absent optional
+// body path (projected to "") does NOT surface as a phantom {name:""} entry —
+// neither a blanked credential nor an empty run_metadata key. Fails on the
+// pre-fix run_metadata loop, which lacked the val=="" skip the credentials
+// loop had, so it injected {repo:""} into PayloadMetadata.
+func TestBuildRunInput_EmptyProjectedValuesSkipped(t *testing.T) {
+	w := config.Webhook{
+		Agent:                  "x",
+		UserCredentialsFromEnv: map[string]string{"slack": "SLACK_ENV"},
+	}
+	proj := projectResult{Fields: map[string]string{
+		"run_metadata.repo":      "acme/app",
+		"run_metadata.pr":        "", // absent optional path
+		"user_credentials.slack": "", // absent — must not clobber the env value
+	}}
+	env := map[string]bool{"SLACK_ENV": true}
+	getenv := func(k string) string { return map[string]string{"SLACK_ENV": "env-slack"}[k] }
+	in := buildRunInput(w, proj, env, getenv, nil)
+
+	if _, ok := in.PayloadMetadata["pr"]; ok {
+		t.Errorf("empty run_metadata.pr must be skipped, not injected as \"\": %v", in.PayloadMetadata)
+	}
+	if in.PayloadMetadata["repo"] != "acme/app" {
+		t.Errorf("non-empty run_metadata.repo should still be present: %v", in.PayloadMetadata)
+	}
+	if in.UserCredentials["slack"] != "env-slack" {
+		t.Errorf("empty payload credential must not clobber the env value; got %q", in.UserCredentials["slack"])
+	}
+}
+
 // TestBuildRunInput_UserCredentialsPrecedence pins env < fork-time < payload.
 func TestBuildRunInput_UserCredentialsPrecedence(t *testing.T) {
 	w := config.Webhook{
