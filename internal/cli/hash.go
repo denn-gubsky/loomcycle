@@ -212,6 +212,7 @@ func runHashAgentByName(name, cfgPath string, stdout, stderr io.Writer) int {
 		Name:                  name,
 		Provider:              def.Provider,
 		Model:                 def.Model,
+		Code:                  def.Code,
 		Tier:                  def.Tier,
 		Effort:                def.Effort,
 		MaxTokens:             def.MaxTokens,

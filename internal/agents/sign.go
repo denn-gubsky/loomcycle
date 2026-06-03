@@ -178,6 +178,7 @@ func FromYAMLAgent(a *Agent) AgentContent {
 		Description:           a.Description,
 		Provider:              a.Provider,
 		Model:                 a.Model,
+		CodeBody:              a.Code,
 		Tier:                  a.Tier,
 		Effort:                a.Effort,
 		MaxTokens:             a.MaxTokens,
