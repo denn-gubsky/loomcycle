@@ -1118,7 +1118,11 @@ export interface MCPServerDefRowResponse {
    *  content (create) or identical discovered_tools (rediscover), so no
    *  new version was minted. Absent (undefined) on a real mint. */
   deduplicated?: boolean;
-  /** Only on `rediscover` responses — the number of tools discovered. */
+  /** Number of tools discovered via the upstream's `tools/list`. Present on
+   *  `rediscover` responses and — since loomcycle auto-discovers at ingestion
+   *  — on a fresh `create`/`fork` that ran the handshake. Absent on a
+   *  deduplicated create (the active tool surface was unchanged) and when
+   *  `discover:false` was passed. */
   discovered?: number;
 }
 
@@ -1136,7 +1140,14 @@ export interface EnsureMcpServerOptions {
    *  loomcycle's idempotent create dedup the re-registration. */
   headers?: Record<string, string>;
   description?: string;
-  /** Run a `tools/list` rediscover after registering. Default false. */
+  /** Force a `tools/list` refresh after registering. Default false.
+   *
+   *  You usually do NOT need this: registration auto-discovers the upstream's
+   *  tools at ingestion, so {@link EnsureMcpServerResult.discoveredToolCount}
+   *  is already populated from the `create`. Set this only to force a re-read
+   *  when the upstream's tool surface changed but the registration content
+   *  (url/headers) did not — a plain re-register would dedup and keep the
+   *  cached tools, whereas a rediscover re-runs the handshake. */
   rediscover?: boolean;
 }
 

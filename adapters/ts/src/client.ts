@@ -746,15 +746,21 @@ export class LoomcycleClient {
    *  "register-if-changed" convenience for a consumer that re-registers its
    *  own callback server on every startup.
    *
-   *  Runs `create` (which is content-addressed-idempotent in loomcycle
-   *  ≥ v0.18.0 — a byte-identical re-registration is a no-op, not a new
-   *  version) and, when {@link EnsureMcpServerOptions.rediscover} is set, a
-   *  `tools/list` rediscover (also idempotent on unchanged tools). The
-   *  returned {@link EnsureMcpServerResult.changed} is false when loomcycle
-   *  deduped both — so a stable-content re-register on every boot is a clean
-   *  no-op. Keep `${run.*}` / `${LOOMCYCLE_*}` header placeholders LITERAL
-   *  (don't resolve a per-restart token) or the content varies each boot and
-   *  dedup can't engage. */
+   *  Runs `create`, which is content-addressed-idempotent (a byte-identical
+   *  re-registration is a no-op, not a new version) AND auto-discovers the
+   *  upstream's tools at ingestion — so {@link EnsureMcpServerResult.changed}
+   *  is false on a stable-content re-register, and
+   *  {@link EnsureMcpServerResult.discoveredToolCount} is populated straight
+   *  from the `create` (no separate rediscover needed for the count). On a
+   *  deduplicated re-register the count is absent (the tool surface was
+   *  unchanged), so it reflects only the freshly-discovered case.
+   *
+   *  Pass {@link EnsureMcpServerOptions.rediscover} only to FORCE a refresh
+   *  when the upstream's tools changed but the registration content didn't.
+   *
+   *  Keep `${run.*}` / `${LOOMCYCLE_*}` header placeholders LITERAL (don't
+   *  resolve a per-restart token) or the content varies each boot and dedup
+   *  can't engage. */
   async ensureMcpServer(
     opts: EnsureMcpServerOptions,
     callOpts?: { signal?: AbortSignal },
@@ -770,7 +776,8 @@ export class LoomcycleClient {
     const created = (await this.mcpServerDef(createInput, callOpts)) as MCPServerDefRowResponse;
     let row = created;
     let changed = created.deduplicated !== true;
-    let discoveredToolCount: number | undefined;
+    // create auto-discovers at ingestion → the count is on the create response.
+    let discoveredToolCount = created.discovered;
 
     if (opts.rediscover) {
       const red = (await this.mcpServerDef(
@@ -779,7 +786,7 @@ export class LoomcycleClient {
       )) as MCPServerDefRowResponse;
       row = red;
       if (red.deduplicated !== true) changed = true;
-      discoveredToolCount = red.discovered;
+      if (red.discovered !== undefined) discoveredToolCount = red.discovered;
     }
 
     const result: EnsureMcpServerResult = {

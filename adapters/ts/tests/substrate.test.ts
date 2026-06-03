@@ -485,6 +485,26 @@ describe("ensureMcpServer / mcpServerDefVerify (v0.18.0)", () => {
     expect(body.overlay.headers.Authorization).toContain("${run.credentials.jobs");
   });
 
+  it("auto-discovery: surfaces discoveredToolCount from the create response (no rediscover)", async () => {
+    const { client, fetchMock } = makeClient([
+      jsonResponse({
+        def_id: "mdf_1",
+        name: "jobs",
+        version: 1,
+        retired: false,
+        bootstrapped_from_static: false,
+        created_at: "2026-06-03T00:00:00Z",
+        promoted: true,
+        discovered: 7, // loomcycle auto-discovered at ingestion
+      }),
+    ]);
+    const r = await client.ensureMcpServer({ name: "jobs", url: "http://localhost:3000/api/mcp" });
+    expect(r.changed).toBe(true);
+    expect(r.discoveredToolCount).toBe(7);
+    // Exactly one call — no separate rediscover needed for the count.
+    expect(fetchMock.mock.calls.length).toBe(1);
+  });
+
   it("dedup path: changed=false when create reports deduplicated", async () => {
     const { client } = makeClient([
       jsonResponse({
