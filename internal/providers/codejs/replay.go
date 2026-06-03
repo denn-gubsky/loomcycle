@@ -56,14 +56,31 @@ type replayState struct {
 	frontier *frontierStop     // set when run() reaches an un-recorded call
 	diverged *replayDivergence // set when the replayed sequence mismatches
 
-	// timedOut is set by interruptWatch's budget-timer branch (NOT the
-	// ctx-cancel branch) before it rt.Interrupt(s) the runtime, so
-	// classifyRunErr can attribute a whole-run wall-clock timeout to a
-	// distinct code_agent_timeout class instead of blaming whichever
-	// innocent line the replay happened to be interrupted at. Written on the
-	// interruptWatch goroutine, read on the runtime goroutine → atomic.
-	timedOut atomic.Bool
+	// cause records WHY interruptWatch stopped the runtime — it is the single
+	// authoritative signal for the stop reason, set on the watch goroutine
+	// immediately before rt.Interrupt and read on the runtime goroutine after
+	// run() returns the interrupt error. Both classifyRunErr AND the frontier
+	// check branch on it instead of re-deriving the cause: deriving from
+	// ctx.Err() races the timer (a genuine budget timeout coinciding with a
+	// parent cancel would misreport as cancelled), and a coincident timeout
+	// would otherwise be masked by state.frontier (the run would dispatch one
+	// more tool call past its deadline). atomic — crosses the two goroutines.
+	cause atomic.Int32
 }
+
+// interruptCause enumerates why interruptWatch stopped the runtime. causeNone
+// means the watcher did not fire: run() finished, or was interrupted by a
+// frontier / divergence (both set their own state fields).
+type interruptCause int32
+
+const (
+	causeNone    interruptCause = iota
+	causeCancel                 // ctx cancelled (operator/parent)
+	causeTimeout                // whole-run wall-clock budget elapsed
+)
+
+// interruptCause reads the authoritative stop reason set by interruptWatch.
+func (s *replayState) interruptCause() interruptCause { return interruptCause(s.cause.Load()) }
 
 // emit is the toolEmitter the bindings call for every JS tool invocation.
 // It either fast-forwards a recorded result, or stops at the frontier — both

@@ -199,7 +199,7 @@ func (p *Provider) runTurn(ctx context.Context, out chan providers.Event, span t
 	go p.interruptWatch(ctx, state, stop, budget)
 
 	if _, err := rt.RunProgram(prog); err != nil {
-		out <- errorEvent(p.classifyRunErr(state, ctx, err, "evaluating index.js", total))
+		out <- errorEvent(p.classifyRunErr(state, ctx, state.interruptCause(), err, "evaluating index.js", total))
 		return
 	}
 	runFn, ok := goja.AssertFunction(rt.Get("run"))
@@ -210,15 +210,22 @@ func (p *Provider) runTurn(ctx context.Context, out chan providers.Event, span t
 
 	ret, err := runFn(goja.Undefined(), rt.ToValue(input))
 	if err != nil {
-		// A frontier or divergence Interrupt surfaces here as the error.
-		if state.frontier != nil {
+		// A frontier, divergence, or watcher (timeout/cancel) Interrupt surfaces
+		// here as the error. A watcher interrupt takes PRECEDENCE over a frontier
+		// reached in the same instant: otherwise a run that overran its budget
+		// while reaching its next tool call would dispatch that call (a full
+		// child run for a fan-out orchestrator) past the deadline and report a
+		// normal tool_use, masking the timeout. cause is causeNone unless the
+		// watcher fired, so the normal frontier path is unchanged.
+		cause := state.interruptCause()
+		if cause == causeNone && state.frontier != nil {
 			fr := state.frontier
 			id := fmt.Sprintf("cj-%d-%d", p.counter.Add(1), fr.idx)
 			out <- providers.Event{Type: providers.EventToolCall, ToolUse: &providers.ToolUse{ID: id, Name: fr.name, Input: fr.input}}
 			out <- providers.Event{Type: providers.EventDone, StopReason: "tool_use", Usage: zeroUsage()}
 			return
 		}
-		out <- errorEvent(p.classifyRunErr(state, ctx, err, "run", total))
+		out <- errorEvent(p.classifyRunErr(state, ctx, cause, err, "run", total))
 		return
 	}
 
@@ -229,17 +236,27 @@ func (p *Provider) runTurn(ctx context.Context, out chan providers.Event, span t
 }
 
 // classifyRunErr maps a non-frontier run() error to a code-agent error string.
-// total is the effective configured wall-clock budget (per-run/per-agent
-// override or the global default) — surfaced in the timeout message.
-func (p *Provider) classifyRunErr(state *replayState, ctx context.Context, err error, where string, total time.Duration) string {
+// cause is interruptWatch's authoritative stop reason (causeNone unless the
+// watcher interrupted the runtime); total is the effective configured
+// wall-clock budget (per-run/per-agent override or the global default),
+// surfaced in the timeout message. Divergence is checked first because it is a
+// determinism bug the operator must fix and is more actionable than "it timed
+// out"; the watcher cause is preferred over ctx.Err() so a budget timeout that
+// coincides with a parent cancel is not misreported as a cancellation.
+func (p *Provider) classifyRunErr(state *replayState, ctx context.Context, cause interruptCause, err error, where string, total time.Duration) string {
 	switch {
 	case state.diverged != nil:
 		d := state.diverged
 		return fmt.Sprintf("code_agent_replay_divergence: tool call #%d was %q on a prior turn but %q on replay — non-deterministic control flow; set LOOMCYCLE_CODE_AGENTS_DETERMINISTIC=1 or remove unhooked non-determinism", d.idx, d.expected, d.got)
-	case ctx.Err() != nil:
+	case cause == causeCancel:
 		// Parent/operator cancellation (the ctx.Done branch of interruptWatch).
-		return "code_agent_cancelled: " + ctx.Err().Error()
-	case state.timedOut.Load():
+		// ctx.Err() is non-nil here since that branch only fires after ctx.Done.
+		msg := "canceled"
+		if e := ctx.Err(); e != nil {
+			msg = e.Error()
+		}
+		return "code_agent_cancelled: " + msg
+	case cause == causeTimeout:
 		// Whole-run wall-clock budget elapsed (the timer branch of
 		// interruptWatch). This is NOT a throw at `where` — the replay was
 		// merely interrupted there — so attribute no source line. For a
@@ -266,13 +283,17 @@ func (p *Provider) interruptWatch(ctx context.Context, state *replayState, stop 
 	defer timer.Stop()
 	select {
 	case <-ctx.Done():
+		// Record the cause BEFORE the interrupt so the runtime goroutine sees
+		// it the instant run() returns the interrupt error. Distinct from the
+		// timer branch so a budget timeout is never misreported as a cancel.
+		state.cause.Store(int32(causeCancel))
 		state.rt.Interrupt(ctx.Err())
 	case <-timer.C:
-		// Whole-run wall-clock budget elapsed — flag it BEFORE the interrupt
-		// so classifyRunErr reports code_agent_timeout (not code_agent_threw
-		// at whatever line the replay was interrupted). Distinct from the
-		// ctx.Done() branch above (operator/parent cancellation).
-		state.timedOut.Store(true)
+		// Whole-run wall-clock budget elapsed — record it BEFORE the interrupt
+		// so classifyRunErr reports code_agent_timeout (not code_agent_threw at
+		// whatever line the replay was interrupted, and not a tool_use if the
+		// run reached a frontier in the same instant).
+		state.cause.Store(int32(causeTimeout))
 		state.rt.Interrupt(context.DeadlineExceeded)
 	case <-stop:
 	}
