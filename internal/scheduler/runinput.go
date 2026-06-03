@@ -36,6 +36,7 @@ type scheduleDef struct {
 	UserCredentialsFromEnv map[string]string   `json:"user_credentials_from_env,omitempty"`
 	UserTier               string              `json:"user_tier,omitempty"`
 	OnComplete             []scheduleHook      `json:"on_complete,omitempty"`
+	Metadata               map[string]any      `json:"metadata,omitempty"`
 }
 
 type schedulePromptSeg struct {
@@ -132,5 +133,8 @@ func buildRunInput(def scheduleDef, envAllowlist map[string]bool, logf func(form
 		UserID:          def.UserID,
 		UserTier:        def.UserTier,
 		UserCredentials: creds,
+		// Non-secret, operator-authored → TRUSTED. The scheduler has no
+		// external inbound body, so there is no PayloadMetadata here.
+		Metadata: def.Metadata,
 	}
 }

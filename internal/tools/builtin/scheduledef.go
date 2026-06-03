@@ -823,6 +823,10 @@ type mergedScheduleDef struct {
 	UserCredentials        map[string]string    `json:"user_credentials,omitempty"`
 	UserCredentialsFromEnv map[string]string    `json:"user_credentials_from_env,omitempty"`
 	OnComplete             []mergedScheduleHook `json:"on_complete,omitempty"`
+	// Metadata is NON-SECRET structured metadata passed to the agent as
+	// TRUSTED (def-authored) via RunInput.Metadata. Per-fork (e.g. a repo
+	// per fork) falls out of the overlay. Not for secrets (UserCredentials*).
+	Metadata map[string]any `json:"metadata,omitempty"`
 }
 
 // mergedSchedulePromptSeg mirrors config.ScheduledRunSegment with JSON tags.
@@ -906,6 +910,9 @@ func (d *mergedScheduleDef) applyOverlay(ov mergedScheduleDef) {
 	if ov.OnComplete != nil {
 		d.OnComplete = ov.OnComplete
 	}
+	if ov.Metadata != nil {
+		d.Metadata = ov.Metadata
+	}
 }
 
 func staticToMergedScheduleDef(sr config.ScheduledRun) mergedScheduleDef {
@@ -920,6 +927,7 @@ func staticToMergedScheduleDef(sr config.ScheduledRun) mergedScheduleDef {
 		CatchUpMax:             sr.CatchUpMax,
 		UserID:                 sr.UserID,
 		UserCredentialsFromEnv: sr.UserCredentialsFromEnv,
+		Metadata:               sr.Metadata,
 	}
 	if len(sr.Prompt) > 0 {
 		out.Prompt = make([]mergedSchedulePromptSeg, len(sr.Prompt))

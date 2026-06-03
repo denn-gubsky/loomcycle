@@ -193,6 +193,7 @@ func TestSchedule_DriftDetection(t *testing.T) {
 		"user_tier":                 true,
 		"user_credentials_from_env": true,
 		"on_complete":               true,
+		"metadata":                  true, // non-secret agent metadata (PR 2/2)
 	}
 	have := scheduleJsonTagsOf(reflect.TypeOf(lookup.SubstrateScheduleDef{}))
 	for tag := range want {

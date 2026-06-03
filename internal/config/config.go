@@ -949,6 +949,12 @@ type ScheduledRun struct {
 	// Operator-yaml authoring. Runtime hooks added via the admin HTTP
 	// surface live in the substrate state, not here.
 	OnComplete []ScheduledRunHook `yaml:"on_complete"`
+
+	// Metadata is NON-SECRET structured metadata passed to the agent as
+	// TRUSTED (operator-authored) via RunInput.Metadata. Per-fork metadata
+	// (e.g. a different repo per fork) falls out of the overlay naturally.
+	// Not for secrets — those use UserCredentials / user_credentials_from_env.
+	Metadata map[string]any `yaml:"metadata"`
 }
 
 // ScheduledRunSegment mirrors the loop.PromptSegment wire shape but
@@ -1072,17 +1078,29 @@ type A2AExpectedSkill struct {
 // parity. on_complete reuses ScheduledRunHook — the same hook shape
 // ScheduleDef uses — rather than a parallel type.
 type Webhook struct {
-	Enabled                bool                `json:"enabled,omitempty" yaml:"enabled"`
-	Delivery               string              `json:"delivery,omitempty" yaml:"delivery"`
-	Agent                  string              `json:"agent,omitempty" yaml:"agent"`
-	Channel                string              `json:"channel,omitempty" yaml:"channel"`
-	Auth                   WebhookAuth         `json:"auth,omitempty" yaml:"auth"`
-	RateLimit              WebhookRateLimit    `json:"rate_limit,omitempty" yaml:"rate_limit"`
-	BodySizeLimitBytes     int                 `json:"body_size_limit_bytes,omitempty" yaml:"body_size_limit_bytes"`
-	UserCredentialsFromEnv map[string]string   `json:"user_credentials_from_env,omitempty" yaml:"user_credentials_from_env"`
-	PayloadMapping         map[string]string   `json:"payload_mapping,omitempty" yaml:"payload_mapping"`
-	SyncResponse           WebhookSyncResponse `json:"sync_response,omitempty" yaml:"sync_response"`
-	OnComplete             []ScheduledRunHook  `json:"on_complete,omitempty" yaml:"on_complete"`
+	Enabled                bool              `json:"enabled,omitempty" yaml:"enabled"`
+	Delivery               string            `json:"delivery,omitempty" yaml:"delivery"`
+	Agent                  string            `json:"agent,omitempty" yaml:"agent"`
+	Channel                string            `json:"channel,omitempty" yaml:"channel"`
+	Auth                   WebhookAuth       `json:"auth,omitempty" yaml:"auth"`
+	RateLimit              WebhookRateLimit  `json:"rate_limit,omitempty" yaml:"rate_limit"`
+	BodySizeLimitBytes     int               `json:"body_size_limit_bytes,omitempty" yaml:"body_size_limit_bytes"`
+	UserCredentialsFromEnv map[string]string `json:"user_credentials_from_env,omitempty" yaml:"user_credentials_from_env"`
+	// UserCredentials maps credential KEY → explicit bearer VALUE (RFC F),
+	// parity with ScheduleDef forks. Resolved into the spawned run's
+	// UserCredentials + substituted at the MCP transport. Receiver
+	// precedence: env-resolved < these fork-time values < payload-projected
+	// `user_credentials.<name>` (the live per-delivery token wins). NOTE: a
+	// literal secret here is baked into the signed/content-hashed/snapshotted
+	// def — the weaker posture vs env/payload; prefer those.
+	UserCredentials map[string]string `json:"user_credentials,omitempty" yaml:"user_credentials"`
+	// Metadata is NON-SECRET structured metadata (repo, review policy,
+	// preferred skills, …) passed to the agent as TRUSTED (def-authored) via
+	// RunInput.Metadata. Not for secrets — those use UserCredentials*.
+	Metadata       map[string]any      `json:"metadata,omitempty" yaml:"metadata"`
+	PayloadMapping map[string]string   `json:"payload_mapping,omitempty" yaml:"payload_mapping"`
+	SyncResponse   WebhookSyncResponse `json:"sync_response,omitempty" yaml:"sync_response"`
+	OnComplete     []ScheduledRunHook  `json:"on_complete,omitempty" yaml:"on_complete"`
 }
 
 // WebhookAuth declares how inbound webhook requests are authenticated.

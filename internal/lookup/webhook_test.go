@@ -146,6 +146,8 @@ func TestWebhook_DriftDetection(t *testing.T) {
 		"rate_limit":                true,
 		"body_size_limit_bytes":     true,
 		"user_credentials_from_env": true,
+		"user_credentials":          true, // RFC F fork-time parity (PR 2/2)
+		"metadata":                  true, // non-secret agent metadata (PR 2/2)
 		"payload_mapping":           true,
 		"sync_response":             true,
 		"on_complete":               true,
