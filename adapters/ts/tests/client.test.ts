@@ -135,6 +135,22 @@ describe("runStreaming", () => {
     });
   });
 
+  it("forwards run_timeout_seconds when set, omits it when undefined", async () => {
+    const { client, fetchMock } = makeClient([
+      sseResponse(['event: done\ndata: {"type":"done"}\n\n']),
+      sseResponse(['event: done\ndata: {"type":"done"}\n\n']),
+    ]);
+    for await (const _ of client.runStreaming({
+      agent: "research-batch",
+      segments: [],
+      runTimeoutSeconds: 1800,
+    })) {}
+    expect(JSON.parse(fetchMock.mock.calls[0]![1]!.body as string).run_timeout_seconds).toBe(1800);
+
+    for await (const _ of client.runStreaming({ agent: "x", segments: [] })) {}
+    expect("run_timeout_seconds" in JSON.parse(fetchMock.mock.calls[1]![1]!.body as string)).toBe(false);
+  });
+
   it("forwards metadata when set, omits it when undefined (v0.21.0)", async () => {
     const { client, fetchMock } = makeClient([
       sseResponse(['event: done\ndata: {"type":"done"}\n\n']),

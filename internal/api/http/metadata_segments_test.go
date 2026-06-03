@@ -57,6 +57,19 @@ func TestInjectMetadataSegments_StructuredInputNoop(t *testing.T) {
 	}
 }
 
+// TestPickRunTimeout pins the per-run > per-agent > global precedence.
+func TestPickRunTimeout(t *testing.T) {
+	if got := pickRunTimeout(900, 300); got != 900 {
+		t.Errorf("per-run must win over per-agent; got %d", got)
+	}
+	if got := pickRunTimeout(0, 300); got != 300 {
+		t.Errorf("per-agent applies when no per-run; got %d", got)
+	}
+	if got := pickRunTimeout(0, 0); got != 0 {
+		t.Errorf("neither set ⇒ 0 (provider global default); got %d", got)
+	}
+}
+
 // TestInjectMetadataSegments_EmptyNoop pins that empty maps add no segment.
 func TestInjectMetadataSegments_EmptyNoop(t *testing.T) {
 	base := []loop.PromptSegment{sysSeg("sp"), userSeg("go")}

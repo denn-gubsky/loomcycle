@@ -228,6 +228,14 @@ type RunInput struct {
 	// <run_metadata> untrusted block. Server-populated only; never a wire
 	// field on /v1/runs (a first-party caller's data is trusted → Metadata).
 	PayloadMetadata map[string]any
+
+	// RunTimeoutSeconds is an optional per-run wall-clock budget override for
+	// a code-js agent (the ad-hoc /v1/runs knob). 0 ⇒ inherit the agent's
+	// run_timeout_seconds, else the global default. The server resolves
+	// per-run > per-agent and passes the winner to loop.RunOptions; only the
+	// code-js provider consumes it (LLM runs are bounded by MaxIterations +
+	// provider HTTP timeouts, not this budget).
+	RunTimeoutSeconds int
 }
 
 // RunCallbacks is how the wire surfaces observe the run.

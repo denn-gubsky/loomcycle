@@ -1636,6 +1636,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		CodeBody:               agentDef.Code, // inline code-js body (RFC J); "" → FS fallback
 		Metadata:               in.Metadata,
 		PayloadMetadata:        in.PayloadMetadata,
+		RunTimeoutSeconds:      pickRunTimeout(in.RunTimeoutSeconds, agentDef.RunTimeoutSeconds),
 		UserTier:               in.UserTier,
 		FallbackPolicy:         fbPolicy,
 		ReResolve:              fbReResolve,
@@ -2367,6 +2368,24 @@ type runRequest struct {
 	// Not a secret (safe to log); credentials use user_credentials. Per-call,
 	// not session state — a continuation must re-send it (see RunInput.Metadata).
 	Metadata map[string]any `json:"metadata,omitempty"`
+	// RunTimeoutSeconds is an optional ad-hoc per-run wall-clock budget for a
+	// code-js agent, overriding the agent's run_timeout_seconds and the global
+	// LOOMCYCLE_CODE_AGENTS_RUN_TIMEOUT_SECONDS (precedence: per-run >
+	// per-agent > global). 0 = inherit. Ignored by LLM agents.
+	RunTimeoutSeconds int `json:"run_timeout_seconds,omitempty"`
+}
+
+// pickRunTimeout resolves the effective code-js wall-clock budget override:
+// per-run (the request field) wins over per-agent (AgentDef), else 0 (the
+// provider's global default). A code-js orchestrator that blocks in
+// Agent.parallel_spawn awaiting LLM children needs a longer envelope than the
+// CPU-oriented global default; this lets a single run or a single agent raise
+// it without bumping the global for every code agent.
+func pickRunTimeout(perRun, perAgent int) int {
+	if perRun > 0 {
+		return perRun
+	}
+	return perAgent
 }
 
 // injectMetadataSegments inserts the run's NON-SECRET metadata into the prompt
@@ -2792,6 +2811,7 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		AgentName:              req.Agent,
 		CodeBody:               agentDef.Code, // inline code-js body (RFC J); "" → FS fallback
 		Metadata:               req.Metadata,  // direct /v1/runs caller is first-party → trusted; no payload_metadata
+		RunTimeoutSeconds:      pickRunTimeout(req.RunTimeoutSeconds, agentDef.RunTimeoutSeconds),
 		UserTier:               req.UserTier,
 		FallbackPolicy:         fbPolicy,
 		ReResolve:              fbReResolve,
@@ -2849,6 +2869,9 @@ type messagesRequest struct {
 	// not session state — see RunInput.Metadata): to carry the original run's
 	// metadata into the continuation, re-send it here.
 	Metadata map[string]any `json:"metadata,omitempty"`
+	// RunTimeoutSeconds mirrors runRequest.RunTimeoutSeconds for the
+	// continuation's new run (per-run > per-agent > global). 0 = inherit.
+	RunTimeoutSeconds int `json:"run_timeout_seconds,omitempty"`
 }
 
 func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
@@ -3164,6 +3187,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		AgentName:              sess.Agent,
 		CodeBody:               agentDef.Code, // inline code-js body (RFC J); "" → FS fallback
 		Metadata:               body.Metadata,
+		RunTimeoutSeconds:      pickRunTimeout(body.RunTimeoutSeconds, agentDef.RunTimeoutSeconds),
 		UserTier:               body.UserTier,
 		FallbackPolicy:         fbPolicy,
 		ReResolve:              fbReResolve,
@@ -3773,22 +3797,29 @@ func (s *Server) runSubAgent(ctx context.Context, name string, prompt string, de
 
 	fbPolicy, fbReResolve := s.fallbackForRun(name, parentTier)
 	res, runErr := loop.Run(subCtx, loop.RunOptions{
-		Provider:               provider,
-		Model:                  model,
-		Tools:                  subTools,
-		Dispatcher:             subDispatcher,
-		Segments:               segs,
-		OnEvent:                subEmit,
-		OnHeartbeat:            subHeartbeat,
-		MaxTokens:              def.MaxTokens,     // 0 → driver default
-		MaxIterations:          def.MaxIterations, // 0 → loop default (16)
-		Effort:                 effort,
-		MarkStalled:            s.markStalledFn(providerID, model),
-		MarkRateLimited:        s.markRateLimitedFn(parentTier),
-		ClearStall:             s.clearStallFn(providerID, model),
-		ToolParallelism:        s.cfg.Env.ToolParallelism,
-		AgentName:              name,
-		CodeBody:               def.Code, // inline code-js body (RFC J); "" → FS fallback
+		Provider:        provider,
+		Model:           model,
+		Tools:           subTools,
+		Dispatcher:      subDispatcher,
+		Segments:        segs,
+		OnEvent:         subEmit,
+		OnHeartbeat:     subHeartbeat,
+		MaxTokens:       def.MaxTokens,     // 0 → driver default
+		MaxIterations:   def.MaxIterations, // 0 → loop default (16)
+		Effort:          effort,
+		MarkStalled:     s.markStalledFn(providerID, model),
+		MarkRateLimited: s.markRateLimitedFn(parentTier),
+		ClearStall:      s.clearStallFn(providerID, model),
+		ToolParallelism: s.cfg.Env.ToolParallelism,
+		AgentName:       name,
+		CodeBody:        def.Code, // inline code-js body (RFC J); "" → FS fallback
+		// A code-js sub-agent's wall-clock budget is its OWN per-agent
+		// run_timeout_seconds — a spawn has no ad-hoc per-run knob, so
+		// per-agent is the sole source (== pickRunTimeout(0, def...)). Without
+		// this, the 4th run-creation site falls back to the global default,
+		// dropping the budget for the fan-out orchestrator case the per-agent
+		// override exists to serve.
+		RunTimeoutSeconds:      def.RunTimeoutSeconds,
 		UserTier:               parentTier,
 		FallbackPolicy:         fbPolicy,
 		ReResolve:              fbReResolve,
