@@ -277,6 +277,48 @@ func TestFromOverlay_RoundTripMatchesYAMLAgent(t *testing.T) {
 	}
 }
 
+// TestFromYAMLAgent_CarriesCodeBody pins that the .md/CLI path threads the
+// inline code-js body into the hash. Fails on the pre-fix code, where
+// FromYAMLAgent dropped Agent.Code so the hash never reflected the body.
+func TestFromYAMLAgent_CarriesCodeBody(t *testing.T) {
+	body := `function run(input){ return {final_text:'x'}; }`
+	withCode := Sign(FromYAMLAgent(&Agent{Name: "ca", Provider: "code-js", Code: body}))
+	without := Sign(FromYAMLAgent(&Agent{Name: "ca", Provider: "code-js"}))
+	if withCode == without {
+		t.Fatal("FromYAMLAgent dropped Code — the inline body did not affect the hash")
+	}
+}
+
+// TestFromOverlay_RoundTripMatchesYAMLAgent_WithCode is the 3-way symmetry
+// guarantee for code agents: the SAME inline body reaching the hash via the
+// yaml/.md/CLI path (FromYAMLAgent) vs the substrate-read path (FromOverlay,
+// which json-unmarshals the persisted code_body) MUST hash identically — so
+// `loomcycle hash agent` and the deployed substrate's content_sha256 agree.
+// Fails on the pre-fix code, where FromYAMLAgent omitted CodeBody and the two
+// paths diverged for any code agent. (signFromMergedDef, the third producer,
+// also maps Code→CodeBody, so all three converge on the same AgentContent.)
+func TestFromOverlay_RoundTripMatchesYAMLAgent_WithCode(t *testing.T) {
+	body := `function run(input){ return {final_text:'x'}; }`
+	agent := &Agent{Name: "ca", Provider: "code-js", SystemPrompt: "orchestrate", Code: body}
+	hashFromYAML := Sign(FromYAMLAgent(agent))
+
+	overlay, err := json.Marshal(map[string]any{
+		"name":          "ca",
+		"provider":      "code-js",
+		"system_prompt": "orchestrate",
+		"code_body":     body,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed, _ := FromOverlay(overlay)
+	hashFromOverlay := Sign(parsed)
+
+	if hashFromYAML != hashFromOverlay {
+		t.Errorf("code agent: yaml/CLI path vs substrate-overlay path diverged:\n %s\n %s", hashFromYAML, hashFromOverlay)
+	}
+}
+
 func TestSign_KnownVector(t *testing.T) {
 	// A pin — if anyone changes the canonical encoding, this test
 	// catches the silent break. Update only with intent: bump a

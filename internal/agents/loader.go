@@ -58,9 +58,15 @@ type Agent struct {
 	Description string
 	Provider    string
 	Model       string
-	Tier        string
-	Effort      string
-	MaxTokens   int
+	// Code is the inline code-js orchestrator source (RFC J). Mirrors
+	// config.AgentDef.Code; when set and Provider is "code-js", the runtime
+	// runs this body instead of reading agent_code/<name>/index.js. Carried
+	// here so a .md-discovered code agent and the `hash agent` CLI compute
+	// the SAME content_sha256 as the substrate (FromYAMLAgent → AgentContent).
+	Code      string
+	Tier      string
+	Effort    string
+	MaxTokens int
 	// MaxIterations caps the agent loop at this many provider calls
 	// before terminating with stop_reason="max_iterations". 0 means
 	// use the loop default (16). Set higher for discovery-style
@@ -237,6 +243,7 @@ type frontmatter struct {
 	AllowedTools          []string                   `yaml:"allowed_tools"` // loomcycle's preferred shape
 	Provider              string                     `yaml:"provider"`
 	Model                 string                     `yaml:"model"`
+	Code                  string                     `yaml:"code"` // inline code-js body (RFC J)
 	Tier                  string                     `yaml:"tier"`
 	Effort                string                     `yaml:"effort"`
 	MaxTokens             int                        `yaml:"max_tokens"`
@@ -303,6 +310,7 @@ func parseAgent(raw []byte) (*Agent, error) {
 	a.Description = fm.Description
 	a.Provider = fm.Provider
 	a.Model = fm.Model
+	a.Code = fm.Code
 	a.Tier = fm.Tier
 	a.Effort = fm.Effort
 	a.MaxTokens = fm.MaxTokens

@@ -855,6 +855,55 @@ agents:
 	}
 }
 
+// TestDiscoverAgents_InlineCodeFlowsThroughDiscoveryAndOverride pins that the
+// RFC J inline code-js body threads through both the .md-discovery projection
+// (agentFromDiscovered) and the yaml-override merge (mergeAgentDef). Fails on
+// the pre-fix code, where neither copied Code, so a discovered or
+// yaml-overridden inline body was silently dropped → the agent fell back to a
+// nonexistent agent_code/<name>/index.js.
+func TestDiscoverAgents_InlineCodeFlowsThroughDiscoveryAndOverride(t *testing.T) {
+	tmp := t.TempDir()
+	agentsDir := filepath.Join(tmp, "agents")
+	if err := os.Mkdir(agentsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// "discovered" carries its body purely from the .md frontmatter.
+	writeAgentMD(t, agentsDir, "discovered", `---
+name: discovered
+provider: code-js
+code: "function run(){ return {final_text: 'from-md'}; }"
+---
+`)
+	// "overridden" has a .md body that the yaml override layer replaces.
+	writeAgentMD(t, agentsDir, "overridden", `---
+name: overridden
+provider: code-js
+code: "function run(){ return {final_text: 'from-md'}; }"
+---
+`)
+	yamlPath := filepath.Join(tmp, "c.yaml")
+	if err := os.WriteFile(yamlPath, []byte(`
+defaults: { provider: anthropic, model: claude-sonnet-4-6 }
+agents:
+  overridden:
+    code: "function run(){ return {final_text: 'from-yaml'}; }"
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("LOOMCYCLE_AGENTS_ROOT", agentsDir)
+
+	cfg, err := Load(yamlPath)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := cfg.Agents["discovered"].Code; got != "function run(){ return {final_text: 'from-md'}; }" {
+		t.Errorf("discovered .md inline code not carried: %q", got)
+	}
+	if got := cfg.Agents["overridden"].Code; got != "function run(){ return {final_text: 'from-yaml'}; }" {
+		t.Errorf("yaml override inline code not applied (mergeAgentDef dropped Code): %q", got)
+	}
+}
+
 // TestDiscoverAgents_DiscoveryOnly: AGENTS_ROOT set, yaml has no
 // `agents:` block at all. All agents come from the MDs, validation
 // passes. The deployment shape an operator using "MDs as sole source
