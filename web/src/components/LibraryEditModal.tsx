@@ -110,6 +110,10 @@ export default function LibraryEditModal({
   const [systemPrompt, setSystemPrompt] = useState(
     pickString(forkSource?.definition, "system_prompt"),
   );
+  // RFC J inline code-js body. Shown only when provider is "code-js".
+  const [codeBody, setCodeBody] = useState(
+    pickString(forkSource?.definition, "code_body"),
+  );
   const [allowedTools, setAllowedTools] = useState(
     pickStringArray(forkSource?.definition, "allowed_tools").join(", "),
   );
@@ -227,6 +231,13 @@ export default function LibraryEditModal({
           return `${label} must be a non-negative integer (got "${raw}").`;
         }
       }
+      // A code-js agent's behaviour IS its inline body — refuse an empty
+      // one locally (the substrate would reject it at create too, but a
+      // local check is a clearer message). Only enforced for code-js so
+      // LLM agents are unaffected.
+      if (provider.trim() === "code-js" && !codeBody.trim()) {
+        return "code_body is required for a code-js agent.";
+      }
       // Per-tier model rows: trim + drop empty pairs at submit time;
       // here just refuse partial rows (provider without model or
       // vice versa) so the operator sees the issue locally.
@@ -269,6 +280,10 @@ export default function LibraryEditModal({
       // Omit when empty so the substrate keeps the parent / yaml value
       // instead of overwriting with "".
       if (systemPrompt.trim()) ov.system_prompt = systemPrompt;
+      // code_body: raw source preserved verbatim (whitespace is
+      // hash-significant). Omit when empty so a fork of an LLM agent
+      // doesn't write a "" body.
+      if (codeBody.trim()) ov.code_body = codeBody;
       const tools = parseCommaList(allowedTools);
       if (tools.length > 0) ov.allowed_tools = tools;
       const sk = parseCommaList(agentSkills);
@@ -432,6 +447,8 @@ export default function LibraryEditModal({
             setEffort={setEffort}
             systemPrompt={systemPrompt}
             setSystemPrompt={setSystemPrompt}
+            codeBody={codeBody}
+            setCodeBody={setCodeBody}
             allowedTools={allowedTools}
             setAllowedTools={setAllowedTools}
             agentSkills={agentSkills}
@@ -526,6 +543,8 @@ interface AgentFieldsProps {
   setEffort: (v: string) => void;
   systemPrompt: string;
   setSystemPrompt: (v: string) => void;
+  codeBody: string;
+  setCodeBody: (v: string) => void;
   allowedTools: string;
   setAllowedTools: (v: string) => void;
   agentSkills: string;
@@ -648,6 +667,28 @@ function AgentFields(props: AgentFieldsProps) {
           placeholder="You are a researcher. Follow these rules…"
         />
       </div>
+
+      {props.provider.trim() === "code-js" && (
+        <div className="library-form-row">
+          <label htmlFor="lib-code-body">
+            code body
+            <span className="library-modal-field-hint">
+              {" "}— inline JavaScript orchestrator (RFC J); requires
+              LOOMCYCLE_CODE_AGENTS_ENABLED on the sidecar
+            </span>
+          </label>
+          <textarea
+            id="lib-code-body"
+            className="library-prompt-textarea mono"
+            value={props.codeBody}
+            onChange={(e) => props.setCodeBody(e.target.value)}
+            disabled={props.submitting}
+            rows={14}
+            spellCheck={false}
+            placeholder={"function run(input) {\n  return { final_text: \"…\" };\n}"}
+          />
+        </div>
+      )}
 
       <div className="library-form-row">
         <label htmlFor="lib-allowed-tools">
