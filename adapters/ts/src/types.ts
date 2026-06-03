@@ -195,6 +195,13 @@ export interface RunOptions {
    *  an LLM agent receives it as a trusted prompt block. NOT for secrets —
    *  use {@link RunOptions.userCredentials} for tokens. */
   metadata?: Record<string, unknown>;
+  /** Optional ad-hoc per-run wall-clock budget (seconds) for a CODE-JS agent,
+   *  overriding the agent's `run_timeout_seconds` and the sidecar's global
+   *  default (precedence: per-run > per-agent > global). Use it for a fan-out
+   *  orchestrator that blocks in Agent.parallel_spawn awaiting LLM children —
+   *  its budget spans that wait, so the CPU-oriented default is often too low.
+   *  Ignored by LLM agents. 0 / omitted = inherit. */
+  runTimeoutSeconds?: number;
   /** Opt-in observability: when true, the iterator emits client-
    *  synthesized `{ type: "_meta", meta_subtype: "stream_open" | "stream_close" }`
    *  events around the real event stream. `meta_reason` carries the
@@ -258,6 +265,9 @@ export interface ContinueOptions {
   /** Optional NON-SECRET structured metadata for the new run — see
    *  {@link RunOptions.metadata}. Same shape + trust posture. */
   metadata?: Record<string, unknown>;
+  /** Optional ad-hoc per-run code-js wall-clock budget (seconds) for the
+   *  continuation's new run — see {@link RunOptions.runTimeoutSeconds}. */
+  runTimeoutSeconds?: number;
   /** Opt-in observability: see {@link RunOptions.debug}. Same shape. */
   debug?: boolean;
   signal?: AbortSignal;

@@ -2,6 +2,7 @@ package codejs
 
 import (
 	"encoding/json"
+	"sync/atomic"
 
 	"github.com/dop251/goja"
 
@@ -54,6 +55,14 @@ type replayState struct {
 
 	frontier *frontierStop     // set when run() reaches an un-recorded call
 	diverged *replayDivergence // set when the replayed sequence mismatches
+
+	// timedOut is set by interruptWatch's budget-timer branch (NOT the
+	// ctx-cancel branch) before it rt.Interrupt(s) the runtime, so
+	// classifyRunErr can attribute a whole-run wall-clock timeout to a
+	// distinct code_agent_timeout class instead of blaming whichever
+	// innocent line the replay happened to be interrupted at. Written on the
+	// interruptWatch goroutine, read on the runtime goroutine → atomic.
+	timedOut atomic.Bool
 }
 
 // emit is the toolEmitter the bindings call for every JS tool invocation.

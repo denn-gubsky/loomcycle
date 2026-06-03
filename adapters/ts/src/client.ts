@@ -165,6 +165,7 @@ export class LoomcycleClient {
     if (opts.userCredentials !== undefined) body.user_credentials = opts.userCredentials;
     if (opts.parentContext !== undefined) body.parent_context = opts.parentContext;
     if (opts.metadata !== undefined) body.metadata = opts.metadata;
+    if (opts.runTimeoutSeconds !== undefined) body.run_timeout_seconds = opts.runTimeoutSeconds;
     yield* this.streamSSE("/v1/runs", body, opts.signal, opts.debug);
   }
 
@@ -200,6 +201,7 @@ export class LoomcycleClient {
     if (opts.userCredentials !== undefined) body.user_credentials = opts.userCredentials;
     if (opts.parentContext !== undefined) body.parent_context = opts.parentContext;
     if (opts.metadata !== undefined) body.metadata = opts.metadata;
+    if (opts.runTimeoutSeconds !== undefined) body.run_timeout_seconds = opts.runTimeoutSeconds;
     yield* this.streamSSE(
       `/v1/sessions/${encodeURIComponent(opts.sessionId)}/messages`,
       body,

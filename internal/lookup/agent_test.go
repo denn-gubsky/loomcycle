@@ -220,6 +220,7 @@ func TestAgent_DriftDetection(t *testing.T) {
 		"memory_quota_bytes":      true,
 		"memory_backend":          true,
 		"retry_attempts":          true,
+		"run_timeout_seconds":     true, // RFC J per-agent code-js budget (operational, not hashed)
 	}
 	have := jsonTagsOf(reflect.TypeOf(lookup.SubstrateAgentDef{}))
 	for tag := range want {

@@ -124,6 +124,12 @@ type RunOptions struct {
 	Metadata        map[string]any
 	PayloadMetadata map[string]any
 
+	// RunTimeoutSeconds is the effective per-run/per-agent code-js wall-clock
+	// budget override (per-run wins over per-agent; resolved by the caller).
+	// 0 ⇒ the code-js provider's global default. Stamped onto RunMeta; LLM
+	// drivers ignore it.
+	RunTimeoutSeconds int
+
 	// UserTier is the v0.8.2 user-facing-tier policy name applied
 	// to this run. Informational on the loop side — appears on
 	// store.Run.UserTier + agent-loop log lines so cost/compliance
@@ -596,13 +602,14 @@ func Run(ctx context.Context, opts RunOptions) (RunResult, error) {
 	// turns, so code-js's anchored Date.now() is consistent across replays.
 	runIdent := tools.RunIdentity(ctx)
 	ctx = providers.WithRunMeta(ctx, providers.RunMeta{
-		AgentName:       opts.AgentName,
-		UserID:          runIdent.UserID,
-		RunID:           runIdent.AgentID,
-		StartedAt:       time.Now(),
-		CodeBody:        opts.CodeBody,
-		Metadata:        opts.Metadata,
-		PayloadMetadata: opts.PayloadMetadata,
+		AgentName:         opts.AgentName,
+		UserID:            runIdent.UserID,
+		RunID:             runIdent.AgentID,
+		StartedAt:         time.Now(),
+		CodeBody:          opts.CodeBody,
+		Metadata:          opts.Metadata,
+		PayloadMetadata:   opts.PayloadMetadata,
+		RunTimeoutSeconds: opts.RunTimeoutSeconds,
 	})
 
 	// Log once per Run if the agent declared an effort hint but the

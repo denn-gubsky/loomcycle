@@ -148,9 +148,18 @@ func (p *Provider) Call(ctx context.Context, req providers.Request) (<-chan prov
 	// MaxIterations cap (Capabilities().UnboundedIterations) and rely on the
 	// timeout as the sole bound. Falls back to a flat per-turn RunTimeout when
 	// StartedAt is unstamped (direct, non-loop callers / tests).
-	budget := p.runTimeout
+	// Effective wall-clock budget: a per-run / per-agent run_timeout_seconds
+	// override (resolved server-side, carried on RunMeta) wins over the global
+	// LOOMCYCLE_CODE_AGENTS_RUN_TIMEOUT_SECONDS default — so a fan-out
+	// orchestrator that blocks in Agent.parallel_spawn awaiting LLM children
+	// can have a long envelope without raising the global for every code agent.
+	total := p.runTimeout
+	if meta.RunTimeoutSeconds > 0 {
+		total = time.Duration(meta.RunTimeoutSeconds) * time.Second
+	}
+	budget := total
 	if !meta.StartedAt.IsZero() {
-		budget = time.Until(meta.StartedAt.Add(p.runTimeout))
+		budget = time.Until(meta.StartedAt.Add(total))
 	}
 	// Emit a loomcycle.provider.call span for parity with the real LLM drivers
 	// (which each open one). The synthetic provider makes no HTTP request, so
@@ -163,7 +172,7 @@ func (p *Provider) Call(ctx context.Context, req providers.Request) (<-chan prov
 		Kind:     "synthetic-code",
 		CodeHash: prog.hash,
 	})
-	go p.runTurn(spanCtx, out, span, prog.prog, buildInput(req, meta), extractRecorded(req), toolNames(req), seed, anchorMs, budget)
+	go p.runTurn(spanCtx, out, span, prog.prog, buildInput(req, meta), extractRecorded(req), toolNames(req), seed, anchorMs, budget, total)
 	return out, nil
 }
 
@@ -171,7 +180,7 @@ func (p *Provider) Call(ctx context.Context, req providers.Request) (<-chan prov
 // runtime → harden + hook → bind → run() → emit the turn's outcome → close.
 // The goroutine lives only for the JS execution (µs–ms), never across a
 // dispatch gap.
-func (p *Provider) runTurn(ctx context.Context, out chan providers.Event, span trace.Span, prog *goja.Program, input map[string]any, recorded []toolRecord, allowed []string, seed uint32, anchorMs int64, budget time.Duration) {
+func (p *Provider) runTurn(ctx context.Context, out chan providers.Event, span trace.Span, prog *goja.Program, input map[string]any, recorded []toolRecord, allowed []string, seed uint32, anchorMs int64, budget, total time.Duration) {
 	defer close(out)
 	defer span.End()
 
@@ -187,10 +196,10 @@ func (p *Provider) runTurn(ctx context.Context, out chan providers.Event, span t
 	// is interruptible. Stopped as soon as the turn finishes.
 	stop := make(chan struct{})
 	defer close(stop)
-	go p.interruptWatch(ctx, rt, stop, budget)
+	go p.interruptWatch(ctx, state, stop, budget)
 
 	if _, err := rt.RunProgram(prog); err != nil {
-		out <- errorEvent(p.classifyRunErr(state, ctx, err, "evaluating index.js"))
+		out <- errorEvent(p.classifyRunErr(state, ctx, err, "evaluating index.js", total))
 		return
 	}
 	runFn, ok := goja.AssertFunction(rt.Get("run"))
@@ -209,7 +218,7 @@ func (p *Provider) runTurn(ctx context.Context, out chan providers.Event, span t
 			out <- providers.Event{Type: providers.EventDone, StopReason: "tool_use", Usage: zeroUsage()}
 			return
 		}
-		out <- errorEvent(p.classifyRunErr(state, ctx, err, "run"))
+		out <- errorEvent(p.classifyRunErr(state, ctx, err, "run", total))
 		return
 	}
 
@@ -220,13 +229,24 @@ func (p *Provider) runTurn(ctx context.Context, out chan providers.Event, span t
 }
 
 // classifyRunErr maps a non-frontier run() error to a code-agent error string.
-func (p *Provider) classifyRunErr(state *replayState, ctx context.Context, err error, where string) string {
+// total is the effective configured wall-clock budget (per-run/per-agent
+// override or the global default) — surfaced in the timeout message.
+func (p *Provider) classifyRunErr(state *replayState, ctx context.Context, err error, where string, total time.Duration) string {
 	switch {
 	case state.diverged != nil:
 		d := state.diverged
 		return fmt.Sprintf("code_agent_replay_divergence: tool call #%d was %q on a prior turn but %q on replay — non-deterministic control flow; set LOOMCYCLE_CODE_AGENTS_DETERMINISTIC=1 or remove unhooked non-determinism", d.idx, d.expected, d.got)
 	case ctx.Err() != nil:
+		// Parent/operator cancellation (the ctx.Done branch of interruptWatch).
 		return "code_agent_cancelled: " + ctx.Err().Error()
+	case state.timedOut.Load():
+		// Whole-run wall-clock budget elapsed (the timer branch of
+		// interruptWatch). This is NOT a throw at `where` — the replay was
+		// merely interrupted there — so attribute no source line. For a
+		// fan-out orchestrator this budget spans the time blocked awaiting
+		// Agent.parallel_spawn children, so the CPU-oriented default is often
+		// too low; raise it per-agent (run_timeout_seconds) or per-run.
+		return fmt.Sprintf("code_agent_timeout: run exceeded its %s wall-clock budget (raise run_timeout_seconds per-agent / per-run, or LOOMCYCLE_CODE_AGENTS_RUN_TIMEOUT_SECONDS globally; the budget includes time blocked in Agent.parallel_spawn awaiting children)", total)
 	default:
 		return fmt.Sprintf("code_agent_threw: %s: %s", where, err)
 	}
@@ -237,7 +257,7 @@ func (p *Provider) classifyRunErr(state *replayState, ctx context.Context, err e
 // closed). budget is the WHOLE RUN's remaining wall-clock (see Call), so the
 // last turn to cross the run deadline is interrupted — the run total can't
 // exceed RunTimeout even with the loop's iteration cap disabled.
-func (p *Provider) interruptWatch(ctx context.Context, rt *goja.Runtime, stop <-chan struct{}, budget time.Duration) {
+func (p *Provider) interruptWatch(ctx context.Context, state *replayState, stop <-chan struct{}, budget time.Duration) {
 	if budget <= 0 {
 		// Run already over its total budget — interrupt this turn at once.
 		budget = time.Millisecond
@@ -246,9 +266,14 @@ func (p *Provider) interruptWatch(ctx context.Context, rt *goja.Runtime, stop <-
 	defer timer.Stop()
 	select {
 	case <-ctx.Done():
-		rt.Interrupt(ctx.Err())
+		state.rt.Interrupt(ctx.Err())
 	case <-timer.C:
-		rt.Interrupt(context.DeadlineExceeded)
+		// Whole-run wall-clock budget elapsed — flag it BEFORE the interrupt
+		// so classifyRunErr reports code_agent_timeout (not code_agent_threw
+		// at whatever line the replay was interrupted). Distinct from the
+		// ctx.Done() branch above (operator/parent cancellation).
+		state.timedOut.Store(true)
+		state.rt.Interrupt(context.DeadlineExceeded)
 	case <-stop:
 	}
 }

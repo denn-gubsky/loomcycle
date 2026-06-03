@@ -143,8 +143,11 @@ type SubstrateAgentDef struct {
 	// spawn in parallel via Agent.parallel_spawn. 0 = use runtime
 	// default (DefaultMaxConcurrentChildren = 4). Mirrors the
 	// config.AgentDef yaml field.
-	MaxConcurrentChildren int    `json:"max_concurrent_children,omitempty"`
-	SystemPrompt          string `json:"system_prompt,omitempty"`
+	MaxConcurrentChildren int `json:"max_concurrent_children,omitempty"`
+	// RunTimeoutSeconds mirrors config.AgentDef.RunTimeoutSeconds — the
+	// per-agent code-js wall-clock budget (RFC J). 0 = global default.
+	RunTimeoutSeconds int    `json:"run_timeout_seconds,omitempty"`
+	SystemPrompt      string `json:"system_prompt,omitempty"`
 	// SystemPromptBase carries the pre-skill-bake snapshot when the
 	// substrate write path (commit 3 of this PR) persisted it.
 	// Read-side normalizers fall back to SystemPrompt when this is
@@ -179,6 +182,7 @@ func (s SubstrateAgentDef) ToConfigDef() config.AgentDef {
 		MaxTokens:             s.MaxTokens,
 		MaxIterations:         s.MaxIterations,
 		MaxConcurrentChildren: s.MaxConcurrentChildren,
+		RunTimeoutSeconds:     s.RunTimeoutSeconds,
 		SystemPrompt:          s.SystemPrompt,
 		SystemPromptBase:      s.SystemPromptBase,
 		AllowedTools:          s.AllowedTools,

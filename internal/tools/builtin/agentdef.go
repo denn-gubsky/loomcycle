@@ -717,8 +717,11 @@ type mergedDef struct {
 	// use the runtime default (DefaultMaxConcurrentChildren = 4).
 	// Sequential Agent.spawn calls are unaffected; the cap only
 	// applies to a single parallel_spawn op's `spawns` array.
-	MaxConcurrentChildren int    `json:"max_concurrent_children,omitempty"`
-	SystemPrompt          string `json:"system_prompt,omitempty"`
+	MaxConcurrentChildren int `json:"max_concurrent_children,omitempty"`
+	// RunTimeoutSeconds is the per-agent code-js wall-clock budget (RFC J),
+	// overriding the global default. 0 = global. See config.AgentDef.
+	RunTimeoutSeconds int    `json:"run_timeout_seconds,omitempty"`
+	SystemPrompt      string `json:"system_prompt,omitempty"`
 	// SystemPromptBase is the pre-skill-bake snapshot of SystemPrompt.
 	// Persisted alongside SystemPrompt so the v0.8.22 SkillDef per-run
 	// resolver (`resolveSkillBodiesForRun` in api/http/server.go) can
@@ -776,6 +779,9 @@ func (d *mergedDef) applyOverlay(ov mergedDef) {
 	}
 	if ov.MaxConcurrentChildren != 0 {
 		d.MaxConcurrentChildren = ov.MaxConcurrentChildren
+	}
+	if ov.RunTimeoutSeconds != 0 {
+		d.RunTimeoutSeconds = ov.RunTimeoutSeconds
 	}
 	if ov.SystemPrompt != "" {
 		d.SystemPrompt = ov.SystemPrompt
@@ -843,6 +849,7 @@ func staticToMergedDef(s config.AgentDef) mergedDef {
 		MaxTokens:             s.MaxTokens,
 		MaxIterations:         s.MaxIterations,
 		MaxConcurrentChildren: s.MaxConcurrentChildren,
+		RunTimeoutSeconds:     s.RunTimeoutSeconds,
 		SystemPrompt:          s.SystemPrompt,
 		SystemPromptBase:      s.SystemPromptBase,
 		AllowedTools:          s.AllowedTools,

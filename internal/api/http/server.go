@@ -1636,6 +1636,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		CodeBody:               agentDef.Code, // inline code-js body (RFC J); "" → FS fallback
 		Metadata:               in.Metadata,
 		PayloadMetadata:        in.PayloadMetadata,
+		RunTimeoutSeconds:      pickRunTimeout(in.RunTimeoutSeconds, agentDef.RunTimeoutSeconds),
 		UserTier:               in.UserTier,
 		FallbackPolicy:         fbPolicy,
 		ReResolve:              fbReResolve,
@@ -2366,6 +2367,24 @@ type runRequest struct {
 	// input.metadata, and to an LLM agent as a trusted-text prompt segment.
 	// Not a secret (safe to persist/log); credentials use user_credentials.
 	Metadata map[string]any `json:"metadata,omitempty"`
+	// RunTimeoutSeconds is an optional ad-hoc per-run wall-clock budget for a
+	// code-js agent, overriding the agent's run_timeout_seconds and the global
+	// LOOMCYCLE_CODE_AGENTS_RUN_TIMEOUT_SECONDS (precedence: per-run >
+	// per-agent > global). 0 = inherit. Ignored by LLM agents.
+	RunTimeoutSeconds int `json:"run_timeout_seconds,omitempty"`
+}
+
+// pickRunTimeout resolves the effective code-js wall-clock budget override:
+// per-run (the request field) wins over per-agent (AgentDef), else 0 (the
+// provider's global default). A code-js orchestrator that blocks in
+// Agent.parallel_spawn awaiting LLM children needs a longer envelope than the
+// CPU-oriented global default; this lets a single run or a single agent raise
+// it without bumping the global for every code agent.
+func pickRunTimeout(perRun, perAgent int) int {
+	if perRun > 0 {
+		return perRun
+	}
+	return perAgent
 }
 
 // injectMetadataSegments inserts the run's NON-SECRET metadata into the prompt
@@ -2789,6 +2808,7 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		AgentName:              req.Agent,
 		CodeBody:               agentDef.Code, // inline code-js body (RFC J); "" → FS fallback
 		Metadata:               req.Metadata,  // direct /v1/runs caller is first-party → trusted; no payload_metadata
+		RunTimeoutSeconds:      pickRunTimeout(req.RunTimeoutSeconds, agentDef.RunTimeoutSeconds),
 		UserTier:               req.UserTier,
 		FallbackPolicy:         fbPolicy,
 		ReResolve:              fbReResolve,
@@ -2843,6 +2863,9 @@ type messagesRequest struct {
 	// Metadata mirrors runRequest.Metadata for the continuation path —
 	// optional trusted non-secret blob for the new run this message spawns.
 	Metadata map[string]any `json:"metadata,omitempty"`
+	// RunTimeoutSeconds mirrors runRequest.RunTimeoutSeconds for the
+	// continuation's new run (per-run > per-agent > global). 0 = inherit.
+	RunTimeoutSeconds int `json:"run_timeout_seconds,omitempty"`
 }
 
 func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
@@ -3158,6 +3181,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		AgentName:              sess.Agent,
 		CodeBody:               agentDef.Code, // inline code-js body (RFC J); "" → FS fallback
 		Metadata:               body.Metadata,
+		RunTimeoutSeconds:      pickRunTimeout(body.RunTimeoutSeconds, agentDef.RunTimeoutSeconds),
 		UserTier:               body.UserTier,
 		FallbackPolicy:         fbPolicy,
 		ReResolve:              fbReResolve,

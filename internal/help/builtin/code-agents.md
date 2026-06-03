@@ -195,10 +195,20 @@ tests and snapshot equality.
   time, not a fresh timeout each turn), so the total run cannot exceed it. (A
   very high hard ceiling on turns remains as a pure runaway backstop; reaching
   it means a non-terminating tool-call loop, not a too-small cap.)
-- **Run timeout bounds total wall time.** A CPU-bound JS loop is cut by goja
-  `Interrupt`; a too-slow multi-call run is cut by the same deadline on whatever
-  turn crosses it. Set `LOOMCYCLE_CODE_AGENTS_RUN_TIMEOUT_SECONDS`. The heap
-  limit is best-effort (goja exposes no hard cap).
+- **Run timeout bounds total wall time — including the parallel_spawn wait.**
+  A CPU-bound JS loop is cut by goja `Interrupt`; a too-slow multi-call run is
+  cut by the same deadline on whatever turn crosses it. Crucially the budget is
+  whole-run wall-clock from start and KEEPS TICKING while the orchestrator is
+  blocked in `Agent.parallel_spawn` awaiting children (each child a full LLM run,
+  often 60–180s) — so a fan-out orchestrator's budget must envelope the entire
+  batch, not one child. The global default (`LOOMCYCLE_CODE_AGENTS_RUN_TIMEOUT_
+  SECONDS`, 120s) is CPU-oriented and structurally too low for one; raise it for
+  just the orchestrator via the agent's `run_timeout_seconds` (AgentDef / yaml),
+  or per-call via the `/v1/runs` `run_timeout_seconds` field (precedence:
+  per-run > per-agent > global). Exceeding the budget reports as
+  `code_agent_timeout` (stating the budget, no JS source line) — distinct from
+  `code_agent_threw` (a real exception) and `code_agent_cancelled` (parent
+  cancel). The heap limit is best-effort (goja exposes no hard cap).
 - **ABI versioning.** The JS-side API is versioned on its own semver
   (currently 1.0.0), separate from loomcycle's release vector. Breaking a
   signature is a major bump with a deprecation window.

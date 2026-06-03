@@ -563,6 +563,16 @@ type AgentDef struct {
 	// linear-pipeline agents that don't need parallelism.
 	MaxConcurrentChildren int `yaml:"max_concurrent_children"`
 
+	// RunTimeoutSeconds is the per-agent wall-clock budget for a code-js
+	// agent (RFC J), overriding the global LOOMCYCLE_CODE_AGENTS_RUN_TIMEOUT_
+	// SECONDS. 0 = use the global. A fan-out orchestrator's budget includes
+	// the time it spends blocked in Agent.parallel_spawn awaiting LLM
+	// children, so the CPU-oriented global default (120s) is structurally too
+	// low for one — set this on the orchestrator agent rather than raising the
+	// global for every code agent. Ignored by LLM agents. A /v1/runs request
+	// may override this per-call (per-run > per-agent > global).
+	RunTimeoutSeconds int `yaml:"run_timeout_seconds"`
+
 	// Tier is the model-tier the resolver should pick from when
 	// the agent doesn't declare an explicit Provider+Model pin.
 	// One of "low" / "middle" / "high". Empty = no tier-based
@@ -1476,6 +1486,16 @@ type Env struct {
 	// deadline (the universal cancel path — Appendix A; Interrupt cannot
 	// break a parked tool call). Default 120s. Env:
 	// LOOMCYCLE_CODE_AGENTS_RUN_TIMEOUT_SECONDS.
+	//
+	// This is TOTAL wall-clock from the run's start, and it KEEPS TICKING
+	// while the orchestrator is blocked in Agent.parallel_spawn awaiting its
+	// children — each child is a full LLM run (often 60–180s), so a fan-out
+	// orchestrator's budget must envelope the whole batch, not one child. The
+	// CPU-oriented 120s default is structurally too low for one: raise it
+	// per-orchestrator-agent via AgentDef.RunTimeoutSeconds (yaml
+	// run_timeout_seconds) or per-call via the /v1/runs run_timeout_seconds
+	// field rather than bumping this global for every code agent. Exceeding
+	// the budget surfaces as code_agent_timeout (not a throw at a JS line).
 	CodeAgentsRunTimeout time.Duration
 
 	// ---- v0.8.x process-resource metrics sampler (opt-in) ----
