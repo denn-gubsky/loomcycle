@@ -203,6 +203,24 @@ type RunInput struct {
 	// store.ErrDuplicateIdempotencyKey and RunOnce aborts BEFORE the
 	// agent loop, so the run never double-executes.
 	IdempotencyKey string
+
+	// Metadata is the optional NON-SECRET structured blob a trigger
+	// (WebHook/Schedule def, or a first-party /v1/runs caller) passes to
+	// the agent — repo name, review policy, preferred skills, etc. It is
+	// TRUSTED (operator/def-authored or first-party): delivered to a code-js
+	// agent as input.metadata, and to an LLM agent as a trusted-text prompt
+	// segment. Safe to persist/log — it is NOT credentials (those stay on
+	// UserCredentials, substituted only at the MCP transport).
+	Metadata map[string]any
+
+	// PayloadMetadata is the optional NON-SECRET structured blob projected
+	// from an EXTERNAL trigger body (the webhook receiver maps
+	// `payload_mapping` `run_metadata.*` targets here). It is UNTRUSTED —
+	// attacker-influenceable — so it is fenced: delivered to a code-js agent
+	// as input.payload_metadata, and to an LLM agent inside an
+	// <run_metadata> untrusted block. Server-populated only; never a wire
+	// field on /v1/runs (a first-party caller's data is trusted → Metadata).
+	PayloadMetadata map[string]any
 }
 
 // RunCallbacks is how the wire surfaces observe the run.

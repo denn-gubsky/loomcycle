@@ -188,6 +188,13 @@ export interface RunOptions {
    *  user-initiated request that spawned the whole tree. Not a secret.
    *  Omitted = no tracking context. */
   parentContext?: ParentContext;
+  /** Optional NON-SECRET structured metadata passed to the agent (repo
+   *  name, review policy, preferred skills, …) — symmetric with the
+   *  WebHook/Schedule trigger paths. As a first-party (bearer-authed)
+   *  caller this is TRUSTED: a code-js agent reads it as `input.metadata`;
+   *  an LLM agent receives it as a trusted prompt block. NOT for secrets —
+   *  use {@link RunOptions.userCredentials} for tokens. */
+  metadata?: Record<string, unknown>;
   /** Opt-in observability: when true, the iterator emits client-
    *  synthesized `{ type: "_meta", meta_subtype: "stream_open" | "stream_close" }`
    *  events around the real event stream. `meta_reason` carries the
@@ -248,6 +255,9 @@ export interface ContinueOptions {
    *  {@link RunOptions.parentContext} — same shape; a continuation may
    *  (re)set the lineage for the new run it creates. */
   parentContext?: ParentContext;
+  /** Optional NON-SECRET structured metadata for the new run — see
+   *  {@link RunOptions.metadata}. Same shape + trust posture. */
+  metadata?: Record<string, unknown>;
   /** Opt-in observability: see {@link RunOptions.debug}. Same shape. */
   debug?: boolean;
   signal?: AbortSignal;

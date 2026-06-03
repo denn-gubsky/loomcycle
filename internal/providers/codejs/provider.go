@@ -277,16 +277,30 @@ func hash32(s string) uint32 {
 	return h.Sum32()
 }
 
-// buildInput assembles the JS run(input) argument: the latest user prompt text
-// plus a metadata object. Credentials are deliberately absent (RFC F).
+// buildInput assembles the JS run(input) argument: the latest user prompt text,
+// a trusted `metadata` object, and an untrusted `payload_metadata` object.
+// Credentials are deliberately absent (RFC F) — the JS never sees bearer values.
+//
+// metadata starts from the caller's trusted RunMeta.Metadata, then the
+// reserved keys user_id/agent are written LAST so a caller-supplied blob can
+// never shadow the loop-stamped identity. payload_metadata carries the
+// external-trigger-body projection verbatim (the JS author treats it as
+// untrusted input).
 func buildInput(req providers.Request, meta providers.RunMeta) map[string]any {
-	return map[string]any{
-		"prompt": latestUserText(req),
-		"metadata": map[string]any{
-			"user_id": meta.UserID,
-			"agent":   meta.AgentName,
-		},
+	md := map[string]any{}
+	for k, v := range meta.Metadata {
+		md[k] = v
 	}
+	md["user_id"] = meta.UserID
+	md["agent"] = meta.AgentName
+	out := map[string]any{
+		"prompt":   latestUserText(req),
+		"metadata": md,
+	}
+	if len(meta.PayloadMetadata) > 0 {
+		out["payload_metadata"] = meta.PayloadMetadata
+	}
+	return out
 }
 
 // latestUserText concatenates the text blocks of the most recent user-role
