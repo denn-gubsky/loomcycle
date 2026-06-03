@@ -41,8 +41,12 @@ import type {
   AgentStatus,
   CancelAgentResult,
   ClientOptions,
+  AgentDefOverlay,
+  AgentDefRowResponse,
   ContinueOptions,
   CreateSnapshotOptions,
+  EnsureCodeAgentOptions,
+  EnsureCodeAgentResult,
   EnsureMcpServerOptions,
   EnsureMcpServerResult,
   HealthResponse,
@@ -640,6 +644,42 @@ export class LoomcycleClient {
     opts?: { signal?: AbortSignal },
   ): Promise<SubstrateToolResponse> {
     return postJSON<SubstrateToolResponse>(this.ctx, "/v1/_agentdef", input, opts);
+  }
+
+  /** Register (or refresh) a code-js agent idempotently from an INLINE JS body
+   *  — the typed "ship a code agent with no host filesystem" convenience
+   *  (RFC J), mirror of {@link LoomcycleClient.ensureMcpServer}.
+   *
+   *  Runs `agentDef({op:"create", overlay:{provider:"code-js", code_body, …}})`,
+   *  which is content-addressed-idempotent in loomcycle: a byte-identical
+   *  re-registration is a no-op (`changed:false`), not a new version. This is
+   *  what makes code agents work across container boundaries / pure-cloud —
+   *  the JS no longer has to exist at `agent_code/<name>/index.js` on the
+   *  sidecar's disk.
+   *
+   *  Requires `LOOMCYCLE_CODE_AGENTS_ENABLED=1` on the sidecar — the same
+   *  switch that registers the code-js provider. Without it the create is
+   *  refused (raises {@link SubstrateToolRefusedError}). Keep `${run.*}` /
+   *  `${LOOMCYCLE_*}` placeholders in the body LITERAL so the content stays
+   *  stable and dedup engages on re-register. */
+  async ensureCodeAgent(
+    opts: EnsureCodeAgentOptions,
+    callOpts?: { signal?: AbortSignal },
+  ): Promise<EnsureCodeAgentResult> {
+    const overlay: AgentDefOverlay = { provider: "code-js", code_body: opts.code };
+    if (opts.allowedTools) overlay.allowed_tools = opts.allowedTools;
+    if (opts.tier) overlay.tier = opts.tier;
+    if (opts.model) overlay.model = opts.model;
+    const input: SubstrateToolInput = { op: "create", name: opts.name, overlay };
+    if (opts.description) input.description = opts.description;
+
+    const row = (await this.agentDef(input, callOpts)) as AgentDefRowResponse;
+    return {
+      name: opts.name,
+      defId: row.def_id,
+      version: row.version,
+      changed: row.deduplicated !== true,
+    };
   }
 
   /** Invoke the SkillDef substrate tool over HTTP. Mirror of

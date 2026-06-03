@@ -195,6 +195,10 @@ export type {
   EnsureMcpServerResult,
   MCPServerDefRowResponse,
   MCPServerDefVerifyResult,
+  // Inline code-js agent ingestion (v0.19.0, RFC J)
+  AgentDefOverlay,
+  EnsureCodeAgentOptions,
+  EnsureCodeAgentResult,
   // Library v2 enumeration (v0.10.3)
   LibraryAgentDefinition,
   LibraryEntry,
