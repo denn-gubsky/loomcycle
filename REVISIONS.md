@@ -8,6 +8,165 @@ For pre-v0.4 history (single-tool runtime, library milestone, security patch), s
 
 ---
 
+## What's in v0.21.0
+
+**Headline: a non-secret structured-metadata channel to the agent — with a
+provenance-based trust split — symmetric across all three trigger surfaces, plus
+a code-js wall-clock-budget overhaul.** Until now the only way to hand a run
+structured context (repo name, review policy, PR number, preferred skills) was
+to jam it into the prompt text. v0.21.0 adds a first-class `metadata` channel
+that reaches a direct `/v1/runs` caller, a WebHook delivery, and a Scheduler
+fire identically — and keeps the two trust domains (operator-authored vs
+attacker-influenceable) cleanly separated. Secrets stay on the orthogonal
+`user_credentials` path. Existing deployments upgrade transparently — both new
+fields are `omitempty` and absent-by-default.
+
+### Non-secret metadata channel (#356)
+
+- **Two-field trust model.** `metadata` (operator/def-authored or first-party
+  wire → **trusted**) and `payload_metadata` (projected from an inbound webhook
+  body → **untrusted**, fenced). Provenance decides trust, not a single
+  conservative field.
+- **Dual-agent delivery.** A **code-js** agent receives both structurally as
+  `input.metadata` / `input.payload_metadata` (reserved `user_id`/`agent` keys
+  win, so a caller can't shadow identity). An **LLM** agent receives `metadata`
+  as a trusted-text prompt segment and `payload_metadata` inside a labeled,
+  `<`-escaped `<run_metadata>` untrusted block. Empty maps emit no segment.
+
+### Trigger sourcing + WebhookDef credential parity (#357)
+
+- **WebHook + Scheduler defs gain `metadata`** (yaml `metadata:`), threaded
+  through the merged/substrate/config projection and the 3-way drift tests.
+  A webhook's `payload_mapping` `run_metadata.*` targets — previously resolved
+  then silently discarded — now project into `RunInput.PayloadMetadata`.
+- **WebhookDef fork-time `user_credentials`** map closes the last asymmetry with
+  ScheduleDef (secure domain). Webhook credential precedence:
+  env-resolved → fork-time `user_credentials` → payload-projected (payload wins).
+
+### Metadata review follow-ups (#358)
+
+Connector (gRPC / LoomCycle-MCP) metadata parity; a `MetadataViaInput`
+capability gate so a code-js agent is fed metadata structurally and **not** also
+via prompt segments; per-call documentation of the trust posture.
+
+### code-js run-budget overhaul (#359)
+
+- **`code_agent_timeout` — a distinct error class.** A whole-run wall-clock
+  budget exhaustion was misreported as `code_agent_threw` at whatever innocent
+  JS line the replay happened to be interrupted at. It now classifies as
+  `code_agent_timeout`, stating the budget with **no** source line — separate
+  from `code_agent_cancelled` (parent/operator cancel) and `code_agent_threw`
+  (a real exception). The interrupt cause is recorded authoritatively at
+  interrupt time, so a timeout coinciding with a cancel, or a budget overrun
+  reached at a tool frontier, is no longer mis-attributed.
+- **Per-agent + per-run `run_timeout_seconds` override** (precedence **per-run >
+  per-agent > global**). The budget is **total wall-clock from the run's start
+  and keeps ticking while a fan-out orchestrator is blocked in
+  `Agent.parallel_spawn` awaiting its LLM children** — each child a full run —
+  so the CPU-oriented global default is structurally too low for one. Raise it
+  on just the orchestrator via `AgentDef.run_timeout_seconds` (yaml) or per-call
+  via the `/v1/runs` `run_timeout_seconds` field, instead of bumping the global
+  for every code agent. Sub-agent spawns inherit the per-agent budget.
+
+### CI (#355)
+
+JS GitHub Actions opted into Node 24 (clears the Node-20 deprecation warning).
+
+### TypeScript client (`@loomcycle/client@0.21.0`)
+
+`RunOptions` / `ContinueOptions` gain `metadata` (trusted; `payload_metadata` is
+server-populated only) and `runTimeoutSeconds` (the ad-hoc per-run code-js
+budget). Dual ESM + CJS distribution unchanged.
+
+---
+
+## What's in v0.20.0
+
+**Headline: code agents become fully substrate-native.** A code-js agent's
+JavaScript can now be ingested **inline** through `AgentDef` and run with **no
+host filesystem bind** — and the Web UI can display and edit it. Alongside,
+`MCPServerDef` auto-discovers its tools on ingestion, and two more runtime
+surfaces (static yaml schedules, post-boot substrate tools) reach full
+symmetry with their dynamic counterparts.
+
+### Inline code-js bodies (#349, #354)
+
+- **`AgentDef` carries the JS `code` inline.** A code agent no longer requires
+  an `agent_code/<name>/index.js` on the host — the body travels in the def, so
+  a code agent can be registered (and forked, versioned, lineage-tracked) over
+  the wire with no filesystem footprint. The inline body wins over the
+  filesystem fallback; an empty body preserves the legacy FS path.
+- **`code_body` threaded through every hash path** (`.md` discovery, CLI,
+  merged-def) so it participates in `content_sha256` consistently — the
+  compile cache is keyed by content hash, not agent name.
+
+### Web UI for code-js agents (#351)
+
+The Library view displays and edits code-js agents (the inline body), and
+clarifies lazy-MCP tool status (a server compiling its route on first request
+no longer reads as permanently "skipped").
+
+### MCPServerDef tool auto-discovery (#352, #353)
+
+Tools are auto-discovered when an `MCPServerDef` is ingested (create / fork),
+so a freshly registered server advertises its tools without a separate probe.
+The TS `ensureMcpServer` reads `discoveredToolCount` straight from create.
+
+### Full runtime symmetry (#345, #346, #347, #348)
+
+- **Static yaml schedules fire autonomously** — the same autonomous-run path the
+  dynamic `ScheduleDef` substrate uses.
+- **Post-boot substrate tools advertised per-run**, so a tool registered after
+  boot is offered to a run without a restart.
+- **The lazy MCP resolver routes through the shared `lookup.MCPServer`** (the
+  static-yaml → dynamic-substrate resolution chain every primitive uses), fixing
+  the static-only-map outlier.
+- **Inner `${LOOMCYCLE_*}` expansion at dynamic MCPServerDef create / fork.**
+
+### TypeScript client (`@loomcycle/client@0.20.0`)
+
+`ensureMcpServer` reads `discoveredToolCount` from the create response.
+
+---
+
+## What's in v0.18.0
+
+**Headline: typed, idempotent `MCPServerDef` ingestion — stop version-spam.**
+Registering the same MCP server repeatedly no longer mints a new version each
+time; create is idempotent and re-discovers tools in place. A typed TS
+`ensureMcpServer` / verify flow drives the dedup, dynamically-registered servers
+resolve their tools correctly, and the CLI bootstrap tightens.
+
+### MCPServerDef idempotency (#340, #343)
+
+- **Idempotent create + rediscover (#343)** — re-ingesting an unchanged server
+  definition reuses the existing version instead of spamming a new one.
+- **Private-host allowlist honored at create-time (#340)** — a dynamic
+  MCPServerDef create is checked against the operator's private-host allowlist,
+  not only at call time.
+
+### Dynamic-server tool resolution (#341)
+
+Tools for a **dynamically-registered** MCP server now resolve correctly (the
+lazy resolver had only consulted the static yaml map).
+
+### TS `ensureMcpServer` + verify (#344)
+
+A typed `ensureMcpServer` + `mcpServerDefVerify` MCP dedup flow on the adapter.
+
+### CLI bootstrap + build (#339, #342)
+
+- **`init --with-token` + auto-loaded `auth.env` (#339)** — a tighter first-run
+  bootstrap that provisions a token and loads it without manual env wiring.
+- **`make build` produces `./bin/loomcycle` (#342)**, not a compile-check — a
+  deployable binary every time.
+
+### TypeScript client (`@loomcycle/client@0.18.0`)
+
+`ensureMcpServer` + `mcpServerDefVerify` for the typed MCP dedup flow.
+
+---
+
 ## What's in v0.17.0
 
 **Headline: OSS multi-tenant authorization (RFC L) — backend + Web UI.** The
