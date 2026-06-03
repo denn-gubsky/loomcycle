@@ -5,6 +5,14 @@ on:
     branches: [main]
   pull_request:
 
+# Run JavaScript-based actions (checkout, setup-go, setup-node, …) on
+# Node.js 24. GitHub forces this default on 2026-06-16 and removes Node 20
+# from runners on 2026-09-16; this opt-in clears the Node-20 deprecation
+# warning now, across every action, without per-action major-version bumps.
+# Safe to delete once Node 24 is the runner default.
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
 permissions:
   contents: read
 
