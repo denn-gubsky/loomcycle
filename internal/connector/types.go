@@ -85,6 +85,14 @@ type SpawnRunRequest struct {
 	// persisted on each run row, and echoed on the per-agent report
 	// surfaces. Not a secret. Nil = no context (back-compat).
 	ParentContext *store.ParentContext `json:"parent_context,omitempty"`
+
+	// Metadata is the optional NON-SECRET structured metadata passed to the
+	// agent (repo name, review policy, …) — the same trusted channel the HTTP
+	// /v1/runs `metadata` field feeds, so a gRPC / LoomCycle-MCP spawn_run /
+	// connector caller reaches it too. A code-js agent reads it as
+	// input.metadata; an LLM agent receives it as a trusted prompt block. Not
+	// a secret — credentials use UserCredentials. Nil = none (back-compat).
+	Metadata map[string]any `json:"metadata,omitempty"`
 }
 
 // SpawnRunResult is the final outcome of a SpawnRun call (returned

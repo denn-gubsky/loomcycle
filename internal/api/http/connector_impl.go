@@ -58,6 +58,7 @@ func (s *Server) SpawnRun(ctx context.Context, req connector.SpawnRunRequest) (c
 		UserBearer:      req.UserBearer,
 		UserCredentials: req.UserCredentials, // v1.x RFC F: per-tool named credentials
 		ParentContext:   req.ParentContext,   // v0.12.x: opaque tracking lineage
+		Metadata:        req.Metadata,        // non-secret trusted agent metadata
 	}
 
 	// Capture: the OnRegistered callback gives us the resolved IDs;

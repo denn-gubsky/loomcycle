@@ -9,6 +9,17 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 )
 
+// TestCapabilities_MetadataViaInput pins that code-js advertises structured
+// metadata delivery, so the run-build path suppresses prompt-segment
+// serialization (review #3 — the gate is this capability, not a hardcoded
+// provider id). Fails if the flag regresses to false.
+func TestCapabilities_MetadataViaInput(t *testing.T) {
+	p := newTestProvider(t.TempDir())
+	if !p.Capabilities().MetadataViaInput {
+		t.Error("code-js must advertise MetadataViaInput=true (it reads input.metadata)")
+	}
+}
+
 // TestBuildInput_MergesCallerMetadata pins that the caller's non-secret
 // metadata reaches the JS as input.metadata / input.payload_metadata. Fails on
 // the pre-feature buildInput, which hardcoded metadata to {user_id, agent}.

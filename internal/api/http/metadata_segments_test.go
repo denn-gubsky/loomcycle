@@ -20,7 +20,7 @@ func userSeg(text string) loop.PromptSegment {
 // after the leading system prompt and before the user content.
 func TestInjectMetadataSegments_TrustedAndUntrusted(t *testing.T) {
 	base := []loop.PromptSegment{sysSeg("you are a reviewer"), userSeg("review this")}
-	out := injectMetadataSegments(base, "anthropic",
+	out := injectMetadataSegments(base, false, // LLM: metadataViaInput=false → serialize into segments
 		map[string]any{"policy": "strict"},
 		map[string]any{"repo": "acme/app"},
 	)
@@ -44,22 +44,23 @@ func TestInjectMetadataSegments_TrustedAndUntrusted(t *testing.T) {
 	}
 }
 
-// TestInjectMetadataSegments_CodeJSNoop pins that code-js agents get NOTHING
-// injected (they receive metadata via RunMeta → input.metadata; a user-role
-// block here would shadow the latest-user-text the provider reads as prompt).
-func TestInjectMetadataSegments_CodeJSNoop(t *testing.T) {
+// TestInjectMetadataSegments_StructuredInputNoop pins that a metadataViaInput
+// provider (code-js) gets NOTHING injected — it receives metadata via
+// RunMeta → input.metadata; a user-role block here would shadow the
+// latest-user-text the provider reads as prompt.
+func TestInjectMetadataSegments_StructuredInputNoop(t *testing.T) {
 	base := []loop.PromptSegment{userSeg("go")}
-	out := injectMetadataSegments(base, "code-js",
+	out := injectMetadataSegments(base, true, // metadataViaInput=true (code-js)
 		map[string]any{"policy": "strict"}, map[string]any{"repo": "acme/app"})
 	if len(out) != 1 || out[0].Content[0].Text != "go" {
-		t.Errorf("code-js must be a no-op; got %d segments %+v", len(out), out)
+		t.Errorf("metadataViaInput provider must be a no-op; got %d segments %+v", len(out), out)
 	}
 }
 
 // TestInjectMetadataSegments_EmptyNoop pins that empty maps add no segment.
 func TestInjectMetadataSegments_EmptyNoop(t *testing.T) {
 	base := []loop.PromptSegment{sysSeg("sp"), userSeg("go")}
-	out := injectMetadataSegments(base, "anthropic", nil, nil)
+	out := injectMetadataSegments(base, false, nil, nil)
 	if len(out) != 2 {
 		t.Errorf("empty metadata must add no segment; got %d", len(out))
 	}

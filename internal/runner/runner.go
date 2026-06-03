@@ -209,8 +209,15 @@ type RunInput struct {
 	// the agent — repo name, review policy, preferred skills, etc. It is
 	// TRUSTED (operator/def-authored or first-party): delivered to a code-js
 	// agent as input.metadata, and to an LLM agent as a trusted-text prompt
-	// segment. Safe to persist/log — it is NOT credentials (those stay on
-	// UserCredentials, substituted only at the MCP transport).
+	// segment. Not a secret (safe to log) — credentials stay on
+	// UserCredentials, substituted only at the MCP transport.
+	//
+	// PER-CALL, not session state: like the agent's system prompt (re-derived
+	// from the AgentDef on every call), Metadata is NOT persisted on the run
+	// or session and is NOT replayed on a continuation. A
+	// /v1/sessions/{id}/messages continuation that needs the same metadata
+	// must re-supply it (same as it re-supplies the prompt). This keeps the
+	// channel a per-invocation input rather than sticky session state.
 	Metadata map[string]any
 
 	// PayloadMetadata is the optional NON-SECRET structured blob projected

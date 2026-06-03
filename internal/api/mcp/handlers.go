@@ -210,6 +210,7 @@ func spawnRunStreaming(ctx context.Context, env *handlerEnv, req connector.Spawn
 		UserBearer:      req.UserBearer,
 		UserCredentials: req.UserCredentials, // v1.x RFC F per-tool named credentials
 		ParentContext:   req.ParentContext,   // v0.12.x opaque tracking lineage
+		Metadata:        req.Metadata,        // non-secret trusted agent metadata
 	}
 
 	var (
