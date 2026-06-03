@@ -79,7 +79,9 @@ const mcpServerDefDescription = `Register, fork, promote, retire, rediscover, an
 	`Static yaml mcp_servers: entries remain the operator's stable ground truth; this tool ` +
 	`produces the DERIVED layer of runtime registrations. Transport restricted to http + ` +
 	`streamable-http (stdio stays yaml-only). URL hostname must be in the operator's HTTP host ` +
-	`allowlist. Operations: create, fork, get, list, retire, promote, rediscover, verify.`
+	`allowlist. create/fork auto-discover the upstream's tools (tools/list) at ingestion ` +
+	`(best-effort; opt out with discover:false), so a separate rediscover is only needed to ` +
+	`refresh a changed tool surface. Operations: create, fork, get, list, retire, promote, rediscover, verify.`
 
 const mcpServerDefInputSchema = `{
   "type": "object",
@@ -100,6 +102,7 @@ const mcpServerDefInputSchema = `{
     },
     "description":   {"type": "string"},
     "promote":       {"type": "boolean", "description": "create defaults true, fork defaults false."},
+    "discover":      {"type": "boolean", "description": "create/fork: run the tools/list handshake at ingestion so discovered_tools is populated immediately (default true). Best-effort — a peer that is unreachable at ingestion still registers and self-heals on first call. Set false to register metadata only."},
     "retired":       {"type": "boolean", "description": "Required for retire."},
     "content_sha256":{"type": "string", "description": "Input for op:verify."}
   },
@@ -114,6 +117,7 @@ type mcpServerDefInput struct {
 	Overlay       json.RawMessage `json:"overlay,omitempty"`
 	Description   string          `json:"description,omitempty"`
 	Promote       *bool           `json:"promote,omitempty"`
+	Discover      *bool           `json:"discover,omitempty"`
 	Retired       *bool           `json:"retired,omitempty"`
 	ContentSHA256 string          `json:"content_sha256,omitempty"`
 }
@@ -251,6 +255,17 @@ func (m *MCPServerDef) execCreate(ctx context.Context, in mcpServerDefInput) (to
 		return okJSON(resp)
 	}
 
+	promote := true
+	if in.Promote != nil {
+		promote = *in.Promote
+	}
+	// Automatic discovery-on-ingestion: fold the tools/list handshake into the
+	// create so v1 carries discovered_tools immediately (no separate
+	// rediscover). Best-effort + only when this version becomes active; an
+	// unreachable peer leaves the def metadata-only and self-heals lazily.
+	var discovered int
+	defJSON, discovered = m.discoverOnIngestion(ctx, in.Name, in, promote, &def, defJSON)
+
 	ident := tools.RunIdentity(ctx)
 	row := store.MCPServerDefRow{
 		DefID:            mintMCPServerDefID(),
@@ -265,16 +280,14 @@ func (m *MCPServerDef) execCreate(ctx context.Context, in mcpServerDefInput) (to
 		return errResult(fmt.Sprintf("create: %s", err)), nil
 	}
 
-	promote := true
-	if in.Promote != nil {
-		promote = *in.Promote
-	}
 	if promote {
 		if err := m.promoteAndWireRegistry(ctx, created, ident.AgentID); err != nil {
 			return errResult(fmt.Sprintf("create: promote: %s", err)), nil
 		}
 	}
-	return okJSON(mcpServerDefRowResponse(created, promote))
+	resp := mcpServerDefRowResponse(created, promote)
+	resp["discovered"] = discovered
+	return okJSON(resp)
 }
 
 // ---- fork ----
@@ -332,6 +345,17 @@ func (m *MCPServerDef) execFork(ctx context.Context, in mcpServerDefInput) (tool
 		return errResult(fmt.Sprintf("fork: description (%d bytes) exceeds max %d", len(in.Description), m.MaxDescriptionBytes)), nil
 	}
 
+	contentSHA := signFromMCPServerOverlay(in.Name, def)
+	promote := false
+	if in.Promote != nil {
+		promote = *in.Promote
+	}
+	// Discover only on a promoted fork: discovery dials by name, which the
+	// pool resolves to the about-to-be-active version's connection params, so
+	// a non-promoted fork (not yet active) can't be dialed meaningfully here.
+	var discovered int
+	defJSON, discovered = m.discoverOnIngestion(ctx, in.Name, in, promote, &def, defJSON)
+
 	ident := tools.RunIdentity(ctx)
 	row := store.MCPServerDefRow{
 		DefID:            mintMCPServerDefID(),
@@ -340,22 +364,20 @@ func (m *MCPServerDef) execFork(ctx context.Context, in mcpServerDefInput) (tool
 		Definition:       defJSON,
 		Description:      in.Description,
 		CreatedByAgentID: ident.AgentID,
-		ContentSHA256:    signFromMCPServerOverlay(in.Name, def),
+		ContentSHA256:    contentSHA,
 	}
 	created, err := m.Store.MCPServerDefCreate(ctx, row)
 	if err != nil {
 		return errResult(fmt.Sprintf("fork: %s", err)), nil
-	}
-	promote := false
-	if in.Promote != nil {
-		promote = *in.Promote
 	}
 	if promote {
 		if err := m.promoteAndWireRegistry(ctx, created, ident.AgentID); err != nil {
 			return errResult(fmt.Sprintf("fork: promote: %s", err)), nil
 		}
 	}
-	return okJSON(mcpServerDefRowResponse(created, promote))
+	resp := mcpServerDefRowResponse(created, promote)
+	resp["discovered"] = discovered
+	return okJSON(resp)
 }
 
 // ---- get / list ----
@@ -460,16 +482,86 @@ func (m *MCPServerDef) promoteAndWireRegistry(ctx context.Context, row store.MCP
 	if err := json.Unmarshal(row.Definition, &ov); err != nil {
 		return fmt.Errorf("definition unmarshal: %w", err)
 	}
-	m.Registry.Set(loommcp.DynamicMCPServerSpec{
-		Name:      row.Name,
-		Transport: ov.Transport,
-		URL:       ov.URL,
-		Headers:   ov.Headers,
-	})
+	m.Registry.Set(specFromOverlay(row.Name, ov))
 	if m.Pool != nil {
 		m.Pool.Evict(row.Name) // existing cached client uses stale metadata; rebuild on next agent call
 	}
 	return nil
+}
+
+// specFromOverlay projects an overlay's connection fields onto the in-memory
+// DynamicMCPServerSpec the pool's caller factory resolves names through.
+func specFromOverlay(name string, ov mcpServerOverlay) loommcp.DynamicMCPServerSpec {
+	return loommcp.DynamicMCPServerSpec{
+		Name:      name,
+		Transport: ov.Transport,
+		URL:       ov.URL,
+		Headers:   ov.Headers,
+	}
+}
+
+// discoverTools runs the upstream's tools/list handshake via the pool and
+// returns the result reshaped as toolDescriptors. The caller MUST have
+// registered name in the registry first (so the pool's caller factory can
+// resolve it). Evict-then-Get forces a fresh handshake. Bounded by a 30s
+// budget so a non-responding peer can't park the goroutine — matches the
+// boot-time MCP-init budget shape. Shared by create/fork (best-effort) and
+// rediscover (fatal on error).
+func (m *MCPServerDef) discoverTools(ctx context.Context, name string) ([]toolDescriptor, error) {
+	if m.Pool == nil {
+		return nil, fmt.Errorf("pool not configured")
+	}
+	m.Pool.Evict(name)
+	hsCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	_, descs, err := m.Pool.Get(hsCtx, name)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]toolDescriptor, 0, len(descs))
+	for _, d := range descs {
+		out = append(out, toolDescriptor{
+			Name:        d.Name,
+			Description: d.Description,
+			InputSchema: d.InputSchema,
+		})
+	}
+	return out, nil
+}
+
+// discoverOnIngestion is the best-effort create/fork discovery pass. When the
+// new version will become active (promote) and discovery isn't opted out, it
+// registers the spec so the pool can dial by name, runs the handshake, and —
+// if the peer is reachable AND the result still fits MaxDefinitionBytes —
+// folds discovered_tools into def and re-marshals. discovered_tools is NOT
+// part of content_sha256, so the dedup hash computed by the caller stays
+// valid. Returns the (possibly updated) defJSON + the discovered count.
+// Never errors: an unreachable peer leaves def untouched (empty tools) and
+// self-heals via lazy registration on first call.
+func (m *MCPServerDef) discoverOnIngestion(ctx context.Context, name string, in mcpServerDefInput, promote bool, def *mcpServerOverlay, defJSON []byte) ([]byte, int) {
+	discover := promote && m.Pool != nil
+	if in.Discover != nil {
+		discover = discover && *in.Discover
+	}
+	if !discover {
+		return defJSON, 0
+	}
+	// Register so pool.Get(name) resolves to this server's connection params.
+	m.Registry.Set(specFromOverlay(name, *def))
+	tools, err := m.discoverTools(ctx, name)
+	if err != nil {
+		return defJSON, 0 // best-effort — keep metadata-only def; lazy/rediscover later.
+	}
+	withTools := *def
+	withTools.DiscoveredTools = tools
+	b, merr := json.Marshal(withTools)
+	if merr != nil || (m.MaxDefinitionBytes > 0 && len(b) > m.MaxDefinitionBytes) {
+		// Tools push the definition past the cap → store metadata-only; the
+		// operator can rediscover with a larger cap if they really need them.
+		return defJSON, 0
+	}
+	*def = withTools
+	return b, len(tools)
 }
 
 // ---- rediscover ----
@@ -486,75 +578,55 @@ func (m *MCPServerDef) execRediscover(ctx context.Context, in mcpServerDefInput)
 		}
 		return errResult(fmt.Sprintf("rediscover: %s", err)), nil
 	}
-	// Force a fresh pool handshake: evict + Get triggers tools/list.
-	if m.Pool != nil {
-		m.Pool.Evict(in.Name)
-		// Bound the handshake — a non-responding upstream would otherwise
-		// park this goroutine forever AND block every subsequent
-		// rediscover on the same name (they queue on e.ready). 30s
-		// matches the boot-time MCP-init budget shape so an operator
-		// who deployed a working server can still rediscover even on
-		// the slowest legitimate handshake path.
-		hsCtx, hsCancel := context.WithTimeout(ctx, 30*time.Second)
-		_, descs, err := m.Pool.Get(hsCtx, in.Name)
-		hsCancel()
-		if err != nil {
-			return errResult(fmt.Sprintf("rediscover: pool.Get: %s", err)), nil
-		}
-		// Reshape descs into the JSON-able toolDescriptor slice + store on a
-		// new row version (fork-from-current; preserves audit history).
-		var ov mcpServerOverlay
-		if err := json.Unmarshal(active.Definition, &ov); err != nil {
-			return errResult(fmt.Sprintf("rediscover: definition unmarshal: %s", err)), nil
-		}
-		oldTools := ov.DiscoveredTools
-		newTools := make([]toolDescriptor, 0, len(descs))
-		for _, d := range descs {
-			newTools = append(newTools, toolDescriptor{
-				Name:        d.Name,
-				Description: d.Description,
-				InputSchema: d.InputSchema,
-			})
-		}
-		// Idempotent rediscover: if the freshly-discovered tools match the
-		// active def's, don't mint a new version — otherwise re-discovery on
-		// every boot version-spams even when the peer's tool surface is
-		// unchanged. content_sha256 excludes discovered_tools, so this is a
-		// direct (order- and JSON-whitespace-insensitive) comparison.
-		if canonicalTools(oldTools) == canonicalTools(newTools) {
-			resp := mcpServerDefRowResponse(active, true)
-			resp["deduplicated"] = true
-			resp["discovered"] = len(descs)
-			return okJSON(resp)
-		}
-		ov.DiscoveredTools = newTools
-		defJSON, _ := json.Marshal(ov)
-		ident := tools.RunIdentity(ctx)
-		row := store.MCPServerDefRow{
-			DefID:            mintMCPServerDefID(),
-			Name:             in.Name,
-			ParentDefID:      active.DefID,
-			Definition:       defJSON,
-			Description:      "rediscovered tools/list",
-			CreatedByAgentID: ident.AgentID,
-			ContentSHA256:    signFromMCPServerOverlay(in.Name, ov),
-		}
-		created, err := m.Store.MCPServerDefCreate(ctx, row)
-		if err != nil {
-			return errResult(fmt.Sprintf("rediscover: persist: %s", err)), nil
-		}
-		if err := m.Store.MCPServerDefSetActive(ctx, in.Name, created.DefID, ident.AgentID); err != nil {
-			return errResult(fmt.Sprintf("rediscover: promote: %s", err)), nil
-		}
-		return okJSON(map[string]any{
-			"def_id":         created.DefID,
-			"name":           in.Name,
-			"version":        created.Version,
-			"discovered":     len(descs),
-			"content_sha256": created.ContentSHA256,
-		})
+	if m.Pool == nil {
+		return errResult("rediscover: pool not configured"), nil
 	}
-	return errResult("rediscover: pool not configured"), nil
+	newTools, err := m.discoverTools(ctx, in.Name)
+	if err != nil {
+		return errResult(fmt.Sprintf("rediscover: pool.Get: %s", err)), nil
+	}
+	// Reshape onto a new row version (fork-from-current; preserves audit history).
+	var ov mcpServerOverlay
+	if err := json.Unmarshal(active.Definition, &ov); err != nil {
+		return errResult(fmt.Sprintf("rediscover: definition unmarshal: %s", err)), nil
+	}
+	// Idempotent rediscover: if the freshly-discovered tools match the active
+	// def's, don't mint a new version — otherwise re-discovery on every boot
+	// version-spams even when the peer's tool surface is unchanged.
+	// content_sha256 excludes discovered_tools, so this is a direct (order- and
+	// JSON-whitespace-insensitive) comparison.
+	if canonicalTools(ov.DiscoveredTools) == canonicalTools(newTools) {
+		resp := mcpServerDefRowResponse(active, true)
+		resp["deduplicated"] = true
+		resp["discovered"] = len(newTools)
+		return okJSON(resp)
+	}
+	ov.DiscoveredTools = newTools
+	defJSON, _ := json.Marshal(ov)
+	ident := tools.RunIdentity(ctx)
+	row := store.MCPServerDefRow{
+		DefID:            mintMCPServerDefID(),
+		Name:             in.Name,
+		ParentDefID:      active.DefID,
+		Definition:       defJSON,
+		Description:      "rediscovered tools/list",
+		CreatedByAgentID: ident.AgentID,
+		ContentSHA256:    signFromMCPServerOverlay(in.Name, ov),
+	}
+	created, err := m.Store.MCPServerDefCreate(ctx, row)
+	if err != nil {
+		return errResult(fmt.Sprintf("rediscover: persist: %s", err)), nil
+	}
+	if err := m.Store.MCPServerDefSetActive(ctx, in.Name, created.DefID, ident.AgentID); err != nil {
+		return errResult(fmt.Sprintf("rediscover: promote: %s", err)), nil
+	}
+	return okJSON(map[string]any{
+		"def_id":         created.DefID,
+		"name":           in.Name,
+		"version":        created.Version,
+		"discovered":     len(newTools),
+		"content_sha256": created.ContentSHA256,
+	})
 }
 
 // ---- verify ----

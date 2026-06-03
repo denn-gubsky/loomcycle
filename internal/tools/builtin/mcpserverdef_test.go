@@ -3,6 +3,7 @@ package builtin
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -300,23 +301,110 @@ func TestMCPServerDefTool_RediscoverNoopOnUnchangedTools(t *testing.T) {
 	)
 	t.Cleanup(tool.Pool.Close)
 
+	// create now auto-discovers (discovery-on-ingestion) → v1 already carries
+	// check_user, so a subsequent rediscover with the SAME surface is a no-op.
 	if r, _ := tool.Execute(ctx, json.RawMessage(`{"op":"create","name":"jobs","overlay":{"transport":"http","url":"`+srv.URL+`"}}`)); r.IsError {
 		t.Fatalf("create: %s", r.Text)
 	}
-	if r, _ := tool.Execute(ctx, json.RawMessage(`{"op":"rediscover","name":"jobs"}`)); r.IsError {
-		t.Fatalf("rediscover#1: %s", r.Text)
-	}
 	r2, _ := tool.Execute(ctx, json.RawMessage(`{"op":"rediscover","name":"jobs"}`))
 	if r2.IsError {
-		t.Fatalf("rediscover#2: %s", r2.Text)
+		t.Fatalf("rediscover: %s", r2.Text)
 	}
 	if decodeResult(t, r2.Text)["deduplicated"] != true {
 		t.Errorf("rediscover with unchanged tools should be a no-op; got %s", r2.Text)
 	}
 	lr, _ := tool.Execute(ctx, json.RawMessage(`{"op":"list","name":"jobs"}`))
 	vs, _ := decodeResult(t, lr.Text)["versions"].([]any)
-	if len(vs) != 2 { // v1 create + v2 first-rediscover; second rediscover adds nothing
-		t.Errorf("unchanged rediscover must not mint a version; got %d (want 2)", len(vs))
+	if len(vs) != 1 { // create auto-discovered v1; the unchanged rediscover adds nothing
+		t.Errorf("auto-discovery + unchanged rediscover must leave 1 version; got %d (want 1)", len(vs))
+	}
+}
+
+// mcpToolPoolFixture wires a fixture's Pool to a fake MCP server exposing one
+// named tool, allowlists 127.0.0.1, and returns the server URL. Shared by the
+// discovery-on-ingestion tests.
+func mcpToolPoolFixture(t *testing.T, tool *MCPServerDef, toolName string) string {
+	t.Helper()
+	srv := mcptest.NewServer(t, mcptest.WithToolName(toolName))
+	tool.Cfg.Env.HTTPHostAllowlist = append(tool.Cfg.Env.HTTPHostAllowlist, "127.0.0.1")
+	tool.Pool = loommcp.NewPool(
+		func(name string) (loommcp.Caller, error) { return mcphttp.New(mcphttp.Config{URL: srv.URL}) },
+		func(c loommcp.Caller) {},
+	)
+	t.Cleanup(tool.Pool.Close)
+	return srv.URL
+}
+
+// TestMCPServerDefTool_CreateAutoDiscoversTools pins discovery-on-ingestion:
+// a create against a reachable peer populates discovered_tools in v1 itself —
+// no separate rediscover. Fails on the pre-feature code, which stored v1 with
+// empty discovered_tools (the UI's "no tools cached" state until rediscover).
+func TestMCPServerDefTool_CreateAutoDiscoversTools(t *testing.T) {
+	tool, ctx, cleanup := mcpServerDefFixture(t)
+	defer cleanup()
+	url := mcpToolPoolFixture(t, tool, "check_user")
+
+	cr, _ := tool.Execute(ctx, json.RawMessage(`{"op":"create","name":"jobs","overlay":{"transport":"http","url":"`+url+`"}}`))
+	if cr.IsError {
+		t.Fatalf("create: %s", cr.Text)
+	}
+	out := decodeResult(t, cr.Text)
+	if out["discovered"] != float64(1) {
+		t.Errorf("create should report discovered=1; got %v", out["discovered"])
+	}
+	defID := out["def_id"].(string)
+	gr, _ := tool.Execute(ctx, json.RawMessage(`{"op":"get","def_id":"`+defID+`"}`))
+	def, _ := decodeResult(t, gr.Text)["definition"].(map[string]any)
+	dt, _ := def["discovered_tools"].([]any)
+	if len(dt) != 1 {
+		t.Fatalf("v1 definition should carry 1 discovered tool; got %v", def["discovered_tools"])
+	}
+	if first, _ := dt[0].(map[string]any); first["name"] != "check_user" {
+		t.Errorf("discovered tool name = %v, want check_user", dt[0])
+	}
+}
+
+// TestMCPServerDefTool_CreateDiscoverOptOut pins discover:false — a metadata-
+// only registration that skips the handshake even with a reachable peer.
+func TestMCPServerDefTool_CreateDiscoverOptOut(t *testing.T) {
+	tool, ctx, cleanup := mcpServerDefFixture(t)
+	defer cleanup()
+	url := mcpToolPoolFixture(t, tool, "check_user")
+
+	cr, _ := tool.Execute(ctx, json.RawMessage(`{"op":"create","name":"jobs","discover":false,"overlay":{"transport":"http","url":"`+url+`"}}`))
+	if cr.IsError {
+		t.Fatalf("create: %s", cr.Text)
+	}
+	out := decodeResult(t, cr.Text)
+	if out["discovered"] != float64(0) {
+		t.Errorf("discover:false should report discovered=0; got %v", out["discovered"])
+	}
+	def, _ := out["definition"].(map[string]any)
+	if dt, ok := def["discovered_tools"]; ok && dt != nil {
+		t.Errorf("discover:false should leave discovered_tools unset; got %v", dt)
+	}
+}
+
+// TestMCPServerDefTool_CreateDiscoveryBestEffortOnUnreachable pins that an
+// unreachable peer does NOT fail the create — it registers metadata-only and
+// self-heals via lazy registration on first call. A caller factory that
+// errors immediately stands in for the dead peer (no 30s timeout).
+func TestMCPServerDefTool_CreateDiscoveryBestEffortOnUnreachable(t *testing.T) {
+	tool, ctx, cleanup := mcpServerDefFixture(t)
+	defer cleanup()
+	tool.Cfg.Env.HTTPHostAllowlist = append(tool.Cfg.Env.HTTPHostAllowlist, "127.0.0.1")
+	tool.Pool = loommcp.NewPool(
+		func(name string) (loommcp.Caller, error) { return nil, fmt.Errorf("connection refused") },
+		func(c loommcp.Caller) {},
+	)
+	t.Cleanup(tool.Pool.Close)
+
+	cr, _ := tool.Execute(ctx, json.RawMessage(`{"op":"create","name":"jobs","overlay":{"transport":"http","url":"http://127.0.0.1:1/mcp"}}`))
+	if cr.IsError {
+		t.Fatalf("unreachable peer must not fail create (best-effort discovery); got %s", cr.Text)
+	}
+	if decodeResult(t, cr.Text)["discovered"] != float64(0) {
+		t.Errorf("unreachable discovery should report discovered=0")
 	}
 }
 
