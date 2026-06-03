@@ -110,6 +110,90 @@ func TestAgentDefTool_ForkInheritsParent(t *testing.T) {
 	}
 }
 
+// ---- RFC J: inline code_body ingestion ----
+
+// Single-quoted JS string so the body embeds cleanly inside the JSON test
+// fixtures below (double quotes would need escaping).
+const validInlineBody = `function run(input){ return { final_text: 'ok' }; }`
+
+// TestAgentDefTool_InlineCodeRefusedWhenCodeJSDisabled pins the gate: with
+// LOOMCYCLE_CODE_AGENTS_ENABLED off (the fixture default), create/fork must
+// refuse a non-empty code_body loudly — persisting a body the runtime can't
+// execute would be a silent footgun. Fails on the pre-feature code, which had
+// no code_body field and would create "codebot" successfully.
+func TestAgentDefTool_InlineCodeRefusedWhenCodeJSDisabled(t *testing.T) {
+	tool, ctx, cleanup := agentDefFixture(t)
+	defer cleanup()
+
+	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"create","name":"codebot","overlay":{"provider":"code-js","code_body":"`+validInlineBody+`"}}`))
+	if !res.IsError {
+		t.Fatalf("inline code_body with code-js disabled should refuse; got %s", res.Text)
+	}
+	if !strings.Contains(res.Text, "code agents are disabled") {
+		t.Errorf("refusal should mention the disabled gate; got %s", res.Text)
+	}
+}
+
+// TestAgentDefTool_InlineCodeRejectsSyntaxError pins authorship-time compile.
+func TestAgentDefTool_InlineCodeRejectsSyntaxError(t *testing.T) {
+	tool, ctx, cleanup := agentDefFixture(t)
+	defer cleanup()
+	tool.Cfg.Env.CodeAgentsEnabled = true
+
+	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"create","name":"codebot","overlay":{"provider":"code-js","code_body":"function run(input){ return {final_text: }"}}`))
+	if !res.IsError {
+		t.Fatalf("syntactically broken code_body should refuse; got %s", res.Text)
+	}
+	if !strings.Contains(res.Text, "does not compile") {
+		t.Errorf("refusal should mention compile failure; got %s", res.Text)
+	}
+}
+
+// TestAgentDefTool_InlineCodeRejectsOversize pins the dedicated byte cap.
+func TestAgentDefTool_InlineCodeRejectsOversize(t *testing.T) {
+	tool, ctx, cleanup := agentDefFixture(t)
+	defer cleanup()
+	tool.Cfg.Env.CodeAgentsEnabled = true
+	tool.MaxCodeBytes = 10 // smaller than validInlineBody
+
+	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"create","name":"codebot","overlay":{"provider":"code-js","code_body":"`+validInlineBody+`"}}`))
+	if !res.IsError {
+		t.Fatalf("oversize code_body should refuse; got %s", res.Text)
+	}
+	if !strings.Contains(res.Text, "exceeds max") {
+		t.Errorf("refusal should mention the byte cap; got %s", res.Text)
+	}
+}
+
+// TestAgentDefTool_InlineCodeCreateAndForkInherits pins the happy path +
+// fork inheritance: a created inline body persists, and forking an INLINE
+// parent carries the body through buildDefinition's parent-JSON unmarshal.
+func TestAgentDefTool_InlineCodeCreateAndForkInherits(t *testing.T) {
+	tool, ctx, cleanup := agentDefFixture(t)
+	defer cleanup()
+	tool.Cfg.Env.CodeAgentsEnabled = true
+
+	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"create","name":"codebot","overlay":{"provider":"code-js","code_body":"`+validInlineBody+`"}}`))
+	if res.IsError {
+		t.Fatalf("create inline code agent: %s", res.Text)
+	}
+	created := decodeResult(t, res.Text)
+	if def, _ := created["definition"].(map[string]any); def["code_body"] != validInlineBody {
+		t.Fatalf("created definition.code_body = %v, want the inline body", def["code_body"])
+	}
+
+	// Fork with no code overlay → must inherit the parent's body.
+	res, _ = tool.Execute(ctx, json.RawMessage(`{"op":"fork","name":"codebot","overlay":{"system_prompt":"forked"}}`))
+	if res.IsError {
+		t.Fatalf("fork inline code agent: %s", res.Text)
+	}
+	forked := decodeResult(t, res.Text)
+	def, _ := forked["definition"].(map[string]any)
+	if def["code_body"] != validInlineBody {
+		t.Errorf("forked definition.code_body = %v, want inherited inline body", def["code_body"])
+	}
+}
+
 func TestAgentDefTool_ForkAllowedToolsCannotWiden(t *testing.T) {
 	tool, ctx, cleanup := agentDefFixture(t)
 	defer cleanup()

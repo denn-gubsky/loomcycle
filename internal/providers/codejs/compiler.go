@@ -21,22 +21,23 @@ type compiled struct {
 	hash string // sha256 hex of the index.js source bytes
 }
 
-// compiler resolves, reads, hashes, and parse-compiles an agent's
-// agent_code/<name>/index.js, caching the result by agent name. goja.Compile
-// parses without executing, so a syntactically broken file is caught here
-// (at AgentDef load via Cache, and again — cached — at first Call) rather
-// than at first scheduled fire.
+// compiler resolves, reads, hashes, and parse-compiles a code-agent's JS —
+// either an inline body (substrate code_body, RFC J) or the filesystem
+// agent_code/<name>/index.js fallback. goja.Compile parses without executing,
+// so a syntactically broken source is caught here (at AgentDef load via Cache,
+// and again — cached — at first Call) rather than at first scheduled fire.
 //
-// The cache is keyed by agent name only. Editing a code-agent's JS without a
-// process restart is NOT picked up (the compiled program is cached for the
-// process lifetime) — operators evolve code-agent JS through the normal
-// version-control + restart / AgentDef-fork path (RFC J "no agent rewrites
-// its own JS" sharp edge). This matches the static-skill bundling posture.
+// The cache is keyed by the source's CONTENT HASH, not the agent name. This is
+// what makes inline code correct under versioning: a new AgentDef version
+// shipping new JS under the same name produces a different hash → compiles
+// fresh, never serving the prior version's program. (As a side effect the old
+// by-name "edit-without-restart-not-picked-up" sharp edge no longer applies to
+// distinct bytes; identical bytes still hit cache by design.)
 type compiler struct {
 	root string
 
 	mu    sync.RWMutex
-	cache map[string]*compiled
+	cache map[string]*compiled // keyed by sha256 hex of the source bytes
 }
 
 func newCompiler(root string) *compiler {
@@ -57,13 +58,6 @@ func (c *compiler) agentFile(name string) string {
 // Both are surfaced at AgentDef load time (so a broken code-agent fails the
 // load, not the first fire) AND defended again here for the direct-Call path.
 func (c *compiler) load(name string) (*compiled, error) {
-	c.mu.RLock()
-	if got, ok := c.cache[name]; ok {
-		c.mu.RUnlock()
-		return got, nil
-	}
-	c.mu.RUnlock()
-
 	if name == "" {
 		return nil, fmt.Errorf("code-agent: empty agent name (no RunMeta on ctx?)")
 	}
@@ -81,26 +75,56 @@ func (c *compiler) load(name string) (*compiled, error) {
 	src, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil, fmt.Errorf("code-agent %q: no index.js at %s", name, path)
+			// Hint at the inline path: a fork of a filesystem code-agent
+			// lands under a new name whose index.js does not exist —
+			// supply a code_body in the fork overlay instead.
+			return nil, fmt.Errorf("code-agent %q: no index.js at %s (a substrate-authored or forked code agent must supply an inline code_body)", name, path)
 		}
 		return nil, fmt.Errorf("code-agent %q: reading %s: %w", name, path, err)
 	}
-	sum := sha256.Sum256(src)
+	return c.compileCached(name, string(src))
+}
+
+// loadSource compiles an inline code-js body (substrate code_body), caching
+// by its content hash exactly like the filesystem path. name is used only for
+// error messages — the cache key is the hash, so two agents with byte-
+// identical bodies share one compiled program and a re-registered identical
+// body is a no-op.
+func (c *compiler) loadSource(name, src string) (*compiled, error) {
+	if src == "" {
+		return nil, fmt.Errorf("code-agent %q: empty inline code_body", name)
+	}
+	return c.compileCached(name, src)
+}
+
+// compileCached is the shared hash → cache → goja.Compile core for both the
+// filesystem and inline paths. Keyed by sha256 of the source bytes.
+func (c *compiler) compileCached(name, src string) (*compiled, error) {
+	sum := sha256.Sum256([]byte(src))
+	key := hex.EncodeToString(sum[:])
+
+	c.mu.RLock()
+	if got, ok := c.cache[key]; ok {
+		c.mu.RUnlock()
+		return got, nil
+	}
+	c.mu.RUnlock()
+
 	// goja.Compile parses without executing — strict mode off matches ES5.1
 	// authoring; the sandbox (sandbox.go) removes eval/Function regardless.
-	prog, err := goja.Compile(path, string(src), false)
+	prog, err := goja.Compile(name, src, false)
 	if err != nil {
-		return nil, fmt.Errorf("code-agent %q: parse %s: %w", name, path, err)
+		return nil, fmt.Errorf("code-agent %q: parse: %w", name, err)
 	}
-	got := &compiled{prog: prog, hash: hex.EncodeToString(sum[:])}
+	got := &compiled{prog: prog, hash: key}
 
 	c.mu.Lock()
 	// Re-check under the write lock: a concurrent loader may have won.
-	if existing, ok := c.cache[name]; ok {
+	if existing, ok := c.cache[key]; ok {
 		c.mu.Unlock()
 		return existing, nil
 	}
-	c.cache[name] = got
+	c.cache[key] = got
 	c.mu.Unlock()
 	return got, nil
 }

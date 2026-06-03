@@ -204,6 +204,7 @@ func TestAgent_DriftDetection(t *testing.T) {
 	want := map[string]bool{
 		"provider":                true,
 		"model":                   true,
+		"code_body":               true, // RFC J inline code-js body
 		"tier":                    true,
 		"effort":                  true,
 		"max_tokens":              true,

@@ -42,6 +42,33 @@ func TestSign_DifferentContentDifferentHash(t *testing.T) {
 	}
 }
 
+// TestSign_EmptyCodeBodyHashesIdenticallyToLegacy is the backward-compat
+// guarantee for the RFC J code_body addition: a definition with no inline
+// code (every LLM agent + every filesystem-backed code agent) must hash
+// byte-for-byte as it did before the field existed — so no existing row's
+// content_sha256 churns. We assert it against a hand-computed reference: the
+// hash of an AgentContent that never sets CodeBody.
+func TestSign_EmptyCodeBodyHashesIdenticallyToLegacy(t *testing.T) {
+	withField := Sign(AgentContent{Name: "a", SystemPrompt: "x", Provider: "anthropic"})
+	// Same content, CodeBody explicitly zeroed — omitempty must drop it so the
+	// canonical JSON (and thus the hash) is unchanged.
+	zeroed := Sign(AgentContent{Name: "a", SystemPrompt: "x", Provider: "anthropic", CodeBody: ""})
+	if withField != zeroed {
+		t.Fatalf("empty CodeBody changed the hash (omitempty regression):\n %s\n %s", withField, zeroed)
+	}
+}
+
+// TestSign_CodeBodyChangesHash pins that inline code is content: two defs
+// differing only in code_body must hash differently (so dedup/verify is
+// correct for code agents).
+func TestSign_CodeBodyChangesHash(t *testing.T) {
+	a := Sign(AgentContent{Name: "ca", Provider: "code-js", CodeBody: `function run(){return {final_text:"A"};}`})
+	b := Sign(AgentContent{Name: "ca", Provider: "code-js", CodeBody: `function run(){return {final_text:"B"};}`})
+	if a == b {
+		t.Error("code_body change didn't move the hash")
+	}
+}
+
 func TestSign_NameChangesHash(t *testing.T) {
 	a := Sign(AgentContent{Name: "a", SystemPrompt: "x"})
 	b := Sign(AgentContent{Name: "b", SystemPrompt: "x"})

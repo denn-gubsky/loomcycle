@@ -37,6 +37,13 @@ type RunMeta struct {
 	// Zero when unstamped (tests / non-loop callers) — the provider then
 	// falls back to a fixed epoch.
 	StartedAt time.Time
+	// CodeBody is the inline code-js orchestrator source resolved from the
+	// agent's AgentDef (substrate/yaml `code_body`, RFC J). Non-empty ⇒ the
+	// code-js provider compiles+runs this body; empty ⇒ it falls back to
+	// agent_code/<AgentName>/index.js. This is the symmetry seam that lets a
+	// code agent run with no host filesystem bind. The loop populates it from
+	// the resolved AgentDef; every LLM driver ignores it.
+	CodeBody string
 }
 
 type ctxKeyRunMeta struct{}

@@ -129,8 +129,12 @@ func Agent(ctx context.Context, s AgentStore, cfg *config.Config, name string) (
 // field set so a future field added to mergedDef without a matching
 // addition here fails the build.
 type SubstrateAgentDef struct {
-	Provider      string `json:"provider,omitempty"`
-	Model         string `json:"model,omitempty"`
+	Provider string `json:"provider,omitempty"`
+	Model    string `json:"model,omitempty"`
+	// Code mirrors config.AgentDef.Code — the inline code-js body (RFC J).
+	// Persisted in the agent_defs definition JSONB; "" = filesystem
+	// fallback. Tag "code_body" matches mergedDef + AgentContent.
+	Code          string `json:"code_body,omitempty"`
 	Tier          string `json:"tier,omitempty"`
 	Effort        string `json:"effort,omitempty"`
 	MaxTokens     int    `json:"max_tokens,omitempty"`
@@ -169,6 +173,7 @@ func (s SubstrateAgentDef) ToConfigDef() config.AgentDef {
 	return config.AgentDef{
 		Provider:              s.Provider,
 		Model:                 s.Model,
+		Code:                  s.Code,
 		Tier:                  s.Tier,
 		Effort:                s.Effort,
 		MaxTokens:             s.MaxTokens,

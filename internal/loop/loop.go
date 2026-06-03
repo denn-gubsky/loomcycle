@@ -108,6 +108,13 @@ type RunOptions struct {
 	// only fires hooks with `agents: ["*"]`.
 	AgentName string
 
+	// CodeBody is the inline code-js orchestrator source (RFC J),
+	// resolved from the agent's AgentDef by the caller. Threaded onto
+	// providers.RunMeta so the code-js provider runs it instead of
+	// reading agent_code/<name>/index.js. Empty for every LLM agent
+	// and for filesystem-backed code agents.
+	CodeBody string
+
 	// UserTier is the v0.8.2 user-facing-tier policy name applied
 	// to this run. Informational on the loop side — appears on
 	// store.Run.UserTier + agent-loop log lines so cost/compliance
@@ -584,6 +591,7 @@ func Run(ctx context.Context, opts RunOptions) (RunResult, error) {
 		UserID:    runIdent.UserID,
 		RunID:     runIdent.AgentID,
 		StartedAt: time.Now(),
+		CodeBody:  opts.CodeBody,
 	})
 
 	// Log once per Run if the agent declared an effort hint but the

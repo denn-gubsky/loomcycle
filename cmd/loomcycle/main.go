@@ -627,6 +627,7 @@ func main() {
 		Cfg:                 cfg,
 		MaxDefinitionBytes:  cfg.Env.AgentDefMaxDefinitionBytes,
 		MaxDescriptionBytes: cfg.Env.AgentDefMaxDescriptionBytes,
+		MaxCodeBytes:        cfg.Env.AgentDefMaxCodeBytes,
 	}
 	allTools = append(allTools, agentDefTool)
 
