@@ -3791,22 +3791,29 @@ func (s *Server) runSubAgent(ctx context.Context, name string, prompt string, de
 
 	fbPolicy, fbReResolve := s.fallbackForRun(name, parentTier)
 	res, runErr := loop.Run(subCtx, loop.RunOptions{
-		Provider:               provider,
-		Model:                  model,
-		Tools:                  subTools,
-		Dispatcher:             subDispatcher,
-		Segments:               segs,
-		OnEvent:                subEmit,
-		OnHeartbeat:            subHeartbeat,
-		MaxTokens:              def.MaxTokens,     // 0 → driver default
-		MaxIterations:          def.MaxIterations, // 0 → loop default (16)
-		Effort:                 effort,
-		MarkStalled:            s.markStalledFn(providerID, model),
-		MarkRateLimited:        s.markRateLimitedFn(parentTier),
-		ClearStall:             s.clearStallFn(providerID, model),
-		ToolParallelism:        s.cfg.Env.ToolParallelism,
-		AgentName:              name,
-		CodeBody:               def.Code, // inline code-js body (RFC J); "" → FS fallback
+		Provider:        provider,
+		Model:           model,
+		Tools:           subTools,
+		Dispatcher:      subDispatcher,
+		Segments:        segs,
+		OnEvent:         subEmit,
+		OnHeartbeat:     subHeartbeat,
+		MaxTokens:       def.MaxTokens,     // 0 → driver default
+		MaxIterations:   def.MaxIterations, // 0 → loop default (16)
+		Effort:          effort,
+		MarkStalled:     s.markStalledFn(providerID, model),
+		MarkRateLimited: s.markRateLimitedFn(parentTier),
+		ClearStall:      s.clearStallFn(providerID, model),
+		ToolParallelism: s.cfg.Env.ToolParallelism,
+		AgentName:       name,
+		CodeBody:        def.Code, // inline code-js body (RFC J); "" → FS fallback
+		// A code-js sub-agent's wall-clock budget is its OWN per-agent
+		// run_timeout_seconds — a spawn has no ad-hoc per-run knob, so
+		// per-agent is the sole source (== pickRunTimeout(0, def...)). Without
+		// this, the 4th run-creation site falls back to the global default,
+		// dropping the budget for the fan-out orchestrator case the per-agent
+		// override exists to serve.
+		RunTimeoutSeconds:      def.RunTimeoutSeconds,
 		UserTier:               parentTier,
 		FallbackPolicy:         fbPolicy,
 		ReResolve:              fbReResolve,
