@@ -135,6 +135,28 @@ describe("runStreaming", () => {
     });
   });
 
+  it("forwards metadata when set, omits it when undefined (v0.21.0)", async () => {
+    const { client, fetchMock } = makeClient([
+      sseResponse(['event: done\ndata: {"type":"done"}\n\n']),
+      sseResponse(['event: done\ndata: {"type":"done"}\n\n']),
+    ]);
+    for await (const _ of client.runStreaming({
+      agent: "reviewer",
+      segments: [],
+      metadata: { repo: "acme/app", policy: "strict", skills: ["go", "security"] },
+    })) {}
+    const withMeta = JSON.parse(fetchMock.mock.calls[0]![1]!.body as string);
+    expect(withMeta.metadata).toEqual({
+      repo: "acme/app",
+      policy: "strict",
+      skills: ["go", "security"],
+    });
+
+    for await (const _ of client.runStreaming({ agent: "reviewer", segments: [] })) {}
+    const noMeta = JSON.parse(fetchMock.mock.calls[1]![1]!.body as string);
+    expect("metadata" in noMeta).toBe(false);
+  });
+
   it("forwards parent_context when set (v0.12.x tracking lineage)", async () => {
     const { client, fetchMock } = makeClient([
       sseResponse(['event: done\ndata: {"type":"done"}\n\n']),

@@ -1621,7 +1621,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		Model:                  model,
 		Tools:                  allowedTools,
 		Dispatcher:             dispatcher,
-		Segments:               segments,
+		Segments:               injectMetadataSegments(segments, providerID, in.Metadata, in.PayloadMetadata),
 		PriorMessages:          priorMessages,
 		OnEvent:                emit,
 		OnHeartbeat:            heartbeat,
@@ -1634,6 +1634,8 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		ToolParallelism:        s.cfg.Env.ToolParallelism,
 		AgentName:              effectiveAgentName,
 		CodeBody:               agentDef.Code, // inline code-js body (RFC J); "" → FS fallback
+		Metadata:               in.Metadata,
+		PayloadMetadata:        in.PayloadMetadata,
 		UserTier:               in.UserTier,
 		FallbackPolicy:         fbPolicy,
 		ReResolve:              fbReResolve,
@@ -2357,6 +2359,64 @@ type runRequest struct {
 	// absent. Not a secret (safe to persist/log/emit). Omitted = no
 	// tracking context (back-compat).
 	ParentContext *store.ParentContext `json:"parent_context,omitempty"`
+	// Metadata is the optional NON-SECRET structured blob passed to the
+	// agent (repo name, review policy, preferred skills, …) — symmetric with
+	// the WebHook/Schedule trigger paths. A first-party /v1/runs caller is
+	// bearer-authed, so this is TRUSTED: delivered to a code-js agent as
+	// input.metadata, and to an LLM agent as a trusted-text prompt segment.
+	// Not a secret (safe to persist/log); credentials use user_credentials.
+	Metadata map[string]any `json:"metadata,omitempty"`
+}
+
+// injectMetadataSegments inserts the run's NON-SECRET metadata into the prompt
+// segments for an LLM agent: the trusted `metadata` as a system-role
+// trusted-text block, and the untrusted `payloadMetadata` (external-trigger
+// projection) as a user-role untrusted-block fenced under kind "run_metadata".
+// Both go AFTER a leading system segment (the agent's system prompt stays
+// first) and before the user content.
+//
+// No-op for a code-js agent (it receives metadata structurally via
+// RunMeta → input.metadata / input.payload_metadata; a user-role untrusted
+// block here would also shadow the latest-user-text the provider reads as
+// input.prompt) and when both maps are empty.
+func injectMetadataSegments(segs []loop.PromptSegment, providerID string, metadata, payloadMetadata map[string]any) []loop.PromptSegment {
+	if providerID == "code-js" {
+		return segs
+	}
+	var inject []loop.PromptSegment
+	if len(metadata) > 0 {
+		if b, err := json.MarshalIndent(metadata, "", "  "); err == nil {
+			inject = append(inject, loop.PromptSegment{
+				Role: "system",
+				Content: []loop.PromptContentBlock{{
+					Type: "trusted-text",
+					Text: "Run metadata (operator-authored, trusted):\n" + string(b),
+				}},
+			})
+		}
+	}
+	if len(payloadMetadata) > 0 {
+		if b, err := json.MarshalIndent(payloadMetadata, "", "  "); err == nil {
+			inject = append(inject, loop.PromptSegment{
+				Role: "user",
+				Content: []loop.PromptContentBlock{{
+					Type: "untrusted-block", Kind: "run_metadata", Text: string(b),
+				}},
+			})
+		}
+	}
+	if len(inject) == 0 {
+		return segs
+	}
+	idx := 0
+	if len(segs) > 0 && segs[0].Role == "system" {
+		idx = 1
+	}
+	out := make([]loop.PromptSegment, 0, len(segs)+len(inject))
+	out = append(out, segs[:idx]...)
+	out = append(out, inject...)
+	out = append(out, segs[idx:]...)
+	return out
 }
 
 func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
@@ -2716,7 +2776,7 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		Model:                  model,
 		Tools:                  allowedTools,
 		Dispatcher:             dispatcher,
-		Segments:               req.Segments,
+		Segments:               injectMetadataSegments(req.Segments, providerID, req.Metadata, nil),
 		OnEvent:                emit,
 		OnHeartbeat:            heartbeat,
 		MaxTokens:              agentDef.MaxTokens,     // 0 → driver default
@@ -2728,6 +2788,7 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		ToolParallelism:        s.cfg.Env.ToolParallelism,
 		AgentName:              req.Agent,
 		CodeBody:               agentDef.Code, // inline code-js body (RFC J); "" → FS fallback
+		Metadata:               req.Metadata,  // direct /v1/runs caller is first-party → trusted; no payload_metadata
 		UserTier:               req.UserTier,
 		FallbackPolicy:         fbPolicy,
 		ReResolve:              fbReResolve,
@@ -2779,6 +2840,9 @@ type messagesRequest struct {
 	// (re)set the opaque tracking lineage for the new run it creates.
 	// Sub-agents spawned from this continuation inherit it identically.
 	ParentContext *store.ParentContext `json:"parent_context,omitempty"`
+	// Metadata mirrors runRequest.Metadata for the continuation path —
+	// optional trusted non-secret blob for the new run this message spawns.
+	Metadata map[string]any `json:"metadata,omitempty"`
 }
 
 func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
@@ -3080,7 +3144,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		Model:                  model,
 		Tools:                  allowedTools,
 		Dispatcher:             dispatcher,
-		Segments:               segments,
+		Segments:               injectMetadataSegments(segments, providerID, body.Metadata, nil),
 		PriorMessages:          priorMessages,
 		OnEvent:                emit,
 		OnHeartbeat:            heartbeat,
@@ -3093,6 +3157,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		ToolParallelism:        s.cfg.Env.ToolParallelism,
 		AgentName:              sess.Agent,
 		CodeBody:               agentDef.Code, // inline code-js body (RFC J); "" → FS fallback
+		Metadata:               body.Metadata,
 		UserTier:               body.UserTier,
 		FallbackPolicy:         fbPolicy,
 		ReResolve:              fbReResolve,

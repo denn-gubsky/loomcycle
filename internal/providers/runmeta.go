@@ -44,6 +44,15 @@ type RunMeta struct {
 	// code agent run with no host filesystem bind. The loop populates it from
 	// the resolved AgentDef; every LLM driver ignores it.
 	CodeBody string
+
+	// Metadata / PayloadMetadata carry the run's NON-SECRET structured
+	// metadata to the code-js provider (it surfaces them as input.metadata /
+	// input.payload_metadata in run(input)). Metadata is TRUSTED (def/wire);
+	// PayloadMetadata is UNTRUSTED (external-trigger-body projection). LLM
+	// drivers ignore both — for those agents the loop serialises the metadata
+	// into prompt segments instead. Credentials remain deliberately ABSENT.
+	Metadata        map[string]any
+	PayloadMetadata map[string]any
 }
 
 type ctxKeyRunMeta struct{}

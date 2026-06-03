@@ -9,6 +9,53 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 )
 
+// TestBuildInput_MergesCallerMetadata pins that the caller's non-secret
+// metadata reaches the JS as input.metadata / input.payload_metadata. Fails on
+// the pre-feature buildInput, which hardcoded metadata to {user_id, agent}.
+func TestBuildInput_MergesCallerMetadata(t *testing.T) {
+	req := providers.Request{Messages: []providers.Message{
+		{Role: "user", Content: []providers.ContentBlock{{Type: "text", Text: "go"}}},
+	}}
+	meta := providers.RunMeta{
+		UserID:          "alice",
+		AgentName:       "reviewer",
+		Metadata:        map[string]any{"repo": "acme/app", "policy": "strict"},
+		PayloadMetadata: map[string]any{"pr": float64(42)},
+	}
+	in := buildInput(req, meta)
+
+	md, _ := in["metadata"].(map[string]any)
+	if md["repo"] != "acme/app" || md["policy"] != "strict" {
+		t.Errorf("trusted metadata not merged into input.metadata: %v", md)
+	}
+	pm, _ := in["payload_metadata"].(map[string]any)
+	if pm["pr"] != float64(42) {
+		t.Errorf("payload metadata not surfaced as input.payload_metadata: %v", in["payload_metadata"])
+	}
+}
+
+// TestBuildInput_ReservedKeysWin pins that a caller cannot shadow the
+// loop-stamped identity keys via metadata.
+func TestBuildInput_ReservedKeysWin(t *testing.T) {
+	meta := providers.RunMeta{
+		UserID:    "alice",
+		AgentName: "reviewer",
+		Metadata:  map[string]any{"user_id": "attacker", "agent": "evil"},
+	}
+	md, _ := buildInput(providers.Request{}, meta)["metadata"].(map[string]any)
+	if md["user_id"] != "alice" || md["agent"] != "reviewer" {
+		t.Errorf("caller metadata shadowed reserved identity keys: %v", md)
+	}
+}
+
+// TestBuildInput_NoPayloadMetadataKeyWhenEmpty keeps input.payload_metadata
+// absent (not an empty object) when no external projection happened.
+func TestBuildInput_NoPayloadMetadataKeyWhenEmpty(t *testing.T) {
+	if _, ok := buildInput(providers.Request{}, providers.RunMeta{})["payload_metadata"]; ok {
+		t.Error("payload_metadata should be absent when empty")
+	}
+}
+
 // runOnce drives a single, tool-free Call with the given RunMeta and returns
 // the final text (or fails on an EventError). Code agents under test here
 // return immediately via `{final_text: ...}`, so one turn suffices.

@@ -115,6 +115,15 @@ type RunOptions struct {
 	// and for filesystem-backed code agents.
 	CodeBody string
 
+	// Metadata / PayloadMetadata are the run's NON-SECRET structured
+	// metadata (repo name, review policy, …). The caller resolves them from
+	// the trigger (WebHook/Schedule def, or a /v1/runs body). Stamped onto
+	// providers.RunMeta for code-js agents; for LLM agents the run-build path
+	// serialises them into prompt segments (trusted-text + untrusted-block).
+	// Never secrets — those stay on the RunIdentity credentials path.
+	Metadata        map[string]any
+	PayloadMetadata map[string]any
+
 	// UserTier is the v0.8.2 user-facing-tier policy name applied
 	// to this run. Informational on the loop side — appears on
 	// store.Run.UserTier + agent-loop log lines so cost/compliance
@@ -587,11 +596,13 @@ func Run(ctx context.Context, opts RunOptions) (RunResult, error) {
 	// turns, so code-js's anchored Date.now() is consistent across replays.
 	runIdent := tools.RunIdentity(ctx)
 	ctx = providers.WithRunMeta(ctx, providers.RunMeta{
-		AgentName: opts.AgentName,
-		UserID:    runIdent.UserID,
-		RunID:     runIdent.AgentID,
-		StartedAt: time.Now(),
-		CodeBody:  opts.CodeBody,
+		AgentName:       opts.AgentName,
+		UserID:          runIdent.UserID,
+		RunID:           runIdent.AgentID,
+		StartedAt:       time.Now(),
+		CodeBody:        opts.CodeBody,
+		Metadata:        opts.Metadata,
+		PayloadMetadata: opts.PayloadMetadata,
 	})
 
 	// Log once per Run if the agent declared an effort hint but the
@@ -1245,6 +1256,7 @@ var allowedUntrustedKinds = map[string]bool{
 	"user_input":    true,
 	"tool_output":   true,
 	"search_result": true,
+	"run_metadata":  true, // non-secret metadata projected from an external trigger body
 }
 
 // FlattenContent is the public version of flattenContent for callers that
