@@ -1621,7 +1621,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		Model:                  model,
 		Tools:                  allowedTools,
 		Dispatcher:             dispatcher,
-		Segments:               injectMetadataSegments(segments, providerID, in.Metadata, in.PayloadMetadata),
+		Segments:               injectMetadataSegments(segments, provider.Capabilities().MetadataViaInput, in.Metadata, in.PayloadMetadata),
 		PriorMessages:          priorMessages,
 		OnEvent:                emit,
 		OnHeartbeat:            heartbeat,
@@ -2364,7 +2364,8 @@ type runRequest struct {
 	// the WebHook/Schedule trigger paths. A first-party /v1/runs caller is
 	// bearer-authed, so this is TRUSTED: delivered to a code-js agent as
 	// input.metadata, and to an LLM agent as a trusted-text prompt segment.
-	// Not a secret (safe to persist/log); credentials use user_credentials.
+	// Not a secret (safe to log); credentials use user_credentials. Per-call,
+	// not session state — a continuation must re-send it (see RunInput.Metadata).
 	Metadata map[string]any `json:"metadata,omitempty"`
 }
 
@@ -2375,12 +2376,14 @@ type runRequest struct {
 // Both go AFTER a leading system segment (the agent's system prompt stays
 // first) and before the user content.
 //
-// No-op for a code-js agent (it receives metadata structurally via
-// RunMeta → input.metadata / input.payload_metadata; a user-role untrusted
-// block here would also shadow the latest-user-text the provider reads as
-// input.prompt) and when both maps are empty.
-func injectMetadataSegments(segs []loop.PromptSegment, providerID string, metadata, payloadMetadata map[string]any) []loop.PromptSegment {
-	if providerID == "code-js" {
+// No-op when metadataViaInput is true — the provider receives metadata
+// structurally via RunMeta → input.metadata / input.payload_metadata (a
+// user-role block here would also shadow the latest-user-text it reads as
+// input.prompt), and when both maps are empty. metadataViaInput is the
+// provider's Capabilities flag (set by code-js), not a hardcoded id, so a
+// future structured-input provider is handled without a special case.
+func injectMetadataSegments(segs []loop.PromptSegment, metadataViaInput bool, metadata, payloadMetadata map[string]any) []loop.PromptSegment {
+	if metadataViaInput {
 		return segs
 	}
 	var inject []loop.PromptSegment
@@ -2776,7 +2779,7 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		Model:                  model,
 		Tools:                  allowedTools,
 		Dispatcher:             dispatcher,
-		Segments:               injectMetadataSegments(req.Segments, providerID, req.Metadata, nil),
+		Segments:               injectMetadataSegments(req.Segments, provider.Capabilities().MetadataViaInput, req.Metadata, nil),
 		OnEvent:                emit,
 		OnHeartbeat:            heartbeat,
 		MaxTokens:              agentDef.MaxTokens,     // 0 → driver default
@@ -2842,6 +2845,9 @@ type messagesRequest struct {
 	ParentContext *store.ParentContext `json:"parent_context,omitempty"`
 	// Metadata mirrors runRequest.Metadata for the continuation path —
 	// optional trusted non-secret blob for the new run this message spawns.
+	// It is NOT inherited from the original run (metadata is a per-call input,
+	// not session state — see RunInput.Metadata): to carry the original run's
+	// metadata into the continuation, re-send it here.
 	Metadata map[string]any `json:"metadata,omitempty"`
 }
 
@@ -3144,7 +3150,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		Model:                  model,
 		Tools:                  allowedTools,
 		Dispatcher:             dispatcher,
-		Segments:               injectMetadataSegments(segments, providerID, body.Metadata, nil),
+		Segments:               injectMetadataSegments(segments, provider.Capabilities().MetadataViaInput, body.Metadata, nil),
 		PriorMessages:          priorMessages,
 		OnEvent:                emit,
 		OnHeartbeat:            heartbeat,

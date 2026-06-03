@@ -193,7 +193,8 @@ export interface RunOptions {
    *  WebHook/Schedule trigger paths. As a first-party (bearer-authed)
    *  caller this is TRUSTED: a code-js agent reads it as `input.metadata`;
    *  an LLM agent receives it as a trusted prompt block. NOT for secrets —
-   *  use {@link RunOptions.userCredentials} for tokens. */
+   *  use {@link RunOptions.userCredentials} for tokens. Per-call, not session
+   *  state: a continuation does not inherit it — re-send on continue(). */
   metadata?: Record<string, unknown>;
   /** Opt-in observability: when true, the iterator emits client-
    *  synthesized `{ type: "_meta", meta_subtype: "stream_open" | "stream_close" }`
@@ -256,7 +257,9 @@ export interface ContinueOptions {
    *  (re)set the lineage for the new run it creates. */
   parentContext?: ParentContext;
   /** Optional NON-SECRET structured metadata for the new run — see
-   *  {@link RunOptions.metadata}. Same shape + trust posture. */
+   *  {@link RunOptions.metadata}. Same shape + trust posture. NOT inherited
+   *  from the original run (metadata is a per-call input, not session state):
+   *  re-send it on the continuation to carry it forward. */
   metadata?: Record<string, unknown>;
   /** Opt-in observability: see {@link RunOptions.debug}. Same shape. */
   debug?: boolean;

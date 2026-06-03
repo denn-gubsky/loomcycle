@@ -86,6 +86,18 @@ type Capabilities struct {
 	// hard ceiling as a pure runaway backstop. False for every LLM driver,
 	// where MaxIterations remains the runaway-tool-use guard.
 	UnboundedIterations bool
+
+	// MetadataViaInput signals that this provider delivers the run's
+	// non-secret metadata to the agent STRUCTURALLY as part of its input
+	// (the code-js provider surfaces it as input.metadata /
+	// input.payload_metadata), so the run-build path must NOT also serialize
+	// metadata into prompt segments — for such a provider a user-role
+	// metadata block would shadow the latest-user-text it reads as the
+	// prompt. False for every LLM driver, where metadata IS delivered via
+	// prompt segments (the only channel an LLM agent has). Set only by the
+	// synthetic code-js provider today; the generalisation is so a future
+	// structured-input provider doesn't have to be special-cased by id.
+	MetadataViaInput bool
 }
 
 // Request is one round-trip to the provider. The loop builds a fresh Request

@@ -86,7 +86,10 @@ func (p *Provider) Capabilities() providers.Capabilities {
 	// SEQUENTIAL tool calls, each a loop turn; the MaxIterations soft-cap is
 	// unusable here. The run is bounded by the run-level wall-clock deadline
 	// (see Call/interruptWatch), not by an iteration count.
-	return providers.Capabilities{Streaming: true, UnboundedIterations: true}
+	// MetadataViaInput: code-js receives run metadata structurally as
+	// input.metadata / input.payload_metadata (see buildInput), so the
+	// run-build path must not also serialize it into prompt segments.
+	return providers.Capabilities{Streaming: true, UnboundedIterations: true, MetadataViaInput: true}
 }
 
 // Probe always succeeds — code-js is in-process, always reachable.
