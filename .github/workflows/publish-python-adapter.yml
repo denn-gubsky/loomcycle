@@ -26,6 +26,13 @@ on:
     tags:
       - "python-v*"
 
+# Run JavaScript-based actions (checkout, setup-python) on Node.js 24. GitHub
+# forces this default 2026-06-16 and removes Node 20 from runners 2026-09-16;
+# this opt-in clears the Node-20 deprecation now without per-action major
+# bumps. Safe to delete once Node 24 is the runner default.
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
 permissions:
   contents: read
   id-token: write
