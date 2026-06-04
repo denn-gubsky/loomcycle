@@ -36,6 +36,12 @@ type DynamicMCPServerSpec struct {
 	Transport string // "http" | "streamable-http"
 	URL       string
 	Headers   map[string]string
+	// TenantID is the RFC N tenant-isolation axis. "" = the shared/
+	// operator/legacy tenant. Entries are keyed by (TenantID, Name) so
+	// two tenants register the same name with distinct URLs without
+	// colliding. Set from the authoritative principal at the write site;
+	// never from the wire.
+	TenantID string
 }
 
 // DynamicRegistry holds runtime-registered MCP server specs. One
@@ -45,71 +51,130 @@ type DynamicMCPServerSpec struct {
 // Empty registry behaves the same as no registry at all — the pool's
 // build callback falls back to the yaml-static map.
 type DynamicRegistry struct {
-	mu      sync.RWMutex
-	entries map[string]DynamicMCPServerSpec
+	mu sync.RWMutex
+	// RFC N: keyed by (tenant, name). Two tenants register the same name
+	// with distinct connection metadata without colliding. The shared/
+	// legacy tenant is the "" tenant key.
+	entries map[regKey]DynamicMCPServerSpec
+}
+
+// regKey is the composite (tenant, name) registry key. RFC N.
+type regKey struct {
+	tenant string
+	name   string
 }
 
 // NewDynamicRegistry returns an empty registry.
 func NewDynamicRegistry() *DynamicRegistry {
-	return &DynamicRegistry{entries: make(map[string]DynamicMCPServerSpec)}
+	return &DynamicRegistry{entries: make(map[regKey]DynamicMCPServerSpec)}
 }
 
-// Set installs (or replaces) the entry for spec.Name. The pool's
-// build callback consults the registry on every cache miss; existing
-// pool entries for the same name continue serving until they crash
-// or are explicitly evicted via PoolEvict (called by the tool's
-// retire / promote-replaces-version paths).
+// Set installs (or replaces) the entry for (spec.TenantID, spec.Name).
+// The pool's build callback consults the registry on every cache miss;
+// existing pool entries for the same (tenant, name) continue serving
+// until they crash or are explicitly evicted via Pool.Evict (called by
+// the tool's retire / promote-replaces-version paths).
 func (r *DynamicRegistry) Set(spec DynamicMCPServerSpec) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.entries[spec.Name] = spec
+	r.entries[regKey{spec.TenantID, spec.Name}] = spec
 }
 
-// Remove evicts the named entry. Returns true if it existed.
+// Remove evicts the (tenantID, name) entry. Returns true if it existed.
 //
 // Removing an entry does NOT close existing pool clients on its own —
-// the substrate-tool layer is responsible for invoking Pool.evict(name)
-// (or the equivalent) to tear down any in-flight client BEFORE
-// removing the registry entry. Otherwise an agent in-flight on the
-// MCP server's tool call continues using the cached pool entry until
-// the underlying transport crashes naturally.
-func (r *DynamicRegistry) Remove(name string) bool {
+// the substrate-tool layer is responsible for invoking Pool.Evict BEFORE
+// removing the registry entry. Otherwise an agent in-flight on the MCP
+// server's tool call continues using the cached pool entry until the
+// underlying transport crashes naturally.
+func (r *DynamicRegistry) Remove(tenantID, name string) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if _, ok := r.entries[name]; !ok {
+	k := regKey{tenantID, name}
+	if _, ok := r.entries[k]; !ok {
 		return false
 	}
-	delete(r.entries, name)
+	delete(r.entries, k)
 	return true
 }
 
-// Get returns the spec for `name` and a presence boolean. Called by
-// the pool's build callback on every cache miss.
-func (r *DynamicRegistry) Get(name string) (DynamicMCPServerSpec, bool) {
+// Get returns the spec for (tenantID, name) and a presence boolean.
+// Called by the resolver on every lookup. RFC N: the caller is
+// responsible for the static→tenant→shared precedence (see
+// lookup.MCPServer); Get is an exact (tenant, name) read.
+func (r *DynamicRegistry) Get(tenantID, name string) (DynamicMCPServerSpec, bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	spec, ok := r.entries[name]
+	spec, ok := r.entries[regKey{tenantID, name}]
 	return spec, ok
 }
 
-// Names returns every registered name, sorted. Used by diagnostic
-// surfaces (the LoomCycle MCP server's get_runtime_state, etc.).
+// Names returns every registered name across ALL tenants, sorted +
+// deduped. Diagnostic-only (the LoomCycle MCP server's
+// get_runtime_state) — it is NOT tenant-scoped and must never gate
+// advertising. Use NamesForTenant for the per-run candidate set.
 //
 // Safe to call concurrently with Set/Remove — returns a snapshot.
 func (r *DynamicRegistry) Names() []string {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
+	seen := make(map[string]struct{}, len(r.entries))
 	out := make([]string, 0, len(r.entries))
-	for name := range r.entries {
+	for k := range r.entries {
+		if _, dup := seen[k.name]; dup {
+			continue
+		}
+		seen[k.name] = struct{}{}
+		out = append(out, k.name)
+	}
+	sortStrings(out)
+	return out
+}
+
+// NamesForTenant returns the names visible to a run in tenantID: that
+// tenant's own names PLUS the shared ("" tenant) names, sorted +
+// deduped. A tenant-owned name shadows a shared one of the same name
+// (it appears once). RFC N §3: this is the per-run candidate set the
+// advertising filter enumerates so a run in tenant A never sees tenant
+// B's MCP servers.
+func (r *DynamicRegistry) NamesForTenant(tenantID string) []string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	seen := make(map[string]struct{}, len(r.entries))
+	out := make([]string, 0, len(r.entries))
+	add := func(name string) {
+		if _, dup := seen[name]; dup {
+			return
+		}
+		seen[name] = struct{}{}
 		out = append(out, name)
 	}
-	// Inline sort to avoid pulling in sort for one-call shape.
+	// Tenant-owned first so it claims the name; shared "" entries only
+	// fill names the tenant doesn't already own (tenant shadows shared).
+	for k := range r.entries {
+		if k.tenant == tenantID {
+			add(k.name)
+		}
+	}
+	if tenantID != "" {
+		for k := range r.entries {
+			if k.tenant == "" {
+				add(k.name)
+			}
+		}
+	}
+	sortStrings(out)
+	return out
+}
+
+// sortStrings is an inline insertion sort — avoids pulling in the sort
+// package for these small diagnostic / candidate-set lists.
+func sortStrings(out []string) {
 	for i := 1; i < len(out); i++ {
 		for j := i; j > 0 && out[j-1] > out[j]; j-- {
 			out[j-1], out[j] = out[j], out[j-1]
 		}
 	}
-	return out
 }
 
 // Size returns the current count. Diagnostic helper.

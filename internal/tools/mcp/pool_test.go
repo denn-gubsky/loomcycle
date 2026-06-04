@@ -115,7 +115,7 @@ func runFakeServer(mode string) {
 
 func newPoolWithFake(t *testing.T, mode string) *mcp.Pool {
 	t.Helper()
-	build := func(name string) (mcp.Caller, error) {
+	build := func(_, name string) (mcp.Caller, error) {
 		c, err := stdio.Spawn(stdio.Config{
 			Command: os.Args[0],
 			Env:     []string{"BE_MCP_SERVER=" + mode},
@@ -130,7 +130,7 @@ func newPoolWithFake(t *testing.T, mode string) *mcp.Pool {
 			_ = cl.Close()
 		}
 	}
-	pool := mcp.NewPool(build, teardown)
+	pool := mcp.NewPool(build, teardown, nil)
 	t.Cleanup(pool.Close)
 	return pool
 }
@@ -228,7 +228,7 @@ func TestPoolGetCachesConnection(t *testing.T) {
 		if cl, ok := c.(*stdio.Client); ok {
 			_ = cl.Close()
 		}
-	})
+	}, nil)
 	t.Cleanup(pool.Close)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -252,7 +252,7 @@ func TestPoolGetSharesInFlightInit(t *testing.T) {
 		if cl, ok := c.(*stdio.Client); ok {
 			_ = cl.Close()
 		}
-	})
+	}, nil)
 	t.Cleanup(pool.Close)
 
 	const N = 8
@@ -285,7 +285,7 @@ func TestPoolGetSharesInFlightInit(t *testing.T) {
 func TestPoolGetRetriesAfterInitFailure(t *testing.T) {
 	var attempts int
 	pool := mcp.NewPool(
-		func(name string) (mcp.Caller, error) {
+		func(_, name string) (mcp.Caller, error) {
 			attempts++
 			if attempts == 1 {
 				return nil, errors.New("transient build failure")
@@ -301,6 +301,7 @@ func TestPoolGetRetriesAfterInitFailure(t *testing.T) {
 				_ = cl.Close()
 			}
 		},
+		nil,
 	)
 	t.Cleanup(pool.Close)
 
@@ -324,7 +325,7 @@ func TestPoolGetRespectsCtxWhileWaitingOnPeerInit(t *testing.T) {
 	// Use a slow build so the second Get can race the first's init.
 	releaseBuild := make(chan struct{})
 	pool := mcp.NewPool(
-		func(name string) (mcp.Caller, error) {
+		func(_, name string) (mcp.Caller, error) {
 			<-releaseBuild
 			return stdio.Spawn(stdio.Config{
 				Command: os.Args[0],
@@ -336,6 +337,7 @@ func TestPoolGetRespectsCtxWhileWaitingOnPeerInit(t *testing.T) {
 				_ = cl.Close()
 			}
 		},
+		nil,
 	)
 	t.Cleanup(func() {
 		// Unblock any stuck build before Close.
@@ -378,7 +380,7 @@ func TestPoolGetRespawnsAfterUnhealthy(t *testing.T) {
 		if cl, ok := c.(*stdio.Client); ok {
 			_ = cl.Close()
 		}
-	})
+	}, nil)
 	t.Cleanup(pool.Close)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -423,9 +425,10 @@ func TestPoolGetRespawnsAfterUnhealthy(t *testing.T) {
 
 func TestPoolGetReturnsBuildError(t *testing.T) {
 	pool := mcp.NewPool(
-		func(name string) (mcp.Caller, error) {
+		func(_, name string) (mcp.Caller, error) {
 			return nil, errors.New("synthetic build failure")
 		},
+		nil,
 		nil,
 	)
 	t.Cleanup(pool.Close)
@@ -451,7 +454,7 @@ func newCountingBuild(t *testing.T, mode string) *countingBuild {
 	return &countingBuild{t: t, mode: mode}
 }
 
-func (b *countingBuild) fn(name string) (mcp.Caller, error) {
+func (b *countingBuild) fn(_, name string) (mcp.Caller, error) {
 	b.count++
 	c, err := stdio.Spawn(stdio.Config{
 		Command: os.Args[0],
@@ -473,7 +476,7 @@ func (b *countingBuild) fn(name string) (mcp.Caller, error) {
 func TestGetWithRetryRecoversFromTransientBuildFailure(t *testing.T) {
 	failureBudget := 2
 	pool := mcp.NewPool(
-		func(name string) (mcp.Caller, error) {
+		func(_, name string) (mcp.Caller, error) {
 			if failureBudget > 0 {
 				failureBudget--
 				return nil, errors.New("ECONNREFUSED (peer still starting)")
@@ -489,6 +492,7 @@ func TestGetWithRetryRecoversFromTransientBuildFailure(t *testing.T) {
 				_ = cl.Close()
 			}
 		},
+		nil,
 	)
 	t.Cleanup(pool.Close)
 
@@ -526,9 +530,10 @@ func TestGetWithRetryRecoversFromTransientBuildFailure(t *testing.T) {
 // returns an error including the attempt count.
 func TestGetWithRetryGivesUpWhenCtxExpires(t *testing.T) {
 	pool := mcp.NewPool(
-		func(name string) (mcp.Caller, error) {
+		func(_, name string) (mcp.Caller, error) {
 			return nil, errors.New("ECONNREFUSED (peer never starts)")
 		},
+		nil,
 		nil,
 	)
 	t.Cleanup(pool.Close)
@@ -558,7 +563,7 @@ func TestGetWithRetryGivesUpWhenCtxExpires(t *testing.T) {
 
 func TestPool_PeekTools_ReturnsNilForUnknownServer(t *testing.T) {
 	pool := newPoolWithFake(t, "ok")
-	if got := pool.PeekTools("does-not-exist"); got != nil {
+	if got := pool.PeekTools("", "does-not-exist"); got != nil {
 		t.Errorf("PeekTools on unknown name = %+v, want nil", got)
 	}
 }
@@ -570,7 +575,7 @@ func TestPool_PeekTools_ReturnsCachedSnapshotAfterGet(t *testing.T) {
 	if _, _, err := pool.Get(ctx, "search"); err != nil {
 		t.Fatalf("Get: %v", err)
 	}
-	descs := pool.PeekTools("search")
+	descs := pool.PeekTools("", "search")
 	if len(descs) != 1 || descs[0].Name != "web_search" {
 		t.Errorf("PeekTools = %+v, want one entry web_search", descs)
 	}
@@ -585,10 +590,11 @@ func TestPool_PeekTools_ReturnsNilAfterEvictedInitFailure(t *testing.T) {
 	// keeps failed entries in the map still produces nil from
 	// PeekTools.
 	pool := mcp.NewPool(
-		func(name string) (mcp.Caller, error) {
+		func(_, name string) (mcp.Caller, error) {
 			return nil, errors.New("transient build failure")
 		},
 		func(c mcp.Caller) {},
+		nil,
 	)
 	t.Cleanup(pool.Close)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -596,7 +602,7 @@ func TestPool_PeekTools_ReturnsNilAfterEvictedInitFailure(t *testing.T) {
 	if _, _, err := pool.Get(ctx, "broken"); err == nil {
 		t.Fatal("expected init to fail")
 	}
-	if got := pool.PeekTools("broken"); got != nil {
+	if got := pool.PeekTools("", "broken"); got != nil {
 		t.Errorf("PeekTools after init failure = %+v, want nil", got)
 	}
 }
