@@ -62,6 +62,43 @@ jobs:
             exit 1
           fi
 
+  go-postgres:
+    name: Go (Postgres store contract)
+    runs-on: ubuntu-latest
+    # Runs the shared storetest contract against a REAL Postgres so
+    # backend-parity bugs are caught in CI, not only on SQLite. The contract
+    # skips the PG path unless LOOMCYCLE_TEST_PG_DSN is set, so before this job
+    # the production backend went untested — which hid the operator-token
+    # nullable-column NULL-scan bug (admin-minted tokens fail-closed 401 on PG)
+    # and a jsonb re-serialization brittleness. Postgres is what ships; CI must
+    # exercise it.
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: loomcycle
+          POSTGRES_PASSWORD: loomcycle
+          POSTGRES_DB: loomcycle_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U loomcycle -d loomcycle_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.x"
+          cache: true
+
+      - name: Postgres store contract
+        env:
+          LOOMCYCLE_TEST_PG_DSN: postgres://loomcycle:loomcycle@127.0.0.1:5432/loomcycle_test?sslmode=disable
+        run: go test -count=1 ./internal/store/...
+
   runtime-codejs:
     name: Runtime suites (code-js)
     runs-on: ubuntu-latest
