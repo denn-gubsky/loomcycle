@@ -3623,8 +3623,11 @@ func (s *Store) SkillDefListChildren(ctx context.Context, parentDefID string) ([
 }
 
 func (s *Store) SkillDefListNames(ctx context.Context) ([]store.SkillDefNameSummary, error) {
+	// RFC N: names are per-tenant; group by tenant_id so a name owned by
+	// N tenants yields N rows (one per tenant) rather than merging them.
 	rows, err := s.pool.Query(ctx, `
 		SELECT
+			d.tenant_id,
 			d.name,
 			COUNT(*)                  AS version_count,
 			MAX(d.version)            AS latest_version,
@@ -3632,8 +3635,8 @@ func (s *Store) SkillDefListNames(ctx context.Context) ([]store.SkillDefNameSumm
 			COALESCE(a.def_id, '')    AS active_def_id
 		FROM skill_defs d
 		LEFT JOIN skill_def_active a ON a.name = d.name AND a.tenant_id = d.tenant_id
-		GROUP BY d.name, a.def_id
-		ORDER BY d.name`)
+		GROUP BY d.tenant_id, d.name, a.def_id
+		ORDER BY d.tenant_id, d.name`)
 	if err != nil {
 		return nil, fmt.Errorf("skill_def list names: %w", err)
 	}
@@ -3642,7 +3645,7 @@ func (s *Store) SkillDefListNames(ctx context.Context) ([]store.SkillDefNameSumm
 	var out []store.SkillDefNameSummary
 	for rows.Next() {
 		var ns store.SkillDefNameSummary
-		if err := rows.Scan(&ns.Name, &ns.VersionCount, &ns.LatestVersion, &ns.LastUpdated, &ns.ActiveDefID); err != nil {
+		if err := rows.Scan(&ns.TenantID, &ns.Name, &ns.VersionCount, &ns.LatestVersion, &ns.LastUpdated, &ns.ActiveDefID); err != nil {
 			return nil, err
 		}
 		out = append(out, ns)
