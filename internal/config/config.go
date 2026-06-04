@@ -1113,7 +1113,13 @@ type Webhook struct {
 	// Metadata is NON-SECRET structured metadata (repo, review policy,
 	// preferred skills, …) passed to the agent as TRUSTED (def-authored) via
 	// RunInput.Metadata. Not for secrets — those use UserCredentials*.
-	Metadata       map[string]any      `json:"metadata,omitempty" yaml:"metadata"`
+	Metadata map[string]any `json:"metadata,omitempty" yaml:"metadata"`
+	// TenantID is the tenant the spawned run EXECUTES as (RFC N follow-up).
+	// It flows to RunInput.TenantID so the run resolves that tenant's
+	// agents/skills/MCP and isolates its memory/runs. "" = shared/default.
+	// SECURITY: tenant comes from this STATIC operator-authored def ONLY —
+	// NEVER from the inbound payload / payload_mapping (attacker-influenceable).
+	TenantID       string              `json:"tenant_id,omitempty" yaml:"tenant_id"`
 	PayloadMapping map[string]string   `json:"payload_mapping,omitempty" yaml:"payload_mapping"`
 	SyncResponse   WebhookSyncResponse `json:"sync_response,omitempty" yaml:"sync_response"`
 	OnComplete     []ScheduledRunHook  `json:"on_complete,omitempty" yaml:"on_complete"`

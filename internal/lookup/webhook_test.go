@@ -148,6 +148,7 @@ func TestWebhook_DriftDetection(t *testing.T) {
 		"user_credentials_from_env": true,
 		"user_credentials":          true, // RFC F fork-time parity (PR 2/2)
 		"metadata":                  true, // non-secret agent metadata (PR 2/2)
+		"tenant_id":                 true, // tenant the spawned run executes as (RFC N follow-up)
 		"payload_mapping":           true,
 		"sync_response":             true,
 		"on_complete":               true,

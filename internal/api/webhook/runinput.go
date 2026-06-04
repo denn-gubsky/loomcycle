@@ -147,6 +147,12 @@ func buildRunInput(w config.Webhook, proj projectResult, envAllowlist map[string
 		// PayloadMetadata is projected from the inbound body → UNTRUSTED.
 		Metadata:        w.Metadata,
 		PayloadMetadata: payloadMeta,
+		// TenantID picks which tenant's agents/skills/MCP resolve and whose
+		// memory/runs the spawned run is isolated to. SECURITY: it comes from
+		// the STATIC def `w` ONLY — NEVER from proj.Fields (the signed-but-
+		// attacker-influenceable payload). There is deliberately no
+		// payload_mapping / run_metadata path for tenant (RFC N follow-up).
+		TenantID: w.TenantID,
 		// IdempotencyKey is set by the caller (deliverSpawn) to the
 		// delivery id, keeping this builder's signature focused on the
 		// Def + projected payload. See RFC H Decision 10 "Layer 2".
