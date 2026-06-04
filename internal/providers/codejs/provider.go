@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"hash/fnv"
+	"sort"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -211,7 +212,7 @@ func (p *Provider) runTurn(ctx context.Context, out chan providers.Event, span t
 		return
 	}
 
-	ret, err := runFn(goja.Undefined(), rt.ToValue(input))
+	ret, err := runFn(goja.Undefined(), stableJSValue(rt, input))
 	if err != nil {
 		// A frontier, divergence, or watcher (timeout/cancel) Interrupt surfaces
 		// here as the error. A watcher interrupt takes PRECEDENCE over a frontier
@@ -250,7 +251,7 @@ func (p *Provider) classifyRunErr(state *replayState, ctx context.Context, cause
 	switch {
 	case state.diverged != nil:
 		d := state.diverged
-		return fmt.Sprintf("code_agent_replay_divergence: tool call #%d was %q on a prior turn but %q on replay — non-deterministic control flow; set LOOMCYCLE_CODE_AGENTS_DETERMINISTIC=1 or remove unhooked non-determinism", d.idx, d.expected, d.got)
+		return fmt.Sprintf("code_agent_replay_divergence: tool call #%d was %q on a prior turn but %q on replay — non-deterministic control flow or serialization. Common causes: an unhooked clock/RNG source (try LOOMCYCLE_CODE_AGENTS_DETERMINISTIC=1), OR serializing an object with non-deterministic key/iteration order into a tool input (loomcycle sorts input.metadata keys, but normalize any OTHER object to a fixed key order before JSON.stringify — DETERMINISTIC=1 does NOT fix key-order divergence)", d.idx, d.expected, d.got)
 	case cause == causeCancel:
 		// Parent/operator cancellation (the ctx.Done branch of interruptWatch).
 		// ctx.Err() is non-nil here since that branch only fires after ctx.Done.
@@ -350,6 +351,45 @@ func buildInput(req providers.Request, meta providers.RunMeta) map[string]any {
 		out["payload_metadata"] = meta.PayloadMetadata
 	}
 	return out
+}
+
+// stableJSValue converts a Go value into a goja value with DETERMINISTIC key
+// order: every map is materialized as a JS object whose properties are inserted
+// in sorted-key order. This is load-bearing for the replay model. The input
+// tree carries caller metadata as Go map[string]any (decoded from JSON, where
+// original key order is already lost); goja's default rt.ToValue iterates a Go
+// map in Go's randomized iteration order, so the SAME metadata produced a JS
+// object with a DIFFERENT key order on each Call/runtime build. An agent that
+// JSON.stringify(s) input.metadata into a tool_use input then emitted
+// byte-different bytes turn-1 vs replay → spurious code_agent_replay_divergence
+// (observed in the JobEmber ats-filter-batch orchestrator, 2026-06). Note
+// LOOMCYCLE_CODE_AGENTS_DETERMINISTIC=1 does NOT help — it pins the RNG/clock,
+// not Go-map order. Sorting keys here makes input.* byte-stable across turns so
+// no chunk-in-JS agent has to normalize its own serialization. Arrays keep
+// their order (slices are ordered); only maps are reordered. JS objects are
+// insertion-ordered, so sorted insertion yields a sorted, stable iteration.
+func stableJSValue(rt *goja.Runtime, v any) goja.Value {
+	switch t := v.(type) {
+	case map[string]any:
+		obj := rt.NewObject()
+		keys := make([]string, 0, len(t))
+		for k := range t {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			_ = obj.Set(k, stableJSValue(rt, t[k]))
+		}
+		return obj
+	case []any:
+		elems := make([]any, len(t))
+		for i, e := range t {
+			elems[i] = stableJSValue(rt, e)
+		}
+		return rt.NewArray(elems...)
+	default:
+		return rt.ToValue(v)
+	}
 }
 
 // latestUserText concatenates the text blocks of the most recent user-role
