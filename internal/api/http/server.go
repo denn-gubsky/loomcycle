@@ -2637,10 +2637,13 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 	defer release()
 
 	// Filter tools by agent allowlist + caller request.
-	// RFC N FIX 2-mcp: advertise at this handler's authoritative tenant. On
-	// an authed HTTP route the principal is on ctx, so tenantFromCtx returns
-	// the principal's tenant (never the wire).
-	allowedTools := filterTools(s.candidateTools(r.Context(), tenantFromCtx(r.Context())), agentDef.AllowedTools, req.AllowedTools)
+	// RFC N: advertise at the run's authoritative tenant. Use req.TenantID
+	// (made authoritative by applyPrincipal above), NOT tenantFromCtx — the
+	// two agree on authed routes but diverge in open mode (tenantFromCtx=""
+	// vs the wire tenant), which would advertise the wrong tenant's MCP tools
+	// for an open-mode run. Consistent with the agent existence-check +
+	// resolveAgent on this path.
+	allowedTools := filterTools(s.candidateTools(r.Context(), req.TenantID), agentDef.AllowedTools, req.AllowedTools)
 	// Per-run host narrowing for HTTP/WebFetch/WebSearch. Behaviour
 	// depends on LOOMCYCLE_HTTP_CALLER_AUTHORITATIVE — see NarrowHosts
 	// doc comment. In caller-authoritative mode we ALWAYS call so the
@@ -2667,11 +2670,11 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 	dispatcher := s.newDispatcher(allowedTools)
 
 	// v0.8.22: rebuild SystemPrompt from per-run SkillDef bodies.
-	// RFC N: resolve at this handler's authoritative tenant. On an authed
-	// HTTP route the principal is on ctx, so tenantFromCtx returns the
-	// principal's tenant (the same value applyPrincipal resolves) — never
-	// the wire. Mirrors the lookupAgent existence-check above.
-	agentDef, promptProv := s.resolveSkillBodiesForRun(r.Context(), tenantFromCtx(r.Context()), agentDef)
+	// RFC N: resolve skills at the run's authoritative tenant — req.TenantID
+	// (authed: == principal; open: == wire), NOT tenantFromCtx, so an
+	// open-mode run resolves its tenant-scoped skills instead of "". Mirrors
+	// the agent existence-check + resolveAgent on this path.
+	agentDef, promptProv := s.resolveSkillBodiesForRun(r.Context(), req.TenantID, agentDef)
 	// Optional system prompt from agent def.
 	if agentDef.SystemPrompt != "" {
 		req.Segments = append([]loop.PromptSegment{{
