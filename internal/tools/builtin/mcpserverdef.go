@@ -214,9 +214,17 @@ func (m *MCPServerDef) execCreate(ctx context.Context, in mcpServerDefInput) (to
 	if in.Name == "" {
 		return errResult("create: missing required field: name"), nil
 	}
-	// Refuse if the yaml block already covers this name. Mirror of
-	// AgentDef.create refusal over static cfg.Agents.
-	if _, ok := m.Cfg.MCPServers[in.Name]; ok {
+	// RFC N: the tenant is authoritative from the run ctx — never from the
+	// wire/tool input. It scopes the version lock, the active pointer, the
+	// dedup read, and the registry entry. "" = shared/operator/legacy.
+	tenantID := tools.RunIdentity(ctx).TenantID
+	// Refuse if the yaml block already covers this name FOR THE SHARED
+	// TENANT. Mirror of AgentDef.create refusal over static cfg.Agents.
+	// A tenant principal (tenantID != "") MAY register a name that collides
+	// with a shared yaml server — that is the RFC N per-tenant override
+	// (the tenant-dynamic pass shadows the static base); yaml stays ground
+	// truth only for the "" tenant.
+	if _, ok := m.Cfg.MCPServers[in.Name]; ok && tenantID == "" {
 		return errResult(fmt.Sprintf("create: name %q matches a static cfg.MCPServers entry — yaml is ground truth; use a different name", in.Name)), nil
 	}
 
@@ -249,7 +257,7 @@ func (m *MCPServerDef) execCreate(ctx context.Context, in mcpServerDefInput) (to
 	// path dedups separately. Re-creating content that matches a NON-active
 	// version still mints + promotes (re-activation is a real state change),
 	// so we compare only against the active row.
-	if active, gerr := m.Store.MCPServerDefGetActive(ctx, in.Name); gerr == nil && active.ContentSHA256 == contentSHA {
+	if active, gerr := m.Store.MCPServerDefGetActive(ctx, tenantID, in.Name); gerr == nil && active.ContentSHA256 == contentSHA {
 		resp := mcpServerDefRowResponse(active, true)
 		resp["deduplicated"] = true
 		return okJSON(resp)
@@ -264,7 +272,7 @@ func (m *MCPServerDef) execCreate(ctx context.Context, in mcpServerDefInput) (to
 	// rediscover). Best-effort + only when this version becomes active; an
 	// unreachable peer leaves the def metadata-only and self-heals lazily.
 	var discovered int
-	defJSON, discovered = m.discoverOnIngestion(ctx, in.Name, in, promote, &def, defJSON)
+	defJSON, discovered = m.discoverOnIngestion(ctx, tenantID, in.Name, in, promote, &def, defJSON)
 
 	ident := tools.RunIdentity(ctx)
 	row := store.MCPServerDefRow{
@@ -274,6 +282,7 @@ func (m *MCPServerDef) execCreate(ctx context.Context, in mcpServerDefInput) (to
 		Description:      in.Description,
 		CreatedByAgentID: ident.AgentID,
 		ContentSHA256:    contentSHA,
+		TenantID:         tenantID,
 	}
 	created, err := m.Store.MCPServerDefCreate(ctx, row)
 	if err != nil {
@@ -296,6 +305,9 @@ func (m *MCPServerDef) execFork(ctx context.Context, in mcpServerDefInput) (tool
 	if in.Name == "" {
 		return errResult("fork: missing required field: name"), nil
 	}
+	// RFC N: tenant from ctx (never the wire). Scopes the parent lookup,
+	// the active pointer, and the row's tenant stamp.
+	tenantID := tools.RunIdentity(ctx).TenantID
 
 	var parentJSON string
 	parentDefID := in.ParentDefID
@@ -311,10 +323,15 @@ func (m *MCPServerDef) execFork(ctx context.Context, in mcpServerDefInput) (tool
 		if parent.Name != in.Name {
 			return errResult(fmt.Sprintf("fork: parent_def_id %q has name %q, refusing to fork under name %q", parentDefID, parent.Name, in.Name)), nil
 		}
+		// RFC N: a fork stays within its own tenant — refuse a parent that
+		// belongs to a different tenant (no cross-tenant lineage / leak).
+		if parent.TenantID != tenantID {
+			return errResult(fmt.Sprintf("fork: parent_def_id %q belongs to tenant %q, refusing to fork under tenant %q", parentDefID, parent.TenantID, tenantID)), nil
+		}
 		parentJSON = string(parent.Definition)
 	} else {
 		// No explicit parent → fork from the active row.
-		active, err := m.Store.MCPServerDefGetActive(ctx, in.Name)
+		active, err := m.Store.MCPServerDefGetActive(ctx, tenantID, in.Name)
 		if err != nil {
 			var nf *store.ErrNotFound
 			if errors.As(err, &nf) {
@@ -354,7 +371,7 @@ func (m *MCPServerDef) execFork(ctx context.Context, in mcpServerDefInput) (tool
 	// pool resolves to the about-to-be-active version's connection params, so
 	// a non-promoted fork (not yet active) can't be dialed meaningfully here.
 	var discovered int
-	defJSON, discovered = m.discoverOnIngestion(ctx, in.Name, in, promote, &def, defJSON)
+	defJSON, discovered = m.discoverOnIngestion(ctx, tenantID, in.Name, in, promote, &def, defJSON)
 
 	ident := tools.RunIdentity(ctx)
 	row := store.MCPServerDefRow{
@@ -365,6 +382,7 @@ func (m *MCPServerDef) execFork(ctx context.Context, in mcpServerDefInput) (tool
 		Description:      in.Description,
 		CreatedByAgentID: ident.AgentID,
 		ContentSHA256:    contentSHA,
+		TenantID:         tenantID,
 	}
 	created, err := m.Store.MCPServerDefCreate(ctx, row)
 	if err != nil {
@@ -437,13 +455,16 @@ func (m *MCPServerDef) execRetire(ctx context.Context, in mcpServerDefInput) (to
 		return errResult(fmt.Sprintf("retire: %s", err)), nil
 	}
 	// Side-effect on the registry + pool ONLY if retiring the currently-
-	// active version. Otherwise the active row stays callable.
+	// active version. Otherwise the active row stays callable. RFC N: the
+	// active pointer + registry + pool entries are keyed by the def's OWN
+	// tenant, so eviction stays tenant-correct (retiring tenant A's server
+	// leaves tenant B's same-name server untouched).
 	if *in.Retired {
-		active, err := m.Store.MCPServerDefGetActive(ctx, row.Name)
+		active, err := m.Store.MCPServerDefGetActive(ctx, row.TenantID, row.Name)
 		if err == nil && active.DefID == in.DefID {
-			m.Registry.Remove(row.Name)
+			m.Registry.Remove(row.TenantID, row.Name)
 			if m.Pool != nil {
-				m.Pool.Evict(row.Name)
+				m.Pool.Evict(row.TenantID, row.Name)
 			}
 		}
 	}
@@ -474,7 +495,10 @@ func (m *MCPServerDef) execPromote(ctx context.Context, in mcpServerDefInput) (t
 // name (which may be using the previous active row's URL / headers)
 // MUST be evicted so the next agent call gets a fresh client.
 func (m *MCPServerDef) promoteAndWireRegistry(ctx context.Context, row store.MCPServerDefRow, promotedByAgentID string) error {
-	if err := m.Store.MCPServerDefSetActive(ctx, row.Name, row.DefID, promotedByAgentID); err != nil {
+	// RFC N: promote within the def's OWN tenant. The store refuses a
+	// def whose tenant_id ≠ the passed tenant, so a caller can't point
+	// another tenant's active pointer at a def it owns.
+	if err := m.Store.MCPServerDefSetActive(ctx, row.TenantID, row.Name, row.DefID, promotedByAgentID); err != nil {
 		return err
 	}
 	// Parse the definition back into the in-memory spec for the registry.
@@ -482,17 +506,20 @@ func (m *MCPServerDef) promoteAndWireRegistry(ctx context.Context, row store.MCP
 	if err := json.Unmarshal(row.Definition, &ov); err != nil {
 		return fmt.Errorf("definition unmarshal: %w", err)
 	}
-	m.Registry.Set(specFromOverlay(row.Name, ov))
+	m.Registry.Set(specFromOverlay(row.TenantID, row.Name, ov))
 	if m.Pool != nil {
-		m.Pool.Evict(row.Name) // existing cached client uses stale metadata; rebuild on next agent call
+		m.Pool.Evict(row.TenantID, row.Name) // existing cached client uses stale metadata; rebuild on next agent call
 	}
 	return nil
 }
 
 // specFromOverlay projects an overlay's connection fields onto the in-memory
 // DynamicMCPServerSpec the pool's caller factory resolves names through.
-func specFromOverlay(name string, ov mcpServerOverlay) loommcp.DynamicMCPServerSpec {
+// RFC N: the spec carries its tenant so the registry keys it by
+// (tenant, name).
+func specFromOverlay(tenantID, name string, ov mcpServerOverlay) loommcp.DynamicMCPServerSpec {
 	return loommcp.DynamicMCPServerSpec{
+		TenantID:  tenantID,
 		Name:      name,
 		Transport: ov.Transport,
 		URL:       ov.URL,
@@ -507,11 +534,14 @@ func specFromOverlay(name string, ov mcpServerOverlay) loommcp.DynamicMCPServerS
 // budget so a non-responding peer can't park the goroutine — matches the
 // boot-time MCP-init budget shape. Shared by create/fork (best-effort) and
 // rediscover (fatal on error).
-func (m *MCPServerDef) discoverTools(ctx context.Context, name string) ([]toolDescriptor, error) {
+func (m *MCPServerDef) discoverTools(ctx context.Context, tenantID, name string) ([]toolDescriptor, error) {
 	if m.Pool == nil {
 		return nil, fmt.Errorf("pool not configured")
 	}
-	m.Pool.Evict(name)
+	// RFC N: evict + dial the (tenant, name) entry. Pool.Get derives the
+	// tenant from ctx (RunIdentity), which is this run's tenant == tenantID,
+	// so the handshake dials this tenant's spec.
+	m.Pool.Evict(tenantID, name)
 	hsCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	_, descs, err := m.Pool.Get(hsCtx, name)
@@ -538,7 +568,7 @@ func (m *MCPServerDef) discoverTools(ctx context.Context, name string) ([]toolDe
 // valid. Returns the (possibly updated) defJSON + the discovered count.
 // Never errors: an unreachable peer leaves def untouched (empty tools) and
 // self-heals via lazy registration on first call.
-func (m *MCPServerDef) discoverOnIngestion(ctx context.Context, name string, in mcpServerDefInput, promote bool, def *mcpServerOverlay, defJSON []byte) ([]byte, int) {
+func (m *MCPServerDef) discoverOnIngestion(ctx context.Context, tenantID, name string, in mcpServerDefInput, promote bool, def *mcpServerOverlay, defJSON []byte) ([]byte, int) {
 	discover := promote && m.Pool != nil
 	if in.Discover != nil {
 		discover = discover && *in.Discover
@@ -546,9 +576,10 @@ func (m *MCPServerDef) discoverOnIngestion(ctx context.Context, name string, in 
 	if !discover {
 		return defJSON, 0
 	}
-	// Register so pool.Get(name) resolves to this server's connection params.
-	m.Registry.Set(specFromOverlay(name, *def))
-	tools, err := m.discoverTools(ctx, name)
+	// Register under (tenant, name) so pool.Get resolves to THIS tenant's
+	// connection params during the discovery handshake.
+	m.Registry.Set(specFromOverlay(tenantID, name, *def))
+	tools, err := m.discoverTools(ctx, tenantID, name)
 	if err != nil {
 		return defJSON, 0 // best-effort — keep metadata-only def; lazy/rediscover later.
 	}
@@ -570,7 +601,10 @@ func (m *MCPServerDef) execRediscover(ctx context.Context, in mcpServerDefInput)
 	if in.Name == "" {
 		return errResult("rediscover: missing required field: name"), nil
 	}
-	active, err := m.Store.MCPServerDefGetActive(ctx, in.Name)
+	// RFC N: tenant from ctx scopes the active lookup, the discovery
+	// handshake, and the new row's stamp.
+	tenantID := tools.RunIdentity(ctx).TenantID
+	active, err := m.Store.MCPServerDefGetActive(ctx, tenantID, in.Name)
 	if err != nil {
 		var nf *store.ErrNotFound
 		if errors.As(err, &nf) {
@@ -581,7 +615,7 @@ func (m *MCPServerDef) execRediscover(ctx context.Context, in mcpServerDefInput)
 	if m.Pool == nil {
 		return errResult("rediscover: pool not configured"), nil
 	}
-	newTools, err := m.discoverTools(ctx, in.Name)
+	newTools, err := m.discoverTools(ctx, tenantID, in.Name)
 	if err != nil {
 		return errResult(fmt.Sprintf("rediscover: pool.Get: %s", err)), nil
 	}
@@ -612,12 +646,13 @@ func (m *MCPServerDef) execRediscover(ctx context.Context, in mcpServerDefInput)
 		Description:      "rediscovered tools/list",
 		CreatedByAgentID: ident.AgentID,
 		ContentSHA256:    signFromMCPServerOverlay(in.Name, ov),
+		TenantID:         tenantID,
 	}
 	created, err := m.Store.MCPServerDefCreate(ctx, row)
 	if err != nil {
 		return errResult(fmt.Sprintf("rediscover: persist: %s", err)), nil
 	}
-	if err := m.Store.MCPServerDefSetActive(ctx, in.Name, created.DefID, ident.AgentID); err != nil {
+	if err := m.Store.MCPServerDefSetActive(ctx, tenantID, in.Name, created.DefID, ident.AgentID); err != nil {
 		return errResult(fmt.Sprintf("rediscover: promote: %s", err)), nil
 	}
 	return okJSON(map[string]any{
@@ -635,7 +670,8 @@ func (m *MCPServerDef) execVerify(ctx context.Context, in mcpServerDefInput) (to
 	if in.Name == "" {
 		return errResult("verify: missing required field: name"), nil
 	}
-	row, err := m.Store.MCPServerDefGetActive(ctx, in.Name)
+	tenantID := tools.RunIdentity(ctx).TenantID
+	row, err := m.Store.MCPServerDefGetActive(ctx, tenantID, in.Name)
 	if err != nil {
 		var nf *store.ErrNotFound
 		if errors.As(err, &nf) {
