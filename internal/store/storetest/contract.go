@@ -166,6 +166,9 @@ func Run(t *testing.T, factory Factory) {
 		{"AgentDefActivePointerIdempotent", testAgentDefActivePointerIdempotent},
 		{"AgentDefRetireReversible", testAgentDefRetireReversible},
 		{"AgentDefStaticFallback", testAgentDefStaticFallback},
+		// RFC N — agent definition plane tenant isolation. Fails on the
+		// pre-migration single-`name`-PK schema (clobber); passes after.
+		{"AgentDefTenantIsolation", testAgentDefTenantIsolation},
 		{"AgentDefContentSHA256RoundTrip", testAgentDefContentSHA256RoundTrip},
 		{"BackfillAgentDefContentSHA256", testBackfillAgentDefContentSHA256},
 		{"BackfillAgentDefSystemPromptBaseFillsLegacyRows", testBackfillAgentDefSystemPromptBase},
@@ -3468,16 +3471,16 @@ func testAgentDefActivePointerIdempotent(t *testing.T, s store.Store) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := s.AgentDefSetActive(ctx, "promo", a.DefID, ""); err != nil {
+	if err := s.AgentDefSetActive(ctx, "", "promo", a.DefID, ""); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.AgentDefSetActive(ctx, "promo", b.DefID, ""); err != nil {
+	if err := s.AgentDefSetActive(ctx, "", "promo", b.DefID, ""); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.AgentDefSetActive(ctx, "promo", a.DefID, ""); err != nil {
+	if err := s.AgentDefSetActive(ctx, "", "promo", a.DefID, ""); err != nil {
 		t.Fatal(err)
 	}
-	got, err := s.AgentDefGetActive(ctx, "promo")
+	got, err := s.AgentDefGetActive(ctx, "", "promo")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -3515,10 +3518,104 @@ func testAgentDefRetireReversible(t *testing.T, s store.Store) {
 
 func testAgentDefStaticFallback(t *testing.T, s store.Store) {
 	ctx := context.Background()
-	_, err := s.AgentDefGetActive(ctx, "no-such-name")
+	_, err := s.AgentDefGetActive(ctx, "", "no-such-name")
 	var nf *store.ErrNotFound
 	if !errors.As(err, &nf) {
 		t.Errorf("got %v, want *ErrNotFound", err)
+	}
+}
+
+// testAgentDefTenantIsolation pins the RFC N boundary: the SAME agent
+// name registered under two tenants must resolve to each tenant's OWN
+// definition + active pointer + dynamic_agents row — no cross-tenant
+// clobber, no cross-tenant read.
+//
+// FAIL-BEFORE: on the pre-migration schema (agent_def_active PK = (name),
+// agent_defs UNIQUE = (name, version), dynamic_agents PK = (name)),
+// tenant B's writes overwrite tenant A's (last-writer-wins on the single
+// global pointer / row), so the GetActive(A) assertion reads back B's
+// def_id and the test fails. The composite (tenant_id, name) PK is what
+// makes the two rows coexist.
+func testAgentDefTenantIsolation(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	const name = "summarize"
+
+	// agent_defs + agent_def_active isolation.
+	aDef := mkDef("ti-a", name, "")
+	aDef.TenantID = "tenant-a"
+	aDef.Definition = json.RawMessage(`{"v":"A"}`)
+	aRow, err := s.AgentDefCreate(ctx, aDef)
+	if err != nil {
+		t.Fatalf("create A: %v", err)
+	}
+
+	bDef := mkDef("ti-b", name, "")
+	bDef.TenantID = "tenant-b"
+	bDef.Definition = json.RawMessage(`{"v":"B"}`)
+	bRow, err := s.AgentDefCreate(ctx, bDef)
+	if err != nil {
+		t.Fatalf("create B: %v", err)
+	}
+
+	if err := s.AgentDefSetActive(ctx, "tenant-a", name, aRow.DefID, ""); err != nil {
+		t.Fatalf("promote A: %v", err)
+	}
+	if err := s.AgentDefSetActive(ctx, "tenant-b", name, bRow.DefID, ""); err != nil {
+		t.Fatalf("promote B: %v", err)
+	}
+
+	gotA, err := s.AgentDefGetActive(ctx, "tenant-a", name)
+	if err != nil {
+		t.Fatalf("get active A: %v", err)
+	}
+	if gotA.DefID != aRow.DefID || gotA.TenantID != "tenant-a" || string(gotA.Definition) != `{"v":"A"}` {
+		t.Errorf("tenant-a clobbered: got def_id=%q tenant=%q def=%s, want A's own def",
+			gotA.DefID, gotA.TenantID, gotA.Definition)
+	}
+
+	gotB, err := s.AgentDefGetActive(ctx, "tenant-b", name)
+	if err != nil {
+		t.Fatalf("get active B: %v", err)
+	}
+	if gotB.DefID != bRow.DefID || gotB.TenantID != "tenant-b" || string(gotB.Definition) != `{"v":"B"}` {
+		t.Errorf("tenant-b clobbered: got def_id=%q tenant=%q def=%s, want B's own def",
+			gotB.DefID, gotB.TenantID, gotB.Definition)
+	}
+
+	// A def can only be promoted within its own tenant — promoting A's
+	// def under tenant-b must be refused.
+	if err := s.AgentDefSetActive(ctx, "tenant-b", name, aRow.DefID, ""); err == nil {
+		t.Error("cross-tenant promote (A's def under tenant-b) unexpectedly succeeded")
+	}
+
+	// dynamic_agents isolation — same name, two tenants, distinct bodies.
+	if err := s.DynamicAgentUpsert(ctx, store.DynamicAgent{
+		TenantID:   "tenant-a",
+		Name:       name,
+		Definition: json.RawMessage(`{"dyn":"A"}`),
+	}); err != nil {
+		t.Fatalf("dyn upsert A: %v", err)
+	}
+	if err := s.DynamicAgentUpsert(ctx, store.DynamicAgent{
+		TenantID:   "tenant-b",
+		Name:       name,
+		Definition: json.RawMessage(`{"dyn":"B"}`),
+	}); err != nil {
+		t.Fatalf("dyn upsert B: %v", err)
+	}
+	dynA, err := s.DynamicAgentGet(ctx, "tenant-a", name)
+	if err != nil {
+		t.Fatalf("dyn get A: %v", err)
+	}
+	if string(dynA.Definition) != `{"dyn":"A"}` || dynA.TenantID != "tenant-a" {
+		t.Errorf("dynamic_agents tenant-a clobbered: got tenant=%q def=%s", dynA.TenantID, dynA.Definition)
+	}
+	dynB, err := s.DynamicAgentGet(ctx, "tenant-b", name)
+	if err != nil {
+		t.Fatalf("dyn get B: %v", err)
+	}
+	if string(dynB.Definition) != `{"dyn":"B"}` || dynB.TenantID != "tenant-b" {
+		t.Errorf("dynamic_agents tenant-b clobbered: got tenant=%q def=%s", dynB.TenantID, dynB.Definition)
 	}
 }
 
