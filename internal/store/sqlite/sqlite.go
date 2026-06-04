@@ -807,14 +807,25 @@ func (s *Store) migrate(ctx context.Context) error {
 		// column added by addColumns above is guaranteed present first.
 		//
 		// Residual caveat (unchanged): the upgraded agent_def_active /
-		// dynamic_agents tables still carry PRIMARY KEY(name), so two tenants
-		// cannot share a name on a PRE-EXISTING SQLite DB — a fresh DB is
-		// required for full multi-tenant on SQLite. These indexes restore
-		// single-tenant upgrade functionality only; they do not retrofit the
-		// per-tenant isolation a fresh DB's composite PK provides.
+		// dynamic_agents / skill_def_active tables still carry PRIMARY
+		// KEY(name), so two tenants cannot share a name on a PRE-EXISTING
+		// SQLite DB — a fresh DB is required for full multi-tenant on SQLite.
+		// These indexes restore single-tenant upgrade functionality only;
+		// they do not retrofit the per-tenant isolation a fresh DB's
+		// composite PK provides. The skill plane has NO dynamic_skills tier
+		// (skills = static skills.Set + the skill_defs/skill_def_active
+		// substrate only), so only two skill indexes are needed.
 		`CREATE UNIQUE INDEX IF NOT EXISTS uniq_agent_def_active_tenant_name    ON agent_def_active(tenant_id, name)`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS uniq_dynamic_agents_tenant_name      ON dynamic_agents(tenant_id, name)`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS uniq_agent_defs_tenant_name_version  ON agent_defs(tenant_id, name, version)`,
+		// Skill plane (RFC N FIX 5-skills) — same in-place-upgrade gap.
+		// SkillDefSetActive does ON CONFLICT(tenant_id, name) on
+		// skill_def_active and SkillDefCreate inserts against
+		// UNIQUE(tenant_id, name, version) on skill_defs; on an upgraded DB
+		// neither composite index exists, so the FIRST promote/register
+		// fails even single-tenant. No dynamic_skills table to cover.
+		`CREATE UNIQUE INDEX IF NOT EXISTS uniq_skill_def_active_tenant_name    ON skill_def_active(tenant_id, name)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS uniq_skill_defs_tenant_name_version  ON skill_defs(tenant_id, name, version)`,
 	}
 	for _, q := range addIndexes {
 		// Note the asymmetry vs addColumns above: indexes use
