@@ -73,7 +73,7 @@ func TestResolveSkillBodiesForRun_DBActiveOverrides(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := s.SkillDefSetActive(ctx, "karpathy-guidelines", row.DefID, ""); err != nil {
+	if err := s.SkillDefSetActive(ctx, "", "karpathy-guidelines", row.DefID, ""); err != nil {
 		t.Fatal(err)
 	}
 
@@ -119,7 +119,7 @@ func TestResolveSkillBodiesForRun_StaleRowIsIgnored(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := s.SkillDefSetActive(ctx, "empty-skill", row.DefID, ""); err != nil {
+	if err := s.SkillDefSetActive(ctx, "", "empty-skill", row.DefID, ""); err != nil {
 		t.Fatal(err)
 	}
 
@@ -159,7 +159,7 @@ func TestResolveSkillBodiesForRun_OneSkillResolvesEvenIfAnotherIsMissing(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := s.SkillDefSetActive(ctx, "skill-a", row.DefID, ""); err != nil {
+	if err := s.SkillDefSetActive(ctx, "", "skill-a", row.DefID, ""); err != nil {
 		t.Fatal(err)
 	}
 

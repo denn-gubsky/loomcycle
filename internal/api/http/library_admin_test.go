@@ -162,7 +162,7 @@ func TestLibrary_SkillDefNames_AfterSeed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_ = s.SkillDefSetActive(ctx, "voice-applier", "sdef_voice_v1", "")
+	_ = s.SkillDefSetActive(ctx, "", "voice-applier", "sdef_voice_v1", "")
 
 	req := authedRequest("GET", "/v1/_skilldef/names", nil)
 	rec := httptest.NewRecorder()

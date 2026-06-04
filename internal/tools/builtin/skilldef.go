@@ -223,6 +223,12 @@ func (s *SkillDef) execCreate(ctx context.Context, policy tools.SkillDefPolicyVa
 	}
 
 	ident := tools.RunIdentity(ctx)
+	// RFC N: the tenant comes from the authoritative run identity in ctx
+	// (the SkillDef tool always runs inside a run whose RunIdentity
+	// carries the principal-derived tenant), never from tool input. ""
+	// = shared/legacy tenant. Used for the row stamp + the promote — both
+	// scoped to the skill's own tenant.
+	tenantID := ident.TenantID
 	row := store.SkillDefRow{
 		DefID:            mintSkillDefID(),
 		Name:             in.Name,
@@ -230,6 +236,7 @@ func (s *SkillDef) execCreate(ctx context.Context, policy tools.SkillDefPolicyVa
 		Description:      in.Description,
 		CreatedByAgentID: ident.AgentID,
 		ContentSHA256:    signFromSkillDef(in.Name, def),
+		TenantID:         tenantID,
 	}
 	created, err := s.Store.SkillDefCreate(ctx, row)
 	if err != nil {
@@ -240,7 +247,7 @@ func (s *SkillDef) execCreate(ctx context.Context, policy tools.SkillDefPolicyVa
 		promote = *in.Promote
 	}
 	if promote {
-		if err := s.Store.SkillDefSetActive(ctx, in.Name, created.DefID, ident.AgentID); err != nil {
+		if err := s.Store.SkillDefSetActive(ctx, tenantID, in.Name, created.DefID, ident.AgentID); err != nil {
 			return errResult(fmt.Sprintf("create: promote: %s", err)), nil
 		}
 	}
@@ -258,6 +265,11 @@ func (s *SkillDef) execFork(ctx context.Context, policy tools.SkillDefPolicyValu
 	//   1. parent_def_id supplied → pin
 	//   2. parent_def_id empty + active pointer exists → use it
 	//   3. neither → name must have a static SKILL.md; bootstrap v1
+	// RFC N: fork resolves + stamps within the skill's own tenant (from
+	// the authoritative run identity, never tool input).
+	ident := tools.RunIdentity(ctx)
+	tenantID := ident.TenantID
+
 	parentDefID := in.ParentDefID
 	var parent store.SkillDefRow
 	if parentDefID != "" {
@@ -272,9 +284,15 @@ func (s *SkillDef) execFork(ctx context.Context, policy tools.SkillDefPolicyValu
 		if row.Name != in.Name {
 			return errResult(fmt.Sprintf("fork: parent_def_id %q has name %q, refusing to fork under name %q", parentDefID, row.Name, in.Name)), nil
 		}
+		// A def_id is a global handle; refuse to fork across the tenant
+		// boundary — a caller in tenant T can't pin another tenant's def
+		// as its parent (which would copy that tenant's body into T).
+		if row.TenantID != tenantID {
+			return errResult(fmt.Sprintf("fork: parent_def_id %q belongs to another tenant, refusing", parentDefID)), nil
+		}
 		parent = row
 	} else {
-		row, err := s.Store.SkillDefGetActive(ctx, in.Name)
+		row, err := s.Store.SkillDefGetActive(ctx, tenantID, in.Name)
 		if err == nil {
 			parent = row
 			parentDefID = row.DefID
@@ -296,7 +314,7 @@ func (s *SkillDef) execFork(ctx context.Context, policy tools.SkillDefPolicyValu
 				// Concurrent first-fork may have already bootstrapped
 				// v1 between our GetActive and our own bootstrap insert.
 				// Re-read active before propagating the error.
-				if row2, gerr := s.Store.SkillDefGetActive(ctx, in.Name); gerr == nil {
+				if row2, gerr := s.Store.SkillDefGetActive(ctx, tenantID, in.Name); gerr == nil {
 					parent = row2
 					parentDefID = row2.DefID
 				} else {
@@ -337,7 +355,6 @@ func (s *SkillDef) execFork(ctx context.Context, policy tools.SkillDefPolicyValu
 		return errResult(fmt.Sprintf("fork: %s", err)), nil
 	}
 
-	ident := tools.RunIdentity(ctx)
 	row := store.SkillDefRow{
 		DefID:            mintSkillDefID(),
 		Name:             in.Name,
@@ -346,6 +363,7 @@ func (s *SkillDef) execFork(ctx context.Context, policy tools.SkillDefPolicyValu
 		Description:      in.Description,
 		CreatedByAgentID: ident.AgentID,
 		ContentSHA256:    signFromSkillDef(in.Name, def),
+		TenantID:         tenantID,
 	}
 	created, err := s.Store.SkillDefCreate(ctx, row)
 	if err != nil {
@@ -356,7 +374,7 @@ func (s *SkillDef) execFork(ctx context.Context, policy tools.SkillDefPolicyValu
 		promote = *in.Promote
 	}
 	if promote {
-		if err := s.Store.SkillDefSetActive(ctx, in.Name, created.DefID, ident.AgentID); err != nil {
+		if err := s.Store.SkillDefSetActive(ctx, tenantID, in.Name, created.DefID, ident.AgentID); err != nil {
 			return errResult(fmt.Sprintf("fork: promote: %s", err)), nil
 		}
 	}
@@ -443,7 +461,11 @@ func (s *SkillDef) execPromote(ctx context.Context, policy tools.SkillDefPolicyV
 		return errResult(err.Error()), nil
 	}
 	ident := tools.RunIdentity(ctx)
-	if err := s.Store.SkillDefSetActive(ctx, row.Name, row.DefID, ident.AgentID); err != nil {
+	// RFC N: promote within the skill's own tenant. SkillDefSetActive
+	// refuses when ident.TenantID ≠ row.TenantID, so a caller in tenant T
+	// cannot point at (or clobber) another tenant's active pointer — even
+	// though def_id is a global handle.
+	if err := s.Store.SkillDefSetActive(ctx, ident.TenantID, row.Name, row.DefID, ident.AgentID); err != nil {
 		return errResult(fmt.Sprintf("promote: %s", err)), nil
 	}
 	return okJSON(map[string]any{"def_id": row.DefID, "name": row.Name, "promoted": true})
@@ -459,7 +481,8 @@ func (s *SkillDef) execVerify(ctx context.Context, policy tools.SkillDefPolicyVa
 	if err := s.checkScopeForName(policy, in.Name, ""); err != nil {
 		return errResult(err.Error()), nil
 	}
-	row, err := s.Store.SkillDefGetActive(ctx, in.Name)
+	// RFC N: verify against the skill's own tenant active pointer.
+	row, err := s.Store.SkillDefGetActive(ctx, tools.RunIdentity(ctx).TenantID, in.Name)
 	if err != nil {
 		var nf *store.ErrNotFound
 		if errors.As(err, &nf) {
@@ -609,6 +632,10 @@ func (s *SkillDef) bootstrapStatic(ctx context.Context, name string, static *ski
 		CreatedByAgentID:       ident.AgentID,
 		BootstrappedFromStatic: true,
 		ContentSHA256:          signFromSkillDef(name, def),
+		// RFC N: the bootstrapped lineage root lives in the forking
+		// caller's tenant (static skills.Set is the shared base; the fork
+		// that triggers bootstrap is per-tenant). "" = shared.
+		TenantID: ident.TenantID,
 	}
 	return s.Store.SkillDefCreate(ctx, row)
 }
