@@ -3,6 +3,7 @@ package mcp
 import (
 	"encoding/json"
 
+	"github.com/denn-gubsky/loomcycle/internal/tools/builtin"
 	loommcp "github.com/denn-gubsky/loomcycle/internal/tools/mcp"
 )
 
@@ -10,10 +11,12 @@ import (
 // by TestServer_ToolsList in server_test.go — let that test be the
 // authoritative source of "how many tools" rather than restating it
 // here (the comment would otherwise drift on every new addition).
-// Each descriptor carries name + description + input schema; the
-// schemas are intentionally minimal — full input validation lives
-// at the connector layer (or, for builtin wrappers, at the
-// underlying tool's discriminated-op schema).
+// Each descriptor carries name + description + input schema. Builtin
+// wrappers source their schema from the underlying tool via
+// builtinSchema(), so the advertised inputSchema is the tool's real
+// discriminated-op schema and can't drift from it; the remaining
+// connector-backed descriptors carry hand-written schemas validated at
+// the connector layer.
 //
 // Naming convention: flat `verb_noun` for actions; single-word for
 // builtin wrappers (memory, channel, agentdef, skilldef, evaluation, context)
@@ -125,73 +128,74 @@ func toolDescriptors() []loommcp.ToolDescriptor {
 		},
 
 		// --- Builtin wrappers ---
-		// Each delegates 1:1 to the underlying builtin tool's
-		// discriminated-op input schema. We don't restate the inner
-		// schema here — the loomcycle agent loop already validates it.
+		// Each delegates 1:1 to the underlying builtin tool, and advertises
+		// that tool's own discriminated-op input schema via builtinSchema()
+		// — clients see the real `op` enum + properties, and the schema
+		// can't drift from the validation the agent loop applies.
 		{
 			Name:        "memory",
 			Description: "Memory tool ops (get/set/delete/list/incr). Pass-through to the underlying Memory builtin.",
-			InputSchema: rawJSON(`{"type": "object"}`),
+			InputSchema: builtinSchema("memory"),
 		},
 		{
 			Name:        "channel",
 			Description: "Channel tool ops (publish/subscribe/ack/peek/list_channels). Pass-through.",
-			InputSchema: rawJSON(`{"type": "object"}`),
+			InputSchema: builtinSchema("channel"),
 		},
 		{
 			Name:        "agentdef",
 			Description: "AgentDef tool ops (create/fork/get/list/promote/retire). Pass-through.",
-			InputSchema: rawJSON(`{"type": "object"}`),
+			InputSchema: builtinSchema("agentdef"),
 		},
 		{
 			Name:        "skilldef",
 			Description: "SkillDef tool ops (create/fork/get/list/promote/retire). Runtime-mutable skill substrate; mirror of AgentDef for skills. Pass-through.",
-			InputSchema: rawJSON(`{"type": "object"}`),
+			InputSchema: builtinSchema("skilldef"),
 		},
 		{
 			Name:        "mcpserverdef",
 			Description: "MCPServerDef tool ops (create/fork/get/list/promote/retire/rediscover/verify). v0.9.x dynamic MCP server registration. Operator-admin-only — register HTTP / Streamable-HTTP MCP servers at runtime; stdio stays yaml. URL hostname must be in LOOMCYCLE_HTTP_HOST_ALLOWLIST. Pass-through.",
-			InputSchema: rawJSON(`{"type": "object"}`),
+			InputSchema: builtinSchema("mcpserverdef"),
 		},
 		{
 			Name:        "scheduledef",
 			Description: "ScheduleDef tool ops (create/fork/get/list/retire). v1.x RFC E scheduled-runs substrate. Operator-admin-only — author + fork per-user schedules at runtime. Forks auto-promote by default (schedule versioning model differs from agent/skill where promote is a separate step). Pass-through.",
-			InputSchema: rawJSON(`{"type": "object"}`),
+			InputSchema: builtinSchema("scheduledef"),
 		},
 		{
 			Name:        "a2aservercarddef",
 			Description: "A2AServerCardDef tool ops (create/fork/get/list/retire). v1.x RFC G A2A-server-card substrate. Operator-admin-only — author + fork A2A server cards at runtime. Pass-through.",
-			InputSchema: rawJSON(`{"type": "object"}`),
+			InputSchema: builtinSchema("a2aservercarddef"),
 		},
 		{
 			Name:        "a2aagentdef",
 			Description: "A2AAgentDef tool ops (create/fork/get/list/retire). v1.x RFC G A2A-agent substrate. Operator-admin-only — author + fork A2A agents at runtime. Pass-through.",
-			InputSchema: rawJSON(`{"type": "object"}`),
+			InputSchema: builtinSchema("a2aagentdef"),
 		},
 		{
 			Name:        "webhookdef",
 			Description: "WebhookDef tool ops (create/fork/get/list/retire). v1.x RFC H inbound-webhook substrate. Operator-admin-only — author + fork inbound webhook definitions at runtime. Static webhooks.<name>: yaml entries stay immutable ground truth; this produces the derived layer. Pass-through.",
-			InputSchema: rawJSON(`{"type": "object"}`),
+			InputSchema: builtinSchema("webhookdef"),
 		},
 		{
 			Name:        "memorybackenddef",
 			Description: "MemoryBackendDef tool ops (create/fork/get/list/retire). RFC I MR-3a memory-backend substrate. Operator-admin-only — author + fork named memory backend definitions at runtime. Static memory_backends.<name>: yaml entries stay immutable ground truth; this produces the derived layer. Pass-through.",
-			InputSchema: rawJSON(`{"type": "object"}`),
+			InputSchema: builtinSchema("memorybackenddef"),
 		},
 		{
 			Name:        "operatortokendef",
 			Description: "OperatorTokenDef tool ops (create/rotate/retire/get/list). RFC L OSS multi-tenant authorization. Operator-admin-only — mint, rotate, and retire bearer tokens each bound to an authoritative principal {tenant_id, subject, allowed_scopes}. The token plaintext is shown ONCE on create/rotate. Pass-through.",
-			InputSchema: rawJSON(`{"type": "object"}`),
+			InputSchema: builtinSchema("operatortokendef"),
 		},
 		{
 			Name:        "evaluation",
 			Description: "Evaluation tool ops (submit/get/list_for_run/list_for_def/aggregate). Pass-through.",
-			InputSchema: rawJSON(`{"type": "object"}`),
+			InputSchema: builtinSchema("evaluation"),
 		},
 		{
 			Name:        "context",
 			Description: "Context tool ops (self/tools/doc/permissions/agents/lineage/evaluations/channels/history/help). Pass-through.",
-			InputSchema: rawJSON(`{"type": "object"}`),
+			InputSchema: builtinSchema("context"),
 		},
 
 		// --- Pause/Resume (v0.8.17 primitives, exposed via Connector in v0.8.18) ---
@@ -424,3 +428,16 @@ func rawJSON(s string) json.RawMessage { return json.RawMessage(s) }
 // from the registry and can never drift — the static "33" in the help text
 // went stale once the registry had grown to 40.
 func MetaToolCount() int { return len(toolDescriptors()) }
+
+// builtinSchema returns the canonical input schema for an op-dispatched
+// builtin wrapper (memory, channel, agentdef, …), sourced from the
+// builtin tool itself so the advertised MCP schema can't drift from the
+// tool's real validation. Falls back to a bare object if the wrapper has
+// no registered schema — a programmer error caught by
+// TestBuiltinWrapperSchemas_CoverAllWrappers.
+func builtinSchema(name string) json.RawMessage {
+	if s, ok := builtin.MCPWrapperInputSchema(name); ok {
+		return s
+	}
+	return rawJSON(`{"type": "object"}`)
+}

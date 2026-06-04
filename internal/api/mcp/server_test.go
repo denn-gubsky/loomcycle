@@ -16,6 +16,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/hooks"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/runner"
+	"github.com/denn-gubsky/loomcycle/internal/tools/builtin"
 	loommcp "github.com/denn-gubsky/loomcycle/internal/tools/mcp"
 )
 
@@ -295,7 +296,7 @@ func TestServer_Handshake(t *testing.T) {
 	}
 }
 
-func TestServer_ToolsList_Returns33Tools(t *testing.T) {
+func TestServer_ToolsList_ReturnsFullCatalogue(t *testing.T) {
 	srv := New(Config{Connector: &mockConnector{}, Logf: func(string, ...any) {}})
 	in := `{"jsonrpc":"2.0","id":1,"method":"tools/list"}` + "\n"
 	resps, _ := driveServer(t, srv, in)
@@ -317,6 +318,47 @@ func TestServer_ToolsList_Returns33Tools(t *testing.T) {
 	for _, want := range []string{"spawn_run", "register_agent", "memory", "agentdef", "skilldef", "mcpserverdef", "scheduledef", "a2aservercarddef", "a2aagentdef", "webhookdef", "memorybackenddef", "operatortokendef", "pause_runtime", "create_snapshot", "get_snapshot", "resolve_probe", "interruption_resolve", "register_hook", "list_hooks", "delete_hook", "list_channels", "stream_user_run_states", "publish_channel", "subscribe_channel", "peek_channel", "ack_channel"} {
 		if !names[want] {
 			t.Errorf("missing tool %q in tools/list", want)
+		}
+	}
+}
+
+// TestBuiltinWrapperSchemas_CoverAllWrappers asserts every op-dispatched
+// builtin tool exposed as an MCP meta-tool advertises that tool's real
+// discriminated-op schema — not the bare {"type":"object"} the wrappers
+// shipped with, which hid the `op` enum + every property from clients
+// introspecting the server. Iterating builtin.MCPWrapperNames() (rather
+// than a hand-kept list) means a newly-exposed wrapper that forgets to
+// source its schema via builtinSchema() fails here.
+func TestBuiltinWrapperSchemas_CoverAllWrappers(t *testing.T) {
+	byName := map[string]json.RawMessage{}
+	for _, td := range toolDescriptors() {
+		byName[td.Name] = td.InputSchema
+	}
+	for _, name := range builtin.MCPWrapperNames() {
+		schema, ok := byName[name]
+		if !ok {
+			t.Errorf("builtin wrapper %q has a schema but no tools/list descriptor", name)
+			continue
+		}
+		want, _ := builtin.MCPWrapperInputSchema(name)
+		if !bytes.Equal(schema, want) {
+			t.Errorf("wrapper %q: descriptor schema not sourced from builtin (bare fallback?)", name)
+		}
+		// The sourced schema must parse and expose a top-level `op` enum —
+		// the whole point of the fix is that clients can discover ops.
+		var parsed struct {
+			Properties struct {
+				Op struct {
+					Enum []string `json:"enum"`
+				} `json:"op"`
+			} `json:"properties"`
+		}
+		if err := json.Unmarshal(schema, &parsed); err != nil {
+			t.Errorf("wrapper %q schema is not valid JSON: %v", name, err)
+			continue
+		}
+		if len(parsed.Properties.Op.Enum) == 0 {
+			t.Errorf("wrapper %q schema exposes no op enum — clients can't discover operations", name)
 		}
 	}
 }
