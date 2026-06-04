@@ -11,8 +11,9 @@ import (
 )
 
 // SkillStore is the subset of store.Store the skill resolver uses.
+// RFC N: the active-pointer lookup carries a tenantID.
 type SkillStore interface {
-	SkillDefGetActive(ctx context.Context, name string) (store.SkillDefRow, error)
+	SkillDefGetActive(ctx context.Context, tenantID, name string) (store.SkillDefRow, error)
 }
 
 // SkillResolution is the effective skill body + metadata returned
@@ -30,48 +31,52 @@ type SkillResolution struct {
 	Source string
 }
 
-// Skill resolves a skill NAME to its effective body + allowed_tools by
-// walking the lookup chain in precedence order:
+// Skill resolves a skill NAME to its effective body + allowed_tools
+// within the caller's tenant, walking the lookup chain in precedence
+// order:
 //
-//  1. substrate (skill_def_active overlay → skill_defs row) —
-//     operator pushed via `POST /v1/_skilldef create`.
-//  2. static skill set (loaded from LOOMCYCLE_SKILLS_ROOT at boot).
+//  1. (tenantID != "") tenant-scoped substrate (skill_def_active overlay
+//     → skill_defs row, WHERE tenant_id=tenantID). A per-tenant
+//     promotion shadows the shared base by name.
+//  2. shared-substrate (skill_def_active, tenant_id="") — the operator's
+//     shared override.
+//  3. static skill set (loaded from LOOMCYCLE_SKILLS_ROOT at boot) — the
+//     shared base every tenant inherits.
 //
-// Returns (zero, false) when neither source has the name.
+// For the default tenant "" step 1 is skipped, so the order collapses to
+// shared-substrate → static — byte-for-byte the pre-RFC-N
+// "substrate-first then static" behavior. This is the critical
+// back-compat property; the skill plane resolves substrate-FIRST (the
+// opposite of agents, which is static-first), and that legacy order is
+// preserved exactly for the "" tenant.
+//
+// The tenantID MUST come from the authoritative principal in ctx
+// (auth.PrincipalFromContext → tools.RunIdentity fallback → ""), never
+// from a wire/request field — see internal/api/http/server.go's
+// tenantFromCtx.
+//
+// Returns (zero, false) when no source has the name.
 //
 // This mirrors what resolveSkillBodiesForRun in api/http/server.go
 // has done inline for skill-baking at run-start. Factored here so
 // the multi-tier lookup is in one place + the SubstrateSkillDef
 // adapter has a documented home alongside the AgentDef one.
-func Skill(ctx context.Context, s SkillStore, set *skills.Set, name string) (SkillResolution, bool) {
-	if s != nil {
-		row, err := s.SkillDefGetActive(ctx, name)
-		switch {
-		case err == nil:
-			var sd SubstrateSkillDef
-			if uerr := json.Unmarshal(row.Definition, &sd); uerr != nil {
-				// Hand-edited / corrupted row — log + fall through to
-				// static so the run can continue with the boot bake.
-				log.Printf("lookup.Skill(%q): parse %s definition failed: %v", name, row.DefID, uerr)
-			} else if sd.Body != "" {
-				return SkillResolution{
-					Body:         sd.Body,
-					AllowedTools: sd.AllowedTools,
-					DefID:        row.DefID,
-					Source:       "substrate",
-				}, true
-			}
-		default:
-			var nf *store.ErrNotFound
-			if !errors.As(err, &nf) {
-				// Transient store hiccup. Static fallback preserves
-				// correctness (the static bake still runs); the log line
-				// is the operator's signal that a substrate override was
-				// skipped this run.
-				log.Printf("lookup.Skill(%q): SkillDefGetActive failed: %v", name, err)
-			}
+func Skill(ctx context.Context, s SkillStore, set *skills.Set, tenantID, name string) (SkillResolution, bool) {
+	// 1. Tenant-scoped substrate shadow (skipped for the shared ""
+	//    tenant so its order stays shared-substrate → static, exactly
+	//    as pre-RFC-N).
+	if s != nil && tenantID != "" {
+		if res, ok := resolveSubstrateSkill(ctx, s, tenantID, name); ok {
+			return res, true
 		}
 	}
+	// 2. Shared substrate (tenant_id="").
+	if s != nil {
+		if res, ok := resolveSubstrateSkill(ctx, s, "", name); ok {
+			return res, true
+		}
+	}
+	// 3. Static skill set — the shared base.
 	if set != nil {
 		if sk, ok := set.Get(name); ok {
 			return SkillResolution{
@@ -79,6 +84,42 @@ func Skill(ctx context.Context, s SkillStore, set *skills.Set, name string) (Ski
 				AllowedTools: sk.AllowedTools,
 				Source:       "static",
 			}, true
+		}
+	}
+	return SkillResolution{}, false
+}
+
+// resolveSubstrateSkill runs the skill_def_active → skill_defs lookup
+// for one tenant pass. Returns (zero, false) when the tenant has no
+// usable active row for the name. Preserves the parse-error +
+// transient-error logging/fallback semantics exactly: a corrupt row or
+// a transient store hiccup logs + returns false so the caller falls
+// through to the next tier (the static bake still runs).
+func resolveSubstrateSkill(ctx context.Context, s SkillStore, tenantID, name string) (SkillResolution, bool) {
+	row, err := s.SkillDefGetActive(ctx, tenantID, name)
+	switch {
+	case err == nil:
+		var sd SubstrateSkillDef
+		if uerr := json.Unmarshal(row.Definition, &sd); uerr != nil {
+			// Hand-edited / corrupted row — log + fall through to
+			// static so the run can continue with the boot bake.
+			log.Printf("lookup.Skill(%q): parse %s definition failed: %v", name, row.DefID, uerr)
+		} else if sd.Body != "" {
+			return SkillResolution{
+				Body:         sd.Body,
+				AllowedTools: sd.AllowedTools,
+				DefID:        row.DefID,
+				Source:       "substrate",
+			}, true
+		}
+	default:
+		var nf *store.ErrNotFound
+		if !errors.As(err, &nf) {
+			// Transient store hiccup. Static fallback preserves
+			// correctness (the static bake still runs); the log line
+			// is the operator's signal that a substrate override was
+			// skipped this run.
+			log.Printf("lookup.Skill(%q): SkillDefGetActive failed: %v", name, err)
 		}
 	}
 	return SkillResolution{}, false
