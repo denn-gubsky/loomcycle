@@ -143,7 +143,7 @@ func TestSchedulerBearerCompound(t *testing.T) {
 	// MCP pool factory — returns a Client for each configured server
 	// using the same URL+headers shape main.go uses.
 	pool := loommcp.NewPool(
-		func(name string) (loommcp.Caller, error) {
+		func(_, name string) (loommcp.Caller, error) {
 			srv, ok := cfg.MCPServers[name]
 			if !ok {
 				return nil, fmt.Errorf("mcp_servers.%s: not configured", name)
@@ -156,6 +156,7 @@ func TestSchedulerBearerCompound(t *testing.T) {
 				_ = cl.Close()
 			}
 		},
+		nil,
 	)
 	t.Cleanup(pool.Close)
 

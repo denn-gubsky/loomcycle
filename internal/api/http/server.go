@@ -124,7 +124,14 @@ type Server struct {
 	// is both ADVERTISED in the run's catalog and dispatchable — symmetric
 	// with boot-registered tools, no restart needed. nil-safe (tests +
 	// deployments without the substrate); wired in main.go.
-	dynamicTools func(context.Context) []tools.Tool
+	//
+	// RFC N FIX 2-mcp: the tenant is an EXPLICIT argument, not ctx-derived.
+	// candidateTools runs at the run-creation ENTRY sites BEFORE
+	// WithRunIdentity is stamped on ctx, so for non-HTTP-principal spawn
+	// surfaces (A2A/scheduler/webhook/MCP spawn_run/gRPC-legacy) the ctx
+	// tenant is "" and the enumerator would advertise the wrong tenant's
+	// MCP tool set. The caller passes the run's authoritative tenant.
+	dynamicTools func(ctx context.Context, tenantID string) []tools.Tool
 
 	// systemPublisher backs the v0.8.6 POST /v1/_channels/_system/...
 	// admin endpoint. Nil = endpoint refuses every request with a
@@ -379,11 +386,14 @@ func (s *Server) SetMCPFallback(fn tools.FallbackFunc) {
 
 // SetDynamicToolEnumerator installs the optional post-boot tool advertiser.
 // fn returns the substrate-registered tools (dynamic MCP + A2A) currently
-// available; the run-creation path folds them into the candidate set before
-// the allowed_tools filter, so post-boot registrations are advertised to the
-// model without a restart. Nil-safe; wired in main.go after the registries +
-// pool are built.
-func (s *Server) SetDynamicToolEnumerator(fn func(context.Context) []tools.Tool) {
+// available for the passed tenant; the run-creation path folds them into the
+// candidate set before the allowed_tools filter, so post-boot registrations
+// are advertised to the model without a restart. Nil-safe; wired in main.go
+// after the registries + pool are built.
+//
+// RFC N FIX 2-mcp: fn takes the run's authoritative tenant EXPLICITLY rather
+// than deriving it from ctx — see candidateTools.
+func (s *Server) SetDynamicToolEnumerator(fn func(ctx context.Context, tenantID string) []tools.Tool) {
 	s.dynamicTools = fn
 }
 
@@ -392,11 +402,16 @@ func (s *Server) SetDynamicToolEnumerator(fn func(context.Context) []tools.Tool)
 // the advertised catalog) sees dynamically-registered tools. The boot set is
 // the floor; a dynamic tool that duplicates a boot-set name collapses in
 // filterTools's by-name map (last writer wins; both wrap the same upstream).
-func (s *Server) candidateTools(ctx context.Context) []tools.Tool {
+//
+// RFC N FIX 2-mcp: tenantID is the run's authoritative tenant, passed
+// EXPLICITLY by the caller. The entry sites call this BEFORE WithRunIdentity
+// is stamped on ctx, so a ctx-derived tenant would be "" for non-HTTP-principal
+// spawn surfaces — and the run would advertise the wrong tenant's MCP tools.
+func (s *Server) candidateTools(ctx context.Context, tenantID string) []tools.Tool {
 	if s.dynamicTools == nil {
 		return s.tools
 	}
-	dyn := s.dynamicTools(ctx)
+	dyn := s.dynamicTools(ctx, tenantID)
 	if len(dyn) == 0 {
 		return s.tools
 	}
@@ -1032,7 +1047,7 @@ type runPromptProvenance struct {
 // Second return value is the per-run provenance (skillName → active
 // SkillDef def_id) for callers emitting the v0.9.x `system_prompt`
 // transcript event. Empty when no DB-active rows were used.
-func (s *Server) resolveSkillBodiesForRun(ctx context.Context, agentDef config.AgentDef) (config.AgentDef, runPromptProvenance) {
+func (s *Server) resolveSkillBodiesForRun(ctx context.Context, tenantID string, agentDef config.AgentDef) (config.AgentDef, runPromptProvenance) {
 	var prov runPromptProvenance
 	if len(agentDef.Skills) == 0 || s.store == nil {
 		return agentDef, prov
@@ -1044,8 +1059,18 @@ func (s *Server) resolveSkillBodiesForRun(ctx context.Context, agentDef config.A
 	resolutions := make(map[string]lookup.SkillResolution, len(agentDef.Skills))
 	activeDefIDs := make(map[string]string, len(agentDef.Skills))
 	anySubstrate := false
+	// RFC N: tenant is an EXPLICIT argument, not ctx-derived — mirrors
+	// lookupAgent (FIX 2). At the run-creation entry sites the run's
+	// authoritative tenant (effectiveTenantID / sess.TenantID) is already
+	// computed BEFORE WithRunIdentity is stamped on ctx, so deriving it
+	// from tenantFromCtx(ctx) here would resolve skills at the WRONG tenant
+	// for non-HTTP-principal spawn surfaces (A2A / scheduler / webhook /
+	// MCP spawn_run / gRPC-legacy) while memory + sub-agents use the run's
+	// tenant. The sub-agent call (runSubAgent) passes tenantFromCtx(ctx)
+	// since the parent's RunIdentity already carries the tenant. A token
+	// only sees its own tenant's promotions + the shared base. "" = shared.
 	for _, skillName := range agentDef.Skills {
-		sr, ok := lookup.Skill(ctx, s.store, s.skillSet, skillName)
+		sr, ok := lookup.Skill(ctx, s.store, s.skillSet, tenantID, skillName)
 		if !ok {
 			continue
 		}
@@ -1462,7 +1487,11 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	defer release()
 
 	// ---- Tool filtering + host narrowing ----
-	allowedTools := filterTools(s.candidateTools(ctx), agentDef.AllowedTools, in.AllowedTools)
+	// RFC N FIX 2-mcp: advertise MCP tools at the run's authoritative
+	// tenant (effectiveTenantID), not the ctx tenant — WithRunIdentity
+	// isn't stamped yet, so for non-HTTP-principal spawn surfaces the ctx
+	// tenant is "" and the run would not see its OWN dynamic MCP tools.
+	allowedTools := filterTools(s.candidateTools(ctx, effectiveTenantID), agentDef.AllowedTools, in.AllowedTools)
 	var hostPolicy tools.HostPolicyValue
 	if in.AllowedHosts != nil || s.cfg.Env.HTTPCallerAuthoritative {
 		var caller []string
@@ -1483,7 +1512,11 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	// v0.8.22: rebuild SystemPrompt from per-run SkillDef bodies
 	// when any of the agent's skills has a DB-active row. No-op
 	// fast path when none do.
-	agentDef, promptProv := s.resolveSkillBodiesForRun(ctx, agentDef)
+	// RFC N: resolve skills at the run's authoritative tenant
+	// (effectiveTenantID), NOT tenantFromCtx(ctx) — WithRunIdentity isn't
+	// stamped until below, so for non-HTTP-principal spawn surfaces the
+	// ctx tenant is wrong here. Mirrors the lookupAgent fix above.
+	agentDef, promptProv := s.resolveSkillBodiesForRun(ctx, effectiveTenantID, agentDef)
 	if agentDef.SystemPrompt != "" {
 		segments = append([]loop.PromptSegment{{
 			Role: "system",
@@ -2598,7 +2631,10 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 	defer release()
 
 	// Filter tools by agent allowlist + caller request.
-	allowedTools := filterTools(s.candidateTools(r.Context()), agentDef.AllowedTools, req.AllowedTools)
+	// RFC N FIX 2-mcp: advertise at this handler's authoritative tenant. On
+	// an authed HTTP route the principal is on ctx, so tenantFromCtx returns
+	// the principal's tenant (never the wire).
+	allowedTools := filterTools(s.candidateTools(r.Context(), tenantFromCtx(r.Context())), agentDef.AllowedTools, req.AllowedTools)
 	// Per-run host narrowing for HTTP/WebFetch/WebSearch. Behaviour
 	// depends on LOOMCYCLE_HTTP_CALLER_AUTHORITATIVE — see NarrowHosts
 	// doc comment. In caller-authoritative mode we ALWAYS call so the
@@ -2625,7 +2661,11 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 	dispatcher := s.newDispatcher(allowedTools)
 
 	// v0.8.22: rebuild SystemPrompt from per-run SkillDef bodies.
-	agentDef, promptProv := s.resolveSkillBodiesForRun(r.Context(), agentDef)
+	// RFC N: resolve at this handler's authoritative tenant. On an authed
+	// HTTP route the principal is on ctx, so tenantFromCtx returns the
+	// principal's tenant (the same value applyPrincipal resolves) — never
+	// the wire. Mirrors the lookupAgent existence-check above.
+	agentDef, promptProv := s.resolveSkillBodiesForRun(r.Context(), tenantFromCtx(r.Context()), agentDef)
 	// Optional system prompt from agent def.
 	if agentDef.SystemPrompt != "" {
 		req.Segments = append([]loop.PromptSegment{{
@@ -3018,7 +3058,11 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	}
 	defer release()
 
-	allowedTools := filterTools(s.candidateTools(r.Context()), agentDef.AllowedTools, body.AllowedTools)
+	// RFC N FIX 2-mcp: a continuation advertises at the SESSION's
+	// authoritative tenant (the same value the continuation run uses), not
+	// the ctx tenant — the ownership gate above already proved the caller
+	// is entitled to this session.
+	allowedTools := filterTools(s.candidateTools(r.Context(), sess.TenantID), agentDef.AllowedTools, body.AllowedTools)
 	var hostPolicy tools.HostPolicyValue
 	if body.AllowedHosts != nil || s.cfg.Env.HTTPCallerAuthoritative {
 		var caller []string
@@ -3040,7 +3084,10 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	// v0.8.22: rebuild SystemPrompt from per-run SkillDef bodies
 	// when any of the agent's skills has a DB-active row. No-op
 	// fast path when none do.
-	agentDef, promptProv := s.resolveSkillBodiesForRun(r.Context(), agentDef)
+	// RFC N: resolve at the SESSION's authoritative tenant (the same value
+	// RunOnce uses for a continuation), not tenantFromCtx — the ownership
+	// gate above already proved the caller is entitled to this session.
+	agentDef, promptProv := s.resolveSkillBodiesForRun(r.Context(), sess.TenantID, agentDef)
 	if agentDef.SystemPrompt != "" {
 		segments = append([]loop.PromptSegment{{
 			Role: "system",
@@ -3708,7 +3755,10 @@ func (s *Server) runSubAgent(ctx context.Context, name string, prompt string, de
 	// sub-agents would silently keep the static baked body and
 	// SkillDef promotions never take effect for agents only spawned
 	// as sub-agents.
-	def, promptProv := s.resolveSkillBodiesForRun(ctx, def)
+	// RFC N: a sub-agent runs with the parent's RunIdentity already on
+	// ctx, so tenantFromCtx(ctx) returns the parent's (== the run's)
+	// authoritative tenant — resolve the sub-agent's skills there.
+	def, promptProv := s.resolveSkillBodiesForRun(ctx, tenantFromCtx(ctx), def)
 	// Build segments: agent's system_prompt (with cache_control) + the
 	// caller-supplied prompt as the first user message. Mirrors the
 	// shape of /v1/runs.
@@ -3731,7 +3781,10 @@ func (s *Server) runSubAgent(ctx context.Context, name string, prompt string, de
 		}},
 	})
 
-	subTools := filterTools(s.candidateTools(ctx), def.AllowedTools, nil)
+	// RFC N FIX 2-mcp: sub-agents run with the parent's RunIdentity already
+	// on ctx, so tenantFromCtx returns the run's authoritative tenant —
+	// the sub-agent advertises the same tenant's MCP tools as its parent.
+	subTools := filterTools(s.candidateTools(ctx, tenantFromCtx(ctx)), def.AllowedTools, nil)
 	// Inherit the parent's caller-authoritative host policy. Without
 	// this, sub-agents fall back to the operator's static
 	// HTTPHostAllowlist — which typically doesn't include localhost

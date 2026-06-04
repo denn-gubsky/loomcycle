@@ -757,7 +757,7 @@ type Store interface {
 	SnapshotRestoreSkillDef(ctx context.Context, r SkillDefRow) (bool, error)
 
 	// SnapshotRestoreSkillDefActive mirrors SnapshotRestoreAgentDefActive
-	// for skill_def_active.
+	// for skill_def_active. ON CONFLICT (tenant_id, name) DO NOTHING.
 	SnapshotRestoreSkillDefActive(ctx context.Context, entry SkillDefActiveEntry) (bool, error)
 
 	// SnapshotRestoreMCPServerDef — v0.9.x mirror.
@@ -1123,8 +1123,17 @@ type Store interface {
 	SkillDefListByName(ctx context.Context, name string) ([]SkillDefRow, error)
 	SkillDefListChildren(ctx context.Context, parentDefID string) ([]SkillDefRow, error)
 	SkillDefListNames(ctx context.Context) ([]SkillDefNameSummary, error)
-	SkillDefSetActive(ctx context.Context, name, defID, promotedByAgentID string) error
-	SkillDefGetActive(ctx context.Context, name string) (SkillDefRow, error)
+	// SkillDefSetActive UPSERTs the skill_def_active pointer for
+	// `(tenantID, name)`. RFC N: the active pointer is per-tenant, and a
+	// def can only be promoted within its own tenant — implementations
+	// refuse if the def's tenant_id ≠ tenantID. tenantID "" = the shared/
+	// operator/legacy tenant.
+	SkillDefSetActive(ctx context.Context, tenantID, name, defID, promotedByAgentID string) error
+	// SkillDefGetActive returns the currently-active row for
+	// `(tenantID, name)`. Returns *ErrNotFound when no active pointer
+	// exists (the caller falls through to the static skills.Set). RFC N:
+	// tenantID "" = the shared/operator/legacy tenant.
+	SkillDefGetActive(ctx context.Context, tenantID, name string) (SkillDefRow, error)
 	SkillDefSetRetired(ctx context.Context, defID string, retired bool) error
 
 	// ---- v0.9.x MCPServerDef substrate ----
@@ -1145,9 +1154,21 @@ type Store interface {
 	MCPServerDefGetByNameVersion(ctx context.Context, name string, version int) (MCPServerDefRow, error)
 	MCPServerDefListByName(ctx context.Context, name string) ([]MCPServerDefRow, error)
 	MCPServerDefListChildren(ctx context.Context, parentDefID string) ([]MCPServerDefRow, error)
+	// MCPServerDefListNames returns one summary per (tenant, name) pair,
+	// each carrying its TenantID. RFC N: the boot rehydrator + the
+	// advertising filter rely on the TenantID so each run only resolves
+	// its own + shared servers.
 	MCPServerDefListNames(ctx context.Context) ([]MCPServerDefNameSummary, error)
-	MCPServerDefSetActive(ctx context.Context, name, defID, promotedByAgentID string) error
-	MCPServerDefGetActive(ctx context.Context, name string) (MCPServerDefRow, error)
+	// MCPServerDefSetActive UPSERTs the mcp_server_def_active pointer for
+	// (tenantID, name). RFC N: the active pointer is per-tenant, and a
+	// def can only be promoted within its own tenant — implementations
+	// refuse if the def's tenant_id ≠ tenantID. tenantID "" = the
+	// shared/operator/legacy tenant.
+	MCPServerDefSetActive(ctx context.Context, tenantID, name, defID, promotedByAgentID string) error
+	// MCPServerDefGetActive returns the active row for (tenantID, name).
+	// Returns *ErrNotFound when no active pointer exists. RFC N: tenantID
+	// "" = the shared/operator/legacy tenant.
+	MCPServerDefGetActive(ctx context.Context, tenantID, name string) (MCPServerDefRow, error)
 	MCPServerDefSetRetired(ctx context.Context, defID string, retired bool) error
 
 	// BackfillMCPServerDefContentSHA256 — mirror of the AgentDef /
@@ -1949,11 +1970,23 @@ type SkillDefRow struct {
 	BootstrappedFromStatic bool            `json:"bootstrapped_from_static"`
 	// ContentSHA256 — see AgentDefRow.ContentSHA256. Same semantics.
 	ContentSHA256 string `json:"content_sha256,omitempty"`
+	// TenantID is the RFC N tenant-isolation axis. "" = the shared/
+	// operator/legacy tenant. The UNIQUE constraint is (tenant_id, name,
+	// version), so two tenants own the same name+version independently.
+	// Deliberately NOT part of the content hash — tenant is operational
+	// identity, not content (same rule AgentDefRow follows), so two
+	// tenants forking the same body get the same content_sha256. Set from
+	// the authoritative principal at the write site; never from the wire.
+	TenantID string `json:"tenant_id,omitempty"`
 }
 
 // SkillDefNameSummary mirrors AgentDefNameSummary.
 type SkillDefNameSummary struct {
-	Name          string    `json:"name"`
+	Name string `json:"name"`
+	// TenantID is the RFC N owning tenant. A name owned by N tenants
+	// yields N summary rows (one per tenant) — without grouping by tenant
+	// the listing would merge distinct tenants' versions under one name.
+	TenantID      string    `json:"tenant_id,omitempty"`
 	VersionCount  int       `json:"version_count"`
 	ActiveDefID   string    `json:"active_def_id,omitempty"`
 	LatestVersion int       `json:"latest_version"`
@@ -1967,6 +2000,9 @@ type SkillDefActiveEntry struct {
 	DefID             string    `json:"def_id"`
 	PromotedAt        time.Time `json:"promoted_at"`
 	PromotedByAgentID string    `json:"promoted_by_agent_id,omitempty"`
+	// TenantID is the RFC N tenant-isolation axis (part of the
+	// skill_def_active PK). "" = the shared/operator/legacy tenant.
+	TenantID string `json:"tenant_id,omitempty"`
 }
 
 // ---- v0.9.x MCPServerDef substrate types ----
@@ -1990,6 +2026,14 @@ type MCPServerDefRow struct {
 	BootstrappedFromStatic bool            `json:"bootstrapped_from_static"`
 	// ContentSHA256 — see AgentDefRow.ContentSHA256.
 	ContentSHA256 string `json:"content_sha256,omitempty"`
+	// TenantID is the RFC N tenant-isolation axis. "" = the shared/
+	// operator/legacy tenant. The UNIQUE constraint is (tenant_id, name,
+	// version), so two tenants own the same name+version independently.
+	// Deliberately NOT part of the content hash — tenant is operational
+	// identity, not content — so two tenants registering the same body
+	// get the same content_sha256. Set from the authoritative principal
+	// at the write site; never from the wire.
+	TenantID string `json:"tenant_id,omitempty"`
 }
 
 // MCPServerDefNameSummary mirrors AgentDefNameSummary.
@@ -1999,6 +2043,11 @@ type MCPServerDefNameSummary struct {
 	ActiveDefID   string    `json:"active_def_id,omitempty"`
 	LatestVersion int       `json:"latest_version"`
 	LastUpdated   time.Time `json:"last_updated"`
+	// TenantID is the RFC N tenant axis the name belongs to. "" = the
+	// shared/operator/legacy tenant. The boot rehydrator + advertising
+	// filter key the per-name GetActive call on this so a run only ever
+	// sees its own + shared MCP servers.
+	TenantID string `json:"tenant_id,omitempty"`
 }
 
 // MCPServerDefActiveEntry mirrors AgentDefActiveEntry / SkillDefActiveEntry.
@@ -2007,6 +2056,9 @@ type MCPServerDefActiveEntry struct {
 	DefID             string    `json:"def_id"`
 	PromotedAt        time.Time `json:"promoted_at"`
 	PromotedByAgentID string    `json:"promoted_by_agent_id,omitempty"`
+	// TenantID is the RFC N tenant-isolation axis (part of the
+	// mcp_server_def_active PK). "" = the shared/operator/legacy tenant.
+	TenantID string `json:"tenant_id,omitempty"`
 }
 
 // ScheduleDefRow mirrors AgentDefRow / SkillDefRow / MCPServerDefRow

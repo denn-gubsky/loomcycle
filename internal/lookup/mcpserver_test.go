@@ -9,10 +9,11 @@ import (
 )
 
 // fakeDynReg is a lookup.MCPDynamicRegistry stub for the resolver test.
-type fakeDynReg map[string]lookup.MCPServerSpec
+// RFC N: keyed by (tenant, name); the "" tenant is the shared registry.
+type fakeDynReg map[[2]string]lookup.MCPServerSpec
 
-func (f fakeDynReg) Get(name string) (lookup.MCPServerSpec, bool) {
-	s, ok := f[name]
+func (f fakeDynReg) Get(tenantID, name string) (lookup.MCPServerSpec, bool) {
+	s, ok := f[[2]string{tenantID, name}]
 	return s, ok
 }
 
@@ -28,24 +29,65 @@ func TestMCPServer_StaticDynamicPrecedence(t *testing.T) {
 		"both":       {Transport: "http", URL: "http://yaml/mcp"},
 	}}
 	dyn := fakeDynReg{
-		"dyn-srv": {Transport: "http", URL: "http://d/mcp"},
-		"both":    {Transport: "http", URL: "http://substrate/mcp"},
+		{"", "dyn-srv"}: {Transport: "http", URL: "http://d/mcp"},
+		{"", "both"}:    {Transport: "http", URL: "http://substrate/mcp"},
 	}
 
-	if spec, ok := lookup.MCPServer(cfg, dyn, "static-srv"); !ok || spec.Source != "static" || !reflect.DeepEqual(spec.AllowedTools, []string{"a", "b"}) {
+	// Default "" tenant: order collapses to static → shared-dynamic, exactly
+	// as pre-RFC-N.
+	if spec, ok := lookup.MCPServer(cfg, dyn, "", "static-srv"); !ok || spec.Source != "static" || !reflect.DeepEqual(spec.AllowedTools, []string{"a", "b"}) {
 		t.Errorf("static: got (%+v, %v), want source=static + allowed [a b]", spec, ok)
 	}
-	if spec, ok := lookup.MCPServer(cfg, dyn, "dyn-srv"); !ok || spec.Source != "dynamic" || len(spec.AllowedTools) != 0 {
+	if spec, ok := lookup.MCPServer(cfg, dyn, "", "dyn-srv"); !ok || spec.Source != "dynamic" || len(spec.AllowedTools) != 0 {
 		t.Errorf("dynamic: got (%+v, %v), want source=dynamic + no allowed_tools (allow-all)", spec, ok)
 	}
-	if spec, ok := lookup.MCPServer(cfg, dyn, "both"); !ok || spec.Source != "static" || spec.URL != "http://yaml/mcp" {
+	if spec, ok := lookup.MCPServer(cfg, dyn, "", "both"); !ok || spec.Source != "static" || spec.URL != "http://yaml/mcp" {
 		t.Errorf("collision: got (%+v, %v), want the static (yaml) entry to win", spec, ok)
 	}
-	if _, ok := lookup.MCPServer(cfg, dyn, "nope"); ok {
+	if _, ok := lookup.MCPServer(cfg, dyn, "", "nope"); ok {
 		t.Error("unknown name must return ok=false")
 	}
-	if _, ok := lookup.MCPServer(nil, nil, "x"); ok {
+	if _, ok := lookup.MCPServer(nil, nil, "", "x"); ok {
 		t.Error("nil cfg + nil dyn must return ok=false")
+	}
+}
+
+// TestMCPServer_TenantResolutionPrecedence pins the RFC N tenant axis:
+//  1. a per-tenant dynamic registration shadows the shared static base;
+//  2. otherwise the static shared base resolves;
+//  3. otherwise a shared ("") dynamic registration resolves;
+//  4. the "" tenant preserves static-first (no tenant shadow pass).
+func TestMCPServer_TenantResolutionPrecedence(t *testing.T) {
+	cfg := &config.Config{MCPServers: map[string]config.MCPServer{
+		"shared-srv": {Transport: "http", URL: "http://static/mcp"},
+	}}
+	dyn := fakeDynReg{
+		// tenant-a overrides the shared static "shared-srv" by name.
+		{"tenant-a", "shared-srv"}: {Transport: "http", URL: "http://a-override/mcp"},
+		// a shared-dynamic-only name (no static entry).
+		{"", "shared-dyn"}: {Transport: "http", URL: "http://shared-dyn/mcp"},
+	}
+
+	// 1. tenant-a's override shadows the static base.
+	if spec, ok := lookup.MCPServer(cfg, dyn, "tenant-a", "shared-srv"); !ok || spec.URL != "http://a-override/mcp" {
+		t.Errorf("tenant override: got (%+v, %v), want a-override URL", spec, ok)
+	}
+	// A different tenant with no override falls through to the static base.
+	if spec, ok := lookup.MCPServer(cfg, dyn, "tenant-b", "shared-srv"); !ok || spec.Source != "static" || spec.URL != "http://static/mcp" {
+		t.Errorf("tenant-b base: got (%+v, %v), want the static shared base", spec, ok)
+	}
+	// 3. shared-dynamic-only name resolves for any tenant.
+	if spec, ok := lookup.MCPServer(cfg, dyn, "tenant-a", "shared-dyn"); !ok || spec.URL != "http://shared-dyn/mcp" {
+		t.Errorf("shared dynamic: got (%+v, %v), want shared-dyn URL", spec, ok)
+	}
+	// 4. "" tenant never sees tenant-a's override — resolves the static base.
+	if spec, ok := lookup.MCPServer(cfg, dyn, "", "shared-srv"); !ok || spec.Source != "static" || spec.URL != "http://static/mcp" {
+		t.Errorf("default tenant: got (%+v, %v), want the static base (no tenant shadow)", spec, ok)
+	}
+	// tenant-a's override is invisible to the "" tenant entirely (the name
+	// only exists in static for "").
+	if _, ok := lookup.MCPServer(cfg, dyn, "tenant-c", "a-only-nonexistent"); ok {
+		t.Error("nonexistent name must return ok=false")
 	}
 }
 

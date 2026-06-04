@@ -18,15 +18,35 @@ import (
 // the shared connection (the underlying transport handles the JSON-RPC ID
 // demuxing).
 //
-// The Pool is intentionally shared across sessions and tenants: per-tenant
-// auth is passed through tool arguments, not by spawning per-tenant
-// children. This keeps memory bounded — n active sessions doesn't mean
-// n × m MCP child processes.
+// The Pool is shared across sessions. RFC N: the client cache is keyed by
+// (tenant, name), not name alone — two tenants registering the SAME name
+// with DIFFERENT URLs must not share one cached Caller (the first-cached
+// URL would otherwise be served to both, a cross-tenant leak the
+// advertising filter alone does NOT close). The tenant is derived from the
+// run ctx via tenantOf at Get time, so a static yaml server (shared) and a
+// per-tenant dynamic registration of the same name get distinct slots.
+// Per-server memory is still bounded: a name only spawns a child for the
+// tenants that actually call it.
 type Pool struct {
-	mu       sync.Mutex
-	servers  map[string]*entry
-	build    func(name string) (Caller, error)
+	mu      sync.Mutex
+	servers map[poolKey]*entry
+	// build resolves a (tenant, name) to a fresh Caller. The tenant lets
+	// the callback dial the RIGHT tenant's URL via lookup.MCPServer.
+	build    func(tenant, name string) (Caller, error)
 	teardown func(c Caller) // Close hook for the concrete transport
+	// tenantOf derives the authoritative tenant from the run ctx
+	// (tools.RunIdentity(ctx).TenantID). Injected to avoid importing the
+	// http auth package here (which would invert the dependency
+	// direction). Nil-safe: a nil tenantOf treats every call as the
+	// shared "" tenant (legacy single-tenant behaviour).
+	tenantOf func(ctx context.Context) string
+}
+
+// poolKey is the RFC N composite cache key: a server name within a
+// tenant. The shared/legacy tenant is the "" tenant key.
+type poolKey struct {
+	tenant string
+	name   string
 }
 
 // entry is one server slot. Once created it lives in p.servers until Pool.Close
@@ -40,16 +60,28 @@ type entry struct {
 	err    error // non-nil means init failed and the entry is unusable
 }
 
-// NewPool creates a pool. build is called the first time a server is needed;
-// it should spawn the transport (e.g. stdio.Spawn) and return its Caller.
+// NewPool creates a pool. build is called the first time a (tenant,
+// server) is needed; it should resolve the tenant's spec, spawn the
+// transport (e.g. stdio.Spawn / mcphttp.New) and return its Caller.
 // teardown is called on Pool.Close for each live entry; pass a function
-// that closes the underlying transport.
-func NewPool(build func(name string) (Caller, error), teardown func(c Caller)) *Pool {
+// that closes the underlying transport. tenantOf derives the authoritative
+// tenant from the run ctx (RFC N); pass nil for legacy single-tenant
+// keying ("" tenant for every call).
+func NewPool(build func(tenant, name string) (Caller, error), teardown func(c Caller), tenantOf func(ctx context.Context) string) *Pool {
 	return &Pool{
-		servers:  make(map[string]*entry),
+		servers:  make(map[poolKey]*entry),
 		build:    build,
 		teardown: teardown,
+		tenantOf: tenantOf,
 	}
+}
+
+// tenantFor derives the cache tenant for a run ctx. Nil-safe.
+func (p *Pool) tenantFor(ctx context.Context) string {
+	if p.tenantOf == nil {
+		return ""
+	}
+	return p.tenantOf(ctx)
 }
 
 // Get returns the Caller for a named server, spawning the connection on
@@ -61,12 +93,13 @@ func NewPool(build func(name string) (Caller, error), teardown func(c Caller)) *
 // crashed), Get evicts it and re-initialises a fresh entry inline. The
 // caller never sees a "permanently dead" slot.
 func (p *Pool) Get(ctx context.Context, name string) (Caller, []ToolDescriptor, error) {
+	key := poolKey{p.tenantFor(ctx), name}
 	// Phase 1 (fast path): check the map under the lock. If the entry
 	// exists, ready, and healthy, return immediately. If it exists but is
 	// still initialising, wait on its ready channel without holding p.mu.
 	// If it's ready but unhealthy, evict and fall through to a fresh init.
 	p.mu.Lock()
-	e, exists := p.servers[name]
+	e, exists := p.servers[key]
 	if exists {
 		select {
 		case <-e.ready:
@@ -80,7 +113,7 @@ func (p *Pool) Get(ctx context.Context, name string) (Caller, []ToolDescriptor, 
 			if e.err == nil && e.caller != nil && p.teardown != nil {
 				p.teardown(e.caller)
 			}
-			delete(p.servers, name)
+			delete(p.servers, key)
 			exists = false
 		default:
 			// Still initialising — fall through to wait.
@@ -88,7 +121,7 @@ func (p *Pool) Get(ctx context.Context, name string) (Caller, []ToolDescriptor, 
 	}
 	if !exists {
 		e = &entry{ready: make(chan struct{})}
-		p.servers[name] = e
+		p.servers[key] = e
 	}
 	p.mu.Unlock()
 
@@ -114,13 +147,13 @@ func (p *Pool) Get(ctx context.Context, name string) (Caller, []ToolDescriptor, 
 	// Drop the lock during build/initialize/list; other goroutines wait on
 	// e.ready. On failure, remove the entry from the map so a retry can
 	// re-attempt rather than seeing a permanently-dead slot.
-	caller, descs, err := p.initEntry(ctx, name)
+	caller, descs, err := p.initEntry(ctx, key.tenant, name)
 	if err != nil {
 		p.mu.Lock()
 		// Only remove if it's still our entry (paranoid against a Close
 		// having already cleared the map).
-		if cur, ok := p.servers[name]; ok && cur == e {
-			delete(p.servers, name)
+		if cur, ok := p.servers[key]; ok && cur == e {
+			delete(p.servers, key)
 		}
 		p.mu.Unlock()
 		e.err = err
@@ -135,8 +168,8 @@ func (p *Pool) Get(ctx context.Context, name string) (Caller, []ToolDescriptor, 
 
 // initEntry runs build → Initialize → ListTools without any pool locks held.
 // On failure the caller (Get) removes the half-built entry from the map.
-func (p *Pool) initEntry(ctx context.Context, name string) (Caller, []ToolDescriptor, error) {
-	caller, err := p.build(name)
+func (p *Pool) initEntry(ctx context.Context, tenant, name string) (Caller, []ToolDescriptor, error) {
+	caller, err := p.build(tenant, name)
 	if err != nil {
 		return nil, nil, fmt.Errorf("mcp pool: build %q: %w", name, err)
 	}
@@ -217,14 +250,14 @@ func (p *Pool) Tools() []tools.Tool {
 	p.mu.Lock()
 	// Snapshot the entry pointers so we can safely iterate the ready
 	// channels without holding p.mu (ready is closed under no lock).
-	entries := make(map[string]*entry, len(p.servers))
-	for name, e := range p.servers {
-		entries[name] = e
+	entries := make(map[poolKey]*entry, len(p.servers))
+	for key, e := range p.servers {
+		entries[key] = e
 	}
 	p.mu.Unlock()
 
 	var out []tools.Tool
-	for serverName, e := range entries {
+	for key, e := range entries {
 		select {
 		case <-e.ready:
 			if e.err != nil {
@@ -235,7 +268,7 @@ func (p *Pool) Tools() []tools.Tool {
 			continue
 		}
 		for _, td := range e.tools {
-			out = append(out, NewTool(p, serverName, td))
+			out = append(out, NewTool(p, key.name, td))
 		}
 	}
 	return out
@@ -249,10 +282,11 @@ func (p *Pool) Tools() []tools.Tool {
 //
 // Read-only — never triggers handshake or eviction. Used by the
 // Library introspection endpoint to enumerate static MCP servers'
-// tool lists without forcing wire round-trips.
-func (p *Pool) PeekTools(name string) []ToolDescriptor {
+// tool lists without forcing wire round-trips. RFC N: keyed by
+// (tenant, name); pass "" for static yaml servers (the shared tenant).
+func (p *Pool) PeekTools(tenant, name string) []ToolDescriptor {
 	p.mu.Lock()
-	e, ok := p.servers[name]
+	e, ok := p.servers[poolKey{tenant, name}]
 	p.mu.Unlock()
 	if !ok {
 		return nil
@@ -278,7 +312,7 @@ func (p *Pool) PeekTools(name string) []ToolDescriptor {
 func (p *Pool) Close() {
 	p.mu.Lock()
 	entries := p.servers
-	p.servers = map[string]*entry{}
+	p.servers = map[poolKey]*entry{}
 	p.mu.Unlock()
 
 	for _, e := range entries {
@@ -307,12 +341,18 @@ func (p *Pool) Close() {
 // map empty and triggers a fresh build() — which consults the dynamic
 // registry for the up-to-date spec.
 //
+// RFC N: keyed by (tenant, name) — evicting tenant A's cached client for
+// a name leaves tenant B's (same name, different URL) untouched. The
+// substrate tool passes the def's own tenant (derived from RunIdentity)
+// so eviction stays tenant-correct.
+//
 // Returns true if an entry was evicted (existed in the map).
-func (p *Pool) Evict(name string) bool {
+func (p *Pool) Evict(tenant, name string) bool {
 	p.mu.Lock()
-	e, exists := p.servers[name]
+	key := poolKey{tenant, name}
+	e, exists := p.servers[key]
 	if exists {
-		delete(p.servers, name)
+		delete(p.servers, key)
 	}
 	p.mu.Unlock()
 	if !exists {

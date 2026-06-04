@@ -23,7 +23,7 @@ func TestResolveSkillBodiesForRun_NoSkillsIsNoop(t *testing.T) {
 
 	srv := &Server{store: s}
 	def := config.AgentDef{SystemPrompt: "base prompt", SystemPromptBase: "base prompt"}
-	got, _ := srv.resolveSkillBodiesForRun(context.Background(), def)
+	got, _ := srv.resolveSkillBodiesForRun(context.Background(), "", def)
 	if got.SystemPrompt != "base prompt" {
 		t.Errorf("got %q, want unchanged base prompt", got.SystemPrompt)
 	}
@@ -46,7 +46,7 @@ func TestResolveSkillBodiesForRun_NoActiveRowsIsNoop(t *testing.T) {
 		SystemPrompt:     baked,
 		SystemPromptBase: "base prompt",
 	}
-	got, _ := srv.resolveSkillBodiesForRun(context.Background(), def)
+	got, _ := srv.resolveSkillBodiesForRun(context.Background(), "", def)
 	if got.SystemPrompt != baked {
 		t.Errorf("no DB-active row should leave baked prompt unchanged; got %q", got.SystemPrompt)
 	}
@@ -73,7 +73,7 @@ func TestResolveSkillBodiesForRun_DBActiveOverrides(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := s.SkillDefSetActive(ctx, "karpathy-guidelines", row.DefID, ""); err != nil {
+	if err := s.SkillDefSetActive(ctx, "", "karpathy-guidelines", row.DefID, ""); err != nil {
 		t.Fatal(err)
 	}
 
@@ -85,7 +85,7 @@ func TestResolveSkillBodiesForRun_DBActiveOverrides(t *testing.T) {
 		SystemPrompt:     "base prompt\n\n---\n\nSTATIC BODY",
 		SystemPromptBase: "base prompt",
 	}
-	got, _ := srv.resolveSkillBodiesForRun(ctx, def)
+	got, _ := srv.resolveSkillBodiesForRun(ctx, "", def)
 	if !strings.Contains(got.SystemPrompt, "DB BODY") {
 		t.Errorf("DB body should be substituted into SystemPrompt; got %q", got.SystemPrompt)
 	}
@@ -119,7 +119,7 @@ func TestResolveSkillBodiesForRun_StaleRowIsIgnored(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := s.SkillDefSetActive(ctx, "empty-skill", row.DefID, ""); err != nil {
+	if err := s.SkillDefSetActive(ctx, "", "empty-skill", row.DefID, ""); err != nil {
 		t.Fatal(err)
 	}
 
@@ -130,7 +130,7 @@ func TestResolveSkillBodiesForRun_StaleRowIsIgnored(t *testing.T) {
 		SystemPrompt:     baked,
 		SystemPromptBase: "base prompt",
 	}
-	got, _ := srv.resolveSkillBodiesForRun(ctx, def)
+	got, _ := srv.resolveSkillBodiesForRun(ctx, "", def)
 	if got.SystemPrompt != baked {
 		t.Errorf("empty-body DB row should NOT trigger rebuild; got %q", got.SystemPrompt)
 	}
@@ -159,7 +159,7 @@ func TestResolveSkillBodiesForRun_OneSkillResolvesEvenIfAnotherIsMissing(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := s.SkillDefSetActive(ctx, "skill-a", row.DefID, ""); err != nil {
+	if err := s.SkillDefSetActive(ctx, "", "skill-a", row.DefID, ""); err != nil {
 		t.Fatal(err)
 	}
 
@@ -169,8 +169,71 @@ func TestResolveSkillBodiesForRun_OneSkillResolvesEvenIfAnotherIsMissing(t *test
 		SystemPrompt:     "base prompt\n\n---\n\nstatic A\n\n---\n\nstatic B",
 		SystemPromptBase: "base prompt",
 	}
-	got, _ := srv.resolveSkillBodiesForRun(ctx, def)
+	got, _ := srv.resolveSkillBodiesForRun(ctx, "", def)
 	if !strings.Contains(got.SystemPrompt, "DB BODY A") {
 		t.Errorf("DB body for skill-a should be substituted; got %q", got.SystemPrompt)
+	}
+}
+
+// TestResolveSkillBodiesForRun_ResolvesExplicitTenantWithoutPrincipalOnCtx
+// — RFC N FIX 2-skills regression, the skill analogue of
+// TestLookupAgent_ResolvesExplicitTenantWithoutPrincipalOnCtx. A
+// non-HTTP-principal spawn surface (A2A / scheduler / webhook / MCP
+// spawn_run / gRPC-legacy) computes the run's authoritative tenant as
+// effectiveTenantID and passes it EXPLICITLY to resolveSkillBodiesForRun,
+// with NO auth.Principal on ctx and WithRunIdentity not yet stamped. The
+// agent's skills MUST resolve at the run's tenant T, not at "".
+//
+// Pre-fix, resolveSkillBodiesForRun derived the tenant from
+// tenantFromCtx(ctx) which — with no principal and no RunIdentity —
+// returns "", so the run resolved its skills at the SHARED tenant while
+// memory + sub-agents used T. This test fails on the unfixed signature
+// (it wouldn't compile against the old ctx-only helper, and semantically
+// would resolve "" not T's promoted body).
+func TestResolveSkillBodiesForRun_ResolvesExplicitTenantWithoutPrincipalOnCtx(t *testing.T) {
+	s, err := sqlite.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	ctx := context.Background() // NO principal, NO RunIdentity (A2A/scheduler shape)
+
+	// Promote a SkillDef body for "tenant-skill" ONLY under tenant "acme"
+	// — not the shared "" tenant.
+	defJSON, _ := json.Marshal(map[string]string{"body": "ACME DB BODY"})
+	row, err := s.SkillDefCreate(ctx, store.SkillDefRow{
+		DefID:      "sdf_acme",
+		Name:       "tenant-skill",
+		Definition: defJSON,
+		TenantID:   "acme",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SkillDefSetActive(ctx, "acme", "tenant-skill", row.DefID, ""); err != nil {
+		t.Fatal(err)
+	}
+
+	srv := &Server{store: s}
+	def := config.AgentDef{
+		Skills:           []string{"tenant-skill"},
+		SystemPrompt:     "base prompt\n\n---\n\nSTATIC BODY",
+		SystemPromptBase: "base prompt",
+	}
+
+	// Explicit tenant "acme" resolves acme's promoted body even with no
+	// principal/RunIdentity on ctx.
+	got, _ := srv.resolveSkillBodiesForRun(ctx, "acme", def)
+	if !strings.Contains(got.SystemPrompt, "ACME DB BODY") {
+		t.Errorf("the run's authoritative tenant must resolve its own promoted skill body even with no principal on ctx; got %q", got.SystemPrompt)
+	}
+
+	// The same agent resolved at the SHARED tenant "" must NOT see acme's
+	// promotion — proving the tenant argument (not a ctx default) selects
+	// the row. With no shared-tenant active row, the baked static prompt
+	// stays unchanged (fast path).
+	gotShared, _ := srv.resolveSkillBodiesForRun(ctx, "", def)
+	if strings.Contains(gotShared.SystemPrompt, "ACME DB BODY") {
+		t.Error("resolving at the shared tenant \"\" surfaced an acme-only promotion; tenant isolation breached")
 	}
 }
