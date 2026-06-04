@@ -1815,7 +1815,7 @@ func TestLookupAgent_FallsThroughToSubstrate(t *testing.T) {
 	// Before this PR, lookupAgent only consulted dynamic_agents (empty)
 	// and returned (zero, false). After this PR it falls through to
 	// AgentDefGetActive and resolves.
-	def, ok := srv.lookupAgent(ctx, "substrate-only-agent")
+	def, ok := srv.lookupAgent(ctx, "", "substrate-only-agent")
 	if !ok {
 		t.Fatal("lookupAgent returned ok=false; expected substrate fall-through to resolve the agent")
 	}
@@ -1875,7 +1875,7 @@ func TestLookupAgent_DynamicAgentsStillWins(t *testing.T) {
 		t.Fatalf("AgentDefSetActive: %v", err)
 	}
 
-	def, ok := srv.lookupAgent(ctx, "shared-name")
+	def, ok := srv.lookupAgent(ctx, "", "shared-name")
 	if !ok {
 		t.Fatal("lookupAgent returned ok=false; want ok=true")
 	}
@@ -1921,7 +1921,7 @@ func TestLookupAgent_SystemPromptBaseSetFromSubstrate(t *testing.T) {
 		t.Fatalf("AgentDefSetActive: %v", err)
 	}
 
-	def, ok := srv.lookupAgent(ctx, "ats-filter")
+	def, ok := srv.lookupAgent(ctx, "", "ats-filter")
 	if !ok {
 		t.Fatal("lookupAgent returned ok=false")
 	}
@@ -1931,6 +1931,61 @@ func TestLookupAgent_SystemPromptBaseSetFromSubstrate(t *testing.T) {
 	// THE invariant this test exists to pin.
 	if def.SystemPromptBase != agentBody {
 		t.Errorf("SystemPromptBase = %q, want it set to SystemPrompt %q so resolveSkillBodiesForRun rebuilds from the agent's actual body, not an empty string", def.SystemPromptBase, agentBody)
+	}
+}
+
+// TestLookupAgent_ResolvesExplicitTenantWithoutPrincipalOnCtx — RFC N
+// FIX 2 regression. A non-HTTP-principal spawn surface (A2A / scheduler /
+// webhook / MCP spawn_run / gRPC-legacy) computes the run's authoritative
+// tenant as effectiveTenantID and passes it EXPLICITLY to lookupAgent,
+// with NO auth.Principal on ctx and WithRunIdentity not yet stamped. The
+// entry agent MUST resolve at the run's tenant T, not at "".
+//
+// Pre-fix, lookupAgent derived the tenant from tenantFromCtx(ctx) which —
+// with no principal and no RunIdentity — returns "", so the entry agent
+// resolved at the SHARED tenant while memory + sub-agents used T. This
+// test fails on the unfixed signature (it wouldn't compile against the
+// old ctx-only lookupAgent, and semantically would resolve "" not T).
+func TestLookupAgent_ResolvesExplicitTenantWithoutPrincipalOnCtx(t *testing.T) {
+	st, err := storesqlite.Open(":memory:")
+	if err != nil {
+		t.Fatalf("sqlite.Open: %v", err)
+	}
+	defer st.Close()
+
+	cfg := &config.Config{
+		Concurrency: config.Concurrency{MaxConcurrentRuns: 1, MaxQueueDepth: 1, QueueTimeoutMS: 100},
+	}
+	srv := New(cfg, &stubResolver{}, nil, concurrency.New(1, 1, time.Second), st)
+	ctx := context.Background() // NO principal, NO RunIdentity (A2A/scheduler shape)
+
+	// Seed "report-agent" ONLY under tenant "acme" — not the shared "" tenant.
+	defJSON, _ := json.Marshal(map[string]any{
+		"system_prompt": "acme tenant body",
+		"allowed_tools": []string{"Read"},
+	})
+	if _, err := st.AgentDefCreate(ctx, store.AgentDefRow{
+		DefID: "def_acme_report", Name: "report-agent", Definition: defJSON, TenantID: "acme",
+	}); err != nil {
+		t.Fatalf("AgentDefCreate: %v", err)
+	}
+	if err := st.AgentDefSetActive(ctx, "acme", "report-agent", "def_acme_report", "a_test"); err != nil {
+		t.Fatalf("AgentDefSetActive: %v", err)
+	}
+
+	// Explicit tenant "acme" resolves the acme-only agent.
+	def, ok := srv.lookupAgent(ctx, "acme", "report-agent")
+	if !ok {
+		t.Fatal("lookupAgent(acme) returned ok=false; the run's authoritative tenant must resolve its own agent even with no principal/RunIdentity on ctx")
+	}
+	if def.SystemPrompt != "acme tenant body" {
+		t.Errorf("SystemPrompt = %q, want acme tenant body", def.SystemPrompt)
+	}
+
+	// The same name resolved at the SHARED tenant "" must NOT find it —
+	// proving the tenant argument (not a ctx default) is what selects the row.
+	if _, ok := srv.lookupAgent(ctx, "", "report-agent"); ok {
+		t.Error("lookupAgent(\"\") resolved an acme-only agent; tenant isolation breached")
 	}
 }
 
@@ -1964,7 +2019,7 @@ func TestLookupAgent_SystemPromptBaseSetFromDynamic(t *testing.T) {
 		t.Fatalf("DynamicAgentUpsert: %v", err)
 	}
 
-	def, ok := srv.lookupAgent(ctx, "legacy-with-skills")
+	def, ok := srv.lookupAgent(ctx, "", "legacy-with-skills")
 	if !ok {
 		t.Fatal("lookupAgent returned ok=false")
 	}

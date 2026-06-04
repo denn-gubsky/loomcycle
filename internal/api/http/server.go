@@ -775,7 +775,9 @@ func writeQuotaError(w http.ResponseWriter, err error) {
 // overlay (v0.7.x behaviour). Unknown names are rejected upstream
 // before this is called.
 func (s *Server) resolveAgent(agentName, userTier string) (providerID, model, effort string, err error) {
-	def, ok := s.lookupAgent(context.Background(), agentName)
+	// Boot/background resolution carries no run tenant — use the ctx
+	// tenant (empty here, since context.Background()) → shared/default.
+	def, ok := s.lookupAgent(context.Background(), tenantFromCtx(context.Background()), agentName)
 	if !ok {
 		return "", "", "", fmt.Errorf("%w: %s", runner.ErrUnknownAgent, agentName)
 	}
@@ -792,12 +794,18 @@ func (s *Server) resolveAgent(agentName, userTier string) (providerID, model, ef
 // inline lookup, AND the v0.9.x lookups that silently skipped the
 // boot-time normalizer chain (PRs #184 + #186). Every code path
 // that needs an agent name → def goes through here.
-func (s *Server) lookupAgent(ctx context.Context, name string) (config.AgentDef, bool) {
-	// RFC N: derive the tenant from the authoritative principal in ctx
-	// (never the wire), so a token can only resolve agents within its
-	// own tenant + the shared base. Callers keep their signature — the
-	// tenant rides ctx. "" = shared/default/legacy tenant.
-	tenantID := tenantFromCtx(ctx)
+func (s *Server) lookupAgent(ctx context.Context, tenantID, name string) (config.AgentDef, bool) {
+	// RFC N: tenant is an EXPLICIT argument, not ctx-derived. At the
+	// run-creation entry sites the authoritative tenant is already
+	// computed as effectiveTenantID (via applyPrincipal / the session)
+	// BEFORE WithRunIdentity is stamped on ctx — so for non-HTTP-principal
+	// spawn surfaces (A2A, scheduler, webhook, MCP spawn_run, gRPC-legacy)
+	// tenantFromCtx(ctx) would return the WRONG tenant ("" or the caller's,
+	// not the run's) and the entry agent would resolve at the wrong tenant
+	// while memory + sub-agents use effectiveTenantID. Callers that already
+	// run with RunIdentity on ctx (sub-agents, the Context-tool path, boot)
+	// pass tenantFromCtx(ctx) explicitly to preserve today's behavior.
+	// "" = shared/default/legacy tenant.
 	// nil-store guard at the boundary so the lookup package can
 	// type-assert an interface receiver. The lookup package treats
 	// "no store" identically to "store didn't have the name" — both
@@ -1408,7 +1416,11 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	if effectiveAgentName == "" {
 		return fmt.Errorf("%w: agent is required", runner.ErrInvalidArgument)
 	}
-	agentDef, ok := s.lookupAgent(ctx, effectiveAgentName)
+	// RFC N: resolve the ENTRY agent at the run's authoritative tenant
+	// (effectiveTenantID), NOT tenantFromCtx(ctx) — WithRunIdentity isn't
+	// stamped until ~line 1500, so for non-HTTP-principal spawn surfaces
+	// the ctx tenant is wrong here.
+	agentDef, ok := s.lookupAgent(ctx, effectiveTenantID, effectiveAgentName)
 	if !ok {
 		return fmt.Errorf("%w: %s", runner.ErrUnknownAgent, effectiveAgentName)
 	}
@@ -2483,7 +2495,11 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	agentDef, ok := s.lookupAgent(r.Context(), req.Agent)
+	// RFC N: existence-check the agent at this handler's authoritative
+	// tenant. On an authed HTTP route the principal is on ctx, so
+	// tenantFromCtx returns the principal's tenant (the same value
+	// applyPrincipal below resolves into req.TenantID) — never the wire.
+	agentDef, ok := s.lookupAgent(r.Context(), tenantFromCtx(r.Context()), req.Agent)
 	if !ok {
 		http.Error(w, fmt.Sprintf("unknown agent %q", req.Agent), http.StatusBadRequest)
 		return
@@ -2941,7 +2957,10 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 
 	// Resolve provider+model from the session's stored agent so the
 	// continuation runs against the same model as the original session.
-	agentDef, ok := s.lookupAgent(r.Context(), sess.Agent)
+	// RFC N: resolve at the SESSION's authoritative tenant (the same value
+	// RunOnce uses for a continuation), not tenantFromCtx — the ownership
+	// gate above already proved the caller is entitled to this session.
+	agentDef, ok := s.lookupAgent(r.Context(), sess.TenantID, sess.Agent)
 	if !ok {
 		http.Error(w, fmt.Sprintf("session refers to unknown agent %q", sess.Agent), http.StatusBadRequest)
 		return
