@@ -191,6 +191,9 @@ func Run(t *testing.T, factory Factory) {
 		{"MCPServerDefVersionMonotonic", testMCPServerDefVersionMonotonic},
 		{"MCPServerDefActivePointerIdempotent", testMCPServerDefActivePointerIdempotent},
 		{"MCPServerDefRetireReversible", testMCPServerDefRetireReversible},
+		// RFC N — MCP server definition plane tenant isolation. Fails on the
+		// pre-migration single-`name`-PK schema (clobber); passes after.
+		{"MCPServerDefTenantIsolation", testMCPServerDefTenantIsolation},
 		{"MCPServerDefContentSHA256RoundTrip", testMCPServerDefContentSHA256RoundTrip},
 		{"BackfillMCPServerDefContentSHA256", testBackfillMCPServerDefContentSHA256},
 		// v1.x RFC E ScheduleDef substrate — same shape minus content_sha256.
@@ -4223,19 +4226,81 @@ func testMCPServerDefActivePointerIdempotent(t *testing.T, s store.Store) {
 	r1, _ := s.MCPServerDefCreate(ctx, mkMCPServerDef("md-active-1", "mcp-active", ""))
 	r2, _ := s.MCPServerDefCreate(ctx, mkMCPServerDef("md-active-2", "mcp-active", ""))
 
-	if err := s.MCPServerDefSetActive(ctx, "mcp-active", r1.DefID, "test"); err != nil {
+	if err := s.MCPServerDefSetActive(ctx, "", "mcp-active", r1.DefID, "test"); err != nil {
 		t.Fatal(err)
 	}
-	got, _ := s.MCPServerDefGetActive(ctx, "mcp-active")
+	got, _ := s.MCPServerDefGetActive(ctx, "", "mcp-active")
 	if got.DefID != r1.DefID {
 		t.Errorf("active = %s, want %s", got.DefID, r1.DefID)
 	}
-	if err := s.MCPServerDefSetActive(ctx, "mcp-active", r2.DefID, "test"); err != nil {
+	if err := s.MCPServerDefSetActive(ctx, "", "mcp-active", r2.DefID, "test"); err != nil {
 		t.Fatal(err)
 	}
-	got, _ = s.MCPServerDefGetActive(ctx, "mcp-active")
+	got, _ = s.MCPServerDefGetActive(ctx, "", "mcp-active")
 	if got.DefID != r2.DefID {
 		t.Errorf("after re-promote: active = %s, want %s", got.DefID, r2.DefID)
+	}
+}
+
+// testMCPServerDefTenantIsolation pins the RFC N boundary: the SAME MCP
+// server name registered under two tenants must resolve to each tenant's
+// OWN definition + active pointer — no cross-tenant clobber, no
+// cross-tenant read, no cross-tenant promote.
+//
+// FAIL-BEFORE: on the pre-migration schema (mcp_server_def_active PK =
+// (name), mcp_server_defs UNIQUE = (name, version)), tenant B's promote
+// overwrites tenant A's single global pointer (last-writer-wins), so the
+// GetActive(A) assertion reads back B's def_id and the test fails. The
+// composite (tenant_id, name) PK is what makes the two rows coexist.
+func testMCPServerDefTenantIsolation(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	const name = "n8n"
+
+	aDef := mkMCPServerDef("mti-a", name, "")
+	aDef.TenantID = "tenant-a"
+	aDef.Definition = json.RawMessage(`{"transport":"http","url":"https://a.example.com/mcp"}`)
+	aRow, err := s.MCPServerDefCreate(ctx, aDef)
+	if err != nil {
+		t.Fatalf("create A: %v", err)
+	}
+
+	bDef := mkMCPServerDef("mti-b", name, "")
+	bDef.TenantID = "tenant-b"
+	bDef.Definition = json.RawMessage(`{"transport":"http","url":"https://b.example.com/mcp"}`)
+	bRow, err := s.MCPServerDefCreate(ctx, bDef)
+	if err != nil {
+		t.Fatalf("create B: %v", err)
+	}
+
+	if err := s.MCPServerDefSetActive(ctx, "tenant-a", name, aRow.DefID, ""); err != nil {
+		t.Fatalf("promote A: %v", err)
+	}
+	if err := s.MCPServerDefSetActive(ctx, "tenant-b", name, bRow.DefID, ""); err != nil {
+		t.Fatalf("promote B: %v", err)
+	}
+
+	gotA, err := s.MCPServerDefGetActive(ctx, "tenant-a", name)
+	if err != nil {
+		t.Fatalf("get active A: %v", err)
+	}
+	if gotA.DefID != aRow.DefID || gotA.TenantID != "tenant-a" || string(gotA.Definition) != `{"transport":"http","url":"https://a.example.com/mcp"}` {
+		t.Errorf("tenant-a clobbered: got def_id=%q tenant=%q def=%s, want A's own def",
+			gotA.DefID, gotA.TenantID, gotA.Definition)
+	}
+
+	gotB, err := s.MCPServerDefGetActive(ctx, "tenant-b", name)
+	if err != nil {
+		t.Fatalf("get active B: %v", err)
+	}
+	if gotB.DefID != bRow.DefID || gotB.TenantID != "tenant-b" || string(gotB.Definition) != `{"transport":"http","url":"https://b.example.com/mcp"}` {
+		t.Errorf("tenant-b clobbered: got def_id=%q tenant=%q def=%s, want B's own def",
+			gotB.DefID, gotB.TenantID, gotB.Definition)
+	}
+
+	// A def can only be promoted within its own tenant — promoting A's
+	// def under tenant-b must be refused.
+	if err := s.MCPServerDefSetActive(ctx, "tenant-b", name, aRow.DefID, ""); err == nil {
+		t.Error("cross-tenant promote (A's def under tenant-b) unexpectedly succeeded")
 	}
 }
 
