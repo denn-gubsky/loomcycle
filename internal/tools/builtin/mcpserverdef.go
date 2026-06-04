@@ -412,10 +412,22 @@ func (m *MCPServerDef) execGet(ctx context.Context, in mcpServerDefInput) (tools
 		}
 		return errResult(fmt.Sprintf("get: %s", err)), nil
 	}
+	// RFC N: def_id is a global handle but a def is owned by exactly one
+	// tenant. MCPServerDefGet is by-def_id and tenant-blind, so guard here:
+	// a caller in tenant T cannot read another tenant's def. Return the SAME
+	// opaque not-found a missing def returns — never leak existence/body of a
+	// cross-tenant row.
+	if row.TenantID != tools.RunIdentity(ctx).TenantID {
+		return errResult(fmt.Sprintf("get: def_id %q not found", in.DefID)), nil
+	}
 	return okJSON(mcpServerDefRowResponseMap(row))
 }
 
 func (m *MCPServerDef) execList(ctx context.Context, in mcpServerDefInput) (tools.Result, error) {
+	// RFC N: both list shapes return rows across ALL tenants (names are
+	// per-tenant now). Filter to the caller's own tenant so a tenant lists
+	// only its own servers — never enumerates another tenant's.
+	tenantID := tools.RunIdentity(ctx).TenantID
 	if in.Name != "" {
 		rows, err := m.Store.MCPServerDefListByName(ctx, in.Name)
 		if err != nil {
@@ -423,15 +435,28 @@ func (m *MCPServerDef) execList(ctx context.Context, in mcpServerDefInput) (tool
 		}
 		out := make([]map[string]any, 0, len(rows))
 		for _, r := range rows {
+			if r.TenantID != tenantID {
+				continue
+			}
 			out = append(out, mcpServerDefRowResponseMap(r))
 		}
 		return okJSON(map[string]any{"name": in.Name, "versions": out})
 	}
+	// MCPServerDefListNames returns a TenantID per summary (it's the
+	// boot/advertising key, NOT a tenant-scoped query) — filter the
+	// summaries to the caller's tenant here, the consumer-side guard.
 	summaries, err := m.Store.MCPServerDefListNames(ctx)
 	if err != nil {
 		return errResult(fmt.Sprintf("list: %s", err)), nil
 	}
-	return okJSON(map[string]any{"names": summaries})
+	out := make([]store.MCPServerDefNameSummary, 0, len(summaries))
+	for _, s := range summaries {
+		if s.TenantID != tenantID {
+			continue
+		}
+		out = append(out, s)
+	}
+	return okJSON(map[string]any{"names": out})
 }
 
 // ---- retire / promote ----
@@ -450,6 +475,15 @@ func (m *MCPServerDef) execRetire(ctx context.Context, in mcpServerDefInput) (to
 			return errResult(fmt.Sprintf("retire: def_id %q not found", in.DefID)), nil
 		}
 		return errResult(fmt.Sprintf("retire: %s", err)), nil
+	}
+	// RFC N: refuse cross-tenant retire. MCPServerDefSetRetired is a global
+	// by-def_id mutation; without this guard a caller in tenant T could
+	// retire another tenant's def (and below, evict another tenant's pooled
+	// client). Opaque not-found — don't leak existence. After this guard
+	// row.TenantID == the caller's tenant, so the Registry.Remove /
+	// Pool.Evict below stay keyed to the caller's own (tenant, name).
+	if row.TenantID != tools.RunIdentity(ctx).TenantID {
+		return errResult(fmt.Sprintf("retire: def_id %q not found", in.DefID)), nil
 	}
 	if err := m.Store.MCPServerDefSetRetired(ctx, in.DefID, *in.Retired); err != nil {
 		return errResult(fmt.Sprintf("retire: %s", err)), nil
@@ -484,6 +518,15 @@ func (m *MCPServerDef) execPromote(ctx context.Context, in mcpServerDefInput) (t
 		return errResult(fmt.Sprintf("promote: %s", err)), nil
 	}
 	ident := tools.RunIdentity(ctx)
+	// RFC N: promote within the caller's OWN tenant. def_id is a global
+	// handle, and promoteAndWireRegistry keys SetActive/Registry/Pool on the
+	// def's own tenant — so without this guard a caller in tenant T could
+	// promote (and evict the pooled client of) another tenant's def. Opaque
+	// not-found — don't leak existence. Mirrors agentdef execPromote, which
+	// gets the same protection by passing ident.TenantID to AgentDefSetActive.
+	if row.TenantID != ident.TenantID {
+		return errResult(fmt.Sprintf("promote: def_id %q not found", in.DefID)), nil
+	}
 	if err := m.promoteAndWireRegistry(ctx, row, ident.AgentID); err != nil {
 		return errResult(fmt.Sprintf("promote: %s", err)), nil
 	}
