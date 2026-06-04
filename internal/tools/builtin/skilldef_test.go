@@ -271,3 +271,74 @@ func TestSkillDefTool_RetireRoundTrip(t *testing.T) {
 		t.Error("retired flag didn't reverse")
 	}
 }
+
+// TestSkillDefTool_TenantIsolationGetListRetire — RFC N FIX 3-skills, the
+// skill analogue of TestAgentDefTool_TenantIsolationGetListRetire. The
+// get / list / retire ops were tenant-blind (gated only by the
+// tenant-blind checkScopeForName), so a caller in tenant A could read,
+// enumerate, and retire defs owned by tenant B. With scopes=[any] on both
+// callers (so the scope gate is NOT what refuses), the only thing keeping
+// tenants apart is the row-TenantID guard added by FIX 3.
+//
+// Pre-fix: get returns B's body, list returns B's versions, retire mutates
+// B's row — all from a tenant-A caller.
+func TestSkillDefTool_TenantIsolationGetListRetire(t *testing.T) {
+	tool, baseCtx, cleanup := skillDefFixture(t)
+	defer cleanup()
+
+	// Two tenant contexts over the SAME tool/store. Re-wrapping RunIdentity
+	// only swaps the tenant/agent; the scopes=[any] policy + agent tools
+	// from the fixture live under separate ctx keys, so refusals come from
+	// the tenant guard, not the scope gate.
+	ctxA := tools.WithRunIdentity(baseCtx, tools.RunIdentityValue{AgentID: "a_test", TenantID: "tenant-a"})
+	ctxB := tools.WithRunIdentity(baseCtx, tools.RunIdentityValue{AgentID: "a_test", TenantID: "tenant-b"})
+
+	// Create a non-static skill def under tenant B.
+	res, _ := tool.Execute(ctxB, json.RawMessage(`{"op":"create","name":"b-only","overlay":{"body":"tenant b body"}}`))
+	if res.IsError {
+		t.Fatalf("create under B: %s", res.Text)
+	}
+	defID := decodeResult(t, res.Text)["def_id"].(string)
+
+	// get from tenant A → opaque not-found (no cross-tenant leak).
+	res, _ = tool.Execute(ctxA, json.RawMessage(`{"op":"get","def_id":"`+defID+`"}`))
+	if !res.IsError {
+		t.Errorf("tenant A get of tenant B's def succeeded; want refusal. body=%s", res.Text)
+	}
+	if !strings.Contains(res.Text, "not found") {
+		t.Errorf("cross-tenant get should return opaque not-found; got %s", res.Text)
+	}
+
+	// list from tenant A → must NOT include B's version.
+	res, _ = tool.Execute(ctxA, json.RawMessage(`{"op":"list","name":"b-only"}`))
+	if res.IsError {
+		t.Fatalf("list under A: %s", res.Text)
+	}
+	versions := decodeResult(t, res.Text)["versions"].([]any)
+	if len(versions) != 0 {
+		t.Errorf("tenant A list of name owned by B returned %d versions; want 0 (tenant filter)", len(versions))
+	}
+
+	// retire from tenant A → refused; B's row must stay un-retired.
+	res, _ = tool.Execute(ctxA, json.RawMessage(`{"op":"retire","def_id":"`+defID+`","retired":true}`))
+	if !res.IsError {
+		t.Errorf("tenant A retire of tenant B's def succeeded; want refusal. body=%s", res.Text)
+	}
+	// Confirm B still sees its row un-retired (the retire didn't leak through).
+	res, _ = tool.Execute(ctxB, json.RawMessage(`{"op":"get","def_id":"`+defID+`"}`))
+	if res.IsError {
+		t.Fatalf("tenant B get of its own def: %s", res.Text)
+	}
+	if decodeResult(t, res.Text)["retired"].(bool) {
+		t.Error("tenant A's cross-tenant retire mutated tenant B's row")
+	}
+
+	// Sanity: tenant B CAN get + list its own def (the guard isn't over-broad).
+	res, _ = tool.Execute(ctxB, json.RawMessage(`{"op":"list","name":"b-only"}`))
+	if res.IsError {
+		t.Fatalf("tenant B list of its own name: %s", res.Text)
+	}
+	if n := len(decodeResult(t, res.Text)["versions"].([]any)); n != 1 {
+		t.Errorf("tenant B list returned %d versions; want 1", n)
+	}
+}

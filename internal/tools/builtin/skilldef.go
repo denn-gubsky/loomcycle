@@ -395,6 +395,14 @@ func (s *SkillDef) execGet(ctx context.Context, policy tools.SkillDefPolicyValue
 		}
 		return errResult(fmt.Sprintf("get: %s", err)), nil
 	}
+	// RFC N: def_id is a global handle but a def is owned by exactly one
+	// tenant. checkScopeForName is tenant-blind, so guard here: a caller
+	// in tenant T cannot read another tenant's def. Return the SAME opaque
+	// not-found a missing def returns — never leak existence/body of a
+	// cross-tenant row.
+	if row.TenantID != tools.RunIdentity(ctx).TenantID {
+		return errResult(fmt.Sprintf("get: def_id %q not found", in.DefID)), nil
+	}
 	if err := s.checkScopeForName(policy, row.Name, row.DefID); err != nil {
 		return errResult(err.Error()), nil
 	}
@@ -412,8 +420,15 @@ func (s *SkillDef) execList(ctx context.Context, policy tools.SkillDefPolicyValu
 	if err != nil {
 		return errResult(fmt.Sprintf("list: %s", err)), nil
 	}
+	// RFC N: SkillDefListByName returns rows across ALL tenants for a name
+	// (names are per-tenant now). Filter to the caller's own tenant so a
+	// tenant lists only its own versions.
+	tenantID := tools.RunIdentity(ctx).TenantID
 	out := make([]map[string]any, 0, len(rows))
 	for _, r := range rows {
+		if r.TenantID != tenantID {
+			continue
+		}
 		out = append(out, skillDefRowResponseMap(r))
 	}
 	return okJSON(map[string]any{"name": in.Name, "versions": out})
@@ -435,6 +450,12 @@ func (s *SkillDef) execRetire(ctx context.Context, policy tools.SkillDefPolicyVa
 			return errResult(fmt.Sprintf("retire: def_id %q not found", in.DefID)), nil
 		}
 		return errResult(fmt.Sprintf("retire: %s", err)), nil
+	}
+	// RFC N: refuse cross-tenant retire. SkillDefSetRetired is a global
+	// by-def_id mutation; without this guard a caller in tenant T could
+	// retire another tenant's def. Opaque not-found — don't leak existence.
+	if row.TenantID != tools.RunIdentity(ctx).TenantID {
+		return errResult(fmt.Sprintf("retire: def_id %q not found", in.DefID)), nil
 	}
 	if err := s.checkScopeForName(policy, row.Name, row.DefID); err != nil {
 		return errResult(err.Error()), nil
