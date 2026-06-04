@@ -1032,7 +1032,7 @@ type runPromptProvenance struct {
 // Second return value is the per-run provenance (skillName → active
 // SkillDef def_id) for callers emitting the v0.9.x `system_prompt`
 // transcript event. Empty when no DB-active rows were used.
-func (s *Server) resolveSkillBodiesForRun(ctx context.Context, agentDef config.AgentDef) (config.AgentDef, runPromptProvenance) {
+func (s *Server) resolveSkillBodiesForRun(ctx context.Context, tenantID string, agentDef config.AgentDef) (config.AgentDef, runPromptProvenance) {
 	var prov runPromptProvenance
 	if len(agentDef.Skills) == 0 || s.store == nil {
 		return agentDef, prov
@@ -1044,10 +1044,16 @@ func (s *Server) resolveSkillBodiesForRun(ctx context.Context, agentDef config.A
 	resolutions := make(map[string]lookup.SkillResolution, len(agentDef.Skills))
 	activeDefIDs := make(map[string]string, len(agentDef.Skills))
 	anySubstrate := false
-	// RFC N: resolve each skill within the run's tenant (from the
-	// authoritative principal in ctx, never the wire). A token only sees
-	// its own tenant's promotions + the shared base. "" = shared tenant.
-	tenantID := tenantFromCtx(ctx)
+	// RFC N: tenant is an EXPLICIT argument, not ctx-derived — mirrors
+	// lookupAgent (FIX 2). At the run-creation entry sites the run's
+	// authoritative tenant (effectiveTenantID / sess.TenantID) is already
+	// computed BEFORE WithRunIdentity is stamped on ctx, so deriving it
+	// from tenantFromCtx(ctx) here would resolve skills at the WRONG tenant
+	// for non-HTTP-principal spawn surfaces (A2A / scheduler / webhook /
+	// MCP spawn_run / gRPC-legacy) while memory + sub-agents use the run's
+	// tenant. The sub-agent call (runSubAgent) passes tenantFromCtx(ctx)
+	// since the parent's RunIdentity already carries the tenant. A token
+	// only sees its own tenant's promotions + the shared base. "" = shared.
 	for _, skillName := range agentDef.Skills {
 		sr, ok := lookup.Skill(ctx, s.store, s.skillSet, tenantID, skillName)
 		if !ok {
@@ -1487,7 +1493,11 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	// v0.8.22: rebuild SystemPrompt from per-run SkillDef bodies
 	// when any of the agent's skills has a DB-active row. No-op
 	// fast path when none do.
-	agentDef, promptProv := s.resolveSkillBodiesForRun(ctx, agentDef)
+	// RFC N: resolve skills at the run's authoritative tenant
+	// (effectiveTenantID), NOT tenantFromCtx(ctx) — WithRunIdentity isn't
+	// stamped until below, so for non-HTTP-principal spawn surfaces the
+	// ctx tenant is wrong here. Mirrors the lookupAgent fix above.
+	agentDef, promptProv := s.resolveSkillBodiesForRun(ctx, effectiveTenantID, agentDef)
 	if agentDef.SystemPrompt != "" {
 		segments = append([]loop.PromptSegment{{
 			Role: "system",
@@ -2629,7 +2639,11 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 	dispatcher := s.newDispatcher(allowedTools)
 
 	// v0.8.22: rebuild SystemPrompt from per-run SkillDef bodies.
-	agentDef, promptProv := s.resolveSkillBodiesForRun(r.Context(), agentDef)
+	// RFC N: resolve at this handler's authoritative tenant. On an authed
+	// HTTP route the principal is on ctx, so tenantFromCtx returns the
+	// principal's tenant (the same value applyPrincipal resolves) — never
+	// the wire. Mirrors the lookupAgent existence-check above.
+	agentDef, promptProv := s.resolveSkillBodiesForRun(r.Context(), tenantFromCtx(r.Context()), agentDef)
 	// Optional system prompt from agent def.
 	if agentDef.SystemPrompt != "" {
 		req.Segments = append([]loop.PromptSegment{{
@@ -3044,7 +3058,10 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	// v0.8.22: rebuild SystemPrompt from per-run SkillDef bodies
 	// when any of the agent's skills has a DB-active row. No-op
 	// fast path when none do.
-	agentDef, promptProv := s.resolveSkillBodiesForRun(r.Context(), agentDef)
+	// RFC N: resolve at the SESSION's authoritative tenant (the same value
+	// RunOnce uses for a continuation), not tenantFromCtx — the ownership
+	// gate above already proved the caller is entitled to this session.
+	agentDef, promptProv := s.resolveSkillBodiesForRun(r.Context(), sess.TenantID, agentDef)
 	if agentDef.SystemPrompt != "" {
 		segments = append([]loop.PromptSegment{{
 			Role: "system",
@@ -3712,7 +3729,10 @@ func (s *Server) runSubAgent(ctx context.Context, name string, prompt string, de
 	// sub-agents would silently keep the static baked body and
 	// SkillDef promotions never take effect for agents only spawned
 	// as sub-agents.
-	def, promptProv := s.resolveSkillBodiesForRun(ctx, def)
+	// RFC N: a sub-agent runs with the parent's RunIdentity already on
+	// ctx, so tenantFromCtx(ctx) returns the parent's (== the run's)
+	// authoritative tenant — resolve the sub-agent's skills there.
+	def, promptProv := s.resolveSkillBodiesForRun(ctx, tenantFromCtx(ctx), def)
 	// Build segments: agent's system_prompt (with cache_control) + the
 	// caller-supplied prompt as the first user message. Mirrors the
 	// shape of /v1/runs.
