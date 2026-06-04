@@ -8,6 +8,7 @@ import (
 	"google.golang.org/grpc/status"
 
 	"github.com/denn-gubsky/loomcycle/internal/api/grpc/loomcyclepb"
+	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
 
@@ -35,9 +36,16 @@ const (
 // future RPC reusing it would silently default-deny without these
 // grants. Keep symmetric with operatorCtx / substrateAdminCtx.
 func substrateGRPCCtx(ctx context.Context) context.Context {
+	// RFC N tenant invariant: tenant from the authoritative principal the
+	// gRPC interceptor stamped on ctx, NEVER the wire. Mirrors HTTP
+	// substrateAdminCtx — without carrying TenantID the def-tools stamp
+	// every gRPC-admin-registered def into the shared "" tenant. Zero
+	// value "" when no principal → shared tenant (correct single-tenant).
+	principal, _ := auth.PrincipalFromContext(ctx)
 	ctx = tools.WithRunIdentity(ctx, tools.RunIdentityValue{
-		UserID:  grpcSubstrateAdminUserID,
-		AgentID: grpcSubstrateAdminAgentID,
+		UserID:   grpcSubstrateAdminUserID,
+		AgentID:  grpcSubstrateAdminAgentID,
+		TenantID: principal.TenantID,
 	})
 	ctx = tools.WithAgentName(ctx, grpcSubstrateAdminAgentName)
 	ctx = tools.WithMemoryPolicy(ctx, tools.MemoryPolicyValue{

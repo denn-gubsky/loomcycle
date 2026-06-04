@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 
+	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/connector"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
@@ -160,9 +161,18 @@ func (s *Server) dispatchSubstrate(
 // would silently default-deny without these grants. Keep them
 // symmetric with operatorCtx so the helper stays safe to extend.
 func substrateAdminCtx(ctx context.Context) context.Context {
+	// RFC N tenant invariant: the tenant comes from the authoritative
+	// principal the auth middleware stamped on ctx, NEVER the wire. The
+	// def-tools read tools.RunIdentity(ctx).TenantID to stamp the row's
+	// tenant_id; without carrying it here every admin-registered def
+	// lands in the shared "" tenant regardless of the caller. Zero value
+	// "" when no principal (legacy LOOMCYCLE_AUTH_TOKEN / open mode) →
+	// shared tenant, which is the correct single-tenant behavior.
+	principal, _ := auth.PrincipalFromContext(ctx)
 	ctx = tools.WithRunIdentity(ctx, tools.RunIdentityValue{
-		UserID:  substrateAdminUserID,
-		AgentID: substrateAdminAgentID,
+		UserID:   substrateAdminUserID,
+		AgentID:  substrateAdminAgentID,
+		TenantID: principal.TenantID,
 	})
 	ctx = tools.WithAgentName(ctx, substrateAdminAgentName)
 	// AgentTools wildcard: substrate admin = operator trust. Without
