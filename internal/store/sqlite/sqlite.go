@@ -230,7 +230,8 @@ func (s *Store) migrate(ctx context.Context) error {
 			retired                   INTEGER NOT NULL DEFAULT 0,
 			bootstrapped_from_static  INTEGER NOT NULL DEFAULT 0,
 			content_sha256            TEXT,
-			UNIQUE(name, version)
+			tenant_id                 TEXT    NOT NULL DEFAULT '',
+			UNIQUE(tenant_id, name, version)
 		)`,
 		`CREATE INDEX IF NOT EXISTS agent_defs_by_name   ON agent_defs(name, version DESC)`,
 		`CREATE INDEX IF NOT EXISTS agent_defs_by_parent ON agent_defs(parent_def_id) WHERE parent_def_id IS NOT NULL`,
@@ -238,11 +239,23 @@ func (s *Store) migrate(ctx context.Context) error {
 		// agent_defs_by_content_sha256 is created in addIndexes below
 		// (runs AFTER addColumns adds the column on upgrade-from-v0.8.x
 		// DBs where this CREATE TABLE IF NOT EXISTS is a no-op).
+		// RFC N: tenant-scoped active pointer. PRIMARY KEY(tenant_id, name)
+		// — two tenants own the same name independently. On a FRESH DB this
+		// CREATE applies the composite PK directly. On an UPGRADED v0.8.x
+		// DB this CREATE is a no-op (table exists) and the tenant_id column
+		// is added by the addColumns ALTER below; SQLite cannot rewrite a
+		// PRIMARY KEY in place, so an upgraded DB keeps PK(name). That is
+		// byte-equivalent for single-tenant (everything tenant_id=''); true
+		// per-tenant isolation on SQLite requires a fresh DB (Postgres
+		// upgrades in place via migration 0037). The contract tests run on
+		// a fresh DB, so the isolation guarantee is verified here.
 		`CREATE TABLE IF NOT EXISTS agent_def_active (
-			name                  TEXT    PRIMARY KEY,
+			name                  TEXT    NOT NULL,
 			def_id                TEXT    NOT NULL REFERENCES agent_defs(def_id),
 			promoted_at           INTEGER NOT NULL,
-			promoted_by_agent_id  TEXT
+			promoted_by_agent_id  TEXT,
+			tenant_id             TEXT    NOT NULL DEFAULT '',
+			PRIMARY KEY(tenant_id, name)
 		)`,
 		// v0.8.22 SkillDef substrate — mirror of agent_defs with
 		// the same identity / lineage / promotion semantics. The
@@ -543,12 +556,17 @@ func (s *Store) migrate(ctx context.Context) error {
 		// the JSON-encoded config.AgentDef body verbatim (the store
 		// doesn't depend on internal/config; same pattern as v0.8.5
 		// agent_defs). expires_at = 0 means "no expiry".
+		// RFC N: tenant-scoped — PRIMARY KEY(tenant_id, name). Fresh-DB-only
+		// PK shape; see the agent_def_active note above for the SQLite
+		// upgrade caveat.
 		`CREATE TABLE IF NOT EXISTS dynamic_agents (
-			name        TEXT PRIMARY KEY,
+			name        TEXT    NOT NULL,
 			definition  BLOB    NOT NULL,
 			created_at  INTEGER NOT NULL,
 			expires_at  INTEGER NOT NULL DEFAULT 0,
-			description TEXT
+			description TEXT,
+			tenant_id   TEXT    NOT NULL DEFAULT '',
+			PRIMARY KEY(tenant_id, name)
 		)`,
 		// v0.8.16 Interruption tool. Agents call Interruption.ask /
 		// .notify / .cancel; pending rows block the run until resolved.
@@ -665,6 +683,16 @@ func (s *Store) migrate(ctx context.Context) error {
 		// sessions JOIN. NULL on legacy rows until the backfill below
 		// copies it from the parent session. New rows set it at CreateRun.
 		`ALTER TABLE runs ADD COLUMN tenant_id TEXT`,
+		// RFC N — tenant-scope the agent definition plane. On an upgraded
+		// v0.8.x DB the CREATE TABLE statements above were no-ops, so these
+		// ALTERs add the tenant_id column to the existing tables. The
+		// PRIMARY KEY stays (name) on the upgraded table (SQLite can't
+		// rewrite a PK in place) — functionally identical for single-tenant
+		// (tenant_id=''); see the CREATE TABLE notes for the isolation
+		// caveat. DEFAULT '' backfills existing rows to the shared tenant.
+		`ALTER TABLE agent_defs ADD COLUMN tenant_id TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE agent_def_active ADD COLUMN tenant_id TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE dynamic_agents ADD COLUMN tenant_id TEXT NOT NULL DEFAULT ''`,
 	}
 	for _, q := range addColumns {
 		if _, err := s.db.ExecContext(ctx, q); err != nil {
@@ -747,6 +775,29 @@ func (s *Store) migrate(ctx context.Context) error {
 		// unconstrained and the index stays small. Mirrors the postgres
 		// 0033 migration.
 		`CREATE UNIQUE INDEX IF NOT EXISTS runs_idempotency_key ON runs(idempotency_key) WHERE idempotency_key IS NOT NULL`,
+		// RFC N — ON CONFLICT(tenant_id, name) targets for the def plane.
+		// On a FRESH DB these are redundant with the composite PRIMARY KEY /
+		// UNIQUE declared in the CREATE TABLE block above (harmless). On an
+		// UPGRADED v0.8.x DB the addColumns ALTER added tenant_id but SQLite
+		// could NOT rewrite the existing PRIMARY KEY(name) / UNIQUE(name,
+		// version) in place — so the runtime upserts' ON CONFLICT(tenant_id,
+		// name) and the version-bump UNIQUE(tenant_id, name, version) have NO
+		// matching index and SQLite refuses with "ON CONFLICT clause does not
+		// match any PRIMARY KEY or UNIQUE constraint", breaking the FIRST
+		// promote/register even single-tenant. These idempotent indexes
+		// supply that ON CONFLICT target so upserts work on upgraded DBs.
+		// Lives in addIndexes (not the CREATE TABLE block) so the tenant_id
+		// column added by addColumns above is guaranteed present first.
+		//
+		// Residual caveat (unchanged): the upgraded agent_def_active /
+		// dynamic_agents tables still carry PRIMARY KEY(name), so two tenants
+		// cannot share a name on a PRE-EXISTING SQLite DB — a fresh DB is
+		// required for full multi-tenant on SQLite. These indexes restore
+		// single-tenant upgrade functionality only; they do not retrofit the
+		// per-tenant isolation a fresh DB's composite PK provides.
+		`CREATE UNIQUE INDEX IF NOT EXISTS uniq_agent_def_active_tenant_name    ON agent_def_active(tenant_id, name)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS uniq_dynamic_agents_tenant_name      ON dynamic_agents(tenant_id, name)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS uniq_agent_defs_tenant_name_version  ON agent_defs(tenant_id, name, version)`,
 	}
 	for _, q := range addIndexes {
 		// Note the asymmetry vs addColumns above: indexes use
@@ -1610,9 +1661,9 @@ func (s *Store) SnapshotReadAgentDefs(ctx context.Context) ([]store.AgentDefRow,
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT def_id, name, version, parent_def_id, definition, description,
 		        created_at, created_by_agent_id, created_by_run_id,
-		        retired, bootstrapped_from_static
+		        retired, bootstrapped_from_static, tenant_id
 		 FROM agent_defs
-		 ORDER BY name ASC, version ASC`,
+		 ORDER BY tenant_id ASC, name ASC, version ASC`,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("snapshot read agent_defs: %w", err)
@@ -1635,7 +1686,7 @@ func (s *Store) SnapshotReadAgentDefs(ctx context.Context) ([]store.AgentDefRow,
 			&r.DefID, &r.Name, &r.Version, &parentDefID,
 			&definition, &description,
 			&createdNs, &createdBy, &createdRun,
-			&retiredInt, &bootstrap,
+			&retiredInt, &bootstrap, &r.TenantID,
 		); err != nil {
 			return nil, fmt.Errorf("scan agent_def: %w", err)
 		}
@@ -1663,9 +1714,9 @@ func (s *Store) SnapshotReadAgentDefs(ctx context.Context) ([]store.AgentDefRow,
 // SnapshotReadAgentDefActive implements store.Store.
 func (s *Store) SnapshotReadAgentDefActive(ctx context.Context) ([]store.AgentDefActiveEntry, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT name, def_id, promoted_at, promoted_by_agent_id
+		`SELECT name, def_id, promoted_at, promoted_by_agent_id, tenant_id
 		 FROM agent_def_active
-		 ORDER BY name ASC`)
+		 ORDER BY tenant_id ASC, name ASC`)
 	if err != nil {
 		return nil, fmt.Errorf("snapshot read agent_def_active: %w", err)
 	}
@@ -1677,7 +1728,7 @@ func (s *Store) SnapshotReadAgentDefActive(ctx context.Context) ([]store.AgentDe
 			promotedNs int64
 			promoter   sql.NullString
 		)
-		if err := rows.Scan(&e.Name, &e.DefID, &promotedNs, &promoter); err != nil {
+		if err := rows.Scan(&e.Name, &e.DefID, &promotedNs, &promoter, &e.TenantID); err != nil {
 			return nil, fmt.Errorf("scan agent_def_active: %w", err)
 		}
 		e.PromotedAt = time.Unix(0, promotedNs)
@@ -2170,13 +2221,13 @@ func (s *Store) SnapshotRestoreAgentDef(ctx context.Context, r store.AgentDefRow
 		`INSERT OR IGNORE INTO agent_defs(
 			def_id, name, version, parent_def_id, definition, description,
 			created_at, created_by_agent_id, created_by_run_id,
-			retired, bootstrapped_from_static, content_sha256
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			retired, bootstrapped_from_static, content_sha256, tenant_id
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		r.DefID, r.Name, r.Version, nilIfEmpty(r.ParentDefID),
 		string(r.Definition), nilIfEmpty(r.Description),
 		createdNs, nilIfEmpty(r.CreatedByAgentID), nilIfEmpty(r.CreatedByRunID),
 		boolToInt(r.Retired), boolToInt(r.BootstrappedFromStatic),
-		nilIfEmpty(r.ContentSHA256),
+		nilIfEmpty(r.ContentSHA256), r.TenantID,
 	)
 	if err != nil {
 		return false, fmt.Errorf("snapshot restore agent_def: %w", err)
@@ -2186,10 +2237,10 @@ func (s *Store) SnapshotRestoreAgentDef(ctx context.Context, r store.AgentDefRow
 }
 
 // SnapshotRestoreAgentDefActive implements store.Store. INSERT OR
-// IGNORE on the name PK — first restore writes the snapshot's
-// promoted_at + def_id; subsequent restores leave the existing row
-// alone so the (bool, error) return reads as "not inserted" and the
-// caller's counter stays honest.
+// IGNORE on the (tenant_id, name) PK — first restore writes the
+// snapshot's promoted_at + def_id; subsequent restores leave the
+// existing row alone so the (bool, error) return reads as "not
+// inserted" and the caller's counter stays honest.
 func (s *Store) SnapshotRestoreAgentDefActive(ctx context.Context, e store.AgentDefActiveEntry) (bool, error) {
 	if e.Name == "" || e.DefID == "" {
 		return false, fmt.Errorf("snapshot restore agent_def_active: name and def_id required")
@@ -2199,8 +2250,8 @@ func (s *Store) SnapshotRestoreAgentDefActive(ctx context.Context, e store.Agent
 		promotedNs = time.Now().UnixNano()
 	}
 	res, err := s.db.ExecContext(ctx,
-		`INSERT OR IGNORE INTO agent_def_active(name, def_id, promoted_at, promoted_by_agent_id) VALUES (?, ?, ?, ?)`,
-		e.Name, e.DefID, promotedNs, nilIfEmpty(e.PromotedByAgentID),
+		`INSERT OR IGNORE INTO agent_def_active(tenant_id, name, def_id, promoted_at, promoted_by_agent_id) VALUES (?, ?, ?, ?, ?)`,
+		e.TenantID, e.Name, e.DefID, promotedNs, nilIfEmpty(e.PromotedByAgentID),
 	)
 	if err != nil {
 		return false, fmt.Errorf("snapshot restore agent_def_active: %w", err)
@@ -3345,10 +3396,11 @@ func (s *Store) ChannelSweepExpired(ctx context.Context) (int, error) {
 // write lock to this one transaction, and IMMEDIATE means concurrent
 // writers see SQLITE_BUSY at BEGIN time (database/sql retries) rather
 // than upgrade-deadlocking mid-tx. Without this, two concurrent
-// AgentDefCreate calls against the same name both start a DEFERRED
-// tx, both SELECT MAX(version) (returning the same value), then both
-// try to INSERT with the same version — one succeeds, one fails on
-// the UNIQUE(name, version) constraint.
+// AgentDefCreate calls against the same (tenant, name) both start a
+// DEFERRED tx, both SELECT MAX(version) (returning the same value),
+// then both try to INSERT with the same version — one succeeds, one
+// fails on the UNIQUE(tenant_id, name, version) constraint. RFC N:
+// version allocation is scoped per-tenant.
 func (s *Store) AgentDefCreate(ctx context.Context, row store.AgentDefRow) (store.AgentDefRow, error) {
 	if row.DefID == "" || row.Name == "" {
 		return store.AgentDefRow{}, fmt.Errorf("agent_def: def_id + name required")
@@ -3381,7 +3433,7 @@ func (s *Store) AgentDefCreate(ctx context.Context, row store.AgentDefRow) (stor
 
 	var maxVer sql.NullInt64
 	if err := conn.QueryRowContext(ctx,
-		`SELECT MAX(version) FROM agent_defs WHERE name = ?`, row.Name,
+		`SELECT MAX(version) FROM agent_defs WHERE tenant_id = ? AND name = ?`, row.TenantID, row.Name,
 	).Scan(&maxVer); err != nil {
 		return store.AgentDefRow{}, err
 	}
@@ -3395,14 +3447,14 @@ func (s *Store) AgentDefCreate(ctx context.Context, row store.AgentDefRow) (stor
 		`INSERT INTO agent_defs (
 			def_id, name, version, parent_def_id, definition, description,
 			created_at, created_by_agent_id, created_by_run_id,
-			retired, bootstrapped_from_static, content_sha256
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			retired, bootstrapped_from_static, content_sha256, tenant_id
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		row.DefID, row.Name, row.Version, nilIfEmpty(row.ParentDefID),
 		string(row.Definition), nilIfEmpty(row.Description),
 		row.CreatedAt.UnixNano(),
 		nilIfEmpty(row.CreatedByAgentID), nilIfEmpty(row.CreatedByRunID),
 		boolToInt(row.Retired), boolToInt(row.BootstrappedFromStatic),
-		nilIfEmpty(row.ContentSHA256),
+		nilIfEmpty(row.ContentSHA256), row.TenantID,
 	); err != nil {
 		return store.AgentDefRow{}, err
 	}
@@ -3451,20 +3503,23 @@ func (s *Store) AgentDefListChildren(ctx context.Context, parentDefID string) ([
 	return s.scanAgentDefRows(rows)
 }
 
-// AgentDefListNames returns one summary row per distinct name. Joins
-// agent_def_active to surface the active def_id when one exists.
+// AgentDefListNames returns one summary row per distinct (tenant, name).
+// Joins agent_def_active to surface the active def_id when one exists.
+// RFC N: names are per-tenant, so the grouping includes tenant_id — a
+// name owned by N tenants yields N rows.
 func (s *Store) AgentDefListNames(ctx context.Context) ([]store.AgentDefNameSummary, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT
+			d.tenant_id,
 			d.name,
 			COUNT(*)                  AS version_count,
 			MAX(d.version)            AS latest_version,
 			MAX(d.created_at)         AS last_updated,
 			COALESCE(a.def_id, '')    AS active_def_id
 		FROM agent_defs d
-		LEFT JOIN agent_def_active a ON a.name = d.name
-		GROUP BY d.name, a.def_id
-		ORDER BY d.name`)
+		LEFT JOIN agent_def_active a ON a.name = d.name AND a.tenant_id = d.tenant_id
+		GROUP BY d.tenant_id, d.name, a.def_id
+		ORDER BY d.tenant_id, d.name`)
 	if err != nil {
 		return nil, err
 	}
@@ -3474,7 +3529,7 @@ func (s *Store) AgentDefListNames(ctx context.Context) ([]store.AgentDefNameSumm
 	for rows.Next() {
 		var s store.AgentDefNameSummary
 		var updatedAt int64
-		if err := rows.Scan(&s.Name, &s.VersionCount, &s.LatestVersion, &updatedAt, &s.ActiveDefID); err != nil {
+		if err := rows.Scan(&s.TenantID, &s.Name, &s.VersionCount, &s.LatestVersion, &updatedAt, &s.ActiveDefID); err != nil {
 			return nil, err
 		}
 		s.LastUpdated = time.Unix(0, updatedAt)
@@ -3483,12 +3538,18 @@ func (s *Store) AgentDefListNames(ctx context.Context) ([]store.AgentDefNameSumm
 	return out, rows.Err()
 }
 
-// AgentDefSetActive UPSERTs the agent_def_active pointer for name.
-func (s *Store) AgentDefSetActive(ctx context.Context, name, defID, promotedByAgentID string) error {
-	// Validate def_id exists + matches name (defence-in-depth; the
-	// FK isn't enforced without foreign_keys PRAGMA).
-	var rowName string
-	err := s.db.QueryRowContext(ctx, `SELECT name FROM agent_defs WHERE def_id = ?`, defID).Scan(&rowName)
+// AgentDefSetActive UPSERTs the agent_def_active pointer for
+// (tenantID, name). RFC N: validates the def belongs to BOTH the named
+// agent AND the supplied tenant — a def can only be promoted within its
+// own tenant.
+func (s *Store) AgentDefSetActive(ctx context.Context, tenantID, name, defID, promotedByAgentID string) error {
+	// Validate def_id exists + matches (name, tenant) (defence-in-depth;
+	// the FK isn't enforced without foreign_keys PRAGMA).
+	var (
+		rowName   string
+		rowTenant string
+	)
+	err := s.db.QueryRowContext(ctx, `SELECT name, tenant_id FROM agent_defs WHERE def_id = ?`, defID).Scan(&rowName, &rowTenant)
 	if err == sql.ErrNoRows {
 		return &store.ErrNotFound{Kind: "agent_def", ID: defID}
 	}
@@ -3498,23 +3559,27 @@ func (s *Store) AgentDefSetActive(ctx context.Context, name, defID, promotedByAg
 	if rowName != name {
 		return fmt.Errorf("agent_def_active: def_id %q has name %q, refusing to promote under name %q", defID, rowName, name)
 	}
+	if rowTenant != tenantID {
+		return fmt.Errorf("agent_def_active: def_id %q belongs to tenant %q, refusing to promote under tenant %q", defID, rowTenant, tenantID)
+	}
 	_, err = s.db.ExecContext(ctx, `
-		INSERT INTO agent_def_active (name, def_id, promoted_at, promoted_by_agent_id)
-		VALUES (?, ?, ?, ?)
-		ON CONFLICT(name) DO UPDATE SET
+		INSERT INTO agent_def_active (tenant_id, name, def_id, promoted_at, promoted_by_agent_id)
+		VALUES (?, ?, ?, ?, ?)
+		ON CONFLICT(tenant_id, name) DO UPDATE SET
 		    def_id               = excluded.def_id,
 		    promoted_at          = excluded.promoted_at,
 		    promoted_by_agent_id = excluded.promoted_by_agent_id`,
-		name, defID, time.Now().UnixNano(), nilIfEmpty(promotedByAgentID),
+		tenantID, name, defID, time.Now().UnixNano(), nilIfEmpty(promotedByAgentID),
 	)
 	return err
 }
 
-// AgentDefGetActive returns the active row for name. *ErrNotFound
-// when no pointer exists — caller falls through to cfg.Agents.
-func (s *Store) AgentDefGetActive(ctx context.Context, name string) (store.AgentDefRow, error) {
+// AgentDefGetActive returns the active row for (tenantID, name).
+// *ErrNotFound when no pointer exists — caller falls through to
+// cfg.Agents.
+func (s *Store) AgentDefGetActive(ctx context.Context, tenantID, name string) (store.AgentDefRow, error) {
 	var defID string
-	err := s.db.QueryRowContext(ctx, `SELECT def_id FROM agent_def_active WHERE name = ?`, name).Scan(&defID)
+	err := s.db.QueryRowContext(ctx, `SELECT def_id FROM agent_def_active WHERE tenant_id = ? AND name = ?`, tenantID, name).Scan(&defID)
 	if err == sql.ErrNoRows {
 		return store.AgentDefRow{}, &store.ErrNotFound{Kind: "agent_def_active", ID: name}
 	}
@@ -3542,8 +3607,7 @@ func (s *Store) AgentDefSetRetired(ctx context.Context, defID string, retired bo
 }
 
 // agentDefSelect is the column list shared by every read. Kept in
-// one place so column additions (a future tenant_id, similarity_score,
-// ...) need only a single touch-point.
+// one place so column additions need only a single touch-point.
 const agentDefSelect = `SELECT
 	def_id, name, version,
 	COALESCE(parent_def_id, ''),
@@ -3554,7 +3618,8 @@ const agentDefSelect = `SELECT
 	COALESCE(created_by_run_id, ''),
 	retired,
 	bootstrapped_from_static,
-	COALESCE(content_sha256, '')
+	COALESCE(content_sha256, ''),
+	tenant_id
 FROM agent_defs`
 
 func (s *Store) scanAgentDef(row *sql.Row) (store.AgentDefRow, error) {
@@ -3574,6 +3639,7 @@ func (s *Store) scanAgentDef(row *sql.Row) (store.AgentDefRow, error) {
 		&out.CreatedByAgentID, &out.CreatedByRunID,
 		&retired, &bootstrap,
 		&out.ContentSHA256,
+		&out.TenantID,
 	)
 	if err != nil {
 		return store.AgentDefRow{}, err
@@ -3604,6 +3670,7 @@ func (s *Store) scanAgentDefRows(rows *sql.Rows) ([]store.AgentDefRow, error) {
 			&r.CreatedByAgentID, &r.CreatedByRunID,
 			&retired, &bootstrap,
 			&r.ContentSHA256,
+			&r.TenantID,
 		); err != nil {
 			return nil, err
 		}
@@ -6036,30 +6103,30 @@ func (s *Store) DynamicAgentUpsert(ctx context.Context, a store.DynamicAgent) er
 		expiresAtNS = a.ExpiresAt.UnixNano()
 	}
 	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO dynamic_agents (name, definition, created_at, expires_at, description)
-		VALUES (?, ?, ?, ?, ?)
-		ON CONFLICT(name) DO UPDATE SET
+		INSERT INTO dynamic_agents (tenant_id, name, definition, created_at, expires_at, description)
+		VALUES (?, ?, ?, ?, ?, ?)
+		ON CONFLICT(tenant_id, name) DO UPDATE SET
 			definition  = excluded.definition,
 			created_at  = excluded.created_at,
 			expires_at  = excluded.expires_at,
 			description = excluded.description
-	`, a.Name, a.Definition, createdAt.UnixNano(), expiresAtNS, a.Description)
+	`, a.TenantID, a.Name, a.Definition, createdAt.UnixNano(), expiresAtNS, a.Description)
 	if err != nil {
 		return fmt.Errorf("dynamic_agents: upsert: %w", err)
 	}
 	return nil
 }
 
-func (s *Store) DynamicAgentGet(ctx context.Context, name string) (store.DynamicAgent, error) {
+func (s *Store) DynamicAgentGet(ctx context.Context, tenantID, name string) (store.DynamicAgent, error) {
 	row := s.db.QueryRowContext(ctx, `
-		SELECT name, definition, created_at, expires_at, COALESCE(description, '')
+		SELECT tenant_id, name, definition, created_at, expires_at, COALESCE(description, '')
 		FROM dynamic_agents
-		WHERE name = ? AND (expires_at = 0 OR expires_at > ?)
-	`, name, time.Now().UnixNano())
+		WHERE tenant_id = ? AND name = ? AND (expires_at = 0 OR expires_at > ?)
+	`, tenantID, name, time.Now().UnixNano())
 
 	var a store.DynamicAgent
 	var createdAtNS, expiresAtNS int64
-	if err := row.Scan(&a.Name, &a.Definition, &createdAtNS, &expiresAtNS, &a.Description); err != nil {
+	if err := row.Scan(&a.TenantID, &a.Name, &a.Definition, &createdAtNS, &expiresAtNS, &a.Description); err != nil {
 		if err == sql.ErrNoRows {
 			return store.DynamicAgent{}, &store.ErrNotFound{Kind: "dynamic_agent", ID: name}
 		}
@@ -6074,7 +6141,7 @@ func (s *Store) DynamicAgentGet(ctx context.Context, name string) (store.Dynamic
 
 func (s *Store) DynamicAgentList(ctx context.Context) ([]store.DynamicAgent, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT name, definition, created_at, expires_at, COALESCE(description, '')
+		SELECT tenant_id, name, definition, created_at, expires_at, COALESCE(description, '')
 		FROM dynamic_agents
 		WHERE expires_at = 0 OR expires_at > ?
 		ORDER BY created_at DESC
@@ -6089,7 +6156,7 @@ func (s *Store) DynamicAgentList(ctx context.Context) ([]store.DynamicAgent, err
 	for rows.Next() {
 		var a store.DynamicAgent
 		var createdAtNS, expiresAtNS int64
-		if err := rows.Scan(&a.Name, &a.Definition, &createdAtNS, &expiresAtNS, &a.Description); err != nil {
+		if err := rows.Scan(&a.TenantID, &a.Name, &a.Definition, &createdAtNS, &expiresAtNS, &a.Description); err != nil {
 			return nil, fmt.Errorf("dynamic_agents: list scan: %w", err)
 		}
 		a.CreatedAt = time.Unix(0, createdAtNS)

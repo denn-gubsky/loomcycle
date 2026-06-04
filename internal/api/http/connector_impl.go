@@ -282,6 +282,12 @@ func (s *Server) RegisterAgent(ctx context.Context, req connector.RegisterAgentR
 		CreatedAt:   createdAt,
 		ExpiresAt:   expiresAt,
 		Description: req.Description,
+		// RFC N: stamp the tenant from the authoritative principal in ctx
+		// (RegisterAgentRequest carries no tenant — never trust the wire).
+		// "" = shared/legacy tenant. Scopes the dynamic registration to
+		// the registering principal's tenant so it can't clobber another
+		// tenant's same-named agent.
+		TenantID: tenantFromCtx(ctx),
 	}
 	if err := s.store.DynamicAgentUpsert(ctx, row); err != nil {
 		return connector.AgentDescriptor{}, err

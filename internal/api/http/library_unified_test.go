@@ -150,7 +150,7 @@ func TestUnifiedLibrary_Agents_DynamicOnly(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_ = s.AgentDefSetActive(ctx, "evaluator", "def_evaluator_v1", "")
+	_ = s.AgentDefSetActive(ctx, "", "evaluator", "def_evaluator_v1", "")
 
 	rec := httptest.NewRecorder()
 	srv.Mux().ServeHTTP(rec, authedRequest("GET", "/v1/_library/agents", nil))
@@ -188,7 +188,7 @@ func TestUnifiedLibrary_Agents_Both(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_ = s.AgentDefSetActive(ctx, "researcher", "def_r_v1", "")
+	_ = s.AgentDefSetActive(ctx, "", "researcher", "def_r_v1", "")
 
 	rec := httptest.NewRecorder()
 	srv.Mux().ServeHTTP(rec, authedRequest("GET", "/v1/_library/agents", nil))
@@ -341,7 +341,7 @@ func TestUnifiedLibrary_OldEndpoints_StillWork(t *testing.T) {
 		DefID: "def_v1", Name: "x", Version: 1,
 		Definition: []byte(`{}`), CreatedAt: time.Now(),
 	})
-	_ = s.AgentDefSetActive(ctx, "x", "def_v1", "")
+	_ = s.AgentDefSetActive(ctx, "", "x", "def_v1", "")
 
 	rec := httptest.NewRecorder()
 	srv.Mux().ServeHTTP(rec, authedRequest("GET", "/v1/_agentdef/names", nil))

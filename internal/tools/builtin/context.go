@@ -392,7 +392,9 @@ func (c *Context) execAgents(ctx context.Context, in contextInput) (tools.Result
 		// so operators see the partial failure without losing the rest
 		// of the catalog. PR 2 review fix.
 		if c.Store != nil {
-			row, err := c.Store.AgentDefGetActive(ctx, name)
+			// RFC N: read the active pointer within the agent's own tenant
+			// (from the authoritative run identity in ctx; "" = shared).
+			row, err := c.Store.AgentDefGetActive(ctx, tools.RunIdentity(ctx).TenantID, name)
 			if err == nil {
 				s.ActiveDefID = row.DefID
 			} else {

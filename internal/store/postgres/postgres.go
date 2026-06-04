@@ -1036,9 +1036,9 @@ func (s *Store) SnapshotReadAgentDefs(ctx context.Context) ([]store.AgentDefRow,
 	rows, err := s.pool.Query(ctx,
 		`SELECT def_id, name, version, parent_def_id, definition::text, description,
 		        created_at, created_by_agent_id, created_by_run_id,
-		        retired, bootstrapped_from_static
+		        retired, bootstrapped_from_static, tenant_id
 		 FROM agent_defs
-		 ORDER BY name ASC, version ASC`,
+		 ORDER BY tenant_id ASC, name ASC, version ASC`,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("snapshot read agent_defs: %w", err)
@@ -1058,7 +1058,7 @@ func (s *Store) SnapshotReadAgentDefs(ctx context.Context) ([]store.AgentDefRow,
 			&r.DefID, &r.Name, &r.Version, &parentDefID,
 			&definition, &description,
 			&r.CreatedAt, &createdBy, &createdRun,
-			&r.Retired, &r.BootstrappedFromStatic,
+			&r.Retired, &r.BootstrappedFromStatic, &r.TenantID,
 		); err != nil {
 			return nil, fmt.Errorf("scan agent_def: %w", err)
 		}
@@ -1083,9 +1083,9 @@ func (s *Store) SnapshotReadAgentDefs(ctx context.Context) ([]store.AgentDefRow,
 // SnapshotReadAgentDefActive implements store.Store.
 func (s *Store) SnapshotReadAgentDefActive(ctx context.Context) ([]store.AgentDefActiveEntry, error) {
 	rows, err := s.pool.Query(ctx,
-		`SELECT name, def_id, promoted_at, promoted_by_agent_id
+		`SELECT name, def_id, promoted_at, promoted_by_agent_id, tenant_id
 		 FROM agent_def_active
-		 ORDER BY name ASC`)
+		 ORDER BY tenant_id ASC, name ASC`)
 	if err != nil {
 		return nil, fmt.Errorf("snapshot read agent_def_active: %w", err)
 	}
@@ -1096,7 +1096,7 @@ func (s *Store) SnapshotReadAgentDefActive(ctx context.Context) ([]store.AgentDe
 			e        store.AgentDefActiveEntry
 			promoter *string
 		)
-		if err := rows.Scan(&e.Name, &e.DefID, &e.PromotedAt, &promoter); err != nil {
+		if err := rows.Scan(&e.Name, &e.DefID, &e.PromotedAt, &promoter, &e.TenantID); err != nil {
 			return nil, fmt.Errorf("scan agent_def_active: %w", err)
 		}
 		if promoter != nil {
@@ -1546,14 +1546,14 @@ func (s *Store) SnapshotRestoreAgentDef(ctx context.Context, r store.AgentDefRow
 		`INSERT INTO agent_defs(
 			def_id, name, version, parent_def_id, definition, description,
 			created_at, created_by_agent_id, created_by_run_id,
-			retired, bootstrapped_from_static, content_sha256
-		) VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10, $11, $12)
+			retired, bootstrapped_from_static, content_sha256, tenant_id
+		) VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10, $11, $12, $13)
 		 ON CONFLICT (def_id) DO NOTHING`,
 		r.DefID, r.Name, r.Version, nullIfEmpty(r.ParentDefID),
 		string(r.Definition), nullIfEmpty(r.Description),
 		createdAt, nullIfEmpty(r.CreatedByAgentID), nullIfEmpty(r.CreatedByRunID),
 		r.Retired, r.BootstrappedFromStatic,
-		nullIfEmpty(r.ContentSHA256),
+		nullIfEmpty(r.ContentSHA256), r.TenantID,
 	)
 	if err != nil {
 		return false, fmt.Errorf("snapshot restore agent_def: %w", err)
@@ -1562,10 +1562,10 @@ func (s *Store) SnapshotRestoreAgentDef(ctx context.Context, r store.AgentDefRow
 }
 
 // SnapshotRestoreAgentDefActive implements store.Store. ON CONFLICT
-// DO NOTHING — first restore writes the snapshot's promoted_at +
-// def_id; subsequent restores leave the existing row alone so the
-// (bool, error) return reads as "not inserted" and the caller's
-// counter stays honest on a re-restore.
+// (tenant_id, name) DO NOTHING — first restore writes the snapshot's
+// promoted_at + def_id; subsequent restores leave the existing row
+// alone so the (bool, error) return reads as "not inserted" and the
+// caller's counter stays honest on a re-restore.
 func (s *Store) SnapshotRestoreAgentDefActive(ctx context.Context, e store.AgentDefActiveEntry) (bool, error) {
 	if e.Name == "" || e.DefID == "" {
 		return false, fmt.Errorf("snapshot restore agent_def_active: name and def_id required")
@@ -1575,9 +1575,9 @@ func (s *Store) SnapshotRestoreAgentDefActive(ctx context.Context, e store.Agent
 		promotedAt = time.Now().UTC()
 	}
 	tag, err := s.pool.Exec(ctx,
-		`INSERT INTO agent_def_active(name, def_id, promoted_at, promoted_by_agent_id) VALUES ($1, $2, $3, $4)
-		 ON CONFLICT (name) DO NOTHING`,
-		e.Name, e.DefID, promotedAt, nullIfEmpty(e.PromotedByAgentID),
+		`INSERT INTO agent_def_active(tenant_id, name, def_id, promoted_at, promoted_by_agent_id) VALUES ($1, $2, $3, $4, $5)
+		 ON CONFLICT (tenant_id, name) DO NOTHING`,
+		e.TenantID, e.Name, e.DefID, promotedAt, nullIfEmpty(e.PromotedByAgentID),
 	)
 	if err != nil {
 		return false, fmt.Errorf("snapshot restore agent_def_active: %w", err)
@@ -1986,30 +1986,30 @@ func (s *Store) DynamicAgentUpsert(ctx context.Context, a store.DynamicAgent) er
 		expiresAt = time.Unix(0, 0).UTC()
 	}
 	_, err := s.pool.Exec(ctx, `
-		INSERT INTO dynamic_agents (name, definition, created_at, expires_at, description)
-		VALUES ($1, $2::jsonb, $3, $4, $5)
-		ON CONFLICT (name) DO UPDATE SET
+		INSERT INTO dynamic_agents (tenant_id, name, definition, created_at, expires_at, description)
+		VALUES ($1, $2, $3::jsonb, $4, $5, $6)
+		ON CONFLICT (tenant_id, name) DO UPDATE SET
 			definition  = EXCLUDED.definition,
 			created_at  = EXCLUDED.created_at,
 			expires_at  = EXCLUDED.expires_at,
 			description = EXCLUDED.description
-	`, a.Name, string(a.Definition), createdAt, expiresAt, a.Description)
+	`, a.TenantID, a.Name, string(a.Definition), createdAt, expiresAt, a.Description)
 	if err != nil {
 		return fmt.Errorf("dynamic_agents: upsert: %w", err)
 	}
 	return nil
 }
 
-func (s *Store) DynamicAgentGet(ctx context.Context, name string) (store.DynamicAgent, error) {
+func (s *Store) DynamicAgentGet(ctx context.Context, tenantID, name string) (store.DynamicAgent, error) {
 	row := s.pool.QueryRow(ctx, `
-		SELECT name, definition::text, created_at, expires_at, COALESCE(description, '')
+		SELECT tenant_id, name, definition::text, created_at, expires_at, COALESCE(description, '')
 		FROM dynamic_agents
-		WHERE name = $1 AND (expires_at = 'epoch' OR expires_at > $2)
-	`, name, time.Now())
+		WHERE tenant_id = $1 AND name = $2 AND (expires_at = 'epoch' OR expires_at > $3)
+	`, tenantID, name, time.Now())
 
 	var a store.DynamicAgent
 	var defStr string
-	if err := row.Scan(&a.Name, &defStr, &a.CreatedAt, &a.ExpiresAt, &a.Description); err != nil {
+	if err := row.Scan(&a.TenantID, &a.Name, &defStr, &a.CreatedAt, &a.ExpiresAt, &a.Description); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return store.DynamicAgent{}, &store.ErrNotFound{Kind: "dynamic_agent", ID: name}
 		}
@@ -2027,7 +2027,7 @@ func (s *Store) DynamicAgentGet(ctx context.Context, name string) (store.Dynamic
 
 func (s *Store) DynamicAgentList(ctx context.Context) ([]store.DynamicAgent, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT name, definition::text, created_at, expires_at, COALESCE(description, '')
+		SELECT tenant_id, name, definition::text, created_at, expires_at, COALESCE(description, '')
 		FROM dynamic_agents
 		WHERE expires_at = 'epoch' OR expires_at > $1
 		ORDER BY created_at DESC
@@ -2042,7 +2042,7 @@ func (s *Store) DynamicAgentList(ctx context.Context) ([]store.DynamicAgent, err
 	for rows.Next() {
 		var a store.DynamicAgent
 		var defStr string
-		if err := rows.Scan(&a.Name, &defStr, &a.CreatedAt, &a.ExpiresAt, &a.Description); err != nil {
+		if err := rows.Scan(&a.TenantID, &a.Name, &defStr, &a.CreatedAt, &a.ExpiresAt, &a.Description); err != nil {
 			return nil, fmt.Errorf("dynamic_agents: list scan: %w", err)
 		}
 		a.Definition = []byte(defStr)
@@ -3268,13 +3268,15 @@ func (s *Store) AgentDefCreate(ctx context.Context, row store.AgentDefRow) (stor
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	// Per-name advisory lock — serialises version allocation against
-	// concurrent forks of the SAME name. Different names proceed in
-	// parallel. The hash is deterministic so the same name always
-	// hashes to the same lock key.
+	// Per-(tenant, name) advisory lock — serialises version allocation
+	// against concurrent forks of the SAME (tenant, name). Different
+	// (tenant, name) tuples proceed in parallel. The hash is
+	// deterministic so the same tuple always hashes to the same lock
+	// key. RFC N: tenant is part of the version-allocation scope so two
+	// tenants' v1 don't collide on the UNIQUE(tenant_id, name, version).
 	if _, err := tx.Exec(ctx,
 		`SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`,
-		"agent_def:"+row.Name,
+		"agent_def:"+row.TenantID+":"+row.Name,
 	); err != nil {
 		return store.AgentDefRow{}, fmt.Errorf("agent_def create lock: %w", err)
 	}
@@ -3290,7 +3292,7 @@ func (s *Store) AgentDefCreate(ctx context.Context, row store.AgentDefRow) (stor
 	}
 
 	var maxVer sql.NullInt64
-	if err := tx.QueryRow(ctx, `SELECT MAX(version) FROM agent_defs WHERE name = $1`, row.Name).Scan(&maxVer); err != nil {
+	if err := tx.QueryRow(ctx, `SELECT MAX(version) FROM agent_defs WHERE tenant_id = $1 AND name = $2`, row.TenantID, row.Name).Scan(&maxVer); err != nil {
 		return store.AgentDefRow{}, fmt.Errorf("agent_def create max version: %w", err)
 	}
 	row.Version = 1
@@ -3303,14 +3305,14 @@ func (s *Store) AgentDefCreate(ctx context.Context, row store.AgentDefRow) (stor
 		INSERT INTO agent_defs (
 			def_id, name, version, parent_def_id, definition, description,
 			created_at, created_by_agent_id, created_by_run_id,
-			retired, bootstrapped_from_static, content_sha256
-		) VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10, $11, $12)`,
+			retired, bootstrapped_from_static, content_sha256, tenant_id
+		) VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10, $11, $12, $13)`,
 		row.DefID, row.Name, row.Version, nullableString(row.ParentDefID),
 		string(row.Definition), nullableString(row.Description),
 		row.CreatedAt,
 		nullableString(row.CreatedByAgentID), nullableString(row.CreatedByRunID),
 		row.Retired, row.BootstrappedFromStatic,
-		nullableString(row.ContentSHA256),
+		nullableString(row.ContentSHA256), row.TenantID,
 	); err != nil {
 		return store.AgentDefRow{}, fmt.Errorf("agent_def insert: %w", err)
 	}
@@ -3360,17 +3362,20 @@ func (s *Store) AgentDefListChildren(ctx context.Context, parentDefID string) ([
 
 // AgentDefListNames returns one summary per distinct name.
 func (s *Store) AgentDefListNames(ctx context.Context) ([]store.AgentDefNameSummary, error) {
+	// RFC N: names are per-tenant; group by tenant_id so a name owned by
+	// N tenants yields N rows (one per tenant) rather than merging them.
 	rows, err := s.pool.Query(ctx, `
 		SELECT
+			d.tenant_id,
 			d.name,
 			COUNT(*)                  AS version_count,
 			MAX(d.version)            AS latest_version,
 			MAX(d.created_at)         AS last_updated,
 			COALESCE(a.def_id, '')    AS active_def_id
 		FROM agent_defs d
-		LEFT JOIN agent_def_active a ON a.name = d.name
-		GROUP BY d.name, a.def_id
-		ORDER BY d.name`)
+		LEFT JOIN agent_def_active a ON a.name = d.name AND a.tenant_id = d.tenant_id
+		GROUP BY d.tenant_id, d.name, a.def_id
+		ORDER BY d.tenant_id, d.name`)
 	if err != nil {
 		return nil, fmt.Errorf("agent_def list names: %w", err)
 	}
@@ -3379,7 +3384,7 @@ func (s *Store) AgentDefListNames(ctx context.Context) ([]store.AgentDefNameSumm
 	var out []store.AgentDefNameSummary
 	for rows.Next() {
 		var s store.AgentDefNameSummary
-		if err := rows.Scan(&s.Name, &s.VersionCount, &s.LatestVersion, &s.LastUpdated, &s.ActiveDefID); err != nil {
+		if err := rows.Scan(&s.TenantID, &s.Name, &s.VersionCount, &s.LatestVersion, &s.LastUpdated, &s.ActiveDefID); err != nil {
 			return nil, err
 		}
 		out = append(out, s)
@@ -3387,10 +3392,17 @@ func (s *Store) AgentDefListNames(ctx context.Context) ([]store.AgentDefNameSumm
 	return out, rows.Err()
 }
 
-// AgentDefSetActive UPSERTs the agent_def_active pointer for name.
-func (s *Store) AgentDefSetActive(ctx context.Context, name, defID, promotedByAgentID string) error {
-	var rowName string
-	err := s.pool.QueryRow(ctx, `SELECT name FROM agent_defs WHERE def_id = $1`, defID).Scan(&rowName)
+// AgentDefSetActive UPSERTs the agent_def_active pointer for
+// (tenantID, name). RFC N: validates the def belongs to BOTH the named
+// agent AND the supplied tenant — a def can only be promoted within its
+// own tenant, so a caller can't point another tenant's active pointer at
+// a def it owns.
+func (s *Store) AgentDefSetActive(ctx context.Context, tenantID, name, defID, promotedByAgentID string) error {
+	var (
+		rowName   string
+		rowTenant string
+	)
+	err := s.pool.QueryRow(ctx, `SELECT name, tenant_id FROM agent_defs WHERE def_id = $1`, defID).Scan(&rowName, &rowTenant)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return &store.ErrNotFound{Kind: "agent_def", ID: defID}
 	}
@@ -3400,14 +3412,17 @@ func (s *Store) AgentDefSetActive(ctx context.Context, name, defID, promotedByAg
 	if rowName != name {
 		return fmt.Errorf("agent_def_active: def_id %q has name %q, refusing to promote under name %q", defID, rowName, name)
 	}
+	if rowTenant != tenantID {
+		return fmt.Errorf("agent_def_active: def_id %q belongs to tenant %q, refusing to promote under tenant %q", defID, rowTenant, tenantID)
+	}
 	_, err = s.pool.Exec(ctx, `
-		INSERT INTO agent_def_active (name, def_id, promoted_at, promoted_by_agent_id)
-		VALUES ($1, $2, $3, $4)
-		ON CONFLICT (name) DO UPDATE SET
+		INSERT INTO agent_def_active (tenant_id, name, def_id, promoted_at, promoted_by_agent_id)
+		VALUES ($1, $2, $3, $4, $5)
+		ON CONFLICT (tenant_id, name) DO UPDATE SET
 		    def_id               = EXCLUDED.def_id,
 		    promoted_at          = EXCLUDED.promoted_at,
 		    promoted_by_agent_id = EXCLUDED.promoted_by_agent_id`,
-		name, defID, time.Now().UTC(), nullableString(promotedByAgentID),
+		tenantID, name, defID, time.Now().UTC(), nullableString(promotedByAgentID),
 	)
 	if err != nil {
 		return fmt.Errorf("agent_def_active upsert: %w", err)
@@ -3415,11 +3430,11 @@ func (s *Store) AgentDefSetActive(ctx context.Context, name, defID, promotedByAg
 	return nil
 }
 
-// AgentDefGetActive returns the active row for name. *ErrNotFound
-// when no pointer exists.
-func (s *Store) AgentDefGetActive(ctx context.Context, name string) (store.AgentDefRow, error) {
+// AgentDefGetActive returns the active row for (tenantID, name).
+// *ErrNotFound when no pointer exists.
+func (s *Store) AgentDefGetActive(ctx context.Context, tenantID, name string) (store.AgentDefRow, error) {
 	var defID string
-	err := s.pool.QueryRow(ctx, `SELECT def_id FROM agent_def_active WHERE name = $1`, name).Scan(&defID)
+	err := s.pool.QueryRow(ctx, `SELECT def_id FROM agent_def_active WHERE tenant_id = $1 AND name = $2`, tenantID, name).Scan(&defID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return store.AgentDefRow{}, &store.ErrNotFound{Kind: "agent_def_active", ID: name}
 	}
@@ -3451,7 +3466,8 @@ const agentDefSelect = `SELECT
 	COALESCE(created_by_run_id, ''),
 	retired,
 	bootstrapped_from_static,
-	COALESCE(content_sha256, '')
+	COALESCE(content_sha256, ''),
+	tenant_id
 FROM agent_defs`
 
 func (s *Store) scanAgentDef(row pgx.Row) (store.AgentDefRow, error) {
@@ -3468,6 +3484,7 @@ func (s *Store) scanAgentDef(row pgx.Row) (store.AgentDefRow, error) {
 		&out.CreatedByAgentID, &out.CreatedByRunID,
 		&out.Retired, &out.BootstrappedFromStatic,
 		&out.ContentSHA256,
+		&out.TenantID,
 	)
 	if err != nil {
 		return store.AgentDefRow{}, err
@@ -3492,6 +3509,7 @@ func (s *Store) scanAgentDefRows(rows pgx.Rows) ([]store.AgentDefRow, error) {
 			&r.CreatedByAgentID, &r.CreatedByRunID,
 			&r.Retired, &r.BootstrappedFromStatic,
 			&r.ContentSHA256,
+			&r.TenantID,
 		); err != nil {
 			return nil, err
 		}

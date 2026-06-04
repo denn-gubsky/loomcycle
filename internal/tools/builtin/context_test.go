@@ -384,7 +384,7 @@ func substrateFixture(t *testing.T) (*Context, store.Store, context.Context, str
 	if err != nil {
 		t.Fatalf("AgentDefCreate v2: %v", err)
 	}
-	if err := s.AgentDefSetActive(ctx, agentName, v2.DefID, ""); err != nil {
+	if err := s.AgentDefSetActive(ctx, "", agentName, v2.DefID, ""); err != nil {
 		t.Fatalf("AgentDefSetActive: %v", err)
 	}
 

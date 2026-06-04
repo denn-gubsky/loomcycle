@@ -745,10 +745,11 @@ type Store interface {
 	// the supplied DefID + Version + parent linkage. Idempotent.
 	SnapshotRestoreAgentDef(ctx context.Context, r AgentDefRow) (bool, error)
 
-	// SnapshotRestoreAgentDefActive UPSERTs one agent_def_active
-	// pointer. ON CONFLICT (name) DO UPDATE — preserves snapshot's
-	// promoted_at + promoted_by_agent_id. `inserted` is true only on
-	// the first write (no prior row for the name).
+	// SnapshotRestoreAgentDefActive inserts one agent_def_active
+	// pointer. ON CONFLICT (tenant_id, name) DO NOTHING — preserves the
+	// snapshot's promoted_at + promoted_by_agent_id on first restore;
+	// subsequent restores leave the row alone. `inserted` is true only
+	// on the first write (no prior row for the (tenant_id, name)).
 	SnapshotRestoreAgentDefActive(ctx context.Context, entry AgentDefActiveEntry) (bool, error)
 
 	// SnapshotRestoreSkillDef mirrors SnapshotRestoreAgentDef for
@@ -1085,17 +1086,22 @@ type Store interface {
 	AgentDefListNames(ctx context.Context) ([]AgentDefNameSummary, error)
 
 	// AgentDefSetActive UPSERTs the agent_def_active pointer for
-	// `name` to `defID`. promotedByAgentID is the agent_id that
-	// performed the promotion (may be empty for admin API calls).
+	// `(tenantID, name)` to `defID`. promotedByAgentID is the agent_id
+	// that performed the promotion (may be empty for admin API calls).
 	// Idempotent: promote A → promote B → promote A leaves the
-	// pointer at A with the latest promoted_at.
-	AgentDefSetActive(ctx context.Context, name, defID, promotedByAgentID string) error
+	// pointer at A with the latest promoted_at. RFC N: the active
+	// pointer is per-tenant, and a def can only be promoted within its
+	// own tenant — implementations refuse if the def's tenant_id ≠
+	// tenantID. tenantID "" = the shared/operator/legacy tenant.
+	AgentDefSetActive(ctx context.Context, tenantID, name, defID, promotedByAgentID string) error
 
-	// AgentDefGetActive returns the currently-active row for `name`
-	// — the (name, version) pointed at by agent_def_active. Returns
-	// *ErrNotFound when no active pointer exists (the caller falls
-	// through to cfg.Agents — the static fallback path).
-	AgentDefGetActive(ctx context.Context, name string) (AgentDefRow, error)
+	// AgentDefGetActive returns the currently-active row for
+	// `(tenantID, name)` — the (name, version) pointed at by
+	// agent_def_active within the tenant. Returns *ErrNotFound when no
+	// active pointer exists (the caller falls through to cfg.Agents —
+	// the static fallback path). RFC N: tenantID "" = the shared/
+	// operator/legacy tenant.
+	AgentDefGetActive(ctx context.Context, tenantID, name string) (AgentDefRow, error)
 
 	// AgentDefSetRetired flips the `retired` flag on one row. The
 	// row stays visible in lineage queries with the flag exposed;
@@ -1363,18 +1369,21 @@ type Store interface {
 	// the count deleted. Idempotent under concurrent sweepers.
 	MetricsSweep(ctx context.Context, cutoff time.Time) (int, error)
 
-	// DynamicAgentUpsert writes a dynamic agent row. The (name)
-	// column is the primary key — re-upserting the same name
-	// overwrites the definition and resets expires_at. expiresAt is
-	// zero-valued to mean "no expiry" (operator must explicitly
-	// DynamicAgentDelete). v0.8.15+.
+	// DynamicAgentUpsert writes a dynamic agent row. RFC N: the
+	// (tenant_id, name) tuple is the primary key — re-upserting the
+	// same (tenant, name) overwrites the definition and resets
+	// expires_at. agent.TenantID is set from the authoritative
+	// principal at the write site ("" = shared/legacy tenant).
+	// expiresAt is zero-valued to mean "no expiry" (operator must
+	// explicitly DynamicAgentDelete). v0.8.15+.
 	DynamicAgentUpsert(ctx context.Context, agent DynamicAgent) error
 
-	// DynamicAgentGet reads one dynamic agent. Returns *ErrNotFound
-	// for both "row missing" and "row expired" — callers don't need
-	// to distinguish. Expired rows are filtered server-side
-	// regardless of whether the sweeper has reaped them yet.
-	DynamicAgentGet(ctx context.Context, name string) (DynamicAgent, error)
+	// DynamicAgentGet reads one dynamic agent by (tenantID, name).
+	// Returns *ErrNotFound for both "row missing" and "row expired" —
+	// callers don't need to distinguish. Expired rows are filtered
+	// server-side regardless of whether the sweeper has reaped them
+	// yet. RFC N: tenantID "" = the shared/operator/legacy tenant.
+	DynamicAgentGet(ctx context.Context, tenantID, name string) (DynamicAgent, error)
 
 	// DynamicAgentList enumerates non-expired dynamic agents.
 	// Capped at 200 rows ordered by created_at DESC.
@@ -1838,11 +1847,16 @@ type MetricsRunWindow struct {
 // explicitly unregister); non-zero rows are filtered by
 // DynamicAgentGet / DynamicAgentList when expires_at < now().
 type DynamicAgent struct {
-	Name        string    `json:"name"`       // primary key; charset [A-Za-z0-9_-]{1,64}
+	Name        string    `json:"name"`       // part of the PK; charset [A-Za-z0-9_-]{1,64}
 	Definition  []byte    `json:"definition"` // JSON-encoded config.AgentDef body
 	CreatedAt   time.Time `json:"created_at"`
 	ExpiresAt   time.Time `json:"expires_at,omitempty"` // zero = no expiry
 	Description string    `json:"description,omitempty"`
+	// TenantID is the RFC N tenant-isolation axis. "" = the shared/
+	// operator/legacy tenant. With (tenant_id, name) as the PK, two
+	// tenants register the same name independently. Set from the
+	// authoritative principal at the write site; never from the wire.
+	TenantID string `json:"tenant_id,omitempty"`
 }
 
 // ---- v0.8.5 Self-Evolution Substrate types ----
@@ -1885,13 +1899,26 @@ type AgentDefRow struct {
 	// "sha256:" + 64 hex chars; empty when the row pre-dates the
 	// content-signature migration and hasn't been backfilled yet.
 	ContentSHA256 string `json:"content_sha256,omitempty"`
+	// TenantID is the RFC N tenant-isolation axis. "" = the shared/
+	// operator/legacy tenant. The UNIQUE constraint is (tenant_id, name,
+	// version), so two tenants own the same name+version independently.
+	// Deliberately NOT part of the content hash — tenant is operational
+	// identity, not content (same rule RetryAttempts/RunTimeoutSeconds
+	// follow), so two tenants forking the same body get the same
+	// content_sha256. Set from the authoritative principal at the write
+	// site; never from the wire.
+	TenantID string `json:"tenant_id,omitempty"`
 }
 
 // AgentDefNameSummary is one entry of AgentDefListNames' output.
 // count is the version count; ActiveDefID is the agent_def_active
 // pointer (empty when no row is promoted under this name).
 type AgentDefNameSummary struct {
-	Name          string    `json:"name"`
+	Name string `json:"name"`
+	// TenantID is the RFC N owning tenant. A name owned by N tenants
+	// yields N summary rows (one per tenant) — without grouping by tenant
+	// the listing would merge distinct tenants' versions under one name.
+	TenantID      string    `json:"tenant_id,omitempty"`
 	VersionCount  int       `json:"version_count"`
 	ActiveDefID   string    `json:"active_def_id,omitempty"`
 	LatestVersion int       `json:"latest_version"`
@@ -2506,6 +2533,9 @@ type AgentDefActiveEntry struct {
 	DefID             string    `json:"def_id"`
 	PromotedAt        time.Time `json:"promoted_at"`
 	PromotedByAgentID string    `json:"promoted_by_agent_id,omitempty"`
+	// TenantID is the RFC N tenant-isolation axis (part of the
+	// agent_def_active PK). "" = the shared/operator/legacy tenant.
+	TenantID string `json:"tenant_id,omitempty"`
 }
 
 // MemorySnapshotEntry is one memory row enriched with its scope +

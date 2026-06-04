@@ -2,6 +2,7 @@ package http
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -10,9 +11,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/concurrency"
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/skills"
+	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/store/sqlite"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 	"github.com/denn-gubsky/loomcycle/internal/tools/builtin"
@@ -348,6 +351,100 @@ func TestSubstrateAdmin_ScheduleDef_NotConfigured(t *testing.T) {
 		raw, _ := io.ReadAll(resp.Body)
 		t.Errorf("status = %d, want 500; body=%s", resp.StatusCode, raw)
 	}
+}
+
+// TestSubstrateAdmin_AgentDef_StampsPrincipalTenant — RFC N FIX 1
+// regression. substrateAdminCtx must carry the authoritative principal's
+// TenantID onto the RunIdentity it stamps; the AgentDef tool reads that to
+// stamp the agent_defs row's tenant_id. Pre-fix, substrateAdminCtx built a
+// RunIdentityValue with NO TenantID, so EVERY admin-registered def landed in
+// the shared "" tenant regardless of which tenant's token drove the call.
+//
+// Drives two cases end-to-end through POST /v1/_agentdef:
+//   - a principal with TenantID="acme" → row tenant_id="acme".
+//   - NO principal (open mode: no auth configured) → row tenant_id="".
+//
+// Pre-fix, the acme case fails (row tenant_id=="" not "acme").
+func TestSubstrateAdmin_AgentDef_StampsPrincipalTenant(t *testing.T) {
+	// rowTenant reads the agent_defs row's tenant_id straight from the DB.
+	// AgentDefListByName returns the AgentDefRow (which carries TenantID).
+	rowTenant := func(t *testing.T, st *sqlite.Store, name string) string {
+		t.Helper()
+		rows, err := st.AgentDefListByName(context.Background(), name)
+		if err != nil {
+			t.Fatalf("AgentDefListByName: %v", err)
+		}
+		if len(rows) == 0 {
+			t.Fatalf("no agent_defs row for %q", name)
+		}
+		return rows[0].TenantID
+	}
+	create := func(t *testing.T, ts *httptest.Server, bearer, name string) {
+		t.Helper()
+		req, _ := http.NewRequest("POST", ts.URL+"/v1/_agentdef",
+			bytes.NewReader([]byte(`{"op":"create","name":"`+name+`","overlay":{"system_prompt":"hi"}}`)))
+		if bearer != "" {
+			req.Header.Set("Authorization", "Bearer "+bearer)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != 200 {
+			raw, _ := io.ReadAll(resp.Body)
+			t.Fatalf("create %q status = %d, want 200; body=%s", name, resp.StatusCode, raw)
+		}
+	}
+	newSrv := func(t *testing.T, withAuth bool) (*httptest.Server, *sqlite.Store, *config.Config) {
+		t.Helper()
+		st, err := sqlite.Open(":memory:")
+		if err != nil {
+			t.Fatalf("sqlite.Open: %v", err)
+		}
+		t.Cleanup(func() { _ = st.Close() })
+		cfg := &config.Config{
+			Concurrency: config.Concurrency{MaxConcurrentRuns: 1, MaxQueueDepth: 1, QueueTimeoutMS: 100},
+		}
+		if withAuth {
+			cfg.Env.AuthToken = "base-token"
+		}
+		agentDefTool := &builtin.AgentDef{Cfg: cfg, Store: st}
+		srv := New(cfg, &stubResolver{}, []tools.Tool{agentDefTool}, concurrency.New(1, 1, time.Second), st)
+		ts := httptest.NewServer(srv.Mux())
+		t.Cleanup(ts.Close)
+		return ts, st, cfg
+	}
+
+	// Case 1: principal with TenantID="acme" → row tenant_id="acme".
+	t.Run("acme_principal", func(t *testing.T) {
+		ts, st, cfg := newSrv(t, true)
+		hash := auth.HashToken(cfg.Env.OperatorTokenPepper, "acme-token")
+		if _, err := st.OperatorTokenDefCreate(context.Background(), store.OperatorTokenDefRow{
+			DefID:         "tok_acme",
+			Name:          "acme-admin",
+			TenantID:      "acme",
+			Subject:       "alice",
+			TokenHash:     hash,
+			AllowedScopes: []string{auth.ScopeAdmin},
+		}); err != nil {
+			t.Fatalf("OperatorTokenDefCreate: %v", err)
+		}
+		create(t, ts, "acme-token", "acme-agent")
+		if got := rowTenant(t, st, "acme-agent"); got != "acme" {
+			t.Errorf("agent_defs row tenant_id=%q, want \"acme\" (substrateAdminCtx dropped the principal tenant)", got)
+		}
+	})
+
+	// Case 2: no principal (open mode) → row tenant_id="".
+	t.Run("no_principal", func(t *testing.T) {
+		ts, st, _ := newSrv(t, false) // open mode: no AuthToken, no token rows
+		create(t, ts, "", "open-agent")
+		if got := rowTenant(t, st, "open-agent"); got != "" {
+			t.Errorf("agent_defs row tenant_id=%q, want \"\" (no principal → shared tenant)", got)
+		}
+	})
 }
 
 func postAdmin(t *testing.T, ts *httptest.Server, path, body string) *http.Response {

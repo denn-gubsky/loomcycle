@@ -220,6 +220,14 @@ func (a *AgentDef) execCreate(ctx context.Context, policy tools.AgentDefPolicyVa
 		return errResult(fmt.Sprintf("create: description (%d bytes) exceeds max %d", len(in.Description), a.MaxDescriptionBytes)), nil
 	}
 
+	ident := tools.RunIdentity(ctx)
+	// RFC N: the tenant comes from the authoritative run identity in ctx
+	// (the AgentDef tool always runs inside a run whose RunIdentity
+	// carries the principal-derived tenant), never from tool input. ""
+	// = shared/legacy tenant. Used for the dedup probe, the row stamp,
+	// and the promote — all scoped to the agent's own tenant.
+	tenantID := ident.TenantID
+
 	contentSHA := signFromMergedDef(in.Name, def)
 	// Idempotent create: if the active def already carries this exact content,
 	// return it as a no-op instead of minting a byte-identical new version. A
@@ -228,13 +236,12 @@ func (a *AgentDef) execCreate(ctx context.Context, policy tools.AgentDefPolicyVa
 	// MCPServerDef.execCreate; compared only against the ACTIVE row, so
 	// re-creating content that matches a non-active version still mints +
 	// promotes (re-activation is a real state change).
-	if active, gerr := a.Store.AgentDefGetActive(ctx, in.Name); gerr == nil && active.ContentSHA256 == contentSHA {
+	if active, gerr := a.Store.AgentDefGetActive(ctx, tenantID, in.Name); gerr == nil && active.ContentSHA256 == contentSHA {
 		resp := rowResponse(active, true)
 		resp["deduplicated"] = true
 		return okJSON(resp)
 	}
 
-	ident := tools.RunIdentity(ctx)
 	row := store.AgentDefRow{
 		DefID:            mintDefID(),
 		Name:             in.Name,
@@ -242,6 +249,7 @@ func (a *AgentDef) execCreate(ctx context.Context, policy tools.AgentDefPolicyVa
 		Description:      in.Description,
 		CreatedByAgentID: ident.AgentID,
 		ContentSHA256:    contentSHA,
+		TenantID:         tenantID,
 		// CreatedByRunID stays empty here — there's no run_id on
 		// RunIdentityValue today; carried via the run ctx separately.
 	}
@@ -254,7 +262,7 @@ func (a *AgentDef) execCreate(ctx context.Context, policy tools.AgentDefPolicyVa
 		promote = *in.Promote
 	}
 	if promote {
-		if err := a.Store.AgentDefSetActive(ctx, in.Name, created.DefID, ident.AgentID); err != nil {
+		if err := a.Store.AgentDefSetActive(ctx, tenantID, in.Name, created.DefID, ident.AgentID); err != nil {
 			return errResult(fmt.Sprintf("create: promote: %s", err)), nil
 		}
 	}
@@ -276,6 +284,11 @@ func (a *AgentDef) execFork(ctx context.Context, policy tools.AgentDefPolicyValu
 	//   2. parent_def_id empty + active pointer exists → use it
 	//   3. neither → name must have a static MD; bootstrap v1
 	//      snapshot as the parent
+	// RFC N: fork resolves + stamps within the agent's own tenant (from
+	// the authoritative run identity, never tool input).
+	ident := tools.RunIdentity(ctx)
+	tenantID := ident.TenantID
+
 	parentDefID := in.ParentDefID
 	var parent store.AgentDefRow
 	if parentDefID != "" {
@@ -290,10 +303,16 @@ func (a *AgentDef) execFork(ctx context.Context, policy tools.AgentDefPolicyValu
 		if row.Name != in.Name {
 			return errResult(fmt.Sprintf("fork: parent_def_id %q has name %q, refusing to fork under name %q", parentDefID, row.Name, in.Name)), nil
 		}
+		// A def_id is a global handle; refuse to fork across the tenant
+		// boundary — a caller in tenant T can't pin another tenant's def
+		// as its parent (which would copy that tenant's body into T).
+		if row.TenantID != tenantID {
+			return errResult(fmt.Sprintf("fork: parent_def_id %q belongs to another tenant, refusing", parentDefID)), nil
+		}
 		parent = row
 	} else {
 		// Try the active pointer first.
-		row, err := a.Store.AgentDefGetActive(ctx, in.Name)
+		row, err := a.Store.AgentDefGetActive(ctx, tenantID, in.Name)
 		if err == nil {
 			parent = row
 			parentDefID = row.DefID
@@ -316,7 +335,7 @@ func (a *AgentDef) execFork(ctx context.Context, policy tools.AgentDefPolicyValu
 				// "another goroutine just won v1." Re-read the active
 				// pointer once before propagating the error — if it's
 				// now set, use that as our parent instead of failing.
-				if row2, gerr := a.Store.AgentDefGetActive(ctx, in.Name); gerr == nil {
+				if row2, gerr := a.Store.AgentDefGetActive(ctx, tenantID, in.Name); gerr == nil {
 					parent = row2
 					parentDefID = row2.DefID
 				} else {
@@ -361,7 +380,6 @@ func (a *AgentDef) execFork(ctx context.Context, policy tools.AgentDefPolicyValu
 		return errResult(fmt.Sprintf("fork: description (%d bytes) exceeds max %d", len(in.Description), a.MaxDescriptionBytes)), nil
 	}
 
-	ident := tools.RunIdentity(ctx)
 	row := store.AgentDefRow{
 		DefID:            mintDefID(),
 		Name:             in.Name,
@@ -370,6 +388,7 @@ func (a *AgentDef) execFork(ctx context.Context, policy tools.AgentDefPolicyValu
 		Description:      in.Description,
 		CreatedByAgentID: ident.AgentID,
 		ContentSHA256:    signFromMergedDef(in.Name, def),
+		TenantID:         tenantID,
 	}
 	created, err := a.Store.AgentDefCreate(ctx, row)
 	if err != nil {
@@ -380,7 +399,7 @@ func (a *AgentDef) execFork(ctx context.Context, policy tools.AgentDefPolicyValu
 		promote = *in.Promote
 	}
 	if promote {
-		if err := a.Store.AgentDefSetActive(ctx, in.Name, created.DefID, ident.AgentID); err != nil {
+		if err := a.Store.AgentDefSetActive(ctx, tenantID, in.Name, created.DefID, ident.AgentID); err != nil {
 			return errResult(fmt.Sprintf("fork: promote: %s", err)), nil
 		}
 	}
@@ -401,6 +420,14 @@ func (a *AgentDef) execGet(ctx context.Context, policy tools.AgentDefPolicyValue
 		}
 		return errResult(fmt.Sprintf("get: %s", err)), nil
 	}
+	// RFC N: def_id is a global handle but a def is owned by exactly one
+	// tenant. checkScopeForName is tenant-blind, so guard here: a caller
+	// in tenant T cannot read another tenant's def. Return the SAME opaque
+	// not-found a missing def returns — never leak existence/body of a
+	// cross-tenant row.
+	if row.TenantID != tools.RunIdentity(ctx).TenantID {
+		return errResult(fmt.Sprintf("get: def_id %q not found", in.DefID)), nil
+	}
 	if err := a.checkScopeForName(policy, row.Name, row.DefID); err != nil {
 		return errResult(err.Error()), nil
 	}
@@ -418,8 +445,15 @@ func (a *AgentDef) execList(ctx context.Context, policy tools.AgentDefPolicyValu
 	if err != nil {
 		return errResult(fmt.Sprintf("list: %s", err)), nil
 	}
+	// RFC N: AgentDefListByName returns rows across ALL tenants for a
+	// name (names are per-tenant now). Filter to the caller's own tenant
+	// so a tenant lists only its own versions.
+	tenantID := tools.RunIdentity(ctx).TenantID
 	out := make([]map[string]any, 0, len(rows))
 	for _, r := range rows {
+		if r.TenantID != tenantID {
+			continue
+		}
 		out = append(out, rowResponseMap(r))
 	}
 	return okJSON(map[string]any{"name": in.Name, "versions": out})
@@ -441,6 +475,12 @@ func (a *AgentDef) execRetire(ctx context.Context, policy tools.AgentDefPolicyVa
 			return errResult(fmt.Sprintf("retire: def_id %q not found", in.DefID)), nil
 		}
 		return errResult(fmt.Sprintf("retire: %s", err)), nil
+	}
+	// RFC N: refuse cross-tenant retire. AgentDefSetRetired is a global
+	// by-def_id mutation; without this guard a caller in tenant T could
+	// retire another tenant's def. Opaque not-found — don't leak existence.
+	if row.TenantID != tools.RunIdentity(ctx).TenantID {
+		return errResult(fmt.Sprintf("retire: def_id %q not found", in.DefID)), nil
 	}
 	if err := a.checkScopeForName(policy, row.Name, row.DefID); err != nil {
 		return errResult(err.Error()), nil
@@ -467,7 +507,11 @@ func (a *AgentDef) execPromote(ctx context.Context, policy tools.AgentDefPolicyV
 		return errResult(err.Error()), nil
 	}
 	ident := tools.RunIdentity(ctx)
-	if err := a.Store.AgentDefSetActive(ctx, row.Name, row.DefID, ident.AgentID); err != nil {
+	// RFC N: promote within the agent's own tenant. AgentDefSetActive
+	// refuses when ident.TenantID ≠ row.TenantID, so a caller in tenant T
+	// cannot point at (or clobber) another tenant's active pointer — even
+	// though def_id is a global handle.
+	if err := a.Store.AgentDefSetActive(ctx, ident.TenantID, row.Name, row.DefID, ident.AgentID); err != nil {
 		return errResult(fmt.Sprintf("promote: %s", err)), nil
 	}
 	return okJSON(map[string]any{"def_id": row.DefID, "name": row.Name, "promoted": true})
@@ -491,7 +535,8 @@ func (a *AgentDef) execVerify(ctx context.Context, policy tools.AgentDefPolicyVa
 	if err := a.checkScopeForName(policy, in.Name, ""); err != nil {
 		return errResult(err.Error()), nil
 	}
-	row, err := a.Store.AgentDefGetActive(ctx, in.Name)
+	// RFC N: verify against the agent's own tenant active pointer.
+	row, err := a.Store.AgentDefGetActive(ctx, tools.RunIdentity(ctx).TenantID, in.Name)
 	if err != nil {
 		var nf *store.ErrNotFound
 		if errors.As(err, &nf) {
@@ -683,6 +728,10 @@ func (a *AgentDef) bootstrapStatic(ctx context.Context, name string, static conf
 		CreatedByAgentID:       ident.AgentID,
 		BootstrappedFromStatic: true,
 		ContentSHA256:          signFromMergedDef(name, def),
+		// RFC N: the bootstrapped lineage root lives in the forking
+		// caller's tenant (static cfg.Agents is the shared base; the
+		// fork that triggers bootstrap is per-tenant). "" = shared.
+		TenantID: ident.TenantID,
 	}
 	created, err := a.Store.AgentDefCreate(ctx, row)
 	if err != nil {

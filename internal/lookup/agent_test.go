@@ -21,15 +21,19 @@ type stubStore struct {
 	defs map[string]store.AgentDefRow // keyed by name (active)
 }
 
-func (s *stubStore) DynamicAgentGet(_ context.Context, name string) (store.DynamicAgent, error) {
-	if row, ok := s.dyn[name]; ok {
+// stubKey composes the (tenant, name) map key so the stub honours the
+// RFC N tenant axis. Tests that don't care about tenancy use "".
+func stubKey(tenantID, name string) string { return tenantID + "\x00" + name }
+
+func (s *stubStore) DynamicAgentGet(_ context.Context, tenantID, name string) (store.DynamicAgent, error) {
+	if row, ok := s.dyn[stubKey(tenantID, name)]; ok {
 		return row, nil
 	}
 	return store.DynamicAgent{}, &store.ErrNotFound{Kind: "dynamic_agent", ID: name}
 }
 
-func (s *stubStore) AgentDefGetActive(_ context.Context, name string) (store.AgentDefRow, error) {
-	if row, ok := s.defs[name]; ok {
+func (s *stubStore) AgentDefGetActive(_ context.Context, tenantID, name string) (store.AgentDefRow, error) {
+	if row, ok := s.defs[stubKey(tenantID, name)]; ok {
 		return row, nil
 	}
 	return store.AgentDefRow{}, &store.ErrNotFound{Kind: "agent_def_active", ID: name}
@@ -93,7 +97,7 @@ func TestAgent_EquivalenceYamlVsSubstrate(t *testing.T) {
 	ss := &stubStore{
 		dyn: map[string]store.DynamicAgent{},
 		defs: map[string]store.AgentDefRow{
-			"researcher": {
+			stubKey("", "researcher"): {
 				DefID:      "def_researcher_v1",
 				Name:       "researcher",
 				Version:    1,
@@ -102,7 +106,7 @@ func TestAgent_EquivalenceYamlVsSubstrate(t *testing.T) {
 			},
 		},
 	}
-	resolved, ok := lookup.Agent(context.Background(), ss, &config.Config{}, "researcher")
+	resolved, ok := lookup.Agent(context.Background(), ss, &config.Config{}, "", "researcher")
 	if !ok {
 		t.Fatal("resolver returned !ok")
 	}
@@ -163,7 +167,7 @@ func TestAgent_LegacyRowGetsSystemPromptBaseFilledOnRead(t *testing.T) {
 	ss := &stubStore{
 		dyn: map[string]store.DynamicAgent{},
 		defs: map[string]store.AgentDefRow{
-			"legacy": {
+			stubKey("", "legacy"): {
 				DefID:      "def_legacy_v1",
 				Name:       "legacy",
 				Version:    1,
@@ -172,7 +176,7 @@ func TestAgent_LegacyRowGetsSystemPromptBaseFilledOnRead(t *testing.T) {
 			},
 		},
 	}
-	resolved, ok := lookup.Agent(context.Background(), ss, &config.Config{}, "legacy")
+	resolved, ok := lookup.Agent(context.Background(), ss, &config.Config{}, "", "legacy")
 	if !ok {
 		t.Fatal("resolver returned !ok")
 	}
@@ -182,6 +186,78 @@ func TestAgent_LegacyRowGetsSystemPromptBaseFilledOnRead(t *testing.T) {
 	}
 	if resolved.SystemPrompt != "be helpful" {
 		t.Errorf("SystemPrompt unexpectedly mutated: %q", resolved.SystemPrompt)
+	}
+}
+
+// TestAgent_TenantResolutionPrecedence pins the RFC N resolution
+// model: a tenant-scoped dynamic registration shadows the shared
+// static base by name, while a different tenant resolving the same name
+// falls through to the shared static base (it cannot see tenant A's
+// private def).
+func TestAgent_TenantResolutionPrecedence(t *testing.T) {
+	tenantDefJSON, err := json.Marshal(map[string]any{"system_prompt": "tenant-A private"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ss := &stubStore{
+		dyn: map[string]store.DynamicAgent{},
+		defs: map[string]store.AgentDefRow{
+			stubKey("tenant-a", "shared"): {
+				DefID:      "def_a_v1",
+				Name:       "shared",
+				Version:    1,
+				Definition: tenantDefJSON,
+			},
+		},
+	}
+	cfg := &config.Config{Agents: map[string]config.AgentDef{
+		"shared": {SystemPrompt: "operator shared base"},
+	}}
+
+	// Tenant A: its dynamic def shadows the shared static base.
+	gotA, ok := lookup.Agent(context.Background(), ss, cfg, "tenant-a", "shared")
+	if !ok {
+		t.Fatal("tenant-a resolve !ok")
+	}
+	if gotA.SystemPrompt != "tenant-A private" {
+		t.Errorf("tenant-a: got %q, want its own dynamic def", gotA.SystemPrompt)
+	}
+
+	// Tenant B: no private def → falls through to the shared static base.
+	// It must NOT see tenant A's private def.
+	gotB, ok := lookup.Agent(context.Background(), ss, cfg, "tenant-b", "shared")
+	if !ok {
+		t.Fatal("tenant-b resolve !ok")
+	}
+	if gotB.SystemPrompt != "operator shared base" {
+		t.Errorf("tenant-b: got %q, want the shared static base (no cross-tenant leak)", gotB.SystemPrompt)
+	}
+}
+
+// TestAgent_DefaultTenantPreservesStaticFirstOrder pins the back-compat
+// invariant: for the default tenant "", a name present in BOTH static
+// cfg.Agents AND the shared dynamic tier resolves to the STATIC one —
+// identical to the pre-RFC-N "cfg.Agents first, then dynamic" order.
+func TestAgent_DefaultTenantPreservesStaticFirstOrder(t *testing.T) {
+	dynJSON, err := json.Marshal(map[string]any{"system_prompt": "dynamic shadow"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ss := &stubStore{
+		dyn: map[string]store.DynamicAgent{
+			stubKey("", "dual"): {Name: "dual", Definition: dynJSON},
+		},
+		defs: map[string]store.AgentDefRow{},
+	}
+	cfg := &config.Config{Agents: map[string]config.AgentDef{
+		"dual": {SystemPrompt: "static wins"},
+	}}
+	got, ok := lookup.Agent(context.Background(), ss, cfg, "", "dual")
+	if !ok {
+		t.Fatal("resolve !ok")
+	}
+	if got.SystemPrompt != "static wins" {
+		t.Errorf("default tenant precedence broke: got %q, want the static cfg.Agents entry", got.SystemPrompt)
 	}
 }
 
