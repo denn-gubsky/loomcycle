@@ -111,6 +111,88 @@ func TestAgentDefTool_ForkInheritsParent(t *testing.T) {
 	}
 }
 
+// TestAgentDefTool_ForkFallsBackToSharedBase pins the fix for the
+// admin-`list`-sees-it-but-`fork`-can't gap. A per-tenant principal whose
+// registry was seeded under the legacy shared "" tenant (e.g. a jobember
+// substrate:admin whose pre-RFC-N defs all live under "") must be able to fork
+// that "" base WITHOUT an explicit parent_def_id, landing the new version
+// under its OWN tenant. This mirrors run-time lookup.Agent precedence
+// (own-tenant → static → shared "").
+//
+// Regression: on the pre-fix code the no-parent branch jumped straight from
+// the own-tenant active-pointer miss to static cfg.Agents and refused "fork:
+// no parent" — even though the name was visibly deployed under "". Revert the
+// agentdef.go fallback and this fails with that refusal.
+func TestAgentDefTool_ForkFallsBackToSharedBase(t *testing.T) {
+	tool, baseCtx, cleanup := agentDefFixture(t)
+	defer cleanup()
+
+	// Seed a NON-static name under the shared "" tenant — the fixture ctx
+	// carries TenantID="" by default — promoted so it has an "" active
+	// pointer. (Omit allowed_tools so the later fork can't trip the ceiling.)
+	res, _ := tool.Execute(baseCtx, json.RawMessage(`{"op":"create","name":"legacy-seed","overlay":{"system_prompt":"shared base body"}}`))
+	if res.IsError {
+		t.Fatalf("seed create under \"\" tenant: %s", res.Text)
+	}
+	sharedDefID := decodeResult(t, res.Text)["def_id"].(string)
+
+	// A per-tenant principal with NO own-tenant version of the name.
+	ctxTenant := tools.WithRunIdentity(baseCtx, tools.RunIdentityValue{AgentID: "a_test", TenantID: "jobember"})
+
+	res, _ = tool.Execute(ctxTenant, json.RawMessage(`{"op":"fork","name":"legacy-seed","overlay":{"system_prompt":"tenant override"},"promote":true}`))
+	if res.IsError {
+		t.Fatalf("fork should fall back to the shared \"\" base; got refusal: %s", res.Text)
+	}
+	out := decodeResult(t, res.Text)
+	if out["parent_def_id"].(string) != sharedDefID {
+		t.Errorf("forked parent_def_id = %q, want the \"\" base %q", out["parent_def_id"], sharedDefID)
+	}
+	tenantForkDefID := out["def_id"].(string)
+
+	// The new version is stamped under jobember: a non-admin tenant `list`
+	// is tenant-scoped, so jobember sees exactly its own forked version and
+	// NOT the "" base.
+	res, _ = tool.Execute(ctxTenant, json.RawMessage(`{"op":"list","name":"legacy-seed"}`))
+	if res.IsError {
+		t.Fatalf("tenant list after fork: %s", res.Text)
+	}
+	versions := decodeResult(t, res.Text)["versions"].([]any)
+	if len(versions) != 1 {
+		t.Fatalf("jobember list = %d versions, want 1 (its own fork, stamped under jobember)", len(versions))
+	}
+	if versions[0].(map[string]any)["def_id"].(string) != tenantForkDefID {
+		t.Errorf("jobember's only version should be its fork %q", tenantForkDefID)
+	}
+
+	// Own-tenant precedence: a SECOND jobember fork now resolves jobember's
+	// own active pointer as the parent (not the "" base again).
+	res, _ = tool.Execute(ctxTenant, json.RawMessage(`{"op":"fork","name":"legacy-seed","overlay":{"system_prompt":"second tenant rev"},"promote":true}`))
+	if res.IsError {
+		t.Fatalf("second tenant fork: %s", res.Text)
+	}
+	if pid := decodeResult(t, res.Text)["parent_def_id"].(string); pid != tenantForkDefID {
+		t.Errorf("second fork parent = %q, want the prior tenant fork %q (own-tenant precedence)", pid, tenantForkDefID)
+	}
+}
+
+// TestAgentDefTool_ForkNoParentStillRefuses guards that the "" fallback did not
+// soften the genuine no-parent refusal: a tenant principal forking a name with
+// no own-tenant version, no shared "" base, and no static cfg.Agents entry must
+// still be refused.
+func TestAgentDefTool_ForkNoParentStillRefuses(t *testing.T) {
+	tool, baseCtx, cleanup := agentDefFixture(t)
+	defer cleanup()
+
+	ctxTenant := tools.WithRunIdentity(baseCtx, tools.RunIdentityValue{AgentID: "a_test", TenantID: "jobember"})
+	res, _ := tool.Execute(ctxTenant, json.RawMessage(`{"op":"fork","name":"never-existed","overlay":{"system_prompt":"x"}}`))
+	if !res.IsError {
+		t.Fatalf("fork of a name with no own/shared/static parent should refuse; got %s", res.Text)
+	}
+	if !strings.Contains(res.Text, "no parent") {
+		t.Errorf("refusal should mention \"no parent\"; got %s", res.Text)
+	}
+}
+
 // ---- RFC J: inline code_body ingestion ----
 
 // Single-quoted JS string so the body embeds cleanly inside the JSON test

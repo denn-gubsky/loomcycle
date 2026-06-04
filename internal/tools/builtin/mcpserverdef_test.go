@@ -577,3 +577,24 @@ func TestMCPServerDefTool_TenantIsolationGetListRetirePromote(t *testing.T) {
 		t.Errorf("tenant B list returned %d versions; want 1", n)
 	}
 }
+
+// TestMCPServerDefTool_ForkFallsBackToSharedBase mirrors the AgentDef fix: a
+// by-name fork by a per-tenant principal falls back to the SHARED ("") base
+// when the name has no own-tenant version, so an MCP server seeded under the
+// legacy "" tenant can be migrated without an explicit parent_def_id.
+func TestMCPServerDefTool_ForkFallsBackToSharedBase(t *testing.T) {
+	tool, baseCtx, cleanup := mcpServerDefFixture(t)
+	defer cleanup()
+
+	ctxShared := tools.WithRunIdentity(baseCtx, tools.RunIdentityValue{AgentID: "a_test", TenantID: ""})
+	res, _ := tool.Execute(ctxShared, json.RawMessage(`{"op":"create","name":"jobs","overlay":{"transport":"http","url":"http://localhost:3000/api/mcp"}}`))
+	if res.IsError {
+		t.Fatalf("create shared mcp server: %s", res.Text)
+	}
+
+	ctxT := tools.WithRunIdentity(baseCtx, tools.RunIdentityValue{AgentID: "a_test", TenantID: "jobember"})
+	res, _ = tool.Execute(ctxT, json.RawMessage(`{"op":"fork","name":"jobs"}`))
+	if res.IsError {
+		t.Fatalf(`by-name fork of the shared "" MCP server as tenant should succeed; got %s`, res.Text)
+	}
+}

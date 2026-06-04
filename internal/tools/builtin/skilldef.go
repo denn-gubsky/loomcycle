@@ -303,28 +303,45 @@ func (s *SkillDef) execFork(ctx context.Context, policy tools.SkillDefPolicyValu
 			if !errors.As(err, &nf) {
 				return errResult(fmt.Sprintf("fork: %s", err)), nil
 			}
-			// No active pointer → bootstrap from static SKILL.md.
-			if s.Set == nil {
-				return errResult(fmt.Sprintf("fork: no parent — name %q has neither a DB version nor a static SKILL.md entry (LOOMCYCLE_SKILLS_ROOT unset)", in.Name)), nil
-			}
-			static, ok := s.Set.Get(in.Name)
-			if !ok {
-				return errResult(fmt.Sprintf("fork: no parent — name %q has neither a DB version nor a static SKILL.md entry", in.Name)), nil
-			}
-			bootstrap, berr := s.bootstrapStatic(ctx, in.Name, static)
-			if berr != nil {
-				// Concurrent first-fork may have already bootstrapped
-				// v1 between our GetActive and our own bootstrap insert.
-				// Re-read active before propagating the error.
-				if row2, gerr := s.Store.SkillDefGetActive(ctx, tenantID, in.Name); gerr == nil {
-					parent = row2
-					parentDefID = row2.DefID
-				} else {
-					return errResult(fmt.Sprintf("fork: bootstrap static: %s", berr)), nil
+			// No own-tenant active pointer. Fall back to the SHARED ("")
+			// base before bootstrapping — mirrors run-time lookup precedence
+			// (own-tenant → static → shared "") and the explicit-parent
+			// branch, so a per-tenant principal can fork a name seeded under
+			// the legacy "" tenant. The fork lands under the caller's tenant.
+			// Skip when tenantID is already "" (identical lookup).
+			if tenantID != "" {
+				if shared, serr := s.Store.SkillDefGetActive(ctx, "", in.Name); serr == nil {
+					parent = shared
+					parentDefID = shared.DefID
+				} else if !errors.As(serr, &nf) {
+					return errResult(fmt.Sprintf("fork: %s", serr)), nil
 				}
-			} else {
-				parent = bootstrap
-				parentDefID = bootstrap.DefID
+			}
+			if parentDefID == "" {
+				// Still no parent (own-tenant AND shared "" missed) →
+				// bootstrap from static SKILL.md, else refuse.
+				if s.Set == nil {
+					return errResult(fmt.Sprintf("fork: no parent — name %q has neither a DB version (own tenant or shared \"\") nor a static SKILL.md entry (LOOMCYCLE_SKILLS_ROOT unset)", in.Name)), nil
+				}
+				static, ok := s.Set.Get(in.Name)
+				if !ok {
+					return errResult(fmt.Sprintf("fork: no parent — name %q has neither a DB version (own tenant or shared \"\") nor a static SKILL.md entry", in.Name)), nil
+				}
+				bootstrap, berr := s.bootstrapStatic(ctx, in.Name, static)
+				if berr != nil {
+					// Concurrent first-fork may have already bootstrapped
+					// v1 between our GetActive and our own bootstrap insert.
+					// Re-read active before propagating the error.
+					if row2, gerr := s.Store.SkillDefGetActive(ctx, tenantID, in.Name); gerr == nil {
+						parent = row2
+						parentDefID = row2.DefID
+					} else {
+						return errResult(fmt.Sprintf("fork: bootstrap static: %s", berr)), nil
+					}
+				} else {
+					parent = bootstrap
+					parentDefID = bootstrap.DefID
+				}
 			}
 		}
 	}

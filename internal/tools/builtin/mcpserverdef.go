@@ -337,10 +337,25 @@ func (m *MCPServerDef) execFork(ctx context.Context, in mcpServerDefInput) (tool
 		active, err := m.Store.MCPServerDefGetActive(ctx, tenantID, in.Name)
 		if err != nil {
 			var nf *store.ErrNotFound
-			if errors.As(err, &nf) {
+			if !errors.As(err, &nf) {
+				return errResult(fmt.Sprintf("fork: %s", err)), nil
+			}
+			// No own-tenant active row. Fall back to the SHARED ("") base
+			// (mirrors run-time lookup + the explicit-parent branch) so a
+			// per-tenant principal can fork a name seeded under the legacy ""
+			// tenant; the fork lands under the caller's tenant. Skip when
+			// tenantID is already "" (identical lookup).
+			if tenantID == "" {
 				return errResult(fmt.Sprintf("fork: name %q has no DB rows — use `create`", in.Name)), nil
 			}
-			return errResult(fmt.Sprintf("fork: %s", err)), nil
+			shared, serr := m.Store.MCPServerDefGetActive(ctx, "", in.Name)
+			if serr != nil {
+				if errors.As(serr, &nf) {
+					return errResult(fmt.Sprintf("fork: name %q has no DB rows (own tenant or shared \"\") — use `create`", in.Name)), nil
+				}
+				return errResult(fmt.Sprintf("fork: %s", serr)), nil
+			}
+			active = shared
 		}
 		parentDefID = active.DefID
 		parentJSON = string(active.Definition)

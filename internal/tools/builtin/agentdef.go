@@ -294,13 +294,19 @@ func (a *AgentDef) execFork(ctx context.Context, policy tools.AgentDefPolicyValu
 		return errResult(fmt.Sprintf("fork: name %q invalid (must match [A-Za-z0-9_-]{1,128})", in.Name)), nil
 	}
 
-	// Resolve the parent. Three paths:
+	// Resolve the parent. Paths, in order:
 	//   1. parent_def_id supplied → pin
-	//   2. parent_def_id empty + active pointer exists → use it
-	//   3. neither → name must have a static MD; bootstrap v1
-	//      snapshot as the parent
-	// RFC N: fork resolves + stamps within the agent's own tenant (from
-	// the authoritative run identity, never tool input).
+	//   2. parent_def_id empty + OWN-tenant active pointer → use it
+	//   3. else + a SHARED ("") active pointer (when tenantID != "") →
+	//      fork the shared base into the caller's tenant. Mirrors the
+	//      run-time lookup.Agent precedence (own-tenant → static → shared
+	//      "") and fixes the admin-`list`-sees-it-but-`fork`-can't gap for
+	//      registries seeded under the legacy "" tenant.
+	//   4. neither → name must have a static MD; bootstrap v1 snapshot.
+	// RFC N: fork resolves the parent within the agent's own tenant first
+	// (then the shared "" base), but the new version is ALWAYS stamped under
+	// the caller's own tenant (from the authoritative run identity, never
+	// tool input).
 	ident := tools.RunIdentity(ctx)
 	tenantID := ident.TenantID
 
@@ -332,7 +338,7 @@ func (a *AgentDef) execFork(ctx context.Context, policy tools.AgentDefPolicyValu
 		}
 		parent = row
 	} else {
-		// Try the active pointer first.
+		// Try the active pointer in the caller's OWN tenant first.
 		row, err := a.Store.AgentDefGetActive(ctx, tenantID, in.Name)
 		if err == nil {
 			parent = row
@@ -342,29 +348,52 @@ func (a *AgentDef) execFork(ctx context.Context, policy tools.AgentDefPolicyValu
 			if !errors.As(err, &nf) {
 				return errResult(fmt.Sprintf("fork: %s", err)), nil
 			}
-			// No active pointer → must bootstrap from static MD.
-			static, ok := a.Cfg.Agents[in.Name]
-			if !ok {
-				return errResult(fmt.Sprintf("fork: no parent — name %q has neither a DB version nor a static cfg.Agents entry", in.Name)), nil
-			}
-			bootstrap, berr := a.bootstrapStatic(ctx, in.Name, static)
-			if berr != nil {
-				// A concurrent first-fork may have already bootstrapped
-				// v1 between our AgentDefGetActive check and our own
-				// bootstrap insert. The store's per-name lock guarantees
-				// monotonic versions but our caller has no way to know
-				// "another goroutine just won v1." Re-read the active
-				// pointer once before propagating the error — if it's
-				// now set, use that as our parent instead of failing.
-				if row2, gerr := a.Store.AgentDefGetActive(ctx, tenantID, in.Name); gerr == nil {
-					parent = row2
-					parentDefID = row2.DefID
-				} else {
-					return errResult(fmt.Sprintf("fork: bootstrap static: %s", berr)), nil
+			// No own-tenant active pointer. Before bootstrapping, fall back
+			// to the SHARED ("") base — the same precedence the run-time
+			// resolver walks (lookup.Agent: own-tenant dynamic → static →
+			// shared "" dynamic). Without this, a per-tenant principal whose
+			// registry was seeded under the legacy "" tenant could SEE a name
+			// via the cross-tenant admin `list` yet be unable to fork it:
+			// `list` reports "deployed", fork reports "no parent". Forking the
+			// shared base lands the new version under the CALLER's tenant
+			// (the row stamp below sets TenantID = tenantID), mirroring the
+			// explicit-parent_def_id branch above which already permits
+			// forking the "" base across the boundary. Skip when tenantID is
+			// already "" — that lookup is identical to the one we just did.
+			if tenantID != "" {
+				if shared, serr := a.Store.AgentDefGetActive(ctx, "", in.Name); serr == nil {
+					parent = shared
+					parentDefID = shared.DefID
+				} else if !errors.As(serr, &nf) {
+					return errResult(fmt.Sprintf("fork: %s", serr)), nil
 				}
-			} else {
-				parent = bootstrap
-				parentDefID = bootstrap.DefID
+			}
+			// Still no parent (own-tenant AND shared "" both missed) →
+			// bootstrap from static MD, else refuse.
+			if parentDefID == "" {
+				static, ok := a.Cfg.Agents[in.Name]
+				if !ok {
+					return errResult(fmt.Sprintf("fork: no parent — name %q has neither a DB version (own tenant or shared \"\") nor a static cfg.Agents entry", in.Name)), nil
+				}
+				bootstrap, berr := a.bootstrapStatic(ctx, in.Name, static)
+				if berr != nil {
+					// A concurrent first-fork may have already bootstrapped
+					// v1 between our AgentDefGetActive check and our own
+					// bootstrap insert. The store's per-name lock guarantees
+					// monotonic versions but our caller has no way to know
+					// "another goroutine just won v1." Re-read the active
+					// pointer once before propagating the error — if it's
+					// now set, use that as our parent instead of failing.
+					if row2, gerr := a.Store.AgentDefGetActive(ctx, tenantID, in.Name); gerr == nil {
+						parent = row2
+						parentDefID = row2.DefID
+					} else {
+						return errResult(fmt.Sprintf("fork: bootstrap static: %s", berr)), nil
+					}
+				} else {
+					parent = bootstrap
+					parentDefID = bootstrap.DefID
+				}
 			}
 		}
 	}
