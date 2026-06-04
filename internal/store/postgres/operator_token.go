@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -28,14 +29,29 @@ func scanOperatorTokenDef(row pgx.Row) (store.OperatorTokenDefRow, error) {
 		out        store.OperatorTokenDefRow
 		scopesJSON string
 		retiredAt  *time.Time
+		// created_by_agent_id / created_by_run_id / rotated_from are
+		// NULLABLE columns (the CREATE path writes NULL via nullableString
+		// when empty — e.g. a token minted through the HTTP/CLI admin path
+		// has no run context, so created_by_run_id is NULL). They MUST scan
+		// into sql.NullString; scanning a NULL into a plain *string fails
+		// with "cannot scan NULL into *string", which on the auth hot path
+		// (OperatorTokenDefGetByTokenHash) takes down token resolution for
+		// every such token on Postgres. (SQLite already scanned these as
+		// sql.NullString — this restores backend parity.)
+		agentID sql.NullString
+		runID   sql.NullString
+		rotated sql.NullString
 	)
 	if err := row.Scan(
 		&out.DefID, &out.Name, &out.TenantID, &out.Subject, &out.TokenHash,
-		&scopesJSON, &out.CreatedAt, &out.CreatedByAgentID, &out.CreatedByRunID,
-		&out.RotatedFrom, &retiredAt,
+		&scopesJSON, &out.CreatedAt, &agentID, &runID,
+		&rotated, &retiredAt,
 	); err != nil {
 		return store.OperatorTokenDefRow{}, err
 	}
+	out.CreatedByAgentID = agentID.String
+	out.CreatedByRunID = runID.String
+	out.RotatedFrom = rotated.String
 	if err := json.Unmarshal([]byte(scopesJSON), &out.AllowedScopes); err != nil {
 		return store.OperatorTokenDefRow{}, fmt.Errorf("operator_token_def: decode allowed_scopes: %w", err)
 	}
