@@ -179,7 +179,7 @@ func TestMCPServerDefTool_CreateHappyPath(t *testing.T) {
 		t.Error("create should default to promoted=true")
 	}
 	// Registry should now hold the entry.
-	spec, ok := tool.Registry.Get("n8n-mailgun")
+	spec, ok := tool.Registry.Get("", "n8n-mailgun")
 	if !ok {
 		t.Fatal("registry doesn't have the new entry")
 	}
@@ -231,7 +231,7 @@ func TestMCPServerDefTool_RetireRemovesFromRegistry(t *testing.T) {
 
 	createRes, _ := tool.Execute(ctx, json.RawMessage(`{"op":"create","name":"n8n-retire","overlay":{"transport":"http","url":"https://n8n.example.com/mcp"}}`))
 	defID := decodeResult(t, createRes.Text)["def_id"].(string)
-	if _, ok := tool.Registry.Get("n8n-retire"); !ok {
+	if _, ok := tool.Registry.Get("", "n8n-retire"); !ok {
 		t.Fatal("registry should have the entry after create")
 	}
 
@@ -239,7 +239,7 @@ func TestMCPServerDefTool_RetireRemovesFromRegistry(t *testing.T) {
 	if res.IsError {
 		t.Fatalf("retire: %s", res.Text)
 	}
-	if _, ok := tool.Registry.Get("n8n-retire"); ok {
+	if _, ok := tool.Registry.Get("", "n8n-retire"); ok {
 		t.Error("registry should NOT have the entry after retiring the active version")
 	}
 }
@@ -296,8 +296,9 @@ func TestMCPServerDefTool_RediscoverNoopOnUnchangedTools(t *testing.T) {
 	srv := mcptest.NewServer(t, mcptest.WithToolName("check_user"))
 	tool.Cfg.Env.HTTPHostAllowlist = append(tool.Cfg.Env.HTTPHostAllowlist, "127.0.0.1")
 	tool.Pool = loommcp.NewPool(
-		func(name string) (loommcp.Caller, error) { return mcphttp.New(mcphttp.Config{URL: srv.URL}) },
+		func(_, name string) (loommcp.Caller, error) { return mcphttp.New(mcphttp.Config{URL: srv.URL}) },
 		func(c loommcp.Caller) {},
+		nil,
 	)
 	t.Cleanup(tool.Pool.Close)
 
@@ -328,8 +329,9 @@ func mcpToolPoolFixture(t *testing.T, tool *MCPServerDef, toolName string) strin
 	srv := mcptest.NewServer(t, mcptest.WithToolName(toolName))
 	tool.Cfg.Env.HTTPHostAllowlist = append(tool.Cfg.Env.HTTPHostAllowlist, "127.0.0.1")
 	tool.Pool = loommcp.NewPool(
-		func(name string) (loommcp.Caller, error) { return mcphttp.New(mcphttp.Config{URL: srv.URL}) },
+		func(_, name string) (loommcp.Caller, error) { return mcphttp.New(mcphttp.Config{URL: srv.URL}) },
 		func(c loommcp.Caller) {},
+		nil,
 	)
 	t.Cleanup(tool.Pool.Close)
 	return srv.URL
@@ -394,8 +396,9 @@ func TestMCPServerDefTool_CreateDiscoveryBestEffortOnUnreachable(t *testing.T) {
 	defer cleanup()
 	tool.Cfg.Env.HTTPHostAllowlist = append(tool.Cfg.Env.HTTPHostAllowlist, "127.0.0.1")
 	tool.Pool = loommcp.NewPool(
-		func(name string) (loommcp.Caller, error) { return nil, fmt.Errorf("connection refused") },
+		func(_, name string) (loommcp.Caller, error) { return nil, fmt.Errorf("connection refused") },
 		func(c loommcp.Caller) {},
+		nil,
 	)
 	t.Cleanup(tool.Pool.Close)
 
@@ -463,7 +466,7 @@ func TestMCPServerDefTool_CreateExpandsInnerLoomcycleEnv(t *testing.T) {
 	// resolved while the outer ${run.credentials.*} token survived for
 	// request-time substitution — i.e. the stored header is now FLAT (no
 	// nested brace), which is exactly what substitute.go's lazy regex needs.
-	active, err := tool.Store.MCPServerDefGetActive(ctx, "jobs")
+	active, err := tool.Store.MCPServerDefGetActive(ctx, "", "jobs")
 	if err != nil {
 		t.Fatalf("GetActive: %v", err)
 	}
