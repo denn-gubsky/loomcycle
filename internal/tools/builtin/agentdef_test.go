@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/lookup"
 	"github.com/denn-gubsky/loomcycle/internal/store/sqlite"
@@ -423,6 +424,51 @@ func TestAgentDefTool_TenantIsolationGetListRetire(t *testing.T) {
 	}
 	if n := len(decodeResult(t, res.Text)["versions"].([]any)); n != 1 {
 		t.Errorf("tenant B list returned %d versions; want 1", n)
+	}
+}
+
+// TestAgentDefTool_AdminCrossesTenantsGetList pins the RFC L invariant that a
+// substrate:admin principal crosses tenant boundaries on the def-tool READ ops
+// (get/list) — the regression behind "agent/skill/MCP bodies not visible in the
+// Web UI library": the role-aware library is an admin surface, but the get/list
+// ops (which back the lineage panel's def bodies) tenant-filtered with no admin
+// bypass, so an admin whose principal tenant differed from the def's tenant
+// (notably the shared "" tenant where bootstrapped/legacy defs live) saw empty
+// bodies. A NON-admin principal must still be tenant-scoped.
+func TestAgentDefTool_AdminCrossesTenantsGetList(t *testing.T) {
+	tool, baseCtx, cleanup := agentDefFixture(t)
+	defer cleanup()
+
+	// A def owned by tenant-b.
+	ctxB := tools.WithRunIdentity(baseCtx, tools.RunIdentityValue{AgentID: "a_test", TenantID: "tenant-b"})
+	res, _ := tool.Execute(ctxB, json.RawMessage(`{"op":"create","name":"b-only","overlay":{"system_prompt":"tenant b body"}}`))
+	if res.IsError {
+		t.Fatalf("create under B: %s", res.Text)
+	}
+	defID := decodeResult(t, res.Text)["def_id"].(string)
+
+	// substrate:admin principal in a DIFFERENT tenant must SEE tenant-b's def.
+	ctxAdmin := tools.WithRunIdentity(baseCtx, tools.RunIdentityValue{AgentID: "a_test", TenantID: "ops"})
+	ctxAdmin = auth.WithPrincipal(ctxAdmin, auth.Principal{TenantID: "ops", Subject: "op", Scopes: []string{auth.ScopeAdmin}})
+
+	res, _ = tool.Execute(ctxAdmin, json.RawMessage(`{"op":"get","def_id":"`+defID+`"}`))
+	if res.IsError {
+		t.Errorf("admin get of another tenant's def should succeed (admin crosses tenants); got %s", res.Text)
+	}
+	res, _ = tool.Execute(ctxAdmin, json.RawMessage(`{"op":"list","name":"b-only"}`))
+	if res.IsError {
+		t.Fatalf("admin list: %s", res.Text)
+	}
+	if n := len(decodeResult(t, res.Text)["versions"].([]any)); n != 1 {
+		t.Errorf("admin list should see tenant-b's version across tenants; got %d", n)
+	}
+
+	// Control: a NON-admin principal in "ops" still cannot see tenant-b's def.
+	ctxNon := tools.WithRunIdentity(baseCtx, tools.RunIdentityValue{AgentID: "a_test", TenantID: "ops"})
+	ctxNon = auth.WithPrincipal(ctxNon, auth.Principal{TenantID: "ops", Subject: "op", Scopes: []string{auth.ScopeRunsCreate}})
+	res, _ = tool.Execute(ctxNon, json.RawMessage(`{"op":"get","def_id":"`+defID+`"}`))
+	if !res.IsError {
+		t.Errorf("non-admin cross-tenant get should be refused; got %s", res.Text)
 	}
 }
 
