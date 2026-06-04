@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/denn-gubsky/loomcycle/internal/agents"
+	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/providers/codejs"
 	"github.com/denn-gubsky/loomcycle/internal/store"
@@ -165,6 +166,20 @@ func (a *AgentDef) Execute(ctx context.Context, raw json.RawMessage) (tools.Resu
 }
 
 // ---- create ----
+
+// defCallerIsAdmin reports whether the ctx principal holds substrate:admin —
+// the super-admin who crosses tenant boundaries BY DESIGN (RFC L, mirroring
+// sessionOwnershipOK / tenantVisible). The def-tool read guards consult it so
+// the role-aware Web UI library (admin) can view EVERY tenant's def bodies
+// (the get/list ops back the library + lineage panel), while a non-admin
+// (tenant-scoped) caller — e.g. an agent calling AgentDef.list mid-run — still
+// sees only its own tenant. Without this, an admin viewing the library got
+// empty bodies for every def outside its own principal tenant (notably the
+// shared "" tenant where bootstrapped/legacy defs live).
+func defCallerIsAdmin(ctx context.Context) bool {
+	p, ok := auth.PrincipalFromContext(ctx)
+	return ok && auth.HasScope(p.Scopes, auth.ScopeAdmin)
+}
 
 func (a *AgentDef) execCreate(ctx context.Context, policy tools.AgentDefPolicyValue, in agentDefInput) (tools.Result, error) {
 	if in.Name == "" {
@@ -425,7 +440,7 @@ func (a *AgentDef) execGet(ctx context.Context, policy tools.AgentDefPolicyValue
 	// in tenant T cannot read another tenant's def. Return the SAME opaque
 	// not-found a missing def returns — never leak existence/body of a
 	// cross-tenant row.
-	if row.TenantID != tools.RunIdentity(ctx).TenantID {
+	if !defCallerIsAdmin(ctx) && row.TenantID != tools.RunIdentity(ctx).TenantID {
 		return errResult(fmt.Sprintf("get: def_id %q not found", in.DefID)), nil
 	}
 	if err := a.checkScopeForName(policy, row.Name, row.DefID); err != nil {
@@ -451,7 +466,7 @@ func (a *AgentDef) execList(ctx context.Context, policy tools.AgentDefPolicyValu
 	tenantID := tools.RunIdentity(ctx).TenantID
 	out := make([]map[string]any, 0, len(rows))
 	for _, r := range rows {
-		if r.TenantID != tenantID {
+		if !defCallerIsAdmin(ctx) && r.TenantID != tenantID {
 			continue
 		}
 		out = append(out, rowResponseMap(r))
@@ -479,7 +494,7 @@ func (a *AgentDef) execRetire(ctx context.Context, policy tools.AgentDefPolicyVa
 	// RFC N: refuse cross-tenant retire. AgentDefSetRetired is a global
 	// by-def_id mutation; without this guard a caller in tenant T could
 	// retire another tenant's def. Opaque not-found — don't leak existence.
-	if row.TenantID != tools.RunIdentity(ctx).TenantID {
+	if !defCallerIsAdmin(ctx) && row.TenantID != tools.RunIdentity(ctx).TenantID {
 		return errResult(fmt.Sprintf("retire: def_id %q not found", in.DefID)), nil
 	}
 	if err := a.checkScopeForName(policy, row.Name, row.DefID); err != nil {

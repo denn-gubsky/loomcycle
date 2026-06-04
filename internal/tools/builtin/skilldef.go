@@ -400,7 +400,7 @@ func (s *SkillDef) execGet(ctx context.Context, policy tools.SkillDefPolicyValue
 	// in tenant T cannot read another tenant's def. Return the SAME opaque
 	// not-found a missing def returns — never leak existence/body of a
 	// cross-tenant row.
-	if row.TenantID != tools.RunIdentity(ctx).TenantID {
+	if !defCallerIsAdmin(ctx) && row.TenantID != tools.RunIdentity(ctx).TenantID {
 		return errResult(fmt.Sprintf("get: def_id %q not found", in.DefID)), nil
 	}
 	if err := s.checkScopeForName(policy, row.Name, row.DefID); err != nil {
@@ -426,7 +426,7 @@ func (s *SkillDef) execList(ctx context.Context, policy tools.SkillDefPolicyValu
 	tenantID := tools.RunIdentity(ctx).TenantID
 	out := make([]map[string]any, 0, len(rows))
 	for _, r := range rows {
-		if r.TenantID != tenantID {
+		if !defCallerIsAdmin(ctx) && r.TenantID != tenantID {
 			continue
 		}
 		out = append(out, skillDefRowResponseMap(r))
@@ -454,7 +454,7 @@ func (s *SkillDef) execRetire(ctx context.Context, policy tools.SkillDefPolicyVa
 	// RFC N: refuse cross-tenant retire. SkillDefSetRetired is a global
 	// by-def_id mutation; without this guard a caller in tenant T could
 	// retire another tenant's def. Opaque not-found — don't leak existence.
-	if row.TenantID != tools.RunIdentity(ctx).TenantID {
+	if !defCallerIsAdmin(ctx) && row.TenantID != tools.RunIdentity(ctx).TenantID {
 		return errResult(fmt.Sprintf("retire: def_id %q not found", in.DefID)), nil
 	}
 	if err := s.checkScopeForName(policy, row.Name, row.DefID); err != nil {
