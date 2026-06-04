@@ -775,6 +775,29 @@ func (s *Store) migrate(ctx context.Context) error {
 		// unconstrained and the index stays small. Mirrors the postgres
 		// 0033 migration.
 		`CREATE UNIQUE INDEX IF NOT EXISTS runs_idempotency_key ON runs(idempotency_key) WHERE idempotency_key IS NOT NULL`,
+		// RFC N — ON CONFLICT(tenant_id, name) targets for the def plane.
+		// On a FRESH DB these are redundant with the composite PRIMARY KEY /
+		// UNIQUE declared in the CREATE TABLE block above (harmless). On an
+		// UPGRADED v0.8.x DB the addColumns ALTER added tenant_id but SQLite
+		// could NOT rewrite the existing PRIMARY KEY(name) / UNIQUE(name,
+		// version) in place — so the runtime upserts' ON CONFLICT(tenant_id,
+		// name) and the version-bump UNIQUE(tenant_id, name, version) have NO
+		// matching index and SQLite refuses with "ON CONFLICT clause does not
+		// match any PRIMARY KEY or UNIQUE constraint", breaking the FIRST
+		// promote/register even single-tenant. These idempotent indexes
+		// supply that ON CONFLICT target so upserts work on upgraded DBs.
+		// Lives in addIndexes (not the CREATE TABLE block) so the tenant_id
+		// column added by addColumns above is guaranteed present first.
+		//
+		// Residual caveat (unchanged): the upgraded agent_def_active /
+		// dynamic_agents tables still carry PRIMARY KEY(name), so two tenants
+		// cannot share a name on a PRE-EXISTING SQLite DB — a fresh DB is
+		// required for full multi-tenant on SQLite. These indexes restore
+		// single-tenant upgrade functionality only; they do not retrofit the
+		// per-tenant isolation a fresh DB's composite PK provides.
+		`CREATE UNIQUE INDEX IF NOT EXISTS uniq_agent_def_active_tenant_name    ON agent_def_active(tenant_id, name)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS uniq_dynamic_agents_tenant_name      ON dynamic_agents(tenant_id, name)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS uniq_agent_defs_tenant_name_version  ON agent_defs(tenant_id, name, version)`,
 	}
 	for _, q := range addIndexes {
 		// Note the asymmetry vs addColumns above: indexes use

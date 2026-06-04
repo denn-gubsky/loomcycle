@@ -233,6 +233,150 @@ func TestMigrate_UpgradeFromV084ChannelMessages(t *testing.T) {
 	}
 }
 
+// TestMigrate_UpgradeFromLegacyAgentDefPlaneTenantUpserts — RFC N
+// regression for the in-place SQLite upgrade bug. Setup: hand-create the
+// LEGACY (pre-RFC-N) agent-def-plane schema — agent_defs with
+// UNIQUE(name, version), agent_def_active with PRIMARY KEY(name),
+// dynamic_agents with PRIMARY KEY(name), none carrying tenant_id. Then
+// reopen via the store path (re-runs migrate(), which ALTERs in tenant_id
+// but CANNOT rewrite the PK/UNIQUE in place) and assert the three runtime
+// upserts SUCCEED.
+//
+// Pre-fix, this FAILS: the upserts' ON CONFLICT(tenant_id, name) /
+// version-bump UNIQUE(tenant_id, name, version) have no matching index on
+// the upgraded table, so SQLite refuses with "ON CONFLICT clause does not
+// match any PRIMARY KEY or UNIQUE constraint" on the FIRST register/promote
+// — broken even single-tenant. The fix adds idempotent CREATE UNIQUE INDEX
+// statements in addIndexes that supply the ON CONFLICT target.
+func TestMigrate_UpgradeFromLegacyAgentDefPlaneTenantUpserts(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "legacy_agentdef.db")
+
+	// 1. Stand up the legacy schema: open (which builds the current
+	// schema), then drop + rebuild the three tables in their pre-RFC-N
+	// shape (no tenant_id; old PK/UNIQUE). Mirrors how a pre-RFC-N deploy
+	// looks on disk.
+	{
+		s, err := Open(path)
+		if err != nil {
+			t.Fatalf("initial open: %v", err)
+		}
+		ctx := context.Background()
+		stmts := []string{
+			`DROP INDEX IF EXISTS uniq_agent_def_active_tenant_name`,
+			`DROP INDEX IF EXISTS uniq_dynamic_agents_tenant_name`,
+			`DROP INDEX IF EXISTS uniq_agent_defs_tenant_name_version`,
+			`DROP TABLE agent_def_active`,
+			`DROP TABLE dynamic_agents`,
+			`DROP TABLE agent_defs`,
+			// Legacy agent_defs: UNIQUE(name, version), no tenant_id.
+			`CREATE TABLE agent_defs (
+				def_id                    TEXT    PRIMARY KEY,
+				name                      TEXT    NOT NULL,
+				version                   INTEGER NOT NULL,
+				parent_def_id             TEXT    REFERENCES agent_defs(def_id),
+				definition                TEXT    NOT NULL,
+				description               TEXT,
+				created_at                INTEGER NOT NULL,
+				created_by_agent_id       TEXT,
+				created_by_run_id         TEXT,
+				retired                   INTEGER NOT NULL DEFAULT 0,
+				bootstrapped_from_static  INTEGER NOT NULL DEFAULT 0,
+				content_sha256            TEXT,
+				UNIQUE(name, version)
+			)`,
+			// Legacy agent_def_active: PRIMARY KEY(name), no tenant_id.
+			`CREATE TABLE agent_def_active (
+				name                  TEXT    PRIMARY KEY,
+				def_id                TEXT    NOT NULL REFERENCES agent_defs(def_id),
+				promoted_at           INTEGER NOT NULL,
+				promoted_by_agent_id  TEXT
+			)`,
+			// Legacy dynamic_agents: PRIMARY KEY(name), no tenant_id.
+			`CREATE TABLE dynamic_agents (
+				name        TEXT    PRIMARY KEY,
+				definition  BLOB    NOT NULL,
+				created_at  INTEGER NOT NULL,
+				expires_at  INTEGER NOT NULL DEFAULT 0,
+				description TEXT
+			)`,
+		}
+		for _, q := range stmts {
+			if _, err := s.db.ExecContext(ctx, q); err != nil {
+				t.Fatalf("setup legacy schema: %q: %v", q, err)
+			}
+		}
+		if err := s.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// 2. Reopen — migrate() ALTERs in tenant_id + creates the ON CONFLICT
+	// target indexes.
+	s, err := Open(path)
+	if err != nil {
+		t.Fatalf("upgrade open: %v", err)
+	}
+	defer s.Close()
+	ctx := context.Background()
+
+	// 3. AgentDefCreate must succeed (exercises UNIQUE(tenant_id, name,
+	// version) via the version-bump path on a second create).
+	created, err := s.AgentDefCreate(ctx, store.AgentDefRow{
+		DefID:      "def_upgrade_v1",
+		Name:       "upgrade-agent",
+		Definition: []byte(`{"system_prompt":"hi"}`),
+		TenantID:   "",
+	})
+	if err != nil {
+		t.Fatalf("AgentDefCreate on upgraded DB failed (RFC N ON CONFLICT target missing?): %v", err)
+	}
+	if created.Version != 1 {
+		t.Errorf("first create version = %d, want 1", created.Version)
+	}
+	// Second create of the same name bumps the version — relies on the
+	// MAX(version) read + UNIQUE(tenant_id, name, version) insert.
+	created2, err := s.AgentDefCreate(ctx, store.AgentDefRow{
+		DefID:      "def_upgrade_v2",
+		Name:       "upgrade-agent",
+		Definition: []byte(`{"system_prompt":"hi2"}`),
+		TenantID:   "",
+	})
+	if err != nil {
+		t.Fatalf("second AgentDefCreate on upgraded DB failed: %v", err)
+	}
+	if created2.Version != 2 {
+		t.Errorf("second create version = %d, want 2", created2.Version)
+	}
+
+	// 4. AgentDefSetActive must succeed (exercises ON CONFLICT(tenant_id,
+	// name) on agent_def_active).
+	if err := s.AgentDefSetActive(ctx, "", "upgrade-agent", "def_upgrade_v1", "a_admin"); err != nil {
+		t.Fatalf("AgentDefSetActive on upgraded DB failed (ON CONFLICT target missing?): %v", err)
+	}
+	// A re-promote to a different def_id exercises the DO UPDATE branch.
+	if err := s.AgentDefSetActive(ctx, "", "upgrade-agent", "def_upgrade_v2", "a_admin"); err != nil {
+		t.Fatalf("AgentDefSetActive re-promote on upgraded DB failed: %v", err)
+	}
+
+	// 5. DynamicAgentUpsert must succeed (exercises ON CONFLICT(tenant_id,
+	// name) on dynamic_agents).
+	if err := s.DynamicAgentUpsert(ctx, store.DynamicAgent{
+		Name:       "dyn-agent",
+		Definition: []byte(`{"system_prompt":"dyn"}`),
+		TenantID:   "",
+	}); err != nil {
+		t.Fatalf("DynamicAgentUpsert on upgraded DB failed (ON CONFLICT target missing?): %v", err)
+	}
+	// Re-upsert exercises the DO UPDATE branch.
+	if err := s.DynamicAgentUpsert(ctx, store.DynamicAgent{
+		Name:       "dyn-agent",
+		Definition: []byte(`{"system_prompt":"dyn2"}`),
+		TenantID:   "",
+	}); err != nil {
+		t.Fatalf("DynamicAgentUpsert re-upsert on upgraded DB failed: %v", err)
+	}
+}
+
 func TestCloseIsIdempotent(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "test.db")
 	s, err := Open(path)
