@@ -87,6 +87,18 @@ single-line hint pointing at `loomcycle init` and exits with code 1.
 Passing `--config /any/path.yaml` bypasses auto-discovery — explicit
 paths win.
 
+## MCP servers (off by default)
+
+The generated `loomcycle.yaml` ships with `mcp_servers: {}` — every
+example server (brave-search, jobs, n8n) is **commented out** so the
+first boot is clean. Each example needs something not present on a fresh
+install (a `BRAVE_API_KEY`, an `npx`-spawnable package, a service on
+`localhost:3000`); leaving them live would print "server skipped"
+startup errors. To wire one up, uncomment its block in the
+`mcp_servers:` section and supply its endpoint/env, then re-run
+`loomcycle doctor`. See `help(topic="dynamic-mcp")` for registering MCP
+servers at runtime over HTTP instead of in yaml.
+
 ## Related topics
 
 - `llm-gateway` — direct LLM routing endpoint (v0.11.0).
