@@ -491,3 +491,89 @@ func TestMCPServerDefTool_CreateExpandsInnerLoomcycleEnv(t *testing.T) {
 		t.Errorf("outer run-credentials token did not survive expansion: %q", gotHdr)
 	}
 }
+
+// TestMCPServerDefTool_TenantIsolationGetListRetirePromote — RFC N FIX
+// 3-mcp. The get / list / retire / promote ops were tenant-blind: get and
+// retire are by-def_id global mutations, list returns rows across ALL
+// tenants, and promote keyed SetActive/Registry/Pool on the def's OWN
+// tenant (so the store's "def belongs to passed tenant" check always
+// passed — it never compared the CALLER's tenant). A caller in tenant A
+// could read, enumerate, retire, and promote (and evict the pooled client
+// of) defs owned by tenant B.
+//
+// Two tenant contexts over the SAME tool/store. The only thing keeping
+// them apart is the row-TenantID guards added by FIX 3-mcp. Pre-fix: get
+// returns B's body, list returns B's versions/names, retire mutates B's
+// row, promote repoints B's active pointer + evicts B's pool entry — all
+// from a tenant-A caller.
+func TestMCPServerDefTool_TenantIsolationGetListRetirePromote(t *testing.T) {
+	tool, baseCtx, cleanup := mcpServerDefFixture(t)
+	defer cleanup()
+
+	ctxA := tools.WithRunIdentity(baseCtx, tools.RunIdentityValue{AgentID: "a_test", TenantID: "tenant-a"})
+	ctxB := tools.WithRunIdentity(baseCtx, tools.RunIdentityValue{AgentID: "a_test", TenantID: "tenant-b"})
+
+	// Create a def under tenant B (a non-yaml name so the static-collision
+	// refusal doesn't fire).
+	res, _ := tool.Execute(ctxB, json.RawMessage(`{"op":"create","name":"b-only","overlay":{"transport":"http","url":"https://n8n.example.com/mcp"}}`))
+	if res.IsError {
+		t.Fatalf("create under B: %s", res.Text)
+	}
+	defID := decodeResult(t, res.Text)["def_id"].(string)
+
+	// get from tenant A → opaque not-found (no cross-tenant leak).
+	res, _ = tool.Execute(ctxA, json.RawMessage(`{"op":"get","def_id":"`+defID+`"}`))
+	if !res.IsError {
+		t.Errorf("tenant A get of tenant B's def succeeded; want refusal. body=%s", res.Text)
+	}
+	if !strings.Contains(res.Text, "not found") {
+		t.Errorf("cross-tenant get should return opaque not-found; got %s", res.Text)
+	}
+
+	// list-by-name from tenant A → must NOT include B's version.
+	res, _ = tool.Execute(ctxA, json.RawMessage(`{"op":"list","name":"b-only"}`))
+	if res.IsError {
+		t.Fatalf("list-by-name under A: %s", res.Text)
+	}
+	if n := len(decodeResult(t, res.Text)["versions"].([]any)); n != 0 {
+		t.Errorf("tenant A list-by-name of B's name returned %d versions; want 0 (tenant filter)", n)
+	}
+
+	// list-names (no name) from tenant A → must NOT enumerate B's name.
+	res, _ = tool.Execute(ctxA, json.RawMessage(`{"op":"list"}`))
+	if res.IsError {
+		t.Fatalf("list-names under A: %s", res.Text)
+	}
+	if names, _ := decodeResult(t, res.Text)["names"].([]any); len(names) != 0 {
+		t.Errorf("tenant A list-names leaked %d entries owned by B; want 0", len(names))
+	}
+
+	// promote from tenant A → refused (don't repoint/evict B's server).
+	res, _ = tool.Execute(ctxA, json.RawMessage(`{"op":"promote","def_id":"`+defID+`"}`))
+	if !res.IsError {
+		t.Errorf("tenant A promote of tenant B's def succeeded; want refusal. body=%s", res.Text)
+	}
+
+	// retire from tenant A → refused; B's row must stay un-retired.
+	res, _ = tool.Execute(ctxA, json.RawMessage(`{"op":"retire","def_id":"`+defID+`","retired":true}`))
+	if !res.IsError {
+		t.Errorf("tenant A retire of tenant B's def succeeded; want refusal. body=%s", res.Text)
+	}
+	// Confirm B still sees its row un-retired (the retire didn't leak through).
+	res, _ = tool.Execute(ctxB, json.RawMessage(`{"op":"get","def_id":"`+defID+`"}`))
+	if res.IsError {
+		t.Fatalf("tenant B get of its own def: %s", res.Text)
+	}
+	if decodeResult(t, res.Text)["retired"].(bool) {
+		t.Error("tenant A's cross-tenant retire mutated tenant B's row")
+	}
+
+	// Sanity: tenant B CAN get + list its own def (the guard isn't over-broad).
+	res, _ = tool.Execute(ctxB, json.RawMessage(`{"op":"list","name":"b-only"}`))
+	if res.IsError {
+		t.Fatalf("tenant B list of its own name: %s", res.Text)
+	}
+	if n := len(decodeResult(t, res.Text)["versions"].([]any)); n != 1 {
+		t.Errorf("tenant B list returned %d versions; want 1", n)
+	}
+}
