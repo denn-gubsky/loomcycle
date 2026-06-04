@@ -1044,8 +1044,12 @@ func (s *Server) resolveSkillBodiesForRun(ctx context.Context, agentDef config.A
 	resolutions := make(map[string]lookup.SkillResolution, len(agentDef.Skills))
 	activeDefIDs := make(map[string]string, len(agentDef.Skills))
 	anySubstrate := false
+	// RFC N: resolve each skill within the run's tenant (from the
+	// authoritative principal in ctx, never the wire). A token only sees
+	// its own tenant's promotions + the shared base. "" = shared tenant.
+	tenantID := tenantFromCtx(ctx)
 	for _, skillName := range agentDef.Skills {
-		sr, ok := lookup.Skill(ctx, s.store, s.skillSet, skillName)
+		sr, ok := lookup.Skill(ctx, s.store, s.skillSet, tenantID, skillName)
 		if !ok {
 			continue
 		}

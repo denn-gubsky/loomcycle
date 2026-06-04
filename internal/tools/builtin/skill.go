@@ -145,7 +145,9 @@ func (s *SkillTool) Execute(ctx context.Context, input json.RawMessage) (tools.R
 func (s *SkillTool) resolveSkill(ctx context.Context, name string) (string, []string, string, error) {
 	// 1. DB-promoted active SkillDef wins when Store is wired.
 	if s.Store != nil {
-		row, err := s.Store.SkillDefGetActive(ctx, name)
+		// RFC N: read the active pointer within the agent's own tenant
+		// (from the authoritative run identity in ctx; "" = shared).
+		row, err := s.Store.SkillDefGetActive(ctx, tools.RunIdentity(ctx).TenantID, name)
 		if err == nil {
 			var def skillDefOverlay
 			if uerr := json.Unmarshal(row.Definition, &def); uerr != nil {
