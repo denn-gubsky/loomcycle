@@ -32,8 +32,11 @@ import (
 )
 
 // PrintHelp writes the top-level help text to w. Invoked by
-// `loomcycle help`, `loomcycle -h`, `loomcycle --help`.
-func PrintHelp(w io.Writer) {
+// `loomcycle help`, `loomcycle -h`, `loomcycle --help`. metaToolCount
+// is the live count of MCP meta-tools (mcp.MetaToolCount()), passed in
+// from main.go so this package stays free of the mcp dependency and the
+// printed count never drifts from the registry.
+func PrintHelp(w io.Writer, metaToolCount int) {
 	fmt.Fprintln(w, "loomcycle — high-load agentic runtime sidecar")
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "USAGE")
@@ -57,7 +60,7 @@ func PrintHelp(w io.Writer) {
 	fmt.Fprintln(w, "  migrate sqlite-to-postgres --src <path> --dst <dsn>")
 	fmt.Fprintln(w, "                                   copy SQLite data into Postgres")
 	fmt.Fprintln(w, "  mcp [--config <yaml>]            run as MCP server over stdio (v0.8.15+)")
-	fmt.Fprintln(w, "                                   exposes 33 meta-tools; consumed by Claude")
+	fmt.Fprintf(w, "                                   exposes %d meta-tools; consumed by Claude\n", metaToolCount)
 	fmt.Fprintln(w, "                                   Code, Claude Desktop, custom orchestrators")
 	fmt.Fprintln(w, "  mcp install [--transport T]      print Claude Code / Desktop config snippets")
 	fmt.Fprintln(w, "              [--config <yaml>]    for registering loomcycle as an MCP server")

@@ -363,7 +363,7 @@ func main() {
 			// recall@k, duplication_rate. The gating tool for ranker PRs.
 			os.Exit(cli.RunMemoryEval(os.Args[2:], os.Stdout, os.Stderr))
 		case "help", "-h", "--help":
-			cli.PrintHelp(os.Stdout)
+			cli.PrintHelp(os.Stdout, lcmcp.MetaToolCount())
 			return
 		}
 	}

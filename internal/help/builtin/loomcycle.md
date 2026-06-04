@@ -24,9 +24,9 @@ You can find out who you are right now with `Context.self`:
 
 ## The built-in primitives
 
-Loomcycle ships nine higher-level built-in tools beyond the basic
-file/network group (`Read` / `Write` / `Edit` / `Grep` / `Glob` /
-`NotebookEdit` / `HTTP` / `WebFetch` / `WebSearch` / `Bash`):
+Loomcycle ships twelve higher-level built-in tools beyond the basic
+file/network group (`Read` / `Write` / `Edit` / `HTTP` / `WebFetch` /
+`WebSearch` / `Bash`):
 
 - **Grep** (v0.8.24) — content search with RE2 regex over the sandbox
   root. Three output modes: `files_with_matches` (default), `content`

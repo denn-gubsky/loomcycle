@@ -25,6 +25,25 @@ You want the sub-agent's OUTPUT before you continue:
 The sub-agent's own ACL applies — your tool set doesn't transfer.
 Each agent definition is operator-curated and self-describing.
 
+## `Agent` (in-loop) vs `spawn_run` (MCP surface)
+
+These live at different layers and are easy to confuse:
+
+- **`Agent`** is a *built-in tool* you call from **inside** a run.
+  It spawns a sub-agent as a child of your current run (parent/child
+  identity, cancel-cascade, depth cap — all above). You are already an
+  agent; `Agent` is how you delegate mid-loop.
+- **`spawn_run`** / **`register_agent`** / **`list_agents`** are
+  *MCP meta-tools* an **external** orchestrator (Claude Code, Claude
+  Desktop, a custom client driving `loomcycle mcp`) calls to start a
+  **top-level** run and manage the agent registry from outside the
+  runtime — the same surface as the HTTP `POST /v1/runs` connector.
+
+Rule of thumb: if you're an agent already running, you use `Agent`;
+if you're a client launching loomcycle work from the outside, you use
+`spawn_run`. They are not alternatives to choose between — they're the
+inside and outside views of the same run machinery.
+
 ## When to use Channel (async handoff)
 
 You don't need an immediate result:

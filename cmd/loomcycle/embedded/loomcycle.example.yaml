@@ -538,24 +538,30 @@ agents:
 # pattern. Static yaml entries (this block) and dynamic rows coexist;
 # name collisions are refused (yaml is ground truth). Stdio is yaml-
 # only — dynamic registration is HTTP / Streamable-HTTP only by design.
-mcp_servers:
+# All entries below are COMMENTED OUT so a fresh install boots clean:
+# each example needs something not present on first run (the brave-search
+# stdio server needs `npx` + BRAVE_API_KEY; the jobs HTTP server needs a
+# service on localhost:3000 + a token). Leaving them live would emit
+# startup errors and "server skipped" log lines on a brand-new config.
+# Uncomment the block you want and supply its env/endpoint to enable it.
+mcp_servers: {}
 
   # ─ Stdio MCP server (subprocess) ────────────────────────────────────
-  brave-search:
-    transport: stdio
-    command: npx
-    args: ["-y", "@modelcontextprotocol/server-brave-search"]
-    env:
-      # ${BRAVE_API_KEY} expands from the parent process env (loomcycle.sh
-      # sources .env.local before exec). Falls through verbatim if the
-      # var is unset — the MCP server will then refuse to start, which
-      # surfaces as a startup log line and the server is skipped.
-      BRAVE_API_KEY: "${BRAVE_API_KEY}"
-    pool_size: 2
-    # Operator-level filter: only this subset of the server's tools is
-    # registered AT ALL. Useful when an MCP server advertises 20 tools
-    # but you only want the model to see 2.
-    allowed_tools: [brave_web_search]
+  # brave-search:
+  #   transport: stdio
+  #   command: npx
+  #   args: ["-y", "@modelcontextprotocol/server-brave-search"]
+  #   env:
+  #     # ${BRAVE_API_KEY} expands from the parent process env (loomcycle.sh
+  #     # sources .env.local before exec). Falls through verbatim if the
+  #     # var is unset — the MCP server will then refuse to start, which
+  #     # surfaces as a startup log line and the server is skipped.
+  #     BRAVE_API_KEY: "${BRAVE_API_KEY}"
+  #   pool_size: 2
+  #   # Operator-level filter: only this subset of the server's tools is
+  #   # registered AT ALL. Useful when an MCP server advertises 20 tools
+  #   # but you only want the model to see 2.
+  #   allowed_tools: [brave_web_search]
 
   # ─ HTTP MCP server (per-call dial) ──────────────────────────────────
   # Use HTTP transport when the MCP server runs as a separate service
@@ -579,11 +585,11 @@ mcp_servers:
   # any LOOMCYCLE_-prefixed name; the example uses
   # LOOMCYCLE_JOBS_SEARCH_API_TOKEN. Set it in .env.local with the
   # value of a valid jobs-search-agent user API token.
-  jobs:
-    transport: http
-    url: http://localhost:3000/api/mcp
-    headers:
-      Authorization: "Bearer ${LOOMCYCLE_JOBS_SEARCH_API_TOKEN}"
+  # jobs:
+  #   transport: http
+  #   url: http://localhost:3000/api/mcp
+  #   headers:
+  #     Authorization: "Bearer ${LOOMCYCLE_JOBS_SEARCH_API_TOKEN}"
 
   # ─ n8n workflow as an MCP tool (Pattern 2 of the n8n integration) ────
   # Optional. Documented so operators wiring loomcycle agents to call

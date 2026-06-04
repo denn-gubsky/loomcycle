@@ -418,3 +418,9 @@ func toolDescriptors() []loommcp.ToolDescriptor {
 }
 
 func rawJSON(s string) json.RawMessage { return json.RawMessage(s) }
+
+// MetaToolCount is the number of meta-tools the LoomCycle MCP server exposes.
+// The CLI help (internal/cli) prints this so the advertised count is sourced
+// from the registry and can never drift — the static "33" in the help text
+// went stale once the registry had grown to 40.
+func MetaToolCount() int { return len(toolDescriptors()) }
