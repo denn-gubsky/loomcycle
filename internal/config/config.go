@@ -965,6 +965,12 @@ type ScheduledRun struct {
 	// (e.g. a different repo per fork) falls out of the overlay naturally.
 	// Not for secrets — those use UserCredentials / user_credentials_from_env.
 	Metadata map[string]any `yaml:"metadata"`
+
+	// TenantID is the tenant the fired run EXECUTES as (RFC N follow-up).
+	// It flows to RunInput.TenantID, so the run resolves that tenant's
+	// agents/skills/MCP and isolates its memory/runs. "" = shared/default
+	// (no tenant scoping). Operator-authored (def content), never inbound.
+	TenantID string `json:"tenant_id,omitempty" yaml:"tenant_id"`
 }
 
 // ScheduledRunSegment mirrors the loop.PromptSegment wire shape but

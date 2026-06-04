@@ -37,6 +37,7 @@ type scheduleDef struct {
 	UserTier               string              `json:"user_tier,omitempty"`
 	OnComplete             []scheduleHook      `json:"on_complete,omitempty"`
 	Metadata               map[string]any      `json:"metadata,omitempty"`
+	TenantID               string              `json:"tenant_id,omitempty"`
 }
 
 type schedulePromptSeg struct {
@@ -136,5 +137,9 @@ func buildRunInput(def scheduleDef, envAllowlist map[string]bool, logf func(form
 		// Non-secret, operator-authored → TRUSTED. The scheduler has no
 		// external inbound body, so there is no PayloadMetadata here.
 		Metadata: def.Metadata,
+		// TenantID comes from the def ONLY (operator-authored) — the run
+		// executes as this tenant, resolving its agents/skills/MCP and
+		// isolating memory/runs. "" = shared/default (RFC N follow-up).
+		TenantID: def.TenantID,
 	}
 }

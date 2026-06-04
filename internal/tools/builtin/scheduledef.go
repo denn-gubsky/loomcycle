@@ -827,6 +827,9 @@ type mergedScheduleDef struct {
 	// TRUSTED (def-authored) via RunInput.Metadata. Per-fork (e.g. a repo
 	// per fork) falls out of the overlay. Not for secrets (UserCredentials*).
 	Metadata map[string]any `json:"metadata,omitempty"`
+	// TenantID is the tenant the fired run EXECUTES as (RFC N follow-up).
+	// Flows to RunInput.TenantID. Per-fork tenant falls out of the overlay.
+	TenantID string `json:"tenant_id,omitempty"`
 }
 
 // mergedSchedulePromptSeg mirrors config.ScheduledRunSegment with JSON tags.
@@ -913,6 +916,9 @@ func (d *mergedScheduleDef) applyOverlay(ov mergedScheduleDef) {
 	if ov.Metadata != nil {
 		d.Metadata = ov.Metadata
 	}
+	if ov.TenantID != "" {
+		d.TenantID = ov.TenantID
+	}
 }
 
 func staticToMergedScheduleDef(sr config.ScheduledRun) mergedScheduleDef {
@@ -928,6 +934,7 @@ func staticToMergedScheduleDef(sr config.ScheduledRun) mergedScheduleDef {
 		UserID:                 sr.UserID,
 		UserCredentialsFromEnv: sr.UserCredentialsFromEnv,
 		Metadata:               sr.Metadata,
+		TenantID:               sr.TenantID,
 	}
 	if len(sr.Prompt) > 0 {
 		out.Prompt = make([]mergedSchedulePromptSeg, len(sr.Prompt))
