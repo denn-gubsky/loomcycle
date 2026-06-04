@@ -104,7 +104,7 @@ func TestLibrary_AgentDefNames_AfterSeed(t *testing.T) {
 	}
 	_ = r2
 	_ = s.AgentDefSetRetired(ctx, "def_researcher_v1", true)
-	_ = s.AgentDefSetActive(ctx, "researcher", "def_researcher_v2", "")
+	_ = s.AgentDefSetActive(ctx, "", "researcher", "def_researcher_v2", "")
 	sum1, err := s.AgentDefCreate(ctx, store.AgentDefRow{
 		DefID: "def_summariser_v1", Name: "summariser", Version: 1,
 		Definition: []byte(`{"system":"sum"}`), CreatedAt: time.Now(),
@@ -113,7 +113,7 @@ func TestLibrary_AgentDefNames_AfterSeed(t *testing.T) {
 		t.Fatal(err)
 	}
 	_ = sum1
-	_ = s.AgentDefSetActive(ctx, "summariser", "def_summariser_v1", "")
+	_ = s.AgentDefSetActive(ctx, "", "summariser", "def_summariser_v1", "")
 
 	req := authedRequest("GET", "/v1/_agentdef/names", nil)
 	rec := httptest.NewRecorder()

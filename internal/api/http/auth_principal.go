@@ -11,6 +11,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/coord"
 	"github.com/denn-gubsky/loomcycle/internal/store"
+	"github.com/denn-gubsky/loomcycle/internal/tools"
 	"github.com/denn-gubsky/loomcycle/internal/webui"
 )
 
@@ -345,6 +346,30 @@ func (s *Server) principalTenantScope(ctx context.Context, wireTenant string) (t
 		log.Printf("auth: tenant_scope_overridden wire=%q principal=%q token_def=%q", wireTenant, p.TenantID, p.TokenDefID)
 	}
 	return p.TenantID, false
+}
+
+// tenantFromCtx resolves the authoritative tenant for definition-plane
+// resolution + write-stamping (RFC N), mirroring applyPrincipal's
+// authority model:
+//
+//  1. auth.PrincipalFromContext(ctx).TenantID — the bearer-derived
+//     principal stamped by the auth middleware (the floor on authed
+//     routes).
+//  2. tools.RunIdentity(ctx).TenantID — the run's effective tenant,
+//     carried in ctx for in-loop callers (sub-agent spawn, tool
+//     dispatch) where no HTTP principal is present but the parent run's
+//     tenant flows via RunIdentity. Sub-agents inherit it unchanged.
+//  3. "" — the shared/default/legacy tenant (open mode / un-authed
+//     internal paths).
+//
+// NEVER derived from a wire/request body field or model-generated text —
+// the tenant boundary is caller/config-authoritative (the same posture
+// RFC L's applyPrincipal enforces for run stamping).
+func tenantFromCtx(ctx context.Context) string {
+	if p, ok := auth.PrincipalFromContext(ctx); ok && p.TenantID != "" {
+		return p.TenantID
+	}
+	return tools.RunIdentity(ctx).TenantID
 }
 
 // tenantVisible reports whether the caller may read a row belonging to

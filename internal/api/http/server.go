@@ -342,7 +342,9 @@ func New(cfg *config.Config, pr ProviderResolver, builtinTools []tools.Tool, sem
 		// next call without restart. Returns 0 = no override; the
 		// tool falls back to DefaultMaxConcurrentChildren.
 		CapLookup: func(ctx context.Context, callingAgent string) int {
-			def, ok := lookup.Agent(ctx, s.store, s.cfg, callingAgent)
+			// RFC N: resolve within the calling run's tenant (carried via
+			// ctx RunIdentity for in-loop callers).
+			def, ok := lookup.Agent(ctx, s.store, s.cfg, tenantFromCtx(ctx), callingAgent)
 			if !ok {
 				return 0
 			}
@@ -791,14 +793,19 @@ func (s *Server) resolveAgent(agentName, userTier string) (providerID, model, ef
 // boot-time normalizer chain (PRs #184 + #186). Every code path
 // that needs an agent name → def goes through here.
 func (s *Server) lookupAgent(ctx context.Context, name string) (config.AgentDef, bool) {
+	// RFC N: derive the tenant from the authoritative principal in ctx
+	// (never the wire), so a token can only resolve agents within its
+	// own tenant + the shared base. Callers keep their signature — the
+	// tenant rides ctx. "" = shared/default/legacy tenant.
+	tenantID := tenantFromCtx(ctx)
 	// nil-store guard at the boundary so the lookup package can
 	// type-assert an interface receiver. The lookup package treats
 	// "no store" identically to "store didn't have the name" — both
 	// fall through to (zero, false).
 	if s.store == nil {
-		return lookup.Agent(ctx, nil, s.cfg, name)
+		return lookup.Agent(ctx, nil, s.cfg, tenantID, name)
 	}
-	return lookup.Agent(ctx, s.store, s.cfg, name)
+	return lookup.Agent(ctx, s.store, s.cfg, tenantID, name)
 }
 
 // resolveAgentDef mirrors resolveAgent but takes a caller-supplied
@@ -3536,7 +3543,12 @@ func (s *Server) makeRecordingEmit(ctx context.Context, runID string, fwd func(p
 // them as IsError tool_results to the parent's model rather than
 // tearing down the parent run.
 func (s *Server) runSubAgent(ctx context.Context, name string, prompt string, defID string) (string, error) {
-	def, ok := lookup.Agent(ctx, s.store, s.cfg, name)
+	// RFC N: a parent in tenant T resolves the sub-agent name within T's
+	// view (parent tenant flows via ctx RunIdentity, inherited by every
+	// sub-agent). Confirms RFC N's open-question on cross-boundary spawn:
+	// the lookup is tenant-scoped, so a parent cannot spawn another
+	// tenant's private agent by name.
+	def, ok := lookup.Agent(ctx, s.store, s.cfg, tenantFromCtx(ctx), name)
 	if !ok {
 		return "", fmt.Errorf("unknown sub-agent %q (not in cfg.Agents, dynamic_agents, or agent_def_active)", name)
 	}

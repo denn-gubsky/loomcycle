@@ -1808,7 +1808,7 @@ func TestLookupAgent_FallsThroughToSubstrate(t *testing.T) {
 	if _, err := st.AgentDefCreate(ctx, row); err != nil {
 		t.Fatalf("AgentDefCreate: %v", err)
 	}
-	if err := st.AgentDefSetActive(ctx, "substrate-only-agent", "def_test_substrate", "a_test"); err != nil {
+	if err := st.AgentDefSetActive(ctx, "", "substrate-only-agent", "def_test_substrate", "a_test"); err != nil {
 		t.Fatalf("AgentDefSetActive: %v", err)
 	}
 
@@ -1871,7 +1871,7 @@ func TestLookupAgent_DynamicAgentsStillWins(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("AgentDefCreate: %v", err)
 	}
-	if err := st.AgentDefSetActive(ctx, "shared-name", "def_shared", "a_test"); err != nil {
+	if err := st.AgentDefSetActive(ctx, "", "shared-name", "def_shared", "a_test"); err != nil {
 		t.Fatalf("AgentDefSetActive: %v", err)
 	}
 
@@ -1917,7 +1917,7 @@ func TestLookupAgent_SystemPromptBaseSetFromSubstrate(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("AgentDefCreate: %v", err)
 	}
-	if err := st.AgentDefSetActive(ctx, "ats-filter", "def_substrate_ats", "a_test"); err != nil {
+	if err := st.AgentDefSetActive(ctx, "", "ats-filter", "def_substrate_ats", "a_test"); err != nil {
 		t.Fatalf("AgentDefSetActive: %v", err)
 	}
 
