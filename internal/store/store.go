@@ -1914,7 +1914,11 @@ type AgentDefRow struct {
 // count is the version count; ActiveDefID is the agent_def_active
 // pointer (empty when no row is promoted under this name).
 type AgentDefNameSummary struct {
-	Name          string    `json:"name"`
+	Name string `json:"name"`
+	// TenantID is the RFC N owning tenant. A name owned by N tenants
+	// yields N summary rows (one per tenant) — without grouping by tenant
+	// the listing would merge distinct tenants' versions under one name.
+	TenantID      string    `json:"tenant_id,omitempty"`
 	VersionCount  int       `json:"version_count"`
 	ActiveDefID   string    `json:"active_def_id,omitempty"`
 	LatestVersion int       `json:"latest_version"`

@@ -3480,11 +3480,14 @@ func (s *Store) AgentDefListChildren(ctx context.Context, parentDefID string) ([
 	return s.scanAgentDefRows(rows)
 }
 
-// AgentDefListNames returns one summary row per distinct name. Joins
-// agent_def_active to surface the active def_id when one exists.
+// AgentDefListNames returns one summary row per distinct (tenant, name).
+// Joins agent_def_active to surface the active def_id when one exists.
+// RFC N: names are per-tenant, so the grouping includes tenant_id — a
+// name owned by N tenants yields N rows.
 func (s *Store) AgentDefListNames(ctx context.Context) ([]store.AgentDefNameSummary, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT
+			d.tenant_id,
 			d.name,
 			COUNT(*)                  AS version_count,
 			MAX(d.version)            AS latest_version,
@@ -3492,8 +3495,8 @@ func (s *Store) AgentDefListNames(ctx context.Context) ([]store.AgentDefNameSumm
 			COALESCE(a.def_id, '')    AS active_def_id
 		FROM agent_defs d
 		LEFT JOIN agent_def_active a ON a.name = d.name AND a.tenant_id = d.tenant_id
-		GROUP BY d.name, a.def_id
-		ORDER BY d.name`)
+		GROUP BY d.tenant_id, d.name, a.def_id
+		ORDER BY d.tenant_id, d.name`)
 	if err != nil {
 		return nil, err
 	}
@@ -3503,7 +3506,7 @@ func (s *Store) AgentDefListNames(ctx context.Context) ([]store.AgentDefNameSumm
 	for rows.Next() {
 		var s store.AgentDefNameSummary
 		var updatedAt int64
-		if err := rows.Scan(&s.Name, &s.VersionCount, &s.LatestVersion, &updatedAt, &s.ActiveDefID); err != nil {
+		if err := rows.Scan(&s.TenantID, &s.Name, &s.VersionCount, &s.LatestVersion, &updatedAt, &s.ActiveDefID); err != nil {
 			return nil, err
 		}
 		s.LastUpdated = time.Unix(0, updatedAt)
