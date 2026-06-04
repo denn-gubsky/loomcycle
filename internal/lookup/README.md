@@ -28,7 +28,7 @@ Every code path that needs to resolve an agent / skill / MCP server NAME to its 
 ```go
 def, ok := lookup.Agent(ctx, s.store, s.cfg, tenantID, name)
 sk, ok  := lookup.Skill(ctx, s.store, s.skillSet, tenantID, name)
-spec, ok := lookup.MCPServer(s.cfg, dynRegistry, name)
+spec, ok := lookup.MCPServer(s.cfg, dynRegistry, tenantID, name)
 ```
 
 ### Agent resolution precedence (RFC N — tenant axis)
@@ -48,8 +48,7 @@ single-tenant deployment (everything `tenant_id=""`) is unchanged. The
 `tenantID` MUST come from the authoritative principal in ctx
 (`auth.PrincipalFromContext` → `tools.RunIdentity` fallback → `""`), never
 from a wire/request field — see `internal/api/http/server.go`'s
-`tenantFromCtx`. (MCP servers still resolve globally; their tenant axis is
-a follow-up.)
+`tenantFromCtx`.
 
 ### Skill resolution precedence (RFC N — tenant axis)
 
@@ -69,6 +68,28 @@ For the default tenant `""`, step 1 is skipped, so the order collapses to
 **shared-substrate → static** — byte-for-byte the pre-RFC-N
 "substrate-first then static" behavior. The same ctx-authoritative
 `tenantID` rule applies as for agents.
+
+### MCP server resolution precedence (RFC N — tenant axis)
+
+`lookup.MCPServer` resolves within the caller's `tenantID`. Like agents,
+the MCP plane is **static-first** (the opposite of skills), with a
+tenant-dynamic shadow in front:
+
+1. **(tenantID != "")** tenant-scoped dynamic registry — a per-tenant
+   registration *shadows* the shared static yaml base by name.
+2. **static `cfg.MCPServers`** — the shared operator (yaml) base.
+3. **shared dynamic registry** (`tenant_id=""`) — operator/runtime
+   registrations every tenant inherits.
+
+For the default tenant `""`, step 1 is skipped, so the order collapses to
+**static → shared-dynamic** — byte-for-byte the pre-RFC-N behavior. The
+in-memory `DynamicRegistry` is keyed by `(tenant, name)`; the MCP
+connection `Pool` is keyed by `(tenant, name)` too, so two tenants
+registering the same name with different URLs never share a cached client.
+The same ctx-authoritative `tenantID` rule applies. The advertising filter
+(`cmd/loomcycle/main.go`'s `SetDynamicToolEnumerator`) enumerates
+`DynamicRegistry.NamesForTenant(tenant)` so a run's candidate tool set
+contains ONLY that tenant's + shared MCP tools (RFC §3).
 
 Don't read substrate rows directly. Don't unmarshal into `config.AgentDef` (use the json-tagged adapters). The pattern is enforced by the drift tests (`TestAgent_DriftDetection` + `TestMergedDef_DriftDetection_VsLookupSubstrateAgentDef`) — a future field added to one shape without the other fails CI.
 

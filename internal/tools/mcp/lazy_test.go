@@ -69,7 +69,7 @@ type buildPlan struct {
 	buildCallCount map[string]int
 }
 
-func (b *buildPlan) build(name string) (Caller, error) {
+func (b *buildPlan) build(_, name string) (Caller, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.buildCallCount[name]++
@@ -109,7 +109,7 @@ func newBuildPlan() *buildPlan {
 // detour. Without this, every miss for a built-in tool name (Read,
 // Write, etc.) would block on a useless pool.Get.
 func TestLazyResolver_NotMCPName(t *testing.T) {
-	pool := NewPool(newBuildPlan().build, nil)
+	pool := NewPool(newBuildPlan().build, nil, nil)
 	r := NewLazyResolver(pool, &config.Config{MCPServers: map[string]config.MCPServer{"jobs": {}}}, nil, nil, 0)
 
 	for _, name := range []string{"Read", "Write", "WebSearch", "mcp__", "mcp__jobs", "mcp__jobs__"} {
@@ -126,7 +126,7 @@ func TestLazyResolver_NotMCPName(t *testing.T) {
 // likely hallucinated the name and the standard "tool not found" is
 // the right surface.
 func TestLazyResolver_ServerNotConfigured(t *testing.T) {
-	pool := NewPool(newBuildPlan().build, nil)
+	pool := NewPool(newBuildPlan().build, nil, nil)
 	r := NewLazyResolver(pool, &config.Config{MCPServers: map[string]config.MCPServer{"jobs": {}}}, nil, nil, 0)
 
 	_, handled := r.Resolve(context.Background(), "mcp__unknown__doSomething", json.RawMessage(`{}`))
@@ -145,7 +145,7 @@ func TestLazyResolver_FirstCallTriggersHandshakeAndDispatches(t *testing.T) {
 	plan.tools["jobs"] = []ToolDescriptor{
 		{Name: "getAgentContext", Description: "load context", InputSchema: json.RawMessage(`{"type":"object"}`)},
 	}
-	pool := NewPool(plan.build, nil)
+	pool := NewPool(plan.build, nil, nil)
 	r := NewLazyResolver(pool, &config.Config{MCPServers: map[string]config.MCPServer{"jobs": {}}}, nil, nil, 0)
 
 	res, handled := r.Resolve(context.Background(), "mcp__jobs__getAgentContext", json.RawMessage(`{}`))
@@ -173,7 +173,7 @@ func TestLazyResolver_SecondCallHitsCache(t *testing.T) {
 		{Name: "getAgentContext", InputSchema: json.RawMessage(`{"type":"object"}`)},
 		{Name: "patchApplication", InputSchema: json.RawMessage(`{"type":"object"}`)},
 	}
-	pool := NewPool(plan.build, nil)
+	pool := NewPool(plan.build, nil, nil)
 	r := NewLazyResolver(pool, &config.Config{MCPServers: map[string]config.MCPServer{"jobs": {}}}, nil, nil, 0)
 
 	for i := 0; i < 5; i++ {
@@ -201,7 +201,7 @@ func TestLazyResolver_SecondCallHitsCache(t *testing.T) {
 func TestLazyResolver_HandshakeFails(t *testing.T) {
 	plan := newBuildPlan()
 	plan.alwaysFail["jobs"] = true
-	pool := NewPool(plan.build, nil)
+	pool := NewPool(plan.build, nil, nil)
 	r := NewLazyResolver(pool, &config.Config{MCPServers: map[string]config.MCPServer{"jobs": {}}}, nil, nil, 0)
 
 	res, handled := r.Resolve(context.Background(), "mcp__jobs__getAgentContext", json.RawMessage(`{}`))
@@ -230,7 +230,7 @@ func TestLazyResolver_OperatorAllowedToolsFilter(t *testing.T) {
 		{Name: "safe_tool", InputSchema: json.RawMessage(`{"type":"object"}`)},
 		{Name: "expensive_tool", InputSchema: json.RawMessage(`{"type":"object"}`)},
 	}
-	pool := NewPool(plan.build, nil)
+	pool := NewPool(plan.build, nil, nil)
 	r := NewLazyResolver(pool, &config.Config{
 		MCPServers: map[string]config.MCPServer{"jobs": {AllowedTools: []string{"safe_tool"}}},
 	}, nil, nil, 0)
@@ -263,7 +263,7 @@ func TestLazyResolver_OnResolveCallback(t *testing.T) {
 		{Name: "alpha", InputSchema: json.RawMessage(`{"type":"object"}`)},
 		{Name: "beta", InputSchema: json.RawMessage(`{"type":"object"}`)},
 	}
-	pool := NewPool(plan.build, nil)
+	pool := NewPool(plan.build, nil, nil)
 	var (
 		mu        sync.Mutex
 		callbacks []struct {
@@ -305,7 +305,7 @@ func TestLazyResolver_ConcurrentCallsCoalesceHandshake(t *testing.T) {
 	plan.tools["jobs"] = []ToolDescriptor{
 		{Name: "getAgentContext", InputSchema: json.RawMessage(`{"type":"object"}`)},
 	}
-	pool := NewPool(plan.build, nil)
+	pool := NewPool(plan.build, nil, nil)
 	r := NewLazyResolver(pool, &config.Config{MCPServers: map[string]config.MCPServer{"jobs": {}}}, nil, nil, 0)
 
 	const N = 50
@@ -338,7 +338,7 @@ func TestLazyResolver_DynamicRegistryServerResolves(t *testing.T) {
 	plan.tools["jobs"] = []ToolDescriptor{
 		{Name: "postResearchIngest", InputSchema: json.RawMessage(`{"type":"object"}`)},
 	}
-	pool := NewPool(plan.build, nil)
+	pool := NewPool(plan.build, nil, nil)
 	// serverConfig deliberately omits "jobs" — it lives ONLY in the dynamic
 	// registry, as if registered at runtime via `mcpserverdef create`.
 	dyn := NewDynamicRegistry()

@@ -9,7 +9,9 @@ import (
 // doesn't import internal/tools/mcp (which would invert the existing
 // dependency direction; tools/mcp is consumed by everything else).
 type MCPDynamicRegistry interface {
-	Get(name string) (MCPServerSpec, bool)
+	// Get is an exact (tenantID, name) read — the resolver drives the
+	// tenant→shared precedence by calling Get twice (RFC N).
+	Get(tenantID, name string) (MCPServerSpec, bool)
 }
 
 // MCPServerSpec is the runtime spec for an MCP server registration.
@@ -36,20 +38,31 @@ type MCPServerSpec struct {
 	Source string
 }
 
-// MCPServer resolves an MCP server NAME to its effective runtime
-// spec by walking the lookup chain in precedence order:
+// MCPServer resolves an MCP server NAME to its effective runtime spec
+// within the caller's tenant, walking the lookup chain in precedence
+// order (MCP is STATIC-first — the opposite of skills):
 //
-//  1. static cfg.MCPServers (yaml-defined; ground truth).
-//  2. dynamic registry (v0.9.x substrate, rehydrated from
+//  1. (tenantID != "") tenant-scoped dynamic registry — a per-tenant
+//     registration shadows the shared static base by name.
+//  2. static cfg.MCPServers (yaml-defined; the shared operator base).
+//  3. shared dynamic registry (tenant_id="", rehydrated from
 //     mcp_server_defs at boot + mutated by promote / retire).
 //
-// Returns (zero, false) when neither source has the name.
+// Returns (zero, false) when no source has the name.
 //
-// Yaml takes precedence on name collisions: the substrate tool refuses
-// `create` over a yaml-occupied name, and the boot-time loader skips
-// dynamic rows whose name collides with yaml. This resolver enforces
-// the same order at the lookup boundary so future refactors that add
-// a third tier can't accidentally invert it.
+// For the default tenant "" step 1 is skipped, so the order collapses to
+// static → shared-dynamic — byte-for-byte the pre-RFC-N behaviour
+// (single-tenant deployments are unchanged). Yaml still takes precedence
+// over a SHARED dynamic registration on name collisions: the substrate
+// tool refuses `create` over a yaml-occupied name, and the boot loader
+// skips shared dynamic rows whose name collides with yaml. A per-TENANT
+// registration (step 1) deliberately CAN shadow the shared yaml base —
+// that is the per-tenant override RFC N grants.
+//
+// The tenantID MUST come from the authoritative principal in ctx
+// (auth.PrincipalFromContext → tools.RunIdentity fallback → ""), never
+// from a wire/request field — see internal/api/http/server.go's
+// tenantFromCtx.
 //
 // LIMITATION (intentional): MCPServerSpec is the HTTP / streamable-http
 // subset. The stdio transport carries additional yaml-only fields
@@ -69,7 +82,16 @@ type MCPServerSpec struct {
 // "is this name known (static OR dynamic)?" + which tools the operator
 // allowed. Routing the resolver through here is what keeps MCP membership
 // from drifting static-only again (the bug fixed in #341).
-func MCPServer(cfg *config.Config, dyn MCPDynamicRegistry, name string) (MCPServerSpec, bool) {
+func MCPServer(cfg *config.Config, dyn MCPDynamicRegistry, tenantID, name string) (MCPServerSpec, bool) {
+	// 1. Tenant-scoped dynamic shadow (skipped for the shared "" tenant so
+	//    its order stays static → shared-dynamic, exactly as pre-RFC-N).
+	if dyn != nil && tenantID != "" {
+		if spec, ok := dyn.Get(tenantID, name); ok {
+			spec.Source = "dynamic"
+			return spec, true
+		}
+	}
+	// 2. Static cfg.MCPServers — the shared operator base.
 	if cfg != nil {
 		if srv, ok := cfg.MCPServers[name]; ok {
 			return MCPServerSpec{
@@ -81,8 +103,9 @@ func MCPServer(cfg *config.Config, dyn MCPDynamicRegistry, name string) (MCPServ
 			}, true
 		}
 	}
+	// 3. Shared dynamic registry (tenant_id="").
 	if dyn != nil {
-		if spec, ok := dyn.Get(name); ok {
+		if spec, ok := dyn.Get("", name); ok {
 			spec.Source = "dynamic"
 			return spec, true
 		}

@@ -85,8 +85,13 @@ type LazyResolver struct {
 	// the agent's tool call blocks. Default is 10s.
 	handshakeTimeout time.Duration
 
-	mu         sync.Mutex
-	registered map[string]map[string]tools.Tool // server → tool name → Tool
+	mu sync.Mutex
+	// RFC N: memo keyed by (tenant, server) → tool name → Tool. Two
+	// tenants registering the same server name with distinct URLs /
+	// allowed_tools get distinct memos (the pool is tenant-keyed too, so
+	// the dispatched call dials the right tenant's URL). The shared/
+	// legacy tenant is the "" tenant key.
+	registered map[regKey]map[string]tools.Tool
 }
 
 // lookupDynView adapts *DynamicRegistry to lookup.MCPDynamicRegistry —
@@ -97,11 +102,11 @@ type LazyResolver struct {
 // historical resolver behaviour.
 type lookupDynView struct{ reg *DynamicRegistry }
 
-func (v lookupDynView) Get(name string) (lookup.MCPServerSpec, bool) {
+func (v lookupDynView) Get(tenantID, name string) (lookup.MCPServerSpec, bool) {
 	if v.reg == nil {
 		return lookup.MCPServerSpec{}, false
 	}
-	s, ok := v.reg.Get(name)
+	s, ok := v.reg.Get(tenantID, name)
 	if !ok {
 		return lookup.MCPServerSpec{}, false
 	}
@@ -124,7 +129,7 @@ func NewLazyResolver(pool *Pool, cfg *config.Config, dynamicReg *DynamicRegistry
 		dynamicReg:       dynamicReg,
 		onResolve:        onResolve,
 		handshakeTimeout: handshakeTimeout,
-		registered:       make(map[string]map[string]tools.Tool),
+		registered:       make(map[regKey]map[string]tools.Tool),
 	}
 }
 
@@ -135,19 +140,26 @@ func (r *LazyResolver) Resolve(ctx context.Context, name string, input json.RawM
 	if !ok {
 		return tools.Result{}, false
 	}
+	// RFC N: the tenant is authoritative from the run ctx (RunIdentity),
+	// never from the tool name / input. It scopes BOTH the resolver
+	// (tenant-dynamic shadows static shadows shared-dynamic) and the
+	// per-(tenant, server) memo so tenant A never resolves tenant B's
+	// MCP server.
+	tenant := tools.RunIdentity(ctx).TenantID
+	key := regKey{tenant, server}
 	// Membership + the operator's per-server allowed_tools filter both come
-	// from the shared lookup.MCPServer resolver, which walks static-yaml then
-	// the dynamic substrate (same chain every other primitive uses). A name
-	// in neither source falls through to the dispatcher's standard
+	// from the shared lookup.MCPServer resolver, which walks tenant-dynamic →
+	// static-yaml → shared-dynamic (same chain every other primitive uses). A
+	// name in no source falls through to the dispatcher's standard
 	// "tool not found".
-	spec, configured := lookup.MCPServer(r.cfg, lookupDynView{r.dynamicReg}, server)
+	spec, configured := lookup.MCPServer(r.cfg, lookupDynView{r.dynamicReg}, tenant, server)
 	if !configured {
 		return tools.Result{}, false
 	}
 
 	// Cache fast path.
 	r.mu.Lock()
-	if reg, ok := r.registered[server]; ok {
+	if reg, ok := r.registered[key]; ok {
 		t, hit := reg[name]
 		r.mu.Unlock()
 		if hit {
@@ -189,7 +201,7 @@ func (r *LazyResolver) Resolve(ctx context.Context, name string, input json.RawM
 	// map is built from the same pool/descs and Tool instances are
 	// stateless wrappers. Last writer wins; no harm.
 	r.mu.Lock()
-	r.registered[server] = toolMap
+	r.registered[key] = toolMap
 	r.mu.Unlock()
 
 	if r.onResolve != nil {
