@@ -316,17 +316,25 @@ func (s *Store) migrate(ctx context.Context) error {
 			retired                   INTEGER NOT NULL DEFAULT 0,
 			bootstrapped_from_static  INTEGER NOT NULL DEFAULT 0,
 			content_sha256            TEXT,
-			UNIQUE(name, version)
+			tenant_id                 TEXT    NOT NULL DEFAULT '',
+			UNIQUE(tenant_id, name, version)
 		)`,
 		`CREATE INDEX IF NOT EXISTS mcp_server_defs_by_name   ON mcp_server_defs(name, version DESC)`,
 		`CREATE INDEX IF NOT EXISTS mcp_server_defs_by_parent ON mcp_server_defs(parent_def_id) WHERE parent_def_id IS NOT NULL`,
 		`CREATE INDEX IF NOT EXISTS mcp_server_defs_by_run    ON mcp_server_defs(created_by_run_id) WHERE created_by_run_id IS NOT NULL`,
 		// mcp_server_defs_by_content_sha256 — see agent_defs_by_content_sha256 note above.
+		// RFC N: tenant-scoped active pointer, PRIMARY KEY(tenant_id, name)
+		// — two tenants own the same name independently. Fresh-DB-only PK
+		// shape; an upgraded v0.9.x DB keeps PK(name) (SQLite can't rewrite
+		// a PK in place) which is byte-equivalent for single-tenant. See the
+		// agent_def_active note earlier for the full upgrade caveat.
 		`CREATE TABLE IF NOT EXISTS mcp_server_def_active (
-			name                  TEXT    PRIMARY KEY,
+			name                  TEXT    NOT NULL,
 			def_id                TEXT    NOT NULL REFERENCES mcp_server_defs(def_id),
 			promoted_at           INTEGER NOT NULL,
-			promoted_by_agent_id  TEXT
+			promoted_by_agent_id  TEXT,
+			tenant_id             TEXT    NOT NULL DEFAULT '',
+			PRIMARY KEY(tenant_id, name)
 		)`,
 		// v1.x RFC E Scheduled Agent Runs substrate — mirror of
 		// agent_defs/skill_defs/mcp_server_defs with the same identity
@@ -710,6 +718,13 @@ func (s *Store) migrate(ctx context.Context) error {
 		// existing rows to the shared tenant.
 		`ALTER TABLE skill_defs ADD COLUMN tenant_id TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE skill_def_active ADD COLUMN tenant_id TEXT NOT NULL DEFAULT ''`,
+		// RFC N — tenant-scope the MCP server definition plane (mirror of the
+		// agent + skill ALTERs above). Same SQLite upgrade caveat: the PK
+		// stays (name) on the upgraded mcp_server_def_active table;
+		// functionally identical for single-tenant (tenant_id=''). DEFAULT ''
+		// backfills existing rows to the shared tenant.
+		`ALTER TABLE mcp_server_defs ADD COLUMN tenant_id TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE mcp_server_def_active ADD COLUMN tenant_id TEXT NOT NULL DEFAULT ''`,
 	}
 	for _, q := range addColumns {
 		if _, err := s.db.ExecContext(ctx, q); err != nil {
@@ -1858,9 +1873,9 @@ func (s *Store) SnapshotReadMCPServerDefs(ctx context.Context) ([]store.MCPServe
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT def_id, name, version, parent_def_id, definition, description,
 		        created_at, created_by_agent_id, created_by_run_id,
-		        retired, bootstrapped_from_static, content_sha256
+		        retired, bootstrapped_from_static, content_sha256, tenant_id
 		 FROM mcp_server_defs
-		 ORDER BY name ASC, version ASC`,
+		 ORDER BY tenant_id ASC, name ASC, version ASC`,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("snapshot read mcp_server_defs: %w", err)
@@ -1884,7 +1899,7 @@ func (s *Store) SnapshotReadMCPServerDefs(ctx context.Context) ([]store.MCPServe
 			&r.DefID, &r.Name, &r.Version, &parentDefID,
 			&definition, &description,
 			&createdNs, &createdBy, &createdRun,
-			&retiredInt, &bootstrap, &contentHash,
+			&retiredInt, &bootstrap, &contentHash, &r.TenantID,
 		); err != nil {
 			return nil, fmt.Errorf("scan mcp_server_def: %w", err)
 		}
@@ -1915,9 +1930,9 @@ func (s *Store) SnapshotReadMCPServerDefs(ctx context.Context) ([]store.MCPServe
 // SnapshotReadMCPServerDefActive — v0.9.x mirror.
 func (s *Store) SnapshotReadMCPServerDefActive(ctx context.Context) ([]store.MCPServerDefActiveEntry, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT name, def_id, promoted_at, promoted_by_agent_id
+		`SELECT name, def_id, promoted_at, promoted_by_agent_id, tenant_id
 		 FROM mcp_server_def_active
-		 ORDER BY name ASC`)
+		 ORDER BY tenant_id ASC, name ASC`)
 	if err != nil {
 		return nil, fmt.Errorf("snapshot read mcp_server_def_active: %w", err)
 	}
@@ -1929,7 +1944,7 @@ func (s *Store) SnapshotReadMCPServerDefActive(ctx context.Context) ([]store.MCP
 			promotedNs int64
 			promoter   sql.NullString
 		)
-		if err := rows.Scan(&e.Name, &e.DefID, &promotedNs, &promoter); err != nil {
+		if err := rows.Scan(&e.Name, &e.DefID, &promotedNs, &promoter, &e.TenantID); err != nil {
 			return nil, fmt.Errorf("scan mcp_server_def_active: %w", err)
 		}
 		e.PromotedAt = time.Unix(0, promotedNs)
@@ -2351,13 +2366,13 @@ func (s *Store) SnapshotRestoreMCPServerDef(ctx context.Context, r store.MCPServ
 		`INSERT OR IGNORE INTO mcp_server_defs(
 			def_id, name, version, parent_def_id, definition, description,
 			created_at, created_by_agent_id, created_by_run_id,
-			retired, bootstrapped_from_static, content_sha256
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			retired, bootstrapped_from_static, content_sha256, tenant_id
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		r.DefID, r.Name, r.Version, nilIfEmpty(r.ParentDefID),
 		string(r.Definition), nilIfEmpty(r.Description),
 		createdNs, nilIfEmpty(r.CreatedByAgentID), nilIfEmpty(r.CreatedByRunID),
 		boolToInt(r.Retired), boolToInt(r.BootstrappedFromStatic),
-		nilIfEmpty(r.ContentSHA256),
+		nilIfEmpty(r.ContentSHA256), r.TenantID,
 	)
 	if err != nil {
 		return false, fmt.Errorf("snapshot restore mcp_server_def: %w", err)
@@ -2376,8 +2391,8 @@ func (s *Store) SnapshotRestoreMCPServerDefActive(ctx context.Context, e store.M
 		promotedNs = time.Now().UnixNano()
 	}
 	res, err := s.db.ExecContext(ctx,
-		`INSERT OR IGNORE INTO mcp_server_def_active(name, def_id, promoted_at, promoted_by_agent_id) VALUES (?, ?, ?, ?)`,
-		e.Name, e.DefID, promotedNs, nilIfEmpty(e.PromotedByAgentID),
+		`INSERT OR IGNORE INTO mcp_server_def_active(tenant_id, name, def_id, promoted_at, promoted_by_agent_id) VALUES (?, ?, ?, ?, ?)`,
+		e.TenantID, e.Name, e.DefID, promotedNs, nilIfEmpty(e.PromotedByAgentID),
 	)
 	if err != nil {
 		return false, fmt.Errorf("snapshot restore mcp_server_def_active: %w", err)
@@ -4024,9 +4039,11 @@ func (s *Store) MCPServerDefCreate(ctx context.Context, row store.MCPServerDefRo
 		}
 	}
 
+	// RFC N: version allocation is scoped per (tenant, name) so two
+	// tenants' v1 don't collide on UNIQUE(tenant_id, name, version).
 	var maxVer sql.NullInt64
 	if err := conn.QueryRowContext(ctx,
-		`SELECT MAX(version) FROM mcp_server_defs WHERE name = ?`, row.Name,
+		`SELECT MAX(version) FROM mcp_server_defs WHERE tenant_id = ? AND name = ?`, row.TenantID, row.Name,
 	).Scan(&maxVer); err != nil {
 		return store.MCPServerDefRow{}, err
 	}
@@ -4040,14 +4057,14 @@ func (s *Store) MCPServerDefCreate(ctx context.Context, row store.MCPServerDefRo
 		`INSERT INTO mcp_server_defs (
 			def_id, name, version, parent_def_id, definition, description,
 			created_at, created_by_agent_id, created_by_run_id,
-			retired, bootstrapped_from_static, content_sha256
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			retired, bootstrapped_from_static, content_sha256, tenant_id
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		row.DefID, row.Name, row.Version, nilIfEmpty(row.ParentDefID),
 		string(row.Definition), nilIfEmpty(row.Description),
 		row.CreatedAt.UnixNano(),
 		nilIfEmpty(row.CreatedByAgentID), nilIfEmpty(row.CreatedByRunID),
 		boolToInt(row.Retired), boolToInt(row.BootstrappedFromStatic),
-		nilIfEmpty(row.ContentSHA256),
+		nilIfEmpty(row.ContentSHA256), row.TenantID,
 	); err != nil {
 		return store.MCPServerDefRow{}, err
 	}
@@ -4095,15 +4112,16 @@ func (s *Store) MCPServerDefListChildren(ctx context.Context, parentDefID string
 func (s *Store) MCPServerDefListNames(ctx context.Context) ([]store.MCPServerDefNameSummary, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT
+			d.tenant_id,
 			d.name,
 			COUNT(*)                  AS version_count,
 			MAX(d.version)            AS latest_version,
 			MAX(d.created_at)         AS last_updated,
 			COALESCE(a.def_id, '')    AS active_def_id
 		FROM mcp_server_defs d
-		LEFT JOIN mcp_server_def_active a ON a.name = d.name
-		GROUP BY d.name, a.def_id
-		ORDER BY d.name`)
+		LEFT JOIN mcp_server_def_active a ON a.name = d.name AND a.tenant_id = d.tenant_id
+		GROUP BY d.tenant_id, d.name, a.def_id
+		ORDER BY d.tenant_id, d.name`)
 	if err != nil {
 		return nil, err
 	}
@@ -4113,7 +4131,7 @@ func (s *Store) MCPServerDefListNames(ctx context.Context) ([]store.MCPServerDef
 	for rows.Next() {
 		var ns store.MCPServerDefNameSummary
 		var updatedAt int64
-		if err := rows.Scan(&ns.Name, &ns.VersionCount, &ns.LatestVersion, &updatedAt, &ns.ActiveDefID); err != nil {
+		if err := rows.Scan(&ns.TenantID, &ns.Name, &ns.VersionCount, &ns.LatestVersion, &updatedAt, &ns.ActiveDefID); err != nil {
 			return nil, err
 		}
 		ns.LastUpdated = time.Unix(0, updatedAt)
@@ -4122,9 +4140,15 @@ func (s *Store) MCPServerDefListNames(ctx context.Context) ([]store.MCPServerDef
 	return out, rows.Err()
 }
 
-func (s *Store) MCPServerDefSetActive(ctx context.Context, name, defID, promotedByAgentID string) error {
-	var rowName string
-	err := s.db.QueryRowContext(ctx, `SELECT name FROM mcp_server_defs WHERE def_id = ?`, defID).Scan(&rowName)
+// MCPServerDefSetActive UPSERTs the active pointer for (tenantID, name).
+// RFC N: validates the def belongs to BOTH the named server AND the
+// supplied tenant — a def can only be promoted within its own tenant.
+func (s *Store) MCPServerDefSetActive(ctx context.Context, tenantID, name, defID, promotedByAgentID string) error {
+	var (
+		rowName   string
+		rowTenant string
+	)
+	err := s.db.QueryRowContext(ctx, `SELECT name, tenant_id FROM mcp_server_defs WHERE def_id = ?`, defID).Scan(&rowName, &rowTenant)
 	if err == sql.ErrNoRows {
 		return &store.ErrNotFound{Kind: "mcp_server_def", ID: defID}
 	}
@@ -4134,21 +4158,27 @@ func (s *Store) MCPServerDefSetActive(ctx context.Context, name, defID, promoted
 	if rowName != name {
 		return fmt.Errorf("mcp_server_def_active: def_id %q has name %q, refusing to promote under name %q", defID, rowName, name)
 	}
+	if rowTenant != tenantID {
+		return fmt.Errorf("mcp_server_def_active: def_id %q belongs to tenant %q, refusing to promote under tenant %q", defID, rowTenant, tenantID)
+	}
 	_, err = s.db.ExecContext(ctx, `
-		INSERT INTO mcp_server_def_active (name, def_id, promoted_at, promoted_by_agent_id)
-		VALUES (?, ?, ?, ?)
-		ON CONFLICT(name) DO UPDATE SET
+		INSERT INTO mcp_server_def_active (tenant_id, name, def_id, promoted_at, promoted_by_agent_id)
+		VALUES (?, ?, ?, ?, ?)
+		ON CONFLICT(tenant_id, name) DO UPDATE SET
 		    def_id               = excluded.def_id,
 		    promoted_at          = excluded.promoted_at,
 		    promoted_by_agent_id = excluded.promoted_by_agent_id`,
-		name, defID, time.Now().UnixNano(), nilIfEmpty(promotedByAgentID),
+		tenantID, name, defID, time.Now().UnixNano(), nilIfEmpty(promotedByAgentID),
 	)
 	return err
 }
 
-func (s *Store) MCPServerDefGetActive(ctx context.Context, name string) (store.MCPServerDefRow, error) {
+// MCPServerDefGetActive returns the active row for (tenantID, name).
+// *ErrNotFound when no pointer exists. RFC N: tenantID "" = the shared/
+// operator/legacy tenant.
+func (s *Store) MCPServerDefGetActive(ctx context.Context, tenantID, name string) (store.MCPServerDefRow, error) {
 	var defID string
-	err := s.db.QueryRowContext(ctx, `SELECT def_id FROM mcp_server_def_active WHERE name = ?`, name).Scan(&defID)
+	err := s.db.QueryRowContext(ctx, `SELECT def_id FROM mcp_server_def_active WHERE tenant_id = ? AND name = ?`, tenantID, name).Scan(&defID)
 	if err == sql.ErrNoRows {
 		return store.MCPServerDefRow{}, &store.ErrNotFound{Kind: "mcp_server_def_active", ID: name}
 	}
@@ -4188,7 +4218,8 @@ const mcpServerDefSelect = `SELECT
 	COALESCE(created_by_run_id, ''),
 	retired,
 	bootstrapped_from_static,
-	COALESCE(content_sha256, '')
+	COALESCE(content_sha256, ''),
+	tenant_id
 FROM mcp_server_defs`
 
 func (s *Store) scanMCPServerDef(row *sql.Row) (store.MCPServerDefRow, error) {
@@ -4208,6 +4239,7 @@ func (s *Store) scanMCPServerDef(row *sql.Row) (store.MCPServerDefRow, error) {
 		&out.CreatedByAgentID, &out.CreatedByRunID,
 		&retired, &bootstrap,
 		&out.ContentSHA256,
+		&out.TenantID,
 	)
 	if err != nil {
 		return store.MCPServerDefRow{}, err
@@ -4238,6 +4270,7 @@ func (s *Store) scanMCPServerDefRows(rows *sql.Rows) ([]store.MCPServerDefRow, e
 			&r.CreatedByAgentID, &r.CreatedByRunID,
 			&retired, &bootstrap,
 			&r.ContentSHA256,
+			&r.TenantID,
 		); err != nil {
 			return nil, err
 		}
