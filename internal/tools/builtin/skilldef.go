@@ -284,10 +284,12 @@ func (s *SkillDef) execFork(ctx context.Context, policy tools.SkillDefPolicyValu
 		if row.Name != in.Name {
 			return errResult(fmt.Sprintf("fork: parent_def_id %q has name %q, refusing to fork under name %q", parentDefID, row.Name, in.Name)), nil
 		}
-		// A def_id is a global handle; refuse to fork across the tenant
-		// boundary — a caller in tenant T can't pin another tenant's def
-		// as its parent (which would copy that tenant's body into T).
-		if row.TenantID != tenantID {
+		// Allow forking the SHARED ("") base or the caller's own tenant (the
+		// fork lands under the caller's tenant); refuse only another specific
+		// tenant's private def, unless the caller is substrate:admin (crosses
+		// tenants, RFC L). The "" allowance lets a legacy/default or tenant
+		// principal migrate a pre-RFC-N / bootstrapped shared def.
+		if row.TenantID != "" && row.TenantID != tenantID && !defCallerIsAdmin(ctx) {
 			return errResult(fmt.Sprintf("fork: parent_def_id %q belongs to another tenant, refusing", parentDefID)), nil
 		}
 		parent = row

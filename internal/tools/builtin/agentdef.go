@@ -318,10 +318,16 @@ func (a *AgentDef) execFork(ctx context.Context, policy tools.AgentDefPolicyValu
 		if row.Name != in.Name {
 			return errResult(fmt.Sprintf("fork: parent_def_id %q has name %q, refusing to fork under name %q", parentDefID, row.Name, in.Name)), nil
 		}
-		// A def_id is a global handle; refuse to fork across the tenant
-		// boundary — a caller in tenant T can't pin another tenant's def
-		// as its parent (which would copy that tenant's body into T).
-		if row.TenantID != tenantID {
+		// A def_id is a global handle. A caller may fork the SHARED ("")
+		// base — the common ground every tenant builds on (e.g. migrate a
+		// pre-RFC-N / bootstrapped def to code-js) — or its OWN tenant's def;
+		// the fork lands under the caller's tenant. Refuse only forking
+		// ANOTHER specific tenant's private def (which would copy that
+		// tenant's body across the boundary), unless the caller is a
+		// substrate:admin (crosses tenants by design, RFC L). Without the ""
+		// allowance, a legacy/default or tenant principal could not fork the
+		// shared base at all.
+		if row.TenantID != "" && row.TenantID != tenantID && !defCallerIsAdmin(ctx) {
 			return errResult(fmt.Sprintf("fork: parent_def_id %q belongs to another tenant, refusing", parentDefID)), nil
 		}
 		parent = row
