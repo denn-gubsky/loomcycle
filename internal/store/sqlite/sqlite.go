@@ -822,14 +822,16 @@ func (s *Store) migrate(ctx context.Context) error {
 		// column added by addColumns above is guaranteed present first.
 		//
 		// Residual caveat (unchanged): the upgraded agent_def_active /
-		// dynamic_agents / skill_def_active tables still carry PRIMARY
-		// KEY(name), so two tenants cannot share a name on a PRE-EXISTING
-		// SQLite DB — a fresh DB is required for full multi-tenant on SQLite.
-		// These indexes restore single-tenant upgrade functionality only;
-		// they do not retrofit the per-tenant isolation a fresh DB's
-		// composite PK provides. The skill plane has NO dynamic_skills tier
-		// (skills = static skills.Set + the skill_defs/skill_def_active
-		// substrate only), so only two skill indexes are needed.
+		// dynamic_agents / skill_def_active / mcp_server_def_active tables
+		// still carry PRIMARY KEY(name), so two tenants cannot share a name on
+		// a PRE-EXISTING SQLite DB — a fresh DB is required for full
+		// multi-tenant on SQLite. These indexes restore single-tenant upgrade
+		// functionality only; they do not retrofit the per-tenant isolation a
+		// fresh DB's composite PK provides. The skill + mcp planes have NO
+		// dynamic_* tier (skills = static skills.Set + the
+		// skill_defs/skill_def_active substrate; mcp = static cfg.MCPServers +
+		// the mcp_server_defs/mcp_server_def_active substrate), so each needs
+		// only two indexes.
 		`CREATE UNIQUE INDEX IF NOT EXISTS uniq_agent_def_active_tenant_name    ON agent_def_active(tenant_id, name)`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS uniq_dynamic_agents_tenant_name      ON dynamic_agents(tenant_id, name)`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS uniq_agent_defs_tenant_name_version  ON agent_defs(tenant_id, name, version)`,
@@ -841,6 +843,14 @@ func (s *Store) migrate(ctx context.Context) error {
 		// fails even single-tenant. No dynamic_skills table to cover.
 		`CREATE UNIQUE INDEX IF NOT EXISTS uniq_skill_def_active_tenant_name    ON skill_def_active(tenant_id, name)`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS uniq_skill_defs_tenant_name_version  ON skill_defs(tenant_id, name, version)`,
+		// MCP plane (RFC N FIX 5-mcp) — same in-place-upgrade gap.
+		// MCPServerDefSetActive does ON CONFLICT(tenant_id, name) on
+		// mcp_server_def_active and MCPServerDefCreate's version-bump inserts
+		// against UNIQUE(tenant_id, name, version) on mcp_server_defs; on an
+		// upgraded DB neither composite index exists, so the FIRST
+		// promote/register fails even single-tenant. No dynamic_mcp table.
+		`CREATE UNIQUE INDEX IF NOT EXISTS uniq_mcp_server_def_active_tenant_name   ON mcp_server_def_active(tenant_id, name)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS uniq_mcp_server_defs_tenant_name_version ON mcp_server_defs(tenant_id, name, version)`,
 	}
 	for _, q := range addIndexes {
 		// Note the asymmetry vs addColumns above: indexes use
