@@ -74,6 +74,27 @@ standalone entry has an explicit `user_id` and a single `schedule:`.
 Mutual exclusion: a template can't fix one cron AND offer per-tier
 defaults. The config validator refuses at boot.
 
+## `tenant_id` — which tenant the fired run executes as (RFC N)
+
+Set `tenant_id:` on a schedule to make its spawned run execute as that
+tenant: the run resolves that tenant's agents / skills / MCP servers and
+its memory and run records are isolated to the tenant (RFC L multi-tenant
+boundary). Omit it (`""`) for a shared/default run with no tenant scoping.
+
+```yaml
+  nightly-acme-digest:
+    agent: digest
+    tenant_id: acme            # run executes as tenant "acme"
+    schedule: "0 2 * * *"
+    user_id: ops@acme.example
+```
+
+It is def-content (lives in the definition, participates in the def's
+serialized identity), so a schedule that runs as tenant A is a genuinely
+different def than one running as tenant B. It is **operator-authored
+only** — the scheduler has no inbound payload, so there is no way for an
+external value to set the tenant. It flows to `RunInput.TenantID`.
+
 ## What ships in the v1.x.0 substrate PR
 
 This is the data-layer foundation. The agent-facing tool +

@@ -577,6 +577,7 @@ type mergedWebhookDef struct {
 	UserCredentialsFromEnv map[string]string         `json:"user_credentials_from_env,omitempty"`
 	UserCredentials        map[string]string         `json:"user_credentials,omitempty"` // RFC F fork-time explicit values (ScheduleDef parity)
 	Metadata               map[string]any            `json:"metadata,omitempty"`         // non-secret, trusted agent metadata
+	TenantID               string                    `json:"tenant_id,omitempty"`        // tenant the spawned run executes as (RFC N follow-up); def-authored, never from payload
 	PayloadMapping         map[string]string         `json:"payload_mapping,omitempty"`
 	SyncResponse           mergedWebhookSyncResp     `json:"sync_response,omitempty"`
 	OnComplete             []config.ScheduledRunHook `json:"on_complete,omitempty"`
@@ -674,6 +675,9 @@ func (d *mergedWebhookDef) applyOverlay(ov mergedWebhookDef) {
 	if ov.Metadata != nil {
 		d.Metadata = ov.Metadata
 	}
+	if ov.TenantID != "" {
+		d.TenantID = ov.TenantID
+	}
 	if ov.PayloadMapping != nil {
 		d.PayloadMapping = ov.PayloadMapping
 	}
@@ -710,6 +714,7 @@ func staticToMergedWebhookDef(w config.Webhook) mergedWebhookDef {
 		UserCredentialsFromEnv: w.UserCredentialsFromEnv,
 		UserCredentials:        w.UserCredentials,
 		Metadata:               w.Metadata,
+		TenantID:               w.TenantID,
 		PayloadMapping:         w.PayloadMapping,
 		SyncResponse: mergedWebhookSyncResp{
 			Enabled:   w.SyncResponse.Enabled,

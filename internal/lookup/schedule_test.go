@@ -194,6 +194,7 @@ func TestSchedule_DriftDetection(t *testing.T) {
 		"user_credentials_from_env": true,
 		"on_complete":               true,
 		"metadata":                  true, // non-secret agent metadata (PR 2/2)
+		"tenant_id":                 true, // tenant the fired run executes as (RFC N follow-up)
 	}
 	have := scheduleJsonTagsOf(reflect.TypeOf(lookup.SubstrateScheduleDef{}))
 	for tag := range want {
