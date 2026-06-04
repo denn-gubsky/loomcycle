@@ -1,9 +1,11 @@
 // Package lookup is the canonical seam for resolving an agent / skill
 // / MCP server NAME to its effective runtime definition. It walks the
-// multi-tier lookup chain (static cfg → dynamic_agents → substrate
-// active overlay) and applies the same normalizer chain the static
-// boot-time config-load path applies, so a name resolved at runtime
-// returns a byte-equivalent definition to one resolved at boot.
+// multi-tier lookup chain (tenant-scoped dynamic → static cfg → shared
+// dynamic, see Agent for the precedence) and applies the same
+// normalizer chain the static boot-time config-load path applies, so a
+// name resolved at runtime returns a byte-equivalent definition to one
+// resolved at boot. RFC N threaded a tenant axis through the dynamic
+// tiers; the default tenant "" preserves the pre-RFC-N order exactly.
 //
 // # Why this package exists
 //
@@ -59,18 +61,32 @@ import (
 
 // AgentStore is the subset of store.Store the agent resolver uses.
 // Declared here so tests + callers can mock without depending on the
-// full store interface.
+// full store interface. RFC N: the dynamic lookups carry a tenantID.
 type AgentStore interface {
-	DynamicAgentGet(ctx context.Context, name string) (store.DynamicAgent, error)
-	AgentDefGetActive(ctx context.Context, name string) (store.AgentDefRow, error)
+	DynamicAgentGet(ctx context.Context, tenantID, name string) (store.DynamicAgent, error)
+	AgentDefGetActive(ctx context.Context, tenantID, name string) (store.AgentDefRow, error)
 }
 
-// Agent resolves an agent NAME to its effective config.AgentDef by
-// walking the lookup chain in precedence order:
+// Agent resolves an agent NAME to its effective config.AgentDef within
+// the caller's tenant, walking the lookup chain in precedence order:
 //
-//  1. static cfg.Agents (yaml-defined, pre-normalized at boot)
-//  2. dynamic_agents table (v0.8.15 RegisterAgent path)
-//  3. agent_def_active + agent_defs (v0.8.22 substrate path)
+//  1. (tenantID != "") tenant-scoped dynamic lookup — dynamic_agents
+//     then agent_def_active, both WHERE tenant_id=tenantID.
+//  2. static cfg.Agents (yaml-defined, pre-normalized at boot) — the
+//     shared operator base every tenant inherits.
+//  3. shared dynamic lookup (tenant_id="") — dynamic_agents then
+//     agent_def_active.
+//
+// For the default tenant "" step 1 is skipped, so the order collapses to
+// static-cfg → shared-dynamic — IDENTICAL to the pre-RFC-N behavior
+// ("cfg.Agents first, then dynamic"). This is the critical back-compat
+// property: a single-tenant deployment (everything tenant_id="") behaves
+// exactly as before.
+//
+// "static = shared base, tenant-dynamic shadows it" (RFC N §Proposed
+// design): a per-tenant dynamic registration shadows the shared static
+// base by name; the static yaml stays a shared base every tenant
+// inherits unless they override it dynamically.
 //
 // Returns (zero, false) when no source has the name. Malformed
 // persistence JSON also returns (zero, false) — defensive against
@@ -82,29 +98,50 @@ type AgentStore interface {
 // entries already went through config-load's resolveSkills /
 // resolveAgent, so the cfg path returns directly without re-
 // normalizing (avoids double-baking skill bodies into SystemPrompt).
-func Agent(ctx context.Context, s AgentStore, cfg *config.Config, name string) (config.AgentDef, bool) {
+func Agent(ctx context.Context, s AgentStore, cfg *config.Config, tenantID, name string) (config.AgentDef, bool) {
+	// 1. Tenant-scoped dynamic shadow (skipped for the shared "" tenant
+	//    so its order stays static-cfg → shared-dynamic, exactly as
+	//    pre-RFC-N).
+	if tenantID != "" {
+		if def, ok := resolveDynamic(ctx, s, tenantID, name); ok {
+			return def, true
+		}
+	}
+	// 2. Static cfg.Agents — the shared operator base.
 	if cfg != nil {
 		if def, ok := cfg.Agents[name]; ok {
 			return def, true
 		}
 	}
+	// 3. Shared dynamic (tenant_id="").
+	return resolveDynamic(ctx, s, "", name)
+}
+
+// resolveDynamic runs the two dynamic tiers for one tenant pass:
+//
+//	dynamic_agents (RegisterAgent path) → agent_def_active + agent_defs
+//	(AgentDef substrate)
+//
+// both scoped to tenantID. Returns (zero, false) when neither tier has
+// the name for that tenant (or the store is nil). Called once for the
+// tenant pass and once for the shared "" pass by Agent.
+func resolveDynamic(ctx context.Context, s AgentStore, tenantID, name string) (config.AgentDef, bool) {
 	if s == nil {
 		return config.AgentDef{}, false
 	}
-	// Tier 2 — dynamic_agents (RegisterAgent path). Persistence uses
-	// config.AgentDef's JSON tags directly; safe to unmarshal into
-	// config.AgentDef.
-	if row, err := s.DynamicAgentGet(ctx, name); err == nil {
+	// Tier A — dynamic_agents. Persistence uses config.AgentDef's JSON
+	// tags directly; safe to unmarshal into config.AgentDef.
+	if row, err := s.DynamicAgentGet(ctx, tenantID, name); err == nil {
 		var def config.AgentDef
 		if uerr := json.Unmarshal(row.Definition, &def); uerr == nil {
 			NormalizeAgentDef(&def)
 			return def, true
 		}
 	}
-	// Tier 3 — substrate (agent_def_active overlay → agent_defs row).
+	// Tier B — substrate (agent_def_active overlay → agent_defs row).
 	// Persistence uses mergedDef's snake_case JSON tags; must unmarshal
 	// into a json-tagged adapter then convert.
-	activeRow, err := s.AgentDefGetActive(ctx, name)
+	activeRow, err := s.AgentDefGetActive(ctx, tenantID, name)
 	if err != nil {
 		return config.AgentDef{}, false
 	}

@@ -26,10 +26,30 @@ This package consolidates the lookup chain + the normalizer chain + the adapter 
 Every code path that needs to resolve an agent / skill / MCP server NAME to its effective runtime def should go through this package:
 
 ```go
-def, ok := lookup.Agent(ctx, s.store, s.cfg, name)
+def, ok := lookup.Agent(ctx, s.store, s.cfg, tenantID, name)
 sk, ok  := lookup.Skill(ctx, s.store, s.skillSet, name)
 spec, ok := lookup.MCPServer(s.cfg, dynRegistry, name)
 ```
+
+### Agent resolution precedence (RFC N — tenant axis)
+
+`lookup.Agent` resolves within the caller's `tenantID`:
+
+1. **(tenantID != "")** tenant-scoped dynamic — `dynamic_agents` then
+   `agent_def_active`, both `WHERE tenant_id=tenantID`. A per-tenant
+   registration *shadows* the shared static base by name.
+2. **static `cfg.Agents`** — the shared operator base every tenant inherits.
+3. **shared dynamic** — `dynamic_agents` then `agent_def_active`,
+   `tenant_id=""`.
+
+For the default tenant `""`, step 1 is skipped, so the order collapses to
+**static-cfg → shared-dynamic** — byte-for-byte the pre-RFC-N behavior. A
+single-tenant deployment (everything `tenant_id=""`) is unchanged. The
+`tenantID` MUST come from the authoritative principal in ctx
+(`auth.PrincipalFromContext` → `tools.RunIdentity` fallback → `""`), never
+from a wire/request field — see `internal/api/http/server.go`'s
+`tenantFromCtx`. (Skills + MCP servers still resolve globally; their tenant
+axis is a follow-up.)
 
 Don't read substrate rows directly. Don't unmarshal into `config.AgentDef` (use the json-tagged adapters). The pattern is enforced by the drift tests (`TestAgent_DriftDetection` + `TestMergedDef_DriftDetection_VsLookupSubstrateAgentDef`) — a future field added to one shape without the other fails CI.
 
