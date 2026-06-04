@@ -1113,9 +1113,9 @@ func (s *Store) SnapshotReadSkillDefs(ctx context.Context) ([]store.SkillDefRow,
 	rows, err := s.pool.Query(ctx,
 		`SELECT def_id, name, version, parent_def_id, definition::text, description,
 		        created_at, created_by_agent_id, created_by_run_id,
-		        retired, bootstrapped_from_static
+		        retired, bootstrapped_from_static, tenant_id
 		 FROM skill_defs
-		 ORDER BY name ASC, version ASC`,
+		 ORDER BY tenant_id ASC, name ASC, version ASC`,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("snapshot read skill_defs: %w", err)
@@ -1135,7 +1135,7 @@ func (s *Store) SnapshotReadSkillDefs(ctx context.Context) ([]store.SkillDefRow,
 			&r.DefID, &r.Name, &r.Version, &parentDefID,
 			&definition, &description,
 			&r.CreatedAt, &createdBy, &createdRun,
-			&r.Retired, &r.BootstrappedFromStatic,
+			&r.Retired, &r.BootstrappedFromStatic, &r.TenantID,
 		); err != nil {
 			return nil, fmt.Errorf("scan skill_def: %w", err)
 		}
@@ -1160,9 +1160,9 @@ func (s *Store) SnapshotReadSkillDefs(ctx context.Context) ([]store.SkillDefRow,
 // SnapshotReadSkillDefActive implements store.Store.
 func (s *Store) SnapshotReadSkillDefActive(ctx context.Context) ([]store.SkillDefActiveEntry, error) {
 	rows, err := s.pool.Query(ctx,
-		`SELECT name, def_id, promoted_at, promoted_by_agent_id
+		`SELECT name, def_id, promoted_at, promoted_by_agent_id, tenant_id
 		 FROM skill_def_active
-		 ORDER BY name ASC`)
+		 ORDER BY tenant_id ASC, name ASC`)
 	if err != nil {
 		return nil, fmt.Errorf("snapshot read skill_def_active: %w", err)
 	}
@@ -1173,7 +1173,7 @@ func (s *Store) SnapshotReadSkillDefActive(ctx context.Context) ([]store.SkillDe
 			e        store.SkillDefActiveEntry
 			promoter *string
 		)
-		if err := rows.Scan(&e.Name, &e.DefID, &e.PromotedAt, &promoter); err != nil {
+		if err := rows.Scan(&e.Name, &e.DefID, &e.PromotedAt, &promoter, &e.TenantID); err != nil {
 			return nil, fmt.Errorf("scan skill_def_active: %w", err)
 		}
 		if promoter != nil {
@@ -1599,14 +1599,14 @@ func (s *Store) SnapshotRestoreSkillDef(ctx context.Context, r store.SkillDefRow
 		`INSERT INTO skill_defs(
 			def_id, name, version, parent_def_id, definition, description,
 			created_at, created_by_agent_id, created_by_run_id,
-			retired, bootstrapped_from_static, content_sha256
-		) VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10, $11, $12)
+			retired, bootstrapped_from_static, content_sha256, tenant_id
+		) VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10, $11, $12, $13)
 		 ON CONFLICT (def_id) DO NOTHING`,
 		r.DefID, r.Name, r.Version, nullIfEmpty(r.ParentDefID),
 		string(r.Definition), nullIfEmpty(r.Description),
 		createdAt, nullIfEmpty(r.CreatedByAgentID), nullIfEmpty(r.CreatedByRunID),
 		r.Retired, r.BootstrappedFromStatic,
-		nullIfEmpty(r.ContentSHA256),
+		nullIfEmpty(r.ContentSHA256), r.TenantID,
 	)
 	if err != nil {
 		return false, fmt.Errorf("snapshot restore skill_def: %w", err)
@@ -1624,9 +1624,9 @@ func (s *Store) SnapshotRestoreSkillDefActive(ctx context.Context, e store.Skill
 		promotedAt = time.Now().UTC()
 	}
 	tag, err := s.pool.Exec(ctx,
-		`INSERT INTO skill_def_active(name, def_id, promoted_at, promoted_by_agent_id) VALUES ($1, $2, $3, $4)
-		 ON CONFLICT (name) DO NOTHING`,
-		e.Name, e.DefID, promotedAt, nullIfEmpty(e.PromotedByAgentID),
+		`INSERT INTO skill_def_active(tenant_id, name, def_id, promoted_at, promoted_by_agent_id) VALUES ($1, $2, $3, $4, $5)
+		 ON CONFLICT (tenant_id, name) DO NOTHING`,
+		e.TenantID, e.Name, e.DefID, promotedAt, nullIfEmpty(e.PromotedByAgentID),
 	)
 	if err != nil {
 		return false, fmt.Errorf("snapshot restore skill_def_active: %w", err)
@@ -3536,9 +3536,13 @@ func (s *Store) SkillDefCreate(ctx context.Context, row store.SkillDefRow) (stor
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
+	// Per-(tenant, name) advisory lock — RFC N: version allocation is
+	// scoped per-tenant so two tenants' v1 don't collide on the
+	// UNIQUE(tenant_id, name, version). See AgentDefCreate for the
+	// rationale.
 	if _, err := tx.Exec(ctx,
 		`SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`,
-		"skill_def:"+row.Name,
+		"skill_def:"+row.TenantID+":"+row.Name,
 	); err != nil {
 		return store.SkillDefRow{}, fmt.Errorf("skill_def create lock: %w", err)
 	}
@@ -3554,7 +3558,7 @@ func (s *Store) SkillDefCreate(ctx context.Context, row store.SkillDefRow) (stor
 	}
 
 	var maxVer sql.NullInt64
-	if err := tx.QueryRow(ctx, `SELECT MAX(version) FROM skill_defs WHERE name = $1`, row.Name).Scan(&maxVer); err != nil {
+	if err := tx.QueryRow(ctx, `SELECT MAX(version) FROM skill_defs WHERE tenant_id = $1 AND name = $2`, row.TenantID, row.Name).Scan(&maxVer); err != nil {
 		return store.SkillDefRow{}, fmt.Errorf("skill_def create max version: %w", err)
 	}
 	row.Version = 1
@@ -3567,14 +3571,14 @@ func (s *Store) SkillDefCreate(ctx context.Context, row store.SkillDefRow) (stor
 		INSERT INTO skill_defs (
 			def_id, name, version, parent_def_id, definition, description,
 			created_at, created_by_agent_id, created_by_run_id,
-			retired, bootstrapped_from_static, content_sha256
-		) VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10, $11, $12)`,
+			retired, bootstrapped_from_static, content_sha256, tenant_id
+		) VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10, $11, $12, $13)`,
 		row.DefID, row.Name, row.Version, nullableString(row.ParentDefID),
 		string(row.Definition), nullableString(row.Description),
 		row.CreatedAt,
 		nullableString(row.CreatedByAgentID), nullableString(row.CreatedByRunID),
 		row.Retired, row.BootstrappedFromStatic,
-		nullableString(row.ContentSHA256),
+		nullableString(row.ContentSHA256), row.TenantID,
 	); err != nil {
 		return store.SkillDefRow{}, fmt.Errorf("skill_def insert: %w", err)
 	}
@@ -3627,7 +3631,7 @@ func (s *Store) SkillDefListNames(ctx context.Context) ([]store.SkillDefNameSumm
 			MAX(d.created_at)         AS last_updated,
 			COALESCE(a.def_id, '')    AS active_def_id
 		FROM skill_defs d
-		LEFT JOIN skill_def_active a ON a.name = d.name
+		LEFT JOIN skill_def_active a ON a.name = d.name AND a.tenant_id = d.tenant_id
 		GROUP BY d.name, a.def_id
 		ORDER BY d.name`)
 	if err != nil {
@@ -3646,9 +3650,17 @@ func (s *Store) SkillDefListNames(ctx context.Context) ([]store.SkillDefNameSumm
 	return out, rows.Err()
 }
 
-func (s *Store) SkillDefSetActive(ctx context.Context, name, defID, promotedByAgentID string) error {
-	var rowName string
-	err := s.pool.QueryRow(ctx, `SELECT name FROM skill_defs WHERE def_id = $1`, defID).Scan(&rowName)
+// SkillDefSetActive UPSERTs the skill_def_active pointer for
+// (tenantID, name). RFC N: validates the def belongs to BOTH the named
+// skill AND the supplied tenant — a def can only be promoted within its
+// own tenant, so a caller can't point another tenant's active pointer at
+// a def it owns.
+func (s *Store) SkillDefSetActive(ctx context.Context, tenantID, name, defID, promotedByAgentID string) error {
+	var (
+		rowName   string
+		rowTenant string
+	)
+	err := s.pool.QueryRow(ctx, `SELECT name, tenant_id FROM skill_defs WHERE def_id = $1`, defID).Scan(&rowName, &rowTenant)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return &store.ErrNotFound{Kind: "skill_def", ID: defID}
 	}
@@ -3658,14 +3670,17 @@ func (s *Store) SkillDefSetActive(ctx context.Context, name, defID, promotedByAg
 	if rowName != name {
 		return fmt.Errorf("skill_def_active: def_id %q has name %q, refusing to promote under name %q", defID, rowName, name)
 	}
+	if rowTenant != tenantID {
+		return fmt.Errorf("skill_def_active: def_id %q belongs to tenant %q, refusing to promote under tenant %q", defID, rowTenant, tenantID)
+	}
 	_, err = s.pool.Exec(ctx, `
-		INSERT INTO skill_def_active (name, def_id, promoted_at, promoted_by_agent_id)
-		VALUES ($1, $2, $3, $4)
-		ON CONFLICT (name) DO UPDATE SET
+		INSERT INTO skill_def_active (tenant_id, name, def_id, promoted_at, promoted_by_agent_id)
+		VALUES ($1, $2, $3, $4, $5)
+		ON CONFLICT (tenant_id, name) DO UPDATE SET
 		    def_id               = EXCLUDED.def_id,
 		    promoted_at          = EXCLUDED.promoted_at,
 		    promoted_by_agent_id = EXCLUDED.promoted_by_agent_id`,
-		name, defID, time.Now().UTC(), nullableString(promotedByAgentID),
+		tenantID, name, defID, time.Now().UTC(), nullableString(promotedByAgentID),
 	)
 	if err != nil {
 		return fmt.Errorf("skill_def_active upsert: %w", err)
@@ -3673,9 +3688,11 @@ func (s *Store) SkillDefSetActive(ctx context.Context, name, defID, promotedByAg
 	return nil
 }
 
-func (s *Store) SkillDefGetActive(ctx context.Context, name string) (store.SkillDefRow, error) {
+// SkillDefGetActive returns the active row for (tenantID, name).
+// *ErrNotFound when no pointer exists.
+func (s *Store) SkillDefGetActive(ctx context.Context, tenantID, name string) (store.SkillDefRow, error) {
 	var defID string
-	err := s.pool.QueryRow(ctx, `SELECT def_id FROM skill_def_active WHERE name = $1`, name).Scan(&defID)
+	err := s.pool.QueryRow(ctx, `SELECT def_id FROM skill_def_active WHERE tenant_id = $1 AND name = $2`, tenantID, name).Scan(&defID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return store.SkillDefRow{}, &store.ErrNotFound{Kind: "skill_def_active", ID: name}
 	}
@@ -3706,7 +3723,8 @@ const skillDefSelect = `SELECT
 	COALESCE(created_by_run_id, ''),
 	retired,
 	bootstrapped_from_static,
-	COALESCE(content_sha256, '')
+	COALESCE(content_sha256, ''),
+	tenant_id
 FROM skill_defs`
 
 func (s *Store) scanSkillDef(row pgx.Row) (store.SkillDefRow, error) {
@@ -3723,6 +3741,7 @@ func (s *Store) scanSkillDef(row pgx.Row) (store.SkillDefRow, error) {
 		&out.CreatedByAgentID, &out.CreatedByRunID,
 		&out.Retired, &out.BootstrappedFromStatic,
 		&out.ContentSHA256,
+		&out.TenantID,
 	)
 	if err != nil {
 		return store.SkillDefRow{}, err
@@ -3747,6 +3766,7 @@ func (s *Store) scanSkillDefRows(rows pgx.Rows) ([]store.SkillDefRow, error) {
 			&r.CreatedByAgentID, &r.CreatedByRunID,
 			&r.Retired, &r.BootstrappedFromStatic,
 			&r.ContentSHA256,
+			&r.TenantID,
 		); err != nil {
 			return nil, err
 		}

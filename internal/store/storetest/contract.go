@@ -180,6 +180,9 @@ func Run(t *testing.T, factory Factory) {
 		{"SkillDefActivePointerIdempotent", testSkillDefActivePointerIdempotent},
 		{"SkillDefRetireReversible", testSkillDefRetireReversible},
 		{"SkillDefStaticFallback", testSkillDefStaticFallback},
+		// RFC N — skill definition plane tenant isolation. Fails on the
+		// pre-migration single-`name`-PK schema (clobber); passes after.
+		{"SkillDefTenantIsolation", testSkillDefTenantIsolation},
 		{"SkillDefContentSHA256RoundTrip", testSkillDefContentSHA256RoundTrip},
 		{"BackfillSkillDefContentSHA256", testBackfillSkillDefContentSHA256},
 		{"SkillDefSnapshotReadEmpty", testSkillDefSnapshotReadEmpty},
@@ -3946,16 +3949,16 @@ func testSkillDefActivePointerIdempotent(t *testing.T, s store.Store) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := s.SkillDefSetActive(ctx, "skill-promo", a.DefID, ""); err != nil {
+	if err := s.SkillDefSetActive(ctx, "", "skill-promo", a.DefID, ""); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.SkillDefSetActive(ctx, "skill-promo", b.DefID, ""); err != nil {
+	if err := s.SkillDefSetActive(ctx, "", "skill-promo", b.DefID, ""); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.SkillDefSetActive(ctx, "skill-promo", a.DefID, ""); err != nil {
+	if err := s.SkillDefSetActive(ctx, "", "skill-promo", a.DefID, ""); err != nil {
 		t.Fatal(err)
 	}
-	got, err := s.SkillDefGetActive(ctx, "skill-promo")
+	got, err := s.SkillDefGetActive(ctx, "", "skill-promo")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -3992,10 +3995,74 @@ func testSkillDefRetireReversible(t *testing.T, s store.Store) {
 
 func testSkillDefStaticFallback(t *testing.T, s store.Store) {
 	ctx := context.Background()
-	_, err := s.SkillDefGetActive(ctx, "no-such-skill-name")
+	_, err := s.SkillDefGetActive(ctx, "", "no-such-skill-name")
 	var nf *store.ErrNotFound
 	if !errors.As(err, &nf) {
 		t.Errorf("got %v, want *ErrNotFound", err)
+	}
+}
+
+// testSkillDefTenantIsolation pins the RFC N boundary: the SAME skill
+// name registered under two tenants must resolve to each tenant's OWN
+// definition + active pointer — no cross-tenant clobber, no cross-tenant
+// read. Skills have no dynamic tier (static skills.Set + the substrate
+// only), so this covers skill_defs + skill_def_active + the cross-tenant
+// promote refusal.
+//
+// FAIL-BEFORE: on the pre-migration schema (skill_def_active PK = (name),
+// skill_defs UNIQUE = (name, version)), tenant B's writes overwrite
+// tenant A's (last-writer-wins on the single global pointer), so the
+// GetActive(A) assertion reads back B's def_id and the test fails. The
+// composite (tenant_id, name) PK is what makes the two rows coexist.
+func testSkillDefTenantIsolation(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	const name = "summarize-skill"
+
+	aDef := mkSkillDef("sti-a", name, "")
+	aDef.TenantID = "tenant-a"
+	aDef.Definition = json.RawMessage(`{"body":"A"}`)
+	aRow, err := s.SkillDefCreate(ctx, aDef)
+	if err != nil {
+		t.Fatalf("create A: %v", err)
+	}
+
+	bDef := mkSkillDef("sti-b", name, "")
+	bDef.TenantID = "tenant-b"
+	bDef.Definition = json.RawMessage(`{"body":"B"}`)
+	bRow, err := s.SkillDefCreate(ctx, bDef)
+	if err != nil {
+		t.Fatalf("create B: %v", err)
+	}
+
+	if err := s.SkillDefSetActive(ctx, "tenant-a", name, aRow.DefID, ""); err != nil {
+		t.Fatalf("promote A: %v", err)
+	}
+	if err := s.SkillDefSetActive(ctx, "tenant-b", name, bRow.DefID, ""); err != nil {
+		t.Fatalf("promote B: %v", err)
+	}
+
+	gotA, err := s.SkillDefGetActive(ctx, "tenant-a", name)
+	if err != nil {
+		t.Fatalf("get active A: %v", err)
+	}
+	if gotA.DefID != aRow.DefID || gotA.TenantID != "tenant-a" || string(gotA.Definition) != `{"body":"A"}` {
+		t.Errorf("tenant-a clobbered: got def_id=%q tenant=%q def=%s, want A's own def",
+			gotA.DefID, gotA.TenantID, gotA.Definition)
+	}
+
+	gotB, err := s.SkillDefGetActive(ctx, "tenant-b", name)
+	if err != nil {
+		t.Fatalf("get active B: %v", err)
+	}
+	if gotB.DefID != bRow.DefID || gotB.TenantID != "tenant-b" || string(gotB.Definition) != `{"body":"B"}` {
+		t.Errorf("tenant-b clobbered: got def_id=%q tenant=%q def=%s, want B's own def",
+			gotB.DefID, gotB.TenantID, gotB.Definition)
+	}
+
+	// A def can only be promoted within its own tenant — promoting A's
+	// def under tenant-b must be refused.
+	if err := s.SkillDefSetActive(ctx, "tenant-b", name, aRow.DefID, ""); err == nil {
+		t.Error("cross-tenant promote (A's def under tenant-b) unexpectedly succeeded")
 	}
 }
 
