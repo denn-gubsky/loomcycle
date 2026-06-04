@@ -44,6 +44,24 @@ type Factory func(t *testing.T) (store.Store, func())
 // Run executes the full Store contract against the factory. Call this from
 // the adapter's own test file. Each subtest gets a fresh Store via the
 // factory; one adapter bug surfaces as one failed subtest, not a cascade.
+// jsonEqual reports whether a stored Definition (raw JSON) is semantically
+// equal to want, independent of whitespace AND object key order. Postgres
+// stores Definition as jsonb and re-serializes it ({"v":"A"} -> {"v": "A"},
+// keys reordered), so a byte-compare against a compact literal spuriously
+// fails on the PG backend while SQLite (TEXT, verbatim) passes — the
+// brittleness that kept the PG contract suite from running green in CI (and
+// hid the operator-token NULL-scan bug, BUG-2). Compare decoded values.
+func jsonEqual(got []byte, want string) bool {
+	var a, b any
+	if err := json.Unmarshal(got, &a); err != nil {
+		return false
+	}
+	if err := json.Unmarshal([]byte(want), &b); err != nil {
+		return false
+	}
+	return reflect.DeepEqual(a, b)
+}
+
 func Run(t *testing.T, factory Factory) {
 	t.Helper()
 	tests := []struct {
@@ -2890,7 +2908,7 @@ func testChannelTTLFilteredAtRead(t *testing.T, s store.Store) {
 	if len(msgs) != 1 {
 		t.Fatalf("got %d msgs, want 1 (the expired one must be filtered at read)", len(msgs))
 	}
-	if string(msgs[0].Payload) != `{"live":true}` {
+	if !jsonEqual(msgs[0].Payload, `{"live":true}`) {
 		t.Errorf("got payload %s; want only the live row", msgs[0].Payload)
 	}
 }
@@ -2958,11 +2976,11 @@ func testChannelScopeIsolation(t *testing.T, s store.Store) {
 		Payload: json.RawMessage(`{"from":"b"}`),
 	}, 0)
 	msgs, _, _ := s.ChannelSubscribe(ctx, "shared", store.MemoryScopeAgent, "agent-a", "", 10)
-	if len(msgs) != 1 || string(msgs[0].Payload) != `{"from":"a"}` {
+	if len(msgs) != 1 || !jsonEqual(msgs[0].Payload, `{"from":"a"}`) {
 		t.Errorf("agent-a sees: %+v, want only its own message", msgs)
 	}
 	msgs, _, _ = s.ChannelSubscribe(ctx, "shared", store.MemoryScopeAgent, "agent-b", "", 10)
-	if len(msgs) != 1 || string(msgs[0].Payload) != `{"from":"b"}` {
+	if len(msgs) != 1 || !jsonEqual(msgs[0].Payload, `{"from":"b"}`) {
 		t.Errorf("agent-b sees: %+v, want only its own message", msgs)
 	}
 }
@@ -3123,7 +3141,7 @@ func testChannelDeferredDeliversAfterProgressedCursor(t *testing.T, s store.Stor
 	if len(msgs) != 2 {
 		t.Fatalf("page1 len = %d, want 2 (A + C)", len(msgs))
 	}
-	if string(msgs[0].Payload) != `"A"` || string(msgs[1].Payload) != `"C"` {
+	if !jsonEqual(msgs[0].Payload, `"A"`) || string(msgs[1].Payload) != `"C"` {
 		t.Errorf("page1 order = %s, %s; want A, C", msgs[0].Payload, msgs[1].Payload)
 	}
 	// Commit cursor past C.
@@ -3143,7 +3161,7 @@ func testChannelDeferredDeliversAfterProgressedCursor(t *testing.T, s store.Stor
 	if len(msgs) != 1 {
 		t.Fatalf("page2 len = %d, want 1 (B)", len(msgs))
 	}
-	if string(msgs[0].Payload) != `"B"` {
+	if !jsonEqual(msgs[0].Payload, `"B"`) {
 		t.Errorf("page2 payload = %s, want B", msgs[0].Payload)
 	}
 }
@@ -3462,7 +3480,7 @@ func testAgentDefAppendOnlyDefinition(t *testing.T, s store.Store) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(got.Definition) != `{"v":"original"}` {
+	if !jsonEqual(got.Definition, `{"v":"original"}`) {
 		t.Errorf("definition: got %s, want original", got.Definition)
 	}
 }
@@ -3574,7 +3592,7 @@ func testAgentDefTenantIsolation(t *testing.T, s store.Store) {
 	if err != nil {
 		t.Fatalf("get active A: %v", err)
 	}
-	if gotA.DefID != aRow.DefID || gotA.TenantID != "tenant-a" || string(gotA.Definition) != `{"v":"A"}` {
+	if gotA.DefID != aRow.DefID || gotA.TenantID != "tenant-a" || !jsonEqual(gotA.Definition, `{"v":"A"}`) {
 		t.Errorf("tenant-a clobbered: got def_id=%q tenant=%q def=%s, want A's own def",
 			gotA.DefID, gotA.TenantID, gotA.Definition)
 	}
@@ -3583,7 +3601,7 @@ func testAgentDefTenantIsolation(t *testing.T, s store.Store) {
 	if err != nil {
 		t.Fatalf("get active B: %v", err)
 	}
-	if gotB.DefID != bRow.DefID || gotB.TenantID != "tenant-b" || string(gotB.Definition) != `{"v":"B"}` {
+	if gotB.DefID != bRow.DefID || gotB.TenantID != "tenant-b" || !jsonEqual(gotB.Definition, `{"v":"B"}`) {
 		t.Errorf("tenant-b clobbered: got def_id=%q tenant=%q def=%s, want B's own def",
 			gotB.DefID, gotB.TenantID, gotB.Definition)
 	}
@@ -3613,14 +3631,14 @@ func testAgentDefTenantIsolation(t *testing.T, s store.Store) {
 	if err != nil {
 		t.Fatalf("dyn get A: %v", err)
 	}
-	if string(dynA.Definition) != `{"dyn":"A"}` || dynA.TenantID != "tenant-a" {
+	if !jsonEqual(dynA.Definition, `{"dyn":"A"}`) || dynA.TenantID != "tenant-a" {
 		t.Errorf("dynamic_agents tenant-a clobbered: got tenant=%q def=%s", dynA.TenantID, dynA.Definition)
 	}
 	dynB, err := s.DynamicAgentGet(ctx, "tenant-b", name)
 	if err != nil {
 		t.Fatalf("dyn get B: %v", err)
 	}
-	if string(dynB.Definition) != `{"dyn":"B"}` || dynB.TenantID != "tenant-b" {
+	if !jsonEqual(dynB.Definition, `{"dyn":"B"}`) || dynB.TenantID != "tenant-b" {
 		t.Errorf("dynamic_agents tenant-b clobbered: got tenant=%q def=%s", dynB.TenantID, dynB.Definition)
 	}
 }
@@ -3937,7 +3955,7 @@ func testSkillDefAppendOnlyDefinition(t *testing.T, s store.Store) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(got.Definition) != `{"body":"original"}` {
+	if !jsonEqual(got.Definition, `{"body":"original"}`) {
 		t.Errorf("definition: got %s, want original", got.Definition)
 	}
 }
@@ -4048,7 +4066,7 @@ func testSkillDefTenantIsolation(t *testing.T, s store.Store) {
 	if err != nil {
 		t.Fatalf("get active A: %v", err)
 	}
-	if gotA.DefID != aRow.DefID || gotA.TenantID != "tenant-a" || string(gotA.Definition) != `{"body":"A"}` {
+	if gotA.DefID != aRow.DefID || gotA.TenantID != "tenant-a" || !jsonEqual(gotA.Definition, `{"body":"A"}`) {
 		t.Errorf("tenant-a clobbered: got def_id=%q tenant=%q def=%s, want A's own def",
 			gotA.DefID, gotA.TenantID, gotA.Definition)
 	}
@@ -4057,7 +4075,7 @@ func testSkillDefTenantIsolation(t *testing.T, s store.Store) {
 	if err != nil {
 		t.Fatalf("get active B: %v", err)
 	}
-	if gotB.DefID != bRow.DefID || gotB.TenantID != "tenant-b" || string(gotB.Definition) != `{"body":"B"}` {
+	if gotB.DefID != bRow.DefID || gotB.TenantID != "tenant-b" || !jsonEqual(gotB.Definition, `{"body":"B"}`) {
 		t.Errorf("tenant-b clobbered: got def_id=%q tenant=%q def=%s, want B's own def",
 			gotB.DefID, gotB.TenantID, gotB.Definition)
 	}
@@ -4283,7 +4301,7 @@ func testMCPServerDefTenantIsolation(t *testing.T, s store.Store) {
 	if err != nil {
 		t.Fatalf("get active A: %v", err)
 	}
-	if gotA.DefID != aRow.DefID || gotA.TenantID != "tenant-a" || string(gotA.Definition) != `{"transport":"http","url":"https://a.example.com/mcp"}` {
+	if gotA.DefID != aRow.DefID || gotA.TenantID != "tenant-a" || !jsonEqual(gotA.Definition, `{"transport":"http","url":"https://a.example.com/mcp"}`) {
 		t.Errorf("tenant-a clobbered: got def_id=%q tenant=%q def=%s, want A's own def",
 			gotA.DefID, gotA.TenantID, gotA.Definition)
 	}
@@ -4292,7 +4310,7 @@ func testMCPServerDefTenantIsolation(t *testing.T, s store.Store) {
 	if err != nil {
 		t.Fatalf("get active B: %v", err)
 	}
-	if gotB.DefID != bRow.DefID || gotB.TenantID != "tenant-b" || string(gotB.Definition) != `{"transport":"http","url":"https://b.example.com/mcp"}` {
+	if gotB.DefID != bRow.DefID || gotB.TenantID != "tenant-b" || !jsonEqual(gotB.Definition, `{"transport":"http","url":"https://b.example.com/mcp"}`) {
 		t.Errorf("tenant-b clobbered: got def_id=%q tenant=%q def=%s, want B's own def",
 			gotB.DefID, gotB.TenantID, gotB.Definition)
 	}
