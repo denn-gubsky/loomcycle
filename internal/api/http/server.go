@@ -789,10 +789,15 @@ func writeQuotaError(w http.ResponseWriter, err error) {
 // has a user_tiers block; otherwise the resolver operates without an
 // overlay (v0.7.x behaviour). Unknown names are rejected upstream
 // before this is called.
-func (s *Server) resolveAgent(agentName, userTier string) (providerID, model, effort string, err error) {
-	// Boot/background resolution carries no run tenant — use the ctx
-	// tenant (empty here, since context.Background()) → shared/default.
-	def, ok := s.lookupAgent(context.Background(), tenantFromCtx(context.Background()), agentName)
+func (s *Server) resolveAgent(ctx context.Context, tenantID, agentName, userTier string) (providerID, model, effort string, err error) {
+	// RFC N: resolve at the RUN's authoritative tenant (threaded by the
+	// caller — effectiveTenantID / req.TenantID / sess.TenantID), NOT a
+	// ctx-derived or empty tenant. This is the provider/model resolution +
+	// existence gate; resolving at "" here made tenant-scoped DYNAMIC agents
+	// unrunnable via /v1/runs ("unknown agent") even though the entry def
+	// lookup (lookupAgent at the run sites) was already tenant-correct.
+	// "" = shared/default tenant.
+	def, ok := s.lookupAgent(ctx, tenantID, agentName)
 	if !ok {
 		return "", "", "", fmt.Errorf("%w: %s", runner.ErrUnknownAgent, agentName)
 	}
@@ -1313,7 +1318,7 @@ func (s *Server) channelPolicyForAgent(agentDef config.AgentDef) tools.ChannelPo
 // On no-more-candidates the closure returns an error — the loop
 // then surfaces the ORIGINAL provider error to the caller (the
 // fallback path is terminal for this run).
-func (s *Server) fallbackForRun(agentName, userTier string) (loop.FallbackPolicy, func(ctx context.Context, failedProvider, failedModel string, cause error) (providers.Provider, string, string, error)) {
+func (s *Server) fallbackForRun(tenantID, agentName, userTier string) (loop.FallbackPolicy, func(ctx context.Context, failedProvider, failedModel string, cause error) (providers.Provider, string, string, error)) {
 	overlay := s.userTierOverlay(userTier)
 	if overlay == nil || !overlay.FallbackOnError {
 		return loop.FallbackPolicy{}, nil
@@ -1332,11 +1337,12 @@ func (s *Server) fallbackForRun(agentName, userTier string) (loop.FallbackPolicy
 		if s.resolver != nil {
 			s.resolver.MarkStalled(failedProvider, failedModel, cause.Error())
 		}
-		// Re-resolve with the same agent + user_tier. The resolver's
-		// stall flag we just set excludes the failed pair; the next
-		// non-stalled candidate in the user_tier's priority is what
+		// Re-resolve with the same agent + user_tier at the run's tenant
+		// (RFC N — captured tenantID, not a ctx-derived/empty tenant). The
+		// resolver's stall flag we just set excludes the failed pair; the
+		// next non-stalled candidate in the user_tier's priority is what
 		// we get back.
-		newProviderID, newModel, newEffort, err := s.resolveAgent(agentName, userTier)
+		newProviderID, newModel, newEffort, err := s.resolveAgent(ctx, tenantID, agentName, userTier)
 		if err != nil {
 			return nil, "", "", err
 		}
@@ -1667,7 +1673,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 
 	heartbeat := s.makeHeartbeat(runID)
 
-	fbPolicy, fbReResolve := s.fallbackForRun(effectiveAgentName, in.UserTier)
+	fbPolicy, fbReResolve := s.fallbackForRun(effectiveTenantID, effectiveAgentName, in.UserTier)
 	res, runErr := loop.Run(loopCtx, loop.RunOptions{
 		Provider:               provider,
 		Model:                  model,
@@ -2528,11 +2534,16 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// RFC N: existence-check the agent at this handler's authoritative
-	// tenant. On an authed HTTP route the principal is on ctx, so
-	// tenantFromCtx returns the principal's tenant (the same value
-	// applyPrincipal below resolves into req.TenantID) — never the wire.
-	agentDef, ok := s.lookupAgent(r.Context(), tenantFromCtx(r.Context()), req.Agent)
+	// RFC L/N: resolve the authoritative identity FIRST (principal over the
+	// wire on authed routes; the wire value on open/un-authed paths), so the
+	// existence-check + ALL downstream resolution use req.TenantID and agree
+	// in BOTH modes. A pre-applyPrincipal check at tenantFromCtx returned ""
+	// in open mode while the run used the wire tenant — rejecting a
+	// tenant-scoped dynamic agent as "unknown agent" (RFC N runtime QA BUG-1).
+	req.TenantID, req.UserID = s.applyPrincipal(r.Context(), req.TenantID, req.UserID)
+
+	// Existence-check the agent at the run's authoritative tenant.
+	agentDef, ok := s.lookupAgent(r.Context(), req.TenantID, req.Agent)
 	if !ok {
 		http.Error(w, fmt.Sprintf("unknown agent %q", req.Agent), http.StatusBadRequest)
 		return
@@ -2568,15 +2579,10 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		req.ParentContext = nil
 	}
 
-	// RFC L: on authenticated routes the resolved principal is
-	// authoritative over the caller-asserted wire tenant_id/user_id
-	// (Decision 5). Overriding them here makes the fairness key (the
-	// AcquireForUser call below), the session's tenant, the run-row
-	// attribution, and the threaded RunIdentity all authority-derived in
-	// one place. Open/un-authed paths leave the wire values unchanged.
-	req.TenantID, req.UserID = s.applyPrincipal(r.Context(), req.TenantID, req.UserID)
-
-	providerID, model, effort, err := s.resolveAgent(req.Agent, req.UserTier)
+	// (req.TenantID / req.UserID were made authoritative above via
+	// applyPrincipal — fairness key, session tenant, run-row attribution,
+	// and threaded RunIdentity all derive from them.)
+	providerID, model, effort, err := s.resolveAgent(r.Context(), req.TenantID, req.Agent, req.UserTier)
 	if err != nil {
 		http.Error(w, err.Error(), resolveErrorToStatus(err))
 		return
@@ -2855,7 +2861,7 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 	// minutes → presumed dead). Cheap (~10–100 calls per run).
 	heartbeat := s.makeHeartbeat(runID)
 
-	fbPolicy, fbReResolve := s.fallbackForRun(req.Agent, req.UserTier)
+	fbPolicy, fbReResolve := s.fallbackForRun(req.TenantID, req.Agent, req.UserTier)
 	loopRes, runErr := loop.Run(loopCtx, loop.RunOptions{
 		Provider:               provider,
 		Model:                  model,
@@ -3027,7 +3033,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	if body.ParentContext.IsZero() {
 		body.ParentContext = nil
 	}
-	providerID, model, effort, err := s.resolveAgent(sess.Agent, body.UserTier)
+	providerID, model, effort, err := s.resolveAgent(r.Context(), sess.TenantID, sess.Agent, body.UserTier)
 	if err != nil {
 		http.Error(w, err.Error(), resolveErrorToStatus(err))
 		return
@@ -3240,7 +3246,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	loopCtx = tools.WithInterruptionPolicy(loopCtx, s.interruptionPolicyForAgent(agentDef))
 	loopCtx = tools.WithRunID(loopCtx, run.ID)
 	loopCtx = tools.WithDispatcher(loopCtx, dispatcher)
-	fbPolicy, fbReResolve := s.fallbackForRun(sess.Agent, body.UserTier)
+	fbPolicy, fbReResolve := s.fallbackForRun(sess.TenantID, sess.Agent, body.UserTier)
 	loopRes, runErr := loop.Run(loopCtx, loop.RunOptions{
 		Provider:               provider,
 		Model:                  model,
@@ -3879,7 +3885,7 @@ func (s *Server) runSubAgent(ctx context.Context, name string, prompt string, de
 
 	subHeartbeat := s.makeHeartbeat(subRunID)
 
-	fbPolicy, fbReResolve := s.fallbackForRun(name, parentTier)
+	fbPolicy, fbReResolve := s.fallbackForRun(tenantFromCtx(ctx), name, parentTier)
 	res, runErr := loop.Run(subCtx, loop.RunOptions{
 		Provider:        provider,
 		Model:           model,
