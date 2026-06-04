@@ -164,6 +164,30 @@ leak a secret onto the message bus. `user_credentials_from_env` (and any
 `payload_mapping` `user_credentials.*` target) is **refused at create time**
 for `delivery: channel` (RFC H Decision 11).
 
+## `tenant_id` — which tenant the spawned run executes as (RFC N)
+
+Set `tenant_id:` on a webhook def to make its **spawn** run execute as that
+tenant: the run resolves that tenant's agents / skills / MCP servers and its
+memory and run records are isolated to the tenant (RFC L multi-tenant
+boundary). Omit it (`""`) for a shared/default run with no tenant scoping.
+
+```yaml
+  github-pr-review:
+    delivery: spawn
+    agent: reviewer
+    tenant_id: acme            # spawned run executes as tenant "acme"
+```
+
+**Security — the tenant comes from the static def ONLY, never the payload.**
+Unlike `user_id` / `user_tier` (which an operator MAY project from the signed
+body via `payload_mapping`, accepting that they are only as trustworthy as
+the per-def signing secret), there is deliberately **no** `payload_mapping`
+or `run_metadata.*` path for the tenant. The inbound body is attacker-
+influenceable; letting it select the tenant would let a sender steer the run
+into another tenant's agents/skills/memory. `tenant_id` is def-content
+(operator-authored), flows to `RunInput.TenantID`, and cannot be overridden
+from the wire.
+
 ## Response policy
 
 `202 Accepted` with `{run_id, webhook_name, delivery_id}` (async, the
