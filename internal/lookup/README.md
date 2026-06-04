@@ -27,7 +27,7 @@ Every code path that needs to resolve an agent / skill / MCP server NAME to its 
 
 ```go
 def, ok := lookup.Agent(ctx, s.store, s.cfg, tenantID, name)
-sk, ok  := lookup.Skill(ctx, s.store, s.skillSet, name)
+sk, ok  := lookup.Skill(ctx, s.store, s.skillSet, tenantID, name)
 spec, ok := lookup.MCPServer(s.cfg, dynRegistry, name)
 ```
 
@@ -48,8 +48,27 @@ single-tenant deployment (everything `tenant_id=""`) is unchanged. The
 `tenantID` MUST come from the authoritative principal in ctx
 (`auth.PrincipalFromContext` → `tools.RunIdentity` fallback → `""`), never
 from a wire/request field — see `internal/api/http/server.go`'s
-`tenantFromCtx`. (Skills + MCP servers still resolve globally; their tenant
-axis is a follow-up.)
+`tenantFromCtx`. (MCP servers still resolve globally; their tenant axis is
+a follow-up.)
+
+### Skill resolution precedence (RFC N — tenant axis)
+
+`lookup.Skill` resolves within the caller's `tenantID`, but the skill
+plane is **substrate-first then static** — the opposite of the agent
+plane:
+
+1. **(tenantID != "")** tenant-scoped substrate — `skill_def_active` →
+   `skill_defs`, `WHERE tenant_id=tenantID`. A per-tenant promotion
+   *shadows* the shared static base by name.
+2. **shared substrate** — `skill_def_active`, `tenant_id=""` — the
+   operator's shared override.
+3. **static skill set** (`LOOMCYCLE_SKILLS_ROOT`) — the shared base every
+   tenant inherits.
+
+For the default tenant `""`, step 1 is skipped, so the order collapses to
+**shared-substrate → static** — byte-for-byte the pre-RFC-N
+"substrate-first then static" behavior. The same ctx-authoritative
+`tenantID` rule applies as for agents.
 
 Don't read substrate rows directly. Don't unmarshal into `config.AgentDef` (use the json-tagged adapters). The pattern is enforced by the drift tests (`TestAgent_DriftDetection` + `TestMergedDef_DriftDetection_VsLookupSubstrateAgentDef`) — a future field added to one shape without the other fails CI.
 
