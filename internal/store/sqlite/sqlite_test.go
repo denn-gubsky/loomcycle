@@ -494,6 +494,120 @@ func TestMigrate_UpgradeFromLegacySkillDefPlaneTenantUpserts(t *testing.T) {
 	}
 }
 
+// TestMigrate_UpgradeFromLegacyMCPServerDefPlaneTenantUpserts — RFC N FIX
+// 5-mcp regression for the in-place SQLite upgrade bug. Setup: hand-create
+// the LEGACY (pre-RFC-N) mcp-server-def-plane schema — mcp_server_defs with
+// UNIQUE(name, version) and mcp_server_def_active with PRIMARY KEY(name),
+// neither carrying tenant_id. Then reopen via the store path (re-runs
+// migrate(), which ALTERs in tenant_id but CANNOT rewrite the PK/UNIQUE in
+// place) and assert MCPServerDefCreate + MCPServerDefSetActive SUCCEED.
+//
+// Pre-fix, this FAILS: the version-bump UNIQUE(tenant_id, name, version) and
+// MCPServerDefSetActive's ON CONFLICT(tenant_id, name) have no matching index
+// on the upgraded table, so SQLite refuses with "ON CONFLICT clause does not
+// match any PRIMARY KEY or UNIQUE constraint" on the FIRST register/promote
+// — broken even single-tenant. The fix adds idempotent CREATE UNIQUE INDEX
+// statements in addIndexes that supply the ON CONFLICT / UNIQUE target.
+func TestMigrate_UpgradeFromLegacyMCPServerDefPlaneTenantUpserts(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "legacy_mcpdef.db")
+
+	// 1. Stand up the legacy schema: open (builds the current schema), then
+	// drop + rebuild the two mcp tables in their pre-RFC-N shape (no
+	// tenant_id; old PK/UNIQUE). Mirrors how a pre-RFC-N deploy looks on disk.
+	{
+		s, err := Open(path)
+		if err != nil {
+			t.Fatalf("initial open: %v", err)
+		}
+		ctx := context.Background()
+		stmts := []string{
+			`DROP INDEX IF EXISTS uniq_mcp_server_def_active_tenant_name`,
+			`DROP INDEX IF EXISTS uniq_mcp_server_defs_tenant_name_version`,
+			`DROP TABLE mcp_server_def_active`,
+			`DROP TABLE mcp_server_defs`,
+			// Legacy mcp_server_defs: UNIQUE(name, version), no tenant_id.
+			`CREATE TABLE mcp_server_defs (
+				def_id                    TEXT    PRIMARY KEY,
+				name                      TEXT    NOT NULL,
+				version                   INTEGER NOT NULL,
+				parent_def_id             TEXT    REFERENCES mcp_server_defs(def_id),
+				definition                TEXT    NOT NULL,
+				description               TEXT,
+				created_at                INTEGER NOT NULL,
+				created_by_agent_id       TEXT,
+				created_by_run_id         TEXT,
+				retired                   INTEGER NOT NULL DEFAULT 0,
+				bootstrapped_from_static  INTEGER NOT NULL DEFAULT 0,
+				content_sha256            TEXT,
+				UNIQUE(name, version)
+			)`,
+			// Legacy mcp_server_def_active: PRIMARY KEY(name), no tenant_id.
+			`CREATE TABLE mcp_server_def_active (
+				name                  TEXT    PRIMARY KEY,
+				def_id                TEXT    NOT NULL REFERENCES mcp_server_defs(def_id),
+				promoted_at           INTEGER NOT NULL,
+				promoted_by_agent_id  TEXT
+			)`,
+		}
+		for _, q := range stmts {
+			if _, err := s.db.ExecContext(ctx, q); err != nil {
+				t.Fatalf("setup legacy schema: %q: %v", q, err)
+			}
+		}
+		if err := s.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// 2. Reopen — migrate() ALTERs in tenant_id + creates the ON CONFLICT
+	// target indexes.
+	s, err := Open(path)
+	if err != nil {
+		t.Fatalf("upgrade open: %v", err)
+	}
+	defer s.Close()
+	ctx := context.Background()
+
+	// 3. MCPServerDefCreate must succeed (exercises UNIQUE(tenant_id, name,
+	// version) via the version-bump path on a second create).
+	created, err := s.MCPServerDefCreate(ctx, store.MCPServerDefRow{
+		DefID:      "mdf_upgrade_v1",
+		Name:       "upgrade-mcp",
+		Definition: []byte(`{"transport":"http","url":"https://x.example/mcp"}`),
+		TenantID:   "",
+	})
+	if err != nil {
+		t.Fatalf("MCPServerDefCreate on upgraded DB failed (RFC N UNIQUE target missing?): %v", err)
+	}
+	if created.Version != 1 {
+		t.Errorf("first create version = %d, want 1", created.Version)
+	}
+	// Second create of the same name bumps the version — relies on the
+	// MAX(version) read + UNIQUE(tenant_id, name, version) insert.
+	created2, err := s.MCPServerDefCreate(ctx, store.MCPServerDefRow{
+		DefID:      "mdf_upgrade_v2",
+		Name:       "upgrade-mcp",
+		Definition: []byte(`{"transport":"http","url":"https://x.example/mcp2"}`),
+		TenantID:   "",
+	})
+	if err != nil {
+		t.Fatalf("second MCPServerDefCreate on upgraded DB failed: %v", err)
+	}
+	if created2.Version != 2 {
+		t.Errorf("second create version = %d, want 2", created2.Version)
+	}
+
+	// 4. MCPServerDefSetActive must succeed (exercises ON CONFLICT(tenant_id,
+	// name) on mcp_server_def_active).
+	if err := s.MCPServerDefSetActive(ctx, "", "upgrade-mcp", "mdf_upgrade_v1", "a_admin"); err != nil {
+		t.Fatalf("MCPServerDefSetActive on upgraded DB failed (ON CONFLICT target missing?): %v", err)
+	}
+	// A re-promote to a different def_id exercises the DO UPDATE branch.
+	if err := s.MCPServerDefSetActive(ctx, "", "upgrade-mcp", "mdf_upgrade_v2", "a_admin"); err != nil {
+		t.Fatalf("MCPServerDefSetActive re-promote on upgraded DB failed: %v", err)
+	}
+}
+
 func TestCloseIsIdempotent(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "test.db")
 	s, err := Open(path)
