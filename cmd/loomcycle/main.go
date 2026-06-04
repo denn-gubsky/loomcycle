@@ -757,36 +757,36 @@ func main() {
 	// restart.
 	dynamicMCPRegistry := mcp.NewDynamicRegistry()
 
+	// RFC N: the pool's build callback resolves through lookup.MCPServer
+	// with the run's tenant so a per-tenant dynamic registration dials its
+	// OWN URL — not a shared one of the same name. A tenant-scoped dynamic
+	// shadow takes precedence; otherwise the static yaml base resolves;
+	// otherwise a shared ("") dynamic registration. stdio is yaml-only and
+	// resolved straight from cfg (lookup.MCPServerSpec omits stdio fields).
+	mcpDynView := mcpLookupView{dynamicMCPRegistry}
 	mcpPool := mcp.NewPool(
-		func(name string) (mcp.Caller, error) {
-			// Static yaml entries are ground truth + take precedence.
-			if srv, ok := cfg.MCPServers[name]; ok {
-				switch srv.Transport {
-				case "stdio":
-					return spawnStdioMCP(name, srv)
-				case "http":
-					return mcphttp.New(mcphttp.Config{
-						URL:     srv.URL,
-						Headers: srv.Headers,
-					})
-				default:
-					return nil, fmt.Errorf("mcp_servers.%s: unknown transport %q", name, srv.Transport)
-				}
+		func(tenant, name string) (mcp.Caller, error) {
+			// Static stdio entries are yaml-only ground truth (lookup's
+			// spec can't carry Command/Args/Env). A tenant never overrides
+			// a stdio server — resolve it directly at the shared base.
+			if srv, ok := cfg.MCPServers[name]; ok && srv.Transport == "stdio" {
+				return spawnStdioMCP(name, srv)
 			}
-			// v0.9.x dynamic registration. Restricted to http + streamable-http
-			// at the substrate-tool layer; stdio cannot reach this path.
-			if spec, ok := dynamicMCPRegistry.Get(name); ok {
-				switch spec.Transport {
-				case "http", "streamable-http":
-					return mcphttp.New(mcphttp.Config{
-						URL:     spec.URL,
-						Headers: spec.Headers,
-					})
-				default:
-					return nil, fmt.Errorf("mcp_servers.%s: dynamic registration has invalid transport %q (substrate should have refused this; data corruption?)", name, spec.Transport)
-				}
+			// http / streamable-http: tenant-dynamic → static yaml →
+			// shared-dynamic, via the shared resolver.
+			spec, ok := lookup.MCPServer(cfg, mcpDynView, tenant, name)
+			if !ok {
+				return nil, fmt.Errorf("mcp_servers.%s: not in static yaml or dynamic registry (tenant=%q)", name, tenant)
 			}
-			return nil, fmt.Errorf("mcp_servers.%s: not in static yaml or dynamic registry", name)
+			switch spec.Transport {
+			case "http", "streamable-http":
+				return mcphttp.New(mcphttp.Config{
+					URL:     spec.URL,
+					Headers: spec.Headers,
+				})
+			default:
+				return nil, fmt.Errorf("mcp_servers.%s: invalid transport %q for non-stdio resolution (data corruption?)", name, spec.Transport)
+			}
 		},
 		func(c mcp.Caller) {
 			// Both stdio.Client and http.Client implement Close() error.
@@ -799,6 +799,14 @@ func main() {
 				return
 			}
 			_ = cl.Close()
+		},
+		// RFC N tenantOf: the pool cache is keyed by (tenant, name). The
+		// tenant is the authoritative principal's tenant carried on the run
+		// ctx via RunIdentity (set from applyPrincipal / inherited by
+		// sub-agents). RunIdentity, not the http auth package, keeps the
+		// pool free of an import cycle. "" = shared/legacy tenant.
+		func(ctx context.Context) string {
+			return tools.RunIdentity(ctx).TenantID
 		},
 	)
 	defer mcpPool.Close()
@@ -990,18 +998,22 @@ func main() {
 			if ns.ActiveDefID == "" {
 				continue
 			}
-			// Skip names that collide with a static yaml `mcp_servers:` entry.
-			// The pool's build callback prefers yaml over the dynamic
-			// registry, so loading a colliding name here would only inflate
-			// Registry.Size() + lie in operator diagnostics (the registry
-			// entry is unreachable). Mirrors the execCreate refusal.
-			if _, ok := cfg.MCPServers[ns.Name]; ok {
-				log.Printf("mcp_server_defs: skipping %q at boot — name collides with static yaml entry (yaml takes precedence)", ns.Name)
+			// Skip SHARED-tenant names that collide with a static yaml
+			// `mcp_servers:` entry — yaml is ground truth for the "" tenant,
+			// so a shared registry entry of that name would be unreachable
+			// (lookup.MCPServer's "" path is static → shared-dynamic) and
+			// only inflate diagnostics. A per-TENANT row (ns.TenantID != "")
+			// that shares the name is a legitimate RFC N override (the
+			// tenant-dynamic pass shadows the static base), so it is NOT
+			// skipped. Mirrors the execCreate refusal, which only refuses
+			// over yaml within the same tenant scope.
+			if _, ok := cfg.MCPServers[ns.Name]; ok && ns.TenantID == "" {
+				log.Printf("mcp_server_defs: skipping shared %q at boot — name collides with static yaml entry (yaml takes precedence)", ns.Name)
 				continue
 			}
 			active, err := storeIface.MCPServerDefGet(context.Background(), ns.ActiveDefID)
 			if err != nil {
-				log.Printf("mcp_server_defs: load active %q: %v", ns.Name, err)
+				log.Printf("mcp_server_defs: load active %q (tenant=%q): %v", ns.Name, ns.TenantID, err)
 				continue
 			}
 			// Skip retired active rows. SetRetired leaves the active overlay
@@ -1010,7 +1022,7 @@ func main() {
 			// Rehydrating a retired spec would silently revive a name the
 			// operator explicitly retired.
 			if active.Retired {
-				log.Printf("mcp_server_defs: skipping %q at boot — active row is retired (def_id=%s)", ns.Name, active.DefID)
+				log.Printf("mcp_server_defs: skipping %q (tenant=%q) at boot — active row is retired (def_id=%s)", ns.Name, ns.TenantID, active.DefID)
 				continue
 			}
 			var ov struct {
@@ -1019,11 +1031,13 @@ func main() {
 				Headers   map[string]string `json:"headers"`
 			}
 			if err := json.Unmarshal(active.Definition, &ov); err != nil {
-				log.Printf("mcp_server_defs: parse active %q: %v", ns.Name, err)
+				log.Printf("mcp_server_defs: parse active %q (tenant=%q): %v", ns.Name, ns.TenantID, err)
 				continue
 			}
+			// RFC N: carry the def's tenant onto the registry entry so it is
+			// keyed by (tenant, name) and only resolved for that tenant's runs.
 			dynamicMCPRegistry.Set(mcp.DynamicMCPServerSpec{
-				Name: active.Name, Transport: ov.Transport, URL: ov.URL, Headers: ov.Headers,
+				TenantID: active.TenantID, Name: active.Name, Transport: ov.Transport, URL: ov.URL, Headers: ov.Headers,
 			})
 		}
 		if size := dynamicMCPRegistry.Size(); size > 0 {
@@ -1164,7 +1178,10 @@ func main() {
 	// marshals into the substrate-mirror shape ({name, description,
 	// input_schema}) so the wire stays uniform across static + dynamic.
 	srv.SetMCPPoolInspector(func(name string) json.RawMessage {
-		descs := mcpPool.PeekTools(name)
+		// Static yaml MCP servers live at the shared "" tenant in the
+		// (tenant, name)-keyed pool. The Library introspection endpoint
+		// surfaces those operator-blessed servers' cached tool lists.
+		descs := mcpPool.PeekTools("", name)
 		if descs == nil {
 			return nil
 		}
@@ -1187,10 +1204,26 @@ func main() {
 	// allowed_tools filter. MCP: each dynamic-registry server's persisted
 	// discovered_tools (set by rediscover). A2A: re-enumerate static +
 	// substrate (the static dups collapse in the by-name filter).
+	//
+	// RFC N §3 tenant boundary: enumerate ONLY the names visible to the
+	// run's tenant (NamesForTenant = own + shared), and read each name's
+	// active def with the tenant→shared precedence. NET EFFECT: a run in
+	// tenant A's candidate set contains ONLY A's + shared MCP tools, never
+	// tenant B's. The tenant is authoritative from ctx (principal →
+	// RunIdentity → ""), never from the wire.
 	srv.SetDynamicToolEnumerator(func(ctx context.Context) []tools.Tool {
 		var out []tools.Tool
-		for _, name := range dynamicMCPRegistry.Names() {
-			row, gerr := storeIface.MCPServerDefGetActive(ctx, name)
+		tenant := mcpTenantFromCtx(ctx)
+		for _, name := range dynamicMCPRegistry.NamesForTenant(tenant) {
+			// Resolve the active def with the same precedence as
+			// lookup.MCPServer: the run's tenant first, then the shared ""
+			// base. A tenant-owned name's tools come from the tenant's def;
+			// a shared name's from the "" def. A run never reads another
+			// tenant's row.
+			row, gerr := storeIface.MCPServerDefGetActive(ctx, tenant, name)
+			if gerr != nil && tenant != "" {
+				row, gerr = storeIface.MCPServerDefGetActive(ctx, "", name)
+			}
 			if gerr != nil {
 				continue
 			}
@@ -2567,6 +2600,37 @@ func runAdvisoryGatedSweeper(
 
 // spawnStdioMCP starts a stdio MCP child for one server entry. Env keys are
 // sorted so process listings are deterministic across runs.
+// mcpLookupView adapts *mcp.DynamicRegistry to lookup.MCPDynamicRegistry
+// so the pool's build callback + the boot rehydrator can resolve through
+// the shared lookup.MCPServer chain (RFC N). The dynamic registry stores
+// mcp.DynamicMCPServerSpec; lookup wants the uniform lookup.MCPServerSpec.
+// A dynamic spec carries no operator allowed_tools (the substrate doesn't
+// record a narrowing), so AllowedTools stays nil = allow-all.
+type mcpLookupView struct{ reg *mcp.DynamicRegistry }
+
+func (v mcpLookupView) Get(tenantID, name string) (lookup.MCPServerSpec, bool) {
+	if v.reg == nil {
+		return lookup.MCPServerSpec{}, false
+	}
+	s, ok := v.reg.Get(tenantID, name)
+	if !ok {
+		return lookup.MCPServerSpec{}, false
+	}
+	return lookup.MCPServerSpec{Transport: s.Transport, URL: s.URL, Headers: s.Headers}, true
+}
+
+// mcpTenantFromCtx mirrors internal/api/http's tenantFromCtx for the
+// boot-wired closures in main.go that can't reach the unexported HTTP
+// helper. The tenant is authoritative-principal-first (the HTTP request
+// ctx carries it), then the RunIdentity fallback (sub-agent / internal
+// dispatch), then "" (shared/legacy). NEVER derived from wire/tool input.
+func mcpTenantFromCtx(ctx context.Context) string {
+	if p, ok := auth.PrincipalFromContext(ctx); ok && p.TenantID != "" {
+		return p.TenantID
+	}
+	return tools.RunIdentity(ctx).TenantID
+}
+
 func spawnStdioMCP(name string, srv config.MCPServer) (mcp.Caller, error) {
 	keys := make([]string, 0, len(srv.Env))
 	for k := range srv.Env {
