@@ -472,6 +472,48 @@ func TestAgentDefTool_AdminCrossesTenantsGetList(t *testing.T) {
 	}
 }
 
+// TestAgentDefTool_ForkFromSharedBaseAllowed pins the regression behind
+// "job-search-batch never migrated to code-js": the RFC N cross-tenant fork
+// guard refused forking the SHARED ("") base, so an authenticated principal
+// (legacy "default" or any tenant — never "" once auth is on) could not fork a
+// pre-RFC-N / bootstrapped def (which lives at "") to migrate it (e.g. to
+// code-js). Forking the shared base must succeed (it lands under the caller's
+// tenant); forking ANOTHER specific tenant's private def stays refused.
+func TestAgentDefTool_ForkFromSharedBaseAllowed(t *testing.T) {
+	tool, baseCtx, cleanup := agentDefFixture(t)
+	defer cleanup()
+
+	// A def owned by the SHARED "" tenant (the pre-RFC-N / bootstrapped shape).
+	ctxShared := tools.WithRunIdentity(baseCtx, tools.RunIdentityValue{AgentID: "a_test", TenantID: ""})
+	res, _ := tool.Execute(ctxShared, json.RawMessage(`{"op":"create","name":"shared-base","overlay":{"system_prompt":"v1"}}`))
+	if res.IsError {
+		t.Fatalf("create shared base: %s", res.Text)
+	}
+	sharedID := decodeResult(t, res.Text)["def_id"].(string)
+
+	// A "default"-tenant principal forks the shared base by def_id → must
+	// SUCCEED (was refused "belongs to another tenant").
+	ctxDefault := tools.WithRunIdentity(baseCtx, tools.RunIdentityValue{AgentID: "a_test", TenantID: "default"})
+	res, _ = tool.Execute(ctxDefault, json.RawMessage(`{"op":"fork","name":"shared-base","parent_def_id":"`+sharedID+`","overlay":{"system_prompt":"v2"}}`))
+	if res.IsError {
+		t.Fatalf(`fork of the shared ("") base as tenant "default" should succeed; got %s`, res.Text)
+	}
+
+	// Control: forking ANOTHER specific tenant's PRIVATE def is still refused
+	// for a non-admin caller (cross-tenant isolation preserved).
+	ctxB := tools.WithRunIdentity(baseCtx, tools.RunIdentityValue{AgentID: "a_test", TenantID: "tenant-b"})
+	res, _ = tool.Execute(ctxB, json.RawMessage(`{"op":"create","name":"b-priv","overlay":{"system_prompt":"b"}}`))
+	if res.IsError {
+		t.Fatalf("create b-priv: %s", res.Text)
+	}
+	bID := decodeResult(t, res.Text)["def_id"].(string)
+	ctxA := tools.WithRunIdentity(baseCtx, tools.RunIdentityValue{AgentID: "a_test", TenantID: "tenant-a"})
+	res, _ = tool.Execute(ctxA, json.RawMessage(`{"op":"fork","name":"b-priv","parent_def_id":"`+bID+`","overlay":{"system_prompt":"x"}}`))
+	if !res.IsError {
+		t.Errorf("forking another tenant's PRIVATE def should still be refused; got %s", res.Text)
+	}
+}
+
 // Capability-escalation guard on `create`: an agent with narrow
 // allowed_tools cannot mint a new agent with a wider tool surface
 // than its own. The caller's effective AgentTools(ctx) is the
