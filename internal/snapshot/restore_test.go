@@ -139,7 +139,7 @@ func TestRoundTrip_WithMCPServerDefs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := src.MCPServerDefSetActive(ctx, def.Name, def.DefID, ""); err != nil {
+	if err := src.MCPServerDefSetActive(ctx, "", def.Name, def.DefID, ""); err != nil {
 		t.Fatal(err)
 	}
 

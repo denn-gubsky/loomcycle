@@ -195,7 +195,7 @@ func TestLibrary_MCPServerDefNames_AfterSeed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_ = s.MCPServerDefSetActive(ctx, "n8n-mailgun", "mdef_n8n_v1", "")
+	_ = s.MCPServerDefSetActive(ctx, "", "n8n-mailgun", "mdef_n8n_v1", "")
 
 	req := authedRequest("GET", "/v1/_mcpserverdef/names", nil)
 	rec := httptest.NewRecorder()
