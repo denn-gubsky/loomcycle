@@ -1209,11 +1209,17 @@ func main() {
 	// run's tenant (NamesForTenant = own + shared), and read each name's
 	// active def with the tenant→shared precedence. NET EFFECT: a run in
 	// tenant A's candidate set contains ONLY A's + shared MCP tools, never
-	// tenant B's. The tenant is authoritative from ctx (principal →
-	// RunIdentity → ""), never from the wire.
-	srv.SetDynamicToolEnumerator(func(ctx context.Context) []tools.Tool {
+	// tenant B's.
+	//
+	// RFC N FIX 2-mcp: the tenant is the run's AUTHORITATIVE tenant passed
+	// in by the server, NOT derived from ctx here. candidateTools runs at
+	// the entry sites before WithRunIdentity is stamped, so a ctx-derived
+	// tenant would be "" for non-HTTP-principal spawn surfaces and the run
+	// would advertise the wrong tenant's MCP tools. The tenant remains
+	// authoritative (the server derived it from the principal / session /
+	// parent RunIdentity), never from the wire.
+	srv.SetDynamicToolEnumerator(func(ctx context.Context, tenant string) []tools.Tool {
 		var out []tools.Tool
-		tenant := mcpTenantFromCtx(ctx)
 		for _, name := range dynamicMCPRegistry.NamesForTenant(tenant) {
 			// Resolve the active def with the same precedence as
 			// lookup.MCPServer: the run's tenant first, then the shared ""
@@ -2617,18 +2623,6 @@ func (v mcpLookupView) Get(tenantID, name string) (lookup.MCPServerSpec, bool) {
 		return lookup.MCPServerSpec{}, false
 	}
 	return lookup.MCPServerSpec{Transport: s.Transport, URL: s.URL, Headers: s.Headers}, true
-}
-
-// mcpTenantFromCtx mirrors internal/api/http's tenantFromCtx for the
-// boot-wired closures in main.go that can't reach the unexported HTTP
-// helper. The tenant is authoritative-principal-first (the HTTP request
-// ctx carries it), then the RunIdentity fallback (sub-agent / internal
-// dispatch), then "" (shared/legacy). NEVER derived from wire/tool input.
-func mcpTenantFromCtx(ctx context.Context) string {
-	if p, ok := auth.PrincipalFromContext(ctx); ok && p.TenantID != "" {
-		return p.TenantID
-	}
-	return tools.RunIdentity(ctx).TenantID
 }
 
 func spawnStdioMCP(name string, srv config.MCPServer) (mcp.Caller, error) {
