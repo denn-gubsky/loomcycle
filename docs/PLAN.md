@@ -4,7 +4,7 @@ This is the public roadmap. For decision history, regret notes, and per-version 
 
 ## Where we are
 
-loomcycle has shipped through **v0.21.0**. The v0.17.0 multi-tenant-authorization capstone (RFC L) was followed by a substrate-completeness line: **v0.18.0** (idempotent `MCPServerDef` ingestion), **v0.20.0** (inline code-js bodies + Web UI + full runtime symmetry), and **v0.21.0** (a non-secret metadata channel across all three trigger surfaces + a code-js run-budget overhaul). Per-version shipped detail now lives in [`REVISIONS.md`](../REVISIONS.md); the historical design-roadmap entries from the v0.8.x series are retained below for context. This section tracks the path forward.
+loomcycle has shipped through **v0.22.0**. The v0.17.0 multi-tenant-authorization capstone (RFC L) was followed by a substrate-completeness line: **v0.18.0** (idempotent `MCPServerDef` ingestion), **v0.20.0** (inline code-js bodies + Web UI + full runtime symmetry), **v0.21.0** (a non-secret metadata channel across all three trigger surfaces + a code-js run-budget overhaul), and **v0.22.0** (tenant isolation extended from the state plane to the agent/skill/MCP/Schedule/Webhook *definition* plane — RFC N). Per-version shipped detail now lives in [`REVISIONS.md`](../REVISIONS.md); the historical design-roadmap entries from the v0.8.x series are retained below for context. This section tracks the path forward.
 
 ## Shipped — v0.17.0 (OSS multi-tenant authorization, RFC L)
 

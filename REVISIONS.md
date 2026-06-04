@@ -8,6 +8,79 @@ For pre-v0.4 history (single-tool runtime, library milestone, security patch), s
 
 ---
 
+## What's in v0.22.0
+
+**Headline: tenant isolation reaches the definition plane (RFC N).** v0.17.0
+(RFC L) isolated the *state* plane — runs, sessions, memory, fairness — behind
+an authoritative `(tenant, subject, scopes)` principal. But the *definition*
+plane stayed global: agent, skill, and MCP-server defs had no tenant column, so
+any `runs:create` token could resolve and execute another tenant's agent, and
+same-name registrations silently clobbered a single global active pointer.
+v0.22.0 closes that gap — agents, skills, MCP servers, and the run-triggering
+ScheduleDef / WebhookDef substrates all gain a tenant axis, resolved at the
+`internal/lookup` chokepoint with a "static yaml = shared base, tenant-dynamic
+shadows by name" precedence. The authoritative tenant comes from the principal
+(→ `RunIdentity` → `""`), never the wire, and the shared `""` tenant is
+byte-identical to pre-RFC-N behavior — single-tenant and open-mode deployments
+are unaffected. Ships with the RFC N runtime-QA fixes, a Postgres
+backend-parity fix, a code-js replay-determinism fix, and a batch of first-run /
+MCP-client polish surfaced by the Homebrew install.
+
+### Tenant-scoped definition plane (RFC N — #361, #365, #364)
+
+- **Agents, skills, MCP servers** gain a `tenant_id` column on both the
+  versioned `*_defs` tables and the `*_active` pointer (active PK →
+  `(tenant_id, name)`); `internal/lookup.{Agent,Skill,MCPServer}` resolve
+  tenant-dynamic → static shared base → shared-`""` dynamic. Cross-tenant
+  fork/promote guards; `tenant_id` excluded from the content SHA-256.
+- **ScheduleDef + WebhookDef** gain the same `tenant_id` axis so the
+  run-triggering substrates can't fire cross-tenant.
+- MCP per-run tool advertising is tenant-filtered; the pool keys its tool cache
+  by `(tenant, name)` to close a same-name/different-URL leak.
+
+### RFC N runtime hardening (#367, #368, #371, #372, #373)
+
+- **BUG-1 (run paths):** the run's agent / skills / MCP tools now resolve at the
+  *run's* tenant on every path (`resolveAgent`, `handleRuns` pre-check) — a
+  tenant-scoped dynamic agent was previously unrunnable (resolved at `""`).
+- **Web UI library bodies:** `substrate:admin` crosses tenants on def
+  `get`/`list` so an admin can read shared-`""` and other tenants' bodies.
+- **Fork from the shared base:** forking the shared-`""` base to migrate it
+  (e.g. LLM → code-js) is allowed on both the explicit-`parent_def_id` and the
+  by-name fork branches (own-tenant → shared `""` → static bootstrap), instead
+  of refusing because the principal tenant is never `""`.
+
+### Postgres backend parity (#369, #370)
+
+- **BUG-2 [prod-blocking]:** `scanOperatorTokenDef` scanned nullable columns
+  (`created_by_run_id`) into `*string` on Postgres → admin-minted tokens
+  fail-closed 401. Now scanned as `sql.NullString`. A new `go-postgres` CI job
+  runs the store contract against real Postgres, closing the blind spot that hid
+  it (SQLite used `NullString`; CI had skipped PG).
+
+### code-js replay determinism (#366)
+
+- `input.metadata` is serialized with **sorted keys** at the Go→JS boundary
+  (`stableJSValue`) — Go's randomized map iteration order previously produced
+  byte-different input across replay turns, tripping
+  `code_agent_replay_divergence` for an agent that `JSON.stringify`'d it.
+
+### First-run + MCP-client polish (#374, #375)
+
+- The CLI help / architecture diagram / README **meta-tool count** is now
+  sourced from the registry (`MetaToolCount()`) so it can't go stale (it had
+  drifted to "33" against an actual 40). The `loomcycle.md` built-in tool count
+  is corrected; a `subagents.md` note disambiguates the in-loop `Agent` tool
+  from the MCP `spawn_run` surface.
+- The starter `loomcycle.yaml` ships `mcp_servers: {}` (the brave-search / jobs
+  examples commented out) so a fresh install boots clean.
+- The 13 op-dispatched builtin MCP meta-tools (`memory`, `channel`, `agentdef`,
+  …) now advertise their **real discriminated-op input schema** sourced from the
+  tool itself, instead of a bare `{"type":"object"}` — MCP clients can finally
+  discover the `op` enum + properties.
+
+---
+
 ## What's in v0.21.0
 
 **Headline: a non-secret structured-metadata channel to the agent — with a
