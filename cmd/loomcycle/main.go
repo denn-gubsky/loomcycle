@@ -1877,6 +1877,14 @@ func main() {
 				mcpMaxConcurrentCalls = n
 			}
 		}
+		// Optional operator default for the spawn_run transport timeout
+		// (RFC P). 0/unset → disabled (defer to the run's own budget).
+		mcpSpawnRunTimeoutMS := 0
+		if v := os.Getenv("LOOMCYCLE_MCP_SPAWN_RUN_TIMEOUT_MS"); v != "" {
+			if n, perr := strconv.Atoi(v); perr == nil && n > 0 {
+				mcpSpawnRunTimeoutMS = n
+			}
+		}
 		mcpSrv := lcmcp.New(lcmcp.Config{
 			Connector:          srv, // *http.Server satisfies connector.Connector
 			Runner:             srv, // *http.Server satisfies runner.Runner (streaming)
@@ -1885,6 +1893,7 @@ func main() {
 			ServerName:         "loomcycle",
 			ServerVersion:      buildVersion,
 			MaxConcurrentCalls: mcpMaxConcurrentCalls,
+			SpawnRunTimeoutMS:  mcpSpawnRunTimeoutMS,
 		})
 		// Run the MCP stdio loop in a goroutine. When stdin closes
 		// (Claude Code disconnects), Serve returns; we log and let

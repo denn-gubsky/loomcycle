@@ -1151,3 +1151,88 @@ func TestServer_QueuedCallErrorsOnShutdown(t *testing.T) {
 		t.Fatalf("queued call on shutdown: want -32603 error, got %+v", r)
 	}
 }
+
+// --- RFC P: spawn_run transport timeout ------------------------------
+
+func decodeSpawnResult(t *testing.T, r loommcp.Response) connector.SpawnRunResult {
+	t.Helper()
+	var call loommcp.CallToolResult
+	if err := json.Unmarshal(r.Result, &call); err != nil {
+		t.Fatalf("unmarshal call result: %v", err)
+	}
+	if len(call.Content) == 0 {
+		t.Fatalf("no content blocks in spawn_run result: %+v", call)
+	}
+	var sr connector.SpawnRunResult
+	if err := json.Unmarshal([]byte(call.Content[0].Text), &sr); err != nil {
+		t.Fatalf("unmarshal spawn result: %v", err)
+	}
+	return sr
+}
+
+func TestEffectiveSpawnTimeoutMS(t *testing.T) {
+	cases := []struct{ op, caller, want int }{
+		{0, 0, 0},       // both unset → no cap
+		{0, 100, 100},   // caller only
+		{200, 0, 200},   // operator only
+		{200, 100, 100}, // caller narrows below the cap
+		{100, 200, 100}, // caller can't exceed the operator cap
+		{100, 100, 100}, // equal
+	}
+	for _, c := range cases {
+		if got := effectiveSpawnTimeoutMS(c.op, c.caller); got != c.want {
+			t.Errorf("effectiveSpawnTimeoutMS(op=%d, caller=%d) = %d; want %d", c.op, c.caller, got, c.want)
+		}
+	}
+}
+
+// TestServer_SpawnRunTimesOut: a per-call timeout_ms bounds a spawn_run
+// whose run never finishes (gate never closed). Without the RFC P
+// timeout the gated call would block forever and waitResp would fatal —
+// so this is also the fail-before regression.
+func TestServer_SpawnRunTimesOut(t *testing.T) {
+	mc := &mockConnector{spawnGate: make(chan struct{})} // never closed
+	srv := New(Config{Connector: mc, Logf: func(string, ...any) {}})
+	ls := newLiveServer(t, srv)
+	defer ls.close()
+
+	ls.handshake()
+	ls.send(toolCallFrame(2, "spawn_run", `{"agent":"x","segments":[],"timeout_ms":120}`))
+	got := decodeSpawnResult(t, ls.waitResp(2, 3*time.Second))
+	if got.Status != "timeout" {
+		t.Fatalf("spawn_run status = %q; want \"timeout\"", got.Status)
+	}
+}
+
+// TestServer_SpawnRunOperatorTimeout: the operator default
+// (Config.SpawnRunTimeoutMS) bounds a call that supplies no timeout_ms.
+func TestServer_SpawnRunOperatorTimeout(t *testing.T) {
+	mc := &mockConnector{spawnGate: make(chan struct{})} // never closed
+	srv := New(Config{Connector: mc, Logf: func(string, ...any) {}, SpawnRunTimeoutMS: 120})
+	ls := newLiveServer(t, srv)
+	defer ls.close()
+
+	ls.handshake()
+	ls.send(toolCallFrame(2, "spawn_run", `{"agent":"x","segments":[]}`)) // no per-call timeout_ms
+	got := decodeSpawnResult(t, ls.waitResp(2, 3*time.Second))
+	if got.Status != "timeout" {
+		t.Fatalf("spawn_run status = %q; want \"timeout\" (operator default)", got.Status)
+	}
+}
+
+// TestServer_SpawnRunNoTimeoutByDefault: with neither knob set, a
+// completing run returns its normal status (the default imposes no
+// transport cap).
+func TestServer_SpawnRunNoTimeoutByDefault(t *testing.T) {
+	mc := &mockConnector{spawnResult: connector.SpawnRunResult{Status: "completed", FinalText: "ok"}}
+	srv := New(Config{Connector: mc, Logf: func(string, ...any) {}})
+	ls := newLiveServer(t, srv)
+	defer ls.close()
+
+	ls.handshake()
+	ls.send(toolCallFrame(2, "spawn_run", `{"agent":"x","segments":[]}`))
+	got := decodeSpawnResult(t, ls.waitResp(2, 3*time.Second))
+	if got.Status != "completed" {
+		t.Fatalf("spawn_run status = %q; want \"completed\" (no timeout by default)", got.Status)
+	}
+}

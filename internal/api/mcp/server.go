@@ -69,6 +69,15 @@ type Config struct {
 	// (defaultMaxConcurrentCalls). Only consulted by Serve (stdio); the
 	// HTTP transport is already concurrent at the http.Server level.
 	MaxConcurrentCalls int
+
+	// SpawnRunTimeoutMS is the operator default for the spawn_run
+	// TRANSPORT timeout (RFC P): how long a spawn_run MCP call may block
+	// before loomcycle cancels the run and returns a status:"timeout"
+	// result instead of hanging. A caller's per-call timeout_ms narrows
+	// this. <= 0 → disabled (the call blocks until the run finishes on
+	// its own run_timeout_seconds budget). This is a transport bound,
+	// distinct from the run's wall-clock budget.
+	SpawnRunTimeoutMS int
 }
 
 // Server reads MCP JSON-RPC frames from stdin and writes responses +
@@ -408,11 +417,12 @@ func (s *Server) handleToolsCall(ctx context.Context, stdout io.Writer, req loom
 	}
 
 	res, err := handler(ctx, &handlerEnv{
-		connector: s.cfg.Connector,
-		runner:    s.cfg.Runner,
-		session:   s.session,
-		notify:    s.makeNotifier(stdout, req.ID),
-		logf:      s.cfg.Logf,
+		connector:         s.cfg.Connector,
+		runner:            s.cfg.Runner,
+		session:           s.session,
+		notify:            s.makeNotifier(stdout, req.ID),
+		logf:              s.cfg.Logf,
+		spawnRunTimeoutMS: s.cfg.SpawnRunTimeoutMS,
 	}, params.Arguments)
 	if err != nil {
 		// Handler returned a Go error (internal failure, not a
@@ -491,6 +501,9 @@ type handlerEnv struct {
 	session   *Session
 	notify    NotifyFunc
 	logf      func(format string, v ...any)
+	// spawnRunTimeoutMS is the operator-default transport timeout for
+	// spawn_run (Config.SpawnRunTimeoutMS); 0 = disabled.
+	spawnRunTimeoutMS int
 }
 
 func defaultLogf(format string, v ...any) {
