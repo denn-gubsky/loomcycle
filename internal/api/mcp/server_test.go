@@ -1,10 +1,12 @@
 package mcp
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"strings"
 	"sync"
@@ -24,9 +26,16 @@ import (
 // the ones explicitly exercised. Lets tests focus on what they care
 // about without faking unrelated surfaces.
 type mockConnector struct {
-	spawnReq     atomic.Value // connector.SpawnRunRequest (last)
-	spawnResult  connector.SpawnRunResult
-	spawnErr     error
+	spawnReq    atomic.Value // connector.SpawnRunRequest (last)
+	spawnResult connector.SpawnRunResult
+	spawnErr    error
+	// spawnGate, when non-nil, makes SpawnRun block until the channel is
+	// closed (or ctx is cancelled) — lets a test hold a spawn_run "in
+	// flight" to exercise concurrent dispatch. spawnActive/spawnMaxSeen
+	// track in-flight + high-water concurrency for the cap test.
+	spawnGate    chan struct{}
+	spawnActive  atomic.Int32
+	spawnMaxSeen atomic.Int32
 	regCalls     atomic.Int32
 	regResult    connector.AgentDescriptor
 	pauseResult  connector.PauseResult
@@ -48,8 +57,22 @@ type mockConnector struct {
 	lastStreamReq    connector.StreamUserRunStatesRequest
 }
 
-func (m *mockConnector) SpawnRun(_ context.Context, r connector.SpawnRunRequest) (connector.SpawnRunResult, error) {
+func (m *mockConnector) SpawnRun(ctx context.Context, r connector.SpawnRunRequest) (connector.SpawnRunResult, error) {
 	m.spawnReq.Store(r)
+	if m.spawnGate != nil {
+		n := m.spawnActive.Add(1)
+		for { // record the high-water mark of concurrent in-flight calls
+			old := m.spawnMaxSeen.Load()
+			if n <= old || m.spawnMaxSeen.CompareAndSwap(old, n) {
+				break
+			}
+		}
+		select {
+		case <-m.spawnGate:
+		case <-ctx.Done():
+		}
+		m.spawnActive.Add(-1)
+	}
 	return m.spawnResult, m.spawnErr
 }
 func (m *mockConnector) CancelRun(_ context.Context, _, _ string) (connector.CancelRunResult, error) {
@@ -898,3 +921,233 @@ func TestServer_StreamUserRunStates_RequiresUserID(t *testing.T) {
 // case Go's stdlib evolves; kept as a guard.
 var _ io.Reader = strings.NewReader("")
 var _ sync.Locker = (*sync.Mutex)(nil)
+
+// --- RFC O: concurrent stdio dispatch ---------------------------------
+//
+// liveServer drives a Server over real pipes so a test can write frames
+// over time and read responses as they arrive (driveServer is batch —
+// it can't observe the non-blocking property). Responses/notifications
+// are demuxed onto channels; waitResp blocks for a specific JSON-RPC id.
+
+type liveServer struct {
+	t      *testing.T
+	stdinW *io.PipeWriter
+	cancel context.CancelFunc
+	done   chan error
+
+	mu    sync.Mutex
+	got   map[int64]loommcp.Response // id → response, as they arrive
+	notes []loommcp.Notification
+	cond  *sync.Cond
+}
+
+func newLiveServer(t *testing.T, srv *Server) *liveServer {
+	t.Helper()
+	stdinR, stdinW := io.Pipe()
+	stdoutR, stdoutW := io.Pipe()
+	ctx, cancel := context.WithCancel(context.Background())
+	ls := &liveServer{t: t, stdinW: stdinW, cancel: cancel, done: make(chan error, 1), got: map[int64]loommcp.Response{}}
+	ls.cond = sync.NewCond(&ls.mu)
+
+	go func() {
+		err := srv.Serve(ctx, stdinR, stdoutW)
+		_ = stdoutW.Close() // unblock the reader goroutine
+		ls.done <- err
+	}()
+	go func() {
+		sc := bufio.NewScanner(stdoutR)
+		sc.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
+		for sc.Scan() {
+			line := sc.Bytes()
+			var probe struct {
+				ID *int64 `json:"id"`
+			}
+			if json.Unmarshal(line, &probe) != nil {
+				continue
+			}
+			ls.mu.Lock()
+			if probe.ID != nil {
+				var r loommcp.Response
+				if json.Unmarshal(line, &r) == nil {
+					ls.got[*probe.ID] = r
+				}
+			} else {
+				var n loommcp.Notification
+				if json.Unmarshal(line, &n) == nil {
+					ls.notes = append(ls.notes, n)
+				}
+			}
+			ls.cond.Broadcast()
+			ls.mu.Unlock()
+		}
+	}()
+	return ls
+}
+
+func (ls *liveServer) send(frame string) {
+	if _, err := io.WriteString(ls.stdinW, frame+"\n"); err != nil {
+		ls.t.Fatalf("send frame: %v", err)
+	}
+}
+
+// waitResp blocks until the response for id arrives or timeout elapses.
+func (ls *liveServer) waitResp(id int64, timeout time.Duration) loommcp.Response {
+	ls.t.Helper()
+	deadline := make(chan struct{})
+	timer := time.AfterFunc(timeout, func() {
+		ls.mu.Lock()
+		close(deadline)
+		ls.cond.Broadcast()
+		ls.mu.Unlock()
+	})
+	defer timer.Stop()
+	ls.mu.Lock()
+	for {
+		if r, ok := ls.got[id]; ok {
+			ls.mu.Unlock()
+			return r
+		}
+		select {
+		case <-deadline:
+			// Unlock before Fatalf: Fatalf runs runtime.Goexit, and we
+			// must not leave ls.mu held while the stdout-reader goroutine
+			// is trying to acquire it.
+			ls.mu.Unlock()
+			ls.t.Fatalf("timed out after %s waiting for response id=%d", timeout, id)
+			return loommcp.Response{} // unreachable; Fatalf exits the goroutine
+		default:
+		}
+		ls.cond.Wait()
+	}
+}
+
+// hasResp reports whether a response for id has arrived yet (non-blocking).
+func (ls *liveServer) hasResp(id int64) bool {
+	ls.mu.Lock()
+	defer ls.mu.Unlock()
+	_, ok := ls.got[id]
+	return ok
+}
+
+func (ls *liveServer) close() {
+	_ = ls.stdinW.Close()
+	ls.cancel()
+}
+
+func toolCallFrame(id int64, name, args string) string {
+	return fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"tools/call","params":{"name":%q,"arguments":%s}}`, id, name, args)
+}
+
+// handshake runs initialize + initialized and waits for the init response.
+func (ls *liveServer) handshake() {
+	ls.send(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"t","version":"1"}}}`)
+	ls.waitResp(1, 2*time.Second)
+	ls.send(`{"jsonrpc":"2.0","method":"notifications/initialized"}`)
+}
+
+// TestServer_LongCallDoesNotBlockSubsequent is the RFC O regression test:
+// a blocked spawn_run must NOT delay a subsequent cheap list_runs. On the
+// pre-RFC-O serial loop the list_runs response never arrives until the
+// spawn_run completes, so waitResp(id=3) times out and the test fails.
+func TestServer_LongCallDoesNotBlockSubsequent(t *testing.T) {
+	gate := make(chan struct{})
+	mc := &mockConnector{spawnGate: gate}
+	srv := New(Config{Connector: mc, Logf: func(string, ...any) {}})
+	ls := newLiveServer(t, srv)
+	defer ls.close()
+
+	ls.handshake()
+	ls.send(toolCallFrame(2, "spawn_run", `{"agent":"x","segments":[]}`)) // blocks on gate
+	ls.send(toolCallFrame(3, "list_runs", `{"user_id":"u"}`))             // cheap; must not be HOL-blocked
+
+	// id=3 must arrive while id=2 is still blocked.
+	ls.waitResp(3, 2*time.Second)
+	if ls.hasResp(2) {
+		t.Fatal("spawn_run (id=2) responded before the gate was released — test setup broken")
+	}
+
+	close(gate) // release spawn_run
+	ls.waitResp(2, 2*time.Second)
+}
+
+// TestServer_CancelRunBypassesCapDuringSaturation proves the selective
+// cap: with the cap fully occupied by a blocked spawn_run, a control
+// call (cancel_run) is NOT bounded and still runs.
+func TestServer_CancelRunBypassesCapDuringSaturation(t *testing.T) {
+	gate := make(chan struct{})
+	mc := &mockConnector{spawnGate: gate}
+	srv := New(Config{Connector: mc, Logf: func(string, ...any) {}, MaxConcurrentCalls: 1})
+	ls := newLiveServer(t, srv)
+	defer ls.close()
+
+	ls.handshake()
+	ls.send(toolCallFrame(2, "spawn_run", `{"agent":"x","segments":[]}`)) // fills the only slot
+	ls.send(toolCallFrame(3, "cancel_run", `{"agent_id":"a"}`))           // not bounded → must run
+
+	ls.waitResp(3, 2*time.Second) // cancel_run responds despite the saturated cap
+	if ls.hasResp(2) {
+		t.Fatal("spawn_run responded before gate release")
+	}
+	close(gate)
+	ls.waitResp(2, 2*time.Second)
+}
+
+// TestServer_LongCallsRespectConcurrencyCap proves the cap bounds the
+// number of long-running tools executing at once: with cap=2 and three
+// blocked spawn_runs outstanding, only two reach the connector.
+func TestServer_LongCallsRespectConcurrencyCap(t *testing.T) {
+	gate := make(chan struct{})
+	mc := &mockConnector{spawnGate: gate}
+	srv := New(Config{Connector: mc, Logf: func(string, ...any) {}, MaxConcurrentCalls: 2})
+	ls := newLiveServer(t, srv)
+	defer ls.close()
+
+	ls.handshake()
+	ls.send(toolCallFrame(2, "spawn_run", `{"agent":"x","segments":[]}`))
+	ls.send(toolCallFrame(3, "spawn_run", `{"agent":"x","segments":[]}`))
+	ls.send(toolCallFrame(4, "spawn_run", `{"agent":"x","segments":[]}`))
+
+	// Wait for two to enter the connector; the third must stay parked on
+	// the semaphore (never enters SpawnRun).
+	deadline := time.After(2 * time.Second)
+	for mc.spawnActive.Load() < 2 {
+		select {
+		case <-deadline:
+			t.Fatalf("only %d spawn_runs entered the connector; want 2", mc.spawnActive.Load())
+		case <-time.After(5 * time.Millisecond):
+		}
+	}
+	// Give the third a chance to (wrongly) slip through, then assert it didn't.
+	time.Sleep(100 * time.Millisecond)
+	if got := mc.spawnMaxSeen.Load(); got != 2 {
+		t.Fatalf("max concurrent spawn_run = %d; cap=2 should bound it to 2", got)
+	}
+
+	close(gate) // release all; the third now proceeds
+	ls.waitResp(2, 2*time.Second)
+	ls.waitResp(3, 2*time.Second)
+	ls.waitResp(4, 2*time.Second)
+}
+
+// TestServer_QueuedCallErrorsOnShutdown locks the shutdown branch: a
+// bounded call still waiting for a concurrency slot when global shutdown
+// fires gets an explicit -32603 (not a silent drop the client would
+// wait out). An unbuffered sem makes the slot unacquirable, so the call
+// deterministically parks until the context is cancelled.
+func TestServer_QueuedCallErrorsOnShutdown(t *testing.T) {
+	mc := &mockConnector{}
+	srv := New(Config{Connector: mc, Logf: func(string, ...any) {}})
+	srv.sem = make(chan struct{}) // unbuffered: a bounded call can never acquire → parks until shutdown
+	ls := newLiveServer(t, srv)
+	defer ls.close()
+
+	ls.handshake()
+	ls.send(toolCallFrame(2, "spawn_run", `{"agent":"x","segments":[]}`)) // bounded → parks on the sem
+	time.Sleep(50 * time.Millisecond)                                     // let the read loop dispatch the goroutine
+	ls.cancel()                                                           // simulate global shutdown (bgCtx / SIGTERM)
+
+	r := ls.waitResp(2, 2*time.Second)
+	if r.Error == nil || r.Error.Code != -32603 {
+		t.Fatalf("queued call on shutdown: want -32603 error, got %+v", r)
+	}
+}

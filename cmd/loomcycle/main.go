@@ -1869,13 +1869,22 @@ func main() {
 		log.Printf("dynamic_agents: sweeper enabled (interval=%s)", cfg.Env.DynamicAgentSweepInterval)
 	}
 	if mcpMode {
+		// Optional operator override for the stdio dispatch concurrency
+		// cap (RFC O). 0/unset → the package default (16).
+		mcpMaxConcurrentCalls := 0
+		if v := os.Getenv("LOOMCYCLE_MCP_MAX_CONCURRENT_CALLS"); v != "" {
+			if n, perr := strconv.Atoi(v); perr == nil && n > 0 {
+				mcpMaxConcurrentCalls = n
+			}
+		}
 		mcpSrv := lcmcp.New(lcmcp.Config{
-			Connector:     srv, // *http.Server satisfies connector.Connector
-			Runner:        srv, // *http.Server satisfies runner.Runner (streaming)
-			Store:         storeIface,
-			Logf:          log.Printf, // log goes to stderr; never stdout (stdout is the JSON-RPC wire)
-			ServerName:    "loomcycle",
-			ServerVersion: buildVersion,
+			Connector:          srv, // *http.Server satisfies connector.Connector
+			Runner:             srv, // *http.Server satisfies runner.Runner (streaming)
+			Store:              storeIface,
+			Logf:               log.Printf, // log goes to stderr; never stdout (stdout is the JSON-RPC wire)
+			ServerName:         "loomcycle",
+			ServerVersion:      buildVersion,
+			MaxConcurrentCalls: mcpMaxConcurrentCalls,
 		})
 		// Run the MCP stdio loop in a goroutine. When stdin closes
 		// (Claude Code disconnects), Serve returns; we log and let

@@ -60,6 +60,15 @@ type Config struct {
 	// to. Empty fallbacks are fine.
 	ServerName    string
 	ServerVersion string
+
+	// MaxConcurrentCalls bounds how many long-running tool calls
+	// (spawn_run, subscribe_channel, peek_channel, stream_user_run_states)
+	// may execute concurrently on the stdio dispatch loop. Cheap/control
+	// calls (list_*, get_run, cancel_run, …) are never bounded, so they
+	// stay responsive even when every slot is occupied. <= 0 → default
+	// (defaultMaxConcurrentCalls). Only consulted by Serve (stdio); the
+	// HTTP transport is already concurrent at the http.Server level.
+	MaxConcurrentCalls int
 }
 
 // Server reads MCP JSON-RPC frames from stdin and writes responses +
@@ -78,7 +87,24 @@ type Server struct {
 	// emitted atomically (one frame per line). Tool handlers and the
 	// notification path both acquire this before writing.
 	writeMu sync.Mutex
+
+	// sem bounds concurrently-executing long-running tool calls on the
+	// stdio Serve loop (see Config.MaxConcurrentCalls). Acquired INSIDE
+	// the per-call goroutine so the read loop never blocks. Buffered to
+	// the cap; nil for the HTTP transport's disposable *Server (it never
+	// calls Serve, so it never touches sem).
+	sem chan struct{}
+	// wg tracks in-flight tools/call goroutines so Serve can flush their
+	// responses before returning (clean shutdown on stdin EOF).
+	wg sync.WaitGroup
 }
+
+// defaultMaxConcurrentCalls bounds in-flight long-running tool calls
+// when Config.MaxConcurrentCalls is unset. Ample for a single MCP
+// client (Claude Code sends roughly one call at a time); the cap exists
+// to keep a pathological burst from spawning unbounded in-flight runs,
+// not to throttle normal use.
+const defaultMaxConcurrentCalls = 16
 
 // New constructs an MCP Server. Caller drives it by calling Serve.
 func New(cfg Config) *Server {
@@ -88,9 +114,14 @@ func New(cfg Config) *Server {
 	if cfg.ServerName == "" {
 		cfg.ServerName = "loomcycle"
 	}
+	maxCalls := cfg.MaxConcurrentCalls
+	if maxCalls <= 0 {
+		maxCalls = defaultMaxConcurrentCalls
+	}
 	return &Server{
 		cfg:     cfg,
 		session: NewSession(),
+		sem:     make(chan struct{}, maxCalls),
 	}
 }
 
@@ -99,20 +130,22 @@ func New(cfg Config) *Server {
 // write errors. Each line on stdin is one JSON-RPC frame (per MCP's
 // stdio framing — newline-delimited JSON, no header).
 //
-// Frames are dispatched SEQUENTIALLY per the MCP initialization
-// contract: initialize must complete before any tool call, and the
-// initialized notification must arrive before other requests are
-// honored. Serialising the entire dispatch satisfies this without
-// per-method gating. Concurrent tools/call (long-running spawn_run
-// vs short list_runs on the same connection) is a v0.8.15.x or v0.9.x
-// optimisation; the writeMu is retained for the notification path
-// where in-flight spawn_run emits notifications while reading the
-// next frame is desired — but those notifications come from the
-// handler goroutine, which is the same goroutine that's dispatching.
+// Dispatch is CONCURRENT for tools/call and INLINE for everything
+// else (RFC O). A tools/call request runs on its own goroutine so a
+// long-running call (spawn_run blocking on a whole run, a channel
+// long-poll, an event wait) can't head-of-line-block the frames the
+// client sends behind it — the prior serial loop let one slow call
+// freeze every subsequent request, including a cheap list_runs or a
+// cancel_run, wedging the whole connection until the process was
+// killed. The init handshake stays correctly ordered for free:
+// initialize / tools/list / notifications are handled inline on the
+// read loop, in arrival order, and a client sends them before any
+// tools/call. writeMu keeps concurrent responses + notifications from
+// interleaving bytes on stdout.
 //
-// In practice MCP clients (Claude Code first) send one request at a
-// time and wait for the response, so sequential dispatch matches
-// real-world usage.
+// Long-running tools take a slot in s.sem (acquired inside the
+// goroutine, so the read loop never blocks); cheap/control tools run
+// unbounded so they stay responsive even when every slot is occupied.
 func (s *Server) Serve(ctx context.Context, stdin io.Reader, stdout io.Writer) error {
 	scanner := bufio.NewScanner(stdin)
 	// MCP messages can be large (tool inputs, agent system prompts).
@@ -120,26 +153,122 @@ func (s *Server) Serve(ctx context.Context, stdin io.Reader, stdout io.Writer) e
 	// server's effective request-size budget.
 	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
 
+	// Handlers get a child of ctx so a global shutdown (parent ctx
+	// cancel) propagates into in-flight tools/call goroutines.
+	handlerCtx, cancelHandlers := context.WithCancel(ctx)
+	defer cancelHandlers()
+
 	for scanner.Scan() {
 		// Copy the line — scanner reuses its buffer on next Scan().
 		line := append([]byte(nil), scanner.Bytes()...)
 		if len(line) == 0 {
 			continue
 		}
-
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		default:
+		if ctx.Err() != nil {
+			break
 		}
 
-		s.handleFrame(ctx, line, stdout)
+		async, bounded := frameRoute(line)
+		if !async {
+			// initialize / tools/list / notifications / malformed —
+			// fast and ordering-sensitive; handle inline on the read
+			// loop (and the HTTP transport reuses handleFrame the same
+			// synchronous way).
+			s.handleFrame(ctx, line, stdout)
+			continue
+		}
+
+		// tools/call — dispatch concurrently so it can't HOL-block the
+		// next frame.
+		s.wg.Add(1)
+		go func(fr []byte, bound bool) {
+			defer s.wg.Done()
+			if bound {
+				select {
+				case s.sem <- struct{}{}:
+					defer func() { <-s.sem }()
+				case <-handlerCtx.Done():
+					// Global shutdown fired before a slot freed. Respond
+					// with an explicit error rather than silently
+					// abandoning the call, so the client doesn't wait out
+					// its own timeout. Best-effort — stdout may already be
+					// tearing down (writeFrame logs + ignores write errors).
+					if id, ok := frameRequestID(fr); ok {
+						s.writeError(stdout, id, -32603, "server shutting down")
+					}
+					return
+				}
+			}
+			s.handleFrame(handlerCtx, fr, stdout)
+		}(line, bounded)
 	}
-	if err := scanner.Err(); err != nil {
-		return fmt.Errorf("mcp: read stdin: %w", err)
+
+	scanErr := scanner.Err()
+	// Stop reading: wait for in-flight tools/call goroutines to flush
+	// their responses before returning, so a caller draining stdout
+	// after Serve sees every frame. We do NOT cancel them here on a
+	// clean EOF — a client that sent a request then closed stdin still
+	// expects the response on stdout. Global shutdown cancellation
+	// flows through handlerCtx (child of ctx) instead.
+	s.wg.Wait()
+	if scanErr != nil {
+		return fmt.Errorf("mcp: read stdin: %w", scanErr)
 	}
-	return nil
+	return ctx.Err()
 }
+
+// frameRoute peeks at a JSON-RPC frame to decide stdio dispatch.
+// async is true for a tools/call request (run on its own goroutine so
+// it can't head-of-line-block later frames). bounded is true when that
+// call targets a long-running tool that must take a concurrency slot.
+// A best-effort decode failure routes inline (async=false) — the
+// authoritative parse + error reporting happens in handleFrame.
+func frameRoute(frame []byte) (async, bounded bool) {
+	var p struct {
+		ID     *int64 `json:"id"`
+		Method string `json:"method"`
+		Params struct {
+			Name string `json:"name"`
+		} `json:"params"`
+	}
+	if err := json.Unmarshal(frame, &p); err != nil {
+		return false, false
+	}
+	if p.ID == nil || p.Method != "tools/call" {
+		return false, false
+	}
+	return true, isLongRunningTool(p.Params.Name)
+}
+
+// frameRequestID extracts the JSON-RPC request id from a frame, used to
+// address a shutdown error response back to a dropped tools/call. ok is
+// false for notifications (no id) or undecodable frames.
+func frameRequestID(frame []byte) (int64, bool) {
+	var p struct {
+		ID *int64 `json:"id"`
+	}
+	if json.Unmarshal(frame, &p) != nil || p.ID == nil {
+		return 0, false
+	}
+	return *p.ID, true
+}
+
+// longRunningTools are the meta-tools whose handler can block for a
+// significant or unbounded time — a full run (spawn_run), a long-poll
+// (subscribe_channel / peek_channel), or an event wait
+// (stream_user_run_states). They take a concurrency slot so a burst
+// can't spawn unbounded in-flight work; every other tool (cheap reads
+// + control ops like cancel_run / get_run) runs unbounded so it stays
+// responsive even when all slots are occupied. Add new blocking tools
+// here when they're introduced.
+var longRunningTools = map[string]bool{
+	"spawn_run":              true,
+	"subscribe_channel":      true,
+	"peek_channel":           true,
+	"stream_user_run_states": true,
+}
+
+func isLongRunningTool(name string) bool { return longRunningTools[name] }
 
 // handleFrame decodes one inbound JSON-RPC frame and dispatches to
 // the appropriate handler. Requests get a response written back to
