@@ -87,8 +87,8 @@ var (
 	ErrResolverUnavailable = errors.New("connector: resolver not configured on this server")
 
 	// ErrResolveProbeUnavailable is returned by ResolveProbe when a
-	// resolver exists but no probe loop is wired (e.g. --no-http, or a
-	// degraded config). ForceProbe would be a silent no-op, so the
+	// resolver exists but no probe loop is wired (e.g. a degraded
+	// startup). ForceProbe would be a silent no-op, so the
 	// method fails rather than return a matrix it never refreshed.
 	// Transports map to Unavailable / HTTP 503 (code "probe_unavailable").
 	ErrResolveProbeUnavailable = errors.New("connector: no probe loop wired; cannot trigger an immediate re-probe")

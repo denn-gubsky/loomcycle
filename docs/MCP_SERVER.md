@@ -21,7 +21,7 @@ So there's exactly **one** authoritative runtime per state, and `loomcycle mcp` 
 - **embedded** — `loomcycle mcp --config loomcycle.yaml`. One process that is *both* the runtime and the MCP server. A single process → a single bus → the cross-process problem can't arise. Use this when the MCP server *is* your loomcycle (a laptop, a dev box).
 - **thin client** — `loomcycle mcp --upstream http://127.0.0.1:8788` (bearer via `LOOMCYCLE_MCP_UPSTREAM_TOKEN`). Runs as a stdio↔`/v1/_mcp` proxy to an **already-running** runtime and boots **no runtime of its own**. Every call — including `interruption_resolve` — lands on the runtime that owns the run, so it wakes correctly. This is the supported way to add an MCP surface next to a running server or a multi-replica cluster (point `--upstream` at any replica or the load balancer). The proxy returns a clean JSON-RPC error (never hangs) if the upstream is unreachable or drops a stream.
 
-> **`--no-http` is deprecated.** `loomcycle mcp --no-http` only mutes the listener — it still boots a *full second runtime*, violating the invariant. Use `--upstream` instead. `--no-http` still works (with a deprecation warning) until the Claude Code plugin migrates, then it will be removed.
+> **`--no-http` was removed (v0.23.0).** It only muted the listener while still booting a *full second runtime* — the anti-pattern this whole section replaces. Use `--upstream` (thin client) to add an MCP surface next to a runtime, or plain `loomcycle mcp` for a standalone single-host runtime.
 
 `loomcycle doctor` WARNs (it doesn't FAIL) when the configured listen address is already in use — that usually means a runtime already owns this state; add an MCP surface with `--upstream`, don't start a second runtime.
 

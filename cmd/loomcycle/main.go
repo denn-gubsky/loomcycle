@@ -370,43 +370,16 @@ func main() {
 
 	cfgPath := flag.String("config", "loomcycle.yaml", "path to config YAML")
 	showVersion := flag.Bool("version", false, "print build identifier and exit")
-	// v0.8.15.2: suppress the HTTP listener. Useful when the daemon
-	// (`loomcycle.sh`, binds 127.0.0.1:8787 by default) is already
-	// running on the same host AND Claude Code spawns `loomcycle mcp`
-	// alongside it. Without --no-http the mcp subcommand collides on
-	// the port. Only honoured in mcp mode — in server mode it warns
-	// and starts HTTP normally so CI scripts conditionally passing the
-	// flag don't hard-fail.
-	noHTTP := flag.Bool("no-http", false, "suppress the HTTP listener (only honoured in `mcp` subcommand mode)")
 	// RFC R thin-client mode: `loomcycle mcp --upstream <url>` runs as a
 	// stdio↔/v1/_mcp proxy to an authoritative runtime, with NO local
 	// runtime. The single-runtime invariant — a second loomcycle process
-	// is a control client, never a second runtime.
+	// is a control client, never a second runtime. This replaced the old
+	// `--no-http` flag (removed in v0.23.0), which "muted the listener"
+	// while still booting a full second runtime — the anti-pattern that
+	// caused the cross-process interruption hang (F15) and rogue-runtime
+	// wedge (F16). To add an MCP surface next to a runtime, use --upstream.
 	upstream := flag.String("upstream", "", "(`mcp` mode) run as a thin client proxying to this runtime's /v1/_mcp instead of booting a local runtime")
 	flag.Parse()
-
-	// Resolve --no-http: takes effect only when mcpMode is true. In
-	// server mode the flag is ignored with a visible warning per RFC
-	// decision B2 — silently dropping it would be confusing; failing
-	// hard would break CI scripts that pass the flag conditionally.
-	skipHTTP := false
-	if *noHTTP {
-		if mcpMode {
-			skipHTTP = true
-			// RFC R: --no-http still boots a FULL second runtime (it only
-			// mutes the listener), which violates the single-runtime
-			// invariant and is the root of the cross-process interruption
-			// hang (F15) + rogue-runtime wedge (F16). The supported way to
-			// add an MCP surface next to a runtime is the thin client.
-			// (--upstream takes a different path entirely and never reaches
-			// here, so this warns only the deprecated standalone use.)
-			if *upstream == "" {
-				log.Printf("warning: `loomcycle mcp --no-http` is DEPRECATED — it boots a full second runtime alongside your real one (single-runtime invariant). Use `loomcycle mcp --upstream <runtime-url>` (thin client) instead.")
-			}
-		} else {
-			log.Printf("note: --no-http only takes effect in `loomcycle mcp` mode; flag ignored, HTTP listener will start normally")
-		}
-	}
 
 	if *showVersion {
 		fmt.Printf("loomcycle version=%s commit=%s built=%s go=%s\n",
@@ -1957,8 +1930,8 @@ func main() {
 	// service-to-service consumers don't use the stdio wrapper and
 	// need a network endpoint. Security posture is identical to all
 	// other /v1/* endpoints — bearer-authed via s.authMiddleware in
-	// the server's Mux(). Disabled implicitly by --no-http (no HTTP
-	// listener = no /v1/_mcp route reachable).
+	// the server's Mux(). This /v1/_mcp endpoint is what the RFC R
+	// thin client (`loomcycle mcp --upstream`) proxies to.
 	mcpHTTPHandler := lcmcp.NewHTTPHandler(lcmcp.Config{
 		Connector:     srv, // same *http.Server instance used by stdio MCP
 		Runner:        srv,
@@ -2001,21 +1974,12 @@ func main() {
 	go runResolveProbeLoop(bgCtx, resolver, pr, cfg, probeInterval)
 	log.Printf("resolve probe: interval=%s", probeInterval)
 
-	if skipHTTP {
-		// v0.8.15.2: --no-http suppresses the HTTP listener. The
-		// httpServer object stays constructed (other subsystems may
-		// hold references for routing internals); we just never call
-		// ListenAndServe. Shutdown below is a no-op on a non-listening
-		// server but we guard it anyway.
-		log.Printf("--no-http: HTTP listener suppressed; %s remains free for other processes", cfg.Env.ListenAddr)
-	} else {
-		go func() {
-			log.Printf("loomcycle listening on %s", cfg.Env.ListenAddr)
-			if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-				log.Fatalf("listen: %v", err)
-			}
-		}()
-	}
+	go func() {
+		log.Printf("loomcycle listening on %s", cfg.Env.ListenAddr)
+		if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Fatalf("listen: %v", err)
+		}
+	}()
 
 	// gRPC server. Optional; opt-in via LOOMCYCLE_GRPC_ADDR. Reuses
 	// the same Store + cancel registry as the HTTP server so both
@@ -2089,9 +2053,7 @@ func main() {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if !skipHTTP {
-		_ = httpServer.Shutdown(ctx)
-	}
+	_ = httpServer.Shutdown(ctx)
 	// Flush OTEL spans before exit. The OTLP exporter batches; without
 	// this, in-flight spans never reach the collector. Same 5s deadline
 	// as the HTTP shutdown — exporters honor ctx.

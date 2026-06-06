@@ -1,6 +1,6 @@
 ---
 name: mcp-server
-description: Running loomcycle AS an MCP server — embedded vs thin-client (--upstream); the single-runtime invariant; why --no-http is deprecated.
+description: Running loomcycle AS an MCP server — embedded vs thin-client (--upstream); the single-runtime invariant; why --no-http was removed.
 ---
 loomcycle can act as an **MCP server** so an external orchestrator
 (Claude Code, Claude Desktop, a custom client) drives it over standard
@@ -49,15 +49,14 @@ multi-replica cluster (point `--upstream` at any replica / the load
 balancer). The proxy returns a clean JSON-RPC error — never hangs — if
 the upstream is unreachable or drops a stream.
 
-## `--no-http` is deprecated
+## `--no-http` was removed (v0.23.0)
 
-`loomcycle mcp --no-http` only *mutes the listener* — it still boots a
-**full second runtime** alongside your real one, violating the invariant
-above. That two-runtime topology is the root of the cross-process
-interruption hang and the "wedged session" failures. **Use `--upstream`
-instead.** `--no-http` still works for now (with a deprecation warning)
-so the Claude Code plugin keeps running until it migrates; it will be
-removed afterward.
+The old `loomcycle mcp --no-http` only *muted the listener* while still
+booting a **full second runtime** — the two-runtime topology that is the
+root of the cross-process interruption hang and the "wedged session"
+failures. It was removed in v0.23.0; the flag is now an error. **Use
+`--upstream`** to add an MCP surface next to a runtime (thin client), or
+plain `loomcycle mcp` for a standalone single-host runtime.
 
 ## doctor
 

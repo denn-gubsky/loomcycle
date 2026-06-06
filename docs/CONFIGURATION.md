@@ -721,7 +721,7 @@ curl -s -X POST -H "Authorization: Bearer $LOOMCYCLE_AUTH_TOKEN" \
   http://localhost:8787/v1/_resolve/probe | jq .
 ```
 
-Returns the **post-probe** matrix in the same shape as `GET /v1/_resolver`. A provider still unreachable after the probe comes back as `reachable: false` with its `last_error` set — that's data, not an error (200). The endpoint only 503s when it can't probe at all: `resolver_unavailable` (degraded startup, no resolver) or `probe_unavailable` (no probe loop wired, e.g. `--no-http`). Also handy for post-deploy / post-config validation before serving traffic.
+Returns the **post-probe** matrix in the same shape as `GET /v1/_resolver`. A provider still unreachable after the probe comes back as `reachable: false` with its `last_error` set — that's data, not an error (200). The endpoint only 503s when it can't probe at all: `resolver_unavailable` (degraded startup, no resolver) or `probe_unavailable` (no probe loop wired, e.g. a degraded startup). Also handy for post-deploy / post-config validation before serving traffic.
 
 The same operation is available through every transport that consumes the Connector: gRPC `ResolveProbe`, the MCP meta-tool `resolve_probe`, and the TypeScript client's `client.resolveProbe()`.
 
