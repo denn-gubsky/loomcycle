@@ -378,6 +378,11 @@ func main() {
 	// and starts HTTP normally so CI scripts conditionally passing the
 	// flag don't hard-fail.
 	noHTTP := flag.Bool("no-http", false, "suppress the HTTP listener (only honoured in `mcp` subcommand mode)")
+	// RFC R thin-client mode: `loomcycle mcp --upstream <url>` runs as a
+	// stdio↔/v1/_mcp proxy to an authoritative runtime, with NO local
+	// runtime. The single-runtime invariant — a second loomcycle process
+	// is a control client, never a second runtime.
+	upstream := flag.String("upstream", "", "(`mcp` mode) run as a thin client proxying to this runtime's /v1/_mcp instead of booting a local runtime")
 	flag.Parse()
 
 	// Resolve --no-http: takes effect only when mcpMode is true. In
@@ -404,6 +409,32 @@ func main() {
 	// debugging spiral. Critical when development cycle is "git pull
 	// && restart" without a rebuild step in between.
 	log.Printf("loomcycle build: version=%s commit=%s time=%s", buildVersion, buildCommit, buildTime)
+
+	// RFC R thin-client mode runs BEFORE any runtime boot — no config
+	// load, no providers, no store, no listener, no second runtime. The
+	// proxy needs only the upstream URL + bearer + stdio.
+	if mcpMode && *upstream != "" {
+		proxyCtx, stopProxy := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer stopProxy()
+		pc := lcmcp.NewProxyClient(lcmcp.ProxyConfig{
+			Upstream: *upstream,
+			Token:    os.Getenv("LOOMCYCLE_MCP_UPSTREAM_TOKEN"),
+			Logf:     log.Printf, // stderr; never stdout (stdout is the JSON-RPC wire)
+		})
+		log.Printf("mcp: thin-client mode → upstream %s (no local runtime)", *upstream)
+		err := pc.Serve(proxyCtx, os.Stdin, os.Stdout)
+		switch {
+		case err == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded):
+			// Clean stop: stdin EOF (client disconnect) or a received
+			// signal. Exit 0 so a supervisor doesn't treat a graceful
+			// stop as a crash and loop-restart.
+			log.Printf("mcp: proxy stopped")
+		default:
+			log.Printf("mcp: proxy ended: %v", err)
+			os.Exit(1)
+		}
+		return
+	}
 
 	// v0.11.1 auto-discovery: when --config wasn't overridden AND
 	// the default file doesn't exist, walk the XDG paths. The
