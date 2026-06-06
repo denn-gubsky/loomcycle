@@ -8,6 +8,62 @@ For pre-v0.4 history (single-tool runtime, library milestone, security patch), s
 
 ---
 
+## What's in v0.23.0
+
+**Headline: the MCP server stops wedging — concurrent dispatch, bounded
+spawn_run, and the single-runtime invariant (RFCs O/P/R), plus a DeepSeek
+tool-use fix (RFC Q).** Hands-on use surfaced a class of failures where the
+`loomcycle mcp` server (the stdio surface Claude Code drives) would hang or
+wedge the session — most often "an interruption was answered but the agent
+never resumed." v0.23.0 fixes the root causes.
+
+### Concurrent stdio dispatch (RFC O — #377)
+- The MCP stdio server dispatched every JSON-RPC frame on one goroutine,
+  serially, so one long call (a blocking `spawn_run`, a channel long-poll)
+  head-of-line-blocked every frame behind it — including a cheap `list_runs`
+  or a `cancel_run` — wedging the connection until the process was killed.
+  `tools/call` now runs concurrently; long-running tools take a bounded slot
+  (`LOOMCYCLE_MCP_MAX_CONCURRENT_CALLS`, default 16) while cheap/control tools
+  (incl. `cancel_run`) stay responsive even when every slot is occupied.
+
+### Bounded spawn_run transport timeout (RFC P — #380)
+- `spawn_run` blocked the transport for the whole run with no per-call
+  timeout. New per-call `timeout_ms` (narrows the operator default
+  `LOOMCYCLE_MCP_SPAWN_RUN_TIMEOUT_MS`, default off): on expiry the run is
+  cancelled and a `status:"timeout"` result is returned instead of hanging.
+  Distinct from the run's own `run_timeout_seconds` budget.
+
+### Single-runtime invariant — the thin client (RFC R — #381, #382, #383)
+- **The biggest fix.** The plugin's `loomcycle mcp` booted a *full second
+  runtime* next to your real one, sharing the SQLite state but with its own
+  in-process event bus — so a cross-process `interruption_resolve` flipped
+  the DB row but never woke the run (the "interruption never resumes" hang),
+  and rogue runtimes accumulated and wedged sessions.
+- `loomcycle mcp --upstream <url>` (#381) runs as a thin stdio↔`/v1/_mcp`
+  proxy to the one authoritative runtime and boots **no runtime of its own**
+  — every call (including `interruption_resolve`) lands on the runtime that
+  owns the run. A dead upstream or a dropped SSE stream returns a clean
+  JSON-RPC error rather than hanging.
+- `loomcycle doctor` now **WARNs** (not FAILs) when the listen address is
+  already in use, pointing at `--upstream` (#382); a new `mcp-server`
+  `Context.help` topic + `MCP_SERVER.md` / `ARCHITECTURE.md` updates.
+- **`--no-http` removed (#383, BREAKING).** It only muted the listener while
+  still booting a full second runtime — the anti-pattern `--upstream`
+  replaces. `loomcycle mcp --no-http` now errors; use `--upstream` (thin
+  client) or plain `loomcycle mcp` (embedded, standalone single host). The
+  Claude Code plugin 0.21.0 migrated to `--upstream`.
+
+### DeepSeek empty tool-result content (RFC Q — #379)
+- The openai-compat driver dropped the `content` field on an empty tool
+  result (`omitempty`); DeepSeek's strict deserializer 400s with "missing
+  field content", breaking **every** tool-using DeepSeek agent the moment a
+  tool returned empty stdout (a silent `mkdir`, a write-only script). The
+  `role:"tool"` message now always serializes `content`.
+
+**Upgrade note.** If you drive loomcycle from the Claude Code plugin, upgrade
+the plugin to **≥ 0.21.0** (it launches `--upstream` now) — the old
+`--no-http` launch errors on this build.
+
 ## What's in v0.22.0
 
 **Headline: tenant isolation reaches the definition plane (RFC N).** v0.17.0
