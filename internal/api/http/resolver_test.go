@@ -217,7 +217,7 @@ func TestHandleResolveProbe_503WhenNoResolver(t *testing.T) {
 
 // TestHandleResolveProbe_503WhenProbeNotWired guards the honesty
 // invariant: a resolver with no force-probe callback installed (no
-// probe loop, as in --no-http or a degraded config) must 503 rather
+// probe loop, as in a degraded startup) must 503 rather
 // than 200 — ForceProbe is a silent no-op when unwired, and returning
 // 200 with a stale matrix would be misleading for a "re-probe now"
 // endpoint.
