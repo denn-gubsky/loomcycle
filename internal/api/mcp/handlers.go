@@ -176,18 +176,68 @@ func handleSpawnRun(ctx context.Context, env *handlerEnv, args json.RawMessage) 
 		req.ParentContext = nil
 	}
 
+	// RFC P — transport timeout. A per-call timeout_ms (caller, narrowing)
+	// over the operator default bounds how long this spawn_run CALL blocks
+	// the MCP transport; on expiry we cancel the run (it honors ctx) and
+	// return a status:"timeout" result rather than hanging. Distinct from
+	// the run's own run_timeout_seconds wall-clock budget. 0 = disabled.
+	var callerTimeoutMS struct {
+		TimeoutMS int `json:"timeout_ms"`
+	}
+	_ = json.Unmarshal(args, &callerTimeoutMS) // best-effort; absent → 0
+	effectiveTimeoutMS := effectiveSpawnTimeoutMS(env.spawnRunTimeoutMS, callerTimeoutMS.TimeoutMS)
+
+	runCtx := ctx
+	if effectiveTimeoutMS > 0 {
+		var cancel context.CancelFunc
+		runCtx, cancel = context.WithTimeout(ctx, time.Duration(effectiveTimeoutMS)*time.Millisecond)
+		defer cancel()
+	}
+
 	useStreaming := env.session != nil && env.session.RunEventsEnabled() && env.runner != nil
 	var result connector.SpawnRunResult
 	var err error
 	if useStreaming {
-		result, err = spawnRunStreaming(ctx, env, req)
+		result, err = spawnRunStreaming(runCtx, env, req)
 	} else {
-		result, err = env.connector.SpawnRun(ctx, req)
+		result, err = env.connector.SpawnRun(runCtx, req)
+	}
+	// Check the transport deadline BEFORE err: a deadline-cancelled run
+	// surfaces as a ctx error on either path, but we want a structured
+	// timeout result, not a -32603. DeadlineExceeded is specific to our
+	// WithTimeout — a parent-ctx cancel (shutdown / cancel_run) yields
+	// Canceled instead, which falls through to the normal error/result.
+	if effectiveTimeoutMS > 0 && errors.Is(runCtx.Err(), context.DeadlineExceeded) {
+		result.Status = "timeout"
+		if result.Error == "" {
+			result.Error = fmt.Sprintf("spawn_run exceeded the %dms MCP transport timeout; the run was cancelled", effectiveTimeoutMS)
+		}
+		return toolResultJSON(result), nil
 	}
 	if err != nil {
 		return toolErr("spawn_run: " + err.Error()), nil
 	}
 	return toolResultJSON(result), nil
+}
+
+// effectiveSpawnTimeoutMS resolves the spawn_run transport timeout: a
+// caller's per-call timeout_ms narrows the operator default (it may
+// shorten the cap but not extend it). 0 on both → no transport cap (the
+// call blocks until the run finishes on its own run_timeout_seconds
+// budget). This bounds how long the spawn_run CALL blocks the MCP
+// transport — it is not the run's wall-clock budget.
+func effectiveSpawnTimeoutMS(operatorMS, callerMS int) int {
+	switch {
+	case operatorMS > 0 && callerMS > 0:
+		if callerMS < operatorMS {
+			return callerMS // caller narrows
+		}
+		return operatorMS // caller can't exceed the operator cap
+	case callerMS > 0:
+		return callerMS
+	default:
+		return operatorMS
+	}
 }
 
 // spawnRunStreaming drives the runner directly and emits per-event
