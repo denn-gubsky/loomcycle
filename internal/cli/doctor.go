@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -9,6 +10,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -115,7 +117,18 @@ func RunDoctor(args []string, stdout, stderr io.Writer) int {
 
 	listenAddr := configListenAddr(cfg)
 	if err := checkPortBindable(listenAddr); err != nil {
-		r.fail("Listen address", fmt.Sprintf("%s not bindable: %v", listenAddr, err))
+		if isAddrInUse(err) {
+			// A runtime (likely loomcycle itself) already owns this
+			// address. That's not a config error — but it's the moment to
+			// flag the single-runtime invariant (RFC R): don't start a
+			// SECOND runtime against the same state. To add an MCP surface,
+			// run a thin client instead of another runtime.
+			r.warn("Listen address", fmt.Sprintf(
+				"%s already in use — a runtime may already own this state. Don't start a second runtime against the same data; to add an MCP surface run `loomcycle mcp --upstream <runtime-url>` (single-runtime invariant). If this IS your running server, ignore.",
+				listenAddr))
+		} else {
+			r.fail("Listen address", fmt.Sprintf("%s not bindable: %v", listenAddr, err))
+		}
 	} else {
 		r.pass("Listen address", fmt.Sprintf("%s (bindable)", listenAddr))
 	}
@@ -341,3 +354,8 @@ func checkPortBindable(addr string) error {
 	}
 	return l.Close()
 }
+
+// isAddrInUse reports whether a bind error is EADDRINUSE — i.e. the
+// address is already taken (very likely by a runtime that already owns
+// this state), as opposed to a permission or bad-address error.
+func isAddrInUse(err error) bool { return errors.Is(err, syscall.EADDRINUSE) }

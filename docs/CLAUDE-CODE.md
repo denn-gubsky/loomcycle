@@ -37,6 +37,14 @@ URL. The plugin then launches `loomcycle mcp --config <your.yaml>` automatically
 The plugin **does not** bundle or start loomcycle — install loomcycle separately
 (Homebrew / Docker / release binary) and have an instance reachable first.
 
+> **Single-runtime invariant (RFC R).** If you already run a loomcycle server,
+> the MCP server should be a **thin client** of it, not a second runtime:
+> `loomcycle mcp --upstream <runtime-url>` proxies to the running runtime and
+> boots no runtime of its own — which is also what makes `interruption_resolve`
+> and `cancel_run` work correctly across the connection. The plugin is migrating
+> to launch `--upstream`; until then it uses the embedded form. See
+> [`MCP_SERVER.md`](MCP_SERVER.md) and `Context.help mcp-server`.
+
 ## Manual: `loomcycle mcp install`
 
 If you'd rather not use the plugin, register the MCP server directly:

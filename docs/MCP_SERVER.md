@@ -12,6 +12,19 @@ When you register loomcycle as your MCP server, your MCP client gains **39 meta-
 
 The most common consumer is Claude Code: you can ask Claude to "spawn a `qa-agent` against this PR and stream the result" and Claude will use loomcycle's `spawn_run` meta-tool transparently.
 
+## Single-runtime invariant: embedded vs thin-client (`--upstream`)
+
+**Never run two loomcycle runtimes against the same state.** A runtime owns the providers, scheduler, sweepers, and an *in-process event bus* that wakes blocked runs (e.g. an agent parked on `Interruption.ask`). Two runtimes sharing one `./data` each have their own bus, so a signal raised on one — a resolved interruption, a cancel — never reaches a run owned by the other: the state row flips, but the agent never wakes. That two-runtime topology is the root of the cross-process interruption hang and the "wedged session" failures.
+
+So there's exactly **one** authoritative runtime per state, and `loomcycle mcp` runs one of two ways:
+
+- **embedded** — `loomcycle mcp --config loomcycle.yaml`. One process that is *both* the runtime and the MCP server. A single process → a single bus → the cross-process problem can't arise. Use this when the MCP server *is* your loomcycle (a laptop, a dev box).
+- **thin client** — `loomcycle mcp --upstream http://127.0.0.1:8788` (bearer via `LOOMCYCLE_MCP_UPSTREAM_TOKEN`). Runs as a stdio↔`/v1/_mcp` proxy to an **already-running** runtime and boots **no runtime of its own**. Every call — including `interruption_resolve` — lands on the runtime that owns the run, so it wakes correctly. This is the supported way to add an MCP surface next to a running server or a multi-replica cluster (point `--upstream` at any replica or the load balancer). The proxy returns a clean JSON-RPC error (never hangs) if the upstream is unreachable or drops a stream.
+
+> **`--no-http` is deprecated.** `loomcycle mcp --no-http` only mutes the listener — it still boots a *full second runtime*, violating the invariant. Use `--upstream` instead. `--no-http` still works (with a deprecation warning) until the Claude Code plugin migrates, then it will be removed.
+
+`loomcycle doctor` WARNs (it doesn't FAIL) when the configured listen address is already in use — that usually means a runtime already owns this state; add an MCP surface with `--upstream`, don't start a second runtime.
+
 ## Quickest path — `loomcycle mcp install`
 
 `loomcycle mcp install` prints copy-paste-ready snippets for both Claude Code (CLI) and Claude Desktop (Mac app). It auto-detects whether you have Docker, Homebrew, or a direct binary installed and chooses the lowest-friction transport:
@@ -176,7 +189,7 @@ loomcycle mcp install --server-name loomcycle-prod \
   --config ~/.config/loomcycle/prod.yaml | tee /tmp/prod.snippet
 ```
 
-Each `add-json` call uses a distinct server-name so both register cleanly.
+Each `add-json` call uses a distinct server-name so both register cleanly. Note this registers instances against **distinct states** (separate `loomcycle.yaml` / data dirs) — that's fine. To point an MCP client at an *already-running* runtime instead of starting another one, use the thin client (`--upstream`); see the single-runtime invariant above.
 
 ## What if loomcycle.yaml uses ${...} env-var placeholders?
 
