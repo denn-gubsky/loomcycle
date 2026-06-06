@@ -210,6 +210,30 @@ type wireMessage struct {
 	ReasoningContent string `json:"reasoning_content,omitempty"`
 }
 
+// MarshalJSON forces `content` to always be present on role:"tool"
+// messages, even when empty. OpenAI tolerates an omitted content on a
+// tool message, but DeepSeek's stricter deserializer rejects it with
+// 400 "missing field content" — which broke every tool-using DeepSeek
+// agent the moment a tool returned empty output (a silent `mkdir`, a
+// script that only writes files; see RFC Q / finding F10). For every
+// other role the standard omitempty marshaling is preserved byte-for-
+// byte — notably an assistant message carrying only tool_calls still
+// omits content, which both OpenAI and DeepSeek accept.
+func (m wireMessage) MarshalJSON() ([]byte, error) {
+	type alias wireMessage // shed the MarshalJSON method to avoid recursion
+	if m.Role == "tool" {
+		// The outer Content (no omitempty, depth 0) overrides the
+		// embedded alias's omitempty content (depth 1) — encoding/json
+		// resolves the same-name conflict in favour of the shallower
+		// field, so `content` is always emitted for tool messages.
+		return json.Marshal(struct {
+			alias
+			Content string `json:"content"`
+		}{alias: alias(m), Content: m.Content})
+	}
+	return json.Marshal(alias(m))
+}
+
 type wireToolCall struct {
 	ID       string         `json:"id"`
 	Type     string         `json:"type"` // always "function"
