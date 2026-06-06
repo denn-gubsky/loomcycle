@@ -223,9 +223,11 @@ func TestDoctor_StorageDataDirNotWritable_FAILs(t *testing.T) {
 	}
 }
 
-// TestDoctor_PortBound_FAILs — bind the port ourselves and assert the
-// doctor reports it as not bindable.
-func TestDoctor_PortBound_FAILs(t *testing.T) {
+// A taken listen address is NOT a config FAIL — it almost always means a
+// runtime already owns this state. doctor WARNs (exit 0) and points at the
+// single-runtime invariant + the thin-client (`--upstream`) path (RFC R),
+// rather than failing the operator who ran doctor while their server is up.
+func TestDoctor_PortBound_WarnsSingleRuntime(t *testing.T) {
 	tmp := t.TempDir()
 	withTempHome(t)
 	// Bind a port and hold it for the test duration.
@@ -249,11 +251,15 @@ func TestDoctor_PortBound_FAILs(t *testing.T) {
 
 	var stdout, stderr bytes.Buffer
 	code := RunDoctor(nil, &stdout, &stderr)
-	if code != 1 {
-		t.Errorf("expected exit=1 when port is taken; got %d\n%s", code, stdout.String())
+	if code != 0 {
+		t.Errorf("expected exit=0 (WARN, not FAIL) when port is taken; got %d\n%s", code, stdout.String())
 	}
-	if !strings.Contains(stdout.String(), "[FAIL]  Listen address") {
-		t.Errorf("expected FAIL for listen address:\n%s", stdout.String())
+	out := stdout.String()
+	if !strings.Contains(out, "[WARN]  Listen address") {
+		t.Errorf("expected WARN for listen address:\n%s", out)
+	}
+	if !strings.Contains(out, "--upstream") {
+		t.Errorf("expected single-runtime / --upstream guidance:\n%s", out)
 	}
 }
 

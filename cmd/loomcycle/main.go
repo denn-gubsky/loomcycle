@@ -393,6 +393,16 @@ func main() {
 	if *noHTTP {
 		if mcpMode {
 			skipHTTP = true
+			// RFC R: --no-http still boots a FULL second runtime (it only
+			// mutes the listener), which violates the single-runtime
+			// invariant and is the root of the cross-process interruption
+			// hang (F15) + rogue-runtime wedge (F16). The supported way to
+			// add an MCP surface next to a runtime is the thin client.
+			// (--upstream takes a different path entirely and never reaches
+			// here, so this warns only the deprecated standalone use.)
+			if *upstream == "" {
+				log.Printf("warning: `loomcycle mcp --no-http` is DEPRECATED — it boots a full second runtime alongside your real one (single-runtime invariant). Use `loomcycle mcp --upstream <runtime-url>` (thin client) instead.")
+			}
 		} else {
 			log.Printf("note: --no-http only takes effect in `loomcycle mcp` mode; flag ignored, HTTP listener will start normally")
 		}
