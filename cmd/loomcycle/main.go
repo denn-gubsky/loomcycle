@@ -1416,18 +1416,23 @@ func main() {
 	// Registered BEFORE srv.Mux() below — the SetWebhookMux hook fires
 	// inside Mux(), same ordering constraint as SetExtraMux for A2A.
 	if cfg.Env.WebhooksEnabled && storeIface != nil && srv != nil {
-		webhookAllowlist := make(map[string]bool, len(cfg.Env.SchedulerEnvAllowlist))
-		for _, name := range cfg.Env.SchedulerEnvAllowlist {
-			webhookAllowlist[name] = true
-		}
+		// The receiver's secret/credential allowlist is the union of the
+		// explicit operator knobs (LOOMCYCLE_SCHEDULER_ENV_ALLOWLIST +
+		// LOOMCYCLE_WEBHOOKS_ENV_ALLOWLIST) and every secret env declared by a
+		// STATIC webhook — so an operator-authored webhook resolves its own
+		// secret without a separate allowlist entry (the F23 trap). A
+		// LOOMCYCLE_*-named VERIFY secret resolves via the namespace auto-allow
+		// in resolveSecret even when not seeded here.
+		webhookAllowlist := webhookapi.BuildEnvAllowlist(cfg)
 		rec := webhookapi.New(webhookapi.Deps{
-			Store:        storeIface,
-			Cfg:          cfg,
-			Runner:       srv,
-			Publisher:    sysPublisher,
-			RunStateBus:  runStateBus,
-			EnvAllowlist: webhookAllowlist,
-			Logf:         log.Printf,
+			Store:                storeIface,
+			Cfg:                  cfg,
+			Runner:               srv,
+			Publisher:            sysPublisher,
+			RunStateBus:          runStateBus,
+			EnvAllowlist:         webhookAllowlist,
+			AllowUnauthenticated: cfg.Env.WebhooksAllowUnauthenticated,
+			Logf:                 log.Printf,
 		})
 		srv.SetWebhookMux(func(reg lchttp.MuxRegistrar, adminAuth func(http.Handler) http.Handler) {
 			// Receiver POST: unauthed (per-WebhookDef secret). Triage
@@ -1435,8 +1440,14 @@ func main() {
 			rec.Mount(reg)
 			rec.MountAdmin(reg, adminAuth)
 		})
-		log.Printf("webhooks: enabled (receiver mounted at POST /v1/_webhooks/{name}, env_allowlist=%d names)",
-			len(cfg.Env.SchedulerEnvAllowlist))
+		log.Printf("webhooks: enabled (POST /v1/_webhooks/{name}, env_allowlist=%d names via LOOMCYCLE_SCHEDULER_ENV_ALLOWLIST + LOOMCYCLE_WEBHOOKS_ENV_ALLOWLIST + static-declared secrets; LOOMCYCLE_* verify-secrets auto-allowed; unauthenticated_mode=%t)",
+			len(webhookAllowlist), cfg.Env.WebhooksAllowUnauthenticated)
+		// Surface every static webhook that will fail every delivery (inert,
+		// or its secret won't resolve) so the operator sees WHY at boot rather
+		// than discovering it via a 503 — the F23/F24 discoverability gap.
+		for _, warn := range webhookapi.UnresolvableStaticSecrets(cfg, webhookAllowlist, os.Getenv) {
+			log.Printf("webhooks: WARNING: %s", warn)
+		}
 	} else if cfg.Env.WebhooksEnabled {
 		log.Printf("webhooks: disabled (no Store backend or no HTTP server)")
 	} else {
