@@ -236,7 +236,7 @@ func runMCPRegistryAppend(args []string, stdout, stderr io.Writer) int {
 		var missingEnv *recipes.ErrMissingEnvVars
 		if errors.As(err, &missingEnv) {
 			fmt.Fprintln(stderr, err.Error())
-			fmt.Fprintln(stderr, "  Hint: add the missing names to your `env.allowlist:` block (or LOOMCYCLE_ENV_ALLOWLIST env var) before retrying.")
+			fmt.Fprintln(stderr, "  Hint: add the missing names to your config's `env.allowlist:` block before retrying.")
 			fmt.Fprintln(stderr, "  Or override with --skip-env-check if you understand the implications.")
 			return 2
 		}
