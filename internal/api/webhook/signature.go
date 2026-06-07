@@ -71,9 +71,20 @@ const (
 // to 401 with NO body detail.
 var errSignatureMismatch = errors.New("signature_mismatch")
 
-// resolveSecret reads an env var through the allowlist gate. Returns the
-// secret_unresolvable authError when the var is not allowlisted, unset, or
-// empty. The returned value is a secret — callers must never log it.
+// resolveSecret reads a VERIFICATION secret (HMAC signing key / bearer token)
+// through the allowlist gate. Returns the secret_unresolvable authError when the
+// var is not allowlisted, unset, or empty. The returned value is a secret —
+// callers must never log it.
+//
+// The gate admits a name when EITHER it is in the explicit allowlist (the
+// operator's LOOMCYCLE_SCHEDULER_ENV_ALLOWLIST / LOOMCYCLE_WEBHOOKS_ENV_ALLOWLIST
+// + every statically-declared webhook secret, seeded by BuildEnvAllowlist) OR it
+// passes config.ExpandEnvAllowed (the LOOMCYCLE_* namespace + known third-party
+// names — the same predicate that gates YAML ${...} expansion). The namespace
+// auto-allow is safe HERE because a verification secret is consumed by the
+// receiver for hmac.Equal / CompareBearer and never reaches the agent. The
+// agent-reachable user_credentials_from_env path deliberately does NOT get this
+// auto-allow (see buildRunInput) — it stays gated on the explicit allowlist.
 //
 // getenv is injected (rather than calling os.Getenv directly) so tests can
 // drive the allowlist/unset/empty branches deterministically without
@@ -82,8 +93,8 @@ func resolveSecret(envName string, allowlist map[string]bool, getenv func(string
 	if envName == "" {
 		return "", &authError{verdict: verdictUnresolved, secretEnv: envName, msg: "auth: no secret env var configured"}
 	}
-	if !allowlist[envName] {
-		return "", &authError{verdict: verdictUnresolved, secretEnv: envName, msg: fmt.Sprintf("auth: env var %q not in allowlist", envName)}
+	if !allowlist[envName] && !config.ExpandEnvAllowed(envName) {
+		return "", &authError{verdict: verdictUnresolved, secretEnv: envName, msg: fmt.Sprintf("auth: env var %q not allowlisted (add it to LOOMCYCLE_WEBHOOKS_ENV_ALLOWLIST, or use a LOOMCYCLE_*-prefixed name)", envName)}
 	}
 	v := getenv(envName)
 	if v == "" {

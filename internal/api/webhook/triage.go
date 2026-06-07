@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/denn-gubsky/loomcycle/internal/lookup"
 )
@@ -108,9 +109,21 @@ func (rec *Receiver) handleTest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 1. Verify the signature (no token consumed, no dedup recorded). Map the
-	//    failure to the same verdict labels the receive path uses.
-	if verr := verifySignature(wd.Auth, body, r.Header.Get, rec.envAllowlist, rec.getenv, rec.now); verr != nil {
+	// 1. Authenticate (no token consumed, no dedup recorded). Mirror the
+	//    receive path: auth.kind=none skips verification only when the operator
+	//    opted in, otherwise the dry-run reports the same refusal a delivery
+	//    would get. Map failures to the same verdict labels the receive path uses.
+	if strings.EqualFold(strings.TrimSpace(wd.Auth.Kind), "none") {
+		if !rec.allowUnauthenticated {
+			writeJSON(w, http.StatusOK, testResult{
+				WouldAccept:     false,
+				Verdict:         verdictUnresolved,
+				RunInputPreview: runInputPreview{},
+			})
+			return
+		}
+		// none + opted in → fall through to projection (would accept).
+	} else if verr := verifySignature(wd.Auth, body, r.Header.Get, rec.envAllowlist, rec.getenv, rec.now); verr != nil {
 		verdict := verdictRejectedSig
 		var ae *authError
 		if errors.As(verr, &ae) && ae.verdict == verdictUnresolved {
