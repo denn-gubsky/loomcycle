@@ -1854,7 +1854,11 @@ type Env struct {
 	// signing-secret + bearer-token + user_credentials_from_env reads
 	// (RFC F shared trigger-credential gate). The webhook receiver
 	// reuses it rather than a parallel list so an operator declares
-	// the env-var floor once for all autonomous-run triggers.
+	// the env-var floor once for all autonomous-run triggers. Webhook
+	// operators may also use the better-named LOOMCYCLE_WEBHOOKS_ENV_ALLOWLIST
+	// (merged with this one at receiver construction); and a webhook's own
+	// statically-declared secret + a LOOMCYCLE_*-named verify secret resolve
+	// without any allowlist entry. See internal/api/webhook.BuildEnvAllowlist.
 	SchedulerEnvAllowlist []string
 
 	// WebhooksEnabled enables the v1.x RFC H inbound-webhook receiver
@@ -1864,6 +1868,23 @@ type Env struct {
 	// works for authoring + listing, just nothing receives). Mirrors
 	// SchedulerEnabled exactly.
 	WebhooksEnabled bool
+
+	// WebhooksEnvAllowlist is the webhook-specific, correctly-named twin of
+	// SchedulerEnvAllowlist (LOOMCYCLE_WEBHOOKS_ENV_ALLOWLIST="VAR1,VAR2").
+	// Webhook operators kept reaching for a LOOMCYCLE_*ENV_ALLOWLIST and
+	// missing the scheduler-named knob; this names the gate after the
+	// subsystem. Merged with SchedulerEnvAllowlist at receiver construction
+	// (union, not replacement) — declaring either authorizes the name.
+	WebhooksEnvAllowlist []string
+
+	// WebhooksAllowUnauthenticated opts into the trusted-network ingress
+	// posture: a webhook with auth.kind="none" skips signature verification
+	// entirely. Default OFF — a none-auth webhook 503s
+	// "unauthenticated_mode_disabled" until the operator sets
+	// LOOMCYCLE_WEBHOOKS_ALLOW_UNAUTHENTICATED=1. For deployments where the
+	// receiver is only reachable over an already-authenticated transport
+	// (WireGuard/tailnet, mTLS mesh) and HMAC is redundant.
+	WebhooksAllowUnauthenticated bool
 
 	// A2AServerEnabled enables the v1.x RFC G A2A server HTTP surface
 	// (the well-known AgentCard URI + the three protocol-binding mounts
@@ -2359,6 +2380,15 @@ func Load(path string) (*Config, error) {
 	// false the receiver route is not mounted; the WebhookDef tool still
 	// works for authoring + listing.
 	cfg.Env.WebhooksEnabled = os.Getenv("LOOMCYCLE_WEBHOOKS_ENABLED") == "1"
+	if v := os.Getenv("LOOMCYCLE_WEBHOOKS_ENV_ALLOWLIST"); v != "" {
+		for _, name := range strings.Split(v, ",") {
+			name = strings.TrimSpace(name)
+			if name != "" {
+				cfg.Env.WebhooksEnvAllowlist = append(cfg.Env.WebhooksEnvAllowlist, name)
+			}
+		}
+	}
+	cfg.Env.WebhooksAllowUnauthenticated = os.Getenv("LOOMCYCLE_WEBHOOKS_ALLOW_UNAUTHENTICATED") == "1"
 
 	// v1.x RFC G A2A server surface. Default OFF; operator opts in via
 	// LOOMCYCLE_A2A_ENABLED=1 + names the active card to serve. Tenancy
@@ -2642,7 +2672,7 @@ func (c *Config) ResolveAgentDefModel(agent string, def AgentDef) (provider stri
 var envVarRe = regexp.MustCompile(`\$\{([A-Za-z_][A-Za-z0-9_]*)\}`)
 
 // expandEnv replaces ${VAR} with the value of VAR, but only for VARs whose
-// names match expandEnvAllowed. Other ${VAR} tokens pass through verbatim.
+// names match ExpandEnvAllowed. Other ${VAR} tokens pass through verbatim.
 //
 // Why an allowlist: a malicious or compromised YAML in a GitOps / shared-
 // config setup could otherwise inject `${ANTHROPIC_API_KEY}` into outbound
@@ -2657,7 +2687,7 @@ var envVarRe = regexp.MustCompile(`\$\{([A-Za-z_][A-Za-z0-9_]*)\}`)
 func expandEnv(s string) string {
 	return envVarRe.ReplaceAllStringFunc(s, func(m string) string {
 		name := m[2 : len(m)-1]
-		if !expandEnvAllowed(name) {
+		if !ExpandEnvAllowed(name) {
 			return m // leave verbatim — caller sees the literal ${...}
 		}
 		return os.Getenv(name)
@@ -2708,10 +2738,21 @@ func parseHeaderList(s string) map[string]string {
 	return out
 }
 
-// expandEnvAllowed reports whether the given env-var name may be expanded
+// ExpandEnvAllowed reports whether the given env-var name may be expanded
 // inside YAML. Allowlist:
 //   - any LOOMCYCLE_-prefixed variable (the project's own namespace)
 //   - well-known third-party keys MCP servers commonly need
+//
+// Exported because the v1.x RFC H webhook receiver reuses this exact
+// predicate as the VERIFICATION-secret namespace auto-allow: a webhook
+// whose signing_secret_env / bearer_token_env is LOOMCYCLE_*-prefixed (or
+// one of the known third-party names) resolves without an explicit
+// allowlist entry, mirroring the YAML ${LOOMCYCLE_*} posture. The verify
+// secret is consumed by the receiver and never reaches the agent, so the
+// auto-allow carries no exfiltration risk. (The agent-reachable
+// user_credentials_from_env path does NOT use this predicate — see
+// internal/api/webhook/runinput.go — so a runtime-authored webhook cannot
+// inject an arbitrary LOOMCYCLE_* value into a run.)
 //
 // Note on the v0.8.x ${run.user_bearer} tokens: these are intentionally
 // NOT handled here. envVarRe above requires var names matching
@@ -2722,7 +2763,7 @@ func parseHeaderList(s string) map[string]string {
 // header value like `Bearer ${run.user_bearer:-${LOOMCYCLE_STATIC}}`
 // has its inner ${LOOMCYCLE_STATIC} resolved here, while the outer
 // ${run.user_bearer:-...} flows through to the request-time substitution.
-func expandEnvAllowed(name string) bool {
+func ExpandEnvAllowed(name string) bool {
 	if strings.HasPrefix(name, "LOOMCYCLE_") {
 		return true
 	}

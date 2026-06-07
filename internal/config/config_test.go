@@ -2228,3 +2228,54 @@ scheduled_runs:
 		})
 	}
 }
+
+// TestExpandEnvAllowed_Predicate pins the exported predicate the webhook
+// receiver reuses for its verify-secret namespace auto-allow (F23). LOOMCYCLE_*
+// and the known third-party names are allowed; provider keys + arbitrary names
+// are NOT (they must never be expandable into outbound fields).
+func TestExpandEnvAllowed_Predicate(t *testing.T) {
+	allowed := []string{"LOOMCYCLE_FOO", "LOOMCYCLE_GITEA_WEBHOOK_SECRET", "GITHUB_TOKEN", "BRAVE_API_KEY"}
+	for _, n := range allowed {
+		if !ExpandEnvAllowed(n) {
+			t.Errorf("ExpandEnvAllowed(%q) = false, want true", n)
+		}
+	}
+	denied := []string{"ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GITEA_SECRET", "AWS_SECRET_ACCESS_KEY", "", "loomcycle_lowercase"}
+	for _, n := range denied {
+		if ExpandEnvAllowed(n) {
+			t.Errorf("ExpandEnvAllowed(%q) = true, want false", n)
+		}
+	}
+}
+
+// TestLoad_WebhooksEnvKnobs verifies the new webhook-specific env knobs are
+// parsed: LOOMCYCLE_WEBHOOKS_ENV_ALLOWLIST (comma list, trimmed) and
+// LOOMCYCLE_WEBHOOKS_ALLOW_UNAUTHENTICATED (=1 → true).
+func TestLoad_WebhooksEnvKnobs(t *testing.T) {
+	tmp := t.TempDir()
+	yamlPath := filepath.Join(tmp, "c.yaml")
+	if err := os.WriteFile(yamlPath, []byte("defaults: { provider: anthropic, model: claude-sonnet-4-6 }\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("ANTHROPIC_API_KEY", "sk-test")
+	t.Setenv("LOOMCYCLE_WEBHOOKS_ENV_ALLOWLIST", " GITEA_SECRET , STRIPE_WH_SECRET ,")
+	t.Setenv("LOOMCYCLE_WEBHOOKS_ALLOW_UNAUTHENTICATED", "1")
+
+	cfg, err := Load(yamlPath)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	got := cfg.Env.WebhooksEnvAllowlist
+	want := []string{"GITEA_SECRET", "STRIPE_WH_SECRET"}
+	if len(got) != len(want) {
+		t.Fatalf("WebhooksEnvAllowlist = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("WebhooksEnvAllowlist[%d] = %q, want %q", i, got[i], want[i])
+		}
+	}
+	if !cfg.Env.WebhooksAllowUnauthenticated {
+		t.Error("WebhooksAllowUnauthenticated = false, want true")
+	}
+}
