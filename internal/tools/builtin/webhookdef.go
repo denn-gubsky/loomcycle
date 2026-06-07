@@ -497,8 +497,18 @@ func validateWebhookDef(def mergedWebhookDef) error {
 		if !envVarNameRe.MatchString(def.Auth.BearerTokenEnv) {
 			return fmt.Errorf("auth.bearer_token_env %q is not a valid env-var name (must match [A-Z][A-Z0-9_]*)", def.Auth.BearerTokenEnv)
 		}
+	case "none":
+		// Trusted-network escape hatch: the receiver performs NO verification.
+		// It is honored only when the operator sets
+		// LOOMCYCLE_WEBHOOKS_ALLOW_UNAUTHENTICATED=1; otherwise every delivery
+		// 503s "unauthenticated_mode_disabled". Forbid declaring a secret that
+		// would never be consumed — silent dead config is worse than a loud
+		// refusal (RFC H Decision 9, never-silently-degrade).
+		if def.Auth.SigningSecretEnv != "" || def.Auth.BearerTokenEnv != "" {
+			return fmt.Errorf("auth.kind=none forbids signing_secret_env / bearer_token_env (no verification is performed)")
+		}
 	default:
-		return fmt.Errorf("unknown auth.kind %q (must be one of: hmac, bearer)", def.Auth.Kind)
+		return fmt.Errorf("unknown auth.kind %q (must be one of: hmac, bearer, none)", def.Auth.Kind)
 	}
 
 	// Every value in user_credentials_from_env must be a valid env-var

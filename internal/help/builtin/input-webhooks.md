@@ -35,10 +35,37 @@ loomcycle as an A2A peer, see `a2a-integration`.
 ## Enabling
 
 Off by default. Set `LOOMCYCLE_WEBHOOKS_ENABLED=1`; the receiver mounts at
-`POST /v1/_webhooks/{name}`. Signing secrets + per-run credentials resolve
-through the **same env-allowlist** the scheduler uses
-(`LOOMCYCLE_SCHEDULER_ENV_ALLOWLIST`) — a value not on the allowlist is
-never read.
+`POST /v1/_webhooks/{name}`.
+
+**Secret resolution (read this first — it is the #1 setup snag).** A signing
+secret / bearer token / `user_credentials_from_env` value resolves only if its
+env-var NAME is authorized. The receiver authorizes a name when **any** of:
+
+1. it is **`LOOMCYCLE_*`-prefixed** (or a known third-party name like
+   `GITHUB_TOKEN`) — auto-allowed for the **verification secret** only
+   (`signing_secret_env` / `bearer_token_env`), which is consumed by the
+   receiver and never reaches the agent. This is why
+   `signing_secret_env: "LOOMCYCLE_GITEA_WEBHOOK_SECRET"` Just Works with no
+   allowlist config;
+2. it is declared by a **static** (operator-authored yaml) webhook — its own
+   secret + `user_credentials_from_env` names are auto-trusted;
+3. it is listed in **`LOOMCYCLE_WEBHOOKS_ENV_ALLOWLIST`** (comma-separated) or
+   the scheduler's shared **`LOOMCYCLE_SCHEDULER_ENV_ALLOWLIST`**.
+
+The agent-reachable `user_credentials_from_env` path does **not** get rule 1's
+namespace auto-allow for *runtime*-authored (`webhookdef`-tool) defs — name a
+non-static credential env explicitly in `LOOMCYCLE_WEBHOOKS_ENV_ALLOWLIST` so a
+less-trusted authoring path can't inject an arbitrary env var into a run. A name
+that resolves by none of the rules → `503 secret_unresolvable` (naming the env
+var, never its value). The boot log prints the live allowlist count and a
+`WARNING:` line per static webhook whose secret won't resolve.
+
+**Trusted-network (no-auth) ingress.** For a receiver only reachable over an
+already-authenticated transport (WireGuard/tailnet, mTLS mesh) where HMAC is
+redundant, set `auth.kind: none`. It is refused (`503
+unauthenticated_mode_disabled`) unless the operator opts in with
+`LOOMCYCLE_WEBHOOKS_ALLOW_UNAUTHENTICATED=1` — the default never silently
+accepts unsigned external POSTs.
 
 ## Defining a webhook
 
@@ -110,12 +137,15 @@ A shared front-half runs for every request, then forks on `delivery`:
 
 ## The signing secret
 
-`signing_secret_env` (HMAC) / `bearer_token_env` (bearer) name an env var
-that must be on the operator's env allowlist (the **same**
-`LOOMCYCLE_SCHEDULER_ENV_ALLOWLIST` the scheduler uses — it is the shared
-trigger-credential gate). A missing or unresolvable secret **fails loud**:
-`503 secret_unresolvable`, naming the env var — never its value. Rotate by
-changing the env var and reloading; no plaintext secret ever lives in a Def.
+`signing_secret_env` (HMAC) / `bearer_token_env` (bearer) name an env var the
+receiver authorizes via the rules under **Enabling** above: a `LOOMCYCLE_*` (or
+known third-party) name is auto-allowed; a static webhook's declared name is
+auto-trusted; otherwise list it in `LOOMCYCLE_WEBHOOKS_ENV_ALLOWLIST` (or the
+scheduler's shared `LOOMCYCLE_SCHEDULER_ENV_ALLOWLIST`). The verification secret
+is consumed by the receiver for the constant-time MAC/bearer compare and never
+reaches the agent. A missing or unresolvable secret **fails loud**: `503
+secret_unresolvable`, naming the env var — never its value. Rotate by changing
+the env var and reloading; no plaintext secret ever lives in a Def.
 
 ## MCP-tool bearer tokens for the spawned run (same as schedulers)
 

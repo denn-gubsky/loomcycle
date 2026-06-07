@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -43,7 +44,11 @@ type Receiver struct {
 	publisher    channels.SystemPublisher
 	runStateBus  *runstate.Bus
 	envAllowlist map[string]bool
-	logf         func(format string, args ...any)
+	// allowUnauthenticated honors auth.kind="none" (skip verification). When
+	// false (default) a none-auth webhook 503s rather than silently accepting
+	// unsigned external POSTs. Set from LOOMCYCLE_WEBHOOKS_ALLOW_UNAUTHENTICATED.
+	allowUnauthenticated bool
+	logf                 func(format string, args ...any)
 
 	dedup   *dedupCache
 	limiter *rateLimiter
@@ -71,7 +76,9 @@ type Deps struct {
 	Publisher    channels.SystemPublisher
 	RunStateBus  *runstate.Bus
 	EnvAllowlist map[string]bool
-	Logf         func(format string, args ...any)
+	// AllowUnauthenticated enables auth.kind="none" webhooks. Default false.
+	AllowUnauthenticated bool
+	Logf                 func(format string, args ...any)
 
 	// Now + Getenv are test seams. Nil falls back to time.Now / os.Getenv.
 	Now    func() time.Time
@@ -94,17 +101,18 @@ func New(d Deps) *Receiver {
 		logf = func(string, ...any) {}
 	}
 	return &Receiver{
-		store:        d.Store,
-		cfg:          d.Cfg,
-		runner:       d.Runner,
-		publisher:    d.Publisher,
-		runStateBus:  d.RunStateBus,
-		envAllowlist: d.EnvAllowlist,
-		logf:         logf,
-		dedup:        newDedupCache(now),
-		limiter:      newRateLimiter(now),
-		now:          now,
-		getenv:       getenv,
+		store:                d.Store,
+		cfg:                  d.Cfg,
+		runner:               d.Runner,
+		publisher:            d.Publisher,
+		runStateBus:          d.RunStateBus,
+		envAllowlist:         d.EnvAllowlist,
+		allowUnauthenticated: d.AllowUnauthenticated,
+		logf:                 logf,
+		dedup:                newDedupCache(now),
+		limiter:              newRateLimiter(now),
+		now:                  now,
+		getenv:               getenv,
 	}
 }
 
@@ -163,8 +171,22 @@ func (rec *Receiver) handle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 3. VERIFY BEFORE PARSE — signature over the raw bytes.
-	if verr := verifySignature(wd.Auth, body, r.Header.Get, rec.envAllowlist, rec.getenv, rec.now); verr != nil {
+	// 3. AUTHENTICATE (VERIFY BEFORE PARSE — over the raw bytes).
+	//
+	//    auth.kind="none" is the trusted-network escape hatch: skip
+	//    verification entirely, but ONLY when the operator has explicitly
+	//    opted in (LOOMCYCLE_WEBHOOKS_ALLOW_UNAUTHENTICATED=1). Otherwise it
+	//    503s loudly — silently accepting unsigned external POSTs would be a
+	//    footgun, so the default refuses even though the Def asked for no auth.
+	if strings.EqualFold(strings.TrimSpace(wd.Auth.Kind), "none") {
+		if !rec.allowUnauthenticated {
+			rec.finish(span, name, "", verdictUnresolved, "")
+			rec.logf("webhook %q: auth.kind=none but LOOMCYCLE_WEBHOOKS_ALLOW_UNAUTHENTICATED is not set — refusing", name)
+			writeError(w, http.StatusServiceUnavailable, "unauthenticated_mode_disabled", "set LOOMCYCLE_WEBHOOKS_ALLOW_UNAUTHENTICATED=1 to enable auth.kind=none")
+			return
+		}
+		rec.logf("webhook %q: accepted UNAUTHENTICATED delivery (auth.kind=none)", name)
+	} else if verr := verifySignature(wd.Auth, body, r.Header.Get, rec.envAllowlist, rec.getenv, rec.now); verr != nil {
 		var ae *authError
 		if errors.As(verr, &ae) && ae.verdict == verdictUnresolved {
 			// Config-side failure (secret not allowlisted / unset). 503 names
