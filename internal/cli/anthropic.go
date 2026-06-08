@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"io/fs"
@@ -19,7 +20,8 @@ import (
 // RunAnthropic dispatches to one of:
 //
 //	loomcycle anthropic login           one-time OAuth login (opens browser)
-//	loomcycle anthropic status          print current token state
+//	loomcycle anthropic status [--probe] print token state; --probe verifies
+//	                                    server-side validity (refreshes the token)
 //	loomcycle anthropic logout          delete the local token file
 //
 // All three are gated on LOOMCYCLE_ANTHROPIC_OAUTH_DEV_ENABLED=1 — when
@@ -165,8 +167,15 @@ func runAnthropicLogin(args []string, stdout, stderr io.Writer) int {
 // when no token exists (logout-status pattern: status is informational,
 // not a precondition check).
 func runAnthropicStatus(args []string, stdout, stderr io.Writer) int {
-	if len(args) > 0 {
-		fmt.Fprintf(stderr, "status: takes no arguments\n")
+	fs := flag.NewFlagSet("anthropic status", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	probe := fs.Bool("probe", false, "verify server-side validity by attempting a token refresh against Anthropic (opt-in network call; rotates + heals the token on success)")
+	fs.BoolVar(probe, "verify", false, "alias for --probe")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if fs.NArg() > 0 {
+		fmt.Fprintf(stderr, "status: takes no positional arguments\n")
 		return 2
 	}
 	storePath, err := oauthdev.DefaultTokenStorePath()
@@ -174,8 +183,14 @@ func runAnthropicStatus(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "status: cannot resolve config dir: %v\n", err)
 		return 1
 	}
-	store := oauthdev.NewTokenStore(storePath)
-	fmt.Fprintf(stdout, "Token storage: %s\n", storePath)
+	return anthropicStatus(stdout, stderr, oauthdev.NewTokenStore(storePath), *probe, oauthdev.ExchangeOptions{})
+}
+
+// anthropicStatus is the testable core of `anthropic status`. store + opts are
+// injected so a test can drive the --probe path against a fake token endpoint.
+// opts is the empty value in production (default endpoint + client).
+func anthropicStatus(stdout, stderr io.Writer, store *oauthdev.TokenStore, probe bool, opts oauthdev.ExchangeOptions) int {
+	fmt.Fprintf(stdout, "Token storage: %s\n", store.Path())
 	tok, err := store.Load()
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
@@ -198,6 +213,34 @@ func runAnthropicStatus(args []string, stdout, stderr io.Writer) int {
 	if err := store.VerifyPermissions(); err != nil {
 		fmt.Fprintf(stdout, "⚠ WARNING:     %v\n", err)
 	}
+
+	if !probe {
+		// F6: every field above is LOCAL token-file metadata — a token can read
+		// "valid / expires in 6h" while Anthropic has already revoked it. Say so
+		// instead of implying the green state was confirmed server-side.
+		fmt.Fprintln(stdout, "Server-side:   not checked (local metadata only) — pass --probe to verify against Anthropic")
+		return 0
+	}
+
+	// --probe: confirm server-side validity by attempting a refresh — the exact
+	// path F6 found silently dead ("refresh failed: invalid_grant"). It is free
+	// (token endpoint, no inference billing) and runs through the canonical
+	// Refresher, so a successful probe also ROTATES + persists a fresh token
+	// (heals/extends the session).
+	if tok.RefreshToken == "" {
+		fmt.Fprintln(stdout, "Server-side:   cannot probe — no refresh token in the store; run `loomcycle anthropic login`")
+		return 1
+	}
+	refresher := oauthdev.NewRefresher(store, opts, func(string, ...any) {})
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := refresher.RefreshNow(ctx); err != nil {
+		fmt.Fprintf(stdout, "Server-side:   ✗ INVALID — %v\n", err)
+		fmt.Fprintln(stdout, "Run `loomcycle anthropic login` to re-authorize.")
+		return 1
+	}
+	fmt.Fprintf(stdout, "Server-side:   ✓ valid (refresh succeeded; token rotated, new expiry %s)\n",
+		refresher.Token().ExpiresAt.Format(time.RFC3339))
 	return 0
 }
 
