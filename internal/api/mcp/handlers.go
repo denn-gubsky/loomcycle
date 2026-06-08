@@ -30,6 +30,9 @@ var handlersByName = map[string]toolHandler{
 	"unregister_agent": handleUnregisterAgent,
 	"list_agents":      handleListAgents,
 
+	// Channel admin CRUD (F20) — the MCP twin of REST /v1/_channels.
+	"channeldef": handleChannelDef,
+
 	// Builtin wrappers
 	"memory": wrapBuiltin("memory", func(c connector.Connector, ctx context.Context, in json.RawMessage) (connector.ToolResult, error) {
 		return c.Memory(ctx, in)
@@ -377,6 +380,59 @@ func handleRegisterAgent(ctx context.Context, env *handlerEnv, args json.RawMess
 		return toolErr("register_agent: " + err.Error()), nil
 	}
 	return toolResultJSON(res), nil
+}
+
+// handleChannelDef is the MCP twin of the REST POST/PATCH/DELETE
+// /v1/_channels admin surface (F20): channel create/update/delete over MCP, so
+// an MCP orchestrator no longer has to drop to raw REST (or a DB delete) to
+// manage the runtime channel substrate. Dispatches the op to the existing
+// Connector channel-admin methods — yaml-declared channels stay immutable
+// (the Connector returns channel_yaml_immutable, surfaced as a tool error).
+func handleChannelDef(ctx context.Context, env *handlerEnv, args json.RawMessage) (*loommcp.CallToolResult, error) {
+	if env.connector == nil {
+		return nil, fmt.Errorf("channeldef: no connector wired")
+	}
+	var disc struct {
+		Op   string `json:"op"`
+		Name string `json:"name"`
+	}
+	if err := json.Unmarshal(args, &disc); err != nil {
+		return toolErr("invalid channeldef arguments: " + err.Error()), nil
+	}
+	if disc.Name == "" {
+		return toolErr("channeldef: name is required"), nil
+	}
+	switch disc.Op {
+	case "create":
+		var req connector.ChannelCreateRequest
+		if err := json.Unmarshal(args, &req); err != nil {
+			return toolErr("invalid channeldef create arguments: " + err.Error()), nil
+		}
+		res, err := env.connector.CreateChannel(ctx, req)
+		if err != nil {
+			return toolErr("channeldef create: " + err.Error()), nil
+		}
+		return toolResultJSON(res), nil
+	case "update":
+		var req connector.ChannelUpdateRequest
+		if err := json.Unmarshal(args, &req); err != nil {
+			return toolErr("invalid channeldef update arguments: " + err.Error()), nil
+		}
+		res, err := env.connector.UpdateChannel(ctx, disc.Name, req)
+		if err != nil {
+			return toolErr("channeldef update: " + err.Error()), nil
+		}
+		return toolResultJSON(res), nil
+	case "delete":
+		if err := env.connector.DeleteChannel(ctx, disc.Name); err != nil {
+			return toolErr("channeldef delete: " + err.Error()), nil
+		}
+		return toolResultJSON(map[string]any{"name": disc.Name, "deleted": true}), nil
+	case "":
+		return toolErr("channeldef: missing required field: op"), nil
+	default:
+		return toolErr(fmt.Sprintf("channeldef: unknown op %q (want create, update, delete)", disc.Op)), nil
+	}
 }
 
 func handleUnregisterAgent(ctx context.Context, env *handlerEnv, args json.RawMessage) (*loommcp.CallToolResult, error) {

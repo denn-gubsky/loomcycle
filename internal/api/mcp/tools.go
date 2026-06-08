@@ -148,6 +148,24 @@ func toolDescriptors() []loommcp.ToolDescriptor {
 			InputSchema: builtinSchema("channel"),
 		},
 		{
+			Name:        "channeldef",
+			Description: "Channel admin CRUD (create/update/delete) for the runtime-declared channel substrate — the MCP twin of the REST POST/PATCH/DELETE /v1/_channels surface (F20). yaml-declared channels are immutable (create/update/delete on one returns channel_yaml_immutable).",
+			InputSchema: rawJSON(`{
+				"type": "object",
+				"required": ["op", "name"],
+				"properties": {
+					"op":           {"type": "string", "enum": ["create", "update", "delete"], "description": "Which admin operation to perform."},
+					"name":         {"type": "string", "description": "Channel name (required for all ops)."},
+					"description":  {"type": "string"},
+					"scope":        {"type": "string", "enum": ["global", "agent", "user"], "description": "create only. Default global."},
+					"semantic":     {"type": "string", "enum": ["queue", "topic"], "description": "Default queue."},
+					"default_ttl":  {"type": "integer", "description": "Per-message TTL seconds. 0 = no TTL."},
+					"max_messages": {"type": "integer", "description": "Bounded-queue cap. 0 = unbounded."},
+					"publisher":    {"type": "string", "description": "create only. Free-form attribution."}
+				}
+			}`),
+		},
+		{
 			Name:        "agentdef",
 			Description: "AgentDef tool ops (create/fork/get/list/promote/retire). Pass-through.",
 			InputSchema: builtinSchema("agentdef"),
