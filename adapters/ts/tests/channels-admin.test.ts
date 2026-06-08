@@ -119,3 +119,25 @@ describe("deleteChannel", () => {
     await expect(client.deleteChannel("missing")).rejects.toBeInstanceOf(LoomcycleError);
   });
 });
+
+// F20 — purge clears buffered messages (allowed on yaml channels, unlike
+// delete) and returns the cleared count.
+describe("purgeChannel", () => {
+  it("POSTs to /{name}/purge and returns the cleared count", async () => {
+    const { client, fetchMock } = makeClient([
+      jsonResponse({ name: "team-updates", purged: 7 }),
+    ]);
+    const res = await client.purgeChannel("team-updates");
+    expect(res).toEqual({ name: "team-updates", purged: 7 });
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(url).toBe("http://test-loomcycle:8787/v1/_channels/team-updates/purge");
+    expect(init.method).toBe("POST");
+  });
+
+  it("surfaces 404 as a typed error", async () => {
+    const { client } = makeClient([
+      errorResponse(404, `{"code":"channel_not_found","error":"channel not found"}`),
+    ]);
+    await expect(client.purgeChannel("ghost")).rejects.toBeInstanceOf(LoomcycleError);
+  });
+});

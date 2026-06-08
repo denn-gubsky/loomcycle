@@ -59,6 +59,7 @@ import type {
   ChannelDescriptor,
   ChannelPeekResult,
   ChannelPublishResult,
+  ChannelPurgeResult,
   ChannelSubscribeResult,
   CreateChannelOptions,
   ListChannelsResponse,
@@ -1328,6 +1329,24 @@ export class LoomcycleClient {
       this.ctx,
       `/v1/_channels/${encodeURIComponent(name)}`,
       opts,
+    );
+  }
+
+  /** Clear all buffered messages on a channel WITHOUT removing its
+   *  definition or subscriber cursors. Unlike {@link deleteChannel} this
+   *  is allowed on yaml-declared channels too — draining a yaml channel
+   *  that filled with test traffic was the F20 pain it solves. Returns
+   *  the channel name + the number of messages cleared. Unknown channels
+   *  reject with a {@link NotFoundError}. */
+  async purgeChannel(
+    name: string,
+    opts?: { signal?: AbortSignal },
+  ): Promise<ChannelPurgeResult> {
+    return postJSON<ChannelPurgeResult>(
+      this.ctx,
+      `/v1/_channels/${encodeURIComponent(name)}/purge`,
+      {},
+      { signal: opts?.signal },
     );
   }
 

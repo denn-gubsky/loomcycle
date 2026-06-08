@@ -382,12 +382,14 @@ func handleRegisterAgent(ctx context.Context, env *handlerEnv, args json.RawMess
 	return toolResultJSON(res), nil
 }
 
-// handleChannelDef is the MCP twin of the REST POST/PATCH/DELETE
-// /v1/_channels admin surface (F20): channel create/update/delete over MCP, so
-// an MCP orchestrator no longer has to drop to raw REST (or a DB delete) to
-// manage the runtime channel substrate. Dispatches the op to the existing
-// Connector channel-admin methods — yaml-declared channels stay immutable
-// (the Connector returns channel_yaml_immutable, surfaced as a tool error).
+// handleChannelDef is the MCP twin of the REST /v1/_channels admin surface
+// (F20): channel create/update/delete/purge over MCP, so an MCP orchestrator no
+// longer has to drop to raw REST (or a DB delete) to manage the runtime channel
+// substrate. Dispatches the op to the existing Connector channel-admin methods.
+// create/update/delete refuse yaml-declared channels (the Connector returns
+// channel_yaml_immutable, surfaced as a tool error); purge is the exception —
+// it clears buffered messages on ANY channel (yaml included) without touching
+// the definition, the op that previously needed a raw channel_messages delete.
 func handleChannelDef(ctx context.Context, env *handlerEnv, args json.RawMessage) (*loommcp.CallToolResult, error) {
 	if env.connector == nil {
 		return nil, fmt.Errorf("channeldef: no connector wired")
@@ -428,10 +430,16 @@ func handleChannelDef(ctx context.Context, env *handlerEnv, args json.RawMessage
 			return toolErr("channeldef delete: " + err.Error()), nil
 		}
 		return toolResultJSON(map[string]any{"name": disc.Name, "deleted": true}), nil
+	case "purge":
+		res, err := env.connector.PurgeChannel(ctx, disc.Name)
+		if err != nil {
+			return toolErr("channeldef purge: " + err.Error()), nil
+		}
+		return toolResultJSON(res), nil
 	case "":
 		return toolErr("channeldef: missing required field: op"), nil
 	default:
-		return toolErr(fmt.Sprintf("channeldef: unknown op %q (want create, update, delete)", disc.Op)), nil
+		return toolErr(fmt.Sprintf("channeldef: unknown op %q (want create, update, delete, purge)", disc.Op)), nil
 	}
 }
 

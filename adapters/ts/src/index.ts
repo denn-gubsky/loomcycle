@@ -175,6 +175,7 @@ export type {
   ChannelMessageItem,
   ChannelPeekResult,
   ChannelPublishResult,
+  ChannelPurgeResult,
   ChannelScope,
   ChannelSubscribeResult,
   PeekChannelOptions,

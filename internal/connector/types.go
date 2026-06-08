@@ -499,6 +499,13 @@ type ChannelUpdateRequest struct {
 	Semantic    *string `json:"semantic,omitempty"`
 }
 
+// ChannelPurgeResult is the output of Connector.PurgeChannel — the
+// channel name and the count of buffered messages cleared.
+type ChannelPurgeResult struct {
+	Name   string `json:"name"`
+	Purged int    `json:"purged"`
+}
+
 // StreamUserRunStatesRequest is the input to Connector.StreamUserRunStates.
 // UserID is required; Statuses and Agent are optional filters that match
 // the SSE handler's ?status=...&agent=... query params.

@@ -818,6 +818,13 @@ export interface ListChannelsResponse {
   channels: ChannelDescriptor[];
 }
 
+/** Result of {@link LoomcycleClient.purgeChannel} — the channel name and
+ *  the count of buffered messages cleared. */
+export interface ChannelPurgeResult {
+  name: string;
+  purged: number;
+}
+
 // ---- v0.9.x Channel CRUD types ----
 
 /** Scope selector for the Channel CRUD methods. `"global"` addresses

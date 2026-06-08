@@ -57,6 +57,74 @@ func channelCRUDFixture(t *testing.T) (*Server, store.Store, func()) {
 	return srv, s, func() { _ = s.Close() }
 }
 
+// TestChannelPurge_AllowedOnYamlChannel is the F20 follow-up: purge clears a
+// yaml-declared channel's buffered messages WITHOUT touching its definition —
+// the op that previously needed a raw channel_messages delete. Contrast with
+// DELETE, which refuses the same channel (yaml is immutable). Exercises the
+// full REST → Connector.PurgeChannel → store.ChannelPurge path.
+func TestChannelPurge_AllowedOnYamlChannel(t *testing.T) {
+	srv, s, cleanup := channelCRUDFixture(t)
+	defer cleanup()
+
+	// Buffer two messages on the yaml-declared "team-updates" channel.
+	for _, ev := range []string{"a", "b"} {
+		body := `{"payload":{"event":"` + ev + `"}}`
+		req := authedRequest("POST", "/v1/_channels/team-updates/publish", strings.NewReader(body))
+		rec := httptest.NewRecorder()
+		srv.Mux().ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("publish %s: status %d (%s)", ev, rec.Code, rec.Body.String())
+		}
+	}
+
+	// Sanity: DELETE refuses a yaml channel (409) — purge must succeed
+	// where delete cannot, which is the entire point of the op.
+	delReq := authedRequest("DELETE", "/v1/_channels/team-updates", nil)
+	delRec := httptest.NewRecorder()
+	srv.Mux().ServeHTTP(delRec, delReq)
+	if delRec.Code != http.StatusConflict {
+		t.Fatalf("DELETE yaml channel: status %d, want 409", delRec.Code)
+	}
+
+	// PURGE clears the buffered messages.
+	purgeReq := authedRequest("POST", "/v1/_channels/team-updates/purge", nil)
+	purgeRec := httptest.NewRecorder()
+	srv.Mux().ServeHTTP(purgeRec, purgeReq)
+	if purgeRec.Code != http.StatusOK {
+		t.Fatalf("purge: status %d (%s)", purgeRec.Code, purgeRec.Body.String())
+	}
+	var res connector.ChannelPurgeResult
+	if err := json.NewDecoder(purgeRec.Body).Decode(&res); err != nil {
+		t.Fatalf("decode purge result: %v", err)
+	}
+	if res.Name != "team-updates" || res.Purged != 2 {
+		t.Errorf("purge result = %+v, want {team-updates 2}", res)
+	}
+
+	// The channel is now empty but still declared (peek works, returns 0).
+	rows, err := s.ChannelPeek(t.Context(), "team-updates", store.MemoryScopeGlobal, "", "", 10)
+	if err != nil {
+		t.Fatalf("ChannelPeek after purge: %v", err)
+	}
+	if len(rows) != 0 {
+		t.Errorf("after purge: %d messages remain, want 0", len(rows))
+	}
+}
+
+// TestChannelPurge_NotFound 404s on a name that is neither yaml-declared nor
+// in the runtime substrate.
+func TestChannelPurge_NotFound(t *testing.T) {
+	srv, _, cleanup := channelCRUDFixture(t)
+	defer cleanup()
+
+	req := authedRequest("POST", "/v1/_channels/ghost/purge", nil)
+	rec := httptest.NewRecorder()
+	srv.Mux().ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("purge unknown channel: status %d, want 404 (body %s)", rec.Code, rec.Body.String())
+	}
+}
+
 // TestAdminChannelPublish_HappyPath verifies a bearer-authed POST to
 // the admin publish endpoint stores the message + returns the
 // expected wire shape.

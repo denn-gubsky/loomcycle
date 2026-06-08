@@ -157,3 +157,14 @@ func (s *Store) ChannelsDelete(ctx context.Context, name string) error {
 	}
 	return nil
 }
+
+// ChannelPurge deletes every channel_messages row for `name` and
+// returns the count. Leaves the channels row + channel_cursors intact
+// — see store.Store.ChannelPurge. One DELETE; no transaction needed.
+func (s *Store) ChannelPurge(ctx context.Context, name string) (int, error) {
+	tag, err := s.pool.Exec(ctx, `DELETE FROM channel_messages WHERE channel = $1`, name)
+	if err != nil {
+		return 0, fmt.Errorf("channel purge: %w", err)
+	}
+	return int(tag.RowsAffected()), nil
+}

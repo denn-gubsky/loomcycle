@@ -38,7 +38,7 @@ type mockConnector struct {
 	spawnMaxSeen atomic.Int32
 	regCalls     atomic.Int32
 	regResult    connector.AgentDescriptor
-	chanDefCalls atomic.Int32 // CreateChannel + UpdateChannel + DeleteChannel
+	chanDefCalls atomic.Int32 // CreateChannel + UpdateChannel + DeleteChannel + PurgeChannel
 	pauseResult  connector.PauseResult
 	listCallback func()
 
@@ -251,6 +251,10 @@ func (m *mockConnector) UpdateChannel(context.Context, string, connector.Channel
 func (m *mockConnector) DeleteChannel(context.Context, string) error {
 	m.chanDefCalls.Add(1)
 	return nil
+}
+func (m *mockConnector) PurgeChannel(context.Context, string) (connector.ChannelPurgeResult, error) {
+	m.chanDefCalls.Add(1)
+	return connector.ChannelPurgeResult{}, nil
 }
 
 // driveServer runs the server against the given input lines and
@@ -637,6 +641,7 @@ func TestServer_ChannelDef_DispatchesThroughConnector(t *testing.T) {
 		{"create", `{"op":"create","name":"runtime-ch","scope":"global","semantic":"queue"}`},
 		{"update", `{"op":"update","name":"runtime-ch","max_messages":100}`},
 		{"delete", `{"op":"delete","name":"runtime-ch"}`},
+		{"purge", `{"op":"purge","name":"runtime-ch"}`},
 	} {
 		t.Run(tc.op, func(t *testing.T) {
 			mc := &mockConnector{}

@@ -1854,6 +1854,7 @@ func (s *Server) Mux() http.Handler {
 	mux.Handle("POST /v1/_channels/{name}/subscribe", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleAdminChannelSubscribe))))
 	mux.Handle("GET /v1/_channels/{name}/peek", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleAdminChannelPeek))))
 	mux.Handle("POST /v1/_channels/{name}/ack", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleAdminChannelAck))))
+	mux.Handle("POST /v1/_channels/{name}/purge", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleChannelPurge))))
 	mux.Handle("POST /v1/users/{user_id}/channels/{name}/publish", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleUserChannelPublish))))
 	mux.Handle("POST /v1/users/{user_id}/channels/{name}/subscribe", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleUserChannelSubscribe))))
 	mux.Handle("GET /v1/users/{user_id}/channels/{name}/peek", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleUserChannelPeek))))
