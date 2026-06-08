@@ -83,8 +83,15 @@ Mirror of the in-band tool. The wire docs cover the deltas:
   for scope=user.
 - **subscribe** — single-round-trip long-poll. Returns immediately
   if messages are present; otherwise waits up to `wait_ms` (capped
-  at the operator's `ChannelsLongPollCapMS`, default 30s) for a
-  publish. **Auto-commits the cursor on a non-empty batch** —
+  at the operator's `ChannelsLongPollCapMS` / `LOOMCYCLE_CHANNELS_LONGPOLL_CAP_MS`,
+  default 30s) for a publish. A `wait_ms` larger than the cap is
+  **silently truncated** to it (logged once per channel as a boot/runtime
+  WARNING). **Interaction with `max_iterations`:** an agent that wants a long
+  wait (e.g. 300s) but is capped at 30s re-subscribes ~10× — each
+  re-subscribe consumes one of the agent's `max_iterations`, so a too-low cap
+  can exhaust the iteration budget before any message arrives. Raise the cap
+  (or the agent's `max_iterations`) when long parks are intended.
+  **Auto-commits the cursor on a non-empty batch** —
   at-most-once shape, same as the in-band tool's subscribe op.
   Returns `{channel, messages, next_cursor}`.
 - **peek** — non-destructive read. Defaults to `cur_0` (replay from
