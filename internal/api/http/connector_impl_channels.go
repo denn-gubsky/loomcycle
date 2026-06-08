@@ -39,19 +39,34 @@ func resolveChannelScope(scopeStr, scopeID string) (store.MemoryScope, string, e
 	}
 }
 
-// requireChannelDeclared reads `cfg.Channels[name]` and returns
-// ErrChannelNotDeclared if the operator yaml didn't declare it.
-// Mirrors the in-band tool's allowlist check (channel.go:resolveChannel)
-// at the wire boundary.
-func (s *Server) requireChannelDeclared(name string) (channelDef, error) {
-	def, ok := s.cfg.Channels[name]
-	if !ok {
-		return channelDef{}, fmt.Errorf("%w: %q", connector.ErrChannelNotDeclared, name)
+// requireChannelDeclared resolves `name` against the yaml `cfg.Channels`
+// block first, then the runtime channel store. F29: a channel declared at
+// runtime (POST /v1/_channels) must be publishable/subscribable like a yaml
+// channel — without the store fallback the admin publish/subscribe routes
+// 404'd `channel_not_declared` for a perfectly valid runtime channel.
+// Returns ErrChannelNotDeclared only when NEITHER source has it. Mirrors the
+// in-band tool's allowlist check (channel.go:resolveChannel) and the per-run
+// channelPolicyForAgent merge, at the wire boundary.
+func (s *Server) requireChannelDeclared(ctx context.Context, name string) (channelDef, error) {
+	if def, ok := s.cfg.Channels[name]; ok {
+		return channelDef{
+			MaxMessages: def.MaxMessages,
+			DefaultTTL:  def.DefaultTTL,
+		}, nil
 	}
-	return channelDef{
-		MaxMessages: def.MaxMessages,
-		DefaultTTL:  def.DefaultTTL,
-	}, nil
+	if s.store != nil {
+		if rows, err := s.store.ChannelsList(ctx); err == nil {
+			for _, r := range rows {
+				if r.Name == name {
+					return channelDef{
+						MaxMessages: r.MaxMessages,
+						DefaultTTL:  r.DefaultTTL,
+					}, nil
+				}
+			}
+		}
+	}
+	return channelDef{}, fmt.Errorf("%w: %q", connector.ErrChannelNotDeclared, name)
 }
 
 // channelDef captures only the fields the Connector methods need —
@@ -82,7 +97,7 @@ func (s *Server) PublishChannel(ctx context.Context, req connector.ChannelPublis
 		return connector.ChannelPublishResult{}, fmt.Errorf("publish: payload (%d bytes) exceeds max %d", len(req.Payload), cap)
 	}
 
-	def, err := s.requireChannelDeclared(req.Channel)
+	def, err := s.requireChannelDeclared(ctx, req.Channel)
 	if err != nil {
 		return connector.ChannelPublishResult{}, err
 	}
@@ -136,7 +151,7 @@ func (s *Server) SubscribeChannel(ctx context.Context, req connector.ChannelSubs
 	if req.Channel == "" {
 		return connector.ChannelSubscribeResult{}, fmt.Errorf("subscribe: missing required field: channel")
 	}
-	if _, err := s.requireChannelDeclared(req.Channel); err != nil {
+	if _, err := s.requireChannelDeclared(ctx, req.Channel); err != nil {
 		return connector.ChannelSubscribeResult{}, err
 	}
 	scope, scopeID, err := resolveChannelScope(req.Scope, req.ScopeID)
@@ -224,7 +239,7 @@ func (s *Server) PeekChannel(ctx context.Context, req connector.ChannelPeekReque
 	if req.Channel == "" {
 		return connector.ChannelPeekResult{}, fmt.Errorf("peek: missing required field: channel")
 	}
-	if _, err := s.requireChannelDeclared(req.Channel); err != nil {
+	if _, err := s.requireChannelDeclared(ctx, req.Channel); err != nil {
 		return connector.ChannelPeekResult{}, err
 	}
 	scope, scopeID, err := resolveChannelScope(req.Scope, req.ScopeID)
@@ -271,7 +286,7 @@ func (s *Server) AckChannel(ctx context.Context, req connector.ChannelAckRequest
 	if req.Cursor == "" {
 		return connector.ChannelAckResult{}, fmt.Errorf("ack: missing required field: cursor")
 	}
-	if _, err := s.requireChannelDeclared(req.Channel); err != nil {
+	if _, err := s.requireChannelDeclared(ctx, req.Channel); err != nil {
 		return connector.ChannelAckResult{}, err
 	}
 	scope, scopeID, err := resolveChannelScope(req.Scope, req.ScopeID)
