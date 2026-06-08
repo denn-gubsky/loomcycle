@@ -3343,6 +3343,40 @@ func agentGateWarnings(name string, a AgentDef) []string {
 	return w
 }
 
+// validateStaticWebhook checks a static `webhooks:` entry's delivery target +
+// auth.kind at config-load (F24). A mismatched delivery target (spawn with no
+// agent, channel with no channel) means the webhook can NEVER fire — failing
+// loud at boot is a better operator signal than a 404/500 at request time. The
+// receiver normalizes an empty `delivery` to spawn and an empty `auth.kind` to
+// hmac, so the empty cases validate as those. Secret RESOLVABILITY is a
+// separate, non-fatal boot WARNING (the receiver's UnresolvableStaticSecrets).
+func validateStaticWebhook(name string, w Webhook) error {
+	switch w.Delivery {
+	case "", "spawn":
+		if w.Agent == "" {
+			return fmt.Errorf("webhooks.%s: delivery=spawn requires `agent`", name)
+		}
+		if w.Channel != "" {
+			return fmt.Errorf("webhooks.%s: delivery=spawn forbids `channel` (set agent, not channel)", name)
+		}
+	case "channel":
+		if w.Channel == "" {
+			return fmt.Errorf("webhooks.%s: delivery=channel requires `channel`", name)
+		}
+		if w.Agent != "" {
+			return fmt.Errorf("webhooks.%s: delivery=channel forbids `agent` (set channel, not agent)", name)
+		}
+	default:
+		return fmt.Errorf("webhooks.%s: unknown delivery %q (want spawn or channel)", name, w.Delivery)
+	}
+	switch strings.ToLower(strings.TrimSpace(w.Auth.Kind)) {
+	case "", "hmac", "bearer", "none":
+	default:
+		return fmt.Errorf("webhooks.%s: unknown auth.kind %q (want hmac, bearer, or none)", name, w.Auth.Kind)
+	}
+	return nil
+}
+
 func validate(c *Config) error {
 	if c.Concurrency.MaxConcurrentRuns < 1 {
 		return fmt.Errorf("concurrency.max_concurrent_runs must be >= 1")
@@ -3424,6 +3458,12 @@ func validate(c *Config) error {
 		if mb.TenancyStrategy.Kind == "shared_key_with_prefix" &&
 			!strings.Contains(mb.TenancyStrategy.PrefixPattern, "{tenant_id}") {
 			return fmt.Errorf("memory_backends.%s: tenancy_strategy.prefix_pattern %q must contain {tenant_id} for shared_key_with_prefix (an empty or token-less prefix collapses all tenants into one keyspace)", bname, mb.TenancyStrategy.PrefixPattern)
+		}
+	}
+	// Static webhooks: a misconfigured delivery target can never fire (F24).
+	for wname, wh := range c.Webhooks {
+		if err := validateStaticWebhook(wname, wh); err != nil {
+			return err
 		}
 	}
 	for name, agent := range c.Agents {
