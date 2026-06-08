@@ -149,12 +149,12 @@ func toolDescriptors() []loommcp.ToolDescriptor {
 		},
 		{
 			Name:        "channeldef",
-			Description: "Channel admin CRUD (create/update/delete) for the runtime-declared channel substrate — the MCP twin of the REST POST/PATCH/DELETE /v1/_channels surface (F20). yaml-declared channels are immutable (create/update/delete on one returns channel_yaml_immutable).",
+			Description: "Channel admin CRUD (create/update/delete/purge) for the channel substrate — the MCP twin of the REST /v1/_channels surface (F20). yaml-declared channels are immutable for create/update/delete (returns channel_yaml_immutable), but purge — which clears buffered messages without touching the definition — is allowed on ANY channel, yaml included.",
 			InputSchema: rawJSON(`{
 				"type": "object",
 				"required": ["op", "name"],
 				"properties": {
-					"op":           {"type": "string", "enum": ["create", "update", "delete"], "description": "Which admin operation to perform."},
+					"op":           {"type": "string", "enum": ["create", "update", "delete", "purge"], "description": "Which admin operation to perform. purge clears buffered messages (allowed on yaml channels); create/update/delete mutate the definition (runtime channels only)."},
 					"name":         {"type": "string", "description": "Channel name (required for all ops)."},
 					"description":  {"type": "string"},
 					"scope":        {"type": "string", "enum": ["global", "agent", "user"], "description": "create only. Default global."},

@@ -159,6 +159,25 @@ func (s *Server) handleDeleteChannel(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// handleChannelPurge serves POST /v1/_channels/{name}/purge — clears
+// buffered messages without deleting the channel. Allowed on yaml
+// channels (unlike DELETE), which is the whole point: drain a yaml
+// channel that accumulated junk without a restart or a raw DB delete.
+func (s *Server) handleChannelPurge(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	res, err := s.PurgeChannel(r.Context(), name)
+	if err != nil {
+		if errors.Is(err, connector.ErrChannelNotFound) {
+			writeChannelError(w, err)
+			return
+		}
+		writeJSONError(w, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(res)
+}
+
 // ---- admin handlers (scope=global) ------------------------------
 
 // handleAdminChannelPublish serves POST /v1/_channels/{name}/publish.

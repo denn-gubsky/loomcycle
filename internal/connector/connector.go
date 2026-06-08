@@ -330,6 +330,15 @@ type Connector interface {
 	CreateChannel(ctx context.Context, req ChannelCreateRequest) (ChannelDescriptor, error)
 	UpdateChannel(ctx context.Context, name string, req ChannelUpdateRequest) (ChannelDescriptor, error)
 	DeleteChannel(ctx context.Context, name string) error
+
+	// PurgeChannel clears all buffered messages on a channel without
+	// removing its definition or subscriber cursors. UNLIKE Create/
+	// Update/Delete it is allowed on yaml-declared channels too —
+	// draining the queue is not a definition mutation, and "clear a
+	// yaml channel that filled with test traffic" was the F20 pain that
+	// otherwise needed a raw DB delete. Returns ErrChannelNotFound when
+	// the name is neither yaml-declared nor in the runtime table.
+	PurgeChannel(ctx context.Context, name string) (ChannelPurgeResult, error)
 }
 
 // RunStateVisitor is the visitor callback for StreamUserRunStates.

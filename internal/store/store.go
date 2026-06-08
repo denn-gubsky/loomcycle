@@ -1515,6 +1515,16 @@ type Store interface {
 	// the name isn't in the runtime table.
 	ChannelsDelete(ctx context.Context, name string) error
 
+	// ChannelPurge deletes all buffered messages for a channel WITHOUT
+	// removing the channel definition or subscriber cursors — the
+	// "drain the queue" operation that ChannelsDelete's full teardown
+	// is too blunt for. Works on ANY name: yaml-declared channels have
+	// no runtime `channels` row, but their messages live in the same
+	// channel_messages table. Idempotent — purging a channel with no
+	// messages returns (0, nil) rather than ErrNotFound; existence is
+	// the caller's concern. Returns the number of messages deleted.
+	ChannelPurge(ctx context.Context, name string) (int, error)
+
 	// Close releases backend resources. Idempotent.
 	Close() error
 }

@@ -867,6 +867,9 @@ func (m *mockConnector) UpdateChannel(context.Context, string, connector.Channel
 func (m *mockConnector) DeleteChannel(context.Context, string) error {
 	return nil
 }
+func (m *mockConnector) PurgeChannel(context.Context, string) (connector.ChannelPurgeResult, error) {
+	return connector.ChannelPurgeResult{}, nil
+}
 
 // TestGrpcServer_CancelAgent_DispatchesThroughConnector is the v0.8.15
 // regression guard: when the gRPC Server is wired with a Connector,

@@ -219,3 +219,41 @@ func (s *Server) DeleteChannel(ctx context.Context, name string) error {
 	}
 	return nil
 }
+
+// PurgeChannel clears all buffered messages on a channel without
+// removing its definition or subscriber cursors. Unlike Create/Update/
+// Delete it is ALLOWED on yaml-declared channels: purging is not a
+// definition mutation, and draining a yaml channel that filled with
+// test traffic was the F20 pain that previously required a raw DB
+// delete. Returns ErrChannelNotFound when the name is neither
+// yaml-declared nor present in the runtime substrate.
+func (s *Server) PurgeChannel(ctx context.Context, name string) (connector.ChannelPurgeResult, error) {
+	name = strings.TrimSpace(name)
+	if _, isYaml := s.cfg.Channels[name]; !isYaml {
+		// Only the runtime plane obeys the strict name shape — yaml
+		// channels may use exotic names (slashes etc.) the runtime
+		// allow-set forbids, and we must still let those be purged.
+		if !validChannelName(name) {
+			return connector.ChannelPurgeResult{}, fmt.Errorf("purge channel: name must match [A-Za-z0-9_-]{1,128}")
+		}
+		rows, err := s.store.ChannelsList(ctx)
+		if err != nil {
+			return connector.ChannelPurgeResult{}, fmt.Errorf("purge channel existence check: %w", err)
+		}
+		found := false
+		for i := range rows {
+			if rows[i].Name == name {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return connector.ChannelPurgeResult{}, fmt.Errorf("%w: %q", connector.ErrChannelNotFound, name)
+		}
+	}
+	n, err := s.store.ChannelPurge(ctx, name)
+	if err != nil {
+		return connector.ChannelPurgeResult{}, fmt.Errorf("purge channel: %w", err)
+	}
+	return connector.ChannelPurgeResult{Name: name, Purged: n}, nil
+}
