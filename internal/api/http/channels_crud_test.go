@@ -178,6 +178,70 @@ func TestAdminChannelPublish_RefusesUndeclared(t *testing.T) {
 	}
 }
 
+// TestAdminChannelPublish_AllowedOnRuntimeChannel is the F29 regression for
+// the admin publish route: POST /v1/_channels/{name}/publish must succeed on a
+// channel declared at runtime (POST /v1/_channels, persisted in the channels
+// table). Before the fix requireChannelDeclared read cfg.Channels (yaml) only,
+// so a runtime channel 404'd `channel_not_declared`.
+func TestAdminChannelPublish_AllowedOnRuntimeChannel(t *testing.T) {
+	srv, s, cleanup := channelCRUDFixture(t)
+	defer cleanup()
+
+	if err := s.ChannelsCreate(t.Context(), store.ChannelRow{
+		Name: "runtime-ch", Scope: "global", Semantic: "broadcast", MaxMessages: 50,
+	}); err != nil {
+		t.Fatalf("ChannelsCreate: %v", err)
+	}
+
+	body := `{"payload":{"event":"hi"}}`
+	req := authedRequest("POST", "/v1/_channels/runtime-ch/publish", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	srv.Mux().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("publish to runtime channel: status %d, want 200 (F29); body=%s", rec.Code, rec.Body.String())
+	}
+
+	rows, err := s.ChannelPeek(t.Context(), "runtime-ch", store.MemoryScopeGlobal, "", "", 10)
+	if err != nil {
+		t.Fatalf("ChannelPeek: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Errorf("after publish: %d messages, want 1", len(rows))
+	}
+}
+
+// TestChannelPolicy_IncludesRuntimeChannel is the F29 regression for the
+// in-agent Channel tool: a runtime-declared channel must appear in the per-run
+// channel policy (channelPolicyForAgent) so the tool can pub/sub to it. Before
+// the fix the policy map was built from cfg.Channels (yaml) only, so the tool
+// refused the channel with "not declared in operator config".
+func TestChannelPolicy_IncludesRuntimeChannel(t *testing.T) {
+	srv, s, cleanup := channelCRUDFixture(t)
+	defer cleanup()
+
+	if err := s.ChannelsCreate(t.Context(), store.ChannelRow{
+		Name: "runtime-ch", Scope: "global", Semantic: "broadcast", MaxMessages: 50,
+	}); err != nil {
+		t.Fatalf("ChannelsCreate: %v", err)
+	}
+
+	agentDef := config.AgentDef{
+		Channels: config.AgentChannelACL{Subscribe: []string{"runtime-ch"}},
+	}
+	pol := srv.channelPolicyForAgent(t.Context(), agentDef)
+	def, ok := pol.Channels["runtime-ch"]
+	if !ok {
+		t.Fatalf("runtime channel absent from policy map (F29); map=%v", pol.Channels)
+	}
+	if def.Scope != "global" || def.MaxMessages != 50 {
+		t.Errorf("policy def = %+v, want scope=global max_messages=50", def)
+	}
+	// yaml channels stay present (precedence + refusal phrasing).
+	if _, ok := pol.Channels["team-updates"]; !ok {
+		t.Errorf("yaml channel team-updates dropped from policy map")
+	}
+}
+
 // TestAdminChannelPublish_RequiresBearer guards the auth middleware
 // wiring on the new route.
 func TestAdminChannelPublish_RequiresBearer(t *testing.T) {
