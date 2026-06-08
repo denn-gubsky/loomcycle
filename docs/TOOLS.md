@@ -55,6 +55,7 @@ Bash has additional warnings: it is **not a true sandbox** even when enabled. Ru
 
 Sandbox semantics (file tools):
 - Paths must resolve **inside** the sandbox root after full `EvalSymlinks` evaluation. Symlinks pointing outside the root are refused.
+- **Relative paths resolve against the loomcycle process's current working directory — NOT against `LOOMCYCLE_WRITE_ROOT` / `LOOMCYCLE_READ_ROOT`.** Those env vars are the *absolute jail* the fully-resolved path must fall inside; they are not the base a relative path is joined to. So if you launch loomcycle from a different directory than your jail root, a relative `Write` path (joined to the process CWD) and `Bash`'s `LOOMCYCLE_BASH_CWD` can point at different places — the offset that scattered files in the experiments harness (the agent wrote to `./foo` while `Bash` ran in `./work/`). **Launch loomcycle from the directory you set as the write/read root** (so process CWD == jail root == `LOOMCYCLE_BASH_CWD`), or have agents use absolute paths.
 - `Write` resolves the **parent** dir (target may not exist yet); `Read`, `Edit`, `Grep`, `Glob`, and `NotebookEdit` resolve the target itself.
 - All file writes are atomic via tempfile + same-directory rename.
 - `Grep` skips binary files via NUL-byte heuristic on the first 8 KiB; caps output at 256 KiB + `head_limit` (default 100).
