@@ -96,6 +96,13 @@ func DefaultTokenStorePath() (string, error) {
 // operator.
 func (s *TokenStore) Path() string { return s.path }
 
+// lockPath returns the path of the sibling advisory-lock file used to
+// serialize token refresh ACROSS processes (F7). It is a SEPARATE, stable
+// file — never rename-replaced like the token file is on every Save — so an
+// flock on it actually serializes; flocking the token inode would not, since
+// Save swaps the inode out from under any held lock.
+func (s *TokenStore) lockPath() string { return s.path + ".lock" }
+
 // Load reads and returns the token. Returns os.ErrNotExist when the
 // file doesn't exist — callers branch on errors.Is(err, os.ErrNotExist)
 // to distinguish "not logged in" from "corrupt token store."
