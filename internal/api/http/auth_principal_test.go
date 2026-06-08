@@ -298,3 +298,27 @@ func TestApplyPrincipal_OverridesWireAndFallsBack(t *testing.T) {
 		t.Errorf("no-principal = (%q,%q), want the wire values", tenant, subject)
 	}
 }
+
+// F18: under the legacy LOOMCYCLE_AUTH_TOKEN (single-operator, no-boundary), the
+// caller-asserted wire user_id must be HONORED, not clobbered to the placeholder
+// "default" — otherwise every spawn_run / POST /v1/runs is scoped to "default"
+// (broken per-user fairness, memory/channel scope, attribution). A REAL
+// OperatorTokenDef principal keeps the strict override —
+// TestApplyPrincipal_OverridesWireAndFallsBack pins that (its principal has
+// Legacy=false), so the security boundary is unchanged.
+func TestApplyPrincipal_LegacyHonorsWireUserID(t *testing.T) {
+	s, _ := tokenAuthServer(t, "legacy")
+	legacy := auth.Principal{TenantID: "default", Subject: "default", Scopes: []string{auth.ScopeAdmin}, Legacy: true}
+	ctx := auth.WithPrincipal(context.Background(), legacy)
+
+	// Caller asserts user_id → honored; tenant stays the legacy default even if
+	// a wire tenant is supplied (tenant routing is a real isolation axis).
+	if tenant, subject := s.applyPrincipal(ctx, "ignored-tenant", "exp1"); tenant != "default" || subject != "exp1" {
+		t.Errorf("legacy+wire = (%q,%q), want (default,exp1)", tenant, subject)
+	}
+
+	// No wire user_id → falls back to the placeholder subject.
+	if tenant, subject := s.applyPrincipal(ctx, "", ""); tenant != "default" || subject != "default" {
+		t.Errorf("legacy+empty = (%q,%q), want (default,default)", tenant, subject)
+	}
+}
