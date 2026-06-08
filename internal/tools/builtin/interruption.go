@@ -81,6 +81,18 @@ type Interruption struct {
 	// LOOMCYCLE_INTERRUPTION_HEARTBEAT_INTERVAL_MS.
 	HeartbeatInterval time.Duration
 
+	// ResolvePollInterval is the durable-wake backstop cadence (F15).
+	// A blocking `ask` wakes instantly via the in-process Bus when the
+	// resolve lands on THIS runtime. In a multi-full-runtime topology
+	// (several full runtimes sharing one DB — NOT the thin-client
+	// `--upstream` shape, which routes every resolve to the owning
+	// runtime), a resolve on a different runtime flips the DB row but
+	// cannot reach this process's Bus. So while blocked we also poll the
+	// interrupt row at this cadence and convert a detected terminal
+	// status into a local Bus.Notify. 0 = use the default below.
+	// Field exists mainly for test injection; not operator-tunable.
+	ResolvePollInterval time.Duration
+
 	// MaxPendingPerRun is the operator-global cap on simultaneous
 	// pending interruptions per run. Agent yaml may NARROW (set its
 	// own lower cap) but cannot exceed this. 0 = unbounded.
@@ -540,6 +552,13 @@ func (it *Interruption) execCancel(ctx context.Context, in interruptionInput) (t
 	return tools.Result{Text: string(out)}, nil
 }
 
+// defaultResolvePollInterval is the durable-wake poll cadence when
+// Interruption.ResolvePollInterval is unset. Deliberately coarse: it only
+// bounds cross-runtime wake latency in a multi-full-runtime topology, and a
+// blocked `ask` is a human-in-the-loop event (low volume), so the periodic
+// InterruptGet adds negligible load in the common single-runtime case.
+const defaultResolvePollInterval = 15 * time.Second
+
 // blockWithHeartbeat is the load-bearing wait: bus.Wait blocks the
 // loop's tool dispatch goroutine until the resolve endpoint calls
 // bus.Notify. A sibling goroutine fires the run's heartbeat
@@ -560,36 +579,64 @@ func (it *Interruption) blockWithHeartbeat(ctx context.Context, interruptID stri
 		waitTimeout = 100 * 365 * 24 * time.Hour
 	}
 
-	// Heartbeat ticker. Calls Store.UpdateHeartbeat(runID) directly
-	// at HeartbeatInterval cadence so the v0.5.0 sweeper doesn't mark
-	// this run as dead while the loop's per-iteration heartbeat is
-	// suspended inside our blocking wait. The DB write uses a ctx
-	// that survives the loop's eventual ctx-cancel so a heartbeat in
-	// flight at cancel time still commits cleanly (cheaper than a
-	// failed DB call's retry storm).
 	runID := tools.RunID(ctx)
 	done := make(chan struct{})
-	if runID != "" {
-		interval := it.HeartbeatInterval
-		if interval <= 0 {
-			interval = 30 * time.Second
-		}
-		ticker := time.NewTicker(interval)
-		go func() {
-			defer ticker.Stop()
-			for {
-				select {
-				case <-ticker.C:
+	defer close(done)
+
+	hbInterval := it.HeartbeatInterval
+	if hbInterval <= 0 {
+		hbInterval = 30 * time.Second
+	}
+	pollInterval := it.ResolvePollInterval
+	if pollInterval <= 0 {
+		pollInterval = defaultResolvePollInterval
+	}
+
+	// Sibling goroutine, two jobs:
+	//
+	//  1. Heartbeat. Calls Store.UpdateHeartbeat(runID) at
+	//     HeartbeatInterval cadence so the v0.5.0 sweeper doesn't mark
+	//     this run as dead while the loop's per-iteration heartbeat is
+	//     suspended inside our blocking Wait. The DB write uses a ctx
+	//     that survives the loop's eventual ctx-cancel so a heartbeat in
+	//     flight at cancel time still commits cleanly (cheaper than a
+	//     failed DB call's retry storm).
+	//
+	//  2. Durable resolve-poll (F15). A resolve landing on a DIFFERENT
+	//     full runtime flips the DB row but cannot reach this process's
+	//     in-memory Bus, so the Wait below would hang to its timeout.
+	//     Re-read the row at pollInterval and Bus.Notify when it goes
+	//     terminal. We re-Notify on EVERY terminal tick (not once): Bus
+	//     notifications are edge-triggered and lost if they fire before
+	//     Wait registers its waker, so repeating until `done` closes is
+	//     self-healing. In the single-runtime case the resolve handler's
+	//     own Bus.Notify wakes Wait first and `done` closes before the
+	//     poll ever fires — this is purely the cross-runtime backstop.
+	go func() {
+		hbTicker := time.NewTicker(hbInterval)
+		defer hbTicker.Stop()
+		pollTicker := time.NewTicker(pollInterval)
+		defer pollTicker.Stop()
+		for {
+			select {
+			case <-hbTicker.C:
+				if runID != "" {
 					hbCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 					_ = it.Store.UpdateHeartbeat(hbCtx, runID)
 					cancel()
-				case <-done:
-					return
 				}
+			case <-pollTicker.C:
+				pCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+				row, err := it.Store.InterruptGet(pCtx, interruptID)
+				cancel()
+				if err == nil && row.Status != store.InterruptStatusPending {
+					it.Bus.Notify("intr:" + interruptID)
+				}
+			case <-done:
+				return
 			}
-		}()
-	}
-	defer close(done)
+		}
+	}()
 
 	woke := it.Bus.Wait(ctx, "intr:"+interruptID, waitTimeout)
 	if woke {

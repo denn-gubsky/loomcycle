@@ -127,6 +127,71 @@ func TestInterruption_AskBlockUntilResolve(t *testing.T) {
 	}
 }
 
+// TestInterruption_AskWakesOnCrossRuntimeResolve guards the F15 durable-wake
+// backstop. In a multi-full-runtime topology the resolve lands on a DIFFERENT
+// runtime: the DB row flips to resolved but THIS process's in-memory Bus is
+// never Notified. Without the resolve-poll the ask hangs to its operator
+// timeout; with it, the poll detects the terminal row and wakes the Wait.
+// (Distinguished from TestInterruption_AskBlockUntilResolve by the deliberate
+// absence of a tool.Bus.Notify call.)
+func TestInterruption_AskWakesOnCrossRuntimeResolve(t *testing.T) {
+	tool, ctx, _, cleanup := interruptionFixture(t)
+	defer cleanup()
+
+	// Tight poll so the test doesn't wait the 15s production default.
+	tool.ResolvePollInterval = 20 * time.Millisecond
+
+	resCh := make(chan tools.Result, 1)
+	go func() {
+		// timeout_ms far exceeds the test's 2s ceiling, so a pass can
+		// only come from the poll waking the Wait — never from a timeout.
+		res, err := tool.Execute(ctx, json.RawMessage(`{
+			"op":"ask",
+			"question":"Proceed with delete?",
+			"options":["Yes","No"],
+			"timeout_ms":60000
+		}`))
+		if err != nil {
+			t.Errorf("Execute: %v", err)
+		}
+		resCh <- res
+	}()
+
+	// Let the create + bus.Wait register.
+	time.Sleep(50 * time.Millisecond)
+
+	pending, err := tool.Store.InterruptListByRun(ctx, tools.RunID(ctx), store.InterruptStatusPending)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(pending) != 1 {
+		t.Fatalf("expected 1 pending interrupt, got %d", len(pending))
+	}
+	id := pending[0].InterruptID
+
+	// Resolve WITHOUT Bus.Notify — the cross-runtime case. The owning
+	// runtime (this process) must wake via the durable poll alone.
+	if err := tool.Store.InterruptResolve(ctx, id, "Yes", store.InterruptResolvedByWebUI, nil); err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+
+	select {
+	case res := <-resCh:
+		if res.IsError {
+			t.Fatalf("expected non-error result; got %+v", res)
+		}
+		var out map[string]any
+		if err := json.Unmarshal([]byte(res.Text), &out); err != nil {
+			t.Fatalf("result not JSON: %v (raw %q)", err, res.Text)
+		}
+		if out["answer"] != "Yes" {
+			t.Errorf("answer=%v, want Yes", out["answer"])
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("ask did not wake on cross-runtime resolve (durable poll missing?)")
+	}
+}
+
 func TestInterruption_AskTimeout(t *testing.T) {
 	tool, ctx, _, cleanup := interruptionFixture(t)
 	defer cleanup()
