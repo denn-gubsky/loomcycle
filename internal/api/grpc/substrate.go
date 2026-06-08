@@ -48,6 +48,12 @@ func substrateGRPCCtx(ctx context.Context) context.Context {
 		TenantID: principal.TenantID,
 	})
 	ctx = tools.WithAgentName(ctx, grpcSubstrateAdminAgentName)
+	// AgentTools wildcard ceiling (F11): operator-trust path → mirror HTTP
+	// substrateAdminCtx + MCP operatorCtx so a gRPC `agentdef`/`skilldef`
+	// create with a tool-bearing allowed_tools overlay validates instead of
+	// refusing "caller's effective allowed_tools not on ctx". Per-run contexts
+	// keep the agent's actual list, so the in-loop escalation guard is unchanged.
+	ctx = tools.WithAgentTools(ctx, []string{"*"})
 	ctx = tools.WithMemoryPolicy(ctx, tools.MemoryPolicyValue{
 		AllowedScopes: []string{"agent", "user", "global"},
 	})

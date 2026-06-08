@@ -57,6 +57,17 @@ func operatorCtx(ctx context.Context) context.Context {
 	})
 	ctx = tools.WithAgentName(ctx, operatorAgentName)
 
+	// AgentTools wildcard ceiling (F11). Without it, `agentdef`/`skilldef`
+	// create with a non-empty allowed_tools overlay refuse with "caller's
+	// effective allowed_tools not on ctx (runtime misconfiguration)" — the
+	// create-time subset check treats a nil ceiling as "unknown → refuse". The
+	// MCP server is operator-trust (single-operator by construction), so attach
+	// the same wildcard the HTTP /v1/_agentdef admin path uses (see
+	// substrateAdminCtx), making MCP agentdef-create symmetric with HTTP/gRPC.
+	// Per-RUN contexts still set WithAgentTools to the agent's actual list, so
+	// the in-loop AgentDef capability-escalation guard is unchanged.
+	ctx = tools.WithAgentTools(ctx, []string{"*"})
+
 	// Memory: full scope access. QuotaBytes=0 falls back to the
 	// global default (LOOMCYCLE_MEMORY_MAX_SCOPE_BYTES) — operators
 	// who want a tighter cap on MCP-direct writes can set the env.
