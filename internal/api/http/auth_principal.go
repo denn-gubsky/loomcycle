@@ -266,10 +266,33 @@ func (s *Server) legacyFallbackDisabled(ctx context.Context) bool {
 // authoritative (tenant, subject); on open/un-authed paths returns the
 // wire values unchanged. A disagreement is honored server-side and
 // logged kind=identity_overridden for triage.
+//
+// Legacy exception (F18): the LOOMCYCLE_AUTH_TOKEN shared-secret fallback is
+// the single-operator, NO-BOUNDARY mode — its principal carries a FIXED
+// placeholder identity ("default"/"default"), not an authoritative per-actor
+// subject. Overriding the caller's wire user_id with that placeholder gave
+// zero security benefit (one fully-trusted operator, no isolation boundary)
+// while silently scoping every spawn_run / POST /v1/runs to user_id="default"
+// — breaking per-user fairness, memory/channel scope, and attribution, and
+// the documented "zero-disruption upgrade" (pre-RFC-L user_id was caller-set).
+// So for a legacy principal we HONOR the wire user_id (falling back to the
+// placeholder only when the caller omits it). A REAL OperatorTokenDef
+// principal keeps the strict override — its subject IS an authoritative actor
+// and a caller must not be able to spoof another subject.
 func (s *Server) applyPrincipal(ctx context.Context, wireTenant, wireUser string) (tenant, subject string) {
 	p, ok := auth.PrincipalFromContext(ctx)
 	if !ok {
 		return wireTenant, wireUser
+	}
+	if p.Legacy {
+		subject = p.Subject
+		if wireUser != "" {
+			subject = wireUser
+		}
+		// Tenant stays the legacy default ("default"): the shared token is
+		// single-tenant by construction, and tenant routing is a real
+		// isolation axis we don't let the wire steer here.
+		return p.TenantID, subject
 	}
 	if wireTenant != "" && wireTenant != p.TenantID {
 		log.Printf("auth: identity_overridden kind=tenant wire=%q principal=%q token_def=%q", wireTenant, p.TenantID, p.TokenDefID)
