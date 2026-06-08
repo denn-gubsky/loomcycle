@@ -17,6 +17,12 @@ import (
 type projectResult struct {
 	Fields      map[string]string
 	MissingKeys []string
+	// RawBody is the exact signed body the mapping was applied to. Carried so
+	// the run-input builder can default the agent's `goal` to the whole event
+	// when the def declares no `goal` target (F28) — without re-threading the
+	// bytes through every buildRunInput call site. Set only by projectPayload
+	// (validated as JSON there); nil on hand-constructed results in tests.
+	RawBody []byte
 }
 
 // projectPayload applies a payload_mapping to a raw JSON body. The mapping
@@ -44,7 +50,7 @@ type projectResult struct {
 // a well-formed body is NOT an error: it yields an empty string and a
 // MissingKeys entry.
 func projectPayload(mapping map[string]string, body []byte) (projectResult, error) {
-	res := projectResult{Fields: make(map[string]string, len(mapping))}
+	res := projectResult{Fields: make(map[string]string, len(mapping)), RawBody: body}
 
 	var doc interface{}
 	if err := json.Unmarshal(body, &doc); err != nil {

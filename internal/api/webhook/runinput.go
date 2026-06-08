@@ -45,6 +45,27 @@ func collectPrefixed(fields map[string]string, prefix string) map[string]string 
 	return out
 }
 
+// effectiveGoal returns the text that becomes the agent's single
+// `webhook_payload` segment.
+//
+//   - If the def declares a `goal` target in payload_mapping, that projected
+//     value is used verbatim — the operator chose WHICH field is the goal, and
+//     it is respected even when it resolves empty (their explicit choice).
+//   - Otherwise the agent receives the RAW signed body (F28). Without this, a
+//     webhook with no `goal` mapping spawned the agent with an empty payload and
+//     it silently no-op'd — the opposite of the GitHub-pattern expectation that
+//     "the agent receives the event". projectPayload already validated RawBody as
+//     JSON, so it is deterministic, safe text; it is still fenced as an
+//     untrusted-block by the caller (the value is attacker-influenceable).
+//
+// Indexing a nil PayloadMapping is safe (zero value, mapped=false).
+func effectiveGoal(w config.Webhook, proj projectResult) string {
+	if _, mapped := w.PayloadMapping["goal"]; mapped {
+		return proj.Fields["goal"]
+	}
+	return string(proj.RawBody)
+}
+
 // buildRunInput converts a resolved webhook Def + projected payload into the
 // RunInput the runner consumes. It MIRRORS the scheduler's buildRunInput
 // credential pattern (env-allowlist gate over user_credentials_from_env)
@@ -112,7 +133,7 @@ func buildRunInput(w config.Webhook, proj projectResult, envAllowlist map[string
 		}
 	}
 
-	goal := proj.Fields["goal"]
+	goal := effectiveGoal(w, proj)
 	seg := loop.PromptSegment{
 		Role: "user",
 		Content: []loop.PromptContentBlock{
