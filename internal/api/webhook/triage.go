@@ -164,9 +164,11 @@ func (rec *Receiver) handleTest(w http.ResponseWriter, r *http.Request) {
 		WouldAccept: true,
 		Verdict:     verdictAccepted,
 		RunInputPreview: runInputPreview{
-			Agent:          in.Agent,
-			UserID:         in.UserID,
-			Goal:           proj.Fields["goal"],
+			Agent:  in.Agent,
+			UserID: in.UserID,
+			// Mirror what a real delivery sends: the mapped goal, or the raw
+			// body when the def declares no `goal` target (F28).
+			Goal:           effectiveGoal(wd, proj),
 			CredentialKeys: keys,
 		},
 	})
