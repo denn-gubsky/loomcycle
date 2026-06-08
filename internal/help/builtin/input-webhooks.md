@@ -106,6 +106,18 @@ webhooks:
     payload_mapping: { build_id: "$.build.id", status: "$.build.status" }
 ```
 
+> **Known limitation (observed v0.23.x — experiments finding F30).** A `spawn`
+> webhook's `agent:` must name a **yaml-declared** agent. An agent created at
+> runtime via the **AgentDef substrate** (`POST /v1/_agentdef`, the `agentdef`
+> MCP tool, `register_agent`) is **not resolved by the webhook-spawn path**: the
+> delivery verifies its signature, then fails `rejected_spawn_setup` with
+> `webhook "<name>": async run failed: unknown agent: <agent>`. Note the
+> asymmetry — `POST /v1/runs` *does* resolve dynamically-created agents, so the
+> gap is specific to the webhook receiver's agent lookup (it consults the static
+> config, not the AgentDef store). Until fixed, point a `spawn` webhook at a
+> yaml-declared agent (or wake a parked dynamic agent with `delivery: channel`,
+> once F29's runtime-channel pub/sub gap is also resolved).
+
 ## How a request is processed
 
 A shared front-half runs for every request, then forks on `delivery`:
