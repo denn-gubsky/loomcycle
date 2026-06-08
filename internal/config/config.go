@@ -805,9 +805,12 @@ type AgentDef struct {
 //     (LOOMCYCLE_INTERRUPTION_MAX_PENDING_PER_RUN). The lower of
 //     the agent and operator caps wins.
 type AgentInterruptionACL struct {
-	Enabled    bool     `yaml:"enabled"`
-	Kinds      []string `yaml:"kinds"`
-	MaxPending int      `yaml:"max_pending"`
+	// json tags mirror the yaml so the substrate (agentdef overlay /
+	// register_agent) JSON shape is clean snake_case — the yaml-load path is
+	// unaffected.
+	Enabled    bool     `yaml:"enabled" json:"enabled,omitempty"`
+	Kinds      []string `yaml:"kinds" json:"kinds,omitempty"`
+	MaxPending int      `yaml:"max_pending" json:"max_pending,omitempty"`
 }
 
 // Channel is one operator-declared channel in the top-level
@@ -887,8 +890,10 @@ func (c Channel) PeriodDuration() (time.Duration, error) {
 // allowlists for the v0.8.4 Channel tool. Empty Publish / Subscribe
 // means no access on that side — the tool surfaces a typed refusal.
 type AgentChannelACL struct {
-	Publish   []string `yaml:"publish"`
-	Subscribe []string `yaml:"subscribe"`
+	// json tags mirror the yaml so the substrate (agentdef overlay /
+	// register_agent) JSON shape is clean snake_case — yaml-load is unaffected.
+	Publish   []string `yaml:"publish" json:"publish,omitempty"`
+	Subscribe []string `yaml:"subscribe" json:"subscribe,omitempty"`
 }
 
 // ScheduledRun is one entry in the v1.x RFC E `scheduled_runs:` yaml

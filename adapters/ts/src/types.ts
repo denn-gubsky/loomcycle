@@ -1199,6 +1199,21 @@ export interface EnsureMcpServerResult {
  *  host filesystem bind — the symmetry that makes code agents work in
  *  containers / pure-cloud. Requires `LOOMCYCLE_CODE_AGENTS_ENABLED=1` on the
  *  sidecar; create/fork refuses a non-empty `code_body` otherwise. */
+/** Per-agent Channel tool ACL (mirrors the sidecar `channels:` agent yaml).
+ *  The Channel tool default-denies until publish/subscribe patterns are granted. */
+export interface AgentChannelACL {
+  publish?: string[];
+  subscribe?: string[];
+}
+
+/** Per-agent Interruption tool gate (mirrors the sidecar `interruption:` agent
+ *  yaml). `enabled: true` is REQUIRED for the Interruption tool to work at all. */
+export interface AgentInterruptionACL {
+  enabled?: boolean;
+  kinds?: string[];
+  max_pending?: number;
+}
+
 export interface AgentDefOverlay {
   provider?: string;
   model?: string;
@@ -1218,6 +1233,13 @@ export interface AgentDefOverlay {
   memory_quota_bytes?: number;
   memory_backend?: string;
   retry_attempts?: number;
+  /** Evaluation tool scope gate, e.g. `["submit_self", "read_any"]`. The
+   *  Evaluation tool default-denies until granted. */
+  evaluation_scopes?: string[];
+  /** Channel tool ACL (default-deny until set). */
+  channels?: AgentChannelACL;
+  /** Interruption tool gate — `enabled: true` REQUIRED for the tool to work. */
+  interruption?: AgentInterruptionACL;
   [extra: string]: unknown;
 }
 

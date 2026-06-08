@@ -259,14 +259,18 @@ func (s *Server) RegisterAgent(ctx context.Context, req connector.RegisterAgentR
 	allowedTools := stripPrivilegedTools(req.AllowedTools, s.cfg.Env.MCPAllowPrivilegedTools)
 
 	def := config.AgentDef{
-		SystemPrompt: req.SystemPrompt,
-		AllowedTools: allowedTools,
-		Tier:         req.Tier,
-		Provider:     req.Provider,
-		Model:        req.Model,
-		Effort:       req.Effort,
-		MaxTokens:    req.MaxTokens,
-		MemoryScopes: req.MemoryScopes,
+		SystemPrompt:     req.SystemPrompt,
+		AllowedTools:     allowedTools,
+		Tier:             req.Tier,
+		Provider:         req.Provider,
+		Model:            req.Model,
+		Effort:           req.Effort,
+		MaxTokens:        req.MaxTokens,
+		MemoryScopes:     req.MemoryScopes,
+		MaxIterations:    req.MaxIterations,
+		Channels:         req.Channels,
+		EvaluationScopes: req.EvaluationScopes,
+		Interruption:     req.Interruption,
 	}
 	defJSON, err := json.Marshal(def)
 	if err != nil {

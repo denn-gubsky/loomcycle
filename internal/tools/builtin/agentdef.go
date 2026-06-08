@@ -852,6 +852,13 @@ type mergedDef struct {
 	// Without the pointer, AgentDef.create/fork on a high-stakes
 	// agent would silently strip the static yaml's "force 0".
 	RetryAttempts *int `json:"retry_attempts,omitempty"`
+	// Channels / EvaluationScopes / Interruption mirror config.AgentDef so an
+	// agent authored over MCP/HTTP (agentdef create/fork) can be a COMPLETE
+	// interactive/multi-agent agent, not just tool-bearing (F14). Kept in sync
+	// with lookup.SubstrateAgentDef (the drift test pins it).
+	Channels         config.AgentChannelACL      `json:"channels,omitempty"`
+	EvaluationScopes []string                    `json:"evaluation_scopes,omitempty"`
+	Interruption     config.AgentInterruptionACL `json:"interruption,omitempty"`
 }
 
 func (d *mergedDef) applyOverlay(ov mergedDef) {
@@ -914,6 +921,20 @@ func (d *mergedDef) applyOverlay(ov mergedDef) {
 	}
 	if ov.RetryAttempts != nil {
 		d.RetryAttempts = ov.RetryAttempts
+	}
+	// Channel ACL: a non-nil publish or subscribe list signals "set".
+	if ov.Channels.Publish != nil || ov.Channels.Subscribe != nil {
+		d.Channels = ov.Channels
+	}
+	if ov.EvaluationScopes != nil {
+		d.EvaluationScopes = ov.EvaluationScopes
+	}
+	// Interruption: any non-zero field signals the operator set the block
+	// (Enabled true, or kinds/max_pending supplied). A fork that wants to
+	// DISABLE an inherited interruption block is an edge the create path
+	// doesn't need — overlays build up, they don't blank.
+	if ov.Interruption.Enabled || len(ov.Interruption.Kinds) > 0 || ov.Interruption.MaxPending != 0 {
+		d.Interruption = ov.Interruption
 	}
 }
 

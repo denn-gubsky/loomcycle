@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/loop"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/store"
@@ -161,6 +162,15 @@ type RegisterAgentRequest struct {
 	MaxTokens    int      `json:"max_tokens,omitempty"`
 	MemoryScopes []string `json:"memory_scopes,omitempty"`
 	Description  string   `json:"description,omitempty"`
+
+	// MaxIterations / Channels / EvaluationScopes / Interruption let an
+	// MCP-registered agent be a COMPLETE interactive/multi-agent agent, not
+	// just a tool-bearing one (F11/F14). They mirror config.AgentDef and flow
+	// through DynamicAgent.Definition unchanged.
+	MaxIterations    int                         `json:"max_iterations,omitempty"`
+	Channels         config.AgentChannelACL      `json:"channels,omitempty"`
+	EvaluationScopes []string                    `json:"evaluation_scopes,omitempty"`
+	Interruption     config.AgentInterruptionACL `json:"interruption,omitempty"`
 
 	// TTLSeconds is how long this dynamic agent should live. When
 	// 0, falls back to LOOMCYCLE_DYNAMIC_AGENT_DEFAULT_TTL_SECONDS
