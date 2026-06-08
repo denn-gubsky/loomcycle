@@ -11,10 +11,14 @@
 *.out
 coverage.txt
 
-# Local config
+# Local config. Two-file convention (docs/CONFIGURATION.md §9c):
+#   .env.local    — secrets (provider keys, bearer, signing secrets)
+#   .env.insecure — non-secret operational config (paths, flags, allowlists)
+# Both stay ignored; only the committed `.example` templates carry them.
 .env
 .env.*
-!.env.example
+!.env.local.example
+!.env.insecure.example
 loomcycle.local.yaml
 
 # Data

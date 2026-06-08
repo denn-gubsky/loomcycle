@@ -2,7 +2,7 @@
 # loomcycle.sh — rebuild + restart the loomcycle sidecar with stamped build metadata.
 #
 # Usage:
-#   ./loomcycle.sh               # rebuild + start, sourcing .env.local
+#   ./loomcycle.sh               # rebuild + start, sourcing .env.insecure + .env.local
 #   ./loomcycle.sh --config X    # override config path (default ~/.config/loomcycle/loomcycle.yaml)
 #   ./loomcycle.sh --no-build    # skip the rebuild (use existing bin/loomcycle)
 #   ./loomcycle.sh --version     # build then print build identifier and exit
@@ -20,7 +20,14 @@ cd "$SCRIPT_DIR"
 
 # ─── Defaults (override via flags or environment) ─────────────────────
 CONFIG="${LOOMCYCLE_CONFIG:-$HOME/.config/loomcycle/loomcycle.yaml}"
-ENV_FILE="${LOOMCYCLE_ENV_FILE:-.env.local}"
+# Env files sourced before exec (config first, secrets last — so a stray
+# config line can never shadow a secret). LOOMCYCLE_ENV_FILE collapses the
+# pair to a single explicit file (back-compat with the old single-file flow).
+if [[ -n "${LOOMCYCLE_ENV_FILE:-}" ]]; then
+  ENV_FILES=("$LOOMCYCLE_ENV_FILE")
+else
+  ENV_FILES=(.env.insecure .env.local)
+fi
 BIN="bin/loomcycle"
 DO_BUILD=1
 SHOW_VERSION=0
@@ -57,9 +64,14 @@ if [[ $SHOW_VERSION -eq 1 ]]; then
   exec "$BIN" --version
 fi
 
-# ─── 2. Source .env.local before exec so loomcycle inherits the vars ──
-if [[ -f "$ENV_FILE" ]]; then
-  echo "loomcycle.sh: sourcing $ENV_FILE"
+# ─── 2. Source env files before exec so loomcycle inherits the vars ───
+# Two-file convention (docs/CONFIGURATION.md §9c): .env.insecure carries
+# non-secret config, .env.local carries secrets. Both are sourced; either
+# may be absent. LOOMCYCLE_ENV_FILE collapses this to one explicit file.
+source_env_file() {
+  local f="$1"
+  [[ -f "$f" ]] || return 1
+  echo "loomcycle.sh: sourcing $f"
   # `set -a` exports every assignment without needing each line to use
   # `export`. `set +a` after the source switches it back off so we
   # don't unintentionally export later script-locals.
@@ -78,17 +90,26 @@ if [[ -f "$ENV_FILE" ]]; then
   # checking that the caller deliberately disabled. `$-` carries the
   # currently-enabled shell options as letter flags; we restore only
   # what was set going in.
-  _loomcycle_saved_opts="$-"
+  local _saved_opts="$-"
   set -a
   set +u
   # shellcheck disable=SC1090
-  source "$ENV_FILE"
-  [[ "$_loomcycle_saved_opts" == *u* ]] && set -u
+  source "$f"
+  [[ "$_saved_opts" == *u* ]] && set -u
   set +a
-  unset _loomcycle_saved_opts
-else
-  echo "loomcycle.sh: no $ENV_FILE found (ok for first run; copy from .env.example)" >&2
+}
+
+_loomcycle_sourced_any=0
+for _ef in "${ENV_FILES[@]}"; do
+  if source_env_file "$_ef"; then
+    _loomcycle_sourced_any=1
+  fi
+done
+if [[ $_loomcycle_sourced_any -eq 0 ]]; then
+  echo "loomcycle.sh: no env file found (${ENV_FILES[*]}); ok for first run — copy" >&2
+  echo "loomcycle.sh:   .env.insecure.example → .env.insecure  and  .env.local.example → .env.local" >&2
 fi
+unset _ef _loomcycle_sourced_any
 
 # ─── 3. Stop any prior instance bound to the loomcycle port ───────────
 # Match by listen port (LOOMCYCLE_LISTEN_ADDR's :port suffix). Catches

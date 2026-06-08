@@ -5,7 +5,7 @@
 #
 # Two-layer policy model (see docs/TOOLS.md):
 #   1. Operator-side env: each built-in is registered but DISABLED until
-#      its env var is set. .env.example documents these.
+#      its env var is set. .env.insecure.example documents these.
 #   2. Per-agent allowed_tools below: anchored allowlist (default-deny).
 #      An agent with no allowed_tools sees ZERO tools at the dispatcher.
 #
@@ -392,7 +392,7 @@ models:
 # an OPTIONAL override layer — a yaml entry with the same name as a
 # discovered MD overrides per-field, so operators can keep one source
 # of truth in the MD and tweak per-environment via yaml. See
-# .env.example for the full frontmatter contract. When AGENTS_ROOT is
+# .env.insecure.example for the full frontmatter contract. When AGENTS_ROOT is
 # unset (default), behaviour is unchanged: agents come purely from the
 # yaml block below.
 #
