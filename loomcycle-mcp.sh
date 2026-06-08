@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# loomcycle-mcp.sh — launch loomcycle in stdio MCP mode with .env.local sourced.
+# loomcycle-mcp.sh — launch loomcycle in stdio MCP mode with the env files sourced.
 #
 # Usage (typically invoked by an MCP client, not by hand):
 #   ./loomcycle-mcp.sh                 # uses default config
@@ -11,7 +11,8 @@
 # loomcycle.yaml's `${...}` placeholders expect. With those unset, the
 # aggregator's upstream pool handshakes fail (brave-search exits, jobs
 # redirects to /login) and the stdio server never converges to ready.
-# This wrapper sources .env.local first so every spawn gets the full env.
+# This wrapper sources .env.insecure + .env.local first so every spawn gets
+# the full env (config NAMES and secret VALUES alike).
 #
 # Compare with loomcycle.sh, which does the same env-sourcing but runs the
 # HTTP+SSE server and rebuilds. MCP mode is per-invocation stdio — no
@@ -23,7 +24,13 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
 CONFIG="${LOOMCYCLE_CONFIG:-$HOME/.config/loomcycle/loomcycle.yaml}"
-ENV_FILE="${LOOMCYCLE_ENV_FILE:-.env.local}"
+# Two-file convention (docs/CONFIGURATION.md §9c): config first, secrets
+# last. LOOMCYCLE_ENV_FILE collapses the pair to one explicit file.
+if [[ -n "${LOOMCYCLE_ENV_FILE:-}" ]]; then
+  ENV_FILES=("$LOOMCYCLE_ENV_FILE")
+else
+  ENV_FILES=(.env.insecure .env.local)
+fi
 BIN="${LOOMCYCLE_BIN:-bin/loomcycle}"
 
 if [[ ! -x "$BIN" ]]; then
@@ -32,13 +39,19 @@ if [[ ! -x "$BIN" ]]; then
   exit 127
 fi
 
-if [[ -f "$ENV_FILE" ]]; then
-  set -a
-  # shellcheck disable=SC1090
-  source "$ENV_FILE"
-  set +a
-else
-  echo "loomcycle-mcp.sh: $ENV_FILE missing — upstream MCP handshakes will likely fail" >&2
+_mcp_sourced_any=0
+for _ef in "${ENV_FILES[@]}"; do
+  if [[ -f "$_ef" ]]; then
+    set -a
+    # shellcheck disable=SC1090
+    source "$_ef"
+    set +a
+    _mcp_sourced_any=1
+  fi
+done
+if [[ $_mcp_sourced_any -eq 0 ]]; then
+  echo "loomcycle-mcp.sh: no env file found (${ENV_FILES[*]}) — upstream MCP handshakes will likely fail" >&2
 fi
+unset _ef _mcp_sourced_any
 
 exec "$BIN" mcp --config "$CONFIG"

@@ -776,9 +776,34 @@ Routes enforce a scope from a closed catalog (`substrate:admin` is superuser); a
 
 ---
 
+## 9c. Environment files — secrets vs. config (`.env.local` / `.env.insecure`)
+
+loomcycle is configured entirely through environment variables (the `loomcycle.yaml` carries agents + routing; everything operational is an env var). The **recommended** layout splits those vars across **two files** by sensitivity, so the secret-bearing half can be locked down independently of the operational half:
+
+| File | Holds | Git posture | Safe to read/diff/share? |
+|---|---|---|---|
+| **`.env.local`** | **Secrets** — provider API keys (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, …), the sidecar bearer `LOOMCYCLE_AUTH_TOKEN`, `BRAVE_API_KEY`, the operator-token pepper, and the secret **values** behind any trigger-credential env names. | **git-ignored**, never committed | **No** — surfacing it leaks credentials |
+| **`.env.insecure`** | **Non-secret config** — `LOOMCYCLE_LISTEN_ADDR`, `LOOMCYCLE_DATA_DIR`, the sandbox roots (`READ_ROOT`/`WRITE_ROOT`/`BASH_CWD`), host allowlists, feature flags (metrics, webhooks, fallback), timeouts, and the trigger-credential allowlist **names** (`LOOMCYCLE_WEBHOOKS_ENV_ALLOWLIST` / `LOOMCYCLE_SCHEDULER_ENV_ALLOWLIST`). | git-ignored in *this* repo; commit it in your own deployment repo if you wish | **Yes** — nothing here is a secret |
+
+**Why split.** The two halves have different blast radii. `.env.insecure` is the part you want in code review, in a config-management repo, in a teammate's hands when they ask "what's your sandbox set to?" — none of it is dangerous to expose. `.env.local` is the part one accidental `cat` in a screen-share burns. Keeping them in one file forces the whole thing to the secret tier and makes the operational config needlessly hard to share. The split also matches the security rule in `CLAUDE.md` — agents (and Claude Code) must never open `.env.local`, but `.env.insecure` is freely readable.
+
+**The allowlist-name vs. secret-value seam.** A webhook's `signing_secret_env: LOOMCYCLE_GITEA_WEBHOOK_SECRET` names an env var. The **name** is non-secret and is authorized in `.env.insecure` (`LOOMCYCLE_WEBHOOKS_ENV_ALLOWLIST=…`, or auto-allowed when `LOOMCYCLE_*`-prefixed — see §9b / `Context.help input-webhooks`). The **value** — the actual HMAC secret — lives in `.env.local`. This is exactly why the two files are sourced together: the allowlist in one, the secret it authorizes in the other.
+
+**Bootstrap.** Two committed templates carry the full annotated reference:
+
+```sh
+cp .env.local.example     .env.local      # then fill in the secrets
+cp .env.insecure.example  .env.insecure   # then adjust paths/flags
+```
+
+**How they're loaded.** `loomcycle.sh` and `loomcycle-mcp.sh` source **`.env.insecure` first, then `.env.local`** (config first, secrets last — so a stray config line can never shadow a secret) before exec'ing the binary; either file may be absent. Set `LOOMCYCLE_ENV_FILE=<path>` to collapse the pair back to a single explicit file (the pre-split single-file flow). loomcycle itself reads only process env — it does not parse these files — so any supervisor (systemd `EnvironmentFile=`, Docker `--env-file`, a CI secret store) can substitute for the launcher scripts.
+
+---
+
 ## 10. Cross-references
 
 - [`loomcycle.example.yaml`](../loomcycle.example.yaml) — the repo-root reference yaml. All six user_tiers wired, inline comments on every section. Copy-paste and edit.
+- [`.env.local.example`](../.env.local.example) + [`.env.insecure.example`](../.env.insecure.example) — the two env-file templates (secrets vs. non-secret config; see §9c). Every operational env var is documented inline in one or the other.
 - [`docs/MCP_INTEGRATION.md`](MCP_INTEGRATION.md) — MCP server configuration (deliberately out of scope for this doc).
 - [`docs/ARCHITECTURE.md`](ARCHITECTURE.md) — broader runtime context, provider driver table, probe semantics.
 - [`docs/TOOLS.md`](TOOLS.md) — tool policy and built-in tool reference (the `allowed_tools` / `tools` axis).
