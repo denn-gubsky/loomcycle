@@ -38,6 +38,7 @@ type mockConnector struct {
 	spawnMaxSeen atomic.Int32
 	regCalls     atomic.Int32
 	regResult    connector.AgentDescriptor
+	chanDefCalls atomic.Int32 // CreateChannel + UpdateChannel + DeleteChannel
 	pauseResult  connector.PauseResult
 	listCallback func()
 
@@ -240,12 +241,15 @@ func (m *mockConnector) AckChannel(context.Context, connector.ChannelAckRequest)
 	return connector.ChannelAckResult{}, nil
 }
 func (m *mockConnector) CreateChannel(context.Context, connector.ChannelCreateRequest) (connector.ChannelDescriptor, error) {
+	m.chanDefCalls.Add(1)
 	return connector.ChannelDescriptor{}, nil
 }
 func (m *mockConnector) UpdateChannel(context.Context, string, connector.ChannelUpdateRequest) (connector.ChannelDescriptor, error) {
+	m.chanDefCalls.Add(1)
 	return connector.ChannelDescriptor{}, nil
 }
 func (m *mockConnector) DeleteChannel(context.Context, string) error {
+	m.chanDefCalls.Add(1)
 	return nil
 }
 
@@ -330,8 +334,8 @@ func TestServer_ToolsList_ReturnsFullCatalogue(t *testing.T) {
 	if err := json.Unmarshal(resps[0].Result, &result); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if len(result.Tools) != 40 {
-		t.Errorf("got %d tools, want 40 (RFC L adds operatortokendef on top of the resolve_probe list)", len(result.Tools))
+	if len(result.Tools) != 41 {
+		t.Errorf("got %d tools, want 41 (F20 adds channeldef on top of the operatortokendef list)", len(result.Tools))
 	}
 	names := map[string]bool{}
 	for _, td := range result.Tools {
@@ -620,6 +624,49 @@ func TestServer_RegisterAgent_DispatchesThroughConnector(t *testing.T) {
 	}
 	if mc.regCalls.Load() != 1 {
 		t.Errorf("Connector.RegisterAgent called %d times, want 1", mc.regCalls.Load())
+	}
+}
+
+// F20: the channeldef meta-tool dispatches create/update/delete to the
+// Connector's channel-admin methods (the MCP twin of REST /v1/_channels).
+func TestServer_ChannelDef_DispatchesThroughConnector(t *testing.T) {
+	for _, tc := range []struct {
+		op   string
+		args string
+	}{
+		{"create", `{"op":"create","name":"runtime-ch","scope":"global","semantic":"queue"}`},
+		{"update", `{"op":"update","name":"runtime-ch","max_messages":100}`},
+		{"delete", `{"op":"delete","name":"runtime-ch"}`},
+	} {
+		t.Run(tc.op, func(t *testing.T) {
+			mc := &mockConnector{}
+			srv := New(Config{Connector: mc, Logf: func(string, ...any) {}})
+			in := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"channeldef","arguments":` + tc.args + `}}` + "\n"
+			resps, _ := driveServer(t, srv, in)
+			if len(resps) != 1 {
+				t.Fatalf("got %d responses, want 1", len(resps))
+			}
+			if resps[0].Error != nil {
+				t.Fatalf("unexpected JSON-RPC error: %+v", resps[0].Error)
+			}
+			if mc.chanDefCalls.Load() != 1 {
+				t.Errorf("%s: Connector channel-admin called %d times, want 1", tc.op, mc.chanDefCalls.Load())
+			}
+		})
+	}
+}
+
+// A channeldef op with no name is refused before reaching the Connector.
+func TestServer_ChannelDef_RequiresName(t *testing.T) {
+	mc := &mockConnector{}
+	srv := New(Config{Connector: mc, Logf: func(string, ...any) {}})
+	in := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"channeldef","arguments":{"op":"create"}}}` + "\n"
+	resps, _ := driveServer(t, srv, in)
+	if len(resps) != 1 {
+		t.Fatalf("got %d responses, want 1", len(resps))
+	}
+	if mc.chanDefCalls.Load() != 0 {
+		t.Errorf("Connector called %d times on a name-less request, want 0", mc.chanDefCalls.Load())
 	}
 }
 
