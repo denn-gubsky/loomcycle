@@ -1454,6 +1454,17 @@ func main() {
 		for _, warn := range webhookapi.UnresolvableStaticSecrets(cfg, webhookAllowlist, os.Getenv) {
 			log.Printf("webhooks: WARNING: %s", warn)
 		}
+		// Materialize static yaml `webhooks:` into the webhook_defs substrate
+		// (F24) — parity with agents/skills/schedules, so a static webhook is
+		// listable/forkable in the Library without a prior fork. Idempotent +
+		// fork-respecting. A minimal tool instance (Store + Cfg) suffices.
+		bootWH := &builtin.WebhookDef{Store: storeIface, Cfg: cfg}
+		bootWHCtx := tools.WithRunIdentity(context.Background(), tools.RunIdentityValue{AgentID: "webhook-bootstrap"})
+		if n, err := bootWH.BootstrapStaticWebhooks(bootWHCtx); err != nil {
+			log.Printf("webhooks: static-webhook bootstrap: %v (continuing)", err)
+		} else if n > 0 {
+			log.Printf("webhooks: materialized %d static webhook(s) into the substrate", n)
+		}
 	} else if cfg.Env.WebhooksEnabled {
 		log.Printf("webhooks: disabled (no Store backend or no HTTP server)")
 	} else {

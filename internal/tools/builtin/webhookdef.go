@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/denn-gubsky/loomcycle/internal/config"
@@ -430,6 +431,40 @@ func (s *WebhookDef) bootstrapStatic(ctx context.Context, name string, static co
 		return created, fmt.Errorf("promote bootstrap: %w", err)
 	}
 	return created, nil
+}
+
+// BootstrapStaticWebhooks materializes static yaml `webhooks:` into the
+// webhook_defs substrate at boot — parity with agents/skills/schedules
+// (F24), so a static webhook is listable/forkable via the WebhookDef tool
+// without first being forked, and shows up in the Library like the other Defs.
+// Idempotent + fork-respecting: a name that already has an active version (a
+// prior bootstrap or a runtime fork) is left untouched. Returns the count of
+// webhooks newly seeded. A minimal tool instance (Store + Cfg) suffices.
+func (s *WebhookDef) BootstrapStaticWebhooks(ctx context.Context) (int, error) {
+	if s.Store == nil || s.Cfg == nil {
+		return 0, nil
+	}
+	names := make([]string, 0, len(s.Cfg.Webhooks))
+	for name := range s.Cfg.Webhooks {
+		names = append(names, name)
+	}
+	sort.Strings(names) // deterministic order for logs + tests
+	seeded := 0
+	for _, name := range names {
+		_, err := s.Store.WebhookDefGetActive(ctx, name)
+		if err == nil {
+			continue // already has an active version — leave it
+		}
+		var nf *store.ErrNotFound
+		if !errors.As(err, &nf) {
+			return seeded, fmt.Errorf("bootstrap %q: get active: %w", name, err)
+		}
+		if _, berr := s.bootstrapStatic(ctx, name, s.Cfg.Webhooks[name]); berr != nil {
+			return seeded, fmt.Errorf("bootstrap %q: %w", name, berr)
+		}
+		seeded++
+	}
+	return seeded, nil
 }
 
 // validateWebhookDef enforces the runtime-supplied overlay shape.

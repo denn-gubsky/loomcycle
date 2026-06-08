@@ -808,3 +808,27 @@ cache:
 # under anthropic-oauth-dev — they're exposed under the
 # mcp__loomcycle__* wire mask so Anthropic's subscription-billing
 # layer treats them as if they came from an MCP server.
+
+# ─── Inbound webhooks (RFC H) ────────────────────────────────────────
+# External systems (GitHub / Gitea / Stripe / CI / n8n) trigger agent runs
+# via a signed POST /v1/_webhooks/{name}. Off by default — turn the receiver
+# on with LOOMCYCLE_WEBHOOKS_ENABLED=1. A static webhook needs `enabled: true`
+# AND a valid delivery target (delivery=spawn → `agent`; delivery=channel →
+# `channel`) or loomcycle refuses to boot. The HMAC signing secret resolves
+# from the env-var named here — a LOOMCYCLE_*-prefixed name auto-resolves with
+# no allowlist config; otherwise add it to LOOMCYCLE_WEBHOOKS_ENV_ALLOWLIST.
+# `goal: "$"` hands the agent the entire signed body. See
+# `help(topic="input-webhooks")` for the full operator walkthrough.
+#
+# webhooks:
+#   pr-opened:
+#     enabled: true
+#     delivery: spawn
+#     agent: researcher              # must be a declared agent
+#     auth:
+#       kind: hmac                   # hmac (default) | bearer | none
+#       header: X-Hub-Signature-256
+#       signing_secret_env: LOOMCYCLE_GITEA_WEBHOOK_SECRET
+#       delivery_id_header: X-Gitea-Delivery
+#     payload_mapping:
+#       goal: "$"                    # "$" = the whole signed body

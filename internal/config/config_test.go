@@ -2342,3 +2342,57 @@ agents:
 		t.Fatalf("expected a memory_scopes warning for agent porous; warnings=%v", cfg.Warnings)
 	}
 }
+
+// F24: a static webhook with a mismatched delivery target can never fire, so
+// validateStaticWebhook rejects it at config-load.
+func TestValidateStaticWebhook(t *testing.T) {
+	cases := []struct {
+		name    string
+		wh      Webhook
+		wantErr string // substring; "" = no error
+	}{
+		{"spawn ok", Webhook{Delivery: "spawn", Agent: "a"}, ""},
+		{"empty delivery is spawn, ok", Webhook{Agent: "a"}, ""},
+		{"spawn without agent", Webhook{Delivery: "spawn"}, "requires `agent`"},
+		{"spawn with channel", Webhook{Delivery: "spawn", Agent: "a", Channel: "c"}, "forbids `channel`"},
+		{"channel ok", Webhook{Delivery: "channel", Channel: "c"}, ""},
+		{"channel without channel", Webhook{Delivery: "channel"}, "requires `channel`"},
+		{"channel with agent", Webhook{Delivery: "channel", Channel: "c", Agent: "a"}, "forbids `agent`"},
+		{"unknown delivery", Webhook{Delivery: "carrier-pigeon", Agent: "a"}, "unknown delivery"},
+		{"auth none ok", Webhook{Delivery: "spawn", Agent: "a", Auth: WebhookAuth{Kind: "none"}}, ""},
+		{"unknown auth.kind", Webhook{Delivery: "spawn", Agent: "a", Auth: WebhookAuth{Kind: "magic"}}, "unknown auth.kind"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validateStaticWebhook("wh", tc.wh)
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatalf("want no error, got %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("err = %v, want contains %q", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+// The validate hook is wired into Load (F24).
+func TestLoad_RejectsWebhookMissingDeliveryTarget(t *testing.T) {
+	tmp := t.TempDir()
+	yamlPath := filepath.Join(tmp, "c.yaml")
+	if err := os.WriteFile(yamlPath, []byte(`
+defaults: { provider: anthropic, model: claude-sonnet-4-6 }
+webhooks:
+  broken:
+    enabled: true
+    delivery: spawn
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("ANTHROPIC_API_KEY", "sk-test")
+	if _, err := Load(yamlPath); err == nil || !strings.Contains(err.Error(), "requires `agent`") {
+		t.Fatalf("Load err = %v, want a webhook delivery-target error", err)
+	}
+}
