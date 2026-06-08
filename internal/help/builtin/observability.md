@@ -290,6 +290,32 @@ RSS, heap, goroutines, concurrency state, build_info) — scraped by
 Profile A's Prometheus and reusable by any operator-existing
 Prometheus deployment regardless of which profile they pick.
 
+## Process-resource metrics (diagnosing host pressure)
+
+Distinct from the OTEL traces above: loomcycle has a built-in **process-resource
+sampler** that records its own RSS / heap / goroutines / concurrency state — and,
+optionally, **system-wide CPU + memory** — to a `process_samples` table, exposed
+at `GET /v1/_metrics/*` (bearer-authed). This is the surface for capacity planning
+and for diagnosing "the box got slow" incidents.
+
+- **Off by default.** Enable with `LOOMCYCLE_METRICS_ENABLED=1` (cadence
+  `LOOMCYCLE_METRICS_SAMPLE_INTERVAL_MS`, default 5 s; sleeps when no run is
+  active — no DB writes / `/proc` reads while idle).
+- **System-wide CPU% + memory stay OFF even when metrics are on.** Set
+  `LOOMCYCLE_METRICS_COLLECT_SYSTEM=1` to also read `/proc/stat` + `/proc/meminfo`
+  (Linux only; silently ignored on macOS/Windows). Without it the
+  `system_cpu_pct_x100` / `system_mem_*_mb` columns stay NULL — so a runaway
+  driven by *co-tenant* host pressure (a hypervisor balloon / ZFS ARC eating RAM
+  in a shared VM) is invisible to loomcycle's own metrics.
+- **The sampler is not a substitute for a host monitor.** It samples only while a
+  run is active and only what the kernel exposes to its own process — pressure
+  that arrives *between* runs is missed. For always-on host telemetry also run an
+  external monitor (node_exporter / `vmstat` / your cloud's host metrics).
+- Endpoints: `GET /v1/_metrics/samples?since=&until=&limit=`,
+  `GET /v1/_metrics/runs/{run_id}` (peak/mean RSS + max CPU% for the run window),
+  `GET /v1/_metrics/summary?period=1h|24h|7d`. The Web UI's Activity tab renders
+  these live.
+
 ## Related topics
 
 - `pause-resume-snapshot` — runtime quiesce + snapshot lifecycle.
