@@ -223,20 +223,14 @@ curl -X DELETE http://127.0.0.1:8787/v1/_channels/briefing-ready \
 # → 204 No Content
 ```
 
-> **Known limitation (observed v0.23.x — experiments finding F29).** Despite the
-> "same table rows, same `Bus.Notify`" model in *What this is NOT* above, a
-> runtime-substrate channel created here is **not currently usable for
-> publish/subscribe**. The in-agent `Channel` tool refuses it (`channel "X" is
-> not declared in operator config (channels: block)`) because the per-run policy
-> `channelPolicyForAgent` (`internal/api/http/server.go`) is built **only from
-> `cfg.Channels`** (the yaml block), never the runtime channel store; and the
-> admin `POST /v1/_channels/{name}/publish` route returns `404
-> channel_not_declared` for the same reason. So today a runtime channel can be
-> **created / listed / updated / deleted but not messaged** — to wire agents (or
-> external pub/sub) over a channel, declare it in the yaml `channels:` block. Fix
-> = merge the runtime channel store into the per-run channel policy **and** the
-> publish/subscribe declaration check, so runtime + yaml channels share one
-> lookup (matching the documented "same rows" intent).
+> **Runtime channels are usable for pub/sub (F29, fixed).** A runtime-substrate
+> channel created here works for publish/subscribe exactly like a yaml channel —
+> both the per-run `Channel`-tool policy (`channelPolicyForAgent`) and the
+> wire-level declaration check (`requireChannelDeclared`, behind admin
+> publish/subscribe/peek/ack) merge the runtime channel store with the yaml
+> `channels:` block (yaml wins on a name collision, matching `GET /v1/_channels`).
+> Earlier v0.23.x builds read `cfg.Channels` only, so a runtime channel could be
+> created/listed/updated/deleted but not messaged; that gap is closed.
 
 `GET /v1/_channels` returns both yaml and runtime channels with a
 `source: "yaml" | "runtime" | "orphan"` discriminator on every row.
