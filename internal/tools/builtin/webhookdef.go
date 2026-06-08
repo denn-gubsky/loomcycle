@@ -146,6 +146,16 @@ func (s *WebhookDef) execCreate(ctx context.Context, policy tools.WebhookDefPoli
 	if err := validateWebhookDef(def); err != nil {
 		return errResult(fmt.Sprintf("create: %s", err)), nil
 	}
+	// RFC N: the spawned run executes as the CREATING principal's tenant,
+	// resolved from the authoritative run identity in ctx — never silently
+	// empty. F30: an un-stamped tenant made a `spawn` webhook resolve a
+	// dynamic agent under "" while AgentDef persisted it under the principal's
+	// tenant ("default" for the legacy token) → "unknown agent". An explicit
+	// overlay tenant_id still wins. Mirrors AgentDef.execCreate's stamp.
+	ident := tools.RunIdentity(ctx)
+	if def.TenantID == "" {
+		def.TenantID = ident.TenantID
+	}
 	defJSON, err := json.Marshal(def)
 	if err != nil {
 		return errResult(fmt.Sprintf("create: marshal: %s", err)), nil
@@ -157,7 +167,6 @@ func (s *WebhookDef) execCreate(ctx context.Context, policy tools.WebhookDefPoli
 		return errResult(fmt.Sprintf("create: description (%d bytes) exceeds max %d", len(in.Description), s.MaxDescriptionBytes)), nil
 	}
 
-	ident := tools.RunIdentity(ctx)
 	row := store.WebhookDefRow{
 		DefID:            mintDefID(),
 		Name:             in.Name,
@@ -250,6 +259,12 @@ func (s *WebhookDef) execFork(ctx context.Context, policy tools.WebhookDefPolicy
 	if err := validateWebhookDef(def); err != nil {
 		return errResult(fmt.Sprintf("fork: %s", err)), nil
 	}
+	// RFC N tenant stamp — see execCreate. A fork defaults to the forking
+	// principal's tenant unless the parent/overlay already carries one.
+	ident := tools.RunIdentity(ctx)
+	if def.TenantID == "" {
+		def.TenantID = ident.TenantID
+	}
 	defJSON, err := json.Marshal(def)
 	if err != nil {
 		return errResult(fmt.Sprintf("fork: marshal: %s", err)), nil
@@ -261,7 +276,6 @@ func (s *WebhookDef) execFork(ctx context.Context, policy tools.WebhookDefPolicy
 		return errResult(fmt.Sprintf("fork: description (%d bytes) exceeds max %d", len(in.Description), s.MaxDescriptionBytes)), nil
 	}
 
-	ident := tools.RunIdentity(ctx)
 	row := store.WebhookDefRow{
 		DefID:            mintDefID(),
 		Name:             in.Name,

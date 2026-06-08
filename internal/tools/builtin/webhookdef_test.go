@@ -84,6 +84,58 @@ func TestWebhookDefTool_CreateSpawnHmac(t *testing.T) {
 	}
 }
 
+// TestWebhookDefTool_CreateStampsTenant is the F30 regression: a runtime
+// webhook created under a principal whose tenant is "default" must persist
+// that tenant in its definition, so the spawn path resolves a dynamic agent
+// under the SAME tenant the AgentDef substrate stored it. Before the fix the
+// tenant was left "" → `lookup.Webhook` returned TenantID="" → buildRunInput
+// spawned under "" → "unknown agent". Asserts through the resolution path the
+// webhook receiver actually uses.
+func TestWebhookDefTool_CreateStampsTenant(t *testing.T) {
+	tool, ctx, cleanup := webhookDefFixture(t)
+	defer cleanup()
+	// Re-stamp the run identity with a tenant (the legacy token resolves "default").
+	ctx = tools.WithRunIdentity(ctx, tools.RunIdentityValue{AgentID: "a_test", TenantID: "default"})
+
+	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"create","name":"adhoc","overlay":{"delivery":"spawn","agent":"intake","auth":{"kind":"hmac","signing_secret_env":"LOOMCYCLE_S"}}}`))
+	if res.IsError {
+		t.Fatalf("create: %s", res.Text)
+	}
+	wd, ok := lookup.Webhook(ctx, tool.Store, tool.Cfg, "adhoc")
+	if !ok {
+		t.Fatalf("lookup.Webhook(adhoc): not found")
+	}
+	if wd.TenantID != "default" {
+		t.Errorf("resolved TenantID = %q, want %q (F30: un-stamped tenant → unknown agent at spawn)", wd.TenantID, "default")
+	}
+}
+
+// TestWebhookDefTool_ForkStampsTenant — the fork twin of the F30 regression.
+// Forks a DYNAMIC webhook (not in yaml; lookup.Webhook is yaml-first, so a
+// forked yaml name would be shadowed by the static def). The parent is created
+// under no tenant, so the FORK — not the create — is what must stamp it.
+func TestWebhookDefTool_ForkStampsTenant(t *testing.T) {
+	tool, ctx, cleanup := webhookDefFixture(t)
+	defer cleanup()
+
+	// Create the dynamic parent under the fixture ctx (no tenant → TenantID "").
+	if res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"create","name":"adhoc","overlay":{"delivery":"spawn","agent":"intake","auth":{"kind":"hmac","signing_secret_env":"LOOMCYCLE_S"}}}`)); res.IsError {
+		t.Fatalf("create parent: %s", res.Text)
+	}
+	// Fork it under a tenant.
+	tctx := tools.WithRunIdentity(ctx, tools.RunIdentityValue{AgentID: "a_test", TenantID: "default"})
+	if res, _ := tool.Execute(tctx, json.RawMessage(`{"op":"fork","name":"adhoc","overlay":{"agent":"intake2"}}`)); res.IsError {
+		t.Fatalf("fork: %s", res.Text)
+	}
+	wd, ok := lookup.Webhook(tctx, tool.Store, tool.Cfg, "adhoc")
+	if !ok {
+		t.Fatalf("lookup.Webhook(adhoc): not found")
+	}
+	if wd.TenantID != "default" {
+		t.Errorf("forked TenantID = %q, want %q", wd.TenantID, "default")
+	}
+}
+
 func TestWebhookDefTool_CreateChannelDelivery(t *testing.T) {
 	tool, ctx, cleanup := webhookDefFixture(t)
 	defer cleanup()
