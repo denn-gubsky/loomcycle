@@ -61,12 +61,59 @@ func TestMCPServerDefTool_CreateRefusedOnStdioTransport(t *testing.T) {
 	tool, ctx, cleanup := mcpServerDefFixture(t)
 	defer cleanup()
 
-	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"create","name":"bad-stdio","overlay":{"transport":"stdio","url":"https://n8n.example.com/mcp"}}`))
+	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"create","name":"bad-stdio","overlay":{"transport":"stdio","command":"x"}}`))
 	if !res.IsError {
-		t.Fatalf("create with stdio transport should refuse; got %s", res.Text)
+		t.Fatalf("create with stdio transport should refuse by default; got %s", res.Text)
 	}
 	if !strings.Contains(res.Text, "stdio") {
 		t.Errorf("refusal should mention stdio; got %s", res.Text)
+	}
+	// F31: the refusal must name the opt-in flag so operators can discover it.
+	if !strings.Contains(res.Text, "LOOMCYCLE_MCP_ALLOW_DYNAMIC_STDIO") {
+		t.Errorf("refusal should name LOOMCYCLE_MCP_ALLOW_DYNAMIC_STDIO; got %s", res.Text)
+	}
+}
+
+// TestMCPServerDefTool_CreateStdioAllowedWithFlag is the F31 regression: with
+// LOOMCYCLE_MCP_ALLOW_DYNAMIC_STDIO set, a stdio server registers and its
+// command/args/env round-trip into the pool registry the build callback reads.
+func TestMCPServerDefTool_CreateStdioAllowedWithFlag(t *testing.T) {
+	tool, ctx, cleanup := mcpServerDefFixture(t)
+	defer cleanup()
+	tool.Cfg.Env.MCPAllowDynamicStdio = true // operator opt-in
+
+	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"create","name":"local-mcp","overlay":{"transport":"stdio","command":"my-mcp","args":["--serve"],"env":{"FOO":"bar"}}}`))
+	if res.IsError {
+		t.Fatalf("create stdio with flag on: %s", res.Text)
+	}
+	spec, ok := tool.Registry.Get("", "local-mcp")
+	if !ok {
+		t.Fatalf("registry missing local-mcp after create")
+	}
+	if spec.Transport != "stdio" || spec.Command != "my-mcp" {
+		t.Errorf("spec = %+v, want transport=stdio command=my-mcp", spec)
+	}
+	if len(spec.Args) != 1 || spec.Args[0] != "--serve" {
+		t.Errorf("spec.Args = %v, want [--serve]", spec.Args)
+	}
+	if spec.Env["FOO"] != "bar" {
+		t.Errorf("spec.Env = %v, want FOO=bar", spec.Env)
+	}
+}
+
+// TestMCPServerDefTool_CreateStdioRequiresCommand — even with the flag on, a
+// stdio overlay with no command is refused (nothing to spawn).
+func TestMCPServerDefTool_CreateStdioRequiresCommand(t *testing.T) {
+	tool, ctx, cleanup := mcpServerDefFixture(t)
+	defer cleanup()
+	tool.Cfg.Env.MCPAllowDynamicStdio = true
+
+	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"create","name":"no-cmd","overlay":{"transport":"stdio"}}`))
+	if !res.IsError {
+		t.Fatalf("stdio without command should refuse; got %s", res.Text)
+	}
+	if !strings.Contains(res.Text, "command") {
+		t.Errorf("refusal should mention command; got %s", res.Text)
 	}
 }
 

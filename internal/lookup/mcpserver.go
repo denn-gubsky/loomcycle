@@ -19,14 +19,19 @@ type MCPDynamicRegistry interface {
 // lookup chain can return a uniform shape regardless of whether the
 // name came from the static yaml or the dynamic registry.
 //
-// (The static cfg.MCPServer has additional yaml-only fields like
-// `command`, `args`, `env`, `pool_size` for stdio servers; those
-// don't apply to dynamically-registered http / streamable-http
-// servers — the substrate refuses stdio at the create boundary.)
+// The static cfg.MCPServer also has `pool_size` (http) which this spec
+// omits. Command/Args/Env carry the stdio invocation: empty for http
+// transports, populated only for a `stdio` row, which the substrate
+// accepts solely when LOOMCYCLE_MCP_ALLOW_DYNAMIC_STDIO is set (F31).
 type MCPServerSpec struct {
 	Transport string
 	URL       string
 	Headers   map[string]string
+	// Command/Args/Env carry a dynamic stdio server's invocation (F31);
+	// empty for http transports.
+	Command string
+	Args    []string
+	Env     map[string]string
 	// AllowedTools is the operator's per-server tools/list narrowing (yaml
 	// `allowed_tools`); empty = allow all discovered tools. Only the STATIC
 	// source carries it — a dynamically-registered (substrate) server has
@@ -64,18 +69,16 @@ type MCPServerSpec struct {
 // from a wire/request field — see internal/api/http/server.go's
 // tenantFromCtx.
 //
-// LIMITATION (intentional): MCPServerSpec is the HTTP / streamable-http
-// subset. The stdio transport carries additional yaml-only fields
-// (Command/Args/Env/PoolSize) that this resolver deliberately omits
-// because the substrate refuses stdio at the create boundary — there's
-// no path by which a dynamic row could carry those fields. As a
-// consequence, this function cannot replace the inline pool build
-// callback in cmd/loomcycle/main.go for the stdio case; that callback
-// reads cfg.MCPServer directly to get the stdio fields.
+// stdio (F31): when the operator sets LOOMCYCLE_MCP_ALLOW_DYNAMIC_STDIO,
+// a dynamic row MAY carry transport=stdio with Command/Args/Env, and this
+// resolver returns them so the pool build callback can spawn the child.
+// STATIC yaml stdio servers are still resolved directly from
+// cfg.MCPServers in the build callback (that first branch short-circuits
+// before this resolver), so the static stdio path is unchanged.
 //
-// Callers that need the full spec (transport/url/headers) should use it
-// only for http-transport servers (the /ui/library/mcp-servers GET
-// endpoint). Callers that need ONLY membership + AllowedTools are
+// Callers that need the full spec (transport/url/headers, or stdio
+// command/args/env) get it for any transport. Callers that need ONLY
+// membership + AllowedTools are
 // transport-agnostic and safe for any server — notably the MCP lazy tool
 // resolver (internal/tools/mcp/lazy.go), which delegates client
 // construction to the pool and consults this resolver purely to decide
@@ -128,6 +131,9 @@ type SubstrateMCPServer struct {
 	Transport       string                   `json:"transport,omitempty"`
 	URL             string                   `json:"url,omitempty"`
 	Headers         map[string]string        `json:"headers,omitempty"`
+	Command         string                   `json:"command,omitempty"` // stdio (F31)
+	Args            []string                 `json:"args,omitempty"`    // stdio (F31)
+	Env             map[string]string        `json:"env,omitempty"`     // stdio (F31)
 	Description     string                   `json:"description,omitempty"`
 	DiscoveredTools []SubstrateMCPServerTool `json:"discovered_tools,omitempty"`
 }

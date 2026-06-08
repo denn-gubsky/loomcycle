@@ -129,6 +129,9 @@ type mcpServerOverlay struct {
 	Transport       string            `json:"transport,omitempty"`
 	URL             string            `json:"url,omitempty"`
 	Headers         map[string]string `json:"headers,omitempty"`
+	Command         string            `json:"command,omitempty"` // stdio (F31)
+	Args            []string          `json:"args,omitempty"`    // stdio (F31)
+	Env             map[string]string `json:"env,omitempty"`     // stdio (F31)
 	Description     string            `json:"description,omitempty"`
 	DiscoveredTools []toolDescriptor  `json:"discovered_tools,omitempty"`
 }
@@ -150,6 +153,15 @@ func (a *mcpServerOverlay) applyOverlay(ov mcpServerOverlay) {
 	}
 	if ov.Headers != nil {
 		a.Headers = ov.Headers
+	}
+	if ov.Command != "" {
+		a.Command = ov.Command
+	}
+	if ov.Args != nil {
+		a.Args = ov.Args
+	}
+	if ov.Env != nil {
+		a.Env = ov.Env
 	}
 	if ov.Description != "" {
 		a.Description = ov.Description
@@ -585,6 +597,9 @@ func specFromOverlay(tenantID, name string, ov mcpServerOverlay) loommcp.Dynamic
 		Transport: ov.Transport,
 		URL:       ov.URL,
 		Headers:   ov.Headers,
+		Command:   ov.Command, // stdio (F31); empty for http
+		Args:      ov.Args,
+		Env:       ov.Env,
 	}
 }
 
@@ -765,11 +780,24 @@ func (m *MCPServerDef) execVerify(ctx context.Context, in mcpServerDefInput) (to
 func (m *MCPServerDef) validateOverlay(ov mcpServerOverlay) error {
 	switch ov.Transport {
 	case "http", "streamable-http":
-		// ok
+		// ok — validated against the URL + host allowlist below.
+	case "stdio":
+		// F31: a stdio server runs an arbitrary LOCAL command, so dynamic
+		// registration is gated behind an explicit operator opt-in (like
+		// the Bash tool). Off by default → refuse, naming the flag. When
+		// enabled, validate the command and return early — the URL/host
+		// allowlist checks below are http-only and don't apply.
+		if !m.Cfg.Env.MCPAllowDynamicStdio {
+			return fmt.Errorf("transport \"stdio\" not allowed for dynamic registration by default — it runs an arbitrary local command; set LOOMCYCLE_MCP_ALLOW_DYNAMIC_STDIO=1 to opt in, or declare the stdio server in yaml mcp_servers: (operator-trusted)")
+		}
+		if ov.Command == "" {
+			return fmt.Errorf("transport stdio requires a command")
+		}
+		return nil
 	case "":
-		return fmt.Errorf("transport is required (http or streamable-http)")
+		return fmt.Errorf("transport is required (http, streamable-http, or stdio)")
 	default:
-		return fmt.Errorf("transport %q not allowed for dynamic registration — only http and streamable-http are supported (stdio stays yaml-only)", ov.Transport)
+		return fmt.Errorf("transport %q not allowed for dynamic registration — only http, streamable-http, and (opt-in) stdio are supported", ov.Transport)
 	}
 	if ov.URL == "" {
 		return fmt.Errorf("url is required")
