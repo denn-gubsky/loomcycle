@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -78,6 +79,21 @@ type Channel struct {
 	// it nil; the diagnostic log path then reports zeros for the pool
 	// fields and the retry behavior is unchanged.
 	PoolStatsFn func() (total, acquired, idle int32)
+
+	// truncWarned dedupes the F22 wait_ms-truncation advisory to once per
+	// channel name (per process). A subscriber whose wait_ms exceeds
+	// LongPollCapMS re-subscribes every cap interval, so logging on every
+	// subscribe would spam. Keyed by channel name; zero-value ready (the
+	// Channel tool is always used by pointer, so the sync.Map is never copied).
+	truncWarned sync.Map
+}
+
+// shouldWarnTruncation reports whether a wait_ms truncation on `channel` should
+// be logged now — true only the FIRST time per channel (per process), so the
+// F22 advisory does not spam on every re-subscribe. Concurrency-safe.
+func (c *Channel) shouldWarnTruncation(channel string) bool {
+	_, dup := c.truncWarned.LoadOrStore(channel, struct{}{})
+	return !dup
 }
 
 const channelDescription = `Persistent inter-agent message bus. ` +
@@ -397,6 +413,14 @@ func (c *Channel) execSubscribe(ctx context.Context, policy tools.ChannelPolicyV
 	if len(msgs) == 0 && longPollEnabled {
 		wait := in.WaitMS
 		if wait > c.LongPollCapMS {
+			// F22: the requested wait_ms is silently truncated to the operator
+			// cap. Surface it once per channel so an operator notices the
+			// long-poll budget being clipped — a subscriber that keeps
+			// requesting longer waits re-subscribes every cap interval, burning
+			// the agent's max_iterations.
+			if c.shouldWarnTruncation(in.Channel) {
+				log.Printf("channel %q: subscribe wait_ms=%d truncated to the operator cap %d ms (LOOMCYCLE_CHANNELS_LONGPOLL_CAP_MS) — repeated truncation re-subscribes every cap interval and burns the agent's max_iterations; raise the cap if longer waits are intended", in.Channel, in.WaitMS, c.LongPollCapMS)
+			}
 			wait = c.LongPollCapMS
 		}
 		t := time.NewTimer(time.Duration(wait) * time.Millisecond)
