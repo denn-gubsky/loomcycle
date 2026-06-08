@@ -2279,3 +2279,66 @@ func TestLoad_WebhooksEnvKnobs(t *testing.T) {
 		t.Error("WebhooksAllowUnauthenticated = false, want true")
 	}
 }
+
+// TestAgentGateWarnings pins the F21 "tool present but capability gate unset"
+// advisories: each named tool default-denies when its gate is empty.
+func TestAgentGateWarnings(t *testing.T) {
+	cases := []struct {
+		name  string
+		agent AgentDef
+		want  []string // expected substrings, in order (nil = no warnings)
+	}{
+		{"memory no scopes", AgentDef{AllowedTools: []string{"Read", "Memory"}}, []string{"memory_scopes is empty"}},
+		{"memory with scopes", AgentDef{AllowedTools: []string{"Memory"}, MemoryScopes: []string{"user"}}, nil},
+		{"memory tool absent", AgentDef{AllowedTools: []string{"Read"}}, nil},
+		{"eval no scopes", AgentDef{AllowedTools: []string{"Evaluation"}}, []string{"evaluation_scopes is empty"}},
+		{"channel no acl", AgentDef{AllowedTools: []string{"Channel"}}, []string{"channels.publish and channels.subscribe are both empty"}},
+		{"channel publish-only is fine", AgentDef{AllowedTools: []string{"Channel"}, Channels: AgentChannelACL{Publish: []string{"x"}}}, nil},
+		{"interruption disabled", AgentDef{AllowedTools: []string{"Interruption"}}, []string{"interruption.enabled is false"}},
+		{"interruption enabled", AgentDef{AllowedTools: []string{"Interruption"}, Interruption: AgentInterruptionACL{Enabled: true}}, nil},
+		{"multiple gates, deterministic order", AgentDef{AllowedTools: []string{"Memory", "Evaluation"}}, []string{"memory_scopes is empty", "evaluation_scopes is empty"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := agentGateWarnings("a", tc.agent)
+			if len(got) != len(tc.want) {
+				t.Fatalf("got %d warnings %v, want %d (%v)", len(got), got, len(tc.want), tc.want)
+			}
+			for i, sub := range tc.want {
+				if !strings.Contains(got[i], sub) {
+					t.Errorf("warning[%d]=%q does not contain %q", i, got[i], sub)
+				}
+			}
+		})
+	}
+}
+
+// TestLoad_CapabilityGateWarnings verifies the advisory is accumulated onto
+// cfg.Warnings during Load (what main.go prints at boot).
+func TestLoad_CapabilityGateWarnings(t *testing.T) {
+	tmp := t.TempDir()
+	yamlPath := filepath.Join(tmp, "c.yaml")
+	if err := os.WriteFile(yamlPath, []byte(`
+defaults: { provider: anthropic, model: claude-sonnet-4-6 }
+agents:
+  porous:
+    model: claude-sonnet-4-6
+    allowed_tools: [Read, Memory]
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("ANTHROPIC_API_KEY", "sk-test")
+	cfg, err := Load(yamlPath)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	found := false
+	for _, w := range cfg.Warnings {
+		if strings.Contains(w, `"porous"`) && strings.Contains(w, "memory_scopes is empty") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected a memory_scopes warning for agent porous; warnings=%v", cfg.Warnings)
+	}
+}

@@ -446,6 +446,12 @@ func main() {
 	if err != nil {
 		log.Fatalf("config: %v", err)
 	}
+	// Non-fatal config advisories (e.g. an agent with Memory in allowed_tools
+	// but no memory_scopes — the tool would default-deny every call, F21).
+	// Surfaced once at boot so a silent-ish partial misconfig is visible.
+	for _, warn := range cfg.Warnings {
+		log.Printf("config: WARNING: %s", warn)
+	}
 
 	// v0.10.0 OpenTelemetry tracer bootstrap. No-op when
 	// LOOMCYCLE_OTEL_EXPORTER_OTLP_ENDPOINT is unset, so zero runtime

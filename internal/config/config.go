@@ -165,6 +165,13 @@ type Config struct {
 	// Env-derived; not in YAML.
 	Env Env `yaml:"-"`
 
+	// Warnings holds non-fatal config advisories accumulated during
+	// validate() — surfaced once at boot by main.go (log "config: WARNING:
+	// …"), never returned over the wire. Today: the "tool is in allowed_tools
+	// but its capability gate is unset, so every call default-denies" footgun
+	// (e.g. Memory without memory_scopes — F21). Not in YAML.
+	Warnings []string `yaml:"-"`
+
 	// configDir is the directory of the loaded YAML, kept so relative
 	// paths inside the config (system_prompt_file, local_api.spec) can
 	// be resolved against it.
@@ -3300,6 +3307,37 @@ func validateAgentChannelEntry(declared map[string]Channel, entry string) error 
 	return nil
 }
 
+// agentGateWarnings returns the non-fatal "tool present but its capability gate
+// is unset" advisories for one agent (F21). Each named tool DEFAULT-DENIES every
+// call when its gate is empty, so the agent runs but the tool silently refuses —
+// easy to miss (it looks like the agent "chose" not to use the tool). Pure +
+// deterministic order (Memory, Evaluation, Channel, Interruption) so it is
+// unit-testable; the caller (validate) accumulates these onto Config.Warnings.
+func agentGateWarnings(name string, a AgentDef) []string {
+	has := func(tool string) bool {
+		for _, t := range a.AllowedTools {
+			if t == tool {
+				return true
+			}
+		}
+		return false
+	}
+	var w []string
+	if has("Memory") && len(a.MemoryScopes) == 0 {
+		w = append(w, fmt.Sprintf("agent %q: allowed_tools includes Memory but memory_scopes is empty — every Memory op will default-deny; add memory_scopes: [agent] and/or [user]", name))
+	}
+	if has("Evaluation") && len(a.EvaluationScopes) == 0 {
+		w = append(w, fmt.Sprintf("agent %q: allowed_tools includes Evaluation but evaluation_scopes is empty — every Evaluation op will default-deny; add evaluation_scopes", name))
+	}
+	if has("Channel") && len(a.Channels.Publish) == 0 && len(a.Channels.Subscribe) == 0 {
+		w = append(w, fmt.Sprintf("agent %q: allowed_tools includes Channel but channels.publish and channels.subscribe are both empty — every Channel op will default-deny", name))
+	}
+	if has("Interruption") && !a.Interruption.Enabled {
+		w = append(w, fmt.Sprintf("agent %q: allowed_tools includes Interruption but interruption.enabled is false — every Interruption op will refuse; set interruption.enabled: true", name))
+	}
+	return w
+}
+
 func validate(c *Config) error {
 	if c.Concurrency.MaxConcurrentRuns < 1 {
 		return fmt.Errorf("concurrency.max_concurrent_runs must be >= 1")
@@ -3427,13 +3465,21 @@ func validate(c *Config) error {
 			}
 		}
 		// Memory tool: validate memory_scopes are known scope strings.
-		// Empty memory_scopes is fine (it just means no Memory access);
-		// non-empty must be a subset of {agent, user} for v0.8.0.
+		// Empty memory_scopes is not an ERROR (it just means no Memory
+		// access), but if the agent ALSO lists Memory in allowed_tools the
+		// tool default-denies every call — a silent-ish footgun surfaced as a
+		// boot warning below (F21). Non-empty must be a subset of {agent, user}.
 		for i, sc := range agent.MemoryScopes {
 			if !validMemoryScopes[sc] {
 				return fmt.Errorf("agent %q: memory_scopes[%d]: unknown scope %q (want one of: agent, user)", name, i, sc)
 			}
 		}
+		// Non-fatal: "tool in allowed_tools but its capability gate is unset"
+		// advisories (Memory/memory_scopes, Evaluation/evaluation_scopes,
+		// Channel/channels, Interruption/interruption.enabled). Accumulated and
+		// logged once at boot, never fatal — an operator may legitimately list a
+		// tool they haven't gated yet.
+		c.Warnings = append(c.Warnings, agentGateWarnings(name, agent)...)
 		if agent.MemoryQuotaBytes < 0 {
 			return fmt.Errorf("agent %q: memory_quota_bytes must be >= 0", name)
 		}
