@@ -133,8 +133,42 @@ func (r *Refresher) loop(ctx context.Context) {
 	}
 }
 
-// refreshLocked performs one refresh attempt. Caller holds r.mu.
+// refreshLocked performs one refresh attempt. Caller holds r.mu (the
+// intra-process single-flight). It ALSO takes a cross-process advisory lock so
+// that multiple loomcycle processes sharing one token file can't race to
+// refresh (F7): without it, two processes POST with the same refresh token, the
+// first rotates it server-side, and the second is rejected with invalid_grant —
+// stranding that process until a full re-login.
+//
+// Lock ordering is always r.mu (intra) → flock (inter); both Refresh paths (the
+// background tick and RefreshNow) funnel through here, so the order is uniform.
 func (r *Refresher) refreshLocked(ctx context.Context) error {
+	// Cross-process serialization. A lock-infra failure must not strand refresh
+	// entirely — log and proceed best-effort (degrades to the prior
+	// single-process behavior) rather than failing the refresh outright.
+	if release, err := acquireFileLock(r.store.lockPath()); err != nil {
+		r.logf("anthropic-oauth-dev: token lock unavailable (%v); refreshing without the cross-process guard", err)
+	} else {
+		defer release()
+	}
+
+	// Reload-before-refresh. Another process may have rotated the token while we
+	// blocked on the lock. If the on-disk token is NEWER than ours (a later
+	// ObtainedAt), adopt it and skip the network round-trip — POSTing now would
+	// use a refresh token that peer already invalidated. This also serves the
+	// forced (post-401) path: the rejected access token is replaced by the
+	// peer's newer one, which the caller's retry then uses. When the on-disk
+	// token is NOT newer (no peer refreshed), fall through and refresh with the
+	// freshest refresh token we have — preserving RefreshNow's "always attempt"
+	// contract.
+	if onDisk, err := r.store.Load(); err == nil && onDisk.RefreshToken != "" {
+		if onDisk.ObtainedAt.After(r.cached.ObtainedAt) {
+			r.cached = onDisk
+			r.logf("anthropic-oauth-dev: adopted a token refreshed by another process (expires_at=%s)", onDisk.ExpiresAt.Format(time.RFC3339))
+			return nil
+		}
+	}
+
 	if r.cached.RefreshToken == "" {
 		// Nothing to refresh — operator hasn't logged in yet.
 		return nil
