@@ -69,10 +69,13 @@ A background goroutine refreshes the access token every 30 seconds, rotating pro
 ### Status check
 
 ```sh
-loomcycle anthropic status
+loomcycle anthropic status            # local token-file metadata only
+loomcycle anthropic status --probe    # ALSO verify server-side validity
 ```
 
 Prints the token file path, whether tokens are loaded, the access token's expiry, the granted scope, and the obtainedAt timestamp. Also surfaces a warning if the token file's permissions have drifted from 0600.
+
+By default every field is **local token-file metadata** — the token can read "valid / expires in 6h" while Anthropic has already revoked it server-side, so plain `status` prints `Server-side: not checked`. Pass **`--probe`** (alias `--verify`) to confirm against Anthropic: it attempts a token refresh (free — token endpoint, no inference billing), reporting `✓ valid` (exit 0) or `✗ INVALID` (exit 1) with the reason. A successful probe **rotates and persists** a fresh token, so it also heals/extends the session.
 
 ### Logout
 
