@@ -1599,6 +1599,17 @@ type Env struct {
 	// LOOMCYCLE_MCP_ALLOW_PRIVILEGED_TOOLS.
 	MCPAllowPrivilegedTools bool
 
+	// MCPAllowDynamicStdio — F31. When true, the MCPServerDef substrate
+	// (POST /v1/_mcpserverdef, the `mcpserverdef` tool) may register a
+	// `transport: stdio` server at runtime. Default false: dynamic
+	// registration is http/streamable-http only, because a stdio server
+	// runs an ARBITRARY LOCAL COMMAND (a second local-exec path alongside
+	// Bash, with no outbound-host-allowlist mediation). Like BashEnabled,
+	// this is operator-gated and off by default; static yaml `mcp_servers:`
+	// stdio entries are unaffected (operator-authored = trusted). Env:
+	// LOOMCYCLE_MCP_ALLOW_DYNAMIC_STDIO.
+	MCPAllowDynamicStdio bool
+
 	// DynamicAgentDefaultTTLSeconds — v0.8.15. TTL applied to
 	// dynamic agents registered via mcp__loomcycle__register_agent
 	// when the caller omits ttl_seconds. Default 86400 (24h).
@@ -2470,6 +2481,7 @@ func Load(path string) (*Config, error) {
 
 	// v0.8.15 LoomCycle MCP: dynamic agent registration policy.
 	cfg.Env.MCPAllowPrivilegedTools = os.Getenv("LOOMCYCLE_MCP_ALLOW_PRIVILEGED_TOOLS") == "1"
+	cfg.Env.MCPAllowDynamicStdio = os.Getenv("LOOMCYCLE_MCP_ALLOW_DYNAMIC_STDIO") == "1"
 	cfg.Env.DynamicAgentDefaultTTLSeconds = 86400 // 24h
 	if v := os.Getenv("LOOMCYCLE_DYNAMIC_AGENT_DEFAULT_TTL_SECONDS"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {

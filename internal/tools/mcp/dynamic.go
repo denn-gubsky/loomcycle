@@ -24,18 +24,29 @@ package mcp
 import "sync"
 
 // DynamicMCPServerSpec is the in-memory shape the pool's build
-// callback needs. Mirrors the operator-yaml mcp_servers.* shape minus
-// stdio bits (dynamic registration is HTTP + Streamable-HTTP only).
+// callback needs. Mirrors the operator-yaml mcp_servers.* shape.
+//
+// Transport is http / streamable-http by default; a `stdio` entry is
+// only ever present when the operator opted in via
+// LOOMCYCLE_MCP_ALLOW_DYNAMIC_STDIO (F31) — the substrate refuses to
+// register a stdio server otherwise, since it runs an arbitrary local
+// command. Command/Args/Env carry the stdio invocation and are empty for
+// http transports.
 //
 // Headers are stored verbatim with their ${LOOMCYCLE_*} / ${run.user_bearer}
 // substitution placeholders intact — the http client's substitution
 // pass at request-build time resolves them (matches yaml-loaded
-// headers' semantics; see internal/tools/mcp/http/client.go).
+// headers' semantics; see internal/tools/mcp/http/client.go). Env values
+// (stdio) are passed to the child literally — no ${} expansion.
 type DynamicMCPServerSpec struct {
 	Name      string
-	Transport string // "http" | "streamable-http"
+	Transport string // "http" | "streamable-http" | "stdio" (stdio gated by LOOMCYCLE_MCP_ALLOW_DYNAMIC_STDIO)
 	URL       string
 	Headers   map[string]string
+	// stdio invocation (F31); empty for http transports.
+	Command string
+	Args    []string
+	Env     map[string]string
 	// TenantID is the RFC N tenant-isolation axis. "" = the shared/
 	// operator/legacy tenant. Entries are keyed by (TenantID, Name) so
 	// two tenants register the same name with distinct URLs without

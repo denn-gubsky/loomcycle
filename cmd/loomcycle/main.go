@@ -804,8 +804,15 @@ func main() {
 					URL:     spec.URL,
 					Headers: spec.Headers,
 				})
+			case "stdio":
+				// F31: a runtime-registered stdio server. The substrate only
+				// admits a stdio row when LOOMCYCLE_MCP_ALLOW_DYNAMIC_STDIO is
+				// set, so reaching here already means the operator opted in.
+				// Spawned + lifecycle-managed (respawn on crash, teardown on
+				// retire) by the same pool path as a yaml stdio server.
+				return spawnStdio(name, spec.Command, spec.Args, spec.Env)
 			default:
-				return nil, fmt.Errorf("mcp_servers.%s: invalid transport %q for non-stdio resolution (data corruption?)", name, spec.Transport)
+				return nil, fmt.Errorf("mcp_servers.%s: invalid transport %q (data corruption?)", name, spec.Transport)
 			}
 		},
 		func(c mcp.Caller) {
@@ -1049,6 +1056,9 @@ func main() {
 				Transport string            `json:"transport"`
 				URL       string            `json:"url"`
 				Headers   map[string]string `json:"headers"`
+				Command   string            `json:"command"` // stdio (F31)
+				Args      []string          `json:"args"`
+				Env       map[string]string `json:"env"`
 			}
 			if err := json.Unmarshal(active.Definition, &ov); err != nil {
 				log.Printf("mcp_server_defs: parse active %q (tenant=%q): %v", ns.Name, ns.TenantID, err)
@@ -1058,6 +1068,7 @@ func main() {
 			// keyed by (tenant, name) and only resolved for that tenant's runs.
 			dynamicMCPRegistry.Set(mcp.DynamicMCPServerSpec{
 				TenantID: active.TenantID, Name: active.Name, Transport: ov.Transport, URL: ov.URL, Headers: ov.Headers,
+				Command: ov.Command, Args: ov.Args, Env: ov.Env, // stdio (F31)
 			})
 		}
 		if size := dynamicMCPRegistry.Size(); size > 0 {
@@ -2671,22 +2682,33 @@ func (v mcpLookupView) Get(tenantID, name string) (lookup.MCPServerSpec, bool) {
 	if !ok {
 		return lookup.MCPServerSpec{}, false
 	}
-	return lookup.MCPServerSpec{Transport: s.Transport, URL: s.URL, Headers: s.Headers}, true
+	return lookup.MCPServerSpec{
+		Transport: s.Transport, URL: s.URL, Headers: s.Headers,
+		Command: s.Command, Args: s.Args, Env: s.Env, // stdio (F31)
+	}, true
 }
 
 func spawnStdioMCP(name string, srv config.MCPServer) (mcp.Caller, error) {
-	keys := make([]string, 0, len(srv.Env))
-	for k := range srv.Env {
+	return spawnStdio(name, srv.Command, srv.Args, srv.Env)
+}
+
+// spawnStdio is the transport-spawn core shared by the static yaml stdio
+// path (spawnStdioMCP) and the dynamic stdio path (the pool build
+// callback's stdio case, F31). envMap is rendered as sorted KEY=VALUE
+// strings — deterministic child env regardless of map iteration order.
+func spawnStdio(name, command string, args []string, envMap map[string]string) (mcp.Caller, error) {
+	keys := make([]string, 0, len(envMap))
+	for k := range envMap {
 		keys = append(keys, k)
 	}
 	sort.Strings(keys)
 	env := make([]string, 0, len(keys))
 	for _, k := range keys {
-		env = append(env, k+"="+srv.Env[k])
+		env = append(env, k+"="+envMap[k])
 	}
 	return mcpstdio.Spawn(mcpstdio.Config{
-		Command: srv.Command,
-		Args:    srv.Args,
+		Command: command,
+		Args:    args,
 		Env:     env,
 		OnStderr: func(line string) {
 			log.Printf("mcp[%s]: %s", name, line)

@@ -105,6 +105,9 @@ func TestMCPServer_DriftDetection(t *testing.T) {
 		"transport":        true,
 		"url":              true,
 		"headers":          true,
+		"command":          true, // stdio (F31)
+		"args":             true, // stdio (F31)
+		"env":              true, // stdio (F31)
 		"description":      true,
 		"discovered_tools": true,
 	}

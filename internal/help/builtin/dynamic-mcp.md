@@ -31,11 +31,17 @@ Read this section before anything else.
   reach it — via `POST /v1/_mcpserverdef`, the loomcycle MCP
   meta-tool, the gRPC RPC, or the TS adapter — all bearer-authed
   against `LOOMCYCLE_AUTH_TOKEN`.
-- **NOT stdio.** Stdio MCP servers stay yaml-only. Dynamic
-  registration is HTTP + Streamable-HTTP only. The substrate refuses
-  any other transport. The decision closes the agent-process-spawn
-  escalation path entirely: there is no way to register a
-  loomcycle-spawned subprocess at runtime.
+- **Stdio is opt-in (default OFF).** Dynamic registration is HTTP +
+  Streamable-HTTP only **unless** the operator sets
+  `LOOMCYCLE_MCP_ALLOW_DYNAMIC_STDIO=1`. A stdio server runs an
+  **arbitrary local command** — a second local-exec path alongside the
+  Bash tool, with no outbound-host-allowlist mediation — so by default
+  the substrate refuses a `stdio` transport (the refusal names the
+  flag). When the flag is set, a `create`/`fork` overlay may carry
+  `command` / `args` / `env`; the server is spawned + lifecycle-managed
+  (respawn on crash, teardown on retire) by the same pool path as a yaml
+  stdio server. Static yaml `mcp_servers:` stdio entries are unaffected
+  (operator-authored ⇒ trusted) regardless of the flag.
 - **NOT a yaml replacement.** Static and dynamic registrations
   coexist. A dynamic `create` colliding with a name already present
   in `cfg.MCPServers` is refused with a typed error — yaml is ground
@@ -50,8 +56,9 @@ Read this section before anything else.
 A row in `mcp_server_defs` carries the substrate's content fields:
 
 ```
-name, description, transport ("http" | "streamable-http"),
-url, headers (map<string,string>), discovered_tools (cached;
+name, description, transport ("http" | "streamable-http" |
+"stdio" [opt-in]), url, headers (map<string,string>),
+command/args/env (stdio only), discovered_tools (cached;
 refreshed via rediscover)
 ```
 
@@ -183,7 +190,7 @@ tables untouched.
 
 | Error code | When |
 |---|---|
-| `mcp_server_def_transport_invalid` | `transport` is not `http` or `streamable-http`. |
+| `mcp_server_def_transport_invalid` | `transport` is not `http`, `streamable-http`, or (with `LOOMCYCLE_MCP_ALLOW_DYNAMIC_STDIO=1`) `stdio`. A `stdio` overlay with the flag unset is refused, naming the flag; with the flag set it requires a `command`. |
 | `mcp_server_def_url_invalid` | `url` is empty, malformed, or not http(s). |
 | `mcp_server_def_host_not_allowed` | URL hostname isn't in `LOOMCYCLE_HTTP_HOST_ALLOWLIST`. |
 | `mcp_server_def_name_collision` | A yaml `mcp_servers.<name>` already owns this name. |
