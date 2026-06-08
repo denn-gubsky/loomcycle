@@ -204,6 +204,13 @@ type SubstrateAgentDef struct {
 	// persist the operator-meaningful "force 0" intent as distinct
 	// from "field not set" (use the tier default).
 	RetryAttempts *int `json:"retry_attempts,omitempty"`
+	// Channels / EvaluationScopes / Interruption mirror config.AgentDef so an
+	// agent authored via the substrate (agentdef create/fork) round-trips a
+	// COMPLETE interactive/multi-agent config, not just tool-bearing (F14).
+	// Kept in sync with builtin.mergedDef (the drift test pins it).
+	Channels         config.AgentChannelACL      `json:"channels,omitempty"`
+	EvaluationScopes []string                    `json:"evaluation_scopes,omitempty"`
+	Interruption     config.AgentInterruptionACL `json:"interruption,omitempty"`
 }
 
 // ToConfigDef projects the substrate JSON shape onto config.AgentDef
@@ -230,6 +237,9 @@ func (s SubstrateAgentDef) ToConfigDef() config.AgentDef {
 		MemoryQuotaBytes:      s.MemoryQuotaBytes,
 		MemoryBackend:         s.MemoryBackend,
 		RetryAttempts:         s.RetryAttempts,
+		Channels:              s.Channels,
+		EvaluationScopes:      s.EvaluationScopes,
+		Interruption:          s.Interruption,
 	}
 }
 

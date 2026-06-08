@@ -82,6 +82,38 @@ describe("agentDef", () => {
     expect(body.overlay.max_iterations).toBe(64);
     expect(body.overlay.system_prompt).toBe("explore");
   });
+
+  // F14: the full capability set (channels / evaluation_scopes / interruption)
+  // must reach the overlay so an MCP/HTTP-authored agent can be a complete
+  // interactive/multi-agent agent, not just tool-bearing.
+  it("passes channels / evaluation_scopes / interruption through the overlay", async () => {
+    const { client, fetchMock } = makeClient([
+      jsonResponse({ def_id: "def_abc", name: "coordinator", version: 1 }),
+    ]);
+    await client.agentDef({
+      op: "create",
+      name: "coordinator",
+      overlay: {
+        allowed_tools: ["Channel", "Evaluation", "Interruption"],
+        evaluation_scopes: ["submit_self", "read_any"],
+        channels: { publish: ["findings"], subscribe: ["tasks"] },
+        interruption: { enabled: true, kinds: ["question"], max_pending: 3 },
+      },
+    });
+    const body = JSON.parse(
+      (fetchMock.mock.calls[0]![1] as RequestInit).body as string,
+    );
+    expect(body.overlay.evaluation_scopes).toEqual(["submit_self", "read_any"]);
+    expect(body.overlay.channels).toEqual({
+      publish: ["findings"],
+      subscribe: ["tasks"],
+    });
+    expect(body.overlay.interruption).toEqual({
+      enabled: true,
+      kinds: ["question"],
+      max_pending: 3,
+    });
+  });
 });
 
 describe("skillDef", () => {
