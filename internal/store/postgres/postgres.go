@@ -5299,9 +5299,9 @@ func (s *Store) ScheduleRunStateGet(ctx context.Context, defID string) (store.Sc
 		pausedUntil *time.Time
 	)
 	err := s.pool.QueryRow(ctx,
-		`SELECT def_id, last_run_at, last_run_id, last_status, last_error, next_run_at, paused_until
+		`SELECT def_id, last_run_at, last_run_id, last_status, last_error, next_run_at, paused_until, fire_count
 		 FROM schedule_run_state WHERE def_id = $1`, defID,
-	).Scan(&out.DefID, &lastRunAt, &lastRunID, &lastStatus, &lastError, &out.NextRunAt, &pausedUntil)
+	).Scan(&out.DefID, &lastRunAt, &lastRunID, &lastStatus, &lastError, &out.NextRunAt, &pausedUntil, &out.FireCount)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return store.ScheduleRunStateRow{}, &store.ErrNotFound{Kind: "schedule_run_state", ID: defID}
 	}
@@ -5358,16 +5358,23 @@ func (s *Store) ScheduleRunStateListDue(ctx context.Context, now time.Time) ([]s
 }
 
 func (s *Store) ScheduleRunStateRecordResult(ctx context.Context, in store.ScheduleRunResult) error {
+	// fire_count += 1 only on a real fire (CountAsFire); the disabled-skip
+	// advance passes false so a disabled schedule keeps its max_fires budget.
+	fireInc := 0
+	if in.CountAsFire {
+		fireInc = 1
+	}
 	tag, err := s.pool.Exec(ctx,
 		`UPDATE schedule_run_state SET
 			last_run_at = $1,
 			last_run_id = $2,
 			last_status = $3,
 			last_error = $4,
-			next_run_at = $5
-		 WHERE def_id = $6`,
+			next_run_at = $5,
+			fire_count = fire_count + $6
+		 WHERE def_id = $7`,
 		in.LastRunAt, in.LastRunID, in.LastStatus, in.LastError,
-		in.NextRunAt, in.DefID,
+		in.NextRunAt, fireInc, in.DefID,
 	)
 	if err != nil {
 		return fmt.Errorf("schedule_run_state record result: %w", err)

@@ -5522,6 +5522,28 @@ func testScheduleRunStateRecordResult(t *testing.T, s store.Store) {
 	if !got.LastRunAt.Equal(start) {
 		t.Errorf("last_run_at = %v, want %v", got.LastRunAt, start)
 	}
+	// RFC S / F36: the first record had CountAsFire unset → fire_count
+	// stays 0 (a non-fire advance must not consume a max_fires budget).
+	if got.FireCount != 0 {
+		t.Errorf("fire_count = %d after CountAsFire=false record, want 0", got.FireCount)
+	}
+	// CountAsFire=true increments by exactly one per call.
+	for want := 1; want <= 2; want++ {
+		if err := s.ScheduleRunStateRecordResult(ctx, store.ScheduleRunResult{
+			DefID:       defID,
+			LastRunID:   "r_fire",
+			LastStatus:  "completed",
+			LastRunAt:   start,
+			NextRunAt:   next,
+			CountAsFire: true,
+		}); err != nil {
+			t.Fatalf("record fire %d: %v", want, err)
+		}
+		got, _ = s.ScheduleRunStateGet(ctx, defID)
+		if got.FireCount != want {
+			t.Errorf("fire_count = %d after %d fires, want %d", got.FireCount, want, want)
+		}
+	}
 
 	// Record on unknown def_id returns ErrNotFound.
 	err := s.ScheduleRunStateRecordResult(ctx, store.ScheduleRunResult{
