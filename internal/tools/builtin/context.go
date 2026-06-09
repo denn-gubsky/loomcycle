@@ -12,6 +12,7 @@ import (
 
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/help"
+	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
@@ -70,8 +71,8 @@ type Context struct {
 const contextDescription = `Read-only runtime introspection. ` +
 	`Answers "what tools do I have? who am I? what permissions apply to me? ` +
 	`what other agents exist? what's my def's lineage and evaluation history? ` +
-	`what runtime concepts and recipes does loomcycle document?". ` +
-	`Operations: self, tools, doc, permissions, agents, lineage, evaluations, channels, history, help. ` +
+	`what runtime concepts and recipes does loomcycle document? what time is it / how long have I been running?". ` +
+	`Operations: self, tools, doc, permissions, agents, lineage, evaluations, channels, history, help, time. ` +
 	`Always safe to call — no side effects, no storage writes, no network calls. ` +
 	`Useful for self-evolving agents that build their own task plans and want to inspect ` +
 	`their environment before deciding what to do. ` +
@@ -81,7 +82,7 @@ const contextDescription = `Read-only runtime introspection. ` +
 const contextInputSchema = `{
   "type": "object",
   "properties": {
-    "op":              {"type": "string", "enum": ["self","tools","doc","permissions","agents","lineage","evaluations","channels","history","help"], "description": "Which introspection op to run."},
+    "op":              {"type": "string", "enum": ["self","tools","doc","permissions","agents","lineage","evaluations","channels","history","help","time"], "description": "Which introspection op to run."},
     "name":            {"type": "string", "description": "doc only: the tool name to fetch detailed docs for."},
     "prefix":          {"type": "string", "description": "agents / channels: optional name prefix filter."},
     "def_id":          {"type": "string", "description": "lineage / evaluations: the agent_defs row id to inspect. Use Context.agents to discover def_ids first."},
@@ -154,10 +155,12 @@ func (c *Context) Execute(ctx context.Context, raw json.RawMessage) (tools.Resul
 		return c.execHistory(ctx, in)
 	case "help":
 		return c.execHelp(ctx, in)
+	case "time":
+		return c.execTime(ctx)
 	case "":
 		return errResult("missing required field: op"), nil
 	default:
-		return errResult(fmt.Sprintf("unknown op %q (must be one of: self, tools, doc, permissions, agents, lineage, evaluations, channels, history, help)", in.Op)), nil
+		return errResult(fmt.Sprintf("unknown op %q (must be one of: self, tools, doc, permissions, agents, lineage, evaluations, channels, history, help, time)", in.Op)), nil
 	}
 }
 
@@ -176,6 +179,41 @@ func (c *Context) execSelf(ctx context.Context) (tools.Result, error) {
 		// Channel messages — the canonical way an Evaluator agent
 		// gets the Editor's run_id for `Evaluation.submit run_id=…`.
 		"run_id": tools.RunID(ctx),
+	}
+	return okJSON(out)
+}
+
+// ---- time ----
+
+// execTime gives the agent a clock (RFC S / F34). Without it an agent
+// can't compute a deadline, bucket a periodic cycle, or build a
+// `deliver_at` for Channel.publish's deferred-visibility timer — it
+// would have to shell out to Bash `date`.
+//
+// now_rfc3339 uses RFC3339Nano (UTC) to match the format Channel emits
+// for published_at / visible_at, so an agent can compare a message
+// timestamp against "now" without reformatting. run_started_at /
+// elapsed_ms come from providers.RunMeta.StartedAt — the wall-clock
+// anchor the loop stamps once per run (the same anchor code-js uses) —
+// and are OMITTED when RunMeta is absent or unstamped rather than
+// fabricated from a zero epoch.
+//
+// Determinism (code-js / replay): execTime reads time.Now() on first
+// execution only. Code-js runs replay tool RESULTS from the transcript
+// rather than re-invoking tools, so a recorded op=time result is
+// reproduced verbatim on replay — there's no need to special-case a
+// pinned clock here. Context stays side_effect_class "pure" (reading a
+// clock mutates nothing).
+func (c *Context) execTime(ctx context.Context) (tools.Result, error) {
+	now := time.Now().UTC()
+	out := map[string]any{
+		"now_rfc3339": now.Format(time.RFC3339Nano),
+		"unix_ms":     now.UnixMilli(),
+	}
+	if meta, ok := providers.RunMetaFromContext(ctx); ok && !meta.StartedAt.IsZero() {
+		started := meta.StartedAt.UTC()
+		out["run_started_at"] = started.Format(time.RFC3339Nano)
+		out["elapsed_ms"] = now.Sub(started).Milliseconds()
 	}
 	return okJSON(out)
 }

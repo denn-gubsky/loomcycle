@@ -217,7 +217,7 @@ func toolDescriptors() []loommcp.ToolDescriptor {
 		},
 		{
 			Name:        "context",
-			Description: "Context tool ops (self/tools/doc/permissions/agents/lineage/evaluations/channels/history/help). Pass-through.",
+			Description: "Context tool ops (self/tools/doc/permissions/agents/lineage/evaluations/channels/history/help/time). Pass-through.",
 			InputSchema: builtinSchema("context"),
 		},
 
