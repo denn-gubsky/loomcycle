@@ -168,6 +168,64 @@ func TestScheduler_DisabledDefSkipped(t *testing.T) {
 	}
 }
 
+// RFC S / F36 — a MaxFires:1 schedule fires once, then auto-retires so it
+// never fires again even when forced due. Fails on the pre-RFC-S sweeper
+// (no retire-after-N) — the def stays active and re-fires on re-seed.
+func TestScheduler_MaxFiresRetiresAfterN(t *testing.T) {
+	enabled := true
+	def := scheduleDef{Agent: "researcher", Schedule: "0 * * * *", Enabled: &enabled, MaxFires: 1}
+	sched, fr, _, defID, st := schedulerFixture(t, def, time.Now().Add(-1*time.Minute))
+	ctx := context.Background()
+
+	fireT(t, sched)
+	if got := len(fr.Calls()); got != 1 {
+		t.Fatalf("RunOnce calls = %d, want 1", got)
+	}
+	state, _ := st.ScheduleRunStateGet(ctx, defID)
+	if state.FireCount != 1 {
+		t.Errorf("fire_count = %d, want 1", state.FireCount)
+	}
+	row, err := st.ScheduleDefGet(ctx, defID)
+	if err != nil {
+		t.Fatalf("def get: %v", err)
+	}
+	if !row.Retired {
+		t.Fatalf("def not retired after reaching max_fires=1")
+	}
+
+	// Force the schedule due again — a retired def must NOT fire (the
+	// due-query JOIN filters sd.retired). Without retire-after-N this
+	// re-fires and Calls() becomes 2.
+	if err := st.ScheduleRunStateSeed(ctx, defID, time.Now().Add(-1*time.Minute)); err != nil {
+		t.Fatalf("re-seed: %v", err)
+	}
+	fireT(t, sched)
+	if got := len(fr.Calls()); got != 1 {
+		t.Errorf("RunOnce calls = %d after retire, want 1 (retired def must not fire)", got)
+	}
+}
+
+// A MaxFires:2 schedule is NOT retired after a single fire (fire_count 1 < 2).
+func TestScheduler_MaxFiresNotReachedKeepsActive(t *testing.T) {
+	enabled := true
+	def := scheduleDef{Agent: "researcher", Schedule: "0 * * * *", Enabled: &enabled, MaxFires: 2}
+	sched, _, _, defID, st := schedulerFixture(t, def, time.Now().Add(-1*time.Minute))
+	ctx := context.Background()
+
+	fireT(t, sched)
+	state, _ := st.ScheduleRunStateGet(ctx, defID)
+	if state.FireCount != 1 {
+		t.Errorf("fire_count = %d, want 1", state.FireCount)
+	}
+	row, err := st.ScheduleDefGet(ctx, defID)
+	if err != nil {
+		t.Fatalf("def get: %v", err)
+	}
+	if row.Retired {
+		t.Errorf("def retired after 1 fire with max_fires=2 — should stay active")
+	}
+}
+
 func TestScheduler_RecordsCompletion(t *testing.T) {
 	enabled := true
 	def := scheduleDef{Agent: "researcher", Schedule: "0 * * * *", Enabled: &enabled}

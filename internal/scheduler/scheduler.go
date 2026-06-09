@@ -335,8 +335,31 @@ func (s *Scheduler) fireOne(ctx context.Context, row store.ScheduleDueRow, now t
 		LastError:  errStr,
 		LastRunAt:  now,
 		NextRunAt:  next,
+		// RFC S / F36: this IS a fire (any status counts toward the cap, so
+		// a wedged/always-failing schedule still retires). The disabled-skip
+		// advance (advanceOnly) leaves this false.
+		CountAsFire: true,
 	}); err != nil {
 		s.logf("scheduler: record result for %q: %v", row.Name, err)
+	}
+
+	// RFC S / F36: auto-retire after the Nth fire. Re-read the just-
+	// incremented fire_count (cheap, and only when a cap is set) and retire
+	// the def once it reaches max_fires. Retired defs are skipped by the
+	// due-query JOIN, so this is the last fire. Uses recordCtx so it still
+	// runs mid-shutdown. Multi-replica: fire_count += 1 is atomic, so the
+	// cap is exact single-replica and at most over-fired by the racing
+	// replica count — acceptable for a lifetime bound.
+	if def.MaxFires > 0 {
+		if st, gerr := s.store.ScheduleRunStateGet(recordCtx, row.DefID); gerr != nil {
+			s.logf("scheduler: max_fires read state for %q: %v", row.Name, gerr)
+		} else if st.FireCount >= def.MaxFires {
+			if rerr := s.store.ScheduleDefSetRetired(recordCtx, row.DefID, true); rerr != nil {
+				s.logf("scheduler: max_fires retire %q (def %s) after %d fires: %v", row.Name, row.DefID, st.FireCount, rerr)
+			} else {
+				s.logf("scheduler: %q reached max_fires=%d — retired def %s", row.Name, def.MaxFires, row.DefID)
+			}
+		}
 	}
 
 	// Dispatch hooks only on success — RFC E says on_complete fires on
