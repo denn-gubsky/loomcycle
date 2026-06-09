@@ -1296,8 +1296,15 @@ type Store interface {
 	WebhookDefListByName(ctx context.Context, name string) ([]WebhookDefRow, error)
 	WebhookDefListChildren(ctx context.Context, parentDefID string) ([]WebhookDefRow, error)
 	WebhookDefListNames(ctx context.Context) ([]WebhookDefNameSummary, error)
-	WebhookDefSetActive(ctx context.Context, name, defID, promotedByAgentID string) error
-	WebhookDefGetActive(ctx context.Context, name string) (WebhookDefRow, error)
+	// WebhookDefSetActive UPSERTs the webhook_def_active pointer for
+	// (tenantID, name). RFC N: per-tenant active pointer; a def can only be
+	// promoted within its own tenant. tenantID "" = shared/operator/legacy
+	// (reachable via the bare-root inbound route POST /v1/_webhooks/{name};
+	// per-tenant webhooks ride POST /v1/_webhooks/{tenant}/{name}).
+	WebhookDefSetActive(ctx context.Context, tenantID, name, defID, promotedByAgentID string) error
+	// WebhookDefGetActive returns the active row for (tenantID, name).
+	// *ErrNotFound when no pointer exists. RFC N: tenantID "" = shared.
+	WebhookDefGetActive(ctx context.Context, tenantID, name string) (WebhookDefRow, error)
 	WebhookDefSetRetired(ctx context.Context, defID string, retired bool) error
 
 	// MemoryBackendDef is the v1.x RFC I MR-3a substrate — a faithful
@@ -2252,6 +2259,10 @@ type WebhookDefRow struct {
 	CreatedByRunID         string          `json:"created_by_run_id,omitempty"`
 	Retired                bool            `json:"retired"`
 	BootstrappedFromStatic bool            `json:"bootstrapped_from_static"`
+	// TenantID is the RFC N tenant-isolation axis. "" = the shared/
+	// operator/legacy tenant. UNIQUE(tenant_id, name, version). Set from the
+	// authoritative principal at the write site; never from the wire.
+	TenantID string `json:"tenant_id,omitempty"`
 }
 
 // WebhookDefNameSummary mirrors A2AAgentDefNameSummary.
@@ -2261,6 +2272,9 @@ type WebhookDefNameSummary struct {
 	ActiveDefID   string    `json:"active_def_id,omitempty"`
 	LatestVersion int       `json:"latest_version"`
 	LastUpdated   time.Time `json:"last_updated"`
+	// TenantID is the RFC N owning tenant. "" = the shared/operator/legacy
+	// tenant. A name owned by N tenants yields N summary rows.
+	TenantID string `json:"tenant_id,omitempty"`
 }
 
 // WebhookDefActiveEntry mirrors A2AAgentDefActiveEntry.
@@ -2269,6 +2283,9 @@ type WebhookDefActiveEntry struct {
 	DefID             string    `json:"def_id"`
 	PromotedAt        time.Time `json:"promoted_at"`
 	PromotedByAgentID string    `json:"promoted_by_agent_id,omitempty"`
+	// TenantID is the RFC N tenant-isolation axis (part of the
+	// webhook_def_active PK). "" = the shared/operator/legacy tenant.
+	TenantID string `json:"tenant_id,omitempty"`
 }
 
 // MemoryBackendDefRow mirrors WebhookDefRow — same identity + lineage +

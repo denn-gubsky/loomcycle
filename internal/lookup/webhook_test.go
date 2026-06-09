@@ -22,7 +22,10 @@ type stubWebhookStore struct {
 	defs map[string]store.WebhookDefRow
 }
 
-func (s *stubWebhookStore) WebhookDefGetActive(_ context.Context, name string) (store.WebhookDefRow, error) {
+// WebhookDefGetActive ignores tenantID — these resolver tests exercise the
+// precedence/equivalence logic with the shared "" tenant; per-tenant
+// isolation is covered by the store contract test.
+func (s *stubWebhookStore) WebhookDefGetActive(_ context.Context, _, name string) (store.WebhookDefRow, error) {
 	if row, ok := s.defs[name]; ok {
 		return row, nil
 	}
@@ -98,7 +101,7 @@ func TestWebhook_EquivalenceYamlVsSubstrate(t *testing.T) {
 			"gh-push": {DefID: "wh_v1", Name: "gh-push", Version: 1, Definition: defJSON, CreatedAt: time.Now()},
 		},
 	}
-	resolved, ok := lookup.Webhook(context.Background(), ss, &config.Config{}, "gh-push")
+	resolved, ok := lookup.Webhook(context.Background(), ss, &config.Config{}, "", "gh-push")
 	if !ok {
 		t.Fatal("resolver returned !ok")
 	}
@@ -118,7 +121,7 @@ func TestWebhook_StaticBeforeSubstrate(t *testing.T) {
 			"hook": {DefID: "wh_v1", Name: "hook", Definition: json.RawMessage(`{"delivery":"spawn","agent":"substrate-agent"}`)},
 		},
 	}
-	got, ok := lookup.Webhook(context.Background(), ss, cfg, "hook")
+	got, ok := lookup.Webhook(context.Background(), ss, cfg, "", "hook")
 	if !ok {
 		t.Fatal("resolver returned !ok")
 	}

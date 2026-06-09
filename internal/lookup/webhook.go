@@ -14,7 +14,8 @@ import (
 // full store interface. Mirrors A2AAgentStore for the v1.x RFC H
 // WebhookDef substrate.
 type WebhookStore interface {
-	WebhookDefGetActive(ctx context.Context, name string) (store.WebhookDefRow, error)
+	// RFC N: the substrate lookup carries a tenantID.
+	WebhookDefGetActive(ctx context.Context, tenantID, name string) (store.WebhookDefRow, error)
 
 	// RunByIdempotencyKey backs RFC H Decision 10 "Layer 2" durable
 	// dedup in the receiver: before spawning, it looks up whether a run
@@ -31,27 +32,47 @@ type WebhookStore interface {
 	MemorySet(ctx context.Context, scope store.MemoryScope, scopeID, key string, value json.RawMessage, ttl time.Duration) error
 }
 
-// Webhook resolves a webhook NAME to its effective config.Webhook by
-// walking the lookup chain in precedence order:
+// Webhook resolves a webhook NAME to its effective config.Webhook within
+// the given tenant, walking the lookup chain in precedence order (mirrors
+// lookup.Agent):
 //
-//  1. static cfg.Webhooks (yaml-defined, pre-validated at boot)
-//  2. webhook_def_active + webhook_defs (substrate path)
+//  1. (tenantID != "") tenant-scoped substrate (webhook_def_active
+//     WHERE tenant_id=tenantID)
+//  2. static cfg.Webhooks (yaml-defined, the shared operator base)
+//  3. shared substrate (tenant_id="")
+//
+// The inbound receiver passes the URL-derived tenant: the bare-root route
+// POST /v1/_webhooks/{name} resolves under "" (so step 1 is skipped and the
+// order collapses to static→shared, identical to pre-RFC-N), while
+// POST /v1/_webhooks/{tenant}/{name} resolves the named tenant's webhook.
 //
 // Returns (zero, false) when no source has the name. Malformed
-// persistence JSON also returns (zero, false) — defensive against
-// future-field churn or hand-edited rows.
-//
-// Mirrors lookup.A2AAgent for the v1.x RFC H WebhookDef substrate.
-func Webhook(ctx context.Context, s WebhookStore, cfg *config.Config, name string) (config.Webhook, bool) {
+// persistence JSON also returns (zero, false).
+func Webhook(ctx context.Context, s WebhookStore, cfg *config.Config, tenantID, name string) (config.Webhook, bool) {
+	// 1. Tenant-scoped substrate (skipped for the shared "" tenant).
+	if tenantID != "" {
+		if w, ok := resolveWebhookSubstrate(ctx, s, tenantID, name); ok {
+			return w, true
+		}
+	}
+	// 2. Static cfg.Webhooks — the shared operator base.
 	if cfg != nil {
 		if w, ok := cfg.Webhooks[name]; ok {
 			return w, true
 		}
 	}
+	// 3. Shared substrate (tenant_id="").
+	return resolveWebhookSubstrate(ctx, s, "", name)
+}
+
+// resolveWebhookSubstrate reads the webhook_def_active overlay for one
+// tenant pass. Returns (zero, false) on nil store, no active pointer for
+// that tenant, or malformed row JSON.
+func resolveWebhookSubstrate(ctx context.Context, s WebhookStore, tenantID, name string) (config.Webhook, bool) {
 	if s == nil {
 		return config.Webhook{}, false
 	}
-	activeRow, err := s.WebhookDefGetActive(ctx, name)
+	activeRow, err := s.WebhookDefGetActive(ctx, tenantID, name)
 	if err != nil {
 		return config.Webhook{}, false
 	}

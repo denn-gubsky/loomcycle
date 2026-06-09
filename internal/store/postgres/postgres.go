@@ -4795,9 +4795,10 @@ func (s *Store) WebhookDefCreate(ctx context.Context, row store.WebhookDefRow) (
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
+	// RFC N: tenant is part of the version-allocation lock scope.
 	if _, err := tx.Exec(ctx,
 		`SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`,
-		"webhook_def:"+row.Name,
+		"webhook_def:"+row.TenantID+":"+row.Name,
 	); err != nil {
 		return store.WebhookDefRow{}, fmt.Errorf("webhook_def create lock: %w", err)
 	}
@@ -4813,7 +4814,7 @@ func (s *Store) WebhookDefCreate(ctx context.Context, row store.WebhookDefRow) (
 	}
 
 	var maxVer sql.NullInt64
-	if err := tx.QueryRow(ctx, `SELECT MAX(version) FROM webhook_defs WHERE name = $1`, row.Name).Scan(&maxVer); err != nil {
+	if err := tx.QueryRow(ctx, `SELECT MAX(version) FROM webhook_defs WHERE tenant_id = $1 AND name = $2`, row.TenantID, row.Name).Scan(&maxVer); err != nil {
 		return store.WebhookDefRow{}, fmt.Errorf("webhook_def create max version: %w", err)
 	}
 	row.Version = 1
@@ -4826,13 +4827,13 @@ func (s *Store) WebhookDefCreate(ctx context.Context, row store.WebhookDefRow) (
 		INSERT INTO webhook_defs (
 			def_id, name, version, parent_def_id, definition, description,
 			created_at, created_by_agent_id, created_by_run_id,
-			retired, bootstrapped_from_static
-		) VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10, $11)`,
+			retired, bootstrapped_from_static, tenant_id
+		) VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10, $11, $12)`,
 		row.DefID, row.Name, row.Version, nullableString(row.ParentDefID),
 		string(row.Definition), nullableString(row.Description),
 		row.CreatedAt,
 		nullableString(row.CreatedByAgentID), nullableString(row.CreatedByRunID),
-		row.Retired, row.BootstrappedFromStatic,
+		row.Retired, row.BootstrappedFromStatic, row.TenantID,
 	); err != nil {
 		return store.WebhookDefRow{}, fmt.Errorf("webhook_def insert: %w", err)
 	}
@@ -4877,17 +4878,19 @@ func (s *Store) WebhookDefListChildren(ctx context.Context, parentDefID string) 
 }
 
 func (s *Store) WebhookDefListNames(ctx context.Context) ([]store.WebhookDefNameSummary, error) {
+	// RFC N: group by tenant_id so a name owned by N tenants yields N rows.
 	rows, err := s.pool.Query(ctx, `
 		SELECT
+			d.tenant_id,
 			d.name,
 			COUNT(*)                  AS version_count,
 			MAX(d.version)            AS latest_version,
 			MAX(d.created_at)         AS last_updated,
 			COALESCE(a.def_id, '')    AS active_def_id
 		FROM webhook_defs d
-		LEFT JOIN webhook_def_active a ON a.name = d.name
-		GROUP BY d.name, a.def_id
-		ORDER BY d.name`)
+		LEFT JOIN webhook_def_active a ON a.name = d.name AND a.tenant_id = d.tenant_id
+		GROUP BY d.tenant_id, d.name, a.def_id
+		ORDER BY d.tenant_id, d.name`)
 	if err != nil {
 		return nil, fmt.Errorf("webhook_def list names: %w", err)
 	}
@@ -4896,7 +4899,7 @@ func (s *Store) WebhookDefListNames(ctx context.Context) ([]store.WebhookDefName
 	var out []store.WebhookDefNameSummary
 	for rows.Next() {
 		var ns store.WebhookDefNameSummary
-		if err := rows.Scan(&ns.Name, &ns.VersionCount, &ns.LatestVersion, &ns.LastUpdated, &ns.ActiveDefID); err != nil {
+		if err := rows.Scan(&ns.TenantID, &ns.Name, &ns.VersionCount, &ns.LatestVersion, &ns.LastUpdated, &ns.ActiveDefID); err != nil {
 			return nil, err
 		}
 		out = append(out, ns)
@@ -4904,9 +4907,15 @@ func (s *Store) WebhookDefListNames(ctx context.Context) ([]store.WebhookDefName
 	return out, rows.Err()
 }
 
-func (s *Store) WebhookDefSetActive(ctx context.Context, name, defID, promotedByAgentID string) error {
-	var rowName string
-	err := s.pool.QueryRow(ctx, `SELECT name FROM webhook_defs WHERE def_id = $1`, defID).Scan(&rowName)
+// WebhookDefSetActive UPSERTs the webhook_def_active pointer for
+// (tenantID, name). RFC N: validates the def belongs to BOTH the named
+// webhook AND the supplied tenant.
+func (s *Store) WebhookDefSetActive(ctx context.Context, tenantID, name, defID, promotedByAgentID string) error {
+	var (
+		rowName   string
+		rowTenant string
+	)
+	err := s.pool.QueryRow(ctx, `SELECT name, tenant_id FROM webhook_defs WHERE def_id = $1`, defID).Scan(&rowName, &rowTenant)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return &store.ErrNotFound{Kind: "webhook_def", ID: defID}
 	}
@@ -4916,14 +4925,17 @@ func (s *Store) WebhookDefSetActive(ctx context.Context, name, defID, promotedBy
 	if rowName != name {
 		return fmt.Errorf("webhook_def_active: def_id %q has name %q, refusing to promote under name %q", defID, rowName, name)
 	}
+	if rowTenant != tenantID {
+		return fmt.Errorf("webhook_def_active: def_id %q belongs to tenant %q, refusing to promote under tenant %q", defID, rowTenant, tenantID)
+	}
 	_, err = s.pool.Exec(ctx, `
-		INSERT INTO webhook_def_active (name, def_id, promoted_at, promoted_by_agent_id)
-		VALUES ($1, $2, $3, $4)
-		ON CONFLICT (name) DO UPDATE SET
+		INSERT INTO webhook_def_active (tenant_id, name, def_id, promoted_at, promoted_by_agent_id)
+		VALUES ($1, $2, $3, $4, $5)
+		ON CONFLICT (tenant_id, name) DO UPDATE SET
 		    def_id               = EXCLUDED.def_id,
 		    promoted_at          = EXCLUDED.promoted_at,
 		    promoted_by_agent_id = EXCLUDED.promoted_by_agent_id`,
-		name, defID, time.Now().UTC(), nullableString(promotedByAgentID),
+		tenantID, name, defID, time.Now().UTC(), nullableString(promotedByAgentID),
 	)
 	if err != nil {
 		return fmt.Errorf("webhook_def_active upsert: %w", err)
@@ -4931,9 +4943,9 @@ func (s *Store) WebhookDefSetActive(ctx context.Context, name, defID, promotedBy
 	return nil
 }
 
-func (s *Store) WebhookDefGetActive(ctx context.Context, name string) (store.WebhookDefRow, error) {
+func (s *Store) WebhookDefGetActive(ctx context.Context, tenantID, name string) (store.WebhookDefRow, error) {
 	var defID string
-	err := s.pool.QueryRow(ctx, `SELECT def_id FROM webhook_def_active WHERE name = $1`, name).Scan(&defID)
+	err := s.pool.QueryRow(ctx, `SELECT def_id FROM webhook_def_active WHERE tenant_id = $1 AND name = $2`, tenantID, name).Scan(&defID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return store.WebhookDefRow{}, &store.ErrNotFound{Kind: "webhook_def_active", ID: name}
 	}
@@ -4963,7 +4975,8 @@ const webhookDefSelect = `SELECT
 	COALESCE(created_by_agent_id, ''),
 	COALESCE(created_by_run_id, ''),
 	retired,
-	bootstrapped_from_static
+	bootstrapped_from_static,
+	tenant_id
 FROM webhook_defs`
 
 func (s *Store) scanWebhookDef(row pgx.Row) (store.WebhookDefRow, error) {
@@ -4979,6 +4992,7 @@ func (s *Store) scanWebhookDef(row pgx.Row) (store.WebhookDefRow, error) {
 		&out.CreatedAt,
 		&out.CreatedByAgentID, &out.CreatedByRunID,
 		&out.Retired, &out.BootstrappedFromStatic,
+		&out.TenantID,
 	)
 	if err != nil {
 		return store.WebhookDefRow{}, err
@@ -5002,6 +5016,7 @@ func (s *Store) scanWebhookDefRows(rows pgx.Rows) ([]store.WebhookDefRow, error)
 			&r.CreatedAt,
 			&r.CreatedByAgentID, &r.CreatedByRunID,
 			&r.Retired, &r.BootstrappedFromStatic,
+			&r.TenantID,
 		); err != nil {
 			return nil, err
 		}

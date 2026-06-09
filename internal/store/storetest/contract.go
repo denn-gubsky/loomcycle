@@ -243,6 +243,7 @@ func Run(t *testing.T, factory Factory) {
 		{"WebhookDefCreateAndGet", testWebhookDefCreateAndGet},
 		{"WebhookDefVersionMonotonic", testWebhookDefVersionMonotonic},
 		{"WebhookDefActivePointerIdempotent", testWebhookDefActivePointerIdempotent},
+		{"WebhookDefTenantIsolation", testWebhookDefTenantIsolation},
 		{"WebhookDefRetireReversible", testWebhookDefRetireReversible},
 		{"WebhookDefParentNotFound", testWebhookDefParentNotFound},
 		{"WebhookDefListByName", testWebhookDefListByName},
@@ -5018,19 +5019,67 @@ func testWebhookDefActivePointerIdempotent(t *testing.T, s store.Store) {
 	r1, _ := s.WebhookDefCreate(ctx, mkWebhookDef("wh-active-1", "hook-active", ""))
 	r2, _ := s.WebhookDefCreate(ctx, mkWebhookDef("wh-active-2", "hook-active", ""))
 
-	if err := s.WebhookDefSetActive(ctx, "hook-active", r1.DefID, "test"); err != nil {
+	if err := s.WebhookDefSetActive(ctx, "", "hook-active", r1.DefID, "test"); err != nil {
 		t.Fatal(err)
 	}
-	got, _ := s.WebhookDefGetActive(ctx, "hook-active")
+	got, _ := s.WebhookDefGetActive(ctx, "", "hook-active")
 	if got.DefID != r1.DefID {
 		t.Errorf("active = %s, want %s", got.DefID, r1.DefID)
 	}
-	if err := s.WebhookDefSetActive(ctx, "hook-active", r2.DefID, "test"); err != nil {
+	if err := s.WebhookDefSetActive(ctx, "", "hook-active", r2.DefID, "test"); err != nil {
 		t.Fatal(err)
 	}
-	got, _ = s.WebhookDefGetActive(ctx, "hook-active")
+	got, _ = s.WebhookDefGetActive(ctx, "", "hook-active")
 	if got.DefID != r2.DefID {
 		t.Errorf("after re-promote: active = %s, want %s", got.DefID, r2.DefID)
+	}
+}
+
+// testWebhookDefTenantIsolation mirrors the other isolation tests for the
+// Webhook plane.
+func testWebhookDefTenantIsolation(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	const name = "shared-hook"
+
+	aDef := mkWebhookDef("whti-a", name, "")
+	aDef.TenantID = "tenant-a"
+	aDef.Definition = json.RawMessage(`{"delivery":"spawn","agent":"x","v":"A"}`)
+	aRow, err := s.WebhookDefCreate(ctx, aDef)
+	if err != nil {
+		t.Fatalf("create A: %v", err)
+	}
+	bDef := mkWebhookDef("whti-b", name, "")
+	bDef.TenantID = "tenant-b"
+	bDef.Definition = json.RawMessage(`{"delivery":"spawn","agent":"x","v":"B"}`)
+	bRow, err := s.WebhookDefCreate(ctx, bDef)
+	if err != nil {
+		t.Fatalf("create B: %v", err)
+	}
+
+	if err := s.WebhookDefSetActive(ctx, "tenant-a", name, aRow.DefID, ""); err != nil {
+		t.Fatalf("promote A: %v", err)
+	}
+	if err := s.WebhookDefSetActive(ctx, "tenant-b", name, bRow.DefID, ""); err != nil {
+		t.Fatalf("promote B: %v", err)
+	}
+
+	gotA, err := s.WebhookDefGetActive(ctx, "tenant-a", name)
+	if err != nil {
+		t.Fatalf("get active A: %v", err)
+	}
+	if gotA.DefID != aRow.DefID || gotA.TenantID != "tenant-a" || !jsonEqual(gotA.Definition, `{"delivery":"spawn","agent":"x","v":"A"}`) {
+		t.Errorf("tenant-a clobbered: got def_id=%q tenant=%q def=%s", gotA.DefID, gotA.TenantID, gotA.Definition)
+	}
+	gotB, err := s.WebhookDefGetActive(ctx, "tenant-b", name)
+	if err != nil {
+		t.Fatalf("get active B: %v", err)
+	}
+	if gotB.DefID != bRow.DefID || gotB.TenantID != "tenant-b" || !jsonEqual(gotB.Definition, `{"delivery":"spawn","agent":"x","v":"B"}`) {
+		t.Errorf("tenant-b clobbered: got def_id=%q tenant=%q def=%s", gotB.DefID, gotB.TenantID, gotB.Definition)
+	}
+
+	if err := s.WebhookDefSetActive(ctx, "tenant-b", name, aRow.DefID, ""); err == nil {
+		t.Error("cross-tenant promote (A's def under tenant-b) unexpectedly succeeded")
 	}
 }
 
