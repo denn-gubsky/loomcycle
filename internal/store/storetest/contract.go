@@ -163,6 +163,7 @@ func Run(t *testing.T, factory Factory) {
 		{"ChannelSweepReapsExpired", testChannelSweepReapsExpired},
 		{"ChannelMaxMessagesTrimsOldest", testChannelMaxMessagesTrimsOldest},
 		{"ChannelScopeIsolation", testChannelScopeIsolation},
+		{"ChannelPurge", testChannelPurge},
 		{"ChannelPeekDoesNotConsume", testChannelPeekDoesNotConsume},
 		{"ChannelReplayFromCursorZero", testChannelReplayFromCursorZero},
 		{"ChannelStatsAggregatesNonExpired", testChannelStatsAggregatesNonExpired},
@@ -2987,6 +2988,58 @@ func testChannelScopeIsolation(t *testing.T, s store.Store) {
 	msgs, _, _ = s.ChannelSubscribe(ctx, "shared", store.MemoryScopeAgent, "agent-b", "", 10)
 	if len(msgs) != 1 || !jsonEqual(msgs[0].Payload, `{"from":"b"}`) {
 		t.Errorf("agent-b sees: %+v, want only its own message", msgs)
+	}
+}
+
+// testChannelPurge pins the ChannelPurge contract: it drains every buffered
+// message for a channel name and returns the count, is idempotent on an
+// empty/unknown channel (0, nil — NOT ErrNotFound), and leaves the channel
+// usable for new publishes (it drains the queue, it does not tear the
+// channel down).
+func testChannelPurge(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	for i := 0; i < 3; i++ {
+		if _, _, err := s.ChannelPublish(ctx, store.ChannelMessage{
+			Channel: "purge-ch", Scope: store.MemoryScopeAgent, ScopeID: "x",
+			Payload: json.RawMessage(`{"i":` + strconv.Itoa(i) + `}`),
+		}, 0); err != nil {
+			t.Fatalf("publish %d: %v", i, err)
+		}
+	}
+
+	n, err := s.ChannelPurge(ctx, "purge-ch")
+	if err != nil {
+		t.Fatalf("purge: %v", err)
+	}
+	if n != 3 {
+		t.Errorf("purge returned %d, want 3", n)
+	}
+	if msgs, _, _ := s.ChannelSubscribe(ctx, "purge-ch", store.MemoryScopeAgent, "x", "", 10); len(msgs) != 0 {
+		t.Errorf("post-purge msgs = %d, want 0 (queue drained)", len(msgs))
+	}
+
+	// Idempotent on an already-empty channel.
+	n2, err := s.ChannelPurge(ctx, "purge-ch")
+	if err != nil {
+		t.Fatalf("purge empty: %v", err)
+	}
+	if n2 != 0 {
+		t.Errorf("purge empty returned %d, want 0", n2)
+	}
+	// Idempotent on a never-seen channel (existence is the caller's concern).
+	if n3, err := s.ChannelPurge(ctx, "never-existed"); err != nil || n3 != 0 {
+		t.Errorf("purge unknown channel = (%d, %v), want (0, nil)", n3, err)
+	}
+
+	// The channel still accepts new messages — purge drained, didn't delete.
+	if _, _, err := s.ChannelPublish(ctx, store.ChannelMessage{
+		Channel: "purge-ch", Scope: store.MemoryScopeAgent, ScopeID: "x",
+		Payload: json.RawMessage(`{"i":99}`),
+	}, 0); err != nil {
+		t.Fatalf("publish after purge: %v", err)
+	}
+	if msgs, _, _ := s.ChannelSubscribe(ctx, "purge-ch", store.MemoryScopeAgent, "x", "", 10); len(msgs) != 1 {
+		t.Errorf("post-purge-republish msgs = %d, want 1", len(msgs))
 	}
 }
 

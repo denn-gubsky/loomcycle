@@ -241,38 +241,11 @@ func (p *Pool) GetWithRetry(ctx context.Context, name string, logf func(string, 
 	}
 }
 
-// Tools returns wrapped tools.Tool entries for every server that has
-// finished initialising. Each tool is named "mcp__{server}__{tool}" to match
-// the convention used by Claude Code (and therefore by jobs-search-agent's
-// policies). Entries that are still initialising or that failed init are
-// skipped.
-func (p *Pool) Tools() []tools.Tool {
-	p.mu.Lock()
-	// Snapshot the entry pointers so we can safely iterate the ready
-	// channels without holding p.mu (ready is closed under no lock).
-	entries := make(map[poolKey]*entry, len(p.servers))
-	for key, e := range p.servers {
-		entries[key] = e
-	}
-	p.mu.Unlock()
-
-	var out []tools.Tool
-	for key, e := range entries {
-		select {
-		case <-e.ready:
-			if e.err != nil {
-				continue
-			}
-		default:
-			// Still initialising — skip; caller can ask again later.
-			continue
-		}
-		for _, td := range e.tools {
-			out = append(out, NewTool(p, key.name, td))
-		}
-	}
-	return out
-}
+// (Pool.Tools was removed in the RFC N follow-up: it enumerated EVERY
+// server's tools with no tenant filter, a latent cross-tenant leak if ever
+// wired into the per-run advertising path. Production tool advertising goes
+// through the tenant-aware enumerate.go DynamicToolsForRun + lazy.go, both
+// of which wrap via NewTool; nothing called Pool.Tools outside tests.)
 
 // PeekTools returns a snapshot of the cached tools/list result for
 // name. Returns nil when the entry is absent, still initialising, or

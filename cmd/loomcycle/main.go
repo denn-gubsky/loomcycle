@@ -1959,7 +1959,10 @@ func main() {
 		// can wrap loomcycle in a supervisor that watches for the
 		// log line.
 		go func() {
-			log.Printf("mcp: stdio server starting (20 tools registered)")
+			// Sourced from the registry (lcmcp.MetaToolCount) so the count
+			// can't drift — the hardcoded "20" went stale once the registry
+			// grew past 40. Same rationale as the CLI help count.
+			log.Printf("mcp: stdio server starting (%d tools registered)", lcmcp.MetaToolCount())
 			if err := mcpSrv.Serve(bgCtx, os.Stdin, os.Stdout); err != nil {
 				log.Printf("mcp: serve ended: %v", err)
 			} else {
