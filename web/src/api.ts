@@ -1585,59 +1585,6 @@ export function continueSession(
   );
 }
 
-// RunStateEvent mirrors connector.RunStateEvent — one frame per run-state
-// transition on GET /v1/users/{id}/agents/stream. Drives the ensemble
-// dashboard (watch many runs' states live) + the orchestrator child tree.
-export interface RunStateEvent {
-  run_id: string;
-  agent_id: string;
-  agent: string;
-  user_id: string;
-  parent_agent_id?: string;
-  status: string;
-  stop_reason?: string;
-  error?: string;
-  ts: string;
-}
-
-// streamRunStates opens the run-STATE SSE feed (GET) and emits each
-// parsed run_state event. GET-only, so it reuses pumpSSE (uniform with
-// startRun). Resolves at EOF (the server caps the stream lifetime ~30min;
-// the caller reconnects if it wants to continue).
-export async function streamRunStates(
-  userId: string,
-  onState: (e: RunStateEvent) => void,
-  opts?: { status?: string[]; agent?: string; signal?: AbortSignal },
-): Promise<void> {
-  const q = new URLSearchParams();
-  if (opts?.status && opts.status.length > 0) q.set("status", opts.status.join(","));
-  if (opts?.agent) q.set("agent", opts.agent);
-  const qs = q.toString();
-  const resp = await fetch(
-    baseURL +
-      `/v1/users/${encodeURIComponent(userId)}/agents/stream${qs ? "?" + qs : ""}`,
-    {
-      credentials: "same-origin",
-      signal: opts?.signal,
-      headers: { Accept: "text/event-stream" },
-    },
-  );
-  if (!resp.ok) {
-    if (redirectToLoginOn401(resp.status)) return new Promise<void>(() => {});
-    const text = await resp.text();
-    throw new Error(`${resp.status} ${resp.statusText}: ${text.slice(0, 200)}`);
-  }
-  if (!resp.body) throw new Error("stream response had no body");
-  await pumpSSE(resp.body, (f) => {
-    if (f.event !== "run_state") return;
-    try {
-      onState(JSON.parse(f.data) as RunStateEvent);
-    } catch {
-      // skip a malformed frame rather than tear down the stream
-    }
-  });
-}
-
 // sseEventToTranscript wraps a bare providers.Event (parsed from a run
 // SSE frame's data) into the persisted TranscriptEvent envelope the
 // existing TerminalTranscript / EventCard renderers consume — so the

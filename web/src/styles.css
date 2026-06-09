@@ -3982,3 +3982,119 @@ button.primary:disabled {
 .live-run-pane-compact {
   min-height: 180px;
 }
+
+/* run mode tabs */
+.run-view-head {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin-bottom: 12px;
+}
+.run-tabs {
+  display: flex;
+  gap: 4px;
+}
+.run-tab {
+  background: transparent;
+  border: 1px solid var(--border, #2a2a32);
+  color: var(--muted, #9aa);
+  padding: 4px 12px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 13px;
+}
+.run-tab-active {
+  color: var(--fg);
+  border-color: var(--accent);
+  background: rgba(120, 160, 255, 0.1);
+}
+
+/* fan-out */
+.fanout-tab {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+.fanout-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 8px 0;
+}
+.fanout-row {
+  display: grid;
+  grid-template-columns: 180px 1fr auto;
+  gap: 8px;
+  align-items: start;
+}
+.fanout-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+}
+.fanout-running-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+.ensemble-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: 12px;
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  align-content: start;
+}
+.ensemble-cell {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--border, #2a2a32);
+  border-radius: 6px;
+  overflow: hidden;
+}
+.ensemble-cell-title {
+  display: flex;
+  justify-content: space-between;
+  padding: 6px 10px;
+  background: rgba(255, 255, 255, 0.03);
+  font-size: 13px;
+}
+.ensemble-cell-agent {
+  font-weight: 600;
+}
+.ensemble-cell-index {
+  color: var(--muted, #9aa);
+}
+
+/* orchestrator */
+.orchestrator-view {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+.orchestrator-body {
+  display: flex;
+  gap: 16px;
+  flex: 1;
+  min-height: 0;
+  margin-top: 12px;
+}
+.orchestrator-parent,
+.orchestrator-children {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.orchestrator-parent h4,
+.orchestrator-children h4 {
+  margin: 0 0 8px;
+}
+.orchestrator-children {
+  overflow-y: auto;
+}
