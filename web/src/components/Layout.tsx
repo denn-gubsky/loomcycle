@@ -135,8 +135,10 @@ export default function Layout() {
           <span className="version">{version === null ? "…" : version}</span>
         </div>
         <nav className="nav-tabs">
-          {/* runs is every role's workspace; the rest are operator-global /
+          {/* run + runs are every role's workspace (running is tenant-level,
+              scoped by principal server-side); the rest are operator-global /
               admin surfaces, hidden for a tenant (and 403 server-side). */}
+          <NavLink to="/run">run</NavLink>
           <NavLink to="/agents">runs</NavLink>
           {isAdmin && (
             <>

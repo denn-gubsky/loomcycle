@@ -3901,3 +3901,84 @@ button.primary:disabled {
   color: var(--fg);
   border-color: var(--accent);
 }
+
+/* ---- Run view (v0.24.0 manual run launcher) ---- */
+.run-view {
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  flex: 1;
+}
+.run-view h2 {
+  margin: 0 0 12px;
+}
+.run-view-body {
+  display: flex;
+  gap: 16px;
+  flex: 1;
+  min-height: 0;
+}
+.run-view-form-col {
+  width: 380px;
+  flex: 0 0 380px;
+  overflow-y: auto;
+}
+.run-view-pane-col {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+}
+.run-form-advanced {
+  margin: 8px 0;
+}
+.run-form-advanced summary {
+  cursor: pointer;
+  color: var(--muted, #9aa);
+  font-size: 13px;
+  padding: 4px 0;
+}
+.run-form-actions {
+  margin-top: 12px;
+}
+.live-run-pane {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  border: 1px solid var(--border, #2a2a32);
+  border-radius: 6px;
+  overflow: hidden;
+}
+.live-run-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border, #2a2a32);
+}
+.live-run-agentid {
+  font-size: 12px;
+  color: var(--muted, #9aa);
+}
+.live-run-cancel {
+  margin-left: auto;
+}
+.live-run-pane .terminal-transcript {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+.live-run-continue {
+  display: flex;
+  gap: 8px;
+  padding: 8px 12px;
+  border-top: 1px solid var(--border, #2a2a32);
+}
+.live-run-continue input {
+  flex: 1;
+}
+.live-run-pane-compact {
+  min-height: 180px;
+}

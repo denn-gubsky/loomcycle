@@ -3,6 +3,7 @@ import ReactDOM from "react-dom/client";
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import "./styles.css";
 import AgentsView from "./pages/AgentsView";
+import RunView from "./pages/RunView";
 import MemoryView from "./pages/MemoryView";
 import InterruptInbox from "./pages/InterruptInbox";
 import SnapshotsView from "./pages/SnapshotsView";
@@ -32,6 +33,7 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
         <Route path="login" element={<LoginView />} />
         <Route path="/" element={<Layout />}>
           <Route index element={<Navigate to="/agents" replace />} />
+          <Route path="run" element={<RunView />} />
           <Route path="agents" element={<AgentsView />} />
           <Route path="agents/:agentId" element={<AgentIdRedirect />} />
           <Route path="library" element={<LibraryView />}>
