@@ -868,9 +868,15 @@ type mergedScheduleDef struct {
 	// PreservesEnabledWhenOverlayOmits.
 	Enabled    *bool `json:"enabled,omitempty"`
 	CatchUpMax int   `json:"catch_up_max,omitempty"`
-	// MaxFires is the lifetime fire-count cap (RFC S / F36). 0 = fire
-	// indefinitely; N > 0 auto-retires the def after its Nth fire.
-	MaxFires int    `json:"max_fires,omitempty"`
+	// MaxFires is the lifetime fire-count cap (RFC S / F36). *int (not int,
+	// like Enabled is *bool) so a fork overlay can DISTINGUISH "field
+	// omitted → inherit the parent's cap" from "explicitly {max_fires:0} →
+	// reset to unbounded". nil = unbounded; non-nil 0 = explicitly
+	// unbounded; N > 0 auto-retires the def after its Nth fire. The
+	// read-side mirrors (SubstrateScheduleDef / scheduler.scheduleDef) keep
+	// plain int — nil and 0 are both "unbounded" once stored, so they need
+	// no such distinction.
+	MaxFires *int   `json:"max_fires,omitempty"`
 	UserID   string `json:"user_id,omitempty"`
 	// UserTier is the fork-time tier pick for templates with
 	// user_tier_schedules. The scheduler's ResolveCron uses it to
@@ -945,7 +951,10 @@ func (d *mergedScheduleDef) applyOverlay(ov mergedScheduleDef) {
 	if ov.CatchUpMax != 0 {
 		d.CatchUpMax = ov.CatchUpMax
 	}
-	if ov.MaxFires != 0 {
+	if ov.MaxFires != nil {
+		// Non-nil (incl. an explicit 0) overrides; nil = overlay omitted
+		// the field → inherit the parent's cap. This is what lets a fork
+		// LIFT a cap with {max_fires:0}, per the tool's documented contract.
 		d.MaxFires = ov.MaxFires
 	}
 	if ov.UserID != "" {
@@ -995,11 +1004,16 @@ func staticToMergedScheduleDef(sr config.ScheduledRun) mergedScheduleDef {
 		Timezone:               sr.Timezone,
 		Enabled:                &enabled,
 		CatchUpMax:             sr.CatchUpMax,
-		MaxFires:               sr.MaxFires,
 		UserID:                 sr.UserID,
 		UserCredentialsFromEnv: sr.UserCredentialsFromEnv,
 		Metadata:               sr.Metadata,
 		TenantID:               sr.TenantID,
+	}
+	// MaxFires is *int on the write side; carry the yaml value as a pointer
+	// only when set (0 = unbounded → leave nil so the Definition JSON omits it).
+	if sr.MaxFires != 0 {
+		mf := sr.MaxFires
+		out.MaxFires = &mf
 	}
 	if len(sr.Prompt) > 0 {
 		out.Prompt = make([]mergedSchedulePromptSeg, len(sr.Prompt))

@@ -267,6 +267,47 @@ func TestScheduleDefTool_ForkPartialCredentialMerge(t *testing.T) {
 	}
 }
 
+// TestScheduleDefTool_MaxFiresOverlaySemantics pins the *int reset
+// semantics (RFC S / F36): a create sets the cap, a fork that OMITS
+// max_fires inherits the parent's cap, and a fork with an EXPLICIT
+// {max_fires:0} LIFTS the cap (unbounded) — the distinction a plain int
+// (zero-sentinel) couldn't express. Fails on the int version of the field.
+func TestScheduleDefTool_MaxFiresOverlaySemantics(t *testing.T) {
+	tool, ctx, cleanup := scheduleDefFixture(t)
+	defer cleanup()
+
+	// Create a bounded schedule (max_fires:3).
+	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"create","name":"bounded-task","overlay":{"agent":"job-search-batch","schedule":"0 9 * * 1","user_id":"alice","max_fires":3}}`))
+	if res.IsError {
+		t.Fatalf("create: %s", res.Text)
+	}
+	out := decodeResult(t, res.Text)
+	v1 := out["def_id"].(string)
+	if def := out["definition"].(map[string]any); def["max_fires"] != float64(3) {
+		t.Fatalf("create max_fires = %v, want 3", def["max_fires"])
+	}
+
+	// Fork omitting max_fires → inherits the parent's 3.
+	res, _ = tool.Execute(ctx, json.RawMessage(`{"op":"fork","name":"bounded-task","parent_def_id":"`+v1+`","overlay":{"user_id":"bob"}}`))
+	if res.IsError {
+		t.Fatalf("inherit fork: %s", res.Text)
+	}
+	if def := decodeResult(t, res.Text)["definition"].(map[string]any); def["max_fires"] != float64(3) {
+		t.Errorf("fork-omit max_fires = %v, want 3 inherited", def["max_fires"])
+	}
+
+	// Fork with explicit {max_fires:0} → resets to unbounded. The field is
+	// either absent or present-as-0; both mean unbounded to the sweeper.
+	res, _ = tool.Execute(ctx, json.RawMessage(`{"op":"fork","name":"bounded-task","parent_def_id":"`+v1+`","overlay":{"max_fires":0}}`))
+	if res.IsError {
+		t.Fatalf("reset fork: %s", res.Text)
+	}
+	def := decodeResult(t, res.Text)["definition"].(map[string]any)
+	if v, present := def["max_fires"]; present && v != float64(0) {
+		t.Errorf("reset fork max_fires = %v, want unbounded (absent or 0)", v)
+	}
+}
+
 // TestScheduleDefTool_ForkPreservesEnabledWhenOverlayOmits regresses
 // a self-review bug: applyOverlay used to unconditionally clobber
 // d.Enabled with ov.Enabled. The fork-rotate-credentials path
