@@ -226,6 +226,12 @@ func runHashAgentByName(name, cfgPath string, stdout, stderr io.Writer) int {
 		MemoryScopes:          def.MemoryScopes,
 		MemoryQuotaBytes:      def.MemoryQuotaBytes,
 		MemoryBackend:         def.MemoryBackend,
+		// F14: channels / evaluation_scopes / interruption are now content-
+		// identifying, so the by-name hash must include them to match the
+		// deployed substrate hash for an agent that uses them.
+		Channels:         agents.AgentChannelACL{Publish: def.Channels.Publish, Subscribe: def.Channels.Subscribe},
+		EvaluationScopes: def.EvaluationScopes,
+		Interruption:     agents.AgentInterruptionACL{Enabled: def.Interruption.Enabled, Kinds: def.Interruption.Kinds, MaxPending: def.Interruption.MaxPending},
 	}
 	fmt.Fprintln(stdout, agents.Sign(agents.FromYAMLAgent(a)))
 	return 0
