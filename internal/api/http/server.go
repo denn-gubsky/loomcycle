@@ -140,7 +140,11 @@ type Server struct {
 	// surfaces (A2A/scheduler/webhook/MCP spawn_run/gRPC-legacy) the ctx
 	// tenant is "" and the enumerator would advertise the wrong tenant's
 	// MCP tool set. The caller passes the run's authoritative tenant.
-	dynamicTools func(ctx context.Context, tenantID string) []tools.Tool
+	//
+	// F33: wantServers is the set of dynamic MCP servers the run references
+	// (from its allowed_tools). The enumerator advertises cached tools for all
+	// servers, but only handshakes a referenced server whose cache is empty.
+	dynamicTools func(ctx context.Context, tenantID string, wantServers map[string]bool) []tools.Tool
 
 	// systemPublisher backs the v0.8.6 POST /v1/_channels/_system/...
 	// admin endpoint. Nil = endpoint refuses every request with a
@@ -408,7 +412,13 @@ func (s *Server) SetMCPFallback(fn tools.FallbackFunc) {
 //
 // RFC N FIX 2-mcp: fn takes the run's authoritative tenant EXPLICITLY rather
 // than deriving it from ctx — see candidateTools.
-func (s *Server) SetDynamicToolEnumerator(fn func(ctx context.Context, tenantID string) []tools.Tool) {
+//
+// F33: fn also takes wantServers — the set of dynamic MCP server names this run
+// references via its allowed_tools. The enumerator advertises every server's
+// CACHED tools regardless, but only HANDSHAKES a referenced server whose cache
+// is empty, so a dynamic-MCP-only agent sees its tools at run start (not just on
+// a first call that, with nothing advertised, the model never makes).
+func (s *Server) SetDynamicToolEnumerator(fn func(ctx context.Context, tenantID string, wantServers map[string]bool) []tools.Tool) {
 	s.dynamicTools = fn
 }
 
@@ -422,17 +432,49 @@ func (s *Server) SetDynamicToolEnumerator(fn func(ctx context.Context, tenantID 
 // EXPLICITLY by the caller. The entry sites call this BEFORE WithRunIdentity
 // is stamped on ctx, so a ctx-derived tenant would be "" for non-HTTP-principal
 // spawn surfaces — and the run would advertise the wrong tenant's MCP tools.
-func (s *Server) candidateTools(ctx context.Context, tenantID string) []tools.Tool {
+//
+// F33: agentAllowed is the agent's declared allowed_tools. We derive the set of
+// dynamic MCP servers it references (referencedDynamicMCPServers) and hand it to
+// the enumerator so a referenced server with no cached tools is handshaked and
+// advertised at run start.
+func (s *Server) candidateTools(ctx context.Context, tenantID string, agentAllowed []string) []tools.Tool {
 	if s.dynamicTools == nil {
 		return s.tools
 	}
-	dyn := s.dynamicTools(ctx, tenantID)
+	dyn := s.dynamicTools(ctx, tenantID, referencedDynamicMCPServers(agentAllowed))
 	if len(dyn) == 0 {
 		return s.tools
 	}
 	out := make([]tools.Tool, 0, len(s.tools)+len(dyn))
 	out = append(out, s.tools...)
 	out = append(out, dyn...)
+	return out
+}
+
+// referencedDynamicMCPServers extracts the set of MCP server names an agent's
+// allowed_tools patterns reference, for the F33 run-start handshake. A pattern
+// of the shape `mcp__<server>__<tool>` or the wildcard `mcp__<server>__*`
+// contributes <server>; any other pattern (a native tool, a bare `*`, an
+// `a2a__…` peer) contributes nothing — those don't gate on dynamic MCP
+// discovery. The names are the SANITISED server segment as it appears in the
+// advertised tool name, so they line up with the enumerator's comparison.
+func referencedDynamicMCPServers(patterns []string) map[string]bool {
+	var out map[string]bool
+	for _, p := range patterns {
+		rest, ok := strings.CutPrefix(p, "mcp__")
+		if !ok {
+			continue
+		}
+		// server is everything up to the first "__" separating it from the tool.
+		server, _, ok := strings.Cut(rest, "__")
+		if !ok || server == "" {
+			continue
+		}
+		if out == nil {
+			out = make(map[string]bool)
+		}
+		out[server] = true
+	}
 	return out
 }
 
@@ -1536,7 +1578,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	// tenant (effectiveTenantID), not the ctx tenant — WithRunIdentity
 	// isn't stamped yet, so for non-HTTP-principal spawn surfaces the ctx
 	// tenant is "" and the run would not see its OWN dynamic MCP tools.
-	allowedTools := filterTools(s.candidateTools(ctx, effectiveTenantID), agentDef.AllowedTools, in.AllowedTools)
+	allowedTools := filterTools(s.candidateTools(ctx, effectiveTenantID, agentDef.AllowedTools), agentDef.AllowedTools, in.AllowedTools)
 	var hostPolicy tools.HostPolicyValue
 	if in.AllowedHosts != nil || s.cfg.Env.HTTPCallerAuthoritative {
 		var caller []string
@@ -2683,7 +2725,7 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 	// vs the wire tenant), which would advertise the wrong tenant's MCP tools
 	// for an open-mode run. Consistent with the agent existence-check +
 	// resolveAgent on this path.
-	allowedTools := filterTools(s.candidateTools(r.Context(), req.TenantID), agentDef.AllowedTools, req.AllowedTools)
+	allowedTools := filterTools(s.candidateTools(r.Context(), req.TenantID, agentDef.AllowedTools), agentDef.AllowedTools, req.AllowedTools)
 	// Per-run host narrowing for HTTP/WebFetch/WebSearch. Behaviour
 	// depends on LOOMCYCLE_HTTP_CALLER_AUTHORITATIVE — see NarrowHosts
 	// doc comment. In caller-authoritative mode we ALWAYS call so the
@@ -3111,7 +3153,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	// authoritative tenant (the same value the continuation run uses), not
 	// the ctx tenant — the ownership gate above already proved the caller
 	// is entitled to this session.
-	allowedTools := filterTools(s.candidateTools(r.Context(), sess.TenantID), agentDef.AllowedTools, body.AllowedTools)
+	allowedTools := filterTools(s.candidateTools(r.Context(), sess.TenantID, agentDef.AllowedTools), agentDef.AllowedTools, body.AllowedTools)
 	var hostPolicy tools.HostPolicyValue
 	if body.AllowedHosts != nil || s.cfg.Env.HTTPCallerAuthoritative {
 		var caller []string
@@ -3867,7 +3909,7 @@ func (s *Server) runSubAgent(ctx context.Context, name string, prompt string, de
 	// RFC N FIX 2-mcp: sub-agents run with the parent's RunIdentity already
 	// on ctx, so tenantFromCtx returns the run's authoritative tenant —
 	// the sub-agent advertises the same tenant's MCP tools as its parent.
-	subTools := filterTools(s.candidateTools(ctx, tenantFromCtx(ctx)), def.AllowedTools, nil)
+	subTools := filterTools(s.candidateTools(ctx, tenantFromCtx(ctx), def.AllowedTools), def.AllowedTools, nil)
 	// Inherit the parent's caller-authoritative host policy. Without
 	// this, sub-agents fall back to the operator's static
 	// HTTPHostAllowlist — which typically doesn't include localhost

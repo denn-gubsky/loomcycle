@@ -1265,33 +1265,11 @@ func main() {
 	// would advertise the wrong tenant's MCP tools. The tenant remains
 	// authoritative (the server derived it from the principal / session /
 	// parent RunIdentity), never from the wire.
-	srv.SetDynamicToolEnumerator(func(ctx context.Context, tenant string) []tools.Tool {
-		var out []tools.Tool
-		for _, name := range dynamicMCPRegistry.NamesForTenant(tenant) {
-			// Resolve the active def with the same precedence as
-			// lookup.MCPServer: the run's tenant first, then the shared ""
-			// base. A tenant-owned name's tools come from the tenant's def;
-			// a shared name's from the "" def. A run never reads another
-			// tenant's row.
-			row, gerr := storeIface.MCPServerDefGetActive(ctx, tenant, name)
-			if gerr != nil && tenant != "" {
-				row, gerr = storeIface.MCPServerDefGetActive(ctx, "", name)
-			}
-			if gerr != nil {
-				continue
-			}
-			var def lookup.SubstrateMCPServer
-			if json.Unmarshal(row.Definition, &def) != nil {
-				continue
-			}
-			for _, dt := range def.DiscoveredTools {
-				out = append(out, mcp.NewTool(mcpPool, name, mcp.ToolDescriptor{
-					Name:        dt.Name,
-					Description: dt.Description,
-					InputSchema: dt.InputSchema,
-				}))
-			}
-		}
+	srv.SetDynamicToolEnumerator(func(ctx context.Context, tenant string, wantServers map[string]bool) []tools.Tool {
+		// F33: dynamic MCP enumeration (cached tools for every server; a
+		// bounded run-start handshake for a REFERENCED server whose cache is
+		// empty) lives in the testable mcp.DynamicToolsForRun helper.
+		out := mcp.DynamicToolsForRun(ctx, mcpPool, dynamicMCPRegistry, mcpActiveDefReader{storeIface}, tenant, wantServers, runStartMCPDiscoveryTimeout, log.Printf)
 		if cfg.Env.A2AServerEnabled {
 			resolve := func(ctx context.Context, name string) (config.A2AAgent, bool) {
 				return lookup.A2AAgent(ctx, storeIface, cfg, name)
@@ -2706,6 +2684,25 @@ func (v mcpLookupView) Get(tenantID, name string) (lookup.MCPServerSpec, bool) {
 
 func spawnStdioMCP(name string, srv config.MCPServer) (mcp.Caller, error) {
 	return spawnStdio(name, srv.Command, srv.Args, srv.Env)
+}
+
+// runStartMCPDiscoveryTimeout bounds the F33 run-start handshake of a referenced
+// dynamic MCP server whose discovered_tools cache is empty. Kept well under the
+// 30s boot-discovery budget: a run shouldn't stall long waiting on one peer, and
+// if it times out the lazy first-call fallback still applies.
+const runStartMCPDiscoveryTimeout = 10 * time.Second
+
+// mcpActiveDefReader adapts the store to mcp.ActiveDefReader (F33), returning the
+// active dynamic-MCP-server def JSON for (tenant, name). Keeps internal/tools/mcp
+// free of an internal/store import.
+type mcpActiveDefReader struct{ store store.Store }
+
+func (r mcpActiveDefReader) ActiveMCPServerDef(ctx context.Context, tenant, name string) (json.RawMessage, bool) {
+	row, err := r.store.MCPServerDefGetActive(ctx, tenant, name)
+	if err != nil {
+		return nil, false
+	}
+	return row.Definition, true
 }
 
 // spawnStdio is the transport-spawn core shared by the static yaml stdio
