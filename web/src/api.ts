@@ -808,13 +808,18 @@ export async function getMetricsSummary(
 // ---- v0.9.x Introspection — Library + Channels + Agent sub-views ----
 
 // Substrate name summary — same shape across AgentDef / SkillDef /
-// MCPServerDef. Returned by the three GET /v1/_*/names endpoints.
+// MCPServerDef and the v0.24.0 families (Webhook / A2A / MemoryBackend).
+// Returned by the GET /v1/_*/names endpoints.
 export interface DefNameSummary {
   name: string;
   version_count: number;
   active_def_id?: string;
   latest_version: number;
   last_updated: string;
+  // Tenant-isolated families (RFC N) return one summary row per
+  // (name, tenant). Absent / "" in legacy/open mode. List rows must be
+  // keyed on name+tenant_id to avoid collisions in multi-tenant deploys.
+  tenant_id?: string;
 }
 
 export interface DefNamesResponse {
@@ -1033,6 +1038,33 @@ export function scheduleDefList(name: string): Promise<ScheduleDefListResponse> 
   });
 }
 
+// scheduleDefCreate authors a brand-new schedule from scratch (no
+// parent). The overlay carries agent + schedule (cron) + prompt +
+// credentials; the server validates agent-required and the
+// cron-XOR-user_tier_schedules invariant. `promote` flips the active
+// pointer to the new version on create (the standalone-create default).
+export function scheduleDefCreate(input: {
+  name: string;
+  overlay: Record<string, unknown>;
+  description?: string;
+  promote?: boolean;
+}): Promise<ScheduleDefRow> {
+  return jsonFetch<ScheduleDefRow>("/v1/_scheduledef", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ op: "create", ...input }),
+  });
+}
+
+// scheduleDefActivate re-activates an older version. ScheduleDef has
+// NO standalone promote op (see scheduledef.go: "schedules'
+// fork-auto-promote model makes a separate promote step unnecessary"),
+// so activating a prior version is a zero-overlay fork from it — the
+// new version inherits the parent's definition and becomes active.
+export function scheduleDefActivate(name: string, parentDefID: string): Promise<ScheduleDefRow> {
+  return scheduleDefFork({ name, parent_def_id: parentDefID, overlay: {} });
+}
+
 // scheduleDefFork creates a new version from an existing parent. The
 // overlay carries the user-supplied fields (user_id, user_tier,
 // user_credentials, optional cron override). Returns the new fork row.
@@ -1120,12 +1152,31 @@ export function listMcpServerDefNames(): Promise<DefNamesResponse> {
   return jsonFetch<DefNamesResponse>("/v1/_mcpserverdef/names");
 }
 
+// v0.24.0 "Integrations" families — same /names wire shape as the
+// three above. These have no unified /v1/_library/* endpoint, so the
+// UI drives its list from /names + per-name lineage (op:list).
+export function listWebhookDefNames(): Promise<DefNamesResponse> {
+  return jsonFetch<DefNamesResponse>("/v1/_webhookdef/names");
+}
+
+export function listA2AServerCardDefNames(): Promise<DefNamesResponse> {
+  return jsonFetch<DefNamesResponse>("/v1/_a2aservercarddef/names");
+}
+
+export function listA2AAgentDefNames(): Promise<DefNamesResponse> {
+  return jsonFetch<DefNamesResponse>("/v1/_a2aagentdef/names");
+}
+
+export function listMemoryBackendDefNames(): Promise<DefNamesResponse> {
+  return jsonFetch<DefNamesResponse>("/v1/_memorybackenddef/names");
+}
+
 // listDefVersionsByName uses the existing op-discriminated POST
 // endpoint with `{op:"list", name}` to retrieve every version of one
 // declared name. Used by the Library UI when an operator clicks into
 // a name to inspect its lineage.
 export function listDefVersionsByName(
-  kind: "agentdef" | "skilldef" | "mcpserverdef",
+  kind: SubstrateKind,
   name: string,
 ): Promise<DefListByNameResponse> {
   return jsonFetch<DefListByNameResponse>(`/v1/_${kind}`, {
@@ -1144,7 +1195,14 @@ export function listDefVersionsByName(
 // jsonFetch surfaces this as a thrown Error whose message contains
 // the JSON body — callers parse for the human-readable text.
 
-export type SubstrateKind = "agentdef" | "skilldef" | "mcpserverdef";
+export type SubstrateKind =
+  | "agentdef"
+  | "skilldef"
+  | "mcpserverdef"
+  | "webhookdef"
+  | "a2aservercarddef"
+  | "a2aagentdef"
+  | "memorybackenddef";
 
 export function createDef(
   kind: SubstrateKind,
