@@ -9,6 +9,7 @@ import SnapshotsView from "./pages/SnapshotsView";
 import AuditView from "./pages/AuditView";
 import ActivityMonitor from "./pages/ActivityMonitor";
 import LibraryView from "./pages/LibraryView";
+import IntegrationsView from "./pages/IntegrationsView";
 import ChannelsView from "./pages/ChannelsView";
 import SchedulesView from "./pages/SchedulesView";
 import Layout from "./components/Layout";
@@ -39,6 +40,22 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
           <Route path="library/agents" element={<LibraryView />} />
           <Route path="library/skills" element={<LibraryView />} />
           <Route path="library/mcp-servers" element={<LibraryView />} />
+          <Route path="integrations" element={<IntegrationsView />}>
+            <Route
+              index
+              element={<Navigate to="/integrations/webhooks" replace />}
+            />
+          </Route>
+          <Route path="integrations/webhooks" element={<IntegrationsView />} />
+          <Route
+            path="integrations/a2a-server-cards"
+            element={<IntegrationsView />}
+          />
+          <Route path="integrations/a2a-agents" element={<IntegrationsView />} />
+          <Route
+            path="integrations/memory-backends"
+            element={<IntegrationsView />}
+          />
           <Route path="channels" element={<ChannelsView />} />
           <Route path="schedules" element={<SchedulesView />} />
           <Route path="memory" element={<MemoryView />} />

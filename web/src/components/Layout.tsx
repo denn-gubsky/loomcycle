@@ -141,6 +141,7 @@ export default function Layout() {
           {isAdmin && (
             <>
               <NavLink to="/library/agents">library</NavLink>
+              <NavLink to="/integrations/webhooks">integrations</NavLink>
               <NavLink to="/channels">channels</NavLink>
               <NavLink to="/schedules">schedules</NavLink>
               <NavLink to="/interrupts">interrupts</NavLink>
