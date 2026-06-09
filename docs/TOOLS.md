@@ -511,7 +511,28 @@ Wildcards are anchored at the end (`findings/*` matches `findings/alpha` but NOT
 // List — informational, reports this agent's allowlists:
 { "op": "list_channels" }
 //   → { "publish": [...], "subscribe": [...] }
+
+// Await — fan-in barrier across MULTIPLE channels (wait for any / all /
+// at_least N messages, or a timeout). Non-committing.
+{ "op": "await", "channels": ["a", "b", "c"], "mode": "at_least", "n": 3, "wait_ms": 30000 }
+//   → { "satisfied": true, "timed_out": false, "mode": "at_least",
+//       "fired": ["a","b","c"], "total_messages": 3,
+//       "results": { "a": { "messages": [...], "next_cursor": "msg_..." }, ... } }
 ```
+
+### Fan-in barrier (`await`)
+
+`subscribe` reads ONE channel. When a consumer must wait for **several** producers — e.g. a consolidator that fires after "N collectors finish, or a timeout" — `await` is the first-class combinator:
+
+- **`mode: any`** — satisfied when ≥1 named channel has a message.
+- **`mode: all`** — satisfied when every named channel has ≥1.
+- **`mode: at_least` + `n`** — satisfied when the total message count across all named channels reaches `n`.
+
+It long-polls up to `wait_ms` (clamped to the operator's `LOOMCYCLE_CHANNELS_LONGPOLL_CAP_MS`), waking the instant a producer publishes. A timeout is **not** an error: it returns `{ "satisfied": false, "timed_out": true }` with whatever partials accumulated — the caller decides what to do.
+
+**`await` is non-committing (detection only).** It returns each fired channel's `next_cursor` but never advances the committed cursor — auto-committing across N channels on a partial/`any`/timeout result would silently consume messages on channels the agent didn't act on. After `await` returns, the agent `subscribe`/`ack`s exactly what it processes. Each channel is resolved through the agent's **subscribe** allowlist, so `await` can't read a channel it couldn't `subscribe` to. Max 32 channels per call.
+
+> **`await` vs `Agent.parallel_spawn`:** both are barriers, but over different things. `parallel_spawn` joins the **sub-agents this agent spawned** (`wg.Wait()`). `await` joins **independent producers** — scheduler-fired runs, inbound webhooks, separately-spawned agents — that `parallel_spawn` can't reach. A scheduler-driven fan-out (N collectors) → consolidator pipeline uses `await`; an in-agent fan-out uses `parallel_spawn`. (`on_complete: channel.publish` on a `ScheduledRun` stamps `schedule_name` per fire — the distinct-producer key an `at_least`/`all` consolidator counts.)
 
 ### Delivery semantics
 
