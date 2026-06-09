@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"sort"
 	"strings"
 
@@ -146,6 +147,7 @@ func (s *WebhookDef) execCreate(ctx context.Context, policy tools.WebhookDefPoli
 	if err := validateWebhookDef(def); err != nil {
 		return errResult(fmt.Sprintf("create: %s", err)), nil
 	}
+	warnLiteralUserCredentials(in.Name, def)
 	// RFC N: the spawned run executes as the CREATING principal's tenant,
 	// resolved from the authoritative run identity in ctx — never silently
 	// empty. F30: an un-stamped tenant made a `spawn` webhook resolve a
@@ -259,6 +261,7 @@ func (s *WebhookDef) execFork(ctx context.Context, policy tools.WebhookDefPolicy
 	if err := validateWebhookDef(def); err != nil {
 		return errResult(fmt.Sprintf("fork: %s", err)), nil
 	}
+	warnLiteralUserCredentials(in.Name, def)
 	// RFC N tenant stamp — see execCreate. A fork defaults to the forking
 	// principal's tenant unless the parent/overlay already carries one.
 	ident := tools.RunIdentity(ctx)
@@ -479,6 +482,19 @@ func (s *WebhookDef) BootstrapStaticWebhooks(ctx context.Context) (int, error) {
 		seeded++
 	}
 	return seeded, nil
+}
+
+// warnLiteralUserCredentials logs a registration-time nudge when a webhook def
+// carries a LITERAL bearer in user_credentials (vs user_credentials_from_env).
+// F32: a literal here is baked into the signed / content-hashed / snapshotted
+// def and is readable at rest. We WARN rather than refuse — RFC F deliberately
+// permits the literal for fork-time explicit values, so refusing would break a
+// legitimate path; the env-name form (user_credentials_from_env) keeps the
+// secret out of the DB and is the preferred posture.
+func warnLiteralUserCredentials(name string, def mergedWebhookDef) {
+	if len(def.UserCredentials) > 0 {
+		log.Printf("webhookdef %q: user_credentials carries %d literal value(s) baked into the stored def (readable at rest) — prefer user_credentials_from_env to keep secrets out of the DB (F32)", name, len(def.UserCredentials))
+	}
 }
 
 // validateWebhookDef enforces the runtime-supplied overlay shape.
