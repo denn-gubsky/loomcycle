@@ -197,6 +197,48 @@ func TestChannelAwait_NonCommitting(t *testing.T) {
 	}
 }
 
+// TestChannelAwait_MultiWakeReArm exercises the re-arm loop: a single
+// channel must accumulate 2 messages (at_least n=2) delivered as two
+// SEPARATE publishes while await long-polls. The first wake re-reads (1
+// msg, unmet), re-arms a fresh waker, and blocks again; the second
+// publish must wake it via the re-armed waker. This is the path the C1
+// register-before-read fix protects — if the re-arm dropped the second
+// Notify, this would hang to the timeout.
+func TestChannelAwait_MultiWakeReArm(t *testing.T) {
+	tool, ctx, cleanup := awaitFixture(t)
+	defer cleanup()
+
+	done := make(chan map[string]any, 1)
+	errc := make(chan string, 1)
+	go func() {
+		res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"await","channels":["c1"],"mode":"at_least","n":2,"wait_ms":5000}`))
+		if res.IsError {
+			errc <- res.Text
+			return
+		}
+		done <- decodeResult(t, res.Text)
+	}()
+
+	time.Sleep(40 * time.Millisecond)
+	mustPublish(t, tool, ctx, "c1") // wake 1 → 1 msg, n=2 unmet → re-arm
+	time.Sleep(40 * time.Millisecond)
+	mustPublish(t, tool, ctx, "c1") // wake 2 (via re-armed waker) → 2 msgs → satisfied
+
+	select {
+	case e := <-errc:
+		t.Fatalf("await: %s", e)
+	case out := <-done:
+		if out["satisfied"] != true {
+			t.Errorf("satisfied = %v, want true after 2 publishes", out["satisfied"])
+		}
+		if tm, _ := out["total_messages"].(float64); tm != 2 {
+			t.Errorf("total_messages = %v, want 2", out["total_messages"])
+		}
+	case <-time.After(6 * time.Second):
+		t.Fatal("await did not return — second wake likely dropped (re-arm race)")
+	}
+}
+
 func TestChannelAwait_InSchemaEnum(t *testing.T) {
 	var schema struct {
 		Properties struct {

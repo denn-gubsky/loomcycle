@@ -838,12 +838,22 @@ func (c *Channel) execAwait(ctx context.Context, policy tools.ChannelPolicyValue
 				timedOut = true
 				break loop
 			}
-			// A channel waker fired. Re-read ONLY that channel, with the
-			// same bounded MVCC-visibility retry subscribe uses (the row
-			// committed before Notify, so it IS visible — the retry covers
-			// the rare pgxpool snapshot window). `from` is non-advancing, so
-			// the re-read returns the full window for that channel.
+			// A channel waker fired (one-shot — Notify drained it). Re-arm a
+			// FRESH waker BEFORE re-reading, preserving subscribe's race-free
+			// register-before-read invariant (Bus.Register doc): a publish
+			// that lands in the window is then guaranteed to either be caught
+			// by the read below (it committed first) or fire the fresh waker
+			// (caught next iteration). Re-arming AFTER the read would drop a
+			// Notify that fires in the gap between the read and the Register,
+			// leaving the loop blocked on a waker that already missed its
+			// signal until the timer expires.
 			st := states[chosen]
+			c.Bus.Unregister(st.name, wakers[chosen])
+			wakers[chosen] = c.Bus.Register(st.name)
+			// Re-read that channel with the same bounded MVCC-visibility retry
+			// subscribe uses (the row committed before Notify, so it IS
+			// visible — the retry covers the rare pgxpool snapshot window).
+			// `from` is non-advancing, so this returns the full window.
 			diag := retryDiagnostics{notifyAt: time.Now(), fromCursor: st.from}
 			if c.PoolStatsFn != nil {
 				diag.poolTotal, diag.poolAcquired, diag.poolIdle = c.PoolStatsFn()
@@ -859,10 +869,6 @@ func (c *Channel) execAwait(ctx context.Context, policy tools.ChannelPolicyValue
 			if satisfied() {
 				break loop
 			}
-			// Re-arm a fresh waker for the next publish on this channel
-			// (the fired one was drained by Notify).
-			c.Bus.Unregister(st.name, wakers[chosen])
-			wakers[chosen] = c.Bus.Register(st.name)
 		}
 	} else if !satisfied() {
 		// No long-poll budget (Bus nil / wait<=0): the single synchronous
