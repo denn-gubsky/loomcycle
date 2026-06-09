@@ -26,9 +26,24 @@ import (
 // signal we want.
 type httpMockConnector struct {
 	cancelCalls atomic.Int32
+	// spawnGate, when non-nil, makes SpawnRun block until the gate is
+	// closed or the context is cancelled — used by the RFC P transport
+	// timeout test to model a run that never finishes. When nil (the
+	// default for every other test), SpawnRun returns immediately.
+	spawnGate chan struct{}
 }
 
-func (m *httpMockConnector) SpawnRun(context.Context, connector.SpawnRunRequest) (connector.SpawnRunResult, error) {
+func (m *httpMockConnector) SpawnRun(ctx context.Context, _ connector.SpawnRunRequest) (connector.SpawnRunResult, error) {
+	if m.spawnGate != nil {
+		// Honor the context so the RFC P WithTimeout cancellation actually
+		// unblocks the call — mirrors a real connector that propagates ctx
+		// into the run loop.
+		select {
+		case <-m.spawnGate:
+		case <-ctx.Done():
+			return connector.SpawnRunResult{}, ctx.Err()
+		}
+	}
 	return connector.SpawnRunResult{
 		AgentID: "a_http", RunID: "r_http", SessionID: "s_http", Status: "completed",
 	}, nil
@@ -541,5 +556,69 @@ func TestHTTPTransport_SpawnRunWithoutOptIn_ReturnsJSONNotSSE(t *testing.T) {
 	var env loommcp.Response
 	if err := json.Unmarshal(body, &env); err != nil {
 		t.Errorf("response body not JSON-RPC: %v body=%s", err, body)
+	}
+}
+
+// TestHTTPTransport_SpawnRunOperatorTimeout is the HTTP-transport mirror
+// of TestServer_SpawnRunOperatorTimeout (stdio): the operator default
+// (Config.SpawnRunTimeoutMS) must bound a spawn_run on the HTTP path too.
+// This matters because the RFC R thin client (`mcp --upstream`) proxies
+// to /v1/_mcp — the HTTP transport IS the now-recommended topology's
+// spawn_run path. The stdio path had this coverage; the HTTP path did
+// not, which is how G1 (main.go's NewHTTPHandler call dropping
+// SpawnRunTimeoutMS, leaving --upstream spawn_run unbounded — the exp3
+// wedge class one layer up) shipped unnoticed. The connector gate is
+// never closed, so without an effective transport timeout this call
+// blocks forever and the test hangs.
+func TestHTTPTransport_SpawnRunOperatorTimeout(t *testing.T) {
+	mc := &httpMockConnector{spawnGate: make(chan struct{})} // never closed
+	h := NewHTTPHandler(Config{
+		Connector:         mc,
+		Logf:              func(string, ...any) {},
+		ServerName:        "loomcycle-test",
+		ServerVersion:     "v-test",
+		SpawnRunTimeoutMS: 120,
+	})
+	ts := httptest.NewServer(h)
+	defer ts.Close()
+
+	// initialize → session ID. No runEvents opt-in and no Runner wired,
+	// so spawn_run takes the blocking Connector.SpawnRun path (the gate).
+	resp, body := postFrame(t, ts.URL, "",
+		`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"t","version":"1"}}}`)
+	if resp.StatusCode != 200 {
+		t.Fatalf("initialize status=%d body=%s", resp.StatusCode, body)
+	}
+	sessionID := resp.Header.Get("Mcp-Session-Id")
+
+	// spawn_run with NO per-call timeout_ms — only the operator default
+	// can bound it. Use a client deadline well above the 120ms operator
+	// timeout: if the fix regresses (timeout not applied), the gate blocks
+	// forever and the client deadline gives a clean, fast failure instead
+	// of hanging until the go-test global timeout.
+	req, err := http.NewRequest(http.MethodPost, ts.URL, strings.NewReader(
+		`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"spawn_run","arguments":{"agent":"x","segments":[]}}}`))
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Mcp-Session-Id", sessionID)
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err = client.Do(req)
+	if err != nil {
+		t.Fatalf("spawn_run POST failed (operator timeout not applied? gate blocks forever): %v", err)
+	}
+	body, _ = io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("spawn_run status=%d body=%s", resp.StatusCode, body)
+	}
+	var env loommcp.Response
+	if err := json.Unmarshal(body, &env); err != nil {
+		t.Fatalf("response body not JSON-RPC: %v body=%s", err, body)
+	}
+	got := decodeSpawnResult(t, env)
+	if got.Status != "timeout" {
+		t.Fatalf("spawn_run status = %q; want \"timeout\" (operator default on HTTP transport)", got.Status)
 	}
 }
