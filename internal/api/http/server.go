@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -30,6 +31,7 @@ import (
 	lcotel "github.com/denn-gubsky/loomcycle/internal/otel"
 	"github.com/denn-gubsky/loomcycle/internal/pause"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
+	"github.com/denn-gubsky/loomcycle/internal/redact"
 	"github.com/denn-gubsky/loomcycle/internal/resolve"
 	"github.com/denn-gubsky/loomcycle/internal/runner"
 	"github.com/denn-gubsky/loomcycle/internal/runstate"
@@ -57,6 +59,13 @@ type Server struct {
 	tools     []tools.Tool
 	sem       *concurrency.Semaphore
 	store     store.Store // optional; nil means "don't persist"
+
+	// redactor masks secret-shaped substrings in tool I/O before it is
+	// persisted to events.payload (F32). Built in New() from the secret-
+	// classified env when cfg.Env.RedactSecrets; nil (a no-op) when disabled
+	// via LOOMCYCLE_REDACT_SECRETS=0. Read-only after construction; the nil /
+	// no-op cases are handled by *redact.Redactor's nil-safe methods.
+	redactor *redact.Redactor
 
 	// cancelReg holds the in-memory map of agent_id → cancelFn so the
 	// cancel API can tear down a still-running loop from a different
@@ -339,6 +348,12 @@ func New(cfg *config.Config, pr ProviderResolver, builtinTools []tools.Tool, sem
 		hookRegistry:   hookReg,
 		hookDispatcher: hooks.NewDispatcher(hookReg, nil),
 		startedAt:      time.Now(),
+	}
+	// F32: build the secret redactor from the process env (secret-classified
+	// names only). Default-ON; LOOMCYCLE_REDACT_SECRETS=0 leaves s.redactor nil
+	// (its methods are nil-safe, so makeRecordingEmit just skips redaction).
+	if cfg.Env.RedactSecrets {
+		s.redactor = redact.New(secretEnvValues(os.Environ()), true)
 	}
 	s.tools = append(s.tools, &builtin.AgentTool{
 		Run: s.runSubAgent,
@@ -3606,7 +3621,22 @@ func (s *Server) makeRecordingEmit(ctx context.Context, runID string, fwd func(p
 	return func(ev providers.Event) {
 		mu.Lock()
 		defer mu.Unlock()
-		payload, err := json.Marshal(ev)
+		// F32: redact secrets out of the PERSISTED copy only — the tool_call
+		// input and tool_result text are the surfaces where a token inlined on a
+		// Bash cmdline / echoed by a tool would otherwise hit the events BLOB
+		// (and, downstream, snapshots + the /v1/_events audit API). fwd() below
+		// still forwards the ORIGINAL event: the live SSE caller is the trust
+		// boundary that already holds the secret, so we don't mangle its stream.
+		toStore := ev
+		if s.redactor.Enabled() && (ev.Type == providers.EventToolCall || ev.Type == providers.EventToolResult) {
+			if ev.ToolUse != nil {
+				tu := *ev.ToolUse // copy so we don't mutate the event fwd() sends
+				tu.Input = s.redactor.Bytes(tu.Input)
+				toStore.ToolUse = &tu
+			}
+			toStore.Text = s.redactor.String(ev.Text)
+		}
+		payload, err := json.Marshal(toStore)
 		if err == nil {
 			if err := s.store.AppendEvent(ctx, runID, string(ev.Type), payload); err != nil {
 				log.Printf("store: AppendEvent failed (run=%s type=%s): %v", runID, ev.Type, err)
@@ -3614,6 +3644,25 @@ func (s *Server) makeRecordingEmit(ctx context.Context, runID string, fwd func(p
 		}
 		fwd(ev)
 	}
+}
+
+// secretEnvValues extracts the VALUES of secret-classified env vars (by name)
+// from an environ slice ("NAME=value" entries), for the F32 redactor's exact-
+// match tier. Empty values are skipped (nothing to mask).
+func secretEnvValues(environ []string) map[string]string {
+	out := make(map[string]string)
+	for _, kv := range environ {
+		i := strings.IndexByte(kv, '=')
+		if i <= 0 {
+			continue
+		}
+		name, val := kv[:i], kv[i+1:]
+		if val == "" || !config.IsSecretEnvName(name) {
+			continue
+		}
+		out[name] = val
+	}
+	return out
 }
 
 // runSubAgent is the SubAgentRunner closure injected into the Agent

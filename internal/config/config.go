@@ -1610,6 +1610,16 @@ type Env struct {
 	// LOOMCYCLE_MCP_ALLOW_DYNAMIC_STDIO.
 	MCPAllowDynamicStdio bool
 
+	// RedactSecrets — F32. When true (the DEFAULT), tool I/O is scanned for
+	// secret-shaped substrings and masked BEFORE it is persisted to the
+	// events.payload BLOB (and thus to snapshots + the /v1/_events audit API).
+	// This is defense-in-depth for the runtime-inline leak: an agent that
+	// inlines a token on a Bash cmdline (`curl -H "Authorization: token …"`) or
+	// a tool result that echoes one would otherwise be stored in cleartext at
+	// rest. The live SSE stream is NOT redacted (the caller already holds the
+	// secret). Opt out with LOOMCYCLE_REDACT_SECRETS=0. See internal/redact.
+	RedactSecrets bool
+
 	// DynamicAgentDefaultTTLSeconds — v0.8.15. TTL applied to
 	// dynamic agents registered via mcp__loomcycle__register_agent
 	// when the caller omits ttl_seconds. Default 86400 (24h).
@@ -2482,6 +2492,9 @@ func Load(path string) (*Config, error) {
 	// v0.8.15 LoomCycle MCP: dynamic agent registration policy.
 	cfg.Env.MCPAllowPrivilegedTools = os.Getenv("LOOMCYCLE_MCP_ALLOW_PRIVILEGED_TOOLS") == "1"
 	cfg.Env.MCPAllowDynamicStdio = os.Getenv("LOOMCYCLE_MCP_ALLOW_DYNAMIC_STDIO") == "1"
+	// F32: default-ON. Only an explicit "0" disables redaction; an unset var
+	// keeps the secure posture (secrets masked before persistence).
+	cfg.Env.RedactSecrets = os.Getenv("LOOMCYCLE_REDACT_SECRETS") != "0"
 	cfg.Env.DynamicAgentDefaultTTLSeconds = 86400 // 24h
 	if v := os.Getenv("LOOMCYCLE_DYNAMIC_AGENT_DEFAULT_TTL_SECONDS"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
@@ -2798,6 +2811,31 @@ func ExpandEnvAllowed(name string) bool {
 		"PG_DSN",
 		"REDIS_URL":
 		return true
+	}
+	return false
+}
+
+// secretEnvSuffixes are the env-var NAME patterns this project classifies as
+// secret (CLAUDE.md §security). A name ending in one of these denotes a
+// credential whose VALUE must be kept out of persisted transcripts (F32).
+var secretEnvSuffixes = []string{
+	"_KEY", "_TOKEN", "_SECRET", "_AUTH", "_PASSWORD", "_CREDENTIAL", "_CREDENTIALS",
+}
+
+// IsSecretEnvName reports whether an env-var name denotes a secret VALUE, by the
+// documented suffix classification (case-insensitive). Used by the secret
+// redactor (internal/redact) to decide which env values to mask from persisted
+// tool transcripts. Deliberately NOT keyed off ExpandEnvAllowed: that allows
+// every LOOMCYCLE_*-prefixed var (incl. non-secrets like LOOMCYCLE_LISTEN_ADDR),
+// so reusing it would collect non-secret values and risk masking benign
+// substrings. The suffix list catches both LOOMCYCLE_* secrets and provider keys
+// (ANTHROPIC_API_KEY, OPENAI_API_KEY, …) without a hard-coded name list.
+func IsSecretEnvName(name string) bool {
+	up := strings.ToUpper(name)
+	for _, suf := range secretEnvSuffixes {
+		if strings.HasSuffix(up, suf) {
+			return true
+		}
 	}
 	return false
 }
