@@ -82,7 +82,7 @@ const scheduleDefInputSchema = `{
     "parent_def_id": {"type": "string", "description": "Fork parent (optional for fork — when absent, forks the active def of the name, or bootstraps from a yaml template)."},
     "overlay": {
       "type": "object",
-      "description": "Mutable subset of ScheduledRun for create/fork. Immutable / server-set fields are silently ignored if supplied.",
+      "description": "Mutable subset of ScheduledRun for create/fork (agent, prompt, schedule/user_tier_schedules, timezone, enabled, catch_up_max, max_fires, user_id, user_tier, user_credentials, user_credentials_from_env, on_complete, metadata, tenant_id). max_fires N>0 auto-retires the def after its Nth fire (1 = one-shot; 0 = unbounded). Immutable / server-set fields are silently ignored if supplied.",
       "additionalProperties": true
     },
     "description":   {"type": "string", "description": "Free-text rationale for create/fork."},
@@ -866,9 +866,12 @@ type mergedScheduleDef struct {
 	// silently clobbered the parent's enabled:true on any partial
 	// overlay — fix landed alongside TestScheduleDefTool_Fork
 	// PreservesEnabledWhenOverlayOmits.
-	Enabled    *bool  `json:"enabled,omitempty"`
-	CatchUpMax int    `json:"catch_up_max,omitempty"`
-	UserID     string `json:"user_id,omitempty"`
+	Enabled    *bool `json:"enabled,omitempty"`
+	CatchUpMax int   `json:"catch_up_max,omitempty"`
+	// MaxFires is the lifetime fire-count cap (RFC S / F36). 0 = fire
+	// indefinitely; N > 0 auto-retires the def after its Nth fire.
+	MaxFires int    `json:"max_fires,omitempty"`
+	UserID   string `json:"user_id,omitempty"`
 	// UserTier is the fork-time tier pick for templates with
 	// user_tier_schedules. The scheduler's ResolveCron uses it to
 	// select which cron expression to fire from the per-tier map.
@@ -942,6 +945,9 @@ func (d *mergedScheduleDef) applyOverlay(ov mergedScheduleDef) {
 	if ov.CatchUpMax != 0 {
 		d.CatchUpMax = ov.CatchUpMax
 	}
+	if ov.MaxFires != 0 {
+		d.MaxFires = ov.MaxFires
+	}
 	if ov.UserID != "" {
 		d.UserID = ov.UserID
 	}
@@ -989,6 +995,7 @@ func staticToMergedScheduleDef(sr config.ScheduledRun) mergedScheduleDef {
 		Timezone:               sr.Timezone,
 		Enabled:                &enabled,
 		CatchUpMax:             sr.CatchUpMax,
+		MaxFires:               sr.MaxFires,
 		UserID:                 sr.UserID,
 		UserCredentialsFromEnv: sr.UserCredentialsFromEnv,
 		Metadata:               sr.Metadata,
