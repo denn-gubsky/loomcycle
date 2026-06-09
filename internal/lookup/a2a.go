@@ -16,9 +16,9 @@ type A2AServerCardStore interface {
 }
 
 // A2AAgentStore is the subset of store.Store the remote-peer resolver
-// uses.
+// uses. RFC N: the substrate lookup carries a tenantID.
 type A2AAgentStore interface {
-	A2AAgentDefGetActive(ctx context.Context, name string) (store.A2AAgentDefRow, error)
+	A2AAgentDefGetActive(ctx context.Context, tenantID, name string) (store.A2AAgentDefRow, error)
 }
 
 // A2AServerCard resolves a server-card NAME to its effective
@@ -53,19 +53,44 @@ func A2AServerCard(ctx context.Context, s A2AServerCardStore, cfg *config.Config
 }
 
 // A2AAgent resolves a remote-peer NAME to its effective config.A2AAgent
-// by walking the same precedence chain as A2AServerCard.
+// within the caller's tenant, walking the lookup chain in precedence order
+// (mirrors lookup.Agent / lookup.MemoryBackend):
 //
-// Mirrors lookup.Schedule for the v1.x RFC G A2AAgentDef substrate.
-func A2AAgent(ctx context.Context, s A2AAgentStore, cfg *config.Config, name string) (config.A2AAgent, bool) {
+//  1. (tenantID != "") tenant-scoped substrate (a2a_agent_def_active
+//     WHERE tenant_id=tenantID)
+//  2. static cfg.A2AAgents (yaml-defined, the shared operator base)
+//  3. shared substrate (tenant_id="")
+//
+// For the default tenant "" step 1 is skipped, collapsing to
+// static-cfg → shared-substrate — identical to the pre-RFC-N behavior.
+//
+// Returns (zero, false) when no source has the name. Malformed
+// persistence JSON also returns (zero, false).
+func A2AAgent(ctx context.Context, s A2AAgentStore, cfg *config.Config, tenantID, name string) (config.A2AAgent, bool) {
+	// 1. Tenant-scoped substrate (skipped for the shared "" tenant).
+	if tenantID != "" {
+		if a, ok := resolveA2AAgentSubstrate(ctx, s, tenantID, name); ok {
+			return a, true
+		}
+	}
+	// 2. Static cfg.A2AAgents — the shared operator base.
 	if cfg != nil {
 		if a, ok := cfg.A2AAgents[name]; ok {
 			return a, true
 		}
 	}
+	// 3. Shared substrate (tenant_id="").
+	return resolveA2AAgentSubstrate(ctx, s, "", name)
+}
+
+// resolveA2AAgentSubstrate reads the a2a_agent_def_active overlay for one
+// tenant pass. Returns (zero, false) on nil store, no active pointer for
+// that tenant, or malformed row JSON.
+func resolveA2AAgentSubstrate(ctx context.Context, s A2AAgentStore, tenantID, name string) (config.A2AAgent, bool) {
 	if s == nil {
 		return config.A2AAgent{}, false
 	}
-	activeRow, err := s.A2AAgentDefGetActive(ctx, name)
+	activeRow, err := s.A2AAgentDefGetActive(ctx, tenantID, name)
 	if err != nil {
 		return config.A2AAgent{}, false
 	}

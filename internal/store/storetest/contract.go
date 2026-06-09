@@ -233,6 +233,7 @@ func Run(t *testing.T, factory Factory) {
 		{"A2AAgentDefCreateAndGet", testA2AAgentDefCreateAndGet},
 		{"A2AAgentDefVersionMonotonic", testA2AAgentDefVersionMonotonic},
 		{"A2AAgentDefActivePointerIdempotent", testA2AAgentDefActivePointerIdempotent},
+		{"A2AAgentDefTenantIsolation", testA2AAgentDefTenantIsolation},
 		{"A2AAgentDefRetireReversible", testA2AAgentDefRetireReversible},
 		{"A2AAgentDefParentNotFound", testA2AAgentDefParentNotFound},
 		{"A2AAgentDefListByName", testA2AAgentDefListByName},
@@ -4730,19 +4731,67 @@ func testA2AAgentDefActivePointerIdempotent(t *testing.T, s store.Store) {
 	r1, _ := s.A2AAgentDefCreate(ctx, mkA2AAgentDef("aad-active-1", "peer-active", ""))
 	r2, _ := s.A2AAgentDefCreate(ctx, mkA2AAgentDef("aad-active-2", "peer-active", ""))
 
-	if err := s.A2AAgentDefSetActive(ctx, "peer-active", r1.DefID, "test"); err != nil {
+	if err := s.A2AAgentDefSetActive(ctx, "", "peer-active", r1.DefID, "test"); err != nil {
 		t.Fatal(err)
 	}
-	got, _ := s.A2AAgentDefGetActive(ctx, "peer-active")
+	got, _ := s.A2AAgentDefGetActive(ctx, "", "peer-active")
 	if got.DefID != r1.DefID {
 		t.Errorf("active = %s, want %s", got.DefID, r1.DefID)
 	}
-	if err := s.A2AAgentDefSetActive(ctx, "peer-active", r2.DefID, "test"); err != nil {
+	if err := s.A2AAgentDefSetActive(ctx, "", "peer-active", r2.DefID, "test"); err != nil {
 		t.Fatal(err)
 	}
-	got, _ = s.A2AAgentDefGetActive(ctx, "peer-active")
+	got, _ = s.A2AAgentDefGetActive(ctx, "", "peer-active")
 	if got.DefID != r2.DefID {
 		t.Errorf("after re-promote: active = %s, want %s", got.DefID, r2.DefID)
+	}
+}
+
+// testA2AAgentDefTenantIsolation mirrors testMemoryBackendDefTenantIsolation
+// for the A2A remote-peer plane.
+func testA2AAgentDefTenantIsolation(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	const name = "shared-peer"
+
+	aDef := mkA2AAgentDef("aadti-a", name, "")
+	aDef.TenantID = "tenant-a"
+	aDef.Definition = json.RawMessage(`{"agent_card_url":"https://a.example","v":"A"}`)
+	aRow, err := s.A2AAgentDefCreate(ctx, aDef)
+	if err != nil {
+		t.Fatalf("create A: %v", err)
+	}
+	bDef := mkA2AAgentDef("aadti-b", name, "")
+	bDef.TenantID = "tenant-b"
+	bDef.Definition = json.RawMessage(`{"agent_card_url":"https://b.example","v":"B"}`)
+	bRow, err := s.A2AAgentDefCreate(ctx, bDef)
+	if err != nil {
+		t.Fatalf("create B: %v", err)
+	}
+
+	if err := s.A2AAgentDefSetActive(ctx, "tenant-a", name, aRow.DefID, ""); err != nil {
+		t.Fatalf("promote A: %v", err)
+	}
+	if err := s.A2AAgentDefSetActive(ctx, "tenant-b", name, bRow.DefID, ""); err != nil {
+		t.Fatalf("promote B: %v", err)
+	}
+
+	gotA, err := s.A2AAgentDefGetActive(ctx, "tenant-a", name)
+	if err != nil {
+		t.Fatalf("get active A: %v", err)
+	}
+	if gotA.DefID != aRow.DefID || gotA.TenantID != "tenant-a" || !jsonEqual(gotA.Definition, `{"agent_card_url":"https://a.example","v":"A"}`) {
+		t.Errorf("tenant-a clobbered: got def_id=%q tenant=%q def=%s", gotA.DefID, gotA.TenantID, gotA.Definition)
+	}
+	gotB, err := s.A2AAgentDefGetActive(ctx, "tenant-b", name)
+	if err != nil {
+		t.Fatalf("get active B: %v", err)
+	}
+	if gotB.DefID != bRow.DefID || gotB.TenantID != "tenant-b" || !jsonEqual(gotB.Definition, `{"agent_card_url":"https://b.example","v":"B"}`) {
+		t.Errorf("tenant-b clobbered: got def_id=%q tenant=%q def=%s", gotB.DefID, gotB.TenantID, gotB.Definition)
+	}
+
+	if err := s.A2AAgentDefSetActive(ctx, "tenant-b", name, aRow.DefID, ""); err == nil {
+		t.Error("cross-tenant promote (A's def under tenant-b) unexpectedly succeeded")
 	}
 }
 

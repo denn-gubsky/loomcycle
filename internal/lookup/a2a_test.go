@@ -107,7 +107,10 @@ type stubA2AAgentStore struct {
 	defs map[string]store.A2AAgentDefRow
 }
 
-func (s *stubA2AAgentStore) A2AAgentDefGetActive(_ context.Context, name string) (store.A2AAgentDefRow, error) {
+// A2AAgentDefGetActive ignores tenantID — these resolver tests exercise
+// the precedence/equivalence logic with the shared "" tenant; per-tenant
+// isolation is covered by the store contract test.
+func (s *stubA2AAgentStore) A2AAgentDefGetActive(_ context.Context, _, name string) (store.A2AAgentDefRow, error) {
 	if row, ok := s.defs[name]; ok {
 		return row, nil
 	}
@@ -146,7 +149,7 @@ func TestA2AAgent_EquivalenceYamlVsSubstrate(t *testing.T) {
 			"peer": {DefID: "aad_v1", Name: "peer", Version: 1, Definition: defJSON, CreatedAt: time.Now()},
 		},
 	}
-	resolved, ok := lookup.A2AAgent(context.Background(), ss, &config.Config{}, "peer")
+	resolved, ok := lookup.A2AAgent(context.Background(), ss, &config.Config{}, "", "peer")
 	if !ok {
 		t.Fatal("resolver returned !ok")
 	}
@@ -166,7 +169,7 @@ func TestA2AAgent_StaticBeforeSubstrate(t *testing.T) {
 			"peer": {DefID: "aad_v1", Name: "peer", Definition: json.RawMessage(`{"agent_card_url":"https://substrate.example"}`)},
 		},
 	}
-	got, ok := lookup.A2AAgent(context.Background(), ss, cfg, "peer")
+	got, ok := lookup.A2AAgent(context.Background(), ss, cfg, "", "peer")
 	if !ok {
 		t.Fatal("resolver returned !ok")
 	}
