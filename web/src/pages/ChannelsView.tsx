@@ -442,9 +442,9 @@ function PublishForm({
     try {
       const r = await publishChannel(channelName, body);
       setOk(
-        r.deliver_at
-          ? `Published ${r.id} (deferred to ${r.deliver_at}).`
-          : `Published ${r.id}.`,
+        r.visible_at
+          ? `Published ${r.msg_id} (deferred to ${r.visible_at}).`
+          : `Published ${r.msg_id}.`,
       );
       onPublished();
     } catch (e) {

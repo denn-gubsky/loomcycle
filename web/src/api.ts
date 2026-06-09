@@ -1295,9 +1295,11 @@ export function listAgentChannels(agentName: string): Promise<AgentChannelsRespo
 }
 
 export interface ChannelPublishResponse {
+  msg_id: string;
   channel: string;
-  id: string;
-  deliver_at?: string;
+  created_at: string;
+  // Set only when the publish was deferred (deliver_at in the future).
+  visible_at?: string;
 }
 
 // publishChannel posts a message to a channel via the admin publish
