@@ -1915,6 +1915,17 @@ func main() {
 			})
 		log.Printf("dynamic_agents: sweeper enabled (interval=%s)", cfg.Env.DynamicAgentSweepInterval)
 	}
+	// Optional operator default for the spawn_run transport timeout
+	// (RFC P). 0/unset → disabled (defer to the run's own budget).
+	// Read outside the mcpMode block: the HTTP MCP transport below is
+	// always wired (both server and mcp modes) and the RFC R thin client
+	// (`mcp --upstream`) proxies to it, so it needs the same bound.
+	mcpSpawnRunTimeoutMS := 0
+	if v := os.Getenv("LOOMCYCLE_MCP_SPAWN_RUN_TIMEOUT_MS"); v != "" {
+		if n, perr := strconv.Atoi(v); perr == nil && n > 0 {
+			mcpSpawnRunTimeoutMS = n
+		}
+	}
 	if mcpMode {
 		// Optional operator override for the stdio dispatch concurrency
 		// cap (RFC O). 0/unset → the package default (16).
@@ -1922,14 +1933,6 @@ func main() {
 		if v := os.Getenv("LOOMCYCLE_MCP_MAX_CONCURRENT_CALLS"); v != "" {
 			if n, perr := strconv.Atoi(v); perr == nil && n > 0 {
 				mcpMaxConcurrentCalls = n
-			}
-		}
-		// Optional operator default for the spawn_run transport timeout
-		// (RFC P). 0/unset → disabled (defer to the run's own budget).
-		mcpSpawnRunTimeoutMS := 0
-		if v := os.Getenv("LOOMCYCLE_MCP_SPAWN_RUN_TIMEOUT_MS"); v != "" {
-			if n, perr := strconv.Atoi(v); perr == nil && n > 0 {
-				mcpSpawnRunTimeoutMS = n
 			}
 		}
 		mcpSrv := lcmcp.New(lcmcp.Config{
@@ -1972,6 +1975,16 @@ func main() {
 		Logf:          log.Printf,
 		ServerName:    "loomcycle",
 		ServerVersion: buildVersion,
+		// RFC P spawn_run timeout must apply to the HTTP transport too —
+		// the RFC R thin client (`mcp --upstream`) proxies to /v1/_mcp, so
+		// without this the now-recommended topology would have no spawn_run
+		// bound (the exp3 wedge class, one layer up). MaxConcurrentCalls is
+		// intentionally NOT passed: it builds the stdio Serve loop's
+		// semaphore and is meaningless here — the HTTP transport is already
+		// per-request concurrent at the http.Server level, and run
+		// concurrency is bounded downstream by the runtime semaphore +
+		// per-tenant fairness.
+		SpawnRunTimeoutMS: mcpSpawnRunTimeoutMS,
 	})
 	srv.SetMCPHTTPHandler(mcpHTTPHandler)
 	// Background session sweeper. Reuses the dynamic-agent sweeper
