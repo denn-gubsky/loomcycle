@@ -344,7 +344,7 @@ func seedScheduleFork(t *testing.T, st store.Store, defID, userID, agentName str
 	}); err != nil {
 		t.Fatalf("ScheduleDefCreate %s: %v", defID, err)
 	}
-	if err := st.ScheduleDefSetActive(ctx, "sched-"+userID, defID, "compound-test"); err != nil {
+	if err := st.ScheduleDefSetActive(ctx, "", "sched-"+userID, defID, "compound-test"); err != nil {
 		t.Fatalf("SetActive %s: %v", defID, err)
 	}
 	if err := st.ScheduleRunStateSeed(ctx, defID, time.Now()); err != nil {

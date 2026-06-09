@@ -1197,8 +1197,13 @@ type Store interface {
 	ScheduleDefListByName(ctx context.Context, name string) ([]ScheduleDefRow, error)
 	ScheduleDefListChildren(ctx context.Context, parentDefID string) ([]ScheduleDefRow, error)
 	ScheduleDefListNames(ctx context.Context) ([]ScheduleDefNameSummary, error)
-	ScheduleDefSetActive(ctx context.Context, name, defID, promotedByAgentID string) error
-	ScheduleDefGetActive(ctx context.Context, name string) (ScheduleDefRow, error)
+	// ScheduleDefSetActive UPSERTs the schedule_def_active pointer for
+	// (tenantID, name). RFC N: per-tenant active pointer; a def can only be
+	// promoted within its own tenant. tenantID "" = shared/operator/legacy.
+	ScheduleDefSetActive(ctx context.Context, tenantID, name, defID, promotedByAgentID string) error
+	// ScheduleDefGetActive returns the active row for (tenantID, name).
+	// *ErrNotFound when no pointer exists. RFC N: tenantID "" = shared.
+	ScheduleDefGetActive(ctx context.Context, tenantID, name string) (ScheduleDefRow, error)
 	ScheduleDefSetRetired(ctx context.Context, defID string, retired bool) error
 
 	// ---- v1.x RFC E ScheduleDef runtime (sweeper-side) ----
@@ -2101,6 +2106,12 @@ type ScheduleDefRow struct {
 	CreatedByRunID         string          `json:"created_by_run_id,omitempty"`
 	Retired                bool            `json:"retired"`
 	BootstrappedFromStatic bool            `json:"bootstrapped_from_static"`
+	// TenantID is the RFC N tenant-isolation axis. "" = the shared/
+	// operator/legacy tenant. UNIQUE(tenant_id, name, version). This is the
+	// def's OWNING tenant — distinct from the run-execution tenant carried
+	// inside the schedule's `definition` JSON (the tenant the fired run
+	// executes as). Set from the authoritative principal at the write site.
+	TenantID string `json:"tenant_id,omitempty"`
 }
 
 // ScheduleDefNameSummary mirrors the AgentDef equivalent.
@@ -2110,6 +2121,9 @@ type ScheduleDefNameSummary struct {
 	ActiveDefID   string    `json:"active_def_id,omitempty"`
 	LatestVersion int       `json:"latest_version"`
 	LastUpdated   time.Time `json:"last_updated"`
+	// TenantID is the RFC N owning tenant. "" = the shared/operator/legacy
+	// tenant. A name owned by N tenants yields N summary rows.
+	TenantID string `json:"tenant_id,omitempty"`
 }
 
 // ScheduleDefActiveEntry mirrors the AgentDef equivalent.
@@ -2118,6 +2132,9 @@ type ScheduleDefActiveEntry struct {
 	DefID             string    `json:"def_id"`
 	PromotedAt        time.Time `json:"promoted_at"`
 	PromotedByAgentID string    `json:"promoted_by_agent_id,omitempty"`
+	// TenantID is the RFC N tenant-isolation axis (part of the
+	// schedule_def_active PK). "" = the shared/operator/legacy tenant.
+	TenantID string `json:"tenant_id,omitempty"`
 }
 
 // A2AServerCardDefRow mirrors ScheduleDefRow — same identity +

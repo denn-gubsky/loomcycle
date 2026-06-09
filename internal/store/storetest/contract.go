@@ -218,6 +218,7 @@ func Run(t *testing.T, factory Factory) {
 		{"ScheduleDefCreateAndGet", testScheduleDefCreateAndGet},
 		{"ScheduleDefVersionMonotonic", testScheduleDefVersionMonotonic},
 		{"ScheduleDefActivePointerIdempotent", testScheduleDefActivePointerIdempotent},
+		{"ScheduleDefTenantIsolation", testScheduleDefTenantIsolation},
 		{"ScheduleDefRetireReversible", testScheduleDefRetireReversible},
 		{"ScheduleDefParentNotFound", testScheduleDefParentNotFound},
 		{"ScheduleDefListByName", testScheduleDefListByName},
@@ -4451,19 +4452,67 @@ func testScheduleDefActivePointerIdempotent(t *testing.T, s store.Store) {
 	r1, _ := s.ScheduleDefCreate(ctx, mkScheduleDef("sd-active-1", "sched-active", ""))
 	r2, _ := s.ScheduleDefCreate(ctx, mkScheduleDef("sd-active-2", "sched-active", ""))
 
-	if err := s.ScheduleDefSetActive(ctx, "sched-active", r1.DefID, "test"); err != nil {
+	if err := s.ScheduleDefSetActive(ctx, "", "sched-active", r1.DefID, "test"); err != nil {
 		t.Fatal(err)
 	}
-	got, _ := s.ScheduleDefGetActive(ctx, "sched-active")
+	got, _ := s.ScheduleDefGetActive(ctx, "", "sched-active")
 	if got.DefID != r1.DefID {
 		t.Errorf("active = %s, want %s", got.DefID, r1.DefID)
 	}
-	if err := s.ScheduleDefSetActive(ctx, "sched-active", r2.DefID, "test"); err != nil {
+	if err := s.ScheduleDefSetActive(ctx, "", "sched-active", r2.DefID, "test"); err != nil {
 		t.Fatal(err)
 	}
-	got, _ = s.ScheduleDefGetActive(ctx, "sched-active")
+	got, _ = s.ScheduleDefGetActive(ctx, "", "sched-active")
 	if got.DefID != r2.DefID {
 		t.Errorf("after re-promote: active = %s, want %s", got.DefID, r2.DefID)
+	}
+}
+
+// testScheduleDefTenantIsolation mirrors testMemoryBackendDefTenantIsolation
+// for the Schedule plane.
+func testScheduleDefTenantIsolation(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	const name = "shared-sched"
+
+	aDef := mkScheduleDef("sdti-a", name, "")
+	aDef.TenantID = "tenant-a"
+	aDef.Definition = json.RawMessage(`{"agent":"x","schedule":"0 0 * * *","v":"A"}`)
+	aRow, err := s.ScheduleDefCreate(ctx, aDef)
+	if err != nil {
+		t.Fatalf("create A: %v", err)
+	}
+	bDef := mkScheduleDef("sdti-b", name, "")
+	bDef.TenantID = "tenant-b"
+	bDef.Definition = json.RawMessage(`{"agent":"x","schedule":"0 0 * * *","v":"B"}`)
+	bRow, err := s.ScheduleDefCreate(ctx, bDef)
+	if err != nil {
+		t.Fatalf("create B: %v", err)
+	}
+
+	if err := s.ScheduleDefSetActive(ctx, "tenant-a", name, aRow.DefID, ""); err != nil {
+		t.Fatalf("promote A: %v", err)
+	}
+	if err := s.ScheduleDefSetActive(ctx, "tenant-b", name, bRow.DefID, ""); err != nil {
+		t.Fatalf("promote B: %v", err)
+	}
+
+	gotA, err := s.ScheduleDefGetActive(ctx, "tenant-a", name)
+	if err != nil {
+		t.Fatalf("get active A: %v", err)
+	}
+	if gotA.DefID != aRow.DefID || gotA.TenantID != "tenant-a" || !jsonEqual(gotA.Definition, `{"agent":"x","schedule":"0 0 * * *","v":"A"}`) {
+		t.Errorf("tenant-a clobbered: got def_id=%q tenant=%q def=%s", gotA.DefID, gotA.TenantID, gotA.Definition)
+	}
+	gotB, err := s.ScheduleDefGetActive(ctx, "tenant-b", name)
+	if err != nil {
+		t.Fatalf("get active B: %v", err)
+	}
+	if gotB.DefID != bRow.DefID || gotB.TenantID != "tenant-b" || !jsonEqual(gotB.Definition, `{"agent":"x","schedule":"0 0 * * *","v":"B"}`) {
+		t.Errorf("tenant-b clobbered: got def_id=%q tenant=%q def=%s", gotB.DefID, gotB.TenantID, gotB.Definition)
+	}
+
+	if err := s.ScheduleDefSetActive(ctx, "tenant-b", name, aRow.DefID, ""); err == nil {
+		t.Error("cross-tenant promote (A's def under tenant-b) unexpectedly succeeded")
 	}
 }
 
@@ -5215,7 +5264,7 @@ func scheduleRuntimeFixture(t *testing.T, s store.Store, name string) string {
 	if _, err := s.ScheduleDefCreate(ctx, mkScheduleDef(defID, name, "")); err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	if err := s.ScheduleDefSetActive(ctx, name, defID, "test"); err != nil {
+	if err := s.ScheduleDefSetActive(ctx, "", name, defID, "test"); err != nil {
 		t.Fatalf("set active: %v", err)
 	}
 	return defID

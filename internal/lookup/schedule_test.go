@@ -19,7 +19,10 @@ type stubScheduleStore struct {
 	defs map[string]store.ScheduleDefRow // keyed by name (active)
 }
 
-func (s *stubScheduleStore) ScheduleDefGetActive(_ context.Context, name string) (store.ScheduleDefRow, error) {
+// ScheduleDefGetActive ignores tenantID — these resolver tests exercise
+// the precedence/equivalence logic with the shared "" tenant; per-tenant
+// isolation is covered by the store contract test.
+func (s *stubScheduleStore) ScheduleDefGetActive(_ context.Context, _, name string) (store.ScheduleDefRow, error) {
 	if row, ok := s.defs[name]; ok {
 		return row, nil
 	}
@@ -95,7 +98,7 @@ func TestSchedule_EquivalenceYamlVsSubstrate(t *testing.T) {
 			},
 		},
 	}
-	resolved, ok := lookup.Schedule(context.Background(), ss, &config.Config{}, "job-search-template")
+	resolved, ok := lookup.Schedule(context.Background(), ss, &config.Config{}, "", "job-search-template")
 	if !ok {
 		t.Fatal("resolver returned !ok")
 	}
@@ -139,7 +142,7 @@ func TestSchedule_StaticBeforeSubstrate(t *testing.T) {
 			},
 		},
 	}
-	got, ok := lookup.Schedule(context.Background(), ss, cfg, "my-sched")
+	got, ok := lookup.Schedule(context.Background(), ss, cfg, "", "my-sched")
 	if !ok {
 		t.Fatal("resolver returned !ok")
 	}
@@ -160,7 +163,7 @@ func TestSchedule_NormalizesTimezone(t *testing.T) {
 			},
 		},
 	}
-	got, ok := lookup.Schedule(context.Background(), ss, &config.Config{}, "no-tz")
+	got, ok := lookup.Schedule(context.Background(), ss, &config.Config{}, "", "no-tz")
 	if !ok {
 		t.Fatal("resolver returned !ok")
 	}

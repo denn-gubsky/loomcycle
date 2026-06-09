@@ -188,13 +188,16 @@ func (s *ScheduleDef) execCreate(ctx context.Context, policy tools.ScheduleDefPo
 		return errResult(fmt.Sprintf("create: description (%d bytes) exceeds max %d", len(in.Description), s.MaxDescriptionBytes)), nil
 	}
 
+	// RFC N: stamp the def under the caller's authoritative tenant.
 	ident := tools.RunIdentity(ctx)
+	tenantID := ident.TenantID
 	row := store.ScheduleDefRow{
 		DefID:            mintDefID(),
 		Name:             in.Name,
 		Definition:       defJSON,
 		Description:      in.Description,
 		CreatedByAgentID: ident.AgentID,
+		TenantID:         tenantID,
 	}
 	created, err := s.Store.ScheduleDefCreate(ctx, row)
 	if err != nil {
@@ -205,7 +208,7 @@ func (s *ScheduleDef) execCreate(ctx context.Context, policy tools.ScheduleDefPo
 		promote = *in.Promote
 	}
 	if promote {
-		if err := s.Store.ScheduleDefSetActive(ctx, in.Name, created.DefID, ident.AgentID); err != nil {
+		if err := s.Store.ScheduleDefSetActive(ctx, tenantID, in.Name, created.DefID, ident.AgentID); err != nil {
 			return errResult(fmt.Sprintf("create: promote: %s", err)), nil
 		}
 		// Seed schedule_run_state so the sweeper's due-query JOIN
@@ -225,10 +228,17 @@ func (s *ScheduleDef) execFork(ctx context.Context, policy tools.ScheduleDefPoli
 		return errResult("fork: missing required field: name"), nil
 	}
 
-	// Resolve the parent. Three paths (mirror AgentDef):
-	//   1. parent_def_id supplied → pin
-	//   2. parent_def_id empty + active pointer exists → use it
-	//   3. neither → name must have a yaml template; bootstrap v1
+	// RFC N: fork resolves the parent within the caller's own tenant first
+	// (then the shared "" base); the new version is ALWAYS stamped under the
+	// caller's own tenant.
+	ident := tools.RunIdentity(ctx)
+	tenantID := ident.TenantID
+
+	// Resolve the parent. Paths (mirror AgentDef):
+	//   1. parent_def_id supplied → pin (refuse another tenant's private def)
+	//   2. parent_def_id empty + own-tenant active pointer → use it
+	//   3. else shared "" active pointer (for non-"" tenants) → use it
+	//   4. neither → name must have a yaml template; bootstrap v1
 	parentDefID := in.ParentDefID
 	var parent store.ScheduleDefRow
 	if parentDefID != "" {
@@ -243,9 +253,14 @@ func (s *ScheduleDef) execFork(ctx context.Context, policy tools.ScheduleDefPoli
 		if row.Name != in.Name {
 			return errResult(fmt.Sprintf("fork: parent_def_id %q has name %q, refusing to fork under name %q", parentDefID, row.Name, in.Name)), nil
 		}
+		// Allow forking the shared "" base or the caller's own def; refuse
+		// another tenant's private def unless substrate:admin.
+		if row.TenantID != "" && row.TenantID != tenantID && !defCallerIsAdmin(ctx) {
+			return errResult(fmt.Sprintf("fork: parent_def_id %q belongs to another tenant, refusing", parentDefID)), nil
+		}
 		parent = row
 	} else {
-		row, err := s.Store.ScheduleDefGetActive(ctx, in.Name)
+		row, err := s.Store.ScheduleDefGetActive(ctx, tenantID, in.Name)
 		if err == nil {
 			parent = row
 			parentDefID = row.DefID
@@ -254,24 +269,37 @@ func (s *ScheduleDef) execFork(ctx context.Context, policy tools.ScheduleDefPoli
 			if !errors.As(err, &nf) {
 				return errResult(fmt.Sprintf("fork: %s", err)), nil
 			}
-			// No active pointer → must bootstrap from yaml.
-			static, ok := s.Cfg.ScheduledRuns[in.Name]
-			if !ok {
-				return errResult(fmt.Sprintf("fork: no parent — name %q has neither a DB version nor a static cfg.ScheduledRuns entry", in.Name)), nil
-			}
-			bootstrap, berr := s.bootstrapStatic(ctx, in.Name, static)
-			if berr != nil {
-				// Concurrent first-fork may have already bootstrapped v1;
-				// re-read active pointer before propagating.
-				if row2, gerr := s.Store.ScheduleDefGetActive(ctx, in.Name); gerr == nil {
-					parent = row2
-					parentDefID = row2.DefID
-				} else {
-					return errResult(fmt.Sprintf("fork: bootstrap static: %s", berr)), nil
+			// No own-tenant active pointer. Fall back to the SHARED ("") base
+			// (same precedence lookup.Schedule walks); the fork still lands
+			// under the caller's tenant. Skip when tenantID is already "".
+			if tenantID != "" {
+				if shared, serr := s.Store.ScheduleDefGetActive(ctx, "", in.Name); serr == nil {
+					parent = shared
+					parentDefID = shared.DefID
+				} else if !errors.As(serr, &nf) {
+					return errResult(fmt.Sprintf("fork: %s", serr)), nil
 				}
-			} else {
-				parent = bootstrap
-				parentDefID = bootstrap.DefID
+			}
+			// Still no parent → bootstrap from yaml, else refuse.
+			if parentDefID == "" {
+				static, ok := s.Cfg.ScheduledRuns[in.Name]
+				if !ok {
+					return errResult(fmt.Sprintf("fork: no parent — name %q has neither a DB version (own tenant or shared \"\") nor a static cfg.ScheduledRuns entry", in.Name)), nil
+				}
+				bootstrap, berr := s.bootstrapStatic(ctx, in.Name, static)
+				if berr != nil {
+					// Concurrent first-fork may have already bootstrapped v1;
+					// re-read own-tenant active pointer before propagating.
+					if row2, gerr := s.Store.ScheduleDefGetActive(ctx, tenantID, in.Name); gerr == nil {
+						parent = row2
+						parentDefID = row2.DefID
+					} else {
+						return errResult(fmt.Sprintf("fork: bootstrap static: %s", berr)), nil
+					}
+				} else {
+					parent = bootstrap
+					parentDefID = bootstrap.DefID
+				}
 			}
 		}
 	}
@@ -305,7 +333,6 @@ func (s *ScheduleDef) execFork(ctx context.Context, policy tools.ScheduleDefPoli
 		return errResult(fmt.Sprintf("fork: description (%d bytes) exceeds max %d", len(in.Description), s.MaxDescriptionBytes)), nil
 	}
 
-	ident := tools.RunIdentity(ctx)
 	row := store.ScheduleDefRow{
 		DefID:            mintDefID(),
 		Name:             in.Name,
@@ -313,6 +340,7 @@ func (s *ScheduleDef) execFork(ctx context.Context, policy tools.ScheduleDefPoli
 		Definition:       defJSON,
 		Description:      in.Description,
 		CreatedByAgentID: ident.AgentID,
+		TenantID:         tenantID,
 	}
 	created, err := s.Store.ScheduleDefCreate(ctx, row)
 	if err != nil {
@@ -327,7 +355,7 @@ func (s *ScheduleDef) execFork(ctx context.Context, policy tools.ScheduleDefPoli
 		promote = *in.Promote
 	}
 	if promote {
-		if err := s.Store.ScheduleDefSetActive(ctx, in.Name, created.DefID, ident.AgentID); err != nil {
+		if err := s.Store.ScheduleDefSetActive(ctx, tenantID, in.Name, created.DefID, ident.AgentID); err != nil {
 			return errResult(fmt.Sprintf("fork: promote: %s", err)), nil
 		}
 		// Seed schedule_run_state — see commentary in execCreate.
@@ -350,6 +378,11 @@ func (s *ScheduleDef) execGet(ctx context.Context, policy tools.ScheduleDefPolic
 		}
 		return errResult(fmt.Sprintf("get: %s", err)), nil
 	}
+	// RFC N: refuse cross-tenant reads with the same opaque not-found a
+	// missing def returns.
+	if !defCallerIsAdmin(ctx) && row.TenantID != tools.RunIdentity(ctx).TenantID {
+		return errResult(fmt.Sprintf("get: def_id %q not found", in.DefID)), nil
+	}
 	if err := s.checkScopeForName(policy, row.Name); err != nil {
 		return errResult(err.Error()), nil
 	}
@@ -367,8 +400,14 @@ func (s *ScheduleDef) execList(ctx context.Context, policy tools.ScheduleDefPoli
 	if err != nil {
 		return errResult(fmt.Sprintf("list: %s", err)), nil
 	}
+	// RFC N: filter to the caller's own tenant (names are per-tenant now);
+	// a substrate:admin sees all.
+	tenantID := tools.RunIdentity(ctx).TenantID
 	out := make([]map[string]any, 0, len(rows))
 	for _, r := range rows {
+		if !defCallerIsAdmin(ctx) && r.TenantID != tenantID {
+			continue
+		}
 		out = append(out, scheduleRowResponseMap(r))
 	}
 	return okJSON(map[string]any{"name": in.Name, "versions": out})
@@ -390,6 +429,10 @@ func (s *ScheduleDef) execRetire(ctx context.Context, policy tools.ScheduleDefPo
 			return errResult(fmt.Sprintf("retire: def_id %q not found", in.DefID)), nil
 		}
 		return errResult(fmt.Sprintf("retire: %s", err)), nil
+	}
+	// RFC N: refuse cross-tenant retire (global by-def_id mutation).
+	if !defCallerIsAdmin(ctx) && row.TenantID != tools.RunIdentity(ctx).TenantID {
+		return errResult(fmt.Sprintf("retire: def_id %q not found", in.DefID)), nil
 	}
 	if err := s.checkScopeForName(policy, row.Name); err != nil {
 		return errResult(err.Error()), nil
@@ -473,6 +516,11 @@ func (s *ScheduleDef) loadParentForHookOp(ctx context.Context, policy tools.Sche
 		}
 		return store.ScheduleDefRow{}, mergedScheduleDef{}, fmt.Errorf("%s: %s", opLabel, err)
 	}
+	// RFC N: a hook edit may only target the caller's own tenant's def.
+	// Opaque not-found — don't leak another tenant's def existence.
+	if !defCallerIsAdmin(ctx) && parent.TenantID != tools.RunIdentity(ctx).TenantID {
+		return store.ScheduleDefRow{}, mergedScheduleDef{}, fmt.Errorf("%s: def_id %q not found", opLabel, defID)
+	}
 	if err := s.checkScopeForName(policy, parent.Name); err != nil {
 		return store.ScheduleDefRow{}, mergedScheduleDef{}, err
 	}
@@ -508,6 +556,9 @@ func (s *ScheduleDef) persistForkFromHookEdit(ctx context.Context, parent store.
 		Definition:       defJSON,
 		Description:      fmt.Sprintf("%s edit (parent v%d)", opLabel, parent.Version),
 		CreatedByAgentID: ident.AgentID,
+		// RFC N: the hook-edit version stays in the parent's tenant
+		// (loadParentForHookOp already refused a cross-tenant parent).
+		TenantID: parent.TenantID,
 	}
 	created, err := s.Store.ScheduleDefCreate(ctx, row)
 	if err != nil {
@@ -517,7 +568,7 @@ func (s *ScheduleDef) persistForkFromHookEdit(ctx context.Context, parent store.
 	// use case for a hook addition the way there might be for a major
 	// definition rewrite. Operators wanting the staged pattern can
 	// use the regular `fork` op with explicit promote:false.
-	if err := s.Store.ScheduleDefSetActive(ctx, parent.Name, created.DefID, ident.AgentID); err != nil {
+	if err := s.Store.ScheduleDefSetActive(ctx, parent.TenantID, parent.Name, created.DefID, ident.AgentID); err != nil {
 		return errResult(fmt.Sprintf("%s: promote: %s", opLabel, err)), nil
 	}
 	_ = s.Store.ScheduleRunStateSeed(ctx, created.DefID, computeInitialNextRunAt(def, time.Now()))
@@ -591,12 +642,15 @@ func (s *ScheduleDef) bootstrapStatic(ctx context.Context, name string, static c
 		Description:            "bootstrapped from static cfg.ScheduledRuns",
 		CreatedByAgentID:       ident.AgentID,
 		BootstrappedFromStatic: true,
+		// RFC N: bootstrap lands in the caller's tenant ("" for the boot
+		// scheduler-bootstrap identity → the shared base).
+		TenantID: ident.TenantID,
 	}
 	created, err := s.Store.ScheduleDefCreate(ctx, row)
 	if err != nil {
 		return store.ScheduleDefRow{}, err
 	}
-	if err := s.Store.ScheduleDefSetActive(ctx, name, created.DefID, ident.AgentID); err != nil {
+	if err := s.Store.ScheduleDefSetActive(ctx, ident.TenantID, name, created.DefID, ident.AgentID); err != nil {
 		// Bootstrap succeeded but couldn't promote — return the row;
 		// the next fork iteration finds it via the active pointer
 		// retry. (Same posture as AgentDef.)
@@ -640,9 +694,13 @@ func (s *ScheduleDef) BootstrapStaticSchedules(ctx context.Context) (int, error)
 		names = append(names, name)
 	}
 	sort.Strings(names) // deterministic order for logs + tests
+	// RFC N: boot bootstrap operates on the caller's tenant — the
+	// scheduler-bootstrap identity carries "" (the shared base every tenant
+	// inherits). bootstrapStatic stamps the same tenant.
+	tenantID := tools.RunIdentity(ctx).TenantID
 	seeded := 0
 	for _, name := range names {
-		_, err := s.Store.ScheduleDefGetActive(ctx, name)
+		_, err := s.Store.ScheduleDefGetActive(ctx, tenantID, name)
 		if err == nil {
 			continue // already has an active version (prior bootstrap or fork) — leave it
 		}
