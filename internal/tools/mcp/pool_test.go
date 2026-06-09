@@ -15,9 +15,25 @@ import (
 	"testing"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/tools"
 	"github.com/denn-gubsky/loomcycle/internal/tools/mcp"
 	"github.com/denn-gubsky/loomcycle/internal/tools/mcp/stdio"
 )
+
+// firstTool resolves a server's first discovered tool via the SAME path
+// production uses (pool.Get → mcp.NewTool, mirroring enumerate.go) —
+// replacing the removed tenant-blind Pool.Tools() convenience.
+func firstTool(t *testing.T, ctx context.Context, pool *mcp.Pool, server string) tools.Tool {
+	t.Helper()
+	_, descs, err := pool.Get(ctx, server)
+	if err != nil {
+		t.Fatalf("Get(%q): %v", server, err)
+	}
+	if len(descs) == 0 {
+		t.Fatalf("no tools discovered for %q", server)
+	}
+	return mcp.NewTool(pool, server, descs[0])
+}
 
 // fakeMCPBinary is the path to the stdio test binary. Tests rely on the
 // stdio package's TestMain installing the BE_MCP_SERVER hook — we run the
@@ -148,12 +164,8 @@ func TestPoolGetSpawnsAndDiscoversTools(t *testing.T) {
 		t.Errorf("descs: %+v", descs)
 	}
 
-	tools := pool.Tools()
-	if len(tools) != 1 {
-		t.Fatalf("tools = %d", len(tools))
-	}
 	want := "mcp__search__web_search"
-	if got := tools[0].Name(); got != want {
+	if got := mcp.NewTool(pool, "search", descs[0]).Name(); got != want {
 		t.Errorf("tool name = %q, want %q", got, want)
 	}
 }
@@ -162,10 +174,7 @@ func TestPoolToolExecuteRoutesToServer(t *testing.T) {
 	pool := newPoolWithFake(t, "ok")
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if _, _, err := pool.Get(ctx, "search"); err != nil {
-		t.Fatal(err)
-	}
-	tool := pool.Tools()[0]
+	tool := firstTool(t, ctx, pool, "search")
 	res, err := tool.Execute(ctx, json.RawMessage(`{"q":"hi"}`))
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
@@ -191,10 +200,7 @@ func TestPoolToolReturnsErrOnCtxCancel(t *testing.T) {
 	pool := newPoolWithFake(t, "slow-call")
 	initCtx, initCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer initCancel()
-	if _, _, err := pool.Get(initCtx, "search"); err != nil {
-		t.Fatal(err)
-	}
-	tool := pool.Tools()[0]
+	tool := firstTool(t, initCtx, pool, "search")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
 	defer cancel()
@@ -209,10 +215,7 @@ func TestPoolToolPropagatesIsError(t *testing.T) {
 	pool := newPoolWithFake(t, "tool_iserror")
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if _, _, err := pool.Get(ctx, "search"); err != nil {
-		t.Fatal(err)
-	}
-	tool := pool.Tools()[0]
+	tool := firstTool(t, ctx, pool, "search")
 	res, err := tool.Execute(ctx, json.RawMessage(`{}`))
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
