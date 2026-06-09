@@ -8,16 +8,25 @@ For pre-v0.4 history (single-tool runtime, library milestone, security patch), s
 
 ---
 
-## Unreleased
+## What's in v0.24.0
 
-**The RFC N tenant axis reaches every definition family.** v0.22.0 (RFC N)
-isolated the active-pointer / definition plane for **agents, skills, and MCP
-servers** (3 of the 8 content-addressed substrate Defs); the run-triggering
-ScheduleDef / WebhookDef carried only a *run-execution* `tenant_id` in the
-def body, not an isolated active pointer, and MemoryBackend / A2A (server
-card + agent) were still global-by-name. So two tenants registering the same
-name collided on a single global pointer, and any admin-listable name could
-leak across the boundary.
+**Headline: the architecture-review hardening pass.** After the v0.21 → v0.23
+line landed one feature at a time, a full code review of those changes
+surfaced a set of structural gaps — the RFC N tenant axis covered only 3 of
+the 8 definition families, the RFC P `spawn_run` timeout never reached the
+HTTP/`--upstream` transport, and an agent's interactive ACLs round-tripped
+through the substrate but were excluded from its content hash. v0.24.0 closes
+them. No new primitives; correctness + completeness.
+
+### The RFC N tenant axis reaches every definition family
+
+v0.22.0 (RFC N) isolated the active-pointer / definition plane for **agents,
+skills, and MCP servers** (3 of the 8 content-addressed substrate Defs); the
+run-triggering ScheduleDef / WebhookDef carried only a *run-execution*
+`tenant_id` in the def body, not an isolated active pointer, and MemoryBackend
+/ A2A (server card + agent) were still global-by-name. So two tenants
+registering the same name collided on a single global pointer, and any
+admin-listable name could leak across the boundary.
 
 This completes the axis across the remaining **five** families — MemoryBackend,
 A2AAgent, ScheduleDef, A2AServerCardDef, WebhookDef — so **all 8** def families
@@ -44,6 +53,47 @@ the shared `""` tenant is byte-identical to pre-RFC-N behavior, so single-tenant
 - **A2A server card:** the served card is resolved under the routed
   (path/host-tenancy) request tenant, so each tenant's A2A surface serves its
   own card; the boot executor stays the operator (`""`) card.
+
+### `spawn_run` timeout now applies to the HTTP / `--upstream` transport
+
+RFC P (v0.23.0) added a `spawn_run` transport timeout (`status:"timeout"`
+instead of hanging), but `main.go`'s `NewHTTPHandler` call dropped the knob —
+only the stdio `New` carried it. So `/v1/_mcp` (the path the RFC R thin client
+`mcp --upstream` proxies to — the *recommended* topology) had **no** spawn_run
+bound. Now both transports honor `LOOMCYCLE_MCP_SPAWN_RUN_TIMEOUT_MS` /
+per-call `timeout_ms`. (`MaxConcurrentCalls` stays stdio-only by design.)
+
+### Agent interactive config is content-identifying (F14)
+
+An agent's `channels` / `evaluation_scopes` / `interruption` ACLs already
+round-tripped through the AgentDef substrate, but were **excluded from the
+content hash** — so a fork that changed only one of them produced an identical
+`content_sha256` and the create-dedup path silently dropped the change. They're
+now part of the hash (and discoverable in the tool's overlay schema), with all
+three hash producers (substrate write, `hash agent` CLI, boot backfill)
+converging. Agents that don't use these fields hash **byte-identically** to
+before (pointer + `omitempty` + normalize-collapse), so existing rows are
+stable. `interruption` also now round-trips through the `.md` loader + config
+merge to parity with `channels`.
+
+### Fixes & cleanups
+
+- **`max_concurrent_children` survives MD-agent discovery.** An MD-declared
+  `max_concurrent_children:` was dropped at boot (neither `agentFromDiscovered`
+  nor `mergeAgentDef` carried it), silently capping the agent at the default
+  (4). Now carried + overridable, matching `max_tokens` / `max_iterations`.
+- **Boot log no longer drifts.** The stdio MCP start line hardcoded
+  `"(20 tools registered)"`; it's now sourced from `MetaToolCount()`.
+- **Removed the tenant-blind `Pool.Tools()`** — it enumerated every server's
+  tools with no tenant filter (a latent cross-tenant leak); it had no
+  production caller (the live paths are the tenant-aware `DynamicToolsForRun`
+  + lazy resolver). Its tests moved to the production `NewTool` wrap path.
+- **`ChannelPurge` gains a store-contract test** (SQLite + real-Postgres CI):
+  drains + returns the count, idempotent on empty/unknown, channel stays usable.
+
+**`@loomcycle/client`:** no client-surface change in v0.24.0 (all server-side;
+the webhook tenant route is an inbound HTTP path the client doesn't construct),
+so the TS adapter is unchanged.
 
 ## What's in v0.23.0
 
