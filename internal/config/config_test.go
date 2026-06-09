@@ -904,6 +904,53 @@ agents:
 	}
 }
 
+// TestDiscoverAgents_MaxConcurrentChildrenFlowsThroughDiscoveryAndOverride
+// pins max_concurrent_children through BOTH the discovery copy
+// (agentFromDiscovered) and the yaml-override merge (mergeAgentDef). Fails on
+// the pre-fix code, where neither carried the field, so an MD-declared
+// parallel-spawn cap was silently dropped → the agent fell back to the
+// runtime default (4) instead of its declared value.
+func TestDiscoverAgents_MaxConcurrentChildrenFlowsThroughDiscoveryAndOverride(t *testing.T) {
+	tmp := t.TempDir()
+	agentsDir := filepath.Join(tmp, "agents")
+	if err := os.Mkdir(agentsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// "discovered" declares the cap purely in its .md frontmatter.
+	writeAgentMD(t, agentsDir, "discovered", `---
+name: discovered
+max_concurrent_children: 8
+---
+`)
+	// "overridden" declares 8 in the .md; the yaml override layer raises it to 12.
+	writeAgentMD(t, agentsDir, "overridden", `---
+name: overridden
+max_concurrent_children: 8
+---
+`)
+	yamlPath := filepath.Join(tmp, "c.yaml")
+	if err := os.WriteFile(yamlPath, []byte(`
+defaults: { provider: anthropic, model: claude-sonnet-4-6 }
+agents:
+  overridden:
+    max_concurrent_children: 12
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("LOOMCYCLE_AGENTS_ROOT", agentsDir)
+
+	cfg, err := Load(yamlPath)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := cfg.Agents["discovered"].MaxConcurrentChildren; got != 8 {
+		t.Errorf("discovered .md max_concurrent_children not carried (agentFromDiscovered dropped it): got %d, want 8", got)
+	}
+	if got := cfg.Agents["overridden"].MaxConcurrentChildren; got != 12 {
+		t.Errorf("yaml override max_concurrent_children not applied (mergeAgentDef dropped it): got %d, want 12", got)
+	}
+}
+
 // TestDiscoverAgents_DiscoveryOnly: AGENTS_ROOT set, yaml has no
 // `agents:` block at all. All agents come from the MDs, validation
 // passes. The deployment shape an operator using "MDs as sole source

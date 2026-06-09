@@ -2901,12 +2901,17 @@ func agentFromDiscovered(d *agents.Agent) AgentDef {
 		Skills:           d.Skills,
 		MaxTokens:        d.MaxTokens,
 		MaxIterations:    d.MaxIterations,
-		Tier:             d.Tier,
-		Effort:           d.Effort,
-		Providers:        d.Providers,
-		MemoryScopes:     d.MemoryScopes,
-		MemoryQuotaBytes: d.MemoryQuotaBytes,
-		MemoryBackend:    d.MemoryBackend,
+		// MaxConcurrentChildren rounds out the loop-budget trio (with
+		// MaxTokens/MaxIterations) — it lives on agents.Agent + the MD
+		// frontmatter, so dropping it here silently capped an MD-declared
+		// agent at the runtime default (4) instead of its declared value.
+		MaxConcurrentChildren: d.MaxConcurrentChildren,
+		Tier:                  d.Tier,
+		Effort:                d.Effort,
+		Providers:             d.Providers,
+		MemoryScopes:          d.MemoryScopes,
+		MemoryQuotaBytes:      d.MemoryQuotaBytes,
+		MemoryBackend:         d.MemoryBackend,
 		Channels: AgentChannelACL{
 			Publish:   d.Channels.Publish,
 			Subscribe: d.Channels.Subscribe,
@@ -2991,6 +2996,9 @@ func mergeAgentDef(base, override AgentDef) AgentDef {
 	}
 	if override.MaxIterations != 0 {
 		out.MaxIterations = override.MaxIterations
+	}
+	if override.MaxConcurrentChildren != 0 {
+		out.MaxConcurrentChildren = override.MaxConcurrentChildren
 	}
 	if override.Tier != "" {
 		out.Tier = override.Tier
