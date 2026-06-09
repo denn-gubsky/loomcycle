@@ -59,6 +59,34 @@ You don't need an immediate result:
 → persists immediately; subscriber pulls when ready
 ```
 
+## Joining work: `Agent.parallel_spawn` vs `Channel.await`
+
+Both are barriers — "wait for N things to finish" — but over different
+producer sets. Pick by who you're joining:
+
+- **`Agent.parallel_spawn`** — joins the **sub-agents YOU spawned** in this
+  loop. It's an AND-barrier: control returns when every child completes
+  (`wg.Wait()`). Use it for an in-agent fan-out: "spawn 4 researchers,
+  wait for all 4, synthesize."
+
+- **`Channel.await`** — joins **independent producers** you did NOT spawn:
+  scheduler-fired runs, inbound webhooks, separately-spawned agents.
+  `parallel_spawn` can't see them (they aren't your children).
+  `await {channels, mode: any|all|at_least, n, wait_ms}` waits for a
+  fan-in across channels: `any` (≥1 channel fired), `all` (every channel
+  fired), or `at_least` (total messages ≥ n) — or a timeout
+  (`{satisfied:false, timed_out:true}`, never an error). It's
+  non-committing: the agent then `subscribe`/`ack`s exactly what it
+  processes.
+
+Canonical pattern: a scheduler fans out N collectors (each a
+`ScheduledRun` whose `on_complete: channel.publish` stamps `schedule_name`
+per fire); a consolidator `await`s `at_least` N on those channels, then
+acts. The collectors aren't the consolidator's children — so it's `await`,
+not `parallel_spawn`. (Need a clock to set the `wait_ms` budget or a
+`deliver_at` self-timeout? `Context op=time` gives the agent `now` +
+`elapsed_ms`.)
+
 ## Recursion depth cap
 
 Sub-agents can spawn sub-sub-agents, but loomcycle caps recursion
