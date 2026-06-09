@@ -1421,3 +1421,238 @@ export async function deleteMemoryEntry(
     throw new Error(`${resp.status} ${resp.statusText}: ${body.slice(0, 200)}`);
   }
 }
+
+// ---- v0.24.0 Run execution + SSE streaming ----
+//
+// POST /v1/runs and POST /v1/sessions/{id}/messages return
+// text/event-stream. EventSource can't POST a body or set headers, but
+// the loomcycle_session cookie authenticates fetch() same-origin (the
+// server's extractBearer cookie fallback), so we read the body as a
+// ReadableStream and parse SSE frames ourselves. This is the UI's first
+// streaming reader — every other call is a one-shot jsonFetch.
+
+export interface SSEFrame {
+  event: string; // the `event:` name ("session"|"agent"|"text"|... )
+  data: string; // the raw `data:` JSON string
+}
+
+export interface RunStreamHandlers {
+  // onFrame receives each parsed SSE frame (comment/keepalive frames are
+  // dropped before this is called). The caller parses frame.data as JSON.
+  onFrame: (f: SSEFrame) => void;
+  signal?: AbortSignal; // wire to an AbortController for cancel/unmount
+}
+
+// streamSSE POSTs and dispatches parsed SSE frames, resolving when the
+// server closes the stream (run done/failed → EOF). It buffers decoded
+// chunks, splits on the `\n\n` frame boundary, reads the `event:` +
+// (possibly multiple) `data:` lines per the SSE spec, and drops
+// comment-only frames (lines starting with `:` — loomcycle's keepalive).
+// A non-OK initial response bounces to /login on 401, else throws with
+// the body so the caller surfaces it before the first frame.
+async function streamSSE(
+  path: string,
+  body: unknown,
+  h: RunStreamHandlers,
+): Promise<void> {
+  const resp = await fetch(baseURL + path, {
+    method: "POST",
+    credentials: "same-origin",
+    signal: h.signal,
+    headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
+    body: JSON.stringify(body),
+  });
+  if (!resp.ok) {
+    if (redirectToLoginOn401(resp.status)) {
+      return new Promise<void>(() => {});
+    }
+    const text = await resp.text();
+    throw new Error(`${resp.status} ${resp.statusText}: ${text.slice(0, 200)}`);
+  }
+  if (!resp.body) {
+    throw new Error("stream response had no body");
+  }
+  await pumpSSE(resp.body, h.onFrame);
+}
+
+// pumpSSE drains a text/event-stream ReadableStream, parsing frames and
+// invoking onFrame for each non-comment frame. Shared by streamSSE (POST)
+// and streamRunStates (GET).
+async function pumpSSE(
+  stream: ReadableStream<Uint8Array>,
+  onFrame: (f: SSEFrame) => void,
+): Promise<void> {
+  const reader = stream.getReader();
+  const decoder = new TextDecoder();
+  let buf = "";
+  const flushFrame = (raw: string) => {
+    let event = "message";
+    const dataLines: string[] = [];
+    let isComment = false;
+    for (const line of raw.split("\n")) {
+      if (line === "") continue;
+      if (line.startsWith(":")) {
+        isComment = true; // keepalive / comment frame — ignore
+        continue;
+      }
+      if (line.startsWith("event:")) {
+        event = line.slice(6).trim();
+      } else if (line.startsWith("data:")) {
+        dataLines.push(line.slice(5).replace(/^ /, ""));
+      }
+    }
+    if (dataLines.length === 0) return;
+    if (isComment) return;
+    onFrame({ event, data: dataLines.join("\n") });
+  };
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += decoder.decode(value, { stream: true });
+    let sep: number;
+    while ((sep = buf.indexOf("\n\n")) !== -1) {
+      const raw = buf.slice(0, sep);
+      buf = buf.slice(sep + 2);
+      if (raw.trim() !== "") flushFrame(raw);
+    }
+  }
+  // Flush any trailing frame the server didn't terminate with \n\n.
+  if (buf.trim() !== "") flushFrame(buf);
+}
+
+export interface StartRunRequest {
+  agent: string; // REQUIRED — the agent name (LibraryEntry.name)
+  prompt: string; // becomes one user trusted-text segment
+  user_id?: string;
+  agent_id?: string; // optional caller handle; else the server generates one
+  session_id?: string;
+  user_tier?: string;
+  // omit => no host narrowing; [] => deny all; non-empty => intersection
+  allowed_hosts?: string[];
+  web_search_filter?: "drop" | "keep";
+  allowed_tools?: string[];
+  metadata?: Record<string, unknown>;
+}
+
+// startRun POSTs /v1/runs and streams events to the handlers. The prompt
+// becomes a single user trusted-text segment (the agent's own system
+// prompt is prepended server-side — do NOT send a system segment).
+// Resolves at stream EOF.
+export function startRun(req: StartRunRequest, h: RunStreamHandlers): Promise<void> {
+  const body: Record<string, unknown> = {
+    agent: req.agent,
+    segments: [
+      { role: "user", content: [{ type: "trusted-text", text: req.prompt }] },
+    ],
+  };
+  if (req.user_id) body.user_id = req.user_id;
+  if (req.agent_id) body.agent_id = req.agent_id;
+  if (req.session_id) body.session_id = req.session_id;
+  if (req.user_tier) body.user_tier = req.user_tier;
+  if (req.allowed_hosts !== undefined) body.allowed_hosts = req.allowed_hosts;
+  if (req.web_search_filter) body.web_search_filter = req.web_search_filter;
+  if (req.allowed_tools && req.allowed_tools.length > 0)
+    body.allowed_tools = req.allowed_tools;
+  if (req.metadata) body.metadata = req.metadata;
+  return streamSSE("/v1/runs", body, h);
+}
+
+// continueSession appends a new turn to an existing session
+// (POST /v1/sessions/{id}/messages — same SSE stream shape as /v1/runs).
+// A 409 session_busy surfaces via the thrown error before the first frame.
+export function continueSession(
+  sessionId: string,
+  prompt: string,
+  h: RunStreamHandlers,
+  opts?: {
+    user_tier?: string;
+    allowed_hosts?: string[];
+    web_search_filter?: "drop" | "keep";
+  },
+): Promise<void> {
+  const body: Record<string, unknown> = {
+    segments: [
+      { role: "user", content: [{ type: "trusted-text", text: prompt }] },
+    ],
+  };
+  if (opts?.user_tier) body.user_tier = opts.user_tier;
+  if (opts?.allowed_hosts !== undefined) body.allowed_hosts = opts.allowed_hosts;
+  if (opts?.web_search_filter) body.web_search_filter = opts.web_search_filter;
+  return streamSSE(
+    `/v1/sessions/${encodeURIComponent(sessionId)}/messages`,
+    body,
+    h,
+  );
+}
+
+// RunStateEvent mirrors connector.RunStateEvent — one frame per run-state
+// transition on GET /v1/users/{id}/agents/stream. Drives the ensemble
+// dashboard (watch many runs' states live) + the orchestrator child tree.
+export interface RunStateEvent {
+  run_id: string;
+  agent_id: string;
+  agent: string;
+  user_id: string;
+  parent_agent_id?: string;
+  status: string;
+  stop_reason?: string;
+  error?: string;
+  ts: string;
+}
+
+// streamRunStates opens the run-STATE SSE feed (GET) and emits each
+// parsed run_state event. GET-only, so it reuses pumpSSE (uniform with
+// startRun). Resolves at EOF (the server caps the stream lifetime ~30min;
+// the caller reconnects if it wants to continue).
+export async function streamRunStates(
+  userId: string,
+  onState: (e: RunStateEvent) => void,
+  opts?: { status?: string[]; agent?: string; signal?: AbortSignal },
+): Promise<void> {
+  const q = new URLSearchParams();
+  if (opts?.status && opts.status.length > 0) q.set("status", opts.status.join(","));
+  if (opts?.agent) q.set("agent", opts.agent);
+  const qs = q.toString();
+  const resp = await fetch(
+    baseURL +
+      `/v1/users/${encodeURIComponent(userId)}/agents/stream${qs ? "?" + qs : ""}`,
+    {
+      credentials: "same-origin",
+      signal: opts?.signal,
+      headers: { Accept: "text/event-stream" },
+    },
+  );
+  if (!resp.ok) {
+    if (redirectToLoginOn401(resp.status)) return new Promise<void>(() => {});
+    const text = await resp.text();
+    throw new Error(`${resp.status} ${resp.statusText}: ${text.slice(0, 200)}`);
+  }
+  if (!resp.body) throw new Error("stream response had no body");
+  await pumpSSE(resp.body, (f) => {
+    if (f.event !== "run_state") return;
+    try {
+      onState(JSON.parse(f.data) as RunStateEvent);
+    } catch {
+      // skip a malformed frame rather than tear down the stream
+    }
+  });
+}
+
+// sseEventToTranscript wraps a bare providers.Event (parsed from a run
+// SSE frame's data) into the persisted TranscriptEvent envelope the
+// existing TerminalTranscript / EventCard renderers consume — so the
+// live stream renders through the exact same components as the persisted
+// transcript. seq is a monotonic client counter; ts_ns is best-effort
+// client time (the live stream carries no server seq/ts).
+export function sseEventToTranscript(
+  seq: number,
+  ev: EventPayload,
+): TranscriptEvent {
+  return {
+    seq,
+    run_id: "",
+    ts_ns: Date.now() * 1_000_000,
+    type: ev.type,
+    event: ev,
+  };
+}
