@@ -10,34 +10,54 @@ import (
 
 // MemoryBackendStore is the subset of store.Store the memory-backend
 // resolver uses. Declared here so tests + callers can mock without
-// depending on the full store interface. RFC I MR-3a / mirrors
-// WebhookStore.
+// depending on the full store interface. RFC N: the substrate lookup
+// carries a tenantID.
 type MemoryBackendStore interface {
-	MemoryBackendDefGetActive(ctx context.Context, name string) (store.MemoryBackendDefRow, error)
+	MemoryBackendDefGetActive(ctx context.Context, tenantID, name string) (store.MemoryBackendDefRow, error)
 }
 
 // MemoryBackend resolves a memory-backend NAME to its effective
-// config.MemoryBackend by walking the lookup chain in precedence order:
+// config.MemoryBackend within the caller's tenant, walking the lookup
+// chain in precedence order (mirrors lookup.Agent):
 //
-//  1. static cfg.MemoryBackends (yaml-defined, pre-validated at boot)
-//  2. memory_backend_def_active + memory_backend_defs (substrate path)
+//  1. (tenantID != "") tenant-scoped substrate — memory_backend_def_active
+//     WHERE tenant_id=tenantID.
+//  2. static cfg.MemoryBackends (yaml-defined, pre-validated at boot) —
+//     the shared operator base every tenant inherits.
+//  3. shared substrate (tenant_id="") — memory_backend_def_active.
+//
+// For the default tenant "" step 1 is skipped, so the order collapses to
+// static-cfg → shared-substrate — identical to the pre-RFC-N behavior.
 //
 // Returns (zero, false) when no source has the name. Malformed
 // persistence JSON also returns (zero, false) — defensive against
 // future-field churn or hand-edited rows.
-//
-// RFC I MR-3a / mirrors lookup.Webhook. Nothing consumes this yet — the
-// per-agent routing + factory land in MR-3b.
-func MemoryBackend(ctx context.Context, s MemoryBackendStore, cfg *config.Config, name string) (config.MemoryBackend, bool) {
+func MemoryBackend(ctx context.Context, s MemoryBackendStore, cfg *config.Config, tenantID, name string) (config.MemoryBackend, bool) {
+	// 1. Tenant-scoped substrate (skipped for the shared "" tenant).
+	if tenantID != "" {
+		if mb, ok := resolveMemoryBackendSubstrate(ctx, s, tenantID, name); ok {
+			return mb, true
+		}
+	}
+	// 2. Static cfg.MemoryBackends — the shared operator base.
 	if cfg != nil {
 		if mb, ok := cfg.MemoryBackends[name]; ok {
 			return mb, true
 		}
 	}
+	// 3. Shared substrate (tenant_id="").
+	return resolveMemoryBackendSubstrate(ctx, s, "", name)
+}
+
+// resolveMemoryBackendSubstrate reads the memory_backend_def_active
+// overlay for one tenant pass. Returns (zero, false) when the store is
+// nil, the name has no active pointer for that tenant, or the row's JSON
+// is malformed.
+func resolveMemoryBackendSubstrate(ctx context.Context, s MemoryBackendStore, tenantID, name string) (config.MemoryBackend, bool) {
 	if s == nil {
 		return config.MemoryBackend{}, false
 	}
-	activeRow, err := s.MemoryBackendDefGetActive(ctx, name)
+	activeRow, err := s.MemoryBackendDefGetActive(ctx, tenantID, name)
 	if err != nil {
 		return config.MemoryBackend{}, false
 	}

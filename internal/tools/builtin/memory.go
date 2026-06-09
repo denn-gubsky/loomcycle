@@ -135,7 +135,10 @@ func (m *Memory) backend(ctx context.Context) memrank.Backend {
 	if name == "" {
 		return m.defaultBackend()
 	}
-	def, ok := lookup.MemoryBackend(ctx, m.Store, m.Cfg, name)
+	// RFC N: resolve under the run's tenant so a tenant-private backend
+	// shadows the shared base; "" tenant collapses to static→shared exactly
+	// as before.
+	def, ok := lookup.MemoryBackend(ctx, m.Store, m.Cfg, tools.RunIdentity(ctx).TenantID, name)
 	if !ok {
 		log.Printf("memory: memory_backend %q not found — using operator-default backend", name)
 		return m.defaultBackend()

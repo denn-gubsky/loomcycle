@@ -158,13 +158,17 @@ func (s *MemoryBackendDef) execCreate(ctx context.Context, policy tools.MemoryBa
 		return errResult(fmt.Sprintf("create: description (%d bytes) exceeds max %d", len(in.Description), s.MaxDescriptionBytes)), nil
 	}
 
+	// RFC N: stamp the def under the caller's authoritative tenant (run
+	// identity, never tool input). "" = the shared/operator/legacy tenant.
 	ident := tools.RunIdentity(ctx)
+	tenantID := ident.TenantID
 	row := store.MemoryBackendDefRow{
 		DefID:            mintDefID(),
 		Name:             in.Name,
 		Definition:       defJSON,
 		Description:      in.Description,
 		CreatedByAgentID: ident.AgentID,
+		TenantID:         tenantID,
 	}
 	created, err := s.Store.MemoryBackendDefCreate(ctx, row)
 	if err != nil {
@@ -175,7 +179,7 @@ func (s *MemoryBackendDef) execCreate(ctx context.Context, policy tools.MemoryBa
 		promote = *in.Promote
 	}
 	if promote {
-		if err := s.Store.MemoryBackendDefSetActive(ctx, in.Name, created.DefID, ident.AgentID); err != nil {
+		if err := s.Store.MemoryBackendDefSetActive(ctx, tenantID, in.Name, created.DefID, ident.AgentID); err != nil {
 			return errResult(fmt.Sprintf("create: promote: %s", err)), nil
 		}
 	}
@@ -189,10 +193,17 @@ func (s *MemoryBackendDef) execFork(ctx context.Context, policy tools.MemoryBack
 		return errResult("fork: missing required field: name"), nil
 	}
 
-	// Resolve the parent. Three paths (mirror WebhookDef):
-	//   1. parent_def_id supplied → pin
-	//   2. parent_def_id empty + active pointer exists → use it
-	//   3. neither → name must have a yaml template; bootstrap v1
+	// RFC N: fork resolves the parent within the caller's own tenant first
+	// (then the shared "" base), but the new version is ALWAYS stamped under
+	// the caller's own tenant (authoritative run identity, never tool input).
+	ident := tools.RunIdentity(ctx)
+	tenantID := ident.TenantID
+
+	// Resolve the parent. Paths (mirror AgentDef):
+	//   1. parent_def_id supplied → pin (refuse another tenant's private def)
+	//   2. parent_def_id empty + own-tenant active pointer → use it
+	//   3. else shared "" active pointer (for non-"" tenants) → use it
+	//   4. neither → name must have a yaml template; bootstrap v1
 	parentDefID := in.ParentDefID
 	var parent store.MemoryBackendDefRow
 	if parentDefID != "" {
@@ -207,9 +218,16 @@ func (s *MemoryBackendDef) execFork(ctx context.Context, policy tools.MemoryBack
 		if row.Name != in.Name {
 			return errResult(fmt.Sprintf("fork: parent_def_id %q has name %q, refusing to fork under name %q", parentDefID, row.Name, in.Name)), nil
 		}
+		// A def_id is a global handle. Allow forking the SHARED ("") base or
+		// the caller's OWN tenant's def; refuse forking ANOTHER tenant's
+		// private def (would copy its body across the boundary) unless the
+		// caller is a substrate:admin (crosses tenants by design).
+		if row.TenantID != "" && row.TenantID != tenantID && !defCallerIsAdmin(ctx) {
+			return errResult(fmt.Sprintf("fork: parent_def_id %q belongs to another tenant, refusing", parentDefID)), nil
+		}
 		parent = row
 	} else {
-		row, err := s.Store.MemoryBackendDefGetActive(ctx, in.Name)
+		row, err := s.Store.MemoryBackendDefGetActive(ctx, tenantID, in.Name)
 		if err == nil {
 			parent = row
 			parentDefID = row.DefID
@@ -218,24 +236,37 @@ func (s *MemoryBackendDef) execFork(ctx context.Context, policy tools.MemoryBack
 			if !errors.As(err, &nf) {
 				return errResult(fmt.Sprintf("fork: %s", err)), nil
 			}
-			// No active pointer → must bootstrap from yaml.
-			static, ok := s.Cfg.MemoryBackends[in.Name]
-			if !ok {
-				return errResult(fmt.Sprintf("fork: no parent — name %q has neither a DB version nor a static cfg.MemoryBackends entry", in.Name)), nil
-			}
-			bootstrap, berr := s.bootstrapStatic(ctx, in.Name, static)
-			if berr != nil {
-				// Concurrent first-fork may have already bootstrapped v1;
-				// re-read active pointer before propagating.
-				if row2, gerr := s.Store.MemoryBackendDefGetActive(ctx, in.Name); gerr == nil {
-					parent = row2
-					parentDefID = row2.DefID
-				} else {
-					return errResult(fmt.Sprintf("fork: bootstrap static: %s", berr)), nil
+			// No own-tenant active pointer. Fall back to the SHARED ("") base
+			// (same precedence lookup.MemoryBackend walks); the fork still
+			// lands under the caller's tenant. Skip when tenantID is already "".
+			if tenantID != "" {
+				if shared, serr := s.Store.MemoryBackendDefGetActive(ctx, "", in.Name); serr == nil {
+					parent = shared
+					parentDefID = shared.DefID
+				} else if !errors.As(serr, &nf) {
+					return errResult(fmt.Sprintf("fork: %s", serr)), nil
 				}
-			} else {
-				parent = bootstrap
-				parentDefID = bootstrap.DefID
+			}
+			// Still no parent → bootstrap from yaml, else refuse.
+			if parentDefID == "" {
+				static, ok := s.Cfg.MemoryBackends[in.Name]
+				if !ok {
+					return errResult(fmt.Sprintf("fork: no parent — name %q has neither a DB version (own tenant or shared \"\") nor a static cfg.MemoryBackends entry", in.Name)), nil
+				}
+				bootstrap, berr := s.bootstrapStatic(ctx, in.Name, static)
+				if berr != nil {
+					// Concurrent first-fork may have already bootstrapped v1;
+					// re-read own-tenant active pointer before propagating.
+					if row2, gerr := s.Store.MemoryBackendDefGetActive(ctx, tenantID, in.Name); gerr == nil {
+						parent = row2
+						parentDefID = row2.DefID
+					} else {
+						return errResult(fmt.Sprintf("fork: bootstrap static: %s", berr)), nil
+					}
+				} else {
+					parent = bootstrap
+					parentDefID = bootstrap.DefID
+				}
 			}
 		}
 	}
@@ -262,7 +293,6 @@ func (s *MemoryBackendDef) execFork(ctx context.Context, policy tools.MemoryBack
 		return errResult(fmt.Sprintf("fork: description (%d bytes) exceeds max %d", len(in.Description), s.MaxDescriptionBytes)), nil
 	}
 
-	ident := tools.RunIdentity(ctx)
 	row := store.MemoryBackendDefRow{
 		DefID:            mintDefID(),
 		Name:             in.Name,
@@ -270,6 +300,7 @@ func (s *MemoryBackendDef) execFork(ctx context.Context, policy tools.MemoryBack
 		Definition:       defJSON,
 		Description:      in.Description,
 		CreatedByAgentID: ident.AgentID,
+		TenantID:         tenantID,
 	}
 	created, err := s.Store.MemoryBackendDefCreate(ctx, row)
 	if err != nil {
@@ -280,7 +311,7 @@ func (s *MemoryBackendDef) execFork(ctx context.Context, policy tools.MemoryBack
 		promote = *in.Promote
 	}
 	if promote {
-		if err := s.Store.MemoryBackendDefSetActive(ctx, in.Name, created.DefID, ident.AgentID); err != nil {
+		if err := s.Store.MemoryBackendDefSetActive(ctx, tenantID, in.Name, created.DefID, ident.AgentID); err != nil {
 			return errResult(fmt.Sprintf("fork: promote: %s", err)), nil
 		}
 	}
@@ -301,6 +332,12 @@ func (s *MemoryBackendDef) execGet(ctx context.Context, policy tools.MemoryBacke
 		}
 		return errResult(fmt.Sprintf("get: %s", err)), nil
 	}
+	// RFC N: def_id is a global handle but a def is owned by exactly one
+	// tenant. Refuse cross-tenant reads with the SAME opaque not-found a
+	// missing def returns — never leak existence/body of another tenant's row.
+	if !defCallerIsAdmin(ctx) && row.TenantID != tools.RunIdentity(ctx).TenantID {
+		return errResult(fmt.Sprintf("get: def_id %q not found", in.DefID)), nil
+	}
 	if err := s.checkScopeForName(policy, row.Name); err != nil {
 		return errResult(err.Error()), nil
 	}
@@ -318,8 +355,15 @@ func (s *MemoryBackendDef) execList(ctx context.Context, policy tools.MemoryBack
 	if err != nil {
 		return errResult(fmt.Sprintf("list: %s", err)), nil
 	}
+	// RFC N: ListByName returns rows across ALL tenants for a name (names
+	// are per-tenant now). Filter to the caller's own tenant so a tenant
+	// lists only its own versions; a substrate:admin sees all.
+	tenantID := tools.RunIdentity(ctx).TenantID
 	out := make([]map[string]any, 0, len(rows))
 	for _, r := range rows {
+		if !defCallerIsAdmin(ctx) && r.TenantID != tenantID {
+			continue
+		}
 		out = append(out, memoryBackendRowResponseMap(r))
 	}
 	return okJSON(map[string]any{"name": in.Name, "versions": out})
@@ -341,6 +385,11 @@ func (s *MemoryBackendDef) execRetire(ctx context.Context, policy tools.MemoryBa
 			return errResult(fmt.Sprintf("retire: def_id %q not found", in.DefID)), nil
 		}
 		return errResult(fmt.Sprintf("retire: %s", err)), nil
+	}
+	// RFC N: refuse cross-tenant retire (global by-def_id mutation). Opaque
+	// not-found — don't leak existence of another tenant's def.
+	if !defCallerIsAdmin(ctx) && row.TenantID != tools.RunIdentity(ctx).TenantID {
+		return errResult(fmt.Sprintf("retire: def_id %q not found", in.DefID)), nil
 	}
 	if err := s.checkScopeForName(policy, row.Name); err != nil {
 		return errResult(err.Error()), nil
@@ -429,12 +478,16 @@ func (s *MemoryBackendDef) bootstrapStatic(ctx context.Context, name string, sta
 		Description:            "bootstrapped from static cfg.MemoryBackends",
 		CreatedByAgentID:       ident.AgentID,
 		BootstrappedFromStatic: true,
+		// RFC N: the bootstrapped lineage root lives in the forking caller's
+		// tenant (static cfg is the shared base; the fork that triggers
+		// bootstrap is per-tenant). "" = shared.
+		TenantID: ident.TenantID,
 	}
 	created, err := s.Store.MemoryBackendDefCreate(ctx, row)
 	if err != nil {
 		return store.MemoryBackendDefRow{}, err
 	}
-	if err := s.Store.MemoryBackendDefSetActive(ctx, name, created.DefID, ident.AgentID); err != nil {
+	if err := s.Store.MemoryBackendDefSetActive(ctx, ident.TenantID, name, created.DefID, ident.AgentID); err != nil {
 		// Bootstrap succeeded but couldn't promote — return the row;
 		// the next fork iteration finds it via the active-pointer retry.
 		return created, fmt.Errorf("promote bootstrap: %w", err)

@@ -10,39 +10,57 @@ import (
 
 // ScheduleStore is the subset of store.Store the schedule resolver
 // uses. Declared here so tests + callers can mock without depending
-// on the full store interface.
+// on the full store interface. RFC N: the substrate lookup carries a
+// tenantID.
 type ScheduleStore interface {
-	ScheduleDefGetActive(ctx context.Context, name string) (store.ScheduleDefRow, error)
+	ScheduleDefGetActive(ctx context.Context, tenantID, name string) (store.ScheduleDefRow, error)
 }
 
 // Schedule resolves a schedule NAME to its effective config.ScheduledRun
-// by walking the lookup chain in precedence order:
+// within the caller's tenant, walking the lookup chain in precedence order
+// (mirrors lookup.Agent):
 //
-//  1. static cfg.ScheduledRuns (yaml-defined, pre-validated at boot)
-//  2. schedule_def_active + schedule_defs (v1.x substrate path)
+//  1. (tenantID != "") tenant-scoped substrate (schedule_def_active
+//     WHERE tenant_id=tenantID)
+//  2. static cfg.ScheduledRuns (yaml-defined, the shared operator base)
+//  3. shared substrate (tenant_id="")
+//
+// For the default tenant "" step 1 is skipped, collapsing to
+// static-cfg → shared-substrate — identical to the pre-RFC-N behavior.
 //
 // Returns (zero, false) when no source has the name. Malformed
-// persistence JSON also returns (zero, false) — defensive against
-// future-field churn or hand-edited rows.
+// persistence JSON also returns (zero, false).
 //
-// Normalization: every dynamic path applies NormalizeScheduleDef
-// before returning, equalizing the runtime shape with what
-// config-load would produce for the same yaml content. Static
-// cfg.ScheduledRuns entries already went through config-load's
-// validation pass; the cfg path returns directly without
-// re-normalizing.
-//
-// Mirrors lookup.Agent for the v1.x RFC E ScheduleDef substrate.
-func Schedule(ctx context.Context, s ScheduleStore, cfg *config.Config, name string) (config.ScheduledRun, bool) {
+// Normalization: every dynamic path applies NormalizeScheduleDef before
+// returning, equalizing the runtime shape with what config-load would
+// produce for the same yaml content. Static cfg.ScheduledRuns entries
+// already went through config-load's validation pass; the cfg path returns
+// directly without re-normalizing.
+func Schedule(ctx context.Context, s ScheduleStore, cfg *config.Config, tenantID, name string) (config.ScheduledRun, bool) {
+	// 1. Tenant-scoped substrate (skipped for the shared "" tenant).
+	if tenantID != "" {
+		if sr, ok := resolveScheduleSubstrate(ctx, s, tenantID, name); ok {
+			return sr, true
+		}
+	}
+	// 2. Static cfg.ScheduledRuns — the shared operator base.
 	if cfg != nil {
 		if sr, ok := cfg.ScheduledRuns[name]; ok {
 			return sr, true
 		}
 	}
+	// 3. Shared substrate (tenant_id="").
+	return resolveScheduleSubstrate(ctx, s, "", name)
+}
+
+// resolveScheduleSubstrate reads the schedule_def_active overlay for one
+// tenant pass, applying NormalizeScheduleDef. Returns (zero, false) on nil
+// store, no active pointer for that tenant, or malformed row JSON.
+func resolveScheduleSubstrate(ctx context.Context, s ScheduleStore, tenantID, name string) (config.ScheduledRun, bool) {
 	if s == nil {
 		return config.ScheduledRun{}, false
 	}
-	activeRow, err := s.ScheduleDefGetActive(ctx, name)
+	activeRow, err := s.ScheduleDefGetActive(ctx, tenantID, name)
 	if err != nil {
 		return config.ScheduledRun{}, false
 	}

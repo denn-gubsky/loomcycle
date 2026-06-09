@@ -608,6 +608,191 @@ func TestMigrate_UpgradeFromLegacyMCPServerDefPlaneTenantUpserts(t *testing.T) {
 	}
 }
 
+// TestMigrate_UpgradeFromLegacyRemainingDefPlanesTenantUpserts — RFC N
+// (completion) regression for the five def families tenanted in migrations
+// 0040–0044 (memory_backend / a2a_agent / a2a_server_card / schedule /
+// webhook). Same in-place-upgrade gap the agent/skill/mcp tests above pin:
+// stand up the LEGACY (pre-tenant) schema for each — *_defs with
+// UNIQUE(name, version), *_def_active with PRIMARY KEY(name), no tenant_id —
+// reopen (migrate ALTERs in tenant_id but CANNOT rewrite the PK/UNIQUE in
+// place), and assert the runtime create/version-bump/promote upserts SUCCEED
+// against the idempotent (tenant_id, name[, version]) indexes addIndexes
+// supplies. Pre-fix (or with a typo'd index name) these FAIL on the FIRST
+// create/promote even single-tenant.
+func TestMigrate_UpgradeFromLegacyRemainingDefPlanesTenantUpserts(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "legacy_remaining.db")
+
+	legacyDefs := func(table string) string {
+		return `CREATE TABLE ` + table + ` (
+			def_id                    TEXT    PRIMARY KEY,
+			name                      TEXT    NOT NULL,
+			version                   INTEGER NOT NULL,
+			parent_def_id             TEXT    REFERENCES ` + table + `(def_id),
+			definition                TEXT    NOT NULL,
+			description               TEXT,
+			created_at                INTEGER NOT NULL,
+			created_by_agent_id       TEXT,
+			created_by_run_id         TEXT,
+			retired                   INTEGER NOT NULL DEFAULT 0,
+			bootstrapped_from_static  INTEGER NOT NULL DEFAULT 0,
+			UNIQUE(name, version)
+		)`
+	}
+	legacyActive := func(table, defsTable string) string {
+		return `CREATE TABLE ` + table + ` (
+			name                  TEXT    PRIMARY KEY,
+			def_id                TEXT    NOT NULL REFERENCES ` + defsTable + `(def_id),
+			promoted_at           INTEGER NOT NULL,
+			promoted_by_agent_id  TEXT
+		)`
+	}
+
+	{
+		s, err := Open(path)
+		if err != nil {
+			t.Fatalf("initial open: %v", err)
+		}
+		ctx := context.Background()
+		stmts := []string{
+			// Drop the tenant ON-CONFLICT-target indexes + the tables, then
+			// recreate each in its pre-RFC-N shape. schedule_run_state FKs
+			// schedule_defs, so drop it first (rows are empty → FK-safe).
+			`DROP INDEX IF EXISTS uniq_memory_backend_def_active_tenant_name`,
+			`DROP INDEX IF EXISTS uniq_memory_backend_defs_tenant_name_version`,
+			`DROP INDEX IF EXISTS uniq_a2a_agent_def_active_tenant_name`,
+			`DROP INDEX IF EXISTS uniq_a2a_agent_defs_tenant_name_version`,
+			`DROP INDEX IF EXISTS uniq_a2a_server_card_def_active_tenant_name`,
+			`DROP INDEX IF EXISTS uniq_a2a_server_card_defs_tenant_name_version`,
+			`DROP INDEX IF EXISTS uniq_schedule_def_active_tenant_name`,
+			`DROP INDEX IF EXISTS uniq_schedule_defs_tenant_name_version`,
+			`DROP INDEX IF EXISTS uniq_webhook_def_active_tenant_name`,
+			`DROP INDEX IF EXISTS uniq_webhook_defs_tenant_name_version`,
+			`DROP TABLE memory_backend_def_active`,
+			`DROP TABLE memory_backend_defs`,
+			`DROP TABLE a2a_agent_def_active`,
+			`DROP TABLE a2a_agent_defs`,
+			`DROP TABLE a2a_server_card_def_active`,
+			`DROP TABLE a2a_server_card_defs`,
+			`DROP TABLE schedule_run_state`,
+			`DROP TABLE schedule_def_active`,
+			`DROP TABLE schedule_defs`,
+			`DROP TABLE webhook_def_active`,
+			`DROP TABLE webhook_defs`,
+			legacyDefs("memory_backend_defs"),
+			legacyActive("memory_backend_def_active", "memory_backend_defs"),
+			legacyDefs("a2a_agent_defs"),
+			legacyActive("a2a_agent_def_active", "a2a_agent_defs"),
+			legacyDefs("a2a_server_card_defs"),
+			legacyActive("a2a_server_card_def_active", "a2a_server_card_defs"),
+			legacyDefs("schedule_defs"),
+			legacyActive("schedule_def_active", "schedule_defs"),
+			// schedule_run_state recreated so the schema is whole post-setup.
+			`CREATE TABLE schedule_run_state (
+				def_id          TEXT    PRIMARY KEY REFERENCES schedule_defs(def_id) ON DELETE CASCADE,
+				last_run_at     INTEGER,
+				last_run_id     TEXT,
+				last_status     TEXT,
+				last_error      TEXT,
+				next_run_at     INTEGER NOT NULL,
+				paused_until    INTEGER
+			)`,
+			legacyDefs("webhook_defs"),
+			legacyActive("webhook_def_active", "webhook_defs"),
+		}
+		for _, q := range stmts {
+			if _, err := s.db.ExecContext(ctx, q); err != nil {
+				t.Fatalf("setup legacy schema: %q: %v", q, err)
+			}
+		}
+		if err := s.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	s, err := Open(path)
+	if err != nil {
+		t.Fatalf("upgrade open: %v", err)
+	}
+	defer s.Close()
+	ctx := context.Background()
+	def := []byte(`{"k":"v"}`)
+
+	// Each family: create v1 + v2 (version-bump UNIQUE(tenant_id,name,version))
+	// + SetActive + re-SetActive (ON CONFLICT(tenant_id,name) DO UPDATE). A
+	// failure here means the family's idempotent upgrade index is missing or
+	// misnamed.
+	t.Run("memory_backend", func(t *testing.T) {
+		if _, err := s.MemoryBackendDefCreate(ctx, store.MemoryBackendDefRow{DefID: "mb1", Name: "up", Definition: def}); err != nil {
+			t.Fatalf("create v1: %v", err)
+		}
+		if _, err := s.MemoryBackendDefCreate(ctx, store.MemoryBackendDefRow{DefID: "mb2", Name: "up", Definition: def}); err != nil {
+			t.Fatalf("create v2: %v", err)
+		}
+		if err := s.MemoryBackendDefSetActive(ctx, "", "up", "mb1", ""); err != nil {
+			t.Fatalf("setactive: %v", err)
+		}
+		if err := s.MemoryBackendDefSetActive(ctx, "", "up", "mb2", ""); err != nil {
+			t.Fatalf("re-setactive: %v", err)
+		}
+	})
+	t.Run("a2a_agent", func(t *testing.T) {
+		if _, err := s.A2AAgentDefCreate(ctx, store.A2AAgentDefRow{DefID: "aa1", Name: "up", Definition: def}); err != nil {
+			t.Fatalf("create v1: %v", err)
+		}
+		if _, err := s.A2AAgentDefCreate(ctx, store.A2AAgentDefRow{DefID: "aa2", Name: "up", Definition: def}); err != nil {
+			t.Fatalf("create v2: %v", err)
+		}
+		if err := s.A2AAgentDefSetActive(ctx, "", "up", "aa1", ""); err != nil {
+			t.Fatalf("setactive: %v", err)
+		}
+		if err := s.A2AAgentDefSetActive(ctx, "", "up", "aa2", ""); err != nil {
+			t.Fatalf("re-setactive: %v", err)
+		}
+	})
+	t.Run("a2a_server_card", func(t *testing.T) {
+		if _, err := s.A2AServerCardDefCreate(ctx, store.A2AServerCardDefRow{DefID: "sc1", Name: "up", Definition: def}); err != nil {
+			t.Fatalf("create v1: %v", err)
+		}
+		if _, err := s.A2AServerCardDefCreate(ctx, store.A2AServerCardDefRow{DefID: "sc2", Name: "up", Definition: def}); err != nil {
+			t.Fatalf("create v2: %v", err)
+		}
+		if err := s.A2AServerCardDefSetActive(ctx, "", "up", "sc1", ""); err != nil {
+			t.Fatalf("setactive: %v", err)
+		}
+		if err := s.A2AServerCardDefSetActive(ctx, "", "up", "sc2", ""); err != nil {
+			t.Fatalf("re-setactive: %v", err)
+		}
+	})
+	t.Run("schedule", func(t *testing.T) {
+		if _, err := s.ScheduleDefCreate(ctx, store.ScheduleDefRow{DefID: "sd1", Name: "up", Definition: def}); err != nil {
+			t.Fatalf("create v1: %v", err)
+		}
+		if _, err := s.ScheduleDefCreate(ctx, store.ScheduleDefRow{DefID: "sd2", Name: "up", Definition: def}); err != nil {
+			t.Fatalf("create v2: %v", err)
+		}
+		if err := s.ScheduleDefSetActive(ctx, "", "up", "sd1", ""); err != nil {
+			t.Fatalf("setactive: %v", err)
+		}
+		if err := s.ScheduleDefSetActive(ctx, "", "up", "sd2", ""); err != nil {
+			t.Fatalf("re-setactive: %v", err)
+		}
+	})
+	t.Run("webhook", func(t *testing.T) {
+		if _, err := s.WebhookDefCreate(ctx, store.WebhookDefRow{DefID: "wh1", Name: "up", Definition: def}); err != nil {
+			t.Fatalf("create v1: %v", err)
+		}
+		if _, err := s.WebhookDefCreate(ctx, store.WebhookDefRow{DefID: "wh2", Name: "up", Definition: def}); err != nil {
+			t.Fatalf("create v2: %v", err)
+		}
+		if err := s.WebhookDefSetActive(ctx, "", "up", "wh1", ""); err != nil {
+			t.Fatalf("setactive: %v", err)
+		}
+		if err := s.WebhookDefSetActive(ctx, "", "up", "wh2", ""); err != nil {
+			t.Fatalf("re-setactive: %v", err)
+		}
+	})
+}
+
 func TestCloseIsIdempotent(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "test.db")
 	s, err := Open(path)

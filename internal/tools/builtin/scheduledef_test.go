@@ -646,7 +646,7 @@ func TestScheduleDefTool_BootstrapStaticSchedules(t *testing.T) {
 
 	// Pre-state: neither static name has an active substrate version.
 	for _, n := range []string{"nightly", "job-search-template"} {
-		if _, err := tool.Store.ScheduleDefGetActive(bg, n); err == nil {
+		if _, err := tool.Store.ScheduleDefGetActive(bg, "", n); err == nil {
 			t.Fatalf("%s unexpectedly has an active version before bootstrap", n)
 		}
 	}
@@ -661,7 +661,7 @@ func TestScheduleDefTool_BootstrapStaticSchedules(t *testing.T) {
 
 	// Both now have an active, bootstrapped-from-static version.
 	for _, name := range []string{"nightly", "job-search-template"} {
-		row, gerr := tool.Store.ScheduleDefGetActive(bg, name)
+		row, gerr := tool.Store.ScheduleDefGetActive(bg, "", name)
 		if gerr != nil {
 			t.Errorf("%s: no active version after bootstrap: %v", name, gerr)
 			continue
@@ -708,7 +708,7 @@ func TestScheduleDefTool_BootstrapStaticSchedules_DoesNotClobberFork(t *testing.
 	if res.IsError {
 		t.Fatalf("fork: %s", res.Text)
 	}
-	before, err := tool.Store.ScheduleDefGetActive(context.Background(), "job-search-template")
+	before, err := tool.Store.ScheduleDefGetActive(context.Background(), "", "job-search-template")
 	if err != nil {
 		t.Fatalf("get active after fork: %v", err)
 	}
@@ -720,7 +720,7 @@ func TestScheduleDefTool_BootstrapStaticSchedules_DoesNotClobberFork(t *testing.
 	if n != 0 {
 		t.Errorf("bootstrap seeded %d, want 0 — an active fork must be preserved", n)
 	}
-	after, _ := tool.Store.ScheduleDefGetActive(context.Background(), "job-search-template")
+	after, _ := tool.Store.ScheduleDefGetActive(context.Background(), "", "job-search-template")
 	if before.DefID != after.DefID {
 		t.Errorf("bootstrap clobbered the active fork: %s → %s", before.DefID, after.DefID)
 	}

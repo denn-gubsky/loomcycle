@@ -101,7 +101,7 @@ func TestWebhookDefTool_CreateStampsTenant(t *testing.T) {
 	if res.IsError {
 		t.Fatalf("create: %s", res.Text)
 	}
-	wd, ok := lookup.Webhook(ctx, tool.Store, tool.Cfg, "adhoc")
+	wd, ok := lookup.Webhook(ctx, tool.Store, tool.Cfg, "default", "adhoc")
 	if !ok {
 		t.Fatalf("lookup.Webhook(adhoc): not found")
 	}
@@ -127,7 +127,7 @@ func TestWebhookDefTool_ForkStampsTenant(t *testing.T) {
 	if res, _ := tool.Execute(tctx, json.RawMessage(`{"op":"fork","name":"adhoc","overlay":{"agent":"intake2"}}`)); res.IsError {
 		t.Fatalf("fork: %s", res.Text)
 	}
-	wd, ok := lookup.Webhook(tctx, tool.Store, tool.Cfg, "adhoc")
+	wd, ok := lookup.Webhook(tctx, tool.Store, tool.Cfg, "default", "adhoc")
 	if !ok {
 		t.Fatalf("lookup.Webhook(adhoc): not found")
 	}

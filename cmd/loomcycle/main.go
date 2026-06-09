@@ -1105,7 +1105,11 @@ func main() {
 	// a registered peer is picked up without a restart.
 	if cfg.Env.A2AServerEnabled {
 		a2aResolve := func(ctx context.Context, name string) (config.A2AAgent, bool) {
-			return lookup.A2AAgent(ctx, storeIface, cfg, name)
+			// RFC N: resolve the peer under the run's tenant (own → static →
+			// shared ""). At boot enumeration the ctx carries no identity, so
+			// this is "" (the shared/operator set); per-call Execute re-runs
+			// it with the live run identity.
+			return lookup.A2AAgent(ctx, storeIface, cfg, tools.RunIdentity(ctx).TenantID, name)
 		}
 		a2aTools := toolsa2a.RegisterTools(context.Background(), cfg, storeIface, a2aResolve, nil, log.Printf)
 		if len(a2aTools) > 0 {
@@ -1272,7 +1276,10 @@ func main() {
 		out := mcp.DynamicToolsForRun(ctx, mcpPool, dynamicMCPRegistry, mcpActiveDefReader{storeIface}, tenant, wantServers, runStartMCPDiscoveryTimeout, log.Printf)
 		if cfg.Env.A2AServerEnabled {
 			resolve := func(ctx context.Context, name string) (config.A2AAgent, bool) {
-				return lookup.A2AAgent(ctx, storeIface, cfg, name)
+				// RFC N: the enumerator's `tenant` is authoritative (server
+				// derived it from the principal/session/parent), so resolve the
+				// per-run peer set under it rather than re-deriving from ctx.
+				return lookup.A2AAgent(ctx, storeIface, cfg, tenant, name)
 			}
 			out = append(out, toolsa2a.RegisterTools(ctx, cfg, storeIface, resolve, nil, log.Printf)...)
 		}

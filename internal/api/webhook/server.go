@@ -128,22 +128,31 @@ type Registrar interface {
 // is NOT wrapped in admin/bearer auth — the receiver authenticates each
 // request against the resolved Def's own secret.
 func (rec *Receiver) Mount(reg Registrar) {
+	// RFC N: two inbound routes. The bare-root route resolves the webhook
+	// under the shared "" tenant (back-compat: existing single-tenant
+	// webhooks, all tenant_id=""); the tenant-prefixed route resolves a
+	// per-tenant webhook. Go's ServeMux distinguishes them by segment count.
 	reg.Handle("POST /v1/_webhooks/{name}", http.HandlerFunc(rec.handle))
+	reg.Handle("POST /v1/_webhooks/{tenant}/{name}", http.HandlerFunc(rec.handle))
 }
 
-// handle is the shared front-half + delivery fork. The webhook NAME comes
-// from the URL path (operator-addressable), never from the body — the body
-// is fully attacker-controlled until the signature verifies.
+// handle is the shared front-half + delivery fork. The webhook NAME (and
+// optional tenant) come from the URL path (operator-addressable), never
+// from the body — the body is fully attacker-controlled until the
+// signature verifies.
 func (rec *Receiver) handle(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	name := r.PathValue("name")
+	// "" for the bare-root route (shared tenant); the named tenant for the
+	// /{tenant}/{name} route. RFC N.
+	tenant := r.PathValue("tenant")
 
 	ctx, span := lcotel.Tracer().Start(ctx, "webhook.receive")
 	defer span.End()
-	span.SetAttributes(attribute.String("webhook.name", name))
+	span.SetAttributes(attribute.String("webhook.name", name), attribute.String("webhook.tenant", tenant))
 
 	// 1. Resolve the active Def. Unknown name → 404.
-	wd, ok := lookup.Webhook(ctx, rec.store, rec.cfg, name)
+	wd, ok := lookup.Webhook(ctx, rec.store, rec.cfg, tenant, name)
 	if !ok {
 		rec.finish(span, name, "", "rejected_unknown", "")
 		writeError(w, http.StatusNotFound, "unknown_webhook", "")

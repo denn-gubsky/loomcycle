@@ -49,7 +49,7 @@ func schedulesAdminFixture(t *testing.T) (*httptest.Server, store.Store, string)
 		Name:       "substrate-sched",
 		Definition: defJSON,
 	})
-	_ = st.ScheduleDefSetActive(ctx, "substrate-sched", defID, "test")
+	_ = st.ScheduleDefSetActive(ctx, "", "substrate-sched", defID, "test")
 	_ = st.ScheduleRunStateSeed(ctx, defID, time.Now().Add(1*time.Hour))
 
 	srv := New(cfg, &stubResolver{}, []tools.Tool{}, concurrency.New(1, 1, time.Second), st)

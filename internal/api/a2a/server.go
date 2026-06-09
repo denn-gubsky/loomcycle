@@ -106,7 +106,12 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 		return nil, nil
 	}
 	cardName := deps.Cfg.Env.A2AServerCardName
-	card, ok := lookup.A2AServerCard(ctx, deps.Store, deps.Cfg, cardName)
+	// RFC N: the boot resolution builds the baseline (operator) executor
+	// from the shared "" card — there is no request tenant at construction.
+	// Per-request tenant cards are resolved in writeCard under the routed
+	// tenant (path/host tenancy). The skill→agent executor stays the
+	// operator's; per-tenant executors are future work.
+	card, ok := lookup.A2AServerCard(ctx, deps.Store, deps.Cfg, "", cardName)
 	if !ok {
 		return nil, fmt.Errorf("a2a server: active server card %q not found (yaml a2a_server_cards or A2AServerCardDef substrate)", cardName)
 	}
@@ -358,7 +363,10 @@ func (s *Server) writeCard(w http.ResponseWriter, r *http.Request, tenant string
 	// Use the request context so a client disconnect / deadline cancels the
 	// substrate card lookup (a DB query on the substrate path) instead of
 	// running it to completion on a detached background context.
-	card, ok := lookup.A2AServerCard(r.Context(), s.deps.Store, s.deps.Cfg, s.cardName)
+	// RFC N: resolve the card under the routed request tenant (path/host
+	// tenancy stamps it) so each tenant's A2A surface serves its own card;
+	// "" (single-tenant / bare-root) collapses to static→shared, unchanged.
+	card, ok := lookup.A2AServerCard(r.Context(), s.deps.Store, s.deps.Cfg, tenant, s.cardName)
 	if !ok {
 		http.Error(w, "a2a server card unavailable", http.StatusServiceUnavailable)
 		return

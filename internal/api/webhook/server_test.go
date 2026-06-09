@@ -332,6 +332,50 @@ func TestReceiver_UnknownWebhook_404(t *testing.T) {
 	}
 }
 
+// TestReceiver_URLTenantRoute_ThreadsTenant pins RFC N's two inbound routes:
+// POST /v1/_webhooks/{tenant}/{name} resolves the webhook under the
+// URL-derived tenant; the bare-root POST /v1/_webhooks/{name} resolves under
+// the shared "" tenant only. Asserts the tenant the receiver threads into the
+// resolver (the store records every queried tenant) rather than the delivery
+// outcome — both routes 404 here since the stub has no def, but the
+// tenant they query differs. Before the fix there was no tenant-prefixed
+// route at all (it would 405/404-route-miss).
+func TestReceiver_URLTenantRoute_ThreadsTenant(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+
+	post := func(path string) []string {
+		st := &fakeWebhookStore{}
+		rec := newTestReceiverWithStore(t, nil, nil, st, nil, nil, now)
+		mux := http.NewServeMux()
+		rec.Mount(mux)
+		req := httptest.NewRequest(http.MethodPost, path, bytesReader([]byte(`{}`)))
+		mux.ServeHTTP(httptest.NewRecorder(), req)
+		st.mu.Lock()
+		defer st.mu.Unlock()
+		return append([]string(nil), st.askedTenants...)
+	}
+
+	// Bare-root route → shared "" tenant only (never the tenant-scoped pass).
+	bare := post("/v1/_webhooks/foo")
+	for _, tn := range bare {
+		if tn != "" {
+			t.Errorf("bare route queried tenant %q; want only the shared \"\" tenant; asked=%v", tn, bare)
+		}
+	}
+
+	// Tenant-prefixed route → queries the URL tenant (then falls back to "").
+	tenanted := post("/v1/_webhooks/jobember/foo")
+	var sawJobember bool
+	for _, tn := range tenanted {
+		if tn == "jobember" {
+			sawJobember = true
+		}
+	}
+	if !sawJobember {
+		t.Errorf("tenant-prefixed route never queried tenant %q; asked=%v", "jobember", tenanted)
+	}
+}
+
 // busRunner publishes a terminal run-state event after OnRegistered so the
 // ?sync path observes completion. It subscribes-side races are avoided
 // because spawnSync subscribes BEFORE invoking RunOnce.
@@ -426,6 +470,11 @@ type fakeWebhookStore struct {
 	// capture the dispatched hooks so tests can assert they fired.
 	channelPublishes []store.ChannelMessage
 	memorySets       []memorySetCall
+
+	// askedTenants records every tenant passed to WebhookDefGetActive (RFC N).
+	// Lets the URL-tenant route test assert the receiver threaded the
+	// URL-derived tenant into the resolver.
+	askedTenants []string
 }
 
 type memorySetCall struct {
@@ -435,7 +484,10 @@ type memorySetCall struct {
 	value   json.RawMessage
 }
 
-func (f *fakeWebhookStore) WebhookDefGetActive(_ context.Context, name string) (store.WebhookDefRow, error) {
+func (f *fakeWebhookStore) WebhookDefGetActive(_ context.Context, tenantID, name string) (store.WebhookDefRow, error) {
+	f.mu.Lock()
+	f.askedTenants = append(f.askedTenants, tenantID)
+	f.mu.Unlock()
 	return store.WebhookDefRow{}, &store.ErrNotFound{Kind: "webhook_def", ID: name}
 }
 
@@ -613,7 +665,7 @@ type raceStore struct {
 	calls  int
 }
 
-func (s *raceStore) WebhookDefGetActive(_ context.Context, name string) (store.WebhookDefRow, error) {
+func (s *raceStore) WebhookDefGetActive(_ context.Context, _, name string) (store.WebhookDefRow, error) {
 	return store.WebhookDefRow{}, &store.ErrNotFound{Kind: "webhook_def", ID: name}
 }
 

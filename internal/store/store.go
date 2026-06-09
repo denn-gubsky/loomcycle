@@ -1197,8 +1197,13 @@ type Store interface {
 	ScheduleDefListByName(ctx context.Context, name string) ([]ScheduleDefRow, error)
 	ScheduleDefListChildren(ctx context.Context, parentDefID string) ([]ScheduleDefRow, error)
 	ScheduleDefListNames(ctx context.Context) ([]ScheduleDefNameSummary, error)
-	ScheduleDefSetActive(ctx context.Context, name, defID, promotedByAgentID string) error
-	ScheduleDefGetActive(ctx context.Context, name string) (ScheduleDefRow, error)
+	// ScheduleDefSetActive UPSERTs the schedule_def_active pointer for
+	// (tenantID, name). RFC N: per-tenant active pointer; a def can only be
+	// promoted within its own tenant. tenantID "" = shared/operator/legacy.
+	ScheduleDefSetActive(ctx context.Context, tenantID, name, defID, promotedByAgentID string) error
+	// ScheduleDefGetActive returns the active row for (tenantID, name).
+	// *ErrNotFound when no pointer exists. RFC N: tenantID "" = shared.
+	ScheduleDefGetActive(ctx context.Context, tenantID, name string) (ScheduleDefRow, error)
 	ScheduleDefSetRetired(ctx context.Context, defID string, retired bool) error
 
 	// ---- v1.x RFC E ScheduleDef runtime (sweeper-side) ----
@@ -1253,8 +1258,15 @@ type Store interface {
 	A2AServerCardDefListByName(ctx context.Context, name string) ([]A2AServerCardDefRow, error)
 	A2AServerCardDefListChildren(ctx context.Context, parentDefID string) ([]A2AServerCardDefRow, error)
 	A2AServerCardDefListNames(ctx context.Context) ([]A2AServerCardDefNameSummary, error)
-	A2AServerCardDefSetActive(ctx context.Context, name, defID, promotedByAgentID string) error
-	A2AServerCardDefGetActive(ctx context.Context, name string) (A2AServerCardDefRow, error)
+	// A2AServerCardDefSetActive UPSERTs the a2a_server_card_def_active
+	// pointer for (tenantID, name). RFC N: per-tenant active pointer; a def
+	// can only be promoted within its own tenant. tenantID "" = shared/
+	// operator/legacy (the tenant the operator-configured server surface
+	// resolves under at boot).
+	A2AServerCardDefSetActive(ctx context.Context, tenantID, name, defID, promotedByAgentID string) error
+	// A2AServerCardDefGetActive returns the active row for (tenantID, name).
+	// *ErrNotFound when no pointer exists. RFC N: tenantID "" = shared.
+	A2AServerCardDefGetActive(ctx context.Context, tenantID, name string) (A2AServerCardDefRow, error)
 	A2AServerCardDefSetRetired(ctx context.Context, defID string, retired bool) error
 
 	A2AAgentDefCreate(ctx context.Context, row A2AAgentDefRow) (A2AAgentDefRow, error)
@@ -1263,8 +1275,13 @@ type Store interface {
 	A2AAgentDefListByName(ctx context.Context, name string) ([]A2AAgentDefRow, error)
 	A2AAgentDefListChildren(ctx context.Context, parentDefID string) ([]A2AAgentDefRow, error)
 	A2AAgentDefListNames(ctx context.Context) ([]A2AAgentDefNameSummary, error)
-	A2AAgentDefSetActive(ctx context.Context, name, defID, promotedByAgentID string) error
-	A2AAgentDefGetActive(ctx context.Context, name string) (A2AAgentDefRow, error)
+	// A2AAgentDefSetActive UPSERTs the a2a_agent_def_active pointer for
+	// (tenantID, name). RFC N: per-tenant active pointer; a def can only be
+	// promoted within its own tenant. tenantID "" = shared/operator/legacy.
+	A2AAgentDefSetActive(ctx context.Context, tenantID, name, defID, promotedByAgentID string) error
+	// A2AAgentDefGetActive returns the active row for (tenantID, name).
+	// *ErrNotFound when no pointer exists. RFC N: tenantID "" = shared.
+	A2AAgentDefGetActive(ctx context.Context, tenantID, name string) (A2AAgentDefRow, error)
 	A2AAgentDefSetRetired(ctx context.Context, defID string, retired bool) error
 
 	// WebhookDef is the v1.x RFC H Input Webhooks substrate — same
@@ -1279,8 +1296,15 @@ type Store interface {
 	WebhookDefListByName(ctx context.Context, name string) ([]WebhookDefRow, error)
 	WebhookDefListChildren(ctx context.Context, parentDefID string) ([]WebhookDefRow, error)
 	WebhookDefListNames(ctx context.Context) ([]WebhookDefNameSummary, error)
-	WebhookDefSetActive(ctx context.Context, name, defID, promotedByAgentID string) error
-	WebhookDefGetActive(ctx context.Context, name string) (WebhookDefRow, error)
+	// WebhookDefSetActive UPSERTs the webhook_def_active pointer for
+	// (tenantID, name). RFC N: per-tenant active pointer; a def can only be
+	// promoted within its own tenant. tenantID "" = shared/operator/legacy
+	// (reachable via the bare-root inbound route POST /v1/_webhooks/{name};
+	// per-tenant webhooks ride POST /v1/_webhooks/{tenant}/{name}).
+	WebhookDefSetActive(ctx context.Context, tenantID, name, defID, promotedByAgentID string) error
+	// WebhookDefGetActive returns the active row for (tenantID, name).
+	// *ErrNotFound when no pointer exists. RFC N: tenantID "" = shared.
+	WebhookDefGetActive(ctx context.Context, tenantID, name string) (WebhookDefRow, error)
 	WebhookDefSetRetired(ctx context.Context, defID string, retired bool) error
 
 	// MemoryBackendDef is the v1.x RFC I MR-3a substrate — a faithful
@@ -1296,8 +1320,16 @@ type Store interface {
 	MemoryBackendDefListByName(ctx context.Context, name string) ([]MemoryBackendDefRow, error)
 	MemoryBackendDefListChildren(ctx context.Context, parentDefID string) ([]MemoryBackendDefRow, error)
 	MemoryBackendDefListNames(ctx context.Context) ([]MemoryBackendDefNameSummary, error)
-	MemoryBackendDefSetActive(ctx context.Context, name, defID, promotedByAgentID string) error
-	MemoryBackendDefGetActive(ctx context.Context, name string) (MemoryBackendDefRow, error)
+	// MemoryBackendDefSetActive UPSERTs the memory_backend_def_active
+	// pointer for (tenantID, name). RFC N: the active pointer is per-tenant,
+	// and a def can only be promoted within its own tenant — implementations
+	// refuse if the def's tenant_id ≠ tenantID. tenantID "" = the shared/
+	// operator/legacy tenant.
+	MemoryBackendDefSetActive(ctx context.Context, tenantID, name, defID, promotedByAgentID string) error
+	// MemoryBackendDefGetActive returns the active row for (tenantID, name).
+	// Returns *ErrNotFound when no active pointer exists. RFC N: tenantID
+	// "" = the shared/operator/legacy tenant.
+	MemoryBackendDefGetActive(ctx context.Context, tenantID, name string) (MemoryBackendDefRow, error)
 	MemoryBackendDefSetRetired(ctx context.Context, defID string, retired bool) error
 
 	// ---- OperatorTokenDef (RFC L OSS multi-tenant authorization) ----
@@ -2088,6 +2120,12 @@ type ScheduleDefRow struct {
 	CreatedByRunID         string          `json:"created_by_run_id,omitempty"`
 	Retired                bool            `json:"retired"`
 	BootstrappedFromStatic bool            `json:"bootstrapped_from_static"`
+	// TenantID is the RFC N tenant-isolation axis. "" = the shared/
+	// operator/legacy tenant. UNIQUE(tenant_id, name, version). This is the
+	// def's OWNING tenant — distinct from the run-execution tenant carried
+	// inside the schedule's `definition` JSON (the tenant the fired run
+	// executes as). Set from the authoritative principal at the write site.
+	TenantID string `json:"tenant_id,omitempty"`
 }
 
 // ScheduleDefNameSummary mirrors the AgentDef equivalent.
@@ -2097,6 +2135,9 @@ type ScheduleDefNameSummary struct {
 	ActiveDefID   string    `json:"active_def_id,omitempty"`
 	LatestVersion int       `json:"latest_version"`
 	LastUpdated   time.Time `json:"last_updated"`
+	// TenantID is the RFC N owning tenant. "" = the shared/operator/legacy
+	// tenant. A name owned by N tenants yields N summary rows.
+	TenantID string `json:"tenant_id,omitempty"`
 }
 
 // ScheduleDefActiveEntry mirrors the AgentDef equivalent.
@@ -2105,6 +2146,9 @@ type ScheduleDefActiveEntry struct {
 	DefID             string    `json:"def_id"`
 	PromotedAt        time.Time `json:"promoted_at"`
 	PromotedByAgentID string    `json:"promoted_by_agent_id,omitempty"`
+	// TenantID is the RFC N tenant-isolation axis (part of the
+	// schedule_def_active PK). "" = the shared/operator/legacy tenant.
+	TenantID string `json:"tenant_id,omitempty"`
 }
 
 // A2AServerCardDefRow mirrors ScheduleDefRow — same identity +
@@ -2123,6 +2167,10 @@ type A2AServerCardDefRow struct {
 	CreatedByRunID         string          `json:"created_by_run_id,omitempty"`
 	Retired                bool            `json:"retired"`
 	BootstrappedFromStatic bool            `json:"bootstrapped_from_static"`
+	// TenantID is the RFC N tenant-isolation axis. "" = the shared/
+	// operator/legacy tenant. UNIQUE(tenant_id, name, version). Set from the
+	// authoritative principal at the write site; never from the wire.
+	TenantID string `json:"tenant_id,omitempty"`
 }
 
 // A2AServerCardDefNameSummary mirrors ScheduleDefNameSummary.
@@ -2132,6 +2180,9 @@ type A2AServerCardDefNameSummary struct {
 	ActiveDefID   string    `json:"active_def_id,omitempty"`
 	LatestVersion int       `json:"latest_version"`
 	LastUpdated   time.Time `json:"last_updated"`
+	// TenantID is the RFC N owning tenant. "" = the shared/operator/legacy
+	// tenant. A name owned by N tenants yields N summary rows.
+	TenantID string `json:"tenant_id,omitempty"`
 }
 
 // A2AServerCardDefActiveEntry mirrors ScheduleDefActiveEntry.
@@ -2140,6 +2191,9 @@ type A2AServerCardDefActiveEntry struct {
 	DefID             string    `json:"def_id"`
 	PromotedAt        time.Time `json:"promoted_at"`
 	PromotedByAgentID string    `json:"promoted_by_agent_id,omitempty"`
+	// TenantID is the RFC N tenant-isolation axis (part of the
+	// a2a_server_card_def_active PK). "" = the shared/operator/legacy tenant.
+	TenantID string `json:"tenant_id,omitempty"`
 }
 
 // A2AAgentDefRow mirrors ScheduleDefRow — same identity + lineage +
@@ -2159,6 +2213,10 @@ type A2AAgentDefRow struct {
 	CreatedByRunID         string          `json:"created_by_run_id,omitempty"`
 	Retired                bool            `json:"retired"`
 	BootstrappedFromStatic bool            `json:"bootstrapped_from_static"`
+	// TenantID is the RFC N tenant-isolation axis. "" = the shared/
+	// operator/legacy tenant. UNIQUE(tenant_id, name, version). Set from
+	// the authoritative principal at the write site; never from the wire.
+	TenantID string `json:"tenant_id,omitempty"`
 }
 
 // A2AAgentDefNameSummary mirrors ScheduleDefNameSummary.
@@ -2168,6 +2226,9 @@ type A2AAgentDefNameSummary struct {
 	ActiveDefID   string    `json:"active_def_id,omitempty"`
 	LatestVersion int       `json:"latest_version"`
 	LastUpdated   time.Time `json:"last_updated"`
+	// TenantID is the RFC N owning tenant. "" = the shared/operator/legacy
+	// tenant. A name owned by N tenants yields N summary rows.
+	TenantID string `json:"tenant_id,omitempty"`
 }
 
 // A2AAgentDefActiveEntry mirrors ScheduleDefActiveEntry.
@@ -2176,6 +2237,9 @@ type A2AAgentDefActiveEntry struct {
 	DefID             string    `json:"def_id"`
 	PromotedAt        time.Time `json:"promoted_at"`
 	PromotedByAgentID string    `json:"promoted_by_agent_id,omitempty"`
+	// TenantID is the RFC N tenant-isolation axis (part of the
+	// a2a_agent_def_active PK). "" = the shared/operator/legacy tenant.
+	TenantID string `json:"tenant_id,omitempty"`
 }
 
 // WebhookDefRow mirrors A2AAgentDefRow — same identity + lineage +
@@ -2195,6 +2259,10 @@ type WebhookDefRow struct {
 	CreatedByRunID         string          `json:"created_by_run_id,omitempty"`
 	Retired                bool            `json:"retired"`
 	BootstrappedFromStatic bool            `json:"bootstrapped_from_static"`
+	// TenantID is the RFC N tenant-isolation axis. "" = the shared/
+	// operator/legacy tenant. UNIQUE(tenant_id, name, version). Set from the
+	// authoritative principal at the write site; never from the wire.
+	TenantID string `json:"tenant_id,omitempty"`
 }
 
 // WebhookDefNameSummary mirrors A2AAgentDefNameSummary.
@@ -2204,6 +2272,9 @@ type WebhookDefNameSummary struct {
 	ActiveDefID   string    `json:"active_def_id,omitempty"`
 	LatestVersion int       `json:"latest_version"`
 	LastUpdated   time.Time `json:"last_updated"`
+	// TenantID is the RFC N owning tenant. "" = the shared/operator/legacy
+	// tenant. A name owned by N tenants yields N summary rows.
+	TenantID string `json:"tenant_id,omitempty"`
 }
 
 // WebhookDefActiveEntry mirrors A2AAgentDefActiveEntry.
@@ -2212,6 +2283,9 @@ type WebhookDefActiveEntry struct {
 	DefID             string    `json:"def_id"`
 	PromotedAt        time.Time `json:"promoted_at"`
 	PromotedByAgentID string    `json:"promoted_by_agent_id,omitempty"`
+	// TenantID is the RFC N tenant-isolation axis (part of the
+	// webhook_def_active PK). "" = the shared/operator/legacy tenant.
+	TenantID string `json:"tenant_id,omitempty"`
 }
 
 // MemoryBackendDefRow mirrors WebhookDefRow — same identity + lineage +
@@ -2231,6 +2305,13 @@ type MemoryBackendDefRow struct {
 	CreatedByRunID         string          `json:"created_by_run_id,omitempty"`
 	Retired                bool            `json:"retired"`
 	BootstrappedFromStatic bool            `json:"bootstrapped_from_static"`
+	// TenantID is the RFC N tenant-isolation axis. "" = the shared/
+	// operator/legacy tenant. The UNIQUE constraint is (tenant_id, name,
+	// version), so two tenants own the same name+version independently. Set
+	// from the authoritative principal at the write site; never from the
+	// wire. (MemoryBackendDef has no content hash, so there is no
+	// content-hash exclusion concern — unlike AgentDefRow.)
+	TenantID string `json:"tenant_id,omitempty"`
 }
 
 // MemoryBackendDefNameSummary mirrors WebhookDefNameSummary.
@@ -2240,6 +2321,9 @@ type MemoryBackendDefNameSummary struct {
 	ActiveDefID   string    `json:"active_def_id,omitempty"`
 	LatestVersion int       `json:"latest_version"`
 	LastUpdated   time.Time `json:"last_updated"`
+	// TenantID is the RFC N owning tenant. A name owned by N tenants yields
+	// N summary rows (one per tenant). "" = the shared/operator/legacy tenant.
+	TenantID string `json:"tenant_id,omitempty"`
 }
 
 // OperatorTokenDefRow is one auth-token row (RFC L). The token plaintext
@@ -2278,6 +2362,9 @@ type MemoryBackendDefActiveEntry struct {
 	DefID             string    `json:"def_id"`
 	PromotedAt        time.Time `json:"promoted_at"`
 	PromotedByAgentID string    `json:"promoted_by_agent_id,omitempty"`
+	// TenantID is the RFC N tenant-isolation axis (part of the
+	// memory_backend_def_active PK). "" = the shared/operator/legacy tenant.
+	TenantID string `json:"tenant_id,omitempty"`
 }
 
 // ScheduleRunStateRow is one row in schedule_run_state — the

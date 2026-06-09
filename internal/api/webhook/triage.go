@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/lookup"
 )
 
@@ -91,7 +92,14 @@ type runInputPreview struct {
 func (rec *Receiver) handleTest(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 
-	wd, ok := lookup.Webhook(r.Context(), rec.store, rec.cfg, name)
+	// RFC N: this is a bearer-authed admin endpoint — resolve the webhook
+	// under the caller's own tenant so the dry-run validates the right def
+	// (a tenant testing its own webhook). "" for the legacy/default tenant.
+	tenant := ""
+	if p, ok := auth.PrincipalFromContext(r.Context()); ok {
+		tenant = p.TenantID
+	}
+	wd, ok := lookup.Webhook(r.Context(), rec.store, rec.cfg, tenant, name)
 	if !ok || !wd.Enabled {
 		// Same 404 posture as the receiver: a disabled/unknown webhook is not
 		// addressable for a dry-run either.

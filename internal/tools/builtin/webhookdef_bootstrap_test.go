@@ -17,7 +17,7 @@ func TestWebhookDef_BootstrapStaticWebhooks(t *testing.T) {
 	if n != 1 {
 		t.Fatalf("seeded %d, want 1", n)
 	}
-	row, err := tool.Store.WebhookDefGetActive(ctx, "gh-push")
+	row, err := tool.Store.WebhookDefGetActive(ctx, "", "gh-push")
 	if err != nil {
 		t.Fatalf("get active after bootstrap: %v", err)
 	}

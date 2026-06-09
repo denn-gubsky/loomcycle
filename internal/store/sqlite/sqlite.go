@@ -355,16 +355,23 @@ func (s *Store) migrate(ctx context.Context) error {
 			created_by_run_id         TEXT,
 			retired                   INTEGER NOT NULL DEFAULT 0,
 			bootstrapped_from_static  INTEGER NOT NULL DEFAULT 0,
-			UNIQUE(name, version)
+			tenant_id                 TEXT    NOT NULL DEFAULT '',
+			UNIQUE(tenant_id, name, version)
 		)`,
 		`CREATE INDEX IF NOT EXISTS schedule_defs_by_name   ON schedule_defs(name, version DESC)`,
 		`CREATE INDEX IF NOT EXISTS schedule_defs_by_parent ON schedule_defs(parent_def_id) WHERE parent_def_id IS NOT NULL`,
 		`CREATE INDEX IF NOT EXISTS schedule_defs_by_run    ON schedule_defs(created_by_run_id) WHERE created_by_run_id IS NOT NULL`,
+		// RFC N: tenant-scoped active pointer. PRIMARY KEY(tenant_id, name)
+		// on a FRESH DB; an UPGRADED DB keeps PK(name) and gets the
+		// (tenant_id, name) UNIQUE INDEX in addIndexes as the ON CONFLICT
+		// target. See the agent_def_active note for the SQLite upgrade caveat.
 		`CREATE TABLE IF NOT EXISTS schedule_def_active (
-			name                  TEXT    PRIMARY KEY,
+			name                  TEXT    NOT NULL,
 			def_id                TEXT    NOT NULL REFERENCES schedule_defs(def_id),
 			promoted_at           INTEGER NOT NULL,
-			promoted_by_agent_id  TEXT
+			promoted_by_agent_id  TEXT,
+			tenant_id             TEXT    NOT NULL DEFAULT '',
+			PRIMARY KEY(tenant_id, name)
 		)`,
 		// schedule_run_state — sweeper's runtime view of last/next
 		// per def. One row per active schedule; FK + ON DELETE CASCADE
@@ -398,16 +405,23 @@ func (s *Store) migrate(ctx context.Context) error {
 			created_by_run_id         TEXT,
 			retired                   INTEGER NOT NULL DEFAULT 0,
 			bootstrapped_from_static  INTEGER NOT NULL DEFAULT 0,
-			UNIQUE(name, version)
+			tenant_id                 TEXT    NOT NULL DEFAULT '',
+			UNIQUE(tenant_id, name, version)
 		)`,
 		`CREATE INDEX IF NOT EXISTS a2a_server_card_defs_by_name   ON a2a_server_card_defs(name, version DESC)`,
 		`CREATE INDEX IF NOT EXISTS a2a_server_card_defs_by_parent ON a2a_server_card_defs(parent_def_id) WHERE parent_def_id IS NOT NULL`,
 		`CREATE INDEX IF NOT EXISTS a2a_server_card_defs_by_run    ON a2a_server_card_defs(created_by_run_id) WHERE created_by_run_id IS NOT NULL`,
+		// RFC N: tenant-scoped active pointer. PRIMARY KEY(tenant_id, name)
+		// on a FRESH DB; an UPGRADED DB keeps PK(name) and gets the
+		// (tenant_id, name) UNIQUE INDEX in addIndexes as the ON CONFLICT
+		// target. See the agent_def_active note for the SQLite upgrade caveat.
 		`CREATE TABLE IF NOT EXISTS a2a_server_card_def_active (
-			name                  TEXT    PRIMARY KEY,
+			name                  TEXT    NOT NULL,
 			def_id                TEXT    NOT NULL REFERENCES a2a_server_card_defs(def_id),
 			promoted_at           INTEGER NOT NULL,
-			promoted_by_agent_id  TEXT
+			promoted_by_agent_id  TEXT,
+			tenant_id             TEXT    NOT NULL DEFAULT '',
+			PRIMARY KEY(tenant_id, name)
 		)`,
 		`CREATE TABLE IF NOT EXISTS a2a_agent_defs (
 			def_id                    TEXT    PRIMARY KEY,
@@ -421,16 +435,23 @@ func (s *Store) migrate(ctx context.Context) error {
 			created_by_run_id         TEXT,
 			retired                   INTEGER NOT NULL DEFAULT 0,
 			bootstrapped_from_static  INTEGER NOT NULL DEFAULT 0,
-			UNIQUE(name, version)
+			tenant_id                 TEXT    NOT NULL DEFAULT '',
+			UNIQUE(tenant_id, name, version)
 		)`,
 		`CREATE INDEX IF NOT EXISTS a2a_agent_defs_by_name   ON a2a_agent_defs(name, version DESC)`,
 		`CREATE INDEX IF NOT EXISTS a2a_agent_defs_by_parent ON a2a_agent_defs(parent_def_id) WHERE parent_def_id IS NOT NULL`,
 		`CREATE INDEX IF NOT EXISTS a2a_agent_defs_by_run    ON a2a_agent_defs(created_by_run_id) WHERE created_by_run_id IS NOT NULL`,
+		// RFC N: tenant-scoped active pointer. PRIMARY KEY(tenant_id, name)
+		// on a FRESH DB; an UPGRADED DB keeps PK(name) and gets the
+		// (tenant_id, name) UNIQUE INDEX in addIndexes as the ON CONFLICT
+		// target. See the agent_def_active note for the SQLite upgrade caveat.
 		`CREATE TABLE IF NOT EXISTS a2a_agent_def_active (
-			name                  TEXT    PRIMARY KEY,
+			name                  TEXT    NOT NULL,
 			def_id                TEXT    NOT NULL REFERENCES a2a_agent_defs(def_id),
 			promoted_at           INTEGER NOT NULL,
-			promoted_by_agent_id  TEXT
+			promoted_by_agent_id  TEXT,
+			tenant_id             TEXT    NOT NULL DEFAULT '',
+			PRIMARY KEY(tenant_id, name)
 		)`,
 		// v1.x RFC H Input Webhooks substrate — a single content-addressed
 		// Def mirroring a2a_agent_defs exactly (identity + lineage +
@@ -451,16 +472,23 @@ func (s *Store) migrate(ctx context.Context) error {
 			created_by_run_id         TEXT,
 			retired                   INTEGER NOT NULL DEFAULT 0,
 			bootstrapped_from_static  INTEGER NOT NULL DEFAULT 0,
-			UNIQUE(name, version)
+			tenant_id                 TEXT    NOT NULL DEFAULT '',
+			UNIQUE(tenant_id, name, version)
 		)`,
 		`CREATE INDEX IF NOT EXISTS webhook_defs_by_name   ON webhook_defs(name, version DESC)`,
 		`CREATE INDEX IF NOT EXISTS webhook_defs_by_parent ON webhook_defs(parent_def_id) WHERE parent_def_id IS NOT NULL`,
 		`CREATE INDEX IF NOT EXISTS webhook_defs_by_run    ON webhook_defs(created_by_run_id) WHERE created_by_run_id IS NOT NULL`,
+		// RFC N: tenant-scoped active pointer. PRIMARY KEY(tenant_id, name)
+		// on a FRESH DB; an UPGRADED DB keeps PK(name) and gets the
+		// (tenant_id, name) UNIQUE INDEX in addIndexes as the ON CONFLICT
+		// target. See the agent_def_active note for the SQLite upgrade caveat.
 		`CREATE TABLE IF NOT EXISTS webhook_def_active (
-			name                  TEXT    PRIMARY KEY,
+			name                  TEXT    NOT NULL,
 			def_id                TEXT    NOT NULL REFERENCES webhook_defs(def_id),
 			promoted_at           INTEGER NOT NULL,
-			promoted_by_agent_id  TEXT
+			promoted_by_agent_id  TEXT,
+			tenant_id             TEXT    NOT NULL DEFAULT '',
+			PRIMARY KEY(tenant_id, name)
 		)`,
 		// RFC I MR-3a MemoryBackendDef substrate — a faithful mirror of
 		// webhook_defs (identity + lineage + promotion), minus the
@@ -481,16 +509,24 @@ func (s *Store) migrate(ctx context.Context) error {
 			created_by_run_id         TEXT,
 			retired                   INTEGER NOT NULL DEFAULT 0,
 			bootstrapped_from_static  INTEGER NOT NULL DEFAULT 0,
-			UNIQUE(name, version)
+			tenant_id                 TEXT    NOT NULL DEFAULT '',
+			UNIQUE(tenant_id, name, version)
 		)`,
 		`CREATE INDEX IF NOT EXISTS memory_backend_defs_by_name   ON memory_backend_defs(name, version DESC)`,
 		`CREATE INDEX IF NOT EXISTS memory_backend_defs_by_parent ON memory_backend_defs(parent_def_id) WHERE parent_def_id IS NOT NULL`,
 		`CREATE INDEX IF NOT EXISTS memory_backend_defs_by_run    ON memory_backend_defs(created_by_run_id) WHERE created_by_run_id IS NOT NULL`,
+		// RFC N: tenant-scoped active pointer. PRIMARY KEY(tenant_id, name)
+		// on a FRESH DB; an UPGRADED DB keeps PK(name) (SQLite can't rewrite a
+		// PK in place) and gets the (tenant_id, name) UNIQUE INDEX in
+		// addIndexes below as the ON CONFLICT target. See the agent_def_active
+		// note above for the full SQLite upgrade caveat.
 		`CREATE TABLE IF NOT EXISTS memory_backend_def_active (
-			name                  TEXT    PRIMARY KEY,
+			name                  TEXT    NOT NULL,
 			def_id                TEXT    NOT NULL REFERENCES memory_backend_defs(def_id),
 			promoted_at           INTEGER NOT NULL,
-			promoted_by_agent_id  TEXT
+			promoted_by_agent_id  TEXT,
+			tenant_id             TEXT    NOT NULL DEFAULT '',
+			PRIMARY KEY(tenant_id, name)
 		)`,
 		// RFC L OSS multi-tenant authorization — bearer tokens bound to
 		// an authoritative principal (tenant_id + subject + allowed_scopes).
@@ -725,6 +761,22 @@ func (s *Store) migrate(ctx context.Context) error {
 		// backfills existing rows to the shared tenant.
 		`ALTER TABLE mcp_server_defs ADD COLUMN tenant_id TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE mcp_server_def_active ADD COLUMN tenant_id TEXT NOT NULL DEFAULT ''`,
+		// RFC N (completion) — tenant-scope the remaining definition planes:
+		// memory backend / schedule / A2A (server card + agent) / webhook
+		// (mirror of the agent + skill + MCP ALTERs above). Same SQLite
+		// upgrade caveat: the *_active PK stays (name) on the upgraded table;
+		// functionally identical for single-tenant (tenant_id=''). DEFAULT ''
+		// backfills existing rows to the shared tenant.
+		`ALTER TABLE memory_backend_defs ADD COLUMN tenant_id TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE memory_backend_def_active ADD COLUMN tenant_id TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE a2a_agent_defs ADD COLUMN tenant_id TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE a2a_agent_def_active ADD COLUMN tenant_id TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE schedule_defs ADD COLUMN tenant_id TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE schedule_def_active ADD COLUMN tenant_id TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE a2a_server_card_defs ADD COLUMN tenant_id TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE a2a_server_card_def_active ADD COLUMN tenant_id TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE webhook_defs ADD COLUMN tenant_id TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE webhook_def_active ADD COLUMN tenant_id TEXT NOT NULL DEFAULT ''`,
 	}
 	for _, q := range addColumns {
 		if _, err := s.db.ExecContext(ctx, q); err != nil {
@@ -851,6 +903,27 @@ func (s *Store) migrate(ctx context.Context) error {
 		// promote/register fails even single-tenant. No dynamic_mcp table.
 		`CREATE UNIQUE INDEX IF NOT EXISTS uniq_mcp_server_def_active_tenant_name   ON mcp_server_def_active(tenant_id, name)`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS uniq_mcp_server_defs_tenant_name_version ON mcp_server_defs(tenant_id, name, version)`,
+		// MemoryBackend plane (RFC N completion) — same in-place-upgrade gap.
+		// MemoryBackendDefSetActive does ON CONFLICT(tenant_id, name) on
+		// memory_backend_def_active and MemoryBackendDefCreate's version-bump
+		// inserts against UNIQUE(tenant_id, name, version) on
+		// memory_backend_defs; on an upgraded DB neither composite index
+		// exists, so the FIRST promote/register fails even single-tenant. No
+		// dynamic_* table to cover.
+		`CREATE UNIQUE INDEX IF NOT EXISTS uniq_memory_backend_def_active_tenant_name   ON memory_backend_def_active(tenant_id, name)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS uniq_memory_backend_defs_tenant_name_version ON memory_backend_defs(tenant_id, name, version)`,
+		// A2A agent plane (RFC N completion) — same in-place-upgrade gap.
+		`CREATE UNIQUE INDEX IF NOT EXISTS uniq_a2a_agent_def_active_tenant_name   ON a2a_agent_def_active(tenant_id, name)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS uniq_a2a_agent_defs_tenant_name_version ON a2a_agent_defs(tenant_id, name, version)`,
+		// Schedule plane (RFC N completion) — same in-place-upgrade gap.
+		`CREATE UNIQUE INDEX IF NOT EXISTS uniq_schedule_def_active_tenant_name   ON schedule_def_active(tenant_id, name)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS uniq_schedule_defs_tenant_name_version ON schedule_defs(tenant_id, name, version)`,
+		// A2A server card plane (RFC N completion) — same in-place-upgrade gap.
+		`CREATE UNIQUE INDEX IF NOT EXISTS uniq_a2a_server_card_def_active_tenant_name   ON a2a_server_card_def_active(tenant_id, name)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS uniq_a2a_server_card_defs_tenant_name_version ON a2a_server_card_defs(tenant_id, name, version)`,
+		// Webhook plane (RFC N completion) — same in-place-upgrade gap.
+		`CREATE UNIQUE INDEX IF NOT EXISTS uniq_webhook_def_active_tenant_name   ON webhook_def_active(tenant_id, name)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS uniq_webhook_defs_tenant_name_version ON webhook_defs(tenant_id, name, version)`,
 	}
 	for _, q := range addIndexes {
 		// Note the asymmetry vs addColumns above: indexes use
@@ -4329,7 +4402,7 @@ func (s *Store) ScheduleDefCreate(ctx context.Context, row store.ScheduleDefRow)
 
 	var maxVer sql.NullInt64
 	if err := conn.QueryRowContext(ctx,
-		`SELECT MAX(version) FROM schedule_defs WHERE name = ?`, row.Name,
+		`SELECT MAX(version) FROM schedule_defs WHERE tenant_id = ? AND name = ?`, row.TenantID, row.Name,
 	).Scan(&maxVer); err != nil {
 		return store.ScheduleDefRow{}, err
 	}
@@ -4343,13 +4416,13 @@ func (s *Store) ScheduleDefCreate(ctx context.Context, row store.ScheduleDefRow)
 		`INSERT INTO schedule_defs (
 			def_id, name, version, parent_def_id, definition, description,
 			created_at, created_by_agent_id, created_by_run_id,
-			retired, bootstrapped_from_static
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			retired, bootstrapped_from_static, tenant_id
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		row.DefID, row.Name, row.Version, nilIfEmpty(row.ParentDefID),
 		string(row.Definition), nilIfEmpty(row.Description),
 		row.CreatedAt.UnixNano(),
 		nilIfEmpty(row.CreatedByAgentID), nilIfEmpty(row.CreatedByRunID),
-		boolToInt(row.Retired), boolToInt(row.BootstrappedFromStatic),
+		boolToInt(row.Retired), boolToInt(row.BootstrappedFromStatic), row.TenantID,
 	); err != nil {
 		return store.ScheduleDefRow{}, err
 	}
@@ -4397,15 +4470,16 @@ func (s *Store) ScheduleDefListChildren(ctx context.Context, parentDefID string)
 func (s *Store) ScheduleDefListNames(ctx context.Context) ([]store.ScheduleDefNameSummary, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT
+			d.tenant_id,
 			d.name,
 			COUNT(*)                  AS version_count,
 			MAX(d.version)            AS latest_version,
 			MAX(d.created_at)         AS last_updated,
 			COALESCE(a.def_id, '')    AS active_def_id
 		FROM schedule_defs d
-		LEFT JOIN schedule_def_active a ON a.name = d.name
-		GROUP BY d.name, a.def_id
-		ORDER BY d.name`)
+		LEFT JOIN schedule_def_active a ON a.name = d.name AND a.tenant_id = d.tenant_id
+		GROUP BY d.tenant_id, d.name, a.def_id
+		ORDER BY d.tenant_id, d.name`)
 	if err != nil {
 		return nil, err
 	}
@@ -4415,7 +4489,7 @@ func (s *Store) ScheduleDefListNames(ctx context.Context) ([]store.ScheduleDefNa
 	for rows.Next() {
 		var ns store.ScheduleDefNameSummary
 		var updatedAt int64
-		if err := rows.Scan(&ns.Name, &ns.VersionCount, &ns.LatestVersion, &updatedAt, &ns.ActiveDefID); err != nil {
+		if err := rows.Scan(&ns.TenantID, &ns.Name, &ns.VersionCount, &ns.LatestVersion, &updatedAt, &ns.ActiveDefID); err != nil {
 			return nil, err
 		}
 		ns.LastUpdated = time.Unix(0, updatedAt)
@@ -4424,9 +4498,15 @@ func (s *Store) ScheduleDefListNames(ctx context.Context) ([]store.ScheduleDefNa
 	return out, rows.Err()
 }
 
-func (s *Store) ScheduleDefSetActive(ctx context.Context, name, defID, promotedByAgentID string) error {
-	var rowName string
-	err := s.db.QueryRowContext(ctx, `SELECT name FROM schedule_defs WHERE def_id = ?`, defID).Scan(&rowName)
+// ScheduleDefSetActive UPSERTs the schedule_def_active pointer for
+// (tenantID, name). RFC N: validates the def belongs to BOTH the named
+// schedule AND the supplied tenant.
+func (s *Store) ScheduleDefSetActive(ctx context.Context, tenantID, name, defID, promotedByAgentID string) error {
+	var (
+		rowName   string
+		rowTenant string
+	)
+	err := s.db.QueryRowContext(ctx, `SELECT name, tenant_id FROM schedule_defs WHERE def_id = ?`, defID).Scan(&rowName, &rowTenant)
 	if err == sql.ErrNoRows {
 		return &store.ErrNotFound{Kind: "schedule_def", ID: defID}
 	}
@@ -4436,21 +4516,24 @@ func (s *Store) ScheduleDefSetActive(ctx context.Context, name, defID, promotedB
 	if rowName != name {
 		return fmt.Errorf("schedule_def_active: def_id %q has name %q, refusing to promote under name %q", defID, rowName, name)
 	}
+	if rowTenant != tenantID {
+		return fmt.Errorf("schedule_def_active: def_id %q belongs to tenant %q, refusing to promote under tenant %q", defID, rowTenant, tenantID)
+	}
 	_, err = s.db.ExecContext(ctx, `
-		INSERT INTO schedule_def_active (name, def_id, promoted_at, promoted_by_agent_id)
-		VALUES (?, ?, ?, ?)
-		ON CONFLICT(name) DO UPDATE SET
+		INSERT INTO schedule_def_active (tenant_id, name, def_id, promoted_at, promoted_by_agent_id)
+		VALUES (?, ?, ?, ?, ?)
+		ON CONFLICT(tenant_id, name) DO UPDATE SET
 		    def_id               = excluded.def_id,
 		    promoted_at          = excluded.promoted_at,
 		    promoted_by_agent_id = excluded.promoted_by_agent_id`,
-		name, defID, time.Now().UnixNano(), nilIfEmpty(promotedByAgentID),
+		tenantID, name, defID, time.Now().UnixNano(), nilIfEmpty(promotedByAgentID),
 	)
 	return err
 }
 
-func (s *Store) ScheduleDefGetActive(ctx context.Context, name string) (store.ScheduleDefRow, error) {
+func (s *Store) ScheduleDefGetActive(ctx context.Context, tenantID, name string) (store.ScheduleDefRow, error) {
 	var defID string
-	err := s.db.QueryRowContext(ctx, `SELECT def_id FROM schedule_def_active WHERE name = ?`, name).Scan(&defID)
+	err := s.db.QueryRowContext(ctx, `SELECT def_id FROM schedule_def_active WHERE tenant_id = ? AND name = ?`, tenantID, name).Scan(&defID)
 	if err == sql.ErrNoRows {
 		return store.ScheduleDefRow{}, &store.ErrNotFound{Kind: "schedule_def_active", ID: name}
 	}
@@ -4484,7 +4567,8 @@ const scheduleDefSelect = `SELECT
 	COALESCE(created_by_agent_id, ''),
 	COALESCE(created_by_run_id, ''),
 	retired,
-	bootstrapped_from_static
+	bootstrapped_from_static,
+	tenant_id
 FROM schedule_defs`
 
 func (s *Store) scanScheduleDef(row *sql.Row) (store.ScheduleDefRow, error) {
@@ -4503,6 +4587,7 @@ func (s *Store) scanScheduleDef(row *sql.Row) (store.ScheduleDefRow, error) {
 		&createdAt,
 		&out.CreatedByAgentID, &out.CreatedByRunID,
 		&retired, &bootstrap,
+		&out.TenantID,
 	)
 	if err != nil {
 		return store.ScheduleDefRow{}, err
@@ -4532,6 +4617,7 @@ func (s *Store) scanScheduleDefRows(rows *sql.Rows) ([]store.ScheduleDefRow, err
 			&createdAt,
 			&r.CreatedByAgentID, &r.CreatedByRunID,
 			&retired, &bootstrap,
+			&r.TenantID,
 		); err != nil {
 			return nil, err
 		}
@@ -4580,7 +4666,7 @@ func (s *Store) A2AServerCardDefCreate(ctx context.Context, row store.A2AServerC
 
 	var maxVer sql.NullInt64
 	if err := conn.QueryRowContext(ctx,
-		`SELECT MAX(version) FROM a2a_server_card_defs WHERE name = ?`, row.Name,
+		`SELECT MAX(version) FROM a2a_server_card_defs WHERE tenant_id = ? AND name = ?`, row.TenantID, row.Name,
 	).Scan(&maxVer); err != nil {
 		return store.A2AServerCardDefRow{}, err
 	}
@@ -4594,13 +4680,13 @@ func (s *Store) A2AServerCardDefCreate(ctx context.Context, row store.A2AServerC
 		`INSERT INTO a2a_server_card_defs (
 			def_id, name, version, parent_def_id, definition, description,
 			created_at, created_by_agent_id, created_by_run_id,
-			retired, bootstrapped_from_static
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			retired, bootstrapped_from_static, tenant_id
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		row.DefID, row.Name, row.Version, nilIfEmpty(row.ParentDefID),
 		string(row.Definition), nilIfEmpty(row.Description),
 		row.CreatedAt.UnixNano(),
 		nilIfEmpty(row.CreatedByAgentID), nilIfEmpty(row.CreatedByRunID),
-		boolToInt(row.Retired), boolToInt(row.BootstrappedFromStatic),
+		boolToInt(row.Retired), boolToInt(row.BootstrappedFromStatic), row.TenantID,
 	); err != nil {
 		return store.A2AServerCardDefRow{}, err
 	}
@@ -4648,15 +4734,16 @@ func (s *Store) A2AServerCardDefListChildren(ctx context.Context, parentDefID st
 func (s *Store) A2AServerCardDefListNames(ctx context.Context) ([]store.A2AServerCardDefNameSummary, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT
+			d.tenant_id,
 			d.name,
 			COUNT(*)                  AS version_count,
 			MAX(d.version)            AS latest_version,
 			MAX(d.created_at)         AS last_updated,
 			COALESCE(a.def_id, '')    AS active_def_id
 		FROM a2a_server_card_defs d
-		LEFT JOIN a2a_server_card_def_active a ON a.name = d.name
-		GROUP BY d.name, a.def_id
-		ORDER BY d.name`)
+		LEFT JOIN a2a_server_card_def_active a ON a.name = d.name AND a.tenant_id = d.tenant_id
+		GROUP BY d.tenant_id, d.name, a.def_id
+		ORDER BY d.tenant_id, d.name`)
 	if err != nil {
 		return nil, err
 	}
@@ -4666,7 +4753,7 @@ func (s *Store) A2AServerCardDefListNames(ctx context.Context) ([]store.A2AServe
 	for rows.Next() {
 		var ns store.A2AServerCardDefNameSummary
 		var updatedAt int64
-		if err := rows.Scan(&ns.Name, &ns.VersionCount, &ns.LatestVersion, &updatedAt, &ns.ActiveDefID); err != nil {
+		if err := rows.Scan(&ns.TenantID, &ns.Name, &ns.VersionCount, &ns.LatestVersion, &updatedAt, &ns.ActiveDefID); err != nil {
 			return nil, err
 		}
 		ns.LastUpdated = time.Unix(0, updatedAt)
@@ -4675,9 +4762,15 @@ func (s *Store) A2AServerCardDefListNames(ctx context.Context) ([]store.A2AServe
 	return out, rows.Err()
 }
 
-func (s *Store) A2AServerCardDefSetActive(ctx context.Context, name, defID, promotedByAgentID string) error {
-	var rowName string
-	err := s.db.QueryRowContext(ctx, `SELECT name FROM a2a_server_card_defs WHERE def_id = ?`, defID).Scan(&rowName)
+// A2AServerCardDefSetActive UPSERTs the a2a_server_card_def_active pointer
+// for (tenantID, name). RFC N: validates the def belongs to BOTH the named
+// card AND the supplied tenant.
+func (s *Store) A2AServerCardDefSetActive(ctx context.Context, tenantID, name, defID, promotedByAgentID string) error {
+	var (
+		rowName   string
+		rowTenant string
+	)
+	err := s.db.QueryRowContext(ctx, `SELECT name, tenant_id FROM a2a_server_card_defs WHERE def_id = ?`, defID).Scan(&rowName, &rowTenant)
 	if err == sql.ErrNoRows {
 		return &store.ErrNotFound{Kind: "a2a_server_card_def", ID: defID}
 	}
@@ -4687,21 +4780,24 @@ func (s *Store) A2AServerCardDefSetActive(ctx context.Context, name, defID, prom
 	if rowName != name {
 		return fmt.Errorf("a2a_server_card_def_active: def_id %q has name %q, refusing to promote under name %q", defID, rowName, name)
 	}
+	if rowTenant != tenantID {
+		return fmt.Errorf("a2a_server_card_def_active: def_id %q belongs to tenant %q, refusing to promote under tenant %q", defID, rowTenant, tenantID)
+	}
 	_, err = s.db.ExecContext(ctx, `
-		INSERT INTO a2a_server_card_def_active (name, def_id, promoted_at, promoted_by_agent_id)
-		VALUES (?, ?, ?, ?)
-		ON CONFLICT(name) DO UPDATE SET
+		INSERT INTO a2a_server_card_def_active (tenant_id, name, def_id, promoted_at, promoted_by_agent_id)
+		VALUES (?, ?, ?, ?, ?)
+		ON CONFLICT(tenant_id, name) DO UPDATE SET
 		    def_id               = excluded.def_id,
 		    promoted_at          = excluded.promoted_at,
 		    promoted_by_agent_id = excluded.promoted_by_agent_id`,
-		name, defID, time.Now().UnixNano(), nilIfEmpty(promotedByAgentID),
+		tenantID, name, defID, time.Now().UnixNano(), nilIfEmpty(promotedByAgentID),
 	)
 	return err
 }
 
-func (s *Store) A2AServerCardDefGetActive(ctx context.Context, name string) (store.A2AServerCardDefRow, error) {
+func (s *Store) A2AServerCardDefGetActive(ctx context.Context, tenantID, name string) (store.A2AServerCardDefRow, error) {
 	var defID string
-	err := s.db.QueryRowContext(ctx, `SELECT def_id FROM a2a_server_card_def_active WHERE name = ?`, name).Scan(&defID)
+	err := s.db.QueryRowContext(ctx, `SELECT def_id FROM a2a_server_card_def_active WHERE tenant_id = ? AND name = ?`, tenantID, name).Scan(&defID)
 	if err == sql.ErrNoRows {
 		return store.A2AServerCardDefRow{}, &store.ErrNotFound{Kind: "a2a_server_card_def_active", ID: name}
 	}
@@ -4735,7 +4831,8 @@ const a2aServerCardDefSelect = `SELECT
 	COALESCE(created_by_agent_id, ''),
 	COALESCE(created_by_run_id, ''),
 	retired,
-	bootstrapped_from_static
+	bootstrapped_from_static,
+	tenant_id
 FROM a2a_server_card_defs`
 
 func (s *Store) scanA2AServerCardDef(row *sql.Row) (store.A2AServerCardDefRow, error) {
@@ -4754,6 +4851,7 @@ func (s *Store) scanA2AServerCardDef(row *sql.Row) (store.A2AServerCardDefRow, e
 		&createdAt,
 		&out.CreatedByAgentID, &out.CreatedByRunID,
 		&retired, &bootstrap,
+		&out.TenantID,
 	)
 	if err != nil {
 		return store.A2AServerCardDefRow{}, err
@@ -4783,6 +4881,7 @@ func (s *Store) scanA2AServerCardDefRows(rows *sql.Rows) ([]store.A2AServerCardD
 			&createdAt,
 			&r.CreatedByAgentID, &r.CreatedByRunID,
 			&retired, &bootstrap,
+			&r.TenantID,
 		); err != nil {
 			return nil, err
 		}
@@ -4831,7 +4930,7 @@ func (s *Store) A2AAgentDefCreate(ctx context.Context, row store.A2AAgentDefRow)
 
 	var maxVer sql.NullInt64
 	if err := conn.QueryRowContext(ctx,
-		`SELECT MAX(version) FROM a2a_agent_defs WHERE name = ?`, row.Name,
+		`SELECT MAX(version) FROM a2a_agent_defs WHERE tenant_id = ? AND name = ?`, row.TenantID, row.Name,
 	).Scan(&maxVer); err != nil {
 		return store.A2AAgentDefRow{}, err
 	}
@@ -4845,13 +4944,13 @@ func (s *Store) A2AAgentDefCreate(ctx context.Context, row store.A2AAgentDefRow)
 		`INSERT INTO a2a_agent_defs (
 			def_id, name, version, parent_def_id, definition, description,
 			created_at, created_by_agent_id, created_by_run_id,
-			retired, bootstrapped_from_static
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			retired, bootstrapped_from_static, tenant_id
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		row.DefID, row.Name, row.Version, nilIfEmpty(row.ParentDefID),
 		string(row.Definition), nilIfEmpty(row.Description),
 		row.CreatedAt.UnixNano(),
 		nilIfEmpty(row.CreatedByAgentID), nilIfEmpty(row.CreatedByRunID),
-		boolToInt(row.Retired), boolToInt(row.BootstrappedFromStatic),
+		boolToInt(row.Retired), boolToInt(row.BootstrappedFromStatic), row.TenantID,
 	); err != nil {
 		return store.A2AAgentDefRow{}, err
 	}
@@ -4899,15 +4998,16 @@ func (s *Store) A2AAgentDefListChildren(ctx context.Context, parentDefID string)
 func (s *Store) A2AAgentDefListNames(ctx context.Context) ([]store.A2AAgentDefNameSummary, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT
+			d.tenant_id,
 			d.name,
 			COUNT(*)                  AS version_count,
 			MAX(d.version)            AS latest_version,
 			MAX(d.created_at)         AS last_updated,
 			COALESCE(a.def_id, '')    AS active_def_id
 		FROM a2a_agent_defs d
-		LEFT JOIN a2a_agent_def_active a ON a.name = d.name
-		GROUP BY d.name, a.def_id
-		ORDER BY d.name`)
+		LEFT JOIN a2a_agent_def_active a ON a.name = d.name AND a.tenant_id = d.tenant_id
+		GROUP BY d.tenant_id, d.name, a.def_id
+		ORDER BY d.tenant_id, d.name`)
 	if err != nil {
 		return nil, err
 	}
@@ -4917,7 +5017,7 @@ func (s *Store) A2AAgentDefListNames(ctx context.Context) ([]store.A2AAgentDefNa
 	for rows.Next() {
 		var ns store.A2AAgentDefNameSummary
 		var updatedAt int64
-		if err := rows.Scan(&ns.Name, &ns.VersionCount, &ns.LatestVersion, &updatedAt, &ns.ActiveDefID); err != nil {
+		if err := rows.Scan(&ns.TenantID, &ns.Name, &ns.VersionCount, &ns.LatestVersion, &updatedAt, &ns.ActiveDefID); err != nil {
 			return nil, err
 		}
 		ns.LastUpdated = time.Unix(0, updatedAt)
@@ -4926,9 +5026,15 @@ func (s *Store) A2AAgentDefListNames(ctx context.Context) ([]store.A2AAgentDefNa
 	return out, rows.Err()
 }
 
-func (s *Store) A2AAgentDefSetActive(ctx context.Context, name, defID, promotedByAgentID string) error {
-	var rowName string
-	err := s.db.QueryRowContext(ctx, `SELECT name FROM a2a_agent_defs WHERE def_id = ?`, defID).Scan(&rowName)
+// A2AAgentDefSetActive UPSERTs the a2a_agent_def_active pointer for
+// (tenantID, name). RFC N: validates the def belongs to BOTH the named
+// peer AND the supplied tenant.
+func (s *Store) A2AAgentDefSetActive(ctx context.Context, tenantID, name, defID, promotedByAgentID string) error {
+	var (
+		rowName   string
+		rowTenant string
+	)
+	err := s.db.QueryRowContext(ctx, `SELECT name, tenant_id FROM a2a_agent_defs WHERE def_id = ?`, defID).Scan(&rowName, &rowTenant)
 	if err == sql.ErrNoRows {
 		return &store.ErrNotFound{Kind: "a2a_agent_def", ID: defID}
 	}
@@ -4938,21 +5044,24 @@ func (s *Store) A2AAgentDefSetActive(ctx context.Context, name, defID, promotedB
 	if rowName != name {
 		return fmt.Errorf("a2a_agent_def_active: def_id %q has name %q, refusing to promote under name %q", defID, rowName, name)
 	}
+	if rowTenant != tenantID {
+		return fmt.Errorf("a2a_agent_def_active: def_id %q belongs to tenant %q, refusing to promote under tenant %q", defID, rowTenant, tenantID)
+	}
 	_, err = s.db.ExecContext(ctx, `
-		INSERT INTO a2a_agent_def_active (name, def_id, promoted_at, promoted_by_agent_id)
-		VALUES (?, ?, ?, ?)
-		ON CONFLICT(name) DO UPDATE SET
+		INSERT INTO a2a_agent_def_active (tenant_id, name, def_id, promoted_at, promoted_by_agent_id)
+		VALUES (?, ?, ?, ?, ?)
+		ON CONFLICT(tenant_id, name) DO UPDATE SET
 		    def_id               = excluded.def_id,
 		    promoted_at          = excluded.promoted_at,
 		    promoted_by_agent_id = excluded.promoted_by_agent_id`,
-		name, defID, time.Now().UnixNano(), nilIfEmpty(promotedByAgentID),
+		tenantID, name, defID, time.Now().UnixNano(), nilIfEmpty(promotedByAgentID),
 	)
 	return err
 }
 
-func (s *Store) A2AAgentDefGetActive(ctx context.Context, name string) (store.A2AAgentDefRow, error) {
+func (s *Store) A2AAgentDefGetActive(ctx context.Context, tenantID, name string) (store.A2AAgentDefRow, error) {
 	var defID string
-	err := s.db.QueryRowContext(ctx, `SELECT def_id FROM a2a_agent_def_active WHERE name = ?`, name).Scan(&defID)
+	err := s.db.QueryRowContext(ctx, `SELECT def_id FROM a2a_agent_def_active WHERE tenant_id = ? AND name = ?`, tenantID, name).Scan(&defID)
 	if err == sql.ErrNoRows {
 		return store.A2AAgentDefRow{}, &store.ErrNotFound{Kind: "a2a_agent_def_active", ID: name}
 	}
@@ -4986,7 +5095,8 @@ const a2aAgentDefSelect = `SELECT
 	COALESCE(created_by_agent_id, ''),
 	COALESCE(created_by_run_id, ''),
 	retired,
-	bootstrapped_from_static
+	bootstrapped_from_static,
+	tenant_id
 FROM a2a_agent_defs`
 
 func (s *Store) scanA2AAgentDef(row *sql.Row) (store.A2AAgentDefRow, error) {
@@ -5005,6 +5115,7 @@ func (s *Store) scanA2AAgentDef(row *sql.Row) (store.A2AAgentDefRow, error) {
 		&createdAt,
 		&out.CreatedByAgentID, &out.CreatedByRunID,
 		&retired, &bootstrap,
+		&out.TenantID,
 	)
 	if err != nil {
 		return store.A2AAgentDefRow{}, err
@@ -5034,6 +5145,7 @@ func (s *Store) scanA2AAgentDefRows(rows *sql.Rows) ([]store.A2AAgentDefRow, err
 			&createdAt,
 			&r.CreatedByAgentID, &r.CreatedByRunID,
 			&retired, &bootstrap,
+			&r.TenantID,
 		); err != nil {
 			return nil, err
 		}
@@ -5082,7 +5194,7 @@ func (s *Store) WebhookDefCreate(ctx context.Context, row store.WebhookDefRow) (
 
 	var maxVer sql.NullInt64
 	if err := conn.QueryRowContext(ctx,
-		`SELECT MAX(version) FROM webhook_defs WHERE name = ?`, row.Name,
+		`SELECT MAX(version) FROM webhook_defs WHERE tenant_id = ? AND name = ?`, row.TenantID, row.Name,
 	).Scan(&maxVer); err != nil {
 		return store.WebhookDefRow{}, err
 	}
@@ -5096,13 +5208,13 @@ func (s *Store) WebhookDefCreate(ctx context.Context, row store.WebhookDefRow) (
 		`INSERT INTO webhook_defs (
 			def_id, name, version, parent_def_id, definition, description,
 			created_at, created_by_agent_id, created_by_run_id,
-			retired, bootstrapped_from_static
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			retired, bootstrapped_from_static, tenant_id
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		row.DefID, row.Name, row.Version, nilIfEmpty(row.ParentDefID),
 		string(row.Definition), nilIfEmpty(row.Description),
 		row.CreatedAt.UnixNano(),
 		nilIfEmpty(row.CreatedByAgentID), nilIfEmpty(row.CreatedByRunID),
-		boolToInt(row.Retired), boolToInt(row.BootstrappedFromStatic),
+		boolToInt(row.Retired), boolToInt(row.BootstrappedFromStatic), row.TenantID,
 	); err != nil {
 		return store.WebhookDefRow{}, err
 	}
@@ -5150,15 +5262,16 @@ func (s *Store) WebhookDefListChildren(ctx context.Context, parentDefID string) 
 func (s *Store) WebhookDefListNames(ctx context.Context) ([]store.WebhookDefNameSummary, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT
+			d.tenant_id,
 			d.name,
 			COUNT(*)                  AS version_count,
 			MAX(d.version)            AS latest_version,
 			MAX(d.created_at)         AS last_updated,
 			COALESCE(a.def_id, '')    AS active_def_id
 		FROM webhook_defs d
-		LEFT JOIN webhook_def_active a ON a.name = d.name
-		GROUP BY d.name, a.def_id
-		ORDER BY d.name`)
+		LEFT JOIN webhook_def_active a ON a.name = d.name AND a.tenant_id = d.tenant_id
+		GROUP BY d.tenant_id, d.name, a.def_id
+		ORDER BY d.tenant_id, d.name`)
 	if err != nil {
 		return nil, err
 	}
@@ -5168,7 +5281,7 @@ func (s *Store) WebhookDefListNames(ctx context.Context) ([]store.WebhookDefName
 	for rows.Next() {
 		var ns store.WebhookDefNameSummary
 		var updatedAt int64
-		if err := rows.Scan(&ns.Name, &ns.VersionCount, &ns.LatestVersion, &updatedAt, &ns.ActiveDefID); err != nil {
+		if err := rows.Scan(&ns.TenantID, &ns.Name, &ns.VersionCount, &ns.LatestVersion, &updatedAt, &ns.ActiveDefID); err != nil {
 			return nil, err
 		}
 		ns.LastUpdated = time.Unix(0, updatedAt)
@@ -5177,9 +5290,15 @@ func (s *Store) WebhookDefListNames(ctx context.Context) ([]store.WebhookDefName
 	return out, rows.Err()
 }
 
-func (s *Store) WebhookDefSetActive(ctx context.Context, name, defID, promotedByAgentID string) error {
-	var rowName string
-	err := s.db.QueryRowContext(ctx, `SELECT name FROM webhook_defs WHERE def_id = ?`, defID).Scan(&rowName)
+// WebhookDefSetActive UPSERTs the webhook_def_active pointer for
+// (tenantID, name). RFC N: validates the def belongs to BOTH the named
+// webhook AND the supplied tenant.
+func (s *Store) WebhookDefSetActive(ctx context.Context, tenantID, name, defID, promotedByAgentID string) error {
+	var (
+		rowName   string
+		rowTenant string
+	)
+	err := s.db.QueryRowContext(ctx, `SELECT name, tenant_id FROM webhook_defs WHERE def_id = ?`, defID).Scan(&rowName, &rowTenant)
 	if err == sql.ErrNoRows {
 		return &store.ErrNotFound{Kind: "webhook_def", ID: defID}
 	}
@@ -5189,21 +5308,24 @@ func (s *Store) WebhookDefSetActive(ctx context.Context, name, defID, promotedBy
 	if rowName != name {
 		return fmt.Errorf("webhook_def_active: def_id %q has name %q, refusing to promote under name %q", defID, rowName, name)
 	}
+	if rowTenant != tenantID {
+		return fmt.Errorf("webhook_def_active: def_id %q belongs to tenant %q, refusing to promote under tenant %q", defID, rowTenant, tenantID)
+	}
 	_, err = s.db.ExecContext(ctx, `
-		INSERT INTO webhook_def_active (name, def_id, promoted_at, promoted_by_agent_id)
-		VALUES (?, ?, ?, ?)
-		ON CONFLICT(name) DO UPDATE SET
+		INSERT INTO webhook_def_active (tenant_id, name, def_id, promoted_at, promoted_by_agent_id)
+		VALUES (?, ?, ?, ?, ?)
+		ON CONFLICT(tenant_id, name) DO UPDATE SET
 		    def_id               = excluded.def_id,
 		    promoted_at          = excluded.promoted_at,
 		    promoted_by_agent_id = excluded.promoted_by_agent_id`,
-		name, defID, time.Now().UnixNano(), nilIfEmpty(promotedByAgentID),
+		tenantID, name, defID, time.Now().UnixNano(), nilIfEmpty(promotedByAgentID),
 	)
 	return err
 }
 
-func (s *Store) WebhookDefGetActive(ctx context.Context, name string) (store.WebhookDefRow, error) {
+func (s *Store) WebhookDefGetActive(ctx context.Context, tenantID, name string) (store.WebhookDefRow, error) {
 	var defID string
-	err := s.db.QueryRowContext(ctx, `SELECT def_id FROM webhook_def_active WHERE name = ?`, name).Scan(&defID)
+	err := s.db.QueryRowContext(ctx, `SELECT def_id FROM webhook_def_active WHERE tenant_id = ? AND name = ?`, tenantID, name).Scan(&defID)
 	if err == sql.ErrNoRows {
 		return store.WebhookDefRow{}, &store.ErrNotFound{Kind: "webhook_def_active", ID: name}
 	}
@@ -5237,7 +5359,8 @@ const webhookDefSelect = `SELECT
 	COALESCE(created_by_agent_id, ''),
 	COALESCE(created_by_run_id, ''),
 	retired,
-	bootstrapped_from_static
+	bootstrapped_from_static,
+	tenant_id
 FROM webhook_defs`
 
 func (s *Store) scanWebhookDef(row *sql.Row) (store.WebhookDefRow, error) {
@@ -5256,6 +5379,7 @@ func (s *Store) scanWebhookDef(row *sql.Row) (store.WebhookDefRow, error) {
 		&createdAt,
 		&out.CreatedByAgentID, &out.CreatedByRunID,
 		&retired, &bootstrap,
+		&out.TenantID,
 	)
 	if err != nil {
 		return store.WebhookDefRow{}, err
@@ -5285,6 +5409,7 @@ func (s *Store) scanWebhookDefRows(rows *sql.Rows) ([]store.WebhookDefRow, error
 			&createdAt,
 			&r.CreatedByAgentID, &r.CreatedByRunID,
 			&retired, &bootstrap,
+			&r.TenantID,
 		); err != nil {
 			return nil, err
 		}
@@ -5334,7 +5459,7 @@ func (s *Store) MemoryBackendDefCreate(ctx context.Context, row store.MemoryBack
 
 	var maxVer sql.NullInt64
 	if err := conn.QueryRowContext(ctx,
-		`SELECT MAX(version) FROM memory_backend_defs WHERE name = ?`, row.Name,
+		`SELECT MAX(version) FROM memory_backend_defs WHERE tenant_id = ? AND name = ?`, row.TenantID, row.Name,
 	).Scan(&maxVer); err != nil {
 		return store.MemoryBackendDefRow{}, err
 	}
@@ -5348,13 +5473,13 @@ func (s *Store) MemoryBackendDefCreate(ctx context.Context, row store.MemoryBack
 		`INSERT INTO memory_backend_defs (
 			def_id, name, version, parent_def_id, definition, description,
 			created_at, created_by_agent_id, created_by_run_id,
-			retired, bootstrapped_from_static
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			retired, bootstrapped_from_static, tenant_id
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		row.DefID, row.Name, row.Version, nilIfEmpty(row.ParentDefID),
 		string(row.Definition), nilIfEmpty(row.Description),
 		row.CreatedAt.UnixNano(),
 		nilIfEmpty(row.CreatedByAgentID), nilIfEmpty(row.CreatedByRunID),
-		boolToInt(row.Retired), boolToInt(row.BootstrappedFromStatic),
+		boolToInt(row.Retired), boolToInt(row.BootstrappedFromStatic), row.TenantID,
 	); err != nil {
 		return store.MemoryBackendDefRow{}, err
 	}
@@ -5402,15 +5527,16 @@ func (s *Store) MemoryBackendDefListChildren(ctx context.Context, parentDefID st
 func (s *Store) MemoryBackendDefListNames(ctx context.Context) ([]store.MemoryBackendDefNameSummary, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT
+			d.tenant_id,
 			d.name,
 			COUNT(*)                  AS version_count,
 			MAX(d.version)            AS latest_version,
 			MAX(d.created_at)         AS last_updated,
 			COALESCE(a.def_id, '')    AS active_def_id
 		FROM memory_backend_defs d
-		LEFT JOIN memory_backend_def_active a ON a.name = d.name
-		GROUP BY d.name, a.def_id
-		ORDER BY d.name`)
+		LEFT JOIN memory_backend_def_active a ON a.name = d.name AND a.tenant_id = d.tenant_id
+		GROUP BY d.tenant_id, d.name, a.def_id
+		ORDER BY d.tenant_id, d.name`)
 	if err != nil {
 		return nil, err
 	}
@@ -5420,7 +5546,7 @@ func (s *Store) MemoryBackendDefListNames(ctx context.Context) ([]store.MemoryBa
 	for rows.Next() {
 		var ns store.MemoryBackendDefNameSummary
 		var updatedAt int64
-		if err := rows.Scan(&ns.Name, &ns.VersionCount, &ns.LatestVersion, &updatedAt, &ns.ActiveDefID); err != nil {
+		if err := rows.Scan(&ns.TenantID, &ns.Name, &ns.VersionCount, &ns.LatestVersion, &updatedAt, &ns.ActiveDefID); err != nil {
 			return nil, err
 		}
 		ns.LastUpdated = time.Unix(0, updatedAt)
@@ -5429,9 +5555,16 @@ func (s *Store) MemoryBackendDefListNames(ctx context.Context) ([]store.MemoryBa
 	return out, rows.Err()
 }
 
-func (s *Store) MemoryBackendDefSetActive(ctx context.Context, name, defID, promotedByAgentID string) error {
-	var rowName string
-	err := s.db.QueryRowContext(ctx, `SELECT name FROM memory_backend_defs WHERE def_id = ?`, defID).Scan(&rowName)
+// MemoryBackendDefSetActive UPSERTs the memory_backend_def_active pointer
+// for (tenantID, name). RFC N: validates the def belongs to BOTH the named
+// backend AND the supplied tenant — a def can only be promoted within its
+// own tenant.
+func (s *Store) MemoryBackendDefSetActive(ctx context.Context, tenantID, name, defID, promotedByAgentID string) error {
+	var (
+		rowName   string
+		rowTenant string
+	)
+	err := s.db.QueryRowContext(ctx, `SELECT name, tenant_id FROM memory_backend_defs WHERE def_id = ?`, defID).Scan(&rowName, &rowTenant)
 	if err == sql.ErrNoRows {
 		return &store.ErrNotFound{Kind: "memory_backend_def", ID: defID}
 	}
@@ -5441,21 +5574,24 @@ func (s *Store) MemoryBackendDefSetActive(ctx context.Context, name, defID, prom
 	if rowName != name {
 		return fmt.Errorf("memory_backend_def_active: def_id %q has name %q, refusing to promote under name %q", defID, rowName, name)
 	}
+	if rowTenant != tenantID {
+		return fmt.Errorf("memory_backend_def_active: def_id %q belongs to tenant %q, refusing to promote under tenant %q", defID, rowTenant, tenantID)
+	}
 	_, err = s.db.ExecContext(ctx, `
-		INSERT INTO memory_backend_def_active (name, def_id, promoted_at, promoted_by_agent_id)
-		VALUES (?, ?, ?, ?)
-		ON CONFLICT(name) DO UPDATE SET
+		INSERT INTO memory_backend_def_active (tenant_id, name, def_id, promoted_at, promoted_by_agent_id)
+		VALUES (?, ?, ?, ?, ?)
+		ON CONFLICT(tenant_id, name) DO UPDATE SET
 		    def_id               = excluded.def_id,
 		    promoted_at          = excluded.promoted_at,
 		    promoted_by_agent_id = excluded.promoted_by_agent_id`,
-		name, defID, time.Now().UnixNano(), nilIfEmpty(promotedByAgentID),
+		tenantID, name, defID, time.Now().UnixNano(), nilIfEmpty(promotedByAgentID),
 	)
 	return err
 }
 
-func (s *Store) MemoryBackendDefGetActive(ctx context.Context, name string) (store.MemoryBackendDefRow, error) {
+func (s *Store) MemoryBackendDefGetActive(ctx context.Context, tenantID, name string) (store.MemoryBackendDefRow, error) {
 	var defID string
-	err := s.db.QueryRowContext(ctx, `SELECT def_id FROM memory_backend_def_active WHERE name = ?`, name).Scan(&defID)
+	err := s.db.QueryRowContext(ctx, `SELECT def_id FROM memory_backend_def_active WHERE tenant_id = ? AND name = ?`, tenantID, name).Scan(&defID)
 	if err == sql.ErrNoRows {
 		return store.MemoryBackendDefRow{}, &store.ErrNotFound{Kind: "memory_backend_def_active", ID: name}
 	}
@@ -5489,7 +5625,8 @@ const memoryBackendDefSelect = `SELECT
 	COALESCE(created_by_agent_id, ''),
 	COALESCE(created_by_run_id, ''),
 	retired,
-	bootstrapped_from_static
+	bootstrapped_from_static,
+	tenant_id
 FROM memory_backend_defs`
 
 func (s *Store) scanMemoryBackendDef(row *sql.Row) (store.MemoryBackendDefRow, error) {
@@ -5508,6 +5645,7 @@ func (s *Store) scanMemoryBackendDef(row *sql.Row) (store.MemoryBackendDefRow, e
 		&createdAt,
 		&out.CreatedByAgentID, &out.CreatedByRunID,
 		&retired, &bootstrap,
+		&out.TenantID,
 	)
 	if err != nil {
 		return store.MemoryBackendDefRow{}, err
@@ -5537,6 +5675,7 @@ func (s *Store) scanMemoryBackendDefRows(rows *sql.Rows) ([]store.MemoryBackendD
 			&createdAt,
 			&r.CreatedByAgentID, &r.CreatedByRunID,
 			&retired, &bootstrap,
+			&r.TenantID,
 		); err != nil {
 			return nil, err
 		}

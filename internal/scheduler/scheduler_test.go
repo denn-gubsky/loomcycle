@@ -99,7 +99,7 @@ func schedulerFixture(t *testing.T, def scheduleDef, nextRunAt time.Time) (*Sche
 	}); err != nil {
 		t.Fatalf("def create: %v", err)
 	}
-	if err := st.ScheduleDefSetActive(ctx, "sched-test", defID, "test"); err != nil {
+	if err := st.ScheduleDefSetActive(ctx, "", "sched-test", defID, "test"); err != nil {
 		t.Fatalf("set active: %v", err)
 	}
 	if err := st.ScheduleRunStateSeed(ctx, defID, nextRunAt); err != nil {
@@ -425,7 +425,7 @@ func TestScheduler_DecodeFailureRecordedAsFailed(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("def create: %v", err)
 	}
-	_ = st.ScheduleDefSetActive(ctx, "sched-malformed", "sd-malformed", "test")
+	_ = st.ScheduleDefSetActive(ctx, "", "sched-malformed", "sd-malformed", "test")
 	_ = st.ScheduleRunStateSeed(ctx, "sd-malformed", time.Now().Add(-1*time.Minute))
 
 	sched := New(Config{TickInterval: 10 * time.Millisecond}, st, &fakeRunner{}, nil, nil, t.Logf)
@@ -466,7 +466,7 @@ func TestScheduler_TickFiresInParallel(t *testing.T) {
 		if _, err := st.ScheduleDefCreate(ctx, store.ScheduleDefRow{DefID: defID, Name: name, Definition: defJSON}); err != nil {
 			t.Fatalf("def create %d: %v", i, err)
 		}
-		_ = st.ScheduleDefSetActive(ctx, name, defID, "test")
+		_ = st.ScheduleDefSetActive(ctx, "", name, defID, "test")
 		_ = st.ScheduleRunStateSeed(ctx, defID, time.Now().Add(-time.Minute))
 	}
 	const perFireDelay = 100 * time.Millisecond
@@ -508,7 +508,7 @@ func TestScheduler_TickRespectsMaxConcurrentFires(t *testing.T) {
 		defID := fmt.Sprintf("sd-cap-%03d", i)
 		name := fmt.Sprintf("sched-cap-%03d", i)
 		_, _ = st.ScheduleDefCreate(ctx, store.ScheduleDefRow{DefID: defID, Name: name, Definition: defJSON})
-		_ = st.ScheduleDefSetActive(ctx, name, defID, "test")
+		_ = st.ScheduleDefSetActive(ctx, "", name, defID, "test")
 		_ = st.ScheduleRunStateSeed(ctx, defID, time.Now().Add(-time.Minute))
 	}
 	fr := &fakeRunner{onRun: func(_ runner.RunInput) { time.Sleep(perFireDelay) }}
@@ -544,7 +544,7 @@ func TestScheduler_PanicInFireOneIsRecovered(t *testing.T) {
 		defID := fmt.Sprintf("sd-panic-%d", i)
 		name := fmt.Sprintf("sched-panic-%d", i)
 		_, _ = st.ScheduleDefCreate(ctx, store.ScheduleDefRow{DefID: defID, Name: name, Definition: defJSON})
-		_ = st.ScheduleDefSetActive(ctx, name, defID, "test")
+		_ = st.ScheduleDefSetActive(ctx, "", name, defID, "test")
 		_ = st.ScheduleRunStateSeed(ctx, defID, time.Now().Add(-time.Minute))
 	}
 	var calls atomic.Int32
@@ -595,7 +595,7 @@ func TestScheduler_InFlightSuppressesDoubleFire(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("def create: %v", err)
 	}
-	_ = st.ScheduleDefSetActive(ctx, "sched-double-fire", defID, "test")
+	_ = st.ScheduleDefSetActive(ctx, "", "sched-double-fire", defID, "test")
 	_ = st.ScheduleRunStateSeed(ctx, defID, time.Now().Add(-time.Minute))
 
 	const perFireDelay = 300 * time.Millisecond

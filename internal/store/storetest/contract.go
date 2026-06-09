@@ -218,6 +218,7 @@ func Run(t *testing.T, factory Factory) {
 		{"ScheduleDefCreateAndGet", testScheduleDefCreateAndGet},
 		{"ScheduleDefVersionMonotonic", testScheduleDefVersionMonotonic},
 		{"ScheduleDefActivePointerIdempotent", testScheduleDefActivePointerIdempotent},
+		{"ScheduleDefTenantIsolation", testScheduleDefTenantIsolation},
 		{"ScheduleDefRetireReversible", testScheduleDefRetireReversible},
 		{"ScheduleDefParentNotFound", testScheduleDefParentNotFound},
 		{"ScheduleDefListByName", testScheduleDefListByName},
@@ -226,6 +227,7 @@ func Run(t *testing.T, factory Factory) {
 		{"A2AServerCardDefCreateAndGet", testA2AServerCardDefCreateAndGet},
 		{"A2AServerCardDefVersionMonotonic", testA2AServerCardDefVersionMonotonic},
 		{"A2AServerCardDefActivePointerIdempotent", testA2AServerCardDefActivePointerIdempotent},
+		{"A2AServerCardDefTenantIsolation", testA2AServerCardDefTenantIsolation},
 		{"A2AServerCardDefRetireReversible", testA2AServerCardDefRetireReversible},
 		{"A2AServerCardDefParentNotFound", testA2AServerCardDefParentNotFound},
 		{"A2AServerCardDefListByName", testA2AServerCardDefListByName},
@@ -233,6 +235,7 @@ func Run(t *testing.T, factory Factory) {
 		{"A2AAgentDefCreateAndGet", testA2AAgentDefCreateAndGet},
 		{"A2AAgentDefVersionMonotonic", testA2AAgentDefVersionMonotonic},
 		{"A2AAgentDefActivePointerIdempotent", testA2AAgentDefActivePointerIdempotent},
+		{"A2AAgentDefTenantIsolation", testA2AAgentDefTenantIsolation},
 		{"A2AAgentDefRetireReversible", testA2AAgentDefRetireReversible},
 		{"A2AAgentDefParentNotFound", testA2AAgentDefParentNotFound},
 		{"A2AAgentDefListByName", testA2AAgentDefListByName},
@@ -240,6 +243,7 @@ func Run(t *testing.T, factory Factory) {
 		{"WebhookDefCreateAndGet", testWebhookDefCreateAndGet},
 		{"WebhookDefVersionMonotonic", testWebhookDefVersionMonotonic},
 		{"WebhookDefActivePointerIdempotent", testWebhookDefActivePointerIdempotent},
+		{"WebhookDefTenantIsolation", testWebhookDefTenantIsolation},
 		{"WebhookDefRetireReversible", testWebhookDefRetireReversible},
 		{"WebhookDefParentNotFound", testWebhookDefParentNotFound},
 		{"WebhookDefListByName", testWebhookDefListByName},
@@ -247,6 +251,7 @@ func Run(t *testing.T, factory Factory) {
 		{"MemoryBackendDefCreateAndGet", testMemoryBackendDefCreateAndGet},
 		{"MemoryBackendDefVersionMonotonic", testMemoryBackendDefVersionMonotonic},
 		{"MemoryBackendDefActivePointerIdempotent", testMemoryBackendDefActivePointerIdempotent},
+		{"MemoryBackendDefTenantIsolation", testMemoryBackendDefTenantIsolation},
 		{"MemoryBackendDefRetireReversible", testMemoryBackendDefRetireReversible},
 		{"MemoryBackendDefParentNotFound", testMemoryBackendDefParentNotFound},
 		{"MemoryBackendDefListByName", testMemoryBackendDefListByName},
@@ -4449,19 +4454,67 @@ func testScheduleDefActivePointerIdempotent(t *testing.T, s store.Store) {
 	r1, _ := s.ScheduleDefCreate(ctx, mkScheduleDef("sd-active-1", "sched-active", ""))
 	r2, _ := s.ScheduleDefCreate(ctx, mkScheduleDef("sd-active-2", "sched-active", ""))
 
-	if err := s.ScheduleDefSetActive(ctx, "sched-active", r1.DefID, "test"); err != nil {
+	if err := s.ScheduleDefSetActive(ctx, "", "sched-active", r1.DefID, "test"); err != nil {
 		t.Fatal(err)
 	}
-	got, _ := s.ScheduleDefGetActive(ctx, "sched-active")
+	got, _ := s.ScheduleDefGetActive(ctx, "", "sched-active")
 	if got.DefID != r1.DefID {
 		t.Errorf("active = %s, want %s", got.DefID, r1.DefID)
 	}
-	if err := s.ScheduleDefSetActive(ctx, "sched-active", r2.DefID, "test"); err != nil {
+	if err := s.ScheduleDefSetActive(ctx, "", "sched-active", r2.DefID, "test"); err != nil {
 		t.Fatal(err)
 	}
-	got, _ = s.ScheduleDefGetActive(ctx, "sched-active")
+	got, _ = s.ScheduleDefGetActive(ctx, "", "sched-active")
 	if got.DefID != r2.DefID {
 		t.Errorf("after re-promote: active = %s, want %s", got.DefID, r2.DefID)
+	}
+}
+
+// testScheduleDefTenantIsolation mirrors testMemoryBackendDefTenantIsolation
+// for the Schedule plane.
+func testScheduleDefTenantIsolation(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	const name = "shared-sched"
+
+	aDef := mkScheduleDef("sdti-a", name, "")
+	aDef.TenantID = "tenant-a"
+	aDef.Definition = json.RawMessage(`{"agent":"x","schedule":"0 0 * * *","v":"A"}`)
+	aRow, err := s.ScheduleDefCreate(ctx, aDef)
+	if err != nil {
+		t.Fatalf("create A: %v", err)
+	}
+	bDef := mkScheduleDef("sdti-b", name, "")
+	bDef.TenantID = "tenant-b"
+	bDef.Definition = json.RawMessage(`{"agent":"x","schedule":"0 0 * * *","v":"B"}`)
+	bRow, err := s.ScheduleDefCreate(ctx, bDef)
+	if err != nil {
+		t.Fatalf("create B: %v", err)
+	}
+
+	if err := s.ScheduleDefSetActive(ctx, "tenant-a", name, aRow.DefID, ""); err != nil {
+		t.Fatalf("promote A: %v", err)
+	}
+	if err := s.ScheduleDefSetActive(ctx, "tenant-b", name, bRow.DefID, ""); err != nil {
+		t.Fatalf("promote B: %v", err)
+	}
+
+	gotA, err := s.ScheduleDefGetActive(ctx, "tenant-a", name)
+	if err != nil {
+		t.Fatalf("get active A: %v", err)
+	}
+	if gotA.DefID != aRow.DefID || gotA.TenantID != "tenant-a" || !jsonEqual(gotA.Definition, `{"agent":"x","schedule":"0 0 * * *","v":"A"}`) {
+		t.Errorf("tenant-a clobbered: got def_id=%q tenant=%q def=%s", gotA.DefID, gotA.TenantID, gotA.Definition)
+	}
+	gotB, err := s.ScheduleDefGetActive(ctx, "tenant-b", name)
+	if err != nil {
+		t.Fatalf("get active B: %v", err)
+	}
+	if gotB.DefID != bRow.DefID || gotB.TenantID != "tenant-b" || !jsonEqual(gotB.Definition, `{"agent":"x","schedule":"0 0 * * *","v":"B"}`) {
+		t.Errorf("tenant-b clobbered: got def_id=%q tenant=%q def=%s", gotB.DefID, gotB.TenantID, gotB.Definition)
+	}
+
+	if err := s.ScheduleDefSetActive(ctx, "tenant-b", name, aRow.DefID, ""); err == nil {
+		t.Error("cross-tenant promote (A's def under tenant-b) unexpectedly succeeded")
 	}
 }
 
@@ -4592,19 +4645,67 @@ func testA2AServerCardDefActivePointerIdempotent(t *testing.T, s store.Store) {
 	r1, _ := s.A2AServerCardDefCreate(ctx, mkA2AServerCardDef("ascd-active-1", "card-active", ""))
 	r2, _ := s.A2AServerCardDefCreate(ctx, mkA2AServerCardDef("ascd-active-2", "card-active", ""))
 
-	if err := s.A2AServerCardDefSetActive(ctx, "card-active", r1.DefID, "test"); err != nil {
+	if err := s.A2AServerCardDefSetActive(ctx, "", "card-active", r1.DefID, "test"); err != nil {
 		t.Fatal(err)
 	}
-	got, _ := s.A2AServerCardDefGetActive(ctx, "card-active")
+	got, _ := s.A2AServerCardDefGetActive(ctx, "", "card-active")
 	if got.DefID != r1.DefID {
 		t.Errorf("active = %s, want %s", got.DefID, r1.DefID)
 	}
-	if err := s.A2AServerCardDefSetActive(ctx, "card-active", r2.DefID, "test"); err != nil {
+	if err := s.A2AServerCardDefSetActive(ctx, "", "card-active", r2.DefID, "test"); err != nil {
 		t.Fatal(err)
 	}
-	got, _ = s.A2AServerCardDefGetActive(ctx, "card-active")
+	got, _ = s.A2AServerCardDefGetActive(ctx, "", "card-active")
 	if got.DefID != r2.DefID {
 		t.Errorf("after re-promote: active = %s, want %s", got.DefID, r2.DefID)
+	}
+}
+
+// testA2AServerCardDefTenantIsolation mirrors the other isolation tests for
+// the A2A server-card plane.
+func testA2AServerCardDefTenantIsolation(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	const name = "shared-card"
+
+	aDef := mkA2AServerCardDef("ascti-a", name, "")
+	aDef.TenantID = "tenant-a"
+	aDef.Definition = json.RawMessage(`{"v":"A"}`)
+	aRow, err := s.A2AServerCardDefCreate(ctx, aDef)
+	if err != nil {
+		t.Fatalf("create A: %v", err)
+	}
+	bDef := mkA2AServerCardDef("ascti-b", name, "")
+	bDef.TenantID = "tenant-b"
+	bDef.Definition = json.RawMessage(`{"v":"B"}`)
+	bRow, err := s.A2AServerCardDefCreate(ctx, bDef)
+	if err != nil {
+		t.Fatalf("create B: %v", err)
+	}
+
+	if err := s.A2AServerCardDefSetActive(ctx, "tenant-a", name, aRow.DefID, ""); err != nil {
+		t.Fatalf("promote A: %v", err)
+	}
+	if err := s.A2AServerCardDefSetActive(ctx, "tenant-b", name, bRow.DefID, ""); err != nil {
+		t.Fatalf("promote B: %v", err)
+	}
+
+	gotA, err := s.A2AServerCardDefGetActive(ctx, "tenant-a", name)
+	if err != nil {
+		t.Fatalf("get active A: %v", err)
+	}
+	if gotA.DefID != aRow.DefID || gotA.TenantID != "tenant-a" || !jsonEqual(gotA.Definition, `{"v":"A"}`) {
+		t.Errorf("tenant-a clobbered: got def_id=%q tenant=%q def=%s", gotA.DefID, gotA.TenantID, gotA.Definition)
+	}
+	gotB, err := s.A2AServerCardDefGetActive(ctx, "tenant-b", name)
+	if err != nil {
+		t.Fatalf("get active B: %v", err)
+	}
+	if gotB.DefID != bRow.DefID || gotB.TenantID != "tenant-b" || !jsonEqual(gotB.Definition, `{"v":"B"}`) {
+		t.Errorf("tenant-b clobbered: got def_id=%q tenant=%q def=%s", gotB.DefID, gotB.TenantID, gotB.Definition)
+	}
+
+	if err := s.A2AServerCardDefSetActive(ctx, "tenant-b", name, aRow.DefID, ""); err == nil {
+		t.Error("cross-tenant promote (A's def under tenant-b) unexpectedly succeeded")
 	}
 }
 
@@ -4729,19 +4830,67 @@ func testA2AAgentDefActivePointerIdempotent(t *testing.T, s store.Store) {
 	r1, _ := s.A2AAgentDefCreate(ctx, mkA2AAgentDef("aad-active-1", "peer-active", ""))
 	r2, _ := s.A2AAgentDefCreate(ctx, mkA2AAgentDef("aad-active-2", "peer-active", ""))
 
-	if err := s.A2AAgentDefSetActive(ctx, "peer-active", r1.DefID, "test"); err != nil {
+	if err := s.A2AAgentDefSetActive(ctx, "", "peer-active", r1.DefID, "test"); err != nil {
 		t.Fatal(err)
 	}
-	got, _ := s.A2AAgentDefGetActive(ctx, "peer-active")
+	got, _ := s.A2AAgentDefGetActive(ctx, "", "peer-active")
 	if got.DefID != r1.DefID {
 		t.Errorf("active = %s, want %s", got.DefID, r1.DefID)
 	}
-	if err := s.A2AAgentDefSetActive(ctx, "peer-active", r2.DefID, "test"); err != nil {
+	if err := s.A2AAgentDefSetActive(ctx, "", "peer-active", r2.DefID, "test"); err != nil {
 		t.Fatal(err)
 	}
-	got, _ = s.A2AAgentDefGetActive(ctx, "peer-active")
+	got, _ = s.A2AAgentDefGetActive(ctx, "", "peer-active")
 	if got.DefID != r2.DefID {
 		t.Errorf("after re-promote: active = %s, want %s", got.DefID, r2.DefID)
+	}
+}
+
+// testA2AAgentDefTenantIsolation mirrors testMemoryBackendDefTenantIsolation
+// for the A2A remote-peer plane.
+func testA2AAgentDefTenantIsolation(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	const name = "shared-peer"
+
+	aDef := mkA2AAgentDef("aadti-a", name, "")
+	aDef.TenantID = "tenant-a"
+	aDef.Definition = json.RawMessage(`{"agent_card_url":"https://a.example","v":"A"}`)
+	aRow, err := s.A2AAgentDefCreate(ctx, aDef)
+	if err != nil {
+		t.Fatalf("create A: %v", err)
+	}
+	bDef := mkA2AAgentDef("aadti-b", name, "")
+	bDef.TenantID = "tenant-b"
+	bDef.Definition = json.RawMessage(`{"agent_card_url":"https://b.example","v":"B"}`)
+	bRow, err := s.A2AAgentDefCreate(ctx, bDef)
+	if err != nil {
+		t.Fatalf("create B: %v", err)
+	}
+
+	if err := s.A2AAgentDefSetActive(ctx, "tenant-a", name, aRow.DefID, ""); err != nil {
+		t.Fatalf("promote A: %v", err)
+	}
+	if err := s.A2AAgentDefSetActive(ctx, "tenant-b", name, bRow.DefID, ""); err != nil {
+		t.Fatalf("promote B: %v", err)
+	}
+
+	gotA, err := s.A2AAgentDefGetActive(ctx, "tenant-a", name)
+	if err != nil {
+		t.Fatalf("get active A: %v", err)
+	}
+	if gotA.DefID != aRow.DefID || gotA.TenantID != "tenant-a" || !jsonEqual(gotA.Definition, `{"agent_card_url":"https://a.example","v":"A"}`) {
+		t.Errorf("tenant-a clobbered: got def_id=%q tenant=%q def=%s", gotA.DefID, gotA.TenantID, gotA.Definition)
+	}
+	gotB, err := s.A2AAgentDefGetActive(ctx, "tenant-b", name)
+	if err != nil {
+		t.Fatalf("get active B: %v", err)
+	}
+	if gotB.DefID != bRow.DefID || gotB.TenantID != "tenant-b" || !jsonEqual(gotB.Definition, `{"agent_card_url":"https://b.example","v":"B"}`) {
+		t.Errorf("tenant-b clobbered: got def_id=%q tenant=%q def=%s", gotB.DefID, gotB.TenantID, gotB.Definition)
+	}
+
+	if err := s.A2AAgentDefSetActive(ctx, "tenant-b", name, aRow.DefID, ""); err == nil {
+		t.Error("cross-tenant promote (A's def under tenant-b) unexpectedly succeeded")
 	}
 }
 
@@ -4870,19 +5019,67 @@ func testWebhookDefActivePointerIdempotent(t *testing.T, s store.Store) {
 	r1, _ := s.WebhookDefCreate(ctx, mkWebhookDef("wh-active-1", "hook-active", ""))
 	r2, _ := s.WebhookDefCreate(ctx, mkWebhookDef("wh-active-2", "hook-active", ""))
 
-	if err := s.WebhookDefSetActive(ctx, "hook-active", r1.DefID, "test"); err != nil {
+	if err := s.WebhookDefSetActive(ctx, "", "hook-active", r1.DefID, "test"); err != nil {
 		t.Fatal(err)
 	}
-	got, _ := s.WebhookDefGetActive(ctx, "hook-active")
+	got, _ := s.WebhookDefGetActive(ctx, "", "hook-active")
 	if got.DefID != r1.DefID {
 		t.Errorf("active = %s, want %s", got.DefID, r1.DefID)
 	}
-	if err := s.WebhookDefSetActive(ctx, "hook-active", r2.DefID, "test"); err != nil {
+	if err := s.WebhookDefSetActive(ctx, "", "hook-active", r2.DefID, "test"); err != nil {
 		t.Fatal(err)
 	}
-	got, _ = s.WebhookDefGetActive(ctx, "hook-active")
+	got, _ = s.WebhookDefGetActive(ctx, "", "hook-active")
 	if got.DefID != r2.DefID {
 		t.Errorf("after re-promote: active = %s, want %s", got.DefID, r2.DefID)
+	}
+}
+
+// testWebhookDefTenantIsolation mirrors the other isolation tests for the
+// Webhook plane.
+func testWebhookDefTenantIsolation(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	const name = "shared-hook"
+
+	aDef := mkWebhookDef("whti-a", name, "")
+	aDef.TenantID = "tenant-a"
+	aDef.Definition = json.RawMessage(`{"delivery":"spawn","agent":"x","v":"A"}`)
+	aRow, err := s.WebhookDefCreate(ctx, aDef)
+	if err != nil {
+		t.Fatalf("create A: %v", err)
+	}
+	bDef := mkWebhookDef("whti-b", name, "")
+	bDef.TenantID = "tenant-b"
+	bDef.Definition = json.RawMessage(`{"delivery":"spawn","agent":"x","v":"B"}`)
+	bRow, err := s.WebhookDefCreate(ctx, bDef)
+	if err != nil {
+		t.Fatalf("create B: %v", err)
+	}
+
+	if err := s.WebhookDefSetActive(ctx, "tenant-a", name, aRow.DefID, ""); err != nil {
+		t.Fatalf("promote A: %v", err)
+	}
+	if err := s.WebhookDefSetActive(ctx, "tenant-b", name, bRow.DefID, ""); err != nil {
+		t.Fatalf("promote B: %v", err)
+	}
+
+	gotA, err := s.WebhookDefGetActive(ctx, "tenant-a", name)
+	if err != nil {
+		t.Fatalf("get active A: %v", err)
+	}
+	if gotA.DefID != aRow.DefID || gotA.TenantID != "tenant-a" || !jsonEqual(gotA.Definition, `{"delivery":"spawn","agent":"x","v":"A"}`) {
+		t.Errorf("tenant-a clobbered: got def_id=%q tenant=%q def=%s", gotA.DefID, gotA.TenantID, gotA.Definition)
+	}
+	gotB, err := s.WebhookDefGetActive(ctx, "tenant-b", name)
+	if err != nil {
+		t.Fatalf("get active B: %v", err)
+	}
+	if gotB.DefID != bRow.DefID || gotB.TenantID != "tenant-b" || !jsonEqual(gotB.Definition, `{"delivery":"spawn","agent":"x","v":"B"}`) {
+		t.Errorf("tenant-b clobbered: got def_id=%q tenant=%q def=%s", gotB.DefID, gotB.TenantID, gotB.Definition)
+	}
+
+	if err := s.WebhookDefSetActive(ctx, "tenant-b", name, aRow.DefID, ""); err == nil {
+		t.Error("cross-tenant promote (A's def under tenant-b) unexpectedly succeeded")
 	}
 }
 
@@ -5011,19 +5208,72 @@ func testMemoryBackendDefActivePointerIdempotent(t *testing.T, s store.Store) {
 	r1, _ := s.MemoryBackendDefCreate(ctx, mkMemoryBackendDef("mb-active-1", "backend-active", ""))
 	r2, _ := s.MemoryBackendDefCreate(ctx, mkMemoryBackendDef("mb-active-2", "backend-active", ""))
 
-	if err := s.MemoryBackendDefSetActive(ctx, "backend-active", r1.DefID, "test"); err != nil {
+	if err := s.MemoryBackendDefSetActive(ctx, "", "backend-active", r1.DefID, "test"); err != nil {
 		t.Fatal(err)
 	}
-	got, _ := s.MemoryBackendDefGetActive(ctx, "backend-active")
+	got, _ := s.MemoryBackendDefGetActive(ctx, "", "backend-active")
 	if got.DefID != r1.DefID {
 		t.Errorf("active = %s, want %s", got.DefID, r1.DefID)
 	}
-	if err := s.MemoryBackendDefSetActive(ctx, "backend-active", r2.DefID, "test"); err != nil {
+	if err := s.MemoryBackendDefSetActive(ctx, "", "backend-active", r2.DefID, "test"); err != nil {
 		t.Fatal(err)
 	}
-	got, _ = s.MemoryBackendDefGetActive(ctx, "backend-active")
+	got, _ = s.MemoryBackendDefGetActive(ctx, "", "backend-active")
 	if got.DefID != r2.DefID {
 		t.Errorf("after re-promote: active = %s, want %s", got.DefID, r2.DefID)
+	}
+}
+
+// testMemoryBackendDefTenantIsolation mirrors testAgentDefTenantIsolation
+// (minus the dynamic_* tier MemoryBackend doesn't have): two tenants own
+// the same name with distinct bodies, each GetActive returns its own, and
+// cross-tenant promote is refused. Fails before the 0040 migration /
+// tenant-scoped store methods (a single global active pointer would have
+// tenant-b's promote clobber tenant-a's).
+func testMemoryBackendDefTenantIsolation(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	const name = "shared-backend"
+
+	aDef := mkMemoryBackendDef("mbti-a", name, "")
+	aDef.TenantID = "tenant-a"
+	aDef.Definition = json.RawMessage(`{"kind":"inprocess","v":"A"}`)
+	aRow, err := s.MemoryBackendDefCreate(ctx, aDef)
+	if err != nil {
+		t.Fatalf("create A: %v", err)
+	}
+	bDef := mkMemoryBackendDef("mbti-b", name, "")
+	bDef.TenantID = "tenant-b"
+	bDef.Definition = json.RawMessage(`{"kind":"inprocess","v":"B"}`)
+	bRow, err := s.MemoryBackendDefCreate(ctx, bDef)
+	if err != nil {
+		t.Fatalf("create B: %v", err)
+	}
+
+	if err := s.MemoryBackendDefSetActive(ctx, "tenant-a", name, aRow.DefID, ""); err != nil {
+		t.Fatalf("promote A: %v", err)
+	}
+	if err := s.MemoryBackendDefSetActive(ctx, "tenant-b", name, bRow.DefID, ""); err != nil {
+		t.Fatalf("promote B: %v", err)
+	}
+
+	gotA, err := s.MemoryBackendDefGetActive(ctx, "tenant-a", name)
+	if err != nil {
+		t.Fatalf("get active A: %v", err)
+	}
+	if gotA.DefID != aRow.DefID || gotA.TenantID != "tenant-a" || !jsonEqual(gotA.Definition, `{"kind":"inprocess","v":"A"}`) {
+		t.Errorf("tenant-a clobbered: got def_id=%q tenant=%q def=%s", gotA.DefID, gotA.TenantID, gotA.Definition)
+	}
+	gotB, err := s.MemoryBackendDefGetActive(ctx, "tenant-b", name)
+	if err != nil {
+		t.Fatalf("get active B: %v", err)
+	}
+	if gotB.DefID != bRow.DefID || gotB.TenantID != "tenant-b" || !jsonEqual(gotB.Definition, `{"kind":"inprocess","v":"B"}`) {
+		t.Errorf("tenant-b clobbered: got def_id=%q tenant=%q def=%s", gotB.DefID, gotB.TenantID, gotB.Definition)
+	}
+
+	// A def can only be promoted within its own tenant.
+	if err := s.MemoryBackendDefSetActive(ctx, "tenant-b", name, aRow.DefID, ""); err == nil {
+		t.Error("cross-tenant promote (A's def under tenant-b) unexpectedly succeeded")
 	}
 }
 
@@ -5112,7 +5362,7 @@ func scheduleRuntimeFixture(t *testing.T, s store.Store, name string) string {
 	if _, err := s.ScheduleDefCreate(ctx, mkScheduleDef(defID, name, "")); err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	if err := s.ScheduleDefSetActive(ctx, name, defID, "test"); err != nil {
+	if err := s.ScheduleDefSetActive(ctx, "", name, defID, "test"); err != nil {
 		t.Fatalf("set active: %v", err)
 	}
 	return defID
