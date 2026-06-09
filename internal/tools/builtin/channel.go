@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"reflect"
 	"strings"
 	"sync"
 	"time"
@@ -98,15 +99,21 @@ func (c *Channel) shouldWarnTruncation(channel string) bool {
 
 const channelDescription = `Persistent inter-agent message bus. ` +
 	`Publish JSON payloads to a named channel; subscribe to drain new messages with cursor-based at-least-once delivery. ` +
-	`Operations: publish, subscribe, ack, peek, list_channels. ` +
+	`Operations: publish, subscribe, ack, peek, list_channels, await. ` +
 	`Channel ACLs are operator-configured; the tool refuses ops on channels not in this agent's publish/subscribe allowlists. ` +
-	`Scope (agent / user / global) is set by the operator per channel; cursor isolation matches that scope.`
+	`Scope (agent / user / global) is set by the operator per channel; cursor isolation matches that scope. ` +
+	`await is a fan-in barrier across MULTIPLE channels (wait for any / all / at_least N messages, or a timeout) — the complement to ` +
+	`Agent.parallel_spawn (which joins sub-agents); use await to join independent producers (scheduler / webhook / separately-spawned agents). ` +
+	`await is non-committing (detection only) — it never advances cursors, so subscribe/ack exactly what you process.`
 
 const channelInputSchema = `{
   "type": "object",
   "properties": {
-    "op":           {"type": "string", "enum": ["publish","subscribe","ack","peek","list_channels"], "description": "Which operation to perform."},
+    "op":           {"type": "string", "enum": ["publish","subscribe","ack","peek","list_channels","await"], "description": "Which operation to perform."},
     "channel":      {"type": "string", "description": "The channel name (required for publish/subscribe/ack/peek)."},
+    "channels":     {"type": "array", "items": {"type": "string"}, "description": "Await only: the channels to fan in over (max 32). Each is resolved under the agent's SUBSCRIBE allowlist."},
+    "mode":         {"type": "string", "enum": ["any","all","at_least"], "description": "Await only: any = ≥1 channel has a message; all = every channel has ≥1; at_least = total messages across channels ≥ n. Default any."},
+    "n":            {"type": "integer", "description": "Await only: the threshold for mode=at_least (required, >0 for that mode)."},
     "value":        {"description": "Publish only: the JSON payload to append."},
     "ttl":          {"type": "integer", "description": "Publish only: per-message TTL in seconds. Absent = channel default."},
     "deliver_at":   {"type": "string", "description": "Publish only (optional): RFC3339 timestamp at which the message becomes deliverable. Absent or in the past = immediate. TTL counts from publish time, NOT deliver_at — size the TTL to cover both the deferral window AND the desired visibility window."},
@@ -122,6 +129,9 @@ const channelInputSchema = `{
 type channelInput struct {
 	Op          string          `json:"op"`
 	Channel     string          `json:"channel,omitempty"`
+	Channels    []string        `json:"channels,omitempty"` // await: fan-in set
+	Mode        string          `json:"mode,omitempty"`     // await: any|all|at_least
+	N           int             `json:"n,omitempty"`        // await: threshold for at_least
 	Value       json.RawMessage `json:"value,omitempty"`
 	TTL         int64           `json:"ttl,omitempty"`
 	DeliverAt   string          `json:"deliver_at,omitempty"`
@@ -163,10 +173,12 @@ func (c *Channel) Execute(ctx context.Context, raw json.RawMessage) (tools.Resul
 		return c.execPeek(ctx, policy, in)
 	case "list_channels":
 		return c.execListChannels(policy)
+	case "await":
+		return c.execAwait(ctx, policy, in)
 	case "":
 		return errResult("missing required field: op"), nil
 	default:
-		return errResult(fmt.Sprintf("unknown op %q (must be one of: publish, subscribe, ack, peek, list_channels)", in.Op)), nil
+		return errResult(fmt.Sprintf("unknown op %q (must be one of: publish, subscribe, ack, peek, list_channels, await)", in.Op)), nil
 	}
 }
 
@@ -645,6 +657,250 @@ func readWithRetry(read func() ([]store.ChannelMessage, string, error), channel 
 		diag.fromCursor,
 		diag.poolTotal, diag.poolAcquired, diag.poolIdle)
 	return nil, "", nil
+}
+
+// awaitMaxChannels caps the fan-in width so one await can't register an
+// unbounded number of Bus wakers / hold an unbounded select.
+const awaitMaxChannels = 32
+
+// execAwait is the RFC S / F35 fan-in barrier: wait until any / all /
+// at_least-N messages are visible across a SET of channels, or a timeout.
+// It is the complement to Agent.parallel_spawn (which joins sub-agents) —
+// await joins INDEPENDENT producers (scheduler / webhook / separately-
+// spawned agents) that parallel_spawn can't reach.
+//
+// A dedicated op — deliberately NOT an overload of subscribe. subscribe's
+// single-channel committed-cursor + auto-commit-on-return is the most
+// concurrency-sensitive path in the tool; forking it behind multi-channel
+// conditionals would risk regressing it. await keeps subscribe byte-for-
+// byte and gives fan-in its own clean contract.
+//
+// NON-COMMITTING (peek-style): await is detection, not drain. It returns
+// each fired channel's next_cursor but NEVER advances the committed
+// cursor — auto-committing across N channels on a partial / any / timeout
+// result would silently consume messages on channels the agent didn't
+// act on. The agent then subscribe/acks exactly what it processes.
+//
+// Timeout is NOT an error: returns {satisfied:false, timed_out:true} with
+// whatever partials accumulated, mirroring subscribe's timeout-returns-empty.
+func (c *Channel) execAwait(ctx context.Context, policy tools.ChannelPolicyValue, in channelInput) (tools.Result, error) {
+	if len(in.Channels) == 0 {
+		return errResult("await: missing required field: channels (non-empty list)"), nil
+	}
+	if len(in.Channels) > awaitMaxChannels {
+		return errResult(fmt.Sprintf("await: too many channels (%d > max %d)", len(in.Channels), awaitMaxChannels)), nil
+	}
+	mode := in.Mode
+	if mode == "" {
+		mode = "any"
+	}
+	switch mode {
+	case "any", "all", "at_least":
+	default:
+		return errResult(fmt.Sprintf("await: unknown mode %q (must be one of: any, all, at_least)", mode)), nil
+	}
+	if mode == "at_least" && in.N <= 0 {
+		return errResult("await: mode=at_least requires n > 0"), nil
+	}
+	limit := in.MaxMessages
+	if limit <= 0 {
+		limit = 10
+	}
+	if limit > 100 {
+		limit = 100
+	}
+
+	// Resolve + dedup every channel up front. Each goes through the
+	// SUBSCRIBE ACL + scope resolution (resolveChannel side="subscribe"),
+	// so await can't read a channel the agent can't subscribe to, and
+	// RFC N tenancy is honoured per channel (resolveChannel reads the
+	// run's tenant scope).
+	type chanState struct {
+		name    string
+		scope   store.MemoryScope
+		scopeID string
+		from    string // committed/explicit cursor; NON-advancing
+		msgs    []store.ChannelMessage
+		next    string
+	}
+	seen := make(map[string]bool, len(in.Channels))
+	states := make([]*chanState, 0, len(in.Channels))
+	for _, name := range in.Channels {
+		if seen[name] {
+			continue
+		}
+		seen[name] = true
+		_, scope, scopeID, err := c.resolveChannel(ctx, policy, "subscribe", name)
+		if err != nil {
+			return errResult(err.Error()), nil
+		}
+		from := in.FromCursor
+		if from == "" {
+			committed, err := c.Store.ChannelCommittedCursor(ctx, name, scope, scopeID)
+			if err != nil {
+				return errResult(fmt.Sprintf("await: read committed cursor for %q: %s", name, err)), nil
+			}
+			from = committed
+		}
+		states = append(states, &chanState{name: name, scope: scope, scopeID: scopeID, from: from})
+	}
+
+	readChan := func(st *chanState) error {
+		msgs, next, err := c.Store.ChannelSubscribe(ctx, st.name, st.scope, st.scopeID, st.from, limit)
+		if err != nil {
+			return err
+		}
+		st.msgs = msgs
+		st.next = next
+		return nil
+	}
+
+	satisfied := func() bool {
+		nonEmpty, total := 0, 0
+		for _, st := range states {
+			if len(st.msgs) > 0 {
+				nonEmpty++
+			}
+			total += len(st.msgs)
+		}
+		switch mode {
+		case "any":
+			return nonEmpty >= 1
+		case "all":
+			return nonEmpty == len(states)
+		case "at_least":
+			return total >= in.N
+		}
+		return false
+	}
+
+	longPoll := c.Bus != nil && in.WaitMS > 0 && c.LongPollCapMS > 0
+	wait := in.WaitMS
+	if longPoll && wait > c.LongPollCapMS {
+		// F22: surface the cap once per channel-set so an operator notices
+		// the long-poll budget being clipped.
+		if c.shouldWarnTruncation("await:" + strings.Join(in.Channels, ",")) {
+			log.Printf("channel await: wait_ms=%d truncated to the operator cap %d ms (LOOMCYCLE_CHANNELS_LONGPOLL_CAP_MS)", in.WaitMS, c.LongPollCapMS)
+		}
+		wait = c.LongPollCapMS
+	}
+
+	// Register one waker per channel BEFORE the initial read — the same
+	// race-free invariant subscribe uses (Bus.Register doc): a publish
+	// that commits between our read and our wait can't be lost. Wakers
+	// are one-shot (Notify drains the slice), so the woken channel's
+	// waker is re-registered after each wake. Final wakers are cleaned by
+	// the defer (Unregister is idempotent).
+	wakers := make([]chan struct{}, len(states))
+	if longPoll {
+		for i, st := range states {
+			wakers[i] = c.Bus.Register(st.name)
+		}
+		defer func() {
+			for i, w := range wakers {
+				if w != nil {
+					c.Bus.Unregister(states[i].name, w)
+				}
+			}
+		}()
+	}
+
+	// Initial synchronous multi-read. Empty is the EXPECTED state here
+	// (no producer has fired yet) — plain read, no readWithRetry (its
+	// 3×10ms backoff is for the post-notify MVCC-visibility window, not
+	// a legitimately-empty channel).
+	for _, st := range states {
+		if err := readChan(st); err != nil {
+			return errResult(fmt.Sprintf("await: read %q: %s", st.name, err)), nil
+		}
+	}
+
+	timedOut := false
+	if !satisfied() && longPoll {
+		timer := time.NewTimer(time.Duration(wait) * time.Millisecond)
+		defer timer.Stop()
+	loop:
+		for {
+			// Dynamic-N select over the wakers + timer + ctx. reflect.Select
+			// is the idiomatic stdlib dynamic select — no merge goroutines,
+			// so nothing can leak.
+			cases := make([]reflect.SelectCase, 0, len(wakers)+2)
+			for _, w := range wakers {
+				cases = append(cases, reflect.SelectCase{Dir: reflect.SelectRecv, Chan: reflect.ValueOf(w)})
+			}
+			timerIdx := len(cases)
+			cases = append(cases, reflect.SelectCase{Dir: reflect.SelectRecv, Chan: reflect.ValueOf(timer.C)})
+			ctxIdx := len(cases)
+			cases = append(cases, reflect.SelectCase{Dir: reflect.SelectRecv, Chan: reflect.ValueOf(ctx.Done())})
+
+			chosen, _, _ := reflect.Select(cases)
+			if chosen == timerIdx || chosen == ctxIdx {
+				timedOut = true
+				break loop
+			}
+			// A channel waker fired. Re-read ONLY that channel, with the
+			// same bounded MVCC-visibility retry subscribe uses (the row
+			// committed before Notify, so it IS visible — the retry covers
+			// the rare pgxpool snapshot window). `from` is non-advancing, so
+			// the re-read returns the full window for that channel.
+			st := states[chosen]
+			diag := retryDiagnostics{notifyAt: time.Now(), fromCursor: st.from}
+			if c.PoolStatsFn != nil {
+				diag.poolTotal, diag.poolAcquired, diag.poolIdle = c.PoolStatsFn()
+			}
+			msgs, next, err := readWithRetry(func() ([]store.ChannelMessage, string, error) {
+				return c.Store.ChannelSubscribe(ctx, st.name, st.scope, st.scopeID, st.from, limit)
+			}, st.name, diag)
+			if err != nil {
+				return errResult(fmt.Sprintf("await: read %q (after wake): %s", st.name, err)), nil
+			}
+			st.msgs = msgs
+			st.next = next
+			if satisfied() {
+				break loop
+			}
+			// Re-arm a fresh waker for the next publish on this channel
+			// (the fired one was drained by Notify).
+			c.Bus.Unregister(st.name, wakers[chosen])
+			wakers[chosen] = c.Bus.Register(st.name)
+		}
+	} else if !satisfied() {
+		// No long-poll budget (Bus nil / wait<=0): the single synchronous
+		// multi-read above is the whole answer; unmet ⇒ timed out.
+		timedOut = true
+	}
+
+	sat := satisfied()
+	fired := make([]string, 0, len(states))
+	results := make(map[string]any, len(states))
+	total := 0
+	for _, st := range states {
+		out := make([]map[string]any, 0, len(st.msgs))
+		for _, m := range st.msgs {
+			out = append(out, map[string]any{
+				"id":           m.ID,
+				"value":        m.Payload,
+				"published_at": m.PublishedAt.UTC().Format(time.RFC3339Nano),
+			})
+		}
+		if len(st.msgs) > 0 {
+			fired = append(fired, st.name)
+		}
+		results[st.name] = map[string]any{
+			"messages":    out,
+			"next_cursor": st.next,
+		}
+		total += len(st.msgs)
+	}
+
+	return okJSON(map[string]any{
+		"satisfied":      sat,
+		"timed_out":      timedOut && !sat,
+		"mode":           mode,
+		"fired":          fired,
+		"results":        results,
+		"total_messages": total,
+	})
 }
 
 func (c *Channel) execAck(ctx context.Context, policy tools.ChannelPolicyValue, in channelInput) (tools.Result, error) {
