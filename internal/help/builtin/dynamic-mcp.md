@@ -73,6 +73,16 @@ substitution happens per-request in `Client.do()` against a local map
 copy — `c.headers` is never mutated, so concurrent calls send the
 right bearer per run.
 
+**Secrets are stored by reference, resolved at dial (F32).** The url +
+headers you register are persisted **verbatim** — a header like
+`Authorization: Bearer ${LOOMCYCLE_N8N_TOKEN}` keeps the `${...}`
+reference in `mcp_server_defs.content` (and `content_sha256` is computed
+over the reference, so it stays stable when the token rotates). The
+`${LOOMCYCLE_*}` is resolved only when the pool dials the server, exactly
+as a yaml `mcp_servers.*` entry is expanded at config load. The live
+credential never touches the DB / backups / snapshots. (Earlier revisions
+baked the resolved token into the stored def — that is fixed.)
+
 ## Ops
 
 The `MCPServerDef` tool dispatches eight ops:

@@ -800,9 +800,25 @@ func main() {
 			}
 			switch spec.Transport {
 			case "http", "streamable-http":
+				// F32: resolve ${LOOMCYCLE_*} at DIAL time, not persist time —
+				// the stored def (and the registry spec) carry only the ${ref};
+				// the live client gets the value. This mirrors yaml-load's
+				// config.Load expansion at exactly the boundary that flattens any
+				// inner ${LOOMCYCLE_*} before the request-time ${run.*}
+				// substituter runs (see mcpserverdef.go buildDefinition). For a
+				// yaml-static spec the values are already flat, so ExpandEnv is an
+				// idempotent no-op; a pre-F32 baked row (resolved value, no ${})
+				// is likewise a no-op → backward-compatible.
+				hdrs := spec.Headers
+				if len(hdrs) > 0 {
+					hdrs = make(map[string]string, len(spec.Headers))
+					for k, v := range spec.Headers {
+						hdrs[k] = config.ExpandEnv(v)
+					}
+				}
 				return mcphttp.New(mcphttp.Config{
-					URL:     spec.URL,
-					Headers: spec.Headers,
+					URL:     config.ExpandEnv(spec.URL),
+					Headers: hdrs,
 				})
 			case "stdio":
 				// F31: a runtime-registered stdio server. The substrate only

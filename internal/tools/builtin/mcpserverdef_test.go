@@ -479,21 +479,24 @@ func TestCanonicalTools_OrderAndWhitespaceInsensitive(t *testing.T) {
 	}
 }
 
-// TestMCPServerDefTool_CreateExpandsInnerLoomcycleEnv pins the dynamic-vs-yaml
-// env-expansion symmetry. A yaml MCP server's header is expanded at
-// config.Load (the whole document passes through expandEnv); a dynamically-
-// registered one never passes through Load. Without expansion at create, the
-// inner ${LOOMCYCLE_*} in a header like
+// TestMCPServerDefTool_CreateStoresEnvReferenceNotValue is the F32 regression:
+// a dynamically-registered http MCP server must persist the ${LOOMCYCLE_*}
+// REFERENCE in mcp_server_defs.content, never the resolved secret. An earlier
+// revision expanded url/headers at create (buildDefinition), baking the live
+// token into the stored def + content_sha256 — readable at rest in the DB /
+// backups / snapshots. Expansion now happens at DIAL time (cmd/loomcycle/
+// main.go pool callback); the disk keeps only the reference.
 //
-//	Bearer ${run.credentials.jobs:-${LOOMCYCLE_JOBS_SEARCH_API_TOKEN}}
+// The test also asserts that re-applying config.ExpandEnv to the stored value
+// (exactly what the pool callback does at dial) still flattens the inner
+// ${LOOMCYCLE_*} while leaving the outer ${run.*} token for the request-time
+// substituter — i.e. the relocation preserves the behaviour the old baking
+// protected (substitute.go's lazy `.*?` would otherwise truncate on a nested
+// `}`; see internal/tools/mcp/http/substitute.go:14).
 //
-// is stored verbatim, and the request-time substituter's lazy `.*?` fallback
-// (internal/tools/mcp/http/substitute.go) then truncates on the inner `}` and
-// sends `Bearer ${LOOMCYCLE_…}` as a literal → 401 upstream.
-//
-// Fails on the pre-fix code, which stored the nested-brace template verbatim:
-// the want-strings below would not match.
-func TestMCPServerDefTool_CreateExpandsInnerLoomcycleEnv(t *testing.T) {
+// Fails on the pre-F32 code, which stored the resolved value: the
+// reference-equality asserts below would see the baked token instead.
+func TestMCPServerDefTool_CreateStoresEnvReferenceNotValue(t *testing.T) {
 	t.Setenv("LOOMCYCLE_JOBS_SEARCH_API_TOKEN", "tok-abc123")
 	t.Setenv("LOOMCYCLE_JOBS_MCP_HOST", "internal.example") // in the fixture allowlist
 
@@ -509,10 +512,6 @@ func TestMCPServerDefTool_CreateExpandsInnerLoomcycleEnv(t *testing.T) {
 		t.Fatalf("create: %s", res.Text)
 	}
 
-	// Read the stored definition back and assert the inner LOOMCYCLE var was
-	// resolved while the outer ${run.credentials.*} token survived for
-	// request-time substitution — i.e. the stored header is now FLAT (no
-	// nested brace), which is exactly what substitute.go's lazy regex needs.
 	active, err := tool.Store.MCPServerDefGetActive(ctx, "", "jobs")
 	if err != nil {
 		t.Fatalf("GetActive: %v", err)
@@ -522,20 +521,96 @@ func TestMCPServerDefTool_CreateExpandsInnerLoomcycleEnv(t *testing.T) {
 		t.Fatalf("unmarshal definition: %v", err)
 	}
 
-	if want := "https://internal.example/mcp"; ov.URL != want {
-		t.Errorf("URL not expanded: got %q, want %q", ov.URL, want)
+	// 1. The stored def keeps the references — no secret at rest.
+	if want := "https://${LOOMCYCLE_JOBS_MCP_HOST}/mcp"; ov.URL != want {
+		t.Errorf("stored URL should keep the env reference:\n got: %q\nwant: %q", ov.URL, want)
 	}
 	gotHdr := ov.Headers["Authorization"]
-	if want := "Bearer ${run.credentials.jobs:-tok-abc123}"; gotHdr != want {
-		t.Fatalf("Authorization header:\n got: %q\nwant: %q", gotHdr, want)
+	if want := "Bearer ${run.credentials.jobs:-${LOOMCYCLE_JOBS_SEARCH_API_TOKEN}}"; gotHdr != want {
+		t.Errorf("stored header should keep the env reference:\n got: %q\nwant: %q", gotHdr, want)
 	}
-	// Belt-and-suspenders: no nested brace remains, and the secret is not a
-	// literal placeholder anymore.
-	if strings.Contains(gotHdr, "${LOOMCYCLE_") {
-		t.Errorf("inner LOOMCYCLE var left unresolved in stored header: %q", gotHdr)
+	// The resolved secret must NOT appear anywhere in the persisted content.
+	if strings.Contains(string(active.Definition), "tok-abc123") {
+		t.Fatalf("resolved token leaked into stored def content: %s", active.Definition)
 	}
-	if !strings.Contains(gotHdr, "${run.credentials.jobs:-") {
-		t.Errorf("outer run-credentials token did not survive expansion: %q", gotHdr)
+
+	// 2. The relocated dial-time expansion still flattens the inner LOOMCYCLE
+	//    var, leaving the outer ${run.*} token for request-time substitution.
+	if got, want := config.ExpandEnv(ov.URL), "https://internal.example/mcp"; got != want {
+		t.Errorf("dial-time URL expansion: got %q, want %q", got, want)
+	}
+	if got, want := config.ExpandEnv(gotHdr), "Bearer ${run.credentials.jobs:-tok-abc123}"; got != want {
+		t.Errorf("dial-time header expansion: got %q, want %q", got, want)
+	}
+}
+
+// TestMCPServerDefTool_ContentSHAStableAcrossTokenRotation pins F32's other
+// win: because the def stores the ${ref} (not the value), content_sha256 is
+// computed over the reference and no longer churns when the underlying secret
+// rotates. On the pre-F32 code the baked value changed with the env, so the
+// two hashes differed (and the resolved token sat in the stored def).
+func TestMCPServerDefTool_ContentSHAStableAcrossTokenRotation(t *testing.T) {
+	tool, _, cleanup := mcpServerDefFixture(t)
+	defer cleanup()
+
+	overlay := json.RawMessage(`{"transport":"http","url":"https://internal.example/mcp","headers":{"Authorization":"Bearer ${LOOMCYCLE_JOBS_SEARCH_API_TOKEN}"}}`)
+
+	t.Setenv("LOOMCYCLE_JOBS_SEARCH_API_TOKEN", "tok-AAAAAAAA")
+	defA, err := tool.buildDefinition("", overlay)
+	if err != nil {
+		t.Fatalf("buildDefinition A: %v", err)
+	}
+	shaA := signFromMCPServerOverlay("jobs", defA)
+
+	t.Setenv("LOOMCYCLE_JOBS_SEARCH_API_TOKEN", "tok-BBBBBBBB-rotated")
+	defB, err := tool.buildDefinition("", overlay)
+	if err != nil {
+		t.Fatalf("buildDefinition B: %v", err)
+	}
+	shaB := signFromMCPServerOverlay("jobs", defB)
+
+	if shaA != shaB {
+		t.Fatalf("content_sha256 changed on token rotation (secret baked into content): %s vs %s", shaA, shaB)
+	}
+	if strings.Contains(defA.Headers["Authorization"], "tok-AAAAAAAA") {
+		t.Errorf("resolved token baked into stored def: %q", defA.Headers["Authorization"])
+	}
+}
+
+// TestMCPServerDefTool_HostCheckedAfterExpand guards that F32's reference
+// storage did not break the host-allowlist gate: validateOverlay expands the
+// ${...} URL transiently (in-memory, for the host extraction only) so a URL
+// resolving to an allowlisted host is admitted and one resolving off-allowlist
+// is refused — while the persisted def still keeps the reference.
+func TestMCPServerDefTool_HostCheckedAfterExpand(t *testing.T) {
+	tool, ctx, cleanup := mcpServerDefFixture(t)
+	defer cleanup()
+
+	t.Setenv("LOOMCYCLE_OK_HOST", "internal.example") // allowlisted in the fixture
+	t.Setenv("LOOMCYCLE_BAD_HOST", "evil.example")    // NOT allowlisted
+
+	ok, _ := tool.Execute(ctx, json.RawMessage(`{"op":"create","name":"ok-host","overlay":{"transport":"http","url":"https://${LOOMCYCLE_OK_HOST}/mcp"}}`))
+	if ok.IsError {
+		t.Fatalf("allowlisted resolved host should pass: %s", ok.Text)
+	}
+	active, err := tool.Store.MCPServerDefGetActive(ctx, "", "ok-host")
+	if err != nil {
+		t.Fatalf("GetActive: %v", err)
+	}
+	var ov mcpServerOverlay
+	if err := json.Unmarshal(active.Definition, &ov); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if want := "https://${LOOMCYCLE_OK_HOST}/mcp"; ov.URL != want {
+		t.Errorf("admitted def should still store the reference: got %q want %q", ov.URL, want)
+	}
+
+	bad, _ := tool.Execute(ctx, json.RawMessage(`{"op":"create","name":"bad-host","overlay":{"transport":"http","url":"https://${LOOMCYCLE_BAD_HOST}/mcp"}}`))
+	if !bad.IsError {
+		t.Fatalf("off-allowlist resolved host should refuse; got %s", bad.Text)
+	}
+	if !strings.Contains(bad.Text, "not in") {
+		t.Errorf("refusal should mention the allowlist; got %s", bad.Text)
 	}
 }
 

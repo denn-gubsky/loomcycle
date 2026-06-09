@@ -802,7 +802,10 @@ func (m *MCPServerDef) validateOverlay(ov mcpServerOverlay) error {
 	if ov.URL == "" {
 		return fmt.Errorf("url is required")
 	}
-	u, err := url.Parse(ov.URL)
+	// F32: the stored def keeps the ${ref}, but the host-allowlist gate must
+	// see the RESOLVED host. Expand transiently here (in-memory, validation
+	// only) — buildDefinition does not persist this expanded form.
+	u, err := url.Parse(config.ExpandEnv(ov.URL))
 	if err != nil {
 		return fmt.Errorf("url parse: %w", err)
 	}
@@ -859,32 +862,24 @@ func (m *MCPServerDef) buildDefinition(parentJSON string, overlay json.RawMessag
 		}
 		base.applyOverlay(ov)
 	}
-	// Mirror yaml-load's ${LOOMCYCLE_*} expansion on the operator-authored
-	// connection fields. A yaml MCP server is expanded at config.Load; a
-	// dynamically-registered one never passes through Load, so without this
-	// the inner ${LOOMCYCLE_TOKEN} in a header template like
+	// F32: persist the ${LOOMCYCLE_*} REFERENCE, not the resolved value. An
+	// earlier revision expanded url/headers here to mirror yaml-load — but that
+	// baked the live token into mcp_server_defs.content (and content_sha256),
+	// leaving the credential readable at rest in the DB / backups / snapshots.
+	// Expansion is now deferred to DIAL time in the pool build callback
+	// (cmd/loomcycle/main.go, case "http"), mirroring how a yaml MCP server is
+	// expanded at config.Load — the live client gets the value, the disk keeps
+	// only ${ref}. This matches the webhookdef pattern (store env-var names,
+	// resolve at use-time) the rest of the substrate already follows.
+	//
+	// The nested-brace concern that motivated the old expansion (a header like
 	//   Bearer ${run.credentials.jobs:-${LOOMCYCLE_JOBS_SEARCH_API_TOKEN}}
-	// is stored verbatim. The request-time substituter's lazy `.*?` fallback
-	// then truncates on the inner `}` (see internal/tools/mcp/http/
-	// substitute.go:14, whose safety comment depends on this prior expansion)
-	// and sends `Bearer ${LOOMCYCLE_…}` as a literal → 401 upstream.
-	// Expanding here keeps the stored value flat (no nested brace), so
-	// request-time substitution behaves identically for yaml- and substrate-
-	// registered servers. The outer ${run.*} token carries a "." in its name,
-	// which envVarRe ([A-Za-z_][A-Za-z0-9_]*) cannot match, so it survives to
-	// request time untouched. Re-expanding an already-stored (forked) value is
-	// a no-op: bearer tokens cannot contain `${…}` per the HTTP-boundary
-	// charset. Caveat: this bakes the resolved token into the stored def
-	// content (and thus content_sha256) — consistent with yaml semantics, and
-	// dedup stays stable as long as the env value is stable.
-	base.URL = config.ExpandEnv(base.URL)
-	if len(base.Headers) > 0 {
-		expanded := make(map[string]string, len(base.Headers))
-		for k, v := range base.Headers {
-			expanded[k] = config.ExpandEnv(v)
-		}
-		base.Headers = expanded
-	}
+	// whose inner ${LOOMCYCLE_*} must be flattened before the request-time
+	// substituter's lazy `.*?` fallback truncates on the inner `}`; see
+	// internal/tools/mcp/http/substitute.go:14) is unchanged — the dial-time
+	// ExpandEnv flattens the inner token at exactly the same point yaml-load
+	// would, just without writing it to disk first. content_sha256 over the
+	// reference is also MORE stable: it no longer churns when the token rotates.
 	return base, nil
 }
 
