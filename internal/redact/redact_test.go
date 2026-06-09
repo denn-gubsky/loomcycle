@@ -33,10 +33,10 @@ func TestRedactor_ShortEnvValueSkipped(t *testing.T) {
 func TestRedactor_Patterns(t *testing.T) {
 	r := New(nil, true) // patterns only, no exact values
 	cases := []struct {
-		name      string
-		in        string
-		mustGo    string // substring that must be gone
-		mustStay  string // substring that must remain (structure preserved)
+		name     string
+		in       string
+		mustGo   string // substring that must be gone
+		mustStay string // substring that must remain (structure preserved)
 	}{
 		{"auth-token", `Authorization: token ghp_realtokenvalue1234567890`, "ghp_realtokenvalue1234567890", "Authorization: token"},
 		{"auth-bearer", `Authorization: Bearer sk-abc123def456ghi789jkl`, "sk-abc123def456ghi789jkl", "Authorization: Bearer"},
