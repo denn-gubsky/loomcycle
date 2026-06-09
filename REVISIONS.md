@@ -8,6 +8,43 @@ For pre-v0.4 history (single-tool runtime, library milestone, security patch), s
 
 ---
 
+## Unreleased
+
+**The RFC N tenant axis reaches every definition family.** v0.22.0 (RFC N)
+isolated the active-pointer / definition plane for **agents, skills, and MCP
+servers** (3 of the 8 content-addressed substrate Defs); the run-triggering
+ScheduleDef / WebhookDef carried only a *run-execution* `tenant_id` in the
+def body, not an isolated active pointer, and MemoryBackend / A2A (server
+card + agent) were still global-by-name. So two tenants registering the same
+name collided on a single global pointer, and any admin-listable name could
+leak across the boundary.
+
+This completes the axis across the remaining **five** families — MemoryBackend,
+A2AAgent, ScheduleDef, A2AServerCardDef, WebhookDef — so **all 8** def families
+now key their versioned rows on `UNIQUE(tenant_id, name, version)` and their
+active pointer on `PRIMARY KEY(tenant_id, name)`, resolved through the same
+`internal/lookup` three-tier precedence (tenant-dynamic → static shared base →
+shared `""`). The owning tenant is the authoritative principal, never the wire;
+the shared `""` tenant is byte-identical to pre-RFC-N behavior, so single-tenant
+/ open-mode deployments are unaffected.
+
+- **Storage:** Postgres migrations 0040–0044 (mirror of 0037); SQLite gains the
+  composite PK on fresh DBs + the idempotent `(tenant_id, name)` ON-CONFLICT
+  index on in-place upgrades (the same caveat as agents/skills/MCP — a fresh DB
+  is required for full per-tenant isolation on SQLite; an upgraded DB keeps
+  PK(name) but stays single-tenant-correct). A new SQLite upgrade regression
+  test covers all five, and five new `*TenantIsolation` store-contract tests run
+  on **both** SQLite and the real-Postgres CI job.
+- **Inbound webhooks gain a tenant route:** `POST /v1/_webhooks/{tenant}/{name}`
+  resolves a per-tenant webhook; the bare-root `POST /v1/_webhooks/{name}` keeps
+  resolving under the shared `""` tenant (existing single-tenant webhooks are
+  unchanged). The admin dry-run (`/test`) resolves under the caller's principal
+  tenant. **Wire change** — a downstream that authors webhooks under a non-empty
+  tenant must register its delivery URL with the `/{tenant}/` prefix.
+- **A2A server card:** the served card is resolved under the routed
+  (path/host-tenancy) request tenant, so each tenant's A2A surface serves its
+  own card; the boot executor stays the operator (`""`) card.
+
 ## What's in v0.23.0
 
 **Headline: the MCP server stops wedging — concurrent dispatch, bounded
