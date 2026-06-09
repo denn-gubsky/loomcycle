@@ -1,12 +1,48 @@
 package lookup_test
 
 import (
+	"encoding/json"
 	"reflect"
 	"testing"
 
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/lookup"
 )
+
+// TestSubstrateMCPServer_UnmarshalsObjectInputSchema is the F33 root-cause
+// regression: a stored mcp_server_def carries discovered_tools whose
+// input_schema is a JSON OBJECT. SubstrateMCPServerTool.InputSchema must be
+// json.RawMessage — a plain []byte field makes encoding/json reject the object
+// (it expects a base64 string), which aborts the WHOLE def unmarshal and leaves
+// DiscoveredTools empty, so the run-start enumerator advertised nothing even for
+// a fully-discovered server. Fails on the pre-fix []byte type.
+func TestSubstrateMCPServer_UnmarshalsObjectInputSchema(t *testing.T) {
+	const defJSON = `{"transport":"http","url":"https://x/mcp","discovered_tools":[` +
+		`{"name":"send_message","description":"send","input_schema":{"type":"object","properties":{"text":{"type":"string"}}}}]}`
+
+	var def lookup.SubstrateMCPServer
+	if err := json.Unmarshal([]byte(defJSON), &def); err != nil {
+		t.Fatalf("unmarshal failed (object input_schema must decode): %v", err)
+	}
+	if len(def.DiscoveredTools) != 1 {
+		t.Fatalf("DiscoveredTools = %d, want 1 (object input_schema dropped the tool)", len(def.DiscoveredTools))
+	}
+	got := def.DiscoveredTools[0]
+	if got.Name != "send_message" {
+		t.Errorf("tool name = %q", got.Name)
+	}
+	// The raw object schema is preserved verbatim.
+	if !json.Valid(got.InputSchema) || len(got.InputSchema) == 0 {
+		t.Fatalf("InputSchema not preserved as raw JSON: %q", got.InputSchema)
+	}
+	var schema map[string]any
+	if err := json.Unmarshal(got.InputSchema, &schema); err != nil {
+		t.Fatalf("InputSchema is not a JSON object: %v", err)
+	}
+	if schema["type"] != "object" {
+		t.Errorf("InputSchema.type = %v, want object", schema["type"])
+	}
+}
 
 // fakeDynReg is a lookup.MCPDynamicRegistry stub for the resolver test.
 // RFC N: keyed by (tenant, name); the "" tenant is the shared registry.
