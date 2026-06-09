@@ -1296,8 +1296,16 @@ type Store interface {
 	MemoryBackendDefListByName(ctx context.Context, name string) ([]MemoryBackendDefRow, error)
 	MemoryBackendDefListChildren(ctx context.Context, parentDefID string) ([]MemoryBackendDefRow, error)
 	MemoryBackendDefListNames(ctx context.Context) ([]MemoryBackendDefNameSummary, error)
-	MemoryBackendDefSetActive(ctx context.Context, name, defID, promotedByAgentID string) error
-	MemoryBackendDefGetActive(ctx context.Context, name string) (MemoryBackendDefRow, error)
+	// MemoryBackendDefSetActive UPSERTs the memory_backend_def_active
+	// pointer for (tenantID, name). RFC N: the active pointer is per-tenant,
+	// and a def can only be promoted within its own tenant — implementations
+	// refuse if the def's tenant_id ≠ tenantID. tenantID "" = the shared/
+	// operator/legacy tenant.
+	MemoryBackendDefSetActive(ctx context.Context, tenantID, name, defID, promotedByAgentID string) error
+	// MemoryBackendDefGetActive returns the active row for (tenantID, name).
+	// Returns *ErrNotFound when no active pointer exists. RFC N: tenantID
+	// "" = the shared/operator/legacy tenant.
+	MemoryBackendDefGetActive(ctx context.Context, tenantID, name string) (MemoryBackendDefRow, error)
 	MemoryBackendDefSetRetired(ctx context.Context, defID string, retired bool) error
 
 	// ---- OperatorTokenDef (RFC L OSS multi-tenant authorization) ----
@@ -2231,6 +2239,13 @@ type MemoryBackendDefRow struct {
 	CreatedByRunID         string          `json:"created_by_run_id,omitempty"`
 	Retired                bool            `json:"retired"`
 	BootstrappedFromStatic bool            `json:"bootstrapped_from_static"`
+	// TenantID is the RFC N tenant-isolation axis. "" = the shared/
+	// operator/legacy tenant. The UNIQUE constraint is (tenant_id, name,
+	// version), so two tenants own the same name+version independently. Set
+	// from the authoritative principal at the write site; never from the
+	// wire. (MemoryBackendDef has no content hash, so there is no
+	// content-hash exclusion concern — unlike AgentDefRow.)
+	TenantID string `json:"tenant_id,omitempty"`
 }
 
 // MemoryBackendDefNameSummary mirrors WebhookDefNameSummary.
@@ -2240,6 +2255,9 @@ type MemoryBackendDefNameSummary struct {
 	ActiveDefID   string    `json:"active_def_id,omitempty"`
 	LatestVersion int       `json:"latest_version"`
 	LastUpdated   time.Time `json:"last_updated"`
+	// TenantID is the RFC N owning tenant. A name owned by N tenants yields
+	// N summary rows (one per tenant). "" = the shared/operator/legacy tenant.
+	TenantID string `json:"tenant_id,omitempty"`
 }
 
 // OperatorTokenDefRow is one auth-token row (RFC L). The token plaintext
@@ -2278,6 +2296,9 @@ type MemoryBackendDefActiveEntry struct {
 	DefID             string    `json:"def_id"`
 	PromotedAt        time.Time `json:"promoted_at"`
 	PromotedByAgentID string    `json:"promoted_by_agent_id,omitempty"`
+	// TenantID is the RFC N tenant-isolation axis (part of the
+	// memory_backend_def_active PK). "" = the shared/operator/legacy tenant.
+	TenantID string `json:"tenant_id,omitempty"`
 }
 
 // ScheduleRunStateRow is one row in schedule_run_state — the

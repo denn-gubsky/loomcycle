@@ -4981,9 +4981,12 @@ func (s *Store) MemoryBackendDefCreate(ctx context.Context, row store.MemoryBack
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
+	// RFC N: tenant is part of the version-allocation lock scope so two
+	// tenants' v1 of the same name don't collide on UNIQUE(tenant_id, name,
+	// version).
 	if _, err := tx.Exec(ctx,
 		`SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`,
-		"memory_backend_def:"+row.Name,
+		"memory_backend_def:"+row.TenantID+":"+row.Name,
 	); err != nil {
 		return store.MemoryBackendDefRow{}, fmt.Errorf("memory_backend_def create lock: %w", err)
 	}
@@ -4999,7 +5002,7 @@ func (s *Store) MemoryBackendDefCreate(ctx context.Context, row store.MemoryBack
 	}
 
 	var maxVer sql.NullInt64
-	if err := tx.QueryRow(ctx, `SELECT MAX(version) FROM memory_backend_defs WHERE name = $1`, row.Name).Scan(&maxVer); err != nil {
+	if err := tx.QueryRow(ctx, `SELECT MAX(version) FROM memory_backend_defs WHERE tenant_id = $1 AND name = $2`, row.TenantID, row.Name).Scan(&maxVer); err != nil {
 		return store.MemoryBackendDefRow{}, fmt.Errorf("memory_backend_def create max version: %w", err)
 	}
 	row.Version = 1
@@ -5012,13 +5015,13 @@ func (s *Store) MemoryBackendDefCreate(ctx context.Context, row store.MemoryBack
 		INSERT INTO memory_backend_defs (
 			def_id, name, version, parent_def_id, definition, description,
 			created_at, created_by_agent_id, created_by_run_id,
-			retired, bootstrapped_from_static
-		) VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10, $11)`,
+			retired, bootstrapped_from_static, tenant_id
+		) VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10, $11, $12)`,
 		row.DefID, row.Name, row.Version, nullableString(row.ParentDefID),
 		string(row.Definition), nullableString(row.Description),
 		row.CreatedAt,
 		nullableString(row.CreatedByAgentID), nullableString(row.CreatedByRunID),
-		row.Retired, row.BootstrappedFromStatic,
+		row.Retired, row.BootstrappedFromStatic, row.TenantID,
 	); err != nil {
 		return store.MemoryBackendDefRow{}, fmt.Errorf("memory_backend_def insert: %w", err)
 	}
@@ -5063,17 +5066,19 @@ func (s *Store) MemoryBackendDefListChildren(ctx context.Context, parentDefID st
 }
 
 func (s *Store) MemoryBackendDefListNames(ctx context.Context) ([]store.MemoryBackendDefNameSummary, error) {
+	// RFC N: group by tenant_id so a name owned by N tenants yields N rows.
 	rows, err := s.pool.Query(ctx, `
 		SELECT
+			d.tenant_id,
 			d.name,
 			COUNT(*)                  AS version_count,
 			MAX(d.version)            AS latest_version,
 			MAX(d.created_at)         AS last_updated,
 			COALESCE(a.def_id, '')    AS active_def_id
 		FROM memory_backend_defs d
-		LEFT JOIN memory_backend_def_active a ON a.name = d.name
-		GROUP BY d.name, a.def_id
-		ORDER BY d.name`)
+		LEFT JOIN memory_backend_def_active a ON a.name = d.name AND a.tenant_id = d.tenant_id
+		GROUP BY d.tenant_id, d.name, a.def_id
+		ORDER BY d.tenant_id, d.name`)
 	if err != nil {
 		return nil, fmt.Errorf("memory_backend_def list names: %w", err)
 	}
@@ -5082,7 +5087,7 @@ func (s *Store) MemoryBackendDefListNames(ctx context.Context) ([]store.MemoryBa
 	var out []store.MemoryBackendDefNameSummary
 	for rows.Next() {
 		var ns store.MemoryBackendDefNameSummary
-		if err := rows.Scan(&ns.Name, &ns.VersionCount, &ns.LatestVersion, &ns.LastUpdated, &ns.ActiveDefID); err != nil {
+		if err := rows.Scan(&ns.TenantID, &ns.Name, &ns.VersionCount, &ns.LatestVersion, &ns.LastUpdated, &ns.ActiveDefID); err != nil {
 			return nil, err
 		}
 		out = append(out, ns)
@@ -5090,9 +5095,16 @@ func (s *Store) MemoryBackendDefListNames(ctx context.Context) ([]store.MemoryBa
 	return out, rows.Err()
 }
 
-func (s *Store) MemoryBackendDefSetActive(ctx context.Context, name, defID, promotedByAgentID string) error {
-	var rowName string
-	err := s.pool.QueryRow(ctx, `SELECT name FROM memory_backend_defs WHERE def_id = $1`, defID).Scan(&rowName)
+// MemoryBackendDefSetActive UPSERTs the memory_backend_def_active pointer
+// for (tenantID, name). RFC N: validates the def belongs to BOTH the named
+// backend AND the supplied tenant — a def can only be promoted within its
+// own tenant.
+func (s *Store) MemoryBackendDefSetActive(ctx context.Context, tenantID, name, defID, promotedByAgentID string) error {
+	var (
+		rowName   string
+		rowTenant string
+	)
+	err := s.pool.QueryRow(ctx, `SELECT name, tenant_id FROM memory_backend_defs WHERE def_id = $1`, defID).Scan(&rowName, &rowTenant)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return &store.ErrNotFound{Kind: "memory_backend_def", ID: defID}
 	}
@@ -5102,14 +5114,17 @@ func (s *Store) MemoryBackendDefSetActive(ctx context.Context, name, defID, prom
 	if rowName != name {
 		return fmt.Errorf("memory_backend_def_active: def_id %q has name %q, refusing to promote under name %q", defID, rowName, name)
 	}
+	if rowTenant != tenantID {
+		return fmt.Errorf("memory_backend_def_active: def_id %q belongs to tenant %q, refusing to promote under tenant %q", defID, rowTenant, tenantID)
+	}
 	_, err = s.pool.Exec(ctx, `
-		INSERT INTO memory_backend_def_active (name, def_id, promoted_at, promoted_by_agent_id)
-		VALUES ($1, $2, $3, $4)
-		ON CONFLICT (name) DO UPDATE SET
+		INSERT INTO memory_backend_def_active (tenant_id, name, def_id, promoted_at, promoted_by_agent_id)
+		VALUES ($1, $2, $3, $4, $5)
+		ON CONFLICT (tenant_id, name) DO UPDATE SET
 		    def_id               = EXCLUDED.def_id,
 		    promoted_at          = EXCLUDED.promoted_at,
 		    promoted_by_agent_id = EXCLUDED.promoted_by_agent_id`,
-		name, defID, time.Now().UTC(), nullableString(promotedByAgentID),
+		tenantID, name, defID, time.Now().UTC(), nullableString(promotedByAgentID),
 	)
 	if err != nil {
 		return fmt.Errorf("memory_backend_def_active upsert: %w", err)
@@ -5117,9 +5132,9 @@ func (s *Store) MemoryBackendDefSetActive(ctx context.Context, name, defID, prom
 	return nil
 }
 
-func (s *Store) MemoryBackendDefGetActive(ctx context.Context, name string) (store.MemoryBackendDefRow, error) {
+func (s *Store) MemoryBackendDefGetActive(ctx context.Context, tenantID, name string) (store.MemoryBackendDefRow, error) {
 	var defID string
-	err := s.pool.QueryRow(ctx, `SELECT def_id FROM memory_backend_def_active WHERE name = $1`, name).Scan(&defID)
+	err := s.pool.QueryRow(ctx, `SELECT def_id FROM memory_backend_def_active WHERE tenant_id = $1 AND name = $2`, tenantID, name).Scan(&defID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return store.MemoryBackendDefRow{}, &store.ErrNotFound{Kind: "memory_backend_def_active", ID: name}
 	}
@@ -5149,7 +5164,8 @@ const memoryBackendDefSelect = `SELECT
 	COALESCE(created_by_agent_id, ''),
 	COALESCE(created_by_run_id, ''),
 	retired,
-	bootstrapped_from_static
+	bootstrapped_from_static,
+	tenant_id
 FROM memory_backend_defs`
 
 func (s *Store) scanMemoryBackendDef(row pgx.Row) (store.MemoryBackendDefRow, error) {
@@ -5165,6 +5181,7 @@ func (s *Store) scanMemoryBackendDef(row pgx.Row) (store.MemoryBackendDefRow, er
 		&out.CreatedAt,
 		&out.CreatedByAgentID, &out.CreatedByRunID,
 		&out.Retired, &out.BootstrappedFromStatic,
+		&out.TenantID,
 	)
 	if err != nil {
 		return store.MemoryBackendDefRow{}, err
@@ -5188,6 +5205,7 @@ func (s *Store) scanMemoryBackendDefRows(rows pgx.Rows) ([]store.MemoryBackendDe
 			&r.CreatedAt,
 			&r.CreatedByAgentID, &r.CreatedByRunID,
 			&r.Retired, &r.BootstrappedFromStatic,
+			&r.TenantID,
 		); err != nil {
 			return nil, err
 		}

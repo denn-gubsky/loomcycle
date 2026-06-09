@@ -22,7 +22,10 @@ type stubMemoryBackendStore struct {
 	defs map[string]store.MemoryBackendDefRow
 }
 
-func (s *stubMemoryBackendStore) MemoryBackendDefGetActive(_ context.Context, name string) (store.MemoryBackendDefRow, error) {
+// MemoryBackendDefGetActive ignores tenantID — these resolver tests
+// exercise the precedence/equivalence/drift logic with the shared ""
+// tenant; per-tenant isolation is covered by the store contract test.
+func (s *stubMemoryBackendStore) MemoryBackendDefGetActive(_ context.Context, _, name string) (store.MemoryBackendDefRow, error) {
 	if row, ok := s.defs[name]; ok {
 		return row, nil
 	}
@@ -71,7 +74,7 @@ func TestMemoryBackend_EquivalenceYamlVsSubstrate(t *testing.T) {
 			"primary": {DefID: "mb_v1", Name: "primary", Version: 1, Definition: defJSON, CreatedAt: time.Now()},
 		},
 	}
-	resolved, ok := lookup.MemoryBackend(context.Background(), ss, &config.Config{}, "primary")
+	resolved, ok := lookup.MemoryBackend(context.Background(), ss, &config.Config{}, "", "primary")
 	if !ok {
 		t.Fatal("resolver returned !ok")
 	}
@@ -91,7 +94,7 @@ func TestMemoryBackend_StaticBeforeSubstrate(t *testing.T) {
 			"backend": {DefID: "mb_v1", Name: "backend", Definition: json.RawMessage(`{"kind":"mem9"}`)},
 		},
 	}
-	got, ok := lookup.MemoryBackend(context.Background(), ss, cfg, "backend")
+	got, ok := lookup.MemoryBackend(context.Background(), ss, cfg, "", "backend")
 	if !ok {
 		t.Fatal("resolver returned !ok")
 	}

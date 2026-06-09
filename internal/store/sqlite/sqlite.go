@@ -481,16 +481,24 @@ func (s *Store) migrate(ctx context.Context) error {
 			created_by_run_id         TEXT,
 			retired                   INTEGER NOT NULL DEFAULT 0,
 			bootstrapped_from_static  INTEGER NOT NULL DEFAULT 0,
-			UNIQUE(name, version)
+			tenant_id                 TEXT    NOT NULL DEFAULT '',
+			UNIQUE(tenant_id, name, version)
 		)`,
 		`CREATE INDEX IF NOT EXISTS memory_backend_defs_by_name   ON memory_backend_defs(name, version DESC)`,
 		`CREATE INDEX IF NOT EXISTS memory_backend_defs_by_parent ON memory_backend_defs(parent_def_id) WHERE parent_def_id IS NOT NULL`,
 		`CREATE INDEX IF NOT EXISTS memory_backend_defs_by_run    ON memory_backend_defs(created_by_run_id) WHERE created_by_run_id IS NOT NULL`,
+		// RFC N: tenant-scoped active pointer. PRIMARY KEY(tenant_id, name)
+		// on a FRESH DB; an UPGRADED DB keeps PK(name) (SQLite can't rewrite a
+		// PK in place) and gets the (tenant_id, name) UNIQUE INDEX in
+		// addIndexes below as the ON CONFLICT target. See the agent_def_active
+		// note above for the full SQLite upgrade caveat.
 		`CREATE TABLE IF NOT EXISTS memory_backend_def_active (
-			name                  TEXT    PRIMARY KEY,
+			name                  TEXT    NOT NULL,
 			def_id                TEXT    NOT NULL REFERENCES memory_backend_defs(def_id),
 			promoted_at           INTEGER NOT NULL,
-			promoted_by_agent_id  TEXT
+			promoted_by_agent_id  TEXT,
+			tenant_id             TEXT    NOT NULL DEFAULT '',
+			PRIMARY KEY(tenant_id, name)
 		)`,
 		// RFC L OSS multi-tenant authorization — bearer tokens bound to
 		// an authoritative principal (tenant_id + subject + allowed_scopes).
@@ -725,6 +733,14 @@ func (s *Store) migrate(ctx context.Context) error {
 		// backfills existing rows to the shared tenant.
 		`ALTER TABLE mcp_server_defs ADD COLUMN tenant_id TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE mcp_server_def_active ADD COLUMN tenant_id TEXT NOT NULL DEFAULT ''`,
+		// RFC N (completion) — tenant-scope the remaining definition planes:
+		// memory backend / schedule / A2A (server card + agent) / webhook
+		// (mirror of the agent + skill + MCP ALTERs above). Same SQLite
+		// upgrade caveat: the *_active PK stays (name) on the upgraded table;
+		// functionally identical for single-tenant (tenant_id=''). DEFAULT ''
+		// backfills existing rows to the shared tenant.
+		`ALTER TABLE memory_backend_defs ADD COLUMN tenant_id TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE memory_backend_def_active ADD COLUMN tenant_id TEXT NOT NULL DEFAULT ''`,
 	}
 	for _, q := range addColumns {
 		if _, err := s.db.ExecContext(ctx, q); err != nil {
@@ -851,6 +867,15 @@ func (s *Store) migrate(ctx context.Context) error {
 		// promote/register fails even single-tenant. No dynamic_mcp table.
 		`CREATE UNIQUE INDEX IF NOT EXISTS uniq_mcp_server_def_active_tenant_name   ON mcp_server_def_active(tenant_id, name)`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS uniq_mcp_server_defs_tenant_name_version ON mcp_server_defs(tenant_id, name, version)`,
+		// MemoryBackend plane (RFC N completion) — same in-place-upgrade gap.
+		// MemoryBackendDefSetActive does ON CONFLICT(tenant_id, name) on
+		// memory_backend_def_active and MemoryBackendDefCreate's version-bump
+		// inserts against UNIQUE(tenant_id, name, version) on
+		// memory_backend_defs; on an upgraded DB neither composite index
+		// exists, so the FIRST promote/register fails even single-tenant. No
+		// dynamic_* table to cover.
+		`CREATE UNIQUE INDEX IF NOT EXISTS uniq_memory_backend_def_active_tenant_name   ON memory_backend_def_active(tenant_id, name)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS uniq_memory_backend_defs_tenant_name_version ON memory_backend_defs(tenant_id, name, version)`,
 	}
 	for _, q := range addIndexes {
 		// Note the asymmetry vs addColumns above: indexes use
@@ -5334,7 +5359,7 @@ func (s *Store) MemoryBackendDefCreate(ctx context.Context, row store.MemoryBack
 
 	var maxVer sql.NullInt64
 	if err := conn.QueryRowContext(ctx,
-		`SELECT MAX(version) FROM memory_backend_defs WHERE name = ?`, row.Name,
+		`SELECT MAX(version) FROM memory_backend_defs WHERE tenant_id = ? AND name = ?`, row.TenantID, row.Name,
 	).Scan(&maxVer); err != nil {
 		return store.MemoryBackendDefRow{}, err
 	}
@@ -5348,13 +5373,13 @@ func (s *Store) MemoryBackendDefCreate(ctx context.Context, row store.MemoryBack
 		`INSERT INTO memory_backend_defs (
 			def_id, name, version, parent_def_id, definition, description,
 			created_at, created_by_agent_id, created_by_run_id,
-			retired, bootstrapped_from_static
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			retired, bootstrapped_from_static, tenant_id
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		row.DefID, row.Name, row.Version, nilIfEmpty(row.ParentDefID),
 		string(row.Definition), nilIfEmpty(row.Description),
 		row.CreatedAt.UnixNano(),
 		nilIfEmpty(row.CreatedByAgentID), nilIfEmpty(row.CreatedByRunID),
-		boolToInt(row.Retired), boolToInt(row.BootstrappedFromStatic),
+		boolToInt(row.Retired), boolToInt(row.BootstrappedFromStatic), row.TenantID,
 	); err != nil {
 		return store.MemoryBackendDefRow{}, err
 	}
@@ -5402,15 +5427,16 @@ func (s *Store) MemoryBackendDefListChildren(ctx context.Context, parentDefID st
 func (s *Store) MemoryBackendDefListNames(ctx context.Context) ([]store.MemoryBackendDefNameSummary, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT
+			d.tenant_id,
 			d.name,
 			COUNT(*)                  AS version_count,
 			MAX(d.version)            AS latest_version,
 			MAX(d.created_at)         AS last_updated,
 			COALESCE(a.def_id, '')    AS active_def_id
 		FROM memory_backend_defs d
-		LEFT JOIN memory_backend_def_active a ON a.name = d.name
-		GROUP BY d.name, a.def_id
-		ORDER BY d.name`)
+		LEFT JOIN memory_backend_def_active a ON a.name = d.name AND a.tenant_id = d.tenant_id
+		GROUP BY d.tenant_id, d.name, a.def_id
+		ORDER BY d.tenant_id, d.name`)
 	if err != nil {
 		return nil, err
 	}
@@ -5420,7 +5446,7 @@ func (s *Store) MemoryBackendDefListNames(ctx context.Context) ([]store.MemoryBa
 	for rows.Next() {
 		var ns store.MemoryBackendDefNameSummary
 		var updatedAt int64
-		if err := rows.Scan(&ns.Name, &ns.VersionCount, &ns.LatestVersion, &updatedAt, &ns.ActiveDefID); err != nil {
+		if err := rows.Scan(&ns.TenantID, &ns.Name, &ns.VersionCount, &ns.LatestVersion, &updatedAt, &ns.ActiveDefID); err != nil {
 			return nil, err
 		}
 		ns.LastUpdated = time.Unix(0, updatedAt)
@@ -5429,9 +5455,16 @@ func (s *Store) MemoryBackendDefListNames(ctx context.Context) ([]store.MemoryBa
 	return out, rows.Err()
 }
 
-func (s *Store) MemoryBackendDefSetActive(ctx context.Context, name, defID, promotedByAgentID string) error {
-	var rowName string
-	err := s.db.QueryRowContext(ctx, `SELECT name FROM memory_backend_defs WHERE def_id = ?`, defID).Scan(&rowName)
+// MemoryBackendDefSetActive UPSERTs the memory_backend_def_active pointer
+// for (tenantID, name). RFC N: validates the def belongs to BOTH the named
+// backend AND the supplied tenant — a def can only be promoted within its
+// own tenant.
+func (s *Store) MemoryBackendDefSetActive(ctx context.Context, tenantID, name, defID, promotedByAgentID string) error {
+	var (
+		rowName   string
+		rowTenant string
+	)
+	err := s.db.QueryRowContext(ctx, `SELECT name, tenant_id FROM memory_backend_defs WHERE def_id = ?`, defID).Scan(&rowName, &rowTenant)
 	if err == sql.ErrNoRows {
 		return &store.ErrNotFound{Kind: "memory_backend_def", ID: defID}
 	}
@@ -5441,21 +5474,24 @@ func (s *Store) MemoryBackendDefSetActive(ctx context.Context, name, defID, prom
 	if rowName != name {
 		return fmt.Errorf("memory_backend_def_active: def_id %q has name %q, refusing to promote under name %q", defID, rowName, name)
 	}
+	if rowTenant != tenantID {
+		return fmt.Errorf("memory_backend_def_active: def_id %q belongs to tenant %q, refusing to promote under tenant %q", defID, rowTenant, tenantID)
+	}
 	_, err = s.db.ExecContext(ctx, `
-		INSERT INTO memory_backend_def_active (name, def_id, promoted_at, promoted_by_agent_id)
-		VALUES (?, ?, ?, ?)
-		ON CONFLICT(name) DO UPDATE SET
+		INSERT INTO memory_backend_def_active (tenant_id, name, def_id, promoted_at, promoted_by_agent_id)
+		VALUES (?, ?, ?, ?, ?)
+		ON CONFLICT(tenant_id, name) DO UPDATE SET
 		    def_id               = excluded.def_id,
 		    promoted_at          = excluded.promoted_at,
 		    promoted_by_agent_id = excluded.promoted_by_agent_id`,
-		name, defID, time.Now().UnixNano(), nilIfEmpty(promotedByAgentID),
+		tenantID, name, defID, time.Now().UnixNano(), nilIfEmpty(promotedByAgentID),
 	)
 	return err
 }
 
-func (s *Store) MemoryBackendDefGetActive(ctx context.Context, name string) (store.MemoryBackendDefRow, error) {
+func (s *Store) MemoryBackendDefGetActive(ctx context.Context, tenantID, name string) (store.MemoryBackendDefRow, error) {
 	var defID string
-	err := s.db.QueryRowContext(ctx, `SELECT def_id FROM memory_backend_def_active WHERE name = ?`, name).Scan(&defID)
+	err := s.db.QueryRowContext(ctx, `SELECT def_id FROM memory_backend_def_active WHERE tenant_id = ? AND name = ?`, tenantID, name).Scan(&defID)
 	if err == sql.ErrNoRows {
 		return store.MemoryBackendDefRow{}, &store.ErrNotFound{Kind: "memory_backend_def_active", ID: name}
 	}
@@ -5489,7 +5525,8 @@ const memoryBackendDefSelect = `SELECT
 	COALESCE(created_by_agent_id, ''),
 	COALESCE(created_by_run_id, ''),
 	retired,
-	bootstrapped_from_static
+	bootstrapped_from_static,
+	tenant_id
 FROM memory_backend_defs`
 
 func (s *Store) scanMemoryBackendDef(row *sql.Row) (store.MemoryBackendDefRow, error) {
@@ -5508,6 +5545,7 @@ func (s *Store) scanMemoryBackendDef(row *sql.Row) (store.MemoryBackendDefRow, e
 		&createdAt,
 		&out.CreatedByAgentID, &out.CreatedByRunID,
 		&retired, &bootstrap,
+		&out.TenantID,
 	)
 	if err != nil {
 		return store.MemoryBackendDefRow{}, err
@@ -5537,6 +5575,7 @@ func (s *Store) scanMemoryBackendDefRows(rows *sql.Rows) ([]store.MemoryBackendD
 			&createdAt,
 			&r.CreatedByAgentID, &r.CreatedByRunID,
 			&retired, &bootstrap,
+			&r.TenantID,
 		); err != nil {
 			return nil, err
 		}

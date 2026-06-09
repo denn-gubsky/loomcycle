@@ -247,6 +247,7 @@ func Run(t *testing.T, factory Factory) {
 		{"MemoryBackendDefCreateAndGet", testMemoryBackendDefCreateAndGet},
 		{"MemoryBackendDefVersionMonotonic", testMemoryBackendDefVersionMonotonic},
 		{"MemoryBackendDefActivePointerIdempotent", testMemoryBackendDefActivePointerIdempotent},
+		{"MemoryBackendDefTenantIsolation", testMemoryBackendDefTenantIsolation},
 		{"MemoryBackendDefRetireReversible", testMemoryBackendDefRetireReversible},
 		{"MemoryBackendDefParentNotFound", testMemoryBackendDefParentNotFound},
 		{"MemoryBackendDefListByName", testMemoryBackendDefListByName},
@@ -5011,19 +5012,72 @@ func testMemoryBackendDefActivePointerIdempotent(t *testing.T, s store.Store) {
 	r1, _ := s.MemoryBackendDefCreate(ctx, mkMemoryBackendDef("mb-active-1", "backend-active", ""))
 	r2, _ := s.MemoryBackendDefCreate(ctx, mkMemoryBackendDef("mb-active-2", "backend-active", ""))
 
-	if err := s.MemoryBackendDefSetActive(ctx, "backend-active", r1.DefID, "test"); err != nil {
+	if err := s.MemoryBackendDefSetActive(ctx, "", "backend-active", r1.DefID, "test"); err != nil {
 		t.Fatal(err)
 	}
-	got, _ := s.MemoryBackendDefGetActive(ctx, "backend-active")
+	got, _ := s.MemoryBackendDefGetActive(ctx, "", "backend-active")
 	if got.DefID != r1.DefID {
 		t.Errorf("active = %s, want %s", got.DefID, r1.DefID)
 	}
-	if err := s.MemoryBackendDefSetActive(ctx, "backend-active", r2.DefID, "test"); err != nil {
+	if err := s.MemoryBackendDefSetActive(ctx, "", "backend-active", r2.DefID, "test"); err != nil {
 		t.Fatal(err)
 	}
-	got, _ = s.MemoryBackendDefGetActive(ctx, "backend-active")
+	got, _ = s.MemoryBackendDefGetActive(ctx, "", "backend-active")
 	if got.DefID != r2.DefID {
 		t.Errorf("after re-promote: active = %s, want %s", got.DefID, r2.DefID)
+	}
+}
+
+// testMemoryBackendDefTenantIsolation mirrors testAgentDefTenantIsolation
+// (minus the dynamic_* tier MemoryBackend doesn't have): two tenants own
+// the same name with distinct bodies, each GetActive returns its own, and
+// cross-tenant promote is refused. Fails before the 0040 migration /
+// tenant-scoped store methods (a single global active pointer would have
+// tenant-b's promote clobber tenant-a's).
+func testMemoryBackendDefTenantIsolation(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	const name = "shared-backend"
+
+	aDef := mkMemoryBackendDef("mbti-a", name, "")
+	aDef.TenantID = "tenant-a"
+	aDef.Definition = json.RawMessage(`{"kind":"inprocess","v":"A"}`)
+	aRow, err := s.MemoryBackendDefCreate(ctx, aDef)
+	if err != nil {
+		t.Fatalf("create A: %v", err)
+	}
+	bDef := mkMemoryBackendDef("mbti-b", name, "")
+	bDef.TenantID = "tenant-b"
+	bDef.Definition = json.RawMessage(`{"kind":"inprocess","v":"B"}`)
+	bRow, err := s.MemoryBackendDefCreate(ctx, bDef)
+	if err != nil {
+		t.Fatalf("create B: %v", err)
+	}
+
+	if err := s.MemoryBackendDefSetActive(ctx, "tenant-a", name, aRow.DefID, ""); err != nil {
+		t.Fatalf("promote A: %v", err)
+	}
+	if err := s.MemoryBackendDefSetActive(ctx, "tenant-b", name, bRow.DefID, ""); err != nil {
+		t.Fatalf("promote B: %v", err)
+	}
+
+	gotA, err := s.MemoryBackendDefGetActive(ctx, "tenant-a", name)
+	if err != nil {
+		t.Fatalf("get active A: %v", err)
+	}
+	if gotA.DefID != aRow.DefID || gotA.TenantID != "tenant-a" || !jsonEqual(gotA.Definition, `{"kind":"inprocess","v":"A"}`) {
+		t.Errorf("tenant-a clobbered: got def_id=%q tenant=%q def=%s", gotA.DefID, gotA.TenantID, gotA.Definition)
+	}
+	gotB, err := s.MemoryBackendDefGetActive(ctx, "tenant-b", name)
+	if err != nil {
+		t.Fatalf("get active B: %v", err)
+	}
+	if gotB.DefID != bRow.DefID || gotB.TenantID != "tenant-b" || !jsonEqual(gotB.Definition, `{"kind":"inprocess","v":"B"}`) {
+		t.Errorf("tenant-b clobbered: got def_id=%q tenant=%q def=%s", gotB.DefID, gotB.TenantID, gotB.Definition)
+	}
+
+	// A def can only be promoted within its own tenant.
+	if err := s.MemoryBackendDefSetActive(ctx, "tenant-b", name, aRow.DefID, ""); err == nil {
+		t.Error("cross-tenant promote (A's def under tenant-b) unexpectedly succeeded")
 	}
 }
 
