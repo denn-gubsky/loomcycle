@@ -227,6 +227,7 @@ func Run(t *testing.T, factory Factory) {
 		{"A2AServerCardDefCreateAndGet", testA2AServerCardDefCreateAndGet},
 		{"A2AServerCardDefVersionMonotonic", testA2AServerCardDefVersionMonotonic},
 		{"A2AServerCardDefActivePointerIdempotent", testA2AServerCardDefActivePointerIdempotent},
+		{"A2AServerCardDefTenantIsolation", testA2AServerCardDefTenantIsolation},
 		{"A2AServerCardDefRetireReversible", testA2AServerCardDefRetireReversible},
 		{"A2AServerCardDefParentNotFound", testA2AServerCardDefParentNotFound},
 		{"A2AServerCardDefListByName", testA2AServerCardDefListByName},
@@ -4643,19 +4644,67 @@ func testA2AServerCardDefActivePointerIdempotent(t *testing.T, s store.Store) {
 	r1, _ := s.A2AServerCardDefCreate(ctx, mkA2AServerCardDef("ascd-active-1", "card-active", ""))
 	r2, _ := s.A2AServerCardDefCreate(ctx, mkA2AServerCardDef("ascd-active-2", "card-active", ""))
 
-	if err := s.A2AServerCardDefSetActive(ctx, "card-active", r1.DefID, "test"); err != nil {
+	if err := s.A2AServerCardDefSetActive(ctx, "", "card-active", r1.DefID, "test"); err != nil {
 		t.Fatal(err)
 	}
-	got, _ := s.A2AServerCardDefGetActive(ctx, "card-active")
+	got, _ := s.A2AServerCardDefGetActive(ctx, "", "card-active")
 	if got.DefID != r1.DefID {
 		t.Errorf("active = %s, want %s", got.DefID, r1.DefID)
 	}
-	if err := s.A2AServerCardDefSetActive(ctx, "card-active", r2.DefID, "test"); err != nil {
+	if err := s.A2AServerCardDefSetActive(ctx, "", "card-active", r2.DefID, "test"); err != nil {
 		t.Fatal(err)
 	}
-	got, _ = s.A2AServerCardDefGetActive(ctx, "card-active")
+	got, _ = s.A2AServerCardDefGetActive(ctx, "", "card-active")
 	if got.DefID != r2.DefID {
 		t.Errorf("after re-promote: active = %s, want %s", got.DefID, r2.DefID)
+	}
+}
+
+// testA2AServerCardDefTenantIsolation mirrors the other isolation tests for
+// the A2A server-card plane.
+func testA2AServerCardDefTenantIsolation(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	const name = "shared-card"
+
+	aDef := mkA2AServerCardDef("ascti-a", name, "")
+	aDef.TenantID = "tenant-a"
+	aDef.Definition = json.RawMessage(`{"v":"A"}`)
+	aRow, err := s.A2AServerCardDefCreate(ctx, aDef)
+	if err != nil {
+		t.Fatalf("create A: %v", err)
+	}
+	bDef := mkA2AServerCardDef("ascti-b", name, "")
+	bDef.TenantID = "tenant-b"
+	bDef.Definition = json.RawMessage(`{"v":"B"}`)
+	bRow, err := s.A2AServerCardDefCreate(ctx, bDef)
+	if err != nil {
+		t.Fatalf("create B: %v", err)
+	}
+
+	if err := s.A2AServerCardDefSetActive(ctx, "tenant-a", name, aRow.DefID, ""); err != nil {
+		t.Fatalf("promote A: %v", err)
+	}
+	if err := s.A2AServerCardDefSetActive(ctx, "tenant-b", name, bRow.DefID, ""); err != nil {
+		t.Fatalf("promote B: %v", err)
+	}
+
+	gotA, err := s.A2AServerCardDefGetActive(ctx, "tenant-a", name)
+	if err != nil {
+		t.Fatalf("get active A: %v", err)
+	}
+	if gotA.DefID != aRow.DefID || gotA.TenantID != "tenant-a" || !jsonEqual(gotA.Definition, `{"v":"A"}`) {
+		t.Errorf("tenant-a clobbered: got def_id=%q tenant=%q def=%s", gotA.DefID, gotA.TenantID, gotA.Definition)
+	}
+	gotB, err := s.A2AServerCardDefGetActive(ctx, "tenant-b", name)
+	if err != nil {
+		t.Fatalf("get active B: %v", err)
+	}
+	if gotB.DefID != bRow.DefID || gotB.TenantID != "tenant-b" || !jsonEqual(gotB.Definition, `{"v":"B"}`) {
+		t.Errorf("tenant-b clobbered: got def_id=%q tenant=%q def=%s", gotB.DefID, gotB.TenantID, gotB.Definition)
+	}
+
+	if err := s.A2AServerCardDefSetActive(ctx, "tenant-b", name, aRow.DefID, ""); err == nil {
+		t.Error("cross-tenant promote (A's def under tenant-b) unexpectedly succeeded")
 	}
 }
 

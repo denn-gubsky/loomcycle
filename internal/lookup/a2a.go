@@ -10,9 +10,10 @@ import (
 
 // A2AServerCardStore is the subset of store.Store the server-card
 // resolver uses. Declared here so tests + callers can mock without
-// depending on the full store interface.
+// depending on the full store interface. RFC N: the substrate lookup
+// carries a tenantID.
 type A2AServerCardStore interface {
-	A2AServerCardDefGetActive(ctx context.Context, name string) (store.A2AServerCardDefRow, error)
+	A2AServerCardDefGetActive(ctx context.Context, tenantID, name string) (store.A2AServerCardDefRow, error)
 }
 
 // A2AAgentStore is the subset of store.Store the remote-peer resolver
@@ -22,26 +23,45 @@ type A2AAgentStore interface {
 }
 
 // A2AServerCard resolves a server-card NAME to its effective
-// config.A2AServerCard by walking the lookup chain in precedence order:
+// config.A2AServerCard within the given tenant, walking the lookup chain in
+// precedence order (mirrors lookup.Agent):
 //
-//  1. static cfg.A2AServerCards (yaml-defined, pre-validated at boot)
-//  2. a2a_server_card_def_active + a2a_server_card_defs (substrate path)
+//  1. (tenantID != "") tenant-scoped substrate (a2a_server_card_def_active
+//     WHERE tenant_id=tenantID)
+//  2. static cfg.A2AServerCards (yaml-defined, the shared operator base)
+//  3. shared substrate (tenant_id="")
+//
+// The operator-configured server surface resolves at boot under the
+// operator tenant (typically ""), so step 1 is skipped and the order
+// collapses to static-cfg → shared-substrate — identical to pre-RFC-N.
 //
 // Returns (zero, false) when no source has the name. Malformed
-// persistence JSON also returns (zero, false) — defensive against
-// future-field churn or hand-edited rows.
-//
-// Mirrors lookup.Schedule for the v1.x RFC G A2AServerCardDef substrate.
-func A2AServerCard(ctx context.Context, s A2AServerCardStore, cfg *config.Config, name string) (config.A2AServerCard, bool) {
+// persistence JSON also returns (zero, false).
+func A2AServerCard(ctx context.Context, s A2AServerCardStore, cfg *config.Config, tenantID, name string) (config.A2AServerCard, bool) {
+	// 1. Tenant-scoped substrate (skipped for the shared "" tenant).
+	if tenantID != "" {
+		if c, ok := resolveA2AServerCardSubstrate(ctx, s, tenantID, name); ok {
+			return c, true
+		}
+	}
+	// 2. Static cfg.A2AServerCards — the shared operator base.
 	if cfg != nil {
 		if c, ok := cfg.A2AServerCards[name]; ok {
 			return c, true
 		}
 	}
+	// 3. Shared substrate (tenant_id="").
+	return resolveA2AServerCardSubstrate(ctx, s, "", name)
+}
+
+// resolveA2AServerCardSubstrate reads the a2a_server_card_def_active overlay
+// for one tenant pass. Returns (zero, false) on nil store, no active pointer
+// for that tenant, or malformed row JSON.
+func resolveA2AServerCardSubstrate(ctx context.Context, s A2AServerCardStore, tenantID, name string) (config.A2AServerCard, bool) {
 	if s == nil {
 		return config.A2AServerCard{}, false
 	}
-	activeRow, err := s.A2AServerCardDefGetActive(ctx, name)
+	activeRow, err := s.A2AServerCardDefGetActive(ctx, tenantID, name)
 	if err != nil {
 		return config.A2AServerCard{}, false
 	}

@@ -22,7 +22,7 @@ import (
 // never reached in these tests) and reports no runs.
 type fakeStore struct{}
 
-func (fakeStore) A2AServerCardDefGetActive(ctx context.Context, name string) (store.A2AServerCardDefRow, error) {
+func (fakeStore) A2AServerCardDefGetActive(ctx context.Context, tenantID, name string) (store.A2AServerCardDefRow, error) {
 	return store.A2AServerCardDefRow{}, &store.ErrNotFound{Kind: "a2a_server_card_def", ID: name}
 }
 func (fakeStore) GetRun(ctx context.Context, runID string) (store.Run, error) {

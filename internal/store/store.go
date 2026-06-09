@@ -1258,8 +1258,15 @@ type Store interface {
 	A2AServerCardDefListByName(ctx context.Context, name string) ([]A2AServerCardDefRow, error)
 	A2AServerCardDefListChildren(ctx context.Context, parentDefID string) ([]A2AServerCardDefRow, error)
 	A2AServerCardDefListNames(ctx context.Context) ([]A2AServerCardDefNameSummary, error)
-	A2AServerCardDefSetActive(ctx context.Context, name, defID, promotedByAgentID string) error
-	A2AServerCardDefGetActive(ctx context.Context, name string) (A2AServerCardDefRow, error)
+	// A2AServerCardDefSetActive UPSERTs the a2a_server_card_def_active
+	// pointer for (tenantID, name). RFC N: per-tenant active pointer; a def
+	// can only be promoted within its own tenant. tenantID "" = shared/
+	// operator/legacy (the tenant the operator-configured server surface
+	// resolves under at boot).
+	A2AServerCardDefSetActive(ctx context.Context, tenantID, name, defID, promotedByAgentID string) error
+	// A2AServerCardDefGetActive returns the active row for (tenantID, name).
+	// *ErrNotFound when no pointer exists. RFC N: tenantID "" = shared.
+	A2AServerCardDefGetActive(ctx context.Context, tenantID, name string) (A2AServerCardDefRow, error)
 	A2AServerCardDefSetRetired(ctx context.Context, defID string, retired bool) error
 
 	A2AAgentDefCreate(ctx context.Context, row A2AAgentDefRow) (A2AAgentDefRow, error)
@@ -2153,6 +2160,10 @@ type A2AServerCardDefRow struct {
 	CreatedByRunID         string          `json:"created_by_run_id,omitempty"`
 	Retired                bool            `json:"retired"`
 	BootstrappedFromStatic bool            `json:"bootstrapped_from_static"`
+	// TenantID is the RFC N tenant-isolation axis. "" = the shared/
+	// operator/legacy tenant. UNIQUE(tenant_id, name, version). Set from the
+	// authoritative principal at the write site; never from the wire.
+	TenantID string `json:"tenant_id,omitempty"`
 }
 
 // A2AServerCardDefNameSummary mirrors ScheduleDefNameSummary.
@@ -2162,6 +2173,9 @@ type A2AServerCardDefNameSummary struct {
 	ActiveDefID   string    `json:"active_def_id,omitempty"`
 	LatestVersion int       `json:"latest_version"`
 	LastUpdated   time.Time `json:"last_updated"`
+	// TenantID is the RFC N owning tenant. "" = the shared/operator/legacy
+	// tenant. A name owned by N tenants yields N summary rows.
+	TenantID string `json:"tenant_id,omitempty"`
 }
 
 // A2AServerCardDefActiveEntry mirrors ScheduleDefActiveEntry.
@@ -2170,6 +2184,9 @@ type A2AServerCardDefActiveEntry struct {
 	DefID             string    `json:"def_id"`
 	PromotedAt        time.Time `json:"promoted_at"`
 	PromotedByAgentID string    `json:"promoted_by_agent_id,omitempty"`
+	// TenantID is the RFC N tenant-isolation axis (part of the
+	// a2a_server_card_def_active PK). "" = the shared/operator/legacy tenant.
+	TenantID string `json:"tenant_id,omitempty"`
 }
 
 // A2AAgentDefRow mirrors ScheduleDefRow — same identity + lineage +

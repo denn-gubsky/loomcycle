@@ -18,7 +18,10 @@ type stubA2AServerCardStore struct {
 	defs map[string]store.A2AServerCardDefRow // keyed by name (active)
 }
 
-func (s *stubA2AServerCardStore) A2AServerCardDefGetActive(_ context.Context, name string) (store.A2AServerCardDefRow, error) {
+// A2AServerCardDefGetActive ignores tenantID — these resolver tests
+// exercise the precedence/equivalence logic with the shared "" tenant;
+// per-tenant isolation is covered by the store contract test.
+func (s *stubA2AServerCardStore) A2AServerCardDefGetActive(_ context.Context, _, name string) (store.A2AServerCardDefRow, error) {
 	if row, ok := s.defs[name]; ok {
 		return row, nil
 	}
@@ -70,7 +73,7 @@ func TestA2AServerCard_EquivalenceYamlVsSubstrate(t *testing.T) {
 			"jobs-card": {DefID: "ascd_v1", Name: "jobs-card", Version: 1, Definition: defJSON, CreatedAt: time.Now()},
 		},
 	}
-	resolved, ok := lookup.A2AServerCard(context.Background(), ss, &config.Config{}, "jobs-card")
+	resolved, ok := lookup.A2AServerCard(context.Background(), ss, &config.Config{}, "", "jobs-card")
 	if !ok {
 		t.Fatal("resolver returned !ok")
 	}
@@ -92,7 +95,7 @@ func TestA2AServerCard_StaticBeforeSubstrate(t *testing.T) {
 			"card": {DefID: "ascd_v1", Name: "card", Definition: json.RawMessage(`{"name":"substrate-card"}`)},
 		},
 	}
-	got, ok := lookup.A2AServerCard(context.Background(), ss, cfg, "card")
+	got, ok := lookup.A2AServerCard(context.Background(), ss, cfg, "", "card")
 	if !ok {
 		t.Fatal("resolver returned !ok")
 	}

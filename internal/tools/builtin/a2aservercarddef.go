@@ -159,13 +159,16 @@ func (s *A2AServerCardDef) execCreate(ctx context.Context, policy tools.A2AServe
 		return errResult(fmt.Sprintf("create: description (%d bytes) exceeds max %d", len(in.Description), s.MaxDescriptionBytes)), nil
 	}
 
+	// RFC N: stamp the def under the caller's authoritative tenant.
 	ident := tools.RunIdentity(ctx)
+	tenantID := ident.TenantID
 	row := store.A2AServerCardDefRow{
 		DefID:            mintDefID(),
 		Name:             in.Name,
 		Definition:       defJSON,
 		Description:      in.Description,
 		CreatedByAgentID: ident.AgentID,
+		TenantID:         tenantID,
 	}
 	created, err := s.Store.A2AServerCardDefCreate(ctx, row)
 	if err != nil {
@@ -176,7 +179,7 @@ func (s *A2AServerCardDef) execCreate(ctx context.Context, policy tools.A2AServe
 		promote = *in.Promote
 	}
 	if promote {
-		if err := s.Store.A2AServerCardDefSetActive(ctx, in.Name, created.DefID, ident.AgentID); err != nil {
+		if err := s.Store.A2AServerCardDefSetActive(ctx, tenantID, in.Name, created.DefID, ident.AgentID); err != nil {
 			return errResult(fmt.Sprintf("create: promote: %s", err)), nil
 		}
 	}
@@ -190,10 +193,17 @@ func (s *A2AServerCardDef) execFork(ctx context.Context, policy tools.A2AServerC
 		return errResult("fork: missing required field: name"), nil
 	}
 
-	// Resolve the parent. Three paths (mirror ScheduleDef):
-	//   1. parent_def_id supplied → pin
-	//   2. parent_def_id empty + active pointer exists → use it
-	//   3. neither → name must have a yaml template; bootstrap v1
+	// RFC N: fork resolves the parent within the caller's own tenant first
+	// (then the shared "" base); the new version is ALWAYS stamped under the
+	// caller's own tenant.
+	ident := tools.RunIdentity(ctx)
+	tenantID := ident.TenantID
+
+	// Resolve the parent. Paths (mirror AgentDef):
+	//   1. parent_def_id supplied → pin (refuse another tenant's private def)
+	//   2. parent_def_id empty + own-tenant active pointer → use it
+	//   3. else shared "" active pointer (for non-"" tenants) → use it
+	//   4. neither → name must have a yaml template; bootstrap v1
 	parentDefID := in.ParentDefID
 	var parent store.A2AServerCardDefRow
 	if parentDefID != "" {
@@ -208,9 +218,14 @@ func (s *A2AServerCardDef) execFork(ctx context.Context, policy tools.A2AServerC
 		if row.Name != in.Name {
 			return errResult(fmt.Sprintf("fork: parent_def_id %q has name %q, refusing to fork under name %q", parentDefID, row.Name, in.Name)), nil
 		}
+		// Allow forking the shared "" base or the caller's own def; refuse
+		// another tenant's private def unless substrate:admin.
+		if row.TenantID != "" && row.TenantID != tenantID && !defCallerIsAdmin(ctx) {
+			return errResult(fmt.Sprintf("fork: parent_def_id %q belongs to another tenant, refusing", parentDefID)), nil
+		}
 		parent = row
 	} else {
-		row, err := s.Store.A2AServerCardDefGetActive(ctx, in.Name)
+		row, err := s.Store.A2AServerCardDefGetActive(ctx, tenantID, in.Name)
 		if err == nil {
 			parent = row
 			parentDefID = row.DefID
@@ -219,24 +234,37 @@ func (s *A2AServerCardDef) execFork(ctx context.Context, policy tools.A2AServerC
 			if !errors.As(err, &nf) {
 				return errResult(fmt.Sprintf("fork: %s", err)), nil
 			}
-			// No active pointer → must bootstrap from yaml.
-			static, ok := s.Cfg.A2AServerCards[in.Name]
-			if !ok {
-				return errResult(fmt.Sprintf("fork: no parent — name %q has neither a DB version nor a static cfg.A2AServerCards entry", in.Name)), nil
-			}
-			bootstrap, berr := s.bootstrapStatic(ctx, in.Name, static)
-			if berr != nil {
-				// Concurrent first-fork may have already bootstrapped v1;
-				// re-read active pointer before propagating.
-				if row2, gerr := s.Store.A2AServerCardDefGetActive(ctx, in.Name); gerr == nil {
-					parent = row2
-					parentDefID = row2.DefID
-				} else {
-					return errResult(fmt.Sprintf("fork: bootstrap static: %s", berr)), nil
+			// No own-tenant active pointer. Fall back to the SHARED ("") base
+			// (same precedence lookup.A2AServerCard walks); the fork still
+			// lands under the caller's tenant. Skip when tenantID is "".
+			if tenantID != "" {
+				if shared, serr := s.Store.A2AServerCardDefGetActive(ctx, "", in.Name); serr == nil {
+					parent = shared
+					parentDefID = shared.DefID
+				} else if !errors.As(serr, &nf) {
+					return errResult(fmt.Sprintf("fork: %s", serr)), nil
 				}
-			} else {
-				parent = bootstrap
-				parentDefID = bootstrap.DefID
+			}
+			// Still no parent → bootstrap from yaml, else refuse.
+			if parentDefID == "" {
+				static, ok := s.Cfg.A2AServerCards[in.Name]
+				if !ok {
+					return errResult(fmt.Sprintf("fork: no parent — name %q has neither a DB version (own tenant or shared \"\") nor a static cfg.A2AServerCards entry", in.Name)), nil
+				}
+				bootstrap, berr := s.bootstrapStatic(ctx, in.Name, static)
+				if berr != nil {
+					// Concurrent first-fork may have already bootstrapped v1;
+					// re-read own-tenant active pointer before propagating.
+					if row2, gerr := s.Store.A2AServerCardDefGetActive(ctx, tenantID, in.Name); gerr == nil {
+						parent = row2
+						parentDefID = row2.DefID
+					} else {
+						return errResult(fmt.Sprintf("fork: bootstrap static: %s", berr)), nil
+					}
+				} else {
+					parent = bootstrap
+					parentDefID = bootstrap.DefID
+				}
 			}
 		}
 	}
@@ -263,7 +291,6 @@ func (s *A2AServerCardDef) execFork(ctx context.Context, policy tools.A2AServerC
 		return errResult(fmt.Sprintf("fork: description (%d bytes) exceeds max %d", len(in.Description), s.MaxDescriptionBytes)), nil
 	}
 
-	ident := tools.RunIdentity(ctx)
 	row := store.A2AServerCardDefRow{
 		DefID:            mintDefID(),
 		Name:             in.Name,
@@ -271,6 +298,7 @@ func (s *A2AServerCardDef) execFork(ctx context.Context, policy tools.A2AServerC
 		Definition:       defJSON,
 		Description:      in.Description,
 		CreatedByAgentID: ident.AgentID,
+		TenantID:         tenantID,
 	}
 	created, err := s.Store.A2AServerCardDefCreate(ctx, row)
 	if err != nil {
@@ -281,7 +309,7 @@ func (s *A2AServerCardDef) execFork(ctx context.Context, policy tools.A2AServerC
 		promote = *in.Promote
 	}
 	if promote {
-		if err := s.Store.A2AServerCardDefSetActive(ctx, in.Name, created.DefID, ident.AgentID); err != nil {
+		if err := s.Store.A2AServerCardDefSetActive(ctx, tenantID, in.Name, created.DefID, ident.AgentID); err != nil {
 			return errResult(fmt.Sprintf("fork: promote: %s", err)), nil
 		}
 	}
@@ -302,6 +330,11 @@ func (s *A2AServerCardDef) execGet(ctx context.Context, policy tools.A2AServerCa
 		}
 		return errResult(fmt.Sprintf("get: %s", err)), nil
 	}
+	// RFC N: refuse cross-tenant reads with the same opaque not-found a
+	// missing def returns.
+	if !defCallerIsAdmin(ctx) && row.TenantID != tools.RunIdentity(ctx).TenantID {
+		return errResult(fmt.Sprintf("get: def_id %q not found", in.DefID)), nil
+	}
 	if err := s.checkScopeForName(policy, row.Name); err != nil {
 		return errResult(err.Error()), nil
 	}
@@ -319,8 +352,13 @@ func (s *A2AServerCardDef) execList(ctx context.Context, policy tools.A2AServerC
 	if err != nil {
 		return errResult(fmt.Sprintf("list: %s", err)), nil
 	}
+	// RFC N: filter to the caller's own tenant; a substrate:admin sees all.
+	tenantID := tools.RunIdentity(ctx).TenantID
 	out := make([]map[string]any, 0, len(rows))
 	for _, r := range rows {
+		if !defCallerIsAdmin(ctx) && r.TenantID != tenantID {
+			continue
+		}
 		out = append(out, a2aServerCardRowResponseMap(r))
 	}
 	return okJSON(map[string]any{"name": in.Name, "versions": out})
@@ -342,6 +380,10 @@ func (s *A2AServerCardDef) execRetire(ctx context.Context, policy tools.A2AServe
 			return errResult(fmt.Sprintf("retire: def_id %q not found", in.DefID)), nil
 		}
 		return errResult(fmt.Sprintf("retire: %s", err)), nil
+	}
+	// RFC N: refuse cross-tenant retire (global by-def_id mutation).
+	if !defCallerIsAdmin(ctx) && row.TenantID != tools.RunIdentity(ctx).TenantID {
+		return errResult(fmt.Sprintf("retire: def_id %q not found", in.DefID)), nil
 	}
 	if err := s.checkScopeForName(policy, row.Name); err != nil {
 		return errResult(err.Error()), nil
@@ -426,12 +468,14 @@ func (s *A2AServerCardDef) bootstrapStatic(ctx context.Context, name string, sta
 		Description:            "bootstrapped from static cfg.A2AServerCards",
 		CreatedByAgentID:       ident.AgentID,
 		BootstrappedFromStatic: true,
+		// RFC N: bootstrap lands in the forking caller's tenant. "" = shared.
+		TenantID: ident.TenantID,
 	}
 	created, err := s.Store.A2AServerCardDefCreate(ctx, row)
 	if err != nil {
 		return store.A2AServerCardDefRow{}, err
 	}
-	if err := s.Store.A2AServerCardDefSetActive(ctx, name, created.DefID, ident.AgentID); err != nil {
+	if err := s.Store.A2AServerCardDefSetActive(ctx, ident.TenantID, name, created.DefID, ident.AgentID); err != nil {
 		// Bootstrap succeeded but couldn't promote — return the row;
 		// the next fork iteration finds it via the active-pointer retry.
 		return created, fmt.Errorf("promote bootstrap: %w", err)

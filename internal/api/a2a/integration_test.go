@@ -115,7 +115,7 @@ func (b *scriptedBackend) GetSession(ctx context.Context, sessionID string) (sto
 // The card-resolution + interrupt surfaces are unused by these tests
 // (the card is served from cfg, and these scenarios don't park), so they
 // return not-found / no-op to satisfy CardAndRunStore.
-func (b *scriptedBackend) A2AServerCardDefGetActive(ctx context.Context, name string) (store.A2AServerCardDefRow, error) {
+func (b *scriptedBackend) A2AServerCardDefGetActive(ctx context.Context, tenantID, name string) (store.A2AServerCardDefRow, error) {
 	return store.A2AServerCardDefRow{}, &store.ErrNotFound{Kind: "a2a_server_card_def", ID: name}
 }
 func (b *scriptedBackend) InterruptListByRun(ctx context.Context, runID, statusFilter string) ([]store.InterruptRow, error) {
