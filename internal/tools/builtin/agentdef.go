@@ -94,7 +94,7 @@ const agentDefInputSchema = `{
     "parent_def_id": {"type": "string", "description": "Fork parent (optional for fork — when absent, forks the active def of the name)."},
     "overlay": {
       "type": "object",
-      "description": "Mutable subset of AgentDef for create/fork. Immutable / server-set fields (def_id, version, parent_def_id, created_*, bootstrapped_from_static) are silently ignored if supplied.",
+      "description": "Mutable subset of AgentDef for create/fork (snake_case keys). Common fields: provider, model, tier, effort, system_prompt, code_body, allowed_tools, skills, providers, models, max_tokens, max_iterations, max_concurrent_children, run_timeout_seconds, memory_scopes, memory_quota_bytes, memory_backend, retry_attempts. Interactive / multi-agent config also round-trips and is content-identifying: channels ({publish:[...],subscribe:[...]}), evaluation_scopes ([...]), interruption ({enabled,kinds:[...],max_pending}). Immutable / server-set fields (def_id, version, parent_def_id, created_*, bootstrapped_from_static) are silently ignored if supplied.",
       "additionalProperties": true
     },
     "description":   {"type": "string", "description": "Free-text rationale for create/fork."},
@@ -980,6 +980,12 @@ func staticToMergedDef(s config.AgentDef) mergedDef {
 		MemoryQuotaBytes:      s.MemoryQuotaBytes,
 		MemoryBackend:         s.MemoryBackend,
 		RetryAttempts:         s.RetryAttempts,
+		// F14: a static agent bootstrapped into the substrate keeps its
+		// interactive/multi-agent config (and so its content hash matches a
+		// hand-authored fork of the same shape). Same config types, direct copy.
+		Channels:         s.Channels,
+		EvaluationScopes: s.EvaluationScopes,
+		Interruption:     s.Interruption,
 	}
 }
 
@@ -1031,7 +1037,7 @@ func signFromMergedDef(name string, def mergedDef) string {
 			models[k] = out
 		}
 	}
-	return agents.Sign(agents.AgentContent{
+	c := agents.AgentContent{
 		Name:                  name,
 		Description:           def.Description,
 		Provider:              def.Provider,
@@ -1050,7 +1056,21 @@ func signFromMergedDef(name string, def mergedDef) string {
 		MemoryScopes:          def.MemoryScopes,
 		MemoryQuotaBytes:      def.MemoryQuotaBytes,
 		MemoryBackend:         def.MemoryBackend,
-	})
+		EvaluationScopes:      def.EvaluationScopes,
+	}
+	// F14: include the interactive/multi-agent ACLs in the hash so a fork
+	// that changes ONLY channels/interruption/evaluation_scopes mints a new
+	// version instead of being deduped as identical content. Mirror
+	// config→agents (the agents package stays config-free); nil when empty
+	// so a no-ACL agent hashes exactly as pre-F14 (normalize() also
+	// collapses defensively).
+	if len(def.Channels.Publish) > 0 || len(def.Channels.Subscribe) > 0 {
+		c.Channels = &agents.AgentChannelACL{Publish: def.Channels.Publish, Subscribe: def.Channels.Subscribe}
+	}
+	if def.Interruption.Enabled || len(def.Interruption.Kinds) > 0 || def.Interruption.MaxPending != 0 {
+		c.Interruption = &agents.AgentInterruptionACL{Enabled: def.Interruption.Enabled, Kinds: def.Interruption.Kinds, MaxPending: def.Interruption.MaxPending}
+	}
+	return agents.Sign(c)
 }
 
 // validateInlineCode gates + validates an inline code-js body (RFC J)

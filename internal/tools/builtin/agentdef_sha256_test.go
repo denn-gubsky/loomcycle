@@ -73,6 +73,39 @@ func TestAgentDefTool_ForkDifferentContentDifferentHash(t *testing.T) {
 	}
 }
 
+// TestAgentDefTool_ForkInteractiveConfigMovesHash is the F14 regression: a
+// fork that changes ONLY channels / interruption / evaluation_scopes must
+// move the content hash. Pre-F14 those fields were excluded from the hash,
+// so such a fork produced an IDENTICAL content_sha256 to its parent and the
+// execCreate/dedup path treated it as a no-op duplicate — silently dropping
+// a real ACL change. Each sub-fork below must differ from the baseline.
+func TestAgentDefTool_ForkInteractiveConfigMovesHash(t *testing.T) {
+	tool, ctx, cleanup := agentDefFixture(t)
+	defer cleanup()
+
+	base, _ := tool.Execute(ctx, json.RawMessage(`{"op":"fork","name":"researcher","overlay":{"system_prompt":"v1"}}`))
+	if base.IsError {
+		t.Fatalf("base fork: %s", base.Text)
+	}
+	baseHash := decodeResult(t, base.Text)["content_sha256"].(string)
+
+	cases := map[string]string{
+		"channels":          `{"op":"fork","name":"researcher","overlay":{"system_prompt":"v1","channels":{"publish":["alerts"]}}}`,
+		"evaluation_scopes": `{"op":"fork","name":"researcher","overlay":{"system_prompt":"v1","evaluation_scopes":["submit_self"]}}`,
+		"interruption":      `{"op":"fork","name":"researcher","overlay":{"system_prompt":"v1","interruption":{"enabled":true,"max_pending":2}}}`,
+	}
+	for field, overlay := range cases {
+		res, _ := tool.Execute(ctx, json.RawMessage(overlay))
+		if res.IsError {
+			t.Fatalf("%s fork: %s", field, res.Text)
+		}
+		h := decodeResult(t, res.Text)["content_sha256"].(string)
+		if h == baseHash {
+			t.Errorf("%s-only fork did NOT move the content hash (still %s) — would be wrongly deduped (F14)", field, baseHash)
+		}
+	}
+}
+
 func TestAgentDefTool_GetSurfacesContentSHA256(t *testing.T) {
 	tool, ctx, cleanup := agentDefFixture(t)
 	defer cleanup()

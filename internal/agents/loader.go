@@ -106,6 +106,12 @@ type Agent struct {
 	// "submit_descendants" / "submit_any" / "read_any". Empty =
 	// default-deny.
 	EvaluationScopes []string
+	// Interruption is the v0.8.16 Interruption-tool ACL (enabled / kinds /
+	// max_pending). Mirrors config.AgentDef.Interruption. Carried here (F14)
+	// so an MD-declared `interruption:` block round-trips to config at boot
+	// AND the `hash agent` CLI computes the SAME content_sha256 as the
+	// substrate (which hashes interruption). Zero value = disabled.
+	Interruption AgentInterruptionACL
 	// Path is the absolute path of the source MD, kept for diagnostic
 	// logging (skills/loader.go follows the same convention).
 	Path string
@@ -113,9 +119,25 @@ type Agent struct {
 
 // AgentChannelACL mirrors config.AgentChannelACL locally so this
 // package doesn't import config. The merger in config converts.
+//
+// json: tags are LOAD-BEARING for the content_sha256 (F14): the
+// AgentContent hash includes channels, and the substrate read path
+// (FromOverlay) unmarshals the persisted snake_case JSON into this type.
+// Without the tags the hash would key on capitalized field names and
+// diverge from the substrate write path.
 type AgentChannelACL struct {
-	Publish   []string `yaml:"publish"`
-	Subscribe []string `yaml:"subscribe"`
+	Publish   []string `json:"publish,omitempty"   yaml:"publish"`
+	Subscribe []string `json:"subscribe,omitempty" yaml:"subscribe"`
+}
+
+// AgentInterruptionACL mirrors config.AgentInterruptionACL locally so this
+// package doesn't import config. json: tags mirror the snake_case the
+// substrate persists (F14 — see AgentChannelACL for why they're
+// load-bearing for the content hash).
+type AgentInterruptionACL struct {
+	Enabled    bool     `json:"enabled,omitempty"     yaml:"enabled"`
+	Kinds      []string `json:"kinds,omitempty"       yaml:"kinds"`
+	MaxPending int      `json:"max_pending,omitempty" yaml:"max_pending"`
 }
 
 // TierCandidate mirrors config.TierCandidate's shape locally so this
@@ -259,6 +281,7 @@ type frontmatter struct {
 	AgentDefScopes        []string                   `yaml:"agent_def_scopes"`
 	SkillDefScopes        []string                   `yaml:"skill_def_scopes"`
 	EvaluationScopes      []string                   `yaml:"evaluation_scopes"`
+	Interruption          AgentInterruptionACL       `yaml:"interruption"` // F14: round-trips like channels
 	SystemPromptFile      string                     `yaml:"system_prompt_file"`
 	// SystemPrompt as an inline frontmatter field is intentionally
 	// NOT supported. The body of the MD is the prompt; if you want a
@@ -326,6 +349,7 @@ func parseAgent(raw []byte) (*Agent, error) {
 	a.AgentDefScopes = fm.AgentDefScopes
 	a.SkillDefScopes = fm.SkillDefScopes
 	a.EvaluationScopes = fm.EvaluationScopes
+	a.Interruption = fm.Interruption
 	a.SystemPromptFile = fm.SystemPromptFile
 	a.SystemPrompt = body
 

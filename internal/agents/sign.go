@@ -13,26 +13,33 @@
 // What gets hashed (content-only — NOT metadata or identity):
 //
 //	name, description, system_prompt, allowed_tools, skills, model,
-//	provider, tier, effort, max_tokens, max_iterations, providers,
-//	models, memory_scopes, memory_quota_bytes
+//	provider, tier, effort, max_tokens, max_iterations,
+//	max_concurrent_children, code_body, providers, models, memory_scopes,
+//	memory_quota_bytes, memory_backend, channels, evaluation_scopes,
+//	interruption
 //
 // Explicitly excluded (would defeat the "did the content change?"
 // question): def_id, version, parent_def_id, created_at,
 // created_by_agent_id, created_by_run_id, retired,
 // bootstrapped_from_static.
 //
-// Also explicitly excluded — fields that exist on the YAML-loader
-// Agent struct but DO NOT round-trip through `AgentDef set` (the
-// substrate overlay → mergedDef → JSONB persistence path):
+// Also excluded — the *tool-capability* ACLs that gate which substrate
+// tools an agent may CALL but are NOT part of its authored definition:
 //
-//	channels, agent_def_scopes, skill_def_scopes, evaluation_scopes
+//	agent_def_scopes, skill_def_scopes
 //
-// These are operator-yaml-only ACL declarations resolved at boot;
-// the in-DB agent_defs row never stores them. If we hashed them in,
-// a YAML-loaded agent and the same agent pushed via the substrate
-// would hash differently and the bundle-vs-deployed comparison would
-// always falsely report drift. The hash basis MUST match the closed
-// set of fields that round-trip both paths.
+// These are operator-yaml-only declarations resolved at boot; the in-DB
+// agent_defs row never stores them, so hashing them would make a
+// YAML-loaded agent and the same agent pushed via the substrate diverge.
+//
+// F14 (channels / evaluation_scopes / interruption): these three WERE
+// excluded for the same round-trip reason, but they now DO round-trip
+// through `AgentDef set` (mergedDef → agent_defs.definition JSONB) and
+// through the MD loader (agents.Agent), so they are part of the hash on
+// BOTH paths. The hash basis MUST match the closed set of fields that
+// round-trip both paths — and these three now do. Empty values still
+// omit (pointer/omitempty + normalize collapse), so every pre-F14 row
+// without these fields hashes byte-identically.
 //
 // Canonical encoding rules:
 //   - Go's encoding/json renders struct fields in declaration order
@@ -73,6 +80,15 @@ import (
 // version on every existing row + re-running the backfill.
 type AgentContent struct {
 	AllowedTools []string `json:"allowed_tools,omitempty"`
+	// Channels is the Channel-tool ACL (F14). Pointer + omitempty so an
+	// agent without a channels block omits the key entirely — an empty
+	// AgentChannelACL is a VALUE struct that would serialise as
+	// `"channels":{}` and change every pre-F14 row's hash; normalize()
+	// collapses an all-empty pointer back to nil so both the
+	// no-channels-agent and the substrate-read path (`"channels":{}` in the
+	// persisted def) hash identically to before. Tag "channels" sorts
+	// between allowed_tools and code_body.
+	Channels *AgentChannelACL `json:"channels,omitempty"`
 	// CodeBody is the inline code-js orchestrator source (RFC J). Empty
 	// for every LLM agent and for filesystem-backed static code agents
 	// (whose body lives on disk, not in the definition) — so with
@@ -81,9 +97,15 @@ type AgentContent struct {
 	// whitespace/CRLF is semantically load-bearing and must match the
 	// operator's `loomcycle hash agent` CI. Tag "code_body" sorts between
 	// allowed_tools and description, preserving the alphabetical order.
-	CodeBody              string                     `json:"code_body,omitempty"`
-	Description           string                     `json:"description,omitempty"`
-	Effort                string                     `json:"effort,omitempty"`
+	CodeBody    string `json:"code_body,omitempty"`
+	Description string `json:"description,omitempty"`
+	Effort      string `json:"effort,omitempty"`
+	// EvaluationScopes / Interruption are the remaining interactive/
+	// multi-agent ACL fields (F14). evaluation_scopes is a slice (nil →
+	// omitted); interruption is a pointer for the same empty-struct reason
+	// as Channels above. Tags sort between effort and max_concurrent_children.
+	EvaluationScopes      []string                   `json:"evaluation_scopes,omitempty"`
+	Interruption          *AgentInterruptionACL      `json:"interruption,omitempty"`
 	MaxConcurrentChildren int                        `json:"max_concurrent_children,omitempty"`
 	MaxIterations         int                        `json:"max_iterations,omitempty"`
 	MaxTokens             int                        `json:"max_tokens,omitempty"`
@@ -147,6 +169,23 @@ func normalize(c *AgentContent) {
 	if len(c.Models) == 0 {
 		c.Models = nil
 	}
+	if len(c.EvaluationScopes) == 0 {
+		c.EvaluationScopes = nil
+	}
+	// F14: collapse an all-empty channels/interruption pointer to nil so it
+	// omits. CRITICAL for backward-compat + path convergence: a no-channels
+	// agent (signFromMergedDef passes nil OR an empty struct) and the
+	// substrate-read path (FromOverlay unmarshals `"channels":{}` from the
+	// persisted def into a non-nil &{}) must both collapse to nil → no
+	// "channels" key → byte-identical to every pre-F14 row. Only an agent
+	// that actually sets publish/subscribe (or an interruption field)
+	// contributes to the hash.
+	if c.Channels != nil && len(c.Channels.Publish) == 0 && len(c.Channels.Subscribe) == 0 {
+		c.Channels = nil
+	}
+	if c.Interruption != nil && !c.Interruption.Enabled && len(c.Interruption.Kinds) == 0 && c.Interruption.MaxPending == 0 {
+		c.Interruption = nil
+	}
 
 	// Trim + normalise the system_prompt to insulate the hash from
 	// editor drift (Windows line endings, trailing blank lines).
@@ -166,14 +205,19 @@ func normalizeText(s string) string {
 }
 
 // FromYAMLAgent builds an AgentContent from a parsed *Agent (boot-time
-// load + CLI `hash agent` subcommand path). Fields that do NOT round-
-// trip through `AgentDef set` (Path, Channels, *Scopes) are omitted —
-// see the package doc for why.
+// load + CLI `hash agent` subcommand path). F14: channels /
+// evaluation_scopes / interruption now DO round-trip through `AgentDef
+// set` (they live in mergedDef → the agent_defs.definition JSONB), so they
+// are part of the hash on both paths. The *Scopes ACLs
+// (agent_def_scopes / skill_def_scopes) and Path still do not round-trip
+// and stay excluded — see the package doc. The channels/interruption
+// pointers are nil when empty so a no-ACL agent hashes exactly as before
+// (normalize() also collapses an all-empty pointer defensively).
 func FromYAMLAgent(a *Agent) AgentContent {
 	if a == nil {
 		return AgentContent{}
 	}
-	return AgentContent{
+	c := AgentContent{
 		Name:                  a.Name,
 		Description:           a.Description,
 		Provider:              a.Provider,
@@ -192,7 +236,15 @@ func FromYAMLAgent(a *Agent) AgentContent {
 		MemoryScopes:          a.MemoryScopes,
 		MemoryQuotaBytes:      a.MemoryQuotaBytes,
 		MemoryBackend:         a.MemoryBackend,
+		EvaluationScopes:      a.EvaluationScopes,
 	}
+	if len(a.Channels.Publish) > 0 || len(a.Channels.Subscribe) > 0 {
+		c.Channels = &AgentChannelACL{Publish: a.Channels.Publish, Subscribe: a.Channels.Subscribe}
+	}
+	if a.Interruption.Enabled || len(a.Interruption.Kinds) > 0 || a.Interruption.MaxPending != 0 {
+		c.Interruption = &AgentInterruptionACL{Enabled: a.Interruption.Enabled, Kinds: a.Interruption.Kinds, MaxPending: a.Interruption.MaxPending}
+	}
+	return c
 }
 
 // FromOverlay parses a JSON overlay (the structured form `AgentDef set` /

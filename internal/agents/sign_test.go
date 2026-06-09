@@ -194,32 +194,93 @@ func TestFromYAMLAgent_DropsPath(t *testing.T) {
 	}
 }
 
-func TestFromYAMLAgent_ChannelACLIgnored(t *testing.T) {
-	// Channels live in operator yaml + don't round-trip through
-	// AgentDef set; they MUST NOT contribute to the hash. Otherwise a
-	// YAML-loaded agent and the same agent pushed via the substrate
-	// would diverge.
+func TestFromYAMLAgent_ChannelsAffectHash(t *testing.T) {
+	// F14: channels now round-trip through AgentDef set (mergedDef → JSONB),
+	// so they ARE content-identifying — a fork that adds a channel ACL must
+	// get a distinct hash, not be deduped as the parent.
 	bare := FromYAMLAgent(&Agent{Name: "x"})
 	withChannels := FromYAMLAgent(&Agent{
 		Name:     "x",
 		Channels: AgentChannelACL{Publish: []string{"out"}, Subscribe: []string{"in"}},
 	})
-	if Sign(bare) != Sign(withChannels) {
-		t.Error("channel ACL leaked into hash — bundle vs deployed comparison would falsely report drift")
+	if Sign(bare) == Sign(withChannels) {
+		t.Error("channels did NOT affect the hash — a channels-only fork would be wrongly deduped (F14)")
+	}
+	// Backward-compat: an EMPTY channels block must still hash like a bare
+	// agent (omitempty pointer + normalize collapse) so pre-F14 rows are stable.
+	emptyChannels := FromYAMLAgent(&Agent{Name: "x", Channels: AgentChannelACL{}})
+	if Sign(bare) != Sign(emptyChannels) {
+		t.Error("empty channels block changed the hash — would invalidate every pre-F14 row")
 	}
 }
 
-func TestFromYAMLAgent_ScopesIgnored(t *testing.T) {
-	// AgentDef / SkillDef / Evaluation scopes are also yaml-only.
+func TestFromYAMLAgent_EvaluationScopesAndInterruptionAffectHash(t *testing.T) {
+	// F14: evaluation_scopes + interruption also round-trip + are content.
+	bare := FromYAMLAgent(&Agent{Name: "x"})
+	withEval := FromYAMLAgent(&Agent{Name: "x", EvaluationScopes: []string{"submit_self"}})
+	if Sign(bare) == Sign(withEval) {
+		t.Error("evaluation_scopes did NOT affect the hash (F14)")
+	}
+	withInterruption := FromYAMLAgent(&Agent{
+		Name:         "x",
+		Interruption: AgentInterruptionACL{Enabled: true, Kinds: []string{"question"}, MaxPending: 3},
+	})
+	if Sign(bare) == Sign(withInterruption) {
+		t.Error("interruption did NOT affect the hash (F14)")
+	}
+	// Backward-compat: an all-zero interruption block hashes like bare.
+	emptyInterruption := FromYAMLAgent(&Agent{Name: "x", Interruption: AgentInterruptionACL{}})
+	if Sign(bare) != Sign(emptyInterruption) {
+		t.Error("empty interruption block changed the hash — would invalidate every pre-F14 row")
+	}
+}
+
+func TestFromYAMLAgent_ToolCapabilityScopesStillIgnored(t *testing.T) {
+	// agent_def_scopes / skill_def_scopes gate which substrate tools the
+	// agent may CALL; they are NOT part of its authored definition and do
+	// NOT round-trip through AgentDef set, so they MUST stay out of the hash
+	// (else a yaml-loaded agent and its substrate copy diverge).
 	bare := FromYAMLAgent(&Agent{Name: "x"})
 	withScopes := FromYAMLAgent(&Agent{
-		Name:             "x",
-		AgentDefScopes:   []string{"self"},
-		SkillDefScopes:   []string{"descendants"},
-		EvaluationScopes: []string{"submit_self"},
+		Name:           "x",
+		AgentDefScopes: []string{"self"},
+		SkillDefScopes: []string{"descendants"},
 	})
 	if Sign(bare) != Sign(withScopes) {
-		t.Error("*Scopes leaked into hash — same drift risk as channels")
+		t.Error("agent_def_scopes/skill_def_scopes leaked into hash — yaml vs substrate would falsely report drift")
+	}
+}
+
+func TestFromOverlay_ChannelsConvergeWithWritePath(t *testing.T) {
+	// F14 convergence invariant: the substrate write path (signFromMergedDef,
+	// modelled here by FromYAMLAgent which builds the same AgentContent) and
+	// the substrate READ path (FromOverlay, used by the boot backfill + verify
+	// against the persisted definition JSON) must produce the SAME hash.
+	//
+	// mergedDef persists channels/interruption as VALUE structs with
+	// omitempty, which (verified) serialise an empty block as `"channels":{}`
+	// — so the persisted definition for a no-ACL agent literally contains
+	// `"channels":{}`. FromOverlay must collapse that to the bare hash.
+	bareHash := Sign(FromYAMLAgent(&Agent{Name: "x"}))
+
+	persistedEmpty := json.RawMessage(`{"name":"x","channels":{},"interruption":{}}`)
+	cEmpty, err := FromOverlay(persistedEmpty)
+	if err != nil {
+		t.Fatalf("FromOverlay(empty blocks): %v", err)
+	}
+	if Sign(cEmpty) != bareHash {
+		t.Errorf("persisted empty channels/interruption did not collapse to the bare hash — backfill/verify would diverge from create")
+	}
+
+	// A real channel ACL must round-trip identically between the two paths.
+	writeHash := Sign(FromYAMLAgent(&Agent{Name: "x", Channels: AgentChannelACL{Publish: []string{"out"}}}))
+	persisted := json.RawMessage(`{"name":"x","channels":{"publish":["out"]},"interruption":{}}`)
+	cRead, err := FromOverlay(persisted)
+	if err != nil {
+		t.Fatalf("FromOverlay(channels): %v", err)
+	}
+	if Sign(cRead) != writeHash {
+		t.Errorf("read path hash %q != write path hash %q for the same channels ACL", Sign(cRead), writeHash)
 	}
 }
 

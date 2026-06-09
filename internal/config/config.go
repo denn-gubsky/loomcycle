@@ -2914,6 +2914,14 @@ func agentFromDiscovered(d *agents.Agent) AgentDef {
 		AgentDefScopes:   d.AgentDefScopes,
 		SkillDefScopes:   d.SkillDefScopes,
 		EvaluationScopes: d.EvaluationScopes,
+		// F14: an MD-declared `interruption:` block now flows to config
+		// (parity with channels) so it takes effect at runtime AND the
+		// content hash matches the substrate.
+		Interruption: AgentInterruptionACL{
+			Enabled:    d.Interruption.Enabled,
+			Kinds:      d.Interruption.Kinds,
+			MaxPending: d.Interruption.MaxPending,
+		},
 	}
 	if len(d.Models) > 0 {
 		def.Models = make(map[string][]TierCandidate, len(d.Models))
@@ -3019,6 +3027,14 @@ func mergeAgentDef(base, override AgentDef) AgentDef {
 	}
 	if override.EvaluationScopes != nil {
 		out.EvaluationScopes = override.EvaluationScopes
+	}
+	// F14: yaml interruption override replaces the MD-discovered block when
+	// the operator set any field. Mirrors the substrate applyOverlay's
+	// "any non-zero field signals intent" rule (and shares its known limit:
+	// flipping enabled true→false via override isn't expressible — the
+	// all-zero block reads as "not set").
+	if override.Interruption.Enabled || len(override.Interruption.Kinds) > 0 || override.Interruption.MaxPending != 0 {
+		out.Interruption = override.Interruption
 	}
 	return out
 }
