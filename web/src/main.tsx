@@ -3,12 +3,14 @@ import ReactDOM from "react-dom/client";
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import "./styles.css";
 import AgentsView from "./pages/AgentsView";
+import RunView from "./pages/RunView";
 import MemoryView from "./pages/MemoryView";
 import InterruptInbox from "./pages/InterruptInbox";
 import SnapshotsView from "./pages/SnapshotsView";
 import AuditView from "./pages/AuditView";
 import ActivityMonitor from "./pages/ActivityMonitor";
 import LibraryView from "./pages/LibraryView";
+import IntegrationsView from "./pages/IntegrationsView";
 import ChannelsView from "./pages/ChannelsView";
 import SchedulesView from "./pages/SchedulesView";
 import Layout from "./components/Layout";
@@ -31,6 +33,7 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
         <Route path="login" element={<LoginView />} />
         <Route path="/" element={<Layout />}>
           <Route index element={<Navigate to="/agents" replace />} />
+          <Route path="run" element={<RunView />} />
           <Route path="agents" element={<AgentsView />} />
           <Route path="agents/:agentId" element={<AgentIdRedirect />} />
           <Route path="library" element={<LibraryView />}>
@@ -39,6 +42,22 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
           <Route path="library/agents" element={<LibraryView />} />
           <Route path="library/skills" element={<LibraryView />} />
           <Route path="library/mcp-servers" element={<LibraryView />} />
+          <Route path="integrations" element={<IntegrationsView />}>
+            <Route
+              index
+              element={<Navigate to="/integrations/webhooks" replace />}
+            />
+          </Route>
+          <Route path="integrations/webhooks" element={<IntegrationsView />} />
+          <Route
+            path="integrations/a2a-server-cards"
+            element={<IntegrationsView />}
+          />
+          <Route path="integrations/a2a-agents" element={<IntegrationsView />} />
+          <Route
+            path="integrations/memory-backends"
+            element={<IntegrationsView />}
+          />
           <Route path="channels" element={<ChannelsView />} />
           <Route path="schedules" element={<SchedulesView />} />
           <Route path="memory" element={<MemoryView />} />

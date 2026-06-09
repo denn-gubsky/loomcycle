@@ -6,6 +6,7 @@ import {
 import Splitter from "../components/Splitter";
 import ScheduleDetailPane from "../components/ScheduleDetailPane";
 import ScheduleForkForm from "../components/ScheduleForkForm";
+import ScheduleCreateForm from "../components/ScheduleCreateForm";
 
 // SchedulesView is the v1.x RFC E admin tab — list + detail two-pane
 // for scheduled-run definitions. Mirrors /ui/library's shape but
@@ -37,6 +38,8 @@ export default function SchedulesView() {
   // Fork-form modal state. Opens when the user clicks "Fork this
   // template" on a static-or-both entry. Null = closed.
   const [forkModalTemplate, setForkModalTemplate] = useState<string | null>(null);
+  // Create-standalone modal — author a brand-new schedule from scratch.
+  const [createOpen, setCreateOpen] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -105,6 +108,14 @@ export default function SchedulesView() {
           <button className="schedules-refresh-btn" onClick={refreshNow} title="Refresh list">
             ↻
           </button>
+          <button
+            type="button"
+            className="primary"
+            onClick={() => setCreateOpen(true)}
+            title="Author a brand-new schedule from scratch"
+          >
+            + New schedule
+          </button>
         </div>
         {err && <div className="schedules-err">Error: {err}</div>}
       </div>
@@ -147,6 +158,16 @@ export default function SchedulesView() {
           onClose={() => setForkModalTemplate(null)}
           onForked={() => {
             setForkModalTemplate(null);
+            refreshNow();
+          }}
+        />
+      )}
+      {createOpen && (
+        <ScheduleCreateForm
+          existingNames={entries.map((e) => e.name)}
+          onClose={() => setCreateOpen(false)}
+          onCreated={() => {
+            setCreateOpen(false);
             refreshNow();
           }}
         />

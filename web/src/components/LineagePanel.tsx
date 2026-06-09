@@ -3,6 +3,7 @@ import {
   DefRow,
   LibraryEntry,
   listDefVersionsByName,
+  type SubstrateKind,
 } from "../api";
 import Splitter from "./Splitter";
 import LineageTree, { buildLineageTree } from "./LineageTree";
@@ -22,8 +23,9 @@ import LineageTree, { buildLineageTree } from "./LineageTree";
 // version lineage refreshes on selection change.
 
 export interface LineagePanelProps {
-  // Substrate kind used in the listDefVersionsByName API call.
-  kind: "agentdef" | "skilldef" | "mcpserverdef";
+  // Substrate kind used in the listDefVersionsByName API call. Covers
+  // the original three plus the v0.24.0 Integrations families.
+  kind: SubstrateKind;
   // Human-readable label for the empty-state copy.
   kindLabel: string;
   // Unified entries — fetched by the parent so the polling
@@ -217,11 +219,15 @@ export default function LineagePanel({
   );
 }
 
-function newCtaLabel(kind: "agentdef" | "skilldef" | "mcpserverdef"): string {
+function newCtaLabel(kind: SubstrateKind): string {
   switch (kind) {
     case "agentdef": return "Agent";
     case "skilldef": return "Skill";
     case "mcpserverdef": return "MCP Server";
+    case "webhookdef": return "Webhook";
+    case "a2aservercarddef": return "A2A Server Card";
+    case "a2aagentdef": return "A2A Agent";
+    case "memorybackenddef": return "Memory Backend";
   }
 }
 

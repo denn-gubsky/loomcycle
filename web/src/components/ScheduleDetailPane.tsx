@@ -8,6 +8,7 @@ import {
   scheduleDefGet,
   scheduleDefList,
   scheduleDefRetire,
+  scheduleDefActivate,
   ScheduleListEntry,
   ScheduleStateView,
 } from "../api";
@@ -127,6 +128,11 @@ export default function ScheduleDetailPane({ entry, onMutated, onForkTemplate }:
     runMutation("retire", () => scheduleDefRetire(entry.active_def_id!, true));
   const handleUnretire = () =>
     runMutation("un-retire", () => scheduleDefRetire(entry.active_def_id!, false));
+  // Re-activate an older version. ScheduleDef has no standalone promote
+  // op, so this forks from the chosen version (auto-promote) — the new
+  // version inherits its definition and becomes active.
+  const handleActivate = (defID: string) =>
+    runMutation("activate", () => scheduleDefActivate(entry.name, defID));
 
   // Static-yaml side renderer: parse static_definition for the
   // identity/schedule/hooks blocks.
@@ -269,6 +275,17 @@ export default function ScheduleDetailPane({ entry, onMutated, onForkTemplate }:
                   <span className="schedule-lineage-tag">bootstrapped</span>
                 )}
                 {v.retired && <span className="schedule-lineage-tag">retired</span>}
+                {v.def_id !== entry.active_def_id && !v.retired && (
+                  <button
+                    type="button"
+                    className="schedule-detail-action"
+                    onClick={() => handleActivate(v.def_id)}
+                    disabled={busy}
+                    title="Fork from this version with auto-promote so it becomes the active def"
+                  >
+                    Activate
+                  </button>
+                )}
               </li>
             ))}
           </ul>
