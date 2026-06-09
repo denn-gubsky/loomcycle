@@ -1,6 +1,8 @@
 package lookup
 
 import (
+	"encoding/json"
+
 	"github.com/denn-gubsky/loomcycle/internal/config"
 )
 
@@ -144,7 +146,13 @@ type SubstrateMCPServer struct {
 type SubstrateMCPServerTool struct {
 	Name        string `json:"name"`
 	Description string `json:"description,omitempty"`
-	// InputSchema is raw JSON — preserved verbatim to avoid double-
-	// parse on every introspection read.
-	InputSchema []byte `json:"input_schema,omitempty"`
+	// InputSchema is raw JSON — preserved verbatim to avoid double-parse on
+	// every introspection read. MUST be json.RawMessage, not a plain []byte:
+	// the stored input_schema is a JSON OBJECT, and encoding/json unmarshals a
+	// JSON object into []byte as an ERROR (it expects a base64 string), which
+	// aborts the WHOLE def unmarshal. With []byte this silently dropped every
+	// discovered tool (the def carrying any object schema failed to decode), so
+	// the run-start enumerator advertised nothing even for a fully-discovered
+	// server (F33). json.RawMessage captures the raw object verbatim.
+	InputSchema json.RawMessage `json:"input_schema,omitempty"`
 }

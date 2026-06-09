@@ -127,6 +127,31 @@ the new active row (different URL / headers). `retire` evicts the
 pool entry; in-flight calls complete, new calls get a clean
 "tool not found" error.
 
+## Advertising at run start (F33)
+
+Dispatch (above) is only half the story. For a model to *emit*
+`mcp__<server>__<tool>` as a structured call, that tool must be
+**advertised** in the run's tool spec — a Claude model only enters
+tool-calling mode when it is told ≥1 tool exists. So at run start,
+loomcycle expands the agent's `allowed_tools` against the dynamic
+registry and advertises the matching servers' tools:
+
+- A server whose def carries cached `discovered_tools` is advertised
+  straight from the cache (no handshake).
+- A **referenced** server with an **empty** cache — discovery was
+  skipped (`discover:false`) or its peer was unreachable at
+  registration — is handshaked once at run start (bounded; default 10s)
+  so its tools are advertised this run, and the pool entry is left warm
+  for the dispatch above.
+
+Without this, an agent whose `allowed_tools` is **only** a dynamic-MCP
+wildcard (e.g. `["mcp__telegram-dyn__*"]`) and that carries no native
+tool would have **zero** advertised tools: the model never enters
+tool-calling mode, emits the intended call as inert text, and the run
+silently does nothing. (The lazy resolver above stays the dispatch +
+peer-recovery path; it is no longer the *only* way a substrate MCP
+server becomes usable.)
+
 ## Operator workflow
 
 The shape is the same across the CLI, the TS adapter, the gRPC

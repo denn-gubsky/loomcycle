@@ -27,13 +27,13 @@ func (n namedTool) Execute(context.Context, json.RawMessage) (tools.Result, erro
 func TestCandidateTools_AdvertisesDynamicTools(t *testing.T) {
 	// New auto-appends the built-in Agent tool, so the boot set is N≥1.
 	srv := New(&config.Config{}, &stubResolver{}, []tools.Tool{namedTool{"Read"}}, concurrency.New(4, 4, time.Second), nil)
-	base := len(srv.candidateTools(context.Background(), ""))
+	base := len(srv.candidateTools(context.Background(), "", nil))
 
 	// Enumerator returns a post-boot dynamic MCP tool → exactly one more.
-	srv.SetDynamicToolEnumerator(func(context.Context, string) []tools.Tool {
+	srv.SetDynamicToolEnumerator(func(context.Context, string, map[string]bool) []tools.Tool {
 		return []tools.Tool{namedTool{"mcp__jobs__getAgentContext"}}
 	})
-	cand := srv.candidateTools(context.Background(), "")
+	cand := srv.candidateTools(context.Background(), "", nil)
 	if len(cand) != base+1 {
 		t.Fatalf("with enumerator: %d candidate tools, want base+1 (%d)", len(cand), base+1)
 	}

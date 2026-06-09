@@ -28,8 +28,8 @@ import (
 // RFC N FIX 2-mcp: the enumerator takes the run's authoritative tenant as an
 // EXPLICIT argument (the server passes it), NOT tenantFromCtx(ctx) — matching
 // the production signature.
-func tenantAdvertisingEnumerator(reg *loommcp.DynamicRegistry, st store.Store) func(context.Context, string) []tools.Tool {
-	return func(ctx context.Context, tenant string) []tools.Tool {
+func tenantAdvertisingEnumerator(reg *loommcp.DynamicRegistry, st store.Store) func(context.Context, string, map[string]bool) []tools.Tool {
+	return func(ctx context.Context, tenant string, _ map[string]bool) []tools.Tool {
 		var out []tools.Tool
 		for _, name := range reg.NamesForTenant(tenant) {
 			row, gerr := st.MCPServerDefGetActive(ctx, tenant, name)
@@ -126,8 +126,8 @@ func TestDynamicTools_TenantScopedAdvertising(t *testing.T) {
 	ctxA := auth.WithPrincipal(context.Background(), auth.Principal{TenantID: "tenant-a", Subject: "alice"})
 	ctxB := auth.WithPrincipal(context.Background(), auth.Principal{TenantID: "tenant-b", Subject: "bob"})
 
-	namesA := toolNames(srv.candidateTools(ctxA, "tenant-a"))
-	namesB := toolNames(srv.candidateTools(ctxB, "tenant-b"))
+	namesA := toolNames(srv.candidateTools(ctxA, "tenant-a", nil))
+	namesB := toolNames(srv.candidateTools(ctxB, "tenant-b", nil))
 
 	// Tenant A sees its OWN crm tool + the shared billing tool, never B's
 	// same-name override and never B's exclusive "secret" server.
@@ -172,7 +172,7 @@ func TestDynamicTools_AdvertisesExplicitTenantWithoutPrincipalOnCtx(t *testing.T
 	// The A2A/scheduler shape: NO principal, NO RunIdentity on ctx. The run's
 	// authoritative tenant "acme" is supplied EXPLICITLY by the entry site.
 	ctx := context.Background()
-	names := toolNames(srv.candidateTools(ctx, "acme"))
+	names := toolNames(srv.candidateTools(ctx, "acme", nil))
 
 	// The run sees its OWN acme tool + the shared billing tool even though
 	// nothing on ctx names the tenant.
@@ -182,7 +182,7 @@ func TestDynamicTools_AdvertisesExplicitTenantWithoutPrincipalOnCtx(t *testing.T
 	// With an EMPTY tenant (the pre-fix ctx-derived value) the acme tool is
 	// NOT advertised — proving the explicit tenant argument, not a ctx
 	// default, is what selects the set.
-	sharedOnly := toolNames(srv.candidateTools(ctx, ""))
+	sharedOnly := toolNames(srv.candidateTools(ctx, "", nil))
 	assertHas(t, "shared(empty)", sharedOnly, "mcp__crm__acme_tool", false)
 	assertHas(t, "shared(empty)", sharedOnly, "mcp__billing__shared_tool", true)
 }
