@@ -341,6 +341,11 @@ function WebhookFields(props: {
             disabled={submitting}
           />{" "}
           enabled
+          <span className="library-modal-field-hint">
+            {" "}
+            — an overlay can only turn this ON. To disable an already-enabled
+            webhook, edit its yaml (a fork with this unchecked won't disable it).
+          </span>
         </label>
       </div>
 

@@ -1488,21 +1488,19 @@ async function pumpSSE(
   const flushFrame = (raw: string) => {
     let event = "message";
     const dataLines: string[] = [];
-    let isComment = false;
     for (const line of raw.split("\n")) {
-      if (line === "") continue;
-      if (line.startsWith(":")) {
-        isComment = true; // keepalive / comment frame — ignore
-        continue;
-      }
+      // Skip blank lines and comment lines (`:`-prefixed, e.g. loomcycle's
+      // keepalive) per-line, so a frame that mixes a comment with data
+      // still dispatches its data.
+      if (line === "" || line.startsWith(":")) continue;
       if (line.startsWith("event:")) {
         event = line.slice(6).trim();
       } else if (line.startsWith("data:")) {
         dataLines.push(line.slice(5).replace(/^ /, ""));
       }
     }
+    // Pure-comment / event-only frames carry no data — nothing to dispatch.
     if (dataLines.length === 0) return;
-    if (isComment) return;
     onFrame({ event, data: dataLines.join("\n") });
   };
   for (;;) {

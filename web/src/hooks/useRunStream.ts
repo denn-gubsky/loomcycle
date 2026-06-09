@@ -123,6 +123,7 @@ export function useRunStream(): UseRunStream {
   const sendMessage = useCallback(
     (prompt: string) => {
       if (!sessionId) return;
+      ctrlRef.current?.abort(); // tear down any prior reader before the new turn
       const ctrl = new AbortController();
       ctrlRef.current = ctrl;
       setError(null);
