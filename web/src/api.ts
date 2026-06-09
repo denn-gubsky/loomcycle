@@ -1294,6 +1294,32 @@ export function listAgentChannels(agentName: string): Promise<AgentChannelsRespo
   );
 }
 
+export interface ChannelPublishResponse {
+  channel: string;
+  id: string;
+  deliver_at?: string;
+}
+
+// publishChannel posts a message to a channel via the admin publish
+// route (handleAdminChannelPublish). `payload` is the raw JSON value
+// (object / array / string / number) — REQUIRED and may not be null.
+// `deliver_at` (RFC3339) defers delivery; omit for "publish now".
+// Server validation: missing/null/invalid payload → 400; oversize → 413
+// payload_too_large; bad deliver_at → 400 invalid_deliver_at.
+export function publishChannel(
+  name: string,
+  body: { payload: unknown; deliver_at?: string },
+): Promise<ChannelPublishResponse> {
+  return jsonFetch<ChannelPublishResponse>(
+    `/v1/_channels/${encodeURIComponent(name)}/publish`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    },
+  );
+}
+
 // ---- v0.11.5 channel admin CRUD ----
 
 export interface ChannelCreateRequest {

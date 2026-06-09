@@ -5,6 +5,7 @@ import {
   deleteChannel,
   listChannels,
   peekChannel,
+  publishChannel,
 } from "../api";
 import Splitter from "../components/Splitter";
 import ChannelEditModal from "../components/ChannelEditModal";
@@ -304,6 +305,8 @@ function ChannelDetail({ channel }: { channel: ChannelDescriptor }) {
   const [messages, setMessages] = useState<ChannelMessageItem[]>([]);
   const [peekErr, setPeekErr] = useState<string | null>(null);
   const [peekLoading, setPeekLoading] = useState(false);
+  // Bumped after a successful publish to re-peek and show the new message.
+  const [reloadKey, setReloadKey] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
@@ -323,7 +326,7 @@ function ChannelDetail({ channel }: { channel: ChannelDescriptor }) {
     return () => {
       cancelled = true;
     };
-  }, [channel.name]);
+  }, [channel.name, reloadKey]);
 
   return (
     <div className="channel-detail">
@@ -350,6 +353,11 @@ function ChannelDetail({ channel }: { channel: ChannelDescriptor }) {
           )}
         </div>
       </div>
+
+      <PublishForm
+        channelName={channel.name}
+        onPublished={() => setReloadKey((k) => k + 1)}
+      />
 
       <div className="channel-detail-section">
         <h4>Recent messages (peek, scope=global)</h4>
@@ -382,6 +390,103 @@ function ChannelDetail({ channel }: { channel: ChannelDescriptor }) {
           </ul>
         )}
       </div>
+    </div>
+  );
+}
+
+// PublishForm posts a message to the selected channel via the admin
+// publish route. payload is parsed client-side (must be valid, non-null
+// JSON, matching the server's guard) so the operator sees a parse error
+// before the round-trip; deliver_at is optional (RFC3339 → deferred).
+function PublishForm({
+  channelName,
+  onPublished,
+}: {
+  channelName: string;
+  onPublished: () => void;
+}) {
+  const [payloadJSON, setPayloadJSON] = useState('{\n  "hello": "world"\n}');
+  const [deliverAt, setDeliverAt] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const [ok, setOk] = useState<string | null>(null);
+
+  // Reset the form when the operator switches channels.
+  useEffect(() => {
+    setErr(null);
+    setOk(null);
+  }, [channelName]);
+
+  const handlePublish = async () => {
+    setErr(null);
+    setOk(null);
+    const raw = payloadJSON.trim();
+    if (!raw) {
+      setErr("payload is required (non-empty JSON value).");
+      return;
+    }
+    let payload: unknown;
+    try {
+      payload = JSON.parse(raw);
+    } catch (e) {
+      setErr(`payload is not valid JSON: ${e instanceof Error ? e.message : String(e)}`);
+      return;
+    }
+    if (payload === null) {
+      setErr("payload may not be null.");
+      return;
+    }
+    const body: { payload: unknown; deliver_at?: string } = { payload };
+    if (deliverAt.trim()) body.deliver_at = deliverAt.trim();
+    setBusy(true);
+    try {
+      const r = await publishChannel(channelName, body);
+      setOk(
+        r.deliver_at
+          ? `Published ${r.id} (deferred to ${r.deliver_at}).`
+          : `Published ${r.id}.`,
+      );
+      onPublished();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="channel-detail-section">
+      <h4>Publish a message</h4>
+      <label className="modal-field">
+        <span>payload (JSON)</span>
+        <textarea
+          value={payloadJSON}
+          onChange={(e) => setPayloadJSON(e.target.value)}
+          rows={5}
+          className="mono"
+          spellCheck={false}
+          placeholder='{"key": "value"}'
+        />
+      </label>
+      <label className="modal-field">
+        <span>deliver_at (optional, RFC3339)</span>
+        <input
+          type="text"
+          value={deliverAt}
+          onChange={(e) => setDeliverAt(e.target.value)}
+          placeholder="2026-01-01T00:00:00Z — omit for publish now"
+        />
+      </label>
+      {err && <div className="error-banner">{err}</div>}
+      {ok && <div className="flash-ok">{ok}</div>}
+      <button
+        type="button"
+        className="primary"
+        onClick={handlePublish}
+        disabled={busy}
+      >
+        {busy ? "Publishing…" : "Publish"}
+      </button>
     </div>
   );
 }
