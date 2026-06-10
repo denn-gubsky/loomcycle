@@ -1336,24 +1336,15 @@ func applyAgentDefOverlay(base config.AgentDef, definition json.RawMessage) conf
 	return out
 }
 
-// channelPolicyForAgent builds the v0.8.4 Channel-tool policy from
-// the agent yaml + the top-level `channels:` block AND the runtime
-// channel store. Returns a value suitable for tools.WithChannelPolicy.
-// The Channels map is a copy of every declared channel — the tool layer
-// needs the per-channel scope/TTL/max_messages even for channels NOT in
-// this agent's allowlist (e.g. to phrase a useful refusal message).
-//
-// F29: a channel declared at runtime (POST /v1/_channels, persisted in
-// the `channels` table) must be usable for pub/sub exactly like a yaml
-// channel. We merge the runtime store into the map — yaml wins on a name
-// collision, matching ListChannels' precedence. The store read is skipped
-// when the agent has no channel allowlist at all (it can't touch a channel
-// either way), so the common no-channels run pays nothing.
 // mergedChannelDefs returns the operator-declared channel defs by name —
 // static yaml (cfg.Channels) first, then runtime-substrate rows from the
-// store (yaml wins on a name collision). includeRuntime gates the store
-// query: callers needing only the static set (e.g. an agent with no channel
-// ACLs) pass false to skip the read.
+// store (yaml wins on a name collision, matching ListChannels' precedence).
+// includeRuntime gates the store query: callers needing only the static set
+// pass false to skip the read.
+//
+// F29: a channel declared at runtime (POST /v1/_channels, persisted in the
+// `channels` table) must be usable for pub/sub exactly like a yaml channel,
+// so the runtime store is merged in here.
 //
 // Single source of truth for a channel's declared scope: both
 // channelPolicyForAgent (the per-agent Channel tool policy) and
@@ -1391,9 +1382,15 @@ func (s *Server) mergedChannelDefs(ctx context.Context, includeRuntime bool) map
 	return channels
 }
 
+// channelPolicyForAgent builds the v0.8.4 Channel-tool policy from the agent
+// yaml + the top-level `channels:` block AND the runtime channel store.
+// Returns a value suitable for tools.WithChannelPolicy. The Channels map is a
+// copy of every declared channel — the tool layer needs the per-channel
+// scope/TTL/max_messages even for channels NOT in this agent's allowlist
+// (e.g. to phrase a useful refusal message). The runtime store read is
+// skipped when the agent has no channel allowlist at all (it can't touch a
+// channel either way), so the common no-channels run pays nothing.
 func (s *Server) channelPolicyForAgent(ctx context.Context, agentDef config.AgentDef) tools.ChannelPolicyValue {
-	// Only pay the runtime store query when the agent can actually touch a
-	// channel — preserves the original fast path for channel-less agents.
 	includeRuntime := len(agentDef.Channels.Publish) > 0 || len(agentDef.Channels.Subscribe) > 0
 	return tools.ChannelPolicyValue{
 		Publish:   agentDef.Channels.Publish,
