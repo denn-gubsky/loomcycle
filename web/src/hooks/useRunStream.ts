@@ -3,6 +3,7 @@ import {
   cancelAgent,
   continueSession,
   resolveInterrupt,
+  sendRunInput,
   startRun,
   sseEventToTranscript,
   type EventPayload,
@@ -52,8 +53,15 @@ export interface UseRunStream {
   // resumes. null when nothing is pending.
   pendingInterrupt: PendingInterrupt | null;
   answerInterrupt: (answer: string) => void;
+  // awaitingInput is true while a persistent INTERACTIVE run is parked at
+  // end_turn waiting for the operator's next instruction (the agent is idle).
+  awaitingInput: boolean;
   start: (req: StartRunRequest) => void;
   sendMessage: (prompt: string) => void;
+  // send routes by state: while the run is running it STEERS the live run
+  // (POST /input — also resumes a parked interactive run); otherwise it
+  // CONTINUES the session as a fresh turn. The single terminal-prompt entry.
+  send: (text: string) => void;
   cancel: () => void;
   reset: () => void;
 }
@@ -66,6 +74,7 @@ export function useRunStream(): UseRunStream {
   const [runId, setRunId] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [pendingInterrupt, setPendingInterrupt] = useState<PendingInterrupt | null>(null);
+  const [awaitingInput, setAwaitingInput] = useState(false);
 
   const seqRef = useRef(0);
   const ctrlRef = useRef<AbortController | null>(null);
@@ -124,6 +133,9 @@ export function useRunStream(): UseRunStream {
         expiresAt: i.expires_at,
       });
     }
+    // awaiting_input ⇒ a persistent interactive run parked (idle); any other
+    // event ⇒ the agent is active again, so clear the idle flag.
+    setAwaitingInput(ev.type === "awaiting_input");
     setEvents((prev) => [...prev, sseEventToTranscript(seqRef.current++, ev)]);
   }, []);
 
@@ -175,6 +187,7 @@ export function useRunStream(): UseRunStream {
       runIdRef.current = "";
       setError(null);
       setPendingInterrupt(null);
+      setAwaitingInput(false);
       setStatus("running");
       runStream(startRun(req, { onFrame, signal: ctrl.signal }));
     },
@@ -189,12 +202,35 @@ export function useRunStream(): UseRunStream {
       ctrlRef.current = ctrl;
       setError(null);
       setPendingInterrupt(null);
+      setAwaitingInput(false);
       setStatus("running");
       runStream(
         continueSession(sessionId, prompt, { onFrame, signal: ctrl.signal }),
       );
     },
     [sessionId, onFrame, runStream],
+  );
+
+  // send is the single terminal-prompt entry. While the run is live it STEERS
+  // it (POST /input — appended mid-turn, or resumes a parked interactive run);
+  // otherwise it CONTINUES the session as a fresh turn. Steering does NOT tear
+  // down the open SSE reader — the same stream carries the response.
+  const send = useCallback(
+    (text: string) => {
+      const t = text.trim();
+      if (!t) return;
+      if (status === "running") {
+        const rid = runIdRef.current;
+        if (!rid) return;
+        setAwaitingInput(false); // optimistic; the resumed activity will stream
+        void sendRunInput(rid, t).catch((e) =>
+          setError(e instanceof Error ? e.message : String(e)),
+        );
+        return;
+      }
+      sendMessage(t);
+    },
+    [status, sendMessage],
   );
 
   const cancel = useCallback(() => {
@@ -217,6 +253,7 @@ export function useRunStream(): UseRunStream {
     runIdRef.current = "";
     setError(null);
     setPendingInterrupt(null);
+    setAwaitingInput(false);
     setStatus("idle");
   }, []);
 
@@ -229,7 +266,9 @@ export function useRunStream(): UseRunStream {
     error,
     pendingInterrupt,
     answerInterrupt,
+    awaitingInput,
     start,
+    send,
     sendMessage,
     cancel,
     reset,
