@@ -8,6 +8,31 @@ For pre-v0.4 history (single-tool runtime, library milestone, security patch), s
 
 ---
 
+## What's in v0.26.2
+
+**Patch: runtime-authored meta-agents keep their `*_def_scopes` (F40).** A
+runtime-authored **meta-agent** — one whose job is to fork, promote, or schedule
+*other* agents (the breeder / scheduler-of-agents pattern) — needs
+`agent_def_scopes` / `skill_def_scopes` / `schedule_def_scopes` /
+`a2a_server_card_def_scopes` / `a2a_agent_def_scopes` to carry that authority.
+The `AgentDef` create / fork overlay **silently dropped all five**: they had no
+field in the persisted overlay shape (`mergedDef`) or the read adapter
+(`lookup.SubstrateAgentDef`), so on every reload the meta-agent came back
+**default-deny** and could author nothing — the pattern was unbuildable at
+runtime. This was the substrate-def slice of the F14 closure still missing
+(`channels` / `evaluation_scopes` / `interruption` already round-tripped). The
+five fields now mirror across the same chain F14 used (`mergedDef` +
+`applyOverlay` + `staticToMergedDef`, then `SubstrateAgentDef` + `ToConfigDef`,
+pinned by the drift test). Deliberately **not** part of `content_sha256` — the
+`*Scopes` ACLs are authority, not content, so existing agent rows stay
+byte-stable and a pure fork-scope change does not mint a new version.
+`agent_def_scopes` + `skill_def_scopes` are consumed in-loop today, so this
+directly unblocks the meta-agent; `schedule` / `a2a` def-scopes now round-trip
+for parity (their in-loop policy wiring is a separate, pre-existing gap).
+Runtime-only; no `@loomcycle/client` bump.
+
+---
+
 ## What's in v0.26.1
 
 **Headline: mid-run steering works across a multi-replica cluster.** v0.26.0
