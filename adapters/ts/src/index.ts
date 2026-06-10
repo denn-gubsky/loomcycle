@@ -181,6 +181,14 @@ export type {
   PeekChannelOptions,
   PublishChannelOptions,
   SubscribeChannelOptions,
+  // Channel fan-in / fan-out (RFC S client twins)
+  AwaitChannelsOptions,
+  BroadcastChannelsOptions,
+  ChannelAwaitEntry,
+  ChannelAwaitMode,
+  ChannelAwaitResult,
+  ChannelBroadcastEntry,
+  ChannelBroadcastResult,
   // Channel admin CRUD (v0.11.5)
   CreateChannelOptions,
   UpdateChannelOptions,

@@ -923,6 +923,80 @@ export interface ChannelAckResult {
   ok: boolean;
 }
 
+// --- RFC S client twins: fan-in (await) / fan-out (broadcast) ---
+
+/** Fan-in mode for {@link LoomcycleClient.awaitChannels}: `any` = ≥1
+ *  channel has a message; `all` = every channel has ≥1; `at_least` =
+ *  total messages across channels ≥ `n`. */
+export type ChannelAwaitMode = "any" | "all" | "at_least";
+
+/** Options for {@link LoomcycleClient.awaitChannels} — wait until the
+ *  predicate is met across `channels`, or `waitMs` elapses. `scope` +
+ *  `userId` apply to EVERY channel in the set. Non-committing. Max 32. */
+export interface AwaitChannelsOptions {
+  channels: string[];
+  scope: ChannelScope;
+  /** Required when scope === "user" — the shared scope_id for the set. */
+  userId?: string;
+  mode?: ChannelAwaitMode;
+  /** Required (>0) when mode === "at_least". */
+  n?: number;
+  fromCursor?: string;
+  maxMessages?: number;
+  /** Long-poll timeout in ms; capped at the operator's LongPollCapMS. */
+  waitMs?: number;
+  signal?: AbortSignal;
+}
+
+/** One fired channel's accumulated messages + the (non-advanced) cursor. */
+export interface ChannelAwaitEntry {
+  messages: ChannelMessageItem[];
+  next_cursor: string;
+}
+
+/** Response shape for {@link LoomcycleClient.awaitChannels}. `timed_out`
+ *  is true only when the predicate was unmet within `waitMs` (never an
+ *  error). `results` is keyed by channel name. */
+export interface ChannelAwaitResult {
+  satisfied: boolean;
+  timed_out: boolean;
+  mode: ChannelAwaitMode;
+  fired: string[];
+  total_messages: number;
+  results: Record<string, ChannelAwaitEntry>;
+}
+
+/** Options for {@link LoomcycleClient.broadcastChannels} — publish the
+ *  same `payload` to every channel in `channels`. Atomic at the declare
+ *  pre-flight (one undeclared channel rejects the whole call). Max 32. */
+export interface BroadcastChannelsOptions {
+  channels: string[];
+  scope: ChannelScope;
+  userId?: string;
+  payload: unknown;
+  /** RFC3339Nano deferred-publish time. Omit for "publish now". */
+  deliverAt?: string;
+  signal?: AbortSignal;
+}
+
+/** One channel's publish outcome. `error` is set (and `msg_id` absent)
+ *  when that channel's write failed after the pre-flight passed. */
+export interface ChannelBroadcastEntry {
+  channel: string;
+  msg_id?: string;
+  created_at?: string;
+  visible_at?: string;
+  error?: string;
+}
+
+/** Response shape for {@link LoomcycleClient.broadcastChannels}.
+ *  `published` + `failed` = the deduped channel count. */
+export interface ChannelBroadcastResult {
+  published: number;
+  failed: number;
+  results: ChannelBroadcastEntry[];
+}
+
 // ---- v0.11.5 Channel admin CRUD types ----
 
 /** Options for {@link LoomcycleClient.createChannel}. Operator-yaml
