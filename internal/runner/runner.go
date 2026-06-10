@@ -236,6 +236,13 @@ type RunInput struct {
 	// code-js provider consumes it (LLM runs are bounded by MaxIterations +
 	// provider HTTP timeouts, not this budget).
 	RunTimeoutSeconds int
+
+	// Interactive starts a PERSISTENT run that parks waiting for operator
+	// steering at end_turn instead of terminating (the interactive terminal
+	// session mode). Requires steering to be wired + the operator to drive
+	// the run via POST /v1/runs/{run_id}/input; pair with an
+	// unbounded_iterations agent for a true always-on terminal. Cancel ends it.
+	Interactive bool
 }
 
 // RunCallbacks is how the wire surfaces observe the run.

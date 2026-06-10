@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/steer"
@@ -127,6 +129,179 @@ func TestRun_DrainSteer_OrderingWithToolResults(t *testing.T) {
 	steerIdx := userTextIdx(msgs, "steer-B")
 	if steerIdx <= toolUseIdx+1 {
 		t.Errorf("steer turn at idx %d, want strictly after the tool_results turn at %d", steerIdx, toolUseIdx+1)
+	}
+}
+
+// endTurnProvider always returns end_turn and counts its calls — for the
+// persistent-park tests.
+type endTurnProvider struct {
+	mu sync.Mutex
+	n  int
+}
+
+func (p *endTurnProvider) ID() string                                   { return "endturn" }
+func (p *endTurnProvider) Probe(context.Context) error                  { return nil }
+func (p *endTurnProvider) ListModels(context.Context) ([]string, error) { return nil, nil }
+func (p *endTurnProvider) Capabilities() providers.Capabilities {
+	return providers.Capabilities{Streaming: true}
+}
+func (p *endTurnProvider) calls() int { p.mu.Lock(); defer p.mu.Unlock(); return p.n }
+func (p *endTurnProvider) Call(context.Context, providers.Request) (<-chan providers.Event, error) {
+	p.mu.Lock()
+	p.n++
+	p.mu.Unlock()
+	ch := make(chan providers.Event, 2)
+	ch <- providers.Event{Type: providers.EventText, Text: "ok"}
+	ch <- providers.Event{Type: providers.EventDone, StopReason: "end_turn", Usage: &providers.Usage{}}
+	close(ch)
+	return ch, nil
+}
+
+// A persistent interactive run parks at end_turn instead of terminating, and
+// resumes on the next operator steering message.
+func TestRun_Interactive_ParksAtEndTurnUntilInput(t *testing.T) {
+	q := make(chan steer.Message, 4)
+	parked := make(chan struct{}, 4)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	prov := &endTurnProvider{}
+	done := make(chan struct{})
+	go func() {
+		_, _ = Run(ctx, RunOptions{
+			Provider:    prov,
+			Model:       "x",
+			Tools:       []tools.Tool{noopTool{}},
+			Dispatcher:  tools.NewDispatcher([]tools.Tool{noopTool{}}),
+			Segments:    steerSegs(),
+			SteerQueue:  q,
+			Interactive: true,
+			OnEvent: func(ev providers.Event) {
+				if ev.Type == providers.EventAwaitingInput {
+					parked <- struct{}{}
+				}
+			},
+		})
+		close(done)
+	}()
+
+	// First end_turn → parked (not terminated).
+	select {
+	case <-parked:
+	case <-time.After(2 * time.Second):
+		t.Fatal("run did not park at end_turn")
+	}
+	if got := prov.calls(); got != 1 {
+		t.Errorf("calls = %d, want 1 before resume", got)
+	}
+	select {
+	case <-done:
+		t.Fatal("run terminated instead of parking")
+	default:
+	}
+
+	// Resume on a steering message → another turn → parks again.
+	q <- steer.Message{Text: "keep going"}
+	select {
+	case <-parked:
+	case <-time.After(2 * time.Second):
+		t.Fatal("run did not resume on steering input")
+	}
+	if got := prov.calls(); got != 2 {
+		t.Errorf("calls = %d, want 2 after resume", got)
+	}
+
+	// Cancel ends the persistent run.
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("run did not terminate after cancel")
+	}
+}
+
+// Cancelling a parked interactive run terminates it promptly (no hang).
+func TestRun_Interactive_CancelWhileParked(t *testing.T) {
+	q := make(chan steer.Message, 1)
+	parked := make(chan struct{}, 1)
+	ctx, cancel := context.WithCancel(context.Background())
+	prov := &endTurnProvider{}
+	done := make(chan struct{})
+	go func() {
+		_, _ = Run(ctx, RunOptions{
+			Provider:    prov,
+			Model:       "x",
+			Tools:       []tools.Tool{noopTool{}},
+			Dispatcher:  tools.NewDispatcher([]tools.Tool{noopTool{}}),
+			Segments:    steerSegs(),
+			SteerQueue:  q,
+			Interactive: true,
+			OnEvent: func(ev providers.Event) {
+				if ev.Type == providers.EventAwaitingInput {
+					parked <- struct{}{}
+				}
+			},
+		})
+		close(done)
+	}()
+	select {
+	case <-parked:
+	case <-time.After(2 * time.Second):
+		t.Fatal("run did not park")
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("cancel did not unblock the parked run")
+	}
+}
+
+// While parked, the run pulses OnHeartbeat so the staleness sweeper doesn't
+// reap it. Lower the interval so the test doesn't wait the production 30s.
+func TestRun_Interactive_HeartbeatFiresWhileParked(t *testing.T) {
+	orig := parkHeartbeatInterval
+	parkHeartbeatInterval = 5 * time.Millisecond
+	defer func() { parkHeartbeatInterval = orig }()
+
+	q := make(chan steer.Message, 1)
+	parked := make(chan struct{}, 1)
+	var hb int32
+	ctx, cancel := context.WithCancel(context.Background())
+	prov := &endTurnProvider{}
+	done := make(chan struct{})
+	go func() {
+		_, _ = Run(ctx, RunOptions{
+			Provider:    prov,
+			Model:       "x",
+			Tools:       []tools.Tool{noopTool{}},
+			Dispatcher:  tools.NewDispatcher([]tools.Tool{noopTool{}}),
+			Segments:    steerSegs(),
+			SteerQueue:  q,
+			Interactive: true,
+			OnHeartbeat: func() { atomic.AddInt32(&hb, 1) },
+			OnEvent: func(ev providers.Event) {
+				if ev.Type == providers.EventAwaitingInput {
+					select {
+					case parked <- struct{}{}:
+					default:
+					}
+				}
+			},
+		})
+		close(done)
+	}()
+	select {
+	case <-parked:
+	case <-time.After(2 * time.Second):
+		t.Fatal("run did not park")
+	}
+	// Give the park heartbeat ticker a few cycles.
+	time.Sleep(60 * time.Millisecond)
+	cancel()
+	<-done
+	// At least the per-iteration heartbeat (1) plus several park ticks.
+	if got := atomic.LoadInt32(&hb); got < 2 {
+		t.Errorf("heartbeat fired %d times, want ≥2 (park ticker not pulsing)", got)
 	}
 }
 
