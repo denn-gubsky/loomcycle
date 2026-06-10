@@ -99,22 +99,24 @@ func (c *Channel) shouldWarnTruncation(channel string) bool {
 
 const channelDescription = `Persistent inter-agent message bus. ` +
 	`Publish JSON payloads to a named channel; subscribe to drain new messages with cursor-based at-least-once delivery. ` +
-	`Operations: publish, subscribe, ack, peek, list_channels, await. ` +
+	`Operations: publish, subscribe, ack, peek, list_channels, await, broadcast. ` +
 	`Channel ACLs are operator-configured; the tool refuses ops on channels not in this agent's publish/subscribe allowlists. ` +
 	`Scope (agent / user / global) is set by the operator per channel; cursor isolation matches that scope. ` +
 	`await is a fan-in barrier across MULTIPLE channels (wait for any / all / at_least N messages, or a timeout) — the complement to ` +
 	`Agent.parallel_spawn (which joins sub-agents); use await to join independent producers (scheduler / webhook / separately-spawned agents). ` +
-	`await is non-committing (detection only) — it never advances cursors, so subscribe/ack exactly what you process.`
+	`await is non-committing (detection only) — it never advances cursors, so subscribe/ack exactly what you process. ` +
+	`broadcast is the symmetric fan-OUT: publish one payload to MULTIPLE channels in a single call (e.g. ping N workers to start). ` +
+	`Both await and broadcast cap at 32 channels and refuse the whole op if any channel fails its ACL (no partial broadcast).`
 
 const channelInputSchema = `{
   "type": "object",
   "properties": {
-    "op":           {"type": "string", "enum": ["publish","subscribe","ack","peek","list_channels","await"], "description": "Which operation to perform."},
+    "op":           {"type": "string", "enum": ["publish","subscribe","ack","peek","list_channels","await","broadcast"], "description": "Which operation to perform."},
     "channel":      {"type": "string", "description": "The channel name (required for publish/subscribe/ack/peek)."},
-    "channels":     {"type": "array", "items": {"type": "string"}, "description": "Await only: the channels to fan in over (max 32). Each is resolved under the agent's SUBSCRIBE allowlist."},
+    "channels":     {"type": "array", "items": {"type": "string"}, "description": "await + broadcast (max 32 channels). await resolves each under the SUBSCRIBE allowlist (fan-in); broadcast under the PUBLISH allowlist (fan-out)."},
     "mode":         {"type": "string", "enum": ["any","all","at_least"], "description": "Await only: any = ≥1 channel has a message; all = every channel has ≥1; at_least = total messages across channels ≥ n. Default any."},
     "n":            {"type": "integer", "description": "Await only: the threshold for mode=at_least (required, >0 for that mode)."},
-    "value":        {"description": "Publish only: the JSON payload to append."},
+    "value":        {"description": "publish / broadcast: the JSON payload to append (broadcast sends the same payload to every named channel)."},
     "ttl":          {"type": "integer", "description": "Publish only: per-message TTL in seconds. Absent = channel default."},
     "deliver_at":   {"type": "string", "description": "Publish only (optional): RFC3339 timestamp at which the message becomes deliverable. Absent or in the past = immediate. TTL counts from publish time, NOT deliver_at — size the TTL to cover both the deferral window AND the desired visibility window."},
     "from_cursor":  {"type": "string", "description": "Subscribe/peek only: read starting after this cursor. Absent = since last ack. \"cur_0\" = replay from oldest."},
@@ -175,10 +177,12 @@ func (c *Channel) Execute(ctx context.Context, raw json.RawMessage) (tools.Resul
 		return c.execListChannels(policy)
 	case "await":
 		return c.execAwait(ctx, policy, in)
+	case "broadcast":
+		return c.execBroadcast(ctx, policy, in)
 	case "":
 		return errResult("missing required field: op"), nil
 	default:
-		return errResult(fmt.Sprintf("unknown op %q (must be one of: publish, subscribe, ack, peek, list_channels, await)", in.Op)), nil
+		return errResult(fmt.Sprintf("unknown op %q (must be one of: publish, subscribe, ack, peek, list_channels, await, broadcast)", in.Op)), nil
 	}
 }
 
@@ -260,113 +264,215 @@ func channelAllowed(name string, allowlist []string) bool {
 }
 
 func (c *Channel) execPublish(ctx context.Context, policy tools.ChannelPolicyValue, in channelInput) (tools.Result, error) {
-	def, scope, scopeID, err := c.resolveChannel(ctx, policy, "publish", in.Channel)
+	def, scope, scopeID, refusal := c.checkPublishACL(ctx, policy, in.Channel)
+	if refusal != "" {
+		return errResult(refusal), nil
+	}
+	if verr := validatePublishValue(in.Value, c.MaxValueBytes); verr != "" {
+		return errResult("publish: " + verr), nil
+	}
+	now := time.Now()
+	visibleAt, deferred, derr := parsePublishDeliverAt(in.DeliverAt, now)
+	if derr != "" {
+		return errResult("publish: " + derr), nil
+	}
+	result, err := c.storeAndNotify(ctx, in.Channel, def, scope, scopeID, in.Value, in.TTL, visibleAt, deferred, now)
 	if err != nil {
-		return errResult(err.Error()), nil
+		return errResult(fmt.Sprintf("publish: %s", err)), nil
 	}
-	// v0.8.6: refuse agent publishes on `publisher: system` channels
-	// AND on `_system/*` channels (prefix is reserved for loomcycle-
-	// authoritative signals regardless of Publisher value). The admin
-	// endpoint and internal Go publisher bypass this check by going
-	// through SystemPublisher / Store.ChannelPublish directly, not
-	// through this tool layer.
-	if def.Publisher == "system" {
-		return errResult(fmt.Sprintf("publish: channel %q is `publisher: system` — agents may not publish (use admin endpoint POST /v1/_channels/_system/%s/publish or wait for internal publisher)", in.Channel, in.Channel)), nil
-	}
-	if strings.HasPrefix(in.Channel, "_system/") {
-		return errResult(fmt.Sprintf("publish: channel %q starts with `_system/` (reserved prefix) — agents may not publish to system channels", in.Channel)), nil
-	}
-	if len(in.Value) == 0 {
-		return errResult("publish: missing required field: value"), nil
-	}
-	if !json.Valid(in.Value) {
-		return errResult("publish: value is not valid JSON"), nil
-	}
-	if c.MaxValueBytes > 0 && len(in.Value) > c.MaxValueBytes {
-		return errResult(fmt.Sprintf("publish: payload (%d bytes) exceeds max %d bytes", len(in.Value), c.MaxValueBytes)), nil
-	}
+	return okJSON(result)
+}
 
-	// TTL precedence: per-message > channel default > none.
-	ttlSecs := in.TTL
+// checkPublishACL resolves a channel for publishing + applies the v0.8.6
+// system-channel refusals (publisher:system + the reserved _system/
+// prefix). Returns a non-empty refusal string when publishing is denied.
+// Side-effect-free — shared by publish + broadcast so both enforce the
+// identical pre-write gate.
+func (c *Channel) checkPublishACL(ctx context.Context, policy tools.ChannelPolicyValue, channel string) (tools.ChannelDef, store.MemoryScope, string, string) {
+	def, scope, scopeID, err := c.resolveChannel(ctx, policy, "publish", channel)
+	if err != nil {
+		return def, scope, scopeID, err.Error()
+	}
+	// The admin endpoint and internal Go publisher bypass these by going
+	// through SystemPublisher / Store.ChannelPublish directly, not this
+	// tool layer.
+	if def.Publisher == "system" {
+		return def, scope, scopeID, fmt.Sprintf("channel %q is `publisher: system` — agents may not publish (use admin endpoint POST /v1/_channels/_system/%s/publish or wait for internal publisher)", channel, channel)
+	}
+	if strings.HasPrefix(channel, "_system/") {
+		return def, scope, scopeID, fmt.Sprintf("channel %q starts with `_system/` (reserved prefix) — agents may not publish to system channels", channel)
+	}
+	return def, scope, scopeID, ""
+}
+
+// validatePublishValue checks the payload is present, valid JSON, and
+// within the operator byte cap. Returns "" when OK. Shared by publish +
+// broadcast (broadcast validates the single shared payload once).
+func validatePublishValue(value json.RawMessage, maxBytes int) string {
+	if len(value) == 0 {
+		return "missing required field: value"
+	}
+	if !json.Valid(value) {
+		return "value is not valid JSON"
+	}
+	if maxBytes > 0 && len(value) > maxBytes {
+		return fmt.Sprintf("payload (%d bytes) exceeds max %d bytes", len(value), maxBytes)
+	}
+	return ""
+}
+
+// parsePublishDeliverAt interprets the optional deliver_at (v0.8.6). Empty
+// or parseable-as-past = visible immediately (deferred=false). Future-dated
+// = deferred publish at that instant. Returns a non-empty refusal on a
+// malformed RFC3339 string.
+func parsePublishDeliverAt(deliverAt string, now time.Time) (visibleAt time.Time, deferred bool, refusal string) {
+	if deliverAt == "" {
+		return time.Time{}, false, ""
+	}
+	parsed, err := time.Parse(time.RFC3339, deliverAt)
+	if err != nil {
+		return time.Time{}, false, fmt.Sprintf("invalid deliver_at %q: %s (expected RFC3339)", deliverAt, err)
+	}
+	if parsed.After(now) {
+		return parsed, true, ""
+	}
+	return time.Time{}, false, ""
+}
+
+// storeAndNotify writes one message to an already-resolved channel, wakes
+// subscribers (or arms the deferred-visibility timer), and emits the typed
+// audit event — the side-effecting half of a publish, shared by publish +
+// broadcast. Returns the per-channel result map (message_id / channel /
+// dropped_oldest, + visible_at when deferred).
+func (c *Channel) storeAndNotify(ctx context.Context, channel string, def tools.ChannelDef, scope store.MemoryScope, scopeID string, value json.RawMessage, ttl int64, visibleAt time.Time, deferred bool, now time.Time) (map[string]any, error) {
+	// TTL precedence: per-message > channel default > none. TTL counts
+	// from publish time, not deliver_at — a deferred message never
+	// survives beyond its declared TTL.
+	ttlSecs := ttl
 	if ttlSecs == 0 {
 		ttlSecs = int64(def.DefaultTTL)
 	}
-	now := time.Now()
 	var expiresAt time.Time
 	if ttlSecs > 0 {
-		// TTL counts from publish time, not deliver_at — preserves
-		// total-lifetime semantics (a deferred message never survives
-		// beyond its declared TTL). Operator/agent's responsibility
-		// to size correctly if they want a meaningful visibility
-		// window after a long deferral.
 		expiresAt = now.Add(time.Duration(ttlSecs) * time.Second)
 	}
 
-	// deliver_at parsing (v0.8.6). Empty / parseable-as-past = visible
-	// immediately. Future-dated = deferred publish.
-	var visibleAt time.Time
-	deferred := false
-	if in.DeliverAt != "" {
-		parsed, err := time.Parse(time.RFC3339, in.DeliverAt)
-		if err != nil {
-			return errResult(fmt.Sprintf("publish: invalid deliver_at %q: %s (expected RFC3339)", in.DeliverAt, err)), nil
-		}
-		if parsed.After(now) {
-			visibleAt = parsed
-			deferred = true
-		}
-	}
-
 	id, dropped, err := c.Store.ChannelPublish(ctx, store.ChannelMessage{
-		Channel:           in.Channel,
+		Channel:           channel,
 		Scope:             scope,
 		ScopeID:           scopeID,
-		Payload:           in.Value,
+		Payload:           value,
 		ExpiresAt:         expiresAt,
 		VisibleAt:         visibleAt, // zero = treated as "now" inside the store
 		PublishedByUserID: tools.RunIdentity(ctx).UserID,
 	}, def.MaxMessages)
 	if err != nil {
-		if errors.Is(err, store.ErrChannelValueTooLarge) {
-			return errResult(fmt.Sprintf("publish: %s", err)), nil
-		}
-		return errResult(fmt.Sprintf("publish: %s", err)), nil
+		return nil, err
 	}
 	// Deferred publishes go via the scheduler so long-poll subscribers
-	// wake at visible_at. Immediate publishes notify the bus directly
-	// (same as v0.8.4).
+	// wake at visible_at. Immediate publishes notify the bus directly.
 	if deferred && c.Scheduler != nil {
-		c.Scheduler.Schedule(in.Channel, id, visibleAt)
+		c.Scheduler.Schedule(channel, id, visibleAt)
 	} else if c.Bus != nil {
-		c.Bus.Notify(in.Channel)
+		c.Bus.Notify(channel)
 	}
-	// Typed audit event (v0.8.4 polish): same payload as the
-	// tool_result envelope, but on a separate event type so SSE
-	// consumers building channel dashboards can filter by Type
-	// without parsing every tool_result JSON. PayloadPreview is
-	// truncated at 200 chars — adapters that need the full
-	// payload still read it from the tool_result envelope.
+	// Typed audit event (v0.8.4 polish): a separate event type so SSE
+	// consumers building channel dashboards can filter without parsing
+	// every tool_result. PayloadPreview truncated at 200 chars.
 	tools.EventEmitter(ctx)(providers.Event{
 		Type: providers.EventChannelPublish,
 		Channel: &providers.ChannelEventInfo{
-			Channel:        in.Channel,
+			Channel:        channel,
 			MessageID:      id,
 			Scope:          string(scope),
 			ScopeID:        scopeID,
-			PayloadBytes:   len(in.Value),
-			PayloadPreview: truncateForEvent(string(in.Value), 200),
+			PayloadBytes:   len(value),
+			PayloadPreview: truncateForEvent(string(value), 200),
 			DroppedOldest:  dropped,
 		},
 	})
 	result := map[string]any{
 		"message_id":     id,
-		"channel":        in.Channel,
+		"channel":        channel,
 		"dropped_oldest": dropped, // > 0 indicates max_messages overflow
 	}
 	if deferred {
 		result["visible_at"] = visibleAt.UTC().Format(time.RFC3339Nano)
 	}
-	return okJSON(result)
+	return result, nil
+}
+
+// execBroadcast is the symmetric fan-OUT to await's fan-in (RFC S shape):
+// publish ONE payload to a SET of channels in a single call — e.g. ping N
+// workers to start, the producer-side bookend of an await consolidator. A
+// dedicated op (not an overload of publish), mirroring how await is its own
+// op rather than an overload of subscribe.
+//
+// Atomic ACL pre-flight: every channel is resolved + system-refusal-checked
+// (under the PUBLISH allowlist) BEFORE any write, so one denied channel
+// refuses the WHOLE op — no partial broadcast. The shared payload + the
+// shared deliver_at are validated once. Writes are then applied per channel;
+// a per-channel storage error (rare) is reported in that channel's result
+// while the already-published ones stand (there is no cross-channel
+// transaction), and the op itself does not error — symmetric with await's
+// "timeout returns partials, never an error" posture.
+func (c *Channel) execBroadcast(ctx context.Context, policy tools.ChannelPolicyValue, in channelInput) (tools.Result, error) {
+	if len(in.Channels) == 0 {
+		return errResult("broadcast: missing required field: channels (non-empty list)"), nil
+	}
+	if len(in.Channels) > maxFanChannels {
+		return errResult(fmt.Sprintf("broadcast: too many channels (%d > max %d)", len(in.Channels), maxFanChannels)), nil
+	}
+	if verr := validatePublishValue(in.Value, c.MaxValueBytes); verr != "" {
+		return errResult("broadcast: " + verr), nil
+	}
+	now := time.Now()
+	visibleAt, deferred, derr := parsePublishDeliverAt(in.DeliverAt, now)
+	if derr != "" {
+		return errResult("broadcast: " + derr), nil
+	}
+
+	// Pre-flight: resolve + ACL-check every (deduped) channel BEFORE any
+	// write. Any denial refuses the whole op so a broadcast is never partial
+	// because of ACLs.
+	type target struct {
+		name    string
+		def     tools.ChannelDef
+		scope   store.MemoryScope
+		scopeID string
+	}
+	seen := make(map[string]bool, len(in.Channels))
+	targets := make([]target, 0, len(in.Channels))
+	for _, name := range in.Channels {
+		if seen[name] {
+			continue
+		}
+		seen[name] = true
+		def, scope, scopeID, refusal := c.checkPublishACL(ctx, policy, name)
+		if refusal != "" {
+			return errResult("broadcast: " + refusal), nil
+		}
+		targets = append(targets, target{name, def, scope, scopeID})
+	}
+
+	// Write to each resolved channel. Per-channel storage errors are
+	// reported in results (the successful publishes stand).
+	results := make([]map[string]any, 0, len(targets))
+	published := 0
+	for _, t := range targets {
+		res, err := c.storeAndNotify(ctx, t.name, t.def, t.scope, t.scopeID, in.Value, in.TTL, visibleAt, deferred, now)
+		if err != nil {
+			results = append(results, map[string]any{"channel": t.name, "error": err.Error()})
+			continue
+		}
+		published++
+		results = append(results, res)
+	}
+	return okJSON(map[string]any{
+		"published": published,
+		"failed":    len(targets) - published,
+		"results":   results,
+	})
 }
 
 func (c *Channel) execSubscribe(ctx context.Context, policy tools.ChannelPolicyValue, in channelInput) (tools.Result, error) {
@@ -659,9 +765,10 @@ func readWithRetry(read func() ([]store.ChannelMessage, string, error), channel 
 	return nil, "", nil
 }
 
-// awaitMaxChannels caps the fan-in width so one await can't register an
-// unbounded number of Bus wakers / hold an unbounded select.
-const awaitMaxChannels = 32
+// maxFanChannels caps the fan-in (await) / fan-out (broadcast) width so a
+// single op can't register an unbounded number of Bus wakers / hold an
+// unbounded select, or fan one publish out to an unbounded write set.
+const maxFanChannels = 32
 
 // execAwait is the RFC S / F35 fan-in barrier: wait until any / all /
 // at_least-N messages are visible across a SET of channels, or a timeout.
@@ -687,8 +794,8 @@ func (c *Channel) execAwait(ctx context.Context, policy tools.ChannelPolicyValue
 	if len(in.Channels) == 0 {
 		return errResult("await: missing required field: channels (non-empty list)"), nil
 	}
-	if len(in.Channels) > awaitMaxChannels {
-		return errResult(fmt.Sprintf("await: too many channels (%d > max %d)", len(in.Channels), awaitMaxChannels)), nil
+	if len(in.Channels) > maxFanChannels {
+		return errResult(fmt.Sprintf("await: too many channels (%d > max %d)", len(in.Channels), maxFanChannels)), nil
 	}
 	mode := in.Mode
 	if mode == "" {
