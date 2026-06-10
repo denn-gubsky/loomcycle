@@ -367,6 +367,14 @@ const (
 	// persists a user_input row separately for replay; this event stays
 	// live-only).
 	EventSteer EventType = "steer"
+
+	// EventAwaitingInput is emitted by a persistent INTERACTIVE run when the
+	// model ends its turn and the loop parks waiting for the operator's next
+	// instruction (instead of terminating). The run resumes on the next
+	// steering message or ends on Cancel. The AwaitingInput field carries the
+	// turn the run parked at. The UI renders this as the terminal's idle
+	// "waiting for input" state.
+	EventAwaitingInput EventType = "awaiting_input"
 )
 
 // Event is one streamed datum from a provider call (or, after the loop layer
@@ -416,6 +424,10 @@ type Event struct {
 	// UserInput carries the structured payload on EventSteer (an
 	// operator-injected steering message drained mid-turn). Nil otherwise.
 	UserInput *UserInputEventInfo `json:"user_input,omitempty"`
+
+	// AwaitingInput carries the structured payload on EventAwaitingInput (a
+	// persistent interactive run parked at end_turn). Nil otherwise.
+	AwaitingInput *AwaitingInputEventInfo `json:"awaiting_input,omitempty"`
 
 	// StopReason is set on the final assistant Event of a provider call:
 	// "end_turn" | "tool_use" | "max_tokens" | "stop_sequence".
@@ -575,6 +587,15 @@ type UserInputEventInfo struct {
 	Source string `json:"source,omitempty"`
 	// SeenAt is when the loop drained the message. RFC3339Nano.
 	SeenAt string `json:"seen_at,omitempty"`
+}
+
+// AwaitingInputEventInfo is the structured payload on EventAwaitingInput — a
+// persistent interactive run parked at end_turn, waiting for the operator's
+// next steering message (or Cancel).
+type AwaitingInputEventInfo struct {
+	// SinceTurn is the iteration index the run parked at. Informational —
+	// lets the UI show "idle after N turns".
+	SinceTurn int `json:"since_turn"`
 }
 
 // HostWideningEventInfo is the structured payload on EventHostWidened

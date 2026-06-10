@@ -1830,6 +1830,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		Metadata:               in.Metadata,
 		PayloadMetadata:        in.PayloadMetadata,
 		RunTimeoutSeconds:      pickRunTimeout(in.RunTimeoutSeconds, agentDef.RunTimeoutSeconds),
+		Interactive:            in.Interactive,
 		UserTier:               in.UserTier,
 		FallbackPolicy:         fbPolicy,
 		ReResolve:              fbReResolve,
@@ -2575,6 +2576,11 @@ type runRequest struct {
 	// LOOMCYCLE_CODE_AGENTS_RUN_TIMEOUT_SECONDS (precedence: per-run >
 	// per-agent > global). 0 = inherit. Ignored by LLM agents.
 	RunTimeoutSeconds int `json:"run_timeout_seconds,omitempty"`
+	// Interactive starts a PERSISTENT run that parks for operator steering at
+	// end_turn instead of terminating (interactive terminal). Drive it via
+	// POST /v1/runs/{run_id}/input; pair with an unbounded_iterations agent
+	// for a true always-on terminal. Cancel ends it.
+	Interactive bool `json:"interactive,omitempty"`
 }
 
 // pickRunTimeout resolves the effective code-js wall-clock budget override:
@@ -3035,6 +3041,7 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		CodeBody:               agentDef.Code, // inline code-js body (RFC J); "" → FS fallback
 		Metadata:               req.Metadata,  // direct /v1/runs caller is first-party → trusted; no payload_metadata
 		RunTimeoutSeconds:      pickRunTimeout(req.RunTimeoutSeconds, agentDef.RunTimeoutSeconds),
+		Interactive:            req.Interactive,
 		UserTier:               req.UserTier,
 		FallbackPolicy:         fbPolicy,
 		ReResolve:              fbReResolve,
@@ -3095,6 +3102,10 @@ type messagesRequest struct {
 	// RunTimeoutSeconds mirrors runRequest.RunTimeoutSeconds for the
 	// continuation's new run (per-run > per-agent > global). 0 = inherit.
 	RunTimeoutSeconds int `json:"run_timeout_seconds,omitempty"`
+	// Interactive makes this continuation a PERSISTENT run that parks for
+	// operator steering at end_turn (interactive terminal). Same semantics as
+	// runRequest.Interactive.
+	Interactive bool `json:"interactive,omitempty"`
 }
 
 func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
@@ -3428,6 +3439,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		CodeBody:               agentDef.Code, // inline code-js body (RFC J); "" → FS fallback
 		Metadata:               body.Metadata,
 		RunTimeoutSeconds:      pickRunTimeout(body.RunTimeoutSeconds, agentDef.RunTimeoutSeconds),
+		Interactive:            body.Interactive,
 		UserTier:               body.UserTier,
 		FallbackPolicy:         fbPolicy,
 		ReResolve:              fbReResolve,

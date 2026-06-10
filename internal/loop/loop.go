@@ -70,6 +70,13 @@ type RunOptions struct {
 	// tolerate failures" contract as OnHeartbeat.
 	OnSteer func(steer.Message)
 
+	// Interactive makes this a PERSISTENT run: instead of terminating when the
+	// model ends its turn, the loop parks on SteerQueue waiting for the
+	// operator's next instruction (resuming on it, ending only on Cancel).
+	// Requires SteerQueue; pairs with UnboundedIterations for a true
+	// always-on terminal agent (else parks count toward MaxIterations).
+	Interactive bool
+
 	// PriorMessages is the conversation history to prepend before the
 	// caller's new Segments. Used by the continuation endpoint to replay
 	// a session's prior turns. Empty for a fresh run (the v0.2 case).
@@ -584,6 +591,34 @@ type RunResult struct {
 }
 
 // Run drives the agent loop to completion.
+// parkHeartbeatInterval is how often a parked interactive run pulses
+// OnHeartbeat while idle, so the staleness sweeper doesn't reap it (the
+// per-iteration heartbeat is suspended during the block). Matches the
+// interruption tool's blocked-heartbeat cadence. A var (not const) so tests
+// can lower it; not an operator knob.
+var parkHeartbeatInterval = 30 * time.Second
+
+// parkForInput blocks a persistent interactive run until an operator steering
+// message arrives or ctx is cancelled, ticking OnHeartbeat meanwhile so the
+// idle run isn't reaped. Returns (msg, true) on input; (zero, false) on
+// cancel or a closed queue.
+func parkForInput(ctx context.Context, q <-chan steer.Message, heartbeat func()) (steer.Message, bool) {
+	t := time.NewTicker(parkHeartbeatInterval)
+	defer t.Stop()
+	for {
+		select {
+		case m, ok := <-q:
+			return m, ok
+		case <-t.C:
+			if heartbeat != nil {
+				heartbeat()
+			}
+		case <-ctx.Done():
+			return steer.Message{}, false
+		}
+	}
+}
+
 // drainSteer non-blocking-pulls every currently-queued operator steering
 // message and appends each as a SEPARATE user-role turn, returning the
 // extended slice. The operator instruction is TRUSTED (bearer-gated, same
@@ -1022,6 +1057,30 @@ outerLoop:
 
 		// Terminal: model is done.
 		if iterStop != "tool_use" || len(pendingTools) == 0 {
+			// Persistent interactive run: park instead of terminating. Wait
+			// for the operator's next instruction (or Cancel). The run holds
+			// its concurrency slot while idle — the documented fairness
+			// trade-off of an always-on terminal agent (bounded by the
+			// existing per-user / global run caps).
+			if opts.Interactive && opts.SteerQueue != nil {
+				emit(providers.Event{Type: providers.EventAwaitingInput,
+					AwaitingInput: &providers.AwaitingInputEventInfo{SinceTurn: iter}})
+				m, resumed := parkForInput(ctx, opts.SteerQueue, opts.OnHeartbeat)
+				if !resumed {
+					// ctx cancelled (or queue closed) → terminate.
+					iterSpan.End()
+					break
+				}
+				messages = append(messages, providers.Message{
+					Role:    "user",
+					Content: []providers.ContentBlock{{Type: "text", Text: m.Text}},
+				})
+				if opts.OnSteer != nil {
+					opts.OnSteer(m)
+				}
+				iterSpan.End()
+				continue outerLoop
+			}
 			iterSpan.End()
 			break
 		}
