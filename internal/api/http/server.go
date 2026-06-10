@@ -36,6 +36,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/runner"
 	"github.com/denn-gubsky/loomcycle/internal/runstate"
 	"github.com/denn-gubsky/loomcycle/internal/skills"
+	"github.com/denn-gubsky/loomcycle/internal/steer"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 	"github.com/denn-gubsky/loomcycle/internal/tools/builtin"
@@ -72,6 +73,10 @@ type Server struct {
 	// HTTP request. Always non-nil after New(); empty on startup. See
 	// internal/cancel/registry.go for the trust model.
 	cancelReg *cancel.Registry
+	// steerReg maps a live run_id → its operator steering queue (PR 2 /
+	// interactive terminal). nil disables steering (POST /v1/runs/{id}/input
+	// → 404). Set at boot via SetSteerRegistry.
+	steerReg *steer.Registry
 
 	// sessionLocks tracks per-session mutexes used by continuation
 	// requests (handleMessages, or handleRuns with a non-empty
@@ -575,6 +580,12 @@ func (s *Server) SetSystemPublisher(p channels.SystemPublisher) {
 // SetInterruptionBus wires the v0.8.16 in-process notification bus
 // used by the Interruption-resolve HTTP handler to wake the blocked
 // tool. Same Bus instance the Channel tool uses.
+// SetSteerRegistry wires the operator-steering registry (PR 2). nil leaves
+// steering disabled. Called once at boot.
+func (s *Server) SetSteerRegistry(r *steer.Registry) {
+	s.steerReg = r
+}
+
 func (s *Server) SetInterruptionBus(b *channels.Bus) {
 	s.interruptionBus = b
 }
@@ -1755,6 +1766,10 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		}
 	})
 
+	// PR 2: operator steering queue for this run (in-flight input injection).
+	steerQ, onSteer, deregSteer := s.makeSteer(ctx, runID, agentID, sessionID, effectiveUserID, emit)
+	defer deregSteer()
+
 	loopCtx := tools.WithAgentTools(runCtx, toolNames(allowedTools))
 	loopCtx = tools.WithRunIdentity(loopCtx, tools.RunIdentityValue{
 		UserID:          effectiveUserID,
@@ -1803,6 +1818,8 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		MaxTokens:              agentDef.MaxTokens,
 		MaxIterations:          agentDef.MaxIterations, // 0 → loop default (16)
 		UnboundedIterations:    agentDef.UnboundedIterations,
+		SteerQueue:             steerQ,
+		OnSteer:                onSteer,
 		Effort:                 effort,
 		MarkStalled:            s.markStalledFn(providerID, model),
 		MarkRateLimited:        s.markRateLimitedFn(in.UserTier),
@@ -2157,6 +2174,9 @@ func (s *Server) Mux() http.Handler {
 	mux.Handle("POST /v1/runs/{run_id}/interrupts/{interrupt_id}/resolve", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleResolveInterrupt))))
 	mux.Handle("GET /v1/runs/{run_id}/interrupts", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleListRunInterrupts))))
 	mux.Handle("GET /v1/users/{user_id}/interrupts", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleListUserInterrupts))))
+	// PR 2 / interactive terminal: inject an operator "steering" instruction
+	// into an in-flight run (appended to the live conversation mid-turn).
+	mux.Handle("POST /v1/runs/{run_id}/input", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleRunInput))))
 	// v0.7.3 Web UI — embedded React SPA. The cookie-set landing
 	// page (/ui with a ?token= query) is intentionally NOT
 	// auth-middleware-wrapped; it sets the cookie that the
@@ -2945,6 +2965,10 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 
 	emit := s.makeRecordingEmit(r.Context(), runID, stream.send)
 
+	// PR 2: operator steering queue for this run (in-flight input injection).
+	steerQ, onSteer, deregSteer := s.makeSteer(r.Context(), runID, agentID, sessionID, req.UserID, emit)
+	defer deregSteer()
+
 	// Pass the agent's effective tool names to the dispatcher so tools
 	// that need a runtime view of "what this agent can use" (e.g. the
 	// Skill tool's subset check on each call) read it via ctx instead
@@ -3000,6 +3024,8 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		MaxTokens:              agentDef.MaxTokens,     // 0 → driver default
 		MaxIterations:          agentDef.MaxIterations, // 0 → loop default (16)
 		UnboundedIterations:    agentDef.UnboundedIterations,
+		SteerQueue:             steerQ,
+		OnSteer:                onSteer,
 		Effort:                 effort,
 		MarkStalled:            s.markStalledFn(providerID, model),
 		MarkRateLimited:        s.markRateLimitedFn(req.UserTier),
@@ -3339,6 +3365,10 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	})
 
 	emit := s.makeRecordingEmit(r.Context(), run.ID, stream.send)
+
+	// PR 2: operator steering queue for this continuation run.
+	steerQ, onSteer, deregSteer := s.makeSteer(r.Context(), run.ID, agentID, id, sess.UserID, emit)
+	defer deregSteer()
 	heartbeat := s.makeHeartbeat(run.ID)
 
 	loopCtx := tools.WithAgentTools(runCtx, toolNames(allowedTools))
@@ -3387,6 +3417,8 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		MaxTokens:              agentDef.MaxTokens,     // 0 → driver default
 		MaxIterations:          agentDef.MaxIterations, // 0 → loop default (16)
 		UnboundedIterations:    agentDef.UnboundedIterations,
+		SteerQueue:             steerQ,
+		OnSteer:                onSteer,
 		Effort:                 effort,
 		MarkStalled:            s.markStalledFn(providerID, model),
 		MarkRateLimited:        s.markRateLimitedFn(body.UserTier),
@@ -3695,6 +3727,43 @@ func (s *Server) openOrCreateSessionAndRun(ctx context.Context, requestedSession
 // (EventChannelPublish / EventChannelDelivery) emit directly from inside
 // tool.Execute() — which runs in a tool goroutine, not the loop. The
 // mutex makes that safe for any concurrent caller.
+// makeSteer wires a run's operator steering queue (PR 2 / interactive
+// terminal). It registers the run in the steer registry and returns the
+// loop's SteerQueue, the OnSteer callback, and a deregister func (defer it so
+// even a panic cleans up). OnSteer persists each drained instruction as a
+// "user_input" transcript event (so a continuation replay rebuilds the
+// conversation) and emits the live EventSteer via the run's emit. Returns
+// (nil, nil, noop) when steering isn't wired (registry nil / no run_id) so
+// callers pass nil into RunOptions and the loop's steering path stays off.
+func (s *Server) makeSteer(ctx context.Context, runID, agentID, sessionID, userID string, emit func(providers.Event)) (<-chan steer.Message, func(steer.Message), func()) {
+	if s.steerReg == nil || runID == "" {
+		return nil, nil, func() {}
+	}
+	q, dereg := s.steerReg.Register(steer.Entry{
+		RunID:     runID,
+		AgentID:   agentID,
+		SessionID: sessionID,
+		UserID:    userID,
+	})
+	onSteer := func(m steer.Message) {
+		if s.store != nil {
+			seg := []loop.PromptSegment{{
+				Role:    "user",
+				Content: []loop.PromptContentBlock{{Type: "trusted-text", Text: m.Text}},
+			}}
+			if b, err := json.Marshal(seg); err == nil {
+				if err := s.store.AppendEvent(ctx, runID, "user_input", b); err != nil {
+					log.Printf("steer: persist user_input failed (run=%s): %v", runID, err)
+				}
+			}
+		}
+		emit(providers.Event{Type: providers.EventSteer, UserInput: &providers.UserInputEventInfo{
+			Text: m.Text, Source: m.Source, SeenAt: time.Now().UTC().Format(time.RFC3339Nano),
+		}})
+	}
+	return q, onSteer, dereg
+}
+
 func (s *Server) makeRecordingEmit(ctx context.Context, runID string, fwd func(providers.Event)) func(providers.Event) {
 	if s.store == nil || runID == "" {
 		// Even on the store-less path, multiple concurrent callers
@@ -3707,6 +3776,15 @@ func (s *Server) makeRecordingEmit(ctx context.Context, runID string, fwd func(p
 	return func(ev providers.Event) {
 		mu.Lock()
 		defer mu.Unlock()
+		// EventSteer (operator steering, PR 2) is forwarded LIVE only — the
+		// runner's OnSteer persists the operator instruction as a separate
+		// "user_input" transcript row (the shape replayTranscript rebuilds the
+		// conversation from). Persisting the steer Event too would double-write
+		// and feed replayTranscript an Event where it expects []PromptSegment.
+		if ev.Type == providers.EventSteer {
+			fwd(ev)
+			return
+		}
 		// F32: redact secrets out of the PERSISTED copy only — the tool_call
 		// input and tool_result text are the surfaces where a token inlined on a
 		// Bash cmdline / echoed by a tool would otherwise hit the events BLOB
@@ -4545,6 +4623,79 @@ func (s *Server) handleResolveInterrupt(w http.ResponseWriter, r *http.Request) 
 		"status":       store.InterruptStatusResolved,
 		"resolved_at":  time.Now().UTC().Format(time.RFC3339Nano),
 	})
+}
+
+// runInputRequest is the JSON body for POST /v1/runs/{run_id}/input.
+type runInputRequest struct {
+	Text string `json:"text"`
+}
+
+// handleRunInput serves POST /v1/runs/{run_id}/input — inject an operator
+// "steering" instruction into an in-flight run (PR 2 / interactive terminal).
+// The text is appended to the running conversation as a user turn at the top
+// of the loop's next iteration. 404 if no run is live for run_id (start a new
+// turn via POST /v1/sessions/{id}/messages instead); 429 if the run's input
+// buffer is full; 422 on empty text. Cross-tenant steers get an opaque 404.
+func (s *Server) handleRunInput(w http.ResponseWriter, r *http.Request) {
+	if s.steerReg == nil {
+		http.Error(w, "steering is not enabled on this server", http.StatusServiceUnavailable)
+		return
+	}
+	runID := r.PathValue("run_id")
+	if !validIdent(runID) {
+		http.Error(w, "run_id must match [A-Za-z0-9_-]{1,128}", http.StatusBadRequest)
+		return
+	}
+	var req runInputRequest
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
+		http.Error(w, fmt.Sprintf("invalid JSON body: %v", err), http.StatusBadRequest)
+		return
+	}
+	text := strings.TrimSpace(req.Text)
+	if text == "" {
+		http.Error(w, "text is required", http.StatusUnprocessableEntity)
+		return
+	}
+
+	// Tenant-ownership gate: resolve the live run's session and refuse a
+	// cross-tenant steer with an opaque 404 (run_ids are not secrets — they're
+	// returned to callers + shown in the UI). Mirrors sessionOwnershipOK used
+	// by continuation/transcript reads. Steering injects arbitrary
+	// instructions, so this gate matters more than for a fixed-options resolve.
+	entry, ok := s.steerReg.Get(runID)
+	if !ok {
+		http.Error(w, "no in-flight run for that run_id", http.StatusNotFound)
+		return
+	}
+	if entry.SessionID != "" && s.store != nil {
+		if sess, err := s.store.GetSession(r.Context(), entry.SessionID); err == nil {
+			if !sessionOwnershipOK(r.Context(), sess) {
+				http.Error(w, "no in-flight run for that run_id", http.StatusNotFound)
+				return
+			}
+		}
+	}
+
+	source := store.InterruptResolvedByAPI
+	if hasSessionCookie(r) {
+		source = store.InterruptResolvedByWebUI
+	}
+	delivered, err := s.steerReg.Push(r.Context(), runID, steer.Message{
+		Text: text, Source: source, EnqueuedAt: time.Now(),
+	})
+	switch {
+	case errors.Is(err, steer.ErrQueueFull):
+		w.Header().Set("Retry-After", "1")
+		http.Error(w, "run input queue full; retry shortly", http.StatusTooManyRequests)
+		return
+	case errors.Is(err, steer.ErrRunNotFound):
+		http.Error(w, "no in-flight run for that run_id", http.StatusNotFound)
+		return
+	case err != nil:
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"run_id": runID, "delivered": delivered})
 }
 
 // handleListRunInterrupts serves GET /v1/runs/{run_id}/interrupts.

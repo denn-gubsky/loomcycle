@@ -357,6 +357,16 @@ const (
 	// makeRecordingEmit path so the events table carries an audit
 	// row for every grant.
 	EventHostWidened EventType = "host_widened"
+
+	// EventSteer is emitted by the loop when an operator-injected steering
+	// message (internal/steer) is drained into the running conversation
+	// mid-turn. The UserInput field carries the text + source. Named "steer"
+	// (not "user_input") deliberately: "user_input" is an existing PERSISTED
+	// transcript-event KIND ([]loop.PromptSegment); the SSE event is distinct
+	// so the recording path doesn't conflate the two shapes (the runner
+	// persists a user_input row separately for replay; this event stays
+	// live-only).
+	EventSteer EventType = "steer"
 )
 
 // Event is one streamed datum from a provider call (or, after the loop layer
@@ -402,6 +412,10 @@ type Event struct {
 	// hook is probably echoing model input without independent
 	// validation.
 	HostWidening *HostWideningEventInfo `json:"host_widening,omitempty"`
+
+	// UserInput carries the structured payload on EventSteer (an
+	// operator-injected steering message drained mid-turn). Nil otherwise.
+	UserInput *UserInputEventInfo `json:"user_input,omitempty"`
 
 	// StopReason is set on the final assistant Event of a provider call:
 	// "end_turn" | "tool_use" | "max_tokens" | "stop_sequence".
@@ -547,6 +561,20 @@ type InterruptionEventInfo struct {
 	// interruption will time out. RFC3339. Empty when no timeout
 	// was set.
 	ExpiresAt string `json:"expires_at,omitempty"`
+}
+
+// UserInputEventInfo is the structured payload on EventSteer — an
+// operator-injected steering message (internal/steer) drained into the
+// running conversation mid-turn. The Web UI renders it as an operator-message
+// row in the live terminal.
+type UserInputEventInfo struct {
+	// Text is the operator's instruction (delivered to the model as a
+	// user-role turn).
+	Text string `json:"text"`
+	// Source is "api" | "webui" — resolved at the auth boundary.
+	Source string `json:"source,omitempty"`
+	// SeenAt is when the loop drained the message. RFC3339Nano.
+	SeenAt string `json:"seen_at,omitempty"`
 }
 
 // HostWideningEventInfo is the structured payload on EventHostWidened
