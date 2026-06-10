@@ -55,6 +55,8 @@ func contextFixture(t *testing.T) (*Context, context.Context) {
 		AgentDefID: "def_abc",
 	})
 	ctx = tools.WithRunID(ctx, "r_test123")
+	ctx = tools.WithResolvedProvider(ctx, "anthropic")
+	ctx = tools.WithResolvedModel(ctx, "claude-opus-4-test")
 	ctx = tools.WithAgentTools(ctx, []string{"Read", "Memory", "Context", "mcp__jobs__patchApp"})
 	return tool, ctx
 }
@@ -89,6 +91,30 @@ func TestContextTool_SelfReturnsIdentity(t *testing.T) {
 	// (which requires run_id, not agent_id) without a separate lookup.
 	if out["run_id"] != "r_test123" {
 		t.Errorf("run_id = %v, want r_test123", out["run_id"])
+	}
+	// Resolved provider + model — non-secret introspection so the agent
+	// knows what it is running on.
+	if out["provider"] != "anthropic" {
+		t.Errorf("provider = %v, want anthropic", out["provider"])
+	}
+	if out["model"] != "claude-opus-4-test" {
+		t.Errorf("model = %v, want claude-opus-4-test", out["model"])
+	}
+}
+
+// Provider/model are present-as-empty (not missing keys) when the run was
+// started outside the loop's stamping path — mirrors the agent_def_id
+// surfaced-even-when-empty contract so callers can rely on the shape.
+func TestContextTool_SelfProviderModelEmptyWhenUnset(t *testing.T) {
+	tool := &Context{}
+	ctx := tools.WithRunIdentity(context.Background(), tools.RunIdentityValue{AgentID: "a_x"})
+	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"self"}`))
+	out := decodeResult(t, res.Text)
+	if v, ok := out["provider"]; !ok || v != "" {
+		t.Errorf("provider = %v (ok=%v), want present empty string", v, ok)
+	}
+	if v, ok := out["model"]; !ok || v != "" {
+		t.Errorf("model = %v (ok=%v), want present empty string", v, ok)
 	}
 }
 

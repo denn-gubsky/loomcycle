@@ -768,6 +768,16 @@ outerLoop:
 		// at function-scope only, not loop-iteration-scope.
 		iterCtx, iterSpan := lcotel.RecordIteration(ctx, iter)
 
+		// Stamp the CURRENTLY-resolved provider/model onto the per-iteration
+		// ctx so the Context tool's op=self can report them to the agent
+		// (non-secret introspection). Per-iteration, not once at Run start,
+		// because tryProviderFallback swaps opts.Provider/opts.Model in place
+		// — this keeps op=self truthful about what the agent is actually
+		// running on after a fallback. Tools dispatched this iteration receive
+		// iterCtx, so the value reaches them without per-tool wiring.
+		iterCtx = tools.WithResolvedProvider(iterCtx, opts.Provider.ID())
+		iterCtx = tools.WithResolvedModel(iterCtx, opts.Model)
+
 		// Heartbeat fires at the top of each iteration. Cheap path —
 		// implementations are expected to be ~one UPDATE. Failures
 		// should NOT propagate (a sweeper in the future is the
