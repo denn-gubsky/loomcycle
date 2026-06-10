@@ -1349,7 +1349,17 @@ func applyAgentDefOverlay(base config.AgentDef, definition json.RawMessage) conf
 // collision, matching ListChannels' precedence. The store read is skipped
 // when the agent has no channel allowlist at all (it can't touch a channel
 // either way), so the common no-channels run pays nothing.
-func (s *Server) channelPolicyForAgent(ctx context.Context, agentDef config.AgentDef) tools.ChannelPolicyValue {
+// mergedChannelDefs returns the operator-declared channel defs by name —
+// static yaml (cfg.Channels) first, then runtime-substrate rows from the
+// store (yaml wins on a name collision). includeRuntime gates the store
+// query: callers needing only the static set (e.g. an agent with no channel
+// ACLs) pass false to skip the read.
+//
+// Single source of truth for a channel's declared scope: both
+// channelPolicyForAgent (the per-agent Channel tool policy) and
+// ResolveChannelScope (the scheduler on_complete publish path, F37) build on
+// it so static + runtime channels resolve identically everywhere.
+func (s *Server) mergedChannelDefs(ctx context.Context, includeRuntime bool) map[string]tools.ChannelDef {
 	channels := make(map[string]tools.ChannelDef, len(s.cfg.Channels))
 	for name, ch := range s.cfg.Channels {
 		channels[name] = tools.ChannelDef{
@@ -1361,7 +1371,7 @@ func (s *Server) channelPolicyForAgent(ctx context.Context, agentDef config.Agen
 			Publisher:   ch.Publisher, // v0.8.6: agent publish refusal when "system"
 		}
 	}
-	if s.store != nil && (len(agentDef.Channels.Publish) > 0 || len(agentDef.Channels.Subscribe) > 0) {
+	if includeRuntime && s.store != nil {
 		if rows, err := s.store.ChannelsList(ctx); err == nil {
 			for _, r := range rows {
 				if _, exists := channels[r.Name]; exists {
@@ -1378,11 +1388,36 @@ func (s *Server) channelPolicyForAgent(ctx context.Context, agentDef config.Agen
 			}
 		}
 	}
+	return channels
+}
+
+func (s *Server) channelPolicyForAgent(ctx context.Context, agentDef config.AgentDef) tools.ChannelPolicyValue {
+	// Only pay the runtime store query when the agent can actually touch a
+	// channel — preserves the original fast path for channel-less agents.
+	includeRuntime := len(agentDef.Channels.Publish) > 0 || len(agentDef.Channels.Subscribe) > 0
 	return tools.ChannelPolicyValue{
 		Publish:   agentDef.Channels.Publish,
 		Subscribe: agentDef.Channels.Subscribe,
-		Channels:  channels,
+		Channels:  s.mergedChannelDefs(ctx, includeRuntime),
 	}
+}
+
+// ResolveChannelScope returns the declared scope ("global" | "user" |
+// "agent") of a channel by name, consulting static yaml + runtime substrate
+// (the same merge the Channel tool uses). ok=false when the channel is
+// declared nowhere.
+//
+// Injected into the scheduler so its on_complete: channel.publish hook lands
+// at the channel's DECLARED scope — a hook publishing to a scope:global
+// channel writes under global, not under the run's user scope where a global
+// reader (admin peek, Channel.await/subscribe resolving global) can't see it
+// (F37 / RFC T).
+func (s *Server) ResolveChannelScope(ctx context.Context, channel string) (string, bool) {
+	def, ok := s.mergedChannelDefs(ctx, true)[channel]
+	if !ok {
+		return "", false
+	}
+	return def.Scope, true
 }
 
 // fallbackForRun builds the v0.8.2 PR-2 runtime-fallback policy +
