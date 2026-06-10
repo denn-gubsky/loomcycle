@@ -1855,6 +1855,11 @@ var _ runner.Runner = (*Server)(nil)
 // originated on the HTTP path (or vice versa).
 func (s *Server) CancelRegistry() *cancel.Registry { return s.cancelReg }
 
+// SteerRegistry exposes the operator-steering registry so main.go can wire the
+// cross-replica SteerCoordinator (SetClusterSteerer + the subscriber
+// goroutines). nil when steering isn't enabled.
+func (s *Server) SteerRegistry() *steer.Registry { return s.steerReg }
+
 // trySessionLock try-locks the session-scoped mutex for id. Returns
 // (release, true) on success and (nil, false) if another caller already
 // holds it — in which case the caller should respond 409 / session_busy.
