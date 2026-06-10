@@ -214,6 +214,15 @@ type SubstrateAgentDef struct {
 	Channels         config.AgentChannelACL      `json:"channels,omitempty"`
 	EvaluationScopes []string                    `json:"evaluation_scopes,omitempty"`
 	Interruption     config.AgentInterruptionACL `json:"interruption,omitempty"`
+	// F40: the *_def_scopes capability gates — the substrate-def slice of the
+	// F14 closure, so a runtime-authored meta-agent's fork/schedule/etc.
+	// authority survives the round-trip instead of defaulting to deny. The
+	// drift test pins parity with builtin.mergedDef.
+	AgentDefScopes         []string `json:"agent_def_scopes,omitempty"`
+	ScheduleDefScopes      []string `json:"schedule_def_scopes,omitempty"`
+	SkillDefScopes         []string `json:"skill_def_scopes,omitempty"`
+	A2AServerCardDefScopes []string `json:"a2a_server_card_def_scopes,omitempty"`
+	A2AAgentDefScopes      []string `json:"a2a_agent_def_scopes,omitempty"`
 }
 
 // ToConfigDef projects the substrate JSON shape onto config.AgentDef
@@ -244,6 +253,13 @@ func (s SubstrateAgentDef) ToConfigDef() config.AgentDef {
 		Channels:              s.Channels,
 		EvaluationScopes:      s.EvaluationScopes,
 		Interruption:          s.Interruption,
+		// F40: surface the capability gates to the policy layer so a
+		// runtime-authored meta-agent's AgentDef/Schedule/etc. scopes apply.
+		AgentDefScopes:         s.AgentDefScopes,
+		ScheduleDefScopes:      s.ScheduleDefScopes,
+		SkillDefScopes:         s.SkillDefScopes,
+		A2AServerCardDefScopes: s.A2AServerCardDefScopes,
+		A2AAgentDefScopes:      s.A2AAgentDefScopes,
 	}
 }
 

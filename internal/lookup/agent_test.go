@@ -301,6 +301,13 @@ func TestAgent_DriftDetection(t *testing.T) {
 		"channels":                true, // F14 — Channel tool ACL on MCP/HTTP-authored agents
 		"evaluation_scopes":       true, // F14 — Evaluation tool scope gate
 		"interruption":            true, // F14 — Interruption tool gate (enabled/kinds/max_pending)
+		// F40 — the *_def_scopes capability gates (substrate-def slice of the
+		// F14 closure) so a runtime-authored meta-agent can fork/schedule others.
+		"agent_def_scopes":           true,
+		"schedule_def_scopes":        true,
+		"skill_def_scopes":           true,
+		"a2a_server_card_def_scopes": true,
+		"a2a_agent_def_scopes":       true,
 	}
 	have := jsonTagsOf(reflect.TypeOf(lookup.SubstrateAgentDef{}))
 	for tag := range want {

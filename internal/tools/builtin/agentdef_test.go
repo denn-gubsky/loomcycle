@@ -63,6 +63,45 @@ func TestAgentDefTool_CreateRefusedOverStaticName(t *testing.T) {
 	}
 }
 
+// F40 (RFC W): an agent created via AgentDef with `*_def_scopes` in the
+// overlay must round-trip those capability gates — overlay → persisted def →
+// lookup.Agent → config.AgentDef — so a runtime-authored meta-agent (breeder /
+// scheduler-of-agents) isn't silently dropped to default-deny. Fail-before:
+// the overlay struct had no def-scope fields, so they resolved empty.
+func TestAgentDefTool_CreateRoundTripsDefScopes(t *testing.T) {
+	tool, ctx, cleanup := agentDefFixture(t)
+	defer cleanup()
+
+	// No allowed_tools in the overlay: the def-scopes round-trip is what F40 is about,
+	// and the narrow-only allowed_tools ceiling check requires WithAgentTools on ctx,
+	// which agentDefFixture intentionally does not set (matches TestAgentDefTool_CreateNewName).
+	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"create","name":"breeder","overlay":{`+
+		`"system_prompt":"breed agents",`+
+		`"agent_def_scopes":["named:foo"],"schedule_def_scopes":["any"],`+
+		`"skill_def_scopes":["named:s"],"a2a_server_card_def_scopes":["any"],`+
+		`"a2a_agent_def_scopes":["any"]}}`))
+	if res.IsError {
+		t.Fatalf("create: %s", res.Text)
+	}
+
+	def, ok := lookup.Agent(context.Background(), tool.Store, tool.Cfg, "", "breeder")
+	if !ok {
+		t.Fatal("breeder did not resolve via lookup.Agent")
+	}
+	if got := def.AgentDefScopes; len(got) != 1 || got[0] != "named:foo" {
+		t.Errorf("AgentDefScopes = %v, want [named:foo] (F40: dropped on the overlay round-trip)", got)
+	}
+	if got := def.ScheduleDefScopes; len(got) != 1 || got[0] != "any" {
+		t.Errorf("ScheduleDefScopes = %v, want [any]", got)
+	}
+	if got := def.SkillDefScopes; len(got) != 1 || got[0] != "named:s" {
+		t.Errorf("SkillDefScopes = %v, want [named:s]", got)
+	}
+	if len(def.A2AServerCardDefScopes) != 1 || len(def.A2AAgentDefScopes) != 1 {
+		t.Errorf("a2a def scopes dropped: server=%v agent=%v", def.A2AServerCardDefScopes, def.A2AAgentDefScopes)
+	}
+}
+
 func TestAgentDefTool_CreateNewName(t *testing.T) {
 	tool, ctx, cleanup := agentDefFixture(t)
 	defer cleanup()
