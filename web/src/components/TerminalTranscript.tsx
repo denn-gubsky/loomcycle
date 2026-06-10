@@ -138,6 +138,14 @@ function formatLine(row: TranscriptEvent): FormattedLine {
     }
     case "error":
       return { key, ts, kind, cls: "tl-error", payload: oneLine(ev.error ?? "") };
+    case "interruption_pending": {
+      const i = ev.interruption;
+      const opts = i?.options && i.options.length > 0 ? ` [${i.options.join(" | ")}]` : "";
+      return {
+        key, ts, kind, cls: "tl-interrupt",
+        payload: `❓ ${oneLine(i?.question ?? "")}${opts}`.trimEnd(),
+      };
+    }
     case "started":
       return { key, ts, kind, cls: "tl-meta", payload: "" };
     case "session":

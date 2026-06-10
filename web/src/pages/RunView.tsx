@@ -117,6 +117,8 @@ function SingleRunTab({
           error={run.error}
           onCancel={run.cancel}
           onContinue={run.sendMessage}
+          pendingInterrupt={run.pendingInterrupt}
+          onAnswerInterrupt={run.answerInterrupt}
         />
       </div>
     </div>
