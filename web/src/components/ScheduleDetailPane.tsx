@@ -201,6 +201,12 @@ export default function ScheduleDetailPane({ entry, onMutated, onForkTemplate }:
           label="enabled"
           value={def?.enabled === false ? "false (disabled)" : "true"}
         />
+        {def?.max_fires != null && (
+          <DefField
+            label="max_fires"
+            value={Number(def.max_fires) === 0 ? "unbounded" : String(def.max_fires)}
+          />
+        )}
         {state?.next_run_at && (
           <DefField label="next_run_at" value={state.next_run_at} />
         )}

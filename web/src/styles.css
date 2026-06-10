@@ -60,13 +60,25 @@ pre {
 
 .layout {
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
   height: 100%;
+}
+/* main-col owns the old flex-column role so .content stays a flex child with
+   a definite height. min-height:0 is load-bearing: it lets the column shrink
+   to the viewport so .content's overflow:auto engages instead of the page
+   growing (the Splitter-based views depend on this). */
+.main-col {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
 }
 .topbar {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  gap: 12px;
   padding: 10px 16px;
   background: var(--bg-soft);
   border-bottom: 1px solid var(--border);
@@ -76,6 +88,7 @@ pre {
   align-items: baseline;
   gap: 8px;
   font-weight: 600;
+  margin-right: auto;
 }
 .brand a {
   color: var(--fg);
@@ -133,6 +146,84 @@ pre {
   color: var(--failed);
   font-size: 11px;
   font-style: italic;
+}
+
+/* Left-sidebar navigation. Collapsed = icons only (52px); expanded = icons +
+   labels (200px). Replaces the old horizontal .nav-tabs strip. */
+.sidebar {
+  display: flex;
+  flex-direction: column;
+  width: 200px;
+  flex-shrink: 0;
+  background: var(--bg-soft);
+  border-right: 1px solid var(--border);
+  transition: width 120ms ease;
+  overflow: hidden;
+}
+.sidebar-collapsed {
+  width: 52px;
+}
+.sidebar-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 12px 8px;
+  flex: 1;
+  overflow-y: auto;
+}
+.sidebar-nav a {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  color: var(--fg-soft);
+  font-size: 13px;
+  white-space: nowrap;
+}
+.sidebar-nav a:hover {
+  color: var(--fg);
+  background: var(--bg-soft-2);
+  text-decoration: none;
+}
+.sidebar-nav a.active {
+  color: var(--fg);
+  background: var(--bg-soft-2);
+  font-weight: 600;
+}
+.sidebar-icon {
+  flex-shrink: 0;
+}
+.sidebar-nav a.active .sidebar-icon {
+  color: var(--accent);
+}
+.sidebar-collapsed .sidebar-label {
+  display: none;
+}
+.sidebar-collapsed .sidebar-nav a {
+  justify-content: center;
+  padding: 8px 0;
+}
+.sidebar-toggle {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 8px;
+  padding: 8px 10px;
+  background: transparent;
+  color: var(--fg-soft);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 13px;
+  cursor: pointer;
+}
+.sidebar-toggle:hover {
+  color: var(--fg);
+  border-color: var(--accent);
+}
+.sidebar-collapsed .sidebar-toggle {
+  justify-content: center;
+  padding: 8px 0;
 }
 
 .content {
@@ -772,40 +863,6 @@ pre {
 .system-prompt-provenance code {
   font-family: var(--mono);
   color: var(--fg);
-}
-
-/* v0.8.0 nav tabs (top bar between brand and user picker). */
-/* Topbar nav rendered as proper tabs. NavLink from react-router-dom
- * adds .active to the matching link; we use that to draw an
- * underline indicator on the current tab. */
-.nav-tabs {
-  display: flex;
-  gap: 0;
-  margin-left: 24px;
-  align-self: stretch;
-  align-items: flex-end;
-}
-.nav-tabs a {
-  color: var(--fg-soft);
-  padding: 8px 14px 9px;
-  font-size: 13px;
-  /* Reserve the underline space on inactive tabs so the layout
-   * doesn't shift when the active tab gains its 2px border. */
-  border-bottom: 2px solid transparent;
-  /* Offset so the underline sits on the topbar's own bottom border,
-   * not above it. */
-  margin-bottom: -1px;
-  transition: color 80ms ease, border-color 80ms ease, background 80ms ease;
-}
-.nav-tabs a:hover {
-  color: var(--fg);
-  background: var(--bg-soft-2);
-  text-decoration: none;
-}
-.nav-tabs a.active {
-  color: var(--fg);
-  border-bottom-color: var(--accent);
-  font-weight: 600;
 }
 
 /* v0.8.0 Memory page — three-pane layout. */
@@ -1862,6 +1919,18 @@ button.primary:disabled {
   background: rgba(255, 93, 104, 0.12);
   border: 1px solid rgba(255, 93, 104, 0.35);
   color: #fee2e2;
+  padding: 8px 12px;
+  border-radius: 4px;
+  margin-bottom: 12px;
+  font-size: 13px;
+}
+/* Partial-success / timed-out tone (amber) — broadcast with failures, or an
+   await that didn't satisfy. Distinct from flash-ok (all good) and
+   error-banner (the call itself failed). */
+.flash-warn {
+  background: rgba(251, 191, 36, 0.1);
+  border: 1px solid rgba(251, 191, 36, 0.35);
+  color: #fef3c7;
   padding: 8px 12px;
   border-radius: 4px;
   margin-bottom: 12px;
@@ -3012,6 +3081,39 @@ button.primary:disabled {
   margin: 0;
   white-space: pre-wrap;
   word-break: break-all;
+}
+
+/* ---- v0.25.0 channel fan-out (broadcast) / fan-in (await) forms ---- */
+.channel-fan-row {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  align-items: flex-end;
+}
+.channel-fan-results {
+  list-style: none;
+  margin: 6px 0 0 0;
+  padding: 0;
+  font-size: 11px;
+}
+.channel-fan-error {
+  color: var(--failed);
+}
+.channel-fan-channel {
+  margin-top: 8px;
+}
+.channel-fan-channel-name {
+  font-size: 11px;
+  color: var(--fg-soft);
+  margin-bottom: 4px;
+}
+.channel-fan-fired {
+  margin-left: 6px;
+  padding: 0 6px;
+  border-radius: 8px;
+  font-size: 10px;
+  background: rgba(74, 222, 128, 0.18);
+  color: #d1fae5;
 }
 
 /* ---- v0.9.x AgentDetailPane sub-tabs (Transcript/Memory/Interrupts/Channels) ---- */

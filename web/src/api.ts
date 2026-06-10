@@ -1322,6 +1322,94 @@ export function publishChannel(
   );
 }
 
+// ---- v0.25.0 Channel fan-out (broadcast) / fan-in (await) ----
+
+// ChannelScope is the addressing scope shared by broadcast + await.
+// "global" needs no scope_id; "user"/"agent" require one.
+export type ChannelScope = "global" | "user" | "agent";
+
+export interface BroadcastChannelsRequest {
+  channels: string[];
+  scope: ChannelScope;
+  scope_id?: string;
+  payload: unknown;
+  // RFC3339; defers delivery for every channel. Omit for "publish now".
+  deliver_at?: string;
+}
+
+export interface ChannelBroadcastEntry {
+  channel: string;
+  msg_id?: string;
+  created_at?: string;
+  // Set only when the publish was deferred (deliver_at in the future).
+  visible_at?: string;
+  // Set (and msg_id empty) when that channel's write failed after the
+  // pre-flight passed — the successful publishes still stand.
+  error?: string;
+}
+
+export interface BroadcastChannelsResponse {
+  published: number;
+  failed: number;
+  results: ChannelBroadcastEntry[];
+}
+
+// broadcastChannels publishes one payload to a SET of channels (same scope,
+// same payload). ATOMIC at the ACL pre-flight — one undeclared/invalid
+// channel refuses the whole op (nothing is published). Server caps the set
+// at 32 channels.
+export function broadcastChannels(
+  body: BroadcastChannelsRequest,
+): Promise<BroadcastChannelsResponse> {
+  return jsonFetch<BroadcastChannelsResponse>("/v1/_channels/_broadcast", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+export type ChannelAwaitMode = "any" | "all" | "at_least";
+
+export interface AwaitChannelsRequest {
+  channels: string[];
+  scope: ChannelScope;
+  scope_id?: string;
+  mode?: ChannelAwaitMode; // default "any"
+  n?: number; // threshold for at_least (>0)
+  from_cursor?: string;
+  max_messages?: number;
+  wait_ms?: number; // bounded long-poll
+}
+
+export interface ChannelAwaitEntry {
+  messages: ChannelMessageItem[];
+  next_cursor: string;
+}
+
+export interface AwaitChannelsResponse {
+  satisfied: boolean;
+  timed_out: boolean;
+  mode: string;
+  fired: string[];
+  total_messages: number;
+  results: Record<string, ChannelAwaitEntry>;
+}
+
+// awaitChannels fans IN across a SET of channels: a bounded long-poll (up to
+// wait_ms) that returns when the mode predicate is met (any / all / at_least
+// n) or the timeout elapses. Reads are NON-committing (detection only); the
+// returned cursors are not advanced. timed_out=true means the predicate was
+// unmet within wait_ms — not an error.
+export function awaitChannels(
+  body: AwaitChannelsRequest,
+): Promise<AwaitChannelsResponse> {
+  return jsonFetch<AwaitChannelsResponse>("/v1/_channels/_await", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
 // ---- v0.11.5 channel admin CRUD ----
 
 export interface ChannelCreateRequest {
