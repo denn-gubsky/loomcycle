@@ -1596,6 +1596,25 @@ func main() {
 		go cancelCoord.RunCancelSubscriber(bgCtx, srv.CancelRegistry())
 		go cancelCoord.RunAckSubscriber(bgCtx)
 
+		// Cross-replica operator steering (the twin of cancel): a
+		// POST /v1/runs/{run_id}/input that lands on a replica not running the
+		// target run routes over the backplane to the owning replica.
+		if steerReg := srv.SteerRegistry(); steerReg != nil {
+			steerCoord, err := coord.NewSteerCoordinator(coord.SteerCoordinatorConfig{
+				Backplane:    bp,
+				ReplicaID:    cfg.Env.ReplicaID,
+				Store:        pgStore,
+				ReplicaStore: replicaStore,
+				AckTimeout:   ackTimeout,
+			})
+			if err != nil {
+				log.Fatalf("coord: steer coordinator init: %v", err)
+			}
+			steerReg.SetClusterSteerer(steerCoord)
+			go steerCoord.RunSteerSubscriber(bgCtx, steerReg)
+			go steerCoord.RunSteerAckSubscriber(bgCtx)
+		}
+
 		// v0.12.3 Phase 4: runstate + channel bus backplane fanout.
 		// Both buses were constructed earlier (lines ~1003/1012) and
 		// wired into the server via SetRunStateBus / SetChannelBus.
