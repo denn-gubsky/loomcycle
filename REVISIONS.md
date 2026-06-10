@@ -8,6 +8,38 @@ For pre-v0.4 history (single-tool runtime, library milestone, security patch), s
 
 ---
 
+## What's in v0.25.3
+
+**Headline: a patch — a dynamic stdio MCP server's `${ENV}` env is now
+interpolated (F39 / RFC V).** Runtime-only: no wire-protocol change, no
+`@loomcycle/client` bump.
+
+### F39 — dynamic stdio MCPServerDef env `${...}` is expanded at spawn
+
+A runtime-created **stdio** MCP server (`POST /v1/_mcpserverdef`) whose `env`
+used `${LOOMCYCLE_*}` received the **literal** placeholder in the child
+process — and because def-supplied env is appended *after* the inherited
+process env, the un-expanded literal also clobbered the real inherited var. A
+dynamic Telegram MCP therefore called `/bot${LOOMCYCLE_TELEGRAM_BOT_TOKEN}/sendMessage`
+→ Telegram **HTTP 404**. The identical *static* yaml server sends fine.
+
+**Root cause.** Config-load `ExpandEnv`s the entire raw yaml before unmarshal,
+so static `mcp_servers.*` env/command/args arrive pre-expanded. A dynamic def
+stores raw `${...}` (kept literal by design, per F32) and never passes through
+that yaml-wide expansion — and `spawnStdio` (the spawn core shared by both
+paths) emitted env values without expansion. A static-vs-dynamic asymmetry.
+
+**Fix.** `spawnStdio` now `ExpandEnv`s the command, args, and env values at
+spawn: idempotent for the static path (already expanded → no `${}` left),
+corrective for the dynamic path. Expansion happens at spawn, **not** baked
+into the stored def, so the persisted content keeps the `${ENV}` reference,
+not the resolved secret (F32). Same allowlisted expander as yaml-load
+(`LOOMCYCLE_*` + the small third-party set); `${run.*}` late-binding tokens
+pass through verbatim as before. A runtime-authored stdio MCP with
+`${LOOMCYCLE_*}` env now "just works" like the static one.
+
+---
+
 ## What's in v0.25.2
 
 **Headline: a patch — scheduled runs resolve runtime-created (substrate)
