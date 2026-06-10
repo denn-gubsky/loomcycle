@@ -1936,6 +1936,11 @@ func (s *Server) Mux() http.Handler {
 	mux.Handle("GET /v1/_channels/{name}/peek", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleAdminChannelPeek))))
 	mux.Handle("POST /v1/_channels/{name}/ack", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleAdminChannelAck))))
 	mux.Handle("POST /v1/_channels/{name}/purge", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleChannelPurge))))
+	// RFC S client twins — multi-channel fan-in / fan-out. The reserved
+	// `_await` / `_broadcast` literals are strictly more specific than the
+	// `{name...}` system-publish catch-all, so Go 1.22+ mux routes them here.
+	mux.Handle("POST /v1/_channels/_await", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleAdminChannelAwait))))
+	mux.Handle("POST /v1/_channels/_broadcast", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleAdminChannelBroadcast))))
 	mux.Handle("POST /v1/users/{user_id}/channels/{name}/publish", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleUserChannelPublish))))
 	mux.Handle("POST /v1/users/{user_id}/channels/{name}/subscribe", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleUserChannelSubscribe))))
 	mux.Handle("GET /v1/users/{user_id}/channels/{name}/peek", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleUserChannelPeek))))

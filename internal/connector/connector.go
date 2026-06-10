@@ -312,6 +312,21 @@ type Connector interface {
 	PeekChannel(ctx context.Context, req ChannelPeekRequest) (ChannelPeekResult, error)
 	AckChannel(ctx context.Context, req ChannelAckRequest) (ChannelAckResult, error)
 
+	// AwaitChannels / BroadcastChannels (RFC S client twins) are the
+	// fan-in / fan-out counterparts of the in-band Channel.await /
+	// Channel.broadcast ops, exposed to wire callers so an external
+	// orchestrator can join independent producers / ping N workers over
+	// the SAME bus + store agents use. Operator-authed; Scope + ScopeID
+	// apply to every channel in the set. AwaitChannels long-polls up to
+	// WaitMS and is non-committing; BroadcastChannels is atomic at the
+	// ACL pre-flight (one undeclared channel refuses the whole op).
+	//
+	// Typed errors: ErrChannelNotDeclared (NotFound), ErrChannelScopeInvalid
+	// (InvalidArgument). A timeout is NOT an error — AwaitChannels returns
+	// TimedOut:true with partials.
+	AwaitChannels(ctx context.Context, req ChannelAwaitRequest) (ChannelAwaitResult, error)
+	BroadcastChannels(ctx context.Context, req ChannelBroadcastRequest) (ChannelBroadcastResult, error)
+
 	// Channel admin CRUD (v0.11.5): the runtime-declared substrate.
 	// yaml-declared channels are static (immutable from the API);
 	// runtime channels persist in the substrate `channels` table and

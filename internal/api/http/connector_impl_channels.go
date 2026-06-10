@@ -15,11 +15,16 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/connector"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 )
+
+// channelFanCap bounds the fan-in (await) / fan-out (broadcast) width on
+// the wire surface — same cap as the in-band Channel tool's maxFanChannels.
+const channelFanCap = 32
 
 // resolveChannelScope maps the wire-string `scope` to the store enum
 // and validates `scope_id` shape. Channel CRUD only supports global +
@@ -301,4 +306,275 @@ func (s *Server) AckChannel(ctx context.Context, req connector.ChannelAckRequest
 		return connector.ChannelAckResult{}, fmt.Errorf("ack: %w", err)
 	}
 	return connector.ChannelAckResult{OK: true}, nil
+}
+
+// BroadcastChannels publishes one payload to a SET of channels — the
+// wire-surface twin of the in-band Channel.broadcast op. Atomic at the
+// declare/scope pre-flight: every channel is checked before ANY write, so
+// one undeclared/invalid channel refuses the whole op (no partial
+// broadcast). Per-channel storage errors after that are reported in that
+// channel's result while the successful publishes stand. Goes through the
+// SAME systemPublisher as PublishChannel, so deferred-publish scheduling +
+// Bus wake-up of waiting subscribers (or awaiters) are identical.
+func (s *Server) BroadcastChannels(ctx context.Context, req connector.ChannelBroadcastRequest) (connector.ChannelBroadcastResult, error) {
+	if s.systemPublisher == nil {
+		return connector.ChannelBroadcastResult{}, connector.ErrSystemPublisherUnwired
+	}
+	if len(req.Channels) == 0 {
+		return connector.ChannelBroadcastResult{}, fmt.Errorf("broadcast: missing required field: channels")
+	}
+	if len(req.Channels) > channelFanCap {
+		return connector.ChannelBroadcastResult{}, fmt.Errorf("broadcast: too many channels (%d > max %d)", len(req.Channels), channelFanCap)
+	}
+	if len(req.Payload) == 0 || string(req.Payload) == "null" {
+		return connector.ChannelBroadcastResult{}, fmt.Errorf("broadcast: missing required field: payload")
+	}
+	if !json.Valid(req.Payload) {
+		return connector.ChannelBroadcastResult{}, fmt.Errorf("broadcast: payload is not valid JSON")
+	}
+	if cap := s.cfg.Env.ChannelsMaxValueBytes; cap > 0 && len(req.Payload) > cap {
+		return connector.ChannelBroadcastResult{}, fmt.Errorf("broadcast: payload (%d bytes) exceeds max %d", len(req.Payload), cap)
+	}
+	scope, scopeID, err := resolveChannelScope(req.Scope, req.ScopeID)
+	if err != nil {
+		return connector.ChannelBroadcastResult{}, err
+	}
+	var deliverAt time.Time
+	if req.DeliverAt != "" {
+		parsed, perr := time.Parse(time.RFC3339, req.DeliverAt)
+		if perr != nil {
+			return connector.ChannelBroadcastResult{}, fmt.Errorf("broadcast: invalid deliver_at %q: %w", req.DeliverAt, perr)
+		}
+		deliverAt = parsed
+	}
+
+	// Pre-flight: declare-check every (deduped) channel BEFORE any write.
+	type target struct {
+		name string
+		def  channelDef
+	}
+	seen := make(map[string]bool, len(req.Channels))
+	targets := make([]target, 0, len(req.Channels))
+	for _, name := range req.Channels {
+		if seen[name] {
+			continue
+		}
+		seen[name] = true
+		def, derr := s.requireChannelDeclared(ctx, name)
+		if derr != nil {
+			return connector.ChannelBroadcastResult{}, derr
+		}
+		targets = append(targets, target{name, def})
+	}
+
+	publishedBy := "_admin"
+	if scope == store.MemoryScopeUser {
+		publishedBy = scopeID
+	}
+	out := connector.ChannelBroadcastResult{Results: make([]connector.ChannelBroadcastEntry, 0, len(targets))}
+	for _, t := range targets {
+		msg, perr := s.systemPublisher.Publish(ctx, t.name, scope, scopeID,
+			req.Payload, deliverAt, publishedBy, t.def.MaxMessages, t.def.DefaultTTL)
+		if perr != nil {
+			out.Failed++
+			out.Results = append(out.Results, connector.ChannelBroadcastEntry{Channel: t.name, Error: perr.Error()})
+			continue
+		}
+		out.Published++
+		entry := connector.ChannelBroadcastEntry{
+			Channel:   t.name,
+			MsgID:     msg.ID,
+			CreatedAt: msg.PublishedAt.UTC().Format(time.RFC3339Nano),
+		}
+		if !msg.VisibleAt.IsZero() && !msg.VisibleAt.Equal(msg.PublishedAt) {
+			entry.VisibleAt = msg.VisibleAt.UTC().Format(time.RFC3339Nano)
+		}
+		out.Results = append(out.Results, entry)
+	}
+	return out, nil
+}
+
+// AwaitChannels fans IN across a SET of channels — the wire-surface twin
+// of the in-band Channel.await op. NON-committing (detection only): it
+// reads via ChannelSubscribe but never advances the committed cursor, so
+// the caller subscribe/acks exactly what it processes. Mirrors the in-band
+// tool's race-free register-before-read + per-channel re-arm pattern over
+// the SAME bus, so a publish/broadcast from any surface wakes it. A
+// timeout is NOT an error — returns TimedOut:true with whatever partials
+// accumulated.
+func (s *Server) AwaitChannels(ctx context.Context, req connector.ChannelAwaitRequest) (connector.ChannelAwaitResult, error) {
+	if len(req.Channels) == 0 {
+		return connector.ChannelAwaitResult{}, fmt.Errorf("await: missing required field: channels")
+	}
+	if len(req.Channels) > channelFanCap {
+		return connector.ChannelAwaitResult{}, fmt.Errorf("await: too many channels (%d > max %d)", len(req.Channels), channelFanCap)
+	}
+	mode := req.Mode
+	if mode == "" {
+		mode = "any"
+	}
+	switch mode {
+	case "any", "all", "at_least":
+	default:
+		return connector.ChannelAwaitResult{}, fmt.Errorf("await: unknown mode %q (must be one of: any, all, at_least)", mode)
+	}
+	if mode == "at_least" && req.N <= 0 {
+		return connector.ChannelAwaitResult{}, fmt.Errorf("await: mode=at_least requires n > 0")
+	}
+	scope, scopeID, err := resolveChannelScope(req.Scope, req.ScopeID)
+	if err != nil {
+		return connector.ChannelAwaitResult{}, err
+	}
+	limit := req.MaxMessages
+	if limit <= 0 {
+		limit = 10
+	}
+	if limit > 100 {
+		limit = 100
+	}
+
+	type chanState struct {
+		name string
+		from string
+		next string
+		msgs []store.ChannelMessage
+	}
+	seen := make(map[string]bool, len(req.Channels))
+	states := make([]*chanState, 0, len(req.Channels))
+	for _, name := range req.Channels {
+		if seen[name] {
+			continue
+		}
+		seen[name] = true
+		if _, derr := s.requireChannelDeclared(ctx, name); derr != nil {
+			return connector.ChannelAwaitResult{}, derr
+		}
+		from := req.FromCursor
+		if from == "" {
+			committed, cerr := s.store.ChannelCommittedCursor(ctx, name, scope, scopeID)
+			if cerr != nil {
+				return connector.ChannelAwaitResult{}, fmt.Errorf("await: read committed cursor for %q: %w", name, cerr)
+			}
+			from = committed
+		}
+		states = append(states, &chanState{name: name, from: from})
+	}
+
+	readChan := func(st *chanState) error {
+		msgs, next, rerr := s.store.ChannelSubscribe(ctx, st.name, scope, scopeID, st.from, limit)
+		if rerr != nil {
+			return rerr
+		}
+		st.msgs = msgs
+		st.next = next
+		return nil
+	}
+	satisfied := func() bool {
+		nonEmpty, total := 0, 0
+		for _, st := range states {
+			if len(st.msgs) > 0 {
+				nonEmpty++
+			}
+			total += len(st.msgs)
+		}
+		switch mode {
+		case "any":
+			return nonEmpty >= 1
+		case "all":
+			return nonEmpty == len(states)
+		case "at_least":
+			return total >= req.N
+		}
+		return false
+	}
+
+	cap := s.cfg.Env.ChannelsLongPollCapMS
+	longPoll := s.channelBus != nil && req.WaitMS > 0 && cap > 0
+	wait := req.WaitMS
+	if longPoll && wait > cap {
+		wait = cap
+	}
+
+	// Register all wakers BEFORE the initial read (race-free invariant);
+	// re-arm the woken channel after each wake (one-shot wakers).
+	wakers := make([]chan struct{}, len(states))
+	if longPoll {
+		for i, st := range states {
+			wakers[i] = s.channelBus.Register(st.name)
+		}
+		defer func() {
+			for i, w := range wakers {
+				if w != nil {
+					s.channelBus.Unregister(states[i].name, w)
+				}
+			}
+		}()
+	}
+	for _, st := range states {
+		if rerr := readChan(st); rerr != nil {
+			return connector.ChannelAwaitResult{}, fmt.Errorf("await: read %q: %w", st.name, rerr)
+		}
+	}
+
+	timedOut := false
+	if !satisfied() && longPoll {
+		timer := time.NewTimer(time.Duration(wait) * time.Millisecond)
+		defer timer.Stop()
+	loop:
+		for {
+			cases := make([]reflect.SelectCase, 0, len(wakers)+2)
+			for _, w := range wakers {
+				cases = append(cases, reflect.SelectCase{Dir: reflect.SelectRecv, Chan: reflect.ValueOf(w)})
+			}
+			timerIdx := len(cases)
+			cases = append(cases, reflect.SelectCase{Dir: reflect.SelectRecv, Chan: reflect.ValueOf(timer.C)})
+			ctxIdx := len(cases)
+			cases = append(cases, reflect.SelectCase{Dir: reflect.SelectRecv, Chan: reflect.ValueOf(ctx.Done())})
+
+			chosen, _, _ := reflect.Select(cases)
+			if chosen == timerIdx || chosen == ctxIdx {
+				timedOut = true
+				break loop
+			}
+			// Re-arm BEFORE re-reading (register-before-read), then re-read
+			// the woken channel — `from` is non-advancing so it returns the
+			// full window.
+			st := states[chosen]
+			s.channelBus.Unregister(st.name, wakers[chosen])
+			wakers[chosen] = s.channelBus.Register(st.name)
+			if rerr := readChan(st); rerr != nil {
+				return connector.ChannelAwaitResult{}, fmt.Errorf("await: read %q (after wake): %w", st.name, rerr)
+			}
+			if satisfied() {
+				break loop
+			}
+		}
+	} else if !satisfied() {
+		timedOut = true
+	}
+
+	sat := satisfied()
+	out := connector.ChannelAwaitResult{
+		Mode:    mode,
+		Fired:   make([]string, 0, len(states)),
+		Results: make(map[string]connector.ChannelAwaitEntry, len(states)),
+	}
+	for _, st := range states {
+		msgs := make([]connector.ChannelMessage, 0, len(st.msgs))
+		for _, m := range st.msgs {
+			msgs = append(msgs, connector.ChannelMessage{
+				ID:          m.ID,
+				Value:       m.Payload,
+				PublishedAt: m.PublishedAt.UTC().Format(time.RFC3339Nano),
+			})
+		}
+		if len(st.msgs) > 0 {
+			out.Fired = append(out.Fired, st.name)
+		}
+		out.Results[st.name] = connector.ChannelAwaitEntry{Messages: msgs, NextCursor: st.next}
+		out.TotalMessages += len(st.msgs)
+	}
+	out.Satisfied = sat
+	out.TimedOut = timedOut && !sat
+	return out, nil
 }
