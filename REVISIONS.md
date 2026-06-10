@@ -8,6 +8,61 @@ For pre-v0.4 history (single-tool runtime, library milestone, security patch), s
 
 ---
 
+## What's in v0.26.0
+
+**Headline: the interactive terminal — drive an agent live from the Web UI,
+Claude-Code-style.** The `/run` terminal becomes interactive: answer an agent's
+questions inline, inject instructions into a running agent mid-turn, and run a
+PERSISTENT session that stays alive between your instructions. The backend
+additions are additive — one new HTTP route + two SSE events + two run flags;
+**no `@loomcycle/client` bump** (the SPA ships its own client; an
+external-orchestrator steering twin is deferred).
+
+### Inline interruptions
+When an agent raises an Interruption question it now renders **inline** in the
+live terminal (option buttons or a free-text box) and resolves on the same
+open SSE stream — no trip to the separate `/interrupts` inbox. UI-only: the
+`interruption_pending` event + resolve endpoint already existed.
+
+### Mid-run steering — `POST /v1/runs/{run_id}/input`
+Inject an unsolicited instruction into an in-flight run. A per-run in-memory
+queue (`internal/steer`, mirroring `internal/cancel`) is drained at the **top
+of each loop iteration** and appended as a user turn before the next model
+call — drained only there, so a steer never splits a tool_use / tool_result
+pair (which would 400 the provider). A new **`steer`** SSE event surfaces it
+live; the instruction persists as a `user_input` transcript event so a later
+continuation replays it. Bearer + tenant-ownership gated; 404 if no run is
+live, 429 if the per-run buffer is full. Single-replica (a cross-replica
+`SteerCoordinator` is a later phase, as cancel was pre-clustering).
+
+### Persistent interactive runs
+With `interactive: true` on the run, the loop **parks at end_turn** — emitting
+an **`awaiting_input`** event and waiting for the operator's next instruction
+(resuming on it, ending only on **Cancel**) instead of terminating. While
+parked it pulses the heartbeat so the staleness sweeper doesn't reap the idle
+run.
+
+### Per-agent `unbounded_iterations`
+A new per-agent flag lifts the `max_iterations` soft-cap for an **LLM** agent
+(the same exemption code-js already had by capability; the 1<<20 hard ceiling
+stays as a runaway backstop). Content-identifying — it round-trips through the
+substrate, and a fork toggling it gets a distinct `content_sha256`. Pair it
+with `interactive` for a true always-on terminal agent.
+
+### Web UI
+The `/run` single-run pane gains an **always-on terminal prompt** (steer while
+running, continue between turns), an **"interactive session"** toggle, and
+inline rendering of the `steer` / `awaiting_input` events. Frontend-only.
+
+**Scope notes.** `interactive` is a per-RUN mode (on the run request), not a
+per-agent identity field — an "always-interactive agent" is the pairing of the
+per-agent `unbounded_iterations` with the interactive toggle. A parked run
+holds its concurrency slot while idle (bounded by the existing per-user /
+global run caps); a dedicated `MAX_INTERACTIVE_RUNS` cap and the cross-replica
+steering coordinator are deferred follow-ups.
+
+---
+
 ## What's in v0.25.3
 
 **Headline: a patch — a dynamic stdio MCP server's `${ENV}` env is now
