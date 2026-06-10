@@ -300,6 +300,13 @@ func (s *Scheduler) fireOne(ctx context.Context, row store.ScheduleDueRow, now t
 	runErr := s.runner.RunOnce(fireCtx, in, cb)
 	status := "completed"
 	errStr := ""
+	// F36: every real fire counts toward max_fires (a wedged/always-failing
+	// schedule still retires). F38 exception: a fire that fails AGENT
+	// RESOLUTION never started a run — it's a config error (the agent isn't
+	// resolvable in the run's tenant), identical on every fire. Counting it
+	// would silently burn the cap and retire the schedule after N failures,
+	// masking the misconfig as N normal runs. Don't count it; log loudly.
+	countAsFire := true
 	if runErr != nil {
 		status = "failed"
 		errStr = runErr.Error()
@@ -309,6 +316,11 @@ func (s *Scheduler) fireOne(ctx context.Context, row store.ScheduleDueRow, now t
 		}
 		if errors.Is(runErr, runner.ErrPerUserQuotaExhausted) {
 			status = "skipped"
+		}
+		if errors.Is(runErr, runner.ErrUnknownAgent) {
+			countAsFire = false
+			s.logf("scheduler: schedule %q could not resolve agent %q in tenant %q — not counting toward max_fires; check the agent exists in this tenant (F38)",
+				row.Name, def.Agent, def.TenantID)
 		}
 		if errors.Is(runErr, context.DeadlineExceeded) {
 			// Disambiguate fireCtx (per-fire timeout) from parent ctx
@@ -355,8 +367,9 @@ func (s *Scheduler) fireOne(ctx context.Context, row store.ScheduleDueRow, now t
 		NextRunAt:  next,
 		// RFC S / F36: this IS a fire (any status counts toward the cap, so
 		// a wedged/always-failing schedule still retires). The disabled-skip
-		// advance (advanceOnly) leaves this false.
-		CountAsFire: true,
+		// advance (advanceOnly) leaves this false; F38 leaves it false for an
+		// unresolved-agent config error (see countAsFire above).
+		CountAsFire: countAsFire,
 	}); err != nil {
 		s.logf("scheduler: record result for %q: %v", row.Name, err)
 	}
