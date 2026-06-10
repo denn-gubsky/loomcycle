@@ -526,6 +526,44 @@ func RunID(ctx context.Context) string {
 	return v
 }
 
+// ctxKeyResolvedProvider / ctxKeyResolvedModel carry the run's
+// CURRENTLY-RESOLVED provider id and model name so the Context tool's
+// op=self can report them to the agent. The model never supplies these
+// (the operator's resolver picks them per tier/effort + fallback), so they
+// travel via ctx. Stamped per-iteration in loop.Run from opts.Provider.ID()
+// / opts.Model, so a mid-run provider fallback is reflected truthfully.
+// Non-secret — the agent is allowed to know what it is running on.
+type ctxKeyResolvedProvider struct{}
+type ctxKeyResolvedModel struct{}
+
+// WithResolvedProvider attaches the resolved provider id to ctx.
+func WithResolvedProvider(ctx context.Context, providerID string) context.Context {
+	if providerID == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, ctxKeyResolvedProvider{}, providerID)
+}
+
+// ResolvedProvider returns the resolved provider id from ctx, or "" when unset.
+func ResolvedProvider(ctx context.Context) string {
+	v, _ := ctx.Value(ctxKeyResolvedProvider{}).(string)
+	return v
+}
+
+// WithResolvedModel attaches the resolved model name to ctx.
+func WithResolvedModel(ctx context.Context, model string) context.Context {
+	if model == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, ctxKeyResolvedModel{}, model)
+}
+
+// ResolvedModel returns the resolved model name from ctx, or "" when unset.
+func ResolvedModel(ctx context.Context) string {
+	v, _ := ctx.Value(ctxKeyResolvedModel{}).(string)
+	return v
+}
+
 // ctxKeyEventEmitter is the context key for the v0.8.4 typed-audit-
 // event emitter. The loop's OnEvent callback is attached at run
 // start; tools that want to surface structured wire events (e.g.

@@ -28,7 +28,8 @@ import (
 //
 // Nine ops total — PR 1 ships four of them:
 //
-//	self        — identity bundle (agent name, run/agent ids, user, tier)
+//	self        — identity bundle (agent name, run/agent ids, user, tier,
+//	              resolved provider + model)
 //	tools       — post-filter tool catalog
 //	doc         — detailed schema/docstring for one tool by name
 //	permissions — gates that apply to the caller (tool ACL, host policy, scopes)
@@ -179,6 +180,12 @@ func (c *Context) execSelf(ctx context.Context) (tools.Result, error) {
 		// Channel messages — the canonical way an Evaluator agent
 		// gets the Editor's run_id for `Evaluation.submit run_id=…`.
 		"run_id": tools.RunID(ctx),
+		// provider/model are the CURRENTLY-resolved driver + model the
+		// agent is running on (tier/effort + fallback). Non-secret — the
+		// agent is allowed to know what it is. Empty when the run was
+		// started outside the loop's stamping path (e.g. some tests).
+		"provider": tools.ResolvedProvider(ctx),
+		"model":    tools.ResolvedModel(ctx),
 	}
 	return okJSON(out)
 }
