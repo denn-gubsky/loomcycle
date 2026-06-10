@@ -1924,6 +1924,18 @@ button.primary:disabled {
   margin-bottom: 12px;
   font-size: 13px;
 }
+/* Partial-success / timed-out tone (amber) — broadcast with failures, or an
+   await that didn't satisfy. Distinct from flash-ok (all good) and
+   error-banner (the call itself failed). */
+.flash-warn {
+  background: rgba(251, 191, 36, 0.1);
+  border: 1px solid rgba(251, 191, 36, 0.35);
+  color: #fef3c7;
+  padding: 8px 12px;
+  border-radius: 4px;
+  margin-bottom: 12px;
+  font-size: 13px;
+}
 .restore-warnings {
   margin: 6px 0 0 16px;
   padding: 0;
@@ -3069,6 +3081,39 @@ button.primary:disabled {
   margin: 0;
   white-space: pre-wrap;
   word-break: break-all;
+}
+
+/* ---- v0.25.0 channel fan-out (broadcast) / fan-in (await) forms ---- */
+.channel-fan-row {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  align-items: flex-end;
+}
+.channel-fan-results {
+  list-style: none;
+  margin: 6px 0 0 0;
+  padding: 0;
+  font-size: 11px;
+}
+.channel-fan-error {
+  color: var(--failed);
+}
+.channel-fan-channel {
+  margin-top: 8px;
+}
+.channel-fan-channel-name {
+  font-size: 11px;
+  color: var(--fg-soft);
+  margin-bottom: 4px;
+}
+.channel-fan-fired {
+  margin-left: 6px;
+  padding: 0 6px;
+  border-radius: 8px;
+  font-size: 10px;
+  background: rgba(74, 222, 128, 0.18);
+  color: #d1fae5;
 }
 
 /* ---- v0.9.x AgentDetailPane sub-tabs (Transcript/Memory/Interrupts/Channels) ---- */
