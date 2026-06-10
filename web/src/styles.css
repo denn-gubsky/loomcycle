@@ -528,6 +528,10 @@ pre {
   color: var(--fg-soft);
   opacity: 0.75;
 }
+.tl-row.tl-interrupt .tl-payload,
+.tl-row.tl-interrupt .tl-kind {
+  color: #fbbf24;
+}
 .agent-link {
   display: flex;
   gap: 8px;
@@ -4083,6 +4087,76 @@ button.primary:disabled {
 }
 .live-run-pane-compact {
   min-height: 180px;
+}
+
+/* Inline interruption prompt (Claude-Code-style) — the agent is blocked on a
+   question and the same SSE stream resumes once answered. */
+.live-run-interrupt {
+  border-top: 1px solid var(--border, #2a2a32);
+  border-left: 3px solid #fbbf24;
+  background: rgba(251, 191, 36, 0.08);
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.live-run-interrupt-q {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--fg);
+}
+.live-run-interrupt-badge {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 1px 6px;
+  border-radius: 8px;
+  background: rgba(251, 191, 36, 0.18);
+  color: #fbbf24;
+  flex-shrink: 0;
+}
+.live-run-interrupt-prio {
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 8px;
+  flex-shrink: 0;
+}
+.live-run-interrupt-prio.prio-high {
+  background: rgba(255, 93, 104, 0.18);
+  color: var(--failed);
+}
+.live-run-interrupt-prio.prio-low {
+  background: var(--bg-soft-2);
+  color: var(--fg-soft);
+}
+.live-run-interrupt-context {
+  font-size: 12px;
+  color: var(--fg-soft);
+}
+.live-run-interrupt-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.live-run-interrupt-option {
+  background: var(--bg-soft-2);
+  border: 1px solid var(--border);
+  color: var(--fg);
+  border-radius: 6px;
+  padding: 5px 12px;
+  cursor: pointer;
+}
+.live-run-interrupt-option:hover {
+  border-color: #fbbf24;
+}
+.live-run-interrupt-form {
+  display: flex;
+  gap: 8px;
+}
+.live-run-interrupt-form input {
+  flex: 1;
 }
 
 /* run mode tabs */

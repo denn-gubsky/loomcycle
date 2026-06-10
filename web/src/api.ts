@@ -110,6 +110,20 @@ export interface EventPayload {
   };
   error?: string;
   retry?: { provider?: string; attempt?: number; wait_ms?: number; reason?: string };
+  // interruption_pending sidecar (providers.InterruptionEventInfo): the agent
+  // raised a question via the Interruption tool and is now blocked. The run's
+  // SSE stream stays open and resumes once the interrupt is resolved (POST
+  // /v1/runs/{run_id}/interrupts/{interrupt_id}/resolve). `options`, when
+  // present, is the fixed answer set the resolve must match.
+  interruption?: {
+    interrupt_id: string;
+    kind?: string;
+    question?: string;
+    options?: string[];
+    context?: string;
+    priority?: string;
+    expires_at?: string;
+  };
 }
 
 // v0.9.x — payloads for event types whose shape doesn't fit
