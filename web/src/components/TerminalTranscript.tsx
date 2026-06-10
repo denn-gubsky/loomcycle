@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type {
   EventPayload,
   SystemPromptPayload,
@@ -43,15 +43,62 @@ export default function TerminalTranscript({ events }: TerminalTranscriptProps) 
   return (
     <div ref={ref} className="terminal-transcript">
       {lines.map((l, i) => (
-        <div key={l.key ?? i} className={`tl-row ${l.cls}`}>
-          {/* Preserve newlines within a single coalesced text block;
-              wrap long lines via CSS white-space: pre-wrap. */}
-          <span className="tl-ts">{l.ts}</span>
-          <span className="tl-kind">{l.kind}</span>
-          <span className="tl-sep">|</span>
-          <span className="tl-payload">{l.payload}</span>
-        </div>
+        <TerminalRow key={l.key ?? i} line={l} />
       ))}
+    </div>
+  );
+}
+
+// TerminalRow renders one transcript line. Non-collapsible kinds (user
+// messages, agent text, meta) render as a single static row. Collapsible
+// kinds (tool results) scaffold to a one-line summary with a caret and
+// expand to the full payload on click — so the scrollback stays scannable
+// and only the operator's own messages + the agent's responses are open by
+// default. Mirrors AgentDetailPane's EventCard collapse pattern.
+function TerminalRow({ line }: { line: FormattedLine }) {
+  const [open, setOpen] = useState<boolean>(line.defaultOpen ?? false);
+  if (!line.collapsible) {
+    return (
+      <div className={`tl-row ${line.cls}`}>
+        {/* Preserve newlines within a single coalesced text block;
+            wrap long lines via CSS white-space: pre-wrap. */}
+        <span className="tl-ts">{line.ts}</span>
+        <span className="tl-kind">{line.kind}</span>
+        <span className="tl-sep">|</span>
+        <span className="tl-payload">{line.payload}</span>
+      </div>
+    );
+  }
+  // Collapsible row reuses the 4-column grid; the caret prefixes the payload
+  // cell, and the expanded detail is a 5th grid child spanning all columns.
+  const toggle = () => setOpen((v) => !v);
+  return (
+    <div
+      className={`tl-row tl-collapsible ${line.cls} ${open ? "tl-open" : ""}`}
+      onClick={toggle}
+      role="button"
+      tabIndex={0}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          toggle();
+        }
+      }}
+    >
+      <span className="tl-ts">{line.ts}</span>
+      <span className="tl-kind">{line.kind}</span>
+      <span className="tl-sep">|</span>
+      <span className="tl-payload">
+        <span className="tl-caret">{open ? "▼" : "▶"}</span>
+        {open ? "" : line.payload}
+      </span>
+      {open && (
+        // stopPropagation so selecting text in the expanded output doesn't
+        // collapse the row.
+        <div className="tl-detail" onClick={(e) => e.stopPropagation()}>
+          {line.full ?? line.payload}
+        </div>
+      )}
     </div>
   );
 }
@@ -61,7 +108,10 @@ interface FormattedLine {
   ts: string;     // "[hh:mm:ss.SSS]" or blank
   kind: string;   // padded to KIND_PAD_WIDTH
   cls: string;
-  payload: string;
+  payload: string;     // collapsed/one-line view
+  collapsible?: boolean; // tool results — scaffold + expand on click
+  full?: string;         // full (multi-line) detail shown when expanded
+  defaultOpen?: boolean; // start expanded (e.g. errors — actionable)
 }
 
 // coalesceTextTerminal merges adjacent text + thinking events into
@@ -113,10 +163,16 @@ function formatLine(row: TranscriptEvent): FormattedLine {
     case "tool_result": {
       const id = (ev as { tool_use_id?: string }).tool_use_id ?? "";
       const idTail = id ? `${id.slice(0, 8)} ` : "";
+      const text = ev.text ?? "";
       return {
         key, ts, kind,
         cls: ev.is_error ? "tl-error" : "tl-result",
-        payload: `${idTail}${oneLine(ev.text ?? "")}`,
+        // Collapsed by default: a one-line summary the operator can scan;
+        // click to expand the full output. Errors start open (actionable).
+        payload: `${idTail}${oneLine(text)}`,
+        collapsible: true,
+        full: `${idTail}${text}`.trimEnd(),
+        defaultOpen: !!ev.is_error,
       };
     }
     case "usage":
@@ -164,7 +220,9 @@ function formatLine(row: TranscriptEvent): FormattedLine {
       const segs = (row.payload as UserInputPayload[] | undefined) ?? [];
       const userSeg = segs.find((s) => s.role === "user");
       const text = userSeg?.content?.[0]?.text ?? "";
-      return { key, ts, kind, cls: "tl-text", payload: oneLine(text) };
+      // Operator messages render in full (expanded), like agent text — only
+      // tool results are scaffolded. Preserve newlines via CSS pre-wrap.
+      return { key, ts, kind, cls: "tl-text", payload: text };
     }
     case "system_prompt": {
       // v0.9.x: same sidecar pattern as user_input. Surface the

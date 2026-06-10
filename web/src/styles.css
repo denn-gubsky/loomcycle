@@ -537,6 +537,33 @@ pre {
   color: var(--accent);
   font-weight: 600;
 }
+/* Collapsible rows (tool results): the whole row is a click target that
+   toggles between the one-line summary and the full output. */
+.tl-row.tl-collapsible {
+  cursor: pointer;
+}
+.tl-row.tl-collapsible:hover .tl-caret {
+  color: var(--fg);
+}
+.tl-caret {
+  color: var(--fg-soft);
+  display: inline-block;
+  width: 1em;
+  font-size: 10px;
+  user-select: none;
+}
+/* Expanded full output spans all grid columns on its own row. */
+.tl-detail {
+  grid-column: 1 / -1;
+  white-space: pre-wrap;
+  word-break: break-word;
+  padding: 2px 0 4px;
+  cursor: text;
+  color: var(--completed);
+}
+.tl-row.tl-collapsible.tl-error .tl-detail {
+  color: var(--failed);
+}
 .agent-link {
   display: flex;
   gap: 8px;
@@ -4020,6 +4047,11 @@ button.primary:disabled {
   flex-direction: column;
   min-height: 0;
   flex: 1;
+  /* .content (the page scroller) is NOT a flex container, so flex:1 here is
+     inert. Fill .content's already-viewport-bounded height explicitly so the
+     transcript pane below can cap to the window and scroll internally instead
+     of growing the page forever. */
+  height: 100%;
 }
 .run-view h2 {
   margin: 0 0 12px;
@@ -4038,6 +4070,7 @@ button.primary:disabled {
 .run-view-pane-col {
   flex: 1;
   min-width: 0;
+  min-height: 0;
   display: flex;
 }
 .run-form-advanced {
