@@ -174,6 +174,17 @@ func (s *ScheduleDef) execCreate(ctx context.Context, policy tools.ScheduleDefPo
 	if err != nil {
 		return errResult(fmt.Sprintf("create: %s", err)), nil
 	}
+	// F38: default the run-execution tenant (def body `tenant_id`) to the
+	// authoritative owning/principal tenant. The scheduler fire path sees
+	// ONLY the def body — not the row's owning tenant — so left empty the
+	// fired run resolves agents/skills/MCP at the shared "" tenant and can't
+	// find the creator's substrate agents (`unknown agent`). Defaulting it to
+	// the creator's tenant resolves them where they live; an explicit overlay
+	// tenant_id still wins (the documented owning-vs-execution split).
+	ident := tools.RunIdentity(ctx)
+	if def.TenantID == "" {
+		def.TenantID = ident.TenantID
+	}
 	if err := validateScheduleDef(def); err != nil {
 		return errResult(fmt.Sprintf("create: %s", err)), nil
 	}
@@ -188,8 +199,8 @@ func (s *ScheduleDef) execCreate(ctx context.Context, policy tools.ScheduleDefPo
 		return errResult(fmt.Sprintf("create: description (%d bytes) exceeds max %d", len(in.Description), s.MaxDescriptionBytes)), nil
 	}
 
-	// RFC N: stamp the def under the caller's authoritative tenant.
-	ident := tools.RunIdentity(ctx)
+	// RFC N: stamp the row under the caller's authoritative owning tenant
+	// (ident resolved above for the body default-stamp).
 	tenantID := ident.TenantID
 	row := store.ScheduleDefRow{
 		DefID:            mintDefID(),
@@ -311,6 +322,14 @@ func (s *ScheduleDef) execFork(ctx context.Context, policy tools.ScheduleDefPoli
 	def, err := s.buildDefinition(in.Name, string(parent.Definition), in.Overlay)
 	if err != nil {
 		return errResult(fmt.Sprintf("fork: %s", err)), nil
+	}
+	// F38: default the run-execution tenant to the fork-owner's tenant (same
+	// rationale as create). A fork inherits the parent body's tenant_id; when
+	// that's empty (e.g. a legacy or pre-fix parent) default it so the fired
+	// run resolves the fork-owner's substrate agents instead of failing at the
+	// shared "" tenant. An explicit overlay tenant_id still wins.
+	if def.TenantID == "" {
+		def.TenantID = ident.TenantID
 	}
 	if err := validateScheduleDef(def); err != nil {
 		return errResult(fmt.Sprintf("fork: %s", err)), nil

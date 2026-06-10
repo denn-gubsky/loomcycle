@@ -92,6 +92,89 @@ func TestScheduleDefTool_CreateNewName(t *testing.T) {
 	}
 }
 
+// ctxForTenant builds a ScheduleDef tool ctx scoped to a principal tenant,
+// for the F38 body-tenant tests.
+func ctxForTenant(tenant string) context.Context {
+	ctx := tools.WithAgentName(context.Background(), "scheduler-orchestrator")
+	ctx = tools.WithRunIdentity(ctx, tools.RunIdentityValue{AgentID: "a_test", TenantID: tenant})
+	ctx = tools.WithScheduleDefPolicy(ctx, tools.ScheduleDefPolicyValue{
+		Scopes:   []string{"any"},
+		SelfName: "scheduler-orchestrator",
+	})
+	return ctx
+}
+
+// bodyTenant reads the persisted def body's tenant_id (the run-execution
+// tenant) for the active version under owningTenant.
+func bodyTenant(t *testing.T, tool *ScheduleDef, owningTenant, name string) string {
+	t.Helper()
+	row, err := tool.Store.ScheduleDefGetActive(context.Background(), owningTenant, name)
+	if err != nil {
+		t.Fatalf("get active %s/%s: %v", owningTenant, name, err)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(row.Definition, &m); err != nil {
+		t.Fatalf("unmarshal def: %v", err)
+	}
+	s, _ := m["tenant_id"].(string)
+	return s
+}
+
+// TestScheduleDefTool_CreateStampsBodyTenant (F38): create stamps the
+// run-execution tenant (def body tenant_id) from the authoritative principal,
+// so the scheduler-fired run resolves the creator's substrate agents (which
+// live under that tenant) instead of failing at the shared "" tenant.
+// Fail-before: the body tenant_id stays "" (only the row was stamped).
+func TestScheduleDefTool_CreateStampsBodyTenant(t *testing.T) {
+	tool, _, cleanup := scheduleDefFixture(t)
+	defer cleanup()
+
+	res, _ := tool.Execute(ctxForTenant("tnt-a"), json.RawMessage(`{"op":"create","name":"tenant-sched","overlay":{"agent":"job-search-batch","schedule":"0 9 * * 1","user_id":"alice"}}`))
+	if res.IsError {
+		t.Fatalf("create: %s", res.Text)
+	}
+	if got := bodyTenant(t, tool, "tnt-a", "tenant-sched"); got != "tnt-a" {
+		t.Errorf("def body tenant_id = %q, want tnt-a (F38: a fired run would resolve agents at the wrong tenant)", got)
+	}
+}
+
+// TestScheduleDefTool_CreateExplicitBodyTenantWins: an explicit overlay
+// tenant_id overrides the principal-tenant default (the documented
+// owning-vs-execution split — an admin can author a def that runs as another
+// tenant).
+func TestScheduleDefTool_CreateExplicitBodyTenantWins(t *testing.T) {
+	tool, _, cleanup := scheduleDefFixture(t)
+	defer cleanup()
+
+	res, _ := tool.Execute(ctxForTenant("tnt-a"), json.RawMessage(`{"op":"create","name":"explicit-sched","overlay":{"agent":"job-search-batch","schedule":"0 9 * * 1","tenant_id":"exec-b"}}`))
+	if res.IsError {
+		t.Fatalf("create: %s", res.Text)
+	}
+	if got := bodyTenant(t, tool, "tnt-a", "explicit-sched"); got != "exec-b" {
+		t.Errorf("def body tenant_id = %q, want exec-b (explicit overlay must win)", got)
+	}
+}
+
+// TestScheduleDefTool_ForkStampsBodyTenant: a fork inherits the parent body's
+// tenant, and an empty inherited tenant defaults to the fork-owner's tenant
+// (F38). Here a dynamic base created under tnt-b is forked under tnt-b; the
+// fork's body tenant must be tnt-b.
+func TestScheduleDefTool_ForkStampsBodyTenant(t *testing.T) {
+	tool, _, cleanup := scheduleDefFixture(t)
+	defer cleanup()
+	ctx := ctxForTenant("tnt-b")
+
+	if res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"create","name":"fork-base","overlay":{"agent":"job-search-batch","schedule":"0 9 * * 1","user_id":"alice"}}`)); res.IsError {
+		t.Fatalf("create base: %s", res.Text)
+	}
+	if res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"fork","name":"fork-base","overlay":{"user_id":"bob"}}`)); res.IsError {
+		t.Fatalf("fork: %s", res.Text)
+	}
+	if got := bodyTenant(t, tool, "tnt-b", "fork-base"); got != "tnt-b" {
+		t.Errorf("forked def body tenant_id = %q, want tnt-b", got)
+	}
+}
+
 func TestScheduleDefTool_CreateRefusesInvalidCron(t *testing.T) {
 	tool, ctx, cleanup := scheduleDefFixture(t)
 	defer cleanup()
