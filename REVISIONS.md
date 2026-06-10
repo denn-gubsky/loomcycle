@@ -8,6 +8,67 @@ For pre-v0.4 history (single-tool runtime, library milestone, security patch), s
 
 ---
 
+## What's in v0.25.0
+
+**Headline: the agentic-ensemble release — a full manual-management Web UI
+console + RFC S synchronization primitives (agent clock · channel fan-in ·
+fan-out · bounded schedules), reachable in-band AND from every wire
+surface.** Where v0.24.0 was a correctness/hardening pass, v0.25.0 is
+feature-forward: it makes loomcycle drivable end-to-end from the browser
+and gives a fan-out/fan-in agent ensemble first-class primitives instead
+of hand-rolled polling.
+
+### Web UI → full manual management console
+
+`/ui` grew from a read-mostly admin into a hands-on console (no backend
+wire change — the SPA ships its own `web/src/api.ts` client):
+
+- **Define every primitive.** A new **Integrations** admin page covers the
+  four families that had no UI — WebhookDef, A2AServerCardDef, A2AAgentDef,
+  MemoryBackendDef — alongside the existing Library (agents / skills / MCP)
+  and Channels. ScheduleDef gained standalone-create + version-activate.
+  (OperatorTokenDef minting stays CLI-only by design.)
+- **Run agents.** A new **Run** launcher: a single run with a live SSE
+  transcript + multi-turn continue; a **fan-out** mode firing N independent
+  runs in a live grid; and an **orchestrator** mode that launches one
+  parallel-spawn parent and renders its live parent→child tree.
+- **Channels** gained a manual **publish** form; the Memory editor rounds
+  out the act-on-a-primitive surface.
+
+### RFC S — ensemble synchronization primitives
+
+Surfaced by a scheduler-driven fan-out/fan-in experiment; three small,
+purely-additive runtime primitives so an ensemble is expressed cleanly:
+
+- **`Context op=time` (F34)** — an agent clock: `{now_rfc3339, unix_ms,
+  run_started_at?, elapsed_ms?}`, anchored on `providers.RunMeta.StartedAt`
+  (no store round-trip). Lets an agent compute a deadline / bucket a cycle /
+  build a `deliver_at` self-timeout without shelling out to Bash `date`.
+- **`Channel.await` (F35)** — a fan-IN barrier across N channels
+  (`any` / `all` / `at_least` N, or a timeout). Non-committing; the
+  complement to `Agent.parallel_spawn` (which joins sub-agents) — `await`
+  joins **independent** producers (scheduler / webhook / separately-spawned).
+- **`Channel.broadcast`** — the symmetric fan-OUT: one payload to N channels
+  in a single atomic-pre-flight call.
+- **`max_fires` (F36)** — a lifetime fire-count cap on a `ScheduledRun`; the
+  sweeper auto-retires the def after its Nth fire (1 = one-shot). Adds a
+  `schedule_run_state.fire_count` column (Postgres migration 0045 + the
+  SQLite fresh/upgrade pattern); any-status fires count, the disabled-skip
+  advance doesn't.
+
+### Channel fan-in / fan-out reach every wire surface
+
+`await` / `broadcast` started in-band (the agent tool) + MCP (the `channel`
+meta-tool auto-advertises them). v0.25.0 adds the **client twins** so an
+external orchestrator (n8n, an app server) can fan-in / fan-out directly
+over the SAME bus + store agents use: `POST /v1/_channels/_await` +
+`/v1/_channels/_broadcast` (REST), `AwaitChannels` / `BroadcastChannels`
+gRPC RPCs, and `awaitChannels()` / `broadcastChannels()` on
+`@loomcycle/client`. Operator-authed; atomic ACL pre-flight on broadcast
+(one undeclared channel rejects the whole call); a timeout is
+`timed_out:true`, never an error. `max_fires` flows through the existing
+untyped scheduledef overlay on all four transports — no surface change.
+
 ## What's in v0.24.0
 
 **Headline: the architecture-review hardening pass.** After the v0.21 → v0.23

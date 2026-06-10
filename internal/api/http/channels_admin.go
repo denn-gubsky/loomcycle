@@ -208,6 +208,45 @@ func (s *Server) handleAdminChannelAck(w http.ResponseWriter, r *http.Request) {
 	s.handleChannelAck(w, r, r.PathValue("name"), "global", "")
 }
 
+// handleAdminChannelAwait serves POST /v1/_channels/_await — the
+// multi-channel fan-in twin of subscribe. The whole request is the body
+// (channels[] + scope + mode + …), not a per-name path, so it decodes
+// straight into the Connector request. scope/scope_id come from the body
+// (default global). Long-poll up to wait_ms; a timeout is a 200 with
+// timed_out:true, not an error.
+func (s *Server) handleAdminChannelAwait(w http.ResponseWriter, r *http.Request) {
+	var req connector.ChannelAwaitRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid_body", "invalid request body: "+err.Error())
+		return
+	}
+	out, err := s.AwaitChannels(r.Context(), req)
+	if err != nil {
+		writeChannelError(w, err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(out)
+}
+
+// handleAdminChannelBroadcast serves POST /v1/_channels/_broadcast — the
+// multi-channel fan-out twin of publish. Atomic at the declare pre-flight
+// (one undeclared channel → 404, nothing published).
+func (s *Server) handleAdminChannelBroadcast(w http.ResponseWriter, r *http.Request) {
+	var req connector.ChannelBroadcastRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid_body", "invalid request body: "+err.Error())
+		return
+	}
+	out, err := s.BroadcastChannels(r.Context(), req)
+	if err != nil {
+		writeChannelError(w, err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(out)
+}
+
 // ---- per-user handlers (scope=user) -----------------------------
 
 // handleUserChannelPublish serves POST /v1/users/{user_id}/channels/{name}/publish.

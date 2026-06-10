@@ -19,7 +19,7 @@ It exists because vendor SDKs (`@anthropic-ai/claude-agent-sdk`, OpenAI Agents S
                                   └─ LLM Gateway (OpenAI-compatible) · LocalAPI gateway (OpenAPI → tools)
 ```
 
-**Currently shipped (v0.23.0):** The core primitives stabilised across the v0.8 → v0.23 line. This enumeration drifts — treat **README.md "What's shipped"** + **`REVISIONS.md`** as authoritative for per-feature detail, and **`docs/PLAN.md`** for the path forward. The shape today:
+**Currently shipped (v0.25.0):** The core primitives stabilised across the v0.8 → v0.23 line; v0.24.0 was an architecture-review hardening pass; v0.25.0 added the manual-management Web UI console + the RFC S ensemble-synchronization primitives (`Context op=time` agent clock, `Channel.await` / `Channel.broadcast` fan-in/out — in-band + MCP + REST/gRPC/TS client twins, `max_fires` self-retiring schedules). This enumeration drifts — treat **README.md "What's shipped"** + **`REVISIONS.md`** as authoritative for per-feature detail, and **`docs/PLAN.md`** for the path forward. The shape today:
 
 - **Six providers, native HTTP, no vendor SDK** — Anthropic, OpenAI, DeepSeek, Gemini, `ollama` (cloud/Bearer), `ollama-local` — behind one `Provider` interface with resolver-based per-tier/effort routing, user-tier fallback cascade, and `PinAfterSuccess`. Plus a synthetic **`code-js`** provider (goja, stateless replay, zero token cost) and a **mock** provider for cost-free load tests.
 - **Built-in tools** — Read/Write/Edit/Grep/Glob/NotebookEdit/HTTP/WebFetch/WebSearch/Bash/Agent/Skill/Memory/Channel/AgentDef/SkillDef/Evaluation/Interruption/Context. **Vector Memory** (semantic search; sqlite-vec / pgvector; embedder substrate) and a pluggable **MemoryBackend** (Mem9 add/recall layer).

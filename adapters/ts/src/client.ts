@@ -55,7 +55,11 @@ import type {
   InterruptStatus,
   ListAgentsResponse,
   AckChannelOptions,
+  AwaitChannelsOptions,
+  BroadcastChannelsOptions,
   ChannelAckResult,
+  ChannelAwaitResult,
+  ChannelBroadcastResult,
   ChannelDescriptor,
   ChannelPeekResult,
   ChannelPublishResult,
@@ -1267,6 +1271,57 @@ export class LoomcycleClient {
       this.ctx,
       path,
       { cursor: opts.cursor },
+      { signal: opts.signal },
+    );
+  }
+
+  // ---- RFC S client twins: fan-in (await) / fan-out (broadcast) ----
+  //
+  // Multi-channel meta-ops (POST /v1/_channels/_await and /_broadcast).
+  // Unlike the per-channel ops above they aren't addressed by name — the
+  // whole request is the body — so they don't use channelOpPath. `scope`
+  // + `userId` apply to every channel in the set. The complements to the
+  // in-band Channel.await / Channel.broadcast tool ops, letting a wire
+  // caller join independent producers / ping N workers over the same bus.
+
+  /** Fan IN across `channels`: wait until the `mode` predicate is met
+   *  (`any` / `all` / `at_least` N), or `waitMs` elapses. NON-committing
+   *  (detection only) — `subscribe`/`ack` exactly what you process. A
+   *  timeout is not an error: the result carries `timed_out: true`. */
+  async awaitChannels(opts: AwaitChannelsOptions): Promise<ChannelAwaitResult> {
+    const body: Record<string, unknown> = { channels: opts.channels };
+    if (opts.scope) body.scope = opts.scope;
+    if (opts.userId) body.scope_id = opts.userId;
+    if (opts.mode) body.mode = opts.mode;
+    if (opts.n !== undefined) body.n = opts.n;
+    if (opts.fromCursor !== undefined) body.from_cursor = opts.fromCursor;
+    if (opts.maxMessages !== undefined) body.max_messages = opts.maxMessages;
+    if (opts.waitMs !== undefined) body.wait_ms = opts.waitMs;
+    return postJSON<ChannelAwaitResult>(this.ctx, "/v1/_channels/_await", body, {
+      signal: opts.signal,
+    });
+  }
+
+  /** Fan OUT: publish the same `payload` to every channel in `channels`,
+   *  in one call. Atomic at the declare pre-flight — one undeclared
+   *  channel rejects the whole call ({@link NotFoundError}, code
+   *  `channel_not_declared`) with nothing published. A per-channel write
+   *  fault after that is reported in that channel's `results` entry while
+   *  the successful publishes stand. */
+  async broadcastChannels(
+    opts: BroadcastChannelsOptions,
+  ): Promise<ChannelBroadcastResult> {
+    const body: Record<string, unknown> = {
+      channels: opts.channels,
+      payload: opts.payload,
+    };
+    if (opts.scope) body.scope = opts.scope;
+    if (opts.userId) body.scope_id = opts.userId;
+    if (opts.deliverAt) body.deliver_at = opts.deliverAt;
+    return postJSON<ChannelBroadcastResult>(
+      this.ctx,
+      "/v1/_channels/_broadcast",
+      body,
       { signal: opts.signal },
     );
   }

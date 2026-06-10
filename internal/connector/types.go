@@ -472,6 +472,79 @@ type ChannelAckResult struct {
 	OK bool `json:"ok"`
 }
 
+// --- Channel fan-in / fan-out (RFC S client twins) ---
+//
+// AwaitChannels is the client-facing twin of the in-band Channel.await
+// op; BroadcastChannels the twin of Channel.broadcast. They let an
+// external orchestrator (n8n, an app server) fan-in / fan-out over the
+// SAME bus + store agents use. Scope + ScopeID apply to EVERY channel in
+// the set (a fan operates within one scope).
+
+// ChannelAwaitRequest fans IN across Channels: wait until the Mode
+// predicate is met (any / all / at_least N), or WaitMS elapses. Reads are
+// NON-committing (detection only) — the caller subscribe/acks what it
+// processes. Channels capped at 32.
+type ChannelAwaitRequest struct {
+	Channels    []string `json:"channels"`
+	Scope       string   `json:"scope"`
+	ScopeID     string   `json:"scope_id,omitempty"`
+	Mode        string   `json:"mode,omitempty"` // any | all | at_least; default any
+	N           int      `json:"n,omitempty"`    // threshold for at_least (>0)
+	FromCursor  string   `json:"from_cursor,omitempty"`
+	MaxMessages int      `json:"max_messages,omitempty"`
+	WaitMS      int      `json:"wait_ms,omitempty"`
+}
+
+// ChannelAwaitEntry is one fired channel's accumulated messages + the
+// cursor to continue from (NON-committing — the cursor is not advanced).
+type ChannelAwaitEntry struct {
+	Messages   []ChannelMessage `json:"messages"`
+	NextCursor string           `json:"next_cursor"`
+}
+
+// ChannelAwaitResult mirrors the in-band Channel.await response. TimedOut
+// is true only when the predicate was unmet within WaitMS (never an
+// error). Results is keyed by channel name.
+type ChannelAwaitResult struct {
+	Satisfied     bool                         `json:"satisfied"`
+	TimedOut      bool                         `json:"timed_out"`
+	Mode          string                       `json:"mode"`
+	Fired         []string                     `json:"fired"`
+	TotalMessages int                          `json:"total_messages"`
+	Results       map[string]ChannelAwaitEntry `json:"results"`
+}
+
+// ChannelBroadcastRequest fans OUT: publish Payload to every channel in
+// Channels (same payload, same scope). DeliverAt is RFC3339Nano; empty =
+// immediate. Channels capped at 32. ATOMIC at the ACL pre-flight — one
+// undeclared/invalid channel refuses the whole op (no partial broadcast).
+type ChannelBroadcastRequest struct {
+	Channels  []string        `json:"channels"`
+	Scope     string          `json:"scope"`
+	ScopeID   string          `json:"scope_id,omitempty"`
+	Payload   json.RawMessage `json:"payload"`
+	DeliverAt string          `json:"deliver_at,omitempty"`
+}
+
+// ChannelBroadcastEntry is one channel's publish outcome. Error is set
+// (and MsgID empty) when that channel's write failed after the pre-flight
+// passed — the successful publishes still stand.
+type ChannelBroadcastEntry struct {
+	Channel   string `json:"channel"`
+	MsgID     string `json:"msg_id,omitempty"`
+	CreatedAt string `json:"created_at,omitempty"` // RFC3339Nano
+	VisibleAt string `json:"visible_at,omitempty"` // RFC3339Nano; set when deferred
+	Error     string `json:"error,omitempty"`
+}
+
+// ChannelBroadcastResult reports how many channels received the payload.
+// Published + Failed = the deduped channel count.
+type ChannelBroadcastResult struct {
+	Published int                     `json:"published"`
+	Failed    int                     `json:"failed"`
+	Results   []ChannelBroadcastEntry `json:"results"`
+}
+
 // --- Channel admin CRUD (v0.11.5) ---
 
 // ChannelCreateRequest is the input to Connector.CreateChannel — the

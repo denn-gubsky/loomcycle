@@ -281,6 +281,15 @@ service Loomcycle {
   rpc SubscribeChannel(SubscribeChannelRequest) returns (SubscribeChannelResponse);
   rpc PeekChannel(PeekChannelRequest) returns (PeekChannelResponse);
   rpc AckChannel(AckChannelRequest) returns (AckChannelResponse);
+
+  // RFC S client twins (mirror POST /v1/_channels/_await and
+  // /v1/_channels/_broadcast). AwaitChannels fans IN across a set of
+  // channels (any/all/at_least N, or a timeout — a timeout is
+  // satisfied=false / timed_out=true, NOT an error); BroadcastChannels
+  // fans OUT one payload to a set of channels (atomic at the declare
+  // pre-flight). Scope + scope_id apply to every channel in the set.
+  rpc AwaitChannels(AwaitChannelsRequest) returns (AwaitChannelsResponse);
+  rpc BroadcastChannels(BroadcastChannelsRequest) returns (BroadcastChannelsResponse);
 }
 
 // ========================
@@ -943,4 +952,57 @@ message AckChannelRequest {
 
 message AckChannelResponse {
   bool ok = 1;
+}
+
+// RFC S client twins. AwaitChannels fans IN across `channels`; reads are
+// NON-committing. BroadcastChannels fans OUT `payload` to `channels`.
+message AwaitChannelsRequest {
+  repeated string channels = 1;
+  string scope = 2;
+  string scope_id = 3;
+  string mode = 4;          // any | all | at_least; default any
+  int32 n = 5;              // threshold for at_least (>0)
+  string from_cursor = 6;
+  int32 max_messages = 7;
+  int32 wait_ms = 8;
+}
+
+// One fired channel's accumulated messages + the (non-advanced) cursor.
+message AwaitChannelEntry {
+  repeated ChannelMessage messages = 1;
+  string next_cursor = 2;
+}
+
+message AwaitChannelsResponse {
+  bool satisfied = 1;
+  bool timed_out = 2;
+  string mode = 3;
+  repeated string fired = 4;
+  int32 total_messages = 5;
+  map<string, AwaitChannelEntry> results = 6;
+}
+
+message BroadcastChannelsRequest {
+  repeated string channels = 1;
+  string scope = 2;
+  string scope_id = 3;
+  // payload is raw JSON (bytes, same as PublishChannelRequest.payload).
+  bytes payload = 4;
+  string deliver_at = 5;  // RFC3339Nano; empty = publish immediately
+}
+
+// One channel's publish outcome. error is set (msg_id empty) when that
+// channel's write failed after the pre-flight passed.
+message BroadcastChannelEntry {
+  string channel = 1;
+  string msg_id = 2;
+  string created_at = 3;  // RFC3339Nano
+  string visible_at = 4;  // RFC3339Nano; set when deferred
+  string error = 5;
+}
+
+message BroadcastChannelsResponse {
+  int32 published = 1;
+  int32 failed = 2;
+  repeated BroadcastChannelEntry results = 3;
 }
