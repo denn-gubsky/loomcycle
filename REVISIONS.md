@@ -8,6 +8,54 @@ For pre-v0.4 history (single-tool runtime, library milestone, security patch), s
 
 ---
 
+## What's in v0.27.0
+
+**Headline: an interactive run survives leaving the terminal — and you can come
+back to it.** v0.26.x shipped the interactive `/run` terminal, but the run was
+bound to its HTTP request: navigating to the runs menu closed the SSE stream,
+which cancelled the request ctx, cascaded to the loop, and **terminated the
+parked run**. v0.27.0 detaches it.
+
+### Interactive runs detach from the request + re-attach stream
+An interactive run now executes in a **background goroutine** under a ctx
+derived with `context.WithoutCancel` — it keeps the request's ctx *values*
+(auth principal / tenant) but is **not** cancelled when the client disconnects.
+The goroutine owns teardown (the run stops only via the cancel registry); the
+HTTP handler streams by **tailing the persisted store** (net/http forbids
+writing to the `ResponseWriter` after the handler returns, so a detached run
+can't push to the live stream). A new **`GET /v1/runs/{run_id}/stream`**
+re-attaches: replays from `?from_seq` then live-tails, re-emitting each stored
+`providers.Event` as the same SSE frame the live run produced — `ScopeRunsRead`
++ tenant-ownership gated (opaque 404). Backed by a new run-scoped incremental
+store read `GetRunEventsSince` (sqlite + postgres; indexed on `events.run_id`).
+In the Web UI a **"resume in terminal"** link on a running agent in the runs
+list (`/agents`) is the way back into a live interactive run; `RunView` honours
+`?attach=<run_id>`. **Behaviour note:** the operator's steer *echo* frame is no
+longer on the live wire for interactive runs (steer events aren't persisted) —
+steering itself is unchanged (the instruction reaches the agent and the run
+resumes; the operator's input shows optimistically + via the persisted
+`user_input` row on reload). Scope: single-replica, single attached viewer;
+cross-replica re-attach + multi-viewer fan-out deferred (as steering shipped).
+Runtime-only; no `@loomcycle/client` bump.
+
+### `Context op=self` reports the resolved provider + model
+The agent-introspection op now returns `provider` (resolved driver id) and
+`model` (resolved model name) alongside the identity bundle — non-secret info
+an agent is allowed to know about its own runtime. Stamped on the per-iteration
+ctx in `loop.Run` from `opts.Provider.ID()` / `opts.Model`, so it stays truthful
+after a mid-run provider fallback, and one choke point covers every run path
+(HTTP / gRPC / MCP / scheduler / sub-agent).
+
+### Interactive terminal polish (Web UI)
+The `/run` terminal no longer grows the page without bound — it caps at the
+viewport and scrolls internally (the run view now fills its already-bounded
+container instead of relying on an inert `flex:1` under the non-flex page
+scroller). Tool results **scaffold to a one-line summary** with a caret and
+expand to the full output on click (errors start expanded); operator messages
+and agent responses render in full. Frontend-only.
+
+---
+
 ## What's in v0.26.2
 
 **Patch: runtime-authored meta-agents keep their `*_def_scopes` (F40).** A
