@@ -8,6 +8,26 @@ For pre-v0.4 history (single-tool runtime, library milestone, security patch), s
 
 ---
 
+## What's in v0.26.1
+
+**Headline: mid-run steering works across a multi-replica cluster.** v0.26.0
+shipped steering single-replica — a `POST /v1/runs/{run_id}/input` had to land
+on the replica running the run, else 404. v0.26.1 closes that with a
+**`coord.SteerCoordinator`** (the twin of the cancel coordinator): a steer that
+misses the local registry routes over the backplane to the **owning replica**
+(by `runs.replica_id`), awaits an ack, and reports delivered. The owning side
+dispatches to its LOCAL registry only (never re-broadcasting — the cancel
+no-storm guard). Unknown / terminal / self-owned / dead-owner all resolve to a
+clean 404. Wired in the cluster-mode init block; **single-replica is
+byte-identical** (a nil coordinator → the registry 404s directly, as before).
+
+Ships with an end-to-end regression test (`TestInteractiveTerminal_EndToEnd`)
+driving the whole interactive flow through the real HTTP server + SSE + loop:
+start interactive run → park (`awaiting_input`) → `POST /input` → `steer` frame
++ resume → park again. Runtime-only; no `@loomcycle/client` bump.
+
+---
+
 ## What's in v0.26.0
 
 **Headline: the interactive terminal — drive an agent live from the Web UI,
