@@ -8,6 +8,50 @@ For pre-v0.4 history (single-tool runtime, library milestone, security patch), s
 
 ---
 
+## What's in v0.25.2
+
+**Headline: a patch — scheduled runs resolve runtime-created (substrate)
+agents (F38 / RFC U).** Runtime-only: no wire-protocol change, no
+`@loomcycle/client` bump.
+
+### F38 — a scheduled run's agent now resolves in the def's tenant
+
+A `scheduled_runs` def whose `agent` was created at runtime via
+`POST /v1/_agentdef` (promoted) fired on cadence but **failed every fire**
+with `unknown agent` — no run produced — while the *same* agent ran fine via
+`POST /v1/runs`. Surfaced running the fully-dynamic variant of a
+scheduler-driven ensemble experiment on v0.25.1.
+
+**Root cause.** The scheduler fires through `srv.RunOnce`, which *does* resolve
+agents via the 3-tier `lookup.Agent` (static cfg → tenant-dynamic substrate →
+shared `""`). The failure was a **tenant mismatch**: `RunOnce` resolves at the
+tenant carried in the def **body** (`definition.tenant_id`), but
+`POST /v1/_scheduledef` stamped the principal's tenant only onto the def
+**row** (the *owning* tenant), leaving the body's *run-execution* tenant `""`.
+The fire then resolved agents at the shared `""` tenant and missed an AgentDef
+owned by the creator's tenant (e.g. `"default"` for the legacy bearer).
+`/v1/runs` worked because it resolves at the principal's tenant.
+
+**Fix.** `ScheduleDef` create/fork now default the def body's `tenant_id` (the
+run-execution tenant) to the authoritative owning/principal tenant when the
+overlay didn't set one; the existing `buildRunInput → RunOnce → lookup.Agent`
+chain then resolves the agent where it lives. An explicit overlay `tenant_id`
+still wins (the documented owning-vs-execution split); static yaml agents are
+unaffected (tenant-agnostic cfg tier). `ScheduleDef` has no content hash, so
+stamping the body has no dedup/lineage impact. Forward-looking: an
+already-stored dynamic scheduledef with an empty body tenant needs
+re-creation.
+
+Plus a hardening: a fire that fails agent resolution (`ErrUnknownAgent`) no
+longer counts toward `max_fires` (and logs loudly) — previously a misconfig
+burned the cap and self-retired after N failures, masking itself as N normal
+runs. Genuine runtime failures still count toward the cap.
+
+With this fix a fully runtime-authored scheduler ensemble (agentdef +
+scheduledef + channel + MCP, all via REST) runs end-to-end.
+
+---
+
 ## What's in v0.25.1
 
 **Headline: a patch release — scheduler fan-in correctness (F37 / RFC T) +
