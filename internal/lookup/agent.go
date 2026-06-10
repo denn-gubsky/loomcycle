@@ -176,6 +176,9 @@ type SubstrateAgentDef struct {
 	Effort        string `json:"effort,omitempty"`
 	MaxTokens     int    `json:"max_tokens,omitempty"`
 	MaxIterations int    `json:"max_iterations,omitempty"`
+	// UnboundedIterations lifts the MaxIterations soft-cap for an LLM agent
+	// (interactive runs). Mirrors mergedDef; the drift test pins parity.
+	UnboundedIterations bool `json:"unbounded_iterations,omitempty"`
 	// MaxConcurrentChildren caps how many sub-agents this agent may
 	// spawn in parallel via Agent.parallel_spawn. 0 = use runtime
 	// default (DefaultMaxConcurrentChildren = 4). Mirrors the
@@ -225,6 +228,7 @@ func (s SubstrateAgentDef) ToConfigDef() config.AgentDef {
 		Effort:                s.Effort,
 		MaxTokens:             s.MaxTokens,
 		MaxIterations:         s.MaxIterations,
+		UnboundedIterations:   s.UnboundedIterations,
 		MaxConcurrentChildren: s.MaxConcurrentChildren,
 		RunTimeoutSeconds:     s.RunTimeoutSeconds,
 		SystemPrompt:          s.SystemPrompt,

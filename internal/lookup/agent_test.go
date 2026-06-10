@@ -285,6 +285,7 @@ func TestAgent_DriftDetection(t *testing.T) {
 		"effort":                  true,
 		"max_tokens":              true,
 		"max_iterations":          true,
+		"unbounded_iterations":    true, // lift the iteration soft-cap for interactive LLM agents
 		"max_concurrent_children": true,
 		"system_prompt":           true,
 		"system_prompt_base":      true,
@@ -311,6 +312,16 @@ func TestAgent_DriftDetection(t *testing.T) {
 		if !want[tag] {
 			t.Errorf("SubstrateAgentDef has json tag %q not in expected set — if this field was deliberately added, update the `want` map in this test to confirm the addition was conscious", tag)
 		}
+	}
+}
+
+// TestSubstrateAgentDef_UnboundedIterations_ToConfigDef pins the read-side
+// projection: a substrate def with unbounded_iterations resolves to a
+// config.AgentDef carrying it (catches a dropped ToConfigDef line).
+func TestSubstrateAgentDef_UnboundedIterations_ToConfigDef(t *testing.T) {
+	got := lookup.SubstrateAgentDef{UnboundedIterations: true}.ToConfigDef()
+	if !got.UnboundedIterations {
+		t.Error("ToConfigDef dropped UnboundedIterations")
 	}
 }
 

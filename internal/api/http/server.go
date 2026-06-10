@@ -1246,20 +1246,21 @@ func applyAgentDefOverlay(base config.AgentDef, definition json.RawMessage) conf
 	// into the merge by accident; an inline anonymous struct keeps
 	// the overlay surface explicit.
 	var ov struct {
-		Provider         string                            `json:"provider,omitempty"`
-		Model            string                            `json:"model,omitempty"`
-		Tier             string                            `json:"tier,omitempty"`
-		Effort           string                            `json:"effort,omitempty"`
-		MaxTokens        int                               `json:"max_tokens,omitempty"`
-		MaxIterations    int                               `json:"max_iterations,omitempty"`
-		SystemPrompt     string                            `json:"system_prompt,omitempty"`
-		AllowedTools     []string                          `json:"allowed_tools,omitempty"`
-		Skills           []string                          `json:"skills,omitempty"`
-		Providers        []string                          `json:"providers,omitempty"`
-		Models           map[string][]config.TierCandidate `json:"models,omitempty"`
-		MemoryScopes     []string                          `json:"memory_scopes,omitempty"`
-		MemoryQuotaBytes int                               `json:"memory_quota_bytes,omitempty"`
-		MemoryBackend    string                            `json:"memory_backend,omitempty"`
+		Provider            string                            `json:"provider,omitempty"`
+		Model               string                            `json:"model,omitempty"`
+		Tier                string                            `json:"tier,omitempty"`
+		Effort              string                            `json:"effort,omitempty"`
+		MaxTokens           int                               `json:"max_tokens,omitempty"`
+		MaxIterations       int                               `json:"max_iterations,omitempty"`
+		UnboundedIterations bool                              `json:"unbounded_iterations,omitempty"`
+		SystemPrompt        string                            `json:"system_prompt,omitempty"`
+		AllowedTools        []string                          `json:"allowed_tools,omitempty"`
+		Skills              []string                          `json:"skills,omitempty"`
+		Providers           []string                          `json:"providers,omitempty"`
+		Models              map[string][]config.TierCandidate `json:"models,omitempty"`
+		MemoryScopes        []string                          `json:"memory_scopes,omitempty"`
+		MemoryQuotaBytes    int                               `json:"memory_quota_bytes,omitempty"`
+		MemoryBackend       string                            `json:"memory_backend,omitempty"`
 		// *int because 0 is a meaningful explicit value ("force no
 		// retries"); non-pointer would collapse "not in overlay" and
 		// "explicitly disable" into the same case and silently strip
@@ -1301,6 +1302,9 @@ func applyAgentDefOverlay(base config.AgentDef, definition json.RawMessage) conf
 	}
 	if ov.MaxIterations != 0 {
 		out.MaxIterations = ov.MaxIterations
+	}
+	if ov.UnboundedIterations {
+		out.UnboundedIterations = true
 	}
 	if ov.SystemPrompt != "" {
 		out.SystemPrompt = ov.SystemPrompt
@@ -1798,6 +1802,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		OnHeartbeat:            heartbeat,
 		MaxTokens:              agentDef.MaxTokens,
 		MaxIterations:          agentDef.MaxIterations, // 0 → loop default (16)
+		UnboundedIterations:    agentDef.UnboundedIterations,
 		Effort:                 effort,
 		MarkStalled:            s.markStalledFn(providerID, model),
 		MarkRateLimited:        s.markRateLimitedFn(in.UserTier),
@@ -2994,6 +2999,7 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		OnHeartbeat:            heartbeat,
 		MaxTokens:              agentDef.MaxTokens,     // 0 → driver default
 		MaxIterations:          agentDef.MaxIterations, // 0 → loop default (16)
+		UnboundedIterations:    agentDef.UnboundedIterations,
 		Effort:                 effort,
 		MarkStalled:            s.markStalledFn(providerID, model),
 		MarkRateLimited:        s.markRateLimitedFn(req.UserTier),
@@ -3380,6 +3386,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		OnHeartbeat:            heartbeat,
 		MaxTokens:              agentDef.MaxTokens,     // 0 → driver default
 		MaxIterations:          agentDef.MaxIterations, // 0 → loop default (16)
+		UnboundedIterations:    agentDef.UnboundedIterations,
 		Effort:                 effort,
 		MarkStalled:            s.markStalledFn(providerID, model),
 		MarkRateLimited:        s.markRateLimitedFn(body.UserTier),
@@ -4043,22 +4050,23 @@ func (s *Server) runSubAgent(ctx context.Context, name string, prompt string, de
 
 	fbPolicy, fbReResolve := s.fallbackForRun(tenantFromCtx(ctx), name, parentTier)
 	res, runErr := loop.Run(subCtx, loop.RunOptions{
-		Provider:        provider,
-		Model:           model,
-		Tools:           subTools,
-		Dispatcher:      subDispatcher,
-		Segments:        segs,
-		OnEvent:         subEmit,
-		OnHeartbeat:     subHeartbeat,
-		MaxTokens:       def.MaxTokens,     // 0 → driver default
-		MaxIterations:   def.MaxIterations, // 0 → loop default (16)
-		Effort:          effort,
-		MarkStalled:     s.markStalledFn(providerID, model),
-		MarkRateLimited: s.markRateLimitedFn(parentTier),
-		ClearStall:      s.clearStallFn(providerID, model),
-		ToolParallelism: s.cfg.Env.ToolParallelism,
-		AgentName:       name,
-		CodeBody:        def.Code, // inline code-js body (RFC J); "" → FS fallback
+		Provider:            provider,
+		Model:               model,
+		Tools:               subTools,
+		Dispatcher:          subDispatcher,
+		Segments:            segs,
+		OnEvent:             subEmit,
+		OnHeartbeat:         subHeartbeat,
+		MaxTokens:           def.MaxTokens,     // 0 → driver default
+		MaxIterations:       def.MaxIterations, // 0 → loop default (16)
+		UnboundedIterations: def.UnboundedIterations,
+		Effort:              effort,
+		MarkStalled:         s.markStalledFn(providerID, model),
+		MarkRateLimited:     s.markRateLimitedFn(parentTier),
+		ClearStall:          s.clearStallFn(providerID, model),
+		ToolParallelism:     s.cfg.Env.ToolParallelism,
+		AgentName:           name,
+		CodeBody:            def.Code, // inline code-js body (RFC J); "" → FS fallback
 		// A code-js sub-agent's wall-clock budget is its OWN per-agent
 		// run_timeout_seconds — a spawn has no ad-hoc per-run knob, so
 		// per-agent is the sole source (== pickRunTimeout(0, def...)). Without

@@ -560,6 +560,15 @@ type AgentDef struct {
 	// (2026-05-21).
 	MaxIterations int `yaml:"max_iterations"`
 
+	// UnboundedIterations lifts the MaxIterations soft-cap for an LLM agent
+	// (the 1<<20 hard backstop in the loop still applies as a runaway guard).
+	// Cancel is the stop, and LLM runs have no wall-clock timeout — use this
+	// for interactive / terminal-driven agents whose turn count is
+	// operator-driven, not bounded by a fixed task. Code-js agents are
+	// already exempt via their provider Capabilities().UnboundedIterations;
+	// this is the LLM-side opt-in.
+	UnboundedIterations bool `yaml:"unbounded_iterations"`
+
 	// MaxConcurrentChildren caps how many sub-agents this agent may
 	// spawn in parallel via Agent.parallel_spawn (v0.11.8+). Zero =
 	// use the runtime default (4 — see builtin.DefaultMaxConcurrentChildren).

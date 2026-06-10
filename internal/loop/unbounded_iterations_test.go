@@ -106,3 +106,32 @@ func TestRun_UnboundedIterations_ExemptFromMaxIterations(t *testing.T) {
 		t.Errorf("capped: made %d calls, want ≤ %d (cap not enforced)", provCapped.calls, cap)
 	}
 }
+
+// The per-agent UnboundedIterations RunOptions flag lifts the cap even when
+// the provider capability is OFF (an LLM driver) — the interactive/terminal
+// agent opt-in. Fail-before: without the `|| opts.UnboundedIterations` in the
+// loop, capability-OFF + flag-ON caps at MaxIterations → "max_iterations".
+func TestRun_UnboundedIterationsFlag_LiftsCapForLLM(t *testing.T) {
+	const cap, want = 3, 10
+	segs := []PromptSegment{{Role: "user", Content: []PromptContentBlock{{Type: "trusted-text", Text: "go"}}}}
+
+	prov := &iterCounterProvider{target: want, unbounded: false} // LLM driver
+	res, err := Run(context.Background(), RunOptions{
+		Provider:            prov,
+		Model:               "x",
+		Tools:               []tools.Tool{noopTool{}},
+		Dispatcher:          tools.NewDispatcher([]tools.Tool{noopTool{}}),
+		Segments:            segs,
+		MaxIterations:       cap,
+		UnboundedIterations: true, // per-agent opt-in
+	})
+	if err != nil {
+		t.Fatalf("unbounded-flag run errored: %v", err)
+	}
+	if res.StopReason != "end_turn" {
+		t.Errorf("flag: stop = %q, want end_turn (per-agent UnboundedIterations not honored)", res.StopReason)
+	}
+	if prov.calls < want {
+		t.Errorf("flag: made %d calls, want ≥ %d (capped despite UnboundedIterations flag)", prov.calls, want)
+	}
+}

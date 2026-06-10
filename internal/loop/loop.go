@@ -51,6 +51,12 @@ type RunOptions struct {
 	Segments      []PromptSegment
 	OnEvent       func(providers.Event) // streaming hook (called from loop goroutine)
 	MaxIterations int                   // safety cap; default 16
+	// UnboundedIterations lifts the MaxIterations soft-cap for THIS run even
+	// on an LLM provider (the 1<<20 hard backstop still applies). Distinct
+	// from Provider.Capabilities().UnboundedIterations (code-js only); set
+	// from the agent's config.AgentDef.UnboundedIterations for interactive
+	// terminal-driven runs.
+	UnboundedIterations bool
 
 	// PriorMessages is the conversation history to prepend before the
 	// caller's new Segments. Used by the continuation endpoint to replay
@@ -584,7 +590,10 @@ func Run(ctx context.Context, opts RunOptions) (RunResult, error) {
 	// timeout (LOOMCYCLE_CODE_AGENTS_RUN_TIMEOUT_SECONDS, enforced as a run-level
 	// deadline). A high hard ceiling stays as a pure runaway backstop. For every
 	// LLM driver MaxIterations is unchanged (the runaway-tool-use guard).
-	unboundedIters := opts.Provider.Capabilities().UnboundedIterations
+	// code-js providers are unbounded by capability; an LLM agent opts in
+	// per-def via UnboundedIterations (interactive/terminal runs). Either way
+	// the 1<<20 hard ceiling stays as a pure runaway backstop.
+	unboundedIters := opts.Provider.Capabilities().UnboundedIterations || opts.UnboundedIterations
 	iterCap := opts.MaxIterations
 	if unboundedIters {
 		iterCap = maxIterationsHardCeiling
