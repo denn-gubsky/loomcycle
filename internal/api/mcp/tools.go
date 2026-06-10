@@ -144,7 +144,7 @@ func toolDescriptors() []loommcp.ToolDescriptor {
 		},
 		{
 			Name:        "channel",
-			Description: "Channel tool ops (publish/subscribe/ack/peek/list_channels/await). await is the multi-channel fan-in barrier (any/all/at_least N or timeout; non-committing). Pass-through.",
+			Description: "Channel tool ops (publish/subscribe/ack/peek/list_channels/await/broadcast). await = multi-channel fan-in barrier (any/all/at_least N or timeout; non-committing); broadcast = symmetric fan-out (one payload → N channels, atomic ACL pre-flight). Pass-through.",
 			InputSchema: builtinSchema("channel"),
 		},
 		{

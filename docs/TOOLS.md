@@ -518,7 +518,18 @@ Wildcards are anchored at the end (`findings/*` matches `findings/alpha` but NOT
 //   → { "satisfied": true, "timed_out": false, "mode": "at_least",
 //       "fired": ["a","b","c"], "total_messages": 3,
 //       "results": { "a": { "messages": [...], "next_cursor": "msg_..." }, ... } }
+
+// Broadcast — symmetric fan-OUT: publish one payload to MULTIPLE channels.
+{ "op": "broadcast", "channels": ["a", "b", "c"], "value": {...}, "ttl": 3600 }
+//   → { "published": 3, "failed": 0,
+//       "results": [{ "channel": "a", "message_id": "msg_...", "dropped_oldest": 0 }, ... ] }
 ```
+
+### Fan-out (`broadcast`)
+
+`broadcast` is the producer-side bookend to `await`: it publishes the **same** payload to a set of channels in one call — e.g. an orchestrator pings N worker channels to start, then `await`s their result channels. It takes the same per-message fields as `publish` (`value`, `ttl`, `deliver_at`), applied to every named channel.
+
+It is **atomic at the ACL pre-flight**: every channel is resolved against the agent's **publish** allowlist (and the `_system/` / `publisher: system` refusals) *before any write*, so one denied channel refuses the whole op — there is no partial broadcast. A per-channel storage error after that (rare) is reported in that channel's `results` entry while the successful publishes stand; the op itself doesn't error. Channels are de-duplicated; max 32 per call.
 
 ### Fan-in barrier (`await`)
 
