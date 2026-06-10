@@ -256,6 +256,12 @@ func (m *mockConnector) PurgeChannel(context.Context, string) (connector.Channel
 	m.chanDefCalls.Add(1)
 	return connector.ChannelPurgeResult{}, nil
 }
+func (m *mockConnector) AwaitChannels(context.Context, connector.ChannelAwaitRequest) (connector.ChannelAwaitResult, error) {
+	return connector.ChannelAwaitResult{}, nil
+}
+func (m *mockConnector) BroadcastChannels(context.Context, connector.ChannelBroadcastRequest) (connector.ChannelBroadcastResult, error) {
+	return connector.ChannelBroadcastResult{}, nil
+}
 
 // driveServer runs the server against the given input lines and
 // returns the response frames (one per request). Notifications are

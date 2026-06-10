@@ -190,6 +190,12 @@ func (m *httpMockConnector) DeleteChannel(context.Context, string) error {
 func (m *httpMockConnector) PurgeChannel(context.Context, string) (connector.ChannelPurgeResult, error) {
 	return connector.ChannelPurgeResult{}, errors.New("not implemented")
 }
+func (m *httpMockConnector) AwaitChannels(context.Context, connector.ChannelAwaitRequest) (connector.ChannelAwaitResult, error) {
+	return connector.ChannelAwaitResult{}, errors.New("not implemented")
+}
+func (m *httpMockConnector) BroadcastChannels(context.Context, connector.ChannelBroadcastRequest) (connector.ChannelBroadcastResult, error) {
+	return connector.ChannelBroadcastResult{}, errors.New("not implemented")
+}
 
 // httpTestServer wires an HTTPHandler against the mock connector and
 // returns an httptest.Server speaking the loomcycle MCP transport over
