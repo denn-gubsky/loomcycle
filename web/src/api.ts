@@ -124,6 +124,10 @@ export interface EventPayload {
     priority?: string;
     expires_at?: string;
   };
+  // "steer" sidecar — an operator-injected steering message drained mid-turn.
+  user_input?: { text: string; source?: string; seen_at?: string };
+  // "awaiting_input" sidecar — a persistent interactive run parked at end_turn.
+  awaiting_input?: { since_turn?: number };
 }
 
 // v0.9.x — payloads for event types whose shape doesn't fit
@@ -1634,6 +1638,11 @@ export interface StartRunRequest {
   web_search_filter?: "drop" | "keep";
   allowed_tools?: string[];
   metadata?: Record<string, unknown>;
+  // interactive: start a PERSISTENT run that parks for operator steering at
+  // end_turn instead of terminating (the interactive terminal session mode).
+  // Drive it via sendRunInput; pair with an unbounded_iterations agent for a
+  // true always-on terminal. Cancel ends it.
+  interactive?: boolean;
 }
 
 // startRun POSTs /v1/runs and streams events to the handlers. The prompt
@@ -1656,7 +1665,25 @@ export function startRun(req: StartRunRequest, h: RunStreamHandlers): Promise<vo
   if (req.allowed_tools && req.allowed_tools.length > 0)
     body.allowed_tools = req.allowed_tools;
   if (req.metadata) body.metadata = req.metadata;
+  if (req.interactive) body.interactive = true;
   return streamSSE("/v1/runs", body, h);
+}
+
+// sendRunInput injects an operator "steering" instruction into an IN-FLIGHT
+// run (POST /v1/runs/{run_id}/input) — appended to the live conversation at
+// the loop's next iteration (and resumes a parked interactive run). 404 if no
+// run is live for run_id; 429 if its input buffer is full; 422 on empty text.
+export async function sendRunInput(runID: string, text: string): Promise<void> {
+  const resp = await fetch(`/v1/runs/${encodeURIComponent(runID)}/input`, {
+    method: "POST",
+    credentials: "same-origin",
+    headers: { "Content-Type": "application/json", Accept: "application/json" },
+    body: JSON.stringify({ text }),
+  });
+  if (!resp.ok) {
+    const b = await resp.text();
+    throw new Error(`${resp.status} ${resp.statusText}: ${b.slice(0, 200)}`);
+  }
 }
 
 // continueSession appends a new turn to an existing session

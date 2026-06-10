@@ -114,9 +114,11 @@ function SingleRunTab({
           status={run.status}
           agentId={run.agentId}
           sessionId={run.sessionId}
+          runId={run.runId}
           error={run.error}
           onCancel={run.cancel}
-          onContinue={run.sendMessage}
+          onSend={run.send}
+          awaitingInput={run.awaitingInput}
           pendingInterrupt={run.pendingInterrupt}
           onAnswerInterrupt={run.answerInterrupt}
         />

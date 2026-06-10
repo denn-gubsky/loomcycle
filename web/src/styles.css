@@ -532,6 +532,11 @@ pre {
 .tl-row.tl-interrupt .tl-kind {
   color: #fbbf24;
 }
+.tl-row.tl-steer .tl-payload,
+.tl-row.tl-steer .tl-kind {
+  color: var(--accent);
+  font-weight: 600;
+}
 .agent-link {
   display: flex;
   gap: 8px;
@@ -4084,6 +4089,15 @@ button.primary:disabled {
 }
 .live-run-continue input {
   flex: 1;
+}
+.live-run-continue input:disabled {
+  opacity: 0.55;
+}
+.live-run-awaiting {
+  padding: 6px 12px;
+  font-size: 12px;
+  color: var(--accent);
+  border-top: 1px solid var(--border, #2a2a32);
 }
 .live-run-pane-compact {
   min-height: 180px;

@@ -146,6 +146,11 @@ function formatLine(row: TranscriptEvent): FormattedLine {
         payload: `❓ ${oneLine(i?.question ?? "")}${opts}`.trimEnd(),
       };
     }
+    case "steer":
+      // operator-injected mid-run instruction; "»" marks it as operator input.
+      return { key, ts, kind, cls: "tl-steer", payload: `» ${oneLine(ev.user_input?.text ?? "")}` };
+    case "awaiting_input":
+      return { key, ts, kind, cls: "tl-meta", payload: "idle — waiting for operator input" };
     case "started":
       return { key, ts, kind, cls: "tl-meta", payload: "" };
     case "session":

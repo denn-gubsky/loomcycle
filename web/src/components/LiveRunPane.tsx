@@ -8,15 +8,21 @@ import { type TranscriptEvent } from "../api";
 // each ensemble cell can render it. Shows a status pill, the streamed
 // transcript via the shared TerminalTranscript, a Cancel button while
 // running, an inline Interruption prompt (Claude-Code-style) when the agent
-// asks a question, and a Continue input once a session exists (multi-turn).
+// asks a question, and an always-on terminal prompt: while the run is live it
+// STEERS the agent mid-flight (or resumes a parked interactive run); between
+// turns it CONTINUES the session. (`onContinue` is the legacy between-turns-
+// only fallback for ensemble cells that don't pass `onSend`.)
 export default function LiveRunPane({
   events,
   status,
   agentId,
   sessionId,
+  runId,
   error,
   onCancel,
   onContinue,
+  onSend,
+  awaitingInput,
   pendingInterrupt,
   onAnswerInterrupt,
   compact,
@@ -25,19 +31,32 @@ export default function LiveRunPane({
   status: RunStatus;
   agentId: string;
   sessionId: string;
+  runId?: string;
   error: string | null;
   onCancel: () => void;
   onContinue?: (prompt: string) => void;
+  onSend?: (text: string) => void;
+  awaitingInput?: boolean;
   pendingInterrupt?: PendingInterrupt | null;
   onAnswerInterrupt?: (answer: string) => void;
   compact?: boolean;
 }) {
   const [followUp, setFollowUp] = useState("");
 
-  const handleContinue = (e: React.FormEvent) => {
+  const running = status === "running";
+  // The terminal prompt is available once a run exists (so steering works as
+  // soon as the run_id is known), hidden while an interruption is pending
+  // (that prompt takes precedence) and before any run starts.
+  const promptHandler = onSend ?? onContinue;
+  const showPrompt =
+    !!promptHandler && !pendingInterrupt && status !== "idle" && !!(sessionId || runId);
+  // The legacy onContinue can only fire between turns; onSend handles both.
+  const promptDisabled = !onSend && running;
+
+  const handleSend = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!onContinue || !followUp.trim()) return;
-    onContinue(followUp.trim());
+    if (!promptHandler || !followUp.trim() || promptDisabled) return;
+    promptHandler(followUp.trim());
     setFollowUp("");
   };
 
@@ -68,23 +87,32 @@ export default function LiveRunPane({
         <InterruptPrompt pending={pendingInterrupt} onAnswer={onAnswerInterrupt} />
       )}
 
-      {onContinue &&
-        sessionId &&
-        !pendingInterrupt &&
-        status !== "running" &&
-        status !== "idle" && (
-          <form className="live-run-continue" onSubmit={handleContinue}>
-            <input
-              type="text"
-              value={followUp}
-              onChange={(e) => setFollowUp(e.target.value)}
-              placeholder="Continue the conversation…"
-            />
-            <button type="submit" disabled={!followUp.trim()}>
-              Send
-            </button>
-          </form>
-        )}
+      {awaitingInput && running && (
+        <div className="live-run-awaiting">● agent is idle — waiting for your input</div>
+      )}
+
+      {showPrompt && (
+        <form className="live-run-continue" onSubmit={handleSend}>
+          <input
+            type="text"
+            value={followUp}
+            onChange={(e) => setFollowUp(e.target.value)}
+            disabled={promptDisabled}
+            placeholder={
+              promptDisabled
+                ? "Wait for the turn to finish…"
+                : running
+                  ? awaitingInput
+                    ? "Type to continue the session…"
+                    : "Steer the running agent…"
+                  : "Continue the conversation…"
+            }
+          />
+          <button type="submit" disabled={!followUp.trim() || promptDisabled}>
+            Send
+          </button>
+        </form>
+      )}
     </div>
   );
 }

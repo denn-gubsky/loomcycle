@@ -25,6 +25,7 @@ export default function RunForm({
   const [denyAllHosts, setDenyAllHosts] = useState(false);
   const [webSearchFilter, setWebSearchFilter] = useState<"" | "drop" | "keep">("");
   const [metadataJSON, setMetadataJSON] = useState("");
+  const [interactive, setInteractive] = useState(false);
   const [formErr, setFormErr] = useState<string | null>(null);
 
   const handleSubmit = (e: React.FormEvent) => {
@@ -54,6 +55,7 @@ export default function RunForm({
       if (hosts.length > 0) req.allowed_hosts = hosts;
     }
     if (webSearchFilter) req.web_search_filter = webSearchFilter;
+    if (interactive) req.interactive = true;
     if (metadataJSON.trim()) {
       try {
         const parsed = JSON.parse(metadataJSON);
@@ -183,6 +185,19 @@ export default function RunForm({
           />
         </div>
       </details>
+
+      <div className="library-form-row library-form-row-checkbox">
+        <label>
+          <input
+            type="checkbox"
+            checked={interactive}
+            onChange={(e) => setInteractive(e.target.checked)}
+            disabled={submitting}
+          />{" "}
+          interactive session — stays alive for steering (pair with an
+          unbounded-iterations agent; Cancel to end)
+        </label>
+      </div>
 
       {formErr && <div className="modal-err">{formErr}</div>}
 
