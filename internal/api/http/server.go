@@ -2183,6 +2183,9 @@ func (s *Server) Mux() http.Handler {
 	// PR 2 / interactive terminal: inject an operator "steering" instruction
 	// into an in-flight run (appended to the live conversation mid-turn).
 	mux.Handle("POST /v1/runs/{run_id}/input", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleRunInput))))
+	// Re-attach to a running (or finished) run's event stream — the operator
+	// leaves the interactive /run terminal and returns to the same live run.
+	mux.Handle("GET /v1/runs/{run_id}/stream", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleRunStream))))
 	// v0.7.3 Web UI — embedded React SPA. The cookie-set landing
 	// page (/ui with a ?token= query) is intentionally NOT
 	// auth-middleware-wrapped; it sets the cookie that the
@@ -2868,12 +2871,29 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Derive the loop ctx with a cancel-cause function. The HTTP request
-	// ctx remains the parent so client-disconnect still tears down. We
-	// register the cancelFn under agent_id so an external cancel API
-	// call can fire it.
-	runCtx, cancelFn := context.WithCancelCause(r.Context())
-	defer cancelFn(nil) // ensure ctx leaks don't survive the handler
+	// Derive the loop ctx with a cancel-cause function. For a normal run the
+	// HTTP request ctx is the parent so client-disconnect tears the run down.
+	// For an INTERACTIVE run we detach with context.WithoutCancel: the run
+	// keeps the request's ctx VALUES (auth principal, tenant) but is NOT
+	// cancelled when the client navigates away — it parks and the operator
+	// re-attaches via GET /v1/runs/{run_id}/stream. cancelFn (registered under
+	// agent_id) is the only thing that stops it.
+	runParent := r.Context()
+	if req.Interactive {
+		runParent = context.WithoutCancel(r.Context())
+	}
+	runCtx, cancelFn := context.WithCancelCause(runParent)
+	// handOff flips true once an interactive run's background goroutine takes
+	// ownership of teardown (cancelFn / span / steer / cancel registry /
+	// finishRun). Until then — and always for non-interactive runs — the
+	// handler's defers own teardown. This prevents the handler returning on
+	// client-disconnect from tearing down a still-running detached run.
+	handOff := false
+	defer func() {
+		if !handOff {
+			cancelFn(nil) // ensure ctx leaks don't survive the handler
+		}
+	}()
 	// v0.10.0 OTEL: top-level loomcycle.run span covers the whole run.
 	runCtx, runSpan := lcotel.RecordRunStart(runCtx, lcotel.RunStartAttrs{
 		RunID:     runID,
@@ -2881,7 +2901,11 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		AgentName: req.Agent,
 		UserID:    req.UserID,
 	})
-	defer runSpan.End()
+	defer func() {
+		if !handOff {
+			runSpan.End()
+		}
+	}()
 	lcotel.RecordQueueWait(runSpan, queueWait)
 
 	regErr := s.cancelReg.Register(cancel.Entry{
@@ -2920,16 +2944,22 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, regErr.Error(), http.StatusInternalServerError)
 		return
 	}
-	defer s.cancelReg.Deregister(agentID)
+	defer func() {
+		if !handOff {
+			s.cancelReg.Deregister(agentID)
+		}
+	}()
 	s.publishRunState(meta, "running", "", "")
 
 	// If we're persisting, record the caller's input segments as the first
 	// event in the run. The loop never emits the caller's input itself, so
 	// without this the transcript would start with the assistant's first
-	// turn — and replay couldn't reconstruct the user prompt.
+	// turn — and replay couldn't reconstruct the user prompt. Persist under
+	// runCtx (not r.Context()) so an interactive run's prompt survives a
+	// client disconnect; for a normal run runCtx tracks the request anyway.
 	if s.store != nil && runID != "" {
 		if inputJSON, err := json.Marshal(req.Segments); err == nil {
-			if err := s.store.AppendEvent(r.Context(), runID, "user_input", inputJSON); err != nil {
+			if err := s.store.AppendEvent(runCtx, runID, "user_input", inputJSON); err != nil {
 				log.Printf("store: AppendEvent(user_input) failed: %v", err)
 			}
 		}
@@ -2937,7 +2967,7 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 	// v0.9.x: persist the resolved system prompt + provenance so the
 	// Web UI surfaces it as a card on the run timeline. Mirrors the
 	// emission in RunOnce + handleMessages + runSubAgent.
-	s.emitSystemPromptEvent(r.Context(), runID, agentDef.SystemPrompt, "", promptProv)
+	s.emitSystemPromptEvent(runCtx, runID, agentDef.SystemPrompt, "", promptProv)
 
 	stream, ok := newSSE(w)
 	if !ok {
@@ -2974,11 +3004,27 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		"parent_context":  req.ParentContext, // v0.12.x: opaque tracking lineage (nil when absent)
 	})
 
-	emit := s.makeRecordingEmit(r.Context(), runID, stream.send)
+	// For an interactive (detached) run the loop runs in a background
+	// goroutine that OUTLIVES this handler — and net/http forbids writing to
+	// the ResponseWriter after the handler returns. So the loop must NOT push
+	// to the live stream; it only persists. The handler (and any re-attach)
+	// streams by tailing the store. For a normal run, forward live as before.
+	streamFwd := stream.send
+	if req.Interactive {
+		streamFwd = func(providers.Event) {}
+	}
+	// Persist under runCtx so events survive a client disconnect on an
+	// interactive run (runCtx tracks the request for a normal run).
+	emit := s.makeRecordingEmit(runCtx, runID, streamFwd)
 
 	// PR 2: operator steering queue for this run (in-flight input injection).
-	steerQ, onSteer, deregSteer := s.makeSteer(r.Context(), runID, agentID, sessionID, req.UserID, emit)
-	defer deregSteer()
+	steerQ, onSteer, deregSteer := s.makeSteer(runCtx, runID, agentID, sessionID, req.UserID, emit)
+	deferDeregSteer := func() {
+		if !handOff {
+			deregSteer()
+		}
+	}
+	defer deferDeregSteer()
 
 	// Pass the agent's effective tool names to the dispatcher so tools
 	// that need a runtime view of "what this agent can use" (e.g. the
@@ -3024,7 +3070,7 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 	heartbeat := s.makeHeartbeat(runID)
 
 	fbPolicy, fbReResolve := s.fallbackForRun(req.TenantID, req.Agent, req.UserTier)
-	loopRes, runErr := loop.Run(loopCtx, loop.RunOptions{
+	runOpts := loop.RunOptions{
 		Provider:               provider,
 		Model:                  model,
 		Tools:                  allowedTools,
@@ -3052,7 +3098,39 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		ReResolve:              fbReResolve,
 		Hooks:                  s.hookDispatcher,
 		MaxSameProviderRetries: s.retryAttemptsForAgent(agentDef, req.UserTier),
-	})
+	}
+
+	if req.Interactive && s.store != nil {
+		// Detached run: execute the loop in a background goroutine that
+		// OUTLIVES this handler, so navigating away (client disconnect) no
+		// longer kills the run — it parks and the operator re-attaches via
+		// GET /v1/runs/{run_id}/stream. The goroutine owns teardown (handOff
+		// neutralises the handler's defers); the handler streams by tailing
+		// the store (it must NOT use the loop's emit→stream path, because
+		// net/http forbids writing to the ResponseWriter after the handler
+		// returns). Returning here does NOT cancel the run.
+		handOff = true
+		go func() {
+			loopRes, runErr := loop.Run(loopCtx, runOpts)
+			if runErr != nil {
+				// Persist (not stream) the failure so a tailing client sees it.
+				emit(providers.Event{Type: providers.EventError, Error: runErr.Error()})
+			}
+			// WithoutCancel: the store write must not ride a runCtx that an
+			// API-cancel already cancelled (the cause is still read from runCtx).
+			s.finishRunWithCancel(context.WithoutCancel(runCtx), runCtx, runID, loopRes, runErr, meta)
+			deregSteer()
+			s.cancelReg.Deregister(agentID)
+			runSpan.End()
+			cancelFn(nil)
+		}()
+		// Tail the store to this client until they disconnect (r.Context()) or
+		// the run terminates. from_seq=0 → stream the whole run live.
+		s.streamRunEvents(r.Context(), stream, runID, 0)
+		return
+	}
+
+	loopRes, runErr := loop.Run(loopCtx, runOpts)
 	if runErr != nil {
 		stream.send(providers.Event{Type: providers.EventError, Error: runErr.Error()})
 	}

@@ -75,6 +75,7 @@ func Run(t *testing.T, factory Factory) {
 		{"CreateRunOnUnknownSession", testCreateRunOnUnknownSession},
 		{"FinishRunIdempotent", testFinishRunIdempotent},
 		{"GetTranscriptEmpty", testGetTranscriptEmpty},
+		{"GetRunEventsSince", testGetRunEventsSince},
 		{"CreateSessionUserIDRoundTrip", testCreateSessionUserIDRoundTrip},
 		{"CreateRunIdentityRoundTrip", testCreateRunIdentityRoundTrip},
 		{"CreateRunParentContextRoundTrip", testCreateRunParentContextRoundTrip},
@@ -394,6 +395,68 @@ func testRunLifecycle(t *testing.T, s store.Store) {
 		if transcript[i].Seq <= transcript[i-1].Seq {
 			t.Errorf("seq not ascending at %d: %d -> %d", i, transcript[i-1].Seq, transcript[i].Seq)
 		}
+	}
+}
+
+func testGetRunEventsSince(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	sess, _ := s.CreateSession(ctx, "t", "default", "")
+	run, err := s.CreateRun(ctx, sess.ID, store.RunIdentity{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, typ := range []string{"started", "text", "tool_call", "tool_result", "done"} {
+		if err := s.AppendEvent(ctx, run.ID, typ, []byte(`{"type":"`+typ+`"}`)); err != nil {
+			t.Fatalf("AppendEvent[%d]: %v", i, err)
+		}
+	}
+
+	// from 0 → all events, ascending by seq.
+	all, err := s.GetRunEventsSince(ctx, run.ID, 0, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(all) != 5 {
+		t.Fatalf("GetRunEventsSince(0) len = %d, want 5", len(all))
+	}
+	for i := 1; i < len(all); i++ {
+		if all[i].Seq <= all[i-1].Seq {
+			t.Errorf("seq not ascending at %d: %d -> %d", i, all[i-1].Seq, all[i].Seq)
+		}
+		if all[i].RunID != run.ID {
+			t.Errorf("event %d run_id = %q, want %q", i, all[i].RunID, run.ID)
+		}
+	}
+
+	// from a mid cursor → only newer events (the tail's incremental read).
+	cursor := all[1].Seq
+	tail, err := s.GetRunEventsSince(ctx, run.ID, cursor, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tail) != 3 {
+		t.Fatalf("GetRunEventsSince(seq=%d) len = %d, want 3", cursor, len(tail))
+	}
+	if tail[0].Seq <= cursor {
+		t.Errorf("first tail seq %d not > cursor %d", tail[0].Seq, cursor)
+	}
+
+	// limit caps the page.
+	capped, err := s.GetRunEventsSince(ctx, run.ID, 0, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(capped) != 2 {
+		t.Errorf("GetRunEventsSince(limit=2) len = %d, want 2", len(capped))
+	}
+
+	// caught up → empty (not error).
+	none, err := s.GetRunEventsSince(ctx, run.ID, all[len(all)-1].Seq, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(none) != 0 {
+		t.Errorf("GetRunEventsSince past tail len = %d, want 0", len(none))
 	}
 }
 

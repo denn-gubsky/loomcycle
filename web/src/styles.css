@@ -694,6 +694,21 @@ pre {
 .cancel-btn:disabled {
   opacity: 0.6;
 }
+.resume-btn {
+  background: var(--accent);
+  color: white;
+  border: none;
+  border-radius: 3px;
+  padding: 4px 10px;
+  cursor: pointer;
+  margin-left: 8px;
+  font-size: 12px;
+  text-decoration: none;
+  white-space: nowrap;
+}
+.resume-btn:hover {
+  filter: brightness(1.1);
+}
 .agent-err {
   margin-top: 8px;
   padding: 6px 10px;

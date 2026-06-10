@@ -1137,6 +1137,36 @@ func (s *Store) GetTranscript(ctx context.Context, sessionID string) ([]store.Ev
 	return out, rows.Err()
 }
 
+// GetRunEventsSince returns a run's events with seq > afterSeq, ordered by seq
+// ascending, capped at limit. Incremental run-scoped read for the interactive
+// SSE tail — indexed on events.run_id like GetLastEventForRun.
+func (s *Store) GetRunEventsSince(ctx context.Context, runID string, afterSeq int64, limit int) ([]store.Event, error) {
+	if limit <= 0 {
+		limit = 500
+	}
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT seq, session_id, run_id, ts, type, payload
+		 FROM events WHERE run_id = ? AND seq > ? ORDER BY seq ASC LIMIT ?`,
+		runID, afterSeq, limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []store.Event
+	for rows.Next() {
+		var ev store.Event
+		var ts int64
+		if err := rows.Scan(&ev.Seq, &ev.SessionID, &ev.RunID, &ts, &ev.Type, &ev.Payload); err != nil {
+			return nil, err
+		}
+		ev.Timestamp = time.Unix(0, ts)
+		out = append(out, ev)
+	}
+	return out, rows.Err()
+}
+
 // GetLastEventForRun returns the latest event by seq for the given
 // run. Indexed by events.run_id under the existing schema; the
 // composite (session_id, seq) index doesn't cover this query, but
