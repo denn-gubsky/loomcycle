@@ -811,6 +811,10 @@ type mergedDef struct {
 	// whose workflow is intrinsically iterative — same knob the
 	// yaml frontmatter exposes via PR #168's `max_iterations` field.
 	MaxIterations int `json:"max_iterations,omitempty"`
+	// UnboundedIterations lifts the MaxIterations soft-cap for an LLM agent
+	// (interactive / terminal runs; the 1<<20 backstop still applies).
+	// Mirrors config.AgentDef.UnboundedIterations.
+	UnboundedIterations bool `json:"unbounded_iterations,omitempty"`
 	// MaxConcurrentChildren caps how many sub-agents this agent may
 	// spawn in parallel via Agent.parallel_spawn (v0.11.8+). Zero =
 	// use the runtime default (DefaultMaxConcurrentChildren = 4).
@@ -882,6 +886,12 @@ func (d *mergedDef) applyOverlay(ov mergedDef) {
 	}
 	if ov.MaxIterations != 0 {
 		d.MaxIterations = ov.MaxIterations
+	}
+	// Bool overlay: a fork can ENABLE unbounded iterations; omitting the
+	// field inherits the parent's value (a fork can't flip it back to false —
+	// author a new def for that, same limitation as other bool overlays).
+	if ov.UnboundedIterations {
+		d.UnboundedIterations = true
 	}
 	if ov.MaxConcurrentChildren != 0 {
 		d.MaxConcurrentChildren = ov.MaxConcurrentChildren
@@ -968,6 +978,7 @@ func staticToMergedDef(s config.AgentDef) mergedDef {
 		Effort:                s.Effort,
 		MaxTokens:             s.MaxTokens,
 		MaxIterations:         s.MaxIterations,
+		UnboundedIterations:   s.UnboundedIterations,
 		MaxConcurrentChildren: s.MaxConcurrentChildren,
 		RunTimeoutSeconds:     s.RunTimeoutSeconds,
 		SystemPrompt:          s.SystemPrompt,
@@ -1047,6 +1058,7 @@ func signFromMergedDef(name string, def mergedDef) string {
 		Effort:                def.Effort,
 		MaxTokens:             def.MaxTokens,
 		MaxIterations:         def.MaxIterations,
+		UnboundedIterations:   def.UnboundedIterations,
 		MaxConcurrentChildren: def.MaxConcurrentChildren,
 		AllowedTools:          def.AllowedTools,
 		Skills:                def.Skills,

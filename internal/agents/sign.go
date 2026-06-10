@@ -120,6 +120,10 @@ type AgentContent struct {
 	Skills                []string                   `json:"skills,omitempty"`
 	SystemPrompt          string                     `json:"system_prompt,omitempty"`
 	Tier                  string                     `json:"tier,omitempty"`
+	// UnboundedIterations is content-identifying (like MaxIterations): a fork
+	// that only flips it must get a distinct content_sha256, not silently
+	// dedup (cf. F14). omitempty keeps pre-existing rows byte-identical.
+	UnboundedIterations bool `json:"unbounded_iterations,omitempty"`
 }
 
 // Sign returns "sha256:" + the lowercase-hex SHA-256 of the canonical

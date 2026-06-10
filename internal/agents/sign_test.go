@@ -19,6 +19,23 @@ func TestSign_PrefixedHex(t *testing.T) {
 	}
 }
 
+// UnboundedIterations is content-identifying: two agents differing only in it
+// must hash differently (F14-class — else a fork toggling it silently dedups),
+// and an unset (false) flag must hash identically to an agent without it
+// (omitempty keeps pre-existing rows byte-identical → no re-backfill).
+func TestSign_UnboundedIterations_IsContentIdentifying(t *testing.T) {
+	base := AgentContent{Name: "term-agent", SystemPrompt: "interactive"}
+	withFlag := base
+	withFlag.UnboundedIterations = true
+
+	if Sign(base) == Sign(withFlag) {
+		t.Error("UnboundedIterations not content-identifying: enabling it did not change the hash")
+	}
+	if got, want := Sign(base), Sign(AgentContent{Name: "term-agent", SystemPrompt: "interactive", UnboundedIterations: false}); got != want {
+		t.Errorf("unset UnboundedIterations changed the hash (omitempty broken): %s vs %s", got, want)
+	}
+}
+
 func TestSign_DeterministicAcrossCalls(t *testing.T) {
 	c := AgentContent{
 		Name:         "researcher",
