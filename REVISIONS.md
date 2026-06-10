@@ -8,6 +8,66 @@ For pre-v0.4 history (single-tool runtime, library milestone, security patch), s
 
 ---
 
+## What's in v0.25.1
+
+**Headline: a patch release — scheduler fan-in correctness (F37 / RFC T) +
+a Web UI catch-up to the v0.25.0 primitives.** Both changes are
+runtime-internal or frontend-only: **no wire-protocol change, no
+`@loomcycle/client` bump.**
+
+### F37 — `on_complete: channel.publish` now honors the channel's declared scope
+
+The scheduler's `on_complete: channel.publish` hook published every message
+under the **run's user scope** (`scope=user, scope_id=<user_id>`) regardless
+of how the target channel was declared. A hook publishing to a `scope: global`
+channel therefore landed in `user/<user_id>` instead of `global/""` — and a
+global reader (the admin `peek`, or a `Channel.await` / `subscribe` resolving
+the channel as global) saw **zero** messages. Silent: no error, the rows
+simply sat at a scope nothing read.
+
+Surfaced running a scheduler-driven fan-in experiment on v0.25.0: five
+collector schedules' hooks pinged the global fan-in channel, but the
+consolidator's `Channel.await {mode: at_least, n: 5}` returned
+`{satisfied: false, timed_out: true, total_messages: 0}` while the rows sat
+under `user/<id>`.
+
+**Fix.** `dispatchChannelPublish` now resolves the channel's **declared**
+scope through the same static-yaml + runtime-substrate merge the Channel tool
+uses (factored into a shared `mergedChannelDefs` / `ResolveChannelScope`, the
+single source of truth) and publishes under it: `global → scope_id=""`,
+`user → run user_id`, `agent → agent name`. An **undeclared** channel fails
+the hook loudly (logged) rather than silently mis-scoping. With no resolver
+wired (small embeds) the legacy user-scope behavior is preserved. `memory.set`
+was already correct — it takes an explicit operator-specified scope rather
+than deriving one. With this fix a scheduler→channel fan-in can use the
+natural `scope: global` instead of needing a `scope: user` workaround.
+
+Regression tests use a real store + the real sweeper tick: a global-channel
+hook lands at `global/""` (and **not** `user/<id>`), with `user` / `agent` /
+undeclared / nil-resolver back-compat cases, plus a `ResolveChannelScope`
+unit covering static / runtime / yaml-precedence / undeclared.
+
+### Web UI catch-up
+
+The console gained the surfaces it was missing after v0.25.0:
+
+- **Collapsible left-sidebar navigation** — navigation moved off the
+  horizontal top tab strip into a left sidebar (lucide icons; collapsed =
+  icons only, expanded = icons + labels; choice persisted). The top bar keeps
+  the operational controls (pause, role badge, tenant switcher, user picker).
+  Per-role gating is unchanged.
+- **Schedule `max_fires`** — an optional input on the create + fork forms
+  (blank ≠ 0: create → unbounded, fork → inherit the template) and a
+  read-only field in the detail pane (0 → "unbounded").
+- **Channel broadcast + await** — `BroadcastForm` (fan-out: one payload to a
+  set of channels) and `AwaitForm` (fan-in: a bounded long-poll until
+  any / all / at_least N fire) beside the existing publish form, seeded with
+  the selected channel.
+
+The SPA ships its own `web/src/api.ts` client, so this is frontend-only.
+
+---
+
 ## What's in v0.25.0
 
 **Headline: the agentic-ensemble release — a full manual-management Web UI
