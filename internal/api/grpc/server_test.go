@@ -871,6 +871,32 @@ func (m *mockConnector) PurgeChannel(context.Context, string) (connector.Channel
 	return connector.ChannelPurgeResult{}, nil
 }
 
+// RFC S client twins. Canned representative results so the gRPC mapping
+// tests can assert the pb round-trip (map + slice shapes).
+func (m *mockConnector) AwaitChannels(context.Context, connector.ChannelAwaitRequest) (connector.ChannelAwaitResult, error) {
+	return connector.ChannelAwaitResult{
+		Satisfied:     true,
+		Mode:          "any",
+		Fired:         []string{"c1"},
+		TotalMessages: 1,
+		Results: map[string]connector.ChannelAwaitEntry{
+			"c1": {
+				Messages:   []connector.ChannelMessage{{ID: "m1", Value: []byte(`{"x":1}`), PublishedAt: "2026-01-01T00:00:00Z"}},
+				NextCursor: "m1",
+			},
+		},
+	}, nil
+}
+func (m *mockConnector) BroadcastChannels(context.Context, connector.ChannelBroadcastRequest) (connector.ChannelBroadcastResult, error) {
+	return connector.ChannelBroadcastResult{
+		Published: 2,
+		Results: []connector.ChannelBroadcastEntry{
+			{Channel: "c1", MsgID: "m1"},
+			{Channel: "c2", MsgID: "m2"},
+		},
+	}, nil
+}
+
 // TestGrpcServer_CancelAgent_DispatchesThroughConnector is the v0.8.15
 // regression guard: when the gRPC Server is wired with a Connector,
 // CancelAgent dispatches through s.connector.CancelRun rather than the

@@ -145,3 +145,79 @@ func (s *Server) AckChannel(ctx context.Context, req *loomcyclepb.AckChannelRequ
 	}
 	return &loomcyclepb.AckChannelResponse{Ok: resp.OK}, nil
 }
+
+// AwaitChannels — mirrors POST /v1/_channels/_await. Fan-in barrier across
+// the channel set; non-committing. A timeout is NOT an error (the response
+// carries timed_out=true) — only a malformed request / store fault errors.
+func (s *Server) AwaitChannels(ctx context.Context, req *loomcyclepb.AwaitChannelsRequest) (*loomcyclepb.AwaitChannelsResponse, error) {
+	if s.connector == nil {
+		return nil, status.Error(codes.Unavailable, "connector not wired")
+	}
+	resp, err := s.connector.AwaitChannels(ctx, connector.ChannelAwaitRequest{
+		Channels:    req.GetChannels(),
+		Scope:       req.GetScope(),
+		ScopeID:     req.GetScopeId(),
+		Mode:        req.GetMode(),
+		N:           int(req.GetN()),
+		FromCursor:  req.GetFromCursor(),
+		MaxMessages: int(req.GetMaxMessages()),
+		WaitMS:      int(req.GetWaitMs()),
+	})
+	if err != nil {
+		return nil, channelErrCode(err)
+	}
+	results := make(map[string]*loomcyclepb.AwaitChannelEntry, len(resp.Results))
+	for name, entry := range resp.Results {
+		msgs := make([]*loomcyclepb.ChannelMessage, 0, len(entry.Messages))
+		for _, m := range entry.Messages {
+			msgs = append(msgs, &loomcyclepb.ChannelMessage{
+				Id:          m.ID,
+				Value:       m.Value,
+				PublishedAt: m.PublishedAt,
+			})
+		}
+		results[name] = &loomcyclepb.AwaitChannelEntry{Messages: msgs, NextCursor: entry.NextCursor}
+	}
+	return &loomcyclepb.AwaitChannelsResponse{
+		Satisfied:     resp.Satisfied,
+		TimedOut:      resp.TimedOut,
+		Mode:          resp.Mode,
+		Fired:         resp.Fired,
+		TotalMessages: int32(resp.TotalMessages),
+		Results:       results,
+	}, nil
+}
+
+// BroadcastChannels — mirrors POST /v1/_channels/_broadcast. Fan-out of one
+// payload to the channel set; atomic at the declare pre-flight (an
+// undeclared channel returns NotFound with nothing published).
+func (s *Server) BroadcastChannels(ctx context.Context, req *loomcyclepb.BroadcastChannelsRequest) (*loomcyclepb.BroadcastChannelsResponse, error) {
+	if s.connector == nil {
+		return nil, status.Error(codes.Unavailable, "connector not wired")
+	}
+	resp, err := s.connector.BroadcastChannels(ctx, connector.ChannelBroadcastRequest{
+		Channels:  req.GetChannels(),
+		Scope:     req.GetScope(),
+		ScopeID:   req.GetScopeId(),
+		Payload:   req.GetPayload(),
+		DeliverAt: req.GetDeliverAt(),
+	})
+	if err != nil {
+		return nil, channelErrCode(err)
+	}
+	out := &loomcyclepb.BroadcastChannelsResponse{
+		Published: int32(resp.Published),
+		Failed:    int32(resp.Failed),
+		Results:   make([]*loomcyclepb.BroadcastChannelEntry, 0, len(resp.Results)),
+	}
+	for _, e := range resp.Results {
+		out.Results = append(out.Results, &loomcyclepb.BroadcastChannelEntry{
+			Channel:   e.Channel,
+			MsgId:     e.MsgID,
+			CreatedAt: e.CreatedAt,
+			VisibleAt: e.VisibleAt,
+			Error:     e.Error,
+		})
+	}
+	return out, nil
+}

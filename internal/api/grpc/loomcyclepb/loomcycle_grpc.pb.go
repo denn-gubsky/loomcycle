@@ -73,6 +73,8 @@ const (
 	Loomcycle_SubscribeChannel_FullMethodName    = "/loomcycle.v1.Loomcycle/SubscribeChannel"
 	Loomcycle_PeekChannel_FullMethodName         = "/loomcycle.v1.Loomcycle/PeekChannel"
 	Loomcycle_AckChannel_FullMethodName          = "/loomcycle.v1.Loomcycle/AckChannel"
+	Loomcycle_AwaitChannels_FullMethodName       = "/loomcycle.v1.Loomcycle/AwaitChannels"
+	Loomcycle_BroadcastChannels_FullMethodName   = "/loomcycle.v1.Loomcycle/BroadcastChannels"
 )
 
 // LoomcycleClient is the client API for Loomcycle service.
@@ -274,6 +276,14 @@ type LoomcycleClient interface {
 	SubscribeChannel(ctx context.Context, in *SubscribeChannelRequest, opts ...grpc.CallOption) (*SubscribeChannelResponse, error)
 	PeekChannel(ctx context.Context, in *PeekChannelRequest, opts ...grpc.CallOption) (*PeekChannelResponse, error)
 	AckChannel(ctx context.Context, in *AckChannelRequest, opts ...grpc.CallOption) (*AckChannelResponse, error)
+	// RFC S client twins (mirror POST /v1/_channels/_await and
+	// /v1/_channels/_broadcast). AwaitChannels fans IN across a set of
+	// channels (any/all/at_least N, or a timeout — a timeout is
+	// satisfied=false / timed_out=true, NOT an error); BroadcastChannels
+	// fans OUT one payload to a set of channels (atomic at the declare
+	// pre-flight). Scope + scope_id apply to every channel in the set.
+	AwaitChannels(ctx context.Context, in *AwaitChannelsRequest, opts ...grpc.CallOption) (*AwaitChannelsResponse, error)
+	BroadcastChannels(ctx context.Context, in *BroadcastChannelsRequest, opts ...grpc.CallOption) (*BroadcastChannelsResponse, error)
 }
 
 type loomcycleClient struct {
@@ -661,6 +671,26 @@ func (c *loomcycleClient) AckChannel(ctx context.Context, in *AckChannelRequest,
 	return out, nil
 }
 
+func (c *loomcycleClient) AwaitChannels(ctx context.Context, in *AwaitChannelsRequest, opts ...grpc.CallOption) (*AwaitChannelsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(AwaitChannelsResponse)
+	err := c.cc.Invoke(ctx, Loomcycle_AwaitChannels_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *loomcycleClient) BroadcastChannels(ctx context.Context, in *BroadcastChannelsRequest, opts ...grpc.CallOption) (*BroadcastChannelsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(BroadcastChannelsResponse)
+	err := c.cc.Invoke(ctx, Loomcycle_BroadcastChannels_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // LoomcycleServer is the server API for Loomcycle service.
 // All implementations must embed UnimplementedLoomcycleServer
 // for forward compatibility.
@@ -860,6 +890,14 @@ type LoomcycleServer interface {
 	SubscribeChannel(context.Context, *SubscribeChannelRequest) (*SubscribeChannelResponse, error)
 	PeekChannel(context.Context, *PeekChannelRequest) (*PeekChannelResponse, error)
 	AckChannel(context.Context, *AckChannelRequest) (*AckChannelResponse, error)
+	// RFC S client twins (mirror POST /v1/_channels/_await and
+	// /v1/_channels/_broadcast). AwaitChannels fans IN across a set of
+	// channels (any/all/at_least N, or a timeout — a timeout is
+	// satisfied=false / timed_out=true, NOT an error); BroadcastChannels
+	// fans OUT one payload to a set of channels (atomic at the declare
+	// pre-flight). Scope + scope_id apply to every channel in the set.
+	AwaitChannels(context.Context, *AwaitChannelsRequest) (*AwaitChannelsResponse, error)
+	BroadcastChannels(context.Context, *BroadcastChannelsRequest) (*BroadcastChannelsResponse, error)
 	mustEmbedUnimplementedLoomcycleServer()
 }
 
@@ -974,6 +1012,12 @@ func (UnimplementedLoomcycleServer) PeekChannel(context.Context, *PeekChannelReq
 }
 func (UnimplementedLoomcycleServer) AckChannel(context.Context, *AckChannelRequest) (*AckChannelResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method AckChannel not implemented")
+}
+func (UnimplementedLoomcycleServer) AwaitChannels(context.Context, *AwaitChannelsRequest) (*AwaitChannelsResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method AwaitChannels not implemented")
+}
+func (UnimplementedLoomcycleServer) BroadcastChannels(context.Context, *BroadcastChannelsRequest) (*BroadcastChannelsResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method BroadcastChannels not implemented")
 }
 func (UnimplementedLoomcycleServer) mustEmbedUnimplementedLoomcycleServer() {}
 func (UnimplementedLoomcycleServer) testEmbeddedByValue()                   {}
@@ -1605,6 +1649,42 @@ func _Loomcycle_AckChannel_Handler(srv interface{}, ctx context.Context, dec fun
 	return interceptor(ctx, in, info, handler)
 }
 
+func _Loomcycle_AwaitChannels_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(AwaitChannelsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(LoomcycleServer).AwaitChannels(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Loomcycle_AwaitChannels_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(LoomcycleServer).AwaitChannels(ctx, req.(*AwaitChannelsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Loomcycle_BroadcastChannels_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(BroadcastChannelsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(LoomcycleServer).BroadcastChannels(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Loomcycle_BroadcastChannels_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(LoomcycleServer).BroadcastChannels(ctx, req.(*BroadcastChannelsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // Loomcycle_ServiceDesc is the grpc.ServiceDesc for Loomcycle service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -1739,6 +1819,14 @@ var Loomcycle_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "AckChannel",
 			Handler:    _Loomcycle_AckChannel_Handler,
+		},
+		{
+			MethodName: "AwaitChannels",
+			Handler:    _Loomcycle_AwaitChannels_Handler,
+		},
+		{
+			MethodName: "BroadcastChannels",
+			Handler:    _Loomcycle_BroadcastChannels_Handler,
 		},
 	},
 	Streams: []grpc.StreamDesc{
