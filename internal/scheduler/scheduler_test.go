@@ -226,6 +226,36 @@ func TestScheduler_MaxFiresNotReachedKeepsActive(t *testing.T) {
 	}
 }
 
+// F38 — a fire that fails AGENT RESOLUTION (unknown agent) is a config error,
+// not a real fire: it must NOT count toward max_fires, else a misconfigured
+// schedule silently retires after N identical failures, masking the misconfig
+// as N normal runs. Fail-before: CountAsFire was hardcoded true, so fire_count
+// reaches 1 and the max_fires=1 def retires.
+func TestScheduler_MaxFiresNotBurnedOnUnknownAgent(t *testing.T) {
+	enabled := true
+	def := scheduleDef{Agent: "ghost-agent", Schedule: "0 * * * *", Enabled: &enabled, MaxFires: 1}
+	sched, fr, _, defID, st := schedulerFixture(t, def, time.Now().Add(-1*time.Minute))
+	fr.runErr = runner.ErrUnknownAgent
+	ctx := context.Background()
+
+	fireT(t, sched)
+
+	if got := len(fr.Calls()); got != 1 {
+		t.Fatalf("RunOnce calls = %d, want 1 (the fire was attempted)", got)
+	}
+	state, _ := st.ScheduleRunStateGet(ctx, defID)
+	if state.FireCount != 0 {
+		t.Errorf("fire_count = %d, want 0 (an unknown-agent fire must not count toward max_fires)", state.FireCount)
+	}
+	row, err := st.ScheduleDefGet(ctx, defID)
+	if err != nil {
+		t.Fatalf("def get: %v", err)
+	}
+	if row.Retired {
+		t.Fatalf("def retired after an unknown-agent failure — max_fires must not have been reached")
+	}
+}
+
 func TestScheduler_RecordsCompletion(t *testing.T) {
 	enabled := true
 	def := scheduleDef{Agent: "researcher", Schedule: "0 * * * *", Enabled: &enabled}
