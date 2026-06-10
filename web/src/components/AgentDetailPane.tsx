@@ -169,6 +169,13 @@ export default function AgentDetailPane({ agentId, ancestors, onSelect }: AgentD
                 {cancelInFlight ? "cancelling…" : "cancel"}
               </button>
             )}
+            {agent.status === "running" && agent.run_id && (
+              // Re-attach to a live (notably interactive/parked) run in the
+              // terminal — the run kept executing after you navigated away.
+              <Link className="resume-btn" to={`/run?attach=${encodeURIComponent(agent.run_id)}`}>
+                resume in terminal
+              </Link>
+            )}
           </div>
           {agent.status === "running" && (
             <div className="line-await">

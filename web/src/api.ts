@@ -1583,6 +1583,39 @@ async function streamSSE(
   await pumpSSE(resp.body, h.onFrame);
 }
 
+// streamRunByID RE-ATTACHES to a running (or finished) run's event stream via
+// GET /v1/runs/{run_id}/stream — the operator left the interactive terminal
+// and returned to the same live run. Replays from fromSeq (0 = whole run) then
+// live-tails until the run terminates or the reader is aborted. Same frame
+// shape as the POST /v1/runs stream, so the caller's onFrame is unchanged.
+export async function streamRunByID(
+  runID: string,
+  fromSeq: number,
+  h: RunStreamHandlers,
+): Promise<void> {
+  const q = fromSeq > 0 ? `?from_seq=${fromSeq}` : "";
+  const resp = await fetch(
+    `${baseURL}/v1/runs/${encodeURIComponent(runID)}/stream${q}`,
+    {
+      method: "GET",
+      credentials: "same-origin",
+      signal: h.signal,
+      headers: { Accept: "text/event-stream" },
+    },
+  );
+  if (!resp.ok) {
+    if (redirectToLoginOn401(resp.status)) {
+      return new Promise<void>(() => {});
+    }
+    const text = await resp.text();
+    throw new Error(`${resp.status} ${resp.statusText}: ${text.slice(0, 200)}`);
+  }
+  if (!resp.body) {
+    throw new Error("stream response had no body");
+  }
+  await pumpSSE(resp.body, h.onFrame);
+}
+
 // pumpSSE drains a text/event-stream ReadableStream, parsing frames and
 // invoking onFrame for each non-comment frame. Shared by streamSSE (POST)
 // and streamRunStates (GET).

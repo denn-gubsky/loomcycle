@@ -1,4 +1,5 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { listLibraryAgents, type StartRunRequest } from "../api";
 import { useUserId } from "../components/Layout";
 import { useRunStream } from "../hooks/useRunStream";
@@ -98,6 +99,22 @@ function SingleRunTab({
   defaultUserId: string;
 }) {
   const run = useRunStream();
+  const [searchParams, setSearchParams] = useSearchParams();
+  // `?attach=<run_id>` re-attaches to a detached interactive run (the operator
+  // returned from the runs list). Attach once on mount, then drop the param so
+  // a manual reset/new-run isn't re-hijacked by a stale URL.
+  const attachRunId = searchParams.get("attach");
+  const attachedRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (attachRunId && attachedRef.current !== attachRunId) {
+      attachedRef.current = attachRunId;
+      run.attach(attachRunId);
+      const next = new URLSearchParams(searchParams);
+      next.delete("attach");
+      setSearchParams(next, { replace: true });
+    }
+  }, [attachRunId, run, searchParams, setSearchParams]);
+
   return (
     <div className="run-view-body">
       <div className="run-view-form-col">

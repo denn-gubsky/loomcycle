@@ -446,6 +446,41 @@ func (s *Store) GetTranscript(ctx context.Context, sessionID string) ([]store.Ev
 	return out, nil
 }
 
+// GetRunEventsSince returns a run's events with seq > afterSeq, ordered by seq
+// ascending, capped at limit. Incremental run-scoped read for the interactive
+// SSE tail. Index hint: events_by_run_seq (run_id, seq) from migration 0015.
+func (s *Store) GetRunEventsSince(ctx context.Context, runID string, afterSeq int64, limit int) ([]store.Event, error) {
+	if limit <= 0 {
+		limit = 500
+	}
+	rows, err := s.pool.Query(ctx,
+		`SELECT seq, session_id, run_id, ts, type, payload
+		 FROM events WHERE run_id = $1 AND seq > $2 ORDER BY seq ASC LIMIT $3`,
+		runID, afterSeq, limit,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("query run events: %w", err)
+	}
+	defer rows.Close()
+
+	out := []store.Event{}
+	for rows.Next() {
+		var (
+			ev store.Event
+			ts time.Time
+		)
+		if err := rows.Scan(&ev.Seq, &ev.SessionID, &ev.RunID, &ts, &ev.Type, &ev.Payload); err != nil {
+			return nil, fmt.Errorf("scan run event: %w", err)
+		}
+		ev.Timestamp = ts
+		out = append(out, ev)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iter run events: %w", err)
+	}
+	return out, nil
+}
+
 // GetLastEventForRun returns the latest event by seq for the given
 // run. Index hint: events_by_run_seq (added in migration 0015).
 func (s *Store) GetLastEventForRun(ctx context.Context, runID string) (store.Event, error) {

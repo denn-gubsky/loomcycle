@@ -492,6 +492,14 @@ type Store interface {
 	// Returns an empty slice (not error) for a session with no runs yet.
 	GetTranscript(ctx context.Context, sessionID string) ([]Event, error)
 
+	// GetRunEventsSince returns a run's events with Seq > afterSeq, ordered by
+	// Seq ascending, capped at limit (<=0 means a sane default). Run-scoped
+	// (not session-scoped) and incremental, so the interactive-run SSE tail
+	// (GET /v1/runs/{run_id}/stream) can poll cheaply without re-reading the
+	// whole session transcript each tick. Returns an empty slice (not error)
+	// when nothing is newer than afterSeq.
+	GetRunEventsSince(ctx context.Context, runID string, afterSeq int64, limit int) ([]Event, error)
+
 	// ListEvents returns events across all sessions matching the
 	// filter, ordered by ts DESC (newest first). Used by the v0.8.21
 	// /v1/_events audit endpoint. Returns the rows AND the total

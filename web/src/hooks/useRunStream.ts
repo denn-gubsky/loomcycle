@@ -5,6 +5,7 @@ import {
   resolveInterrupt,
   sendRunInput,
   startRun,
+  streamRunByID,
   sseEventToTranscript,
   type EventPayload,
   type StartRunRequest,
@@ -57,6 +58,11 @@ export interface UseRunStream {
   // end_turn waiting for the operator's next instruction (the agent is idle).
   awaitingInput: boolean;
   start: (req: StartRunRequest) => void;
+  // attach RE-CONNECTS to an already-running (or finished) run by id —
+  // the operator returns to a detached interactive run from the runs list.
+  // Replays the run's transcript then live-tails; the terminal prompt /
+  // steering / cancel all work against the re-attached run.
+  attach: (runId: string) => void;
   sendMessage: (prompt: string) => void;
   // send routes by state: while the run is running it STEERS the live run
   // (POST /input — also resumes a parked interactive run); otherwise it
@@ -194,6 +200,31 @@ export function useRunStream(): UseRunStream {
     [onFrame, runStream],
   );
 
+  const attach = useCallback(
+    (rid: string) => {
+      if (!rid) return;
+      ctrlRef.current?.abort();
+      const ctrl = new AbortController();
+      ctrlRef.current = ctrl;
+      // Replay from seq 0: the re-attach stream carries the whole run, so the
+      // returning operator sees the full scrollback then live updates. (The
+      // run's own user_input/system_prompt rows aren't on the tail; for a
+      // detached interactive run the agent's turns are what matter live.)
+      seqRef.current = 0;
+      setEvents([]);
+      setAgentId("");
+      setSessionId("");
+      setRunId(rid);
+      runIdRef.current = rid;
+      setError(null);
+      setPendingInterrupt(null);
+      setAwaitingInput(false);
+      setStatus("running");
+      runStream(streamRunByID(rid, 0, { onFrame, signal: ctrl.signal }));
+    },
+    [onFrame, runStream],
+  );
+
   const sendMessage = useCallback(
     (prompt: string) => {
       if (!sessionId) return;
@@ -268,6 +299,7 @@ export function useRunStream(): UseRunStream {
     answerInterrupt,
     awaitingInput,
     start,
+    attach,
     send,
     sendMessage,
     cancel,

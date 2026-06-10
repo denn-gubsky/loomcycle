@@ -23,13 +23,18 @@ import (
 // interactive-terminal flow through the real HTTP server + SSE + loop —
 //
 //	start interactive run → loop parks at end_turn (`awaiting_input`)
-//	→ POST /v1/runs/{run_id}/input → `steer` frame + the run RESUMES
+//	→ POST /v1/runs/{run_id}/input → the run RESUMES (a new `text` turn)
 //	→ parks again → client disconnect ends the persistent run.
 //
-// Everything below the SSE wire is real (RunOnce → loop → steer registry →
-// the /input handler → drain → resume); only the provider is stubbed (always
-// end_turn, so each turn parks). This is the chain the unit/integration tests
-// only covered piecewise.
+// Everything below the SSE wire is real (loop → steer registry → the /input
+// handler → drain → resume); only the provider is stubbed (always end_turn, so
+// each turn parks). Since interactive runs are now DETACHED (the loop runs in a
+// background goroutine that survives client disconnect) and the live view is
+// served by tailing the persisted store, the operator's instruction reaches
+// the agent and the run resumes — but the steer ECHO frame is no longer on the
+// live wire (it is shown optimistically by the frontend + via the persisted
+// user_input row on reload). This asserts the functional chain: park → input →
+// resume → re-park.
 func TestInteractiveTerminal_EndToEnd(t *testing.T) {
 	cfg := &config.Config{
 		Defaults: config.Defaults{Provider: "stub", Model: "stub-model"},
@@ -143,20 +148,19 @@ func TestInteractiveTerminal_EndToEnd(t *testing.T) {
 		t.Fatalf("input status = %d: %s", in.StatusCode, body)
 	}
 
-	// Phase 3: the steer surfaces (`steer` frame) and the run RESUMES (another
-	// `text` turn) before parking again.
-	sawSteer, resumed := false, false
+	// Phase 3: the steered instruction reaches the parked loop, which wakes and
+	// RESUMES — a new `text` turn appears (via the store tail) before it parks
+	// again. The steer echo frame is intentionally NOT on the live wire under
+	// the detached/store-tail model.
+	resumed, reparked := false, false
 	for {
 		f := next()
 		switch f.typ {
-		case "steer":
-			sawSteer = true
 		case "text":
-			if sawSteer {
-				resumed = true
-			}
+			resumed = true
 		case "awaiting_input":
-			if sawSteer && resumed {
+			if resumed {
+				reparked = true
 				goto done
 			}
 		case "done", "error":
@@ -164,11 +168,11 @@ func TestInteractiveTerminal_EndToEnd(t *testing.T) {
 		}
 	}
 done:
-	if !sawSteer {
-		t.Error("no `steer` frame after POST /input — steering didn't reach the live stream")
-	}
 	if !resumed {
-		t.Error("run did not resume (no `text` after the steer) — park didn't wake")
+		t.Error("run did not resume (no `text` after POST /input) — park didn't wake")
+	}
+	if !reparked {
+		t.Error("run did not re-park after resuming")
 	}
 
 	// End the persistent run: client disconnect cancels the run ctx, which
