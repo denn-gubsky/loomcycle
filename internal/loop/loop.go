@@ -19,6 +19,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/hooks"
 	lcotel "github.com/denn-gubsky/loomcycle/internal/otel"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
+	"github.com/denn-gubsky/loomcycle/internal/steer"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
 
@@ -57,6 +58,17 @@ type RunOptions struct {
 	// from the agent's config.AgentDef.UnboundedIterations for interactive
 	// terminal-driven runs.
 	UnboundedIterations bool
+
+	// SteerQueue, when non-nil, is the receive side of this run's operator
+	// steering queue (internal/steer). At the TOP of each iteration the loop
+	// drains it (non-blocking) and appends each Message as a user-role turn
+	// before the next provider call. Nil disables steering.
+	SteerQueue <-chan steer.Message
+	// OnSteer fires once per drained steering message, AFTER it's appended to
+	// the conversation, so the runner can persist a user_input transcript
+	// event + emit the EventSteer SSE event. Same "cheap, loop-goroutine,
+	// tolerate failures" contract as OnHeartbeat.
+	OnSteer func(steer.Message)
 
 	// PriorMessages is the conversation history to prepend before the
 	// caller's new Segments. Used by the continuation endpoint to replay
@@ -572,6 +584,29 @@ type RunResult struct {
 }
 
 // Run drives the agent loop to completion.
+// drainSteer non-blocking-pulls every currently-queued operator steering
+// message and appends each as a SEPARATE user-role turn, returning the
+// extended slice. The operator instruction is TRUSTED (bearer-gated, same
+// trust tier as the original run caller) → plain text, not fenced as
+// untrusted. onSteer (if set) fires per message so the runner can persist +
+// emit it.
+func drainSteer(q <-chan steer.Message, messages []providers.Message, onSteer func(steer.Message)) []providers.Message {
+	for {
+		select {
+		case m := <-q:
+			messages = append(messages, providers.Message{
+				Role:    "user",
+				Content: []providers.ContentBlock{{Type: "text", Text: m.Text}},
+			})
+			if onSteer != nil {
+				onSteer(m)
+			}
+		default:
+			return messages
+		}
+	}
+}
+
 func Run(ctx context.Context, opts RunOptions) (RunResult, error) {
 	if opts.MaxIterations == 0 {
 		opts.MaxIterations = 16
@@ -706,6 +741,19 @@ outerLoop:
 		if opts.OnHeartbeat != nil {
 			opts.OnHeartbeat()
 		}
+
+		// Mid-turn steering (internal/steer): drain any operator-injected
+		// instructions and append each as a user turn BEFORE this iteration's
+		// provider call. Drained ONLY here, at the top of the iteration —
+		// never between a tool_use assistant turn and its tool_results user
+		// turn (which would orphan the tool_use and 400 the provider). After
+		// a tool round the messages end [...assistant(tool_use),
+		// user(tool_results)]; appending a user(steer) turn yields consecutive
+		// user turns, which every provider accepts (replay already emits them).
+		if opts.SteerQueue != nil {
+			messages = drainSteer(opts.SteerQueue, messages, opts.OnSteer)
+		}
+
 		req := providers.Request{
 			Model:     opts.Model,
 			System:    system,

@@ -72,6 +72,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/runstate"
 	"github.com/denn-gubsky/loomcycle/internal/scheduler"
 	"github.com/denn-gubsky/loomcycle/internal/skills"
+	"github.com/denn-gubsky/loomcycle/internal/steer"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	storepostgres "github.com/denn-gubsky/loomcycle/internal/store/postgres"
 	storesqlite "github.com/denn-gubsky/loomcycle/internal/store/sqlite"
@@ -1315,6 +1316,11 @@ func main() {
 	// "intr:<id>" key. Without this the resolve writes the row but
 	// the tool re-checks storage only when its own timer fires.
 	srv.SetInterruptionBus(channelBus)
+	// PR 2 / interactive terminal — operator mid-run steering registry.
+	// Enables POST /v1/runs/{run_id}/input to inject an instruction into an
+	// in-flight run. Default per-run buffer depth (16); single-replica
+	// (cross-replica routing is a later phase).
+	srv.SetSteerRegistry(steer.NewRegistry(0))
 	// v0.9.x — same Bus also drives the Channel CRUD subscribe path
 	// (Connector + HTTP /v1/_channels/{name}/subscribe). Wire-side
 	// subscribers wake on the same Notify() the in-band tool would.
