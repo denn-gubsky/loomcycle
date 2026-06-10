@@ -62,12 +62,13 @@ func (c Config) defaults() Config {
 // Construction is via New + Start. Stop the goroutine via
 // (*Scheduler).Stop or by cancelling the ctx passed to Start.
 type Scheduler struct {
-	cfg    Config
-	store  store.Store
-	runner runner.Runner
-	pause  *pause.Manager
-	mcp    MCPCaller
-	logf   func(format string, args ...any)
+	cfg     Config
+	store   store.Store
+	runner  runner.Runner
+	pause   *pause.Manager
+	mcp     MCPCaller
+	chScope ChannelScopeResolver
+	logf    func(format string, args ...any)
 
 	wg     sync.WaitGroup
 	stopCh chan struct{}
@@ -96,6 +97,23 @@ type Scheduler struct {
 	// timeout cancels the RunOnce call (default 10m), which is the
 	// existing budget. No separate TTL needed.
 	inFlight sync.Map
+}
+
+// ChannelScopeResolver returns the declared scope ("global" | "user" |
+// "agent") of a channel by name. ok=false when the channel is declared
+// nowhere (static yaml + runtime substrate). Injected so the on_complete:
+// channel.publish hook publishes at the channel's declared scope instead of
+// blindly under the run's user scope (F37 / RFC T). Satisfied by
+// (*http.Server).ResolveChannelScope; nil leaves the legacy user-scope
+// behavior untouched.
+type ChannelScopeResolver func(ctx context.Context, channel string) (scope string, ok bool)
+
+// SetChannelScope wires the channel-scope resolver. Must be called before
+// Start (the sweeper reads chScope when dispatching on_complete hooks). A
+// no-op-safe setter rather than a New parameter so the many existing
+// New(...) call sites stay unchanged.
+func (s *Scheduler) SetChannelScope(r ChannelScopeResolver) {
+	s.chScope = r
 }
 
 // New constructs a Scheduler. All four runtime dependencies are

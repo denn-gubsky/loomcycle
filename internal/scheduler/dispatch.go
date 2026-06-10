@@ -33,17 +33,17 @@ type MCPCaller interface {
 // failed schedule to the hook delivery that follow-on consumed.
 func (s *Scheduler) dispatchHooks(ctx context.Context, scheduleName string, def scheduleDef, runID, agentID string) {
 	for i, h := range def.OnComplete {
-		if err := s.dispatchOneHook(ctx, scheduleName, def.UserID, h, runID, agentID); err != nil {
+		if err := s.dispatchOneHook(ctx, scheduleName, def.UserID, def.Agent, h, runID, agentID); err != nil {
 			s.logf("scheduler: schedule %q on_complete[%d] (%s) failed: %v",
 				scheduleName, i, h.Kind, err)
 		}
 	}
 }
 
-func (s *Scheduler) dispatchOneHook(ctx context.Context, scheduleName, userID string, h scheduleHook, runID, agentID string) error {
+func (s *Scheduler) dispatchOneHook(ctx context.Context, scheduleName, userID, agentName string, h scheduleHook, runID, agentID string) error {
 	switch h.Kind {
 	case "channel.publish":
-		return s.dispatchChannelPublish(ctx, scheduleName, userID, h, runID, agentID)
+		return s.dispatchChannelPublish(ctx, scheduleName, userID, agentName, h, runID, agentID)
 	case "memory.set":
 		return s.dispatchMemorySet(ctx, scheduleName, userID, h)
 	case "mcp.call":
@@ -55,7 +55,7 @@ func (s *Scheduler) dispatchOneHook(ctx context.Context, scheduleName, userID st
 	}
 }
 
-func (s *Scheduler) dispatchChannelPublish(ctx context.Context, scheduleName, userID string, h scheduleHook, runID, agentID string) error {
+func (s *Scheduler) dispatchChannelPublish(ctx context.Context, scheduleName, userID, agentName string, h scheduleHook, runID, agentID string) error {
 	if h.Channel == "" {
 		return fmt.Errorf("channel.publish missing `channel`")
 	}
@@ -68,11 +68,9 @@ func (s *Scheduler) dispatchChannelPublish(ctx context.Context, scheduleName, us
 	if err != nil {
 		return fmt.Errorf("marshal payload: %w", err)
 	}
-	scope := store.MemoryScopeGlobal
-	scopeID := ""
-	if userID != "" {
-		scope = store.MemoryScopeUser
-		scopeID = userID
+	scope, scopeID, err := s.resolvePublishScope(ctx, h.Channel, userID, agentName)
+	if err != nil {
+		return err
 	}
 	msg := store.ChannelMessage{
 		Channel:           h.Channel,
@@ -89,6 +87,49 @@ func (s *Scheduler) dispatchChannelPublish(ctx context.Context, scheduleName, us
 	// a sweeper-side cap if operators report unbounded growth.
 	_, _, err = s.store.ChannelPublish(ctx, msg, 0)
 	return err
+}
+
+// resolvePublishScope returns the (scope, scopeID) an on_complete:
+// channel.publish hook should write under.
+//
+// With a resolver wired (the normal path), it honors the channel's DECLARED
+// scope (F37 / RFC T): a `scope: global` channel publishes at global/"" so a
+// global reader (admin peek, Channel.await/subscribe resolving global) can
+// see it — not under the run's user scope where it would be invisible. The
+// run's userID / agentName fill scope_id for user / agent channels. An
+// undeclared channel is an operator error and fails the hook loudly (logged
+// by dispatchHooks) rather than silently mis-scoping.
+//
+// With no resolver (nil — small embeds / tests that don't wire one), it
+// falls back to the legacy behavior: user scope when the schedule has a
+// user_id, else global.
+func (s *Scheduler) resolvePublishScope(ctx context.Context, channel, userID, agentName string) (store.MemoryScope, string, error) {
+	if s.chScope == nil {
+		if userID != "" {
+			return store.MemoryScopeUser, userID, nil
+		}
+		return store.MemoryScopeGlobal, "", nil
+	}
+	declared, ok := s.chScope(ctx, channel)
+	if !ok {
+		return "", "", fmt.Errorf("channel.publish: channel %q is not declared (static yaml or runtime substrate)", channel)
+	}
+	switch declared {
+	case "global":
+		return store.MemoryScopeGlobal, "", nil
+	case "user":
+		if userID == "" {
+			return "", "", fmt.Errorf("channel.publish: channel %q has scope=user but schedule has no user_id", channel)
+		}
+		return store.MemoryScopeUser, userID, nil
+	case "agent":
+		if agentName == "" {
+			return "", "", fmt.Errorf("channel.publish: channel %q has scope=agent but schedule has no agent", channel)
+		}
+		return store.MemoryScopeAgent, agentName, nil
+	default:
+		return "", "", fmt.Errorf("channel.publish: channel %q has unknown scope %q", channel, declared)
+	}
 }
 
 func (s *Scheduler) dispatchMemorySet(ctx context.Context, scheduleName, userID string, h scheduleHook) error {
