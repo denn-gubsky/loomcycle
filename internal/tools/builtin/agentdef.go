@@ -863,6 +863,16 @@ type mergedDef struct {
 	Channels         config.AgentChannelACL      `json:"channels,omitempty"`
 	EvaluationScopes []string                    `json:"evaluation_scopes,omitempty"`
 	Interruption     config.AgentInterruptionACL `json:"interruption,omitempty"`
+	// The *_def_scopes capability gates (F40) — the substrate-def slice of the
+	// F14 closure. Without these a runtime-authored meta-agent (one that
+	// forks/promotes/schedules other agents) comes back default-deny and can't
+	// author anything. NOT part of content_sha256 (the *Scopes ACLs are
+	// deliberately excluded from agents.AgentContent — authority, not content).
+	AgentDefScopes         []string `json:"agent_def_scopes,omitempty"`
+	ScheduleDefScopes      []string `json:"schedule_def_scopes,omitempty"`
+	SkillDefScopes         []string `json:"skill_def_scopes,omitempty"`
+	A2AServerCardDefScopes []string `json:"a2a_server_card_def_scopes,omitempty"`
+	A2AAgentDefScopes      []string `json:"a2a_agent_def_scopes,omitempty"`
 }
 
 func (d *mergedDef) applyOverlay(ov mergedDef) {
@@ -946,6 +956,23 @@ func (d *mergedDef) applyOverlay(ov mergedDef) {
 	if ov.Interruption.Enabled || len(ov.Interruption.Kinds) > 0 || ov.Interruption.MaxPending != 0 {
 		d.Interruption = ov.Interruption
 	}
+	// *_def_scopes capability gates (F40): slice-set-if-supplied, same idiom as
+	// EvaluationScopes — overlays build up, they don't blank.
+	if ov.AgentDefScopes != nil {
+		d.AgentDefScopes = ov.AgentDefScopes
+	}
+	if ov.ScheduleDefScopes != nil {
+		d.ScheduleDefScopes = ov.ScheduleDefScopes
+	}
+	if ov.SkillDefScopes != nil {
+		d.SkillDefScopes = ov.SkillDefScopes
+	}
+	if ov.A2AServerCardDefScopes != nil {
+		d.A2AServerCardDefScopes = ov.A2AServerCardDefScopes
+	}
+	if ov.A2AAgentDefScopes != nil {
+		d.A2AAgentDefScopes = ov.A2AAgentDefScopes
+	}
 }
 
 // normalize fills derived fields that the static config-load path
@@ -997,6 +1024,13 @@ func staticToMergedDef(s config.AgentDef) mergedDef {
 		Channels:         s.Channels,
 		EvaluationScopes: s.EvaluationScopes,
 		Interruption:     s.Interruption,
+		// F40: a static meta-agent bootstrapped into the substrate keeps its
+		// capability gates, so a fork of it inherits them.
+		AgentDefScopes:         s.AgentDefScopes,
+		ScheduleDefScopes:      s.ScheduleDefScopes,
+		SkillDefScopes:         s.SkillDefScopes,
+		A2AServerCardDefScopes: s.A2AServerCardDefScopes,
+		A2AAgentDefScopes:      s.A2AAgentDefScopes,
 	}
 }
 
