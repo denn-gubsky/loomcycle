@@ -2378,6 +2378,11 @@ type ScheduleRunStateRow struct {
 	LastError   string    `json:"last_error,omitempty"`
 	NextRunAt   time.Time `json:"next_run_at"`
 	PausedUntil time.Time `json:"paused_until,omitempty"`
+	// FireCount is the lifetime count of fires recorded for this def
+	// (RFC S / F36). RecordResult increments it when CountAsFire is set
+	// (every real fire; NOT the disabled-skip advance). The scheduler
+	// reads it after a fire to enforce ScheduledRun.MaxFires.
+	FireCount int `json:"fire_count,omitempty"`
 }
 
 // ScheduleDueRow is the JOIN result returned by ScheduleRunStateListDue.
@@ -2402,6 +2407,11 @@ type ScheduleRunResult struct {
 	LastError  string
 	LastRunAt  time.Time
 	NextRunAt  time.Time
+	// CountAsFire increments fire_count by one when true (RFC S / F36).
+	// The scheduler sets it on every real fire (any status); the
+	// disabled-skip advance (advanceOnly) leaves it false so a disabled
+	// schedule doesn't consume its max_fires budget.
+	CountAsFire bool
 }
 
 // EvaluationRow is one row in the evaluations table.

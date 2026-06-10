@@ -383,7 +383,8 @@ func (s *Store) migrate(ctx context.Context) error {
 			last_status     TEXT,
 			last_error      TEXT,
 			next_run_at     INTEGER NOT NULL,
-			paused_until    INTEGER
+			paused_until    INTEGER,
+			fire_count      INTEGER NOT NULL DEFAULT 0
 		)`,
 		`CREATE INDEX IF NOT EXISTS schedule_run_state_due ON schedule_run_state(next_run_at)`,
 		// v1.x RFC G A2A substrate — two content-addressed Defs mirroring
@@ -777,6 +778,9 @@ func (s *Store) migrate(ctx context.Context) error {
 		`ALTER TABLE a2a_server_card_def_active ADD COLUMN tenant_id TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE webhook_defs ADD COLUMN tenant_id TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE webhook_def_active ADD COLUMN tenant_id TEXT NOT NULL DEFAULT ''`,
+		// RFC S / F36: lifetime fire-count for max_fires self-retirement.
+		// Idempotent ALTER for existing DBs; fresh DBs get it in CREATE TABLE.
+		`ALTER TABLE schedule_run_state ADD COLUMN fire_count INTEGER NOT NULL DEFAULT 0`,
 	}
 	for _, q := range addColumns {
 		if _, err := s.db.ExecContext(ctx, q); err != nil {
@@ -5712,11 +5716,12 @@ func (s *Store) ScheduleRunStateGet(ctx context.Context, defID string) (store.Sc
 		lastError   sql.NullString
 		nextRunAt   int64
 		pausedUntil sql.NullInt64
+		fireCount   int
 	)
 	err := s.db.QueryRowContext(ctx,
-		`SELECT def_id, last_run_at, last_run_id, last_status, last_error, next_run_at, paused_until
+		`SELECT def_id, last_run_at, last_run_id, last_status, last_error, next_run_at, paused_until, fire_count
 		 FROM schedule_run_state WHERE def_id = ?`, defID,
-	).Scan(&out.DefID, &lastRunAt, &lastRunID, &lastStatus, &lastError, &nextRunAt, &pausedUntil)
+	).Scan(&out.DefID, &lastRunAt, &lastRunID, &lastStatus, &lastError, &nextRunAt, &pausedUntil, &fireCount)
 	if err == sql.ErrNoRows {
 		return store.ScheduleRunStateRow{}, &store.ErrNotFound{Kind: "schedule_run_state", ID: defID}
 	}
@@ -5733,6 +5738,7 @@ func (s *Store) ScheduleRunStateGet(ctx context.Context, defID string) (store.Sc
 	if pausedUntil.Valid {
 		out.PausedUntil = time.Unix(0, pausedUntil.Int64)
 	}
+	out.FireCount = fireCount
 	return out, nil
 }
 
@@ -5775,16 +5781,23 @@ func (s *Store) ScheduleRunStateListDue(ctx context.Context, now time.Time) ([]s
 }
 
 func (s *Store) ScheduleRunStateRecordResult(ctx context.Context, in store.ScheduleRunResult) error {
+	// fire_count += 1 only on a real fire (CountAsFire); the disabled-skip
+	// advance passes false so a disabled schedule keeps its max_fires budget.
+	fireInc := 0
+	if in.CountAsFire {
+		fireInc = 1
+	}
 	res, err := s.db.ExecContext(ctx,
 		`UPDATE schedule_run_state SET
 			last_run_at = ?,
 			last_run_id = ?,
 			last_status = ?,
 			last_error = ?,
-			next_run_at = ?
+			next_run_at = ?,
+			fire_count = fire_count + ?
 		 WHERE def_id = ?`,
 		in.LastRunAt.UnixNano(), in.LastRunID, in.LastStatus, in.LastError,
-		in.NextRunAt.UnixNano(), in.DefID,
+		in.NextRunAt.UnixNano(), fireInc, in.DefID,
 	)
 	if err != nil {
 		return err

@@ -74,6 +74,35 @@ standalone entry has an explicit `user_id` and a single `schedule:`.
 Mutual exclusion: a template can't fix one cron AND offer per-tier
 defaults. The config validator refuses at boot.
 
+## `max_fires` — bounded / one-shot schedules (RFC S / F36)
+
+`max_fires: N` caps the schedule's LIFETIME fire count. The sweeper
+auto-retires the def after its Nth fire — no external watcher needed.
+
+```yaml
+scheduled_runs:
+  one-shot-migration:
+    agent: migrator
+    schedule: "*/5 * * * *"   # next 5-min boundary
+    max_fires: 1              # fire exactly once, then retire
+    prompt:
+      - role: user
+        content: [{ type: trusted-text, text: "Run the migration." }]
+```
+
+- `0` (default) = fire indefinitely until retired — unchanged behavior.
+- `1` = one-shot (pair with a near-future cron for "run once soon").
+- `N > 1` = a finite run of N fires.
+
+Fires of **any** status count (completed / failed / backpressure-skipped)
+so a wedged schedule still retires; catch-up fires after a pause count
+too — it's a hard lifetime cap regardless of cadence. The disabled-skip
+advance (`enabled: false`) does NOT count, so toggling a schedule off and
+on preserves its remaining budget. Retirement flips the def's `retired`
+flag (lineage stays visible in `/ui/schedules`); the run-state row's
+`fire_count` is the counter. Set it on a substrate fork via the overlay:
+`{op:"fork", name:"…", overlay:{max_fires:3}}`.
+
 ## `tenant_id` — which tenant the fired run executes as (RFC N)
 
 Set `tenant_id:` on a schedule to make its spawned run execute as that

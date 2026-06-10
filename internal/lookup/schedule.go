@@ -100,9 +100,12 @@ type SubstrateScheduleDef struct {
 	// disables it). v1.x review-fix: previously this was `bool` with
 	// no omitempty, which silently coerced missing-fields to false on
 	// the lookup path even when the write side intended true.
-	Enabled    *bool  `json:"enabled,omitempty"`
-	CatchUpMax int    `json:"catch_up_max,omitempty"`
-	UserID     string `json:"user_id,omitempty"`
+	Enabled    *bool `json:"enabled,omitempty"`
+	CatchUpMax int   `json:"catch_up_max,omitempty"`
+	// MaxFires is the lifetime fire-count cap (RFC S / F36). Mirrors
+	// mergedScheduleDef.MaxFires so the def round-trips through the lookup.
+	MaxFires int    `json:"max_fires,omitempty"`
+	UserID   string `json:"user_id,omitempty"`
 	// UserTier is the fork-time tier pick — see the matching field
 	// commentary on builtin.mergedScheduleDef. Required for sweeper-
 	// side cron resolution on templates with user_tier_schedules.
@@ -160,6 +163,7 @@ func (s SubstrateScheduleDef) ToConfigDef() config.ScheduledRun {
 		Timezone:               s.Timezone,
 		Enabled:                enabled,
 		CatchUpMax:             s.CatchUpMax,
+		MaxFires:               s.MaxFires,
 		UserID:                 s.UserID,
 		UserCredentialsFromEnv: s.UserCredentialsFromEnv,
 		Metadata:               s.Metadata,

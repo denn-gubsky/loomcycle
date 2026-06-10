@@ -954,6 +954,13 @@ type ScheduledRun struct {
 	// N > 0 = up to N retroactive fires. Per RFC E sharp edge.
 	CatchUpMax int `yaml:"catch_up_max"`
 
+	// MaxFires bounds the schedule's LIFETIME fire count (RFC S / F36).
+	// 0 (default) = fire indefinitely until retired; N > 0 = the sweeper
+	// auto-retires the def after its Nth fire (1 = one-shot). Fires of any
+	// status count (a wedged schedule still retires); catch-up fires count
+	// too — it's a hard lifetime cap regardless of cadence.
+	MaxFires int `yaml:"max_fires"`
+
 	// UserID is the run's identity anchor for STANDALONE entries.
 	// Empty = TEMPLATE entry (orchestrators fork with their per-user
 	// identity supplied via the ScheduleDef tool overlay).

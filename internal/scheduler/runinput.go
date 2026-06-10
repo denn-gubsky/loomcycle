@@ -31,6 +31,7 @@ type scheduleDef struct {
 	Timezone               string              `json:"timezone,omitempty"`
 	Enabled                *bool               `json:"enabled,omitempty"`
 	CatchUpMax             int                 `json:"catch_up_max,omitempty"`
+	MaxFires               int                 `json:"max_fires,omitempty"` // RFC S / F36 lifetime cap
 	UserID                 string              `json:"user_id,omitempty"`
 	UserCredentials        map[string]string   `json:"user_credentials,omitempty"`
 	UserCredentialsFromEnv map[string]string   `json:"user_credentials_from_env,omitempty"`

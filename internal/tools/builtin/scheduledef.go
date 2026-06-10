@@ -82,7 +82,7 @@ const scheduleDefInputSchema = `{
     "parent_def_id": {"type": "string", "description": "Fork parent (optional for fork — when absent, forks the active def of the name, or bootstraps from a yaml template)."},
     "overlay": {
       "type": "object",
-      "description": "Mutable subset of ScheduledRun for create/fork. Immutable / server-set fields are silently ignored if supplied.",
+      "description": "Mutable subset of ScheduledRun for create/fork (agent, prompt, schedule/user_tier_schedules, timezone, enabled, catch_up_max, max_fires, user_id, user_tier, user_credentials, user_credentials_from_env, on_complete, metadata, tenant_id). max_fires N>0 auto-retires the def after its Nth fire (1 = one-shot; 0 = unbounded). Immutable / server-set fields are silently ignored if supplied.",
       "additionalProperties": true
     },
     "description":   {"type": "string", "description": "Free-text rationale for create/fork."},
@@ -866,9 +866,18 @@ type mergedScheduleDef struct {
 	// silently clobbered the parent's enabled:true on any partial
 	// overlay — fix landed alongside TestScheduleDefTool_Fork
 	// PreservesEnabledWhenOverlayOmits.
-	Enabled    *bool  `json:"enabled,omitempty"`
-	CatchUpMax int    `json:"catch_up_max,omitempty"`
-	UserID     string `json:"user_id,omitempty"`
+	Enabled    *bool `json:"enabled,omitempty"`
+	CatchUpMax int   `json:"catch_up_max,omitempty"`
+	// MaxFires is the lifetime fire-count cap (RFC S / F36). *int (not int,
+	// like Enabled is *bool) so a fork overlay can DISTINGUISH "field
+	// omitted → inherit the parent's cap" from "explicitly {max_fires:0} →
+	// reset to unbounded". nil = unbounded; non-nil 0 = explicitly
+	// unbounded; N > 0 auto-retires the def after its Nth fire. The
+	// read-side mirrors (SubstrateScheduleDef / scheduler.scheduleDef) keep
+	// plain int — nil and 0 are both "unbounded" once stored, so they need
+	// no such distinction.
+	MaxFires *int   `json:"max_fires,omitempty"`
+	UserID   string `json:"user_id,omitempty"`
 	// UserTier is the fork-time tier pick for templates with
 	// user_tier_schedules. The scheduler's ResolveCron uses it to
 	// select which cron expression to fire from the per-tier map.
@@ -942,6 +951,12 @@ func (d *mergedScheduleDef) applyOverlay(ov mergedScheduleDef) {
 	if ov.CatchUpMax != 0 {
 		d.CatchUpMax = ov.CatchUpMax
 	}
+	if ov.MaxFires != nil {
+		// Non-nil (incl. an explicit 0) overrides; nil = overlay omitted
+		// the field → inherit the parent's cap. This is what lets a fork
+		// LIFT a cap with {max_fires:0}, per the tool's documented contract.
+		d.MaxFires = ov.MaxFires
+	}
 	if ov.UserID != "" {
 		d.UserID = ov.UserID
 	}
@@ -993,6 +1008,12 @@ func staticToMergedScheduleDef(sr config.ScheduledRun) mergedScheduleDef {
 		UserCredentialsFromEnv: sr.UserCredentialsFromEnv,
 		Metadata:               sr.Metadata,
 		TenantID:               sr.TenantID,
+	}
+	// MaxFires is *int on the write side; carry the yaml value as a pointer
+	// only when set (0 = unbounded → leave nil so the Definition JSON omits it).
+	if sr.MaxFires != 0 {
+		mf := sr.MaxFires
+		out.MaxFires = &mf
 	}
 	if len(sr.Prompt) > 0 {
 		out.Prompt = make([]mergedSchedulePromptSeg, len(sr.Prompt))
