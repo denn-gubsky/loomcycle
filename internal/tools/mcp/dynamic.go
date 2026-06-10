@@ -37,7 +37,9 @@ import "sync"
 // substitution placeholders intact — the http client's substitution
 // pass at request-build time resolves them (matches yaml-loaded
 // headers' semantics; see internal/tools/mcp/http/client.go). Env values
-// (stdio) are passed to the child literally — no ${} expansion.
+// (stdio) are likewise stored verbatim and ExpandEnv'd at spawn (F39, in
+// spawnStdio), not baked into the stored spec — so the placeholder, not the
+// resolved secret, persists (F32).
 type DynamicMCPServerSpec struct {
 	Name      string
 	Transport string // "http" | "streamable-http" | "stdio" (stdio gated by LOOMCYCLE_MCP_ALLOW_DYNAMIC_STDIO)

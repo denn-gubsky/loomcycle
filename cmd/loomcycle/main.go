@@ -2734,9 +2734,38 @@ func (r mcpActiveDefReader) ActiveMCPServerDef(ctx context.Context, tenant, name
 
 // spawnStdio is the transport-spawn core shared by the static yaml stdio
 // path (spawnStdioMCP) and the dynamic stdio path (the pool build
-// callback's stdio case, F31). envMap is rendered as sorted KEY=VALUE
-// strings — deterministic child env regardless of map iteration order.
+// callback's stdio case, F31).
+//
+// F39: command / args / env values are ExpandEnv'd HERE, at spawn. The static
+// yaml path arrives pre-expanded (config-load ExpandEnvs the whole file), so
+// this is an idempotent no-op for it; the DYNAMIC path stores raw ${...}
+// placeholders (kept literal in the def per F32) that never went through the
+// yaml-wide expansion, so without this a dynamic stdio server received the
+// literal "${LOOMCYCLE_X}" (and clobbered the inherited real var, since
+// cmd.Env appends def env AFTER the inherited environ). Expanding at spawn —
+// not baking into the stored def — keeps the persisted content free of the
+// resolved secret (F32). Uses the same allowlisted expander as yaml-load;
+// ${run.*} late-binding tokens pass through verbatim as before.
 func spawnStdio(name, command string, args []string, envMap map[string]string) (mcp.Caller, error) {
+	expandedArgs := make([]string, len(args))
+	for i, a := range args {
+		expandedArgs[i] = config.ExpandEnv(a)
+	}
+	return mcpstdio.Spawn(mcpstdio.Config{
+		Command: config.ExpandEnv(command),
+		Args:    expandedArgs,
+		Env:     expandedStdioEnv(envMap),
+		OnStderr: func(line string) {
+			log.Printf("mcp[%s]: %s", name, line)
+		},
+	})
+}
+
+// expandedStdioEnv renders an stdio env map as sorted KEY=VALUE strings,
+// ExpandEnv'ing each VALUE (F39). Sorted for a deterministic child env
+// regardless of map iteration order. Pure (no spawn) so the expansion is
+// unit-testable. See spawnStdio for the static-vs-dynamic rationale + F32.
+func expandedStdioEnv(envMap map[string]string) []string {
 	keys := make([]string, 0, len(envMap))
 	for k := range envMap {
 		keys = append(keys, k)
@@ -2744,16 +2773,9 @@ func spawnStdio(name, command string, args []string, envMap map[string]string) (
 	sort.Strings(keys)
 	env := make([]string, 0, len(keys))
 	for _, k := range keys {
-		env = append(env, k+"="+envMap[k])
+		env = append(env, k+"="+config.ExpandEnv(envMap[k]))
 	}
-	return mcpstdio.Spawn(mcpstdio.Config{
-		Command: command,
-		Args:    args,
-		Env:     env,
-		OnStderr: func(line string) {
-			log.Printf("mcp[%s]: %s", name, line)
-		},
-	})
+	return env
 }
 
 // applyAllowedToolsFilter — thin wrapper over mcp.ApplyAllowedToolsFilter.

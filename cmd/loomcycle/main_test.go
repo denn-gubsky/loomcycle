@@ -209,3 +209,27 @@ func TestResolveBuildInfo_DoesNotPanic(t *testing.T) {
 		}
 	}
 }
+
+// TestExpandedStdioEnv is the F39 regression: a dynamic stdio MCP server's env
+// values must be ExpandEnv'd at spawn (the static yaml path arrives
+// pre-expanded; the dynamic def stores raw ${...}). Allowlisted LOOMCYCLE_*
+// expands; literals and non-allowlisted ${...} pass through verbatim; output
+// is sorted by key. Fail-before: the value was emitted literally
+// (BOT_TOKEN=${LOOMCYCLE_F39_TOKEN}).
+func TestExpandedStdioEnv(t *testing.T) {
+	t.Setenv("LOOMCYCLE_F39_TOKEN", "s3cret")
+
+	got := expandedStdioEnv(map[string]string{
+		"BOT_TOKEN": "${LOOMCYCLE_F39_TOKEN}", // allowlisted → expands
+		"CHAT_ID":   "12345",                  // literal → unchanged
+		"PASSTHRU":  "${NOT_ALLOWLISTED}",     // off-allowlist → verbatim
+	})
+	want := []string{
+		"BOT_TOKEN=s3cret",
+		"CHAT_ID=12345",
+		"PASSTHRU=${NOT_ALLOWLISTED}",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("expandedStdioEnv:\n got %q\nwant %q", got, want)
+	}
+}
