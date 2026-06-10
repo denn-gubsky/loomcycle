@@ -87,6 +87,12 @@ not `parallel_spawn`. (Need a clock to set the `wait_ms` budget or a
 `deliver_at` self-timeout? `Context op=time` gives the agent `now` +
 `elapsed_ms`.)
 
+The producer-side bookend is **`Channel.broadcast`** — publish one payload
+to N channels in a single call (e.g. an orchestrator pings N worker
+channels to start, then `await`s their result channels). It's the
+symmetric fan-OUT to `await`'s fan-IN; both cap at 32 channels and are
+atomic at the ACL pre-flight (one denied channel refuses the whole op).
+
 ## Recursion depth cap
 
 Sub-agents can spawn sub-sub-agents, but loomcycle caps recursion
