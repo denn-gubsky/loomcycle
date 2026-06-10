@@ -1,9 +1,49 @@
 import { useEffect, useState } from "react";
 import { Link, NavLink, Outlet, useOutletContext } from "react-router-dom";
+import {
+  Activity,
+  Bell,
+  Brain,
+  CalendarClock,
+  Camera,
+  Library,
+  ListTree,
+  type LucideIcon,
+  PanelLeftClose,
+  PanelLeftOpen,
+  Play,
+  Plug,
+  Radio,
+  ScrollText,
+} from "lucide-react";
 import { Principal, UserSummary, getHealth, getWhoami, listUsers } from "../api";
 import PauseControls from "./PauseControls";
 
 const USER_ID_KEY = "loomcycle.userId";
+const SIDEBAR_KEY = "loomcycle.sidebar.collapsed";
+
+// Left-sidebar navigation model. `adminOnly` reproduces the pre-sidebar
+// gating exactly: run + runs are every role's workspace; the rest are
+// operator-global / admin surfaces (hidden for a tenant, 403 server-side).
+interface NavItem {
+  to: string;
+  label: string;
+  Icon: LucideIcon;
+  adminOnly: boolean;
+}
+const NAV_ITEMS: NavItem[] = [
+  { to: "/run", label: "run", Icon: Play, adminOnly: false },
+  { to: "/agents", label: "runs", Icon: ListTree, adminOnly: false },
+  { to: "/library/agents", label: "library", Icon: Library, adminOnly: true },
+  { to: "/integrations/webhooks", label: "integrations", Icon: Plug, adminOnly: true },
+  { to: "/channels", label: "channels", Icon: Radio, adminOnly: true },
+  { to: "/schedules", label: "schedules", Icon: CalendarClock, adminOnly: true },
+  { to: "/interrupts", label: "interrupts", Icon: Bell, adminOnly: true },
+  { to: "/memory", label: "memory", Icon: Brain, adminOnly: true },
+  { to: "/snapshots", label: "snapshots", Icon: Camera, adminOnly: true },
+  { to: "/audit", label: "audit", Icon: ScrollText, adminOnly: true },
+  { to: "/activity", label: "activity", Icon: Activity, adminOnly: true },
+];
 // Refresh the user picker every 30 s. Activity stats (running counts)
 // drift fast on busy deployments; the dropdown is rendered with the
 // most recent counts each time it opens.
@@ -37,9 +77,19 @@ export default function Layout() {
   const [focusTenant, setFocusTenant] = useState<string>("");
   const [draftTenant, setDraftTenant] = useState<string>("");
 
+  // Left-sidebar collapse: icons-only (collapsed) vs icons+labels. Persisted
+  // so the operator's choice survives navigation and reload.
+  const [navCollapsed, setNavCollapsed] = useState<boolean>(
+    () => localStorage.getItem(SIDEBAR_KEY) === "1",
+  );
+
   useEffect(() => {
     localStorage.setItem(USER_ID_KEY, userId);
   }, [userId]);
+
+  useEffect(() => {
+    localStorage.setItem(SIDEBAR_KEY, navCollapsed ? "1" : "0");
+  }, [navCollapsed]);
 
   // Resolve identity first — everything below branches on the role.
   useEffect(() => {
@@ -129,142 +179,147 @@ export default function Layout() {
 
   return (
     <div className="layout">
-      <header className="topbar">
-        <div className="brand">
-          <Link to="/">loomcycle</Link>
-          <span className="version">{version === null ? "…" : version}</span>
-        </div>
-        <nav className="nav-tabs">
-          {/* run + runs are every role's workspace (running is tenant-level,
-              scoped by principal server-side); the rest are operator-global /
-              admin surfaces, hidden for a tenant (and 403 server-side). */}
-          <NavLink to="/run">run</NavLink>
-          <NavLink to="/agents">runs</NavLink>
-          {isAdmin && (
-            <>
-              <NavLink to="/library/agents">library</NavLink>
-              <NavLink to="/integrations/webhooks">integrations</NavLink>
-              <NavLink to="/channels">channels</NavLink>
-              <NavLink to="/schedules">schedules</NavLink>
-              <NavLink to="/interrupts">interrupts</NavLink>
-              <NavLink to="/memory">memory</NavLink>
-              <NavLink to="/snapshots">snapshots</NavLink>
-              <NavLink to="/audit">audit</NavLink>
-              <NavLink to="/activity">activity</NavLink>
-            </>
-          )}
+      <aside className={"sidebar" + (navCollapsed ? " sidebar-collapsed" : "")}>
+        {/* run + runs are every role's workspace (running is tenant-level,
+            scoped by principal server-side); the rest are operator-global /
+            admin surfaces, hidden for a tenant (and 403 server-side). The
+            NAV_ITEMS.adminOnly filter reproduces the old isAdmin gating. */}
+        <nav className="sidebar-nav">
+          {NAV_ITEMS.filter((it) => !it.adminOnly || isAdmin).map(({ to, label, Icon }) => (
+            <NavLink key={to} to={to} title={label}>
+              <Icon size={18} className="sidebar-icon" />
+              <span className="sidebar-label">{label}</span>
+            </NavLink>
+          ))}
         </nav>
-        {isAdmin && <PauseControls />}
-        {/* Role/tenant badge — super-admin sees all tenants; a tenant is
-            scoped to its own. */}
-        {principal && (
-          <span
-            className={"role-badge " + (isAdmin ? "role-admin" : "role-tenant")}
-            title={`subject: ${principal.subject}`}
-          >
-            {isAdmin ? "super-admin" : `tenant: ${principal.tenant_id}`}
-          </span>
-        )}
-        {/* Super-admin tenant-focus switcher: narrows the workspace to one
-            tenant (or all when blank). Changing focus resets the picked
-            user since user_ids don't carry across tenants. Admin-only —
-            tenants are locked to their own tenant by the backend. */}
-        {isAdmin && (
-          <form
-            className="tenant-switcher"
-            onSubmit={(e) => {
-              e.preventDefault();
-              setFocusTenant(draftTenant.trim());
-              setUserId("");
-            }}
-          >
-            <label htmlFor="tenant_focus">tenant</label>
-            <input
-              id="tenant_focus"
-              type="text"
-              value={draftTenant}
-              onChange={(e) => setDraftTenant(e.target.value)}
-              placeholder="all tenants"
-              title="Focus one tenant's workspace; blank = all"
-            />
-            {focusTenant && (
+        <button
+          type="button"
+          className="sidebar-toggle"
+          title={navCollapsed ? "Expand menu" : "Collapse menu"}
+          onClick={() => setNavCollapsed((c) => !c)}
+        >
+          {navCollapsed ? <PanelLeftOpen size={18} /> : <PanelLeftClose size={18} />}
+          {!navCollapsed && <span className="sidebar-label">collapse</span>}
+        </button>
+      </aside>
+      <div className="main-col">
+        <header className="topbar">
+          <div className="brand">
+            <Link to="/">loomcycle</Link>
+            <span className="version">{version === null ? "…" : version}</span>
+          </div>
+          {isAdmin && <PauseControls />}
+          {/* Role/tenant badge — super-admin sees all tenants; a tenant is
+              scoped to its own. */}
+          {principal && (
+            <span
+              className={"role-badge " + (isAdmin ? "role-admin" : "role-tenant")}
+              title={`subject: ${principal.subject}`}
+            >
+              {isAdmin ? "super-admin" : `tenant: ${principal.tenant_id}`}
+            </span>
+          )}
+          {/* Super-admin tenant-focus switcher: narrows the workspace to one
+              tenant (or all when blank). Changing focus resets the picked
+              user since user_ids don't carry across tenants. Admin-only —
+              tenants are locked to their own tenant by the backend. */}
+          {isAdmin && (
+            <form
+              className="tenant-switcher"
+              onSubmit={(e) => {
+                e.preventDefault();
+                setFocusTenant(draftTenant.trim());
+                setUserId("");
+              }}
+            >
+              <label htmlFor="tenant_focus">tenant</label>
+              <input
+                id="tenant_focus"
+                type="text"
+                value={draftTenant}
+                onChange={(e) => setDraftTenant(e.target.value)}
+                placeholder="all tenants"
+                title="Focus one tenant's workspace; blank = all"
+              />
+              {focusTenant && (
+                <button
+                  type="button"
+                  className="manual-btn"
+                  title="Clear tenant focus (show all)"
+                  onClick={() => {
+                    setFocusTenant("");
+                    setDraftTenant("");
+                    setUserId("");
+                  }}
+                >
+                  ✕
+                </button>
+              )}
+            </form>
+          )}
+          <div className="user-picker">
+            {usersErr && (
+              <span className="picker-err" title={usersErr}>
+                users unavailable
+              </span>
+            )}
+            {!showManual && (
+              <>
+                <label htmlFor="user_select">user</label>
+                <select
+                  id="user_select"
+                  value={knownUser ? userId : ""}
+                  onChange={(e) => setUserId(e.target.value)}
+                >
+                  <option value="">— pick a user —</option>
+                  {users.map((u) => (
+                    <option key={u.user_id} value={u.user_id}>
+                      {u.user_id} · {u.running_count > 0 ? `${u.running_count} running` : `${u.total_count} runs`}
+                    </option>
+                  ))}
+                </select>
+              </>
+            )}
+            {!showManual && (
               <button
                 type="button"
                 className="manual-btn"
-                title="Clear tenant focus (show all)"
+                title="Type a user_id manually"
                 onClick={() => {
-                  setFocusTenant("");
-                  setDraftTenant("");
-                  setUserId("");
+                  setDraft(userId);
+                  setShowManual(true);
                 }}
               >
-                ✕
+                ✎
               </button>
             )}
-          </form>
-        )}
-        <div className="user-picker">
-          {usersErr && (
-            <span className="picker-err" title={usersErr}>
-              users unavailable
-            </span>
-          )}
-          {!showManual && (
-            <>
-              <label htmlFor="user_select">user</label>
-              <select
-                id="user_select"
-                value={knownUser ? userId : ""}
-                onChange={(e) => setUserId(e.target.value)}
+            {showManual && (
+              <form
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  setUserId(draft.trim());
+                  setShowManual(false);
+                }}
               >
-                <option value="">— pick a user —</option>
-                {users.map((u) => (
-                  <option key={u.user_id} value={u.user_id}>
-                    {u.user_id} · {u.running_count > 0 ? `${u.running_count} running` : `${u.total_count} runs`}
-                  </option>
-                ))}
-              </select>
-            </>
-          )}
-          {!showManual && (
-            <button
-              type="button"
-              className="manual-btn"
-              title="Type a user_id manually"
-              onClick={() => {
-                setDraft(userId);
-                setShowManual(true);
-              }}
-            >
-              ✎
-            </button>
-          )}
-          {showManual && (
-            <form
-              onSubmit={(e) => {
-                e.preventDefault();
-                setUserId(draft.trim());
-                setShowManual(false);
-              }}
-            >
-              <input
-                type="text"
-                value={draft}
-                onChange={(e) => setDraft(e.target.value)}
-                placeholder="paste a user_id…"
-                autoFocus
-              />
-              <button type="submit">apply</button>
-              <button type="button" onClick={() => setShowManual(false)}>
-                cancel
-              </button>
-            </form>
-          )}
-        </div>
-      </header>
-      <main className="content">
-        <Outlet context={{ userId, principal: principal ?? null, focusTenant }} />
-      </main>
+                <input
+                  type="text"
+                  value={draft}
+                  onChange={(e) => setDraft(e.target.value)}
+                  placeholder="paste a user_id…"
+                  autoFocus
+                />
+                <button type="submit">apply</button>
+                <button type="button" onClick={() => setShowManual(false)}>
+                  cancel
+                </button>
+              </form>
+            )}
+          </div>
+        </header>
+        <main className="content">
+          <Outlet context={{ userId, principal: principal ?? null, focusTenant }} />
+        </main>
+      </div>
     </div>
   );
 }
