@@ -22,6 +22,7 @@ export default function ScheduleCreateForm({ existingNames, onClose, onCreated }
   const [userID, setUserID] = useState("");
   const [userTier, setUserTier] = useState("");
   const [timezone, setTimezone] = useState("");
+  const [maxFires, setMaxFires] = useState("");
   const [credentialsJSON, setCredentialsJSON] = useState('{"":""}');
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -75,6 +76,17 @@ export default function ScheduleCreateForm({ existingNames, onClose, onCreated }
     if (userID.trim()) overlay.user_id = userID.trim();
     if (userTier.trim()) overlay.user_tier = userTier.trim();
     if (timezone.trim()) overlay.timezone = timezone.trim();
+    // max_fires: lifetime fire cap. Blank = omit (unbounded); 0 = explicit
+    // unbounded; N>0 auto-retires after N fires. Omit-empty discipline so a
+    // blank field never sends 0 and surprises the operator.
+    if (maxFires.trim()) {
+      const n = parseInt(maxFires.trim(), 10);
+      if (!Number.isInteger(n) || n < 0) {
+        setErr("max_fires must be a non-negative integer (0 = unbounded).");
+        return;
+      }
+      overlay.max_fires = n;
+    }
     if (Object.keys(credentials).length > 0) overlay.user_credentials = credentials;
 
     setBusy(true);
@@ -162,6 +174,16 @@ export default function ScheduleCreateForm({ existingNames, onClose, onCreated }
               value={timezone}
               onChange={(e) => setTimezone(e.target.value)}
               placeholder="UTC (default) | America/New_York"
+            />
+          </label>
+          <label className="modal-field">
+            <span>max_fires (optional)</span>
+            <input
+              type="number"
+              min="0"
+              value={maxFires}
+              onChange={(e) => setMaxFires(e.target.value)}
+              placeholder="blank or 0 = unbounded; N = retire after N fires"
             />
           </label>
           <label className="modal-field">

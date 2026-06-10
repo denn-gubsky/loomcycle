@@ -20,6 +20,7 @@ export default function ScheduleForkForm({ templateName, onClose, onForked }: Pr
   const [userID, setUserID] = useState("");
   const [userTier, setUserTier] = useState("");
   const [cronOverride, setCronOverride] = useState("");
+  const [maxFires, setMaxFires] = useState("");
   const [credentialsJSON, setCredentialsJSON] = useState('{"":""}');
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -51,6 +52,17 @@ export default function ScheduleForkForm({ templateName, onClose, onForked }: Pr
     if (userID) overlay.user_id = userID;
     if (userTier) overlay.user_tier = userTier;
     if (cronOverride) overlay.schedule = cronOverride;
+    // max_fires override: blank = inherit the template's cap; 0 = unbounded;
+    // N>0 = retire after N fires. Omit-empty so a blank field inherits.
+    if (maxFires.trim()) {
+      const n = parseInt(maxFires.trim(), 10);
+      if (!Number.isInteger(n) || n < 0) {
+        setErr("max_fires must be a non-negative integer (0 = unbounded).");
+        setBusy(false);
+        return;
+      }
+      overlay.max_fires = n;
+    }
     if (Object.keys(credentials).length > 0) overlay.user_credentials = credentials;
 
     try {
@@ -98,6 +110,16 @@ export default function ScheduleForkForm({ templateName, onClose, onForked }: Pr
               value={cronOverride}
               onChange={(e) => setCronOverride(e.target.value)}
               placeholder='leave empty to use the template tier cron, or enter e.g. "0 6 * * *"'
+            />
+          </label>
+          <label className="modal-field">
+            <span>max_fires override (optional)</span>
+            <input
+              type="number"
+              min="0"
+              value={maxFires}
+              onChange={(e) => setMaxFires(e.target.value)}
+              placeholder="blank = inherit template; 0 = unbounded; N = retire after N fires"
             />
           </label>
           <label className="modal-field">
