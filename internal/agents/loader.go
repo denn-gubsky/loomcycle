@@ -140,6 +140,21 @@ type AgentInterruptionACL struct {
 	MaxPending int      `json:"max_pending,omitempty" yaml:"max_pending"`
 }
 
+// Sampling mirrors config.Sampling locally so the agents package stays
+// config-free (config → agents would otherwise cycle). json: tags mirror the
+// snake_case the substrate persists and are LOAD-BEARING for content_sha256
+// (see AgentChannelACL). Pointers so an unset field omits — and so a meaningful
+// temperature:0.0 is distinct from "unset".
+type Sampling struct {
+	Temperature      *float64 `json:"temperature,omitempty"`
+	TopP             *float64 `json:"top_p,omitempty"`
+	TopK             *int     `json:"top_k,omitempty"`
+	FrequencyPenalty *float64 `json:"frequency_penalty,omitempty"`
+	PresencePenalty  *float64 `json:"presence_penalty,omitempty"`
+	Seed             *int     `json:"seed,omitempty"`
+	Stop             []string `json:"stop,omitempty"`
+}
+
 // TierCandidate mirrors config.TierCandidate's shape locally so this
 // package doesn't import config (which would create a cycle:
 // config → agents → config). The merger in config converts these to

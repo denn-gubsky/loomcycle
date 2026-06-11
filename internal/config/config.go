@@ -607,6 +607,14 @@ type AgentDef struct {
 	// matrix series; PR 1 plumbs the field through unchanged.
 	Effort string `yaml:"effort"`
 
+	// Sampling tunes the per-agent LLM sampling parameters (temperature,
+	// top_p, …). nil = use the provider/model defaults. Per-run callers can
+	// override individual fields via the /v1/runs `sampling` block (per-run
+	// wins per-field; see MergeSampling). Each driver maps the params it
+	// supports and drops the rest (the same translate-or-drop contract as
+	// Effort). Pointer so a no-sampling agent stays byte-identical pre-feature.
+	Sampling *Sampling `yaml:"sampling,omitempty"`
+
 	// Providers is the per-agent override of the library
 	// ProviderPriority for tier resolution. Full replacement
 	// semantics: when set, the resolver uses this list verbatim
@@ -797,6 +805,145 @@ type AgentDef struct {
 	// the yaml-zero case ("explicitly disable retries"). When set,
 	// must be >= 0; validator refuses negatives at config-load.
 	RetryAttempts *int `yaml:"retry_attempts,omitempty"`
+}
+
+// Sampling is the per-agent LLM sampling-parameter block (the yaml/JSON
+// `sampling:` object). Every field is a pointer (or, for Stop, a slice) so
+// "unset" (nil) is distinct from a meaningful zero value — temperature 0.0 is
+// DETERMINISTIC, not "use the default". Each provider driver maps the params
+// it supports and silently drops the rest. nil Sampling = full provider/model
+// defaults.
+type Sampling struct {
+	// Temperature: sampling randomness. Provider ranges differ (Anthropic
+	// 0–1, OpenAI/Gemini 0–2); validated to 0–2 here, the API is the backstop.
+	Temperature *float64 `json:"temperature,omitempty" yaml:"temperature"`
+	// TopP: nucleus sampling probability mass (0–1).
+	TopP *float64 `json:"top_p,omitempty" yaml:"top_p"`
+	// TopK: top-k token cutoff (>=1). Anthropic / Gemini / Ollama only.
+	TopK *int `json:"top_k,omitempty" yaml:"top_k"`
+	// FrequencyPenalty / PresencePenalty (-2..2). OpenAI/DeepSeek/Ollama only.
+	FrequencyPenalty *float64 `json:"frequency_penalty,omitempty" yaml:"frequency_penalty"`
+	PresencePenalty  *float64 `json:"presence_penalty,omitempty" yaml:"presence_penalty"`
+	// Seed: deterministic-sampling seed where the provider supports it
+	// (OpenAI/DeepSeek/Gemini/Ollama). Useful for reproducible breeder variants.
+	Seed *int `json:"seed,omitempty" yaml:"seed"`
+	// Stop: up to a few stop sequences.
+	Stop []string `json:"stop,omitempty" yaml:"stop"`
+}
+
+// IsZero reports whether no sampling field is set (so callers can collapse an
+// empty block to nil — keeps content hashes byte-stable for no-sampling agents).
+func (s *Sampling) IsZero() bool {
+	return s == nil || (s.Temperature == nil && s.TopP == nil && s.TopK == nil &&
+		s.FrequencyPenalty == nil && s.PresencePenalty == nil && s.Seed == nil && len(s.Stop) == 0)
+}
+
+// Clone returns a deep copy (pointers + slice) so a merged result never aliases
+// either input's fields.
+func (s *Sampling) Clone() *Sampling {
+	if s == nil {
+		return nil
+	}
+	out := &Sampling{Stop: append([]string(nil), s.Stop...)}
+	if s.Temperature != nil {
+		v := *s.Temperature
+		out.Temperature = &v
+	}
+	if s.TopP != nil {
+		v := *s.TopP
+		out.TopP = &v
+	}
+	if s.TopK != nil {
+		v := *s.TopK
+		out.TopK = &v
+	}
+	if s.FrequencyPenalty != nil {
+		v := *s.FrequencyPenalty
+		out.FrequencyPenalty = &v
+	}
+	if s.PresencePenalty != nil {
+		v := *s.PresencePenalty
+		out.PresencePenalty = &v
+	}
+	if s.Seed != nil {
+		v := *s.Seed
+		out.Seed = &v
+	}
+	return out
+}
+
+// MergeSampling overlays `over` onto `base` PER FIELD — a field set in `over`
+// wins, an unset (nil) field in `over` keeps `base`'s value. Used for both the
+// AgentDef fork overlay (a fork that sets only temperature keeps the parent's
+// top_p) and the per-run override (a /v1/runs sampling field wins over the
+// agent's, field by field). Returns nil only when both inputs contribute
+// nothing. Never aliases either input.
+func MergeSampling(base, over *Sampling) *Sampling {
+	if base.IsZero() && over.IsZero() {
+		return nil
+	}
+	out := base.Clone()
+	if out == nil {
+		out = &Sampling{}
+	}
+	if over == nil {
+		return out
+	}
+	if over.Temperature != nil {
+		v := *over.Temperature
+		out.Temperature = &v
+	}
+	if over.TopP != nil {
+		v := *over.TopP
+		out.TopP = &v
+	}
+	if over.TopK != nil {
+		v := *over.TopK
+		out.TopK = &v
+	}
+	if over.FrequencyPenalty != nil {
+		v := *over.FrequencyPenalty
+		out.FrequencyPenalty = &v
+	}
+	if over.PresencePenalty != nil {
+		v := *over.PresencePenalty
+		out.PresencePenalty = &v
+	}
+	if over.Seed != nil {
+		v := *over.Seed
+		out.Seed = &v
+	}
+	if len(over.Stop) > 0 {
+		out.Stop = append([]string(nil), over.Stop...)
+	}
+	return out
+}
+
+// Validate checks light per-field bounds (the provider API is the final
+// authority). Returns a descriptive error naming the offending field.
+func (s *Sampling) Validate() error {
+	if s == nil {
+		return nil
+	}
+	if s.Temperature != nil && (*s.Temperature < 0 || *s.Temperature > 2) {
+		return fmt.Errorf("sampling.temperature %.3f out of range [0,2]", *s.Temperature)
+	}
+	if s.TopP != nil && (*s.TopP < 0 || *s.TopP > 1) {
+		return fmt.Errorf("sampling.top_p %.3f out of range [0,1]", *s.TopP)
+	}
+	if s.TopK != nil && *s.TopK < 1 {
+		return fmt.Errorf("sampling.top_k %d out of range (>=1)", *s.TopK)
+	}
+	if s.FrequencyPenalty != nil && (*s.FrequencyPenalty < -2 || *s.FrequencyPenalty > 2) {
+		return fmt.Errorf("sampling.frequency_penalty %.3f out of range [-2,2]", *s.FrequencyPenalty)
+	}
+	if s.PresencePenalty != nil && (*s.PresencePenalty < -2 || *s.PresencePenalty > 2) {
+		return fmt.Errorf("sampling.presence_penalty %.3f out of range [-2,2]", *s.PresencePenalty)
+	}
+	if len(s.Stop) > 8 {
+		return fmt.Errorf("sampling.stop has %d sequences (max 8)", len(s.Stop))
+	}
+	return nil
 }
 
 // AgentInterruptionACL is the per-agent v0.8.16 Interruption tool
@@ -3575,6 +3722,9 @@ func validate(c *Config) error {
 		}
 		if !validEffortLevels[agent.Effort] {
 			return fmt.Errorf("agent %q: invalid effort %q (want one of low/medium/high or empty)", name, agent.Effort)
+		}
+		if err := agent.Sampling.Validate(); err != nil {
+			return fmt.Errorf("agent %q: %w", name, err)
 		}
 		if hasTier && !validTierNames[agent.Tier] {
 			return fmt.Errorf("agent %q: invalid tier %q (want one of low/middle/high)", name, agent.Tier)

@@ -16,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/hooks"
 	lcotel "github.com/denn-gubsky/loomcycle/internal/otel"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
@@ -115,6 +116,12 @@ type RunOptions struct {
 	// Ollama no-op. PR 1 plumbs it through providers.Request
 	// unchanged; drivers in PR 1 ignore the field entirely.
 	Effort string
+
+	// Sampling carries the resolved per-agent LLM sampling params (per-run >
+	// per-agent already merged by the caller). The loop maps it onto the flat
+	// providers.Request fields; each driver applies what it supports. nil =
+	// provider defaults.
+	Sampling *config.Sampling
 
 	// ToolParallelism caps how many tool_calls from a single
 	// assistant turn run concurrently. Zero = use the package
@@ -845,6 +852,17 @@ outerLoop:
 			// hook the loop uses for response events. Without this hop
 			// the retry would be invisible to SSE consumers.
 			OnEvent: emit,
+		}
+		// Map the resolved per-agent sampling params onto the flat Request
+		// fields (each driver applies the subset its provider supports).
+		if s := opts.Sampling; s != nil {
+			req.Temperature = s.Temperature
+			req.TopP = s.TopP
+			req.TopK = s.TopK
+			req.FrequencyPenalty = s.FrequencyPenalty
+			req.PresencePenalty = s.PresencePenalty
+			req.Seed = s.Seed
+			req.Stop = s.Stop
 		}
 		ch, err := opts.Provider.Call(iterCtx, req)
 		if err != nil {

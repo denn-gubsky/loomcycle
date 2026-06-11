@@ -111,6 +111,19 @@ type Request struct {
 	Temperature *float64       `json:"temperature,omitempty"`
 	Stream      bool           `json:"stream"`
 
+	// Per-agent LLM sampling knobs (config.Sampling, resolved per-run >
+	// per-agent and mapped onto these flat fields by the loop). Each driver
+	// applies the ones its provider supports and DROPS the rest (the same
+	// translate-or-drop contract as Effort) — nil/empty = provider default.
+	// Anthropic also drops Temperature/TopP when it attaches a thinking block
+	// (the API rejects temperature!=1 with thinking).
+	TopP             *float64 `json:"top_p,omitempty"`
+	TopK             *int     `json:"top_k,omitempty"`
+	FrequencyPenalty *float64 `json:"frequency_penalty,omitempty"`
+	PresencePenalty  *float64 `json:"presence_penalty,omitempty"`
+	Seed             *int     `json:"seed,omitempty"`
+	Stop             []string `json:"stop,omitempty"`
+
 	// Effort is the reasoning-effort hint: "low" / "medium" / "high"
 	// or empty (= no hint, driver default). Drivers translate it to
 	// their native parameter where supported (Anthropic

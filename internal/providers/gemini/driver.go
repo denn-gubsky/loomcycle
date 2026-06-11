@@ -212,9 +212,15 @@ type wireFunctionDecl struct {
 }
 
 type wireGenConfig struct {
-	MaxOutputTokens int                 `json:"maxOutputTokens,omitempty"`
-	Temperature     *float64            `json:"temperature,omitempty"`
-	ThinkingConfig  *wireThinkingConfig `json:"thinkingConfig,omitempty"`
+	MaxOutputTokens int      `json:"maxOutputTokens,omitempty"`
+	Temperature     *float64 `json:"temperature,omitempty"`
+	// Gemini generationConfig sampling knobs. frequency/presence_penalty are
+	// not Gemini params (dropped). seed is supported on recent models.
+	TopP           *float64            `json:"topP,omitempty"`
+	TopK           *int                `json:"topK,omitempty"`
+	Seed           *int                `json:"seed,omitempty"`
+	StopSequences  []string            `json:"stopSequences,omitempty"`
+	ThinkingConfig *wireThinkingConfig `json:"thinkingConfig,omitempty"`
 }
 
 type wireThinkingConfig struct {
@@ -276,10 +282,15 @@ func buildRequestBody(req providers.Request) ([]byte, error) {
 		w.Tools = []wireTool{{FunctionDeclarations: decls}}
 	}
 
-	if req.MaxTokens > 0 || req.Temperature != nil || req.Effort != "" {
+	if req.MaxTokens > 0 || req.Temperature != nil || req.Effort != "" ||
+		req.TopP != nil || req.TopK != nil || req.Seed != nil || len(req.Stop) > 0 {
 		gc := &wireGenConfig{
 			MaxOutputTokens: req.MaxTokens,
 			Temperature:     req.Temperature,
+			TopP:            req.TopP,
+			TopK:            req.TopK,
+			Seed:            req.Seed,
+			StopSequences:   req.Stop,
 		}
 		if budget := geminiEffortBudget(req.Effort, req.MaxTokens); budget >= 0 {
 			gc.ThinkingConfig = &wireThinkingConfig{ThinkingBudget: budget}

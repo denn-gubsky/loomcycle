@@ -1844,6 +1844,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		PayloadMetadata:        in.PayloadMetadata,
 		RunTimeoutSeconds:      pickRunTimeout(in.RunTimeoutSeconds, agentDef.RunTimeoutSeconds),
 		Interactive:            in.Interactive,
+		Sampling:               config.MergeSampling(agentDef.Sampling, in.Sampling), // per-run wins per field
 		UserTier:               in.UserTier,
 		FallbackPolicy:         fbPolicy,
 		ReResolve:              fbReResolve,
@@ -2602,6 +2603,11 @@ type runRequest struct {
 	// POST /v1/runs/{run_id}/input; pair with an unbounded_iterations agent
 	// for a true always-on terminal. Cancel ends it.
 	Interactive bool `json:"interactive,omitempty"`
+
+	// Sampling is an optional per-RUN LLM sampling override (temperature,
+	// top_p, …) — merged PER FIELD over the agent's own sampling (this wins;
+	// unset fields inherit the agent's). nil = inherit the agent's entirely.
+	Sampling *config.Sampling `json:"sampling,omitempty"`
 }
 
 // pickRunTimeout resolves the effective code-js wall-clock budget override:
@@ -3113,6 +3119,7 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		Metadata:               req.Metadata,  // direct /v1/runs caller is first-party → trusted; no payload_metadata
 		RunTimeoutSeconds:      pickRunTimeout(req.RunTimeoutSeconds, agentDef.RunTimeoutSeconds),
 		Interactive:            req.Interactive,
+		Sampling:               config.MergeSampling(agentDef.Sampling, req.Sampling), // per-run wins per field
 		UserTier:               req.UserTier,
 		FallbackPolicy:         fbPolicy,
 		ReResolve:              fbReResolve,
@@ -3230,6 +3237,10 @@ type messagesRequest struct {
 	// operator steering at end_turn (interactive terminal). Same semantics as
 	// runRequest.Interactive.
 	Interactive bool `json:"interactive,omitempty"`
+
+	// Sampling: per-RUN LLM sampling override for this continuation turn,
+	// merged per field over the agent's. Same semantics as runRequest.Sampling.
+	Sampling *config.Sampling `json:"sampling,omitempty"`
 }
 
 func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
@@ -3574,6 +3585,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		Metadata:               body.Metadata,
 		RunTimeoutSeconds:      pickRunTimeout(body.RunTimeoutSeconds, agentDef.RunTimeoutSeconds),
 		Interactive:            body.Interactive,
+		Sampling:               config.MergeSampling(agentDef.Sampling, body.Sampling), // per-run wins per field
 		UserTier:               body.UserTier,
 		FallbackPolicy:         fbPolicy,
 		ReResolve:              fbReResolve,
@@ -4304,7 +4316,10 @@ func (s *Server) runSubAgent(ctx context.Context, name string, prompt string, de
 		// this, the 4th run-creation site falls back to the global default,
 		// dropping the budget for the fan-out orchestrator case the per-agent
 		// override exists to serve.
-		RunTimeoutSeconds:      def.RunTimeoutSeconds,
+		RunTimeoutSeconds: def.RunTimeoutSeconds,
+		// Sub-agents use their OWN def's sampling (no per-spawn override yet —
+		// a breeder varies temperature by FORKING a def, then spawning it).
+		Sampling:               def.Sampling,
 		UserTier:               parentTier,
 		FallbackPolicy:         fbPolicy,
 		ReResolve:              fbReResolve,
