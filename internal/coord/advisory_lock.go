@@ -117,6 +117,10 @@ var (
 	LockKeyMetricsSweeper      int64
 	LockKeyDynamicAgentSweeper int64
 	LockKeyReplicasSweeper     int64
+	// LockKeyResumePausedRuns gates the one-shot boot-time re-dispatch of
+	// pause_state='paused' runs (F42 / RFC X Phase 2) so exactly ONE replica
+	// resurrects each paused run's loop in a cluster — not a periodic sweep.
+	LockKeyResumePausedRuns int64
 )
 
 func init() {
@@ -127,6 +131,7 @@ func init() {
 	LockKeyMetricsSweeper = fnvKey("metrics_sweeper")
 	LockKeyDynamicAgentSweeper = fnvKey("dynamic_agent_sweeper")
 	LockKeyReplicasSweeper = fnvKey("replicas_sweeper")
+	LockKeyResumePausedRuns = fnvKey("resume_paused_runs")
 }
 
 // fnvKey hashes a sweeper-name string to a stable int64 lock key.
