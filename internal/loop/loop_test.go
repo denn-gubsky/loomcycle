@@ -149,6 +149,60 @@ func TestLoopToolUseCycle(t *testing.T) {
 	}
 }
 
+// ctxWindowProvider emits one end_turn with usage and reports a
+// configurable context-window ceiling, so we can assert the loop stamps
+// it onto the emitted EventUsage.
+type ctxWindowProvider struct{ maxCtx int }
+
+func (p *ctxWindowProvider) ID() string                    { return "ctxwin" }
+func (p *ctxWindowProvider) Probe(_ context.Context) error { return nil }
+func (p *ctxWindowProvider) ListModels(_ context.Context) ([]string, error) {
+	return []string{"m"}, nil
+}
+func (p *ctxWindowProvider) Capabilities() providers.Capabilities {
+	return providers.Capabilities{Streaming: true, MaxContextTokens: p.maxCtx}
+}
+func (p *ctxWindowProvider) Call(_ context.Context, _ providers.Request) (<-chan providers.Event, error) {
+	ch := make(chan providers.Event, 2)
+	ch <- providers.Event{Type: providers.EventText, Text: "hi"}
+	ch <- providers.Event{Type: providers.EventDone, StopReason: "end_turn", Usage: &providers.Usage{InputTokens: 7, OutputTokens: 2}}
+	close(ch)
+	return ch, nil
+}
+
+// TestLoop_EmitsMaxContextTokensOnUsage pins that the loop stamps the
+// serving model's context-window ceiling onto each EventUsage from
+// Provider.Capabilities().MaxContextTokens, so the Web UI can render a
+// context gauge without a hard-coded per-model table. A 0-window
+// provider (e.g. Ollama) leaves the field 0 (omitted on the wire).
+func TestLoop_EmitsMaxContextTokensOnUsage(t *testing.T) {
+	for _, tc := range []struct{ maxCtx int }{{200000}, {0}} {
+		var usage *providers.Usage
+		_, err := Run(context.Background(), RunOptions{
+			Provider:   &ctxWindowProvider{maxCtx: tc.maxCtx},
+			Model:      "m",
+			Dispatcher: tools.NewDispatcher(nil),
+			Segments: []PromptSegment{
+				{Role: "user", Content: []PromptContentBlock{{Type: "trusted-text", Text: "hi"}}},
+			},
+			OnEvent: func(ev providers.Event) {
+				if ev.Type == providers.EventUsage {
+					usage = ev.Usage
+				}
+			},
+		})
+		if err != nil {
+			t.Fatalf("Run: %v", err)
+		}
+		if usage == nil {
+			t.Fatal("no EventUsage emitted")
+		}
+		if usage.MaxContextTokens != tc.maxCtx {
+			t.Errorf("MaxContextTokens = %d, want %d", usage.MaxContextTokens, tc.maxCtx)
+		}
+	}
+}
+
 // Regression: when a provider emits a tool_use with an empty ID (Ollama does
 // this — its native API doesn't include tool_call IDs), the loop must
 // synthesise one. Otherwise the next iteration's request carries an empty
