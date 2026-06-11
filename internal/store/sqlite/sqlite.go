@@ -3672,13 +3672,16 @@ func (s *Store) AgentDefListNames(ctx context.Context) ([]store.AgentDefNameSumm
 		SELECT
 			d.tenant_id,
 			d.name,
-			COUNT(*)                  AS version_count,
-			MAX(d.version)            AS latest_version,
-			MAX(d.created_at)         AS last_updated,
-			COALESCE(a.def_id, '')    AS active_def_id
+			COUNT(*)                              AS version_count,
+			COUNT(*) FILTER (WHERE d.retired = 0) AS live_version_count,
+			MAX(d.version)                        AS latest_version,
+			MAX(d.created_at)                     AS last_updated,
+			COALESCE(a.def_id, '')                AS active_def_id,
+			COALESCE(ad.retired, 0)               AS active_retired
 		FROM agent_defs d
 		LEFT JOIN agent_def_active a ON a.name = d.name AND a.tenant_id = d.tenant_id
-		GROUP BY d.tenant_id, d.name, a.def_id
+		LEFT JOIN agent_defs ad      ON ad.def_id = a.def_id
+		GROUP BY d.tenant_id, d.name, a.def_id, ad.retired
 		ORDER BY d.tenant_id, d.name`)
 	if err != nil {
 		return nil, err
@@ -3689,10 +3692,12 @@ func (s *Store) AgentDefListNames(ctx context.Context) ([]store.AgentDefNameSumm
 	for rows.Next() {
 		var s store.AgentDefNameSummary
 		var updatedAt int64
-		if err := rows.Scan(&s.TenantID, &s.Name, &s.VersionCount, &s.LatestVersion, &updatedAt, &s.ActiveDefID); err != nil {
+		var activeRetired int
+		if err := rows.Scan(&s.TenantID, &s.Name, &s.VersionCount, &s.LiveVersionCount, &s.LatestVersion, &updatedAt, &s.ActiveDefID, &activeRetired); err != nil {
 			return nil, err
 		}
 		s.LastUpdated = time.Unix(0, updatedAt)
+		s.ActiveRetired = activeRetired != 0
 		out = append(out, s)
 	}
 	return out, rows.Err()
@@ -3752,18 +3757,38 @@ func (s *Store) AgentDefGetActive(ctx context.Context, tenantID, name string) (s
 // AgentDefSetRetired flips the `retired` flag on one row. The row
 // stays visible in lineage queries.
 func (s *Store) AgentDefSetRetired(ctx context.Context, defID string, retired bool) error {
-	res, err := s.db.ExecContext(ctx,
-		`UPDATE agent_defs SET retired = ? WHERE def_id = ?`,
-		boolToInt(retired), defID,
-	)
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
-	n, _ := res.RowsAffected()
-	if n == 0 {
+	defer func() { _ = tx.Rollback() }()
+
+	var name, tenant string
+	err = tx.QueryRowContext(ctx, `SELECT name, tenant_id FROM agent_defs WHERE def_id = ?`, defID).Scan(&name, &tenant)
+	if err == sql.ErrNoRows {
 		return &store.ErrNotFound{Kind: "agent_def", ID: defID}
 	}
-	return nil
+	if err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE agent_defs SET retired = ? WHERE def_id = ?`,
+		boolToInt(retired), defID,
+	); err != nil {
+		return err
+	}
+	if retired {
+		// Clear the active pointer ONLY when it points at THIS def — the
+		// `def_id = ?` guard leaves a non-active version's pointer alone, so
+		// the name becomes reclaimable and runs stop resolving a retired def.
+		if _, err := tx.ExecContext(ctx,
+			`DELETE FROM agent_def_active WHERE tenant_id = ? AND name = ? AND def_id = ?`,
+			tenant, name, defID,
+		); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 // agentDefSelect is the column list shared by every read. Kept in

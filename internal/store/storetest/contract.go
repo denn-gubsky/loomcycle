@@ -185,6 +185,12 @@ func Run(t *testing.T, factory Factory) {
 		{"AgentDefAppendOnlyDefinition", testAgentDefAppendOnlyDefinition},
 		{"AgentDefActivePointerIdempotent", testAgentDefActivePointerIdempotent},
 		{"AgentDefRetireReversible", testAgentDefRetireReversible},
+		// Soft-reclaim: retiring the ACTIVE def clears its pointer (name
+		// reclaimable); retiring a non-active version leaves it; list surfaces
+		// live-vs-total counts. Fail-before: retire was a bare flag flip.
+		{"AgentDefRetireActiveClearsPointer", testAgentDefRetireActiveClearsPointer},
+		{"AgentDefRetireNonActiveLeavesPointer", testAgentDefRetireNonActiveLeavesPointer},
+		{"AgentDefListNamesLiveCount", testAgentDefListNamesLiveCount},
 		{"AgentDefStaticFallback", testAgentDefStaticFallback},
 		// RFC N — agent definition plane tenant isolation. Fails on the
 		// pre-migration single-`name`-PK schema (clobber); passes after.
@@ -3658,6 +3664,101 @@ func testAgentDefRetireReversible(t *testing.T, s store.Store) {
 	rows, _ := s.AgentDefListByName(ctx, "retireagent")
 	if len(rows) != 1 {
 		t.Errorf("list after retire toggle: got %d, want 1", len(rows))
+	}
+}
+
+// testAgentDefRetireActiveClearsPointer pins the soft-reclaim contract:
+// retiring the CURRENTLY-ACTIVE def clears its active pointer, so the name
+// becomes reclaimable and runs stop resolving a retired def. FAIL-BEFORE:
+// retire was a bare `UPDATE ... SET retired` that left the pointer, so
+// AgentDefGetActive still returned the retired row.
+func testAgentDefRetireActiveClearsPointer(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	row, err := s.AgentDefCreate(ctx, mkDef("rca-1", "rca-agent", ""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AgentDefSetActive(ctx, "", "rca-agent", row.DefID, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AgentDefSetRetired(ctx, row.DefID, true); err != nil {
+		t.Fatal(err)
+	}
+	// Active pointer cleared → reclaimable / no longer served.
+	_, err = s.AgentDefGetActive(ctx, "", "rca-agent")
+	var nf *store.ErrNotFound
+	if !errors.As(err, &nf) {
+		t.Errorf("GetActive after retiring the active def = %v, want *ErrNotFound (pointer should be cleared)", err)
+	}
+	// The row itself survives, flagged retired (audit lineage preserved).
+	got, _ := s.AgentDefGet(ctx, row.DefID)
+	if !got.Retired {
+		t.Error("retired flag didn't stick on the row")
+	}
+}
+
+// testAgentDefRetireNonActiveLeavesPointer pins that retiring a NON-active
+// version leaves the active pointer untouched (the `def_id` guard).
+func testAgentDefRetireNonActiveLeavesPointer(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	v1, err := s.AgentDefCreate(ctx, mkDef("rna-1", "rna-agent", ""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	v2, err := s.AgentDefCreate(ctx, mkDef("rna-2", "rna-agent", v1.DefID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AgentDefSetActive(ctx, "", "rna-agent", v2.DefID, ""); err != nil {
+		t.Fatal(err)
+	}
+	// Retire the OLD, non-active v1 — the active pointer must still be v2.
+	if err := s.AgentDefSetRetired(ctx, v1.DefID, true); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.AgentDefGetActive(ctx, "", "rna-agent")
+	if err != nil {
+		t.Fatalf("GetActive after retiring a non-active version: %v", err)
+	}
+	if got.DefID != v2.DefID {
+		t.Errorf("active = %s, want %s (retiring non-active must not touch the pointer)", got.DefID, v2.DefID)
+	}
+}
+
+// testAgentDefListNamesLiveCount pins the additive list fields: total
+// VersionCount includes retired rows, LiveVersionCount excludes them, and
+// retiring the active def clears ActiveDefID for that name.
+func testAgentDefListNamesLiveCount(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	v1, err := s.AgentDefCreate(ctx, mkDef("lc-1", "lc-agent", ""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.AgentDefCreate(ctx, mkDef("lc-2", "lc-agent", v1.DefID)); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AgentDefSetRetired(ctx, v1.DefID, true); err != nil {
+		t.Fatal(err)
+	}
+	findName := func() store.AgentDefNameSummary {
+		rows, lerr := s.AgentDefListNames(ctx)
+		if lerr != nil {
+			t.Fatal(lerr)
+		}
+		for _, r := range rows {
+			if r.Name == "lc-agent" && r.TenantID == "" {
+				return r
+			}
+		}
+		t.Fatal("lc-agent not in list")
+		return store.AgentDefNameSummary{}
+	}
+	sum := findName()
+	if sum.VersionCount != 2 {
+		t.Errorf("VersionCount = %d, want 2 (retired rows still counted)", sum.VersionCount)
+	}
+	if sum.LiveVersionCount != 1 {
+		t.Errorf("LiveVersionCount = %d, want 1 (retired excluded)", sum.LiveVersionCount)
 	}
 }
 

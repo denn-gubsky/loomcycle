@@ -52,6 +52,11 @@ type LibraryEntry struct {
 	LatestVersion    int             `json:"latest_version,omitempty"`
 	LastUpdated      time.Time       `json:"last_updated,omitempty"`
 	StaticDefinition json.RawMessage `json:"static_definition,omitempty"`
+	// LiveVersionCount / ActiveRetired — agents only (the soft-reclaim
+	// status the UI badges on). Zero/false for skills + mcp-servers, whose
+	// summaries don't carry these yet.
+	LiveVersionCount int  `json:"live_version_count,omitempty"`
+	ActiveRetired    bool `json:"active_retired,omitempty"`
 }
 
 // libraryListResponse is the envelope returned by all three handlers.
@@ -91,6 +96,8 @@ func (s *Server) handleListLibraryAgents(w http.ResponseWriter, r *http.Request)
 			entry.ActiveDefID = sub.ActiveDefID
 			entry.LatestVersion = sub.LatestVersion
 			entry.LastUpdated = sub.LastUpdated
+			entry.LiveVersionCount = sub.LiveVersionCount
+			entry.ActiveRetired = sub.ActiveRetired
 		}
 		entry.Source = deriveSource(entry.InStatic, entry.InSubstrate)
 		entries = append(entries, entry)
@@ -101,13 +108,15 @@ func (s *Server) handleListLibraryAgents(w http.ResponseWriter, r *http.Request)
 			continue
 		}
 		entries = append(entries, LibraryEntry{
-			Name:          name,
-			Source:        deriveSource(false, true),
-			InSubstrate:   true,
-			VersionCount:  sub.VersionCount,
-			ActiveDefID:   sub.ActiveDefID,
-			LatestVersion: sub.LatestVersion,
-			LastUpdated:   sub.LastUpdated,
+			Name:             name,
+			Source:           deriveSource(false, true),
+			InSubstrate:      true,
+			VersionCount:     sub.VersionCount,
+			ActiveDefID:      sub.ActiveDefID,
+			LatestVersion:    sub.LatestVersion,
+			LastUpdated:      sub.LastUpdated,
+			LiveVersionCount: sub.LiveVersionCount,
+			ActiveRetired:    sub.ActiveRetired,
 		})
 	}
 	sort.Slice(entries, func(i, j int) bool { return entries[i].Name < entries[j].Name })

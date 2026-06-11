@@ -536,6 +536,39 @@ func TestAgentDefTool_RetireRoundTrip(t *testing.T) {
 	}
 }
 
+// TestAgentDefTool_ReclaimNameAfterRetire pins the soft-reclaim end-to-end
+// at the tool layer: after retiring the active def for a name, a fresh
+// `create` of the SAME name succeeds (the cleared active pointer means the
+// name no longer collides). This is the operator workflow for granting an
+// agent MORE tools — a fork can't widen the allowed_tools ceiling, but a
+// recreate (fresh root) can, and reclaim unblocks it.
+func TestAgentDefTool_ReclaimNameAfterRetire(t *testing.T) {
+	tool, ctx, cleanup := agentDefFixture(t)
+	defer cleanup()
+
+	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"create","name":"reclaimtest"}`))
+	if res.IsError {
+		t.Fatalf("first create: %s", res.Text)
+	}
+	firstDefID := decodeResult(t, res.Text)["def_id"].(string)
+
+	// Retire the active def — clears the active pointer.
+	res, _ = tool.Execute(ctx, json.RawMessage(`{"op":"retire","def_id":"`+firstDefID+`","retired":true}`))
+	if res.IsError {
+		t.Fatalf("retire: %s", res.Text)
+	}
+
+	// Re-create the same name — must NOT be blocked, mints a new version.
+	res, _ = tool.Execute(ctx, json.RawMessage(`{"op":"create","name":"reclaimtest"}`))
+	if res.IsError {
+		t.Fatalf("reclaim create after retire: %s", res.Text)
+	}
+	secondDefID := decodeResult(t, res.Text)["def_id"].(string)
+	if secondDefID == "" || secondDefID == firstDefID {
+		t.Errorf("reclaim create returned def_id %q (first was %q) — expected a fresh row", secondDefID, firstDefID)
+	}
+}
+
 // TestAgentDefTool_TenantIsolationGetListRetire — RFC N FIX 3. The
 // get / list / retire ops were tenant-blind (gated only by the
 // tenant-blind checkScopeForName), so a caller in tenant A could read,

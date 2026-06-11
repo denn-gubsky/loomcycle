@@ -1111,10 +1111,15 @@ type Store interface {
 	// operator/legacy tenant.
 	AgentDefGetActive(ctx context.Context, tenantID, name string) (AgentDefRow, error)
 
-	// AgentDefSetRetired flips the `retired` flag on one row. The
-	// row stays visible in lineage queries with the flag exposed;
-	// the resolver skips retired rows when picking the next default
-	// for runs that don't pin def_id.
+	// AgentDefSetRetired flips the `retired` flag on one row, in a
+	// transaction. The row stays visible in lineage queries with the flag
+	// exposed. When retired=true AND this def is the CURRENT active pointer
+	// for its (tenant, name), the active pointer is CLEARED in the same tx —
+	// so the name becomes reclaimable (a fresh create allocates the next
+	// version) and runs fall through to the static fallback / nothing
+	// instead of resolving a retired def. retired=false never touches the
+	// pointer (un-retire does NOT auto-promote — promotion is an explicit
+	// op). Retiring a NON-active version leaves the pointer untouched.
 	AgentDefSetRetired(ctx context.Context, defID string, retired bool) error
 
 	// ---- v0.8.22 SkillDef substrate ----
@@ -1994,6 +1999,16 @@ type AgentDefNameSummary struct {
 	ActiveDefID   string    `json:"active_def_id,omitempty"`
 	LatestVersion int       `json:"latest_version"`
 	LastUpdated   time.Time `json:"last_updated"`
+	// LiveVersionCount is VersionCount minus retired rows (additive; 0 for
+	// pre-feature callers). A name whose LiveVersionCount is 0 (every
+	// version retired) is "inactive" — the UI badges it and lets the
+	// operator reclaim the name with a fresh create.
+	LiveVersionCount int `json:"live_version_count"`
+	// ActiveRetired is true when ActiveDefID points at a retired row — a
+	// corrupt-legacy state (pre the retire-clears-active fix) the UI flags
+	// until the next retire/promote heals it. Normally false: the
+	// retire-of-active path now clears the pointer.
+	ActiveRetired bool `json:"active_retired,omitempty"`
 }
 
 // ---- v0.8.22 SkillDef substrate types ----
