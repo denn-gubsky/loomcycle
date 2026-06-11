@@ -87,6 +87,11 @@ var (
 	// Wire: HTTP 429 + Retry-After: 5 / gRPC ResourceExhausted.
 	// (v0.10.1)
 	ErrPerUserQuotaExhausted = errors.New("per_user_quota_exhausted")
+	// ErrRuntimePaused — a runtime-wide pause (POST /v1/_pause) is in
+	// effect, so new runs are not admitted (RFC X / F41). The runtime is
+	// quiescing for a snapshot; retry after resume. Wire: HTTP 503 / gRPC
+	// Unavailable.
+	ErrRuntimePaused = errors.New("runtime paused")
 	// ErrInternal — unexpected error from store / loop / providers.
 	// Wire: HTTP 500 / gRPC Internal.
 	ErrInternal = errors.New("internal error")

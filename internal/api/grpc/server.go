@@ -863,6 +863,10 @@ func mapRunnerErr(err error) error {
 		// `code` field + Retry-After header; gRPC consumers branch on
 		// the error message if they need to distinguish.
 		return status.Error(codes.ResourceExhausted, err.Error())
+	case errors.Is(err, runner.ErrRuntimePaused):
+		// Runtime-wide pause in effect (RFC X) — new runs rejected until
+		// resume. Unavailable mirrors the HTTP 503 gate.
+		return status.Error(codes.Unavailable, err.Error())
 	default:
 		return status.Errorf(codes.Internal, "runner: %v", err)
 	}

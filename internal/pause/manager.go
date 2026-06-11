@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -90,6 +91,21 @@ type Manager struct {
 	// allocated so the next pause has a clean signal.
 	pauseCh chan struct{}
 
+	// resumeCh is closed on Resume to WAKE runs parked at an iteration
+	// boundary (the loop's PauseGate.Park selects on it). A fresh one is
+	// allocated each Resume so the next pause cycle has a clean signal.
+	// Mirror of pauseCh — pauseCh signals "stop", resumeCh signals "go".
+	resumeCh chan struct{}
+
+	// activeRuns is the in-flight-run registry the PauseGate registers
+	// with (RegisterRun on loop entry, DeregisterRun on exit, parked flag
+	// set while a run is parked at a boundary). Pause()'s Stage-2 barrier
+	// waits until every registered run is parked (or the deadline) so
+	// paused_runs_count is meaningful on return. Key: runID; value:
+	// *runEntry. sync.Map so per-run registration doesn't contend with
+	// state transitions (same rationale as activeTools).
+	activeRuns sync.Map
+
 	// store is used to persist runs.pause_state and to list paused
 	// runs on resume. Manager treats the store as the source of
 	// truth — process-local atomic is the fast path; DB is the
@@ -143,6 +159,12 @@ type toolEntry struct {
 	id       string
 }
 
+// runEntry tracks one in-flight run for the pause barrier. parked flips
+// true while the run's loop is parked at an iteration boundary.
+type runEntry struct {
+	parked atomic.Bool
+}
+
 // NewManager constructs a Manager wired to the given store. The
 // initial state is StateRunning; no pause is in flight. timeout is the
 // default wait-for-non-idempotent-tools cap when POST /v1/runtime/pause
@@ -157,6 +179,7 @@ func NewManager(s store.Store, timeout time.Duration) *Manager {
 	m := &Manager{
 		store:          s,
 		pauseCh:        make(chan struct{}),
+		resumeCh:       make(chan struct{}),
 		defaultTimeout: timeout,
 	}
 	m.state.Store(int32(StateRunning))
@@ -290,6 +313,8 @@ func (m *Manager) applyRemoteResume() {
 		return
 	}
 	m.pauseCh = make(chan struct{})
+	close(m.resumeCh)
+	m.resumeCh = make(chan struct{})
 	m.state.Store(int32(StateRunning))
 	m.mu.Unlock()
 
@@ -318,6 +343,116 @@ func (m *Manager) PauseCh() <-chan struct{} {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.pauseCh
+}
+
+// RegisterRun adds a run to the in-flight registry so Pause()'s barrier knows
+// to wait for it to reach an iteration boundary. Called by the run's PauseGate
+// (via the server) at loop entry. Idempotent. No-op on a nil manager.
+func (m *Manager) RegisterRun(runID string) {
+	if m == nil || runID == "" {
+		return
+	}
+	m.activeRuns.LoadOrStore(runID, &runEntry{})
+}
+
+// DeregisterRun removes a run from the registry (loop exit — completed,
+// failed, or cancelled). A deregistered run no longer holds back the barrier.
+func (m *Manager) DeregisterRun(runID string) {
+	if m == nil || runID == "" {
+		return
+	}
+	m.activeRuns.Delete(runID)
+}
+
+// BeginPark is called by a run's PauseGate at an iteration boundary when a
+// pause is in effect. Under the manager lock it RE-CHECKS state (so a run that
+// raced a concurrent Resume does not park) and returns the resume channel to
+// wait on. shouldPark=false means the runtime is already running again — the
+// caller must not park. It does NOT mark the run parked: the caller must
+// persist pause_state='paused' to the store FIRST, then call MarkParked, so
+// the Pause() barrier (which waits on the parked flag) never reports a run
+// parked before its store row is durably 'paused' (else finalizePause /
+// snapshot, which read the store, would miss it).
+func (m *Manager) BeginPark(runID string) (resume <-chan struct{}, shouldPark bool) {
+	if m == nil {
+		return nil, false
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if loadState(&m.state) == StateRunning {
+		return nil, false
+	}
+	return m.resumeCh, true
+}
+
+// MarkParked flags a run parked for the Pause() barrier. Called by the
+// PauseGate AFTER it has persisted pause_state='paused' (see BeginPark).
+func (m *Manager) MarkParked(runID string) {
+	if m == nil {
+		return
+	}
+	if e, ok := m.activeRuns.Load(runID); ok {
+		e.(*runEntry).parked.Store(true)
+	}
+}
+
+// EndPark clears a run's parked flag (the loop woke and is resuming).
+func (m *Manager) EndPark(runID string) {
+	if m == nil {
+		return
+	}
+	if e, ok := m.activeRuns.Load(runID); ok {
+		e.(*runEntry).parked.Store(false)
+	}
+}
+
+// runsQuiesced reports whether every registered in-flight run is parked at a
+// boundary (or none are registered). total is the registered count; used by
+// Pause()'s Stage-2 barrier and for the not-all-parked warning.
+func (m *Manager) runsQuiesced() (allParked bool, total, parked int) {
+	m.activeRuns.Range(func(_, v any) bool {
+		total++
+		if v.(*runEntry).parked.Load() {
+			parked++
+		}
+		return true
+	})
+	return total == parked, total, parked
+}
+
+// unparkedRunIDs returns the registered runs that have NOT reached a pause
+// boundary yet — used to name them in the timeout/cancel warning. The classic
+// case is a fan-out PARENT blocked in Agent.parallel_spawn: its loop is
+// suspended in the tool while its children park, so it can't reach its own
+// boundary until the spawn returns (on resume). Snapshotting mid-fan-out would
+// capture the parked children WITHOUT the parent, so callers must snapshot only
+// at a quiescent boundary (a clean Pause with no warning).
+func (m *Manager) unparkedRunIDs() []string {
+	var out []string
+	m.activeRuns.Range(func(k, v any) bool {
+		if !v.(*runEntry).parked.Load() {
+			out = append(out, k.(string))
+		}
+		return true
+	})
+	return out
+}
+
+// unparkedWarning builds the "runs didn't reach a boundary" warning (shared by
+// the deadline + caller-cancel paths), naming the runs so an operator knows a
+// fan-out parent (or a long tool/provider turn) held back the quiesce — and
+// that paused_runs_count therefore excludes them. Empty when all parked.
+func (m *Manager) unparkedWarning(whenPhrase string) string {
+	ids := m.unparkedRunIDs()
+	if len(ids) == 0 {
+		return ""
+	}
+	return fmt.Sprintf(
+		"%d in-flight run(s) did not reach a pause boundary %s — still executing a tool / "+
+			"provider turn (e.g. a fan-out PARENT blocked in parallel_spawn whose children HAVE "+
+			"parked); they park on their next boundary, so paused_runs_count excludes them. Snapshot "+
+			"only at a quiescent boundary (a clean Pause with no warning), not mid-fan-out. runs: %s",
+		len(ids), whenPhrase, strings.Join(ids, ", "))
 }
 
 // ToolCtx derives a per-tool-call context with the right cancellation
@@ -482,19 +617,25 @@ func (m *Manager) Pause(ctx context.Context, timeout time.Duration) (PauseResult
 		return true
 	})
 
-	// Stage 2: wait for activeTools to drain or hit the deadline.
+	// Stage 2: wait for activeTools to drain AND for every in-flight run to
+	// reach a pause boundary (PauseGate.Park persisting pause_state='paused'),
+	// or hit the deadline. Waiting for runs to park is what makes
+	// paused_runs_count meaningful on return — a run blocked in a long tool /
+	// provider turn parks at its NEXT boundary, bounded by this deadline.
 	deadline := time.NewTimer(timeout)
 	defer deadline.Stop()
 	tick := time.NewTicker(50 * time.Millisecond)
 	defer tick.Stop()
 
+	var warnings []string
 	for {
-		empty := true
+		toolsEmpty := true
 		m.activeTools.Range(func(_, _ any) bool {
-			empty = false
+			toolsEmpty = false
 			return false
 		})
-		if empty {
+		runsParked, _, _ := m.runsQuiesced()
+		if toolsEmpty && runsParked {
 			break
 		}
 		select {
@@ -503,11 +644,16 @@ func (m *Manager) Pause(ctx context.Context, timeout time.Duration) (PauseResult
 			// still in flight as force-cancelled, transition to
 			// StatePaused, return the partial result.
 			m.forceCancelRemaining(&forceCancelMu, &forceCancel)
-			return m.finalizePause(start, forceCancel, idempotentCount, []string{
-				fmt.Sprintf("pause request cancelled by caller: %v", ctx.Err()),
-			}), nil
+			if w := m.unparkedWarning("at cancellation"); w != "" {
+				warnings = append(warnings, w)
+			}
+			return m.finalizePause(start, forceCancel, idempotentCount, append(warnings,
+				fmt.Sprintf("pause request cancelled by caller: %v", ctx.Err()))), nil
 		case <-deadline.C:
 			m.forceCancelRemaining(&forceCancelMu, &forceCancel)
+			if w := m.unparkedWarning("within the timeout"); w != "" {
+				warnings = append(warnings, w)
+			}
 			break
 		case <-tick.C:
 			continue
@@ -517,7 +663,7 @@ func (m *Manager) Pause(ctx context.Context, timeout time.Duration) (PauseResult
 		break
 	}
 
-	return m.finalizePause(start, forceCancel, idempotentCount, nil), nil
+	return m.finalizePause(start, forceCancel, idempotentCount, warnings), nil
 }
 
 // forceCancelRemaining cancels every entry still in activeTools and
@@ -613,6 +759,10 @@ func (m *Manager) Resume(ctx context.Context) (ResumeResult, error) {
 	// holding the closed channel from the prior pause naturally fall
 	// through their select-default branch on the next iteration.
 	m.pauseCh = make(chan struct{})
+	// Wake every parked run (PauseGate.Park is selecting on this channel),
+	// then allocate a fresh one for the next pause cycle.
+	close(m.resumeCh)
+	m.resumeCh = make(chan struct{})
 	m.state.Store(int32(StateRunning))
 	bp := m.bp
 	m.mu.Unlock()
