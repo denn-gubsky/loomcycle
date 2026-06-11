@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
 
@@ -582,5 +583,179 @@ func TestAgentTool_Spawn_RejectsSpawnsArray(t *testing.T) {
 	}`))
 	if !res.IsError {
 		t.Errorf("op=spawn with spawns array should refuse, got: %s", res.Text)
+	}
+}
+
+// ---- RFC X Phase 3: parallel_spawn park watcher + spawn ledger ----
+
+// fanoutFakeGate is a tools.PauseGate stub for the parallel_spawn park-watcher
+// test. triggerPause closes the current PauseCh (one pause cycle); Park rearms a
+// fresh open channel BEFORE blocking (mirrors the real gate's
+// fresh-channel-per-resume contract) so the watcher's re-watch select blocks
+// rather than spinning on a permanently-closed channel.
+type fanoutFakeGate struct {
+	mu        sync.Mutex
+	ch        chan struct{}
+	parkCalls int32
+	parked    chan struct{}
+	parkOnce  sync.Once
+	release   chan struct{}
+}
+
+func newFanoutFakeGate() *fanoutFakeGate {
+	return &fanoutFakeGate{ch: make(chan struct{}), parked: make(chan struct{}), release: make(chan struct{})}
+}
+
+func (g *fanoutFakeGate) PauseRequested() bool { return false }
+
+func (g *fanoutFakeGate) PauseCh() <-chan struct{} {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.ch
+}
+
+func (g *fanoutFakeGate) triggerPause() {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	close(g.ch)
+}
+
+func (g *fanoutFakeGate) Park(ctx context.Context) error {
+	atomic.AddInt32(&g.parkCalls, 1)
+	g.parkOnce.Do(func() { close(g.parked) })
+	g.mu.Lock()
+	g.ch = make(chan struct{}) // rearm so the watcher re-watch blocks
+	g.mu.Unlock()
+	select {
+	case <-g.release:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// TestAgentTool_ParallelSpawn_ParksParentOnPause: when a pause is declared while
+// the fan-out parent is blocked in wg.Wait, the Phase-3 watcher parks the parent
+// (gate.Park) WITHOUT disturbing the in-flight child; on resume the fan-out
+// completes and the envelope is correct. Fail-before: pre-Phase-3 there was no
+// watcher, so the parent never parked mid-tool-call.
+func TestAgentTool_ParallelSpawn_ParksParentOnPause(t *testing.T) {
+	gate := newFanoutFakeGate()
+	childStarted := make(chan struct{})
+	childRelease := make(chan struct{})
+	var startedOnce sync.Once
+
+	a := &AgentTool{
+		SpawnLedger: true,
+		RunDetailed: func(_ context.Context, name, _, _ string) (string, string, error) {
+			startedOnce.Do(func() { close(childStarted) })
+			<-childRelease // simulate a long child still running when the pause hits
+			return "child-out-" + name, "run_child_0", nil
+		},
+	}
+	// Run is a thin wrapper so a.runChild prefers RunDetailed.
+	a.Run = func(ctx context.Context, name, prompt, defID string) (string, error) {
+		out, _, err := a.RunDetailed(ctx, name, prompt, defID)
+		return out, err
+	}
+
+	var emu sync.Mutex
+	var events []providers.Event
+	emit := func(ev providers.Event) { emu.Lock(); events = append(events, ev); emu.Unlock() }
+
+	ctx := tools.WithPauseGate(context.Background(), gate)
+	ctx = tools.WithToolUseID(ctx, "tu_fan")
+	ctx = tools.WithEventEmitter(ctx, emit)
+
+	resCh := make(chan tools.Result, 1)
+	go func() {
+		res, _ := a.Execute(ctx, json.RawMessage(`{"op":"parallel_spawn","spawns":[{"name":"solver","prompt":"p"}]}`))
+		resCh <- res
+	}()
+
+	<-childStarted      // child is running
+	gate.triggerPause() // declare a pause
+	select {
+	case <-gate.parked:
+	case <-time.After(2 * time.Second):
+		t.Fatal("watcher never parked the fan-out parent on pause")
+	}
+	if got := atomic.LoadInt32(&gate.parkCalls); got != 1 {
+		t.Fatalf("park called %d times, want exactly 1", got)
+	}
+
+	close(childRelease) // child returns → wg.Wait completes → Execute returns via defer
+	close(gate.release) // let Park return so the watcher exits + is joined
+
+	var res tools.Result
+	select {
+	case res = <-resCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Execute did not return after resume (watcher join hung?)")
+	}
+	if res.IsError {
+		t.Fatalf("envelope IsError after resume: %s", res.Text)
+	}
+	var env struct {
+		Results []parallelSpawnResult `json:"results"`
+	}
+	if err := json.Unmarshal([]byte(res.Text), &env); err != nil {
+		t.Fatalf("envelope unmarshal: %v; raw=%s", err, res.Text)
+	}
+	if len(env.Results) != 1 || !env.Results[0].Ok || env.Results[0].Output != "child-out-solver" {
+		t.Fatalf("post-resume envelope wrong: %+v", env.Results)
+	}
+	// The ledger recorded the completed child (spawn_child_result on the parent).
+	emu.Lock()
+	defer emu.Unlock()
+	var sawResult bool
+	for _, ev := range events {
+		if ev.Type == providers.EventSpawnChildResult && ev.SpawnChild != nil && ev.SpawnChild.ToolUseID == "tu_fan" {
+			sawResult = true
+		}
+	}
+	if !sawResult {
+		t.Errorf("expected a spawn_child_result ledger event for tu_fan; got %d events", len(events))
+	}
+}
+
+// TestAgentTool_ParallelSpawn_NoWatcherNoLedgerWhenFlagOff: with SpawnLedger
+// off (the default), parallel_spawn emits NO ledger events and starts NO park
+// watcher even when a gate + emitter are present — proving the Phase-3 capture
+// side is byte-identical to pre-Phase-3 until the operator opts in.
+func TestAgentTool_ParallelSpawn_NoWatcherNoLedgerWhenFlagOff(t *testing.T) {
+	gate := newFanoutFakeGate()
+	a := &AgentTool{
+		// SpawnLedger defaults false.
+		RunDetailed: func(_ context.Context, name, _, _ string) (string, string, error) {
+			return "out-" + name, "run_x", nil
+		},
+	}
+	a.Run = func(ctx context.Context, name, prompt, defID string) (string, error) {
+		out, _, err := a.RunDetailed(ctx, name, prompt, defID)
+		return out, err
+	}
+	var emu sync.Mutex
+	var events []providers.Event
+	emit := func(ev providers.Event) { emu.Lock(); events = append(events, ev); emu.Unlock() }
+	ctx := tools.WithPauseGate(context.Background(), gate)
+	ctx = tools.WithToolUseID(ctx, "tu_fan")
+	ctx = tools.WithEventEmitter(ctx, emit)
+
+	res, err := a.Execute(ctx, json.RawMessage(`{"op":"parallel_spawn","spawns":[{"name":"solver","prompt":"p"}]}`))
+	if err != nil || res.IsError {
+		t.Fatalf("Execute failed: err=%v isErr=%v text=%s", err, res.IsError, res.Text)
+	}
+	// Trigger a pause AFTER completion — a watcher (if it had wrongly started)
+	// would call Park; a correctly-disabled one never does.
+	gate.triggerPause()
+	time.Sleep(20 * time.Millisecond)
+	if got := atomic.LoadInt32(&gate.parkCalls); got != 0 {
+		t.Errorf("park called %d times with SpawnLedger off, want 0", got)
+	}
+	emu.Lock()
+	defer emu.Unlock()
+	if len(events) != 0 {
+		t.Errorf("expected no ledger events with SpawnLedger off, got %d", len(events))
 	}
 }
