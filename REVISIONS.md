@@ -8,6 +8,22 @@ For pre-v0.4 history (single-tool runtime, library milestone, security patch), s
 
 ---
 
+## What's in v0.27.1
+
+**Patch: interactive-terminal Web UI polish.** Three follow-ups to the
+v0.27.0 terminal: **(1) auto-scroll** — streaming text deltas coalesce into a
+single transcript line, so keying the scroll effect on line-count stalled the
+tail mid-stream; it now follows the live `events` stream with a stick-to-bottom
+ref (pauses when you scroll up to read, resumes at the bottom). **(2) `tool_call`
+collapse** — a tool call's full input (a `Write`'s whole file body) no longer
+floods the scrollback; it scaffolds to `name + id + an 80-char preview` and
+expands to the pretty-printed input on click, like `tool_result`. **(3) Multi-line
+input** — the continue/steer box is a `<textarea>`: Enter sends, Shift+Enter
+inserts a soft newline, auto-growing with content up to a cap. Frontend-only; no
+wire change, no `@loomcycle/client` bump.
+
+---
+
 ## What's in v0.27.0
 
 **Headline: an interactive run survives leaving the terminal — and you can come
