@@ -13,7 +13,7 @@
 // What gets hashed (content-only — NOT metadata or identity):
 //
 //	name, description, system_prompt, allowed_tools, skills, model,
-//	provider, tier, effort, max_tokens, max_iterations,
+//	provider, tier, effort, sampling, max_tokens, max_iterations,
 //	max_concurrent_children, code_body, providers, models, memory_scopes,
 //	memory_quota_bytes, memory_backend, channels, evaluation_scopes,
 //	interruption
@@ -117,9 +117,17 @@ type AgentContent struct {
 	Name                  string                     `json:"name,omitempty"`
 	Provider              string                     `json:"provider,omitempty"`
 	Providers             []string                   `json:"providers,omitempty"`
-	Skills                []string                   `json:"skills,omitempty"`
-	SystemPrompt          string                     `json:"system_prompt,omitempty"`
-	Tier                  string                     `json:"tier,omitempty"`
+	// Sampling is the per-agent LLM sampling block (mirrors config.Sampling;
+	// the agents package stays config-free, so it's a local type). Content-
+	// identifying: a fork that only changes temperature must mint a distinct
+	// content_sha256. Pointer + omitempty so a no-sampling agent omits the key
+	// and hashes byte-identical to pre-feature rows; normalize() collapses an
+	// all-nil pointer back to nil. Tag "sampling" sorts between providers and
+	// skills.
+	Sampling     *Sampling `json:"sampling,omitempty"`
+	Skills       []string  `json:"skills,omitempty"`
+	SystemPrompt string    `json:"system_prompt,omitempty"`
+	Tier         string    `json:"tier,omitempty"`
 	// UnboundedIterations is content-identifying (like MaxIterations): a fork
 	// that only flips it must get a distinct content_sha256, not silently
 	// dedup (cf. F14). omitempty keeps pre-existing rows byte-identical.
@@ -189,6 +197,14 @@ func normalize(c *AgentContent) {
 	}
 	if c.Interruption != nil && !c.Interruption.Enabled && len(c.Interruption.Kinds) == 0 && c.Interruption.MaxPending == 0 {
 		c.Interruption = nil
+	}
+	// Collapse an all-nil Sampling pointer to nil so a `"sampling":{}` (e.g. a
+	// substrate read of a no-sampling def) hashes identically to a pre-feature
+	// row. A meaningful temperature:0.0 is a non-nil *float64 and is preserved.
+	if c.Sampling != nil && c.Sampling.Temperature == nil && c.Sampling.TopP == nil &&
+		c.Sampling.TopK == nil && c.Sampling.FrequencyPenalty == nil && c.Sampling.PresencePenalty == nil &&
+		c.Sampling.Seed == nil && len(c.Sampling.Stop) == 0 {
+		c.Sampling = nil
 	}
 
 	// Trim + normalise the system_prompt to insulate the hash from

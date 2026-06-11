@@ -461,6 +461,69 @@ func TestRequestBodyShape(t *testing.T) {
 	}
 }
 
+// captureBody runs one Call against a stub server and returns the request body.
+func captureBody(t *testing.T, req providers.Request) string {
+	t.Helper()
+	var captured []byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		captured, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, "event: message_stop\ndata: {}\n\n")
+	}))
+	defer srv.Close()
+	d := New("test-key", srv.URL, streamhttp.Options{}, nil)
+	ch, err := d.Call(context.Background(), req)
+	if err != nil {
+		t.Fatalf("Call: %v", err)
+	}
+	for range ch {
+	}
+	return string(captured)
+}
+
+// TestRequestBody_SamplingMapped: the sampling params Anthropic supports land
+// on the wire (temperature, top_p, top_k, stop_sequences).
+func TestRequestBody_SamplingMapped(t *testing.T) {
+	temp, topP := 0.2, 0.9
+	topK := 40
+	body := captureBody(t, providers.Request{
+		Model:       "claude-sonnet-4-6",
+		Messages:    []providers.Message{{Role: "user", Content: []providers.ContentBlock{{Type: "text", Text: "hi"}}}},
+		Temperature: &temp,
+		TopP:        &topP,
+		TopK:        &topK,
+		Stop:        []string{"STOP"},
+	})
+	for _, want := range []string{`"temperature":0.2`, `"top_p":0.9`, `"top_k":40`, `"stop_sequences":["STOP"]`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("missing %s in body:\n%s", want, body)
+		}
+	}
+}
+
+// TestRequestBody_DropsTemperatureWithThinking: Anthropic rejects temperature
+// when extended thinking is attached, so the driver drops temperature/top_p
+// once effort engages thinking on a reasoning model.
+func TestRequestBody_DropsTemperatureWithThinking(t *testing.T) {
+	temp, topP := 0.2, 0.9
+	body := captureBody(t, providers.Request{
+		Model:       "claude-sonnet-4-6", // reasoning-capable → thinking attaches
+		Messages:    []providers.Message{{Role: "user", Content: []providers.ContentBlock{{Type: "text", Text: "hi"}}}},
+		Temperature: &temp,
+		TopP:        &topP,
+		Effort:      "high",
+	})
+	if !strings.Contains(body, `"thinking"`) {
+		t.Fatalf("expected a thinking block for effort=high on sonnet:\n%s", body)
+	}
+	if strings.Contains(body, `"temperature"`) {
+		t.Errorf("temperature must be dropped when thinking is attached:\n%s", body)
+	}
+	if strings.Contains(body, `"top_p"`) {
+		t.Errorf("top_p must be dropped when thinking is attached:\n%s", body)
+	}
+}
+
 // TestBuildRequestBody_MaxTokensDefault verifies the driver's default
 // max_tokens. 4096 was the historical value but caused mid-output
 // truncation for batch agents (~12k chars output ≈ 4k tokens, hitting

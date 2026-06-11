@@ -171,11 +171,15 @@ type SubstrateAgentDef struct {
 	// Code mirrors config.AgentDef.Code — the inline code-js body (RFC J).
 	// Persisted in the agent_defs definition JSONB; "" = filesystem
 	// fallback. Tag "code_body" matches mergedDef + AgentContent.
-	Code          string `json:"code_body,omitempty"`
-	Tier          string `json:"tier,omitempty"`
-	Effort        string `json:"effort,omitempty"`
-	MaxTokens     int    `json:"max_tokens,omitempty"`
-	MaxIterations int    `json:"max_iterations,omitempty"`
+	Code   string `json:"code_body,omitempty"`
+	Tier   string `json:"tier,omitempty"`
+	Effort string `json:"effort,omitempty"`
+	// Sampling: per-agent LLM sampling params (mirrors config.Sampling /
+	// mergedDef). Pointer so substrate JSON persists nil (provider default)
+	// vs an explicit temperature:0.0 (deterministic).
+	Sampling      *config.Sampling `json:"sampling,omitempty"`
+	MaxTokens     int              `json:"max_tokens,omitempty"`
+	MaxIterations int              `json:"max_iterations,omitempty"`
 	// UnboundedIterations lifts the MaxIterations soft-cap for an LLM agent
 	// (interactive runs). Mirrors mergedDef; the drift test pins parity.
 	UnboundedIterations bool `json:"unbounded_iterations,omitempty"`
@@ -235,6 +239,7 @@ func (s SubstrateAgentDef) ToConfigDef() config.AgentDef {
 		Code:                  s.Code,
 		Tier:                  s.Tier,
 		Effort:                s.Effort,
+		Sampling:              s.Sampling,
 		MaxTokens:             s.MaxTokens,
 		MaxIterations:         s.MaxIterations,
 		UnboundedIterations:   s.UnboundedIterations,

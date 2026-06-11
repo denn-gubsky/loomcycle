@@ -234,6 +234,12 @@ type wireOptions struct {
 	Temperature *float64 `json:"temperature,omitempty"`
 	NumPredict  int      `json:"num_predict,omitempty"` // Ollama's name for max_tokens
 	NumCtx      int      `json:"num_ctx,omitempty"`     // input-window size; 0 = Ollama server default
+	// Ollama options sampling knobs. frequency/presence_penalty exist on some
+	// models but vary; we plumb the broadly-supported set.
+	TopP *float64 `json:"top_p,omitempty"`
+	TopK *int     `json:"top_k,omitempty"`
+	Seed *int     `json:"seed,omitempty"`
+	Stop []string `json:"stop,omitempty"`
 }
 
 type wireMessage struct {
@@ -268,11 +274,16 @@ func (d *Driver) buildRequestBody(req providers.Request) ([]byte, error) {
 		Stream: true,
 	}
 
-	if req.Temperature != nil || req.MaxTokens > 0 || d.numCtx > 0 {
+	if req.Temperature != nil || req.MaxTokens > 0 || d.numCtx > 0 ||
+		req.TopP != nil || req.TopK != nil || req.Seed != nil || len(req.Stop) > 0 {
 		w.Options = &wireOptions{
 			Temperature: req.Temperature,
 			NumPredict:  req.MaxTokens,
 			NumCtx:      d.numCtx,
+			TopP:        req.TopP,
+			TopK:        req.TopK,
+			Seed:        req.Seed,
+			Stop:        req.Stop,
 		}
 	}
 

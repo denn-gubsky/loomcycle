@@ -805,6 +805,10 @@ type mergedDef struct {
 	Tier      string `json:"tier,omitempty"`
 	Effort    string `json:"effort,omitempty"`
 	MaxTokens int    `json:"max_tokens,omitempty"`
+	// Sampling: per-agent LLM sampling params. Round-trips as the `sampling`
+	// object; applyOverlay merges it PER FIELD (a fork that sets only
+	// temperature keeps the parent's top_p). Content-identifying (hashed).
+	Sampling *config.Sampling `json:"sampling,omitempty"`
 	// MaxIterations caps the loop at N provider calls before
 	// terminating with stop_reason="max_iterations". 0 = use the
 	// loop default (16). Set higher for discovery-style forks
@@ -890,6 +894,11 @@ func (d *mergedDef) applyOverlay(ov mergedDef) {
 	}
 	if ov.Effort != "" {
 		d.Effort = ov.Effort
+	}
+	// Sampling merges PER FIELD: a fork that sets only temperature keeps the
+	// parent's top_p (MergeSampling overlays non-nil fields onto the base).
+	if !ov.Sampling.IsZero() {
+		d.Sampling = config.MergeSampling(d.Sampling, ov.Sampling)
 	}
 	if ov.MaxTokens != 0 {
 		d.MaxTokens = ov.MaxTokens
@@ -1003,6 +1012,7 @@ func staticToMergedDef(s config.AgentDef) mergedDef {
 		Code:                  s.Code,
 		Tier:                  s.Tier,
 		Effort:                s.Effort,
+		Sampling:              s.Sampling.Clone(),
 		MaxTokens:             s.MaxTokens,
 		MaxIterations:         s.MaxIterations,
 		UnboundedIterations:   s.UnboundedIterations,
@@ -1115,6 +1125,20 @@ func signFromMergedDef(name string, def mergedDef) string {
 	}
 	if def.Interruption.Enabled || len(def.Interruption.Kinds) > 0 || def.Interruption.MaxPending != 0 {
 		c.Interruption = &agents.AgentInterruptionACL{Enabled: def.Interruption.Enabled, Kinds: def.Interruption.Kinds, MaxPending: def.Interruption.MaxPending}
+	}
+	// Sampling is content-identifying: a fork that only changes temperature
+	// must mint a new content_sha256. Map config→agents (config-free agents pkg);
+	// nil/empty omits so a no-sampling agent hashes exactly as pre-feature.
+	if s := def.Sampling; !s.IsZero() {
+		c.Sampling = &agents.Sampling{
+			Temperature:      s.Temperature,
+			TopP:             s.TopP,
+			TopK:             s.TopK,
+			FrequencyPenalty: s.FrequencyPenalty,
+			PresencePenalty:  s.PresencePenalty,
+			Seed:             s.Seed,
+			Stop:             s.Stop,
+		}
 	}
 	return agents.Sign(c)
 }

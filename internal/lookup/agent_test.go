@@ -283,6 +283,7 @@ func TestAgent_DriftDetection(t *testing.T) {
 		"code_body":               true, // RFC J inline code-js body
 		"tier":                    true,
 		"effort":                  true,
+		"sampling":                true, // per-agent LLM sampling params (temperature, top_p, …)
 		"max_tokens":              true,
 		"max_iterations":          true,
 		"unbounded_iterations":    true, // lift the iteration soft-cap for interactive LLM agents

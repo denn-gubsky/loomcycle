@@ -102,6 +102,63 @@ func TestAgentDefTool_CreateRoundTripsDefScopes(t *testing.T) {
 	}
 }
 
+// TestAgentDefTool_SamplingRoundTrips: a create overlay's sampling block
+// survives create → persist → lookup → config.AgentDef (the breeder mints
+// variants this way).
+func TestAgentDefTool_SamplingRoundTrips(t *testing.T) {
+	tool, ctx, cleanup := agentDefFixture(t)
+	defer cleanup()
+
+	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"create","name":"explorer","overlay":{`+
+		`"system_prompt":"explore","sampling":{"temperature":0.2,"top_p":0.9,"seed":7}}}`))
+	if res.IsError {
+		t.Fatalf("create: %s", res.Text)
+	}
+	def, ok := lookup.Agent(context.Background(), tool.Store, tool.Cfg, "", "explorer")
+	if !ok {
+		t.Fatal("explorer did not resolve via lookup.Agent")
+	}
+	if def.Sampling == nil {
+		t.Fatal("Sampling dropped on the round-trip")
+	}
+	if def.Sampling.Temperature == nil || *def.Sampling.Temperature != 0.2 {
+		t.Errorf("temperature = %v, want 0.2", def.Sampling.Temperature)
+	}
+	if def.Sampling.TopP == nil || *def.Sampling.TopP != 0.9 {
+		t.Errorf("top_p = %v, want 0.9", def.Sampling.TopP)
+	}
+	if def.Sampling.Seed == nil || *def.Sampling.Seed != 7 {
+		t.Errorf("seed = %v, want 7", def.Sampling.Seed)
+	}
+}
+
+// TestAgentDefTool_ForkMergesSamplingPerField: a fork that overrides ONLY
+// temperature keeps the parent's top_p (per-field merge through the substrate).
+func TestAgentDefTool_ForkMergesSamplingPerField(t *testing.T) {
+	tool, ctx, cleanup := agentDefFixture(t)
+	defer cleanup()
+
+	if res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"create","name":"explorer","overlay":{`+
+		`"system_prompt":"explore","sampling":{"temperature":0.2,"top_p":0.9}}}`)); res.IsError {
+		t.Fatalf("create: %s", res.Text)
+	}
+	// Fork overriding only temperature; promote so lookup resolves the fork.
+	if res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"fork","name":"explorer","promote":true,`+
+		`"overlay":{"sampling":{"temperature":0.9}}}`)); res.IsError {
+		t.Fatalf("fork: %s", res.Text)
+	}
+	def, ok := lookup.Agent(context.Background(), tool.Store, tool.Cfg, "", "explorer")
+	if !ok {
+		t.Fatal("explorer did not resolve after fork")
+	}
+	if def.Sampling == nil || def.Sampling.Temperature == nil || *def.Sampling.Temperature != 0.9 {
+		t.Errorf("temperature = %v, want 0.9 (fork override)", def.Sampling.Temperature)
+	}
+	if def.Sampling.TopP == nil || *def.Sampling.TopP != 0.9 {
+		t.Errorf("top_p = %v, want 0.9 (inherited from parent — fork left it unset)", def.Sampling.TopP)
+	}
+}
+
 func TestAgentDefTool_CreateNewName(t *testing.T) {
 	tool, ctx, cleanup := agentDefFixture(t)
 	defer cleanup()

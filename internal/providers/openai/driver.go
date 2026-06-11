@@ -177,6 +177,15 @@ type wireRequest struct {
 	Temperature *float64      `json:"temperature,omitempty"`
 	Stream      bool          `json:"stream"`
 
+	// Sampling knobs OpenAI's /v1/chat/completions accepts (DeepSeek's
+	// OpenAI-compat surface inherits the same field names). top_k is NOT an
+	// OpenAI param, so it's intentionally absent here.
+	TopP             *float64 `json:"top_p,omitempty"`
+	FrequencyPenalty *float64 `json:"frequency_penalty,omitempty"`
+	PresencePenalty  *float64 `json:"presence_penalty,omitempty"`
+	Seed             *int     `json:"seed,omitempty"`
+	Stop             []string `json:"stop,omitempty"`
+
 	// stream_options.include_usage tells OpenAI to include final usage in the
 	// last data frame before [DONE]. Without this we have no token counts.
 	StreamOptions *wireStreamOptions `json:"stream_options,omitempty"`
@@ -258,11 +267,16 @@ type wireFunction struct {
 
 func buildRequestBody(req providers.Request) ([]byte, error) {
 	w := wireRequest{
-		Model:         req.Model,
-		MaxTokens:     req.MaxTokens,
-		Temperature:   req.Temperature,
-		Stream:        true,
-		StreamOptions: &wireStreamOptions{IncludeUsage: true},
+		Model:            req.Model,
+		MaxTokens:        req.MaxTokens,
+		Temperature:      req.Temperature,
+		TopP:             req.TopP,
+		FrequencyPenalty: req.FrequencyPenalty,
+		PresencePenalty:  req.PresencePenalty,
+		Seed:             req.Seed,
+		Stop:             req.Stop,
+		Stream:           true,
+		StreamOptions:    &wireStreamOptions{IncludeUsage: true},
 		// Pass-through of Request.Effort to OpenAI's reasoning_effort
 		// param. Empty stays empty — omitempty drops it from the wire.
 		// "low" / "medium" / "high" pass through verbatim; the API

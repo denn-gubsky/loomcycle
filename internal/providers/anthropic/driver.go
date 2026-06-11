@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -154,7 +155,14 @@ type wireRequest struct {
 	Messages    []wireMessage        `json:"messages"`
 	Tools       []providers.ToolSpec `json:"tools,omitempty"`
 	Temperature *float64             `json:"temperature,omitempty"`
-	Stream      bool                 `json:"stream"`
+	// Sampling knobs Anthropic's Messages API accepts. top_k is Anthropic-
+	// native; frequency/presence_penalty + seed are NOT Anthropic params, so
+	// they're intentionally absent here (dropped). Temperature + top_p are also
+	// dropped when Thinking is attached (the API rejects temperature!=1 then).
+	TopP   *float64 `json:"top_p,omitempty"`
+	TopK   *int     `json:"top_k,omitempty"`
+	Stop   []string `json:"stop_sequences,omitempty"`
+	Stream bool     `json:"stream"`
 	// Thinking opts the request into Anthropic's extended-thinking
 	// surface. Only sent when the agent declared an effort hint AND
 	// the model is reasoning-capable (sonnet/opus, NOT haiku). When
@@ -218,6 +226,9 @@ func buildRequestBody(req providers.Request) ([]byte, error) {
 		// combinator. See schema.go.
 		Tools:       sanitizeAnthropicTools(req.Tools),
 		Temperature: req.Temperature,
+		TopP:        req.TopP,
+		TopK:        req.TopK,
+		Stop:        req.Stop,
 		Stream:      true, // we always stream
 	}
 
@@ -252,6 +263,19 @@ func buildRequestBody(req providers.Request) ([]byte, error) {
 		if budget >= 1024 {
 			w.Thinking = &wireThinking{Type: "enabled", BudgetTokens: budget}
 		}
+	}
+
+	// Anthropic rejects temperature/top_p != default when an extended-thinking
+	// block is attached (the API requires temperature=1 with thinking). An
+	// agent that sets BOTH effort and a custom temperature would hard-400, so
+	// drop the sampling overrides for this call and log the conflict (mirrors
+	// the "effort dropped" signal) — thinking wins, since the operator opted
+	// into reasoning. Only fires for the misconfigured both-set case.
+	if w.Thinking != nil && (w.Temperature != nil || w.TopP != nil) {
+		log.Printf("anthropic: dropped temperature/top_p — incompatible with extended thinking (effort) on model %q; "+
+			"set effort OR temperature, not both", req.Model)
+		w.Temperature = nil
+		w.TopP = nil
 	}
 
 	for _, sb := range req.System {

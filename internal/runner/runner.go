@@ -29,6 +29,7 @@ import (
 	"context"
 	"errors"
 
+	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/loop"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/store"
@@ -248,6 +249,13 @@ type RunInput struct {
 	// the run via POST /v1/runs/{run_id}/input; pair with an
 	// unbounded_iterations agent for a true always-on terminal. Cancel ends it.
 	Interactive bool
+
+	// Sampling is an optional per-RUN LLM sampling-param override (temperature,
+	// top_p, …). Merged PER FIELD over the agent's own Sampling (per-run field
+	// wins, an unset field inherits the agent's). nil = inherit the agent's
+	// sampling entirely. The server resolves the merge and passes the winner to
+	// loop.RunOptions.
+	Sampling *config.Sampling
 }
 
 // RunCallbacks is how the wire surfaces observe the run.
