@@ -236,6 +236,8 @@ func (s *Server) resumePausedRun(ctx context.Context, run store.Run) error {
 	heartbeat := s.makeHeartbeat(run.ID)
 	fbPolicy, fbReResolve := s.fallbackForRun(run.TenantID, run.Agent, run.UserTier)
 	gate, deregGate := s.newPauseGate(run.ID)
+	// RFC X Phase 3: a re-dispatched run that itself fans out can park too.
+	loopCtx = tools.WithPauseGate(loopCtx, gate)
 
 	runOpts := loop.RunOptions{
 		Provider:               provider,

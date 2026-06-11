@@ -1530,6 +1530,16 @@ type Env struct {
 	// only narrow operator's list, never widen. Operator opts in once
 	// via LOOMCYCLE_HTTP_CALLER_AUTHORITATIVE=1.
 	HTTPCallerAuthoritative bool
+	// ResumeFanout enables RFC X Phase 3: a fan-out PARENT blocked in
+	// Agent.parallel_spawn cooperatively PARKS on pause (so paused_runs_count
+	// includes it + the warning clears), and a snapshotted mid-fan-out parent
+	// is RESUMABLE on a fresh instance (a spawn ledger is persisted; resume
+	// reconciles the children + synthesizes the parallel_spawn tool_result).
+	// Default OFF: when unset, pause/snapshot/resume behave exactly as before
+	// (no ledger events, no park watcher, no reconcile). Operator opts in via
+	// LOOMCYCLE_RESUME_FANOUT=1; should be on at BOTH the capturing and
+	// restoring instances for a cross-instance hand-off.
+	ResumeFanout bool
 	// BraveAPIKey enables the WebSearch tool. Empty = WebSearch refuses
 	// every call. Lives at https://api.search.brave.com/.
 	BraveAPIKey string
@@ -2190,6 +2200,7 @@ func Load(path string) (*Config, error) {
 		HTTPHostAllowlist:        splitCSV(os.Getenv("LOOMCYCLE_HTTP_HOST_ALLOWLIST")),
 		HTTPPrivateHostAllowlist: splitCSV(os.Getenv("LOOMCYCLE_HTTP_PRIVATE_HOST_ALLOWLIST")),
 		HTTPCallerAuthoritative:  os.Getenv("LOOMCYCLE_HTTP_CALLER_AUTHORITATIVE") == "1",
+		ResumeFanout:             os.Getenv("LOOMCYCLE_RESUME_FANOUT") == "1",
 		BraveAPIKey:              os.Getenv("BRAVE_API_KEY"),
 		BashEnabled:              os.Getenv("LOOMCYCLE_BASH_ENABLED") == "1",
 		BashCwd:                  os.Getenv("LOOMCYCLE_BASH_CWD"),

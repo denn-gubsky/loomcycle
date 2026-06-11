@@ -1214,6 +1214,10 @@ func executeTool(ctx context.Context, d *tools.Dispatcher, tu providers.ToolUse)
 	if d == nil {
 		return tools.Result{Text: "no tool dispatcher", IsError: true}
 	}
+	// Stamp the tool_use id so a tool can tag side events with it (RFC X
+	// Phase 3: the Agent tool's parallel_spawn ledger keys on the parent
+	// tool_use id). Harmless for every other tool.
+	ctx = tools.WithToolUseID(ctx, tu.ID)
 	return d.Execute(ctx, tu.Name, tu.Input)
 }
 

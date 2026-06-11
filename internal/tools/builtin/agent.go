@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
 
@@ -33,6 +34,14 @@ import (
 //   - Carry the parent's context.Context (so cancellation, deadlines,
 //     and the loomcycle agent-depth value all propagate).
 type SubAgentRunner func(ctx context.Context, name string, prompt string, defID string) (output string, err error)
+
+// SubAgentRunnerDetailed is SubAgentRunner that ALSO surfaces the child's run
+// row id (RFC X Phase 3). parallel_spawn uses it (via AgentTool.RunDetailed)
+// to record each child in the spawn ledger so a snapshotted+restored fan-out
+// parent can re-find and re-collect its children. Additive: when RunDetailed
+// is nil, parallel_spawn falls back to Run (no run_id, no ledger) — existing
+// callers + tests are unaffected.
+type SubAgentRunnerDetailed func(ctx context.Context, name string, prompt string, defID string) (output string, runID string, err error)
 
 // MaxConcurrentChildrenLookup resolves the per-agent
 // `max_concurrent_children` cap for the named CALLING agent (the
@@ -136,10 +145,33 @@ type AgentTool struct {
 	// drive a fresh loop. Constructed by the HTTP server at boot.
 	Run SubAgentRunner
 
+	// RunDetailed is the run_id-surfacing variant used by parallel_spawn
+	// for the RFC X Phase 3 spawn ledger (optional). When nil, parallel_spawn
+	// falls back to Run with no run_id (no ledger) — existing behavior.
+	// Wired by the HTTP server at boot to the same runner as Run.
+	RunDetailed SubAgentRunnerDetailed
+
+	// SpawnLedger gates the RFC X Phase 3 spawn-ledger emits (and the
+	// per-child index threading) in parallel_spawn. Set from
+	// LOOMCYCLE_RESUME_FANOUT at boot; default false → no ledger events, no
+	// behavior change. Requires RunDetailed + an EventEmitter in ctx.
+	SpawnLedger bool
+
 	// CapLookup resolves the calling agent's per-agent
 	// `max_concurrent_children` override. nil = always use
 	// DefaultMaxConcurrentChildren. Wired by the HTTP server at boot.
 	CapLookup MaxConcurrentChildrenLookup
+}
+
+// runChild drives one sub-agent, preferring RunDetailed (surfaces the child
+// run_id for the spawn ledger) and falling back to Run. runID is "" on the
+// fallback path or when RunDetailed couldn't create a run.
+func (a *AgentTool) runChild(ctx context.Context, name, prompt, defID string) (output string, runID string, err error) {
+	if a.RunDetailed != nil {
+		return a.RunDetailed(ctx, name, prompt, defID)
+	}
+	output, err = a.Run(ctx, name, prompt, defID)
+	return output, "", err
 }
 
 // agentInput is the JSON shape the model sends. The discriminator is
@@ -175,6 +207,10 @@ type parallelSpawnResult struct {
 	Ok     bool   `json:"ok"`
 	Output string `json:"output,omitempty"`
 	Error  string `json:"error,omitempty"`
+	// RunID is the child's run row id (RFC X Phase 3), captured for the
+	// spawn ledger so a restored fan-out parent can re-find this child.
+	// Internal-only — omitted from the tool_result envelope the model sees.
+	RunID string `json:"-"`
 }
 
 // agentInputSchema is the JSON Schema the model sees. Discriminated
@@ -374,6 +410,19 @@ func (a *AgentTool) executeParallelSpawn(ctx context.Context, in agentInput) (to
 		concurrencyCap = len(in.Spawns)
 	}
 
+	// RFC X Phase 3 spawn ledger (flag-gated). emit + toolUseID are captured
+	// from the parent ctx once; the per-child goroutines record spawn_child_*
+	// events through the (mutex-guarded, concurrency-safe) parent emitter so a
+	// snapshotted+restored fan-out parent can reconstruct this tool_result.
+	ledger := a.SpawnLedger && a.RunDetailed != nil
+	var ledgerEmit tools.EventEmitterFunc
+	var toolUseID string
+	if ledger {
+		ledgerEmit = tools.EventEmitter(ctx)
+		toolUseID = tools.ToolUseID(ctx)
+		ledger = ledgerEmit != nil && toolUseID != ""
+	}
+
 	results := make([]parallelSpawnResult, len(in.Spawns))
 	sem := make(chan struct{}, concurrencyCap)
 	var wg sync.WaitGroup
@@ -393,17 +442,80 @@ func (a *AgentTool) executeParallelSpawn(ctx context.Context, in agentInput) (to
 				results[i] = parallelSpawnResult{Index: i, Agent: sp.Name, Ok: false, Error: subCtx.Err().Error()}
 				return
 			}
-			out, err := a.Run(subCtx, sp.Name, sp.Prompt, sp.DefID)
+			// Thread the child's index so runSubAgent can emit the
+			// spawn_child_started ledger row with the right index + run_id.
+			childCtx := subCtx
+			if ledger {
+				childCtx = tools.WithSpawnIndex(subCtx, i)
+			}
+			out, childRunID, err := a.runChild(childCtx, sp.Name, sp.Prompt, sp.DefID)
+			var r parallelSpawnResult
 			if err != nil {
-				results[i] = parallelSpawnResult{Index: i, Agent: sp.Name, Ok: false, Error: err.Error()}
-				return
+				r = parallelSpawnResult{Index: i, Agent: sp.Name, Ok: false, Error: err.Error(), RunID: childRunID}
+			} else {
+				if out == "" {
+					out = fmt.Sprintf("(sub-agent %q completed with no final text)", sp.Name)
+				}
+				r = parallelSpawnResult{Index: i, Agent: sp.Name, Ok: true, Output: out, RunID: childRunID}
 			}
-			if out == "" {
-				out = fmt.Sprintf("(sub-agent %q completed with no final text)", sp.Name)
+			results[i] = r
+			// Record this child's result on the parent's transcript so a
+			// child that completed BEFORE a snapshot (whose run row isn't
+			// captured) still has a recoverable result on resume.
+			if ledger {
+				ledgerEmit(providers.Event{
+					Type: providers.EventSpawnChildResult,
+					SpawnChild: &providers.SpawnChildEventInfo{
+						ToolUseID: toolUseID,
+						Index:     i,
+						RunID:     childRunID,
+						Agent:     sp.Name,
+						Ok:        r.Ok,
+						Output:    r.Output,
+						Error:     r.Error,
+					},
+				})
 			}
-			results[i] = parallelSpawnResult{Index: i, Agent: sp.Name, Ok: true, Output: out}
 		}()
 	}
+
+	// RFC X Phase 3: park the fan-out PARENT while it's blocked in wg.Wait. The
+	// loop's own top-of-iteration park is unreachable mid-tool-call, so a
+	// watcher goroutine parks the parent run (persist pause_state=paused + take
+	// barrier credit so paused_runs_count is accurate + the warning clears) when
+	// a pause is declared, and unparks on resume — WITHOUT touching the
+	// wg.Wait collection below (the in-memory results survive a same-instance
+	// pause/resume; a cross-instance snapshot reconstructs from the ledger). The
+	// deferred close+join guarantees the watcher has fully stopped before we
+	// return, so it never races the loop's own next Park.
+	if ledger {
+		if gate := tools.PauseGateFromContext(ctx); gate != nil {
+			watchDone := make(chan struct{})
+			watcherExited := make(chan struct{})
+			go func() {
+				defer close(watcherExited)
+				for {
+					select {
+					case <-watchDone:
+						return
+					case <-ctx.Done():
+						return
+					case <-gate.PauseCh():
+						if err := gate.Park(ctx); err != nil {
+							return // ctx cancelled while parked
+						}
+						// resumed → re-watch the next pause cycle (PauseCh
+						// returns a fresh channel post-resume).
+					}
+				}
+			}()
+			defer func() {
+				close(watchDone)
+				<-watcherExited
+			}()
+		}
+	}
+
 	wg.Wait()
 
 	envelope := struct {
