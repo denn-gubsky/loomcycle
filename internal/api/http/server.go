@@ -3138,6 +3138,23 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		// returns). Returning here does NOT cancel the run.
 		handOff = true
 		go func() {
+			// Teardown is DEFERRED + panic-guarded: a panic in loop.Run must
+			// not (a) crash the process (this goroutine has no other recover —
+			// the recoveryMiddleware only wraps the synchronous handler) nor
+			// (b) skip deregistration, which would leak the run in the cancel /
+			// steer / pause-barrier registries — a leaked pause entry never
+			// parks, so every future Pause would time out waiting for a ghost.
+			defer func() {
+				if rec := recover(); rec != nil {
+					log.Printf("interactive run %s panicked: %v", runID, rec)
+					s.finishRunFailedReason(runID, fmt.Sprintf("panic: %v", rec), meta)
+				}
+				deregSteer()
+				deregGate()
+				s.cancelReg.Deregister(agentID)
+				runSpan.End()
+				cancelFn(nil)
+			}()
 			loopRes, runErr := loop.Run(loopCtx, runOpts)
 			if runErr != nil {
 				// Persist (not stream) the failure so a tailing client sees it.
@@ -3146,11 +3163,6 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 			// WithoutCancel: the store write must not ride a runCtx that an
 			// API-cancel already cancelled (the cause is still read from runCtx).
 			s.finishRunWithCancel(context.WithoutCancel(runCtx), runCtx, runID, loopRes, runErr, meta)
-			deregSteer()
-			deregGate()
-			s.cancelReg.Deregister(agentID)
-			runSpan.End()
-			cancelFn(nil)
 		}()
 		// Tail the store to this client until they disconnect (r.Context()) or
 		// the run terminates. from_seq=0 → stream the whole run live.

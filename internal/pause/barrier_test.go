@@ -2,6 +2,7 @@ package pause
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -96,7 +97,13 @@ func TestManager_PauseTimesOutOnUnparkedRun(t *testing.T) {
 		t.Errorf("PausedRunsCount = %d, want 0 (the run never parked)", res.PausedRunsCount)
 	}
 	if len(res.Warnings) == 0 {
-		t.Error("want a warning naming the run(s) that did not reach a boundary in time")
+		t.Fatal("want a warning naming the run(s) that did not reach a boundary in time")
+	}
+	// The warning must NAME the unparked run (review finding #2 — actionable so
+	// an operator knows a fan-out parent / long turn held back the quiesce).
+	joined := strings.Join(res.Warnings, " ")
+	if !strings.Contains(joined, run.ID) {
+		t.Errorf("warning %q does not name the unparked run %q", joined, run.ID)
 	}
 	if got := m.State(); got != StatePaused {
 		t.Errorf("State after timeout = %s, want paused (state still transitions)", got)

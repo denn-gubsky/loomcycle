@@ -2,6 +2,7 @@ package http
 
 import (
 	"context"
+	"log"
 	"net/http"
 	"time"
 
@@ -47,13 +48,23 @@ func (g *pauseGate) Park(ctx context.Context) error {
 	// barrier: Pause() only treats a run as quiesced once MarkParked fires, so
 	// this ordering guarantees finalizePause / snapshot (which read the store)
 	// see the 'paused' row by the time the barrier releases.
-	g.setPauseState(ctx, store.PauseStatePaused)
-	g.mgr.MarkParked(g.runID)
+	//
+	// If the durable write FAILS we still block (the run stops executing — the
+	// quiesce we want) but do NOT MarkParked: the barrier must never count a
+	// run as paused when its store row isn't durably 'paused', or
+	// paused_runs_count / snapshot would disagree with the store. Pause then
+	// reports it as not-yet-parked (a warning), so the operator won't snapshot
+	// an inconsistent state.
+	if err := g.setPauseState(ctx, store.PauseStatePaused); err != nil {
+		log.Printf("pause: persist paused for run %s failed: %v — parking without barrier credit", g.runID, err)
+	} else {
+		g.mgr.MarkParked(g.runID)
+	}
 	defer func() {
 		g.mgr.EndPark(g.runID)
 		// Resume() also bulk-flips paused→running (covers restored/orphaned
 		// runs with no live loop); this per-run flip is idempotent with it.
-		g.setPauseState(context.Background(), store.PauseStateRunning)
+		_ = g.setPauseState(context.Background(), store.PauseStateRunning)
 	}()
 	select {
 	case <-resume:
@@ -64,14 +75,15 @@ func (g *pauseGate) Park(ctx context.Context) error {
 }
 
 // setPauseState writes runs.pause_state under a bounded, non-cancellable ctx so
-// the marker survives a run-ctx cancellation racing the pause.
-func (g *pauseGate) setPauseState(parent context.Context, state string) {
+// the marker survives a run-ctx cancellation racing the pause. Returns the
+// store error so Park can decide whether the run earned barrier credit.
+func (g *pauseGate) setPauseState(parent context.Context, state string) error {
 	if g.store == nil || g.runID == "" {
-		return
+		return nil
 	}
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(parent), pauseStatePersistTimeout)
 	defer cancel()
-	_ = g.store.SetRunPauseState(ctx, g.runID, state)
+	return g.store.SetRunPauseState(ctx, g.runID, state)
 }
 
 // newPauseGate builds a loop.PauseGate for runID and registers the run with the

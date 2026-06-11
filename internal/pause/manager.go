@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -419,6 +420,41 @@ func (m *Manager) runsQuiesced() (allParked bool, total, parked int) {
 	return total == parked, total, parked
 }
 
+// unparkedRunIDs returns the registered runs that have NOT reached a pause
+// boundary yet — used to name them in the timeout/cancel warning. The classic
+// case is a fan-out PARENT blocked in Agent.parallel_spawn: its loop is
+// suspended in the tool while its children park, so it can't reach its own
+// boundary until the spawn returns (on resume). Snapshotting mid-fan-out would
+// capture the parked children WITHOUT the parent, so callers must snapshot only
+// at a quiescent boundary (a clean Pause with no warning).
+func (m *Manager) unparkedRunIDs() []string {
+	var out []string
+	m.activeRuns.Range(func(k, v any) bool {
+		if !v.(*runEntry).parked.Load() {
+			out = append(out, k.(string))
+		}
+		return true
+	})
+	return out
+}
+
+// unparkedWarning builds the "runs didn't reach a boundary" warning (shared by
+// the deadline + caller-cancel paths), naming the runs so an operator knows a
+// fan-out parent (or a long tool/provider turn) held back the quiesce — and
+// that paused_runs_count therefore excludes them. Empty when all parked.
+func (m *Manager) unparkedWarning(whenPhrase string) string {
+	ids := m.unparkedRunIDs()
+	if len(ids) == 0 {
+		return ""
+	}
+	return fmt.Sprintf(
+		"%d in-flight run(s) did not reach a pause boundary %s — still executing a tool / "+
+			"provider turn (e.g. a fan-out PARENT blocked in parallel_spawn whose children HAVE "+
+			"parked); they park on their next boundary, so paused_runs_count excludes them. Snapshot "+
+			"only at a quiescent boundary (a clean Pause with no warning), not mid-fan-out. runs: %s",
+		len(ids), whenPhrase, strings.Join(ids, ", "))
+}
+
 // ToolCtx derives a per-tool-call context with the right cancellation
 // policy for the current runtime state. Called from inside the loop's
 // executePendingTools fan-out, ONCE per pending tool, before the
@@ -608,20 +644,15 @@ func (m *Manager) Pause(ctx context.Context, timeout time.Duration) (PauseResult
 			// still in flight as force-cancelled, transition to
 			// StatePaused, return the partial result.
 			m.forceCancelRemaining(&forceCancelMu, &forceCancel)
-			if _, total, parked := m.runsQuiesced(); total > parked {
-				warnings = append(warnings, fmt.Sprintf(
-					"%d of %d in-flight run(s) had not reached a pause boundary at cancellation",
-					total-parked, total))
+			if w := m.unparkedWarning("at cancellation"); w != "" {
+				warnings = append(warnings, w)
 			}
 			return m.finalizePause(start, forceCancel, idempotentCount, append(warnings,
 				fmt.Sprintf("pause request cancelled by caller: %v", ctx.Err()))), nil
 		case <-deadline.C:
 			m.forceCancelRemaining(&forceCancelMu, &forceCancel)
-			if _, total, parked := m.runsQuiesced(); total > parked {
-				warnings = append(warnings, fmt.Sprintf(
-					"%d of %d in-flight run(s) did not reach a pause boundary within the timeout "+
-						"(still executing a tool / provider turn); they will park on their next boundary",
-					total-parked, total))
+			if w := m.unparkedWarning("within the timeout"); w != "" {
+				warnings = append(warnings, w)
 			}
 			break
 		case <-tick.C:
