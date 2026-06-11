@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { load as yamlLoad } from "js-yaml";
 import {
   createDef,
   forkDef,
@@ -7,12 +8,12 @@ import {
   type SubstrateKind,
 } from "../api";
 
-// LibraryEditModal — v0.11.6 Library admin UI.
+// LibraryEditModal — Library admin UI.
 //
-// Hybrid form for create / fork on the three substrate flavors. All
-// editable fields render as structured inputs — the v0.10.4 JSON
-// catch-all for agent overlays was removed in v0.11.6 because
-// operators were hitting two real pain points:
+// Hybrid form for create / fork on the three substrate flavors. The
+// common, high-value overlay fields render as structured inputs. The
+// v0.10.4 JSON catch-all for the WHOLE agent overlay was removed in
+// v0.11.6 because operators hit two real pain points:
 //
 //   1. Raw newlines inside the agent's `system_prompt` produced
 //      invalid JSON and surfaced as a confusing "JSON parse error"
@@ -20,10 +21,17 @@ import {
 //   2. A single missing comma anywhere in the JSON body sunk the
 //      whole submit, with no per-field validation.
 //
-// The trade-off: when the AgentDef schema grows a new field, the
-// modal must be updated to expose it. That's the same posture the
-// MCP-server kind has had since v0.10.4 (fully structured, no JSON)
-// and the v0.11.5 channel + memory modals follow.
+// The AgentDef overlay keeps growing (sampling, channels, interruption,
+// the *_def_scopes family, …) and dedicated controls can't keep pace
+// with every field. So a SCOPED advanced editor is back (agents only):
+// a collapsible JSON/YAML textarea that holds ONLY keys not covered by
+// a structured control, shallow-merged over the structured overlay at
+// submit. The two old pain points don't apply: `system_prompt` stays in
+// its own textarea (no newlines-in-JSON), and an EMPTY advanced box
+// never blocks submit (a malformed NON-empty box does, with an inline
+// error). This deliberately differs from the removed whole-overlay
+// catch-all — the structured fields remain authoritative for the common
+// case; the box is the escape hatch for the long tail.
 //
 // On submit, calls createDef() or forkDef() depending on `mode`. On
 // refusal (substrate returns 422), the thrown jsonFetch error contains
@@ -153,6 +161,53 @@ export default function LibraryEditModal({
     [forkSource],
   );
 
+  // --- Sampling (v0.28.0 per-agent LLM sampling block). String-typed
+  // state, mirroring the number-as-string pattern above: blank = unset
+  // (inherit provider/agent default), "0" = an EXPLICIT value. This is
+  // load-bearing for `temperature` — 0.0 is deterministic, distinct from
+  // "use the default" (the substrate's Sampling uses pointer fields for
+  // exactly this reason), so the sampling parser must NOT drop "0".
+  const [sampTemperature, setSampTemperature] = useState(
+    pickNestedNumberAsString(forkSource?.definition, "sampling", "temperature"),
+  );
+  const [sampTopP, setSampTopP] = useState(
+    pickNestedNumberAsString(forkSource?.definition, "sampling", "top_p"),
+  );
+  const [sampTopK, setSampTopK] = useState(
+    pickNestedNumberAsString(forkSource?.definition, "sampling", "top_k"),
+  );
+  const [sampFrequencyPenalty, setSampFrequencyPenalty] = useState(
+    pickNestedNumberAsString(forkSource?.definition, "sampling", "frequency_penalty"),
+  );
+  const [sampPresencePenalty, setSampPresencePenalty] = useState(
+    pickNestedNumberAsString(forkSource?.definition, "sampling", "presence_penalty"),
+  );
+  const [sampSeed, setSampSeed] = useState(
+    pickNestedNumberAsString(forkSource?.definition, "sampling", "seed"),
+  );
+  const [sampStop, setSampStop] = useState(
+    pickSamplingStop(forkSource?.definition).join(", "),
+  );
+
+  // --- Advanced overlay (agents only). A free-form JSON/YAML object
+  // for overlay keys without a dedicated control (channels, interruption,
+  // evaluation_scopes, memory_backend, retry_attempts,
+  // unbounded_iterations, the *_def_scopes family, …). Starts EMPTY on
+  // fork — the substrate's per-field applyOverlay already inherits the
+  // parent's unknown keys, so we don't re-confront the operator with a
+  // JSON blob; an info chip lists what's carried forward unchanged.
+  const [advancedOpen, setAdvancedOpen] = useState(false);
+  const [advancedFormat, setAdvancedFormat] = useState<"json" | "yaml">("json");
+  const [advancedText, setAdvancedText] = useState("");
+  const [advancedErr, setAdvancedErr] = useState<string | null>(null);
+  // Keys present on the fork source that no structured control maps —
+  // carried forward unchanged by the substrate's per-field merge. Shown
+  // as a hint so the operator knows they're preserved without seeing JSON.
+  const inheritedUnknownKeys = useMemo(
+    () => unknownSourceKeys(forkSource?.definition),
+    [forkSource],
+  );
+
   // --- Skill-flavor specific
   const [skillBody, setSkillBody] = useState<string>(
     pickString(forkSource?.definition, "body"),
@@ -250,6 +305,21 @@ export default function LibraryEditModal({
           }
         }
       }
+      // Sampling range checks — mirror config.Sampling.Validate() so the
+      // operator gets a per-field message instead of a 422 from the
+      // substrate. These are guards, not authority: the provider API is
+      // the final arbiter of per-model ranges. A blank field is unset
+      // (skipped); "0" is a real value and IS range-checked.
+      const sampErr = validateSampling({
+        temperature: sampTemperature,
+        top_p: sampTopP,
+        top_k: sampTopK,
+        frequency_penalty: sampFrequencyPenalty,
+        presence_penalty: sampPresencePenalty,
+        seed: sampSeed,
+        stop: sampStop,
+      });
+      if (sampErr) return sampErr;
     }
     if (kind === "skill") {
       if (!skillBody.trim()) return "Skill body is required (substrate refuses empty bodies).";
@@ -328,6 +398,32 @@ export default function LibraryEditModal({
         if (cands.length > 0) models[slot] = cands;
       }
       if (Object.keys(models).length > 0) ov.models = models;
+      // sampling: emit only the fields the operator set. `num()` keeps an
+      // explicit "0" (temperature 0.0 is deterministic — see the state
+      // comment) and omits a blank field so the substrate inherits the
+      // parent/agent default. top_k + seed are emitted as integers.
+      const num = (s: string): number | null => {
+        const t = s.trim();
+        if (t === "") return null;
+        const n = Number(t);
+        return Number.isFinite(n) ? n : null;
+      };
+      const sampling: Record<string, unknown> = {};
+      const tv = num(sampTemperature);
+      if (tv !== null) sampling.temperature = tv;
+      const pv = num(sampTopP);
+      if (pv !== null) sampling.top_p = pv;
+      const kv = num(sampTopK);
+      if (kv !== null) sampling.top_k = kv;
+      const fv = num(sampFrequencyPenalty);
+      if (fv !== null) sampling.frequency_penalty = fv;
+      const ppv = num(sampPresencePenalty);
+      if (ppv !== null) sampling.presence_penalty = ppv;
+      const sv = num(sampSeed);
+      if (sv !== null) sampling.seed = sv;
+      const stop = parseCommaList(sampStop);
+      if (stop.length > 0) sampling.stop = stop;
+      if (Object.keys(sampling).length > 0) ov.sampling = sampling;
       return ov;
     }
     if (kind === "skill") {
@@ -358,11 +454,28 @@ export default function LibraryEditModal({
       setSubmitErr(localErr);
       return;
     }
+    // Advanced overlay (agents only): parse-on-submit. An EMPTY box never
+    // blocks; a non-empty box that won't parse blocks with an inline
+    // error. Parsed keys shallow-merge OVER the structured overlay
+    // (advanced wins per-key) — the collision warning in the UI tells
+    // the operator which structured fields they're shadowing.
+    let advancedOv: Record<string, unknown> = {};
+    if (kind === "agent" && advancedText.trim()) {
+      const { obj, err } = parseAdvancedOverlay(advancedText, advancedFormat);
+      if (err || !obj) {
+        setAdvancedErr(err ?? "advanced overlay must be a JSON/YAML object");
+        setAdvancedOpen(true);
+        setSubmitErr("Fix the advanced overlay before saving.");
+        return;
+      }
+      advancedOv = obj;
+    }
+    setAdvancedErr(null);
     setSubmitErr(null);
     setSubmitting(true);
     try {
       const substrateKind = kindToSubstrate(kind);
-      const overlay = buildOverlay();
+      const overlay = { ...buildOverlay(), ...advancedOv };
       let row: DefRow;
       if (mode === "create") {
         row = await createDef(substrateKind, name.trim(), overlay, promote);
@@ -468,6 +581,37 @@ export default function LibraryEditModal({
             modelsByTier={modelsByTier}
             setModelsByTier={setModelsByTier}
             droppedCustomTiers={droppedCustomTiers}
+            sampTemperature={sampTemperature}
+            setSampTemperature={setSampTemperature}
+            sampTopP={sampTopP}
+            setSampTopP={setSampTopP}
+            sampTopK={sampTopK}
+            setSampTopK={setSampTopK}
+            sampFrequencyPenalty={sampFrequencyPenalty}
+            setSampFrequencyPenalty={setSampFrequencyPenalty}
+            sampPresencePenalty={sampPresencePenalty}
+            setSampPresencePenalty={setSampPresencePenalty}
+            sampSeed={sampSeed}
+            setSampSeed={setSampSeed}
+            sampStop={sampStop}
+            setSampStop={setSampStop}
+            submitting={submitting}
+          />
+        )}
+
+        {kind === "agent" && (
+          <AgentAdvancedOverlay
+            open={advancedOpen}
+            setOpen={setAdvancedOpen}
+            format={advancedFormat}
+            setFormat={setAdvancedFormat}
+            text={advancedText}
+            setText={(v) => {
+              setAdvancedText(v);
+              if (advancedErr) setAdvancedErr(null);
+            }}
+            err={advancedErr}
+            inheritedUnknownKeys={inheritedUnknownKeys}
             submitting={submitting}
           />
         )}
@@ -564,6 +708,20 @@ interface AgentFieldsProps {
   modelsByTier: Record<TierSlot, ModelCandidate[]>;
   setModelsByTier: (v: Record<TierSlot, ModelCandidate[]>) => void;
   droppedCustomTiers: string[];
+  sampTemperature: string;
+  setSampTemperature: (v: string) => void;
+  sampTopP: string;
+  setSampTopP: (v: string) => void;
+  sampTopK: string;
+  setSampTopK: (v: string) => void;
+  sampFrequencyPenalty: string;
+  setSampFrequencyPenalty: (v: string) => void;
+  sampPresencePenalty: string;
+  setSampPresencePenalty: (v: string) => void;
+  sampSeed: string;
+  setSampSeed: (v: string) => void;
+  sampStop: string;
+  setSampStop: (v: string) => void;
   submitting: boolean;
 }
 
@@ -890,7 +1048,199 @@ function AgentFields(props: AgentFieldsProps) {
           ))}
         </div>
       </div>
+
+      <div className="library-form-row">
+        <label>
+          sampling
+          <span className="library-modal-field-hint">
+            {" "}— per-agent LLM sampling; blank = provider default,
+            0 = explicit (temperature 0 is deterministic)
+          </span>
+        </label>
+      </div>
+      <div className="library-form-row library-form-row-quad">
+        <label htmlFor="lib-samp-temperature">temperature</label>
+        <input
+          id="lib-samp-temperature"
+          type="number"
+          step="0.1"
+          value={props.sampTemperature}
+          onChange={(e) => props.setSampTemperature(e.target.value)}
+          disabled={props.submitting}
+          placeholder="blank = default; 0 = deterministic"
+        />
+        <label htmlFor="lib-samp-top-p">top_p</label>
+        <input
+          id="lib-samp-top-p"
+          type="number"
+          step="0.05"
+          value={props.sampTopP}
+          onChange={(e) => props.setSampTopP(e.target.value)}
+          disabled={props.submitting}
+          placeholder="0–1"
+        />
+      </div>
+      <div className="library-form-row library-form-row-quad">
+        <label htmlFor="lib-samp-top-k">top_k</label>
+        <input
+          id="lib-samp-top-k"
+          type="number"
+          step="1"
+          min="1"
+          value={props.sampTopK}
+          onChange={(e) => props.setSampTopK(e.target.value)}
+          disabled={props.submitting}
+          placeholder="≥1 (Anthropic/Gemini/Ollama)"
+        />
+        <label htmlFor="lib-samp-seed">seed</label>
+        <input
+          id="lib-samp-seed"
+          type="number"
+          step="1"
+          value={props.sampSeed}
+          onChange={(e) => props.setSampSeed(e.target.value)}
+          disabled={props.submitting}
+          placeholder="reproducibility (OpenAI/Gemini/Ollama)"
+        />
+      </div>
+      <div className="library-form-row library-form-row-quad">
+        <label htmlFor="lib-samp-freq">frequency_penalty</label>
+        <input
+          id="lib-samp-freq"
+          type="number"
+          step="0.1"
+          value={props.sampFrequencyPenalty}
+          onChange={(e) => props.setSampFrequencyPenalty(e.target.value)}
+          disabled={props.submitting}
+          placeholder="-2–2 (OpenAI/DeepSeek)"
+        />
+        <label htmlFor="lib-samp-pres">presence_penalty</label>
+        <input
+          id="lib-samp-pres"
+          type="number"
+          step="0.1"
+          value={props.sampPresencePenalty}
+          onChange={(e) => props.setSampPresencePenalty(e.target.value)}
+          disabled={props.submitting}
+          placeholder="-2–2 (OpenAI/DeepSeek)"
+        />
+      </div>
+      <div className="library-form-row">
+        <label htmlFor="lib-samp-stop">
+          stop
+          <span className="library-modal-field-hint">
+            {" "}— comma-separated stop sequences (max 8)
+          </span>
+        </label>
+        <input
+          id="lib-samp-stop"
+          type="text"
+          value={props.sampStop}
+          onChange={(e) => props.setSampStop(e.target.value)}
+          disabled={props.submitting}
+          placeholder="END, \n\nHuman:"
+        />
+      </div>
     </>
+  );
+}
+
+// AgentAdvancedOverlay — the scoped escape hatch for overlay keys that
+// have no dedicated control. JSON or YAML; parsed on submit by the
+// parent (parseAdvancedOverlay). Empty = no-op (never blocks); a
+// non-empty malformed body blocks with the inline `err`.
+function AgentAdvancedOverlay(props: {
+  open: boolean;
+  setOpen: (v: boolean) => void;
+  format: "json" | "yaml";
+  setFormat: (v: "json" | "yaml") => void;
+  text: string;
+  setText: (v: string) => void;
+  err: string | null;
+  inheritedUnknownKeys: string[];
+  submitting: boolean;
+}) {
+  // Live, non-blocking collision detection: which structured-control keys
+  // would the advanced body shadow? Parsed best-effort for display only.
+  const collisions = useMemo(() => {
+    if (!props.text.trim()) return [];
+    const { obj } = parseAdvancedOverlay(props.text, props.format);
+    if (!obj) return [];
+    return Object.keys(obj).filter((k) => STRUCTURED_AGENT_KEYS.has(k));
+  }, [props.text, props.format]);
+
+  return (
+    <div className="library-form-row library-advanced-overlay">
+      <button
+        type="button"
+        className="library-schema-hint-toggle"
+        onClick={() => props.setOpen(!props.open)}
+        disabled={props.submitting}
+      >
+        {props.open ? "▾" : "▸"} advanced (raw overlay) — channels,
+        interruption, *_def_scopes, …
+      </button>
+      {props.open && (
+        <>
+          {props.inheritedUnknownKeys.length > 0 && (
+            <div className="library-modal-field-hint">
+              inherited from source (carried forward unchanged):{" "}
+              <code>{props.inheritedUnknownKeys.join(", ")}</code>. Re-type a
+              key here only to override it.
+            </div>
+          )}
+          <div className="library-advanced-format">
+            <label>
+              <input
+                type="radio"
+                name="adv-format"
+                checked={props.format === "json"}
+                onChange={() => props.setFormat("json")}
+                disabled={props.submitting}
+              />{" "}
+              JSON
+            </label>
+            <label>
+              <input
+                type="radio"
+                name="adv-format"
+                checked={props.format === "yaml"}
+                onChange={() => props.setFormat("yaml")}
+                disabled={props.submitting}
+              />{" "}
+              YAML
+            </label>
+          </div>
+          <textarea
+            className="library-prompt-textarea mono"
+            value={props.text}
+            onChange={(e) => props.setText(e.target.value)}
+            disabled={props.submitting}
+            rows={8}
+            spellCheck={false}
+            placeholder={
+              props.format === "json"
+                ? '{\n  "interruption": { "enabled": true },\n  "retry_attempts": 3\n}'
+                : "interruption:\n  enabled: true\nretry_attempts: 3"
+            }
+          />
+          <div className="library-modal-field-hint">
+            Keys not covered by the fields above. Merged over them
+            (advanced wins). allowed_hosts is intentionally NOT settable
+            here — it's a caller-authoritative trust boundary, set per-run.
+          </div>
+          {collisions.length > 0 && (
+            <div className="library-models-warning">
+              ⚠ overrides structured field
+              {collisions.length === 1 ? "" : "s"}:{" "}
+              <code>{collisions.join(", ")}</code> — the value(s) above are
+              ignored for these.
+            </div>
+          )}
+          {props.err && <div className="modal-err">{props.err}</div>}
+        </>
+      )}
+    </div>
   );
 }
 
@@ -1140,6 +1490,161 @@ function pickCustomTierNames(def: unknown): string[] {
     if (!fixed.has(key)) out.push(key);
   }
   return out;
+}
+
+// Overlay keys owned by a dedicated structured control. The advanced
+// overlay warns when it shadows one of these, and unknownSourceKeys()
+// excludes them from the "inherited" hint.
+const STRUCTURED_AGENT_KEYS = new Set<string>([
+  "description",
+  "provider",
+  "model",
+  "tier",
+  "effort",
+  "system_prompt",
+  "code_body",
+  "allowed_tools",
+  "skills",
+  "providers",
+  "max_tokens",
+  "max_iterations",
+  "memory_quota_bytes",
+  "max_concurrent_children",
+  "memory_scopes",
+  "models",
+  "sampling",
+]);
+
+// Server-set / immutable / derived keys that are NOT operator overlay
+// fields — excluded from the "inherited unknown keys" hint so we don't
+// suggest re-typing def_id/version/etc.
+const NON_OVERLAY_KEYS = new Set<string>([
+  "name",
+  "def_id",
+  "version",
+  "parent_def_id",
+  "created_at",
+  "created_by_agent_id",
+  "created_by_run_id",
+  "bootstrapped_from_static",
+  "content_sha256",
+  "retired",
+  "system_prompt_base", // derived: pre-skill-bake snapshot
+]);
+
+// pickNestedNumberAsString reads def[parent][key] for sampling pre-fill.
+// Returns "" for unset/non-numeric; returns "0" for an explicit 0 (the
+// 0-vs-unset distinction the substrate's pointer fields preserve).
+function pickNestedNumberAsString(
+  def: unknown,
+  parent: string,
+  key: string,
+): string {
+  if (!def || typeof def !== "object") return "";
+  const p = (def as Record<string, unknown>)[parent];
+  if (!p || typeof p !== "object" || Array.isArray(p)) return "";
+  const v = (p as Record<string, unknown>)[key];
+  if (typeof v === "number" && Number.isFinite(v)) return String(v);
+  return "";
+}
+
+// pickSamplingStop reads def.sampling.stop as a string[].
+function pickSamplingStop(def: unknown): string[] {
+  if (!def || typeof def !== "object") return [];
+  const s = (def as Record<string, unknown>)["sampling"];
+  if (!s || typeof s !== "object" || Array.isArray(s)) return [];
+  const stop = (s as Record<string, unknown>)["stop"];
+  if (!Array.isArray(stop)) return [];
+  return stop.filter((x): x is string => typeof x === "string");
+}
+
+// unknownSourceKeys returns the source definition's keys that no
+// structured control maps and that aren't server-set — i.e. overlay
+// fields the operator set via the advanced box (channels, interruption,
+// retry_attempts, *_def_scopes, …). The substrate's per-field merge
+// carries them forward unchanged on a fork, so we only hint at them.
+function unknownSourceKeys(def: unknown): string[] {
+  if (!def || typeof def !== "object") return [];
+  const out: string[] = [];
+  for (const key of Object.keys(def as Record<string, unknown>)) {
+    if (STRUCTURED_AGENT_KEYS.has(key) || NON_OVERLAY_KEYS.has(key)) continue;
+    out.push(key);
+  }
+  return out;
+}
+
+// validateSampling mirrors config.Sampling.Validate() for per-field
+// client-side messages. Blank = unset (skipped); "0" is a real value.
+// Returns null when all set fields are in range.
+function validateSampling(v: {
+  temperature: string;
+  top_p: string;
+  top_k: string;
+  frequency_penalty: string;
+  presence_penalty: string;
+  seed: string;
+  stop: string;
+}): string | null {
+  const range = (
+    raw: string,
+    label: string,
+    lo: number,
+    hi: number,
+  ): string | null => {
+    const t = raw.trim();
+    if (t === "") return null;
+    const n = Number(t);
+    if (!Number.isFinite(n)) return `${label} must be a number (got "${raw}").`;
+    if (n < lo || n > hi) return `${label} must be between ${lo} and ${hi}.`;
+    return null;
+  };
+  const intMin = (
+    raw: string,
+    label: string,
+    lo: number,
+  ): string | null => {
+    const t = raw.trim();
+    if (t === "") return null;
+    const n = Number(t);
+    if (!Number.isInteger(n)) return `${label} must be an integer (got "${raw}").`;
+    if (n < lo) return `${label} must be ≥ ${lo}.`;
+    return null;
+  };
+  return (
+    range(v.temperature, "temperature", 0, 2) ??
+    range(v.top_p, "top_p", 0, 1) ??
+    intMin(v.top_k, "top_k", 1) ??
+    range(v.frequency_penalty, "frequency_penalty", -2, 2) ??
+    range(v.presence_penalty, "presence_penalty", -2, 2) ??
+    (v.seed.trim() === "" || Number.isInteger(Number(v.seed))
+      ? null
+      : `seed must be an integer (got "${v.seed}").`) ??
+    (parseCommaList(v.stop).length > 8
+      ? "stop accepts at most 8 sequences."
+      : null)
+  );
+}
+
+// parseAdvancedOverlay parses the advanced box as JSON or YAML and
+// requires a plain object (not array / null / scalar). Used both by the
+// submit path (the merge) and the live collision-detection display.
+function parseAdvancedOverlay(
+  text: string,
+  format: "json" | "yaml",
+): { obj: Record<string, unknown> | null; err: string | null } {
+  let parsed: unknown;
+  try {
+    parsed = format === "json" ? JSON.parse(text) : yamlLoad(text);
+  } catch (e) {
+    return { obj: null, err: e instanceof Error ? e.message : String(e) };
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return {
+      obj: null,
+      err: `advanced overlay must be a ${format.toUpperCase()} object, not an array or scalar`,
+    };
+  }
+  return { obj: parsed as Record<string, unknown>, err: null };
 }
 
 // parseCommaList splits a comma-separated string into trimmed,

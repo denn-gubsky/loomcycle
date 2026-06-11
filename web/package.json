@@ -11,12 +11,14 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "js-yaml": "^4.2.0",
     "lucide-react": "^0.460.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "react-router-dom": "^7.0.0"
   },
   "devDependencies": {
+    "@types/js-yaml": "^4.0.9",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
     "@vitejs/plugin-react": "^5.0.0",
