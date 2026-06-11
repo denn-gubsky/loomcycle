@@ -1,0 +1,53 @@
+# exp2 — interruption (human-in-the-loop Yes/No gating)
+#
+# `yesno-agent` calls the Interruption tool to ask the operator a Yes/No question,
+# blocks until the answer is resolved over REST, then branches its single-line
+# output (Yes → PROCEED, No → ABORT).
+#
+# Routing: Anthropic OAuth (primary) → deepseek-v4-pro (fallback) via `tier: middle`.
+# See README.md.
+
+provider_priority:
+  - anthropic-oauth-dev
+  - deepseek
+
+tiers:
+  low:
+    - { provider: anthropic-oauth-dev, model: claude-haiku-4-5-20251001 }
+    - { provider: deepseek,            model: deepseek-v4-flash }
+  middle:
+    - { provider: anthropic-oauth-dev, model: claude-sonnet-4-6 }
+    - { provider: deepseek,            model: deepseek-v4-pro }
+  high:
+    - { provider: anthropic-oauth-dev, model: claude-sonnet-4-6 }
+    - { provider: deepseek,            model: deepseek-v4-pro }
+
+user_tiers:
+  default:
+    provider_priority: [anthropic-oauth-dev, deepseek]
+    fallback_on_error: true
+    max_fallback_attempts: 3
+
+agents:
+  # Interruption needs BOTH allowed_tools:[Interruption] AND interruption.enabled:true
+  # (the per-agent opt-in). allowed_tools alone makes the tool refuse with
+  # "not enabled for this agent".
+  yesno-agent:
+    tier: middle
+    allowed_tools: [Interruption]
+    interruption:
+      enabled: true
+    system_prompt: |
+      You are an approval gatekeeper. Do exactly this and nothing else:
+      1. Call the Interruption tool once: op=ask, question="Approve the
+         deployment?", options=["Yes","No"].
+      2. Wait for the human's answer (the tool returns it).
+      3. Produce your FINAL message as EXACTLY one line, nothing before or after:
+         - if the answer is "Yes": RESULT: PROCEED
+         - if the answer is "No": RESULT: ABORT
+      Do not call any other tool. Do not add explanation or extra text.
+
+concurrency:
+  max_concurrent_runs: 4
+  max_queue_depth: 8
+  queue_timeout_ms: 30000

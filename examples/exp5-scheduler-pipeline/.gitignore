@@ -1,0 +1,9 @@
+# runtime state + secrets (never commit)
+.env.local
+data/*.db
+data/*.db-wal
+data/*.db-shm
+# scratch under the tool jail
+work/tmp/
+work/__pycache__/
+work/bin/__pycache__/

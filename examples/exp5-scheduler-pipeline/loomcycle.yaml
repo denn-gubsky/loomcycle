@@ -1,0 +1,220 @@
+# exp5 — scheduler-driven fan-out / fan-in news-digest pipeline
+#
+#   scheduler ──┬─▶ exp5-collect-hn        ┐
+#               ├─▶ exp5-collect-wired     │ (5 collectors, every 5 min, max_fires:3)
+#               ├─▶ exp5-collect-engadget  ├─ each: Context op=time → cycle; HTTP GET feed;
+#               ├─▶ exp5-collect-ars       │  pick 0..5 AI items → Memory digest:<cycle>:<feed>:<n>;
+#               └─▶ exp5-collect-tc        ┘  on_complete ─▶ ping exp5-pings (global)
+#                                                                   │
+#   scheduler ────▶ exp5-consolidate  (offset cron :01, max_fires:3)│
+#       Channel op=await {exp5-pings, at_least, n=5, wait_ms} ◀──────┘  (fan-in: 5 pings OR timeout)
+#       → dedup this cycle's digests → Memory consolidated:<cycle> → Telegram one message
+#
+# Exercises the v0.25.0+ "agentic-ensemble" primitives:
+#   • scheduler fan-out (5 collector schedules)         — RFC E
+#   • schedule  max_fires  (self-stop after 3 cycles)   — RFC S / F36
+#   • Context op=time       (agent clock → cycle bucket) — RFC S / F34
+#   • Channel op=await      (native AT_LEAST_N fan-in)   — RFC S / F35
+# plus a real 3rd-party push leg (Telegram). Routing: Anthropic OAuth → deepseek-v4-pro.
+#
+# CANONICAL 5-MINUTE cadence: collectors fire at :00/:05/:10…, the consolidator one
+# minute later (:01/:06/:11…) so it reads a settled cycle. cycle = floor(unix_ms/300000).
+# (The sandbox live-run used an accelerated 1-min cadence + a manual consolidator spawn;
+# the offset-cron consolidator below is the clean, fully-static form — no driver needed.)
+#
+# PATHS: run.sh cd's to ./work before launching, so the telegram mcp command path
+# (bin/telegram-bot-mcp.py) is relative to ./work. Always start via ./run.sh.
+
+provider_priority:
+  - anthropic-oauth-dev
+  - deepseek
+
+tiers:
+  low:
+    - { provider: anthropic-oauth-dev, model: claude-haiku-4-5-20251001 }
+    - { provider: deepseek,            model: deepseek-v4-flash }
+  middle:
+    - { provider: anthropic-oauth-dev, model: claude-sonnet-4-6 }
+    - { provider: deepseek,            model: deepseek-v4-pro }
+  high:
+    - { provider: anthropic-oauth-dev, model: claude-sonnet-4-6 }
+    - { provider: deepseek,            model: deepseek-v4-pro }
+
+user_tiers:
+  default:
+    provider_priority: [anthropic-oauth-dev, deepseek]
+    fallback_on_error: true
+    max_fallback_attempts: 3
+
+channels:
+  exp5-pings:
+    # scope: GLOBAL — the natural choice for a cross-collector fan-in channel. Requires the
+    # F37 fix (loomcycle >= v0.25.1): the scheduler's on_complete:channel.publish hook honors
+    # the channel's declared scope (publishes a global channel at global/""), so the
+    # consolidator's global Channel.await sees the collectors' pings.
+    description: "Exp5 → consolidator inbox (scope:global). Each collector's on_complete hook pings here; schedule_name identifies the distinct collector."
+    scope: global
+    default_ttl: 3600
+    max_messages: 50
+    semantic: queue
+
+mcp_servers:
+  telegram:
+    # Minimal stdlib-only Telegram-sender MCP (bundled). The env values are ${}-interpolated
+    # at config load (static path); the dynamic POST /v1/_mcpserverdef path got the same
+    # spawn-time interpolation in v0.25.3 (#426, F39).
+    transport: stdio
+    command: python3
+    args: ["bin/telegram-bot-mcp.py"]
+    env:
+      LOOMCYCLE_TELEGRAM_BOT_TOKEN: "${LOOMCYCLE_TELEGRAM_BOT_TOKEN}"
+      TELEGRAM_CHAT_ID: "${LOOMCYCLE_TELEGRAM_CHAT_ID}"
+    pool_size: 1
+
+agents:
+  exp5-collector:
+    tier: middle
+    max_iterations: 25
+    max_tokens: 4096
+    effort: medium
+    allowed_tools: [Context, WebFetch, HTTP, Memory]
+    memory_scopes: [user]
+    system_prompt: |
+      You are an RSS COLLECTOR in a periodic AI-news digest pipeline. You run once
+      per scheduler fire. Your feed name + URL are in the user message.
+
+      PROCEDURE — do exactly this, then stop:
+      1. CYCLE: call Context op=time. Compute cycle = floor(unix_ms / 300000) (the
+         5-minute bucket). Keep <cycle> as an integer string.
+      2. FETCH: HTTP op=GET url=<feed-url>. The body is RSS/Atom XML (text). If it
+         errors/empty, report "FEED_EMPTY <feed>" and stop.
+      3. SELECT 0..5 items whose title/description concern AI, LLMs, agents/agentic
+         systems, ML, or autonomous systems. Prefer the newest. Zero is valid.
+      4. For each selected item, index n=0..4:
+         Memory op=set scope=user key="digest:<cycle>:<feed>:<n>" value=<JSON>:
+         {"feed":"<feed>","cycle":<cycle>,"title":"...","url":"<item-link>",
+          "summary":"<your own 1-2 sentence gloss, <=300 chars>"}
+         (Use the feed-provided title/summary; do NOT fetch article hosts — only the
+         feed URL is allowlisted.)
+      5. REPORT one line: "COLLECTED feed=<feed> cycle=<cycle> picked=<k>" and stop.
+
+      Rules: only GET the given feed URL. Summaries <=300 chars. Never invent URLs.
+      Reference secrets by name only.
+
+  exp5-consolidator:
+    tier: middle
+    max_iterations: 30
+    max_tokens: 4096
+    effort: medium
+    allowed_tools: [Context, Channel, Memory, "mcp__telegram__*"]
+    memory_scopes: [user]
+    channels:
+      subscribe: [exp5-pings]
+    system_prompt: |
+      You are the CONSOLIDATOR. You run once per cycle, ~1 minute after the
+      collectors. Wait for the collectors (bounded), then merge this cycle's
+      digests and send one Telegram message.
+
+      CONSTANTS: N_TARGET=5  WAIT_MS=120000.
+
+      PROCEDURE:
+      1. FAN-IN BARRIER (native AT_LEAST_N OR timeout): call
+           Channel op=await channels=["exp5-pings"] mode="at_least" n=N_TARGET wait_ms=WAIT_MS.
+         Result = {satisfied, timed_out, total_messages, results:{ "exp5-pings":{messages:[{value,...}]}}}.
+         Count DISTINCT collectors by the messages' .schedule_name (the scheduler stamps it) →
+         collectors_seen; exit_reason = "n_reached" if satisfied else "timeout". Proceed either way.
+      2. PICK CYCLE (robust to clock straddle — do NOT use op=time to choose it):
+         Memory op=list scope=user prefix="digest:" limit=1000. Keys are
+         "digest:<cycle>:<feed>:<n>". Group entries by <cycle>; pick the cycle with the MOST
+         distinct feeds (tie → the largest <cycle>). Call it <cycle>; keep only its entries.
+      3. DEDUP <cycle>'s entries by normalized URL (lowercase host+path, drop query/fragment);
+         fall back to lowercased title. Keep the richer summary on collision.
+      4. WRITE: Memory op=set scope=user key="consolidated:<cycle>" value=<JSON>:
+         {cycle, collectors:sorted(collectors_seen), exit_reason, total_seen,
+          deduped, items:[up to 30 {title,url,feed,summary}]}.
+      5. TELEGRAM: mcp__telegram__send_message text = a header
+         "🗞️ AI digest — cycle <cycle> (<deduped> items, <k>/5 sources, <exit_reason>)"
+         then up to ~10 lines "• <title> — <url>". Send exactly ONE message.
+      6. REPORT one line: "CONSOLIDATED cycle=<cycle> collectors=<k>/5 items=<deduped>
+         exit=<reason>" and stop.
+
+      Never block past the await budget. Reference secrets by name only.
+
+scheduled_runs:
+  exp5-collect-hn:
+    agent: exp5-collector
+    schedule: "*/5 * * * *"
+    max_fires: 3
+    user_id: exp5
+    enabled: true
+    metadata: { feed: hn, url: "https://news.ycombinator.com/rss" }
+    prompt:
+      - role: user
+        content: [ { type: trusted-text, text: "feed=hn  url=https://news.ycombinator.com/rss" } ]
+    on_complete:
+      - { kind: channel.publish, channel: exp5-pings, payload: { collector: hn } }
+  exp5-collect-wired:
+    agent: exp5-collector
+    schedule: "*/5 * * * *"
+    max_fires: 3
+    user_id: exp5
+    enabled: true
+    metadata: { feed: wired, url: "https://www.wired.com/feed/rss" }
+    prompt:
+      - role: user
+        content: [ { type: trusted-text, text: "feed=wired  url=https://www.wired.com/feed/rss" } ]
+    on_complete:
+      - { kind: channel.publish, channel: exp5-pings, payload: { collector: wired } }
+  exp5-collect-engadget:
+    agent: exp5-collector
+    schedule: "*/5 * * * *"
+    max_fires: 3
+    user_id: exp5
+    enabled: true
+    metadata: { feed: engadget, url: "https://www.engadget.com/rss.xml" }
+    prompt:
+      - role: user
+        content: [ { type: trusted-text, text: "feed=engadget  url=https://www.engadget.com/rss.xml" } ]
+    on_complete:
+      - { kind: channel.publish, channel: exp5-pings, payload: { collector: engadget } }
+  exp5-collect-ars:
+    agent: exp5-collector
+    schedule: "*/5 * * * *"
+    max_fires: 3
+    user_id: exp5
+    enabled: true
+    metadata: { feed: ars, url: "https://feeds.arstechnica.com/arstechnica/index" }
+    prompt:
+      - role: user
+        content: [ { type: trusted-text, text: "feed=ars  url=https://feeds.arstechnica.com/arstechnica/index" } ]
+    on_complete:
+      - { kind: channel.publish, channel: exp5-pings, payload: { collector: ars } }
+  exp5-collect-tc:
+    agent: exp5-collector
+    schedule: "*/5 * * * *"
+    max_fires: 3
+    user_id: exp5
+    enabled: true
+    metadata: { feed: tc, url: "https://techcrunch.com/feed/" }
+    prompt:
+      - role: user
+        content: [ { type: trusted-text, text: "feed=tc  url=https://techcrunch.com/feed/" } ]
+    on_complete:
+      - { kind: channel.publish, channel: exp5-pings, payload: { collector: tc } }
+
+  # CONSOLIDATOR — offset cron (:01 after the collectors' :00), so it reads a settled
+  # cycle and its Channel.await catches the collectors' pings. max_fires:3 = 3 cycles.
+  exp5-consolidate:
+    agent: exp5-consolidator
+    schedule: "1-59/5 * * * *"
+    max_fires: 3
+    user_id: exp5
+    enabled: true
+    prompt:
+      - role: user
+        content: [ { type: trusted-text, text: "Consolidate this cycle's collector digests and send the Telegram summary." } ]
+
+concurrency:
+  max_concurrent_runs: 8
+  max_queue_depth: 16
+  queue_timeout_ms: 30000

@@ -1,0 +1,184 @@
+# exp4 — Gitea webhook dev loop + 3rd-party MCP + Telegram
+#
+#   orchestrator → exp4-tasks → CODER (writes code, pushes branch, opens PR via gitea-mcp)
+#        → Gitea `pull_request` webhook → REVIEWER (reviews + merges via gitea-mcp)
+#        → Gitea `pull_request_review_*`/merge webhook → ADVISOR → Telegram "merged"
+#
+# Exercises: inbound webhooks (HMAC), a real 3rd-party stdio MCP (gitea-mcp, 53 tools),
+# a Telegram-sender MCP, and a channel-driven multi-agent dev loop.
+#
+# PATHS: this config is launched by run.sh, which cd's to ./work, so the mcp_servers
+# command paths below are relative to ./work (i.e. bin/...). Always start via run.sh.
+#
+# Routing: Anthropic OAuth (primary) → deepseek-v4-pro (fallback) via `tier: middle`.
+# See README.md for the (substantial) external prerequisites.
+
+provider_priority:
+  - anthropic-oauth-dev
+  - deepseek
+
+tiers:
+  low:
+    - { provider: anthropic-oauth-dev, model: claude-haiku-4-5-20251001 }
+    - { provider: deepseek,            model: deepseek-v4-flash }
+  middle:
+    - { provider: anthropic-oauth-dev, model: claude-sonnet-4-6 }
+    - { provider: deepseek,            model: deepseek-v4-pro }
+  high:
+    - { provider: anthropic-oauth-dev, model: claude-sonnet-4-6 }
+    - { provider: deepseek,            model: deepseek-v4-pro }
+
+user_tiers:
+  default:
+    provider_priority: [anthropic-oauth-dev, deepseek]
+    fallback_on_error: true
+    max_fallback_attempts: 3
+
+channels:
+  exp4-tasks:
+    description: "Exp4 → code-guru inbox. Orchestrator + advisor publish coding tasks / change requests."
+    scope: global
+    default_ttl: 86400
+    max_messages: 50
+    semantic: queue
+
+agents:
+  # CODER — long-running, subscribes to exp4-tasks; pushes branches + opens PRs.
+  exp4-code-guru:
+    tier: middle
+    max_iterations: 60
+    max_tokens: 8192
+    allowed_tools: [Bash, Read, Write, Edit, Channel, "mcp__gitea__*"]
+    channels:
+      subscribe: [exp4-tasks]
+    system_prompt: |
+      You are the CODER in an automated dev-review loop on a Gitea repo. The repo
+      is already cloned at exp4-workflow (relative to your Bash CWD; origin set, push auth preconfigured
+      via a git credential helper — just `git push`, never handle tokens). Default
+      branch is "main". Use mcp__gitea__* for PR ops; Bash/git for the working tree.
+
+      LOOP — repeat, never exit after one task:
+      1. SUBSCRIBE: Channel op=subscribe channel="exp4-tasks" wait_ms=170000.
+         Payload JSON = {"task": "...", "pr": <int|null>, "branch": "<name|null>"}.
+      2. cd exp4-workflow; `git checkout main && git pull`.
+         - NEW task (pr null): `git checkout -b feat/<short-slug>`.
+         - CHANGE request (pr set): `git fetch origin && git checkout <branch>`.
+      3. Implement the task: write minimal correct code + a test. Every shell
+         command must print a non-empty summary line.
+      4. `git add -A`, `git commit -m "<msg>"`, `git push -u origin <branch>`.
+      5. NEW task: open the PR — mcp__gitea__create_pull_request (base="main",
+         head=<branch>, title, body). CHANGE request: the push updates the PR (no
+         new PR). Report "CODER: pushed <branch>, PR #<n>".
+      6. Go back to step 1 and wait for the next signal.
+
+      RULES: never read/print secret files (.env*) or tokens. Stay inside exp4-workflow. Never produce empty tool output.
+
+  # REVIEWER — spawned by the `pull_request` webhook (payload in the prompt).
+  exp4-code-reviewer:
+    tier: middle
+    max_iterations: 40
+    max_tokens: 8192
+    allowed_tools: [Bash, "mcp__gitea__*"]
+    system_prompt: |
+      You are the REVIEWER, spawned by a Gitea `pull_request` webhook. The webhook
+      JSON is in your prompt — parse it.
+
+      1. Read payload.action: proceed ONLY for "opened" or "synchronized"; for any
+         other (e.g. "closed") output "skip: action=<x>" and STOP.
+      2. Extract: owner = payload.repository.owner.username (or .login), repo =
+         payload.repository.name, PR index = payload.number, head branch =
+         payload.pull_request.head.ref, clone_url = payload.repository.clone_url.
+      3. CLONE for review: `rm -rf tmp/exp4-workflow; git clone --quiet
+         <clone_url> tmp/exp4-workflow; cd tmp/exp4-workflow; git fetch
+         origin <head>; git diff origin/main...origin/<head>`. Read the diff.
+      4. Review for correctness + quality. Decide and act via gitea-mcp:
+         - Problems → mcp__gitea__create_pull_request_review (owner, repo,
+           index, event="REQUEST_CHANGES", body=<specific change list>).
+         - Good → create review event="APPROVE", then mcp__gitea__merge_pull_request
+           (owner, repo, index, Do="squash").
+      5. ALWAYS clean up: `rm -rf tmp/exp4-workflow`.
+      6. Output one line: "REVIEW: request-changes" or "REVIEW: approved+merged".
+
+      RULES: never touch secret files. Always delete the clone. Non-empty output.
+
+  # ADVISOR — spawned by the merge / pull_request_review webhook (payload in prompt).
+  exp4-advisor:
+    tier: middle
+    max_iterations: 30
+    max_tokens: 4096
+    allowed_tools: ["mcp__gitea__*", "mcp__telegram__*", Channel]
+    channels:
+      publish: [exp4-tasks]
+    system_prompt: |
+      You are the ADVISOR, spawned by a Gitea pull_request webhook. The webhook
+      JSON is in your prompt — parse it.
+
+      1. Extract: owner, repo, PR index = payload.pull_request.number, head branch =
+         payload.pull_request.head.ref.
+      2. Get current PR state: mcp__gitea__get_pull_request_by_index (owner, repo,
+         index). Read pull_request.merged (true/false).
+      3. DECIDE:
+         - MERGED == true → cycle COMPLETE. mcp__telegram__send_message
+           text="✅ exp4: PR #<index> merged — dev/review cycle complete." STOP.
+         - NOT merged → this webhook fired on a non-merge action (e.g. the PR was
+           just opened, not yet reviewed). Output one line "skip: PR #<index> not
+           merged yet" and STOP. Do NOT send Telegram and do NOT publish to
+           exp4-tasks (avoids a spawn loop on the open event).
+
+      RULES: never touch secret files. Non-empty output. Send exactly one Telegram
+      message per run.
+
+mcp_servers:
+  # gitea-mcp (3rd-party, https://gitea.com/gitea/gitea-mcp). The wrapper injects the
+  # token from env (token-safe). Download the binary to work/bin/gitea-mcp (see README).
+  gitea:
+    transport: stdio
+    command: bin/gitea-mcp-stdio.sh      # relative to ./work (run.sh cd's there)
+    pool_size: 2
+  # minimal Telegram bot sender (stdlib-only python, bundled at work/bin/).
+  telegram:
+    transport: stdio
+    command: python3
+    args: ["bin/telegram-bot-mcp.py"]
+    env:
+      LOOMCYCLE_TELEGRAM_BOT_TOKEN: "${LOOMCYCLE_TELEGRAM_BOT_TOKEN}"
+      TELEGRAM_CHAT_ID: "${LOOMCYCLE_TELEGRAM_CHAT_ID}"
+    pool_size: 1
+
+# The webhook receiver may resolve this env NAME as the HMAC secret (also set via
+# LOOMCYCLE_WEBHOOKS_ENV_ALLOWLIST in run.sh; a static-yaml webhook's own secret is
+# auto-trusted, and a LOOMCYCLE_*-prefixed verify secret is auto-allowed).
+env_allowlist:
+  - LOOMCYCLE_GITEA_WEBHOOK_SECRET
+
+# Inbound webhooks (LOOMCYCLE_WEBHOOKS_ENABLED=1 in run.sh). Receiver mounts at
+# POST /v1/_webhooks/{name}. Register two Gitea repo hooks (by URL) → these names.
+# payload_mapping goal:"$" delivers the WHOLE signed body to the spawned agent.
+webhooks:
+  pr-opened:
+    enabled: true
+    delivery: spawn
+    agent: exp4-code-reviewer
+    payload_mapping:
+      goal: "$"
+    auth:
+      kind: hmac
+      header: X-Hub-Signature-256
+      signing_secret_env: LOOMCYCLE_GITEA_WEBHOOK_SECRET
+      delivery_id_header: X-Gitea-Delivery
+  review-done:
+    enabled: true
+    delivery: spawn
+    agent: exp4-advisor
+    payload_mapping:
+      goal: "$"
+    auth:
+      kind: hmac
+      header: X-Hub-Signature-256
+      signing_secret_env: LOOMCYCLE_GITEA_WEBHOOK_SECRET
+      delivery_id_header: X-Gitea-Delivery
+
+concurrency:
+  max_concurrent_runs: 8
+  max_queue_depth: 16
+  queue_timeout_ms: 30000

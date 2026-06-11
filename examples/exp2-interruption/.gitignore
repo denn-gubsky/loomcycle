@@ -1,0 +1,14 @@
+# runtime state + secrets (never commit)
+.env.local
+data/*.db
+data/*.db-wal
+data/*.db-shm
+# agent output / scratch under the tool jail
+work/*-out/
+work/exp4-workflow/
+work/tmp/
+work/__pycache__/
+work/bin/__pycache__/
+# the gitea-mcp binary is downloaded per-host (see README), not committed
+work/bin/gitea-mcp
+work/bin/*.tar.gz
