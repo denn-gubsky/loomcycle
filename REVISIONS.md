@@ -8,6 +8,17 @@ For pre-v0.4 history (single-tool runtime, library milestone, security patch), s
 
 ---
 
+## What's in v0.27.2
+
+**Patch: collapsed tool results actually fold.** The collapsed `tool_result`
+summary used `oneLine(text)` — which only flattens whitespace, not length — so
+a large result rendered in full as one wrapped blob and the fold appeared to do
+nothing (the same content showed folded and unfolded). It's now truncated to a
+100-char summary (matching `tool_call`), with the full output in the expanded
+detail. Frontend-only; no `@loomcycle/client` bump.
+
+---
+
 ## What's in v0.27.1
 
 **Patch: interactive-terminal Web UI polish.** Three follow-ups to the
