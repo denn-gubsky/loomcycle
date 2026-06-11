@@ -265,7 +265,18 @@ export default function LibraryEditModal({
     if (!name.trim()) return "Name is required.";
     if (mode === "create" && existingNames) {
       const hit = existingNames.find((e) => e.name === name.trim());
-      if (hit) {
+      // A name is reclaimable when it has NO live active version and isn't
+      // static — every version retired (the active pointer was cleared on
+      // retire), so a fresh create just allocates the next version. Block
+      // only a name that's static or has a live, non-retired active def
+      // (mirrors the backend: AgentDefCreate refuses static names, but
+      // versions onward otherwise). This is the soft-reclaim fix: a retired
+      // agent no longer blocks recreating its name (e.g. to grant more tools).
+      const reclaimable =
+        hit &&
+        !hit.in_static &&
+        (!hit.active_def_id || hit.active_retired === true);
+      if (hit && !reclaimable) {
         return `An entry named "${name.trim()}" already exists. Use Edit (fork) on its row instead.`;
       }
     }

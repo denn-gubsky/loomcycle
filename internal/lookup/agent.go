@@ -145,6 +145,14 @@ func resolveDynamic(ctx context.Context, s AgentStore, tenantID, name string) (c
 	if err != nil {
 		return config.AgentDef{}, false
 	}
+	// A retired def must never be served, even if the active pointer still
+	// references it. The retire-of-active path now clears the pointer, so
+	// this is defense-in-depth for legacy/corrupt rows (ActiveRetired) — a
+	// run for a retired-but-active name falls through to static/none rather
+	// than silently running a retired definition.
+	if activeRow.Retired {
+		return config.AgentDef{}, false
+	}
 	var sd SubstrateAgentDef
 	if uerr := json.Unmarshal(activeRow.Definition, &sd); uerr != nil {
 		return config.AgentDef{}, false

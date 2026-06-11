@@ -931,6 +931,12 @@ export interface LibraryEntry {
   active_def_id?: string;
   latest_version?: number;
   last_updated?: string;
+  /** Agents only (soft reclaim): live (non-retired) version count, and
+   *  whether the active pointer references a retired row. A name with
+   *  live_version_count === 0 and no live active is "inactive" — badged,
+   *  and reclaimable by a fresh create. Absent for skills + mcp-servers. */
+  live_version_count?: number;
+  active_retired?: boolean;
   /**
    * Static-side definition payload. Same JSON shape as the substrate
    * body (snake_case keys mirroring lookup.SubstrateAgentDef /
