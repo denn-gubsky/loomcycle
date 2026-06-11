@@ -8,6 +8,42 @@ For pre-v0.4 history (single-tool runtime, library milestone, security patch), s
 
 ---
 
+## What's in v0.30.0
+
+**Cross-instance resume of a snapshotted mid-run (F42 / RFC X Phase 2).**
+v0.28.0 made `pause` cooperatively quiesce in-flight runs (Phase 1) so a
+mid-run snapshot is reliable; but a snapshotted `pause_state='paused'` run was
+restored as **data only** — nothing backed it with a live goroutine on the
+target instance, so `POST /v1/_resume` returned `409 not_paused` (the runtime
+isn't paused, only the row) and a restart didn't relaunch it. The
+"snapshot a mid-run experiment, continue it elsewhere" promise held only at a
+quiescent boundary.
+
+v0.30.0 closes it: **paused runs are re-dispatched by reconstructing their loop
+from the transcript.** `ResumePausedRuns` re-resolves the agent →
+provider/model/tools/system-prompt, replays the run's transcript into the
+conversation history (`replayTranscript` → `PriorMessages`), flips the row back
+to `running`, re-registers it with the cancel / pause-gate / runstate / steer
+registries, and re-enters `loop.Run` under the **existing run_id** in a detached
+background goroutine — so the run continues from where it parked. It fires at
+**both** triggers F42 named: after a **snapshot restore** (the restore response
+reports `paused_runs_resumed`) and at **boot** (crash recovery; in a cluster,
+gated by an advisory lock so exactly one replica resurrects each run).
+
+Supporting changes: a new additive **`runs.interactive`** column (captured +
+restored) so a resumed run keeps the correct park-at-end_turn (interactive) vs
+run-to-completion (batch) semantics; and the stale-run **sweeper now skips
+`pause_state IN ('paused','pausing')`** so a parked run (no heartbeat by design)
+isn't marked failed before resume picks it up.
+
+**Limitations (documented):** per-run **secrets** (`user_bearer` / named
+credentials) and **call-time overrides** (allowed_hosts narrowing, per-run
+sampling, metadata) are never snapshotted — a resumed run re-derives everything
+from the agent definition (a tool call needing `${run.user_bearer}` degrades).
+A run that was **idle awaiting operator input** when paused isn't auto-resumed
+(re-entering would send the provider a trailing assistant turn); it's flagged
+for manual re-attach. Runtime-only; no `@loomcycle/client` bump.
+
 ## What's in v0.29.1
 
 Patch — **adapter lockstep publish.** The additive `max_context_tokens` field
