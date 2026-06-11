@@ -4134,11 +4134,25 @@ button.primary:disabled {
   gap: 8px;
   padding: 8px 12px;
   border-top: 1px solid var(--border, #2a2a32);
+  align-items: flex-end;
 }
 .live-run-continue input {
   flex: 1;
 }
-.live-run-continue input:disabled {
+.live-run-input {
+  flex: 1;
+  resize: none;
+  overflow-y: auto;
+  min-height: 34px;
+  max-height: 160px;
+  line-height: 1.4;
+  padding: 6px 8px;
+  font-family: inherit;
+  font-size: inherit;
+  box-sizing: border-box;
+}
+.live-run-continue input:disabled,
+.live-run-input:disabled {
   opacity: 0.55;
 }
 .live-run-awaiting {

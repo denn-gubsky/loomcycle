@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import TerminalTranscript from "./TerminalTranscript";
 import { type PendingInterrupt, type RunStatus } from "../hooks/useRunStream";
 import { type TranscriptEvent } from "../api";
@@ -42,6 +42,15 @@ export default function LiveRunPane({
   compact?: boolean;
 }) {
   const [followUp, setFollowUp] = useState("");
+  const taRef = useRef<HTMLTextAreaElement>(null);
+  // Auto-grow the input with its content (up to a cap), and shrink back to one
+  // line after a send clears it.
+  useEffect(() => {
+    const ta = taRef.current;
+    if (!ta) return;
+    ta.style.height = "auto";
+    ta.style.height = `${Math.min(ta.scrollHeight, 160)}px`;
+  }, [followUp]);
 
   const running = status === "running";
   // The terminal prompt is available once a run exists (so steering works as
@@ -53,11 +62,21 @@ export default function LiveRunPane({
   // The legacy onContinue can only fire between turns; onSend handles both.
   const promptDisabled = !onSend && running;
 
-  const handleSend = (e: React.FormEvent) => {
-    e.preventDefault();
+  const doSend = () => {
     if (!promptHandler || !followUp.trim() || promptDisabled) return;
     promptHandler(followUp.trim());
     setFollowUp("");
+  };
+  const handleSend = (e: React.FormEvent) => {
+    e.preventDefault();
+    doSend();
+  };
+  // Enter sends; Shift+Enter inserts a soft newline (multi-line editing).
+  const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      doSend();
+    }
   };
 
   return (
@@ -93,19 +112,22 @@ export default function LiveRunPane({
 
       {showPrompt && (
         <form className="live-run-continue" onSubmit={handleSend}>
-          <input
-            type="text"
+          <textarea
+            ref={taRef}
+            className="live-run-input"
             value={followUp}
             onChange={(e) => setFollowUp(e.target.value)}
+            onKeyDown={onKeyDown}
             disabled={promptDisabled}
+            rows={1}
             placeholder={
               promptDisabled
                 ? "Wait for the turn to finish…"
                 : running
                   ? awaitingInput
-                    ? "Type to continue the session…"
-                    : "Steer the running agent…"
-                  : "Continue the conversation…"
+                    ? "Type to continue (Enter to send, Shift+Enter for newline)…"
+                    : "Steer the running agent (Enter to send, Shift+Enter for newline)…"
+                  : "Continue the conversation (Enter to send, Shift+Enter for newline)…"
             }
           />
           <button type="submit" disabled={!followUp.trim() || promptDisabled}>
