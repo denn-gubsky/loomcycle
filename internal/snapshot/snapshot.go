@@ -450,6 +450,7 @@ func capturePausedRuns(ctx context.Context, s store.Store, out *PausedRunsSectio
 			StartedAt:     r.StartedAt,
 			Model:         r.Model,
 			PauseState:    r.PauseState,
+			Interactive:   r.Interactive,           // F42: re-dispatch with correct park-vs-complete semantics
 			ParentContext: r.ParentContext.Clone(), // v0.12.x: survive pause→snapshot→restore
 		}
 		// Read the session transcript and filter by run_id. Cost:

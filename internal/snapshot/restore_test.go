@@ -454,6 +454,44 @@ func TestRoundTrip_PreservesParentContext(t *testing.T) {
 	}
 }
 
+// TestRoundTrip_PreservesInteractiveFlag pins F42 / RFC X Phase 2: a paused
+// interactive run's `interactive` flag survives pause→snapshot→restore, so the
+// run re-dispatches with the correct park-at-end_turn (vs run-to-completion)
+// semantics on the target instance. Without the flag captured + restored, a
+// resumed interactive session would silently become a batch run.
+func TestRoundTrip_PreservesInteractiveFlag(t *testing.T) {
+	src, srcClose := newTestStore(t)
+	defer srcClose()
+	dst, dstClose := newTestStore(t)
+	defer dstClose()
+	ctx := context.Background()
+
+	sess, _ := src.CreateSession(ctx, "t", "qa", "user1")
+	run, err := src.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: "a_int", UserID: "user1", Interactive: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := src.SetRunPauseState(ctx, run.ID, store.PauseStatePaused); err != nil {
+		t.Fatal(err)
+	}
+
+	_, raw, err := Capture(ctx, src, CaptureOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Restore(ctx, dst, raw, RestoreOptions{}); err != nil {
+		t.Fatalf("Restore: %v", err)
+	}
+
+	got, err := dst.GetRun(ctx, run.ID)
+	if err != nil {
+		t.Fatalf("GetRun on dst: %v", err)
+	}
+	if !got.Interactive {
+		t.Error("interactive flag lost across pause→snapshot→restore")
+	}
+}
+
 // TestRestore_DropsEmbeddingFieldOnPhase1 — restoring a hand-crafted
 // envelope where memory.entries[].embedding is populated (simulating
 // a Phase-2-captured snapshot) on a Phase-1 reader silently drops

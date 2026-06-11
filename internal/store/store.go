@@ -249,6 +249,14 @@ type Run struct {
 	// Round-trips on read so a deduped caller can look up the winning run
 	// and confirm the key. Not a secret.
 	IdempotencyKey string `json:"idempotency_key,omitempty"`
+
+	// Interactive marks a persistent interactive run (F42 / RFC X Phase 2):
+	// it parks at end_turn (awaiting_input) instead of terminating. Stamped
+	// at CreateRun from the run request's `interactive` flag and persisted
+	// (runs.interactive) so a snapshotted + restored paused run can be
+	// re-dispatched on another instance with the correct park-vs-complete
+	// semantics. false on legacy rows + batch runs.
+	Interactive bool `json:"interactive,omitempty"`
 }
 
 // PauseState constants — the wire string values stored in runs.pause_state.
@@ -368,6 +376,12 @@ type RunIdentity struct {
 	// Layer-1 TTL — or lands on a different replica — still dedups.
 	// Not a secret (safe to persist + echo).
 	IdempotencyKey string
+
+	// Interactive marks a persistent interactive run (F42 / RFC X Phase 2).
+	// Persisted to runs.interactive so a snapshotted + restored paused run
+	// re-dispatches with the correct park-at-end_turn (vs run-to-completion)
+	// semantics. false = batch run (the default).
+	Interactive bool
 }
 
 // ParentContext is the typed caller-tracking lineage attached to a run

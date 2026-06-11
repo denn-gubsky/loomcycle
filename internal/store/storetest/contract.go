@@ -93,6 +93,11 @@ func Run(t *testing.T, factory Factory) {
 		{"FinishRunCancelledTerminal", testFinishRunCancelledTerminal},
 		{"TranscriptOrderedAcrossRuns", testTranscriptOrderedAcrossRuns},
 		{"SweepStaleRuns", testSweepStaleRuns},
+		// F42 / RFC X Phase 2: a paused run is intentionally parked, not crashed —
+		// the stale-run sweeper must skip it (else a restored paused run dies
+		// before resume re-dispatches it). Plus runs.interactive round-trips.
+		{"SweepStaleRunsSkipsPaused", testSweepStaleRunsSkipsPaused},
+		{"CreateRunInteractiveRoundTrip", testCreateRunInteractiveRoundTrip},
 		{"SetRunPauseStateRoundTrip", testSetRunPauseStateRoundTrip},
 		{"SetRunPauseStateUnknownStateRefused", testSetRunPauseStateUnknownStateRefused},
 		{"SetRunPauseStateMissingRunReturnsNotFound", testSetRunPauseStateMissingRunReturnsNotFound},
@@ -1163,6 +1168,70 @@ func testSweepStaleRuns(t *testing.T, s store.Store) {
 	}
 	if swept2 != 0 {
 		t.Errorf("second sweep returned %d, want 0", swept2)
+	}
+}
+
+// testSweepStaleRunsSkipsPaused pins the F42 / RFC X Phase 2 sweeper guard:
+// a run that's intentionally parked (pause_state='paused') is NEVER swept
+// stale even when it has no heartbeat and an old started_at — otherwise a
+// snapshotted+restored paused run would be marked failed before resume
+// re-dispatches it. A stale pause_state='running' run is still swept.
+//
+// FAIL-BEFORE: the sweeper UPDATE had no pause_state guard, so the paused row
+// (no heartbeat, old started_at) matched and was marked failed.
+func testSweepStaleRunsSkipsPaused(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	sess, _ := s.CreateSession(ctx, "t", "a", "u")
+
+	// A paused run with no heartbeat — represents a restored mid-run snapshot.
+	paused, _ := s.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: "a_paused_skip"})
+	if err := s.SetRunPauseState(ctx, paused.ID, store.PauseStatePaused); err != nil {
+		t.Fatal(err)
+	}
+	// A normal running run with no heartbeat — must still be swept.
+	_, _ = s.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: "a_running_sweep"})
+
+	// Both created before this cutoff (no heartbeat → started_at branch).
+	time.Sleep(50 * time.Millisecond)
+	cutoff := time.Now()
+
+	swept, err := s.SweepStaleRuns(ctx, cutoff)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if swept != 1 {
+		t.Errorf("SweepStaleRuns swept %d, want 1 (only the running run; the paused one is skipped)", swept)
+	}
+	pausedAfter, _ := s.GetRunByAgentID(ctx, "a_paused_skip")
+	if pausedAfter.Status != store.RunRunning {
+		t.Errorf("paused run was swept: status=%q, want running (paused runs are intentionally parked)", pausedAfter.Status)
+	}
+	runningAfter, _ := s.GetRunByAgentID(ctx, "a_running_sweep")
+	if runningAfter.Status != store.RunFailed {
+		t.Errorf("stale running run not swept: status=%q, want failed", runningAfter.Status)
+	}
+}
+
+// testCreateRunInteractiveRoundTrip pins that runs.interactive (F42 / RFC X
+// Phase 2) is persisted at CreateRun and round-trips on read — needed so a
+// restored paused run re-dispatches with the correct park-vs-complete
+// semantics. Default is false.
+func testCreateRunInteractiveRoundTrip(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	sess, _ := s.CreateSession(ctx, "t", "a", "u")
+
+	batch, _ := s.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: "a_batch"})
+	if got, _ := s.GetRun(ctx, batch.ID); got.Interactive {
+		t.Errorf("batch run Interactive = true, want false (default)")
+	}
+
+	inter, _ := s.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: "a_inter", Interactive: true})
+	if !inter.Interactive {
+		t.Errorf("CreateRun returned Interactive=false for an interactive run")
+	}
+	got, _ := s.GetRun(ctx, inter.ID)
+	if !got.Interactive {
+		t.Errorf("interactive run Interactive=false on read-back (did not persist)")
 	}
 }
 
