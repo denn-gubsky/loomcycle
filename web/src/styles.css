@@ -1718,6 +1718,18 @@ pre {
   border-radius: 4px;
   color: var(--fg);
 }
+.library-advanced-overlay {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  border-top: 1px dashed var(--border, #444);
+  padding-top: 10px;
+}
+.library-advanced-format {
+  display: flex;
+  gap: 16px;
+  font-size: 12px;
+}
 .library-models-warning code {
   font-family: var(--mono);
   font-size: 11px;
