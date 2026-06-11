@@ -22,8 +22,17 @@ state machine transitions `running → pausing → paused`:
   tools are given a grace window — 30 s by default — to finish
   cleanly. Any still running at the deadline get force-cancelled
   and counted in the result.
-- New `/v1/runs` requests return 503 while the runtime is in
-  `pausing` or `paused`.
+- New `/v1/runs` requests (and the gRPC / webhook / A2A run-admission
+  paths) return 503 / Unavailable while the runtime is in `pausing` or
+  `paused`; the scheduler skips firing. Sub-agents of an already-admitted
+  run are NOT rejected — they park at their own boundary.
+- Pause WAITS (up to `timeout_ms`) for in-flight runs to reach a boundary
+  and park, so `paused_runs_count` is meaningful on return. A run blocked
+  inside a single long tool / provider turn parks at its NEXT boundary; if
+  it doesn't reach one within the window, Pause returns with a warning
+  naming it (it parks on its next boundary regardless). Snapshot only
+  captures `pause_state='paused'` runs, so wait for a clean Pause result
+  (no "did not reach a boundary" warning) before snapshotting mid-run.
 
 **Resume** flips back to `running`. Each previously-paused run's
 state row is updated; the runner goroutine watching the broadcast

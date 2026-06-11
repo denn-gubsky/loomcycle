@@ -1605,6 +1605,13 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		priorMessages = replayTranscript(transcript)
 	}
 
+	// Runtime-pause admission gate (RFC X / F41) — reject new runs while
+	// pausing/paused. Covers the gRPC / webhook / A2A / scheduler surfaces
+	// that drive runs through RunOnce. Checked before the concurrency slot.
+	if err := s.pausedRunErr(); err != nil {
+		return err
+	}
+
 	// ---- Concurrency slot ----
 	acquireStart := time.Now()
 	release, err := s.sem.AcquireForUser(ctx, effectiveUserID)
@@ -1805,6 +1812,11 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 
 	heartbeat := s.makeHeartbeat(runID)
 
+	// Cooperative pause quiesce (RFC X / F41): park at an iteration boundary
+	// while paused. RunOnce is synchronous, so a plain defer-deregister works.
+	gate, deregGate := s.newPauseGate(runID)
+	defer deregGate()
+
 	fbPolicy, fbReResolve := s.fallbackForRun(effectiveTenantID, effectiveAgentName, in.UserTier)
 	res, runErr := loop.Run(loopCtx, loop.RunOptions{
 		Provider:               provider,
@@ -1813,6 +1825,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		Dispatcher:             dispatcher,
 		Segments:               injectMetadataSegments(segments, provider.Capabilities().MetadataViaInput, in.Metadata, in.PayloadMetadata),
 		PriorMessages:          priorMessages,
+		PauseGate:              gate,
 		OnEvent:                emit,
 		OnHeartbeat:            heartbeat,
 		MaxTokens:              agentDef.MaxTokens,
@@ -2783,6 +2796,13 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		defer releaseSess()
 	}
 
+	// Runtime-pause admission gate (RFC X / F41): reject new runs with 503
+	// while pausing/paused, BEFORE acquiring a slot so a rejected run doesn't
+	// burn a quota slot. The help doc already documents this 503.
+	if s.rejectIfPausedHTTP(w) {
+		return
+	}
+
 	// Acquire concurrency slot first so backpressure is reported as 429
 	// before we open the SSE stream.
 	acquireStart := time.Now()
@@ -3100,6 +3120,13 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		MaxSameProviderRetries: s.retryAttemptsForAgent(agentDef, req.UserTier),
 	}
 
+	// Cooperative pause quiesce (RFC X / F41): the loop parks at an iteration
+	// boundary while paused. Registers the run with the pause barrier; the
+	// matching deregister runs after the loop (inline) or in the detached
+	// goroutine (interactive) — never a handler-level defer (handOff).
+	gate, deregGate := s.newPauseGate(runID)
+	runOpts.PauseGate = gate
+
 	if req.Interactive && s.store != nil {
 		// Detached run: execute the loop in a background goroutine that
 		// OUTLIVES this handler, so navigating away (client disconnect) no
@@ -3120,6 +3147,7 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 			// API-cancel already cancelled (the cause is still read from runCtx).
 			s.finishRunWithCancel(context.WithoutCancel(runCtx), runCtx, runID, loopRes, runErr, meta)
 			deregSteer()
+			deregGate()
 			s.cancelReg.Deregister(agentID)
 			runSpan.End()
 			cancelFn(nil)
@@ -3136,6 +3164,7 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.finishRunWithCancel(r.Context(), runCtx, runID, loopRes, runErr, meta)
+	deregGate()
 }
 
 // messagesRequest is the JSON body for POST /v1/sessions/{id}/messages. It
@@ -3299,6 +3328,12 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	priorMessages := replayTranscript(transcript)
+
+	// Runtime-pause admission gate (RFC X / F41): a continuation starts a new
+	// turn/run, so reject it with 503 while pausing/paused (before the slot).
+	if s.rejectIfPausedHTTP(w) {
+		return
+	}
 
 	// Acquire concurrency slot before opening the SSE stream so backpressure
 	// is reported as 429. user_id comes from the session (set at original
@@ -3498,6 +3533,9 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	loopCtx = tools.WithInterruptionPolicy(loopCtx, s.interruptionPolicyForAgent(agentDef))
 	loopCtx = tools.WithRunID(loopCtx, run.ID)
 	loopCtx = tools.WithDispatcher(loopCtx, dispatcher)
+	// Cooperative pause quiesce (RFC X / F41) — synchronous handler, defer-deregister.
+	gate, deregGate := s.newPauseGate(run.ID)
+	defer deregGate()
 	fbPolicy, fbReResolve := s.fallbackForRun(sess.TenantID, sess.Agent, body.UserTier)
 	loopRes, runErr := loop.Run(loopCtx, loop.RunOptions{
 		Provider:               provider,
@@ -3506,6 +3544,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		Dispatcher:             dispatcher,
 		Segments:               injectMetadataSegments(segments, provider.Capabilities().MetadataViaInput, body.Metadata, nil),
 		PriorMessages:          priorMessages,
+		PauseGate:              gate,
 		OnEvent:                emit,
 		OnHeartbeat:            heartbeat,
 		MaxTokens:              agentDef.MaxTokens,     // 0 → driver default
@@ -4221,6 +4260,12 @@ func (s *Server) runSubAgent(ctx context.Context, name string, prompt string, de
 
 	subHeartbeat := s.makeHeartbeat(subRunID)
 
+	// Cooperative pause quiesce (RFC X / F41): a sub-agent parks at its own
+	// boundary while paused (so a fan-out tree quiesces). NOT admission-gated —
+	// it's a child of an already-admitted run, not new top-level work.
+	subGate, deregSubGate := s.newPauseGate(subRunID)
+	defer deregSubGate()
+
 	fbPolicy, fbReResolve := s.fallbackForRun(tenantFromCtx(ctx), name, parentTier)
 	res, runErr := loop.Run(subCtx, loop.RunOptions{
 		Provider:            provider,
@@ -4230,6 +4275,7 @@ func (s *Server) runSubAgent(ctx context.Context, name string, prompt string, de
 		Segments:            segs,
 		OnEvent:             subEmit,
 		OnHeartbeat:         subHeartbeat,
+		PauseGate:           subGate,
 		MaxTokens:           def.MaxTokens,     // 0 → driver default
 		MaxIterations:       def.MaxIterations, // 0 → loop default (16)
 		UnboundedIterations: def.UnboundedIterations,

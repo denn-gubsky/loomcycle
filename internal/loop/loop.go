@@ -77,6 +77,13 @@ type RunOptions struct {
 	// always-on terminal agent (else parks count toward MaxIterations).
 	Interactive bool
 
+	// PauseGate, when non-nil, cooperatively quiesces this run for the
+	// runtime-wide pause/snapshot protocol (RFC X / F41). At the TOP of each
+	// iteration the loop asks PauseRequested(); if true it calls Park, which
+	// persists pause_state='paused', blocks until resume (or ctx cancel), then
+	// restores 'running'. nil disables pausing (direct loop callers / tests).
+	PauseGate PauseGate
+
 	// PriorMessages is the conversation history to prepend before the
 	// caller's new Segments. Used by the continuation endpoint to replay
 	// a session's prior turns. Empty for a fresh run (the v0.2 case).
@@ -293,6 +300,21 @@ type RunOptions struct {
 	// Sourced from cfg.UserTiers[req.user_tier].RetryAttempts on the
 	// HTTP layer. The HTTP layer caps at 5 before passing to the loop.
 	MaxSameProviderRetries int
+}
+
+// PauseGate is the loop's seam into the runtime pause/quiesce protocol
+// (internal/pause). The server builds a per-run implementation wrapping the
+// pause Manager + store; the loop stays free of pause/store imports. Both
+// methods are no-ops behind a nil RunOptions.PauseGate.
+type PauseGate interface {
+	// PauseRequested reports whether a runtime pause is in effect. Cheap +
+	// non-blocking; the loop calls it at the top of every iteration.
+	PauseRequested() bool
+	// Park persists this run's pause_state='paused', blocks until the runtime
+	// resumes (or ctx is cancelled), then restores 'running'. Returns ctx.Err()
+	// if cancelled while parked (the loop then exits cleanly). A no-op return
+	// (nil, no block) is valid if the pause was already lifted (lost race).
+	Park(ctx context.Context) error
 }
 
 // FallbackPolicy controls the v0.8.2 runtime fallback path. The HTTP
@@ -785,6 +807,18 @@ outerLoop:
 		// to wait for the sweeper to catch up).
 		if opts.OnHeartbeat != nil {
 			opts.OnHeartbeat()
+		}
+
+		// Cooperative pause/quiesce (RFC X / F41): if a runtime pause is in
+		// effect, park HERE — a clean iteration boundary, never mid-turn /
+		// between a tool_use and its tool_results. Park persists
+		// pause_state='paused', blocks until resume, then restores 'running'.
+		// On ctx cancel while parked it returns an error and we exit the run.
+		if opts.PauseGate != nil && opts.PauseGate.PauseRequested() {
+			if err := opts.PauseGate.Park(iterCtx); err != nil {
+				iterSpan.End()
+				return RunResult{StopReason: "cancelled", Usage: totalUsage}, ctx.Err()
+			}
 		}
 
 		// Mid-turn steering (internal/steer): drain any operator-injected
