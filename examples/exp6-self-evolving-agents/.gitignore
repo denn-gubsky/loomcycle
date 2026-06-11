@@ -1,0 +1,8 @@
+# runtime state + secrets (never commit)
+.env.local
+data/*.db
+data/*.db-wal
+data/*.db-shm
+# scratch
+work/__pycache__/
+work/*.tmp
