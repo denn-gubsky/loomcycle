@@ -191,9 +191,11 @@ function formatLine(row: TranscriptEvent): FormattedLine {
       return {
         key, ts, kind,
         cls: ev.is_error ? "tl-error" : "tl-result",
-        // Collapsed by default: a one-line summary the operator can scan;
-        // click to expand the full output. Errors start open (actionable).
-        payload: `${idTail}${oneLine(text)}`,
+        // Collapsed by default: a TRUNCATED one-line summary the operator can
+        // scan (oneLine alone only flattens whitespace — a big result would
+        // still render in full and defeat the fold); click to expand the full
+        // output. Errors start open (actionable).
+        payload: `${idTail}${truncate(oneLine(text), 100)}`,
         collapsible: true,
         full: `${idTail}${text}`.trimEnd(),
         defaultOpen: !!ev.is_error,
