@@ -365,7 +365,15 @@ func New(cfg *config.Config, pr ProviderResolver, builtinTools []tools.Tool, sem
 		s.redactor = redact.New(secretEnvValues(os.Environ()), true)
 	}
 	s.tools = append(s.tools, &builtin.AgentTool{
-		Run: s.runSubAgent,
+		// Run drops the run_id (the common sequential/spawn path); RunDetailed
+		// keeps it for the parallel_spawn ledger (RFC X Phase 3). Both drive
+		// the same runSubAgent.
+		Run: func(ctx context.Context, name, prompt, defID string) (string, error) {
+			out, _, err := s.runSubAgent(ctx, name, prompt, defID)
+			return out, err
+		},
+		RunDetailed: s.runSubAgent,
+		SpawnLedger: cfg.Env.ResumeFanout, // RFC X Phase 3: record the spawn ledger (default off)
 		// v0.11.8 — per-agent max_concurrent_children cap for
 		// Agent.parallel_spawn. Walks the same resolver chain as
 		// sub-run dispatch (yaml > dynamic_agents > AgentDef
@@ -1816,6 +1824,9 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	// while paused. RunOnce is synchronous, so a plain defer-deregister works.
 	gate, deregGate := s.newPauseGate(runID)
 	defer deregGate()
+	// RFC X Phase 3: expose the gate to the Agent tool so a parallel_spawn
+	// fan-out parent can park mid-tool-call (no-op unless LOOMCYCLE_RESUME_FANOUT).
+	loopCtx = tools.WithPauseGate(loopCtx, gate)
 
 	fbPolicy, fbReResolve := s.fallbackForRun(effectiveTenantID, effectiveAgentName, in.UserTier)
 	res, runErr := loop.Run(loopCtx, loop.RunOptions{
@@ -3133,6 +3144,9 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 	// goroutine (interactive) — never a handler-level defer (handOff).
 	gate, deregGate := s.newPauseGate(runID)
 	runOpts.PauseGate = gate
+	// RFC X Phase 3: expose the gate to the Agent tool so a parallel_spawn
+	// fan-out parent can park mid-tool-call (no-op unless LOOMCYCLE_RESUME_FANOUT).
+	loopCtx = tools.WithPauseGate(loopCtx, gate)
 
 	if req.Interactive && s.store != nil {
 		// Detached run: execute the loop in a background goroutine that
@@ -3559,6 +3573,8 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	// Cooperative pause quiesce (RFC X / F41) — synchronous handler, defer-deregister.
 	gate, deregGate := s.newPauseGate(run.ID)
 	defer deregGate()
+	// RFC X Phase 3: expose the gate to the Agent tool (parallel_spawn parent park).
+	loopCtx = tools.WithPauseGate(loopCtx, gate)
 	fbPolicy, fbReResolve := s.fallbackForRun(sess.TenantID, sess.Agent, body.UserTier)
 	loopRes, runErr := loop.Run(loopCtx, loop.RunOptions{
 		Provider:               provider,
@@ -3943,6 +3959,21 @@ func (s *Server) makeRecordingEmit(ctx context.Context, runID string, fwd func(p
 			fwd(ev)
 			return
 		}
+		// RFC X Phase 3: the spawn ledger (spawn_child_started / spawn_child_result)
+		// is a STORE-side durability mechanism for reconstructing a parked fan-out
+		// parent on resume — the mirror image of EventSteer above. It must NOT reach
+		// live SSE/gRPC consumers: it's not a client-facing event, and eventToProto
+		// carries no SpawnChild payload (a gRPC client would get a typed-but-empty
+		// frame). Persist, don't forward.
+		if ev.Type == providers.EventSpawnChildStarted || ev.Type == providers.EventSpawnChildResult {
+			payload, err := json.Marshal(ev)
+			if err == nil {
+				if err := s.store.AppendEvent(ctx, runID, string(ev.Type), payload); err != nil {
+					log.Printf("store: AppendEvent failed (run=%s type=%s): %v", runID, ev.Type, err)
+				}
+			}
+			return
+		}
 		// F32: redact secrets out of the PERSISTED copy only — the tool_call
 		// input and tool_result text are the surfaces where a token inlined on a
 		// Bash cmdline / echoed by a tool would otherwise hit the events BLOB
@@ -4013,7 +4044,11 @@ func secretEnvValues(environ []string) map[string]string {
 // Errors propagate as Go errors back to the Agent tool, which surfaces
 // them as IsError tool_results to the parent's model rather than
 // tearing down the parent run.
-func (s *Server) runSubAgent(ctx context.Context, name string, prompt string, defID string) (string, error) {
+// runSubAgent runs a named sub-agent to completion. The second return is the
+// child's run row id (RFC X Phase 3) — "" when the run was never created (an
+// early resolution/provider error), otherwise the sub-run's id even on failure
+// so the parent's spawn ledger can re-find it. (Wired to AgentTool.Run.)
+func (s *Server) runSubAgent(ctx context.Context, name string, prompt string, defID string) (string, string, error) {
 	// RFC N: a parent in tenant T resolves the sub-agent name within T's
 	// view (parent tenant flows via ctx RunIdentity, inherited by every
 	// sub-agent). Confirms RFC N's open-question on cross-boundary spawn:
@@ -4021,7 +4056,7 @@ func (s *Server) runSubAgent(ctx context.Context, name string, prompt string, de
 	// tenant's private agent by name.
 	def, ok := lookup.Agent(ctx, s.store, s.cfg, tenantFromCtx(ctx), name)
 	if !ok {
-		return "", fmt.Errorf("unknown sub-agent %q (not in cfg.Agents, dynamic_agents, or agent_def_active)", name)
+		return "", "", fmt.Errorf("unknown sub-agent %q (not in cfg.Agents, dynamic_agents, or agent_def_active)", name)
 	}
 
 	// v0.8.5 substrate: when defID is set, overlay the named def's
@@ -4032,17 +4067,17 @@ func (s *Server) runSubAgent(ctx context.Context, name string, prompt string, de
 	// the operator's static agent boundary.
 	if defID != "" {
 		if s.store == nil {
-			return "", fmt.Errorf("Agent tool: def_id pinning requires a configured store backend")
+			return "", "", fmt.Errorf("Agent tool: def_id pinning requires a configured store backend")
 		}
 		row, err := s.store.AgentDefGet(ctx, defID)
 		if err != nil {
-			return "", fmt.Errorf("Agent tool: def_id %q lookup failed: %w", defID, err)
+			return "", "", fmt.Errorf("Agent tool: def_id %q lookup failed: %w", defID, err)
 		}
 		if row.Name != name {
-			return "", fmt.Errorf("Agent tool: def_id %q is for agent %q, not %q (cross-name pinning refused)", defID, row.Name, name)
+			return "", "", fmt.Errorf("Agent tool: def_id %q is for agent %q, not %q (cross-name pinning refused)", defID, row.Name, name)
 		}
 		if row.Retired {
-			return "", fmt.Errorf("Agent tool: def_id %q is retired", defID)
+			return "", "", fmt.Errorf("Agent tool: def_id %q is retired", defID)
 		}
 		def = applyAgentDefOverlay(def, row.Definition)
 	}
@@ -4058,11 +4093,11 @@ func (s *Server) runSubAgent(ctx context.Context, name string, prompt string, de
 	// would silently discard the fork's values.
 	providerID, model, effort, err := s.resolveAgentDef(def, name, parentTier)
 	if err != nil {
-		return "", fmt.Errorf("resolve sub-agent %q model: %w", name, err)
+		return "", "", fmt.Errorf("resolve sub-agent %q model: %w", name, err)
 	}
 	provider, err := s.providers.Get(providerID)
 	if err != nil {
-		return "", fmt.Errorf("provider for sub-agent %q: %w", name, err)
+		return "", "", fmt.Errorf("provider for sub-agent %q: %w", name, err)
 	}
 
 	// Read parent's identity from ctx to inherit user_id and pin
@@ -4100,7 +4135,32 @@ func (s *Server) runSubAgent(ctx context.Context, name string, prompt string, de
 	}
 	subSessionID, subRunID, err := s.openOrCreateSessionAndRun(ctx, "", name, "", parentIdentity.UserID, subIdentity)
 	if err != nil {
-		return "", fmt.Errorf("create sub-session for %q: %w", name, err)
+		return "", "", fmt.Errorf("create sub-session for %q: %w", name, err)
+	}
+
+	// RFC X Phase 3 spawn ledger: when this sub-run is a parallel_spawn child
+	// (the parent threaded a spawn index + the parent's tool_use id is on ctx)
+	// and the feature is on, record a spawn_child_started row on the PARENT's
+	// transcript NOW — while the child run id is known but the child may park
+	// before it completes. The emitter on ctx is still the parent's (the
+	// sub-run's own emitter is swapped in below). Gives a restored fan-out
+	// parent the (index → run_id) mapping to await + re-collect this child.
+	if s.cfg.Env.ResumeFanout {
+		if idx, ok := tools.SpawnIndex(ctx); ok {
+			if tuID := tools.ToolUseID(ctx); tuID != "" {
+				if emit := tools.EventEmitter(ctx); emit != nil {
+					emit(providers.Event{
+						Type: providers.EventSpawnChildStarted,
+						SpawnChild: &providers.SpawnChildEventInfo{
+							ToolUseID: tuID,
+							Index:     idx,
+							RunID:     subRunID,
+							Agent:     name,
+						},
+					})
+				}
+			}
+		}
 	}
 
 	// Register the sub-run in the cancel registry so a parent-cancel
@@ -4289,6 +4349,9 @@ func (s *Server) runSubAgent(ctx context.Context, name string, prompt string, de
 	// it's a child of an already-admitted run, not new top-level work.
 	subGate, deregSubGate := s.newPauseGate(subRunID)
 	defer deregSubGate()
+	// RFC X Phase 3: expose the gate so a NESTED fan-out parent (a sub-agent
+	// that itself parallel_spawns) can park mid-tool-call too.
+	subCtx = tools.WithPauseGate(subCtx, subGate)
 
 	fbPolicy, fbReResolve := s.fallbackForRun(tenantFromCtx(ctx), name, parentTier)
 	res, runErr := loop.Run(subCtx, loop.RunOptions{
@@ -4334,14 +4397,14 @@ func (s *Server) runSubAgent(ctx context.Context, name string, prompt string, de
 		// model sees the unwrapped error message. agent_id is the v0.4
 		// addressable handle, so include it too — the easiest hint for
 		// "GET /v1/agents/<this>" debugging.
-		return "", fmt.Errorf("sub-agent %q failed (agent=%s session=%s run=%s): %w",
+		return "", subRunID, fmt.Errorf("sub-agent %q failed (agent=%s session=%s run=%s): %w",
 			name, subAgentID, subSessionID, subRunID, runErr)
 	}
 	// Surface the sub agent_id to the parent agent's transcript by
 	// prefixing the tool_result text. Parent caller's model sees this
 	// and can echo it to the UI. Cheap; unblocks future "cancel only
 	// the sub" UX.
-	return fmt.Sprintf("[sub-agent agent_id=%s]\n%s", subAgentID, res.FinalText), nil
+	return formatSubAgentOutput(subAgentID, res.FinalText), subRunID, nil
 }
 
 // agentResponse is the JSON shape returned by GET /v1/agents/{id} and

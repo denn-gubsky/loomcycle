@@ -388,6 +388,20 @@ const (
 	// turn the run parked at. The UI renders this as the terminal's idle
 	// "waiting for input" state.
 	EventAwaitingInput EventType = "awaiting_input"
+
+	// EventSpawnChildStarted / EventSpawnChildResult are the RFC X Phase 3
+	// "spawn ledger" — recorded on the PARENT run's transcript so a
+	// snapshotted+restored fan-out parent (blocked in Agent.parallel_spawn)
+	// can reconstruct the parallel_spawn tool_result it never got to write.
+	// EventSpawnChildStarted is emitted as each child's run row is created
+	// (carries the child's index + run_id); EventSpawnChildResult as each
+	// child completes (carries the result). Both carry the parent's
+	// tool_use_id so the resume reconcile matches them to the dangling
+	// parallel_spawn tool_use. replayTranscript ignores both (default case),
+	// so they never pollute the reconstructed conversation. Emitted ONLY when
+	// LOOMCYCLE_RESUME_FANOUT is on.
+	EventSpawnChildStarted EventType = "spawn_child_started"
+	EventSpawnChildResult  EventType = "spawn_child_result"
 )
 
 // Event is one streamed datum from a provider call (or, after the loop layer
@@ -441,6 +455,10 @@ type Event struct {
 	// AwaitingInput carries the structured payload on EventAwaitingInput (a
 	// persistent interactive run parked at end_turn). Nil otherwise.
 	AwaitingInput *AwaitingInputEventInfo `json:"awaiting_input,omitempty"`
+
+	// SpawnChild carries the structured payload on EventSpawnChildStarted /
+	// EventSpawnChildResult (RFC X Phase 3 spawn ledger). Nil otherwise.
+	SpawnChild *SpawnChildEventInfo `json:"spawn_child,omitempty"`
 
 	// StopReason is set on the final assistant Event of a provider call:
 	// "end_turn" | "tool_use" | "max_tokens" | "stop_sequence".
@@ -609,6 +627,26 @@ type AwaitingInputEventInfo struct {
 	// SinceTurn is the iteration index the run parked at. Informational —
 	// lets the UI show "idle after N turns".
 	SinceTurn int `json:"since_turn"`
+}
+
+// SpawnChildEventInfo is the structured payload on EventSpawnChildStarted /
+// EventSpawnChildResult (RFC X Phase 3 spawn ledger), recorded on the PARENT
+// run's transcript. ToolUseID + Index identify the child within the parent's
+// parallel_spawn call; RunID is the child's run row (the started event's
+// reason for being — so the resume reconcile can await + re-collect a child
+// still pending at snapshot time). On EventSpawnChildResult, Ok/Output/Error
+// carry the finished child's result (so a child that completed BEFORE the
+// snapshot — whose run row isn't captured — still has its result in the
+// parent's captured transcript).
+type SpawnChildEventInfo struct {
+	ToolUseID string `json:"tool_use_id"`
+	Index     int    `json:"index"`
+	RunID     string `json:"run_id,omitempty"`
+	Agent     string `json:"agent,omitempty"`
+	// Result fields — set on EventSpawnChildResult only.
+	Ok     bool   `json:"ok,omitempty"`
+	Output string `json:"output,omitempty"`
+	Error  string `json:"error,omitempty"`
 }
 
 // HostWideningEventInfo is the structured payload on EventHostWidened

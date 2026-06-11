@@ -527,6 +527,84 @@ func RunID(ctx context.Context) string {
 	return v
 }
 
+// ctxKeyToolUseID carries the current tool call's tool_use id (RFC X Phase 3).
+// The loop stamps it before dispatching each tool so a tool (the Agent tool's
+// parallel_spawn) can tag its spawn-ledger events with the parent tool_use id,
+// letting the resume reconcile match the ledger to the dangling tool_use.
+type ctxKeyToolUseID struct{}
+
+// WithToolUseID attaches the dispatching tool call's tool_use id to ctx.
+func WithToolUseID(ctx context.Context, id string) context.Context {
+	if id == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, ctxKeyToolUseID{}, id)
+}
+
+// ToolUseID returns the current tool call's tool_use id, or "" when unset.
+func ToolUseID(ctx context.Context) string {
+	v, _ := ctx.Value(ctxKeyToolUseID{}).(string)
+	return v
+}
+
+// ctxKeySpawnIndex carries a child's index within its parent's parallel_spawn
+// (RFC X Phase 3). parallel_spawn stamps it per child so the sub-run runner
+// can emit the child's spawn-ledger "started" event with the right index.
+// Stored as index+1 internally so a genuine index 0 is distinguishable from
+// "unset"; SpawnIndex returns (index, ok).
+type ctxKeySpawnIndex struct{}
+
+// WithSpawnIndex attaches a child's parallel_spawn index to ctx.
+func WithSpawnIndex(ctx context.Context, index int) context.Context {
+	return context.WithValue(ctx, ctxKeySpawnIndex{}, index+1)
+}
+
+// SpawnIndex returns the child's parallel_spawn index and whether it was set.
+func SpawnIndex(ctx context.Context) (int, bool) {
+	v, ok := ctx.Value(ctxKeySpawnIndex{}).(int)
+	if !ok || v == 0 {
+		return 0, false
+	}
+	return v - 1, true
+}
+
+// PauseGate is the minimal pause-park surface a tool needs (RFC X Phase 3).
+// The Agent tool's parallel_spawn uses it to PARK the fan-out parent run while
+// it's blocked awaiting children (the loop's own top-of-iteration park is
+// unreachable mid-tool-call). The concrete implementation lives in the HTTP
+// server (internal/api/http) and is threaded in via ctx; this interface keeps
+// the tools package free of a pause/server import. It is a superset of the
+// loop's PauseGate (adds PauseCh) so the same concrete value satisfies both.
+type PauseGate interface {
+	// PauseRequested reports whether the runtime is pausing/paused.
+	PauseRequested() bool
+	// PauseCh returns the channel closed when a pause is declared (re-fetch
+	// each cycle — a fresh channel is allocated on Resume).
+	PauseCh() <-chan struct{}
+	// Park persists pause_state=paused for this run, blocks until Resume (or
+	// ctx cancel), then restores pause_state=running. Returns ctx.Err() on
+	// cancel, nil on a clean resume.
+	Park(ctx context.Context) error
+}
+
+// ctxKeyPauseGate carries the run's PauseGate so a tool can cooperatively park
+// while blocked (RFC X Phase 3). Stashed by the server at run dispatch.
+type ctxKeyPauseGate struct{}
+
+// WithPauseGate attaches the run's PauseGate to ctx. nil gate is a no-op.
+func WithPauseGate(ctx context.Context, g PauseGate) context.Context {
+	if g == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, ctxKeyPauseGate{}, g)
+}
+
+// PauseGateFromContext returns the run's PauseGate, or nil when unset.
+func PauseGateFromContext(ctx context.Context) PauseGate {
+	g, _ := ctx.Value(ctxKeyPauseGate{}).(PauseGate)
+	return g
+}
+
 // ctxKeyResolvedProvider / ctxKeyResolvedModel carry the run's
 // CURRENTLY-RESOLVED provider id and model name so the Context tool's
 // op=self can report them to the agent. The model never supplies these
@@ -626,6 +704,17 @@ func EventEmitter(ctx context.Context) EventEmitterFunc {
 		return fn
 	}
 	return func(providers.Event) {}
+}
+
+// HasEventEmitter reports whether a REAL emitter was attached to ctx (vs the
+// no-op EventEmitter hands back by default). A caller that only wants to do work
+// when its events will actually be recorded — e.g. the RFC X Phase 3 spawn
+// ledger, which is pointless if it drains into the no-op — gates on this rather
+// than on EventEmitter(ctx) != nil (which is ALWAYS true, since the accessor
+// never returns nil).
+func HasEventEmitter(ctx context.Context) bool {
+	fn, ok := ctx.Value(ctxKeyEventEmitter{}).(EventEmitterFunc)
+	return ok && fn != nil
 }
 
 // ctxKeyAgentDefPolicy carries the v0.8.5 AgentDef-tool capability

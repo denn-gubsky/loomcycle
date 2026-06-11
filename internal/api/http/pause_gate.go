@@ -6,10 +6,10 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/denn-gubsky/loomcycle/internal/loop"
 	"github.com/denn-gubsky/loomcycle/internal/pause"
 	"github.com/denn-gubsky/loomcycle/internal/runner"
 	"github.com/denn-gubsky/loomcycle/internal/store"
+	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
 
 // pauseGate is the per-run loop.PauseGate implementation (RFC X / F41). It
@@ -33,6 +33,18 @@ const pauseStatePersistTimeout = 5 * time.Second
 // (lock-free in single-replica mode, 1s-cached in cluster mode).
 func (g *pauseGate) PauseRequested() bool {
 	return g.mgr != nil && !g.mgr.State().AcceptsNewRuns()
+}
+
+// PauseCh returns the channel closed when a pause is declared (RFC X Phase 3).
+// The Agent tool's parallel_spawn watcher selects on it to park the fan-out
+// parent mid-tool-call. A fresh channel is allocated each Resume, so callers
+// must re-fetch it per wait cycle. Returns a nil channel (blocks forever) when
+// the manager is unset — the watcher then never fires, which is correct.
+func (g *pauseGate) PauseCh() <-chan struct{} {
+	if g.mgr == nil {
+		return nil
+	}
+	return g.mgr.PauseCh()
 }
 
 // Park persists pause_state='paused', blocks until the runtime resumes (or the
@@ -86,11 +98,14 @@ func (g *pauseGate) setPauseState(parent context.Context, state string) error {
 	return g.store.SetRunPauseState(ctx, g.runID, state)
 }
 
-// newPauseGate builds a loop.PauseGate for runID and registers the run with the
+// newPauseGate builds a PauseGate for runID and registers the run with the
 // pause barrier, returning a deregister func to defer at the loop site. Returns
 // (nil, no-op) when pause isn't wired (no manager / no store) — the loop then
-// skips pausing entirely.
-func (s *Server) newPauseGate(runID string) (loop.PauseGate, func()) {
+// skips pausing entirely. The concrete *pauseGate satisfies BOTH loop.PauseGate
+// (PauseRequested + Park, used by the loop) and tools.PauseGate (adds PauseCh,
+// used by the parallel_spawn park watcher); returning the wider tools.PauseGate
+// lets callers both set runOpts.PauseGate and stash it via tools.WithPauseGate.
+func (s *Server) newPauseGate(runID string) (tools.PauseGate, func()) {
 	if s.pauseMgr == nil || s.store == nil || runID == "" {
 		return nil, func() {}
 	}

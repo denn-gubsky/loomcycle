@@ -2,8 +2,11 @@ package http
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/cancel"
@@ -12,6 +15,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
+	"github.com/denn-gubsky/loomcycle/internal/tools/builtin"
 )
 
 // resume.go — F42 / RFC X Phase 2: re-dispatch snapshotted paused runs.
@@ -124,12 +128,30 @@ func (s *Server) resumePausedRun(ctx context.Context, run store.Run) error {
 	}
 	priorMessages := replayTranscript(runEvents)
 
+	// RFC X Phase 3: detect a parked fan-out PARENT — a parallel_spawn that the
+	// Phase-3 watcher parked mid-wg.Wait, so its transcript ends on a dangling
+	// tool_use (no envelope tool_result) backed by a spawn ledger. Such a run
+	// can't take the endsWithPendingTurn path (it ends on an assistant turn) but
+	// IS resumable: the goroutine below reconciles the children into the
+	// envelope. Flag-gated — off ⇒ (_, false) ⇒ the byte-identical normal path.
+	fanout, isFanout := detectFanoutParent(s.cfg.Env.ResumeFanout, runEvents)
+	if isFanout && !lastTurnIsSoleToolUse(priorMessages, fanout.toolUseID) {
+		// A parked fan-out that shared its turn with other in-flight tools (a
+		// mixed tool iteration) isn't auto-reconcilable: synthesizing only the
+		// fan-out's result would leave a sibling tool_use unanswered (the
+		// provider 400s). Documented Phase-3 limitation; flag for manual
+		// re-attach rather than emit a malformed continuation.
+		s.flagRunUnresumable(run, "parked fan-out parent shared its turn with other in-flight tools; re-attach to continue")
+		return fmt.Errorf("not auto-resumable (mixed fan-out tool turn)")
+	}
+
 	// Auto-resume only when there's a pending turn for the model to answer
 	// (the conversation ends on a user/tool_result message). A conversation
 	// ending on an assistant turn means the run was idle awaiting operator
 	// input when paused — re-entering the loop would send the provider a
-	// trailing assistant message. Flag it for manual re-attach instead.
-	if !endsWithPendingTurn(priorMessages) {
+	// trailing assistant message. Flag it for manual re-attach instead. A
+	// detected fan-out parent is exempt: its tool_result is synthesized below.
+	if !isFanout && !endsWithPendingTurn(priorMessages) {
 		s.flagRunUnresumable(run, "run was idle awaiting input when paused; re-attach + steer to continue")
 		return fmt.Errorf("not auto-resumable (no pending turn)")
 	}
@@ -236,6 +258,8 @@ func (s *Server) resumePausedRun(ctx context.Context, run store.Run) error {
 	heartbeat := s.makeHeartbeat(run.ID)
 	fbPolicy, fbReResolve := s.fallbackForRun(run.TenantID, run.Agent, run.UserTier)
 	gate, deregGate := s.newPauseGate(run.ID)
+	// RFC X Phase 3: a re-dispatched run that itself fans out can park too.
+	loopCtx = tools.WithPauseGate(loopCtx, gate)
 
 	runOpts := loop.RunOptions{
 		Provider:               provider,
@@ -285,6 +309,21 @@ func (s *Server) resumePausedRun(ctx context.Context, run store.Run) error {
 			runSpan.End()
 			cancelFn(nil)
 		}()
+		// RFC X Phase 3: reconcile a parked fan-out parent BEFORE acquiring a run
+		// slot. The reconcile awaits this parent's children (which acquire their
+		// OWN per-user slots when ResumePausedRuns re-dispatches them) — holding a
+		// slot here while awaiting could deadlock the per-user semaphore. The
+		// synthesized parallel_spawn tool_result is appended to PriorMessages so
+		// loop.Run continues past the dangling tool_use.
+		if isFanout {
+			toolResult, rerr := s.reconcileFanoutParent(runCtx, run, runEvents, fanout, emit)
+			if rerr != nil {
+				s.finishRunFailedReason(run.ID, "resume: reconcile fan-out parent: "+rerr.Error(), meta)
+				return
+			}
+			runOpts.PriorMessages = append(runOpts.PriorMessages, toolResult)
+		}
+
 		// Respect the per-tenant fairness semaphore so a boot that resumes many
 		// runs doesn't blow past MAX_CONCURRENT_RUNS. Acquired inside the
 		// goroutine so the caller's resume loop never blocks.
@@ -326,4 +365,400 @@ func endsWithPendingTurn(msgs []providers.Message) bool {
 		return false
 	}
 	return msgs[len(msgs)-1].Role == "user"
+}
+
+// --- RFC X Phase 3: parked fan-out parent reconcile ---------------------------
+
+// fanoutParkInfo describes a detected parked fan-out parent: the parallel_spawn
+// tool_use that never received a tool_result, plus its raw input (the
+// authoritative spawn list, so the reconcile knows the full child count even
+// when a child past the concurrency cap never started and thus has no ledger).
+type fanoutParkInfo struct {
+	toolUseID string
+	input     json.RawMessage
+}
+
+// detectFanoutParent scans one run's transcript events for a parked fan-out
+// parent: an Agent parallel_spawn tool_use that (a) has at least one
+// spawn_child_started ledger event (so it IS a fan-out, not some other tool)
+// and (b) has no matching tool_result (so the Phase-3 watcher parked it
+// mid-wg.Wait before the envelope was emitted). Returns the dangling
+// tool_use_id + its tool_call input. Flag-gated: returns (_, false) when
+// ResumeFanout is off, so the run takes the normal endsWithPendingTurn path —
+// byte-identical to pre-Phase-3. At most one tool_use can be unanswered at a
+// pause boundary (the loop answers every tool_use within an iteration before
+// the next), so the first unanswered ledger-backed id is the parked parent.
+func detectFanoutParent(enabled bool, runEvents []store.Event) (fanoutParkInfo, bool) {
+	if !enabled {
+		return fanoutParkInfo{}, false
+	}
+	answered := map[string]bool{}         // tool_use_id → has a tool_result
+	hasLedger := map[string]bool{}        // tool_use_id → has ≥1 spawn_child_started
+	input := map[string]json.RawMessage{} // tool_use_id → tool_call input
+	for _, ev := range runEvents {
+		switch ev.Type {
+		case "tool_call":
+			var pe providers.Event
+			if err := json.Unmarshal(ev.Payload, &pe); err == nil && pe.ToolUse != nil {
+				input[pe.ToolUse.ID] = pe.ToolUse.Input
+			}
+		case "tool_result":
+			var pe providers.Event
+			if err := json.Unmarshal(ev.Payload, &pe); err == nil && pe.ToolUse != nil {
+				answered[pe.ToolUse.ID] = true
+			}
+		case string(providers.EventSpawnChildStarted):
+			var pe providers.Event
+			if err := json.Unmarshal(ev.Payload, &pe); err == nil && pe.SpawnChild != nil {
+				hasLedger[pe.SpawnChild.ToolUseID] = true
+			}
+		}
+	}
+	for tuID := range hasLedger {
+		if !answered[tuID] {
+			return fanoutParkInfo{toolUseID: tuID, input: input[tuID]}, true
+		}
+	}
+	return fanoutParkInfo{}, false
+}
+
+// lastTurnIsSoleToolUse confirms the reconstructed conversation ends on an
+// assistant turn whose ONLY tool_use is the fan-out tool_use_id. A turn with
+// other tool_use blocks means the fan-out shared its iteration with sibling
+// tools (also dangling) — not auto-reconcilable, see the caller.
+func lastTurnIsSoleToolUse(msgs []providers.Message, toolUseID string) bool {
+	if len(msgs) == 0 {
+		return false
+	}
+	last := msgs[len(msgs)-1]
+	if last.Role != "assistant" {
+		return false
+	}
+	n, match := 0, false
+	for _, c := range last.Content {
+		if c.Type == "tool_use" {
+			n++
+			if c.ToolUseID == toolUseID {
+				match = true
+			}
+		}
+	}
+	return n == 1 && match
+}
+
+// parseSpawnNames reads the authoritative child count + names from a
+// parallel_spawn tool_call input. Used so the reconcile can produce a result
+// entry even for a child that was never dispatched (blocked past the
+// concurrency cap when the pause hit, so it has no ledger entry). Returns
+// (0, nil) on any unmarshal problem — the caller falls back to the ledger count.
+func parseSpawnNames(input json.RawMessage) (int, []string) {
+	if len(input) == 0 {
+		return 0, nil
+	}
+	var in struct {
+		Spawns []struct {
+			Name string `json:"name"`
+		} `json:"spawns"`
+	}
+	if err := json.Unmarshal(input, &in); err != nil {
+		return 0, nil
+	}
+	names := make([]string, len(in.Spawns))
+	for i, sp := range in.Spawns {
+		names[i] = sp.Name
+	}
+	return len(in.Spawns), names
+}
+
+// reconcileFanoutParent reconstructs the parallel_spawn tool_result for a
+// restored fan-out parent and returns it as a user(tool_result) Message to
+// append to PriorMessages so the loop continues past the dangling tool_use.
+//
+// Per child index it prefers the durable spawn_child_result ledger event (a
+// child that completed BEFORE the snapshot — whose run row isn't captured);
+// otherwise it awaits the child run (re-dispatched independently by
+// ResumePausedRuns) to terminal and reads its result. A child with no ledger
+// entry (never dispatched — blocked past the concurrency cap when the pause
+// hit) or one that can't be recovered becomes an error result the parent's
+// model can choose to re-issue. The synthesized envelope matches
+// executeParallelSpawn's exact JSON shape, and is also appended to the parent's
+// transcript via emit so a re-attaching operator and any future re-snapshot
+// see a complete tool cycle.
+func (s *Server) reconcileFanoutParent(ctx context.Context, run store.Run, runEvents []store.Event, fanout fanoutParkInfo, emit func(providers.Event)) (providers.Message, error) {
+	// Keep the parent's heartbeat fresh during the (possibly long) child await:
+	// the parent's own loop heartbeat doesn't start until this returns, and the
+	// stale-run sweeper (default 10m) would otherwise reap the parent
+	// mid-reconcile if a child legitimately runs longer than the cutoff.
+	hbStop := make(chan struct{})
+	go func() {
+		t := time.NewTicker(fanoutHeartbeatInterval)
+		defer t.Stop()
+		for {
+			select {
+			case <-hbStop:
+				return
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				if err := s.store.UpdateHeartbeat(ctx, run.ID); err != nil {
+					log.Printf("resume: fan-out parent %s heartbeat pump: %v", run.ID, err)
+				}
+			}
+		}
+	}()
+	defer close(hbStop)
+
+	// Gather the ledger keyed by child index.
+	type childLedger struct {
+		runID  string
+		agent  string
+		result *providers.SpawnChildEventInfo
+	}
+	children := map[int]*childLedger{}
+	get := func(idx int) *childLedger {
+		if c := children[idx]; c != nil {
+			return c
+		}
+		c := &childLedger{}
+		children[idx] = c
+		return c
+	}
+	for _, ev := range runEvents {
+		switch ev.Type {
+		case string(providers.EventSpawnChildStarted):
+			var pe providers.Event
+			if err := json.Unmarshal(ev.Payload, &pe); err != nil || pe.SpawnChild == nil || pe.SpawnChild.ToolUseID != fanout.toolUseID {
+				continue
+			}
+			c := get(pe.SpawnChild.Index)
+			c.runID = pe.SpawnChild.RunID
+			c.agent = pe.SpawnChild.Agent
+		case string(providers.EventSpawnChildResult):
+			var pe providers.Event
+			if err := json.Unmarshal(ev.Payload, &pe); err != nil || pe.SpawnChild == nil || pe.SpawnChild.ToolUseID != fanout.toolUseID {
+				continue
+			}
+			c := get(pe.SpawnChild.Index)
+			scCopy := *pe.SpawnChild
+			c.result = &scCopy
+			if c.agent == "" {
+				c.agent = pe.SpawnChild.Agent
+			}
+		}
+	}
+
+	// Child count must span every index we have a ledger row for — derive it
+	// from the HIGHEST observed index, not len(children): the dispatched set can
+	// be sparse (a child past the concurrency cap never emitted a started event,
+	// and goroutine scheduling means the dispatched indices aren't a contiguous
+	// prefix), so len(children) could be < maxIndex+1 and the loop below would
+	// silently drop the highest-index child's real result. parseSpawnNames then
+	// widens it further to the authoritative input count (covers a never-
+	// dispatched tail) when the persisted tool_call input is still parseable.
+	count := 0
+	for idx := range children {
+		if idx+1 > count {
+			count = idx + 1
+		}
+	}
+	var names []string
+	if n, nm := parseSpawnNames(fanout.input); n > count {
+		count = n
+		names = nm
+	}
+	if count == 0 {
+		return providers.Message{}, fmt.Errorf("fan-out tool_use %s has no children to reconcile", fanout.toolUseID)
+	}
+
+	results := make([]builtin.ParallelSpawnResult, count)
+	for i := 0; i < count; i++ {
+		c := children[i]
+		name := ""
+		if c != nil {
+			name = c.agent
+		}
+		if name == "" && i < len(names) {
+			name = names[i]
+		}
+		switch {
+		case c != nil && c.result != nil:
+			// Completed before the snapshot — durable result in the ledger.
+			results[i] = builtin.ParallelSpawnResult{Index: i, Agent: c.result.Agent, Ok: c.result.Ok, Output: c.result.Output, Error: c.result.Error}
+		case c != nil && c.runID != "":
+			// Still running (parked) at snapshot → re-dispatched independently
+			// by ResumePausedRuns. Await it + read its result.
+			results[i] = s.awaitChildResult(ctx, i, name, c.runID)
+		default:
+			results[i] = builtin.ParallelSpawnResult{Index: i, Agent: name, Ok: false,
+				Error: "child was not dispatched before the snapshot; re-issue if its result is required"}
+		}
+	}
+
+	envelope := struct {
+		Results []builtin.ParallelSpawnResult `json:"results"`
+	}{Results: results}
+	body, err := json.Marshal(envelope)
+	if err != nil {
+		return providers.Message{}, fmt.Errorf("marshal parallel_spawn envelope: %w", err)
+	}
+
+	// Persist the synthesized tool_result to the parent's transcript so a
+	// re-attaching operator AND any future re-snapshot see a complete cycle.
+	// makeRecordingEmit stores it under the parent's run id (mutex-guarded).
+	emit(providers.Event{
+		Type:    providers.EventToolResult,
+		ToolUse: &providers.ToolUse{ID: fanout.toolUseID},
+		Text:    string(body),
+	})
+
+	return providers.Message{
+		Role: "user",
+		Content: []providers.ContentBlock{{
+			Type:      "tool_result",
+			ToolUseID: fanout.toolUseID,
+			Text:      string(body),
+		}},
+	}, nil
+}
+
+// fanoutChildPollInterval / fanoutChildAwaitTimeout bound the reconcile's wait
+// for a re-dispatched child to reach terminal. The timeout is a backstop: a
+// child has its OWN run_timeout + the stale-run sweeper as ultimate ceilings,
+// so this only fires if a child genuinely wedges. Generous so a long-running
+// solver child still resolves to a real result rather than a timeout error.
+const (
+	fanoutChildPollInterval = 500 * time.Millisecond
+	fanoutChildAwaitTimeout = 30 * time.Minute
+	// fanoutChildMaxErrPolls bounds how long a persistent NON-ErrNotFound store
+	// error (DB outage) is retried before awaitChildTerminal surfaces it — ~10s
+	// at the 500ms poll interval, vs silently burning the full 30m backstop.
+	fanoutChildMaxErrPolls = 20
+	// fanoutHeartbeatInterval keeps the parent's last_heartbeat_at fresh during
+	// the await. Well under the sweeper's default 10m StaleAfter; matches the
+	// cadence the loop itself would heartbeat at once it starts.
+	fanoutHeartbeatInterval = 30 * time.Second
+)
+
+// awaitChildResult awaits one re-dispatched child to terminal and maps it to a
+// builtin.ParallelSpawnResult: completed → ok + the child's final text (prefixed exactly like
+// runSubAgent so it reads identically to a live collection); failed/cancelled →
+// an error result. A child whose row was never captured (the narrow race where
+// it completed in the instant before the snapshot, so pause_state never flipped
+// to 'paused') resolves to an error result via awaitChildTerminal's fast-fail.
+func (s *Server) awaitChildResult(ctx context.Context, index int, name, childRunID string) builtin.ParallelSpawnResult {
+	child, err := s.awaitChildTerminal(ctx, childRunID)
+	if err != nil {
+		return builtin.ParallelSpawnResult{Index: index, Agent: name, Ok: false,
+			Error: fmt.Sprintf("await child run %s: %v", childRunID, err)}
+	}
+	if name == "" {
+		name = child.Agent
+	}
+	switch child.Status {
+	case store.RunCompleted:
+		out := s.childFinalText(ctx, child)
+		if out == "" {
+			out = fmt.Sprintf("(sub-agent %q completed with no final text)", name)
+		}
+		return builtin.ParallelSpawnResult{Index: index, Agent: name, Ok: true,
+			Output: formatSubAgentOutput(child.AgentID, out)}
+	default:
+		msg := child.ErrorMsg
+		if msg == "" {
+			msg = string(child.Status)
+		}
+		return builtin.ParallelSpawnResult{Index: index, Agent: name, Ok: false, Error: msg}
+	}
+}
+
+// awaitChildTerminal polls a child run row until it reaches a terminal status
+// or a backstop deadline elapses, returning early on:
+//   - a persistent ErrNotFound (the row wasn't captured in the snapshot — the
+//     narrow race where the child completed in the instant before capture);
+//   - a persistent NON-ErrNotFound store error (a DB outage shouldn't burn the
+//     whole backstop silently — surface it after a short streak).
+//
+// A child that a CONCURRENT pause re-parks (pause_state set, Status still
+// 'running') is alive, not wedged: its presence RESETS the deadline so a long
+// second pause doesn't turn a healthy parked child into a spurious timeout
+// error. ctx (the parent's runCtx) cancellation — operator cancel — always wins.
+func (s *Server) awaitChildTerminal(ctx context.Context, childRunID string) (store.Run, error) {
+	tick := time.NewTicker(fanoutChildPollInterval)
+	defer tick.Stop()
+	deadline := time.Now().Add(fanoutChildAwaitTimeout)
+	notFoundStreak, errStreak := 0, 0
+	for {
+		run, err := s.store.GetRun(ctx, childRunID)
+		switch {
+		case err == nil:
+			notFoundStreak, errStreak = 0, 0
+			if isTerminalRunStatus(run.Status) {
+				return run, nil
+			}
+			// Re-parked by a concurrent pause → don't penalize parked time.
+			if run.PauseState == store.PauseStatePaused || run.PauseState == store.PauseStatePausing {
+				deadline = time.Now().Add(fanoutChildAwaitTimeout)
+			}
+		default:
+			var nf *store.ErrNotFound
+			if errors.As(err, &nf) {
+				notFoundStreak++
+				if notFoundStreak >= 3 {
+					return store.Run{}, fmt.Errorf("child run not found (not captured in snapshot)")
+				}
+			} else if errStreak++; errStreak >= fanoutChildMaxErrPolls {
+				return store.Run{}, fmt.Errorf("get child run: %w", err)
+			}
+		}
+		if time.Now().After(deadline) {
+			return store.Run{}, fmt.Errorf("child run %s did not reach terminal within %s", childRunID, fanoutChildAwaitTimeout)
+		}
+		select {
+		case <-ctx.Done():
+			return store.Run{}, ctx.Err()
+		case <-tick.C:
+		}
+	}
+}
+
+// formatSubAgentOutput wraps a sub-agent's final text with the parseable
+// "[sub-agent agent_id=...]" header the parent agent's model reads to attribute
+// child output. Shared by the live collection path (runSubAgent) and the
+// cross-instance reconcile (awaitChildResult) so the wire contract can't drift.
+func formatSubAgentOutput(agentID, finalText string) string {
+	return fmt.Sprintf("[sub-agent agent_id=%s]\n%s", agentID, finalText)
+}
+
+// childFinalText reads a completed child's final assistant text from its
+// transcript — the same last-assistant-text that runSubAgent surfaces via
+// loop.RunResult.FinalText. Returns "" if the transcript is unreadable or has
+// no assistant text (the caller substitutes a "no final text" placeholder).
+func (s *Server) childFinalText(ctx context.Context, child store.Run) string {
+	if child.SessionID == "" {
+		return ""
+	}
+	events, err := s.store.GetTranscript(ctx, child.SessionID)
+	if err != nil {
+		return ""
+	}
+	runEvents := make([]store.Event, 0, len(events))
+	for _, e := range events {
+		if e.RunID == child.ID {
+			runEvents = append(runEvents, e)
+		}
+	}
+	msgs := replayTranscript(runEvents)
+	for i := len(msgs) - 1; i >= 0; i-- {
+		if msgs[i].Role != "assistant" {
+			continue
+		}
+		var b strings.Builder
+		for _, c := range msgs[i].Content {
+			if c.Type == "text" {
+				b.WriteString(c.Text)
+			}
+		}
+		return b.String()
+	}
+	return ""
 }
