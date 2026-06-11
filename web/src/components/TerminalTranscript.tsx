@@ -31,17 +31,29 @@ export interface TerminalTranscriptProps {
 
 export default function TerminalTranscript({ events }: TerminalTranscriptProps) {
   const ref = useRef<HTMLDivElement | null>(null);
+  // stickRef tracks whether the operator is pinned to the bottom (following
+  // the tail). Starts true; the onScroll handler flips it when they scroll up
+  // to read and back when they return to the bottom. So we follow live output
+  // by default but never yank them off a line they're reading.
+  const stickRef = useRef(true);
   const lines = useMemo(() => coalesceTextTerminal(events).map(formatLine), [events]);
 
+  // Depend on the events array (not lines.length): streaming text deltas
+  // COALESCE into one line, so lines.length stays flat while the content
+  // grows — keying on events.length would stall the tail mid-stream.
   useEffect(() => {
     const el = ref.current;
+    if (el && stickRef.current) el.scrollTop = el.scrollHeight;
+  }, [events]);
+
+  const onScroll = () => {
+    const el = ref.current;
     if (!el) return;
-    const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
-    if (nearBottom) el.scrollTop = el.scrollHeight;
-  }, [lines.length]);
+    stickRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 60;
+  };
 
   return (
-    <div ref={ref} className="terminal-transcript">
+    <div ref={ref} className="terminal-transcript" onScroll={onScroll}>
       {lines.map((l, i) => (
         <TerminalRow key={l.key ?? i} line={l} />
       ))}
@@ -149,15 +161,27 @@ function formatLine(row: TranscriptEvent): FormattedLine {
       return { key, ts, kind, cls: "tl-text", payload: ev.text ?? "" };
     case "tool_call": {
       const t = ev.tool_use;
-      const inputStr = t?.input
+      const oneLineInput = t?.input
         ? typeof t.input === "string"
           ? oneLine(t.input)
           : oneLine(JSON.stringify(t.input))
         : "";
+      // Expanded detail: the full input, pretty-printed when it's an object so
+      // a Write's file content / a multi-field call is readable.
+      const fullInput = t?.input
+        ? typeof t.input === "string"
+          ? t.input
+          : JSON.stringify(t.input, null, 2)
+        : "";
       const idTail = t?.id ? ` ${t.id.slice(0, 8)}` : "";
+      // Collapsed by default: a tool call's input can be huge (a Write's whole
+      // file body) and contaminates the scrollback — show name + id + a short
+      // preview, expand on click.
       return {
         key, ts, kind, cls: "tl-tool",
-        payload: `${t?.name ?? "?"}${idTail} ${inputStr}`.trimEnd(),
+        payload: `${t?.name ?? "?"}${idTail} ${truncate(oneLineInput, 80)}`.trimEnd(),
+        collapsible: true,
+        full: `${t?.name ?? "?"}${idTail}\n${fullInput}`.trimEnd(),
       };
     }
     case "tool_result": {
@@ -241,6 +265,10 @@ function formatLine(row: TranscriptEvent): FormattedLine {
 
 function oneLine(s: string): string {
   return s.replace(/\s+/g, " ").trim();
+}
+
+function truncate(s: string, n: number): string {
+  return s.length > n ? s.slice(0, n) + "…" : s;
 }
 
 function formatHMSms(ns: number): string {
