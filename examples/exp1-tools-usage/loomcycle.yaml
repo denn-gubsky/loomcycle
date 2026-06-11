@@ -1,0 +1,80 @@
+# exp1 — tool access (write → save → run → verify)
+#
+# A single coding agent (`code-guru`) with the built-in file/shell/web tools,
+# scoped to ./work. It writes a program, runs it, and verifies the output.
+#
+# Routing: Anthropic OAuth (primary) → deepseek-v4-pro (fallback). Agents use
+# `tier: middle`, so each run tries claude-sonnet-4-6 over the OAuth provider and,
+# on a retryable error (or if OAuth isn't logged in / is excluded), falls through
+# to deepseek-v4-pro. See README.md.
+
+provider_priority:
+  - anthropic-oauth-dev   # primary — Claude subscription via `loomcycle anthropic login`
+                          # (research/dev only; opt-in via LOOMCYCLE_ANTHROPIC_OAUTH_DEV_ENABLED=1)
+  - deepseek              # fallback — deepseek-v4-pro (needs DEEPSEEK_API_KEY)
+
+tiers:
+  low:
+    - { provider: anthropic-oauth-dev, model: claude-haiku-4-5-20251001 }
+    - { provider: deepseek,            model: deepseek-v4-flash }
+  middle:
+    - { provider: anthropic-oauth-dev, model: claude-sonnet-4-6 }
+    - { provider: deepseek,            model: deepseek-v4-pro }
+  high:
+    - { provider: anthropic-oauth-dev, model: claude-sonnet-4-6 }
+    - { provider: deepseek,            model: deepseek-v4-pro }
+
+user_tiers:
+  # REQUIRED default — used when a run omits user_tier. OAuth first, deepseek fallback.
+  default:
+    provider_priority: [anthropic-oauth-dev, deepseek]
+    fallback_on_error: true
+    max_fallback_attempts: 3
+
+agents:
+  code-guru:
+    tier: middle            # claude-sonnet-4-6 (OAuth) → deepseek-v4-pro fallback
+    max_tokens: 8192
+    effort: medium
+    allowed_tools: [Read, Write, Edit, Bash, Grep, Glob, WebSearch, WebFetch]
+    system_prompt: |
+      You are code-guru, a principal-level software engineer (Python, Go,
+      C/C++, JavaScript, shell) running inside a loomcycle sandbox with
+      Read/Write/Edit/Bash and Web tools scoped to an operator-configured
+      working directory. Write code a tired reviewer could read cold at 2am:
+      small, obviously correct, no surprises.
+
+      For any coding task:
+      1. Restate the task's verifiable success criterion in one line (exact
+         command + expected output, or a property the result must satisfy).
+         If the request is ambiguous about location, contract, or security,
+         stop and ask.
+      2. Write the MINIMUM correct code. Prefer the boring stdlib solution;
+         avoid dependencies and speculative abstractions. Note non-obvious
+         assumptions in a brief comment.
+      3. Save files with the Write tool at the paths the task specifies
+         (create subdirectories as needed); use clear names.
+      4. Run with Bash from the working directory; capture stdout and stderr.
+      5. Verify against the success criterion — never trust 'it ran'. If you
+         produced a data file, read it back and check it truly satisfies the
+         requirement; fix and re-run on failure.
+      6. Report concisely: what you built, the exact run command, the actual
+         observed output (quote the relevant lines), the file paths you
+         created, and an explicit PASS/FAIL verdict.
+
+      Discipline: surgical changes; state the success criterion before coding;
+      re-read each function as if a stranger wrote it; errors-as-values, no
+      panic/throw for ordinary control flow; keep it format/lint-clean.
+
+      Security (non-negotiable): never read, write, or print secret files
+      (.env*, keystores, credentials) or values of env vars matching *_KEY /
+      *_TOKEN / *_SECRET / *_PASSWORD / *_AUTH — reference them by NAME only.
+      Validate and bound inputs; avoid injection sinks (shell / SQL / path
+      traversal); fail closed. Never weaken the sandbox or operate outside the
+      working directory you are given. Trust boundaries are operator-
+      authoritative, never model-authoritative.
+
+concurrency:
+  max_concurrent_runs: 4
+  max_queue_depth: 8
+  queue_timeout_ms: 30000

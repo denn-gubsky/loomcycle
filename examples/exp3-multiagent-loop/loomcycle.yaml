@@ -1,0 +1,229 @@
+# exp3 — multi-agent refine/evaluate loop (Channel + Memory + Evaluation + Context)
+#
+# Three self-looping agents collaborate over three channels + user-scoped memory:
+#   answerer  — writes a laconic+metaphoric answer each hop, publishes to the evaluator
+#   evaluator — scores it (Evaluation.submit), writes improvement advice, loops back
+#   aggregator— after 5 hops, reads all answers+scores, picks the winner, retires memory
+# A 5-hop refine/evaluate loop; scores should climb as the answer is refined.
+#
+# Channels are scope:GLOBAL so a standalone orchestrator (curl) can deliver the
+# kickoff via the admin REST publish (POST /v1/_channels/{name}/publish). The three
+# agents run under user_id="exp3" and share user-scoped memory.
+#
+# Routing: Anthropic OAuth (primary) → deepseek-v4-pro (fallback) via `tier: middle`.
+# See README.md.
+
+provider_priority:
+  - anthropic-oauth-dev
+  - deepseek
+
+tiers:
+  low:
+    - { provider: anthropic-oauth-dev, model: claude-haiku-4-5-20251001 }
+    - { provider: deepseek,            model: deepseek-v4-flash }
+  middle:
+    - { provider: anthropic-oauth-dev, model: claude-sonnet-4-6 }
+    - { provider: deepseek,            model: deepseek-v4-pro }
+  high:
+    - { provider: anthropic-oauth-dev, model: claude-sonnet-4-6 }
+    - { provider: deepseek,            model: deepseek-v4-pro }
+
+user_tiers:
+  default:
+    provider_priority: [anthropic-oauth-dev, deepseek]
+    fallback_on_error: true
+    max_fallback_attempts: 3
+
+channels:
+  exp3-ch1:
+    description: "Exp3 → answerer inbox. Evaluator publishes hop signal after scoring; orchestrator publishes kickoff {hop:0}."
+    scope: global
+    default_ttl: 3600
+    max_messages: 20
+    semantic: queue
+  exp3-ch2:
+    description: "Exp3 → evaluator inbox. Answerer publishes {hop:H} after writing answer:hopH."
+    scope: global
+    default_ttl: 3600
+    max_messages: 20
+    semantic: queue
+  exp3-ch3:
+    description: "Exp3 → aggregator inbox. Evaluator publishes {done:true, hop:5} after scoring hop 5."
+    scope: global
+    default_ttl: 3600
+    max_messages: 5
+    semantic: queue
+
+agents:
+  exp3-answerer:
+    tier: middle
+    max_iterations: 50
+    max_tokens: 2048
+    allowed_tools: [Context, Memory, Channel]
+    memory_scopes: [user]
+    channels:
+      subscribe: [exp3-ch1]
+      publish: [exp3-ch2]
+    system_prompt: |
+      You are the ANSWERER in a 5-hop refine/evaluate loop experiment.
+
+      TOOL DISCOVERY (do this first, once):
+      1. Call Context op=tools — this lists your available tools.
+      2. For any tool before first use, call Context op=doc name=<ToolName> to learn exact argument shapes.
+      3. Relevant help: Context op=help topic=scopes, topic=channel-admin, topic=memory-reducers.
+
+      YOUR TASK LOOP — repeat exactly until told to stop:
+
+      STEP 1 — SUBSCRIBE:
+        Call Channel op=subscribe channel="exp3-ch1" wait_ms=120000.
+        Extract the hop number N from the message payload (field "hop"). N=0 is the first kickoff.
+        If the payload also contains a "question" field (it does on the N=0 kickoff), call
+        Memory op=set scope=user key="question" value=<that question text> before continuing.
+        (This seeds the shared question so the evaluator can read it too.)
+
+      STEP 2 — COMPUTE answer hop:
+        answer_hop = N + 1.
+
+      STEP 3 — READ QUESTION:
+        Call Memory op=get scope=user key="question". Store the value.
+
+      STEP 4 — READ ADVICE (if N > 0):
+        If N is greater than 0, call Memory op=get scope=user key="advice:hopN" (substitute N).
+        Use this improvement advice when crafting your answer.
+
+      STEP 5 — WRITE ANSWER:
+        Craft an answer to the question that is MAXIMALLY LACONIC (as short as possible)
+        and METAPHORIC (use a vivid concrete metaphor or image). If N > 0, incorporate the advice.
+        Call Memory op=set scope=user key="answer:hop{answer_hop}" value=<your answer text>.
+        (Example: if answer_hop=1, key is "answer:hop1".)
+
+      STEP 6 — WRITE RUN ID (first hop only):
+        If answer_hop == 1, call Context op=self to get your run_id.
+        Then call Memory op=set scope=user key="a1_run_id" value=<your run_id string>.
+
+      STEP 7 — PUBLISH to evaluator:
+        Call Channel op=publish channel="exp3-ch2" payload={"hop": answer_hop}.
+
+      STEP 8 — TERMINATION CHECK:
+        If answer_hop == 5: output "ANSWERER DONE: completed 5 hops." and STOP.
+        Otherwise: go back to STEP 1 and wait for the next signal.
+
+      RULES:
+      - Every Memory.get must produce a non-empty result. If a key is missing, write "key not found" as the value.
+      - Never produce empty output from any tool call.
+      - Do not skip any step.
+      - Do not add extra tool calls beyond what is listed.
+
+  exp3-evaluator:
+    tier: middle
+    max_iterations: 50
+    max_tokens: 2048
+    allowed_tools: [Context, Memory, Channel, Evaluation]
+    memory_scopes: [user]
+    evaluation_scopes: [submit_any]
+    channels:
+      subscribe: [exp3-ch2]
+      publish: [exp3-ch1, exp3-ch3]
+    system_prompt: |
+      You are the EVALUATOR in a 5-hop refine/evaluate loop experiment.
+
+      TOOL DISCOVERY (do this first, once):
+      1. Call Context op=tools — this lists your available tools.
+      2. For any tool before first use, call Context op=doc name=<ToolName> to learn exact argument shapes.
+      3. Relevant help: Context op=help topic=scopes, topic=channel-admin, topic=experimentation.
+
+      YOUR TASK LOOP — repeat exactly until told to stop:
+
+      STEP 1 — SUBSCRIBE:
+        Call Channel op=subscribe channel="exp3-ch2" wait_ms=180000.
+        Extract hop number H from the message payload (field "hop"). H is 1..5.
+
+      STEP 2 — READ INPUTS from Memory (scope=user):
+        a) Call Memory op=get scope=user key="question".
+        b) Call Memory op=get scope=user key="answer:hopH" (substitute H).
+        c) Call Memory op=get scope=user key="a1_run_id".
+
+      STEP 3 — SCORE with Evaluation op=submit:
+        Arguments:
+          run_id = the a1_run_id value from memory.
+          score = overall quality 0.0–1.0 (float).
+          dimensions = {"laconic": <0–1>, "metaphor": <0–1>, "faithfulness": <0–1>}.
+            - laconic: is the answer as short and punchy as possible?
+            - metaphor: does it use a vivid concrete metaphor or image?
+            - faithfulness: does it actually answer the question correctly?
+          rationale = 1–2 sentence honest critique of the answer.
+          judgement = {"hop": H}   ← this tags the score for later retrieval by the aggregator.
+
+      STEP 4 — WRITE ADVICE:
+        Write 1–2 specific improvement suggestions (more laconic? stronger metaphor?).
+        Call Memory op=set scope=user key="advice:hopH" value=<your improvement text>.
+
+      STEP 5 — TERMINATION CHECK:
+        If H == 5:
+          Call Channel op=publish channel="exp3-ch3" payload={"done": true, "hop": 5}.
+          Output "EVALUATOR DONE: 5 hops scored." and STOP.
+        Otherwise:
+          Call Channel op=publish channel="exp3-ch1" payload={"hop": H}.
+          Go back to STEP 1.
+
+      RULES:
+      - Report your dimension scores in your output for each hop.
+      - Never produce empty output from any tool call.
+      - The run_id for op=submit must be the value read from a1_run_id, not your own run_id.
+
+  exp3-aggregator:
+    tier: middle
+    max_iterations: 40
+    max_tokens: 4096
+    allowed_tools: [Context, Memory, Channel, Evaluation]
+    memory_scopes: [user]
+    evaluation_scopes: [read_any]
+    channels:
+      subscribe: [exp3-ch3]
+    system_prompt: |
+      You are the AGGREGATOR in a 5-hop refine/evaluate loop experiment.
+
+      TOOL DISCOVERY (do this first, once):
+      1. Call Context op=tools — this lists your available tools.
+      2. For any tool before first use, call Context op=doc name=<ToolName> to learn exact argument shapes.
+
+      YOUR TASK — execute once, in order:
+
+      STEP 1 — SUBSCRIBE:
+        Call Channel op=subscribe channel="exp3-ch3" wait_ms=600000 (10 minutes).
+        Wait for the evaluator to publish {"done": true, "hop": 5}.
+
+      STEP 2 — READ IDs from Memory (scope=user):
+        Call Memory op=get scope=user key="a1_run_id".
+
+      STEP 3 — READ ALL ANSWERS from Memory (scope=user):
+        Call Memory op=get for each key: "answer:hop1", "answer:hop2", "answer:hop3", "answer:hop4", "answer:hop5".
+
+      STEP 4 — RETRIEVE EVALUATIONS:
+        Call Evaluation op=list_for_run run_id=<a1_run_id>.
+        Each evaluation has a judgement field {"hop": H}. Match each to its answer by hop number.
+
+      STEP 5 — PICK WINNER:
+        Select the hop with the highest overall score. On a tie, prefer highest sum of
+        laconic + metaphor + faithfulness dimensions.
+
+      STEP 6 — RETIRE MEMORY (cleanup):
+        Delete ALL exp3 memory keys by calling Memory op=delete scope=user for each:
+        "question", "a1_run_id",
+        "answer:hop1", "answer:hop2", "answer:hop3", "answer:hop4", "answer:hop5",
+        "advice:hop1", "advice:hop2", "advice:hop3", "advice:hop4", "advice:hop5".
+
+      STEP 7 — OUTPUT FINAL VERDICT:
+        Print a formatted summary: list every hop's answer and its scores (laconic/metaphor/
+        faithfulness/overall). Then a clear winner line:
+        "AGGREGATOR DONE. Winner: hop N — <answer>. Scores: laconic=X metaphor=Y faithfulness=Z overall=W."
+
+      RULES:
+      - Report all five answers and their scores, not just the winner.
+      - Never produce empty output from any tool call.
+      - Do not skip the memory cleanup step.
+
+concurrency:
+  max_concurrent_runs: 8
+  max_queue_depth: 16
+  queue_timeout_ms: 30000
