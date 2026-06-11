@@ -107,6 +107,10 @@ export interface EventPayload {
     cache_read_input_tokens?: number;
     cache_creation_input_tokens?: number;
     model?: string;
+    // Serving model's context-window ceiling (loop stamps it from
+    // Provider.Capabilities()). 0/absent = unknown (e.g. Ollama). Used
+    // by the live terminal to render a "context used / max" gauge.
+    max_context_tokens?: number;
   };
   error?: string;
   retry?: { provider?: string; attempt?: number; wait_ms?: number; reason?: string };
@@ -1763,5 +1767,22 @@ export function sseEventToTranscript(
     ts_ns: Date.now() * 1_000_000,
     type: ev.type,
     event: ev,
+  };
+}
+
+// userEchoTranscript builds a CLIENT-ONLY transcript entry echoing the
+// operator's own message (initial prompt, steer, or continuation) into
+// the live terminal. The persisted `user_input` event is filtered from
+// the live SSE tail (run_stream.go nonStreamableEventTypes), so without
+// this the operator never sees what they typed. type "user_echo" renders
+// as `❯ {text}` (TerminalTranscript) — distinct from the agent's text and
+// from a drained `steer` frame. Never sent to the server.
+export function userEchoTranscript(seq: number, text: string): TranscriptEvent {
+  return {
+    seq,
+    run_id: "",
+    ts_ns: Date.now() * 1_000_000,
+    type: "user_echo",
+    event: { type: "user_echo", text },
   };
 }

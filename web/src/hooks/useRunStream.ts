@@ -7,10 +7,15 @@ import {
   startRun,
   streamRunByID,
   sseEventToTranscript,
+  userEchoTranscript,
   type EventPayload,
   type StartRunRequest,
   type TranscriptEvent,
 } from "../api";
+
+// LiveUsage is the latest per-turn token accounting the run reported,
+// used to render the context gauge. Mirrors EventPayload.usage.
+export type LiveUsage = NonNullable<EventPayload["usage"]>;
 
 // PendingInterrupt is the inline-prompt shape the terminal renders when the
 // running agent raises an Interruption question (the `interruption_pending`
@@ -57,6 +62,10 @@ export interface UseRunStream {
   // awaitingInput is true while a persistent INTERACTIVE run is parked at
   // end_turn waiting for the operator's next instruction (the agent is idle).
   awaitingInput: boolean;
+  // lastUsage is the most recent per-turn token accounting (input/output/
+  // cache tokens + the model's max context window), used to render the
+  // context-size gauge. null until the first usage event arrives.
+  lastUsage: LiveUsage | null;
   start: (req: StartRunRequest) => void;
   // attach RE-CONNECTS to an already-running (or finished) run by id —
   // the operator returns to a detached interactive run from the runs list.
@@ -81,6 +90,7 @@ export function useRunStream(): UseRunStream {
   const [error, setError] = useState<string | null>(null);
   const [pendingInterrupt, setPendingInterrupt] = useState<PendingInterrupt | null>(null);
   const [awaitingInput, setAwaitingInput] = useState(false);
+  const [lastUsage, setLastUsage] = useState<LiveUsage | null>(null);
 
   const seqRef = useRef(0);
   const ctrlRef = useRef<AbortController | null>(null);
@@ -142,6 +152,8 @@ export function useRunStream(): UseRunStream {
     // awaiting_input ⇒ a persistent interactive run parked (idle); any other
     // event ⇒ the agent is active again, so clear the idle flag.
     setAwaitingInput(ev.type === "awaiting_input");
+    // Track the latest usage for the context gauge.
+    if (ev.type === "usage" && ev.usage) setLastUsage(ev.usage);
     setEvents((prev) => [...prev, sseEventToTranscript(seqRef.current++, ev)]);
   }, []);
 
@@ -186,7 +198,11 @@ export function useRunStream(): UseRunStream {
       const ctrl = new AbortController();
       ctrlRef.current = ctrl;
       seqRef.current = 0;
-      setEvents([]);
+      // Seed the transcript with the operator's own prompt — the persisted
+      // user_input event is filtered from the live SSE tail, so this is the
+      // only way they see what they typed live.
+      const prompt = req.prompt.trim();
+      setEvents(prompt ? [userEchoTranscript(seqRef.current++, prompt)] : []);
       setAgentId(req.agent_id ?? "");
       setSessionId("");
       setRunId("");
@@ -194,6 +210,7 @@ export function useRunStream(): UseRunStream {
       setError(null);
       setPendingInterrupt(null);
       setAwaitingInput(false);
+      setLastUsage(null);
       setStatus("running");
       runStream(startRun(req, { onFrame, signal: ctrl.signal }));
     },
@@ -219,6 +236,7 @@ export function useRunStream(): UseRunStream {
       setError(null);
       setPendingInterrupt(null);
       setAwaitingInput(false);
+      setLastUsage(null);
       setStatus("running");
       runStream(streamRunByID(rid, 0, { onFrame, signal: ctrl.signal }));
     },
@@ -235,6 +253,12 @@ export function useRunStream(): UseRunStream {
       setPendingInterrupt(null);
       setAwaitingInput(false);
       setStatus("running");
+      // Echo the operator's continuation message (it's persisted but not on
+      // the live tail). Appends — sendMessage doesn't reset the transcript.
+      setEvents((prev) => [
+        ...prev,
+        userEchoTranscript(seqRef.current++, prompt),
+      ]);
       runStream(
         continueSession(sessionId, prompt, { onFrame, signal: ctrl.signal }),
       );
@@ -254,6 +278,15 @@ export function useRunStream(): UseRunStream {
         const rid = runIdRef.current;
         if (!rid) return;
         setAwaitingInput(false); // optimistic; the resumed activity will stream
+        // Echo the steer text immediately. The server also emits a live
+        // `steer` frame (rendered `» text`); the two read as "I said X /
+        // accepted X" rather than a literal dup (distinct glyphs). On
+        // re-attach there's no double-render — attach() wipes state and the
+        // persisted user_input is off the live tail.
+        setEvents((prev) => [
+          ...prev,
+          userEchoTranscript(seqRef.current++, t),
+        ]);
         void sendRunInput(rid, t).catch((e) =>
           setError(e instanceof Error ? e.message : String(e)),
         );
@@ -285,6 +318,7 @@ export function useRunStream(): UseRunStream {
     setError(null);
     setPendingInterrupt(null);
     setAwaitingInput(false);
+    setLastUsage(null);
     setStatus("idle");
   }, []);
 
@@ -298,6 +332,7 @@ export function useRunStream(): UseRunStream {
     pendingInterrupt,
     answerInterrupt,
     awaitingInput,
+    lastUsage,
     start,
     attach,
     send,
