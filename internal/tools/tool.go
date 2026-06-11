@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"github.com/denn-gubsky/loomcycle/internal/config"
 	lcotel "github.com/denn-gubsky/loomcycle/internal/otel"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/store"
@@ -561,6 +562,27 @@ func WithResolvedModel(ctx context.Context, model string) context.Context {
 // ResolvedModel returns the resolved model name from ctx, or "" when unset.
 func ResolvedModel(ctx context.Context) string {
 	v, _ := ctx.Value(ctxKeyResolvedModel{}).(string)
+	return v
+}
+
+// ctxKeyResolvedSampling carries the run's RESOLVED LLM sampling params
+// (per-run > per-agent, already merged) so Context op=self can report them to
+// the agent — non-secret introspection, like provider/model. Stamped per-
+// iteration in loop.Run from opts.Sampling.
+type ctxKeyResolvedSampling struct{}
+
+// WithResolvedSampling attaches the resolved sampling params to ctx. nil is a
+// no-op (no sampling configured → op=self omits the field).
+func WithResolvedSampling(ctx context.Context, s *config.Sampling) context.Context {
+	if s.IsZero() {
+		return ctx
+	}
+	return context.WithValue(ctx, ctxKeyResolvedSampling{}, s)
+}
+
+// ResolvedSampling returns the resolved sampling params from ctx, or nil.
+func ResolvedSampling(ctx context.Context) *config.Sampling {
+	v, _ := ctx.Value(ctxKeyResolvedSampling{}).(*config.Sampling)
 	return v
 }
 

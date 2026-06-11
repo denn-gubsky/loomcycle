@@ -57,6 +57,8 @@ func contextFixture(t *testing.T) (*Context, context.Context) {
 	ctx = tools.WithRunID(ctx, "r_test123")
 	ctx = tools.WithResolvedProvider(ctx, "anthropic")
 	ctx = tools.WithResolvedModel(ctx, "claude-opus-4-test")
+	temp := 0.7
+	ctx = tools.WithResolvedSampling(ctx, &config.Sampling{Temperature: &temp})
 	ctx = tools.WithAgentTools(ctx, []string{"Read", "Memory", "Context", "mcp__jobs__patchApp"})
 	return tool, ctx
 }
@@ -99,6 +101,28 @@ func TestContextTool_SelfReturnsIdentity(t *testing.T) {
 	}
 	if out["model"] != "claude-opus-4-test" {
 		t.Errorf("model = %v, want claude-opus-4-test", out["model"])
+	}
+	// sampling: the resolved LLM params surface so a self-evolving agent can
+	// read its own temperature. Decoded JSON → map with "temperature": 0.7.
+	samp, ok := out["sampling"].(map[string]any)
+	if !ok {
+		t.Fatalf("sampling = %v (%T), want an object", out["sampling"], out["sampling"])
+	}
+	if samp["temperature"] != 0.7 {
+		t.Errorf("sampling.temperature = %v, want 0.7", samp["temperature"])
+	}
+}
+
+// TestContextTool_SelfOmitsSamplingWhenUnset: no sampling stamped → no
+// "sampling" key (the agent sees provider defaults; the key isn't a misleading
+// empty object).
+func TestContextTool_SelfOmitsSamplingWhenUnset(t *testing.T) {
+	tool := &Context{}
+	ctx := tools.WithRunIdentity(context.Background(), tools.RunIdentityValue{AgentID: "a_x"})
+	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"self"}`))
+	out := decodeResult(t, res.Text)
+	if _, present := out["sampling"]; present {
+		t.Errorf("sampling key present (%v) with no sampling configured — want omitted", out["sampling"])
 	}
 }
 

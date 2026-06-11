@@ -29,7 +29,7 @@ import (
 // Nine ops total — PR 1 ships four of them:
 //
 //	self        — identity bundle (agent name, run/agent ids, user, tier,
-//	              resolved provider + model)
+//	              resolved provider + model + sampling)
 //	tools       — post-filter tool catalog
 //	doc         — detailed schema/docstring for one tool by name
 //	permissions — gates that apply to the caller (tool ACL, host policy, scopes)
@@ -186,6 +186,14 @@ func (c *Context) execSelf(ctx context.Context) (tools.Result, error) {
 		// started outside the loop's stamping path (e.g. some tests).
 		"provider": tools.ResolvedProvider(ctx),
 		"model":    tools.ResolvedModel(ctx),
+	}
+	// sampling: the resolved LLM sampling params (temperature, top_p, …) in
+	// effect for this run (per-run > per-agent). Non-secret — the agent is
+	// allowed to know how it's being sampled (a self-evolving agent reads this
+	// to reason about its own exploration vs. exploitation). Omitted when no
+	// sampling is configured (the model sees provider defaults).
+	if s := tools.ResolvedSampling(ctx); !s.IsZero() {
+		out["sampling"] = s
 	}
 	return okJSON(out)
 }
