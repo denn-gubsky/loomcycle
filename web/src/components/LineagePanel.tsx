@@ -267,7 +267,7 @@ function EntryList({
               {e.in_substrate && (
                 <span className="def-chip def-chip-dynamic">dynamic</span>
               )}
-              {e.in_substrate && e.active_def_id && (
+              {e.in_substrate && e.active_def_id && !e.active_retired && (
                 <span className="def-chip def-chip-active">
                   v{e.latest_version ?? "?"} ★
                 </span>
@@ -275,6 +275,19 @@ function EntryList({
               {e.in_substrate && !e.active_def_id && (
                 <span className="def-chip def-chip-no-active">no active</span>
               )}
+              {/* active pointer references a retired row — a corrupt-legacy
+                  state (pre retire-clears-active); flag it. */}
+              {e.in_substrate && e.active_retired && (
+                <span className="def-chip def-chip-retired">active retired</span>
+              )}
+              {/* every version retired + not static → inactive, name is
+                  reclaimable by a fresh create. */}
+              {e.in_substrate &&
+                !e.in_static &&
+                !e.active_def_id &&
+                e.live_version_count === 0 && (
+                  <span className="def-chip def-chip-retired">inactive</span>
+                )}
             </span>
           </button>
         </li>
@@ -286,6 +299,12 @@ function EntryList({
 function entryCountLabel(e: LibraryEntry): string {
   if (!e.in_substrate) return "static only";
   const n = e.version_count;
-  return `${n} version${n === 1 ? "" : "s"}`;
+  const base = `${n} version${n === 1 ? "" : "s"}`;
+  // When some versions are retired, show the live count too so the operator
+  // sees how many are still usable (e.g. "3 versions · 1 live").
+  if (e.live_version_count !== undefined && e.live_version_count < n) {
+    return `${base} · ${e.live_version_count} live`;
+  }
+  return base;
 }
 

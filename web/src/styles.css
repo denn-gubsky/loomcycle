@@ -2851,6 +2851,13 @@ button.primary:disabled {
   color: var(--failed);
   border: 1px solid var(--failed);
 }
+/* Soft-reclaim markers: a fully-retired (inactive) name, or an active
+   pointer still on a retired row (corrupt-legacy). Muted/warning tone. */
+.def-chip-retired {
+  background: rgba(150, 150, 160, 0.12);
+  color: var(--fg-soft, #9aa);
+  border: 1px solid var(--fg-soft, #9aa);
+}
 /* v0.9.x Library v2 source chips — name-level marker showing where
    the entity lives (yaml-only / substrate-only / both). The existing
    bootstrapped chip stays as the row-level marker inside the
