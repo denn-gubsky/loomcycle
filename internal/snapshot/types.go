@@ -306,6 +306,11 @@ type PausedRunEntry struct {
 	StartedAt     time.Time `json:"started_at"`
 	Model         string    `json:"model,omitempty"`
 	PauseState    string    `json:"pause_state"`
+	// Interactive marks a persistent interactive run (F42 / RFC X Phase 2),
+	// captured so a restored paused run re-dispatches with the correct
+	// park-at-end_turn (vs run-to-completion) semantics. Omitted for batch
+	// runs + snapshots taken before this field existed (decode to false).
+	Interactive bool `json:"interactive,omitempty"`
 	// ParentContext is the run's opaque caller-tracking lineage (v0.12.x),
 	// carried through the snapshot so a paused run's parent_context
 	// survives pause→snapshot→restore. Omitted when the run had none.

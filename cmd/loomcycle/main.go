@@ -1817,6 +1817,32 @@ func main() {
 		}
 	}
 
+	// F42 / RFC X Phase 2: re-dispatch any pause_state='paused' runs left in
+	// the store at boot (crash recovery / restart on a restored data dir) by
+	// reconstructing each run's loop from its transcript. One-shot, run after
+	// the server is fully wired (providers/tools/cancel/steer/pause). In a
+	// cluster, gate behind an advisory lock so exactly ONE replica resurrects
+	// each run; single-replica runs it directly. Backgrounded so a long-lived
+	// resumed loop never blocks the rest of boot.
+	if storeIface != nil {
+		go func() {
+			resume := func(ctx context.Context) error {
+				n, warnings := srv.ResumePausedRuns(ctx)
+				if n > 0 || len(warnings) > 0 {
+					log.Printf("resume(boot): re-dispatched %d paused run(s); %d skipped/flagged", n, len(warnings))
+				}
+				return nil
+			}
+			if advisoryLock != nil {
+				if _, err := advisoryLock.TryRun(bgCtx, coord.LockKeyResumePausedRuns, resume); err != nil {
+					log.Printf("resume(boot): advisory-gated resume failed: %v", err)
+				}
+			} else {
+				_ = resume(bgCtx)
+			}
+		}()
+	}
+
 	if cfg.Env.MetricsEnabled && storeIface != nil {
 		metricsSampler := metrics.New(storeIface, sem, metrics.Config{
 			Interval:      cfg.Env.MetricsSampleInterval,

@@ -781,6 +781,11 @@ func (s *Store) migrate(ctx context.Context) error {
 		// RFC S / F36: lifetime fire-count for max_fires self-retirement.
 		// Idempotent ALTER for existing DBs; fresh DBs get it in CREATE TABLE.
 		`ALTER TABLE schedule_run_state ADD COLUMN fire_count INTEGER NOT NULL DEFAULT 0`,
+		// F42 / RFC X Phase 2: persist whether a run is an interactive
+		// (persistent, parks-at-end_turn) session so a snapshotted+restored
+		// paused run can be re-dispatched with the correct park-vs-complete
+		// semantics. NULL/0 on legacy rows + batch runs; CreateRun stamps it.
+		`ALTER TABLE runs ADD COLUMN interactive INTEGER NOT NULL DEFAULT 0`,
 	}
 	for _, q := range addColumns {
 		if _, err := s.db.ExecContext(ctx, q); err != nil {
@@ -1018,8 +1023,8 @@ func (s *Store) CreateRun(ctx context.Context, sessionID string, identity store.
 		pcVal = pcJSON
 	}
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO runs(id, session_id, status, started_at, agent_id, parent_agent_id, parent_run_id, user_id, tenant_id, user_tier, agent_def_id, model, parent_context, idempotency_key)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO runs(id, session_id, status, started_at, agent_id, parent_agent_id, parent_run_id, user_id, tenant_id, user_tier, agent_def_id, model, parent_context, idempotency_key, interactive)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		id, sessionID, store.RunRunning, now.UnixNano(),
 		nilIfEmpty(identity.AgentID),
 		nilIfEmpty(identity.ParentAgentID),
@@ -1031,6 +1036,7 @@ func (s *Store) CreateRun(ctx context.Context, sessionID string, identity store.
 		nilIfEmpty(identity.Model),
 		pcVal,
 		nilIfEmpty(identity.IdempotencyKey),
+		boolToInt(identity.Interactive),
 	)
 	if err != nil {
 		// RFC H Decision 10: a collision on the runs_idempotency_key
@@ -1061,6 +1067,7 @@ func (s *Store) CreateRun(ctx context.Context, sessionID string, identity store.
 		Model:          identity.Model,
 		ParentContext:  identity.ParentContext.Clone(),
 		IdempotencyKey: identity.IdempotencyKey,
+		Interactive:    identity.Interactive,
 	}, nil
 }
 
@@ -1280,6 +1287,7 @@ func scanRun(scanner interface{ Scan(...any) error }) (store.Run, error) {
 	var parentContext sql.NullString
 	var idempotencyKey sql.NullString
 	var tenantID sql.NullString
+	var interactive sql.NullInt64
 	var sessAgent sql.NullString
 	var status string
 	if err := scanner.Scan(
@@ -1290,6 +1298,7 @@ func scanRun(scanner interface{ Scan(...any) error }) (store.Run, error) {
 		&agentID, &parentAgentID, &parentRunID, &userID, &lastHbNs,
 		&userTier,
 		&agentDefID, &pauseState, &parentContext, &idempotencyKey, &tenantID,
+		&interactive,
 		&sessAgent,
 	); err != nil {
 		return store.Run{}, err
@@ -1350,6 +1359,7 @@ func scanRun(scanner interface{ Scan(...any) error }) (store.Run, error) {
 	if tenantID.Valid {
 		r.TenantID = tenantID.String
 	}
+	r.Interactive = interactive.Valid && interactive.Int64 != 0
 	if sessAgent.Valid {
 		r.Agent = sessAgent.String
 	}
@@ -1371,6 +1381,7 @@ const runColumns = `r.id, r.session_id, r.status, r.started_at, r.completed_at,
 		r.agent_id, r.parent_agent_id, r.parent_run_id, r.user_id, r.last_heartbeat_at,
 		r.user_tier,
 		r.agent_def_id, r.pause_state, r.parent_context, r.idempotency_key, r.tenant_id,
+		r.interactive,
 		s.agent`
 
 // runFromTable is the canonical FROM clause paired with runColumns.
@@ -1578,6 +1589,12 @@ func (s *Store) SweepStaleRuns(ctx context.Context, cutoff time.Time) (int, erro
 			error = ?,
 			stop_reason = ?
 		 WHERE status = ?
+		   -- F42 / RFC X Phase 2: a paused/pausing run is INTENTIONALLY parked
+		   -- (no heartbeat by design), not crashed — never sweep it stale. A
+		   -- snapshotted+restored paused run carries an old started_at + NULL
+		   -- heartbeat; without this guard the sweeper would kill it before
+		   -- resume re-dispatches it.
+		   AND COALESCE(pause_state, 'running') NOT IN ('paused', 'pausing')
 		   AND (
 			 (last_heartbeat_at IS NOT NULL AND last_heartbeat_at < ?)
 			 OR (last_heartbeat_at IS NULL AND started_at < ?)
@@ -2312,14 +2329,15 @@ func (s *Store) SnapshotRestoreRun(ctx context.Context, r store.Run) (bool, erro
 			input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens,
 			model, provider, error,
 			agent_id, parent_agent_id, parent_run_id, user_id, last_heartbeat_at,
-			user_tier, agent_def_id, pause_state, parent_context
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			user_tier, agent_def_id, pause_state, parent_context, interactive
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		r.ID, r.SessionID, status, startedNs, completedNs, nilIfEmpty(r.StopReason),
 		r.InputTokens, r.OutputTokens, r.CacheCreationTokens, r.CacheReadTokens,
 		nilIfEmpty(r.Model), nilIfEmpty(r.Provider), nilIfEmpty(r.ErrorMsg),
 		nilIfEmpty(r.AgentID), nilIfEmpty(r.ParentAgentID), nilIfEmpty(r.ParentRunID),
 		nilIfEmpty(r.UserID), lastHbNs,
 		nilIfEmpty(r.UserTier), nilIfEmpty(r.AgentDefID), pauseState, pcVal,
+		boolToInt(r.Interactive),
 	)
 	if err != nil {
 		return false, fmt.Errorf("snapshot restore run: %w", err)

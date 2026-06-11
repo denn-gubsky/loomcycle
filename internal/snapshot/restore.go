@@ -487,6 +487,7 @@ func Restore(ctx context.Context, s store.Store, raw []byte, opts RestoreOptions
 				UserTier:      e.UserTier,
 				AgentDefID:    e.AgentDefID,
 				PauseState:    e.PauseState,
+				Interactive:   e.Interactive,   // F42: park-vs-complete semantics on re-dispatch
 				ParentContext: e.ParentContext, // v0.12.x: restore the run's tracking lineage
 			}
 			runInserted, err := s.SnapshotRestoreRun(ctx, runRow)

@@ -1,6 +1,7 @@
 package http
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -220,13 +221,18 @@ type snapshotRestoreRequest struct {
 
 // snapshotRestoreResponse mirrors snapshot.RestoreResult for the wire.
 type snapshotRestoreResponse struct {
-	AgentDefsRestored          int      `json:"agent_defs_restored"`
-	AgentDefActiveRestored     int      `json:"agent_def_active_restored"`
-	MemoryRestored             int      `json:"memory_restored"`
-	ChannelMessagesRestored    int      `json:"channel_messages_restored"`
-	ChannelCursorsRestored     int      `json:"channel_cursors_restored"`
-	EvaluationsRestored        int      `json:"evaluations_restored"`
-	PausedRunsRestored         int      `json:"paused_runs_restored"`
+	AgentDefsRestored       int `json:"agent_defs_restored"`
+	AgentDefActiveRestored  int `json:"agent_def_active_restored"`
+	MemoryRestored          int `json:"memory_restored"`
+	ChannelMessagesRestored int `json:"channel_messages_restored"`
+	ChannelCursorsRestored  int `json:"channel_cursors_restored"`
+	EvaluationsRestored     int `json:"evaluations_restored"`
+	PausedRunsRestored      int `json:"paused_runs_restored"`
+	// PausedRunsResumed is how many of the restored paused runs were
+	// re-dispatched as live loops (F42 / RFC X Phase 2). May be < restored
+	// when a run's agent no longer resolves or it isn't auto-resumable; those
+	// are flagged failed and surfaced in Warnings.
+	PausedRunsResumed          int      `json:"paused_runs_resumed"`
 	SynthesizedSessions        int      `json:"synthesized_sessions"`
 	TranscriptEventsRestored   int      `json:"transcript_events_restored"`
 	InteractionHistoryRestored int      `json:"interaction_history_restored"`
@@ -291,6 +297,16 @@ func (s *Server) handleRestoreSnapshot(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// F42 / RFC X Phase 2: re-dispatch the just-restored paused runs so a
+	// snapshotted mid-run experiment genuinely continues on this instance
+	// (reconstruct each loop from its transcript). Runs whose agent no longer
+	// resolves — or that aren't auto-resumable — are flagged failed and
+	// surfaced in the warnings. Uses a detached background context so a slow
+	// re-dispatch (or a long-lived resumed loop) doesn't block the response.
+	warnings := result.Warnings
+	resumed, resumeWarnings := s.ResumePausedRuns(context.WithoutCancel(r.Context()))
+	warnings = append(warnings, resumeWarnings...)
+
 	writeJSON(w, http.StatusOK, snapshotRestoreResponse{
 		AgentDefsRestored:          result.AgentDefsRestored,
 		AgentDefActiveRestored:     result.AgentDefActiveRestored,
@@ -299,10 +315,11 @@ func (s *Server) handleRestoreSnapshot(w http.ResponseWriter, r *http.Request) {
 		ChannelCursorsRestored:     result.ChannelCursorsRestored,
 		EvaluationsRestored:        result.EvaluationsRestored,
 		PausedRunsRestored:         result.PausedRunsRestored,
+		PausedRunsResumed:          resumed,
 		SynthesizedSessions:        result.SynthesizedSessions,
 		TranscriptEventsRestored:   result.TranscriptEventsRestored,
 		InteractionHistoryRestored: result.InteractionHistoryRestored,
-		Warnings:                   result.Warnings,
+		Warnings:                   warnings,
 	})
 }
 

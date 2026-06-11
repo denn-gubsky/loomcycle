@@ -1674,7 +1674,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	}
 
 	// ---- Session+run creation ----
-	identity := store.RunIdentity{AgentID: agentID, UserID: effectiveUserID, TenantID: effectiveTenantID, UserTier: in.UserTier, Model: model, ReplicaID: s.replicaID, ParentContext: in.ParentContext, IdempotencyKey: in.IdempotencyKey}
+	identity := store.RunIdentity{AgentID: agentID, UserID: effectiveUserID, TenantID: effectiveTenantID, UserTier: in.UserTier, Model: model, ReplicaID: s.replicaID, ParentContext: in.ParentContext, IdempotencyKey: in.IdempotencyKey, Interactive: in.Interactive}
 	sessionID, runID, sessErr := s.openOrCreateSessionAndRun(ctx, in.SessionID, effectiveAgentName, effectiveTenantID, effectiveUserID, identity)
 	if sessErr != nil {
 		var nf *store.ErrNotFound
@@ -2885,7 +2885,7 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 	// emitted event through the store before forwarding to SSE. With
 	// s.store == nil the recording becomes a no-op so v0.2 callers see no
 	// behaviour change.
-	identity := store.RunIdentity{AgentID: agentID, UserID: req.UserID, TenantID: req.TenantID, UserTier: req.UserTier, Model: model, ReplicaID: s.replicaID, ParentContext: req.ParentContext}
+	identity := store.RunIdentity{AgentID: agentID, UserID: req.UserID, TenantID: req.TenantID, UserTier: req.UserTier, Model: model, ReplicaID: s.replicaID, ParentContext: req.ParentContext, Interactive: req.Interactive}
 	sessionID, runID, sessErr := s.openOrCreateSessionAndRun(r.Context(), req.SessionID, req.Agent, req.TenantID, req.UserID, identity)
 	if sessErr != nil {
 		var nf *store.ErrNotFound
