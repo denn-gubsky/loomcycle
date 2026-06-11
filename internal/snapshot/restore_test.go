@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/snapshot/migrations"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 )
@@ -112,6 +113,107 @@ func TestRoundTrip_WithMemoryAndAgentDefs(t *testing.T) {
 	}
 	if len(defs) != 1 || defs[0].DefID != "def_test_1" {
 		t.Errorf("dst agent_defs = %+v", defs)
+	}
+}
+
+// TestRoundTrip_PreservesAgentDefSampling pins the v0.28.0 contract that a
+// substrate-authored agent's per-agent LLM sampling block (temperature, top_p,
+// seed, stop — the breeder/exp6 path) survives capture → Export (the external
+// snapshot file) → Restore. Snapshot captures the agent_defs Definition as an
+// opaque JSON blob, so sampling rides along for free — but this locks the
+// invariant so a future change that re-serialises or normalises the definition
+// can't silently drop it. Specifically guards the temperature: 0.0 edge:
+// 0.0 is DETERMINISTIC, distinct from "unset" (nil → provider default), so a
+// lossy round-trip that collapses the zero would be a real bug.
+func TestRoundTrip_PreservesAgentDefSampling(t *testing.T) {
+	src, srcClose := newTestStore(t)
+	defer srcClose()
+	dst, dstClose := newTestStore(t)
+	defer dstClose()
+	ctx := context.Background()
+
+	zero, topP := 0.0, 0.95
+	seed := 7
+	samp := &config.Sampling{
+		Temperature: &zero, // deterministic — the load-bearing edge
+		TopP:        &topP,
+		Seed:        &seed,
+		Stop:        []string{"END"},
+	}
+	// The stored agent_defs Definition is the mergedDef JSON, which carries
+	// sampling under the `sampling` key (config.Sampling's own json tags). We
+	// mirror that exact shape here rather than depending on the unexported
+	// mergedDef type from internal/tools/builtin.
+	defBody := struct {
+		Name     string           `json:"name"`
+		Sampling *config.Sampling `json:"sampling,omitempty"`
+	}{Name: "tuned-agent", Sampling: samp}
+	defJSON, err := json.Marshal(defBody)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := src.AgentDefCreate(ctx, store.AgentDefRow{
+		DefID:                  "def_tuned_1",
+		Name:                   "tuned-agent",
+		Version:                1,
+		Definition:             json.RawMessage(defJSON),
+		CreatedAt:              mustParseTime(t, "2026-06-11T00:00:00Z"),
+		BootstrappedFromStatic: false, // runtime-created (breeder fork), not static yaml
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Capture → Export to the external-file byte form → Restore from those
+	// bytes. This exercises BOTH "saved into snapshot" and "exported to
+	// external snapshot file" in one chain.
+	_, raw, err := Capture(ctx, src, CaptureOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var env Envelope
+	if err := json.Unmarshal(raw, &env); err != nil {
+		t.Fatalf("parse captured envelope: %v", err)
+	}
+	fileBytes, err := Export(&env)
+	if err != nil {
+		t.Fatalf("Export: %v", err)
+	}
+	if _, err := Restore(ctx, dst, fileBytes, RestoreOptions{}); err != nil {
+		t.Fatalf("Restore: %v", err)
+	}
+
+	restored, err := dst.SnapshotReadAgentDefs(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(restored) != 1 || restored[0].DefID != "def_tuned_1" {
+		t.Fatalf("dst agent_defs = %+v, want one def_tuned_1", restored)
+	}
+
+	var got struct {
+		Sampling *config.Sampling `json:"sampling"`
+	}
+	if err := json.Unmarshal(restored[0].Definition, &got); err != nil {
+		t.Fatalf("unmarshal restored definition: %v", err)
+	}
+	if got.Sampling == nil {
+		t.Fatal("restored definition dropped the sampling block entirely")
+	}
+	if got.Sampling.Temperature == nil {
+		t.Fatal("restored sampling.temperature is nil — the deterministic 0.0 was lost")
+	}
+	if *got.Sampling.Temperature != 0.0 {
+		t.Errorf("restored temperature = %v, want 0.0", *got.Sampling.Temperature)
+	}
+	if got.Sampling.TopP == nil || *got.Sampling.TopP != topP {
+		t.Errorf("restored top_p = %v, want %v", got.Sampling.TopP, topP)
+	}
+	if got.Sampling.Seed == nil || *got.Sampling.Seed != seed {
+		t.Errorf("restored seed = %v, want %v", got.Sampling.Seed, seed)
+	}
+	if len(got.Sampling.Stop) != 1 || got.Sampling.Stop[0] != "END" {
+		t.Errorf("restored stop = %v, want [END]", got.Sampling.Stop)
 	}
 }
 

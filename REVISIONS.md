@@ -8,6 +8,46 @@ For pre-v0.4 history (single-tool runtime, library milestone, security patch), s
 
 ---
 
+## What's in v0.28.0
+
+Two features.
+
+### Per-agent LLM sampling parameters
+A grouped **`sampling:`** block tunes how an agent's model samples —
+`temperature`, `top_p`, `top_k`, `frequency_penalty`, `presence_penalty`,
+`seed`, `stop`. Settable three ways with the same shape: **static yaml** on the
+agent, the **AgentDef substrate** (`create`/`fork` overlay — how a self-evolving
+breeder mints variants), and **per-instance on `POST /v1/runs`** (A/B a single
+agent without forking). Overlays/overrides merge **per field** (a fork that sets
+only `temperature` keeps the parent's `top_p`); precedence is per-run > per-agent
+> provider default; `temperature: 0.0` is a real deterministic value (≠ unset).
+Each driver maps the params its provider supports and drops the rest
+(translate-or-drop, like `effort`); Anthropic drops `temperature`/`top_p` when
+`effort` engages a thinking block (the API rejects it). Sampling is
+content-identifying (a temp-only fork mints a new `content_sha256`). Reported
+back via **`Context op=self`** (a `sampling` object alongside `provider`/`model`)
+so a self-evolving agent can read how it's being sampled. See
+`Context op=help topic=sampling`. Runtime-only; no `@loomcycle/client` bump
+(gRPC proto + TS-adapter wiring + a per-spawn Agent-tool knob are deferred).
+
+### `pause` cooperatively quiesces in-flight runs + gates new spawns (F41 / RFC X)
+`POST /v1/_pause` was a *soft* quiesce — it cancelled idempotent tools and
+flipped runtime state, but the loop-side park and the admission gate were never
+wired, so `paused_runs_count` was always 0 and a mid-run was never snapshot-
+captured. v0.28.0 wires the intended design: the loop **parks at a clean
+iteration boundary** (persist `pause_state='paused'` → block until resume), the
+Manager gains a resume signal + an **active-run barrier** so `Pause()` WAITS (up
+to `timeout_ms`) for in-flight runs to park — making `paused_runs_count`
+accurate and naming any run that didn't reach a boundary (e.g. a fan-out parent
+blocked in `parallel_spawn`) — and new runs are **503-gated** (`/v1/runs` +
+gRPC `Unavailable` + webhook/A2A; the scheduler already skipped). A failed
+durable `pause_state` write no longer credits the barrier; the detached
+interactive-run goroutine got panic-safe teardown. Snapshotting a fan-out parent
+mid-spawn is the documented Phase-2 deferral (snapshot at a quiescent boundary —
+a clean Pause with no warning). Runtime-only; no `@loomcycle/client` bump.
+
+---
+
 ## What's in v0.27.2
 
 **Patch: collapsed tool results actually fold.** The collapsed `tool_result`

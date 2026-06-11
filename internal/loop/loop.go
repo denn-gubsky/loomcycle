@@ -806,6 +806,7 @@ outerLoop:
 		// iterCtx, so the value reaches them without per-tool wiring.
 		iterCtx = tools.WithResolvedProvider(iterCtx, opts.Provider.ID())
 		iterCtx = tools.WithResolvedModel(iterCtx, opts.Model)
+		iterCtx = tools.WithResolvedSampling(iterCtx, opts.Sampling)
 
 		// Heartbeat fires at the top of each iteration. Cheap path —
 		// implementations are expected to be ~one UPDATE. Failures

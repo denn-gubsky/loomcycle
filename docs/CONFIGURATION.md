@@ -557,6 +557,7 @@ Parsed at `internal/agents/loader.go:199` (the `frontmatter` struct):
 | `models` | `map[tier][]TierCandidate` | Per-agent tier candidate lists | Full replacement of library `tiers[]` for this agent. |
 | `effort` | string | `low` / `medium` / `high` | Reasoning-effort hint. Anthropic + OpenAI honour it; Ollama ignores. |
 | `max_tokens` | int | Per-iteration assistant output cap | 0 = provider default. |
+| `sampling` | object | LLM sampling params | `temperature` / `top_p` / `top_k` / `frequency_penalty` / `presence_penalty` / `seed` / `stop`. Each driver applies what its provider supports, drops the rest. `temperature: 0.0` is deterministic (≠ unset). Overridable per-run on `/v1/runs` (`sampling`), merged per field (per-run wins). See `Context op=help topic=sampling`. Anthropic drops temperature/top_p when `effort` engages thinking. |
 | **Tool fields** | | | |
 | `allowed_tools` | `[]string` | Tool allowlist (loomcycle form) | Empty list = zero tools. Always wins over `tools:`. |
 | `tools` | string OR `[]string` | Claude-Code-compatible form | Comma-string or list. Tolerated for Claude-Code compatibility; `allowed_tools` takes precedence when both are set. |
@@ -640,7 +641,7 @@ Mix of built-in tools (WebSearch, WebFetch) and an MCP tool. Tier-driven resolut
 
 ### Claude-Code compatibility
 
-The same `.md` file works in both Claude Code and loomcycle. **Claude-Code-honoured fields**: `name`, `description`, `tools` (comma-string), `model`. **Loomcycle extensions**: `tier`, `models`, `providers`, `effort`, `max_tokens`, `skills`, `allowed_tools` (list form), `system_prompt_file`, `memory_scopes`, `memory_quota_bytes`, `channels`, `agent_def_scopes`, `evaluation_scopes`. Claude Code ignores unknown keys; loomcycle treats the format as a superset. Keep your agents portable by including both `tools:` (Claude Code shape) and `allowed_tools:` (loomcycle shape) when you want the same file used in both.
+The same `.md` file works in both Claude Code and loomcycle. **Claude-Code-honoured fields**: `name`, `description`, `tools` (comma-string), `model`. **Loomcycle extensions**: `tier`, `models`, `providers`, `effort`, `max_tokens`, `sampling`, `skills`, `allowed_tools` (list form), `system_prompt_file`, `memory_scopes`, `memory_quota_bytes`, `channels`, `agent_def_scopes`, `evaluation_scopes`. Claude Code ignores unknown keys; loomcycle treats the format as a superset. Keep your agents portable by including both `tools:` (Claude Code shape) and `allowed_tools:` (loomcycle shape) when you want the same file used in both.
 
 ### Operator-yaml `agents:` overlay
 
