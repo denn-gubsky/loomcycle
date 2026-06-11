@@ -8,6 +8,61 @@ For pre-v0.4 history (single-tool runtime, library milestone, security patch), s
 
 ---
 
+## What's in v0.31.0
+
+**Park + resume a fan-out parent blocked in `parallel_spawn` (F42 / RFC X
+Phase 3).** Phase 1 (v0.28.0) parks runs at the loop's top-of-iteration
+boundary; Phase 2 (v0.30.0) re-dispatches a snapshotted paused run from its
+transcript. The **residual** was a fan-out **parent**: a run blocked inside
+`Agent.parallel_spawn` → `wg.Wait()` is *inside a tool call*, not at the loop's
+only park point — so on pause it never parked. `paused_runs_count` excluded it,
+the pause Manager emitted a "fan-out PARENT … did not reach a pause boundary"
+warning, and a mid-fan-out snapshot missed the parent. (This is why the exp6.5
+breeder had to be captured during MUTATE, not mid-SOLVE.)
+
+v0.31.0 closes it on **both** sides, all gated behind a new
+**`LOOMCYCLE_RESUME_FANOUT`** env flag (**default OFF** — every existing
+pause/snapshot/resume path stays byte-identical until an operator opts in):
+
+- **Capture side — the parent parks in place.** `executeParallelSpawn` starts a
+  **pause-watcher goroutine** that calls the *existing* `PauseGate.Park` when a
+  pause is declared and unparks on resume, **without touching `wg.Wait` or the
+  result collection**. The parent now counts as parked (barrier completes
+  cleanly → warning gone → `paused_runs_count` accurate), and a same-instance
+  pause→resume mid-fan-out "just works" (the in-memory results + goroutine
+  survive; children un-park; `wg.Wait` completes). A minimal `tools.PauseGate`
+  interface keeps the Agent tool free of `internal/pause` imports.
+
+- **Durability — a spawn ledger.** Two new parent-transcript events:
+  `spawn_child_started` (index → child run_id, written as each child's run row
+  is created) and `spawn_child_result` (the finished child's result, for
+  children that completed *before* the snapshot — whose run rows aren't
+  captured). Both ride the existing (mutex-guarded) event emitter, so there's
+  **no schema change**. `replayTranscript` ignores them, so reconstructed
+  conversations are unaffected.
+
+- **Resume side — reconcile.** On restore/boot, `resumePausedRun` detects a
+  parked fan-out parent (a `parallel_spawn` tool_use with a spawn ledger and no
+  tool_result) and, in the parent's background goroutine **before acquiring a
+  run slot** (so awaiting children — which take their own slots — can't deadlock
+  the semaphore), reconciles each child: it prefers the durable
+  `spawn_child_result`, else **awaits** the re-dispatched child run to terminal
+  and reads its final text from its transcript (no new column). It then
+  synthesizes the `{"results":[...]}` envelope — byte-compatible with a live
+  `parallel_spawn` — appends it to the parent's transcript, and seeds it into
+  `PriorMessages` so `loop.Run` continues past the dangling tool_use. A
+  heartbeat pump keeps the parent alive during a long child await.
+
+**Edges handled:** a child completed pre-snapshot (ledger result); a child still
+running at snapshot (awaited); a child whose agent is gone (terminal=failed →
+error result); a child never dispatched past the concurrency cap (error result
+the model can re-issue); depth>1 (a child that is itself a fan-out parent
+reconciles when re-dispatched). **Deferred:** a parked fan-out that *shared its
+iteration* with other in-flight tools (mixed tool turn) is flagged for manual
+re-attach rather than risk a malformed continuation; flipping the flag to
+default-ON awaits exp6.5 re-validation; sequential `Agent.spawn` parent park
+(same watcher pattern, lower value). Runtime-only; no `@loomcycle/client` bump.
+
 ## What's in v0.30.0
 
 **Cross-instance resume of a snapshotted mid-run (F42 / RFC X Phase 2).**
