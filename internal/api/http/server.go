@@ -3959,6 +3959,21 @@ func (s *Server) makeRecordingEmit(ctx context.Context, runID string, fwd func(p
 			fwd(ev)
 			return
 		}
+		// RFC X Phase 3: the spawn ledger (spawn_child_started / spawn_child_result)
+		// is a STORE-side durability mechanism for reconstructing a parked fan-out
+		// parent on resume — the mirror image of EventSteer above. It must NOT reach
+		// live SSE/gRPC consumers: it's not a client-facing event, and eventToProto
+		// carries no SpawnChild payload (a gRPC client would get a typed-but-empty
+		// frame). Persist, don't forward.
+		if ev.Type == providers.EventSpawnChildStarted || ev.Type == providers.EventSpawnChildResult {
+			payload, err := json.Marshal(ev)
+			if err == nil {
+				if err := s.store.AppendEvent(ctx, runID, string(ev.Type), payload); err != nil {
+					log.Printf("store: AppendEvent failed (run=%s type=%s): %v", runID, ev.Type, err)
+				}
+			}
+			return
+		}
 		// F32: redact secrets out of the PERSISTED copy only — the tool_call
 		// input and tool_result text are the surfaces where a token inlined on a
 		// Bash cmdline / echoed by a tool would otherwise hit the events BLOB
@@ -4389,7 +4404,7 @@ func (s *Server) runSubAgent(ctx context.Context, name string, prompt string, de
 	// prefixing the tool_result text. Parent caller's model sees this
 	// and can echo it to the UI. Cheap; unblocks future "cancel only
 	// the sub" UX.
-	return fmt.Sprintf("[sub-agent agent_id=%s]\n%s", subAgentID, res.FinalText), subRunID, nil
+	return formatSubAgentOutput(subAgentID, res.FinalText), subRunID, nil
 }
 
 // agentResponse is the JSON shape returned by GET /v1/agents/{id} and

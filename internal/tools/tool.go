@@ -706,6 +706,17 @@ func EventEmitter(ctx context.Context) EventEmitterFunc {
 	return func(providers.Event) {}
 }
 
+// HasEventEmitter reports whether a REAL emitter was attached to ctx (vs the
+// no-op EventEmitter hands back by default). A caller that only wants to do work
+// when its events will actually be recorded — e.g. the RFC X Phase 3 spawn
+// ledger, which is pointless if it drains into the no-op — gates on this rather
+// than on EventEmitter(ctx) != nil (which is ALWAYS true, since the accessor
+// never returns nil).
+func HasEventEmitter(ctx context.Context) bool {
+	fn, ok := ctx.Value(ctxKeyEventEmitter{}).(EventEmitterFunc)
+	return ok && fn != nil
+}
+
 // ctxKeyAgentDefPolicy carries the v0.8.5 AgentDef-tool capability
 // gate. Mirrors MemoryPolicy / ChannelPolicy shape.
 type ctxKeyAgentDefPolicy struct{}

@@ -196,12 +196,12 @@ type parallelSpawnEntry struct {
 	DefID  string `json:"def_id,omitempty"`
 }
 
-// parallelSpawnResult is one entry in the JSON envelope the
+// ParallelSpawnResult is one entry in the JSON envelope the
 // parallel_spawn op returns to the calling model. `Ok` discriminates
 // success vs failure: when true, `Output` carries the child's final
 // text; when false, `Error` carries the human-readable error string.
 // Index preserves input ordering when the model needs to correlate.
-type parallelSpawnResult struct {
+type ParallelSpawnResult struct {
 	Index  int    `json:"index"`
 	Agent  string `json:"agent"`
 	Ok     bool   `json:"ok"`
@@ -414,16 +414,18 @@ func (a *AgentTool) executeParallelSpawn(ctx context.Context, in agentInput) (to
 	// from the parent ctx once; the per-child goroutines record spawn_child_*
 	// events through the (mutex-guarded, concurrency-safe) parent emitter so a
 	// snapshotted+restored fan-out parent can reconstruct this tool_result.
-	ledger := a.SpawnLedger && a.RunDetailed != nil
+	// Gate on a REAL emitter (tools.HasEventEmitter) + a tool_use id — not on
+	// EventEmitter(ctx) != nil, which is always true (the accessor returns a
+	// no-op when unset, so the old check could not detect a missing sink and the
+	// ledger would silently drain to the no-op).
+	toolUseID := tools.ToolUseID(ctx)
+	ledger := a.SpawnLedger && a.RunDetailed != nil && toolUseID != "" && tools.HasEventEmitter(ctx)
 	var ledgerEmit tools.EventEmitterFunc
-	var toolUseID string
 	if ledger {
 		ledgerEmit = tools.EventEmitter(ctx)
-		toolUseID = tools.ToolUseID(ctx)
-		ledger = ledgerEmit != nil && toolUseID != ""
 	}
 
-	results := make([]parallelSpawnResult, len(in.Spawns))
+	results := make([]ParallelSpawnResult, len(in.Spawns))
 	sem := make(chan struct{}, concurrencyCap)
 	var wg sync.WaitGroup
 	for i, sp := range in.Spawns {
@@ -439,7 +441,7 @@ func (a *AgentTool) executeParallelSpawn(ctx context.Context, in agentInput) (to
 			case sem <- struct{}{}:
 				defer func() { <-sem }()
 			case <-subCtx.Done():
-				results[i] = parallelSpawnResult{Index: i, Agent: sp.Name, Ok: false, Error: subCtx.Err().Error()}
+				results[i] = ParallelSpawnResult{Index: i, Agent: sp.Name, Ok: false, Error: subCtx.Err().Error()}
 				return
 			}
 			// Thread the child's index so runSubAgent can emit the
@@ -449,14 +451,14 @@ func (a *AgentTool) executeParallelSpawn(ctx context.Context, in agentInput) (to
 				childCtx = tools.WithSpawnIndex(subCtx, i)
 			}
 			out, childRunID, err := a.runChild(childCtx, sp.Name, sp.Prompt, sp.DefID)
-			var r parallelSpawnResult
+			var r ParallelSpawnResult
 			if err != nil {
-				r = parallelSpawnResult{Index: i, Agent: sp.Name, Ok: false, Error: err.Error(), RunID: childRunID}
+				r = ParallelSpawnResult{Index: i, Agent: sp.Name, Ok: false, Error: err.Error(), RunID: childRunID}
 			} else {
 				if out == "" {
 					out = fmt.Sprintf("(sub-agent %q completed with no final text)", sp.Name)
 				}
-				r = parallelSpawnResult{Index: i, Agent: sp.Name, Ok: true, Output: out, RunID: childRunID}
+				r = ParallelSpawnResult{Index: i, Agent: sp.Name, Ok: true, Output: out, RunID: childRunID}
 			}
 			results[i] = r
 			// Record this child's result on the parent's transcript so a
@@ -519,7 +521,7 @@ func (a *AgentTool) executeParallelSpawn(ctx context.Context, in agentInput) (to
 	wg.Wait()
 
 	envelope := struct {
-		Results []parallelSpawnResult `json:"results"`
+		Results []ParallelSpawnResult `json:"results"`
 	}{Results: results}
 	body, err := json.Marshal(envelope)
 	if err != nil {

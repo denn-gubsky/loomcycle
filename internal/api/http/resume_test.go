@@ -11,6 +11,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/loop"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/store"
+	"github.com/denn-gubsky/loomcycle/internal/tools/builtin"
 )
 
 // appendResumeEvent persists one transcript event for a run under test.
@@ -330,7 +331,7 @@ func TestResumePausedRuns_ReconcilesFanoutParent(t *testing.T) {
 		t.Fatal("no synthesized tool_result for tu_fan on the parent transcript")
 	}
 	var env struct {
-		Results []fanoutResult `json:"results"`
+		Results []builtin.ParallelSpawnResult `json:"results"`
 	}
 	if err := json.Unmarshal([]byte(envText), &env); err != nil {
 		t.Fatalf("envelope unmarshal: %v; raw=%s", err, envText)

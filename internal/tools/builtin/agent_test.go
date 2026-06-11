@@ -273,7 +273,7 @@ func TestAgentTool_ParallelSpawn_HappyPath(t *testing.T) {
 		t.Fatalf("expected success, got IsError=true: %s", res.Text)
 	}
 	var env struct {
-		Results []parallelSpawnResult `json:"results"`
+		Results []ParallelSpawnResult `json:"results"`
 	}
 	if err := json.Unmarshal([]byte(res.Text), &env); err != nil {
 		t.Fatalf("envelope unmarshal: %v; raw=%s", err, res.Text)
@@ -322,7 +322,7 @@ func TestAgentTool_ParallelSpawn_ChildErrorCaptured(t *testing.T) {
 		t.Fatalf("tool-level error should NOT escalate per-child failures: %s", res.Text)
 	}
 	var env struct {
-		Results []parallelSpawnResult `json:"results"`
+		Results []ParallelSpawnResult `json:"results"`
 	}
 	_ = json.Unmarshal([]byte(res.Text), &env)
 	if !env.Results[0].Ok || !env.Results[2].Ok {
@@ -697,7 +697,7 @@ func TestAgentTool_ParallelSpawn_ParksParentOnPause(t *testing.T) {
 		t.Fatalf("envelope IsError after resume: %s", res.Text)
 	}
 	var env struct {
-		Results []parallelSpawnResult `json:"results"`
+		Results []ParallelSpawnResult `json:"results"`
 	}
 	if err := json.Unmarshal([]byte(res.Text), &env); err != nil {
 		t.Fatalf("envelope unmarshal: %v; raw=%s", err, res.Text)

@@ -111,3 +111,47 @@ func TestRecordingEmit_NoRedactorWhenDisabled(t *testing.T) {
 		t.Errorf("with redaction disabled the secret should persist verbatim; got %q", got.Text)
 	}
 }
+
+// TestRecordingEmit_SpawnLedgerStoredNotForwarded is the RFC X Phase 3 review fix
+// (#1): the spawn ledger is a STORE-side durability mechanism — it must be
+// persisted for the resume reconcile but NOT forwarded to the live SSE/gRPC wire
+// (it's not a client-facing event, and the gRPC proto carries no SpawnChild
+// payload, so a client would get a typed-but-empty frame). Fails on the
+// pre-fix code, which routed ledger events through the generic fwd(ev) tail.
+func TestRecordingEmit_SpawnLedgerStoredNotForwarded(t *testing.T) {
+	srv, st, runID, ctx, cleanup := emitFixture(t, nil)
+	defer cleanup()
+
+	forwarded := 0
+	emit := srv.makeRecordingEmit(ctx, runID, func(providers.Event) { forwarded++ })
+
+	for _, typ := range []providers.EventType{providers.EventSpawnChildStarted, providers.EventSpawnChildResult} {
+		emit(providers.Event{
+			Type:       typ,
+			SpawnChild: &providers.SpawnChildEventInfo{ToolUseID: "tu_fan", Index: 0, RunID: "r_child", Agent: "solver", Ok: true, Output: "done"},
+		})
+	}
+
+	// NOT forwarded to the live stream.
+	if forwarded != 0 {
+		t.Errorf("spawn ledger events were forwarded to the live wire %d time(s); want 0", forwarded)
+	}
+
+	// But DO land in the store (so the resume reconcile can read them back).
+	for _, typ := range []providers.EventType{providers.EventSpawnChildStarted, providers.EventSpawnChildResult} {
+		evs, _, err := st.ListEvents(ctx, store.EventFilter{Type: string(typ)}, 10, 0)
+		if err != nil {
+			t.Fatalf("ListEvents(%s): %v", typ, err)
+		}
+		if len(evs) != 1 {
+			t.Fatalf("expected 1 %s event persisted, got %d", typ, len(evs))
+		}
+		var decoded providers.Event
+		if err := json.Unmarshal(evs[0].Payload, &decoded); err != nil {
+			t.Fatalf("unmarshal %s payload: %v", typ, err)
+		}
+		if decoded.SpawnChild == nil || decoded.SpawnChild.ToolUseID != "tu_fan" {
+			t.Errorf("%s persisted without its SpawnChild payload: %+v", typ, decoded.SpawnChild)
+		}
+	}
+}

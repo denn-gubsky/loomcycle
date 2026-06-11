@@ -15,6 +15,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
+	"github.com/denn-gubsky/loomcycle/internal/tools/builtin"
 )
 
 // resume.go — F42 / RFC X Phase 2: re-dispatch snapshotted paused runs.
@@ -377,18 +378,6 @@ type fanoutParkInfo struct {
 	input     json.RawMessage
 }
 
-// fanoutResult mirrors builtin.parallelSpawnResult's JSON shape EXACTLY so a
-// reconciled envelope is byte-compatible with a live parallel_spawn envelope.
-// (The builtin type is unexported; this is the package-http twin — output and
-// error are omitempty, RunID is internal-only and absent here.)
-type fanoutResult struct {
-	Index  int    `json:"index"`
-	Agent  string `json:"agent"`
-	Ok     bool   `json:"ok"`
-	Output string `json:"output,omitempty"`
-	Error  string `json:"error,omitempty"`
-}
-
 // detectFanoutParent scans one run's transcript events for a parked fan-out
 // parent: an Agent parallel_spawn tool_use that (a) has at least one
 // spawn_child_started ledger event (so it IS a fan-out, not some other tool)
@@ -558,10 +547,20 @@ func (s *Server) reconcileFanoutParent(ctx context.Context, run store.Run, runEv
 		}
 	}
 
-	// Authoritative child count + names from the parallel_spawn input (covers a
-	// child that was never dispatched — past the concurrency cap when the pause
-	// hit — so it has no ledger entry).
-	count := len(children)
+	// Child count must span every index we have a ledger row for — derive it
+	// from the HIGHEST observed index, not len(children): the dispatched set can
+	// be sparse (a child past the concurrency cap never emitted a started event,
+	// and goroutine scheduling means the dispatched indices aren't a contiguous
+	// prefix), so len(children) could be < maxIndex+1 and the loop below would
+	// silently drop the highest-index child's real result. parseSpawnNames then
+	// widens it further to the authoritative input count (covers a never-
+	// dispatched tail) when the persisted tool_call input is still parseable.
+	count := 0
+	for idx := range children {
+		if idx+1 > count {
+			count = idx + 1
+		}
+	}
 	var names []string
 	if n, nm := parseSpawnNames(fanout.input); n > count {
 		count = n
@@ -571,7 +570,7 @@ func (s *Server) reconcileFanoutParent(ctx context.Context, run store.Run, runEv
 		return providers.Message{}, fmt.Errorf("fan-out tool_use %s has no children to reconcile", fanout.toolUseID)
 	}
 
-	results := make([]fanoutResult, count)
+	results := make([]builtin.ParallelSpawnResult, count)
 	for i := 0; i < count; i++ {
 		c := children[i]
 		name := ""
@@ -584,19 +583,19 @@ func (s *Server) reconcileFanoutParent(ctx context.Context, run store.Run, runEv
 		switch {
 		case c != nil && c.result != nil:
 			// Completed before the snapshot — durable result in the ledger.
-			results[i] = fanoutResult{Index: i, Agent: c.result.Agent, Ok: c.result.Ok, Output: c.result.Output, Error: c.result.Error}
+			results[i] = builtin.ParallelSpawnResult{Index: i, Agent: c.result.Agent, Ok: c.result.Ok, Output: c.result.Output, Error: c.result.Error}
 		case c != nil && c.runID != "":
 			// Still running (parked) at snapshot → re-dispatched independently
 			// by ResumePausedRuns. Await it + read its result.
 			results[i] = s.awaitChildResult(ctx, i, name, c.runID)
 		default:
-			results[i] = fanoutResult{Index: i, Agent: name, Ok: false,
+			results[i] = builtin.ParallelSpawnResult{Index: i, Agent: name, Ok: false,
 				Error: "child was not dispatched before the snapshot; re-issue if its result is required"}
 		}
 	}
 
 	envelope := struct {
-		Results []fanoutResult `json:"results"`
+		Results []builtin.ParallelSpawnResult `json:"results"`
 	}{Results: results}
 	body, err := json.Marshal(envelope)
 	if err != nil {
@@ -630,6 +629,10 @@ func (s *Server) reconcileFanoutParent(ctx context.Context, run store.Run, runEv
 const (
 	fanoutChildPollInterval = 500 * time.Millisecond
 	fanoutChildAwaitTimeout = 30 * time.Minute
+	// fanoutChildMaxErrPolls bounds how long a persistent NON-ErrNotFound store
+	// error (DB outage) is retried before awaitChildTerminal surfaces it — ~10s
+	// at the 500ms poll interval, vs silently burning the full 30m backstop.
+	fanoutChildMaxErrPolls = 20
 	// fanoutHeartbeatInterval keeps the parent's last_heartbeat_at fresh during
 	// the await. Well under the sweeper's default 10m StaleAfter; matches the
 	// cadence the loop itself would heartbeat at once it starts.
@@ -637,15 +640,15 @@ const (
 )
 
 // awaitChildResult awaits one re-dispatched child to terminal and maps it to a
-// fanoutResult: completed → ok + the child's final text (prefixed exactly like
+// builtin.ParallelSpawnResult: completed → ok + the child's final text (prefixed exactly like
 // runSubAgent so it reads identically to a live collection); failed/cancelled →
 // an error result. A child whose row was never captured (the narrow race where
 // it completed in the instant before the snapshot, so pause_state never flipped
 // to 'paused') resolves to an error result via awaitChildTerminal's fast-fail.
-func (s *Server) awaitChildResult(ctx context.Context, index int, name, childRunID string) fanoutResult {
+func (s *Server) awaitChildResult(ctx context.Context, index int, name, childRunID string) builtin.ParallelSpawnResult {
 	child, err := s.awaitChildTerminal(ctx, childRunID)
 	if err != nil {
-		return fanoutResult{Index: index, Agent: name, Ok: false,
+		return builtin.ParallelSpawnResult{Index: index, Agent: name, Ok: false,
 			Error: fmt.Sprintf("await child run %s: %v", childRunID, err)}
 	}
 	if name == "" {
@@ -657,34 +660,44 @@ func (s *Server) awaitChildResult(ctx context.Context, index int, name, childRun
 		if out == "" {
 			out = fmt.Sprintf("(sub-agent %q completed with no final text)", name)
 		}
-		return fanoutResult{Index: index, Agent: name, Ok: true,
-			Output: fmt.Sprintf("[sub-agent agent_id=%s]\n%s", child.AgentID, out)}
+		return builtin.ParallelSpawnResult{Index: index, Agent: name, Ok: true,
+			Output: formatSubAgentOutput(child.AgentID, out)}
 	default:
 		msg := child.ErrorMsg
 		if msg == "" {
 			msg = string(child.Status)
 		}
-		return fanoutResult{Index: index, Agent: name, Ok: false, Error: msg}
+		return builtin.ParallelSpawnResult{Index: index, Agent: name, Ok: false, Error: msg}
 	}
 }
 
-// awaitChildTerminal polls a child run row until its status leaves "running"
-// (terminal) or the bounded ctx expires. A persistent ErrNotFound fast-fails
-// (the row wasn't captured in the snapshot) rather than waiting out the full
-// timeout.
+// awaitChildTerminal polls a child run row until it reaches a terminal status
+// or a backstop deadline elapses, returning early on:
+//   - a persistent ErrNotFound (the row wasn't captured in the snapshot — the
+//     narrow race where the child completed in the instant before capture);
+//   - a persistent NON-ErrNotFound store error (a DB outage shouldn't burn the
+//     whole backstop silently — surface it after a short streak).
+//
+// A child that a CONCURRENT pause re-parks (pause_state set, Status still
+// 'running') is alive, not wedged: its presence RESETS the deadline so a long
+// second pause doesn't turn a healthy parked child into a spurious timeout
+// error. ctx (the parent's runCtx) cancellation — operator cancel — always wins.
 func (s *Server) awaitChildTerminal(ctx context.Context, childRunID string) (store.Run, error) {
-	ctx, cancel := context.WithTimeout(ctx, fanoutChildAwaitTimeout)
-	defer cancel()
 	tick := time.NewTicker(fanoutChildPollInterval)
 	defer tick.Stop()
-	notFoundStreak := 0
+	deadline := time.Now().Add(fanoutChildAwaitTimeout)
+	notFoundStreak, errStreak := 0, 0
 	for {
 		run, err := s.store.GetRun(ctx, childRunID)
 		switch {
 		case err == nil:
-			notFoundStreak = 0
-			if run.Status != store.RunRunning {
+			notFoundStreak, errStreak = 0, 0
+			if isTerminalRunStatus(run.Status) {
 				return run, nil
+			}
+			// Re-parked by a concurrent pause → don't penalize parked time.
+			if run.PauseState == store.PauseStatePaused || run.PauseState == store.PauseStatePausing {
+				deadline = time.Now().Add(fanoutChildAwaitTimeout)
 			}
 		default:
 			var nf *store.ErrNotFound
@@ -693,7 +706,12 @@ func (s *Server) awaitChildTerminal(ctx context.Context, childRunID string) (sto
 				if notFoundStreak >= 3 {
 					return store.Run{}, fmt.Errorf("child run not found (not captured in snapshot)")
 				}
+			} else if errStreak++; errStreak >= fanoutChildMaxErrPolls {
+				return store.Run{}, fmt.Errorf("get child run: %w", err)
 			}
+		}
+		if time.Now().After(deadline) {
+			return store.Run{}, fmt.Errorf("child run %s did not reach terminal within %s", childRunID, fanoutChildAwaitTimeout)
 		}
 		select {
 		case <-ctx.Done():
@@ -701,6 +719,14 @@ func (s *Server) awaitChildTerminal(ctx context.Context, childRunID string) (sto
 		case <-tick.C:
 		}
 	}
+}
+
+// formatSubAgentOutput wraps a sub-agent's final text with the parseable
+// "[sub-agent agent_id=...]" header the parent agent's model reads to attribute
+// child output. Shared by the live collection path (runSubAgent) and the
+// cross-instance reconcile (awaitChildResult) so the wire contract can't drift.
+func formatSubAgentOutput(agentID, finalText string) string {
+	return fmt.Sprintf("[sub-agent agent_id=%s]\n%s", agentID, finalText)
 }
 
 // childFinalText reads a completed child's final assistant text from its
