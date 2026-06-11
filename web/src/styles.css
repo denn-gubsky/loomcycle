@@ -4187,31 +4187,99 @@ button.primary:disabled {
   min-height: 0;
   overflow-y: auto;
 }
-.live-run-continue {
+/* Claude-Desktop-style composer: a rounded, elevated card holding the input on
+   top and a footer row (live model + MCP-tool chrome on the left, a circular
+   send arrow on the right). Replaces the flat textarea+button bar. */
+.composer {
   display: flex;
+  flex-direction: column;
   gap: 8px;
-  padding: 8px 12px;
-  border-top: 1px solid var(--border, #2a2a32);
-  align-items: flex-end;
+  margin: 10px 12px;
+  padding: 10px 12px;
+  background: var(--bg-soft-2, #1d2230);
+  border: 1px solid var(--border, #2a2a32);
+  border-radius: 14px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25);
 }
-.live-run-continue input {
-  flex: 1;
+.composer:focus-within {
+  border-color: var(--accent, #5b9dff);
 }
-.live-run-input {
-  flex: 1;
+.composer-input {
+  width: 100%;
   resize: none;
   overflow-y: auto;
-  min-height: 34px;
+  min-height: 24px;
   max-height: 160px;
-  line-height: 1.4;
-  padding: 6px 8px;
+  line-height: 1.45;
+  padding: 0;
+  border: none;
+  outline: none;
+  background: transparent;
+  color: var(--fg, #e6e8ee);
   font-family: inherit;
   font-size: inherit;
   box-sizing: border-box;
 }
-.live-run-continue input:disabled,
-.live-run-input:disabled {
+.composer-input::placeholder {
+  color: var(--fg-muted, #8a90a0);
+}
+.composer-input:disabled {
   opacity: 0.55;
+}
+.composer-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.composer-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  font-size: 12px;
+  color: var(--fg-muted, #8a90a0);
+}
+.composer-model {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  max-width: 240px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.composer-mcp {
+  flex-shrink: 0;
+  padding: 1px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border, #2a2a32);
+  background: var(--bg-soft, #161922);
+  white-space: nowrap;
+}
+.composer-send {
+  flex-shrink: 0;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: var(--accent, #5b9dff);
+  color: #fff;
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.composer-send:not(:disabled):hover {
+  filter: brightness(1.1);
+}
+.composer-send:disabled {
+  opacity: 0.4;
+  cursor: default;
 }
 .live-run-awaiting {
   padding: 6px 12px;

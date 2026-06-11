@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import TerminalTranscript from "./TerminalTranscript";
 import {
   type LiveUsage,
@@ -85,6 +85,23 @@ export default function LiveRunPane({
     }
   };
 
+  // Composer chrome from REAL run data: the model the run is actually being
+  // served by (latest usage event) and how many distinct MCP servers it has
+  // reached so far (derived from mcp__<server>__<tool> tool_call names in the
+  // transcript). Both populate as the run produces events; absent → omitted.
+  const model = lastUsage?.model ?? "";
+  const mcpCount = useMemo(() => {
+    const servers = new Set<string>();
+    for (const e of events) {
+      const name = e.event?.tool_use?.name;
+      if (name && name.startsWith("mcp__")) {
+        const server = name.split("__")[1];
+        if (server) servers.add(server);
+      }
+    }
+    return servers.size;
+  }, [events]);
+
   return (
     <div className={compact ? "live-run-pane live-run-pane-compact" : "live-run-pane"}>
       <div className="live-run-header">
@@ -118,10 +135,10 @@ export default function LiveRunPane({
       )}
 
       {showPrompt && (
-        <form className="live-run-continue" onSubmit={handleSend}>
+        <form className="composer" onSubmit={handleSend}>
           <textarea
             ref={taRef}
-            className="live-run-input"
+            className="composer-input"
             value={followUp}
             onChange={(e) => setFollowUp(e.target.value)}
             onKeyDown={onKeyDown}
@@ -132,14 +149,34 @@ export default function LiveRunPane({
                 ? "Wait for the turn to finish…"
                 : running
                   ? awaitingInput
-                    ? "Type to continue (Enter to send, Shift+Enter for newline)…"
-                    : "Steer the running agent (Enter to send, Shift+Enter for newline)…"
-                  : "Continue the conversation (Enter to send, Shift+Enter for newline)…"
+                    ? "Type to continue…"
+                    : "Steer the running agent…"
+                  : "Continue the conversation…"
             }
           />
-          <button type="submit" disabled={!followUp.trim() || promptDisabled}>
-            Send
-          </button>
+          <div className="composer-footer">
+            <div className="composer-meta">
+              {model && (
+                <span className="composer-model" title={`serving model: ${model}`}>
+                  <span aria-hidden="true">⚙</span> {model}
+                </span>
+              )}
+              {mcpCount > 0 && (
+                <span className="composer-mcp" title={`${mcpCount} MCP server(s) reached`}>
+                  MCP ({mcpCount})
+                </span>
+              )}
+            </div>
+            <button
+              type="submit"
+              className="composer-send"
+              disabled={!followUp.trim() || promptDisabled}
+              aria-label="Send"
+              title="Send — Enter (Shift+Enter for newline)"
+            >
+              ↑
+            </button>
+          </div>
         </form>
       )}
     </div>
