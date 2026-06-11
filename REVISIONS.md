@@ -8,6 +8,67 @@ For pre-v0.4 history (single-tool runtime, library milestone, security patch), s
 
 ---
 
+## What's in v0.29.0
+
+A Web UI + operability release — three operator-facing improvements plus a
+bundled example. No new runtime primitives.
+
+### Agent editor: sampling controls + an advanced JSON/YAML overlay (#449)
+The agent create/fork modal exposed ~23 fields but not the v0.28.0
+**`sampling`** block, nor the growing long tail (`channels`, `interruption`,
+`evaluation_scopes`, `memory_backend`, `retry_attempts`, `unbounded_iterations`,
+the five `*_def_scopes`) — all of which the substrate overlay already accepts.
+Two additions (agents only; backend unchanged): (1) **dedicated sampling
+controls** — string-typed so blank = unset and `0` = explicit (a dedicated
+parser keeps `temperature: 0.0`, which the existing `>0` helper would drop),
+fork-prefilled, with client-side range checks mirroring `Sampling.Validate()`;
+(2) a collapsible **advanced JSON/YAML overlay** (via `js-yaml`) for keys without
+a dedicated control, shallow-merged over the structured overlay (advanced wins
+per-key, with a non-blocking collision warning). An **empty box never blocks**
+submit; a non-empty malformed body blocks with an inline error. This deliberately
+differs from the v0.10.4 whole-overlay catch-all removed in v0.11.6 —
+`system_prompt` stays in its own textarea (no newlines-in-JSON), and the box is
+optional, so neither original pain point applies. `allowed_hosts` is intentionally
+excluded (caller-authoritative trust boundary; set per-run, never on the agent def).
+
+### Interactive terminal: user-message echo + context-size gauge (#450)
+(1) Your own messages now echo into the live transcript as `❯ …` — the initial
+prompt, steering input, and continuations. They were persisted but filtered from
+the live SSE tail (`nonStreamableEventTypes`), so the operator never saw what they
+typed. The fix is a client-side optimistic echo (no wire change); safe vs
+re-attach. (2) A **context-size gauge** in the terminal header —
+`ctx 47.2k / 200k (24%)` with a bar (amber >70%, red >90%). Backed by an additive,
+optional **`max_context_tokens`** on the usage event, stamped by the loop from
+`Provider.Capabilities().MaxContextTokens` (0 = unknown, e.g. Ollama → absolute
+size only). Context used = input + cache-read + cache-creation tokens (the true
+prompt footprint). `@loomcycle/client` 0.26.0 carries the optional field; gRPC
+parity is a fast-follow. (Compaction itself is future work.)
+
+### Soft-reclaim: retired agent names + Library status (#452)
+Retiring an agent only flipped a flag — it never cleared the active pointer and
+never freed the name, so a retired agent stayed listed and **blocked recreating
+the name** (which is how you grant an agent *more* tools: a fork can't widen the
+`allowed_tools` ceiling, but a fresh `create` builds a new root and can).
+`AgentDefSetRetired` is now transactional and, when retiring the **active** def,
+clears its `agent_def_active` pointer in the same tx (a `def_id` guard leaves a
+non-active version's pointer alone); `retired=false` never auto-promotes. Both
+store backends. This also fixes a **latent runtime bug** — `lookup.resolveDynamic`
+never checked `retired`, so a retired-but-active def was still served to runs.
+The list now surfaces `live_version_count` + `active_retired`; the Web UI badges
+**inactive** / **active retired** names and relaxes the create-name collision so a
+fully-retired name is reclaimable. Soft reclaim only — no hard delete; full audit
+lineage is preserved (a `delete` op is deferred).
+
+### Example: exp6 self-evolving agents (#451)
+A bundled `examples/exp6-self-evolving-agents/` showing the per-agent
+model-tuning variant (a breeder mints `sampling` variants via the AgentDef
+substrate) end-to-end.
+
+### Run launcher (already shipped)
+`allowed_hosts` per-run narrowing already lives in the run form's advanced
+section (omit = no narrowing, deny-all checkbox, narrows-never-widens) — the
+correct caller-authoritative home, confirmed during this work.
+
 ## What's in v0.28.0
 
 Two features.
