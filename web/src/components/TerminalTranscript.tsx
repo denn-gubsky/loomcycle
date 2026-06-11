@@ -231,6 +231,12 @@ function formatLine(row: TranscriptEvent): FormattedLine {
     case "steer":
       // operator-injected mid-run instruction; "»" marks it as operator input.
       return { key, ts, kind, cls: "tl-steer", payload: `» ${oneLine(ev.user_input?.text ?? "")}` };
+    case "user_echo":
+      // client-only echo of the operator's own message (initial prompt /
+      // steer / continuation). "❯" marks it as the operator's input, distinct
+      // from the agent's text and from a drained `steer` frame. Rendered in
+      // full (pre-wrap) like agent text — the operator wants to re-read it.
+      return { key, ts, kind, cls: "tl-user", payload: `❯ ${ev.text ?? ""}` };
     case "awaiting_input":
       return { key, ts, kind, cls: "tl-meta", payload: "idle — waiting for operator input" };
     case "started":

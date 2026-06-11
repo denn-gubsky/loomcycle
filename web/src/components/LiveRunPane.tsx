@@ -1,6 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 import TerminalTranscript from "./TerminalTranscript";
-import { type PendingInterrupt, type RunStatus } from "../hooks/useRunStream";
+import {
+  type LiveUsage,
+  type PendingInterrupt,
+  type RunStatus,
+} from "../hooks/useRunStream";
 import { type TranscriptEvent } from "../api";
 
 // LiveRunPane renders one run's live transcript + controls. Decoupled
@@ -23,6 +27,7 @@ export default function LiveRunPane({
   onContinue,
   onSend,
   awaitingInput,
+  lastUsage,
   pendingInterrupt,
   onAnswerInterrupt,
   compact,
@@ -37,6 +42,7 @@ export default function LiveRunPane({
   onContinue?: (prompt: string) => void;
   onSend?: (text: string) => void;
   awaitingInput?: boolean;
+  lastUsage?: LiveUsage | null;
   pendingInterrupt?: PendingInterrupt | null;
   onAnswerInterrupt?: (answer: string) => void;
   compact?: boolean;
@@ -84,6 +90,7 @@ export default function LiveRunPane({
       <div className="live-run-header">
         <span className={`pill ${status}`}>{status}</span>
         {agentId && <code className="live-run-agentid">{agentId}</code>}
+        <ContextGauge usage={lastUsage} />
         {status === "running" && (
           <button type="button" className="live-run-cancel" onClick={onCancel}>
             Cancel
@@ -136,6 +143,42 @@ export default function LiveRunPane({
         </form>
       )}
     </div>
+  );
+}
+
+// ContextGauge renders "ctx used / max (pct%)" from the latest usage event.
+// Context used = input + cache_read + cache_creation tokens — the true prompt
+// footprint for the turn (input_tokens alone undercounts when prompt caching
+// is active, since the cached prefix is reported under cache_read, not input).
+// Output tokens are excluded (they're the response, not context the prompt
+// consumed). When max is unknown (0 — e.g. Ollama) we show only the absolute
+// size with no bar/percent.
+function ContextGauge({ usage }: { usage?: LiveUsage | null }) {
+  if (!usage) return null;
+  const used =
+    (usage.input_tokens ?? 0) +
+    (usage.cache_read_input_tokens ?? 0) +
+    (usage.cache_creation_input_tokens ?? 0);
+  if (used <= 0) return null;
+  const max = usage.max_context_tokens ?? 0;
+  const fmtK = (n: number) =>
+    n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n);
+  if (max <= 0) {
+    return (
+      <span className="ctx-gauge" title="context used (max window unknown)">
+        ctx {fmtK(used)}
+      </span>
+    );
+  }
+  const pct = Math.min(100, Math.round((used / max) * 100));
+  const level = pct >= 90 ? "ctx-high" : pct >= 70 ? "ctx-mid" : "ctx-low";
+  return (
+    <span className="ctx-gauge" title={`${used} / ${max} tokens`}>
+      <span className="ctx-bar">
+        <span className={`ctx-bar-fill ${level}`} style={{ width: `${pct}%` }} />
+      </span>
+      ctx {fmtK(used)} / {fmtK(max)} ({pct}%)
+    </span>
   );
 }
 

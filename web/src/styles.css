@@ -537,6 +537,16 @@ pre {
   color: var(--accent);
   font-weight: 600;
 }
+/* tl-user: the operator's OWN message echoed into the transcript ("❯ …").
+   Distinct from the agent's text and from a drained `steer` frame. */
+.tl-row.tl-user .tl-payload,
+.tl-row.tl-user .tl-kind {
+  color: var(--accent);
+  font-weight: 600;
+}
+.tl-row.tl-user .tl-payload {
+  white-space: pre-wrap;
+}
 /* Collapsible rows (tool results): the whole row is a click target that
    toggles between the one-line summary and the full output. */
 .tl-row.tl-collapsible {
@@ -4132,6 +4142,35 @@ button.primary:disabled {
 .live-run-agentid {
   font-size: 12px;
   color: var(--muted, #9aa);
+}
+/* Context-size gauge in the live-run header: a thin bar + "ctx X/Y (Z%)". */
+.ctx-gauge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  font-family: var(--mono);
+  color: var(--fg-soft, #9aa);
+}
+.ctx-bar {
+  display: inline-block;
+  width: 60px;
+  height: 6px;
+  border-radius: 3px;
+  background: var(--bg-muted, #181818);
+  border: 1px solid var(--border, #2a2a32);
+  overflow: hidden;
+}
+.ctx-bar-fill {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+}
+.ctx-bar-fill.ctx-mid {
+  background: var(--running, #f0a040);
+}
+.ctx-bar-fill.ctx-high {
+  background: var(--error, #e0556a);
 }
 .live-run-cancel {
   margin-left: auto;

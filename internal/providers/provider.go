@@ -675,4 +675,13 @@ type Usage struct {
 	// place when fallback engages, so this naturally captures the
 	// post-fallback identity.
 	Provider string `json:"provider,omitempty"`
+
+	// MaxContextTokens is the serving model's context-window ceiling,
+	// surfaced so a UI can render a "context used / max" gauge without
+	// hard-coding a per-model table. 0 = unknown (e.g. Ollama, which
+	// defers the window to the model). Set by the loop at emit time from
+	// opts.Provider.Capabilities().MaxContextTokens — additive + optional,
+	// so older consumers and the run-final totalUsage (which leaves it 0)
+	// are unaffected.
+	MaxContextTokens int `json:"max_context_tokens,omitempty"`
 }

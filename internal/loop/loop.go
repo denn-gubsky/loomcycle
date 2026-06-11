@@ -1112,6 +1112,12 @@ outerLoop:
 			// reflects the post-fallback identity. Used by downstream
 			// analysis to quantify primary-vs-fallback routing.
 			totalUsage.Provider = opts.Provider.ID()
+			// Stamp the serving model's context-window ceiling onto the
+			// per-iteration usage event so the UI can render a "context
+			// used / max" gauge. Set on iterUsage (discarded after this
+			// iteration) NOT totalUsage, so the run-final accounting stays
+			// byte-stable; 0 when the provider reports an unknown window.
+			iterUsage.MaxContextTokens = opts.Provider.Capabilities().MaxContextTokens
 			emit(providers.Event{Type: providers.EventUsage, Usage: iterUsage})
 		}
 

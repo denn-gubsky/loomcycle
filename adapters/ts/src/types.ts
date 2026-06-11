@@ -47,6 +47,11 @@ export interface Usage {
   cache_creation_input_tokens?: number;
   cache_read_input_tokens?: number;
   model?: string;
+  /** Serving model's context-window ceiling, stamped by the loop on each
+   *  per-iteration usage event from Provider.Capabilities(). 0/absent =
+   *  unknown (e.g. Ollama). Lets a client render a "context used / max"
+   *  gauge without a hard-coded per-model table. Additive + optional. */
+  max_context_tokens?: number;
   /** Forward-compat: a future wire bump may include the provider-billed
    *  USD cost alongside token counts. Today the sidecar never populates
    *  this; the field stays optional so consumers can plumb it without a
