@@ -8,6 +8,17 @@ For pre-v0.4 history (single-tool runtime, library milestone, security patch), s
 
 ---
 
+## What's in v0.29.1
+
+Patch — **adapter lockstep publish.** The additive `max_context_tokens` field
+on the usage event (v0.29.0, #450) shipped in the runtime but the
+`@loomcycle/client` npm publish skipped: the publish workflow only fires when
+`adapters/ts/package.json`'s version equals the release tag, and the adapter
+was at `0.26.0` (not `0.29.0`). v0.29.1 realigns the adapter version with the
+release tag so `@loomcycle/client@0.29.1` publishes with the field. No
+runtime/binary change (the Go binaries are identical to v0.29.0); the only diff
+is the adapter version + this note.
+
 ## What's in v0.29.0
 
 A Web UI + operability release — three operator-facing improvements plus a
