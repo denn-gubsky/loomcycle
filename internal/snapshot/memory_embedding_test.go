@@ -323,6 +323,13 @@ func TestRestore_BadBase64InEmbeddingRecordsWarningAndContinues(t *testing.T) {
 	// Corrupt the vector base64 in the envelope.
 	corrupted := strings.Replace(string(jsonBytes),
 		`"vector":"`, `"vector":"!!not-base64!!`, 1)
+	// Re-stamp the I4 integrity checksum over the corrupted-but-structurally-
+	// valid document: this test models a SELF-CONSISTENT snapshot that
+	// legitimately carries a malformed embedding value (a downstream
+	// decode-warning case), NOT an in-transit truncation/tamper (which the
+	// checksum rightly rejects). Without re-stamping, Capture's checksum no
+	// longer matches the mutated body and Restore would reject it outright.
+	corrupted = restampSectionChecksum(t, corrupted)
 
 	dstBase, cleanupDst := newTestStore(t)
 	defer cleanupDst()
