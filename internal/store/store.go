@@ -1558,6 +1558,15 @@ type Store interface {
 	// happens in the HTTP handler.
 	ChannelsList(ctx context.Context) ([]ChannelRow, error)
 
+	// ChannelGet returns one runtime-declared channel by name. Returns
+	// *ErrNotFound{Kind:"channel"} when the name isn't in the runtime
+	// table (yaml-declared channels are NOT here — the caller checks
+	// cfg.Channels first). A point lookup so the hot publish/subscribe/
+	// peek/ack declared-check doesn't scan the whole table per op, and
+	// so a real store fault surfaces as an error instead of an empty
+	// list that masquerades as "not declared" (exp7 I5).
+	ChannelGet(ctx context.Context, name string) (ChannelRow, error)
+
 	// ChannelsCreate inserts a new runtime channel. Returns
 	// *ErrConflict{Kind:"channel"} when a runtime row with the
 	// same name already exists. yaml-name collisions are caught
