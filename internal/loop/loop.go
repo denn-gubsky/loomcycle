@@ -648,16 +648,41 @@ func parkForInput(ctx context.Context, q <-chan steer.Message, heartbeat func())
 	}
 }
 
+// CompactionMessages builds the two-message replacement for a steer.KindCompact
+// control: a user turn carrying the summary as established context, then a short
+// assistant ack. The pair starts on a user turn and ends on an assistant turn so
+// the operator's NEXT input alternates cleanly (Anthropic et al. require
+// start-with-user + role alternation). The system prompt is separate (re-derived
+// by the caller), so it is untouched — only the conversation history collapses.
+func CompactionMessages(summary string) []providers.Message {
+	return []providers.Message{
+		{Role: "user", Content: []providers.ContentBlock{{Type: "text",
+			Text: "[Conversation compacted — the summary below is the established context for everything before this point.]\n\n" + summary}}},
+		{Role: "assistant", Content: []providers.ContentBlock{{Type: "text",
+			Text: "Understood — I'll continue from the summary above."}}},
+	}
+}
+
 // drainSteer non-blocking-pulls every currently-queued operator steering
-// message and appends each as a SEPARATE user-role turn, returning the
-// extended slice. The operator instruction is TRUSTED (bearer-gated, same
-// trust tier as the original run caller) → plain text, not fenced as
-// untrusted. onSteer (if set) fires per message so the runner can persist +
-// emit it.
-func drainSteer(q <-chan steer.Message, messages []providers.Message, onSteer func(steer.Message)) []providers.Message {
+// message. An ordinary message (Kind == "") is appended as a SEPARATE user-role
+// turn (TRUSTED — bearer-gated, same trust tier as the run caller — so plain
+// text, not fenced); onSteer (if set) fires per message so the runner persists +
+// emits it. A steer.KindCompact control instead REPLACES the conversation with
+// the summary pair and emits EventContextCompaction (persisted + forwarded), so
+// the in-memory history collapses; it does NOT fire onSteer (the summary is not
+// an operator turn and must not be persisted as a user_input replay row).
+func drainSteer(q <-chan steer.Message, messages []providers.Message, onSteer func(steer.Message), emit func(providers.Event)) []providers.Message {
 	for {
 		select {
 		case m := <-q:
+			if m.Kind == steer.KindCompact {
+				messages = CompactionMessages(m.Text)
+				if emit != nil {
+					emit(providers.Event{Type: providers.EventContextCompaction,
+						ContextCompaction: &providers.ContextCompactionEventInfo{Summary: m.Text}})
+				}
+				continue
+			}
 			messages = append(messages, providers.Message{
 				Role:    "user",
 				Content: []providers.ContentBlock{{Type: "text", Text: m.Text}},
@@ -838,7 +863,7 @@ outerLoop:
 		// user(tool_results)]; appending a user(steer) turn yields consecutive
 		// user turns, which every provider accepts (replay already emits them).
 		if opts.SteerQueue != nil {
-			messages = drainSteer(opts.SteerQueue, messages, opts.OnSteer)
+			messages = drainSteer(opts.SteerQueue, messages, opts.OnSteer, emit)
 		}
 
 		req := providers.Request{
@@ -1134,20 +1159,37 @@ outerLoop:
 			if opts.Interactive && opts.SteerQueue != nil {
 				emit(providers.Event{Type: providers.EventAwaitingInput,
 					AwaitingInput: &providers.AwaitingInputEventInfo{SinceTurn: iter}})
-				m, resumed := parkForInput(ctx, opts.SteerQueue, opts.OnHeartbeat)
-				if !resumed {
-					// ctx cancelled (or queue closed) → terminate.
-					iterSpan.End()
+				// Park until a real operator turn arrives. A steer.KindCompact
+				// control replaces the in-memory history with the summary pair
+				// and RE-parks (compaction is not itself new input — the
+				// operator's next message is), so the loop never calls the
+				// provider on the bare summary.
+				resumedWithInput := false
+				for {
+					m, resumed := parkForInput(ctx, opts.SteerQueue, opts.OnHeartbeat)
+					if !resumed {
+						break // ctx cancelled (or queue closed) → terminate
+					}
+					if m.Kind == steer.KindCompact {
+						messages = CompactionMessages(m.Text)
+						emit(providers.Event{Type: providers.EventContextCompaction,
+							ContextCompaction: &providers.ContextCompactionEventInfo{Summary: m.Text}})
+						continue // re-park: wait for the operator's actual next turn
+					}
+					messages = append(messages, providers.Message{
+						Role:    "user",
+						Content: []providers.ContentBlock{{Type: "text", Text: m.Text}},
+					})
+					if opts.OnSteer != nil {
+						opts.OnSteer(m)
+					}
+					resumedWithInput = true
 					break
 				}
-				messages = append(messages, providers.Message{
-					Role:    "user",
-					Content: []providers.ContentBlock{{Type: "text", Text: m.Text}},
-				})
-				if opts.OnSteer != nil {
-					opts.OnSteer(m)
-				}
 				iterSpan.End()
+				if !resumedWithInput {
+					break
+				}
 				continue outerLoop
 			}
 			iterSpan.End()

@@ -461,6 +461,8 @@ func requiredScopeFor(method, path string) string {
 	// Human-in-the-loop interrupt: resolve is a run-state write, list a read.
 	case method == http.MethodPost && strings.HasPrefix(path, "/v1/runs/") && strings.HasSuffix(path, "/resolve"):
 		return auth.ScopeRunsCreate
+	case method == http.MethodPost && strings.HasPrefix(path, "/v1/runs/") && strings.HasSuffix(path, "/compact"):
+		return auth.ScopeRunsCreate
 	case method == http.MethodGet && strings.HasPrefix(path, "/v1/runs/"):
 		return auth.ScopeRunsRead
 	// Run / agent / session / user reads.

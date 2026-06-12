@@ -135,6 +135,7 @@ function SingleRunTab({
           error={run.error}
           onCancel={run.cancel}
           onSend={run.send}
+          onCompact={run.compact}
           awaitingInput={run.awaitingInput}
           lastUsage={run.lastUsage}
           pendingInterrupt={run.pendingInterrupt}

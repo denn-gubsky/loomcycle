@@ -4200,6 +4200,32 @@ button.primary:disabled {
 .live-run-cancel:active {
   background: #861f24;
 }
+/* Compact: a non-destructive action — neutral/outline pill, visually distinct
+   from the red Stop. margin-left:auto pushes the action group to the right (the
+   first right-floated control absorbs the free space; Stop follows it). */
+.live-run-compact {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 12px;
+  border: 1px solid var(--border, #2a2e3a);
+  border-radius: 999px;
+  background: var(--bg-soft-2, #1d2230);
+  color: var(--fg-soft, #9aa);
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.4;
+  cursor: pointer;
+}
+.live-run-compact:not(:disabled):hover {
+  border-color: var(--accent, #5b9dff);
+  color: var(--fg, #e6e6e6);
+}
+.live-run-compact:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
 .live-run-pane .terminal-transcript {
   flex: 1;
   min-height: 0;
