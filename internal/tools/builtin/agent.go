@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
@@ -184,6 +185,10 @@ type agentInput struct {
 	Name   string `json:"name,omitempty"`
 	Prompt string `json:"prompt,omitempty"`
 	DefID  string `json:"def_id,omitempty"`
+	// Compaction optionally overrides the child's resolved compaction settings
+	// PER FIELD (the parent steering its child's context management). Merged on
+	// top of what the child inherits from this parent. nil = inherit unchanged.
+	Compaction *config.Compaction `json:"compaction,omitempty"`
 
 	// Parallel-spawn fields (op="parallel_spawn").
 	Spawns []parallelSpawnEntry `json:"spawns,omitempty"`
@@ -194,6 +199,8 @@ type parallelSpawnEntry struct {
 	Name   string `json:"name"`
 	Prompt string `json:"prompt"`
 	DefID  string `json:"def_id,omitempty"`
+	// Compaction: per-spawn compaction override for THIS child (see agentInput).
+	Compaction *config.Compaction `json:"compaction,omitempty"`
 }
 
 // ParallelSpawnResult is one entry in the JSON envelope the
@@ -227,7 +234,8 @@ const agentInputSchema = `{
         "op":     {"type": "string", "enum": ["spawn"], "description": "Optional; defaults to spawn when omitted."},
         "name":   {"type": "string", "description": "Sub-agent name. Must match a key in the loomcycle.yaml agents map."},
         "prompt": {"type": "string", "description": "User-message body the sub-agent sees. Treat as the task description; do not include auth tokens (the sub-agent gets its own auth context)."},
-        "def_id": {"type": "string", "description": "Optional. Pin this sub-run to a specific agent_defs row id (returned by AgentDef.create or AgentDef.fork). The row's name must match the 'name' field."}
+        "def_id": {"type": "string", "description": "Optional. Pin this sub-run to a specific agent_defs row id (returned by AgentDef.create or AgentDef.fork). The row's name must match the 'name' field."},
+        "compaction": {"type": "object", "description": "Optional. Override this child's context-compaction settings (it inherits yours by default). Per field: enabled (auto-compact on/off), target_percentage (10-50), keep_last_n, keep_first, autocompact_at_pct (50-95), model.", "properties": {"enabled": {"type": "boolean"}, "target_percentage": {"type": "integer"}, "keep_last_n": {"type": "integer"}, "keep_first": {"type": "boolean"}, "autocompact_at_pct": {"type": "integer"}, "model": {"type": "string"}}}
       },
       "required": ["name", "prompt"]
     },
@@ -244,7 +252,8 @@ const agentInputSchema = `{
             "properties": {
               "name":   {"type": "string", "description": "Sub-agent name. Must match a key in the loomcycle.yaml agents map."},
               "prompt": {"type": "string", "description": "User-message body the sub-agent sees."},
-              "def_id": {"type": "string", "description": "Optional. Pin this sub-run to a specific agent_defs row id."}
+              "def_id": {"type": "string", "description": "Optional. Pin this sub-run to a specific agent_defs row id."},
+              "compaction": {"type": "object", "description": "Optional per-child context-compaction override (inherits yours by default). Fields: enabled, target_percentage (10-50), keep_last_n, keep_first, autocompact_at_pct (50-95), model.", "properties": {"enabled": {"type": "boolean"}, "target_percentage": {"type": "integer"}, "keep_last_n": {"type": "integer"}, "keep_first": {"type": "boolean"}, "autocompact_at_pct": {"type": "integer"}, "model": {"type": "string"}}}
             },
             "required": ["name", "prompt"]
           }
@@ -320,6 +329,11 @@ func (a *AgentTool) executeSpawn(ctx context.Context, in agentInput) (tools.Resu
 		}, nil
 	}
 	subCtx := IncrementAgentDepth(ctx)
+	// Per-spawn compaction override (the parent steering this child's context
+	// management); runSubAgent blends it on top of inheritance.
+	if !in.Compaction.IsZero() {
+		subCtx = tools.WithCompactionOverride(subCtx, in.Compaction)
+	}
 	output, err := a.Run(subCtx, in.Name, in.Prompt, in.DefID)
 	if err != nil {
 		return tools.Result{IsError: true, Text: err.Error()}, nil
@@ -449,6 +463,11 @@ func (a *AgentTool) executeParallelSpawn(ctx context.Context, in agentInput) (to
 			childCtx := subCtx
 			if ledger {
 				childCtx = tools.WithSpawnIndex(subCtx, i)
+			}
+			// Per-spawn compaction override (the parent steering this child's
+			// context management); runSubAgent blends it on top of inheritance.
+			if !sp.Compaction.IsZero() {
+				childCtx = tools.WithCompactionOverride(childCtx, sp.Compaction)
 			}
 			out, childRunID, err := a.runChild(childCtx, sp.Name, sp.Prompt, sp.DefID)
 			var r ParallelSpawnResult

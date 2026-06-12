@@ -1807,6 +1807,10 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		QuotaBytes:    agentDef.MemoryQuotaBytes,
 		Backend:       agentDef.MemoryBackend,
 	})
+	// Resolved compaction settings flow down the spawn tree via ctx: a sub-agent
+	// inherits the parent's effective policy (its def fills any gaps the parent
+	// left unset), overridable per-spawn by the Agent tool.
+	loopCtx = tools.WithCompactionPolicy(loopCtx, config.MergeCompaction(agentDef.Compaction, in.Compaction))
 	loopCtx = tools.WithChannelPolicy(loopCtx, s.channelPolicyForAgent(loopCtx, agentDef))
 	loopCtx = tools.WithEventEmitter(loopCtx, emit)
 	adPolicy, evPolicy := s.substratePoliciesForAgent(agentDef, effectiveAgentName)
@@ -3097,6 +3101,7 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		QuotaBytes:    agentDef.MemoryQuotaBytes,
 		Backend:       agentDef.MemoryBackend,
 	})
+	loopCtx = tools.WithCompactionPolicy(loopCtx, config.MergeCompaction(agentDef.Compaction, req.Compaction))
 	loopCtx = tools.WithChannelPolicy(loopCtx, s.channelPolicyForAgent(loopCtx, agentDef))
 	loopCtx = tools.WithEventEmitter(loopCtx, emit)
 	adPolicy, evPolicy := s.substratePoliciesForAgent(agentDef, req.Agent)
@@ -3572,6 +3577,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		QuotaBytes:    agentDef.MemoryQuotaBytes,
 		Backend:       agentDef.MemoryBackend,
 	})
+	loopCtx = tools.WithCompactionPolicy(loopCtx, config.MergeCompaction(agentDef.Compaction, body.Compaction))
 	loopCtx = tools.WithChannelPolicy(loopCtx, s.channelPolicyForAgent(loopCtx, agentDef))
 	loopCtx = tools.WithEventEmitter(loopCtx, emit)
 	adPolicy, evPolicy := s.substratePoliciesForAgent(agentDef, sess.Agent)
@@ -4383,6 +4389,15 @@ func (s *Server) runSubAgent(ctx context.Context, name string, prompt string, de
 		QuotaBytes:    def.MemoryQuotaBytes,
 		Backend:       def.MemoryBackend,
 	})
+	// Compaction flows DOWN the spawn tree (unlike memory/channels/sampling,
+	// which are the child's own). The parent's effective policy (on ctx) wins per
+	// field; the child def fills any field the PARENT left unset; a per-spawn
+	// Agent-tool override (also on ctx) wins over both. The result is stamped on
+	// subCtx so the child's OWN children inherit it (recursive), and passed to
+	// the sub-loop's RunOptions for its auto-compaction.
+	subCompaction := config.MergeCompaction(def.Compaction, tools.CompactionPolicy(ctx))
+	subCompaction = config.MergeCompaction(subCompaction, tools.CompactionOverride(ctx))
+	subCtx = tools.WithCompactionPolicy(subCtx, subCompaction)
 	// Sub-agent's Channel policy follows the same per-yaml shape as
 	// MemoryPolicy above. The Channels map (operator-declared
 	// channels) IS shared with the parent — those are operator
@@ -4447,6 +4462,7 @@ func (s *Server) runSubAgent(ctx context.Context, name string, prompt string, de
 		// Sub-agents use their OWN def's sampling (no per-spawn override yet —
 		// a breeder varies temperature by FORKING a def, then spawning it).
 		Sampling:               def.Sampling,
+		Compaction:             subCompaction,
 		UserTier:               parentTier,
 		FallbackPolicy:         fbPolicy,
 		ReResolve:              fbReResolve,
