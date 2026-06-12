@@ -2295,6 +2295,58 @@ func TestExpandEnvAllowed_Predicate(t *testing.T) {
 	}
 }
 
+// TestExpandEnv_DeniesInfraSecrets pins exp7 C2: loomcycle's own DB DSN and
+// operator bearer must never be interpolated into a YAML/MCP field, even
+// though the LOOMCYCLE_ prefix (or the bare PG_DSN third-party name) would
+// otherwise allow it. They stay verbatim. A non-secret LOOMCYCLE_ var and a
+// per-MCP auth token (the legitimate ${LOOMCYCLE_*_TOKEN} header use the deny
+// set must NOT break) still expand.
+func TestExpandEnv_DeniesInfraSecrets(t *testing.T) {
+	t.Setenv("PG_DSN", "postgres://u:p@h/db")
+	t.Setenv("LOOMCYCLE_PG_DSN", "postgres://u:p@h/db")
+	t.Setenv("LOOMCYCLE_AUTH_TOKEN", "operator-bearer")
+	t.Setenv("LOOMCYCLE_FOO", "ok-value")
+	t.Setenv("LOOMCYCLE_JIRA_TOKEN", "mcp-auth-token")
+
+	// Infra secrets: the literal ${...} survives, the value never appears.
+	for _, name := range []string{"PG_DSN", "LOOMCYCLE_PG_DSN", "LOOMCYCLE_AUTH_TOKEN"} {
+		in := "x=${" + name + "}"
+		if got := expandEnv(in); got != in {
+			t.Errorf("expandEnv(%q) = %q, want unchanged (infra secret must not interpolate)", in, got)
+		}
+	}
+
+	// Non-secret LOOMCYCLE_ var still expands.
+	if got := expandEnv("${LOOMCYCLE_FOO}"); got != "ok-value" {
+		t.Errorf("expandEnv(LOOMCYCLE_FOO) = %q, want ok-value", got)
+	}
+	// A legitimate per-MCP auth token (the deny set is a tight named set, NOT
+	// the broad *_TOKEN suffix match) must still expand into its own header.
+	if got := expandEnv("Bearer ${LOOMCYCLE_JIRA_TOKEN}"); got != "Bearer mcp-auth-token" {
+		t.Errorf("expandEnv(LOOMCYCLE_JIRA_TOKEN) = %q, want Bearer mcp-auth-token", got)
+	}
+}
+
+// TestExpandEnv_RejectsNewlineValue pins exp7 I6: env values are interpolated
+// into raw YAML bytes before yaml.Unmarshal, so a value carrying a newline
+// could inject new keys/structure. Such a value is left verbatim (a visible
+// "didn't expand" signal); a normal single-line value expands as usual.
+func TestExpandEnv_RejectsNewlineValue(t *testing.T) {
+	t.Setenv("LOOMCYCLE_INJ", "value\ninjected_key: pwned")
+	t.Setenv("LOOMCYCLE_CR", "value\rmore")
+	t.Setenv("LOOMCYCLE_OK", "clean-value")
+
+	if got := expandEnv("${LOOMCYCLE_INJ}"); got != "${LOOMCYCLE_INJ}" {
+		t.Errorf("expandEnv(newline value) = %q, want unchanged ${LOOMCYCLE_INJ}", got)
+	}
+	if got := expandEnv("${LOOMCYCLE_CR}"); got != "${LOOMCYCLE_CR}" {
+		t.Errorf("expandEnv(CR value) = %q, want unchanged ${LOOMCYCLE_CR}", got)
+	}
+	if got := expandEnv("${LOOMCYCLE_OK}"); got != "clean-value" {
+		t.Errorf("expandEnv(clean value) = %q, want clean-value", got)
+	}
+}
+
 // TestLoad_WebhooksEnvKnobs verifies the new webhook-specific env knobs are
 // parsed: LOOMCYCLE_WEBHOOKS_ENV_ALLOWLIST (comma list, trimmed) and
 // LOOMCYCLE_WEBHOOKS_ALLOW_UNAUTHENTICATED (=1 → true).
