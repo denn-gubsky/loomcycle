@@ -463,6 +463,12 @@ func requiredScopeFor(method, path string) string {
 		return auth.ScopeRunsCreate
 	case method == http.MethodPost && strings.HasPrefix(path, "/v1/runs/") && strings.HasSuffix(path, "/compact"):
 		return auth.ScopeRunsCreate
+	// Operator steering / continuation input is a run-state MUTATION (it injects
+	// text into a live run), so it requires runs:create like cancel/resolve/
+	// compact — NOT the read scope. (exp7 I1: it previously fell through to the
+	// default empty arm, letting a read-only bearer steer a run.)
+	case method == http.MethodPost && strings.HasPrefix(path, "/v1/runs/") && strings.HasSuffix(path, "/input"):
+		return auth.ScopeRunsCreate
 	case method == http.MethodGet && strings.HasPrefix(path, "/v1/runs/"):
 		return auth.ScopeRunsRead
 	// Run / agent / session / user reads.

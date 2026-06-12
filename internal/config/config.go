@@ -3044,10 +3044,21 @@ var envVarRe = regexp.MustCompile(`\$\{([A-Za-z_][A-Za-z0-9_]*)\}`)
 func expandEnv(s string) string {
 	return envVarRe.ReplaceAllStringFunc(s, func(m string) string {
 		name := m[2 : len(m)-1]
-		if !ExpandEnvAllowed(name) {
+		if !ExpandEnvAllowed(name) || expandDenyNames[name] {
 			return m // leave verbatim — caller sees the literal ${...}
 		}
-		return os.Getenv(name)
+		v := os.Getenv(name)
+		// exp7 I6: env values are interpolated into raw YAML bytes BEFORE
+		// yaml.Unmarshal, so a value carrying a newline could inject new
+		// keys/structure into the document. A legitimate scalar is never
+		// multi-line, so refuse to expand it — leaving the literal ${name}
+		// is a visible "didn't expand" signal and cannot corrupt the
+		// document structure (vs. an error path that would change this
+		// helper's signature, which the runtime ExpandEnv path also uses).
+		if strings.ContainsAny(v, "\r\n") {
+			return m
+		}
+		return v
 	})
 }
 
@@ -3128,11 +3139,27 @@ func ExpandEnvAllowed(name string) bool {
 	case "BRAVE_API_KEY",
 		"GITHUB_TOKEN",
 		"SLACK_BOT_TOKEN",
-		"PG_DSN",
 		"REDIS_URL":
 		return true
 	}
 	return false
+}
+
+// expandDenyNames are loomcycle's OWN infrastructure / admin secrets that must
+// NEVER be interpolated into a YAML/MCP field, even though the LOOMCYCLE_ prefix
+// (or a bare third-party name) would otherwise allow it (exp7 C2). The DB DSN
+// and the operator bearer are loomcycle's own credentials — unlike a per-MCP
+// auth token (which an operator legitimately references in THAT server's own
+// header via ${LOOMCYCLE_*}), interpolating these into an outbound MCP URL/
+// header would exfiltrate loomcycle's infra creds to a third party. They reach
+// the system via the Env struct, never via YAML interpolation, so denying them
+// here breaks no legitimate use. (Deliberately a tight named set, NOT the broad
+// IsSecretEnvName suffix match, which would also block legitimate
+// ${LOOMCYCLE_*_TOKEN} MCP auth headers.)
+var expandDenyNames = map[string]bool{
+	"PG_DSN":               true,
+	"LOOMCYCLE_PG_DSN":     true,
+	"LOOMCYCLE_AUTH_TOKEN": true,
 }
 
 // secretEnvSuffixes are the env-var NAME patterns this project classifies as

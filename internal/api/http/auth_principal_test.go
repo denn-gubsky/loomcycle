@@ -198,6 +198,11 @@ func TestRequiredScopeFor(t *testing.T) {
 		// Interrupt resolve = write, list = read (were any-authenticated).
 		{"POST", "/v1/runs/r_1/interrupts/i_1/resolve", auth.ScopeRunsCreate},
 		{"GET", "/v1/runs/r_1/interrupts", auth.ScopeRunsRead},
+		// Compact + operator steering input both MUTATE run state → runs:create
+		// (exp7 I1: /input previously fell through to any-authenticated, so a
+		// read-only bearer could steer a run).
+		{"POST", "/v1/runs/r_1/compact", auth.ScopeRunsCreate},
+		{"POST", "/v1/runs/r_1/input", auth.ScopeRunsCreate},
 		{"GET", "/v1/agents/a_1", auth.ScopeRunsRead},
 		{"GET", "/v1/users/alice/agents", auth.ScopeRunsRead},
 		// Per-user channel surface uses the channel scopes (were
