@@ -21,6 +21,7 @@ type toolHandler func(ctx context.Context, env *handlerEnv, args json.RawMessage
 var handlersByName = map[string]toolHandler{
 	// Run lifecycle
 	"spawn_run":  handleSpawnRun,
+	"spawn_runs": handleSpawnRuns, // RFC Y external fan-out
 	"cancel_run": handleCancelRun,
 	"get_run":    handleGetRun,
 	"list_runs":  handleListRuns,
@@ -221,6 +222,47 @@ func handleSpawnRun(ctx context.Context, env *handlerEnv, args json.RawMessage) 
 		return toolErr("spawn_run: " + err.Error()), nil
 	}
 	return toolResultJSON(result), nil
+}
+
+// handleSpawnRuns is the RFC Y external fan-out tool: validate each child spec
+// (mirroring handleSpawnRun's per-request validation), then hand the whole batch
+// to the connector, which fans out concurrently under the admission gate and
+// joins. Per-child run failures come back inside the envelope; this returns a
+// tool error only for a malformed batch (bad child spec / over-cap / mode).
+func handleSpawnRuns(ctx context.Context, env *handlerEnv, args json.RawMessage) (*loommcp.CallToolResult, error) {
+	if env.connector == nil {
+		return nil, fmt.Errorf("spawn_runs: no connector wired")
+	}
+	var req connector.BatchSpawnRequest
+	if err := json.Unmarshal(args, &req); err != nil {
+		return toolErr("invalid spawn_runs arguments: " + err.Error()), nil
+	}
+	if len(req.Spawns) == 0 {
+		return toolErr("spawn_runs: at least one spawn is required"), nil
+	}
+	for i := range req.Spawns {
+		sp := &req.Spawns[i]
+		if sp.Agent == "" {
+			return toolErr(fmt.Sprintf("spawn_runs: spawns[%d].agent is required (batch children are fresh runs)", i)), nil
+		}
+		if errMsg, ok := connector.ValidateUserCredentialsMap(sp.UserCredentials); !ok {
+			return toolErr(fmt.Sprintf("spawn_runs: spawns[%d]: %s", i, errMsg)), nil
+		}
+		if errMsg, ok := connector.ValidateParentContext(sp.ParentContext); !ok {
+			return toolErr(fmt.Sprintf("spawn_runs: spawns[%d]: %s", i, errMsg)), nil
+		}
+		// Normalise an all-empty struct to nil so the echo omits it (matches
+		// handleSpawnRun / the HTTP handlers).
+		if sp.ParentContext.IsZero() {
+			sp.ParentContext = nil
+		}
+	}
+	res, err := env.connector.SpawnRunBatch(ctx, req)
+	if err != nil {
+		// Malformed batch (over-cap / unsupported mode) — a tool error.
+		return toolErr("spawn_runs: " + err.Error()), nil
+	}
+	return toolResultJSON(res), nil
 }
 
 // effectiveSpawnTimeoutMS resolves the spawn_run transport timeout: a

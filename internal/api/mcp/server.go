@@ -272,6 +272,7 @@ func frameRequestID(frame []byte) (int64, bool) {
 // here when they're introduced.
 var longRunningTools = map[string]bool{
 	"spawn_run":              true,
+	"spawn_runs":             true, // RFC Y fan-out blocks for the whole join
 	"subscribe_channel":      true,
 	"peek_channel":           true,
 	"stream_user_run_states": true,
