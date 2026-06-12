@@ -61,6 +61,51 @@ func TestReplayTranscript_ContextCompactionResets(t *testing.T) {
 	}
 }
 
+// TestReplayTranscript_KeepNAndKeepFirst: a marker with KeepN>0 + KeepFirst
+// rebuilds [pinned task + summary, ack, last-N verbatim] — identical to what the
+// live loop produced — and drops the summarized middle.
+func TestReplayTranscript_KeepNAndKeepFirst(t *testing.T) {
+	uinput := func(text string) store.Event {
+		return mkEvent("user_input", []loop.PromptSegment{
+			{Role: "user", Content: []loop.PromptContentBlock{{Type: "trusted-text", Text: text}}},
+		})
+	}
+	events := []store.Event{
+		uinput("the original task"),
+		mkEvent("text", providers.Event{Type: providers.EventText, Text: "middle answer 1"}),
+		mkEvent("done", providers.Event{Type: providers.EventDone, StopReason: "end_turn"}),
+		uinput("middle question 2"),
+		mkEvent("text", providers.Event{Type: providers.EventText, Text: "middle answer 2"}),
+		mkEvent("done", providers.Event{Type: providers.EventDone, StopReason: "end_turn"}),
+		mkEvent(string(providers.EventContextCompaction), providers.Event{
+			Type: providers.EventContextCompaction,
+			ContextCompaction: &providers.ContextCompactionEventInfo{
+				Summary: "SUMMARY", KeepN: 2, KeepFirst: true,
+			},
+		}),
+		uinput("fresh follow-up"),
+	}
+	msgs := replayTranscript(events)
+	// accumulated before marker: [user(task), asst(a1), user(q2), asst(a2)] (4).
+	// keepN=2 → tail = [user(q2), asst(a2)]; keepFirst → pin user(task).
+	// → [user(task+SUMMARY), asst(ack), user(q2), asst(a2)] + user(follow-up) = 5.
+	if len(msgs) != 5 {
+		t.Fatalf("got %d messages, want 5: %+v", len(msgs), msgs)
+	}
+	if !strings.Contains(firstText(msgs[0]), "the original task") || !strings.Contains(firstText(msgs[0]), "SUMMARY") {
+		t.Errorf("msg[0] should pin the task + carry the summary: %q", firstText(msgs[0]))
+	}
+	if firstText(msgs[2]) != "middle question 2" || firstText(msgs[3]) != "middle answer 2" {
+		t.Errorf("last-2 tail not kept verbatim: %q / %q", firstText(msgs[2]), firstText(msgs[3]))
+	}
+	if firstText(msgs[4]) != "fresh follow-up" {
+		t.Errorf("post-marker turn not replayed: %q", firstText(msgs[4]))
+	}
+	if strings.Contains(firstText(msgs[1]), "middle answer 1") {
+		t.Error("summarized middle (answer 1) should be gone")
+	}
+}
+
 func compactFixture(t *testing.T) (*Server, *scriptedProvider) {
 	t.Helper()
 	cfg := &config.Config{
