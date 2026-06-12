@@ -922,10 +922,12 @@ func maybeAutoCompact(ctx context.Context, opts RunOptions, messages []providers
 		pinned = messageText(messages[0])
 	}
 	out := CompactionMessages(pinned, strings.TrimSpace(summary), messages[cut:])
+	after := estimateMessageTokens(out)
 	emit(providers.Event{Type: providers.EventContextCompaction,
 		ContextCompaction: &providers.ContextCompactionEventInfo{
 			Summary: strings.TrimSpace(summary), KeepN: len(messages) - cut, KeepFirst: firstIdx > 0,
-			BeforeTokens: before, AfterTokens: estimateMessageTokens(out), Trigger: trigger}})
+			BeforeTokens: before, AfterTokens: after, Trigger: trigger}})
+	lcotel.RecordCompactionCtx(ctx, trigger, before, after) // per-run-shape metric via OTEL span event
 	return out, true
 }
 
