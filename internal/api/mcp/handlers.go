@@ -20,10 +20,11 @@ type toolHandler func(ctx context.Context, env *handlerEnv, args json.RawMessage
 
 var handlersByName = map[string]toolHandler{
 	// Run lifecycle
-	"spawn_run":  handleSpawnRun,
-	"cancel_run": handleCancelRun,
-	"get_run":    handleGetRun,
-	"list_runs":  handleListRuns,
+	"spawn_run":   handleSpawnRun,
+	"cancel_run":  handleCancelRun,
+	"get_run":     handleGetRun,
+	"compact_run": handleCompactRun,
+	"list_runs":   handleListRuns,
 
 	// Agent management
 	"register_agent":   handleRegisterAgent,
@@ -350,6 +351,37 @@ func handleGetRun(ctx context.Context, env *handlerEnv, args json.RawMessage) (*
 	res, err := env.connector.GetRun(ctx, p.AgentID)
 	if err != nil {
 		return toolErr("get_run: " + err.Error()), nil
+	}
+	return toolResultJSON(res), nil
+}
+
+// handleCompactRun resolves the caller's agent_id to its run_id (via GetRun,
+// like cancel_run/get_run's agent-keyed convention) and compacts that run. The
+// operation itself (parked-boundary gate, summarize, live-push vs marker) lives
+// in Connector.CompactRun, shared with POST /v1/runs/{run_id}/compact.
+func handleCompactRun(ctx context.Context, env *handlerEnv, args json.RawMessage) (*loommcp.CallToolResult, error) {
+	var p struct {
+		AgentID string `json:"agent_id"`
+		Reason  string `json:"reason"`
+	}
+	if err := json.Unmarshal(args, &p); err != nil {
+		return toolErr("invalid compact_run arguments: " + err.Error()), nil
+	}
+	if p.AgentID == "" {
+		return toolErr("compact_run: agent_id is required"), nil
+	}
+	run, err := env.connector.GetRun(ctx, p.AgentID)
+	if err != nil {
+		return toolErr("compact_run: " + err.Error()), nil
+	}
+	if run.RunID == "" {
+		return toolErr("compact_run: no run_id for agent_id " + p.AgentID), nil
+	}
+	res, err := env.connector.CompactRun(ctx, run.RunID)
+	if err != nil {
+		// Includes the parked-boundary "run_busy" rejection — surfaced as a tool
+		// error so the orchestrator can retry when the run parks.
+		return toolErr("compact_run: " + err.Error()), nil
 	}
 	return toolResultJSON(res), nil
 }

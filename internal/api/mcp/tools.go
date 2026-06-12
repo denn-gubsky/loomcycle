@@ -43,7 +43,8 @@ func toolDescriptors() []loommcp.ToolDescriptor {
 					"allowed_hosts":    {"type": "array", "items": {"type": "string"}, "description": "OMIT for no narrowing (operator's static allowlist applies). Pass empty array [] to DENY ALL outbound HTTP. Pass non-empty array to intersect with operator's list."},
 					"web_search_filter": {"type": "string", "enum": ["drop", "keep"]},
 					"parent_context":   {"type": "object", "description": "v0.12.x opaque caller-tracking lineage carried verbatim, inherited by every sub-agent, and echoed on the per-agent report surfaces so a consumer can attribute a child sub-agent's usage to the user-initiated request.", "properties": {"root_agent_run_id": {"type": "string"}, "function_key": {"type": "string"}, "tier_at_run": {"type": "string"}}},
-					"timeout_ms":       {"type": "integer", "minimum": 1, "description": "Optional transport timeout (RFC P): max milliseconds this spawn_run call may block before loomcycle cancels the run and returns status:\"timeout\" instead of hanging. Narrows the operator default (LOOMCYCLE_MCP_SPAWN_RUN_TIMEOUT_MS) — it can shorten but not exceed it. Omit to block until the run finishes on its own run_timeout_seconds budget. This is a transport bound, NOT the run's wall-clock budget."}
+					"timeout_ms":       {"type": "integer", "minimum": 1, "description": "Optional transport timeout (RFC P): max milliseconds this spawn_run call may block before loomcycle cancels the run and returns status:\"timeout\" instead of hanging. Narrows the operator default (LOOMCYCLE_MCP_SPAWN_RUN_TIMEOUT_MS) — it can shorten but not exceed it. Omit to block until the run finishes on its own run_timeout_seconds budget. This is a transport bound, NOT the run's wall-clock budget."},
+					"compaction":       {"type": "object", "description": "Optional per-run context-compaction override, merged per-field over the agent's own block. Trigger compaction mid-run with the compact_run tool.", "properties": {"enabled": {"type": "boolean", "description": "Turn AUTO-compaction on for this run."}, "target_percentage": {"type": "integer", "minimum": 10, "maximum": 50, "description": "Summary aims for ~N% of the compacted span (default 10)."}, "keep_last_n": {"type": "integer", "minimum": 0, "description": "Keep the last N messages verbatim (default 4; 0 = summarize all)."}, "keep_first": {"type": "boolean", "description": "Pin the first user message (the task) verbatim (default true)."}, "autocompact_at_pct": {"type": "integer", "minimum": 50, "maximum": 95, "description": "Auto-compact when used/window ≥ N% (default 80; only when enabled + the provider reports a window)."}, "model": {"type": "string", "description": "Optional cheaper/faster summary model served by the same provider."}}}
 				},
 				"anyOf": [
 					{"required": ["agent"]},
@@ -70,6 +71,18 @@ func toolDescriptors() []loommcp.ToolDescriptor {
 				"type": "object",
 				"required": ["agent_id"],
 				"properties": {"agent_id": {"type": "string"}}
+			}`),
+		},
+		{
+			Name:        "compact_run",
+			Description: "Compact a run's conversation: summarize the history to free context and continue from the summary. Targets the run by agent_id (resolved to its run_id). A live run must be PARKED (awaiting input) — a mid-turn run is refused. Returns {compacted, before_tokens, after_tokens, applied}, where applied is \"live\" (pushed to the running loop), \"marker\" (persisted for a terminal run's next continuation), or \"noop\" (too short to compact). Honors the agent's compaction settings (keep_last_n / keep_first / target_percentage / summary model).",
+			InputSchema: rawJSON(`{
+				"type": "object",
+				"required": ["agent_id"],
+				"properties": {
+					"agent_id": {"type": "string"},
+					"reason":   {"type": "string", "description": "Optional free-text note (audit only)."}
+				}
 			}`),
 		},
 		{

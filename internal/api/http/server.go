@@ -14,6 +14,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -5012,16 +5013,24 @@ func (s *Server) handleRunInput(w http.ResponseWriter, r *http.Request) {
 // minCompactMessages: a conversation shorter than this isn't worth a model call.
 const minCompactMessages = 4
 
-// compactResponse is the JSON body of POST /v1/runs/{run_id}/compact.
-type compactResponse struct {
-	RunID        string `json:"run_id"`
-	Compacted    bool   `json:"compacted"`
-	BeforeTokens int    `json:"before_tokens"`
-	AfterTokens  int    `json:"after_tokens"`
-	// Applied: "live" (pushed to the running loop), "marker" (persisted for a
-	// terminal run's next continuation), or "noop" (too short to compact).
-	Applied string `json:"applied"`
+// compactResponse is the JSON body of POST /v1/runs/{run_id}/compact — an alias
+// for the canonical connector.CompactResult so the HTTP wire and the connector
+// surface (the MCP compact_run tool, gRPC) share exactly one shape.
+type compactResponse = connector.CompactResult
+
+// compactErr carries the HTTP status + machine code + retry hint a CompactRun
+// failure should surface, so the operation can be shared between the HTTP
+// handler (which maps these onto the response) and the connector tools (MCP /
+// gRPC), which surface only the message as a tool error. A zero status is
+// treated as 500.
+type compactErr struct {
+	status     int
+	code       string // non-empty → writeJSONError(status, code, msg); else plain http.Error
+	msg        string
+	retryAfter int // seconds; >0 → set Retry-After (queue-full back-pressure)
 }
+
+func (e *compactErr) Error() string { return e.msg }
 
 // handleCompactRun serves POST /v1/runs/{run_id}/compact — summarize the run's
 // conversation to free context and continue from the summary (interactive
@@ -5032,26 +5041,65 @@ type compactResponse struct {
 // marker) or, for a terminal run with no live loop, persists the marker directly
 // so the next continuation rebuilds compacted. Cross-tenant gets an opaque 404.
 func (s *Server) handleCompactRun(w http.ResponseWriter, r *http.Request) {
-	if s.store == nil {
-		http.Error(w, "compaction requires persistence", http.StatusServiceUnavailable)
-		return
-	}
 	runID := r.PathValue("run_id")
 	if !validIdent(runID) {
 		http.Error(w, "run_id must match [A-Za-z0-9_-]{1,128}", http.StatusBadRequest)
 		return
 	}
-	run, err := s.store.GetRun(r.Context(), runID)
+	// Preserve the webui-vs-api source attribution on the HTTP path (a cookie'd
+	// /run terminal vs a programmatic caller); the connector CompactRun uses API.
+	res, err := s.compactRunWithSource(r.Context(), runID, compactSource(r))
 	if err != nil {
-		http.Error(w, "no run for that run_id", http.StatusNotFound)
+		var ce *compactErr
+		if errors.As(err, &ce) {
+			status := ce.status
+			if status == 0 {
+				status = http.StatusInternalServerError
+			}
+			if ce.retryAfter > 0 {
+				w.Header().Set("Retry-After", strconv.Itoa(ce.retryAfter))
+			}
+			if ce.code != "" {
+				writeJSONError(w, status, ce.code, ce.msg)
+			} else {
+				http.Error(w, ce.msg, status)
+			}
+			return
+		}
+		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
+	}
+	writeJSON(w, http.StatusOK, res)
+}
+
+// CompactRun is the connector-surface compaction op (the MCP compact_run tool,
+// gRPC, future CLI) — the same operation as POST /v1/runs/{run_id}/compact,
+// attributed to the API source. A run-state mutation, so transports gate it on
+// runs:create. Run lookup, tenant-ownership, the parked-boundary gate, and both
+// apply paths (live steer push vs terminal marker) are shared with the HTTP
+// handler via compactRunWithSource.
+func (s *Server) CompactRun(ctx context.Context, runID string) (connector.CompactResult, error) {
+	return s.compactRunWithSource(ctx, runID, store.InterruptResolvedByAPI)
+}
+
+// compactRunWithSource is the shared compaction core. It returns a *compactErr
+// on every failure path (carrying the status/code the HTTP handler maps) and a
+// CompactResult on success — including the Compacted:false "noop" outcome for a
+// conversation too short to summarize. `source` attributes the steer-push (api
+// vs webui) for audit.
+func (s *Server) compactRunWithSource(ctx context.Context, runID, source string) (connector.CompactResult, error) {
+	if s.store == nil {
+		return connector.CompactResult{}, &compactErr{status: http.StatusServiceUnavailable, msg: "compaction requires persistence"}
+	}
+	run, err := s.store.GetRun(ctx, runID)
+	if err != nil {
+		return connector.CompactResult{}, &compactErr{status: http.StatusNotFound, msg: "no run for that run_id"}
 	}
 	// Tenant-ownership: opaque 404 cross-tenant (run_ids aren't secrets).
 	if run.SessionID != "" {
-		if sess, serr := s.store.GetSession(r.Context(), run.SessionID); serr == nil {
-			if !sessionOwnershipOK(r.Context(), sess) {
-				http.Error(w, "no run for that run_id", http.StatusNotFound)
-				return
+		if sess, serr := s.store.GetSession(ctx, run.SessionID); serr == nil {
+			if !sessionOwnershipOK(ctx, sess) {
+				return connector.CompactResult{}, &compactErr{status: http.StatusNotFound, msg: "no run for that run_id"}
 			}
 		}
 	}
@@ -5062,17 +5110,15 @@ func (s *Server) handleCompactRun(w http.ResponseWriter, r *http.Request) {
 	// parked; refuse mid-turn so compaction applies at the boundary the agent is
 	// already at rather than being deferred into the current turn.
 	if live && !terminal && !s.steerReg.IsParked(runID) {
-		writeJSONError(w, http.StatusConflict, "run_busy",
-			"the agent is mid-turn; compact when it's parked waiting for your input")
-		return
+		return connector.CompactResult{}, &compactErr{status: http.StatusConflict, code: "run_busy",
+			msg: "the agent is mid-turn; compact when it's parked waiting for your input"}
 	}
 
 	// Rebuild the conversation from this run's transcript (== the parked loop's
 	// in-memory history — a parked run has persisted everything up to the park).
-	events, terr := s.store.GetTranscript(r.Context(), run.SessionID)
+	events, terr := s.store.GetTranscript(ctx, run.SessionID)
 	if terr != nil {
-		http.Error(w, "read transcript: "+terr.Error(), http.StatusInternalServerError)
-		return
+		return connector.CompactResult{}, &compactErr{status: http.StatusInternalServerError, msg: "read transcript: " + terr.Error()}
 	}
 	runEvents := make([]store.Event, 0, len(events))
 	for _, e := range events {
@@ -5083,26 +5129,22 @@ func (s *Server) handleCompactRun(w http.ResponseWriter, r *http.Request) {
 	msgs := replayTranscript(runEvents)
 	before := estimateMessageTokens(msgs)
 	if len(msgs) < minCompactMessages {
-		writeJSON(w, http.StatusOK, compactResponse{RunID: runID, Compacted: false, BeforeTokens: before, AfterTokens: before, Applied: "noop"})
-		return
+		return connector.CompactResult{RunID: runID, Compacted: false, BeforeTokens: before, AfterTokens: before, Applied: "noop"}, nil
 	}
 
 	// Resolve provider/model + summarize (one model call) — same chain resume
 	// uses; no per-run secrets needed (the operator's provider key serves it).
-	agentDef, ok := s.lookupAgent(r.Context(), run.TenantID, run.Agent)
+	agentDef, ok := s.lookupAgent(ctx, run.TenantID, run.Agent)
 	if !ok {
-		writeJSONError(w, http.StatusConflict, "agent_gone", "the run's agent no longer exists")
-		return
+		return connector.CompactResult{}, &compactErr{status: http.StatusConflict, code: "agent_gone", msg: "the run's agent no longer exists"}
 	}
 	providerID, model, _, rerr := s.resolveAgentDef(agentDef, run.Agent, run.UserTier)
 	if rerr != nil {
-		http.Error(w, "resolve provider/model: "+rerr.Error(), http.StatusInternalServerError)
-		return
+		return connector.CompactResult{}, &compactErr{status: http.StatusInternalServerError, msg: "resolve provider/model: " + rerr.Error()}
 	}
 	provider, perr := s.providers.Get(providerID)
 	if perr != nil {
-		http.Error(w, "provider unavailable: "+perr.Error(), http.StatusServiceUnavailable)
-		return
+		return connector.CompactResult{}, &compactErr{status: http.StatusServiceUnavailable, msg: "provider unavailable: " + perr.Error()}
 	}
 
 	// Resolve the run's compaction keep-N / keep-first / target / summary-model
@@ -5127,18 +5169,15 @@ func (s *Server) handleCompactRun(w http.ResponseWriter, r *http.Request) {
 	// CompactionSplit (shared with the loop) picks what to summarize vs keep.
 	firstIdx, cut, splitOK := loop.CompactionSplit(msgs, keepLastN, keepFirst)
 	if !splitOK {
-		writeJSON(w, http.StatusOK, compactResponse{RunID: runID, Compacted: false, BeforeTokens: before, AfterTokens: before, Applied: "noop"})
-		return
+		return connector.CompactResult{RunID: runID, Compacted: false, BeforeTokens: before, AfterTokens: before, Applied: "noop"}, nil
 	}
-	summary, serr := loop.Summarize(r.Context(), provider, summaryModel, msgs[firstIdx:cut], targetPct)
+	summary, serr := loop.Summarize(ctx, provider, summaryModel, msgs[firstIdx:cut], targetPct)
 	if serr != nil {
-		http.Error(w, "summarize: "+serr.Error(), http.StatusBadGateway)
-		return
+		return connector.CompactResult{}, &compactErr{status: http.StatusBadGateway, msg: "summarize: " + serr.Error()}
 	}
 	summary = strings.TrimSpace(summary)
 	if summary == "" {
-		http.Error(w, "summarization produced no text", http.StatusBadGateway)
-		return
+		return connector.CompactResult{}, &compactErr{status: http.StatusBadGateway, msg: "summarization produced no text"}
 	}
 	keepN := len(msgs) - cut
 	pinned := ""
@@ -5157,20 +5196,17 @@ func (s *Server) handleCompactRun(w http.ResponseWriter, r *http.Request) {
 	// for the next continuation.
 	applied := "marker"
 	if !terminal && s.steerReg != nil {
-		_, pushErr := s.steerReg.Push(r.Context(), runID, steer.Message{
+		_, pushErr := s.steerReg.Push(ctx, runID, steer.Message{
 			Kind: steer.KindCompact, Text: summary, KeepN: keepN, KeepFirst: firstIdx > 0,
-			Source: compactSource(r), EnqueuedAt: time.Now(),
+			Source: source, EnqueuedAt: time.Now(),
 		})
 		switch {
 		case errors.Is(pushErr, steer.ErrQueueFull):
-			w.Header().Set("Retry-After", "1")
-			http.Error(w, "run input queue full; retry shortly", http.StatusTooManyRequests)
-			return
+			return connector.CompactResult{}, &compactErr{status: http.StatusTooManyRequests, msg: "run input queue full; retry shortly", retryAfter: 1}
 		case errors.Is(pushErr, steer.ErrRunNotFound):
 			// Raced to terminal between GetRun and Push → fall through to marker.
 		case pushErr != nil:
-			http.Error(w, pushErr.Error(), http.StatusInternalServerError)
-			return
+			return connector.CompactResult{}, &compactErr{status: http.StatusInternalServerError, msg: pushErr.Error()}
 		default:
 			applied = "live"
 		}
@@ -5184,13 +5220,12 @@ func (s *Server) handleCompactRun(w http.ResponseWriter, r *http.Request) {
 			},
 		})
 		if merr == nil {
-			if aerr := s.store.AppendEvent(r.Context(), runID, string(providers.EventContextCompaction), payload); aerr != nil {
-				http.Error(w, "persist compaction marker: "+aerr.Error(), http.StatusInternalServerError)
-				return
+			if aerr := s.store.AppendEvent(ctx, runID, string(providers.EventContextCompaction), payload); aerr != nil {
+				return connector.CompactResult{}, &compactErr{status: http.StatusInternalServerError, msg: "persist compaction marker: " + aerr.Error()}
 			}
 		}
 	}
-	writeJSON(w, http.StatusOK, compactResponse{RunID: runID, Compacted: true, BeforeTokens: before, AfterTokens: after, Applied: applied})
+	return connector.CompactResult{RunID: runID, Compacted: true, BeforeTokens: before, AfterTokens: after, Applied: applied}, nil
 }
 
 // compactSource mirrors handleRunInput's api-vs-webui source resolution.

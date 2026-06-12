@@ -55,6 +55,9 @@ func (m *httpMockConnector) CancelRun(_ context.Context, _, _ string) (connector
 func (m *httpMockConnector) GetRun(context.Context, string) (connector.Run, error) {
 	return connector.Run{}, nil
 }
+func (m *httpMockConnector) CompactRun(context.Context, string) (connector.CompactResult, error) {
+	return connector.CompactResult{}, nil
+}
 func (m *httpMockConnector) ListRuns(context.Context, connector.ListRunsFilter) ([]connector.Run, error) {
 	return nil, nil
 }

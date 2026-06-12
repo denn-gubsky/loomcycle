@@ -94,6 +94,13 @@ type SpawnRunRequest struct {
 	// input.metadata; an LLM agent receives it as a trusted prompt block. Not
 	// a secret — credentials use UserCredentials. Nil = none (back-compat).
 	Metadata map[string]any `json:"metadata,omitempty"`
+
+	// Compaction is an optional per-RUN context-compaction override, merged PER
+	// FIELD over the agent's own compaction block (this wins; unset fields
+	// inherit). nil = inherit the agent's entirely. Mirrors the HTTP /v1/runs
+	// `compaction` field so a gRPC / LoomCycle-MCP spawn_run / fan-out child
+	// reaches the same per-run knob. Carried verbatim to runner.RunInput.
+	Compaction *config.Compaction `json:"compaction,omitempty"`
 }
 
 // SpawnRunResult is the final outcome of a SpawnRun call (returned
@@ -119,6 +126,18 @@ type CancelRunResult struct {
 	Cancelled    bool `json:"cancelled"`
 	CascadeCount int  `json:"cascade_count"` // sub-runs also cancelled
 	AlreadyEnded bool `json:"already_ended"` // run had already completed/failed
+}
+
+// CompactResult is the outcome of CompactRun — summarize a run's conversation
+// to free context. Mirrors POST /v1/runs/{run_id}/compact's response body.
+type CompactResult struct {
+	RunID        string `json:"run_id"`
+	Compacted    bool   `json:"compacted"`
+	BeforeTokens int    `json:"before_tokens"`
+	AfterTokens  int    `json:"after_tokens"`
+	// Applied: "live" (pushed to the running loop), "marker" (persisted for a
+	// terminal run's next continuation), or "noop" (too short to compact).
+	Applied string `json:"applied"`
 }
 
 // Run is the status snapshot returned by GetRun / ListRuns. Distinct
