@@ -17,10 +17,11 @@ type Refresher struct {
 	httpClient ExchangeOptions
 	logf       func(string, ...any) // nil = log.Printf
 
-	mu       sync.Mutex
-	stopOnce sync.Once
-	stopCh   chan struct{}
-	doneCh   chan struct{}
+	mu        sync.Mutex
+	startOnce sync.Once
+	stopOnce  sync.Once
+	stopCh    chan struct{}
+	doneCh    chan struct{}
 
 	// Token is the in-memory cache the driver reads on every request.
 	// kept in sync with the persisted file by the refresh goroutine.
@@ -52,17 +53,20 @@ func NewRefresher(store *TokenStore, opts ExchangeOptions, logf func(string, ...
 	return r
 }
 
-// Start launches the background refresh goroutine. Must be called
-// EXACTLY ONCE per Refresher lifetime; subsequent Start() calls panic
-// on the deferred close(doneCh) once the first goroutine exits. Stop()
-// must also be called exactly once, AFTER Start().
+// Start launches the background refresh goroutine. Idempotent: a second
+// Start() is a no-op (the first ctx wins) — exp7 I2 hardening. Previously a
+// double Start spawned two loops, each with `defer close(doneCh)`, so the
+// second goroutine's exit panicked on close-of-closed-channel. Stop() must
+// be called exactly once, AFTER Start().
 //
 // Used by the v0.11.9 provider registration in cmd/loomcycle/main.go
 // (one Start at boot, one Stop at shutdown). Callers needing
 // hot-reload semantics should construct a fresh Refresher rather than
 // re-starting an existing one.
 func (r *Refresher) Start(ctx context.Context) {
-	go r.loop(ctx)
+	r.startOnce.Do(func() {
+		go r.loop(ctx)
+	})
 }
 
 // Stop signals the refresh goroutine to exit + waits for it to finish.
