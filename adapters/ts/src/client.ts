@@ -96,8 +96,13 @@ import type {
   ResolveInterruptOptions,
   ResumeResult,
   ResolverMatrix,
+  CompactRunResult,
+  CompactionOptions,
+  RunBatchOptions,
+  RunBatchResult,
   RunOptions,
   RunStateStreamItem,
+  SamplingOptions,
   RuntimeStateResponse,
   SnapshotCreateResponse,
   SnapshotDescriptor,
@@ -110,6 +115,63 @@ import type {
   TranscriptResponse,
   WhoamiResponse,
 } from "./types.js";
+
+/** samplingToWire maps the camelCase SamplingOptions to the snake_case wire
+ *  object, omitting unset fields so they inherit the agent's value. */
+function samplingToWire(s: SamplingOptions): Record<string, unknown> {
+  const w: Record<string, unknown> = {};
+  if (s.temperature !== undefined) w.temperature = s.temperature;
+  if (s.topP !== undefined) w.top_p = s.topP;
+  if (s.topK !== undefined) w.top_k = s.topK;
+  if (s.frequencyPenalty !== undefined) w.frequency_penalty = s.frequencyPenalty;
+  if (s.presencePenalty !== undefined) w.presence_penalty = s.presencePenalty;
+  if (s.seed !== undefined) w.seed = s.seed;
+  if (s.stop !== undefined) w.stop = s.stop;
+  return w;
+}
+
+/** compactionToWire maps the camelCase CompactionOptions to the snake_case
+ *  wire object, omitting unset fields so they inherit the agent's value. */
+function compactionToWire(c: CompactionOptions): Record<string, unknown> {
+  const w: Record<string, unknown> = {};
+  if (c.enabled !== undefined) w.enabled = c.enabled;
+  if (c.targetPercentage !== undefined) w.target_percentage = c.targetPercentage;
+  if (c.keepLastN !== undefined) w.keep_last_n = c.keepLastN;
+  if (c.keepFirst !== undefined) w.keep_first = c.keepFirst;
+  if (c.autocompactAtPct !== undefined) w.autocompact_at_pct = c.autocompactAtPct;
+  if (c.model !== undefined) w.model = c.model;
+  return w;
+}
+
+/** runBody builds the snake_case /v1/runs request body from RunOptions,
+ *  omitting unset fields (preserves the server's nil semantics — notably
+ *  `allowedHosts: null` is treated as "omit", not deny-all). Shared by
+ *  runStreaming and each spawn of spawnRunBatch. `signal`/`debug` are client
+ *  concerns and never sent. */
+function runBody(opts: RunOptions): Record<string, unknown> {
+  const body: Record<string, unknown> = {
+    agent: opts.agent,
+    segments: opts.segments,
+  };
+  if (opts.allowedTools !== undefined) body.allowed_tools = opts.allowedTools;
+  if (opts.allowedHosts !== undefined && opts.allowedHosts !== null) {
+    body.allowed_hosts = opts.allowedHosts;
+  }
+  if (opts.webSearchFilter !== undefined) body.web_search_filter = opts.webSearchFilter;
+  if (opts.sessionId !== undefined) body.session_id = opts.sessionId;
+  if (opts.tenantId !== undefined) body.tenant_id = opts.tenantId;
+  if (opts.userId !== undefined) body.user_id = opts.userId;
+  if (opts.agentId !== undefined) body.agent_id = opts.agentId;
+  if (opts.userTier !== undefined) body.user_tier = opts.userTier;
+  if (opts.userBearer !== undefined) body.user_bearer = opts.userBearer;
+  if (opts.userCredentials !== undefined) body.user_credentials = opts.userCredentials;
+  if (opts.parentContext !== undefined) body.parent_context = opts.parentContext;
+  if (opts.metadata !== undefined) body.metadata = opts.metadata;
+  if (opts.runTimeoutSeconds !== undefined) body.run_timeout_seconds = opts.runTimeoutSeconds;
+  if (opts.sampling !== undefined) body.sampling = samplingToWire(opts.sampling);
+  if (opts.compaction !== undefined) body.compaction = compactionToWire(opts.compaction);
+  return body;
+}
 
 export class LoomcycleClient {
   private ctx: _FetchContext;
@@ -146,32 +208,7 @@ export class LoomcycleClient {
    * events around the real frames. Silent (default) when omitted.
    */
   async *runStreaming(opts: RunOptions): AsyncIterable<AgentEvent> {
-    // Build the body conditionally so omitted fields stay off the wire.
-    // The pointer-vs-empty distinction on allowed_hosts is preserved by
-    // treating `null` as "omit" — same as the server's nil semantics —
-    // so callers threading a possibly-unset slice don't accidentally
-    // send `allowed_hosts: null` (which JSON-decodes to a deny-all on
-    // some implementations).
-    const body: Record<string, unknown> = {
-      agent: opts.agent,
-      segments: opts.segments,
-    };
-    if (opts.allowedTools !== undefined) body.allowed_tools = opts.allowedTools;
-    if (opts.allowedHosts !== undefined && opts.allowedHosts !== null) {
-      body.allowed_hosts = opts.allowedHosts;
-    }
-    if (opts.webSearchFilter !== undefined) body.web_search_filter = opts.webSearchFilter;
-    if (opts.sessionId !== undefined) body.session_id = opts.sessionId;
-    if (opts.tenantId !== undefined) body.tenant_id = opts.tenantId;
-    if (opts.userId !== undefined) body.user_id = opts.userId;
-    if (opts.agentId !== undefined) body.agent_id = opts.agentId;
-    if (opts.userTier !== undefined) body.user_tier = opts.userTier;
-    if (opts.userBearer !== undefined) body.user_bearer = opts.userBearer;
-    if (opts.userCredentials !== undefined) body.user_credentials = opts.userCredentials;
-    if (opts.parentContext !== undefined) body.parent_context = opts.parentContext;
-    if (opts.metadata !== undefined) body.metadata = opts.metadata;
-    if (opts.runTimeoutSeconds !== undefined) body.run_timeout_seconds = opts.runTimeoutSeconds;
-    yield* this.streamSSE("/v1/runs", body, opts.signal, opts.debug);
+    yield* this.streamSSE("/v1/runs", runBody(opts), opts.signal, opts.debug);
   }
 
   /**
@@ -207,11 +244,60 @@ export class LoomcycleClient {
     if (opts.parentContext !== undefined) body.parent_context = opts.parentContext;
     if (opts.metadata !== undefined) body.metadata = opts.metadata;
     if (opts.runTimeoutSeconds !== undefined) body.run_timeout_seconds = opts.runTimeoutSeconds;
+    if (opts.sampling !== undefined) body.sampling = samplingToWire(opts.sampling);
+    if (opts.compaction !== undefined) body.compaction = compactionToWire(opts.compaction);
     yield* this.streamSSE(
       `/v1/sessions/${encodeURIComponent(opts.sessionId)}/messages`,
       body,
       opts.signal,
       opts.debug,
+    );
+  }
+
+  /**
+   * Spawn N fresh runs concurrently in ONE call (RFC Y external fan-out) and
+   * resolve once they ALL settle, returning the combined index-aligned
+   * envelope. A per-child failure is captured in that child's result
+   * (`status` + `error`) and never rejects the batch. Prefer this over firing
+   * N parallel {@link LoomcycleClient.runStreaming} calls.
+   *
+   * Each spawn is a fresh run (its `sessionId` is ignored). Capped at 32 —
+   * an over-cap batch rejects with InvalidArgumentError. `mode: "detach"`
+   * (async handles) is reserved for a future release and rejected today.
+   *
+   * Blocking: resolves only when the slowest child finishes (or `timeoutMs`
+   * elapses). Mirrors POST /v1/runs:batch.
+   */
+  async spawnRunBatch(opts: RunBatchOptions): Promise<RunBatchResult> {
+    const body: Record<string, unknown> = {
+      spawns: opts.spawns.map(runBody),
+    };
+    if (opts.mode !== undefined) body.mode = opts.mode;
+    if (opts.timeoutMs !== undefined) body.timeout_ms = opts.timeoutMs;
+    return postJSON<RunBatchResult>(this.ctx, "/v1/runs:batch", body, {
+      signal: opts.signal,
+    });
+  }
+
+  /**
+   * Compact a run's conversation: summarize the history to free context and
+   * continue from the summary. Targets the run by `runId`. A live run must be
+   * PARKED (awaiting input) — a mid-turn run rejects (RunBusyError / 409).
+   * Returns `{ compacted, before_tokens, after_tokens, applied }`, where
+   * `applied` is "live", "marker", or "noop". Mirrors
+   * POST /v1/runs/{run_id}/compact.
+   */
+  async compactRun(
+    runId: string,
+    opts?: { reason?: string; signal?: AbortSignal },
+  ): Promise<CompactRunResult> {
+    const body: Record<string, unknown> = {};
+    if (opts?.reason !== undefined) body.reason = opts.reason;
+    return postJSON<CompactRunResult>(
+      this.ctx,
+      `/v1/runs/${encodeURIComponent(runId)}/compact`,
+      body,
+      opts,
     );
   }
 

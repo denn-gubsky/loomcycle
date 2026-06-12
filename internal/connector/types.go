@@ -95,6 +95,13 @@ type SpawnRunRequest struct {
 	// a secret — credentials use UserCredentials. Nil = none (back-compat).
 	Metadata map[string]any `json:"metadata,omitempty"`
 
+	// Sampling is an optional per-RUN LLM sampling override (temperature,
+	// top_p, …), merged PER FIELD over the agent's own sampling (this wins;
+	// unset fields inherit). nil = inherit entirely. Mirrors the HTTP /v1/runs
+	// `sampling` field so a gRPC / LoomCycle-MCP spawn_run / fan-out child
+	// reaches the same per-run knob. Carried verbatim to runner.RunInput.
+	Sampling *config.Sampling `json:"sampling,omitempty"`
+
 	// Compaction is an optional per-RUN context-compaction override, merged PER
 	// FIELD over the agent's own compaction block (this wins; unset fields
 	// inherit). nil = inherit the agent's entirely. Mirrors the HTTP /v1/runs

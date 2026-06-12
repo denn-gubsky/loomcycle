@@ -208,6 +208,15 @@ export interface RunOptions {
    *  its budget spans that wait, so the CPU-oriented default is often too low.
    *  Ignored by LLM agents. 0 / omitted = inherit. */
   runTimeoutSeconds?: number;
+  /** Per-run LLM sampling override (v0.28.0), merged PER FIELD over the
+   *  agent's own sampling (this wins; unset fields inherit). Omitted =
+   *  inherit entirely. */
+  sampling?: SamplingOptions;
+  /** Per-run context-compaction override (v0.32.0), merged PER FIELD over
+   *  the agent's own compaction block (this wins; unset fields inherit).
+   *  Omitted = inherit entirely. Trigger compaction mid-run with
+   *  {@link LoomcycleClient.compactRun}. */
+  compaction?: CompactionOptions;
   /** Opt-in observability: when true, the iterator emits client-
    *  synthesized `{ type: "_meta", meta_subtype: "stream_open" | "stream_close" }`
    *  events around the real event stream. `meta_reason` carries the
@@ -217,6 +226,40 @@ export interface RunOptions {
    *  closed" log entries without inferring from event timing. */
   debug?: boolean;
   signal?: AbortSignal;
+}
+
+/** Per-run LLM sampling override (v0.28.0). Mirrors config.Sampling — every
+ *  field optional; an unset field inherits the agent's value. An explicit
+ *  `temperature: 0` is deterministic, NOT "unset". Each provider maps what it
+ *  supports (e.g. topK is Anthropic/Gemini/Ollama; frequencyPenalty/
+ *  presencePenalty/seed are OpenAI/DeepSeek/Ollama). */
+export interface SamplingOptions {
+  temperature?: number;
+  topP?: number;
+  topK?: number;
+  frequencyPenalty?: number;
+  presencePenalty?: number;
+  seed?: number;
+  stop?: string[];
+}
+
+/** Per-run context-compaction override (v0.32.0). Mirrors config.Compaction —
+ *  every field optional; an unset field inherits the agent's value. */
+export interface CompactionOptions {
+  /** Turn AUTO-compaction on for this run (default off). */
+  enabled?: boolean;
+  /** Summary aims for ~N% of the compacted span's length (10..50; default 10). */
+  targetPercentage?: number;
+  /** Keep the last N messages verbatim (default 4; 0 = summarize all). */
+  keepLastN?: number;
+  /** Pin the first user message (the task) verbatim (default true). */
+  keepFirst?: boolean;
+  /** Auto-compact when used/window ≥ N% (50..95; default 80; only when
+   *  enabled + the provider reports a context window). */
+  autocompactAtPct?: number;
+  /** Run the summary call on a cheaper/faster model served by the SAME
+   *  provider. Omitted = the run's model. */
+  model?: string;
 }
 
 /** Opaque caller-tracking lineage (v0.12.x) attached to a run and
@@ -276,6 +319,10 @@ export interface ContinueOptions {
   /** Optional ad-hoc per-run code-js wall-clock budget (seconds) for the
    *  continuation's new run — see {@link RunOptions.runTimeoutSeconds}. */
   runTimeoutSeconds?: number;
+  /** Per-continuation LLM sampling override — see {@link RunOptions.sampling}. */
+  sampling?: SamplingOptions;
+  /** Per-continuation context-compaction override — see {@link RunOptions.compaction}. */
+  compaction?: CompactionOptions;
   /** Opt-in observability: see {@link RunOptions.debug}. Same shape. */
   debug?: boolean;
   signal?: AbortSignal;
@@ -348,6 +395,57 @@ export interface CancelAgentResult {
    *  via parent_agent_id cascade). 0 when the agent had already
    *  terminated; the call still succeeds (idempotent contract). */
   cancelledCount: number;
+}
+
+// ---- Fan-out (RFC Y) + compaction ----
+
+/** Options for {@link LoomcycleClient.spawnRunBatch} — the RFC Y external
+ *  fan-out. Each spawn is a fresh-run {@link RunOptions} (its `sessionId` is
+ *  ignored — batch children never continue a session; `signal`/`debug` are
+ *  per-call client concerns and not sent). Capped at 32; the server rejects an
+ *  over-cap batch. */
+export interface RunBatchOptions {
+  spawns: RunOptions[];
+  /** "join" (default) — block until all children settle, returning the
+   *  combined envelope. "detach" (async run handles) is reserved for a future
+   *  release and rejected by the server today. */
+  mode?: "join";
+  /** Optional join deadline (ms): a child still running when it elapses is
+   *  cancelled and reported with a cancelled status in-envelope. */
+  timeoutMs?: number;
+  signal?: AbortSignal;
+}
+
+/** One child run's outcome in a batch. Mirrors the server's SpawnResult wire
+ *  shape; a per-child failure is reported via `status` + `error`, never as a
+ *  thrown error (the batch as a whole still resolves). */
+export interface SpawnRunResult {
+  agent_id: string;
+  run_id: string;
+  session_id: string;
+  status: AgentStatus;
+  stop_reason?: string;
+  final_text?: string;
+  usage?: AgentUsage;
+  error?: string;
+}
+
+/** Result of {@link LoomcycleClient.spawnRunBatch} — `results` is index-aligned
+ *  with the request's `spawns`. */
+export interface RunBatchResult {
+  results: SpawnRunResult[];
+  spawned: number;
+}
+
+/** Result of {@link LoomcycleClient.compactRun}. `applied` is "live" (pushed to
+ *  the running loop), "marker" (persisted for a terminal run's next
+ *  continuation), or "noop" (too short to compact). */
+export interface CompactRunResult {
+  run_id: string;
+  compacted: boolean;
+  before_tokens: number;
+  after_tokens: number;
+  applied: "live" | "marker" | "noop";
 }
 
 // ---- Transcript ----

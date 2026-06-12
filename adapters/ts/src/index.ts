@@ -96,6 +96,8 @@ export type {
   PromptSegment,
   RetryInfo,
   RunOptions,
+  SamplingOptions,
+  CompactionOptions,
   ToolUse,
   Usage,
   // Agent metadata
@@ -104,6 +106,11 @@ export type {
   AgentUsage,
   CancelAgentResult,
   ListAgentsResponse,
+  // Fan-out (RFC Y) + compaction
+  RunBatchOptions,
+  RunBatchResult,
+  SpawnRunResult,
+  CompactRunResult,
   // Transcript
   TranscriptEvent,
   TranscriptResponse,

@@ -40,6 +40,8 @@ const _ = grpc.SupportPackageIsVersion9
 const (
 	Loomcycle_Run_FullMethodName                 = "/loomcycle.v1.Loomcycle/Run"
 	Loomcycle_Continue_FullMethodName            = "/loomcycle.v1.Loomcycle/Continue"
+	Loomcycle_SpawnRunBatch_FullMethodName       = "/loomcycle.v1.Loomcycle/SpawnRunBatch"
+	Loomcycle_CompactRun_FullMethodName          = "/loomcycle.v1.Loomcycle/CompactRun"
 	Loomcycle_GetTranscript_FullMethodName       = "/loomcycle.v1.Loomcycle/GetTranscript"
 	Loomcycle_GetAgent_FullMethodName            = "/loomcycle.v1.Loomcycle/GetAgent"
 	Loomcycle_CancelAgent_FullMethodName         = "/loomcycle.v1.Loomcycle/CancelAgent"
@@ -93,6 +95,21 @@ type LoomcycleClient interface {
 	//
 	// Mirrors POST /v1/sessions/{id}/messages.
 	Continue(ctx context.Context, in *ContinueRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[Event], error)
+	// SpawnRunBatch spawns N fresh runs concurrently in one call (RFC Y
+	// external fan-out, mode "join"), bounded by the per-user admission
+	// gate, returning a combined index-aligned envelope once all settle. A
+	// per-child failure is captured in that child's result and never fails
+	// the batch. mode "detach" (async run handles) is reserved for a future
+	// release and rejected today.
+	//
+	// Mirrors POST /v1/runs:batch + the spawn_runs MCP tool.
+	SpawnRunBatch(ctx context.Context, in *BatchSpawnRequest, opts ...grpc.CallOption) (*BatchSpawnResult, error)
+	// CompactRun summarizes a run's conversation to free context and
+	// continue from the summary. A live run must be PARKED (awaiting input);
+	// a mid-turn run returns FailedPrecondition. Keyed by run_id.
+	//
+	// Mirrors POST /v1/runs/{run_id}/compact + the compact_run MCP tool.
+	CompactRun(ctx context.Context, in *CompactRunRequest, opts ...grpc.CallOption) (*CompactRunResult, error)
 	// GetTranscript returns the full event history for a session,
 	// ordered by seq. Used by adapters that re-attach to a previously
 	// started session (e.g. cross-tab sync).
@@ -331,6 +348,26 @@ func (c *loomcycleClient) Continue(ctx context.Context, in *ContinueRequest, opt
 
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type Loomcycle_ContinueClient = grpc.ServerStreamingClient[Event]
+
+func (c *loomcycleClient) SpawnRunBatch(ctx context.Context, in *BatchSpawnRequest, opts ...grpc.CallOption) (*BatchSpawnResult, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(BatchSpawnResult)
+	err := c.cc.Invoke(ctx, Loomcycle_SpawnRunBatch_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *loomcycleClient) CompactRun(ctx context.Context, in *CompactRunRequest, opts ...grpc.CallOption) (*CompactRunResult, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(CompactRunResult)
+	err := c.cc.Invoke(ctx, Loomcycle_CompactRun_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
 
 func (c *loomcycleClient) GetTranscript(ctx context.Context, in *GetTranscriptRequest, opts ...grpc.CallOption) (*Transcript, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
@@ -707,6 +744,21 @@ type LoomcycleServer interface {
 	//
 	// Mirrors POST /v1/sessions/{id}/messages.
 	Continue(*ContinueRequest, grpc.ServerStreamingServer[Event]) error
+	// SpawnRunBatch spawns N fresh runs concurrently in one call (RFC Y
+	// external fan-out, mode "join"), bounded by the per-user admission
+	// gate, returning a combined index-aligned envelope once all settle. A
+	// per-child failure is captured in that child's result and never fails
+	// the batch. mode "detach" (async run handles) is reserved for a future
+	// release and rejected today.
+	//
+	// Mirrors POST /v1/runs:batch + the spawn_runs MCP tool.
+	SpawnRunBatch(context.Context, *BatchSpawnRequest) (*BatchSpawnResult, error)
+	// CompactRun summarizes a run's conversation to free context and
+	// continue from the summary. A live run must be PARKED (awaiting input);
+	// a mid-turn run returns FailedPrecondition. Keyed by run_id.
+	//
+	// Mirrors POST /v1/runs/{run_id}/compact + the compact_run MCP tool.
+	CompactRun(context.Context, *CompactRunRequest) (*CompactRunResult, error)
 	// GetTranscript returns the full event history for a session,
 	// ordered by seq. Used by adapters that re-attach to a previously
 	// started session (e.g. cross-tab sync).
@@ -914,6 +966,12 @@ func (UnimplementedLoomcycleServer) Run(*RunRequest, grpc.ServerStreamingServer[
 func (UnimplementedLoomcycleServer) Continue(*ContinueRequest, grpc.ServerStreamingServer[Event]) error {
 	return status.Error(codes.Unimplemented, "method Continue not implemented")
 }
+func (UnimplementedLoomcycleServer) SpawnRunBatch(context.Context, *BatchSpawnRequest) (*BatchSpawnResult, error) {
+	return nil, status.Error(codes.Unimplemented, "method SpawnRunBatch not implemented")
+}
+func (UnimplementedLoomcycleServer) CompactRun(context.Context, *CompactRunRequest) (*CompactRunResult, error) {
+	return nil, status.Error(codes.Unimplemented, "method CompactRun not implemented")
+}
 func (UnimplementedLoomcycleServer) GetTranscript(context.Context, *GetTranscriptRequest) (*Transcript, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetTranscript not implemented")
 }
@@ -1061,6 +1119,42 @@ func _Loomcycle_Continue_Handler(srv interface{}, stream grpc.ServerStream) erro
 
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type Loomcycle_ContinueServer = grpc.ServerStreamingServer[Event]
+
+func _Loomcycle_SpawnRunBatch_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(BatchSpawnRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(LoomcycleServer).SpawnRunBatch(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Loomcycle_SpawnRunBatch_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(LoomcycleServer).SpawnRunBatch(ctx, req.(*BatchSpawnRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Loomcycle_CompactRun_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(CompactRunRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(LoomcycleServer).CompactRun(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Loomcycle_CompactRun_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(LoomcycleServer).CompactRun(ctx, req.(*CompactRunRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
 
 func _Loomcycle_GetTranscript_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(GetTranscriptRequest)
@@ -1692,6 +1786,14 @@ var Loomcycle_ServiceDesc = grpc.ServiceDesc{
 	ServiceName: "loomcycle.v1.Loomcycle",
 	HandlerType: (*LoomcycleServer)(nil),
 	Methods: []grpc.MethodDesc{
+		{
+			MethodName: "SpawnRunBatch",
+			Handler:    _Loomcycle_SpawnRunBatch_Handler,
+		},
+		{
+			MethodName: "CompactRun",
+			Handler:    _Loomcycle_CompactRun_Handler,
+		},
 		{
 			MethodName: "GetTranscript",
 			Handler:    _Loomcycle_GetTranscript_Handler,
