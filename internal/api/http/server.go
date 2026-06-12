@@ -1855,7 +1855,8 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		PayloadMetadata:        in.PayloadMetadata,
 		RunTimeoutSeconds:      pickRunTimeout(in.RunTimeoutSeconds, agentDef.RunTimeoutSeconds),
 		Interactive:            in.Interactive,
-		Sampling:               config.MergeSampling(agentDef.Sampling, in.Sampling), // per-run wins per field
+		Sampling:               config.MergeSampling(agentDef.Sampling, in.Sampling),       // per-run wins per field
+		Compaction:             config.MergeCompaction(agentDef.Compaction, in.Compaction), // per-run wins per field
 		UserTier:               in.UserTier,
 		FallbackPolicy:         fbPolicy,
 		ReResolve:              fbReResolve,
@@ -2620,6 +2621,11 @@ type runRequest struct {
 	// top_p, …) — merged PER FIELD over the agent's own sampling (this wins;
 	// unset fields inherit the agent's). nil = inherit the agent's entirely.
 	Sampling *config.Sampling `json:"sampling,omitempty"`
+
+	// Compaction is an optional per-RUN context-compaction override — merged PER
+	// FIELD over the agent's own compaction block (this wins; unset fields
+	// inherit). nil = inherit the agent's entirely.
+	Compaction *config.Compaction `json:"compaction,omitempty"`
 }
 
 // pickRunTimeout resolves the effective code-js wall-clock budget override:
@@ -3131,7 +3137,8 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		Metadata:               req.Metadata,  // direct /v1/runs caller is first-party → trusted; no payload_metadata
 		RunTimeoutSeconds:      pickRunTimeout(req.RunTimeoutSeconds, agentDef.RunTimeoutSeconds),
 		Interactive:            req.Interactive,
-		Sampling:               config.MergeSampling(agentDef.Sampling, req.Sampling), // per-run wins per field
+		Sampling:               config.MergeSampling(agentDef.Sampling, req.Sampling),       // per-run wins per field
+		Compaction:             config.MergeCompaction(agentDef.Compaction, req.Compaction), // per-run wins per field
 		UserTier:               req.UserTier,
 		FallbackPolicy:         fbPolicy,
 		ReResolve:              fbReResolve,
@@ -3256,6 +3263,10 @@ type messagesRequest struct {
 	// Sampling: per-RUN LLM sampling override for this continuation turn,
 	// merged per field over the agent's. Same semantics as runRequest.Sampling.
 	Sampling *config.Sampling `json:"sampling,omitempty"`
+
+	// Compaction: per-RUN context-compaction override for this continuation,
+	// merged per field over the agent's. Same semantics as runRequest.Compaction.
+	Compaction *config.Compaction `json:"compaction,omitempty"`
 }
 
 func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
@@ -3602,7 +3613,8 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		Metadata:               body.Metadata,
 		RunTimeoutSeconds:      pickRunTimeout(body.RunTimeoutSeconds, agentDef.RunTimeoutSeconds),
 		Interactive:            body.Interactive,
-		Sampling:               config.MergeSampling(agentDef.Sampling, body.Sampling), // per-run wins per field
+		Sampling:               config.MergeSampling(agentDef.Sampling, body.Sampling),       // per-run wins per field
+		Compaction:             config.MergeCompaction(agentDef.Compaction, body.Compaction), // per-run wins per field
 		UserTier:               body.UserTier,
 		FallbackPolicy:         fbPolicy,
 		ReResolve:              fbReResolve,

@@ -185,9 +185,12 @@ type SubstrateAgentDef struct {
 	// Sampling: per-agent LLM sampling params (mirrors config.Sampling /
 	// mergedDef). Pointer so substrate JSON persists nil (provider default)
 	// vs an explicit temperature:0.0 (deterministic).
-	Sampling      *config.Sampling `json:"sampling,omitempty"`
-	MaxTokens     int              `json:"max_tokens,omitempty"`
-	MaxIterations int              `json:"max_iterations,omitempty"`
+	Sampling *config.Sampling `json:"sampling,omitempty"`
+	// Compaction: per-agent context-compaction settings (mirrors config.Compaction
+	// / mergedDef).
+	Compaction    *config.Compaction `json:"compaction,omitempty"`
+	MaxTokens     int                `json:"max_tokens,omitempty"`
+	MaxIterations int                `json:"max_iterations,omitempty"`
 	// UnboundedIterations lifts the MaxIterations soft-cap for an LLM agent
 	// (interactive runs). Mirrors mergedDef; the drift test pins parity.
 	UnboundedIterations bool `json:"unbounded_iterations,omitempty"`
@@ -248,6 +251,7 @@ func (s SubstrateAgentDef) ToConfigDef() config.AgentDef {
 		Tier:                  s.Tier,
 		Effort:                s.Effort,
 		Sampling:              s.Sampling,
+		Compaction:            s.Compaction,
 		MaxTokens:             s.MaxTokens,
 		MaxIterations:         s.MaxIterations,
 		UnboundedIterations:   s.UnboundedIterations,

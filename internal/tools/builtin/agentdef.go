@@ -809,6 +809,9 @@ type mergedDef struct {
 	// object; applyOverlay merges it PER FIELD (a fork that sets only
 	// temperature keeps the parent's top_p). Content-identifying (hashed).
 	Sampling *config.Sampling `json:"sampling,omitempty"`
+	// Compaction: per-agent context-compaction settings. Same PER-FIELD overlay +
+	// content-identifying treatment as Sampling.
+	Compaction *config.Compaction `json:"compaction,omitempty"`
 	// MaxIterations caps the loop at N provider calls before
 	// terminating with stop_reason="max_iterations". 0 = use the
 	// loop default (16). Set higher for discovery-style forks
@@ -899,6 +902,10 @@ func (d *mergedDef) applyOverlay(ov mergedDef) {
 	// parent's top_p (MergeSampling overlays non-nil fields onto the base).
 	if !ov.Sampling.IsZero() {
 		d.Sampling = config.MergeSampling(d.Sampling, ov.Sampling)
+	}
+	// Compaction merges PER FIELD, same as Sampling.
+	if !ov.Compaction.IsZero() {
+		d.Compaction = config.MergeCompaction(d.Compaction, ov.Compaction)
 	}
 	if ov.MaxTokens != 0 {
 		d.MaxTokens = ov.MaxTokens
@@ -1013,6 +1020,7 @@ func staticToMergedDef(s config.AgentDef) mergedDef {
 		Tier:                  s.Tier,
 		Effort:                s.Effort,
 		Sampling:              s.Sampling.Clone(),
+		Compaction:            s.Compaction.Clone(),
 		MaxTokens:             s.MaxTokens,
 		MaxIterations:         s.MaxIterations,
 		UnboundedIterations:   s.UnboundedIterations,
@@ -1138,6 +1146,17 @@ func signFromMergedDef(name string, def mergedDef) string {
 			PresencePenalty:  s.PresencePenalty,
 			Seed:             s.Seed,
 			Stop:             s.Stop,
+		}
+	}
+	// Compaction is content-identifying, same as Sampling.
+	if cp := def.Compaction; !cp.IsZero() {
+		c.Compaction = &agents.Compaction{
+			Enabled:          cp.Enabled,
+			TargetPercentage: cp.TargetPercentage,
+			KeepLastN:        cp.KeepLastN,
+			KeepFirst:        cp.KeepFirst,
+			AutoCompactAtPct: cp.AutoCompactAtPct,
+			Model:            cp.Model,
 		}
 	}
 	return agents.Sign(c)

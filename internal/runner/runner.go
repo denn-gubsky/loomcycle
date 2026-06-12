@@ -256,6 +256,10 @@ type RunInput struct {
 	// sampling entirely. The server resolves the merge and passes the winner to
 	// loop.RunOptions.
 	Sampling *config.Sampling
+
+	// Compaction is an optional per-RUN context-compaction override, merged PER
+	// FIELD over the agent's own Compaction. nil = inherit the agent's entirely.
+	Compaction *config.Compaction
 }
 
 // RunCallbacks is how the wire surfaces observe the run.

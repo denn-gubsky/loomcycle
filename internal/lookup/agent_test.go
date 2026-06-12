@@ -284,6 +284,7 @@ func TestAgent_DriftDetection(t *testing.T) {
 		"tier":                    true,
 		"effort":                  true,
 		"sampling":                true, // per-agent LLM sampling params (temperature, top_p, …)
+		"compaction":              true, // per-agent context-compaction settings
 		"max_tokens":              true,
 		"max_iterations":          true,
 		"unbounded_iterations":    true, // lift the iteration soft-cap for interactive LLM agents
