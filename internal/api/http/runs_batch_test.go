@@ -123,9 +123,7 @@ func TestSpawnRunBatch_FanOutConcurrentAndInEnvelopeError(t *testing.T) {
 		{Agent: "r", Segments: oneUserSeg("e")},
 	}}
 
-	start := time.Now()
 	res, err := s.SpawnRunBatch(context.Background(), req)
-	elapsed := time.Since(start)
 	if err != nil {
 		t.Fatalf("SpawnRunBatch: %v", err)
 	}
@@ -141,13 +139,12 @@ func TestSpawnRunBatch_FanOutConcurrentAndInEnvelopeError(t *testing.T) {
 			t.Errorf("results[%d].Status = %q, want completed", i, res.Results[i].Status)
 		}
 	}
-	// Concurrency: the valid children ran at once (max-in-flight > 1), so the
-	// wall-clock is ~one dwell, not the serial sum (4×80ms).
+	// Concurrency: the valid children overlapped in flight (max-in-flight >= 2).
+	// This is the deterministic proof; an earlier wall-clock ceiling was dropped
+	// because the race detector's goroutine overhead inflates the concurrent
+	// wall-clock toward the serial sum, making any timing bound flaky.
 	if mx := p.maxSeen.Load(); mx < 2 {
-		t.Errorf("max concurrent in-flight = %d, want > 1 (fan-out serialized?)", mx)
-	}
-	if elapsed > 4*60*time.Millisecond {
-		t.Errorf("batch wall-clock %v ≈ serial sum — children did not run concurrently", elapsed)
+		t.Errorf("max concurrent in-flight = %d, want >= 2 (fan-out serialized?)", mx)
 	}
 }
 
