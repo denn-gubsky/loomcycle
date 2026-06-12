@@ -615,6 +615,14 @@ type AgentDef struct {
 	// Effort). Pointer so a no-sampling agent stays byte-identical pre-feature.
 	Sampling *Sampling `yaml:"sampling,omitempty"`
 
+	// Compaction is the per-agent context-compaction block (yaml/JSON
+	// `compaction:`). Controls keep-last-N / keep-first, the auto-compact
+	// trigger, the summary target size, and an optional cheaper summary model.
+	// nil = compaction disabled (auto) with defaults applied where a manual
+	// compact runs. Inherited down the spawn tree (parent-set fields win; a
+	// child def fills gaps), overridable per-spawn via the Agent tool.
+	Compaction *Compaction `yaml:"compaction,omitempty"`
+
 	// Providers is the per-agent override of the library
 	// ProviderPriority for tier resolution. Full replacement
 	// semantics: when set, the resolver uses this list verbatim
@@ -942,6 +950,144 @@ func (s *Sampling) Validate() error {
 	}
 	if len(s.Stop) > 8 {
 		return fmt.Errorf("sampling.stop has %d sequences (max 8)", len(s.Stop))
+	}
+	return nil
+}
+
+// Compaction is the per-agent context-compaction block (the yaml/JSON
+// `compaction:` object). Every field is a pointer so "unset" (nil) is distinct
+// from a meaningful value — and so the per-field merge (parent/child/per-run/
+// per-spawn) can tell "inherit" from "explicitly set". nil = no compaction
+// configured (auto off; a manual compact uses the documented defaults).
+type Compaction struct {
+	// Enabled turns AUTO-compaction on. Default off (nil/false): the manual
+	// Compact button + Context op=compact still work, but the loop never
+	// auto-triggers. Opt-in so existing agents are byte-identical.
+	Enabled *bool `json:"enabled,omitempty" yaml:"enabled"`
+	// TargetPercentage shapes the summary: aim for ~N% of the compacted span's
+	// length. Range 10..50; default 10 (aggressive).
+	TargetPercentage *int `json:"target_percentage,omitempty" yaml:"target_percentage"`
+	// KeepLastN keeps the last N messages verbatim (snapped to a clean user-turn
+	// boundary so a tool_use/tool_result pair is never split). Default 4. 0 =
+	// keep none (summarize the whole conversation).
+	KeepLastN *int `json:"keep_last_n,omitempty" yaml:"keep_last_n"`
+	// KeepFirst pins the first user message (the task) verbatim — never
+	// summarized — so a long autonomous agent never loses its objective.
+	// Default true.
+	KeepFirst *bool `json:"keep_first,omitempty" yaml:"keep_first"`
+	// AutoCompactAtPct is the trigger: auto-compact when used/window >= N%.
+	// Range 50..95; default 80. Only consulted when Enabled and the provider
+	// reports a context window.
+	AutoCompactAtPct *int `json:"autocompact_at_pct,omitempty" yaml:"autocompact_at_pct"`
+	// Model optionally runs the summary call on a cheaper/faster model SERVED BY
+	// THE SAME PROVIDER (e.g. a haiku-class model). "" / nil = the run's model.
+	Model *string `json:"model,omitempty" yaml:"model"`
+}
+
+// Compaction defaults — applied at use-time when a field is unset.
+const (
+	CompactionDefaultTargetPct = 10
+	CompactionDefaultKeepLastN = 4
+	CompactionDefaultKeepFirst = true
+	CompactionDefaultAutoAtPct = 80
+)
+
+// IsZero reports whether no compaction field is set (collapse to nil → byte-
+// stable content hashes for agents that don't configure compaction).
+func (c *Compaction) IsZero() bool {
+	return c == nil || (c.Enabled == nil && c.TargetPercentage == nil && c.KeepLastN == nil &&
+		c.KeepFirst == nil && c.AutoCompactAtPct == nil && c.Model == nil)
+}
+
+// Clone deep-copies (every field is a pointer) so a merge never aliases an input.
+func (c *Compaction) Clone() *Compaction {
+	if c == nil {
+		return nil
+	}
+	out := &Compaction{}
+	if c.Enabled != nil {
+		v := *c.Enabled
+		out.Enabled = &v
+	}
+	if c.TargetPercentage != nil {
+		v := *c.TargetPercentage
+		out.TargetPercentage = &v
+	}
+	if c.KeepLastN != nil {
+		v := *c.KeepLastN
+		out.KeepLastN = &v
+	}
+	if c.KeepFirst != nil {
+		v := *c.KeepFirst
+		out.KeepFirst = &v
+	}
+	if c.AutoCompactAtPct != nil {
+		v := *c.AutoCompactAtPct
+		out.AutoCompactAtPct = &v
+	}
+	if c.Model != nil {
+		v := *c.Model
+		out.Model = &v
+	}
+	return out
+}
+
+// MergeCompaction overlays `over` onto `base` PER FIELD — a field set in `over`
+// wins, an unset field keeps `base`'s value. Drives the AgentDef fork overlay,
+// the per-run override, AND the spawn precedence blend (a child fills the gaps
+// its parent left unset: MergeCompaction(childDef, parentSparse)). Returns nil
+// only when both inputs are empty; never aliases either input.
+func MergeCompaction(base, over *Compaction) *Compaction {
+	if base.IsZero() && over.IsZero() {
+		return nil
+	}
+	out := base.Clone()
+	if out == nil {
+		out = &Compaction{}
+	}
+	if over == nil {
+		return out
+	}
+	if over.Enabled != nil {
+		v := *over.Enabled
+		out.Enabled = &v
+	}
+	if over.TargetPercentage != nil {
+		v := *over.TargetPercentage
+		out.TargetPercentage = &v
+	}
+	if over.KeepLastN != nil {
+		v := *over.KeepLastN
+		out.KeepLastN = &v
+	}
+	if over.KeepFirst != nil {
+		v := *over.KeepFirst
+		out.KeepFirst = &v
+	}
+	if over.AutoCompactAtPct != nil {
+		v := *over.AutoCompactAtPct
+		out.AutoCompactAtPct = &v
+	}
+	if over.Model != nil {
+		v := *over.Model
+		out.Model = &v
+	}
+	return out
+}
+
+// Validate checks per-field bounds. Returns a descriptive error naming the field.
+func (c *Compaction) Validate() error {
+	if c == nil {
+		return nil
+	}
+	if c.TargetPercentage != nil && (*c.TargetPercentage < 10 || *c.TargetPercentage > 50) {
+		return fmt.Errorf("compaction.target_percentage %d out of range [10,50]", *c.TargetPercentage)
+	}
+	if c.KeepLastN != nil && *c.KeepLastN < 0 {
+		return fmt.Errorf("compaction.keep_last_n %d must be >= 0", *c.KeepLastN)
+	}
+	if c.AutoCompactAtPct != nil && (*c.AutoCompactAtPct < 50 || *c.AutoCompactAtPct > 95) {
+		return fmt.Errorf("compaction.autocompact_at_pct %d out of range [50,95]", *c.AutoCompactAtPct)
 	}
 	return nil
 }
@@ -3735,6 +3881,9 @@ func validate(c *Config) error {
 			return fmt.Errorf("agent %q: invalid effort %q (want one of low/medium/high or empty)", name, agent.Effort)
 		}
 		if err := agent.Sampling.Validate(); err != nil {
+			return fmt.Errorf("agent %q: %w", name, err)
+		}
+		if err := agent.Compaction.Validate(); err != nil {
 			return fmt.Errorf("agent %q: %w", name, err)
 		}
 		if hasTier && !validTierNames[agent.Tier] {

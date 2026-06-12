@@ -83,7 +83,7 @@ const contextDescription = `Read-only runtime introspection. ` +
 const contextInputSchema = `{
   "type": "object",
   "properties": {
-    "op":              {"type": "string", "enum": ["self","tools","doc","permissions","agents","lineage","evaluations","channels","history","help","time"], "description": "Which introspection op to run."},
+    "op":              {"type": "string", "enum": ["self","tools","doc","permissions","agents","lineage","evaluations","channels","history","help","time","compact"], "description": "Which introspection op to run."},
     "name":            {"type": "string", "description": "doc only: the tool name to fetch detailed docs for."},
     "prefix":          {"type": "string", "description": "agents / channels: optional name prefix filter."},
     "def_id":          {"type": "string", "description": "lineage / evaluations: the agent_defs row id to inspect. Use Context.agents to discover def_ids first."},
@@ -158,11 +158,30 @@ func (c *Context) Execute(ctx context.Context, raw json.RawMessage) (tools.Resul
 		return c.execHelp(ctx, in)
 	case "time":
 		return c.execTime(ctx)
+	case "compact":
+		return c.execCompact(ctx)
 	case "":
 		return errResult("missing required field: op"), nil
 	default:
-		return errResult(fmt.Sprintf("unknown op %q (must be one of: self, tools, doc, permissions, agents, lineage, evaluations, channels, history, help, time)", in.Op)), nil
+		return errResult(fmt.Sprintf("unknown op %q (must be one of: self, tools, doc, permissions, agents, lineage, evaluations, channels, history, help, time, compact)", in.Op)), nil
 	}
+}
+
+// ---- compact ----
+
+// execCompact lets an agent proactively compact its OWN context (self-
+// compaction — useful for a long autonomous run that's filling its window). It
+// sets the loop's compact-request flag; the loop summarizes + replaces the
+// conversation at its NEXT iteration boundary (never mid-tool-cycle), honoring
+// the agent's keep_last_n / keep_first / target_percentage. Returns immediately
+// — the compaction isn't visible until the next turn.
+func (c *Context) execCompact(ctx context.Context) (tools.Result, error) {
+	flag := tools.CompactRequest(ctx)
+	if flag == nil {
+		return errResult("context compaction is not available for this run"), nil
+	}
+	flag.Store(true)
+	return okJSON(map[string]any{"compaction": "scheduled", "applies_at": "the next step"})
 }
 
 // ---- self ----
@@ -194,6 +213,26 @@ func (c *Context) execSelf(ctx context.Context) (tools.Result, error) {
 	// sampling is configured (the model sees provider defaults).
 	if s := tools.ResolvedSampling(ctx); !s.IsZero() {
 		out["sampling"] = s
+	}
+	// compaction: the resolved context-compaction settings in effect for this run
+	// (inherited from the parent + per-run/per-spawn overrides). An agent can read
+	// this to decide whether to self-compact (Context op=compact). Omitted when
+	// no compaction is configured.
+	if cp := tools.CompactionPolicy(ctx); !cp.IsZero() {
+		out["compaction"] = cp
+	}
+	// context: how full the window is as of the last completed turn (used =
+	// input + cache tokens; max = the model's window, 0/absent when unknown e.g.
+	// Ollama). Paired with `compaction` above, this is what an agent needs to
+	// make a conscious self-compact decision (e.g. "used_pct >= autocompact_at_pct
+	// → call Context op=compact now"). Omitted before the first turn completes.
+	if u := tools.ContextUsage(ctx); u.Used > 0 {
+		usage := map[string]any{"used_tokens": u.Used}
+		if u.Max > 0 {
+			usage["max_tokens"] = u.Max
+			usage["used_pct"] = u.Used * 100 / u.Max
+		}
+		out["context"] = usage
 	}
 	return okJSON(out)
 }

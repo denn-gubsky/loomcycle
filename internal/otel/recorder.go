@@ -225,6 +225,27 @@ func RecordQueueWait(span trace.Span, wait time.Duration) {
 	span.SetAttributes(attribute.Int64(AttrQueueWaitMs, wait.Milliseconds()))
 }
 
+// RecordCompaction adds a "context.compaction" event to the run/iteration span
+// when the loop compacts (trigger = manual|auto|self), with before/after token
+// estimates. Per-run-shape metric → flows through OTEL (the documented path;
+// /metrics stays substrate-only). No-op on a nil/non-recording span.
+func RecordCompaction(span trace.Span, trigger string, before, after int) {
+	if span == nil || !span.IsRecording() {
+		return
+	}
+	span.AddEvent("context.compaction", trace.WithAttributes(
+		attribute.String("compaction.trigger", trigger),
+		attribute.Int("compaction.before_tokens", before),
+		attribute.Int("compaction.after_tokens", after),
+	))
+}
+
+// RecordCompactionCtx is RecordCompaction against the current span on ctx — for
+// callers (the loop) that hold a ctx but not the span directly.
+func RecordCompactionCtx(ctx context.Context, trigger string, before, after int) {
+	RecordCompaction(trace.SpanFromContext(ctx), trigger, before, after)
+}
+
 // SetSpanError marks a span as failed with the given error. The message
 // is truncated to a sane length so a noisy provider error doesn't blow
 // up Jaeger storage.

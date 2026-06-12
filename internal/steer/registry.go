@@ -52,6 +52,11 @@ type Message struct {
 	// user message). KindCompact = replace the conversation with a summary
 	// built from Text. New kinds extend this without changing the queue plumbing.
 	Kind string
+	// KeepN / KeepFirst accompany a KindCompact control: keep the last KeepN
+	// messages verbatim and pin the first user turn when KeepFirst. Computed by
+	// the server (snapped to a clean boundary) so the loop applies them verbatim.
+	KeepN     int
+	KeepFirst bool
 }
 
 // Entry is the live handle for one run's steering queue.

@@ -155,6 +155,18 @@ type Sampling struct {
 	Stop             []string `json:"stop,omitempty"`
 }
 
+// Compaction mirrors config.Compaction locally (the agents package stays
+// config-free). json: tags mirror the persisted snake_case and are LOAD-BEARING
+// for content_sha256. Pointers so an unset field omits.
+type Compaction struct {
+	Enabled          *bool   `json:"enabled,omitempty"`
+	TargetPercentage *int    `json:"target_percentage,omitempty"`
+	KeepLastN        *int    `json:"keep_last_n,omitempty"`
+	KeepFirst        *bool   `json:"keep_first,omitempty"`
+	AutoCompactAtPct *int    `json:"autocompact_at_pct,omitempty"`
+	Model            *string `json:"model,omitempty"`
+}
+
 // TierCandidate mirrors config.TierCandidate's shape locally so this
 // package doesn't import config (which would create a cycle:
 // config → agents → config). The merger in config converts these to

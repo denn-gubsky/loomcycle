@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -123,6 +124,65 @@ func TestContextTool_SelfOmitsSamplingWhenUnset(t *testing.T) {
 	out := decodeResult(t, res.Text)
 	if _, present := out["sampling"]; present {
 		t.Errorf("sampling key present (%v) with no sampling configured — want omitted", out["sampling"])
+	}
+	if _, present := out["compaction"]; present {
+		t.Errorf("compaction key present (%v) with none configured — want omitted", out["compaction"])
+	}
+}
+
+// op=self reports the resolved compaction settings when configured (so an agent
+// can decide whether to self-compact).
+func TestContextTool_SelfReportsCompaction(t *testing.T) {
+	tool := &Context{}
+	enabled := true
+	ctx := tools.WithRunIdentity(context.Background(), tools.RunIdentityValue{AgentID: "a_x"})
+	ctx = tools.WithCompactionPolicy(ctx, &config.Compaction{Enabled: &enabled})
+	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"self"}`))
+	out := decodeResult(t, res.Text)
+	if _, present := out["compaction"]; !present {
+		t.Error("compaction key missing from op=self with a configured policy")
+	}
+}
+
+// op=self reports the current context footprint (used/max/pct) so an agent can
+// decide whether to self-compact; omitted before the first turn completes.
+func TestContextTool_SelfReportsContextUsage(t *testing.T) {
+	tool := &Context{}
+	ctx := tools.WithRunIdentity(context.Background(), tools.RunIdentityValue{AgentID: "a_x"})
+	// No usage yet → omitted.
+	res0, _ := tool.Execute(ctx, json.RawMessage(`{"op":"self"}`))
+	if _, present := decodeResult(t, res0.Text)["context"]; present {
+		t.Error("context key present with no usage — want omitted")
+	}
+	// With usage → reported with used_tokens/max_tokens/used_pct.
+	ctx = tools.WithContextUsage(ctx, 160000, 200000)
+	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"self"}`))
+	out := decodeResult(t, res.Text)
+	cu, ok := out["context"].(map[string]any)
+	if !ok {
+		t.Fatalf("context key missing/wrong type: %v", out["context"])
+	}
+	if int(cu["used_tokens"].(float64)) != 160000 || int(cu["used_pct"].(float64)) != 80 {
+		t.Errorf("context usage wrong: %+v (want used=160000, pct=80)", cu)
+	}
+}
+
+// op=compact sets the loop's compact-request flag; without one wired it errors.
+func TestContextTool_CompactSetsFlag(t *testing.T) {
+	tool := &Context{}
+	var flag atomic.Bool
+	ctx := tools.WithCompactRequest(context.Background(), &flag)
+	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"compact"}`))
+	if res.IsError {
+		t.Fatalf("op=compact errored with a flag wired: %s", res.Text)
+	}
+	if !flag.Load() {
+		t.Error("op=compact did not set the compact-request flag")
+	}
+	// No flag on ctx → not available → error.
+	res2, _ := tool.Execute(context.Background(), json.RawMessage(`{"op":"compact"}`))
+	if !res2.IsError {
+		t.Error("op=compact should error when compaction isn't available for the run")
 	}
 }
 

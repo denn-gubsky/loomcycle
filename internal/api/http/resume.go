@@ -244,6 +244,9 @@ func (s *Server) resumePausedRun(ctx context.Context, run store.Run) error {
 		QuotaBytes:    agentDef.MemoryQuotaBytes,
 		Backend:       agentDef.MemoryBackend,
 	})
+	// Compaction re-derived from the agent def (per-run override not snapshotted),
+	// stamped for sub-agent inheritance.
+	loopCtx = tools.WithCompactionPolicy(loopCtx, agentDef.Compaction)
 	loopCtx = tools.WithChannelPolicy(loopCtx, s.channelPolicyForAgent(loopCtx, agentDef))
 	loopCtx = tools.WithEventEmitter(loopCtx, emit)
 	adPolicy, evPolicy := s.substratePoliciesForAgent(agentDef, run.Agent)
@@ -284,7 +287,8 @@ func (s *Server) resumePausedRun(ctx context.Context, run store.Run) error {
 		CodeBody:               agentDef.Code,
 		RunTimeoutSeconds:      agentDef.RunTimeoutSeconds, // per-run override not snapshotted
 		Interactive:            run.Interactive,
-		Sampling:               agentDef.Sampling, // per-run override not snapshotted
+		Sampling:               agentDef.Sampling,   // per-run override not snapshotted
+		Compaction:             agentDef.Compaction, // per-run override not snapshotted
 		UserTier:               run.UserTier,
 		FallbackPolicy:         fbPolicy,
 		ReResolve:              fbReResolve,

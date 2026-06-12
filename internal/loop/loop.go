@@ -14,6 +14,7 @@ import (
 	"log"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/config"
@@ -122,6 +123,14 @@ type RunOptions struct {
 	// providers.Request fields; each driver applies what it supports. nil =
 	// provider defaults.
 	Sampling *config.Sampling
+
+	// Compaction carries the resolved per-agent compaction settings (already
+	// merged: per-run/per-spawn > parent-inherited > child def). When Enabled
+	// and the provider reports a context window, the loop auto-compacts at a
+	// top-of-iteration boundary once used/window crosses AutoCompactAtPct. nil =
+	// no auto-compaction (manual + Context op=compact still work). Defaults are
+	// applied at use-time (see config.CompactionDefault*).
+	Compaction *config.Compaction
 
 	// ToolParallelism caps how many tool_calls from a single
 	// assistant turn run concurrently. Zero = use the package
@@ -648,19 +657,198 @@ func parkForInput(ctx context.Context, q <-chan steer.Message, heartbeat func())
 	}
 }
 
-// CompactionMessages builds the two-message replacement for a steer.KindCompact
-// control: a user turn carrying the summary as established context, then a short
-// assistant ack. The pair starts on a user turn and ends on an assistant turn so
-// the operator's NEXT input alternates cleanly (Anthropic et al. require
-// start-with-user + role alternation). The system prompt is separate (re-derived
-// by the caller), so it is untouched — only the conversation history collapses.
-func CompactionMessages(summary string) []providers.Message {
-	return []providers.Message{
-		{Role: "user", Content: []providers.ContentBlock{{Type: "text",
-			Text: "[Conversation compacted — the summary below is the established context for everything before this point.]\n\n" + summary}}},
+// CompactionMessages builds the replacement conversation for a compaction: an
+// optional pinned task (kept verbatim), the summary of the middle span, and the
+// kept recent tail. Shape: [user(<pinned?> + <summary>), assistant(ack)] ++ keptTail.
+// It always starts on a user turn; keptTail must be snapped to a clean user-turn
+// boundary (compactionSplit) so the whole sequence alternates and never orphans a
+// tool_use/tool_result. The system prompt is separate (re-derived) and untouched.
+func CompactionMessages(pinnedTask, summary string, keptTail []providers.Message) []providers.Message {
+	var b strings.Builder
+	if strings.TrimSpace(pinnedTask) != "" {
+		b.WriteString("[Original task — preserved verbatim:]\n")
+		b.WriteString(pinnedTask)
+		b.WriteString("\n\n")
+	}
+	b.WriteString("[Conversation so far, compacted to a summary — treat it as established context for everything before this point:]\n\n")
+	b.WriteString(summary)
+	out := []providers.Message{
+		{Role: "user", Content: []providers.ContentBlock{{Type: "text", Text: b.String()}}},
 		{Role: "assistant", Content: []providers.ContentBlock{{Type: "text",
 			Text: "Understood — I'll continue from the summary above."}}},
 	}
+	return append(out, keptTail...)
+}
+
+// isFreshUserTurn reports whether m is a user message that STARTS a turn (a real
+// input), not a tool_result-carrying user turn. Cutting a kept tail to start here
+// never orphans a preceding assistant(tool_use) — its tool_result stays in the
+// summarized span.
+func isFreshUserTurn(m providers.Message) bool {
+	if m.Role != "user" {
+		return false
+	}
+	return len(m.Content) == 0 || m.Content[0].Type != "tool_result"
+}
+
+// compactionSplit decides what to summarize vs keep: summarize msgs[firstIdx:cut],
+// keep msgs[cut:]. firstIdx is 1 when keepFirst pins a leading user turn. cut snaps
+// to a clean user-turn boundary that keeps AT LEAST keepLastN messages (snapping
+// back to a boundary keeps a few more rather than splitting a tool cycle);
+// keepLastN<=0 keeps none (cut=len). ok=false when nothing is worth summarizing.
+func CompactionSplit(msgs []providers.Message, keepLastN int, keepFirst bool) (firstIdx, cut int, ok bool) {
+	n := len(msgs)
+	firstIdx = 0
+	if keepFirst && n > 0 && isFreshUserTurn(msgs[0]) {
+		firstIdx = 1
+	}
+	if keepLastN <= 0 {
+		cut = n
+	} else {
+		target := n - keepLastN
+		if target <= firstIdx {
+			return firstIdx, firstIdx, false // keep-N spans the whole tail → nothing to summarize
+		}
+		cut = -1
+		for i := target; i > firstIdx; i-- {
+			if isFreshUserTurn(msgs[i]) {
+				cut = i
+				break
+			}
+		}
+		if cut < 0 {
+			cut = n // no clean boundary in range → summarize everything after firstIdx
+		}
+	}
+	return firstIdx, cut, cut > firstIdx
+}
+
+// messageText concatenates a message's text blocks (used to pin the task verbatim).
+func messageText(m providers.Message) string {
+	var b strings.Builder
+	for _, c := range m.Content {
+		if c.Type == "text" {
+			b.WriteString(c.Text)
+		}
+	}
+	return b.String()
+}
+
+// estimateMessageTokens is a cheap chars/4 heuristic over message text + tool I/O
+// — for the operator-facing before/after readout, not for billing.
+func estimateMessageTokens(msgs []providers.Message) int {
+	chars := 0
+	for _, m := range msgs {
+		for _, c := range m.Content {
+			chars += len(c.Text) + len(c.ToolInput)
+		}
+	}
+	return chars / 4
+}
+
+// compactionPrompt builds the summarization system prompt for a target percentage
+// (10..50). Shared by the loop (auto/self) and the server (manual) via Summarize.
+func compactionPrompt(targetPct int) string {
+	if targetPct < 10 || targetPct > 50 {
+		targetPct = config.CompactionDefaultTargetPct
+	}
+	return fmt.Sprintf("You are compacting a conversation to free up the model's context window. "+
+		"Produce a single concise summary — aim for roughly %d%% of the original length — that "+
+		"preserves the user's goals and constraints, decisions made, facts and values established, "+
+		"tool results that still matter, and any open threads or next steps. Write it as durable "+
+		"context the assistant can rely on to continue. Output ONLY the summary prose — no preamble.", targetPct)
+}
+
+// Summarize makes ONE provider call to compact msgs into a summary string. The
+// conversation is flattened into a single user message (role-tagged) so the call
+// is valid regardless of how msgs alternates, and the model clearly sees
+// "summarize this". NO tools are offered → the summary call cannot re-enter the
+// tool / compaction machinery. Shared by the loop (auto + self-compact) and the
+// server (manual + terminal compaction). model may be a cheaper same-provider model.
+func Summarize(ctx context.Context, provider providers.Provider, model string, msgs []providers.Message, targetPct int) (string, error) {
+	var convo strings.Builder
+	for _, m := range msgs {
+		for _, c := range m.Content {
+			switch c.Type {
+			case "text":
+				if c.Text != "" {
+					fmt.Fprintf(&convo, "%s: %s\n\n", m.Role, c.Text)
+				}
+			case "tool_use":
+				fmt.Fprintf(&convo, "%s [tool_use %s]: %s\n\n", m.Role, c.ToolName, string(c.ToolInput))
+			case "tool_result":
+				fmt.Fprintf(&convo, "%s [tool_result]: %s\n\n", m.Role, c.Text)
+			}
+		}
+	}
+	ch, err := provider.Call(ctx, providers.Request{
+		Model:  model,
+		System: []providers.ContentBlock{{Type: "text", Text: compactionPrompt(targetPct)}},
+		Messages: []providers.Message{{
+			Role:    "user",
+			Content: []providers.ContentBlock{{Type: "text", Text: "Conversation to compact:\n\n" + convo.String()}},
+		}},
+	})
+	if err != nil {
+		return "", err
+	}
+	var out strings.Builder
+	for ev := range ch {
+		switch ev.Type {
+		case providers.EventText:
+			out.WriteString(ev.Text)
+		case providers.EventError:
+			return "", errors.New(ev.Error)
+		}
+	}
+	return out.String(), nil
+}
+
+// applyCompactSummary replaces `messages` with a compacted form built from a
+// PRE-COMPUTED summary (the manual path — the server already summarized) + keepN/
+// keepFirst taken verbatim from the control, and emits the persisted marker. The
+// loop trusts keepN (the server snapped it on the same in-memory==transcript
+// history). Used by drainSteer + parkForInput.
+func applyCompactSummary(messages []providers.Message, summary string, keepN int, keepFirst bool, emit func(providers.Event)) []providers.Message {
+	before := estimateMessageTokens(messages)
+	if keepN < 0 {
+		keepN = 0
+	}
+	if keepN > len(messages) {
+		keepN = len(messages)
+	}
+	tail := messages[len(messages)-keepN:]
+	pinned := ""
+	if keepFirst && len(messages) > 0 {
+		pinned = messageText(messages[0])
+	}
+	out := CompactionMessages(pinned, summary, tail)
+	if emit != nil {
+		emit(providers.Event{Type: providers.EventContextCompaction,
+			ContextCompaction: &providers.ContextCompactionEventInfo{
+				Summary: summary, KeepN: keepN, KeepFirst: keepFirst,
+				BeforeTokens: before, AfterTokens: estimateMessageTokens(out)}})
+	}
+	return out
+}
+
+// shouldAutoCompact reports whether the loop should auto-compact at this
+// boundary: compaction enabled, the provider reports a window, the previous
+// turn's context footprint crossed the trigger percentage, and we didn't just
+// compact (one-iteration debounce against thrash). used/window are the previous
+// iteration's live values (0 on the first iteration → never fires).
+func shouldAutoCompact(c *config.Compaction, used, window, iter, lastCompactIter int) bool {
+	if c == nil || c.Enabled == nil || !*c.Enabled {
+		return false
+	}
+	if window <= 0 || used <= 0 || iter <= lastCompactIter+1 {
+		return false
+	}
+	at := config.CompactionDefaultAutoAtPct
+	if c.AutoCompactAtPct != nil {
+		at = *c.AutoCompactAtPct
+	}
+	return used*100 >= window*at
 }
 
 // drainSteer non-blocking-pulls every currently-queued operator steering
@@ -668,19 +856,15 @@ func CompactionMessages(summary string) []providers.Message {
 // turn (TRUSTED — bearer-gated, same trust tier as the run caller — so plain
 // text, not fenced); onSteer (if set) fires per message so the runner persists +
 // emits it. A steer.KindCompact control instead REPLACES the conversation with
-// the summary pair and emits EventContextCompaction (persisted + forwarded), so
-// the in-memory history collapses; it does NOT fire onSteer (the summary is not
-// an operator turn and must not be persisted as a user_input replay row).
+// the compacted form (server-computed summary + keep-N/keep-first) and emits
+// EventContextCompaction; it does NOT fire onSteer (the summary is not an
+// operator turn and must not be persisted as a user_input replay row).
 func drainSteer(q <-chan steer.Message, messages []providers.Message, onSteer func(steer.Message), emit func(providers.Event)) []providers.Message {
 	for {
 		select {
 		case m := <-q:
 			if m.Kind == steer.KindCompact {
-				messages = CompactionMessages(m.Text)
-				if emit != nil {
-					emit(providers.Event{Type: providers.EventContextCompaction,
-						ContextCompaction: &providers.ContextCompactionEventInfo{Summary: m.Text}})
-				}
+				messages = applyCompactSummary(messages, m.Text, m.KeepN, m.KeepFirst, emit)
 				continue
 			}
 			messages = append(messages, providers.Message{
@@ -694,6 +878,57 @@ func drainSteer(q <-chan steer.Message, messages []providers.Message, onSteer fu
 			return messages
 		}
 	}
+}
+
+// maybeAutoCompact runs an INLINE summarization (the loop computes the summary
+// itself — the auto + self-compact path) and replaces `messages` with the
+// compacted form, emitting the marker. Returns the (possibly unchanged) slice +
+// whether it compacted. A failed summary call changes nothing (logged via emit).
+// The caller gates WHEN this runs (threshold / self-request) at a clean boundary.
+func maybeAutoCompact(ctx context.Context, opts RunOptions, messages []providers.Message, emit func(providers.Event), trigger string) ([]providers.Message, bool) {
+	c := opts.Compaction
+	keepLastN := config.CompactionDefaultKeepLastN
+	keepFirst := config.CompactionDefaultKeepFirst
+	targetPct := config.CompactionDefaultTargetPct
+	model := opts.Model
+	if c != nil {
+		if c.KeepLastN != nil {
+			keepLastN = *c.KeepLastN
+		}
+		if c.KeepFirst != nil {
+			keepFirst = *c.KeepFirst
+		}
+		if c.TargetPercentage != nil {
+			targetPct = *c.TargetPercentage
+		}
+		if c.Model != nil && *c.Model != "" {
+			model = *c.Model
+		}
+	}
+	firstIdx, cut, ok := CompactionSplit(messages, keepLastN, keepFirst)
+	if !ok {
+		return messages, false
+	}
+	summary, err := Summarize(ctx, opts.Provider, model, messages[firstIdx:cut], targetPct)
+	if err != nil || strings.TrimSpace(summary) == "" {
+		if err != nil {
+			emit(providers.Event{Type: providers.EventError, Error: "compaction summary failed (" + trigger + "): " + err.Error()})
+		}
+		return messages, false
+	}
+	before := estimateMessageTokens(messages)
+	pinned := ""
+	if firstIdx > 0 {
+		pinned = messageText(messages[0])
+	}
+	out := CompactionMessages(pinned, strings.TrimSpace(summary), messages[cut:])
+	after := estimateMessageTokens(out)
+	emit(providers.Event{Type: providers.EventContextCompaction,
+		ContextCompaction: &providers.ContextCompactionEventInfo{
+			Summary: strings.TrimSpace(summary), KeepN: len(messages) - cut, KeepFirst: firstIdx > 0,
+			BeforeTokens: before, AfterTokens: after, Trigger: trigger}})
+	lcotel.RecordCompactionCtx(ctx, trigger, before, after) // per-run-shape metric via OTEL span event
+	return out, true
 }
 
 func Run(ctx context.Context, opts RunOptions) (RunResult, error) {
@@ -777,6 +1012,15 @@ func Run(ctx context.Context, opts RunOptions) (RunResult, error) {
 
 	emit(providers.Event{Type: providers.EventStarted})
 
+	// Context compaction (v2): a self-request flag the Context op=compact tool
+	// sets (checked at the next iteration boundary), plus the previous iteration's
+	// context footprint + window ceiling that drive the auto-compact threshold.
+	// lastCompactIter debounces back-to-back auto-compactions.
+	var compactRequested atomic.Bool
+	ctx = tools.WithCompactRequest(ctx, &compactRequested)
+	var lastCtxTokens, lastWindow int
+	lastCompactIter := -2
+
 	var totalUsage providers.Usage
 	var finalText string
 	var stopReason string
@@ -832,6 +1076,11 @@ outerLoop:
 		iterCtx = tools.WithResolvedProvider(iterCtx, opts.Provider.ID())
 		iterCtx = tools.WithResolvedModel(iterCtx, opts.Model)
 		iterCtx = tools.WithResolvedSampling(iterCtx, opts.Sampling)
+		// Current context footprint (last completed turn's input+cache vs the
+		// window) so Context op=self can show the agent how full it is — the
+		// signal it needs to decide whether to self-compact (op=compact). Same
+		// values the auto-compact threshold reads; 0 on the first iteration.
+		iterCtx = tools.WithContextUsage(iterCtx, lastCtxTokens, lastWindow)
 
 		// Heartbeat fires at the top of each iteration. Cheap path —
 		// implementations are expected to be ~one UPDATE. Failures
@@ -864,6 +1113,23 @@ outerLoop:
 		// user turns, which every provider accepts (replay already emits them).
 		if opts.SteerQueue != nil {
 			messages = drainSteer(opts.SteerQueue, messages, opts.OnSteer, emit)
+		}
+
+		// Auto / self-requested compaction — also a clean boundary (drainSteer
+		// ran; no tool cycle is mid-flight). Fires when the agent asked
+		// (Context op=compact) OR the PREVIOUS iteration's context footprint
+		// crossed the configured threshold. The loop summarizes inline and
+		// replaces the history; the smaller next request self-debounces the
+		// threshold. Applies to ALL runs (interactive + autonomous).
+		if selfReq := compactRequested.Swap(false); selfReq || shouldAutoCompact(opts.Compaction, lastCtxTokens, lastWindow, iter, lastCompactIter) {
+			trigger := "auto"
+			if selfReq {
+				trigger = "self"
+			}
+			if newMsgs, did := maybeAutoCompact(iterCtx, opts, messages, emit, trigger); did {
+				messages = newMsgs
+				lastCompactIter = iter
+			}
 		}
 
 		req := providers.Request{
@@ -1144,6 +1410,13 @@ outerLoop:
 			// byte-stable; 0 when the provider reports an unknown window.
 			iterUsage.MaxContextTokens = opts.Provider.Capabilities().MaxContextTokens
 			emit(providers.Event{Type: providers.EventUsage, Usage: iterUsage})
+			// Retain this turn's CURRENT context footprint (input + cache, i.e.
+			// what the request actually sent — NOT cumulative totalUsage, which
+			// only grows) + the window ceiling, so the NEXT iteration's
+			// top-of-loop auto-compact check sees the live utilization. After a
+			// compaction the next request shrinks, so this self-debounces.
+			lastCtxTokens = iterUsage.InputTokens + iterUsage.CacheReadTokens + iterUsage.CacheCreationTokens
+			lastWindow = iterUsage.MaxContextTokens
 		}
 
 		stopReason = iterStop
@@ -1171,9 +1444,7 @@ outerLoop:
 						break // ctx cancelled (or queue closed) → terminate
 					}
 					if m.Kind == steer.KindCompact {
-						messages = CompactionMessages(m.Text)
-						emit(providers.Event{Type: providers.EventContextCompaction,
-							ContextCompaction: &providers.ContextCompactionEventInfo{Summary: m.Text}})
+						messages = applyCompactSummary(messages, m.Text, m.KeepN, m.KeepFirst, emit)
 						continue // re-park: wait for the operator's actual next turn
 					}
 					messages = append(messages, providers.Message{

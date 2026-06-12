@@ -670,6 +670,15 @@ type ContextCompactionEventInfo struct {
 	Summary      string `json:"summary"`
 	BeforeTokens int    `json:"before_tokens,omitempty"`
 	AfterTokens  int    `json:"after_tokens,omitempty"`
+	// KeepN / KeepFirst record how much recent history was kept verbatim and
+	// whether the first user turn (the task) was pinned — replayTranscript reads
+	// these to reconstruct the identical compacted form (keep last KeepN of the
+	// accumulated messages + pin the first when KeepFirst).
+	KeepN     int  `json:"keep_n,omitempty"`
+	KeepFirst bool `json:"keep_first,omitempty"`
+	// Trigger is "manual" | "auto" | "self" — which path fired the compaction.
+	// Surfaced for metrics + the UI; not used by replay.
+	Trigger string `json:"trigger,omitempty"`
 }
 
 // HostWideningEventInfo is the structured payload on EventHostWidened

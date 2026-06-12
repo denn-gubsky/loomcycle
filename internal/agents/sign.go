@@ -97,9 +97,16 @@ type AgentContent struct {
 	// whitespace/CRLF is semantically load-bearing and must match the
 	// operator's `loomcycle hash agent` CI. Tag "code_body" sorts between
 	// allowed_tools and description, preserving the alphabetical order.
-	CodeBody    string `json:"code_body,omitempty"`
-	Description string `json:"description,omitempty"`
-	Effort      string `json:"effort,omitempty"`
+	CodeBody string `json:"code_body,omitempty"`
+	// Compaction is the per-agent context-compaction block (mirrors
+	// config.Compaction; the agents package stays config-free). Content-
+	// identifying — a fork that only changes a compaction field mints a distinct
+	// content_sha256. Pointer + omitempty + normalize-collapse so a no-compaction
+	// agent omits the key and hashes byte-identical to pre-feature rows. Tag
+	// "compaction" sorts between code_body and description.
+	Compaction  *Compaction `json:"compaction,omitempty"`
+	Description string      `json:"description,omitempty"`
+	Effort      string      `json:"effort,omitempty"`
 	// EvaluationScopes / Interruption are the remaining interactive/
 	// multi-agent ACL fields (F14). evaluation_scopes is a slice (nil →
 	// omitted); interruption is a pointer for the same empty-struct reason
@@ -205,6 +212,13 @@ func normalize(c *AgentContent) {
 		c.Sampling.TopK == nil && c.Sampling.FrequencyPenalty == nil && c.Sampling.PresencePenalty == nil &&
 		c.Sampling.Seed == nil && len(c.Sampling.Stop) == 0 {
 		c.Sampling = nil
+	}
+	// Same all-nil collapse for compaction (a substrate read of a no-compaction
+	// def yields `"compaction":{}`) → hashes identically to a pre-feature row.
+	if c.Compaction != nil && c.Compaction.Enabled == nil && c.Compaction.TargetPercentage == nil &&
+		c.Compaction.KeepLastN == nil && c.Compaction.KeepFirst == nil &&
+		c.Compaction.AutoCompactAtPct == nil && c.Compaction.Model == nil {
+		c.Compaction = nil
 	}
 
 	// Trim + normalise the system_prompt to insulate the hash from

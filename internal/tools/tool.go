@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sync/atomic"
 
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	lcotel "github.com/denn-gubsky/loomcycle/internal/otel"
@@ -605,6 +606,65 @@ func PauseGateFromContext(ctx context.Context) PauseGate {
 	return g
 }
 
+// --- Compaction (context-compaction v2) ----------------------------------
+
+type ctxKeyCompactRequest struct{}
+
+// WithCompactRequest stashes a "compact requested" flag on ctx so a tool
+// (Context op=compact) can ask the loop to compact at its next iteration
+// boundary. The loop allocates the flag + checks/clears it; the tool only sets
+// it. nil flag is a no-op (no loop is listening).
+func WithCompactRequest(ctx context.Context, flag *atomic.Bool) context.Context {
+	if flag == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, ctxKeyCompactRequest{}, flag)
+}
+
+// CompactRequest returns the compact-request flag, or nil when unset (the
+// op=compact tool then reports compaction isn't available for this run).
+func CompactRequest(ctx context.Context) *atomic.Bool {
+	v, _ := ctx.Value(ctxKeyCompactRequest{}).(*atomic.Bool)
+	return v
+}
+
+type ctxKeyCompactionPolicy struct{}
+
+// WithCompactionPolicy attaches the run's RESOLVED-but-sparse compaction settings
+// to ctx (per-run/per-spawn > parent-inherited > child def, defaults applied at
+// use-time). A sub-agent inherits this; the spawn path blends a child def +
+// per-spawn override over it. nil/IsZero is a no-op.
+func WithCompactionPolicy(ctx context.Context, c *config.Compaction) context.Context {
+	if c.IsZero() {
+		return ctx
+	}
+	return context.WithValue(ctx, ctxKeyCompactionPolicy{}, c)
+}
+
+// CompactionPolicy returns the inherited compaction settings (sparse), or nil.
+func CompactionPolicy(ctx context.Context) *config.Compaction {
+	c, _ := ctx.Value(ctxKeyCompactionPolicy{}).(*config.Compaction)
+	return c
+}
+
+type ctxKeyCompactionOverride struct{}
+
+// WithCompactionOverride carries a per-spawn compaction override (the Agent
+// tool's `compaction` field on a spawn entry) from the tool to runSubAgent,
+// which blends it on top of the child's effective policy. nil/IsZero is a no-op.
+func WithCompactionOverride(ctx context.Context, c *config.Compaction) context.Context {
+	if c.IsZero() {
+		return ctx
+	}
+	return context.WithValue(ctx, ctxKeyCompactionOverride{}, c)
+}
+
+// CompactionOverride returns the per-spawn compaction override, or nil.
+func CompactionOverride(ctx context.Context) *config.Compaction {
+	c, _ := ctx.Value(ctxKeyCompactionOverride{}).(*config.Compaction)
+	return c
+}
+
 // ctxKeyResolvedProvider / ctxKeyResolvedModel carry the run's
 // CURRENTLY-RESOLVED provider id and model name so the Context tool's
 // op=self can report them to the agent. The model never supplies these
@@ -661,6 +721,35 @@ func WithResolvedSampling(ctx context.Context, s *config.Sampling) context.Conte
 // ResolvedSampling returns the resolved sampling params from ctx, or nil.
 func ResolvedSampling(ctx context.Context) *config.Sampling {
 	v, _ := ctx.Value(ctxKeyResolvedSampling{}).(*config.Sampling)
+	return v
+}
+
+// ctxKeyContextUsage carries the run's CURRENT context footprint (tokens used as
+// of the last completed turn + the model's window ceiling) so Context op=self
+// can report it. An agent reads this alongside its compaction settings to decide
+// whether to self-compact (Context op=compact). Stamped per-iteration in loop.Run.
+type ctxKeyContextUsage struct{}
+
+// ContextUsageValue is the footprint op=self reports. Used is input + cache
+// tokens of the last turn's request; Max is the window ceiling (0 = unknown).
+type ContextUsageValue struct {
+	Used int
+	Max  int
+}
+
+// WithContextUsage attaches the current context footprint to ctx. used<=0 is a
+// no-op (no turn has completed yet → op=self omits the field).
+func WithContextUsage(ctx context.Context, used, max int) context.Context {
+	if used <= 0 {
+		return ctx
+	}
+	return context.WithValue(ctx, ctxKeyContextUsage{}, ContextUsageValue{Used: used, Max: max})
+}
+
+// ContextUsage returns the current context footprint from ctx (zero value when
+// unset — Used==0).
+func ContextUsage(ctx context.Context) ContextUsageValue {
+	v, _ := ctx.Value(ctxKeyContextUsage{}).(ContextUsageValue)
 	return v
 }
 

@@ -1807,6 +1807,10 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		QuotaBytes:    agentDef.MemoryQuotaBytes,
 		Backend:       agentDef.MemoryBackend,
 	})
+	// Resolved compaction settings flow down the spawn tree via ctx: a sub-agent
+	// inherits the parent's effective policy (its def fills any gaps the parent
+	// left unset), overridable per-spawn by the Agent tool.
+	loopCtx = tools.WithCompactionPolicy(loopCtx, config.MergeCompaction(agentDef.Compaction, in.Compaction))
 	loopCtx = tools.WithChannelPolicy(loopCtx, s.channelPolicyForAgent(loopCtx, agentDef))
 	loopCtx = tools.WithEventEmitter(loopCtx, emit)
 	adPolicy, evPolicy := s.substratePoliciesForAgent(agentDef, effectiveAgentName)
@@ -1855,7 +1859,8 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		PayloadMetadata:        in.PayloadMetadata,
 		RunTimeoutSeconds:      pickRunTimeout(in.RunTimeoutSeconds, agentDef.RunTimeoutSeconds),
 		Interactive:            in.Interactive,
-		Sampling:               config.MergeSampling(agentDef.Sampling, in.Sampling), // per-run wins per field
+		Sampling:               config.MergeSampling(agentDef.Sampling, in.Sampling),       // per-run wins per field
+		Compaction:             config.MergeCompaction(agentDef.Compaction, in.Compaction), // per-run wins per field
 		UserTier:               in.UserTier,
 		FallbackPolicy:         fbPolicy,
 		ReResolve:              fbReResolve,
@@ -2620,6 +2625,11 @@ type runRequest struct {
 	// top_p, …) — merged PER FIELD over the agent's own sampling (this wins;
 	// unset fields inherit the agent's). nil = inherit the agent's entirely.
 	Sampling *config.Sampling `json:"sampling,omitempty"`
+
+	// Compaction is an optional per-RUN context-compaction override — merged PER
+	// FIELD over the agent's own compaction block (this wins; unset fields
+	// inherit). nil = inherit the agent's entirely.
+	Compaction *config.Compaction `json:"compaction,omitempty"`
 }
 
 // pickRunTimeout resolves the effective code-js wall-clock budget override:
@@ -3091,6 +3101,7 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		QuotaBytes:    agentDef.MemoryQuotaBytes,
 		Backend:       agentDef.MemoryBackend,
 	})
+	loopCtx = tools.WithCompactionPolicy(loopCtx, config.MergeCompaction(agentDef.Compaction, req.Compaction))
 	loopCtx = tools.WithChannelPolicy(loopCtx, s.channelPolicyForAgent(loopCtx, agentDef))
 	loopCtx = tools.WithEventEmitter(loopCtx, emit)
 	adPolicy, evPolicy := s.substratePoliciesForAgent(agentDef, req.Agent)
@@ -3131,7 +3142,8 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		Metadata:               req.Metadata,  // direct /v1/runs caller is first-party → trusted; no payload_metadata
 		RunTimeoutSeconds:      pickRunTimeout(req.RunTimeoutSeconds, agentDef.RunTimeoutSeconds),
 		Interactive:            req.Interactive,
-		Sampling:               config.MergeSampling(agentDef.Sampling, req.Sampling), // per-run wins per field
+		Sampling:               config.MergeSampling(agentDef.Sampling, req.Sampling),       // per-run wins per field
+		Compaction:             config.MergeCompaction(agentDef.Compaction, req.Compaction), // per-run wins per field
 		UserTier:               req.UserTier,
 		FallbackPolicy:         fbPolicy,
 		ReResolve:              fbReResolve,
@@ -3256,6 +3268,10 @@ type messagesRequest struct {
 	// Sampling: per-RUN LLM sampling override for this continuation turn,
 	// merged per field over the agent's. Same semantics as runRequest.Sampling.
 	Sampling *config.Sampling `json:"sampling,omitempty"`
+
+	// Compaction: per-RUN context-compaction override for this continuation,
+	// merged per field over the agent's. Same semantics as runRequest.Compaction.
+	Compaction *config.Compaction `json:"compaction,omitempty"`
 }
 
 func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
@@ -3561,6 +3577,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		QuotaBytes:    agentDef.MemoryQuotaBytes,
 		Backend:       agentDef.MemoryBackend,
 	})
+	loopCtx = tools.WithCompactionPolicy(loopCtx, config.MergeCompaction(agentDef.Compaction, body.Compaction))
 	loopCtx = tools.WithChannelPolicy(loopCtx, s.channelPolicyForAgent(loopCtx, agentDef))
 	loopCtx = tools.WithEventEmitter(loopCtx, emit)
 	adPolicy, evPolicy := s.substratePoliciesForAgent(agentDef, sess.Agent)
@@ -3602,7 +3619,8 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		Metadata:               body.Metadata,
 		RunTimeoutSeconds:      pickRunTimeout(body.RunTimeoutSeconds, agentDef.RunTimeoutSeconds),
 		Interactive:            body.Interactive,
-		Sampling:               config.MergeSampling(agentDef.Sampling, body.Sampling), // per-run wins per field
+		Sampling:               config.MergeSampling(agentDef.Sampling, body.Sampling),       // per-run wins per field
+		Compaction:             config.MergeCompaction(agentDef.Compaction, body.Compaction), // per-run wins per field
 		UserTier:               body.UserTier,
 		FallbackPolicy:         fbPolicy,
 		ReResolve:              fbReResolve,
@@ -3756,7 +3774,28 @@ func replayTranscript(events []store.Event) []providers.Message {
 			flushPendingTools()
 			var pe providers.Event
 			if err := json.Unmarshal(ev.Payload, &pe); err == nil && pe.ContextCompaction != nil {
-				messages = append([]providers.Message(nil), loop.CompactionMessages(pe.ContextCompaction.Summary)...)
+				cc := pe.ContextCompaction
+				// Keep the same last-N of the accumulated history the live loop
+				// kept, and pin the first message when keep_first — the marker
+				// records both, so the rebuild is byte-identical to what the loop
+				// produced (counts align: system prompt is excluded from both).
+				keepN := cc.KeepN
+				if keepN < 0 {
+					keepN = 0
+				}
+				if keepN > len(messages) {
+					keepN = len(messages)
+				}
+				tail := append([]providers.Message(nil), messages[len(messages)-keepN:]...)
+				pinned := ""
+				if cc.KeepFirst && len(messages) > 0 {
+					for _, c := range messages[0].Content {
+						if c.Type == "text" {
+							pinned += c.Text
+						}
+					}
+				}
+				messages = loop.CompactionMessages(pinned, cc.Summary, tail)
 			}
 			asstText.Reset()
 			asstTools = nil
@@ -4350,6 +4389,15 @@ func (s *Server) runSubAgent(ctx context.Context, name string, prompt string, de
 		QuotaBytes:    def.MemoryQuotaBytes,
 		Backend:       def.MemoryBackend,
 	})
+	// Compaction flows DOWN the spawn tree (unlike memory/channels/sampling,
+	// which are the child's own). The parent's effective policy (on ctx) wins per
+	// field; the child def fills any field the PARENT left unset; a per-spawn
+	// Agent-tool override (also on ctx) wins over both. The result is stamped on
+	// subCtx so the child's OWN children inherit it (recursive), and passed to
+	// the sub-loop's RunOptions for its auto-compaction.
+	subCompaction := config.MergeCompaction(def.Compaction, tools.CompactionPolicy(ctx))
+	subCompaction = config.MergeCompaction(subCompaction, tools.CompactionOverride(ctx))
+	subCtx = tools.WithCompactionPolicy(subCtx, subCompaction)
 	// Sub-agent's Channel policy follows the same per-yaml shape as
 	// MemoryPolicy above. The Channels map (operator-declared
 	// channels) IS shared with the parent — those are operator
@@ -4414,6 +4462,7 @@ func (s *Server) runSubAgent(ctx context.Context, name string, prompt string, de
 		// Sub-agents use their OWN def's sampling (no per-spawn override yet —
 		// a breeder varies temperature by FORKING a def, then spawning it).
 		Sampling:               def.Sampling,
+		Compaction:             subCompaction,
 		UserTier:               parentTier,
 		FallbackPolicy:         fbPolicy,
 		ReResolve:              fbReResolve,
@@ -4960,16 +5009,6 @@ func (s *Server) handleRunInput(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"run_id": runID, "delivered": delivered})
 }
 
-// compactionSystemPrompt instructs the model to compact a conversation. Used by
-// handleCompactRun's one-shot summarization call (NOT the agent's own system
-// prompt, which is re-derived separately and untouched by compaction).
-const compactionSystemPrompt = "You are compacting a conversation to free up the model's context " +
-	"window. Produce a single concise summary — aim for roughly 10% of the original length — that " +
-	"preserves the user's goals and constraints, decisions made, facts and values established, tool " +
-	"results that still matter, and any open threads or next steps. Write it as durable context the " +
-	"assistant can rely on to continue the conversation. Output ONLY the summary prose — no preamble, " +
-	"no meta-commentary."
-
 // minCompactMessages: a conversation shorter than this isn't worth a model call.
 const minCompactMessages = 4
 
@@ -5065,7 +5104,33 @@ func (s *Server) handleCompactRun(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "provider unavailable: "+perr.Error(), http.StatusServiceUnavailable)
 		return
 	}
-	summary, serr := summarizeConversation(r.Context(), provider, model, msgs)
+
+	// Resolve the run's compaction keep-N / keep-first / target / summary-model
+	// (agent-def settings; defaults applied) so a manual compact keeps recent
+	// turns + pins the task exactly like auto-compaction does.
+	keepLastN, keepFirst, targetPct := config.CompactionDefaultKeepLastN, config.CompactionDefaultKeepFirst, config.CompactionDefaultTargetPct
+	summaryModel := model
+	if c := agentDef.Compaction; c != nil {
+		if c.KeepLastN != nil {
+			keepLastN = *c.KeepLastN
+		}
+		if c.KeepFirst != nil {
+			keepFirst = *c.KeepFirst
+		}
+		if c.TargetPercentage != nil {
+			targetPct = *c.TargetPercentage
+		}
+		if c.Model != nil && *c.Model != "" {
+			summaryModel = *c.Model
+		}
+	}
+	// CompactionSplit (shared with the loop) picks what to summarize vs keep.
+	firstIdx, cut, splitOK := loop.CompactionSplit(msgs, keepLastN, keepFirst)
+	if !splitOK {
+		writeJSON(w, http.StatusOK, compactResponse{RunID: runID, Compacted: false, BeforeTokens: before, AfterTokens: before, Applied: "noop"})
+		return
+	}
+	summary, serr := loop.Summarize(r.Context(), provider, summaryModel, msgs[firstIdx:cut], targetPct)
 	if serr != nil {
 		http.Error(w, "summarize: "+serr.Error(), http.StatusBadGateway)
 		return
@@ -5075,15 +5140,26 @@ func (s *Server) handleCompactRun(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "summarization produced no text", http.StatusBadGateway)
 		return
 	}
-	after := estimateMessageTokens(loop.CompactionMessages(summary))
+	keepN := len(msgs) - cut
+	pinned := ""
+	if firstIdx > 0 {
+		for _, c := range msgs[0].Content {
+			if c.Type == "text" {
+				pinned += c.Text
+			}
+		}
+	}
+	after := estimateMessageTokens(loop.CompactionMessages(pinned, summary, msgs[cut:]))
 
 	// Apply. Live (local or cross-replica, routed by steerReg.Push): push the
-	// compact control — the loop swaps its history + emits the persisted marker.
-	// Terminal: no loop, so persist the marker here for the next continuation.
+	// compact control (summary + keep-N/keep-first) — the loop swaps its history
+	// + emits the persisted marker. Terminal: no loop, so persist the marker here
+	// for the next continuation.
 	applied := "marker"
 	if !terminal && s.steerReg != nil {
 		_, pushErr := s.steerReg.Push(r.Context(), runID, steer.Message{
-			Kind: steer.KindCompact, Text: summary, Source: compactSource(r), EnqueuedAt: time.Now(),
+			Kind: steer.KindCompact, Text: summary, KeepN: keepN, KeepFirst: firstIdx > 0,
+			Source: compactSource(r), EnqueuedAt: time.Now(),
 		})
 		switch {
 		case errors.Is(pushErr, steer.ErrQueueFull):
@@ -5103,7 +5179,8 @@ func (s *Server) handleCompactRun(w http.ResponseWriter, r *http.Request) {
 		payload, merr := json.Marshal(providers.Event{
 			Type: providers.EventContextCompaction,
 			ContextCompaction: &providers.ContextCompactionEventInfo{
-				Summary: summary, BeforeTokens: before, AfterTokens: after,
+				Summary: summary, KeepN: keepN, KeepFirst: firstIdx > 0,
+				BeforeTokens: before, AfterTokens: after, Trigger: "manual",
 			},
 		})
 		if merr == nil {
@@ -5135,49 +5212,6 @@ func estimateMessageTokens(msgs []providers.Message) int {
 		}
 	}
 	return chars / 4
-}
-
-// summarizeConversation makes ONE provider call to compact msgs into a summary.
-// The conversation is flattened into a single user message (role-tagged) so the
-// call is valid regardless of how msgs alternates or which turn it ends on, and
-// the model clearly sees "summarize this text". Drains the event stream for text.
-func summarizeConversation(ctx context.Context, provider providers.Provider, model string, msgs []providers.Message) (string, error) {
-	var convo strings.Builder
-	for _, m := range msgs {
-		for _, c := range m.Content {
-			switch c.Type {
-			case "text":
-				if c.Text != "" {
-					fmt.Fprintf(&convo, "%s: %s\n\n", m.Role, c.Text)
-				}
-			case "tool_use":
-				fmt.Fprintf(&convo, "%s [tool_use %s]: %s\n\n", m.Role, c.ToolName, string(c.ToolInput))
-			case "tool_result":
-				fmt.Fprintf(&convo, "%s [tool_result]: %s\n\n", m.Role, c.Text)
-			}
-		}
-	}
-	ch, err := provider.Call(ctx, providers.Request{
-		Model:  model,
-		System: []providers.ContentBlock{{Type: "text", Text: compactionSystemPrompt}},
-		Messages: []providers.Message{{
-			Role:    "user",
-			Content: []providers.ContentBlock{{Type: "text", Text: "Conversation to compact:\n\n" + convo.String()}},
-		}},
-	})
-	if err != nil {
-		return "", err
-	}
-	var b strings.Builder
-	for ev := range ch {
-		switch ev.Type {
-		case providers.EventText:
-			b.WriteString(ev.Text)
-		case providers.EventError:
-			return "", errors.New(ev.Error)
-		}
-	}
-	return b.String(), nil
 }
 
 // handleListRunInterrupts serves GET /v1/runs/{run_id}/interrupts.

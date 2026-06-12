@@ -8,6 +8,51 @@ For pre-v0.4 history (single-tool runtime, library milestone, security patch), s
 
 ---
 
+## What's in v0.32.0
+
+**Context compaction — the full subsystem.** A long session (interactive or
+autonomous) eventually crowds the model's context window. v0.32.0 makes
+compaction a first-class, configurable capability that summarizes older turns and
+continues from the summary, freeing context while preserving the thread.
+
+The mechanism (how "replace the conversation" stays correct): a compaction
+replaces the loop's in-memory history with `[pinned task? + summary, ack] ++
+last-N kept verbatim`, snapped to a clean user-turn boundary so a tool_use /
+tool_result pair is never split (no provider 400). The system prompt is separate
+(re-derived), so it's untouched. A `context_compaction` transcript marker records
+the summary + keep-N/keep-first so `replayTranscript` reconstructs the identical
+compacted form on crash-recovery / resume / continuation. The full transcript is
+retained — non-destructive audit.
+
+Four ways to compact, one shared summarizer (`loop.Summarize`):
+- **Manual** — the `/run` terminal's Compact button (v0.31.x line) → `POST
+  /v1/runs/{run_id}/compact`, gated to a safe boundary.
+- **Auto** — when `compaction.enabled` and the context footprint crosses
+  `autocompact_at_pct`, the loop compacts inline at a top-of-iteration boundary.
+  Applies to **autonomous** runs too (the big win for long agents); off by
+  default; self-debounces (the compacted next request shrinks).
+- **Self** — `Context op=compact` lets an agent compact its OWN context, and
+  `Context op=self` now reports both the resolved `compaction` settings AND the
+  current `context` footprint (used / max / used_pct) so the agent can make a
+  conscious decision about when to do so.
+- All emit the same marker + an OTEL `context.compaction` span event (per-run
+  shape flows via OTEL; `/metrics` stays substrate-only).
+
+Per-agent **`compaction`** block (mirrors the `sampling` block — static yaml,
+AgentDef create/fork overlay, per-run on `POST /v1/runs`, content-identifying,
+reported by `Context op=self`): `enabled`, `target_percentage` (10–50),
+`keep_last_n`, `keep_first` (pin the task verbatim), `autocompact_at_pct`
+(50–95), and an optional cheaper same-provider summary `model`. Settings **flow
+down the spawn tree** — a child inherits the parent's effective policy, the
+child's own def fills any field the parent left unset, and the parent can
+override per-spawn via the Agent tool's `compaction` field.
+
+Also folded in (the UI line since v0.31.0): the Claude-Desktop-style `/run`
+composer (#458), the white-on-dark-red **✕ Stop** button (#459), and the original
+manual Compact button (#460). Compaction is configurable in the agent modal today
+via the advanced JSON/YAML overlay; dedicated form controls are a follow-up.
+Runtime-only; no `@loomcycle/client` bump.
+
 ## What's in v0.31.0
 
 **Park + resume a fan-out parent blocked in `parallel_spawn` (F42 / RFC X
