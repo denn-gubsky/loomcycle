@@ -221,6 +221,19 @@ func (c *Context) execSelf(ctx context.Context) (tools.Result, error) {
 	if cp := tools.CompactionPolicy(ctx); !cp.IsZero() {
 		out["compaction"] = cp
 	}
+	// context: how full the window is as of the last completed turn (used =
+	// input + cache tokens; max = the model's window, 0/absent when unknown e.g.
+	// Ollama). Paired with `compaction` above, this is what an agent needs to
+	// make a conscious self-compact decision (e.g. "used_pct >= autocompact_at_pct
+	// → call Context op=compact now"). Omitted before the first turn completes.
+	if u := tools.ContextUsage(ctx); u.Used > 0 {
+		usage := map[string]any{"used_tokens": u.Used}
+		if u.Max > 0 {
+			usage["max_tokens"] = u.Max
+			usage["used_pct"] = u.Used * 100 / u.Max
+		}
+		out["context"] = usage
+	}
 	return okJSON(out)
 }
 

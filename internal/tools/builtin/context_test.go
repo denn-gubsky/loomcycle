@@ -144,6 +144,29 @@ func TestContextTool_SelfReportsCompaction(t *testing.T) {
 	}
 }
 
+// op=self reports the current context footprint (used/max/pct) so an agent can
+// decide whether to self-compact; omitted before the first turn completes.
+func TestContextTool_SelfReportsContextUsage(t *testing.T) {
+	tool := &Context{}
+	ctx := tools.WithRunIdentity(context.Background(), tools.RunIdentityValue{AgentID: "a_x"})
+	// No usage yet → omitted.
+	res0, _ := tool.Execute(ctx, json.RawMessage(`{"op":"self"}`))
+	if _, present := decodeResult(t, res0.Text)["context"]; present {
+		t.Error("context key present with no usage — want omitted")
+	}
+	// With usage → reported with used_tokens/max_tokens/used_pct.
+	ctx = tools.WithContextUsage(ctx, 160000, 200000)
+	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"self"}`))
+	out := decodeResult(t, res.Text)
+	cu, ok := out["context"].(map[string]any)
+	if !ok {
+		t.Fatalf("context key missing/wrong type: %v", out["context"])
+	}
+	if int(cu["used_tokens"].(float64)) != 160000 || int(cu["used_pct"].(float64)) != 80 {
+		t.Errorf("context usage wrong: %+v (want used=160000, pct=80)", cu)
+	}
+}
+
 // op=compact sets the loop's compact-request flag; without one wired it errors.
 func TestContextTool_CompactSetsFlag(t *testing.T) {
 	tool := &Context{}

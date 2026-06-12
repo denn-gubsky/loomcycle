@@ -1076,6 +1076,11 @@ outerLoop:
 		iterCtx = tools.WithResolvedProvider(iterCtx, opts.Provider.ID())
 		iterCtx = tools.WithResolvedModel(iterCtx, opts.Model)
 		iterCtx = tools.WithResolvedSampling(iterCtx, opts.Sampling)
+		// Current context footprint (last completed turn's input+cache vs the
+		// window) so Context op=self can show the agent how full it is — the
+		// signal it needs to decide whether to self-compact (op=compact). Same
+		// values the auto-compact threshold reads; 0 on the first iteration.
+		iterCtx = tools.WithContextUsage(iterCtx, lastCtxTokens, lastWindow)
 
 		// Heartbeat fires at the top of each iteration. Cheap path —
 		// implementations are expected to be ~one UPDATE. Failures

@@ -724,6 +724,35 @@ func ResolvedSampling(ctx context.Context) *config.Sampling {
 	return v
 }
 
+// ctxKeyContextUsage carries the run's CURRENT context footprint (tokens used as
+// of the last completed turn + the model's window ceiling) so Context op=self
+// can report it. An agent reads this alongside its compaction settings to decide
+// whether to self-compact (Context op=compact). Stamped per-iteration in loop.Run.
+type ctxKeyContextUsage struct{}
+
+// ContextUsageValue is the footprint op=self reports. Used is input + cache
+// tokens of the last turn's request; Max is the window ceiling (0 = unknown).
+type ContextUsageValue struct {
+	Used int
+	Max  int
+}
+
+// WithContextUsage attaches the current context footprint to ctx. used<=0 is a
+// no-op (no turn has completed yet → op=self omits the field).
+func WithContextUsage(ctx context.Context, used, max int) context.Context {
+	if used <= 0 {
+		return ctx
+	}
+	return context.WithValue(ctx, ctxKeyContextUsage{}, ContextUsageValue{Used: used, Max: max})
+}
+
+// ContextUsage returns the current context footprint from ctx (zero value when
+// unset — Used==0).
+func ContextUsage(ctx context.Context) ContextUsageValue {
+	v, _ := ctx.Value(ctxKeyContextUsage{}).(ContextUsageValue)
+	return v
+}
+
 // ctxKeyEventEmitter is the context key for the v0.8.4 typed-audit-
 // event emitter. The loop's OnEvent callback is attached at run
 // start; tools that want to surface structured wire events (e.g.
