@@ -31,7 +31,10 @@ Four ways to compact, one shared summarizer (`loop.Summarize`):
   `autocompact_at_pct`, the loop compacts inline at a top-of-iteration boundary.
   Applies to **autonomous** runs too (the big win for long agents); off by
   default; self-debounces (the compacted next request shrinks).
-- **Self** — `Context op=compact` lets an agent compact its OWN context.
+- **Self** — `Context op=compact` lets an agent compact its OWN context, and
+  `Context op=self` now reports both the resolved `compaction` settings AND the
+  current `context` footprint (used / max / used_pct) so the agent can make a
+  conscious decision about when to do so.
 - All emit the same marker + an OTEL `context.compaction` span event (per-run
   shape flows via OTEL; `/metrics` stays substrate-only).
 
