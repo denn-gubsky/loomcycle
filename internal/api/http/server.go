@@ -3756,7 +3756,28 @@ func replayTranscript(events []store.Event) []providers.Message {
 			flushPendingTools()
 			var pe providers.Event
 			if err := json.Unmarshal(ev.Payload, &pe); err == nil && pe.ContextCompaction != nil {
-				messages = append([]providers.Message(nil), loop.CompactionMessages(pe.ContextCompaction.Summary)...)
+				cc := pe.ContextCompaction
+				// Keep the same last-N of the accumulated history the live loop
+				// kept, and pin the first message when keep_first — the marker
+				// records both, so the rebuild is byte-identical to what the loop
+				// produced (counts align: system prompt is excluded from both).
+				keepN := cc.KeepN
+				if keepN < 0 {
+					keepN = 0
+				}
+				if keepN > len(messages) {
+					keepN = len(messages)
+				}
+				tail := append([]providers.Message(nil), messages[len(messages)-keepN:]...)
+				pinned := ""
+				if cc.KeepFirst && len(messages) > 0 {
+					for _, c := range messages[0].Content {
+						if c.Type == "text" {
+							pinned += c.Text
+						}
+					}
+				}
+				messages = loop.CompactionMessages(pinned, cc.Summary, tail)
 			}
 			asstText.Reset()
 			asstTools = nil
@@ -4960,16 +4981,6 @@ func (s *Server) handleRunInput(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"run_id": runID, "delivered": delivered})
 }
 
-// compactionSystemPrompt instructs the model to compact a conversation. Used by
-// handleCompactRun's one-shot summarization call (NOT the agent's own system
-// prompt, which is re-derived separately and untouched by compaction).
-const compactionSystemPrompt = "You are compacting a conversation to free up the model's context " +
-	"window. Produce a single concise summary — aim for roughly 10% of the original length — that " +
-	"preserves the user's goals and constraints, decisions made, facts and values established, tool " +
-	"results that still matter, and any open threads or next steps. Write it as durable context the " +
-	"assistant can rely on to continue the conversation. Output ONLY the summary prose — no preamble, " +
-	"no meta-commentary."
-
 // minCompactMessages: a conversation shorter than this isn't worth a model call.
 const minCompactMessages = 4
 
@@ -5065,7 +5076,33 @@ func (s *Server) handleCompactRun(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "provider unavailable: "+perr.Error(), http.StatusServiceUnavailable)
 		return
 	}
-	summary, serr := summarizeConversation(r.Context(), provider, model, msgs)
+
+	// Resolve the run's compaction keep-N / keep-first / target / summary-model
+	// (agent-def settings; defaults applied) so a manual compact keeps recent
+	// turns + pins the task exactly like auto-compaction does.
+	keepLastN, keepFirst, targetPct := config.CompactionDefaultKeepLastN, config.CompactionDefaultKeepFirst, config.CompactionDefaultTargetPct
+	summaryModel := model
+	if c := agentDef.Compaction; c != nil {
+		if c.KeepLastN != nil {
+			keepLastN = *c.KeepLastN
+		}
+		if c.KeepFirst != nil {
+			keepFirst = *c.KeepFirst
+		}
+		if c.TargetPercentage != nil {
+			targetPct = *c.TargetPercentage
+		}
+		if c.Model != nil && *c.Model != "" {
+			summaryModel = *c.Model
+		}
+	}
+	// CompactionSplit (shared with the loop) picks what to summarize vs keep.
+	firstIdx, cut, splitOK := loop.CompactionSplit(msgs, keepLastN, keepFirst)
+	if !splitOK {
+		writeJSON(w, http.StatusOK, compactResponse{RunID: runID, Compacted: false, BeforeTokens: before, AfterTokens: before, Applied: "noop"})
+		return
+	}
+	summary, serr := loop.Summarize(r.Context(), provider, summaryModel, msgs[firstIdx:cut], targetPct)
 	if serr != nil {
 		http.Error(w, "summarize: "+serr.Error(), http.StatusBadGateway)
 		return
@@ -5075,15 +5112,26 @@ func (s *Server) handleCompactRun(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "summarization produced no text", http.StatusBadGateway)
 		return
 	}
-	after := estimateMessageTokens(loop.CompactionMessages(summary))
+	keepN := len(msgs) - cut
+	pinned := ""
+	if firstIdx > 0 {
+		for _, c := range msgs[0].Content {
+			if c.Type == "text" {
+				pinned += c.Text
+			}
+		}
+	}
+	after := estimateMessageTokens(loop.CompactionMessages(pinned, summary, msgs[cut:]))
 
 	// Apply. Live (local or cross-replica, routed by steerReg.Push): push the
-	// compact control — the loop swaps its history + emits the persisted marker.
-	// Terminal: no loop, so persist the marker here for the next continuation.
+	// compact control (summary + keep-N/keep-first) — the loop swaps its history
+	// + emits the persisted marker. Terminal: no loop, so persist the marker here
+	// for the next continuation.
 	applied := "marker"
 	if !terminal && s.steerReg != nil {
 		_, pushErr := s.steerReg.Push(r.Context(), runID, steer.Message{
-			Kind: steer.KindCompact, Text: summary, Source: compactSource(r), EnqueuedAt: time.Now(),
+			Kind: steer.KindCompact, Text: summary, KeepN: keepN, KeepFirst: firstIdx > 0,
+			Source: compactSource(r), EnqueuedAt: time.Now(),
 		})
 		switch {
 		case errors.Is(pushErr, steer.ErrQueueFull):
@@ -5103,7 +5151,8 @@ func (s *Server) handleCompactRun(w http.ResponseWriter, r *http.Request) {
 		payload, merr := json.Marshal(providers.Event{
 			Type: providers.EventContextCompaction,
 			ContextCompaction: &providers.ContextCompactionEventInfo{
-				Summary: summary, BeforeTokens: before, AfterTokens: after,
+				Summary: summary, KeepN: keepN, KeepFirst: firstIdx > 0,
+				BeforeTokens: before, AfterTokens: after, Trigger: "manual",
 			},
 		})
 		if merr == nil {
@@ -5135,49 +5184,6 @@ func estimateMessageTokens(msgs []providers.Message) int {
 		}
 	}
 	return chars / 4
-}
-
-// summarizeConversation makes ONE provider call to compact msgs into a summary.
-// The conversation is flattened into a single user message (role-tagged) so the
-// call is valid regardless of how msgs alternates or which turn it ends on, and
-// the model clearly sees "summarize this text". Drains the event stream for text.
-func summarizeConversation(ctx context.Context, provider providers.Provider, model string, msgs []providers.Message) (string, error) {
-	var convo strings.Builder
-	for _, m := range msgs {
-		for _, c := range m.Content {
-			switch c.Type {
-			case "text":
-				if c.Text != "" {
-					fmt.Fprintf(&convo, "%s: %s\n\n", m.Role, c.Text)
-				}
-			case "tool_use":
-				fmt.Fprintf(&convo, "%s [tool_use %s]: %s\n\n", m.Role, c.ToolName, string(c.ToolInput))
-			case "tool_result":
-				fmt.Fprintf(&convo, "%s [tool_result]: %s\n\n", m.Role, c.Text)
-			}
-		}
-	}
-	ch, err := provider.Call(ctx, providers.Request{
-		Model:  model,
-		System: []providers.ContentBlock{{Type: "text", Text: compactionSystemPrompt}},
-		Messages: []providers.Message{{
-			Role:    "user",
-			Content: []providers.ContentBlock{{Type: "text", Text: "Conversation to compact:\n\n" + convo.String()}},
-		}},
-	})
-	if err != nil {
-		return "", err
-	}
-	var b strings.Builder
-	for ev := range ch {
-		switch ev.Type {
-		case providers.EventText:
-			b.WriteString(ev.Text)
-		case providers.EventError:
-			return "", errors.New(ev.Error)
-		}
-	}
-	return b.String(), nil
 }
 
 // handleListRunInterrupts serves GET /v1/runs/{run_id}/interrupts.

@@ -3,6 +3,7 @@ package http
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -79,8 +80,9 @@ func compactFixture(t *testing.T) (*Server, *scriptedProvider) {
 	return srv, prov
 }
 
-// seedConversation creates a run with a >=4-message transcript (so it's worth
-// compacting). When terminal, the run is finished completed.
+// seedConversation creates a run with a multi-turn transcript long enough that
+// CompactionSplit (default keep_last_n=4 + keep_first) still has a middle span to
+// summarize. When terminal, the run is finished completed.
 func seedConversation(t *testing.T, srv *Server, terminal bool) (sessID, runID string) {
 	t.Helper()
 	ctx := context.Background()
@@ -95,12 +97,12 @@ func seedConversation(t *testing.T, srv *Server, terminal bool) (sessID, runID s
 	uinput := func(text string) []loop.PromptSegment {
 		return []loop.PromptSegment{{Role: "user", Content: []loop.PromptContentBlock{{Type: "trusted-text", Text: text}}}}
 	}
-	appendResumeEvent(t, srv, run.ID, "user_input", uinput("question one"))
-	appendResumeEvent(t, srv, run.ID, "text", providers.Event{Type: providers.EventText, Text: "answer one"})
-	appendResumeEvent(t, srv, run.ID, "done", providers.Event{Type: providers.EventDone, StopReason: "end_turn"})
-	appendResumeEvent(t, srv, run.ID, "user_input", uinput("question two"))
-	appendResumeEvent(t, srv, run.ID, "text", providers.Event{Type: providers.EventText, Text: "answer two"})
-	appendResumeEvent(t, srv, run.ID, "done", providers.Event{Type: providers.EventDone, StopReason: "end_turn"})
+	// 8 exchanges → 16 messages; keep_last_4 + keep_first leaves ~11 to summarize.
+	for i := 1; i <= 8; i++ {
+		appendResumeEvent(t, srv, run.ID, "user_input", uinput(fmt.Sprintf("question %d", i)))
+		appendResumeEvent(t, srv, run.ID, "text", providers.Event{Type: providers.EventText, Text: fmt.Sprintf("answer %d", i)})
+		appendResumeEvent(t, srv, run.ID, "done", providers.Event{Type: providers.EventDone, StopReason: "end_turn"})
+	}
 	if terminal {
 		if err := srv.store.FinishRun(ctx, run.ID, store.RunCompleted, "end_turn", store.Usage{}, ""); err != nil {
 			t.Fatal(err)

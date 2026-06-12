@@ -16,18 +16,25 @@ import (
 // user turn and end on an assistant turn so the operator's next input alternates
 // cleanly (Anthropic et al. require start-with-user + role alternation).
 func TestCompactionMessages_Shape(t *testing.T) {
-	msgs := CompactionMessages("THE SUMMARY")
-	if len(msgs) != 2 {
-		t.Fatalf("got %d messages, want 2 (user intro + assistant ack)", len(msgs))
+	tail := []providers.Message{
+		{Role: "user", Content: []providers.ContentBlock{{Type: "text", Text: "recent question"}}},
+		{Role: "assistant", Content: []providers.ContentBlock{{Type: "text", Text: "recent answer"}}},
+	}
+	msgs := CompactionMessages("THE TASK", "THE SUMMARY", tail)
+	if len(msgs) != 4 {
+		t.Fatalf("got %d messages, want 4 (summary pair + 2 kept tail)", len(msgs))
 	}
 	if msgs[0].Role != "user" {
 		t.Errorf("first role = %q, want user (providers require start-with-user)", msgs[0].Role)
 	}
-	if !strings.Contains(msgs[0].Content[0].Text, "THE SUMMARY") {
-		t.Errorf("summary not embedded in the user turn: %q", msgs[0].Content[0].Text)
+	if !strings.Contains(msgs[0].Content[0].Text, "THE SUMMARY") || !strings.Contains(msgs[0].Content[0].Text, "THE TASK") {
+		t.Errorf("pinned task + summary not both embedded in the user turn: %q", msgs[0].Content[0].Text)
 	}
 	if msgs[1].Role != "assistant" {
-		t.Errorf("last role = %q, want assistant (so the next operator turn alternates)", msgs[1].Role)
+		t.Errorf("msg[1] role = %q, want assistant", msgs[1].Role)
+	}
+	if msgs[2].Role != "user" || msgs[2].Content[0].Text != "recent question" {
+		t.Errorf("kept tail not appended verbatim: %+v", msgs[2])
 	}
 }
 
