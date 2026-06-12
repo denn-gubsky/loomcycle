@@ -748,6 +748,19 @@ cache:
   native:
     enabled: true              # honour Anthropic cache_control hints
 
+# ─── Context-transform plugins (RFC Z / v0.33.x) ────────────────────
+# A runtime-wide chain of fast, built-in transforms applied to a COPY of the
+# OUTBOUND LLM request on every turn, in declared order. The only built-in
+# today is `redact` — it scrubs secrets out of what the model sees (Tier-A:
+# the operator's secret-classified env values; Tier-B: heuristic value patterns
+# for sk-/AKIA/xox/ghp_/Authorization/key=value). Complements F32, which
+# redacts the PERSISTED transcript — this redacts what is SENT. The synthetic
+# code-js provider is exempt (local replay; no external leak). Empty = no chain.
+# context_plugins:
+#   - name: redact
+#     # enabled: true            # default on; set false to keep the entry but skip it
+#     # redact_tool_input: false # also scrub tool_use inputs, not just text blocks
+
 # ─── Memory (v0.9.0 embedder + v0.11.5 yaml-seeded entries) ──────────
 # memory:
 #   # v0.9.0 — embedder for Vector Memory (Memory.embed: true + Memory.search).
