@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/config"
+	"github.com/denn-gubsky/loomcycle/internal/contextplugin"
 	"github.com/denn-gubsky/loomcycle/internal/hooks"
 	lcotel "github.com/denn-gubsky/loomcycle/internal/otel"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
@@ -44,6 +45,13 @@ type PromptContentBlock struct {
 	Cacheable bool   `json:"cacheable,omitempty"`
 	Kind      string `json:"kind,omitempty"` // for untrusted-block: e.g. "web_content", "uploaded_cv"
 }
+
+// codeJSProviderID is the synthetic replay provider's ID — must match
+// internal/providers/codejs.providerID. The loop can't import codejs (cycle),
+// so the constant is mirrored here; it gates the RFC-Z context-plugin exemption
+// (code-js replays locally, so outbound redaction is both pointless and would
+// trip replay divergence).
+const codeJSProviderID = "code-js"
 
 // RunOptions is one Run() invocation.
 type RunOptions struct {
@@ -131,6 +139,13 @@ type RunOptions struct {
 	// no auto-compaction (manual + Context op=compact still work). Defaults are
 	// applied at use-time (see config.CompactionDefault*).
 	Compaction *config.Compaction
+
+	// ContextPlugins is the runtime-wide context-transform chain (RFC Z / F43):
+	// fast, built-in transforms applied to a COPY of the outbound request each
+	// turn (e.g. secret redaction), in order. nil/empty = no chain. Built once
+	// by the server and shared read-only. Skipped for the synthetic code-js
+	// provider (local replay; redacting its bytes would trip replay divergence).
+	ContextPlugins []contextplugin.Plugin
 
 	// ToolParallelism caps how many tool_calls from a single
 	// assistant turn run concurrently. Zero = use the package
@@ -1132,10 +1147,26 @@ outerLoop:
 			}
 		}
 
+		// Context-transform plugins (RFC Z / F43): run the configured chain on a
+		// COPY of the outbound context — the loop's canonical system/messages
+		// (and so the persisted transcript + code-js replay input) stay
+		// untouched. Skipped for the synthetic code-js provider (local replay,
+		// no external leak; redacting its bytes would trip replay divergence).
+		// No caching in this version — the chain re-runs over the copy each turn.
+		reqSystem, reqMessages := system, messages
+		if len(opts.ContextPlugins) > 0 && opts.Provider.ID() != codeJSProviderID {
+			cs, cm, perr := contextplugin.Apply(iterCtx, opts.ContextPlugins, system, messages)
+			if perr != nil {
+				emit(providers.Event{Type: providers.EventError, Error: "context transform: " + perr.Error()})
+				return RunResult{Iterations: iter}, perr
+			}
+			reqSystem, reqMessages = cs, cm
+		}
+
 		req := providers.Request{
 			Model:     opts.Model,
-			System:    system,
-			Messages:  messages,
+			System:    reqSystem,
+			Messages:  reqMessages,
 			Tools:     toolSpecs,
 			MaxTokens: opts.MaxTokens, // 0 → driver default
 			Effort:    opts.Effort,    // "" → driver default; PR 3 wires per-driver translation

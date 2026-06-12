@@ -2495,3 +2495,25 @@ webhooks:
 		t.Fatalf("Load err = %v, want a webhook delivery-target error", err)
 	}
 }
+
+// TestValidate_ContextPlugins pins the RFC-Z load-time guard: a valid built-in
+// name passes; an unknown name or an empty name fails loudly (so a typo can't
+// silently drop a security-critical transform like redaction).
+func TestValidate_ContextPlugins(t *testing.T) {
+	base := func(specs []ContextPluginSpec) *Config {
+		return &Config{
+			Defaults:       Defaults{Provider: "anthropic", Model: "claude-sonnet-4-6"},
+			Concurrency:    Concurrency{MaxConcurrentRuns: 1, MaxQueueDepth: 0},
+			ContextPlugins: specs,
+		}
+	}
+	if err := validate(base([]ContextPluginSpec{{Name: "redact"}})); err != nil {
+		t.Errorf("valid redact spec rejected: %v", err)
+	}
+	if err := validate(base([]ContextPluginSpec{{Name: "redcat"}})); err == nil || !strings.Contains(err.Error(), "unknown plugin") {
+		t.Errorf("unknown plugin name: got %v, want 'unknown plugin' error", err)
+	}
+	if err := validate(base([]ContextPluginSpec{{Name: ""}})); err == nil || !strings.Contains(err.Error(), "name is required") {
+		t.Errorf("empty name: got %v, want 'name is required' error", err)
+	}
+}
