@@ -25,6 +25,7 @@ func TestLoadSet_BundledOnly(t *testing.T) {
 		"a2a-integration",
 		"channel-admin",
 		"code-agents",
+		"compaction",
 		"content-signatures",
 		"dynamic-mcp",
 		"experimentation",
