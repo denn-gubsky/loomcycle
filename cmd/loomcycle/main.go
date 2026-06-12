@@ -2122,9 +2122,17 @@ func main() {
 		// v1.x RFC G — register the A2A gRPC binding on the same server.
 		// gRPC is not a path-mounted http.Handler (it needs the HTTP/2
 		// server), so the /a2a/grpc binding rides loomcycle's existing
-		// grpc.Server; the AgentCard advertises the gRPC port. Nil-safe
-		// when the A2A surface is disabled.
-		a2aServer.RegisterGRPC(grpcSrv)
+		// grpc.Server; the AgentCard advertises the gRPC port.
+		//
+		// Call-site nil-guard mirrors the other two a2aServer uses above
+		// (SetExtraMux at ~1426, PathTenantWrapper at ~1497): a2aServer is
+		// nil whenever A2AServerEnabled is off. RegisterGRPC is itself
+		// nil-receiver-safe, so this is defensive consistency rather than a
+		// live-crash fix — it stops the gRPC path depending on the callee's
+		// internal guard (exp7 C3).
+		if a2aServer != nil {
+			a2aServer.RegisterGRPC(grpcSrv)
+		}
 		grpcLis, err := net.Listen("tcp", cfg.Env.GrpcAddr)
 		if err != nil {
 			log.Fatalf("grpc listen %s: %v", cfg.Env.GrpcAddr, err)
