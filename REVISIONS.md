@@ -8,6 +8,63 @@ For pre-v0.4 history (single-tool runtime, library milestone, security patch), s
 
 ---
 
+## What's in v0.33.0
+
+**External fan-out + the run-mutation wire surface across all transports, plus
+an exp7 self-review hardening pass.** Three feature lines and one fix line.
+
+**RFC Y — external fan-out run.** `spawn_run` (MCP) and `POST /v1/runs` (REST)
+each spawn ONE run and block; to run N agents concurrently from outside, a caller
+had to fire N calls that serialize over a single MCP stdio connection (F17), or
+ship an in-loomcycle dispatcher agent that calls `Agent op=parallel_spawn`.
+v0.33.0 lifts that fan-out to a first-class **`POST /v1/runs:batch`** + a
+**`spawn_runs`** MCP tool (mode `"join"`): one call spawns up to 32 fresh child
+runs **server-side concurrent**, bounded by the existing per-user admission gate
+(no wrapper semaphore — each child acquires its own slot, so fairness +
+back-pressure are preserved), and returns a combined **index-aligned** envelope
+once all settle. A per-child failure is captured in that child's result (`status`
++ `error`), never failing the batch — mirroring `parallel_spawn`. The batch
+caller's authoritative principal/tenant stamps every child (a forged per-spawn
+`tenant_id` can't widen scope). `mode:"detach"` (async run handles) awaits RFC P
+and is rejected explicitly; an optional `timeout_ms` caps the join.
+
+**Compaction + sampling — the run-mutation surface, on every transport.** The
+v0.32.0 compaction op + the per-run `sampling` (v0.28.0) / `compaction` (v0.32.0)
+overrides existed only on HTTP. v0.33.0 closes the gap:
+- **`compact_run`** MCP tool + **`CompactRun`** gRPC RPC — the compaction op
+  (`POST /v1/runs/{run_id}/compact`) lifted to a shared `connector.CompactRun`
+  (the HTTP handler is now a thin wrapper; behaviour byte-identical). The MCP
+  tool keys on `agent_id` (resolved → run_id, like `cancel_run`/`get_run`); the
+  parked-boundary 409 maps to a gRPC `FailedPrecondition`.
+- **Per-run `sampling` + `compaction`** on `spawn_run` / `spawn_runs` (MCP), the
+  gRPC `RunRequest` / `ContinueRequest` (proto3 `optional` per field, so an
+  explicit `temperature: 0` stays deterministic and `enabled: false` stays
+  "off" — distinct from "unset"), and `@loomcycle/client`'s `runStreaming` /
+  `continueSession`. Closed a latent gap found here: `connector.SpawnRunRequest`
+  carried only `Compaction`, never `Sampling` — adding it also fixes per-run
+  sampling for the MCP `spawn_run` path.
+
+**`@loomcycle/client` 0.33.0.** New `spawnRunBatch()` + `compactRun()` methods +
+the `SamplingOptions` / `CompactionOptions` / `RunBatchOptions` /
+`RunBatchResult` / `SpawnRunResult` / `CompactRunResult` types; per-run sampling
++ compaction accepted on `runStreaming` / `continueSession` (an explicit
+`temperature: 0` is preserved, not dropped as falsy). 52 → 54 methods.
+
+**exp7 self-review hardening.** loomcycle reviewed its own repo (a 10-agent
+fan-out); the verified top-10 landed as two PRs. **Security/isolation:**
+tenant-scope `DynamicAgentDelete` (a cross-tenant delete — a principal could
+unregister another tenant's same-named agent); never interpolate
+loomcycle's own infra secrets (`PG_DSN`, `LOOMCYCLE_PG_DSN`,
+`LOOMCYCLE_AUTH_TOKEN`) into a YAML/MCP field + reject newline-bearing env values
+(YAML-structure injection); scope-gate `POST /v1/runs/{id}/input` at
+`runs:create` (a read-only bearer could steer). **Correctness/hardening:**
+scheduler now logs a dropped `RecordResult` error (was a silent re-fire loop); a
+`ChannelGet` point-lookup replaces an O(N) scan in the channel-declared check and
+propagates store faults instead of masking them as "not declared"; an additive,
+verify-if-present SHA-256 snapshot checksum; `idleReadCloser` timer access
+serialized; `Refresher.Start` idempotent; an `a2aServer.RegisterGRPC` call-site
+nil-guard.
+
 ## What's in v0.32.0
 
 **Context compaction — the full subsystem.** A long session (interactive or
