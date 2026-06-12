@@ -738,6 +738,9 @@ func (m *mockConnector) CancelRun(_ context.Context, agentID, reason string) (co
 func (m *mockConnector) SpawnRun(context.Context, connector.SpawnRunRequest) (connector.SpawnRunResult, error) {
 	return connector.SpawnRunResult{}, nil
 }
+func (m *mockConnector) SpawnRunBatch(context.Context, connector.BatchSpawnRequest) (connector.BatchSpawnResult, error) {
+	return connector.BatchSpawnResult{}, nil
+}
 func (m *mockConnector) GetRun(context.Context, string) (connector.Run, error) {
 	return connector.Run{}, nil
 }

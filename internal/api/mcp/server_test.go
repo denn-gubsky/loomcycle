@@ -57,6 +57,11 @@ type mockConnector struct {
 	streamErr        error
 	lastStreamReq    connector.StreamUserRunStatesRequest
 
+	// RFC Y fan-out (spawn_runs) injection points.
+	batchReq    atomic.Value // connector.BatchSpawnRequest (last)
+	batchResult connector.BatchSpawnResult
+	batchErr    error
+
 	// compact_run (compaction MCP tool) injection points.
 	getRunResult  connector.Run // returned by GetRun (agent_id→run_id resolution)
 	compactRunID  atomic.Value  // string: the run_id CompactRun was called with
@@ -81,6 +86,10 @@ func (m *mockConnector) SpawnRun(ctx context.Context, r connector.SpawnRunReques
 		m.spawnActive.Add(-1)
 	}
 	return m.spawnResult, m.spawnErr
+}
+func (m *mockConnector) SpawnRunBatch(_ context.Context, r connector.BatchSpawnRequest) (connector.BatchSpawnResult, error) {
+	m.batchReq.Store(r)
+	return m.batchResult, m.batchErr
 }
 func (m *mockConnector) CancelRun(_ context.Context, _, _ string) (connector.CancelRunResult, error) {
 	return connector.CancelRunResult{Cancelled: true}, nil
@@ -354,15 +363,15 @@ func TestServer_ToolsList_ReturnsFullCatalogue(t *testing.T) {
 	if err := json.Unmarshal(resps[0].Result, &result); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if len(result.Tools) != 42 {
-		t.Errorf("got %d tools, want 42 (compact_run added on top of the channeldef list)", len(result.Tools))
+	if len(result.Tools) != 43 {
+		t.Errorf("got %d tools, want 43 (spawn_runs + compact_run on top of the channeldef list)", len(result.Tools))
 	}
 	names := map[string]bool{}
 	for _, td := range result.Tools {
 		names[td.Name] = true
 	}
 	// Spot-check across categories — through the v1.x additions.
-	for _, want := range []string{"spawn_run", "compact_run", "register_agent", "memory", "agentdef", "skilldef", "mcpserverdef", "scheduledef", "a2aservercarddef", "a2aagentdef", "webhookdef", "memorybackenddef", "operatortokendef", "pause_runtime", "create_snapshot", "get_snapshot", "resolve_probe", "interruption_resolve", "register_hook", "list_hooks", "delete_hook", "list_channels", "stream_user_run_states", "publish_channel", "subscribe_channel", "peek_channel", "ack_channel"} {
+	for _, want := range []string{"spawn_run", "spawn_runs", "compact_run", "register_agent", "memory", "agentdef", "skilldef", "mcpserverdef", "scheduledef", "a2aservercarddef", "a2aagentdef", "webhookdef", "memorybackenddef", "operatortokendef", "pause_runtime", "create_snapshot", "get_snapshot", "resolve_probe", "interruption_resolve", "register_hook", "list_hooks", "delete_hook", "list_channels", "stream_user_run_states", "publish_channel", "subscribe_channel", "peek_channel", "ack_channel"} {
 		if !names[want] {
 			t.Errorf("missing tool %q in tools/list", want)
 		}
@@ -535,6 +544,70 @@ func TestServer_CompactRun_RequiresAgentID(t *testing.T) {
 	}
 	if mc.compactRunID.Load() != nil {
 		t.Error("CompactRun must NOT be called when agent_id is missing")
+	}
+}
+
+// TestServer_SpawnRuns_DispatchesBatch verifies the RFC Y spawn_runs tool
+// parses the spawns array, hands it to Connector.SpawnRunBatch, and returns the
+// combined envelope as the tool result.
+func TestServer_SpawnRuns_DispatchesBatch(t *testing.T) {
+	mc := &mockConnector{
+		batchResult: connector.BatchSpawnResult{
+			Spawned: 2,
+			Results: []connector.SpawnRunResult{
+				{AgentID: "a_0", RunID: "r_0", Status: "completed", FinalText: "zero"},
+				{AgentID: "a_1", RunID: "r_1", Status: "completed", FinalText: "one"},
+			},
+		},
+	}
+	srv := New(Config{Connector: mc, Logf: func(string, ...any) {}})
+	in := strings.Join([]string{
+		`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"t","version":"1"}}}`,
+		`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"spawn_runs","arguments":{"spawns":[{"agent":"rev"},{"agent":"rev"}]}}}`,
+	}, "\n") + "\n"
+	resps, _ := driveServer(t, srv, in)
+	if len(resps) != 2 {
+		t.Fatalf("got %d responses, want 2 (init + spawn_runs)", len(resps))
+	}
+	stored, _ := mc.batchReq.Load().(connector.BatchSpawnRequest)
+	if len(stored.Spawns) != 2 || stored.Spawns[0].Agent != "rev" {
+		t.Errorf("Connector saw spawns=%+v, want 2× agent=rev", stored.Spawns)
+	}
+	var callRes loommcp.CallToolResult
+	if err := json.Unmarshal(resps[1].Result, &callRes); err != nil {
+		t.Fatalf("unmarshal call result: %v", err)
+	}
+	if callRes.IsError {
+		t.Fatalf("expected non-error spawn_runs result, got: %v", callRes.Content)
+	}
+	var inner connector.BatchSpawnResult
+	if err := json.Unmarshal([]byte(callRes.Content[0].Text), &inner); err != nil {
+		t.Fatalf("unmarshal inner: %v", err)
+	}
+	if inner.Spawned != 2 || len(inner.Results) != 2 || inner.Results[1].RunID != "r_1" {
+		t.Errorf("inner = %+v, want 2 results with r_1 at index 1", inner)
+	}
+}
+
+// TestServer_SpawnRuns_RejectsChildMissingAgent verifies per-child validation:
+// a spawn with no agent is a tool error, never reaches the connector.
+func TestServer_SpawnRuns_RejectsChildMissingAgent(t *testing.T) {
+	mc := &mockConnector{}
+	srv := New(Config{Connector: mc, Logf: func(string, ...any) {}})
+	in := strings.Join([]string{
+		`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"t","version":"1"}}}`,
+		`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"spawn_runs","arguments":{"spawns":[{"agent":""}]}}}`,
+	}, "\n") + "\n"
+	resps, _ := driveServer(t, srv, in)
+	var callRes loommcp.CallToolResult
+	if err := json.Unmarshal(resps[1].Result, &callRes); err != nil {
+		t.Fatalf("unmarshal call result: %v", err)
+	}
+	if !callRes.IsError {
+		t.Error("spawn_runs with an empty agent must be a tool error")
+	}
+	if mc.batchReq.Load() != nil {
+		t.Error("connector.SpawnRunBatch must NOT be called when a child fails validation")
 	}
 }
 

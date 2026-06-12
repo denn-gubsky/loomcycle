@@ -1974,6 +1974,10 @@ func (s *Server) Mux() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", s.handleHealthz)
 	mux.Handle("POST /v1/runs", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleRuns))))
+	// RFC Y external fan-out: one call spawns N runs concurrently (mode "join").
+	// Literal sibling of /v1/runs — distinct from /v1/runs/{run_id}/* (no slash
+	// after "runs"), so it cannot collide with the per-run routes.
+	mux.Handle("POST /v1/runs:batch", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleRunsBatch))))
 	mux.Handle("GET /v1/sessions/{id}/transcript", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleTranscript))))
 	mux.Handle("POST /v1/sessions/{id}/messages", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleMessages))))
 	// v0.4 tracking + cancel API.
