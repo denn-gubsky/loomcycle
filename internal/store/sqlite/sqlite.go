@@ -6480,8 +6480,10 @@ func (s *Store) DynamicAgentList(ctx context.Context) ([]store.DynamicAgent, err
 	return out, rows.Err()
 }
 
-func (s *Store) DynamicAgentDelete(ctx context.Context, name string) (bool, error) {
-	res, err := s.db.ExecContext(ctx, `DELETE FROM dynamic_agents WHERE name = ?`, name)
+func (s *Store) DynamicAgentDelete(ctx context.Context, tenantID, name string) (bool, error) {
+	// RFC N: scope the delete to (tenant_id, name) — a principal must not be
+	// able to unregister another tenant's same-named agent (exp7 C1).
+	res, err := s.db.ExecContext(ctx, `DELETE FROM dynamic_agents WHERE tenant_id = ? AND name = ?`, tenantID, name)
 	if err != nil {
 		return false, fmt.Errorf("dynamic_agents: delete: %w", err)
 	}

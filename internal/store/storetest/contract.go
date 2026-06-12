@@ -3932,6 +3932,28 @@ func testAgentDefTenantIsolation(t *testing.T, s store.Store) {
 	if !jsonEqual(dynB.Definition, `{"dyn":"B"}`) || dynB.TenantID != "tenant-b" {
 		t.Errorf("dynamic_agents tenant-b clobbered: got tenant=%q def=%s", dynB.TenantID, dynB.Definition)
 	}
+
+	// dynamic_agents DELETE isolation (exp7 C1) — deleting tenant-a's row
+	// must not touch tenant-b's same-named row. FAIL-BEFORE: when the delete
+	// filtered on (name) alone, this wiped BOTH tenants' rows, so the
+	// tenant-b GetActive below would 404.
+	deleted, err := s.DynamicAgentDelete(ctx, "tenant-a", name)
+	if err != nil {
+		t.Fatalf("dyn delete A: %v", err)
+	}
+	if !deleted {
+		t.Error("dyn delete A: reported no row deleted, want true")
+	}
+	if _, err := s.DynamicAgentGet(ctx, "tenant-a", name); err == nil {
+		t.Error("dyn get A after delete: row still present, want not-found")
+	}
+	survivor, err := s.DynamicAgentGet(ctx, "tenant-b", name)
+	if err != nil {
+		t.Fatalf("dyn get B after deleting A: tenant-b's row was wiped by a cross-tenant delete: %v", err)
+	}
+	if !jsonEqual(survivor.Definition, `{"dyn":"B"}`) || survivor.TenantID != "tenant-b" {
+		t.Errorf("dynamic_agents tenant-b altered by tenant-a delete: got tenant=%q def=%s", survivor.TenantID, survivor.Definition)
+	}
 }
 
 func testAgentDefContentSHA256RoundTrip(t *testing.T, s store.Store) {

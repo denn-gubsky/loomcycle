@@ -322,7 +322,10 @@ func (s *Server) UnregisterAgent(ctx context.Context, name string) error {
 	if s.store == nil {
 		return fmt.Errorf("unregister_agent requires persistence (no Store configured)")
 	}
-	_, err := s.store.DynamicAgentDelete(ctx, name)
+	// RFC N: delete scoped to the registering principal's tenant — mirrors
+	// RegisterAgent's tenantFromCtx stamping so one tenant can't unregister
+	// another tenant's same-named agent (exp7 C1).
+	_, err := s.store.DynamicAgentDelete(ctx, tenantFromCtx(ctx), name)
 	return err
 }
 

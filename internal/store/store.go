@@ -1469,10 +1469,13 @@ type Store interface {
 	// Capped at 200 rows ordered by created_at DESC.
 	DynamicAgentList(ctx context.Context) ([]DynamicAgent, error)
 
-	// DynamicAgentDelete removes one dynamic agent. Returns true
-	// when a row was actually deleted, false when the name didn't
-	// exist (or had already expired). Both are non-error paths.
-	DynamicAgentDelete(ctx context.Context, name string) (bool, error)
+	// DynamicAgentDelete removes one dynamic agent scoped to (tenantID,
+	// name) — RFC N: a principal may only delete its own tenant's agent,
+	// never another tenant's same-named row. Returns true when a row was
+	// actually deleted, false when no (tenant, name) match existed (or it
+	// had already expired). Both are non-error paths. tenantID "" = the
+	// shared/operator/legacy tenant.
+	DynamicAgentDelete(ctx context.Context, tenantID, name string) (bool, error)
 
 	// DynamicAgentSweep deletes every dynamic_agents row whose
 	// expires_at has passed. Returns the row count deleted. Safe to
