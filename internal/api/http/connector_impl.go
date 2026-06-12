@@ -18,6 +18,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/channels"
@@ -124,6 +125,77 @@ func (s *Server) SpawnRun(ctx context.Context, req connector.SpawnRunRequest) (c
 		result.Error = lastErrorMsg
 	}
 	return result, nil
+}
+
+// SpawnRunBatch implements the RFC Y external fan-out (mode "join"): spawn every
+// child concurrently via SpawnRun and join them. Each child flows through the
+// SAME per-user admission gate as a lone SpawnRun (RunOnce → sem.AcquireForUser),
+// so there is deliberately NO wrapper semaphore here — admission back-pressure
+// and per-user fairness are already enforced one level down, and adding a second
+// gate would only double-count. The batch caller's ctx (carrying the
+// authoritative principal/tenant from the auth middleware) is passed to every
+// child, so children inherit the caller's tenant via the normal WithRunIdentity
+// path — no manual tenant threading. Per-child failures are captured in that
+// child's SpawnRunResult; the batch itself errors only on a malformed request
+// (over-cap / unsupported mode).
+func (s *Server) SpawnRunBatch(ctx context.Context, req connector.BatchSpawnRequest) (connector.BatchSpawnResult, error) {
+	n := len(req.Spawns)
+	if n == 0 {
+		return connector.BatchSpawnResult{}, fmt.Errorf("spawn_runs: no spawns supplied")
+	}
+	if n > connector.MaxBatchSpawns {
+		return connector.BatchSpawnResult{}, fmt.Errorf("spawn_runs: %d spawns exceeds the per-batch cap of %d", n, connector.MaxBatchSpawns)
+	}
+	mode := req.Mode
+	if mode == "" {
+		mode = "join"
+	}
+	if mode != "join" {
+		// "detach" (return async run handles to poll/stream) requires RFC P's
+		// bounded/async spawn; reject explicitly until it ships rather than
+		// silently degrading to a blocking join.
+		return connector.BatchSpawnResult{}, fmt.Errorf("spawn_runs: mode %q not supported (only %q; %q awaits RFC P async run handles)", mode, "join", "detach")
+	}
+
+	// Optional batch-level join deadline. A child still running when it fires
+	// has its RunOnce ctx cancelled (derived from this ctx) and is reported
+	// with a cancelled status in-envelope — the batch still returns the
+	// finished children's results.
+	if req.TimeoutMS > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, time.Duration(req.TimeoutMS)*time.Millisecond)
+		defer cancel()
+	}
+
+	results := make([]connector.SpawnRunResult, n)
+	var wg sync.WaitGroup
+	wg.Add(n)
+	for i := range req.Spawns {
+		go func(i int) {
+			defer wg.Done()
+			spawn := req.Spawns[i]
+			// Batch children are always fresh runs — a per-spawn session_id
+			// would continue an existing session, which the fan-out shape never
+			// intends. ParentContext is the caller's own opaque lineage (cost
+			// attribution); preserve it verbatim — the caller groups a batch by
+			// setting a shared root_agent_run_id across its spawns.
+			spawn.SessionID = ""
+			res, err := s.SpawnRun(ctx, spawn)
+			if err != nil {
+				// SpawnRun captures run failures in-result and returns a nil
+				// error; a non-nil error here is an unexpected dispatch failure.
+				// Surface it in THIS child's envelope, never fail the batch.
+				res.Status = string(store.RunFailed)
+				if res.Error == "" {
+					res.Error = err.Error()
+				}
+			}
+			results[i] = res
+		}(i)
+	}
+	wg.Wait()
+
+	return connector.BatchSpawnResult{Results: results, Spawned: n}, nil
 }
 
 // CancelRun looks up the run by agent_id and triggers cancellation

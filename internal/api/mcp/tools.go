@@ -52,6 +52,42 @@ func toolDescriptors() []loommcp.ToolDescriptor {
 			}`),
 		},
 		{
+			Name:        "spawn_runs",
+			Description: "RFC Y external fan-out: spawn up to 32 agent runs concurrently in ONE call (server-side, bounded by the per-user admission gate) and block until all settle, returning a combined index-aligned envelope. A per-child failure is captured in that child's result and never fails the batch. Prefer this over firing N parallel spawn_run calls, which serialize over a single MCP connection. Each child is a FRESH run (no session continuation). mode \"detach\" (async run handles) is reserved for a future release and rejected today.",
+			InputSchema: rawJSON(`{
+				"type": "object",
+				"required": ["spawns"],
+				"properties": {
+					"spawns": {
+						"type": "array",
+						"minItems": 1,
+						"maxItems": 32,
+						"description": "The child runs to fan out (each a fresh run; session_id is ignored).",
+						"items": {
+							"type": "object",
+							"required": ["agent"],
+							"properties": {
+								"agent":            {"type": "string", "description": "Registered agent name."},
+								"segments":         {"type": "array"},
+								"tenant_id":        {"type": "string"},
+								"user_id":          {"type": "string"},
+								"agent_id":         {"type": "string", "description": "Optional caller-supplied tracking handle."},
+								"user_tier":        {"type": "string"},
+								"user_bearer":      {"type": "string"},
+								"user_credentials": {"type": "object", "additionalProperties": {"type": "string"}},
+								"allowed_tools":    {"type": "array", "items": {"type": "string"}},
+								"allowed_hosts":    {"type": "array", "items": {"type": "string"}, "description": "OMIT for no narrowing; [] denies all outbound HTTP; non-empty intersects the operator list."},
+								"web_search_filter": {"type": "string", "enum": ["drop", "keep"]},
+								"parent_context":   {"type": "object", "properties": {"root_agent_run_id": {"type": "string"}, "function_key": {"type": "string"}, "tier_at_run": {"type": "string"}}, "description": "Set a shared root_agent_run_id across the spawns to group the batch for cost attribution."}
+							}
+						}
+					},
+					"mode":       {"type": "string", "enum": ["join"], "description": "Only \"join\" (default) is supported today: block until all children settle. \"detach\" awaits a future async-handle release."},
+					"timeout_ms": {"type": "integer", "minimum": 1, "description": "Optional join deadline: a child still running when it elapses is cancelled and reported with a cancelled status in-envelope."}
+				}
+			}`),
+		},
+		{
 			Name:        "cancel_run",
 			Description: "Cancel a running agent by agent_id. Cascades to sub-agents. Idempotent.",
 			InputSchema: rawJSON(`{

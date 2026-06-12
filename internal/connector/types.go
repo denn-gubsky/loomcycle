@@ -114,6 +114,43 @@ type SpawnRunResult struct {
 	ParentContext *store.ParentContext `json:"parent_context,omitempty"`
 }
 
+// MaxBatchSpawns bounds a single external fan-out call (RFC Y). Matches the
+// in-loop Agent op=parallel_spawn child cap so in-loop and external fan-out
+// share the same ceiling.
+const MaxBatchSpawns = 32
+
+// BatchSpawnRequest is the input to SpawnRunBatch — the RFC Y external fan-out
+// run. Each entry in Spawns is a FRESH-run SpawnRunRequest (its SessionID is
+// ignored; batch children never continue an existing session). SpawnRunBatch
+// runs all children server-side concurrent under the existing per-user
+// admission gate and joins them; per-child failures are captured in-envelope
+// and never fail the whole batch (mirrors Agent op=parallel_spawn).
+type BatchSpawnRequest struct {
+	// Spawns is the set of child runs to fan out. Capped at MaxBatchSpawns;
+	// an over-cap request is rejected explicitly (never silently truncated).
+	Spawns []SpawnRunRequest `json:"spawns"`
+
+	// Mode is "join" (default): block until every child settles, then return
+	// the combined envelope. "detach" (return async run handles to poll/stream)
+	// is reserved for RFC P and rejected until that ships.
+	Mode string `json:"mode,omitempty"`
+
+	// TimeoutMS optionally caps the join. A child still running when the
+	// deadline passes is cancelled and reported with a cancelled status
+	// in-envelope. 0 = no batch-level deadline (a child's own timeout, if any,
+	// still applies).
+	TimeoutMS int `json:"timeout_ms,omitempty"`
+}
+
+// BatchSpawnResult is the combined outcome of a "join"-mode SpawnRunBatch.
+// Results is index-aligned with the request's Spawns (a per-child error lives
+// in that child's SpawnRunResult.Error/Status). Spawned is the number of
+// children dispatched (== len(Results) on the join path).
+type BatchSpawnResult struct {
+	Results []SpawnRunResult `json:"results"`
+	Spawned int              `json:"spawned"`
+}
+
 // CancelRunResult reports the outcome of CancelRun.
 type CancelRunResult struct {
 	Cancelled    bool `json:"cancelled"`

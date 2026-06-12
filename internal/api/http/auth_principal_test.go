@@ -191,6 +191,8 @@ func TestRequiredScopeFor(t *testing.T) {
 		method, path, want string
 	}{
 		{"POST", "/v1/runs", auth.ScopeRunsCreate},
+		// RFC Y fan-out is a create op (exact path, not the /v1/runs/ prefix).
+		{"POST", "/v1/runs:batch", auth.ScopeRunsCreate},
 		{"POST", "/v1/sessions/s_1/messages", auth.ScopeRunsCreate},
 		// Cancel is POST /v1/agents/{id}/cancel — must be runs:create (was a
 		// dead DELETE case → any-authenticated).
