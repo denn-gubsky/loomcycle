@@ -26,6 +26,7 @@ export default function LiveRunPane({
   onCancel,
   onContinue,
   onSend,
+  onCompact,
   awaitingInput,
   lastUsage,
   pendingInterrupt,
@@ -41,6 +42,7 @@ export default function LiveRunPane({
   onCancel: () => void;
   onContinue?: (prompt: string) => void;
   onSend?: (text: string) => void;
+  onCompact?: () => void;
   awaitingInput?: boolean;
   lastUsage?: LiveUsage | null;
   pendingInterrupt?: PendingInterrupt | null;
@@ -108,6 +110,26 @@ export default function LiveRunPane({
         <span className={`pill ${status}`}>{status}</span>
         {agentId && <code className="live-run-agentid">{agentId}</code>}
         <ContextGauge usage={lastUsage} />
+        {onCompact &&
+          !pendingInterrupt &&
+          events.length > 0 &&
+          (status === "running" || status === "completed") && (
+            <button
+              type="button"
+              className="live-run-compact"
+              onClick={onCompact}
+              disabled={
+                !(status === "completed" || (status === "running" && !!awaitingInput))
+              }
+              title={
+                status === "running" && !awaitingInput
+                  ? "Wait for the current turn to finish, then compact"
+                  : "Summarize the conversation to free up context, then continue"
+              }
+            >
+              Compact
+            </button>
+          )}
         {status === "running" && (
           <button
             type="button"

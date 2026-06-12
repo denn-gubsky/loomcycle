@@ -402,6 +402,14 @@ const (
 	// LOOMCYCLE_RESUME_FANOUT is on.
 	EventSpawnChildStarted EventType = "spawn_child_started"
 	EventSpawnChildResult  EventType = "spawn_child_result"
+
+	// EventContextCompaction marks where an interactive run's conversation was
+	// compacted: everything before it is replaced by a summary. The loop emits
+	// it (persisted + forwarded) when it applies a steer.KindCompact control at
+	// a park boundary; replayTranscript RESETS to the summary pair on replay, so
+	// a crash-recovery/resume rebuild reconstructs the compacted form, not the
+	// full history. The full transcript is retained (non-destructive audit).
+	EventContextCompaction EventType = "context_compaction"
 )
 
 // Event is one streamed datum from a provider call (or, after the loop layer
@@ -459,6 +467,10 @@ type Event struct {
 	// SpawnChild carries the structured payload on EventSpawnChildStarted /
 	// EventSpawnChildResult (RFC X Phase 3 spawn ledger). Nil otherwise.
 	SpawnChild *SpawnChildEventInfo `json:"spawn_child,omitempty"`
+
+	// ContextCompaction carries the structured payload on EventContextCompaction
+	// (the conversation summary that replaces prior history). Nil otherwise.
+	ContextCompaction *ContextCompactionEventInfo `json:"context_compaction,omitempty"`
 
 	// StopReason is set on the final assistant Event of a provider call:
 	// "end_turn" | "tool_use" | "max_tokens" | "stop_sequence".
@@ -647,6 +659,17 @@ type SpawnChildEventInfo struct {
 	Ok     bool   `json:"ok,omitempty"`
 	Output string `json:"output,omitempty"`
 	Error  string `json:"error,omitempty"`
+}
+
+// ContextCompactionEventInfo is the structured payload on EventContextCompaction
+// (interactive context compaction). Summary is the model-generated recap that
+// replaces the prior conversation; Before/AfterTokens are the rough token
+// footprint before vs after, for the operator-facing "context compacted (N→M)"
+// line. replayTranscript reads Summary to seed the compacted message pair.
+type ContextCompactionEventInfo struct {
+	Summary      string `json:"summary"`
+	BeforeTokens int    `json:"before_tokens,omitempty"`
+	AfterTokens  int    `json:"after_tokens,omitempty"`
 }
 
 // HostWideningEventInfo is the structured payload on EventHostWidened

@@ -132,6 +132,9 @@ export interface EventPayload {
   user_input?: { text: string; source?: string; seen_at?: string };
   // "awaiting_input" sidecar — a persistent interactive run parked at end_turn.
   awaiting_input?: { since_turn?: number };
+  // "context_compaction" sidecar — the conversation before this marker was
+  // summarized to free context (interactive compaction).
+  context_compaction?: { summary?: string; before_tokens?: number; after_tokens?: number };
 }
 
 // v0.9.x — payloads for event types whose shape doesn't fit
@@ -1727,6 +1730,33 @@ export async function sendRunInput(runID: string, text: string): Promise<void> {
     const b = await resp.text();
     throw new Error(`${resp.status} ${resp.statusText}: ${b.slice(0, 200)}`);
   }
+}
+
+// CompactResult mirrors the POST /v1/runs/{run_id}/compact JSON body.
+export interface CompactResult {
+  run_id: string;
+  compacted: boolean;
+  before_tokens: number;
+  after_tokens: number;
+  applied: string; // "live" | "marker" | "noop"
+}
+
+// compactRun summarizes a run's conversation to free context and continue from
+// the summary (POST /v1/runs/{run_id}/compact). Only valid at a safe boundary
+// (the agent parked awaiting input, or a terminal run) — the server returns 409
+// mid-turn.
+export async function compactRun(runID: string): Promise<CompactResult> {
+  const resp = await fetch(`/v1/runs/${encodeURIComponent(runID)}/compact`, {
+    method: "POST",
+    credentials: "same-origin",
+    headers: { "Content-Type": "application/json", Accept: "application/json" },
+    body: JSON.stringify({}),
+  });
+  if (!resp.ok) {
+    const b = await resp.text();
+    throw new Error(`${resp.status} ${resp.statusText}: ${b.slice(0, 200)}`);
+  }
+  return resp.json() as Promise<CompactResult>;
 }
 
 // continueSession appends a new turn to an existing session

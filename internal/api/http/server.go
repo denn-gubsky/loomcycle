@@ -2208,6 +2208,7 @@ func (s *Server) Mux() http.Handler {
 	// PR 2 / interactive terminal: inject an operator "steering" instruction
 	// into an in-flight run (appended to the live conversation mid-turn).
 	mux.Handle("POST /v1/runs/{run_id}/input", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleRunInput))))
+	mux.Handle("POST /v1/runs/{run_id}/compact", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleCompactRun))))
 	// Re-attach to a running (or finished) run's event stream — the operator
 	// leaves the interactive /run terminal and returns to the same live run.
 	mux.Handle("GET /v1/runs/{run_id}/stream", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleRunStream))))
@@ -3744,6 +3745,23 @@ func replayTranscript(events []store.Event) []providers.Message {
 			// no tool_results to carry over).
 			flushAssistant()
 			flushPendingTools()
+		case "context_compaction":
+			// Interactive context compaction: everything before this marker
+			// collapses to the summary. RESET all accumulated state and seed the
+			// same user+assistant summary pair the live loop swapped in, so a
+			// rebuild (crash recovery / resume / /sessions/messages) reconstructs
+			// the compacted conversation, not the full history. Any events AFTER
+			// the marker (turns since the compaction) replay normally on top.
+			flushAssistant()
+			flushPendingTools()
+			var pe providers.Event
+			if err := json.Unmarshal(ev.Payload, &pe); err == nil && pe.ContextCompaction != nil {
+				messages = append([]providers.Message(nil), loop.CompactionMessages(pe.ContextCompaction.Summary)...)
+			}
+			asstText.Reset()
+			asstTools = nil
+			pendingToolResults = nil
+			asstReasoning = ""
 		}
 	}
 	flushAssistant()
@@ -3948,6 +3966,19 @@ func (s *Server) makeRecordingEmit(ctx context.Context, runID string, fwd func(p
 	}
 	var mu sync.Mutex
 	return func(ev providers.Event) {
+		// Track parked (awaiting_input) state for the compaction boundary gate
+		// (handleCompactRun's IsParked check). The run is parked when it emits
+		// awaiting_input and resumes work on the next steer/text/tool_call. No-op
+		// for non-interactive runs (they never emit awaiting_input) and for
+		// run_ids not in the steer registry. SetParked takes its own lock.
+		if s.steerReg != nil {
+			switch ev.Type {
+			case providers.EventAwaitingInput:
+				s.steerReg.SetParked(runID, true)
+			case providers.EventSteer, providers.EventText, providers.EventToolCall:
+				s.steerReg.SetParked(runID, false)
+			}
+		}
 		mu.Lock()
 		defer mu.Unlock()
 		// EventSteer (operator steering, PR 2) is forwarded LIVE only — the
@@ -4927,6 +4958,226 @@ func (s *Server) handleRunInput(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"run_id": runID, "delivered": delivered})
+}
+
+// compactionSystemPrompt instructs the model to compact a conversation. Used by
+// handleCompactRun's one-shot summarization call (NOT the agent's own system
+// prompt, which is re-derived separately and untouched by compaction).
+const compactionSystemPrompt = "You are compacting a conversation to free up the model's context " +
+	"window. Produce a single concise summary — aim for roughly 10% of the original length — that " +
+	"preserves the user's goals and constraints, decisions made, facts and values established, tool " +
+	"results that still matter, and any open threads or next steps. Write it as durable context the " +
+	"assistant can rely on to continue the conversation. Output ONLY the summary prose — no preamble, " +
+	"no meta-commentary."
+
+// minCompactMessages: a conversation shorter than this isn't worth a model call.
+const minCompactMessages = 4
+
+// compactResponse is the JSON body of POST /v1/runs/{run_id}/compact.
+type compactResponse struct {
+	RunID        string `json:"run_id"`
+	Compacted    bool   `json:"compacted"`
+	BeforeTokens int    `json:"before_tokens"`
+	AfterTokens  int    `json:"after_tokens"`
+	// Applied: "live" (pushed to the running loop), "marker" (persisted for a
+	// terminal run's next continuation), or "noop" (too short to compact).
+	Applied string `json:"applied"`
+}
+
+// handleCompactRun serves POST /v1/runs/{run_id}/compact — summarize the run's
+// conversation to free context and continue from the summary (interactive
+// context compaction). Gated to a safe boundary: a live run must be PARKED
+// (awaiting_input); mid-turn returns 409. Computes the summary with one model
+// call (the run's resolved provider/model), then either pushes a compact
+// control to the live loop (it swaps its in-memory history + emits the persisted
+// marker) or, for a terminal run with no live loop, persists the marker directly
+// so the next continuation rebuilds compacted. Cross-tenant gets an opaque 404.
+func (s *Server) handleCompactRun(w http.ResponseWriter, r *http.Request) {
+	if s.store == nil {
+		http.Error(w, "compaction requires persistence", http.StatusServiceUnavailable)
+		return
+	}
+	runID := r.PathValue("run_id")
+	if !validIdent(runID) {
+		http.Error(w, "run_id must match [A-Za-z0-9_-]{1,128}", http.StatusBadRequest)
+		return
+	}
+	run, err := s.store.GetRun(r.Context(), runID)
+	if err != nil {
+		http.Error(w, "no run for that run_id", http.StatusNotFound)
+		return
+	}
+	// Tenant-ownership: opaque 404 cross-tenant (run_ids aren't secrets).
+	if run.SessionID != "" {
+		if sess, serr := s.store.GetSession(r.Context(), run.SessionID); serr == nil {
+			if !sessionOwnershipOK(r.Context(), sess) {
+				http.Error(w, "no run for that run_id", http.StatusNotFound)
+				return
+			}
+		}
+	}
+
+	terminal := isTerminalRunStatus(run.Status)
+	live := s.steerReg != nil && func() bool { _, ok := s.steerReg.Get(runID); return ok }()
+	// Boundary gate (user-chosen: safe boundary only). A LOCAL live run must be
+	// parked; refuse mid-turn so compaction applies at the boundary the agent is
+	// already at rather than being deferred into the current turn.
+	if live && !terminal && !s.steerReg.IsParked(runID) {
+		writeJSONError(w, http.StatusConflict, "run_busy",
+			"the agent is mid-turn; compact when it's parked waiting for your input")
+		return
+	}
+
+	// Rebuild the conversation from this run's transcript (== the parked loop's
+	// in-memory history — a parked run has persisted everything up to the park).
+	events, terr := s.store.GetTranscript(r.Context(), run.SessionID)
+	if terr != nil {
+		http.Error(w, "read transcript: "+terr.Error(), http.StatusInternalServerError)
+		return
+	}
+	runEvents := make([]store.Event, 0, len(events))
+	for _, e := range events {
+		if e.RunID == runID {
+			runEvents = append(runEvents, e)
+		}
+	}
+	msgs := replayTranscript(runEvents)
+	before := estimateMessageTokens(msgs)
+	if len(msgs) < minCompactMessages {
+		writeJSON(w, http.StatusOK, compactResponse{RunID: runID, Compacted: false, BeforeTokens: before, AfterTokens: before, Applied: "noop"})
+		return
+	}
+
+	// Resolve provider/model + summarize (one model call) — same chain resume
+	// uses; no per-run secrets needed (the operator's provider key serves it).
+	agentDef, ok := s.lookupAgent(r.Context(), run.TenantID, run.Agent)
+	if !ok {
+		writeJSONError(w, http.StatusConflict, "agent_gone", "the run's agent no longer exists")
+		return
+	}
+	providerID, model, _, rerr := s.resolveAgentDef(agentDef, run.Agent, run.UserTier)
+	if rerr != nil {
+		http.Error(w, "resolve provider/model: "+rerr.Error(), http.StatusInternalServerError)
+		return
+	}
+	provider, perr := s.providers.Get(providerID)
+	if perr != nil {
+		http.Error(w, "provider unavailable: "+perr.Error(), http.StatusServiceUnavailable)
+		return
+	}
+	summary, serr := summarizeConversation(r.Context(), provider, model, msgs)
+	if serr != nil {
+		http.Error(w, "summarize: "+serr.Error(), http.StatusBadGateway)
+		return
+	}
+	summary = strings.TrimSpace(summary)
+	if summary == "" {
+		http.Error(w, "summarization produced no text", http.StatusBadGateway)
+		return
+	}
+	after := estimateMessageTokens(loop.CompactionMessages(summary))
+
+	// Apply. Live (local or cross-replica, routed by steerReg.Push): push the
+	// compact control — the loop swaps its history + emits the persisted marker.
+	// Terminal: no loop, so persist the marker here for the next continuation.
+	applied := "marker"
+	if !terminal && s.steerReg != nil {
+		_, pushErr := s.steerReg.Push(r.Context(), runID, steer.Message{
+			Kind: steer.KindCompact, Text: summary, Source: compactSource(r), EnqueuedAt: time.Now(),
+		})
+		switch {
+		case errors.Is(pushErr, steer.ErrQueueFull):
+			w.Header().Set("Retry-After", "1")
+			http.Error(w, "run input queue full; retry shortly", http.StatusTooManyRequests)
+			return
+		case errors.Is(pushErr, steer.ErrRunNotFound):
+			// Raced to terminal between GetRun and Push → fall through to marker.
+		case pushErr != nil:
+			http.Error(w, pushErr.Error(), http.StatusInternalServerError)
+			return
+		default:
+			applied = "live"
+		}
+	}
+	if applied == "marker" {
+		payload, merr := json.Marshal(providers.Event{
+			Type: providers.EventContextCompaction,
+			ContextCompaction: &providers.ContextCompactionEventInfo{
+				Summary: summary, BeforeTokens: before, AfterTokens: after,
+			},
+		})
+		if merr == nil {
+			if aerr := s.store.AppendEvent(r.Context(), runID, string(providers.EventContextCompaction), payload); aerr != nil {
+				http.Error(w, "persist compaction marker: "+aerr.Error(), http.StatusInternalServerError)
+				return
+			}
+		}
+	}
+	writeJSON(w, http.StatusOK, compactResponse{RunID: runID, Compacted: true, BeforeTokens: before, AfterTokens: after, Applied: applied})
+}
+
+// compactSource mirrors handleRunInput's api-vs-webui source resolution.
+func compactSource(r *http.Request) string {
+	if hasSessionCookie(r) {
+		return store.InterruptResolvedByWebUI
+	}
+	return store.InterruptResolvedByAPI
+}
+
+// estimateMessageTokens is a cheap chars/4 heuristic (no tokenizer) over message
+// text + tool I/O — enough for the operator-facing "context compacted (N→M)"
+// readout, not for billing.
+func estimateMessageTokens(msgs []providers.Message) int {
+	chars := 0
+	for _, m := range msgs {
+		for _, c := range m.Content {
+			chars += len(c.Text) + len(c.ToolInput)
+		}
+	}
+	return chars / 4
+}
+
+// summarizeConversation makes ONE provider call to compact msgs into a summary.
+// The conversation is flattened into a single user message (role-tagged) so the
+// call is valid regardless of how msgs alternates or which turn it ends on, and
+// the model clearly sees "summarize this text". Drains the event stream for text.
+func summarizeConversation(ctx context.Context, provider providers.Provider, model string, msgs []providers.Message) (string, error) {
+	var convo strings.Builder
+	for _, m := range msgs {
+		for _, c := range m.Content {
+			switch c.Type {
+			case "text":
+				if c.Text != "" {
+					fmt.Fprintf(&convo, "%s: %s\n\n", m.Role, c.Text)
+				}
+			case "tool_use":
+				fmt.Fprintf(&convo, "%s [tool_use %s]: %s\n\n", m.Role, c.ToolName, string(c.ToolInput))
+			case "tool_result":
+				fmt.Fprintf(&convo, "%s [tool_result]: %s\n\n", m.Role, c.Text)
+			}
+		}
+	}
+	ch, err := provider.Call(ctx, providers.Request{
+		Model:  model,
+		System: []providers.ContentBlock{{Type: "text", Text: compactionSystemPrompt}},
+		Messages: []providers.Message{{
+			Role:    "user",
+			Content: []providers.ContentBlock{{Type: "text", Text: "Conversation to compact:\n\n" + convo.String()}},
+		}},
+	})
+	if err != nil {
+		return "", err
+	}
+	var b strings.Builder
+	for ev := range ch {
+		switch ev.Type {
+		case providers.EventText:
+			b.WriteString(ev.Text)
+		case providers.EventError:
+			return "", errors.New(ev.Error)
+		}
+	}
+	return b.String(), nil
 }
 
 // handleListRunInterrupts serves GET /v1/runs/{run_id}/interrupts.

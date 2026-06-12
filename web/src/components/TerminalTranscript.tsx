@@ -239,6 +239,13 @@ function formatLine(row: TranscriptEvent): FormattedLine {
       return { key, ts, kind, cls: "tl-user", payload: `❯ ${ev.text ?? ""}` };
     case "awaiting_input":
       return { key, ts, kind, cls: "tl-meta", payload: "idle — waiting for operator input" };
+    case "context_compaction": {
+      // The conversation before this point was summarized to free context.
+      const before = ev.context_compaction?.before_tokens ?? 0;
+      const after = ev.context_compaction?.after_tokens ?? 0;
+      const sizes = before > 0 && after > 0 ? ` (~${fmtTokens(before)} → ~${fmtTokens(after)})` : "";
+      return { key, ts, kind, cls: "tl-meta", payload: `↯ context compacted${sizes}` };
+    }
     case "started":
       return { key, ts, kind, cls: "tl-meta", payload: "" };
     case "session":
@@ -277,6 +284,11 @@ function oneLine(s: string): string {
 
 function truncate(s: string, n: number): string {
   return s.length > n ? s.slice(0, n) + "…" : s;
+}
+
+// fmtTokens renders a rough token count compactly (1234 → "1.2k").
+function fmtTokens(n: number): string {
+  return n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n);
 }
 
 function formatHMSms(ns: number): string {

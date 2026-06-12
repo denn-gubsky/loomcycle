@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   cancelAgent,
+  compactRun,
   continueSession,
   resolveInterrupt,
   sendRunInput,
@@ -78,6 +79,9 @@ export interface UseRunStream {
   // CONTINUES the session as a fresh turn. The single terminal-prompt entry.
   send: (text: string) => void;
   cancel: () => void;
+  // compact summarizes the conversation and continues from the summary, freeing
+  // context. Valid only at a safe boundary (parked / terminal).
+  compact: () => void;
   reset: () => void;
 }
 
@@ -307,6 +311,17 @@ export function useRunStream(): UseRunStream {
     setStatus((s) => (s === "running" ? "cancelled" : s));
   }, [agentId]);
 
+  // compact summarizes the run's conversation and continues from the summary.
+  // Best-effort; only valid at a safe boundary (the LiveRunPane button gates
+  // this), the server returns 409 mid-turn. The resulting context_compaction
+  // event arrives on the live stream and renders in the transcript.
+  const compact = useCallback(() => {
+    if (!runId) return;
+    void compactRun(runId).catch((e) => {
+      setError(e instanceof Error ? e.message : String(e));
+    });
+  }, [runId]);
+
   const reset = useCallback(() => {
     ctrlRef.current?.abort();
     seqRef.current = 0;
@@ -338,6 +353,7 @@ export function useRunStream(): UseRunStream {
     send,
     sendMessage,
     cancel,
+    compact,
     reset,
   };
 }

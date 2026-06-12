@@ -22,6 +22,7 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -33,11 +34,24 @@ var ErrRunNotFound = errors.New("steer: no in-flight run for run_id")
 // operator is outpacing the loop's drain. HTTP maps it to 429 (retry).
 var ErrQueueFull = errors.New("steer: run input queue full")
 
-// Message is one operator-injected steering instruction.
+// KindCompact marks a Message as a context-compaction control rather than an
+// operator steering turn (RFC: interactive context compaction). The loop, on
+// draining a compact Message, REPLACES its in-memory conversation with a
+// summary pair built from Text instead of appending Text as a user turn. The
+// empty Kind ("") is the default — an ordinary steering/continuation message.
+const KindCompact = "compact"
+
+// Message is one operator-injected steering instruction (Kind == "") or a
+// control message (e.g. KindCompact). Carried over the same per-run queue so
+// the loop applies it at its next iteration / park boundary.
 type Message struct {
 	Text       string
 	Source     string // "api" | "webui" — resolved at the auth boundary, never the wire
 	EnqueuedAt time.Time
+	// Kind discriminates the message. "" = an operator turn (append Text as a
+	// user message). KindCompact = replace the conversation with a summary
+	// built from Text. New kinds extend this without changing the queue plumbing.
+	Kind string
 }
 
 // Entry is the live handle for one run's steering queue.
@@ -47,6 +61,12 @@ type Entry struct {
 	SessionID string
 	UserID    string
 	ch        chan Message
+	// parked reports whether the run is currently parked at end_turn awaiting
+	// operator input (an interactive run between turns) vs. actively mid-turn.
+	// A pointer so the value-copied Entry returned by Get still observes
+	// updates. Flipped by SetParked (driven by the run's awaiting_input /
+	// resume events); read by IsParked for the compaction boundary gate.
+	parked *atomic.Bool
 }
 
 // ClusterSteerer is the cross-replica fallback (mirror of
@@ -93,6 +113,7 @@ func (r *Registry) SetClusterSteerer(c ClusterSteerer) {
 func (r *Registry) Register(e Entry) (<-chan Message, func()) {
 	ch := make(chan Message, r.cap)
 	e.ch = ch
+	e.parked = &atomic.Bool{}
 	r.mu.Lock()
 	r.entries[e.RunID] = e
 	r.mu.Unlock()
@@ -172,4 +193,27 @@ func (r *Registry) Count() int {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	return len(r.entries)
+}
+
+// SetParked records whether a registered run is parked at end_turn awaiting
+// input. Driven by the run's awaiting_input event (true) and the events that
+// signal it resumed work (false). No-op for an unregistered run_id.
+func (r *Registry) SetParked(runID string, parked bool) {
+	r.mu.RLock()
+	e, ok := r.entries[runID]
+	r.mu.RUnlock()
+	if ok && e.parked != nil {
+		e.parked.Store(parked)
+	}
+}
+
+// IsParked reports whether a LOCALLY-registered run is parked awaiting input —
+// the safe boundary for context compaction. False when the run_id is unknown
+// locally (terminated, or owned by another replica): the caller treats those
+// via the terminal / cross-replica paths, not as "parked here".
+func (r *Registry) IsParked(runID string) bool {
+	r.mu.RLock()
+	e, ok := r.entries[runID]
+	r.mu.RUnlock()
+	return ok && e.parked != nil && e.parked.Load()
 }
