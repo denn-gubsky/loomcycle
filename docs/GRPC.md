@@ -58,7 +58,7 @@ rather than a feature toggle, so it lives in env-only.
 
 ## Wire surface
 
-Seven RPCs on the `loomcycle.v1.Loomcycle` service. Each maps 1:1 to
+Nine RPCs on the `loomcycle.v1.Loomcycle` service. Each maps 1:1 to
 an HTTP route — wire-shape parity is a stability guarantee, so an
 adapter can be trivially ported between the two.
 
@@ -66,11 +66,22 @@ adapter can be trivially ported between the two.
 |---|---|---|---|
 | `Run(RunRequest) → stream Event` | `POST /v1/runs` (text/event-stream) | server-stream | Drives one fresh agent run end-to-end. |
 | `Continue(ContinueRequest) → stream Event` | `POST /v1/sessions/{session_id}/continue` | server-stream | Continues an existing session. |
+| `SpawnRunBatch(BatchSpawnRequest) → BatchSpawnResult` | `POST /v1/runs:batch` | unary | **RFC Y external fan-out (v0.33.0).** Spawn up to 32 fresh runs concurrently (mode `"join"`) under the per-user admission gate; returns an index-aligned envelope (`results[]` of `SpawnResult` + `spawned`). A per-child failure rides in its `status`+`error`, never failing the batch; an over-cap / `mode:"detach"` request → `INVALID_ARGUMENT`. |
+| `CompactRun(CompactRunRequest) → CompactRunResult` | `POST /v1/runs/{run_id}/compact` | unary | **v0.33.0.** Summarize a run's context (keyed on `run_id`). A live run must be PARKED — mid-turn → `FAILED_PRECONDITION`. Returns `{compacted, before_tokens, after_tokens, applied}` (`applied` ∈ `live`/`marker`/`noop`). |
 | `GetAgent(GetAgentRequest) → Agent` | `GET /v1/agents/{agent_id}` | unary | Read one agent's status + usage. |
 | `CancelAgent(CancelAgentRequest) → CancelAgentResponse` | `POST /v1/agents/{agent_id}/cancel` | unary | Cascades to children via `parent_agent_id`. |
 | `ListUserAgents(ListUserAgentsRequest) → ListUserAgentsResponse` | `GET /v1/users/{user_id}/agents` | unary | Status filter optional. |
 | `GetTranscript(GetTranscriptRequest) → Transcript` | `GET /v1/sessions/{session_id}/transcript` | unary | Persisted event log; payloads are raw JSON bytes. |
 | `Health(HealthRequest) → HealthResponse` | `GET /healthz` | unary | Unauthenticated. Returns build commit + uptime. |
+
+**Per-run `sampling` + `compaction` (v0.33.0).** `RunRequest` and
+`ContinueRequest` carry optional `Sampling` and `Compaction` messages —
+per-run overrides merged per-field over the agent's own (mirroring the HTTP
+`sampling`/`compaction` body fields). Every scalar uses proto3 `optional` so
+"unset" (inherit the agent's value) is distinct from an explicit zero — a
+`temperature` of `0.0` stays deterministic, `enabled: false` stays "off".
+`BatchSpawnRequest.spawns` reuses `RunRequest`, so a fan-out child sets these
+the same way.
 
 `HostAllowlist` is a wrapper message rather than a `repeated string`
 field directly so the proto can encode the three-state `*[]string`

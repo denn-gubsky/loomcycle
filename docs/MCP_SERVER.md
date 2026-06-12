@@ -2,15 +2,17 @@
 
 This page covers the **other direction** of loomcycle's MCP integration: exposing loomcycle itself as a stdio MCP server that **Claude Code, Claude Desktop, and other MCP orchestrators consume**.
 
-> **Why this, not the alternative.** You could write your own orchestration: spin up loomcycle as an HTTP server, write client code that polls `/v1/runs`, manage tokens, parse SSE streams. The MCP server path is one command and a five-line config — every MCP client (Claude Code, Claude Desktop, the model layer of any orchestrator that speaks MCP) discovers loomcycle's 39 meta-tools automatically. The HTTP path stays available for everything else, but for "I want Claude Code to drive a multi-agent loomcycle backend", MCP is the shorter route.
+> **Why this, not the alternative.** You could write your own orchestration: spin up loomcycle as an HTTP server, write client code that polls `/v1/runs`, manage tokens, parse SSE streams. The MCP server path is one command and a five-line config — every MCP client (Claude Code, Claude Desktop, the model layer of any orchestrator that speaks MCP) discovers loomcycle's 43 meta-tools automatically. The HTTP path stays available for everything else, but for "I want Claude Code to drive a multi-agent loomcycle backend", MCP is the shorter route.
 
 The consumer side (loomcycle's agents calling external MCP servers like `mcp__jobs__getAgentContext`) is documented in [`MCP_INTEGRATION.md`](MCP_INTEGRATION.md). This document is purely about the inverse: loomcycle's own `loomcycle mcp` subcommand.
 
 ## What you get
 
-When you register loomcycle as your MCP server, your MCP client gains **39 meta-tools** for driving loomcycle from inside a chat — spawn runs, manage agents, read/write memory, publish/subscribe to channels, register agent definitions, etc. The full surface is enumerated in the diagram at [`docs/assets/architecture-connector.png`](assets/architecture-connector.png).
+When you register loomcycle as your MCP server, your MCP client gains **43 meta-tools** for driving loomcycle from inside a chat — spawn runs, manage agents, read/write memory, publish/subscribe to channels, register agent definitions, etc. The full surface is enumerated in the diagram at [`docs/assets/architecture-connector.png`](assets/architecture-connector.png).
 
 The most common consumer is Claude Code: you can ask Claude to "spawn a `qa-agent` against this PR and stream the result" and Claude will use loomcycle's `spawn_run` meta-tool transparently.
+
+**v0.33.0 added two run-lifecycle meta-tools:** **`spawn_runs`** — RFC Y external fan-out: spawn up to 32 fresh runs concurrently in one call and get back a combined index-aligned envelope (prefer it over firing N `spawn_run` calls, which serialize over the single stdio connection); and **`compact_run`** — compact a parked run's context by `agent_id` (summarize older turns, continue from the summary). `spawn_run`/`spawn_runs` also now accept per-run `sampling` + `compaction` overrides.
 
 ## Single-runtime invariant: embedded vs thin-client (`--upstream`)
 
