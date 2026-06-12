@@ -711,3 +711,82 @@ func TestScheduler_InFlightSuppressesDoubleFire(t *testing.T) {
 		t.Errorf("calls = %d, want 1 (in-flight tracker should have suppressed re-fires while the first fire was running)", got)
 	}
 }
+
+// recordResultErrStore embeds a real store but forces every
+// ScheduleRunStateRecordResult to fail — exercising the I3 dropped-error
+// paths without needing a genuinely broken backend.
+type recordResultErrStore struct {
+	store.Store
+	err error
+}
+
+func (s recordResultErrStore) ScheduleRunStateRecordResult(context.Context, store.ScheduleRunResult) error {
+	return s.err
+}
+
+// TestScheduler_AdvanceOnly_LogsDroppedResultWriteError pins exp7 I3: when the
+// result-write fails, next_run_at can't advance and the def re-presents every
+// tick (a re-fire loop). The scheduler previously swallowed the error (`_ =`),
+// hiding the cause. Now it logs. FAIL-BEFORE: with the dropped `_ =` the
+// captured log is empty and this test fails.
+func TestScheduler_AdvanceOnly_LogsDroppedResultWriteError(t *testing.T) {
+	real, err := sqlite.Open(":memory:")
+	if err != nil {
+		t.Fatalf("sqlite.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = real.Close() })
+
+	var mu sync.Mutex
+	var logged strings.Builder
+	logf := func(format string, args ...any) {
+		mu.Lock()
+		defer mu.Unlock()
+		fmt.Fprintf(&logged, format, args...)
+		logged.WriteByte('\n')
+	}
+
+	st := recordResultErrStore{Store: real, err: errors.New("boom-write-failed")}
+	sched := New(Config{TickInterval: time.Hour}, st, &fakeRunner{}, nil, nil, logf)
+
+	// Empty Schedule → computeNext errors → 1h-park fallback, then the
+	// record-result write fails and must be logged (not swallowed).
+	sched.advanceOnly(context.Background(), "sd-x", scheduleDef{}, "skipped", time.Now())
+
+	mu.Lock()
+	out := logged.String()
+	mu.Unlock()
+	if !strings.Contains(out, "record-result failed") || !strings.Contains(out, "boom-write-failed") {
+		t.Errorf("advanceOnly did not log the dropped result-write error; captured log:\n%s", out)
+	}
+}
+
+// TestScheduler_RecordFireFailure_LogsDroppedResultWriteError mirrors the above
+// for the recordFireFailure path (exp7 I3).
+func TestScheduler_RecordFireFailure_LogsDroppedResultWriteError(t *testing.T) {
+	real, err := sqlite.Open(":memory:")
+	if err != nil {
+		t.Fatalf("sqlite.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = real.Close() })
+
+	var mu sync.Mutex
+	var logged strings.Builder
+	logf := func(format string, args ...any) {
+		mu.Lock()
+		defer mu.Unlock()
+		fmt.Fprintf(&logged, format, args...)
+		logged.WriteByte('\n')
+	}
+
+	st := recordResultErrStore{Store: real, err: errors.New("boom-write-failed")}
+	sched := New(Config{TickInterval: time.Hour}, st, &fakeRunner{}, nil, nil, logf)
+
+	sched.recordFireFailure(context.Background(), "sd-y", "r1", "failed", errors.New("decode"), time.Now())
+
+	mu.Lock()
+	out := logged.String()
+	mu.Unlock()
+	if !strings.Contains(out, "record fire-failure result failed") || !strings.Contains(out, "boom-write-failed") {
+		t.Errorf("recordFireFailure did not log the dropped result-write error; captured log:\n%s", out)
+	}
+}
