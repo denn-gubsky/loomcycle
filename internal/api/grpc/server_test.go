@@ -744,6 +744,9 @@ func (m *mockConnector) SpawnRunBatch(context.Context, connector.BatchSpawnReque
 func (m *mockConnector) GetRun(context.Context, string) (connector.Run, error) {
 	return connector.Run{}, nil
 }
+func (m *mockConnector) CompactRun(context.Context, string) (connector.CompactResult, error) {
+	return connector.CompactResult{}, nil
+}
 func (m *mockConnector) ListRuns(context.Context, connector.ListRunsFilter) ([]connector.Run, error) {
 	return nil, nil
 }

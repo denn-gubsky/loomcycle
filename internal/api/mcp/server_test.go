@@ -61,6 +61,12 @@ type mockConnector struct {
 	batchReq    atomic.Value // connector.BatchSpawnRequest (last)
 	batchResult connector.BatchSpawnResult
 	batchErr    error
+
+	// compact_run (compaction MCP tool) injection points.
+	getRunResult  connector.Run // returned by GetRun (agent_id→run_id resolution)
+	compactRunID  atomic.Value  // string: the run_id CompactRun was called with
+	compactResult connector.CompactResult
+	compactErr    error
 }
 
 func (m *mockConnector) SpawnRun(ctx context.Context, r connector.SpawnRunRequest) (connector.SpawnRunResult, error) {
@@ -89,7 +95,11 @@ func (m *mockConnector) CancelRun(_ context.Context, _, _ string) (connector.Can
 	return connector.CancelRunResult{Cancelled: true}, nil
 }
 func (m *mockConnector) GetRun(_ context.Context, _ string) (connector.Run, error) {
-	return connector.Run{}, nil
+	return m.getRunResult, nil
+}
+func (m *mockConnector) CompactRun(_ context.Context, runID string) (connector.CompactResult, error) {
+	m.compactRunID.Store(runID)
+	return m.compactResult, m.compactErr
 }
 func (m *mockConnector) ListRuns(_ context.Context, _ connector.ListRunsFilter) ([]connector.Run, error) {
 	if m.listCallback != nil {
@@ -353,15 +363,15 @@ func TestServer_ToolsList_ReturnsFullCatalogue(t *testing.T) {
 	if err := json.Unmarshal(resps[0].Result, &result); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if len(result.Tools) != 42 {
-		t.Errorf("got %d tools, want 42 (RFC Y adds spawn_runs on top of the channeldef list)", len(result.Tools))
+	if len(result.Tools) != 43 {
+		t.Errorf("got %d tools, want 43 (spawn_runs + compact_run on top of the channeldef list)", len(result.Tools))
 	}
 	names := map[string]bool{}
 	for _, td := range result.Tools {
 		names[td.Name] = true
 	}
 	// Spot-check across categories — through the v1.x additions.
-	for _, want := range []string{"spawn_run", "spawn_runs", "register_agent", "memory", "agentdef", "skilldef", "mcpserverdef", "scheduledef", "a2aservercarddef", "a2aagentdef", "webhookdef", "memorybackenddef", "operatortokendef", "pause_runtime", "create_snapshot", "get_snapshot", "resolve_probe", "interruption_resolve", "register_hook", "list_hooks", "delete_hook", "list_channels", "stream_user_run_states", "publish_channel", "subscribe_channel", "peek_channel", "ack_channel"} {
+	for _, want := range []string{"spawn_run", "spawn_runs", "compact_run", "register_agent", "memory", "agentdef", "skilldef", "mcpserverdef", "scheduledef", "a2aservercarddef", "a2aagentdef", "webhookdef", "memorybackenddef", "operatortokendef", "pause_runtime", "create_snapshot", "get_snapshot", "resolve_probe", "interruption_resolve", "register_hook", "list_hooks", "delete_hook", "list_channels", "stream_user_run_states", "publish_channel", "subscribe_channel", "peek_channel", "ack_channel"} {
 		if !names[want] {
 			t.Errorf("missing tool %q in tools/list", want)
 		}
@@ -453,6 +463,87 @@ func TestServer_SpawnRun_BlockingPath(t *testing.T) {
 	}
 	if inner.AgentID != "a_x" || inner.FinalText != "hello world" {
 		t.Errorf("inner = %+v, want AgentID=a_x FinalText=\"hello world\"", inner)
+	}
+}
+
+// TestServer_SpawnRun_CarriesCompaction verifies a per-run compaction block on
+// a spawn_run call decodes into SpawnRunRequest.Compaction (the new per-run
+// config surface; the connector then carries it to runner.RunInput).
+func TestServer_SpawnRun_CarriesCompaction(t *testing.T) {
+	mc := &mockConnector{spawnResult: connector.SpawnRunResult{AgentID: "a", RunID: "r", Status: "completed"}}
+	srv := New(Config{Connector: mc, Logf: func(string, ...any) {}})
+	in := strings.Join([]string{
+		`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"t","version":"1"}}}`,
+		`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"spawn_run","arguments":{"agent":"qa","segments":[],"compaction":{"enabled":true,"keep_last_n":6,"autocompact_at_pct":75}}}}`,
+	}, "\n") + "\n"
+	driveServer(t, srv, in)
+	stored, _ := mc.spawnReq.Load().(connector.SpawnRunRequest)
+	if stored.Compaction == nil {
+		t.Fatal("SpawnRunRequest.Compaction is nil — per-run compaction did not decode")
+	}
+	if stored.Compaction.Enabled == nil || !*stored.Compaction.Enabled {
+		t.Error("compaction.enabled did not decode as true")
+	}
+	if stored.Compaction.KeepLastN == nil || *stored.Compaction.KeepLastN != 6 {
+		t.Errorf("compaction.keep_last_n = %v, want 6", stored.Compaction.KeepLastN)
+	}
+	if stored.Compaction.AutoCompactAtPct == nil || *stored.Compaction.AutoCompactAtPct != 75 {
+		t.Errorf("compaction.autocompact_at_pct = %v, want 75", stored.Compaction.AutoCompactAtPct)
+	}
+}
+
+// TestServer_CompactRun_ResolvesAgentIDThenCompacts verifies the compact_run
+// tool resolves agent_id→run_id via GetRun, calls CompactRun with that run_id,
+// and returns the compaction envelope.
+func TestServer_CompactRun_ResolvesAgentIDThenCompacts(t *testing.T) {
+	mc := &mockConnector{
+		getRunResult:  connector.Run{AgentID: "a_x", RunID: "r_x", Status: "awaiting_input"},
+		compactResult: connector.CompactResult{RunID: "r_x", Compacted: true, BeforeTokens: 900, AfterTokens: 120, Applied: "live"},
+	}
+	srv := New(Config{Connector: mc, Logf: func(string, ...any) {}})
+	in := strings.Join([]string{
+		`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"t","version":"1"}}}`,
+		`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"compact_run","arguments":{"agent_id":"a_x"}}}`,
+	}, "\n") + "\n"
+	resps, _ := driveServer(t, srv, in)
+	if got, _ := mc.compactRunID.Load().(string); got != "r_x" {
+		t.Errorf("CompactRun saw run_id=%q, want r_x (agent_id must resolve via GetRun)", got)
+	}
+	var callRes loommcp.CallToolResult
+	if err := json.Unmarshal(resps[1].Result, &callRes); err != nil {
+		t.Fatalf("unmarshal call result: %v", err)
+	}
+	if callRes.IsError {
+		t.Fatalf("expected non-error compact_run result, got: %v", callRes.Content)
+	}
+	var inner connector.CompactResult
+	if err := json.Unmarshal([]byte(callRes.Content[0].Text), &inner); err != nil {
+		t.Fatalf("unmarshal inner: %v", err)
+	}
+	if !inner.Compacted || inner.Applied != "live" || inner.AfterTokens != 120 {
+		t.Errorf("inner = %+v, want compacted live with after_tokens=120", inner)
+	}
+}
+
+// TestServer_CompactRun_RequiresAgentID verifies the agent_id guard short-
+// circuits before any connector call.
+func TestServer_CompactRun_RequiresAgentID(t *testing.T) {
+	mc := &mockConnector{}
+	srv := New(Config{Connector: mc, Logf: func(string, ...any) {}})
+	in := strings.Join([]string{
+		`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"t","version":"1"}}}`,
+		`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"compact_run","arguments":{}}}`,
+	}, "\n") + "\n"
+	resps, _ := driveServer(t, srv, in)
+	var callRes loommcp.CallToolResult
+	if err := json.Unmarshal(resps[1].Result, &callRes); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if !callRes.IsError {
+		t.Error("compact_run with no agent_id must be a tool error")
+	}
+	if mc.compactRunID.Load() != nil {
+		t.Error("CompactRun must NOT be called when agent_id is missing")
 	}
 }
 

@@ -68,6 +68,13 @@ type Connector interface {
 	// agent_id. Mirrors GET /v1/agents/{agent_id}.
 	GetRun(ctx context.Context, agentID string) (Run, error)
 
+	// CompactRun summarizes a run's conversation to free context and continue
+	// from the summary — mirrors POST /v1/runs/{run_id}/compact. Keyed by
+	// run_id (transports holding an agent_id resolve it via GetRun first). A
+	// live run must be parked; a mid-turn run is refused. Cross-tenant is an
+	// opaque not-found.
+	CompactRun(ctx context.Context, runID string) (CompactResult, error)
+
 	// ListRuns enumerates runs matching the filter. Mirrors
 	// GET /v1/runs (with optional user_id / status filters).
 	ListRuns(ctx context.Context, filter ListRunsFilter) ([]Run, error)
