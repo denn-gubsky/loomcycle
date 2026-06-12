@@ -43,6 +43,23 @@ service Loomcycle {
   // Mirrors POST /v1/sessions/{id}/messages.
   rpc Continue(ContinueRequest) returns (stream Event);
 
+  // SpawnRunBatch spawns N fresh runs concurrently in one call (RFC Y
+  // external fan-out, mode "join"), bounded by the per-user admission
+  // gate, returning a combined index-aligned envelope once all settle. A
+  // per-child failure is captured in that child's result and never fails
+  // the batch. mode "detach" (async run handles) is reserved for a future
+  // release and rejected today.
+  //
+  // Mirrors POST /v1/runs:batch + the spawn_runs MCP tool.
+  rpc SpawnRunBatch(BatchSpawnRequest) returns (BatchSpawnResult);
+
+  // CompactRun summarizes a run's conversation to free context and
+  // continue from the summary. A live run must be PARKED (awaiting input);
+  // a mid-turn run returns FailedPrecondition. Keyed by run_id.
+  //
+  // Mirrors POST /v1/runs/{run_id}/compact + the compact_run MCP tool.
+  rpc CompactRun(CompactRunRequest) returns (CompactRunResult);
+
   // GetTranscript returns the full event history for a session,
   // ordered by seq. Used by adapters that re-attach to a previously
   // started session (e.g. cross-tab sync).
@@ -358,6 +375,16 @@ message RunRequest {
   // arbitrary strings; empty map valid. Never persisted, never logged.
   // See `docs/PLAN.md` → RFC F and `Context.help per-run-credentials`.
   map<string, string> user_credentials = 12;
+
+  // sampling (v0.28.0) is the per-run LLM sampling override, merged
+  // per-field over the agent's own sampling (unset fields inherit).
+  // Absent = inherit entirely. Mirrors the HTTP /v1/runs `sampling` field.
+  Sampling sampling = 13;
+
+  // compaction (v0.32.0) is the per-run context-compaction override,
+  // merged per-field over the agent's own block (unset fields inherit).
+  // Absent = inherit entirely. Mirrors the HTTP /v1/runs `compaction` field.
+  Compaction compaction = 14;
 }
 
 message ContinueRequest {
@@ -378,6 +405,89 @@ message ContinueRequest {
   // v1.x RFC F per-tool credentials map. Same shape + semantics as
   // RunRequest.user_credentials; supplied per-continuation.
   map<string, string> user_credentials = 9;
+
+  // v0.28.0 / v0.32.0 per-continuation overrides (mirror RunRequest).
+  Sampling sampling = 10;
+  Compaction compaction = 11;
+}
+
+// Sampling mirrors config.Sampling — the per-run LLM sampling override.
+// Every field is proto3 `optional` so "unset" (inherit the agent's value)
+// is distinguishable from an explicit zero (temperature 0.0 is
+// deterministic, NOT "unspecified").
+message Sampling {
+  optional double temperature = 1;
+  optional double top_p = 2;
+  optional int32 top_k = 3;
+  optional double frequency_penalty = 4;
+  optional double presence_penalty = 5;
+  optional int32 seed = 6;
+  repeated string stop = 7;
+}
+
+// Compaction mirrors config.Compaction — the per-run context-compaction
+// override. `optional` preserves unset-vs-explicit (enabled=false is "off",
+// absent is "inherit").
+message Compaction {
+  optional bool enabled = 1;
+  optional int32 target_percentage = 2;
+  optional int32 keep_last_n = 3;
+  optional bool keep_first = 4;
+  optional int32 autocompact_at_pct = 5;
+  optional string model = 6;
+}
+
+// ========================
+// Fan-out (RFC Y) + Compaction
+// ========================
+
+// BatchSpawnRequest is the input to SpawnRunBatch. Each spawn reuses the
+// RunRequest shape (its session_id is ignored — batch children are always
+// fresh runs). Capped at 32; the server rejects an over-cap batch.
+message BatchSpawnRequest {
+  repeated RunRequest spawns = 1;
+  // mode is "join" (default): block until all children settle. "detach"
+  // (async run handles) is reserved for a future release and rejected.
+  string mode = 2;
+  // timeout_ms optionally caps the join; a child still running when it
+  // elapses is cancelled and reported with a cancelled status in-envelope.
+  int64 timeout_ms = 3;
+}
+
+// SpawnResult mirrors connector.SpawnRunResult — one child's outcome. A
+// per-child failure is reported here (status + error), never as an RPC error.
+message SpawnResult {
+  string agent_id = 1;
+  string run_id = 2;
+  string session_id = 3;
+  string status = 4;  // completed | failed | cancelled
+  string stop_reason = 5;
+  string final_text = 6;
+  Usage usage = 7;
+  string error = 8;
+}
+
+// BatchSpawnResult is the combined "join"-mode outcome; results is
+// index-aligned with the request's spawns.
+message BatchSpawnResult {
+  repeated SpawnResult results = 1;
+  int32 spawned = 2;
+}
+
+// CompactRunRequest targets a run by run_id (the HTTP path keys on it; the
+// MCP tool resolves agent_id→run_id before calling).
+message CompactRunRequest {
+  string run_id = 1;
+  string reason = 2;  // optional audit note
+}
+
+// CompactRunResult mirrors connector.CompactResult.
+message CompactRunResult {
+  string run_id = 1;
+  bool compacted = 2;
+  int32 before_tokens = 3;
+  int32 after_tokens = 4;
+  string applied = 5;  // live | marker | noop
 }
 
 // HostAllowlist wraps a repeated string so the absence-of-list state

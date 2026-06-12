@@ -5036,6 +5036,11 @@ type compactErr struct {
 
 func (e *compactErr) Error() string { return e.msg }
 
+// HTTPStatus exposes the carried status so a non-HTTP transport (the gRPC
+// CompactRun handler) maps this error to the matching code by asserting the
+// interface{ HTTPStatus() int } — without importing this unexported type.
+func (e *compactErr) HTTPStatus() int { return e.status }
+
 // handleCompactRun serves POST /v1/runs/{run_id}/compact — summarize the run's
 // conversation to free context and continue from the summary (interactive
 // context compaction). Gated to a safe boundary: a live run must be PARKED

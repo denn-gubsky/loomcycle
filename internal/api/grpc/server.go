@@ -20,6 +20,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log"
+	nethttp "net/http"
 	"strings"
 	"time"
 
@@ -32,6 +33,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/api/grpc/loomcyclepb"
 	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/cancel"
+	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/connector"
 	"github.com/denn-gubsky/loomcycle/internal/loop"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
@@ -471,6 +473,8 @@ const grpcMethodPrefix = "/loomcycle.v1.Loomcycle/"
 var grpcConsumerScopes = map[string]string{
 	"Run":                 auth.ScopeRunsCreate,
 	"Continue":            auth.ScopeRunsCreate,
+	"SpawnRunBatch":       auth.ScopeRunsCreate,
+	"CompactRun":          auth.ScopeRunsCreate,
 	"CancelAgent":         auth.ScopeRunsCreate,
 	"GetTranscript":       auth.ScopeRunsRead,
 	"GetAgent":            auth.ScopeRunsRead,
@@ -587,6 +591,8 @@ func (s *Server) Run(req *loomcyclepb.RunRequest, stream loomcyclepb.Loomcycle_R
 		UserTier:        req.GetUserTier(),
 		UserBearer:      req.GetUserBearer(),
 		UserCredentials: req.GetUserCredentials(), // v1.x RFC F
+		Sampling:        samplingFromProto(req.GetSampling()),
+		Compaction:      compactionFromProto(req.GetCompaction()),
 	})
 	return s.driveStream(stream.Context(), stream, in)
 }
@@ -617,8 +623,144 @@ func (s *Server) Continue(req *loomcyclepb.ContinueRequest, stream loomcyclepb.L
 		UserTier:        req.GetUserTier(),
 		UserBearer:      req.GetUserBearer(),
 		UserCredentials: req.GetUserCredentials(), // v1.x RFC F
+		Sampling:        samplingFromProto(req.GetSampling()),
+		Compaction:      compactionFromProto(req.GetCompaction()),
 	})
 	return s.driveStream(stream.Context(), stream, in)
+}
+
+// SpawnRunBatch is the RFC Y external fan-out: spawn N fresh runs
+// concurrently (mode "join") and return the combined index-aligned envelope.
+// Dispatches to connector.SpawnRunBatch, which bounds concurrency on the
+// per-user admission gate and captures per-child failures in-envelope. The RPC
+// only errors on a malformed batch (over-cap / unsupported mode). Mirrors
+// POST /v1/runs:batch.
+func (s *Server) SpawnRunBatch(ctx context.Context, req *loomcyclepb.BatchSpawnRequest) (*loomcyclepb.BatchSpawnResult, error) {
+	if s.connector == nil {
+		return nil, status.Error(codes.Unimplemented, "SpawnRunBatch requires a connector; this Server was constructed without one")
+	}
+	spawns := make([]connector.SpawnRunRequest, 0, len(req.GetSpawns()))
+	for _, sp := range req.GetSpawns() {
+		if errMsg, ok := connector.ValidateUserCredentialsMap(sp.GetUserCredentials()); !ok {
+			return nil, status.Error(codes.InvalidArgument, errMsg)
+		}
+		spawns = append(spawns, spawnRequestFromProto(sp))
+	}
+	res, err := s.connector.SpawnRunBatch(ctx, connector.BatchSpawnRequest{
+		Spawns:    spawns,
+		Mode:      req.GetMode(),
+		TimeoutMS: int(req.GetTimeoutMs()),
+	})
+	if err != nil {
+		// Malformed batch (empty / over-cap / unsupported mode) — a client
+		// error, not Internal. Per-child run failures live inside res.
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+	out := &loomcyclepb.BatchSpawnResult{Spawned: int32(res.Spawned)}
+	for i := range res.Results {
+		out.Results = append(out.Results, spawnResultToProto(res.Results[i]))
+	}
+	return out, nil
+}
+
+// CompactRun summarizes a run's conversation to free context. Dispatches to
+// connector.CompactRun (keyed by run_id). Mirrors POST /v1/runs/{run_id}/compact;
+// the connector's HTTP-status-bearing error maps to the matching gRPC code
+// (mid-turn → FailedPrecondition, missing run → NotFound, …).
+func (s *Server) CompactRun(ctx context.Context, req *loomcyclepb.CompactRunRequest) (*loomcyclepb.CompactRunResult, error) {
+	if s.connector == nil {
+		return nil, status.Error(codes.Unimplemented, "CompactRun requires a connector; this Server was constructed without one")
+	}
+	if !validIdent(req.GetRunId()) {
+		return nil, status.Error(codes.InvalidArgument, "run_id must match [A-Za-z0-9_-]{1,128}")
+	}
+	res, err := s.connector.CompactRun(ctx, req.GetRunId())
+	if err != nil {
+		return nil, compactErrToStatus(err)
+	}
+	return &loomcyclepb.CompactRunResult{
+		RunId:        res.RunID,
+		Compacted:    res.Compacted,
+		BeforeTokens: int32(res.BeforeTokens),
+		AfterTokens:  int32(res.AfterTokens),
+		Applied:      res.Applied,
+	}, nil
+}
+
+// spawnRequestFromProto maps a proto RunRequest to a connector.SpawnRunRequest
+// for the fan-out path. session_id is carried through but batch children are
+// forced fresh by SpawnRunBatch. parent_context / metadata are not on the proto
+// RunRequest (a pre-existing gRPC gap) so they stay nil.
+func spawnRequestFromProto(req *loomcyclepb.RunRequest) connector.SpawnRunRequest {
+	r := connector.SpawnRunRequest{
+		Agent:           req.GetAgent(),
+		SessionID:       req.GetSessionId(),
+		TenantID:        req.GetTenantId(),
+		Segments:        segmentsFromProto(req.GetSegments()),
+		AllowedTools:    req.GetAllowedTools(),
+		WebSearchFilter: req.GetWebSearchFilter(),
+		UserID:          req.GetUserId(),
+		AgentID:         req.GetAgentId(),
+		UserTier:        req.GetUserTier(),
+		UserBearer:      req.GetUserBearer(),
+		UserCredentials: req.GetUserCredentials(),
+		Sampling:        samplingFromProto(req.GetSampling()),
+		Compaction:      compactionFromProto(req.GetCompaction()),
+	}
+	if hosts := req.GetAllowedHosts(); hosts != nil {
+		list := hosts.GetList()
+		r.AllowedHosts = &list
+	}
+	return r
+}
+
+// spawnResultToProto maps one connector.SpawnRunResult to its proto shape.
+func spawnResultToProto(r connector.SpawnRunResult) *loomcyclepb.SpawnResult {
+	return &loomcyclepb.SpawnResult{
+		AgentId:    r.AgentID,
+		RunId:      r.RunID,
+		SessionId:  r.SessionID,
+		Status:     r.Status,
+		StopReason: r.StopReason,
+		FinalText:  r.FinalText,
+		Usage:      usageToProto(r.Usage),
+		Error:      r.Error,
+	}
+}
+
+// usageToProto maps a providers.Usage to the proto Usage message (nil-safe).
+func usageToProto(u *providers.Usage) *loomcyclepb.Usage {
+	if u == nil {
+		return nil
+	}
+	return &loomcyclepb.Usage{
+		InputTokens:         int64(u.InputTokens),
+		OutputTokens:        int64(u.OutputTokens),
+		CacheCreationTokens: int64(u.CacheCreationTokens),
+		CacheReadTokens:     int64(u.CacheReadTokens),
+		Model:               u.Model,
+	}
+}
+
+// compactErrToStatus maps connector.CompactRun's HTTP-status-bearing error to
+// the matching gRPC code (the error implements HTTPStatus() — see the http
+// package's compactErr — so the mapping stays in sync with the REST surface
+// without leaking the concrete type). Unrecognized errors map to Internal.
+func compactErrToStatus(err error) error {
+	var hse interface{ HTTPStatus() int }
+	if errors.As(err, &hse) {
+		switch hse.HTTPStatus() {
+		case nethttp.StatusNotFound:
+			return status.Error(codes.NotFound, err.Error())
+		case nethttp.StatusConflict:
+			return status.Error(codes.FailedPrecondition, err.Error())
+		case nethttp.StatusServiceUnavailable, nethttp.StatusBadGateway:
+			return status.Error(codes.Unavailable, err.Error())
+		case nethttp.StatusTooManyRequests:
+			return status.Error(codes.ResourceExhausted, err.Error())
+		}
+	}
+	return status.Error(codes.Internal, err.Error())
 }
 
 // runStreamSink abstracts the two streaming server types
@@ -713,7 +855,9 @@ type runInputProtoArgs struct {
 	TenantID        string
 	UserTier        string
 	UserBearer      string
-	UserCredentials map[string]string // v1.x RFC F per-tool named credentials
+	UserCredentials map[string]string  // v1.x RFC F per-tool named credentials
+	Sampling        *config.Sampling   // v0.28.0 per-run sampling override
+	Compaction      *config.Compaction // v0.32.0 per-run compaction override
 }
 
 // runInputFromProto maps the proto request fields into the
@@ -731,6 +875,8 @@ func runInputFromProto(a runInputProtoArgs) runner.RunInput {
 		UserTier:        a.UserTier,
 		UserBearer:      a.UserBearer,
 		UserCredentials: a.UserCredentials, // v1.x RFC F per-tool named credentials
+		Sampling:        a.Sampling,        // v0.28.0 per-run sampling override
+		Compaction:      a.Compaction,      // v0.32.0 per-run compaction override
 	}
 	if a.AllowedHosts != nil {
 		// Proto3 message-type field present → caller did supply a
@@ -740,6 +886,77 @@ func runInputFromProto(a runInputProtoArgs) runner.RunInput {
 		in.AllowedHosts = &list
 	}
 	return in
+}
+
+// samplingFromProto maps the proto Sampling message to *config.Sampling,
+// preserving field presence (proto3 `optional` → a nil pointer means
+// "inherit"; an explicit 0.0 temperature stays 0.0, not unset). Returns nil
+// when the whole message is absent.
+func samplingFromProto(p *loomcyclepb.Sampling) *config.Sampling {
+	if p == nil {
+		return nil
+	}
+	s := &config.Sampling{Stop: p.GetStop()}
+	if p.Temperature != nil {
+		v := *p.Temperature
+		s.Temperature = &v
+	}
+	if p.TopP != nil {
+		v := *p.TopP
+		s.TopP = &v
+	}
+	if p.TopK != nil {
+		v := int(*p.TopK)
+		s.TopK = &v
+	}
+	if p.FrequencyPenalty != nil {
+		v := *p.FrequencyPenalty
+		s.FrequencyPenalty = &v
+	}
+	if p.PresencePenalty != nil {
+		v := *p.PresencePenalty
+		s.PresencePenalty = &v
+	}
+	if p.Seed != nil {
+		v := int(*p.Seed)
+		s.Seed = &v
+	}
+	return s
+}
+
+// compactionFromProto maps the proto Compaction message to *config.Compaction,
+// preserving field presence (an absent message = inherit; enabled=false is an
+// explicit "off", not unset). Returns nil when the message is absent.
+func compactionFromProto(p *loomcyclepb.Compaction) *config.Compaction {
+	if p == nil {
+		return nil
+	}
+	c := &config.Compaction{}
+	if p.Enabled != nil {
+		v := *p.Enabled
+		c.Enabled = &v
+	}
+	if p.TargetPercentage != nil {
+		v := int(*p.TargetPercentage)
+		c.TargetPercentage = &v
+	}
+	if p.KeepLastN != nil {
+		v := int(*p.KeepLastN)
+		c.KeepLastN = &v
+	}
+	if p.KeepFirst != nil {
+		v := *p.KeepFirst
+		c.KeepFirst = &v
+	}
+	if p.AutocompactAtPct != nil {
+		v := int(*p.AutocompactAtPct)
+		c.AutoCompactAtPct = &v
+	}
+	if p.Model != nil {
+		v := *p.Model
+		c.Model = &v
+	}
+	return c
 }
 
 func segmentsFromProto(segs []*loomcyclepb.PromptSegment) []loop.PromptSegment {
