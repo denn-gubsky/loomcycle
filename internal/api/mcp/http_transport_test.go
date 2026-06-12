@@ -48,6 +48,9 @@ func (m *httpMockConnector) SpawnRun(ctx context.Context, _ connector.SpawnRunRe
 		AgentID: "a_http", RunID: "r_http", SessionID: "s_http", Status: "completed",
 	}, nil
 }
+func (m *httpMockConnector) SpawnRunBatch(context.Context, connector.BatchSpawnRequest) (connector.BatchSpawnResult, error) {
+	return connector.BatchSpawnResult{}, nil
+}
 func (m *httpMockConnector) CancelRun(_ context.Context, _, _ string) (connector.CancelRunResult, error) {
 	m.cancelCalls.Add(1)
 	return connector.CancelRunResult{Cancelled: true}, nil

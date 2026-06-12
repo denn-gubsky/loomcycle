@@ -451,6 +451,11 @@ func requiredScopeFor(method, path string) string {
 	// Run creation (fresh run + session continuation message).
 	case method == http.MethodPost && path == "/v1/runs":
 		return auth.ScopeRunsCreate
+	// RFC Y fan-out spawns N runs in one call — same create scope as /v1/runs.
+	// Exact match (not the /v1/runs/ prefix), so it's not shadowed by the
+	// per-run write cases below.
+	case method == http.MethodPost && path == "/v1/runs:batch":
+		return auth.ScopeRunsCreate
 	case method == http.MethodPost && strings.HasPrefix(path, "/v1/sessions/") && strings.HasSuffix(path, "/messages"):
 		return auth.ScopeRunsCreate
 	// Cancel a run — a write on run state. (The real route is POST
