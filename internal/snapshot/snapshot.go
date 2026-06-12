@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -141,9 +140,13 @@ func Capture(ctx context.Context, s store.Store, opts CaptureOptions) (*store.Sn
 		envelope.Sections.InteractionHistory = hist
 	}
 
-	jsonBytes, err := json.Marshal(envelope)
+	// Route through Export so the produced snapshot carries the additive
+	// integrity checksum (exp7 I4) — Capture is the production path (HTTP
+	// /v1/_snapshot + the connector), so stamping only in Export would leave
+	// real snapshots unprotected.
+	jsonBytes, err := Export(envelope)
 	if err != nil {
-		return nil, nil, fmt.Errorf("snapshot capture: marshal envelope: %w", err)
+		return nil, nil, fmt.Errorf("snapshot capture: %w", err)
 	}
 	if int64(len(jsonBytes)) > maxBytes {
 		return nil, nil, &ErrSnapshotTooLarge{

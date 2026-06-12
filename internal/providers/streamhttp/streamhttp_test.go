@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -189,3 +190,58 @@ func TestOptions_Resolve(t *testing.T) {
 // Ensure errors.Is wires through cleanly for the cancellation case
 // (sanity check used elsewhere in this codebase).
 var _ = errors.Is
+
+// flipReadCloser returns one byte per Read until Close flips it to EOF.
+// Read never blocks long, so the concurrent Read/Close test churns the
+// timer Reset path against Close's Stop.
+type flipReadCloser struct{ closed atomic.Bool }
+
+func (f *flipReadCloser) Read(p []byte) (int, error) {
+	if f.closed.Load() {
+		return 0, io.EOF
+	}
+	if len(p) == 0 {
+		return 0, nil
+	}
+	p[0] = 'x'
+	return 1, nil
+}
+
+func (f *flipReadCloser) Close() error { f.closed.Store(true); return nil }
+
+// TestIdleReadCloser_ConcurrentReadClose drives Read (which resets the idle
+// timer) concurrently with Close (which stops it) — exp7 I7. The fix
+// serializes both timer operations under the mutex and refuses to reset the
+// timer after Close. Run under `go test -race` to catch any timer-access data
+// race; the loop also exercises the resurrect-after-close window the fix
+// closes (a Read must not re-arm a stopped timer).
+func TestIdleReadCloser_ConcurrentReadClose(t *testing.T) {
+	for iter := 0; iter < 100; iter++ {
+		rc := &flipReadCloser{}
+		ctx, cancel := context.WithCancel(context.Background())
+		body := WrapBody(rc, time.Millisecond, cancel)
+
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			buf := make([]byte, 8)
+			for j := 0; j < 2000; j++ {
+				if _, err := body.Read(buf); err != nil {
+					return
+				}
+			}
+		}()
+		go func() {
+			defer wg.Done()
+			_ = body.Close()
+		}()
+		wg.Wait()
+		// Double Close stays idempotent.
+		if err := body.Close(); err != nil {
+			t.Fatalf("second Close: %v", err)
+		}
+		cancel()
+		_ = ctx
+	}
+}

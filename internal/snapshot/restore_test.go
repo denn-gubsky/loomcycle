@@ -718,3 +718,129 @@ func mustParseTime(t *testing.T, s string) time.Time {
 	}
 	return tt
 }
+
+// restampSectionChecksum recomputes the I4 integrity checksum over a
+// (possibly mutated) but structurally valid snapshot document and writes it
+// back, so the document is self-consistent again. Used by tests that
+// deliberately mutate section CONTENT (e.g. a malformed embedding) and want
+// Restore to reach the downstream warning path rather than reject on the
+// digest. Lives here so package-internal tests can share it.
+func restampSectionChecksum(t *testing.T, doc string) string {
+	t.Helper()
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(doc), &m); err != nil {
+		t.Fatalf("restamp: parse: %v", err)
+	}
+	cs, err := json.Marshal(sectionChecksum(m["sections"]))
+	if err != nil {
+		t.Fatalf("restamp: marshal checksum: %v", err)
+	}
+	m["checksum"] = cs
+	out, err := json.Marshal(m)
+	if err != nil {
+		t.Fatalf("restamp: marshal: %v", err)
+	}
+	return string(out)
+}
+
+// mkChecksumEnvelope builds a minimal envelope with one agent def, carrying a
+// recognisable description for tamper tests.
+func mkChecksumEnvelope(t *testing.T) Envelope {
+	t.Helper()
+	return Envelope{
+		SchemaVersion: SchemaVersion,
+		CreatedAt:     mustParseTime(t, "2026-01-01T00:00:00Z"),
+		Sections: Sections{
+			AgentDefs: AgentDefsSection{
+				Version: SectionVersion,
+				Entries: []AgentDefEntry{{
+					DefID:       "d1",
+					Name:        "alpha",
+					Version:     1,
+					Definition:  json.RawMessage(`{"model":"x"}`),
+					Description: "ORIGINAL_DESCRIPTION_TOKEN",
+					CreatedAt:   mustParseTime(t, "2026-01-01T00:00:00Z"),
+				}},
+			},
+		},
+	}
+}
+
+// TestExportRestore_ChecksumRoundTrip pins exp7 I4: Export stamps a
+// sha256:<hex> checksum over the section bytes and Restore accepts the
+// round-trip.
+func TestExportRestore_ChecksumRoundTrip(t *testing.T) {
+	env := mkChecksumEnvelope(t)
+	raw, err := Export(&env)
+	if err != nil {
+		t.Fatalf("Export: %v", err)
+	}
+	if !strings.Contains(string(raw), `"checksum":"sha256:`) {
+		t.Fatalf("Export output carries no sha256 checksum: %s", raw)
+	}
+	// Export must NOT mutate the caller's envelope.
+	if env.Checksum != "" {
+		t.Errorf("Export mutated caller's envelope Checksum = %q, want empty", env.Checksum)
+	}
+
+	dst, dstClose := newTestStore(t)
+	defer dstClose()
+	res, err := Restore(context.Background(), dst, raw, RestoreOptions{})
+	if err != nil {
+		t.Fatalf("Restore of a valid checksummed snapshot failed: %v", err)
+	}
+	if res.AgentDefsRestored != 1 {
+		t.Errorf("AgentDefsRestored = %d, want 1", res.AgentDefsRestored)
+	}
+}
+
+// TestRestore_RejectsTamperedBodyWithStaleChecksum pins the integrity gate: a
+// body mutated AFTER Export (without re-stamping) is rejected before any
+// decode/insert.
+func TestRestore_RejectsTamperedBodyWithStaleChecksum(t *testing.T) {
+	env := mkChecksumEnvelope(t)
+	raw, err := Export(&env)
+	if err != nil {
+		t.Fatalf("Export: %v", err)
+	}
+	// Flip a section byte without recomputing the checksum.
+	tampered := strings.Replace(string(raw), "ORIGINAL_DESCRIPTION_TOKEN", "TAMPERED_DESCRIPTION_XXXX", 1)
+	if tampered == string(raw) {
+		t.Fatal("tamper no-op — token not found in export")
+	}
+
+	dst, dstClose := newTestStore(t)
+	defer dstClose()
+	_, err = Restore(context.Background(), dst, []byte(tampered), RestoreOptions{})
+	if err == nil {
+		t.Fatal("Restore accepted a tampered body with a stale checksum")
+	}
+	if !strings.Contains(err.Error(), "checksum mismatch") {
+		t.Errorf("err = %v, want a checksum mismatch", err)
+	}
+}
+
+// TestRestore_LegacySnapshotWithoutChecksumStillRestores pins backward-compat:
+// a snapshot captured before I4 (no checksum field) restores unchanged.
+func TestRestore_LegacySnapshotWithoutChecksumStillRestores(t *testing.T) {
+	env := mkChecksumEnvelope(t)
+	// Marshal directly (NOT via Export) so the document carries no checksum —
+	// the pre-I4 producer shape (env.Checksum == "" → omitempty drops it).
+	legacy, err := json.Marshal(&env)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if strings.Contains(string(legacy), `"checksum"`) {
+		t.Fatalf("legacy fixture unexpectedly carries a checksum: %s", legacy)
+	}
+
+	dst, dstClose := newTestStore(t)
+	defer dstClose()
+	res, err := Restore(context.Background(), dst, legacy, RestoreOptions{})
+	if err != nil {
+		t.Fatalf("Restore of a checksum-less (legacy) snapshot failed: %v", err)
+	}
+	if res.AgentDefsRestored != 1 {
+		t.Errorf("AgentDefsRestored = %d, want 1", res.AgentDefsRestored)
+	}
+}

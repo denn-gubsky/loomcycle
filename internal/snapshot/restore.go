@@ -94,15 +94,34 @@ func Restore(ctx context.Context, s store.Store, raw []byte, opts RestoreOptions
 	// so each section's raw bytes can pass through Migrate() before
 	// being typed-decoded — that's the migration mechanism's hook.
 	var outer struct {
-		SchemaVersion int                        `json:"schema_version"`
-		CreatedAt     time.Time                  `json:"created_at"`
-		Sections      map[string]json.RawMessage `json:"sections"`
+		SchemaVersion int             `json:"schema_version"`
+		CreatedAt     time.Time       `json:"created_at"`
+		Sections      json.RawMessage `json:"sections"`
+		Checksum      string          `json:"checksum,omitempty"`
 	}
 	if err := json.Unmarshal(raw, &outer); err != nil {
 		return RestoreResult{}, fmt.Errorf("snapshot restore: parse envelope: %w", err)
 	}
 	if outer.SchemaVersion > SchemaVersion {
 		return RestoreResult{}, fmt.Errorf("snapshot restore: envelope schema_version %d is newer than reader %d", outer.SchemaVersion, SchemaVersion)
+	}
+
+	// exp7 I4: verify the integrity digest BEFORE any decode/insert, when
+	// present. outer.Sections holds the raw "sections" bytes exactly as they
+	// appear in the document (json.RawMessage), so hashing them reproduces
+	// Export's digest. A snapshot without a checksum (captured before I4)
+	// skips verification and restores unchanged — additive, not a gate.
+	if outer.Checksum != "" {
+		if got := sectionChecksum(outer.Sections); got != outer.Checksum {
+			return RestoreResult{}, fmt.Errorf("snapshot restore: checksum mismatch (want %s, got %s) — snapshot is truncated or tampered", outer.Checksum, got)
+		}
+	}
+
+	// Decode the section map from the raw sections bytes for the per-section
+	// migration + insert logic below.
+	var sections map[string]json.RawMessage
+	if err := json.Unmarshal(outer.Sections, &sections); err != nil {
+		return RestoreResult{}, fmt.Errorf("snapshot restore: parse sections: %w", err)
 	}
 
 	result := RestoreResult{}
@@ -112,7 +131,7 @@ func Restore(ctx context.Context, s store.Store, raw []byte, opts RestoreOptions
 	// sessions before paused_runs).
 
 	// agent_defs
-	if rawSection, ok := outer.Sections[migrations.SectionAgentDefs]; ok {
+	if rawSection, ok := sections[migrations.SectionAgentDefs]; ok {
 		var sec AgentDefsSection
 		if err := decodeWithMigration(migrations.SectionAgentDefs, rawSection, &sec); err != nil {
 			return result, err
@@ -143,7 +162,7 @@ func Restore(ctx context.Context, s store.Store, raw []byte, opts RestoreOptions
 	}
 
 	// agent_def_active (after agent_defs for FK)
-	if rawSection, ok := outer.Sections[migrations.SectionAgentDefActive]; ok {
+	if rawSection, ok := sections[migrations.SectionAgentDefActive]; ok {
 		var sec AgentDefActiveSection
 		if err := decodeWithMigration(migrations.SectionAgentDefActive, rawSection, &sec); err != nil {
 			return result, err
@@ -166,7 +185,7 @@ func Restore(ctx context.Context, s store.Store, raw []byte, opts RestoreOptions
 	}
 
 	// skill_defs (v0.8.22) — mirror of agent_defs restore
-	if rawSection, ok := outer.Sections[migrations.SectionSkillDefs]; ok {
+	if rawSection, ok := sections[migrations.SectionSkillDefs]; ok {
 		var sec SkillDefsSection
 		if err := decodeWithMigration(migrations.SectionSkillDefs, rawSection, &sec); err != nil {
 			return result, err
@@ -197,7 +216,7 @@ func Restore(ctx context.Context, s store.Store, raw []byte, opts RestoreOptions
 	}
 
 	// skill_def_active (after skill_defs for FK)
-	if rawSection, ok := outer.Sections[migrations.SectionSkillDefActive]; ok {
+	if rawSection, ok := sections[migrations.SectionSkillDefActive]; ok {
 		var sec SkillDefActiveSection
 		if err := decodeWithMigration(migrations.SectionSkillDefActive, rawSection, &sec); err != nil {
 			return result, err
@@ -220,7 +239,7 @@ func Restore(ctx context.Context, s store.Store, raw []byte, opts RestoreOptions
 	}
 
 	// mcp_server_defs (v0.9.x) — mirror of agent_defs / skill_defs restore
-	if rawSection, ok := outer.Sections[migrations.SectionMCPServerDefs]; ok {
+	if rawSection, ok := sections[migrations.SectionMCPServerDefs]; ok {
 		var sec MCPServerDefsSection
 		if err := decodeWithMigration(migrations.SectionMCPServerDefs, rawSection, &sec); err != nil {
 			return result, err
@@ -251,7 +270,7 @@ func Restore(ctx context.Context, s store.Store, raw []byte, opts RestoreOptions
 	}
 
 	// mcp_server_def_active (after mcp_server_defs for FK)
-	if rawSection, ok := outer.Sections[migrations.SectionMCPServerDefActive]; ok {
+	if rawSection, ok := sections[migrations.SectionMCPServerDefActive]; ok {
 		var sec MCPServerDefActiveSection
 		if err := decodeWithMigration(migrations.SectionMCPServerDefActive, rawSection, &sec); err != nil {
 			return result, err
@@ -275,7 +294,7 @@ func Restore(ctx context.Context, s store.Store, raw []byte, opts RestoreOptions
 
 	// memory (no FK; embedding field carried but Phase 1 always
 	// null; Phase 2 will populate)
-	if rawSection, ok := outer.Sections[migrations.SectionMemory]; ok {
+	if rawSection, ok := sections[migrations.SectionMemory]; ok {
 		var sec MemorySection
 		if err := decodeWithMigration(migrations.SectionMemory, rawSection, &sec); err != nil {
 			return result, err
@@ -350,7 +369,7 @@ func Restore(ctx context.Context, s store.Store, raw []byte, opts RestoreOptions
 	// yaml-side; restore doesn't write it back into a table — the
 	// operator on the restoring host reconciles against their own
 	// yaml. Messages + cursors get raw inserts.
-	if rawSection, ok := outer.Sections[migrations.SectionChannels]; ok {
+	if rawSection, ok := sections[migrations.SectionChannels]; ok {
 		var sec ChannelsSection
 		if err := decodeWithMigration(migrations.SectionChannels, rawSection, &sec); err != nil {
 			return result, err
@@ -407,7 +426,7 @@ func Restore(ctx context.Context, s store.Store, raw []byte, opts RestoreOptions
 	// evaluations (no FK enforced — runs.agent_def_id is
 	// denormalised at submit time; runs may not even exist on the
 	// restoring host)
-	if rawSection, ok := outer.Sections[migrations.SectionEvaluations]; ok {
+	if rawSection, ok := sections[migrations.SectionEvaluations]; ok {
 		var sec EvaluationsSection
 		if err := decodeWithMigration(migrations.SectionEvaluations, rawSection, &sec); err != nil {
 			return result, err
@@ -437,7 +456,7 @@ func Restore(ctx context.Context, s store.Store, raw []byte, opts RestoreOptions
 	}
 
 	// paused_runs (after sessions are synthesized — FK on session_id)
-	if rawSection, ok := outer.Sections[migrations.SectionPausedRuns]; ok {
+	if rawSection, ok := sections[migrations.SectionPausedRuns]; ok {
 		var sec PausedRunsSection
 		if err := decodeWithMigration(migrations.SectionPausedRuns, rawSection, &sec); err != nil {
 			return result, err
@@ -522,7 +541,7 @@ func Restore(ctx context.Context, s store.Store, raw []byte, opts RestoreOptions
 
 	// interaction_history (optional, opt-in via RestoreOptions)
 	if opts.IncludeHistory {
-		if rawSection, ok := outer.Sections[migrations.SectionInteractionHistory]; ok {
+		if rawSection, ok := sections[migrations.SectionInteractionHistory]; ok {
 			var sec InteractionHistorySection
 			if err := decodeWithMigration(migrations.SectionInteractionHistory, rawSection, &sec); err != nil {
 				return result, err
@@ -540,7 +559,7 @@ func Restore(ctx context.Context, s store.Store, raw []byte, opts RestoreOptions
 					"interaction_history events in envelope: Phase 1 restore does not write these back yet; see snapshot.go captureInteractionHistory")
 			}
 		}
-	} else if _, ok := outer.Sections[migrations.SectionInteractionHistory]; ok {
+	} else if _, ok := sections[migrations.SectionInteractionHistory]; ok {
 		result.Warnings = append(result.Warnings,
 			"interaction_history section present in snapshot but RestoreOptions.IncludeHistory=false; skipped")
 	}

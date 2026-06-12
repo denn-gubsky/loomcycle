@@ -81,3 +81,27 @@ func TestRefresh_PostsWhenNoNewerOnDiskToken(t *testing.T) {
 		t.Errorf("Token = %q, want POSTED", got)
 	}
 }
+
+// TestRefresher_StartIsIdempotent pins exp7 I2: a double Start() must not
+// spawn a second refresh loop. Each loop runs `defer close(doneCh)`, so two
+// loops crash the process with close-of-closed-channel when the second exits.
+// startOnce makes the second Start a no-op. FAIL-BEFORE: without startOnce the
+// second loop panics during Stop's teardown.
+func TestRefresher_StartIsIdempotent(t *testing.T) {
+	store := NewTokenStore(t.TempDir() + "/tokens.json")
+	r := NewRefresher(store, ExchangeOptions{}, func(string, ...any) {})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	r.Start(ctx)
+	r.Start(ctx) // must be a no-op, not a second loop
+
+	r.Stop()
+	r.Stop() // Stop stays idempotent too
+
+	// Give any (erroneously-spawned) second loop a window to run its deferred
+	// close(doneCh) and panic, so the fail-before is deterministic; harmless
+	// on the fixed single-loop path.
+	time.Sleep(50 * time.Millisecond)
+}

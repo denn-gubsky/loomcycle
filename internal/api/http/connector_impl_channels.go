@@ -60,15 +60,21 @@ func (s *Server) requireChannelDeclared(ctx context.Context, name string) (chann
 		}, nil
 	}
 	if s.store != nil {
-		if rows, err := s.store.ChannelsList(ctx); err == nil {
-			for _, r := range rows {
-				if r.Name == name {
-					return channelDef{
-						MaxMessages: r.MaxMessages,
-						DefaultTTL:  r.DefaultTTL,
-					}, nil
-				}
-			}
+		// exp7 I5: point lookup (not an O(N) ChannelsList scan on every
+		// publish/subscribe/peek/ack), and propagate a genuine store fault
+		// instead of swallowing it — the old `if err == nil` masked any
+		// transient error as a spurious channel_not_declared denial.
+		row, err := s.store.ChannelGet(ctx, name)
+		switch {
+		case err == nil:
+			return channelDef{
+				MaxMessages: row.MaxMessages,
+				DefaultTTL:  row.DefaultTTL,
+			}, nil
+		case isNotFound(err):
+			// fall through to the not-declared signal below
+		default:
+			return channelDef{}, fmt.Errorf("channel lookup %q: %w", name, err)
 		}
 	}
 	return channelDef{}, fmt.Errorf("%w: %q", connector.ErrChannelNotDeclared, name)

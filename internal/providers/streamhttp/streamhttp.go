@@ -133,8 +133,11 @@ func WrapBody(rc io.ReadCloser, idleTimeout time.Duration, cancel context.Cancel
 
 // idleReadCloser is the WrapBody implementation. The timer is created
 // in WrapBody (so we don't need a separate Start step) and torn down
-// in Close. Concurrent Close vs Read is allowed; the mutex makes Close
-// idempotent and prevents a double Stop on the timer.
+// in Close. Concurrent Close vs Read is allowed; the mutex serializes
+// every timer operation (Read's Reset vs Close's Stop), makes Close
+// idempotent, and prevents a double Stop — exp7 I7: Read previously
+// called timer.Reset unlocked while Close called timer.Stop after
+// releasing mu, racing two operations on the same *time.Timer.
 type idleReadCloser struct {
 	rc     io.ReadCloser
 	idle   time.Duration
@@ -146,13 +149,18 @@ type idleReadCloser struct {
 }
 
 func (i *idleReadCloser) Read(p []byte) (int, error) {
+	// Read on the underlying body stays OUTSIDE the lock — it blocks until
+	// bytes arrive, and holding mu would serialize a Close behind it.
 	n, err := i.rc.Read(p)
 	if n > 0 {
-		// Reset returns false when the timer was already fired/stopped;
-		// we don't care — if it already fired, cancel() ran and the next
-		// Read will see the context error. If it was stopped (Close),
-		// we're shutting down anyway.
-		i.timer.Reset(i.idle)
+		i.mu.Lock()
+		// Don't resurrect the timer after Close stopped it; otherwise
+		// serialize the Reset against Close's Stop. If the timer already
+		// fired, cancel() ran and the next Read sees the context error.
+		if !i.closed {
+			i.timer.Reset(i.idle)
+		}
+		i.mu.Unlock()
 	}
 	return n, err
 }
@@ -164,7 +172,9 @@ func (i *idleReadCloser) Close() error {
 		return nil
 	}
 	i.closed = true
-	i.mu.Unlock()
+	// Stop inside the critical section so it can never race a concurrent
+	// Read's Reset on the same timer.
 	i.timer.Stop()
+	i.mu.Unlock()
 	return i.rc.Close()
 }

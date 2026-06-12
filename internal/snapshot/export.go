@@ -1,6 +1,8 @@
 package snapshot
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 )
@@ -20,20 +22,38 @@ import (
 // the canonical form is what the restore path consumes, so keep it
 // minimal.
 //
-// Export does NOT include an envelope-level checksum or signature.
-// That's left to the transport layer: HTTP responses include
-// Content-Length; the snapshots table stores byte_size; operators
-// transferring snapshot files between hosts use external tools
-// (sha256sum, signed transfer) when integrity matters.
+// Export stamps an additive "sha256:<hex>" Checksum over the canonical
+// Sections bytes (exp7 I4) so Restore can detect a truncated/tampered body
+// before touching the store. It remains backward-compatible — Restore only
+// verifies the digest when present, so older readers and older snapshots are
+// unaffected. Transport-level integrity (Content-Length, the snapshots
+// table's byte_size, signed transfer) still applies on top.
 func Export(env *Envelope) ([]byte, error) {
 	if env == nil {
 		return nil, fmt.Errorf("snapshot export: nil envelope")
 	}
-	b, err := json.Marshal(env)
+	// Hash the canonical Sections bytes — identical to the "sections" value
+	// that ends up in the marshalled document, since encoding/json marshals
+	// a field value the same standalone as embedded. Stamp on a copy so the
+	// caller's envelope is not mutated.
+	sectionBytes, err := json.Marshal(env.Sections)
+	if err != nil {
+		return nil, fmt.Errorf("snapshot export: marshal sections: %w", err)
+	}
+	out := *env
+	out.Checksum = sectionChecksum(sectionBytes)
+	b, err := json.Marshal(&out)
 	if err != nil {
 		return nil, fmt.Errorf("snapshot export: marshal: %w", err)
 	}
 	return b, nil
+}
+
+// sectionChecksum returns the canonical "sha256:<hex>" digest of the given
+// section bytes. Shared by Export (stamp) and Restore (verify).
+func sectionChecksum(sectionBytes []byte) string {
+	sum := sha256.Sum256(sectionBytes)
+	return "sha256:" + hex.EncodeToString(sum[:])
 }
 
 // ExportPretty produces indented JSON for human inspection. Used by

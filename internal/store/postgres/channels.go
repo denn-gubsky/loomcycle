@@ -48,6 +48,34 @@ func (s *Store) ChannelsList(ctx context.Context) ([]store.ChannelRow, error) {
 	return out, rows.Err()
 }
 
+// ChannelGet returns one runtime-declared channel by name. Returns
+// *store.ErrNotFound{Kind:"channel"} when the name has no runtime row
+// (exp7 I5: a point lookup for the hot declared-check, so a real query
+// fault surfaces as an error instead of an empty scan masquerading as
+// "not declared").
+func (s *Store) ChannelGet(ctx context.Context, name string) (store.ChannelRow, error) {
+	var r store.ChannelRow
+	var createdAt time.Time
+	err := s.pool.QueryRow(ctx, `
+		SELECT name, description, scope, semantic,
+		       default_ttl, max_messages, publisher, period, created_at
+		FROM channels
+		WHERE name = $1
+	`, name).Scan(
+		&r.Name, &r.Description, &r.Scope, &r.Semantic,
+		&r.DefaultTTL, &r.MaxMessages, &r.Publisher, &r.Period,
+		&createdAt,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return store.ChannelRow{}, &store.ErrNotFound{Kind: "channel", ID: name}
+	}
+	if err != nil {
+		return store.ChannelRow{}, fmt.Errorf("channel get: %w", err)
+	}
+	r.CreatedAt = createdAt.UTC()
+	return r, nil
+}
+
 // ChannelsCreate inserts a new runtime channel. Returns
 // *store.ErrConflict{Kind:"channel", ID:name} on PK violation
 // (Postgres SQLSTATE 23505 = unique_violation).

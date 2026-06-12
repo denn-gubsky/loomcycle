@@ -248,13 +248,17 @@ func (s *Scheduler) tick(ctx context.Context) {
 					s.logf("scheduler: PANIC in fireOne(def_id=%s): %v", row.DefID, r)
 					// Best-effort park — re-use the same 1h fallback
 					// the cron-resolve failure path uses.
-					_ = s.store.ScheduleRunStateRecordResult(context.Background(), store.ScheduleRunResult{
+					if rerr := s.store.ScheduleRunStateRecordResult(context.Background(), store.ScheduleRunResult{
 						DefID:      row.DefID,
 						LastStatus: "failed",
 						LastError:  "panic in fireOne",
 						LastRunAt:  time.Now(),
 						NextRunAt:  time.Now().Add(1 * time.Hour),
-					})
+					}); rerr != nil {
+						// exp7 I3: if the park write also fails the def re-fires
+						// next tick — log so the panic→re-fire chain isn't silent.
+						s.logf("scheduler: def %q panic-park record-result failed: %v", row.DefID, rerr)
+					}
 				}
 			}()
 			s.fireOne(ctx, row, now)
@@ -407,12 +411,18 @@ func (s *Scheduler) advanceOnly(ctx context.Context, defID string, def scheduleD
 	if err != nil {
 		next = now.Add(1 * time.Hour)
 	}
-	_ = s.store.ScheduleRunStateRecordResult(ctx, store.ScheduleRunResult{
+	// exp7 I3: a dropped result-write leaves next_run_at unadvanced, so the
+	// def re-presents on every subsequent tick (a re-fire loop). A genuinely
+	// dead store can't advance state at all — logging is the most this path
+	// can do, but it makes the re-fire cause visible instead of silent.
+	if err := s.store.ScheduleRunStateRecordResult(ctx, store.ScheduleRunResult{
 		DefID:      defID,
 		LastStatus: reason,
 		LastRunAt:  now,
 		NextRunAt:  next,
-	})
+	}); err != nil {
+		s.logf("scheduler: def %q advance-only (%s) record-result failed: %v", defID, reason, err)
+	}
 }
 
 // recordFireFailure records an outcome when we never reached the
@@ -420,14 +430,17 @@ func (s *Scheduler) advanceOnly(ctx context.Context, defID string, def scheduleD
 // the def's cron can't be resolved.
 func (s *Scheduler) recordFireFailure(ctx context.Context, defID, runID, status string, err error, now time.Time) {
 	s.logf("scheduler: def %q fire-failed (%s): %v", defID, status, err)
-	_ = s.store.ScheduleRunStateRecordResult(ctx, store.ScheduleRunResult{
+	// exp7 I3: surface a dropped result-write — see advanceOnly above.
+	if rerr := s.store.ScheduleRunStateRecordResult(ctx, store.ScheduleRunResult{
 		DefID:      defID,
 		LastRunID:  runID,
 		LastStatus: status,
 		LastError:  err.Error(),
 		LastRunAt:  now,
 		NextRunAt:  now.Add(1 * time.Hour),
-	})
+	}); rerr != nil {
+		s.logf("scheduler: def %q record fire-failure result failed: %v", defID, rerr)
+	}
 }
 
 // computeNext picks the cron from the def and returns the next-fire time

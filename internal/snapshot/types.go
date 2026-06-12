@@ -52,6 +52,13 @@ type Envelope struct {
 	SchemaVersion int       `json:"schema_version"`
 	CreatedAt     time.Time `json:"created_at"`
 	Sections      Sections  `json:"sections"`
+	// Checksum is an OPTIONAL "sha256:<hex>" digest over the canonical JSON
+	// bytes of the Sections object (exp7 I4). Additive + backward-compatible:
+	// Export stamps it, Restore verifies it ONLY when present — snapshots
+	// captured before this field (no checksum) still restore unchanged.
+	// omitempty keeps pre-checksum readers byte-identical and lets the
+	// human-only ExportPretty path omit it.
+	Checksum string `json:"checksum,omitempty"`
 }
 
 // Sections is the named section map. Each field is the section's

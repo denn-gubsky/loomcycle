@@ -45,6 +45,34 @@ func (s *Store) ChannelsList(ctx context.Context) ([]store.ChannelRow, error) {
 	return out, rows.Err()
 }
 
+// ChannelGet returns one runtime-declared channel by name. Returns
+// *store.ErrNotFound{Kind:"channel"} when the name has no runtime row
+// (exp7 I5: a point lookup for the hot declared-check, so a real query
+// fault surfaces as an error instead of an empty scan masquerading as
+// "not declared").
+func (s *Store) ChannelGet(ctx context.Context, name string) (store.ChannelRow, error) {
+	var r store.ChannelRow
+	var createdNano int64
+	err := s.db.QueryRowContext(ctx, `
+		SELECT name, description, scope, semantic,
+		       default_ttl, max_messages, publisher, period, created_at
+		FROM channels
+		WHERE name = ?
+	`, name).Scan(
+		&r.Name, &r.Description, &r.Scope, &r.Semantic,
+		&r.DefaultTTL, &r.MaxMessages, &r.Publisher, &r.Period,
+		&createdNano,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return store.ChannelRow{}, &store.ErrNotFound{Kind: "channel", ID: name}
+	}
+	if err != nil {
+		return store.ChannelRow{}, fmt.Errorf("channel get: %w", err)
+	}
+	r.CreatedAt = time.Unix(0, createdNano).UTC()
+	return r, nil
+}
+
 // ChannelsCreate inserts a new runtime channel. Returns
 // *store.ErrConflict{Kind:"channel", ID:name} on PK violation
 // (the substrate's standard duplicate-row signal).

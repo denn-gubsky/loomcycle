@@ -174,6 +174,7 @@ func Run(t *testing.T, factory Factory) {
 		{"ChannelReplayFromCursorZero", testChannelReplayFromCursorZero},
 		{"ChannelStatsAggregatesNonExpired", testChannelStatsAggregatesNonExpired},
 		{"ChannelStatsEmptyOnNoMessages", testChannelStatsEmptyOnNoMessages},
+		{"ChannelGetPointLookup", testChannelGetPointLookup},
 		// v0.8.6 deferred publish (PR 1)
 		{"ChannelDeferredHiddenUntilVisible", testChannelDeferredHiddenUntilVisible},
 		{"ChannelDeferredDeliversAfterProgressedCursor", testChannelDeferredDeliversAfterProgressedCursor},
@@ -3245,6 +3246,35 @@ func testChannelStatsEmptyOnNoMessages(t *testing.T, s store.Store) {
 	}
 	if len(stats) != 0 {
 		t.Errorf("expected empty stats, got %d rows: %+v", len(stats), stats)
+	}
+}
+
+// testChannelGetPointLookup pins exp7 I5's new ChannelGet: an existing
+// runtime-declared channel resolves by name with its persisted fields; a
+// missing name returns a typed *store.ErrNotFound (so the connector can
+// distinguish "not declared" from a real store fault).
+func testChannelGetPointLookup(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	if err := s.ChannelsCreate(ctx, store.ChannelRow{
+		Name: "cg-point", Description: "d", Scope: "global", Semantic: "queue",
+		DefaultTTL: 90, MaxMessages: 11, Publisher: "system", Period: "1m",
+	}); err != nil {
+		t.Fatalf("ChannelsCreate: %v", err)
+	}
+
+	got, err := s.ChannelGet(ctx, "cg-point")
+	if err != nil {
+		t.Fatalf("ChannelGet(existing): %v", err)
+	}
+	if got.Name != "cg-point" || got.MaxMessages != 11 || got.DefaultTTL != 90 ||
+		got.Scope != "global" || got.Semantic != "queue" || got.Publisher != "system" || got.Period != "1m" {
+		t.Errorf("ChannelGet round-trip mismatch: %+v", got)
+	}
+
+	_, err = s.ChannelGet(ctx, "cg-absent")
+	var nf *store.ErrNotFound
+	if !errors.As(err, &nf) {
+		t.Errorf("ChannelGet(missing): got %v (%T), want *store.ErrNotFound", err, err)
 	}
 }
 
