@@ -4181,6 +4181,24 @@ button.primary:disabled {
 }
 .live-run-cancel {
   margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 12px;
+  border: none;
+  border-radius: 999px;
+  background: #9b2c2c; /* dark red — a clear "stop", distinct from the accent */
+  color: #fff;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.4;
+  cursor: pointer;
+}
+.live-run-cancel:hover {
+  background: #b5343a;
+}
+.live-run-cancel:active {
+  background: #861f24;
 }
 .live-run-pane .terminal-transcript {
   flex: 1;

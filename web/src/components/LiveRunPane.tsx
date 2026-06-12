@@ -109,8 +109,13 @@ export default function LiveRunPane({
         {agentId && <code className="live-run-agentid">{agentId}</code>}
         <ContextGauge usage={lastUsage} />
         {status === "running" && (
-          <button type="button" className="live-run-cancel" onClick={onCancel}>
-            Cancel
+          <button
+            type="button"
+            className="live-run-cancel"
+            onClick={onCancel}
+            title="Stop the run"
+          >
+            <span aria-hidden="true">✕</span> Stop
           </button>
         )}
       </div>
