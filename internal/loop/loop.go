@@ -614,10 +614,44 @@ func tryProviderFallback(
 		})
 	}
 
+	// Thinking-model downgrade on cross-provider switch (exp7 R2). A DeepSeek-
+	// family thinking model (deepseek-reasoner / *-pro) requires provider-
+	// produced reasoning_content on every assistant turn and 400s
+	// ("reasoning_content ... must be passed back") on a turn lacking it. After
+	// this switch the history's assistant turns are all reasoning-less — a
+	// foreign provider produced them (Anthropic/Gemini never set Reasoning), or
+	// the strip above zeroed them (the deepseek→other→deepseek-reasoner bounce).
+	// The strip can't fix this (it removes reasoning, can't synthesise it), so
+	// downgrade to the non-thinking sibling for the remaining iterations rather
+	// than let the request 400. No assistant turn yet ⇒ nothing to satisfy ⇒ no
+	// downgrade (a fresh history is fine for a thinking model).
+	if dg, ok := newProvider.(providers.ThinkingDowngrader); ok && hasReasoningLessAssistantTurn(messages) {
+		if sibling, downgraded := dg.NonThinkingSibling(newModel); downgraded {
+			emit(providers.Event{
+				Type: providers.EventModelDowngraded,
+				Text: fmt.Sprintf("downgraded %s to non-thinking %s on switch to %s: the fallback history carries assistant turns without reasoning_content, which the thinking model would reject", newModel, sibling, newProvider.ID()),
+			})
+			newModel = sibling
+		}
+	}
+
 	opts.Provider = newProvider
 	opts.Model = newModel
 	opts.Effort = newEffort
 	return fallbackOutcomeSwitched
+}
+
+// hasReasoningLessAssistantTurn reports whether the history contains an
+// assistant turn with no reasoning_content. A DeepSeek-family thinking model
+// rejects such a turn; after a cross-provider switch every assistant turn is
+// reasoning-less (a foreign provider produced it, or the strip zeroed it).
+func hasReasoningLessAssistantTurn(messages []providers.Message) bool {
+	for i := range messages {
+		if messages[i].Role == "assistant" && messages[i].Reasoning == "" {
+			return true
+		}
+	}
+	return false
 }
 
 // truncateError clips long error strings to 200 chars so a peer's
