@@ -25,11 +25,25 @@ The client surface mirrors the gRPC service in proto/loomcycle.proto:
 
     run_streaming(...)        — server-stream events from a fresh run
     continue_session(...)     — server-stream events from a continuation
+    spawn_run_batch(...)      — spawn up to 32 runs concurrently (RFC Y)
+    compact_run(...)          — summarize a parked run's context
     get_agent(...)            — read one agent's status + usage
     cancel_agent(...)         — cancel a live agent (cascades to children)
     list_user_agents(...)     — list a user's recent runs
+    stream_user_run_states(...) — stream a user's run-state transitions
     get_transcript(...)       — read the persisted event log for a session
+    resolve_probe()           — resolver provider/model availability matrix
     health()                  — liveness probe
+
+As of v0.8.0 the client covers all 39 gRPC RPCs: the substrate-def family
+(agent_def / skill_def / mcp_server_def / schedule_def / a2a_server_card_def /
+a2a_agent_def / webhook_def / memory_backend_def / operator_token_def), the
+channel ops (list_channels / publish_channel / subscribe_channel / peek_channel /
+ack_channel / await_channels / broadcast_channels), pause/resume/state, the
+snapshot lifecycle, and hook management. run_streaming / continue_session /
+spawn_run_batch accept per-run ``sampling`` + ``compaction`` overrides. The
+HTTP-only surface (memory-entry admin, interruptions, library enumeration, the
+LLM gateway, whoami/list-users) has no gRPC RPC and is not exposed here.
 
 All methods are async. Server-streaming methods return an
 ``AsyncIterator[AgentEvent]``. The synthetic ``"session"`` and
@@ -95,4 +109,4 @@ __all__ = [
     "SubstrateToolRefusedError",
 ]
 
-__version__ = "0.7.0"
+__version__ = "0.8.0"
