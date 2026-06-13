@@ -8,6 +8,54 @@ For pre-v0.4 history (single-tool runtime, library milestone, security patch), s
 
 ---
 
+## What's in v0.34.1
+
+**Hardening + branding — no new features.** A security-hardening and cosmetic
+release on the road to v1.0.
+
+**Central tenant-scoping (security review S2).** The v0.34.0 deep review noted
+that tenant isolation was enforced **per-handler** — each read remembering to
+call `tenantVisible` / `sessionOwnershipOK` — rather than at a choke-point, and
+that **three tenant-token-reachable reads had no tenant gate at all** (a live,
+low-severity cross-tenant read, since `run_id`s / `user_id`s aren't secret).
+v0.34.1 introduces a per-request **`tenantScopedStore`** accessor
+(`internal/api/http/tenant_store.go`) that captures the caller's tenant scope
+from the ctx principal (admin / legacy / open mode → all tenants) and folds a
+cross-tenant row into an opaque `*store.ErrNotFound` — so a cross-tenant probe
+is indistinguishable from a miss (no existence oracle). The three gaps are
+closed:
+
+- `GET /v1/runs/{run_id}/interrupts` — gated on the owning run's tenant
+  (interrupts inherit it); a cross-tenant/unknown run returns an empty list,
+  identical to a real run with zero interrupts.
+- `GET /v1/users/{user_id}/interrupts` — a `tenantID` arg added to
+  `store.InterruptListByUser` (JOINs `runs`, filters `runs.tenant_id`; `""` =
+  all tenants, mirroring `ListUsers`); sqlite + postgres + the store contract.
+- `GET /v1/users/{user_id}/agents/stream` — the run's `TenantID` is now carried
+  on `runstate.RunStateEvent` (serialised so it survives the cluster-backplane
+  round-trip) and filtered in `StreamUserRunStates` via new `TenantID` /
+  `TenantScoped` request fields set from `principalTenantScope`.
+
+Per-user channel routes (`/v1/users/{user_id}/channels/*`) are gated to the
+principal's own subject (`requirePrincipalOwnsPathUser`) — channel messages have
+no tenant column, so this is the safe no-schema mitigation. The run-keyed and
+session-keyed reads (`handleGetAgent`, `handleRunStream`, `compactRunWithSource`,
+`handleMessages`, `handleTranscript`) are migrated onto the accessor so the
+convention becomes one choke-point; a `TestTenantReachableReads_*` coverage
+inventory keeps the surface gated. The **whole-tenant model is preserved**: a
+same-tenant different subject and a super-admin still resolve; the cross-**tenant**
+boundary stays hard. Deferred (documented): the gRPC/MCP run-state stream tenant
+filter, and a `tenant_id` column on `channel_messages` / interrupts for full
+whole-tenant channel sharing. Server-side only; no `@loomcycle/client` change.
+
+**New brand identity in the Web UI.** The topbar shows the new loomcycle
+**wordmark logo** at the top-left (the dark-theme variant — the wordmark
+recoloured to the theme foreground `--fg`, the loom-mark's brand colours kept,
+since the UI is dark-first) and the new **favicon** (the colour loom mark).
+Frontend-only.
+
+---
+
 ## What's in v0.34.0
 
 **Context-transform plugins, an exp7 (v0.33.0 re-run) hardening pass, and a
