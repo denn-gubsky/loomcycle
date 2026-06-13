@@ -17,6 +17,10 @@ func TestCategoryForInput(t *testing.T) {
 	}{
 		// Read-only file I/O — idempotent.
 		{"Read", "Read", `{"path":"/etc/hosts"}`, CategoryIdempotent},
+		// exp7: Glob/Grep are read-only searches; previously fell through to
+		// the non-idempotent default.
+		{"Glob", "Glob", `{"pattern":"**/*.go"}`, CategoryIdempotent},
+		{"Grep", "Grep", `{"pattern":"func"}`, CategoryIdempotent},
 		{"WebFetch", "WebFetch", `{"url":"https://example.com"}`, CategoryIdempotent},
 		{"WebSearch", "WebSearch", `{"query":"go modules"}`, CategoryIdempotent},
 
