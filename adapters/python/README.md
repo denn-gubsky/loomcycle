@@ -1,20 +1,28 @@
 # loomcycle — async Python client
 
 `loomcycle` is the async Python client for [loomcycle][1]'s gRPC API
-(introduced in v0.5.5; expanded to ~22 methods in v0.6.0). It exposes
-the full RPC surface (run streaming, agent metadata, transcript,
-pause / snapshot lifecycle, memory admin, interruption resolve) on
-the `Loomcycle` service through an ergonomic `LoomcycleClient` class —
-no need to import generated protobuf types in your application code.
+(introduced in v0.5.5). As of **v0.8.0 it covers all 39 gRPC RPCs** —
+run streaming + continuation, batch fan-out, run compaction, agent
+metadata + transcript, pause / resume / state, the snapshot lifecycle,
+the resolver probe, the full substrate-def family, channel publish /
+subscribe / peek / ack / await / broadcast, and run-state streaming —
+through an ergonomic `LoomcycleClient` class with no need to import
+generated protobuf types in your application code.
 
 [1]: https://github.com/denn-gubsky/loomcycle
 
 ## Status
 
-- Wraps loomcycle ≥ v0.5.5's gRPC server (`LOOMCYCLE_GRPC_ADDR`).
+- Wraps loomcycle's gRPC server (`LOOMCYCLE_GRPC_ADDR`).
 - Async-only (`grpc.aio`). Python 3.9+.
-- Equivalent surface to the TypeScript adapter at `adapters/ts/`.
-- Production tag: `0.6.0` (full ~22-method parity + hook management; ships alongside the v0.8.18 cross-transport hardening loomcycle release).
+- **Full parity with the gRPC service surface** (39 RPCs).
+- The TypeScript adapter (`adapters/ts/`) additionally exposes
+  **HTTP-only** operations that have no gRPC RPC — memory-entry admin,
+  interruptions, library enumeration, the LLM gateway, and
+  whoami / list-users. Those are not reachable over gRPC and so are not
+  in this client; use the HTTP+SSE surface for them.
+- Production tag: `0.8.0` (39-RPC parity, ships alongside the
+  loomcycle v0.34.x line).
 
 ## Install
 
@@ -108,6 +116,22 @@ All methods are coroutine methods on `LoomcycleClient`.
 | `export_snapshot(snapshot_id)` | `dict` | v0.8.18 — canonical bytes via `raw_json` for streaming consumers. |
 | `restore_snapshot(snapshot_id=..., raw_json=..., include_history=False)` | `dict` | v0.8.18 — exactly one of `snapshot_id` / `raw_json`. Per-section counters returned. |
 | `delete_snapshot(snapshot_id)` | `bool` | v0.8.18 — idempotent; returns True. |
+| `spawn_run_batch(spawns, mode="join", timeout_ms=0)` | `dict` | v0.8.0 — spawn up to 32 runs concurrently (RFC Y); index-aligned `{spawned, results}`, per-child failures in-envelope. |
+| `compact_run(run_id, reason="")` | `dict` | v0.8.0 — summarize a parked run's context. `{run_id, compacted, before_tokens, after_tokens, applied}`. |
+| `resolve_probe()` | `dict` | v0.8.0 — resolver provider/model availability matrix. |
+| `agent_def(input)` / `skill_def(input)` | `dict` | Substrate AgentDef / SkillDef tool; op-discriminated body. |
+| `mcp_server_def` / `schedule_def` / `a2a_server_card_def` / `a2a_agent_def` / `webhook_def` / `memory_backend_def` / `operator_token_def` `(input)` | `dict` | v0.8.0 — the rest of the substrate-def family; same shape + `SubstrateToolRefusedError` contract. |
+| `list_channels()` | `list[dict]` | v0.8.0 — declared + runtime channels with aggregate stats. |
+| `publish_channel(channel, payload, scope="global", scope_id="", deliver_at="")` | `dict` | v0.8.0 — publish raw-JSON `payload` (bytes); `deliver_at` defers. |
+| `subscribe_channel(channel, ...)` / `peek_channel(channel, ...)` | `dict` | v0.8.0 — long-poll / non-destructive read; `{messages, next_cursor?}`. |
+| `ack_channel(channel, cursor, ...)` | `bool` | v0.8.0 — commit a channel cursor. |
+| `await_channels(channels, mode="any", n=0, ...)` | `dict` | v0.8.0 — fan-in across channels (any / all / at_least). |
+| `broadcast_channels(channels, payload, ...)` | `dict` | v0.8.0 — fan-out one payload to N channels. |
+| `stream_user_run_states(user_id, statuses=None, agent="")` | `AsyncIterator[dict]` | v0.8.0 — stream a user's run-state transitions. |
+
+`run_streaming` / `continue_session` / each `spawn_run_batch` child also accept
+per-run `sampling` and `compaction` dict overrides (v0.8.0); an explicit
+`temperature: 0.0` is preserved as deterministic.
 
 ## Errors
 

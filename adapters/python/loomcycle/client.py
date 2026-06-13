@@ -551,21 +551,58 @@ class LoomcycleClient:
         the full shape."""
         return await self._dispatch_substrate("SkillDef", input)
 
+    async def mcp_server_def(self, input: Mapping[str, Any]) -> Mapping[str, Any]:
+        """Invoke the MCPServerDef substrate tool — dynamic MCP-server
+        registration (verify-or-create, content-addressed). Mirror of
+        :meth:`agent_def`; same op-discriminated input + error contract."""
+        return await self._dispatch_substrate("MCPServerDef", input)
+
+    async def schedule_def(self, input: Mapping[str, Any]) -> Mapping[str, Any]:
+        """Invoke the ScheduleDef substrate tool — runtime-mutable
+        scheduled runs (RFC E). Mirror of :meth:`agent_def`."""
+        return await self._dispatch_substrate("ScheduleDef", input)
+
+    async def a2a_server_card_def(self, input: Mapping[str, Any]) -> Mapping[str, Any]:
+        """Invoke the A2AServerCardDef substrate tool — agent-to-agent
+        server card publication (RFC G). Mirror of :meth:`agent_def`."""
+        return await self._dispatch_substrate("A2AServerCardDef", input)
+
+    async def a2a_agent_def(self, input: Mapping[str, Any]) -> Mapping[str, Any]:
+        """Invoke the A2AAgentDef substrate tool — agent-to-agent peer
+        registration (RFC G). Mirror of :meth:`agent_def`."""
+        return await self._dispatch_substrate("A2AAgentDef", input)
+
+    async def webhook_def(self, input: Mapping[str, Any]) -> Mapping[str, Any]:
+        """Invoke the WebhookDef substrate tool — inbound webhook trigger
+        registration (RFC H). Mirror of :meth:`agent_def`."""
+        return await self._dispatch_substrate("WebhookDef", input)
+
+    async def memory_backend_def(self, input: Mapping[str, Any]) -> Mapping[str, Any]:
+        """Invoke the MemoryBackendDef substrate tool — pluggable memory
+        backend registration. Mirror of :meth:`agent_def`."""
+        return await self._dispatch_substrate("MemoryBackendDef", input)
+
+    async def operator_token_def(self, input: Mapping[str, Any]) -> Mapping[str, Any]:
+        """Invoke the OperatorTokenDef substrate tool — mint/list/revoke
+        per-principal bearer tokens (RFC L multi-tenant auth). Mirror of
+        :meth:`agent_def`."""
+        return await self._dispatch_substrate("OperatorTokenDef", input)
+
     async def _dispatch_substrate(
         self, tool: str, input: Mapping[str, Any]
     ) -> Mapping[str, Any]:
-        """Shared body of agent_def + skill_def. Serialises ``input``
-        as JSON, dispatches the matching gRPC RPC, decodes the
-        response. Tool-level refusals (is_error=True) raise
-        :class:`SubstrateToolRefusedError`; transport-level errors
-        map via _raise_from_grpc as usual."""
+        """Shared body of the substrate-def methods. Serialises
+        ``input`` as JSON, dispatches the matching gRPC RPC (the stub
+        method name equals ``tool``, and every substrate RPC shares the
+        SubstrateRequest→SubstrateResponse shape), decodes the response.
+        Tool-level refusals (is_error=True) raise
+        :class:`SubstrateToolRefusedError`; transport-level errors map
+        via _raise_from_grpc as usual."""
         input_json = json.dumps(input).encode("utf-8")
         req = pb.SubstrateRequest(input_json=input_json)
         try:
-            if tool == "AgentDef":
-                resp = await self._stub.AgentDef(req, metadata=self._auth_metadata())
-            else:
-                resp = await self._stub.SkillDef(req, metadata=self._auth_metadata())
+            rpc = getattr(self._stub, tool)
+            resp = await rpc(req, metadata=self._auth_metadata())
         except grpc.aio.AioRpcError as e:
             _raise_from_grpc(e)
         output_text = (resp.output_json or b"").decode("utf-8")
@@ -579,6 +616,271 @@ class LoomcycleClient:
                 f"{tool}: unexpected non-dict response: {output_text[:200]}"
             )
         return parsed
+
+    # ---- v0.8.0 run mutation + resolver (gRPC parity) ----
+
+    async def spawn_run_batch(
+        self,
+        spawns: Iterable[Mapping[str, Any]],
+        *,
+        mode: str = "join",
+        timeout_ms: int = 0,
+    ) -> Mapping[str, Any]:
+        """Spawn up to 32 fresh runs server-side-concurrent in ONE call
+        (RFC Y; mirror of the HTTP ``POST /v1/runs:batch`` + the
+        ``spawn_runs`` MCP tool). ``spawns`` is an iterable of run dicts
+        whose keys mirror :meth:`run_streaming`'s kwargs (``agent``,
+        ``segments``, ``allowed_tools``, ``allowed_hosts``, ``user_id``,
+        ``tenant_id``, ``user_tier``, ``user_bearer``, ``sampling``,
+        ``compaction``, …). ``mode="join"`` (default) blocks until every
+        child settles; ``timeout_ms`` optionally caps the join (a child
+        still running is cancelled + reported in-envelope).
+
+        Returns ``{"spawned": int, "results": [<spawn result>, …]}``
+        index-aligned with ``spawns``; a per-child failure rides in that
+        child's result (``status`` + ``error``), never raising."""
+        req = pb.BatchSpawnRequest(
+            spawns=[_run_request_from_dict(s) for s in spawns],
+            mode=mode,
+            timeout_ms=timeout_ms,
+        )
+        try:
+            resp = await self._stub.SpawnRunBatch(req, metadata=self._auth_metadata())
+        except grpc.aio.AioRpcError as e:
+            _raise_from_grpc(e)
+        return {
+            "spawned": resp.spawned,
+            "results": [_spawn_result_to_dict(r) for r in resp.results],
+        }
+
+    async def compact_run(self, run_id: str, *, reason: str = "") -> Mapping[str, Any]:
+        """Summarize a parked run's context (mirror of the HTTP
+        ``POST /v1/runs/{run_id}/compact`` + the ``compact_run`` MCP
+        tool). ``reason`` is an optional audit note. Returns
+        ``{run_id, compacted, before_tokens, after_tokens, applied}``
+        where ``applied`` is ``"live"`` | ``"marker"`` | ``"noop"``.
+        A run parked at a boundary that can't be compacted maps to a
+        :class:`NotPausedError` (FailedPrecondition)."""
+        req = pb.CompactRunRequest(run_id=run_id, reason=reason)
+        try:
+            resp = await self._stub.CompactRun(req, metadata=self._auth_metadata())
+        except grpc.aio.AioRpcError as e:
+            _raise_from_grpc(e)
+        return {
+            "run_id": resp.run_id,
+            "compacted": resp.compacted,
+            "before_tokens": resp.before_tokens,
+            "after_tokens": resp.after_tokens,
+            "applied": resp.applied,
+        }
+
+    async def resolve_probe(self) -> Mapping[str, Any]:
+        """Return the resolver's current per-(provider, model)
+        availability matrix (issue #88 operator escape hatch; mirror of
+        ``GET /v1/_resolve/probe``). Returns
+        ``{"generated_at": <ISO8601>, "providers": {<id>: {...}}}``."""
+        try:
+            resp = await self._stub.ResolveProbe(
+                pb.ResolveProbeRequest(), metadata=self._auth_metadata()
+            )
+        except grpc.aio.AioRpcError as e:
+            _raise_from_grpc(e)
+        return _resolver_matrix_to_dict(resp)
+
+    # ---- v0.8.0 channels (gRPC parity) ----
+
+    async def list_channels(self) -> Sequence[Mapping[str, Any]]:
+        """List the operator-declared + runtime channels with cheap
+        aggregate stats (mirror of ``GET /v1/_channels``)."""
+        try:
+            resp = await self._stub.ListChannels(
+                pb.ListChannelsRequest(), metadata=self._auth_metadata()
+            )
+        except grpc.aio.AioRpcError as e:
+            _raise_from_grpc(e)
+        return [_channel_descriptor_to_dict(c) for c in resp.channels]
+
+    async def publish_channel(
+        self,
+        channel: str,
+        *,
+        payload: bytes,
+        scope: str = "global",
+        scope_id: str = "",
+        deliver_at: str = "",
+    ) -> Mapping[str, Any]:
+        """Publish one message to a channel. ``payload`` is raw JSON
+        bytes (the server validates ``json.Valid`` + the size cap).
+        ``deliver_at`` (RFC3339Nano) defers visibility; empty publishes
+        immediately. Returns ``{msg_id, channel, created_at, visible_at}``."""
+        req = pb.PublishChannelRequest(
+            channel=channel,
+            scope=scope,
+            scope_id=scope_id,
+            payload=payload,
+            deliver_at=deliver_at,
+        )
+        try:
+            resp = await self._stub.PublishChannel(req, metadata=self._auth_metadata())
+        except grpc.aio.AioRpcError as e:
+            _raise_from_grpc(e)
+        return {
+            "msg_id": resp.msg_id,
+            "channel": resp.channel,
+            "created_at": resp.created_at,
+            "visible_at": resp.visible_at,
+        }
+
+    async def subscribe_channel(
+        self,
+        channel: str,
+        *,
+        scope: str = "global",
+        scope_id: str = "",
+        from_cursor: str = "",
+        max_messages: int = 0,
+        wait_ms: int = 0,
+    ) -> Mapping[str, Any]:
+        """Long-poll a channel. ``from_cursor`` empty = committed cursor,
+        ``"cur_0"`` = replay from oldest. ``wait_ms`` 0 = poll-and-return.
+        Returns ``{channel, messages: [{id, value, published_at}, …],
+        next_cursor}`` (``value`` is raw JSON bytes)."""
+        req = pb.SubscribeChannelRequest(
+            channel=channel,
+            scope=scope,
+            scope_id=scope_id,
+            from_cursor=from_cursor,
+            max_messages=max_messages,
+            wait_ms=wait_ms,
+        )
+        try:
+            resp = await self._stub.SubscribeChannel(req, metadata=self._auth_metadata())
+        except grpc.aio.AioRpcError as e:
+            _raise_from_grpc(e)
+        return {
+            "channel": resp.channel,
+            "messages": [_channel_message_to_dict(m) for m in resp.messages],
+            "next_cursor": resp.next_cursor,
+        }
+
+    async def peek_channel(
+        self,
+        channel: str,
+        *,
+        scope: str = "global",
+        scope_id: str = "",
+        from_cursor: str = "",
+        max_messages: int = 0,
+    ) -> Mapping[str, Any]:
+        """Non-destructively read a channel without advancing any cursor.
+        Returns ``{channel, messages: [...]}``."""
+        req = pb.PeekChannelRequest(
+            channel=channel,
+            scope=scope,
+            scope_id=scope_id,
+            from_cursor=from_cursor,
+            max_messages=max_messages,
+        )
+        try:
+            resp = await self._stub.PeekChannel(req, metadata=self._auth_metadata())
+        except grpc.aio.AioRpcError as e:
+            _raise_from_grpc(e)
+        return {
+            "channel": resp.channel,
+            "messages": [_channel_message_to_dict(m) for m in resp.messages],
+        }
+
+    async def ack_channel(
+        self,
+        channel: str,
+        *,
+        cursor: str,
+        scope: str = "global",
+        scope_id: str = "",
+    ) -> bool:
+        """Commit a channel cursor (advance the read position). Returns
+        the server's ``ok`` flag."""
+        req = pb.AckChannelRequest(
+            channel=channel, scope=scope, scope_id=scope_id, cursor=cursor
+        )
+        try:
+            resp = await self._stub.AckChannel(req, metadata=self._auth_metadata())
+        except grpc.aio.AioRpcError as e:
+            _raise_from_grpc(e)
+        return resp.ok
+
+    async def await_channels(
+        self,
+        channels: Sequence[str],
+        *,
+        scope: str = "global",
+        scope_id: str = "",
+        mode: str = "any",
+        n: int = 0,
+        from_cursor: str = "",
+        max_messages: int = 0,
+        wait_ms: int = 0,
+    ) -> Mapping[str, Any]:
+        """Multi-channel fan-in (RFC S): wait for messages across
+        ``channels`` per ``mode`` (``"any"`` | ``"all"`` | ``"at_least"``
+        with threshold ``n``), or until ``wait_ms`` elapses. Non-committing.
+        Returns ``{satisfied, timed_out, mode, fired: [...], total_messages,
+        results: {<channel>: {messages: [...], next_cursor}}}``."""
+        req = pb.AwaitChannelsRequest(
+            channels=list(channels),
+            scope=scope,
+            scope_id=scope_id,
+            mode=mode,
+            n=n,
+            from_cursor=from_cursor,
+            max_messages=max_messages,
+            wait_ms=wait_ms,
+        )
+        try:
+            resp = await self._stub.AwaitChannels(req, metadata=self._auth_metadata())
+        except grpc.aio.AioRpcError as e:
+            _raise_from_grpc(e)
+        return _await_result_to_dict(resp)
+
+    async def broadcast_channels(
+        self,
+        channels: Sequence[str],
+        *,
+        payload: bytes,
+        scope: str = "global",
+        scope_id: str = "",
+        deliver_at: str = "",
+    ) -> Mapping[str, Any]:
+        """Multi-channel fan-out (RFC S): publish one ``payload`` (raw
+        JSON bytes) to every channel in ``channels``. Atomic at the
+        declare pre-flight (one undeclared channel → nothing published).
+        Returns ``{published, failed, results: [{channel, msg_id,
+        created_at, visible_at, error}, …]}``."""
+        req = pb.BroadcastChannelsRequest(
+            channels=list(channels),
+            scope=scope,
+            scope_id=scope_id,
+            payload=payload,
+            deliver_at=deliver_at,
+        )
+        try:
+            resp = await self._stub.BroadcastChannels(req, metadata=self._auth_metadata())
+        except grpc.aio.AioRpcError as e:
+            _raise_from_grpc(e)
+        return {
+            "published": resp.published,
+            "failed": resp.failed,
+            "results": [
+                {
+                    "channel": r.channel,
+                    "msg_id": r.msg_id,
+                    "created_at": r.created_at,
+                    "visible_at": r.visible_at,
+                    "error": r.error,
+                }
+                for r in resp.results
+            ],
+        }
 
     # ---- Streaming RPCs ----
 
@@ -596,6 +898,8 @@ class LoomcycleClient:
         tenant_id: str = "",
         user_tier: str = "",
         user_bearer: str = "",
+        sampling: Optional[Mapping[str, Any]] = None,
+        compaction: Optional[Mapping[str, Any]] = None,
         on_handle: Optional[Callable[["RunHandle"], None]] = None,
     ) -> AsyncIterator[AgentEvent]:
         """Drive one agent run end-to-end, yielding each
@@ -632,21 +936,21 @@ class LoomcycleClient:
         enough that no ``await`` is needed at the call site;
         consume with ``async for``).
         """
-        req = pb.RunRequest(
+        req = _build_run_request(
             agent=agent,
+            segments=segments,
             session_id=session_id,
-            segments=_segments_to_proto(segments),
-            allowed_tools=list(allowed_tools or ()),
+            allowed_tools=allowed_tools,
+            allowed_hosts=allowed_hosts,
             web_search_filter=web_search_filter,
             user_id=user_id,
             agent_id=agent_id,
             tenant_id=tenant_id,
             user_tier=user_tier,
             user_bearer=user_bearer,
+            sampling=sampling,
+            compaction=compaction,
         )
-        if allowed_hosts is not None:
-            req.allowed_hosts.list.extend(allowed_hosts)
-
         return self._drive_stream(
             self._stub.Run(req, metadata=self._auth_metadata()),
             on_handle=on_handle,
@@ -663,6 +967,8 @@ class LoomcycleClient:
         agent_id: str = "",
         user_tier: str = "",
         user_bearer: str = "",
+        sampling: Optional[Mapping[str, Any]] = None,
+        compaction: Optional[Mapping[str, Any]] = None,
         on_handle: Optional[Callable[["RunHandle"], None]] = None,
     ) -> AsyncIterator[AgentEvent]:
         """Continue an existing session. Same yield shape as
@@ -688,13 +994,55 @@ class LoomcycleClient:
         )
         if allowed_hosts is not None:
             req.allowed_hosts.list.extend(allowed_hosts)
+        if sampling is not None:
+            req.sampling.CopyFrom(_build_sampling(sampling))
+        if compaction is not None:
+            req.compaction.CopyFrom(_build_compaction(compaction))
 
         return self._drive_stream(
             self._stub.Continue(req, metadata=self._auth_metadata()),
             on_handle=on_handle,
         )
 
+    def stream_user_run_states(
+        self,
+        user_id: str,
+        *,
+        statuses: Optional[Sequence[str]] = None,
+        agent: str = "",
+    ) -> AsyncIterator[Mapping[str, Any]]:
+        """Stream run-state transitions for a user's runs (mirror of the
+        gRPC ``StreamUserRunStates`` / HTTP
+        ``GET /v1/users/{user_id}/agents/stream``). Optional ``statuses``
+        filter (empty = all transitions); optional ``agent`` filter
+        (empty = any agent). Yields ``{run_id, agent_id, agent, user_id,
+        parent_agent_id, status, stop_reason, error, ts}`` dicts as
+        transitions arrive.
+
+        Sync-returning — consume with ``async for`` (see
+        :meth:`run_streaming`)."""
+        req = pb.StreamUserRunStatesRequest(
+            user_id=user_id,
+            statuses=list(statuses or ()),
+            agent=agent,
+        )
+        return self._drive_run_state_stream(
+            self._stub.StreamUserRunStates(req, metadata=self._auth_metadata())
+        )
+
     # ---- Internal ----
+
+    async def _drive_run_state_stream(
+        self, stream: grpc.aio.UnaryStreamCall
+    ) -> AsyncIterator[Mapping[str, Any]]:
+        """Consume the run-state server-stream, yielding each
+        RunStateEvent as a public dict. Translates gRPC errors to typed
+        exceptions on the way out."""
+        try:
+            async for raw in stream:
+                yield _run_state_event_to_dict(raw)
+        except grpc.aio.AioRpcError as e:
+            _raise_from_grpc(e)
 
     async def _drive_stream(
         self,
@@ -850,6 +1198,214 @@ def _snapshot_descriptor_to_dict(d: pb.SnapshotDescriptor) -> Mapping[str, Any]:
         "since_ts": _ts_to_iso(d.since_ts) if d.HasField("since_ts") else "",
         "description": d.description,
         "format_version": d.format_version,
+    }
+
+
+# ---- v0.8.0 request builders + response decoders (gRPC parity) ----
+
+
+def _build_sampling(d: Mapping[str, Any]) -> "pb.Sampling":
+    """Map a sampling dict → pb.Sampling, setting only the keys the
+    caller provided. Presence (proto3 optional) preserves an explicit
+    ``temperature: 0.0`` as deterministic rather than dropping it as
+    falsy — the whole point of the per-run override."""
+    s = pb.Sampling()
+    if d.get("temperature") is not None:
+        s.temperature = float(d["temperature"])
+    if d.get("top_p") is not None:
+        s.top_p = float(d["top_p"])
+    if d.get("top_k") is not None:
+        s.top_k = int(d["top_k"])
+    if d.get("frequency_penalty") is not None:
+        s.frequency_penalty = float(d["frequency_penalty"])
+    if d.get("presence_penalty") is not None:
+        s.presence_penalty = float(d["presence_penalty"])
+    if d.get("seed") is not None:
+        s.seed = int(d["seed"])
+    stop = d.get("stop")
+    if stop:
+        s.stop.extend(stop)
+    return s
+
+
+def _build_compaction(d: Mapping[str, Any]) -> "pb.Compaction":
+    """Map a compaction dict → pb.Compaction, setting only provided
+    keys (proto3 optional presence)."""
+    c = pb.Compaction()
+    if d.get("enabled") is not None:
+        c.enabled = bool(d["enabled"])
+    if d.get("target_percentage") is not None:
+        c.target_percentage = int(d["target_percentage"])
+    if d.get("keep_last_n") is not None:
+        c.keep_last_n = int(d["keep_last_n"])
+    if d.get("keep_first") is not None:
+        c.keep_first = bool(d["keep_first"])
+    if d.get("autocompact_at_pct") is not None:
+        c.autocompact_at_pct = int(d["autocompact_at_pct"])
+    if d.get("model") is not None:
+        c.model = str(d["model"])
+    return c
+
+
+def _build_run_request(
+    *,
+    agent: str = "",
+    segments: Iterable[PromptSegment] = (),
+    session_id: str = "",
+    allowed_tools: Optional[Sequence[str]] = None,
+    allowed_hosts: Optional[Sequence[str]] = None,
+    web_search_filter: str = "",
+    user_id: str = "",
+    agent_id: str = "",
+    tenant_id: str = "",
+    user_tier: str = "",
+    user_bearer: str = "",
+    sampling: Optional[Mapping[str, Any]] = None,
+    compaction: Optional[Mapping[str, Any]] = None,
+) -> "pb.RunRequest":
+    """Construct a pb.RunRequest from the run params. Shared by
+    run_streaming + the batch builder so the field-mapping lives in one
+    place. ``allowed_hosts`` keeps the three-state semantics (None = no
+    narrowing; [] = deny-all; [...] = intersection)."""
+    req = pb.RunRequest(
+        agent=agent,
+        session_id=session_id,
+        segments=_segments_to_proto(segments),
+        allowed_tools=list(allowed_tools or ()),
+        web_search_filter=web_search_filter,
+        user_id=user_id,
+        agent_id=agent_id,
+        tenant_id=tenant_id,
+        user_tier=user_tier,
+        user_bearer=user_bearer,
+    )
+    if allowed_hosts is not None:
+        req.allowed_hosts.list.extend(allowed_hosts)
+    if sampling is not None:
+        req.sampling.CopyFrom(_build_sampling(sampling))
+    if compaction is not None:
+        req.compaction.CopyFrom(_build_compaction(compaction))
+    return req
+
+
+def _run_request_from_dict(spawn: Mapping[str, Any]) -> "pb.RunRequest":
+    """Build a pb.RunRequest from a spawn dict (the per-child shape of
+    spawn_run_batch). Keys mirror run_streaming's kwargs; unknown keys
+    are ignored."""
+    return _build_run_request(
+        agent=spawn.get("agent", ""),
+        segments=spawn.get("segments", ()),
+        session_id=spawn.get("session_id", ""),
+        allowed_tools=spawn.get("allowed_tools"),
+        allowed_hosts=spawn.get("allowed_hosts"),
+        web_search_filter=spawn.get("web_search_filter", ""),
+        user_id=spawn.get("user_id", ""),
+        agent_id=spawn.get("agent_id", ""),
+        tenant_id=spawn.get("tenant_id", ""),
+        user_tier=spawn.get("user_tier", ""),
+        user_bearer=spawn.get("user_bearer", ""),
+        sampling=spawn.get("sampling"),
+        compaction=spawn.get("compaction"),
+    )
+
+
+def _usage_to_dict(u: "pb.Usage") -> Mapping[str, Any]:
+    """Convert proto Usage → public dict (shared by spawn results)."""
+    return {
+        "input_tokens": u.input_tokens,
+        "output_tokens": u.output_tokens,
+        "cache_creation_tokens": u.cache_creation_tokens,
+        "cache_read_tokens": u.cache_read_tokens,
+        "model": u.model,
+    }
+
+
+def _spawn_result_to_dict(r: "pb.SpawnResult") -> Mapping[str, Any]:
+    """Convert proto SpawnResult → public dict (one batch child)."""
+    return {
+        "agent_id": r.agent_id,
+        "run_id": r.run_id,
+        "session_id": r.session_id,
+        "status": r.status,
+        "stop_reason": r.stop_reason,
+        "final_text": r.final_text,
+        "usage": _usage_to_dict(r.usage) if r.HasField("usage") else None,
+        "error": r.error,
+    }
+
+
+def _channel_descriptor_to_dict(c: "pb.ChannelDescriptor") -> Mapping[str, Any]:
+    """Convert proto ChannelDescriptor → public dict."""
+    return {
+        "name": c.name,
+        "scope": c.scope,
+        "semantic": c.semantic,
+        "publisher": c.publisher,
+        "period": c.period,
+        "default_ttl": c.default_ttl,
+        "max_messages": c.max_messages,
+        "message_count": c.message_count,
+        "oldest_visible_at": c.oldest_visible_at,
+        "newest_visible_at": c.newest_visible_at,
+    }
+
+
+def _channel_message_to_dict(m: "pb.ChannelMessage") -> Mapping[str, Any]:
+    """Convert proto ChannelMessage → public dict. ``value`` stays raw
+    JSON bytes — caller decodes with ``json.loads``."""
+    return {"id": m.id, "value": m.value, "published_at": m.published_at}
+
+
+def _await_result_to_dict(resp: "pb.AwaitChannelsResponse") -> Mapping[str, Any]:
+    """Convert proto AwaitChannelsResponse → public dict."""
+    return {
+        "satisfied": resp.satisfied,
+        "timed_out": resp.timed_out,
+        "mode": resp.mode,
+        "fired": list(resp.fired),
+        "total_messages": resp.total_messages,
+        "results": {
+            ch: {
+                "messages": [_channel_message_to_dict(m) for m in entry.messages],
+                "next_cursor": entry.next_cursor,
+            }
+            for ch, entry in resp.results.items()
+        },
+    }
+
+
+def _resolver_matrix_to_dict(resp: "pb.ResolverMatrixResponse") -> Mapping[str, Any]:
+    """Convert proto ResolverMatrixResponse → public dict."""
+    return {
+        "generated_at": _ts_to_iso(resp.generated_at),
+        "providers": {
+            pid: {
+                "excluded": p.excluded,
+                "reachable": p.reachable,
+                "last_check": _ts_to_iso(p.last_check) if p.HasField("last_check") else "",
+                "last_error": p.last_error,
+                "models": {
+                    m: {"listed": s.listed, "stalled": s.stalled}
+                    for m, s in p.models.items()
+                },
+            }
+            for pid, p in resp.providers.items()
+        },
+    }
+
+
+def _run_state_event_to_dict(e: "pb.RunStateEvent") -> Mapping[str, Any]:
+    """Convert proto RunStateEvent → public dict."""
+    return {
+        "run_id": e.run_id,
+        "agent_id": e.agent_id,
+        "agent": e.agent,
+        "user_id": e.user_id,
+        "parent_agent_id": e.parent_agent_id,
+        "status": e.status,
+        "stop_reason": e.stop_reason,
+        "error": e.error,
+        "ts": e.ts,
     }
 
 
