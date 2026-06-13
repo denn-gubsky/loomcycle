@@ -79,13 +79,6 @@ func captureEmbedding(ctx context.Context, s store.Store, scope store.MemoryScop
 	}, nil
 }
 
-// nilEmbedding is preserved for back-compat with the Phase-1
-// captureMemory call site. It returns nil → JSON null. New call
-// sites should use captureEmbedding directly.
-//
-// Deprecated: use captureEmbedding for snapshot Phase-2 paths.
-func nilEmbedding() *MemoryEmbeddingSnapshot { return nil }
-
 // encodeFloat32LEBase64 packs []float32 into little-endian bytes
 // then base64-encodes the result. Matches the on-disk pgvector +
 // sqlite-vec wire formats so a JSON snapshot can move bytes
