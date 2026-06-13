@@ -57,14 +57,25 @@ func sectionChecksum(sectionBytes []byte) string {
 }
 
 // ExportPretty produces indented JSON for human inspection. Used by
-// the CLI's `loomcycle snapshot get --pretty` flag. NOT used by
-// Restore — restoration parses canonical JSON via Export's output
-// shape.
+// the CLI's `loomcycle snapshot get --pretty` flag. NOT the canonical
+// restore artifact — restoration consumes Export's compact output.
+//
+// It clears the integrity Checksum on its copy. Restore (exp7 I4) verifies
+// the digest against the "sections" bytes exactly as they appear in the
+// document, but json.MarshalIndent re-indents the nested "sections" object —
+// so a checksum stamped over the compact bytes (which every Capture/Export
+// envelope carries) no longer matches the indented bytes, and Restore would
+// reject the pretty document as "truncated or tampered". A pretty doc
+// therefore carries no checksum: if one is ever fed to Restore it skips
+// verification (additive) instead of failing on a digest that cannot survive
+// re-indentation.
 func ExportPretty(env *Envelope) ([]byte, error) {
 	if env == nil {
 		return nil, fmt.Errorf("snapshot export pretty: nil envelope")
 	}
-	b, err := json.MarshalIndent(env, "", "  ")
+	out := *env
+	out.Checksum = ""
+	b, err := json.MarshalIndent(&out, "", "  ")
 	if err != nil {
 		return nil, fmt.Errorf("snapshot export pretty: marshal: %w", err)
 	}
