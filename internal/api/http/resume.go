@@ -289,6 +289,7 @@ func (s *Server) resumePausedRun(ctx context.Context, run store.Run) error {
 		Interactive:            run.Interactive,
 		Sampling:               agentDef.Sampling,   // per-run override not snapshotted
 		Compaction:             agentDef.Compaction, // per-run override not snapshotted
+		ContextPlugins:         s.contextPlugins,    // RFC Z runtime-wide chain (code-js exempt in the loop)
 		UserTier:               run.UserTier,
 		FallbackPolicy:         fbPolicy,
 		ReResolve:              fbReResolve,

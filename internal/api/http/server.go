@@ -24,6 +24,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/concurrency"
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/connector"
+	"github.com/denn-gubsky/loomcycle/internal/contextplugin"
 	"github.com/denn-gubsky/loomcycle/internal/coord"
 	"github.com/denn-gubsky/loomcycle/internal/hooks"
 	"github.com/denn-gubsky/loomcycle/internal/lookup"
@@ -68,6 +69,13 @@ type Server struct {
 	// via LOOMCYCLE_REDACT_SECRETS=0. Read-only after construction; the nil /
 	// no-op cases are handled by *redact.Redactor's nil-safe methods.
 	redactor *redact.Redactor
+
+	// contextPlugins is the runtime-wide context-transform chain (RFC Z / F43),
+	// built once from cfg.ContextPlugins at construction and shared read-only
+	// across every run (the plugins are stateless/concurrent-safe). Passed into
+	// each loop.RunOptions; the loop applies it on a COPY of the outbound
+	// request and skips it for the code-js provider. nil = no chain.
+	contextPlugins []contextplugin.Plugin
 
 	// cancelReg holds the in-memory map of agent_id → cancelFn so the
 	// cancel API can tear down a still-running loop from a different
@@ -364,6 +372,16 @@ func New(cfg *config.Config, pr ProviderResolver, builtinTools []tools.Tool, sem
 	// (its methods are nil-safe, so makeRecordingEmit just skips redaction).
 	if cfg.Env.RedactSecrets {
 		s.redactor = redact.New(secretEnvValues(os.Environ()), true)
+	}
+	// RFC Z: build the runtime-wide context-transform chain once. The redact
+	// plugin masks the same operator env-secret values + the Tier-B heuristic
+	// patterns from the OUTBOUND request (vs F32's persisted-transcript path).
+	// config.validate already rejected unknown names at load; a Build error
+	// here is defensive — log it loudly rather than silently drop a transform.
+	if cp, err := contextplugin.Build(cfg.ContextPlugins, secretEnvValues(os.Environ())); err != nil {
+		log.Printf("context_plugins: build failed (chain disabled): %v", err)
+	} else {
+		s.contextPlugins = cp
 	}
 	s.tools = append(s.tools, &builtin.AgentTool{
 		// Run drops the run_id (the common sequential/spawn path); RunDetailed
@@ -1862,6 +1880,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		Interactive:            in.Interactive,
 		Sampling:               config.MergeSampling(agentDef.Sampling, in.Sampling),       // per-run wins per field
 		Compaction:             config.MergeCompaction(agentDef.Compaction, in.Compaction), // per-run wins per field
+		ContextPlugins:         s.contextPlugins,                                           // RFC Z runtime-wide chain (code-js exempt in the loop)
 		UserTier:               in.UserTier,
 		FallbackPolicy:         fbPolicy,
 		ReResolve:              fbReResolve,
@@ -3149,6 +3168,7 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		Interactive:            req.Interactive,
 		Sampling:               config.MergeSampling(agentDef.Sampling, req.Sampling),       // per-run wins per field
 		Compaction:             config.MergeCompaction(agentDef.Compaction, req.Compaction), // per-run wins per field
+		ContextPlugins:         s.contextPlugins,                                            // RFC Z runtime-wide chain (code-js exempt in the loop)
 		UserTier:               req.UserTier,
 		FallbackPolicy:         fbPolicy,
 		ReResolve:              fbReResolve,
@@ -3626,6 +3646,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		Interactive:            body.Interactive,
 		Sampling:               config.MergeSampling(agentDef.Sampling, body.Sampling),       // per-run wins per field
 		Compaction:             config.MergeCompaction(agentDef.Compaction, body.Compaction), // per-run wins per field
+		ContextPlugins:         s.contextPlugins,                                             // RFC Z runtime-wide chain (code-js exempt in the loop)
 		UserTier:               body.UserTier,
 		FallbackPolicy:         fbPolicy,
 		ReResolve:              fbReResolve,
@@ -4468,6 +4489,7 @@ func (s *Server) runSubAgent(ctx context.Context, name string, prompt string, de
 		// a breeder varies temperature by FORKING a def, then spawning it).
 		Sampling:               def.Sampling,
 		Compaction:             subCompaction,
+		ContextPlugins:         s.contextPlugins, // RFC Z runtime-wide chain (sub-agents included; code-js exempt in the loop)
 		UserTier:               parentTier,
 		FallbackPolicy:         fbPolicy,
 		ReResolve:              fbReResolve,

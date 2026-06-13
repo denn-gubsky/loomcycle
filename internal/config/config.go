@@ -28,6 +28,16 @@ type Config struct {
 	MCPServers  map[string]MCPServer `yaml:"mcp_servers"`
 	Concurrency Concurrency          `yaml:"concurrency"`
 	Cache       CacheConfig          `yaml:"cache"`
+
+	// ContextPlugins is the runtime-wide chain of context-transform plugins
+	// (RFC Z / F43) — fast, built-in transforms applied to a COPY of the
+	// outbound LLM request on every turn (e.g. secret redaction), in declared
+	// order. Empty = no chain. Runtime-wide only in this version; per-agent +
+	// tenant scopes (with floor composition) are a follow-up. Built once at
+	// server start and shared read-only across runs; the synthetic code-js
+	// provider is exempt (the loop skips the chain for it).
+	ContextPlugins []ContextPluginSpec `yaml:"context_plugins,omitempty"`
+
 	// LocalAPI declares the OpenAPI-derived MCP gateway (v0.4.0+).
 	// One tool is generated per operation; tools forward calls to
 	// BaseURL with the agent's `bearer` field as Authorization.
@@ -1091,6 +1101,31 @@ func (c *Compaction) Validate() error {
 	}
 	return nil
 }
+
+// ContextPluginSpec is one entry in the runtime-wide context-transform plugin
+// chain (RFC Z / F43). `Name` selects a built-in transformer from the
+// contextplugin registry (the only built-in today is "redact"). The chain runs
+// in declared order on a COPY of the outbound LLM request. This is plain
+// config data (no behaviour) so the config package stays free of a dependency
+// on the contextplugin/providers transform layer.
+type ContextPluginSpec struct {
+	// Name selects the built-in transformer (e.g. "redact"). Required.
+	Name string `json:"name" yaml:"name"`
+	// Enabled toggles this entry. nil/true = on; an explicit false leaves the
+	// entry in the config (documented intent) but skips building it.
+	Enabled *bool `json:"enabled,omitempty" yaml:"enabled,omitempty"`
+	// RedactToolInput (redact plugin only): also scrub tool_use inputs in the
+	// outbound request, not just text blocks. nil/false = text only.
+	RedactToolInput *bool `json:"redact_tool_input,omitempty" yaml:"redact_tool_input,omitempty"`
+}
+
+// IsEnabled reports whether this spec should be built (nil Enabled = on).
+func (s ContextPluginSpec) IsEnabled() bool { return s.Enabled == nil || *s.Enabled }
+
+// knownContextPluginNames mirrors the internal/contextplugin registry for
+// load-time validation (config can't import contextplugin — cycle). Keep in
+// sync when a built-in plugin is added.
+var knownContextPluginNames = map[string]bool{"redact": true}
 
 // AgentInterruptionACL is the per-agent v0.8.16 Interruption tool
 // gate. Three fields:
@@ -3801,6 +3836,20 @@ func validateStaticWebhook(name string, w Webhook) error {
 func validate(c *Config) error {
 	if c.Concurrency.MaxConcurrentRuns < 1 {
 		return fmt.Errorf("concurrency.max_concurrent_runs must be >= 1")
+	}
+	// Runtime-wide context-transform plugin chain (RFC Z). Validate names
+	// loudly at load — a typo'd plugin name must fail startup, not silently
+	// drop a (possibly security-critical) transform like redaction. The
+	// authoritative registry lives in internal/contextplugin (config can't
+	// import it — that would cycle); knownContextPluginNames mirrors it and
+	// must be kept in sync as built-in plugins are added.
+	for i, p := range c.ContextPlugins {
+		if p.Name == "" {
+			return fmt.Errorf("context_plugins[%d]: name is required", i)
+		}
+		if !knownContextPluginNames[p.Name] {
+			return fmt.Errorf("context_plugins[%d]: unknown plugin %q (want one of: redact)", i, p.Name)
+		}
 	}
 	if c.Concurrency.MaxQueueDepth < 0 {
 		return fmt.Errorf("concurrency.max_queue_depth must be >= 0")
