@@ -115,15 +115,27 @@ func TestManager_PauseTimesOutOnUnparkedRun(t *testing.T) {
 func TestManager_PauseQuiescesImmediatelyWhenNoRuns(t *testing.T) {
 	m, _, cleanup := newTestManager(t)
 	defer cleanup()
-	start := time.Now()
-	res, err := m.Pause(context.Background(), 2*time.Second)
-	if err != nil {
-		t.Fatalf("Pause: %v", err)
-	}
-	if time.Since(start) > 500*time.Millisecond {
-		t.Errorf("Pause with no in-flight runs took %v, want near-immediate", time.Since(start))
-	}
-	if res.PausedRunsCount != 0 {
-		t.Errorf("PausedRunsCount = %d, want 0", res.PausedRunsCount)
+	// A LONG pause timeout: if the barrier failed to short-circuit on "no
+	// registered runs" it would block the full 10s. Assert Pause returns well
+	// within that window via a generous 3s select bound — robust under -race CI
+	// load (a near-instant Pause never approaches 3s) while still catching a
+	// regression that waits the whole timeout. Avoids the prior tight
+	// `< 500ms` wall-clock assertion, which could flake under scheduler
+	// contention even on the happy path.
+	done := make(chan PauseResult, 1)
+	go func() {
+		res, perr := m.Pause(context.Background(), 10*time.Second)
+		if perr != nil {
+			t.Errorf("Pause: %v", perr)
+		}
+		done <- res
+	}()
+	select {
+	case res := <-done:
+		if res.PausedRunsCount != 0 {
+			t.Errorf("PausedRunsCount = %d, want 0", res.PausedRunsCount)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("Pause with no in-flight runs did not quiesce within 3s — barrier did not short-circuit")
 	}
 }

@@ -755,6 +755,28 @@ func (m *Manager) Resume(ctx context.Context) (ResumeResult, error) {
 		m.mu.Unlock()
 		return ResumeResult{State: st}, ErrNotPaused
 	}
+	m.mu.Unlock()
+
+	// Snapshot the paused set BEFORE waking any gate. While the manager is
+	// still StatePaused the gates are parked (selecting on resumeCh) and no new
+	// runs are admitted, so this list is a stable, accurate count. If we woke
+	// the gates first (the old ordering: close(resumeCh) then ListPausedRuns),
+	// a woken gate flips its own pause_state back to running and races the
+	// list — under-counting ResumedRunsCount nondeterministically (the flaky
+	// TestManager_PauseWaitsForRunToPark). The per-run SetRunPauseState(running)
+	// below is idempotent with a gate's self-flip; only the count must be
+	// snapshotted pre-wake.
+	paused, listErr := m.store.ListPausedRuns(ctx)
+
+	m.mu.Lock()
+	// Re-check under the lock: a concurrent Resume may have transitioned us to
+	// running between the pre-check and here. The loser reports ErrNotPaused
+	// (the winner already woke the gates) — keeps the state transition atomic.
+	if loadState(&m.state) != StatePaused {
+		st := loadState(&m.state).String()
+		m.mu.Unlock()
+		return ResumeResult{State: st}, ErrNotPaused
+	}
 	// New broadcast channel for the next pause cycle. Old callers
 	// holding the closed channel from the prior pause naturally fall
 	// through their select-default branch on the next iteration.
@@ -786,12 +808,13 @@ func (m *Manager) Resume(ctx context.Context) (ResumeResult, error) {
 		}
 	}
 
-	paused, err := m.store.ListPausedRuns(ctx)
-	if err != nil {
-		log.Printf("resume: ListPausedRuns failed: %v", err)
+	// The gates are now woken (above); even if the snapshot failed we must not
+	// short-circuit before that. Handle the snapshot error here for the count.
+	if listErr != nil {
+		log.Printf("resume: ListPausedRuns failed: %v", listErr)
 		return ResumeResult{
 			State:    StateRunning.String(),
-			Warnings: []string{fmt.Sprintf("could not enumerate paused runs: %v", err)},
+			Warnings: []string{fmt.Sprintf("could not enumerate paused runs: %v", listErr)},
 		}, nil
 	}
 	resumed := 0
