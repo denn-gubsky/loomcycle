@@ -128,22 +128,14 @@ func (s *Server) handleRunStream(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "run_id must match [A-Za-z0-9_-]{1,128}", http.StatusBadRequest)
 		return
 	}
-	run, err := s.store.GetRun(r.Context(), runID)
+	// Tenant-ownership gate via the tenant-scoped accessor: a cross-tenant run
+	// is folded into *store.ErrNotFound, so an unknown run and a cross-tenant
+	// run both return the same opaque 404 (run_ids are not secret, so the gate
+	// must not become an existence oracle). Super-admin / legacy / open see all.
+	run, err := s.tenantStore(r.Context()).GetRun(r.Context(), runID)
 	if err != nil {
-		// Opaque 404 — run_ids are not secret, but we don't distinguish
-		// "unknown" from "not yours" to avoid a cross-tenant probe oracle.
 		http.Error(w, "no such run", http.StatusNotFound)
 		return
-	}
-	// Tenant-ownership gate (mirrors handleRunInput): resolve the run's session
-	// and refuse a cross-tenant attach with the same opaque 404.
-	if run.SessionID != "" {
-		if sess, serr := s.store.GetSession(r.Context(), run.SessionID); serr == nil {
-			if !sessionOwnershipOK(r.Context(), sess) {
-				http.Error(w, "no such run", http.StatusNotFound)
-				return
-			}
-		}
 	}
 
 	var fromSeq int64

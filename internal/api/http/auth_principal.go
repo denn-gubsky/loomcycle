@@ -400,11 +400,10 @@ func tenantFromCtx(ctx context.Context) string {
 // only its own tenant. Single-row read handlers use this to 404 a
 // cross-tenant probe (opaque — no existence oracle).
 func (s *Server) tenantVisible(ctx context.Context, rowTenant string) bool {
-	p, ok := auth.PrincipalFromContext(ctx)
-	if !ok || auth.HasScope(p.Scopes, auth.ScopeAdmin) {
-		return true
-	}
-	return rowTenant == p.TenantID
+	// Single source of truth for the visibility predicate: the same scope
+	// resolution the tenant-scoped store accessor uses (tenant_store.go).
+	tenantID, all := tenantScopeFromCtx(ctx)
+	return all || rowTenant == tenantID
 }
 
 // requiredScopeFor maps an HTTP (method, path) to the scope a caller
