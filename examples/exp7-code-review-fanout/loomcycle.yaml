@@ -1,0 +1,148 @@
+# exp7 — Claude Code delegates a real code review to loomcycle, fanning the reviewers
+#        out THROUGH THE MCP SERVER (RFC Y `spawn_runs`, loomcycle ≥ v0.32.0).
+#
+# An external orchestrator (Claude Code, or the `work/exp7_run.sh` driver here) clones a Go repo
+# into the jail (work/loomcycle-src), then:
+#
+#   1. ONE `spawn_runs` MCP call (mode=join, N=10) → 10 × `code-reviewer` runs server-side
+#      CONCURRENTLY (bounded by the admission gate); the join AND-barrier returns the index-aligned
+#      envelope when all settle. Each reviewer reads ONE repo slice (READ-ONLY) and writes its
+#      confidence-≥80 findings to Memory (review:<slice>:findings).
+#   2. ONE `spawn_run` MCP call → `exp7-consolidator`, which reads the review:* ledger, merges +
+#      counts, writes consolidated:report, and RETURNS the executive report — back to the caller.
+#
+# The `spawn_runs` join barrier IS the fan-in — there is NO in-loomcycle dispatcher agent and NO
+# fan-in channel. (loomcycle < v0.32.0 had no `spawn_runs`; the original sandbox exp7 used an
+# in-loomcycle dispatcher + `Agent op=parallel_spawn` as the workaround — that motivated RFC Y,
+# shipped in v0.32.0.)
+#
+# Substrate (all shipped): `loomcycle import claude-code` + skills bundling, the MCP `spawn_runs`
+# external fan-out (RFC Y), Memory (user scope), the read-only Read/Grep/Glob jail. The reviewer is
+# read-only (no Bash/Write). Routing: Anthropic OAuth → deepseek-v4-pro (tier: middle = sonnet).
+#
+# `run.sh` sets the jail (LOOMCYCLE_READ_ROOT=./work) and the skills root
+# (LOOMCYCLE_SKILLS_ROOT=./skills) so the imported code-review skill body is bundled into the
+# reviewer's system prompt at config-load (boot log: `skills: loaded 1`).
+#
+# PROVENANCE — how `code-reviewer` was produced: `./claude-code-src/agents/code-reviewer.md` (+
+# `./claude-code-src/skills/code-review/SKILL.md`) are the Claude Code source artifacts; imported with
+#   loomcycle import claude-code --from=./claude-code-src --write --diff=./loomcycle.yaml --skills-dest=./skills
+# (claude-code-src/ is a normal `.claude`-layout dir — agents/ + skills/ — renamed only because the
+#  loomcycle repo gitignores `.claude/`; the importer reads the structure, not the dir name).
+# (tools→allowed_tools, body→system_prompt). The importer drops the agent's `skills:` frontmatter
+# ("no loomcycle equivalent"), so `skills:[code-review]` is re-attached here, and `model: sonnet`
+# (a Claude-Code alias) is replaced with `tier: middle`. The agent below is the post-import result.
+
+provider_priority:
+  - anthropic-oauth-dev
+  - deepseek
+
+tiers:
+  middle:
+    - { provider: anthropic-oauth-dev, model: claude-sonnet-4-6 }
+    - { provider: deepseek,            model: deepseek-v4-pro }
+  low:
+    - { provider: anthropic-oauth-dev, model: claude-haiku-4-5-20251001 }
+    - { provider: deepseek,            model: deepseek-v4-flash }
+  high:
+    - { provider: anthropic-oauth-dev, model: claude-sonnet-4-6 }
+    - { provider: deepseek,            model: deepseek-v4-pro }
+
+user_tiers:
+  default:
+    provider_priority: [anthropic-oauth-dev, deepseek]
+    fallback_on_error: true
+    max_fallback_attempts: 3
+
+agents:
+  # ───────────────────────── code-reviewer (imported; fanned out via MCP spawn_runs) ─────────────────────────
+  # Claude Code / the driver fans out N=10 of THESE in ONE `spawn_runs` (mode=join) MCP call — no
+  # in-loomcycle dispatcher. Each spawn carries its `slice=`/`path=` in the prompt.
+  code-reviewer:
+    tier: middle              # sonnet (OAuth) → deepseek-v4-pro fallback (replaces the imported `model: sonnet`)
+    max_iterations: 40        # large slices finish + record
+    max_tokens: 8192
+    effort: medium
+    skills: [code-review]     # re-attached (the importer drops the agent's `skills:` frontmatter)
+    memory_scopes: [user]
+    allowed_tools: [Read, Grep, Glob, Memory, Context]   # READ-ONLY — no Bash/Write
+    system_prompt: |2
+      You are an expert CODE REVIEWER (read-only) working one slice of a Go repository. The repo is
+      cloned inside your sandbox read-root: **your cwd IS the read-root**, and the repo lives at
+      `loomcycle-src/` directly beneath it. ALWAYS address files by the path RELATIVE to the read-root
+      (e.g. `loomcycle-src/internal/api/http/server.go`), NOT by an absolute `/…` path — the Glob/Read
+      sandbox resolves relative to the read-root, and an absolute `**` pattern will NOT match. Follow
+      the **code-review** skill: confidence-score every candidate issue and report only those with
+      **confidence ≥ 80**; apply the Karpathy guidelines (surface assumptions, flag overcomplication /
+      non-surgical changes, prefer verifiable findings). Honor the repo's own `CLAUDE.md` where present.
+
+      The user message gives you `slice=<name>` and a `path=` (a subdirectory under `loomcycle-src/`).
+
+      PROCEDURE — do exactly this, then stop:
+      1. Discover the slice: `Glob` `loomcycle-src/<path>/**/*.go` (RELATIVE; skip `*_test.go` unless
+         reviewing tests). The repo IS present — if a glob returns no matches, do NOT conclude the repo
+         is missing: retry with a shallower pattern (`loomcycle-src/<path>/*.go`) and/or `Read` known
+         files directly. Then `Read` the **most important 10–15 source files** — prioritise entrypoints,
+         request handlers, lifecycle/shutdown, locking, and the largest files; do NOT read every file in
+         a big slice (it wastes the token budget). Use `Grep` to scan the WHOLE slice for risky patterns
+         instead (error-dropping, unchecked type assertions, `panic`, goroutine/lock misuse, unbounded
+         reads, secret-ish strings, missing context cancellation, etc.) and Read only the hits worth
+         confirming.
+      2. Form findings. For each issue keep only confidence ≥ 80: `{file, line, severity:"Critical"|
+         "Important", confidence, message, fix}`. Be precise — cite real `file:line` you actually read.
+      3. Record (run-id from `Context op=self`):
+         `Memory op=set scope=user key="review:<slice>:findings"` value (compact JSON):
+         `{"slice":"<slice>","run_id":"<id>","path":"<path>","files_reviewed":<n>,
+           "issues":[ ... ≥80-confidence only ... ],"summary":"<2-3 sentence audit>"}`
+         (If the slice is clean, write `issues:[]` + a "meets standards" summary — still record it.)
+      4. Output one line: `REVIEWED slice=<slice> files=<n> issues=<k>` and stop. (This line is your
+         final_text — it rides back in the `spawn_runs` join envelope to the caller.)
+
+      Rules: READ-ONLY — never write/edit/execute (you have no Bash/Write). Stay under `loomcycle-src/`
+      (relative to the read-root). Keep memory values compact JSON. Reference any secret by name only.
+
+  # ───────────────────────── exp7-consolidator (single spawn_run after the fan-out) ─────────────────────────
+  # The caller spawns THIS once (a single MCP `spawn_run`) AFTER the `spawn_runs` fan-out settles.
+  # It reads the review:* ledger the 10 reviewers wrote, merges + counts, writes consolidated:report,
+  # and returns the executive report as its final_text — the delegated result the caller keeps.
+  exp7-consolidator:
+    tier: middle
+    max_iterations: 12
+    max_tokens: 8192
+    effort: high
+    allowed_tools: [Memory, Context]
+    memory_scopes: [user]
+    system_prompt: |
+      You are EXP7-CONSOLIDATOR. Ten read-only `code-reviewer` agents were just fanned out (via the
+      MCP `spawn_runs` call) over 10 slices of a Go repo; each wrote its findings to Memory under key
+      `review:<slice>:findings`. Your job: gather them, consolidate, and return one report. CONSTANTS:
+      N=10 slices; user_id is the run's user_id.
+
+      SLICES (the 10 expected keys): api-http, tools-builtin, providers, store, config, snapshot,
+        scheduler, pause, channels, cmd.
+
+      PROCEDURE:
+      1. GATHER: `Memory op=list scope=user prefix="review:" limit=100` → collect each
+         `review:<slice>:findings` value (parse the compact JSON). Note which of the 10 slices recorded.
+      2. CONSOLIDATE: merge all issues; dedup obvious repeats; count by severity (Critical/Important)
+         and by slice; pick the top ~10 highest-confidence findings across the repo.
+      3. WRITE: `Memory op=set scope=user key="consolidated:report"` value (JSON):
+           {"slices_reviewed":<k>/10,"files_reviewed":<sum>,"total_issues":<n>,
+            "by_severity":{"Critical":<c>,"Important":<i>},"by_slice":{...},
+            "top_findings":[{"slice","file","line","severity","confidence","message","fix"} ...up to 10],
+            "summary":"<3-5 sentence executive code-review summary of the repo>"}
+      4. RETURN: output a concise human-readable report (the executive summary + the top findings as a
+         bulleted list with file:line + severity) as your final message — this goes back to the caller.
+
+      Never invent findings; only consolidate what the reviewers actually recorded. If a slice is
+      missing from the ledger, report it as 0/not-recorded — do not fabricate. Reference secrets by name only.
+
+concurrency:
+  # Throttle the fan-out: 10 concurrent heavy sonnet reviewers can saturate a subscription (OAuth)
+  # account rate limit (HTTP 429). Run a few at a time; the `spawn_runs` join still accepts all 10 —
+  # the rest QUEUE and run as slots free. queue_timeout MUST exceed a reviewer's wall-clock so queued
+  # children wait for a slot instead of being rejected. (Raise max_concurrent_runs if your provider /
+  # plan has the headroom — e.g. a paid API key rather than a subscription.)
+  max_concurrent_runs: 4
+  max_queue_depth: 24
+  queue_timeout_ms: 1200000
