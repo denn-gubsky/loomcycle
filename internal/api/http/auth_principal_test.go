@@ -222,6 +222,16 @@ func TestRequiredScopeFor(t *testing.T) {
 		{"POST", "/v1/chat/completions", ""},
 		{"POST", "/v1/embeddings", ""},
 		{"GET", "/healthz", ""},
+		// S2 default-deny: an UNLISTED mutating route falls through to
+		// ScopeAdmin (not any-authenticated), so a forgotten new state-changing
+		// endpoint can't silently ship reachable by a narrow tenant token. An
+		// unlisted READ keeps the any-authenticated default (tenant-gated in the
+		// handler).
+		{"POST", "/v1/widgets", auth.ScopeAdmin},
+		{"PUT", "/v1/widgets/w_1", auth.ScopeAdmin},
+		{"PATCH", "/v1/widgets/w_1", auth.ScopeAdmin},
+		{"DELETE", "/v1/widgets/w_1", auth.ScopeAdmin},
+		{"GET", "/v1/widgets", ""},
 	}
 	for _, c := range cases {
 		if got := requiredScopeFor(c.method, c.path); got != c.want {

@@ -482,6 +482,22 @@ func requiredScopeFor(method, path string) string {
 		strings.HasPrefix(path, "/v1/sessions/")):
 		return auth.ScopeRunsRead
 	default:
+		// Default-deny for unlisted MUTATING routes (v0.34.0 security review
+		// S2). The prior `return ""` shipped any unlisted route at
+		// any-authenticated — so a new state-changing endpoint added without a
+		// requiredScopeFor entry was silently reachable by a minimal-scope
+		// tenant token. A mutating method now requires ScopeAdmin by default;
+		// ScopeAdmin still satisfies every check (auth.HasScope), so the
+		// default/legacy admin token is unaffected and the safe failure
+		// direction for a forgotten route is over-restrict (a narrow token gets
+		// 403), never silent exposure. GET/HEAD reads keep the any-authenticated
+		// default — reads are tenant-gated per-handler (tenantVisible /
+		// sessionOwnershipOK), and the consumer LLM-gateway POSTs that are
+		// legitimately any-authenticated are explicit `return ""` cases above.
+		switch method {
+		case http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete:
+			return auth.ScopeAdmin
+		}
 		return ""
 	}
 }
