@@ -107,3 +107,14 @@ func (t *tenantScopedStore) InterruptListByRun(ctx context.Context, runID, statu
 	}
 	return t.store.InterruptListByRun(ctx, runID, statusFilter)
 }
+
+// InterruptListByUser returns the user's interrupts scoped to the caller's
+// tenant (the store JOINs runs.tenant_id). allTenants → no tenant filter
+// (super-admin / legacy / open mode see every tenant), mirroring ListUsers.
+func (t *tenantScopedStore) InterruptListByUser(ctx context.Context, userID, statusFilter string) ([]store.InterruptRow, error) {
+	tenantFilter := t.tenantID
+	if t.allTenants {
+		tenantFilter = ""
+	}
+	return t.store.InterruptListByUser(ctx, userID, tenantFilter, statusFilter)
+}

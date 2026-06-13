@@ -121,6 +121,59 @@ func TestHandleTranscript_RejectsCrossTenant(t *testing.T) {
 	}
 }
 
+// The user-scoped interrupt inbox (GET /v1/users/{user_id}/interrupts) keyed on
+// user_id alone before this change; a token could read another tenant's pending
+// questions by passing a user_id that exists in both tenants (user_ids are not
+// secret). The handler now passes the principal's tenant down to the store
+// JOIN. Fails on the pre-gate code, which returned both tenants' rows.
+func TestHandleListUserInterrupts_RejectsCrossTenant(t *testing.T) {
+	s, st := tokenAuthServer(t, "")
+	ctx := context.Background()
+	const user = "u_shared"
+	runAcme := seedRunInTenant(t, st, "acme", user, "a_acme_ui")
+	runEvil := seedRunInTenant(t, st, "evil", user, "a_evil_ui")
+	for _, rr := range []struct{ run, q string }{{runAcme, "acme Q"}, {runEvil, "evil Q"}} {
+		if _, err := st.InterruptCreate(ctx, store.InterruptRow{
+			InterruptID: store.MintInterruptID(time.Now()), RunID: rr.run, UserID: user,
+			Question: rr.q, CreatedAt: time.Now(),
+		}); err != nil {
+			t.Fatalf("InterruptCreate: %v", err)
+		}
+	}
+
+	totalFor := func(tenant, subject string, scopes []string) int {
+		r := httptest.NewRequest(http.MethodGet, "/v1/users/"+user+"/interrupts?status=all", nil)
+		r.SetPathValue("user_id", user)
+		r = r.WithContext(auth.WithPrincipal(r.Context(), auth.Principal{
+			TenantID: tenant, Subject: subject, Scopes: scopes,
+		}))
+		rr := httptest.NewRecorder()
+		s.handleListUserInterrupts(rr, r)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("status=%d, want 200", rr.Code)
+		}
+		var body struct {
+			Total int `json:"total"`
+		}
+		if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		return body.Total
+	}
+
+	// A tenant principal sees only its own tenant's interrupt for this user.
+	if got := totalFor("acme", "alice", []string{auth.ScopeRunsRead}); got != 1 {
+		t.Errorf("acme inbox for %q = %d rows, want 1 (cross-tenant leak)", user, got)
+	}
+	if got := totalFor("evil", "mallory", []string{auth.ScopeRunsRead}); got != 1 {
+		t.Errorf("evil inbox for %q = %d rows, want 1 (cross-tenant leak)", user, got)
+	}
+	// Super-admin sees both tenants' interrupts.
+	if got := totalFor("x", "ops", []string{auth.ScopeAdmin}); got != 2 {
+		t.Errorf("admin inbox for %q = %d rows, want 2", user, got)
+	}
+}
+
 // TestTenantStore_GetRunOpaqueCrossTenant locks the accessor's core posture: a
 // cross-tenant run is indistinguishable from a missing one (both
 // *store.ErrNotFound), while the owning tenant + admin resolve it.

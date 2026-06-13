@@ -299,6 +299,7 @@ func Run(t *testing.T, factory Factory) {
 		{"InterruptFinishRejectsAlreadyTerminal", testInterruptFinishRejectsAlreadyTerminal},
 		{"InterruptListByRunFiltersByStatus", testInterruptListByRunFiltersByStatus},
 		{"InterruptListByUserFiltersByStatus", testInterruptListByUserFiltersByStatus},
+		{"InterruptListByUserFiltersByTenant", testInterruptListByUserFiltersByTenant},
 		{"InterruptCountPendingByRunIsAccurateUnderConcurrency", testInterruptCountPendingByRunIsAccurateUnderConcurrency},
 		{"InterruptSweepExpiredMarksOnlyExpiredPending", testInterruptSweepExpiredMarksOnlyExpiredPending},
 		{"InterruptIDIsMonotonicByTime", testInterruptIDIsMonotonicByTime},
@@ -6199,6 +6200,27 @@ func makeRunForInterrupt(t *testing.T, s store.Store, userID, agentID, agentName
 	return sess.ID, run.ID
 }
 
+// makeRunForInterruptTenant is makeRunForInterrupt with an explicit tenant
+// stamped onto the run row (CreateRun denormalises identity.TenantID — the
+// column InterruptListByUser's tenant filter reads). Returns the run id.
+func makeRunForInterruptTenant(t *testing.T, s store.Store, tenant, userID, agentID, agentName string) (runID string) {
+	t.Helper()
+	ctx := context.Background()
+	sess, err := s.CreateSession(ctx, tenant, agentName, userID)
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	run, err := s.CreateRun(ctx, sess.ID, store.RunIdentity{
+		AgentID:  agentID,
+		UserID:   userID,
+		TenantID: tenant,
+	})
+	if err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+	return run.ID
+}
+
 func testInterruptCreateAndGet(t *testing.T, s store.Store) {
 	ctx := context.Background()
 	_, runID := makeRunForInterrupt(t, s, "u_alice", "a_intr_1", "batch-processor")
@@ -6413,7 +6435,9 @@ func testInterruptListByUserFiltersByStatus(t *testing.T, s store.Store) {
 	id3 := store.MintInterruptID(time.Now().Add(2 * time.Millisecond))
 	_, _ = s.InterruptCreate(ctx, store.InterruptRow{InterruptID: id3, RunID: runC, UserID: "u_other", Question: "Q from C", CreatedAt: time.Now().Add(2 * time.Millisecond)})
 
-	rows, err := s.InterruptListByUser(ctx, "u_bob", store.InterruptStatusPending)
+	// tenantID "" = all tenants (this test exercises the user filter, not the
+	// tenant filter — see testInterruptListByUserFiltersByTenant for that).
+	rows, err := s.InterruptListByUser(ctx, "u_bob", "", store.InterruptStatusPending)
 	if err != nil {
 		t.Fatalf("ListByUser: %v", err)
 	}
@@ -6424,6 +6448,50 @@ func testInterruptListByUserFiltersByStatus(t *testing.T, s store.Store) {
 		if r.UserID != "u_bob" {
 			t.Errorf("listing leaked row from %q", r.UserID)
 		}
+	}
+}
+
+// testInterruptListByUserFiltersByTenant locks RFC L/N whole-tenant isolation
+// on the user-scoped interrupt inbox: when a tenant is passed, interrupts on
+// another tenant's runs are excluded even for the SAME user_id (user_ids are
+// not secret). "" = all tenants. Fails on the pre-tenant signature where the
+// listing keyed on user_id alone and leaked across tenants.
+func testInterruptListByUserFiltersByTenant(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	// Same user_id "u_shared" in two tenants — the cross-tenant leak surface.
+	runAcme := makeRunForInterruptTenant(t, s, "acme", "u_shared", "a_acme_intr", "agent-acme")
+	runEvil := makeRunForInterruptTenant(t, s, "evil", "u_shared", "a_evil_intr", "agent-evil")
+
+	idA := store.MintInterruptID(time.Now())
+	_, _ = s.InterruptCreate(ctx, store.InterruptRow{InterruptID: idA, RunID: runAcme, UserID: "u_shared", Question: "acme Q", CreatedAt: time.Now()})
+	idE := store.MintInterruptID(time.Now().Add(time.Millisecond))
+	_, _ = s.InterruptCreate(ctx, store.InterruptRow{InterruptID: idE, RunID: runEvil, UserID: "u_shared", Question: "evil Q", CreatedAt: time.Now().Add(time.Millisecond)})
+
+	// Scoped to acme: only the acme interrupt, never evil's.
+	acme, err := s.InterruptListByUser(ctx, "u_shared", "acme", "")
+	if err != nil {
+		t.Fatalf("ListByUser(acme): %v", err)
+	}
+	if len(acme) != 1 || acme[0].InterruptID != idA {
+		t.Fatalf("acme-scoped listing = %d rows (want 1, id=%s) — tenant filter leaked", len(acme), idA)
+	}
+
+	// Scoped to evil: only evil's.
+	evil, err := s.InterruptListByUser(ctx, "u_shared", "evil", "")
+	if err != nil {
+		t.Fatalf("ListByUser(evil): %v", err)
+	}
+	if len(evil) != 1 || evil[0].InterruptID != idE {
+		t.Fatalf("evil-scoped listing = %d rows (want 1, id=%s)", len(evil), idE)
+	}
+
+	// "" = all tenants (super-admin) → both.
+	all, err := s.InterruptListByUser(ctx, "u_shared", "", "")
+	if err != nil {
+		t.Fatalf("ListByUser(all): %v", err)
+	}
+	if len(all) != 2 {
+		t.Fatalf("all-tenants listing = %d rows, want 2", len(all))
 	}
 }
 

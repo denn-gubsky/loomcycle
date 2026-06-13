@@ -2344,8 +2344,47 @@ func (s *Store) InterruptListByRun(ctx context.Context, runID, statusFilter stri
 	return s.interruptList(ctx, "run_id", runID, statusFilter)
 }
 
-func (s *Store) InterruptListByUser(ctx context.Context, userID, statusFilter string) ([]store.InterruptRow, error) {
-	return s.interruptList(ctx, "user_id", userID, statusFilter)
+func (s *Store) InterruptListByUser(ctx context.Context, userID, tenantID, statusFilter string) ([]store.InterruptRow, error) {
+	// Whole-tenant isolation (RFC L/N): when tenantID is set, JOIN runs and
+	// filter the OWNING run's tenant so a caller can't read another tenant's
+	// interrupts by guessing a user_id. "" = all tenants (super-admin / open).
+	q := `
+		SELECT i.interrupt_id, i.run_id, i.kind, i.status,
+		       i.question, i.options::text, i.context_data, i.priority,
+		       i.answer, i.answer_meta::text,
+		       i.created_at, i.expires_at, i.resolved_at, i.resolved_by,
+		       i.user_id, i.agent_id, i.agent_name
+		FROM interrupts i`
+	args := []any{userID}
+	if tenantID != "" {
+		q += ` JOIN runs r ON r.id = i.run_id`
+	}
+	q += ` WHERE i.user_id = $1`
+	if tenantID != "" {
+		args = append(args, tenantID)
+		q += fmt.Sprintf(` AND r.tenant_id = $%d`, len(args))
+	}
+	if statusFilter != "" {
+		args = append(args, statusFilter)
+		q += fmt.Sprintf(` AND i.status = $%d`, len(args))
+	}
+	q += ` ORDER BY i.created_at DESC LIMIT 200`
+
+	rows, err := s.pool.Query(ctx, q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("interrupts: list by user: %w", err)
+	}
+	defer rows.Close()
+
+	out := []store.InterruptRow{}
+	for rows.Next() {
+		r, err := s.scanInterruptRow(rows)
+		if err != nil {
+			return nil, fmt.Errorf("interrupts: list by user scan: %w", err)
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
 }
 
 func (s *Store) interruptList(ctx context.Context, col, val, statusFilter string) ([]store.InterruptRow, error) {

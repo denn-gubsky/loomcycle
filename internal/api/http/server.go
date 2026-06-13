@@ -5334,7 +5334,12 @@ func (s *Server) handleListUserInterrupts(w http.ResponseWriter, r *http.Request
 	if statusFilter == "all" {
 		statusFilter = ""
 	}
-	rows, err := s.store.InterruptListByUser(r.Context(), userID, statusFilter)
+	// Tenant-scope the inbox: a tenant principal sees only interrupts on its
+	// own tenant's runs (the accessor passes the principal's tenant down to the
+	// store JOIN); super-admin / legacy / open mode see all. Without this a
+	// token could read another tenant's pending questions by guessing a
+	// user_id (user_ids are not secret). Mirrors handleListUsers' scoping.
+	rows, err := s.tenantStore(r.Context()).InterruptListByUser(r.Context(), userID, statusFilter)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return

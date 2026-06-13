@@ -1525,11 +1525,15 @@ type Store interface {
 	// Capped at 200 rows.
 	InterruptListByRun(ctx context.Context, runID, statusFilter string) ([]InterruptRow, error)
 
-	// InterruptListByUser returns interrupts owned by user_id,
-	// newest first. statusFilter same shape as ListByRun. The
-	// denormalised user_id column drives this query without a JOIN
-	// against runs. Capped at 200 rows.
-	InterruptListByUser(ctx context.Context, userID, statusFilter string) ([]InterruptRow, error)
+	// InterruptListByUser returns interrupts owned by user_id, newest
+	// first. statusFilter same shape as ListByRun. tenantID scopes the
+	// result to the OWNING run's tenant (RFC L/N whole-tenant isolation):
+	// when non-empty the query JOINs runs and filters runs.tenant_id, so a
+	// caller can't read another tenant's interrupts by guessing a user_id;
+	// "" = all tenants (super-admin / open mode — mirrors ListUsers). The
+	// user_id column is indexed; the tenant JOIN is only added when scoped.
+	// Capped at 200 rows.
+	InterruptListByUser(ctx context.Context, userID, tenantID, statusFilter string) ([]InterruptRow, error)
 
 	// InterruptCountPendingByRun returns the count of status=pending
 	// interrupts for the given run_id. Drives max_pending enforcement
