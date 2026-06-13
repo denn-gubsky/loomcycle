@@ -85,13 +85,22 @@ pre {
 }
 .brand {
   display: flex;
-  align-items: baseline;
-  gap: 8px;
-  font-weight: 600;
+  align-items: center;
+  gap: 10px;
   margin-right: auto;
 }
 .brand a {
   color: var(--fg);
+  display: inline-flex;
+  align-items: center;
+}
+/* loomcycle wordmark (web/public/loomcycle-logo.svg). Fixed height, intrinsic
+   aspect ratio (1344×300); the SVG already carries the dark-theme wordmark
+   colour so no filter is applied. */
+.brand-logo {
+  display: block;
+  height: 22px;
+  width: auto;
 }
 .version {
   color: var(--fg-soft);
