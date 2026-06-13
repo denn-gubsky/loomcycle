@@ -3,6 +3,7 @@ package channels
 import (
 	"context"
 	"encoding/json"
+	"sync"
 	"testing"
 	"time"
 
@@ -71,6 +72,56 @@ func TestHeartbeatRunner_StopIdempotent(t *testing.T) {
 	time.Sleep(60 * time.Millisecond)
 	runner.Stop()
 	runner.Stop() // should not panic / hang
+}
+
+// TestHeartbeatRunner_ConcurrentStartStopRaceFree is the exp7 regression for
+// the data race: Start() wrote h.cancel with no synchronization against Stop()'s
+// read. Run Start and Stop concurrently; under -race the unfixed code reports a
+// data race on h.cancel. The parent ctx is cancelled on cleanup so a goroutine
+// that outlives a Stop-before-Start still drains.
+func TestHeartbeatRunner_ConcurrentStartStopRaceFree(t *testing.T) {
+	s, _ := sqlite.Open(":memory:")
+	defer s.Close()
+	pub := &StorePublisher{Store: s, Bus: NewBus()}
+	h := NewHeartbeatRunner(pub, "v", []HeartbeatSpec{
+		{Name: "_system/hb-race", Period: time.Millisecond},
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() { defer wg.Done(); h.Start(ctx) }()
+	go func() { defer wg.Done(); h.Stop() }()
+	wg.Wait()
+	h.Stop() // idempotent
+}
+
+// TestHeartbeatRunner_DoubleStartNoOp pins the idempotent-Start guard: a second
+// Start must not spawn a second goroutine batch. On the unfixed code the second
+// Start overwrites h.cancel (orphaning the first batch's cancel), so the single
+// Stop cancels only the second context and wg.Wait blocks on the first batch
+// forever. FAIL-BEFORE: Stop hangs and this times out.
+func TestHeartbeatRunner_DoubleStartNoOp(t *testing.T) {
+	s, _ := sqlite.Open(":memory:")
+	defer s.Close()
+	pub := &StorePublisher{Store: s, Bus: NewBus()}
+	h := NewHeartbeatRunner(pub, "v", []HeartbeatSpec{
+		{Name: "_system/hb-double", Period: 50 * time.Millisecond},
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	h.Start(ctx)
+	h.Start(ctx) // must be a no-op, not a second batch
+
+	done := make(chan struct{})
+	go func() { h.Stop(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Stop() hung — a second Start spawned an un-cancelled goroutine batch")
+	}
 }
 
 // Empty specs is a no-op (no goroutines started, Stop returns immediately).

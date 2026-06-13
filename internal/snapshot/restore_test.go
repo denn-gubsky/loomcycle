@@ -794,6 +794,53 @@ func TestExportRestore_ChecksumRoundTrip(t *testing.T) {
 	}
 }
 
+// TestExportPretty_ClearsChecksumSoRestoreSucceeds is the exp7 regression for
+// the pretty-export path. json.MarshalIndent re-indents the nested "sections"
+// object, so a checksum stamped over the COMPACT section bytes (which every
+// Capture/Export envelope carries) no longer matches the indented bytes —
+// Restore hashes the document's section bytes and would reject a pretty doc as
+// "truncated or tampered". ExportPretty therefore clears the checksum.
+// Fail-before: with the checksum propagated into the pretty doc, this Restore
+// fails with "checksum mismatch".
+func TestExportPretty_ClearsChecksumSoRestoreSucceeds(t *testing.T) {
+	env := mkChecksumEnvelope(t)
+	// Simulate a fetched, stored snapshot: it carries the compact checksum
+	// because Capture routes through Export, which stamps it.
+	raw, err := Export(&env)
+	if err != nil {
+		t.Fatalf("Export: %v", err)
+	}
+	var stored Envelope
+	if err := json.Unmarshal(raw, &stored); err != nil {
+		t.Fatalf("unmarshal stored: %v", err)
+	}
+	if stored.Checksum == "" {
+		t.Fatal("precondition: stored envelope should carry a checksum")
+	}
+
+	pretty, err := ExportPretty(&stored)
+	if err != nil {
+		t.Fatalf("ExportPretty: %v", err)
+	}
+	if strings.Contains(string(pretty), `"checksum"`) {
+		t.Errorf("pretty export still carries a checksum (cannot survive re-indent): %s", pretty)
+	}
+	// Must not mutate the caller's envelope.
+	if stored.Checksum == "" {
+		t.Errorf("ExportPretty cleared the caller's Checksum; it must copy")
+	}
+
+	dst, dstClose := newTestStore(t)
+	defer dstClose()
+	res, err := Restore(context.Background(), dst, pretty, RestoreOptions{})
+	if err != nil {
+		t.Fatalf("ExportPretty -> Restore failed (stale checksum survived?): %v", err)
+	}
+	if res.AgentDefsRestored != 1 {
+		t.Errorf("AgentDefsRestored = %d, want 1", res.AgentDefsRestored)
+	}
+}
+
 // TestRestore_RejectsTamperedBodyWithStaleChecksum pins the integrity gate: a
 // body mutated AFTER Export (without re-stamping) is rejected before any
 // decode/insert.

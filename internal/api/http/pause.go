@@ -50,6 +50,7 @@ func (s *Server) handlePauseRuntime(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req pauseRequest
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
 		writeJSONError(w, http.StatusBadRequest, "invalid_json", "request body must be JSON object (or empty)")
 		return

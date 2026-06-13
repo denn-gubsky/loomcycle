@@ -106,6 +106,21 @@ func (g *Glob) Execute(ctx context.Context, input json.RawMessage) (tools.Result
 		searchRoot = resolved
 	}
 
+	// The matcher compares pattern segments against walk-root-RELATIVE file
+	// paths. An absolute pattern's leading "/" splits to an empty first
+	// segment that never matches a relative path, so an absolute in-root
+	// pattern silently returned no matches (exp7 R1). Relativize it to the
+	// walk root; an absolute pattern pointing outside the root can't match
+	// anything in the sandbox.
+	pattern := args.Pattern
+	if filepath.IsAbs(pattern) {
+		rel, inRoot := relativizeToRoot(searchRoot, pattern)
+		if !inRoot {
+			return tools.Result{Text: "no matches\n"}, nil
+		}
+		pattern = rel
+	}
+
 	maxResults := g.MaxResults
 	if maxResults <= 0 {
 		maxResults = globDefaultMaxResults
@@ -114,7 +129,7 @@ func (g *Glob) Execute(ctx context.Context, input json.RawMessage) (tools.Result
 	// Pre-compile the pattern into a segment slice so we don't re-split
 	// per file. `**` survives as a literal sentinel inside the segment
 	// matcher.
-	patSegments := strings.Split(args.Pattern, "/")
+	patSegments := strings.Split(pattern, "/")
 
 	type fileInfo struct {
 		rel   string
@@ -176,6 +191,26 @@ func (g *Glob) Execute(ctx context.Context, input json.RawMessage) (tools.Result
 		return tools.Result{Text: "no matches\n"}, nil
 	}
 	return tools.Result{Text: out.String()}, nil
+}
+
+// relativizeToRoot converts an absolute glob pattern to one relative to root
+// (the walk root). Returns (rel, true) when the pattern sits inside root, or
+// ("", false) when it is the root itself or points outside it — in which case
+// it can match nothing in the sandbox. Glob metacharacters are preserved;
+// only the fixed leading directory prefix is stripped. filepath.Clean
+// collapses any `..` first, so a traversal-escaping pattern fails the prefix
+// check and yields false.
+func relativizeToRoot(root, pattern string) (string, bool) {
+	cleanRoot := filepath.Clean(root)
+	cleanPat := filepath.Clean(pattern)
+	if cleanPat == cleanRoot {
+		return "", false
+	}
+	prefix := cleanRoot + string(filepath.Separator)
+	if !strings.HasPrefix(cleanPat, prefix) {
+		return "", false
+	}
+	return filepath.ToSlash(cleanPat[len(prefix):]), true
 }
 
 // doublestarMatch matches a `/`-split pattern against a `/`-split

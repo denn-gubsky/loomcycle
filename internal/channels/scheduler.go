@@ -71,36 +71,48 @@ func (s *Scheduler) Schedule(channel, msgID string, visibleAt time.Time) bool {
 	if msgID == "" {
 		return false
 	}
-	if _, exists := s.timers.Load(msgID); exists {
-		return false // idempotent — caller may legitimately reschedule on bootstrap
-	}
 	if s.MaxPending > 0 && s.pendCnt.Load() >= int64(s.MaxPending) {
 		return false // silent fallback to periodic-poll delivery
 	}
 
-	t := time.AfterFunc(delay, func() {
-		// Order matters: do the bookkeeping BEFORE calling Notify.
-		// Notify hands off to the waiting goroutine synchronously
-		// (bus.Wait returns true the moment Notify lands). If we
-		// notified first, an observer reading PendingCount() right
-		// after their Wait returned could see a stale count of 1
-		// because the Delete + Add(-1) below hadn't completed yet
-		// — the race detector exposed this as a flaky
-		// TestScheduler_FiresAtVisibleAt failure. With this order,
-		// PendingCount is post-fire by the time any subscriber
-		// observes Notify.
-		s.timers.Delete(msgID)
-		s.pendCnt.Add(-1)
-		s.bus.Notify(channel)
-	})
-	if _, loaded := s.timers.LoadOrStore(msgID, t); loaded {
-		// Race: another caller registered the same msgID between
-		// our Load above and the LoadOrStore. Stop our redundant
-		// timer; the first registration wins.
-		t.Stop()
+	// Claim the registry slot BEFORE arming the timer. Arming first (the old
+	// code did `t := AfterFunc(...)` then `LoadOrStore(msgID, t)`) opened a
+	// window where, for a sub-millisecond delay, the fire closure could run
+	// between AfterFunc and the store: its Delete was a no-op (the entry
+	// didn't exist yet) and the subsequent store then parked an
+	// already-fired timer in the map — an orphaned entry that nothing ever
+	// removed (exp7 C1, narrow + low-severity). Reserve a nil placeholder via
+	// LoadOrStore; a loaded result means the msgID is already scheduled
+	// (idempotent re-Schedule on bootstrap).
+	if _, loaded := s.timers.LoadOrStore(msgID, (*time.Timer)(nil)); loaded {
 		return false
 	}
+	// pendCnt is incremented under the claim. Invariant: whoever removes the
+	// slot (the fire closure or Cancel, via LoadAndDelete) decrements exactly
+	// once — so the count can't drift even if they race.
 	s.pendCnt.Add(1)
+
+	t := time.AfterFunc(delay, func() {
+		// Order matters: do the bookkeeping BEFORE calling Notify. Notify
+		// hands off to the waiting goroutine synchronously (bus.Wait returns
+		// true the moment Notify lands). If we notified first, an observer
+		// reading PendingCount() right after their Wait returned could see a
+		// stale count because the LoadAndDelete + Add(-1) below hadn't
+		// completed — the race detector exposed this as a flaky
+		// TestScheduler_FiresAtVisibleAt. With this order, PendingCount is
+		// post-fire by the time any subscriber observes Notify.
+		if _, ok := s.timers.LoadAndDelete(msgID); ok {
+			s.pendCnt.Add(-1)
+		}
+		s.bus.Notify(channel)
+	})
+	// Swap the placeholder for the armed timer — but only if the closure
+	// hasn't already fired and removed the slot. A failed CAS means the timer
+	// already fired (and cleaned up via LoadAndDelete), so there is nothing to
+	// store and Stop is a harmless no-op; either way no orphan is left behind.
+	if !s.timers.CompareAndSwap(msgID, (*time.Timer)(nil), t) {
+		t.Stop()
+	}
 	return true
 }
 
@@ -113,13 +125,14 @@ func (s *Scheduler) Cancel(msgID string) {
 	if !loaded {
 		return
 	}
-	if t, ok := v.(*time.Timer); ok {
-		if t.Stop() {
-			s.pendCnt.Add(-1)
-		}
-		// If Stop() returned false, the timer already fired and
-		// pendCnt was decremented in the AfterFunc closure — don't
-		// double-decrement.
+	// Remover-decrements invariant: we removed a live slot, so we own the
+	// decrement. The racing fire closure's LoadAndDelete now returns ok=false,
+	// so it won't double-decrement. v may be the nil placeholder (Cancel
+	// raced a Schedule between its slot-claim and the CompareAndSwap); guard
+	// the nil so Stop isn't called on a nil *time.Timer.
+	s.pendCnt.Add(-1)
+	if t, ok := v.(*time.Timer); ok && t != nil {
+		t.Stop()
 	}
 }
 

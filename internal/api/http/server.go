@@ -1940,6 +1940,12 @@ func (s *Server) trySessionLock(id string) (release func(), ok bool) {
 // Replaces both the in-process hooks.Registry AND the Dispatcher's
 // reference to it so the loop sees the new registry on the next
 // tool dispatch.
+//
+// Invariant: call during boot wiring, BEFORE the server starts serving.
+// hookRegistry / hookDispatcher are read unlocked on the request path, so
+// safety relies on the happens-before edge from this call to the request
+// goroutines ListenAndServe later spawns. It is NOT safe to call concurrently
+// with request handling (a hot-reload path would need a guard added here).
 func (s *Server) SetHookRegistry(r hooks.RegistryInterface) {
 	s.hookRegistry = r
 	s.hookDispatcher = hooks.NewDispatcher(r, nil)
@@ -1948,6 +1954,11 @@ func (s *Server) SetHookRegistry(r hooks.RegistryInterface) {
 // SetPgSessionLocker installs the v0.12.5 Phase 6 cluster-wide
 // session lock. When non-nil, trySessionLock dispatches to it
 // instead of the in-process SessionLockMap.
+//
+// Invariant: call during boot wiring, BEFORE the server starts serving —
+// sessionLockPG is read unlocked in trySessionLock on the request path. Same
+// set-before-Serve contract as SetHookRegistry; not safe to call concurrently
+// with request handling.
 func (s *Server) SetPgSessionLocker(l *runner.PgSessionLocker) {
 	s.sessionLockPG = l
 }
@@ -2470,6 +2481,7 @@ func (s *Server) handleSystemChannelPublish(w http.ResponseWriter, r *http.Reque
 	}
 
 	var body systemChannelPublishRequest
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeJSONError(w, http.StatusBadRequest, "invalid_body", fmt.Sprintf("invalid request body: %s", err))
 		return
@@ -4839,6 +4851,7 @@ func (s *Server) handleResolveInterrupt(w http.ResponseWriter, r *http.Request) 
 	}
 
 	var req resolveInterruptRequest
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, fmt.Sprintf("invalid JSON body: %v", err), http.StatusBadRequest)
 		return

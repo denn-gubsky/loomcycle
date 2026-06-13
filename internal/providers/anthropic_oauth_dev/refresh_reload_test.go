@@ -105,3 +105,31 @@ func TestRefresher_StartIsIdempotent(t *testing.T) {
 	// on the fixed single-loop path.
 	time.Sleep(50 * time.Millisecond)
 }
+
+// TestRefresher_StopBeforeStartDoesNotDeadlock is the exp7 regression for the
+// I2 sibling: Stop() waits on doneCh, which only loop() closes. If Start() was
+// never called the loop never runs, so the unfixed Stop() blocked forever.
+// The started gate skips the wait when no loop exists. FAIL-BEFORE: without the
+// gate this Stop() never returns and the test times out.
+func TestRefresher_StopBeforeStartDoesNotDeadlock(t *testing.T) {
+	store := NewTokenStore(t.TempDir() + "/tokens.json")
+	r := NewRefresher(store, ExchangeOptions{}, func(string, ...any) {})
+
+	done := make(chan struct{})
+	go func() {
+		r.Stop() // never Started — must return, not deadlock
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Stop() before Start() deadlocked")
+	}
+
+	// A subsequent Start()+Stop() must still behave (loop spawns, sees the
+	// already-closed stopCh, exits cleanly).
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	r.Start(ctx)
+	r.Stop()
+}

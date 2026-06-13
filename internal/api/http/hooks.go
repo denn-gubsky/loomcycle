@@ -23,6 +23,7 @@ import (
 // handleSnapshot style.
 func (s *Server) handleRegisterHook(w http.ResponseWriter, r *http.Request) {
 	var req connector.RegisterHookRequest
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSONError(w, http.StatusBadRequest, "invalid_json", "request body must be JSON: "+err.Error())
 		return

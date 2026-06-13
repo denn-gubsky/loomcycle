@@ -38,6 +38,14 @@ type Bus struct {
 
 	// bp is the cluster-mode backplane. Nil = single-replica mode.
 	bp coord.Backplane
+
+	// bpPublishTimeout bounds the best-effort backplane publish in Notify.
+	// Notify runs synchronously on the publish path (after the storage
+	// commit), so an unbounded context.Background() publish could hang that
+	// path indefinitely if the backplane stalls (e.g. an exhausted pgx pool
+	// or a slow pg_notify). Set in NewBus; a missed fanout degrades to plain
+	// polling on remote replicas, so a bounded best-effort publish is safe.
+	bpPublishTimeout time.Duration
 }
 
 // channelBackplaneEvent is the wire payload on `loomcycle.channel`.
@@ -50,7 +58,10 @@ type channelBackplaneEvent struct {
 // NewBus returns a fresh, empty bus. Single instance per loomcycle
 // process; injected into the Channel tool at registration time.
 func NewBus() *Bus {
-	return &Bus{waiters: make(map[string][]chan struct{})}
+	return &Bus{
+		waiters:          make(map[string][]chan struct{}),
+		bpPublishTimeout: 5 * time.Second,
+	}
 }
 
 // Notify wakes every subscriber currently blocked in Wait on the
@@ -68,9 +79,15 @@ func (b *Bus) Notify(channel string) {
 	b.mu.Unlock()
 	if bp != nil {
 		payload, _ := json.Marshal(channelBackplaneEvent{Channel: channel})
-		if err := bp.Publish(context.Background(), "loomcycle.channel", payload); err != nil {
+		timeout := b.bpPublishTimeout
+		if timeout <= 0 {
+			timeout = 5 * time.Second
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), timeout)
+		if err := bp.Publish(ctx, "loomcycle.channel", payload); err != nil {
 			log.Printf("channels: backplane publish failed for %s: %v", channel, err)
 		}
+		cancel()
 	}
 }
 

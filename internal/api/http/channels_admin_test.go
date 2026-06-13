@@ -133,6 +133,29 @@ func TestCreateChannel_Runtime_HappyPath(t *testing.T) {
 	}
 }
 
+// TestCreateChannel_RejectsOversizedBody is the exp7 regression: admin POST
+// bodies must be bounded by http.MaxBytesReader. A valid create body padded
+// past the 1 MiB cap with an ignored field decodes fully — and the channel is
+// created (201) — on the unfixed code, because the decoder reads the whole
+// 2 MiB stream; with the cap the decode trips at 1 MiB and the handler returns
+// 400 before the body ever reaches the store. Fail-before: 201 without the cap.
+func TestCreateChannel_RejectsOversizedBody(t *testing.T) {
+	srv, _, cleanup := systemChannelFixture(t)
+	defer cleanup()
+
+	pad := strings.Repeat("x", 2<<20) // 2 MiB, over the 1 MiB cap
+	body := `{"name":"oversized-create","scope":"global","semantic":"queue","_pad":"` + pad + `"}`
+	rec := httptest.NewRecorder()
+	srv.Mux().ServeHTTP(rec, authedRequest("POST", "/v1/_channels", strings.NewReader(body)))
+
+	if rec.Code == http.StatusCreated || rec.Code == http.StatusOK {
+		t.Fatalf("oversized create body accepted: status %d — MaxBytesReader missing", rec.Code)
+	}
+	if rec.Code != http.StatusBadRequest && rec.Code != http.StatusRequestEntityTooLarge {
+		t.Errorf("status = %d, want 400 or 413; body=%s", rec.Code, rec.Body.String())
+	}
+}
+
 // TestCreateChannel_RejectsYamlName refuses with 409
 // channel_yaml_immutable so operators can't shadow a yaml channel
 // with a runtime row of the same name (yaml is the floor).

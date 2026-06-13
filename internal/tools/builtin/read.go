@@ -4,6 +4,7 @@ package builtin
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"os"
 
 	"github.com/denn-gubsky/loomcycle/internal/tools"
@@ -66,10 +67,15 @@ func (r *Read) Execute(ctx context.Context, input json.RawMessage) (tools.Result
 	}
 	defer f.Close()
 
-	buf := make([]byte, maxBytes)
-	n, err := f.Read(buf)
-	if err != nil && err.Error() != "EOF" {
+	// Read up to maxBytes. io.ReadAll over a LimitReader handles a short read
+	// (a single os.File.Read may legally return fewer bytes than requested —
+	// e.g. on a FIFO/device, a network FS, or a >1 GiB read) and treats EOF as
+	// success — replacing the prior single f.Read + the fragile
+	// err.Error() == "EOF" string compare (which breaks on a wrapped EOF). A
+	// file larger than maxBytes is bounded to exactly maxBytes.
+	data, err := io.ReadAll(io.LimitReader(f, maxBytes))
+	if err != nil {
 		return tools.Result{Text: err.Error(), IsError: true}, nil
 	}
-	return tools.Result{Text: string(buf[:n])}, nil
+	return tools.Result{Text: string(data)}, nil
 }

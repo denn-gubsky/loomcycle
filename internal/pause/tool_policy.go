@@ -121,7 +121,11 @@ func CategoryForInput(toolName string, input json.RawMessage) ToolCategory {
 		return CategoryExternal
 	}
 	switch toolName {
-	case "Read", "WebFetch", "WebSearch":
+	case "Read", "Glob", "Grep", "WebFetch", "WebSearch":
+		// Read-only file/search tools — safe to cancel immediately on pause
+		// and re-run on resume (same result). Glob/Grep were previously
+		// absent and fell through to the non-idempotent default, so a pending
+		// directory walk needlessly blocked pause until its timeout.
 		return CategoryIdempotent
 	case "Write", "Edit", "Bash":
 		// File writes + shell commands are always non-idempotent.

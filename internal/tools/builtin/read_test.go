@@ -120,3 +120,60 @@ func TestReadAllowsInsideSandbox(t *testing.T) {
 		t.Errorf("Text = %q, want %q", res.Text, "hello")
 	}
 }
+
+// Behaviour lock for the exp7 read-path hardening (io.ReadAll over a
+// LimitReader instead of a single f.Read + err.Error()=="EOF"). These pin
+// the three cases that matter: a multi-page file read in full, a file larger
+// than the cap bounded to exactly maxBytes, and an empty file. (Not a strict
+// fail-before: a single os.File.Read does not truncate a regular file in
+// practice — the hardening covers short reads on FIFOs/devices/>1 GiB reads
+// and removes the fragile EOF string compare.)
+func TestRead_FullReadBoundedAndEmpty(t *testing.T) {
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// (1) Multi-page file (1 MiB), cap above size → read in full, intact.
+	big := strings.Repeat("ABCDEFGH", 1<<17) // 1 MiB
+	bigPath := filepath.Join(root, "big.txt")
+	if err := os.WriteFile(bigPath, []byte(big), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	r := &Read{Root: root, MaxBytes: 4 << 20}
+	in, _ := json.Marshal(map[string]string{"path": bigPath})
+	res, _ := r.Execute(context.Background(), in)
+	if res.IsError {
+		t.Fatalf("big read errored: %q", res.Text)
+	}
+	if res.Text != big {
+		t.Errorf("big file not read in full: got %d bytes, want %d", len(res.Text), len(big))
+	}
+
+	// (2) File larger than the cap → bounded to exactly maxBytes.
+	rCap := &Read{Root: root, MaxBytes: 1024}
+	res, _ = rCap.Execute(context.Background(), in)
+	if res.IsError {
+		t.Fatalf("capped read errored: %q", res.Text)
+	}
+	if len(res.Text) != 1024 {
+		t.Errorf("capped read = %d bytes, want exactly 1024", len(res.Text))
+	}
+	if res.Text != big[:1024] {
+		t.Errorf("capped read returned the wrong leading bytes")
+	}
+
+	// (3) Empty file → empty result, no error (the old EOF branch).
+	emptyPath := filepath.Join(root, "empty.txt")
+	if err := os.WriteFile(emptyPath, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	inEmpty, _ := json.Marshal(map[string]string{"path": emptyPath})
+	res, _ = r.Execute(context.Background(), inEmpty)
+	if res.IsError {
+		t.Fatalf("empty read errored: %q", res.Text)
+	}
+	if res.Text != "" {
+		t.Errorf("empty file Text = %q, want empty", res.Text)
+	}
+}

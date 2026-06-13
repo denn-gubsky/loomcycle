@@ -3,6 +3,8 @@ package channels
 import (
 	"context"
 	"errors"
+	"strconv"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -141,6 +143,60 @@ func TestScheduler_CancelUnknown(t *testing.T) {
 	sched.Cancel("msg_does_not_exist")
 	if sched.PendingCount() != 0 {
 		t.Errorf("PendingCount = %d, want 0", sched.PendingCount())
+	}
+}
+
+// timerMapLen counts live registry entries — exposes orphaned entries that
+// PendingCount (an atomic counter that nets to the right value) cannot reveal.
+func timerMapLen(s *Scheduler) int {
+	n := 0
+	s.timers.Range(func(_, _ any) bool { n++; return true })
+	return n
+}
+
+// TestScheduler_ConcurrentScheduleCancelDrainsClean is the exp7 C1 invariant
+// lock for the placeholder-claim + CompareAndSwap rewrite: under concurrent
+// Schedule/Cancel the registry must drain to zero entries with no pendCnt
+// drift and no panic (Cancel can observe the nil placeholder mid-Schedule).
+// Run under -race.
+//
+// Not a strict fail-before: the original arm-then-store orphan race is
+// practically unreproducible because AfterFunc's microsecond firing latency
+// dwarfs the few-nanosecond window between arming the timer and storing it —
+// so this locks the post-fix invariants (clean drain, no panic, no data race)
+// rather than failing on the old code.
+func TestScheduler_ConcurrentScheduleCancelDrainsClean(t *testing.T) {
+	bus := NewBus()
+	sched := NewScheduler(bus, 0)
+
+	const n = 400
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			id := "msg_" + strconv.Itoa(i)
+			sched.Schedule("ch", id, time.Now().Add(20*time.Millisecond))
+			if i%2 == 0 {
+				sched.Cancel(id) // race the just-armed timer / its placeholder
+			}
+		}(i)
+	}
+	wg.Wait()
+
+	// Let any uncancelled timers fire + run their cleanup.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if timerMapLen(sched) == 0 && sched.PendingCount() == 0 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if got := timerMapLen(sched); got != 0 {
+		t.Errorf("registry has %d entries after drain, want 0 (orphaned entry?)", got)
+	}
+	if got := sched.PendingCount(); got != 0 {
+		t.Errorf("PendingCount = %d after drain, want 0", got)
 	}
 }
 

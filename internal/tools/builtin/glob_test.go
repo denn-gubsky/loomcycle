@@ -171,6 +171,46 @@ func TestGlob_NoMatches(t *testing.T) {
 	}
 }
 
+// TestGlob_AbsoluteInRootPattern is the exp7 R1 regression: an absolute
+// pattern pointing inside the sandbox root must match. The matcher compares
+// against root-relative paths, so the leading "/" used to become an empty
+// first segment that never matched — an absolute in-root pattern silently
+// returned "no matches". It is now relativized to the walk root.
+// FAIL-BEFORE: returns "no matches".
+func TestGlob_AbsoluteInRootPattern(t *testing.T) {
+	root := makeGlobTree(t)
+	g := &Glob{Root: root}
+	abs := root + "/**/*.go"
+	in, _ := json.Marshal(map[string]string{"pattern": abs})
+	res, _ := g.Execute(context.Background(), in)
+	if res.IsError {
+		t.Fatalf("err: %s", res.Text)
+	}
+	for _, want := range []string{"a.go", "src/main.go", "src/pkg/util.go", "vendor/third.go"} {
+		if !strings.Contains(res.Text, want) {
+			t.Errorf("absolute in-root pattern %q: expected %q in results, got %q", abs, want, res.Text)
+		}
+	}
+	if strings.Contains(res.Text, "no matches") {
+		t.Errorf("absolute in-root pattern returned no matches: %q", res.Text)
+	}
+}
+
+// TestGlob_AbsolutePatternOutsideRootMatchesNothing: an absolute pattern that
+// points outside the sandbox root matches nothing — it must not walk or leak
+// files outside the root.
+func TestGlob_AbsolutePatternOutsideRootMatchesNothing(t *testing.T) {
+	root := makeGlobTree(t)
+	g := &Glob{Root: root}
+	res, _ := g.Execute(context.Background(), json.RawMessage(`{"pattern":"/etc/**/*.conf"}`))
+	if res.IsError {
+		t.Fatalf("err: %s", res.Text)
+	}
+	if !strings.Contains(res.Text, "no matches") {
+		t.Errorf("absolute out-of-root pattern must match nothing, got %q", res.Text)
+	}
+}
+
 func TestGlob_PathEscapeRejected(t *testing.T) {
 	root := makeGlobTree(t)
 	g := &Glob{Root: root}

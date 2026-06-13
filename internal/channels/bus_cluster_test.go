@@ -30,6 +30,40 @@ func (s *stubBackplane) Subscribe(_ context.Context, _ string) (<-chan coord.Eve
 
 func (s *stubBackplane) Close() error { return nil }
 
+// blockingBackplane.Publish blocks until ctx is cancelled, then returns
+// ctx.Err() — simulating a stalled backplane (exhausted pgx pool / slow
+// pg_notify).
+type blockingBackplane struct{}
+
+func (b *blockingBackplane) Publish(ctx context.Context, _ string, _ []byte) error {
+	<-ctx.Done()
+	return ctx.Err()
+}
+func (b *blockingBackplane) Subscribe(context.Context, string) (<-chan coord.Event, error) {
+	return nil, nil
+}
+func (b *blockingBackplane) Close() error { return nil }
+
+// TestBus_Notify_BoundsBackplanePublish is the exp7 regression: Notify runs
+// synchronously on the publish path, so an unbounded context.Background()
+// backplane publish would hang that path forever when the backplane stalls.
+// Notify now bounds the publish with bpPublishTimeout. FAIL-BEFORE: with
+// context.Background() the blocking Publish never returns and Notify hangs, so
+// this test times out.
+func TestBus_Notify_BoundsBackplanePublish(t *testing.T) {
+	b := NewBus()
+	b.bpPublishTimeout = 50 * time.Millisecond // same package — set the bound low
+	b.SetBackplane(&blockingBackplane{})
+
+	done := make(chan struct{})
+	go func() { b.Notify("my-channel"); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Notify hung — backplane publish is not bounded")
+	}
+}
+
 func TestBus_Notify_PublishesOnBackplane_WhenBPSet(t *testing.T) {
 	b := NewBus()
 	bp := newStubBackplane()
