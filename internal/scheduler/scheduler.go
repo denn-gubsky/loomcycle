@@ -456,14 +456,3 @@ func (s *Scheduler) computeNext(def scheduleDef, now time.Time) (time.Time, erro
 	}
 	return NextFireAfter(expr, def.Timezone, now)
 }
-
-// ctxDone is a non-blocking ctx-cancellation check used inside the
-// fire loop so a Stop() mid-tick gets honoured promptly.
-func ctxDone(ctx context.Context) bool {
-	select {
-	case <-ctx.Done():
-		return true
-	default:
-		return false
-	}
-}

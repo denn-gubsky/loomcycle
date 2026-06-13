@@ -23,6 +23,7 @@ package scheduler
 
 import (
 	"fmt"
+	"sort"
 	"time"
 
 	"github.com/robfig/cron/v3"
@@ -80,13 +81,15 @@ func ResolveCron(schedule string, userTierSchedules map[string]string, tier stri
 	}
 	expr, ok := userTierSchedules[tier]
 	if !ok {
-		// Pick a deterministic tier from the available set for the
-		// error message so operators see what's available rather than
-		// a generic "not found."
-		var avail []string
+		// List the available tiers in the error so operators see what's
+		// valid rather than a generic "not found." Sort so the message is
+		// deterministic — Go randomises map iteration order, so without this
+		// the "(have: ...)" list shuffled between identical failures.
+		avail := make([]string, 0, len(userTierSchedules))
 		for k := range userTierSchedules {
 			avail = append(avail, k)
 		}
+		sort.Strings(avail)
 		return "", fmt.Errorf("tier %q not in user_tier_schedules (have: %v)", tier, avail)
 	}
 	return expr, nil

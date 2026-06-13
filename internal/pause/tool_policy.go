@@ -44,27 +44,6 @@ func (c ToolCategory) String() string {
 	}
 }
 
-// idempotentBuiltins is the static allowlist of built-in tool names
-// whose Execute() is read-only OR otherwise safe to cancel-and-retry.
-// Source of truth: doc-internal/rfcs/pause-resume-snapshot.md's locked
-// per-tool cancel policy.
-//
-// Tools that take an `op` field (Memory, Channel, AgentDef, Evaluation,
-// Context) are categorised at the OP level — see CategoryForInput
-// below, which parses the input's `op` field and consults the
-// op-specific table.
-//
-// MCP tools (prefix `mcp__`) are NOT in this map; they get
-// CategoryExternal via the prefix check in CategoryForInput.
-var idempotentBuiltins = map[string]bool{
-	// Read-only file I/O
-	"Read":      true,
-	"WebFetch":  true,
-	"WebSearch": true,
-	// HTTP method-discriminated — see CategoryForInput; map entry
-	// would be misleading.
-}
-
 // Op-discriminated builtin: idempotent ops vs non-idempotent ops on
 // the Memory tool. Reads are safe to cancel; writes need wait-with-
 // timeout.
