@@ -48,6 +48,16 @@ class LoomcycleStub(object):
                 request_serializer=loomcycle__pb2.ContinueRequest.SerializeToString,
                 response_deserializer=loomcycle__pb2.Event.FromString,
                 _registered_method=True)
+        self.SpawnRunBatch = channel.unary_unary(
+                '/loomcycle.v1.Loomcycle/SpawnRunBatch',
+                request_serializer=loomcycle__pb2.BatchSpawnRequest.SerializeToString,
+                response_deserializer=loomcycle__pb2.BatchSpawnResult.FromString,
+                _registered_method=True)
+        self.CompactRun = channel.unary_unary(
+                '/loomcycle.v1.Loomcycle/CompactRun',
+                request_serializer=loomcycle__pb2.CompactRunRequest.SerializeToString,
+                response_deserializer=loomcycle__pb2.CompactRunResult.FromString,
+                _registered_method=True)
         self.GetTranscript = channel.unary_unary(
                 '/loomcycle.v1.Loomcycle/GetTranscript',
                 request_serializer=loomcycle__pb2.GetTranscriptRequest.SerializeToString,
@@ -103,6 +113,11 @@ class LoomcycleStub(object):
                 request_serializer=loomcycle__pb2.GetRuntimeStateRequest.SerializeToString,
                 response_deserializer=loomcycle__pb2.RuntimeStateResponse.FromString,
                 _registered_method=True)
+        self.ResolveProbe = channel.unary_unary(
+                '/loomcycle.v1.Loomcycle/ResolveProbe',
+                request_serializer=loomcycle__pb2.ResolveProbeRequest.SerializeToString,
+                response_deserializer=loomcycle__pb2.ResolverMatrixResponse.FromString,
+                _registered_method=True)
         self.CreateSnapshot = channel.unary_unary(
                 '/loomcycle.v1.Loomcycle/CreateSnapshot',
                 request_serializer=loomcycle__pb2.CreateSnapshotRequest.SerializeToString,
@@ -143,6 +158,81 @@ class LoomcycleStub(object):
                 request_serializer=loomcycle__pb2.SubstrateRequest.SerializeToString,
                 response_deserializer=loomcycle__pb2.SubstrateResponse.FromString,
                 _registered_method=True)
+        self.MCPServerDef = channel.unary_unary(
+                '/loomcycle.v1.Loomcycle/MCPServerDef',
+                request_serializer=loomcycle__pb2.SubstrateRequest.SerializeToString,
+                response_deserializer=loomcycle__pb2.SubstrateResponse.FromString,
+                _registered_method=True)
+        self.ScheduleDef = channel.unary_unary(
+                '/loomcycle.v1.Loomcycle/ScheduleDef',
+                request_serializer=loomcycle__pb2.SubstrateRequest.SerializeToString,
+                response_deserializer=loomcycle__pb2.SubstrateResponse.FromString,
+                _registered_method=True)
+        self.A2AServerCardDef = channel.unary_unary(
+                '/loomcycle.v1.Loomcycle/A2AServerCardDef',
+                request_serializer=loomcycle__pb2.SubstrateRequest.SerializeToString,
+                response_deserializer=loomcycle__pb2.SubstrateResponse.FromString,
+                _registered_method=True)
+        self.A2AAgentDef = channel.unary_unary(
+                '/loomcycle.v1.Loomcycle/A2AAgentDef',
+                request_serializer=loomcycle__pb2.SubstrateRequest.SerializeToString,
+                response_deserializer=loomcycle__pb2.SubstrateResponse.FromString,
+                _registered_method=True)
+        self.WebhookDef = channel.unary_unary(
+                '/loomcycle.v1.Loomcycle/WebhookDef',
+                request_serializer=loomcycle__pb2.SubstrateRequest.SerializeToString,
+                response_deserializer=loomcycle__pb2.SubstrateResponse.FromString,
+                _registered_method=True)
+        self.MemoryBackendDef = channel.unary_unary(
+                '/loomcycle.v1.Loomcycle/MemoryBackendDef',
+                request_serializer=loomcycle__pb2.SubstrateRequest.SerializeToString,
+                response_deserializer=loomcycle__pb2.SubstrateResponse.FromString,
+                _registered_method=True)
+        self.OperatorTokenDef = channel.unary_unary(
+                '/loomcycle.v1.Loomcycle/OperatorTokenDef',
+                request_serializer=loomcycle__pb2.SubstrateRequest.SerializeToString,
+                response_deserializer=loomcycle__pb2.SubstrateResponse.FromString,
+                _registered_method=True)
+        self.ListChannels = channel.unary_unary(
+                '/loomcycle.v1.Loomcycle/ListChannels',
+                request_serializer=loomcycle__pb2.ListChannelsRequest.SerializeToString,
+                response_deserializer=loomcycle__pb2.ListChannelsResponse.FromString,
+                _registered_method=True)
+        self.StreamUserRunStates = channel.unary_stream(
+                '/loomcycle.v1.Loomcycle/StreamUserRunStates',
+                request_serializer=loomcycle__pb2.StreamUserRunStatesRequest.SerializeToString,
+                response_deserializer=loomcycle__pb2.RunStateEvent.FromString,
+                _registered_method=True)
+        self.PublishChannel = channel.unary_unary(
+                '/loomcycle.v1.Loomcycle/PublishChannel',
+                request_serializer=loomcycle__pb2.PublishChannelRequest.SerializeToString,
+                response_deserializer=loomcycle__pb2.PublishChannelResponse.FromString,
+                _registered_method=True)
+        self.SubscribeChannel = channel.unary_unary(
+                '/loomcycle.v1.Loomcycle/SubscribeChannel',
+                request_serializer=loomcycle__pb2.SubscribeChannelRequest.SerializeToString,
+                response_deserializer=loomcycle__pb2.SubscribeChannelResponse.FromString,
+                _registered_method=True)
+        self.PeekChannel = channel.unary_unary(
+                '/loomcycle.v1.Loomcycle/PeekChannel',
+                request_serializer=loomcycle__pb2.PeekChannelRequest.SerializeToString,
+                response_deserializer=loomcycle__pb2.PeekChannelResponse.FromString,
+                _registered_method=True)
+        self.AckChannel = channel.unary_unary(
+                '/loomcycle.v1.Loomcycle/AckChannel',
+                request_serializer=loomcycle__pb2.AckChannelRequest.SerializeToString,
+                response_deserializer=loomcycle__pb2.AckChannelResponse.FromString,
+                _registered_method=True)
+        self.AwaitChannels = channel.unary_unary(
+                '/loomcycle.v1.Loomcycle/AwaitChannels',
+                request_serializer=loomcycle__pb2.AwaitChannelsRequest.SerializeToString,
+                response_deserializer=loomcycle__pb2.AwaitChannelsResponse.FromString,
+                _registered_method=True)
+        self.BroadcastChannels = channel.unary_unary(
+                '/loomcycle.v1.Loomcycle/BroadcastChannels',
+                request_serializer=loomcycle__pb2.BroadcastChannelsRequest.SerializeToString,
+                response_deserializer=loomcycle__pb2.BroadcastChannelsResponse.FromString,
+                _registered_method=True)
 
 
 class LoomcycleServicer(object):
@@ -169,6 +259,31 @@ class LoomcycleServicer(object):
         stream covers only the NEW events from this continuation.
 
         Mirrors POST /v1/sessions/{id}/messages.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def SpawnRunBatch(self, request, context):
+        """SpawnRunBatch spawns N fresh runs concurrently in one call (RFC Y
+        external fan-out, mode "join"), bounded by the per-user admission
+        gate, returning a combined index-aligned envelope once all settle. A
+        per-child failure is captured in that child's result and never fails
+        the batch. mode "detach" (async run handles) is reserved for a future
+        release and rejected today.
+
+        Mirrors POST /v1/runs:batch + the spawn_runs MCP tool.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def CompactRun(self, request, context):
+        """CompactRun summarizes a run's conversation to free context and
+        continue from the summary. A live run must be PARKED (awaiting input);
+        a mid-turn run returns FailedPrecondition. Keyed by run_id.
+
+        Mirrors POST /v1/runs/{run_id}/compact + the compact_run MCP tool.
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -304,6 +419,18 @@ class LoomcycleServicer(object):
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def ResolveProbe(self, request, context):
+        """ResolveProbe triggers an immediate, synchronous re-probe of every
+        configured provider and returns the refreshed availability matrix
+        — the operator escape hatch when a transient outage stalls every
+        provider. Unavailable when no resolver / no probe loop is wired.
+
+        Mirrors POST /v1/_resolve/probe.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
     def CreateSnapshot(self, request, context):
         """CreateSnapshot captures running-state into a per-section-semver
         JSON envelope (agent_defs, agent_def_active, memory, channels,
@@ -403,6 +530,157 @@ class LoomcycleServicer(object):
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def MCPServerDef(self, request, context):
+        """MCPServerDef dispatches to the v0.9.x dynamic MCP server
+        registration substrate. Mirrors POST /v1/_mcpserverdef.
+        Operator-admin-only — same SubstrateRequest body shape as
+        AgentDef + SkillDef (op-discriminated input_json + is_error
+        tool refusals in the response).
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def ScheduleDef(self, request, context):
+        """ScheduleDef dispatches to the v1.x RFC E scheduled-runs
+        substrate. Mirrors POST /v1/_scheduledef. Operator-admin-only.
+        Same SubstrateRequest body shape — op-discriminated input_json
+        (create / fork / get / list / retire) + is_error tool refusals
+        in the response.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def A2AServerCardDef(self, request, context):
+        """A2AServerCardDef dispatches to the v1.x RFC G A2A-server-card
+        substrate. Mirrors POST /v1/_a2aservercarddef. Operator-admin-only.
+        Same SubstrateRequest body shape — op-discriminated input_json
+        (create / fork / get / list / retire) + is_error tool refusals
+        in the response.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def A2AAgentDef(self, request, context):
+        """A2AAgentDef dispatches to the v1.x RFC G A2A-agent substrate.
+        Mirrors POST /v1/_a2aagentdef. Operator-admin-only. Same
+        SubstrateRequest body shape — op-discriminated input_json
+        (create / fork / get / list / retire) + is_error tool refusals
+        in the response.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def WebhookDef(self, request, context):
+        """WebhookDef dispatches to the v1.x RFC H inbound-webhook substrate.
+        Mirrors POST /v1/_webhookdef. Operator-admin-only. Same
+        SubstrateRequest body shape — op-discriminated input_json
+        (create / fork / get / list / retire) + is_error tool refusals
+        in the response. (RFC H WH-3 / mirrors A2AAgentDef.)
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def MemoryBackendDef(self, request, context):
+        """MemoryBackendDef dispatches to the RFC I MR-3a memory-backend
+        substrate. Mirrors POST /v1/_memorybackenddef. Operator-admin-only.
+        Same SubstrateRequest body shape — op-discriminated input_json
+        (create / fork / get / list / retire) + is_error tool refusals
+        in the response. (RFC I MR-3a / mirrors WebhookDef.)
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def OperatorTokenDef(self, request, context):
+        """OperatorTokenDef dispatches to the RFC L OSS multi-tenant
+        authorization substrate (auth-token minting/rotation/retirement).
+        Mirrors POST /v1/_operatortokendef. Operator-admin-only. Same
+        SubstrateRequest body shape — op-discriminated input_json
+        (create / rotate / retire / get / list).
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def ListChannels(self, request, context):
+        """----- v0.9.x n8n RFC Phase 0 -----
+
+        ListChannels mirrors GET /v1/_channels — operator-declared
+        channels joined with runtime stats.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def StreamUserRunStates(self, request, context):
+        """StreamUserRunStates mirrors GET /v1/users/{user_id}/agents/stream.
+        Server-streams one RunStateEvent per matching state transition
+        until ctx cancels or the client closes the stream.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def PublishChannel(self, request, context):
+        """----- v0.9.x Channel CRUD (admin + per-user) -----
+
+        Mirrors the four HTTP routes:
+        PublishChannel   → POST /v1/_channels/{name}/publish (and the
+        /v1/users/{user_id}/channels/... variant)
+        SubscribeChannel → POST /v1/_channels/{name}/subscribe (single-
+        round-trip long-poll; not streaming)
+        PeekChannel      → GET  /v1/_channels/{name}/peek (non-destructive)
+        AckChannel       → POST /v1/_channels/{name}/ack
+
+        Scope + scope_id select the cursor namespace: scope="global" with
+        empty scope_id addresses the admin surface; scope="user" with a
+        non-empty scope_id addresses a per-end-user channel.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def SubscribeChannel(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def PeekChannel(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def AckChannel(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def AwaitChannels(self, request, context):
+        """RFC S client twins (mirror POST /v1/_channels/_await and
+        /v1/_channels/_broadcast). AwaitChannels fans IN across a set of
+        channels (any/all/at_least N, or a timeout — a timeout is
+        satisfied=false / timed_out=true, NOT an error); BroadcastChannels
+        fans OUT one payload to a set of channels (atomic at the declare
+        pre-flight). Scope + scope_id apply to every channel in the set.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def BroadcastChannels(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
 
 def add_LoomcycleServicer_to_server(servicer, server):
     rpc_method_handlers = {
@@ -415,6 +693,16 @@ def add_LoomcycleServicer_to_server(servicer, server):
                     servicer.Continue,
                     request_deserializer=loomcycle__pb2.ContinueRequest.FromString,
                     response_serializer=loomcycle__pb2.Event.SerializeToString,
+            ),
+            'SpawnRunBatch': grpc.unary_unary_rpc_method_handler(
+                    servicer.SpawnRunBatch,
+                    request_deserializer=loomcycle__pb2.BatchSpawnRequest.FromString,
+                    response_serializer=loomcycle__pb2.BatchSpawnResult.SerializeToString,
+            ),
+            'CompactRun': grpc.unary_unary_rpc_method_handler(
+                    servicer.CompactRun,
+                    request_deserializer=loomcycle__pb2.CompactRunRequest.FromString,
+                    response_serializer=loomcycle__pb2.CompactRunResult.SerializeToString,
             ),
             'GetTranscript': grpc.unary_unary_rpc_method_handler(
                     servicer.GetTranscript,
@@ -471,6 +759,11 @@ def add_LoomcycleServicer_to_server(servicer, server):
                     request_deserializer=loomcycle__pb2.GetRuntimeStateRequest.FromString,
                     response_serializer=loomcycle__pb2.RuntimeStateResponse.SerializeToString,
             ),
+            'ResolveProbe': grpc.unary_unary_rpc_method_handler(
+                    servicer.ResolveProbe,
+                    request_deserializer=loomcycle__pb2.ResolveProbeRequest.FromString,
+                    response_serializer=loomcycle__pb2.ResolverMatrixResponse.SerializeToString,
+            ),
             'CreateSnapshot': grpc.unary_unary_rpc_method_handler(
                     servicer.CreateSnapshot,
                     request_deserializer=loomcycle__pb2.CreateSnapshotRequest.FromString,
@@ -510,6 +803,81 @@ def add_LoomcycleServicer_to_server(servicer, server):
                     servicer.SkillDef,
                     request_deserializer=loomcycle__pb2.SubstrateRequest.FromString,
                     response_serializer=loomcycle__pb2.SubstrateResponse.SerializeToString,
+            ),
+            'MCPServerDef': grpc.unary_unary_rpc_method_handler(
+                    servicer.MCPServerDef,
+                    request_deserializer=loomcycle__pb2.SubstrateRequest.FromString,
+                    response_serializer=loomcycle__pb2.SubstrateResponse.SerializeToString,
+            ),
+            'ScheduleDef': grpc.unary_unary_rpc_method_handler(
+                    servicer.ScheduleDef,
+                    request_deserializer=loomcycle__pb2.SubstrateRequest.FromString,
+                    response_serializer=loomcycle__pb2.SubstrateResponse.SerializeToString,
+            ),
+            'A2AServerCardDef': grpc.unary_unary_rpc_method_handler(
+                    servicer.A2AServerCardDef,
+                    request_deserializer=loomcycle__pb2.SubstrateRequest.FromString,
+                    response_serializer=loomcycle__pb2.SubstrateResponse.SerializeToString,
+            ),
+            'A2AAgentDef': grpc.unary_unary_rpc_method_handler(
+                    servicer.A2AAgentDef,
+                    request_deserializer=loomcycle__pb2.SubstrateRequest.FromString,
+                    response_serializer=loomcycle__pb2.SubstrateResponse.SerializeToString,
+            ),
+            'WebhookDef': grpc.unary_unary_rpc_method_handler(
+                    servicer.WebhookDef,
+                    request_deserializer=loomcycle__pb2.SubstrateRequest.FromString,
+                    response_serializer=loomcycle__pb2.SubstrateResponse.SerializeToString,
+            ),
+            'MemoryBackendDef': grpc.unary_unary_rpc_method_handler(
+                    servicer.MemoryBackendDef,
+                    request_deserializer=loomcycle__pb2.SubstrateRequest.FromString,
+                    response_serializer=loomcycle__pb2.SubstrateResponse.SerializeToString,
+            ),
+            'OperatorTokenDef': grpc.unary_unary_rpc_method_handler(
+                    servicer.OperatorTokenDef,
+                    request_deserializer=loomcycle__pb2.SubstrateRequest.FromString,
+                    response_serializer=loomcycle__pb2.SubstrateResponse.SerializeToString,
+            ),
+            'ListChannels': grpc.unary_unary_rpc_method_handler(
+                    servicer.ListChannels,
+                    request_deserializer=loomcycle__pb2.ListChannelsRequest.FromString,
+                    response_serializer=loomcycle__pb2.ListChannelsResponse.SerializeToString,
+            ),
+            'StreamUserRunStates': grpc.unary_stream_rpc_method_handler(
+                    servicer.StreamUserRunStates,
+                    request_deserializer=loomcycle__pb2.StreamUserRunStatesRequest.FromString,
+                    response_serializer=loomcycle__pb2.RunStateEvent.SerializeToString,
+            ),
+            'PublishChannel': grpc.unary_unary_rpc_method_handler(
+                    servicer.PublishChannel,
+                    request_deserializer=loomcycle__pb2.PublishChannelRequest.FromString,
+                    response_serializer=loomcycle__pb2.PublishChannelResponse.SerializeToString,
+            ),
+            'SubscribeChannel': grpc.unary_unary_rpc_method_handler(
+                    servicer.SubscribeChannel,
+                    request_deserializer=loomcycle__pb2.SubscribeChannelRequest.FromString,
+                    response_serializer=loomcycle__pb2.SubscribeChannelResponse.SerializeToString,
+            ),
+            'PeekChannel': grpc.unary_unary_rpc_method_handler(
+                    servicer.PeekChannel,
+                    request_deserializer=loomcycle__pb2.PeekChannelRequest.FromString,
+                    response_serializer=loomcycle__pb2.PeekChannelResponse.SerializeToString,
+            ),
+            'AckChannel': grpc.unary_unary_rpc_method_handler(
+                    servicer.AckChannel,
+                    request_deserializer=loomcycle__pb2.AckChannelRequest.FromString,
+                    response_serializer=loomcycle__pb2.AckChannelResponse.SerializeToString,
+            ),
+            'AwaitChannels': grpc.unary_unary_rpc_method_handler(
+                    servicer.AwaitChannels,
+                    request_deserializer=loomcycle__pb2.AwaitChannelsRequest.FromString,
+                    response_serializer=loomcycle__pb2.AwaitChannelsResponse.SerializeToString,
+            ),
+            'BroadcastChannels': grpc.unary_unary_rpc_method_handler(
+                    servicer.BroadcastChannels,
+                    request_deserializer=loomcycle__pb2.BroadcastChannelsRequest.FromString,
+                    response_serializer=loomcycle__pb2.BroadcastChannelsResponse.SerializeToString,
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
@@ -570,6 +938,60 @@ class Loomcycle(object):
             '/loomcycle.v1.Loomcycle/Continue',
             loomcycle__pb2.ContinueRequest.SerializeToString,
             loomcycle__pb2.Event.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def SpawnRunBatch(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/loomcycle.v1.Loomcycle/SpawnRunBatch',
+            loomcycle__pb2.BatchSpawnRequest.SerializeToString,
+            loomcycle__pb2.BatchSpawnResult.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def CompactRun(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/loomcycle.v1.Loomcycle/CompactRun',
+            loomcycle__pb2.CompactRunRequest.SerializeToString,
+            loomcycle__pb2.CompactRunResult.FromString,
             options,
             channel_credentials,
             insecure,
@@ -878,6 +1300,33 @@ class Loomcycle(object):
             _registered_method=True)
 
     @staticmethod
+    def ResolveProbe(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/loomcycle.v1.Loomcycle/ResolveProbe',
+            loomcycle__pb2.ResolveProbeRequest.SerializeToString,
+            loomcycle__pb2.ResolverMatrixResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
     def CreateSnapshot(request,
             target,
             options=(),
@@ -1083,6 +1532,411 @@ class Loomcycle(object):
             '/loomcycle.v1.Loomcycle/SkillDef',
             loomcycle__pb2.SubstrateRequest.SerializeToString,
             loomcycle__pb2.SubstrateResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def MCPServerDef(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/loomcycle.v1.Loomcycle/MCPServerDef',
+            loomcycle__pb2.SubstrateRequest.SerializeToString,
+            loomcycle__pb2.SubstrateResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ScheduleDef(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/loomcycle.v1.Loomcycle/ScheduleDef',
+            loomcycle__pb2.SubstrateRequest.SerializeToString,
+            loomcycle__pb2.SubstrateResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def A2AServerCardDef(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/loomcycle.v1.Loomcycle/A2AServerCardDef',
+            loomcycle__pb2.SubstrateRequest.SerializeToString,
+            loomcycle__pb2.SubstrateResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def A2AAgentDef(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/loomcycle.v1.Loomcycle/A2AAgentDef',
+            loomcycle__pb2.SubstrateRequest.SerializeToString,
+            loomcycle__pb2.SubstrateResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def WebhookDef(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/loomcycle.v1.Loomcycle/WebhookDef',
+            loomcycle__pb2.SubstrateRequest.SerializeToString,
+            loomcycle__pb2.SubstrateResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def MemoryBackendDef(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/loomcycle.v1.Loomcycle/MemoryBackendDef',
+            loomcycle__pb2.SubstrateRequest.SerializeToString,
+            loomcycle__pb2.SubstrateResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def OperatorTokenDef(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/loomcycle.v1.Loomcycle/OperatorTokenDef',
+            loomcycle__pb2.SubstrateRequest.SerializeToString,
+            loomcycle__pb2.SubstrateResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ListChannels(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/loomcycle.v1.Loomcycle/ListChannels',
+            loomcycle__pb2.ListChannelsRequest.SerializeToString,
+            loomcycle__pb2.ListChannelsResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def StreamUserRunStates(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_stream(
+            request,
+            target,
+            '/loomcycle.v1.Loomcycle/StreamUserRunStates',
+            loomcycle__pb2.StreamUserRunStatesRequest.SerializeToString,
+            loomcycle__pb2.RunStateEvent.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def PublishChannel(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/loomcycle.v1.Loomcycle/PublishChannel',
+            loomcycle__pb2.PublishChannelRequest.SerializeToString,
+            loomcycle__pb2.PublishChannelResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def SubscribeChannel(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/loomcycle.v1.Loomcycle/SubscribeChannel',
+            loomcycle__pb2.SubscribeChannelRequest.SerializeToString,
+            loomcycle__pb2.SubscribeChannelResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def PeekChannel(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/loomcycle.v1.Loomcycle/PeekChannel',
+            loomcycle__pb2.PeekChannelRequest.SerializeToString,
+            loomcycle__pb2.PeekChannelResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def AckChannel(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/loomcycle.v1.Loomcycle/AckChannel',
+            loomcycle__pb2.AckChannelRequest.SerializeToString,
+            loomcycle__pb2.AckChannelResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def AwaitChannels(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/loomcycle.v1.Loomcycle/AwaitChannels',
+            loomcycle__pb2.AwaitChannelsRequest.SerializeToString,
+            loomcycle__pb2.AwaitChannelsResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def BroadcastChannels(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/loomcycle.v1.Loomcycle/BroadcastChannels',
+            loomcycle__pb2.BroadcastChannelsRequest.SerializeToString,
+            loomcycle__pb2.BroadcastChannelsResponse.FromString,
             options,
             channel_credentials,
             insecure,
