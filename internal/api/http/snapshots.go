@@ -84,6 +84,7 @@ type snapshotGetResponse struct {
 
 func (s *Server) handleCreateSnapshot(w http.ResponseWriter, r *http.Request) {
 	var req snapshotCreateRequest
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
 		// Empty body is fine (all fields optional); only error on
 		// malformed JSON.
@@ -243,6 +244,10 @@ func (s *Server) handleRestoreSnapshot(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 
 	var req snapshotRestoreRequest
+	// The body may carry an inline snapshot envelope (req.json) up to the
+	// snapshot ceiling, so the cap is the envelope ceiling + envelope-field
+	// headroom — not the 1 MiB control-body cap used elsewhere.
+	r.Body = http.MaxBytesReader(w, r.Body, snapshot.DefaultMaxBytes+(1<<20))
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
 		writeJSONError(w, http.StatusBadRequest, "invalid_json", "request body must be JSON object (or empty)")
 		return

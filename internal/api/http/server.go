@@ -2470,6 +2470,7 @@ func (s *Server) handleSystemChannelPublish(w http.ResponseWriter, r *http.Reque
 	}
 
 	var body systemChannelPublishRequest
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeJSONError(w, http.StatusBadRequest, "invalid_body", fmt.Sprintf("invalid request body: %s", err))
 		return
@@ -4839,6 +4840,7 @@ func (s *Server) handleResolveInterrupt(w http.ResponseWriter, r *http.Request) 
 	}
 
 	var req resolveInterruptRequest
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, fmt.Sprintf("invalid JSON body: %v", err), http.StatusBadRequest)
 		return

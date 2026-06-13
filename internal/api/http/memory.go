@@ -283,6 +283,16 @@ func (s *Server) handlePutMemoryEntry(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body memoryEntryPutBody
+	// Bound the body to the configured per-value limit (default 64 KiB)
+	// plus JSON-envelope headroom; 0 (values uncapped) falls back to a
+	// generous wire ceiling so a deliberately-uncapped deployment still
+	// can't be OOM'd by a single oversized request. The tool layer's
+	// MaxValueBytes / quota check remains the authoritative limit.
+	maxBody := int64(16 << 20)
+	if v := s.cfg.Env.MemoryMaxValueBytes; v > 0 {
+		maxBody = int64(v) + (1 << 16)
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxBody)
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeJSONError(w, http.StatusBadRequest, "invalid_body",
 			"invalid request body: "+err.Error())

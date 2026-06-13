@@ -96,6 +96,7 @@ func writeChannelError(w http.ResponseWriter, err error) {
 // handleCreateChannel serves POST /v1/_channels.
 func (s *Server) handleCreateChannel(w http.ResponseWriter, r *http.Request) {
 	var req connector.ChannelCreateRequest
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSONError(w, http.StatusBadRequest, "invalid_body", "invalid request body: "+err.Error())
 		return
@@ -123,6 +124,7 @@ func (s *Server) handleCreateChannel(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleUpdateChannel(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 	var req connector.ChannelUpdateRequest
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	if r.ContentLength != 0 {
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			writeJSONError(w, http.StatusBadRequest, "invalid_body", "invalid request body: "+err.Error())
@@ -216,6 +218,7 @@ func (s *Server) handleAdminChannelAck(w http.ResponseWriter, r *http.Request) {
 // timed_out:true, not an error.
 func (s *Server) handleAdminChannelAwait(w http.ResponseWriter, r *http.Request) {
 	var req connector.ChannelAwaitRequest
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSONError(w, http.StatusBadRequest, "invalid_body", "invalid request body: "+err.Error())
 		return
@@ -234,6 +237,7 @@ func (s *Server) handleAdminChannelAwait(w http.ResponseWriter, r *http.Request)
 // (one undeclared channel → 404, nothing published).
 func (s *Server) handleAdminChannelBroadcast(w http.ResponseWriter, r *http.Request) {
 	var req connector.ChannelBroadcastRequest
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSONError(w, http.StatusBadRequest, "invalid_body", "invalid request body: "+err.Error())
 		return
@@ -299,6 +303,7 @@ func (s *Server) handleChannelPublish(w http.ResponseWriter, r *http.Request, na
 		return
 	}
 	var body channelPublishBody
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeJSONError(w, http.StatusBadRequest, "invalid_body", "invalid request body: "+err.Error())
 		return
@@ -324,6 +329,7 @@ func (s *Server) handleChannelSubscribe(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 	var body channelSubscribeBody
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	// Subscribe body is optional — empty body means "poll once from
 	// committed cursor, no wait." JSON-decode failure on an empty
 	// body is expected (io.EOF); only surface real parse errors.
@@ -394,6 +400,7 @@ func (s *Server) handleChannelAck(w http.ResponseWriter, r *http.Request, name, 
 		return
 	}
 	var body channelAckBody
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeJSONError(w, http.StatusBadRequest, "invalid_body", "invalid request body: "+err.Error())
 		return
