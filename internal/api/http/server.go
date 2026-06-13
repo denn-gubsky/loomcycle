@@ -3337,7 +3337,12 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	// Validate the session exists BEFORE taking the per-session lock.
 	// Otherwise an attacker can spam unknown IDs and each LoadOrStore
 	// grows sessionLocks permanently (entries are never GC'd at v0.3.2).
-	sess, err := s.store.GetSession(r.Context(), id)
+	//
+	// RFC L: a continuation runs under the session's stored tenant+subject, so
+	// the caller must OWN the session (the tenant boundary). The tenant-scoped
+	// accessor folds a cross-tenant session into the same *store.ErrNotFound a
+	// missing one returns → identical opaque 404, no existence oracle.
+	sess, err := s.tenantStore(r.Context()).GetSession(r.Context(), id)
 	if err != nil {
 		var nf *store.ErrNotFound
 		if errors.As(err, &nf) {
@@ -3345,13 +3350,6 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	// RFC L: a continuation runs under the session's stored tenant+subject, so
-	// the caller principal must OWN the session. 404 (not 403) on mismatch so
-	// a non-owner can't probe which session ids exist (no-oracle).
-	if !sessionOwnershipOK(r.Context(), sess) {
-		http.Error(w, (&store.ErrNotFound{Kind: "session", ID: id}).Error(), http.StatusNotFound)
 		return
 	}
 
@@ -3881,7 +3879,10 @@ func (s *Server) handleTranscript(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "session id is required", http.StatusBadRequest)
 		return
 	}
-	sess, err := s.store.GetSession(r.Context(), id)
+	// RFC L: the transcript exposes the session's full history — gate it on the
+	// same tenant ownership as continuation. The accessor folds a cross-tenant
+	// session into the same opaque *store.ErrNotFound a missing one returns.
+	sess, err := s.tenantStore(r.Context()).GetSession(r.Context(), id)
 	if err != nil {
 		var nf *store.ErrNotFound
 		if errors.As(err, &nf) {
@@ -3889,12 +3890,6 @@ func (s *Server) handleTranscript(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	// RFC L: the transcript exposes the session's full history — gate it on
-	// the same cross-principal ownership as continuation (opaque 404).
-	if !sessionOwnershipOK(r.Context(), sess) {
-		http.Error(w, (&store.ErrNotFound{Kind: "session", ID: id}).Error(), http.StatusNotFound)
 		return
 	}
 	transcript, err := s.store.GetTranscript(r.Context(), id)

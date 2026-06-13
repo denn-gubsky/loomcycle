@@ -81,6 +81,21 @@ func (t *tenantScopedStore) GetRunByAgentID(ctx context.Context, agentID string)
 	return run, nil
 }
 
+// GetSession fetches a session and folds a cross-tenant row into an opaque
+// *store.ErrNotFound — mirrors sessionOwnershipOK's 404-on-mismatch (a
+// continuation/transcript exposes the session's history, so the boundary is
+// the tenant; session_ids are not secret).
+func (t *tenantScopedStore) GetSession(ctx context.Context, sessionID string) (store.Session, error) {
+	sess, err := t.store.GetSession(ctx, sessionID)
+	if err != nil {
+		return store.Session{}, err
+	}
+	if !t.visible(sess.TenantID) {
+		return store.Session{}, &store.ErrNotFound{Kind: "session", ID: sessionID}
+	}
+	return sess, nil
+}
+
 // InterruptListByRun returns the run's interrupts, gated by the OWNING run's
 // tenant: a cross-tenant (or missing) run returns *store.ErrNotFound so the
 // list can't be used as a cross-tenant existence oracle. Interrupts carry no

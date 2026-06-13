@@ -85,6 +85,42 @@ func TestHandleListRunInterrupts_RejectsCrossTenant(t *testing.T) {
 	}
 }
 
+// The transcript endpoint exposes a session's full history; the migrated
+// handler gates it through the tenant-scoped accessor. A cross-TENANT caller
+// gets the same opaque 404 a missing session returns; the owning tenant + admin
+// resolve it. Locks the gate on handleTranscript after the accessor migration.
+func TestHandleTranscript_RejectsCrossTenant(t *testing.T) {
+	s, st := tokenAuthServer(t, "")
+	sess, err := st.CreateSession(context.Background(), "acme", "agentx", "alice")
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	statusFor := func(tenant, subject string, scopes []string) int {
+		r := httptest.NewRequest(http.MethodGet, "/v1/sessions/"+sess.ID+"/transcript", nil)
+		r.SetPathValue("id", sess.ID)
+		r = r.WithContext(auth.WithPrincipal(r.Context(), auth.Principal{
+			TenantID: tenant, Subject: subject, Scopes: scopes,
+		}))
+		rr := httptest.NewRecorder()
+		s.handleTranscript(rr, r)
+		return rr.Code
+	}
+
+	if got := statusFor("evil", "mallory", []string{auth.ScopeRunsRead}); got != http.StatusNotFound {
+		t.Errorf("cross-tenant transcript status=%d, want 404 (tenant gate not enforced)", got)
+	}
+	if got := statusFor("acme", "alice", []string{auth.ScopeRunsRead}); got == http.StatusNotFound {
+		t.Errorf("own-tenant transcript got 404 — gate rejected a legitimate caller")
+	}
+	if got := statusFor("acme", "bob", []string{auth.ScopeRunsRead}); got == http.StatusNotFound {
+		t.Errorf("same-tenant different-subject transcript got 404 — whole-tenant sharing")
+	}
+	if got := statusFor("x", "ops", []string{auth.ScopeAdmin}); got == http.StatusNotFound {
+		t.Errorf("admin transcript got 404 — super-admin must cross tenants")
+	}
+}
+
 // TestTenantStore_GetRunOpaqueCrossTenant locks the accessor's core posture: a
 // cross-tenant run is indistinguishable from a missing one (both
 // *store.ErrNotFound), while the owning tenant + admin resolve it.
