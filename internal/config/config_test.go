@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -2305,11 +2306,20 @@ func TestExpandEnv_DeniesInfraSecrets(t *testing.T) {
 	t.Setenv("PG_DSN", "postgres://u:p@h/db")
 	t.Setenv("LOOMCYCLE_PG_DSN", "postgres://u:p@h/db")
 	t.Setenv("LOOMCYCLE_AUTH_TOKEN", "operator-bearer")
+	// v0.34.0 security review S1: these infra secrets passed the old 3-name
+	// denylist and were exfiltratable into an attacker-controlled MCP field.
+	t.Setenv("LOOMCYCLE_OPERATOR_TOKEN_PEPPER", "token-hash-pepper")
+	t.Setenv("LOOMCYCLE_MCP_UPSTREAM_TOKEN", "upstream-bearer")
+	t.Setenv("LOOMCYCLE_OTEL_EXPORTER_OTLP_HEADERS", "x-honeycomb-team=secret")
 	t.Setenv("LOOMCYCLE_FOO", "ok-value")
 	t.Setenv("LOOMCYCLE_JIRA_TOKEN", "mcp-auth-token")
 
 	// Infra secrets: the literal ${...} survives, the value never appears.
-	for _, name := range []string{"PG_DSN", "LOOMCYCLE_PG_DSN", "LOOMCYCLE_AUTH_TOKEN"} {
+	for _, name := range []string{
+		"PG_DSN", "LOOMCYCLE_PG_DSN", "LOOMCYCLE_AUTH_TOKEN",
+		"LOOMCYCLE_OPERATOR_TOKEN_PEPPER", "LOOMCYCLE_MCP_UPSTREAM_TOKEN",
+		"LOOMCYCLE_OTEL_EXPORTER_OTLP_HEADERS",
+	} {
 		in := "x=${" + name + "}"
 		if got := expandEnv(in); got != in {
 			t.Errorf("expandEnv(%q) = %q, want unchanged (infra secret must not interpolate)", in, got)
@@ -2324,6 +2334,53 @@ func TestExpandEnv_DeniesInfraSecrets(t *testing.T) {
 	// the broad *_TOKEN suffix match) must still expand into its own header.
 	if got := expandEnv("Bearer ${LOOMCYCLE_JIRA_TOKEN}"); got != "Bearer mcp-auth-token" {
 		t.Errorf("expandEnv(LOOMCYCLE_JIRA_TOKEN) = %q, want Bearer mcp-auth-token", got)
+	}
+}
+
+// TestExpandDenyNames_CoversInfraSecretReads is the v0.34.0 S1 drift guard. The
+// expandDenyNames blocklist is only safe if it's COMPLETE — the review's HIGH
+// was that it silently missed the operator-token pepper. This test scans
+// loomcycle's OWN source for os.Getenv / os.LookupEnv("LOOMCYCLE_…") reads whose
+// name ends in a secret suffix and asserts every one is denied, so a future
+// infra-secret env read added without an expandDenyNames entry fails CI here
+// (the secret would otherwise be interpolatable into an attacker-controlled MCP
+// url/header/arg → exfiltration). It scans this package's config.go plus
+// cmd/loomcycle/main.go (the MCP-upstream-token read). Non-suffix secret names
+// (_HEADERS like the OTEL exporter headers, _BEARER) aren't caught here and need
+// a manual denylist entry + TestExpandEnv_DeniesInfraSecrets coverage above.
+func TestExpandDenyNames_CoversInfraSecretReads(t *testing.T) {
+	secretSuffixes := []string{
+		"_TOKEN", "_KEY", "_SECRET", "_PASSWORD", "_AUTH",
+		"_CREDENTIAL", "_CREDENTIALS", "_PEPPER", "_DSN",
+	}
+	re := regexp.MustCompile(`os\.(?:Getenv|LookupEnv)\("(LOOMCYCLE_[A-Z0-9_]*)"`)
+	sources := []string{"config.go", "../../cmd/loomcycle/main.go"}
+	scanned := 0
+	for _, src := range sources {
+		b, err := os.ReadFile(src)
+		if err != nil {
+			t.Logf("skip %s (not readable: %v)", src, err)
+			continue
+		}
+		scanned++
+		for _, m := range re.FindAllStringSubmatch(string(b), -1) {
+			name := m[1]
+			isSecret := false
+			for _, suf := range secretSuffixes {
+				if strings.HasSuffix(name, suf) {
+					isSecret = true
+					break
+				}
+			}
+			if isSecret && !expandDenyNames[name] {
+				t.Errorf("%s reads infra secret %q via os.Getenv but it is NOT in expandDenyNames — "+
+					"it would be interpolatable into an attacker-controlled MCP field (S1). Add it to expandDenyNames.",
+					src, name)
+			}
+		}
+	}
+	if scanned == 0 {
+		t.Fatal("scanned no source files — the drift guard is inert")
 	}
 }
 
