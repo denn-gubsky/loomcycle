@@ -1,0 +1,10 @@
+# runtime state + secrets (never commit)
+.env.local
+data/*.db
+data/*.db-wal
+data/*.db-shm
+# the review target is cloned at run time, not committed
+work/loomcycle-src/
+# scratch
+work/__pycache__/
+work/*.tmp
