@@ -1502,6 +1502,13 @@ func main() {
 		Addr:              cfg.Env.ListenAddr,
 		Handler:           rootHandler,
 		ReadHeaderTimeout: 10 * time.Second,
+		// Bound idle keep-alive connections so abandoned clients don't
+		// accumulate open fds over time. ReadTimeout/WriteTimeout stay OFF
+		// deliberately: SSE run streams + long-poll subscribes are long-lived
+		// and a read/write deadline would sever them mid-stream. IdleTimeout
+		// only fires between requests on a keep-alive connection, so it's
+		// SSE-safe.
+		IdleTimeout: 120 * time.Second,
 	}
 
 	if cfg.Env.AuthToken == "" {
@@ -2173,11 +2180,14 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	_ = httpServer.Shutdown(ctx)
-	// Flush OTEL spans before exit. The OTLP exporter batches; without
-	// this, in-flight spans never reach the collector. Same 5s deadline
-	// as the HTTP shutdown — exporters honor ctx.
+	// Flush OTEL spans before exit. The OTLP exporter batches; without this,
+	// in-flight spans never reach the collector. Give it its OWN 5s budget —
+	// sharing the HTTP shutdown's ctx meant a slow in-flight request drain
+	// could exhaust the deadline first, silently dropping the final spans.
 	if otelShutdown != nil {
-		if err := otelShutdown(ctx); err != nil {
+		otelCtx, otelCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer otelCancel()
+		if err := otelShutdown(otelCtx); err != nil {
 			log.Printf("otel: shutdown failed: %v", err)
 		}
 	}
