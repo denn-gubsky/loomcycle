@@ -46,7 +46,7 @@ Internal packages added since v0.9.0: `a2a`, `audit`, `auth`, `claudeimport`, `c
 
 **Key consumers of loomcycle:**
 - `jobs-search-agent` (separate repo; this machine: `/home/denn/workspace/jobs_search_agent`) — first production user. Adopts loomcycle as the only `Runner` backend; CLI / SDK backends were retired in May 2026 after a $80 cost incident traced to subprocess auth inheritance.
-- TypeScript client at `adapters/ts/` → `npm: @loomcycle/client`. Python client at `adapters/python/` → `loomcycle` (installable from source; PyPI Trusted Publisher pending).
+- TypeScript client at `adapters/ts/` → `npm: @loomcycle/client`. Python client at `adapters/python/` → `pip install loomcycle` (published on PyPI from v0.8.0 under the `denn-gubsky` account via the OIDC Trusted Publisher; versioned independently on `python-v*` tags. A `loomcycle` PyPI Organization is pending — the project transfers to it once approved, install name unchanged).
 
 ## Development workflow
 
