@@ -5616,7 +5616,11 @@ func (s *Store) scanEvaluation(row pgx.Row) (store.EvaluationRow, error) {
 		return store.EvaluationRow{}, err
 	}
 	if dimensions != "" {
-		_ = json.Unmarshal([]byte(dimensions), &out.Dimensions)
+		if err := json.Unmarshal([]byte(dimensions), &out.Dimensions); err != nil {
+			// Malformed dimensions JSON (e.g. a hand-edited row) — log + leave
+			// Dimensions nil rather than silently dropping the parse error.
+			log.Printf("evaluations: scan eval_id=%s: dimensions JSON parse failed, skipping: %v", out.EvalID, err)
+		}
 	}
 	if judgement != "" {
 		out.Judgement = json.RawMessage(judgement)
@@ -5640,7 +5644,9 @@ func (s *Store) scanEvaluationRows(rows pgx.Rows) ([]store.EvaluationRow, error)
 			return nil, err
 		}
 		if dimensions != "" {
-			_ = json.Unmarshal([]byte(dimensions), &r.Dimensions)
+			if err := json.Unmarshal([]byte(dimensions), &r.Dimensions); err != nil {
+				log.Printf("evaluations: scan eval_id=%s: dimensions JSON parse failed, skipping: %v", r.EvalID, err)
+			}
 		}
 		if judgement != "" {
 			r.Judgement = json.RawMessage(judgement)
