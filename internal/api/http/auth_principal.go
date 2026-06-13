@@ -400,11 +400,26 @@ func tenantFromCtx(ctx context.Context) string {
 // only its own tenant. Single-row read handlers use this to 404 a
 // cross-tenant probe (opaque — no existence oracle).
 func (s *Server) tenantVisible(ctx context.Context, rowTenant string) bool {
+	// Single source of truth for the visibility predicate: the same scope
+	// resolution the tenant-scoped store accessor uses (tenant_store.go).
+	tenantID, all := tenantScopeFromCtx(ctx)
+	return all || rowTenant == tenantID
+}
+
+// requirePrincipalOwnsPathUser reports whether the ctx principal may act on the
+// per-user surface for pathUserID. Used by the per-user channel routes, whose
+// backing channel_messages carry NO tenant column — so the whole-tenant model
+// (subjects within a tenant share its workspace) can't be enforced without the
+// deferred tenant_id denormalisation. The safe no-schema mitigation is
+// per-SUBJECT: a non-admin principal may act ONLY on its own subject. Admin /
+// legacy / open mode are unrestricted (mirrors the exemptions of
+// sessionOwnershipOK / tenantVisible).
+func requirePrincipalOwnsPathUser(ctx context.Context, pathUserID string) bool {
 	p, ok := auth.PrincipalFromContext(ctx)
-	if !ok || auth.HasScope(p.Scopes, auth.ScopeAdmin) {
+	if !ok || p.Legacy || auth.HasScope(p.Scopes, auth.ScopeAdmin) {
 		return true
 	}
-	return rowTenant == p.TenantID
+	return pathUserID == p.Subject
 }
 
 // requiredScopeFor maps an HTTP (method, path) to the scope a caller

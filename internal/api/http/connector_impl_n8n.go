@@ -165,6 +165,14 @@ func (s *Server) StreamUserRunStates(ctx context.Context, req connector.StreamUs
 			if !ok {
 				return nil
 			}
+			// RFC L/N tenant isolation: a tenant principal sees only its own
+			// tenant's run transitions. Filtered here (after the bus read, where
+			// the runstate event still carries TenantID) so it also covers the
+			// cluster-backplane path. Left off (TenantScoped=false) for the
+			// gRPC/MCP adapters — behaviour unchanged for them.
+			if req.TenantScoped && evt.TenantID != req.TenantID {
+				continue
+			}
 			if req.Agent != "" && evt.Agent != req.Agent {
 				continue
 			}

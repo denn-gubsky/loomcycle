@@ -95,6 +95,14 @@ func (s *Server) handleStreamUserAgents(w http.ResponseWriter, r *http.Request) 
 	}
 
 	req := parseStreamFilter(userID, r.URL.Query())
+	// RFC L/N tenant isolation: a tenant principal sees only its own tenant's
+	// run transitions (run_ids/user_ids aren't secret, so without this a token
+	// could stream another tenant's run states by passing its user_id).
+	// principalTenantScope: tenant → own (TenantScoped), admin/legacy/open →
+	// all (no scope). ?tenant= lets an admin focus one tenant, like the lists.
+	tenantID, all := s.principalTenantScope(r.Context(), r.URL.Query().Get("tenant"))
+	req.TenantID = tenantID
+	req.TenantScoped = !all
 
 	stream.start()
 

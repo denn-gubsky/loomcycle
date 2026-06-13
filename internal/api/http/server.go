@@ -1756,6 +1756,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		AgentID:       agentID,
 		Agent:         effectiveAgentName,
 		UserID:        effectiveUserID,
+		TenantID:      effectiveTenantID,
 		ParentContext: in.ParentContext,
 	}
 	// Stash the run span on the meta so finishRun* can close it with
@@ -3006,6 +3007,7 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		AgentID:       agentID,
 		Agent:         req.Agent,
 		UserID:        req.UserID,
+		TenantID:      req.TenantID,
 		otelSpan:      runSpan,
 		ParentContext: req.ParentContext,
 	}
@@ -3337,7 +3339,12 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	// Validate the session exists BEFORE taking the per-session lock.
 	// Otherwise an attacker can spam unknown IDs and each LoadOrStore
 	// grows sessionLocks permanently (entries are never GC'd at v0.3.2).
-	sess, err := s.store.GetSession(r.Context(), id)
+	//
+	// RFC L: a continuation runs under the session's stored tenant+subject, so
+	// the caller must OWN the session (the tenant boundary). The tenant-scoped
+	// accessor folds a cross-tenant session into the same *store.ErrNotFound a
+	// missing one returns → identical opaque 404, no existence oracle.
+	sess, err := s.tenantStore(r.Context()).GetSession(r.Context(), id)
 	if err != nil {
 		var nf *store.ErrNotFound
 		if errors.As(err, &nf) {
@@ -3345,13 +3352,6 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	// RFC L: a continuation runs under the session's stored tenant+subject, so
-	// the caller principal must OWN the session. 404 (not 403) on mismatch so
-	// a non-owner can't probe which session ids exist (no-oracle).
-	if !sessionOwnershipOK(r.Context(), sess) {
-		http.Error(w, (&store.ErrNotFound{Kind: "session", ID: id}).Error(), http.StatusNotFound)
 		return
 	}
 
@@ -3535,6 +3535,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		AgentID:       agentID,
 		Agent:         sess.Agent,
 		UserID:        sess.UserID,
+		TenantID:      sess.TenantID,
 		otelSpan:      runSpan,
 		ParentContext: body.ParentContext,
 	}
@@ -3881,7 +3882,10 @@ func (s *Server) handleTranscript(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "session id is required", http.StatusBadRequest)
 		return
 	}
-	sess, err := s.store.GetSession(r.Context(), id)
+	// RFC L: the transcript exposes the session's full history — gate it on the
+	// same tenant ownership as continuation. The accessor folds a cross-tenant
+	// session into the same opaque *store.ErrNotFound a missing one returns.
+	sess, err := s.tenantStore(r.Context()).GetSession(r.Context(), id)
 	if err != nil {
 		var nf *store.ErrNotFound
 		if errors.As(err, &nf) {
@@ -3889,12 +3893,6 @@ func (s *Server) handleTranscript(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	// RFC L: the transcript exposes the session's full history — gate it on
-	// the same cross-principal ownership as continuation (opaque 404).
-	if !sessionOwnershipOK(r.Context(), sess) {
-		http.Error(w, (&store.ErrNotFound{Kind: "session", ID: id}).Error(), http.StatusNotFound)
 		return
 	}
 	transcript, err := s.store.GetTranscript(r.Context(), id)
@@ -4316,6 +4314,7 @@ func (s *Server) runSubAgent(ctx context.Context, name string, prompt string, de
 		AgentID:       subAgentID,
 		Agent:         name,
 		UserID:        parentIdentity.UserID,
+		TenantID:      parentIdentity.TenantID, // sub-agent inherits the parent run's tenant
 		ParentAgentID: parentIdentity.AgentID,
 		otelSpan:      subRunSpan,
 		ParentContext: parentIdentity.ParentContext, // v0.12.x: sub-agent's run-state events carry the root's lineage
@@ -4671,7 +4670,11 @@ func (s *Server) handleGetAgent(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	run, err := s.store.GetRunByAgentID(r.Context(), agentID)
+	// Multi-tenant authz: the accessor folds a cross-tenant run into the same
+	// *store.ErrNotFound a missing run returns, so the not-found branch below
+	// covers both — a cross-tenant probe gets the identical opaque 404 (no
+	// existence oracle). Super-admin / legacy / open mode see all.
+	run, err := s.tenantStore(r.Context()).GetRunByAgentID(r.Context(), agentID)
 	if err != nil {
 		var nf *store.ErrNotFound
 		if errors.As(err, &nf) {
@@ -4681,15 +4684,6 @@ func (s *Server) handleGetAgent(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	// Multi-tenant authz: a tenant principal may only read runs in its
-	// own tenant. A cross-tenant probe gets the same 404 as a missing
-	// agent (opaque — no existence oracle). Super-admin / open mode see all.
-	if !s.tenantVisible(r.Context(), run.TenantID) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusNotFound)
-		fmt.Fprintf(w, `{"code":"unknown_agent_id","error":"no run found for agent_id %q"}`, agentID)
 		return
 	}
 	_, live := s.cancelReg.Get(agentID)
@@ -5135,17 +5129,13 @@ func (s *Server) compactRunWithSource(ctx context.Context, runID, source string)
 	if s.store == nil {
 		return connector.CompactResult{}, &compactErr{status: http.StatusServiceUnavailable, msg: "compaction requires persistence"}
 	}
-	run, err := s.store.GetRun(ctx, runID)
+	// Tenant-ownership via the tenant-scoped accessor: a cross-tenant (or
+	// missing) run both fold into the same opaque 404 (run_ids aren't secrets,
+	// so the gate must not become an existence oracle). Shared by the HTTP
+	// handler and the gRPC/MCP CompactRun — both carry the principal in ctx.
+	run, err := s.tenantStore(ctx).GetRun(ctx, runID)
 	if err != nil {
 		return connector.CompactResult{}, &compactErr{status: http.StatusNotFound, msg: "no run for that run_id"}
-	}
-	// Tenant-ownership: opaque 404 cross-tenant (run_ids aren't secrets).
-	if run.SessionID != "" {
-		if sess, serr := s.store.GetSession(ctx, run.SessionID); serr == nil {
-			if !sessionOwnershipOK(ctx, sess) {
-				return connector.CompactResult{}, &compactErr{status: http.StatusNotFound, msg: "no run for that run_id"}
-			}
-		}
 	}
 
 	terminal := isTerminalRunStatus(run.Status)
@@ -5309,8 +5299,18 @@ func (s *Server) handleListRunInterrupts(w http.ResponseWriter, r *http.Request)
 	if statusFilter == "all" {
 		statusFilter = ""
 	}
-	rows, err := s.store.InterruptListByRun(r.Context(), runID, statusFilter)
+	// Tenant-ownership via the accessor: it gates on the OWNING run's tenant
+	// (interrupts have no tenant column — they inherit the run's). A
+	// cross-tenant or unknown run folds into *store.ErrNotFound, which we map
+	// to an empty list — indistinguishable from a real run with zero
+	// interrupts, so the listing can't be a cross-tenant existence oracle.
+	rows, err := s.tenantStore(r.Context()).InterruptListByRun(r.Context(), runID, statusFilter)
 	if err != nil {
+		var nf *store.ErrNotFound
+		if errors.As(err, &nf) {
+			writeJSON(w, http.StatusOK, map[string]any{"interrupts": []store.InterruptRow{}, "total": 0})
+			return
+		}
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -5338,7 +5338,12 @@ func (s *Server) handleListUserInterrupts(w http.ResponseWriter, r *http.Request
 	if statusFilter == "all" {
 		statusFilter = ""
 	}
-	rows, err := s.store.InterruptListByUser(r.Context(), userID, statusFilter)
+	// Tenant-scope the inbox: a tenant principal sees only interrupts on its
+	// own tenant's runs (the accessor passes the principal's tenant down to the
+	// store JOIN); super-admin / legacy / open mode see all. Without this a
+	// token could read another tenant's pending questions by guessing a
+	// user_id (user_ids are not secret). Mirrors handleListUsers' scoping.
+	rows, err := s.tenantStore(r.Context()).InterruptListByUser(r.Context(), userID, statusFilter)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -5378,6 +5383,7 @@ type runStateMeta struct {
 	AgentID       string
 	Agent         string
 	UserID        string
+	TenantID      string // run's authoritative tenant — gates the user-agents stream
 	ParentAgentID string
 	// ParentContext is the run's opaque tracking lineage, echoed on the
 	// published RunStateEvent (v0.12.x).
@@ -5402,6 +5408,7 @@ func (s *Server) publishRunState(m runStateMeta, status, stopReason, errMsg stri
 		AgentID:       m.AgentID,
 		Agent:         m.Agent,
 		UserID:        m.UserID,
+		TenantID:      m.TenantID,
 		ParentAgentID: m.ParentAgentID,
 		Status:        status,
 		StopReason:    stopReason,

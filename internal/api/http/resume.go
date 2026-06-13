@@ -201,6 +201,7 @@ func (s *Server) resumePausedRun(ctx context.Context, run store.Run) error {
 		AgentID:       run.AgentID,
 		Agent:         run.Agent,
 		UserID:        run.UserID,
+		TenantID:      run.TenantID,
 		ParentContext: run.ParentContext,
 		otelSpan:      runSpan,
 	}
@@ -356,6 +357,7 @@ func (s *Server) flagRunUnresumable(run store.Run, reason string) {
 		AgentID:       run.AgentID,
 		Agent:         run.Agent,
 		UserID:        run.UserID,
+		TenantID:      run.TenantID,
 		ParentContext: run.ParentContext,
 	}
 	s.finishRunFailedReason(run.ID, "resume failed: "+reason, meta)

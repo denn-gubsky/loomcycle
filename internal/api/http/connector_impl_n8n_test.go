@@ -99,6 +99,56 @@ func TestConnector_StreamUserRunStates_VisitsMatchingEvents(t *testing.T) {
 	}
 }
 
+// A tenant-scoped stream must drop run-state events for runs in OTHER tenants
+// even when they share the requested user_id (RFC L/N: run_ids/user_ids aren't
+// secret). Mirrors the user-filter test's "publish a dropped event first, then
+// a passing one; the first RECEIVED event proves the drop" shape. Fails on the
+// pre-filter code, where the cross-tenant event would arrive first.
+func TestConnector_StreamUserRunStates_TenantScopedDropsCrossTenant(t *testing.T) {
+	srv, _, cleanup := systemChannelFixture(t)
+	defer cleanup()
+	bus := runstate.NewBus()
+	srv.SetRunStateBus(bus)
+
+	var c connector.Connector = srv
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+
+	received := make(chan connector.RunStateEvent, 4)
+	done := make(chan error, 1)
+	go func() {
+		done <- c.StreamUserRunStates(ctx, connector.StreamUserRunStatesRequest{
+			UserID:       "u-shared",
+			TenantID:     "acme",
+			TenantScoped: true,
+		}, func(evt connector.RunStateEvent) error {
+			received <- evt
+			return nil
+		})
+	}()
+
+	waitForSubscriber(t, bus)
+
+	// Same user, two tenants. The evil event is published FIRST and must be
+	// dropped; the acme event must pass — so the first RECEIVED event is acme.
+	bus.Publish(runstate.RunStateEvent{RunID: "r_evil", UserID: "u-shared", TenantID: "evil", Status: "completed"})
+	bus.Publish(runstate.RunStateEvent{RunID: "r_acme", UserID: "u-shared", TenantID: "acme", Status: "completed"})
+
+	select {
+	case evt := <-received:
+		if evt.RunID != "r_acme" {
+			t.Errorf("cross-tenant event leaked: got %q, want r_acme (tenant filter not enforced)", evt.RunID)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("no event delivered within 1s")
+	}
+
+	cancel()
+	if err := <-done; err != nil {
+		t.Errorf("StreamUserRunStates returned err: %v", err)
+	}
+}
+
 func TestConnector_StreamUserRunStates_StopOnSentinel(t *testing.T) {
 	srv, _, cleanup := systemChannelFixture(t)
 	defer cleanup()
