@@ -45,7 +45,12 @@ type HeartbeatRunner struct {
 	version   string
 	startedAt time.Time
 
+	// mu guards cancel + started against a concurrent Start/Stop. Start is
+	// idempotent (a second call is a no-op) so a double Start can't overwrite
+	// cancel and orphan the first goroutine batch.
+	mu      sync.Mutex
 	cancel  context.CancelFunc
+	started bool
 	stopped sync.Once
 	wg      sync.WaitGroup
 }
@@ -74,14 +79,29 @@ func (h *HeartbeatRunner) Start(parent context.Context) {
 	if len(h.specs) == 0 {
 		return
 	}
+	h.mu.Lock()
+	if h.started {
+		h.mu.Unlock()
+		return // idempotent: a second Start is a no-op
+	}
+	h.started = true
 	ctx, cancel := context.WithCancel(parent)
 	h.cancel = cancel
+	// Reserve the WaitGroup for every runnable spec while still holding the
+	// lock, so a Stop() that races Start can't observe a zero counter
+	// mid-Add. Goroutines are spawned after the lock is released.
+	runnable := make([]HeartbeatSpec, 0, len(h.specs))
 	for _, spec := range h.specs {
 		if spec.Period <= 0 {
 			log.Printf("heartbeat: skip %q (non-positive period)", spec.Name)
 			continue
 		}
-		h.wg.Add(1)
+		runnable = append(runnable, spec)
+	}
+	h.wg.Add(len(runnable))
+	h.mu.Unlock()
+
+	for _, spec := range runnable {
 		go h.run(ctx, spec)
 	}
 }
@@ -90,8 +110,11 @@ func (h *HeartbeatRunner) Start(parent context.Context) {
 // Idempotent — safe to call multiple times.
 func (h *HeartbeatRunner) Stop() {
 	h.stopped.Do(func() {
-		if h.cancel != nil {
-			h.cancel()
+		h.mu.Lock()
+		cancel := h.cancel
+		h.mu.Unlock()
+		if cancel != nil {
+			cancel()
 		}
 		h.wg.Wait()
 	})
