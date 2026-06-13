@@ -398,9 +398,13 @@ func (s *Scheduler) fireOne(ctx context.Context, row store.ScheduleDueRow, now t
 	}
 
 	// Dispatch hooks only on success — RFC E says on_complete fires on
-	// "successful runs." Failed/skipped runs don't notify.
+	// "successful runs." Failed/skipped runs don't notify. Use recordCtx (the
+	// survival ctx) not the parent: a run that completes just as shutdown
+	// begins still recorded its result above, so its on_complete hooks
+	// (channel publish / memory set / mcp.call) must fire too rather than be
+	// dropped on a cancelled parent ctx.
 	if status == "completed" {
-		s.dispatchHooks(ctx, row.Name, def, registeredRunID, registeredAgentID)
+		s.dispatchHooks(recordCtx, row.Name, def, registeredRunID, registeredAgentID)
 	}
 }
 

@@ -2,6 +2,7 @@ package scheduler
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -30,6 +31,36 @@ func channelHookDef(channel string) scheduleDef {
 		OnComplete: []scheduleHook{
 			{Kind: "channel.publish", Channel: channel, Payload: map[string]any{"top": 3}},
 		},
+	}
+}
+
+// TestScheduler_OnCompleteHookUsesSurvivalCtx is the exp7 regression: a run
+// that completes just as shutdown begins records its result on the survival
+// ctx (recordCtx) — but dispatchHooks used the parent ctx, so the on_complete
+// hook was dropped on a cancelled context. Fire with an already-cancelled
+// parent ctx and assert the channel.publish hook still lands.
+//
+// FAIL-BEFORE: with dispatchHooks(ctx) the ChannelPublish runs on the cancelled
+// ctx, fails, and the global peek returns 0.
+func TestScheduler_OnCompleteHookUsesSurvivalCtx(t *testing.T) {
+	def := channelHookDef("ctx-survival")
+	sched, _, _, defID, st := schedulerFixture(t, def, time.Now().Add(-1*time.Minute))
+	sched.SetChannelScope(func(context.Context, string) (string, bool) { return "global", true })
+
+	// Parent ctx already cancelled — the run still "completes" (the fake
+	// runner ignores ctx), so status=="completed" and the survival ctx kicks
+	// in for both the result-write and (post-fix) the hook dispatch.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	defJSON, err := json.Marshal(def)
+	if err != nil {
+		t.Fatalf("marshal def: %v", err)
+	}
+	sched.fireOne(ctx, store.ScheduleDueRow{DefID: defID, Name: "sched-test", Definition: defJSON}, time.Now())
+
+	if got := peekScopeCount(t, st, "ctx-survival", store.MemoryScopeGlobal, ""); got != 1 {
+		t.Errorf("on_complete publish landed %d messages, want 1 (hook must use the survival ctx)", got)
 	}
 }
 
