@@ -499,11 +499,14 @@ type UserTier struct {
 	//
 	// 0 (default) keeps the v0.12.x behaviour — 30s default applied
 	// inside the resolver. Values in [1_000, 600_000] (1 s to 10
-	// min) accepted; out-of-range values silently clamp to that
-	// window at config-load. Sub-second cooldowns would defeat the
-	// purpose (the cascade would re-fire on the next call); >10 min
-	// becomes meaningless because the periodic probe (default 15
-	// min) clears the matrix before the cooldown expires anyway.
+	// min) accepted; positive out-of-range values silently clamp to
+	// that window when the resolver overlay is built (see
+	// clampRateLimitCooldownMs in internal/api/http/server.go — the
+	// single source of truth for the bound), and a negative value is
+	// rejected at config-load by validate(). Sub-second cooldowns would
+	// defeat the purpose (the cascade would re-fire on the next call);
+	// >10 min becomes meaningless because the periodic probe (default
+	// 15 min) clears the matrix before the cooldown expires anyway.
 	RateLimitCooldownMs int `yaml:"rate_limit_cooldown_ms"`
 }
 
