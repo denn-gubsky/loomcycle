@@ -4,6 +4,7 @@ import (
 	"context"
 	"log"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -20,6 +21,7 @@ type Refresher struct {
 	mu        sync.Mutex
 	startOnce sync.Once
 	stopOnce  sync.Once
+	started   atomic.Bool // set inside startOnce; gates Stop's doneCh wait
 	stopCh    chan struct{}
 	doneCh    chan struct{}
 
@@ -65,6 +67,10 @@ func NewRefresher(store *TokenStore, opts ExchangeOptions, logf func(string, ...
 // re-starting an existing one.
 func (r *Refresher) Start(ctx context.Context) {
 	r.startOnce.Do(func() {
+		// Mark started BEFORE spawning the loop so a concurrent Stop that
+		// observes started==true is guaranteed the loop will reach its
+		// `defer close(doneCh)` and unblock the wait below.
+		r.started.Store(true)
 		go r.loop(ctx)
 	})
 }
@@ -75,9 +81,13 @@ func (r *Refresher) Stop() {
 	r.stopOnce.Do(func() {
 		close(r.stopCh)
 	})
-	// Block until loop returns. Bounded by the 30-second tick + the
-	// refresh HTTP call's 30-second timeout.
-	<-r.doneCh
+	// Only wait if the loop was ever started — doneCh is closed solely by
+	// loop()'s defer, so a Stop() that precedes (or replaces) Start() would
+	// otherwise block forever. With a started loop the wait is bounded by the
+	// 30-second tick + the refresh HTTP call's 30-second timeout.
+	if r.started.Load() {
+		<-r.doneCh
+	}
 }
 
 // Token returns the most recent cached token. Safe for concurrent use.
