@@ -3183,21 +3183,33 @@ func ExpandEnvAllowed(name string) bool {
 	return false
 }
 
-// expandDenyNames are loomcycle's OWN infrastructure / admin secrets that must
-// NEVER be interpolated into a YAML/MCP field, even though the LOOMCYCLE_ prefix
-// (or a bare third-party name) would otherwise allow it (exp7 C2). The DB DSN
-// and the operator bearer are loomcycle's own credentials — unlike a per-MCP
-// auth token (which an operator legitimately references in THAT server's own
-// header via ${LOOMCYCLE_*}), interpolating these into an outbound MCP URL/
-// header would exfiltrate loomcycle's infra creds to a third party. They reach
-// the system via the Env struct, never via YAML interpolation, so denying them
-// here breaks no legitimate use. (Deliberately a tight named set, NOT the broad
-// IsSecretEnvName suffix match, which would also block legitimate
-// ${LOOMCYCLE_*_TOKEN} MCP auth headers.)
+// expandDenyNames is the authoritative set of loomcycle's OWN infrastructure /
+// admin secrets that must NEVER be interpolated into a YAML/MCP field, even
+// though the LOOMCYCLE_ prefix (or a bare third-party name) would otherwise
+// allow it (exp7 C2 + the v0.34.0 security review S1). These are loomcycle's
+// own credentials — the DB DSN, the operator bearer, the operator-token hashing
+// pepper, the thin-client upstream MCP token, and the OTEL exporter headers
+// (which carry collector auth like x-honeycomb-team). Interpolating any of them
+// into an attacker-controlled outbound MCP URL/header/arg (a runtime-authored
+// MCPServerDef → config.ExpandEnv at dial time) would exfiltrate the secret to
+// a third party. They reach the system via the Env struct, never via YAML
+// interpolation, so denying them here breaks no legitimate use.
+//
+// Deliberately a tight NAMED set, NOT the broad IsSecretEnvName suffix match —
+// a suffix deny would also block the legitimate operator pattern of referencing
+// a per-MCP auth token via ${LOOMCYCLE_*_TOKEN} / ${LOOMCYCLE_STATIC_BEARER} in
+// THAT server's own header (documented in docs/ARCHITECTURE.md). The
+// completeness this named set needs — every loomcycle-OWNED infra secret denied
+// — is enforced by TestExpandDenyNames_CoversInfraSecretReads, which scans this
+// package's own os.Getenv("LOOMCYCLE_…") secret-bearing reads and fails CI if a
+// new one isn't listed here (closing the "incomplete blocklist" gap S1 named).
 var expandDenyNames = map[string]bool{
-	"PG_DSN":               true,
-	"LOOMCYCLE_PG_DSN":     true,
-	"LOOMCYCLE_AUTH_TOKEN": true,
+	"PG_DSN":                               true,
+	"LOOMCYCLE_PG_DSN":                     true,
+	"LOOMCYCLE_AUTH_TOKEN":                 true,
+	"LOOMCYCLE_OPERATOR_TOKEN_PEPPER":      true, // RFC L token-hash pepper (S1: the high-value miss)
+	"LOOMCYCLE_MCP_UPSTREAM_TOKEN":         true, // thin-client upstream MCP bearer
+	"LOOMCYCLE_OTEL_EXPORTER_OTLP_HEADERS": true, // collector auth headers
 }
 
 // secretEnvSuffixes are the env-var NAME patterns this project classifies as
