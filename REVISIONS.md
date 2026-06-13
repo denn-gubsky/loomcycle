@@ -8,6 +8,72 @@ For pre-v0.4 history (single-tool runtime, library milestone, security patch), s
 
 ---
 
+## What's in v0.34.0
+
+**Context-transform plugins, an exp7 (v0.33.0 re-run) hardening pass, and a
+cross-provider thinking-fallback fix.** One new primitive, one hardening line,
+one fix line.
+
+**Context-transform plugins (RFC Z Phase 1a).** A new runtime-wide plugin chain
+that sits between the agent's assembled context and the outbound LLM request.
+Each plugin transforms a **copy** of the (system, messages) pair — deterministic,
+copy-on-write, never mutating the caller's history — and the chain runs on every
+turn just before the provider request is built. The synthetic `code-js` provider
+is exempt so its deterministic replay stays byte-stable. Phase 1a ships one
+plugin, **`redact`**: outbound secret scrubbing that reuses the F32
+`redact.Redactor` (Tier-A exact env-value masking + the Tier-B heuristic value
+patterns — `Authorization` / `sk-` / `AKIA` / `xox` / `ghp_` / `key=value`), so
+the model never sees a configured secret even if one leaks into the conversation
+history. Distinct from F32 (which redacts the *persisted transcript*); this
+redacts what is *sent*. Configured via a top-level `context_plugins:` block,
+validated at config load, built once at server start. (Per-tenant and per-agent
+scoping + a compression plugin are deferred to later RFC Z phases.)
+
+**exp7 self-review re-run hardening.** The exp7 self-code-review (10
+`code-reviewer` agents fanned out via `spawn_runs`) was re-run against v0.33.0,
+producing 35 findings + 3 runtime findings. Because the review was
+model-generated, **every finding was independently verified against `main`
+before acting** — roughly 9 of ~40 were refuted or reclassified on verification
+(notably: a "predictable IDs" finding was refuted because Go 1.24+
+`crypto/rand.Read` never returns an error; the "Critical" deferred-timer race
+was downgraded to LOW after the claimed pendCnt leak proved to net out). The
+confirmed set landed as correctness / robustness fixes, each with a fail-before
+test where one was feasible: admin POST bodies bounded with `MaxBytesReader`;
+`ExportPretty` clears the integrity checksum (a propagated compact checksum made
+a pretty snapshot fail restore); an OAuth-refresher `Stop()`-before-`Start()`
+deadlock; a `HeartbeatRunner` cancel data race + double-`Start` guard; a bounded
+best-effort backplane publish in `Bus.Notify`; scheduler `on_complete` hooks
+dispatched on the survival ctx so a run completing at shutdown still notifies;
+pause classifies `Glob`/`Grep` as idempotent; an absolute in-root `Glob` pattern
+now matches (R1); malformed evaluation `dimensions` are logged instead of
+swallowed; a separate otel-shutdown budget + an SSE-safe `IdleTimeout`. A second
+sweep removed dead code (`idempotentBuiltins`, `ctxDone`, `nilEmbedding`), sorted
+a non-deterministic cron error message, and hoisted a duplicated
+`backfillSystemPromptBase` into the shared store package.
+
+**R2 — cross-provider thinking-model fallback downgrade.** A DeepSeek thinking
+model (`deepseek-reasoner` / `*-pro`) requires provider-produced
+`reasoning_content` echoed on every assistant turn and 400s
+("reasoning_content … must be passed back") on a turn lacking it. After a
+cross-provider fallback the history's assistant turns are all reasoning-less — a
+foreign provider produced them (Anthropic / Gemini never set the field), or the
+existing cross-provider reasoning strip zeroed them (including the
+`deepseek→other→deepseek-reasoner` bounce). The strip can't fix this (it removes
+reasoning, it can't synthesise it), so a new **optional**
+`providers.ThinkingDowngrader` interface — implemented by the DeepSeek driver
+(`deepseek-reasoner`→`deepseek-chat`, `*-pro`→same-generation `*-flash`) — lets
+the loop downgrade the model to its non-thinking sibling for the remaining
+iterations and emit a new informational **`EventModelDowngraded`**. A fresh
+history (no assistant turn yet) is left on the thinking model. Providers that
+tolerate a reasoning-less history (Anthropic, Gemini, OpenAI o-series) don't
+implement the interface and are untouched.
+
+**`@loomcycle/client` 0.34.0** — version-aligned lockstep release; no
+client-surface change. The new `model_downgraded` SSE event passes through the
+generic event stream unchanged, and context plugins are server-side config.
+
+---
+
 ## What's in v0.33.0
 
 **External fan-out + the run-mutation wire surface across all transports, plus
