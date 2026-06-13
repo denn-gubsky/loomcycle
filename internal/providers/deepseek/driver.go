@@ -116,6 +116,26 @@ func IsThinkingModel(model string) bool {
 	return false
 }
 
+// NonThinkingSibling implements providers.ThinkingDowngrader. A DeepSeek
+// thinking model (deepseek-reasoner / *-pro / *-r1) requires reasoning_content
+// echoed on every assistant turn and 400s on a turn lacking it. When a
+// cross-provider fallback lands on such a model with a reasoning-less history,
+// the loop swaps it for the non-thinking sibling returned here.
+//
+// Mapping: a *-pro variant pairs with the same-generation *-flash non-thinking
+// model (deepseek-v4-pro → deepseek-v4-flash); reasoner / r1 have no flash
+// sibling, so fall back to deepseek-chat — the canonical, always-available
+// non-thinking model (V3 chat). Returns ("", false) for a non-thinking model.
+func (d *Driver) NonThinkingSibling(model string) (string, bool) {
+	if !IsThinkingModel(model) {
+		return "", false
+	}
+	if strings.Contains(model, "-pro") {
+		return strings.Replace(model, "-pro", "-flash", 1), true
+	}
+	return "deepseek-chat", true
+}
+
 // Call delegates to the OpenAI driver. The request body, retry
 // strategy, and SSE framing are identical between the two services.
 //

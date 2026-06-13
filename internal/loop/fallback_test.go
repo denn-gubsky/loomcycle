@@ -849,3 +849,151 @@ func TestFallback_PinAfterSuccess_FlagOff_PreservesV082Behavior(t *testing.T) {
 		t.Errorf("StopReason = %q, want end_turn", res.StopReason)
 	}
 }
+
+// downgradingRecorder is a recordingProvider that also implements
+// providers.ThinkingDowngrader (mimicking the DeepSeek driver), so the loop's
+// exp7 R2 thinking-model downgrade fires against it.
+type downgradingRecorder struct {
+	*recordingProvider
+}
+
+func (d *downgradingRecorder) NonThinkingSibling(model string) (string, bool) {
+	switch model {
+	case "deepseek-reasoner":
+		return "deepseek-chat", true
+	case "deepseek-v4-pro":
+		return "deepseek-v4-flash", true
+	default:
+		return "", false
+	}
+}
+
+// TestFallback_DowngradesThinkingModelOnForeignHistory is the exp7 R2
+// regression: a cross-provider fallback that lands on a DeepSeek thinking model
+// (deepseek-reasoner) with a history whose assistant turns lack
+// reasoning_content must be downgraded to the non-thinking sibling, so the
+// thinking model never receives a turn it would 400 on ("reasoning_content
+// must be passed back"). The prior assistant turn here has no Reasoning — the
+// Anthropic→DeepSeek shape. FAIL-BEFORE: without the downgrade the new provider
+// is called with "deepseek-reasoner".
+func TestFallback_DowngradesThinkingModelOnForeignHistory(t *testing.T) {
+	failing := &tieredProvider{
+		id:     "anthropic",
+		errors: []error{fmt.Errorf("anthropic 529: overloaded")},
+	}
+	healthy := &downgradingRecorder{
+		recordingProvider: &recordingProvider{
+			tieredProvider: &tieredProvider{
+				id:        "deepseek",
+				responses: [][]providers.Event{successResponse()},
+			},
+		},
+	}
+	// Prior assistant turn with NO reasoning_content (Anthropic never sets it).
+	prior := []providers.Message{
+		{Role: "user", Content: []providers.ContentBlock{{Type: "text", Text: "first"}}},
+		{Role: "assistant", Content: []providers.ContentBlock{{Type: "text", Text: "ok"}}},
+	}
+
+	var events []providers.Event
+	var mu sync.Mutex
+	opts := RunOptions{
+		Provider:      failing,
+		Model:         "claude-sonnet-4-6",
+		MaxIterations: 5,
+		Segments:      []PromptSegment{{Role: "user", Content: []PromptContentBlock{{Type: "trusted-text", Text: "second"}}}},
+		PriorMessages: prior,
+		OnEvent: func(ev providers.Event) {
+			mu.Lock()
+			defer mu.Unlock()
+			events = append(events, ev)
+		},
+		FallbackPolicy: FallbackPolicy{Enabled: true, MaxAttempts: 3, UserTierName: "high"},
+		ReResolve: func(_ context.Context, _, _ string, _ error) (providers.Provider, string, string, error) {
+			return healthy, "deepseek-reasoner", "", nil
+		},
+	}
+	if _, err := Run(context.Background(), opts); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	reqs := healthy.snapshotRequests()
+	if len(reqs) != 1 {
+		t.Fatalf("downgrade target got %d Calls, want 1", len(reqs))
+	}
+	if reqs[0].Model != "deepseek-chat" {
+		t.Errorf("fallback leg ran on model %q, want deepseek-chat (thinking model not downgraded)", reqs[0].Model)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	var saw bool
+	for _, ev := range events {
+		if ev.Type == providers.EventModelDowngraded {
+			saw = true
+			if !strings.Contains(ev.Text, "deepseek-reasoner") || !strings.Contains(ev.Text, "deepseek-chat") {
+				t.Errorf("EventModelDowngraded Text = %q, want mention of both models", ev.Text)
+			}
+		}
+	}
+	if !saw {
+		t.Error("no EventModelDowngraded emitted")
+	}
+}
+
+// TestFallback_NoDowngradeWithoutAssistantTurn — a fresh history (no assistant
+// turn yet) is fine for a thinking model: there's no prior turn to demand
+// reasoning_content for, so the loop must NOT downgrade.
+func TestFallback_NoDowngradeWithoutAssistantTurn(t *testing.T) {
+	failing := &tieredProvider{
+		id:     "anthropic",
+		errors: []error{fmt.Errorf("anthropic 529: overloaded")},
+	}
+	healthy := &downgradingRecorder{
+		recordingProvider: &recordingProvider{
+			tieredProvider: &tieredProvider{
+				id:        "deepseek",
+				responses: [][]providers.Event{successResponse()},
+			},
+		},
+	}
+
+	var events []providers.Event
+	var mu sync.Mutex
+	opts := RunOptions{
+		Provider:      failing,
+		Model:         "claude-sonnet-4-6",
+		MaxIterations: 5,
+		// No PriorMessages → the only turn is the fresh user segment.
+		Segments: []PromptSegment{{Role: "user", Content: []PromptContentBlock{{Type: "trusted-text", Text: "go"}}}},
+		OnEvent: func(ev providers.Event) {
+			mu.Lock()
+			defer mu.Unlock()
+			events = append(events, ev)
+		},
+		FallbackPolicy: FallbackPolicy{Enabled: true, MaxAttempts: 3, UserTierName: "high"},
+		ReResolve: func(_ context.Context, _, _ string, _ error) (providers.Provider, string, string, error) {
+			return healthy, "deepseek-reasoner", "", nil
+		},
+	}
+	if _, err := Run(context.Background(), opts); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	reqs := healthy.snapshotRequests()
+	if len(reqs) != 1 || reqs[0].Model != "deepseek-reasoner" {
+		t.Fatalf("fresh-history fallback should keep deepseek-reasoner; got reqs=%d model=%q", len(reqs), func() string {
+			if len(reqs) > 0 {
+				return reqs[0].Model
+			}
+			return ""
+		}())
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	for _, ev := range events {
+		if ev.Type == providers.EventModelDowngraded {
+			t.Errorf("spurious EventModelDowngraded on a fresh history: %q", ev.Text)
+		}
+	}
+}

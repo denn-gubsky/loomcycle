@@ -48,6 +48,27 @@ type Provider interface {
 	ListModels(ctx context.Context) ([]string, error)
 }
 
+// ThinkingDowngrader is an OPTIONAL interface a Provider implements when its
+// thinking-class models require provider-produced reasoning state
+// (reasoning_content) on every assistant turn of the input history. DeepSeek's
+// deepseek-reasoner / *-pro reject an assistant turn lacking it with HTTP 400
+// "reasoning_content ... must be passed back to the API".
+//
+// On a cross-provider fallback the history carries assistant turns that have
+// no such state — a different provider produced them, or the loop's reasoning
+// strip zeroed them (incl. the deepseek→other→deepseek-reasoner bounce). The
+// loop calls NonThinkingSibling on the fallback target and, if it downgrades,
+// runs the remaining iterations on the non-thinking model rather than letting
+// the request 400. Providers that tolerate a reasoning-less history (Anthropic,
+// Gemini, OpenAI o-series) simply don't implement this interface.
+type ThinkingDowngrader interface {
+	// NonThinkingSibling returns the non-thinking model to use in place of a
+	// thinking-class model that cannot consume a foreign/reasoning-stripped
+	// history, and true; or ("", false) when model is not a thinking-class
+	// model needing a downgrade.
+	NonThinkingSibling(model string) (string, bool)
+}
+
 // Capabilities tells the loop what the provider can and can't do, so the loop
 // can degrade gracefully instead of sending unsupported fields.
 type Capabilities struct {
@@ -305,6 +326,21 @@ const (
 	// ("cleared reasoning_content from N assistant turn(s) on
 	// switch from <old> to <new>").
 	EventReasoningInvalidated EventType = "reasoning_invalidated"
+
+	// EventModelDowngraded signals that a cross-provider fallback landed on a
+	// thinking-class model that cannot consume the fallback history, so the
+	// loop swapped it for its non-thinking sibling on that leg (see
+	// ThinkingDowngrader). DeepSeek's deepseek-reasoner / *-pro require
+	// provider-produced reasoning_content echoed on every assistant turn and
+	// 400 ("reasoning_content ... must be passed back") on a turn lacking it;
+	// after a switch the history's assistant turns are all reasoning-less (a
+	// foreign provider produced them, or the reasoning strip zeroed them), so
+	// the thinking model is downgraded to a non-thinking model for this run's
+	// remaining iterations. Purely informational; the Text field names the
+	// old model, the new model, and the provider. Distinct from
+	// EventReasoningInvalidated (which reports the strip itself) — both may
+	// fire on the same switch.
+	EventModelDowngraded EventType = "model_downgraded"
 
 	// EventChannelPublish signals that the v0.8.4 Channel tool
 	// successfully appended a message to a channel. Emitted from

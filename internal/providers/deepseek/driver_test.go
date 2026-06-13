@@ -167,6 +167,37 @@ func TestIsThinkingModel(t *testing.T) {
 	}
 }
 
+// TestNonThinkingSibling pins the exp7 R2 downgrade mapping: a thinking-class
+// model maps to a non-thinking sibling (same-generation *-flash for *-pro, else
+// deepseek-chat); a non-thinking model yields ("", false).
+func TestNonThinkingSibling(t *testing.T) {
+	d := &Driver{}
+	cases := []struct {
+		model         string
+		wantSibling   string
+		wantDowngrade bool
+	}{
+		{"deepseek-v4-pro", "deepseek-v4-flash", true},
+		{"deepseek-v3-pro", "deepseek-v3-flash", true},
+		{"deepseek-reasoner", "deepseek-chat", true},
+		{"deepseek-r1", "deepseek-chat", true},
+		{"deepseek-r1-distill", "deepseek-chat", true},
+		// Non-thinking models need no downgrade.
+		{"deepseek-chat", "", false},
+		{"deepseek-v4-flash", "", false},
+		{"deepseek-v3.2", "", false},
+		{"", "", false},
+		{"unknown-model", "", false},
+	}
+	for _, tc := range cases {
+		sib, dg := d.NonThinkingSibling(tc.model)
+		if dg != tc.wantDowngrade || sib != tc.wantSibling {
+			t.Errorf("NonThinkingSibling(%q) = (%q, %v), want (%q, %v)",
+				tc.model, sib, dg, tc.wantSibling, tc.wantDowngrade)
+		}
+	}
+}
+
 // ---- helpers ----
 
 type roundTripFunc func(req *http.Request) (*http.Response, error)
