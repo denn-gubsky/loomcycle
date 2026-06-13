@@ -253,13 +253,38 @@ func (s *Server) handleAdminChannelBroadcast(w http.ResponseWriter, r *http.Requ
 
 // ---- per-user handlers (scope=user) -----------------------------
 
+// userChannelScopeID validates the {user_id} path arg and enforces the
+// per-user channel ownership gate, returning (scopeID, true) when the request
+// may proceed. On a bad id or a cross-subject access it writes the response and
+// returns ("", false).
+//
+// Ownership gate: channel_messages carry NO tenant column (the whole-tenant
+// isolation that runs/sessions get would need the deferred tenant_id
+// denormalisation), so the safe no-schema mitigation is per-SUBJECT — a
+// non-admin principal may act ONLY on its own subject's channels. Without it a
+// channel-scoped tenant token could read/write any user's channel by changing
+// the path (user_ids aren't secret). Opaque 404 on mismatch (no existence
+// oracle — same posture sessionOwnershipOK gives). Admin / legacy / open mode
+// are unrestricted.
+func (s *Server) userChannelScopeID(w http.ResponseWriter, r *http.Request) (string, bool) {
+	userID := r.PathValue("user_id")
+	if !validIdent(userID) {
+		writeJSONError(w, http.StatusBadRequest, "invalid_user_id", `user_id must match [A-Za-z0-9_-]{1,128}`)
+		return "", false
+	}
+	if !requirePrincipalOwnsPathUser(r.Context(), userID) {
+		writeJSONError(w, http.StatusNotFound, "unknown_channel", "no such channel")
+		return "", false
+	}
+	return userID, true
+}
+
 // handleUserChannelPublish serves POST /v1/users/{user_id}/channels/{name}/publish.
 // scope=user, scope_id resolved from the URL path so the bearer
 // can't forge a different user_id in the body.
 func (s *Server) handleUserChannelPublish(w http.ResponseWriter, r *http.Request) {
-	userID := r.PathValue("user_id")
-	if !validIdent(userID) {
-		writeJSONError(w, http.StatusBadRequest, "invalid_user_id", `user_id must match [A-Za-z0-9_-]{1,128}`)
+	userID, ok := s.userChannelScopeID(w, r)
+	if !ok {
 		return
 	}
 	s.handleChannelPublish(w, r, r.PathValue("name"), "user", userID)
@@ -267,9 +292,8 @@ func (s *Server) handleUserChannelPublish(w http.ResponseWriter, r *http.Request
 
 // handleUserChannelSubscribe serves POST /v1/users/{user_id}/channels/{name}/subscribe.
 func (s *Server) handleUserChannelSubscribe(w http.ResponseWriter, r *http.Request) {
-	userID := r.PathValue("user_id")
-	if !validIdent(userID) {
-		writeJSONError(w, http.StatusBadRequest, "invalid_user_id", `user_id must match [A-Za-z0-9_-]{1,128}`)
+	userID, ok := s.userChannelScopeID(w, r)
+	if !ok {
 		return
 	}
 	s.handleChannelSubscribe(w, r, r.PathValue("name"), "user", userID)
@@ -277,9 +301,8 @@ func (s *Server) handleUserChannelSubscribe(w http.ResponseWriter, r *http.Reque
 
 // handleUserChannelPeek serves GET /v1/users/{user_id}/channels/{name}/peek.
 func (s *Server) handleUserChannelPeek(w http.ResponseWriter, r *http.Request) {
-	userID := r.PathValue("user_id")
-	if !validIdent(userID) {
-		writeJSONError(w, http.StatusBadRequest, "invalid_user_id", `user_id must match [A-Za-z0-9_-]{1,128}`)
+	userID, ok := s.userChannelScopeID(w, r)
+	if !ok {
 		return
 	}
 	s.handleChannelPeek(w, r, r.PathValue("name"), "user", userID)
@@ -287,9 +310,8 @@ func (s *Server) handleUserChannelPeek(w http.ResponseWriter, r *http.Request) {
 
 // handleUserChannelAck serves POST /v1/users/{user_id}/channels/{name}/ack.
 func (s *Server) handleUserChannelAck(w http.ResponseWriter, r *http.Request) {
-	userID := r.PathValue("user_id")
-	if !validIdent(userID) {
-		writeJSONError(w, http.StatusBadRequest, "invalid_user_id", `user_id must match [A-Za-z0-9_-]{1,128}`)
+	userID, ok := s.userChannelScopeID(w, r)
+	if !ok {
 		return
 	}
 	s.handleChannelAck(w, r, r.PathValue("name"), "user", userID)

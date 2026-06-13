@@ -406,6 +406,22 @@ func (s *Server) tenantVisible(ctx context.Context, rowTenant string) bool {
 	return all || rowTenant == tenantID
 }
 
+// requirePrincipalOwnsPathUser reports whether the ctx principal may act on the
+// per-user surface for pathUserID. Used by the per-user channel routes, whose
+// backing channel_messages carry NO tenant column — so the whole-tenant model
+// (subjects within a tenant share its workspace) can't be enforced without the
+// deferred tenant_id denormalisation. The safe no-schema mitigation is
+// per-SUBJECT: a non-admin principal may act ONLY on its own subject. Admin /
+// legacy / open mode are unrestricted (mirrors the exemptions of
+// sessionOwnershipOK / tenantVisible).
+func requirePrincipalOwnsPathUser(ctx context.Context, pathUserID string) bool {
+	p, ok := auth.PrincipalFromContext(ctx)
+	if !ok || p.Legacy || auth.HasScope(p.Scopes, auth.ScopeAdmin) {
+		return true
+	}
+	return pathUserID == p.Subject
+}
+
 // requiredScopeFor maps an HTTP (method, path) to the scope a caller
 // must hold. Empty string = any authenticated principal (no specific
 // scope). substrate:admin satisfies everything (see auth.HasScope), so
