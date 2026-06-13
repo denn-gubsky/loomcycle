@@ -1756,6 +1756,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		AgentID:       agentID,
 		Agent:         effectiveAgentName,
 		UserID:        effectiveUserID,
+		TenantID:      effectiveTenantID,
 		ParentContext: in.ParentContext,
 	}
 	// Stash the run span on the meta so finishRun* can close it with
@@ -3006,6 +3007,7 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		AgentID:       agentID,
 		Agent:         req.Agent,
 		UserID:        req.UserID,
+		TenantID:      req.TenantID,
 		otelSpan:      runSpan,
 		ParentContext: req.ParentContext,
 	}
@@ -3533,6 +3535,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		AgentID:       agentID,
 		Agent:         sess.Agent,
 		UserID:        sess.UserID,
+		TenantID:      sess.TenantID,
 		otelSpan:      runSpan,
 		ParentContext: body.ParentContext,
 	}
@@ -4311,6 +4314,7 @@ func (s *Server) runSubAgent(ctx context.Context, name string, prompt string, de
 		AgentID:       subAgentID,
 		Agent:         name,
 		UserID:        parentIdentity.UserID,
+		TenantID:      parentIdentity.TenantID, // sub-agent inherits the parent run's tenant
 		ParentAgentID: parentIdentity.AgentID,
 		otelSpan:      subRunSpan,
 		ParentContext: parentIdentity.ParentContext, // v0.12.x: sub-agent's run-state events carry the root's lineage
@@ -5379,6 +5383,7 @@ type runStateMeta struct {
 	AgentID       string
 	Agent         string
 	UserID        string
+	TenantID      string // run's authoritative tenant — gates the user-agents stream
 	ParentAgentID string
 	// ParentContext is the run's opaque tracking lineage, echoed on the
 	// published RunStateEvent (v0.12.x).
@@ -5403,6 +5408,7 @@ func (s *Server) publishRunState(m runStateMeta, status, stopReason, errMsg stri
 		AgentID:       m.AgentID,
 		Agent:         m.Agent,
 		UserID:        m.UserID,
+		TenantID:      m.TenantID,
 		ParentAgentID: m.ParentAgentID,
 		Status:        status,
 		StopReason:    stopReason,

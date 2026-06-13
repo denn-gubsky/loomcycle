@@ -649,6 +649,16 @@ type StreamUserRunStatesRequest struct {
 	UserID   string   `json:"user_id"`
 	Statuses []string `json:"statuses,omitempty"`
 	Agent    string   `json:"agent,omitempty"`
+	// TenantID + TenantScoped enforce RFC L/N tenant isolation on the stream.
+	// When TenantScoped is true, only events whose run TenantID == TenantID are
+	// yielded (a tenant principal must not see another tenant's run
+	// transitions). Set by the HTTP handler from the request principal; left
+	// false by the gRPC/MCP adapters (they keep their own gating — tenant
+	// scoping those transports is a separate follow-up), so their behaviour is
+	// unchanged. An empty TenantID with TenantScoped=true matches only the
+	// shared/default ("") tenant — never "all".
+	TenantID     string `json:"-"`
+	TenantScoped bool   `json:"-"`
 }
 
 // RunStateEvent is the payload yielded by RunStateVisitor for each

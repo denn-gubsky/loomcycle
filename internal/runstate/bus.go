@@ -37,10 +37,17 @@ import (
 // RunStateEvent is the payload published on every run state transition.
 // Fields mirror the SSE frame the handler will emit.
 type RunStateEvent struct {
-	RunID         string    `json:"run_id"`
-	AgentID       string    `json:"agent_id"`
-	Agent         string    `json:"agent"`
-	UserID        string    `json:"user_id"`
+	RunID   string `json:"run_id"`
+	AgentID string `json:"agent_id"`
+	Agent   string `json:"agent"`
+	UserID  string `json:"user_id"`
+	// TenantID is the run's authoritative tenant (RFC L/N), carried so the
+	// HTTP user-agents stream can drop events outside a tenant principal's
+	// tenant (a tenant token must not see another tenant's run transitions —
+	// run_ids/user_ids aren't secret). Serialised so it survives the cluster
+	// backplane JSON round-trip (the filter runs after a remote replica
+	// re-publishes locally). "" = the shared/default tenant.
+	TenantID      string    `json:"tenant_id,omitempty"`
 	ParentAgentID string    `json:"parent_agent_id,omitempty"`
 	Status        string    `json:"status"`
 	StopReason    string    `json:"stop_reason,omitempty"`
