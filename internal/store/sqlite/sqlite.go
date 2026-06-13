@@ -3241,7 +3241,7 @@ func (s *Store) BackfillAgentDefSystemPromptBase(ctx context.Context) (int, erro
 
 	n := 0
 	for _, p := range todo {
-		updated, ok, err := backfillSystemPromptBase(p.Def)
+		updated, ok, err := store.BackfillSystemPromptBase(p.Def)
 		if err != nil {
 			// Hand-edited row with broken JSON — log + skip rather than
 			// abort the whole backfill. The read-side normalizer in
@@ -3262,33 +3262,6 @@ func (s *Store) BackfillAgentDefSystemPromptBase(ctx context.Context) (int, erro
 		n++
 	}
 	return n, nil
-}
-
-// backfillSystemPromptBase is the JSON-layer transform shared by
-// the sqlite + postgres backfill methods. Returns (newDef, true,
-// nil) when the row needed a fill; (nil, false, nil) when it didn't;
-// (nil, false, err) on JSON parse failure.
-func backfillSystemPromptBase(def []byte) ([]byte, bool, error) {
-	var raw map[string]any
-	if err := json.Unmarshal(def, &raw); err != nil {
-		return nil, false, err
-	}
-	existing, _ := raw["system_prompt_base"].(string)
-	if existing != "" {
-		return nil, false, nil
-	}
-	sp, _ := raw["system_prompt"].(string)
-	if sp == "" {
-		// No system_prompt either — nothing to backfill from. Leave
-		// the row as-is; the read-side normalizer is a no-op too.
-		return nil, false, nil
-	}
-	raw["system_prompt_base"] = sp
-	out, err := json.Marshal(raw)
-	if err != nil {
-		return nil, false, err
-	}
-	return out, true, nil
 }
 
 // BackfillAgentDefContentSHA256 walks NULL/empty rows + populates the
