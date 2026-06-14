@@ -83,8 +83,11 @@ type RunOptions struct {
 	// Interactive makes this a PERSISTENT run: instead of terminating when the
 	// model ends its turn, the loop parks on SteerQueue waiting for the
 	// operator's next instruction (resuming on it, ending only on Cancel).
-	// Requires SteerQueue; pairs with UnboundedIterations for a true
-	// always-on terminal agent (else parks count toward MaxIterations).
+	// Requires SteerQueue. An interactive run with no explicit MaxIterations is
+	// automatically unbounded (Run lifts the 16-turn soft cap — see the
+	// interactiveUnbounded note in Run), so an always-on terminal works without
+	// also setting UnboundedIterations; the 1<<20 hard ceiling + Cancel still
+	// bound it. Set an explicit MaxIterations to cap an interactive session.
 	Interactive bool
 
 	// PauseGate, when non-nil, cooperatively quiesces this run for the
@@ -981,6 +984,18 @@ func maybeAutoCompact(ctx context.Context, opts RunOptions, messages []providers
 }
 
 func Run(ctx context.Context, opts RunOptions) (RunResult, error) {
+	// An interactive run is operator-driven and Cancel-bounded: each operator
+	// turn (and each end_turn park awaiting input) consumes a loop iteration,
+	// so the default 16-iteration runaway guard silently ends a live terminal
+	// session after 16 turns (reported as "max_iterations"). That guard exists
+	// to stop a RUNAWAY AUTONOMOUS agent — it has no purpose for a human-driven
+	// terminal the operator can Cancel. So when no explicit cap is set, an
+	// interactive run is unbounded (the 1<<20 hard ceiling + run cancellation
+	// still bound it), and the operator no longer has to ALSO set
+	// unbounded_iterations to get an always-on terminal. An EXPLICIT
+	// max_iterations is still honored; an autonomous run keeps the 16 default.
+	interactiveUnbounded := opts.Interactive && opts.SteerQueue != nil && opts.MaxIterations == 0
+
 	if opts.MaxIterations == 0 {
 		opts.MaxIterations = 16
 	}
@@ -1001,7 +1016,7 @@ func Run(ctx context.Context, opts RunOptions) (RunResult, error) {
 	// code-js providers are unbounded by capability; an LLM agent opts in
 	// per-def via UnboundedIterations (interactive/terminal runs). Either way
 	// the 1<<20 hard ceiling stays as a pure runaway backstop.
-	unboundedIters := opts.Provider.Capabilities().UnboundedIterations || opts.UnboundedIterations
+	unboundedIters := opts.Provider.Capabilities().UnboundedIterations || opts.UnboundedIterations || interactiveUnbounded
 	iterCap := opts.MaxIterations
 	if unboundedIters {
 		iterCap = maxIterationsHardCeiling
