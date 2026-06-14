@@ -3,6 +3,7 @@ package loop
 import (
 	"context"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -224,6 +225,114 @@ func TestRun_Interactive_CompactReplacesHistory(t *testing.T) {
 		if txt(m) == "go" {
 			t.Errorf("the original pre-compaction turn survived: %+v", m)
 		}
+	}
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("run did not terminate after cancel")
+	}
+}
+
+// ctxUsageProvider records the context footprint visible on ctx at each Call —
+// exactly what a Context op=self invoked that turn would report (the loop hands
+// the provider the same iterCtx the tools get). The FIRST call reports a large
+// InputTokens usage so lastCtxTokens becomes large; every call ends the turn.
+type ctxUsageProvider struct {
+	mu       sync.Mutex
+	seenUsed []int
+	firstIn  int
+	maxCtx   int
+	turn     int
+}
+
+func (p *ctxUsageProvider) ID() string                                   { return "ctxusage-test" }
+func (p *ctxUsageProvider) Probe(context.Context) error                  { return nil }
+func (p *ctxUsageProvider) ListModels(context.Context) ([]string, error) { return nil, nil }
+func (p *ctxUsageProvider) Capabilities() providers.Capabilities {
+	return providers.Capabilities{Streaming: true, MaxContextTokens: p.maxCtx}
+}
+func (p *ctxUsageProvider) Call(ctx context.Context, _ providers.Request) (<-chan providers.Event, error) {
+	p.mu.Lock()
+	p.seenUsed = append(p.seenUsed, tools.ContextUsage(ctx).Used)
+	turn := p.turn
+	p.turn++
+	p.mu.Unlock()
+
+	in := 0
+	if turn == 0 {
+		in = p.firstIn
+	}
+	ch := make(chan providers.Event, 2)
+	ch <- providers.Event{Type: providers.EventText, Text: "ok"}
+	ch <- providers.Event{Type: providers.EventDone, StopReason: "end_turn", Usage: &providers.Usage{InputTokens: in}}
+	close(ch)
+	return ch, nil
+}
+
+// A parked interactive run that compacts (steer.KindCompact) must refresh the
+// context footprint so the NEXT operator turn's Context op=self reports the
+// compacted (small) size — not the stale pre-compaction footprint.
+//
+// Fail-before: the loop never refreshed lastCtxTokens on compaction, so op=self
+// kept reporting the old ~full context (e.g. 164k / 82%) for a whole turn even
+// though the real wire request had already shrunk — the reported bug.
+func TestRun_Interactive_ContextUsageRefreshedAfterCompaction(t *testing.T) {
+	q := make(chan steer.Message, 4)
+	parked := make(chan struct{}, 8)
+	compacted := make(chan struct{}, 8)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	prov := &ctxUsageProvider{firstIn: 164000, maxCtx: 200000}
+	done := make(chan struct{})
+	go func() {
+		_, _ = Run(ctx, RunOptions{
+			Provider:    prov,
+			Model:       "x",
+			Tools:       []tools.Tool{noopTool{}},
+			Dispatcher:  tools.NewDispatcher([]tools.Tool{noopTool{}}),
+			Segments:    steerSegs(),
+			SteerQueue:  q,
+			Interactive: true,
+			OnEvent: func(ev providers.Event) {
+				switch ev.Type {
+				case providers.EventAwaitingInput:
+					parked <- struct{}{}
+				case providers.EventContextCompaction:
+					compacted <- struct{}{}
+				}
+			},
+		})
+		close(done)
+	}()
+	waitOn := func(ch <-chan struct{}, what string) {
+		t.Helper()
+		select {
+		case <-ch:
+		case <-time.After(2 * time.Second):
+			t.Fatalf("%s: timed out", what)
+		}
+	}
+
+	// Turn 0: a real turn that reports a large footprint (164k), then parks.
+	waitOn(parked, "initial end_turn park")
+	// Compact while parked → shrinks the in-memory history; re-parks (no call).
+	q <- steer.Message{Kind: steer.KindCompact, Text: "SUMMARY-X"}
+	waitOn(compacted, "compaction applied")
+	// A real operator turn now → exactly one provider call on the compacted history.
+	q <- steer.Message{Text: "continue"}
+	waitOn(parked, "re-park after the real turn")
+
+	prov.mu.Lock()
+	seen := append([]int(nil), prov.seenUsed...)
+	prov.mu.Unlock()
+	if len(seen) < 2 {
+		t.Fatalf("want >=2 provider calls, got %d (%v)", len(seen), seen)
+	}
+	post := seen[len(seen)-1]
+	if post >= prov.firstIn {
+		t.Fatalf("post-compaction Context op=self footprint = %d; want the small compacted size, not the stale pre-compaction %d", post, prov.firstIn)
 	}
 
 	cancel()

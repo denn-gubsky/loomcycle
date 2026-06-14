@@ -910,13 +910,17 @@ func shouldAutoCompact(c *config.Compaction, used, window, iter, lastCompactIter
 // emits it. A steer.KindCompact control instead REPLACES the conversation with
 // the compacted form (server-computed summary + keep-N/keep-first) and emits
 // EventContextCompaction; it does NOT fire onSteer (the summary is not an
-// operator turn and must not be persisted as a user_input replay row).
-func drainSteer(q <-chan steer.Message, messages []providers.Message, onSteer func(steer.Message), emit func(providers.Event)) []providers.Message {
+// operator turn and must not be persisted as a user_input replay row). Returns
+// the (possibly compacted) messages + whether a compaction was applied, so the
+// caller can refresh the context footprint (lastCtxTokens) after a shrink.
+func drainSteer(q <-chan steer.Message, messages []providers.Message, onSteer func(steer.Message), emit func(providers.Event)) ([]providers.Message, bool) {
+	compacted := false
 	for {
 		select {
 		case m := <-q:
 			if m.Kind == steer.KindCompact {
 				messages = applyCompactSummary(messages, m.Text, m.KeepN, m.KeepFirst, emit)
+				compacted = true
 				continue
 			}
 			messages = append(messages, providers.Message{
@@ -927,7 +931,7 @@ func drainSteer(q <-chan steer.Message, messages []providers.Message, onSteer fu
 				onSteer(m)
 			}
 		default:
-			return messages
+			return messages, compacted
 		}
 	}
 }
@@ -1140,11 +1144,9 @@ outerLoop:
 		iterCtx = tools.WithResolvedProvider(iterCtx, opts.Provider.ID())
 		iterCtx = tools.WithResolvedModel(iterCtx, opts.Model)
 		iterCtx = tools.WithResolvedSampling(iterCtx, opts.Sampling)
-		// Current context footprint (last completed turn's input+cache vs the
-		// window) so Context op=self can show the agent how full it is — the
-		// signal it needs to decide whether to self-compact (op=compact). Same
-		// values the auto-compact threshold reads; 0 on the first iteration.
-		iterCtx = tools.WithContextUsage(iterCtx, lastCtxTokens, lastWindow)
+		// NB: the context-footprint stamp (tools.WithContextUsage) is applied
+		// LOWER — after drainSteer + auto/self compaction — so a same-turn
+		// op=self never reports a stale pre-compaction footprint.
 
 		// Heartbeat fires at the top of each iteration. Cheap path —
 		// implementations are expected to be ~one UPDATE. Failures
@@ -1176,7 +1178,14 @@ outerLoop:
 		// user(tool_results)]; appending a user(steer) turn yields consecutive
 		// user turns, which every provider accepts (replay already emits them).
 		if opts.SteerQueue != nil {
-			messages = drainSteer(opts.SteerQueue, messages, opts.OnSteer, emit)
+			var steerCompacted bool
+			messages, steerCompacted = drainSteer(opts.SteerQueue, messages, opts.OnSteer, emit)
+			if steerCompacted {
+				// A steer-delivered compaction shrank the running history; refresh
+				// the footprint so the auto-compact check + op=self below reflect
+				// the compacted size, not the stale pre-compaction value.
+				lastCtxTokens = estimateMessageTokens(messages)
+			}
 		}
 
 		// Auto / self-requested compaction — also a clean boundary (drainSteer
@@ -1193,8 +1202,20 @@ outerLoop:
 			if newMsgs, did := maybeAutoCompact(iterCtx, opts, messages, emit, trigger); did {
 				messages = newMsgs
 				lastCompactIter = iter
+				// Compaction shrank the history; refresh the footprint so op=self
+				// below reflects the compacted size, not the pre-compaction value
+				// (the next real turn's usage overwrites it).
+				lastCtxTokens = estimateMessageTokens(messages)
 			}
 		}
+
+		// Context footprint (input+cache of the last completed turn, or the
+		// post-compaction estimate when a compaction just ran above) so Context
+		// op=self can show the agent how full its window is — the signal it needs
+		// to decide whether to self-compact (op=compact). Stamped HERE, below
+		// drainSteer + auto/self compaction, so a same-turn op=self never reports
+		// the stale pre-compaction footprint. 0 on the first iteration.
+		iterCtx = tools.WithContextUsage(iterCtx, lastCtxTokens, lastWindow)
 
 		// Context-transform plugins (RFC Z / F43): run the configured chain on a
 		// COPY of the outbound context — the loop's canonical system/messages
@@ -1525,6 +1546,12 @@ outerLoop:
 					}
 					if m.Kind == steer.KindCompact {
 						messages = applyCompactSummary(messages, m.Text, m.KeepN, m.KeepFirst, emit)
+						// Refresh the footprint so the next operator turn's op=self
+						// reports the compacted size, not the stale pre-compaction
+						// value. Without this a parked run that compacted kept
+						// reporting its old ~full context (used_tokens / used_pct)
+						// until the next real turn's usage landed.
+						lastCtxTokens = estimateMessageTokens(messages)
 						continue // re-park: wait for the operator's actual next turn
 					}
 					messages = append(messages, providers.Message{
