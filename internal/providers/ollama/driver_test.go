@@ -239,6 +239,21 @@ func TestRequestBody_NumCtxOmittedByDefault(t *testing.T) {
 	}
 }
 
+// TestCapabilities_MaxContextTokensReflectsNumCtx pins that the context
+// window the driver advertises equals the operator-pinned num_ctx — the
+// value the interactive terminal's context gauge renders as used/max/%.
+// Without WithNumCtx the per-model window is genuinely unknown (the driver
+// is model-agnostic), so it stays 0 and the gauge shows only the absolute
+// used size. Fail-before: Capabilities hardcoded MaxContextTokens: 0.
+func TestCapabilities_MaxContextTokensReflectsNumCtx(t *testing.T) {
+	if got := New("ollama-local", "", "", streamhttp.Options{}, nil).Capabilities().MaxContextTokens; got != 0 {
+		t.Errorf("no num_ctx: MaxContextTokens = %d, want 0 (unknown)", got)
+	}
+	if got := New("ollama-local", "", "", streamhttp.Options{}, nil).WithNumCtx(32768).Capabilities().MaxContextTokens; got != 32768 {
+		t.Errorf("num_ctx=32768: MaxContextTokens = %d, want 32768", got)
+	}
+}
+
 // TestRequestBody_NumCtxPropagated pins the headline path: after
 // WithNumCtx(N), every chat request carries options.num_ctx=N. The
 // load-bearing assertion behind the 2026-05-15 employer-profiler
