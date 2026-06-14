@@ -210,11 +210,15 @@ export default function Layout() {
         <header className="topbar">
           <div className="brand">
             <Link to="/" aria-label="loomcycle home">
-              {/* Wordmark from web/public, served under the Vite base "/ui/"
-                  (hardcoded to match the existing /ui/* links in this tree).
-                  The asset is the dark-theme variant: wordmark recoloured to
-                  --fg, loom-mark keeps its brand colours. */}
-              <img src="/ui/loomcycle-logo.svg" alt="loomcycle" className="brand-logo" />
+              {/* Wordmark from web/public (served under the Vite base "/ui/").
+                  Two variants — the wordmark is recoloured per theme so it reads
+                  on the topbar; the loom-mark keeps its brand colours in both.
+                  light → black-ink wordmark, dark → near-white wordmark. */}
+              <img
+                src={theme === "light" ? "/ui/loomcycle-logo-light.svg" : "/ui/loomcycle-logo.svg"}
+                alt="loomcycle"
+                className="brand-logo"
+              />
             </Link>
             <span className="version">{version === null ? "…" : version}</span>
           </div>

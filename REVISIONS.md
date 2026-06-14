@@ -38,7 +38,8 @@ loom-wood brand green **`#56c596`** everywhere — CSS (via the aliases) and the
 inline chart colors (`LineChart` grid/axis, `ActivityMonitor` series now read
 `var(--lc-*)`; inline SVG resolves ancestor CSS vars). The global form controls
 also theme against the tokens (folding in the v0.34.1-line form-field
-homogenisation). No `#5b9dff` remains.
+homogenisation). No `#5b9dff` remains. The topbar wordmark swaps per theme too —
+near-white on dark, black-ink on light — so it reads on either topbar.
 
 **Fixes.** (1) **Interactive runs are unbounded by default** — an interactive
 (persistent terminal) run parks at end_turn and resumes per operator turn, and
