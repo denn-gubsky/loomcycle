@@ -163,26 +163,26 @@ export default function LineChart({
             x2={PAD_LEFT + plotW}
             y1={yScaleLeft(t)}
             y2={yScaleLeft(t)}
-            stroke="#2a2e3a"
+            stroke="var(--lc-chart-grid)"
             strokeOpacity={0.5}
           />
         ))}
 
         {/* axis lines */}
-        <line x1={PAD_LEFT} x2={PAD_LEFT} y1={PAD_TOP} y2={PAD_TOP + plotH} stroke="#2a2e3a" />
+        <line x1={PAD_LEFT} x2={PAD_LEFT} y1={PAD_TOP} y2={PAD_TOP + plotH} stroke="var(--lc-chart-grid)" />
         <line
           x1={PAD_LEFT + plotW}
           x2={PAD_LEFT + plotW}
           y1={PAD_TOP}
           y2={PAD_TOP + plotH}
-          stroke="#2a2e3a"
+          stroke="var(--lc-chart-grid)"
         />
         <line
           x1={PAD_LEFT}
           x2={PAD_LEFT + plotW}
           y1={PAD_TOP + plotH}
           y2={PAD_TOP + plotH}
-          stroke="#2a2e3a"
+          stroke="var(--lc-chart-grid)"
         />
 
         {/* axis tick labels */}
@@ -193,7 +193,7 @@ export default function LineChart({
             y={yScaleLeft(t) + 3}
             textAnchor="end"
             fontSize="10"
-            fill="#9aa0ad"
+            fill="var(--lc-chart-axis)"
             fontFamily="ui-monospace, monospace"
           >
             {yLeftFormat(t)}
@@ -207,7 +207,7 @@ export default function LineChart({
               y={yScaleRight(t) + 3}
               textAnchor="start"
               fontSize="10"
-              fill="#9aa0ad"
+              fill="var(--lc-chart-axis)"
               fontFamily="ui-monospace, monospace"
             >
               {yRightFormat(t)}
@@ -220,7 +220,7 @@ export default function LineChart({
             y={PAD_TOP + plotH + 14}
             textAnchor="middle"
             fontSize="10"
-            fill="#9aa0ad"
+            fill="var(--lc-chart-axis)"
             fontFamily="ui-monospace, monospace"
           >
             {xFormat(t)}
@@ -265,7 +265,7 @@ export default function LineChart({
             x2={hover.x}
             y1={PAD_TOP}
             y2={PAD_TOP + plotH}
-            stroke="#9aa0ad"
+            stroke="var(--lc-chart-axis)"
             strokeOpacity={0.4}
             strokeDasharray="3 3"
           />

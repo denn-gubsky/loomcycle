@@ -1,33 +1,8 @@
-/* Loomcycle UI — minimal, dark-first dashboard styling.
-   No CSS framework; vanilla CSS for the v0.7.3 footprint. */
-
-:root {
-  --bg: #0f1115;
-  --bg-soft: #161922;
-  --bg-soft-2: #1d2230;
-  --fg: #e6e6e6;
-  --fg-soft: #9aa0ad;
-  --accent: #5b9dff;
-  --running: #f0a040;
-  --completed: #4ec9b0;
-  --failed: #ff5d68;
-  --cancelled: #b08bd0;
-  --border: #2a2e3a;
-  --mono: ui-monospace, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
-  /* v0.11.6 — promoted from inline fallback values (--bg-muted, #181818)
-   * + (--danger, #c33) used in .library-headers-grid + the new
-   * .library-models-* classes. Codifying them here so theming stays
-   * coherent if a future change overrides them. */
-  --bg-muted: #181818;
-  --danger: #c33;
-  /* v0.11.7 — same treatment for --fg-muted and --bg-input. Both have
-   * ~16 call sites across the library/memory/channel form clusters,
-   * always via inline fallback only. A future theme override would
-   * silently fail on those sites; declaring them here makes overrides
-   * authoritative. Values match the predominant inline fallback. */
-  --fg-muted: #888;
-  --bg-input: #1a1a1a;
-}
+/* Loomcycle UI — dashboard styling. Themeable (light/dark) via the design
+   tokens in tokens.css (imported first in main.tsx): the --bg / --fg / --accent
+   / --border / … names used throughout this file are aliases of the themed
+   --lc-* tokens, so this file follows the active theme for free. New rules
+   should prefer the --lc-* tokens directly. */
 
 * {
   box-sizing: border-box;
@@ -37,12 +12,19 @@ html, body, #root {
   padding: 0;
   background: var(--bg);
   color: var(--fg);
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  font-family: var(--lc-font-body);
   font-size: 14px;
   height: 100%;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+/* Display font for headings (design-system: Outfit). Sizes are left to the
+   existing per-component rules — the dense console keeps its scale. */
+h1, h2, h3, h4, h5, h6 {
+  font-family: var(--lc-font-display);
 }
 a {
-  color: var(--accent);
+  color: var(--lc-link);
   text-decoration: none;
 }
 a:hover {
@@ -58,44 +40,55 @@ pre {
   word-break: break-word;
 }
 
-/* Homogeneous dark-theme form controls.
- *
- * loomcycle is a dark-first console, but <input>/<textarea>/<select> do NOT
- * inherit font or colors from <body>, so a field that isn't wrapped in a styled
- * container falls back to the white-on-black UA default (thin font, square
- * corners) — and even the styled editor rules set colors but no font-family, so
- * their text stayed in the thin UA font. This base gives every text-like
- * control the same dark look the topbar fields have (dark bg, light text, mono
- * font, rounded corners, accent focus).
- *
- * `:where()` keeps the selector at element-level specificity (0,0,1) so any
- * existing component rule still wins where it sets a property — this only fills
- * the gaps. Checkboxes / radios / file / range / color keep native rendering.
- */
+/* Homogeneous form controls (themed).
+ * <input>/<textarea>/<select> don't inherit font or colors from <body>, so an
+ * unstyled field falls back to the UA default. This base gives every text-like
+ * control the same look as the topbar fields, themed via the design tokens.
+ * :where() keeps the selector at element specificity (0,0,1) so any component
+ * rule still wins; checkboxes / radios / file / range / color stay native. */
 input,
 textarea,
 select {
-  font-family: var(--mono);
+  font-family: var(--lc-font-mono);
 }
 input:where(:not([type="checkbox"]):not([type="radio"]):not([type="file"]):not([type="range"]):not([type="color"])),
 textarea,
 select {
-  background: var(--bg-input);
-  color: var(--fg);
-  border: 1px solid var(--border);
-  border-radius: 4px;
+  background: var(--lc-input-bg);
+  color: var(--lc-text);
+  border: 1px solid var(--lc-rule);
+  border-radius: var(--lc-radius-sm);
   padding: 6px 8px;
-  font-size: 13px;
+  font-size: var(--lc-text-sm);
 }
 input:where(:not([type="checkbox"]):not([type="radio"]):not([type="file"]):not([type="range"]):not([type="color"])):focus,
 textarea:focus,
 select:focus {
   outline: none;
-  border-color: var(--accent);
+  border-color: var(--lc-accent);
 }
 input::placeholder,
 textarea::placeholder {
-  color: var(--fg-muted);
+  color: var(--lc-text-faint);
+}
+
+/* Topbar theme toggle (sun/moon). Quiet icon button matching the topbar. */
+.theme-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 28px;
+  background: transparent;
+  color: var(--lc-text-muted);
+  border: 1px solid var(--lc-rule);
+  border-radius: var(--lc-radius-sm);
+  cursor: pointer;
+  padding: 0;
+}
+.theme-toggle:hover {
+  color: var(--lc-text);
+  border-color: var(--lc-accent);
 }
 
 .layout {
@@ -4268,7 +4261,7 @@ button.primary:disabled {
   cursor: pointer;
 }
 .live-run-compact:not(:disabled):hover {
-  border-color: var(--accent, #5b9dff);
+  border-color: var(--accent);
   color: var(--fg, #e6e6e6);
 }
 .live-run-compact:disabled {
@@ -4295,7 +4288,7 @@ button.primary:disabled {
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25);
 }
 .composer:focus-within {
-  border-color: var(--accent, #5b9dff);
+  border-color: var(--accent);
 }
 .composer-input {
   width: 100%;
@@ -4358,7 +4351,7 @@ button.primary:disabled {
   padding: 0;
   border: none;
   border-radius: 50%;
-  background: var(--accent, #5b9dff);
+  background: var(--accent);
   color: #fff;
   font-size: 16px;
   line-height: 1;
