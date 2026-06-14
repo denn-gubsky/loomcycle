@@ -58,6 +58,46 @@ pre {
   word-break: break-word;
 }
 
+/* Homogeneous dark-theme form controls.
+ *
+ * loomcycle is a dark-first console, but <input>/<textarea>/<select> do NOT
+ * inherit font or colors from <body>, so a field that isn't wrapped in a styled
+ * container falls back to the white-on-black UA default (thin font, square
+ * corners) — and even the styled editor rules set colors but no font-family, so
+ * their text stayed in the thin UA font. This base gives every text-like
+ * control the same dark look the topbar fields have (dark bg, light text, mono
+ * font, rounded corners, accent focus).
+ *
+ * `:where()` keeps the selector at element-level specificity (0,0,1) so any
+ * existing component rule still wins where it sets a property — this only fills
+ * the gaps. Checkboxes / radios / file / range / color keep native rendering.
+ */
+input,
+textarea,
+select {
+  font-family: var(--mono);
+}
+input:where(:not([type="checkbox"]):not([type="radio"]):not([type="file"]):not([type="range"]):not([type="color"])),
+textarea,
+select {
+  background: var(--bg-input);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 6px 8px;
+  font-size: 13px;
+}
+input:where(:not([type="checkbox"]):not([type="radio"]):not([type="file"]):not([type="range"]):not([type="color"])):focus,
+textarea:focus,
+select:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+input::placeholder,
+textarea::placeholder {
+  color: var(--fg-muted);
+}
+
 .layout {
   display: flex;
   flex-direction: row;
