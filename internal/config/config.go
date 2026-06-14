@@ -2176,6 +2176,22 @@ type Env struct {
 	// Env: LOOMCYCLE_PROVIDER_IDLE_TIMEOUT_MS.
 	ProviderIdleTimeout time.Duration
 
+	// OllamaLocalHeaderTimeout / OllamaLocalIdleTimeout override the
+	// ProviderHeaderTimeout / ProviderIdleTimeout pair for the
+	// "ollama-local" registration ONLY. Local generation is inherently
+	// slow on first-token — a cold model load from disk plus prompt
+	// evaluation over a large num_ctx can take minutes on a consumer
+	// GPU/CPU, blowing past the 60s/90s cloud-shaped defaults and
+	// surfacing as a spurious header/idle timeout. These default to a
+	// generous 300s each so a slow local model isn't cut off, while the
+	// cloud providers keep the tighter fast-fail defaults. Hosted
+	// ollama.com (the "ollama" registration) uses the global
+	// Provider*Timeout, like every other cloud driver.
+	// Env: LOOMCYCLE_OLLAMA_LOCAL_HEADER_TIMEOUT_MS /
+	// LOOMCYCLE_OLLAMA_LOCAL_IDLE_TIMEOUT_MS.
+	OllamaLocalHeaderTimeout time.Duration
+	OllamaLocalIdleTimeout   time.Duration
+
 	// v0.10.0 OpenTelemetry tracing — default OFF. Setting
 	// OTELExporterEndpoint to a non-empty value installs an OTLP/HTTP
 	// exporter; loomcycle emits run/iteration/provider.call/tool.call
@@ -2959,6 +2975,23 @@ func Load(path string) (*Config, error) {
 	if v := os.Getenv("LOOMCYCLE_PROVIDER_IDLE_TIMEOUT_MS"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
 			cfg.Env.ProviderIdleTimeout = time.Duration(n) * time.Millisecond
+		}
+	}
+
+	// Local Ollama gets a more generous default than the cloud providers:
+	// a cold model load + large-context prompt eval can take minutes to
+	// first token. Scoped to the ollama-local registration; see the field
+	// docs on Env.OllamaLocalHeaderTimeout.
+	cfg.Env.OllamaLocalHeaderTimeout = 300 * time.Second
+	if v := os.Getenv("LOOMCYCLE_OLLAMA_LOCAL_HEADER_TIMEOUT_MS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			cfg.Env.OllamaLocalHeaderTimeout = time.Duration(n) * time.Millisecond
+		}
+	}
+	cfg.Env.OllamaLocalIdleTimeout = 300 * time.Second
+	if v := os.Getenv("LOOMCYCLE_OLLAMA_LOCAL_IDLE_TIMEOUT_MS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			cfg.Env.OllamaLocalIdleTimeout = time.Duration(n) * time.Millisecond
 		}
 	}
 
