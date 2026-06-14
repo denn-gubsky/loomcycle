@@ -191,18 +191,23 @@ export default function LibraryEditModal({
 
   // --- Advanced overlay (agents only). A free-form JSON/YAML object
   // for overlay keys without a dedicated control (channels, interruption,
-  // evaluation_scopes, memory_backend, retry_attempts,
-  // unbounded_iterations, the *_def_scopes family, …). Starts EMPTY on
-  // fork — the substrate's per-field applyOverlay already inherits the
-  // parent's unknown keys, so we don't re-confront the operator with a
-  // JSON blob; an info chip lists what's carried forward unchanged.
-  const [advancedOpen, setAdvancedOpen] = useState(false);
+  // evaluation_scopes, memory_backend, compaction, retry_attempts,
+  // unbounded_iterations, the *_def_scopes family, …). PRE-FILLED on
+  // fork/edit with the source's current advanced keys (values), so a saved
+  // overlay is visible AND editable when the editor is reopened — it used to
+  // start empty and surface saved values only as a key-name hint, which read
+  // as "the overlay was never saved". Opens expanded when there's content.
+  const initialAdvancedText = useMemo(
+    () => initialAdvancedOverlayText(forkSource?.definition),
+    [forkSource],
+  );
+  const [advancedOpen, setAdvancedOpen] = useState(initialAdvancedText !== "");
   const [advancedFormat, setAdvancedFormat] = useState<"json" | "yaml">("json");
-  const [advancedText, setAdvancedText] = useState("");
+  const [advancedText, setAdvancedText] = useState(initialAdvancedText);
   const [advancedErr, setAdvancedErr] = useState<string | null>(null);
-  // Keys present on the fork source that no structured control maps —
-  // carried forward unchanged by the substrate's per-field merge. Shown
-  // as a hint so the operator knows they're preserved without seeing JSON.
+  // Keys present on the fork source that no structured control maps. They're
+  // pre-filled into the box above; the hint names them (and notes the
+  // remove-falls-back-to-inherited subtlety of the substrate's additive merge).
   const inheritedUnknownKeys = useMemo(
     () => unknownSourceKeys(forkSource?.definition),
     [forkSource],
@@ -1195,9 +1200,9 @@ function AgentAdvancedOverlay(props: {
         <>
           {props.inheritedUnknownKeys.length > 0 && (
             <div className="library-modal-field-hint">
-              inherited from source (carried forward unchanged):{" "}
-              <code>{props.inheritedUnknownKeys.join(", ")}</code>. Re-type a
-              key here only to override it.
+              pre-filled from the source: <code>{props.inheritedUnknownKeys.join(", ")}</code>.
+              Edit a value to change it; a key you delete falls back to the
+              source's value (the substrate merge is additive — it can't unset).
             </div>
           )}
           <div className="library-advanced-format">
@@ -1582,6 +1587,26 @@ function unknownSourceKeys(def: unknown): string[] {
     out.push(key);
   }
   return out;
+}
+
+// unknownSourceOverlay returns the {key: value} object for the source's
+// advanced-overlay keys (the unknownSourceKeys set) — used to pre-fill the
+// advanced box so a saved overlay round-trips visibly in the editor.
+function unknownSourceOverlay(def: unknown): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  if (!def || typeof def !== "object") return out;
+  const d = def as Record<string, unknown>;
+  for (const key of unknownSourceKeys(def)) {
+    out[key] = d[key];
+  }
+  return out;
+}
+
+// initialAdvancedOverlayText pretty-prints unknownSourceOverlay as JSON for the
+// advanced box's initial value; "" when the source has no such keys.
+function initialAdvancedOverlayText(def: unknown): string {
+  const ov = unknownSourceOverlay(def);
+  return Object.keys(ov).length > 0 ? JSON.stringify(ov, null, 2) : "";
 }
 
 // validateSampling mirrors config.Sampling.Validate() for per-field

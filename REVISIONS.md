@@ -53,7 +53,12 @@ unbounded (the `1<<20` hard ceiling + cancellation still bound it); an explicit
 scale=310 under `go test -race ./...`, saturating the in-memory sqlite under
 64-way concurrent fires and intermittently over-counting (a load artifact, not a
 data race); the scale is now capped under `-race` while keeping full
-race-coverage of the scheduler concurrency.
+race-coverage of the scheduler concurrency. (3) **Agent editor — advanced
+overlay round-trips visibly** — the "advanced (raw overlay)" box used to init
+empty, so a saved overlay (`channels` / `interruption` / `retry_attempts` /
+`*_def_scopes` / …) was invisible on reopen and read as "never saved" (it was
+always persisted server-side). It now **pre-fills from the source** (values,
+editable) and opens expanded when there's content.
 
 Web-UI / CI only; no `@loomcycle/client` bump.
 
