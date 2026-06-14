@@ -4,7 +4,27 @@
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="dark light" />
     <title>loomcycle</title>
+    <!-- Resolve the theme before first paint (override ?? OS) so there's no
+         flash-of-wrong-theme. useTheme.ts mirrors + maintains this at runtime. -->
+    <script>
+      (function () {
+        try {
+          var v = localStorage.getItem("loomcycle.theme");
+          var t =
+            v === "light" || v === "dark"
+              ? v
+              : window.matchMedia &&
+                window.matchMedia("(prefers-color-scheme: light)").matches
+              ? "light"
+              : "dark";
+          document.documentElement.setAttribute("data-theme", t);
+          var m = document.querySelector('meta[name="color-scheme"]');
+          if (m) m.setAttribute("content", t);
+        } catch (e) {}
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

@@ -9,14 +9,17 @@ import {
   Library,
   ListTree,
   type LucideIcon,
+  Moon,
   PanelLeftClose,
   PanelLeftOpen,
   Play,
   Plug,
   Radio,
   ScrollText,
+  Sun,
 } from "lucide-react";
 import { Principal, UserSummary, getHealth, getWhoami, listUsers } from "../api";
+import { useTheme } from "../hooks/useTheme";
 import PauseControls from "./PauseControls";
 
 const USER_ID_KEY = "loomcycle.userId";
@@ -60,6 +63,7 @@ export default function Layout() {
   const [showManual, setShowManual] = useState(false);
   const [draft, setDraft] = useState(userId);
   const [version, setVersion] = useState<string | null>(null);
+  const { theme, toggle: toggleTheme } = useTheme();
 
   // The authenticated principal (RFC L / multi-tenant UI authz), resolved
   // from GET /v1/_me on boot. Drives the role: super-admin (is_admin) sees
@@ -214,6 +218,15 @@ export default function Layout() {
             </Link>
             <span className="version">{version === null ? "…" : version}</span>
           </div>
+          <button
+            type="button"
+            className="theme-toggle"
+            onClick={toggleTheme}
+            title={theme === "dark" ? "Switch to light theme" : "Switch to dark theme"}
+            aria-label="Toggle color theme"
+          >
+            {theme === "dark" ? <Sun size={16} /> : <Moon size={16} />}
+          </button>
           {isAdmin && <PauseControls />}
           {/* Role/tenant badge — super-admin sees all tenants; a tenant is
               scoped to its own. */}
