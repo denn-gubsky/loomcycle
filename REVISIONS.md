@@ -8,6 +8,48 @@ For pre-v0.4 history (single-tool runtime, library milestone, security patch), s
 
 ---
 
+## What's in v0.34.3
+
+**`Context op=self` footprint is fresh after a compaction.** A patch — runtime
+only, no new primitives.
+
+A compaction replaces the loop's in-memory history with `[pinned task? +
+summary, ack] ++ last-N kept verbatim`. The loop also tracks a running **context
+footprint** (`lastCtxTokens`) — the value `Context op=self` reports as
+`used_tokens` / `used_pct`, and the same value the auto-compact threshold reads.
+That footprint was only ever set from a **completed provider turn's usage**, so a
+compaction (which rewrites `messages` *without* a provider call) left it pointing
+at the pre-compaction size. The result: for one turn after a compaction the agent
+reported its **old, near-full** context (e.g. `~164k / 82%`) even though the
+actual outbound request had already shrunk — an operator saw the compaction fire
+(`~98k → ~0.9k`), asked the agent its context size, and got the stale `164k` back
+while the real wire request was only `in=1504` tokens.
+
+The loop now refreshes `lastCtxTokens` (using `estimateMessageTokens` — the same
+estimator behind the `context_compaction` event's before/after numbers) at
+**every** compaction site:
+
+- the **parked interactive run** path (`steer.KindCompact` applied while the run
+  is parked awaiting operator input — the reported case),
+- the **running run** path (`steer.KindCompact` drained by `drainSteer`; it now
+  returns whether it compacted so the caller can refresh), and
+- the **inline auto/self** path (`maybeAutoCompact` — covers the auto-threshold
+  trigger and `Context op=compact`).
+
+The `WithContextUsage` stamp also moves **below** the loop's top-of-iteration
+compaction block, so a *same-turn* `op=self` (on the inline / running-steer
+paths) reflects the compacted size too. As a side benefit, refreshing the
+footprint before the `shouldAutoCompact` check suppresses a redundant auto-compact
+immediately after a steer-delivered compaction.
+
+Fail-before regression test `TestRun_Interactive_ContextUsageRefreshedAfterCompaction`
+(`internal/loop/compact_test.go`): a parked run reports a 164k footprint,
+compacts, then a real operator turn's visible `op=self` footprint must be the
+small compacted size — reverting the fix reproduces the stale `164000`.
+Runtime-only; no `@loomcycle/client` bump.
+
+---
+
 ## What's in v0.34.2
 
 **Web UI design system + light/dark theming.** No runtime primitives — a Web UI
