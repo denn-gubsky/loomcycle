@@ -1,0 +1,166 @@
+/* ============================================================
+ * loomcycle Web UI — design tokens
+ *
+ * The single source of truth for color / spacing / type / radius /
+ * shadow / font, mirroring the brand design system
+ * (loomcycle-internal/web/assets/tokens.css). Two layers:
+ *
+ *   1. --lc-* tokens — the design system. Non-color tokens are
+ *      theme-independent; color tokens are themed (dark default,
+ *      [data-theme="light"] override).
+ *   2. Legacy aliases (--bg / --fg / --accent / …) mapped onto the
+ *      --lc-* tokens, so the rest of styles.css keeps working and
+ *      themes for free while it migrates to the --lc-* names.
+ *
+ * Theme is resolved before paint by the inline script in index.html
+ * (localStorage override ?? OS prefers-color-scheme) which sets
+ * <html data-theme>. useTheme.ts keeps it in sync at runtime.
+ * ============================================================ */
+
+:root {
+  /* —— Typography —— */
+  --lc-font-display: "Outfit Variable", "Outfit", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --lc-font-body: "Inter Variable", "Inter", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --lc-font-mono: "JetBrains Mono Variable", "JetBrains Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+
+  /* Type scale (1.25 modular). Available to components; the dense
+   * console keeps its existing per-element sizes — these are not
+   * force-applied globally. */
+  --lc-text-xs: 12px;
+  --lc-text-sm: 13px;
+  --lc-text-base: 14px;
+  --lc-text-md: 16px;
+  --lc-text-lg: 20px;
+  --lc-text-xl: 25px;
+  --lc-text-2xl: 32px;
+  --lc-text-3xl: 40px;
+  --lc-text-4xl: 56px;
+  --lc-text-5xl: 72px;
+
+  /* —— Spacing (8px base) —— */
+  --lc-space-1: 8px;
+  --lc-space-2: 16px;
+  --lc-space-3: 24px;
+  --lc-space-4: 32px;
+  --lc-space-6: 48px;
+  --lc-space-8: 64px;
+  --lc-space-12: 96px;
+
+  /* —— Radius —— */
+  --lc-radius-sm: 4px;
+  --lc-radius: 8px;
+  --lc-radius-lg: 14px;
+
+  /* —— Elevation —— */
+  --lc-shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.20);
+  --lc-shadow: 0 2px 10px rgba(0, 0, 0, 0.30);
+  --lc-shadow-lg: 0 10px 30px rgba(0, 0, 0, 0.40);
+
+  /* ======================================================
+   * DARK theme color tokens (default).
+   * Values are the current palette verbatim, so dark renders
+   * byte-identical to before — except --lc-accent, now the
+   * loom-wood brand green.
+   * ====================================================== */
+  --lc-bg: #0f1115;
+  --lc-surface: #161922;
+  --lc-surface-2: #1d2230;
+  --lc-surface-3: #2a2a32;
+  --lc-input-bg: #1a1a1a;
+
+  --lc-text: #e6e6e6;
+  --lc-text-muted: #9aa0ad;
+  --lc-text-faint: #888888;
+  --lc-text-inverse: #0f1115;
+
+  --lc-rule: #2a2e3a;
+  --lc-rule-strong: #444444;
+
+  --lc-accent: #56c596;        /* loom-wood — the brand accent */
+  --lc-accent-hover: #3da376;
+  --lc-accent-soft: rgba(86, 197, 150, 0.14);
+  --lc-link: #56c596;
+
+  --lc-running: #f0a040;
+  --lc-completed: #4ec9b0;
+  --lc-failed: #ff5d68;
+  --lc-cancelled: #b08bd0;
+  --lc-danger: #cc3333;
+  --lc-danger-strong: #9b2c2c;
+
+  /* Charts (consumed by inline SVG via var()) */
+  --lc-chart-grid: #2a2e3a;
+  --lc-chart-axis: #9aa0ad;
+
+  color-scheme: dark;
+
+  /* ======================================================
+   * Legacy aliases → themed --lc-* tokens. Keep the old names
+   * working (and theming) while styles.css migrates.
+   * ====================================================== */
+  --bg: var(--lc-bg);
+  --bg-soft: var(--lc-surface);
+  --bg-soft-2: var(--lc-surface-2);
+  --bg-muted: var(--lc-input-bg);
+  --bg-input: var(--lc-input-bg);
+  --fg: var(--lc-text);
+  --fg-soft: var(--lc-text-muted);
+  --fg-muted: var(--lc-text-faint);
+  --accent: var(--lc-accent);
+  --border: var(--lc-rule);
+  --running: var(--lc-running);
+  --completed: var(--lc-completed);
+  --failed: var(--lc-failed);
+  --cancelled: var(--lc-cancelled);
+  --danger: var(--lc-danger);
+  --mono: var(--lc-font-mono);
+}
+
+/* Explicit dark selector == the :root default (so the toggle can set
+ * data-theme="dark" unconditionally). */
+[data-theme="dark"] {
+  color-scheme: dark;
+}
+
+/* ======================================================
+ * LIGHT theme — functional, basic-neutral first pass.
+ * Refining this to the brand cream/agent palette is the
+ * documented follow-up; only the color tokens change here,
+ * everything else inherits from :root.
+ * ====================================================== */
+[data-theme="light"] {
+  --lc-bg: #f5f6f8;
+  --lc-surface: #ffffff;
+  --lc-surface-2: #eceef2;
+  --lc-surface-3: #e2e5ea;
+  --lc-input-bg: #ffffff;
+
+  --lc-text: #1a1d24;
+  --lc-text-muted: #5a6270;
+  --lc-text-faint: #8a909c;
+  --lc-text-inverse: #ffffff;
+
+  --lc-rule: #d7dbe2;
+  --lc-rule-strong: #c2c7d0;
+
+  --lc-accent: #2f9e6f;        /* darker loom-wood for AA contrast on light */
+  --lc-accent-hover: #25805a;
+  --lc-accent-soft: rgba(47, 158, 111, 0.12);
+  --lc-link: #2f9e6f;
+
+  --lc-running: #b9740f;
+  --lc-completed: #1f9e86;
+  --lc-failed: #d23f4a;
+  --lc-cancelled: #7d4fb3;
+  --lc-danger: #c0392b;
+  --lc-danger-strong: #962419;
+
+  --lc-chart-grid: #d7dbe2;
+  --lc-chart-axis: #5a6270;
+
+  --lc-shadow-sm: 0 1px 2px rgba(26, 29, 36, 0.05);
+  --lc-shadow: 0 2px 10px rgba(26, 29, 36, 0.08);
+  --lc-shadow-lg: 0 10px 30px rgba(26, 29, 36, 0.12);
+
+  color-scheme: light;
+}

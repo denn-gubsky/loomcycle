@@ -1,6 +1,13 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
+// Self-hosted brand fonts (bundled into dist by Vite — no CDN, works offline).
+import "@fontsource-variable/outfit";
+import "@fontsource-variable/inter";
+import "@fontsource-variable/jetbrains-mono";
+// Design tokens MUST load before styles.css so the legacy --bg/--fg/--accent
+// aliases resolve to the themed --lc-* tokens.
+import "./tokens.css";
 import "./styles.css";
 import AgentsView from "./pages/AgentsView";
 import RunView from "./pages/RunView";

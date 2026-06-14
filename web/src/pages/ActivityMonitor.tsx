@@ -39,14 +39,17 @@ const LS_SHOW_ADVANCED = "loomcycle.activity.showAdvanced";
 // Series colors — pulled from the existing palette + the v0.8.21
 // awaited-state chip palette to stay consistent with the rest of
 // the UI.
-const C_MEMORY = "#5b9dff";     // --accent
+// Accent / running / muted are theme-aware via the design tokens (inline SVG
+// reads ancestor CSS vars); the rest are a fixed multi-series palette that
+// reads on both themes.
+const C_MEMORY = "var(--lc-accent)";
 const C_AGENTS = "#ffb766";     // await-channel orange
-const C_QUEUED = "#5b9dff";     // accent (top of stack)
-const C_ACTIVE = "#f0a040";     // --running (bottom of stack)
-const C_CPU_PROCESS = "#5b9dff";
-const C_CPU_SYSTEM = "#9aa0ad"; // --fg-soft, dashed via opacity
+const C_QUEUED = "var(--lc-accent)"; // accent (top of stack)
+const C_ACTIVE = "var(--lc-running)"; // running (bottom of stack)
+const C_CPU_PROCESS = "var(--lc-accent)";
+const C_CPU_SYSTEM = "var(--lc-chart-axis)"; // muted, dashed via opacity
 const C_GOROUTINES = "#6ee7a3";   // await-running green
-const C_HEAP_ALLOC = "#5b9dff";   // accent
+const C_HEAP_ALLOC = "var(--lc-accent)";
 const C_HEAP_INUSE = "#c9a8ff";   // await-interrupted violet
 const C_SYSMEM_USED = "#ffb766";  // await-channel orange
 const C_SYSMEM_AVAIL = "#6ee7a3"; // await-running green
