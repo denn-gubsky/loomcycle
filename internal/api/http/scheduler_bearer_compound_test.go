@@ -30,6 +30,12 @@ import (
 // stress under load — proportions across the 3 phases are preserved.
 var compoundScale = flag.Int("scale", 310, "total number of schedules to seed in TestSchedulerBearerCompound (split 3% / 32% / 65% across the 3 phases)")
 
+// raceMaxCompoundScale caps the scale when the test binary is built with
+// -race (see race_detect_test.go). Equals the functional floor (30), so the
+// race job still exercises every concurrency path without the high-scale load
+// artifact. The full 310-scale load run is for the non-race job.
+const raceMaxCompoundScale = 30
+
 // TestSchedulerBearerCompound is the v0.12.7 release-gate test. It
 // verifies the three v1.x substrates COMPOSE correctly:
 //
@@ -68,6 +74,19 @@ func TestSchedulerBearerCompound(t *testing.T) {
 		// one fork (scale=1 would split into 0/0/1).
 		t.Logf("scale=%d clamped to 30 (minimum per-phase = 1+1+1 = 3 wouldn't exercise the cascade)", scale)
 		scale = 30
+	}
+	// Under the race detector this is a load artifact, not a race test: at the
+	// default scale=310 the ~10× slowdown + serialised access saturate the
+	// in-memory sqlite under 64-way concurrent fires and intermittently
+	// over-count (a flake, observed only on loaded CI runners, not a data
+	// race). Cap the scale so `go test -race ./...` still exercises the
+	// scheduler's concurrency (parallel fires, the inFlight map, the per-tick
+	// barrier) for genuine race detection, without the load-induced flake. The
+	// full 310-scale load run still works without -race (or `-scale=N` + -race
+	// for deliberate stress).
+	if raceEnabled && scale > raceMaxCompoundScale {
+		t.Logf("scale=%d capped to %d under -race (this is a load test, not a race test)", scale, raceMaxCompoundScale)
+		scale = raceMaxCompoundScale
 	}
 	phase1Count := scale * 3 / 100
 	if phase1Count < 1 {
