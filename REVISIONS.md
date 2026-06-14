@@ -8,6 +8,56 @@ For pre-v0.4 history (single-tool runtime, library milestone, security patch), s
 
 ---
 
+## What's in v0.34.2
+
+**Web UI design system + light/dark theming.** No runtime primitives — a Web UI
+design pass plus two small fixes.
+
+**Tokenized design system.** A new `--lc-*` token layer (`web/src/tokens.css`)
+mirroring the brand design system (`loomcycle-internal/web/assets/tokens.css`):
+spacing (8px grid) / type scale (1.25 modular) / radius / shadow / fonts +
+semantic colors. Color tokens are themed (dark default + a `[data-theme="light"]`
+override); the rest are theme-independent. The legacy `--bg` / `--fg` /
+`--accent` / `--border` / … names are redefined as aliases of the themed
+`--lc-*` tokens, so the whole 4571-line `styles.css` follows the active theme
+without a per-rule rewrite. `tokens.css` imports before `styles.css` so the
+aliases resolve.
+
+**Light + dark themes.** Default follows the OS `prefers-color-scheme`; a
+persistent topbar sun/moon toggle overrides it (`useTheme.ts`, localStorage). An
+inline pre-paint script in `index.html` sets `data-theme` + `<meta
+color-scheme>` before React mounts, so there's no flash-of-wrong-theme. Dark is
+the current palette verbatim; light ships as a functional **basic-neutral**
+palette — refining it to the brand cream/agent colors is the documented
+follow-up.
+
+**Brand fonts + accent.** Self-hosted, bundled **Outfit** (display) / **Inter**
+(body) / **JetBrains Mono** (code) via `@fontsource-variable` — no CDN, embedded
+in the binary, offline-safe. The accent moves from light-blue `#5b9dff` to the
+loom-wood brand green **`#56c596`** everywhere — CSS (via the aliases) and the
+inline chart colors (`LineChart` grid/axis, `ActivityMonitor` series now read
+`var(--lc-*)`; inline SVG resolves ancestor CSS vars). The global form controls
+also theme against the tokens (folding in the v0.34.1-line form-field
+homogenisation). No `#5b9dff` remains.
+
+**Fixes.** (1) **Interactive runs are unbounded by default** — an interactive
+(persistent terminal) run parks at end_turn and resumes per operator turn, and
+each turn consumes a loop iteration, so the default 16-iteration cap silently
+ended a live session after ~16 turns (`max_iterations`). That cap is a
+runaway-autonomous guard with no purpose for an operator-driven, Cancel-bounded
+terminal, so an interactive run with no explicit `max_iterations` is now
+unbounded (the `1<<20` hard ceiling + cancellation still bound it); an explicit
+`max_iterations` is still honored, autonomous runs keep the 16 default.
+(2) **`-race` de-flake** — `TestSchedulerBearerCompound` ran at its default
+scale=310 under `go test -race ./...`, saturating the in-memory sqlite under
+64-way concurrent fires and intermittently over-counting (a load artifact, not a
+data race); the scale is now capped under `-race` while keeping full
+race-coverage of the scheduler concurrency.
+
+Web-UI / CI only; no `@loomcycle/client` bump.
+
+---
+
 ## What's in v0.34.1
 
 **Hardening + branding — no new features.** A security-hardening and cosmetic
