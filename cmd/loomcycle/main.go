@@ -2370,7 +2370,14 @@ func newProviderResolver(cfg *config.Config) *providerResolver {
 	// effectively always-on. Operators disable it via
 	// OLLAMA_BASE_URL=disabled (or an empty string in shell env).
 	if cfg.Env.OllamaBaseURL != "" && cfg.Env.OllamaBaseURL != "disabled" {
-		pr.ollamaLocal = ollama.New("ollama-local", "", cfg.Env.OllamaBaseURL, streamOpts, nil).
+		// Local Ollama is slow on first-token (cold model load + large-context
+		// eval), so it gets its own, more generous timeout pair rather than the
+		// cloud-shaped global defaults — see Env.OllamaLocalHeaderTimeout.
+		localStreamOpts := streamhttp.Options{
+			HeaderTimeout: cfg.Env.OllamaLocalHeaderTimeout,
+			IdleTimeout:   cfg.Env.OllamaLocalIdleTimeout,
+		}
+		pr.ollamaLocal = ollama.New("ollama-local", "", cfg.Env.OllamaBaseURL, localStreamOpts, nil).
 			WithNumCtx(cfg.Env.OllamaLocalNumCtx)
 	}
 	// DeepSeek opts in via DEEPSEEK_API_KEY. Optional DEEPSEEK_BASE_URL

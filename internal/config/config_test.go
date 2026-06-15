@@ -762,6 +762,48 @@ agents:
 	}
 }
 
+// ollama-local gets a generous 300s/300s default timeout pair (cold local
+// model load + large-context eval is slow), distinct from the cloud-shaped
+// 60s/90s global default; the LOOMCYCLE_OLLAMA_LOCAL_* env vars override it
+// and the global Provider*Timeout is untouched.
+func TestOllamaLocalTimeouts_DefaultsAndOverrides(t *testing.T) {
+	tmp := t.TempDir()
+	yamlPath := filepath.Join(tmp, "c.yaml")
+	os.WriteFile(yamlPath, []byte(`
+defaults: { provider: anthropic, model: claude-sonnet-4-6 }
+agents:
+  default: { model: claude-sonnet-4-6 }
+`), 0o600)
+
+	cfg, err := Load(yamlPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Env.OllamaLocalHeaderTimeout != 300*time.Second {
+		t.Errorf("default header = %v, want 300s", cfg.Env.OllamaLocalHeaderTimeout)
+	}
+	if cfg.Env.OllamaLocalIdleTimeout != 300*time.Second {
+		t.Errorf("default idle = %v, want 300s", cfg.Env.OllamaLocalIdleTimeout)
+	}
+	// The local timeouts must NOT perturb the global cloud defaults.
+	if cfg.Env.ProviderHeaderTimeout != 60*time.Second {
+		t.Errorf("global header default perturbed: %v, want 60s", cfg.Env.ProviderHeaderTimeout)
+	}
+
+	t.Setenv("LOOMCYCLE_OLLAMA_LOCAL_HEADER_TIMEOUT_MS", "600000")
+	t.Setenv("LOOMCYCLE_OLLAMA_LOCAL_IDLE_TIMEOUT_MS", "450000")
+	cfg, err = Load(yamlPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Env.OllamaLocalHeaderTimeout != 600*time.Second {
+		t.Errorf("override header = %v, want 600s", cfg.Env.OllamaLocalHeaderTimeout)
+	}
+	if cfg.Env.OllamaLocalIdleTimeout != 450*time.Second {
+		t.Errorf("override idle = %v, want 450s", cfg.Env.OllamaLocalIdleTimeout)
+	}
+}
+
 // Absolute path bypasses configDir resolution. Used when the operator
 // stages prompts somewhere outside the YAML's directory.
 func TestSystemPromptFileAbsolutePath(t *testing.T) {

@@ -120,8 +120,14 @@ func (d *Driver) Capabilities() providers.Capabilities {
 		NativePromptCache: false,
 		ParallelToolCalls: true, // model-dependent; we report the optimistic case
 		Streaming:         true,
-		MaxContextTokens:  0, // varies wildly by model; 0 means "ask the model"
-		SupportsThinking:  false,
+		// The real per-model window varies wildly and the driver is
+		// model-agnostic, so we can't name it from here. But when the
+		// operator pins options.num_ctx (WithNumCtx / LOOMCYCLE_OLLAMA*_NUM_CTX)
+		// that IS the input window every request runs in — report it so the
+		// interactive terminal's context gauge can render used/max/%. 0 (no
+		// num_ctx) stays "unknown" and the gauge shows only the absolute size.
+		MaxContextTokens: d.numCtx,
+		SupportsThinking: false,
 		// Ollama has no operator-controlled thinking-budget knob today.
 		// Reasoning models (qwen3, deepseek-r1, hermes3) decide whether
 		// to think based on their own defaults; the message.thinking

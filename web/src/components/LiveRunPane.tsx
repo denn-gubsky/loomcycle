@@ -104,6 +104,26 @@ export default function LiveRunPane({
     return servers.size;
   }, [events]);
 
+  // The agent is actively working when the run is live, not parked awaiting
+  // input, and not blocked on an interruption — i.e. a provider call is in
+  // flight, the model is streaming, or a tool is executing. That's when the
+  // flashing indicator shows. The label adapts: a tool_call with no matching
+  // tool_result yet means a tool is running; otherwise we're waiting on the
+  // model (request in flight / response streaming in).
+  const busy = running && !awaitingInput && !pendingInterrupt;
+  const busyHint = useMemo(() => {
+    const resultIds = new Set<string>();
+    for (const e of events) {
+      const rid = e.event?.tool_use_id;
+      if (rid) resultIds.add(rid);
+    }
+    for (let i = events.length - 1; i >= 0; i--) {
+      const tu = events[i].event?.tool_use;
+      if (tu?.id && !resultIds.has(tu.id)) return `running ${tu.name}…`;
+    }
+    return "waiting for the model…";
+  }, [events]);
+
   return (
     <div className={compact ? "live-run-pane live-run-pane-compact" : "live-run-pane"}>
       <div className="live-run-header">
@@ -159,6 +179,13 @@ export default function LiveRunPane({
 
       {awaitingInput && running && (
         <div className="live-run-awaiting">● agent is idle — waiting for your input</div>
+      )}
+
+      {busy && (
+        <div className="live-run-busy" aria-live="polite">
+          <span className="live-run-busy-dot" aria-hidden="true" />
+          {busyHint}
+        </div>
       )}
 
       {showPrompt && (
