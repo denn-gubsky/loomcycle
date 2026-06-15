@@ -8,6 +8,38 @@ For pre-v0.4 history (single-tool runtime, library milestone, security patch), s
 
 ---
 
+## What's in v0.34.5
+
+**Ollama reports the model's actual loaded context window.** A patch — runtime
++ docs, no new primitives, no `@loomcycle/client` change.
+
+**Ollama context window from `/api/ps` (#495).** The `ollama` / `ollama-local`
+context gauge could previously show a window only when the operator pinned
+`LOOMCYCLE_OLLAMA_LOCAL_NUM_CTX` — and that knob is *also* sent as
+`options.num_ctx`, so it both **caps and reports** the context, overriding
+whatever the ollama server is configured for. With `num_ctx` unset, loomcycle
+reported "unknown" even when ollama loaded the model at a larger window (e.g. a
+256K-trained model running at a real 128K via the server's
+`OLLAMA_CONTEXT_LENGTH`). The driver now reports the **actual loaded context**:
+at the stream's done frame (the model is in VRAM by then) it reads
+`context_length` from ollama's `/api/ps` and stamps it on the usage event, so
+the gauge reflects what ollama actually allocated. An explicit `num_ctx` still
+wins (exact); a not-yet-loaded model reports 0 ("unknown") — ollama only
+publishes the context once the model is loaded. Per-model cached (5-min TTL),
+best-effort with a 2s timeout (gauge-only, never correctness). The loop now
+prefers a driver-reported per-call window over the static capability default;
+other providers are unaffected. Fail-before test
+`TestUsage_MaxContextTokensFromLoadedContext`.
+
+**Docs.** The system architecture diagram + `ARCHITECTURE.md` now show the
+context-transform plugin layer (RFC Z / the `redact` plugin) on the
+loop→providers outbound path (#493); plus a README voice/positioning refresh for
+the v1.0 line (#494).
+
+Runtime + docs; no `@loomcycle/client` bump.
+
+---
+
 ## What's in v0.34.4
 
 **Interactive-terminal UX, local-model fixes, and two sandbox/Library bug
