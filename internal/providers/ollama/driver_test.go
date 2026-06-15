@@ -18,10 +18,16 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/providers/streamhttp"
 )
 
-// fakeStream serves a canned NDJSON script as one /api/chat response.
+// fakeStream serves a canned NDJSON script as one /api/chat response. It also
+// answers the driver's best-effort /api/ps context-window probe with an empty
+// model list (→ window "unknown"/0), so streamEvents' usage stamp doesn't error.
 func fakeStream(t *testing.T, frames []string) *httptest.Server {
 	t.Helper()
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/ps" {
+			fmt.Fprint(w, `{"models":[]}`)
+			return
+		}
 		if r.URL.Path != "/api/chat" {
 			t.Errorf("path = %q, want /api/chat", r.URL.Path)
 		}
@@ -155,6 +161,10 @@ func TestStreamToolCallOnNonFinalFrame(t *testing.T) {
 func TestRequestBodyShape(t *testing.T) {
 	var captured []byte
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/ps" {
+			fmt.Fprint(w, `{"models":[]}`)
+			return
+		}
 		captured, _ = io.ReadAll(r.Body)
 		w.Header().Set("Content-Type", "application/x-ndjson")
 		fmt.Fprint(w, `{"model":"x","message":{"role":"assistant","content":""},"done":true}`+"\n")
@@ -217,6 +227,10 @@ func TestRequestBodyShape(t *testing.T) {
 func TestRequestBody_NumCtxOmittedByDefault(t *testing.T) {
 	var captured []byte
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/ps" {
+			fmt.Fprint(w, `{"models":[]}`)
+			return
+		}
 		captured, _ = io.ReadAll(r.Body)
 		w.Header().Set("Content-Type", "application/x-ndjson")
 		fmt.Fprint(w, `{"model":"x","message":{"role":"assistant","content":""},"done":true}`+"\n")
@@ -262,6 +276,10 @@ func TestCapabilities_MaxContextTokensReflectsNumCtx(t *testing.T) {
 func TestRequestBody_NumCtxPropagated(t *testing.T) {
 	var captured []byte
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/ps" {
+			fmt.Fprint(w, `{"models":[]}`)
+			return
+		}
 		captured, _ = io.ReadAll(r.Body)
 		w.Header().Set("Content-Type", "application/x-ndjson")
 		fmt.Fprint(w, `{"model":"x","message":{"role":"assistant","content":""},"done":true}`+"\n")
@@ -298,6 +316,10 @@ func TestRequestBody_NumCtxPropagated(t *testing.T) {
 func TestRequestBody_NumCtxCombinesWithTemperatureAndMaxTokens(t *testing.T) {
 	var captured []byte
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/ps" {
+			fmt.Fprint(w, `{"models":[]}`)
+			return
+		}
 		captured, _ = io.ReadAll(r.Body)
 		w.Header().Set("Content-Type", "application/x-ndjson")
 		fmt.Fprint(w, `{"model":"x","message":{"role":"assistant","content":""},"done":true}`+"\n")
@@ -411,6 +433,10 @@ func TestRetryOn429PreservesContext(t *testing.T) {
 		callNum int
 	)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/ps" { // best-effort gauge probe — don't count
+			fmt.Fprint(w, `{"models":[]}`)
+			return
+		}
 		body, _ := io.ReadAll(r.Body)
 		mu.Lock()
 		callNum++
@@ -716,4 +742,67 @@ func TestStreamCoalesceFlushesOnNewline(t *testing.T) {
 func jsonString(s string) string {
 	b, _ := json.Marshal(s)
 	return string(b)
+}
+
+// TestUsage_MaxContextTokensFromLoadedContext pins that the driver reports the
+// model's ACTUAL loaded context window (read from /api/ps) on the usage event —
+// so the UI gauge is truthful for local models with no explicit num_ctx. An
+// operator num_ctx still wins (exact), and a not-yet-loaded model (absent from
+// /api/ps) reports 0 ("unknown"). Fail-before: the driver never set
+// usage.MaxContextTokens, so a direct Call always reported 0.
+func TestUsage_MaxContextTokensFromLoadedContext(t *testing.T) {
+	chatFrames := `{"model":"qwen3.6:27b","message":{"role":"assistant","content":"ok"},"done":false}` + "\n" +
+		`{"model":"qwen3.6:27b","message":{"role":"assistant","content":""},"done":true,"done_reason":"stop","prompt_eval_count":10,"eval_count":2}` + "\n"
+	newSrv := func(psBody string) *httptest.Server {
+		return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == "/api/ps" {
+				fmt.Fprint(w, psBody)
+				return
+			}
+			w.Header().Set("Content-Type", "application/x-ndjson")
+			fmt.Fprint(w, chatFrames)
+		}))
+	}
+	runCall := func(t *testing.T, d *Driver) *providers.Usage {
+		t.Helper()
+		ch, err := d.Call(context.Background(), providers.Request{
+			Model:    "qwen3.6:27b",
+			Messages: []providers.Message{{Role: "user", Content: []providers.ContentBlock{{Type: "text", Text: "hi"}}}},
+		})
+		if err != nil {
+			t.Fatalf("Call: %v", err)
+		}
+		var u *providers.Usage
+		for ev := range ch {
+			if ev.Type == providers.EventDone {
+				u = ev.Usage
+			}
+		}
+		if u == nil {
+			t.Fatal("no usage on done")
+		}
+		return u
+	}
+
+	t.Run("loaded context from /api/ps", func(t *testing.T) {
+		srv := newSrv(`{"models":[{"name":"qwen3.6:27b","context_length":131072}]}`)
+		defer srv.Close()
+		if u := runCall(t, New("ollama-local", "", srv.URL, streamhttp.Options{}, nil)); u.MaxContextTokens != 131072 {
+			t.Errorf("MaxContextTokens = %d, want 131072 (from /api/ps)", u.MaxContextTokens)
+		}
+	})
+	t.Run("explicit num_ctx wins", func(t *testing.T) {
+		srv := newSrv(`{"models":[{"name":"qwen3.6:27b","context_length":131072}]}`)
+		defer srv.Close()
+		if u := runCall(t, New("ollama-local", "", srv.URL, streamhttp.Options{}, nil).WithNumCtx(32768)); u.MaxContextTokens != 32768 {
+			t.Errorf("MaxContextTokens = %d, want 32768 (operator num_ctx wins)", u.MaxContextTokens)
+		}
+	})
+	t.Run("model not loaded reports 0", func(t *testing.T) {
+		srv := newSrv(`{"models":[]}`)
+		defer srv.Close()
+		if u := runCall(t, New("ollama-local", "", srv.URL, streamhttp.Options{}, nil)); u.MaxContextTokens != 0 {
+			t.Errorf("MaxContextTokens = %d, want 0 (model not in /api/ps)", u.MaxContextTokens)
+		}
+	})
 }
