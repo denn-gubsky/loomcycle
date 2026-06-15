@@ -354,3 +354,58 @@ func jsonTagsOf(t reflect.Type) map[string]bool {
 	}
 	return out
 }
+
+// TestAgent_StaticRevealedWhenNoActiveDynamic pins the invariant behind the
+// "static agent buried under retired dynamic versions" bug: when a name has a
+// static cfg.Agents base AND substrate history but NO active pointer (the
+// v0.29.0 soft-reclaim clears the pointer when the active def is retired),
+// lookup.Agent must fall through to the STATIC def at the caller's tenant. The
+// non-active version rows in agent_defs are irrelevant to resolution — only an
+// active pointer shadows the static base.
+func TestAgent_StaticRevealedWhenNoActiveDynamic(t *testing.T) {
+	cfg := &config.Config{Agents: map[string]config.AgentDef{
+		"code-guru": {SystemPrompt: "STATIC-BASE"},
+	}}
+	// jobember has substrate history but an EMPTY active pointer (defs map has
+	// no entry for it) — mirrors the live state (v1/v4 retired, v2/v3 inactive,
+	// agent_def_active empty).
+	ss := &stubStore{
+		dyn:  map[string]store.DynamicAgent{},
+		defs: map[string]store.AgentDefRow{},
+	}
+	got, ok := lookup.Agent(context.Background(), ss, cfg, "jobember", "code-guru")
+	if !ok {
+		t.Fatal("static base must resolve when no dynamic version is active")
+	}
+	if got.SystemPrompt != "STATIC-BASE" {
+		t.Errorf("resolved %q, want the STATIC base", got.SystemPrompt)
+	}
+}
+
+// TestAgent_RetiredActivePointerFallsThroughToStatic covers the defense-in-depth
+// branch (agent.go: a retired def referenced by a stale active pointer must
+// never be served): resolution falls through to the static base instead.
+func TestAgent_RetiredActivePointerFallsThroughToStatic(t *testing.T) {
+	cfg := &config.Config{Agents: map[string]config.AgentDef{
+		"code-guru": {SystemPrompt: "STATIC-BASE"},
+	}}
+	ss := &stubStore{
+		dyn: map[string]store.DynamicAgent{},
+		defs: map[string]store.AgentDefRow{
+			stubKey("jobember", "code-guru"): {
+				DefID:      "def_codeguru_v4",
+				Name:       "code-guru",
+				Version:    4,
+				Retired:    true,
+				Definition: json.RawMessage(`{"system_prompt":"RETIRED-DYNAMIC"}`),
+			},
+		},
+	}
+	got, ok := lookup.Agent(context.Background(), ss, cfg, "jobember", "code-guru")
+	if !ok {
+		t.Fatal("must resolve to static even when the active pointer is on a retired def")
+	}
+	if got.SystemPrompt != "STATIC-BASE" {
+		t.Errorf("resolved %q, want the STATIC base (a retired def must never be served)", got.SystemPrompt)
+	}
+}
