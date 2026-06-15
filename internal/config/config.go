@@ -3921,6 +3921,28 @@ func validateStaticWebhook(name string, w Webhook) error {
 	return nil
 }
 
+// validateTierCandidate checks one tier candidate at config-load. A candidate
+// may name a models: alias as a bare model with an empty provider — the alias
+// supplies the provider at resolve time (ExpandModelAlias) — so an empty
+// provider is valid IFF the model is a defined alias. Otherwise the provider
+// must be a known ID and the model non-empty. Without the alias carve-out an
+// all-aliases tier list fails load with `unknown provider ""`.
+func validateTierCandidate(cand TierCandidate, models map[string]ModelRef) error {
+	if cand.Provider == "" {
+		if _, ok := models[cand.Model]; !ok {
+			return fmt.Errorf("empty provider and %q is not a model alias (define it under models: or set an explicit provider)", cand.Model)
+		}
+		return nil
+	}
+	if !validProviderIDs[cand.Provider] {
+		return fmt.Errorf("unknown provider %q", cand.Provider)
+	}
+	if cand.Model == "" {
+		return fmt.Errorf("model is required")
+	}
+	return nil
+}
+
 func validate(c *Config) error {
 	if c.Concurrency.MaxConcurrentRuns < 1 {
 		return fmt.Errorf("concurrency.max_concurrent_runs must be >= 1")
@@ -3956,11 +3978,8 @@ func validate(c *Config) error {
 			return fmt.Errorf("tiers.%s: unknown tier (want one of low/middle/high)", tierName)
 		}
 		for i, cand := range candidates {
-			if !validProviderIDs[cand.Provider] {
-				return fmt.Errorf("tiers.%s[%d]: unknown provider %q", tierName, i, cand.Provider)
-			}
-			if cand.Model == "" {
-				return fmt.Errorf("tiers.%s[%d]: model is required", tierName, i)
+			if err := validateTierCandidate(cand, c.Models); err != nil {
+				return fmt.Errorf("tiers.%s[%d]: %v", tierName, i, err)
 			}
 		}
 	}
@@ -3989,11 +4008,8 @@ func validate(c *Config) error {
 					return fmt.Errorf("user_tiers.%s.tiers.%s: unknown tier (want one of low/middle/high)", tierName, taskTier)
 				}
 				for i, cand := range candidates {
-					if !validProviderIDs[cand.Provider] {
-						return fmt.Errorf("user_tiers.%s.tiers.%s[%d]: unknown provider %q", tierName, taskTier, i, cand.Provider)
-					}
-					if cand.Model == "" {
-						return fmt.Errorf("user_tiers.%s.tiers.%s[%d]: model is required", tierName, taskTier, i)
+					if err := validateTierCandidate(cand, c.Models); err != nil {
+						return fmt.Errorf("user_tiers.%s.tiers.%s[%d]: %v", tierName, taskTier, i, err)
 					}
 				}
 			}
@@ -4065,11 +4081,8 @@ func validate(c *Config) error {
 				return fmt.Errorf("agent %q: models.%s: unknown tier", name, tierName)
 			}
 			for i, cand := range candidates {
-				if !validProviderIDs[cand.Provider] {
-					return fmt.Errorf("agent %q: models.%s[%d]: unknown provider %q", name, tierName, i, cand.Provider)
-				}
-				if cand.Model == "" {
-					return fmt.Errorf("agent %q: models.%s[%d]: model is required", name, tierName, i)
+				if err := validateTierCandidate(cand, c.Models); err != nil {
+					return fmt.Errorf("agent %q: models.%s[%d]: %v", name, tierName, i, err)
 				}
 			}
 		}

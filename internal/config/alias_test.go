@@ -34,6 +34,32 @@ func TestTierCandidate_UnmarshalYAML_BareStringIsModel(t *testing.T) {
 	}
 }
 
+// TestValidateTierCandidate_AliasAware locks the config-load carve-out: a bare
+// alias (empty provider, model is a defined models: alias) passes validation
+// because the alias supplies the provider at resolve time. Fail-before:
+// without the carve-out, an empty-provider candidate fails `unknown provider
+// ""` and an all-aliases tier list won't load.
+func TestValidateTierCandidate_AliasAware(t *testing.T) {
+	models := map[string]ModelRef{
+		"local-qwen": {Provider: "ollama-local", Model: "qwen3.6:max"},
+	}
+	if err := validateTierCandidate(TierCandidate{Model: "local-qwen"}, models); err != nil {
+		t.Errorf("bare alias rejected: %v", err)
+	}
+	if err := validateTierCandidate(TierCandidate{Model: "not-an-alias"}, models); err == nil {
+		t.Error("empty provider + non-alias model accepted, want error")
+	}
+	if err := validateTierCandidate(TierCandidate{Provider: "deepseek", Model: "deepseek-v4-pro"}, models); err != nil {
+		t.Errorf("explicit literal candidate rejected: %v", err)
+	}
+	if err := validateTierCandidate(TierCandidate{Provider: "bogus", Model: "x"}, models); err == nil {
+		t.Error("unknown provider accepted, want error")
+	}
+	if err := validateTierCandidate(TierCandidate{Provider: "deepseek"}, models); err == nil {
+		t.Error("explicit provider + empty model accepted, want error")
+	}
+}
+
 // TestExpandModelAlias_* lock the single source of truth for model-alias
 // expansion shared by the pin path (ResolveAgentDefModel) and the tier path
 // (the resolver-boundary converters). Each behaviour is the same rule the pin
