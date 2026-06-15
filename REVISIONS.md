@@ -8,6 +8,55 @@ For pre-v0.4 history (single-tool runtime, library milestone, security patch), s
 
 ---
 
+## What's in v0.35.0
+
+**Model aliases work in tier candidates — parse, validate, resolve.** A minor
+release: a config/runtime feature, no `@loomcycle/client` change and no
+wire-shape change.
+
+**The gap (#497).** loomcycle has two ways an agent picks a model. On the
+**pin** path (`provider`/`model`), a model name that is a key in the top-level
+`models:` alias map (e.g. `local-gemma: {provider: ollama-local, model:
+gemma4:max}`) is expanded to its concrete provider/model. On the **tier** path
+— per-agent `models:`, `user_tiers.*.tiers`, and the library `tiers:` — it was
+not: the candidate's model was matched literally by the resolver, so a tier
+candidate naming an alias failed with `503 no provider available for requested
+tier`. Authoring an all-aliases tier list surfaced two further gaps on the same
+path: a **bare-string** candidate (`- local-gemma`) wouldn't parse, and
+config-load validation rejected the empty-provider candidate a bare alias
+produces.
+
+**The fix.** Aliases are now honored at every stage of the tier path:
+
+- **Resolve.** A single shared `config.ExpandModelAlias` — extracted from the
+  pin path's `ResolveAgentDefModel`, so the two paths can't drift — is applied
+  at the two resolver-entry boundaries: `convertConfigCandidates` (per-agent
+  `models:` + the user-tier overlay; covers HTTP **and** gRPC, plus
+  dynamic / Web-UI / MCP-authored agents) and `convertTiers` (the library
+  `tiers:`). An explicit provider on a candidate always wins over the alias's;
+  a non-alias model is a verbatim no-op.
+- **Parse.** A tier candidate may now be written as a bare scalar string
+  (`- local-gemma`), taken as the model with an empty provider — the natural
+  way to name an alias. The mapping form (`{provider, model}`) still works, and
+  the struct still marshals identically, so `content_sha256` is unchanged.
+- **Validate.** Config-load validation treats an empty provider as valid when
+  the model names a defined alias (the alias supplies the provider at resolve
+  time); otherwise the provider must be known and the model non-empty.
+
+**Web UI.** The Library agent editor's per-tier model field hint + placeholder
+now note that an alias is accepted; the backend expansion already covered
+Web-UI-authored agents (same resolution path), so the UI change is
+discoverability only.
+
+Fail-before regression tests at each stage:
+`TestResolveAgentDef_TierCandidateAliasExpands` (the exact 503 repro,
+end-to-end through the real resolver), `TestConvertConfigCandidates_ExpandsAlias`
+/ `TestConvertTiers_ExpandsAlias`,
+`TestTierCandidate_UnmarshalYAML_BareStringIsModel`, and
+`TestValidateTierCandidate_AliasAware`.
+
+---
+
 ## What's in v0.34.5
 
 **Ollama reports the model's actual loaded context window.** A patch — runtime
