@@ -1,6 +1,13 @@
 # Binaries
 /cmd/ac/ac
 /bin/
+# Stray root build artifact from `go build ./cmd/loomcycle` run without -o
+# (the canonical binary is /bin/loomcycle, produced by `make build`). A loose
+# /loomcycle file at the repo root also shadows relative tool paths in dev.
+/loomcycle
+# Local tool-sandbox scratch (dev points LOOMCYCLE_READ_ROOT / WRITE_ROOT /
+# BASH_CWD here; agents clone + write into it — never committed).
+/tmp/
 *.exe
 *.dll
 *.so

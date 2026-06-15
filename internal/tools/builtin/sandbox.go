@@ -6,9 +6,31 @@ import (
 	"strings"
 )
 
-// resolveInsideRoot resolves an absolute target path and verifies it sits
-// inside root after symlink evaluation. Returns the resolved absolute
-// path on success.
+// absUnderRoot makes target absolute, anchoring a RELATIVE target to the
+// sandbox root — NOT the loomcycle process's working directory.
+//
+// Why: a relative tool path ("internal/foo.go") should mean "inside the
+// sandbox", the same thing it means to the Bash tool (whose cwd is the jail)
+// and the same thing every model assumes. The old behaviour
+// (filepath.Abs → process cwd) resolved it against wherever the server
+// happened to start, so a relative path landed OUTSIDE the sandbox and either
+// failed or — if a like-named file sat at the server's cwd — produced a
+// baffling error (a code-reviewer agent's `Read internal/store/store.go`
+// resolved into a stray `loomcycle` binary at the repo root → ENOTDIR).
+//
+// The result is only a CANDIDATE: every caller still EvalSymlinks it and
+// re-checks containment with relInsideRoot, so a relative `..` that climbs
+// out of root is still rejected.
+func absUnderRoot(rootResolved, target string) string {
+	if filepath.IsAbs(target) {
+		return filepath.Clean(target)
+	}
+	return filepath.Join(rootResolved, target)
+}
+
+// resolveInsideRoot resolves a target path (absolute, or relative to the
+// sandbox root — see absUnderRoot) and verifies it sits inside root after
+// symlink evaluation. Returns the resolved absolute path on success.
 //
 // Used by Read and Edit, where the file MUST exist (otherwise EvalSymlinks
 // fails). Write uses resolveParentInsideRoot below because the file may
@@ -23,10 +45,7 @@ func resolveInsideRoot(root, target string) (resolved string, err error) {
 	if err != nil {
 		return "", fmt.Errorf("sandbox root: %w", err)
 	}
-	abs, err := filepath.Abs(filepath.Clean(target))
-	if err != nil {
-		return "", fmt.Errorf("abs path: %w", err)
-	}
+	abs := absUnderRoot(rootResolved, target)
 	resolved, err = filepath.EvalSymlinks(abs)
 	if err != nil {
 		return "", err
@@ -45,10 +64,7 @@ func resolveParentInsideRoot(root, target string) (joined string, err error) {
 	if err != nil {
 		return "", fmt.Errorf("sandbox root: %w", err)
 	}
-	abs, err := filepath.Abs(filepath.Clean(target))
-	if err != nil {
-		return "", fmt.Errorf("abs path: %w", err)
-	}
+	abs := absUnderRoot(rootResolved, target)
 	parentResolved, err := filepath.EvalSymlinks(filepath.Dir(abs))
 	if err != nil {
 		return "", fmt.Errorf("parent dir: %w", err)
