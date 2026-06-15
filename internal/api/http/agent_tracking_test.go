@@ -800,3 +800,26 @@ func TestRunToAgentResponse_ReplicaIDRoundTrip(t *testing.T) {
 		}
 	})
 }
+
+// TestRunToAgentResponse_InteractiveRoundTrip pins that the run list surfaces
+// runs.interactive so the Web UI can tag interactive runs + list re-attachable
+// interactive sessions. Omitted for ordinary runs (omitempty).
+func TestRunToAgentResponse_InteractiveRoundTrip(t *testing.T) {
+	t.Run("interactive run", func(t *testing.T) {
+		resp := runToAgentResponse(store.Run{ID: "r1", AgentID: "a1", Interactive: true}, true)
+		if !resp.Interactive {
+			t.Error("Interactive = false, want true")
+		}
+		b, _ := json.Marshal(resp)
+		if !strings.Contains(string(b), `"interactive":true`) {
+			t.Errorf("JSON missing interactive:true: %s", b)
+		}
+	})
+	t.Run("ordinary run omits interactive", func(t *testing.T) {
+		resp := runToAgentResponse(store.Run{ID: "r2", AgentID: "a2"}, false)
+		b, _ := json.Marshal(resp)
+		if strings.Contains(string(b), "interactive") {
+			t.Errorf("JSON should omit interactive when false: %s", b)
+		}
+	})
+}

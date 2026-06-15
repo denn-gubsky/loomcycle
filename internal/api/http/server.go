@@ -4555,6 +4555,11 @@ type agentResponse struct {
 	Usage           agentResponseUsage `json:"usage"`
 	LastHeartbeatAt *time.Time         `json:"last_heartbeat_at,omitempty"`
 	Live            bool               `json:"live"`
+	// Interactive marks a persistent interactive run (started with
+	// interactive:true; parks at end_turn for operator steering). Surfaced
+	// from runs.interactive so the Web UI can tag interactive runs and list
+	// re-attachable interactive sessions. Omitted for ordinary runs.
+	Interactive bool `json:"interactive,omitempty"`
 	// v0.8.21 awaited-state surface — what the running agent is
 	// currently blocked on. Empty for non-running rows AND for
 	// running rows where the agent is making progress (no
@@ -4620,6 +4625,7 @@ func runToAgentResponse(r store.Run, live bool) agentResponse {
 			Provider:            r.Provider,
 		},
 		Live:          live,
+		Interactive:   r.Interactive,
 		ReplicaID:     r.ReplicaID,
 		ParentContext: r.ParentContext, // v0.12.x: echo tracking lineage alongside usage
 	}
