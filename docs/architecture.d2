@@ -84,6 +84,15 @@ loomcycle: "loomcycle — single Go binary (~30 MB)\n1..N replicas (see cluster 
     }
   }
 
+  context_plugins: "Context-transform plugins (v0.34.0 · RFC Z)\nper-turn chain at the loop seam — transforms a COPY of\nthe outbound (system + messages); canonical history untouched\nredact — outbound secret scrubbing (Tier-A env values + Tier-B patterns)\ncode-js exempt · compression planned (Phase 2)" {
+    style: {
+      fill: "#dcfce7"
+      stroke: "#16a34a"
+      stroke-width: 2
+      font-size: 12
+    }
+  }
+
   dispatcher: "Tool dispatcher" {
     grid-columns: 2
     style.fill: "#fef3c7"
@@ -119,6 +128,7 @@ loomcycle: "loomcycle — single Go binary (~30 MB)\n1..N replicas (see cluster 
   surfaces -> middleware: {style.stroke: "#94a3b8"}
   middleware -> connector: {style.stroke: "#94a3b8"}
   connector -> loop: "dispatch" {style.stroke: "#be185d"; style.stroke-width: 2}
+  loop -> context_plugins: "outbound context\n(per turn, on a copy)" {style.stroke: "#16a34a"}
   loop -> dispatcher: "tool calls" {style.stroke: "#4f46e5"}
   loop -> store: "transcripts · events" {style.stroke: "#ea580c"}
   triggers -> loop: "fire run" {style.stroke: "#7c3aed"; style.stroke-dash: 4}
@@ -197,7 +207,7 @@ externals: "External" {
 # ---- Cross-layer edges ----
 
 clients -> loomcycle.surfaces: "HTTP · gRPC · MCP" {style.stroke: "#475569"}
-loomcycle.loop -> externals.providers: "stream + tool_use" {
+loomcycle.context_plugins -> externals.providers: "stream + tool_use\n(secrets redacted)" {
   style: {
     stroke: "#d97706"
     bold: true

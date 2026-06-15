@@ -237,6 +237,21 @@ Token accounting: usage events are accumulated across iterations into `RunResult
 
 References: `internal/loop/loop.go`, `internal/api/http/server.go makeRecordingEmit` (the SSE recorder).
 
+## Context-transform plugins (v0.34.0, RFC Z)
+
+A chain of fast, built-in Go transformers that sits **between the assembled agent context and the outbound LLM request**, run on every iteration at the loop's per-turn seam (`internal/loop/loop.go`, just before the provider call). Each plugin's `Transform(ctx, system, messages)` runs over a **copy** of the outbound context — the loop's canonical history and the persisted transcript are never mutated, so replay stays byte-stable. The synthetic `code-js` provider is exempt (local replay; redacting its bytes would trip replay divergence).
+
+Phase 1a ships the **`redact`** plugin — outbound secret scrubbing. It reuses the F32 `redact.Redactor` (Tier-A exact env-value masking via `strings.Replacer`; Tier-B heuristic patterns: `Authorization` / `sk-` / `AKIA` / `xox` / `ghp_` / `key=value`), so a model never sees a configured secret even when it leaks into history. Configured via a top-level `context_plugins:` block; composes runtime/tenant/agent-wide as a **security floor** (a narrower scope strengthens but can't disable a broader scope's transform — the `allowed_hosts` model).
+
+```
+loop ──(per turn, on a copy)──▶ context_plugins ──redacted system+messages──▶ provider.Call
+        canonical history + transcript stay untouched          (code-js exempt)
+```
+
+Phase 2 (planned) adds a `compress` plugin (context compression). RFC AB (planned) adds a per-run prefix cache so only the appended tail is re-scanned each turn.
+
+References: `internal/contextplugin/` (`Plugin`, `Registry`, `Apply`, `Build`), `internal/redact/redact.go`, the seam in `internal/loop/loop.go`, build wiring at `internal/api/http/server.go`.
+
 ## Tool dispatch
 
 The `Dispatcher` (`internal/tools/tool.go`) maps tool name → `Tool.Execute(ctx, input)`. The set of tools registered on the dispatcher for a given run is the **intersection** of:
