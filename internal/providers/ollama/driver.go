@@ -24,6 +24,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	lcotel "github.com/denn-gubsky/loomcycle/internal/otel"
@@ -51,6 +52,11 @@ type Driver struct {
 	http        *http.Client
 	idleTimeout time.Duration
 	numCtx      int // 0 = omit (Ollama server default applies)
+	// ctxCache memoises each model's loaded context window read from
+	// /api/ps (model name → ctxCacheEntry), so the gauge lookup costs one
+	// cheap request per model, not per turn. Concurrent-safe (the Driver is
+	// shared across runs).
+	ctxCache sync.Map
 }
 
 // New constructs a Driver.
@@ -113,6 +119,83 @@ func (d *Driver) WithNumCtx(n int) *Driver {
 	return d
 }
 
+// ctxCacheEntry caches a model's loaded context window (from /api/ps) with a
+// short TTL so a model reloaded at a different num_ctx is eventually picked up.
+type ctxCacheEntry struct {
+	ctx int
+	at  time.Time
+}
+
+const ctxCacheTTL = 5 * time.Minute
+
+// contextWindow returns the model's effective input window to stamp on the
+// usage event so the UI context gauge is truthful for local models.
+//
+//   - An explicit operator num_ctx (WithNumCtx / LOOMCYCLE_OLLAMA*_NUM_CTX)
+//     wins — it's exact and is precisely what we send as options.num_ctx.
+//   - Otherwise we ask Ollama what the model is ACTUALLY loaded with via
+//     /api/ps. Ollama only publishes context_length once the model is in VRAM
+//     (it's absent while loading), so this returns 0 ("unknown") until the
+//     first turn after a load, then the real window. Cached per model.
+//
+// Called at the stream's done frame — the model is loaded by then — so the
+// turn that loaded the model already reports the real window; later turns hit
+// the cache. 0 leaves the gauge showing only the absolute used size, unchanged.
+func (d *Driver) contextWindow(model string) int {
+	if d.numCtx > 0 {
+		return d.numCtx
+	}
+	if v, ok := d.ctxCache.Load(model); ok {
+		if e := v.(ctxCacheEntry); e.ctx > 0 && time.Since(e.at) < ctxCacheTTL {
+			return e.ctx
+		}
+	}
+	n := d.queryLoadedContext(model)
+	if n > 0 {
+		d.ctxCache.Store(model, ctxCacheEntry{ctx: n, at: time.Now()})
+	}
+	return n
+}
+
+// queryLoadedContext reads the loaded model's context_length from Ollama's
+// /api/ps. Best-effort with a short timeout: this only feeds the gauge, never
+// correctness, so any failure (loading, network, old Ollama) returns 0.
+func (d *Driver) queryLoadedContext(model string) int {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	httpReq, err := http.NewRequestWithContext(ctx, "GET", d.baseURL+"/api/ps", nil)
+	if err != nil {
+		return 0
+	}
+	if d.apiKey != "" {
+		httpReq.Header.Set("Authorization", "Bearer "+d.apiKey)
+	}
+	resp, err := d.http.Do(httpReq)
+	if err != nil {
+		return 0
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return 0
+	}
+	var body struct {
+		Models []struct {
+			Name          string `json:"name"`
+			Model         string `json:"model"`
+			ContextLength int    `json:"context_length"`
+		} `json:"models"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		return 0
+	}
+	for _, m := range body.Models {
+		if m.Name == model || m.Model == model {
+			return m.ContextLength
+		}
+	}
+	return 0
+}
+
 func (d *Driver) ID() string { return d.providerID }
 
 func (d *Driver) Capabilities() providers.Capabilities {
@@ -120,12 +203,12 @@ func (d *Driver) Capabilities() providers.Capabilities {
 		NativePromptCache: false,
 		ParallelToolCalls: true, // model-dependent; we report the optimistic case
 		Streaming:         true,
-		// The real per-model window varies wildly and the driver is
-		// model-agnostic, so we can't name it from here. But when the
-		// operator pins options.num_ctx (WithNumCtx / LOOMCYCLE_OLLAMA*_NUM_CTX)
-		// that IS the input window every request runs in — report it so the
-		// interactive terminal's context gauge can render used/max/%. 0 (no
-		// num_ctx) stays "unknown" and the gauge shows only the absolute size.
+		// Static fallback only. The authoritative per-call window is set on
+		// the usage event by the stream path (contextWindow → /api/ps reads
+		// the model's ACTUAL loaded context); the loop prefers that and falls
+		// back here. When the operator pins options.num_ctx (WithNumCtx /
+		// LOOMCYCLE_OLLAMA*_NUM_CTX) that is the exact window; else 0 here
+		// ("unknown") and the per-call /api/ps value fills it in once loaded.
 		MaxContextTokens: d.numCtx,
 		SupportsThinking: false,
 		// Ollama has no operator-controlled thinking-budget knob today.
@@ -206,7 +289,9 @@ func (d *Driver) Call(ctx context.Context, req providers.Request) (<-chan provid
 	out := make(chan providers.Event, 16)
 	go func() {
 		defer cancelStream()
-		streamEvents(streamCtx, resp.Body, out, len(req.Tools) > 0)
+		// maxCtxFn is evaluated lazily at the done frame (model loaded by
+		// then) so the usage event carries the model's real loaded window.
+		streamEvents(streamCtx, resp.Body, out, len(req.Tools) > 0, func() int { return d.contextWindow(req.Model) })
 	}()
 	return out, nil
 }
@@ -409,7 +494,9 @@ type chunkToolCallFn struct {
 	Arguments json.RawMessage `json:"arguments"`
 }
 
-func streamEvents(ctx context.Context, body io.ReadCloser, out chan<- providers.Event, wantTools bool) {
+// maxCtxFn (optional) returns the model's effective context window; called
+// once at the done frame to stamp usage.MaxContextTokens. nil → not stamped.
+func streamEvents(ctx context.Context, body io.ReadCloser, out chan<- providers.Event, wantTools bool, maxCtxFn func() int) {
 	defer body.Close()
 	defer close(out)
 
@@ -530,6 +617,9 @@ func streamEvents(ctx context.Context, body io.ReadCloser, out chan<- providers.
 					InputTokens:  c.PromptEvalCount,
 					OutputTokens: c.EvalCount,
 					Model:        model,
+				}
+				if maxCtxFn != nil {
+					usage.MaxContextTokens = maxCtxFn()
 				}
 			}
 		}

@@ -1509,7 +1509,12 @@ outerLoop:
 			// used / max" gauge. Set on iterUsage (discarded after this
 			// iteration) NOT totalUsage, so the run-final accounting stays
 			// byte-stable; 0 when the provider reports an unknown window.
-			iterUsage.MaxContextTokens = opts.Provider.Capabilities().MaxContextTokens
+			// A driver may already report a per-CALL window (e.g. Ollama
+			// reads the model's actual loaded context from /api/ps) — prefer
+			// that and only fall back to the static capability default.
+			if iterUsage.MaxContextTokens == 0 {
+				iterUsage.MaxContextTokens = opts.Provider.Capabilities().MaxContextTokens
+			}
 			emit(providers.Event{Type: providers.EventUsage, Usage: iterUsage})
 			// Retain this turn's CURRENT context footprint (input + cache, i.e.
 			// what the request actually sent — NOT cumulative totalUsage, which
