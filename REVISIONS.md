@@ -8,6 +8,64 @@ For pre-v0.4 history (single-tool runtime, library milestone, security patch), s
 
 ---
 
+## What's in v0.34.4
+
+**Interactive-terminal UX, local-model fixes, and two sandbox/Library bug
+fixes.** A patch — Web UI + runtime, no new primitives, no `@loomcycle/client`
+change.
+
+**Interactive sessions are easy to find + switch (#491).** Leaving the `/run`
+terminal stranded an interactive run — the only way back was the runs page's
+"resume in terminal" link. The run page (Single tab) now has a collapsible
+**Interactive sessions** list in its left column: the operator's running
+interactive sessions (polled from the run list), each re-attaching in the
+terminal on click (replay + live-tail via the existing re-attach path); the
+current one is marked *open*, and collapsed it shows just "N interactive
+sessions" (state persisted). The runs page (tree + detail) also gains an
+**`interactive`** tag. Backed by an additive `interactive` field on the
+`GET /v1/users/{id}/agents` run-list row (the `runs.interactive` flag was
+already persisted — it just wasn't surfaced).
+
+**A waiting indicator in the terminal (#488).** While the agent is working — a
+provider call in flight, the model streaming, or a tool running — the
+interactive terminal now shows a flashing indicator with an adaptive label
+("running `<tool>`…" vs "waiting for the model…") so a slow turn no longer looks
+stalled.
+
+**Local Ollama models (#488).** The interactive context gauge now renders a real
+window for `ollama-local`: `Capabilities()` reports the operator-pinned
+`num_ctx` as `MaxContextTokens` (it was hard-coded to 0, so the gauge could only
+ever show the absolute size). And `ollama-local` gets its own generous default
+timeouts — **300s / 300s** time-to-first-byte / idle (a cold local model load +
+large-context eval easily blows past the cloud-shaped 60s/90s default and the
+run died before producing a token), overridable via
+`LOOMCYCLE_OLLAMA_LOCAL_HEADER_TIMEOUT_MS` / `_IDLE_TIMEOUT_MS`. Hosted
+ollama.com and the cloud providers keep the tighter global default.
+
+**Sandbox relative paths resolve against the root, not the process cwd (#489).**
+The file tools (Read / Edit / Glob / Grep / NotebookEdit + Write) made a
+relative path absolute against the loomcycle *process's* working directory, then
+checked containment — so a relative tool path meant "wherever the server
+started", disagreeing with the Bash tool (whose cwd is the jail). A sandboxed
+agent's `Read internal/foo.go` could land outside the sandbox (and, when a
+like-named file sat at the server's cwd, fail with a baffling ENOTDIR). Relative
+targets now anchor to the **sandbox root** so a relative path means the same
+thing across every tool; absolute paths and the symlink-escape guard are
+unchanged.
+
+**The static agent base re-surfaces in the Library (#490).** A static agent
+(yaml) that had accrued dynamic substrate versions which were then retired /
+deactivated (no active pointer) was buried in the Library — you couldn't see,
+edit, or fork from the static base, even though runs still resolve to it. The
+lineage now always surfaces the static "v0" row when a static base exists, marks
+it **effective** when no dynamic version is active, and the existing "Edit (forks
+from yaml)" path makes it editable/forkable again. (Runtime resolution already
+fell through to the static base — this was a UI visibility fix.)
+
+Web-UI + runtime; no `@loomcycle/client` bump.
+
+---
+
 ## What's in v0.34.3
 
 **`Context op=self` footprint is fresh after a compaction.** A patch — runtime
