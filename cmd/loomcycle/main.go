@@ -2582,7 +2582,7 @@ func (p *providerResolver) Get(id string) (providers.Provider, error) {
 // Subsequent rounds run in a background goroutine started by main —
 // see runResolveProbeLoop.
 func buildResolver(cfg *config.Config, pr *providerResolver) *resolve.Resolver {
-	libraryTiers := convertTiers(cfg.Tiers)
+	libraryTiers := convertTiers(cfg.Tiers, cfg.Models)
 	r := resolve.NewResolver(cfg.ProviderPriority, libraryTiers)
 
 	// First-round probe — synchronous, so the matrix is hot before
@@ -2703,7 +2703,7 @@ func runResolveProbeLoop(ctx context.Context, r *resolve.Resolver, pr *providerR
 // tier definitions into the resolver-package representation. Mirrors
 // the per-agent helper in internal/api/http/server.go but operates on
 // the top-level cfg.Tiers map.
-func convertTiers(in map[string][]config.TierCandidate) map[string][]resolve.Candidate {
+func convertTiers(in map[string][]config.TierCandidate, models map[string]config.ModelRef) map[string][]resolve.Candidate {
 	if len(in) == 0 {
 		return nil
 	}
@@ -2711,7 +2711,11 @@ func convertTiers(in map[string][]config.TierCandidate) map[string][]resolve.Can
 	for tier, cands := range in {
 		conv := make([]resolve.Candidate, 0, len(cands))
 		for _, c := range cands {
-			conv = append(conv, resolve.Candidate{Provider: c.Provider, Model: c.Model})
+			// Expand model aliases (top-level models:) — mirrors the pin
+			// path and the per-agent converter so a library tier candidate
+			// can name an alias too.
+			prov, mdl := config.ExpandModelAlias(models, c.Provider, c.Model)
+			conv = append(conv, resolve.Candidate{Provider: prov, Model: mdl})
 		}
 		out[tier] = conv
 	}
