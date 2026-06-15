@@ -3055,6 +3055,25 @@ func (c *Config) ResolveAgentModel(agent string) (provider string, model string,
 	return c.ResolveAgentDefModel(agent, def)
 }
 
+// ExpandModelAlias resolves a model-alias (a key in the top-level models:
+// map) to its concrete provider/model. The alias only fills an EMPTY
+// provider — an explicit provider on the pin/candidate always wins — so the
+// tier path and the pin path expand aliases identically. A nil/absent map or
+// a non-alias model is a no-op (the model is treated as a literal). This is
+// the single source of truth for alias expansion, shared by the pin path
+// (ResolveAgentDefModel) and the tier path (the resolver-boundary converters
+// in internal/api/http and cmd/loomcycle); keeping it in one place stops the
+// two paths from drifting.
+func ExpandModelAlias(models map[string]ModelRef, provider, model string) (string, string) {
+	if ref, ok := models[model]; ok {
+		model = ref.Model
+		if provider == "" {
+			provider = ref.Provider
+		}
+	}
+	return provider, model
+}
+
 // ResolveAgentDefModel mirrors ResolveAgentModel but resolves against
 // a caller-supplied AgentDef instead of looking it up in c.Agents.
 // Used by the sub-agent path when an overlay has already produced an
@@ -3075,12 +3094,7 @@ func (c *Config) ResolveAgentDefModel(agent string, def AgentDef) (provider stri
 	}
 
 	// If model is an alias in models:, expand it.
-	if ref, ok := c.Models[model]; ok {
-		model = ref.Model
-		if provider == "" {
-			provider = ref.Provider
-		}
-	}
+	provider, model = ExpandModelAlias(c.Models, provider, model)
 	if provider == "" {
 		provider = c.Defaults.Provider
 	}
