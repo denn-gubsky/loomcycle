@@ -1,6 +1,38 @@
 package config
 
-import "testing"
+import (
+	"testing"
+
+	"gopkg.in/yaml.v3"
+)
+
+// TestTierCandidate_UnmarshalYAML_BareStringIsModel locks the bare-string
+// authoring form: `- local-qwen` parses to {Provider:"", Model:"local-qwen"}
+// (the alias supplies the provider downstream via ExpandModelAlias), while the
+// mapping form still works. Fail-before: without the custom UnmarshalYAML, a
+// bare scalar fails with "cannot unmarshal !!str into config.TierCandidate".
+func TestTierCandidate_UnmarshalYAML_BareStringIsModel(t *testing.T) {
+	var doc struct {
+		Tiers map[string][]TierCandidate `yaml:"tiers"`
+	}
+	src := "tiers:\n" +
+		"  middle:\n" +
+		"    - local-qwen\n" +
+		"    - { provider: deepseek, model: deepseek-v4-pro }\n"
+	if err := yaml.Unmarshal([]byte(src), &doc); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	mid := doc.Tiers["middle"]
+	if len(mid) != 2 {
+		t.Fatalf("got %d candidates, want 2 (%+v)", len(mid), mid)
+	}
+	if mid[0] != (TierCandidate{Provider: "", Model: "local-qwen"}) {
+		t.Errorf("bare candidate = %+v, want {Provider: Model:local-qwen}", mid[0])
+	}
+	if mid[1] != (TierCandidate{Provider: "deepseek", Model: "deepseek-v4-pro"}) {
+		t.Errorf("mapping candidate = %+v", mid[1])
+	}
+}
 
 // TestExpandModelAlias_* lock the single source of truth for model-alias
 // expansion shared by the pin path (ResolveAgentDefModel) and the tier path

@@ -418,6 +418,32 @@ type TierCandidate struct {
 	Model    string `json:"model"    yaml:"model"`
 }
 
+// UnmarshalYAML accepts a tier candidate written EITHER as a mapping
+// ({provider: X, model: Y}) or as a bare scalar string. A bare string is
+// taken as the model with an empty provider — the natural way to name a
+// models: alias (the alias supplies the provider) without repeating the
+// pair, e.g. `- local-qwen`. Without this, a bare scalar fails to unmarshal
+// into the struct ("cannot unmarshal !!str into config.TierCandidate"), which
+// surprised an operator authoring an all-aliases tier list. Only the YAML
+// INPUT shape is affected — the struct still marshals to the same JSON
+// object, so content_sha256 (see the json: tags above) is unchanged.
+func (tc *TierCandidate) UnmarshalYAML(value *yaml.Node) error {
+	if value.Kind == yaml.ScalarNode {
+		tc.Provider = ""
+		tc.Model = value.Value
+		return nil
+	}
+	// Mapping form: decode via an alias type so we don't recurse into this
+	// method.
+	type rawTierCandidate TierCandidate
+	var raw rawTierCandidate
+	if err := value.Decode(&raw); err != nil {
+		return err
+	}
+	*tc = TierCandidate(raw)
+	return nil
+}
+
 // UserTier is one named user-facing-tier policy. Operators define
 // these in the top-level `user_tiers:` map; clients reference them by
 // name via the `user_tier` field on POST /v1/runs. See Config.UserTiers
