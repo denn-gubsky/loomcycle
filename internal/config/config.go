@@ -418,6 +418,32 @@ type TierCandidate struct {
 	Model    string `json:"model"    yaml:"model"`
 }
 
+// UnmarshalYAML accepts a tier candidate written EITHER as a mapping
+// ({provider: X, model: Y}) or as a bare scalar string. A bare string is
+// taken as the model with an empty provider — the natural way to name a
+// models: alias (the alias supplies the provider) without repeating the
+// pair, e.g. `- local-qwen`. Without this, a bare scalar fails to unmarshal
+// into the struct ("cannot unmarshal !!str into config.TierCandidate"), which
+// surprised an operator authoring an all-aliases tier list. Only the YAML
+// INPUT shape is affected — the struct still marshals to the same JSON
+// object, so content_sha256 (see the json: tags above) is unchanged.
+func (tc *TierCandidate) UnmarshalYAML(value *yaml.Node) error {
+	if value.Kind == yaml.ScalarNode {
+		tc.Provider = ""
+		tc.Model = value.Value
+		return nil
+	}
+	// Mapping form: decode via an alias type so we don't recurse into this
+	// method.
+	type rawTierCandidate TierCandidate
+	var raw rawTierCandidate
+	if err := value.Decode(&raw); err != nil {
+		return err
+	}
+	*tc = TierCandidate(raw)
+	return nil
+}
+
 // UserTier is one named user-facing-tier policy. Operators define
 // these in the top-level `user_tiers:` map; clients reference them by
 // name via the `user_tier` field on POST /v1/runs. See Config.UserTiers
@@ -3055,6 +3081,25 @@ func (c *Config) ResolveAgentModel(agent string) (provider string, model string,
 	return c.ResolveAgentDefModel(agent, def)
 }
 
+// ExpandModelAlias resolves a model-alias (a key in the top-level models:
+// map) to its concrete provider/model. The alias only fills an EMPTY
+// provider — an explicit provider on the pin/candidate always wins — so the
+// tier path and the pin path expand aliases identically. A nil/absent map or
+// a non-alias model is a no-op (the model is treated as a literal). This is
+// the single source of truth for alias expansion, shared by the pin path
+// (ResolveAgentDefModel) and the tier path (the resolver-boundary converters
+// in internal/api/http and cmd/loomcycle); keeping it in one place stops the
+// two paths from drifting.
+func ExpandModelAlias(models map[string]ModelRef, provider, model string) (string, string) {
+	if ref, ok := models[model]; ok {
+		model = ref.Model
+		if provider == "" {
+			provider = ref.Provider
+		}
+	}
+	return provider, model
+}
+
 // ResolveAgentDefModel mirrors ResolveAgentModel but resolves against
 // a caller-supplied AgentDef instead of looking it up in c.Agents.
 // Used by the sub-agent path when an overlay has already produced an
@@ -3075,12 +3120,7 @@ func (c *Config) ResolveAgentDefModel(agent string, def AgentDef) (provider stri
 	}
 
 	// If model is an alias in models:, expand it.
-	if ref, ok := c.Models[model]; ok {
-		model = ref.Model
-		if provider == "" {
-			provider = ref.Provider
-		}
-	}
+	provider, model = ExpandModelAlias(c.Models, provider, model)
 	if provider == "" {
 		provider = c.Defaults.Provider
 	}
@@ -3881,6 +3921,28 @@ func validateStaticWebhook(name string, w Webhook) error {
 	return nil
 }
 
+// validateTierCandidate checks one tier candidate at config-load. A candidate
+// may name a models: alias as a bare model with an empty provider — the alias
+// supplies the provider at resolve time (ExpandModelAlias) — so an empty
+// provider is valid IFF the model is a defined alias. Otherwise the provider
+// must be a known ID and the model non-empty. Without the alias carve-out an
+// all-aliases tier list fails load with `unknown provider ""`.
+func validateTierCandidate(cand TierCandidate, models map[string]ModelRef) error {
+	if cand.Provider == "" {
+		if _, ok := models[cand.Model]; !ok {
+			return fmt.Errorf("empty provider and %q is not a model alias (define it under models: or set an explicit provider)", cand.Model)
+		}
+		return nil
+	}
+	if !validProviderIDs[cand.Provider] {
+		return fmt.Errorf("unknown provider %q", cand.Provider)
+	}
+	if cand.Model == "" {
+		return fmt.Errorf("model is required")
+	}
+	return nil
+}
+
 func validate(c *Config) error {
 	if c.Concurrency.MaxConcurrentRuns < 1 {
 		return fmt.Errorf("concurrency.max_concurrent_runs must be >= 1")
@@ -3916,11 +3978,8 @@ func validate(c *Config) error {
 			return fmt.Errorf("tiers.%s: unknown tier (want one of low/middle/high)", tierName)
 		}
 		for i, cand := range candidates {
-			if !validProviderIDs[cand.Provider] {
-				return fmt.Errorf("tiers.%s[%d]: unknown provider %q", tierName, i, cand.Provider)
-			}
-			if cand.Model == "" {
-				return fmt.Errorf("tiers.%s[%d]: model is required", tierName, i)
+			if err := validateTierCandidate(cand, c.Models); err != nil {
+				return fmt.Errorf("tiers.%s[%d]: %v", tierName, i, err)
 			}
 		}
 	}
@@ -3949,11 +4008,8 @@ func validate(c *Config) error {
 					return fmt.Errorf("user_tiers.%s.tiers.%s: unknown tier (want one of low/middle/high)", tierName, taskTier)
 				}
 				for i, cand := range candidates {
-					if !validProviderIDs[cand.Provider] {
-						return fmt.Errorf("user_tiers.%s.tiers.%s[%d]: unknown provider %q", tierName, taskTier, i, cand.Provider)
-					}
-					if cand.Model == "" {
-						return fmt.Errorf("user_tiers.%s.tiers.%s[%d]: model is required", tierName, taskTier, i)
+					if err := validateTierCandidate(cand, c.Models); err != nil {
+						return fmt.Errorf("user_tiers.%s.tiers.%s[%d]: %v", tierName, taskTier, i, err)
 					}
 				}
 			}
@@ -4025,11 +4081,8 @@ func validate(c *Config) error {
 				return fmt.Errorf("agent %q: models.%s: unknown tier", name, tierName)
 			}
 			for i, cand := range candidates {
-				if !validProviderIDs[cand.Provider] {
-					return fmt.Errorf("agent %q: models.%s[%d]: unknown provider %q", name, tierName, i, cand.Provider)
-				}
-				if cand.Model == "" {
-					return fmt.Errorf("agent %q: models.%s[%d]: model is required", name, tierName, i)
+				if err := validateTierCandidate(cand, c.Models); err != nil {
+					return fmt.Errorf("agent %q: models.%s[%d]: %v", name, tierName, i, err)
 				}
 			}
 		}

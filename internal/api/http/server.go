@@ -958,7 +958,7 @@ func (s *Server) resolveAgentDef(def config.AgentDef, agentName, userTier string
 			Tier:      def.Tier,
 			Effort:    def.Effort,
 			Providers: def.Providers,
-			Models:    convertConfigCandidates(def.Models),
+			Models:    convertConfigCandidates(def.Models, s.cfg.Models),
 			UserTier:  s.userTierOverlay(userTier),
 		}
 		dec, rerr := s.resolver.Resolve(req)
@@ -1008,7 +1008,7 @@ func (s *Server) userTierOverlay(name string) *resolve.UserTierOverlay {
 	return &resolve.UserTierOverlay{
 		Name:                name,
 		ProviderPriority:    ut.ProviderPriority,
-		Tiers:               convertConfigCandidates(ut.Tiers),
+		Tiers:               convertConfigCandidates(ut.Tiers, s.cfg.Models),
 		FallbackOnError:     ut.FallbackOnError,
 		MaxFallbackAttempts: ut.MaxFallbackAttempts,
 		RetryAttempts:       ut.RetryAttempts,
@@ -1515,7 +1515,7 @@ func (s *Server) fallbackForRun(tenantID, agentName, userTier string) (loop.Fall
 // Keeping the resolver package free of internal/config imports avoids
 // circularity (resolver is consumed by the HTTP server, which already
 // depends on config).
-func convertConfigCandidates(in map[string][]config.TierCandidate) map[string][]resolve.Candidate {
+func convertConfigCandidates(in map[string][]config.TierCandidate, models map[string]config.ModelRef) map[string][]resolve.Candidate {
 	if len(in) == 0 {
 		return nil
 	}
@@ -1523,7 +1523,12 @@ func convertConfigCandidates(in map[string][]config.TierCandidate) map[string][]
 	for tier, cands := range in {
 		conv := make([]resolve.Candidate, 0, len(cands))
 		for _, c := range cands {
-			conv = append(conv, resolve.Candidate{Provider: c.Provider, Model: c.Model})
+			// Expand model aliases (top-level models:) the same way the
+			// pin path does — so model: <alias> works in a tier candidate
+			// too, not only as a pin. The resolver matches literal model
+			// strings, so expansion must happen here at the boundary.
+			prov, mdl := config.ExpandModelAlias(models, c.Provider, c.Model)
+			conv = append(conv, resolve.Candidate{Provider: prov, Model: mdl})
 		}
 		out[tier] = conv
 	}

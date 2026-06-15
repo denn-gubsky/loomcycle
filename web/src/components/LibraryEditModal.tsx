@@ -1007,8 +1007,9 @@ function AgentFields(props: AgentFieldsProps) {
         <label>
           models (per-tier)
           <span className="library-modal-field-hint">
-            {" "}— per-tier candidate list; leave a tier empty to inherit
-            from the library Tiers map
+            {" "}— per-tier candidate list; model may be a literal model name
+            or an alias from the top-level models: map (e.g. local-gemma);
+            leave a tier empty to inherit from the library Tiers map
           </span>
         </label>
         <div className="library-models-grid">
@@ -1043,7 +1044,7 @@ function AgentFields(props: AgentFieldsProps) {
                   />
                   <input
                     type="text"
-                    placeholder="model"
+                    placeholder="model or alias"
                     value={c.model}
                     onChange={(e) =>
                       updateCandidate(slot, i, { model: e.target.value })
