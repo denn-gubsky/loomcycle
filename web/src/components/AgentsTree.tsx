@@ -170,6 +170,11 @@ function AgentsTreeNode({ node, depth, expandedMap, setExpanded, selectedId, onS
           {hasChildren ? (expanded ? "▼" : "▶") : "·"}
         </button>
         <span className={`pill ${a.status}`}>{a.status}</span>
+        {a.interactive && (
+          <span className="pill-interactive" title="Interactive session — parks for operator steering; re-attachable in the run terminal">
+            interactive
+          </span>
+        )}
         {onSelect ? (
           <button
             type="button"

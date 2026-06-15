@@ -149,6 +149,11 @@ export default function AgentDetailPane({ agentId, ancestors, onSelect }: AgentD
         <div className="agent-header">
           <div className="line1">
             <span className={`pill ${agent.status}`}>{agent.status}</span>
+            {agent.interactive && (
+              <span className="pill-interactive" title="Interactive session — parks for operator steering; re-attachable in the run terminal">
+                interactive
+              </span>
+            )}
             <strong>{agent.agent || "(unknown agent)"}</strong>
             <code className="agent-id">{agent.agent_id}</code>
             {agent.status === "running" && (

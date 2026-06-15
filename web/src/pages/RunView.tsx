@@ -5,6 +5,7 @@ import { useUserId } from "../components/Layout";
 import { useRunStream } from "../hooks/useRunStream";
 import RunForm from "../components/RunForm";
 import LiveRunPane from "../components/LiveRunPane";
+import InteractiveSessionsPanel from "../components/InteractiveSessionsPanel";
 import FanOutForm from "../components/FanOutForm";
 import EnsembleDashboard from "../components/EnsembleDashboard";
 import OrchestratorView from "../components/OrchestratorView";
@@ -118,6 +119,11 @@ function SingleRunTab({
   return (
     <div className="run-view-body">
       <div className="run-view-form-col">
+        <InteractiveSessionsPanel
+          userId={defaultUserId}
+          currentRunId={run.runId}
+          onOpen={run.attach}
+        />
         <RunForm
           agents={agents}
           defaultUserId={defaultUserId}

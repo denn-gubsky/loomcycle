@@ -72,6 +72,10 @@ export interface Agent {
   };
   last_heartbeat_at: string | null;
   live: boolean;
+  // interactive marks a persistent interactive run (parks at end_turn for
+  // operator steering). Drives the run page's interactive-session switcher
+  // and the runs-page "interactive" tag. Absent/false for ordinary runs.
+  interactive?: boolean;
   // v0.8.21 awaited-state surface. Empty/absent for non-running
   // runs AND for running runs making normal progress. When set,
   // `awaited_state` is "channel" (open Channel.subscribe) or
