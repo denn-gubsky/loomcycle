@@ -95,17 +95,27 @@ export default function LineagePanel({
       setSelectedDefID("");
       return;
     }
+    // The static base is shown as a synthetic "v0" row (def_id
+    // "static:<name>") built from the entry's static_definition. We surface it
+    // whenever the entry HAS a static base — not only when there are zero
+    // dynamic versions — so it stays visible + fork-from-able, and (when no
+    // dynamic version is active) it's the definition runs actually resolve to.
+    // Without this, once any dynamic version exists (even all-retired / no
+    // active pointer) the static base was buried and couldn't be edited/forked.
+    const staticRow: DefRow | null = selectedEntry.in_static
+      ? {
+          def_id: `static:${selectedEntry.name}`,
+          name: selectedEntry.name,
+          version: 0,
+          created_at: "",
+          definition: selectedEntry.static_definition,
+        }
+      : null;
+
     if (!selectedEntry.in_substrate) {
-      // Static-only — synthesize the pseudo-row inline. No network.
-      const syntheticRow: DefRow = {
-        def_id: `static:${selectedEntry.name}`,
-        name: selectedEntry.name,
-        version: 0,
-        created_at: "",
-        definition: selectedEntry.static_definition,
-      };
-      setVersions([syntheticRow]);
-      setSelectedDefID(syntheticRow.def_id);
+      // Static-only — no network; the static row is the whole lineage.
+      setVersions(staticRow ? [staticRow] : []);
+      setSelectedDefID(staticRow?.def_id ?? "");
       setVersionsLoading(false);
       setVersionsErr(null);
       return;
@@ -116,14 +126,20 @@ export default function LineagePanel({
     listDefVersionsByName(kind, selectedName)
       .then((r) => {
         if (cancelled) return;
-        setVersions(r.versions ?? []);
+        const dynVersions = r.versions ?? [];
+        // Surface the static base alongside the dynamic lineage.
+        setVersions(staticRow ? [staticRow, ...dynVersions] : dynVersions);
         setVersionsLoading(false);
-        // Pre-select the active version if available, else the
-        // highest-version (most recent) row.
+        // Pre-select the EFFECTIVE definition — what a run resolves to: the
+        // promoted dynamic version if one is active, else the static base
+        // (runtime falls through to it when no dynamic is active), else the
+        // newest dynamic row.
         if (selectedEntry.active_def_id) {
           setSelectedDefID(selectedEntry.active_def_id);
-        } else if (r.versions && r.versions.length > 0) {
-          const top = [...r.versions].sort((a, b) => b.version - a.version)[0]!;
+        } else if (staticRow) {
+          setSelectedDefID(staticRow.def_id);
+        } else if (dynVersions.length > 0) {
+          const top = [...dynVersions].sort((a, b) => b.version - a.version)[0]!;
           setSelectedDefID(top.def_id);
         } else {
           setSelectedDefID("");
@@ -141,6 +157,13 @@ export default function LineagePanel({
 
   const tree = useMemo(() => buildLineageTree(versions), [versions]);
   const activeDefID = selectedEntry?.active_def_id ?? "";
+  // When NO dynamic version is active, the static base is the definition a run
+  // resolves to — flag it "effective" in the tree. (When a dynamic version is
+  // active, activeDefID already badges it "active ★".)
+  const effectiveDefID =
+    selectedEntry && !activeDefID && selectedEntry.in_static
+      ? `static:${selectedEntry.name}`
+      : "";
 
   if (entries.length === 0) {
     return (
@@ -207,6 +230,7 @@ export default function LineagePanel({
         <LineageTree
           tree={tree}
           activeDefID={activeDefID}
+          effectiveDefID={effectiveDefID}
           selectedDefID={selectedDefID}
           onSelect={setSelectedDefID}
           renderDefinition={renderDefinition}

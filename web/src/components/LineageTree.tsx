@@ -43,9 +43,12 @@ export function buildLineageTree(rows: DefRow[]): LineageNode[] {
 export interface LineageTreeProps {
   tree: LineageNode[];
   // Highlight + click callback. activeDefID — the row stored in the
-  // *_def_active overlay; gets the "active ★" chip. selectedDefID —
-  // the currently-clicked row (independent of active).
+  // *_def_active overlay; gets the "active ★" chip. effectiveDefID — the
+  // row a run actually resolves to when NO dynamic version is active (the
+  // static base); gets the "effective" chip. selectedDefID — the
+  // currently-clicked row (independent of active/effective).
   activeDefID?: string;
+  effectiveDefID?: string;
   selectedDefID?: string;
   onSelect?: (defID: string) => void;
   // Inline-detail renderer (v0.9.x Library v2). When set, each row
@@ -67,6 +70,7 @@ export interface LineageTreeProps {
 export default function LineageTree({
   tree,
   activeDefID,
+  effectiveDefID,
   selectedDefID,
   onSelect,
   renderDefinition,
@@ -134,6 +138,7 @@ export default function LineageTree({
           detailExpanded={detailExpanded}
           toggleDetail={toggleDetail}
           activeDefID={activeDefID}
+          effectiveDefID={effectiveDefID}
           selectedDefID={selectedDefID}
           onSelect={onSelect}
           renderDefinition={renderDefinition}
@@ -154,6 +159,7 @@ function LineageNodeRow({
   detailExpanded,
   toggleDetail,
   activeDefID,
+  effectiveDefID,
   selectedDefID,
   onSelect,
   renderDefinition,
@@ -168,6 +174,7 @@ function LineageNodeRow({
   detailExpanded: Map<string, boolean>;
   toggleDetail: (id: string) => void;
   activeDefID?: string;
+  effectiveDefID?: string;
   selectedDefID?: string;
   onSelect?: (defID: string) => void;
   renderDefinition?: (row: DefRow) => React.ReactNode;
@@ -181,6 +188,9 @@ function LineageNodeRow({
   const isActive = node.row.def_id === activeDefID;
   const isSelected = node.row.def_id === selectedDefID;
   const row = node.row;
+  const isStatic = row.version === 0 && row.def_id.startsWith("static:");
+  // The static base is the effective definition when no dynamic is active.
+  const isEffective = isStatic && !!effectiveDefID && row.def_id === effectiveDefID;
 
   // Whole-row click toggles content visibility (when renderDefinition is
   // wired) AND records selection (highlights + auto-expands ancestors).
@@ -229,8 +239,16 @@ function LineageNodeRow({
           ) : (
             <span className="lineage-version">v{row.version}</span>
           )}
-          {row.version === 0 && row.def_id.startsWith("static:") && (
+          {isStatic && (
             <span className="def-chip def-chip-static">static</span>
+          )}
+          {isEffective && (
+            <span
+              className="def-chip def-chip-effective"
+              title="No dynamic version is active — runs resolve to this static base."
+            >
+              effective
+            </span>
           )}
           {isActive && <span className="def-chip def-chip-active">active ★</span>}
           {row.retired && <span className="def-chip def-chip-retired">retired</span>}
@@ -338,6 +356,7 @@ function LineageNodeRow({
               detailExpanded={detailExpanded}
               toggleDetail={toggleDetail}
               activeDefID={activeDefID}
+              effectiveDefID={effectiveDefID}
               selectedDefID={selectedDefID}
               onSelect={onSelect}
               renderDefinition={renderDefinition}

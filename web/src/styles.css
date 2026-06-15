@@ -2936,6 +2936,15 @@ button.primary:disabled {
   color: #b08bd0;
   border: 1px solid #b08bd0;
 }
+/* The static base is the definition runs resolve to when no dynamic version
+   is active — a FILLED accent chip so it reads as "live", visually distinct
+   from the outlined "active ★" (which marks a promoted dynamic version). */
+.def-chip-effective {
+  background: var(--accent, #56c596);
+  color: #0b0b0d;
+  border: 1px solid var(--accent, #56c596);
+  font-weight: 600;
+}
 .lineage-name-chips {
   display: inline-flex;
   gap: 4px;
