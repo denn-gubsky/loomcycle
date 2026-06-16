@@ -3,6 +3,7 @@ import { useSearchParams } from "react-router-dom";
 import { listLibraryAgents, type StartRunRequest } from "../api";
 import { useUserId } from "../components/Layout";
 import { useRunStream } from "../hooks/useRunStream";
+import { useInteractiveSessions } from "../hooks/useInteractiveSessions";
 import RunForm from "../components/RunForm";
 import LiveRunPane from "../components/LiveRunPane";
 import InteractiveSessionsPanel from "../components/InteractiveSessionsPanel";
@@ -15,6 +16,10 @@ import OrchestratorView from "../components/OrchestratorView";
 //   fanout       — N independent top-level runs in a live grid
 //   orchestrator — one parent agent that parallel_spawns a live child tree
 type Tab = "single" | "fanout" | "orchestrator";
+
+// Persisted collapse state for the Single-tab left column (sessions + form),
+// so the operator's "give the terminal full width" choice survives navigation.
+const FORM_COL_COLLAPSE_KEY = "loomcycle.run.form-col.collapsed";
 
 export default function RunView() {
   const defaultUserId = useUserId();
@@ -100,6 +105,15 @@ function SingleRunTab({
   defaultUserId: string;
 }) {
   const run = useRunStream();
+  const sessions = useInteractiveSessions(defaultUserId);
+  // Collapse the whole left column to a thin strip so the live terminal can
+  // use the full width during a run. Persisted so it survives navigation.
+  const [colCollapsed, setColCollapsed] = useState<boolean>(
+    () => localStorage.getItem(FORM_COL_COLLAPSE_KEY) === "1",
+  );
+  useEffect(() => {
+    localStorage.setItem(FORM_COL_COLLAPSE_KEY, colCollapsed ? "1" : "0");
+  }, [colCollapsed]);
   const [searchParams, setSearchParams] = useSearchParams();
   // `?attach=<run_id>` re-attaches to a detached interactive run (the operator
   // returned from the runs list). Attach once on mount, then drop the param so
@@ -116,21 +130,55 @@ function SingleRunTab({
     }
   }, [attachRunId, run, searchParams, setSearchParams]);
 
+  const sessionCount = sessions.length;
   return (
     <div className="run-view-body">
-      <div className="run-view-form-col">
-        <InteractiveSessionsPanel
-          userId={defaultUserId}
-          currentRunId={run.runId}
-          onOpen={run.attach}
-        />
-        <RunForm
-          agents={agents}
-          defaultUserId={defaultUserId}
-          submitting={run.status === "running"}
-          onSubmit={(req) => run.start(req)}
-        />
-      </div>
+      {colCollapsed ? (
+        <button
+          type="button"
+          className="run-view-form-col-collapsed"
+          onClick={() => setColCollapsed(false)}
+          title={`Expand panel — ${sessionCount} interactive session${sessionCount === 1 ? "" : "s"}`}
+          aria-label="Expand panel"
+        >
+          <span className="run-col-toggle-icon" aria-hidden="true">
+            »
+          </span>
+          <span
+            className="run-col-collapsed-badge"
+            data-empty={sessionCount === 0 ? "1" : undefined}
+          >
+            {sessionCount}
+          </span>
+          <span className="run-col-collapsed-vtext">interactive</span>
+        </button>
+      ) : (
+        <div className="run-view-form-col">
+          <div className="run-col-toolbar">
+            <button
+              type="button"
+              className="run-col-toggle"
+              onClick={() => setColCollapsed(true)}
+              title="Collapse panel (give the terminal full width)"
+              aria-label="Collapse panel"
+            >
+              «
+            </button>
+          </div>
+          <InteractiveSessionsPanel
+            userId={defaultUserId}
+            sessions={sessions}
+            currentRunId={run.runId}
+            onOpen={run.attach}
+          />
+          <RunForm
+            agents={agents}
+            defaultUserId={defaultUserId}
+            submitting={run.status === "running"}
+            onSubmit={(req) => run.start(req)}
+          />
+        </div>
+      )}
       <div className="run-view-pane-col">
         <LiveRunPane
           events={run.events}
