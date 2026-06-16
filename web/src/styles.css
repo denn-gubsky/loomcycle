@@ -4172,6 +4172,80 @@ button.primary:disabled {
   display: flex;
 }
 
+/* Collapse toggle inside the expanded left column (top-right). */
+.run-col-toolbar {
+  flex: 0 0 auto;
+  display: flex;
+  justify-content: flex-end;
+}
+.run-col-toggle {
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--fg-soft);
+  border-radius: var(--lc-radius-sm, 6px);
+  cursor: pointer;
+  padding: 1px 9px;
+  font-size: 15px;
+  line-height: 1.4;
+}
+.run-col-toggle:hover {
+  background: var(--bg-soft);
+  color: var(--fg);
+}
+
+/* Collapsed left column: a thin vertical strip showing the running-interactive
+   count + an expand affordance, so the live terminal gets the full width. */
+.run-view-form-col-collapsed {
+  flex: 0 0 38px;
+  width: 38px;
+  align-self: stretch;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 0;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+  cursor: pointer;
+  color: var(--fg-soft);
+}
+.run-view-form-col-collapsed:hover {
+  background: var(--bg-soft);
+  color: var(--fg);
+}
+.run-col-toggle-icon {
+  font-size: 16px;
+  line-height: 1;
+}
+.run-col-collapsed-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 22px;
+  height: 22px;
+  padding: 0 6px;
+  border-radius: 11px;
+  font-size: 12px;
+  font-weight: 600;
+  background: rgba(86, 197, 150, 0.15);
+  color: var(--accent, #56c596);
+  border: 1px solid var(--accent, #56c596);
+}
+/* Zero running sessions: mute the badge so it doesn't read as a live count. */
+.run-col-collapsed-badge[data-empty="1"] {
+  background: transparent;
+  color: var(--muted);
+  border-color: var(--border);
+}
+.run-col-collapsed-vtext {
+  writing-mode: vertical-rl;
+  text-orientation: mixed;
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+}
+
 /* Interactive-sessions switcher — a collapsible list at the top of the run
    page's left column. Lets the operator switch between / re-open running
    interactive sessions without the runs-page "resume in terminal" detour. */
