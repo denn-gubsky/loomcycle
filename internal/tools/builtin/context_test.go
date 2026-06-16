@@ -114,6 +114,121 @@ func TestContextTool_SelfReturnsIdentity(t *testing.T) {
 	}
 }
 
+// TestContextTool_SelfReportsSandboxAndNetwork: op=self surfaces the
+// filesystem jail (read/write roots + bash cwd, with the relative-path
+// convention) and the effective host allowlist, so a jailed agent can
+// introspect its sandbox instead of guessing host paths / probing hosts. With
+// no per-run caller list, the operator's static allowlist is reported as the
+// floor (source=operator_default).
+func TestContextTool_SelfReportsSandboxAndNetwork(t *testing.T) {
+	tool, ctx := contextFixture(t)
+	tool.Cfg = &config.Config{Env: config.Env{
+		ReadRoot:          "/work/sandbox",
+		WriteRoot:         "/work/sandbox/out",
+		BashCwd:           "/work/sandbox",
+		HTTPHostAllowlist: []string{"api.example.com", "docs.example.com"},
+	}}
+	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"self"}`))
+	if res.IsError {
+		t.Fatalf("self: %s", res.Text)
+	}
+	out := decodeResult(t, res.Text)
+
+	sb, ok := out["sandbox"].(map[string]any)
+	if !ok {
+		t.Fatalf("sandbox = %v (%T), want an object", out["sandbox"], out["sandbox"])
+	}
+	if sb["read_root"] != "/work/sandbox" {
+		t.Errorf("sandbox.read_root = %v, want /work/sandbox", sb["read_root"])
+	}
+	if sb["write_root"] != "/work/sandbox/out" {
+		t.Errorf("sandbox.write_root = %v, want /work/sandbox/out", sb["write_root"])
+	}
+	if sb["bash_cwd"] != "/work/sandbox" {
+		t.Errorf("sandbox.bash_cwd = %v, want /work/sandbox", sb["bash_cwd"])
+	}
+	if s, _ := sb["path_convention"].(string); !strings.Contains(s, "RELATIVE") {
+		t.Errorf("sandbox.path_convention should mention RELATIVE, got %q", s)
+	}
+
+	net, ok := out["network"].(map[string]any)
+	if !ok {
+		t.Fatalf("network = %v (%T), want an object", out["network"], out["network"])
+	}
+	if net["source"] != "operator_default" {
+		t.Errorf("network.source = %v, want operator_default", net["source"])
+	}
+	hosts, _ := net["allowed_hosts"].([]any)
+	if len(hosts) != 2 || hosts[0] != "api.example.com" {
+		t.Errorf("network.allowed_hosts = %v, want [api.example.com docs.example.com]", net["allowed_hosts"])
+	}
+}
+
+// TestContextTool_SelfNetworkCallerList: a per-run caller allowed_hosts list
+// (HasList) is reported as source=caller and wins over the operator default.
+func TestContextTool_SelfNetworkCallerList(t *testing.T) {
+	tool, ctx := contextFixture(t)
+	tool.Cfg = &config.Config{Env: config.Env{HTTPHostAllowlist: []string{"operator-floor.example.com"}}}
+	ctx = tools.WithHostPolicy(ctx, tools.HostPolicyValue{
+		AllowedHosts: []string{"caller.example.com"},
+		HasList:      true,
+	})
+	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"self"}`))
+	if res.IsError {
+		t.Fatalf("self: %s", res.Text)
+	}
+	out := decodeResult(t, res.Text)
+	net, ok := out["network"].(map[string]any)
+	if !ok {
+		t.Fatalf("network missing from op=self")
+	}
+	if net["source"] != "caller" {
+		t.Errorf("network.source = %v, want caller", net["source"])
+	}
+	hosts, _ := net["allowed_hosts"].([]any)
+	if len(hosts) != 1 || hosts[0] != "caller.example.com" {
+		t.Errorf("network.allowed_hosts = %v, want [caller.example.com]", net["allowed_hosts"])
+	}
+}
+
+// TestContextTool_SelfOmitsSandboxWhenNoCfg: a bare fixture (no Cfg, no host
+// policy) omits sandbox + network rather than emitting empty objects.
+func TestContextTool_SelfOmitsSandboxWhenNoCfg(t *testing.T) {
+	tool, ctx := contextFixture(t)
+	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"self"}`))
+	out := decodeResult(t, res.Text)
+	if _, ok := out["sandbox"]; ok {
+		t.Errorf("sandbox should be omitted when Cfg is nil, got %v", out["sandbox"])
+	}
+	if _, ok := out["network"]; ok {
+		t.Errorf("network should be omitted with no caller list and nil Cfg, got %v", out["network"])
+	}
+}
+
+// TestSandboxedToolPaths_DescribedRelative is the regression guard for the
+// root-cause fix: the file/exec tools must describe their path params as
+// RELATIVE to the sandbox root, not "Absolute file path" (which led jailed
+// agents to pass host paths that resolve outside the root).
+func TestSandboxedToolPaths_DescribedRelative(t *testing.T) {
+	cases := []struct {
+		name   string
+		schema string
+	}{
+		{"Read", string((&Read{}).InputSchema())},
+		{"Write", string((&Write{}).InputSchema())},
+		{"Edit", string((&Edit{}).InputSchema())},
+		{"Bash", string((&Bash{}).InputSchema())},
+	}
+	for _, c := range cases {
+		if strings.Contains(c.schema, "Absolute file path") {
+			t.Errorf("%s schema still says %q — should describe paths as RELATIVE to the root", c.name, "Absolute file path")
+		}
+		if !strings.Contains(c.schema, "RELATIVE") {
+			t.Errorf("%s schema should mention RELATIVE path guidance, got: %s", c.name, c.schema)
+		}
+	}
+}
+
 // TestContextTool_SelfOmitsSamplingWhenUnset: no sampling stamped → no
 // "sampling" key (the agent sees provider defaults; the key isn't a misleading
 // empty object).
