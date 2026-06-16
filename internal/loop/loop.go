@@ -1123,6 +1123,39 @@ func Run(ctx context.Context, opts RunOptions) (RunResult, error) {
 		opts.MaxSameProviderRetries = maxSameProviderRetriesCap
 	}
 
+	// Run-lifetime heartbeat: pulse OnHeartbeat every parkHeartbeatInterval for
+	// as long as this run's goroutine is alive, IN ADDITION to the per-iteration
+	// pulse below. The stale-run sweeper reaps a run whose heartbeat hasn't
+	// advanced in HeartbeatStaleAfter (default 10m) as CRASHED — but a SINGLE
+	// iteration can legitimately block far longer than the per-iteration cadence:
+	// a large-context prefill on a slow local model, a long tool, or
+	// same-provider retry backoff. A slow ollama review hit exactly this — two
+	// 300s header timeouts inside one iteration (>10m with no pulse) got the
+	// live run reaped as heartbeat_timeout. A live goroutine is not a crashed
+	// process, so keep the heartbeat fresh regardless of which phase the
+	// iteration is in. The callback is a fire-and-forget DB write (server's
+	// makeHeartbeat) — safe to call concurrently with the per-iteration pulse.
+	// Stops when Run returns (close) or ctx is cancelled. parkForInput keeps its
+	// own pulse (this subsumes it; harmless overlap).
+	if opts.OnHeartbeat != nil {
+		hbDone := make(chan struct{})
+		defer close(hbDone)
+		go func() {
+			t := time.NewTicker(parkHeartbeatInterval)
+			defer t.Stop()
+			for {
+				select {
+				case <-hbDone:
+					return
+				case <-ctx.Done():
+					return
+				case <-t.C:
+					opts.OnHeartbeat()
+				}
+			}
+		}()
+	}
+
 outerLoop:
 	for iter := 0; iter < iterCap; iter++ {
 		// v0.10.0 OTEL: one loomcycle.iteration span per turn. Nested
