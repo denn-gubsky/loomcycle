@@ -16,12 +16,46 @@
 # config setup from exfiltrating, say, ANTHROPIC_API_KEY into an MCP
 # server URL.
 
+# ─── Model aliases — name your models ONCE, here, FIRST ───────────────
+# A model alias maps a friendly name → (provider, real model id). Define
+# every model you use here, then reference it BY NAME everywhere else:
+# tier candidate lists (below), per-agent pins (`model: sonnet`), and the
+# per-agent `models:` override. This is the recommended way to name models
+# — editing one right-hand side re-points every agent/tier that uses the
+# alias (e.g. when Anthropic ships sonnet-5, change `sonnet:` once). A raw
+# `{provider, model}` pair still works anywhere an alias does; the alias
+# just avoids repeating the id. NOTE: `defaults:` (far below) is NOT
+# alias-expanded — pin it with a concrete provider+model.
+models:
+  # — Anthropic (key: ANTHROPIC_API_KEY) —
+  haiku:  { provider: anthropic, model: claude-haiku-4-5 }
+  sonnet: { provider: anthropic, model: claude-sonnet-4-6 }
+  opus:   { provider: anthropic, model: claude-opus-4-7 }
+  # — OpenAI (OPENAI_API_KEY) —
+  gpt-mini: { provider: openai, model: gpt-5.4-mini }
+  gpt:      { provider: openai, model: gpt-5.4 }
+  gpt-max:  { provider: openai, model: gpt-5.5 }
+  # — DeepSeek — the cost floor (DEEPSEEK_API_KEY) —
+  deepseek-flash: { provider: deepseek, model: deepseek-v4-flash }
+  deepseek-pro:   { provider: deepseek, model: deepseek-v4-pro }
+  # — Hosted Ollama cloud (OLLAMA_API_KEY) — for models too big to run locally —
+  cloud-kimi: { provider: ollama, model: kimi-k2.6 }
+  # — Local Ollama on your workstation / LAN (OLLAMA_BASE_URL; no key) —
+  # Slow local models have their own knobs (num_ctx, header/idle timeouts,
+  # compaction tuning, unbounded interactive runs). See "Local models" in
+  # docs/CONFIGURATION.md and loomcycle.local-interactive.example.yaml.
+  local-small:  { provider: ollama-local, model: gemma4:9b }        # low tier
+  local-medium: { provider: ollama-local, model: qwen3.6:27b }      # middle tier
+  local-coder:  { provider: ollama-local, model: qwen3-coder-next } # high tier (coding)
+
 # ─── Tier-based model resolution (v0.7+, opt-in) ──────────────────────
 # Agents can declare `tier: low | middle | high` instead of pinning a
-# specific (provider, model). The resolver walks `provider_priority`
-# below and picks the first available candidate from `tiers.<level>`
-# for that provider. Cost-floor-first by default — try DeepSeek, fall
-# through to Ollama (local llama), then OpenAI, then Anthropic.
+# specific model. The resolver walks `provider_priority` below and picks
+# the first available candidate from `tiers.<level>`. Candidates are
+# written as bare ALIASES (defined above) — `- deepseek-flash` is the same
+# as `- { provider: deepseek, model: deepseek-v4-flash }`, just shorter and
+# single-sourced. Cost-floor-first by default — try DeepSeek, fall through
+# to local Ollama, then OpenAI, then Anthropic.
 #
 # Per-agent overrides: an agent may set its own `providers:` list
 # (full replacement of provider_priority) and/or `models:` map (full
@@ -43,23 +77,22 @@ provider_priority:
 
 tiers:
   low:
-    - { provider: deepseek,     model: deepseek-v4-flash }
-    - { provider: ollama-local, model: gemma4:9b }
-    - { provider: openai,       model: gpt-5.4-mini }
-    - { provider: anthropic,    model: claude-haiku-4-5 }
+    - deepseek-flash   # cost floor first
+    - local-small      # workstation GPU
+    - gpt-mini
+    - haiku            # cloud-frontier fallback
   middle:
-    - { provider: deepseek,     model: deepseek-v4-pro }
-    - { provider: ollama-local, model: qwen3.6:27b }
-    - { provider: openai,       model: gpt-5.4 }
-    - { provider: anthropic,    model: claude-sonnet-4-6 }
+    - deepseek-pro
+    - local-medium
+    - gpt
+    - sonnet
   high:
     # DeepSeek absent — V4 Pro doesn't compete with Opus 4.7 / GPT-5.5.
-    # ollama-local typically can't host 600B+ kimi-k2.6 either; the
-    # `ollama` (hosted) entry covers that case for operators with a
-    # paid quota.
-    - { provider: ollama,    model: kimi-k2.6 }
-    - { provider: openai,    model: gpt-5.5 }
-    - { provider: anthropic, model: claude-opus-4-7 }
+    # A local box typically can't host 600B+ kimi-k2.6 either; cloud-kimi
+    # (hosted Ollama) covers that case for operators with a paid quota.
+    - cloud-kimi
+    - gpt-max
+    - opus
 
 # ─── User tiers (v0.8.2+) ─────────────────────────────────────────────
 # Operator-defined per-user-tier overlay on the resolver matrix above.
@@ -109,10 +142,10 @@ user_tiers:
   # prompt.
   free:
     provider_priority: [ollama-local]
-    tiers:
-      low:    [{provider: ollama-local, model: gemma4:9b}]
-      middle: [{provider: ollama-local, model: qwen3.6:27b}]
-      high:   [{provider: ollama-local, model: qwen3.6:27b}]
+    tiers:                  # bare aliases again — same names as the top-level models: map
+      low:    [local-small]
+      middle: [local-medium]
+      high:   [local-medium]
     fallback_on_error: false
 
   # Low tier: cost-floor-first with one paid backstop. DeepSeek's free
@@ -363,21 +396,13 @@ hooks:
 # Used by agents that declare neither `tier:` nor an explicit
 # `provider:`+`model:` pin. v0.6.x back-compat path; tier-based agents
 # bypass these defaults entirely.
+# NOT alias-expanded — pin a concrete provider+model here (an alias name
+# in `defaults.model` would be sent to the provider verbatim, not resolved).
 defaults:
   provider: anthropic
   model: claude-sonnet-4-6
 
-# ─── Model aliases ────────────────────────────────────────────────────
-# Agents reference these names via `model: <alias>`. The alias resolves
-# to (provider, real_model_id). Cleaner than repeating model strings,
-# and makes "swap haiku→sonnet for cv-adapter" a one-line YAML change.
-models:
-  cheap:  { provider: anthropic, model: claude-haiku-4-5 }
-  smart:  { provider: anthropic, model: claude-sonnet-4-6 }
-  best:   { provider: anthropic, model: claude-opus-4-7 }
-  gpt:    { provider: openai,    model: gpt-4o-mini }
-  gpt-4:  { provider: openai,    model: gpt-4o }
-  local:  { provider: ollama-local, model: llama3.1:8b }  # tool-tuned model on workstation
+# (Model aliases are defined at the TOP of this file — see "Model aliases".)
 
 # ─── Agents ───────────────────────────────────────────────────────────
 # Each agent is addressed by name in POST /v1/runs's "agent" field.
@@ -406,7 +431,7 @@ agents:
   # Reaches no resources outside the model. Safe for prompts that only
   # need text generation (Q&A bots, classifiers, summarisers).
   default:
-    model: smart
+    model: sonnet
     system_prompt: "You are a helpful assistant."
     allowed_tools: []
 
@@ -447,7 +472,7 @@ agents:
     effort: medium
     models:
       high:
-        - { provider: anthropic, model: claude-opus-4-7 }
+        - opus   # alias → {anthropic, claude-opus-4-7}; locks this sensitive agent to Anthropic
     system_prompt: "You adapt the user's CV to a target job description."
     allowed_tools: [Read, Write]
 
@@ -455,7 +480,7 @@ agents:
   # directory. Mutually exclusive with system_prompt. Useful when the
   # prompt is long enough to be uncomfortable to inline.
   # docs-from-file:
-  #   model: smart
+  #   model: sonnet
   #   system_prompt_file: prompts/docs-agent.md
   #   allowed_tools: [WebFetch]
 
@@ -463,7 +488,7 @@ agents:
   # the network. Good for code-review or doc-editing flows where the
   # operator has staged inputs into LOOMCYCLE_WRITE_ROOT.
   file-editor:
-    model: smart
+    model: sonnet
     system_prompt: "You edit files in the configured sandbox. Never speculate about files you haven't read."
     allowed_tools: [Read, Write, Edit]
 
@@ -478,7 +503,7 @@ agents:
   # implement the "researcher-feeds-analyst" canonical pattern from
   # the v0.8.4 Channel-tool RFC.
   researcher:
-    model: smart
+    model: sonnet
     system_prompt: "You do focused web research. Cite every claim with a URL. Publish each finding as a single JSON object to the `findings` channel."
     allowed_tools: [WebSearch, WebFetch, Channel]
     channels:
@@ -489,7 +514,7 @@ agents:
   # batches into reports, and reads the alerts broadcast. Demonstrates
   # the consumer side of the Channel tool.
   analyst:
-    model: smart
+    model: sonnet
     system_prompt: "You drain the `findings` channel and produce summary reports. Subscribe to `alerts` for cross-tenant notifications."
     allowed_tools: [Channel, Write]
     channels:
@@ -500,7 +525,7 @@ agents:
   # operator has containerised loomcycle (Bash is NOT a true sandbox).
   # Keep `Bash` off this list unless you really need it.
   power-user:
-    model: best
+    model: opus
     system_prompt: "You have broad access. Do the minimum work needed."
     allowed_tools: [Read, Write, Edit, WebSearch, WebFetch]
     # Add Bash only if loomcycle runs inside a container/VM:
@@ -510,7 +535,7 @@ agents:
   # server registers, alongside built-in WebFetch for the deep-dive.
   # The mcp_servers.brave-search block below declares the server.
   brave-researcher:
-    model: smart
+    model: sonnet
     allowed_tools: ["mcp__brave-search__*", WebFetch]
     system_prompt: "Search via Brave, fetch top results, synthesise."
 
@@ -518,7 +543,7 @@ agents:
   # all the heavy lifting. Good for routing/triage where you'd
   # otherwise pay sonnet rates per call.
   classifier:
-    model: cheap
+    model: haiku
     system_prompt: |
       Classify each input into exactly one of: bug, feature, question, spam.
       Output ONLY the label, no explanation.
