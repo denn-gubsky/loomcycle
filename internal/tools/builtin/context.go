@@ -234,7 +234,57 @@ func (c *Context) execSelf(ctx context.Context) (tools.Result, error) {
 		}
 		out["context"] = usage
 	}
+	// sandbox: the filesystem jail the file/exec tools enforce. Paths passed to
+	// Read/Write/Edit/Glob/Grep and Bash commands resolve RELATIVE to these
+	// roots (~ is not expanded; an absolute path must resolve inside the root).
+	// Surfaced so a jailed agent knows its own roots instead of guessing host
+	// paths — the recurring "agent uses an absolute path and gets a not-inside-
+	// root error" failure. Omitted when no roots are configured (Cfg is nil in
+	// some test fixtures; an unset root means that tool refuses every call).
+	if c.Cfg != nil {
+		sb := map[string]any{}
+		if c.Cfg.Env.ReadRoot != "" {
+			sb["read_root"] = c.Cfg.Env.ReadRoot
+		}
+		if c.Cfg.Env.WriteRoot != "" {
+			sb["write_root"] = c.Cfg.Env.WriteRoot
+		}
+		if c.Cfg.Env.BashCwd != "" {
+			sb["bash_cwd"] = c.Cfg.Env.BashCwd
+		}
+		if len(sb) > 0 {
+			sb["path_convention"] = "Pass paths RELATIVE to these roots (e.g. \"src/main.go\"); ~ is not expanded and an absolute path must resolve inside the root."
+			out["sandbox"] = sb
+		}
+	}
+	// network: the host allowlist the HTTP/WebFetch/WebSearch tools enforce for
+	// this run, so an agent knows which hosts it may reach instead of probing
+	// blind. A per-run caller list (allowed_hosts on POST /v1/runs) wins; else
+	// the operator's static allowlist is the floor. allowed_hosts is suffix-
+	// matched; an empty list means no web egress (deny-all). Omitted only when
+	// there's no policy to report (no caller list and Cfg is nil).
+	hp := tools.HostPolicy(ctx)
+	if hp.HasList {
+		out["network"] = map[string]any{
+			"allowed_hosts": nonNilStrings(hp.AllowedHosts),
+			"source":        "caller",
+		}
+	} else if c.Cfg != nil {
+		out["network"] = map[string]any{
+			"allowed_hosts": nonNilStrings(c.Cfg.Env.HTTPHostAllowlist),
+			"source":        "operator_default",
+		}
+	}
 	return okJSON(out)
+}
+
+// nonNilStrings normalises a nil slice to an empty one so the JSON encodes as
+// [] (an explicit "no hosts" / deny-all signal) rather than null.
+func nonNilStrings(s []string) []string {
+	if s == nil {
+		return []string{}
+	}
+	return s
 }
 
 // ---- time ----

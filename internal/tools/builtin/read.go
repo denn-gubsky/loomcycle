@@ -29,7 +29,7 @@ func (r *Read) InputSchema() json.RawMessage {
 	return json.RawMessage(`{
 		"type": "object",
 		"properties": {
-			"path": {"type": "string", "description": "Absolute file path inside the sandbox root."}
+			"path": {"type": "string", "description": "Path RELATIVE to the sandbox root (e.g. \"src/main.go\"). ~ is not expanded; an absolute path is accepted only if it resolves inside the root. Call Context op=self to see the root."}
 		},
 		"required": ["path"]
 	}`)

@@ -57,7 +57,7 @@ func (b *Bash) InputSchema() json.RawMessage {
 	return json.RawMessage(`{
 		"type": "object",
 		"properties": {
-			"command":         {"type": "string", "description": "Shell command to execute via /bin/sh -c."},
+			"command":         {"type": "string", "description": "Shell command to execute via /bin/sh -c. The working directory is already set to your sandbox; use paths RELATIVE to it (e.g. \"ls .\", \"cat src/main.go\") — not absolute host paths or ~. Call Context op=self to see the cwd."},
 			"timeout_seconds": {"type": "integer", "description": "Per-call timeout. Capped at 300s."}
 		},
 		"required": ["command"]

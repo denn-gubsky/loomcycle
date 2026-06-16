@@ -37,7 +37,7 @@ func (w *Write) InputSchema() json.RawMessage {
 	return json.RawMessage(`{
 		"type": "object",
 		"properties": {
-			"path":    {"type": "string", "description": "Absolute file path inside the sandbox root."},
+			"path":    {"type": "string", "description": "Path RELATIVE to the sandbox write root (e.g. \"src/main.go\"). ~ is not expanded; an absolute path is accepted only if it resolves inside the root. Call Context op=self to see the root."},
 			"content": {"type": "string", "description": "UTF-8 text to write. Replaces any existing content."}
 		},
 		"required": ["path", "content"]

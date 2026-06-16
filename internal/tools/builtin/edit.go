@@ -36,7 +36,7 @@ func (e *Edit) InputSchema() json.RawMessage {
 	return json.RawMessage(`{
 		"type": "object",
 		"properties": {
-			"path":        {"type": "string", "description": "Absolute file path inside the sandbox root."},
+			"path":        {"type": "string", "description": "Path RELATIVE to the sandbox write root (e.g. \"src/main.go\"). ~ is not expanded; an absolute path is accepted only if it resolves inside the root. Call Context op=self to see the root."},
 			"old_string":  {"type": "string", "description": "Exact text to replace. Must be unique unless replace_all is true."},
 			"new_string":  {"type": "string", "description": "Replacement text. Must differ from old_string."},
 			"replace_all": {"type": "boolean", "description": "Replace every occurrence instead of requiring exactly one match."}
