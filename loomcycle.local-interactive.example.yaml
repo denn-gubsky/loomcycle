@@ -1,0 +1,122 @@
+# loomcycle.local-interactive.example.yaml
+# ─────────────────────────────────────────────────────────────────────
+# A focused config for driving INTERACTIVE agents on LOCAL (Ollama) models —
+# a coding/review terminal you steer turn-by-turn on your own GPU, with a
+# cloud fallback for when the local box is down or a task needs a frontier
+# model.
+#
+#   Run it:   loomcycle --config loomcycle.local-interactive.example.yaml
+#   Drive it: the /run terminal in the Web UI (/ui), or
+#             POST /v1/runs {"agent":"coder","interactive":true,...}
+#             then steer via POST /v1/runs/{id}/input.
+#
+# WHY a separate example: local models are SLOW and their context is
+# precious. A frontier cloud model prefills a 100k-token context in ~1s; a
+# single consumer GPU can take minutes. That changes how you configure
+# things — the env knobs and the per-agent `compaction` block below are the
+# difference between a terminal that hums and one that times out. See the
+# "Local models (Ollama)" section in docs/CONFIGURATION.md for the full
+# rationale.
+#
+# ─── Local-model ENV (set in .env.insecure — operational, not secret) ─────
+#   OLLAMA_BASE_URL=http://<host>:11434    # your Ollama host (LAN / Tailscale /
+#                                          #   localhost). NOT a model name — the
+#                                          #   model comes from the aliases below.
+#   LOOMCYCLE_OLLAMA_LOCAL_NUM_CTX=131072  # pin the context window (see note).
+#   LOOMCYCLE_OLLAMA_LOCAL_HEADER_TIMEOUT_MS=300000  # time-to-FIRST-token budget.
+#   LOOMCYCLE_OLLAMA_LOCAL_IDLE_TIMEOUT_MS=300000    # inter-token idle budget.
+#   LOOMCYCLE_BASH_ENABLED=1   LOOMCYCLE_BASH_CWD=<dir>   # if the agent runs shell
+#   LOOMCYCLE_READ_ROOT=<dir>  LOOMCYCLE_WRITE_ROOT=<dir> # the file sandbox jail
+#
+# num_ctx is GLOBAL (one value for ALL ollama-local models) and is sent as
+# options.num_ctx — it both CAPS the window the model loads AND is what the
+# UI context gauge reports. Pin it to a value EVERY local model you use can
+# handle (e.g. 131072), or omit it to inherit each model's Modelfile default
+# (the gauge then reads the ACTUAL loaded window from Ollama's /api/ps). Too
+# LOW starves long sessions; too HIGH makes prefill + VRAM explode on a slow
+# GPU. ~128K is a sane middle for a 24GB+ card.
+
+# ─── Model aliases — name your models first ──────────────────────────
+# Match the names to what `ollama list` shows on your OLLAMA_BASE_URL host.
+models:
+  local-fast:  { provider: ollama-local, model: gemma4:9b }        # quick / low-context
+  local-chat:  { provider: ollama-local, model: qwen3.6:27b }      # general reasoning
+  local-coder: { provider: ollama-local, model: qwen3-coder-next } # coding / review
+  # Cloud fallback for when the local box is down or a task is too big for it
+  # (pick whichever you have a key for; this one needs ANTHROPIC_API_KEY).
+  cloud-sonnet: { provider: anthropic, model: claude-sonnet-4-6 }
+
+# Local first; the cloud entry catches outages and oversized prefills.
+provider_priority:
+  - ollama-local
+  - anthropic
+
+# Tier candidates are bare aliases (same names as the models: map above).
+tiers:
+  low:    [local-fast,  cloud-sonnet]
+  middle: [local-chat,  cloud-sonnet]
+  high:   [local-coder, cloud-sonnet]
+
+# defaults is NOT alias-expanded — pin a concrete provider+model here.
+defaults:
+  provider: ollama-local
+  model: qwen3-coder-next
+
+# ─── Interruption (human-in-the-loop steering) ───────────────────────
+interruption:
+  backend: webui
+  default_timeout_ms: 3600000     # 1h
+  max_timeout_ms: 86400000        # 24h ceiling
+
+# ─── Interactive local agents ────────────────────────────────────────
+agents:
+
+  # An interactive coding/review agent. The three settings that make a SLOW
+  # LOCAL model usable in a terminal you steer:
+  coder:
+    tier: high                # → local-coder, falling back to cloud-sonnet
+    max_tokens: 8192          # local default (4096) truncates large output
+    effort: medium            # ollama ignores; honoured on the cloud fallback
+
+    # (1) unbounded_iterations — an interactive terminal is operator-driven
+    # and Cancel-bounded, so don't let the 16-iteration runaway guard end a
+    # live session (each steer + each end_turn park burns an iteration). The
+    # 1<<20 hard backstop + Cancel still bound it.
+    unbounded_iterations: true
+
+    # (2) compaction tuned for a SLOW model — the prefill cost of a near-full
+    # window is what times a local model out. Compact EARLY (55%) and keep a
+    # SMALL verbatim tail (3): a tool-heavy agent's tail (big file reads)
+    # dominates the post-compaction prefill, so fewer kept turns is the lever.
+    # When the window is known, the loop also folds an over-window tail into
+    # the summary automatically. The task (keep_first) stays pinned.
+    compaction:
+      enabled: true
+      autocompact_at_pct: 55
+      target_percentage: 25
+      keep_last_n: 3
+      keep_first: true
+
+    # (3) interruption — let the operator answer the agent's questions inline.
+    interruption: { enabled: true }
+
+    allowed_tools: [Read, Write, Edit, Grep, Glob, Bash, Context]
+    system_prompt: |
+      You are an interactive coding agent running on a local model. Read
+      before you edit; make surgical changes; verify with Bash. Pass file
+      paths RELATIVE to the sandbox root (call Context op=self to see your
+      roots and which hosts you may reach). Keep tool output focused — a
+      large file read fills a small local context window fast.
+
+# ─── Concurrency (single-user / workstation defaults) ────────────────
+concurrency:
+  max_concurrent_runs: 4
+  max_queue_depth: 8
+  queue_timeout_ms: 30000
+
+# ─── Cache ────────────────────────────────────────────────────────────
+cache:
+  native: { enabled: true }     # honour native prompt caching where the provider supports it
+
+# Storage defaults to sqlite at ./data when omitted — fine for a single
+# workstation. For Postgres, see the storage: block in loomcycle.example.yaml.

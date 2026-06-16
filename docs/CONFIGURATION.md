@@ -48,7 +48,7 @@ The doc presents this as **four cookbook patterns**. Find the pattern matching y
 |---|---|---|---|
 | **Library `provider_priority`** | top-level `provider_priority:` | The walk order across providers when nothing else overrides | Always — every config sets this |
 | **Library `tiers`** | top-level `tiers:` | Per-task-tier (`low`/`middle`/`high`) ordered candidate lists | Always — every agent that uses `tier:` reads this |
-| **`models:` alias map** | top-level `models:` | Aliases like `sonnet → {anthropic, claude-sonnet-4-6}` so agents can say `model: sonnet` | When you want short names in agent .md files instead of full model IDs |
+| **`models:` alias map** | top-level `models:` | Aliases like `sonnet → {anthropic, claude-sonnet-4-6}`. Reference by name in tier candidate lists (`- sonnet`), per-agent pins (`model: sonnet`), and per-agent `models[tier]` — define the model once, single-source the id | The recommended way to name models — always; raw `{provider, model}` pairs still work but repeat the id |
 | **`user_tiers:` overlay** | top-level `user_tiers:` | Per-user-class policy (free/low/medium/high). Restricts which providers + models a user's runs may touch | When your app has multiple plan tiers OR multi-tenant cost/privacy boundaries |
 | **Per-agent `providers:`** | agent .md `providers:` | Replaces the priority order for THIS agent only | When one agent must skip certain providers (privacy, capability) |
 | **Per-agent `models[tier]:`** | agent .md `models:` | Replaces the tier candidate list for THIS agent | When one agent needs specific models in its tier slot |
@@ -132,24 +132,28 @@ If you set both `tier: middle` AND `model: claude-sonnet-4-6` in an agent's fron
 ```yaml
 # loomcycle.yaml — single-provider, tier-driven
 
-provider_priority:
-  - anthropic
-
-tiers:
-  low:
-    - { provider: anthropic, model: claude-haiku-4-5 }
-  middle:
-    - { provider: anthropic, model: claude-sonnet-4-6 }
-  high:
-    - { provider: anthropic, model: claude-opus-4-7 }
-
-# Alias map — left-hand-side is what agents write; resolver expands.
+# Aliases FIRST — name every model once; reference it by name everywhere
+# (tier candidates, agent pins). Editing one right-hand side re-points
+# every agent/tier that uses the alias.
 models:
   haiku:  { provider: anthropic, model: claude-haiku-4-5 }
   sonnet: { provider: anthropic, model: claude-sonnet-4-6 }
   opus:   { provider: anthropic, model: claude-opus-4-7 }
 
+provider_priority:
+  - anthropic
+
+# Tier candidates are bare ALIASES (v0.35.0+) — `- haiku` is the same as
+# `- { provider: anthropic, model: claude-haiku-4-5 }`, single-sourced from
+# the models: map above. A raw {provider, model} pair still works too.
+tiers:
+  low:    [haiku]
+  middle: [sonnet]
+  high:   [opus]
+
 # Default for agents without tier or explicit pin (rare; back-compat path).
+# NOT alias-expanded — pin a concrete provider+model (an alias name here is
+# sent to the provider verbatim, not resolved).
 defaults:
   provider: anthropic
   model:    claude-sonnet-4-6
@@ -537,6 +541,60 @@ It's what real production deployments look like. The library is the backstop; us
 
 ---
 
+## 6b. Local models (Ollama) — configuring + slow-model advice
+
+Local models change the economics. A frontier cloud model prefills a 100k-token context in about a second; a single consumer GPU can take minutes. The knobs below exist because of that. For a ready-to-run config, see [`loomcycle.local-interactive.example.yaml`](../loomcycle.local-interactive.example.yaml).
+
+### Two Ollama providers
+
+| Provider id | What it is | Auth | Set |
+|---|---|---|---|
+| `ollama-local` | Ollama on your workstation / LAN / Tailscale host | none | `OLLAMA_BASE_URL=http://<host>:11434` |
+| `ollama` | Hosted Ollama cloud (ollama.com) — for models too big to run locally | Bearer | `OLLAMA_API_KEY` |
+
+`OLLAMA_BASE_URL` is the **host**, not a model — the model comes from a `models:` alias (`local-coder: { provider: ollama-local, model: qwen3-coder-next }`). Name your aliases to match what `ollama list` shows on that host.
+
+### The context window (`num_ctx`) — the knob that bites
+
+`LOOMCYCLE_OLLAMA_LOCAL_NUM_CTX` controls the window for **all** `ollama-local` models. It is sent as `options.num_ctx`, so it both **caps the window the model loads** and **is what the UI context gauge reports**.
+
+- **Unset** → `num_ctx` is omitted; Ollama uses each model's Modelfile `num_ctx`, and the gauge reads the **actual loaded window** from Ollama's `/api/ps` (after the model is in VRAM — it may read 0 while loading).
+- **Set** → that value is forced for every local model and reported verbatim.
+
+Pick a value **every** local model you use can handle (it's global), e.g. `131072`. Too low starves long sessions; too high blows up prefill time and VRAM on a slow GPU. ~128K is a sane middle for a 24GB+ card. A model's *training* context (e.g. 256K) is an upper bound, not what you must load — load only what your GPU can prefill in reasonable time.
+
+> **Symptom:** the gauge shows a small window (e.g. 32K) you didn't expect. Almost always `LOOMCYCLE_OLLAMA_LOCAL_NUM_CTX` is pinned low in the launch env — it's global and overrides the Modelfile. A model also stays resident at whatever window it was first loaded with until it unloads/reloads, so a stale low-context load can linger until the next fresh load.
+
+### Slow models — timeouts + heartbeat
+
+A big prefill can take a long time before the first token. Two budgets (defaults 300s; raise for very large contexts on slow hardware):
+
+- `LOOMCYCLE_OLLAMA_LOCAL_HEADER_TIMEOUT_MS` — **time to first byte** (the prefill). Exceeding it surfaces as `net/http: timeout awaiting response headers`.
+- `LOOMCYCLE_OLLAMA_LOCAL_IDLE_TIMEOUT_MS` — max gap **between** streamed tokens.
+
+A slow-but-alive call no longer trips the stale-run sweeper: the loop pulses the run heartbeat throughout a model call, so a long prefill won't be reaped as `heartbeat_timeout`. The HTTP timeouts above remain the authority on a genuinely stuck call.
+
+### Compaction — tune it for the prefill cost
+
+On a slow model, the prefill cost of a near-full window is what times you out — so compact **early** and keep a **small** verbatim tail. In a per-agent `compaction:` block:
+
+- `autocompact_at_pct: 55` — compact well before the window fills (vs. the 80% default).
+- `keep_last_n: 3` — a tool-heavy agent's tail (big file reads) dominates the post-compaction prefill, so fewer kept turns is the real lever.
+
+When the provider reports a window, the loop also caps the kept tail to ~half the window automatically — folding an over-window tail into the summary — so a compaction always actually relieves pressure (it won't "succeed" yet leave you still over the window).
+
+### Interactive local agents
+
+For a terminal you steer turn-by-turn:
+
+- `unbounded_iterations: true` — an interactive run is operator-driven and Cancel-bounded; don't let the 16-iteration runaway guard end a live session (each steer + each end_turn park burns an iteration).
+- `interruption: { enabled: true }` — let the operator answer the agent's questions inline.
+- `max_tokens: 8192` — the local default (4096) truncates large output.
+
+All of this is wired together in [`loomcycle.local-interactive.example.yaml`](../loomcycle.local-interactive.example.yaml).
+
+---
+
 ## 7. Agent `.md` frontmatter reference
 
 Agent files live under `LOOMCYCLE_AGENTS_ROOT` (set in the env file). Each `<name>.md` has YAML frontmatter between `---` delimiters; the body is the system prompt.
@@ -811,6 +869,8 @@ cp .env.insecure.example  .env.insecure   # then adjust paths/flags
 ## 10. Cross-references
 
 - [`loomcycle.example.yaml`](../loomcycle.example.yaml) — the repo-root reference yaml. All six user_tiers wired, inline comments on every section. Copy-paste and edit.
+- [`loomcycle.example.yaml`](../loomcycle.example.yaml) — the comprehensive example config (aliases-first, every tool/feature exercised). Start here.
+- [`loomcycle.local-interactive.example.yaml`](../loomcycle.local-interactive.example.yaml) — a focused config for driving interactive agents on local (Ollama) models, with the slow-model knobs from §6b wired together.
 - [`.env.local.example`](../.env.local.example) + [`.env.insecure.example`](../.env.insecure.example) — the two env-file templates (secrets vs. non-secret config; see §9c). Every operational env var is documented inline in one or the other.
 - [`docs/MCP_INTEGRATION.md`](MCP_INTEGRATION.md) — MCP server configuration (deliberately out of scope for this doc).
 - [`docs/ARCHITECTURE.md`](ARCHITECTURE.md) — broader runtime context, provider driver table, probe semantics.
