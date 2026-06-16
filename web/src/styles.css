@@ -4336,6 +4336,10 @@ button.primary:disabled {
   background: rgba(86, 197, 150, 0.15);
   color: var(--accent, #56c596);
   border: 1px solid var(--accent, #56c596);
+  /* In the runs tree row the chip sits in a 1fr grid column, so a stretched
+     grid item filled the whole column. Keep it text-wide, left-aligned in its
+     cell. justify-self is a no-op in the (non-grid) detail-pane + switcher uses. */
+  justify-self: start;
 }
 .run-form-advanced {
   margin: 8px 0;
