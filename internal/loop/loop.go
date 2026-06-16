@@ -775,6 +775,46 @@ func CompactionSplit(msgs []providers.Message, keepLastN int, keepFirst bool) (f
 	return firstIdx, cut, cut > firstIdx
 }
 
+// compactionKeptTailBudgetPct caps the kept-verbatim tail at this percent of the
+// provider's reported context window. Without it a compaction can "succeed" yet
+// still overflow: keep_last_n snaps to a huge tool-result tail whose size alone
+// approaches (or exceeds) the window, so the next request overflows anyway — a
+// slow local model timed out prefilling a post-compaction context that was
+// STILL over its 131k window. Estimate-based (chars/4, which overcounts dense
+// JSON/code), so it errs toward keeping LESS — the safe direction for a slow
+// local model's prefill cost. The other ~half of the window is left for the
+// summary, the next turn, and the model's response.
+const compactionKeptTailBudgetPct = 50
+
+// capKeptTailToWindow advances `cut` forward — dropping the OLDEST kept-verbatim
+// turns into the summarized span, snapping to fresh-user-turn boundaries — until
+// the kept tail (msgs[cut:]) fits within budget estimated tokens. budget<=0
+// (window unknown, e.g. a provider that doesn't report one) → no cap. Never
+// splits a turn or truncates content: if the tail collapses to a single
+// over-budget turn (one giant tool_result) it stays, since dropping it would
+// lose the agent's most recent context entirely — better over-budget-by-one-turn
+// than empty. Returns the (possibly larger) cut; cut only ever increases, so the
+// summarized span [firstIdx:cut] stays non-empty.
+func capKeptTailToWindow(msgs []providers.Message, cut, budget int) int {
+	if budget <= 0 {
+		return cut
+	}
+	for cut < len(msgs) && estimateMessageTokens(msgs[cut:]) > budget {
+		next := -1
+		for i := cut + 1; i < len(msgs); i++ {
+			if isFreshUserTurn(msgs[i]) {
+				next = i
+				break
+			}
+		}
+		if next < 0 {
+			break // remaining tail is one irreducible chunk — keep it rather than empty
+		}
+		cut = next
+	}
+	return cut
+}
+
 // messageText concatenates a message's text blocks (used to pin the task verbatim).
 func messageText(m providers.Message) string {
 	var b strings.Builder
@@ -941,7 +981,7 @@ func drainSteer(q <-chan steer.Message, messages []providers.Message, onSteer fu
 // compacted form, emitting the marker. Returns the (possibly unchanged) slice +
 // whether it compacted. A failed summary call changes nothing (logged via emit).
 // The caller gates WHEN this runs (threshold / self-request) at a clean boundary.
-func maybeAutoCompact(ctx context.Context, opts RunOptions, messages []providers.Message, emit func(providers.Event), trigger string) ([]providers.Message, bool) {
+func maybeAutoCompact(ctx context.Context, opts RunOptions, messages []providers.Message, window int, emit func(providers.Event), trigger string) ([]providers.Message, bool) {
 	c := opts.Compaction
 	keepLastN := config.CompactionDefaultKeepLastN
 	keepFirst := config.CompactionDefaultKeepFirst
@@ -964,6 +1004,14 @@ func maybeAutoCompact(ctx context.Context, opts RunOptions, messages []providers
 	firstIdx, cut, ok := CompactionSplit(messages, keepLastN, keepFirst)
 	if !ok {
 		return messages, false
+	}
+	// Safety cap: when the provider reports a window, never let the kept-
+	// verbatim tail itself approach it — otherwise the post-compaction request
+	// still overflows (the slow-local-model failure: a tail snapped to a huge
+	// tool-result was STILL over the 131k window after compaction). Drop the
+	// oldest kept turns into the summarized span until the tail fits.
+	if window > 0 {
+		cut = capKeptTailToWindow(messages, cut, window*compactionKeptTailBudgetPct/100)
 	}
 	summary, err := Summarize(ctx, opts.Provider, model, messages[firstIdx:cut], targetPct)
 	if err != nil || strings.TrimSpace(summary) == "" {
@@ -1199,7 +1247,7 @@ outerLoop:
 			if selfReq {
 				trigger = "self"
 			}
-			if newMsgs, did := maybeAutoCompact(iterCtx, opts, messages, emit, trigger); did {
+			if newMsgs, did := maybeAutoCompact(iterCtx, opts, messages, lastWindow, emit, trigger); did {
 				messages = newMsgs
 				lastCompactIter = iter
 				// Compaction shrank the history; refresh the footprint so op=self
