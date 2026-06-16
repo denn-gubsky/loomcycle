@@ -8,6 +8,47 @@ For pre-v0.4 history (single-tool runtime, library milestone, security patch), s
 
 ---
 
+## What's in v0.36.0
+
+**Jailed agents can see (and correctly address) their sandbox, and the run
+page makes room for the terminal.** A minor release — two features, runtime +
+Web UI + docs, no `@loomcycle/client` change.
+
+**Relative-path tool docs + sandbox introspection (#500).** Agents jailed to a
+filesystem sandbox kept addressing files with absolute host paths (e.g. `ls -la
+~/work/.../tmp/`), which resolve outside the root and fail. Two root causes,
+both fixed:
+
+- The `Read` / `Write` / `Edit` path parameters literally said *"Absolute file
+  path inside the sandbox root"* — what the model reads in the tool schema
+  every turn — even though the resolver anchors a **relative** path to the
+  sandbox root (`sandbox.go absUnderRoot`). The descriptions now instruct
+  relative paths (`~` is not expanded; an absolute path is accepted only if it
+  resolves inside the root), and `Bash`'s command note explains its cwd is the
+  sandbox. `docs/TOOLS.md` is corrected too — it had documented the old
+  relative-to-process-cwd behaviour and even advised "use absolute paths," the
+  opposite of the current resolver.
+- An agent had **no way to introspect** its own jail. `Context op=self` now
+  reports `sandbox` (`read_root` / `write_root` / `bash_cwd` +
+  `path_convention`) and `network` (`allowed_hosts` + `source`: the per-run
+  caller list, else the operator's static allowlist; empty = no web egress).
+  Both were already on the tool context (`cfg.Env` + `HostPolicy(ctx)`) — no new
+  plumbing. The op=self fields are additive (no wire-shape break).
+
+**Collapsible run-page left column (#499).** During an interactive run the
+operator wants the live terminal at full width. The Single tab's left column
+(interactive-sessions switcher + run form) now collapses to a thin vertical
+strip showing the running-interactive count + an expand affordance; the
+terminal reclaims the freed width. Collapse state persists across navigation,
+separate from the sessions-list collapse already in the panel. The
+running-interactive count is now polled once via a shared `useInteractiveSessions`
+hook (one poll for the column, not two).
+
+Tests: `SelfReportsSandboxAndNetwork`, `SelfNetworkCallerList`,
+`SelfOmitsSandboxWhenNoCfg`, `SandboxedToolPaths_DescribedRelative`.
+
+---
+
 ## What's in v0.35.0
 
 **Model aliases work in tier candidates — parse, validate, resolve.** A minor
