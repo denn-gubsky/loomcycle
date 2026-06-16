@@ -8,6 +8,48 @@ For pre-v0.4 history (single-tool runtime, library milestone, security patch), s
 
 ---
 
+## What's in v0.37.0
+
+**Slow-local-model robustness + aliases-first docs.** A minor release — two
+loop fixes that keep an interactive run on a slow local model alive for hours,
+plus a config/docs pass. No `@loomcycle/client` change, no wire-shape change.
+
+**Heartbeat during a model call (#502).** `OnHeartbeat` fired only at the
+*start* of each iteration, so a single iteration that blocked far longer than
+the cadence — a large-context prefill on a slow local model, or a same-provider
+retry — let `runs.last_heartbeat_at` go stale and the stale-run sweeper reaped
+the **live** run as crashed (`failed`, `stop_reason=heartbeat_timeout`). A
+run-lifetime heartbeat ticker now pulses every 30s for as long as the run
+goroutine is alive; the HTTP header/idle timeouts remain the authority on a
+genuinely stuck call. Test `TestRun_HeartbeatPulsedDuringSlowCall`.
+
+**Compaction caps the kept tail to the window (#503).** Auto-compaction could
+"succeed" yet leave a context still over the window: `keep_last_n` snaps to a
+clean boundary that, for a tool-heavy agent, keeps a huge tool-result tail. The
+loop now advances the cut — folding the oldest kept turns into the summarized
+span — until the kept tail fits ~half the reported window, so a compaction
+always actually relieves pressure (no content lost; a single irreducible turn is
+kept rather than dropping to empty; `window<=0` → no cap). Test
+`TestCapKeptTailToWindow`.
+
+**Aliases-first config + a local-model guide (#504).** `loomcycle.example.yaml`
+is restructured aliases-first (the `models:` map at the top; tier candidates and
+pins reference bare aliases like `- deepseek-flash`). `docs/CONFIGURATION.md`
+gains a **§6b "Local models (Ollama)"** — the two Ollama providers, the global
+`LOOMCYCLE_OLLAMA_LOCAL_NUM_CTX` knob (caps **and** reports; unset → Modelfile;
+gauge reads `/api/ps`), header/idle timeouts, the heartbeat behavior, compaction
+tuning for prefill cost, and the interactive knobs. New
+`loomcycle.local-interactive.example.yaml` wires it all together for a local
+interactive terminal. Plus a runs-page `interactive`-chip width fix.
+
+> Validated by a **133-minute** standalone interactive run (`code-reviewer` on
+> `qwen3.6:max`, a single local GPU) through several successful auto-compactions
+> — a workload that died in minutes before this pass. The one remaining edge it
+> surfaced — compaction can't reduce a single indivisible autonomous tool-chain
+> — is captured for a follow-up (RFC AD).
+
+---
+
 ## What's in v0.36.0
 
 **Jailed agents can see (and correctly address) their sandbox, and the run
