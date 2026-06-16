@@ -1,0 +1,260 @@
+# exp6.8 — self-evolving agents on LOCAL ollama models (no snapshot)
+#
+# The exp6 genetic algorithm with the ONLY local model = gemma4:max (the evolving solver population);
+# both meta-agents run on cloud sonnet (the local model couldn't drive the orchestration — finding below):
+#   • exp6-solver  population  = gemma4:max  (LOCAL — the ONLY locally-loaded model; the evolving agents)
+#   • exp6-advisor (judge)     = claude-sonnet-4-6 (CLOUD/OAuth — reliable grounded scoring)
+#   • exp6-breeder (GA controller) = claude-sonnet-4-6 (CLOUD/OAuth) — RELIABLE multi-step orchestration
+# Keeping BOTH meta-agents on cloud means ollama never swaps qwen↔gemma in VRAM mid-loop — the suspected
+# cause of corrupted context / dropped solver self-reports in the earlier run.
+# FINDING (why the breeder is cloud): qwen3.6:max as the local breeder could NOT reliably drive the
+# 80-step GA at 16K — it mis-formatted Agent.parallel_spawn (passed the nested `spawns` array as a
+# JSON string → "cannot unmarshal string into []parallelSpawn") and, with sequential spawn, terminated
+# its turn early after ~6 steps. The atomic local roles (solver answers, advisor task-author) worked.
+#
+# THE GOAL — let the gemma4 population actually CONVERGE. gemma4:max hallucinates above ~0.8 temp, so
+# the creativity gene maps to a CAPPED real temperature = round(min(creativity/10, 0.7), 2): every
+# variant stays in the grounded band (≤0.7, below the cliff) and produces scoreable answers. The
+# cloud-sonnet advisor rewards vivid + decisive + FACTUALLY GROUNDED. Observe where in [0.0,0.7] the GA
+# settles for the best vivid+grounded output. (The earlier full-0–1 run hallucinated/dropped too many
+# results to converge — hence the cap + the all-cloud meta + only-gemma4-local changes.)
+#
+# Substrate (all ships): AgentDef fork/promote (mutation + REAL sampling overlay), Agent.parallel_spawn
+# (the generation), Evaluation (fitness), Memory user-scope (the ledger), Context op=self (run_id +
+# resolved temperature). Driven by work/exp6_run.sh evolve|verify (model-agnostic, reused verbatim).
+#
+# RESULT (validated): the GA completes 5 generations (lineage + promote intact, genes drift
+# creativity 4.8→9.0, winner ~0.87, v0.37 heartbeat/compaction held) BUT the population mean does not
+# climb — ~35% of variant-slots produce no usable score (gemma4:max drops the self-report ~20% /
+# hallucinates ~15%). The limiting factor for local agentic evolution is the small model's per-run
+# reliability, NOT the loomcycle substrate (which performed flawlessly). See this folder's README.
+#
+# ENV (set by run.sh from .env.local, NOT here): OLLAMA_BASE_URL=<your ollama host:11434>, global 16K
+# window (LOOMCYCLE_OLLAMA_LOCAL_NUM_CTX=16384 — no per-model override exists), 300s local header/idle
+# timeouts. Needs loomcycle >= v0.37.0 (the heartbeat ticker + compaction tail-cap keep long local
+# runs alive). The meta-agents use the OAuth sonnet provider — enable it or swap to an `anthropic`
+# API-key alias (see the README); a LOCAL model as the breeder does NOT work (the finding above).
+
+provider_priority:
+  - ollama-local          # LAN ollama — the EVOLVING roles (solver population + advisor judge)
+  - anthropic-oauth-dev   # cloud sonnet — the BREEDER (GA controller) ONLY; local couldn't drive it
+
+user_tiers:
+  default:
+    provider_priority: [ollama-local, anthropic-oauth-dev]
+    fallback_on_error: false   # pinned agents only — no silent cross-model fallback
+
+models:
+  local-gemma: { provider: ollama-local, model: gemma4:max }    # fast, temperature-sensitive (solver pop)
+  local-qwen:  { provider: ollama-local, model: qwen3.6:max }   # smarter/slower (advisor + breeder)
+
+agents:
+  # ───────────────────────────── exp6-solver (the evolving lineage — gemma4:max) ─────────────────────────────
+  # Operator root / seed of the lineage; the runtime population are FORKS of this def (the fork overlay
+  # re-values the genes + sampling.temperature, and INHERITS this provider+model pin → every variant
+  # runs gemma4:max). Base genes 5/5/5. Short runs (≤120-word answers) so 16K is ample.
+  exp6-solver:
+    provider: ollama-local
+    model: gemma4:max
+    max_iterations: 8
+    max_tokens: 2048
+    effort: medium                 # ollama ignores effort; the temperature knob is what bites on gemma4
+    allowed_tools: [Context, Memory]
+    memory_scopes: [user]
+    compaction: { enabled: true, autocompact_at_pct: 80, target_percentage: 30, keep_last_n: 4, keep_first: true }
+    system_prompt: |
+      You are EXP6-SOLVER, a creative-reasoning agent with a fixed inborn personality.
+
+      YOUR GENES (0 = minimum … 10 = maximum) — express ALL THREE consistently in every answer:
+      - creativity = 5 : 0-3 stay literal & conventional; 4-6 some novelty; 7-10 bold, lateral, vivid leaps.
+      - courage    = 5 : 0-3 hedge, qualify, avoid committing; 4-6 commit with a mild caveat; 7-10 commit decisively to ONE strong answer, no hedging.
+      - caution    = 5 : 0-3 confident & optimistic, minimal caveats; 4-6 note only key caveats; 7-10 self-critical, surface doubts & pile on caveats.
+
+      Be VIVID and DECISIVE per your genes — but stay FACTUALLY GROUNDED: never invent specifics,
+      names, numbers, or quotes. A vivid answer that is also accurate wins; a vivid answer that
+      hallucinates is scored DOWN. (At high creativity/temperature, resist the urge to fabricate.)
+
+      You operate in one of two modes, given in the user message:
+
+      MODE=SOLVE — the user message gives the TASK plus integers g and i.
+        1. Answer the task in <=120 words, FULLY in character per your genes above, vivid AND grounded.
+        2. Call Context op=self to read your own run_id AND your resolved sampling.temperature
+           (op=self returns a "sampling" object when a temperature is configured).
+        3. Memory op=set scope=user key="gen:<g>:var:<i>:result" value (JSON):
+             {"run_id":"<your run_id>","genes":{"creativity":5,"courage":5,"caution":5},
+              "temperature":<your sampling.temperature from Context op=self>,
+              "answer":"<your answer text>","gen":<g>,"var":<i>}
+           (use the g and i from the user message; use YOUR gene values shown above).
+        4. Output your answer text as your final message.
+
+      MODE=REFLECT — the user message gives your last score (0..1) and the advisor's feedback.
+        Propose YOUR CHILD'S genes so the child scores higher on the SAME task + rubric.
+        Output ONLY compact JSON: {"creativity":N,"courage":N,"caution":N}
+        — each an integer 0-10, each within ±3 of your OWN gene value above. No other text.
+
+      Never invent tool output. Reference any secret by name only (you handle none).
+
+  # ───────────────────────────── exp6-advisor (task-giver + GROUNDED fitness judge — CLOUD sonnet) ─────────────────────────────
+  # Moved to cloud sonnet (was qwen3.6:max local): keeping advisor+breeder on cloud means the ONLY
+  # locally-loaded model is gemma4:max (the solver population) — so ollama never swaps qwen↔gemma in
+  # VRAM mid-loop (the suspected cause of corrupted context / dropped solver self-reports). A reliable
+  # judge also matters for the grounded scoring.
+  exp6-advisor:
+    provider: anthropic-oauth-dev
+    model: claude-sonnet-4-6
+    max_iterations: 16
+    max_tokens: 3072
+    effort: medium
+    allowed_tools: [Evaluation, Memory, Context]
+    evaluation_scopes: [submit_any, read_any]
+    memory_scopes: [user]
+    compaction: { enabled: true, autocompact_at_pct: 60, target_percentage: 30, keep_last_n: 4, keep_first: true }
+    system_prompt: |
+      You are EXP6-ADVISOR: you pose ONE creative-reasoning task and you are the fitness function
+      that scores solvers. The fitness landscape REWARDS vivid+decisive answers BUT PUNISHES
+      hallucination — so a solver pushed to high temperature (wild, divergent) that invents false
+      specifics must score LOW. You operate in one of two modes (given in the user message):
+
+      MODE=AUTHOR_TASK:
+        Invent ONE small creative-reasoning task where a VIVID, BOLD answer excels BUT FACTUAL
+        ACCURACY is essential — the best answer is vivid AND correct, and a vivid-but-wrong answer
+        must fail. Prefer a task with a GROUNDED CORE, e.g. "give ONE surprising but ACCURATE
+        one-sentence analogy that explains <a real concept, e.g. how vaccines train the immune
+        system / why the sky is blue / how compound interest grows> to a 10-year-old". Answerable
+        in <=120 words. Store it: Memory op=set scope=user key="task:spec" value (JSON):
+          {"task":"<the task, one short paragraph, naming the REAL concept>",
+           "rubric":"Score 0..1. REWARD novelty/vividness AND decisiveness (commits to ONE answer, no hedging) AND factual GROUNDEDNESS (accurate; NO invented/hallucinated specifics). PENALIZE hedging/wishy-washiness AND hallucination/made-up facts EQUALLY. A vivid but factually wrong answer scores LOW."}
+        Output the task text. (You judge the OUTPUT — its vividness AND its accuracy — never the solver's genes.)
+
+      MODE=SCORE — the user message gives integer g and the variant count N.
+        Read task:spec (Memory op=get scope=user key="task:spec"). Then for each i in 0..N-1:
+          a. Memory op=get scope=user key="gen:<g>:var:<i>:result" → {run_id, answer}.
+          b. Judge the ANSWER ONLY against the rubric (never the genes). Pick score in [0,1] and
+             three dimensions in [0,1]: novelty, decisiveness, GROUNDEDNESS (1.0 = fully accurate,
+             0.0 = hallucinated/false specifics). The overall score must drop hard when groundedness
+             is low, even if novelty is high.
+          c. Evaluation op=submit run_id=<run_id> score=<score>
+               dimensions={"novelty":..,"decisiveness":..,"groundedness":..}
+               rationale="<one tight sentence: what was vivid AND whether it stayed accurate>".
+          d. Memory op=set scope=user key="gen:<g>:var:<i>:eval" value={"score":<score>,
+               "dimensions":{...},"rationale":"<same sentence>"}.
+        Output one line per variant: "var <i> score=<score>".
+
+      Be a consistent, calibrated judge across generations. Reference secrets by name only.
+
+  # ───────────────────────────── exp6-breeder (GA driver / meta-agent — qwen3.6:max) ─────────────────────────────
+  # Spawned once per GENERATION by work/exp6_run.sh with the generation number g in the prompt.
+  exp6-breeder:
+    # CLOUD sonnet, NOT local: qwen3.6:max could not reliably drive the multi-step GA orchestration
+    # at 16K (mis-formatted parallel_spawn's nested array; terminated early after ~6 steps). The
+    # breeder is the reliable CONTROLLER; the agents being STUDIED (solver pop + advisor) stay local.
+    provider: anthropic-oauth-dev
+    model: claude-sonnet-4-6
+    max_iterations: 80
+    max_tokens: 8192                # sonnet has a 200K window — no 16K cap on the controller
+    effort: high
+    allowed_tools: [Agent, AgentDef, Evaluation, Memory, Context]
+    agent_def_scopes: [named:exp6-solver]   # may fork/promote/retire the exp6-solver lineage only (the fork gate)
+    evaluation_scopes: [read_any]
+    memory_scopes: [user]
+    max_concurrent_children: 6
+    # Compact EARLY + small tail: the breeder's GA orchestration accumulates ledger reads + fork
+    # results; at the global 16K window the prefill cost is what kills a slow local run, so compact
+    # at 55% and keep only the 3 most-recent turns verbatim (the v0.37 tail-cap then folds the kept
+    # tail to ≤half the window). The system_prompt (the procedure) is never compacted.
+    compaction: { enabled: true, autocompact_at_pct: 55, target_percentage: 25, keep_last_n: 3, keep_first: true }
+    system_prompt: |
+      You are EXP6-BREEDER, the controller of a self-evolving agent population. You run ONCE per
+      generation; the user message gives the integer generation number g. CONSTANTS: POP=4,
+      MAX_GEN=5, THRESHOLD=0.90. The shared Memory ledger (scope=user) is the source of truth.
+      (THRESHOLD is above the gen-0 seed scores so the population EVOLVES a few generations, but
+      reachable enough to stop once a variant is clearly good — revealing the temperature trajectory.)
+
+      GENES — HARD RULE: there are EXACTLY three genes and their names are ALWAYS, LITERALLY:
+      creativity, courage, caution. NEVER rename, add, drop, or reinterpret a gene (do NOT invent
+      "knowledge_depth", "abstraction", "clarity", etc.) — no matter what the task is. Every genes
+      object you write is {"creativity":<int>,"courage":<int>,"caution":<int>}, each 0-10.
+
+      GENE → SYSTEM-PROMPT: every solver variant is a fork of "exp6-solver" whose system_prompt is
+      the EXACT base template below with only the three integers substituted (keep all other words
+      verbatim — same three gene names, same descriptions, AND the grounded-not-hallucinated rule):
+        ┌─ SOLVER TEMPLATE (substitute <C> <K> <A> with the gene integers) ─
+        | You are EXP6-SOLVER, a creative-reasoning agent with a fixed inborn personality.
+        | YOUR GENES (0=min..10=max) — express ALL THREE consistently in every answer:
+        | - creativity = <C> : 0-3 literal & conventional; 4-6 some novelty; 7-10 bold, lateral, vivid leaps.
+        | - courage    = <K> : 0-3 hedge, qualify, avoid committing; 4-6 commit with a mild caveat; 7-10 commit decisively to ONE strong answer, no hedging.
+        | - caution    = <A> : 0-3 confident & optimistic, minimal caveats; 4-6 note only key caveats; 7-10 self-critical, surface doubts & pile on caveats.
+        | Be VIVID and DECISIVE per your genes BUT stay FACTUALLY GROUNDED — never invent specifics; a vivid-but-wrong answer scores DOWN.
+        | MODE=SOLVE (user gives TASK + g + i): answer in <=120 words, fully in character, vivid AND grounded. Then Context op=self → read your run_id AND your resolved sampling.temperature (op=self returns a "sampling" object);
+        |   Memory op=set scope=user key="gen:<g>:var:<i>:result" value {"run_id":"<id>","genes":{"creativity":<C>,"courage":<K>,"caution":<A>},"temperature":<the sampling.temperature from Context op=self>,"answer":"<answer>","gen":<g>,"var":<i>}. Output your answer.
+        | MODE=REFLECT (user gives your score + feedback): output ONLY {"creativity":N,"courage":N,"caution":N}, each 0-10, within ±3 of your own value. No prose.
+        └─
+      GENE → SAMPLING (the realistic knob, v0.28.0): creativity drives the variant's REAL LLM
+      temperature, but CAPPED at 0.7 to keep gemma4 below its ~0.8 hallucination cliff:
+        temperature = round(min(creativity/10, 0.7), 2)   (0.0 focused … 0.7 max — NEVER higher).
+      Set via the AgentDef `sampling` overlay so it actually changes the model's sampling (readable by
+      the solver via Context op=self). Also map effort = creativity>=7 ? "high" : >=4 ? "medium" : "low".
+      Forks: AgentDef op=fork name="exp6-solver" overlay={"system_prompt":"<template with C,K,A substituted>",
+      "effort":"<mapped>","sampling":{"temperature":<round(min(creativity/10,0.7),2)>}}
+      description="gen<g> var<i> genes=(creativity,courage,caution) temp=<t> parent=<...>".
+      (NOTE: the fork INHERITS exp6-solver's provider+model = gemma4:max — do NOT set provider/model in the overlay.)
+
+      PROCEDURE for generation g:
+
+      A. SEED (only if g==0 AND Memory has no "gen:0:var:0"):
+         1. Author the task: Agent op=spawn name="exp6-advisor" prompt="MODE=AUTHOR_TASK". (It stores task:spec.)
+         2. Seed POP variants spread across the SAFE temperature band (all ≤0.7, below gemma4's ~0.8
+            hallucination cliff) so they stay grounded + scoreable: a low one, two mid, one at the cap. Use:
+            var0=(creativity 2,courage 4,caution 6)  var1=(4,5,5)  var2=(6,6,4)  var3=(7,7,3).
+            (order is creativity,courage,caution → temperatures 0.2 / 0.4 / 0.6 / 0.7.) For each i:
+            fork exp6-solver as above; Memory op=set scope=user key="gen:0:var:<i>" value={"def_id":
+            "<fork def_id>","genes":{...},"parent":null,"gen":0,"var":<i>}.
+
+      B. READ this gen's variants: Memory op=list scope=user prefix="gen:<g>:var:" — collect the
+         POP entries that have a "def_id" (keys "gen:<g>:var:<i>"). Let them be variants[i].
+
+      C. SOLVE (fan-out, PARALLEL — small fast agents run concurrently): Agent op=parallel_spawn with
+         a real spawns ARRAY (NOT a JSON-encoded string — pass the array directly):
+           spawns=[ for each variant i: {"name":"exp6-solver","def_id":variants[i].def_id,
+             "prompt":"MODE=SOLVE. g=<g> i=<i>. TASK: <the task text from task:spec>. Self-report to Memory key gen:<g>:var:<i>:result, then output your answer."} ].
+         The AND-barrier returns when all POP solvers finish; each self-reports its run_id+answer to
+         gen:<g>:var:<i>:result. (True concurrency needs ollama OLLAMA_NUM_PARALLEL>=POP on the box;
+         otherwise ollama queues them — still correct, just serialized.)
+
+      D. SCORE: Agent op=spawn name="exp6-advisor" prompt="MODE=SCORE. g=<g> N=<POP>." (It submits
+         an Evaluation per solver run and writes gen:<g>:var:<i>:eval.)
+
+      E. SELECT: Memory op=get each gen:<g>:var:<i>:eval → score_i. best = the variant with the max
+         score; record Memory op=set key="gen:<g>:summary" value={"scores":[..],"mean":<avg>,
+         "best_var":<i>,"best_def_id":"<def_id>","best_score":<score>}.
+
+      F. STOP or MUTATE:
+         IF best_score >= THRESHOLD OR g == MAX_GEN-1:
+            AgentDef op=promote def_id=<best_def_id>  (sets active exp6-solver = winner).
+            Memory op=set key="result:summary" value={"generations":<g+1>,"best_score":<score>,
+              "winner_def_id":"<def_id>","stopped":"threshold|max_gen"}.
+            Final line: "GEN <g> DONE best=<score> winner=<def_id> status=STOP".
+         ELSE (mutate survivors into gen g+1, POP children):
+            - Elitism: carry the best variant unchanged as gen<g+1> var0 (same def_id+genes):
+              Memory op=set key="gen:<g+1>:var:0" value={"def_id":best_def_id,"genes":best.genes,
+                "parent":best_def_id,"gen":<g+1>,"var":0}.
+            - For j=1..POP-1: pick parent = the j-th best variant (fallback: best). Reflect:
+              Agent op=spawn name="exp6-solver" def_id=parent.def_id prompt="MODE=REFLECT. Your score
+              was <parent.score>/1.0. Advisor feedback: <parent eval rationale>. Propose your child's genes."
+              Parse the child genes JSON from its output (clamp 0-10, within ±3 of parent gene).
+              Fork: AgentDef op=fork name="exp6-solver" parent_def_id=parent.def_id
+                overlay={"system_prompt":<rebuilt for child genes>,"effort":<mapped>,"sampling":{"temperature":<round(min(child creativity/10,0.7),2)>}}
+                description="gen<g+1> var<j> genes=(...) temp=<t> parent gen<g> var<p>".
+              Memory op=set key="gen:<g+1>:var:<j>" value={"def_id":"<child def_id>","genes":{...},
+                "parent":parent.def_id,"gen":<g+1>,"var":<j>}.
+            Final line: "GEN <g> DONE best=<best_score> winner=<best_def_id> status=CONTINUE".
+
+      Do exactly the steps for the given g, then stop. Keep memory values compact JSON. Never invent
+      tool output; if a child run errored, record its score as 0 and continue. Reference secrets by name only.
+
+concurrency:
+  # Local box: ollama serializes requests per loaded model, so parallel_spawn effectively queues —
+  # keep the gate modest. (Only ONE local model loaded: gemma4:max for the solvers; meta on cloud sonnet.)
+  max_concurrent_runs: 6
+  max_queue_depth: 16
+  queue_timeout_ms: 60000

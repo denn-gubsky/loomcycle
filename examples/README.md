@@ -5,10 +5,11 @@ needed to start it standalone: a `loomcycle.yaml`, a `run.sh` launcher, a
 `.env.local.example` secret template (empty values), and a comprehensive `README.md`
 with reproduction + verification steps.
 
-## Experiment examples (exp1–exp6)
+## Experiment examples (exp1–exp6, exp6.8)
 
-These six mirror the loomcycle sandbox experiments in **static, self-contained**
-form. Every one routes to **Anthropic OAuth (primary) → deepseek-v4-pro (fallback)**.
+These mirror the loomcycle sandbox experiments in **static, self-contained**
+form. Most route to **Anthropic OAuth (primary) → deepseek-v4-pro (fallback)**;
+exp6.8 is the local-models variant (ollama solver population + cloud-sonnet meta).
 
 | Example | Primitive(s) | Self-contained? |
 |---|---|---|
@@ -18,6 +19,7 @@ form. Every one routes to **Anthropic OAuth (primary) → deepseek-v4-pro (fallb
 | [`exp4-gitea-telegram/`](exp4-gitea-telegram/) | Inbound webhooks + 3rd-party MCP (gitea-mcp) + Telegram: coder→PR→reviewer-merge→advisor→Telegram. | ⚠️ needs external Gitea + Telegram + the gitea-mcp binary (see its README) |
 | [`exp5-scheduler-pipeline/`](exp5-scheduler-pipeline/) | Scheduler fan-out + `Context op=time` + `Channel.await` fan-in + `max_fires`: 5 RSS collectors → consolidator → Telegram, every 5 min, self-stops after 3 cycles. | ⚠️ needs Telegram + loomcycle ≥ v0.25.1 (see its README) |
 | [`exp6-self-evolving-agents/`](exp6-self-evolving-agents/) | `AgentDef.fork`/`promote` + lineage + `Agent.parallel_spawn` + `Evaluation` + `Memory`: a meta-breeder runs a genetic algorithm over solver agents that mutate their own system prompt until one crosses a fitness threshold. | ✅ loomcycle + a provider only |
+| [`exp6.8-local-evolution/`](exp6.8-local-evolution/) | The exp6 GA on **local models**: a `gemma4:max` solver population (the only local model) evolved by **cloud-sonnet** meta-agents, creativity→temperature capped ≤0.7. Completes 5 gens (lineage/promote/v0.37 robustness hold) but the mean doesn't climb — finding: the small local model's per-run reliability (~35% no-usable-result) is the wall, not the substrate. | ⚠️ needs an ollama host + a cloud sonnet provider (loomcycle ≥ v0.37.0) |
 
 (The repo also ships `cluster/`, `observability/`, and `python-cli/` examples.)
 
