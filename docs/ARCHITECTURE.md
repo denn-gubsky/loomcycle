@@ -659,14 +659,14 @@ The single shared `LOOMCYCLE_AUTH_TOKEN` still authenticates unchanged (resolved
 
 References: `internal/auth/{bearer,principal,scopes,token}.go`, `internal/api/http/auth_principal.go` (`applyPrincipal`, `requiredScopeFor`, `principalTenantScope`, `handleWhoami`), `internal/cli/operator_token.go`, `internal/store/store.go` (`OperatorTokenDef` + `runs.tenant_id`).
 
-## What's next (v1.0)
+## v1.0 (shipped) and beyond
 
-The v0.4.0-era deferred list is retired — OTEL, multi-replica HA, per-tenant fairness, the LLM gateway, A2A, webhooks, pluggable memory, the synthetic code provider, and (v0.17.0) OSS multi-tenant authorization all shipped (above). What remains for v1.0 is hardening + distribution, no new primitives:
+The v0.4.0-era deferred list is retired — OTEL, multi-replica HA, per-tenant fairness, the LLM gateway, A2A, webhooks, pluggable memory, the synthetic code provider, and (v0.17.0) OSS multi-tenant authorization all shipped (above). **v1.0.0 is the stable, feature-complete tag** — a pure hardening + distribution milestone, no new primitives, on the runtime hardened across the v0.24 → v0.37 line:
 
-- **Distribution + bootstrapping.** A hardened first-run install story: multi-arch Homebrew formula + Docker images wired to the `init` / `doctor` flow and a sane default config, so `brew install` / `docker run` reaches a working sidecar without reading the docs first.
-- **Claude Code plugin hardening.** The `claude-code-plugin-loomcycle` plugin (slash commands + skills + hooks over `loomcycle mcp`) gets a robustness pass — error surfaces, version-skew handling, clean bootstrap from the published binary.
-- **Security + robustness + runtime-QA pass** across the v0.13–v0.17 surfaces, then the v1.0 tag.
-- **Beyond:** a settings UI, an operator cookbook of postures, broader distribution (Helm), Python adapter version parity (lags TS). Enterprise-grade auth (SSO/RBAC/SCIM/signed audit) is a separate edition built on the same `OperatorTokenDef` substrate.
+- **Distribution + bootstrapping (shipped).** A hardened first-run install story: multi-arch Homebrew formula + Docker images wired to the `init` / `doctor` flow and a sane default config, so `brew install` / `docker run` reaches a working sidecar without reading the docs first.
+- **Claude Code plugin hardening (shipped).** The `claude-code-plugin-loomcycle` plugin (slash commands + skills + hooks over `loomcycle mcp`) got a robustness pass — error surfaces, version-skew handling, clean bootstrap from the published binary.
+- **Security + robustness + runtime-QA pass (shipped)** across the v0.13–v0.17 surfaces, then the v1.0 tag.
+- **Beyond v1.0:** a settings UI, an operator cookbook of postures, broader distribution (Helm). Enterprise-grade auth (SSO/RBAC/SCIM/signed audit) is a separate edition built on the same `OperatorTokenDef` substrate.
 
 See `docs/PLAN.md` for the public roadmap.
 

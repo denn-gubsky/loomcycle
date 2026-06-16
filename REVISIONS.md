@@ -8,6 +8,45 @@ For pre-v0.4 history (single-tool runtime, library milestone, security patch), s
 
 ---
 
+## What's in v1.0.0
+
+**🌳 1.0 — feature-complete, hardened, distribution-ready.** The milestone the
+roadmap pointed at since the multi-tenant-auth capstone (v0.17.0) and the
+substrate-completeness line (v0.18–v0.23). **No new primitives** — 1.0 is the
+stable tag on a runtime that has been complete and hardened for many releases.
+
+- **Feature set (stabilised v0.8 → v0.23).** Six providers behind one HTTP-only
+  `Provider` interface (+ the synthetic `code-js` + a mock); the built-in tools
+  (Read/Write/Edit/Grep/Glob/NotebookEdit/HTTP/WebFetch/WebSearch/Bash/Agent/
+  Skill/Memory/Channel/AgentDef/SkillDef/Evaluation/Interruption/Context) +
+  vector + pluggable memory; the content-addressed, tenant-scoped, runtime-mutable
+  substrate Defs (Agent/Skill/MCPServer/Schedule/Webhook/MemoryBackend/A2A);
+  triggers (Scheduler, inbound Webhooks, A2A); MCP on both sides; multi-tenant
+  authz (RFC L/N — per-principal bearer tokens, per-route/per-RPC scope gates,
+  tenant isolation across state + definition planes); HA (pause/resume/snapshot,
+  multi-replica, OTEL + Prometheus).
+- **Hardening + operability (v0.24 → v0.37).** The interactive terminal +
+  mid-run steering; pause/resume/snapshot + cross-instance + fan-out-parent
+  resume; the context-compaction subsystem; context-transform plugins (the
+  `redact` secret-scrubber); per-agent sampling + compaction; external fan-out
+  and the run-mutation surface on every transport; Web UI design system + theming;
+  and the slow-local-model robustness pass (heartbeat-during-call, compaction
+  window cap, aliases-first config + a local-model guide).
+- **Distribution wired end-to-end.** Homebrew + multi-arch Docker, `init` /
+  `doctor` first-run, the Claude Code plugin + `loomcycle import claude-code`,
+  the TS (`@loomcycle/client`) + Python (`loomcycle`) adapters, an n8n community
+  package, and the embedded React Web UI.
+- **Stability.** An 8-hour soak: 1.27M circuits, 3.8M agent runs, 100% completion
+  across 468 waves, zero leaks. Apache-2.0.
+
+**Code-identical to v0.37.0** — 1.0 is the stability stamp, not a feature delta.
+**Beyond 1.0** (unscheduled): a settings UI, an operator cookbook of deployment
+postures, Helm. One known follow-up captured during the v0.37 slow-local-model
+work (RFC AD — compaction can't reduce a single indivisible tool-chain) remains
+open and does not affect the 1.0 surface.
+
+---
+
 ## What's in v0.37.0
 
 **Slow-local-model robustness + aliases-first docs.** A minor release — two
