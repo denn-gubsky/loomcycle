@@ -92,7 +92,7 @@ func TestMaybeAutoCompact_SummarizesAndKeepsTail(t *testing.T) {
 		Compaction: &config.Compaction{KeepLastN: cptr(2), KeepFirst: cptr(true), TargetPercentage: cptr(10)},
 	}
 	var compacted bool
-	out, did := maybeAutoCompact(context.Background(), opts, msgs, func(providers.Event) {}, "auto")
+	out, did := maybeAutoCompact(context.Background(), opts, msgs, 0 /* no window cap */, func(providers.Event) {}, "auto")
 	if !did {
 		t.Fatal("expected compaction to happen")
 	}
@@ -340,5 +340,40 @@ func TestRun_Interactive_ContextUsageRefreshedAfterCompaction(t *testing.T) {
 	case <-done:
 	case <-time.After(2 * time.Second):
 		t.Fatal("run did not terminate after cancel")
+	}
+}
+
+// TestCapKeptTailToWindow locks the kept-tail window cap: when the provider
+// reports a window, the verbatim tail is reduced (oldest kept turns folded into
+// the summarized span, snapping to fresh-user-turn boundaries) until it fits the
+// budget — the fix for a compaction that "succeeds" but leaves a tail still over
+// the window (the slow-local-model timeout). budget<=0 is a no-op; a single
+// over-budget turn is kept rather than dropping to empty.
+func TestCapKeptTailToWindow(t *testing.T) {
+	big := userMsg(strings.Repeat("x", 800)) // ~200 est tokens (chars/4)
+	// [u0, a0, BIG-u1, a1, u2, a2] — fresh user turns at indices 0, 2, 4.
+	msgs := []providers.Message{
+		userMsg("task"), asstMsg("a0"),
+		big, asstMsg("a1"),
+		userMsg("q2"), asstMsg("a2"),
+	}
+
+	// Initial cut=2 keeps [BIG-u1, a1, u2, a2] (~201 est). Budget 50 forces a
+	// drop to the next fresh-user-turn (index 4) → keeps [u2, a2] (~1 est).
+	if got := capKeptTailToWindow(msgs, 2, 50); got != 4 {
+		t.Errorf("over-budget tail: cut = %d, want 4 (advanced past the big turn)", got)
+	}
+	// Under budget → unchanged.
+	if got := capKeptTailToWindow(msgs, 4, 50); got != 4 {
+		t.Errorf("under-budget tail: cut = %d, want 4 (unchanged)", got)
+	}
+	// budget<=0 (unknown window) → no cap.
+	if got := capKeptTailToWindow(msgs, 2, 0); got != 2 {
+		t.Errorf("no window: cut = %d, want 2 (no cap)", got)
+	}
+	// Irreducible: a single over-budget last turn is kept, not dropped to empty.
+	huge := []providers.Message{userMsg("task"), big}
+	if got := capKeptTailToWindow(huge, 1, 50); got != 1 {
+		t.Errorf("irreducible tail: cut = %d, want 1 (kept, not emptied)", got)
 	}
 }
