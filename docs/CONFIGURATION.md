@@ -629,6 +629,7 @@ Parsed at `internal/agents/loader.go:199` (the `frontmatter` struct):
 | `channels` | object | Channel tool ACL | `{publish: [...], subscribe: [...]}`. |
 | `agent_def_scopes` | `[]string` | AgentDef tool scope | `self` / `descendants` / `named:<name>` / `any`. Empty = default-deny. |
 | `evaluation_scopes` | `[]string` | Evaluation tool scope | `submit_self` / `submit_siblings` / etc. Empty = default-deny. |
+| `volumes` | `[]string` | Filesystem-volume binding | Names of top-level `volumes:` entries the agent's file/exec tools may use. Empty = implicitly bound to `[default]`. Confines the agent to exactly the named volumes (does NOT also grant `default`). See §9d. |
 
 ### Worked examples (real agents from jobs-search-agent)
 
@@ -872,6 +873,47 @@ cp .env.insecure.example  .env.insecure   # then adjust paths/flags
 
 - **Definition plane — store the reference, resolve at use-time.** A substrate def persists the `${ENV_NAME}` reference, never the expanded value. Webhook defs store `signing_secret_env` / `bearer_token_env` (env-var *names*), and a dynamic MCP server's `url` / `headers` keep their `${LOOMCYCLE_*}` placeholders in `mcp_server_defs.content` — the secret is resolved only when the pool dials the server (mirroring how a yaml `mcp_servers.*` entry is expanded at config load). `content_sha256` is computed over the reference, so it stays stable when the token rotates.
 - **Transcript plane — redact before persisting (`LOOMCYCLE_REDACT_SECRETS`, default ON).** Tool I/O (tool_call inputs + tool_result outputs) is scanned for secret-shaped substrings and masked before it reaches the events store (and thus snapshots + the `/v1/_events` audit API): the exact values of secret-named env vars (`*_KEY` / `*_TOKEN` / `*_SECRET` / `*_AUTH` / `*_PASSWORD` / `*_CREDENTIAL`) become `[redacted:NAME]`, plus conservative heuristics for `Authorization:` headers, `sk-`/`AKIA`/`xox`/`ghp_` keys, and `*_API_KEY=` assignments. The live SSE stream is **not** redacted (the caller already holds the secret). Set `LOOMCYCLE_REDACT_SECRETS=0` to disable. This is defense-in-depth — agents should still pass secrets out-of-band (env / stdin / credential helper), never inline on a cmdline.
+
+---
+
+## 9d. Filesystem Volumes — per-agent ro/rw scopes (RFC AH Phase 1)
+
+The file/exec tools (Read / Write / Edit / Glob / Grep / Bash / NotebookEdit) used to share a single per-instance jail (`LOOMCYCLE_READ_ROOT` / `WRITE_ROOT` / `BASH_CWD`). A **Volume** is a named, per-agent, read-only-or-read-write root that replaces it — the filesystem analog of the caller-authoritative `allowed_hosts` host policy. Two ensembles in one runtime can now be confined to separate working trees.
+
+**Top-level `volumes:` map** — the universe of bindable roots (the filesystem analog of registered tools). Declared once by the operator:
+
+```yaml
+volumes:
+  default:   { path: /work/sandbox,     mode: rw, default: true }
+  shared-ro: { path: /work/reference,   mode: ro }
+  repo-a:    { path: /work/ensembles/a, mode: rw }
+```
+
+- `mode` is `rw` (read+write) or `ro` (read-only); empty defaults to `rw`.
+- Each `path` **must already exist and be a directory** — validated at config-load (static volumes map existing infrastructure; the runtime never `mkdir`s them). Paths are resolved to absolute.
+- At most one volume may be `default: true` — it's the one a tool call uses when it omits the `volume` argument.
+
+**Per-agent `volumes:` binding** — which volumes an agent's tools may use, validated against the map above (exactly like `allowed_tools` against registered tools):
+
+```yaml
+agents:
+  ensemble-a-lead:
+    allowed_tools: [Read, Write, Edit, Glob, Grep, Bash, Agent]
+    volumes: [repo-a, shared-ro]   # confined to these; cannot touch default or repo-b
+```
+
+- An agent that declares **no** `volumes` is implicitly bound to `[default]` — backward-compatible.
+- An agent that declares volumes is confined to **exactly those** — it does *not* implicitly also get `default`.
+
+**ro / rw enforcement.** Read / Glob / Grep operate on any bound volume. Write / Edit / NotebookEdit require a `rw` volume (a `ro` target is refused). **Bash requires `rw` and is refused on a `ro` volume** — a shell can write via absolute paths and redirection, so loomcycle refuses rather than ship a read-only guarantee it cannot keep (CLAUDE.md rule #7).
+
+**Spawn confinement.** A sub-agent's volume set is the **narrow-only** intersection of (child-declared) ∩ (parent's active bindings); where both hold a volume, the ro/rw flag resolves to the more restrictive of the two. A child can never gain a volume its parent lacks — mirroring host-allowlist narrowing.
+
+**Backward compatibility.** With no `volumes:` block, the legacy `LOOMCYCLE_READ_ROOT` / `WRITE_ROOT` synthesize a `default` volume, so a deployment with no volumes config and no agent bindings is **byte-identical** to before. When `ReadRoot` is a broader parent of `WriteRoot`, a companion read-only `default-read` volume is synthesized alongside the rw `default` (= WriteRoot). To migrate cleanly off the env-var split, declare explicit `volumes:` instead.
+
+**Introspection.** `Context op=self` reports the bound volumes (`volumes.bindings`: name / path / mode / default), so an agent knows precisely which roots it may touch and which verb each allows. An unbound agent still sees the legacy `sandbox` block.
+
+> Phase 1 is **static** volumes only. The dynamic, tenant-scoped, auto-provisioned `VolumeDef` substrate (runtime `create` / `delete` / `purge`, ephemeral run-scoped volumes) is Phase 2, a separate release.
 
 ---
 
