@@ -56,16 +56,23 @@ type RegistryInterface interface {
 // confines a host-widen grant to the tenant the operator named.
 type Registry struct {
 	mu    sync.RWMutex
-	byID  map[string]*Hook    // id → hook, for DELETE / GET by id
-	byKey map[ownerName]*Hook // (owner, name) → hook, for replace-on-conflict
-	order []string            // ids in registration order; chain order in Match()
+	byID  map[string]*Hook  // id → hook, for DELETE / GET by id
+	byKey map[hookKey]*Hook // (tenant, owner, name) → hook, for replace-on-conflict
+	order []string          // ids in registration order; chain order in Match()
 
 	hostWidenPermitted map[tenantOwner]struct{} // (tenant, owner) set; frozen post-construction
 }
 
-type ownerName struct {
-	Owner string
-	Name  string
+// hookKey is the replace-on-conflict identity of a hook. RFC AF: it includes the
+// authoritative Tenant, NOT just (owner, name) — otherwise two tenants
+// registering the same (owner, name) collide in byKey and the second EVICTS the
+// first (a cross-tenant integrity bug, since `owner`+`name` are caller-supplied
+// and the registry is process-global). Within one tenant, re-registering the
+// same (owner, name) still replaces in place (the app-restart dedup contract).
+type hookKey struct {
+	Tenant string
+	Owner  string
+	Name   string
 }
 
 // tenantOwner is the (tenant, owner) permit key (RFC AF follow-up). The empty
@@ -108,7 +115,7 @@ func NewRegistryWithPermissions(permitEntries []string) *Registry {
 	}
 	return &Registry{
 		byID:               make(map[string]*Hook),
-		byKey:              make(map[ownerName]*Hook),
+		byKey:              make(map[hookKey]*Hook),
 		hostWidenPermitted: permit,
 	}
 }
@@ -150,10 +157,11 @@ func (r *Registry) IsHostWidenPermitted(tenant, owner string) bool {
 	return ok
 }
 
-// Register adds a hook. If a hook with the same (Owner, Name) is
-// already registered, the prior entry is evicted in-place and the
-// new one takes its slot — preserves chain order so a re-registration
-// on app restart doesn't reshuffle the hook graph.
+// Register adds a hook. If a hook with the same (Tenant, Owner, Name) is
+// already registered, the prior entry is evicted in-place and the new one takes
+// its slot — preserves chain order so a re-registration on app restart doesn't
+// reshuffle the hook graph. The Tenant is part of the identity so two tenants
+// using the same (Owner, Name) coexist instead of evicting each other.
 //
 // Returns the assigned ID, or ErrInvalidRegistration if required
 // fields are missing or malformed.
@@ -164,7 +172,7 @@ func (r *Registry) Register(h *Hook) (string, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	key := ownerName{Owner: h.Owner, Name: h.Name}
+	key := hookKey{Tenant: h.Tenant, Owner: h.Owner, Name: h.Name}
 	now := time.Now()
 	if existing, ok := r.byKey[key]; ok {
 		// Replace in-place: keep the existing position in `order` so
@@ -213,7 +221,7 @@ func (r *Registry) Delete(id string) error {
 		return ErrNotFound
 	}
 	delete(r.byID, id)
-	delete(r.byKey, ownerName{Owner: h.Owner, Name: h.Name})
+	delete(r.byKey, hookKey{Tenant: h.Tenant, Owner: h.Owner, Name: h.Name})
 	for i, oid := range r.order {
 		if oid == id {
 			r.order = append(r.order[:i], r.order[i+1:]...)

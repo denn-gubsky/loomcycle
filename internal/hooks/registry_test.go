@@ -101,6 +101,61 @@ func TestRegistry_ReplaceOnOwnerName_NameKey(t *testing.T) {
 	}
 }
 
+// TestRegistry_Register_SameOwnerNameDifferentTenant pins the RFC AF identity
+// fix: the replace-on-conflict key is (tenant, owner, name), NOT (owner, name).
+// Two tenants registering the SAME (owner, name) must COEXIST — neither evicts
+// the other — and each must fire only on its own tenant's runs. Re-registering
+// within one tenant still replaces that tenant's hook in place.
+func TestRegistry_Register_SameOwnerNameDifferentTenant(t *testing.T) {
+	r := NewRegistry()
+	idA := mustRegister(t, r, &Hook{
+		Tenant: "tenant-a", Owner: "jobs-search-web", Name: "url-gate", Phase: PhasePre,
+		CallbackURL: "https://a/x", Tools: []string{"T"},
+	})
+	idB := mustRegister(t, r, &Hook{
+		Tenant: "tenant-b", Owner: "jobs-search-web", Name: "url-gate", Phase: PhasePre,
+		CallbackURL: "https://b/x", Tools: []string{"T"},
+	})
+
+	// Both coexist — the (owner,name) collision no longer evicts. (Fail-before:
+	// with the old (owner,name) key, registering tenant-b evicted tenant-a → 1.)
+	if got := r.List(); len(got) != 2 {
+		t.Fatalf("List len = %d, want 2 (same owner+name across tenants must coexist)", len(got))
+	}
+	if idA == idB {
+		t.Errorf("distinct-tenant registrations returned the same id %q", idA)
+	}
+
+	// Each fires only on its own tenant's runs.
+	if got := hookNames(r.Match("tenant-a", "agent", "T", PhasePre)); len(got) != 1 || got[0] != "url-gate" {
+		t.Errorf("Match(tenant-a) = %v, want [url-gate]", got)
+	}
+	aHooks := r.Match("tenant-a", "agent", "T", PhasePre)
+	if len(aHooks) == 1 && aHooks[0].ID != idA {
+		t.Errorf("Match(tenant-a) returned id %q, want tenant-a's %q", aHooks[0].ID, idA)
+	}
+	bHooks := r.Match("tenant-b", "agent", "T", PhasePre)
+	if len(bHooks) != 1 || bHooks[0].ID != idB {
+		t.Errorf("Match(tenant-b) returned %v, want tenant-b's %q", bHooks, idB)
+	}
+
+	// Re-registering within tenant-a replaces ONLY tenant-a's hook (fresh id),
+	// leaving tenant-b's untouched.
+	idA2 := mustRegister(t, r, &Hook{
+		Tenant: "tenant-a", Owner: "jobs-search-web", Name: "url-gate", Phase: PhasePre,
+		CallbackURL: "https://a/x2", Tools: []string{"T"},
+	})
+	if idA2 == idA {
+		t.Errorf("same-tenant re-register returned the same id %q; expected a fresh id on replace", idA)
+	}
+	if got := r.List(); len(got) != 2 {
+		t.Fatalf("List len = %d after same-tenant re-register, want 2 (replace, not append; tenant-b intact)", len(got))
+	}
+	if got := r.Match("tenant-b", "agent", "T", PhasePre); len(got) != 1 || got[0].ID != idB {
+		t.Errorf("tenant-b hook disturbed by tenant-a re-register: %v, want id %q", got, idB)
+	}
+}
+
 // TestRegistry_ReplacePreservesChainPosition pins that re-registration
 // keeps the slot in `order` so chain ordering doesn't shuffle when an
 // app restarts. Hooks A → B → C, then re-register B; chain must
