@@ -8,6 +8,31 @@ For pre-v0.4 history (single-tool runtime, library milestone, security patch), s
 
 ---
 
+## What's in v1.0.2
+
+**🌐 Permitted host-widen grants now work with no static HTTP allowlist.** A
+patch. When an operator ran no static HTTP floor (`LOOMCYCLE_HTTP_HOST_ALLOWLIST`
+unset) and relied on a permitted Pre-hook (`hooks.permit_host_widen.owners`) to
+grant hosts dynamically per call, the grant had **no effect** — every HTTP /
+WebFetch call was refused. `HTTP.do` short-circuited on an empty `HostAllowlist`
+*before* the per-call `ExtraAllowedHosts` (the permitted-hook grant) was ever
+consulted, so `permit_host_widen` was dead whenever the static allowlist was empty.
+
+- **The fix (`internal/tools/builtin/httptool.go`).** Refuse only when the
+  operator floor is empty **and** there is no permitted per-call grant. The
+  per-host check still enforces that the grant actually covers the requested
+  host, and the dial-time private-IP (SSRF) guard still applies — so this widens
+  nothing the operator did not explicitly opt in to (`ExtraAllowedHosts` is
+  populated ONLY by the dispatcher after `IsHostWidenPermitted`, never by the
+  model or the runtime caller; the CLAUDE.md rule-#8 trust boundary is preserved).
+- **Tests.** Fail-before regressions: an empty-allowlist call with a permitted
+  grant covering the host now succeeds; a grant for a *different* host is still
+  refused (host-scoped); empty allowlist + no grant still refuses.
+
+Surfaced by the JobEmber VPS deploy (a tenant driving all hosts through its
+`url-gate` Pre-hook with no static floor). No wire-shape or config change;
+behaviour with a non-empty allowlist is byte-identical.
+
 ## What's in v1.0.1
 
 **🔐 `substrate:tenant` — the tenant-operator scope (RFC AF).** A security patch:

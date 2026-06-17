@@ -25,6 +25,62 @@ func TestHTTPRefusesEmptyAllowlist(t *testing.T) {
 	}
 }
 
+// A permitted Pre-hook's per-call host grant (ExtraAllowedHosts) must satisfy a
+// call even when the static HostAllowlist is EMPTY — otherwise
+// hooks.permit_host_widen is dead for any deployment that drives all hosts
+// dynamically through a hook. Fail-before: on the pre-fix code the empty-
+// allowlist guard returned "refusing all calls" before the extras were ever
+// consulted, so this request was refused and this test fails.
+func TestHTTPEmptyAllowlistHonoursPermittedHostWidenGrant(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, "reached via hook grant")
+	}))
+	defer srv.Close()
+
+	host := mustHost(t, srv.URL)
+	h := &HTTP{
+		// HostAllowlist deliberately EMPTY — the operator runs no static
+		// floor and relies entirely on permitted hooks to grant hosts.
+		PrivateHostAllowlist: []string{host}, // let the loopback dial through
+	}
+	// The grant arrives ONLY via ctx, exactly as loop.dispatchOneTool sets it
+	// after a permitted Pre-hook returns allow_hosts.
+	ctx := tools.WithExtraAllowedHosts(context.Background(), []string{host})
+	body, _ := json.Marshal(map[string]string{"method": "GET", "url": srv.URL})
+	res, err := h.Execute(ctx, body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.IsError {
+		t.Fatalf("permitted host-widen grant should satisfy an empty-allowlist call; got %q", res.Text)
+	}
+	if !strings.Contains(res.Text, "reached via hook grant") {
+		t.Errorf("body missing: %q", res.Text)
+	}
+}
+
+// The empty-allowlist grant is host-scoped: a grant for one host does NOT open
+// a different host. Guards against the fix degenerating into "any extras →
+// allow anything."
+func TestHTTPEmptyAllowlistGrantIsHostScoped(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, "should not be reached")
+	}))
+	defer srv.Close()
+
+	h := &HTTP{PrivateHostAllowlist: []string{mustHost(t, srv.URL)}}
+	// Grant covers a DIFFERENT host than the one requested.
+	ctx := tools.WithExtraAllowedHosts(context.Background(), []string{"granted.example"})
+	body, _ := json.Marshal(map[string]string{"method": "GET", "url": srv.URL})
+	res, err := h.Execute(ctx, body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.IsError || !strings.Contains(res.Text, "not in allowlist") {
+		t.Fatalf("expected host-not-in-allowlist refusal (grant is host-scoped); got %q", res.Text)
+	}
+}
+
 func TestHTTPHostAllowlist(t *testing.T) {
 	cases := []struct {
 		host  string
