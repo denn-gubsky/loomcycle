@@ -34,15 +34,31 @@ user/tenant by editing the request body.
 
 ## Scope catalog (closed)
 
-`substrate:admin` (superuser — satisfies every scope), `runs:create`,
-`runs:read`, `channel:publish`, `channel:read`. Every catalog scope is
-enforced by at least one route — operators can't invent scope names, and
-the catalog intentionally excludes scopes no route checks (a scope that
-enforces nothing is a false limitation). The default at create is
-`["substrate:admin"]`, so a first token keeps "single token, full
-power". Narrow app tokens (`["runs:create"]`) are the upgrade path; a
-route that needs a scope the token lacks returns **403** with
-`WWW-Authenticate: Bearer scope="…"`.
+`substrate:admin` (superuser — satisfies every scope), `substrate:tenant`
+(tenant operator — RFC AF), `runs:create`, `runs:read`, `channel:publish`,
+`channel:read`. Every catalog scope is enforced by at least one route —
+operators can't invent scope names, and the catalog intentionally excludes
+scopes no route checks (a scope that enforces nothing is a false
+limitation). The default at create is `["substrate:admin"]`, so a first
+token keeps "single token, full power". Narrow app tokens
+(`["runs:create"]`) are the upgrade path; a route that needs a scope the
+token lacks returns **403** with `WWW-Authenticate: Bearer scope="…"`.
+
+**`substrate:tenant`** is the middle ground between an admin token and a
+narrow `runs:*` app token: it grants FULL power WITHIN the token's own
+tenant — runs, channels, authoring all 8 substrate Def families (Agent /
+Skill / MCPServer / Schedule / Webhook / MemoryBackend / A2AAgent /
+A2AServerCard, where MCPServerDef is the "dynamic MCP tools ingestion"
+surface), and registering tool-use hooks — but NOT the operator plane: no
+token minting (`/v1/_operatortokendef`), no runtime admin (pause / resume /
+snapshot), no loomcycle-as-MCP-server transport (`/v1/_mcp`), and no
+cross-tenant access. It satisfies the within-tenant scopes (`runs:*`,
+`channel:*`, the def/hook gate) but never `substrate:admin`. Mint a
+self-provisioning tenant (e.g. an app that syncs its own AgentDefs + hooks
+at boot) with `--scopes substrate:tenant` instead of handing it admin.
+Confinement is automatic — a non-admin principal's def writes are stamped
+with its authoritative tenant, cross-tenant reads return an opaque 404, and
+a tenant-registered hook fires only on that tenant's runs.
 
 ## Managing tokens
 
