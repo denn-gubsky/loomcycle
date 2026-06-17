@@ -2704,6 +2704,14 @@ type SnapshotRow struct {
 	JSONContent   []byte
 }
 
+// ErrHooksUnsupported is returned by the hook DB methods (CreateHook /
+// DeleteHook / GetHookByID) on a backend without a cluster hook registry —
+// today the SQLite backend, which is single-replica (hooks live in-memory; the
+// DB table is Postgres-only). Callers (e.g. the store contract suite) errors.Is
+// against it to skip the cluster-hook path on such backends, mirroring
+// ErrVectorUnsupported.
+var ErrHooksUnsupported = errors.New("hooks: DB-backed hook registry requires the Postgres backend (single-replica SQLite keeps hooks in memory)")
+
 // HookRow is the v0.12.5 Phase 6 cluster-wide hook registration
 // shape. Mirrors internal/hooks.Hook but uses plain strings for
 // Phase + FailMode so the store package stays free of an

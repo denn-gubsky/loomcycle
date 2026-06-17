@@ -167,9 +167,11 @@ func TestDBBackedRegistry_Delete_RemovesAndPublishes(t *testing.T) {
 func TestDBBackedRegistry_LoadFromDB_SeedsInnerCache(t *testing.T) {
 	inner := NewRegistry()
 	hs := newStubHookStore()
-	// Seed DB rows directly.
+	// Seed DB rows directly. The Tenant is set so we can assert it survives the
+	// rowToHook conversion (RFC AF: a dropped Tenant on reload would silently
+	// un-scope a tenant hook to global, firing on every tenant's runs).
 	hs.rows["hook_x"] = store.HookRow{
-		ID: "hook_x", Owner: "app", Name: "n", Phase: "pre",
+		ID: "hook_x", Tenant: "tenant-a", Owner: "app", Name: "n", Phase: "pre",
 		Agents: []string{}, Tools: []string{"Read"},
 		CallbackURL: "https://example.com",
 		FailMode:    "open",
@@ -179,8 +181,12 @@ func TestDBBackedRegistry_LoadFromDB_SeedsInnerCache(t *testing.T) {
 	if err := r.LoadFromDB(context.Background()); err != nil {
 		t.Fatalf("LoadFromDB: %v", err)
 	}
-	if got := len(r.List()); got != 1 {
-		t.Errorf("List() len = %d, want 1 (seeded from db)", got)
+	got := r.List()
+	if len(got) != 1 {
+		t.Fatalf("List() len = %d, want 1 (seeded from db)", len(got))
+	}
+	if got[0].Tenant != "tenant-a" {
+		t.Errorf("reloaded hook Tenant = %q, want tenant-a (rowToHook dropped the tenant)", got[0].Tenant)
 	}
 }
 
@@ -193,9 +199,10 @@ func TestDBBackedRegistry_BackplaneCreatedEvent_HydratesCache(t *testing.T) {
 	bp := newStubBackplane()
 	r, _ := NewDBBackedRegistry(inner, hs, bp, "rep-b")
 
-	// Seed the DB row directly (simulating replica A's insert).
+	// Seed the DB row directly (simulating replica A's insert), with a tenant
+	// so the backplane-hydration path's rowToHook is asserted to carry it.
 	hs.rows["hook_remote"] = store.HookRow{
-		ID: "hook_remote", Owner: "app", Name: "n", Phase: "pre",
+		ID: "hook_remote", Tenant: "tenant-b", Owner: "app", Name: "n", Phase: "pre",
 		Agents: []string{}, Tools: []string{"Read"},
 		CallbackURL: "https://example.com",
 		FailMode:    "open",
@@ -217,8 +224,12 @@ func TestDBBackedRegistry_BackplaneCreatedEvent_HydratesCache(t *testing.T) {
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
-	if got := len(r.List()); got != 1 {
-		t.Errorf("inner cache should have hydrated from DB, got %d entries", got)
+	hydrated := r.List()
+	if len(hydrated) != 1 {
+		t.Fatalf("inner cache should have hydrated from DB, got %d entries", len(hydrated))
+	}
+	if hydrated[0].Tenant != "tenant-b" {
+		t.Errorf("backplane-hydrated hook Tenant = %q, want tenant-b", hydrated[0].Tenant)
 	}
 }
 
