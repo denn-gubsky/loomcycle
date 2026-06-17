@@ -234,14 +234,39 @@ func (c *Context) execSelf(ctx context.Context) (tools.Result, error) {
 		}
 		out["context"] = usage
 	}
-	// sandbox: the filesystem jail the file/exec tools enforce. Paths passed to
-	// Read/Write/Edit/Glob/Grep and Bash commands resolve RELATIVE to these
-	// roots (~ is not expanded; an absolute path must resolve inside the root).
-	// Surfaced so a jailed agent knows its own roots instead of guessing host
-	// paths — the recurring "agent uses an absolute path and gets a not-inside-
-	// root error" failure. Omitted when no roots are configured (Cfg is nil in
-	// some test fixtures; an unset root means that tool refuses every call).
-	if c.Cfg != nil {
+	// volumes: the filesystem volumes (RFC AH) the file/exec tools enforce for
+	// this run. Each entry names a root + mode (ro/rw) + whether it's the
+	// default for an omitted `volume` arg. Paths passed to Read/Write/Edit/
+	// Glob/Grep and Bash commands resolve RELATIVE to a volume's root (~ is
+	// not expanded; an absolute path must resolve inside the root). Surfaced
+	// so a bound agent knows precisely which volumes it may touch and which
+	// verb each allows, instead of guessing host paths.
+	//
+	// Bound agent (a VolumePolicy is on ctx) → report the binding list. Unbound
+	// agent (no policy) → fall back to the legacy read_root/write_root/bash_cwd
+	// sandbox fields so single-jail deployments report unchanged.
+	if vp := tools.VolumePolicy(ctx); len(vp.Bindings) > 0 {
+		vols := make([]map[string]any, 0, len(vp.Bindings))
+		for _, b := range vp.Bindings {
+			mode := "rw"
+			if b.ReadOnly {
+				mode = "ro"
+			}
+			vols = append(vols, map[string]any{
+				"name":    b.Name,
+				"path":    b.Root,
+				"mode":    mode,
+				"default": b.Default,
+			})
+		}
+		out["volumes"] = map[string]any{
+			"bindings":        vols,
+			"path_convention": "Pass paths RELATIVE to a volume root (e.g. \"src/main.go\"); ~ is not expanded and an absolute path must resolve inside the root. Set the \"volume\" tool argument to target a non-default volume; omit it to use the one marked default.",
+		}
+	} else if c.Cfg != nil {
+		// Legacy single-jail fallback (unbound agent). Omitted when no roots
+		// are configured (Cfg is nil in some test fixtures; an unset root means
+		// that tool refuses every call).
 		sb := map[string]any{}
 		if c.Cfg.Env.ReadRoot != "" {
 			sb["read_root"] = c.Cfg.Env.ReadRoot

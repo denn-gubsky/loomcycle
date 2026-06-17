@@ -1261,6 +1261,86 @@ func (s *Server) interruptionPolicyForAgent(agentDef config.AgentDef) tools.Inte
 	}
 }
 
+// volumePolicyForAgent resolves the agent's declared `volumes` binding
+// (RFC AH Phase 1) against the operator's top-level `volumes:` config
+// into the run-scoped VolumePolicy the file/exec tools read via ctx.
+//
+//   - An agent that declares NO volumes is implicitly bound to [default]
+//     — a single synthesized binding from the `default` config volume.
+//     When no `default` volume exists (no `volumes:` config AND no legacy
+//     ReadRoot/WriteRoot), the policy is EMPTY (nil Bindings) so the
+//     tools fall back to their construction-time Root — byte-identical to
+//     a pre-feature deployment.
+//   - An agent that declares volumes is confined to EXACTLY those (it
+//     does NOT implicitly also get `default`). Each binding's Default
+//     flag carries through from the config volume's `default: true`, so
+//     an omitted `volume` arg resolves to that one (or the sole binding).
+//
+// Config-load validation guarantees every declared name exists and every
+// volume path is an existing directory resolved absolute, so this never
+// errors — a missing name here would be a config-validation bug.
+func (s *Server) volumePolicyForAgent(agentDef config.AgentDef) tools.VolumePolicyValue {
+	if len(agentDef.Volumes) == 0 {
+		def, ok := s.cfg.Volumes["default"]
+		if !ok {
+			return tools.VolumePolicyValue{} // legacy jail fallback (no policy).
+		}
+		return tools.VolumePolicyValue{Bindings: []tools.VolumeBinding{{
+			Name: "default", Root: def.Path, ReadOnly: def.ReadOnly(), Default: true,
+		}}}
+	}
+	bindings := make([]tools.VolumeBinding, 0, len(agentDef.Volumes))
+	for _, name := range agentDef.Volumes {
+		v, ok := s.cfg.Volumes[name]
+		if !ok {
+			continue // unreachable post-validation; skip defensively.
+		}
+		bindings = append(bindings, tools.VolumeBinding{
+			Name: name, Root: v.Path, ReadOnly: v.ReadOnly(), Default: v.Default,
+		})
+	}
+	return tools.VolumePolicyValue{Bindings: bindings}
+}
+
+// narrowVolumes computes a sub-agent's volume binding set as the
+// NARROW-ONLY intersection (RFC AH §4): child set = (child-declared) ∩
+// (parent's active bindings). A child can NEVER gain a volume the parent
+// lacks; where both hold a volume, ReadOnly resolves to the MORE
+// restrictive of the two (ro wins). This mirrors NarrowHosts exactly —
+// the parent's policy is the floor, the child can only shrink it.
+//
+// The child's Default flag is preserved from the child's own declaration
+// (the parent might mark a different volume as its default), so an
+// omitted `volume` in the child resolves against the child's own designated
+// default among the surviving intersection.
+func narrowVolumes(parent, child tools.VolumePolicyValue) tools.VolumePolicyValue {
+	if len(parent.Bindings) == 0 {
+		// Parent is unbound (legacy jail). A bound child cannot widen past
+		// the parent's (absent) policy, so it inherits the same unbound
+		// fallback — it gets no named volumes of its own.
+		return tools.VolumePolicyValue{}
+	}
+	parentByName := make(map[string]tools.VolumeBinding, len(parent.Bindings))
+	for _, b := range parent.Bindings {
+		parentByName[b.Name] = b
+	}
+	out := make([]tools.VolumeBinding, 0, len(child.Bindings))
+	for _, cb := range child.Bindings {
+		pb, ok := parentByName[cb.Name]
+		if !ok {
+			continue // child named a volume the parent lacks — drop it.
+		}
+		// More-restrictive-wins on the ro/rw axis: ro if EITHER side is ro.
+		out = append(out, tools.VolumeBinding{
+			Name:     cb.Name,
+			Root:     pb.Root, // parent's resolved root is authoritative.
+			ReadOnly: cb.ReadOnly || pb.ReadOnly,
+			Default:  cb.Default,
+		})
+	}
+	return tools.VolumePolicyValue{Bindings: out}
+}
+
 // applyAgentDefOverlay overlays the v0.8.5 agent_defs.definition JSON
 // onto a static cfg.Agents entry, producing the effective AgentDef
 // for one sub-run. Mirrors the mutable-subset list maintained by the
@@ -1836,6 +1916,10 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	// inherits the parent's effective policy (its def fills any gaps the parent
 	// left unset), overridable per-spawn by the Agent tool.
 	loopCtx = tools.WithCompactionPolicy(loopCtx, config.MergeCompaction(agentDef.Compaction, in.Compaction))
+	// RFC AH: the run's filesystem-volume bindings. Unbound agents get an
+	// empty policy (the file tools fall back to the legacy jail Root);
+	// sub-agents inherit + narrow this via runSubAgent.
+	loopCtx = tools.WithVolumePolicy(loopCtx, s.volumePolicyForAgent(agentDef))
 	loopCtx = tools.WithChannelPolicy(loopCtx, s.channelPolicyForAgent(loopCtx, agentDef))
 	loopCtx = tools.WithEventEmitter(loopCtx, emit)
 	adPolicy, evPolicy := s.substratePoliciesForAgent(agentDef, effectiveAgentName)
@@ -3145,6 +3229,10 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		Backend:       agentDef.MemoryBackend,
 	})
 	loopCtx = tools.WithCompactionPolicy(loopCtx, config.MergeCompaction(agentDef.Compaction, req.Compaction))
+	// RFC AH: the run's filesystem-volume bindings. Unbound agents get an
+	// empty policy (the file tools fall back to the legacy jail Root);
+	// sub-agents inherit + narrow this via runSubAgent.
+	loopCtx = tools.WithVolumePolicy(loopCtx, s.volumePolicyForAgent(agentDef))
 	loopCtx = tools.WithChannelPolicy(loopCtx, s.channelPolicyForAgent(loopCtx, agentDef))
 	loopCtx = tools.WithEventEmitter(loopCtx, emit)
 	adPolicy, evPolicy := s.substratePoliciesForAgent(agentDef, req.Agent)
@@ -3621,6 +3709,10 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		Backend:       agentDef.MemoryBackend,
 	})
 	loopCtx = tools.WithCompactionPolicy(loopCtx, config.MergeCompaction(agentDef.Compaction, body.Compaction))
+	// RFC AH: the run's filesystem-volume bindings. Unbound agents get an
+	// empty policy (the file tools fall back to the legacy jail Root);
+	// sub-agents inherit + narrow this via runSubAgent.
+	loopCtx = tools.WithVolumePolicy(loopCtx, s.volumePolicyForAgent(agentDef))
 	loopCtx = tools.WithChannelPolicy(loopCtx, s.channelPolicyForAgent(loopCtx, agentDef))
 	loopCtx = tools.WithEventEmitter(loopCtx, emit)
 	adPolicy, evPolicy := s.substratePoliciesForAgent(agentDef, sess.Agent)
@@ -4440,6 +4532,12 @@ func (s *Server) runSubAgent(ctx context.Context, name string, prompt string, de
 	subCompaction := config.MergeCompaction(def.Compaction, tools.CompactionPolicy(ctx))
 	subCompaction = config.MergeCompaction(subCompaction, tools.CompactionOverride(ctx))
 	subCtx = tools.WithCompactionPolicy(subCtx, subCompaction)
+	// RFC AH §4 — the load-bearing spawn invariant: a child's volume set is
+	// the NARROW-ONLY intersection of (child-declared) ∩ (parent's active
+	// bindings). A sub-agent can never gain a volume its parent lacks, and
+	// where both hold one the ro/rw axis resolves to the more restrictive.
+	// Mirrors the host-allowlist narrowing read from ctx just above (4376).
+	subCtx = tools.WithVolumePolicy(subCtx, narrowVolumes(tools.VolumePolicy(ctx), s.volumePolicyForAgent(def)))
 	// Sub-agent's Channel policy follows the same per-yaml shape as
 	// MemoryPolicy above. The Channels map (operator-declared
 	// channels) IS shared with the parent — those are operator
