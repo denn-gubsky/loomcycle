@@ -217,28 +217,36 @@ type VolumeBinding struct {
 	Default  bool
 }
 
-// VolumePolicyValue is the run's resolved volume binding set. A nil/empty
-// Bindings slice means "no policy" — the tools fall back to their
-// construction-time Root (the legacy jail). It is attached only when the
-// run-start path has a binding set to apply.
+// VolumePolicyValue is the run's resolved volume policy.
+//
+// Active distinguishes "volume confinement is in force" from "no policy",
+// which is load-bearing for spawn confinement:
+//   - Active == false (the zero value / never attached): the file tools
+//     fall back to their construction-time Root (the legacy jail). This is
+//     the backward-compat path for deployments + agents that don't use
+//     volumes.
+//   - Active == true: the run is confined to Bindings. An Active policy with
+//     an EMPTY Bindings slice DENIES every file-tool call (e.g. a sub-agent
+//     whose declared volumes share none of the parent's). It must NOT fall
+//     back to the legacy jail — otherwise narrowing a child to nothing would
+//     silently hand it the (broader) jail instead of denying it.
 type VolumePolicyValue struct {
+	Active   bool
 	Bindings []VolumeBinding
 }
 
-// WithVolumePolicy attaches the run's volume binding set to ctx. An
-// empty binding set is a no-op (the tools then use their legacy Root),
-// so callers can attach unconditionally without forcing the policy path
-// onto unbound agents.
+// WithVolumePolicy attaches the run's volume policy to ctx. It ALWAYS sets
+// the value — even an inactive/empty policy must OVERWRITE any policy a child
+// ctx inherited from its parent. (A sub-agent narrowed to an empty binding
+// set would otherwise keep the parent's policy via ctx-value inheritance, a
+// confinement-widening bug.)
 func WithVolumePolicy(ctx context.Context, p VolumePolicyValue) context.Context {
-	if len(p.Bindings) == 0 {
-		return ctx
-	}
 	return context.WithValue(ctx, ctxKeyVolumePolicy{}, p)
 }
 
-// VolumePolicy returns the run's volume binding set from ctx, or the
-// zero value (nil Bindings) when none was attached. A zero value is the
-// "unbound agent" signal — the tools use their construction-time Root.
+// VolumePolicy returns the run's volume policy from ctx, or the zero value
+// (Active=false) when none was attached. Active=false is the "unbound /
+// legacy jail" signal — the tools use their construction-time Root.
 func VolumePolicy(ctx context.Context) VolumePolicyValue {
 	v, _ := ctx.Value(ctxKeyVolumePolicy{}).(VolumePolicyValue)
 	return v

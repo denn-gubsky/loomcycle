@@ -11,9 +11,11 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
 
-// ctxWith attaches a VolumePolicy with the given bindings to a fresh ctx.
+// ctxWith attaches an ACTIVE VolumePolicy with the given bindings to a fresh
+// ctx. (Active=true is what puts the file tools on the volume path; an inactive
+// policy would fall back to the construction-time Root — the legacy jail.)
 func ctxWith(bindings ...tools.VolumeBinding) context.Context {
-	return tools.WithVolumePolicy(context.Background(), tools.VolumePolicyValue{Bindings: bindings})
+	return tools.WithVolumePolicy(context.Background(), tools.VolumePolicyValue{Active: true, Bindings: bindings})
 }
 
 // realDir EvalSymlinks's a fresh temp dir so a /var→/private/var (macOS) root
@@ -284,7 +286,7 @@ func TestRead_UnboundVolumeErrorsListsBound(t *testing.T) {
 // volumes it may touch and which verb each allows.
 func TestContextSelf_ReportsBoundVolumes(t *testing.T) {
 	tool, ctx := contextFixture(t)
-	ctx = tools.WithVolumePolicy(ctx, tools.VolumePolicyValue{Bindings: []tools.VolumeBinding{
+	ctx = tools.WithVolumePolicy(ctx, tools.VolumePolicyValue{Active: true, Bindings: []tools.VolumeBinding{
 		{Name: "work", Root: "/work/a", Default: true},
 		{Name: "ref", Root: "/work/ref", ReadOnly: true},
 	}})
@@ -330,5 +332,49 @@ func TestRead_UnboundAgentUsesLegacyRoot(t *testing.T) {
 	}
 	if res.IsError || res.Text != "legacy" {
 		t.Fatalf("unbound agent should use legacy Root, got Text=%q IsError=%v", res.Text, res.IsError)
+	}
+}
+
+// An ACTIVE policy with NO bindings (a sub-agent narrowed to an empty
+// intersection — it shares none of the parent's volumes) DENIES every
+// file-tool call. It must NOT fall back to the construction-time Root, or
+// spawn confinement would silently hand the child the (broader) legacy jail.
+// Fail-before: pre-fix, effectiveRoot keyed off len(Bindings)==0 and treated an
+// empty policy as "no policy", returning the Root.
+func TestRead_ActiveEmptyPolicyRefuses(t *testing.T) {
+	root := realDir(t)
+	if err := os.WriteFile(filepath.Join(root, "f.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Active, zero bindings. A legacy Root IS set — it must NOT be reached.
+	ctx := tools.WithVolumePolicy(context.Background(), tools.VolumePolicyValue{Active: true})
+	r := &Read{Root: root}
+	body, _ := json.Marshal(map[string]string{"path": "f.txt"})
+	res, err := r.Execute(ctx, body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.IsError || !strings.Contains(res.Text, "no filesystem volume is available") {
+		t.Fatalf("active-empty policy must refuse (not fall back to the legacy Root); got Text=%q IsError=%v", res.Text, res.IsError)
+	}
+}
+
+// A single binding with NO Default flag is still used when `volume` is omitted
+// (the sole-binding fallback) — an agent bound to exactly one volume needn't
+// mark it default.
+func TestRead_SoleBindingNoDefaultFlagUsesIt(t *testing.T) {
+	root := realDir(t)
+	if err := os.WriteFile(filepath.Join(root, "f.txt"), []byte("sole"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ctx := ctxWith(tools.VolumeBinding{Name: "only", Root: root}) // Default:false
+	r := &Read{}
+	body, _ := json.Marshal(map[string]string{"path": "f.txt"})
+	res, err := r.Execute(ctx, body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.IsError || res.Text != "sole" {
+		t.Fatalf("sole binding (no default flag) should resolve on omitted volume; got Text=%q IsError=%v", res.Text, res.IsError)
 	}
 }

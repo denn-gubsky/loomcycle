@@ -115,38 +115,15 @@ agents:
 	}
 }
 
-// Backward-compat: with no volumes: block but legacy ReadRoot==WriteRoot env,
-// a single `default` rw volume is synthesized.
-func TestLoadVolumes_SynthesizeDefaultFromLegacyEnv(t *testing.T) {
-	d, err := filepath.EvalSymlinks(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("LOOMCYCLE_READ_ROOT", d)
-	t.Setenv("LOOMCYCLE_WRITE_ROOT", d)
-	yamlPath := writeVolConfig(t, `
-agents:
-  a: { model: claude-sonnet-4-6 }
-`)
-	cfg, err := Load(yamlPath)
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	v, ok := cfg.Volumes["default"]
-	if !ok {
-		t.Fatal("expected a synthesized `default` volume")
-	}
-	if v.Path != d || v.Mode != "rw" || !v.Default {
-		t.Errorf("default = %+v, want {path:%q, mode:rw, default:true}", v, d)
-	}
-	if _, ok := cfg.Volumes["default-read"]; ok {
-		t.Error("ReadRoot==WriteRoot should NOT synthesize a default-read companion")
-	}
-}
-
-// ReadRoot != WriteRoot (read is a broader parent) synthesizes a companion
-// read-only `default-read` volume alongside the rw `default` (= WriteRoot).
-func TestLoadVolumes_ReadRootBroaderSynthesizesCompanion(t *testing.T) {
+// Backward-compat: with legacy ReadRoot/WriteRoot env and NO `volumes:` block,
+// NOTHING is synthesized — there is no `default` volume. Unbound agents then
+// run with an inactive policy and each file tool uses its own legacy root
+// (Read←ReadRoot, Write←WriteRoot, Bash←BashCwd), byte-identical to a
+// pre-feature deployment. We deliberately do NOT collapse the three legacy
+// roots into one synthesized `default`: a single root can't reproduce three
+// distinct ones, and a ReadRoot-only "writes disabled" deploy must not silently
+// gain write access on upgrade.
+func TestLoadVolumes_NoSynthesisFromLegacyEnv(t *testing.T) {
 	base, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -165,28 +142,21 @@ agents:
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	def := cfg.Volumes["default"]
-	if def.Path != writeDir || def.ReadOnly() {
-		t.Errorf("default should be the rw write root %q; got %+v", writeDir, def)
+	if _, ok := cfg.Volumes["default"]; ok {
+		t.Error("no `volumes:` block must NOT synthesize a `default` volume from legacy env")
 	}
-	dr, ok := cfg.Volumes["default-read"]
-	if !ok {
-		t.Fatal("ReadRoot != WriteRoot should synthesize a default-read companion")
-	}
-	if dr.Path != base || !dr.ReadOnly() {
-		t.Errorf("default-read should be the ro read root %q; got %+v", base, dr)
+	if _, ok := cfg.Volumes["default-read"]; ok {
+		t.Error("no `default-read` companion should be synthesized either")
 	}
 }
 
-// An explicit `default` volume in yaml wins over legacy-env synthesis.
-func TestLoadVolumes_ExplicitDefaultNotOverridden(t *testing.T) {
+// An explicit `default` volume in yaml loads and is honored verbatim (path /
+// mode / default flag); unbound agents bind to it.
+func TestLoadVolumes_ExplicitDefaultLoads(t *testing.T) {
 	d, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
-	other := filepath.Join(t.TempDir())
-	t.Setenv("LOOMCYCLE_READ_ROOT", other)
-	t.Setenv("LOOMCYCLE_WRITE_ROOT", other)
 	yamlPath := writeVolConfig(t, `
 volumes:
   default: { path: `+d+`, mode: ro, default: true }
@@ -197,7 +167,25 @@ agents:
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if cfg.Volumes["default"].Path != d || !cfg.Volumes["default"].ReadOnly() {
-		t.Errorf("explicit default must win over env synthesis; got %+v", cfg.Volumes["default"])
+	v := cfg.Volumes["default"]
+	if v.Path != d || !v.ReadOnly() || !v.Default {
+		t.Errorf("explicit default = %+v, want {path:%q, ro, default:true}", v, d)
+	}
+}
+
+// An unknown mode (not ro / rw / "") is a config-load error.
+func TestLoadVolumes_InvalidModeErrors(t *testing.T) {
+	d, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	yamlPath := writeVolConfig(t, `
+volumes:
+  data: { path: `+d+`, mode: readwrite }
+agents:
+  a: { model: claude-sonnet-4-6 }
+`)
+	if _, err := Load(yamlPath); err == nil {
+		t.Fatal("an invalid volume mode must be a config-load error")
 	}
 }

@@ -42,11 +42,17 @@ import (
 //     rather than ship a false guarantee — RFC §6).
 func effectiveRoot(ctx context.Context, fallbackRoot, volumeName string, needWrite bool) (string, error) {
 	pol := tools.VolumePolicy(ctx)
-	if len(pol.Bindings) == 0 {
-		// Unbound agent → legacy jail. fallbackRoot may be "" (an unset
-		// root), in which case the caller's existing empty-Root guard
-		// refuses the call exactly as before.
+	if !pol.Active {
+		// No volume confinement in force → legacy construction-time root.
+		// fallbackRoot may be "" (an unset root), in which case the caller's
+		// existing empty-Root guard refuses the call exactly as before.
 		return fallbackRoot, nil
+	}
+	if len(pol.Bindings) == 0 {
+		// Active but confined to NOTHING (e.g. a sub-agent whose declared
+		// volumes share none of the parent's). Deny — do NOT fall back to the
+		// legacy jail, or spawn confinement would be a no-op.
+		return "", fmt.Errorf("no filesystem volume is available to this agent; refusing")
 	}
 
 	var binding *tools.VolumeBinding

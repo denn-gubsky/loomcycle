@@ -1283,9 +1283,16 @@ func (s *Server) volumePolicyForAgent(agentDef config.AgentDef) tools.VolumePoli
 	if len(agentDef.Volumes) == 0 {
 		def, ok := s.cfg.Volumes["default"]
 		if !ok {
-			return tools.VolumePolicyValue{} // legacy jail fallback (no policy).
+			// No explicit `default` volume → inactive policy. The file tools
+			// fall back to their construction-time Root (the legacy
+			// ReadRoot/WriteRoot/BashCwd), byte-identical to a pre-feature
+			// deployment. We deliberately do NOT synthesize a single-root
+			// `default` from the three legacy roots — collapsing them into one
+			// root cannot be byte-identical when they differ (Read would read
+			// WriteRoot, Bash would lose BashCwd).
+			return tools.VolumePolicyValue{}
 		}
-		return tools.VolumePolicyValue{Bindings: []tools.VolumeBinding{{
+		return tools.VolumePolicyValue{Active: true, Bindings: []tools.VolumeBinding{{
 			Name: "default", Root: def.Path, ReadOnly: def.ReadOnly(), Default: true,
 		}}}
 	}
@@ -1299,7 +1306,7 @@ func (s *Server) volumePolicyForAgent(agentDef config.AgentDef) tools.VolumePoli
 			Name: name, Root: v.Path, ReadOnly: v.ReadOnly(), Default: v.Default,
 		})
 	}
-	return tools.VolumePolicyValue{Bindings: bindings}
+	return tools.VolumePolicyValue{Active: true, Bindings: bindings}
 }
 
 // narrowVolumes computes a sub-agent's volume binding set as the
@@ -1313,13 +1320,12 @@ func (s *Server) volumePolicyForAgent(agentDef config.AgentDef) tools.VolumePoli
 // (the parent might mark a different volume as its default), so an
 // omitted `volume` in the child resolves against the child's own designated
 // default among the surviving intersection.
+//
+// Called ONLY with an ACTIVE parent (see childVolumePolicy). The result is
+// ALWAYS active: an empty intersection means the child shares none of the
+// parent's volumes and is confined to NOTHING (every file-tool call refused),
+// NOT dropped back to the legacy jail.
 func narrowVolumes(parent, child tools.VolumePolicyValue) tools.VolumePolicyValue {
-	if len(parent.Bindings) == 0 {
-		// Parent is unbound (legacy jail). A bound child cannot widen past
-		// the parent's (absent) policy, so it inherits the same unbound
-		// fallback — it gets no named volumes of its own.
-		return tools.VolumePolicyValue{}
-	}
 	parentByName := make(map[string]tools.VolumeBinding, len(parent.Bindings))
 	for _, b := range parent.Bindings {
 		parentByName[b.Name] = b
@@ -1338,7 +1344,30 @@ func narrowVolumes(parent, child tools.VolumePolicyValue) tools.VolumePolicyValu
 			Default:  cb.Default,
 		})
 	}
-	return tools.VolumePolicyValue{Bindings: out}
+	return tools.VolumePolicyValue{Active: true, Bindings: out}
+}
+
+// childVolumePolicy resolves a sub-agent's volume policy from the parent's
+// run policy + the child's AgentDef (RFC AH §4). Three cases:
+//
+//   - Parent NOT confined by volumes (inactive — legacy/no `default`): the
+//     child is resolved as if top-level (its own declared volumes, or the
+//     operator `default`, or the inactive legacy fallback). There is no
+//     parent volume scope to narrow against, and the child's volumes come
+//     from its own operator-authored AgentDef, not from the parent.
+//   - Unbound child of a confined parent: INHERIT the parent's policy
+//     verbatim — the helper works within the parent's scope, exactly as a
+//     sub-agent inherits the parent's host allowlist.
+//   - Bound child of a confined parent: NARROW — child-declared ∩ parent
+//     (narrow-only; a child can never reach a volume the parent lacks).
+func (s *Server) childVolumePolicy(parentVol tools.VolumePolicyValue, def config.AgentDef) tools.VolumePolicyValue {
+	if !parentVol.Active {
+		return s.volumePolicyForAgent(def)
+	}
+	if len(def.Volumes) == 0 {
+		return parentVol
+	}
+	return narrowVolumes(parentVol, s.volumePolicyForAgent(def))
 }
 
 // applyAgentDefOverlay overlays the v0.8.5 agent_defs.definition JSON
@@ -4537,7 +4566,7 @@ func (s *Server) runSubAgent(ctx context.Context, name string, prompt string, de
 	// bindings). A sub-agent can never gain a volume its parent lacks, and
 	// where both hold one the ro/rw axis resolves to the more restrictive.
 	// Mirrors the host-allowlist narrowing read from ctx just above (4376).
-	subCtx = tools.WithVolumePolicy(subCtx, narrowVolumes(tools.VolumePolicy(ctx), s.volumePolicyForAgent(def)))
+	subCtx = tools.WithVolumePolicy(subCtx, s.childVolumePolicy(tools.VolumePolicy(ctx), def))
 	// Sub-agent's Channel policy follows the same per-yaml shape as
 	// MemoryPolicy above. The Channels map (operator-declared
 	// channels) IS shared with the parent — those are operator

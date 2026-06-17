@@ -242,10 +242,11 @@ func (c *Context) execSelf(ctx context.Context) (tools.Result, error) {
 	// so a bound agent knows precisely which volumes it may touch and which
 	// verb each allows, instead of guessing host paths.
 	//
-	// Bound agent (a VolumePolicy is on ctx) → report the binding list. Unbound
-	// agent (no policy) → fall back to the legacy read_root/write_root/bash_cwd
+	// Active volume policy → report the binding list (an active-but-empty
+	// policy reports an empty bindings list = confined to no volume). Inactive
+	// (no policy) → fall back to the legacy read_root/write_root/bash_cwd
 	// sandbox fields so single-jail deployments report unchanged.
-	if vp := tools.VolumePolicy(ctx); len(vp.Bindings) > 0 {
+	if vp := tools.VolumePolicy(ctx); vp.Active {
 		vols := make([]map[string]any, 0, len(vp.Bindings))
 		for _, b := range vp.Bindings {
 			mode := "rw"

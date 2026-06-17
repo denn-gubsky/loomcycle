@@ -422,10 +422,11 @@ defaults:
 #
 # OMIT this whole block to keep the legacy single jail: with no volumes:
 # and no per-agent `volumes:`, the file tools use LOOMCYCLE_READ_ROOT /
-# WRITE_ROOT / BASH_CWD exactly as before (a `default` volume is
-# synthesized from them). Bind an agent via its `volumes:` list (see the
-# agents block below). An agent that declares none is implicitly bound to
-# [default]. ro = Read/Glob/Grep only; rw = also Write/Edit/Bash/Notebook.
+# WRITE_ROOT / BASH_CWD exactly as before (nothing is synthesized — the
+# three legacy roots are NOT collapsed into one volume). Declare a volume
+# named `default` here to give unbound agents a default; otherwise bind an
+# agent via its `volumes:` list (see the agents block below).
+# ro = Read/Glob/Grep only; rw = also Write/Edit/Bash/Notebook.
 # `loomcycle help volumes` for the full topic.
 #
 # volumes:

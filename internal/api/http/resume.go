@@ -249,6 +249,11 @@ func (s *Server) resumePausedRun(ctx context.Context, run store.Run) error {
 	// stamped for sub-agent inheritance.
 	loopCtx = tools.WithCompactionPolicy(loopCtx, agentDef.Compaction)
 	loopCtx = tools.WithChannelPolicy(loopCtx, s.channelPolicyForAgent(loopCtx, agentDef))
+	// Volume confinement re-derived from the agent def (RFC AH attach-gap fix):
+	// a resumed run is top-level (no parent), so its policy is the agent's own.
+	// Without this a volume-bound agent would resume into the legacy jail — a
+	// silent confinement downgrade across pause / snapshot / cross-instance resume.
+	loopCtx = tools.WithVolumePolicy(loopCtx, s.volumePolicyForAgent(agentDef))
 	loopCtx = tools.WithEventEmitter(loopCtx, emit)
 	adPolicy, evPolicy := s.substratePoliciesForAgent(agentDef, run.Agent)
 	loopCtx = tools.WithAgentDefPolicy(loopCtx, adPolicy)

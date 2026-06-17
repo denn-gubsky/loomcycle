@@ -159,11 +159,14 @@ type Config struct {
 	// entry's `path` MUST already exist and be a directory (validated at
 	// config-load; the runtime never mkdir's a static volume); at most
 	// one entry may be `default: true`. When the operator declares no
-	// `volumes:` block, the legacy LOOMCYCLE_READ_ROOT / WRITE_ROOT /
-	// BASH_CWD synthesize a volume named `default` (plus `default-read`
-	// when ReadRoot is a broader read-only parent of WriteRoot), so
-	// existing single-jail deployments are byte-identical. Only the
-	// static Phase 1 surface lives here; the dynamic VolumeDef substrate
+	// `volumes:` block, agents run UNCONFINED by volumes and the file tools
+	// use their legacy LOOMCYCLE_READ_ROOT / WRITE_ROOT / BASH_CWD roots
+	// (byte-identical to a pre-feature deployment) — the three legacy roots
+	// are deliberately NOT collapsed into one synthesized `default` volume (a
+	// single root can't reproduce three distinct ones: Read would read
+	// WriteRoot, Bash would lose BashCwd). A `default` volume exists only if
+	// the operator declares it; unbound agents bind to it when present. Only
+	// the static Phase 1 surface lives here; the dynamic VolumeDef substrate
 	// (Phase 2) is a separate, later feature.
 	Volumes map[string]Volume `yaml:"volumes"`
 
@@ -3085,14 +3088,6 @@ func Load(path string) (*Config, error) {
 		}
 	}
 
-	// RFC AH Phase 1: synthesize the `default` volume from the legacy
-	// LOOMCYCLE_READ_ROOT / WRITE_ROOT / BASH_CWD env vars when the
-	// operator hasn't declared one explicitly. MUST run after the Env
-	// block above (it reads ReadRoot/WriteRoot/BashCwd) and before
-	// validate() (agent `volumes` bindings validate against the
-	// synthesized map). No-op when a `default` volume is already declared.
-	synthesizeDefaultVolume(cfg)
-
 	// resolveSkills MUST come after env loading (it needs SkillsRoot)
 	// AND after resolveSystemPromptFiles (skill bodies append onto
 	// SystemPrompt — file-loaded prompts have to land first).
@@ -3140,55 +3135,6 @@ func addContextToolDefaults(cfg *Config) {
 		}
 		def.AllowedTools = append(def.AllowedTools, "Context")
 		cfg.Agents[name] = def
-	}
-}
-
-// synthesizeDefaultVolume populates the `default` volume (RFC AH Phase 1)
-// from the legacy LOOMCYCLE_READ_ROOT / WRITE_ROOT env vars when the
-// operator hasn't declared one. This is what makes the rename invisible:
-// a deployment with no `volumes:` block and the legacy jail env vars set
-// gets exactly one `default` volume, and an unbound agent (no `volumes:`
-// binding) runs against it — byte-identical to the pre-feature jail.
-//
-// ReadRoot≠WriteRoot migration (RFC §7, option a, chosen for this PR):
-// the single-root `default` = WriteRoot (rw) if set, else ReadRoot (rw).
-// When ReadRoot is ALSO set and points at a different (typically broader,
-// read-only) tree than the chosen default root, a companion READ-ONLY
-// `default-read` volume is synthesized so the legacy "read from a broader
-// parent, write to a sub-directory" posture still works. The common case
-// (ReadRoot == WriteRoot, or only one set) yields a single `default`.
-//
-// No-op when a `default` volume is already declared (the operator's
-// explicit declaration wins) OR when neither legacy root is set (the
-// legacy "tool refuses, no root configured" behaviour is preserved —
-// unbound agents get no policy and fall back to the empty Root).
-//
-// Note: LOOMCYCLE_BASH_CWD is deliberately NOT folded in here — Bash's
-// legacy cwd is preserved via the no-policy fallback (the Bash tool keeps
-// its construction-time Cwd when no VolumePolicy is attached). A bound
-// agent's Bash uses the default rw volume's root as cwd instead.
-func synthesizeDefaultVolume(cfg *Config) {
-	if _, ok := cfg.Volumes["default"]; ok {
-		return // operator declared it explicitly — don't override.
-	}
-	read, write := cfg.Env.ReadRoot, cfg.Env.WriteRoot
-	if read == "" && write == "" {
-		return // no legacy jail configured; nothing to synthesize.
-	}
-	defaultRoot := write
-	if defaultRoot == "" {
-		defaultRoot = read
-	}
-	if cfg.Volumes == nil {
-		cfg.Volumes = map[string]Volume{}
-	}
-	cfg.Volumes["default"] = Volume{Path: defaultRoot, Mode: "rw", Default: true}
-	// Companion read-only volume only when ReadRoot is a DIFFERENT tree
-	// than the default (write) root — the ReadRoot≠WriteRoot corner.
-	if read != "" && read != defaultRoot {
-		if _, ok := cfg.Volumes["default-read"]; !ok {
-			cfg.Volumes["default-read"] = Volume{Path: read, Mode: "ro"}
-		}
 	}
 }
 

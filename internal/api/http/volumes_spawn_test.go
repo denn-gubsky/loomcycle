@@ -3,6 +3,7 @@ package http
 import (
 	"testing"
 
+	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
 
@@ -76,16 +77,56 @@ func TestSubAgent_VolumeNarrowOnly_MoreRestrictiveModeWins(t *testing.T) {
 	}
 }
 
-// An unbound parent (legacy jail, no policy) yields a child with no named
-// volumes — a bound child cannot widen past the parent's absent policy; it
-// inherits the same unbound legacy-jail fallback.
-func TestSubAgent_VolumeNarrowOnly_UnboundParentYieldsUnboundChild(t *testing.T) {
-	parent := tools.VolumePolicyValue{} // unbound
-	child := tools.VolumePolicyValue{Bindings: []tools.VolumeBinding{
+// childVolumePolicy orchestration (RFC AH §4) — the real spawn path, not just
+// the pure narrowVolumes intersection.
+
+// An INACTIVE parent (legacy / no `default` volume) resolves the child as if
+// top-level — its own declared volumes apply (there is no parent volume scope
+// to narrow against, and the child's volumes come from its own AgentDef).
+func TestChildVolumePolicy_InactiveParentResolvesChildAsTopLevel(t *testing.T) {
+	s := &Server{cfg: &config.Config{Volumes: map[string]config.Volume{
+		"repo-a": {Path: "/work/a"},
+	}}}
+	got := s.childVolumePolicy(tools.VolumePolicyValue{}, config.AgentDef{Volumes: []string{"repo-a"}})
+	if !got.Active {
+		t.Fatal("an inactive parent must resolve the child as top-level (its own declared volumes)")
+	}
+	if _, ok := bindingNames(got)["repo-a"]; !ok {
+		t.Error("child declaring repo-a should get it when the parent is unconfined")
+	}
+}
+
+// An UNBOUND child of a CONFINED parent inherits the parent's policy verbatim
+// (it works within the parent's scope, like host-allowlist inheritance).
+func TestChildVolumePolicy_ActiveParentUnboundChildInheritsParent(t *testing.T) {
+	s := &Server{cfg: &config.Config{Volumes: map[string]config.Volume{"repo-a": {Path: "/work/a"}}}}
+	parent := tools.VolumePolicyValue{Active: true, Bindings: []tools.VolumeBinding{
 		{Name: "repo-a", Root: "/work/a", Default: true},
 	}}
-	got := narrowVolumes(parent, child)
+	got := s.childVolumePolicy(parent, config.AgentDef{}) // unbound child
+	if !got.Active || len(got.Bindings) != 1 || got.Bindings[0].Name != "repo-a" {
+		t.Errorf("an unbound child of a confined parent must inherit the parent verbatim; got %+v", got)
+	}
+}
+
+// Spawn-widening fix: a bound child that shares NONE of the parent's volumes is
+// confined to an Active-EMPTY policy (every file-tool call denied). It must NOT
+// silently retain the parent's policy via ctx inheritance, nor fall back to the
+// legacy jail. Before the fix the empty result was a no-op and the child kept
+// the parent's full bindings.
+func TestChildVolumePolicy_BoundChildSharingNoneDeniedEmpty(t *testing.T) {
+	s := &Server{cfg: &config.Config{Volumes: map[string]config.Volume{
+		"repo-a": {Path: "/work/a"},
+		"repo-b": {Path: "/work/b"},
+	}}}
+	parent := tools.VolumePolicyValue{Active: true, Bindings: []tools.VolumeBinding{
+		{Name: "repo-a", Root: "/work/a", Default: true},
+	}}
+	got := s.childVolumePolicy(parent, config.AgentDef{Volumes: []string{"repo-b"}})
+	if !got.Active {
+		t.Fatal("the narrowed child policy must stay ACTIVE (tools deny, not fall back to the legacy jail)")
+	}
 	if len(got.Bindings) != 0 {
-		t.Errorf("unbound parent must yield an unbound child; got %d bindings", len(got.Bindings))
+		t.Errorf("child sharing none of the parent's volumes must be confined to nothing; got %+v", got.Bindings)
 	}
 }
