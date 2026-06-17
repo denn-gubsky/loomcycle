@@ -29,7 +29,8 @@ func (r *Read) InputSchema() json.RawMessage {
 	return json.RawMessage(`{
 		"type": "object",
 		"properties": {
-			"path": {"type": "string", "description": "Path RELATIVE to the sandbox root (e.g. \"src/main.go\"). ~ is not expanded; an absolute path is accepted only if it resolves inside the root. Call Context op=self to see the root."}
+			"path":   {"type": "string", "description": "Path RELATIVE to the volume root (e.g. \"src/main.go\"). ~ is not expanded; an absolute path is accepted only if it resolves inside the root. Call Context op=self to see your volumes."},
+			"volume": {"type": "string", "description": "Optional volume name to read from. Omit to use your default volume. Call Context op=self for the volumes you may access."}
 		},
 		"required": ["path"]
 	}`)
@@ -37,7 +38,8 @@ func (r *Read) InputSchema() json.RawMessage {
 
 func (r *Read) Execute(ctx context.Context, input json.RawMessage) (tools.Result, error) {
 	var args struct {
-		Path string `json:"path"`
+		Path   string `json:"path"`
+		Volume string `json:"volume"`
 	}
 	if err := json.Unmarshal(input, &args); err != nil {
 		return tools.Result{Text: "invalid input: " + err.Error(), IsError: true}, nil
@@ -45,11 +47,15 @@ func (r *Read) Execute(ctx context.Context, input json.RawMessage) (tools.Result
 	if args.Path == "" {
 		return tools.Result{Text: "path is required", IsError: true}, nil
 	}
-	if r.Root == "" {
+	root, err := effectiveRoot(ctx, r.Root, args.Volume, false)
+	if err != nil {
+		return tools.Result{Text: err.Error(), IsError: true}, nil
+	}
+	if root == "" {
 		return tools.Result{Text: "Read tool is not configured with a sandbox root; refusing to read", IsError: true}, nil
 	}
 
-	resolved, err := resolveInsideRoot(r.Root, args.Path)
+	resolved, err := resolveInsideRoot(root, args.Path)
 	if err != nil {
 		return tools.Result{Text: err.Error(), IsError: true}, nil
 	}

@@ -52,7 +52,8 @@ func (g *Glob) InputSchema() json.RawMessage {
 		"type": "object",
 		"properties": {
 			"pattern": {"type": "string", "description": "Glob pattern. Supports *, ?, [..], and ** (recursive)."},
-			"path":    {"type": "string", "description": "Optional subpath under the sandbox root to scope the search."}
+			"path":    {"type": "string", "description": "Optional subpath under the volume root to scope the search."},
+			"volume":  {"type": "string", "description": "Optional volume name to search. Omit to use your default volume. Call Context op=self for the volumes you may access."}
 		},
 		"required": ["pattern"]
 	}`)
@@ -61,6 +62,7 @@ func (g *Glob) InputSchema() json.RawMessage {
 type globInput struct {
 	Pattern string `json:"pattern"`
 	Path    string `json:"path,omitempty"`
+	Volume  string `json:"volume,omitempty"`
 }
 
 func (g *Glob) Execute(ctx context.Context, input json.RawMessage) (tools.Result, error) {
@@ -71,7 +73,11 @@ func (g *Glob) Execute(ctx context.Context, input json.RawMessage) (tools.Result
 	if args.Pattern == "" {
 		return errResult("pattern is required"), nil
 	}
-	if g.Root == "" {
+	root, rootErr := effectiveRoot(ctx, g.Root, args.Volume, false)
+	if rootErr != nil {
+		return errResult(rootErr.Error()), nil
+	}
+	if root == "" {
 		return errResult("Glob tool is not configured with a sandbox root; set LOOMCYCLE_READ_ROOT"), nil
 	}
 	// Validate every pattern segment up-front. filepath.Match returns
@@ -89,17 +95,17 @@ func (g *Glob) Execute(ctx context.Context, input json.RawMessage) (tools.Result
 		}
 	}
 
-	searchRoot := g.Root
+	searchRoot := root
 	if args.Path != "" {
-		// Relative `path` is interpreted under the sandbox root; absolute
+		// Relative `path` is interpreted under the volume root; absolute
 		// paths flow through unchanged and get the same escape check.
 		// This matches Claude Code's "subpath under root" semantics
 		// without losing the absolute-path refusal for /etc & friends.
 		target := args.Path
 		if !filepath.IsAbs(target) {
-			target = filepath.Join(g.Root, target)
+			target = filepath.Join(root, target)
 		}
-		resolved, rerr := resolveInsideRoot(g.Root, target)
+		resolved, rerr := resolveInsideRoot(root, target)
 		if rerr != nil {
 			return errResult(rerr.Error()), nil
 		}

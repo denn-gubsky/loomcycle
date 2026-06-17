@@ -36,10 +36,11 @@ func (e *Edit) InputSchema() json.RawMessage {
 	return json.RawMessage(`{
 		"type": "object",
 		"properties": {
-			"path":        {"type": "string", "description": "Path RELATIVE to the sandbox write root (e.g. \"src/main.go\"). ~ is not expanded; an absolute path is accepted only if it resolves inside the root. Call Context op=self to see the root."},
+			"path":        {"type": "string", "description": "Path RELATIVE to the volume root (e.g. \"src/main.go\"). ~ is not expanded; an absolute path is accepted only if it resolves inside the root. Call Context op=self to see your volumes."},
 			"old_string":  {"type": "string", "description": "Exact text to replace. Must be unique unless replace_all is true."},
 			"new_string":  {"type": "string", "description": "Replacement text. Must differ from old_string."},
-			"replace_all": {"type": "boolean", "description": "Replace every occurrence instead of requiring exactly one match."}
+			"replace_all": {"type": "boolean", "description": "Replace every occurrence instead of requiring exactly one match."},
+			"volume":      {"type": "string", "description": "Optional read-write volume name to edit in. Omit to use your default volume. Read-only volumes are refused. Call Context op=self for the volumes you may access."}
 		},
 		"required": ["path", "old_string", "new_string"]
 	}`)
@@ -51,6 +52,7 @@ func (e *Edit) Execute(ctx context.Context, input json.RawMessage) (tools.Result
 		OldString  string `json:"old_string"`
 		NewString  string `json:"new_string"`
 		ReplaceAll bool   `json:"replace_all"`
+		Volume     string `json:"volume"`
 	}
 	if err := json.Unmarshal(input, &args); err != nil {
 		return tools.Result{Text: "invalid input: " + err.Error(), IsError: true}, nil
@@ -61,7 +63,11 @@ func (e *Edit) Execute(ctx context.Context, input json.RawMessage) (tools.Result
 	if args.OldString == args.NewString {
 		return tools.Result{Text: "old_string and new_string must differ", IsError: true}, nil
 	}
-	if e.Root == "" {
+	root, err := effectiveRoot(ctx, e.Root, args.Volume, true)
+	if err != nil {
+		return tools.Result{Text: err.Error(), IsError: true}, nil
+	}
+	if root == "" {
 		return tools.Result{Text: "Edit tool is not configured with a sandbox root; refusing to edit", IsError: true}, nil
 	}
 
@@ -72,7 +78,7 @@ func (e *Edit) Execute(ctx context.Context, input json.RawMessage) (tools.Result
 
 	// Edit requires the file to exist, so we use resolveInsideRoot
 	// (Write would resolve the parent because the file may be new).
-	resolved, err := resolveInsideRoot(e.Root, args.Path)
+	resolved, err := resolveInsideRoot(root, args.Path)
 	if err != nil {
 		return tools.Result{Text: err.Error(), IsError: true}, nil
 	}

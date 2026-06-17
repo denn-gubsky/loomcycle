@@ -51,7 +51,8 @@ func (g *Grep) InputSchema() json.RawMessage {
 		"type": "object",
 		"properties": {
 			"pattern":           {"type": "string", "description": "RE2 regex to match against each file's contents."},
-			"path":              {"type": "string", "description": "Optional subpath under the sandbox root. Defaults to the root."},
+			"path":              {"type": "string", "description": "Optional subpath under the volume root. Defaults to the root."},
+			"volume":            {"type": "string", "description": "Optional volume name to search. Omit to use your default volume. Call Context op=self for the volumes you may access."},
 			"glob":              {"type": "string", "description": "Optional single-segment filename pattern (e.g. *.go). Filenames not matching are skipped."},
 			"output_mode":       {"type": "string", "enum": ["files_with_matches", "content", "count"], "description": "files_with_matches (default) returns paths; content returns file:line:text with optional -A/-B/-C context; count returns file:N."},
 			"case_insensitive": {"type": "boolean", "description": "If true, applies the (?i) RE2 flag."},
@@ -68,6 +69,7 @@ func (g *Grep) InputSchema() json.RawMessage {
 type grepInput struct {
 	Pattern         string `json:"pattern"`
 	Path            string `json:"path,omitempty"`
+	Volume          string `json:"volume,omitempty"`
 	Glob            string `json:"glob,omitempty"`
 	OutputMode      string `json:"output_mode,omitempty"`
 	CaseInsensitive bool   `json:"case_insensitive,omitempty"`
@@ -86,7 +88,11 @@ func (g *Grep) Execute(ctx context.Context, input json.RawMessage) (tools.Result
 	if args.Pattern == "" {
 		return errResult("pattern is required"), nil
 	}
-	if g.Root == "" {
+	root, rootErr := effectiveRoot(ctx, g.Root, args.Volume, false)
+	if rootErr != nil {
+		return errResult(rootErr.Error()), nil
+	}
+	if root == "" {
 		return errResult("Grep tool is not configured with a sandbox root; set LOOMCYCLE_READ_ROOT"), nil
 	}
 
@@ -121,13 +127,13 @@ func (g *Grep) Execute(ctx context.Context, input json.RawMessage) (tools.Result
 	// itself; non-empty = subpath of it (resolved + symlink-checked).
 	// Relative paths are joined with the root; absolute paths flow
 	// through and get the same escape check.
-	searchRoot := g.Root
+	searchRoot := root
 	if args.Path != "" {
 		target := args.Path
 		if !filepath.IsAbs(target) {
-			target = filepath.Join(g.Root, target)
+			target = filepath.Join(root, target)
 		}
-		resolved, rerr := resolveInsideRoot(g.Root, target)
+		resolved, rerr := resolveInsideRoot(root, target)
 		if rerr != nil {
 			return errResult(rerr.Error()), nil
 		}
