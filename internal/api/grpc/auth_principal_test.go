@@ -64,6 +64,37 @@ func TestGrpcRequiredScopeForRPC_DefaultsToAdmin(t *testing.T) {
 	}
 }
 
+// TestGrpcRequiredScopeForRPC_RFCAFTenantPlane locks the RFC AF split on gRPC:
+// the 8 def families + hook RPCs accept substrate:tenant, while OperatorTokenDef
+// (token minting) stays admin-only via the deny-by-default.
+func TestGrpcRequiredScopeForRPC_RFCAFTenantPlane(t *testing.T) {
+	tenantRPCs := []string{
+		"AgentDef", "SkillDef", "MCPServerDef", "ScheduleDef",
+		"A2AServerCardDef", "A2AAgentDef", "WebhookDef", "MemoryBackendDef",
+		"RegisterHook", "ListHooks", "DeleteHook",
+	}
+	for _, name := range tenantRPCs {
+		if got := requiredScopeForRPC(grpcMethodPrefix + name); got != auth.ScopeTenant {
+			t.Errorf("%s scope = %q, want substrate:tenant", name, got)
+		}
+	}
+	// Minting stays operator-only.
+	if got := requiredScopeForRPC(grpcMethodPrefix + "OperatorTokenDef"); got != auth.ScopeAdmin {
+		t.Errorf("OperatorTokenDef scope = %q, want substrate:admin (minting stays operator-only)", got)
+	}
+
+	// End-to-end: a substrate:tenant token passes AgentDef but is DENIED
+	// OperatorTokenDef.
+	tenant := auth.WithPrincipal(context.Background(),
+		auth.Principal{TenantID: "jobember", Subject: "svc", Scopes: []string{auth.ScopeTenant}})
+	if err := enforceScope(tenant, grpcMethodPrefix+"AgentDef"); err != nil {
+		t.Errorf("substrate:tenant on AgentDef: %v, want nil", err)
+	}
+	if err := enforceScope(tenant, grpcMethodPrefix+"OperatorTokenDef"); status.Code(err) != codes.PermissionDenied {
+		t.Errorf("substrate:tenant on OperatorTokenDef: code = %v, want PermissionDenied", status.Code(err))
+	}
+}
+
 func TestGrpcAuthenticate_OpenMode(t *testing.T) {
 	// authConfigured returns false → pass through even without a bearer.
 	s := &Server{authConfigured: func(context.Context) bool { return false }}

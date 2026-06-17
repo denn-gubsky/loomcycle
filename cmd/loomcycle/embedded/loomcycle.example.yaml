@@ -370,16 +370,23 @@ interruption:
 # CANNOT be set via the runtime API (so the registering app can't
 # escalate its own trust boundary).
 #
-# permit_host_widen.owners: the exact-string list of registered-hook
-# Owner UIDs whose Pre-hook `allow_hosts` response is HONOURED at
-# dispatch time. Without an entry here, any hook's allow_hosts is
-# silently dropped (with a WARN log + Dispatcher.HostWidenDenied
-# counter increment). The model and the runtime caller cannot enable
-# widening — only this yaml can. See docs/TOOLS.md "Per-call host
-# widening" for the wire shape, audit event, and known limitations.
+# permit_host_widen.owners: the exact-match list of `[tenant:]owner`
+# entries — (tenant, registered-hook Owner UID) pairs — whose Pre-hook
+# `allow_hosts` response is HONOURED at dispatch time. A bare `owner`
+# (no colon) binds to the shared tenant "" (single-tenant deployments +
+# operator/global hooks); `tenant:owner` confines the grant to that one
+# tenant. Keying on (tenant, owner) — not owner alone — stops a SECOND
+# tenant from registering a hook with a permitted owner string and
+# escaping the operator host floor for its own runs (a hook's `owner` is
+# caller-supplied; only the tenant is authoritative). Without a matching
+# entry, a hook's allow_hosts is silently dropped (WARN log +
+# Dispatcher.HostWidenDenied counter). The model and the runtime caller
+# cannot enable widening — only this yaml can. See docs/TOOLS.md
+# "Per-call host widening" for the wire shape, audit event, limitations.
 #
-# Env equivalent (APPENDS to whatever yaml has, not replaces):
-#   LOOMCYCLE_HOOKS_PERMIT_HOST_WIDEN_OWNERS=jobs-search-web,company-research
+# Env equivalent (APPENDS to whatever yaml has, not replaces; same
+# `[tenant:]owner` syntax):
+#   LOOMCYCLE_HOOKS_PERMIT_HOST_WIDEN_OWNERS=jobember:jobs-search-web
 #
 # SECURITY: the named app is trusted to make ad-hoc per-call URL
 # decisions. The hook receives the URL the model wants to fetch +
@@ -390,7 +397,8 @@ interruption:
 # any trust delegation.
 hooks:
   permit_host_widen:
-    owners: []                    # e.g. ["jobs-search-web"] — empty default-denies for all owners
+    # bare owner = shared tenant ""; "tenant:owner" = that tenant only.
+    owners: []                    # e.g. ["jobember:jobs-search-web"] — empty default-denies for all
 
 # ─── Default routing for agents that don't specify their own ──────────
 # Used by agents that declare neither `tier:` nor an explicit

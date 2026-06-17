@@ -267,6 +267,54 @@ func TestDispatcher_PreAllowHosts_UnpermittedOwnerDropped(t *testing.T) {
 	}
 }
 
+// TestDispatcher_PreAllowHosts_TenantScopedPermit is the RFC AF follow-up at
+// the dispatch layer: a `tenant:owner` permit grants host-widening to a hook
+// in THAT tenant, but the SAME owner in a DIFFERENT tenant is refused — so a
+// second tenant claiming a permitted owner string can't widen hosts for its
+// own runs. Fail-before: with the old owner-only keying the cross-tenant hook
+// would have been permitted (owner matches), leaking the operator host floor.
+func TestDispatcher_PreAllowHosts_TenantScopedPermit(t *testing.T) {
+	// Operator permits owner "jobs-search-web" ONLY under tenant "jobember".
+	// One hook per registry (a same-(owner,name) pair across tenants would
+	// collide on the registry's byKey dedup — a separate isolation gap).
+	mkDispatcher := func(hookTenant string) *Dispatcher {
+		hook := newFakeHook(t, `{"allow_hosts":["acme.com"]}`)
+		r := NewRegistryWithPermissions([]string{"jobember:jobs-search-web"})
+		mustRegister(t, r, &Hook{
+			Tenant: hookTenant, Owner: "jobs-search-web", Name: "url-gate", Phase: PhasePre,
+			CallbackURL: hook.srv.URL, Tools: []string{"WebFetch"},
+		})
+		return NewDispatcher(r, nil)
+	}
+
+	// The jobember run: its hook IS permitted → widens.
+	d := mkDispatcher("jobember")
+	out := d.RunPre(context.Background(),
+		Identity{Agent: "a", Tenant: "jobember"},
+		ToolCall{ID: "t1", Name: "WebFetch", Input: json.RawMessage(`{}`)},
+	)
+	if len(out.AllowHosts) != 1 || out.AllowHosts[0] != "acme.com" {
+		t.Errorf("jobember run AllowHosts = %v, want [acme.com] (permitted (tenant,owner))", out.AllowHosts)
+	}
+	if d.Stats().HostWidenPermitted != 1 || d.Stats().HostWidenDenied != 0 {
+		t.Errorf("jobember stats = permitted %d/denied %d, want 1/0", d.Stats().HostWidenPermitted, d.Stats().HostWidenDenied)
+	}
+
+	// The "other" tenant's run: same owner string, but the (other, jobs-search-web)
+	// pair is NOT permitted → grant dropped (the cross-tenant escape is closed).
+	d2 := mkDispatcher("other")
+	out2 := d2.RunPre(context.Background(),
+		Identity{Agent: "a", Tenant: "other"},
+		ToolCall{ID: "t2", Name: "WebFetch", Input: json.RawMessage(`{}`)},
+	)
+	if len(out2.AllowHosts) != 0 {
+		t.Errorf("other-tenant run AllowHosts = %v, want empty (owner permitted only under jobember)", out2.AllowHosts)
+	}
+	if d2.Stats().HostWidenDenied != 1 || d2.Stats().HostWidenPermitted != 0 {
+		t.Errorf("other-tenant stats = permitted %d/denied %d, want 0/1", d2.Stats().HostWidenPermitted, d2.Stats().HostWidenDenied)
+	}
+}
+
 // TestDispatcher_PreAllowHosts_FailClosedTimeoutDiscardsPriorGrants
 // pins the symmetric case to DenyDiscardsPriorGrants: a permitted
 // hook contributes allow_hosts, then a FailClosed hook TIMES OUT and

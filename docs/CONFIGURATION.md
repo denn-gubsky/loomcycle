@@ -829,7 +829,16 @@ Config knobs (full reference: `loomcycle context help operator-tokens` or the `C
 | `LOOMCYCLE_AUDIT_LOG_PATH` | JSONL audit of every create/rotate/retire (never a token or hash). |
 | `LOOMCYCLE_AUTH_VERBOSE` | `1` logs a server-side reason on a rejected bearer (the wire 401 stays opaque). |
 
-Routes enforce a scope from a closed catalog (`substrate:admin` is superuser); an under-scoped token gets `403` + `WWW-Authenticate: Bearer scope="…"`. The legacy `LOOMCYCLE_AUTH_TOKEN` is disabled only once an admin-scoped token exists (the no-lockout gate).
+Routes enforce a scope from a closed catalog; an under-scoped token gets `403` + `WWW-Authenticate: Bearer scope="…"`. The legacy `LOOMCYCLE_AUTH_TOKEN` is disabled only once an admin-scoped token exists (the no-lockout gate). The catalog:
+
+| Scope | Grants |
+|---|---|
+| `substrate:admin` | **Superuser** — satisfies every scope, incl. token minting, runtime admin (pause/resume/snapshot), the loomcycle-as-MCP-server transport (`/v1/_mcp`), and **cross-tenant** focus. The create-time default. |
+| `substrate:tenant` | **Tenant operator (RFC AF)** — FULL power WITHIN the token's own tenant: runs, channels, authoring all 8 substrate Def families (incl. `_mcpserverdef`, the dynamic-MCP-ingestion surface), and registering tool-use hooks — but NOT the operator plane (no minting, no runtime admin, no MCP-server transport, no cross-tenant access). Lets a self-provisioning tenant author its own surface without admin. |
+| `runs:create` / `runs:read` | Create/continue runs · read runs, agents, sessions. |
+| `channel:publish` / `channel:read` | Publish/ack · subscribe/peek on the per-user + system channel surface. |
+
+`substrate:tenant` satisfies the within-tenant scopes (`runs:*`, `channel:*`, and the def/hook gate) but never `substrate:admin` — so a tenant operator passes the def + hook routes yet is refused minting/runtime-admin. Mint one with `--scopes substrate:tenant`. Confinement is automatic: a non-admin principal's def writes are stamped with its authoritative tenant, cross-tenant reads return an opaque `404`, and a tenant-registered hook fires only on that tenant's runs.
 
 **Trigger-spawned runs choose their tenant in the def (RFC N).** An interactive run inherits its tenant from the caller's token, but a scheduler- or webhook-spawned run has no inbound bearer — so the run-execution tenant is declared in the def via `tenant_id:` on a `scheduled_runs:` entry or a `webhooks:` entry. The spawned run then resolves that tenant's agents/skills/MCP and isolates its memory/runs. It is operator-authored def-content (`""` = shared/default). **Security: for webhooks the tenant comes from the static def ONLY — never from the inbound `payload_mapping`** (the attacker-influenceable body must not be able to select another tenant). See `Context.help scheduled-runs` / `Context.help input-webhooks`.
 

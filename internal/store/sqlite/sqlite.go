@@ -1810,7 +1810,11 @@ func (s *Store) SnapshotDelete(ctx context.Context, id string) (bool, error) {
 // test that bypasses the boot guard, the error message points at the
 // design intent.
 
-var errHooksSQLiteUnsupported = errors.New("hooks: SQLite backend is single-replica only; hook DB methods require Postgres (set LOOMCYCLE_REPLICA_ID to enter cluster mode)")
+// errHooksSQLiteUnsupported wraps the exported store.ErrHooksUnsupported so
+// callers can errors.Is against the backend-agnostic sentinel (e.g. the store
+// contract suite skips the cluster-hook path), while keeping the detailed
+// SQLite-specific guidance in the message.
+var errHooksSQLiteUnsupported = fmt.Errorf("hooks: SQLite backend is single-replica only; hook DB methods require Postgres (set LOOMCYCLE_REPLICA_ID to enter cluster mode): %w", store.ErrHooksUnsupported)
 
 func (s *Store) CreateHook(ctx context.Context, h store.HookRow) error {
 	return errHooksSQLiteUnsupported

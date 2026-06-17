@@ -314,6 +314,12 @@ func Run(t *testing.T, factory Factory) {
 		// fallback-routed runs.
 		{"FinishRunPersistsProvider", testFinishRunPersistsProvider},
 		{"FinishRunPersistsProviderEmpty", testFinishRunPersistsProviderEmpty},
+		// RFC AF (v1.0.1): the cluster hook registry persists the
+		// authoritative tenant_id. Exercises the new column's INSERT/SELECT
+		// ordinals on a REAL backend (the go-postgres CI job) — SQLite skips
+		// (hook DB methods are Postgres-only). Guards the BUG-2 class:
+		// a shifted placeholder/scan that the SQLite path can't catch.
+		{"HookTenantRoundTrip", testHookTenantRoundTrip},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -543,6 +549,80 @@ func testFinishRunPersistsProviderEmpty(t *testing.T, s store.Store) {
 	}
 	if got.Provider != "" {
 		t.Errorf("Provider = %q, want empty string", got.Provider)
+	}
+}
+
+// testHookTenantRoundTrip exercises the cluster hook-registry SQL — the RFC AF
+// (v1.0.1) tenant_id column's INSERT/SELECT/Scan ordinals — on a REAL backend.
+// SQLite's hook DB methods are unsupported (single-replica keeps hooks
+// in-memory), so it skips; the go-postgres CI job runs the real round-trip.
+// Guards the BUG-2 class: a shifted placeholder/scan that the SQLite default
+// CI path can't catch would silently corrupt the authoritative tenant.
+func testHookTenantRoundTrip(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	rowA := store.HookRow{
+		ID: "hook_a", Tenant: "tenant-a", Owner: "jobs-search-web", Name: "url-gate",
+		Phase: "pre", Agents: []string{"qa", "company-*"}, Tools: []string{"WebFetch"},
+		CallbackURL: "https://a/cb", FailMode: "closed", TimeoutMs: 3000,
+		CreatedAt: time.Now().UTC().Truncate(time.Millisecond), CreatedByReplica: "r1",
+	}
+	if err := s.CreateHook(ctx, rowA); err != nil {
+		if errors.Is(err, store.ErrHooksUnsupported) {
+			t.Skipf("backend has no DB-backed hook registry: %v", err)
+		}
+		t.Fatalf("CreateHook: %v", err)
+	}
+	// A second hook with the SAME owner+name under a DIFFERENT tenant must
+	// coexist at the row level (the table keys on id; both tenants persist
+	// distinctly — the registry layer enforces isolation on top).
+	rowB := rowA
+	rowB.ID, rowB.Tenant, rowB.CallbackURL = "hook_b", "tenant-b", "https://b/cb"
+	if err := s.CreateHook(ctx, rowB); err != nil {
+		t.Fatalf("CreateHook B: %v", err)
+	}
+
+	// GetHookByID round-trips every field, incl. the new tenant_id — a column
+	// ordinal shift in the SELECT/Scan would surface here as a wrong field.
+	got, err := s.GetHookByID(ctx, "hook_a")
+	if err != nil {
+		t.Fatalf("GetHookByID: %v", err)
+	}
+	if got.Tenant != "tenant-a" || got.Owner != "jobs-search-web" || got.Name != "url-gate" ||
+		got.Phase != "pre" || got.CallbackURL != "https://a/cb" || got.FailMode != "closed" ||
+		got.TimeoutMs != 3000 || got.CreatedByReplica != "r1" {
+		t.Errorf("GetHookByID round-trip mismatch (column ordinal shift?): %+v", got)
+	}
+	if len(got.Agents) != 2 || got.Agents[0] != "qa" || got.Agents[1] != "company-*" ||
+		len(got.Tools) != 1 || got.Tools[0] != "WebFetch" {
+		t.Errorf("GetHookByID jsonb agents/tools mismatch: agents=%v tools=%v", got.Agents, got.Tools)
+	}
+
+	// ListHooks returns both rows, each with its own tenant.
+	all, err := s.ListHooks(ctx)
+	if err != nil {
+		t.Fatalf("ListHooks: %v", err)
+	}
+	byID := map[string]store.HookRow{}
+	for _, r := range all {
+		byID[r.ID] = r
+	}
+	if byID["hook_a"].Tenant != "tenant-a" {
+		t.Errorf("ListHooks hook_a tenant = %q, want tenant-a", byID["hook_a"].Tenant)
+	}
+	if byID["hook_b"].Tenant != "tenant-b" {
+		t.Errorf("ListHooks hook_b tenant = %q, want tenant-b", byID["hook_b"].Tenant)
+	}
+
+	// Delete hook_a; hook_b (distinct tenant, same owner+name) survives.
+	if err := s.DeleteHook(ctx, "hook_a"); err != nil {
+		t.Fatalf("DeleteHook: %v", err)
+	}
+	var nf *store.ErrNotFound
+	if _, err := s.GetHookByID(ctx, "hook_a"); !errors.As(err, &nf) {
+		t.Errorf("GetHookByID after delete: got %v (%T), want *store.ErrNotFound", err, err)
+	}
+	if survivor, err := s.GetHookByID(ctx, "hook_b"); err != nil || survivor.Tenant != "tenant-b" {
+		t.Errorf("hook_b should survive hook_a's delete: row=%+v err=%v", survivor, err)
 	}
 }
 

@@ -485,6 +485,24 @@ var grpcConsumerScopes = map[string]string{
 	"SubscribeChannel":    auth.ScopeChannelRead,
 	"PeekChannel":         auth.ScopeChannelRead,
 	"ListChannels":        auth.ScopeChannelRead,
+	// RFC AF: the tenant-confined substrate plane — the 8 def families + hook
+	// management. ScopeTenant (substrate:admin still satisfies). substrateGRPCCtx
+	// stamps the principal's authoritative tenant on the def-tools, and the hook
+	// connector stamps + tenant-scopes register/list/delete, so a tenant operator
+	// authors ONLY its own surface. OperatorTokenDef is DELIBERATELY absent — it
+	// defaults to ScopeAdmin (token minting stays operator-only), mirroring the
+	// HTTP /v1/_operatortokendef exclusion.
+	"AgentDef":         auth.ScopeTenant,
+	"SkillDef":         auth.ScopeTenant,
+	"MCPServerDef":     auth.ScopeTenant,
+	"ScheduleDef":      auth.ScopeTenant,
+	"A2AServerCardDef": auth.ScopeTenant,
+	"A2AAgentDef":      auth.ScopeTenant,
+	"WebhookDef":       auth.ScopeTenant,
+	"MemoryBackendDef": auth.ScopeTenant,
+	"RegisterHook":     auth.ScopeTenant,
+	"ListHooks":        auth.ScopeTenant,
+	"DeleteHook":       auth.ScopeTenant,
 }
 
 // requiredScopeForRPC returns the scope a caller must hold for fullMethod.

@@ -443,14 +443,36 @@ func requiredScopeFor(method, path string) string {
 	// can focus via ?tenant=). The UI's per-tenant workspace picker needs it.
 	case path == "/v1/_users":
 		return ""
-	// Everything else under /v1/_* is operator-admin: the substrate Def
-	// endpoints, runtime admin (pause/resume/state/snapshots/metrics),
-	// resolver, users, memory admin, channels admin.
+	// RFC AF: the tenant-confined substrate plane — def-authoring across the 8
+	// xxxDef families, INCLUDING /v1/_mcpserverdef (the "dynamic MCP tools
+	// ingestion" surface: a tenant registers an external MCP server and the
+	// runtime mounts its tools for the tenant's agents). ScopeTenant (ScopeAdmin
+	// also satisfies it). The handlers stamp the principal's authoritative tenant
+	// (dispatchSubstrate → RunIdentity) and 404 cross-tenant reads, so a tenant
+	// operator authors ONLY its own surface. DELIBERATELY EXCLUDES
+	// /v1/_operatortokendef (token minting) and /v1/_mcp (the loomcycle-as-MCP-
+	// server transport — operatorCtx grants it global-operator authority with no
+	// per-principal tenant/scope confinement, so it MUST stay ScopeAdmin); the
+	// catch-all below keeps minting, the MCP transport, and runtime-admin at
+	// ScopeAdmin.
+	case isTenantConfinedDefPath(path):
+		return auth.ScopeTenant
+	// Everything else under /v1/_* is OPERATOR-admin: token minting
+	// (_operatortokendef), runtime admin (pause/resume/state/snapshots/metrics),
+	// resolver, audit, cross-tenant user focus.
 	case strings.HasPrefix(path, "/v1/_"):
 		return auth.ScopeAdmin
-	// Operator hook management.
+	// Hook registration / list / delete — RFC AF: tenant-confined. The hook
+	// registry is now tenant-isolated: RegisterHook stamps the principal's
+	// authoritative tenant, Match() fires a tenant-scoped hook ONLY on its own
+	// tenant's runs (operator/global hooks, Tenant="", still fire on all), and
+	// List/Delete are tenant-scoped (opaque-404 cross-tenant). So a tenant
+	// operator registers hooks for its own runs without seeing/touching another
+	// tenant's. The privileged host-WIDEN capability stays gated by the
+	// operator-yaml hooks.permit_host_widen owner allowlist (frozen at boot), so
+	// ScopeTenant alone can't let a hook escape the host-allowlist floor.
 	case strings.HasPrefix(path, "/v1/hooks"):
-		return auth.ScopeAdmin
+		return auth.ScopeTenant
 	// Prometheus scrape — operator surface, same posture as /v1/_metrics/*.
 	case path == "/metrics":
 		return auth.ScopeAdmin
@@ -515,4 +537,34 @@ func requiredScopeFor(method, path string) string {
 		}
 		return ""
 	}
+}
+
+// isTenantConfinedDefPath matches the 8 substrate def-authoring families that
+// RFC AF moves from operator-admin (ScopeAdmin) to the tenant-confined
+// ScopeTenant. Each family has exactly two routes — POST /v1/_<fam>def (all ops
+// dispatch via the body's `op` field) and GET /v1/_<fam>def/names — so exact
+// matching is complete (there are no /{name} sub-paths). It DELIBERATELY
+// EXCLUDES:
+//   - /v1/_operatortokendef — token minting stays operator-only.
+//   - /v1/_mcp — the loomcycle-as-MCP-server HTTP transport. That surface runs
+//     under operatorCtx (mcp/context.go), which grants global-operator authority
+//     (Admin token-minting + "any"-scope cross-tenant def authoring + runtime
+//     admin) with NO per-principal tenant/scope confinement, so it MUST keep
+//     ScopeAdmin. Note /v1/_mcpserverdef (a def family, in the loop below) IS
+//     the tenant-confined "dynamic MCP tools ingestion" surface — it mounts an
+//     external MCP server's tools for the tenant, and is tenant-stamped.
+//   - runtime-admin / resolver / audit — keep ScopeAdmin via the /v1/_* catch-all.
+//
+// The def handlers confine a non-admin principal to its own tenant (write-stamp
+// + opaque-404), so opening these gates to ScopeTenant doesn't widen reach.
+func isTenantConfinedDefPath(path string) bool {
+	for _, fam := range []string{
+		"/v1/_agentdef", "/v1/_skilldef", "/v1/_mcpserverdef", "/v1/_scheduledef",
+		"/v1/_webhookdef", "/v1/_memorybackenddef", "/v1/_a2aagentdef", "/v1/_a2aservercarddef",
+	} {
+		if path == fam || path == fam+"/names" {
+			return true
+		}
+	}
+	return false
 }

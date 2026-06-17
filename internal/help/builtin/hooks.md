@@ -111,14 +111,23 @@ rule). The single exception is a `pre` hook's `allow_hosts`, and it is
 ```yaml
 hooks:
   permit_host_widen:
-    owners: [url-reputation-gate]   # exact owner UIDs, no globs
-# or: LOOMCYCLE_HOOKS_PERMIT_HOST_WIDEN_OWNERS=url-reputation-gate (env wins)
+    # entries are "[tenant:]owner" — exact match on both, no globs.
+    owners: [acme:url-reputation-gate]   # owner "url-reputation-gate" in tenant "acme"
+# or: LOOMCYCLE_HOOKS_PERMIT_HOST_WIDEN_OWNERS=acme:url-reputation-gate (env appends)
 ```
 
-Only for a listed owner does the dispatcher union that hook's
+Each entry names a **(tenant, owner)** pair. A bare `owner` (no colon) binds
+to the shared tenant `""` — the right form for a single-tenant deployment or
+an operator/global hook; `tenant:owner` confines the grant to that tenant. The
+key is `(tenant, owner)` and **not owner alone** because a hook's `owner` is a
+caller-supplied string while only its tenant is authoritative — so without the
+tenant a second tenant could register a hook with a permitted owner name and
+widen hosts for its own runs, escaping the operator floor.
+
+Only for a listed `(tenant, owner)` does the dispatcher union that hook's
 `allow_hosts` into a **ctx-scoped, this-call-only** extra list the
 HTTP/WebFetch tools consult — no server-side cache, **not inherited by
-sub-agents**. An un-permitted owner's `allow_hosts` is dropped with a WARN
+sub-agents**. An un-permitted grant is dropped with a WARN
 log + a `hooks_host_widen_total` metric. Matching is intentionally
 stricter than the operator allowlist: a bare hostname is **exact-match**
 (`acme.com` ≠ `careers.acme.com`); a leading-dot entry (`.acme.com`) is

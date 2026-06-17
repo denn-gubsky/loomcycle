@@ -1678,6 +1678,10 @@ outerLoop:
 			Agent:   opts.AgentName,
 			UserID:  ident.UserID,
 			AgentID: ident.AgentID,
+			// RFC AF: the run's authoritative tenant so the registry fires a
+			// tenant-scoped hook only on its own tenant's runs (global hooks,
+			// Tenant=="", still fire on all).
+			Tenant: ident.TenantID,
 		}
 		toolResults := executePendingTools(iterCtx, opts.Dispatcher, pendingTools, opts.ToolParallelism, opts.Hooks, hookIdent, emit)
 		messages = append(messages, providers.Message{Role: "user", Content: toolResults})

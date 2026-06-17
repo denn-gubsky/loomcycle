@@ -212,11 +212,39 @@ func TestRequiredScopeFor(t *testing.T) {
 		{"POST", "/v1/users/alice/channels/work/publish", auth.ScopeChannelPublish},
 		{"POST", "/v1/users/alice/channels/work/ack", auth.ScopeChannelPublish},
 		{"GET", "/v1/users/alice/channels/work/peek", auth.ScopeChannelRead},
+		// RFC AF: token minting + runtime admin STAY operator-only (substrate:admin).
 		{"POST", "/v1/_operatortokendef", auth.ScopeAdmin},
 		{"GET", "/v1/_resolver", auth.ScopeAdmin},
 		{"POST", "/v1/_pause", auth.ScopeAdmin},
-		{"DELETE", "/v1/hooks/h_1", auth.ScopeAdmin},
 		{"GET", "/metrics", auth.ScopeAdmin},
+		// RFC AF: /v1/_mcp (the loomcycle-as-MCP-server HTTP transport) STAYS
+		// operator-only. It runs under operatorCtx — global-operator authority with
+		// NO per-principal tenant/scope confinement — so a tenant token must NOT
+		// reach it (it could mint tokens / author cross-tenant defs). The
+		// tenant-confined "dynamic MCP tools ingestion" surface is the
+		// /v1/_mcpserverdef def family below, which IS tenant-stamped.
+		{"POST", "/v1/_mcp", auth.ScopeAdmin},
+		{"DELETE", "/v1/_mcp", auth.ScopeAdmin},
+		// RFC AF: def-authoring (8 families, incl. _mcpserverdef) + hooks are
+		// tenant-confined (substrate:tenant; substrate:admin still satisfies). The
+		// handlers confine a non-admin principal to its own tenant.
+		{"POST", "/v1/_agentdef", auth.ScopeTenant},
+		{"GET", "/v1/_agentdef/names", auth.ScopeTenant},
+		{"POST", "/v1/_skilldef", auth.ScopeTenant},
+		{"POST", "/v1/_mcpserverdef", auth.ScopeTenant},
+		{"GET", "/v1/_mcpserverdef/names", auth.ScopeTenant},
+		{"POST", "/v1/_scheduledef", auth.ScopeTenant},
+		{"POST", "/v1/_webhookdef", auth.ScopeTenant},
+		{"POST", "/v1/_memorybackenddef", auth.ScopeTenant},
+		{"POST", "/v1/_a2aagentdef", auth.ScopeTenant},
+		{"POST", "/v1/_a2aservercarddef", auth.ScopeTenant},
+		{"GET", "/v1/_a2aservercarddef/names", auth.ScopeTenant},
+		// RFC AF: hooks are tenant-confined now that the registry is
+		// tenant-isolated (stamp on register, tenant-filtered Match, scoped
+		// List/Delete). substrate:admin still satisfies.
+		{"POST", "/v1/hooks", auth.ScopeTenant},
+		{"GET", "/v1/hooks", auth.ScopeTenant},
+		{"DELETE", "/v1/hooks/h_1", auth.ScopeTenant},
 		// Consumer gateway endpoints are NOT admin.
 		{"POST", "/v1/_llm/chat", ""},
 		{"POST", "/v1/chat/completions", ""},
@@ -261,6 +289,50 @@ func TestAuthMiddleware_403InsufficientScope(t *testing.T) {
 	}
 	if wa := rec.Header().Get("WWW-Authenticate"); wa != `Bearer scope="runs:create"` {
 		t.Errorf("WWW-Authenticate = %q, want the runs:create hint", wa)
+	}
+}
+
+// TestAuthMiddleware_RFCAFTenantToken drives the full RFC AF posture through
+// the real middleware: a substrate:tenant token is ADMITTED on the
+// tenant-confined def + hook plane but REFUSED (403) on the operator plane
+// (token minting, the MCP-server transport, runtime admin).
+func TestAuthMiddleware_RFCAFTenantToken(t *testing.T) {
+	s, st := tokenAuthServer(t, "legacy")
+	seedToken(t, st, "lct_tenant", "jobember", "svc", []string{auth.ScopeTenant}, time.Time{})
+
+	admitted := []struct{ method, path string }{
+		{"POST", "/v1/_agentdef"}, // def authoring — confined
+		{"GET", "/v1/_agentdef/names"},
+		{"POST", "/v1/_mcpserverdef"}, // dynamic MCP ingestion — confined
+		{"POST", "/v1/hooks"},         // tenant-isolated hooks
+	}
+	for _, c := range admitted {
+		var reached bool
+		h := s.authMiddleware(passthroughHandler(&reached))
+		req := httptest.NewRequest(c.method, c.path, nil)
+		req.Header.Set("Authorization", "Bearer lct_tenant")
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		if !reached || rec.Code == http.StatusForbidden {
+			t.Errorf("substrate:tenant on %s %s: code=%d reached=%v, want admitted", c.method, c.path, rec.Code, reached)
+		}
+	}
+
+	refused := []struct{ method, path string }{
+		{"POST", "/v1/_operatortokendef"}, // token minting — operator-only
+		{"POST", "/v1/_mcp"},              // MCP-server transport — global operator
+		{"POST", "/v1/_pause"},            // runtime admin
+	}
+	for _, c := range refused {
+		var reached bool
+		h := s.authMiddleware(passthroughHandler(&reached))
+		req := httptest.NewRequest(c.method, c.path, nil)
+		req.Header.Set("Authorization", "Bearer lct_tenant")
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		if rec.Code != http.StatusForbidden || reached {
+			t.Errorf("substrate:tenant on %s %s: code=%d reached=%v, want 403 + not reached", c.method, c.path, rec.Code, reached)
+		}
 	}
 }
 

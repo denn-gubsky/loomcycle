@@ -14,6 +14,40 @@ func mustRegister(t *testing.T, r *Registry, h *Hook) string {
 	return id
 }
 
+// TestRegistry_Match_TenantConfinement locks RFC AF's hook tenant filter:
+// an operator/global hook (Tenant=="") fires for EVERY tenant's runs, while a
+// tenant-scoped hook fires ONLY for runs in its own tenant — so a tenant
+// operator's hooks can never intercept another tenant's tool calls.
+func TestRegistry_Match_TenantConfinement(t *testing.T) {
+	r := NewRegistry()
+	// Registration order = Pre chain order.
+	mustRegister(t, r, &Hook{Owner: "op", Name: "global", Phase: PhasePre, CallbackURL: "https://x/g", Tools: []string{"T"}})
+	mustRegister(t, r, &Hook{Tenant: "tenant-a", Owner: "a", Name: "a-only", Phase: PhasePre, CallbackURL: "https://x/a", Tools: []string{"T"}})
+	mustRegister(t, r, &Hook{Tenant: "tenant-b", Owner: "b", Name: "b-only", Phase: PhasePre, CallbackURL: "https://x/b", Tools: []string{"T"}})
+
+	cases := []struct {
+		tenant string
+		want   []string
+	}{
+		{"tenant-a", []string{"global", "a-only"}}, // global + own; NOT b-only
+		{"tenant-b", []string{"global", "b-only"}}, // global + own; NOT a-only
+		{"tenant-c", []string{"global"}},           // an unrelated tenant sees only the global hook
+		{"", []string{"global"}},                   // a legacy/untenated run sees only the global hook
+	}
+	for _, tc := range cases {
+		got := hookNames(r.Match(tc.tenant, "agent", "T", PhasePre))
+		if len(got) != len(tc.want) {
+			t.Errorf("Match(tenant=%q): got %v, want %v", tc.tenant, got, tc.want)
+			continue
+		}
+		for i := range tc.want {
+			if got[i] != tc.want[i] {
+				t.Errorf("Match(tenant=%q)[%d] = %q, want %q", tc.tenant, i, got[i], tc.want[i])
+			}
+		}
+	}
+}
+
 func TestRegistry_RegisterAndDelete(t *testing.T) {
 	r := NewRegistry()
 	id := mustRegister(t, r, &Hook{
@@ -67,6 +101,61 @@ func TestRegistry_ReplaceOnOwnerName_NameKey(t *testing.T) {
 	}
 }
 
+// TestRegistry_Register_SameOwnerNameDifferentTenant pins the RFC AF identity
+// fix: the replace-on-conflict key is (tenant, owner, name), NOT (owner, name).
+// Two tenants registering the SAME (owner, name) must COEXIST — neither evicts
+// the other — and each must fire only on its own tenant's runs. Re-registering
+// within one tenant still replaces that tenant's hook in place.
+func TestRegistry_Register_SameOwnerNameDifferentTenant(t *testing.T) {
+	r := NewRegistry()
+	idA := mustRegister(t, r, &Hook{
+		Tenant: "tenant-a", Owner: "jobs-search-web", Name: "url-gate", Phase: PhasePre,
+		CallbackURL: "https://a/x", Tools: []string{"T"},
+	})
+	idB := mustRegister(t, r, &Hook{
+		Tenant: "tenant-b", Owner: "jobs-search-web", Name: "url-gate", Phase: PhasePre,
+		CallbackURL: "https://b/x", Tools: []string{"T"},
+	})
+
+	// Both coexist — the (owner,name) collision no longer evicts. (Fail-before:
+	// with the old (owner,name) key, registering tenant-b evicted tenant-a → 1.)
+	if got := r.List(); len(got) != 2 {
+		t.Fatalf("List len = %d, want 2 (same owner+name across tenants must coexist)", len(got))
+	}
+	if idA == idB {
+		t.Errorf("distinct-tenant registrations returned the same id %q", idA)
+	}
+
+	// Each fires only on its own tenant's runs.
+	if got := hookNames(r.Match("tenant-a", "agent", "T", PhasePre)); len(got) != 1 || got[0] != "url-gate" {
+		t.Errorf("Match(tenant-a) = %v, want [url-gate]", got)
+	}
+	aHooks := r.Match("tenant-a", "agent", "T", PhasePre)
+	if len(aHooks) == 1 && aHooks[0].ID != idA {
+		t.Errorf("Match(tenant-a) returned id %q, want tenant-a's %q", aHooks[0].ID, idA)
+	}
+	bHooks := r.Match("tenant-b", "agent", "T", PhasePre)
+	if len(bHooks) != 1 || bHooks[0].ID != idB {
+		t.Errorf("Match(tenant-b) returned %v, want tenant-b's %q", bHooks, idB)
+	}
+
+	// Re-registering within tenant-a replaces ONLY tenant-a's hook (fresh id),
+	// leaving tenant-b's untouched.
+	idA2 := mustRegister(t, r, &Hook{
+		Tenant: "tenant-a", Owner: "jobs-search-web", Name: "url-gate", Phase: PhasePre,
+		CallbackURL: "https://a/x2", Tools: []string{"T"},
+	})
+	if idA2 == idA {
+		t.Errorf("same-tenant re-register returned the same id %q; expected a fresh id on replace", idA)
+	}
+	if got := r.List(); len(got) != 2 {
+		t.Fatalf("List len = %d after same-tenant re-register, want 2 (replace, not append; tenant-b intact)", len(got))
+	}
+	if got := r.Match("tenant-b", "agent", "T", PhasePre); len(got) != 1 || got[0].ID != idB {
+		t.Errorf("tenant-b hook disturbed by tenant-a re-register: %v, want id %q", got, idB)
+	}
+}
+
 // TestRegistry_ReplacePreservesChainPosition pins that re-registration
 // keeps the slot in `order` so chain ordering doesn't shuffle when an
 // app restarts. Hooks A → B → C, then re-register B; chain must
@@ -79,7 +168,7 @@ func TestRegistry_ReplacePreservesChainPosition(t *testing.T) {
 
 	mustRegister(t, r, &Hook{Owner: "x", Name: "B", Phase: PhasePre, CallbackURL: "https://x/b2", Tools: []string{"T"}})
 
-	got := r.Match("agent", "T", PhasePre)
+	got := r.Match("", "agent", "T", PhasePre)
 	if len(got) != 3 {
 		t.Fatalf("Match returned %d hooks, want 3", len(got))
 	}
@@ -126,7 +215,7 @@ func TestRegistry_MatchAgentTool(t *testing.T) {
 		{"company-researcher", "mcp__other__do", 0, nil},
 	}
 	for _, tc := range cases {
-		got := r.Match(tc.agent, tc.tool, PhasePost)
+		got := r.Match("", tc.agent, tc.tool, PhasePost)
 		if len(got) != tc.wantCnt {
 			t.Errorf("Match(%q,%q): %d hits, want %d (got=%v)", tc.agent, tc.tool, len(got), tc.wantCnt, hookNames(got))
 			continue
@@ -154,7 +243,7 @@ func TestRegistry_MatchPostIsLIFO(t *testing.T) {
 	mustRegister(t, r, &Hook{Owner: "x", Name: "B", Phase: PhasePost, CallbackURL: "https://x/b", Tools: []string{"T"}})
 	mustRegister(t, r, &Hook{Owner: "x", Name: "C", Phase: PhasePost, CallbackURL: "https://x/c", Tools: []string{"T"}})
 
-	got := hookNames(r.Match("agent", "T", PhasePost))
+	got := hookNames(r.Match("", "agent", "T", PhasePost))
 	want := []string{"C", "B", "A"}
 	if len(got) != len(want) {
 		t.Fatalf("Match Post returned %d, want %d", len(got), len(want))
@@ -228,24 +317,60 @@ func TestRegistry_HostWidenPermit_ExactMatch(t *testing.T) {
 		"",                     // empty entry silently dropped
 	})
 
+	// Bare entries bind to the shared tenant "" (single-tenant / operator hooks).
 	cases := []struct {
-		owner string
-		want  bool
+		tenant string
+		owner  string
+		want   bool
 	}{
-		{"jobs-search-web", true},          // exact match
-		{"company-research", true},         // trimmed match
-		{"jobs-search-web-staging", false}, // prefix is NOT a match (no globs)
-		{"jobs-search", false},             // partial prefix not a match
-		{"web", false},                     // suffix not a match
-		{"", false},                        // empty owner never matches
-		{"unknown", false},                 // not in list
-		{"  jobs-search-web  ", false},     // lookup doesn't trim — operator names canonicalise on registration
+		{"", "jobs-search-web", true},          // exact match (shared tenant)
+		{"", "company-research", true},         // trimmed match
+		{"", "jobs-search-web-staging", false}, // prefix is NOT a match (no globs)
+		{"", "jobs-search", false},             // partial prefix not a match
+		{"", "web", false},                     // suffix not a match
+		{"", "", false},                        // empty owner never matches
+		{"", "unknown", false},                 // not in list
+		{"", "  jobs-search-web  ", false},     // lookup doesn't trim — names canonicalise on registration
+		// A bare permit entry is tenant "" ONLY — it does NOT grant another tenant.
+		{"jobember", "jobs-search-web", false},
 	}
 	for _, tc := range cases {
-		t.Run(tc.owner, func(t *testing.T) {
-			got := r.IsHostWidenPermitted(tc.owner)
+		t.Run(tc.tenant+"/"+tc.owner, func(t *testing.T) {
+			got := r.IsHostWidenPermitted(tc.tenant, tc.owner)
 			if got != tc.want {
-				t.Errorf("IsHostWidenPermitted(%q) = %v, want %v", tc.owner, got, tc.want)
+				t.Errorf("IsHostWidenPermitted(%q,%q) = %v, want %v", tc.tenant, tc.owner, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestRegistry_HostWidenPermit_TenantScoped is the RFC AF follow-up: a
+// `tenant:owner` permit entry grants host-widening to that owner ONLY within
+// the named tenant. The same owner string under a DIFFERENT tenant (or the
+// shared "" tenant) is refused — so a second tenant can't claim a permitted
+// owner and escape the operator host floor for its own runs.
+func TestRegistry_HostWidenPermit_TenantScoped(t *testing.T) {
+	r := NewRegistryWithPermissions([]string{
+		"jobember:jobs-search-web", // tenant-scoped grant
+		"a:b:c",                    // owner may contain a colon — split on the FIRST
+		"  toneember : scraper  ",  // both sides trimmed
+		"bad:",                     // empty owner → dropped
+	})
+	cases := []struct {
+		tenant, owner string
+		want          bool
+	}{
+		{"jobember", "jobs-search-web", true}, // exact (tenant, owner)
+		{"", "jobs-search-web", false},        // shared tenant NOT granted
+		{"other", "jobs-search-web", false},   // a different tenant claiming the same owner — DENIED
+		{"a", "b:c", true},                    // first-colon split: tenant "a", owner "b:c"
+		{"toneember", "scraper", true},        // trimmed
+		{"bad", "", false},                    // empty owner never matches
+	}
+	for _, tc := range cases {
+		t.Run(tc.tenant+"/"+tc.owner, func(t *testing.T) {
+			if got := r.IsHostWidenPermitted(tc.tenant, tc.owner); got != tc.want {
+				t.Errorf("IsHostWidenPermitted(%q,%q) = %v, want %v", tc.tenant, tc.owner, got, tc.want)
 			}
 		})
 	}
@@ -258,10 +383,13 @@ func TestRegistry_HostWidenPermit_ExactMatch(t *testing.T) {
 // don't opt in.
 func TestRegistry_HostWidenPermit_DefaultDeny(t *testing.T) {
 	r := NewRegistry()
-	if r.IsHostWidenPermitted("any-owner") {
+	if r.IsHostWidenPermitted("", "any-owner") {
 		t.Error("NewRegistry() should default-deny host widening for every owner")
 	}
-	if r.IsHostWidenPermitted("") {
+	if r.IsHostWidenPermitted("jobember", "any-owner") {
+		t.Error("NewRegistry() should default-deny host widening for every (tenant, owner)")
+	}
+	if r.IsHostWidenPermitted("", "") {
 		t.Error("NewRegistry() must default-deny the empty-string owner")
 	}
 }
@@ -273,7 +401,7 @@ func TestRegistry_HostWidenPermit_DefaultDeny(t *testing.T) {
 // latent crash class.
 func TestRegistry_HostWidenPermit_NilReceiver(t *testing.T) {
 	var r *Registry
-	if r.IsHostWidenPermitted("anyone") {
+	if r.IsHostWidenPermitted("any-tenant", "anyone") {
 		t.Error("nil receiver should return false")
 	}
 }

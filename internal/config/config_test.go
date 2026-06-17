@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/hooks"
+
 	// Blank imports populate the providers embedder registry via
 	// each driver's init() — the v0.9.0 memory.embedder validation
 	// path calls providers.RegisteredEmbedders() and needs the
@@ -715,6 +717,66 @@ agents:
 	if _, err := Load(yamlPath); err != nil {
 		t.Fatalf("literal inprocess should always validate: %v", err)
 	}
+}
+
+// TestHooksPermitHostWidenEnvTenantOwner pins the env→config→registry wiring for
+// the RFC AF `[tenant:]owner` host-widen permit syntax: the env var appends to
+// the yaml list, the comma split preserves the `tenant:owner` colons, and the
+// resulting list, fed to the registry, honours the (tenant, owner) pairs while
+// denying a bare/wrong-tenant lookup.
+func TestHooksPermitHostWidenEnvTenantOwner(t *testing.T) {
+	tmp := t.TempDir()
+	yamlPath := filepath.Join(tmp, "c.yaml")
+	os.WriteFile(yamlPath, []byte(`
+defaults: { provider: anthropic, model: claude-sonnet-4-6 }
+agents:
+  default: { model: claude-sonnet-4-6 }
+hooks:
+  permit_host_widen:
+    owners: ["yamltenant:yamlowner"]
+`), 0o600)
+	// Env appends two tenant:owner entries to the yaml's one.
+	t.Setenv("LOOMCYCLE_HOOKS_PERMIT_HOST_WIDEN_OWNERS", "jobember:jobs-search-web,acme:scraper")
+
+	cfg, err := Load(yamlPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// yaml entry + env appends (colons preserved through the comma split).
+	want := []string{"yamltenant:yamlowner", "jobember:jobs-search-web", "acme:scraper"}
+	if got := cfg.Hooks.PermitHostWiden.Owners; !equalStrings(got, want) {
+		t.Fatalf("PermitHostWiden.Owners = %v, want %v (env should append, colons preserved)", got, want)
+	}
+
+	// End-to-end: the list the runtime feeds to the registry honours each
+	// (tenant, owner) pair and denies a bare / wrong-tenant lookup.
+	r := hooks.NewRegistryWithPermissions(cfg.Hooks.PermitHostWiden.Owners)
+	for _, ok := range []struct {
+		tenant, owner string
+	}{{"yamltenant", "yamlowner"}, {"jobember", "jobs-search-web"}, {"acme", "scraper"}} {
+		if !r.IsHostWidenPermitted(ok.tenant, ok.owner) {
+			t.Errorf("IsHostWidenPermitted(%q,%q) = false, want true", ok.tenant, ok.owner)
+		}
+	}
+	// Bare (shared "") tenant must NOT inherit a tenant-scoped grant.
+	if r.IsHostWidenPermitted("", "jobs-search-web") {
+		t.Error("bare tenant must not satisfy a tenant-scoped permit entry")
+	}
+	if r.IsHostWidenPermitted("other", "jobs-search-web") {
+		t.Error("a different tenant must not satisfy jobember's permit entry")
+	}
+}
+
+func equalStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func TestMemoryEnvDefaults(t *testing.T) {

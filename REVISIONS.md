@@ -8,6 +8,56 @@ For pre-v0.4 history (single-tool runtime, library milestone, security patch), s
 
 ---
 
+## What's in v1.0.1
+
+**🔐 `substrate:tenant` — the tenant-operator scope (RFC AF).** A security patch:
+a new closed-catalog scope that gives a tenant FULL power WITHIN its own tenant —
+authoring all 8 substrate Def families (Agent/Skill/MCPServer/Schedule/Webhook/
+MemoryBackend/A2AAgent/A2AServerCard, including the `_mcpserverdef` "dynamic MCP
+tools ingestion" surface) and registering tool-use hooks — WITHOUT holding
+`substrate:admin` (the cross-tenant superuser). It exists so a self-provisioning
+tenant (e.g. JobEmber's boot-time AgentDef sync + hooks) authors its own surface
+on a narrow token, and you never have to hand two tenants admin rights.
+
+- **Scope semantics (`internal/auth`).** `substrate:tenant` satisfies the
+  within-tenant scopes (runs / channels / the def-hook gate) but NOT
+  `substrate:admin` — so a tenant operator passes the def/hook route gate yet is
+  refused the operator plane (token minting, runtime admin, cross-tenant focus,
+  the MCP-server transport). `substrate:admin` remains the superuser.
+- **Route gate split (HTTP + gRPC).** The 8 `POST /v1/_<fam>def` + `GET
+  …/names` routes and `/v1/hooks*` now require `substrate:tenant`; the gRPC
+  `AgentDef…MemoryBackendDef` + `RegisterHook/ListHooks/DeleteHook` RPCs mirror
+  it. **`/v1/_operatortokendef` (minting), `/v1/_mcp` (the loomcycle-as-MCP-server
+  transport — it runs as a GLOBAL operator with no per-principal confinement), and
+  runtime admin STAY `substrate:admin`.** Confinement reuses the RFC L/N
+  infra already keying on the principal's tenant: the def-tools stamp the
+  authoritative tenant on every write and fold cross-tenant reads into an opaque
+  404, so a tenant operator authors ONLY its own surface.
+- **Hooks tenant-isolation.** The hook registry was global by construction
+  (a hook fired on every tenant's tool calls; List/Delete spanned all tenants).
+  This release adds an authoritative `Tenant` to `hooks.Hook` (migration
+  `0047_hooks_tenant_id` on the cluster registry), a tenant filter in the hot-path
+  `Match` (an operator/global hook — `Tenant=""` — still fires on all runs; a
+  tenant-scoped hook fires ONLY on its tenant's runs), and tenant-stamping +
+  scoping in `RegisterHook`/`ListHooks`/`DeleteHook` across HTTP + gRPC. The
+  host-WIDEN capability stays gated by the operator-yaml `permit_host_widen`
+  allowlist (frozen at boot), so `substrate:tenant` can't escape the host floor —
+  and that allowlist is now keyed on **`(tenant, owner)`** (entries are
+  `[tenant:]owner`; bare = the shared `""` tenant), not the caller-supplied
+  `owner` alone, so a second tenant can't claim a permitted owner string and
+  widen hosts for its own runs. A single-tenant deployment's bare `owners`
+  entries are unchanged (they bind to `""`).
+- **No wire-shape change** beyond the additive `tenant` field on hook
+  rows/responses; existing single-tenant + admin behaviour is byte-identical
+  (admin/legacy registrations are global, the catalog gains one scope). Existing
+  `LOOMCYCLE_AUTH_TOKEN` / admin tokens are unaffected.
+
+Mint a tenant operator with `--scopes substrate:tenant`. Decision history +
+the two architecture findings (the MCP transport and hooks were NOT
+tenant-confined; only the def plane was) live in the operator-side RFC AF.
+
+---
+
 ## What's in v1.0.0
 
 **🌳 1.0 — feature-complete, hardened, distribution-ready.** The milestone the
