@@ -191,6 +191,59 @@ func ExtraAllowedHosts(ctx context.Context) []string {
 	return v
 }
 
+// ctxKeyVolumePolicy is the context key for the run's effective
+// filesystem-volume policy (RFC AH). It mirrors HostPolicy exactly:
+// the run-start path resolves the agent's declared `volumes` against
+// the operator's top-level `volumes:` config into a binding set and
+// attaches it here; the file/exec tools read it via VolumePolicy to
+// resolve which root a given call targets; sub-agents read the
+// parent's policy from ctx and re-apply NARROW-ONLY narrowing (child ⊆
+// parent), the filesystem analog of the host-allowlist narrowing.
+//
+// A run with NO policy attached (unbound agent, no `volumes:` config)
+// falls back to each tool's construction-time Root — the legacy global
+// jail — so behaviour is byte-identical to pre-feature deployments.
+type ctxKeyVolumePolicy struct{}
+
+// VolumeBinding is one filesystem volume an agent is bound to. Root is
+// the already-resolved absolute path (validated to exist + be a dir at
+// config-load for static volumes); ReadOnly enforces the ro/rw axis
+// (Write/Edit/NotebookEdit and Bash require ReadOnly=false); Default
+// marks the binding used when a tool call omits the `volume` argument.
+type VolumeBinding struct {
+	Name     string
+	Root     string
+	ReadOnly bool
+	Default  bool
+}
+
+// VolumePolicyValue is the run's resolved volume binding set. A nil/empty
+// Bindings slice means "no policy" — the tools fall back to their
+// construction-time Root (the legacy jail). It is attached only when the
+// run-start path has a binding set to apply.
+type VolumePolicyValue struct {
+	Bindings []VolumeBinding
+}
+
+// WithVolumePolicy attaches the run's volume binding set to ctx. An
+// empty binding set is a no-op (the tools then use their legacy Root),
+// so callers can attach unconditionally without forcing the policy path
+// onto unbound agents.
+func WithVolumePolicy(ctx context.Context, p VolumePolicyValue) context.Context {
+	if len(p.Bindings) == 0 {
+		return ctx
+	}
+	return context.WithValue(ctx, ctxKeyVolumePolicy{}, p)
+}
+
+// VolumePolicy returns the run's volume binding set from ctx, or the
+// zero value (nil Bindings) when none was attached. A zero value is the
+// "unbound agent" signal — the tools use their construction-time Root.
+func VolumePolicy(ctx context.Context) VolumePolicyValue {
+	v, _ := ctx.Value(ctxKeyVolumePolicy{}).(VolumePolicyValue)
+	return v
+}
+
 // ctxKeyRunIdentity is the context key under which the runtime
 // stashes the current run's user_id and agent_id (v0.4 tracking
 // fields). Sub-agents read these via RunIdentity to inherit the
