@@ -97,7 +97,18 @@ func (h *HTTP) Execute(ctx context.Context, input json.RawMessage) (tools.Result
 
 // do is split out so WebFetch can call it directly with GET defaults.
 func (h *HTTP) do(ctx context.Context, method, rawURL string, headers map[string]string, body string) (tools.Result, error) {
-	if len(h.HostAllowlist) == 0 {
+	// Refuse only when the operator floor is empty AND no permitted Pre-hook
+	// contributed a per-call host grant. A permitted host-widen grant
+	// (ExtraAllowedHosts — populated ONLY by operator-opted-in hooks via the
+	// dispatcher's IsHostWidenPermitted gate, never by the model or the
+	// runtime caller) must be able to satisfy a call even with no static
+	// allowlist; otherwise hooks.permit_host_widen is dead for any deployment
+	// that drives all hosts dynamically through a hook (an empty floor used to
+	// short-circuit here before the per-host extras check below ever ran). The
+	// per-host check below still enforces the grant, and the dial-time
+	// private-IP guard still applies — so this widens nothing the operator
+	// did not explicitly opt in to.
+	if len(h.HostAllowlist) == 0 && len(tools.ExtraAllowedHosts(ctx)) == 0 {
 		return tools.Result{Text: "HTTP tool has empty host allowlist; refusing all calls", IsError: true}, nil
 	}
 	if method == "" {
