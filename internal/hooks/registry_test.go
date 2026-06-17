@@ -14,6 +14,40 @@ func mustRegister(t *testing.T, r *Registry, h *Hook) string {
 	return id
 }
 
+// TestRegistry_Match_TenantConfinement locks RFC AF's hook tenant filter:
+// an operator/global hook (Tenant=="") fires for EVERY tenant's runs, while a
+// tenant-scoped hook fires ONLY for runs in its own tenant — so a tenant
+// operator's hooks can never intercept another tenant's tool calls.
+func TestRegistry_Match_TenantConfinement(t *testing.T) {
+	r := NewRegistry()
+	// Registration order = Pre chain order.
+	mustRegister(t, r, &Hook{Owner: "op", Name: "global", Phase: PhasePre, CallbackURL: "https://x/g", Tools: []string{"T"}})
+	mustRegister(t, r, &Hook{Tenant: "tenant-a", Owner: "a", Name: "a-only", Phase: PhasePre, CallbackURL: "https://x/a", Tools: []string{"T"}})
+	mustRegister(t, r, &Hook{Tenant: "tenant-b", Owner: "b", Name: "b-only", Phase: PhasePre, CallbackURL: "https://x/b", Tools: []string{"T"}})
+
+	cases := []struct {
+		tenant string
+		want   []string
+	}{
+		{"tenant-a", []string{"global", "a-only"}}, // global + own; NOT b-only
+		{"tenant-b", []string{"global", "b-only"}}, // global + own; NOT a-only
+		{"tenant-c", []string{"global"}},           // an unrelated tenant sees only the global hook
+		{"", []string{"global"}},                   // a legacy/untenated run sees only the global hook
+	}
+	for _, tc := range cases {
+		got := hookNames(r.Match(tc.tenant, "agent", "T", PhasePre))
+		if len(got) != len(tc.want) {
+			t.Errorf("Match(tenant=%q): got %v, want %v", tc.tenant, got, tc.want)
+			continue
+		}
+		for i := range tc.want {
+			if got[i] != tc.want[i] {
+				t.Errorf("Match(tenant=%q)[%d] = %q, want %q", tc.tenant, i, got[i], tc.want[i])
+			}
+		}
+	}
+}
+
 func TestRegistry_RegisterAndDelete(t *testing.T) {
 	r := NewRegistry()
 	id := mustRegister(t, r, &Hook{
@@ -79,7 +113,7 @@ func TestRegistry_ReplacePreservesChainPosition(t *testing.T) {
 
 	mustRegister(t, r, &Hook{Owner: "x", Name: "B", Phase: PhasePre, CallbackURL: "https://x/b2", Tools: []string{"T"}})
 
-	got := r.Match("agent", "T", PhasePre)
+	got := r.Match("", "agent", "T", PhasePre)
 	if len(got) != 3 {
 		t.Fatalf("Match returned %d hooks, want 3", len(got))
 	}
@@ -126,7 +160,7 @@ func TestRegistry_MatchAgentTool(t *testing.T) {
 		{"company-researcher", "mcp__other__do", 0, nil},
 	}
 	for _, tc := range cases {
-		got := r.Match(tc.agent, tc.tool, PhasePost)
+		got := r.Match("", tc.agent, tc.tool, PhasePost)
 		if len(got) != tc.wantCnt {
 			t.Errorf("Match(%q,%q): %d hits, want %d (got=%v)", tc.agent, tc.tool, len(got), tc.wantCnt, hookNames(got))
 			continue
@@ -154,7 +188,7 @@ func TestRegistry_MatchPostIsLIFO(t *testing.T) {
 	mustRegister(t, r, &Hook{Owner: "x", Name: "B", Phase: PhasePost, CallbackURL: "https://x/b", Tools: []string{"T"}})
 	mustRegister(t, r, &Hook{Owner: "x", Name: "C", Phase: PhasePost, CallbackURL: "https://x/c", Tools: []string{"T"}})
 
-	got := hookNames(r.Match("agent", "T", PhasePost))
+	got := hookNames(r.Match("", "agent", "T", PhasePost))
 	want := []string{"C", "B", "A"}
 	if len(got) != len(want) {
 		t.Fatalf("Match Post returned %d, want %d", len(got), len(want))

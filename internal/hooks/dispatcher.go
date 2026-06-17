@@ -61,6 +61,10 @@ type Identity struct {
 	Agent   string
 	UserID  string
 	AgentID string
+	// Tenant is the run's authoritative tenant (RunIdentity.TenantID). The
+	// registry's Match uses it (RFC AF) so a tenant-scoped hook fires only on
+	// its tenant's runs; an operator/global hook (Hook.Tenant=="") fires on all.
+	Tenant string
 }
 
 // PreOutcome is what RunPre returns to the loop:
@@ -119,7 +123,7 @@ type PreOutcome struct {
 //     hook that contributed at least one host. Carried for the
 //     audit event so operators see a single attribution.
 func (d *Dispatcher) RunPre(ctx context.Context, ident Identity, tu ToolCall) PreOutcome {
-	hooks := d.registry.Match(ident.Agent, tu.Name, PhasePre)
+	hooks := d.registry.Match(ident.Tenant, ident.Agent, tu.Name, PhasePre)
 	current := tu.Input
 	var (
 		allowHosts       []string
@@ -242,7 +246,7 @@ func normaliseHost(h string) string {
 // Returns the rewritten result (or `original` if no hook produced a
 // rewrite).
 func (d *Dispatcher) RunPost(ctx context.Context, ident Identity, tu ToolCall, original ToolResult) ToolResult {
-	hooks := d.registry.Match(ident.Agent, tu.Name, PhasePost) // already reversed by registry for Post
+	hooks := d.registry.Match(ident.Tenant, ident.Agent, tu.Name, PhasePost) // already reversed by registry for Post
 	current := original
 	for _, h := range hooks {
 		call := PostHookCall{

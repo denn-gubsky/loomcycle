@@ -2713,7 +2713,10 @@ type SnapshotRow struct {
 // Conversion to *hooks.Hook happens in internal/hooks/db_registry.go
 // where both package types are in scope.
 type HookRow struct {
-	ID               string
+	ID string
+	// Tenant is the RFC AF owning-tenant ('' = operator/global hook). Persisted
+	// so a cluster reload / backplane re-fetch reconstructs the tenant scope.
+	Tenant           string
 	Owner            string
 	Name             string
 	Phase            string // "pre" or "post"

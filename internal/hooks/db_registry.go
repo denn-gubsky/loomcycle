@@ -189,8 +189,8 @@ func (r *DBBackedRegistry) List() []*Hook {
 	return r.inner.List()
 }
 
-func (r *DBBackedRegistry) Match(agent, tool string, phase Phase) []*Hook {
-	return r.inner.Match(agent, tool, phase)
+func (r *DBBackedRegistry) Match(tenant, agent, tool string, phase Phase) []*Hook {
+	return r.inner.Match(tenant, agent, tool, phase)
 }
 
 func (r *DBBackedRegistry) IsHostWidenPermitted(owner string) bool {
@@ -214,6 +214,7 @@ func rowToHook(r store.HookRow) *Hook {
 	timeout := time.Duration(r.TimeoutMs) * time.Millisecond
 	return &Hook{
 		ID:           r.ID,
+		Tenant:       r.Tenant,
 		Owner:        r.Owner,
 		Name:         r.Name,
 		Phase:        Phase(r.Phase),
@@ -231,6 +232,7 @@ func rowToHook(r store.HookRow) *Hook {
 func hookToRow(h *Hook, replicaID string) store.HookRow {
 	return store.HookRow{
 		ID:               h.ID,
+		Tenant:           h.Tenant,
 		Owner:            h.Owner,
 		Name:             h.Name,
 		Phase:            string(h.Phase),

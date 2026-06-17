@@ -28,7 +28,7 @@ type RegistryInterface interface {
 	Register(h *Hook) (string, error)
 	Delete(id string) error
 	List() []*Hook
-	Match(agent, tool string, phase Phase) []*Hook
+	Match(tenant, agent, tool string, phase Phase) []*Hook
 	IsHostWidenPermitted(owner string) bool
 }
 
@@ -193,16 +193,21 @@ func (r *Registry) List() []*Hook {
 	return out
 }
 
-// Match returns the hooks that fire for the given (agent, tool, phase),
-// in chain order:
+// Match returns the hooks that fire for the given (tenant, agent, tool,
+// phase), in chain order:
 //   - Pre-hooks: registration order (earliest first; first non-nil
 //     deny short-circuits the chain).
 //   - Post-hooks: REVERSE registration order (LIFO middleware
 //     pattern; outer hooks see the inner hooks' modifications).
 //
+// RFC AF tenant filter: a hook with a non-empty Tenant fires ONLY when it
+// equals the run's tenant; a hook with Tenant=="" is an operator/global hook
+// that fires on every run (preserving pre-RFC-AF behaviour). tenant is the
+// run's authoritative RunIdentity.TenantID, never a wire value.
+//
 // Returns nil when no hooks match — callers can short-circuit
 // without allocating.
-func (r *Registry) Match(agent, tool string, phase Phase) []*Hook {
+func (r *Registry) Match(tenant, agent, tool string, phase Phase) []*Hook {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
@@ -210,6 +215,11 @@ func (r *Registry) Match(agent, tool string, phase Phase) []*Hook {
 	for _, id := range r.order {
 		h, ok := r.byID[id]
 		if !ok {
+			continue
+		}
+		// A tenant-scoped hook is invisible to other tenants' runs; a global
+		// hook (Tenant=="") fires for everyone.
+		if h.Tenant != "" && h.Tenant != tenant {
 			continue
 		}
 		if h.Matches(agent, tool, phase) {

@@ -998,11 +998,11 @@ func (s *Store) CreateHook(ctx context.Context, h store.HookRow) error {
 		replica = h.CreatedByReplica
 	}
 	if _, err := s.pool.Exec(ctx, `
-		INSERT INTO hooks (id, owner, name, phase, agents, tools, callback_url,
+		INSERT INTO hooks (id, tenant_id, owner, name, phase, agents, tools, callback_url,
 		                   fail_mode, timeout_ms, created_at, created_by_replica)
-		VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb, $7, $8, $9, $10, $11)
+		VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb, $8, $9, $10, $11, $12)
 		ON CONFLICT (id) DO NOTHING
-	`, h.ID, h.Owner, h.Name, h.Phase, string(agents), string(tools),
+	`, h.ID, h.Tenant, h.Owner, h.Name, h.Phase, string(agents), string(tools),
 		h.CallbackURL, h.FailMode, h.TimeoutMs, h.CreatedAt, replica,
 	); err != nil {
 		return fmt.Errorf("hooks insert %s: %w", h.ID, err)
@@ -1022,7 +1022,7 @@ func (s *Store) DeleteHook(ctx context.Context, hookID string) error {
 
 func (s *Store) ListHooks(ctx context.Context) ([]store.HookRow, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT id, owner, name, phase, agents, tools, callback_url,
+		SELECT id, COALESCE(tenant_id, ''), owner, name, phase, agents, tools, callback_url,
 		       fail_mode, timeout_ms, created_at, COALESCE(created_by_replica, '')
 		  FROM hooks
 		 ORDER BY created_at ASC, id ASC
@@ -1035,7 +1035,7 @@ func (s *Store) ListHooks(ctx context.Context) ([]store.HookRow, error) {
 	for rows.Next() {
 		var r store.HookRow
 		var agentsRaw, toolsRaw []byte
-		if err := rows.Scan(&r.ID, &r.Owner, &r.Name, &r.Phase,
+		if err := rows.Scan(&r.ID, &r.Tenant, &r.Owner, &r.Name, &r.Phase,
 			&agentsRaw, &toolsRaw, &r.CallbackURL,
 			&r.FailMode, &r.TimeoutMs, &r.CreatedAt, &r.CreatedByReplica); err != nil {
 			return nil, fmt.Errorf("scan hook row: %w", err)
@@ -1054,11 +1054,11 @@ func (s *Store) GetHookByID(ctx context.Context, hookID string) (store.HookRow, 
 	var r store.HookRow
 	var agentsRaw, toolsRaw []byte
 	err := s.pool.QueryRow(ctx, `
-		SELECT id, owner, name, phase, agents, tools, callback_url,
+		SELECT id, COALESCE(tenant_id, ''), owner, name, phase, agents, tools, callback_url,
 		       fail_mode, timeout_ms, created_at, COALESCE(created_by_replica, '')
 		  FROM hooks
 		 WHERE id = $1
-	`, hookID).Scan(&r.ID, &r.Owner, &r.Name, &r.Phase,
+	`, hookID).Scan(&r.ID, &r.Tenant, &r.Owner, &r.Name, &r.Phase,
 		&agentsRaw, &toolsRaw, &r.CallbackURL,
 		&r.FailMode, &r.TimeoutMs, &r.CreatedAt, &r.CreatedByReplica)
 	if err != nil {

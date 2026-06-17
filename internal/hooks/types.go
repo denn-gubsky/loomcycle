@@ -61,7 +61,17 @@ const (
 // is exact match or trailing-* prefix glob (e.g. "mcp__jobs__*"). No
 // regex, no middle wildcards — the model is intentionally simple.
 type Hook struct {
-	ID          string        `json:"id"`
+	ID string `json:"id"`
+	// Tenant is the RFC AF authoritative owning-tenant. Empty "" = an
+	// operator/global hook: it fires on EVERY run regardless of tenant
+	// (preserving pre-RFC-AF admin + single-tenant behaviour). A non-empty
+	// tenant scopes the hook to runs in that tenant ONLY (see Match's filter and
+	// the dispatcher's Identity.Tenant). It is set AUTHORITATIVELY from the
+	// registering principal (a non-admin tenant operator → its own tenant;
+	// admin / legacy / MCP-operator → "" global), never from a caller-supplied
+	// body field — so a tenant operator can register hooks but cannot intercept
+	// another tenant's tool calls.
+	Tenant      string        `json:"tenant"`
 	Owner       string        `json:"owner"` // app UID; (Owner, Name) is identity
 	Name        string        `json:"name"`
 	Phase       Phase         `json:"phase"`
