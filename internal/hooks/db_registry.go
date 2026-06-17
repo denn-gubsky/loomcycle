@@ -193,8 +193,8 @@ func (r *DBBackedRegistry) Match(tenant, agent, tool string, phase Phase) []*Hoo
 	return r.inner.Match(tenant, agent, tool, phase)
 }
 
-func (r *DBBackedRegistry) IsHostWidenPermitted(owner string) bool {
-	return r.inner.IsHostWidenPermitted(owner)
+func (r *DBBackedRegistry) IsHostWidenPermitted(tenant, owner string) bool {
+	return r.inner.IsHostWidenPermitted(tenant, owner)
 }
 
 func (r *DBBackedRegistry) publishBackplane(op, hookID string) {

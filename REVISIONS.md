@@ -41,7 +41,12 @@ on a narrow token, and you never have to hand two tenants admin rights.
   tenant-scoped hook fires ONLY on its tenant's runs), and tenant-stamping +
   scoping in `RegisterHook`/`ListHooks`/`DeleteHook` across HTTP + gRPC. The
   host-WIDEN capability stays gated by the operator-yaml `permit_host_widen`
-  allowlist (frozen at boot), so `substrate:tenant` can't escape the host floor.
+  allowlist (frozen at boot), so `substrate:tenant` can't escape the host floor —
+  and that allowlist is now keyed on **`(tenant, owner)`** (entries are
+  `[tenant:]owner`; bare = the shared `""` tenant), not the caller-supplied
+  `owner` alone, so a second tenant can't claim a permitted owner string and
+  widen hosts for its own runs. A single-tenant deployment's bare `owners`
+  entries are unchanged (they bind to `""`).
 - **No wire-shape change** beyond the additive `tenant` field on hook
   rows/responses; existing single-tenant + admin behaviour is byte-identical
   (admin/legacy registrations are global, the catalog gains one scope). Existing

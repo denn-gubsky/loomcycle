@@ -262,24 +262,60 @@ func TestRegistry_HostWidenPermit_ExactMatch(t *testing.T) {
 		"",                     // empty entry silently dropped
 	})
 
+	// Bare entries bind to the shared tenant "" (single-tenant / operator hooks).
 	cases := []struct {
-		owner string
-		want  bool
+		tenant string
+		owner  string
+		want   bool
 	}{
-		{"jobs-search-web", true},          // exact match
-		{"company-research", true},         // trimmed match
-		{"jobs-search-web-staging", false}, // prefix is NOT a match (no globs)
-		{"jobs-search", false},             // partial prefix not a match
-		{"web", false},                     // suffix not a match
-		{"", false},                        // empty owner never matches
-		{"unknown", false},                 // not in list
-		{"  jobs-search-web  ", false},     // lookup doesn't trim — operator names canonicalise on registration
+		{"", "jobs-search-web", true},          // exact match (shared tenant)
+		{"", "company-research", true},         // trimmed match
+		{"", "jobs-search-web-staging", false}, // prefix is NOT a match (no globs)
+		{"", "jobs-search", false},             // partial prefix not a match
+		{"", "web", false},                     // suffix not a match
+		{"", "", false},                        // empty owner never matches
+		{"", "unknown", false},                 // not in list
+		{"", "  jobs-search-web  ", false},     // lookup doesn't trim — names canonicalise on registration
+		// A bare permit entry is tenant "" ONLY — it does NOT grant another tenant.
+		{"jobember", "jobs-search-web", false},
 	}
 	for _, tc := range cases {
-		t.Run(tc.owner, func(t *testing.T) {
-			got := r.IsHostWidenPermitted(tc.owner)
+		t.Run(tc.tenant+"/"+tc.owner, func(t *testing.T) {
+			got := r.IsHostWidenPermitted(tc.tenant, tc.owner)
 			if got != tc.want {
-				t.Errorf("IsHostWidenPermitted(%q) = %v, want %v", tc.owner, got, tc.want)
+				t.Errorf("IsHostWidenPermitted(%q,%q) = %v, want %v", tc.tenant, tc.owner, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestRegistry_HostWidenPermit_TenantScoped is the RFC AF follow-up: a
+// `tenant:owner` permit entry grants host-widening to that owner ONLY within
+// the named tenant. The same owner string under a DIFFERENT tenant (or the
+// shared "" tenant) is refused — so a second tenant can't claim a permitted
+// owner and escape the operator host floor for its own runs.
+func TestRegistry_HostWidenPermit_TenantScoped(t *testing.T) {
+	r := NewRegistryWithPermissions([]string{
+		"jobember:jobs-search-web", // tenant-scoped grant
+		"a:b:c",                    // owner may contain a colon — split on the FIRST
+		"  toneember : scraper  ",  // both sides trimmed
+		"bad:",                     // empty owner → dropped
+	})
+	cases := []struct {
+		tenant, owner string
+		want          bool
+	}{
+		{"jobember", "jobs-search-web", true}, // exact (tenant, owner)
+		{"", "jobs-search-web", false},        // shared tenant NOT granted
+		{"other", "jobs-search-web", false},   // a different tenant claiming the same owner — DENIED
+		{"a", "b:c", true},                    // first-colon split: tenant "a", owner "b:c"
+		{"toneember", "scraper", true},        // trimmed
+		{"bad", "", false},                    // empty owner never matches
+	}
+	for _, tc := range cases {
+		t.Run(tc.tenant+"/"+tc.owner, func(t *testing.T) {
+			if got := r.IsHostWidenPermitted(tc.tenant, tc.owner); got != tc.want {
+				t.Errorf("IsHostWidenPermitted(%q,%q) = %v, want %v", tc.tenant, tc.owner, got, tc.want)
 			}
 		})
 	}
@@ -292,10 +328,13 @@ func TestRegistry_HostWidenPermit_ExactMatch(t *testing.T) {
 // don't opt in.
 func TestRegistry_HostWidenPermit_DefaultDeny(t *testing.T) {
 	r := NewRegistry()
-	if r.IsHostWidenPermitted("any-owner") {
+	if r.IsHostWidenPermitted("", "any-owner") {
 		t.Error("NewRegistry() should default-deny host widening for every owner")
 	}
-	if r.IsHostWidenPermitted("") {
+	if r.IsHostWidenPermitted("jobember", "any-owner") {
+		t.Error("NewRegistry() should default-deny host widening for every (tenant, owner)")
+	}
+	if r.IsHostWidenPermitted("", "") {
 		t.Error("NewRegistry() must default-deny the empty-string owner")
 	}
 }
@@ -307,7 +346,7 @@ func TestRegistry_HostWidenPermit_DefaultDeny(t *testing.T) {
 // latent crash class.
 func TestRegistry_HostWidenPermit_NilReceiver(t *testing.T) {
 	var r *Registry
-	if r.IsHostWidenPermitted("anyone") {
+	if r.IsHostWidenPermitted("any-tenant", "anyone") {
 		t.Error("nil receiver should return false")
 	}
 }

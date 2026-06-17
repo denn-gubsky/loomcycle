@@ -279,23 +279,30 @@ func (c *Config) ConfigDir() string { return c.configDir }
 // the dynamic POST /v1/hooks endpoint — they need a trust boundary
 // the registering app can't influence.
 type HooksConfig struct {
-	// PermitHostWiden lists hook owners whose Pre-hook responses are
-	// honoured when they include an `allow_hosts` field. A hook
-	// registers via POST /v1/hooks with an Owner UID; if that Owner
-	// appears here (exact string match, no globs), the dispatcher
-	// will UNION the hook's per-call allow_hosts entries into a
-	// ctx-scoped extra list that HTTP/WebFetch consult at the
+	// PermitHostWiden lists the (tenant, hook-owner) pairs whose Pre-hook
+	// responses are honoured when they include an `allow_hosts` field. A hook
+	// registers via POST /v1/hooks with an Owner UID and is stamped with its
+	// AUTHORITATIVE tenant; if that (tenant, owner) appears here (exact match on
+	// both, no globs), the dispatcher UNIONs the hook's per-call allow_hosts
+	// entries into a ctx-scoped extra list that HTTP/WebFetch consult at the
 	// host-allowed gate.
 	//
-	// Without an entry here, allow_hosts from any hook is silently
+	// Each entry is a `[tenant:]owner` string: a bare `owner` (no colon) binds
+	// to the shared tenant "" (single-tenant deployments + operator/global
+	// hooks); `tenant:owner` confines the grant to that tenant. Keying on
+	// (tenant, owner) — not owner alone — stops a second tenant from claiming a
+	// permitted owner string and escaping the operator host floor for its own
+	// runs (RFC AF follow-up; owner is caller-supplied, only the tenant is
+	// authoritative).
+	//
+	// Without a matching entry, allow_hosts from a hook is silently
 	// dropped (with a WARN log + metric increment) — preserving the
 	// "operator yaml is the trust-boundary floor" invariant
 	// (CLAUDE.md rule #8): the runtime caller and the model both
 	// cannot enable widening.
 	//
 	// Env-var equivalent: LOOMCYCLE_HOOKS_PERMIT_HOST_WIDEN_OWNERS
-	// (comma-separated). Env wins over yaml when both are set (same
-	// rule as storage / cache blocks).
+	// (comma-separated, same `[tenant:]owner` syntax). Env appends to yaml.
 	PermitHostWiden HostWidenPermitConfig `yaml:"permit_host_widen"`
 }
 
@@ -384,9 +391,10 @@ type EmbedderConfig struct {
 // so future widening axes (memory scopes, channel ACLs) can hang off
 // HooksConfig without flattening the namespace.
 type HostWidenPermitConfig struct {
-	// Owners is the exact-match list of registered-hook owner UIDs
-	// whose allow_hosts entries are honoured. Empty / nil = no
-	// widening permitted (default — the safe stance).
+	// Owners is the exact-match list of `[tenant:]owner` entries whose
+	// allow_hosts grants are honoured (bare `owner` = the shared tenant "";
+	// `tenant:owner` = that tenant only). Empty / nil = no widening permitted
+	// (default — the safe stance).
 	Owners []string `yaml:"owners"`
 }
 

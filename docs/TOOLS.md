@@ -750,13 +750,15 @@ This solves the dynamic-discovery problem: `job-searcher` finds a job posting on
 ```yaml
 hooks:
   permit_host_widen:
-    owners: ["jobs-search-web"]
+    # entries are "[tenant:]owner": bare = the shared tenant ""; "tenant:owner" = that tenant only.
+    owners: ["jobember:jobs-search-web"]
 ```
 
-Or env: `LOOMCYCLE_HOOKS_PERMIT_HOST_WIDEN_OWNERS=jobs-search-web,company-research`
+Or env: `LOOMCYCLE_HOOKS_PERMIT_HOST_WIDEN_OWNERS=jobember:jobs-search-web` (appends to yaml).
 
-- **Exact-string match** against `Hook.Owner`. No globs.
-- Without an entry here, ANY hook's `allow_hosts` field is silently dropped at the dispatcher (with a `hooks: pre ... dropping grant` WARN log + counter increment via `Dispatcher.Stats().HostWidenDenied`). The model and the runtime caller cannot enable this — only the operator yaml can.
+- **Exact match on the `(tenant, owner)` pair**, where `tenant` is the hook's authoritative `Hook.Tenant` (`""` for an operator/global hook or a single-tenant deployment) and `owner` is its caller-supplied `Hook.Owner`. No globs. A bare entry omits the `tenant:` prefix and binds to `""`.
+- **Why the tenant, not just the owner:** `Hook.Owner` is caller-supplied; only the tenant is authoritative (stamped on register). Keying on owner alone would let a *second* tenant register a hook with a permitted owner string and widen hosts for its own runs — escaping the operator floor. `(tenant, owner)` confines a grant to the tenant the operator named. (RFC AF follow-up.)
+- Without a matching entry, ANY hook's `allow_hosts` field is silently dropped at the dispatcher (with a `hooks: pre ... dropping grant` WARN log + counter increment via `Dispatcher.Stats().HostWidenDenied`). The model and the runtime caller cannot enable this — only the operator yaml can.
 - **Caller-authoritative mode interaction**: when `LOOMCYCLE_HTTP_CALLER_AUTHORITATIVE=true`, a permitted hook STILL widens on top of the caller's authoritative list. Operator yaml is the floor for *behaviors* (including hook delegation), not just for the static host list.
 
 #### Wire shape

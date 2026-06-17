@@ -29,7 +29,7 @@ type RegistryInterface interface {
 	Delete(id string) error
 	List() []*Hook
 	Match(tenant, agent, tool string, phase Phase) []*Hook
-	IsHostWidenPermitted(owner string) bool
+	IsHostWidenPermitted(tenant, owner string) bool
 }
 
 // Registry holds the set of currently-registered hooks. In-memory
@@ -46,18 +46,35 @@ type RegistryInterface interface {
 // it via IsHostWidenPermitted() to decide whether a Pre-hook's
 // allow_hosts is honoured. Read access is lock-free — the set is
 // frozen.
+//
+// RFC AF follow-up: the key is (tenant, owner), NOT owner alone. A hook's
+// `owner` is a CALLER-SUPPLIED string; only the tenant is authoritative
+// (stamped on register). Keying on owner alone meant an operator's grant of
+// "owner X may widen" applied to EVERY tenant that registered a hook with that
+// owner string — letting a second tenant claim the same owner and escape the
+// shared operator host floor for its own runs. Keying on (tenant, owner)
+// confines a host-widen grant to the tenant the operator named.
 type Registry struct {
 	mu    sync.RWMutex
 	byID  map[string]*Hook    // id → hook, for DELETE / GET by id
 	byKey map[ownerName]*Hook // (owner, name) → hook, for replace-on-conflict
 	order []string            // ids in registration order; chain order in Match()
 
-	hostWidenPermitted map[string]struct{} // owner UID set; frozen post-construction
+	hostWidenPermitted map[tenantOwner]struct{} // (tenant, owner) set; frozen post-construction
 }
 
 type ownerName struct {
 	Owner string
 	Name  string
+}
+
+// tenantOwner is the (tenant, owner) permit key (RFC AF follow-up). The empty
+// tenant "" is the shared/operator/legacy tenant — a bare `owner` permit entry
+// (no `tenant:` prefix) lands here, so a global/operator hook (Hook.Tenant=="")
+// and any single-tenant deployment keep working unchanged.
+type tenantOwner struct {
+	Tenant string
+	Owner  string
 }
 
 // NewRegistry constructs an empty Registry with the default policy
@@ -68,23 +85,26 @@ func NewRegistry() *Registry {
 }
 
 // NewRegistryWithPermissions constructs a Registry with the operator's
-// host-widen permit list baked in. permitHostWidenOwners is the
-// exact-match set of registered-hook owner UIDs whose Pre-hook
-// allow_hosts is honoured at dispatch time. nil / empty = no widening
-// permitted for anyone (default-deny stance).
+// host-widen permit list baked in. Each entry is a `[tenant:]owner` string
+// naming a (tenant, registered-hook-owner-UID) pair whose Pre-hook allow_hosts
+// is honoured at dispatch time. A bare `owner` (no colon) binds to the shared
+// tenant "" — preserving single-tenant + operator/global-hook behaviour. A
+// `tenant:owner` entry (split on the FIRST colon, both sides trimmed) confines
+// the grant to that tenant. nil / empty = no widening permitted for anyone
+// (default-deny stance).
 //
 // The set is built once at construction and never mutated — so the
 // trust boundary is "what the operator declared at boot", not "what
 // some runtime API ended up writing." That property is load-bearing
 // for CLAUDE.md rule #8.
-func NewRegistryWithPermissions(permitHostWidenOwners []string) *Registry {
-	permit := make(map[string]struct{}, len(permitHostWidenOwners))
-	for _, owner := range permitHostWidenOwners {
-		owner = strings.TrimSpace(owner)
-		if owner == "" {
+func NewRegistryWithPermissions(permitEntries []string) *Registry {
+	permit := make(map[tenantOwner]struct{}, len(permitEntries))
+	for _, entry := range permitEntries {
+		tenant, owner, ok := parsePermitEntry(entry)
+		if !ok {
 			continue
 		}
-		permit[owner] = struct{}{}
+		permit[tenantOwner{Tenant: tenant, Owner: owner}] = struct{}{}
 	}
 	return &Registry{
 		byID:               make(map[string]*Hook),
@@ -93,16 +113,40 @@ func NewRegistryWithPermissions(permitHostWidenOwners []string) *Registry {
 	}
 }
 
-// IsHostWidenPermitted reports whether the given hook Owner is on the
-// operator-yaml permit list (exact-string match, no globs). Used by
-// the dispatcher to decide whether to honour a Pre-hook's allow_hosts
-// field. False for any owner not explicitly listed at server boot —
-// including the empty string.
-func (r *Registry) IsHostWidenPermitted(owner string) bool {
+// parsePermitEntry splits a `[tenant:]owner` permit entry into its parts. Split
+// on the FIRST colon so an owner UID may itself contain colons (the tenant is
+// the leading segment). A bare entry (no colon) binds to the shared tenant "".
+// Returns ok=false for an empty entry or an empty owner (`tenant:`), so those
+// are silently dropped.
+func parsePermitEntry(entry string) (tenant, owner string, ok bool) {
+	entry = strings.TrimSpace(entry)
+	if entry == "" {
+		return "", "", false
+	}
+	if i := strings.IndexByte(entry, ':'); i >= 0 {
+		tenant = strings.TrimSpace(entry[:i])
+		owner = strings.TrimSpace(entry[i+1:])
+	} else {
+		owner = entry // bare owner → shared tenant ""
+	}
+	if owner == "" {
+		return "", "", false
+	}
+	return tenant, owner, true
+}
+
+// IsHostWidenPermitted reports whether a hook with the given (tenant, owner) is
+// on the operator-yaml permit list (exact match on BOTH, no globs). tenant is
+// the hook's AUTHORITATIVE Hook.Tenant ("" for an operator/global hook); owner
+// is its caller-supplied UID. Used by the dispatcher to decide whether to
+// honour a Pre-hook's allow_hosts field. False for any pair not explicitly
+// listed at server boot — so owner X permitted under tenant A does not let
+// tenant B's same-named hook widen hosts.
+func (r *Registry) IsHostWidenPermitted(tenant, owner string) bool {
 	if r == nil || r.hostWidenPermitted == nil {
 		return false
 	}
-	_, ok := r.hostWidenPermitted[owner]
+	_, ok := r.hostWidenPermitted[tenantOwner{Tenant: tenant, Owner: owner}]
 	return ok
 }
 

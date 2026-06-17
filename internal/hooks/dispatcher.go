@@ -169,16 +169,16 @@ func (d *Dispatcher) RunPre(ctx context.Context, ident Identity, tu ToolCall) Pr
 			current = res.Input
 		}
 		if len(res.AllowHosts) > 0 {
-			if !d.registry.IsHostWidenPermitted(h.Owner) {
-				// Operator never opted this owner in. Drop with a WARN
-				// log so operators can spot un-authorised widening
-				// attempts (e.g., a hook that started returning
-				// allow_hosts after a code update without the
-				// corresponding yaml change). Counter exposed via
-				// Stats() for graphability.
+			if !d.registry.IsHostWidenPermitted(h.Tenant, h.Owner) {
+				// Operator never opted this (tenant, owner) in. Drop with a
+				// WARN log so operators can spot un-authorised widening
+				// attempts (e.g., a hook that started returning allow_hosts
+				// after a code update without the corresponding yaml change, or
+				// a tenant claiming an owner string permitted only for another
+				// tenant). Counter exposed via Stats() for graphability.
 				d.hostWidenDenied.Add(1)
-				log.Printf("hooks: pre %s/%s returned allow_hosts=%v but owner is NOT on hooks.permit_host_widen.owners; dropping grant",
-					h.Owner, h.Name, res.AllowHosts)
+				log.Printf("hooks: pre %s/%s (tenant=%q) returned allow_hosts=%v but (tenant,owner) is NOT on hooks.permit_host_widen.owners; dropping grant",
+					h.Owner, h.Name, h.Tenant, res.AllowHosts)
 				continue
 			}
 			// Permitted. Union into the accumulator (dedup on
