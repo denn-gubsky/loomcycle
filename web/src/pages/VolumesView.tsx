@@ -20,7 +20,9 @@ import VolumeEditModal from "../components/VolumeEditModal";
 //     yaml (read-only). DYNAMIC rows are the tenant's VolumeDefs: Delete
 //     (non-destructive unmap) + Purge (destructive RemoveAll, type-to-confirm).
 //     A "bound by" column cross-references AgentDef.volumes (derived from
-//     listLibraryAgents()).
+//     listLibraryAgents() — STATIC-config agents only; a runtime-created
+//     substrate agent that binds a volume is not reflected, so the column is a
+//     hint, not an authority, before a destructive purge).
 //   Ephemeral — read-only flat table of GET /v1/_volumes/ephemeral (live,
 //     run-scoped, auto-purged at run completion).
 //
@@ -185,7 +187,9 @@ function PersistentTab({
         <span className="muted">
           Static volumes are operator yaml (read-only — the shared bind floor).
           Dynamic volumes are this tenant's — Delete unmaps (keeps files); Purge
-          deletes the directory tree.
+          deletes the directory tree. <strong>“Bound by” reflects static-config
+          agents only</strong> — a runtime-created (substrate) agent may also
+          bind a volume without appearing here.
         </span>
         <button type="button" className="primary" onClick={onCreate}>
           Create volume
@@ -199,7 +203,9 @@ function PersistentTab({
             <th>path</th>
             <th>mode</th>
             <th>default</th>
-            <th>bound by</th>
+            <th title="Static-config (yaml) agents only — a runtime-created agent may also bind this volume without showing here.">
+              bound by <span className="muted">ⓘ</span>
+            </th>
             <th>actions</th>
           </tr>
         </thead>
@@ -355,9 +361,17 @@ function PurgeConfirmModal({
         <h3>Purge volume · {volume.name}</h3>
         <div className="warning-banner">
           This is <strong>destructive</strong>. Purge removes the mapping AND
-          recursively deletes the directory tree (<code className="mono">{volume.path}</code>)
+          recursively deletes the directory tree
+          {volume.path ? (
+            <>
+              {" "}
+              (<code className="mono">{volume.path}</code>)
+            </>
+          ) : null}{" "}
           on disk. This cannot be undone. To unmap without deleting files, use
-          Delete instead.
+          Delete instead. <strong>A runtime-created agent may still be using this
+          volume even if “bound by” shows none</strong> — that column reflects
+          static-config agents only.
         </div>
         <div className="library-modal-fields">
           <label className="library-modal-field">
