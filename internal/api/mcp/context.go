@@ -146,8 +146,10 @@ func operatorCtx(ctx context.Context) context.Context {
 
 	// VolumeDef (RFC AH): "any" scope so the MCP `volumedef` meta-tool
 	// reaches the in-process tool instead of being default-denied at the
-	// scope gate (gates create/delete/purge). The tenant is still
-	// authoritative from RunIdentity above. (Mirrors MemoryBackendDef.)
+	// scope gate (gates create/delete/purge). The MCP RunIdentity carries no
+	// TenantID, so the tool operates in the shared "" tenant — correct for the
+	// single-operator MCP stdio path, same as every sibling Def here.
+	// (Mirrors MemoryBackendDef.)
 	ctx = tools.WithVolumeDefPolicy(ctx, tools.VolumeDefPolicyValue{
 		Scopes: []string{"any"},
 	})
