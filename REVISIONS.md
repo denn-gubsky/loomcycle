@@ -93,8 +93,45 @@ substrate so a tenant can provision volumes per job without a config change.
   run-start resolves it (static-first, then tenant-dynamic, then shared) and the
   file/exec tools confine to its root — spawn narrowing unchanged.
 - **Not in Phase 2a (follow-ups):** ephemeral run-scoped volumes + the
-  completion-purge sweeper (Phase 2b); gRPC / MCP-meta-tool parity for the
-  authoring surface; Web UI; versioning.
+  completion-purge sweeper (Phase 2b, below); gRPC / MCP-meta-tool parity for
+  the authoring surface; Web UI; versioning.
+
+**📁 Filesystem Volumes — run-scoped EPHEMERAL volumes (RFC AH Phase 2b).** A
+persistent dynamic volume (Phase 2a) is tenant-shared; an *ephemeral* volume is
+scoped to the creating run **tree** and torn down when the top-level run
+finishes — true per-ensemble scratch, even for two concurrent runs in one
+tenant.
+
+- **Create with `ephemeral: true`.** `VolumeDef create {name, mode,
+  ephemeral:true}` derives `path = <dynamic_root>/_ephemeral/<root_run_id>/<name>`
+  (`_ephemeral` is a reserved first segment — a tenant id literally equal to it
+  is rejected, like `_shared`). Run ids are globally unique, so two runs (any
+  tenant) never collide. Requires an active run; refused on a static-name or
+  in-run-duplicate collision. Same `volume_def_scopes` capability gate as the
+  persistent op.
+- **Run-tree-scoped resolution.** The volume is registered in an in-memory
+  set created once per top-level run and shared down the spawn tree via ctx, so
+  the whole creating tree (parent + sub-agents) resolves it by name, while a
+  *different* top-level run's set never sees it (the load-bearing isolation
+  property). Sub-agents inherit it under the same narrow-only spawn rule as
+  static/dynamic volumes; `effectiveRoot` consults the ephemeral set first for a
+  named volume, enforces ro/rw, and the unchanged `resolveInsideRoot` still
+  contains every path.
+- **Purged when the TOP-LEVEL run completes.** An inline run-completion hook
+  fenced-`RemoveAll`s the `<dynamic_root>/_ephemeral/<root_run_id>/` subtree +
+  drops the rows; a sub-agent completing never purges (the tree belongs to the
+  top-level run). A **singleton sweeper** (`LOOMCYCLE_EPHEMERAL_VOLUME_SWEEP_MS`,
+  default 60s; cluster-gated) backstops a crashed host. Both purge paths reuse
+  the Phase-2a `os.RemoveAll` fence (re-derive, EvalSymlinks, strictly-inside,
+  expected-prefix) and **skip paused/pausing runs** exactly like the stale-run
+  sweeper, so a paused run's ephemeral volumes survive to be reused on resume
+  (a resumed run rehydrates its in-memory set from the persisted rows).
+- **A separate flat store table** (`ephemeral_volume_defs`, PK
+  `(root_run_id, name)`) backs the durable crash-cleanup — distinct from
+  `volume_defs` whose `(tenant_id, name)` PK would collide across concurrent
+  runs. The in-memory set is the resolution source; the table only backs purge.
+- **Not in Phase 2b (follow-ups):** gRPC / MCP-meta-tool parity for the
+  `ephemeral` create param; Web UI; Phase 3 (legacy-jail removal).
 
 ## What's in v1.0.2
 
