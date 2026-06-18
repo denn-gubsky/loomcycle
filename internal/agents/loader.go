@@ -101,6 +101,10 @@ type Agent struct {
 	// Closed set: "descendants" / "named:<skill-name>" / "any".
 	// Empty = default-deny. No "self" (skills have no agent identity).
 	SkillDefScopes []string
+	// VolumeDefScopes is the RFC AH Phase 2a VolumeDef-tool capability
+	// gate. Closed set: "named:<volume-name>" / "any". Empty =
+	// default-deny. No "self" (volumes have no agent identity).
+	VolumeDefScopes []string
 	// EvaluationScopes is the v0.8.5 Evaluation-tool capability gate.
 	// Closed set: "submit_self" / "submit_siblings" /
 	// "submit_descendants" / "submit_any" / "read_any". Empty =
@@ -307,6 +311,7 @@ type frontmatter struct {
 	Channels              AgentChannelACL            `yaml:"channels"`
 	AgentDefScopes        []string                   `yaml:"agent_def_scopes"`
 	SkillDefScopes        []string                   `yaml:"skill_def_scopes"`
+	VolumeDefScopes       []string                   `yaml:"volume_def_scopes"`
 	EvaluationScopes      []string                   `yaml:"evaluation_scopes"`
 	Interruption          AgentInterruptionACL       `yaml:"interruption"` // F14: round-trips like channels
 	SystemPromptFile      string                     `yaml:"system_prompt_file"`
@@ -375,6 +380,7 @@ func parseAgent(raw []byte) (*Agent, error) {
 	a.Channels = fm.Channels
 	a.AgentDefScopes = fm.AgentDefScopes
 	a.SkillDefScopes = fm.SkillDefScopes
+	a.VolumeDefScopes = fm.VolumeDefScopes
 	a.EvaluationScopes = fm.EvaluationScopes
 	a.Interruption = fm.Interruption
 	a.SystemPromptFile = fm.SystemPromptFile

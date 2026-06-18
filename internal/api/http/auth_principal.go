@@ -539,12 +539,14 @@ func requiredScopeFor(method, path string) string {
 	}
 }
 
-// isTenantConfinedDefPath matches the 8 substrate def-authoring families that
+// isTenantConfinedDefPath matches the substrate def-authoring families that
 // RFC AF moves from operator-admin (ScopeAdmin) to the tenant-confined
-// ScopeTenant. Each family has exactly two routes — POST /v1/_<fam>def (all ops
-// dispatch via the body's `op` field) and GET /v1/_<fam>def/names — so exact
-// matching is complete (there are no /{name} sub-paths). It DELIBERATELY
-// EXCLUDES:
+// ScopeTenant. The original 8 families each have two routes — POST
+// /v1/_<fam>def (all ops dispatch via the body's `op` field) and GET
+// /v1/_<fam>def/names — so exact matching is complete (there are no
+// /{name} sub-paths). The RFC AH Phase 2a VolumeDef family (added below) has
+// only the POST route (its `list` op dispatches via the body, not a GET
+// /names route). It DELIBERATELY EXCLUDES:
 //   - /v1/_operatortokendef — token minting stays operator-only.
 //   - /v1/_mcp — the loomcycle-as-MCP-server HTTP transport. That surface runs
 //     under operatorCtx (mcp/context.go), which grants global-operator authority
@@ -561,6 +563,11 @@ func isTenantConfinedDefPath(path string) bool {
 	for _, fam := range []string{
 		"/v1/_agentdef", "/v1/_skilldef", "/v1/_mcpserverdef", "/v1/_scheduledef",
 		"/v1/_webhookdef", "/v1/_memorybackenddef", "/v1/_a2aagentdef", "/v1/_a2aservercarddef",
+		// RFC AH Phase 2a — the dynamic-volume substrate is tenant-confined
+		// (write-stamps the caller's tenant + opaque-404s cross-tenant), so
+		// it joins the ScopeTenant set. No /names sub-path: the list op
+		// dispatches via the POST body, not a GET route.
+		"/v1/_volumedef",
 	} {
 		if path == fam || path == fam+"/names" {
 			return true

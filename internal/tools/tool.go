@@ -1072,6 +1072,35 @@ func SkillDefPolicy(ctx context.Context) SkillDefPolicyValue {
 	return v
 }
 
+// ctxKeyVolumeDefPolicy carries the RFC AH Phase 2a VolumeDef-tool
+// capability gate. Mirrors SkillDefPolicy (no SelfName — volumes have no
+// agent identity, so no "self" scope).
+type ctxKeyVolumeDefPolicy struct{}
+
+// VolumeDefPolicyValue is the per-agent VolumeDef-tool access policy.
+//
+//   - Scopes is the operator-yaml volume_def_scopes list. Closed set:
+//     "any" / "named:<volume-name>". Empty = default-deny.
+//
+// Gates create/delete/purge only — get/list are tenant-scoped reads
+// available to any agent the tool is attached to (mirrors the other Def
+// families' read posture).
+type VolumeDefPolicyValue struct {
+	Scopes []string
+}
+
+// WithVolumeDefPolicy attaches the policy to ctx.
+func WithVolumeDefPolicy(ctx context.Context, p VolumeDefPolicyValue) context.Context {
+	return context.WithValue(ctx, ctxKeyVolumeDefPolicy{}, p)
+}
+
+// VolumeDefPolicy returns the policy from ctx. Zero value = default-deny
+// (the tool refuses create/delete/purge until scopes are granted via yaml).
+func VolumeDefPolicy(ctx context.Context) VolumeDefPolicyValue {
+	v, _ := ctx.Value(ctxKeyVolumeDefPolicy{}).(VolumeDefPolicyValue)
+	return v
+}
+
 // ctxKeyEvaluationPolicy carries the v0.8.5 Evaluation-tool gate.
 type ctxKeyEvaluationPolicy struct{}
 

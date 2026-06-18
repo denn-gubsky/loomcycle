@@ -270,6 +270,12 @@ func Run(t *testing.T, factory Factory) {
 		{"MemoryBackendDefParentNotFound", testMemoryBackendDefParentNotFound},
 		{"MemoryBackendDefListByName", testMemoryBackendDefListByName},
 		{"MemoryBackendDefListChildren", testMemoryBackendDefListChildren},
+		// RFC AH Phase 2a VolumeDef substrate — flat (tenant, name) table.
+		{"VolumeDefCreateAndGet", testVolumeDefCreateAndGet},
+		{"VolumeDefTenantIsolation", testVolumeDefTenantIsolation},
+		{"VolumeDefDelete", testVolumeDefDelete},
+		{"VolumeDefList", testVolumeDefList},
+		{"VolumeDefCreateUpdatesDefinition", testVolumeDefCreateUpdatesDefinition},
 		// RFC L OSS multi-tenant authorization — OperatorTokenDef.
 		{"OperatorTokenDefCreateAndLookup", testOperatorTokenDefCreateAndLookup},
 		{"OperatorTokenDefCurrentByName", testOperatorTokenDefCurrentByName},
@@ -6986,5 +6992,142 @@ func testOperatorTokenDefListNames(t *testing.T, s store.Store) {
 		if n.TenantID != "acme" || n.Subject == "" || !n.HasCurrent || n.TokenCount != 1 {
 			t.Errorf("summary wrong: %+v", n)
 		}
+	}
+}
+
+// ---- RFC AH Phase 2a VolumeDef contract tests ----
+
+func mkVolumeDef(tenantID, name, path, mode string) store.VolumeDefRow {
+	return store.VolumeDefRow{
+		TenantID:   tenantID,
+		Name:       name,
+		Definition: json.RawMessage(fmt.Sprintf(`{"path":%q,"mode":%q}`, path, mode)),
+	}
+}
+
+func testVolumeDefCreateAndGet(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	_, err := s.VolumeDefCreate(ctx, mkVolumeDef("", "repo-a", "/pool/_shared/repo-a", "rw"))
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	got, err := s.VolumeDefGetByName(ctx, "", "repo-a")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.Name != "repo-a" || !jsonEqual(got.Definition, `{"path":"/pool/_shared/repo-a","mode":"rw"}`) {
+		t.Errorf("got %+v", got)
+	}
+	if got.CreatedAt.IsZero() || got.UpdatedAt.IsZero() {
+		t.Errorf("timestamps not stamped: %+v", got)
+	}
+	// A miss returns *ErrNotFound.
+	_, err = s.VolumeDefGetByName(ctx, "", "nope")
+	var nf *store.ErrNotFound
+	if !errors.As(err, &nf) {
+		t.Errorf("miss err = %v, want *ErrNotFound", err)
+	}
+}
+
+// testVolumeDefTenantIsolation pins the RFC N boundary: the SAME volume
+// name created under two tenants resolves to each tenant's OWN row with no
+// clobber. The (tenant_id, name) PK is what makes the two coexist.
+func testVolumeDefTenantIsolation(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	if _, err := s.VolumeDefCreate(ctx, mkVolumeDef("tenant-a", "work", "/pool/tenant-a/work", "rw")); err != nil {
+		t.Fatalf("create A: %v", err)
+	}
+	if _, err := s.VolumeDefCreate(ctx, mkVolumeDef("tenant-b", "work", "/pool/tenant-b/work", "ro")); err != nil {
+		t.Fatalf("create B: %v", err)
+	}
+	gotA, err := s.VolumeDefGetByName(ctx, "tenant-a", "work")
+	if err != nil {
+		t.Fatalf("get A: %v", err)
+	}
+	if !jsonEqual(gotA.Definition, `{"path":"/pool/tenant-a/work","mode":"rw"}`) {
+		t.Errorf("tenant A clobbered: %s", gotA.Definition)
+	}
+	gotB, err := s.VolumeDefGetByName(ctx, "tenant-b", "work")
+	if err != nil {
+		t.Fatalf("get B: %v", err)
+	}
+	if !jsonEqual(gotB.Definition, `{"path":"/pool/tenant-b/work","mode":"ro"}`) {
+		t.Errorf("tenant B clobbered: %s", gotB.Definition)
+	}
+	// Deleting A's row leaves B's untouched.
+	found, err := s.VolumeDefDelete(ctx, "tenant-a", "work")
+	if err != nil || !found {
+		t.Fatalf("delete A: found=%v err=%v", found, err)
+	}
+	if _, err := s.VolumeDefGetByName(ctx, "tenant-b", "work"); err != nil {
+		t.Errorf("tenant B's row vanished after A's delete: %v", err)
+	}
+}
+
+func testVolumeDefDelete(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	if _, err := s.VolumeDefCreate(ctx, mkVolumeDef("", "scratch", "/pool/_shared/scratch", "rw")); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	found, err := s.VolumeDefDelete(ctx, "", "scratch")
+	if err != nil || !found {
+		t.Fatalf("delete: found=%v err=%v", found, err)
+	}
+	if _, err := s.VolumeDefGetByName(ctx, "", "scratch"); err == nil {
+		t.Error("row still present after delete")
+	}
+	// Idempotent: deleting a missing row returns (false, nil).
+	found, err = s.VolumeDefDelete(ctx, "", "scratch")
+	if err != nil || found {
+		t.Errorf("second delete: found=%v err=%v, want (false, nil)", found, err)
+	}
+}
+
+func testVolumeDefList(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	for _, n := range []string{"beta", "alpha", "gamma"} {
+		if _, err := s.VolumeDefCreate(ctx, mkVolumeDef("t1", n, "/pool/t1/"+n, "rw")); err != nil {
+			t.Fatalf("create %s: %v", n, err)
+		}
+	}
+	// A different tenant's row must NOT appear in t1's list.
+	if _, err := s.VolumeDefCreate(ctx, mkVolumeDef("t2", "other", "/pool/t2/other", "rw")); err != nil {
+		t.Fatalf("create t2: %v", err)
+	}
+	rows, err := s.VolumeDefList(ctx, "t1")
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(rows) != 3 {
+		t.Fatalf("list returned %d rows, want 3", len(rows))
+	}
+	// Ordered by name.
+	if rows[0].Name != "alpha" || rows[1].Name != "beta" || rows[2].Name != "gamma" {
+		t.Errorf("list order = %s,%s,%s want alpha,beta,gamma", rows[0].Name, rows[1].Name, rows[2].Name)
+	}
+}
+
+// testVolumeDefCreateUpdatesDefinition pins the tool's "re-create with a
+// different mode updates the existing row" semantics (idempotent repoint).
+func testVolumeDefCreateUpdatesDefinition(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	first, err := s.VolumeDefCreate(ctx, mkVolumeDef("", "data", "/pool/_shared/data", "rw"))
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	second, err := s.VolumeDefCreate(ctx, mkVolumeDef("", "data", "/pool/_shared/data", "ro"))
+	if err != nil {
+		t.Fatalf("re-create: %v", err)
+	}
+	if !jsonEqual(second.Definition, `{"path":"/pool/_shared/data","mode":"ro"}`) {
+		t.Errorf("definition not updated: %s", second.Definition)
+	}
+	// created_at preserved across the update; only one row exists.
+	if !second.CreatedAt.Equal(first.CreatedAt) {
+		t.Errorf("created_at changed on update: %v -> %v", first.CreatedAt, second.CreatedAt)
+	}
+	rows, _ := s.VolumeDefList(ctx, "")
+	if len(rows) != 1 {
+		t.Errorf("update minted a new row: %d rows", len(rows))
 	}
 }

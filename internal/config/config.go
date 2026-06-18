@@ -806,6 +806,20 @@ type AgentDef struct {
 	//                            orchestrator privilege)
 	SkillDefScopes []string `yaml:"skill_def_scopes"`
 
+	// VolumeDefScopes is the RFC AH Phase 2a VolumeDef tool capability
+	// gate. Default-deny when empty. Mirrors SkillDefScopes (no "self" —
+	// a volume has no agent identity). Closed set:
+	//
+	//   - "named:<volume-name>" → may create/delete/purge the named
+	//                             single volume (multi-entry)
+	//   - "any"                 → unrestricted (operator-blessed
+	//                             dynamic-ensemble launcher privilege)
+	//
+	// Gates create/delete/purge only; get/list are tenant-scoped reads
+	// available to any bound agent (mirrors the other Def families'
+	// read posture).
+	VolumeDefScopes []string `yaml:"volume_def_scopes"`
+
 	// EvaluationScopes is the v0.8.5 Evaluation tool capability gate.
 	// Multi-select; default-deny when empty. Closed set:
 	//
@@ -1264,6 +1278,15 @@ type Volume struct {
 	// Default marks this volume as the one a tool call uses when it omits
 	// the `volume` argument. At most one volume may set this (validated).
 	Default bool `yaml:"default"`
+	// DynamicRoot marks this static volume as the parent under which the
+	// RFC AH Phase 2a dynamic VolumeDef substrate provisions per-tenant
+	// directories (`<path>/<tenant-segment>/<name>`). At most ONE static
+	// volume may set this (validated). When no volume sets it, `VolumeDef
+	// create` refuses — there is no operator-blessed root to confine
+	// dynamic volumes inside. The dynamic root itself must (already) exist
+	// + be a directory, exactly like any static volume; a dynamic volume's
+	// mode (ro/rw) is caller-chosen, independent of the root's mode.
+	DynamicRoot bool `yaml:"dynamic_root"`
 }
 
 // ReadOnly reports whether this volume is read-only. Empty Mode (the
@@ -3153,6 +3176,7 @@ func addContextToolDefaults(cfg *Config) {
 // call time (the TOCTOU-safe containment check is unchanged).
 func validateVolumes(c *Config) error {
 	defaultSeen := ""
+	dynamicRootSeen := ""
 	// Deterministic iteration order so the "two defaults" error names a
 	// stable pair across runs (Go map order is randomised).
 	names := make([]string, 0, len(c.Volumes))
@@ -3191,6 +3215,16 @@ func validateVolumes(c *Config) error {
 				return fmt.Errorf("volumes: at most one volume may be default:true (found %q and %q)", defaultSeen, name)
 			}
 			defaultSeen = name
+		}
+		// RFC AH Phase 2a: at most one static volume may be the dynamic
+		// root — the single operator-blessed parent the VolumeDef substrate
+		// provisions (and confines) dynamic volumes inside. Two roots would
+		// make "which parent does a create land in" ambiguous.
+		if v.DynamicRoot {
+			if dynamicRootSeen != "" {
+				return fmt.Errorf("volumes: at most one volume may be dynamic_root:true (found %q and %q)", dynamicRootSeen, name)
+			}
+			dynamicRootSeen = name
 		}
 	}
 	return nil
@@ -3513,6 +3547,7 @@ func agentFromDiscovered(d *agents.Agent) AgentDef {
 		},
 		AgentDefScopes:   d.AgentDefScopes,
 		SkillDefScopes:   d.SkillDefScopes,
+		VolumeDefScopes:  d.VolumeDefScopes,
 		EvaluationScopes: d.EvaluationScopes,
 		// F14: an MD-declared `interruption:` block now flows to config
 		// (parity with channels) so it takes effect at runtime AND the
@@ -3627,6 +3662,9 @@ func mergeAgentDef(base, override AgentDef) AgentDef {
 	}
 	if override.SkillDefScopes != nil {
 		out.SkillDefScopes = override.SkillDefScopes
+	}
+	if override.VolumeDefScopes != nil {
+		out.VolumeDefScopes = override.VolumeDefScopes
 	}
 	if override.EvaluationScopes != nil {
 		out.EvaluationScopes = override.EvaluationScopes
@@ -3951,6 +3989,26 @@ func validateSkillDefScope(sc string) error {
 		return nil
 	}
 	return fmt.Errorf("unknown scope %q (want one of: descendants, any, or \"named:<skill-name>\")", sc)
+}
+
+// validateVolumeDefScope checks one entry in an agent's
+// volume_def_scopes list (RFC AH Phase 2a). Closed set, mirroring
+// skill_def_scopes minus "descendants" (volumes have no lineage):
+//
+//   - "any"
+//   - "named:<volume-name>" where <volume-name> is non-empty
+func validateVolumeDefScope(sc string) error {
+	if sc == "any" {
+		return nil
+	}
+	if strings.HasPrefix(sc, "named:") {
+		ref := strings.TrimPrefix(sc, "named:")
+		if ref == "" {
+			return fmt.Errorf("volume_def_scopes: \"named:\" requires a non-empty volume name (e.g. \"named:repo-a\")")
+		}
+		return nil
+	}
+	return fmt.Errorf("unknown scope %q (want \"any\" or \"named:<volume-name>\")", sc)
 }
 
 // validateAgentChannelEntry checks one publish/subscribe entry on
@@ -4304,6 +4362,13 @@ func validate(c *Config) error {
 		for i, sc := range agent.SkillDefScopes {
 			if err := validateSkillDefScope(sc); err != nil {
 				return fmt.Errorf("agent %q: skill_def_scopes[%d]: %w", name, i, err)
+			}
+		}
+		// VolumeDef tool (RFC AH Phase 2a): validate volume_def_scopes
+		// entries. Closed set: "named:<volume-name>" / "any".
+		for i, sc := range agent.VolumeDefScopes {
+			if err := validateVolumeDefScope(sc); err != nil {
+				return fmt.Errorf("agent %q: volume_def_scopes[%d]: %w", name, i, err)
 			}
 		}
 		// Evaluation tool (v0.8.5): validate evaluation_scopes entries.

@@ -54,8 +54,47 @@ host policy.
   read_root / write_root / bash_cwd dump for an unbound agent.
 
 The TOCTOU-safe path-containment code (`resolveInsideRoot` and siblings) is
-unchanged — volumes only change *which root is passed in*. Phase 2 (the dynamic,
-tenant-scoped `VolumeDef` substrate) is a separate, later release.
+unchanged — volumes only change *which root is passed in*.
+
+**📁 Filesystem Volumes — persistent dynamic `VolumeDef` substrate (RFC AH
+Phase 2a).** Static volumes (Phase 1) need the operator to pre-declare every
+volume in yaml. Phase 2a adds the runtime-mutable, tenant-scoped **`VolumeDef`**
+substrate so a tenant can provision volumes per job without a config change.
+
+- **The path is runtime-derived — never caller-supplied.** `create` takes a
+  **name + mode only**; the runtime derives
+  `path = <dynamic_root>/<tenant-segment>/<name>` (tenant-segment = the tenant
+  id, or `_shared` for the shared tenant). Names must match
+  `^[a-z0-9][a-z0-9_-]{0,63}$` (no slashes/dots), so a name can't inject a path
+  component. There is NO caller-controlled path anywhere.
+- **The dynamic root** is a static volume marked `dynamic_root: true` — the
+  single operator-blessed parent every dynamic volume is provisioned + confined
+  inside (at most one; config-load error otherwise). With none configured,
+  `VolumeDef create` refuses. A dynamic volume's mode (ro/rw) is caller-chosen,
+  independent of the root's mode.
+- **A flat substrate, not the versioned lifecycle.** A Volume points at mutable
+  on-disk state outside the def, so fork/promote/roll-back are meaningless: a
+  flat `(tenant_id, name)` table (no version, no `parent_def_id`, no
+  `content_sha256`) with a `create` / `get` / `list` / `delete` / `purge` op
+  set. `delete` removes the mapping but **leaves files on disk**; `purge`
+  removes the mapping **and** the directory tree.
+- **The `purge` fence.** The destructive op is fenced four ways before
+  `os.RemoveAll`: tenant ownership (opaque-404 cross-tenant); **re-derive** the
+  path from `(dynamic_root, tenant, name)` rather than trust the stored path
+  (a tampered row can't redirect the delete); `EvalSymlinks` + delete the
+  resolved real path (a swapped symlink can't redirect outside); and assert the
+  resolved path is strictly inside the dynamic root under the tenant segment,
+  and is not the root or tenant dir itself.
+- **Capability-gated + tenant-confined.** Per-agent `volume_def_scopes`
+  (default-deny; `any` / `named:<volume>`) gates create/delete/purge; get/list
+  are tenant-scoped reads. Authoring goes through the in-loop tool, the MCP
+  server, or the tenant-confined `POST /v1/_volumedef` (RFC AF `substrate:tenant`
+  scope). An agent binds to a dynamic volume by name exactly like a static one;
+  run-start resolves it (static-first, then tenant-dynamic, then shared) and the
+  file/exec tools confine to its root — spawn narrowing unchanged.
+- **Not in Phase 2a (follow-ups):** ephemeral run-scoped volumes + the
+  completion-purge sweeper (Phase 2b); gRPC / MCP-meta-tool parity for the
+  authoring surface; Web UI; versioning.
 
 ## What's in v1.0.2
 

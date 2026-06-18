@@ -1203,6 +1203,30 @@ type Store interface {
 	// the injected signFn. Idempotent; boot-time-only.
 	BackfillMCPServerDefContentSHA256(ctx context.Context, signFn func(name string, def []byte) (string, error)) (int, error)
 
+	// ---- RFC AH Phase 2a VolumeDef substrate ----
+	//
+	// Deliberately NOT the content-addressed versioning lifecycle the
+	// other Def families use. A Volume is a POINTER to mutable on-disk
+	// state that lives outside the def, so "fork/promote/roll back" is
+	// meaningless. Instead: a FLAT (tenant_id, name) table with a create /
+	// delete / purge op set. No version column, no parent_def_id, no
+	// content_sha256, no active-pointer table. The Definition payload is
+	// the runtime-derived {"path":..,"mode":..} — never a caller-supplied
+	// host path (the tool derives it; see internal/tools/builtin/volumedef.go).
+	//
+	// VolumeDefGetByName returns *ErrNotFound on a miss. tenantID "" = the
+	// shared/operator/legacy tenant. All four methods scope by tenant_id —
+	// tenant isolation is enforced at the store boundary AND re-checked at
+	// the tool layer (opaque-404).
+	VolumeDefCreate(ctx context.Context, row VolumeDefRow) (VolumeDefRow, error)
+	VolumeDefGetByName(ctx context.Context, tenantID, name string) (VolumeDefRow, error)
+	VolumeDefList(ctx context.Context, tenantID string) ([]VolumeDefRow, error)
+	// VolumeDefDelete removes the (tenant_id, name) row. Returns
+	// (found, error): found=false when no row existed (idempotent delete).
+	// It NEVER touches the on-disk directory — that is the tool's `purge`
+	// op, which deletes the row AND the files behind a four-way fence.
+	VolumeDefDelete(ctx context.Context, tenantID, name string) (bool, error)
+
 	// ---- v1.x RFC E ScheduleDef substrate ----
 	//
 	// Fourth substrate primitive after AgentDef + SkillDef + MCPServerDef.
@@ -2154,6 +2178,31 @@ type MCPServerDefActiveEntry struct {
 	// TenantID is the RFC N tenant-isolation axis (part of the
 	// mcp_server_def_active PK). "" = the shared/operator/legacy tenant.
 	TenantID string `json:"tenant_id,omitempty"`
+}
+
+// VolumeDefRow is one persistent dynamic volume (RFC AH Phase 2a). Flat
+// shape — PK (tenant_id, name) — NOT the content-addressed/versioned Def
+// shape: a Volume points at mutable on-disk state, so it has no version,
+// no parent_def_id, no content_sha256.
+//
+// Definition holds the runtime-derived {"path":..,"mode":..} JSON. Path
+// is ALWAYS `<dynamic_root>/<tenant-segment>/<name>` derived by the tool
+// — never a caller-supplied host path. The purge op re-derives the path
+// rather than trusting this stored value, so a tampered row can't redirect
+// a delete (see internal/tools/builtin/volumedef.go).
+type VolumeDefRow struct {
+	// TenantID is the RFC N tenant-isolation axis. "" = the shared/
+	// operator/legacy tenant. Set from the authoritative principal at the
+	// write site, never from the wire.
+	TenantID string `json:"tenant_id,omitempty"`
+	// Name is the dynamic volume name (charset-validated at the tool
+	// layer to `^[a-z0-9][a-z0-9_-]{0,63}$` so it can't inject path
+	// components).
+	Name string `json:"name"`
+	// Definition is the {"path":..,"mode":..} body.
+	Definition json.RawMessage `json:"definition"`
+	CreatedAt  time.Time       `json:"created_at"`
+	UpdatedAt  time.Time       `json:"updated_at"`
 }
 
 // ScheduleDefRow mirrors AgentDefRow / SkillDefRow / MCPServerDefRow

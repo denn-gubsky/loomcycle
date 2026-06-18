@@ -91,6 +91,15 @@ func (s *Server) handleSubstrateMemoryBackendDef(w http.ResponseWriter, r *http.
 	s.dispatchSubstrate(w, r, "MemoryBackendDef", s.MemoryBackendDef)
 }
 
+// handleSubstrateVolumeDef serves POST /v1/_volumedef.
+// RFC AH Phase 2a dynamic-volume substrate. Bearer-authed; same dispatch
+// shape as the other substrate endpoints. The capability gate is the
+// agent's volume_def_scopes — substrateAdminCtx grants ["any"] so the
+// HTTP-admin caller (operator trust) isn't default-denied.
+func (s *Server) handleSubstrateVolumeDef(w http.ResponseWriter, r *http.Request) {
+	s.dispatchSubstrate(w, r, "VolumeDef", s.VolumeDef)
+}
+
 // dispatchSubstrate is the shared body of the two handlers.
 // connectorFn is the Connector method (already a method value
 // bound to the Server). toolName is the label used in error
@@ -204,6 +213,11 @@ func substrateAdminCtx(ctx context.Context) context.Context {
 		SelfName: substrateAdminAgentName,
 	})
 	ctx = tools.WithSkillDefPolicy(ctx, tools.SkillDefPolicyValue{
+		Scopes: []string{"any"},
+	})
+	// VolumeDef (RFC AH Phase 2a): "any" scope so the HTTP-admin caller can
+	// create/delete/purge any dynamic volume name (operator trust).
+	ctx = tools.WithVolumeDefPolicy(ctx, tools.VolumeDefPolicyValue{
 		Scopes: []string{"any"},
 	})
 	// ScheduleDef: same operator-trust posture; "any" scope lets the

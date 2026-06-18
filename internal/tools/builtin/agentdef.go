@@ -880,6 +880,11 @@ type mergedDef struct {
 	SkillDefScopes         []string `json:"skill_def_scopes,omitempty"`
 	A2AServerCardDefScopes []string `json:"a2a_server_card_def_scopes,omitempty"`
 	A2AAgentDefScopes      []string `json:"a2a_agent_def_scopes,omitempty"`
+	// VolumeDefScopes is the RFC AH Phase 2a slice of the F40 closure —
+	// without it a runtime-authored ensemble launcher that provisions
+	// dynamic volumes comes back default-deny on reload. Same exclusion
+	// from content_sha256 (authority, not content).
+	VolumeDefScopes []string `json:"volume_def_scopes,omitempty"`
 }
 
 func (d *mergedDef) applyOverlay(ov mergedDef) {
@@ -989,6 +994,9 @@ func (d *mergedDef) applyOverlay(ov mergedDef) {
 	if ov.A2AAgentDefScopes != nil {
 		d.A2AAgentDefScopes = ov.A2AAgentDefScopes
 	}
+	if ov.VolumeDefScopes != nil {
+		d.VolumeDefScopes = ov.VolumeDefScopes
+	}
 }
 
 // normalize fills derived fields that the static config-load path
@@ -1049,6 +1057,7 @@ func staticToMergedDef(s config.AgentDef) mergedDef {
 		SkillDefScopes:         s.SkillDefScopes,
 		A2AServerCardDefScopes: s.A2AServerCardDefScopes,
 		A2AAgentDefScopes:      s.A2AAgentDefScopes,
+		VolumeDefScopes:        s.VolumeDefScopes,
 	}
 }
 

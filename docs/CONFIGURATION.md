@@ -630,6 +630,7 @@ Parsed at `internal/agents/loader.go:199` (the `frontmatter` struct):
 | `agent_def_scopes` | `[]string` | AgentDef tool scope | `self` / `descendants` / `named:<name>` / `any`. Empty = default-deny. |
 | `evaluation_scopes` | `[]string` | Evaluation tool scope | `submit_self` / `submit_siblings` / etc. Empty = default-deny. |
 | `volumes` | `[]string` | Filesystem-volume binding | Names of top-level `volumes:` entries the agent's file/exec tools may use. Empty = implicitly bound to `[default]`. Confines the agent to exactly the named volumes (does NOT also grant `default`). See §9d. |
+| `volume_def_scopes` | `[]string` | VolumeDef tool scope | `any` / `named:<volume>`. Empty = default-deny. Gates create/delete/purge of dynamic volumes; get/list are tenant-scoped reads. See §9d.1. |
 
 ### Worked examples (real agents from jobs-search-agent)
 
@@ -913,7 +914,46 @@ agents:
 
 **Introspection.** `Context op=self` reports the bound volumes (`volumes.bindings`: name / path / mode / default), so an agent knows precisely which roots it may touch and which verb each allows. An unbound agent still sees the legacy `sandbox` block.
 
-> Phase 1 is **static** volumes only. The dynamic, tenant-scoped, auto-provisioned `VolumeDef` substrate (runtime `create` / `delete` / `purge`, ephemeral run-scoped volumes) is Phase 2, a separate release.
+### 9d.1 Dynamic volumes — the `VolumeDef` substrate (RFC AH Phase 2a)
+
+Static volumes (above) require the operator to pre-declare every volume in yaml. The **`VolumeDef`** tool adds runtime-mutable, tenant-scoped, **confined** volumes so a tenant can provision a working tree per job without a config change.
+
+**The dynamic root.** Mark exactly one static volume `dynamic_root: true` — the operator-blessed parent under which all dynamic volumes are provisioned and confined:
+
+```yaml
+volumes:
+  default: { path: /work/sandbox, mode: rw, default: true }
+  pool:    { path: /work/dynamic, mode: rw, dynamic_root: true }
+```
+
+At most one volume may set `dynamic_root` (config-load error otherwise), and like any static volume its `path` must already exist and be a directory. With no `dynamic_root` declared, `VolumeDef create` refuses.
+
+**The `VolumeDef` tool.** A per-agent in-loop tool (also reachable over the MCP server and the `POST /v1/_volumedef` admin endpoint). Ops:
+
+| op | effect |
+|----|--------|
+| `create {name, mode}` | Derive `path = <dynamic_root>/<tenant-segment>/<name>` (tenant-segment = the tenant id, or `_shared` for the shared tenant), `mkdir` it (`0700`), persist the mapping. `mode` is `rw` (default) or `ro`, caller-chosen. **Idempotent** — same mode is a no-op, a different mode updates. Refused on a static-name collision (yaml is ground truth) or when no `dynamic_root` is configured. |
+| `get {name}` / `list` | Tenant-scoped reads — another tenant's volume is reported as not-found. |
+| `delete {name}` | Remove the mapping, **LEAVE files on disk** (unmap). |
+| `purge {name}` | Remove the mapping **AND** delete the directory tree (the destructive op). |
+
+**The path is runtime-derived — never caller-supplied.** `create` takes a name + mode only; the path is derived. Names must match `^[a-z0-9][a-z0-9_-]{0,63}$` (no slashes/dots), so a name can't inject a path component. `purge` re-derives the path (it never trusts the stored value), `EvalSymlinks` it, and refuses unless the resolved real path is strictly inside the dynamic root under the tenant's segment — so a recursive delete can only ever target the tenant's own volume directory.
+
+**Capability gate — `volume_def_scopes`.** The tool is default-deny. Grant it per-agent (closed set: `any` or `named:<volume>`):
+
+```yaml
+agents:
+  ensemble-launcher:
+    allowed_tools: [VolumeDef, Agent, Read, Write, Bash]
+    volume_def_scopes: [any]        # may create/delete/purge any dynamic volume
+    # volume_def_scopes: [named:repo-a]   # or only the named volume(s)
+```
+
+Without a grant, create/delete/purge are refused; `get`/`list` are tenant-scoped reads available to any agent the tool is attached to. The `POST /v1/_volumedef` endpoint is bearer-authed under the RFC AF `substrate:tenant` scope (the operator-trust admin caller is granted `any`).
+
+**Binding.** After `create`, an agent binds to a dynamic volume by name exactly like a static one (`volumes: [repo-a]`). Run-start resolves the name static-first, then the agent's own tenant's dynamic volumes, then the shared tenant's — an operator static volume can never be shadowed by a dynamic one. Spawn narrowing is unchanged.
+
+> **Not in Phase 2a:** ephemeral run-scoped volumes + their completion-purge sweeper (Phase 2b); gRPC / MCP-meta-tool parity for the authoring surface; Web UI; versioning. The in-loop tool and the HTTP endpoint are the Phase 2a authoring surfaces.
 
 ---
 

@@ -189,3 +189,57 @@ agents:
 		t.Fatal("an invalid volume mode must be a config-load error")
 	}
 }
+
+// RFC AH Phase 2a: two volumes marked dynamic_root:true is a config-load
+// error — there can be exactly one operator-blessed parent the VolumeDef
+// substrate provisions dynamic volumes inside.
+func TestLoadVolumes_TwoDynamicRootsErrors(t *testing.T) {
+	d := t.TempDir()
+	yamlPath := writeVolConfig(t, `
+volumes:
+  pool-a: { path: `+d+`, mode: rw, dynamic_root: true }
+  pool-b: { path: `+d+`, mode: rw, dynamic_root: true }
+agents:
+  ag: { model: claude-sonnet-4-6 }
+`)
+	_, err := Load(yamlPath)
+	if err == nil || !strings.Contains(err.Error(), "at most one volume may be dynamic_root") {
+		t.Fatalf("expected two-dynamic-roots error, got %v", err)
+	}
+}
+
+// A single dynamic_root:true volume loads + carries the flag through.
+func TestLoadVolumes_DynamicRootLoads(t *testing.T) {
+	d, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	yamlPath := writeVolConfig(t, `
+volumes:
+  pool: { path: `+d+`, mode: rw, dynamic_root: true }
+agents:
+  a: { model: claude-sonnet-4-6 }
+`)
+	cfg, err := Load(yamlPath)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !cfg.Volumes["pool"].DynamicRoot {
+		t.Errorf("dynamic_root flag dropped: %+v", cfg.Volumes["pool"])
+	}
+}
+
+// An invalid volume_def_scopes entry (not "any" / "named:<x>") errors.
+func TestLoadVolumes_InvalidVolumeDefScopeErrors(t *testing.T) {
+	d := t.TempDir()
+	yamlPath := writeVolConfig(t, `
+volumes:
+  pool: { path: `+d+`, mode: rw, dynamic_root: true }
+agents:
+  a: { model: claude-sonnet-4-6, volume_def_scopes: [self] }
+`)
+	_, err := Load(yamlPath)
+	if err == nil || !strings.Contains(err.Error(), "volume_def_scopes") {
+		t.Fatalf("expected volume_def_scopes validation error, got %v", err)
+	}
+}

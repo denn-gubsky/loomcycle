@@ -238,6 +238,10 @@ type SubstrateAgentDef struct {
 	SkillDefScopes         []string `json:"skill_def_scopes,omitempty"`
 	A2AServerCardDefScopes []string `json:"a2a_server_card_def_scopes,omitempty"`
 	A2AAgentDefScopes      []string `json:"a2a_agent_def_scopes,omitempty"`
+	// VolumeDefScopes (RFC AH Phase 2a) — the dynamic-volume slice of the
+	// F40 closure, so a runtime-authored ensemble launcher's volume
+	// authority survives the round-trip instead of defaulting to deny.
+	VolumeDefScopes []string `json:"volume_def_scopes,omitempty"`
 }
 
 // ToConfigDef projects the substrate JSON shape onto config.AgentDef
@@ -277,6 +281,7 @@ func (s SubstrateAgentDef) ToConfigDef() config.AgentDef {
 		SkillDefScopes:         s.SkillDefScopes,
 		A2AServerCardDefScopes: s.A2AServerCardDefScopes,
 		A2AAgentDefScopes:      s.A2AAgentDefScopes,
+		VolumeDefScopes:        s.VolumeDefScopes,
 	}
 }
 
