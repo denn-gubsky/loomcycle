@@ -151,6 +151,38 @@ tenant.
 - **Not in Phase 2b (follow-ups):** gRPC / MCP-meta-tool parity for the
   `ephemeral` create param; Web UI; Phase 3 (legacy-jail removal).
 
+**🖥️ Filesystem Volumes — Web UI management (RFC AH Phase 4).** A dedicated
+**Volumes** console tab (under `/ui`, admin-gated to match Library/Integrations)
+to view and manage volumes for the operator's tenant. Web-UI-only — it consumes
+the existing HTTP surface; no new runtime primitive.
+
+- **Persistent sub-tab.** A flat table merging the **static** `volumes:`
+  universe (source `static`, **read-only** — operator yaml is ground truth,
+  including the one flagged `dynamic_root`) with the tenant's **dynamic**
+  `VolumeDef`s (source `dynamic`). Dynamic rows get **Delete** (non-destructive
+  — unmaps the volume, keeps files on disk; a simple confirm, matching the
+  retire pattern) and **Purge** (destructive). A **Create** button provisions a
+  dynamic volume by name + mode (the runtime derives the path). A **bound by**
+  column cross-references which AgentDefs bind each volume (`AgentDef.volumes`,
+  now surfaced on `/v1/_library/agents`).
+- **Ephemeral sub-tab.** A read-only flat table of the tenant's **live**
+  ephemeral volumes (name / run_id / mode / created_at), polled every 10s, with
+  a "live, run-scoped, auto-purged at run completion" note.
+- **Type-to-confirm purge.** `Purge` opens a modal that names the directory it
+  `RemoveAll`s and requires the operator to **type the volume's name** to enable
+  the confirm button — distinct from `Delete`. The server-side four-way fence
+  remains the real guard; this is a UI affordance.
+- **Two additive read endpoints** (no new primitive): **`GET /v1/_volumes`**
+  (merged persistent universe — statics shown to all as the bind floor, dynamics
+  filtered to the caller's tenant) and **`GET /v1/_volumes/ephemeral`** (the
+  tenant's live ephemeral volumes, backed by the cross-replica
+  `ephemeral_volume_defs` table via the new `EphemeralVolumeListByTenant` store
+  method). Both derive the tenant from the authoritative principal (never the
+  wire) and are gated at `ScopeTenant` (admin satisfies); dynamic + ephemeral
+  rows are opaque cross-tenant. CRUD stays on the existing `POST /v1/_volumedef`.
+- **Not in Phase 4 (follow-ups):** broader tenant-operator UI access (the tab is
+  admin-gated for now); Phase 5 (gRPC / MCP / TS / Python `VolumeDef` parity).
+
 ## What's in v1.0.2
 
 **🌐 Permitted host-widen grants now work with no static HTTP allowlist.** A
