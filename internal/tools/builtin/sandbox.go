@@ -41,6 +41,23 @@ import (
 //     and Bash require rw; Bash cannot truly enforce ro, so it refuses
 //     rather than ship a false guarantee — RFC §6).
 func effectiveRoot(ctx context.Context, fallbackRoot, volumeName string, needWrite bool) (string, error) {
+	// RFC AH Phase 2b — ephemeral (run-tree-scoped) volumes resolve FIRST,
+	// but ONLY for an explicitly NAMED volume (ephemeral volumes are always
+	// named — an omitted `volume` uses the existing default-binding logic
+	// below). The run-scoped set is the resolution source; the ro/rw axis is
+	// enforced here and the file tools' UNCHANGED resolveInsideRoot still
+	// applies containment per-volume. A name that is NOT an ephemeral volume
+	// falls through to the Phase-1/2a VolumePolicy binding logic — ephemeral
+	// resolution is purely additive, it never bypasses confinement.
+	if volumeName != "" {
+		if ref, ok := tools.EphemeralVolumes(ctx).Get(volumeName); ok {
+			if needWrite && ref.ReadOnly {
+				return "", fmt.Errorf("volume %q is read-only; this operation requires a read-write volume", volumeName)
+			}
+			return ref.Root, nil
+		}
+	}
+
 	pol := tools.VolumePolicy(ctx)
 	if !pol.Active {
 		// No volume confinement in force → legacy construction-time root.

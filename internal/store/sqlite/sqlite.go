@@ -543,6 +543,22 @@ func (s *Store) migrate(ctx context.Context) error {
 			updated_at  INTEGER NOT NULL,
 			PRIMARY KEY (tenant_id, name)
 		)`,
+		// RFC AH Phase 2b — ephemeral (run-tree-scoped) volumes. SEPARATE
+		// from volume_defs: PK (root_run_id, name), NOT (tenant_id, name) —
+		// two concurrent runs (any tenant) can each own a `work` volume with
+		// no clobber. tenant_id is carried for the purge fence; definition is
+		// the runtime-derived {"path":..,"mode":..} where path is always
+		// <dynamic_root>/_ephemeral/<root_run_id>/<name>. The row backs the
+		// inline run-completion purge + the crash-recovery sweeper; the
+		// in-memory EphemeralVolumeSet is the resolution source.
+		`CREATE TABLE IF NOT EXISTS ephemeral_volume_defs (
+			root_run_id TEXT NOT NULL,
+			name        TEXT NOT NULL,
+			tenant_id   TEXT NOT NULL DEFAULT '',
+			definition  TEXT NOT NULL,
+			created_at  INTEGER NOT NULL,
+			PRIMARY KEY (root_run_id, name)
+		)`,
 		// RFC L OSS multi-tenant authorization — bearer tokens bound to
 		// an authoritative principal (tenant_id + subject + allowed_scopes).
 		// NOT versioned/forkable: no version, no active pointer, no parent.

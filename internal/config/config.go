@@ -2109,6 +2109,17 @@ type Env struct {
 	// LOOMCYCLE_DYNAMIC_AGENT_SWEEP_INTERVAL_MS.
 	DynamicAgentSweepInterval time.Duration
 
+	// EphemeralVolumeSweepInterval — RFC AH Phase 2b. Cadence for the
+	// crash-recovery sweep of ephemeral (run-tree-scoped) volumes whose
+	// owning run is terminal-and-not-paused: a fenced os.RemoveAll of the
+	// <dynamic_root>/_ephemeral/<root_run_id>/ subtree + its rows. The
+	// inline run-completion purge is the primary path; this backstops a
+	// crashed host (the inline purge never ran). Default 60s. 0 disables
+	// (the inline purge still runs; only crash cleanup lapses). Cluster-gated
+	// by coord.LockKeyEphemeralVolumeSweeper. Env:
+	// LOOMCYCLE_EPHEMERAL_VOLUME_SWEEP_MS.
+	EphemeralVolumeSweepInterval time.Duration
+
 	// ToolParallelism caps how many tool_calls from a single
 	// assistant turn run concurrently. Default 8. Set to 1 to
 	// force serial dispatch (debug / determinism). Field 0
@@ -2998,6 +3009,19 @@ func Load(path string) (*Config, error) {
 				cfg.Env.DynamicAgentSweepInterval = 0
 			} else {
 				cfg.Env.DynamicAgentSweepInterval = time.Duration(n) * time.Millisecond
+			}
+		}
+	}
+
+	// RFC AH Phase 2b ephemeral-volume crash-recovery sweeper. Default 60s;
+	// 0 disables (the inline run-completion purge still runs).
+	cfg.Env.EphemeralVolumeSweepInterval = 60 * time.Second
+	if v := os.Getenv("LOOMCYCLE_EPHEMERAL_VOLUME_SWEEP_MS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			if n <= 0 {
+				cfg.Env.EphemeralVolumeSweepInterval = 0
+			} else {
+				cfg.Env.EphemeralVolumeSweepInterval = time.Duration(n) * time.Millisecond
 			}
 		}
 	}

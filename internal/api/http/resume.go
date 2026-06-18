@@ -204,6 +204,10 @@ func (s *Server) resumePausedRun(ctx context.Context, run store.Run) error {
 		TenantID:      run.TenantID,
 		ParentContext: run.ParentContext,
 		otelSpan:      runSpan,
+		// RFC AH Phase 2b: a resumed run is top-level (no parent) — it owns the
+		// ephemeral tree purge at completion. RootRunID is its own id.
+		IsTopLevel: true,
+		RootRunID:  run.ID,
 	}
 
 	// Claim the run in the cancel registry. ErrInUse ⇒ already live on this
@@ -233,6 +237,7 @@ func (s *Server) resumePausedRun(ctx context.Context, run store.Run) error {
 		UserID:        run.UserID,
 		TenantID:      run.TenantID,
 		AgentID:       run.AgentID,
+		RootRunID:     run.ID, // RFC AH Phase 2b: resumed run roots its own tree
 		UserTier:      run.UserTier,
 		ParentContext: run.ParentContext,
 		// UserBearer / UserCredentials are intentionally absent — secrets are
@@ -254,6 +259,13 @@ func (s *Server) resumePausedRun(ctx context.Context, run store.Run) error {
 	// Without this a volume-bound agent would resume into the legacy jail — a
 	// silent confinement downgrade across pause / snapshot / cross-instance resume.
 	loopCtx = tools.WithVolumePolicy(loopCtx, s.volumePolicyForAgent(loopCtx, agentDef))
+	// RFC AH Phase 2b: re-attach a fresh run-scoped ephemeral set, REHYDRATED
+	// from any ephemeral_volume_defs rows this run created before it was
+	// paused/snapshotted (the sweeper skips paused runs, so the rows + on-disk
+	// dirs survived). Without this a resumed paused run would lose in-memory
+	// resolution of its own ephemeral volumes. Best-effort: a store fault
+	// leaves an empty set (the agent can re-create) rather than failing resume.
+	loopCtx = tools.WithEphemeralVolumes(loopCtx, s.rehydrateEphemeralVolumes(loopCtx, run.ID))
 	loopCtx = tools.WithEventEmitter(loopCtx, emit)
 	adPolicy, evPolicy := s.substratePoliciesForAgent(agentDef, run.Agent)
 	loopCtx = tools.WithAgentDefPolicy(loopCtx, adPolicy)

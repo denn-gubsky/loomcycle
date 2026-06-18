@@ -121,6 +121,10 @@ var (
 	// pause_state='paused' runs (F42 / RFC X Phase 2) so exactly ONE replica
 	// resurrects each paused run's loop in a cluster — not a periodic sweep.
 	LockKeyResumePausedRuns int64
+	// LockKeyEphemeralVolumeSweeper gates the RFC AH Phase 2b crash-recovery
+	// sweep of ephemeral volumes whose owning run is terminal (not paused), so
+	// only one replica per tick runs the fenced os.RemoveAll.
+	LockKeyEphemeralVolumeSweeper int64
 )
 
 func init() {
@@ -132,6 +136,7 @@ func init() {
 	LockKeyDynamicAgentSweeper = fnvKey("dynamic_agent_sweeper")
 	LockKeyReplicasSweeper = fnvKey("replicas_sweeper")
 	LockKeyResumePausedRuns = fnvKey("resume_paused_runs")
+	LockKeyEphemeralVolumeSweeper = fnvKey("ephemeral_volume_sweeper")
 }
 
 // fnvKey hashes a sweeper-name string to a stable int64 lock key.

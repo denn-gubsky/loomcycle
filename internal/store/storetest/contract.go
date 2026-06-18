@@ -276,6 +276,10 @@ func Run(t *testing.T, factory Factory) {
 		{"VolumeDefDelete", testVolumeDefDelete},
 		{"VolumeDefList", testVolumeDefList},
 		{"VolumeDefCreateUpdatesDefinition", testVolumeDefCreateUpdatesDefinition},
+		// RFC AH Phase 2b ephemeral (run-tree-scoped) volumes.
+		{"EphemeralVolumeCreateListDelete", testEphemeralVolumeCreateListDelete},
+		{"EphemeralVolumeSweepCandidatesTerminalOnly", testEphemeralVolumeSweepCandidatesTerminalOnly},
+		{"EphemeralVolumeSweepCandidatesSkipsPaused", testEphemeralVolumeSweepCandidatesSkipsPaused},
 		// RFC L OSS multi-tenant authorization — OperatorTokenDef.
 		{"OperatorTokenDefCreateAndLookup", testOperatorTokenDefCreateAndLookup},
 		{"OperatorTokenDefCurrentByName", testOperatorTokenDefCurrentByName},
@@ -7129,5 +7133,142 @@ func testVolumeDefCreateUpdatesDefinition(t *testing.T, s store.Store) {
 	rows, _ := s.VolumeDefList(ctx, "")
 	if len(rows) != 1 {
 		t.Errorf("update minted a new row: %d rows", len(rows))
+	}
+}
+
+// ---- RFC AH Phase 2b ephemeral volume contract tests ----
+
+func mkEphemeralVolume(rootRunID, name, tenantID, path, mode string) store.EphemeralVolumeDefRow {
+	return store.EphemeralVolumeDefRow{
+		RootRunID:  rootRunID,
+		Name:       name,
+		TenantID:   tenantID,
+		Definition: json.RawMessage(fmt.Sprintf(`{"path":%q,"mode":%q}`, path, mode)),
+	}
+}
+
+// testEphemeralVolumeCreateListDelete pins the create/list/delete-by-run
+// round-trip AND the load-bearing isolation property: the SAME name under
+// two DIFFERENT root runs coexists (the (root_run_id, name) PK), so two
+// concurrent runs never clobber each other's `work`.
+func testEphemeralVolumeCreateListDelete(t *testing.T, s store.Store) {
+	ctx := context.Background()
+
+	// Two distinct root runs each own a `work` volume — no clobber.
+	if _, err := s.EphemeralVolumeCreate(ctx, mkEphemeralVolume("run-1", "work", "", "/pool/_ephemeral/run-1/work", "rw")); err != nil {
+		t.Fatalf("create run-1/work: %v", err)
+	}
+	if _, err := s.EphemeralVolumeCreate(ctx, mkEphemeralVolume("run-1", "scratch", "", "/pool/_ephemeral/run-1/scratch", "ro")); err != nil {
+		t.Fatalf("create run-1/scratch: %v", err)
+	}
+	if _, err := s.EphemeralVolumeCreate(ctx, mkEphemeralVolume("run-2", "work", "", "/pool/_ephemeral/run-2/work", "rw")); err != nil {
+		t.Fatalf("create run-2/work: %v", err)
+	}
+
+	// List is scoped to one root run, ordered by name.
+	rows, err := s.EphemeralVolumeListByRun(ctx, "run-1")
+	if err != nil {
+		t.Fatalf("list run-1: %v", err)
+	}
+	if len(rows) != 2 || rows[0].Name != "scratch" || rows[1].Name != "work" {
+		t.Fatalf("list run-1 = %+v, want [scratch, work]", rows)
+	}
+	if !jsonEqual(rows[1].Definition, `{"path":"/pool/_ephemeral/run-1/work","mode":"rw"}`) {
+		t.Errorf("run-1/work body = %s", rows[1].Definition)
+	}
+	if rows[1].CreatedAt.IsZero() {
+		t.Errorf("created_at not stamped: %+v", rows[1])
+	}
+
+	// Delete-by-run removes ALL of run-1's rows, returns the count, and
+	// leaves run-2's row untouched.
+	n, err := s.EphemeralVolumeDeleteByRun(ctx, "run-1")
+	if err != nil || n != 2 {
+		t.Fatalf("delete run-1: n=%d err=%v, want (2, nil)", n, err)
+	}
+	if rows, _ := s.EphemeralVolumeListByRun(ctx, "run-1"); len(rows) != 0 {
+		t.Errorf("run-1 rows survived delete: %+v", rows)
+	}
+	if rows, _ := s.EphemeralVolumeListByRun(ctx, "run-2"); len(rows) != 1 {
+		t.Errorf("run-2's row vanished after run-1's delete: %+v", rows)
+	}
+
+	// Idempotent: deleting a run that owns nothing returns (0, nil).
+	if n, err := s.EphemeralVolumeDeleteByRun(ctx, "run-1"); err != nil || n != 0 {
+		t.Errorf("second delete run-1: n=%d err=%v, want (0, nil)", n, err)
+	}
+}
+
+// testEphemeralVolumeSweepCandidatesTerminalOnly verifies the sweeper's work
+// list contains a run whose owning row is TERMINAL but EXCLUDES one that is
+// still running.
+func testEphemeralVolumeSweepCandidatesTerminalOnly(t *testing.T, s store.Store) {
+	ctx := context.Background()
+
+	// A terminal (completed) run with an ephemeral volume → a candidate.
+	doneSess, _ := s.CreateSession(ctx, "tnt-done", "a", "u")
+	doneRun, _ := s.CreateRun(ctx, doneSess.ID, store.RunIdentity{AgentID: "a_ev_done", TenantID: "tnt-done"})
+	if _, err := s.EphemeralVolumeCreate(ctx, mkEphemeralVolume(doneRun.ID, "work", "tnt-done", "/pool/_ephemeral/"+doneRun.ID+"/work", "rw")); err != nil {
+		t.Fatalf("create done ephemeral: %v", err)
+	}
+	if err := s.FinishRun(ctx, doneRun.ID, store.RunCompleted, "end_turn", store.Usage{}, ""); err != nil {
+		t.Fatalf("finish done run: %v", err)
+	}
+
+	// A still-running run with an ephemeral volume → NOT a candidate.
+	liveSess, _ := s.CreateSession(ctx, "tnt-live", "a", "u")
+	liveRun, _ := s.CreateRun(ctx, liveSess.ID, store.RunIdentity{AgentID: "a_ev_live", TenantID: "tnt-live"})
+	if _, err := s.EphemeralVolumeCreate(ctx, mkEphemeralVolume(liveRun.ID, "work", "tnt-live", "/pool/_ephemeral/"+liveRun.ID+"/work", "rw")); err != nil {
+		t.Fatalf("create live ephemeral: %v", err)
+	}
+
+	cands, err := s.EphemeralVolumeSweepCandidates(ctx)
+	if err != nil {
+		t.Fatalf("sweep candidates: %v", err)
+	}
+	got := map[string]string{}
+	for _, c := range cands {
+		got[c.RootRunID] = c.TenantID
+	}
+	if tnt, ok := got[doneRun.ID]; !ok || tnt != "tnt-done" {
+		t.Errorf("terminal run not a candidate (or wrong tenant): got=%v", got)
+	}
+	if _, ok := got[liveRun.ID]; ok {
+		t.Errorf("still-running run wrongly appeared as a sweep candidate")
+	}
+}
+
+// testEphemeralVolumeSweepCandidatesSkipsPaused is the fail-before guard for
+// the paused-skip: a PAUSED run is parked (it will resume + keep using its
+// volumes), so it must NEVER be a sweep candidate even though it is not
+// "running". Dropping the COALESCE(pause_state) NOT IN (paused,pausing)
+// clause makes this run appear → the test fails.
+func testEphemeralVolumeSweepCandidatesSkipsPaused(t *testing.T, s store.Store) {
+	ctx := context.Background()
+
+	sess, _ := s.CreateSession(ctx, "tnt-paused", "a", "u")
+	run, _ := s.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: "a_ev_paused", TenantID: "tnt-paused"})
+	if _, err := s.EphemeralVolumeCreate(ctx, mkEphemeralVolume(run.ID, "work", "tnt-paused", "/pool/_ephemeral/"+run.ID+"/work", "rw")); err != nil {
+		t.Fatalf("create paused ephemeral: %v", err)
+	}
+	// A snapshotted+restored paused run is TERMINAL-status'd... no — a paused
+	// run stays status=running with pause_state=paused. Mark it failed too to
+	// prove the pause_state guard (not just the status filter) is what keeps
+	// it out: a terminal status with pause_state=paused must STILL be skipped.
+	if err := s.FinishRun(ctx, run.ID, store.RunFailed, "", store.Usage{}, "stale-style terminal"); err != nil {
+		t.Fatalf("finish paused run: %v", err)
+	}
+	if err := s.SetRunPauseState(ctx, run.ID, store.PauseStatePaused); err != nil {
+		t.Fatalf("set paused: %v", err)
+	}
+
+	cands, err := s.EphemeralVolumeSweepCandidates(ctx)
+	if err != nil {
+		t.Fatalf("sweep candidates: %v", err)
+	}
+	for _, c := range cands {
+		if c.RootRunID == run.ID {
+			t.Fatalf("PAUSED run appeared as a sweep candidate — its volumes would be wrongly purged before resume")
+		}
 	}
 }

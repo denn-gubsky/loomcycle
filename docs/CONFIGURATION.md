@@ -933,6 +933,7 @@ At most one volume may set `dynamic_root` (config-load error otherwise), and lik
 | op | effect |
 |----|--------|
 | `create {name, mode}` | Derive `path = <dynamic_root>/<tenant-segment>/<name>` (tenant-segment = the tenant id, or `_shared` for the shared tenant), `mkdir` it (`0700`), persist the mapping. `mode` is `rw` (default) or `ro`, caller-chosen. **Idempotent** — same mode is a no-op, a different mode updates. Refused on a static-name collision (yaml is ground truth) or when no `dynamic_root` is configured. |
+| `create {name, mode, ephemeral:true}` | Provision a **run-scoped ephemeral** volume instead (see §9d.2): `path = <dynamic_root>/_ephemeral/<root_run_id>/<name>`, auto-purged when the top-level run finishes. Requires an active run. |
 | `get {name}` / `list` | Tenant-scoped reads — another tenant's volume is reported as not-found. |
 | `delete {name}` | Remove the mapping, **LEAVE files on disk** (unmap). |
 | `purge {name}` | Remove the mapping **AND** delete the directory tree (the destructive op). |
@@ -953,7 +954,22 @@ Without a grant, create/delete/purge are refused; `get`/`list` are tenant-scoped
 
 **Binding.** After `create`, an agent binds to a dynamic volume by name exactly like a static one (`volumes: [repo-a]`). Run-start resolves the name static-first, then the agent's own tenant's dynamic volumes, then the shared tenant's — an operator static volume can never be shadowed by a dynamic one. Spawn narrowing is unchanged.
 
-> **Not in Phase 2a:** ephemeral run-scoped volumes + their completion-purge sweeper (Phase 2b); gRPC / MCP-meta-tool parity for the authoring surface; Web UI; versioning. The in-loop tool and the HTTP endpoint are the Phase 2a authoring surfaces.
+> **Not in Phase 2a:** gRPC / MCP-meta-tool parity for the authoring surface; Web UI; versioning. The in-loop tool and the HTTP endpoint are the Phase 2a authoring surfaces. Ephemeral run-scoped volumes shipped in Phase 2b (§9d.2).
+
+### 9d.2 Ephemeral (run-scoped) volumes (RFC AH Phase 2b)
+
+A dynamic volume (§9d.1) is tenant-shared; an **ephemeral** volume is scoped to the creating run **tree** and torn down when the top-level run finishes — per-ensemble scratch with no cross-run collision, even for two concurrent runs in one tenant.
+
+Create one with `ephemeral: true`:
+
+```jsonc
+{"op": "create", "name": "work", "mode": "rw", "ephemeral": true}
+```
+
+- **Path.** Derived as `<dynamic_root>/_ephemeral/<root_run_id>/<name>`. `_ephemeral` is a reserved first segment under the dynamic root — a tenant id literally equal to `_ephemeral` is rejected (like `_shared`), and the name charset forbids a leading underscore, so the two purge fences never blur. Run ids are globally unique, so two runs (any tenant) never collide.
+- **Lifetime.** Resolvable by the whole creating run tree (parent + sub-agents, inherited under the same narrow-only spawn rule). Auto-**purged when the top-level run completes** — an inline run-completion hook fenced-`RemoveAll`s `<dynamic_root>/_ephemeral/<root_run_id>/` and drops the rows. A sub-agent completing never purges (the tree belongs to the top-level run). There is no `delete`/`purge` op for ephemeral volumes — the lifetime *is* the run.
+- **Requires an active run.** `ephemeral: true` is refused outside a run (no root run id) and on a static-name or in-run-duplicate collision. Same `volume_def_scopes` gate as the persistent op.
+- **Crash backstop — `LOOMCYCLE_EPHEMERAL_VOLUME_SWEEP_MS`.** A singleton sweeper (default **60s**; `0` disables — the inline purge still runs) periodically purges ephemeral volumes whose owning run is terminal **and not paused/pausing** (a paused run is parked, not crashed — its volumes survive to be reused on resume; a resumed run rehydrates its in-memory set from the persisted rows). Cluster-gated, so one replica per tick does the work. Skipped when no `dynamic_root` is configured.
 
 ---
 
