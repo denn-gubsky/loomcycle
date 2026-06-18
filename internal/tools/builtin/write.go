@@ -15,15 +15,12 @@ import (
 // directory, then a single rename into place. Partial writes are never
 // observed by readers (POSIX rename is atomic on the same filesystem).
 //
-// Sandbox semantics mirror Read: empty Root rejects every call. Path
-// resolution checks the PARENT directory (the file may not exist yet),
+// Sandbox semantics mirror Read: an agent bound to no rw volume is refused.
+// Path resolution checks the PARENT directory (the file may not exist yet),
 // then writes the new file beside the resolved parent. A symlink at the
 // target path is silently replaced by the rename, which is fine — we
 // never follow it.
 type Write struct {
-	// Root is the sandbox root. The target's parent must resolve inside
-	// Root after symlink evaluation. Required.
-	Root string
 	// MaxBytes caps the content size. Default 1 MiB.
 	MaxBytes int64
 }
@@ -57,12 +54,9 @@ func (w *Write) Execute(ctx context.Context, input json.RawMessage) (tools.Resul
 	if args.Path == "" {
 		return tools.Result{Text: "path is required", IsError: true}, nil
 	}
-	root, err := effectiveRoot(ctx, w.Root, args.Volume, true)
+	root, err := effectiveRoot(ctx, args.Volume, true)
 	if err != nil {
 		return tools.Result{Text: err.Error(), IsError: true}, nil
-	}
-	if root == "" {
-		return tools.Result{Text: "Write tool is not configured with a sandbox root; refusing to write", IsError: true}, nil
 	}
 
 	maxBytes := w.MaxBytes

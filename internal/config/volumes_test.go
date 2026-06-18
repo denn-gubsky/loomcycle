@@ -115,38 +115,30 @@ agents:
 	}
 }
 
-// Backward-compat: with legacy ReadRoot/WriteRoot env and NO `volumes:` block,
-// NOTHING is synthesized — there is no `default` volume. Unbound agents then
-// run with an inactive policy and each file tool uses its own legacy root
-// (Read←ReadRoot, Write←WriteRoot, Bash←BashCwd), byte-identical to a
-// pre-feature deployment. We deliberately do NOT collapse the three legacy
-// roots into one synthesized `default`: a single root can't reproduce three
-// distinct ones, and a ReadRoot-only "writes disabled" deploy must not silently
-// gain write access on upgrade.
-func TestLoadVolumes_NoSynthesisFromLegacyEnv(t *testing.T) {
-	base, err := filepath.EvalSymlinks(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	writeDir := filepath.Join(base, "out")
-	if err := os.MkdirAll(writeDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("LOOMCYCLE_READ_ROOT", base)
-	t.Setenv("LOOMCYCLE_WRITE_ROOT", writeDir)
+// RFC AH Phase 3: the legacy jail env vars are retired. Setting any of
+// LOOMCYCLE_READ_ROOT / WRITE_ROOT / BASH_CWD must fail Load with a migration
+// hint naming the var(s) + pointing at `volumes:`, rather than silently
+// denying every file op. Fail-before: remove the checkRetiredJailEnv call in
+// Load and Load returns nil error (a stale deploy then silently no-ops).
+func TestLoad_LegacyJailEnvErrors(t *testing.T) {
 	yamlPath := writeVolConfig(t, `
 agents:
   a: { model: claude-sonnet-4-6 }
 `)
-	cfg, err := Load(yamlPath)
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	if _, ok := cfg.Volumes["default"]; ok {
-		t.Error("no `volumes:` block must NOT synthesize a `default` volume from legacy env")
-	}
-	if _, ok := cfg.Volumes["default-read"]; ok {
-		t.Error("no `default-read` companion should be synthesized either")
+	for _, name := range []string{"LOOMCYCLE_READ_ROOT", "LOOMCYCLE_WRITE_ROOT", "LOOMCYCLE_BASH_CWD"} {
+		t.Run(name, func(t *testing.T) {
+			t.Setenv(name, "/work/sandbox")
+			_, err := Load(yamlPath)
+			if err == nil {
+				t.Fatalf("Load must error when %s is set", name)
+			}
+			if !strings.Contains(err.Error(), name) {
+				t.Errorf("error should name the retired var %s; got %q", name, err)
+			}
+			if !strings.Contains(err.Error(), "volumes:") {
+				t.Errorf("error should point at `volumes:`; got %q", err)
+			}
+		})
 	}
 }
 

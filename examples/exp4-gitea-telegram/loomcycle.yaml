@@ -34,6 +34,12 @@ user_tiers:
     fallback_on_error: true
     max_fallback_attempts: 3
 
+# path: . is the cwd run.sh cd's into ($HERE/work) — replaces the retired
+# LOOMCYCLE_READ_ROOT/WRITE_ROOT/BASH_CWD jail (RFC AH Phase 3). The coder +
+# reviewer agents are unbound, so they bind to `default`.
+volumes:
+  default: { path: ., mode: rw, default: true }
+
 channels:
   exp4-tasks:
     description: "Exp4 → code-guru inbox. Orchestrator + advisor publish coding tasks / change requests."

@@ -8,7 +8,15 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
+
+// globCtx attaches a default rw volume rooted at root, the standard ctx the
+// Glob tests run under (RFC AH Phase 3: file tools require a bound volume).
+func globCtx(root string) context.Context {
+	return ctxWith(tools.VolumeBinding{Name: "default", Root: root, Default: true})
+}
 
 // makeGlobTree builds a known structure for the Glob tests.
 //
@@ -47,8 +55,8 @@ func makeGlobTree(t *testing.T) string {
 
 func TestGlob_DoubleStarRecursive(t *testing.T) {
 	root := makeGlobTree(t)
-	g := &Glob{Root: root}
-	res, _ := g.Execute(context.Background(), json.RawMessage(`{"pattern":"**/*.go"}`))
+	g := &Glob{}
+	res, _ := g.Execute(globCtx(root), json.RawMessage(`{"pattern":"**/*.go"}`))
 	if res.IsError {
 		t.Fatalf("err: %s", res.Text)
 	}
@@ -68,8 +76,8 @@ func TestGlob_DoubleStarRecursive(t *testing.T) {
 
 func TestGlob_SingleSegmentPattern(t *testing.T) {
 	root := makeGlobTree(t)
-	g := &Glob{Root: root}
-	res, _ := g.Execute(context.Background(), json.RawMessage(`{"pattern":"*.go"}`))
+	g := &Glob{}
+	res, _ := g.Execute(globCtx(root), json.RawMessage(`{"pattern":"*.go"}`))
 	if res.IsError {
 		t.Fatalf("err: %s", res.Text)
 	}
@@ -84,8 +92,8 @@ func TestGlob_SingleSegmentPattern(t *testing.T) {
 
 func TestGlob_MultiSegmentPattern(t *testing.T) {
 	root := makeGlobTree(t)
-	g := &Glob{Root: root}
-	res, _ := g.Execute(context.Background(), json.RawMessage(`{"pattern":"src/**/*.tsx"}`))
+	g := &Glob{}
+	res, _ := g.Execute(globCtx(root), json.RawMessage(`{"pattern":"src/**/*.tsx"}`))
 	if res.IsError {
 		t.Fatalf("err: %s", res.Text)
 	}
@@ -120,8 +128,8 @@ func TestGlob_MtimeDescOrdering(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	g := &Glob{Root: root}
-	res, _ := g.Execute(context.Background(), json.RawMessage(`{"pattern":"*.go"}`))
+	g := &Glob{}
+	res, _ := g.Execute(globCtx(root), json.RawMessage(`{"pattern":"*.go"}`))
 	if res.IsError {
 		t.Fatalf("err: %s", res.Text)
 	}
@@ -145,8 +153,8 @@ func TestGlob_MaxResultsTruncation(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	g := &Glob{Root: root, MaxResults: 3}
-	res, _ := g.Execute(context.Background(), json.RawMessage(`{"pattern":"*.go"}`))
+	g := &Glob{MaxResults: 3}
+	res, _ := g.Execute(globCtx(root), json.RawMessage(`{"pattern":"*.go"}`))
 	if res.IsError {
 		t.Fatalf("err: %s", res.Text)
 	}
@@ -161,8 +169,8 @@ func TestGlob_MaxResultsTruncation(t *testing.T) {
 
 func TestGlob_NoMatches(t *testing.T) {
 	root := makeGlobTree(t)
-	g := &Glob{Root: root}
-	res, _ := g.Execute(context.Background(), json.RawMessage(`{"pattern":"**/*.rs"}`))
+	g := &Glob{}
+	res, _ := g.Execute(globCtx(root), json.RawMessage(`{"pattern":"**/*.rs"}`))
 	if res.IsError {
 		t.Fatalf("err: %s", res.Text)
 	}
@@ -179,10 +187,10 @@ func TestGlob_NoMatches(t *testing.T) {
 // FAIL-BEFORE: returns "no matches".
 func TestGlob_AbsoluteInRootPattern(t *testing.T) {
 	root := makeGlobTree(t)
-	g := &Glob{Root: root}
+	g := &Glob{}
 	abs := root + "/**/*.go"
 	in, _ := json.Marshal(map[string]string{"pattern": abs})
-	res, _ := g.Execute(context.Background(), in)
+	res, _ := g.Execute(globCtx(root), in)
 	if res.IsError {
 		t.Fatalf("err: %s", res.Text)
 	}
@@ -201,8 +209,8 @@ func TestGlob_AbsoluteInRootPattern(t *testing.T) {
 // files outside the root.
 func TestGlob_AbsolutePatternOutsideRootMatchesNothing(t *testing.T) {
 	root := makeGlobTree(t)
-	g := &Glob{Root: root}
-	res, _ := g.Execute(context.Background(), json.RawMessage(`{"pattern":"/etc/**/*.conf"}`))
+	g := &Glob{}
+	res, _ := g.Execute(globCtx(root), json.RawMessage(`{"pattern":"/etc/**/*.conf"}`))
 	if res.IsError {
 		t.Fatalf("err: %s", res.Text)
 	}
@@ -213,21 +221,23 @@ func TestGlob_AbsolutePatternOutsideRootMatchesNothing(t *testing.T) {
 
 func TestGlob_PathEscapeRejected(t *testing.T) {
 	root := makeGlobTree(t)
-	g := &Glob{Root: root}
-	res, _ := g.Execute(context.Background(), json.RawMessage(`{"pattern":"*","path":"/etc"}`))
+	g := &Glob{}
+	res, _ := g.Execute(globCtx(root), json.RawMessage(`{"pattern":"*","path":"/etc"}`))
 	if !res.IsError {
 		t.Errorf("path outside root must refuse, got %q", res.Text)
 	}
 }
 
-func TestGlob_MissingRootRefuses(t *testing.T) {
+// RFC AH Phase 3: an agent bound to no volume must refuse (sandbox-by-default;
+// the legacy LOOMCYCLE_READ_ROOT jail is gone).
+func TestGlob_NoVolumeRefuses(t *testing.T) {
 	g := &Glob{}
 	res, _ := g.Execute(context.Background(), json.RawMessage(`{"pattern":"*"}`))
 	if !res.IsError {
-		t.Errorf("missing Root must refuse, got %q", res.Text)
+		t.Errorf("no volume bound must refuse, got %q", res.Text)
 	}
-	if !strings.Contains(res.Text, "LOOMCYCLE_READ_ROOT") {
-		t.Errorf("refusal must mention env var, got %q", res.Text)
+	if !strings.Contains(res.Text, "no filesystem volume available") {
+		t.Errorf("refusal must report no volume, got %q", res.Text)
 	}
 }
 
@@ -236,8 +246,8 @@ func TestGlob_MissingRootRefuses(t *testing.T) {
 // per-file filepath.Match's swallowed ErrBadPattern.
 func TestGlob_InvalidPatternIsError(t *testing.T) {
 	root := makeGlobTree(t)
-	g := &Glob{Root: root}
-	res, _ := g.Execute(context.Background(), json.RawMessage(`{"pattern":"[unclosed"}`))
+	g := &Glob{}
+	res, _ := g.Execute(globCtx(root), json.RawMessage(`{"pattern":"[unclosed"}`))
 	if !res.IsError {
 		t.Errorf("invalid pattern must return IsError, got %q", res.Text)
 	}
@@ -248,9 +258,9 @@ func TestGlob_InvalidPatternIsError(t *testing.T) {
 
 func TestGlob_PathSubdirScopes(t *testing.T) {
 	root := makeGlobTree(t)
-	g := &Glob{Root: root}
+	g := &Glob{}
 	// Scope to src/ — vendor/third.go must not appear.
-	res, _ := g.Execute(context.Background(), json.RawMessage(`{"pattern":"**/*.go","path":"src"}`))
+	res, _ := g.Execute(globCtx(root), json.RawMessage(`{"pattern":"**/*.go","path":"src"}`))
 	if res.IsError {
 		t.Fatalf("err: %s", res.Text)
 	}

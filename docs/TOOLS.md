@@ -32,20 +32,20 @@ Both layers are intersection-only: nothing the model sees can ever exceed what t
 
 ### Built-ins
 
-Each built-in is registered into the dispatcher at process startup but **refuses every call** until its sandbox is configured via env. The model will see the tool's spec and may try to call it, but every call comes back with `{"is_error": true, "text": "<tool> is not configured ..."}`. This deliberate behaviour means the model gets a clear "not configured" signal it can self-correct from, instead of `unknown tool`.
+Each built-in is registered into the dispatcher at process startup but **refuses every call** until its sandbox is configured. For the file/exec tools that means a bound **volume** (RFC AH); for the network tools, a host allowlist or key. The model sees the tool's spec and may try to call it, but every call comes back with `{"is_error": true, "text": "<tool> ... refuses ..."}`. This deliberate behaviour means the model gets a clear "not configured" signal it can self-correct from, instead of `unknown tool`.
 
 | Tool        | Enabled by                                            |
 |-------------|-------------------------------------------------------|
-| `Read`      | `LOOMCYCLE_READ_ROOT=/path/to/sandbox`                |
-| `Write`     | `LOOMCYCLE_WRITE_ROOT=/path/to/sandbox`               |
-| `Edit`      | `LOOMCYCLE_WRITE_ROOT=/path/to/sandbox` (shared)      |
-| `Grep`      | `LOOMCYCLE_READ_ROOT=...` (shared with Read; v0.8.24) |
-| `Glob`      | `LOOMCYCLE_READ_ROOT=...` (shared with Read; v0.8.24) |
-| `NotebookEdit` | `LOOMCYCLE_WRITE_ROOT=...` (shared with Write; v0.8.24) |
+| `Read`      | a bound `volumes:` volume (any mode)                  |
+| `Write`     | a bound **rw** `volumes:` volume                      |
+| `Edit`      | a bound **rw** `volumes:` volume                      |
+| `Grep`      | a bound `volumes:` volume (any mode)                  |
+| `Glob`      | a bound `volumes:` volume (any mode)                  |
+| `NotebookEdit` | a bound **rw** `volumes:` volume                   |
 | `HTTP`      | `LOOMCYCLE_HTTP_HOST_ALLOWLIST=api.example.com,...`   |
 | `WebFetch`  | (same allowlist as HTTP — shared backend)             |
 | `WebSearch` | `BRAVE_API_KEY=...`                                   |
-| `Bash`      | `LOOMCYCLE_BASH_ENABLED=1` + `LOOMCYCLE_BASH_CWD=...` |
+| `Bash`      | `LOOMCYCLE_BASH_ENABLED=1` + a bound **rw** volume    |
 | `Agent`     | Always registered (server-internal); per-agent `allowed_tools` controls who can spawn. |
 | `Skill`     | `LOOMCYCLE_SKILLS_ROOT=/path/to/skills` (or skills inlined per-agent via YAML `skills:` list). v0.8.22+ also consults the `skill_defs` store for DB-active overrides. |
 | `SkillDef`  | Always registered (v0.8.22). Per-agent `skill_def_scopes:` YAML gate (default-deny); no extra env var. Storage shared with the rest of the substrate. |
@@ -56,17 +56,17 @@ Bash has additional warnings: it is **not a true sandbox** even when enabled. Ru
 
 Sandbox semantics (file tools):
 - Paths must resolve **inside** the sandbox root after full `EvalSymlinks` evaluation. Symlinks pointing outside the root are refused.
-- **Relative paths are joined to the sandbox root, NOT the loomcycle process's current working directory.** A relative `Read`/`Edit`/`Grep`/`Glob` path is resolved under `LOOMCYCLE_READ_ROOT`; a relative `Write`/`Edit` path under `LOOMCYCLE_WRITE_ROOT` (`internal/tools/builtin/sandbox.go` `absUnderRoot`). This is what the model assumes and means agents should pass **relative paths** (e.g. `src/main.go`) regardless of where loomcycle was launched from. `~` is **not** expanded; an absolute path is accepted only if it still resolves inside the root. (The older behaviour joined relative paths to the process CWD, so a relative path could land outside the jail — the offset that scattered files in the experiments harness and made a code-reviewer's `Read internal/store/store.go` resolve into a stray binary at the launch dir.) `Bash` is separate: its commands run with the working directory set to `LOOMCYCLE_BASH_CWD`, so relative paths in a shell command are relative to *that*. Keep `LOOMCYCLE_BASH_CWD` equal to the read/write root so file-tool paths and Bash paths agree. Agents can read the active roots at runtime via `Context op=self` (`sandbox.read_root` / `write_root` / `bash_cwd`).
+- **Relative paths are joined to the bound volume's root, NOT the loomcycle process's current working directory.** A relative `Read`/`Edit`/`Grep`/`Glob`/`Write` path resolves under the volume the call targets (`internal/tools/builtin/sandbox.go` `absUnderRoot`). This is what the model assumes and means agents should pass **relative paths** (e.g. `src/main.go`) regardless of where loomcycle was launched from. `~` is **not** expanded; an absolute path is accepted only if it still resolves inside the root. (The older behaviour joined relative paths to the process CWD, so a relative path could land outside the jail — the offset that scattered files in the experiments harness and made a code-reviewer's `Read internal/store/store.go` resolve into a stray binary at the launch dir.) `Bash` runs with its working directory set to the bound (rw) volume's root, so relative paths in a shell command are relative to *that* — the same root the file tools use, so paths agree. Agents read their bound volumes at runtime via `Context op=self` (`volumes.bindings`).
 - `Write` resolves the **parent** dir (target may not exist yet); `Read`, `Edit`, `Grep`, `Glob`, and `NotebookEdit` resolve the target itself.
 - All file writes are atomic via tempfile + same-directory rename.
 - `Grep` skips binary files via NUL-byte heuristic on the first 8 KiB; caps output at 256 KiB + `head_limit` (default 100).
 - `Glob` supports `**` for recursive segment match; returns paths sorted by mtime DESC, capped at 100 results.
 - `NotebookEdit` accepts `replace` / `insert` / `delete` modes; preserves all non-target cells and notebook metadata verbatim.
-- **Filesystem Volumes (RFC AH Phase 1).** When the operator declares a top-level `volumes:` map (named ro/rw roots) and binds an agent via `AgentDef.volumes`, the file/exec tools resolve paths against those volumes instead of the single jail. Each of `Read` / `Write` / `Edit` / `Glob` / `Grep` / `Bash` / `NotebookEdit` then accepts an optional `"volume"` string argument:
+- **Filesystem Volumes (RFC AH).** Volumes are the **sole** filesystem mechanism — the operator declares a top-level `volumes:` map (named ro/rw roots) and binds an agent via `AgentDef.volumes`; the file/exec tools resolve paths against those volumes. Each of `Read` / `Write` / `Edit` / `Glob` / `Grep` / `Bash` / `NotebookEdit` accepts an optional `"volume"` string argument:
   - **omitted** → the agent's designated default binding (the one marked `default: true`, or the sole binding). Multiple bindings + no designated default → an error listing the available names.
   - **named** → that binding; naming a volume the agent isn't bound to → an error listing the bound volumes.
   - **ro / rw**: `Read` / `Glob` / `Grep` operate on any volume; `Write` / `Edit` / `NotebookEdit` and **`Bash`** require a `rw` volume (a `ro` target is refused — `Bash` cannot enforce read-only, so it refuses rather than ship a false guarantee). The unchanged `resolveInsideRoot` containment still applies per-volume — a `..` escape from one volume into another is rejected.
-  - An agent with **no** volume binding (or a deployment with no `volumes:` config) is unaffected: the tools use the legacy `LOOMCYCLE_READ_ROOT` / `WRITE_ROOT` / `BASH_CWD` jail exactly as before. Sub-agents inherit the **narrow-only** intersection of the parent's volumes. Agents read their bound volumes at runtime via `Context op=self` (`volumes.bindings`: name / path / mode / default). See `docs/CONFIGURATION.md` §9d.
+  - **Sandbox-by-default (RFC AH Phase 3).** An agent with **no** volume binding (or a deployment with no `volumes:` config) has **no filesystem access** — every file/exec tool refuses. The legacy `LOOMCYCLE_READ_ROOT` / `WRITE_ROOT` / `BASH_CWD` jail is retired (setting one fails startup with a migration hint; declare a `default` volume to restore the single shared jail). Sub-agents inherit the **narrow-only** intersection of the parent's volumes. Agents read their bound volumes at runtime via `Context op=self` (`volumes.bindings`: name / path / mode / default); an unbound agent sees `filesystem: "none …"`. See `docs/CONFIGURATION.md` §9d.
 - **`VolumeDef` — dynamic volumes (RFC AH Phase 2a/2b).** The `VolumeDef` tool provisions *dynamic* volumes at runtime: tenant-scoped, mutable, and confined inside an operator-blessed parent (a static volume marked `dynamic_root: true`). Ops: `create {name, mode}` (the path is **runtime-derived** — `<dynamic_root>/<tenant-segment>/<name>`; you supply a name + mode, never a host path; idempotent, mode-updates), `get {name}` / `list` (tenant-scoped reads), `delete {name}` (unmap — **leaves files**), `purge {name}` (unmap **and** delete the directory tree, behind a four-way fence: tenant ownership, re-derive-don't-trust, `EvalSymlinks`-the-real-path, assert-strictly-inside-root). **Phase 2b** adds `create {name, mode, ephemeral:true}` — a **run-scoped** volume at `<dynamic_root>/_ephemeral/<root_run_id>/<name>`, resolvable by the whole creating run tree and **auto-purged when the top-level run completes** (a singleton sweeper backstops crashes; `LOOMCYCLE_EPHEMERAL_VOLUME_SWEEP_MS`); it requires an active run and has no `delete`/`purge` (lifetime is the run). Names must match `^[a-z0-9][a-z0-9_-]{0,63}$`. Gated by per-agent `volume_def_scopes` (`any` / `named:<volume>`; default-deny). An agent binds to a dynamic volume by name exactly like a static one. See `docs/CONFIGURATION.md` §9d.1/§9d.2 and the `volumedef` help topic.
 
 SSRF semantics (network tools):
@@ -203,7 +203,7 @@ Continuations on `/v1/sessions/{id}/messages` re-supply `allowed_hosts` and `web
 
 | Situation                                                 | Result                                |
 |-----------------------------------------------------------|---------------------------------------|
-| Operator hasn't set `LOOMCYCLE_WRITE_ROOT`                | `Write`/`Edit` calls refuse with a clear message. |
+| Agent bound to no (rw) `volumes:` volume                  | `Write`/`Edit`/`Bash`/etc. refuse with a clear "no filesystem volume available" message. |
 | Agent omits `allowed_tools`                               | The model sees zero tools.            |
 | Agent includes a tool the operator hasn't enabled         | The tool is registered (visible) but every call refuses. |
 | Caller's request lists a tool the agent doesn't allow     | That tool is silently dropped from the run's set. |

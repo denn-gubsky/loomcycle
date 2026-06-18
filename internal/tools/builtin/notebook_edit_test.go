@@ -7,7 +7,16 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
+
+// nbCtx attaches a default rw volume rooted at root, the standard ctx the
+// NotebookEdit tests run under (RFC AH Phase 3: file tools require a bound
+// volume).
+func nbCtx(root string) context.Context {
+	return ctxWith(tools.VolumeBinding{Name: "default", Root: root, Default: true})
+}
 
 // fixtureNotebook is a 2-cell .ipynb file used by every test.
 const fixtureNotebook = `{
@@ -47,8 +56,8 @@ func readNB(t *testing.T, path string) notebook {
 
 func TestNotebookEdit_ReplaceExistingCell(t *testing.T) {
 	root, file := writeFixture(t)
-	n := &NotebookEdit{Root: root}
-	res, _ := n.Execute(context.Background(), json.RawMessage(`{"file_path":"nb.ipynb","cell_id":"aaaaaaaa","source":"print(42)","mode":"replace"}`))
+	n := &NotebookEdit{}
+	res, _ := n.Execute(nbCtx(root), json.RawMessage(`{"file_path":"nb.ipynb","cell_id":"aaaaaaaa","source":"print(42)","mode":"replace"}`))
 	if res.IsError {
 		t.Fatalf("replace failed: %s", res.Text)
 	}
@@ -69,8 +78,8 @@ func TestNotebookEdit_ReplaceExistingCell(t *testing.T) {
 
 func TestNotebookEdit_InsertAfterCell(t *testing.T) {
 	root, file := writeFixture(t)
-	n := &NotebookEdit{Root: root}
-	res, _ := n.Execute(context.Background(), json.RawMessage(`{"file_path":"nb.ipynb","cell_id":"aaaaaaaa","source":"y = 2","mode":"insert"}`))
+	n := &NotebookEdit{}
+	res, _ := n.Execute(nbCtx(root), json.RawMessage(`{"file_path":"nb.ipynb","cell_id":"aaaaaaaa","source":"y = 2","mode":"insert"}`))
 	if res.IsError {
 		t.Fatalf("insert: %s", res.Text)
 	}
@@ -95,8 +104,8 @@ func TestNotebookEdit_InsertAfterCell(t *testing.T) {
 
 func TestNotebookEdit_InsertAtStartWhenCellIDEmpty(t *testing.T) {
 	root, file := writeFixture(t)
-	n := &NotebookEdit{Root: root}
-	res, _ := n.Execute(context.Background(), json.RawMessage(`{"file_path":"nb.ipynb","source":"top","cell_type":"markdown","mode":"insert"}`))
+	n := &NotebookEdit{}
+	res, _ := n.Execute(nbCtx(root), json.RawMessage(`{"file_path":"nb.ipynb","source":"top","cell_type":"markdown","mode":"insert"}`))
 	if res.IsError {
 		t.Fatalf("insert at start: %s", res.Text)
 	}
@@ -118,8 +127,8 @@ func TestNotebookEdit_InsertAtStartWhenCellIDEmpty(t *testing.T) {
 
 func TestNotebookEdit_DeleteCell(t *testing.T) {
 	root, file := writeFixture(t)
-	n := &NotebookEdit{Root: root}
-	res, _ := n.Execute(context.Background(), json.RawMessage(`{"file_path":"nb.ipynb","cell_id":"aaaaaaaa","mode":"delete"}`))
+	n := &NotebookEdit{}
+	res, _ := n.Execute(nbCtx(root), json.RawMessage(`{"file_path":"nb.ipynb","cell_id":"aaaaaaaa","mode":"delete"}`))
 	if res.IsError {
 		t.Fatalf("delete: %s", res.Text)
 	}
@@ -134,8 +143,8 @@ func TestNotebookEdit_DeleteCell(t *testing.T) {
 
 func TestNotebookEdit_CellNotFoundIsError(t *testing.T) {
 	root, _ := writeFixture(t)
-	n := &NotebookEdit{Root: root}
-	res, _ := n.Execute(context.Background(), json.RawMessage(`{"file_path":"nb.ipynb","cell_id":"nonexistent","source":"x","mode":"replace"}`))
+	n := &NotebookEdit{}
+	res, _ := n.Execute(nbCtx(root), json.RawMessage(`{"file_path":"nb.ipynb","cell_id":"nonexistent","source":"x","mode":"replace"}`))
 	if !res.IsError {
 		t.Errorf("expected error for missing cell, got %q", res.Text)
 	}
@@ -147,8 +156,8 @@ func TestNotebookEdit_InvalidJSONIsError(t *testing.T) {
 	if err := os.WriteFile(file, []byte("{not json"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	n := &NotebookEdit{Root: root}
-	res, _ := n.Execute(context.Background(), json.RawMessage(`{"file_path":"bad.ipynb","cell_id":"x","source":"y","mode":"replace"}`))
+	n := &NotebookEdit{}
+	res, _ := n.Execute(nbCtx(root), json.RawMessage(`{"file_path":"bad.ipynb","cell_id":"x","source":"y","mode":"replace"}`))
 	if !res.IsError {
 		t.Errorf("expected JSON parse error")
 	}
@@ -156,8 +165,8 @@ func TestNotebookEdit_InvalidJSONIsError(t *testing.T) {
 
 func TestNotebookEdit_NonIpynbExtensionRejected(t *testing.T) {
 	root := t.TempDir()
-	n := &NotebookEdit{Root: root}
-	res, _ := n.Execute(context.Background(), json.RawMessage(`{"file_path":"file.txt","cell_id":"x","source":"y","mode":"replace"}`))
+	n := &NotebookEdit{}
+	res, _ := n.Execute(nbCtx(root), json.RawMessage(`{"file_path":"file.txt","cell_id":"x","source":"y","mode":"replace"}`))
 	if !res.IsError {
 		t.Errorf("non-.ipynb path should be rejected")
 	}
@@ -175,29 +184,31 @@ func TestNotebookEdit_PathEscapeRejected(t *testing.T) {
 	if err := os.WriteFile(outsideFile, []byte(fixtureNotebook), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	n := &NotebookEdit{Root: root}
+	n := &NotebookEdit{}
 	body := json.RawMessage(`{"file_path":"` + outsideFile + `","cell_id":"aaaaaaaa","source":"y","mode":"replace"}`)
-	res, _ := n.Execute(context.Background(), body)
+	res, _ := n.Execute(nbCtx(root), body)
 	if !res.IsError {
 		t.Errorf("path outside root must refuse, got %q", res.Text)
 	}
 }
 
-func TestNotebookEdit_MissingRootRefuses(t *testing.T) {
+// RFC AH Phase 3: an agent bound to no volume must refuse (sandbox-by-default;
+// the legacy LOOMCYCLE_WRITE_ROOT jail is gone).
+func TestNotebookEdit_NoVolumeRefuses(t *testing.T) {
 	n := &NotebookEdit{}
 	res, _ := n.Execute(context.Background(), json.RawMessage(`{"file_path":"x.ipynb","cell_id":"y","source":"z","mode":"replace"}`))
 	if !res.IsError {
-		t.Errorf("missing root must refuse")
+		t.Errorf("no volume bound must refuse")
 	}
-	if !strings.Contains(res.Text, "LOOMCYCLE_WRITE_ROOT") {
-		t.Errorf("refusal should mention LOOMCYCLE_WRITE_ROOT, got %q", res.Text)
+	if !strings.Contains(res.Text, "no filesystem volume available") {
+		t.Errorf("refusal should report no volume, got %q", res.Text)
 	}
 }
 
 func TestNotebookEdit_AtomicWriteLeavesNoTempfile(t *testing.T) {
 	root, file := writeFixture(t)
-	n := &NotebookEdit{Root: root}
-	res, _ := n.Execute(context.Background(), json.RawMessage(`{"file_path":"nb.ipynb","cell_id":"aaaaaaaa","source":"q","mode":"replace"}`))
+	n := &NotebookEdit{}
+	res, _ := n.Execute(nbCtx(root), json.RawMessage(`{"file_path":"nb.ipynb","cell_id":"aaaaaaaa","source":"q","mode":"replace"}`))
 	if res.IsError {
 		t.Fatalf("replace: %s", res.Text)
 	}
@@ -219,9 +230,9 @@ func TestNotebookEdit_AtomicWriteLeavesNoTempfile(t *testing.T) {
 // both keys on code cells).
 func TestNotebookEdit_PromoteToCodeSeedsRequiredFields(t *testing.T) {
 	root, file := writeFixture(t)
-	n := &NotebookEdit{Root: root}
+	n := &NotebookEdit{}
 	// bbbbbbbb is the markdown cell in the fixture. Promote to code.
-	res, _ := n.Execute(context.Background(), json.RawMessage(`{"file_path":"nb.ipynb","cell_id":"bbbbbbbb","source":"x = 1","cell_type":"code","mode":"replace"}`))
+	res, _ := n.Execute(nbCtx(root), json.RawMessage(`{"file_path":"nb.ipynb","cell_id":"bbbbbbbb","source":"x = 1","cell_type":"code","mode":"replace"}`))
 	if res.IsError {
 		t.Fatalf("promote-to-code: %s", res.Text)
 	}
@@ -254,9 +265,9 @@ func TestNotebookEdit_PromoteToCodeSeedsRequiredFields(t *testing.T) {
 
 func TestNotebookEdit_PreservesUnaffectedCells(t *testing.T) {
 	root, file := writeFixture(t)
-	n := &NotebookEdit{Root: root}
+	n := &NotebookEdit{}
 	// Replace aaaaaaaa; bbbbbbbb must be untouched.
-	res, _ := n.Execute(context.Background(), json.RawMessage(`{"file_path":"nb.ipynb","cell_id":"aaaaaaaa","source":"new","mode":"replace"}`))
+	res, _ := n.Execute(nbCtx(root), json.RawMessage(`{"file_path":"nb.ipynb","cell_id":"aaaaaaaa","source":"new","mode":"replace"}`))
 	if res.IsError {
 		t.Fatalf("%s", res.Text)
 	}

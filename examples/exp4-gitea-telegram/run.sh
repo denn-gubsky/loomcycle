@@ -12,11 +12,9 @@ export LOOMCYCLE_DATA_DIR="${LOOMCYCLE_DATA_DIR:-$HERE/data}"
 # (or a tailnet/LAN IP) and point the Gitea webhook URL at it. See README.
 export LOOMCYCLE_LISTEN_ADDR="${LOOMCYCLE_LISTEN_ADDR:-127.0.0.1:8787}"
 export LOOMCYCLE_ANTHROPIC_OAUTH_DEV_ENABLED="${LOOMCYCLE_ANTHROPIC_OAUTH_DEV_ENABLED:-1}"
-# tool sandbox (the coder/reviewer use Bash+git under ./work)
-export LOOMCYCLE_READ_ROOT="${LOOMCYCLE_READ_ROOT:-$HERE/work}"
-export LOOMCYCLE_WRITE_ROOT="${LOOMCYCLE_WRITE_ROOT:-$HERE/work}"
+# tool sandbox: the coder/reviewer use Bash+git under ./work via the `default`
+# volume in loomcycle.yaml (run.sh cd's to ./work, so `path: .` == ./work).
 export LOOMCYCLE_BASH_ENABLED="${LOOMCYCLE_BASH_ENABLED:-1}"
-export LOOMCYCLE_BASH_CWD="${LOOMCYCLE_BASH_CWD:-$HERE/work}"
 export LOOMCYCLE_CHANNELS_LONGPOLL_CAP_MS="${LOOMCYCLE_CHANNELS_LONGPOLL_CAP_MS:-180000}"
 # inbound webhooks + the HMAC secret allowlist (the receiver resolves these env NAMES)
 export LOOMCYCLE_WEBHOOKS_ENABLED="${LOOMCYCLE_WEBHOOKS_ENABLED:-1}"

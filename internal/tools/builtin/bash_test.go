@@ -8,14 +8,22 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
 
+// bashCtx attaches a default rw volume rooted at root, the standard ctx the
+// Bash tests run under (RFC AH Phase 3: Bash requires a bound rw volume).
+func bashCtx(root string) context.Context {
+	return ctxWith(tools.VolumeBinding{Name: "default", Root: root, Default: true})
+}
+
 // Refusal cases: empty Enabled flag rejects every call. We test this
-// before any cwd config because Enabled is the single security gate
-// operators need to flip — a misconfigured cwd should never matter
-// when Enabled is false.
+// before any volume config because Enabled is the single security gate
+// operators need to flip — a missing volume should never matter when
+// Enabled is false.
 func TestBashRefusesWhenNotEnabled(t *testing.T) {
-	b := &Bash{Cwd: "/tmp"}
+	b := &Bash{}
 	res, err := b.Execute(context.Background(), json.RawMessage(`{"command":"echo hi"}`))
 	if err != nil {
 		t.Fatal(err)
@@ -25,14 +33,16 @@ func TestBashRefusesWhenNotEnabled(t *testing.T) {
 	}
 }
 
-func TestBashRefusesWithoutCwd(t *testing.T) {
+// RFC AH Phase 3: an enabled Bash bound to no volume must refuse
+// (sandbox-by-default; the legacy LOOMCYCLE_BASH_CWD jail is gone).
+func TestBashRefusesWithoutVolume(t *testing.T) {
 	b := &Bash{Enabled: true}
 	res, err := b.Execute(context.Background(), json.RawMessage(`{"command":"echo hi"}`))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !res.IsError || !strings.Contains(res.Text, "no cwd") {
-		t.Errorf("expected no-cwd refusal, got %q", res.Text)
+	if !res.IsError || !strings.Contains(res.Text, "no filesystem volume available") {
+		t.Errorf("expected no-volume refusal, got %q", res.Text)
 	}
 }
 
@@ -48,9 +58,9 @@ func TestBashRunsInsideCwd(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	b := &Bash{Enabled: true, Cwd: cwd}
+	b := &Bash{Enabled: true}
 	body, _ := json.Marshal(map[string]string{"command": "ls"})
-	res, err := b.Execute(context.Background(), body)
+	res, err := b.Execute(bashCtx(cwd), body)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -70,10 +80,10 @@ func TestBashTruncatesOutput(t *testing.T) {
 		t.Skip()
 	}
 	cwd, _ := filepath.EvalSymlinks(t.TempDir())
-	b := &Bash{Enabled: true, Cwd: cwd, MaxOutputBytes: 100}
+	b := &Bash{Enabled: true, MaxOutputBytes: 100}
 	// yes | head -c 5000 produces ~5KB of "y\n" repeated.
 	body, _ := json.Marshal(map[string]string{"command": "yes | head -c 5000"})
-	res, err := b.Execute(context.Background(), body)
+	res, err := b.Execute(bashCtx(cwd), body)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -91,9 +101,9 @@ func TestBashScrubsParentEnv(t *testing.T) {
 	}
 	t.Setenv("LOOMCYCLE_SECRET_FOR_TEST", "leak-me")
 	cwd, _ := filepath.EvalSymlinks(t.TempDir())
-	b := &Bash{Enabled: true, Cwd: cwd}
+	b := &Bash{Enabled: true}
 	body, _ := json.Marshal(map[string]string{"command": "env"})
-	res, err := b.Execute(context.Background(), body)
+	res, err := b.Execute(bashCtx(cwd), body)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -115,11 +125,10 @@ func TestBashAllowsExplicitlyAllowedEnv(t *testing.T) {
 	cwd, _ := filepath.EvalSymlinks(t.TempDir())
 	b := &Bash{
 		Enabled:         true,
-		Cwd:             cwd,
 		AllowedExtraEnv: []string{"LOOMCYCLE_PUBLIC_FOR_TEST"},
 	}
 	body, _ := json.Marshal(map[string]string{"command": "env"})
-	res, err := b.Execute(context.Background(), body)
+	res, err := b.Execute(bashCtx(cwd), body)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -135,9 +144,9 @@ func TestBashNonZeroExitSurfacesAsError(t *testing.T) {
 		t.Skip()
 	}
 	cwd, _ := filepath.EvalSymlinks(t.TempDir())
-	b := &Bash{Enabled: true, Cwd: cwd}
+	b := &Bash{Enabled: true}
 	body, _ := json.Marshal(map[string]string{"command": "echo something; exit 7"})
-	res, err := b.Execute(context.Background(), body)
+	res, err := b.Execute(bashCtx(cwd), body)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -158,12 +167,12 @@ func TestBashCallerTimeoutCappedAtHardCeiling(t *testing.T) {
 		t.Skip()
 	}
 	cwd, _ := filepath.EvalSymlinks(t.TempDir())
-	b := &Bash{Enabled: true, Cwd: cwd, MaxOutputBytes: 64}
+	b := &Bash{Enabled: true, MaxOutputBytes: 64}
 	// timeout_seconds: 9999 → must clamp to 300s. We don't actually wait;
 	// just verify the configured timeout doesn't allow >5min via reflection
 	// of behaviour: a quick command should still complete.
 	body, _ := json.Marshal(map[string]any{"command": "echo fast", "timeout_seconds": 9999})
-	res, err := b.Execute(context.Background(), body)
+	res, err := b.Execute(bashCtx(cwd), body)
 	if err != nil {
 		t.Fatal(err)
 	}

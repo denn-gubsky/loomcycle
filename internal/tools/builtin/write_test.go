@@ -7,17 +7,20 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
 
-// Mirrors TestReadRefusesEmptyRoot: no Root → no writes regardless of input.
-func TestWriteRefusesEmptyRoot(t *testing.T) {
+// Mirrors TestReadRefusesNoVolume: no volume bound → no writes regardless of
+// input (RFC AH Phase 3 sandbox-by-default).
+func TestWriteRefusesNoVolume(t *testing.T) {
 	w := &Write{}
 	res, err := w.Execute(context.Background(), json.RawMessage(`{"path":"/tmp/x","content":"y"}`))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !res.IsError || !strings.Contains(res.Text, "sandbox") {
-		t.Fatalf("expected sandbox-refusal error, got Text=%q IsError=%v", res.Text, res.IsError)
+	if !res.IsError || !strings.Contains(res.Text, "no filesystem volume available") {
+		t.Fatalf("expected no-volume refusal, got Text=%q IsError=%v", res.Text, res.IsError)
 	}
 }
 
@@ -28,9 +31,10 @@ func TestWriteAllowsInsideSandbox(t *testing.T) {
 	}
 	target := filepath.Join(root, "out.txt")
 
-	w := &Write{Root: root}
+	w := &Write{}
+	ctx := ctxWith(tools.VolumeBinding{Name: "default", Root: root, Default: true})
 	body, _ := json.Marshal(map[string]string{"path": target, "content": "hello world"})
-	res, err := w.Execute(context.Background(), body)
+	res, err := w.Execute(ctx, body)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -57,9 +61,10 @@ func TestWriteRejectsParentTraversal(t *testing.T) {
 	parent := filepath.Dir(root)
 	probe := filepath.Join(parent, "anywhere.txt")
 
-	w := &Write{Root: root}
+	w := &Write{}
+	ctx := ctxWith(tools.VolumeBinding{Name: "default", Root: root, Default: true})
 	body, _ := json.Marshal(map[string]string{"path": probe, "content": "x"})
-	res, err := w.Execute(context.Background(), body)
+	res, err := w.Execute(ctx, body)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -91,9 +96,10 @@ func TestWriteRejectsSymlinkedParentEscape(t *testing.T) {
 	}
 	target := filepath.Join(link, "x.txt")
 
-	w := &Write{Root: root}
+	w := &Write{}
+	ctx := ctxWith(tools.VolumeBinding{Name: "default", Root: root, Default: true})
 	body, _ := json.Marshal(map[string]string{"path": target, "content": "leaked"})
-	res, err := w.Execute(context.Background(), body)
+	res, err := w.Execute(ctx, body)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -121,9 +127,10 @@ func TestWriteOverwritesExistingFile(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	w := &Write{Root: root}
+	w := &Write{}
+	ctx := ctxWith(tools.VolumeBinding{Name: "default", Root: root, Default: true})
 	body, _ := json.Marshal(map[string]string{"path": target, "content": "new"})
-	res, err := w.Execute(context.Background(), body)
+	res, err := w.Execute(ctx, body)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -144,9 +151,10 @@ func TestWriteRefusesOversizedContent(t *testing.T) {
 	}
 	target := filepath.Join(root, "big.txt")
 
-	w := &Write{Root: root, MaxBytes: 8}
+	w := &Write{MaxBytes: 8}
+	ctx := ctxWith(tools.VolumeBinding{Name: "default", Root: root, Default: true})
 	body, _ := json.Marshal(map[string]string{"path": target, "content": "this is way more than eight bytes"})
-	res, err := w.Execute(context.Background(), body)
+	res, err := w.Execute(ctx, body)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -561,19 +561,20 @@ func main() {
 	}
 
 	allTools := []tools.Tool{
-		&builtin.Read{Root: cfg.Env.ReadRoot},
-		&builtin.Write{Root: cfg.Env.WriteRoot},
-		&builtin.Edit{Root: cfg.Env.WriteRoot},
-		// Grep + Glob ride the Read sandbox (read-only content/path
-		// search). NotebookEdit rides the Write sandbox (it mutates
-		// .ipynb files atomically, same posture as Edit).
-		&builtin.Grep{Root: cfg.Env.ReadRoot},
-		&builtin.Glob{Root: cfg.Env.ReadRoot},
-		&builtin.NotebookEdit{Root: cfg.Env.WriteRoot},
+		// The file/exec tools resolve their sandbox root per-call from the
+		// run's VolumePolicy (RFC AH); an agent bound to no volume is refused
+		// (sandbox-by-default — the legacy READ_ROOT/WRITE_ROOT/BASH_CWD jail
+		// was retired in Phase 3).
+		&builtin.Read{},
+		&builtin.Write{},
+		&builtin.Edit{},
+		&builtin.Grep{},
+		&builtin.Glob{},
+		&builtin.NotebookEdit{},
 		httpTool,
 		&builtin.WebFetch{HTTP: httpTool},
 		&builtin.WebSearch{APIKey: cfg.Env.BraveAPIKey},
-		&builtin.Bash{Enabled: cfg.Env.BashEnabled, Cwd: cfg.Env.BashCwd},
+		&builtin.Bash{Enabled: cfg.Env.BashEnabled},
 		// SkillTool's Store is late-bound below (so DB-active SkillDef
 		// rows override the static Set body). Nil-Store before
 		// late-binding falls back to the static Set; the assignment
@@ -739,11 +740,8 @@ func main() {
 			allTools = append(allTools, laTools...)
 		}
 	}
-	if cfg.Env.ReadRoot == "" {
-		log.Printf("note: Read tool is registered but disabled — set LOOMCYCLE_READ_ROOT to enable")
-	}
-	if cfg.Env.WriteRoot == "" {
-		log.Printf("note: Write + Edit tools are registered but disabled — set LOOMCYCLE_WRITE_ROOT to enable")
+	if len(cfg.Volumes) == 0 {
+		log.Printf("note: file tools (Read/Write/Edit/Glob/Grep/Bash) require a `volumes:` binding — none configured; agents with no volume binding have no filesystem access")
 	}
 	if len(staticHosts) == 0 && !cfg.Env.HTTPCallerAuthoritative {
 		log.Printf("note: HTTP + WebFetch tools are registered but disabled — set LOOMCYCLE_HTTP_HOST_ALLOWLIST to enable (or LOOMCYCLE_HTTP_CALLER_AUTHORITATIVE=1 to delegate the allowlist to the caller)")
@@ -759,9 +757,7 @@ func main() {
 	}
 	if cfg.Env.BashEnabled {
 		log.Printf("WARNING: Bash tool is enabled (LOOMCYCLE_BASH_ENABLED=1). This is NOT a true sandbox — run loomcycle inside a container or VM if you expose this to untrusted prompts.")
-		if cfg.Env.BashCwd == "" {
-			log.Printf("note: Bash is enabled but has no cwd; every call will refuse — set LOOMCYCLE_BASH_CWD")
-		}
+		log.Printf("note: Bash requires a rw volume binding — it runs in the bound volume's root and refuses an agent with no rw volume")
 	} else {
 		log.Printf("note: Bash tool is registered but disabled — set LOOMCYCLE_BASH_ENABLED=1 to enable (NOT a true sandbox; see docs)")
 	}

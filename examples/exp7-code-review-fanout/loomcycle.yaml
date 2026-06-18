@@ -20,9 +20,10 @@
 # external fan-out (RFC Y), Memory (user scope), the read-only Read/Grep/Glob jail. The reviewer is
 # read-only (no Bash/Write). Routing: Anthropic OAuth → deepseek-v4-pro (tier: middle = sonnet).
 #
-# `run.sh` sets the jail (LOOMCYCLE_READ_ROOT=./work) and the skills root
-# (LOOMCYCLE_SKILLS_ROOT=./skills) so the imported code-review skill body is bundled into the
-# reviewer's system prompt at config-load (boot log: `skills: loaded 1`).
+# The read-only `default` volume (below) IS the review jail — `run.sh` cd's to ./work so its
+# `path: .` resolves there. `run.sh` also sets the skills root (LOOMCYCLE_SKILLS_ROOT=./skills) so
+# the imported code-review skill body is bundled into the reviewer's system prompt at config-load
+# (boot log: `skills: loaded 1`).
 #
 # PROVENANCE — how `code-reviewer` was produced: `./claude-code-src/agents/code-reviewer.md` (+
 # `./claude-code-src/skills/code-review/SKILL.md`) are the Claude Code source artifacts; imported with
@@ -53,6 +54,13 @@ user_tiers:
     provider_priority: [anthropic-oauth-dev, deepseek]
     fallback_on_error: true
     max_fallback_attempts: 3
+
+# path: . is the cwd run.sh cd's into ($HERE/work) — replaces the retired
+# LOOMCYCLE_READ_ROOT jail (RFC AH Phase 3). READ-ONLY: the reviewers get only
+# Read/Grep/Glob (no Bash/Write), so the volume is `ro`. The unbound reviewer +
+# consolidator agents bind to `default`.
+volumes:
+  default: { path: ., mode: ro, default: true }
 
 agents:
   # ───────────────────────── code-reviewer (imported; fanned out via MCP spawn_runs) ─────────────────────────

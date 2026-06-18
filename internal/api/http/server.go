@@ -1274,10 +1274,10 @@ func (s *Server) interruptionPolicyForAgent(agentDef config.AgentDef) tools.Inte
 //
 //   - An agent that declares NO volumes is implicitly bound to [default]
 //     — a single synthesized binding from the `default` config volume.
-//     When no `default` volume exists (no `volumes:` config AND no legacy
-//     ReadRoot/WriteRoot), the policy is EMPTY (nil Bindings) so the
-//     tools fall back to their construction-time Root — byte-identical to
-//     a pre-feature deployment.
+//     When no `default` volume exists (no `volumes:` config), the policy is
+//     INACTIVE so every file/exec tool refuses — sandbox-by-default, RFC AH
+//     Phase 3 (the legacy jail is gone; declare a `default` volume to grant
+//     disk access).
 //   - An agent that declares volumes is confined to EXACTLY those (it
 //     does NOT implicitly also get `default`). Each binding's Default
 //     flag carries through from the config volume's `default: true`, so
@@ -1295,13 +1295,10 @@ func (s *Server) volumePolicyForAgent(ctx context.Context, agentDef config.Agent
 	if len(agentDef.Volumes) == 0 {
 		def, ok := s.cfg.Volumes["default"]
 		if !ok {
-			// No explicit `default` volume → inactive policy. The file tools
-			// fall back to their construction-time Root (the legacy
-			// ReadRoot/WriteRoot/BashCwd), byte-identical to a pre-feature
-			// deployment. We deliberately do NOT synthesize a single-root
-			// `default` from the three legacy roots — collapsing them into one
-			// root cannot be byte-identical when they differ (Read would read
-			// WriteRoot, Bash would lose BashCwd).
+			// No explicit `default` volume → inactive policy. RFC AH Phase 3:
+			// the legacy jail is gone, so an inactive policy means DENY — every
+			// file/exec tool refuses (sandbox-by-default). Declare a `default`
+			// volume to grant the old single-jail behaviour.
 			return tools.VolumePolicyValue{}
 		}
 		return tools.VolumePolicyValue{Active: true, Bindings: []tools.VolumeBinding{{

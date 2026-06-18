@@ -13,9 +13,9 @@ export LOOMCYCLE_LISTEN_ADDR="${LOOMCYCLE_LISTEN_ADDR:-127.0.0.1:8787}"
 export LOOMCYCLE_ANTHROPIC_OAUTH_DEV_ENABLED="${LOOMCYCLE_ANTHROPIC_OAUTH_DEV_ENABLED:-1}"
 
 # The read-only review jail + the imported skill. The reviewers get Read/Grep/Glob sandboxed to
-# LOOMCYCLE_READ_ROOT (=./work); the repo under review is cloned to ./work/loomcycle-src and
-# addressed by reviewers RELATIVE to the read-root (loomcycle-src/<path>). No Bash/Write/egress.
-export LOOMCYCLE_READ_ROOT="${LOOMCYCLE_READ_ROOT:-$HERE/work}"
+# the read-only `default` volume in loomcycle.yaml (run.sh cd's to ./work below, so `path: .` ==
+# ./work); the repo under review is cloned to ./work/loomcycle-src and addressed by reviewers
+# RELATIVE to that volume root (loomcycle-src/<path>). No Bash/Write/egress.
 export LOOMCYCLE_SKILLS_ROOT="${LOOMCYCLE_SKILLS_ROOT:-$HERE/skills}"   # bundle ./skills/code-review/SKILL.md
 # Bearer the MCP thin client (work/exp7_mcp.py → `loomcycle mcp --upstream`) uses to reach this runtime.
 export LOOMCYCLE_MCP_UPSTREAM_TOKEN="${LOOMCYCLE_MCP_UPSTREAM_TOKEN:-${LOOMCYCLE_AUTH_TOKEN:-}}"
@@ -23,4 +23,6 @@ export LOOMCYCLE_MCP_UPSTREAM_TOKEN="${LOOMCYCLE_MCP_UPSTREAM_TOKEN:-${LOOMCYCLE
 mkdir -p "$HERE/data" "$HERE/work"
 LOOMCYCLE_BIN="${LOOMCYCLE_BIN:-loomcycle}"
 command -v "$LOOMCYCLE_BIN" >/dev/null 2>&1 || { echo "run.sh: '$LOOMCYCLE_BIN' not on PATH — install loomcycle (≥ v0.32.0) or set LOOMCYCLE_BIN." >&2; exit 127; }
+# cd into the read-only volume root so loomcycle.yaml's `default: {path: .}` resolves to ./work.
+cd "$HERE/work"
 exec "$LOOMCYCLE_BIN" "$@" --config "$HERE/loomcycle.yaml"

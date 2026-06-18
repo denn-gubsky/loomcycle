@@ -37,7 +37,6 @@
 package builtin
 
 import (
-	"context"
 	"encoding/json"
 	"path/filepath"
 	"runtime"
@@ -50,11 +49,11 @@ func TestBashTimeout(t *testing.T) {
 		t.Skip()
 	}
 	cwd, _ := filepath.EvalSymlinks(t.TempDir())
-	b := &Bash{Enabled: true, Cwd: cwd, Timeout: 100 * time.Millisecond}
+	b := &Bash{Enabled: true, Timeout: 100 * time.Millisecond}
 	body, _ := json.Marshal(map[string]any{"command": "sleep 5"})
 
 	start := time.Now()
-	res, err := b.Execute(context.Background(), body)
+	res, err := b.Execute(bashCtx(cwd), body)
 	elapsed := time.Since(start)
 	if err != nil {
 		t.Fatal(err)

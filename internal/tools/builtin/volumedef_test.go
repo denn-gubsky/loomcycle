@@ -535,7 +535,8 @@ func TestPurgeEphemeralRunTree_RefusesEmptyRunID(t *testing.T) {
 
 // a NAMED ephemeral volume resolves to its root via effectiveRoot; rw allows
 // a write, ro refuses; a name not in the set falls through (and with no
-// VolumePolicy → the legacy fallback root).
+// VolumePolicy → DENY, RFC AH Phase 3 sandbox-by-default; the legacy
+// fallback root is gone).
 func TestEffectiveRoot_EphemeralTier(t *testing.T) {
 	set := tools.NewEphemeralVolumeSet()
 	set.Add("work", tools.EphemeralVolumeRef{Root: "/pool/_ephemeral/run-1/work", ReadOnly: false})
@@ -543,22 +544,22 @@ func TestEffectiveRoot_EphemeralTier(t *testing.T) {
 	ctx := tools.WithEphemeralVolumes(context.Background(), set)
 
 	// rw ephemeral resolves for both read + write.
-	if got, err := effectiveRoot(ctx, "/fallback", "work", false); err != nil || got != "/pool/_ephemeral/run-1/work" {
+	if got, err := effectiveRoot(ctx, "work", false); err != nil || got != "/pool/_ephemeral/run-1/work" {
 		t.Errorf("read work = %q err=%v", got, err)
 	}
-	if got, err := effectiveRoot(ctx, "/fallback", "work", true); err != nil || got != "/pool/_ephemeral/run-1/work" {
+	if got, err := effectiveRoot(ctx, "work", true); err != nil || got != "/pool/_ephemeral/run-1/work" {
 		t.Errorf("write work = %q err=%v", got, err)
 	}
 	// ro ephemeral allows read, refuses write.
-	if got, err := effectiveRoot(ctx, "/fallback", "ref", false); err != nil || got != "/pool/_ephemeral/run-1/ref" {
+	if got, err := effectiveRoot(ctx, "ref", false); err != nil || got != "/pool/_ephemeral/run-1/ref" {
 		t.Errorf("read ref = %q err=%v", got, err)
 	}
-	if _, err := effectiveRoot(ctx, "/fallback", "ref", true); err == nil || !strings.Contains(err.Error(), "read-only") {
+	if _, err := effectiveRoot(ctx, "ref", true); err == nil || !strings.Contains(err.Error(), "read-only") {
 		t.Errorf("write ref must refuse ro; err=%v", err)
 	}
-	// A name not in the set + no VolumePolicy → legacy fallback (unchanged).
-	if got, err := effectiveRoot(ctx, "/fallback", "other", false); err != nil || got != "/fallback" {
-		t.Errorf("unknown name = %q err=%v, want fallback", got, err)
+	// A name not in the set + no VolumePolicy → DENY (no fallback root).
+	if _, err := effectiveRoot(ctx, "other", false); err == nil || !strings.Contains(err.Error(), "no filesystem volume available") {
+		t.Errorf("unknown name + no policy must deny; err=%v", err)
 	}
 }
 
@@ -586,7 +587,7 @@ func TestEffectiveRoot_EphemeralStillContains(t *testing.T) {
 	set.Add("work", tools.EphemeralVolumeRef{Root: realRoot})
 	ctx := tools.WithEphemeralVolumes(context.Background(), set)
 
-	root, err := effectiveRoot(ctx, "", "work", false)
+	root, err := effectiveRoot(ctx, "work", false)
 	if err != nil {
 		t.Fatalf("effectiveRoot: %v", err)
 	}

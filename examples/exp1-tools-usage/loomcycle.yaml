@@ -31,6 +31,12 @@ user_tiers:
     fallback_on_error: true
     max_fallback_attempts: 3
 
+# path: . is the cwd run.sh cd's into ($HERE/work) — replaces the retired
+# LOOMCYCLE_READ_ROOT/WRITE_ROOT/BASH_CWD jail (RFC AH Phase 3). The unbound
+# code-guru agent binds to `default`.
+volumes:
+  default: { path: ., mode: rw, default: true }
+
 agents:
   code-guru:
     tier: middle            # claude-sonnet-4-6 (OAuth) → deepseek-v4-pro fallback

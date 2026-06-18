@@ -7,21 +7,24 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
 
-func TestEditRefusesEmptyRoot(t *testing.T) {
+func TestEditRefusesNoVolume(t *testing.T) {
 	e := &Edit{}
 	res, err := e.Execute(context.Background(), json.RawMessage(`{"path":"/tmp/x","old_string":"a","new_string":"b"}`))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !res.IsError || !strings.Contains(res.Text, "sandbox") {
-		t.Fatalf("expected sandbox-refusal error, got Text=%q IsError=%v", res.Text, res.IsError)
+	if !res.IsError || !strings.Contains(res.Text, "no filesystem volume available") {
+		t.Fatalf("expected no-volume refusal, got Text=%q IsError=%v", res.Text, res.IsError)
 	}
 }
 
 func TestEditRejectsIdenticalOldAndNew(t *testing.T) {
-	e := &Edit{Root: t.TempDir()}
+	// old==new is checked before the volume resolves, so this needs no binding.
+	e := &Edit{}
 	body, _ := json.Marshal(map[string]string{"path": "/x", "old_string": "same", "new_string": "same"})
 	res, err := e.Execute(context.Background(), body)
 	if err != nil {
@@ -42,9 +45,10 @@ func TestEditOldStringNotFound(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	e := &Edit{Root: root}
+	e := &Edit{}
+	ctx := ctxWith(tools.VolumeBinding{Name: "default", Root: root, Default: true})
 	body, _ := json.Marshal(map[string]string{"path": target, "old_string": "missing", "new_string": "x"})
-	res, err := e.Execute(context.Background(), body)
+	res, err := e.Execute(ctx, body)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -66,9 +70,10 @@ func TestEditRejectsAmbiguousMatchWithoutReplaceAll(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	e := &Edit{Root: root}
+	e := &Edit{}
+	ctx := ctxWith(tools.VolumeBinding{Name: "default", Root: root, Default: true})
 	body, _ := json.Marshal(map[string]string{"path": target, "old_string": "foo", "new_string": "bar"})
-	res, err := e.Execute(context.Background(), body)
+	res, err := e.Execute(ctx, body)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -92,9 +97,10 @@ func TestEditSingleReplacement(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	e := &Edit{Root: root}
+	e := &Edit{}
+	ctx := ctxWith(tools.VolumeBinding{Name: "default", Root: root, Default: true})
 	body, _ := json.Marshal(map[string]string{"path": target, "old_string": "world", "new_string": "earth"})
-	res, err := e.Execute(context.Background(), body)
+	res, err := e.Execute(ctx, body)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -117,9 +123,10 @@ func TestEditReplaceAll(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	e := &Edit{Root: root}
+	e := &Edit{}
+	ctx := ctxWith(tools.VolumeBinding{Name: "default", Root: root, Default: true})
 	body, _ := json.Marshal(map[string]any{"path": target, "old_string": "foo", "new_string": "bar", "replace_all": true})
-	res, err := e.Execute(context.Background(), body)
+	res, err := e.Execute(ctx, body)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -153,9 +160,10 @@ func TestEditRejectsSymlinkEscape(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	e := &Edit{Root: root}
+	e := &Edit{}
+	ctx := ctxWith(tools.VolumeBinding{Name: "default", Root: root, Default: true})
 	body, _ := json.Marshal(map[string]string{"path": link, "old_string": "CLASSIFIED", "new_string": "OPEN"})
-	res, err := e.Execute(context.Background(), body)
+	res, err := e.Execute(ctx, body)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -178,9 +186,10 @@ func TestEditRejectsOversizedFile(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	e := &Edit{Root: root, MaxBytes: 8}
+	e := &Edit{MaxBytes: 8}
+	ctx := ctxWith(tools.VolumeBinding{Name: "default", Root: root, Default: true})
 	body, _ := json.Marshal(map[string]string{"path": target, "old_string": "0", "new_string": "X"})
-	res, err := e.Execute(context.Background(), body)
+	res, err := e.Execute(ctx, body)
 	if err != nil {
 		t.Fatal(err)
 	}

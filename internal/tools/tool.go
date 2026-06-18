@@ -221,16 +221,16 @@ type VolumeBinding struct {
 // VolumePolicyValue is the run's resolved volume policy.
 //
 // Active distinguishes "volume confinement is in force" from "no policy",
-// which is load-bearing for spawn confinement:
-//   - Active == false (the zero value / never attached): the file tools
-//     fall back to their construction-time Root (the legacy jail). This is
-//     the backward-compat path for deployments + agents that don't use
-//     volumes.
+// which is load-bearing for both spawn confinement and sandbox-by-default
+// (RFC AH Phase 3 — the legacy jail is gone):
+//   - Active == false (the zero value / never attached): the agent is bound
+//     to NO volume, so every file/exec tool REFUSES (no filesystem access).
+//     Disk access is an explicit grant — declare a `volumes:` block (with a
+//     `default` volume to restore the old single-jail behaviour).
 //   - Active == true: the run is confined to Bindings. An Active policy with
 //     an EMPTY Bindings slice DENIES every file-tool call (e.g. a sub-agent
-//     whose declared volumes share none of the parent's). It must NOT fall
-//     back to the legacy jail — otherwise narrowing a child to nothing would
-//     silently hand it the (broader) jail instead of denying it.
+//     whose declared volumes share none of the parent's), exactly like the
+//     inactive case — there is no longer any fallback root to leak to.
 type VolumePolicyValue struct {
 	Active   bool
 	Bindings []VolumeBinding
@@ -246,8 +246,9 @@ func WithVolumePolicy(ctx context.Context, p VolumePolicyValue) context.Context 
 }
 
 // VolumePolicy returns the run's volume policy from ctx, or the zero value
-// (Active=false) when none was attached. Active=false is the "unbound /
-// legacy jail" signal — the tools use their construction-time Root.
+// (Active=false) when none was attached. Active=false is the "no volume
+// bound" signal — the file/exec tools refuse (RFC AH Phase 3: no legacy
+// fallback root survives).
 func VolumePolicy(ctx context.Context) VolumePolicyValue {
 	v, _ := ctx.Value(ctxKeyVolumePolicy{}).(VolumePolicyValue)
 	return v

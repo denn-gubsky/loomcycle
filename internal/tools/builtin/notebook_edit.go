@@ -24,12 +24,9 @@ import (
 // corrupt. NotebookEdit handles the on-disk shape and preserves all
 // non-target cells + top-level metadata verbatim.
 //
-// Sandbox model: same Root as Write (this mutates files). Writes
-// are atomic: tempfile in the same dir + rename.
+// Sandbox model: mirrors Write (this mutates files) — a rw volume is
+// required. Writes are atomic: tempfile in the same dir + rename.
 type NotebookEdit struct {
-	// Root is the sandbox root (reuses LOOMCYCLE_WRITE_ROOT in
-	// production). Empty = refuse.
-	Root string
 	// MaxBytes caps both input file size and produced JSON. Default 8 MiB
 	// — notebooks routinely run larger than the 1 MiB Write default
 	// because of inline base64 image outputs.
@@ -96,12 +93,9 @@ func (n *NotebookEdit) Execute(ctx context.Context, input json.RawMessage) (tool
 	if err := json.Unmarshal(input, &args); err != nil {
 		return errResult("invalid input: " + err.Error()), nil
 	}
-	root, rootErr := effectiveRoot(ctx, n.Root, args.Volume, true)
+	root, rootErr := effectiveRoot(ctx, args.Volume, true)
 	if rootErr != nil {
 		return errResult(rootErr.Error()), nil
-	}
-	if root == "" {
-		return errResult("NotebookEdit tool is not configured with a sandbox root; set LOOMCYCLE_WRITE_ROOT"), nil
 	}
 	if args.FilePath == "" {
 		return errResult("file_path is required"), nil
