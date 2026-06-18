@@ -274,6 +274,10 @@ type staticAgentDefJSON struct {
 	MemoryScopes          []string                          `json:"memory_scopes,omitempty"`
 	MemoryQuotaBytes      int                               `json:"memory_quota_bytes,omitempty"`
 	MemoryBackend         string                            `json:"memory_backend,omitempty"`
+	// RFC AH per-agent filesystem volume bindings — the names this agent is
+	// confined to. Surfaced so the Volumes Web UI (Phase 4) can cross-reference
+	// which agents bind each volume (derived client-side from this list).
+	Volumes []string `json:"volumes,omitempty"`
 }
 
 func marshalStaticAgentDef(def config.AgentDef) json.RawMessage {
@@ -295,6 +299,7 @@ func marshalStaticAgentDef(def config.AgentDef) json.RawMessage {
 		MemoryScopes:          def.MemoryScopes,
 		MemoryQuotaBytes:      def.MemoryQuotaBytes,
 		MemoryBackend:         def.MemoryBackend,
+		Volumes:               def.Volumes,
 	})
 	if err != nil {
 		return nil

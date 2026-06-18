@@ -280,6 +280,7 @@ func Run(t *testing.T, factory Factory) {
 		{"EphemeralVolumeCreateListDelete", testEphemeralVolumeCreateListDelete},
 		{"EphemeralVolumeSweepCandidatesTerminalOnly", testEphemeralVolumeSweepCandidatesTerminalOnly},
 		{"EphemeralVolumeSweepCandidatesSkipsPaused", testEphemeralVolumeSweepCandidatesSkipsPaused},
+		{"EphemeralVolumeListByTenantIsolation", testEphemeralVolumeListByTenantIsolation},
 		// RFC L OSS multi-tenant authorization — OperatorTokenDef.
 		{"OperatorTokenDefCreateAndLookup", testOperatorTokenDefCreateAndLookup},
 		{"OperatorTokenDefCurrentByName", testOperatorTokenDefCurrentByName},
@@ -7270,5 +7271,53 @@ func testEphemeralVolumeSweepCandidatesSkipsPaused(t *testing.T, s store.Store) 
 		if c.RootRunID == run.ID {
 			t.Fatalf("PAUSED run appeared as a sweep candidate — its volumes would be wrongly purged before resume")
 		}
+	}
+}
+
+// testEphemeralVolumeListByTenantIsolation pins the RFC AH Phase 4 read path:
+// EphemeralVolumeListByTenant returns ONLY the asked-for tenant's live
+// ephemeral rows (across all of that tenant's runs), never another tenant's.
+// This is the store-boundary guarantee the Web UI's ephemeral view relies on.
+func testEphemeralVolumeListByTenantIsolation(t *testing.T, s store.Store) {
+	ctx := context.Background()
+
+	// Tenant A owns two runs, each with an ephemeral volume.
+	if _, err := s.EphemeralVolumeCreate(ctx, mkEphemeralVolume("run-a1", "work", "tnt-a", "/pool/_ephemeral/run-a1/work", "rw")); err != nil {
+		t.Fatalf("create a1: %v", err)
+	}
+	if _, err := s.EphemeralVolumeCreate(ctx, mkEphemeralVolume("run-a2", "scratch", "tnt-a", "/pool/_ephemeral/run-a2/scratch", "ro")); err != nil {
+		t.Fatalf("create a2: %v", err)
+	}
+	// Tenant B owns one — must NOT appear in A's list.
+	if _, err := s.EphemeralVolumeCreate(ctx, mkEphemeralVolume("run-b1", "work", "tnt-b", "/pool/_ephemeral/run-b1/work", "rw")); err != nil {
+		t.Fatalf("create b1: %v", err)
+	}
+
+	rowsA, err := s.EphemeralVolumeListByTenant(ctx, "tnt-a")
+	if err != nil {
+		t.Fatalf("list tnt-a: %v", err)
+	}
+	if len(rowsA) != 2 {
+		t.Fatalf("tnt-a list = %d rows, want 2: %+v", len(rowsA), rowsA)
+	}
+	for _, r := range rowsA {
+		if r.TenantID != "tnt-a" {
+			t.Errorf("tnt-a list leaked a %q row: %+v", r.TenantID, r)
+		}
+	}
+	// Ordered by (root_run_id, name): run-a1/work then run-a2/scratch.
+	if rowsA[0].RootRunID != "run-a1" || rowsA[0].Name != "work" {
+		t.Errorf("tnt-a[0] = %s/%s, want run-a1/work", rowsA[0].RootRunID, rowsA[0].Name)
+	}
+	if !jsonEqual(rowsA[0].Definition, `{"path":"/pool/_ephemeral/run-a1/work","mode":"rw"}`) {
+		t.Errorf("tnt-a[0] body = %s", rowsA[0].Definition)
+	}
+
+	rowsB, err := s.EphemeralVolumeListByTenant(ctx, "tnt-b")
+	if err != nil {
+		t.Fatalf("list tnt-b: %v", err)
+	}
+	if len(rowsB) != 1 || rowsB[0].RootRunID != "run-b1" {
+		t.Fatalf("tnt-b list = %+v, want one run-b1 row", rowsB)
 	}
 }

@@ -6,6 +6,7 @@ import {
   Brain,
   CalendarClock,
   Camera,
+  HardDrive,
   Library,
   ListTree,
   type LucideIcon,
@@ -39,6 +40,9 @@ const NAV_ITEMS: NavItem[] = [
   { to: "/agents", label: "runs", Icon: ListTree, adminOnly: false },
   { to: "/library/agents", label: "library", Icon: Library, adminOnly: true },
   { to: "/integrations/webhooks", label: "integrations", Icon: Plug, adminOnly: true },
+  // RFC AH Phase 4. adminOnly mirrors the Library/Integrations def-management
+  // gating; broadening to tenant-operator UI access is a separate concern.
+  { to: "/volumes/persistent", label: "volumes", Icon: HardDrive, adminOnly: true },
   { to: "/channels", label: "channels", Icon: Radio, adminOnly: true },
   { to: "/schedules", label: "schedules", Icon: CalendarClock, adminOnly: true },
   { to: "/interrupts", label: "interrupts", Icon: Bell, adminOnly: true },

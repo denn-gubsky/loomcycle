@@ -2269,6 +2269,13 @@ func (s *Server) Mux() http.Handler {
 	// confined (ScopeTenant via isTenantConfinedDefPath) — the tool stamps
 	// the caller's authoritative tenant + opaque-404s cross-tenant reads.
 	mux.Handle("POST /v1/_volumedef", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleSubstrateVolumeDef))))
+	// RFC AH Phase 4 (Web UI) — two ADDITIVE read-only views of the volume
+	// universe. Tenant-confined (ScopeTenant via isTenantConfinedDefPath):
+	// statics are shown to all (the shared bind floor), dynamic + ephemeral
+	// rows are filtered to the caller's authoritative tenant. No new runtime
+	// primitive — CRUD stays on POST /v1/_volumedef.
+	mux.Handle("GET /v1/_volumes", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleListVolumes))))
+	mux.Handle("GET /v1/_volumes/ephemeral", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleListEphemeralVolumes))))
 	// v1.x scheduled-runs substrate. Same operator-admin-only dispatch
 	// shape; the tool is reachable only via this endpoint + the MCP
 	// meta-tool + the future gRPC RPC (no per-agent dispatcher slot).

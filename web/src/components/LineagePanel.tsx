@@ -252,6 +252,10 @@ function newCtaLabel(kind: SubstrateKind): string {
     case "a2aservercarddef": return "A2A Server Card";
     case "a2aagentdef": return "A2A Agent";
     case "memorybackenddef": return "Memory Backend";
+    // VolumeDef is FLAT (no lineage); the Volumes tab uses its own flat table,
+    // not LineagePanel, so this label is never rendered for it. The arm keeps
+    // the switch exhaustive over SubstrateKind.
+    case "volumedef": return "Volume";
   }
 }
 

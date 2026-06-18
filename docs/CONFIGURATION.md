@@ -978,6 +978,15 @@ Create one with `ephemeral: true`:
 - **Requires an active run.** `ephemeral: true` is refused outside a run (no root run id) and on a static-name or in-run-duplicate collision. Same `volume_def_scopes` gate as the persistent op.
 - **Crash backstop — `LOOMCYCLE_EPHEMERAL_VOLUME_SWEEP_MS`.** A singleton sweeper (default **60s**; `0` disables — the inline purge still runs) periodically purges ephemeral volumes whose owning run is terminal **and not paused/pausing** (a paused run is parked, not crashed — its volumes survive to be reused on resume; a resumed run rehydrates its in-memory set from the persisted rows). Cluster-gated, so one replica per tick does the work. Skipped when no `dynamic_root` is configured.
 
+### 9d.3 Volumes console tab (RFC AH Phase 4)
+
+The embedded Web UI (`/ui`) has a dedicated **Volumes** tab (admin-gated, alongside Library / Integrations / Channels / Schedules) to view and manage volumes for the operator's tenant. It's a thin client over the HTTP surface — no new runtime behaviour.
+
+- **Persistent.** A flat table of static volumes (read-only — the operator yaml is ground truth, including the `dynamic_root`) plus the tenant's dynamic `VolumeDef`s. Dynamic rows support **Delete** (non-destructive — unmaps the volume, keeps files) and **Purge** (destructive — `RemoveAll`s the directory tree). A **Create** button provisions a dynamic volume by name + mode (the runtime derives the path). A **bound by** column shows which agents bind each volume.
+- **Ephemeral.** A read-only table of the tenant's live ephemeral volumes (auto-purged at run completion), polled every ~10s.
+- **Purge is type-to-confirm** — the operator must type the volume's name to enable the confirm button, distinct from the one-click Delete. The server-side `RemoveAll` fence (§6 of the RFC: re-derive, EvalSymlinks, strictly-inside, expected-prefix) remains the real guard.
+- **Backed by two read-only endpoints** — `GET /v1/_volumes` (merged static + tenant dynamic) and `GET /v1/_volumes/ephemeral` (the tenant's live ephemeral volumes). Both are tenant-scoped from the authoritative principal (gated at `substrate:tenant`; admin satisfies). CRUD reuses `POST /v1/_volumedef`.
+
 ---
 
 ## 10. Cross-references
