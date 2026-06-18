@@ -3,6 +3,7 @@ package grpc
 import (
 	"context"
 	"encoding/json"
+	"path/filepath"
 	"testing"
 
 	"google.golang.org/grpc/codes"
@@ -25,14 +26,17 @@ type substrateMock struct {
 	gotAgentDefInput    json.RawMessage
 	gotSkillDefInput    json.RawMessage
 	gotScheduleDefInput json.RawMessage
+	gotVolumeDefInput   json.RawMessage
 
 	agentDefResult    connector.ToolResult
 	skillDefResult    connector.ToolResult
 	scheduleDefResult connector.ToolResult
+	volumeDefResult   connector.ToolResult
 
 	agentDefErr    error
 	skillDefErr    error
 	scheduleDefErr error
+	volumeDefErr   error
 }
 
 func (m *substrateMock) AgentDef(_ context.Context, in json.RawMessage) (connector.ToolResult, error) {
@@ -48,6 +52,11 @@ func (m *substrateMock) SkillDef(_ context.Context, in json.RawMessage) (connect
 func (m *substrateMock) ScheduleDef(_ context.Context, in json.RawMessage) (connector.ToolResult, error) {
 	m.gotScheduleDefInput = in
 	return m.scheduleDefResult, m.scheduleDefErr
+}
+
+func (m *substrateMock) VolumeDef(_ context.Context, in json.RawMessage) (connector.ToolResult, error) {
+	m.gotVolumeDefInput = in
+	return m.volumeDefResult, m.volumeDefErr
 }
 
 func TestGrpcAgentDef_HappyPath(t *testing.T) {
@@ -128,6 +137,33 @@ func TestGrpcScheduleDef_HappyPath(t *testing.T) {
 	}
 }
 
+func TestGrpcVolumeDef_HappyPath(t *testing.T) {
+	mc := &substrateMock{
+		volumeDefResult: connector.ToolResult{
+			Text:    `{"name":"repo-a","path":"/pool/_shared/repo-a","mode":"rw"}`,
+			IsError: false,
+		},
+	}
+	client, cleanup := startTestServerWithConnector(t, mc)
+	defer cleanup()
+
+	resp, err := client.VolumeDef(context.Background(), &loomcyclepb.SubstrateRequest{
+		InputJson: []byte(`{"op":"create","name":"repo-a","mode":"rw"}`),
+	})
+	if err != nil {
+		t.Fatalf("VolumeDef: %v", err)
+	}
+	if resp.GetIsError() {
+		t.Errorf("is_error = true, want false")
+	}
+	if string(mc.gotVolumeDefInput) == "" {
+		t.Errorf("connector wasn't called with the input")
+	}
+	if string(resp.GetOutputJson()) != `{"name":"repo-a","path":"/pool/_shared/repo-a","mode":"rw"}` {
+		t.Errorf("output_json = %s", resp.GetOutputJson())
+	}
+}
+
 func TestGrpcSubstrate_PropagatesToolRefusal(t *testing.T) {
 	mc := &substrateMock{
 		skillDefResult: connector.ToolResult{
@@ -193,6 +229,7 @@ type realToolConnector struct {
 
 	skillTool    *builtin.SkillDef
 	scheduleTool *builtin.ScheduleDef
+	volumeTool   *builtin.VolumeDef
 }
 
 func (c *realToolConnector) SkillDef(ctx context.Context, in json.RawMessage) (connector.ToolResult, error) {
@@ -202,6 +239,11 @@ func (c *realToolConnector) SkillDef(ctx context.Context, in json.RawMessage) (c
 
 func (c *realToolConnector) ScheduleDef(ctx context.Context, in json.RawMessage) (connector.ToolResult, error) {
 	res, err := c.scheduleTool.Execute(ctx, in)
+	return connector.ToolResult{Text: res.Text, IsError: res.IsError}, err
+}
+
+func (c *realToolConnector) VolumeDef(ctx context.Context, in json.RawMessage) (connector.ToolResult, error) {
+	res, err := c.volumeTool.Execute(ctx, in)
 	return connector.ToolResult{Text: res.Text, IsError: res.IsError}, err
 }
 
@@ -268,5 +310,45 @@ func TestGrpcSubstrate_ScheduleDefCtxSynthesis(t *testing.T) {
 	}
 	if resp.GetIsError() {
 		t.Errorf("is_error = true with output_json = %s — gRPC ctx synthesis didn't grant ScheduleDef scope=[any]", resp.GetOutputJson())
+	}
+}
+
+// TestGrpcSubstrate_VolumeDefCtxSynthesis is the ctx-synthesis regression for
+// VolumeDef. Unlike the SkillDef/ScheduleDef tests above (which use `list`),
+// this MUST use `create`: the VolumeDef policy gates create/delete/purge ONLY
+// — get/list are ungated reads — so a list op would pass even if
+// substrateGRPCCtx forgot WithVolumeDefPolicy. A real builtin.VolumeDef tool
+// is wired so the in-process scope gate fires if-and-only-if the gRPC handler
+// fails to stamp the "any" volume_def policy.
+func TestGrpcSubstrate_VolumeDefCtxSynthesis(t *testing.T) {
+	st, err := storesqlite.Open(":memory:")
+	if err != nil {
+		t.Fatalf("sqlite.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatalf("EvalSymlinks: %v", err)
+	}
+	cfg := &config.Config{Volumes: map[string]config.Volume{
+		"pool": {Path: root, Mode: "rw", DynamicRoot: true},
+	}}
+	volumeTool := &builtin.VolumeDef{Store: st, Cfg: cfg, MaxNameLen: 64}
+	mc := &realToolConnector{volumeTool: volumeTool}
+
+	client, cleanup := startTestServerWithConnector(t, mc)
+	defer cleanup()
+
+	// `create` is capability-gated. is_error=true means substrateGRPCCtx
+	// didn't grant scope=[any] (the tool default-denied the create).
+	resp, err := client.VolumeDef(context.Background(), &loomcyclepb.SubstrateRequest{
+		InputJson: []byte(`{"op":"create","name":"repo-a","mode":"rw"}`),
+	})
+	if err != nil {
+		t.Fatalf("VolumeDef: %v", err)
+	}
+	if resp.GetIsError() {
+		t.Errorf("is_error = true with output_json = %s — gRPC ctx synthesis didn't grant VolumeDef scope=[any]", resp.GetOutputJson())
 	}
 }

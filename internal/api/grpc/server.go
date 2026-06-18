@@ -500,6 +500,7 @@ var grpcConsumerScopes = map[string]string{
 	"A2AAgentDef":      auth.ScopeTenant,
 	"WebhookDef":       auth.ScopeTenant,
 	"MemoryBackendDef": auth.ScopeTenant,
+	"VolumeDef":        auth.ScopeTenant,
 	"RegisterHook":     auth.ScopeTenant,
 	"ListHooks":        auth.ScopeTenant,
 	"DeleteHook":       auth.ScopeTenant,
