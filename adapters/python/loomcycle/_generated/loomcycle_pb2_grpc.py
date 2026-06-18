@@ -193,6 +193,11 @@ class LoomcycleStub(object):
                 request_serializer=loomcycle__pb2.SubstrateRequest.SerializeToString,
                 response_deserializer=loomcycle__pb2.SubstrateResponse.FromString,
                 _registered_method=True)
+        self.VolumeDef = channel.unary_unary(
+                '/loomcycle.v1.Loomcycle/VolumeDef',
+                request_serializer=loomcycle__pb2.SubstrateRequest.SerializeToString,
+                response_deserializer=loomcycle__pb2.SubstrateResponse.FromString,
+                _registered_method=True)
         self.ListChannels = channel.unary_unary(
                 '/loomcycle.v1.Loomcycle/ListChannels',
                 request_serializer=loomcycle__pb2.ListChannelsRequest.SerializeToString,
@@ -607,6 +612,21 @@ class LoomcycleServicer(object):
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def VolumeDef(self, request, context):
+        """VolumeDef dispatches to the RFC AH dynamic filesystem-volume
+        substrate. Mirrors POST /v1/_volumedef. TENANT-CONFINED (ScopeTenant,
+        like AgentDef/SkillDef — NOT operator-admin-only): the tool stamps the
+        caller's authoritative tenant + opaque-404s cross-tenant reads. A
+        VolumeDef is flat (a pointer to mutable on-disk state, not a versioned
+        definition), so the op set is create / get / list / delete / purge —
+        NOT the content-addressed retire/promote/fork of the families above.
+        Same SubstrateRequest body shape (op-discriminated input_json +
+        is_error tool refusals in the response).
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
     def ListChannels(self, request, context):
         """----- v0.9.x n8n RFC Phase 0 -----
 
@@ -836,6 +856,11 @@ def add_LoomcycleServicer_to_server(servicer, server):
             ),
             'OperatorTokenDef': grpc.unary_unary_rpc_method_handler(
                     servicer.OperatorTokenDef,
+                    request_deserializer=loomcycle__pb2.SubstrateRequest.FromString,
+                    response_serializer=loomcycle__pb2.SubstrateResponse.SerializeToString,
+            ),
+            'VolumeDef': grpc.unary_unary_rpc_method_handler(
+                    servicer.VolumeDef,
                     request_deserializer=loomcycle__pb2.SubstrateRequest.FromString,
                     response_serializer=loomcycle__pb2.SubstrateResponse.SerializeToString,
             ),
@@ -1719,6 +1744,33 @@ class Loomcycle(object):
             request,
             target,
             '/loomcycle.v1.Loomcycle/OperatorTokenDef',
+            loomcycle__pb2.SubstrateRequest.SerializeToString,
+            loomcycle__pb2.SubstrateResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def VolumeDef(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/loomcycle.v1.Loomcycle/VolumeDef',
             loomcycle__pb2.SubstrateRequest.SerializeToString,
             loomcycle__pb2.SubstrateResponse.FromString,
             options,

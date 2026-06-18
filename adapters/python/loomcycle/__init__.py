@@ -35,12 +35,13 @@ The client surface mirrors the gRPC service in proto/loomcycle.proto:
     resolve_probe()           — resolver provider/model availability matrix
     health()                  — liveness probe
 
-As of v0.8.0 the client covers all 39 gRPC RPCs: the substrate-def family
+As of v0.9.0 the client covers all 40 gRPC RPCs: the substrate-def family
 (agent_def / skill_def / mcp_server_def / schedule_def / a2a_server_card_def /
-a2a_agent_def / webhook_def / memory_backend_def / operator_token_def), the
-channel ops (list_channels / publish_channel / subscribe_channel / peek_channel /
-ack_channel / await_channels / broadcast_channels), pause/resume/state, the
-snapshot lifecycle, and hook management. run_streaming / continue_session /
+a2a_agent_def / webhook_def / memory_backend_def / operator_token_def /
+volume_def), the channel ops (list_channels / publish_channel /
+subscribe_channel / peek_channel / ack_channel / await_channels /
+broadcast_channels), pause/resume/state, the snapshot lifecycle, and hook
+management. run_streaming / continue_session /
 spawn_run_batch accept per-run ``sampling`` + ``compaction`` overrides. The
 HTTP-only surface (memory-entry admin, interruptions, library enumeration, the
 LLM gateway, whoami/list-users) has no gRPC RPC and is not exposed here.
@@ -109,4 +110,4 @@ __all__ = [
     "SubstrateToolRefusedError",
 ]
 
-__version__ = "0.8.0"
+__version__ = "0.9.0"
