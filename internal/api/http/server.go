@@ -1897,6 +1897,10 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		UserID:        effectiveUserID,
 		TenantID:      effectiveTenantID,
 		ParentContext: in.ParentContext,
+		// RFC AH Phase 2b: this is a TOP-LEVEL run — it owns the ephemeral
+		// volume tree purge at completion. RootRunID is its own id.
+		IsTopLevel: true,
+		RootRunID:  runID,
 	}
 	// Stash the run span on the meta so finishRun* can close it with
 	// final attrs (usage totals + stop_reason + error status).
@@ -1949,6 +1953,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		UserID:          effectiveUserID,
 		TenantID:        effectiveTenantID, // RFC L: authoritative tenant (memory tenancy key)
 		AgentID:         agentID,
+		RootRunID:       runID, // RFC AH Phase 2b: top-level run roots its own spawn tree
 		UserTier:        in.UserTier,
 		UserBearer:      in.UserBearer,      // v0.8.x: per-run MCP bearer
 		UserCredentials: in.UserCredentials, // v1.x RFC F: per-tool named credentials
@@ -1974,6 +1979,11 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	// empty policy (the file tools fall back to the legacy jail Root);
 	// sub-agents inherit + narrow this via runSubAgent.
 	loopCtx = tools.WithVolumePolicy(loopCtx, s.volumePolicyForAgent(loopCtx, agentDef))
+	// RFC AH Phase 2b: a FRESH run-scoped ephemeral volume set, attached ONCE
+	// at this top-level start. Sub-agents inherit this SAME pointer via the
+	// ctx chain (runSubAgent must not re-attach it) — never shared across
+	// top-level runs (the load-bearing isolation property).
+	loopCtx = tools.WithEphemeralVolumes(loopCtx, tools.NewEphemeralVolumeSet())
 	loopCtx = tools.WithChannelPolicy(loopCtx, s.channelPolicyForAgent(loopCtx, agentDef))
 	loopCtx = tools.WithEventEmitter(loopCtx, emit)
 	adPolicy, evPolicy := s.substratePoliciesForAgent(agentDef, effectiveAgentName)
@@ -3158,6 +3168,9 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		TenantID:      req.TenantID,
 		otelSpan:      runSpan,
 		ParentContext: req.ParentContext,
+		// RFC AH Phase 2b: top-level run — owns its ephemeral tree purge.
+		IsTopLevel: true,
+		RootRunID:  runID,
 	}
 	if errors.Is(regErr, cancel.ErrInUse) {
 		// We've already created the session+run row in the store
@@ -3272,6 +3285,7 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		UserID:          req.UserID,
 		TenantID:        req.TenantID, // RFC L: authoritative tenant (memory tenancy key)
 		AgentID:         agentID,
+		RootRunID:       runID, // RFC AH Phase 2b: top-level run roots its own spawn tree
 		UserTier:        req.UserTier,
 		UserBearer:      req.UserBearer,      // v0.8.x: per-run MCP bearer
 		UserCredentials: req.UserCredentials, // v1.x RFC F: per-tool named credentials
@@ -3292,6 +3306,9 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 	// empty policy (the file tools fall back to the legacy jail Root);
 	// sub-agents inherit + narrow this via runSubAgent.
 	loopCtx = tools.WithVolumePolicy(loopCtx, s.volumePolicyForAgent(loopCtx, agentDef))
+	// RFC AH Phase 2b: fresh run-scoped ephemeral volume set (inherited by
+	// sub-agents via ctx; never shared across top-level runs).
+	loopCtx = tools.WithEphemeralVolumes(loopCtx, tools.NewEphemeralVolumeSet())
 	loopCtx = tools.WithChannelPolicy(loopCtx, s.channelPolicyForAgent(loopCtx, agentDef))
 	loopCtx = tools.WithEventEmitter(loopCtx, emit)
 	adPolicy, evPolicy := s.substratePoliciesForAgent(agentDef, req.Agent)
@@ -3691,6 +3708,10 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		TenantID:      sess.TenantID,
 		otelSpan:      runSpan,
 		ParentContext: body.ParentContext,
+		// RFC AH Phase 2b: a continuation is a top-level run; it owns the
+		// ephemeral tree purge for THIS run id.
+		IsTopLevel: true,
+		RootRunID:  run.ID,
 	}
 	if errors.Is(regErr, cancel.ErrInUse) {
 		// Same orphan-row mitigation as handleRuns — the run was
@@ -3750,6 +3771,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		UserID:          sess.UserID,
 		TenantID:        sess.TenantID, // RFC L: tenant from the session (authoritative at creation)
 		AgentID:         agentID,
+		RootRunID:       run.ID, // RFC AH Phase 2b: continuation roots its own spawn tree
 		UserTier:        body.UserTier,
 		UserBearer:      body.UserBearer,      // v0.8.x: per-run MCP bearer
 		UserCredentials: body.UserCredentials, // v1.x RFC F: per-tool named credentials
@@ -3773,6 +3795,9 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	// empty policy (the file tools fall back to the legacy jail Root);
 	// sub-agents inherit + narrow this via runSubAgent.
 	loopCtx = tools.WithVolumePolicy(loopCtx, s.volumePolicyForAgent(loopCtx, agentDef))
+	// RFC AH Phase 2b: fresh run-scoped ephemeral volume set (inherited by
+	// sub-agents via ctx; never shared across top-level runs).
+	loopCtx = tools.WithEphemeralVolumes(loopCtx, tools.NewEphemeralVolumeSet())
 	loopCtx = tools.WithChannelPolicy(loopCtx, s.channelPolicyForAgent(loopCtx, agentDef))
 	loopCtx = tools.WithEventEmitter(loopCtx, emit)
 	adPolicy, evPolicy := s.substratePoliciesForAgent(agentDef, sess.Agent)
@@ -4565,6 +4590,7 @@ func (s *Server) runSubAgent(ctx context.Context, name string, prompt string, de
 		UserID:          parentIdentity.UserID,
 		TenantID:        parentIdentity.TenantID, // RFC L: sub-agents inherit the parent's authoritative tenant (same isolation boundary)
 		AgentID:         subAgentID,
+		RootRunID:       parentIdentity.RootRunID,             // RFC AH Phase 2b: INHERIT the tree's root id (do NOT overwrite)
 		UserTier:        parentIdentity.UserTier,              // v0.8.2: sub-agents inherit parent's user_tier
 		AgentDefID:      defID,                                // v0.8.7: surface pinned def_id via Context.self
 		UserBearer:      parentIdentity.UserBearer,            // v0.8.x: bearer inherited identically (same end-user)
@@ -4599,6 +4625,12 @@ func (s *Server) runSubAgent(ctx context.Context, name string, prompt string, de
 	// where both hold one the ro/rw axis resolves to the more restrictive.
 	// Mirrors the host-allowlist narrowing read from ctx just above (4376).
 	subCtx = tools.WithVolumePolicy(subCtx, s.childVolumePolicy(subCtx, tools.VolumePolicy(ctx), def))
+	// RFC AH Phase 2b: the run-tree's ephemeral volume SET is deliberately NOT
+	// re-attached here — subCtx derives from the parent's ctx (via subRunCtx ←
+	// WithCancelCause(ctx)), so the SAME *EphemeralVolumeSet pointer flows down
+	// unchanged. A sub-agent creating an ephemeral volume thus registers it in
+	// the shared set the whole tree resolves through, and it is purged with the
+	// tree at the top-level run's completion (sub-agents never purge).
 	// Sub-agent's Channel policy follows the same per-yaml shape as
 	// MemoryPolicy above. The Channels map (operator-declared
 	// channels) IS shared with the parent — those are operator
@@ -5556,6 +5588,16 @@ type runStateMeta struct {
 	UserID        string
 	TenantID      string // run's authoritative tenant — gates the user-agents stream
 	ParentAgentID string
+	// IsTopLevel marks a TOP-LEVEL run (handleRuns / handleMessages / resume)
+	// vs a sub-agent run (RFC AH Phase 2b). finishRun purges the run tree's
+	// ephemeral volumes ONLY for a top-level run — a sub-agent completing must
+	// NOT tear down the tree its siblings + parent still use. Defaults false
+	// (a zero meta from an early-failure path never purges).
+	IsTopLevel bool
+	// RootRunID is the top-level run id at the root of this spawn tree, used
+	// by finishRun to derive the ephemeral subtree to purge (RFC AH Phase 2b).
+	// Set to the run's own id at every top-level site.
+	RootRunID string
 	// ParentContext is the run's opaque tracking lineage, echoed on the
 	// published RunStateEvent (v0.12.x).
 	ParentContext *store.ParentContext
@@ -5645,6 +5687,14 @@ func (s *Server) makeHeartbeat(runID string) func() {
 // only by finishRun for its store write — passing both keeps the
 // background-write fallback in finishRun reusable for both code paths.
 func (s *Server) finishRunWithCancel(ctx context.Context, runCtx context.Context, runID string, res loop.RunResult, runErr error, meta runStateMeta) {
+	// RFC AH Phase 2b: tear down this run tree's ephemeral volumes at
+	// terminal — but ONLY for a TOP-LEVEL run (a sub-agent completing must
+	// not purge the tree its parent + siblings still use). Deferred so it
+	// fires after either terminal-write branch below. Re-derives the subtree;
+	// best-effort (the sweeper backstops a fault).
+	if meta.IsTopLevel {
+		defer s.purgeEphemeralVolumesForRun(meta.RootRunID)
+	}
 	if cause := context.Cause(runCtx); errors.Is(cause, cancel.ErrCancelledByAPI) {
 		// API-cancel terminal write. Reason text comes from the
 		// optional wrapper; falls back to the sentinel string.
@@ -5685,6 +5735,13 @@ func (s *Server) finishRunFailedReason(runID, reason string, meta runStateMeta) 
 		log.Printf("store: FinishRun(failed reason=%q) failed (run=%s): %v", reason, runID, err)
 	}
 	s.publishRunState(meta, "failed", "", reason)
+	// RFC AH Phase 2b: a top-level run that fails (incl. mid-flight panic in
+	// the background-goroutine paths) must still purge its ephemeral subtree.
+	// A no-op for the pre-loop collision/register-fail bails (no volumes were
+	// created yet → the subtree doesn't exist).
+	if meta.IsTopLevel {
+		s.purgeEphemeralVolumesForRun(meta.RootRunID)
+	}
 }
 
 // finishRunCancelled writes the terminal cancelled status with the
@@ -5723,6 +5780,65 @@ func (s *Server) finishRunCancelled(_ context.Context, runID string, res loop.Ru
 		log.Printf("store: FinishRun(cancelled) failed (run=%s): %v", runID, err)
 	}
 	s.publishRunState(meta, "cancelled", reason, "")
+}
+
+// purgeEphemeralVolumesForRun tears down a TOP-LEVEL run tree's ephemeral
+// volumes at completion (RFC AH Phase 2b): a FENCED os.RemoveAll of
+// <dynamic_root>/_ephemeral/<root_run_id>/ + the ephemeral_volume_defs rows.
+// Best-effort + logged — a purge fault must never fail the run (the sweeper
+// backstops it). No-op when no dynamic_root is configured (no ephemeral
+// volumes could exist) or rootRunID is empty.
+//
+// Gated to top-level runs by the caller (meta.IsTopLevel): a sub-agent
+// completing must NOT purge the tree its parent + siblings still use.
+func (s *Server) purgeEphemeralVolumesForRun(rootRunID string) {
+	if rootRunID == "" || s.store == nil {
+		return
+	}
+	dynRoot, ok := builtin.DynamicVolumeRoot(s.cfg)
+	if !ok {
+		return // no dynamic root → no ephemeral volumes possible
+	}
+	// FENCED RemoveAll of the per-run ephemeral subtree (re-derived; never a
+	// stored path). removed=false when it was already gone (nothing to do).
+	if _, err := builtin.PurgeEphemeralRunTree(dynRoot, rootRunID, "ephemeral inline purge"); err != nil {
+		log.Printf("ephemeral inline purge (run=%s): %v", rootRunID, err)
+	}
+	bg, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := s.store.EphemeralVolumeDeleteByRun(bg, rootRunID); err != nil {
+		log.Printf("ephemeral inline purge: delete rows (run=%s): %v", rootRunID, err)
+	}
+}
+
+// rehydrateEphemeralVolumes builds a run-scoped EphemeralVolumeSet from the
+// ephemeral_volume_defs rows a run created before it was paused/snapshotted
+// (RFC AH Phase 2b). Used by the resume path so a resumed paused run keeps
+// in-memory resolution of its own ephemeral volumes (the rows + on-disk dirs
+// survive because the sweeper skips paused runs). Best-effort: a store fault
+// or a malformed row body is logged + skipped, returning whatever resolved
+// (an empty set in the worst case — the agent can re-create).
+func (s *Server) rehydrateEphemeralVolumes(ctx context.Context, rootRunID string) *tools.EphemeralVolumeSet {
+	set := tools.NewEphemeralVolumeSet()
+	if s.store == nil || rootRunID == "" {
+		return set
+	}
+	rows, err := s.store.EphemeralVolumeListByRun(ctx, rootRunID)
+	if err != nil {
+		log.Printf("ephemeral rehydrate (run=%s): %v", rootRunID, err)
+		return set
+	}
+	for _, r := range rows {
+		var body struct {
+			Path string `json:"path"`
+			Mode string `json:"mode"`
+		}
+		if err := json.Unmarshal(r.Definition, &body); err != nil || body.Path == "" {
+			continue
+		}
+		set.Add(r.Name, tools.EphemeralVolumeRef{Root: body.Path, ReadOnly: body.Mode == "ro"})
+	}
+	return set
 }
 
 // finishRun marks the run terminal in the store. status is derived from

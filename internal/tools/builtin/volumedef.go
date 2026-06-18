@@ -421,12 +421,27 @@ func (v *VolumeDef) validateName(name string) error {
 // dynamicRoot returns the operator-blessed parent (the static volume marked
 // dynamic_root: true). Refuses when none is configured.
 func (v *VolumeDef) dynamicRoot() (string, error) {
-	for _, vol := range v.Cfg.Volumes {
-		if vol.DynamicRoot {
-			return vol.Path, nil
-		}
+	if root, ok := DynamicVolumeRoot(v.Cfg); ok {
+		return root, nil
 	}
 	return "", fmt.Errorf("no dynamic volume root configured — mark a static volume `dynamic_root: true`")
+}
+
+// DynamicVolumeRoot returns the operator-blessed parent path (the static
+// volume marked dynamic_root: true), or ("", false) when none is configured.
+// EXPORTED so the HTTP server's inline ephemeral purge + the sweeper backstop
+// resolve the SAME root the tool uses — there is one source of truth for the
+// dynamic root. nil cfg → ("", false).
+func DynamicVolumeRoot(cfg *config.Config) (string, bool) {
+	if cfg == nil {
+		return "", false
+	}
+	for _, vol := range cfg.Volumes {
+		if vol.DynamicRoot {
+			return vol.Path, true
+		}
+	}
+	return "", false
 }
 
 // checkScopeForName enforces the agent's volume_def_scopes against the
@@ -553,14 +568,16 @@ func fencedRemoveAll(dynRoot, expectedParent, target, who string) (removed bool,
 	return true, nil
 }
 
-// purgeEphemeralRunTree RemoveAll's the <dynamic_root>/_ephemeral/<root_run_id>
+// PurgeEphemeralRunTree RemoveAll's the <dynamic_root>/_ephemeral/<root_run_id>
 // subtree behind fencedRemoveAll (RFC AH §6). expectedParent is
 // <dynamic_root>/_ephemeral — the run dir must sit strictly under it and not
 // equal it (so a missing/escaping run id can never widen the delete to the
 // whole _ephemeral tree or the dynamic root). Re-derives the path; never
-// trusts a stored row. Shared by the inline run-completion purge + the
-// sweeper backstop. who is a log prefix (e.g. "ephemeral inline purge").
-func purgeEphemeralRunTree(dynRoot, rootRunID, who string) (removed bool, err error) {
+// trusts a stored row. EXPORTED so the HTTP server's inline run-completion
+// purge + the cmd/loomcycle ephemeral sweeper backstop reuse the SAME fence.
+// who is a log prefix (e.g. "ephemeral inline purge"). removed=false when
+// the subtree was already gone (a no-op success).
+func PurgeEphemeralRunTree(dynRoot, rootRunID, who string) (removed bool, err error) {
 	if rootRunID == "" {
 		return false, fmt.Errorf("empty root run id")
 	}
