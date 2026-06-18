@@ -42,6 +42,8 @@ const (
 	Loomcycle_Continue_FullMethodName            = "/loomcycle.v1.Loomcycle/Continue"
 	Loomcycle_SpawnRunBatch_FullMethodName       = "/loomcycle.v1.Loomcycle/SpawnRunBatch"
 	Loomcycle_CompactRun_FullMethodName          = "/loomcycle.v1.Loomcycle/CompactRun"
+	Loomcycle_RunInput_FullMethodName            = "/loomcycle.v1.Loomcycle/RunInput"
+	Loomcycle_StreamRun_FullMethodName           = "/loomcycle.v1.Loomcycle/StreamRun"
 	Loomcycle_GetTranscript_FullMethodName       = "/loomcycle.v1.Loomcycle/GetTranscript"
 	Loomcycle_GetAgent_FullMethodName            = "/loomcycle.v1.Loomcycle/GetAgent"
 	Loomcycle_CancelAgent_FullMethodName         = "/loomcycle.v1.Loomcycle/CancelAgent"
@@ -111,6 +113,21 @@ type LoomcycleClient interface {
 	//
 	// Mirrors POST /v1/runs/{run_id}/compact + the compact_run MCP tool.
 	CompactRun(ctx context.Context, in *CompactRunRequest, opts ...grpc.CallOption) (*CompactRunResult, error)
+	// RunInput pushes an operator steering message into a LIVE interactive
+	// run (one parked at end_turn awaiting input, or mid-turn — the message
+	// is drained at the next iteration boundary). delivered=false +
+	// NotFound when no in-flight run holds run_id; ResourceExhausted when
+	// the run's steer queue is full. The injected `source` is server-stamped
+	// (never wire-trusted). Cross-replica routing is inherited from the
+	// steer registry. Mirrors POST /v1/runs/{run_id}/input. (RFC AI)
+	RunInput(ctx context.Context, in *RunInputRequest, opts ...grpc.CallOption) (*RunInputResponse, error)
+	// StreamRun re-attaches to a run's event stream by run_id, replaying
+	// from from_seq and then live-tailing — the gRPC twin of
+	// GET /v1/runs/{run_id}/stream. For a PARKED interactive run (non-
+	// terminal) the stream stays open until the run ends or ctx fires; a
+	// disconnect does NOT stop the run. The first frame is a synthetic
+	// type="agent" Event carrying run metadata. (RFC AI)
+	StreamRun(ctx context.Context, in *StreamRunRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[Event], error)
 	// GetTranscript returns the full event history for a session,
 	// ordered by seq. Used by adapters that re-attach to a previously
 	// started session (e.g. cross-tab sync).
@@ -379,6 +396,35 @@ func (c *loomcycleClient) CompactRun(ctx context.Context, in *CompactRunRequest,
 	}
 	return out, nil
 }
+
+func (c *loomcycleClient) RunInput(ctx context.Context, in *RunInputRequest, opts ...grpc.CallOption) (*RunInputResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(RunInputResponse)
+	err := c.cc.Invoke(ctx, Loomcycle_RunInput_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *loomcycleClient) StreamRun(ctx context.Context, in *StreamRunRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[Event], error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	stream, err := c.cc.NewStream(ctx, &Loomcycle_ServiceDesc.Streams[2], Loomcycle_StreamRun_FullMethodName, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	x := &grpc.GenericClientStream[StreamRunRequest, Event]{ClientStream: stream}
+	if err := x.ClientStream.SendMsg(in); err != nil {
+		return nil, err
+	}
+	if err := x.ClientStream.CloseSend(); err != nil {
+		return nil, err
+	}
+	return x, nil
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type Loomcycle_StreamRunClient = grpc.ServerStreamingClient[Event]
 
 func (c *loomcycleClient) GetTranscript(ctx context.Context, in *GetTranscriptRequest, opts ...grpc.CallOption) (*Transcript, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
@@ -672,7 +718,7 @@ func (c *loomcycleClient) ListChannels(ctx context.Context, in *ListChannelsRequ
 
 func (c *loomcycleClient) StreamUserRunStates(ctx context.Context, in *StreamUserRunStatesRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[RunStateEvent], error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	stream, err := c.cc.NewStream(ctx, &Loomcycle_ServiceDesc.Streams[2], Loomcycle_StreamUserRunStates_FullMethodName, cOpts...)
+	stream, err := c.cc.NewStream(ctx, &Loomcycle_ServiceDesc.Streams[3], Loomcycle_StreamUserRunStates_FullMethodName, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -780,6 +826,21 @@ type LoomcycleServer interface {
 	//
 	// Mirrors POST /v1/runs/{run_id}/compact + the compact_run MCP tool.
 	CompactRun(context.Context, *CompactRunRequest) (*CompactRunResult, error)
+	// RunInput pushes an operator steering message into a LIVE interactive
+	// run (one parked at end_turn awaiting input, or mid-turn — the message
+	// is drained at the next iteration boundary). delivered=false +
+	// NotFound when no in-flight run holds run_id; ResourceExhausted when
+	// the run's steer queue is full. The injected `source` is server-stamped
+	// (never wire-trusted). Cross-replica routing is inherited from the
+	// steer registry. Mirrors POST /v1/runs/{run_id}/input. (RFC AI)
+	RunInput(context.Context, *RunInputRequest) (*RunInputResponse, error)
+	// StreamRun re-attaches to a run's event stream by run_id, replaying
+	// from from_seq and then live-tailing — the gRPC twin of
+	// GET /v1/runs/{run_id}/stream. For a PARKED interactive run (non-
+	// terminal) the stream stays open until the run ends or ctx fires; a
+	// disconnect does NOT stop the run. The first frame is a synthetic
+	// type="agent" Event carrying run metadata. (RFC AI)
+	StreamRun(*StreamRunRequest, grpc.ServerStreamingServer[Event]) error
 	// GetTranscript returns the full event history for a session,
 	// ordered by seq. Used by adapters that re-attach to a previously
 	// started session (e.g. cross-tab sync).
@@ -1003,6 +1064,12 @@ func (UnimplementedLoomcycleServer) SpawnRunBatch(context.Context, *BatchSpawnRe
 func (UnimplementedLoomcycleServer) CompactRun(context.Context, *CompactRunRequest) (*CompactRunResult, error) {
 	return nil, status.Error(codes.Unimplemented, "method CompactRun not implemented")
 }
+func (UnimplementedLoomcycleServer) RunInput(context.Context, *RunInputRequest) (*RunInputResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method RunInput not implemented")
+}
+func (UnimplementedLoomcycleServer) StreamRun(*StreamRunRequest, grpc.ServerStreamingServer[Event]) error {
+	return status.Error(codes.Unimplemented, "method StreamRun not implemented")
+}
 func (UnimplementedLoomcycleServer) GetTranscript(context.Context, *GetTranscriptRequest) (*Transcript, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetTranscript not implemented")
 }
@@ -1189,6 +1256,35 @@ func _Loomcycle_CompactRun_Handler(srv interface{}, ctx context.Context, dec fun
 	}
 	return interceptor(ctx, in, info, handler)
 }
+
+func _Loomcycle_RunInput_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RunInputRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(LoomcycleServer).RunInput(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Loomcycle_RunInput_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(LoomcycleServer).RunInput(ctx, req.(*RunInputRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Loomcycle_StreamRun_Handler(srv interface{}, stream grpc.ServerStream) error {
+	m := new(StreamRunRequest)
+	if err := stream.RecvMsg(m); err != nil {
+		return err
+	}
+	return srv.(LoomcycleServer).StreamRun(m, &grpc.GenericServerStream[StreamRunRequest, Event]{ServerStream: stream})
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type Loomcycle_StreamRunServer = grpc.ServerStreamingServer[Event]
 
 func _Loomcycle_GetTranscript_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(GetTranscriptRequest)
@@ -1847,6 +1943,10 @@ var Loomcycle_ServiceDesc = grpc.ServiceDesc{
 			Handler:    _Loomcycle_CompactRun_Handler,
 		},
 		{
+			MethodName: "RunInput",
+			Handler:    _Loomcycle_RunInput_Handler,
+		},
+		{
 			MethodName: "GetTranscript",
 			Handler:    _Loomcycle_GetTranscript_Handler,
 		},
@@ -1996,6 +2096,11 @@ var Loomcycle_ServiceDesc = grpc.ServiceDesc{
 		{
 			StreamName:    "Continue",
 			Handler:       _Loomcycle_Continue_Handler,
+			ServerStreams: true,
+		},
+		{
+			StreamName:    "StreamRun",
+			Handler:       _Loomcycle_StreamRun_Handler,
 			ServerStreams: true,
 		},
 		{
