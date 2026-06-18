@@ -722,10 +722,11 @@ v1.0 keeps a single binary and a single config schema. There is **no** `--profil
 LOOMCYCLE_BASH_ENABLED=0
 LOOMCYCLE_HTTP_HOST_ALLOWLIST=             # empty — agents reach no hosts unless caller supplies allowed_hosts
 LOOMCYCLE_HTTP_CALLER_AUTHORITATIVE=1      # caller's per-request allowed_hosts is the policy
-LOOMCYCLE_READ_ROOT=                       # unset → Read tool refuses every call
-LOOMCYCLE_WRITE_ROOT=                      # unset → Write/Edit refuse every call
 LOOMCYCLE_SKILLS_ROOT=/srv/loomcycle/skills
 ```
+
+No `volumes:` block in the yaml — sandbox-by-default (RFC AH Phase 3): with no
+volume declared, Read/Write/Edit/Bash refuse every call.
 
 YAML: every agent's `allowed_tools` lists only the network-restricted set (`HTTP` only with caller-supplied hosts, `WebSearch` with `web_search_filter: drop`, `Agent` for orchestration). Run inside a container; rely on the container for true filesystem isolation.
 
@@ -733,12 +734,18 @@ YAML: every agent's `allowed_tools` lists only the network-restricted set (`HTTP
 
 ```bash
 LOOMCYCLE_BASH_ENABLED=1                   # bash on (still NOT a real sandbox; container required)
-LOOMCYCLE_BASH_CWD=/work
 LOOMCYCLE_HTTP_HOST_ALLOWLIST=api.anthropic.com,api.brave.com,github.com,...
-LOOMCYCLE_READ_ROOT=/work
-LOOMCYCLE_WRITE_ROOT=/work
 LOOMCYCLE_SKILLS_ROOT=/work/.claude/skills
 LOOMCYCLE_HTTP_PRIVATE_HOST_ALLOWLIST=localhost,127.0.0.1
+```
+
+The filesystem reach is a `volumes:` block in the yaml (RFC AH Phase 3 retired
+the `LOOMCYCLE_READ_ROOT`/`WRITE_ROOT`/`BASH_CWD` jail). A `default` rw volume
+gives Read/Write/Edit/Bash access to `/work`:
+
+```yaml
+volumes:
+  default: { path: /work, mode: rw, default: true }
 ```
 
 YAML: agents can list any tool. The bearer token (`LOOMCYCLE_AUTH_TOKEN`) is the trust boundary; treat anyone with the token as fully trusted to drive the runtime.

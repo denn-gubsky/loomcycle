@@ -334,6 +334,8 @@ func TestRead_UnboundAgentDenies(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// "available" (no "is") — effectiveRoot's !pol.Active branch. The one-word
+	// difference from the active-empty refusal below is intentional; don't unify.
 	if !res.IsError || !strings.Contains(res.Text, "no filesystem volume available") {
 		t.Fatalf("unbound agent must refuse (no legacy fallback), got Text=%q IsError=%v", res.Text, res.IsError)
 	}
@@ -356,6 +358,9 @@ func TestRead_ActiveEmptyPolicyRefuses(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// "is available" — effectiveRoot's len(pol.Bindings)==0 branch (active policy,
+	// no bindings). The one-word difference from the inactive refusal above is
+	// intentional; don't "correct" it or this assertion silently passes the wrong branch.
 	if !res.IsError || !strings.Contains(res.Text, "no filesystem volume is available") {
 		t.Fatalf("active-empty policy must refuse; got Text=%q IsError=%v", res.Text, res.IsError)
 	}
