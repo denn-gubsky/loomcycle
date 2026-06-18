@@ -28,6 +28,7 @@ var loomcycleOnlyBuiltins = map[string]bool{
 	"MCPServerDef": true,
 	"Memory":       true,
 	"SkillDef":     true,
+	"VolumeDef":    true, // RFC AH Phase 2a — added after v0.11.10 mask list was established
 }
 
 // MaskPrefix is the wire-name prefix the loomcycle-only built-ins
