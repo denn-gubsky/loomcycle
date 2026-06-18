@@ -33,6 +33,7 @@ var mcpWrapperSchemas = map[string]string{
 	"webhookdef":       webhookDefInputSchema,
 	"memorybackenddef": memoryBackendDefInputSchema,
 	"operatortokendef": operatorTokenDefInputSchema,
+	"volumedef":        volumeDefInputSchema,
 	"evaluation":       evaluationInputSchema,
 	"context":          contextInputSchema,
 }

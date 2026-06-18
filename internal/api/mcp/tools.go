@@ -260,6 +260,11 @@ func toolDescriptors() []loommcp.ToolDescriptor {
 			InputSchema: builtinSchema("operatortokendef"),
 		},
 		{
+			Name:        "volumedef",
+			Description: "VolumeDef tool ops (create/get/list/delete/purge). RFC AH dynamic filesystem-volume substrate. Tenant-confined — provision + manage CONFINED per-tenant volumes at runtime. Volumes are created by NAME + MODE only; the runtime derives the path inside an operator-blessed parent (dynamic_root/<tenant>/<name>) — you never supply a host path. delete unmaps (keeps files); purge removes the row AND the directory tree. Pass-through.",
+			InputSchema: builtinSchema("volumedef"),
+		},
+		{
 			Name:        "evaluation",
 			Description: "Evaluation tool ops (submit/get/list_for_run/list_for_def/aggregate). Pass-through.",
 			InputSchema: builtinSchema("evaluation"),
