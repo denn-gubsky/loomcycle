@@ -52,6 +52,11 @@
  *     ensureMcpServer(opts): Promise<EnsureMcpServerResult>              // v0.18.0 — idempotent register-if-changed
  *     scheduleDef(input): Promise<SubstrateToolResponse>
  *
+ *     // Dynamic filesystem volumes (v0.35.0 — RFC AH; tenant-confined)
+ *     volumeDef(input): Promise<SubstrateToolResponse>            // create/get/list/delete/purge
+ *     listVolumes(): Promise<PersistentVolumesResponse>
+ *     listEphemeralVolumes(): Promise<EphemeralVolumesResponse>
+ *
  *     // Library v2 enumeration (v0.10.3 — yaml+substrate merged)
  *     listLibraryAgents(): Promise<LibraryListResponse<LibraryAgentDefinition>>
  *     listLibrarySkills(): Promise<LibraryListResponse<LibrarySkillDefinition>>
@@ -165,6 +170,12 @@ export type {
   // Substrate admin (v0.8.22)
   SubstrateToolInput,
   SubstrateToolResponse,
+  // RFC AH dynamic volumes (v0.35.0)
+  VolumeMode,
+  PersistentVolumeEntry,
+  PersistentVolumesResponse,
+  EphemeralVolumeEntry,
+  EphemeralVolumesResponse,
   // Transcript first-cycle types (v0.9.1)
   SystemPromptPayload,
   UserInputPayload,

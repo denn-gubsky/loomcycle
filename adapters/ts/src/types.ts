@@ -869,7 +869,21 @@ export interface PostHookCall {
  *  the adapter doesn't re-validate. Use the optional `extra` index
  *  signature for forward-compat fields. */
 export type SubstrateToolInput = {
-  op: "create" | "fork" | "get" | "list" | "promote" | "retire" | "rediscover" | "verify";
+  // `delete` + `purge` are the flat VolumeDef lifecycle ops (RFC AH) — a
+  // Volume points at mutable on-disk state, so it has no version chain to
+  // retire/promote/fork. `delete` unmaps (keeps files); `purge` removes the
+  // row AND the directory tree.
+  op:
+    | "create"
+    | "fork"
+    | "get"
+    | "list"
+    | "promote"
+    | "retire"
+    | "rediscover"
+    | "verify"
+    | "delete"
+    | "purge";
   name?: string;
   def_id?: string;
   parent_def_id?: string;
@@ -877,6 +891,9 @@ export type SubstrateToolInput = {
   description?: string;
   promote?: boolean;
   retired?: boolean;
+  // VolumeDef create takes a flat `mode` (ro|rw); the runtime derives the
+  // path, so callers never supply one.
+  mode?: VolumeMode;
   [extra: string]: unknown;
 };
 
@@ -886,6 +903,47 @@ export type SubstrateToolInput = {
  *  `{name, versions: [...]}`, promote/retire return summary shapes.
  *  Callers narrow as needed. */
 export type SubstrateToolResponse = unknown;
+
+/** Volume access mode — read-only or read-write (RFC AH). */
+export type VolumeMode = "ro" | "rw";
+
+/** One row of {@link LoomcycleClient.listVolumes} (`GET /v1/_volumes`). */
+export interface PersistentVolumeEntry {
+  name: string;
+  /** "static" (operator yaml, read-only) or "dynamic" (a tenant VolumeDef). */
+  source: "static" | "dynamic";
+  /** Host path. Redacted to "" for a non-operator (tenant) caller — the
+   *  volume universe is visible to a tenant operator, the host location is
+   *  not. Operator-equivalent callers see the real path. */
+  path: string;
+  mode: VolumeMode;
+  /** True for the static volume flagged `default: true` (never for dynamic). */
+  default: boolean;
+  /** True for the static volume dynamic VolumeDefs are provisioned inside. */
+  dynamic_root: boolean;
+  /** Set for dynamic rows (the substrate stamps it); absent for static. */
+  created_at?: string;
+}
+
+export interface PersistentVolumesResponse {
+  entries: PersistentVolumeEntry[];
+}
+
+/** One row of {@link LoomcycleClient.listEphemeralVolumes}
+ *  (`GET /v1/_volumes/ephemeral`). */
+export interface EphemeralVolumeEntry {
+  name: string;
+  root_run_id: string;
+  /** Host path — redacted to "" for a non-operator caller (see
+   *  {@link PersistentVolumeEntry.path}). */
+  path: string;
+  mode: VolumeMode;
+  created_at: string;
+}
+
+export interface EphemeralVolumesResponse {
+  entries: EphemeralVolumeEntry[];
+}
 
 /** Response a Post webhook returns. When result is omitted the tool
  *  result passes through unchanged. */

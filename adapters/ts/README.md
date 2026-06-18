@@ -12,6 +12,7 @@ TypeScript client for the [loomcycle](https://github.com/denn-gubsky/loomcycle) 
 
 ### What's new since v0.8.18
 
+- **`volumeDef` / `listVolumes` / `listEphemeralVolumes`** (v0.35.0, RFC AH) — the dynamic filesystem-volume surface. `volumeDef` is the op-discriminated substrate tool (`create` / `get` / `list` / `delete` / `purge`); a Volume is **flat** (a pointer to mutable on-disk state, not a versioned def), so `delete` unmaps + leaves files while `purge` removes the row **and** the directory tree — there is no retire/promote/fork. Tenant-confined (`ScopeTenant`): the runtime derives the path inside an operator-blessed `dynamic_root`, so you pass `{name, mode}`, never a host path. `listVolumes()` / `listEphemeralVolumes()` return the tenant's persistent + live run-scoped volumes; host paths are redacted (`""`) for a non-operator caller.
 - **`ensureMcpServer` / `mcpServerDefVerify`** (v0.18.0) — typed ergonomics for the dynamic-MCP dedup flow. `ensureMcpServer({name, url, headers?, rediscover?})` registers a callback MCP server **idempotently**: it runs `create` (a no-op in loomcycle ≥ v0.18.0 when the active def already carries identical content) plus an optional `rediscover` (a no-op on unchanged tools), and returns `{defId, version, changed, discoveredToolCount?}` — so a consumer re-registering on every startup gets `changed: false` once its registration content is stable. Keep `${run.*}` / `${LOOMCYCLE_*}` header placeholders **literal** (don't bake a per-restart token) or the content varies each boot and dedup can't engage. `mcpServerDefVerify(name, sha)` is the typed `op: verify` wrapper (`matches: true` = no-op signal).
 - **`operatorTokenDef` / `whoami` + tenant-scoped reads** (v0.17.0, RFC L) — the OSS multi-tenant authorization surface. `operatorTokenDef` is the op-discriminated admin tool over the `OperatorTokenDef` substrate (create / rotate / retire per-principal bearer tokens); `whoami()` returns the authoritative `(tenant, subject, scopes, is_admin)` resolved from the calling bearer; `listUsers({ tenant })` / `listUserAgents(userId, { tenant })` accept a super-admin tenant-focus (ignored server-side for a tenant principal — its own tenant is forced).
 
@@ -273,6 +274,32 @@ console.log(`forked def_id=${forked.def_id} hash=${forked.content_sha256}`);
 Operations on AgentDef: `create` / `fork` / `get` / `list` / `promote` / `retire` / **`verify`** (v0.9.x). SkillDef has the same set minus `retire`'s edge cases. See `internal/tools/builtin/agentdef.go` for the canonical input schema; each op enforces the agent's `agent_def_scopes` / `skill_def_scopes` capability gate from the operator yaml.
 
 Refusals throw `SubstrateToolRefusedError` (a scope deny / empty body / allowed-tools widening); transport failures throw the usual typed errors (`AuthError`, `UnavailableError`, etc.).
+
+### Dynamic filesystem volumes (v0.35.0 — RFC AH)
+
+Per-tenant, ro/rw filesystem roots an agent can be bound to. `volumeDef` provisions and manages them at runtime; the two list methods render the volume universe. Tenant-confined (`ScopeTenant`).
+
+| Method | Returns | Notes |
+|---|---|---|
+| `volumeDef(input)` | `Promise<SubstrateToolResponse>` | Op-discriminated (`create` / `get` / `list` / `delete` / `purge`). Mirrors `POST /v1/_volumedef`. |
+| `listVolumes()` | `Promise<PersistentVolumesResponse>` | Static (read-only floor) + the tenant's dynamic volumes. `GET /v1/_volumes`. |
+| `listEphemeralVolumes()` | `Promise<EphemeralVolumesResponse>` | Live, run-scoped volumes (auto-purged at run completion). `GET /v1/_volumes/ephemeral`. |
+
+A Volume is **flat** — a pointer to mutable on-disk state, not a versioned definition — so the op set is `create` / `get` / `list` / `delete` / `purge` (no retire/promote/fork). The runtime DERIVES the path inside an operator-blessed `dynamic_root` (`<root>/<tenant>/<name>`), so you pass `{name, mode}` and never a host path:
+
+```ts
+// Provision a writable per-tenant volume (the runtime mkdir's it).
+await client.volumeDef({ op: "create", name: "repo-a", mode: "rw" });
+
+// Unmap (keeps files) vs. destroy (RemoveAll's the tree).
+await client.volumeDef({ op: "delete", name: "repo-a" }); // non-destructive
+await client.volumeDef({ op: "purge",  name: "repo-a" }); // destructive
+
+const { entries } = await client.listVolumes();
+// entries[].path is "" (redacted) unless the caller is operator-equivalent.
+```
+
+Refusals throw `SubstrateToolRefusedError` (collision with a static volume name, no `dynamic_root` configured, cross-tenant); transport failures throw the usual typed errors.
 
 ### Channels + run-state stream (v0.9.x n8n Phase 0)
 
