@@ -183,6 +183,43 @@ the existing HTTP surface; no new runtime primitive.
 - **Not in Phase 4 (follow-ups):** broader tenant-operator UI access (the tab is
   admin-gated for now); Phase 5 (gRPC / MCP / TS / Python `VolumeDef` parity).
 
+**🔌 Filesystem Volumes — cross-transport `VolumeDef` parity (RFC AH Phase 5).**
+Phases 2a/2b shipped the `VolumeDef` authoring API only over HTTP
+(`POST /v1/_volumedef`) + the in-loop builtin tool. Phase 5 surfaces it on
+**every** wire transport, matching the other substrate-def families. Additive;
+no new runtime semantics — tenant authority, opaque-404, and the
+`volume_def_scopes` gate are enforced server-side, so every transport inherits
+them and the adapters stay thin.
+
+- **gRPC.** A new `rpc VolumeDef(SubstrateRequest) returns (SubstrateResponse)`
+  (proto + regenerated stubs + server impl mirroring the AgentDef/MCPServerDef
+  RPCs). Routed through the shared `connector.VolumeDef` (newly added to the
+  `Connector` interface; the HTTP server already implemented it). The per-RPC
+  scope gate maps `VolumeDef → ScopeTenant` (NOT `ScopeAdmin` —
+  tenant-confined, unlike `OperatorTokenDef`), and `substrateGRPCCtx` grants the
+  operator-trust `volume_def` policy so the in-process tool isn't default-denied.
+  This is the path the **Python** adapter consumes (Python is gRPC-only).
+- **MCP.** A `volumedef` meta-tool on the `loomcycle mcp` server (catalogue
+  descriptor + dispatch + the canonical input schema, with `operatorCtx`
+  granting the `volume_def` policy) — `create`/`get`/`list`/`delete`/`purge`
+  reachable over MCP like the other def families. (Advertised tool count
+  43 → 44.)
+- **TS adapter (`@loomcycle/client` 0.35.0, HTTP+SSE).** `volumeDef({op, …})`
+  plus the two Phase-4 reads `listVolumes()` / `listEphemeralVolumes()` (typed
+  `PersistentVolumesResponse` / `EphemeralVolumesResponse`; host paths arrive
+  redacted for a non-operator caller). 54 → 57 methods. The `SubstrateToolInput`
+  `op` union gains `delete` / `purge` (the flat VolumeDef lifecycle).
+- **Python adapter (`loomcycle` 0.9.0, gRPC-only).** `volume_def(input)` over
+  the new RPC; regenerated stubs; 39 → 40 RPC parity. (The HTTP-only reads stay
+  TS-only, consistent with the existing gRPC ⊊ TS surface.)
+- **A Volume is flat** (a pointer to mutable on-disk state, not a versioned
+  definition), so the op set is `create`/`get`/`list`/`delete`/`purge` on every
+  transport — never the content-addressed `retire`/`promote`/`fork` of the other
+  Def families. `delete` unmaps (keeps files); `purge` removes the row AND the
+  directory tree. The destructive `purge` carries **no** type-to-confirm over a
+  programmatic transport (that's a Phase-4 UI affordance) — callers are trusted
+  code; the server-side four-way fence is the real guard.
+
 ## What's in v1.0.2
 
 **🌐 Permitted host-widen grants now work with no static HTTP allowlist.** A
