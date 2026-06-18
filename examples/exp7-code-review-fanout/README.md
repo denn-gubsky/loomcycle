@@ -40,7 +40,7 @@ in v0.32.0. See [the note below](#a-note-on-the-sandbox-origin--rfc-y).)
 | **`spawn_runs` (RFC Y, MCP/`POST /v1/runs:batch`)** | the **external fan-out** — ONE call spawns N runs server-side-concurrent, `mode:join` blocks until all settle, returns an index-aligned envelope (a per-child failure is captured in-envelope, never fails the batch) |
 | **`spawn_run` (MCP)** | the single consolidator run after the fan-out |
 | **`Memory` (user scope)** | the shared findings ledger — `review:<slice>:findings` per reviewer → `consolidated:report` |
-| **read-only `Read`/`Grep`/`Glob` jail** | reviewers get the file tools sandboxed to `LOOMCYCLE_READ_ROOT` with **no Bash/Write** — they can read the repo but not mutate or execute |
+| **read-only `Read`/`Grep`/`Glob` jail** | reviewers get the file tools sandboxed to the read-only `default` volume (`loomcycle.yaml`, `path: .` == `./work`) with **no Bash/Write** — they can read the repo but not mutate or execute |
 | **`Context op=self`** | each reviewer self-reports its `run_id` into its findings (provenance) |
 
 Routing: **Anthropic OAuth (primary) → deepseek-v4-pro (fallback)** via `tier: middle`.
@@ -173,7 +173,7 @@ Ctrl-C the server; `rm -rf data` for a clean ledger; `rm -rf work/loomcycle-src`
 | File | Purpose |
 |---|---|
 | `loomcycle.yaml` | routing + `code-reviewer` (imported, read-only) + `exp7-consolidator`; throttled concurrency |
-| `run.sh` | launcher — sets the read-only jail (`LOOMCYCLE_READ_ROOT=./work`) + skills root + MCP upstream token |
+| `run.sh` | launcher — cd's into the read-only jail (`./work`, bound by `loomcycle.yaml`'s `default` ro volume) + sets skills root + MCP upstream token |
 | `claude-code-src/{agents/code-reviewer.md,skills/code-review/SKILL.md}` | the Claude Code source artifacts the import was produced from (provenance; `.claude`-layout) |
 | `skills/code-review/SKILL.md` | the imported skill body, bundled into the reviewer's prompt at load |
 | `work/exp7_mcp.py` | token-safe MCP stdio JSON-RPC client driving `loomcycle mcp --upstream` |
