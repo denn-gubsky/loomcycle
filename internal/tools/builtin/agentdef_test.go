@@ -79,7 +79,7 @@ func TestAgentDefTool_CreateRoundTripsDefScopes(t *testing.T) {
 		`"system_prompt":"breed agents",`+
 		`"agent_def_scopes":["named:foo"],"schedule_def_scopes":["any"],`+
 		`"skill_def_scopes":["named:s"],"a2a_server_card_def_scopes":["any"],`+
-		`"a2a_agent_def_scopes":["any"]}}`))
+		`"a2a_agent_def_scopes":["any"],"volume_def_scopes":["named:vol"]}}`))
 	if res.IsError {
 		t.Fatalf("create: %s", res.Text)
 	}
@@ -99,6 +99,23 @@ func TestAgentDefTool_CreateRoundTripsDefScopes(t *testing.T) {
 	}
 	if len(def.A2AServerCardDefScopes) != 1 || len(def.A2AAgentDefScopes) != 1 {
 		t.Errorf("a2a def scopes dropped: server=%v agent=%v", def.A2AServerCardDefScopes, def.A2AAgentDefScopes)
+	}
+	if got := def.VolumeDefScopes; len(got) != 1 || got[0] != "named:vol" {
+		t.Errorf("VolumeDefScopes = %v, want [named:vol] (Phase 2a: dropped on the overlay round-trip)", got)
+	}
+}
+
+// staticToMergedDef must carry EVERY *_def_scopes from a static (yaml) agent
+// into the substrate bootstrap — else a fork of an operator's static meta-agent
+// silently loses its authority. VolumeDefScopes was dropped (Phase 2a review).
+func TestStaticToMergedDef_PreservesVolumeDefScopes(t *testing.T) {
+	md := staticToMergedDef(config.AgentDef{
+		AgentDefScopes:  []string{"any"},
+		SkillDefScopes:  []string{"any"},
+		VolumeDefScopes: []string{"named:repo"},
+	})
+	if len(md.VolumeDefScopes) != 1 || md.VolumeDefScopes[0] != "named:repo" {
+		t.Errorf("staticToMergedDef dropped VolumeDefScopes: got %v", md.VolumeDefScopes)
 	}
 }
 

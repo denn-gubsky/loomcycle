@@ -111,6 +111,14 @@ func (v *VolumeDef) Execute(ctx context.Context, raw json.RawMessage) (tools.Res
 	if v.Cfg == nil {
 		return errResult("VolumeDef tool: not configured (no Config — dynamic root unavailable)"), nil
 	}
+	// The shared tenant ("") maps to the reserved on-disk segment
+	// sharedTenantSegment. Refuse a real tenant whose minted id is literally
+	// that string, so the reserved segment can never be shared by two distinct
+	// tenants (which would let one purge the other's volume tree). The tenant
+	// is authoritative from the principal, never the wire.
+	if tools.RunIdentity(ctx).TenantID == sharedTenantSegment {
+		return errResult(fmt.Sprintf("VolumeDef tool: tenant id %q is reserved", sharedTenantSegment)), nil
+	}
 	var in volumeDefInput
 	if err := json.Unmarshal(raw, &in); err != nil {
 		return errResult(fmt.Sprintf("invalid input JSON: %s", err)), nil
@@ -391,21 +399,19 @@ func (v *VolumeDef) checkScopeForName(ctx context.Context, name string) error {
 	return fmt.Errorf("VolumeDef tool: name %q not in this agent's volume_def_scopes (%v)", name, policy.Scopes)
 }
 
+// sharedTenantSegment is the on-disk path segment for the shared tenant ("").
+// A real tenant whose minted id is literally this string is REJECTED at the op
+// boundary (see Execute), so the segment is unambiguous and two distinct
+// tenants can never share a directory subtree.
+const sharedTenantSegment = "_shared"
+
 // tenantSegment maps a tenant id to its on-disk path segment. The shared
-// tenant "" uses "_shared" — a name the volumeNameRe charset forbids, so it
-// can never collide with a tenant-named volume's own segment (no real
-// tenant id can be "_shared" produced by a leading underscore via the
-// charset, and a tenant whose literal id is "_shared" still gets its OWN
-// distinct segment string equal to "_shared" — see note below).
-//
-// NOTE: a tenant whose literal id were the string "_shared" would share the
-// shared tenant's directory. Tenant ids come from the operator-minted
-// OperatorTokenDef principal (never the wire), so this is an operator
-// naming choice, not a model-reachable collision; documented rather than
-// defended (no tenant id is "_shared" in practice).
+// tenant "" uses sharedTenantSegment; every other tenant uses its id verbatim.
+// The Execute guard rejects a tenant id equal to sharedTenantSegment, so the
+// "" → sharedTenantSegment mapping can never collide with a real tenant.
 func tenantSegment(tenantID string) string {
 	if tenantID == "" {
-		return "_shared"
+		return sharedTenantSegment
 	}
 	return tenantID
 }

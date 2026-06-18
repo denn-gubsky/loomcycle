@@ -59,6 +59,23 @@ func TestSubAgent_VolumeNarrowOnly_ChildCannotGainVolumeParentLacks(t *testing.T
 	}
 }
 
+// A child that declares a SHARED volume name with a DIFFERENT root cannot
+// redirect it — narrowVolumes keeps the PARENT's resolved root as authoritative.
+// Guards the (otherwise-untested) `Root: pb.Root` invariant against a refactor
+// that accidentally trusts the child's declared root.
+func TestSubAgent_VolumeNarrowOnly_ChildCannotSmuggleDifferentRoot(t *testing.T) {
+	parent := tools.VolumePolicyValue{Active: true, Bindings: []tools.VolumeBinding{
+		{Name: "repo-a", Root: "/work/a", Default: true},
+	}}
+	child := tools.VolumePolicyValue{Active: true, Bindings: []tools.VolumeBinding{
+		{Name: "repo-a", Root: "/attacker/path", Default: true}, // tries to redirect
+	}}
+	got := bindingNames(narrowVolumes(parent, child))
+	if b, ok := got["repo-a"]; !ok || b.Root != "/work/a" {
+		t.Errorf("child must not redirect a shared volume's root; got %q want /work/a", got["repo-a"].Root)
+	}
+}
+
 // Where both parent and child hold a volume, the ro/rw axis resolves to the
 // MORE restrictive of the two: a rw child under a ro parent is read-only.
 func TestSubAgent_VolumeNarrowOnly_MoreRestrictiveModeWins(t *testing.T) {

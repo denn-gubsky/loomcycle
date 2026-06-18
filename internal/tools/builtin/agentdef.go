@@ -1057,6 +1057,7 @@ func staticToMergedDef(s config.AgentDef) mergedDef {
 		SkillDefScopes:         s.SkillDefScopes,
 		A2AServerCardDefScopes: s.A2AServerCardDefScopes,
 		A2AAgentDefScopes:      s.A2AAgentDefScopes,
+		VolumeDefScopes:        s.VolumeDefScopes,
 	}
 }
 

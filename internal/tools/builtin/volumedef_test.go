@@ -315,6 +315,28 @@ func TestVolumeDefTool_CapabilityGate(t *testing.T) {
 	if _, res := vdExec(t, tool, namedCtx, `{"op":"create","name":"other"}`); !res.IsError {
 		t.Error("named:allowed should refuse create other")
 	}
+	// The gate applies to delete + purge too — not just create.
+	for _, op := range []string{`{"op":"delete","name":"other"}`, `{"op":"purge","name":"other"}`} {
+		if _, res := vdExec(t, tool, namedCtx, op); !res.IsError {
+			t.Errorf("named:allowed should refuse %s on other", op)
+		}
+	}
+}
+
+// A tenant whose minted id is literally the reserved shared segment is refused
+// on every op — it would otherwise collide on-disk with the shared tenant
+// (one could purge the other's volume tree). Operator-gated, cheaply fenced.
+func TestVolumeDefTool_ReservedTenantRefused(t *testing.T) {
+	tool, baseCtx, _, cleanup := volumeDefFixture(t)
+	defer cleanup()
+	ctx := tools.WithVolumeDefPolicy(
+		tools.WithRunIdentity(baseCtx, tools.RunIdentityValue{TenantID: "_shared"}),
+		tools.VolumeDefPolicyValue{Scopes: []string{"any"}})
+	for _, op := range []string{`{"op":"create","name":"x"}`, `{"op":"purge","name":"x"}`, `{"op":"list"}`} {
+		if _, res := vdExec(t, tool, ctx, op); !res.IsError || !strings.Contains(res.Text, "reserved") {
+			t.Errorf("reserved tenant must be refused on %s; got %s", op, res.Text)
+		}
+	}
 }
 
 func mustJSON(s string) string {
