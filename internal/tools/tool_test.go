@@ -163,6 +163,65 @@ func TestExtraAllowedHosts_NoLeakAcrossSiblingDerivations(t *testing.T) {
 	}
 }
 
+// ---- RFC AH Phase 2b ephemeral volume set ----
+
+// TestEphemeralVolumes_SharedPointerDownTree pins the load-bearing
+// resolution mechanism: a volume added through a CHILD ctx (a simulated
+// sub-agent that inherited the parent's set pointer) is visible through the
+// PARENT's set — they are the same pointer flowing down the tree.
+func TestEphemeralVolumes_SharedPointerDownTree(t *testing.T) {
+	set := NewEphemeralVolumeSet()
+	parentCtx := WithEphemeralVolumes(context.Background(), set)
+
+	// A sub-agent ctx derives from the parent — the value flows down unchanged.
+	childCtx := WithAgentName(parentCtx, "child") // any derivation; does NOT re-attach the set
+	childSet := EphemeralVolumes(childCtx)
+	if childSet != set {
+		t.Fatalf("child ctx got a different ephemeral set pointer than the parent")
+	}
+
+	// The child creates an ephemeral volume; the parent sees it (same map).
+	childSet.Add("work", EphemeralVolumeRef{Root: "/pool/_ephemeral/run-1/work", ReadOnly: false})
+	if ref, ok := EphemeralVolumes(parentCtx).Get("work"); !ok || ref.Root != "/pool/_ephemeral/run-1/work" {
+		t.Errorf("parent does not see the child-created volume: %+v ok=%v", ref, ok)
+	}
+}
+
+// TestEphemeralVolumes_IsolatedAcrossTopLevelRuns pins the isolation
+// property: a DIFFERENT top-level run gets its OWN set, so it never sees
+// another run's ephemeral volumes (no cross-run leak).
+func TestEphemeralVolumes_IsolatedAcrossTopLevelRuns(t *testing.T) {
+	setA := NewEphemeralVolumeSet()
+	setB := NewEphemeralVolumeSet()
+	ctxA := WithEphemeralVolumes(context.Background(), setA)
+	ctxB := WithEphemeralVolumes(context.Background(), setB)
+
+	EphemeralVolumes(ctxA).Add("work", EphemeralVolumeRef{Root: "/pool/_ephemeral/run-A/work"})
+
+	if _, ok := EphemeralVolumes(ctxB).Get("work"); ok {
+		t.Errorf("run B sees run A's ephemeral volume — cross-run leak")
+	}
+	if _, ok := EphemeralVolumes(ctxA).Get("work"); !ok {
+		t.Errorf("run A lost its own ephemeral volume")
+	}
+}
+
+// TestEphemeralVolumes_NilSafe confirms the getter + the set's methods are
+// nil-safe (no panic when no set was attached).
+func TestEphemeralVolumes_NilSafe(t *testing.T) {
+	if got := EphemeralVolumes(context.Background()); got != nil {
+		t.Errorf("EphemeralVolumes on a bare ctx = %v, want nil", got)
+	}
+	var nilSet *EphemeralVolumeSet
+	if _, ok := nilSet.Get("x"); ok {
+		t.Errorf("nil set Get reported found")
+	}
+	if nilSet.Has("x") {
+		t.Errorf("nil set Has reported true")
+	}
+	nilSet.Add("x", EphemeralVolumeRef{}) // must not panic
+}
+
 // ---- RFC F per-run credentials sugar in WithRunIdentity -----------
 
 // TestWithRunIdentity_PromotesUserBearerToDefaultCred pins the v0.8.x

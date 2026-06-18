@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sync"
 	"sync/atomic"
 
 	"github.com/denn-gubsky/loomcycle/internal/config"
@@ -252,6 +253,89 @@ func VolumePolicy(ctx context.Context) VolumePolicyValue {
 	return v
 }
 
+// ctxKeyEphemeralVolumes carries the run-tree's EphemeralVolumeSet (RFC AH
+// Phase 2b). Created ONCE at each top-level run-start and attached to the
+// loop ctx; sub-agents inherit the SAME pointer via the ctx chain
+// (runSubAgent derives the child ctx from the parent's, so the value flows
+// down — and must NOT be overwritten). The set is the run-scoped resolution
+// source for ephemeral volumes and is NEVER shared across different
+// top-level runs (a fresh set per run-start is the load-bearing isolation
+// property — no cross-run leak).
+type ctxKeyEphemeralVolumes struct{}
+
+// EphemeralVolumeRef is one resolved ephemeral volume: its on-disk root +
+// the ro/rw axis. Stored in the EphemeralVolumeSet keyed by name.
+type EphemeralVolumeRef struct {
+	Root     string
+	ReadOnly bool
+}
+
+// EphemeralVolumeSet is the run-tree's in-memory registry of ephemeral
+// volumes (RFC AH Phase 2b). It is a POINTER struct shared down the spawn
+// tree, so concurrent sub-agents add to and read from the same map under a
+// mutex. It is the resolution source effectiveRoot consults FIRST for a
+// named volume; it is created fresh per top-level run-start (never reused
+// across runs).
+type EphemeralVolumeSet struct {
+	mu sync.RWMutex
+	m  map[string]EphemeralVolumeRef
+}
+
+// NewEphemeralVolumeSet returns an empty set ready to share down a run tree.
+func NewEphemeralVolumeSet() *EphemeralVolumeSet {
+	return &EphemeralVolumeSet{m: make(map[string]EphemeralVolumeRef)}
+}
+
+// Add registers (or overwrites) an ephemeral volume by name. Thread-safe —
+// concurrent sub-agents may create ephemeral volumes simultaneously.
+func (s *EphemeralVolumeSet) Add(name string, ref EphemeralVolumeRef) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.m == nil {
+		s.m = make(map[string]EphemeralVolumeRef)
+	}
+	s.m[name] = ref
+}
+
+// Get returns the ref for name and whether it exists. Nil-safe (a nil set
+// reports "not found", so callers don't special-case the no-set path).
+func (s *EphemeralVolumeSet) Get(name string) (EphemeralVolumeRef, bool) {
+	if s == nil {
+		return EphemeralVolumeRef{}, false
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	ref, ok := s.m[name]
+	return ref, ok
+}
+
+// Has reports whether name is already registered (used by the create op to
+// refuse a duplicate ephemeral name within the same run tree).
+func (s *EphemeralVolumeSet) Has(name string) bool {
+	_, ok := s.Get(name)
+	return ok
+}
+
+// WithEphemeralVolumes attaches the run-tree's ephemeral volume set to ctx.
+// nil set is a no-op (EphemeralVolumes then returns nil → no ephemeral
+// resolution, and the create op refuses with "no ephemeral set on ctx").
+func WithEphemeralVolumes(ctx context.Context, set *EphemeralVolumeSet) context.Context {
+	if set == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, ctxKeyEphemeralVolumes{}, set)
+}
+
+// EphemeralVolumes returns the run-tree's ephemeral volume set from ctx, or
+// nil when none was attached. Nil is safe to pass to the set's methods.
+func EphemeralVolumes(ctx context.Context) *EphemeralVolumeSet {
+	v, _ := ctx.Value(ctxKeyEphemeralVolumes{}).(*EphemeralVolumeSet)
+	return v
+}
+
 // ctxKeyRunIdentity is the context key under which the runtime
 // stashes the current run's user_id and agent_id (v0.4 tracking
 // fields). Sub-agents read these via RunIdentity to inherit the
@@ -264,6 +348,15 @@ type ctxKeyRunIdentity struct{}
 type RunIdentityValue struct {
 	UserID  string
 	AgentID string
+	// RootRunID is the id of the TOP-LEVEL run at the root of this spawn
+	// tree (RFC AH Phase 2b). At each top-level run-start site it is set to
+	// the run's OWN id; a sub-agent INHERITS the parent's RootRunID
+	// unchanged (runSubAgent must not overwrite it), so the whole tree
+	// shares one root id. Ephemeral filesystem volumes scope to it:
+	// resolvable by the entire creating tree, purged when the top-level run
+	// completes. Empty for a run started outside the volume-aware run-start
+	// path (the ephemeral VolumeDef create op then refuses — no active run).
+	RootRunID string
 	// TenantID is the RFC L authoritative data-isolation boundary. On
 	// authenticated routes it is set from the resolved auth.Principal's
 	// TenantID (which overrides the wire tenant_id); for legacy /
